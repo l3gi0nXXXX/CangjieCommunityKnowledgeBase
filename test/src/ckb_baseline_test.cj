@@ -328,6 +328,119 @@ public class CkbBaselineTest {
     }
 
     @TestCase
+    public func liveApplyWritesSourceTypedRawNormalizedAndMetadata(): Unit {
+        let kb = newOfflineKnowledgeBase()
+        let fake = FakeSourceFetchRunner()
+        let store = FileKnowledgeStore("target/ckb-test-live-apply")
+        let options = LiveApplyOptions()
+        options.apply = true
+        options.maxItems = 20
+
+        let result = ckbSyncLiveApply(kb, SourceAdapter(runner: fake), store, options)
+        let raw = store.loadRaw()
+        let normalized = store.loadNormalized()
+
+        @Expect(result.ok, true)
+        @Expect(result.candidateVersion.contains("candidate"), true)
+        @Expect(result.activeVersion.contains("active"), true)
+        @Expect(store.has("raw/doc/doc-syntax.ckb"), true)
+        @Expect(store.has("raw/repo/source-http-client.ckb"), true)
+        @Expect(store.has("raw/community/community-issue-1.ckb"), true)
+        @Expect(store.has("raw/web_candidate/web-candidate-blog.ckb"), true)
+        @Expect(store.has("metadata/status.ckb"), true)
+        @Expect(raw.size, result.rawCount)
+        @Expect(normalized.size, result.normalizedCount)
+        @Expect(raw[0].metadata.sourceType != "", true)
+        @Expect(raw[0].metadata.sourceUrl != "", true)
+        @Expect(raw[0].metadata.crawlAt != "", true)
+        @Expect(raw[0].contentHash.contains("hash-"), true)
+        @Expect(raw[0].metadata.contentSize > 0, true)
+        @Expect(raw[0].metadata.knowledgeVersion.contains("active"), true)
+        @Expect(raw[0].metadata.candidateVersion.contains("candidate"), true)
+    }
+
+    @TestCase
+    public func liveNormalizerEmitsVerifiableRecordKinds(): Unit {
+        let kb = newOfflineKnowledgeBase()
+        let store = FileKnowledgeStore("target/ckb-test-live-normalized")
+        let options = LiveApplyOptions()
+        options.apply = true
+        let result = ckbSyncLiveApply(kb, SourceAdapter(runner: FakeSourceFetchRunner()), store, options)
+        let normalized = store.loadNormalized()
+        var documentSeen = false
+        var codeSeen = false
+        var commentSeen = false
+        var candidateSeen = false
+
+        for (record in normalized) {
+            if (record.recordKind == "document_chunk") {
+                documentSeen = documentSeen || (record.metadata.sourceUrl != "" && record.title != "" && record.chunk != "")
+            }
+            if (record.recordKind == "code_entity") {
+                codeSeen = codeSeen || (record.metadata.repo != "" && record.metadata.path != "" && record.metadata.symbol != "")
+            }
+            if (record.recordKind == "comment_record") {
+                commentSeen = commentSeen || (record.metadata.repo != "" && record.citation != "")
+            }
+            if (record.recordKind == "web_candidate") {
+                candidateSeen = candidateSeen || (record.requiresReview && record.metadata.reviewState == ReviewStates.CANDIDATE)
+            }
+        }
+
+        @Expect(result.ok, true)
+        @Expect(documentSeen, true)
+        @Expect(codeSeen, true)
+        @Expect(commentSeen, true)
+        @Expect(candidateSeen, true)
+    }
+
+    @TestCase
+    public func liveCandidateFailureDoesNotPersistActiveIndex(): Unit {
+        let kb = newOfflineKnowledgeBase()
+        let before = cangjie_knowledge_status(kb).activeKnowledgeVersion
+        let store = FileKnowledgeStore("target/ckb-test-live-failed-candidate")
+        let options = LiveApplyOptions()
+        options.apply = true
+        options.simulateValidationFailure = true
+
+        let result = ckbSyncLiveApply(kb, SourceAdapter(runner: FakeSourceFetchRunner()), store, options)
+        let after = cangjie_knowledge_status(kb)
+
+        @Expect(result.ok, false)
+        @Expect(after.activeKnowledgeVersion, before)
+        @Expect(after.failedCandidateVersion.contains("candidate"), true)
+        @Expect(store.has("raw/candidate/${after.candidateKnowledgeVersion}/records.ckb"), true)
+        @Expect(store.has("index/active.ckb"), false)
+    }
+
+    @TestCase
+    public func liveApplyLimitsCarrySinceAndTruncateRequests(): Unit {
+        let kb = newOfflineKnowledgeBase()
+        let fake = FakeSourceFetchRunner()
+        let store = FileKnowledgeStore("target/ckb-test-live-limits")
+        let options = LiveApplyOptions()
+        options.apply = true
+        options.maxRepos = 0
+        options.maxFilesPerRepo = 0
+        options.maxItems = 2
+        options.since = "2026-05-01T00:00:00Z"
+
+        let result = ckbSyncLiveApply(kb, SourceAdapter(runner: fake), store, options)
+        var gitCodeSeen = false
+        for (request in fake.calls) {
+            if (request.kind == SourceKinds.GITCODE_ORG || request.kind == SourceKinds.GITCODE_REPO || request.kind == SourceKinds.GITCODE_SOURCE || request.kind == SourceKinds.GITCODE_ISSUE_HISTORY || request.kind == SourceKinds.GITCODE_PR_HISTORY) {
+                gitCodeSeen = true
+            }
+        }
+
+        @Expect(result.ok, true)
+        @Expect(result.requests <= 2, true)
+        @Expect(result.truncated, true)
+        @Expect(result.since, "2026-05-01T00:00:00Z")
+        @Expect(gitCodeSeen, false)
+    }
+
+    @TestCase
     public func queryServiceAppliesTrustReviewAndCandidateFilters(): Unit {
         let kb = newOfflineKnowledgeBase()
         let service = QueryService(kb)

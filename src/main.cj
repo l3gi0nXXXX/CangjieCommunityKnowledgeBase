@@ -1,5 +1,7 @@
 package cangjie_community_knowledge_base
 
+import std.convert.Parsable
+
 main(args: Array<String>): Int64 {
     let kb = newOfflineKnowledgeBase()
     let cli = parseCli(args)
@@ -24,6 +26,11 @@ main(args: Array<String>): Int64 {
         let options = LiveSyncOptions()
         options.dryRun = cli.dryRun
         options.apply = cli.apply
+        let applyOptions = parseLiveApplyOptions(args)
+        options.maxRepos = applyOptions.maxRepos
+        options.maxFilesPerRepo = applyOptions.maxFilesPerRepo
+        options.maxItems = applyOptions.maxItems
+        options.since = applyOptions.since
         let runner: SourceFetchRunner = if (config.networkEnabled) { HttpSourceFetchRunner(config) } else { DisabledNetworkFetchRunner() }
         let text = ckbSyncLive(kb, config, options, runner: runner, store: FileKnowledgeStore("target/ckb-data"))
         print(text)
@@ -124,4 +131,51 @@ private func cliTail(input: String, command: String, fallback: String): String {
         return fallback
     }
     input[prefixSize..input.size].trimAscii()
+}
+
+private func parseLiveApplyOptions(args: Array<String>): LiveApplyOptions {
+    let options = LiveApplyOptions()
+    var i: Int64 = 0
+    while (i < args.size) {
+        let arg = args[i]
+        if (arg == "--apply") {
+            options.apply = true
+        } else if (arg == "--max-repos") {
+            options.maxRepos = parseNextInt(args, i, -1)
+            i += 1
+        } else if (arg == "--max-files-per-repo") {
+            options.maxFilesPerRepo = parseNextInt(args, i, -1)
+            i += 1
+        } else if (arg == "--max-items") {
+            options.maxItems = parseNextInt(args, i, -1)
+            i += 1
+        } else if (arg == "--since") {
+            if (i + 1 < args.size) {
+                options.since = args[i + 1]
+            }
+            i += 1
+        }
+        i += 1
+    }
+    options
+}
+
+private func hasArg(args: Array<String>, name: String): Bool {
+    for (arg in args) {
+        if (arg == name) {
+            return true
+        }
+    }
+    false
+}
+
+private func parseNextInt(args: Array<String>, index: Int64, fallback: Int64): Int64 {
+    if (index + 1 >= args.size) {
+        return fallback
+    }
+    try {
+        Int64.parse(args[index + 1])
+    } catch (_: Exception) {
+        fallback
+    }
 }
