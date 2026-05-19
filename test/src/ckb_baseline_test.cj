@@ -803,6 +803,36 @@ public class CkbBaselineTest {
     }
 
     @TestCase
+    public func curlTransportDiagnosticsClassifyAndRedactStderr(): Unit {
+        let timeout = diagnoseCurlTransportError(28, "curl: (28) Operation timed out after 1000 milliseconds")
+        let dns = diagnoseCurlTransportError(6, "curl: (6) Could not resolve host: gitcode.com")
+        let tls = diagnoseCurlTransportError(60, "curl: (60) SSL certificate problem")
+        let proxy = diagnoseCurlTransportError(5, "curl: (5) Could not resolve proxy: 127.0.0.1")
+        let refused = diagnoseCurlTransportError(7, "curl: (7) Failed to connect to 127.0.0.1 port 9: Connection refused")
+        let curlExit = diagnoseCurlTransportError(22, "curl: (22) The requested URL returned error: 502")
+        let unknown = diagnoseCurlTransportError(0, "unexpected transport state")
+        let sensitive = diagnoseCurlTransportError(6, "curl: (6) Could not resolve host: gitcode.com\nAuthorization: Bearer live-token-secret\nCookie: SESSION=cookie-secret\nretry token=token-secret path=/Users/l3gi0n/private/ckb-live.conf extra=abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz")
+
+        @Expect(timeout.transportErrorClass, "timeout")
+        @Expect(dns.transportErrorClass, "dns")
+        @Expect(tls.transportErrorClass, "tls")
+        @Expect(proxy.transportErrorClass, "proxy")
+        @Expect(refused.transportErrorClass, "connection_refused")
+        @Expect(curlExit.transportErrorClass, "curl_exit")
+        @Expect(unknown.transportErrorClass, "unknown_transport")
+        @Expect(sensitive.transportErrorClass, "dns")
+        @Expect(sensitive.curlExitCode, 6)
+        @Expect(sensitive.transportDiagnostic.size <= 160, true)
+        @Expect(sensitive.transportDiagnostic.contains("live-token-secret"), false)
+        @Expect(sensitive.transportDiagnostic.contains("cookie-secret"), false)
+        @Expect(sensitive.transportDiagnostic.contains("token-secret"), false)
+        @Expect(sensitive.transportDiagnostic.contains("/Users/l3gi0n"), false)
+        @Expect(sensitive.transportDiagnostic.contains("Authorization"), true)
+        @Expect(sensitive.transportDiagnostic.contains("Cookie"), true)
+        @Expect(sensitive.transportDiagnostic.contains("[local-path-redacted]"), true)
+    }
+
+    @TestCase
     public func runtimeConfigLoadsFixtureWithoutExposingTokenOrLocalPath(): Unit {
         let path = "target/ckb-live-config.fixture"
         File.writeTo(Path(path), """
@@ -902,6 +932,41 @@ network.retryCount=3
     }
 
     @TestCase
+    public func syncLiveSummaryIncludesTransportDiagnosticsOnlyForTransportFailures(): Unit {
+        let kb = newOfflineKnowledgeBase()
+        let config = CkbRuntimeConfig()
+        config.networkEnabled = true
+        let options = LiveSyncOptions()
+        options.dryRun = true
+        options.maxItems = 1
+        let fake = FakeSourceFetchRunner()
+        fake.statusCode = 0
+        fake.status = "transport_error"
+        fake.body = ""
+        fake.transportErrorClass = "dns"
+        fake.transportDiagnostic = "curl: (6) Could not resolve host: gitcode.com"
+        fake.curlExitCode = 6
+
+        let text = ckbSyncLive(kb, config, options, runner: fake, store: FileKnowledgeStore("target/ckb-transport-summary"))
+
+        @Expect(text.contains("status=transport_error"), true)
+        @Expect(text.contains("transportClass=dns"), true)
+        @Expect(text.contains("transportDiagnostic=curl: (6) Could not resolve host: gitcode.com"), true)
+        @Expect(text.contains("curlExitCode=6"), true)
+
+        fake.status = "timeout"
+        fake.transportErrorClass = "timeout"
+        fake.transportDiagnostic = "curl: (28) Operation timed out"
+        fake.curlExitCode = 28
+        let timeoutText = ckbSyncLive(kb, config, options, runner: fake, store: FileKnowledgeStore("target/ckb-timeout-summary"))
+
+        @Expect(timeoutText.contains("status=timeout"), true)
+        @Expect(timeoutText.contains("transportClass=timeout"), true)
+        @Expect(timeoutText.contains("transportDiagnostic=curl: (28) Operation timed out"), true)
+        @Expect(timeoutText.contains("curlExitCode=28"), true)
+    }
+
+    @TestCase
     public func httpRunnerReadsTokenFileAndInjectsBearerHeader(): Unit {
         let tokenPath = "target/ckb-test-token-file.fixture"
         File.writeTo(Path(tokenPath), "file-token-secret\n".toArray())
@@ -917,6 +982,25 @@ network.retryCount=3
         @Expect(executor.calls, 1)
         @Expect(executor.seenAuthHeader, "Authorization: Bearer file-token-secret")
         @Expect(config.redactedSummary().contains("file-token-secret"), false)
+    }
+
+    @TestCase
+    public func httpRunnerDoesNotSendGitCodeAuthToWebsiteOrDocsRequests(): Unit {
+        let config = CkbRuntimeConfig()
+        config.networkEnabled = true
+        config.gitCodeAuthMode = "token"
+        config.gitCodeTokenRef = "gitcode-secret-token"
+        let websiteExecutor = FakeHttpExecutor(200, "<html></html>", "text/html", "http_200", 0)
+        let docsExecutor = FakeHttpExecutor(200, "<html></html>", "text/html", "http_200", 0)
+        let builder = SourceRequestBuilder()
+
+        let website = HttpSourceFetchRunner(config, executor: websiteExecutor).fetch(builder.website("https://cangjie-lang.cn/"))
+        let docs = HttpSourceFetchRunner(config, executor: docsExecutor).fetch(builder.docs("https://docs.cangjie-lang.cn/docs/1.0.0/"))
+
+        @Expect(website.ok, true)
+        @Expect(docs.ok, true)
+        @Expect(websiteExecutor.seenAuthHeader, "")
+        @Expect(docsExecutor.seenAuthHeader, "")
     }
 
     @TestCase
@@ -1049,7 +1133,11 @@ network.retryCount=3
         let unauthorized = HttpSourceFetchRunner(config, executor: FakeHttpExecutor(401, "{}", "application/json", "http_401", 0)).fetch(request)
         let missing = HttpSourceFetchRunner(config, executor: FakeHttpExecutor(404, "{}", "application/json", "http_404", 0)).fetch(request)
         let limited = HttpSourceFetchRunner(config, executor: FakeHttpExecutor(429, "{}", "application/json", "http_429", 30)).fetch(request)
-        let timeout = HttpSourceFetchRunner(config, executor: FakeHttpExecutor(0, "", "", "timeout", 0)).fetch(request)
+        let timeoutExecutor = FakeHttpExecutor(0, "", "", "timeout", 0)
+        timeoutExecutor.transportErrorClass = "timeout"
+        timeoutExecutor.transportDiagnostic = "curl: (28) Operation timed out"
+        timeoutExecutor.curlExitCode = 28
+        let timeout = HttpSourceFetchRunner(config, executor: timeoutExecutor).fetch(request)
 
         @Expect(unauthorized.status, "auth_degraded")
         @Expect(missing.status, "not_found")
@@ -1057,6 +1145,9 @@ network.retryCount=3
         @Expect(limited.retryAfterSeconds, 30)
         @Expect(limited.attempts, 2)
         @Expect(timeout.status, "timeout")
+        @Expect(timeout.transportErrorClass, "timeout")
+        @Expect(timeout.transportDiagnostic, "curl: (28) Operation timed out")
+        @Expect(timeout.curlExitCode, 28)
     }
 
     @TestCase
@@ -1212,6 +1303,9 @@ class FakeHttpExecutor <: HttpRequestExecutor {
     let retryAfter: Int64
     public var calls: Int64 = 0
     public var seenAuthHeader: String = ""
+    public var transportErrorClass: String = ""
+    public var transportDiagnostic: String = ""
+    public var curlExitCode: Int64 = 0
 
     init(code: Int64, body: String, contentType: String, status: String, retryAfter: Int64) {
         this.code = code
@@ -1230,6 +1324,9 @@ class FakeHttpExecutor <: HttpRequestExecutor {
         response.contentType = this.contentType
         response.status = this.status
         response.retryAfterSeconds = this.retryAfter
+        response.transportErrorClass = this.transportErrorClass
+        response.transportDiagnostic = this.transportDiagnostic
+        response.curlExitCode = this.curlExitCode
         response
     }
 }
