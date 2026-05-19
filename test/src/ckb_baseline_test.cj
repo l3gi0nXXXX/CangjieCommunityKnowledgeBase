@@ -561,10 +561,50 @@ public class CkbBaselineTest {
         @Expect(first.status.state, EmbeddingProviderState.READY)
         @Expect(first.vectors.size, 1)
         @Expect(first.vectors[0].size, 8)
+        @Expect(first.requested, 1)
+        @Expect(first.succeeded, 1)
+        @Expect(first.failed, 0)
         @Expect(first.vectors[0][1], second.vectors[0][1])
         @Expect(degraded.status.state, EmbeddingProviderState.DEGRADED)
         @Expect(degraded.status.degradedReason.contains("missing_config"), true)
+        @Expect(degraded.requested, 1)
+        @Expect(degraded.failed, 1)
         @Expect(degraded.vectors.size, 0)
+    }
+
+    @TestCase
+    public func runtimeEmbeddingConfigSupportsDeterministicAndProductionDegradedWithoutSecrets(): Unit {
+        let noCreds = CkbRuntimeConfig()
+        noCreds.embeddingProvider = "production-http"
+        noCreds.embeddingModel = "remote-embedding"
+        noCreds.embeddingDimensions = 64
+        noCreds.embeddingEndpoint = "https://embedding.invalid/v1"
+        noCreds.embeddingBatchSize = 32
+        noCreds.embeddingTimeoutMillis = 4321
+        noCreds.embeddingRetryCount = 4
+        let production = embeddingProviderFromRuntime(noCreds)
+        let productionStatus = production.status()
+
+        let local = CkbRuntimeConfig()
+        local.embeddingProvider = "deterministic"
+        local.embeddingDimensions = 12
+        let deterministic = embeddingProviderFromRuntime(local)
+        let texts = ArrayList<String>()
+        texts.add("func HttpClient")
+        texts.add("download tools")
+        let batch = deterministic.embed(texts, "deterministic-token-v1", 12)
+
+        @Expect(productionStatus.state, EmbeddingProviderState.DEGRADED)
+        @Expect(productionStatus.degradedReason, "production_embedding_missing_config")
+        @Expect(productionStatus.endpointConfigured, true)
+        @Expect(productionStatus.tokenConfigured, false)
+        @Expect(productionStatus.batchSize, 32)
+        @Expect(productionStatus.timeoutMillis, 4321)
+        @Expect(productionStatus.retryCount, 4)
+        @Expect(batch.status.state, EmbeddingProviderState.READY)
+        @Expect(batch.vectors.size, 2)
+        @Expect(batch.requested, 2)
+        @Expect(batch.succeeded, 2)
     }
 
     @TestCase
@@ -590,6 +630,73 @@ public class CkbBaselineTest {
         @Expect(fallback.records.size > 0, true)
         @Expect(fallback.degraded, true)
         @Expect(fallback.fallbackReason, "vector_store_unavailable")
+    }
+
+    @TestCase
+    public func localVectorStoreKeepsActiveAndCandidateCollectionsIsolated(): Unit {
+        let kb = newOfflineKnowledgeBase()
+        let activeRecords = kb.activeVectorRecords()
+        let candidateRecords = ArrayList<VectorRecord>()
+        let candidate = VectorRecord()
+        candidate.id = "candidate-only"
+        candidate.title = "candidate only"
+        candidate.chunk = "candidate vector"
+        candidate.citation = "candidate://only"
+        candidate.metadata = activeRecords[0].metadata
+        candidate.vector = activeRecords[0].vector
+        candidateRecords.add(candidate)
+
+        let store = LocalVectorStore()
+        let activeStatus = store.upsert("active", activeRecords)
+        let candidateStatus = store.upsert("candidate", candidateRecords)
+        let filters = VectorSearchFilters()
+        filters.knowledgeVersion = activeRecords[0].metadata.knowledgeVersion
+        let activeSearch = store.search("active", activeRecords[0].vector, filters, 20)
+        var candidateLeaked = false
+        for (item in activeSearch) {
+            if (item.id == "candidate-only") {
+                candidateLeaked = true
+            }
+        }
+        store.clear("candidate")
+        let activeAfterClear = store.status("active")
+        let candidateAfterClear = store.status("candidate")
+
+        @Expect(activeStatus.count > 0, true)
+        @Expect(candidateStatus.count, 1)
+        @Expect(candidateLeaked, false)
+        @Expect(activeAfterClear.count, activeRecords.size)
+        @Expect(candidateAfterClear.count, 0)
+    }
+
+    @TestCase
+    public func localVectorFilesBackupRestoreAndRecoveredActiveSurvivesProductionProviderDegraded(): Unit {
+        let root = "target/ckb-test-vector-restore-prod"
+        let store = FileKnowledgeStore(root)
+        let first = newOfflineKnowledgeBase()
+        let rebuild = ckbRebuildIndex(first, store)
+        let backedUp = store.backupVectorCollection("active", "before-clear")
+        let empty = ArrayList<VectorRecord>()
+        store.saveVectorCollection(empty, "active")
+        let restoredFile = store.restoreVectorBackup("active", "before-clear")
+
+        let config = CkbRuntimeConfig()
+        config.embeddingProvider = "production-http"
+        config.embeddingModel = "remote-embedding"
+        config.embeddingDimensions = 16
+        config.embeddingEndpoint = "https://embedding.invalid/v1"
+        let loaded = newKnowledgeBaseFromStoreWithRuntime(store, config)
+        let status = cangjie_knowledge_status(loaded.kb)
+        let rendered = renderQuery(cangjie_evidence_pack(loaded.kb, "HttpClient", 3))
+
+        @Expect(rebuild.ok, true)
+        @Expect(backedUp, true)
+        @Expect(restoredFile, true)
+        @Expect(loaded.source, "persisted")
+        @Expect(status.storage.vectorState, EmbeddingProviderState.READY)
+        @Expect(status.storage.vectorIndexCount > 0, true)
+        @Expect(rendered.contains("knowledgeVersion=ckb-20260519-000200-active"), true)
+        @Expect(rendered.contains("HttpClient"), true)
     }
 
     @TestCase
@@ -663,7 +770,17 @@ gitcode.tokenFile=/Users/l3gi0n/.metis/gitcode-token
 website.enabled=true
 docs.enabled=true
 index.backend=local-vector
-embedding.provider=fake
+embedding.provider=production-http
+embedding.model=remote-embedding
+embedding.dimensions=128
+embedding.endpoint=https://embedding.invalid/v1?access_token=fake-live-token
+embedding.tokenFile=/Users/l3gi0n/.metis/embedding-token
+embedding.batchSize=24
+embedding.timeoutMillis=2345
+embedding.retryCount=5
+vector.backend=local-file
+vector.activeCollection=prod-active
+vector.candidateCollection=prod-candidate
 network.timeoutMillis=1234
 network.retryCount=3
 """.toArray())
@@ -676,7 +793,17 @@ network.retryCount=3
         @Expect(config.docsEnabled, true)
         @Expect(config.timeoutMillis, 1234)
         @Expect(config.retryCount, 3)
+        @Expect(config.embeddingProvider, "production-http")
+        @Expect(config.embeddingModel, "remote-embedding")
+        @Expect(config.embeddingDimensions, 128)
+        @Expect(config.embeddingBatchSize, 24)
+        @Expect(config.embeddingTimeoutMillis, 2345)
+        @Expect(config.embeddingRetryCount, 5)
+        @Expect(config.vectorActiveCollection, "prod-active")
+        @Expect(config.vectorCandidateCollection, "prod-candidate")
         @Expect(summary.contains("gitcode.token=present"), true)
+        @Expect(summary.contains("embedding.endpoint=present"), true)
+        @Expect(summary.contains("embedding.token=present"), true)
         @Expect(summary.contains("fake-live-token"), false)
         @Expect(summary.contains("/Users/l3gi0n"), false)
     }

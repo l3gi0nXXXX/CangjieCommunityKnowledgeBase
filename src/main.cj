@@ -10,7 +10,7 @@ public func ckbCliMain(args: Array<String>): Int64 {
     let cli = parseCli(args)
     let config = loadCkbRuntimeConfig(cli.configPath)
     let store = FileKnowledgeStore(cli.storePath)
-    let kb = loadCliKnowledgeBase(cli.command, store)
+    let kb = loadCliKnowledgeBase(cli.command, store, config)
     let input = cliInput(args)
     if (cli.command == "" || cli.command == "doctor") {
         print(renderDoctor(cangjie_knowledge_status(kb)))
@@ -131,11 +131,11 @@ private func cliInput(args: Array<String>): String {
     input.trimAscii()
 }
 
-private func loadCliKnowledgeBase(command: String, store: FileKnowledgeStore): KnowledgeBase {
+private func loadCliKnowledgeBase(command: String, store: FileKnowledgeStore, config: CkbRuntimeConfig): KnowledgeBase {
     if (command == "schema") {
         return newOfflineKnowledgeBase()
     }
-    newKnowledgeBaseFromStore(store).kb
+    newKnowledgeBaseFromStoreWithRuntime(store, config).kb
 }
 
 private func cliTail(input: String, command: String, fallback: String): String {
