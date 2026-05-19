@@ -461,6 +461,18 @@ public class LiveApplyResult {
     public init() {}
 }
 
+public class BackupRestoreResult {
+    public var ok: Bool = false
+    public var action: String = ""
+    public var source: String = ""
+    public var destination: String = ""
+    public var activeVersion: String = ""
+    public var diagnostic: String = ""
+    public var files: Int64 = 0
+
+    public init() {}
+}
+
 public func ckbSyncLive(kb: KnowledgeBase, config: CkbRuntimeConfig, options: LiveSyncOptions, runner!: SourceFetchRunner = DisabledNetworkFetchRunner(), store!: FileKnowledgeStore = FileKnowledgeStore("target/ckb-data")): String {
     if (options.dryRun == options.apply) {
         return "usage error: sync-live requires exactly one of --dry-run or --apply"
@@ -752,6 +764,110 @@ public class FileKnowledgeStore {
         snapshot
     }
 
+    public func backupActiveSnapshot(backupRoot: String): BackupRestoreResult {
+        let result = BackupRestoreResult()
+        result.action = "backup"
+        result.source = "store"
+        result.destination = redactSensitive(backupRoot)
+        if (backupRoot.trimAscii() == "") {
+            result.ok = false
+            result.diagnostic = "missing_backup_path"
+            return result
+        }
+        let snapshot = this.loadActiveSnapshot()
+        result.activeVersion = snapshot.activeVersion
+        if (!snapshot.valid) {
+            result.ok = false
+            result.diagnostic = snapshot.diagnostic
+            return result
+        }
+        let backup = FileKnowledgeStore(backupRoot)
+        backup.ensureLayout()
+        result.files += this.copyIfPresentTo(backup, "raw/records.ckb")
+        result.files += this.copyIfPresentTo(backup, "normalized/records.ckb")
+        result.files += this.copyIfPresentTo(backup, "metadata/status.ckb")
+        result.files += this.copyIfPresentTo(backup, "index/active.version")
+        result.files += this.copyIfPresentTo(backup, "index/active.ckb")
+        result.files += this.copyIfPresentTo(backup, "index/vector-active.ckb")
+        result.files += this.copyIfPresentTo(backup, "index/graph-nodes.ckb")
+        result.files += this.copyIfPresentTo(backup, "index/graph-edges.ckb")
+        backup.writeLines("metadata/backup.ckb", "active=${snapshot.activeVersion}\nsource=active-snapshot\n")
+        result.files += 1
+        result.ok = true
+        result.diagnostic = "ok"
+        result
+    }
+
+    public func restoreActiveSnapshotBackup(backupRoot: String): BackupRestoreResult {
+        let result = BackupRestoreResult()
+        result.action = "restore"
+        result.source = redactSensitive(backupRoot)
+        result.destination = "store"
+        if (backupRoot.trimAscii() == "") {
+            result.ok = false
+            result.diagnostic = "missing_backup_path"
+            return result
+        }
+        let backup = FileKnowledgeStore(backupRoot)
+        let snapshot = backup.loadActiveSnapshot()
+        result.activeVersion = snapshot.activeVersion
+        if (!snapshot.valid) {
+            result.ok = false
+            result.diagnostic = snapshot.diagnostic
+            return result
+        }
+        this.ensureLayout()
+        result.files += backup.copyIfPresentTo(this, "raw/records.ckb")
+        result.files += backup.copyIfPresentTo(this, "normalized/records.ckb")
+        result.files += backup.copyIfPresentTo(this, "metadata/status.ckb")
+        result.files += backup.copyIfPresentTo(this, "index/active.version")
+        result.files += backup.copyIfPresentTo(this, "index/active.ckb")
+        result.files += backup.copyIfPresentTo(this, "index/vector-active.ckb")
+        result.files += backup.copyIfPresentTo(this, "index/graph-nodes.ckb")
+        result.files += backup.copyIfPresentTo(this, "index/graph-edges.ckb")
+        result.ok = true
+        result.diagnostic = "ok"
+        result
+    }
+
+    public func saveScheduler(entries: ArrayList<ScheduleEntry>): Unit {
+        var text = ""
+        for (entry in entries) {
+            text += "${escapeField(entry.name)}|${entry.intervalMinutes}|${entry.nextRunAt}|${entry.lastStartedAt}|${entry.lastSuccessAt}|${entry.lastFailureAt}|${entry.failureCount}|${entry.degraded}|${escapeField(entry.lastCursor)}|${escapeField(entry.lastSince)}|${escapeField(entry.activeVersion)}|${escapeField(entry.candidateVersion)}|${escapeField(entry.lastStatus)}\n"
+        }
+        this.writeLines("metadata/scheduler.ckb", text)
+    }
+
+    public func loadScheduler(): ArrayList<ScheduleEntry> {
+        let out = ArrayList<ScheduleEntry>()
+        let text = this.readLines("metadata/scheduler.ckb")
+        if (text == "") {
+            return out
+        }
+        for (line in text.split("\n")) {
+            if (line == "") {
+                continue
+            }
+            let parts = line.split("|")
+            if (parts.size < 13) {
+                continue
+            }
+            let entry = ScheduleEntry(unescapeField(parts[0]), parseIntField(parts[1], 0), parseIntField(parts[2], 0))
+            entry.lastStartedAt = parseIntField(parts[3], -1)
+            entry.lastSuccessAt = parseIntField(parts[4], -1)
+            entry.lastFailureAt = parseIntField(parts[5], -1)
+            entry.failureCount = parseIntField(parts[6], 0)
+            entry.degraded = parts[7] == "true"
+            entry.lastCursor = unescapeField(parts[8])
+            entry.lastSince = unescapeField(parts[9])
+            entry.activeVersion = unescapeField(parts[10])
+            entry.candidateVersion = unescapeField(parts[11])
+            entry.lastStatus = unescapeField(parts[12])
+            out.add(entry)
+        }
+        out
+    }
+
     public func publicStatus(): StorageStatus {
         let status = StorageStatus()
         status.rawPath = "data/raw"
@@ -789,6 +905,14 @@ public class FileKnowledgeStore {
             return ""
         }
         String.fromUtf8(File.readFrom(path))
+    }
+
+    private func copyIfPresentTo(destination: FileKnowledgeStore, relative: String): Int64 {
+        if (!this.has(relative)) {
+            return 0
+        }
+        destination.writeLines(relative, this.readLines(relative))
+        1
     }
 
     private func parseNormalized(text: String): ArrayList<NormalizedRecord> {
@@ -1001,7 +1125,141 @@ public class CkbSchema {
     }
 
     public static func httpLikeRoutes(): String {
-        "routes: GET /status, POST /query, POST /evidence, POST /sync-once, POST /rebuild-index"
+        "routes: STDIO health,status,metrics,query <text>,evidence <text>,sync,rebuild,restart,stop; GET /health, GET /status, POST /query, POST /evidence, POST /sync-once, POST /rebuild-index"
+    }
+}
+
+public class CkbSchedulerTaskRunner <: SchedulerTaskRunner {
+    private let kb: KnowledgeBase
+    private let config: CkbRuntimeConfig
+    private let store: FileKnowledgeStore
+    private let sourceRunner: SourceFetchRunner
+
+    public init(kb: KnowledgeBase, config: CkbRuntimeConfig, store: FileKnowledgeStore, sourceRunner!: SourceFetchRunner = DisabledNetworkFetchRunner()) {
+        this.kb = kb
+        this.config = config
+        this.store = store
+        this.sourceRunner = sourceRunner
+    }
+
+    public func runTask(name: String, since: String): SchedulerTaskResult {
+        let result = SchedulerTaskResult()
+        result.since = if (since == "") { "0" } else { since }
+        if (name == "weekly_full_rebuild") {
+            let rebuild = ckbRebuildIndex(this.kb, this.store)
+            result.ok = rebuild.ok
+            result.status = if (rebuild.ok) { "rebuild_ok" } else { "rebuild_failed" }
+            result.cursor = "rebuild-${rebuild.activeVersion}"
+            result.activeVersion = rebuild.activeVersion
+            result.candidateVersion = rebuild.candidateVersion
+            return result
+        }
+        let options = LiveSyncOptions()
+        options.apply = true
+        options.maxItems = 3
+        options.since = result.since
+        let text = ckbSyncLive(this.kb, this.config, options, runner: this.sourceRunner, store: this.store)
+        let status = this.kb.status()
+        result.ok = text.contains("summary") && !text.contains("network=disabled") && !text.contains("usage error")
+        result.status = if (result.ok) { "sync_ok" } else { "sync_failed" }
+        result.cursor = "cursor-${status.activeKnowledgeVersion}"
+        result.since = "${this.kb.scheduler.clock.nowMinutes}"
+        result.activeVersion = status.activeKnowledgeVersion
+        result.candidateVersion = status.candidateKnowledgeVersion
+        result
+    }
+}
+
+public class CkbServiceResponse {
+    public var text: String = ""
+    public var shouldStop: Bool = false
+
+    public init() {}
+}
+
+public class CkbCommandLoopService {
+    private let config: CkbRuntimeConfig
+    private let store: FileKnowledgeStore
+    private let sourceRunner: SourceFetchRunner
+    private var kb: KnowledgeBase
+    private var started: Bool = false
+
+    public init(config: CkbRuntimeConfig, store: FileKnowledgeStore, sourceRunner!: SourceFetchRunner = DisabledNetworkFetchRunner()) {
+        this.config = config
+        this.store = store
+        this.sourceRunner = sourceRunner
+        this.kb = newKnowledgeBaseFromStore(store).kb
+    }
+
+    public func start(): String {
+        this.started = true
+        this.logLine("info", "service_started")
+    }
+
+    public func handleLine(line: String): CkbServiceResponse {
+        if (!this.started) {
+            this.started = true
+        }
+        let response = CkbServiceResponse()
+        let cleaned = line.trimAscii()
+        if (cleaned == "") {
+            response.text = "error code=empty_command\n"
+            return response
+        }
+        let command = firstToken(cleaned)
+        let tail = lineTail(cleaned, command)
+        if (command == "health") {
+            response.text = this.health()
+        } else if (command == "status") {
+            response.text = renderDoctor(this.kb.status())
+        } else if (command == "metrics") {
+            response.text = renderMetrics(this.kb.status())
+        } else if (command == "query") {
+            response.text = renderQuery(cangjie_evidence_pack(this.kb, if (tail == "") { "func syntax" } else { tail }, 5))
+        } else if (command == "evidence") {
+            response.text = renderQuery(cangjie_evidence_pack(this.kb, if (tail == "") { "HttpClient" } else { tail }, 3))
+        } else if (command == "sync") {
+            let options = LiveSyncOptions()
+            options.apply = true
+            options.maxItems = 3
+            response.text = ckbSyncLive(this.kb, this.config, options, runner: this.sourceRunner, store: this.store)
+        } else if (command == "rebuild") {
+            let result = ckbRebuildIndex(this.kb, this.store)
+            response.text = "rebuild ok=${result.ok} activeKnowledgeVersion=${result.activeVersion} candidateKnowledgeVersion=${result.candidateVersion} count=${result.count}\n"
+        } else if (command == "scheduler-run") {
+            let executor = SchedulerExecutor(this.kb.scheduler, CkbSchedulerTaskRunner(this.kb, this.config, this.store, sourceRunner: this.sourceRunner))
+            let result = executor.runDue()
+            this.store.saveScheduler(this.kb.scheduler.entries)
+            response.text = "scheduler ran=${result.ran} succeeded=${result.succeeded} failed=${result.failed} degraded=${result.degraded}\n${result.details}"
+        } else if (command == "backup") {
+            response.text = renderBackupRestore(this.store.backupActiveSnapshot(tail))
+        } else if (command == "restore") {
+            let result = this.store.restoreActiveSnapshotBackup(tail)
+            if (result.ok) {
+                this.kb = newKnowledgeBaseFromStore(this.store).kb
+            }
+            response.text = renderBackupRestore(result)
+        } else if (command == "restart") {
+            this.kb = newKnowledgeBaseFromStore(this.store).kb
+            response.text = this.logLine("info", "service_restarted")
+        } else if (command == "stop" || command == "shutdown" || command == "exit") {
+            response.text = this.logLine("info", "service_stopped")
+            response.shouldStop = true
+        } else {
+            response.text = "error code=unknown_command command=${redactSensitive(command)} protocol=ckb-stdio-v1\n"
+        }
+        response.text = redactSensitive(response.text)
+        response
+    }
+
+    private func health(): String {
+        let status = this.kb.status()
+        "health ok=true protocol=ckb-stdio-v1 activeKnowledgeVersion=${status.activeKnowledgeVersion} activeStateSource=${status.activeStateSource} restoreDiagnostic=${status.restoreDiagnostic} vectorState=${status.storage.vectorState} graphState=${status.storage.graphState}\n"
+    }
+
+    private func logLine(level: String, event: String): String {
+        let status = this.kb.status()
+        "log level=${level} event=${event} protocol=ckb-stdio-v1 activeKnowledgeVersion=${status.activeKnowledgeVersion} store=redacted\n"
     }
 }
 
@@ -1280,6 +1538,25 @@ private func configApply(config: CkbRuntimeConfig, key: String, value: String): 
     } else if (key == "network.retryCount") {
         config.retryCount = try { Int64.parse(value) } catch (_: Exception) { config.retryCount }
     }
+}
+
+private func parseIntField(value: String, fallback: Int64): Int64 {
+    try { Int64.parse(value) } catch (_: Exception) { fallback }
+}
+
+private func firstToken(line: String): String {
+    let parts = line.split(" ")
+    if (parts.size == 0) {
+        return ""
+    }
+    parts[0].trimAscii()
+}
+
+private func lineTail(line: String, command: String): String {
+    if (line.size <= command.size) {
+        return ""
+    }
+    line[command.size..line.size].trimAscii()
 }
 
 private func parseBool(value: String): Bool {

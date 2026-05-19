@@ -1,6 +1,8 @@
 package cangjie_community_knowledge_base
 
 import std.convert.Parsable
+import std.fs.{File, OpenMode}
+import std.io.*
 
 main(args: Array<String>): Int64 {
     ckbCliMain(args)
@@ -20,6 +22,30 @@ public func ckbCliMain(args: Array<String>): Int64 {
     if (cli.command == "status") {
         print(renderDoctor(cangjie_knowledge_status(kb)))
         print(renderRuntimeDoctor(config))
+        return 0
+    }
+    if (cli.command == "metrics") {
+        print(renderMetrics(cangjie_knowledge_status(kb)))
+        print(renderRuntimeDoctor(config))
+        return 0
+    }
+    if (cli.command == "service" || cli.command == "start") {
+        return runCkbServiceLoop(config, store)
+    }
+    if (cli.command == "service-once") {
+        let service = CkbCommandLoopService(config, store, sourceRunner: if (config.networkEnabled) { HttpSourceFetchRunner(config) } else { DisabledNetworkFetchRunner() })
+        print(service.start())
+        let response = service.handleLine(cliTail(input, "service-once", "health"))
+        print(response.text)
+        return if (response.text.startsWith("error")) { 2 } else { 0 }
+    }
+    if (cli.command == "stop") {
+        println("service protocol=ckb-stdio-v1 action=stop usage=\"send stop to the running service stdin\"")
+        return 0
+    }
+    if (cli.command == "restart") {
+        let service = CkbCommandLoopService(config, store, sourceRunner: if (config.networkEnabled) { HttpSourceFetchRunner(config) } else { DisabledNetworkFetchRunner() })
+        print(service.handleLine("restart").text)
         return 0
     }
     if (cli.command == "sync-once") {
@@ -45,6 +71,24 @@ public func ckbCliMain(args: Array<String>): Int64 {
         println("rebuild ok=${result.ok} activeKnowledgeVersion=${result.activeVersion} candidateKnowledgeVersion=${result.candidateVersion} count=${result.count}")
         return 0
     }
+    if (cli.command == "scheduler-run") {
+        let executor = SchedulerExecutor(kb.scheduler, CkbSchedulerTaskRunner(kb, config, store, sourceRunner: if (config.networkEnabled) { HttpSourceFetchRunner(config) } else { DisabledNetworkFetchRunner() }))
+        let result = executor.runDue()
+        store.saveScheduler(kb.scheduler.entries)
+        print("scheduler ran=${result.ran} succeeded=${result.succeeded} failed=${result.failed} degraded=${result.degraded}\n")
+        print(result.details)
+        return if (result.failed > 0) { 1 } else { 0 }
+    }
+    if (cli.command == "backup") {
+        let result = store.backupActiveSnapshot(cliTail(input, "backup", ""))
+        print(renderBackupRestore(result))
+        return if (result.ok) { 0 } else { 1 }
+    }
+    if (cli.command == "restore") {
+        let result = store.restoreActiveSnapshotBackup(cliTail(input, "restore", ""))
+        print(renderBackupRestore(result))
+        return if (result.ok) { 0 } else { 1 }
+    }
     if (cli.command == "schema") {
         println(CkbSchema.mcpTools())
         println(CkbSchema.httpLikeRoutes())
@@ -60,7 +104,7 @@ public func ckbCliMain(args: Array<String>): Int64 {
         print(renderQuery(cangjie_evidence_pack(kb, query, 3)))
         return 0
     }
-    println("Usage: cangjie_community_knowledge_base [--config <path>] [--store <path>] doctor | status | sync-once | sync-live (--dry-run|--apply) | rebuild-index | query <text> | evidence <text> | schema")
+    println("Usage: cangjie_community_knowledge_base [--config <path>] [--store <path>] doctor | status | metrics | service | service-once <command> | start | stop | restart | sync-once | sync-live (--dry-run|--apply) | scheduler-run | rebuild-index | backup <path> | restore <path> | query <text> | evidence <text> | schema")
     2
 }
 
@@ -194,4 +238,29 @@ private func parseNextInt(args: Array<String>, index: Int64, fallback: Int64): I
     } catch (_: Exception) {
         fallback
     }
+}
+
+private func runCkbServiceLoop(config: CkbRuntimeConfig, store: FileKnowledgeStore): Int64 {
+    let runner: SourceFetchRunner = if (config.networkEnabled) { HttpSourceFetchRunner(config) } else { DisabledNetworkFetchRunner() }
+    let service = CkbCommandLoopService(config, store, sourceRunner: runner)
+    print(service.start())
+    try (stdinFile = File("/dev/stdin", OpenMode.Read)) {
+        let reader = StringReader(stdinFile)
+        while (true) {
+            let line = if (let Some(line) <- reader.readln()) {
+                line
+            } else {
+                break
+            }
+            let response = service.handleLine(line)
+            print(response.text)
+            if (response.shouldStop) {
+                break
+            }
+        }
+    } catch (_: Exception) {
+        println("log level=error event=service_stdin_closed protocol=ckb-stdio-v1")
+        return 1
+    }
+    0
 }

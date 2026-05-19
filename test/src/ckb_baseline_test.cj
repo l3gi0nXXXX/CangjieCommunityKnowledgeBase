@@ -759,6 +759,150 @@ network.retryCount=3
         @Expect(limited.attempts, 2)
         @Expect(timeout.status, "timeout")
     }
+
+    @TestCase
+    public func serviceCommandLoopExposesHealthStatusQueryEvidenceSyncAndRestart(): Unit {
+        let store = FileKnowledgeStore("target/ckb-test-service-a4")
+        let kb = newKnowledgeBaseFromStore(store).kb
+        let rebuild = ckbRebuildIndex(kb, store)
+        let config = CkbRuntimeConfig()
+        config.networkEnabled = true
+        config.gitCodeTokenRef = "secret-service-token"
+        let fake = FakeSourceFetchRunner()
+        let service = CkbCommandLoopService(config, store, sourceRunner: fake)
+
+        let start = service.start()
+        let health = service.handleLine("health").text
+        let status = service.handleLine("status").text
+        let query = service.handleLine("query HttpClient").text
+        let evidence = service.handleLine("evidence func syntax").text
+        let sync = service.handleLine("sync").text
+        let restart = service.handleLine("restart").text
+        let afterRestart = service.handleLine("health").text
+        let stop = service.handleLine("stop")
+
+        @Expect(rebuild.ok, true)
+        @Expect(start.contains("service_started"), true)
+        @Expect(health.contains("protocol=ckb-stdio-v1"), true)
+        @Expect(status.contains("activeStateSource=persisted"), true)
+        @Expect(query.contains("citation"), true)
+        @Expect(evidence.contains("graphContext"), true)
+        @Expect(sync.contains("summary"), true)
+        @Expect(restart.contains("service_restarted"), true)
+        @Expect(afterRestart.contains("ckb-20260519-000200-active") || afterRestart.contains("ckb-20260519-000100-active"), true)
+        @Expect(stop.shouldStop, true)
+        @Expect("${start}${health}${status}${query}${evidence}${sync}${restart}${stop.text}".contains("secret-service-token"), false)
+    }
+
+    @TestCase
+    public func schedulerExecutorCheckpointsSuccessRetryAndDegradedState(): Unit {
+        let clock = FakeClock(0)
+        let scheduler = Scheduler(clock)
+        let runner = ScriptedSchedulerTaskRunner()
+        let executor = SchedulerExecutor(scheduler, runner)
+
+        runner.ok = true
+        runner.status = "fixture_ok"
+        runner.cursor = "cursor-1"
+        runner.since = "10"
+        runner.activeVersion = "ckb-20260519-000100-active"
+        runner.candidateVersion = "ckb-20260519-000100-candidate"
+        let success = executor.runDue(limit: 1)
+
+        runner.ok = false
+        runner.status = "fixture_down"
+        let firstFailure = executor.runDue(limit: 1)
+        clock.advance(5)
+        let secondFailure = executor.runDue(limit: 1)
+        clock.advance(15)
+        let thirdFailure = executor.runDue(limit: 1)
+
+        @Expect(success.ran, 1)
+        @Expect(success.succeeded, 1)
+        @Expect(scheduler.entries[0].lastCursor, "cursor-1")
+        @Expect(scheduler.entries[0].lastSince, "10")
+        @Expect(scheduler.entries[0].activeVersion, "ckb-20260519-000100-active")
+        @Expect(firstFailure.failed, 1)
+        @Expect(secondFailure.failed, 1)
+        @Expect(thirdFailure.failed, 1)
+        @Expect(scheduler.entries[3].failureCount, 3)
+        @Expect(scheduler.entries[3].degraded, true)
+        @Expect(scheduler.entries[3].nextRunAt, 80)
+    }
+
+    @TestCase
+    public func schedulerCheckpointsPersistAcrossKnowledgeBaseReload(): Unit {
+        let store = FileKnowledgeStore("target/ckb-test-scheduler-persist")
+        let kb = newKnowledgeBaseFromStore(store).kb
+        let runner = ScriptedSchedulerTaskRunner()
+        runner.ok = true
+        runner.status = "fixture_ok"
+        runner.cursor = "cursor-persisted"
+        runner.since = "20"
+        runner.activeVersion = "ckb-20260519-000100-active"
+        runner.candidateVersion = "ckb-20260519-000100-candidate"
+        let executor = SchedulerExecutor(kb.scheduler, runner)
+
+        let result = executor.runDue(limit: 1)
+        store.saveScheduler(kb.scheduler.entries)
+        let loaded = newKnowledgeBaseFromStore(store)
+        let status = cangjie_knowledge_status(loaded.kb)
+
+        @Expect(result.succeeded, 1)
+        @Expect(status.schedules[0].lastCursor, "cursor-persisted")
+        @Expect(status.schedules[0].lastSince, "20")
+        @Expect(status.schedules[0].lastStatus, "fixture_ok")
+    }
+
+    @TestCase
+    public func backupRestoreActiveSnapshotAndRejectCorruptedBackup(): Unit {
+        let sourceStore = FileKnowledgeStore("target/ckb-test-backup-source")
+        let sourceKb = newKnowledgeBaseFromStore(sourceStore).kb
+        let rebuild = ckbRebuildIndex(sourceKb, sourceStore)
+        let backupPath = "target/ckb-test-backup-copy"
+        let restoredStore = FileKnowledgeStore("target/ckb-test-backup-restored")
+
+        let backup = sourceStore.backupActiveSnapshot(backupPath)
+        let missingPath = sourceStore.backupActiveSnapshot("")
+        let restore = restoredStore.restoreActiveSnapshotBackup(backupPath)
+        let loaded = newKnowledgeBaseFromStore(restoredStore)
+        let pack = cangjie_evidence_pack(loaded.kb, "HttpClient", 3)
+        File.writeTo(Path("${backupPath}/index/active.ckb"), "corrupted|snapshot\n".toArray())
+        let corrupted = FileKnowledgeStore("target/ckb-test-backup-corrupted-target").restoreActiveSnapshotBackup(backupPath)
+
+        @Expect(rebuild.ok, true)
+        @Expect(backup.ok, true)
+        @Expect(missingPath.diagnostic, "missing_backup_path")
+        @Expect(backup.activeVersion, "ckb-20260519-000200-active")
+        @Expect(restore.ok, true)
+        @Expect(loaded.source, "persisted")
+        @Expect(pack.knowledgeVersion, "ckb-20260519-000200-active")
+        @Expect(corrupted.ok, false)
+        @Expect(corrupted.diagnostic, "malformed_active_index")
+        @Expect(renderBackupRestore(backup).contains("/Users/l3gi0n"), false)
+    }
+}
+
+class ScriptedSchedulerTaskRunner <: SchedulerTaskRunner {
+    public var ok: Bool = true
+    public var status: String = "fixture_ok"
+    public var cursor: String = ""
+    public var since: String = ""
+    public var activeVersion: String = ""
+    public var candidateVersion: String = ""
+
+    public init() {}
+
+    public func runTask(name: String, since: String): SchedulerTaskResult {
+        let result = SchedulerTaskResult()
+        result.ok = this.ok
+        result.status = this.status
+        result.cursor = this.cursor
+        result.since = this.since
+        result.activeVersion = this.activeVersion
+        result.candidateVersion = this.candidateVersion
+        result
+    }
 }
 
 class FakeHttpExecutor <: HttpRequestExecutor {
