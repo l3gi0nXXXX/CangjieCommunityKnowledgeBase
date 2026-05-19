@@ -1,6 +1,7 @@
 package cangjie_community_knowledge_base_test
 
 import std.collection.ArrayList
+import std.fs.{File, Path}
 import std.unittest.*
 import std.unittest.testmacro.*
 
@@ -347,6 +348,142 @@ public class CkbBaselineTest {
         @Expect(CkbSchema.mcpTools().contains("cangjie.status"), true)
         @Expect(CkbSchema.httpLikeRoutes().contains("POST /query"), true)
         @Expect(CkbSchema.httpLikeRoutes().contains("POST /rebuild-index"), true)
+    }
+
+    @TestCase
+    public func runtimeConfigDefaultsToOfflineAndRedactsSensitiveText(): Unit {
+        let config = loadCkbRuntimeConfig("")
+        let doctor = renderRuntimeDoctor(config)
+        let redacted = redactSensitive("Authorization: Bearer fake-token\nCookie=session=abc https://gitcode.com/api?access_token=secret&x=1 mirror=/Users/l3gi0n/private")
+
+        @Expect(config.networkEnabled, false)
+        @Expect(doctor.contains("network=disabled"), true)
+        @Expect(doctor.contains("gitcode.token=absent"), true)
+        @Expect(redacted.contains("fake-token"), false)
+        @Expect(redacted.contains("session=abc"), false)
+        @Expect(redacted.contains("secret"), false)
+        @Expect(redacted.contains("/Users/l3gi0n"), false)
+        @Expect(redacted.contains("[local-path-redacted]"), true)
+    }
+
+    @TestCase
+    public func runtimeConfigLoadsFixtureWithoutExposingTokenOrLocalPath(): Unit {
+        let path = "target/ckb-live-config.fixture"
+        File.writeTo(Path(path), """
+network.enabled=true
+gitcode.baseUrl=https://gitcode.com/api/v5?access_token=fake-live-token
+gitcode.authMode=token
+gitcode.tokenRef=fake-live-token
+gitcode.tokenFile=/Users/l3gi0n/.metis/gitcode-token
+website.enabled=true
+docs.enabled=true
+index.backend=local-vector
+embedding.provider=fake
+network.timeoutMillis=1234
+network.retryCount=3
+""".toArray())
+
+        let config = loadCkbRuntimeConfig(path)
+        let summary = config.redactedSummary()
+
+        @Expect(config.networkEnabled, true)
+        @Expect(config.websiteEnabled, true)
+        @Expect(config.docsEnabled, true)
+        @Expect(config.timeoutMillis, 1234)
+        @Expect(config.retryCount, 3)
+        @Expect(summary.contains("gitcode.token=present"), true)
+        @Expect(summary.contains("fake-live-token"), false)
+        @Expect(summary.contains("/Users/l3gi0n"), false)
+    }
+
+    @TestCase
+    public func syncLiveRequiresModeAndNetworkGatePreventsFetches(): Unit {
+        let kb = newOfflineKnowledgeBase()
+        let config = CkbRuntimeConfig()
+        let fake = FakeSourceFetchRunner()
+        let noMode = LiveSyncOptions()
+        let dryRun = LiveSyncOptions()
+        dryRun.dryRun = true
+
+        let usage = ckbSyncLive(kb, config, noMode, runner: fake)
+        let blocked = ckbSyncLive(kb, config, dryRun, runner: fake)
+
+        @Expect(usage.contains("usage error"), true)
+        @Expect(blocked.contains("network=disabled"), true)
+        @Expect(blocked.contains("requests=0"), true)
+        @Expect(fake.calls.size, 0)
+    }
+
+    @TestCase
+    public func syncLiveDryRunSummarizesShapesAndDoesNotWriteRawData(): Unit {
+        let kb = newOfflineKnowledgeBase()
+        let config = CkbRuntimeConfig()
+        config.networkEnabled = true
+        config.websiteEnabled = true
+        config.docsEnabled = true
+        config.gitCodeTokenRef = "fake-live-token"
+        let options = LiveSyncOptions()
+        options.dryRun = true
+        let fake = FakeSourceFetchRunner()
+        fake.body = "[{\"name\":\"repo-one\",\"access_token\":\"fake-live-token\"}]"
+        let store = FileKnowledgeStore("target/ckb-live-dry-run-store")
+
+        let text = ckbSyncLive(kb, config, options, runner: fake, store: store)
+
+        @Expect(text.contains("mode=dry-run"), true)
+        @Expect(text.contains("shape=repo-list"), true)
+        @Expect(text.contains("shape=html-entry"), true)
+        @Expect(text.contains("shape=history-list"), true)
+        @Expect(text.contains("rawWritten=false"), true)
+        @Expect(text.contains("fake-live-token"), false)
+        @Expect(text.contains("access_token"), false)
+        @Expect(store.has("raw/records.ckb"), false)
+    }
+
+    @TestCase
+    public func httpSourceFetchRunnerMapsHttpStatusRetryAndTimeout(): Unit {
+        let config = CkbRuntimeConfig()
+        config.networkEnabled = true
+        let request = SourceRequestBuilder().gitCodeOrgRepos("cangjie")
+        request.retryCount = 1
+
+        let unauthorized = HttpSourceFetchRunner(config, executor: FakeHttpExecutor(401, "{}", "application/json", "http_401", 0)).fetch(request)
+        let missing = HttpSourceFetchRunner(config, executor: FakeHttpExecutor(404, "{}", "application/json", "http_404", 0)).fetch(request)
+        let limited = HttpSourceFetchRunner(config, executor: FakeHttpExecutor(429, "{}", "application/json", "http_429", 30)).fetch(request)
+        let timeout = HttpSourceFetchRunner(config, executor: FakeHttpExecutor(0, "", "", "timeout", 0)).fetch(request)
+
+        @Expect(unauthorized.status, "auth_degraded")
+        @Expect(missing.status, "not_found")
+        @Expect(limited.status, "rate_limited")
+        @Expect(limited.retryAfterSeconds, 30)
+        @Expect(limited.attempts, 2)
+        @Expect(timeout.status, "timeout")
+    }
+}
+
+class FakeHttpExecutor <: HttpRequestExecutor {
+    let code: Int64
+    let body: String
+    let contentType: String
+    let status: String
+    let retryAfter: Int64
+
+    init(code: Int64, body: String, contentType: String, status: String, retryAfter: Int64) {
+        this.code = code
+        this.body = body
+        this.contentType = contentType
+        this.status = status
+        this.retryAfter = retryAfter
+    }
+
+    public func get(request: HttpExecutionRequest): HttpExecutionResponse {
+        let response = HttpExecutionResponse()
+        response.statusCode = this.code
+        response.body = this.body
+        response.contentType = this.contentType
+        response.status = this.status
+        response.retryAfterSeconds = this.retryAfter
+        response
     }
 }
 

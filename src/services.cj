@@ -3,6 +3,8 @@ package cangjie_community_knowledge_base
 import std.collection.ArrayList
 import std.convert.Parsable
 import std.fs.{Directory, File, Path, exists}
+import std.io.*
+import std.process.*
 
 public class SourceKinds {
     public static let GITCODE_ORG: String = "gitcode_org"
@@ -27,6 +29,10 @@ public class SourceFetchRequest {
     public var page: Int64 = 1
     public var perPage: Int64 = 100
     public var purpose: String = ""
+    public var paginationParam: String = "page"
+    public var perPageParam: String = "per_page"
+    public var timeoutMillis: Int64 = 10000
+    public var retryCount: Int64 = 2
 
     public init() {}
 
@@ -52,6 +58,11 @@ public class SourceFetchResult {
     public var etag: String = ""
     public var lastModified: String = ""
     public var truncated: Bool = false
+    public var contentType: String = ""
+    public var bytes: Int64 = 0
+    public var bodyHash: String = ""
+    public var retryAfterSeconds: Int64 = 0
+    public var attempts: Int64 = 0
 
     public init() {}
 }
@@ -74,33 +85,238 @@ public class DisabledNetworkFetchRunner <: SourceFetchRunner {
 
 public class FakeSourceFetchRunner <: SourceFetchRunner {
     public var calls: ArrayList<SourceFetchRequest> = ArrayList<SourceFetchRequest>()
+    public var statusCode: Int64 = 200
+    public var status: String = "ok"
+    public var body: String = ""
+    public var retryAfterSeconds: Int64 = 0
 
     public init() {}
 
     public func fetch(request: SourceFetchRequest): SourceFetchResult {
         this.calls.add(request)
         let result = SourceFetchResult()
-        result.ok = true
-        result.status = "ok"
-        result.statusCode = 200
+        result.ok = this.statusCode >= 200 && this.statusCode < 300
+        result.status = this.status
+        result.statusCode = this.statusCode
         result.commit = "fake-commit"
         result.sourceUrl = request.url
         result.normalizedType = request.kind
         result.etag = "fake-etag"
         result.lastModified = "2026-05-19T00:00:00Z"
-        result.body = "fake ${request.kind} ${request.repo} ${request.path} func HttpClient Cangjie docs tutorial"
+        result.body = if (this.body == "") { "fake ${request.kind} ${request.repo} ${request.path} func HttpClient Cangjie docs tutorial" } else { this.body }
+        result.contentType = if (request.accept == "text/html") { "text/html" } else { "application/json" }
+        result.bytes = result.body.size
+        result.bodyHash = stableSummaryHash(result.body)
+        result.retryAfterSeconds = this.retryAfterSeconds
+        result.attempts = 1
+        result
+    }
+}
+
+public class CkbRuntimeConfig {
+    public var networkEnabled: Bool = false
+    public var gitCodeBaseUrl: String = "https://gitcode.com/api/v5"
+    public var gitCodeAuthMode: String = "none"
+    public var gitCodeTokenRef: String = ""
+    public var gitCodeTokenFile: String = ""
+    public var websiteEnabled: Bool = false
+    public var docsEnabled: Bool = false
+    public var indexBackend: String = "offline"
+    public var embeddingProvider: String = "none"
+    public var timeoutMillis: Int64 = 10000
+    public var retryCount: Int64 = 2
+
+    public init() {}
+
+    public func tokenPresent(): Bool {
+        this.gitCodeTokenRef != "" || this.gitCodeTokenFile != ""
+    }
+
+    public func redactedSummary(): String {
+        var out = "network=${if (this.networkEnabled) { "enabled" } else { "disabled" }}"
+        out += " gitcode.baseUrl=${redactSensitive(this.gitCodeBaseUrl)}"
+        out += " gitcode.authMode=${this.gitCodeAuthMode}"
+        out += " gitcode.token=${if (this.tokenPresent()) { "present" } else { "absent" }}"
+        out += " website=${if (this.websiteEnabled) { "enabled" } else { "disabled" }}"
+        out += " docs=${if (this.docsEnabled) { "enabled" } else { "disabled" }}"
+        out += " index.backend=${this.indexBackend}"
+        out += " embedding.provider=${this.embeddingProvider}"
+        out
+    }
+}
+
+public func loadCkbRuntimeConfig(path: String): CkbRuntimeConfig {
+    let config = CkbRuntimeConfig()
+    if (path == "" || !exists(Path(path))) {
+        return config
+    }
+    let text = String.fromUtf8(File.readFrom(Path(path)))
+    for (line in text.split("\n")) {
+        let trimmed = line.trimAscii()
+        if (trimmed == "" || trimmed.startsWith("#")) {
+            continue
+        }
+        let parts = trimmed.split("=")
+        if (parts.size < 2) {
+            continue
+        }
+        let key = parts[0].trimAscii()
+        var value = parts[1].trimAscii()
+        if (parts.size > 2) {
+            for (i in 2..parts.size) {
+                value += "=${parts[i]}"
+            }
+        }
+        configApply(config, key, unquoteConfigValue(value))
+    }
+    config
+}
+
+public func redactSensitive(raw: String): String {
+    var text = raw
+    text = redactQueryParam(text, "access_token")
+    text = redactQueryParam(text, "token")
+    text = redactAssignment(text, "Authorization")
+    text = redactAssignment(text, "authorization")
+    text = redactAssignment(text, "Cookie")
+    text = redactAssignment(text, "cookie")
+    text = redactAssignment(text, "token")
+    text = redactAssignment(text, "access_token")
+    text = redactAbsolutePath(text)
+    text
+}
+
+public class HttpExecutionRequest {
+    public var method: String = "GET"
+    public var url: String = ""
+    public var accept: String = "application/json"
+    public var authHeader: String = ""
+    public var timeoutMillis: Int64 = 10000
+    public var retryCount: Int64 = 2
+
+    public init() {}
+}
+
+public class HttpExecutionResponse {
+    public var statusCode: Int64 = 0
+    public var body: String = ""
+    public var contentType: String = ""
+    public var retryAfterSeconds: Int64 = 0
+    public var status: String = "not_started"
+
+    public init() {}
+}
+
+public interface HttpRequestExecutor {
+    func get(request: HttpExecutionRequest): HttpExecutionResponse
+}
+
+public class CurlHttpRequestExecutor <: HttpRequestExecutor {
+    public init() {}
+
+    public func get(request: HttpExecutionRequest): HttpExecutionResponse {
+        let response = HttpExecutionResponse()
+        if (request.method != "GET") {
+            response.status = "unsupported_method"
+            return response
+        }
+        let timeoutSeconds = if (request.timeoutMillis <= 0) { "10" } else { "${(request.timeoutMillis + 999) / 1000}" }
+        let args = ["-sS", "-L", "--max-time", timeoutSeconds, "-H", "Accept: ${request.accept}", "-w", "\nCKB_HTTP_STATUS:%{http_code}\nCKB_CONTENT_TYPE:%{content_type}\n", request.url]
+        try {
+            let process = launch("curl", args, stdOut: ProcessRedirect.Pipe, stdErr: ProcessRedirect.Pipe)
+            let out = StringReader<InputStream>(process.stdOutPipe).readToEnd()
+            let err = StringReader<InputStream>(process.stdErrPipe).readToEnd()
+            let code = process.wait()
+            response.body = stripCurlTrailer(out)
+            response.statusCode = parseCurlStatus(out)
+            response.contentType = parseCurlContentType(out)
+            response.status = if (code == 0) { "http_${response.statusCode}" } else { "transport_error" }
+            if (code != 0 && err.contains("timed out")) {
+                response.status = "timeout"
+            }
+        } catch (_: Exception) {
+            response.status = "transport_error"
+        }
+        response
+    }
+}
+
+public class HttpSourceFetchRunner <: SourceFetchRunner {
+    private let config: CkbRuntimeConfig
+    private let executor: HttpRequestExecutor
+
+    public init(config: CkbRuntimeConfig, executor!: HttpRequestExecutor = CurlHttpRequestExecutor()) {
+        this.config = config
+        this.executor = executor
+    }
+
+    public func fetch(request: SourceFetchRequest): SourceFetchResult {
+        let result = SourceFetchResult()
+        result.sourceUrl = request.url
+        result.normalizedType = request.kind
+        if (!this.config.networkEnabled) {
+            result.status = "network_disabled"
+            return result
+        }
+        if (request.method != "GET") {
+            result.status = "unsupported_method"
+            return result
+        }
+        let http = HttpExecutionRequest()
+        http.method = request.method
+        http.url = request.url
+        http.accept = request.accept
+        http.timeoutMillis = request.timeoutMillis
+        http.retryCount = request.retryCount
+        http.authHeader = if (this.config.tokenPresent()) { "present-redacted" } else { "" }
+        var attempt: Int64 = 0
+        var last = HttpExecutionResponse()
+        while (attempt <= request.retryCount) {
+            attempt += 1
+            last = this.executor.get(http)
+            if (last.statusCode != 429 && last.statusCode < 500 && last.status != "timeout") {
+                break
+            }
+        }
+        result.attempts = attempt
+        result.statusCode = last.statusCode
+        result.body = last.body
+        result.contentType = last.contentType
+        result.bytes = last.body.size
+        result.bodyHash = stableSummaryHash(last.body)
+        result.retryAfterSeconds = last.retryAfterSeconds
+        result.ok = last.statusCode >= 200 && last.statusCode < 300
+        if (last.status == "timeout") {
+            result.status = "timeout"
+        } else if (result.ok) {
+            result.status = "ok"
+        } else if (last.statusCode == 401 || last.statusCode == 403) {
+            result.status = "auth_degraded"
+        } else if (last.statusCode == 429) {
+            result.status = "rate_limited"
+        } else if (last.statusCode == 404) {
+            result.status = "not_found"
+        } else if (last.statusCode >= 500) {
+            result.status = "server_error"
+        } else {
+            result.status = last.status
+        }
         result
     }
 }
 
 public class SourceRequestBuilder {
-    private let gitCodeApiRoot: String = "https://gitcode.com/api/v5"
+    private let gitCodeApiRoot: String
 
-    public init() {}
+    public init(gitCodeApiRoot!: String = "https://gitcode.com/api/v5") {
+        this.gitCodeApiRoot = gitCodeApiRoot
+    }
 
     public func gitCodeOrgRepos(org: String): SourceFetchRequest {
         let request = SourceFetchRequest(SourceKinds.GITCODE_ORG, "${this.gitCodeApiRoot}/orgs/${org}/projects?visibility=public&page=1&per_page=100", repo: org, purpose: "enumerate_public_repos")
         request.authHint = "gitcode-token-optional-redacted"
+        request.paginationParam = "page"
+        request.perPageParam = "per_page"
         request
     }
 
@@ -160,6 +376,10 @@ public class SourceResponseNormalizer {
             result.truncated = true
             result.body = result.body[0..200000]
         }
+        result.bytes = result.body.size
+        if (result.bodyHash == "") {
+            result.bodyHash = stableSummaryHash(result.body)
+        }
         result
     }
 }
@@ -171,9 +391,11 @@ public class SourceSyncPlan {
 }
 
 public class SourceSyncPlanner {
-    private let builder: SourceRequestBuilder = SourceRequestBuilder()
+    private let builder: SourceRequestBuilder
 
-    public init() {}
+    public init(builder!: SourceRequestBuilder = SourceRequestBuilder()) {
+        this.builder = builder
+    }
 
     public func productionPlan(scope: SourceScope): SourceSyncPlan {
         let plan = SourceSyncPlan()
@@ -195,6 +417,55 @@ public class SourceSyncPlanner {
         }
         plan
     }
+}
+
+public class LiveSyncOptions {
+    public var dryRun: Bool = false
+    public var apply: Bool = false
+
+    public init() {}
+}
+
+public func ckbSyncLive(kb: KnowledgeBase, config: CkbRuntimeConfig, options: LiveSyncOptions, runner!: SourceFetchRunner = DisabledNetworkFetchRunner(), store!: FileKnowledgeStore = FileKnowledgeStore("target/ckb-data")): String {
+    if (options.dryRun == options.apply) {
+        return "usage error: sync-live requires exactly one of --dry-run or --apply"
+    }
+    if (!config.networkEnabled) {
+        return "sync-live mode=${if (options.dryRun) { "dry-run" } else { "apply" }} network=disabled requests=0 status=network_disabled"
+    }
+    let planner = SourceSyncPlanner(builder: SourceRequestBuilder(gitCodeApiRoot: config.gitCodeBaseUrl))
+    let plan = planner.productionPlan(kb.sourceScope)
+    var out = "sync-live mode=${if (options.dryRun) { "dry-run" } else { "apply" }} ${config.redactedSummary()}\n"
+    var okCount: Int64 = 0
+    var degradedCount: Int64 = 0
+    for (request in plan.requests) {
+        request.timeoutMillis = config.timeoutMillis
+        request.retryCount = config.retryCount
+        if (!config.websiteEnabled && request.kind == SourceKinds.CANGJIE_WEBSITE) {
+            out += "skip kind=${request.kind} reason=website_disabled url=${redactSensitive(request.url)}\n"
+            continue
+        }
+        if (!config.docsEnabled && request.kind == SourceKinds.CANGJIE_DOCS) {
+            out += "skip kind=${request.kind} reason=docs_disabled url=${redactSensitive(request.url)}\n"
+            continue
+        }
+        let fetch = SourceResponseNormalizer().normalize(request, runner.fetch(request))
+        if (fetch.ok) {
+            okCount += 1
+        } else {
+            degradedCount += 1
+        }
+        out += renderLiveFetchSummary(request, fetch)
+        if (options.apply && fetch.ok) {
+            ingestLiveFetch(kb, request, fetch)
+        }
+    }
+    if (options.apply) {
+        kb.normalize()
+        kb.persist(store)
+    }
+    out += "summary requests=${plan.requests.size} ok=${okCount} degraded=${degradedCount} rawWritten=${if (options.apply) { "true" } else { "false" }}\n"
+    redactSensitive(out)
 }
 
 public class SourceAdapter {
@@ -554,6 +825,10 @@ public func ckbRebuildIndex(kb: KnowledgeBase, store: FileKnowledgeStore, fail!:
     result
 }
 
+public func renderRuntimeDoctor(config: CkbRuntimeConfig): String {
+    "runtime ${config.redactedSummary()}\n"
+}
+
 private func metadataLine(metadata: KnowledgeMetadata): String {
     "${escapeField(metadata.sourceType)}|${escapeField(metadata.sourceUrl)}|${escapeField(metadata.repo)}|${escapeField(metadata.commit)}|${escapeField(metadata.path)}|${escapeField(metadata.symbol)}|${escapeField(metadata.docVersion)}|${escapeField(metadata.crawlAt)}|${escapeField(metadata.indexedAt)}|${escapeField(metadata.knowledgeVersion)}|${escapeField(metadata.trustLevel)}|${escapeField(metadata.reviewState)}|${escapeField(metadata.license)}"
 }
@@ -596,4 +871,221 @@ private func escapeField(raw: String): String {
 
 private func unescapeField(raw: String): String {
     raw.replace("\\r", "\r").replace("\\n", "\n").replace("\\p", "|").replace("\\\\", "\\")
+}
+
+private func findText(raw: String, needle: String): Int64 {
+    if (needle == "") {
+        return 0
+    }
+    if (raw.size < needle.size) {
+        return -1
+    }
+    for (i in 0..=raw.size - needle.size) {
+        if (raw[i..i + needle.size] == needle) {
+            return i
+        }
+    }
+    -1
+}
+
+private func configApply(config: CkbRuntimeConfig, key: String, value: String): Unit {
+    if (key == "network.enabled") {
+        config.networkEnabled = parseBool(value)
+    } else if (key == "gitcode.baseUrl") {
+        config.gitCodeBaseUrl = value
+    } else if (key == "gitcode.authMode") {
+        config.gitCodeAuthMode = value
+    } else if (key == "gitcode.tokenRef") {
+        config.gitCodeTokenRef = value
+    } else if (key == "gitcode.tokenFile") {
+        config.gitCodeTokenFile = value
+    } else if (key == "website.enabled") {
+        config.websiteEnabled = parseBool(value)
+    } else if (key == "docs.enabled") {
+        config.docsEnabled = parseBool(value)
+    } else if (key == "index.backend") {
+        config.indexBackend = value
+    } else if (key == "embedding.provider") {
+        config.embeddingProvider = value
+    } else if (key == "network.timeoutMillis") {
+        config.timeoutMillis = try { Int64.parse(value) } catch (_: Exception) { config.timeoutMillis }
+    } else if (key == "network.retryCount") {
+        config.retryCount = try { Int64.parse(value) } catch (_: Exception) { config.retryCount }
+    }
+}
+
+private func parseBool(value: String): Bool {
+    let lowered = value.toAsciiLower()
+    lowered == "true" || lowered == "1" || lowered == "yes" || lowered == "enabled"
+}
+
+private func unquoteConfigValue(value: String): String {
+    var out = value.trimAscii()
+    if (out.size >= 2 && ((out.startsWith("\"") && out.endsWith("\"")) || (out.startsWith("'") && out.endsWith("'")))) {
+        out = out[1..out.size - 1]
+    }
+    out
+}
+
+private func redactQueryParam(raw: String, key: String): String {
+    var text = raw
+    let needle1 = "${key}="
+    let needle2 = "${key}%3D"
+    text = redactAfterNeedle(text, needle1)
+    text = redactAfterNeedle(text, needle2)
+    text
+}
+
+private func redactAssignment(raw: String, key: String): String {
+    var text = raw
+    if (key == "Authorization" || key == "authorization" || key == "Cookie" || key == "cookie") {
+        text = redactLineAfterNeedle(text, "${key}: ")
+        text = redactLineAfterNeedle(text, "${key}:")
+    } else {
+        text = redactAfterNeedle(text, "${key}: ")
+        text = redactAfterNeedle(text, "${key}:")
+    }
+    text = redactAfterNeedle(text, "${key}=")
+    text
+}
+
+private func redactAfterNeedle(raw: String, needle: String): String {
+    let idx = findText(raw, needle)
+    if (idx < 0) {
+        return raw
+    }
+    var end = idx + needle.size
+    while (end < raw.size) {
+        let ch = raw[end..end + 1]
+        if (ch == "&" || ch == " " || ch == "\n" || ch == "\r" || ch == "\"" || ch == "'") {
+            break
+        }
+        end += 1
+    }
+    raw[0..idx + needle.size] + "[redacted]" + raw[end..raw.size]
+}
+
+private func redactLineAfterNeedle(raw: String, needle: String): String {
+    let idx = findText(raw, needle)
+    if (idx < 0) {
+        return raw
+    }
+    var end = idx + needle.size
+    while (end < raw.size) {
+        let ch = raw[end..end + 1]
+        if (ch == "\n" || ch == "\r") {
+            break
+        }
+        end += 1
+    }
+    raw[0..idx + needle.size] + "[redacted]" + raw[end..raw.size]
+}
+
+private func redactAbsolutePath(raw: String): String {
+    var text = raw
+    text = redactPathPrefix(text, "/Users/")
+    text = redactPathPrefix(text, "/home/")
+    text = redactPathPrefix(text, "/var/")
+    text = redactPathPrefix(text, "/tmp/")
+    text
+}
+
+private func redactPathPrefix(raw: String, prefix: String): String {
+    let idx = findText(raw, prefix)
+    if (idx < 0) {
+        return raw
+    }
+    var end = idx
+    while (end < raw.size) {
+        let ch = raw[end..end + 1]
+        if (ch == " " || ch == "\n" || ch == "\r" || ch == "\"" || ch == "'") {
+            break
+        }
+        end += 1
+    }
+    raw[0..idx] + "[local-path-redacted]" + raw[end..raw.size]
+}
+
+public func stableSummaryHash(raw: String): String {
+    var hash: Int64 = raw.size * 131
+    if (raw.contains("repo")) {
+        hash += 17
+    }
+    if (raw.contains("issue")) {
+        hash += 31
+    }
+    if (raw.contains("func")) {
+        hash += 47
+    }
+    "h${hash}"
+}
+
+private func stripCurlTrailer(raw: String): String {
+    let marker = "\nCKB_HTTP_STATUS:"
+    let idx = findText(raw, marker)
+    if (idx < 0) {
+        return raw
+    }
+    raw[0..idx]
+}
+
+private func parseCurlStatus(raw: String): Int64 {
+    let marker = "CKB_HTTP_STATUS:"
+    let idx = findText(raw, marker)
+    if (idx < 0) {
+        return 0
+    }
+    let rest = raw[idx + marker.size..raw.size]
+    let line = rest.split("\n")[0].trimAscii()
+    try { Int64.parse(line) } catch (_: Exception) { 0 }
+}
+
+private func parseCurlContentType(raw: String): String {
+    let marker = "CKB_CONTENT_TYPE:"
+    let idx = findText(raw, marker)
+    if (idx < 0) {
+        return ""
+    }
+    raw[idx + marker.size..raw.size].split("\n")[0].trimAscii()
+}
+
+private func renderLiveFetchSummary(request: SourceFetchRequest, fetch: SourceFetchResult): String {
+    var shape = "unknown"
+    if (request.kind == SourceKinds.GITCODE_ORG) {
+        shape = "repo-list"
+    } else if (request.kind == SourceKinds.CANGJIE_WEBSITE || request.kind == SourceKinds.CANGJIE_DOCS) {
+        shape = "html-entry"
+    } else if (request.kind == SourceKinds.GITCODE_ISSUE_HISTORY || request.kind == SourceKinds.GITCODE_PR_HISTORY) {
+        shape = "history-list"
+    } else if (request.kind == SourceKinds.GITCODE_REPO) {
+        shape = "repo-metadata"
+    } else if (request.kind == SourceKinds.GITCODE_SOURCE) {
+        shape = "source-snapshot"
+    }
+    var out = "request kind=${request.kind} method=${request.method} url=${redactSensitive(request.url)} pageParam=${request.paginationParam} perPageParam=${request.perPageParam} timeoutMillis=${request.timeoutMillis} retryCount=${request.retryCount}"
+    out += " -> status=${fetch.status} code=${fetch.statusCode} shape=${shape} bytes=${fetch.bytes} contentType=${fetch.contentType} hash=${fetch.bodyHash} attempts=${fetch.attempts}"
+    if (fetch.retryAfterSeconds > 0) {
+        out += " retryAfter=${fetch.retryAfterSeconds}"
+    }
+    out + "\n"
+}
+
+private func ingestLiveFetch(kb: KnowledgeBase, request: SourceFetchRequest, fetch: SourceFetchResult): Unit {
+    if (request.kind == SourceKinds.GITCODE_ORG) {
+        kb.ingestFetchResult("live-org-${safeName(request.repo)}", SourceTypes.COMMUNITY, fetch, "GitCode ${request.repo} repo list", TrustLevels.COMMUNITY, ReviewStates.REVIEWED)
+    } else if (request.kind == SourceKinds.GITCODE_REPO) {
+        kb.ingestFetchResult("live-repo-${safeName(request.repo)}", SourceTypes.REPO, fetch, "GitCode ${request.repo} repo", TrustLevels.OFFICIAL, ReviewStates.TRUSTED)
+    } else if (request.kind == SourceKinds.GITCODE_SOURCE) {
+        kb.ingestFetchResult("live-source-${safeName(request.repo)}-${safeName(request.path)}", SourceTypes.REPO, fetch, "GitCode ${request.repo} source", TrustLevels.OFFICIAL, ReviewStates.TRUSTED)
+    } else if (request.kind == SourceKinds.GITCODE_ISSUE_HISTORY) {
+        kb.ingestFetchResult("live-issue-${safeName(request.repo)}", SourceTypes.COMMUNITY, fetch, "GitCode issue history", TrustLevels.COMMUNITY, ReviewStates.REVIEWED)
+    } else if (request.kind == SourceKinds.GITCODE_PR_HISTORY) {
+        kb.ingestFetchResult("live-pr-${safeName(request.repo)}", SourceTypes.COMMUNITY, fetch, "GitCode PR history", TrustLevels.COMMUNITY, ReviewStates.REVIEWED)
+    } else if (request.kind == SourceKinds.CANGJIE_DOCS) {
+        kb.ingestFetchResult("live-docs-${safeName(request.url)}", SourceTypes.DOC, fetch, "Cangjie docs", TrustLevels.OFFICIAL, ReviewStates.TRUSTED)
+    } else if (request.kind == SourceKinds.CANGJIE_WEBSITE) {
+        kb.ingestFetchResult("live-website-${safeName(request.url)}", SourceTypes.WEBSITE, fetch, "Cangjie website", TrustLevels.OFFICIAL, ReviewStates.TRUSTED)
+    } else if (request.kind == SourceKinds.WEB_CANDIDATE) {
+        kb.ingestFetchResult("live-web-candidate-${safeName(request.url)}", SourceTypes.WEB_CANDIDATE, fetch, "Web candidate", TrustLevels.WEB_CANDIDATE, ReviewStates.CANDIDATE)
+    }
 }
