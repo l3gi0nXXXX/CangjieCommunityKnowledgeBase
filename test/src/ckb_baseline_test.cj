@@ -323,6 +323,20 @@ public class CkbBaselineTest {
     }
 
     @TestCase
+    public func invalidSnapshotFactoryFallsBackToOfflineBaseline(): Unit {
+        let loaded = newKnowledgeBaseFromStore(FileKnowledgeStore("target/ckb-test-restore-invalid-fallback"))
+        let status = cangjie_knowledge_status(loaded.kb)
+        let source = cangjie_source_search(loaded.kb, "HttpClient", 3)
+
+        @Expect(loaded.source, "offline_baseline")
+        @Expect(loaded.diagnostic, "missing_active_version")
+        @Expect(status.activeKnowledgeVersion, "ckb-20260519-000100-active")
+        @Expect(status.activeStateSource, "offline_baseline")
+        @Expect(status.restoreDiagnostic, "missing_active_version")
+        @Expect(source.records.size > 0, true)
+    }
+
+    @TestCase
     public func statusAndMetadataExposeDeterministicIndexManifest(): Unit {
         let kb = newOfflineKnowledgeBase()
         let store = FileKnowledgeStore("target/ckb-test-index-manifest")
