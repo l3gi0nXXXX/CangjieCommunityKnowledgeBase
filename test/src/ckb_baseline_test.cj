@@ -750,6 +750,7 @@ public class CkbBaselineTest {
         @Expect(tools.contains("citations"), true)
         @Expect(tools.contains("requiresReview"), true)
         @Expect(tools.contains("ckb.auth_degraded"), true)
+        @Expect(tools.contains("PRIVATE-TOKEN"), true)
         @Expect(tools.contains("Authorization"), true)
         @Expect(tools.contains("Cookie"), true)
         @Expect(tools.contains("fake-live-token"), false)
@@ -790,11 +791,16 @@ public class CkbBaselineTest {
     public func runtimeConfigDefaultsToOfflineAndRedactsSensitiveText(): Unit {
         let config = loadCkbRuntimeConfig("")
         let doctor = renderRuntimeDoctor(config)
-        let redacted = redactSensitive("Authorization: Bearer fake-token\nCookie=session=abc https://gitcode.com/api?access_token=secret&x=1 mirror=/Users/l3gi0n/private")
+        let redacted = redactSensitive("PRIVATE-TOKEN: private-token-secret\nAuthorization: Bearer fake-token\nCookie=session=abc https://gitcode.com/api?access_token=secret&x=1 mirror=/Users/l3gi0n/private")
 
         @Expect(config.networkEnabled, false)
+        @Expect(config.gitCodeAuthHeader, "private-token")
+        @Expect(config.gitCodeAccessTokenQuery, false)
         @Expect(doctor.contains("network=disabled"), true)
+        @Expect(doctor.contains("gitcode.authHeader=private-token"), true)
+        @Expect(doctor.contains("gitcode.accessTokenQuery=disabled"), true)
         @Expect(doctor.contains("gitcode.token=absent"), true)
+        @Expect(redacted.contains("private-token-secret"), false)
         @Expect(redacted.contains("fake-token"), false)
         @Expect(redacted.contains("session=abc"), false)
         @Expect(redacted.contains("secret"), false)
@@ -809,6 +815,7 @@ public class CkbBaselineTest {
 network.enabled=true
 gitcode.baseUrl=https://gitcode.com/api/v5?access_token=fake-live-token
 gitcode.authMode=token
+gitcode.authHeader=authorization
 gitcode.tokenRef=fake-live-token
 gitcode.tokenFile=/Users/l3gi0n/.metis/gitcode-token
 website.enabled=true
@@ -835,6 +842,9 @@ network.retryCount=3
         @Expect(config.networkEnabled, true)
         @Expect(config.websiteEnabled, true)
         @Expect(config.docsEnabled, true)
+        @Expect(config.gitCodeBaseUrl.contains("access_token"), false)
+        @Expect(config.gitCodeAuthHeader, "authorization")
+        @Expect(config.gitCodeAccessTokenQuery, false)
         @Expect(config.timeoutMillis, 1234)
         @Expect(config.retryCount, 3)
         @Expect(config.embeddingProvider, "production-http")
@@ -846,6 +856,8 @@ network.retryCount=3
         @Expect(config.vectorActiveCollection, "prod-active")
         @Expect(config.vectorCandidateCollection, "prod-candidate")
         @Expect(summary.contains("gitcode.token=present"), true)
+        @Expect(summary.contains("gitcode.authHeader=authorization"), true)
+        @Expect(summary.contains("gitcode.accessTokenQuery=disabled"), true)
         @Expect(summary.contains("embedding.endpoint=present"), true)
         @Expect(summary.contains("embedding.token=present"), true)
         @Expect(summary.contains("fake-live-token"), false)
@@ -892,6 +904,8 @@ network.retryCount=3
         @Expect(text.contains("shape=html-entry"), true)
         @Expect(text.contains("shape=history-list"), true)
         @Expect(text.contains("auth=token"), true)
+        @Expect(text.contains("authHeader=private-token"), true)
+        @Expect(text.contains("gitcode.accessTokenQuery=disabled"), true)
         @Expect(text.contains("httpStatus=200"), true)
         @Expect(text.contains("bodyHash="), true)
         @Expect(text.contains("errorClass=none"), true)
@@ -902,7 +916,7 @@ network.retryCount=3
     }
 
     @TestCase
-    public func httpRunnerReadsTokenFileAndInjectsBearerHeader(): Unit {
+    public func httpRunnerReadsTokenFileAndInjectsPrivateTokenHeader(): Unit {
         let tokenPath = "target/ckb-test-token-file.fixture"
         File.writeTo(Path(tokenPath), "file-token-secret\n".toArray())
         let config = CkbRuntimeConfig()
@@ -915,7 +929,8 @@ network.retryCount=3
 
         @Expect(fetch.ok, true)
         @Expect(executor.calls, 1)
-        @Expect(executor.seenAuthHeader, "Authorization: Bearer file-token-secret")
+        @Expect(executor.seenHeaders.size, 1)
+        @Expect(executor.seenHeaders[0], "PRIVATE-TOKEN: file-token-secret")
         @Expect(config.redactedSummary().contains("file-token-secret"), false)
     }
 
@@ -924,6 +939,7 @@ network.retryCount=3
         let tokenConfig = CkbRuntimeConfig()
         tokenConfig.networkEnabled = true
         tokenConfig.gitCodeAuthMode = "token"
+        tokenConfig.gitCodeAuthHeader = "authorization"
         tokenConfig.gitCodeTokenRef = "ref-token-secret"
         let tokenExecutor = FakeHttpExecutor(200, "{}", "application/json", "http_200", 0)
 
@@ -932,6 +948,7 @@ network.retryCount=3
         let cookieConfig = CkbRuntimeConfig()
         cookieConfig.networkEnabled = true
         cookieConfig.gitCodeAuthMode = "cookie"
+        cookieConfig.gitCodeAuthHeader = "both"
         cookieConfig.gitCodeTokenRef = "SESSION=cookie-secret; Path=/"
         let cookieExecutor = FakeHttpExecutor(200, "{}", "application/json", "http_200", 0)
 
@@ -941,12 +958,33 @@ network.retryCount=3
         let text = ckbSyncLive(newOfflineKnowledgeBase(), cookieConfig, dryRun, runner: FakeSourceFetchRunner(), store: FileKnowledgeStore("target/ckb-cookie-dry-run"))
 
         @Expect(tokenFetch.ok, true)
-        @Expect(tokenExecutor.seenAuthHeader, "Authorization: Bearer ref-token-secret")
+        @Expect(tokenExecutor.seenHeaders.size, 1)
+        @Expect(tokenExecutor.seenHeaders[0], "Authorization: Bearer ref-token-secret")
         @Expect(cookieFetch.ok, true)
-        @Expect(cookieExecutor.seenAuthHeader, "Cookie: SESSION=cookie-secret; Path=/")
+        @Expect(cookieExecutor.seenHeaders.size, 1)
+        @Expect(cookieExecutor.seenHeaders[0], "Cookie: SESSION=cookie-secret; Path=/")
         @Expect(text.contains("auth=cookie-present"), true)
+        @Expect(text.contains("authHeader=both"), true)
         @Expect(text.contains("cookie-secret"), false)
         @Expect(text.contains("Cookie:"), false)
+    }
+
+    @TestCase
+    public func httpRunnerCanSendBothGitCodeTokenHeaders(): Unit {
+        let config = CkbRuntimeConfig()
+        config.networkEnabled = true
+        config.gitCodeAuthMode = "token"
+        config.gitCodeAuthHeader = "both"
+        config.gitCodeTokenRef = "both-token-secret"
+        let executor = FakeHttpExecutor(200, "{}", "application/json", "http_200", 0)
+
+        let fetch = HttpSourceFetchRunner(config, executor: executor).fetch(SourceRequestBuilder().gitCodeRepo("cangjie/stdx"))
+
+        @Expect(fetch.ok, true)
+        @Expect(executor.calls, 1)
+        @Expect(executor.seenHeaders.size, 2)
+        @Expect(executor.seenHeaders[0], "PRIVATE-TOKEN: both-token-secret")
+        @Expect(executor.seenHeaders[1], "Authorization: Bearer both-token-secret")
     }
 
     @TestCase
@@ -1211,7 +1249,7 @@ class FakeHttpExecutor <: HttpRequestExecutor {
     let status: String
     let retryAfter: Int64
     public var calls: Int64 = 0
-    public var seenAuthHeader: String = ""
+    public var seenHeaders: ArrayList<String> = ArrayList<String>()
 
     init(code: Int64, body: String, contentType: String, status: String, retryAfter: Int64) {
         this.code = code
@@ -1223,7 +1261,9 @@ class FakeHttpExecutor <: HttpRequestExecutor {
 
     public func get(request: HttpExecutionRequest): HttpExecutionResponse {
         this.calls += 1
-        this.seenAuthHeader = request.authHeader
+        for (header in request.headers) {
+            this.seenHeaders.add(header)
+        }
         let response = HttpExecutionResponse()
         response.statusCode = this.code
         response.body = this.body

@@ -117,6 +117,8 @@ public class CkbRuntimeConfig {
     public var networkEnabled: Bool = false
     public var gitCodeBaseUrl: String = "https://gitcode.com/api/v5"
     public var gitCodeAuthMode: String = "none"
+    public var gitCodeAuthHeader: String = "private-token"
+    public var gitCodeAccessTokenQuery: Bool = false
     public var gitCodeTokenRef: String = ""
     public var gitCodeTokenFile: String = ""
     public var websiteEnabled: Bool = false
@@ -154,6 +156,14 @@ public class CkbRuntimeConfig {
             auth.diagnostic = "unsupported_auth_mode"
             return auth
         }
+        auth.headerStrategy = normalizedGitCodeAuthHeader(this.gitCodeAuthHeader)
+        auth.accessTokenQuery = this.gitCodeAccessTokenQuery
+        if (mode == "token" && auth.headerStrategy == "invalid") {
+            auth.state = "invalid"
+            auth.status = "auth_degraded"
+            auth.diagnostic = "unsupported_auth_header_strategy"
+            return auth
+        }
         if (this.gitCodeTokenRef.trimAscii() != "") {
             auth.state = if (mode == "cookie") { "cookie-present" } else { "token" }
             return auth
@@ -186,6 +196,14 @@ public class CkbRuntimeConfig {
             auth.diagnostic = "unsupported_auth_mode"
             return auth
         }
+        auth.headerStrategy = normalizedGitCodeAuthHeader(this.gitCodeAuthHeader)
+        auth.accessTokenQuery = this.gitCodeAccessTokenQuery
+        if (mode == "token" && auth.headerStrategy == "invalid") {
+            auth.state = "invalid"
+            auth.status = "auth_degraded"
+            auth.diagnostic = "unsupported_auth_header_strategy"
+            return auth
+        }
         var secret = this.gitCodeTokenRef.trimAscii()
         var fileStatus = "not_configured"
         if (secret == "" && this.gitCodeTokenFile != "") {
@@ -209,7 +227,11 @@ public class CkbRuntimeConfig {
         }
         auth.state = if (mode == "cookie") { "cookie-present" } else { "token" }
         auth.status = "ok"
-        auth.header = if (mode == "cookie") { "Cookie: ${secret}" } else { "Authorization: Bearer ${secret}" }
+        if (mode == "cookie") {
+            auth.headers.add("Cookie: ${secret}")
+        } else {
+            addGitCodeTokenHeaders(auth.headers, auth.headerStrategy, secret)
+        }
         auth
     }
 
@@ -218,6 +240,8 @@ public class CkbRuntimeConfig {
         var out = "network=${if (this.networkEnabled) { "enabled" } else { "disabled" }}"
         out += " gitcode.baseUrl=${redactSensitive(this.gitCodeBaseUrl)}"
         out += " gitcode.authMode=${this.gitCodeAuthMode}"
+        out += " gitcode.authHeader=${normalizedGitCodeAuthHeader(this.gitCodeAuthHeader)}"
+        out += " gitcode.accessTokenQuery=${if (this.gitCodeAccessTokenQuery) { "enabled" } else { "disabled" }}"
         out += " gitcode.token=${if (this.tokenPresent()) { "present" } else { "absent" }}"
         out += " gitcode.auth=${auth.state}"
         if (auth.diagnostic != "") {
@@ -245,7 +269,9 @@ public class GitCodeAuthResolution {
     public var state: String = "none"
     public var status: String = "ok"
     public var diagnostic: String = ""
-    public var header: String = ""
+    public var headers: ArrayList<String> = ArrayList<String>()
+    public var headerStrategy: String = "none"
+    public var accessTokenQuery: Bool = false
 
     public init() {}
 }
@@ -255,6 +281,28 @@ private class CredentialFileRead {
     var value: String = ""
 
     init() {}
+}
+
+private func normalizedGitCodeAuthHeader(raw: String): String {
+    let value = raw.trimAscii().toAsciiLower()
+    if (value == "" || value == "private-token") {
+        return "private-token"
+    }
+    if (value == "authorization" || value == "both") {
+        return value
+    }
+    "invalid"
+}
+
+private func addGitCodeTokenHeaders(headers: ArrayList<String>, strategy: String, secret: String): Unit {
+    if (strategy == "authorization") {
+        headers.add("Authorization: Bearer ${secret}")
+    } else if (strategy == "both") {
+        headers.add("PRIVATE-TOKEN: ${secret}")
+        headers.add("Authorization: Bearer ${secret}")
+    } else {
+        headers.add("PRIVATE-TOKEN: ${secret}")
+    }
 }
 
 public func loadCkbRuntimeConfig(path: String): CkbRuntimeConfig {
@@ -314,6 +362,8 @@ public func redactSensitive(raw: String): String {
     var text = raw
     text = redactQueryParam(text, "access_token")
     text = redactQueryParam(text, "token")
+    text = redactAssignment(text, "PRIVATE-TOKEN")
+    text = redactAssignment(text, "private-token")
     text = redactAssignment(text, "Authorization")
     text = redactAssignment(text, "authorization")
     text = redactAssignment(text, "Cookie")
@@ -328,7 +378,7 @@ public class HttpExecutionRequest {
     public var method: String = "GET"
     public var url: String = ""
     public var accept: String = "application/json"
-    public var authHeader: String = ""
+    public var headers: ArrayList<String> = ArrayList<String>()
     public var timeoutMillis: Int64 = 10000
     public var retryCount: Int64 = 2
 
@@ -349,6 +399,24 @@ public interface HttpRequestExecutor {
     func get(request: HttpExecutionRequest): HttpExecutionResponse
 }
 
+private func curlRequestArgs(request: HttpExecutionRequest, timeoutSeconds: String): Array<String> {
+    let args = ArrayList<String>()
+    args.add("-sS")
+    args.add("-L")
+    args.add("--max-time")
+    args.add(timeoutSeconds)
+    args.add("-H")
+    args.add("Accept: ${request.accept}")
+    for (header in request.headers) {
+        args.add("-H")
+        args.add(header)
+    }
+    args.add("-w")
+    args.add("\nCKB_HTTP_STATUS:%{http_code}\nCKB_CONTENT_TYPE:%{content_type}\n")
+    args.add(request.url)
+    args.toArray()
+}
+
 public class CurlHttpRequestExecutor <: HttpRequestExecutor {
     public init() {}
 
@@ -359,11 +427,7 @@ public class CurlHttpRequestExecutor <: HttpRequestExecutor {
             return response
         }
         let timeoutSeconds = if (request.timeoutMillis <= 0) { "10" } else { "${(request.timeoutMillis + 999) / 1000}" }
-        let args = if (request.authHeader == "") {
-            ["-sS", "-L", "--max-time", timeoutSeconds, "-H", "Accept: ${request.accept}", "-w", "\nCKB_HTTP_STATUS:%{http_code}\nCKB_CONTENT_TYPE:%{content_type}\n", request.url]
-        } else {
-            ["-sS", "-L", "--max-time", timeoutSeconds, "-H", "Accept: ${request.accept}", "-H", request.authHeader, "-w", "\nCKB_HTTP_STATUS:%{http_code}\nCKB_CONTENT_TYPE:%{content_type}\n", request.url]
-        }
+        let args = curlRequestArgs(request, timeoutSeconds)
         try {
             let process = launch("curl", args, stdOut: ProcessRedirect.Pipe, stdErr: ProcessRedirect.Pipe)
             let out = StringReader<InputStream>(process.stdOutPipe).readToEnd()
@@ -417,7 +481,9 @@ public class HttpSourceFetchRunner <: SourceFetchRunner {
             result.bodyHash = stableSummaryHash(auth.diagnostic)
             return result
         }
-        http.authHeader = auth.header
+        for (header in auth.headers) {
+            http.headers.add(header)
+        }
         var attempt: Int64 = 0
         var last = HttpExecutionResponse()
         while (attempt <= request.retryCount) {
@@ -1349,7 +1415,7 @@ public class QueryService {
 
 public class CkbSchema {
     public static func mcpTools(): String {
-        "tools: cangjie.health,cangjie.status,cangjie.query,cangjie.evidence,cangjie.sync,cangjie.rebuild,cangjie.source_search,cangjie.doc_search,cangjie.website_search,cangjie.web_candidate_search,cangjie.hybrid_search,cangjie.evidence_pack; input: query{q,budget,sourceType,includeCandidates=false}, evidence{q,budget,includeCandidates=true}, sync{dryRun,apply,maxRepos,maxFilesPerRepo,maxItems,since}, rebuild{store}; output: ok,status,errorCode,activeKnowledgeVersion,knowledgeVersion,citations,evidence,requiresReview,truncated,degraded; redaction: never returns tokenRef,tokenFile contents,Authorization,Cookie,absolute local paths; errors: ckb.bad_request,ckb.network_disabled,ckb.auth_degraded,ckb.rate_limited,ckb.source_unavailable,ckb.rebuild_failed,ckb.validation_failed"
+        "tools: cangjie.health,cangjie.status,cangjie.query,cangjie.evidence,cangjie.sync,cangjie.rebuild,cangjie.source_search,cangjie.doc_search,cangjie.website_search,cangjie.web_candidate_search,cangjie.hybrid_search,cangjie.evidence_pack; input: query{q,budget,sourceType,includeCandidates=false}, evidence{q,budget,includeCandidates=true}, sync{dryRun,apply,maxRepos,maxFilesPerRepo,maxItems,since}, rebuild{store}; output: ok,status,errorCode,activeKnowledgeVersion,knowledgeVersion,citations,evidence,requiresReview,truncated,degraded; redaction: never returns tokenRef,tokenFile contents,PRIVATE-TOKEN,Authorization,Cookie,absolute local paths; errors: ckb.bad_request,ckb.network_disabled,ckb.auth_degraded,ckb.rate_limited,ckb.source_unavailable,ckb.rebuild_failed,ckb.validation_failed"
     }
 
     public static func httpLikeRoutes(): String {
@@ -1818,9 +1884,13 @@ private func configApply(config: CkbRuntimeConfig, key: String, value: String): 
     if (key == "network.enabled") {
         config.networkEnabled = parseBool(value)
     } else if (key == "gitcode.baseUrl") {
-        config.gitCodeBaseUrl = value
+        config.gitCodeBaseUrl = if (config.gitCodeAccessTokenQuery) { value } else { stripAccessTokenQuery(value) }
     } else if (key == "gitcode.authMode") {
         config.gitCodeAuthMode = value
+    } else if (key == "gitcode.authHeader") {
+        config.gitCodeAuthHeader = value
+    } else if (key == "gitcode.accessTokenQuery") {
+        config.gitCodeAccessTokenQuery = parseBool(value)
     } else if (key == "gitcode.tokenRef") {
         config.gitCodeTokenRef = value
     } else if (key == "gitcode.tokenFile") {
@@ -1882,6 +1952,35 @@ private func lineTail(line: String, command: String): String {
 private func parseBool(value: String): Bool {
     let lowered = value.toAsciiLower()
     lowered == "true" || lowered == "1" || lowered == "yes" || lowered == "enabled"
+}
+
+private func stripAccessTokenQuery(raw: String): String {
+    let needle = "access_token="
+    let idx = findText(raw, needle)
+    if (idx < 0) {
+        return raw
+    }
+    var start = idx
+    var delimiter = ""
+    if (idx > 0) {
+        let previous = raw[idx - 1..idx]
+        if (previous == "?" || previous == "&") {
+            start = idx - 1
+            delimiter = previous
+        }
+    }
+    var end = idx + needle.size
+    while (end < raw.size) {
+        let ch = raw[end..end + 1]
+        if (ch == "&" || ch == "#" || ch == " " || ch == "\n" || ch == "\r" || ch == "\"" || ch == "'") {
+            break
+        }
+        end += 1
+    }
+    if (delimiter == "?" && end < raw.size && raw[end..end + 1] == "&") {
+        return raw[0..start + 1] + raw[end + 1..raw.size]
+    }
+    raw[0..start] + raw[end..raw.size]
 }
 
 private func unquoteConfigValue(value: String): String {
@@ -2027,7 +2126,7 @@ private func renderLiveFetchSummary(request: SourceFetchRequest, fetch: SourceFe
     } else if (request.kind == SourceKinds.GITCODE_SOURCE) {
         shape = "source-snapshot"
     }
-    var out = "request kind=${request.kind} method=${request.method} sourceUrl=${redactSensitive(request.url)} pageParam=${request.paginationParam} perPageParam=${request.perPageParam} timeoutMillis=${request.timeoutMillis} retryCount=${request.retryCount} auth=${auth.state}"
+    var out = "request kind=${request.kind} method=${request.method} sourceUrl=${redactSensitive(request.url)} pageParam=${request.paginationParam} perPageParam=${request.perPageParam} timeoutMillis=${request.timeoutMillis} retryCount=${request.retryCount} auth=${auth.state} authHeader=${auth.headerStrategy}"
     out += " -> status=${fetch.status} httpStatus=${fetch.statusCode} shape=${shape} bytes=${fetch.bytes} contentType=${fetch.contentType} bodyHash=${fetch.bodyHash} attempts=${fetch.attempts} errorClass=${classifyFetchError(fetch)}"
     if (auth.diagnostic != "") {
         out += " authDiagnostic=${auth.diagnostic}"
