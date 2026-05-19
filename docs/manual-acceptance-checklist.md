@@ -28,6 +28,10 @@ website.enabled=true
 docs.enabled=true
 network.timeoutMillis=10000
 network.retryCount=2
+network.proxy=
+network.envProxyEnabled=false
+network.noProxy=
+network.insecureSkipTlsVerify=false
 ```
 
 - [ ] Live GitCode sync is limited to public repositories. Private, internal,
@@ -37,11 +41,17 @@ network.retryCount=2
   any bypass for non-public repository acquisition.
 - [ ] Local `tokenFile` contains exactly one GitCode PAT line. Do not include
   `token=`, `Bearer`, `PRIVATE-TOKEN`, quotes, comments, or any other prefix.
+- [ ] `doctor` reports `transport=native`, `network.proxy`, `network.envProxy`,
+  `network.noProxy`, `network.insecureSkipTlsVerify`, `network.timeoutMillis`,
+  and `network.retryCount` with sensitive values redacted.
 
 ## Real Source Sync
 
 - [ ] Anonymous dry-run reaches GitCode, the Cangjie official website, and the
   Cangjie documentation site, or reports a classified upstream failure.
+- [ ] Dry-run output never reports `curl launch failed` or `curlExitCode` on
+  the default live path. Transport failures are reported with
+  `transportClass` and `transportDiagnostic`.
 - [ ] GitCode dry-run output confirms public repository scope and does not
   schedule private, internal, or unknown-visibility repositories for fetch,
   normalization, indexing, or trusted evidence.
