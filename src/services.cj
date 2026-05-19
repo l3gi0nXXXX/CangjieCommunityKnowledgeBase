@@ -556,6 +556,20 @@ public class SourceAdapter {
     }
 }
 
+public class ActiveSnapshot {
+    public var activeVersion: String = ""
+    public var candidateVersion: String = ""
+    public var failedVersion: String = ""
+    public var rawRecords: ArrayList<RawRecord> = ArrayList<RawRecord>()
+    public var normalizedRecords: ArrayList<NormalizedRecord> = ArrayList<NormalizedRecord>()
+    public var activeIndex: ArrayList<NormalizedRecord> = ArrayList<NormalizedRecord>()
+    public var status: KnowledgeStatus = KnowledgeStatus()
+    public var valid: Bool = false
+    public var diagnostic: String = ""
+
+    public init() {}
+}
+
 public class FileKnowledgeStore {
     public let root: Path
 
@@ -649,51 +663,55 @@ public class FileKnowledgeStore {
     }
 
     public func loadRaw(): ArrayList<RawRecord> {
-        let out = ArrayList<RawRecord>()
-        let text = this.readLines("raw/records.ckb")
-        if (text == "") {
-            return out
-        }
-        for (line in text.split("\n")) {
-            let parts = line.split("|")
-            if (parts.size >= 19) {
-                let metadata = metadataFromParts(parts, 4)
-                let record = RawRecord()
-                record.sourceId = unescapeField(parts[0])
-                record.title = unescapeField(parts[1])
-                record.content = unescapeField(parts[2])
-                record.contentHash = unescapeField(parts[3])
-                record.metadata = metadata
-                record.requiresReview = metadata.reviewState == ReviewStates.CANDIDATE
-                out.add(record)
-            }
-        }
-        out
+        parseRawRecords(this.readLines("raw/records.ckb"))
     }
 
     public func loadNormalized(): ArrayList<NormalizedRecord> {
-        let out = ArrayList<NormalizedRecord>()
-        let text = this.readLines("normalized/records.ckb")
-        if (text == "") {
-            return out
+        parseNormalizedRecords(this.readLines("normalized/records.ckb"))
+    }
+
+    public func loadActiveVersion(): String {
+        this.readLines("index/active.version").trimAscii()
+    }
+
+    public func loadActiveIndex(): ArrayList<NormalizedRecord> {
+        parseNormalizedRecords(this.readLines("index/active.ckb"))
+    }
+
+    public func loadMetadataStatus(): KnowledgeStatus {
+        parseMetadataStatus(this.readLines("metadata/status.ckb"))
+    }
+
+    public func loadActiveSnapshot(): ActiveSnapshot {
+        let snapshot = ActiveSnapshot()
+        snapshot.activeVersion = this.loadActiveVersion()
+        snapshot.rawRecords = this.loadRaw()
+        snapshot.normalizedRecords = this.loadNormalized()
+        snapshot.status = this.loadMetadataStatus()
+        snapshot.candidateVersion = snapshot.status.candidateKnowledgeVersion
+        snapshot.failedVersion = snapshot.status.failedCandidateVersion
+
+        let diagnostics = ArrayList<String>()
+        snapshot.activeIndex = parseNormalizedRecordsStrict(this.readLines("index/active.ckb"), diagnostics)
+
+        if (snapshot.activeVersion == "") {
+            diagnostics.add("missing active.version")
         }
-        for (line in text.split("\n")) {
-            let parts = line.split("|")
-            if (parts.size >= 20) {
-                let metadata = metadataFromParts(parts, 6)
-                let record = NormalizedRecord()
-                record.sourceId = unescapeField(parts[0])
-                record.recordKind = unescapeField(parts[1])
-                record.title = unescapeField(parts[2])
-                record.chunk = unescapeField(parts[3])
-                record.citation = unescapeField(parts[4])
-                record.score = try { Float64.parse(parts[5]) } catch (_: Exception) { 0.0 }
-                record.metadata = metadata
-                record.requiresReview = metadata.reviewState == ReviewStates.CANDIDATE
-                out.add(record)
+        if (snapshot.activeIndex.size == 0) {
+            diagnostics.add("active index has no records")
+        }
+        for (record in snapshot.activeIndex) {
+            if (record.metadata.knowledgeVersion != snapshot.activeVersion) {
+                diagnostics.add("active index record ${record.sourceId} knowledgeVersion=${record.metadata.knowledgeVersion} does not match activeVersion=${snapshot.activeVersion}")
             }
         }
-        out
+        if (snapshot.status.activeKnowledgeVersion != "" && snapshot.status.activeKnowledgeVersion != snapshot.activeVersion) {
+            diagnostics.add("metadata active=${snapshot.status.activeKnowledgeVersion} does not match activeVersion=${snapshot.activeVersion}")
+        }
+
+        snapshot.valid = diagnostics.size == 0
+        snapshot.diagnostic = joinDiagnostics(diagnostics)
+        snapshot
     }
 
     public func publicStatus(): StorageStatus {
@@ -789,6 +807,160 @@ private func singleRawRecord(record: RawRecord): ArrayList<RawRecord> {
     let records = ArrayList<RawRecord>()
     records.add(record)
     records
+}
+
+private func parseRawRecords(text: String): ArrayList<RawRecord> {
+    let out = ArrayList<RawRecord>()
+    if (text == "") {
+        return out
+    }
+    for (line in text.split("\n")) {
+        if (line == "") {
+            continue
+        }
+        let parts = line.split("|")
+        if (parts.size >= 19) {
+            let metadata = metadataFromParts(parts, 4)
+            let record = RawRecord()
+            record.sourceId = unescapeField(parts[0])
+            record.title = unescapeField(parts[1])
+            record.content = unescapeField(parts[2])
+            record.contentHash = unescapeField(parts[3])
+            record.metadata = metadata
+            record.requiresReview = metadata.reviewState == ReviewStates.CANDIDATE
+            out.add(record)
+        }
+    }
+    out
+}
+
+private func parseNormalizedRecords(text: String): ArrayList<NormalizedRecord> {
+    let diagnostics = ArrayList<String>()
+    parseNormalizedRecordsInternal(text, false, diagnostics)
+}
+
+private func parseNormalizedRecordsStrict(text: String, diagnostics: ArrayList<String>): ArrayList<NormalizedRecord> {
+    parseNormalizedRecordsInternal(text, true, diagnostics)
+}
+
+private func parseNormalizedRecordsInternal(text: String, strict: Bool, diagnostics: ArrayList<String>): ArrayList<NormalizedRecord> {
+    let out = ArrayList<NormalizedRecord>()
+    if (text == "") {
+        return out
+    }
+    var lineNumber: Int64 = 0
+    for (line in text.split("\n")) {
+        lineNumber += 1
+        if (line == "") {
+            continue
+        }
+        let parts = line.split("|")
+        if (parts.size >= 21) {
+            let metadata = metadataFromParts(parts, 6)
+            let record = NormalizedRecord()
+            record.sourceId = unescapeField(parts[0])
+            record.recordKind = unescapeField(parts[1])
+            record.title = unescapeField(parts[2])
+            record.chunk = unescapeField(parts[3])
+            record.citation = unescapeField(parts[4])
+            record.score = try { Float64.parse(parts[5]) } catch (_: Exception) { 0.0 }
+            record.metadata = metadata
+            record.requiresReview = metadata.reviewState == ReviewStates.CANDIDATE
+            out.add(record)
+        } else if (strict) {
+            diagnostics.add("malformed active index line ${lineNumber}")
+        }
+    }
+    out
+}
+
+private func parseMetadataStatus(text: String): KnowledgeStatus {
+    let status = KnowledgeStatus()
+    if (text == "") {
+        return status
+    }
+    for (line in text.split("\n")) {
+        if (line == "") {
+            continue
+        }
+        if (line.startsWith("index ")) {
+            let parts = line[6..].split("|")
+            if (parts.size >= 6) {
+                let entry = IndexMetadata()
+                entry.kind = parts[0]
+                entry.version = parts[1]
+                entry.itemCount = try { Int64.parse(parts[2]) } catch (_: Exception) { 0 }
+                entry.deterministic = parseBool(parts[3])
+                entry.candidateIsolated = parseBool(parts[4])
+                entry.notes = unescapeField(parts[5])
+                status.indexManifest.entries.add(entry)
+            }
+            continue
+        }
+        let idx = findText(line, "=")
+        if (idx < 0) {
+            continue
+        }
+        applyMetadataStatusField(status, line[0..idx], line[idx + 1..])
+    }
+    status
+}
+
+private func applyMetadataStatusField(status: KnowledgeStatus, key: String, value: String): Unit {
+    if (key == "active") {
+        status.activeKnowledgeVersion = value
+    } else if (key == "candidate") {
+        status.candidateKnowledgeVersion = value
+    } else if (key == "failed") {
+        status.failedCandidateVersion = value
+    } else if (key == "rawCount") {
+        status.storage.rawCount = try { Int64.parse(value) } catch (_: Exception) { 0 }
+    } else if (key == "normalizedCount") {
+        status.storage.normalizedCount = try { Int64.parse(value) } catch (_: Exception) { 0 }
+    } else if (key == "indexCount") {
+        status.storage.indexCount = try { Int64.parse(value) } catch (_: Exception) { 0 }
+    } else if (key == "textIndexCount") {
+        status.storage.textIndexCount = try { Int64.parse(value) } catch (_: Exception) { 0 }
+    } else if (key == "vectorIndexCount") {
+        status.storage.vectorIndexCount = try { Int64.parse(value) } catch (_: Exception) { 0 }
+    } else if (key == "symbolIndexCount") {
+        status.storage.symbolIndexCount = try { Int64.parse(value) } catch (_: Exception) { 0 }
+    } else if (key == "graphIndexCount") {
+        status.storage.graphIndexCount = try { Int64.parse(value) } catch (_: Exception) { 0 }
+    } else if (key == "vectorBackend") {
+        status.storage.vectorBackend = value
+    } else if (key == "vectorState") {
+        status.storage.vectorState = value
+    } else if (key == "vectorCollection") {
+        status.storage.vectorCollection = value
+    } else if (key == "vectorDimension") {
+        status.storage.vectorDimension = try { Int64.parse(value) } catch (_: Exception) { 0 }
+    } else if (key == "vectorDegradedReason") {
+        status.storage.vectorDegradedReason = unescapeField(value)
+    } else if (key == "graphBackend") {
+        status.storage.graphBackend = value
+    } else if (key == "graphState") {
+        status.storage.graphState = value
+    } else if (key == "graphNodeCount") {
+        status.storage.graphNodeCount = try { Int64.parse(value) } catch (_: Exception) { 0 }
+    } else if (key == "graphEdgeCount") {
+        status.storage.graphEdgeCount = try { Int64.parse(value) } catch (_: Exception) { 0 }
+    } else if (key == "indexManifestActive") {
+        status.indexManifest.activeVersion = value
+    } else if (key == "indexManifestCandidate") {
+        status.indexManifest.candidateVersion = value
+    }
+}
+
+private func joinDiagnostics(diagnostics: ArrayList<String>): String {
+    var out = ""
+    for (diagnostic in diagnostics) {
+        if (out != "") {
+            out += "; "
+        }
+        out += diagnostic
+    }
+    out
 }
 
 public class Normalizer {
