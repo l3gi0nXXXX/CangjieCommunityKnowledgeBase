@@ -40,7 +40,22 @@ index counts, and scheduler state. It does not expose local mirror paths.
 The `schema` command also reports the GitCode live official API, auth header
 strategy, transport diagnostics, and dry-run/apply acceptance order.
 
-For live GitCode acceptance, create only ignored local files:
+## GitCode Live Sync Scope
+
+CKB GitCode live sync supports public repositories only. Public repository
+enumeration and public source reads are the only repository acquisition path in
+this implementation. Repositories whose visibility is private, internal, or
+unknown are out of scope and must not enter knowledge acquisition, indexing, or
+trusted evidence.
+
+Do not add or document any repository-visibility setting that expands live sync
+beyond public repositories, or any alternate bypass for private/internal
+repository acquisition. Historical notes about future private-repository
+support are analysis only and are not part of the implemented live sync
+contract.
+
+For live GitCode acceptance of public repositories, create only ignored local
+files:
 
 ```text
 network.enabled=true
