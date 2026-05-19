@@ -706,6 +706,7 @@ network.retryCount=3
         config.networkEnabled = true
         config.websiteEnabled = true
         config.docsEnabled = true
+        config.gitCodeAuthMode = "token"
         config.gitCodeTokenRef = "fake-live-token"
         let options = LiveSyncOptions()
         options.dryRun = true
@@ -719,10 +720,137 @@ network.retryCount=3
         @Expect(text.contains("shape=repo-list"), true)
         @Expect(text.contains("shape=html-entry"), true)
         @Expect(text.contains("shape=history-list"), true)
+        @Expect(text.contains("auth=token"), true)
+        @Expect(text.contains("httpStatus=200"), true)
+        @Expect(text.contains("bodyHash="), true)
+        @Expect(text.contains("errorClass=none"), true)
         @Expect(text.contains("rawWritten=false"), true)
         @Expect(text.contains("fake-live-token"), false)
         @Expect(text.contains("access_token"), false)
         @Expect(store.has("raw/records.ckb"), false)
+    }
+
+    @TestCase
+    public func httpRunnerReadsTokenFileAndInjectsBearerHeader(): Unit {
+        let tokenPath = "target/ckb-test-token-file.fixture"
+        File.writeTo(Path(tokenPath), "file-token-secret\n".toArray())
+        let config = CkbRuntimeConfig()
+        config.networkEnabled = true
+        config.gitCodeAuthMode = "token"
+        config.gitCodeTokenFile = tokenPath
+        let executor = FakeHttpExecutor(200, "{}", "application/json", "http_200", 0)
+
+        let fetch = HttpSourceFetchRunner(config, executor: executor).fetch(SourceRequestBuilder().gitCodeOrgRepos("cangjie"))
+
+        @Expect(fetch.ok, true)
+        @Expect(executor.calls, 1)
+        @Expect(executor.seenAuthHeader, "Authorization: Bearer file-token-secret")
+        @Expect(config.redactedSummary().contains("file-token-secret"), false)
+    }
+
+    @TestCase
+    public func httpRunnerUsesTokenRefAndCookieModesWithoutLeakingDryRunOutput(): Unit {
+        let tokenConfig = CkbRuntimeConfig()
+        tokenConfig.networkEnabled = true
+        tokenConfig.gitCodeAuthMode = "token"
+        tokenConfig.gitCodeTokenRef = "ref-token-secret"
+        let tokenExecutor = FakeHttpExecutor(200, "{}", "application/json", "http_200", 0)
+
+        let tokenFetch = HttpSourceFetchRunner(tokenConfig, executor: tokenExecutor).fetch(SourceRequestBuilder().gitCodeRepo("cangjie/stdx"))
+
+        let cookieConfig = CkbRuntimeConfig()
+        cookieConfig.networkEnabled = true
+        cookieConfig.gitCodeAuthMode = "cookie"
+        cookieConfig.gitCodeTokenRef = "SESSION=cookie-secret; Path=/"
+        let cookieExecutor = FakeHttpExecutor(200, "{}", "application/json", "http_200", 0)
+
+        let cookieFetch = HttpSourceFetchRunner(cookieConfig, executor: cookieExecutor).fetch(SourceRequestBuilder().gitCodeRepo("cangjie/stdx"))
+        let dryRun = LiveSyncOptions()
+        dryRun.dryRun = true
+        let text = ckbSyncLive(newOfflineKnowledgeBase(), cookieConfig, dryRun, runner: FakeSourceFetchRunner(), store: FileKnowledgeStore("target/ckb-cookie-dry-run"))
+
+        @Expect(tokenFetch.ok, true)
+        @Expect(tokenExecutor.seenAuthHeader, "Authorization: Bearer ref-token-secret")
+        @Expect(cookieFetch.ok, true)
+        @Expect(cookieExecutor.seenAuthHeader, "Cookie: SESSION=cookie-secret; Path=/")
+        @Expect(text.contains("auth=cookie-present"), true)
+        @Expect(text.contains("cookie-secret"), false)
+        @Expect(text.contains("Cookie:"), false)
+    }
+
+    @TestCase
+    public func missingTokenFileDegradesBeforeHttpRequestWithDiagnostic(): Unit {
+        let config = CkbRuntimeConfig()
+        config.networkEnabled = true
+        config.gitCodeAuthMode = "token"
+        config.gitCodeTokenFile = "target/ckb-missing-token.fixture"
+        let executor = FakeHttpExecutor(200, "{}", "application/json", "http_200", 0)
+
+        let fetch = HttpSourceFetchRunner(config, executor: executor).fetch(SourceRequestBuilder().gitCodeOrgRepos("cangjie"))
+        let dryRun = LiveSyncOptions()
+        dryRun.dryRun = true
+        let text = ckbSyncLive(newOfflineKnowledgeBase(), config, dryRun, runner: HttpSourceFetchRunner(config, executor: FakeHttpExecutor(200, "{}", "application/json", "http_200", 0)), store: FileKnowledgeStore("target/ckb-missing-token-dry-run"))
+
+        @Expect(fetch.ok, false)
+        @Expect(fetch.status, "auth_degraded")
+        @Expect(fetch.body, "missing_token_file")
+        @Expect(executor.calls, 0)
+        @Expect(text.contains("auth=token-missing"), true)
+        @Expect(text.contains("authDiagnostic=missing_token_file"), true)
+        @Expect(text.contains("errorClass=auth"), true)
+        @Expect(text.contains("ckb-missing-token.fixture"), false)
+    }
+
+    @TestCase
+    public func httpRunnerNetworkDisabledNeverCallsExecutor(): Unit {
+        let config = CkbRuntimeConfig()
+        config.networkEnabled = false
+        config.gitCodeAuthMode = "token"
+        config.gitCodeTokenRef = "disabled-token-secret"
+        let executor = FakeHttpExecutor(200, "{}", "application/json", "http_200", 0)
+
+        let fetch = HttpSourceFetchRunner(config, executor: executor).fetch(SourceRequestBuilder().gitCodeOrgRepos("cangjie"))
+
+        @Expect(fetch.ok, false)
+        @Expect(fetch.status, "network_disabled")
+        @Expect(executor.calls, 0)
+    }
+
+    @TestCase
+    public func syncLiveApplyWritesCandidatePromotesActiveAndFailureKeepsOldActive(): Unit {
+        let successStore = FileKnowledgeStore("target/ckb-sync-live-apply-success")
+        let successKb = newOfflineKnowledgeBase()
+        let config = CkbRuntimeConfig()
+        config.networkEnabled = true
+        config.websiteEnabled = true
+        config.docsEnabled = true
+        let apply = LiveSyncOptions()
+        apply.apply = true
+        apply.maxItems = 3
+
+        let success = ckbSyncLive(successKb, config, apply, runner: FakeSourceFetchRunner(), store: successStore)
+
+        let failStore = FileKnowledgeStore("target/ckb-sync-live-apply-failure")
+        let failKb = newOfflineKnowledgeBase()
+        let before = cangjie_knowledge_status(failKb).activeKnowledgeVersion
+        let fail = LiveSyncOptions()
+        fail.apply = true
+        fail.maxItems = 3
+        fail.simulateValidationFailure = true
+
+        let failed = ckbSyncLive(failKb, config, fail, runner: FakeSourceFetchRunner(), store: failStore)
+        let after = cangjie_knowledge_status(failKb)
+
+        @Expect(success.contains("activePromoted=true"), true)
+        @Expect(successStore.has("raw/records.ckb"), true)
+        @Expect(successStore.has("normalized/records.ckb"), true)
+        @Expect(successStore.has("raw/candidate/${cangjie_knowledge_status(successKb).candidateKnowledgeVersion}/records.ckb"), true)
+        @Expect(successStore.has("index/active.ckb"), true)
+        @Expect(failed.contains("activePromoted=false"), true)
+        @Expect(after.activeKnowledgeVersion, before)
+        @Expect(after.failedCandidateVersion.contains("candidate"), true)
+        @Expect(failStore.has("raw/candidate/${after.candidateKnowledgeVersion}/records.ckb"), true)
+        @Expect(failStore.has("index/active.ckb"), false)
     }
 
     @TestCase
@@ -767,6 +895,8 @@ class FakeHttpExecutor <: HttpRequestExecutor {
     let contentType: String
     let status: String
     let retryAfter: Int64
+    public var calls: Int64 = 0
+    public var seenAuthHeader: String = ""
 
     init(code: Int64, body: String, contentType: String, status: String, retryAfter: Int64) {
         this.code = code
@@ -777,6 +907,8 @@ class FakeHttpExecutor <: HttpRequestExecutor {
     }
 
     public func get(request: HttpExecutionRequest): HttpExecutionResponse {
+        this.calls += 1
+        this.seenAuthHeader = request.authHeader
         let response = HttpExecutionResponse()
         response.statusCode = this.code
         response.body = this.body
