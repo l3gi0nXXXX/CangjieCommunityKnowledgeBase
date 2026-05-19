@@ -27,6 +27,12 @@ record contains a non-empty citation or source URL. Web candidate evidence is
 not trusted by default and must retain `requiresReview=true` until reviewed.
 Failed candidate builds must not replace active indexes.
 
+GitCode live sync is scoped to public repositories only. Private, internal, and
+unknown-visibility repositories are not valid CKB knowledge sources and must be
+rejected before fetch, normalization, indexing, or evidence publication. The
+CKB/Metis/GitCodeMonitor integration contract does not provide any
+repository-visibility mode or bypass mode for non-public repositories.
+
 ## Redaction and Error Contract
 
 CKB must never return or log raw `tokenRef`, raw `tokenFile` contents,
@@ -97,7 +103,9 @@ cjpm run --skip-build --run-args "evidence HttpClient"
 ```
 
 2. Create a local, ignored runtime config outside committed docs. Use anonymous
-   access first unless the acceptance owner provides a private credential file.
+   access first unless the acceptance owner provides a credential file for
+   public repository API quota or authentication requirements. Do not use
+   credentials to acquire private, internal, or unknown-visibility repositories.
 
 ```text
 network.enabled=true
@@ -131,8 +139,8 @@ cjpm run --skip-build --run-args "--config ckb-live.conf sync-live --dry-run --m
 
 ## Controlled Live Acceptance
 
-Use a short window, a small source limit, and a private ignored credential file
-only if anonymous access is insufficient.
+Use a short window, a small source limit, and an ignored credential file only if
+anonymous access is insufficient for public repository sync.
 
 ```bash
 cjpm run --skip-build --run-args "--config ckb-live.conf sync-live --apply --max-repos 3 --max-files-per-repo 2 --max-items 20"

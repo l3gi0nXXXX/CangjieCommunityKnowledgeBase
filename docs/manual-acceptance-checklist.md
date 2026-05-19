@@ -12,7 +12,7 @@ release ticket or run log, not in committed credential files.
 - [ ] No real credential value is committed in docs, source, tests, or fixtures.
 - [ ] `cjpm run --run-args schema` lists health, status, query, evidence, sync,
   rebuild, GitCode official API, auth header strategy, transport diagnostics,
-  and dry-run/apply acceptance order.
+  public-only repository scope, and dry-run/apply acceptance order.
 - [ ] `cjpm run --run-args status` reports logical data paths and redacted
   runtime configuration only.
 - [ ] Local `ckb-live.conf` is ignored and uses the repaired GitCode API
@@ -30,6 +30,11 @@ network.timeoutMillis=10000
 network.retryCount=2
 ```
 
+- [ ] Live GitCode sync is limited to public repositories. Private, internal,
+  or unknown-visibility repositories are rejected before knowledge acquisition.
+- [ ] Local configs, scripts, runbooks, and command examples do not include any
+  repository-visibility mode that expands sync beyond public repositories, or
+  any bypass for non-public repository acquisition.
 - [ ] Local `tokenFile` contains exactly one GitCode PAT line. Do not include
   `token=`, `Bearer`, `PRIVATE-TOKEN`, quotes, comments, or any other prefix.
 
@@ -37,6 +42,9 @@ network.retryCount=2
 
 - [ ] Anonymous dry-run reaches GitCode, the Cangjie official website, and the
   Cangjie documentation site, or reports a classified upstream failure.
+- [ ] GitCode dry-run output confirms public repository scope and does not
+  schedule private, internal, or unknown-visibility repositories for fetch,
+  normalization, indexing, or trusted evidence.
 - [ ] If GitCode requires authentication, CKB uses an ignored local token file
   and reports only credential presence plus `authHeader=private-token`.
 - [ ] Live acceptance order is schema, doctor/status, anonymous dry-run,

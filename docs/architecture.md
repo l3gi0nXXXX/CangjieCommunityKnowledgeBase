@@ -19,6 +19,12 @@ The default source scope covers:
 Private repositories, credentials, unredacted logs, and unreviewed web
 candidates are excluded from automatic trusted evidence.
 
+GitCode live sync is public-only. The production source scope does not acquire,
+normalize, index, or expose repositories whose visibility is private, internal,
+or unknown. Documentation and operator runbooks must not introduce
+non-public repository-visibility modes or any other bypass that would route
+non-public repositories into knowledge acquisition.
+
 ## Storage
 
 `FileKnowledgeStore` persists the required logical layout:
@@ -56,6 +62,11 @@ content, issue history, PR history, Cangjie website/docs probes, and web
 candidate recrawls. `SourceResponseNormalizer` converts injected runner output
 into a stable fetch result with status code, normalized type, source URL, and
 truncation metadata before ingestion.
+
+The GitCode request contract is constrained to public repository scope. If an
+upstream response or future adapter shape cannot confirm public visibility, CKB
+must treat that repository as ineligible for live knowledge acquisition rather
+than falling back to a broader visibility mode.
 
 ## Query Surface
 
