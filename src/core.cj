@@ -64,6 +64,8 @@ public class KnowledgeMetadata {
     public var crawlAt: String = ""
     public var indexedAt: String = ""
     public var knowledgeVersion: String = ""
+    public var candidateVersion: String = ""
+    public var contentSize: Int64 = 0
     public var trustLevel: String = ""
     public var reviewState: String = ""
     public var license: String = "unknown"
@@ -85,6 +87,7 @@ public class RawRecord {
 
 public class NormalizedRecord {
     public var sourceId: String = ""
+    public var recordKind: String = ""
     public var title: String = ""
     public var chunk: String = ""
     public var citation: String = ""
@@ -503,6 +506,8 @@ public class KnowledgeBase {
         metadata.crawlAt = "2026-05-19T00:00:00Z"
         metadata.indexedAt = "2026-05-19T00:00:00Z"
         metadata.knowledgeVersion = this.activeKnowledgeVersion
+        metadata.candidateVersion = ""
+        metadata.contentSize = content.size
         metadata.trustLevel = trustLevel
         metadata.reviewState = reviewState
         metadata.license = "declared-or-unknown"
@@ -511,7 +516,7 @@ public class KnowledgeBase {
         record.title = title
         record.content = content
         record.metadata = metadata
-        record.contentHash = "hash-${sourceId}"
+        record.contentHash = contentHash(sourceId, content)
         record.requiresReview = reviewState == ReviewStates.CANDIDATE
         this.rawRecords.add(record)
     }
@@ -546,6 +551,7 @@ public class KnowledgeBase {
         for (record in this.rawRecords) {
             let normalized = NormalizedRecord()
             normalized.sourceId = record.sourceId
+            normalized.recordKind = this.normalizedKind(record)
             normalized.title = record.title
             normalized.chunk = record.content
             normalized.citation = this.publicCitation(record)
@@ -555,6 +561,22 @@ public class KnowledgeBase {
         }
         this.storage.rawCount = this.rawRecords.size
         this.storage.normalizedCount = this.normalizedRecords.size
+    }
+
+    private func normalizedKind(record: RawRecord): String {
+        if (record.metadata.sourceType == SourceTypes.REPO && record.metadata.symbol != "") {
+            return "code_entity"
+        }
+        if (record.metadata.sourceType == SourceTypes.COMMUNITY) {
+            return "comment_record"
+        }
+        if (record.metadata.sourceType == SourceTypes.WEB_CANDIDATE) {
+            return "web_candidate"
+        }
+        if (record.metadata.sourceType == SourceTypes.DOC || record.metadata.sourceType == SourceTypes.WEBSITE) {
+            return "document_chunk"
+        }
+        "chunk"
     }
 
     private func publicCitation(record: RawRecord): String {
@@ -571,6 +593,7 @@ public class KnowledgeBase {
         this.candidateKnowledgeVersion = "ckb-20260519-000100-candidate"
         this.candidateIndex.clear()
         for (record in this.normalizedRecords) {
+            record.metadata.candidateVersion = this.candidateKnowledgeVersion
             this.candidateIndex.add(record)
         }
         if (simulateFailure) {
@@ -584,6 +607,7 @@ public class KnowledgeBase {
         this.activeKnowledgeVersion = "ckb-20260519-000100-active"
         for (record in this.activeIndex) {
             record.metadata.knowledgeVersion = this.activeKnowledgeVersion
+            record.metadata.candidateVersion = this.candidateKnowledgeVersion
         }
         this.failedCandidateVersion = ""
         this.storage.indexCount = this.activeIndex.size
@@ -597,6 +621,7 @@ public class KnowledgeBase {
         this.candidateKnowledgeVersion = result.candidateVersion
         this.candidateIndex.clear()
         for (record in this.normalizedRecords) {
+            record.metadata.candidateVersion = result.candidateVersion
             this.candidateIndex.add(record)
         }
         if (!result.ok) {
@@ -606,6 +631,7 @@ public class KnowledgeBase {
         this.activeIndex.clear()
         for (record in this.candidateIndex) {
             record.metadata.knowledgeVersion = result.activeVersion
+            record.metadata.candidateVersion = result.candidateVersion
             this.activeIndex.add(record)
         }
         this.activeKnowledgeVersion = result.activeVersion
@@ -677,6 +703,21 @@ public class KnowledgeBase {
         if (this.candidateKnowledgeVersion != "") {
             store.saveCandidateIndex(this.candidateIndex, this.candidateKnowledgeVersion)
         }
+        store.saveMetadata(this.status())
+    }
+
+    public func persistActiveSnapshot(store: FileKnowledgeStore): Unit {
+        store.ensureLayout()
+        store.saveRaw(this.rawRecords)
+        store.saveNormalized(this.activeIndex)
+        store.saveActiveIndex(this.activeIndex, this.activeKnowledgeVersion)
+        store.saveMetadata(this.status())
+    }
+
+    public func persistCandidateSnapshot(store: FileKnowledgeStore): Unit {
+        store.ensureLayout()
+        store.saveCandidateRaw(this.rawRecords, this.candidateKnowledgeVersion)
+        store.saveCandidateNormalized(this.candidateIndex, this.candidateKnowledgeVersion)
         store.saveMetadata(this.status())
     }
 
@@ -928,4 +969,13 @@ public func renderQuery(pack: EvidencePack): String {
         out += "citation ${citation.sourceId} ${citation.citation} ${citation.knowledgeVersion}\n"
     }
     out
+}
+
+private func contentHash(sourceId: String, content: String): String {
+    var hash: Int64 = 5381
+    let modulus: Int64 = 1000000007
+    for (b in "${sourceId}:${content}".toArray()) {
+        hash = ((hash * 33) % modulus + (Int64(b) % modulus)) % modulus
+    }
+    "hash-${hash}-${content.size}"
 }

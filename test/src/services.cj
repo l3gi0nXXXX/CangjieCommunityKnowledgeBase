@@ -166,6 +166,7 @@ public class SourceResponseNormalizer {
 
 public class SourceSyncPlan {
     public var requests: ArrayList<SourceFetchRequest> = ArrayList<SourceFetchRequest>()
+    public var truncated: Bool = false
 
     public init() {}
 }
@@ -195,6 +196,35 @@ public class SourceSyncPlanner {
         }
         plan
     }
+}
+
+public class LiveApplyOptions {
+    public var apply: Bool = false
+    public var maxRepos: Int64 = -1
+    public var maxFilesPerRepo: Int64 = -1
+    public var maxItems: Int64 = -1
+    public var since: String = ""
+    public var simulateValidationFailure: Bool = false
+
+    public init() {}
+}
+
+public class LiveApplyResult {
+    public var ok: Bool = false
+    public var applied: Bool = false
+    public var requests: Int64 = 0
+    public var fetched: Int64 = 0
+    public var failed: Int64 = 0
+    public var rawCount: Int64 = 0
+    public var normalizedCount: Int64 = 0
+    public var truncated: Bool = false
+    public var activeVersion: String = ""
+    public var candidateVersion: String = ""
+    public var failedVersion: String = ""
+    public var since: String = ""
+    public var errorReport: String = ""
+
+    public init() {}
 }
 
 public class SourceAdapter {
@@ -263,10 +293,27 @@ public class FileKnowledgeStore {
 
     public func saveRaw(records: ArrayList<RawRecord>): Unit {
         this.writeLines("raw/records.ckb", this.rawLines(records))
+        for (record in records) {
+            this.writeLines("raw/${safeName(record.metadata.sourceType)}/${safeName(record.sourceId)}.ckb", this.rawLines(singleRawRecord(record)))
+        }
     }
 
     public func saveNormalized(records: ArrayList<NormalizedRecord>): Unit {
         this.writeLines("normalized/records.ckb", this.normalizedLines(records))
+    }
+
+    public func saveCandidateRaw(records: ArrayList<RawRecord>, version: String): Unit {
+        if (version == "") {
+            return
+        }
+        this.writeLines("raw/candidate/${safeName(version)}/records.ckb", this.rawLines(records))
+    }
+
+    public func saveCandidateNormalized(records: ArrayList<NormalizedRecord>, version: String): Unit {
+        if (version == "") {
+            return
+        }
+        this.writeLines("normalized/candidate/${safeName(version)}.ckb", this.normalizedLines(records))
     }
 
     public func saveMetadata(status: KnowledgeStatus): Unit {
@@ -310,7 +357,7 @@ public class FileKnowledgeStore {
         }
         for (line in text.split("\n")) {
             let parts = line.split("|")
-            if (parts.size >= 17) {
+            if (parts.size >= 19) {
                 let metadata = metadataFromParts(parts, 4)
                 let record = RawRecord()
                 record.sourceId = unescapeField(parts[0])
@@ -333,14 +380,15 @@ public class FileKnowledgeStore {
         }
         for (line in text.split("\n")) {
             let parts = line.split("|")
-            if (parts.size >= 17) {
-                let metadata = metadataFromParts(parts, 5)
+            if (parts.size >= 20) {
+                let metadata = metadataFromParts(parts, 6)
                 let record = NormalizedRecord()
                 record.sourceId = unescapeField(parts[0])
-                record.title = unescapeField(parts[1])
-                record.chunk = unescapeField(parts[2])
-                record.citation = unescapeField(parts[3])
-                record.score = try { Float64.parse(parts[4]) } catch (_: Exception) { 0.0 }
+                record.recordKind = unescapeField(parts[1])
+                record.title = unescapeField(parts[2])
+                record.chunk = unescapeField(parts[3])
+                record.citation = unescapeField(parts[4])
+                record.score = try { Float64.parse(parts[5]) } catch (_: Exception) { 0.0 }
                 record.metadata = metadata
                 record.requiresReview = metadata.reviewState == ReviewStates.CANDIDATE
                 out.add(record)
@@ -373,7 +421,11 @@ public class FileKnowledgeStore {
 
     private func writeLines(relative: String, text: String): Unit {
         this.ensureLayout()
-        File.writeTo(this.root.join(relative), text.toArray())
+        let path = this.root.join(relative)
+        if (!exists(path.parent)) {
+            Directory.create(path.parent, recursive: true)
+        }
+        File.writeTo(path, text.toArray())
     }
 
     private func readLines(relative: String): String {
@@ -395,7 +447,7 @@ public class FileKnowledgeStore {
     private func normalizedLines(records: ArrayList<NormalizedRecord>): String {
         var out = ""
         for (record in records) {
-            out += "${escapeField(record.sourceId)}|${escapeField(record.title)}|${escapeField(record.chunk)}|${escapeField(record.citation)}|${record.score}|${metadataLine(record.metadata)}\n"
+            out += "${escapeField(record.sourceId)}|${escapeField(record.recordKind)}|${escapeField(record.title)}|${escapeField(record.chunk)}|${escapeField(record.citation)}|${record.score}|${metadataLine(record.metadata)}\n"
         }
         out
     }
@@ -408,6 +460,12 @@ public class FileKnowledgeStore {
         }
         out
     }
+}
+
+private func singleRawRecord(record: RawRecord): ArrayList<RawRecord> {
+    let records = ArrayList<RawRecord>()
+    records.add(record)
+    records
 }
 
 public class Normalizer {
@@ -546,6 +604,47 @@ public func ckbSyncOnce(kb: KnowledgeBase, adapter: SourceAdapter, store: FileKn
     "sync status requests=${plan.requests.size} ok=${okCount} org=${orgStatus} repo=${repoStatus} docs=${docsStatus} webCandidate=${webCandidateStatus}"
 }
 
+public func ckbSyncLiveApply(kb: KnowledgeBase, adapter: SourceAdapter, store: FileKnowledgeStore, options: LiveApplyOptions): LiveApplyResult {
+    let result = LiveApplyResult()
+    result.applied = options.apply
+    result.since = options.since
+    let planner = SourceSyncPlanner()
+    let plan = limitedPlan(planner.productionPlan(kb.sourceScope), options)
+    result.truncated = plan.truncated
+    result.requests = plan.requests.size
+    if (!options.apply) {
+        result.ok = true
+        return result
+    }
+    for (i in 0..plan.requests.size) {
+        let request = plan.requests[i]
+        let fetch = adapter.fetch(request)
+        if (fetch.ok) {
+            result.fetched += 1
+            ingestLiveFetch(kb, request, fetch, i)
+        } else {
+            result.failed += 1
+            result.errorReport += "${request.kind}:${request.repo}:${fetch.status}\n"
+        }
+    }
+    kb.normalize()
+    kb.publishIndex(options.simulateValidationFailure)
+    let status = kb.status()
+    result.rawCount = status.storage.rawCount
+    result.normalizedCount = status.storage.normalizedCount
+    result.activeVersion = status.activeKnowledgeVersion
+    result.candidateVersion = status.candidateKnowledgeVersion
+    result.failedVersion = status.failedCandidateVersion
+    kb.persistCandidateSnapshot(store)
+    if (status.failedCandidateVersion != "") {
+        result.ok = false
+        return result
+    }
+    kb.persistActiveSnapshot(store)
+    result.ok = true
+    result
+}
+
 public func ckbRebuildIndex(kb: KnowledgeBase, store: FileKnowledgeStore, fail!: Bool = false): IndexBuildResult {
     let result = kb.rebuildIndex(fail)
     if (result.ok) {
@@ -554,8 +653,79 @@ public func ckbRebuildIndex(kb: KnowledgeBase, store: FileKnowledgeStore, fail!:
     result
 }
 
+private func limitedPlan(plan: SourceSyncPlan, options: LiveApplyOptions): SourceSyncPlan {
+    let out = SourceSyncPlan()
+    var repos: Int64 = 0
+    var filesByRepo: ArrayList<String> = ArrayList<String>()
+    for (request in plan.requests) {
+        if (options.maxItems >= 0 && out.requests.size >= options.maxItems) {
+            out.truncated = true
+            continue
+        }
+        if (request.kind == SourceKinds.GITCODE_ORG || request.kind == SourceKinds.GITCODE_REPO || request.kind == SourceKinds.GITCODE_SOURCE || request.kind == SourceKinds.GITCODE_ISSUE_HISTORY || request.kind == SourceKinds.GITCODE_PR_HISTORY) {
+            if (request.repo != "" && !repoSeen(out, request.repo)) {
+                if (options.maxRepos >= 0 && repos >= options.maxRepos) {
+                    out.truncated = true
+                    continue
+                }
+                repos += 1
+            }
+        }
+        if (request.kind == SourceKinds.GITCODE_SOURCE) {
+            let key = request.repo
+            let current = countMatches(filesByRepo, key)
+            if (options.maxFilesPerRepo >= 0 && current >= options.maxFilesPerRepo) {
+                out.truncated = true
+                continue
+            }
+            filesByRepo.add(key)
+        }
+        out.requests.add(request)
+    }
+    out
+}
+
+private func repoSeen(plan: SourceSyncPlan, repo: String): Bool {
+    for (request in plan.requests) {
+        if (request.repo == repo && (request.kind == SourceKinds.GITCODE_ORG || request.kind == SourceKinds.GITCODE_REPO || request.kind == SourceKinds.GITCODE_SOURCE || request.kind == SourceKinds.GITCODE_ISSUE_HISTORY || request.kind == SourceKinds.GITCODE_PR_HISTORY)) {
+            return true
+        }
+    }
+    false
+}
+
+private func countMatches(values: ArrayList<String>, value: String): Int64 {
+    var count: Int64 = 0
+    for (entry in values) {
+        if (entry == value) {
+            count += 1
+        }
+    }
+    count
+}
+
+private func ingestLiveFetch(kb: KnowledgeBase, request: SourceFetchRequest, fetch: SourceFetchResult, index: Int64): Unit {
+    if (request.kind == SourceKinds.GITCODE_ORG) {
+        kb.ingestFetchResult("live-org-${safeName(request.repo)}", SourceTypes.COMMUNITY, fetch, "GitCode ${request.repo} org", TrustLevels.COMMUNITY, ReviewStates.REVIEWED)
+    } else if (request.kind == SourceKinds.GITCODE_REPO) {
+        kb.ingestFetchResult("live-repo-${safeName(request.repo)}", SourceTypes.REPO, fetch, "GitCode ${request.repo} repo", TrustLevels.OFFICIAL, ReviewStates.TRUSTED)
+    } else if (request.kind == SourceKinds.GITCODE_SOURCE) {
+        kb.ingestFetchResult("live-source-${safeName(request.repo)}-${safeName(request.path)}", SourceTypes.REPO, fetch, "GitCode ${request.repo} source", TrustLevels.OFFICIAL, ReviewStates.TRUSTED)
+    } else if (request.kind == SourceKinds.GITCODE_ISSUE_HISTORY) {
+        kb.ingestFetchResult("live-issue-${safeName(request.repo)}", SourceTypes.COMMUNITY, fetch, "GitCode issue history", TrustLevels.COMMUNITY, ReviewStates.REVIEWED)
+    } else if (request.kind == SourceKinds.GITCODE_PR_HISTORY) {
+        kb.ingestFetchResult("live-pr-${safeName(request.repo)}", SourceTypes.COMMUNITY, fetch, "GitCode PR history", TrustLevels.COMMUNITY, ReviewStates.REVIEWED)
+    } else if (request.kind == SourceKinds.CANGJIE_DOCS) {
+        kb.ingestFetchResult("live-docs-${index}", SourceTypes.DOC, fetch, "Cangjie docs", TrustLevels.OFFICIAL, ReviewStates.TRUSTED)
+    } else if (request.kind == SourceKinds.CANGJIE_WEBSITE) {
+        kb.ingestFetchResult("live-website-${index}", SourceTypes.WEBSITE, fetch, "Cangjie website", TrustLevels.OFFICIAL, ReviewStates.TRUSTED)
+    } else if (request.kind == SourceKinds.WEB_CANDIDATE) {
+        kb.ingestFetchResult("live-web-candidate-${index}", SourceTypes.WEB_CANDIDATE, fetch, "Web candidate", TrustLevels.WEB_CANDIDATE, ReviewStates.CANDIDATE)
+    }
+}
+
 private func metadataLine(metadata: KnowledgeMetadata): String {
-    "${escapeField(metadata.sourceType)}|${escapeField(metadata.sourceUrl)}|${escapeField(metadata.repo)}|${escapeField(metadata.commit)}|${escapeField(metadata.path)}|${escapeField(metadata.symbol)}|${escapeField(metadata.docVersion)}|${escapeField(metadata.crawlAt)}|${escapeField(metadata.indexedAt)}|${escapeField(metadata.knowledgeVersion)}|${escapeField(metadata.trustLevel)}|${escapeField(metadata.reviewState)}|${escapeField(metadata.license)}"
+    "${escapeField(metadata.sourceType)}|${escapeField(metadata.sourceUrl)}|${escapeField(metadata.repo)}|${escapeField(metadata.commit)}|${escapeField(metadata.path)}|${escapeField(metadata.symbol)}|${escapeField(metadata.docVersion)}|${escapeField(metadata.crawlAt)}|${escapeField(metadata.indexedAt)}|${escapeField(metadata.knowledgeVersion)}|${escapeField(metadata.candidateVersion)}|${metadata.contentSize}|${escapeField(metadata.trustLevel)}|${escapeField(metadata.reviewState)}|${escapeField(metadata.license)}"
 }
 
 private func metadataFromParts(parts: Array<String>, start: Int64): KnowledgeMetadata {
@@ -570,9 +740,11 @@ private func metadataFromParts(parts: Array<String>, start: Int64): KnowledgeMet
     metadata.crawlAt = unescapeField(parts[start + 7])
     metadata.indexedAt = unescapeField(parts[start + 8])
     metadata.knowledgeVersion = unescapeField(parts[start + 9])
-    metadata.trustLevel = unescapeField(parts[start + 10])
-    metadata.reviewState = unescapeField(parts[start + 11])
-    metadata.license = unescapeField(parts[start + 12])
+    metadata.candidateVersion = unescapeField(parts[start + 10])
+    metadata.contentSize = try { Int64.parse(parts[start + 11]) } catch (_: Exception) { 0 }
+    metadata.trustLevel = unescapeField(parts[start + 12])
+    metadata.reviewState = unescapeField(parts[start + 13])
+    metadata.license = unescapeField(parts[start + 14])
     metadata
 }
 
