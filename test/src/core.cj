@@ -788,6 +788,11 @@ public class ScheduleEntry {
     public var stale: Bool = false
     public var degraded: Bool = false
     public var failureCount: Int64 = 0
+    public var lastCursor: String = ""
+    public var lastSince: String = ""
+    public var activeVersion: String = ""
+    public var candidateVersion: String = ""
+    public var lastStatus: String = "pending"
 
     public init() {}
 
@@ -861,6 +866,7 @@ public class Scheduler {
                 entry.lastSuccessAt = this.clock.nowMinutes
                 entry.failureCount = 0
                 entry.degraded = false
+                entry.lastStatus = "succeeded"
                 entry.nextRunAt = this.clock.nowMinutes + entry.intervalMinutes
             }
         }
@@ -872,6 +878,7 @@ public class Scheduler {
                 entry.lastStartedAt = this.clock.nowMinutes
                 entry.lastFailureAt = this.clock.nowMinutes
                 entry.failureCount += 1
+                entry.lastStatus = "failed"
                 if (entry.failureCount >= 3) {
                     entry.degraded = true
                 }
@@ -883,6 +890,90 @@ public class Scheduler {
                     backoff = 60
                 }
                 entry.nextRunAt = this.clock.nowMinutes + backoff
+            }
+        }
+    }
+}
+
+public class SchedulerTaskResult {
+    public var ok: Bool = false
+    public var status: String = "not_started"
+    public var cursor: String = ""
+    public var since: String = ""
+    public var activeVersion: String = ""
+    public var candidateVersion: String = ""
+
+    public init() {}
+}
+
+public class SchedulerExecutorResult {
+    public var ran: Int64 = 0
+    public var succeeded: Int64 = 0
+    public var failed: Int64 = 0
+    public var degraded: Int64 = 0
+    public var details: String = ""
+
+    public init() {}
+}
+
+public interface SchedulerTaskRunner {
+    func runTask(name: String, since: String): SchedulerTaskResult
+}
+
+public class SchedulerExecutor {
+    private let scheduler: Scheduler
+    private let runner: SchedulerTaskRunner
+
+    public init(scheduler: Scheduler, runner: SchedulerTaskRunner) {
+        this.scheduler = scheduler
+        this.runner = runner
+    }
+
+    public func runDue(limit!: Int64 = 1): SchedulerExecutorResult {
+        let result = SchedulerExecutorResult()
+        let due = this.scheduler.dueTaskNames()
+        for (name in due) {
+            if (limit > 0 && result.ran >= limit) {
+                break
+            }
+            let entry = this.findEntry(name)
+            let task = this.runner.runTask(name, entry.lastSince)
+            result.ran += 1
+            if (task.ok) {
+                this.scheduler.markSuccess(name)
+                this.applyCheckpoint(name, task)
+                result.succeeded += 1
+            } else {
+                this.scheduler.markFailure(name)
+                this.applyCheckpoint(name, task)
+                result.failed += 1
+            }
+            let after = this.findEntry(name)
+            if (after.degraded) {
+                result.degraded += 1
+            }
+            result.details += "task ${name} ok=${task.ok} status=${task.status} nextRunAt=${after.nextRunAt} failureCount=${after.failureCount} degraded=${after.degraded}\n"
+        }
+        result
+    }
+
+    private func findEntry(name: String): ScheduleEntry {
+        for (entry in this.scheduler.entries) {
+            if (entry.name == name) {
+                return entry
+            }
+        }
+        ScheduleEntry(name, 0, 0)
+    }
+
+    private func applyCheckpoint(name: String, task: SchedulerTaskResult): Unit {
+        for (entry in this.scheduler.entries) {
+            if (entry.name == name) {
+                entry.lastCursor = task.cursor
+                entry.lastSince = task.since
+                entry.activeVersion = task.activeVersion
+                entry.candidateVersion = task.candidateVersion
+                entry.lastStatus = task.status
             }
         }
     }
@@ -1108,6 +1199,26 @@ public class KnowledgeBase {
         }
         this.rebuildIndexManifest()
         return true
+    }
+
+    public func restoreScheduler(entries: ArrayList<ScheduleEntry>): Unit {
+        for (checkpoint in entries) {
+            for (entry in this.scheduler.entries) {
+                if (entry.name == checkpoint.name) {
+                    entry.nextRunAt = checkpoint.nextRunAt
+                    entry.lastStartedAt = checkpoint.lastStartedAt
+                    entry.lastSuccessAt = checkpoint.lastSuccessAt
+                    entry.lastFailureAt = checkpoint.lastFailureAt
+                    entry.failureCount = checkpoint.failureCount
+                    entry.degraded = checkpoint.degraded
+                    entry.lastCursor = checkpoint.lastCursor
+                    entry.lastSince = checkpoint.lastSince
+                    entry.activeVersion = checkpoint.activeVersion
+                    entry.candidateVersion = checkpoint.candidateVersion
+                    entry.lastStatus = checkpoint.lastStatus
+                }
+            }
+        }
     }
 
     private func addRecord(sourceId: String, sourceType: String, title: String, sourceUrl: String, repo: String, path: String, symbol: String, docVersion: String, trustLevel: String, reviewState: String, content: String): Unit {
@@ -1775,10 +1886,12 @@ public func newKnowledgeBaseFromStore(store: FileKnowledgeStore): KnowledgeBaseL
     let result = KnowledgeBaseLoadResult(kb)
     let snapshot = store.loadActiveSnapshot()
     if (kb.restoreActiveSnapshot(snapshot)) {
+        kb.restoreScheduler(store.loadScheduler())
         result.source = "persisted"
         result.diagnostic = snapshot.diagnostic
         return result
     }
+    kb.restoreScheduler(store.loadScheduler())
     result.source = "offline_baseline"
     result.diagnostic = snapshot.diagnostic
     return result
@@ -2058,9 +2171,31 @@ public func renderDoctor(status: KnowledgeStatus): String {
     out += "scope organizations=${status.sourceScope.organizations} repoScope=${status.sourceScope.repoScope} websiteUrls=${status.sourceScope.websiteUrls} docsUrls=${status.sourceScope.docsUrls} stdSources=${status.sourceScope.stdSources} issuePrHistory=${status.sourceScope.includesIssuePrHistory} governedWebCandidates=${status.sourceScope.includesGovernedWebCandidates}\n"
     out += "localPathRedacted=${status.localPathRedacted}\n"
     for (entry in status.schedules) {
-        out += "schedule ${entry.name} nextRunAt=${entry.nextRunAt} lastStartedAt=${entry.lastStartedAt} lastSuccessAt=${entry.lastSuccessAt} lastFailureAt=${entry.lastFailureAt} stale=${entry.stale} degraded=${entry.degraded}\n"
+        out += "schedule ${entry.name} nextRunAt=${entry.nextRunAt} lastStartedAt=${entry.lastStartedAt} lastSuccessAt=${entry.lastSuccessAt} lastFailureAt=${entry.lastFailureAt} failureCount=${entry.failureCount} stale=${entry.stale} degraded=${entry.degraded} cursor=${entry.lastCursor} since=${entry.lastSince} active=${entry.activeVersion} candidate=${entry.candidateVersion} status=${entry.lastStatus}\n"
     }
     out
+}
+
+public func renderMetrics(status: KnowledgeStatus): String {
+    var degradedSchedules: Int64 = 0
+    var staleSchedules: Int64 = 0
+    for (entry in status.schedules) {
+        if (entry.degraded) {
+            degradedSchedules += 1
+        }
+        if (entry.stale) {
+            staleSchedules += 1
+        }
+    }
+    var out = "metrics activeKnowledgeVersion=${status.activeKnowledgeVersion} activeStateSource=${status.activeStateSource} restoreDiagnostic=${status.restoreDiagnostic}\n"
+    out += "metrics storage raw=${status.storage.rawCount} normalized=${status.storage.normalizedCount} activeIndex=${status.storage.indexCount} vector=${status.storage.vectorIndexCount} graphEdges=${status.storage.graphEdgeCount}\n"
+    out += "metrics backend vectorState=${status.storage.vectorState} graphState=${status.storage.graphState}\n"
+    out += "metrics scheduler total=${status.schedules.size} degraded=${degradedSchedules} stale=${staleSchedules}\n"
+    out
+}
+
+public func renderBackupRestore(result: BackupRestoreResult): String {
+    "backupRestore action=${result.action} ok=${result.ok} source=${result.source} destination=${result.destination} activeKnowledgeVersion=${result.activeVersion} files=${result.files} diagnostic=${result.diagnostic}\n"
 }
 
 public func renderQuery(pack: EvidencePack): String {

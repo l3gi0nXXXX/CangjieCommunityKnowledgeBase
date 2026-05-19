@@ -85,9 +85,31 @@ The baseline scheduler uses a fake clock and encodes the required SLA:
 - web candidate weekly search and 30-day recrawl;
 - weekly full rebuild.
 
+`SchedulerExecutor` runs due entries through a task runner and checkpoints
+last success, last failure, cursor, since, active version, and candidate
+version under `metadata/scheduler.ckb`. Failures retry with 5, 15, then
+60-minute backoff; after three failures the entry is marked degraded. The
+`metrics` command summarizes storage, backend, stale schedule, and degraded
+schedule counts.
+
 Scoped freshness policies are modeled as `use_active`, `ensure_recent`,
 `ensure_ref`, and `force_candidate`. Candidate evidence requires review and
 repo-scoped refreshes observe a five-minute cooldown.
+
+## Service Lifecycle and Operations
+
+The production service shape is `ckb-stdio-v1`: the executable starts with
+`service` or `start`, loads only the explicit `--config` and `--store` paths,
+then reads newline-delimited commands from stdin and writes redacted key-value
+responses to stdout. It exposes `health`, `status`, `metrics`, `query`,
+`evidence`, `sync`, `rebuild`, `scheduler-run`, `backup`, `restore`,
+`restart`, and `stop`. This is the stable service interface until a socket
+server is selected for deployment.
+
+Backup and restore operate on the active snapshot files only. Restore validates
+the backup active snapshot before replacing the target store; malformed or
+missing active snapshots return a clear diagnostic such as
+`malformed_active_index` without silently promoting corrupted data.
 
 ## ACP Offline Curation
 
@@ -101,8 +123,14 @@ The executable supports human-readable commands:
 
 - `doctor`
 - `status`
+- `metrics`
+- `service`
+- `service-once <command>`
+- `scheduler-run`
 - `sync-once`
 - `rebuild-index`
+- `backup <path>`
+- `restore <path>`
 - `query <text>`
 - `evidence <text>`
 - `schema`
