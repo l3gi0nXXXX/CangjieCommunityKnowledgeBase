@@ -672,28 +672,78 @@ public class FileKnowledgeStore {
     }
 
     public func loadNormalized(): ArrayList<NormalizedRecord> {
-        let out = ArrayList<NormalizedRecord>()
-        let text = this.readLines("normalized/records.ckb")
-        if (text == "") {
-            return out
-        }
+        this.parseNormalized(this.readLines("normalized/records.ckb"))
+    }
+
+    public func loadActiveVersion(): String {
+        this.readLines("index/active.version").trimAscii()
+    }
+
+    public func loadActiveIndex(): ArrayList<NormalizedRecord> {
+        this.parseNormalized(this.readLines("index/active.ckb"))
+    }
+
+    public func loadMetadataStatus(): StoreMetadataStatus {
+        let status = StoreMetadataStatus()
+        let text = this.readLines("metadata/status.ckb")
         for (line in text.split("\n")) {
-            let parts = line.split("|")
-            if (parts.size >= 20) {
-                let metadata = metadataFromParts(parts, 6)
-                let record = NormalizedRecord()
-                record.sourceId = unescapeField(parts[0])
-                record.recordKind = unescapeField(parts[1])
-                record.title = unescapeField(parts[2])
-                record.chunk = unescapeField(parts[3])
-                record.citation = unescapeField(parts[4])
-                record.score = try { Float64.parse(parts[5]) } catch (_: Exception) { 0.0 }
-                record.metadata = metadata
-                record.requiresReview = metadata.reviewState == ReviewStates.CANDIDATE
-                out.add(record)
+            let trimmed = line.trimAscii()
+            if (trimmed == "") {
+                continue
+            }
+            let parts = trimmed.split("=")
+            if (parts.size < 2) {
+                continue
+            }
+            let key = parts[0]
+            let value = trimmed[(key.size + 1)..trimmed.size]
+            if (key == "active") {
+                status.activeVersion = value
+            } else if (key == "candidate") {
+                status.candidateVersion = value
+            } else if (key == "failed") {
+                status.failedVersion = value
             }
         }
-        out
+        status
+    }
+
+    public func loadActiveSnapshot(): ActiveSnapshot {
+        let snapshot = ActiveSnapshot()
+        snapshot.activeVersion = this.loadActiveVersion()
+        if (snapshot.activeVersion == "") {
+            snapshot.valid = false
+            snapshot.diagnostic = "missing_active_version"
+            return snapshot
+        }
+        let metadata = this.loadMetadataStatus()
+        snapshot.candidateVersion = metadata.candidateVersion
+        snapshot.failedVersion = metadata.failedVersion
+        if (metadata.activeVersion != "" && metadata.activeVersion != snapshot.activeVersion) {
+            snapshot.valid = false
+            snapshot.diagnostic = "metadata_active_mismatch"
+            return snapshot
+        }
+        snapshot.activeIndex = this.loadActiveIndex()
+        if (snapshot.activeIndex.size == 0) {
+            snapshot.valid = false
+            snapshot.diagnostic = "missing_or_empty_active_index"
+            return snapshot
+        }
+        for (record in snapshot.activeIndex) {
+            if (record.metadata.knowledgeVersion != snapshot.activeVersion) {
+                snapshot.valid = false
+                snapshot.diagnostic = "active_index_version_mismatch"
+                return snapshot
+            }
+        }
+        snapshot.rawRecords = this.loadRaw()
+        snapshot.normalizedRecords = this.loadNormalized()
+        snapshot.valid = true
+        snapshot.diagnostic = "ok"
+        snapshot.hasVectorArtifact = this.has("index/vector-active.ckb")
+        snapshot.hasGraphArtifacts = this.has("index/graph-nodes.ckb") && this.has("index/graph-edges.ckb")
+        snapshot
     }
 
     public func publicStatus(): StorageStatus {
@@ -733,6 +783,30 @@ public class FileKnowledgeStore {
             return ""
         }
         String.fromUtf8(File.readFrom(path))
+    }
+
+    private func parseNormalized(text: String): ArrayList<NormalizedRecord> {
+        let out = ArrayList<NormalizedRecord>()
+        if (text == "") {
+            return out
+        }
+        for (line in text.split("\n")) {
+            let parts = line.split("|")
+            if (parts.size >= 20) {
+                let metadata = metadataFromParts(parts, 6)
+                let record = NormalizedRecord()
+                record.sourceId = unescapeField(parts[0])
+                record.recordKind = unescapeField(parts[1])
+                record.title = unescapeField(parts[2])
+                record.chunk = unescapeField(parts[3])
+                record.citation = unescapeField(parts[4])
+                record.score = try { Float64.parse(parts[5]) } catch (_: Exception) { 0.0 }
+                record.metadata = metadata
+                record.requiresReview = metadata.reviewState == ReviewStates.CANDIDATE
+                out.add(record)
+            }
+        }
+        out
     }
 
     private func rawLines(records: ArrayList<RawRecord>): String {
@@ -783,6 +857,29 @@ public class FileKnowledgeStore {
         }
         out
     }
+}
+
+public class StoreMetadataStatus {
+    public var activeVersion: String = ""
+    public var candidateVersion: String = ""
+    public var failedVersion: String = ""
+
+    public init() {}
+}
+
+public class ActiveSnapshot {
+    public var valid: Bool = false
+    public var diagnostic: String = ""
+    public var activeVersion: String = ""
+    public var candidateVersion: String = ""
+    public var failedVersion: String = ""
+    public var rawRecords: ArrayList<RawRecord> = ArrayList<RawRecord>()
+    public var normalizedRecords: ArrayList<NormalizedRecord> = ArrayList<NormalizedRecord>()
+    public var activeIndex: ArrayList<NormalizedRecord> = ArrayList<NormalizedRecord>()
+    public var hasVectorArtifact: Bool = false
+    public var hasGraphArtifacts: Bool = false
+
+    public init() {}
 }
 
 private func singleRawRecord(record: RawRecord): ArrayList<RawRecord> {
@@ -971,9 +1068,7 @@ public func ckbSyncLiveApply(kb: KnowledgeBase, adapter: SourceAdapter, store: F
 public func ckbRebuildIndex(kb: KnowledgeBase, store: FileKnowledgeStore, fail!: Bool = false): IndexBuildResult {
     let result = kb.rebuildIndex(fail)
     if (result.ok) {
-        kb.persistIndex(store)
-        store.saveVectorCollection(kb.activeVectorRecords(), "active")
-        store.saveGraph(kb.activeGraphBuild())
+        kb.persistActiveSnapshot(store)
     }
     result
 }

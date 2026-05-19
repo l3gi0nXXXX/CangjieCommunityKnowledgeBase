@@ -272,6 +272,42 @@ public class CkbBaselineTest {
     }
 
     @TestCase
+    public func activeSnapshotRestoreUsesPersistedIndexAcrossObjects(): Unit {
+        let store = FileKnowledgeStore("target/ckb-test-restore-p3")
+        let first = newOfflineKnowledgeBase()
+        let rebuild = ckbRebuildIndex(first, store)
+
+        let loaded = newKnowledgeBaseFromStore(store)
+        let status = cangjie_knowledge_status(loaded.kb)
+        let pack = cangjie_evidence_pack(loaded.kb, "HttpClient", 3)
+
+        @Expect(rebuild.ok, true)
+        @Expect(rebuild.activeVersion, "ckb-20260519-000200-active")
+        @Expect(loaded.source, "persisted")
+        @Expect(status.activeStateSource, "persisted")
+        @Expect(status.activeKnowledgeVersion, "ckb-20260519-000200-active")
+        @Expect(pack.knowledgeVersion, "ckb-20260519-000200-active")
+        @Expect(pack.graphContext.knowledgeVersion, "ckb-20260519-000200-active")
+    }
+
+    @TestCase
+    public func activeSnapshotRejectsMissingVersionAndMismatchedMetadata(): Unit {
+        let missing = FileKnowledgeStore("target/ckb-test-restore-missing")
+        let missingSnapshot = missing.loadActiveSnapshot()
+        let store = FileKnowledgeStore("target/ckb-test-restore-mismatch")
+        let kb = newOfflineKnowledgeBase()
+        let rebuild = ckbRebuildIndex(kb, store)
+        File.writeTo(Path("target/ckb-test-restore-mismatch/metadata/status.ckb"), "active=wrong-active\n".toArray())
+        let mismatched = store.loadActiveSnapshot()
+
+        @Expect(missingSnapshot.valid, false)
+        @Expect(missingSnapshot.diagnostic, "missing_active_version")
+        @Expect(rebuild.ok, true)
+        @Expect(mismatched.valid, false)
+        @Expect(mismatched.diagnostic, "metadata_active_mismatch")
+    }
+
+    @TestCase
     public func statusAndMetadataExposeDeterministicIndexManifest(): Unit {
         let kb = newOfflineKnowledgeBase()
         let store = FileKnowledgeStore("target/ckb-test-index-manifest")
@@ -411,6 +447,30 @@ public class CkbBaselineTest {
         @Expect(after.failedCandidateVersion.contains("candidate"), true)
         @Expect(store.has("raw/candidate/${after.candidateKnowledgeVersion}/records.ckb"), true)
         @Expect(store.has("index/active.ckb"), false)
+    }
+
+    @TestCase
+    public func failedCandidateApplyDoesNotOverwritePersistedActiveAcrossObjects(): Unit {
+        let store = FileKnowledgeStore("target/ckb-test-live-failed-isolation")
+        let first = newOfflineKnowledgeBase()
+        let rebuild = ckbRebuildIndex(first, store)
+        let restored = newKnowledgeBaseFromStore(store)
+        let options = LiveApplyOptions()
+        options.apply = true
+        options.simulateValidationFailure = true
+
+        let failed = ckbSyncLiveApply(restored.kb, SourceAdapter(runner: FakeSourceFetchRunner()), store, options)
+        let next = newKnowledgeBaseFromStore(store)
+        let status = cangjie_knowledge_status(next.kb)
+        let pack = cangjie_evidence_pack(next.kb, "HttpClient", 3)
+
+        @Expect(rebuild.ok, true)
+        @Expect(failed.ok, false)
+        @Expect(failed.failedVersion.contains("candidate"), true)
+        @Expect(next.source, "persisted")
+        @Expect(status.activeKnowledgeVersion, "ckb-20260519-000200-active")
+        @Expect(status.failedCandidateVersion.contains("candidate"), true)
+        @Expect(pack.knowledgeVersion, "ckb-20260519-000200-active")
     }
 
     @TestCase
@@ -634,6 +694,21 @@ network.retryCount=3
         @Expect(text.contains("fake-live-token"), false)
         @Expect(text.contains("access_token"), false)
         @Expect(store.has("raw/records.ckb"), false)
+    }
+
+    @TestCase
+    public func cliLikeRebuildThenIndependentEvidenceUsesPersistedActive(): Unit {
+        let store = FileKnowledgeStore("target/ckb-test-cli-p5")
+        let rebuildKb = newKnowledgeBaseFromStore(store).kb
+        let rebuild = ckbRebuildIndex(rebuildKb, store)
+
+        let evidenceKb = newKnowledgeBaseFromStore(store).kb
+        let rendered = renderQuery(cangjie_evidence_pack(evidenceKb, "HttpClient", 3))
+
+        @Expect(rebuild.ok, true)
+        @Expect(rendered.contains("knowledgeVersion=ckb-20260519-000200-active"), true)
+        @Expect(rendered.contains("graphContext"), true)
+        @Expect(rendered.contains("ckb-20260519-000100-active"), false)
     }
 
     @TestCase

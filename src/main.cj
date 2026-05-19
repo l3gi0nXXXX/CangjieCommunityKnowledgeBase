@@ -3,9 +3,14 @@ package cangjie_community_knowledge_base
 import std.convert.Parsable
 
 main(args: Array<String>): Int64 {
-    let kb = newOfflineKnowledgeBase()
+    ckbCliMain(args)
+}
+
+public func ckbCliMain(args: Array<String>): Int64 {
     let cli = parseCli(args)
     let config = loadCkbRuntimeConfig(cli.configPath)
+    let store = FileKnowledgeStore(cli.storePath)
+    let kb = loadCliKnowledgeBase(cli.command, store)
     let input = cliInput(args)
     if (cli.command == "" || cli.command == "doctor") {
         print(renderDoctor(cangjie_knowledge_status(kb)))
@@ -18,7 +23,6 @@ main(args: Array<String>): Int64 {
         return 0
     }
     if (cli.command == "sync-once") {
-        let store = FileKnowledgeStore("target/ckb-data")
         println(ckbSyncOnce(kb, SourceAdapter(), store))
         return 0
     }
@@ -32,12 +36,11 @@ main(args: Array<String>): Int64 {
         options.maxItems = applyOptions.maxItems
         options.since = applyOptions.since
         let runner: SourceFetchRunner = if (config.networkEnabled) { HttpSourceFetchRunner(config) } else { DisabledNetworkFetchRunner() }
-        let text = ckbSyncLive(kb, config, options, runner: runner, store: FileKnowledgeStore("target/ckb-data"))
+        let text = ckbSyncLive(kb, config, options, runner: runner, store: store)
         print(text)
         return if (text.startsWith("usage error")) { 2 } else { 0 }
     }
     if (cli.command == "rebuild-index") {
-        let store = FileKnowledgeStore("target/ckb-data")
         let result = ckbRebuildIndex(kb, store)
         println("rebuild ok=${result.ok} activeKnowledgeVersion=${result.activeVersion} candidateKnowledgeVersion=${result.candidateVersion} count=${result.count}")
         return 0
@@ -57,13 +60,14 @@ main(args: Array<String>): Int64 {
         print(renderQuery(cangjie_evidence_pack(kb, query, 3)))
         return 0
     }
-    println("Usage: cangjie_community_knowledge_base [--config <path>] doctor | status | sync-once | sync-live (--dry-run|--apply) | rebuild-index | query <text> | evidence <text> | schema")
+    println("Usage: cangjie_community_knowledge_base [--config <path>] [--store <path>] doctor | status | sync-once | sync-live (--dry-run|--apply) | rebuild-index | query <text> | evidence <text> | schema")
     2
 }
 
 class CliOptions {
     var command: String = ""
     var configPath: String = ""
+    var storePath: String = "target/ckb-data"
     var dryRun: Bool = false
     var apply: Bool = false
 
@@ -77,6 +81,11 @@ private func parseCli(args: Array<String>): CliOptions {
         let arg = args[i]
         if (arg == "--config" && i + 1 < args.size) {
             cli.configPath = args[i + 1]
+            i += 2
+            continue
+        }
+        if (arg == "--store" && i + 1 < args.size) {
+            cli.storePath = args[i + 1]
             i += 2
             continue
         }
@@ -106,7 +115,7 @@ private func cliInput(args: Array<String>): String {
             skipNext = false
             continue
         }
-        if (arg == "--config") {
+        if (arg == "--config" || arg == "--store") {
             skipNext = true
             continue
         }
@@ -120,6 +129,13 @@ private func cliInput(args: Array<String>): String {
         }
     }
     input.trimAscii()
+}
+
+private func loadCliKnowledgeBase(command: String, store: FileKnowledgeStore): KnowledgeBase {
+    if (command == "schema") {
+        return newOfflineKnowledgeBase()
+    }
+    newKnowledgeBaseFromStore(store).kb
 }
 
 private func cliTail(input: String, command: String, fallback: String): String {
