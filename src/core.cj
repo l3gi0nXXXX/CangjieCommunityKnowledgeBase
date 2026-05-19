@@ -132,16 +132,31 @@ public class EmbeddingConfig {
     public var provider: String = "local-file"
     public var model: String = "deterministic-token-v1"
     public var dimensions: Int64 = 16
+    public var endpoint: String = ""
+    public var tokenFile: String = ""
+    public var tokenRef: String = ""
+    public var batchSize: Int64 = 16
+    public var timeoutMillis: Int64 = 10000
+    public var retryCount: Int64 = 2
     public var production: Bool = true
     public var configured: Bool = true
 
     public init() {}
+
+    public func credentialPresent(): Bool {
+        this.tokenFile != "" || this.tokenRef != ""
+    }
 }
 
 public class EmbeddingStatus {
     public var provider: String = ""
     public var model: String = ""
     public var dimensions: Int64 = 0
+    public var endpointConfigured: Bool = false
+    public var tokenConfigured: Bool = false
+    public var batchSize: Int64 = 0
+    public var timeoutMillis: Int64 = 0
+    public var retryCount: Int64 = 0
     public var state: String = EmbeddingProviderState.DEGRADED
     public var production: Bool = false
     public var degradedReason: String = ""
@@ -152,6 +167,10 @@ public class EmbeddingStatus {
 public class EmbeddingBatch {
     public var vectors: ArrayList<ArrayList<Float64>> = ArrayList<ArrayList<Float64>>()
     public var status: EmbeddingStatus = EmbeddingStatus()
+    public var requested: Int64 = 0
+    public var succeeded: Int64 = 0
+    public var failed: Int64 = 0
+    public var batchSize: Int64 = 0
 
     public init() {}
 }
@@ -174,13 +193,17 @@ public class DeterministicEmbeddingProvider <: EmbeddingProvider {
 
     public func embed(texts: ArrayList<String>, model: String, dimensions: Int64): EmbeddingBatch {
         let batch = EmbeddingBatch()
+        batch.requested = texts.size
+        batch.batchSize = this.config.batchSize
         batch.status = this.status()
         if (batch.status.state != EmbeddingProviderState.READY) {
+            batch.failed = texts.size
             return batch
         }
         for (text in texts) {
             batch.vectors.add(deterministicEmbedding(text, dimensions))
         }
+        batch.succeeded = batch.vectors.size
         batch
     }
 
@@ -189,6 +212,11 @@ public class DeterministicEmbeddingProvider <: EmbeddingProvider {
         status.provider = this.config.provider
         status.model = this.config.model
         status.dimensions = this.config.dimensions
+        status.endpointConfigured = this.config.endpoint != ""
+        status.tokenConfigured = this.config.credentialPresent()
+        status.batchSize = this.config.batchSize
+        status.timeoutMillis = this.config.timeoutMillis
+        status.retryCount = this.config.retryCount
         status.production = this.config.production
         if (!this.config.configured || this.config.dimensions <= 0) {
             status.state = EmbeddingProviderState.DEGRADED
@@ -209,7 +237,10 @@ public class ProductionEmbeddingProvider <: EmbeddingProvider {
 
     public func embed(texts: ArrayList<String>, model: String, dimensions: Int64): EmbeddingBatch {
         let batch = EmbeddingBatch()
+        batch.requested = texts.size
+        batch.batchSize = this.config.batchSize
         batch.status = this.status()
+        batch.failed = texts.size
         batch
     }
 
@@ -218,10 +249,15 @@ public class ProductionEmbeddingProvider <: EmbeddingProvider {
         status.provider = this.config.provider
         status.model = this.config.model
         status.dimensions = this.config.dimensions
+        status.endpointConfigured = this.config.endpoint != ""
+        status.tokenConfigured = this.config.credentialPresent()
+        status.batchSize = this.config.batchSize
+        status.timeoutMillis = this.config.timeoutMillis
+        status.retryCount = this.config.retryCount
         status.production = true
         status.state = EmbeddingProviderState.DEGRADED
         status.degradedReason = "production_embedding_requires_external_adapter"
-        if (!this.config.configured) {
+        if (!this.config.configured || this.config.endpoint == "" || !this.config.credentialPresent() || this.config.dimensions <= 0) {
             status.degradedReason = "production_embedding_missing_config"
         }
         status
@@ -260,6 +296,8 @@ public class VectorSearchResult {
 public class VectorStoreStatus {
     public var backend: String = ""
     public var collection: String = ""
+    public var activeCollection: String = "active"
+    public var candidateCollection: String = "candidate"
     public var dimension: Int64 = 0
     public var count: Int64 = 0
     public var state: String = EmbeddingProviderState.DEGRADED
@@ -272,13 +310,33 @@ public interface VectorStore {
     func upsert(collection: String, vectors: ArrayList<VectorRecord>): VectorStoreStatus
     func search(collection: String, queryVector: ArrayList<Float64>, filters: VectorSearchFilters, topK: Int64): ArrayList<VectorSearchResult>
     func status(collection: String): VectorStoreStatus
+    func clear(collection: String): VectorStoreStatus
+    func recreate(collection: String, vectors: ArrayList<VectorRecord>): VectorStoreStatus
+    func backup(collection: String): VectorBackup
+    func restore(backup: VectorBackup): VectorStoreStatus
+}
+
+public class VectorBackup {
+    public var collection: String = ""
+    public var records: ArrayList<VectorRecord> = ArrayList<VectorRecord>()
+    public var valid: Bool = false
+    public var diagnostic: String = ""
+
+    public init() {}
+}
+
+class LocalVectorCollection {
+    public var name: String = ""
+    public var records: ArrayList<VectorRecord> = ArrayList<VectorRecord>()
+    public var dimension: Int64 = 0
+
+    public init() {}
 }
 
 public class LocalVectorStore <: VectorStore {
-    private var collectionName: String = ""
-    private var records: ArrayList<VectorRecord> = ArrayList<VectorRecord>()
-    private var dimension: Int64 = 0
+    private var collections: ArrayList<LocalVectorCollection> = ArrayList<LocalVectorCollection>()
     private var available: Bool = true
+    private let backendName: String = "local-file"
 
     public init() {}
 
@@ -287,27 +345,31 @@ public class LocalVectorStore <: VectorStore {
     }
 
     public func upsert(collection: String, vectors: ArrayList<VectorRecord>): VectorStoreStatus {
-        this.collectionName = collection
-        this.records.clear()
-        this.dimension = 0
         if (!this.available) {
             return this.status(collection)
         }
+        let stored = this.ensureCollection(collection)
+        stored.records.clear()
+        stored.dimension = 0
         for (record in vectors) {
-            if (this.dimension == 0) {
-                this.dimension = record.vector.size
+            if (stored.dimension == 0) {
+                stored.dimension = record.vector.size
             }
-            this.records.add(record)
+            stored.records.add(record)
         }
         this.status(collection)
     }
 
     public func search(collection: String, queryVector: ArrayList<Float64>, filters: VectorSearchFilters, topK: Int64): ArrayList<VectorSearchResult> {
         let out = ArrayList<VectorSearchResult>()
-        if (!this.available || this.collectionName != collection || queryVector.size == 0) {
+        if (!this.available || queryVector.size == 0) {
             return out
         }
-        for (record in this.records) {
+        let stored = this.findCollection(collection)
+        if (stored.name == "") {
+            return out
+        }
+        for (record in stored.records) {
             if (!vectorRecordAllowed(record, filters)) {
                 continue
             }
@@ -322,10 +384,11 @@ public class LocalVectorStore <: VectorStore {
 
     public func status(collection: String): VectorStoreStatus {
         let status = VectorStoreStatus()
-        status.backend = "local-file"
-        status.collection = if (collection == "") { this.collectionName } else { collection }
-        status.dimension = this.dimension
-        status.count = this.records.size
+        status.backend = this.backendName
+        status.collection = collection
+        let stored = this.findCollection(collection)
+        status.dimension = stored.dimension
+        status.count = stored.records.size
         if (!this.available) {
             status.state = EmbeddingProviderState.DOWN
             status.degradedReason = "vector_store_unavailable"
@@ -333,6 +396,76 @@ public class LocalVectorStore <: VectorStore {
         }
         status.state = EmbeddingProviderState.READY
         status
+    }
+
+    public func clear(collection: String): VectorStoreStatus {
+        if (!this.available) {
+            return this.status(collection)
+        }
+        let stored = this.findCollection(collection)
+        if (stored.name != "") {
+            stored.records.clear()
+            stored.dimension = 0
+        }
+        this.status(collection)
+    }
+
+    public func recreate(collection: String, vectors: ArrayList<VectorRecord>): VectorStoreStatus {
+        this.clear(collection)
+        this.upsert(collection, vectors)
+    }
+
+    public func backup(collection: String): VectorBackup {
+        let backup = VectorBackup()
+        backup.collection = collection
+        if (!this.available) {
+            backup.valid = false
+            backup.diagnostic = "vector_store_unavailable"
+            return backup
+        }
+        let stored = this.findCollection(collection)
+        if (stored.name == "") {
+            backup.valid = false
+            backup.diagnostic = "collection_missing"
+            return backup
+        }
+        for (record in stored.records) {
+            backup.records.add(record)
+        }
+        backup.valid = true
+        backup.diagnostic = "ok"
+        backup
+    }
+
+    public func restore(backup: VectorBackup): VectorStoreStatus {
+        if (!backup.valid) {
+            let status = this.status(backup.collection)
+            status.state = EmbeddingProviderState.DEGRADED
+            status.degradedReason = backup.diagnostic
+            return status
+        }
+        this.recreate(backup.collection, backup.records)
+    }
+
+    private func findCollection(collection: String): LocalVectorCollection {
+        for (stored in this.collections) {
+            if (stored.name == collection) {
+                return stored
+            }
+        }
+        LocalVectorCollection()
+    }
+
+    private func ensureCollection(collection: String): LocalVectorCollection {
+        for (stored in this.collections) {
+            if (stored.name == collection) {
+                return stored
+            }
+        }
+        let stored = LocalVectorCollection()
+        stored.name = collection
+        this.collections.add(stored)
+        stored
     }
 }
 
@@ -602,6 +735,8 @@ public class StorageStatus {
     public var vectorState: String = EmbeddingProviderState.DEGRADED
     public var vectorDimension: Int64 = 0
     public var vectorCollection: String = "active"
+    public var vectorActiveCollection: String = "active"
+    public var vectorCandidateCollection: String = "candidate"
     public var vectorDegradedReason: String = ""
     public var graphBackend: String = "local-graph"
     public var graphState: String = EmbeddingProviderState.DEGRADED
@@ -880,7 +1015,8 @@ public class KnowledgeBase {
     private let embeddingProvider: EmbeddingProvider
     private let vectorStore: VectorStore
     private let graphStore: GraphStore
-    private let vectorCollection: String = "active"
+    private var vectorCollection: String = "active"
+    private var candidateVectorCollection: String = "candidate"
     private let embeddingModel: String = "deterministic-token-v1"
     private let embeddingDimensions: Int64 = 16
 
@@ -896,6 +1032,18 @@ public class KnowledgeBase {
         this.embeddingProvider = embeddingProvider
         this.vectorStore = vectorStore
         this.graphStore = graphStore
+    }
+
+    public func configureVectorCollections(active: String, candidate: String): Unit {
+        if (active != "") {
+            this.vectorCollection = active
+            this.storage.vectorCollection = active
+            this.storage.vectorActiveCollection = active
+        }
+        if (candidate != "") {
+            this.candidateVectorCollection = candidate
+            this.storage.vectorCandidateCollection = candidate
+        }
     }
 
     public func bootstrapOffline(): Unit {
@@ -945,7 +1093,19 @@ public class KnowledgeBase {
         this.storage.rawCount = this.rawRecords.size
         this.storage.normalizedCount = this.normalizedRecords.size
         this.storage.indexCount = this.activeIndex.size
-        this.rebuildProductionIndexes()
+        if (snapshot.vectorRecords.size > 0) {
+            let backup = VectorBackup()
+            backup.collection = this.vectorCollection
+            backup.valid = true
+            backup.diagnostic = "ok"
+            for (record in snapshot.vectorRecords) {
+                backup.records.add(record)
+            }
+            this.applyVectorStatus(this.vectorStore.restore(backup))
+            this.rebuildGraphIndex()
+        } else {
+            this.rebuildProductionIndexes()
+        }
         this.rebuildIndexManifest()
         return true
     }
@@ -1109,7 +1269,7 @@ public class KnowledgeBase {
         for (record in this.activeIndex) {
             texts.add("${record.title} ${record.chunk} ${record.metadata.repo} ${record.metadata.path} ${record.metadata.symbol}")
         }
-        let batch = this.embeddingProvider.embed(texts, this.embeddingModel, this.embeddingDimensions)
+        let batch = this.embeddingProvider.embed(texts, this.activeEmbeddingModel(), this.activeEmbeddingDimensions())
         if (batch.status.state == EmbeddingProviderState.READY && batch.vectors.size == this.activeIndex.size) {
             for (i in 0..this.activeIndex.size) {
                 let source = this.activeIndex[i]
@@ -1130,6 +1290,10 @@ public class KnowledgeBase {
             vectorStatus.degradedReason = batch.status.degradedReason
             this.applyVectorStatus(vectorStatus)
         }
+        this.rebuildGraphIndex()
+    }
+
+    private func rebuildGraphIndex(): Unit {
         let graph = buildGraphFromRecords(this.activeIndex, this.activeKnowledgeVersion)
         this.graphStore.upsert(graph.nodes, graph.edges)
         let graphStatus = this.graphStore.status()
@@ -1142,7 +1306,9 @@ public class KnowledgeBase {
     private func applyVectorStatus(status: VectorStoreStatus): Unit {
         this.storage.vectorBackend = status.backend
         this.storage.vectorState = status.state
-        this.storage.vectorCollection = status.collection
+        this.storage.vectorCollection = if (status.collection == "") { this.vectorCollection } else { status.collection }
+        this.storage.vectorActiveCollection = this.vectorCollection
+        this.storage.vectorCandidateCollection = this.candidateVectorCollection
         this.storage.vectorDimension = status.dimension
         this.storage.vectorDegradedReason = status.degradedReason
         this.storage.vectorIndexCount = status.count
@@ -1235,7 +1401,7 @@ public class KnowledgeBase {
         for (record in this.activeIndex) {
             texts.add("${record.title} ${record.chunk} ${record.metadata.repo} ${record.metadata.path} ${record.metadata.symbol}")
         }
-        let batch = this.embeddingProvider.embed(texts, this.embeddingModel, this.embeddingDimensions)
+        let batch = this.embeddingProvider.embed(texts, this.activeEmbeddingModel(), this.activeEmbeddingDimensions())
         if (batch.vectors.size != this.activeIndex.size) {
             return out
         }
@@ -1302,7 +1468,7 @@ public class KnowledgeBase {
         }
         let texts = ArrayList<String>()
         texts.add(query)
-        let batch = this.embeddingProvider.embed(texts, this.embeddingModel, this.embeddingDimensions)
+        let batch = this.embeddingProvider.embed(texts, this.activeEmbeddingModel(), this.activeEmbeddingDimensions())
         if (batch.vectors.size == 0) {
             result.degraded = true
             result.fallbackReason = "query_embedding_unavailable"
@@ -1476,6 +1642,22 @@ public class KnowledgeBase {
 
     public func vectorStatus(): VectorStoreStatus {
         this.vectorStore.status(this.vectorCollection)
+    }
+
+    private func activeEmbeddingModel(): String {
+        let status = this.embeddingProvider.status()
+        if (status.model != "") {
+            return status.model
+        }
+        this.embeddingModel
+    }
+
+    private func activeEmbeddingDimensions(): Int64 {
+        let status = this.embeddingProvider.status()
+        if (status.dimensions > 0) {
+            return status.dimensions
+        }
+        this.embeddingDimensions
     }
 
     public func graphStatus(): VectorStoreStatus {
@@ -1870,7 +2052,7 @@ public func renderDoctor(status: KnowledgeStatus): String {
     out += "activeStateSource=${status.activeStateSource} restoreDiagnostic=${status.restoreDiagnostic}\n"
     out += "storage raw=${status.storage.rawCount} normalized=${status.storage.normalizedCount} indexes=${status.storage.indexCount} derived=${status.storage.derivedCount}\n"
     out += "indexKinds text=${status.storage.textIndexCount} vector=${status.storage.vectorIndexCount} symbol=${status.storage.symbolIndexCount} graph=${status.storage.graphIndexCount}\n"
-    out += "vector backend=${status.storage.vectorBackend} state=${status.storage.vectorState} collection=${status.storage.vectorCollection} dimension=${status.storage.vectorDimension} count=${status.storage.vectorIndexCount} degradedReason=${status.storage.vectorDegradedReason}\n"
+    out += "vector backend=${status.storage.vectorBackend} state=${status.storage.vectorState} collection=${status.storage.vectorCollection} activeCollection=${status.storage.vectorActiveCollection} candidateCollection=${status.storage.vectorCandidateCollection} dimension=${status.storage.vectorDimension} count=${status.storage.vectorIndexCount} degradedReason=${status.storage.vectorDegradedReason}\n"
     out += "graph backend=${status.storage.graphBackend} state=${status.storage.graphState} nodes=${status.storage.graphNodeCount} edges=${status.storage.graphEdgeCount}\n"
     out += "paths raw=${status.storage.rawPath} normalized=${status.storage.normalizedPath} metadata=${status.storage.metadataPath} indexes=${status.storage.indexesPath} derived=${status.storage.derivedPath} cache=${status.storage.cachePath}\n"
     out += "scope organizations=${status.sourceScope.organizations} repoScope=${status.sourceScope.repoScope} websiteUrls=${status.sourceScope.websiteUrls} docsUrls=${status.sourceScope.docsUrls} stdSources=${status.sourceScope.stdSources} issuePrHistory=${status.sourceScope.includesIssuePrHistory} governedWebCandidates=${status.sourceScope.includesGovernedWebCandidates}\n"

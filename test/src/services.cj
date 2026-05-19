@@ -123,6 +123,16 @@ public class CkbRuntimeConfig {
     public var docsEnabled: Bool = false
     public var indexBackend: String = "offline"
     public var embeddingProvider: String = "none"
+    public var embeddingModel: String = ""
+    public var embeddingDimensions: Int64 = 0
+    public var embeddingEndpoint: String = ""
+    public var embeddingTokenFile: String = ""
+    public var embeddingBatchSize: Int64 = 16
+    public var embeddingTimeoutMillis: Int64 = 10000
+    public var embeddingRetryCount: Int64 = 2
+    public var vectorBackend: String = "local-file"
+    public var vectorActiveCollection: String = "active"
+    public var vectorCandidateCollection: String = "candidate"
     public var timeoutMillis: Int64 = 10000
     public var retryCount: Int64 = 2
 
@@ -141,6 +151,16 @@ public class CkbRuntimeConfig {
         out += " docs=${if (this.docsEnabled) { "enabled" } else { "disabled" }}"
         out += " index.backend=${this.indexBackend}"
         out += " embedding.provider=${this.embeddingProvider}"
+        out += " embedding.model=${if (this.embeddingModel == "") { "unset" } else { this.embeddingModel }}"
+        out += " embedding.dimensions=${this.embeddingDimensions}"
+        out += " embedding.endpoint=${if (this.embeddingEndpoint == "") { "absent" } else { "present" }}"
+        out += " embedding.token=${if (this.embeddingTokenFile == "") { "absent" } else { "present" }}"
+        out += " embedding.batchSize=${this.embeddingBatchSize}"
+        out += " embedding.timeoutMillis=${this.embeddingTimeoutMillis}"
+        out += " embedding.retryCount=${this.embeddingRetryCount}"
+        out += " vector.backend=${this.vectorBackend}"
+        out += " vector.activeCollection=${this.vectorActiveCollection}"
+        out += " vector.candidateCollection=${this.vectorCandidateCollection}"
         out
     }
 }
@@ -611,6 +631,8 @@ public class FileKnowledgeStore {
         text += "vectorBackend=${status.storage.vectorBackend}\n"
         text += "vectorState=${status.storage.vectorState}\n"
         text += "vectorCollection=${status.storage.vectorCollection}\n"
+        text += "vectorActiveCollection=${status.storage.vectorActiveCollection}\n"
+        text += "vectorCandidateCollection=${status.storage.vectorCandidateCollection}\n"
         text += "vectorDimension=${status.storage.vectorDimension}\n"
         text += "vectorDegradedReason=${escapeField(status.storage.vectorDegradedReason)}\n"
         text += "graphBackend=${status.storage.graphBackend}\n"
@@ -633,6 +655,28 @@ public class FileKnowledgeStore {
 
     public func saveVectorCollection(records: ArrayList<VectorRecord>, collection: String): Unit {
         this.writeLines("index/vector-${safeName(collection)}.ckb", this.vectorLines(records))
+    }
+
+    public func loadVectorCollection(collection: String): ArrayList<VectorRecord> {
+        this.parseVector(this.readLines("index/vector-${safeName(collection)}.ckb"))
+    }
+
+    public func backupVectorCollection(collection: String, backupName: String): Bool {
+        let source = this.readLines("index/vector-${safeName(collection)}.ckb")
+        if (source == "") {
+            return false
+        }
+        this.writeLines("backup/vector-${safeName(backupName)}-${safeName(collection)}.ckb", source)
+        true
+    }
+
+    public func restoreVectorBackup(collection: String, backupName: String): Bool {
+        let source = this.readLines("backup/vector-${safeName(backupName)}-${safeName(collection)}.ckb")
+        if (source == "") {
+            return false
+        }
+        this.writeLines("index/vector-${safeName(collection)}.ckb", source)
+        true
     }
 
     public func saveGraph(graph: GraphBuildResult): Unit {
@@ -703,6 +747,10 @@ public class FileKnowledgeStore {
                 status.candidateVersion = value
             } else if (key == "failed") {
                 status.failedVersion = value
+            } else if (key == "vectorActiveCollection") {
+                status.vectorActiveCollection = value
+            } else if (key == "vectorCandidateCollection") {
+                status.vectorCandidateCollection = value
             }
         }
         status
@@ -719,6 +767,8 @@ public class FileKnowledgeStore {
         let metadata = this.loadMetadataStatus()
         snapshot.candidateVersion = metadata.candidateVersion
         snapshot.failedVersion = metadata.failedVersion
+        snapshot.vectorActiveCollection = metadata.vectorActiveCollection
+        snapshot.vectorCandidateCollection = metadata.vectorCandidateCollection
         if (metadata.activeVersion != "" && metadata.activeVersion != snapshot.activeVersion) {
             snapshot.valid = false
             snapshot.diagnostic = "metadata_active_mismatch"
@@ -747,7 +797,11 @@ public class FileKnowledgeStore {
         snapshot.normalizedRecords = this.loadNormalized()
         snapshot.valid = true
         snapshot.diagnostic = "ok"
-        snapshot.hasVectorArtifact = this.has("index/vector-active.ckb")
+        let vectorCollection = if (metadata.vectorActiveCollection == "") { "active" } else { metadata.vectorActiveCollection }
+        snapshot.hasVectorArtifact = this.has("index/vector-${safeName(vectorCollection)}.ckb")
+        if (snapshot.hasVectorArtifact) {
+            snapshot.vectorRecords = this.loadVectorCollection(vectorCollection)
+        }
         snapshot.hasGraphArtifacts = this.has("index/graph-nodes.ckb") && this.has("index/graph-edges.ckb")
         snapshot
     }
@@ -850,9 +904,45 @@ public class FileKnowledgeStore {
     private func vectorLines(records: ArrayList<VectorRecord>): String {
         var out = ""
         for (record in records) {
-            out += "${escapeField(record.id)}|${escapeField(record.metadata.knowledgeVersion)}|${escapeField(record.metadata.sourceId)}|${escapeField(record.metadata.sourceType)}|${escapeField(record.metadata.trustLevel)}|${escapeField(record.metadata.reviewState)}|${escapeField(record.citation)}|${vectorToLine(record.vector)}\n"
+            out += "${escapeField(record.id)}|${escapeField(record.title)}|${escapeField(record.chunk)}|${escapeField(record.metadata.knowledgeVersion)}|${escapeField(record.metadata.sourceId)}|${escapeField(record.metadata.sourceType)}|${escapeField(record.metadata.trustLevel)}|${escapeField(record.metadata.reviewState)}|${escapeField(record.citation)}|${vectorToLine(record.vector)}\n"
         }
         out
+    }
+
+    private func parseVector(text: String): ArrayList<VectorRecord> {
+        let out = ArrayList<VectorRecord>()
+        if (text == "") {
+            return out
+        }
+        for (line in text.split("\n")) {
+            if (line == "") {
+                continue
+            }
+            let parts = line.split("|")
+            if (parts.size >= 10) {
+                out.add(this.vectorRecordFromParts(parts, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9))
+            } else if (parts.size >= 8) {
+                out.add(this.vectorRecordFromParts(parts, 0, -1, -1, 1, 2, 3, 4, 5, 6, 7))
+            }
+        }
+        out
+    }
+
+    private func vectorRecordFromParts(parts: Array<String>, idIndex: Int64, titleIndex: Int64, chunkIndex: Int64, versionIndex: Int64, sourceIdIndex: Int64, sourceTypeIndex: Int64, trustIndex: Int64, reviewIndex: Int64, citationIndex: Int64, vectorIndex: Int64): VectorRecord {
+        let metadata = KnowledgeMetadata()
+        metadata.knowledgeVersion = unescapeField(parts[versionIndex])
+        metadata.sourceId = unescapeField(parts[sourceIdIndex])
+        metadata.sourceType = unescapeField(parts[sourceTypeIndex])
+        metadata.trustLevel = unescapeField(parts[trustIndex])
+        metadata.reviewState = unescapeField(parts[reviewIndex])
+        let record = VectorRecord()
+        record.id = unescapeField(parts[idIndex])
+        record.title = if (titleIndex >= 0) { unescapeField(parts[titleIndex]) } else { "" }
+        record.chunk = if (chunkIndex >= 0) { unescapeField(parts[chunkIndex]) } else { "" }
+        record.metadata = metadata
+        record.citation = unescapeField(parts[citationIndex])
+        record.vector = parseVectorValues(parts[vectorIndex])
+        record
     }
 
     private func graphNodeLines(nodes: ArrayList<GraphNode>): String {
@@ -885,6 +975,8 @@ public class StoreMetadataStatus {
     public var activeVersion: String = ""
     public var candidateVersion: String = ""
     public var failedVersion: String = ""
+    public var vectorActiveCollection: String = "active"
+    public var vectorCandidateCollection: String = "candidate"
 
     public init() {}
 }
@@ -898,6 +990,9 @@ public class ActiveSnapshot {
     public var rawRecords: ArrayList<RawRecord> = ArrayList<RawRecord>()
     public var normalizedRecords: ArrayList<NormalizedRecord> = ArrayList<NormalizedRecord>()
     public var activeIndex: ArrayList<NormalizedRecord> = ArrayList<NormalizedRecord>()
+    public var vectorActiveCollection: String = "active"
+    public var vectorCandidateCollection: String = "candidate"
+    public var vectorRecords: ArrayList<VectorRecord> = ArrayList<VectorRecord>()
     public var hasVectorArtifact: Bool = false
     public var hasGraphArtifacts: Bool = false
 
@@ -1099,6 +1194,48 @@ public func renderRuntimeDoctor(config: CkbRuntimeConfig): String {
     "runtime ${config.redactedSummary()}\n"
 }
 
+public func embeddingConfigFromRuntime(config: CkbRuntimeConfig): EmbeddingConfig {
+    let embedding = EmbeddingConfig()
+    embedding.provider = config.embeddingProvider
+    embedding.model = if (config.embeddingModel == "") { "deterministic-token-v1" } else { config.embeddingModel }
+    embedding.dimensions = if (config.embeddingDimensions <= 0) { 16 } else { config.embeddingDimensions }
+    embedding.endpoint = config.embeddingEndpoint
+    embedding.tokenFile = config.embeddingTokenFile
+    embedding.batchSize = config.embeddingBatchSize
+    embedding.timeoutMillis = config.embeddingTimeoutMillis
+    embedding.retryCount = config.embeddingRetryCount
+    embedding.production = !(config.embeddingProvider == "deterministic" || config.embeddingProvider == "local" || config.embeddingProvider == "local-file")
+    embedding.configured = config.embeddingProvider != "" && config.embeddingProvider != "none"
+    embedding
+}
+
+public func embeddingProviderFromRuntime(config: CkbRuntimeConfig): EmbeddingProvider {
+    let embedding = embeddingConfigFromRuntime(config)
+    if (embedding.provider == "deterministic" || embedding.provider == "local" || embedding.provider == "local-file") {
+        embedding.provider = "deterministic"
+        embedding.production = false
+        embedding.configured = true
+        return DeterministicEmbeddingProvider(embedding)
+    }
+    ProductionEmbeddingProvider(embedding)
+}
+
+public func newKnowledgeBaseFromStoreWithRuntime(store: FileKnowledgeStore, config: CkbRuntimeConfig): KnowledgeBaseLoadResult {
+    let kb = KnowledgeBase(FakeClock(0), embeddingProviderFromRuntime(config), LocalVectorStore(), LocalGraphStore())
+    kb.configureVectorCollections(config.vectorActiveCollection, config.vectorCandidateCollection)
+    kb.bootstrapOffline()
+    let result = KnowledgeBaseLoadResult(kb)
+    let snapshot = store.loadActiveSnapshot()
+    if (kb.restoreActiveSnapshot(snapshot)) {
+        result.source = "persisted"
+        result.diagnostic = snapshot.diagnostic
+        return result
+    }
+    result.source = "offline_baseline"
+    result.diagnostic = snapshot.diagnostic
+    return result
+}
+
 private func liveApplyOptionsFromSync(options: LiveSyncOptions): LiveApplyOptions {
     let out = LiveApplyOptions()
     out.apply = options.apply
@@ -1149,6 +1286,18 @@ private func vectorToLine(vector: ArrayList<Float64>): String {
             out += ","
         }
         out += "${vector[i]}"
+    }
+    out
+}
+
+private func parseVectorValues(raw: String): ArrayList<Float64> {
+    let out = ArrayList<Float64>()
+    for (value in raw.split(",")) {
+        let trimmed = value.trimAscii()
+        if (trimmed == "") {
+            continue
+        }
+        out.add(try { Float64.parse(trimmed) } catch (_: Exception) { 0.0 })
     }
     out
 }
@@ -1275,6 +1424,26 @@ private func configApply(config: CkbRuntimeConfig, key: String, value: String): 
         config.indexBackend = value
     } else if (key == "embedding.provider") {
         config.embeddingProvider = value
+    } else if (key == "embedding.model") {
+        config.embeddingModel = value
+    } else if (key == "embedding.dimensions") {
+        config.embeddingDimensions = try { Int64.parse(value) } catch (_: Exception) { config.embeddingDimensions }
+    } else if (key == "embedding.endpoint") {
+        config.embeddingEndpoint = value
+    } else if (key == "embedding.tokenFile") {
+        config.embeddingTokenFile = value
+    } else if (key == "embedding.batchSize") {
+        config.embeddingBatchSize = try { Int64.parse(value) } catch (_: Exception) { config.embeddingBatchSize }
+    } else if (key == "embedding.timeoutMillis") {
+        config.embeddingTimeoutMillis = try { Int64.parse(value) } catch (_: Exception) { config.embeddingTimeoutMillis }
+    } else if (key == "embedding.retryCount") {
+        config.embeddingRetryCount = try { Int64.parse(value) } catch (_: Exception) { config.embeddingRetryCount }
+    } else if (key == "vector.backend") {
+        config.vectorBackend = value
+    } else if (key == "vector.activeCollection") {
+        config.vectorActiveCollection = value
+    } else if (key == "vector.candidateCollection") {
+        config.vectorCandidateCollection = value
     } else if (key == "network.timeoutMillis") {
         config.timeoutMillis = try { Int64.parse(value) } catch (_: Exception) { config.timeoutMillis }
     } else if (key == "network.retryCount") {
