@@ -145,6 +145,10 @@ public class CkbRuntimeConfig {
     public var gitCodeAccessTokenQuery: Bool = false
     public var gitCodeTokenRef: String = ""
     public var gitCodeTokenFile: String = ""
+    public var networkProxy: String = ""
+    public var networkEnvProxyEnabled: Bool = false
+    public var networkNoProxy: String = ""
+    public var networkInsecureSkipTlsVerify: Bool = false
     public var websiteEnabled: Bool = false
     public var docsEnabled: Bool = false
     public var indexBackend: String = "offline"
@@ -271,6 +275,13 @@ public class CkbRuntimeConfig {
         if (auth.diagnostic != "") {
             out += " gitcode.authDiagnostic=${auth.diagnostic}"
         }
+        out += " transport=native"
+        out += " network.proxy=${if (this.networkProxy == "") { "absent" } else { redactProxyEndpoint(this.networkProxy) }}"
+        out += " network.envProxy=${if (this.networkEnvProxyEnabled) { "enabled" } else { "disabled" }}"
+        out += " network.noProxy=${if (this.networkNoProxy == "") { "absent" } else { redactSensitive(this.networkNoProxy) }}"
+        out += " network.insecureSkipTlsVerify=${if (this.networkInsecureSkipTlsVerify) { "enabled" } else { "disabled" }}"
+        out += " network.timeoutMillis=${this.timeoutMillis}"
+        out += " network.retryCount=${this.retryCount}"
         out += " website=${if (this.websiteEnabled) { "enabled" } else { "disabled" }}"
         out += " docs=${if (this.docsEnabled) { "enabled" } else { "disabled" }}"
         out += " index.backend=${this.indexBackend}"
@@ -713,6 +724,24 @@ public func redactSensitive(raw: String): String {
     text
 }
 
+public func redactProxyEndpoint(raw: String): String {
+    var text = redactSensitive(raw.trimAscii())
+    let schemeIdx = findText(text, "://")
+    if (schemeIdx < 0) {
+        return text
+    }
+    let authorityStart = schemeIdx + 3
+    let rest = text[authorityStart..text.size]
+    let slashIdx = findText(rest, "/")
+    let authorityEnd = if (slashIdx < 0) { text.size } else { authorityStart + slashIdx }
+    let authority = text[authorityStart..authorityEnd]
+    let atIdx = findText(authority, "@")
+    if (atIdx < 0) {
+        return text
+    }
+    text[0..authorityStart] + "[redacted]@" + text[authorityStart + atIdx + 1..text.size]
+}
+
 private func sanitizedTransportDiagnostic(raw: String): String {
     var text = redactSensitive(raw).replace("\n", " ").replace("\r", " ").trimAscii()
     if (text.size > 160) {
@@ -845,7 +874,12 @@ public class HttpSourceFetchRunner <: SourceFetchRunner {
     private let config: CkbRuntimeConfig
     private let executor: HttpRequestExecutor
 
-    public init(config: CkbRuntimeConfig, executor!: HttpRequestExecutor = CurlHttpRequestExecutor()) {
+    public init(config: CkbRuntimeConfig) {
+        this.config = config
+        this.executor = NativeHttpRequestExecutor(config)
+    }
+
+    public init(config: CkbRuntimeConfig, executor!: HttpRequestExecutor) {
         this.config = config
         this.executor = executor
     }
@@ -2752,6 +2786,14 @@ private func configApply(config: CkbRuntimeConfig, key: String, value: String): 
         config.gitCodeTokenRef = value
     } else if (key == "gitcode.tokenFile") {
         config.gitCodeTokenFile = value
+    } else if (key == "network.proxy") {
+        config.networkProxy = value
+    } else if (key == "network.envProxyEnabled") {
+        config.networkEnvProxyEnabled = parseBool(value)
+    } else if (key == "network.noProxy") {
+        config.networkNoProxy = value
+    } else if (key == "network.insecureSkipTlsVerify") {
+        config.networkInsecureSkipTlsVerify = parseBool(value)
     } else if (key == "website.enabled") {
         config.websiteEnabled = parseBool(value)
     } else if (key == "docs.enabled") {
@@ -2999,9 +3041,6 @@ private func renderLiveFetchSummary(request: SourceFetchRequest, fetch: SourceFe
         }
         if (fetch.transportDiagnostic != "") {
             out += " transportDiagnostic=${fetch.transportDiagnostic}"
-        }
-        if (fetch.curlExitCode != 0) {
-            out += " curlExitCode=${fetch.curlExitCode}"
         }
     }
     if (fetch.retryAfterSeconds > 0) {

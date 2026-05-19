@@ -67,6 +67,10 @@ website.enabled=true
 docs.enabled=true
 network.timeoutMillis=10000
 network.retryCount=2
+network.proxy=
+network.envProxyEnabled=false
+network.noProxy=
+network.insecureSkipTlsVerify=false
 ```
 
 `tokenFile` must contain exactly one GitCode PAT line. Do not include `token=`,
@@ -74,6 +78,16 @@ network.retryCount=2
 doctor/status first, then anonymous dry-run, credentialed dry-run only if
 needed, limited apply, rebuild-index, and final status/evidence checks. Never
 commit `ckb-live.conf`, `tokenFile`, or terminal output containing credentials.
+
+Live HTTP sync uses the native Cangjie HTTP/TLS transport by default. `network.proxy`
+accepts an HTTP proxy such as `http://127.0.0.1:7897`; HTTPS targets use an HTTP
+CONNECT tunnel through that proxy. `network.envProxyEnabled=true` allows the
+transport to honor process proxy environment variables, while `network.noProxy`
+lists comma-separated hosts or suffixes that must bypass proxy routing.
+`network.insecureSkipTlsVerify` defaults to `false` and should stay disabled for
+production acceptance unless a controlled diagnostic explicitly requires it.
+Human-facing doctor and dry-run output redacts tokens, cookies, proxy passwords,
+and local absolute paths.
 
 ## Service Protocol
 
