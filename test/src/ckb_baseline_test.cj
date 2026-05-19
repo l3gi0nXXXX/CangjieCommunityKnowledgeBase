@@ -173,13 +173,28 @@ public class CkbBaselineTest {
         @Expect(source.body.contains("HttpClient"), true)
         @Expect(fake.calls.size, 1)
         @Expect(fake.calls[0].kind, SourceKinds.GITCODE_SOURCE)
+
+        let invalid = adapter.fetchGitCodeSource("cangjie/stdx/extra", "main", "src/http/client.cj")
+        @Expect(invalid.ok, false)
+        @Expect(invalid.status, "invalid_repo_path")
+        @Expect(invalid.sourceUrl, "")
+        @Expect(fake.calls.size, 1)
     }
 
     @TestCase
     public func sourceRequestBuildersUseProductionApiSpecsAndNormalizeResponses(): Unit {
+        let config = CkbRuntimeConfig()
         let builder = SourceRequestBuilder()
+        let org = builder.gitCodeOrgRepos("cangjie")
+        let repo = builder.gitCodeRepo("cangjie/stdx")
+        let cangjieRepo = builder.gitCodeRepo("cangjie/cangjie")
         let source = builder.gitCodeSource("cangjie/stdx", "main", "src/http/client.cj")
+        let cangjieSource = builder.gitCodeSource("cangjie/cangjie", "main", "src/main.cj")
         let issues = builder.gitCodeIssueHistory("cangjie/cangjie")
+        let pulls = builder.gitCodePrHistory("cangjie/cangjie")
+        let invalidRepo = builder.gitCodeRepo("cangjie/stdx/extra")
+        let invalidPath = builder.gitCodeSource("cangjie/stdx", "main", "../secret.txt")
+        let encodedTraversalPath = builder.gitCodeSource("cangjie/stdx", "main", "src/%2e%2e/secret.txt")
         let docs = builder.docs("https://docs.cangjie-lang.cn/docs/1.0.0/")
         let normalizer = SourceResponseNormalizer()
         let result = SourceFetchResult()
@@ -188,12 +203,29 @@ public class CkbBaselineTest {
 
         let normalized = normalizer.normalize(source, result)
 
+        @Expect(config.gitCodeBaseUrl, "https://api.gitcode.com/api/v5")
+        @Expect(org.url, "https://api.gitcode.com/api/v5/orgs/cangjie/repos?type=public&page=1&per_page=100")
+        @Expect(repo.url, "https://api.gitcode.com/api/v5/repos/cangjie/stdx?ref=main")
+        @Expect(cangjieRepo.url, "https://api.gitcode.com/api/v5/repos/cangjie/cangjie?ref=main")
         @Expect(source.method, "GET")
-        @Expect(source.url.contains("/api/v5/projects/cangjie/stdx/repository/files/src/http/client.cj/raw?ref=main"), true)
+        @Expect(source.url, "https://api.gitcode.com/api/v5/repos/cangjie/stdx/contents/src/http/client.cj?ref=main")
+        @Expect(cangjieSource.url, "https://api.gitcode.com/api/v5/repos/cangjie/cangjie/contents/src/main.cj?ref=main")
         @Expect(source.accept, "text/plain")
         @Expect(source.authHint.contains("redacted"), true)
-        @Expect(issues.url.contains("state=all"), true)
+        @Expect(issues.url, "https://api.gitcode.com/api/v5/repos/cangjie/cangjie/issues?state=all&page=1&per_page=100")
+        @Expect(pulls.url, "https://api.gitcode.com/api/v5/repos/cangjie/cangjie/pulls?state=all&page=1&per_page=100")
+        @Expect(source.url.contains("/projects/"), false)
+        @Expect(pulls.url.contains("merge_requests"), false)
         @Expect(issues.perPage, 100)
+        @Expect(invalidRepo.status, "invalid_repo_path")
+        @Expect(invalidRepo.diagnostic, "invalid_repo_path")
+        @Expect(invalidRepo.url, "")
+        @Expect(invalidRepo.repo, "")
+        @Expect(invalidPath.status, "invalid_source_path")
+        @Expect(invalidPath.url, "")
+        @Expect(invalidPath.path, "")
+        @Expect(encodedTraversalPath.status, "invalid_source_path")
+        @Expect(encodedTraversalPath.url, "")
         @Expect(docs.accept, "text/html")
         @Expect(normalized.ok, true)
         @Expect(normalized.status, "ok")
@@ -807,7 +839,7 @@ public class CkbBaselineTest {
         let path = "target/ckb-live-config.fixture"
         File.writeTo(Path(path), """
 network.enabled=true
-gitcode.baseUrl=https://gitcode.com/api/v5?access_token=fake-live-token
+gitcode.baseUrl=https://api.gitcode.com/api/v5?access_token=fake-live-token
 gitcode.authMode=token
 gitcode.tokenRef=fake-live-token
 gitcode.tokenFile=/Users/l3gi0n/.metis/gitcode-token
