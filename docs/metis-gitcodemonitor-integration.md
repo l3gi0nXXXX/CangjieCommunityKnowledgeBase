@@ -101,16 +101,23 @@ cjpm run --skip-build --run-args "evidence HttpClient"
 
 ```text
 network.enabled=true
-gitcode.baseUrl=https://gitcode.com/api/v5
-gitcode.authMode=none
+gitcode.baseUrl=https://api.gitcode.com/api/v5
+gitcode.authMode=token
+gitcode.authHeader=private-token
+gitcode.tokenFile=tokenFile
 website.enabled=true
 docs.enabled=true
 network.timeoutMillis=10000
 network.retryCount=2
 ```
 
-3. Run CKB dry-run sync. It must report source shapes and redacted status
-   without writing raw records.
+The ignored `tokenFile` contains one GitCode PAT line only. Do not include
+`token=`, `Bearer`, `PRIVATE-TOKEN`, quotes, comments, or any other prefix.
+For anonymous dry-run smoke, set `gitcode.authMode=none` in the local ignored
+config and do not create or read `tokenFile`.
+
+3. Run CKB dry-run sync. It must report source shapes, transport diagnostics,
+   auth header strategy, and redacted status without writing raw records.
 
 ```bash
 cjpm run --skip-build --run-args "--config ckb-live.conf sync-live --dry-run --max-repos 3 --max-items 20"

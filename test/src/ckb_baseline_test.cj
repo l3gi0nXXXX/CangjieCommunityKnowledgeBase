@@ -785,6 +785,13 @@ public class CkbBaselineTest {
         @Expect(tools.contains("PRIVATE-TOKEN"), true)
         @Expect(tools.contains("Authorization"), true)
         @Expect(tools.contains("Cookie"), true)
+        @Expect(tools.contains("officialApi=https://api.gitcode.com/api/v5"), true)
+        @Expect(tools.contains("authHeader=private-token"), true)
+        @Expect(tools.contains("tokenFile=tokenFile"), true)
+        @Expect(tools.contains("single PAT line"), true)
+        @Expect(tools.contains("transportDiagnostic"), true)
+        @Expect(tools.contains("anonymous dry-run"), true)
+        @Expect(tools.contains("limited apply"), true)
         @Expect(tools.contains("fake-live-token"), false)
         @Expect(routes.contains("GET /health"), true)
         @Expect(routes.contains("GET /status"), true)
@@ -793,13 +800,17 @@ public class CkbBaselineTest {
         @Expect(routes.contains("POST /sync"), true)
         @Expect(routes.contains("POST /rebuild-index"), true)
         @Expect(routes.contains("redactedSourceStatus"), true)
+        @Expect(routes.contains("authHeaderStrategy"), true)
+        @Expect(routes.contains("transportDiagnostic"), true)
     }
 
     @TestCase
     public func integrationDocsDefineBoundariesWithoutRealCredentials(): Unit {
         let integration = String.fromUtf8(File.readFrom(Path("../docs/metis-gitcodemonitor-integration.md")))
         let checklist = String.fromUtf8(File.readFrom(Path("../docs/manual-acceptance-checklist.md")))
-        let docs = integration + "\n" + checklist
+        let readme = String.fromUtf8(File.readFrom(Path("../README.md")))
+        let ignore = String.fromUtf8(File.readFrom(Path("../.gitignore")))
+        let docs = integration + "\n" + checklist + "\n" + readme
 
         @Expect(integration.contains("GET /health"), true)
         @Expect(integration.contains("POST /query"), true)
@@ -812,11 +823,24 @@ public class CkbBaselineTest {
         @Expect(checklist.contains("Real Source Sync"), true)
         @Expect(checklist.contains("Backup and Restore"), true)
         @Expect(checklist.contains("Exception Recovery"), true)
+        @Expect(docs.contains("gitcode.baseUrl=https://api.gitcode.com/api/v5"), true)
+        @Expect(docs.contains("gitcode.authMode=token"), true)
+        @Expect(docs.contains("gitcode.authHeader=private-token"), true)
+        @Expect(docs.contains("gitcode.tokenFile=tokenFile"), true)
+        @Expect(docs.contains("one GitCode PAT line"), true)
+        @Expect(docs.contains("token="), true)
+        @Expect(docs.contains("transport diagnostics"), true)
+        @Expect(docs.contains("anonymous dry-run"), true)
+        @Expect(docs.contains("limited apply"), true)
         @Expect(docs.contains("fake-live-token"), false)
         @Expect(docs.contains("gitcode_x"), false)
         @Expect(docs.contains("Authorization: Bearer"), false)
         @Expect(docs.contains("Cookie: "), false)
         @Expect(docs.contains("/Users/l3gi0n/.metis"), false)
+        @Expect(ignore.contains("tokenFile"), true)
+        @Expect(ignore.contains("ckb-live.conf"), true)
+        @Expect(ignore.contains("*.token"), true)
+        @Expect(ignore.contains("*.local.conf"), true)
     }
 
     @TestCase

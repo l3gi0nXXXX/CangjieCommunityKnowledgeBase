@@ -11,16 +11,37 @@ release ticket or run log, not in committed credential files.
   runtime configs.
 - [ ] No real credential value is committed in docs, source, tests, or fixtures.
 - [ ] `cjpm run --run-args schema` lists health, status, query, evidence, sync,
-  and rebuild contracts.
+  rebuild, GitCode official API, auth header strategy, transport diagnostics,
+  and dry-run/apply acceptance order.
 - [ ] `cjpm run --run-args status` reports logical data paths and redacted
   runtime configuration only.
+- [ ] Local `ckb-live.conf` is ignored and uses the repaired GitCode API
+  configuration:
+
+```text
+network.enabled=true
+gitcode.baseUrl=https://api.gitcode.com/api/v5
+gitcode.authMode=token
+gitcode.authHeader=private-token
+gitcode.tokenFile=tokenFile
+website.enabled=true
+docs.enabled=true
+network.timeoutMillis=10000
+network.retryCount=2
+```
+
+- [ ] Local `tokenFile` contains exactly one GitCode PAT line. Do not include
+  `token=`, `Bearer`, `PRIVATE-TOKEN`, quotes, comments, or any other prefix.
 
 ## Real Source Sync
 
 - [ ] Anonymous dry-run reaches GitCode, the Cangjie official website, and the
   Cangjie documentation site, or reports a classified upstream failure.
 - [ ] If GitCode requires authentication, CKB uses an ignored local token file
-  and reports only credential presence.
+  and reports only credential presence plus `authHeader=private-token`.
+- [ ] Live acceptance order is schema, doctor/status, anonymous dry-run,
+  credentialed dry-run only if needed, limited apply, rebuild-index, then
+  status/evidence verification.
 - [ ] Small apply run is limited by `--max-repos`, `--max-files-per-repo`, and
   `--max-items`.
 - [ ] Raw, normalized, metadata, index, derived, and cache layers are written

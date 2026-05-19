@@ -37,6 +37,28 @@ cjpm run --run-args "backup target/ckb-active-copy"
 
 The `doctor` command reports logical storage paths, source-scope coverage,
 index counts, and scheduler state. It does not expose local mirror paths.
+The `schema` command also reports the GitCode live official API, auth header
+strategy, transport diagnostics, and dry-run/apply acceptance order.
+
+For live GitCode acceptance, create only ignored local files:
+
+```text
+network.enabled=true
+gitcode.baseUrl=https://api.gitcode.com/api/v5
+gitcode.authMode=token
+gitcode.authHeader=private-token
+gitcode.tokenFile=tokenFile
+website.enabled=true
+docs.enabled=true
+network.timeoutMillis=10000
+network.retryCount=2
+```
+
+`tokenFile` must contain exactly one GitCode PAT line. Do not include `token=`,
+`Bearer`, `PRIVATE-TOKEN`, quotes, comments, or any other prefix. Run schema and
+doctor/status first, then anonymous dry-run, credentialed dry-run only if
+needed, limited apply, rebuild-index, and final status/evidence checks. Never
+commit `ckb-live.conf`, `tokenFile`, or terminal output containing credentials.
 
 ## Service Protocol
 
