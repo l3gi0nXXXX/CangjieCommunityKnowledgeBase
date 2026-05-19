@@ -47,6 +47,27 @@ network.insecureSkipTlsVerify=false
 
 ## Real Source Sync
 
+- [ ] Production live sync uses the Cangjie native HTTP/TLS executor. Dry-run
+  output must not contain `curl launch failed`, `curlExitCode=-1`, or any
+  other diagnostic that proves the default path still shells out to `curl`.
+- [ ] Native HTTP dry-run is started with the ignored local config file:
+
+```bash
+cjpm run --skip-build --run-args "--config ckb-live.conf sync-live --dry-run --max-repos 5 --max-files-per-repo 2 --max-items 30"
+```
+
+- [ ] The native HTTP dry-run reports `network=enabled`, reaches the GitCode
+  organization repository-list endpoint, and prints `repoDiscovery` with
+  `discovered` and `public` counts greater than zero when the upstream API is
+  reachable.
+- [ ] If the upstream API, TLS, DNS, proxy, or timeout path fails, the output
+  reports a native transport class such as `dns`, `tls`, `proxy`,
+  `connection_refused`, or `timeout`; it must not report `curl launch failed`
+  as the primary diagnostic.
+- [ ] If an HTTP proxy is configured for live acceptance, HTTPS GitCode and
+  documentation requests must route through native HTTP CONNECT before stdx
+  TLS handles the final HTTPS request. Proxy credentials must be redacted in
+  all doctor, dry-run, and error outputs.
 - [ ] Anonymous dry-run reaches GitCode, the Cangjie official website, and the
   Cangjie documentation site, or reports a classified upstream failure.
 - [ ] Dry-run output never reports `curl launch failed` or `curlExitCode` on
@@ -120,9 +141,31 @@ network.insecureSkipTlsVerify=false
 ## Exception Recovery
 
 - [ ] Network disabled reports `ckb.network_disabled` or equivalent diagnostic.
+- [ ] `network.enabled=false` prevents any HTTP executor call and does not read
+  GitCode token or cookie files.
 - [ ] Authentication failure reports `ckb.auth_degraded` without credential
   content.
 - [ ] Rate limiting reports `ckb.rate_limited` and preserves retry-after when
   available.
 - [ ] Source unavailable and timeout cases are visible in logs.
 - [ ] Candidate validation failure does not promote an active version.
+
+## Native HTTP Automated Test Coverage
+
+- [ ] `test/src/ckb_native_http_transport_test.cj` passes together with the
+  baseline tests.
+- [ ] Status mapping tests prove 401/403, 404, 429, 5xx, and timeout responses
+  still map to the same CKB source-fetch statuses after the native executor
+  replaces the curl executor.
+- [ ] Retry tests prove retry decisions do not depend on a curl exit code.
+- [ ] Header tests prove GitCode token headers are sent only to GitCode API
+  requests and are never sent to official website or documentation requests.
+- [ ] Redaction tests prove token, cookie, query-token, proxy credential, and
+  local absolute path values are not exposed.
+- [ ] Fake live dry-run tests prove private, internal, and unknown-visibility
+  repositories are excluded before any repo-scoped source, issue, PR, or
+  comment fetch is planned.
+- [ ] After the native transport worker lands callable pure helpers, add or
+  enable focused tests for proxy route resolution, `no_proxy`, CONNECT request
+  construction, URL safety, header parsing, and native exception
+  classification.
