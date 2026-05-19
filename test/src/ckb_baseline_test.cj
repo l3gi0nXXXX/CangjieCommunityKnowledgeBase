@@ -311,8 +311,7 @@ public class CkbBaselineTest {
         var orgs: Int64 = 0
         var websites: Int64 = 0
         var docs: Int64 = 0
-        var issueHistory: Int64 = 0
-        var prHistory: Int64 = 0
+        var gitCodeRepoScoped: Int64 = 0
         var candidates: Int64 = 0
         for (request in plan.requests) {
             if (request.kind == SourceKinds.GITCODE_ORG) {
@@ -324,11 +323,8 @@ public class CkbBaselineTest {
             if (request.kind == SourceKinds.CANGJIE_DOCS) {
                 docs += 1
             }
-            if (request.kind == SourceKinds.GITCODE_ISSUE_HISTORY) {
-                issueHistory += 1
-            }
-            if (request.kind == SourceKinds.GITCODE_PR_HISTORY) {
-                prHistory += 1
+            if (request.kind == SourceKinds.GITCODE_REPO || request.kind == SourceKinds.GITCODE_TREE || request.kind == SourceKinds.GITCODE_SOURCE || request.kind == SourceKinds.GITCODE_ISSUE_HISTORY || request.kind == SourceKinds.GITCODE_PR_HISTORY || request.kind == SourceKinds.GITCODE_COMMENT_HISTORY) {
+                gitCodeRepoScoped += 1
             }
             if (request.kind == SourceKinds.WEB_CANDIDATE) {
                 candidates += 1
@@ -338,10 +334,53 @@ public class CkbBaselineTest {
         @Expect(orgs, 3)
         @Expect(websites, scope.websiteUrls.size)
         @Expect(docs, scope.docsUrls.size)
-        @Expect(issueHistory, 1)
-        @Expect(prHistory, 1)
+        @Expect(gitCodeRepoScoped, 0)
         @Expect(candidates, 1)
-        @Expect(plan.requests.size >= 11, true)
+        @Expect(plan.requests.size, 3 + scope.websiteUrls.size + scope.docsUrls.size + 1)
+    }
+
+    @TestCase
+    public func repoScopedPlanOnlyAllowsPublicRepos(): Unit {
+        let publicRepo = parseGitCodeRepoMetadataJson("{\"id\":1,\"path\":\"pub\",\"default_branch\":\"dev\",\"public\":true,\"namespace\":{\"path\":\"cangjie\"}}")
+        let privateRepo = parseGitCodeRepoMetadataJson("{\"id\":2,\"path\":\"priv\",\"default_branch\":\"main\",\"private\":true,\"namespace\":{\"path\":\"cangjie\"}}")
+        let internalRepo = parseGitCodeRepoMetadataJson("{\"id\":3,\"path\":\"int\",\"default_branch\":\"main\",\"internal\":true,\"namespace\":{\"path\":\"cangjie\"}}")
+        let unknownRepo = parseGitCodeRepoMetadataJson("{\"id\":4,\"path\":\"unknown\",\"default_branch\":\"main\",\"namespace\":{\"path\":\"cangjie\"}}")
+        let repos = ArrayList<GitCodeRepoMetadata>()
+        repos.add(publicRepo)
+        repos.add(privateRepo)
+        repos.add(internalRepo)
+        repos.add(unknownRepo)
+
+        let plan = SourceSyncPlanner().repoScopedPlan(repos)
+        var publicRequests: Int64 = 0
+        var blockedRequests: Int64 = 0
+
+        for (request in plan.requests) {
+            if (request.repo == "cangjie/pub") {
+                publicRequests += 1
+                @Expect(request.repoVisibility, RepoVisibility.PUBLIC)
+            }
+            if (request.repo == "cangjie/priv" || request.repo == "cangjie/int" || request.repo == "cangjie/unknown") {
+                blockedRequests += 1
+            }
+        }
+
+        @Expect(publicRequests, 4)
+        @Expect(blockedRequests, 0)
+        @Expect(plan.requests[0].kind, SourceKinds.GITCODE_TREE)
+        @Expect(plan.requests[0].url.contains("/git/trees/dev"), true)
+    }
+
+    @TestCase
+    public func sourceCandidateSelectorPrefersCjThenReadmeAndDocs(): Unit {
+        let body = "{\"tree\":[{\"type\":\"blob\",\"path\":\"README.md\"},{\"type\":\"blob\",\"path\":\"docs/guide.md\"},{\"type\":\"blob\",\"path\":\"target/generated.cj\"},{\"type\":\"blob\",\"path\":\"src/main.cj\"},{\"type\":\"blob\",\"path\":\"src/lib.png\"},{\"type\":\"tree\",\"path\":\"src\"}]}"
+
+        let selected = SourceCandidateSelector().selectFromTree(body, maxFiles: 3)
+
+        @Expect(selected.size, 3)
+        @Expect(selected[0], "src/main.cj")
+        @Expect(selected[1], "README.md")
+        @Expect(selected[2], "docs/guide.md")
     }
 
     @TestCase
@@ -488,7 +527,7 @@ public class CkbBaselineTest {
 
         @Expect(text.contains("org=ok"), true)
         @Expect(text.contains("requests="), true)
-        @Expect(fake.calls.size >= 11, true)
+        @Expect(fake.calls.size >= 8, true)
         @Expect(kb.rawRecordCount() >= 14, true)
         @Expect(candidates.records.size > 0, true)
         @Expect(candidates.records[0].requiresReview, true)
@@ -1050,16 +1089,29 @@ network.retryCount=3
         config.gitCodeTokenRef = "fake-live-token"
         let options = LiveSyncOptions()
         options.dryRun = true
-        let fake = FakeSourceFetchRunner()
-        fake.body = "[{\"name\":\"repo-one\",\"access_token\":\"fake-live-token\"}]"
+        let fake = ScriptedSourceFetchRunner()
         let store = FileKnowledgeStore("target/ckb-live-dry-run-store")
 
         let text = ckbSyncLive(kb, config, options, runner: fake, store: store)
 
         @Expect(text.contains("mode=dry-run"), true)
+        @Expect(text.contains("repoDiscovery orgs=3"), true)
+        @Expect(text.contains("repoIncluded cangjie/repo-one visibility=public defaultBranch=dev"), true)
+        @Expect(text.contains("repoExcluded cangjie/private-one visibility=private"), true)
+        @Expect(text.contains("repoExcluded cangjie/internal-one visibility=internal"), true)
+        @Expect(text.contains("repoExcluded cangjie/unknown-one visibility=unknown"), true)
+        @Expect(text.contains("repoFetch kind=gitcode_tree repo=cangjie/repo-one visibility=public"), true)
+        @Expect(text.contains("repoFetch kind=gitcode_issue_history repo=cangjie/repo-one visibility=public"), true)
+        @Expect(text.contains("repoFetch kind=gitcode_pr_history repo=cangjie/repo-one visibility=public"), true)
+        @Expect(text.contains("repoFetch kind=gitcode_comment_history repo=cangjie/repo-one visibility=public"), true)
+        @Expect(text.contains("repo=cangjie/private-one visibility=public"), false)
+        @Expect(text.contains("repo=cangjie/internal-one visibility=public"), false)
+        @Expect(text.contains("repo=cangjie/unknown-one visibility=public"), false)
         @Expect(text.contains("shape=repo-list"), true)
         @Expect(text.contains("shape=html-entry"), true)
         @Expect(text.contains("shape=history-list"), true)
+        @Expect(text.contains("shape=source-tree"), true)
+        @Expect(text.contains("shape=source-snapshot"), true)
         @Expect(text.contains("auth=token"), true)
         @Expect(text.contains("authHeader=private-token"), true)
         @Expect(text.contains("gitcode.accessTokenQuery=disabled"), true)
@@ -1070,6 +1122,37 @@ network.retryCount=3
         @Expect(text.contains("fake-live-token"), false)
         @Expect(text.contains("access_token"), false)
         @Expect(store.has("raw/records.ckb"), false)
+    }
+
+    @TestCase
+    public func syncLiveApplyPersistsOnlyPublicRepoVisibility(): Unit {
+        let kb = newOfflineKnowledgeBase()
+        let config = CkbRuntimeConfig()
+        config.networkEnabled = true
+        let options = LiveSyncOptions()
+        options.apply = true
+        options.maxRepos = 1
+        options.maxFilesPerRepo = 1
+        let store = FileKnowledgeStore("target/ckb-live-public-apply")
+
+        let text = ckbSyncLive(kb, config, options, runner: ScriptedSourceFetchRunner(), store: store)
+        let raw = store.loadRaw()
+        var publicGitCodeRecords: Int64 = 0
+        var privateRecords: Int64 = 0
+
+        for (record in raw) {
+            if (record.metadata.repo == "cangjie/repo-one") {
+                publicGitCodeRecords += 1
+                @Expect(record.metadata.repoVisibility, RepoVisibility.PUBLIC)
+            }
+            if (record.metadata.repo == "cangjie/private-one" || record.metadata.repo == "cangjie/internal-one" || record.metadata.repo == "cangjie/unknown-one") {
+                privateRecords += 1
+            }
+        }
+
+        @Expect(text.contains("activePromoted=true"), true)
+        @Expect(publicGitCodeRecords > 0, true)
+        @Expect(privateRecords, 0)
     }
 
     @TestCase
@@ -1457,6 +1540,60 @@ class ScriptedSchedulerTaskRunner <: SchedulerTaskRunner {
         result.activeVersion = this.activeVersion
         result.candidateVersion = this.candidateVersion
         result
+    }
+}
+
+class ScriptedSourceFetchRunner <: SourceFetchRunner {
+    public var calls: ArrayList<SourceFetchRequest> = ArrayList<SourceFetchRequest>()
+
+    public init() {}
+
+    public func fetch(request: SourceFetchRequest): SourceFetchResult {
+        this.calls.add(request)
+        let result = SourceFetchResult()
+        result.ok = true
+        result.status = "ok"
+        result.statusCode = 200
+        result.sourceUrl = request.url
+        result.normalizedType = request.kind
+        result.repo = request.repo
+        result.ref = request.ref
+        result.path = request.path
+        result.repoVisibility = request.repoVisibility
+        result.contentType = if (request.accept == "text/html") { "text/html" } else { "application/json" }
+        result.body = this.bodyFor(request)
+        result.bytes = result.body.size
+        result.bodyHash = stableSummaryHash(result.body)
+        result.attempts = 1
+        result
+    }
+
+    private func bodyFor(request: SourceFetchRequest): String {
+        if (request.kind == SourceKinds.GITCODE_ORG) {
+            if (request.repo == "cangjie") {
+                return "[{\"id\":1,\"path\":\"repo-one\",\"default_branch\":\"dev\",\"public\":true,\"namespace\":{\"path\":\"cangjie\"},\"web_url\":\"https://gitcode.com/cangjie/repo-one\",\"access_token\":\"fake-live-token\"},{\"id\":2,\"path\":\"private-one\",\"default_branch\":\"main\",\"private\":true,\"namespace\":{\"path\":\"cangjie\"}},{\"id\":3,\"path\":\"internal-one\",\"default_branch\":\"main\",\"internal\":true,\"namespace\":{\"path\":\"cangjie\"}},{\"id\":4,\"path\":\"unknown-one\",\"default_branch\":\"main\",\"namespace\":{\"path\":\"cangjie\"}}]"
+            }
+            return "[]"
+        }
+        if (request.kind == SourceKinds.GITCODE_TREE) {
+            return "{\"tree\":[{\"type\":\"blob\",\"path\":\"src/main.cj\"},{\"type\":\"blob\",\"path\":\"README.md\"},{\"type\":\"blob\",\"path\":\"target/generated.cj\"}]}"
+        }
+        if (request.kind == SourceKinds.GITCODE_SOURCE) {
+            return "public func repoOneMain(): Unit { println(\"repo one\") }"
+        }
+        if (request.kind == SourceKinds.GITCODE_ISSUE_HISTORY) {
+            return "[{\"number\":\"1\",\"title\":\"issue\",\"body\":\"public issue\"}]"
+        }
+        if (request.kind == SourceKinds.GITCODE_PR_HISTORY) {
+            return "[{\"number\":\"2\",\"title\":\"pull\",\"body\":\"public pull\"}]"
+        }
+        if (request.kind == SourceKinds.GITCODE_COMMENT_HISTORY) {
+            return "[{\"id\":3,\"body\":\"public comment\"}]"
+        }
+        if (request.kind == SourceKinds.CANGJIE_WEBSITE || request.kind == SourceKinds.CANGJIE_DOCS) {
+            return "<html>Cangjie public documentation</html>"
+        }
+        "fixture body"
     }
 }
 

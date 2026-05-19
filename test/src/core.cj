@@ -70,6 +70,7 @@ public class KnowledgeMetadata {
     public var trustLevel: String = ""
     public var reviewState: String = ""
     public var license: String = "unknown"
+    public var repoVisibility: String = ""
     public var derivedFrom: Array<String> = []
 
     public init() {}
@@ -1256,15 +1257,14 @@ public class KnowledgeBase {
         if (!fetch.ok) {
             return false
         }
-        var repo = ""
-        var path = ""
+        var repo = fetch.repo
+        var path = fetch.path
         var symbol = ""
         if (sourceType == SourceTypes.REPO) {
-            repo = if (fetch.sourceUrl.contains("cangjie/stdx")) { "cangjie/stdx" } else { "cangjie/cangjie" }
-            path = if (fetch.sourceUrl.contains("/blob/")) { "src/http/client.cj" } else { "" }
             symbol = if (path != "") { "HttpClient" } else { "" }
         }
         this.addRecord(sourceId, sourceType, title, fetch.sourceUrl, repo, path, symbol, "1.0.0", trustLevel, reviewState, fetch.body)
+        this.rawRecords[this.rawRecords.size - 1].metadata.repoVisibility = fetch.repoVisibility
         true
     }
 

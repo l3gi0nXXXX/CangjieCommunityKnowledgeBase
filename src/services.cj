@@ -9,9 +9,11 @@ import std.process.*
 public class SourceKinds {
     public static let GITCODE_ORG: String = "gitcode_org"
     public static let GITCODE_REPO: String = "gitcode_repo"
+    public static let GITCODE_TREE: String = "gitcode_tree"
     public static let GITCODE_SOURCE: String = "gitcode_source"
     public static let GITCODE_ISSUE_HISTORY: String = "gitcode_issue_history"
     public static let GITCODE_PR_HISTORY: String = "gitcode_pr_history"
+    public static let GITCODE_COMMENT_HISTORY: String = "gitcode_comment_history"
     public static let CANGJIE_WEBSITE: String = "cangjie_website"
     public static let CANGJIE_DOCS: String = "cangjie_docs"
     public static let WEB_CANDIDATE: String = "web_candidate"
@@ -35,6 +37,7 @@ public class SourceFetchRequest {
     public var perPageParam: String = "per_page"
     public var timeoutMillis: Int64 = 10000
     public var retryCount: Int64 = 2
+    public var repoVisibility: String = ""
 
     public init() {}
 
@@ -68,6 +71,10 @@ public class SourceFetchResult {
     public var transportErrorClass: String = ""
     public var transportDiagnostic: String = ""
     public var curlExitCode: Int64 = 0
+    public var repo: String = ""
+    public var ref: String = ""
+    public var path: String = ""
+    public var repoVisibility: String = ""
 
     public init() {}
 }
@@ -920,11 +927,12 @@ public class SourceRequestBuilder {
         this.gitCodeApiRoot = gitCodeApiRoot
     }
 
-    public func gitCodeOrgRepos(org: String): SourceFetchRequest {
-        let request = SourceFetchRequest(SourceKinds.GITCODE_ORG, "${this.gitCodeApiRoot}/orgs/${org}/repos?type=public&page=1&per_page=100", repo: org, purpose: "enumerate_public_repos")
+    public func gitCodeOrgRepos(org: String, page!: Int64 = 1): SourceFetchRequest {
+        let request = SourceFetchRequest(SourceKinds.GITCODE_ORG, "${this.gitCodeApiRoot}/orgs/${org}/repos?type=public&page=${page}&per_page=100", repo: org, purpose: "enumerate_public_repos")
         request.authHint = "gitcode-token-optional-redacted"
         request.paginationParam = "page"
         request.perPageParam = "per_page"
+        request.page = page
         request
     }
 
@@ -960,6 +968,20 @@ public class SourceRequestBuilder {
         request
     }
 
+    public func gitCodeTree(repo: String, ref: String): SourceFetchRequest {
+        let parts = parseGitCodeRepoPath(repo)
+        if (!parts.valid) {
+            return invalidSourceFetchRequest(SourceKinds.GITCODE_TREE, "source_tree", parts.diagnostic)
+        }
+        if (!isSafeGitCodeRef(ref)) {
+            return invalidSourceFetchRequest(SourceKinds.GITCODE_TREE, "source_tree", "invalid_ref")
+        }
+        let normalizedRepo = "${parts.owner}/${parts.repo}"
+        let request = SourceFetchRequest(SourceKinds.GITCODE_TREE, "${this.gitCodeApiRoot}/repos/${parts.owner}/${parts.repo}/git/trees/${ref}?recursive=1&page=1&per_page=100", repo: normalizedRepo, ref: ref, purpose: "source_tree")
+        request.authHint = "gitcode-token-optional-redacted"
+        request
+    }
+
     public func gitCodeIssueHistory(repo: String): SourceFetchRequest {
         let parts = parseGitCodeRepoPath(repo)
         if (!parts.valid) {
@@ -978,6 +1000,17 @@ public class SourceRequestBuilder {
         }
         let normalizedRepo = "${parts.owner}/${parts.repo}"
         let request = SourceFetchRequest(SourceKinds.GITCODE_PR_HISTORY, "${this.gitCodeApiRoot}/repos/${parts.owner}/${parts.repo}/pulls?state=all&page=1&per_page=100", repo: normalizedRepo, purpose: "pr_history")
+        request.authHint = "gitcode-token-optional-redacted"
+        request
+    }
+
+    public func gitCodeCommentHistory(repo: String): SourceFetchRequest {
+        let parts = parseGitCodeRepoPath(repo)
+        if (!parts.valid) {
+            return invalidSourceFetchRequest(SourceKinds.GITCODE_COMMENT_HISTORY, "comment_history", parts.diagnostic)
+        }
+        let normalizedRepo = "${parts.owner}/${parts.repo}"
+        let request = SourceFetchRequest(SourceKinds.GITCODE_COMMENT_HISTORY, "${this.gitCodeApiRoot}/repos/${parts.owner}/${parts.repo}/issues/comments?page=1&per_page=100", repo: normalizedRepo, purpose: "comment_history")
         request.authHint = "gitcode-token-optional-redacted"
         request
     }
@@ -1054,6 +1087,93 @@ private func normalizeGitCodeSourcePath(raw: String): String {
     trimmed
 }
 
+private func jsonObjectChunks(body: String): ArrayList<String> {
+    let objects = ArrayList<String>()
+    var depth: Int64 = 0
+    var start: Int64 = -1
+    var inString = false
+    var escaped = false
+    var i: Int64 = 0
+    while (i < body.size) {
+        let ch = body[i..i + 1]
+        if (inString) {
+            if (escaped) {
+                escaped = false
+            } else if (ch == "\\") {
+                escaped = true
+            } else if (ch == "\"") {
+                inString = false
+            }
+        } else if (ch == "\"") {
+            inString = true
+        } else if (ch == "{") {
+            if (depth == 0) {
+                start = i
+            }
+            depth += 1
+        } else if (ch == "}") {
+            depth -= 1
+            if (depth == 0 && start >= 0) {
+                objects.add(body[start..i + 1])
+                start = -1
+            }
+        }
+        i += 1
+    }
+    objects
+}
+
+private func nestedJsonObjectChunks(body: String): ArrayList<String> {
+    let objects = ArrayList<String>()
+    let starts = ArrayList<Int64>()
+    var inString = false
+    var escaped = false
+    var i: Int64 = 0
+    while (i < body.size) {
+        let ch = body[i..i + 1]
+        if (inString) {
+            if (escaped) {
+                escaped = false
+            } else if (ch == "\\") {
+                escaped = true
+            } else if (ch == "\"") {
+                inString = false
+            }
+        } else if (ch == "\"") {
+            inString = true
+        } else if (ch == "{") {
+            starts.add(i)
+        } else if (ch == "}" && starts.size > 0) {
+            let start = starts[starts.size - 1]
+            starts.remove(at: starts.size - 1)
+            objects.add(body[start..i + 1])
+        }
+        i += 1
+    }
+    objects
+}
+
+private func addUniqueString(out: ArrayList<String>, value: String): Unit {
+    for (item in out) {
+        if (item == value) {
+            return
+        }
+    }
+    out.add(value)
+}
+
+private func excludedSourceCandidate(path: String): Bool {
+    let lower = path.toAsciiLower()
+    lower.startsWith("target/") || lower.contains("/target/") || lower.startsWith("build/") || lower.contains("/build/") || lower.startsWith("vendor/") || lower.contains("/vendor/") || lower.startsWith("binary/") || lower.contains("/binary/") || lower.endsWith(".png") || lower.endsWith(".jpg") || lower.endsWith(".jpeg") || lower.endsWith(".gif") || lower.endsWith(".zip") || lower.endsWith(".tar") || lower.endsWith(".gz") || lower.endsWith(".so") || lower.endsWith(".dylib") || lower.endsWith(".a") || lower.endsWith(".o") || lower.endsWith(".jar") || lower.endsWith(".class")
+}
+
+private func isReadmeOrDocsMarkdown(lower: String): Bool {
+    if (!(lower.endsWith(".md") || lower.endsWith(".markdown"))) {
+        return false
+    }
+    lower == "readme.md" || lower.endsWith("/readme.md") || lower.startsWith("docs/") || lower.contains("/docs/") || lower.startsWith("doc/") || lower.contains("/doc/")
+}
+
 private func invalidSourceFetchRequest(kind: String, purpose: String, diagnostic: String): SourceFetchRequest {
     let request = SourceFetchRequest(kind, "", purpose: purpose)
     request.status = diagnostic
@@ -1085,6 +1205,10 @@ public class SourceResponseNormalizer {
         }
         result.sourceUrl = if (result.sourceUrl == "") { request.url } else { result.sourceUrl }
         result.normalizedType = request.kind
+        result.repo = if (result.repo == "") { request.repo } else { result.repo }
+        result.ref = if (result.ref == "") { request.ref } else { result.ref }
+        result.path = if (result.path == "") { request.path } else { result.path }
+        result.repoVisibility = if (result.repoVisibility == "") { request.repoVisibility } else { result.repoVisibility }
         if (result.statusCode == 0 && result.ok) {
             result.statusCode = 200
         }
@@ -1113,6 +1237,71 @@ public class SourceSyncPlan {
     public init() {}
 }
 
+public class GitCodeDiscoveryStats {
+    public var orgs: Int64 = 0
+    public var pages: Int64 = 0
+    public var discovered: Int64 = 0
+    public var publicCount: Int64 = 0
+    public var privateCount: Int64 = 0
+    public var internalCount: Int64 = 0
+    public var unknownCount: Int64 = 0
+    public var included: Int64 = 0
+    public var excluded: Int64 = 0
+
+    public init() {}
+}
+
+private class LiveSyncRunState {
+    var requests: Int64 = 0
+    var okCount: Int64 = 0
+    var degradedCount: Int64 = 0
+    var truncated: Bool = false
+    var out: String = ""
+    let discovery: GitCodeDiscoveryStats = GitCodeDiscoveryStats()
+
+    init() {}
+}
+
+public class SourceCandidateSelector {
+    public init() {}
+
+    public func selectFromTree(body: String, maxFiles!: Int64 = -1): ArrayList<String> {
+        let code = ArrayList<String>()
+        let docs = ArrayList<String>()
+        for (object in nestedJsonObjectChunks(body)) {
+            let rawPath = jsonStringField(object, "path")
+            let path = normalizeGitCodeSourcePath(rawPath)
+            if (path == "" || excludedSourceCandidate(path)) {
+                continue
+            }
+            let itemType = jsonStringField(object, "type").toAsciiLower()
+            if (itemType == "tree" || itemType == "commit") {
+                continue
+            }
+            let lower = path.toAsciiLower()
+            if (lower.endsWith(".cj")) {
+                addUniqueString(code, path)
+            } else if (isReadmeOrDocsMarkdown(lower)) {
+                addUniqueString(docs, path)
+            }
+        }
+        let selected = ArrayList<String>()
+        for (path in code) {
+            if (maxFiles >= 0 && selected.size >= maxFiles) {
+                return selected
+            }
+            selected.add(path)
+        }
+        for (path in docs) {
+            if (maxFiles >= 0 && selected.size >= maxFiles) {
+                return selected
+            }
+            selected.add(path)
+        }
+        selected
+    }
+}
+
 public class SourceSyncPlanner {
     private let builder: SourceRequestBuilder
 
@@ -1125,10 +1314,6 @@ public class SourceSyncPlanner {
         for (org in scope.organizations) {
             plan.requests.add(this.builder.gitCodeOrgRepos(org))
         }
-        plan.requests.add(this.builder.gitCodeRepo("cangjie/stdx"))
-        plan.requests.add(this.builder.gitCodeSource("cangjie/stdx", "main", "src/http/client.cj"))
-        plan.requests.add(this.builder.gitCodeIssueHistory("cangjie/cangjie"))
-        plan.requests.add(this.builder.gitCodePrHistory("cangjie/cangjie"))
         for (url in scope.websiteUrls) {
             plan.requests.add(this.builder.website(url))
         }
@@ -1137,6 +1322,22 @@ public class SourceSyncPlanner {
         }
         if (scope.includesGovernedWebCandidates) {
             plan.requests.add(this.builder.webCandidate("https://example.invalid/cangjie-tutorial"))
+        }
+        plan
+    }
+
+    public func repoScopedPlan(repos: ArrayList<GitCodeRepoMetadata>, maxFilesPerRepo!: Int64 = -1): SourceSyncPlan {
+        let plan = SourceSyncPlan()
+        for (repo in repos) {
+            if (!isRepoAllowedForKnowledge(repo)) {
+                continue
+            }
+            if (repo.defaultBranch != "") {
+                plan.requests.add(markPublicRepoRequest(this.builder.gitCodeTree(repo.fullName, repo.defaultBranch)))
+            }
+            plan.requests.add(markPublicRepoRequest(this.builder.gitCodeIssueHistory(repo.fullName)))
+            plan.requests.add(markPublicRepoRequest(this.builder.gitCodePrHistory(repo.fullName)))
+            plan.requests.add(markPublicRepoRequest(this.builder.gitCodeCommentHistory(repo.fullName)))
         }
         plan
     }
@@ -1203,32 +1404,24 @@ public func ckbSyncLive(kb: KnowledgeBase, config: CkbRuntimeConfig, options: Li
         return "sync-live mode=${if (options.dryRun) { "dry-run" } else { "apply" }} network=disabled requests=0 status=network_disabled"
     }
     let planner = SourceSyncPlanner(builder: SourceRequestBuilder(gitCodeApiRoot: config.gitCodeBaseUrl))
-    let applyOptions = liveApplyOptionsFromSync(options)
-    let plan = limitedPlan(planner.productionPlan(kb.sourceScope), applyOptions)
-    var out = "sync-live mode=${if (options.dryRun) { "dry-run" } else { "apply" }} requests=${plan.requests.size} websiteEnabled=${config.websiteEnabled} docsEnabled=${config.docsEnabled} ${config.redactedSummary()}\n"
-    var okCount: Int64 = 0
-    var degradedCount: Int64 = 0
-    for (request in plan.requests) {
-        request.timeoutMillis = config.timeoutMillis
-        request.retryCount = config.retryCount
+    let builder = SourceRequestBuilder(gitCodeApiRoot: config.gitCodeBaseUrl)
+    let state = LiveSyncRunState()
+    state.out = "sync-live mode=${if (options.dryRun) { "dry-run" } else { "apply" }} requests=dynamic websiteEnabled=${config.websiteEnabled} docsEnabled=${config.docsEnabled} ${config.redactedSummary()}\n"
+    discoverAndFetchGitCodePublicRepos(kb, config, options, runner, builder, state)
+    let staticPlan = planner.productionPlan(kb.sourceScope)
+    for (request in staticPlan.requests) {
+        if (request.kind == SourceKinds.GITCODE_ORG) {
+            continue
+        }
         if (!config.websiteEnabled && request.kind == SourceKinds.CANGJIE_WEBSITE) {
-            out += "skip kind=${request.kind} reason=website_disabled auth=none sourceUrl=${redactSensitive(request.url)}\n"
+            state.out += "skip kind=${request.kind} reason=website_disabled auth=none sourceUrl=${redactSensitive(request.url)}\n"
             continue
         }
         if (!config.docsEnabled && request.kind == SourceKinds.CANGJIE_DOCS) {
-            out += "skip kind=${request.kind} reason=docs_disabled auth=none sourceUrl=${redactSensitive(request.url)}\n"
+            state.out += "skip kind=${request.kind} reason=docs_disabled auth=none sourceUrl=${redactSensitive(request.url)}\n"
             continue
         }
-        let fetch = SourceResponseNormalizer().normalize(request, runner.fetch(request))
-        if (fetch.ok) {
-            okCount += 1
-        } else {
-            degradedCount += 1
-        }
-        out += renderLiveFetchSummary(request, fetch, authSummaryForRequest(config, request))
-        if (options.apply && fetch.ok) {
-            ingestLiveFetch(kb, request, fetch, okCount + degradedCount)
-        }
+        fetchLiveRequest(kb, config, options, runner, request, state)
     }
     var activePromoted = false
     var candidateWritten = false
@@ -1242,8 +1435,144 @@ public func ckbSyncLive(kb: KnowledgeBase, config: CkbRuntimeConfig, options: Li
             activePromoted = true
         }
     }
-    out += "summary requests=${plan.requests.size} ok=${okCount} degraded=${degradedCount} truncated=${plan.truncated} rawWritten=${if (options.apply && activePromoted) { "true" } else { "false" }} candidateWritten=${candidateWritten} activePromoted=${activePromoted} since=${options.since}\n"
-    redactSensitive(out)
+    state.out += "summary requests=${state.requests} ok=${state.okCount} degraded=${state.degradedCount} truncated=${state.truncated} rawWritten=${if (options.apply && activePromoted) { "true" } else { "false" }} candidateWritten=${candidateWritten} activePromoted=${activePromoted} since=${options.since}\n"
+    redactSensitive(state.out)
+}
+
+private func discoverAndFetchGitCodePublicRepos(kb: KnowledgeBase, config: CkbRuntimeConfig, options: LiveSyncOptions, runner: SourceFetchRunner, builder: SourceRequestBuilder, state: LiveSyncRunState): Unit {
+    for (org in kb.sourceScope.organizations) {
+        state.discovery.orgs += 1
+        var page: Int64 = 1
+        while (true) {
+            if (!liveBudgetAllows(state, options)) {
+                state.truncated = true
+                break
+            }
+            let request = builder.gitCodeOrgRepos(org, page: page)
+            let fetch = fetchLiveRequest(kb, config, options, runner, request, state)
+            state.discovery.pages += 1
+            let repos = parseGitCodeOrgReposJson(fetch.body)
+            updateDiscoveryStats(state.discovery, repos)
+            state.out += renderRepoDiscoveryLine(state.discovery)
+            state.out += "repoDiscoveryPage org=${org} page=${page} status=${fetch.status} repos=${repos.size} stop=${if (!fetch.ok || repos.size < request.perPage) { "true" } else { "false" }}\n"
+            if (!fetch.ok) {
+                break
+            }
+            for (repo in repos) {
+                if (!isRepoAllowedForKnowledge(repo)) {
+                    state.discovery.excluded += 1
+                    state.out += "repoExcluded ${repoDisplayName(repo)} visibility=${repo.visibility} reason=${repo.visibility}_repo_excluded\n"
+                    continue
+                }
+                if (options.maxRepos >= 0 && state.discovery.included >= options.maxRepos) {
+                    state.truncated = true
+                    state.out += "repoExcluded ${repo.fullName} visibility=public reason=max_repos\n"
+                    continue
+                }
+                state.discovery.included += 1
+                state.out += "repoIncluded ${repo.fullName} visibility=public defaultBranch=${if (repo.defaultBranch == "") { "missing" } else { repo.defaultBranch }}\n"
+                fetchGitCodePublicRepo(kb, config, options, runner, builder, repo, state)
+            }
+            if (repos.size < request.perPage) {
+                break
+            }
+            page += 1
+        }
+    }
+}
+
+private func fetchGitCodePublicRepo(kb: KnowledgeBase, config: CkbRuntimeConfig, options: LiveSyncOptions, runner: SourceFetchRunner, builder: SourceRequestBuilder, repo: GitCodeRepoMetadata, state: LiveSyncRunState): Unit {
+    if (!isRepoAllowedForKnowledge(repo)) {
+        state.out += "repoExcluded ${repoDisplayName(repo)} visibility=${repo.visibility} reason=non_public_request_blocked\n"
+        return
+    }
+    if (repo.defaultBranch != "") {
+        let treeRequest = markPublicRepoRequest(builder.gitCodeTree(repo.fullName, repo.defaultBranch))
+        let treeFetch = fetchLiveRequest(kb, config, options, runner, treeRequest, state)
+        if (treeFetch.ok) {
+            let candidates = SourceCandidateSelector().selectFromTree(treeFetch.body, maxFiles: options.maxFilesPerRepo)
+            for (path in candidates) {
+                if (!liveBudgetAllows(state, options)) {
+                    state.truncated = true
+                    break
+                }
+                fetchLiveRequest(kb, config, options, runner, markPublicRepoRequest(builder.gitCodeSource(repo.fullName, repo.defaultBranch, path)), state)
+            }
+        }
+    } else {
+        state.out += "repoSkippedSource ${repo.fullName} visibility=public reason=missing_default_branch\n"
+    }
+    if (!liveBudgetAllows(state, options)) {
+        state.truncated = true
+        return
+    }
+    fetchLiveRequest(kb, config, options, runner, markPublicRepoRequest(builder.gitCodeIssueHistory(repo.fullName)), state)
+    if (!liveBudgetAllows(state, options)) {
+        state.truncated = true
+        return
+    }
+    fetchLiveRequest(kb, config, options, runner, markPublicRepoRequest(builder.gitCodePrHistory(repo.fullName)), state)
+    if (!liveBudgetAllows(state, options)) {
+        state.truncated = true
+        return
+    }
+    fetchLiveRequest(kb, config, options, runner, markPublicRepoRequest(builder.gitCodeCommentHistory(repo.fullName)), state)
+}
+
+private func fetchLiveRequest(kb: KnowledgeBase, config: CkbRuntimeConfig, options: LiveSyncOptions, runner: SourceFetchRunner, request: SourceFetchRequest, state: LiveSyncRunState): SourceFetchResult {
+    request.timeoutMillis = config.timeoutMillis
+    request.retryCount = config.retryCount
+    state.requests += 1
+    state.out += "repoFetch kind=${request.kind} repo=${request.repo} visibility=${if (request.repoVisibility == "") { "n/a" } else { request.repoVisibility }} sourceUrl=${redactSensitive(request.url)}\n"
+    let fetch = SourceResponseNormalizer().normalize(request, runner.fetch(request))
+    if (fetch.ok) {
+        state.okCount += 1
+    } else {
+        state.degradedCount += 1
+    }
+    state.out += renderLiveFetchSummary(request, fetch, authSummaryForRequest(config, request))
+    if (options.apply && fetch.ok) {
+        ingestLiveFetch(kb, request, fetch, state.requests)
+    }
+    fetch
+}
+
+private func liveBudgetAllows(state: LiveSyncRunState, options: LiveSyncOptions): Bool {
+    options.maxItems < 0 || state.requests < options.maxItems
+}
+
+private func markPublicRepoRequest(request: SourceFetchRequest): SourceFetchRequest {
+    request.repoVisibility = RepoVisibility.PUBLIC
+    request
+}
+
+private func updateDiscoveryStats(stats: GitCodeDiscoveryStats, repos: ArrayList<GitCodeRepoMetadata>): Unit {
+    stats.discovered += repos.size
+    for (repo in repos) {
+        if (repo.visibility == RepoVisibility.PUBLIC) {
+            stats.publicCount += 1
+        } else if (repo.visibility == RepoVisibility.PRIVATE) {
+            stats.privateCount += 1
+        } else if (repo.visibility == RepoVisibility.INTERNAL) {
+            stats.internalCount += 1
+        } else {
+            stats.unknownCount += 1
+        }
+    }
+}
+
+private func renderRepoDiscoveryLine(stats: GitCodeDiscoveryStats): String {
+    "repoDiscovery orgs=${stats.orgs} pages=${stats.pages} discovered=${stats.discovered} public=${stats.publicCount} private=${stats.privateCount} internal=${stats.internalCount} unknown=${stats.unknownCount} included=${stats.included} excluded=${stats.excluded}\n"
+}
+
+private func repoDisplayName(repo: GitCodeRepoMetadata): String {
+    if (repo.fullName != "") {
+        return repo.fullName
+    }
+    if (repo.owner != "" || repo.repo != "") {
+        return "${repo.owner}/${repo.repo}"
+    }
+    "unknown"
 }
 
 public class SourceAdapter {
@@ -1273,12 +1602,20 @@ public class SourceAdapter {
         this.fetch(this.builder.gitCodeSource(repo, ref, path))
     }
 
+    public func fetchGitCodeTree(repo: String, ref: String): SourceFetchResult {
+        this.fetch(this.builder.gitCodeTree(repo, ref))
+    }
+
     public func fetchGitCodeIssueHistory(repo: String): SourceFetchResult {
         this.fetch(this.builder.gitCodeIssueHistory(repo))
     }
 
     public func fetchGitCodePrHistory(repo: String): SourceFetchResult {
         this.fetch(this.builder.gitCodePrHistory(repo))
+    }
+
+    public func fetchGitCodeCommentHistory(repo: String): SourceFetchResult {
+        this.fetch(this.builder.gitCodeCommentHistory(repo))
     }
 
     public func fetchCangjieWebsite(url: String): SourceFetchResult {
@@ -2306,7 +2643,7 @@ private func authSummaryForRequest(config: CkbRuntimeConfig, request: SourceFetc
 }
 
 private func isGitCodeRequest(request: SourceFetchRequest): Bool {
-    request.kind == SourceKinds.GITCODE_ORG || request.kind == SourceKinds.GITCODE_REPO || request.kind == SourceKinds.GITCODE_SOURCE || request.kind == SourceKinds.GITCODE_ISSUE_HISTORY || request.kind == SourceKinds.GITCODE_PR_HISTORY
+    request.kind == SourceKinds.GITCODE_ORG || request.kind == SourceKinds.GITCODE_REPO || request.kind == SourceKinds.GITCODE_TREE || request.kind == SourceKinds.GITCODE_SOURCE || request.kind == SourceKinds.GITCODE_ISSUE_HISTORY || request.kind == SourceKinds.GITCODE_PR_HISTORY || request.kind == SourceKinds.GITCODE_COMMENT_HISTORY
 }
 
 private func ingestLiveFetch(kb: KnowledgeBase, request: SourceFetchRequest, fetch: SourceFetchResult, index: Int64): Unit {
@@ -2314,12 +2651,16 @@ private func ingestLiveFetch(kb: KnowledgeBase, request: SourceFetchRequest, fet
         kb.ingestFetchResult("live-org-${safeName(request.repo)}", SourceTypes.COMMUNITY, fetch, "GitCode ${request.repo} org", TrustLevels.COMMUNITY, ReviewStates.REVIEWED)
     } else if (request.kind == SourceKinds.GITCODE_REPO) {
         kb.ingestFetchResult("live-repo-${safeName(request.repo)}", SourceTypes.REPO, fetch, "GitCode ${request.repo} repo", TrustLevels.OFFICIAL, ReviewStates.TRUSTED)
+    } else if (request.kind == SourceKinds.GITCODE_TREE) {
+        kb.ingestFetchResult("live-tree-${safeName(request.repo)}", SourceTypes.REPO, fetch, "GitCode ${request.repo} tree", TrustLevels.OFFICIAL, ReviewStates.TRUSTED)
     } else if (request.kind == SourceKinds.GITCODE_SOURCE) {
         kb.ingestFetchResult("live-source-${safeName(request.repo)}-${safeName(request.path)}", SourceTypes.REPO, fetch, "GitCode ${request.repo} source", TrustLevels.OFFICIAL, ReviewStates.TRUSTED)
     } else if (request.kind == SourceKinds.GITCODE_ISSUE_HISTORY) {
         kb.ingestFetchResult("live-issue-${safeName(request.repo)}", SourceTypes.COMMUNITY, fetch, "GitCode issue history", TrustLevels.COMMUNITY, ReviewStates.REVIEWED)
     } else if (request.kind == SourceKinds.GITCODE_PR_HISTORY) {
         kb.ingestFetchResult("live-pr-${safeName(request.repo)}", SourceTypes.COMMUNITY, fetch, "GitCode PR history", TrustLevels.COMMUNITY, ReviewStates.REVIEWED)
+    } else if (request.kind == SourceKinds.GITCODE_COMMENT_HISTORY) {
+        kb.ingestFetchResult("live-comments-${safeName(request.repo)}", SourceTypes.COMMUNITY, fetch, "GitCode comment history", TrustLevels.COMMUNITY, ReviewStates.REVIEWED)
     } else if (request.kind == SourceKinds.CANGJIE_DOCS) {
         kb.ingestFetchResult("live-docs-${index}", SourceTypes.DOC, fetch, "Cangjie docs", TrustLevels.OFFICIAL, ReviewStates.TRUSTED)
     } else if (request.kind == SourceKinds.CANGJIE_WEBSITE) {
@@ -2330,7 +2671,7 @@ private func ingestLiveFetch(kb: KnowledgeBase, request: SourceFetchRequest, fet
 }
 
 private func metadataLine(metadata: KnowledgeMetadata): String {
-    "${escapeField(metadata.sourceType)}|${escapeField(metadata.sourceUrl)}|${escapeField(metadata.repo)}|${escapeField(metadata.commit)}|${escapeField(metadata.path)}|${escapeField(metadata.symbol)}|${escapeField(metadata.docVersion)}|${escapeField(metadata.crawlAt)}|${escapeField(metadata.indexedAt)}|${escapeField(metadata.knowledgeVersion)}|${escapeField(metadata.candidateVersion)}|${metadata.contentSize}|${escapeField(metadata.trustLevel)}|${escapeField(metadata.reviewState)}|${escapeField(metadata.license)}|${escapeField(metadata.sourceId)}"
+    "${escapeField(metadata.sourceType)}|${escapeField(metadata.sourceUrl)}|${escapeField(metadata.repo)}|${escapeField(metadata.commit)}|${escapeField(metadata.path)}|${escapeField(metadata.symbol)}|${escapeField(metadata.docVersion)}|${escapeField(metadata.crawlAt)}|${escapeField(metadata.indexedAt)}|${escapeField(metadata.knowledgeVersion)}|${escapeField(metadata.candidateVersion)}|${metadata.contentSize}|${escapeField(metadata.trustLevel)}|${escapeField(metadata.reviewState)}|${escapeField(metadata.license)}|${escapeField(metadata.sourceId)}|${escapeField(metadata.repoVisibility)}"
 }
 
 private func metadataFromParts(parts: Array<String>, start: Int64): KnowledgeMetadata {
@@ -2352,6 +2693,9 @@ private func metadataFromParts(parts: Array<String>, start: Int64): KnowledgeMet
     metadata.license = unescapeField(parts[start + 14])
     if (parts.size > start + 15) {
         metadata.sourceId = unescapeField(parts[start + 15])
+    }
+    if (parts.size > start + 16) {
+        metadata.repoVisibility = unescapeField(parts[start + 16])
     }
     metadata
 }
@@ -2632,10 +2976,12 @@ private func renderLiveFetchSummary(request: SourceFetchRequest, fetch: SourceFe
         shape = "repo-list"
     } else if (request.kind == SourceKinds.CANGJIE_WEBSITE || request.kind == SourceKinds.CANGJIE_DOCS) {
         shape = "html-entry"
-    } else if (request.kind == SourceKinds.GITCODE_ISSUE_HISTORY || request.kind == SourceKinds.GITCODE_PR_HISTORY) {
+    } else if (request.kind == SourceKinds.GITCODE_ISSUE_HISTORY || request.kind == SourceKinds.GITCODE_PR_HISTORY || request.kind == SourceKinds.GITCODE_COMMENT_HISTORY) {
         shape = "history-list"
     } else if (request.kind == SourceKinds.GITCODE_REPO) {
         shape = "repo-metadata"
+    } else if (request.kind == SourceKinds.GITCODE_TREE) {
+        shape = "source-tree"
     } else if (request.kind == SourceKinds.GITCODE_SOURCE) {
         shape = "source-snapshot"
     }
@@ -2700,12 +3046,16 @@ private func ingestLiveFetch(kb: KnowledgeBase, request: SourceFetchRequest, fet
         kb.ingestFetchResult("live-org-${safeName(request.repo)}", SourceTypes.COMMUNITY, fetch, "GitCode ${request.repo} repo list", TrustLevels.COMMUNITY, ReviewStates.REVIEWED)
     } else if (request.kind == SourceKinds.GITCODE_REPO) {
         kb.ingestFetchResult("live-repo-${safeName(request.repo)}", SourceTypes.REPO, fetch, "GitCode ${request.repo} repo", TrustLevels.OFFICIAL, ReviewStates.TRUSTED)
+    } else if (request.kind == SourceKinds.GITCODE_TREE) {
+        kb.ingestFetchResult("live-tree-${safeName(request.repo)}", SourceTypes.REPO, fetch, "GitCode ${request.repo} tree", TrustLevels.OFFICIAL, ReviewStates.TRUSTED)
     } else if (request.kind == SourceKinds.GITCODE_SOURCE) {
         kb.ingestFetchResult("live-source-${safeName(request.repo)}-${safeName(request.path)}", SourceTypes.REPO, fetch, "GitCode ${request.repo} source", TrustLevels.OFFICIAL, ReviewStates.TRUSTED)
     } else if (request.kind == SourceKinds.GITCODE_ISSUE_HISTORY) {
         kb.ingestFetchResult("live-issue-${safeName(request.repo)}", SourceTypes.COMMUNITY, fetch, "GitCode issue history", TrustLevels.COMMUNITY, ReviewStates.REVIEWED)
     } else if (request.kind == SourceKinds.GITCODE_PR_HISTORY) {
         kb.ingestFetchResult("live-pr-${safeName(request.repo)}", SourceTypes.COMMUNITY, fetch, "GitCode PR history", TrustLevels.COMMUNITY, ReviewStates.REVIEWED)
+    } else if (request.kind == SourceKinds.GITCODE_COMMENT_HISTORY) {
+        kb.ingestFetchResult("live-comments-${safeName(request.repo)}", SourceTypes.COMMUNITY, fetch, "GitCode comment history", TrustLevels.COMMUNITY, ReviewStates.REVIEWED)
     } else if (request.kind == SourceKinds.CANGJIE_DOCS) {
         kb.ingestFetchResult("live-docs-${safeName(request.url)}", SourceTypes.DOC, fetch, "Cangjie docs", TrustLevels.OFFICIAL, ReviewStates.TRUSTED)
     } else if (request.kind == SourceKinds.CANGJIE_WEBSITE) {
