@@ -110,6 +110,19 @@ public class CkbBaselineTest {
     }
 
     @TestCase
+    public func schedulerEncodesRequiredR8R9SlaWindows(): Unit {
+        let scheduler = Scheduler(FakeClock(0))
+
+        @Expect(intervalFor(scheduler, "active_item_sync_10m"), 10)
+        @Expect(intervalFor(scheduler, "active_repo_fetch_30m"), 30)
+        @Expect(intervalFor(scheduler, "website_probe_6h"), 360)
+        @Expect(intervalFor(scheduler, "docs_probe_6h"), 360)
+        @Expect(intervalFor(scheduler, "website_full_daily"), 1440)
+        @Expect(intervalFor(scheduler, "weekly_full_rebuild"), 10080)
+        @Expect(intervalFor(scheduler, "web_candidate_recrawl_30d"), 43200)
+    }
+
+    @TestCase
     public func scopedRefreshPoliciesApplyCooldownAndCandidateReview(): Unit {
         let service = ScopedRefreshService()
         let active = "ckb-20260519-000100-active"
@@ -162,6 +175,72 @@ public class CkbBaselineTest {
     }
 
     @TestCase
+    public func sourceRequestBuildersUseProductionApiSpecsAndNormalizeResponses(): Unit {
+        let builder = SourceRequestBuilder()
+        let source = builder.gitCodeSource("cangjie/stdx", "main", "src/http/client.cj")
+        let issues = builder.gitCodeIssueHistory("cangjie/cangjie")
+        let docs = builder.docs("https://docs.cangjie-lang.cn/docs/1.0.0/")
+        let normalizer = SourceResponseNormalizer()
+        let result = SourceFetchResult()
+        result.statusCode = 206
+        result.body = "partial source"
+
+        let normalized = normalizer.normalize(source, result)
+
+        @Expect(source.method, "GET")
+        @Expect(source.url.contains("/api/v5/projects/cangjie/stdx/repository/files/src/http/client.cj/raw?ref=main"), true)
+        @Expect(source.accept, "text/plain")
+        @Expect(source.authHint.contains("redacted"), true)
+        @Expect(issues.url.contains("state=all"), true)
+        @Expect(issues.perPage, 100)
+        @Expect(docs.accept, "text/html")
+        @Expect(normalized.ok, true)
+        @Expect(normalized.status, "ok")
+        @Expect(normalized.normalizedType, SourceKinds.GITCODE_SOURCE)
+        @Expect(normalized.sourceUrl, source.url)
+    }
+
+    @TestCase
+    public func sourceSyncPlannerCoversThreeOrgsDocsWebsiteHistoryAndCandidates(): Unit {
+        let scope = SourceScope()
+        let plan = SourceSyncPlanner().productionPlan(scope)
+        var orgs: Int64 = 0
+        var websites: Int64 = 0
+        var docs: Int64 = 0
+        var issueHistory: Int64 = 0
+        var prHistory: Int64 = 0
+        var candidates: Int64 = 0
+        for (request in plan.requests) {
+            if (request.kind == SourceKinds.GITCODE_ORG) {
+                orgs += 1
+            }
+            if (request.kind == SourceKinds.CANGJIE_WEBSITE) {
+                websites += 1
+            }
+            if (request.kind == SourceKinds.CANGJIE_DOCS) {
+                docs += 1
+            }
+            if (request.kind == SourceKinds.GITCODE_ISSUE_HISTORY) {
+                issueHistory += 1
+            }
+            if (request.kind == SourceKinds.GITCODE_PR_HISTORY) {
+                prHistory += 1
+            }
+            if (request.kind == SourceKinds.WEB_CANDIDATE) {
+                candidates += 1
+            }
+        }
+
+        @Expect(orgs, 3)
+        @Expect(websites, scope.websiteUrls.size)
+        @Expect(docs, scope.docsUrls.size)
+        @Expect(issueHistory, 1)
+        @Expect(prHistory, 1)
+        @Expect(candidates, 1)
+        @Expect(plan.requests.size >= 11, true)
+    }
+
+    @TestCase
     public func fileStoragePersistsRawNormalizedMetadataIndexDerivedAndCache(): Unit {
         let kb = newOfflineKnowledgeBase()
         let store = FileKnowledgeStore("target/ckb-test-storage")
@@ -192,6 +271,44 @@ public class CkbBaselineTest {
     }
 
     @TestCase
+    public func statusAndMetadataExposeDeterministicIndexManifest(): Unit {
+        let kb = newOfflineKnowledgeBase()
+        let store = FileKnowledgeStore("target/ckb-test-index-manifest")
+        kb.persist(store)
+        let status = cangjie_knowledge_status(kb)
+        var textSeen = false
+        var vectorSeen = false
+        var symbolSeen = false
+        var graphSeen = false
+        for (entry in status.indexManifest.entries) {
+            if (entry.kind == IndexKinds.TEXT) {
+                textSeen = true
+            }
+            if (entry.kind == IndexKinds.VECTOR) {
+                vectorSeen = true
+            }
+            if (entry.kind == IndexKinds.SYMBOL) {
+                symbolSeen = true
+            }
+            if (entry.kind == IndexKinds.GRAPH) {
+                graphSeen = true
+            }
+            @Expect(entry.deterministic, true)
+            @Expect(entry.candidateIsolated, true)
+        }
+
+        @Expect(status.storage.textIndexCount > 0, true)
+        @Expect(status.storage.vectorIndexCount > 0, true)
+        @Expect(status.storage.symbolIndexCount > 0, true)
+        @Expect(status.storage.graphIndexCount > 0, true)
+        @Expect(textSeen, true)
+        @Expect(vectorSeen, true)
+        @Expect(symbolSeen, true)
+        @Expect(graphSeen, true)
+        @Expect(store.has("metadata/status.ckb"), true)
+    }
+
+    @TestCase
     public func syncOnceIngestsAllSourceFamiliesWithoutNetworkByDefault(): Unit {
         let kb = newOfflineKnowledgeBase()
         let fake = FakeSourceFetchRunner()
@@ -201,7 +318,8 @@ public class CkbBaselineTest {
         let candidates = query.query("web_candidate", "tutorial", 10)
 
         @Expect(text.contains("org=ok"), true)
-        @Expect(fake.calls.size, 8)
+        @Expect(text.contains("requests="), true)
+        @Expect(fake.calls.size >= 11, true)
         @Expect(kb.rawRecordCount() >= 14, true)
         @Expect(candidates.records.size > 0, true)
         @Expect(candidates.records[0].requiresReview, true)
@@ -230,4 +348,13 @@ public class CkbBaselineTest {
         @Expect(CkbSchema.httpLikeRoutes().contains("POST /query"), true)
         @Expect(CkbSchema.httpLikeRoutes().contains("POST /rebuild-index"), true)
     }
+}
+
+private func intervalFor(scheduler: Scheduler, name: String): Int64 {
+    for (entry in scheduler.entries) {
+        if (entry.name == name) {
+            return entry.intervalMinutes
+        }
+    }
+    -1
 }

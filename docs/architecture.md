@@ -39,6 +39,8 @@ Raw records are normalized into records that retain `sourceUrl`, `repo`,
 `trustLevel`, `reviewState`, `license`, and derived-source references. Index
 rebuilds write a candidate version first and only promote it to active after a
 successful build, so failed candidates do not pollute active query results.
+Status and metadata include deterministic text, vector-surrogate, symbol, and
+graph index manifest entries. Candidate indexes remain isolated until publish.
 
 ## Source Sync
 
@@ -47,6 +49,13 @@ Issue/PR history, official website/docs, and governed web candidates. The
 default runner returns `network_disabled`. Tests use `FakeSourceFetchRunner` to
 keep offline source-adapter coverage while preserving the production injection
 point for real HTTP/Git fetch code.
+
+`SourceRequestBuilder` owns the production request specs used by the sync
+surface: GitCode `/api/v5` org repo enumeration, repo metadata, source file raw
+content, issue history, PR history, Cangjie website/docs probes, and web
+candidate recrawls. `SourceResponseNormalizer` converts injected runner output
+into a stable fetch result with status code, normalized type, source URL, and
+truncation metadata before ingestion.
 
 ## Query Surface
 

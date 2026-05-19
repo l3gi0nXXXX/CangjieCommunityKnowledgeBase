@@ -11,6 +11,13 @@ public class SourceTypes {
     public static let DERIVED: String = "derived"
 }
 
+public class IndexKinds {
+    public static let TEXT: String = "text"
+    public static let VECTOR: String = "vector"
+    public static let SYMBOL: String = "symbol"
+    public static let GRAPH: String = "graph"
+}
+
 public class TrustLevels {
     public static let OFFICIAL: String = "official"
     public static let COMMUNITY: String = "community"
@@ -193,6 +200,29 @@ public class StorageStatus {
     public var normalizedCount: Int64 = 0
     public var indexCount: Int64 = 0
     public var derivedCount: Int64 = 0
+    public var textIndexCount: Int64 = 0
+    public var vectorIndexCount: Int64 = 0
+    public var symbolIndexCount: Int64 = 0
+    public var graphIndexCount: Int64 = 0
+
+    public init() {}
+}
+
+public class IndexMetadata {
+    public var kind: String = ""
+    public var version: String = ""
+    public var itemCount: Int64 = 0
+    public var deterministic: Bool = true
+    public var candidateIsolated: Bool = true
+    public var notes: String = ""
+
+    public init() {}
+}
+
+public class IndexManifest {
+    public var activeVersion: String = ""
+    public var candidateVersion: String = ""
+    public var entries: ArrayList<IndexMetadata> = ArrayList<IndexMetadata>()
 
     public init() {}
 }
@@ -237,6 +267,7 @@ public class KnowledgeStatus {
     public var storage: StorageStatus = StorageStatus()
     public var sourceScope: SourceScope = SourceScope()
     public var schedules: ArrayList<ScheduleEntry> = ArrayList<ScheduleEntry>()
+    public var indexManifest: IndexManifest = IndexManifest()
     public var localPathRedacted: Bool = true
 
     public init() {}
@@ -438,6 +469,7 @@ public class KnowledgeBase {
     private var activeKnowledgeVersion: String = "ckb-20260519-000000-baseline"
     private var candidateKnowledgeVersion: String = ""
     private var failedCandidateVersion: String = ""
+    private var indexManifest: IndexManifest = IndexManifest()
 
     public init(clock: FakeClock) {
         this.scheduler = Scheduler(clock)
@@ -555,6 +587,7 @@ public class KnowledgeBase {
         }
         this.failedCandidateVersion = ""
         this.storage.indexCount = this.activeIndex.size
+        this.rebuildIndexManifest()
         true
     }
 
@@ -578,7 +611,57 @@ public class KnowledgeBase {
         this.activeKnowledgeVersion = result.activeVersion
         this.failedCandidateVersion = ""
         this.storage.indexCount = this.activeIndex.size
+        this.rebuildIndexManifest()
         result
+    }
+
+    private func rebuildIndexManifest(): Unit {
+        let manifest = IndexManifest()
+        manifest.activeVersion = this.activeKnowledgeVersion
+        manifest.candidateVersion = this.candidateKnowledgeVersion
+        manifest.entries.add(this.indexMetadata(IndexKinds.TEXT, this.activeIndex.size, "token overlap text index"))
+        manifest.entries.add(this.indexMetadata(IndexKinds.VECTOR, this.activeIndex.size, "deterministic lexical vector surrogate"))
+        manifest.entries.add(this.indexMetadata(IndexKinds.SYMBOL, this.countSymbolRecords(), "symbol metadata index"))
+        manifest.entries.add(this.indexMetadata(IndexKinds.GRAPH, this.countGraphEdges(), "repo-doc-community citation graph"))
+        this.indexManifest = manifest
+        this.storage.textIndexCount = this.activeIndex.size
+        this.storage.vectorIndexCount = this.activeIndex.size
+        this.storage.symbolIndexCount = this.countSymbolRecords()
+        this.storage.graphIndexCount = this.countGraphEdges()
+    }
+
+    private func indexMetadata(kind: String, count: Int64, notes: String): IndexMetadata {
+        let metadata = IndexMetadata()
+        metadata.kind = kind
+        metadata.version = this.activeKnowledgeVersion
+        metadata.itemCount = count
+        metadata.deterministic = true
+        metadata.candidateIsolated = true
+        metadata.notes = notes
+        metadata
+    }
+
+    private func countSymbolRecords(): Int64 {
+        var count: Int64 = 0
+        for (record in this.activeIndex) {
+            if (record.metadata.symbol != "") {
+                count += 1
+            }
+        }
+        count
+    }
+
+    private func countGraphEdges(): Int64 {
+        var count: Int64 = 0
+        for (record in this.activeIndex) {
+            if (record.metadata.repo != "" && record.citation != "") {
+                count += 1
+            }
+            if (record.metadata.sourceType == SourceTypes.COMMUNITY) {
+                count += 1
+            }
+        }
+        count
     }
 
     public func persist(store: FileKnowledgeStore): Unit {
@@ -672,6 +755,7 @@ public class KnowledgeBase {
         status.failedCandidateVersion = this.failedCandidateVersion
         status.storage = this.storage
         status.sourceScope = this.sourceScope
+        status.indexManifest = this.indexManifest
         for (entry in this.scheduler.entries) {
             if (entry.lastSuccessAt < 0 && this.scheduler.clock.nowMinutes > entry.intervalMinutes) {
                 entry.stale = true
@@ -827,6 +911,7 @@ public func renderDoctor(status: KnowledgeStatus): String {
     var out = "CangjieCommunityKnowledgeBase doctor\n"
     out += "activeKnowledgeVersion=${status.activeKnowledgeVersion}\n"
     out += "storage raw=${status.storage.rawCount} normalized=${status.storage.normalizedCount} indexes=${status.storage.indexCount} derived=${status.storage.derivedCount}\n"
+    out += "indexKinds text=${status.storage.textIndexCount} vector=${status.storage.vectorIndexCount} symbol=${status.storage.symbolIndexCount} graph=${status.storage.graphIndexCount}\n"
     out += "paths raw=${status.storage.rawPath} normalized=${status.storage.normalizedPath} metadata=${status.storage.metadataPath} indexes=${status.storage.indexesPath} derived=${status.storage.derivedPath} cache=${status.storage.cachePath}\n"
     out += "scope organizations=${status.sourceScope.organizations} repoScope=${status.sourceScope.repoScope} websiteUrls=${status.sourceScope.websiteUrls} docsUrls=${status.sourceScope.docsUrls} stdSources=${status.sourceScope.stdSources} issuePrHistory=${status.sourceScope.includesIssuePrHistory} governedWebCandidates=${status.sourceScope.includesGovernedWebCandidates}\n"
     out += "localPathRedacted=${status.localPathRedacted}\n"

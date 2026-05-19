@@ -17,28 +17,41 @@ public class SourceKinds {
 
 public class SourceFetchRequest {
     public var kind: String = ""
+    public var method: String = "GET"
     public var url: String = ""
     public var repo: String = ""
     public var ref: String = ""
     public var path: String = ""
+    public var accept: String = "application/json"
+    public var authHint: String = "none"
+    public var page: Int64 = 1
+    public var perPage: Int64 = 100
+    public var purpose: String = ""
 
     public init() {}
 
-    public init(kind: String, url: String, repo!: String = "", ref!: String = "", path!: String = "") {
+    public init(kind: String, url: String, repo!: String = "", ref!: String = "", path!: String = "", accept!: String = "application/json", purpose!: String = "") {
         this.kind = kind
         this.url = url
         this.repo = repo
         this.ref = ref
         this.path = path
+        this.accept = accept
+        this.purpose = purpose
     }
 }
 
 public class SourceFetchResult {
     public var ok: Bool = false
     public var status: String = "not_started"
+    public var statusCode: Int64 = 0
     public var body: String = ""
     public var commit: String = ""
     public var sourceUrl: String = ""
+    public var normalizedType: String = ""
+    public var etag: String = ""
+    public var lastModified: String = ""
+    public var truncated: Bool = false
 
     public init() {}
 }
@@ -69,50 +82,166 @@ public class FakeSourceFetchRunner <: SourceFetchRunner {
         let result = SourceFetchResult()
         result.ok = true
         result.status = "ok"
+        result.statusCode = 200
         result.commit = "fake-commit"
         result.sourceUrl = request.url
+        result.normalizedType = request.kind
+        result.etag = "fake-etag"
+        result.lastModified = "2026-05-19T00:00:00Z"
         result.body = "fake ${request.kind} ${request.repo} ${request.path} func HttpClient Cangjie docs tutorial"
         result
     }
 }
 
+public class SourceRequestBuilder {
+    private let gitCodeApiRoot: String = "https://gitcode.com/api/v5"
+
+    public init() {}
+
+    public func gitCodeOrgRepos(org: String): SourceFetchRequest {
+        let request = SourceFetchRequest(SourceKinds.GITCODE_ORG, "${this.gitCodeApiRoot}/orgs/${org}/projects?visibility=public&page=1&per_page=100", repo: org, purpose: "enumerate_public_repos")
+        request.authHint = "gitcode-token-optional-redacted"
+        request
+    }
+
+    public func gitCodeRepo(repo: String, ref!: String = "main"): SourceFetchRequest {
+        let request = SourceFetchRequest(SourceKinds.GITCODE_REPO, "${this.gitCodeApiRoot}/projects/${repo}?ref=${ref}", repo: repo, ref: ref, purpose: "repo_metadata")
+        request.authHint = "gitcode-token-optional-redacted"
+        request
+    }
+
+    public func gitCodeSource(repo: String, ref: String, path: String): SourceFetchRequest {
+        let request = SourceFetchRequest(SourceKinds.GITCODE_SOURCE, "${this.gitCodeApiRoot}/projects/${repo}/repository/files/${path}/raw?ref=${ref}", repo: repo, ref: ref, path: path, accept: "text/plain", purpose: "source_snapshot")
+        request.authHint = "gitcode-token-optional-redacted"
+        request
+    }
+
+    public func gitCodeIssueHistory(repo: String): SourceFetchRequest {
+        let request = SourceFetchRequest(SourceKinds.GITCODE_ISSUE_HISTORY, "${this.gitCodeApiRoot}/projects/${repo}/issues?state=all&page=1&per_page=100", repo: repo, purpose: "issue_history")
+        request.authHint = "gitcode-token-optional-redacted"
+        request
+    }
+
+    public func gitCodePrHistory(repo: String): SourceFetchRequest {
+        let request = SourceFetchRequest(SourceKinds.GITCODE_PR_HISTORY, "${this.gitCodeApiRoot}/projects/${repo}/merge_requests?state=all&page=1&per_page=100", repo: repo, purpose: "pr_history")
+        request.authHint = "gitcode-token-optional-redacted"
+        request
+    }
+
+    public func website(url: String): SourceFetchRequest {
+        SourceFetchRequest(SourceKinds.CANGJIE_WEBSITE, url, accept: "text/html", purpose: "website_probe")
+    }
+
+    public func docs(url: String): SourceFetchRequest {
+        SourceFetchRequest(SourceKinds.CANGJIE_DOCS, url, accept: "text/html", purpose: "docs_probe")
+    }
+
+    public func webCandidate(url: String): SourceFetchRequest {
+        SourceFetchRequest(SourceKinds.WEB_CANDIDATE, url, accept: "text/html", purpose: "candidate_recrawl")
+    }
+}
+
+public class SourceResponseNormalizer {
+    public init() {}
+
+    public func normalize(request: SourceFetchRequest, result: SourceFetchResult): SourceFetchResult {
+        result.sourceUrl = if (result.sourceUrl == "") { request.url } else { result.sourceUrl }
+        result.normalizedType = request.kind
+        if (result.statusCode == 0 && result.ok) {
+            result.statusCode = 200
+        }
+        if (result.statusCode >= 200 && result.statusCode < 300) {
+            result.ok = true
+            result.status = "ok"
+        } else if (result.status == "not_started") {
+            result.status = "http_${result.statusCode}"
+        }
+        if (result.body.size > 200000) {
+            result.truncated = true
+            result.body = result.body[0..200000]
+        }
+        result
+    }
+}
+
+public class SourceSyncPlan {
+    public var requests: ArrayList<SourceFetchRequest> = ArrayList<SourceFetchRequest>()
+
+    public init() {}
+}
+
+public class SourceSyncPlanner {
+    private let builder: SourceRequestBuilder = SourceRequestBuilder()
+
+    public init() {}
+
+    public func productionPlan(scope: SourceScope): SourceSyncPlan {
+        let plan = SourceSyncPlan()
+        for (org in scope.organizations) {
+            plan.requests.add(this.builder.gitCodeOrgRepos(org))
+        }
+        plan.requests.add(this.builder.gitCodeRepo("cangjie/stdx"))
+        plan.requests.add(this.builder.gitCodeSource("cangjie/stdx", "main", "src/http/client.cj"))
+        plan.requests.add(this.builder.gitCodeIssueHistory("cangjie/cangjie"))
+        plan.requests.add(this.builder.gitCodePrHistory("cangjie/cangjie"))
+        for (url in scope.websiteUrls) {
+            plan.requests.add(this.builder.website(url))
+        }
+        for (url in scope.docsUrls) {
+            plan.requests.add(this.builder.docs(url))
+        }
+        if (scope.includesGovernedWebCandidates) {
+            plan.requests.add(this.builder.webCandidate("https://example.invalid/cangjie-tutorial"))
+        }
+        plan
+    }
+}
+
 public class SourceAdapter {
     private let runner: SourceFetchRunner
+    private let builder: SourceRequestBuilder
+    private let normalizer: SourceResponseNormalizer
 
     public init(runner!: SourceFetchRunner = DisabledNetworkFetchRunner()) {
         this.runner = runner
+        this.builder = SourceRequestBuilder()
+        this.normalizer = SourceResponseNormalizer()
+    }
+
+    public func fetch(request: SourceFetchRequest): SourceFetchResult {
+        this.normalizer.normalize(request, this.runner.fetch(request))
     }
 
     public func fetchGitCodeOrg(org: String): SourceFetchResult {
-        this.runner.fetch(SourceFetchRequest(SourceKinds.GITCODE_ORG, "https://gitcode.com/${org}", repo: org))
+        this.fetch(this.builder.gitCodeOrgRepos(org))
     }
 
     public func fetchGitCodeRepo(repo: String, ref!: String = "main"): SourceFetchResult {
-        this.runner.fetch(SourceFetchRequest(SourceKinds.GITCODE_REPO, "https://gitcode.com/${repo}", repo: repo, ref: ref))
+        this.fetch(this.builder.gitCodeRepo(repo, ref: ref))
     }
 
     public func fetchGitCodeSource(repo: String, ref: String, path: String): SourceFetchResult {
-        this.runner.fetch(SourceFetchRequest(SourceKinds.GITCODE_SOURCE, "https://gitcode.com/${repo}/blob/${ref}/${path}", repo: repo, ref: ref, path: path))
+        this.fetch(this.builder.gitCodeSource(repo, ref, path))
     }
 
     public func fetchGitCodeIssueHistory(repo: String): SourceFetchResult {
-        this.runner.fetch(SourceFetchRequest(SourceKinds.GITCODE_ISSUE_HISTORY, "https://gitcode.com/${repo}/issues", repo: repo))
+        this.fetch(this.builder.gitCodeIssueHistory(repo))
     }
 
     public func fetchGitCodePrHistory(repo: String): SourceFetchResult {
-        this.runner.fetch(SourceFetchRequest(SourceKinds.GITCODE_PR_HISTORY, "https://gitcode.com/${repo}/pulls", repo: repo))
+        this.fetch(this.builder.gitCodePrHistory(repo))
     }
 
     public func fetchCangjieWebsite(url: String): SourceFetchResult {
-        this.runner.fetch(SourceFetchRequest(SourceKinds.CANGJIE_WEBSITE, url))
+        this.fetch(this.builder.website(url))
     }
 
     public func fetchCangjieDocs(url: String): SourceFetchResult {
-        this.runner.fetch(SourceFetchRequest(SourceKinds.CANGJIE_DOCS, url))
+        this.fetch(this.builder.docs(url))
     }
 
     public func fetchWebCandidate(url: String): SourceFetchResult {
-        this.runner.fetch(SourceFetchRequest(SourceKinds.WEB_CANDIDATE, url))
+        this.fetch(this.builder.webCandidate(url))
     }
 }
 
@@ -147,6 +276,11 @@ public class FileKnowledgeStore {
         text += "rawCount=${status.storage.rawCount}\n"
         text += "normalizedCount=${status.storage.normalizedCount}\n"
         text += "indexCount=${status.storage.indexCount}\n"
+        text += "textIndexCount=${status.storage.textIndexCount}\n"
+        text += "vectorIndexCount=${status.storage.vectorIndexCount}\n"
+        text += "symbolIndexCount=${status.storage.symbolIndexCount}\n"
+        text += "graphIndexCount=${status.storage.graphIndexCount}\n"
+        text += this.indexManifestLines(status.indexManifest)
         this.writeLines("metadata/status.ckb", text)
     }
 
@@ -265,6 +399,15 @@ public class FileKnowledgeStore {
         }
         out
     }
+
+    private func indexManifestLines(manifest: IndexManifest): String {
+        var out = "indexManifestActive=${manifest.activeVersion}\n"
+        out += "indexManifestCandidate=${manifest.candidateVersion}\n"
+        for (entry in manifest.entries) {
+            out += "index ${entry.kind}|${entry.version}|${entry.itemCount}|${entry.deterministic}|${entry.candidateIsolated}|${escapeField(entry.notes)}\n"
+        }
+        out
+    }
 }
 
 public class Normalizer {
@@ -363,25 +506,44 @@ public class CkbSchema {
 }
 
 public func ckbSyncOnce(kb: KnowledgeBase, adapter: SourceAdapter, store: FileKnowledgeStore): String {
-    let org = adapter.fetchGitCodeOrg("cangjie")
-    let repo = adapter.fetchGitCodeRepo("cangjie/stdx")
-    let source = adapter.fetchGitCodeSource("cangjie/stdx", "main", "src/http/client.cj")
-    let issue = adapter.fetchGitCodeIssueHistory("cangjie/cangjie")
-    let pr = adapter.fetchGitCodePrHistory("cangjie/cangjie")
-    let docs = adapter.fetchCangjieDocs("https://docs.cangjie-lang.cn/docs/1.0.0/")
-    let web = adapter.fetchCangjieWebsite("https://cangjie-lang.cn/docs")
-    let candidate = adapter.fetchWebCandidate("https://example.invalid/cangjie-tutorial")
-    kb.ingestFetchResult("sync-org", SourceTypes.COMMUNITY, org, "GitCode cangjie org", TrustLevels.COMMUNITY, ReviewStates.REVIEWED)
-    kb.ingestFetchResult("sync-repo", SourceTypes.REPO, repo, "GitCode stdx repo", TrustLevels.OFFICIAL, ReviewStates.TRUSTED)
-    kb.ingestFetchResult("sync-source", SourceTypes.REPO, source, "GitCode stdx source", TrustLevels.OFFICIAL, ReviewStates.TRUSTED)
-    kb.ingestFetchResult("sync-issue", SourceTypes.COMMUNITY, issue, "GitCode issue history", TrustLevels.COMMUNITY, ReviewStates.REVIEWED)
-    kb.ingestFetchResult("sync-pr", SourceTypes.COMMUNITY, pr, "GitCode PR history", TrustLevels.COMMUNITY, ReviewStates.REVIEWED)
-    kb.ingestFetchResult("sync-docs", SourceTypes.DOC, docs, "Cangjie docs", TrustLevels.OFFICIAL, ReviewStates.TRUSTED)
-    kb.ingestFetchResult("sync-website", SourceTypes.WEBSITE, web, "Cangjie website", TrustLevels.OFFICIAL, ReviewStates.TRUSTED)
-    kb.ingestFetchResult("sync-web-candidate", SourceTypes.WEB_CANDIDATE, candidate, "Web candidate", TrustLevels.WEB_CANDIDATE, ReviewStates.CANDIDATE)
+    let planner = SourceSyncPlanner()
+    let plan = planner.productionPlan(kb.sourceScope)
+    var okCount: Int64 = 0
+    var orgStatus = "missing"
+    var repoStatus = "missing"
+    var docsStatus = "missing"
+    var webCandidateStatus = "missing"
+    for (i in 0..plan.requests.size) {
+        let request = plan.requests[i]
+        let fetch = adapter.fetch(request)
+        if (fetch.ok) {
+            okCount += 1
+        }
+        if (request.kind == SourceKinds.GITCODE_ORG) {
+            orgStatus = fetch.status
+            kb.ingestFetchResult("sync-org-${request.repo}", SourceTypes.COMMUNITY, fetch, "GitCode ${request.repo} org", TrustLevels.COMMUNITY, ReviewStates.REVIEWED)
+        } else if (request.kind == SourceKinds.GITCODE_REPO) {
+            repoStatus = fetch.status
+            kb.ingestFetchResult("sync-repo-${safeName(request.repo)}", SourceTypes.REPO, fetch, "GitCode ${request.repo} repo", TrustLevels.OFFICIAL, ReviewStates.TRUSTED)
+        } else if (request.kind == SourceKinds.GITCODE_SOURCE) {
+            kb.ingestFetchResult("sync-source-${safeName(request.repo)}-${safeName(request.path)}", SourceTypes.REPO, fetch, "GitCode ${request.repo} source", TrustLevels.OFFICIAL, ReviewStates.TRUSTED)
+        } else if (request.kind == SourceKinds.GITCODE_ISSUE_HISTORY) {
+            kb.ingestFetchResult("sync-issue-${safeName(request.repo)}", SourceTypes.COMMUNITY, fetch, "GitCode issue history", TrustLevels.COMMUNITY, ReviewStates.REVIEWED)
+        } else if (request.kind == SourceKinds.GITCODE_PR_HISTORY) {
+            kb.ingestFetchResult("sync-pr-${safeName(request.repo)}", SourceTypes.COMMUNITY, fetch, "GitCode PR history", TrustLevels.COMMUNITY, ReviewStates.REVIEWED)
+        } else if (request.kind == SourceKinds.CANGJIE_DOCS) {
+            docsStatus = fetch.status
+            kb.ingestFetchResult("sync-docs-${i}", SourceTypes.DOC, fetch, "Cangjie docs", TrustLevels.OFFICIAL, ReviewStates.TRUSTED)
+        } else if (request.kind == SourceKinds.CANGJIE_WEBSITE) {
+            kb.ingestFetchResult("sync-website-${i}", SourceTypes.WEBSITE, fetch, "Cangjie website", TrustLevels.OFFICIAL, ReviewStates.TRUSTED)
+        } else if (request.kind == SourceKinds.WEB_CANDIDATE) {
+            webCandidateStatus = fetch.status
+            kb.ingestFetchResult("sync-web-candidate-${i}", SourceTypes.WEB_CANDIDATE, fetch, "Web candidate", TrustLevels.WEB_CANDIDATE, ReviewStates.CANDIDATE)
+        }
+    }
     kb.normalize()
     kb.persist(store)
-    "sync status org=${org.status} repo=${repo.status} docs=${docs.status} webCandidate=${candidate.status}"
+    "sync status requests=${plan.requests.size} ok=${okCount} org=${orgStatus} repo=${repoStatus} docs=${docsStatus} webCandidate=${webCandidateStatus}"
 }
 
 public func ckbRebuildIndex(kb: KnowledgeBase, store: FileKnowledgeStore, fail!: Bool = false): IndexBuildResult {
