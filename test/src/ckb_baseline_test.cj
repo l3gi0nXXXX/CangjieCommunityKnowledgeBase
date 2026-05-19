@@ -234,6 +234,77 @@ public class CkbBaselineTest {
     }
 
     @TestCase
+    public func gitCodeRepoVisibilityOnlyAllowsExplicitPublicRepos(): Unit {
+        let publicRepo = GitCodeRepoMetadata()
+        publicRepo.visibility = RepoVisibility.PUBLIC
+        let privateRepo = GitCodeRepoMetadata()
+        privateRepo.visibility = RepoVisibility.PRIVATE
+        let internalRepo = GitCodeRepoMetadata()
+        internalRepo.visibility = RepoVisibility.INTERNAL
+        let unknownRepo = GitCodeRepoMetadata()
+        unknownRepo.visibility = RepoVisibility.UNKNOWN
+
+        @Expect(RepoVisibility.PUBLIC, "public")
+        @Expect(RepoVisibility.PRIVATE, "private")
+        @Expect(RepoVisibility.INTERNAL, "internal")
+        @Expect(RepoVisibility.UNKNOWN, "unknown")
+        @Expect(deriveRepoVisibility(true, true, true), RepoVisibility.PRIVATE)
+        @Expect(deriveRepoVisibility(false, true, true), RepoVisibility.INTERNAL)
+        @Expect(deriveRepoVisibility(false, false, true), RepoVisibility.PUBLIC)
+        @Expect(deriveRepoVisibility(false, false, false), RepoVisibility.UNKNOWN)
+        @Expect(isRepoAllowedForKnowledge(publicRepo), true)
+        @Expect(isRepoAllowedForKnowledge(privateRepo), false)
+        @Expect(isRepoAllowedForKnowledge(internalRepo), false)
+        @Expect(isRepoAllowedForKnowledge(unknownRepo), false)
+    }
+
+    @TestCase
+    public func gitCodeOrgRepoListParserBuildsPathsFromNamespaceAndPath(): Unit {
+        let body = "[{\"id\":101,\"full_name\":\"Display Name With Spaces\",\"name\":\"stdx-display\",\"path\":\"stdx\",\"default_branch\":\"main\",\"visibility\":\"public\",\"web_url\":\"https://gitcode.com/cangjie/stdx\",\"namespace\":{\"path\":\"cangjie\"}},{\"id\":\"102\",\"full_name\":\"bad owner/bad repo\",\"name\":\"private-display\",\"path\":\"private-repo\",\"default_branch\":\"dev\",\"private\":true,\"visibility\":\"public\",\"web_url\":\"https://gitcode.com/cangjie/private-repo\",\"namespace\":{\"path\":\"cangjie\"}},{\"id\":103,\"name\":\"internal-repo\",\"defaultBranch\":\"trunk\",\"internal\":true,\"namespace\":{\"path\":\"cangjie-sig\"}},{\"id\":104,\"path\":\"mystery\",\"visibility\":\"friends\",\"namespace\":{\"path\":\"cangjie\"}},{\"id\":105,\"path\":\"broken\",\"visibility\":\"public\",\"namespace\":{\"path\":\"bad owner\"}}]"
+
+        let repos = parseGitCodeOrgReposJson(body)
+
+        @Expect(repos.size, 4)
+        @Expect(repos[0].org, "cangjie")
+        @Expect(repos[0].owner, "cangjie")
+        @Expect(repos[0].repo, "stdx")
+        @Expect(repos[0].fullName, "cangjie/stdx")
+        @Expect(repos[0].fullName.contains("Display Name With Spaces"), false)
+        @Expect(repos[0].defaultBranch, "main")
+        @Expect(repos[0].rawId, "101")
+        @Expect(repos[0].sourceUrl, "https://gitcode.com/cangjie/stdx")
+        @Expect(repos[0].public, true)
+        @Expect(repos[0].private, false)
+        @Expect(repos[0].internal, false)
+        @Expect(repos[0].visibility, RepoVisibility.PUBLIC)
+        @Expect(isRepoAllowedForKnowledge(repos[0]), true)
+        @Expect(repos[1].visibility, RepoVisibility.PRIVATE)
+        @Expect(isRepoAllowedForKnowledge(repos[1]), false)
+        @Expect(repos[2].repo, "internal-repo")
+        @Expect(repos[2].defaultBranch, "trunk")
+        @Expect(repos[2].visibility, RepoVisibility.INTERNAL)
+        @Expect(isRepoAllowedForKnowledge(repos[2]), false)
+        @Expect(repos[3].visibility, RepoVisibility.UNKNOWN)
+        @Expect(repos[3].public, false)
+        @Expect(isRepoAllowedForKnowledge(repos[3]), false)
+    }
+
+    @TestCase
+    public func gitCodeRepoMetadataParserDoesNotDefaultMalformedVisibilityToPublic(): Unit {
+        let unknown = parseGitCodeRepoMetadataJson("{\"id\":201,\"path\":\"ambiguous\",\"visibility\":\"team-only\",\"namespace\":{\"path\":\"cangjie\"}}")
+        let missing = parseGitCodeRepoMetadataJson("{\"id\":202,\"path\":\"missing-visibility\",\"namespace\":{\"path\":\"cangjie\"}}")
+
+        @Expect(unknown.fullName, "cangjie/ambiguous")
+        @Expect(unknown.visibility, RepoVisibility.UNKNOWN)
+        @Expect(unknown.public, false)
+        @Expect(isRepoAllowedForKnowledge(unknown), false)
+        @Expect(missing.fullName, "cangjie/missing-visibility")
+        @Expect(missing.visibility, RepoVisibility.UNKNOWN)
+        @Expect(missing.public, false)
+        @Expect(isRepoAllowedForKnowledge(missing), false)
+    }
+
+    @TestCase
     public func sourceSyncPlannerCoversThreeOrgsDocsWebsiteHistoryAndCandidates(): Unit {
         let scope = SourceScope()
         let plan = SourceSyncPlanner().productionPlan(scope)

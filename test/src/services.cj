@@ -293,6 +293,321 @@ public class GitCodeAuthResolution {
     public init() {}
 }
 
+public class RepoVisibility {
+    public static let PUBLIC: String = "public"
+    public static let PRIVATE: String = "private"
+    public static let INTERNAL: String = "internal"
+    public static let UNKNOWN: String = "unknown"
+}
+
+public class GitCodeRepoMetadata {
+    public var org: String = ""
+    public var owner: String = ""
+    public var repo: String = ""
+    public var fullName: String = ""
+    public var defaultBranch: String = ""
+    public var public: Bool = false
+    public var private: Bool = false
+    public var internal: Bool = false
+    public var visibility: String = RepoVisibility.UNKNOWN
+    public var sourceUrl: String = ""
+    public var rawId: String = ""
+
+    public init() {}
+}
+
+private class JsonStringScan {
+    var ok: Bool = false
+    var value: String = ""
+    var end: Int64 = 0
+
+    init() {}
+}
+
+public func deriveRepoVisibility(private: Bool, internal: Bool, public: Bool): String {
+    if (private) {
+        return RepoVisibility.PRIVATE
+    }
+    if (internal) {
+        return RepoVisibility.INTERNAL
+    }
+    if (public) {
+        return RepoVisibility.PUBLIC
+    }
+    RepoVisibility.UNKNOWN
+}
+
+public func isRepoAllowedForKnowledge(metadata: GitCodeRepoMetadata): Bool {
+    metadata.visibility == RepoVisibility.PUBLIC
+}
+
+public func parseGitCodeRepoMetadataJson(body: String): GitCodeRepoMetadata {
+    parseGitCodeRepoObject(body)
+}
+
+public func parseGitCodeOrgReposJson(body: String): ArrayList<GitCodeRepoMetadata> {
+    let repos = ArrayList<GitCodeRepoMetadata>()
+    let trimmed = body.trimAscii()
+    if (!trimmed.startsWith("[") || !trimmed.endsWith("]")) {
+        return repos
+    }
+    var i: Int64 = 0
+    var inString = false
+    var escaped = false
+    var depth: Int64 = 0
+    var start: Int64 = -1
+    while (i < trimmed.size) {
+        let ch = trimmed[i..i + 1]
+        if (inString) {
+            if (escaped) {
+                escaped = false
+            } else if (ch == "\\") {
+                escaped = true
+            } else if (ch == "\"") {
+                inString = false
+            }
+        } else if (ch == "\"") {
+            inString = true
+        } else if (ch == "{") {
+            if (depth == 0) {
+                start = i
+            }
+            depth += 1
+        } else if (ch == "}") {
+            depth -= 1
+            if (depth == 0 && start >= 0) {
+                let metadata = parseGitCodeRepoObject(trimmed[start..i + 1])
+                if (metadata.fullName != "") {
+                    repos.add(metadata)
+                }
+                start = -1
+            }
+        }
+        i += 1
+    }
+    repos
+}
+
+private func parseGitCodeRepoObject(raw: String): GitCodeRepoMetadata {
+    let metadata = GitCodeRepoMetadata()
+    let namespaceObject = jsonObjectField(raw, "namespace")
+    metadata.org = jsonStringField(namespaceObject, "path")
+    metadata.owner = metadata.org
+    metadata.repo = jsonStringField(raw, "path")
+    if (metadata.repo == "") {
+        metadata.repo = jsonStringField(raw, "name")
+    }
+    if (metadata.owner != "" && metadata.repo != "" && isSafeGitCodePathPart(metadata.owner) && isSafeGitCodePathPart(metadata.repo)) {
+        metadata.fullName = "${metadata.owner}/${metadata.repo}"
+    }
+    metadata.defaultBranch = jsonStringField(raw, "default_branch")
+    if (metadata.defaultBranch == "") {
+        metadata.defaultBranch = jsonStringField(raw, "defaultBranch")
+    }
+    metadata.sourceUrl = firstNonEmptyJsonString(raw, ["web_url", "html_url", "sourceUrl", "url"])
+    metadata.rawId = jsonScalarField(raw, "id")
+    let visibilityText = normalizeRepoVisibility(jsonStringField(raw, "visibility"))
+    metadata.private = jsonBoolField(raw, "private") || visibilityText == RepoVisibility.PRIVATE
+    metadata.internal = jsonBoolField(raw, "internal") || visibilityText == RepoVisibility.INTERNAL
+    metadata.public = jsonBoolField(raw, "public") || visibilityText == RepoVisibility.PUBLIC
+    metadata.visibility = deriveRepoVisibility(metadata.private, metadata.internal, metadata.public)
+    metadata
+}
+
+private func normalizeRepoVisibility(raw: String): String {
+    let value = raw.trimAscii().toAsciiLower()
+    if (value == RepoVisibility.PUBLIC || value == RepoVisibility.PRIVATE || value == RepoVisibility.INTERNAL) {
+        return value
+    }
+    RepoVisibility.UNKNOWN
+}
+
+private func firstNonEmptyJsonString(raw: String, keys: Array<String>): String {
+    for (key in keys) {
+        let value = jsonStringField(raw, key)
+        if (value != "") {
+            return value
+        }
+    }
+    ""
+}
+
+private func jsonStringField(raw: String, key: String): String {
+    let start = jsonTopLevelValueStart(raw, key)
+    if (start < 0 || start >= raw.size || raw[start..start + 1] != "\"") {
+        return ""
+    }
+    let scan = readJsonStringAt(raw, start)
+    if (scan.ok) {
+        return scan.value
+    }
+    ""
+}
+
+private func jsonObjectField(raw: String, key: String): String {
+    let start = jsonTopLevelValueStart(raw, key)
+    if (start < 0 || start >= raw.size || raw[start..start + 1] != "{") {
+        return ""
+    }
+    var i = start
+    var inString = false
+    var escaped = false
+    var depth: Int64 = 0
+    while (i < raw.size) {
+        let ch = raw[i..i + 1]
+        if (inString) {
+            if (escaped) {
+                escaped = false
+            } else if (ch == "\\") {
+                escaped = true
+            } else if (ch == "\"") {
+                inString = false
+            }
+        } else if (ch == "\"") {
+            inString = true
+        } else if (ch == "{") {
+            depth += 1
+        } else if (ch == "}") {
+            depth -= 1
+            if (depth == 0) {
+                return raw[start..i + 1]
+            }
+        }
+        i += 1
+    }
+    ""
+}
+
+private func jsonBoolField(raw: String, key: String): Bool {
+    let start = jsonTopLevelValueStart(raw, key)
+    if (start < 0) {
+        return false
+    }
+    raw[start..raw.size].startsWith("true")
+}
+
+private func jsonScalarField(raw: String, key: String): String {
+    let start = jsonTopLevelValueStart(raw, key)
+    if (start < 0 || start >= raw.size) {
+        return ""
+    }
+    if (raw[start..start + 1] == "\"") {
+        return jsonStringField(raw, key)
+    }
+    var end = start
+    while (end < raw.size) {
+        let ch = raw[end..end + 1]
+        if (ch == "," || ch == "}" || ch == "]" || ch == "\n" || ch == "\r" || ch == " " || ch == "\t") {
+            break
+        }
+        end += 1
+    }
+    raw[start..end].trimAscii()
+}
+
+private func jsonTopLevelValueStart(raw: String, key: String): Int64 {
+    var i: Int64 = 0
+    var depth: Int64 = 0
+    var inString = false
+    var escaped = false
+    while (i < raw.size) {
+        let ch = raw[i..i + 1]
+        if (inString) {
+            if (escaped) {
+                escaped = false
+            } else if (ch == "\\") {
+                escaped = true
+            } else if (ch == "\"") {
+                inString = false
+            }
+            i += 1
+            continue
+        }
+        if (ch == "\"") {
+            if (depth == 1) {
+                let scan = readJsonStringAt(raw, i)
+                if (scan.ok && scan.value == key) {
+                    var colon = skipJsonWhitespace(raw, scan.end)
+                    if (colon < raw.size && raw[colon..colon + 1] == ":") {
+                        return skipJsonWhitespace(raw, colon + 1)
+                    }
+                }
+                i = if (scan.ok) { scan.end } else { i + 1 }
+                continue
+            }
+            inString = true
+        } else if (ch == "{" || ch == "[") {
+            depth += 1
+        } else if (ch == "}" || ch == "]") {
+            depth -= 1
+        }
+        i += 1
+    }
+    -1
+}
+
+private func readJsonStringAt(raw: String, start: Int64): JsonStringScan {
+    let scan = JsonStringScan()
+    if (start < 0 || start >= raw.size || raw[start..start + 1] != "\"") {
+        return scan
+    }
+    var i = start + 1
+    var escaped = false
+    var value = ""
+    while (i < raw.size) {
+        let ch = raw[i..i + 1]
+        if (escaped) {
+            value += jsonUnescapeChar(ch)
+            escaped = false
+        } else if (ch == "\\") {
+            escaped = true
+        } else if (ch == "\"") {
+            scan.ok = true
+            scan.value = value
+            scan.end = i + 1
+            return scan
+        } else {
+            value += ch
+        }
+        i += 1
+    }
+    scan
+}
+
+private func jsonUnescapeChar(ch: String): String {
+    if (ch == "\"") {
+        return "\""
+    }
+    if (ch == "\\") {
+        return "\\"
+    }
+    if (ch == "/") {
+        return "/"
+    }
+    if (ch == "n") {
+        return "\n"
+    }
+    if (ch == "r") {
+        return "\r"
+    }
+    if (ch == "t") {
+        return "\t"
+    }
+    ch
+}
+
+private func skipJsonWhitespace(raw: String, start: Int64): Int64 {
+    var i = start
+    while (i < raw.size) {
+        let ch = raw[i..i + 1]
+        if (ch != " " && ch != "\n" && ch != "\r" && ch != "\t") {
+            break
+        }
+        i += 1
+    }
+    i
+}
+
 private class CredentialFileRead {
     var status: String = "not_configured"
     var value: String = ""
