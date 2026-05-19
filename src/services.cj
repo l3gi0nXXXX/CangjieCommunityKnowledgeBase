@@ -122,9 +122,9 @@ public class CkbRuntimeConfig {
     public var websiteEnabled: Bool = false
     public var docsEnabled: Bool = false
     public var indexBackend: String = "offline"
-    public var embeddingProvider: String = "none"
-    public var embeddingModel: String = ""
-    public var embeddingDimensions: Int64 = 0
+    public var embeddingProvider: String = "deterministic"
+    public var embeddingModel: String = "deterministic-token-v1"
+    public var embeddingDimensions: Int64 = 16
     public var embeddingEndpoint: String = ""
     public var embeddingTokenFile: String = ""
     public var embeddingBatchSize: Int64 = 16
