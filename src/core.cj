@@ -607,6 +607,8 @@ public class StorageStatus {
     public var graphState: String = EmbeddingProviderState.DEGRADED
     public var graphNodeCount: Int64 = 0
     public var graphEdgeCount: Int64 = 0
+    public var restoreState: String = "not_attempted"
+    public var restoreDiagnostic: String = ""
 
     public init() {}
 }
@@ -1214,6 +1216,70 @@ public class KnowledgeBase {
         buildGraphFromRecords(this.activeIndex, this.activeKnowledgeVersion)
     }
 
+    public func restoreActiveSnapshot(snapshot: ActiveSnapshot): Bool {
+        if (!snapshot.valid) {
+            this.bootstrapOffline()
+            this.storage.restoreState = "fallback"
+            this.storage.restoreDiagnostic = snapshot.diagnostic
+            return false
+        }
+        this.rawRecords.clear()
+        for (record in snapshot.rawRecords) {
+            this.rawRecords.add(record)
+        }
+        this.normalizedRecords.clear()
+        for (record in snapshot.normalizedRecords) {
+            this.normalizedRecords.add(record)
+        }
+        this.activeIndex.clear()
+        for (record in snapshot.activeIndex) {
+            record.metadata.knowledgeVersion = snapshot.activeVersion
+            this.activeIndex.add(record)
+        }
+        this.candidateIndex.clear()
+        this.activeKnowledgeVersion = snapshot.activeVersion
+        this.candidateKnowledgeVersion = snapshot.candidateVersion
+        this.failedCandidateVersion = snapshot.failedVersion
+        this.restoreStorageStatus(snapshot.storage)
+        this.indexManifest = snapshot.indexManifest
+        this.rebuildProductionIndexes()
+        if (this.indexManifest.activeVersion == "") {
+            this.rebuildIndexManifest()
+        } else {
+            this.storage.textIndexCount = this.activeIndex.size
+            this.storage.symbolIndexCount = this.countSymbolRecords()
+            this.storage.graphIndexCount = this.storage.graphEdgeCount
+        }
+        this.storage.rawCount = this.rawRecords.size
+        this.storage.normalizedCount = this.normalizedRecords.size
+        this.storage.indexCount = this.activeIndex.size
+        this.storage.restoreState = "restored"
+        this.storage.restoreDiagnostic = snapshot.diagnostic
+        true
+    }
+
+    private func restoreStorageStatus(status: StorageStatus): Unit {
+        this.storage.rawCount = status.rawCount
+        this.storage.normalizedCount = status.normalizedCount
+        this.storage.indexCount = status.indexCount
+        this.storage.derivedCount = status.derivedCount
+        this.storage.textIndexCount = status.textIndexCount
+        this.storage.vectorIndexCount = status.vectorIndexCount
+        this.storage.symbolIndexCount = status.symbolIndexCount
+        this.storage.graphIndexCount = status.graphIndexCount
+        this.storage.vectorBackend = status.vectorBackend
+        this.storage.vectorState = status.vectorState
+        this.storage.vectorDimension = status.vectorDimension
+        this.storage.vectorCollection = status.vectorCollection
+        this.storage.vectorDegradedReason = status.vectorDegradedReason
+        this.storage.graphBackend = status.graphBackend
+        this.storage.graphState = status.graphState
+        this.storage.graphNodeCount = status.graphNodeCount
+        this.storage.graphEdgeCount = status.graphEdgeCount
+        this.storage.restoreState = status.restoreState
+        this.storage.restoreDiagnostic = status.restoreDiagnostic
+    }
+
     public func rawRecordCount(): Int64 {
         this.rawRecords.size
     }
@@ -1530,6 +1596,12 @@ public class KnowledgeBase {
 public func newOfflineKnowledgeBase(): KnowledgeBase {
     let kb = KnowledgeBase(FakeClock(0))
     kb.bootstrapOffline()
+    kb
+}
+
+public func newKnowledgeBaseFromStore(store: FileKnowledgeStore): KnowledgeBase {
+    let kb = KnowledgeBase(FakeClock(0))
+    kb.restoreActiveSnapshot(store.loadActiveSnapshot())
     kb
 }
 

@@ -539,6 +539,67 @@ public class CkbBaselineTest {
     }
 
     @TestCase
+    public func restoreActiveSnapshotRehydratesSearchAndGraphBackends(): Unit {
+        let kb = newOfflineKnowledgeBase()
+        let store = FileKnowledgeStore("target/ckb-test-restore-active")
+        let result = ckbRebuildIndex(kb, store)
+
+        let restored = newKnowledgeBaseFromStore(store)
+        let status = cangjie_knowledge_status(restored)
+        let hybrid = cangjie_hybrid_search(restored, "define function", 3)
+        let pack = cangjie_evidence_pack(restored, "HttpClient", 1)
+
+        @Expect(result.ok, true)
+        @Expect(status.activeKnowledgeVersion, result.activeVersion)
+        @Expect(status.candidateKnowledgeVersion, result.candidateVersion)
+        @Expect(status.storage.restoreState, "restored")
+        @Expect(status.storage.rawCount, kb.rawRecordCount())
+        @Expect(status.storage.normalizedCount, kb.normalizedRecordCount())
+        @Expect(status.storage.indexCount > 0, true)
+        @Expect(status.indexManifest.activeVersion, result.activeVersion)
+        @Expect(hybrid.records.size > 0, true)
+        @Expect(hybrid.vectorUsed, true)
+        @Expect(pack.hasGraphContext, true)
+        @Expect(pack.graphContext.knowledgeVersion, result.activeVersion)
+        @Expect(pack.graphContext.edges.size > 0, true)
+    }
+
+    @TestCase
+    public func restoreFallbackUsesOfflineBaselineForInvalidSnapshot(): Unit {
+        let store = FileKnowledgeStore("target/ckb-test-restore-invalid")
+        let restored = newKnowledgeBaseFromStore(store)
+        let status = cangjie_knowledge_status(restored)
+
+        @Expect(status.activeKnowledgeVersion, "ckb-20260519-000100-active")
+        @Expect(status.storage.restoreState, "fallback")
+        @Expect(status.storage.restoreDiagnostic, "missing_active_version")
+        @Expect(cangjie_source_search(restored, "HttpClient", 3).records.size > 0, true)
+    }
+
+    @TestCase
+    public func failedCandidateSnapshotDoesNotReplaceRestoredActiveVersion(): Unit {
+        let seed = newOfflineKnowledgeBase()
+        let store = FileKnowledgeStore("target/ckb-test-restore-failed-candidate")
+        let active = ckbRebuildIndex(seed, store)
+        let restored = newKnowledgeBaseFromStore(store)
+        let options = LiveApplyOptions()
+        options.apply = true
+        options.simulateValidationFailure = true
+        options.maxItems = 2
+
+        let failed = ckbSyncLiveApply(restored, SourceAdapter(runner: FakeSourceFetchRunner()), store, options)
+        let afterFailure = newKnowledgeBaseFromStore(store)
+        let status = cangjie_knowledge_status(afterFailure)
+
+        @Expect(active.ok, true)
+        @Expect(failed.ok, false)
+        @Expect(status.activeKnowledgeVersion, active.activeVersion)
+        @Expect(status.failedCandidateVersion.contains("candidate"), true)
+        @Expect(status.storage.restoreState, "restored")
+        @Expect(cangjie_source_search(afterFailure, "HttpClient", 3).knowledgeVersion, active.activeVersion)
+    }
+
+    @TestCase
     public func schemaListsMcpToolsAndHttpLikeRoutes(): Unit {
         @Expect(CkbSchema.mcpTools().contains("cangjie.evidence_pack"), true)
         @Expect(CkbSchema.mcpTools().contains("cangjie.status"), true)

@@ -461,6 +461,22 @@ public class LiveApplyResult {
     public init() {}
 }
 
+public class ActiveSnapshot {
+    public var activeVersion: String = ""
+    public var candidateVersion: String = ""
+    public var failedVersion: String = ""
+    public var rawRecords: ArrayList<RawRecord> = ArrayList<RawRecord>()
+    public var normalizedRecords: ArrayList<NormalizedRecord> = ArrayList<NormalizedRecord>()
+    public var activeIndex: ArrayList<NormalizedRecord> = ArrayList<NormalizedRecord>()
+    public var status: KnowledgeStatus = KnowledgeStatus()
+    public var storage: StorageStatus = StorageStatus()
+    public var indexManifest: IndexManifest = IndexManifest()
+    public var valid: Bool = false
+    public var diagnostic: String = ""
+
+    public init() {}
+}
+
 public func ckbSyncLive(kb: KnowledgeBase, config: CkbRuntimeConfig, options: LiveSyncOptions, runner!: SourceFetchRunner = DisabledNetworkFetchRunner(), store!: FileKnowledgeStore = FileKnowledgeStore("target/ckb-data")): String {
     if (options.dryRun == options.apply) {
         return "usage error: sync-live requires exactly one of --dry-run or --apply"
@@ -672,8 +688,110 @@ public class FileKnowledgeStore {
     }
 
     public func loadNormalized(): ArrayList<NormalizedRecord> {
+        this.loadNormalizedFile("normalized/records.ckb")
+    }
+
+    public func loadActiveVersion(): String {
+        this.readLines("index/active.version").trimAscii()
+    }
+
+    public func loadActiveIndex(): ArrayList<NormalizedRecord> {
+        this.loadNormalizedFile("index/active.ckb")
+    }
+
+    public func loadMetadataStatus(): KnowledgeStatus {
+        let status = KnowledgeStatus()
+        let text = this.readLines("metadata/status.ckb")
+        if (text == "") {
+            return status
+        }
+        let manifest = IndexManifest()
+        for (line in text.split("\n")) {
+            let trimmed = line.trimAscii()
+            if (trimmed == "") {
+                continue
+            }
+            if (trimmed.startsWith("index ")) {
+                let parts = trimmed.replace("index ", "").split("|")
+                if (parts.size >= 6) {
+                    let entry = IndexMetadata()
+                    entry.kind = unescapeField(parts[0])
+                    entry.version = unescapeField(parts[1])
+                    entry.itemCount = parseIntOrZero(parts[2])
+                    entry.deterministic = parts[3] == "true"
+                    entry.candidateIsolated = parts[4] == "true"
+                    entry.notes = unescapeField(parts[5])
+                    manifest.entries.add(entry)
+                }
+                continue
+            }
+            let splitAt = trimmed.split("=")
+            if (splitAt.size < 2) {
+                continue
+            }
+            let key = splitAt[0]
+            var value = splitAt[1]
+            if (splitAt.size > 2) {
+                for (i in 2..splitAt.size) {
+                    value += "=${splitAt[i]}"
+                }
+            }
+            this.applyStatusField(status, manifest, key, value)
+        }
+        status.indexManifest = manifest
+        status
+    }
+
+    public func loadActiveSnapshot(): ActiveSnapshot {
+        let snapshot = ActiveSnapshot()
+        snapshot.activeVersion = this.loadActiveVersion()
+        snapshot.rawRecords = this.loadRaw()
+        snapshot.normalizedRecords = this.loadNormalized()
+        snapshot.activeIndex = this.loadActiveIndex()
+        snapshot.status = this.loadMetadataStatus()
+        snapshot.storage = snapshot.status.storage
+        snapshot.indexManifest = snapshot.status.indexManifest
+        snapshot.candidateVersion = snapshot.status.candidateKnowledgeVersion
+        snapshot.failedVersion = snapshot.status.failedCandidateVersion
+        if (snapshot.activeVersion == "") {
+            snapshot.diagnostic = "missing_active_version"
+            return snapshot
+        }
+        if (snapshot.activeIndex.size == 0) {
+            snapshot.diagnostic = "missing_or_empty_active_index"
+            return snapshot
+        }
+        if (snapshot.status.activeKnowledgeVersion != "" && snapshot.status.activeKnowledgeVersion != snapshot.activeVersion) {
+            snapshot.diagnostic = "metadata_active_version_mismatch"
+            return snapshot
+        }
+        for (record in snapshot.activeIndex) {
+            if (record.sourceId == "" || record.recordKind == "" || record.citation == "") {
+                snapshot.diagnostic = "invalid_active_index_record"
+                return snapshot
+            }
+            if (record.metadata.knowledgeVersion != snapshot.activeVersion) {
+                snapshot.diagnostic = "active_index_version_mismatch"
+                return snapshot
+            }
+        }
+        if (snapshot.normalizedRecords.size == 0) {
+            for (record in snapshot.activeIndex) {
+                snapshot.normalizedRecords.add(record)
+            }
+        }
+        if (snapshot.indexManifest.activeVersion == "") {
+            snapshot.indexManifest.activeVersion = snapshot.activeVersion
+            snapshot.indexManifest.candidateVersion = snapshot.candidateVersion
+        }
+        snapshot.valid = true
+        snapshot.diagnostic = "restored_active_snapshot"
+        snapshot
+    }
+
+    private func loadNormalizedFile(relative: String): ArrayList<NormalizedRecord> {
         let out = ArrayList<NormalizedRecord>()
-        let text = this.readLines("normalized/records.ckb")
+        let text = this.readLines(relative)
         if (text == "") {
             return out
         }
@@ -694,6 +812,33 @@ public class FileKnowledgeStore {
             }
         }
         out
+    }
+
+    private func applyStatusField(status: KnowledgeStatus, manifest: IndexManifest, key: String, value: String): Unit {
+        match (key) {
+            case "active" => status.activeKnowledgeVersion = value
+            case "candidate" => status.candidateKnowledgeVersion = value
+            case "failed" => status.failedCandidateVersion = value
+            case "rawCount" => status.storage.rawCount = parseIntOrZero(value)
+            case "normalizedCount" => status.storage.normalizedCount = parseIntOrZero(value)
+            case "indexCount" => status.storage.indexCount = parseIntOrZero(value)
+            case "textIndexCount" => status.storage.textIndexCount = parseIntOrZero(value)
+            case "vectorIndexCount" => status.storage.vectorIndexCount = parseIntOrZero(value)
+            case "symbolIndexCount" => status.storage.symbolIndexCount = parseIntOrZero(value)
+            case "graphIndexCount" => status.storage.graphIndexCount = parseIntOrZero(value)
+            case "vectorBackend" => status.storage.vectorBackend = value
+            case "vectorState" => status.storage.vectorState = value
+            case "vectorCollection" => status.storage.vectorCollection = value
+            case "vectorDimension" => status.storage.vectorDimension = parseIntOrZero(value)
+            case "vectorDegradedReason" => status.storage.vectorDegradedReason = unescapeField(value)
+            case "graphBackend" => status.storage.graphBackend = value
+            case "graphState" => status.storage.graphState = value
+            case "graphNodeCount" => status.storage.graphNodeCount = parseIntOrZero(value)
+            case "graphEdgeCount" => status.storage.graphEdgeCount = parseIntOrZero(value)
+            case "indexManifestActive" => manifest.activeVersion = value
+            case "indexManifestCandidate" => manifest.candidateVersion = value
+            case _ => ()
+        }
     }
 
     public func publicStatus(): StorageStatus {
@@ -971,9 +1116,7 @@ public func ckbSyncLiveApply(kb: KnowledgeBase, adapter: SourceAdapter, store: F
 public func ckbRebuildIndex(kb: KnowledgeBase, store: FileKnowledgeStore, fail!: Bool = false): IndexBuildResult {
     let result = kb.rebuildIndex(fail)
     if (result.ok) {
-        kb.persistIndex(store)
-        store.saveVectorCollection(kb.activeVectorRecords(), "active")
-        store.saveGraph(kb.activeGraphBuild())
+        kb.persistActiveSnapshot(store)
     }
     result
 }
@@ -1034,6 +1177,10 @@ private func vectorToLine(vector: ArrayList<Float64>): String {
         out += "${vector[i]}"
     }
     out
+}
+
+private func parseIntOrZero(raw: String): Int64 {
+    try { Int64.parse(raw) } catch (_: Exception) { 0 }
 }
 
 private func repoSeen(plan: SourceSyncPlan, repo: String): Bool {
