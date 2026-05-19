@@ -70,9 +70,11 @@ The Cangjie API surface is implemented as MCP/HTTP-like functions:
 - `cangjie_knowledge_status`
 
 `CkbSchema.mcpTools()` and `CkbSchema.httpLikeRoutes()` expose the current
-contract names for bridge callers. `QueryService` supports `source`, `doc`,
-`website`, `web_candidate`, `hybrid`, `evidence_pack`, and `status` modes with
-budget, truncation, citation, trust, review-state, and candidate filters.
+contract names for bridge callers, including the production health, status,
+query, evidence, sync, and rebuild boundary used by Metis-facing integration.
+`QueryService` supports `source`, `doc`, `website`, `web_candidate`, `hybrid`,
+`evidence_pack`, and `status` modes with budget, truncation, citation, trust,
+review-state, and candidate filters.
 
 ## Scheduler and Freshness
 

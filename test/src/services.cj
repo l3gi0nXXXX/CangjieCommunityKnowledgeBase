@@ -997,11 +997,11 @@ public class QueryService {
 
 public class CkbSchema {
     public static func mcpTools(): String {
-        "tools: cangjie.source_search,cangjie.doc_search,cangjie.website_search,cangjie.web_candidate_search,cangjie.hybrid_search,cangjie.evidence_pack,cangjie.status"
+        "tools: cangjie.health,cangjie.status,cangjie.query,cangjie.evidence,cangjie.sync,cangjie.rebuild,cangjie.source_search,cangjie.doc_search,cangjie.website_search,cangjie.web_candidate_search,cangjie.hybrid_search,cangjie.evidence_pack; input: query{q,budget,sourceType,includeCandidates=false}, evidence{q,budget,includeCandidates=true}, sync{dryRun,apply,maxRepos,maxFilesPerRepo,maxItems,since}, rebuild{store}; output: ok,status,errorCode,activeKnowledgeVersion,knowledgeVersion,citations,evidence,requiresReview,truncated,degraded; redaction: never returns tokenRef,tokenFile contents,Authorization,Cookie,absolute local paths; errors: ckb.bad_request,ckb.network_disabled,ckb.auth_degraded,ckb.rate_limited,ckb.source_unavailable,ckb.rebuild_failed,ckb.validation_failed"
     }
 
     public static func httpLikeRoutes(): String {
-        "routes: GET /status, POST /query, POST /evidence, POST /sync-once, POST /rebuild-index"
+        "routes: GET /health -> ok,status,activeKnowledgeVersion,degraded; GET /status -> storage,indexManifest,scheduler,activeKnowledgeVersion,restoreDiagnostic; POST /query -> query,evidence,citations,knowledgeVersion; POST /evidence -> evidencePack,graphContext,citations,activeKnowledgeVersion; POST /sync -> dryRun|apply,candidateVersion,activeKnowledgeVersion,redactedSourceStatus; POST /rebuild-index -> candidateVersion,activeKnowledgeVersion,count; compatibility: GET /status and POST /rebuild-index map to CLI status and rebuild-index"
     }
 }
 

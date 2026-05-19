@@ -4,6 +4,9 @@ MEMORY.md
 DREAMS.md
 memory/
 .env
+tokenFile
+ckb-live.conf
+*.local.conf
 .agents/
 .claude/
 .learnings/

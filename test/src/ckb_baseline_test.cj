@@ -629,10 +629,54 @@ public class CkbBaselineTest {
 
     @TestCase
     public func schemaListsMcpToolsAndHttpLikeRoutes(): Unit {
-        @Expect(CkbSchema.mcpTools().contains("cangjie.evidence_pack"), true)
-        @Expect(CkbSchema.mcpTools().contains("cangjie.status"), true)
-        @Expect(CkbSchema.httpLikeRoutes().contains("POST /query"), true)
-        @Expect(CkbSchema.httpLikeRoutes().contains("POST /rebuild-index"), true)
+        let tools = CkbSchema.mcpTools()
+        let routes = CkbSchema.httpLikeRoutes()
+
+        @Expect(tools.contains("cangjie.health"), true)
+        @Expect(tools.contains("cangjie.status"), true)
+        @Expect(tools.contains("cangjie.query"), true)
+        @Expect(tools.contains("cangjie.evidence"), true)
+        @Expect(tools.contains("cangjie.sync"), true)
+        @Expect(tools.contains("cangjie.rebuild"), true)
+        @Expect(tools.contains("cangjie.evidence_pack"), true)
+        @Expect(tools.contains("activeKnowledgeVersion"), true)
+        @Expect(tools.contains("citations"), true)
+        @Expect(tools.contains("requiresReview"), true)
+        @Expect(tools.contains("ckb.auth_degraded"), true)
+        @Expect(tools.contains("Authorization"), true)
+        @Expect(tools.contains("Cookie"), true)
+        @Expect(tools.contains("fake-live-token"), false)
+        @Expect(routes.contains("GET /health"), true)
+        @Expect(routes.contains("GET /status"), true)
+        @Expect(routes.contains("POST /query"), true)
+        @Expect(routes.contains("POST /evidence"), true)
+        @Expect(routes.contains("POST /sync"), true)
+        @Expect(routes.contains("POST /rebuild-index"), true)
+        @Expect(routes.contains("redactedSourceStatus"), true)
+    }
+
+    @TestCase
+    public func integrationDocsDefineBoundariesWithoutRealCredentials(): Unit {
+        let integration = String.fromUtf8(File.readFrom(Path("../docs/metis-gitcodemonitor-integration.md")))
+        let checklist = String.fromUtf8(File.readFrom(Path("../docs/manual-acceptance-checklist.md")))
+        let docs = integration + "\n" + checklist
+
+        @Expect(integration.contains("GET /health"), true)
+        @Expect(integration.contains("POST /query"), true)
+        @Expect(integration.contains("POST /evidence"), true)
+        @Expect(integration.contains("POST /sync"), true)
+        @Expect(integration.contains("POST /rebuild-index"), true)
+        @Expect(integration.contains("activeKnowledgeVersion"), true)
+        @Expect(integration.contains("requiresReview=true"), true)
+        @Expect(integration.contains("GitCodeMonitor should go through Metis"), true)
+        @Expect(checklist.contains("Real Source Sync"), true)
+        @Expect(checklist.contains("Backup and Restore"), true)
+        @Expect(checklist.contains("Exception Recovery"), true)
+        @Expect(docs.contains("fake-live-token"), false)
+        @Expect(docs.contains("gitcode_x"), false)
+        @Expect(docs.contains("Authorization: Bearer"), false)
+        @Expect(docs.contains("Cookie: "), false)
+        @Expect(docs.contains("/Users/l3gi0n/.metis"), false)
     }
 
     @TestCase
