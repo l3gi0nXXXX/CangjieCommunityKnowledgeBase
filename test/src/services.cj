@@ -26,6 +26,8 @@ public class SourceFetchRequest {
     public var path: String = ""
     public var accept: String = "application/json"
     public var authHint: String = "none"
+    public var status: String = "ready"
+    public var diagnostic: String = ""
     public var page: Int64 = 1
     public var perPage: Int64 = 100
     public var purpose: String = ""
@@ -75,6 +77,9 @@ public class DisabledNetworkFetchRunner <: SourceFetchRunner {
     public init() {}
 
     public func fetch(request: SourceFetchRequest): SourceFetchResult {
+        if (isInvalidSourceRequest(request)) {
+            return invalidSourceFetchResult(request)
+        }
         let result = SourceFetchResult()
         result.ok = false
         result.status = "network_disabled"
@@ -93,6 +98,9 @@ public class FakeSourceFetchRunner <: SourceFetchRunner {
     public init() {}
 
     public func fetch(request: SourceFetchRequest): SourceFetchResult {
+        if (isInvalidSourceRequest(request)) {
+            return invalidSourceFetchResult(request)
+        }
         this.calls.add(request)
         let result = SourceFetchResult()
         result.ok = this.statusCode >= 200 && this.statusCode < 300
@@ -115,7 +123,7 @@ public class FakeSourceFetchRunner <: SourceFetchRunner {
 
 public class CkbRuntimeConfig {
     public var networkEnabled: Bool = false
-    public var gitCodeBaseUrl: String = "https://gitcode.com/api/v5"
+    public var gitCodeBaseUrl: String = "https://api.gitcode.com/api/v5"
     public var gitCodeAuthMode: String = "none"
     public var gitCodeTokenRef: String = ""
     public var gitCodeTokenFile: String = ""
@@ -396,6 +404,9 @@ public class HttpSourceFetchRunner <: SourceFetchRunner {
         let result = SourceFetchResult()
         result.sourceUrl = request.url
         result.normalizedType = request.kind
+        if (isInvalidSourceRequest(request)) {
+            return invalidSourceFetchResult(request)
+        }
         if (!this.config.networkEnabled) {
             result.status = "network_disabled"
             return result
@@ -457,12 +468,12 @@ public class HttpSourceFetchRunner <: SourceFetchRunner {
 public class SourceRequestBuilder {
     private let gitCodeApiRoot: String
 
-    public init(gitCodeApiRoot!: String = "https://gitcode.com/api/v5") {
+    public init(gitCodeApiRoot!: String = "https://api.gitcode.com/api/v5") {
         this.gitCodeApiRoot = gitCodeApiRoot
     }
 
     public func gitCodeOrgRepos(org: String): SourceFetchRequest {
-        let request = SourceFetchRequest(SourceKinds.GITCODE_ORG, "${this.gitCodeApiRoot}/orgs/${org}/projects?visibility=public&page=1&per_page=100", repo: org, purpose: "enumerate_public_repos")
+        let request = SourceFetchRequest(SourceKinds.GITCODE_ORG, "${this.gitCodeApiRoot}/orgs/${org}/repos?type=public&page=1&per_page=100", repo: org, purpose: "enumerate_public_repos")
         request.authHint = "gitcode-token-optional-redacted"
         request.paginationParam = "page"
         request.perPageParam = "per_page"
@@ -470,25 +481,55 @@ public class SourceRequestBuilder {
     }
 
     public func gitCodeRepo(repo: String, ref!: String = "main"): SourceFetchRequest {
-        let request = SourceFetchRequest(SourceKinds.GITCODE_REPO, "${this.gitCodeApiRoot}/projects/${repo}?ref=${ref}", repo: repo, ref: ref, purpose: "repo_metadata")
+        let parts = parseGitCodeRepoPath(repo)
+        if (!parts.valid) {
+            return invalidSourceFetchRequest(SourceKinds.GITCODE_REPO, "repo_metadata", parts.diagnostic)
+        }
+        if (!isSafeGitCodeRef(ref)) {
+            return invalidSourceFetchRequest(SourceKinds.GITCODE_REPO, "repo_metadata", "invalid_ref")
+        }
+        let normalizedRepo = "${parts.owner}/${parts.repo}"
+        let request = SourceFetchRequest(SourceKinds.GITCODE_REPO, "${this.gitCodeApiRoot}/repos/${parts.owner}/${parts.repo}?ref=${ref}", repo: normalizedRepo, ref: ref, purpose: "repo_metadata")
         request.authHint = "gitcode-token-optional-redacted"
         request
     }
 
     public func gitCodeSource(repo: String, ref: String, path: String): SourceFetchRequest {
-        let request = SourceFetchRequest(SourceKinds.GITCODE_SOURCE, "${this.gitCodeApiRoot}/projects/${repo}/repository/files/${path}/raw?ref=${ref}", repo: repo, ref: ref, path: path, accept: "text/plain", purpose: "source_snapshot")
+        let parts = parseGitCodeRepoPath(repo)
+        if (!parts.valid) {
+            return invalidSourceFetchRequest(SourceKinds.GITCODE_SOURCE, "source_snapshot", parts.diagnostic)
+        }
+        if (!isSafeGitCodeRef(ref)) {
+            return invalidSourceFetchRequest(SourceKinds.GITCODE_SOURCE, "source_snapshot", "invalid_ref")
+        }
+        let safePath = normalizeGitCodeSourcePath(path)
+        if (safePath == "") {
+            return invalidSourceFetchRequest(SourceKinds.GITCODE_SOURCE, "source_snapshot", "invalid_source_path")
+        }
+        let normalizedRepo = "${parts.owner}/${parts.repo}"
+        let request = SourceFetchRequest(SourceKinds.GITCODE_SOURCE, "${this.gitCodeApiRoot}/repos/${parts.owner}/${parts.repo}/contents/${safePath}?ref=${ref}", repo: normalizedRepo, ref: ref, path: safePath, accept: "text/plain", purpose: "source_snapshot")
         request.authHint = "gitcode-token-optional-redacted"
         request
     }
 
     public func gitCodeIssueHistory(repo: String): SourceFetchRequest {
-        let request = SourceFetchRequest(SourceKinds.GITCODE_ISSUE_HISTORY, "${this.gitCodeApiRoot}/projects/${repo}/issues?state=all&page=1&per_page=100", repo: repo, purpose: "issue_history")
+        let parts = parseGitCodeRepoPath(repo)
+        if (!parts.valid) {
+            return invalidSourceFetchRequest(SourceKinds.GITCODE_ISSUE_HISTORY, "issue_history", parts.diagnostic)
+        }
+        let normalizedRepo = "${parts.owner}/${parts.repo}"
+        let request = SourceFetchRequest(SourceKinds.GITCODE_ISSUE_HISTORY, "${this.gitCodeApiRoot}/repos/${parts.owner}/${parts.repo}/issues?state=all&page=1&per_page=100", repo: normalizedRepo, purpose: "issue_history")
         request.authHint = "gitcode-token-optional-redacted"
         request
     }
 
     public func gitCodePrHistory(repo: String): SourceFetchRequest {
-        let request = SourceFetchRequest(SourceKinds.GITCODE_PR_HISTORY, "${this.gitCodeApiRoot}/projects/${repo}/merge_requests?state=all&page=1&per_page=100", repo: repo, purpose: "pr_history")
+        let parts = parseGitCodeRepoPath(repo)
+        if (!parts.valid) {
+            return invalidSourceFetchRequest(SourceKinds.GITCODE_PR_HISTORY, "pr_history", parts.diagnostic)
+        }
+        let normalizedRepo = "${parts.owner}/${parts.repo}"
+        let request = SourceFetchRequest(SourceKinds.GITCODE_PR_HISTORY, "${this.gitCodeApiRoot}/repos/${parts.owner}/${parts.repo}/pulls?state=all&page=1&per_page=100", repo: normalizedRepo, purpose: "pr_history")
         request.authHint = "gitcode-token-optional-redacted"
         request
     }
@@ -506,10 +547,94 @@ public class SourceRequestBuilder {
     }
 }
 
+private class GitCodeRepoParts {
+    var valid: Bool = false
+    var owner: String = ""
+    var repo: String = ""
+    var diagnostic: String = "invalid_repo_path"
+
+    init() {}
+}
+
+private func parseGitCodeRepoPath(raw: String): GitCodeRepoParts {
+    let parts = GitCodeRepoParts()
+    let values = raw.trimAscii().split("/")
+    if (values.size != 2) {
+        return parts
+    }
+    let owner = values[0].trimAscii()
+    let repo = values[1].trimAscii()
+    if (!isSafeGitCodePathPart(owner) || !isSafeGitCodePathPart(repo)) {
+        return parts
+    }
+    parts.valid = true
+    parts.owner = owner
+    parts.repo = repo
+    parts.diagnostic = ""
+    parts
+}
+
+private func isSafeGitCodePathPart(part: String): Bool {
+    if (part == "" || part == "." || part == "..") {
+        return false
+    }
+    if (part.contains("\\") || part.contains("..") || part.contains("%") || part.contains("?") || part.contains("#") || part.contains("&") || part.contains("=") || part.contains(":") || part.contains(" ") || part.contains("\n") || part.contains("\r") || part.contains("\t")) {
+        return false
+    }
+    true
+}
+
+private func isSafeGitCodeRef(ref: String): Bool {
+    let trimmed = ref.trimAscii()
+    if (trimmed == "" || trimmed.contains("%") || trimmed.contains("?") || trimmed.contains("#") || trimmed.contains("&") || trimmed.contains("=") || trimmed.contains("\n") || trimmed.contains("\r") || trimmed.contains("\t")) {
+        return false
+    }
+    true
+}
+
+private func normalizeGitCodeSourcePath(raw: String): String {
+    let trimmed = raw.trimAscii()
+    if (trimmed == "" || trimmed.startsWith("/") || trimmed.contains("\\") || trimmed.contains("%") || trimmed.contains("?") || trimmed.contains("#") || trimmed.contains("&") || trimmed.contains("=") || trimmed.contains(":") || trimmed.contains("\n") || trimmed.contains("\r") || trimmed.contains("\t")) {
+        return ""
+    }
+    let parts = trimmed.split("/")
+    for (part in parts) {
+        if (part == "" || part == "." || part == "..") {
+            return ""
+        }
+    }
+    trimmed
+}
+
+private func invalidSourceFetchRequest(kind: String, purpose: String, diagnostic: String): SourceFetchRequest {
+    let request = SourceFetchRequest(kind, "", purpose: purpose)
+    request.status = diagnostic
+    request.diagnostic = diagnostic
+    request
+}
+
+private func isInvalidSourceRequest(request: SourceFetchRequest): Bool {
+    request.diagnostic != ""
+}
+
+private func invalidSourceFetchResult(request: SourceFetchRequest): SourceFetchResult {
+    let result = SourceFetchResult()
+    result.ok = false
+    result.status = request.diagnostic
+    result.sourceUrl = ""
+    result.normalizedType = request.kind
+    result.body = request.diagnostic
+    result.bodyHash = stableSummaryHash(result.body)
+    result
+}
+
 public class SourceResponseNormalizer {
     public init() {}
 
     public func normalize(request: SourceFetchRequest, result: SourceFetchResult): SourceFetchResult {
+        if (isInvalidSourceRequest(request)) {
+            return invalidSourceFetchResult(request)
+        }
         result.sourceUrl = if (result.sourceUrl == "") { request.url } else { result.sourceUrl }
         result.normalizedType = request.kind
         if (result.statusCode == 0 && result.ok) {
@@ -1713,6 +1838,9 @@ private func countMatches(values: ArrayList<String>, value: String): Int64 {
 }
 
 private func authHeaderForRequest(config: CkbRuntimeConfig, request: SourceFetchRequest): GitCodeAuthResolution {
+    if (isInvalidSourceRequest(request)) {
+        return GitCodeAuthResolution()
+    }
     if (!isGitCodeRequest(request)) {
         return GitCodeAuthResolution()
     }
@@ -1720,6 +1848,9 @@ private func authHeaderForRequest(config: CkbRuntimeConfig, request: SourceFetch
 }
 
 private func authSummaryForRequest(config: CkbRuntimeConfig, request: SourceFetchRequest): GitCodeAuthResolution {
+    if (isInvalidSourceRequest(request)) {
+        return GitCodeAuthResolution()
+    }
     if (!isGitCodeRequest(request)) {
         return GitCodeAuthResolution()
     }
@@ -2032,6 +2163,9 @@ private func renderLiveFetchSummary(request: SourceFetchRequest, fetch: SourceFe
     if (auth.diagnostic != "") {
         out += " authDiagnostic=${auth.diagnostic}"
     }
+    if (request.diagnostic != "") {
+        out += " requestDiagnostic=${request.diagnostic}"
+    }
     if (fetch.retryAfterSeconds > 0) {
         out += " retryAfter=${fetch.retryAfterSeconds}"
     }
@@ -2062,6 +2196,9 @@ private func classifyFetchError(fetch: SourceFetchResult): String {
     }
     if (fetch.status == "server_error") {
         return "server"
+    }
+    if (fetch.status == "invalid_repo_path" || fetch.status == "invalid_source_path" || fetch.status == "invalid_ref") {
+        return "validation"
     }
     "http"
 }
