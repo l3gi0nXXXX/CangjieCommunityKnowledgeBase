@@ -1,0 +1,21 @@
+[package]
+  cjc-version = "1.0.0"
+  name = "cangjie_community_knowledge_base_test"
+  description = "CangjieCommunityKnowledgeBase offline unittest package."
+  version = "0.1.0"
+  target-dir = ""
+  src-dir = ""
+  output-type = "static"
+  compile-option = "-Woff unused"
+  override-compile-option = ""
+  link-option = ""
+
+[profile.test]
+  parallel = 1
+  no-progress = true
+  no-color = true
+
+[profile.test.env]
+  cjHeapSize = { value = "64MB", splice-type = "replace" }
+
+[dependencies]

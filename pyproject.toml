@@ -1,9 +1,0 @@
-[project]
-name = "cangjie-community-knowledge-base"
-version = "0.1.0"
-description = "Offline-first Cangjie community knowledge base primitives."
-requires-python = ">=3.9"
-dependencies = []
-
-[tool.unittest]
-start-dir = "tests"

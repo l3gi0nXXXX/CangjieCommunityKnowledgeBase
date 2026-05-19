@@ -1,100 +1,56 @@
 # CangjieCommunityKnowledgeBase
 
-## Project Introduction
+An independent Cangjie `cjpm` baseline for the Cangjie community knowledge base.
+The implementation is intentionally offline: it provides deterministic source
+scope, storage layout, normalization, simplified text/symbol/hybrid search,
+evidence-pack APIs, scheduler SLA modeling, scoped freshness policies, and
+ACP-style offline curation lifecycle tests without using real network sources.
 
-CangjieCommunityKnowledgeBase is an independent Cangjie community knowledge
-service. It owns the lifecycle for Cangjie source code, documentation, community
-history, normalized records, indexes, derived knowledge, evidence packs, and
-knowledge versions.
+## Layout
 
-Metis consumes evidence from this service when generating GitCode summaries and
-reply drafts. GitCodeMonitor remains responsible for GitCode scanning,
-notification delivery, and writeback.
+- `src/`: Cangjie implementation and CLI entrypoint.
+- `test/`: Cangjie unittest coverage for the Phase 10 baseline.
+- `docs/`: architecture and operating notes.
+- `data/`: required knowledge storage layers.
+- `LICENSE`: project license.
 
-The current baseline is an offline-testable Python package. It provides source
-scope configuration, storage layout creation, raw record models, normalization,
-simple indexes, evidence-pack query functions, knowledge status, bootstrap sync
-with fake adapters, update scheduler defaults, offline curation queue, and
-scoped just-in-time refresh primitives for ACP long-running tasks.
-
-## Usage
-
-Requirements:
-
-- Python 3.9 or newer.
-- No third-party runtime dependency is required for the current baseline.
-
-Run tests:
+## Build and Test
 
 ```bash
-PYTHONPATH=src python3 -m compileall -q src tests
-PYTHONPATH=src python3 -m unittest discover -s tests -v
+source /Users/l3gi0n/cangjie100/envsetup.sh
+cjpm clean
+cjpm build -i
+cjpm test
 ```
 
-Example usage:
-
-```python
-from cangjie_community_knowledge_base import (
-    CangjieKnowledgeBase,
-    cangjie_evidence_pack,
-    cangjie_knowledge_status,
-)
-
-kb = CangjieKnowledgeBase("/tmp/cangjie-knowledge")
-status = cangjie_knowledge_status(kb)
-print(status["storageLayout"])
-
-pack = cangjie_evidence_pack(kb, "stdx HTTP client")
-print(pack["knowledgeVersion"])
-```
-
-A real deployment should provide source adapters for GitCode, official Cangjie
-documentation, website pages, and reviewed web candidates.
-
-## Quick Start
+## CLI
 
 ```bash
-cd /Users/l3gi0n/work/workspace_cangjie/CangjieCommunityKnowledgeBase
-PYTHONPATH=src python3 -m compileall -q src tests
-PYTHONPATH=src python3 -m unittest discover -s tests -v
+cjpm run --run-args doctor
+cjpm run --run-args "query func named parameters"
+cjpm run --run-args "evidence HttpClient"
 ```
 
-The default source scope includes:
+The `doctor` command reports logical storage paths, source-scope coverage,
+index counts, and scheduler state. It does not expose local mirror paths.
 
-- `cangjie`
-- `cangjie-sig`
-- `cangjie-tpc`
-- Cangjie website and documentation roots
-- Standard library repositories
-- Issue and pull request history
-- Governed web candidates
+## API Surface
 
-The storage layout is created under the configured root:
+The core MCP-like functions are available from `src/core.cj`:
 
-```text
-data/raw
-data/normalized
-data/metadata
-data/indexes
-data/derived
-data/cache
-```
+- `cangjie_source_search`
+- `cangjie_doc_search`
+- `cangjie_website_search`
+- `cangjie_web_candidate_search`
+- `cangjie_hybrid_search`
+- `cangjie_evidence_pack`
+- `cangjie_knowledge_status`
 
-## How to Contribute
+Web candidate evidence is always marked `requiresReview=true` by default.
 
-1. Keep knowledge synchronization, storage, indexing, and evidence-pack
-   lifecycle in this project.
-2. Do not generate final GitCode replies here; Metis owns reply generation.
-3. Do not scan GitCode monitor cursors or write GitCode comments here;
-   GitCodeMonitor owns that lifecycle.
-4. Preserve source references, `knowledgeVersion`, `trustLevel`, and
-   `reviewState` in new data paths.
-5. Keep tests offline by using fake source adapters.
-6. Add tests for scheduler SLA, storage layout, normalization, search, evidence
-   redaction, candidate gating, and scoped refresh.
-7. Run validation before committing:
+## Contribution Rules
 
-```bash
-PYTHONPATH=src python3 -m compileall -q src tests
-PYTHONPATH=src python3 -m unittest discover -s tests -v
-```
+Keep knowledge synchronization, storage, indexing, and evidence-pack lifecycle
+inside this project. Do not generate final GitCode replies here; Metis owns
+reply generation. Do not scan GitCode monitor cursors or write GitCode comments
+here; GitCodeMonitor owns that lifecycle.

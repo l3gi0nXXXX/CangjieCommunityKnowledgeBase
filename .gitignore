@@ -44,8 +44,7 @@ Thumbs.db
 *.temp
 todo.md
 
-# Test files
-test/
+# Generated or external test fixtures
 test_examples/
 
 # External modules

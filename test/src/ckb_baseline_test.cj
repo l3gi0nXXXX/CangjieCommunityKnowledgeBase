@@ -1,0 +1,147 @@
+package cangjie_community_knowledge_base_test
+
+import std.collection.ArrayList
+import std.unittest.*
+import std.unittest.testmacro.*
+
+@Test
+public class CkbBaselineTest {
+    @TestCase
+    public func defaultSourceScopeCoversPhase10Sources(): Unit {
+        let kb = newOfflineKnowledgeBase()
+        let status = cangjie_knowledge_status(kb)
+
+        @Expect(status.sourceScope.repoScope, "all-public-repos")
+        @Expect(status.sourceScope.organizations.size, 3)
+        @Expect(status.sourceScope.organizations[0], "cangjie")
+        @Expect(status.sourceScope.organizations[1], "cangjie-sig")
+        @Expect(status.sourceScope.organizations[2], "cangjie-tpc")
+        @Expect(status.sourceScope.websiteUrls[0], "https://cangjie-lang.cn/")
+        @Expect(status.sourceScope.docsUrls[0], "https://docs.cangjie-lang.cn/docs/1.0.0/")
+        @Expect(status.sourceScope.stdSources.size, 2)
+        @Expect(status.sourceScope.includesIssuePrHistory, true)
+        @Expect(status.sourceScope.includesGovernedWebCandidates, true)
+        @Expect(status.sourceScope.excludesPrivateRepos, true)
+    }
+
+    @TestCase
+    public func storageDoctorReportsLayeredPathsWithoutAbsoluteMirrorPath(): Unit {
+        let kb = newOfflineKnowledgeBase()
+        let doctor = renderDoctor(cangjie_knowledge_status(kb))
+
+        @Expect(doctor.contains("data/raw"), true)
+        @Expect(doctor.contains("data/normalized"), true)
+        @Expect(doctor.contains("data/metadata"), true)
+        @Expect(doctor.contains("data/indexes"), true)
+        @Expect(doctor.contains("data/derived"), true)
+        @Expect(doctor.contains("data/cache"), true)
+        @Expect(doctor.contains("/Users/l3gi0n"), false)
+        @Expect(doctor.contains("localPathRedacted=true"), true)
+    }
+
+    @TestCase
+    public func evidenceApisReturnTypedEvidenceAndReviewFlags(): Unit {
+        let kb = newOfflineKnowledgeBase()
+
+        let doc = cangjie_doc_search(kb, "func named parameters", 5)
+        let source = cangjie_source_search(kb, "HttpClient", 5)
+        let website = cangjie_website_search(kb, "download tools", 5)
+        let candidate = cangjie_web_candidate_search(kb, "third party tutorial", 5)
+        let pack = cangjie_evidence_pack(kb, "func HttpClient download tutorial", 2)
+
+        @Expect(doc.records.size > 0, true)
+        @Expect(source.records.size > 0, true)
+        @Expect(website.records.size > 0, true)
+        @Expect(candidate.records.size > 0, true)
+        @Expect(candidate.records[0].requiresReview, true)
+        @Expect(pack.knowledgeVersion.contains("ckb-"), true)
+        @Expect(pack.docEvidence.size > 0, true)
+        @Expect(pack.sourceEvidence.size > 0, true)
+        @Expect(pack.websiteEvidence.size > 0, true)
+        @Expect(pack.webCandidateEvidence.size > 0, true)
+        @Expect(pack.webCandidateEvidence[0].requiresReview, true)
+    }
+
+    @TestCase
+    public func hybridSearchFiltersCandidatesByDefaultAndCanTruncate(): Unit {
+        let kb = newOfflineKnowledgeBase()
+        let hybrid = cangjie_hybrid_search(kb, "tutorial", 5)
+        let candidate = cangjie_web_candidate_search(kb, "tutorial", 1)
+        let truncated = cangjie_hybrid_search(kb, "Cangjie", 1)
+
+        @Expect(hybrid.records.size, 0)
+        @Expect(candidate.records.size, 1)
+        @Expect(candidate.records[0].metadata.reviewState, ReviewStates.CANDIDATE)
+        @Expect(truncated.truncated, true)
+    }
+
+    @TestCase
+    public func failedCandidateIndexDoesNotReplaceActiveVersion(): Unit {
+        let kb = newOfflineKnowledgeBase()
+        let before = cangjie_knowledge_status(kb).activeKnowledgeVersion
+        let ok = kb.publishIndex(true)
+        let after = cangjie_knowledge_status(kb)
+
+        @Expect(ok, false)
+        @Expect(after.activeKnowledgeVersion, before)
+        @Expect(after.failedCandidateVersion.contains("candidate"), true)
+        @Expect(cangjie_source_search(kb, "HttpClient", 5).records.size > 0, true)
+    }
+
+    @TestCase
+    public func schedulerSlaUsesFakeClockAndFailureBackoff(): Unit {
+        let clock = FakeClock(0)
+        let scheduler = Scheduler(clock)
+        @Expect(scheduler.dueTaskNames().contains("repo_list_6h"), true)
+        @Expect(scheduler.dueTaskNames().contains("active_item_sync_10m"), true)
+
+        scheduler.markSuccess("active_item_sync_10m")
+        @Expect(scheduler.dueTaskNames().contains("active_item_sync_10m"), false)
+        clock.advance(10)
+        @Expect(scheduler.dueTaskNames().contains("active_item_sync_10m"), true)
+
+        scheduler.markFailure("active_repo_fetch_30m")
+        @Expect(scheduler.entries[4].nextRunAt, 15)
+        scheduler.markFailure("active_repo_fetch_30m")
+        @Expect(scheduler.entries[4].nextRunAt, 25)
+        scheduler.markFailure("active_repo_fetch_30m")
+        @Expect(scheduler.entries[4].nextRunAt, 70)
+        @Expect(scheduler.entries[4].degraded, true)
+    }
+
+    @TestCase
+    public func scopedRefreshPoliciesApplyCooldownAndCandidateReview(): Unit {
+        let service = ScopedRefreshService()
+        let active = "ckb-20260519-000100-active"
+
+        let useActive = service.apply(FreshnessPolicies.USE_ACTIVE, "cangjie/stdx", "main", 0, active)
+        let recent = service.apply(FreshnessPolicies.ENSURE_RECENT, "cangjie/stdx", "main", 10, active)
+        let limited = service.apply(FreshnessPolicies.ENSURE_REF, "cangjie/stdx", "feature", 12, active)
+        let candidate = service.apply(FreshnessPolicies.FORCE_CANDIDATE, "cangjie/stdx", "feature", 20, active)
+
+        @Expect(useActive.status, "active")
+        @Expect(recent.status, "fresh")
+        @Expect(limited.status, "refresh_limited")
+        @Expect(limited.blocked, true)
+        @Expect(candidate.status, "candidate")
+        @Expect(candidate.requiresReview, true)
+    }
+
+    @TestCase
+    public func offlineCurationLifecycleRequiresSourceReferences(): Unit {
+        let queue = CurationQueue()
+        let emptyRefs = ArrayList<SourceReference>()
+        let noRefs = queue.enqueueRepoSummary("cangjie/stdx", emptyRefs)
+        @Expect(queue.start(noRefs.taskId), true)
+        @Expect(queue.complete(noRefs.taskId, "summary without references"), false)
+
+        let refs = ArrayList<SourceReference>()
+        refs.add(SourceReference("source-http-client", "cangjie/stdx:src/http/client.cj#HttpClient", "ckb-20260519-000100-active"))
+        let task = queue.enqueueRepoSummary("cangjie/stdx", refs)
+        @Expect(task.status, "pending")
+        @Expect(queue.start(task.taskId), true)
+        @Expect(queue.complete(task.taskId, "HttpClient summary"), true)
+        @Expect(task.status, "succeeded")
+        @Expect(task.sourceReferences.size, 1)
+    }
+}
