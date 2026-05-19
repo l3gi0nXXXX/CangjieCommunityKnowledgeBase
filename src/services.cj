@@ -115,8 +115,9 @@ public class FakeSourceFetchRunner <: SourceFetchRunner {
 
 public class CkbRuntimeConfig {
     public var networkEnabled: Bool = false
-    public var gitCodeBaseUrl: String = "https://gitcode.com/api/v5"
+    public var gitCodeBaseUrl: String = "https://api.gitcode.com/api/v5"
     public var gitCodeAuthMode: String = "none"
+    public var gitCodeAuthHeader: String = "private-token"
     public var gitCodeTokenRef: String = ""
     public var gitCodeTokenFile: String = ""
     public var websiteEnabled: Bool = false
@@ -209,7 +210,7 @@ public class CkbRuntimeConfig {
         }
         auth.state = if (mode == "cookie") { "cookie-present" } else { "token" }
         auth.status = "ok"
-        auth.header = if (mode == "cookie") { "Cookie: ${secret}" } else { "Authorization: Bearer ${secret}" }
+        auth.header = if (mode == "cookie") { "Cookie: ${secret}" } else { gitCodeTokenHeader(this.gitCodeAuthHeader, secret) }
         auth
     }
 
@@ -218,6 +219,7 @@ public class CkbRuntimeConfig {
         var out = "network=${if (this.networkEnabled) { "enabled" } else { "disabled" }}"
         out += " gitcode.baseUrl=${redactSensitive(this.gitCodeBaseUrl)}"
         out += " gitcode.authMode=${this.gitCodeAuthMode}"
+        out += " gitcode.authHeader=${gitCodeAuthHeaderSummary(this.gitCodeAuthHeader)}"
         out += " gitcode.token=${if (this.tokenPresent()) { "present" } else { "absent" }}"
         out += " gitcode.auth=${auth.state}"
         if (auth.diagnostic != "") {
@@ -457,7 +459,7 @@ public class HttpSourceFetchRunner <: SourceFetchRunner {
 public class SourceRequestBuilder {
     private let gitCodeApiRoot: String
 
-    public init(gitCodeApiRoot!: String = "https://gitcode.com/api/v5") {
+    public init(gitCodeApiRoot!: String = "https://api.gitcode.com/api/v5") {
         this.gitCodeApiRoot = gitCodeApiRoot
     }
 
@@ -1349,11 +1351,11 @@ public class QueryService {
 
 public class CkbSchema {
     public static func mcpTools(): String {
-        "tools: cangjie.health,cangjie.status,cangjie.query,cangjie.evidence,cangjie.sync,cangjie.rebuild,cangjie.source_search,cangjie.doc_search,cangjie.website_search,cangjie.web_candidate_search,cangjie.hybrid_search,cangjie.evidence_pack; input: query{q,budget,sourceType,includeCandidates=false}, evidence{q,budget,includeCandidates=true}, sync{dryRun,apply,maxRepos,maxFilesPerRepo,maxItems,since}, rebuild{store}; output: ok,status,errorCode,activeKnowledgeVersion,knowledgeVersion,citations,evidence,requiresReview,truncated,degraded; redaction: never returns tokenRef,tokenFile contents,Authorization,Cookie,absolute local paths; errors: ckb.bad_request,ckb.network_disabled,ckb.auth_degraded,ckb.rate_limited,ckb.source_unavailable,ckb.rebuild_failed,ckb.validation_failed"
+        "tools: cangjie.health,cangjie.status,cangjie.query,cangjie.evidence,cangjie.sync,cangjie.rebuild,cangjie.source_search,cangjie.doc_search,cangjie.website_search,cangjie.web_candidate_search,cangjie.hybrid_search,cangjie.evidence_pack; input: query{q,budget,sourceType,includeCandidates=false}, evidence{q,budget,includeCandidates=true}, sync{dryRun,apply,maxRepos,maxFilesPerRepo,maxItems,since}, rebuild{store}; liveGitCode: officialApi=https://api.gitcode.com/api/v5 authMode=token authHeader=private-token tokenFile=tokenFile tokenFileFormat=single PAT line without token/Bearer/PRIVATE-TOKEN prefix; acceptance: schema -> doctor/status -> anonymous dry-run -> credentialed dry-run if needed -> limited apply -> rebuild-index -> status/evidence; output: ok,status,errorCode,activeKnowledgeVersion,knowledgeVersion,citations,evidence,requiresReview,truncated,degraded,transportDiagnostic; redaction: never returns tokenRef,tokenFile contents,Authorization,Cookie,private-token values,absolute local paths; errors: ckb.bad_request,ckb.network_disabled,ckb.auth_degraded,ckb.rate_limited,ckb.source_unavailable,ckb.rebuild_failed,ckb.validation_failed"
     }
 
     public static func httpLikeRoutes(): String {
-        "routes: STDIO ckb-stdio-v1 health,status,metrics,query <text>,evidence <text>,sync,rebuild,scheduler-run,backup <name>,restore <name>,restart,stop; GET /health -> ok,status,activeKnowledgeVersion,degraded; GET /status -> storage,indexManifest,scheduler,activeKnowledgeVersion,restoreDiagnostic; POST /query -> query,evidence,citations,knowledgeVersion; POST /evidence -> evidencePack,graphContext,citations,activeKnowledgeVersion; POST /sync -> dryRun|apply,candidateVersion,activeKnowledgeVersion,redactedSourceStatus; POST /rebuild-index -> candidateVersion,activeKnowledgeVersion,count; compatibility: CLI service/status/rebuild-index provide the canonical local protocol"
+        "routes: STDIO ckb-stdio-v1 health,status,metrics,query <text>,evidence <text>,sync,rebuild,scheduler-run,backup <name>,restore <name>,restart,stop; GET /health -> ok,status,activeKnowledgeVersion,degraded; GET /status -> storage,indexManifest,scheduler,activeKnowledgeVersion,restoreDiagnostic,authHeaderStrategy; POST /query -> query,evidence,citations,knowledgeVersion; POST /evidence -> evidencePack,graphContext,citations,activeKnowledgeVersion; POST /sync -> dryRun|apply,candidateVersion,activeKnowledgeVersion,redactedSourceStatus,transportDiagnostic; POST /rebuild-index -> candidateVersion,activeKnowledgeVersion,count; compatibility: CLI service/status/rebuild-index provide the canonical local protocol"
     }
 }
 
@@ -1726,6 +1728,31 @@ private func authSummaryForRequest(config: CkbRuntimeConfig, request: SourceFetc
     config.gitCodeAuthSummary()
 }
 
+private func gitCodeAuthHeaderSummary(raw: String): String {
+    let normalized = raw.toAsciiLower().trimAscii()
+    if (normalized == "" || normalized == "private-token" || normalized == "private_token") {
+        return "private-token"
+    }
+    if (normalized == "authorization-bearer" || normalized == "bearer") {
+        return "authorization-bearer"
+    }
+    if (normalized == "authorization-token" || normalized == "token") {
+        return "authorization-token"
+    }
+    "unsupported"
+}
+
+private func gitCodeTokenHeader(raw: String, secret: String): String {
+    let strategy = gitCodeAuthHeaderSummary(raw)
+    if (strategy == "authorization-bearer") {
+        return "Authorization: Bearer ${secret}"
+    }
+    if (strategy == "authorization-token") {
+        return "Authorization: token ${secret}"
+    }
+    "PRIVATE-TOKEN: ${secret}"
+}
+
 private func isGitCodeRequest(request: SourceFetchRequest): Bool {
     request.kind == SourceKinds.GITCODE_ORG || request.kind == SourceKinds.GITCODE_REPO || request.kind == SourceKinds.GITCODE_SOURCE || request.kind == SourceKinds.GITCODE_ISSUE_HISTORY || request.kind == SourceKinds.GITCODE_PR_HISTORY
 }
@@ -1821,6 +1848,8 @@ private func configApply(config: CkbRuntimeConfig, key: String, value: String): 
         config.gitCodeBaseUrl = value
     } else if (key == "gitcode.authMode") {
         config.gitCodeAuthMode = value
+    } else if (key == "gitcode.authHeader") {
+        config.gitCodeAuthHeader = value
     } else if (key == "gitcode.tokenRef") {
         config.gitCodeTokenRef = value
     } else if (key == "gitcode.tokenFile") {

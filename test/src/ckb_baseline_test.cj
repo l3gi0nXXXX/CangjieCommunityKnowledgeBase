@@ -752,6 +752,13 @@ public class CkbBaselineTest {
         @Expect(tools.contains("ckb.auth_degraded"), true)
         @Expect(tools.contains("Authorization"), true)
         @Expect(tools.contains("Cookie"), true)
+        @Expect(tools.contains("officialApi=https://api.gitcode.com/api/v5"), true)
+        @Expect(tools.contains("authHeader=private-token"), true)
+        @Expect(tools.contains("tokenFile=tokenFile"), true)
+        @Expect(tools.contains("single PAT line"), true)
+        @Expect(tools.contains("transportDiagnostic"), true)
+        @Expect(tools.contains("anonymous dry-run"), true)
+        @Expect(tools.contains("limited apply"), true)
         @Expect(tools.contains("fake-live-token"), false)
         @Expect(routes.contains("GET /health"), true)
         @Expect(routes.contains("GET /status"), true)
@@ -760,13 +767,17 @@ public class CkbBaselineTest {
         @Expect(routes.contains("POST /sync"), true)
         @Expect(routes.contains("POST /rebuild-index"), true)
         @Expect(routes.contains("redactedSourceStatus"), true)
+        @Expect(routes.contains("authHeaderStrategy"), true)
+        @Expect(routes.contains("transportDiagnostic"), true)
     }
 
     @TestCase
     public func integrationDocsDefineBoundariesWithoutRealCredentials(): Unit {
         let integration = String.fromUtf8(File.readFrom(Path("../docs/metis-gitcodemonitor-integration.md")))
         let checklist = String.fromUtf8(File.readFrom(Path("../docs/manual-acceptance-checklist.md")))
-        let docs = integration + "\n" + checklist
+        let readme = String.fromUtf8(File.readFrom(Path("../README.md")))
+        let ignore = String.fromUtf8(File.readFrom(Path("../.gitignore")))
+        let docs = integration + "\n" + checklist + "\n" + readme
 
         @Expect(integration.contains("GET /health"), true)
         @Expect(integration.contains("POST /query"), true)
@@ -779,11 +790,24 @@ public class CkbBaselineTest {
         @Expect(checklist.contains("Real Source Sync"), true)
         @Expect(checklist.contains("Backup and Restore"), true)
         @Expect(checklist.contains("Exception Recovery"), true)
+        @Expect(docs.contains("gitcode.baseUrl=https://api.gitcode.com/api/v5"), true)
+        @Expect(docs.contains("gitcode.authMode=token"), true)
+        @Expect(docs.contains("gitcode.authHeader=private-token"), true)
+        @Expect(docs.contains("gitcode.tokenFile=tokenFile"), true)
+        @Expect(docs.contains("one GitCode PAT line"), true)
+        @Expect(docs.contains("token="), true)
+        @Expect(docs.contains("transport diagnostics"), true)
+        @Expect(docs.contains("anonymous dry-run"), true)
+        @Expect(docs.contains("limited apply"), true)
         @Expect(docs.contains("fake-live-token"), false)
         @Expect(docs.contains("gitcode_x"), false)
         @Expect(docs.contains("Authorization: Bearer"), false)
         @Expect(docs.contains("Cookie: "), false)
         @Expect(docs.contains("/Users/l3gi0n/.metis"), false)
+        @Expect(ignore.contains("tokenFile"), true)
+        @Expect(ignore.contains("ckb-live.conf"), true)
+        @Expect(ignore.contains("*.token"), true)
+        @Expect(ignore.contains("*.local.conf"), true)
     }
 
     @TestCase
@@ -809,6 +833,7 @@ public class CkbBaselineTest {
 network.enabled=true
 gitcode.baseUrl=https://gitcode.com/api/v5?access_token=fake-live-token
 gitcode.authMode=token
+gitcode.authHeader=authorization-bearer
 gitcode.tokenRef=fake-live-token
 gitcode.tokenFile=/Users/l3gi0n/.metis/gitcode-token
 website.enabled=true
@@ -837,6 +862,7 @@ network.retryCount=3
         @Expect(config.docsEnabled, true)
         @Expect(config.timeoutMillis, 1234)
         @Expect(config.retryCount, 3)
+        @Expect(config.gitCodeAuthHeader, "authorization-bearer")
         @Expect(config.embeddingProvider, "production-http")
         @Expect(config.embeddingModel, "remote-embedding")
         @Expect(config.embeddingDimensions, 128)
@@ -846,6 +872,7 @@ network.retryCount=3
         @Expect(config.vectorActiveCollection, "prod-active")
         @Expect(config.vectorCandidateCollection, "prod-candidate")
         @Expect(summary.contains("gitcode.token=present"), true)
+        @Expect(summary.contains("gitcode.authHeader=authorization-bearer"), true)
         @Expect(summary.contains("embedding.endpoint=present"), true)
         @Expect(summary.contains("embedding.token=present"), true)
         @Expect(summary.contains("fake-live-token"), false)
@@ -892,6 +919,7 @@ network.retryCount=3
         @Expect(text.contains("shape=html-entry"), true)
         @Expect(text.contains("shape=history-list"), true)
         @Expect(text.contains("auth=token"), true)
+        @Expect(text.contains("authHeader=private-token"), true)
         @Expect(text.contains("httpStatus=200"), true)
         @Expect(text.contains("bodyHash="), true)
         @Expect(text.contains("errorClass=none"), true)
@@ -902,7 +930,7 @@ network.retryCount=3
     }
 
     @TestCase
-    public func httpRunnerReadsTokenFileAndInjectsBearerHeader(): Unit {
+    public func httpRunnerReadsTokenFileAndInjectsPrivateTokenHeader(): Unit {
         let tokenPath = "target/ckb-test-token-file.fixture"
         File.writeTo(Path(tokenPath), "file-token-secret\n".toArray())
         let config = CkbRuntimeConfig()
@@ -915,7 +943,7 @@ network.retryCount=3
 
         @Expect(fetch.ok, true)
         @Expect(executor.calls, 1)
-        @Expect(executor.seenAuthHeader, "Authorization: Bearer file-token-secret")
+        @Expect(executor.seenAuthHeader, "PRIVATE-TOKEN: file-token-secret")
         @Expect(config.redactedSummary().contains("file-token-secret"), false)
     }
 
@@ -924,6 +952,7 @@ network.retryCount=3
         let tokenConfig = CkbRuntimeConfig()
         tokenConfig.networkEnabled = true
         tokenConfig.gitCodeAuthMode = "token"
+        tokenConfig.gitCodeAuthHeader = "authorization-bearer"
         tokenConfig.gitCodeTokenRef = "ref-token-secret"
         let tokenExecutor = FakeHttpExecutor(200, "{}", "application/json", "http_200", 0)
 
