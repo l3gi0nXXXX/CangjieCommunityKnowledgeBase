@@ -667,6 +667,8 @@ public class KnowledgeStatus {
     public var activeKnowledgeVersion: String = ""
     public var candidateKnowledgeVersion: String = ""
     public var failedCandidateVersion: String = ""
+    public var activeStateSource: String = "offline_baseline"
+    public var restoreDiagnostic: String = ""
     public var storage: StorageStatus = StorageStatus()
     public var sourceScope: SourceScope = SourceScope()
     public var schedules: ArrayList<ScheduleEntry> = ArrayList<ScheduleEntry>()
@@ -872,6 +874,8 @@ public class KnowledgeBase {
     private var activeKnowledgeVersion: String = "ckb-20260519-000000-baseline"
     private var candidateKnowledgeVersion: String = ""
     private var failedCandidateVersion: String = ""
+    private var activeStateSource: String = "offline_baseline"
+    private var restoreDiagnostic: String = ""
     private var indexManifest: IndexManifest = IndexManifest()
     private let embeddingProvider: EmbeddingProvider
     private let vectorStore: VectorStore
@@ -897,6 +901,8 @@ public class KnowledgeBase {
     public func bootstrapOffline(): Unit {
         this.rawRecords.clear()
         this.normalizedRecords.clear()
+        this.activeStateSource = "offline_baseline"
+        this.restoreDiagnostic = ""
         this.addRecord("doc-syntax", SourceTypes.DOC, "Cangjie function syntax", "https://docs.cangjie-lang.cn/docs/1.0.0/language/functions", "", "", "", "1.0.0", TrustLevels.OFFICIAL, ReviewStates.TRUSTED, "Function definitions use func. Named parameters use an exclamation marker in the declaration and parameter names in calls. Cangjie syntax covers classes, arrays, options, and tests.")
         this.addRecord("doc-stdx-json", SourceTypes.DOC, "stdx JSON API", "https://docs.cangjie-lang.cn/docs/1.0.0/libs/stdx/json", "", "", "", "1.0.0", TrustLevels.OFFICIAL, ReviewStates.TRUSTED, "stdx contains JSON support for structured encoding and decoding.")
         this.addRecord("website-download", SourceTypes.WEBSITE, "Cangjie official download", "https://cangjie-lang.cn/download", "", "", "", "", TrustLevels.OFFICIAL, ReviewStates.TRUSTED, "The official website links Cangjie downloads, documentation, tools, and community entry points.")
@@ -905,6 +911,43 @@ public class KnowledgeBase {
         this.addRecord("web-candidate-blog", SourceTypes.WEB_CANDIDATE, "External Cangjie tutorial candidate", "https://example.invalid/cangjie-tutorial", "", "", "", "", TrustLevels.WEB_CANDIDATE, ReviewStates.CANDIDATE, "A third party tutorial discusses Cangjie stdx examples and requires manual review.")
         this.normalize()
         this.publishIndex(false)
+    }
+
+    public func restoreActiveSnapshot(snapshot: ActiveSnapshot): Bool {
+        if (!snapshot.valid) {
+            this.restoreDiagnostic = snapshot.diagnostic
+            return false
+        }
+        this.rawRecords.clear()
+        this.normalizedRecords.clear()
+        this.activeIndex.clear()
+        this.candidateIndex.clear()
+        for (record in snapshot.rawRecords) {
+            this.rawRecords.add(record)
+        }
+        for (record in snapshot.normalizedRecords) {
+            this.normalizedRecords.add(record)
+        }
+        if (this.normalizedRecords.size == 0) {
+            for (record in snapshot.activeIndex) {
+                this.normalizedRecords.add(record)
+            }
+        }
+        for (record in snapshot.activeIndex) {
+            record.metadata.knowledgeVersion = snapshot.activeVersion
+            this.activeIndex.add(record)
+        }
+        this.activeKnowledgeVersion = snapshot.activeVersion
+        this.candidateKnowledgeVersion = snapshot.candidateVersion
+        this.failedCandidateVersion = snapshot.failedVersion
+        this.activeStateSource = "persisted"
+        this.restoreDiagnostic = snapshot.diagnostic
+        this.storage.rawCount = this.rawRecords.size
+        this.storage.normalizedCount = this.normalizedRecords.size
+        this.storage.indexCount = this.activeIndex.size
+        this.rebuildProductionIndexes()
+        this.rebuildIndexManifest()
+        return true
     }
 
     private func addRecord(sourceId: String, sourceType: String, title: String, sourceUrl: String, repo: String, path: String, symbol: String, docVersion: String, trustLevel: String, reviewState: String, content: String): Unit {
@@ -1346,6 +1389,8 @@ public class KnowledgeBase {
         status.activeKnowledgeVersion = this.activeKnowledgeVersion
         status.candidateKnowledgeVersion = this.candidateKnowledgeVersion
         status.failedCandidateVersion = this.failedCandidateVersion
+        status.activeStateSource = this.activeStateSource
+        status.restoreDiagnostic = this.restoreDiagnostic
         status.storage = this.storage
         status.sourceScope = this.sourceScope
         status.indexManifest = this.indexManifest
@@ -1531,6 +1576,30 @@ public func newOfflineKnowledgeBase(): KnowledgeBase {
     let kb = KnowledgeBase(FakeClock(0))
     kb.bootstrapOffline()
     kb
+}
+
+public class KnowledgeBaseLoadResult {
+    public let kb: KnowledgeBase
+    public var source: String = "offline_baseline"
+    public var diagnostic: String = ""
+
+    public init(kb: KnowledgeBase) {
+        this.kb = kb
+    }
+}
+
+public func newKnowledgeBaseFromStore(store: FileKnowledgeStore): KnowledgeBaseLoadResult {
+    let kb = newOfflineKnowledgeBase()
+    let result = KnowledgeBaseLoadResult(kb)
+    let snapshot = store.loadActiveSnapshot()
+    if (kb.restoreActiveSnapshot(snapshot)) {
+        result.source = "persisted"
+        result.diagnostic = snapshot.diagnostic
+        return result
+    }
+    result.source = "offline_baseline"
+    result.diagnostic = snapshot.diagnostic
+    return result
 }
 
 public func cangjie_source_search(kb: KnowledgeBase, query: String, budget: Int64): SearchResult {
@@ -1798,6 +1867,7 @@ private func safeGraphId(raw: String): String {
 public func renderDoctor(status: KnowledgeStatus): String {
     var out = "CangjieCommunityKnowledgeBase doctor\n"
     out += "activeKnowledgeVersion=${status.activeKnowledgeVersion}\n"
+    out += "activeStateSource=${status.activeStateSource} restoreDiagnostic=${status.restoreDiagnostic}\n"
     out += "storage raw=${status.storage.rawCount} normalized=${status.storage.normalizedCount} indexes=${status.storage.indexCount} derived=${status.storage.derivedCount}\n"
     out += "indexKinds text=${status.storage.textIndexCount} vector=${status.storage.vectorIndexCount} symbol=${status.storage.symbolIndexCount} graph=${status.storage.graphIndexCount}\n"
     out += "vector backend=${status.storage.vectorBackend} state=${status.storage.vectorState} collection=${status.storage.vectorCollection} dimension=${status.storage.vectorDimension} count=${status.storage.vectorIndexCount} degradedReason=${status.storage.vectorDegradedReason}\n"
