@@ -342,6 +342,89 @@ public class CkbBaselineTest {
     }
 
     @TestCase
+    public func deterministicEmbeddingProviderIsStableAndProductionProviderDegradesOffline(): Unit {
+        let texts = ArrayList<String>()
+        texts.add("func HttpClient")
+        let fake = DeterministicEmbeddingProvider()
+        let first = fake.embed(texts, "deterministic-token-v1", 8)
+        let second = fake.embed(texts, "deterministic-token-v1", 8)
+
+        let config = EmbeddingConfig()
+        config.provider = "production-http"
+        config.configured = false
+        let production = ProductionEmbeddingProvider(config)
+        let degraded = production.embed(texts, "remote-model", 8)
+
+        @Expect(first.status.state, EmbeddingProviderState.READY)
+        @Expect(first.vectors.size, 1)
+        @Expect(first.vectors[0].size, 8)
+        @Expect(first.vectors[0][1], second.vectors[0][1])
+        @Expect(degraded.status.state, EmbeddingProviderState.DEGRADED)
+        @Expect(degraded.status.degradedReason.contains("missing_config"), true)
+        @Expect(degraded.vectors.size, 0)
+    }
+
+    @TestCase
+    public func localVectorStoreUpsertsSearchesAndFallsBackWhenDown(): Unit {
+        let kb = newOfflineKnowledgeBase()
+        let semantic = cangjie_hybrid_search(kb, "define function", 3)
+        let status = cangjie_knowledge_status(kb)
+
+        let downKb = KnowledgeBase(FakeClock(0), DeterministicEmbeddingProvider(), LocalVectorStore(false), LocalGraphStore())
+        downKb.bootstrapOffline()
+        let fallback = cangjie_hybrid_search(downKb, "define function", 3)
+
+        @Expect(status.storage.vectorBackend, "local-file")
+        @Expect(status.storage.vectorState, EmbeddingProviderState.READY)
+        @Expect(status.storage.vectorDimension, 16)
+        @Expect(status.storage.vectorIndexCount > 0, true)
+        @Expect(kb.activeVectorRecords()[0].metadata.sourceId != "", true)
+        @Expect(kb.activeVectorRecords()[0].metadata.knowledgeVersion.contains("active"), true)
+        @Expect(kb.activeVectorRecords()[0].metadata.trustLevel != "", true)
+        @Expect(kb.activeVectorRecords()[0].metadata.reviewState != "", true)
+        @Expect(semantic.records.size > 0, true)
+        @Expect(semantic.vectorUsed, true)
+        @Expect(fallback.records.size > 0, true)
+        @Expect(fallback.degraded, true)
+        @Expect(fallback.fallbackReason, "vector_store_unavailable")
+    }
+
+    @TestCase
+    public func evidencePackCarriesBudgetedGraphContextWithActiveVersion(): Unit {
+        let kb = newOfflineKnowledgeBase()
+        let pack = cangjie_evidence_pack(kb, "HttpClient", 1)
+        let query = GraphQuery()
+        query.symbol = "HttpClient"
+        query.budget = 2
+        query.knowledgeVersion = pack.knowledgeVersion
+        let neighbors = kb.graphNeighbors(query)
+        let status = cangjie_knowledge_status(kb)
+
+        @Expect(pack.hasGraphContext, true)
+        @Expect(pack.graphContext.knowledgeVersion, pack.knowledgeVersion)
+        @Expect(pack.graphContext.edges.size <= 2, true)
+        @Expect(pack.graphContext.truncated, true)
+        @Expect(neighbors.edges.size > 0, true)
+        @Expect(neighbors.knowledgeVersion, pack.knowledgeVersion)
+        @Expect(status.storage.graphBackend, "local-graph")
+        @Expect(status.storage.graphNodeCount > 0, true)
+        @Expect(status.storage.graphEdgeCount > 0, true)
+    }
+
+    @TestCase
+    public func rebuildIndexPersistsLocalVectorAndGraphBackendFiles(): Unit {
+        let kb = newOfflineKnowledgeBase()
+        let store = FileKnowledgeStore("target/ckb-test-live34-index")
+        let result = ckbRebuildIndex(kb, store)
+
+        @Expect(result.ok, true)
+        @Expect(store.has("index/vector-active.ckb"), true)
+        @Expect(store.has("index/graph-nodes.ckb"), true)
+        @Expect(store.has("index/graph-edges.ckb"), true)
+        @Expect(store.has("metadata/status.ckb"), true)
+    }
+
+    @TestCase
     public func schemaListsMcpToolsAndHttpLikeRoutes(): Unit {
         @Expect(CkbSchema.mcpTools().contains("cangjie.evidence_pack"), true)
         @Expect(CkbSchema.mcpTools().contains("cangjie.status"), true)
