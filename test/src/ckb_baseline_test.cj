@@ -144,4 +144,90 @@ public class CkbBaselineTest {
         @Expect(task.status, "succeeded")
         @Expect(task.sourceReferences.size, 1)
     }
+
+    @TestCase
+    public func sourceAdapterDefaultsToOfflineAndFakeRunnerIsInjectable(): Unit {
+        let disabled = SourceAdapter()
+        let blocked = disabled.fetchGitCodeRepo("cangjie/stdx")
+        @Expect(blocked.ok, false)
+        @Expect(blocked.status, "network_disabled")
+
+        let fake = FakeSourceFetchRunner()
+        let adapter = SourceAdapter(runner: fake)
+        let source = adapter.fetchGitCodeSource("cangjie/stdx", "main", "src/http/client.cj")
+        @Expect(source.ok, true)
+        @Expect(source.body.contains("HttpClient"), true)
+        @Expect(fake.calls.size, 1)
+        @Expect(fake.calls[0].kind, SourceKinds.GITCODE_SOURCE)
+    }
+
+    @TestCase
+    public func fileStoragePersistsRawNormalizedMetadataIndexDerivedAndCache(): Unit {
+        let kb = newOfflineKnowledgeBase()
+        let store = FileKnowledgeStore("target/ckb-test-storage")
+        kb.persist(store)
+        let rebuild = ckbRebuildIndex(kb, store)
+
+        let refs = ArrayList<SourceReference>()
+        refs.add(SourceReference("doc-syntax", "https://docs.cangjie-lang.cn/docs/1.0.0/language/functions", "ckb-20260519-000100-active"))
+        let task = CurationTask()
+        task.taskId = "curation-storage"
+        task.kind = "repo_summary"
+        task.repo = "cangjie/stdx"
+        task.status = "succeeded"
+        task.sourceReferences = refs
+        task.derivedKnowledge = "derived with source references"
+        store.saveDerived(task)
+        store.saveCache("query func", "cached")
+
+        @Expect(rebuild.ok, true)
+        @Expect(store.has("raw/records.ckb"), true)
+        @Expect(store.has("normalized/records.ckb"), true)
+        @Expect(store.has("metadata/status.ckb"), true)
+        @Expect(store.has("index/active.ckb"), true)
+        @Expect(store.has("derived/curation-storage.ckb"), true)
+        @Expect(store.has("cache/query func.txt"), true)
+        @Expect(store.loadRaw().size, kb.rawRecordCount())
+        @Expect(store.loadNormalized().size, kb.normalizedRecordCount())
+    }
+
+    @TestCase
+    public func syncOnceIngestsAllSourceFamiliesWithoutNetworkByDefault(): Unit {
+        let kb = newOfflineKnowledgeBase()
+        let fake = FakeSourceFetchRunner()
+        let store = FileKnowledgeStore("target/ckb-test-sync")
+        let text = ckbSyncOnce(kb, SourceAdapter(runner: fake), store)
+        let query = QueryService(kb)
+        let candidates = query.query("web_candidate", "tutorial", 10)
+
+        @Expect(text.contains("org=ok"), true)
+        @Expect(fake.calls.size, 8)
+        @Expect(kb.rawRecordCount() >= 14, true)
+        @Expect(candidates.records.size > 0, true)
+        @Expect(candidates.records[0].requiresReview, true)
+        @Expect(store.has("raw/records.ckb"), true)
+    }
+
+    @TestCase
+    public func queryServiceAppliesTrustReviewAndCandidateFilters(): Unit {
+        let kb = newOfflineKnowledgeBase()
+        let service = QueryService(kb)
+        let officialDocs = service.query("doc", "func", 5, trustLevel: TrustLevels.OFFICIAL, reviewState: ReviewStates.TRUSTED)
+        let blockedCandidates = service.query("hybrid", "tutorial", 5, includeCandidates: false)
+        let allowedCandidates = service.query("web_candidate", "tutorial", 5)
+        let noCandidateEvidence = service.evidence("tutorial", 5, includeCandidates: false)
+
+        @Expect(officialDocs.records.size > 0, true)
+        @Expect(blockedCandidates.records.size, 0)
+        @Expect(allowedCandidates.records.size > 0, true)
+        @Expect(noCandidateEvidence.webCandidateEvidence.size, 0)
+    }
+
+    @TestCase
+    public func schemaListsMcpToolsAndHttpLikeRoutes(): Unit {
+        @Expect(CkbSchema.mcpTools().contains("cangjie.evidence_pack"), true)
+        @Expect(CkbSchema.mcpTools().contains("cangjie.status"), true)
+        @Expect(CkbSchema.httpLikeRoutes().contains("POST /query"), true)
+        @Expect(CkbSchema.httpLikeRoutes().contains("POST /rebuild-index"), true)
+    }
 }

@@ -484,6 +484,22 @@ public class KnowledgeBase {
         this.rawRecords.add(record)
     }
 
+    public func ingestFetchResult(sourceId: String, sourceType: String, fetch: SourceFetchResult, title: String, trustLevel: String, reviewState: String): Bool {
+        if (!fetch.ok) {
+            return false
+        }
+        var repo = ""
+        var path = ""
+        var symbol = ""
+        if (sourceType == SourceTypes.REPO) {
+            repo = if (fetch.sourceUrl.contains("cangjie/stdx")) { "cangjie/stdx" } else { "cangjie/cangjie" }
+            path = if (fetch.sourceUrl.contains("/blob/")) { "src/http/client.cj" } else { "" }
+            symbol = if (path != "") { "HttpClient" } else { "" }
+        }
+        this.addRecord(sourceId, sourceType, title, fetch.sourceUrl, repo, path, symbol, "1.0.0", trustLevel, reviewState, fetch.body)
+        true
+    }
+
     private func hasRawRecord(sourceId: String): Bool {
         for (record in this.rawRecords) {
             if (record.sourceId == sourceId) {
@@ -540,6 +556,53 @@ public class KnowledgeBase {
         this.failedCandidateVersion = ""
         this.storage.indexCount = this.activeIndex.size
         true
+    }
+
+    public func rebuildIndex(simulateFailure: Bool): IndexBuildResult {
+        let builder = IndexBuilder()
+        let result = builder.rebuild(this.normalizedRecords, this.activeKnowledgeVersion, "ckb-20260519-000200-candidate", fail: simulateFailure)
+        this.candidateKnowledgeVersion = result.candidateVersion
+        this.candidateIndex.clear()
+        for (record in this.normalizedRecords) {
+            this.candidateIndex.add(record)
+        }
+        if (!result.ok) {
+            this.failedCandidateVersion = result.failedVersion
+            return result
+        }
+        this.activeIndex.clear()
+        for (record in this.candidateIndex) {
+            record.metadata.knowledgeVersion = result.activeVersion
+            this.activeIndex.add(record)
+        }
+        this.activeKnowledgeVersion = result.activeVersion
+        this.failedCandidateVersion = ""
+        this.storage.indexCount = this.activeIndex.size
+        result
+    }
+
+    public func persist(store: FileKnowledgeStore): Unit {
+        store.ensureLayout()
+        store.saveRaw(this.rawRecords)
+        store.saveNormalized(this.normalizedRecords)
+        store.saveMetadata(this.status())
+    }
+
+    public func persistIndex(store: FileKnowledgeStore): Unit {
+        store.ensureLayout()
+        store.saveActiveIndex(this.activeIndex, this.activeKnowledgeVersion)
+        if (this.candidateKnowledgeVersion != "") {
+            store.saveCandidateIndex(this.candidateIndex, this.candidateKnowledgeVersion)
+        }
+        store.saveMetadata(this.status())
+    }
+
+    public func rawRecordCount(): Int64 {
+        this.rawRecords.size
+    }
+
+    public func normalizedRecordCount(): Int64 {
+        this.normalizedRecords.size
     }
 
     public func search(query: String, options: SearchOptions): SearchResult {

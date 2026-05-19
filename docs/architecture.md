@@ -1,8 +1,9 @@
-# CangjieCommunityKnowledgeBase Baseline
+# CangjieCommunityKnowledgeBase
 
-This project is an independent Cangjie `cjpm` implementation of the Phase 10
-knowledge-base baseline. It does not depend on Metis internals and does not
-perform real network access in the baseline build.
+This project is an independent Cangjie `cjpm` implementation of the Cangjie
+community knowledge-base side of the Metis/GitCode monitor bridge plan. It does
+not depend on Metis internals and does not perform real network access unless a
+caller injects a real `SourceFetchRunner`.
 
 ## Source Scope
 
@@ -20,7 +21,7 @@ candidates are excluded from automatic trusted evidence.
 
 ## Storage
 
-The baseline keeps the required layout:
+`FileKnowledgeStore` persists the required logical layout:
 
 - `data/raw`
 - `data/normalized`
@@ -29,12 +30,27 @@ The baseline keeps the required layout:
 - `data/derived`
 - `data/cache`
 
-Doctor/status output reports these logical paths and counts, but never exposes
-local mirror or absolute host paths to Metis-facing evidence output.
+Runtime CLI writes generated data under `target/ckb-data` by default. Doctor and
+status output report logical `data/...` paths and counts, but never expose local
+mirror or absolute host paths to Metis-facing evidence output.
+
+Raw records are normalized into records that retain `sourceUrl`, `repo`,
+`commit`, `path`, `symbol`, crawl/index timestamps, `knowledgeVersion`,
+`trustLevel`, `reviewState`, `license`, and derived-source references. Index
+rebuilds write a candidate version first and only promote it to active after a
+successful build, so failed candidates do not pollute active query results.
+
+## Source Sync
+
+`SourceAdapter` defines the CKB source boundary for GitCode org/repo/source,
+Issue/PR history, official website/docs, and governed web candidates. The
+default runner returns `network_disabled`. Tests use `FakeSourceFetchRunner` to
+keep offline source-adapter coverage while preserving the production injection
+point for real HTTP/Git fetch code.
 
 ## Query Surface
 
-The Cangjie API surface is implemented as MCP-like functions:
+The Cangjie API surface is implemented as MCP/HTTP-like functions:
 
 - `cangjie_source_search`
 - `cangjie_doc_search`
@@ -44,9 +60,10 @@ The Cangjie API surface is implemented as MCP-like functions:
 - `cangjie_evidence_pack`
 - `cangjie_knowledge_status`
 
-The offline index supports `sourceType`, `trustLevel`, and `reviewState`
-filtering. Candidate index publication is separate from the active index; a
-failed candidate build does not replace the active version.
+`CkbSchema.mcpTools()` and `CkbSchema.httpLikeRoutes()` expose the current
+contract names for bridge callers. `QueryService` supports `source`, `doc`,
+`website`, `web_candidate`, `hybrid`, `evidence_pack`, and `status` modes with
+budget, truncation, citation, trust, review-state, and candidate filters.
 
 ## Scheduler and Freshness
 
@@ -68,3 +85,17 @@ repo-scoped refreshes observe a five-minute cooldown.
 The curation queue models repo summary tasks with `pending`, `running`,
 `succeeded`, `failed`, and `cancelled` lifecycle states. Derived knowledge can
 only be completed when source references are present.
+
+## CLI
+
+The executable supports human-readable commands:
+
+- `doctor`
+- `status`
+- `sync-once`
+- `rebuild-index`
+- `query <text>`
+- `evidence <text>`
+- `schema`
+
+Default output is formatted text, not raw JSON.
