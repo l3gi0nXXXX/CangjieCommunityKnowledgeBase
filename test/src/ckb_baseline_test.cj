@@ -1399,6 +1399,46 @@ network.retryCount=3
     }
 
     @TestCase
+    public func nativeHttpTransportResolvesProxyRoutesAndRedactsCredentials(): Unit {
+        let direct = CkbNativeHttpTransportConfig("", false, "", false, false, "", 10000)
+        let proxied = CkbNativeHttpTransportConfig("http://user:pass@127.0.0.1:7897", false, "", false, false, "", 10000)
+        let httpsProxy = CkbNativeHttpTransportConfig("https://user:pass@127.0.0.1:7897", false, "", false, false, "", 10000)
+        let noProxy = CkbNativeHttpTransportConfig("http://user:pass@127.0.0.1:7897", false, "api.gitcode.com", false, false, "", 10000)
+
+        let directRoute = ckbNativeHttpResolveRoute("https://api.gitcode.com/api/v5/orgs/cangjie/repos", direct)
+        let tunnelRoute = ckbNativeHttpResolveRoute("https://api.gitcode.com/api/v5/orgs/cangjie/repos", proxied)
+        let unsupportedRoute = ckbNativeHttpResolveRoute("https://api.gitcode.com/api/v5/orgs/cangjie/repos", httpsProxy)
+        let noProxyRoute = ckbNativeHttpResolveRoute("https://api.gitcode.com/api/v5/orgs/cangjie/repos", noProxy)
+
+        @Expect(directRoute.mode, "direct")
+        @Expect(tunnelRoute.mode, "httpConnectTunnel")
+        @Expect(tunnelRoute.redactedProxy.contains("user:pass"), false)
+        @Expect(tunnelRoute.redactedProxy.contains("[redacted]@127.0.0.1:7897"), true)
+        @Expect(unsupportedRoute.mode, "unsupportedHttpsProxy")
+        @Expect(unsupportedRoute.error.contains("true HTTPS proxy is not implemented"), true)
+        @Expect(noProxyRoute.mode, "direct")
+    }
+
+    @TestCase
+    public func nativeHttpTransportBlocksUnsafeUrlsAndClassifiesExceptions(): Unit {
+        let config = CkbNativeHttpTransportConfig("", false, "", false, false, "", 10000)
+        let extended = CkbNativeHttpTransportConfig("", false, "", false, false, "docs.example.org", 10000)
+
+        @Expect(ckbNativeHttpValidateUrl("file:///tmp/a", config), "blocked non-http url")
+        @Expect(ckbNativeHttpValidateUrl("https://127.0.0.1/secret", config).contains("private-network"), true)
+        @Expect(ckbNativeHttpValidateUrl("https://evil.example.com/", config).contains("blocked host"), true)
+        @Expect(ckbNativeHttpValidateUrl("https://api.gitcode.com/api/v5/orgs/cangjie/repos", config), "")
+        @Expect(ckbNativeHttpValidateUrl("https://guide.docs.example.org/cangjie", extended), "")
+
+        @Expect(ckbNativeHttpClassifyException("operation timed out").transportErrorClass, "timeout")
+        @Expect(ckbNativeHttpClassifyException("could not resolve host").transportErrorClass, "dns")
+        @Expect(ckbNativeHttpClassifyException("TLS certificate verify failed").transportErrorClass, "tls")
+        @Expect(ckbNativeHttpClassifyException("proxy CONNECT failed").transportErrorClass, "proxy")
+        @Expect(ckbNativeHttpClassifyException("connection refused").transportErrorClass, "connection_refused")
+        @Expect(ckbNativeHttpClassifyException("Authorization: Bearer secret-token").transportDiagnostic.contains("secret-token"), false)
+    }
+
+    @TestCase
     public func serviceCommandLoopExposesHealthStatusQueryEvidenceSyncAndRestart(): Unit {
         let store = FileKnowledgeStore("target/ckb-test-service-a4")
         let kb = newKnowledgeBaseFromStore(store).kb

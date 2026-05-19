@@ -161,6 +161,12 @@ public class CkbRuntimeConfig {
     public var vectorCandidateCollection: String = "candidate"
     public var timeoutMillis: Int64 = 10000
     public var retryCount: Int64 = 2
+    public var networkProxy: String = ""
+    public var networkEnvProxyEnabled: Bool = false
+    public var networkNoProxy: String = ""
+    public var networkInsecureSkipTlsVerify: Bool = false
+    public var networkAllowPrivateNetwork: Bool = false
+    public var networkAllowedHosts: String = ""
 
     public init() {}
 
@@ -285,6 +291,9 @@ public class CkbRuntimeConfig {
         out += " vector.backend=${this.vectorBackend}"
         out += " vector.activeCollection=${this.vectorActiveCollection}"
         out += " vector.candidateCollection=${this.vectorCandidateCollection}"
+        out += " network.proxy=${if (this.networkProxy == "") { "absent" } else { redactSensitive(this.networkProxy) }}"
+        out += " network.envProxy=${if (this.networkEnvProxyEnabled) { "enabled" } else { "disabled" }}"
+        out += " network.noProxy=${if (this.networkNoProxy == "") { "absent" } else { redactSensitive(this.networkNoProxy) }}"
         out
     }
 }
@@ -845,7 +854,12 @@ public class HttpSourceFetchRunner <: SourceFetchRunner {
     private let config: CkbRuntimeConfig
     private let executor: HttpRequestExecutor
 
-    public init(config: CkbRuntimeConfig, executor!: HttpRequestExecutor = CurlHttpRequestExecutor()) {
+    public init(config: CkbRuntimeConfig) {
+        this.config = config
+        this.executor = NativeHttpRequestExecutor(config)
+    }
+
+    public init(config: CkbRuntimeConfig, executor!: HttpRequestExecutor) {
         this.config = config
         this.executor = executor
     }
@@ -2784,6 +2798,18 @@ private func configApply(config: CkbRuntimeConfig, key: String, value: String): 
         config.timeoutMillis = try { Int64.parse(value) } catch (_: Exception) { config.timeoutMillis }
     } else if (key == "network.retryCount") {
         config.retryCount = try { Int64.parse(value) } catch (_: Exception) { config.retryCount }
+    } else if (key == "network.proxy") {
+        config.networkProxy = value
+    } else if (key == "network.envProxyEnabled") {
+        config.networkEnvProxyEnabled = parseBool(value)
+    } else if (key == "network.noProxy") {
+        config.networkNoProxy = value
+    } else if (key == "network.insecureSkipTlsVerify") {
+        config.networkInsecureSkipTlsVerify = parseBool(value)
+    } else if (key == "network.allowPrivateNetwork") {
+        config.networkAllowPrivateNetwork = parseBool(value)
+    } else if (key == "network.allowedHosts") {
+        config.networkAllowedHosts = value
     }
 }
 
