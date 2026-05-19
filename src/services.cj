@@ -132,17 +132,109 @@ public class CkbRuntimeConfig {
         this.gitCodeTokenRef != "" || this.gitCodeTokenFile != ""
     }
 
+    public func gitCodeAuthSummary(): GitCodeAuthResolution {
+        let auth = GitCodeAuthResolution()
+        let mode = this.gitCodeAuthMode.toAsciiLower()
+        if (mode == "" || mode == "none") {
+            return auth
+        }
+        if (mode != "token" && mode != "cookie") {
+            auth.state = "invalid"
+            auth.status = "auth_degraded"
+            auth.diagnostic = "unsupported_auth_mode"
+            return auth
+        }
+        if (this.gitCodeTokenRef.trimAscii() != "") {
+            auth.state = if (mode == "cookie") { "cookie-present" } else { "token" }
+            return auth
+        }
+        if (this.gitCodeTokenFile != "") {
+            if (exists(Path(this.gitCodeTokenFile))) {
+                auth.state = if (mode == "cookie") { "cookie-present" } else { "token" }
+                return auth
+            }
+            auth.state = if (mode == "cookie") { "cookie-missing" } else { "token-missing" }
+            auth.status = "auth_degraded"
+            auth.diagnostic = if (mode == "cookie") { "missing_cookie_file" } else { "missing_token_file" }
+            return auth
+        }
+        auth.state = if (mode == "cookie") { "cookie-missing" } else { "token-missing" }
+        auth.status = "auth_degraded"
+        auth.diagnostic = if (mode == "cookie") { "missing_cookie" } else { "missing_token" }
+        auth
+    }
+
+    public func gitCodeAuth(): GitCodeAuthResolution {
+        let auth = GitCodeAuthResolution()
+        let mode = this.gitCodeAuthMode.toAsciiLower()
+        if (mode == "" || mode == "none") {
+            return auth
+        }
+        if (mode != "token" && mode != "cookie") {
+            auth.state = "invalid"
+            auth.status = "auth_degraded"
+            auth.diagnostic = "unsupported_auth_mode"
+            return auth
+        }
+        var secret = this.gitCodeTokenRef.trimAscii()
+        var fileStatus = "not_configured"
+        if (secret == "" && this.gitCodeTokenFile != "") {
+            let loaded = readCredentialFile(this.gitCodeTokenFile)
+            secret = loaded.value
+            fileStatus = loaded.status
+        }
+        if (secret == "") {
+            auth.state = if (mode == "cookie") { "cookie-missing" } else { "token-missing" }
+            auth.status = "auth_degraded"
+            auth.diagnostic = if (fileStatus == "missing") {
+                if (mode == "cookie") { "missing_cookie_file" } else { "missing_token_file" }
+            } else if (fileStatus == "empty") {
+                if (mode == "cookie") { "empty_cookie_file" } else { "empty_token_file" }
+            } else if (mode == "cookie") {
+                "missing_cookie"
+            } else {
+                "missing_token"
+            }
+            return auth
+        }
+        auth.state = if (mode == "cookie") { "cookie-present" } else { "token" }
+        auth.status = "ok"
+        auth.header = if (mode == "cookie") { "Cookie: ${secret}" } else { "Authorization: Bearer ${secret}" }
+        auth
+    }
+
     public func redactedSummary(): String {
+        let auth = this.gitCodeAuthSummary()
         var out = "network=${if (this.networkEnabled) { "enabled" } else { "disabled" }}"
         out += " gitcode.baseUrl=${redactSensitive(this.gitCodeBaseUrl)}"
         out += " gitcode.authMode=${this.gitCodeAuthMode}"
         out += " gitcode.token=${if (this.tokenPresent()) { "present" } else { "absent" }}"
+        out += " gitcode.auth=${auth.state}"
+        if (auth.diagnostic != "") {
+            out += " gitcode.authDiagnostic=${auth.diagnostic}"
+        }
         out += " website=${if (this.websiteEnabled) { "enabled" } else { "disabled" }}"
         out += " docs=${if (this.docsEnabled) { "enabled" } else { "disabled" }}"
         out += " index.backend=${this.indexBackend}"
         out += " embedding.provider=${this.embeddingProvider}"
         out
     }
+}
+
+public class GitCodeAuthResolution {
+    public var state: String = "none"
+    public var status: String = "ok"
+    public var diagnostic: String = ""
+    public var header: String = ""
+
+    public init() {}
+}
+
+private class CredentialFileRead {
+    var status: String = "not_configured"
+    var value: String = ""
+
+    init() {}
 }
 
 public func loadCkbRuntimeConfig(path: String): CkbRuntimeConfig {
@@ -170,6 +262,32 @@ public func loadCkbRuntimeConfig(path: String): CkbRuntimeConfig {
         configApply(config, key, unquoteConfigValue(value))
     }
     config
+}
+
+private func readCredentialFile(path: String): CredentialFileRead {
+    let result = CredentialFileRead()
+    if (path == "" || !exists(Path(path))) {
+        result.status = "missing"
+        return result
+    }
+    try {
+        let text = String.fromUtf8(File.readFrom(Path(path))).trimAscii()
+        result.value = firstCredentialLine(text)
+        result.status = if (result.value == "") { "empty" } else { "ok" }
+    } catch (_: Exception) {
+        result.status = "missing"
+    }
+    result
+}
+
+private func firstCredentialLine(text: String): String {
+    for (line in text.split("\n")) {
+        let trimmed = line.trimAscii()
+        if (trimmed != "") {
+            return trimmed
+        }
+    }
+    ""
 }
 
 public func redactSensitive(raw: String): String {
@@ -221,7 +339,11 @@ public class CurlHttpRequestExecutor <: HttpRequestExecutor {
             return response
         }
         let timeoutSeconds = if (request.timeoutMillis <= 0) { "10" } else { "${(request.timeoutMillis + 999) / 1000}" }
-        let args = ["-sS", "-L", "--max-time", timeoutSeconds, "-H", "Accept: ${request.accept}", "-w", "\nCKB_HTTP_STATUS:%{http_code}\nCKB_CONTENT_TYPE:%{content_type}\n", request.url]
+        let args = if (request.authHeader == "") {
+            ["-sS", "-L", "--max-time", timeoutSeconds, "-H", "Accept: ${request.accept}", "-w", "\nCKB_HTTP_STATUS:%{http_code}\nCKB_CONTENT_TYPE:%{content_type}\n", request.url]
+        } else {
+            ["-sS", "-L", "--max-time", timeoutSeconds, "-H", "Accept: ${request.accept}", "-H", request.authHeader, "-w", "\nCKB_HTTP_STATUS:%{http_code}\nCKB_CONTENT_TYPE:%{content_type}\n", request.url]
+        }
         try {
             let process = launch("curl", args, stdOut: ProcessRedirect.Pipe, stdErr: ProcessRedirect.Pipe)
             let out = StringReader<InputStream>(process.stdOutPipe).readToEnd()
@@ -268,7 +390,14 @@ public class HttpSourceFetchRunner <: SourceFetchRunner {
         http.accept = request.accept
         http.timeoutMillis = request.timeoutMillis
         http.retryCount = request.retryCount
-        http.authHeader = if (this.config.tokenPresent()) { "present-redacted" } else { "" }
+        let auth = authHeaderForRequest(this.config, request)
+        if (auth.status != "ok") {
+            result.status = auth.status
+            result.body = auth.diagnostic
+            result.bodyHash = stableSummaryHash(auth.diagnostic)
+            return result
+        }
+        http.authHeader = auth.header
         var attempt: Int64 = 0
         var last = HttpExecutionResponse()
         while (attempt <= request.retryCount) {
@@ -471,18 +600,18 @@ public func ckbSyncLive(kb: KnowledgeBase, config: CkbRuntimeConfig, options: Li
     let planner = SourceSyncPlanner(builder: SourceRequestBuilder(gitCodeApiRoot: config.gitCodeBaseUrl))
     let applyOptions = liveApplyOptionsFromSync(options)
     let plan = limitedPlan(planner.productionPlan(kb.sourceScope), applyOptions)
-    var out = "sync-live mode=${if (options.dryRun) { "dry-run" } else { "apply" }} ${config.redactedSummary()}\n"
+    var out = "sync-live mode=${if (options.dryRun) { "dry-run" } else { "apply" }} requests=${plan.requests.size} websiteEnabled=${config.websiteEnabled} docsEnabled=${config.docsEnabled} ${config.redactedSummary()}\n"
     var okCount: Int64 = 0
     var degradedCount: Int64 = 0
     for (request in plan.requests) {
         request.timeoutMillis = config.timeoutMillis
         request.retryCount = config.retryCount
         if (!config.websiteEnabled && request.kind == SourceKinds.CANGJIE_WEBSITE) {
-            out += "skip kind=${request.kind} reason=website_disabled url=${redactSensitive(request.url)}\n"
+            out += "skip kind=${request.kind} reason=website_disabled auth=none sourceUrl=${redactSensitive(request.url)}\n"
             continue
         }
         if (!config.docsEnabled && request.kind == SourceKinds.CANGJIE_DOCS) {
-            out += "skip kind=${request.kind} reason=docs_disabled url=${redactSensitive(request.url)}\n"
+            out += "skip kind=${request.kind} reason=docs_disabled auth=none sourceUrl=${redactSensitive(request.url)}\n"
             continue
         }
         let fetch = SourceResponseNormalizer().normalize(request, runner.fetch(request))
@@ -491,20 +620,24 @@ public func ckbSyncLive(kb: KnowledgeBase, config: CkbRuntimeConfig, options: Li
         } else {
             degradedCount += 1
         }
-        out += renderLiveFetchSummary(request, fetch)
+        out += renderLiveFetchSummary(request, fetch, authSummaryForRequest(config, request))
         if (options.apply && fetch.ok) {
             ingestLiveFetch(kb, request, fetch, okCount + degradedCount)
         }
     }
+    var activePromoted = false
+    var candidateWritten = false
     if (options.apply) {
         kb.normalize()
         kb.publishIndex(options.simulateValidationFailure)
         kb.persistCandidateSnapshot(store)
+        candidateWritten = true
         if (kb.status().failedCandidateVersion == "") {
             kb.persistActiveSnapshot(store)
+            activePromoted = true
         }
     }
-    out += "summary requests=${plan.requests.size} ok=${okCount} degraded=${degradedCount} truncated=${plan.truncated} rawWritten=${if (options.apply) { "true" } else { "false" }} since=${options.since}\n"
+    out += "summary requests=${plan.requests.size} ok=${okCount} degraded=${degradedCount} truncated=${plan.truncated} rawWritten=${if (options.apply && activePromoted) { "true" } else { "false" }} candidateWritten=${candidateWritten} activePromoted=${activePromoted} since=${options.since}\n"
     redactSensitive(out)
 }
 
@@ -1172,6 +1305,24 @@ private func countMatches(values: ArrayList<String>, value: String): Int64 {
     count
 }
 
+private func authHeaderForRequest(config: CkbRuntimeConfig, request: SourceFetchRequest): GitCodeAuthResolution {
+    if (!isGitCodeRequest(request)) {
+        return GitCodeAuthResolution()
+    }
+    config.gitCodeAuth()
+}
+
+private func authSummaryForRequest(config: CkbRuntimeConfig, request: SourceFetchRequest): GitCodeAuthResolution {
+    if (!isGitCodeRequest(request)) {
+        return GitCodeAuthResolution()
+    }
+    config.gitCodeAuthSummary()
+}
+
+private func isGitCodeRequest(request: SourceFetchRequest): Bool {
+    request.kind == SourceKinds.GITCODE_ORG || request.kind == SourceKinds.GITCODE_REPO || request.kind == SourceKinds.GITCODE_SOURCE || request.kind == SourceKinds.GITCODE_ISSUE_HISTORY || request.kind == SourceKinds.GITCODE_PR_HISTORY
+}
+
 private func ingestLiveFetch(kb: KnowledgeBase, request: SourceFetchRequest, fetch: SourceFetchResult, index: Int64): Unit {
     if (request.kind == SourceKinds.GITCODE_ORG) {
         kb.ingestFetchResult("live-org-${safeName(request.repo)}", SourceTypes.COMMUNITY, fetch, "GitCode ${request.repo} org", TrustLevels.COMMUNITY, ReviewStates.REVIEWED)
@@ -1417,7 +1568,7 @@ private func parseCurlContentType(raw: String): String {
     raw[idx + marker.size..raw.size].split("\n")[0].trimAscii()
 }
 
-private func renderLiveFetchSummary(request: SourceFetchRequest, fetch: SourceFetchResult): String {
+private func renderLiveFetchSummary(request: SourceFetchRequest, fetch: SourceFetchResult, auth: GitCodeAuthResolution): String {
     var shape = "unknown"
     if (request.kind == SourceKinds.GITCODE_ORG) {
         shape = "repo-list"
@@ -1430,12 +1581,43 @@ private func renderLiveFetchSummary(request: SourceFetchRequest, fetch: SourceFe
     } else if (request.kind == SourceKinds.GITCODE_SOURCE) {
         shape = "source-snapshot"
     }
-    var out = "request kind=${request.kind} method=${request.method} url=${redactSensitive(request.url)} pageParam=${request.paginationParam} perPageParam=${request.perPageParam} timeoutMillis=${request.timeoutMillis} retryCount=${request.retryCount}"
-    out += " -> status=${fetch.status} code=${fetch.statusCode} shape=${shape} bytes=${fetch.bytes} contentType=${fetch.contentType} hash=${fetch.bodyHash} attempts=${fetch.attempts}"
+    var out = "request kind=${request.kind} method=${request.method} sourceUrl=${redactSensitive(request.url)} pageParam=${request.paginationParam} perPageParam=${request.perPageParam} timeoutMillis=${request.timeoutMillis} retryCount=${request.retryCount} auth=${auth.state}"
+    out += " -> status=${fetch.status} httpStatus=${fetch.statusCode} shape=${shape} bytes=${fetch.bytes} contentType=${fetch.contentType} bodyHash=${fetch.bodyHash} attempts=${fetch.attempts} errorClass=${classifyFetchError(fetch)}"
+    if (auth.diagnostic != "") {
+        out += " authDiagnostic=${auth.diagnostic}"
+    }
     if (fetch.retryAfterSeconds > 0) {
         out += " retryAfter=${fetch.retryAfterSeconds}"
     }
     out + "\n"
+}
+
+private func classifyFetchError(fetch: SourceFetchResult): String {
+    if (fetch.ok) {
+        return "none"
+    }
+    if (fetch.status == "network_disabled") {
+        return "network_disabled"
+    }
+    if (fetch.status == "auth_degraded") {
+        return "auth"
+    }
+    if (fetch.status == "rate_limited") {
+        return "rate_limit"
+    }
+    if (fetch.status == "timeout") {
+        return "timeout"
+    }
+    if (fetch.status == "transport_error") {
+        return "transport"
+    }
+    if (fetch.status == "not_found") {
+        return "not_found"
+    }
+    if (fetch.status == "server_error") {
+        return "server"
+    }
+    "http"
 }
 
 private func ingestLiveFetch(kb: KnowledgeBase, request: SourceFetchRequest, fetch: SourceFetchResult): Unit {

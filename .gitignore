@@ -4,6 +4,10 @@ MEMORY.md
 DREAMS.md
 memory/
 .env
+tokenFile
+cookieFile
+*.token
+*.cookie
 .agents/
 .claude/
 .learnings/
