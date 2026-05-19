@@ -68,6 +68,10 @@ The core MCP-like functions are available from `src/core.cj`:
 
 Web candidate evidence is always marked `requiresReview=true` by default.
 
+Operational integration with Metis and GitCodeMonitor is documented in
+`docs/metis-gitcodemonitor-integration.md`. Manual production acceptance is
+tracked with `docs/manual-acceptance-checklist.md`.
+
 ## Contribution Rules
 
 Keep knowledge synchronization, storage, indexing, and evidence-pack lifecycle

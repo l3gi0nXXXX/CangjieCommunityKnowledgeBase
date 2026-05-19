@@ -8,6 +8,8 @@ tokenFile
 cookieFile
 *.token
 *.cookie
+ckb-live.conf
+*.local.conf
 .agents/
 .claude/
 .learnings/

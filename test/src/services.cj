@@ -1349,11 +1349,11 @@ public class QueryService {
 
 public class CkbSchema {
     public static func mcpTools(): String {
-        "tools: cangjie.source_search,cangjie.doc_search,cangjie.website_search,cangjie.web_candidate_search,cangjie.hybrid_search,cangjie.evidence_pack,cangjie.status"
+        "tools: cangjie.health,cangjie.status,cangjie.query,cangjie.evidence,cangjie.sync,cangjie.rebuild,cangjie.source_search,cangjie.doc_search,cangjie.website_search,cangjie.web_candidate_search,cangjie.hybrid_search,cangjie.evidence_pack; input: query{q,budget,sourceType,includeCandidates=false}, evidence{q,budget,includeCandidates=true}, sync{dryRun,apply,maxRepos,maxFilesPerRepo,maxItems,since}, rebuild{store}; output: ok,status,errorCode,activeKnowledgeVersion,knowledgeVersion,citations,evidence,requiresReview,truncated,degraded; redaction: never returns tokenRef,tokenFile contents,Authorization,Cookie,absolute local paths; errors: ckb.bad_request,ckb.network_disabled,ckb.auth_degraded,ckb.rate_limited,ckb.source_unavailable,ckb.rebuild_failed,ckb.validation_failed"
     }
 
     public static func httpLikeRoutes(): String {
-        "routes: STDIO health,status,metrics,query <text>,evidence <text>,sync,rebuild,restart,stop; GET /health, GET /status, POST /query, POST /evidence, POST /sync-once, POST /rebuild-index"
+        "routes: STDIO ckb-stdio-v1 health,status,metrics,query <text>,evidence <text>,sync,rebuild,scheduler-run,backup <name>,restore <name>,restart,stop; GET /health -> ok,status,activeKnowledgeVersion,degraded; GET /status -> storage,indexManifest,scheduler,activeKnowledgeVersion,restoreDiagnostic; POST /query -> query,evidence,citations,knowledgeVersion; POST /evidence -> evidencePack,graphContext,citations,activeKnowledgeVersion; POST /sync -> dryRun|apply,candidateVersion,activeKnowledgeVersion,redactedSourceStatus; POST /rebuild-index -> candidateVersion,activeKnowledgeVersion,count; compatibility: CLI service/status/rebuild-index provide the canonical local protocol"
     }
 }
 
