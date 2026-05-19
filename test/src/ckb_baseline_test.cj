@@ -1,9 +1,17 @@
 package cangjie_community_knowledge_base_test
 
 import std.collection.ArrayList
-import std.fs.{File, Path}
+import std.fs.{Directory, File, Path, exists}
 import std.unittest.*
 import std.unittest.testmacro.*
+
+private func writeTestFile(path: String, text: String): Unit {
+    let target = Path(path)
+    if (!exists(target.parent)) {
+        Directory.create(target.parent, recursive: true)
+    }
+    File.writeTo(target, text.toArray())
+}
 
 @Test
 public class CkbBaselineTest {
@@ -269,6 +277,63 @@ public class CkbBaselineTest {
         @Expect(store.has("cache/query func.txt"), true)
         @Expect(store.loadRaw().size, kb.rawRecordCount())
         @Expect(store.loadNormalized().size, kb.normalizedRecordCount())
+    }
+
+    @TestCase
+    public func activeSnapshotLoadsRebuiltActiveVersionFromStore(): Unit {
+        let kb = newOfflineKnowledgeBase()
+        let store = FileKnowledgeStore("target/ckb-test-active-snapshot-valid")
+        let rebuild = ckbRebuildIndex(kb, store)
+        let snapshot = store.loadActiveSnapshot()
+
+        @Expect(rebuild.ok, true)
+        @Expect(rebuild.activeVersion, "ckb-20260519-000200-active")
+        @Expect(snapshot.valid, true)
+        @Expect(snapshot.activeVersion, "ckb-20260519-000200-active")
+        @Expect(snapshot.activeIndex.size > 0, true)
+        @Expect(snapshot.rawRecords.size, 0)
+        @Expect(snapshot.normalizedRecords.size, 0)
+        @Expect(snapshot.status.activeKnowledgeVersion, "ckb-20260519-000200-active")
+    }
+
+    @TestCase
+    public func activeSnapshotRejectsMissingActiveVersion(): Unit {
+        let kb = newOfflineKnowledgeBase()
+        let store = FileKnowledgeStore("target/ckb-test-active-snapshot-missing-version")
+        ckbRebuildIndex(kb, store)
+        writeTestFile("target/ckb-test-active-snapshot-missing-version/index/active.version", "")
+
+        let snapshot = store.loadActiveSnapshot()
+
+        @Expect(snapshot.valid, false)
+        @Expect(snapshot.diagnostic.contains("missing active.version"), true)
+    }
+
+    @TestCase
+    public func activeSnapshotRejectsMetadataActiveMismatch(): Unit {
+        let kb = newOfflineKnowledgeBase()
+        let store = FileKnowledgeStore("target/ckb-test-active-snapshot-metadata-mismatch")
+        ckbRebuildIndex(kb, store)
+        writeTestFile("target/ckb-test-active-snapshot-metadata-mismatch/metadata/status.ckb", "active=ckb-20260519-000100-active\n")
+
+        let snapshot = store.loadActiveSnapshot()
+
+        @Expect(snapshot.valid, false)
+        @Expect(snapshot.diagnostic.contains("metadata active=ckb-20260519-000100-active"), true)
+    }
+
+    @TestCase
+    public func activeSnapshotRejectsMalformedActiveIndex(): Unit {
+        let kb = newOfflineKnowledgeBase()
+        let store = FileKnowledgeStore("target/ckb-test-active-snapshot-malformed-index")
+        ckbRebuildIndex(kb, store)
+        writeTestFile("target/ckb-test-active-snapshot-malformed-index/index/active.ckb", "not|a|normalized|record\n")
+
+        let snapshot = store.loadActiveSnapshot()
+
+        @Expect(snapshot.valid, false)
+        @Expect(snapshot.activeIndex.size, 0)
+        @Expect(snapshot.diagnostic.contains("malformed active index line"), true)
     }
 
     @TestCase
