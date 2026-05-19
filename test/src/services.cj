@@ -65,6 +65,9 @@ public class SourceFetchResult {
     public var bodyHash: String = ""
     public var retryAfterSeconds: Int64 = 0
     public var attempts: Int64 = 0
+    public var transportErrorClass: String = ""
+    public var transportDiagnostic: String = ""
+    public var curlExitCode: Int64 = 0
 
     public init() {}
 }
@@ -94,6 +97,9 @@ public class FakeSourceFetchRunner <: SourceFetchRunner {
     public var status: String = "ok"
     public var body: String = ""
     public var retryAfterSeconds: Int64 = 0
+    public var transportErrorClass: String = ""
+    public var transportDiagnostic: String = ""
+    public var curlExitCode: Int64 = 0
 
     public init() {}
 
@@ -117,6 +123,9 @@ public class FakeSourceFetchRunner <: SourceFetchRunner {
         result.bodyHash = stableSummaryHash(result.body)
         result.retryAfterSeconds = this.retryAfterSeconds
         result.attempts = 1
+        result.transportErrorClass = this.transportErrorClass
+        result.transportDiagnostic = this.transportDiagnostic
+        result.curlExitCode = this.curlExitCode
         result
     }
 }
@@ -382,6 +391,14 @@ public func redactSensitive(raw: String): String {
     text
 }
 
+private func sanitizedTransportDiagnostic(raw: String): String {
+    var text = redactSensitive(raw).replace("\n", " ").replace("\r", " ").trimAscii()
+    if (text.size > 160) {
+        text = text[0..160]
+    }
+    text
+}
+
 public class HttpExecutionRequest {
     public var method: String = "GET"
     public var url: String = ""
@@ -399,8 +416,45 @@ public class HttpExecutionResponse {
     public var contentType: String = ""
     public var retryAfterSeconds: Int64 = 0
     public var status: String = "not_started"
+    public var transportErrorClass: String = ""
+    public var transportDiagnostic: String = ""
+    public var curlExitCode: Int64 = 0
 
     public init() {}
+}
+
+public class CurlTransportDiagnostic {
+    public var transportErrorClass: String = "unknown_transport"
+    public var transportDiagnostic: String = ""
+    public var curlExitCode: Int64 = 0
+
+    public init() {}
+}
+
+public func diagnoseCurlTransportError(curlExitCode: Int64, stderr: String): CurlTransportDiagnostic {
+    let diagnostic = CurlTransportDiagnostic()
+    diagnostic.curlExitCode = curlExitCode
+    diagnostic.transportDiagnostic = sanitizedTransportDiagnostic(stderr)
+    let lowered = stderr.toAsciiLower()
+    if (curlExitCode == 28 || lowered.contains("timed out") || lowered.contains("timeout")) {
+        diagnostic.transportErrorClass = "timeout"
+    } else if (curlExitCode == 6 || lowered.contains("could not resolve host") || lowered.contains("name lookup") || lowered.contains("resolve host")) {
+        diagnostic.transportErrorClass = "dns"
+    } else if (curlExitCode == 35 || curlExitCode == 51 || curlExitCode == 58 || curlExitCode == 60 || lowered.contains("ssl") || lowered.contains("tls") || lowered.contains("certificate")) {
+        diagnostic.transportErrorClass = "tls"
+    } else if (curlExitCode == 5 || lowered.contains("proxy")) {
+        diagnostic.transportErrorClass = "proxy"
+    } else if (curlExitCode == 7 || lowered.contains("connection refused") || lowered.contains("failed to connect")) {
+        diagnostic.transportErrorClass = "connection_refused"
+    } else if (curlExitCode != 0) {
+        diagnostic.transportErrorClass = "curl_exit"
+    } else {
+        diagnostic.transportErrorClass = "unknown_transport"
+    }
+    if (diagnostic.transportDiagnostic == "") {
+        diagnostic.transportDiagnostic = diagnostic.transportErrorClass
+    }
+    diagnostic
 }
 
 public interface HttpRequestExecutor {
@@ -445,11 +499,21 @@ public class CurlHttpRequestExecutor <: HttpRequestExecutor {
             response.statusCode = parseCurlStatus(out)
             response.contentType = parseCurlContentType(out)
             response.status = if (code == 0) { "http_${response.statusCode}" } else { "transport_error" }
-            if (code != 0 && err.contains("timed out")) {
-                response.status = "timeout"
+            if (code != 0) {
+                let diagnostic = diagnoseCurlTransportError(code, err)
+                response.transportErrorClass = diagnostic.transportErrorClass
+                response.transportDiagnostic = diagnostic.transportDiagnostic
+                response.curlExitCode = diagnostic.curlExitCode
+                if (diagnostic.transportErrorClass == "timeout") {
+                    response.status = "timeout"
+                }
             }
         } catch (_: Exception) {
+            let diagnostic = diagnoseCurlTransportError(-1, "curl launch failed")
             response.status = "transport_error"
+            response.transportErrorClass = diagnostic.transportErrorClass
+            response.transportDiagnostic = diagnostic.transportDiagnostic
+            response.curlExitCode = diagnostic.curlExitCode
         }
         response
     }
@@ -511,6 +575,9 @@ public class HttpSourceFetchRunner <: SourceFetchRunner {
         result.bytes = last.body.size
         result.bodyHash = stableSummaryHash(last.body)
         result.retryAfterSeconds = last.retryAfterSeconds
+        result.transportErrorClass = last.transportErrorClass
+        result.transportDiagnostic = last.transportDiagnostic
+        result.curlExitCode = last.curlExitCode
         result.ok = last.statusCode >= 200 && last.statusCode < 300
         if (last.status == "timeout") {
             result.status = "timeout"
@@ -2264,6 +2331,17 @@ private func renderLiveFetchSummary(request: SourceFetchRequest, fetch: SourceFe
     }
     if (request.diagnostic != "") {
         out += " requestDiagnostic=${request.diagnostic}"
+    }
+    if (fetch.status == "timeout" || fetch.status == "transport_error") {
+        if (fetch.transportErrorClass != "") {
+            out += " transportClass=${fetch.transportErrorClass}"
+        }
+        if (fetch.transportDiagnostic != "") {
+            out += " transportDiagnostic=${fetch.transportDiagnostic}"
+        }
+        if (fetch.curlExitCode != 0) {
+            out += " curlExitCode=${fetch.curlExitCode}"
+        }
     }
     if (fetch.retryAfterSeconds > 0) {
         out += " retryAfter=${fetch.retryAfterSeconds}"
