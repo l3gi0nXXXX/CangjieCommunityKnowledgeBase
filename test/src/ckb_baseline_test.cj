@@ -1168,26 +1168,24 @@ network.retryCount=3
         fake.status = "transport_error"
         fake.body = ""
         fake.transportErrorClass = "dns"
-        fake.transportDiagnostic = "curl: (6) Could not resolve host: gitcode.com"
-        fake.curlExitCode = 6
+        fake.transportDiagnostic = "native dns lookup failed for gitcode.com"
 
         let text = ckbSyncLive(kb, config, options, runner: fake, store: FileKnowledgeStore("target/ckb-transport-summary"))
 
         @Expect(text.contains("status=transport_error"), true)
         @Expect(text.contains("transportClass=dns"), true)
-        @Expect(text.contains("transportDiagnostic=curl: (6) Could not resolve host: gitcode.com"), true)
-        @Expect(text.contains("curlExitCode=6"), true)
+        @Expect(text.contains("transportDiagnostic=native dns lookup failed for gitcode.com"), true)
+        @Expect(text.contains("curlExitCode"), false)
 
         fake.status = "timeout"
         fake.transportErrorClass = "timeout"
-        fake.transportDiagnostic = "curl: (28) Operation timed out"
-        fake.curlExitCode = 28
+        fake.transportDiagnostic = "native request timed out"
         let timeoutText = ckbSyncLive(kb, config, options, runner: fake, store: FileKnowledgeStore("target/ckb-timeout-summary"))
 
         @Expect(timeoutText.contains("status=timeout"), true)
         @Expect(timeoutText.contains("transportClass=timeout"), true)
-        @Expect(timeoutText.contains("transportDiagnostic=curl: (28) Operation timed out"), true)
-        @Expect(timeoutText.contains("curlExitCode=28"), true)
+        @Expect(timeoutText.contains("transportDiagnostic=native request timed out"), true)
+        @Expect(timeoutText.contains("curlExitCode"), false)
     }
 
     @TestCase
@@ -1383,8 +1381,7 @@ network.retryCount=3
         let limited = HttpSourceFetchRunner(config, executor: FakeHttpExecutor(429, "{}", "application/json", "http_429", 30)).fetch(request)
         let timeoutExecutor = FakeHttpExecutor(0, "", "", "timeout", 0)
         timeoutExecutor.transportErrorClass = "timeout"
-        timeoutExecutor.transportDiagnostic = "curl: (28) Operation timed out"
-        timeoutExecutor.curlExitCode = 28
+        timeoutExecutor.transportDiagnostic = "native request timed out"
         let timeout = HttpSourceFetchRunner(config, executor: timeoutExecutor).fetch(request)
 
         @Expect(unauthorized.status, "auth_degraded")
@@ -1394,8 +1391,8 @@ network.retryCount=3
         @Expect(limited.attempts, 2)
         @Expect(timeout.status, "timeout")
         @Expect(timeout.transportErrorClass, "timeout")
-        @Expect(timeout.transportDiagnostic, "curl: (28) Operation timed out")
-        @Expect(timeout.curlExitCode, 28)
+        @Expect(timeout.transportDiagnostic, "native request timed out")
+        @Expect(timeout.curlExitCode, 0)
     }
 
     @TestCase

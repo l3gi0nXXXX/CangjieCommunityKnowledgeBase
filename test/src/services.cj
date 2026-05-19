@@ -277,6 +277,13 @@ public class CkbRuntimeConfig {
         if (auth.diagnostic != "") {
             out += " gitcode.authDiagnostic=${auth.diagnostic}"
         }
+        out += " transport=native"
+        out += " network.proxy=${if (this.networkProxy == "") { "absent" } else { redactProxyEndpoint(this.networkProxy) }}"
+        out += " network.envProxy=${if (this.networkEnvProxyEnabled) { "enabled" } else { "disabled" }}"
+        out += " network.noProxy=${if (this.networkNoProxy == "") { "absent" } else { redactSensitive(this.networkNoProxy) }}"
+        out += " network.insecureSkipTlsVerify=${if (this.networkInsecureSkipTlsVerify) { "enabled" } else { "disabled" }}"
+        out += " network.timeoutMillis=${this.timeoutMillis}"
+        out += " network.retryCount=${this.retryCount}"
         out += " website=${if (this.websiteEnabled) { "enabled" } else { "disabled" }}"
         out += " docs=${if (this.docsEnabled) { "enabled" } else { "disabled" }}"
         out += " index.backend=${this.indexBackend}"
@@ -291,9 +298,6 @@ public class CkbRuntimeConfig {
         out += " vector.backend=${this.vectorBackend}"
         out += " vector.activeCollection=${this.vectorActiveCollection}"
         out += " vector.candidateCollection=${this.vectorCandidateCollection}"
-        out += " network.proxy=${if (this.networkProxy == "") { "absent" } else { redactSensitive(this.networkProxy) }}"
-        out += " network.envProxy=${if (this.networkEnvProxyEnabled) { "enabled" } else { "disabled" }}"
-        out += " network.noProxy=${if (this.networkNoProxy == "") { "absent" } else { redactSensitive(this.networkNoProxy) }}"
         out
     }
 }
@@ -721,6 +725,24 @@ public func redactSensitive(raw: String): String {
     text = redactProxyCredentials(text)
     text = redactAbsolutePath(text)
     text
+}
+
+public func redactProxyEndpoint(raw: String): String {
+    var text = redactSensitive(raw.trimAscii())
+    let schemeIdx = findText(text, "://")
+    if (schemeIdx < 0) {
+        return text
+    }
+    let authorityStart = schemeIdx + 3
+    let rest = text[authorityStart..text.size]
+    let slashIdx = findText(rest, "/")
+    let authorityEnd = if (slashIdx < 0) { text.size } else { authorityStart + slashIdx }
+    let authority = text[authorityStart..authorityEnd]
+    let atIdx = findText(authority, "@")
+    if (atIdx < 0) {
+        return text
+    }
+    text[0..authorityStart] + "[redacted]@" + text[authorityStart + atIdx + 1..text.size]
 }
 
 private func sanitizedTransportDiagnostic(raw: String): String {
@@ -3061,9 +3083,6 @@ private func renderLiveFetchSummary(request: SourceFetchRequest, fetch: SourceFe
         }
         if (fetch.transportDiagnostic != "") {
             out += " transportDiagnostic=${fetch.transportDiagnostic}"
-        }
-        if (fetch.curlExitCode != 0) {
-            out += " curlExitCode=${fetch.curlExitCode}"
         }
     }
     if (fetch.retryAfterSeconds > 0) {

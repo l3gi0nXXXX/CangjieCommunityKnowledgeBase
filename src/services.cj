@@ -145,10 +145,6 @@ public class CkbRuntimeConfig {
     public var gitCodeAccessTokenQuery: Bool = false
     public var gitCodeTokenRef: String = ""
     public var gitCodeTokenFile: String = ""
-    public var networkProxy: String = ""
-    public var networkEnvProxyEnabled: Bool = false
-    public var networkNoProxy: String = ""
-    public var networkInsecureSkipTlsVerify: Bool = false
     public var websiteEnabled: Bool = false
     public var docsEnabled: Bool = false
     public var indexBackend: String = "offline"
@@ -302,9 +298,6 @@ public class CkbRuntimeConfig {
         out += " vector.backend=${this.vectorBackend}"
         out += " vector.activeCollection=${this.vectorActiveCollection}"
         out += " vector.candidateCollection=${this.vectorCandidateCollection}"
-        out += " network.proxy=${if (this.networkProxy == "") { "absent" } else { redactSensitive(this.networkProxy) }}"
-        out += " network.envProxy=${if (this.networkEnvProxyEnabled) { "enabled" } else { "disabled" }}"
-        out += " network.noProxy=${if (this.networkNoProxy == "") { "absent" } else { redactSensitive(this.networkNoProxy) }}"
         out
     }
 }
