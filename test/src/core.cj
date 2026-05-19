@@ -54,6 +54,7 @@ public class SourceReference {
 }
 
 public class KnowledgeMetadata {
+    public var sourceId: String = ""
     public var sourceType: String = ""
     public var sourceUrl: String = ""
     public var repo: String = ""
@@ -104,6 +105,7 @@ public class SearchOptions {
     public var reviewState: String = ""
     public var budget: Int64 = 5
     public var includeCandidates: Bool = false
+    public var includeVector: Bool = true
 
     public init() {}
 }
@@ -113,8 +115,394 @@ public class SearchResult {
     public var knowledgeVersion: String = ""
     public var records: ArrayList<NormalizedRecord> = ArrayList<NormalizedRecord>()
     public var truncated: Bool = false
+    public var degraded: Bool = false
+    public var vectorUsed: Bool = false
+    public var fallbackReason: String = ""
 
     public init() {}
+}
+
+public class EmbeddingProviderState {
+    public static let READY: String = "ready"
+    public static let DEGRADED: String = "degraded"
+    public static let DOWN: String = "down"
+}
+
+public class EmbeddingConfig {
+    public var provider: String = "local-file"
+    public var model: String = "deterministic-token-v1"
+    public var dimensions: Int64 = 16
+    public var production: Bool = true
+    public var configured: Bool = true
+
+    public init() {}
+}
+
+public class EmbeddingStatus {
+    public var provider: String = ""
+    public var model: String = ""
+    public var dimensions: Int64 = 0
+    public var state: String = EmbeddingProviderState.DEGRADED
+    public var production: Bool = false
+    public var degradedReason: String = ""
+
+    public init() {}
+}
+
+public class EmbeddingBatch {
+    public var vectors: ArrayList<ArrayList<Float64>> = ArrayList<ArrayList<Float64>>()
+    public var status: EmbeddingStatus = EmbeddingStatus()
+
+    public init() {}
+}
+
+public interface EmbeddingProvider {
+    func embed(texts: ArrayList<String>, model: String, dimensions: Int64): EmbeddingBatch
+    func status(): EmbeddingStatus
+}
+
+public class DeterministicEmbeddingProvider <: EmbeddingProvider {
+    private let config: EmbeddingConfig
+
+    public init() {
+        this.config = EmbeddingConfig()
+    }
+
+    public init(config: EmbeddingConfig) {
+        this.config = config
+    }
+
+    public func embed(texts: ArrayList<String>, model: String, dimensions: Int64): EmbeddingBatch {
+        let batch = EmbeddingBatch()
+        batch.status = this.status()
+        if (batch.status.state != EmbeddingProviderState.READY) {
+            return batch
+        }
+        for (text in texts) {
+            batch.vectors.add(deterministicEmbedding(text, dimensions))
+        }
+        batch
+    }
+
+    public func status(): EmbeddingStatus {
+        let status = EmbeddingStatus()
+        status.provider = this.config.provider
+        status.model = this.config.model
+        status.dimensions = this.config.dimensions
+        status.production = this.config.production
+        if (!this.config.configured || this.config.dimensions <= 0) {
+            status.state = EmbeddingProviderState.DEGRADED
+            status.degradedReason = "embedding_provider_not_configured"
+            return status
+        }
+        status.state = EmbeddingProviderState.READY
+        status
+    }
+}
+
+public class ProductionEmbeddingProvider <: EmbeddingProvider {
+    private let config: EmbeddingConfig
+
+    public init(config: EmbeddingConfig) {
+        this.config = config
+    }
+
+    public func embed(texts: ArrayList<String>, model: String, dimensions: Int64): EmbeddingBatch {
+        let batch = EmbeddingBatch()
+        batch.status = this.status()
+        batch
+    }
+
+    public func status(): EmbeddingStatus {
+        let status = EmbeddingStatus()
+        status.provider = this.config.provider
+        status.model = this.config.model
+        status.dimensions = this.config.dimensions
+        status.production = true
+        status.state = EmbeddingProviderState.DEGRADED
+        status.degradedReason = "production_embedding_requires_external_adapter"
+        if (!this.config.configured) {
+            status.degradedReason = "production_embedding_missing_config"
+        }
+        status
+    }
+}
+
+public class VectorRecord {
+    public var id: String = ""
+    public var vector: ArrayList<Float64> = ArrayList<Float64>()
+    public var metadata: KnowledgeMetadata = KnowledgeMetadata()
+    public var title: String = ""
+    public var chunk: String = ""
+    public var citation: String = ""
+
+    public init() {}
+}
+
+public class VectorSearchFilters {
+    public var sourceType: String = ""
+    public var trustLevel: String = ""
+    public var reviewState: String = ""
+    public var knowledgeVersion: String = ""
+    public var includeCandidates: Bool = false
+
+    public init() {}
+}
+
+public class VectorSearchResult {
+    public var id: String = ""
+    public var score: Float64 = 0.0
+    public var record: VectorRecord = VectorRecord()
+
+    public init() {}
+}
+
+public class VectorStoreStatus {
+    public var backend: String = ""
+    public var collection: String = ""
+    public var dimension: Int64 = 0
+    public var count: Int64 = 0
+    public var state: String = EmbeddingProviderState.DEGRADED
+    public var degradedReason: String = ""
+
+    public init() {}
+}
+
+public interface VectorStore {
+    func upsert(collection: String, vectors: ArrayList<VectorRecord>): VectorStoreStatus
+    func search(collection: String, queryVector: ArrayList<Float64>, filters: VectorSearchFilters, topK: Int64): ArrayList<VectorSearchResult>
+    func status(collection: String): VectorStoreStatus
+}
+
+public class LocalVectorStore <: VectorStore {
+    private var collectionName: String = ""
+    private var records: ArrayList<VectorRecord> = ArrayList<VectorRecord>()
+    private var dimension: Int64 = 0
+    private var available: Bool = true
+
+    public init() {}
+
+    public init(available: Bool) {
+        this.available = available
+    }
+
+    public func upsert(collection: String, vectors: ArrayList<VectorRecord>): VectorStoreStatus {
+        this.collectionName = collection
+        this.records.clear()
+        this.dimension = 0
+        if (!this.available) {
+            return this.status(collection)
+        }
+        for (record in vectors) {
+            if (this.dimension == 0) {
+                this.dimension = record.vector.size
+            }
+            this.records.add(record)
+        }
+        this.status(collection)
+    }
+
+    public func search(collection: String, queryVector: ArrayList<Float64>, filters: VectorSearchFilters, topK: Int64): ArrayList<VectorSearchResult> {
+        let out = ArrayList<VectorSearchResult>()
+        if (!this.available || this.collectionName != collection || queryVector.size == 0) {
+            return out
+        }
+        for (record in this.records) {
+            if (!vectorRecordAllowed(record, filters)) {
+                continue
+            }
+            let score = cosineSimilarity(queryVector, record.vector)
+            if (score <= 0.0) {
+                continue
+            }
+            insertVectorResult(out, record, score, topK)
+        }
+        out
+    }
+
+    public func status(collection: String): VectorStoreStatus {
+        let status = VectorStoreStatus()
+        status.backend = "local-file"
+        status.collection = if (collection == "") { this.collectionName } else { collection }
+        status.dimension = this.dimension
+        status.count = this.records.size
+        if (!this.available) {
+            status.state = EmbeddingProviderState.DOWN
+            status.degradedReason = "vector_store_unavailable"
+            return status
+        }
+        status.state = EmbeddingProviderState.READY
+        status
+    }
+}
+
+public class GraphNodeTypes {
+    public static let REPO: String = "repo"
+    public static let PATH: String = "path"
+    public static let SYMBOL: String = "symbol"
+    public static let DOC: String = "doc"
+    public static let SECTION: String = "section"
+    public static let ISSUE: String = "issue"
+    public static let PR: String = "pr"
+    public static let COMMENT: String = "comment"
+    public static let CITATION: String = "citation"
+    public static let DERIVED_KNOWLEDGE: String = "derivedKnowledge"
+}
+
+public class GraphEdgeTypes {
+    public static let CONTAINS: String = "contains"
+    public static let DEFINES: String = "defines"
+    public static let CITES: String = "cites"
+    public static let DISCUSSES: String = "discusses"
+    public static let DERIVED_FROM: String = "derivedFrom"
+}
+
+public class GraphNode {
+    public var nodeId: String = ""
+    public var nodeType: String = ""
+    public var label: String = ""
+    public var sourceId: String = ""
+    public var knowledgeVersion: String = ""
+
+    public init() {}
+}
+
+public class GraphEdge {
+    public var edgeId: String = ""
+    public var edgeType: String = ""
+    public var fromNodeId: String = ""
+    public var toNodeId: String = ""
+    public var sourceId: String = ""
+    public var knowledgeVersion: String = ""
+
+    public init() {}
+}
+
+public class GraphQuery {
+    public var sourceId: String = ""
+    public var symbol: String = ""
+    public var repo: String = ""
+    public var budget: Int64 = 8
+    public var knowledgeVersion: String = ""
+
+    public init() {}
+}
+
+public class GraphContext {
+    public var knowledgeVersion: String = ""
+    public var nodes: ArrayList<GraphNode> = ArrayList<GraphNode>()
+    public var edges: ArrayList<GraphEdge> = ArrayList<GraphEdge>()
+    public var truncated: Bool = false
+    public var budget: Int64 = 0
+
+    public init() {}
+}
+
+public class GraphBuildResult {
+    public var nodes: ArrayList<GraphNode> = ArrayList<GraphNode>()
+    public var edges: ArrayList<GraphEdge> = ArrayList<GraphEdge>()
+
+    public init() {}
+}
+
+public interface GraphStore {
+    func upsert(nodes: ArrayList<GraphNode>, edges: ArrayList<GraphEdge>): Unit
+    func neighbors(query: GraphQuery): GraphContext
+    func status(): VectorStoreStatus
+}
+
+public class LocalGraphStore <: GraphStore {
+    private var nodes: ArrayList<GraphNode> = ArrayList<GraphNode>()
+    private var edges: ArrayList<GraphEdge> = ArrayList<GraphEdge>()
+    private var activeVersion: String = ""
+
+    public init() {}
+
+    public func upsert(nodes: ArrayList<GraphNode>, edges: ArrayList<GraphEdge>): Unit {
+        this.nodes.clear()
+        this.edges.clear()
+        this.activeVersion = ""
+        for (node in nodes) {
+            if (this.activeVersion == "" && node.knowledgeVersion != "") {
+                this.activeVersion = node.knowledgeVersion
+            }
+            this.nodes.add(node)
+        }
+        for (edge in edges) {
+            this.edges.add(edge)
+        }
+    }
+
+    public func neighbors(query: GraphQuery): GraphContext {
+        let context = GraphContext()
+        context.knowledgeVersion = if (query.knowledgeVersion != "") { query.knowledgeVersion } else { this.activeVersion }
+        context.budget = query.budget
+        for (edge in this.edges) {
+            if (context.edges.size >= query.budget) {
+                context.truncated = true
+                break
+            }
+            if (query.knowledgeVersion != "" && edge.knowledgeVersion != query.knowledgeVersion) {
+                continue
+            }
+            if (this.edgeMatches(edge, query)) {
+                context.edges.add(edge)
+                this.addGraphNodeById(context, edge.fromNodeId, query.budget)
+                this.addGraphNodeById(context, edge.toNodeId, query.budget)
+            }
+        }
+        context
+    }
+
+    public func status(): VectorStoreStatus {
+        let status = VectorStoreStatus()
+        status.backend = "local-graph"
+        status.collection = "active-graph"
+        status.count = this.edges.size
+        status.dimension = this.nodes.size
+        status.state = EmbeddingProviderState.READY
+        status
+    }
+
+    private func edgeMatches(edge: GraphEdge, query: GraphQuery): Bool {
+        if (query.sourceId != "" && edge.sourceId == query.sourceId) {
+            return true
+        }
+        let from = this.findNode(edge.fromNodeId)
+        let to = this.findNode(edge.toNodeId)
+        if (query.symbol != "" && (from.label == query.symbol || to.label == query.symbol)) {
+            return true
+        }
+        if (query.repo != "" && (from.label == query.repo || to.label == query.repo || from.nodeId.contains(safeGraphId(query.repo)) || to.nodeId.contains(safeGraphId(query.repo)))) {
+            return true
+        }
+        false
+    }
+
+    private func addGraphNodeById(context: GraphContext, nodeId: String, budget: Int64): Unit {
+        if (context.nodes.size >= budget) {
+            context.truncated = true
+            return
+        }
+        for (existing in context.nodes) {
+            if (existing.nodeId == nodeId) {
+                return
+            }
+        }
+        let node = this.findNode(nodeId)
+        if (node.nodeId != "") {
+            context.nodes.add(node)
+        }
+    }
+
+    private func findNode(nodeId: String): GraphNode {
+        for (node in this.nodes) {
+            if (node.nodeId == nodeId) {
+                return node
+            }
+        }
+        GraphNode()
+    }
 }
 
 public class SourceEvidence {
@@ -182,12 +570,15 @@ public class EvidencePack {
     public var queryId: String = ""
     public var knowledgeVersion: String = ""
     public var truncated: Bool = false
+    public var degraded: Bool = false
     public var citations: ArrayList<SourceReference> = ArrayList<SourceReference>()
     public var sourceEvidence: ArrayList<SourceEvidence> = ArrayList<SourceEvidence>()
     public var docEvidence: ArrayList<DocEvidence> = ArrayList<DocEvidence>()
     public var websiteEvidence: ArrayList<WebsiteEvidence> = ArrayList<WebsiteEvidence>()
     public var communityEvidence: ArrayList<CommunityEvidence> = ArrayList<CommunityEvidence>()
     public var webCandidateEvidence: ArrayList<WebCandidateEvidence> = ArrayList<WebCandidateEvidence>()
+    public var graphContext: GraphContext = GraphContext()
+    public var hasGraphContext: Bool = false
 
     public init() {}
 }
@@ -207,6 +598,15 @@ public class StorageStatus {
     public var vectorIndexCount: Int64 = 0
     public var symbolIndexCount: Int64 = 0
     public var graphIndexCount: Int64 = 0
+    public var vectorBackend: String = "local-file"
+    public var vectorState: String = EmbeddingProviderState.DEGRADED
+    public var vectorDimension: Int64 = 0
+    public var vectorCollection: String = "active"
+    public var vectorDegradedReason: String = ""
+    public var graphBackend: String = "local-graph"
+    public var graphState: String = EmbeddingProviderState.DEGRADED
+    public var graphNodeCount: Int64 = 0
+    public var graphEdgeCount: Int64 = 0
 
     public init() {}
 }
@@ -473,9 +873,25 @@ public class KnowledgeBase {
     private var candidateKnowledgeVersion: String = ""
     private var failedCandidateVersion: String = ""
     private var indexManifest: IndexManifest = IndexManifest()
+    private let embeddingProvider: EmbeddingProvider
+    private let vectorStore: VectorStore
+    private let graphStore: GraphStore
+    private let vectorCollection: String = "active"
+    private let embeddingModel: String = "deterministic-token-v1"
+    private let embeddingDimensions: Int64 = 16
 
     public init(clock: FakeClock) {
         this.scheduler = Scheduler(clock)
+        this.embeddingProvider = DeterministicEmbeddingProvider()
+        this.vectorStore = LocalVectorStore()
+        this.graphStore = LocalGraphStore()
+    }
+
+    public init(clock: FakeClock, embeddingProvider: EmbeddingProvider, vectorStore: VectorStore, graphStore: GraphStore) {
+        this.scheduler = Scheduler(clock)
+        this.embeddingProvider = embeddingProvider
+        this.vectorStore = vectorStore
+        this.graphStore = graphStore
     }
 
     public func bootstrapOffline(): Unit {
@@ -496,6 +912,7 @@ public class KnowledgeBase {
             return
         }
         let metadata = KnowledgeMetadata()
+        metadata.sourceId = sourceId
         metadata.sourceType = sourceType
         metadata.sourceUrl = sourceUrl
         metadata.repo = repo
@@ -611,6 +1028,7 @@ public class KnowledgeBase {
         }
         this.failedCandidateVersion = ""
         this.storage.indexCount = this.activeIndex.size
+        this.rebuildProductionIndexes()
         this.rebuildIndexManifest()
         true
     }
@@ -637,8 +1055,54 @@ public class KnowledgeBase {
         this.activeKnowledgeVersion = result.activeVersion
         this.failedCandidateVersion = ""
         this.storage.indexCount = this.activeIndex.size
+        this.rebuildProductionIndexes()
         this.rebuildIndexManifest()
         result
+    }
+
+    private func rebuildProductionIndexes(): Unit {
+        let vectorRecords = ArrayList<VectorRecord>()
+        let texts = ArrayList<String>()
+        for (record in this.activeIndex) {
+            texts.add("${record.title} ${record.chunk} ${record.metadata.repo} ${record.metadata.path} ${record.metadata.symbol}")
+        }
+        let batch = this.embeddingProvider.embed(texts, this.embeddingModel, this.embeddingDimensions)
+        if (batch.status.state == EmbeddingProviderState.READY && batch.vectors.size == this.activeIndex.size) {
+            for (i in 0..this.activeIndex.size) {
+                let source = this.activeIndex[i]
+                let vectorRecord = VectorRecord()
+                vectorRecord.id = source.sourceId
+                vectorRecord.vector = batch.vectors[i]
+                vectorRecord.metadata = source.metadata
+                vectorRecord.title = source.title
+                vectorRecord.chunk = source.chunk
+                vectorRecord.citation = source.citation
+                vectorRecords.add(vectorRecord)
+            }
+            let vectorStatus = this.vectorStore.upsert(this.vectorCollection, vectorRecords)
+            this.applyVectorStatus(vectorStatus)
+        } else {
+            let vectorStatus = this.vectorStore.status(this.vectorCollection)
+            vectorStatus.state = EmbeddingProviderState.DEGRADED
+            vectorStatus.degradedReason = batch.status.degradedReason
+            this.applyVectorStatus(vectorStatus)
+        }
+        let graph = buildGraphFromRecords(this.activeIndex, this.activeKnowledgeVersion)
+        this.graphStore.upsert(graph.nodes, graph.edges)
+        let graphStatus = this.graphStore.status()
+        this.storage.graphBackend = graphStatus.backend
+        this.storage.graphState = graphStatus.state
+        this.storage.graphNodeCount = graphStatus.dimension
+        this.storage.graphEdgeCount = graphStatus.count
+    }
+
+    private func applyVectorStatus(status: VectorStoreStatus): Unit {
+        this.storage.vectorBackend = status.backend
+        this.storage.vectorState = status.state
+        this.storage.vectorCollection = status.collection
+        this.storage.vectorDimension = status.dimension
+        this.storage.vectorDegradedReason = status.degradedReason
+        this.storage.vectorIndexCount = status.count
     }
 
     private func rebuildIndexManifest(): Unit {
@@ -646,14 +1110,13 @@ public class KnowledgeBase {
         manifest.activeVersion = this.activeKnowledgeVersion
         manifest.candidateVersion = this.candidateKnowledgeVersion
         manifest.entries.add(this.indexMetadata(IndexKinds.TEXT, this.activeIndex.size, "token overlap text index"))
-        manifest.entries.add(this.indexMetadata(IndexKinds.VECTOR, this.activeIndex.size, "deterministic lexical vector surrogate"))
+        manifest.entries.add(this.indexMetadata(IndexKinds.VECTOR, this.storage.vectorIndexCount, "${this.storage.vectorBackend} vector backend state=${this.storage.vectorState} dimension=${this.storage.vectorDimension}"))
         manifest.entries.add(this.indexMetadata(IndexKinds.SYMBOL, this.countSymbolRecords(), "symbol metadata index"))
-        manifest.entries.add(this.indexMetadata(IndexKinds.GRAPH, this.countGraphEdges(), "repo-doc-community citation graph"))
+        manifest.entries.add(this.indexMetadata(IndexKinds.GRAPH, this.storage.graphEdgeCount, "${this.storage.graphBackend} neighbor graph nodes=${this.storage.graphNodeCount}"))
         this.indexManifest = manifest
         this.storage.textIndexCount = this.activeIndex.size
-        this.storage.vectorIndexCount = this.activeIndex.size
         this.storage.symbolIndexCount = this.countSymbolRecords()
-        this.storage.graphIndexCount = this.countGraphEdges()
+        this.storage.graphIndexCount = this.storage.graphEdgeCount
     }
 
     private func indexMetadata(kind: String, count: Int64, notes: String): IndexMetadata {
@@ -711,6 +1174,8 @@ public class KnowledgeBase {
         store.saveRaw(this.rawRecords)
         store.saveNormalized(this.activeIndex)
         store.saveActiveIndex(this.activeIndex, this.activeKnowledgeVersion)
+        store.saveVectorCollection(this.activeVectorRecords(), this.vectorCollection)
+        store.saveGraph(this.activeGraphBuild())
         store.saveMetadata(this.status())
     }
 
@@ -719,6 +1184,34 @@ public class KnowledgeBase {
         store.saveCandidateRaw(this.rawRecords, this.candidateKnowledgeVersion)
         store.saveCandidateNormalized(this.candidateIndex, this.candidateKnowledgeVersion)
         store.saveMetadata(this.status())
+    }
+
+    public func activeVectorRecords(): ArrayList<VectorRecord> {
+        let out = ArrayList<VectorRecord>()
+        let texts = ArrayList<String>()
+        for (record in this.activeIndex) {
+            texts.add("${record.title} ${record.chunk} ${record.metadata.repo} ${record.metadata.path} ${record.metadata.symbol}")
+        }
+        let batch = this.embeddingProvider.embed(texts, this.embeddingModel, this.embeddingDimensions)
+        if (batch.vectors.size != this.activeIndex.size) {
+            return out
+        }
+        for (i in 0..this.activeIndex.size) {
+            let source = this.activeIndex[i]
+            let vectorRecord = VectorRecord()
+            vectorRecord.id = source.sourceId
+            vectorRecord.vector = batch.vectors[i]
+            vectorRecord.metadata = source.metadata
+            vectorRecord.title = source.title
+            vectorRecord.chunk = source.chunk
+            vectorRecord.citation = source.citation
+            out.add(vectorRecord)
+        }
+        out
+    }
+
+    public func activeGraphBuild(): GraphBuildResult {
+        buildGraphFromRecords(this.activeIndex, this.activeKnowledgeVersion)
     }
 
     public func rawRecordCount(): Int64 {
@@ -747,7 +1240,66 @@ public class KnowledgeBase {
                 }
             }
         }
+        if (options.includeVector && result.records.size < options.budget) {
+            this.appendVectorResults(result, query, options)
+        }
         result
+    }
+
+    private func appendVectorResults(result: SearchResult, query: String, options: SearchOptions): Unit {
+        if (!hasEmbeddingAnchor(query)) {
+            return
+        }
+        let embeddingStatus = this.embeddingProvider.status()
+        let vectorStatus = this.vectorStore.status(this.vectorCollection)
+        if (embeddingStatus.state != EmbeddingProviderState.READY || vectorStatus.state != EmbeddingProviderState.READY) {
+            result.degraded = true
+            result.fallbackReason = if (embeddingStatus.state != EmbeddingProviderState.READY) { embeddingStatus.degradedReason } else { vectorStatus.degradedReason }
+            return
+        }
+        let texts = ArrayList<String>()
+        texts.add(query)
+        let batch = this.embeddingProvider.embed(texts, this.embeddingModel, this.embeddingDimensions)
+        if (batch.vectors.size == 0) {
+            result.degraded = true
+            result.fallbackReason = "query_embedding_unavailable"
+            return
+        }
+        let filters = VectorSearchFilters()
+        filters.sourceType = options.sourceType
+        filters.trustLevel = options.trustLevel
+        filters.reviewState = options.reviewState
+        filters.knowledgeVersion = this.activeKnowledgeVersion
+        filters.includeCandidates = options.includeCandidates
+        let vectorResults = this.vectorStore.search(this.vectorCollection, batch.vectors[0], filters, options.budget)
+        for (item in vectorResults) {
+            if (result.records.size >= options.budget) {
+                result.truncated = true
+                break
+            }
+            if (this.hasResultRecord(result, item.id)) {
+                continue
+            }
+            let record = NormalizedRecord()
+            record.sourceId = item.record.id
+            record.title = item.record.title
+            record.chunk = item.record.chunk
+            record.citation = item.record.citation
+            record.metadata = item.record.metadata
+            record.requiresReview = item.record.metadata.reviewState == ReviewStates.CANDIDATE
+            record.score = 0.55 + item.score * 0.35
+            result.records.add(record)
+            result.vectorUsed = true
+        }
+    }
+
+    private func hasResultRecord(result: SearchResult, sourceId: String): Bool {
+        for (record in result.records) {
+            if (record.sourceId == sourceId) {
+                return true
+            }
+        }
+        false
     }
 
     private func recordAllowed(record: NormalizedRecord, options: SearchOptions): Bool {
@@ -810,15 +1362,79 @@ public class KnowledgeBase {
         let pack = EvidencePack()
         pack.queryId = "evidence-${query.size}"
         pack.knowledgeVersion = this.activeKnowledgeVersion
-        this.fillSourceEvidence(pack, cangjie_source_search(this, query, budget))
-        this.fillDocEvidence(pack, cangjie_doc_search(this, query, budget))
-        this.fillWebsiteEvidence(pack, cangjie_website_search(this, query, budget))
-        this.fillCommunityEvidence(pack, this.searchByType(query, SourceTypes.COMMUNITY, budget, false))
-        this.fillWebCandidateEvidence(pack, cangjie_web_candidate_search(this, query, budget))
+        let sourceResult = cangjie_source_search(this, query, budget)
+        let docResult = cangjie_doc_search(this, query, budget)
+        let websiteResult = cangjie_website_search(this, query, budget)
+        let communityResult = this.searchByType(query, SourceTypes.COMMUNITY, budget, false)
+        let candidateResult = cangjie_web_candidate_search(this, query, budget)
+        this.fillSourceEvidence(pack, sourceResult)
+        this.fillDocEvidence(pack, docResult)
+        this.fillWebsiteEvidence(pack, websiteResult)
+        this.fillCommunityEvidence(pack, communityResult)
+        this.fillWebCandidateEvidence(pack, candidateResult)
+        pack.degraded = sourceResult.degraded || docResult.degraded || websiteResult.degraded || communityResult.degraded || candidateResult.degraded
+        this.attachGraphContext(pack, budget)
         if (pack.sourceEvidence.size + pack.docEvidence.size + pack.websiteEvidence.size + pack.communityEvidence.size + pack.webCandidateEvidence.size > budget) {
             pack.truncated = true
         }
         pack
+    }
+
+    private func attachGraphContext(pack: EvidencePack, budget: Int64): Unit {
+        let graphBudget = if (budget <= 0) { 0 } else { budget * 2 }
+        if (graphBudget <= 0) {
+            return
+        }
+        for (citation in pack.citations) {
+            if (pack.graphContext.edges.size >= graphBudget) {
+                pack.graphContext.truncated = true
+                break
+            }
+            let query = GraphQuery()
+            query.sourceId = citation.sourceId
+            query.knowledgeVersion = this.activeKnowledgeVersion
+            query.budget = graphBudget - pack.graphContext.edges.size
+            let context = this.graphStore.neighbors(query)
+            this.mergeGraphContext(pack.graphContext, context, graphBudget)
+            pack.hasGraphContext = pack.graphContext.nodes.size > 0 || pack.graphContext.edges.size > 0
+        }
+        pack.graphContext.knowledgeVersion = this.activeKnowledgeVersion
+        pack.graphContext.budget = graphBudget
+        pack.truncated = pack.truncated || pack.graphContext.truncated
+    }
+
+    private func mergeGraphContext(target: GraphContext, source: GraphContext, budget: Int64): Unit {
+        for (node in source.nodes) {
+            if (target.nodes.size >= budget) {
+                target.truncated = true
+                break
+            }
+            if (!graphContextHasNode(target, node.nodeId)) {
+                target.nodes.add(node)
+            }
+        }
+        for (edge in source.edges) {
+            if (target.edges.size >= budget) {
+                target.truncated = true
+                break
+            }
+            if (!graphContextHasEdge(target, edge.edgeId)) {
+                target.edges.add(edge)
+            }
+        }
+        target.truncated = target.truncated || source.truncated
+    }
+
+    public func graphNeighbors(query: GraphQuery): GraphContext {
+        this.graphStore.neighbors(query)
+    }
+
+    public func vectorStatus(): VectorStoreStatus {
+        this.vectorStore.status(this.vectorCollection)
+    }
+
+    public func graphStatus(): VectorStoreStatus {
+        this.graphStore.status()
     }
 
     private func fillSourceEvidence(pack: EvidencePack, result: SearchResult): Unit {
@@ -948,11 +1564,244 @@ public func cangjie_knowledge_status(kb: KnowledgeBase): KnowledgeStatus {
     kb.status()
 }
 
+private func deterministicEmbedding(text: String, dimensions: Int64): ArrayList<Float64> {
+    let vector = ArrayList<Float64>()
+    let dim = if (dimensions <= 0) { 1 } else { dimensions }
+    for (_ in 0..dim) {
+        vector.add(0.0)
+    }
+    let lowered = text.toAsciiLower()
+    for (word in lowered.split(" ")) {
+        let token = word.trimAscii().replace(".", "").replace(",", "").replace(":", "").replace(";", "").replace("(", "").replace(")", "")
+        if (token.size < 3) {
+            continue
+        }
+        let bucket = tokenBucket(token, dim)
+        vector[bucket] = vector[bucket] + 1.0
+        if (token.contains("func") || token.contains("function")) {
+            vector[1 % dim] = vector[1 % dim] + 2.0
+        }
+        if (token.contains("http") || token.contains("client")) {
+            vector[2 % dim] = vector[2 % dim] + 2.0
+        }
+        if (token.contains("download") || token.contains("tool")) {
+            vector[3 % dim] = vector[3 % dim] + 2.0
+        }
+        if (token.contains("json")) {
+            vector[4 % dim] = vector[4 % dim] + 2.0
+        }
+        if (token.contains("repo") || token.contains("source") || token.contains("symbol")) {
+            vector[5 % dim] = vector[5 % dim] + 1.5
+        }
+    }
+    normalizeVector(vector)
+    vector
+}
+
+private func hasEmbeddingAnchor(text: String): Bool {
+    let lowered = text.toAsciiLower()
+    lowered.contains("func") || lowered.contains("function") || lowered.contains("http") || lowered.contains("client") || lowered.contains("download") || lowered.contains("tool") || lowered.contains("json") || lowered.contains("repo") || lowered.contains("source") || lowered.contains("symbol")
+}
+
+private func tokenBucket(token: String, dimensions: Int64): Int64 {
+    var score = token.size * 3
+    if (token.contains("a")) {
+        score += 1
+    }
+    if (token.contains("e")) {
+        score += 2
+    }
+    if (token.contains("i")) {
+        score += 3
+    }
+    if (token.contains("o")) {
+        score += 4
+    }
+    if (token.contains("u")) {
+        score += 5
+    }
+    score % dimensions
+}
+
+private func normalizeVector(vector: ArrayList<Float64>): Unit {
+    var sum = 0.0
+    for (value in vector) {
+        sum += value * value
+    }
+    if (sum <= 0.0) {
+        return
+    }
+    let norm = sqrtApprox(sum)
+    for (i in 0..vector.size) {
+        vector[i] = vector[i] / norm
+    }
+}
+
+private func sqrtApprox(value: Float64): Float64 {
+    var guess = if (value > 1.0) { value / 2.0 } else { 1.0 }
+    for (_ in 0..8) {
+        guess = (guess + value / guess) / 2.0
+    }
+    guess
+}
+
+private func cosineSimilarity(left: ArrayList<Float64>, right: ArrayList<Float64>): Float64 {
+    let size = if (left.size < right.size) { left.size } else { right.size }
+    var dot = 0.0
+    for (i in 0..size) {
+        dot += left[i] * right[i]
+    }
+    dot
+}
+
+private func vectorRecordAllowed(record: VectorRecord, filters: VectorSearchFilters): Bool {
+    if (filters.sourceType != "" && record.metadata.sourceType != filters.sourceType) {
+        return false
+    }
+    if (filters.trustLevel != "" && record.metadata.trustLevel != filters.trustLevel) {
+        return false
+    }
+    if (filters.reviewState != "" && record.metadata.reviewState != filters.reviewState) {
+        return false
+    }
+    if (filters.knowledgeVersion != "" && record.metadata.knowledgeVersion != filters.knowledgeVersion) {
+        return false
+    }
+    if (!filters.includeCandidates && record.metadata.reviewState == ReviewStates.CANDIDATE) {
+        return false
+    }
+    true
+}
+
+private func insertVectorResult(out: ArrayList<VectorSearchResult>, record: VectorRecord, score: Float64, topK: Int64): Unit {
+    if (topK <= 0) {
+        return
+    }
+    let item = VectorSearchResult()
+    item.id = record.id
+    item.score = score
+    item.record = record
+    if (out.size < topK) {
+        out.add(item)
+        return
+    }
+    var minIndex: Int64 = 0
+    var minScore = out[0].score
+    for (i in 1..out.size) {
+        if (out[i].score < minScore) {
+            minScore = out[i].score
+            minIndex = i
+        }
+    }
+    if (score > minScore) {
+        out[minIndex] = item
+    }
+}
+
+private func buildGraphFromRecords(records: ArrayList<NormalizedRecord>, knowledgeVersion: String): GraphBuildResult {
+    let result = GraphBuildResult()
+    for (record in records) {
+        let citationNode = graphNode("citation:${record.sourceId}", GraphNodeTypes.CITATION, record.citation, record.sourceId, knowledgeVersion)
+        addGraphNode(result.nodes, citationNode)
+        if (record.metadata.repo != "") {
+            let repoNode = graphNode("repo:${record.metadata.repo}", GraphNodeTypes.REPO, record.metadata.repo, record.sourceId, knowledgeVersion)
+            addGraphNode(result.nodes, repoNode)
+            addGraphEdge(result.edges, GraphEdgeTypes.CITES, repoNode.nodeId, citationNode.nodeId, record.sourceId, knowledgeVersion)
+        }
+        if (record.metadata.path != "") {
+            let pathNode = graphNode("path:${record.metadata.repo}:${record.metadata.path}", GraphNodeTypes.PATH, record.metadata.path, record.sourceId, knowledgeVersion)
+            addGraphNode(result.nodes, pathNode)
+            addGraphEdge(result.edges, GraphEdgeTypes.CONTAINS, "repo:${record.metadata.repo}", pathNode.nodeId, record.sourceId, knowledgeVersion)
+            addGraphEdge(result.edges, GraphEdgeTypes.CITES, pathNode.nodeId, citationNode.nodeId, record.sourceId, knowledgeVersion)
+        }
+        if (record.metadata.symbol != "") {
+            let symbolNode = graphNode("symbol:${record.metadata.repo}:${record.metadata.symbol}", GraphNodeTypes.SYMBOL, record.metadata.symbol, record.sourceId, knowledgeVersion)
+            addGraphNode(result.nodes, symbolNode)
+            let fromNode = if (record.metadata.path != "") { "path:${record.metadata.repo}:${record.metadata.path}" } else { "repo:${record.metadata.repo}" }
+            addGraphEdge(result.edges, GraphEdgeTypes.DEFINES, fromNode, symbolNode.nodeId, record.sourceId, knowledgeVersion)
+            addGraphEdge(result.edges, GraphEdgeTypes.CITES, symbolNode.nodeId, citationNode.nodeId, record.sourceId, knowledgeVersion)
+        }
+        if (record.metadata.sourceType == SourceTypes.DOC || record.metadata.sourceType == SourceTypes.WEBSITE) {
+            let docNode = graphNode("doc:${record.sourceId}", if (record.metadata.sourceType == SourceTypes.DOC) { GraphNodeTypes.DOC } else { GraphNodeTypes.SECTION }, record.title, record.sourceId, knowledgeVersion)
+            addGraphNode(result.nodes, docNode)
+            addGraphEdge(result.edges, GraphEdgeTypes.CITES, docNode.nodeId, citationNode.nodeId, record.sourceId, knowledgeVersion)
+        }
+        if (record.metadata.sourceType == SourceTypes.COMMUNITY) {
+            let issueNode = graphNode("issue:${record.sourceId}", GraphNodeTypes.ISSUE, record.title, record.sourceId, knowledgeVersion)
+            addGraphNode(result.nodes, issueNode)
+            if (record.metadata.repo != "") {
+                addGraphEdge(result.edges, GraphEdgeTypes.DISCUSSES, issueNode.nodeId, "repo:${record.metadata.repo}", record.sourceId, knowledgeVersion)
+            }
+            addGraphEdge(result.edges, GraphEdgeTypes.CITES, issueNode.nodeId, citationNode.nodeId, record.sourceId, knowledgeVersion)
+        }
+    }
+    result
+}
+
+private func graphNode(nodeId: String, nodeType: String, label: String, sourceId: String, knowledgeVersion: String): GraphNode {
+    let node = GraphNode()
+    node.nodeId = safeGraphId(nodeId)
+    node.nodeType = nodeType
+    node.label = label
+    node.sourceId = sourceId
+    node.knowledgeVersion = knowledgeVersion
+    node
+}
+
+private func addGraphNode(nodes: ArrayList<GraphNode>, node: GraphNode): Unit {
+    for (existing in nodes) {
+        if (existing.nodeId == node.nodeId) {
+            return
+        }
+    }
+    nodes.add(node)
+}
+
+private func addGraphEdge(edges: ArrayList<GraphEdge>, edgeType: String, fromNodeId: String, toNodeId: String, sourceId: String, knowledgeVersion: String): Unit {
+    let edge = GraphEdge()
+    edge.edgeType = edgeType
+    edge.fromNodeId = safeGraphId(fromNodeId)
+    edge.toNodeId = safeGraphId(toNodeId)
+    edge.sourceId = sourceId
+    edge.knowledgeVersion = knowledgeVersion
+    edge.edgeId = "${edge.edgeType}:${edge.fromNodeId}->${edge.toNodeId}:${sourceId}"
+    for (existing in edges) {
+        if (existing.edgeId == edge.edgeId) {
+            return
+        }
+    }
+    edges.add(edge)
+}
+
+private func graphContextHasNode(context: GraphContext, nodeId: String): Bool {
+    for (node in context.nodes) {
+        if (node.nodeId == nodeId) {
+            return true
+        }
+    }
+    false
+}
+
+private func graphContextHasEdge(context: GraphContext, edgeId: String): Bool {
+    for (edge in context.edges) {
+        if (edge.edgeId == edgeId) {
+            return true
+        }
+    }
+    false
+}
+
+private func safeGraphId(raw: String): String {
+    raw.replace("/", "_").replace("\\", "_").replace(":", "_").replace(" ", "_").replace("#", "_").replace("?", "_")
+}
+
 public func renderDoctor(status: KnowledgeStatus): String {
     var out = "CangjieCommunityKnowledgeBase doctor\n"
     out += "activeKnowledgeVersion=${status.activeKnowledgeVersion}\n"
     out += "storage raw=${status.storage.rawCount} normalized=${status.storage.normalizedCount} indexes=${status.storage.indexCount} derived=${status.storage.derivedCount}\n"
     out += "indexKinds text=${status.storage.textIndexCount} vector=${status.storage.vectorIndexCount} symbol=${status.storage.symbolIndexCount} graph=${status.storage.graphIndexCount}\n"
+    out += "vector backend=${status.storage.vectorBackend} state=${status.storage.vectorState} collection=${status.storage.vectorCollection} dimension=${status.storage.vectorDimension} count=${status.storage.vectorIndexCount} degradedReason=${status.storage.vectorDegradedReason}\n"
+    out += "graph backend=${status.storage.graphBackend} state=${status.storage.graphState} nodes=${status.storage.graphNodeCount} edges=${status.storage.graphEdgeCount}\n"
     out += "paths raw=${status.storage.rawPath} normalized=${status.storage.normalizedPath} metadata=${status.storage.metadataPath} indexes=${status.storage.indexesPath} derived=${status.storage.derivedPath} cache=${status.storage.cachePath}\n"
     out += "scope organizations=${status.sourceScope.organizations} repoScope=${status.sourceScope.repoScope} websiteUrls=${status.sourceScope.websiteUrls} docsUrls=${status.sourceScope.docsUrls} stdSources=${status.sourceScope.stdSources} issuePrHistory=${status.sourceScope.includesIssuePrHistory} governedWebCandidates=${status.sourceScope.includesGovernedWebCandidates}\n"
     out += "localPathRedacted=${status.localPathRedacted}\n"
@@ -963,8 +1812,9 @@ public func renderDoctor(status: KnowledgeStatus): String {
 }
 
 public func renderQuery(pack: EvidencePack): String {
-    var out = "queryId=${pack.queryId} knowledgeVersion=${pack.knowledgeVersion} truncated=${pack.truncated}\n"
+    var out = "queryId=${pack.queryId} knowledgeVersion=${pack.knowledgeVersion} truncated=${pack.truncated} degraded=${pack.degraded}\n"
     out += "sourceEvidence=${pack.sourceEvidence.size} docEvidence=${pack.docEvidence.size} websiteEvidence=${pack.websiteEvidence.size} communityEvidence=${pack.communityEvidence.size} webCandidateEvidence=${pack.webCandidateEvidence.size}\n"
+    out += "graphContext nodes=${pack.graphContext.nodes.size} edges=${pack.graphContext.edges.size} knowledgeVersion=${pack.graphContext.knowledgeVersion} truncated=${pack.graphContext.truncated}\n"
     for (citation in pack.citations) {
         out += "citation ${citation.sourceId} ${citation.citation} ${citation.knowledgeVersion}\n"
     }

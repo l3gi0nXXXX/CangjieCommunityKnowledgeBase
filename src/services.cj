@@ -608,6 +608,15 @@ public class FileKnowledgeStore {
         text += "vectorIndexCount=${status.storage.vectorIndexCount}\n"
         text += "symbolIndexCount=${status.storage.symbolIndexCount}\n"
         text += "graphIndexCount=${status.storage.graphIndexCount}\n"
+        text += "vectorBackend=${status.storage.vectorBackend}\n"
+        text += "vectorState=${status.storage.vectorState}\n"
+        text += "vectorCollection=${status.storage.vectorCollection}\n"
+        text += "vectorDimension=${status.storage.vectorDimension}\n"
+        text += "vectorDegradedReason=${escapeField(status.storage.vectorDegradedReason)}\n"
+        text += "graphBackend=${status.storage.graphBackend}\n"
+        text += "graphState=${status.storage.graphState}\n"
+        text += "graphNodeCount=${status.storage.graphNodeCount}\n"
+        text += "graphEdgeCount=${status.storage.graphEdgeCount}\n"
         text += this.indexManifestLines(status.indexManifest)
         this.writeLines("metadata/status.ckb", text)
     }
@@ -620,6 +629,15 @@ public class FileKnowledgeStore {
     public func saveCandidateIndex(records: ArrayList<NormalizedRecord>, version: String): Unit {
         this.writeLines("index/candidate.version", version + "\n")
         this.writeLines("index/candidate.ckb", this.normalizedLines(records))
+    }
+
+    public func saveVectorCollection(records: ArrayList<VectorRecord>, collection: String): Unit {
+        this.writeLines("index/vector-${safeName(collection)}.ckb", this.vectorLines(records))
+    }
+
+    public func saveGraph(graph: GraphBuildResult): Unit {
+        this.writeLines("index/graph-nodes.ckb", this.graphNodeLines(graph.nodes))
+        this.writeLines("index/graph-edges.ckb", this.graphEdgeLines(graph.edges))
     }
 
     public func saveDerived(task: CurationTask): Unit {
@@ -729,6 +747,30 @@ public class FileKnowledgeStore {
         var out = ""
         for (record in records) {
             out += "${escapeField(record.sourceId)}|${escapeField(record.recordKind)}|${escapeField(record.title)}|${escapeField(record.chunk)}|${escapeField(record.citation)}|${record.score}|${metadataLine(record.metadata)}\n"
+        }
+        out
+    }
+
+    private func vectorLines(records: ArrayList<VectorRecord>): String {
+        var out = ""
+        for (record in records) {
+            out += "${escapeField(record.id)}|${escapeField(record.metadata.knowledgeVersion)}|${escapeField(record.metadata.sourceId)}|${escapeField(record.metadata.sourceType)}|${escapeField(record.metadata.trustLevel)}|${escapeField(record.metadata.reviewState)}|${escapeField(record.citation)}|${vectorToLine(record.vector)}\n"
+        }
+        out
+    }
+
+    private func graphNodeLines(nodes: ArrayList<GraphNode>): String {
+        var out = ""
+        for (node in nodes) {
+            out += "${escapeField(node.nodeId)}|${escapeField(node.nodeType)}|${escapeField(node.label)}|${escapeField(node.sourceId)}|${escapeField(node.knowledgeVersion)}\n"
+        }
+        out
+    }
+
+    private func graphEdgeLines(edges: ArrayList<GraphEdge>): String {
+        var out = ""
+        for (edge in edges) {
+            out += "${escapeField(edge.edgeId)}|${escapeField(edge.edgeType)}|${escapeField(edge.fromNodeId)}|${escapeField(edge.toNodeId)}|${escapeField(edge.sourceId)}|${escapeField(edge.knowledgeVersion)}\n"
         }
         out
     }
@@ -930,6 +972,8 @@ public func ckbRebuildIndex(kb: KnowledgeBase, store: FileKnowledgeStore, fail!:
     let result = kb.rebuildIndex(fail)
     if (result.ok) {
         kb.persistIndex(store)
+        store.saveVectorCollection(kb.activeVectorRecords(), "active")
+        store.saveGraph(kb.activeGraphBuild())
     }
     result
 }
@@ -981,6 +1025,17 @@ private func limitedPlan(plan: SourceSyncPlan, options: LiveApplyOptions): Sourc
     out
 }
 
+private func vectorToLine(vector: ArrayList<Float64>): String {
+    var out = ""
+    for (i in 0..vector.size) {
+        if (i > 0) {
+            out += ","
+        }
+        out += "${vector[i]}"
+    }
+    out
+}
+
 private func repoSeen(plan: SourceSyncPlan, repo: String): Bool {
     for (request in plan.requests) {
         if (request.repo == repo && (request.kind == SourceKinds.GITCODE_ORG || request.kind == SourceKinds.GITCODE_REPO || request.kind == SourceKinds.GITCODE_SOURCE || request.kind == SourceKinds.GITCODE_ISSUE_HISTORY || request.kind == SourceKinds.GITCODE_PR_HISTORY)) {
@@ -1021,7 +1076,7 @@ private func ingestLiveFetch(kb: KnowledgeBase, request: SourceFetchRequest, fet
 }
 
 private func metadataLine(metadata: KnowledgeMetadata): String {
-    "${escapeField(metadata.sourceType)}|${escapeField(metadata.sourceUrl)}|${escapeField(metadata.repo)}|${escapeField(metadata.commit)}|${escapeField(metadata.path)}|${escapeField(metadata.symbol)}|${escapeField(metadata.docVersion)}|${escapeField(metadata.crawlAt)}|${escapeField(metadata.indexedAt)}|${escapeField(metadata.knowledgeVersion)}|${escapeField(metadata.candidateVersion)}|${metadata.contentSize}|${escapeField(metadata.trustLevel)}|${escapeField(metadata.reviewState)}|${escapeField(metadata.license)}"
+    "${escapeField(metadata.sourceType)}|${escapeField(metadata.sourceUrl)}|${escapeField(metadata.repo)}|${escapeField(metadata.commit)}|${escapeField(metadata.path)}|${escapeField(metadata.symbol)}|${escapeField(metadata.docVersion)}|${escapeField(metadata.crawlAt)}|${escapeField(metadata.indexedAt)}|${escapeField(metadata.knowledgeVersion)}|${escapeField(metadata.candidateVersion)}|${metadata.contentSize}|${escapeField(metadata.trustLevel)}|${escapeField(metadata.reviewState)}|${escapeField(metadata.license)}|${escapeField(metadata.sourceId)}"
 }
 
 private func metadataFromParts(parts: Array<String>, start: Int64): KnowledgeMetadata {
@@ -1041,6 +1096,9 @@ private func metadataFromParts(parts: Array<String>, start: Int64): KnowledgeMet
     metadata.trustLevel = unescapeField(parts[start + 12])
     metadata.reviewState = unescapeField(parts[start + 13])
     metadata.license = unescapeField(parts[start + 14])
+    if (parts.size > start + 15) {
+        metadata.sourceId = unescapeField(parts[start + 15])
+    }
     metadata
 }
 
