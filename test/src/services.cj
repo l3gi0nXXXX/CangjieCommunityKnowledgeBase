@@ -709,6 +709,7 @@ public func redactSensitive(raw: String): String {
     text = redactAssignment(text, "cookie")
     text = redactAssignment(text, "token")
     text = redactAssignment(text, "access_token")
+    text = redactProxyCredentials(text)
     text = redactAbsolutePath(text)
     text
 }
@@ -2852,7 +2853,11 @@ private func redactQueryParam(raw: String, key: String): String {
     var text = raw
     let needle1 = "${key}="
     let needle2 = "${key}%3D"
+    text = redactAfterNeedle(text, "?${needle1}")
+    text = redactAfterNeedle(text, "&${needle1}")
     text = redactAfterNeedle(text, needle1)
+    text = redactAfterNeedle(text, "?${needle2}")
+    text = redactAfterNeedle(text, "&${needle2}")
     text = redactAfterNeedle(text, needle2)
     text
 }
@@ -2900,6 +2905,37 @@ private func redactLineAfterNeedle(raw: String, needle: String): String {
         end += 1
     }
     raw[0..idx + needle.size] + "[redacted]" + raw[end..raw.size]
+}
+
+private func redactProxyCredentials(raw: String): String {
+    var text = raw
+    text = redactProxyCredentialsForScheme(text, "http://")
+    text = redactProxyCredentialsForScheme(text, "https://")
+    text
+}
+
+private func redactProxyCredentialsForScheme(raw: String, scheme: String): String {
+    let idx = findText(raw, scheme)
+    if (idx < 0) {
+        return raw
+    }
+    let authStart = idx + scheme.size
+    var end = authStart
+    var atIndex: Int64 = -1
+    while (end < raw.size) {
+        let ch = raw[end..end + 1]
+        if (ch == "@" && atIndex < 0) {
+            atIndex = end
+        }
+        if (ch == "/" || ch == " " || ch == "\n" || ch == "\r" || ch == "\"" || ch == "'") {
+            break
+        }
+        end += 1
+    }
+    if (atIndex < 0) {
+        return raw
+    }
+    raw[0..authStart] + "[redacted]@" + raw[atIndex + 1..raw.size]
 }
 
 private func redactAbsolutePath(raw: String): String {
