@@ -89,6 +89,23 @@ public class CkbNativeHttpBuildPlan {
     }
 }
 
+public class CkbNativeHttpSmokeResult {
+    public var routeMode: String = ""
+    public var targetHost: String = ""
+    public var tlsVerifyMode: String = "strict"
+    public var proxySource: String = "none"
+    public var redactedProxy: String = ""
+    public var httpStatus: Int64 = 0
+    public var status: String = ""
+    public var transportClass: String = ""
+    public var transportDiagnostic: String = ""
+    public var rawWritten: Bool = false
+    public var candidateWritten: Bool = false
+    public var activePromoted: Bool = false
+
+    public init() {}
+}
+
 public class NativeHttpRequestExecutor <: HttpRequestExecutor {
     private let config: CkbNativeHttpTransportConfig
 
@@ -161,6 +178,66 @@ public func ckbNativeHttpConfigFromRuntime(config: CkbRuntimeConfig): CkbNativeH
         config.networkAllowedHosts,
         config.timeoutMillis
     )
+}
+
+public func ckbNativeHttpSmoke(url: String, runtime: CkbRuntimeConfig): String {
+    ckbNativeHttpRenderSmokeResult(ckbNativeHttpSmokeWithExecutor(url, ckbNativeHttpConfigFromRuntime(runtime), NativeHttpRequestExecutor(runtime)))
+}
+
+public func ckbNativeHttpSmokeWithExecutor(url: String, config: CkbNativeHttpTransportConfig, executor: HttpRequestExecutor): CkbNativeHttpSmokeResult {
+    let trimmed = url.trimAscii()
+    let route = ckbNativeHttpResolveRoute(trimmed, config)
+    let result = CkbNativeHttpSmokeResult()
+    result.routeMode = route.mode
+    result.targetHost = route.targetHost
+    result.tlsVerifyMode = if (config.insecureSkipTlsVerify) { "trust-all" } else { "strict" }
+    result.proxySource = route.proxySource
+    result.redactedProxy = route.redactedProxy
+
+    let urlPolicy = ckbNativeHttpValidateUrl(trimmed, config)
+    if (urlPolicy != "") {
+        result.status = "blocked_url"
+        result.transportClass = "blocked_url"
+        result.transportDiagnostic = urlPolicy
+        return result
+    }
+    if (route.error != "") {
+        result.status = "transport_error"
+        result.transportClass = "proxy"
+        result.transportDiagnostic = route.error
+        return result
+    }
+
+    let request = HttpExecutionRequest()
+    request.method = "GET"
+    request.url = trimmed
+    request.accept = "*/*"
+    request.timeoutMillis = config.timeoutMillis
+    request.retryCount = 0
+
+    let response = executor.get(request)
+    result.httpStatus = response.statusCode
+    result.status = response.status
+    result.transportClass = if (response.transportErrorClass == "") { "none" } else { response.transportErrorClass }
+    result.transportDiagnostic = response.transportDiagnostic
+    result
+}
+
+public func ckbNativeHttpRenderSmokeResult(result: CkbNativeHttpSmokeResult): String {
+    var out = "native-http-smoke"
+    out += " route=${result.routeMode}"
+    out += " targetHost=${if (result.targetHost == "") { "n/a" } else { result.targetHost }}"
+    out += " tlsVerifyMode=${result.tlsVerifyMode}"
+    out += " proxySource=${result.proxySource}"
+    if (result.redactedProxy != "") {
+        out += " proxy=${result.redactedProxy}"
+    }
+    out += " httpStatus=${result.httpStatus}"
+    out += " status=${if (result.status == "") { "unknown" } else { result.status }}"
+    out += " transportClass=${if (result.transportClass == "") { "none" } else { result.transportClass }}"
+    out += " transportDiagnostic=${if (result.transportDiagnostic == "") { "none" } else { redactSensitive(result.transportDiagnostic) }}"
+    out += " rawWritten=${result.rawWritten} candidateWritten=${result.candidateWritten} activePromoted=${result.activePromoted}\n"
+    redactSensitive(out)
 }
 
 public func ckbNativeHttpValidateUrl(url: String, config: CkbNativeHttpTransportConfig): String {
