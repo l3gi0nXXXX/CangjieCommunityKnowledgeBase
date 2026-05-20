@@ -3598,15 +3598,16 @@ public func renderRuntimeDoctor(config: CkbRuntimeConfig): String {
 
 public func embeddingConfigFromRuntime(config: CkbRuntimeConfig): EmbeddingConfig {
     let embedding = EmbeddingConfig()
+    let localProvider = config.embeddingProvider == "deterministic" || config.embeddingProvider == "local" || config.embeddingProvider == "local-file"
     embedding.provider = config.embeddingProvider
-    embedding.model = if (config.embeddingModel == "") { "deterministic-token-v1" } else { config.embeddingModel }
-    embedding.dimensions = if (config.embeddingDimensions <= 0) { 16 } else { config.embeddingDimensions }
+    embedding.model = if (config.embeddingModel == "" && localProvider) { "deterministic-token-v1" } else { config.embeddingModel }
+    embedding.dimensions = if (config.embeddingDimensions <= 0 && localProvider) { 16 } else { config.embeddingDimensions }
     embedding.endpoint = config.embeddingEndpoint
     embedding.tokenFile = config.embeddingTokenFile
     embedding.batchSize = config.embeddingBatchSize
     embedding.timeoutMillis = config.embeddingTimeoutMillis
     embedding.retryCount = config.embeddingRetryCount
-    embedding.production = !(config.embeddingProvider == "deterministic" || config.embeddingProvider == "local" || config.embeddingProvider == "local-file")
+    embedding.production = !localProvider
     embedding.configured = config.embeddingProvider != "" && config.embeddingProvider != "none"
     embedding
 }
@@ -3618,6 +3619,11 @@ public func embeddingProviderFromRuntime(config: CkbRuntimeConfig): EmbeddingPro
         embedding.production = false
         embedding.configured = true
         return DeterministicEmbeddingProvider(embedding)
+    }
+    if (embedding.provider == "ollama") {
+        embedding.production = true
+        embedding.configured = true
+        return OllamaEmbeddingProvider(embedding)
     }
     ProductionEmbeddingProvider(embedding)
 }
