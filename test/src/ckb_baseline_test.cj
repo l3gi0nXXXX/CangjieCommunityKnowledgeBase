@@ -1129,6 +1129,80 @@ public class CkbBaselineTest {
     }
 
     @TestCase
+    public func runtimeFactoriesExposeOllamaAndQdrantConfigBranchesWithoutLocalFallback(): Unit {
+        let config = CkbRuntimeConfig()
+        config.embeddingProvider = "ollama"
+        config.embeddingModel = "bge-m3:latest"
+        config.embeddingDimensions = 1024
+        config.embeddingEndpoint = "http://127.0.0.1:11434/api/embed"
+        config.embeddingAllowPrivateEndpoint = true
+        config.vectorBackend = "qdrant"
+        config.vectorDimensions = 1024
+        config.vectorDistance = "Cosine"
+        config.vectorTimeoutMillis = 9876
+        config.vectorRetryCount = 3
+        config.vectorAllowPrivateEndpoint = true
+        config.vectorActiveCollection = "ckb_active"
+        config.vectorCandidateCollection = "ckb_candidate"
+
+        let embedding = embeddingProviderFromRuntime(config).status()
+        let vector = vectorStoreFromRuntime(config).status("ckb_active")
+
+        @Expect(embedding.provider, "ollama")
+        @Expect(embedding.production, true)
+        @Expect(embedding.endpointConfigured, true)
+        @Expect(embedding.tokenConfigured, false)
+        @Expect(embedding.dimensions, 1024)
+        @Expect(embedding.state, EmbeddingProviderState.READY)
+        @Expect(vector.backend, "qdrant")
+        @Expect(vector.collection, "ckb_active")
+        @Expect(vector.activeCollection, "ckb_active")
+        @Expect(vector.candidateCollection, "ckb_candidate")
+        @Expect(vector.dimension, 1024)
+        @Expect(vector.state, EmbeddingProviderState.DEGRADED)
+        @Expect(vector.degradedReason, "qdrant_vector_missing_config")
+    }
+
+    @TestCase
+    public func runtimeFactoriesBlockPrivateAdapterEndpointsUnlessExplicitlyAllowed(): Unit {
+        let config = CkbRuntimeConfig()
+        config.embeddingProvider = "ollama"
+        config.embeddingModel = "bge-m3:latest"
+        config.embeddingDimensions = 1024
+        config.embeddingEndpoint = "http://127.0.0.1:11434/api/embed"
+        config.vectorBackend = "qdrant"
+        config.vectorEndpoint = "http://127.0.0.1:6333"
+        config.vectorDimensions = 1024
+
+        let embedding = embeddingProviderFromRuntime(config).status()
+        let vector = vectorStoreFromRuntime(config).status("active")
+
+        @Expect(embedding.provider, "ollama")
+        @Expect(embedding.degradedReason, "embedding_private_endpoint_not_allowed")
+        @Expect(vector.backend, "qdrant")
+        @Expect(vector.degradedReason, "vector_private_endpoint_not_allowed")
+    }
+
+    @TestCase
+    public func runtimeFactoriesRejectUnknownProductionProvidersWithoutDeterministicFallback(): Unit {
+        let config = CkbRuntimeConfig()
+        config.embeddingProvider = "unknown-provider"
+        config.embeddingEndpoint = "https://embedding.invalid/v1"
+        config.vectorBackend = "unknown-vector"
+        config.vectorEndpoint = "https://vector.invalid"
+
+        let embedding = embeddingProviderFromRuntime(config).status()
+        let vector = vectorStoreFromRuntime(config).status("active")
+
+        @Expect(embedding.provider, "unknown-provider")
+        @Expect(embedding.state, EmbeddingProviderState.DEGRADED)
+        @Expect(embedding.degradedReason, "unsupported_provider")
+        @Expect(vector.backend, "unknown-vector")
+        @Expect(vector.state, EmbeddingProviderState.DEGRADED)
+        @Expect(vector.degradedReason, "unsupported_vector_backend")
+    }
+
+    @TestCase
     public func localVectorStoreUpsertsSearchesAndFallsBackWhenDown(): Unit {
         let kb = newOfflineKnowledgeBase()
         let semantic = cangjie_hybrid_search(kb, "define function", 3)
@@ -1341,10 +1415,20 @@ public class CkbBaselineTest {
         @Expect(config.networkEnabled, false)
         @Expect(config.gitCodeAuthHeader, "private-token")
         @Expect(config.gitCodeAccessTokenQuery, false)
+        @Expect(config.embeddingProvider, "deterministic")
+        @Expect(config.embeddingAllowPrivateEndpoint, false)
+        @Expect(config.vectorBackend, "local-file")
+        @Expect(config.vectorDimensions, 16)
+        @Expect(config.vectorDistance, "Cosine")
+        @Expect(config.vectorAllowPrivateEndpoint, false)
         @Expect(doctor.contains("network=disabled"), true)
         @Expect(doctor.contains("gitcode.authHeader=private-token"), true)
         @Expect(doctor.contains("gitcode.accessTokenQuery=disabled"), true)
         @Expect(doctor.contains("gitcode.token=absent"), true)
+        @Expect(doctor.contains("embedding.allowPrivateEndpoint=false"), true)
+        @Expect(doctor.contains("vector.backend=local-file"), true)
+        @Expect(doctor.contains("vector.endpoint=absent"), true)
+        @Expect(doctor.contains("vector.allowPrivateEndpoint=false"), true)
         @Expect(redacted.contains("private-token-secret"), false)
         @Expect(redacted.contains("fake-token"), false)
         @Expect(redacted.contains("session=abc"), false)
@@ -1404,9 +1488,17 @@ embedding.tokenFile=/Users/l3gi0n/.metis/embedding-token
 embedding.batchSize=24
 embedding.timeoutMillis=2345
 embedding.retryCount=5
-vector.backend=local-file
+embedding.allowPrivateEndpoint=true
+vector.backend=qdrant
+vector.endpoint=http://127.0.0.1:6333?api_key=fake-live-token
 vector.activeCollection=prod-active
 vector.candidateCollection=prod-candidate
+vector.dimensions=1024
+vector.distance=Cosine
+vector.timeoutMillis=3456
+vector.retryCount=6
+vector.apiKeyFile=/Users/l3gi0n/.metis/qdrant-token
+vector.allowPrivateEndpoint=true
 network.timeoutMillis=1234
 network.retryCount=3
 network.proxy=http://user:pass@127.0.0.1:7897
@@ -1442,8 +1534,17 @@ network.allowedHosts=docs.example.org
         @Expect(config.embeddingBatchSize, 24)
         @Expect(config.embeddingTimeoutMillis, 2345)
         @Expect(config.embeddingRetryCount, 5)
+        @Expect(config.embeddingAllowPrivateEndpoint, true)
+        @Expect(config.vectorBackend, "qdrant")
+        @Expect(config.vectorEndpoint, "http://127.0.0.1:6333?api_key=fake-live-token")
         @Expect(config.vectorActiveCollection, "prod-active")
         @Expect(config.vectorCandidateCollection, "prod-candidate")
+        @Expect(config.vectorDimensions, 1024)
+        @Expect(config.vectorDistance, "Cosine")
+        @Expect(config.vectorTimeoutMillis, 3456)
+        @Expect(config.vectorRetryCount, 6)
+        @Expect(config.vectorApiKeyFile, "/Users/l3gi0n/.metis/qdrant-token")
+        @Expect(config.vectorAllowPrivateEndpoint, true)
         @Expect(summary.contains("gitcode.token=present"), true)
         @Expect(summary.contains("gitcode.authHeader=authorization"), true)
         @Expect(summary.contains("gitcode.accessTokenQuery=disabled"), true)
@@ -1456,6 +1557,15 @@ network.allowedHosts=docs.example.org
         @Expect(summary.contains("user:pass"), false)
         @Expect(summary.contains("embedding.endpoint=present"), true)
         @Expect(summary.contains("embedding.token=present"), true)
+        @Expect(summary.contains("embedding.allowPrivateEndpoint=true"), true)
+        @Expect(summary.contains("vector.backend=qdrant"), true)
+        @Expect(summary.contains("vector.endpoint=present"), true)
+        @Expect(summary.contains("vector.dimensions=1024"), true)
+        @Expect(summary.contains("vector.distance=Cosine"), true)
+        @Expect(summary.contains("vector.timeoutMillis=3456"), true)
+        @Expect(summary.contains("vector.retryCount=6"), true)
+        @Expect(summary.contains("vector.apiKey=present"), true)
+        @Expect(summary.contains("vector.allowPrivateEndpoint=true"), true)
         @Expect(summary.contains("fake-live-token"), false)
         @Expect(summary.contains("/Users/l3gi0n"), false)
     }

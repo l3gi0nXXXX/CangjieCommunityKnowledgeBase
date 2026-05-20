@@ -266,6 +266,12 @@ public class CkbRuntimeConfig {
     public var vectorBackend: String = "local-file"
     public var vectorActiveCollection: String = "active"
     public var vectorCandidateCollection: String = "candidate"
+    public var vectorEndpoint: String = ""
+    public var vectorDimensions: Int64 = 16
+    public var vectorDistance: String = "Cosine"
+    public var vectorTimeoutMillis: Int64 = 10000
+    public var vectorRetryCount: Int64 = 2
+    public var vectorApiKeyFile: String = ""
     public var vectorAllowPrivateEndpoint: Bool = false
     public var timeoutMillis: Int64 = 10000
     public var retryCount: Int64 = 2
@@ -422,6 +428,12 @@ public class CkbRuntimeConfig {
         out += " vector.backend=${this.vectorBackend}"
         out += " vector.activeCollection=${this.vectorActiveCollection}"
         out += " vector.candidateCollection=${this.vectorCandidateCollection}"
+        out += " vector.endpoint=${if (this.vectorEndpoint == "") { "absent" } else { "present" }}"
+        out += " vector.dimensions=${this.vectorDimensions}"
+        out += " vector.distance=${this.vectorDistance}"
+        out += " vector.timeoutMillis=${this.vectorTimeoutMillis}"
+        out += " vector.retryCount=${this.vectorRetryCount}"
+        out += " vector.apiKey=${if (this.vectorApiKeyFile == "") { "absent" } else { "present" }}"
         out += " vector.allowPrivateEndpoint=${if (this.vectorAllowPrivateEndpoint) { "true" } else { "false" }}"
         out
     }
@@ -3612,6 +3624,163 @@ public func embeddingConfigFromRuntime(config: CkbRuntimeConfig): EmbeddingConfi
     embedding
 }
 
+public class RuntimeVectorStoreConfig {
+    public var backend: String = "local-file"
+    public var endpoint: String = ""
+    public var activeCollection: String = "active"
+    public var candidateCollection: String = "candidate"
+    public var dimensions: Int64 = 16
+    public var distance: String = "Cosine"
+    public var timeoutMillis: Int64 = 10000
+    public var retryCount: Int64 = 2
+    public var apiKeyFile: String = ""
+    public var allowPrivateEndpoint: Bool = false
+
+    public init() {}
+
+    public func apiKeyPresent(): Bool {
+        this.apiKeyFile != ""
+    }
+}
+
+public func vectorStoreConfigFromRuntime(config: CkbRuntimeConfig): RuntimeVectorStoreConfig {
+    let vector = RuntimeVectorStoreConfig()
+    vector.backend = if (config.vectorBackend == "") { "local-file" } else { config.vectorBackend }
+    vector.endpoint = config.vectorEndpoint
+    vector.activeCollection = if (config.vectorActiveCollection == "") { "active" } else { config.vectorActiveCollection }
+    vector.candidateCollection = if (config.vectorCandidateCollection == "") { "candidate" } else { config.vectorCandidateCollection }
+    vector.dimensions = if (config.vectorDimensions <= 0) { 16 } else { config.vectorDimensions }
+    vector.distance = if (config.vectorDistance == "") { "Cosine" } else { config.vectorDistance }
+    vector.timeoutMillis = config.vectorTimeoutMillis
+    vector.retryCount = config.vectorRetryCount
+    vector.apiKeyFile = config.vectorApiKeyFile
+    vector.allowPrivateEndpoint = config.vectorAllowPrivateEndpoint
+    vector
+}
+
+public class RuntimeUnavailableEmbeddingProvider <: EmbeddingProvider {
+    private let config: EmbeddingConfig
+    private let degradedReason: String
+
+    public init(config: EmbeddingConfig, degradedReason: String) {
+        this.config = config
+        this.degradedReason = degradedReason
+    }
+
+    public func embed(texts: ArrayList<String>, model: String, dimensions: Int64): EmbeddingBatch {
+        let batch = EmbeddingBatch()
+        batch.requested = texts.size
+        batch.batchSize = this.config.batchSize
+        batch.status = this.status()
+        batch.failed = texts.size
+        batch
+    }
+
+    public func status(): EmbeddingStatus {
+        let status = EmbeddingStatus()
+        status.provider = this.config.provider
+        status.model = this.config.model
+        status.dimensions = this.config.dimensions
+        status.endpointConfigured = this.config.endpoint != ""
+        status.tokenConfigured = this.config.credentialPresent()
+        status.batchSize = this.config.batchSize
+        status.timeoutMillis = this.config.timeoutMillis
+        status.retryCount = this.config.retryCount
+        status.production = true
+        status.state = EmbeddingProviderState.DEGRADED
+        status.degradedReason = this.degradedReason
+        status
+    }
+}
+
+public class RuntimeUnavailableVectorStore <: VectorStore {
+    private let config: RuntimeVectorStoreConfig
+    private let degradedReason: String
+
+    public init(config: RuntimeVectorStoreConfig, degradedReason: String) {
+        this.config = config
+        this.degradedReason = degradedReason
+    }
+
+    public func upsert(collection: String, vectors: ArrayList<VectorRecord>): VectorStoreStatus {
+        this.status(collection)
+    }
+
+    public func search(collection: String, queryVector: ArrayList<Float64>, filters: VectorSearchFilters, topK: Int64): ArrayList<VectorSearchResult> {
+        ArrayList<VectorSearchResult>()
+    }
+
+    public func status(collection: String): VectorStoreStatus {
+        let status = VectorStoreStatus()
+        status.backend = this.config.backend
+        status.collection = collection
+        status.activeCollection = this.config.activeCollection
+        status.candidateCollection = this.config.candidateCollection
+        status.dimension = this.config.dimensions
+        status.count = 0
+        status.state = EmbeddingProviderState.DEGRADED
+        status.degradedReason = this.degradedReason
+        status
+    }
+
+    public func clear(collection: String): VectorStoreStatus {
+        this.status(collection)
+    }
+
+    public func recreate(collection: String, vectors: ArrayList<VectorRecord>): VectorStoreStatus {
+        this.status(collection)
+    }
+
+    public func backup(collection: String): VectorBackup {
+        let backup = VectorBackup()
+        backup.collection = collection
+        backup.valid = false
+        backup.diagnostic = this.degradedReason
+        backup
+    }
+
+    public func restore(backup: VectorBackup): VectorStoreStatus {
+        this.status(backup.collection)
+    }
+}
+
+public class RuntimeOllamaEmbeddingHttpExecutor <: OllamaEmbeddingHttpExecutor {
+    private let executor: HttpRequestExecutor
+
+    public init(executor: HttpRequestExecutor) {
+        this.executor = executor
+    }
+
+    public func execute(request: OllamaEmbeddingHttpRequest): OllamaEmbeddingHttpResponse {
+        let http = HttpExecutionRequest()
+        http.method = request.method
+        http.url = request.url
+        http.accept = request.accept
+        http.contentType = request.contentType
+        http.body = request.body
+        http.timeoutMillis = request.timeoutMillis
+        http.retryCount = request.retryCount
+        for (header in request.headers) {
+            http.headers.add(header)
+        }
+        let response = this.executor.execute(http)
+        let out = OllamaEmbeddingHttpResponse()
+        out.statusCode = response.statusCode
+        out.body = response.body
+        out.contentType = response.contentType
+        out.status = response.status
+        out.retryAfterSeconds = response.retryAfterSeconds
+        out.transportErrorClass = response.transportErrorClass
+        out.transportDiagnostic = response.transportDiagnostic
+        out
+    }
+}
+
+private func endpointLooksPrivate(endpoint: String): Bool {
+    let lower = endpoint.trimAscii().toAsciiLower()
+    lower.startsWith("http://127.") || lower.startsWith("https://127.") || lower.startsWith("http://localhost") || lower.startsWith("https://localhost") || lower.startsWith("http://[::1]") || lower.startsWith("https://[::1]") || lower.startsWith("http://10.") || lower.startsWith("https://10.") || lower.startsWith("http://192.168.") || lower.startsWith("https://192.168.")
+}
+
 public func embeddingProviderFromRuntime(config: CkbRuntimeConfig): EmbeddingProvider {
     let embedding = embeddingConfigFromRuntime(config)
     if (embedding.provider == "deterministic" || embedding.provider == "local" || embedding.provider == "local-file") {
@@ -3622,14 +3791,61 @@ public func embeddingProviderFromRuntime(config: CkbRuntimeConfig): EmbeddingPro
     }
     if (embedding.provider == "ollama") {
         embedding.production = true
-        embedding.configured = true
-        return OllamaEmbeddingProvider(embedding)
+        embedding.configured = embedding.model != "" && embedding.endpoint != "" && embedding.dimensions > 0
+        if (endpointLooksPrivate(embedding.endpoint) && !config.embeddingAllowPrivateEndpoint) {
+            return RuntimeUnavailableEmbeddingProvider(embedding, "embedding_private_endpoint_not_allowed")
+        }
+        if (!embedding.configured) {
+            return RuntimeUnavailableEmbeddingProvider(embedding, "ollama_embedding_missing_config")
+        }
+        let httpExecutor = NativeHttpRequestExecutor(ckbNativeHttpAdapterConfigFromRuntime(config, config.embeddingAllowPrivateEndpoint))
+        return OllamaEmbeddingProvider(embedding, executor: RuntimeOllamaEmbeddingHttpExecutor(httpExecutor))
+    }
+    if (embedding.provider != "production-http") {
+        embedding.production = true
+        embedding.configured = false
+        return RuntimeUnavailableEmbeddingProvider(embedding, "unsupported_provider")
     }
     ProductionEmbeddingProvider(embedding)
 }
 
+private func qdrantVectorStoreConfigFromRuntime(config: CkbRuntimeConfig, vector: RuntimeVectorStoreConfig): QdrantVectorStoreConfig {
+    let qdrant = QdrantVectorStoreConfig()
+    qdrant.endpoint = vector.endpoint
+    qdrant.dimensions = vector.dimensions
+    qdrant.distance = vector.distance
+    qdrant.timeoutMillis = vector.timeoutMillis
+    qdrant.retryCount = vector.retryCount
+    if (vector.apiKeyFile != "") {
+        let loaded = readCredentialFile(vector.apiKeyFile)
+        if (loaded.status == "ok") {
+            qdrant.apiKey = loaded.value
+        }
+    }
+    qdrant
+}
+
+public func vectorStoreFromRuntime(config: CkbRuntimeConfig): VectorStore {
+    let vector = vectorStoreConfigFromRuntime(config)
+    let backend = vector.backend
+    if (backend == "local-file" || backend == "local" || backend == "deterministic" || backend == "") {
+        return LocalVectorStore()
+    }
+    if (backend == "qdrant") {
+        if (endpointLooksPrivate(vector.endpoint) && !vector.allowPrivateEndpoint) {
+            return RuntimeUnavailableVectorStore(vector, "vector_private_endpoint_not_allowed")
+        }
+        if (vector.endpoint == "" || vector.dimensions <= 0 || vector.distance == "") {
+            return RuntimeUnavailableVectorStore(vector, "qdrant_vector_missing_config")
+        }
+        let httpExecutor = NativeHttpRequestExecutor(ckbNativeHttpAdapterConfigFromRuntime(config, vector.allowPrivateEndpoint))
+        return QdrantVectorStore(qdrantVectorStoreConfigFromRuntime(config, vector), executor: httpExecutor)
+    }
+    RuntimeUnavailableVectorStore(vector, "unsupported_vector_backend")
+}
+
 public func newKnowledgeBaseFromStoreWithRuntime(store: FileKnowledgeStore, config: CkbRuntimeConfig): KnowledgeBaseLoadResult {
-    let kb = KnowledgeBase(FakeClock(0), embeddingProviderFromRuntime(config), LocalVectorStore(), LocalGraphStore())
+    let kb = KnowledgeBase(FakeClock(0), embeddingProviderFromRuntime(config), vectorStoreFromRuntime(config), LocalGraphStore())
     kb.configureVectorCollections(config.vectorActiveCollection, config.vectorCandidateCollection)
     kb.bootstrapOffline()
     let result = KnowledgeBaseLoadResult(kb)
@@ -3884,6 +4100,18 @@ private func configApply(config: CkbRuntimeConfig, key: String, value: String): 
         config.vectorActiveCollection = value
     } else if (key == "vector.candidateCollection") {
         config.vectorCandidateCollection = value
+    } else if (key == "vector.endpoint") {
+        config.vectorEndpoint = value
+    } else if (key == "vector.dimensions") {
+        config.vectorDimensions = try { Int64.parse(value) } catch (_: Exception) { config.vectorDimensions }
+    } else if (key == "vector.distance") {
+        config.vectorDistance = value
+    } else if (key == "vector.timeoutMillis") {
+        config.vectorTimeoutMillis = try { Int64.parse(value) } catch (_: Exception) { config.vectorTimeoutMillis }
+    } else if (key == "vector.retryCount") {
+        config.vectorRetryCount = try { Int64.parse(value) } catch (_: Exception) { config.vectorRetryCount }
+    } else if (key == "vector.apiKeyFile") {
+        config.vectorApiKeyFile = value
     } else if (key == "vector.allowPrivateEndpoint") {
         config.vectorAllowPrivateEndpoint = parseBool(value)
     } else if (key == "network.timeoutMillis") {

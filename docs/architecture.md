@@ -48,6 +48,37 @@ successful build, so failed candidates do not pollute active query results.
 Status and metadata include deterministic text, vector-surrogate, symbol, and
 graph index manifest entries. Candidate indexes remain isolated until publish.
 
+## Embedding and Vector Runtime
+
+`CkbRuntimeConfig` is the single runtime configuration boundary for embedding
+and vector database selection. The offline defaults are
+`embedding.provider=deterministic` and `vector.backend=local-file`; they do not
+perform network access and remain the test baseline.
+
+Production semantic retrieval is selected explicitly with
+`embedding.provider=ollama` and `vector.backend=qdrant`. The config includes
+adapter endpoint, dimensions, timeout, retry count, private-endpoint allowance,
+Qdrant distance, Qdrant active/candidate collection names, and optional Qdrant
+api-key file presence. Human-facing summaries expose only whether endpoints and
+credentials are present, not token contents or local credential paths.
+
+The runtime factory boundary is:
+
+- `embeddingProviderFromRuntime` maps deterministic/local values to
+  `DeterministicEmbeddingProvider`, `ollama` to the Ollama adapter branch, and
+  unknown providers to degraded `unsupported_provider`.
+- `vectorStoreFromRuntime` maps `local-file` to `LocalVectorStore`, `qdrant` to
+  the Qdrant adapter branch, and unknown backends to degraded
+  `unsupported_vector_backend`.
+- `newKnowledgeBaseFromStoreWithRuntime` injects both factories into
+  `KnowledgeBase`; query, evidence, rebuild, and status code do not depend on
+  concrete adapter classes.
+
+Until the HTTP/Ollama/Qdrant core adapters are merged, the Ollama and Qdrant
+factory branches intentionally return pending degraded wrappers. This preserves
+visible production wiring without silently routing production configs back to
+deterministic/local behavior.
+
 ## Source Sync
 
 `SourceAdapter` defines the CKB source boundary for GitCode org/repo/source,

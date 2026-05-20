@@ -135,6 +135,52 @@ diagnostic classes. Missing OpenSSL runtime functions are reported as
 automatically repair the host CA trust configuration. Do not promote
 `network.insecureSkipTlsVerify=true` as an operating solution.
 
+## Production Embedding and Vector DB
+
+The default runtime remains deterministic embedding plus the local-file vector
+store. Production semantic retrieval is configured explicitly with Ollama
+`bge-m3:latest` and Qdrant:
+
+```text
+embedding.provider=ollama
+embedding.model=bge-m3:latest
+embedding.endpoint=http://127.0.0.1:11434/api/embed
+embedding.dimensions=1024
+embedding.batchSize=16
+embedding.timeoutMillis=30000
+embedding.retryCount=2
+embedding.allowPrivateEndpoint=true
+
+vector.backend=qdrant
+vector.endpoint=http://127.0.0.1:6333
+vector.activeCollection=ckb_active
+vector.candidateCollection=ckb_candidate
+vector.dimensions=1024
+vector.distance=Cosine
+vector.timeoutMillis=10000
+vector.retryCount=2
+vector.apiKeyFile=
+vector.allowPrivateEndpoint=true
+```
+
+`embedding.allowPrivateEndpoint` and `vector.allowPrivateEndpoint` are scoped to
+the embedding/vector adapters. They do not widen GitCode or website source
+fetch private-network access. Runtime summaries report endpoint and api-key
+presence only; token contents and local paths must stay redacted.
+
+The runtime factory now has explicit `embedding.provider=ollama` and
+`vector.backend=qdrant` branches. Until the core HTTP adapters land, those
+branches return degraded pending diagnostics instead of silently falling back
+to deterministic/local behavior. This is intentional: production configs should
+fail visibly when the adapter implementation is not linked.
+
+Generated CKB data, Qdrant storage, `ckb-live.conf`, token files, and local
+acceptance logs must remain ignored local files. Do not bypass `.gitignore` or
+commit anything under local `ckb-data/` directories.
+
+Detailed production semantic retrieval runbook:
+`docs/production-embedding-vector-db.md`.
+
 ## Service Protocol
 
 CKB can run as a long-lived stdio service:

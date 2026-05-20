@@ -49,6 +49,35 @@ network.caFile=/etc/ssl/cert.pem
   reports `sourceAnalysis.enabled=false` unless an ignored local config
   explicitly enables it.
 
+## Embedding and Vector DB Preflight
+
+- [ ] The ignored local config keeps deterministic/local defaults unless a
+  production semantic run is intended.
+- [ ] Production semantic config uses `embedding.provider=ollama`,
+  `embedding.model=bge-m3:latest`, `embedding.dimensions=1024`,
+  `embedding.endpoint=http://127.0.0.1:11434/api/embed`, and
+  `embedding.allowPrivateEndpoint=true`.
+- [ ] Production vector config uses `vector.backend=qdrant`,
+  `vector.endpoint=http://127.0.0.1:6333`,
+  `vector.activeCollection=ckb_active`,
+  `vector.candidateCollection=ckb_candidate`,
+  `vector.dimensions=1024`, `vector.distance=Cosine`, and
+  `vector.allowPrivateEndpoint=true`.
+- [ ] `doctor` or `status` reports `embedding.endpoint=present`,
+  `embedding.allowPrivateEndpoint=true`, `vector.endpoint=present`,
+  `vector.dimensions=1024`, `vector.distance=Cosine`, and api-key presence
+  only. It must not print token contents, `vector.apiKeyFile` paths, or local
+  `ckb-data` paths.
+- [ ] If `embedding.allowPrivateEndpoint=false`, an Ollama loopback endpoint
+  reports a degraded private-endpoint diagnostic before any network call.
+- [ ] If `vector.allowPrivateEndpoint=false`, a Qdrant loopback endpoint
+  reports a degraded private-endpoint diagnostic before any network call.
+- [ ] Until the concrete adapters are linked, `ollama` and `qdrant` factory
+  branches report pending degraded diagnostics instead of falling back to
+  deterministic/local behavior.
+- [ ] Qdrant storage, `ckb-live.conf`, token files, api-key files, and
+  acceptance logs stay ignored local files. Do not bypass `.gitignore`.
+
 ## Real Source Sync
 
 - [ ] On macOS, no manual TLS environment export is required for CKB network
