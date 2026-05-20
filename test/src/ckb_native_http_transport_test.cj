@@ -153,6 +153,20 @@ public class CkbNativeHttpTransportTest {
     }
 
     @TestCase
+    public func nativeTlsBootstrapScriptMatchesMetisOpenSslRuntimeWithoutCaBundleSideEffects(): Unit {
+        let script = ckbNativeTlsBootstrapScript("/tmp/ckb-bin", ["native-http-smoke", "https://api.gitcode.com/api/v5/orgs/cangjie/repos"])
+
+        @Expect(script.contains("/opt/homebrew/opt/openssl@3/lib"), true)
+        @Expect(script.contains("/opt/homebrew/opt/openssl@3.5/lib"), true)
+        @Expect(script.contains("/usr/local/opt/openssl@3/lib"), true)
+        @Expect(script.contains("SSL_CERT_FILE"), false)
+        @Expect(script.contains("SSL_CERT_DIR"), false)
+        @Expect(script.contains("security find-certificate"), false)
+        @Expect(script.contains("ckb-system-roots.pem"), false)
+        @Expect(script.contains("SystemRootCertificates"), false)
+    }
+
+    @TestCase
     public func syncLiveWithFakeRunnerKeepsPrivateInternalUnknownReposExcluded(): Unit {
         let kb = newOfflineKnowledgeBase()
         let config = CkbRuntimeConfig()
