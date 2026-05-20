@@ -124,11 +124,20 @@ cjpm run --skip-build --run-args "--config ckb-live.conf sync-live --dry-run --m
   normalization, indexing, or trusted evidence.
 - [ ] If GitCode requires authentication, CKB uses an ignored local token file
   and reports only credential presence plus `authHeader=private-token`.
+- [ ] GitCode source fetch uses `sourceVariant=raw` first. If raw returns a
+  source-unavailable HTTP failure, dry-run shows `contentsFallback=attempted`
+  and the follow-up source summary reports `sourceVariant=contents`.
+- [ ] Contents fallback accepts only `type=file` with `encoding=base64`, rejects
+  malformed or path-mismatched payloads, and keeps repo/ref/path plus
+  `repoVisibility=public` on accepted source records.
 - [ ] Live acceptance order is schema, doctor/status, anonymous dry-run,
   credentialed dry-run only if needed, limited apply, rebuild-index, then
   status/evidence verification.
 - [ ] Small apply run is limited by `--max-repos`, `--max-files-per-repo`, and
   `--max-items`.
+- [ ] After limited apply and rebuild-index, `evidence README` or
+  `source_search README` can return a GitCode source file citation when a source
+  file was fetched successfully.
 - [ ] Raw, normalized, metadata, index, derived, and cache layers are written
   only under the CKB store.
 - [ ] Issue and PR history are ingested as community evidence, not trusted
