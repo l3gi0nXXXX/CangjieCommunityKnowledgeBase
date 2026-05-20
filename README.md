@@ -92,10 +92,9 @@ and local absolute paths.
 On macOS, native network commands bootstrap their own TLS runtime before the
 request path runs. The bootstrap follows the Metis Gateway launch pattern by
 restarting the command with OpenSSL 3 and Cangjie/stdx dynamic library paths in
-`DYLD_LIBRARY_PATH`. If `SSL_CERT_FILE` is absent, it also creates a temporary
-system-root PEM at `/tmp/ckb-system-roots.pem` for the child process. Operators
-run the same CKB command; no token, cookie, or config file is read by the
-bootstrap itself.
+`DYLD_LIBRARY_PATH`. It does not manage CA bundles or certificate trust stores.
+Operators run the same CKB command; no token, cookie, or config file is read by
+the bootstrap itself.
 
 For TLS or route diagnostics, use the read-only native HTTP smoke command
 before running live sync:
@@ -115,8 +114,9 @@ TLS failures are diagnosed by the native transport. DNS failures such as
 such as `unknown CA` or `certificate verify failed` are reported as
 `tls_unknown_ca`; hostname and expired-certificate failures have separate TLS
 diagnostic classes. Missing OpenSSL runtime functions are reported as
-`tls_runtime`. Do not promote `network.insecureSkipTlsVerify=true` as an
-operating solution.
+`tls_runtime`. A `tls_unknown_ca` result is diagnostic only; CKB does not
+automatically repair the host CA trust configuration. Do not promote
+`network.insecureSkipTlsVerify=true` as an operating solution.
 
 ## Service Protocol
 
