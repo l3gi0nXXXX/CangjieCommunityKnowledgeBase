@@ -89,6 +89,16 @@ production acceptance unless a controlled diagnostic explicitly requires it.
 Human-facing doctor and dry-run output redacts tokens, cookies, proxy passwords,
 and local absolute paths.
 
+On macOS, the native Cangjie TLS runtime needs OpenSSL 3 visible to `dyld` and
+a PEM CA bundle visible to OpenSSL. This mirrors the Metis runtime prerequisite
+for native HTTPS. A local shell can prepare both without storing secrets:
+
+```bash
+security find-certificate -a -p /System/Library/Keychains/SystemRootCertificates.keychain > /tmp/ckb-system-roots.pem
+export DYLD_LIBRARY_PATH="/opt/homebrew/opt/openssl@3/lib:/opt/homebrew/opt/openssl@3.5/lib:/usr/local/opt/openssl@3/lib:$DYLD_LIBRARY_PATH"
+export SSL_CERT_FILE="/tmp/ckb-system-roots.pem"
+```
+
 For TLS or route diagnostics, use the read-only native HTTP smoke command
 before running live sync:
 
@@ -106,10 +116,9 @@ TLS failures are diagnosed by the native transport. DNS failures such as
 `Failed to resolve address` are reported as `dns`; certificate trust failures
 such as `unknown CA` or `certificate verify failed` are reported as
 `tls_unknown_ca`; hostname and expired-certificate failures have separate TLS
-diagnostic classes. If Metis-aligned direct HTTPS still fails after the native
-transport no longer installs a direct socket connector, the next production fix
-is CA trust-store discovery or explicit CA bundle support. Do not promote
-`network.insecureSkipTlsVerify=true` as an operating solution.
+diagnostic classes. Missing OpenSSL runtime functions are reported as
+`tls_runtime`. Do not promote `network.insecureSkipTlsVerify=true` as an
+operating solution.
 
 ## Service Protocol
 

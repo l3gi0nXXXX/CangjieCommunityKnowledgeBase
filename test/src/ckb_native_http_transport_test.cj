@@ -148,6 +148,7 @@ public class CkbNativeHttpTransportTest {
         @Expect(ckbNativeHttpClassifyException("TLS handshake failed (client): certificate verify failed (134), TLS alert unknown CA(F)").transportErrorClass, "tls_unknown_ca")
         @Expect(ckbNativeHttpClassifyException("certificate hostname mismatch").transportErrorClass, "tls_hostname_mismatch")
         @Expect(ckbNativeHttpClassifyException("certificate has expired").transportErrorClass, "tls_expired_certificate")
+        @Expect(ckbNativeHttpClassifyException("Can not load openssl library or function CRYPTO_get_ex_new_index.").transportErrorClass, "tls_runtime")
         @Expect(ckbNativeHttpClassifyException("TLS handshake failed").transportErrorClass, "tls_handshake_failed")
     }
 

@@ -359,6 +359,8 @@ public func ckbNativeHttpClassifyException(message: String): CkbNativeHttpTransp
         diagnostic.transportErrorClass = "tls_hostname_mismatch"
     } else if (lowered.contains("certificate has expired") || lowered.contains("certificate expired") || lowered.contains("expired certificate") || lowered.contains("not yet valid")) {
         diagnostic.transportErrorClass = "tls_expired_certificate"
+    } else if (lowered.contains("can not load openssl") || lowered.contains("cannot load openssl") || lowered.contains("crypto_get_ex_new_index")) {
+        diagnostic.transportErrorClass = "tls_runtime"
     } else if (lowered.contains("ssl") || lowered.contains("tls") || lowered.contains("certificate")) {
         diagnostic.transportErrorClass = "tls_handshake_failed"
     } else if (lowered.contains("proxy") || lowered.contains("connect failed")) {

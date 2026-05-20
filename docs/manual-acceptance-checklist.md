@@ -47,6 +47,20 @@ network.insecureSkipTlsVerify=false
 
 ## Real Source Sync
 
+- [ ] On macOS, prepare native TLS runtime dependencies before real network
+  acceptance. This follows the same OpenSSL 3 requirement documented by Metis
+  for native HTTPS:
+
+```bash
+security find-certificate -a -p /System/Library/Keychains/SystemRootCertificates.keychain > /tmp/ckb-system-roots.pem
+export DYLD_LIBRARY_PATH="/opt/homebrew/opt/openssl@3/lib:/opt/homebrew/opt/openssl@3.5/lib:/usr/local/opt/openssl@3/lib:$DYLD_LIBRARY_PATH"
+export SSL_CERT_FILE="/tmp/ckb-system-roots.pem"
+```
+
+- [ ] If the native transport reports `transportClass=tls_runtime`, OpenSSL 3
+  is not visible to the Cangjie runtime. If it reports
+  `transportClass=tls_unknown_ca`, OpenSSL is loaded but the CA bundle is not
+  visible or does not trust the remote certificate chain.
 - [ ] Before full live sync, run the read-only native HTTP smoke command
   against a public allowlist URL:
 
@@ -81,8 +95,8 @@ cjpm run --skip-build --run-args "--config ckb-live.conf sync-live --dry-run --m
 - [ ] If the upstream API, TLS, DNS, proxy, or timeout path fails, the output
   reports a native transport class such as `dns`, `tls_unknown_ca`,
   `tls_hostname_mismatch`, `tls_expired_certificate`,
-  `tls_handshake_failed`, `proxy`, `connection_refused`, or `timeout`; it must
-  not report `curl launch failed` as the primary diagnostic.
+  `tls_runtime`, `tls_handshake_failed`, `proxy`, `connection_refused`, or
+  `timeout`; it must not report `curl launch failed` as the primary diagnostic.
 - [ ] A DNS-only failure such as `Failed to resolve address example.invalid`
   is reported as `transportClass=dns`, not `unknown`.
 - [ ] A certificate trust failure such as `unknown CA` or `certificate verify
