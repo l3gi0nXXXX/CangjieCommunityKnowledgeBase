@@ -5,6 +5,35 @@ import std.fs.{File, Path}
 import std.unittest.*
 import std.unittest.testmacro.*
 
+class SourceAnalysisFakeRunner <: SourceFetchRunner {
+    public var calls: ArrayList<SourceFetchRequest> = ArrayList<SourceFetchRequest>()
+    public var rawStatusCode: Int64 = 200
+    public var contentsStatusCode: Int64 = 200
+    public var body: String = "func targetSymbol() { println(\"ok\") }"
+    public var sourceUrlSuffix: String = ""
+
+    init() {}
+
+    public func fetch(request: SourceFetchRequest): SourceFetchResult {
+        this.calls.add(request)
+        let result = SourceFetchResult()
+        let statusCode = if (request.purpose == "source_raw") { this.rawStatusCode } else { this.contentsStatusCode }
+        result.ok = statusCode >= 200 && statusCode < 300
+        result.statusCode = statusCode
+        result.status = if (result.ok) { "ok" } else { "not_found" }
+        result.body = if (result.ok) { this.body } else { "" }
+        result.commit = "fake-analysis-commit"
+        result.sourceUrl = request.url + this.sourceUrlSuffix
+        result.normalizedType = request.kind
+        result.bytes = result.body.size
+        result.bodyHash = stableSummaryHash(result.body)
+        result.repo = request.repo
+        result.ref = request.ref
+        result.path = request.path
+        result
+    }
+}
+
 @Test
 public class CkbBaselineTest {
     @TestCase
@@ -231,6 +260,142 @@ public class CkbBaselineTest {
         @Expect(normalized.status, "ok")
         @Expect(normalized.normalizedType, SourceKinds.GITCODE_SOURCE)
         @Expect(normalized.sourceUrl, source.url)
+    }
+
+    @TestCase
+    public func sourceAnalysisSchemaAndClassifierCoverSrc0Src1Triggers(): Unit {
+        let schema = CkbSchema.mcpTools()
+        @Expect(schema.contains("source_analysis"), true)
+        @Expect(schema.contains("repo,ref,query,issueUrl,prUrl,changedFiles,candidatePaths,allowCloneFallback,maxFiles,maxBytes,timeoutMillis"), true)
+
+        let classifier = SourceAnalysisTriggerClassifier()
+        let summary = SourceAnalysisRequest()
+        summary.query = "please summarize this issue"
+        @Expect(classifier.classify(summary).shouldAnalyze, false)
+
+        let filePath = SourceAnalysisRequest()
+        filePath.query = "compile error in src/foo/bar.cj:12"
+        let fileDecision = classifier.classify(filePath)
+        @Expect(fileDecision.shouldAnalyze, true)
+        @Expect(fileDecision.triggerReasons.contains(SourceAnalysisTriggerReasons.FILE_PATH_MENTIONED), true)
+        @Expect(fileDecision.triggerReasons.contains(SourceAnalysisTriggerReasons.COMPILE_ERROR), true)
+
+        let stack = SourceAnalysisRequest()
+        stack.query = "panic stack trace at module.func src/main.cj:44"
+        let stackDecision = classifier.classify(stack)
+        @Expect(stackDecision.shouldAnalyze, true)
+        @Expect(stackDecision.triggerReasons.contains(SourceAnalysisTriggerReasons.STACK_TRACE), true)
+
+        let changed = SourceAnalysisRequest()
+        changed.changedFiles.add("src/lib.cj")
+        let changedDecision = classifier.classify(changed)
+        @Expect(changedDecision.shouldAnalyze, true)
+        @Expect(changedDecision.triggerReasons.contains(SourceAnalysisTriggerReasons.PR_DIFF_REVIEW), true)
+
+        let insufficient = SourceAnalysisRequest()
+        insufficient.query = "need answer"
+        let insufficientDecision = classifier.classify(insufficient, hasSourceEvidence: false)
+        @Expect(insufficientDecision.shouldAnalyze, true)
+        @Expect(insufficientDecision.triggerReasons.contains(SourceAnalysisTriggerReasons.INSUFFICIENT_SOURCE_EVIDENCE), true)
+        @Expect(insufficientDecision.degraded, true)
+    }
+
+    @TestCase
+    public func sourceAnalysisApiRawReadsChangedFilesWithoutClone(): Unit {
+        let request = SourceAnalysisRequest()
+        request.repo = "cangjie/stdx"
+        request.ref = "main"
+        request.query = "review changed files"
+        request.changedFiles.add("src/a.cj")
+        request.changedFiles.add("src/b.cj")
+        request.maxFiles = 1
+        request.allowCloneFallback = false
+        let runner = SourceAnalysisFakeRunner()
+
+        let result = ckbSourceAnalysis(request, runner: runner)
+
+        @Expect(result.sourceAcquisition, SourceAnalysisAcquisition.API_RAW)
+        @Expect(result.filesRead.size, 1)
+        @Expect(result.filesRead[0].path, "src/a.cj")
+        @Expect(result.filesRead[0].bodyHash, stableSummaryHash(runner.body))
+        @Expect(result.citations[0], "https://gitcode.com/cangjie/stdx/-/blob/main/src/a.cj")
+        @Expect(runner.calls.size, 1)
+        @Expect(runner.calls[0].purpose, "source_raw")
+        @Expect(result.diagnostic.contains("clone"), false)
+    }
+
+    @TestCase
+    public func sourceAnalysisFallsBackFromRawToContentsAndRedactsOutput(): Unit {
+        let request = SourceAnalysisRequest()
+        request.repo = "cangjie/stdx"
+        request.ref = "main"
+        request.query = "source_analysis src/http/client.cj"
+        request.allowCloneFallback = false
+        let runner = SourceAnalysisFakeRunner()
+        runner.rawStatusCode = 404
+        runner.contentsStatusCode = 200
+        runner.sourceUrlSuffix = "?access_token=secret-token"
+
+        let result = ckbSourceAnalysis(request, runner: runner)
+        let rendered = renderSourceAnalysis(result)
+
+        @Expect(result.sourceAcquisition, SourceAnalysisAcquisition.API_CONTENTS)
+        @Expect(result.filesRead.size, 1)
+        @Expect(runner.calls.size, 2)
+        @Expect(runner.calls[0].purpose, "source_raw")
+        @Expect(runner.calls[1].purpose, "source_snapshot")
+        @Expect(rendered.contains("secret-token"), false)
+        @Expect(rendered.contains("[redacted]"), true)
+    }
+
+    @TestCase
+    public func sourceAnalysisDegradesWithoutCloneFallbackAndBlocksPrivateRepos(): Unit {
+        let request = SourceAnalysisRequest()
+        request.repo = "cangjie/stdx"
+        request.ref = "main"
+        request.query = "source_analysis src/missing.cj"
+        request.allowCloneFallback = false
+        let runner = SourceAnalysisFakeRunner()
+        runner.rawStatusCode = 404
+        runner.contentsStatusCode = 404
+
+        let result = ckbSourceAnalysis(request, runner: runner, hasSourceEvidence: false)
+
+        @Expect(result.degraded, true)
+        @Expect(result.diagnostic.contains("clone_fallback_disabled"), true)
+        @Expect(result.sourceAcquisition, SourceAnalysisAcquisition.NONE)
+        @Expect(runner.calls.size, 2)
+
+        let privateRequest = SourceAnalysisRequest()
+        privateRequest.repo = "cangjie/private"
+        privateRequest.query = "source_analysis src/main.cj"
+        privateRequest.repoVisibility = RepoVisibility.PRIVATE
+        let blockedRunner = SourceAnalysisFakeRunner()
+        let blocked = ckbSourceAnalysis(privateRequest, runner: blockedRunner)
+        @Expect(blocked.degraded, true)
+        @Expect(blocked.diagnostic, "blocked_non_public_repo")
+        @Expect(blockedRunner.calls.size, 0)
+    }
+
+    @TestCase
+    public func syncLiveDoesNotInvokeSourceAnalysisRawPath(): Unit {
+        let kb = newOfflineKnowledgeBase()
+        let config = CkbRuntimeConfig()
+        let options = LiveSyncOptions()
+        options.dryRun = true
+        options.maxItems = 1
+        let runner = SourceAnalysisFakeRunner()
+
+        let text = ckbSyncLive(kb, config, options, runner: runner, store: FileKnowledgeStore("target/ckb-test-source-analysis-sync-live"))
+        var rawCalls: Int64 = 0
+        for (call in runner.calls) {
+            if (call.purpose == "source_raw") {
+                rawCalls += 1
+            }
+        }
+
+        @Expect(text.contains("source_analysis"), false)
+        @Expect(rawCalls, 0)
     }
 
     @TestCase
