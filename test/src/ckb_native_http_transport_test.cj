@@ -153,6 +153,21 @@ public class CkbNativeHttpTransportTest {
     }
 
     @TestCase
+    public func nativeTlsBootstrapEnvMatchesMetisOpenSslWithoutCaBundleWork(): Unit {
+        let script = ckbNativeTlsBootstrapEnvScript()
+
+        @Expect(script.contains("CKB_NATIVE_TLS_BOOTSTRAPPED=1"), true)
+        @Expect(script.contains("/opt/homebrew/opt/openssl@3/lib"), true)
+        @Expect(script.contains("/opt/homebrew/opt/openssl@3.5/lib"), true)
+        @Expect(script.contains("/usr/local/opt/openssl@3/lib"), true)
+        @Expect(script.contains("CKB_CJPM_SKIP_BUILD_CANGJIE_ROOT"), true)
+        @Expect(script.contains("CKB_CJPM_SKIP_BUILD_MAGIC_ROOT"), true)
+        @Expect(script.contains("SSL_CERT_FILE"), false)
+        @Expect(script.contains("security find-certificate"), false)
+        @Expect(script.contains("ckb-system-roots"), false)
+    }
+
+    @TestCase
     public func syncLiveWithFakeRunnerKeepsPrivateInternalUnknownReposExcluded(): Unit {
         let kb = newOfflineKnowledgeBase()
         let config = CkbRuntimeConfig()
