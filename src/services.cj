@@ -3989,17 +3989,24 @@ private func redactAssignment(raw: String, key: String): String {
 }
 
 private func redactAfterNeedle(raw: String, needle: String): String {
-    if (!raw.contains(needle)) {
-        return raw
-    }
-    textBeforeFirst(raw, needle) + needle + "[redacted]" + tailAfterRedactedValue(textAfterFirst(raw, needle), RedactStopMode.TOKEN)
+    redactAllAfterNeedle(raw, needle, RedactStopMode.TOKEN)
 }
 
 private func redactLineAfterNeedle(raw: String, needle: String): String {
+    redactAllAfterNeedle(raw, needle, RedactStopMode.LINE)
+}
+
+private func redactAllAfterNeedle(raw: String, needle: String, mode: String): String {
     if (!raw.contains(needle)) {
         return raw
     }
-    textBeforeFirst(raw, needle) + needle + "[redacted]" + tailAfterRedactedValue(textAfterFirst(raw, needle), RedactStopMode.LINE)
+    var remaining = raw
+    var out = ""
+    while (remaining.contains(needle)) {
+        out += textBeforeFirst(remaining, needle) + needle + "[redacted]"
+        remaining = tailAfterRedactedValue(textAfterFirst(remaining, needle), mode)
+    }
+    out + remaining
 }
 
 private func redactProxyCredentials(raw: String): String {
@@ -4016,8 +4023,9 @@ private func redactProxyCredentialsForScheme(raw: String, scheme: String): Strin
     let prefix = textBeforeFirst(raw, scheme) + scheme
     let tail = textAfterFirst(raw, scheme)
     let authority = textBeforeFirstAuthorityStop(tail)
+    let rest = tailAfterRedactedValue(tail, RedactStopMode.URL_AUTHORITY)
     if (!authority.contains("@")) {
-        return raw
+        return prefix + authority + redactProxyCredentialsForScheme(rest, scheme)
     }
     let authParts = authority.split("@")
     var host = ""
@@ -4027,7 +4035,7 @@ private func redactProxyCredentialsForScheme(raw: String, scheme: String): Strin
         }
         host += authParts[i]
     }
-    prefix + "[redacted]@" + host + tailAfterRedactedValue(tail, RedactStopMode.URL_AUTHORITY)
+    prefix + "[redacted]@" + host + redactProxyCredentialsForScheme(rest, scheme)
 }
 
 private func textBeforeFirstAuthorityStop(raw: String): String {

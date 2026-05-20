@@ -12,6 +12,7 @@ class SourceAnalysisFakeRunner <: SourceFetchRunner {
     public var rawStatusCode: Int64 = 200
     public var contentsStatusCode: Int64 = 200
     public var body: String = "func targetSymbol() { println(\"ok\") }"
+    public var contentsBodyBase64: String = "ZnVuYyB0YXJnZXRTeW1ib2woKSB7IHByaW50bG4oXCJva1wiKSB9"
     public var sourceUrlSuffix: String = ""
 
     init() {}
@@ -26,7 +27,7 @@ class SourceAnalysisFakeRunner <: SourceFetchRunner {
         result.body = if (!result.ok) {
             ""
         } else if (request.sourceVariant == "contents" || request.purpose == "source_contents_snapshot") {
-            "{\"type\":\"file\",\"encoding\":\"base64\",\"content\":\"ZnVuYyB0YXJnZXRTeW1ib2woKSB7IHByaW50bG4oXCJva1wiKSB9\",\"path\":\"${request.path}\",\"sha\":\"fake-analysis-commit\",\"html_url\":\"${request.url}${this.sourceUrlSuffix}\"}"
+            "{\"type\":\"file\",\"encoding\":\"base64\",\"content\":\"${this.contentsBodyBase64}\",\"path\":\"${request.path}\",\"sha\":\"fake-analysis-commit\",\"html_url\":\"${request.url}${this.sourceUrlSuffix}\"}"
         } else {
             this.body
         }
@@ -449,6 +450,88 @@ public class CkbBaselineTest {
         @Expect(rendered.contains("source-secret"), false)
         @Expect(rendered.contains("url-secret"), false)
         @Expect(rendered.contains("[redacted]"), true)
+    }
+
+    @TestCase
+    public func sourceAnalysisRawLongUnicodeExcerptTruncatesOnRuneBoundary(): Unit {
+        let request = SourceAnalysisRequest()
+        request.repo = "Cangjie/community"
+        request.ref = "main"
+        request.query = "source_analysis README.md"
+        request.allowCloneFallback = false
+        let runner = SourceAnalysisFakeRunner()
+        runner.body = "仓颉源码 token=source-secret " + repeatText("中文片段", 80)
+
+        let result = ckbSourceAnalysis(request, runner: runner)
+        let rendered = renderSourceAnalysis(result)
+
+        @Expect(result.filesRead.size, 1)
+        @Expect(result.filesRead[0].excerpt.contains("仓颉源码"), true)
+        @Expect(result.filesRead[0].excerpt.contains("source-secret"), false)
+        @Expect(result.filesRead[0].excerpt.contains("[redacted]"), true)
+        @Expect(rendered.contains("source-secret"), false)
+    }
+
+    @TestCase
+    public func sourceAnalysisContentsFallbackUnicodeBase64DoesNotCrashDuringRedactionOrExcerpt(): Unit {
+        let request = SourceAnalysisRequest()
+        request.repo = "Cangjie/community"
+        request.ref = "main"
+        request.query = "source_analysis README.md"
+        request.allowCloneFallback = false
+        let runner = SourceAnalysisFakeRunner()
+        runner.rawStatusCode = 404
+        runner.contentsStatusCode = 200
+        runner.contentsBodyBase64 = "IyDku5PpookgY29udGVudHMKdG9rZW49Y29udGVudHMtc2VjcmV0IOS4reaWh+e7k+Wwvg=="
+        runner.sourceUrlSuffix = "?access_token=url-secret&x=1"
+
+        let result = ckbSourceAnalysis(request, runner: runner)
+        let rendered = renderSourceAnalysis(result)
+
+        @Expect(result.sourceAcquisition, SourceAnalysisAcquisition.API_CONTENTS)
+        @Expect(result.filesRead.size, 1)
+        @Expect(result.filesRead[0].excerpt.contains("仓颉 contents"), true)
+        @Expect(rendered.contains("contents-secret"), false)
+        @Expect(rendered.contains("url-secret"), false)
+        @Expect(rendered.contains("[redacted]"), true)
+    }
+
+    @TestCase
+    public func redactSensitiveHandlesUtf8BeforeAndAfterAllSensitiveForms(): Unit {
+        let raw = "说明 https://gitcode.com/api?access_token=url-secret&x=1 中文 token=inline-secret 后续\n" +
+            "PRIVATE-TOKEN: private-secret 中文\n" +
+            "Authorization: Bearer auth-secret 中文\n" +
+            "Cookie=session-secret 中文\n" +
+            "proxy=https://用户:密码@proxy.example:7890/path 中文\n" +
+            "mirror=/Users/测试目录/private file"
+
+        let redacted = redactSensitive(raw)
+
+        @Expect(redacted.contains("说明"), true)
+        @Expect(redacted.contains("中文"), true)
+        @Expect(redacted.contains("url-secret"), false)
+        @Expect(redacted.contains("inline-secret"), false)
+        @Expect(redacted.contains("private-secret"), false)
+        @Expect(redacted.contains("auth-secret"), false)
+        @Expect(redacted.contains("session-secret"), false)
+        @Expect(redacted.contains("用户:密码"), false)
+        @Expect(redacted.contains("测试目录"), false)
+        @Expect(redacted.contains("[redacted]"), true)
+        @Expect(redacted.contains("[local-path-redacted]"), true)
+    }
+
+    @TestCase
+    public func redactSensitiveHandlesUtf8EncodedQueryAndRepeatedNeedles(): Unit {
+        let raw = "中文前缀 token%3Dencoded-secret&next=1 中文中段 access_token=plain-secret#frag token=tail-secret"
+
+        let redacted = redactSensitive(raw)
+
+        @Expect(redacted.contains("中文前缀"), true)
+        @Expect(redacted.contains("中文中段"), true)
+        @Expect(redacted.contains("encoded-secret"), false)
+        @Expect(redacted.contains("plain-secret"), false)
+        @Expect(redacted.contains("tail-secret"), false)
+        @Expect(redacted.contains("[redacted]"), true)
     }
 
     @TestCase
