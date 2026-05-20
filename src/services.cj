@@ -2789,14 +2789,6 @@ private func configApply(config: CkbRuntimeConfig, key: String, value: String): 
         config.gitCodeTokenRef = value
     } else if (key == "gitcode.tokenFile") {
         config.gitCodeTokenFile = value
-    } else if (key == "network.proxy") {
-        config.networkProxy = value
-    } else if (key == "network.envProxyEnabled") {
-        config.networkEnvProxyEnabled = parseBool(value)
-    } else if (key == "network.noProxy") {
-        config.networkNoProxy = value
-    } else if (key == "network.insecureSkipTlsVerify") {
-        config.networkInsecureSkipTlsVerify = parseBool(value)
     } else if (key == "website.enabled") {
         config.websiteEnabled = parseBool(value)
     } else if (key == "docs.enabled") {

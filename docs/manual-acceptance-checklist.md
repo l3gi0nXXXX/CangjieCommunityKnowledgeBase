@@ -79,9 +79,19 @@ cjpm run --skip-build --run-args "--config ckb-live.conf sync-live --dry-run --m
   `discovered` and `public` counts greater than zero when the upstream API is
   reachable.
 - [ ] If the upstream API, TLS, DNS, proxy, or timeout path fails, the output
-  reports a native transport class such as `dns`, `tls`, `proxy`,
-  `connection_refused`, or `timeout`; it must not report `curl launch failed`
-  as the primary diagnostic.
+  reports a native transport class such as `dns`, `tls_unknown_ca`,
+  `tls_hostname_mismatch`, `tls_expired_certificate`,
+  `tls_handshake_failed`, `proxy`, `connection_refused`, or `timeout`; it must
+  not report `curl launch failed` as the primary diagnostic.
+- [ ] A DNS-only failure such as `Failed to resolve address example.invalid`
+  is reported as `transportClass=dns`, not `unknown`.
+- [ ] A certificate trust failure such as `unknown CA` or `certificate verify
+  failed` is reported as `transportClass=tls_unknown_ca` or an equivalent
+  visible TLS trust diagnostic.
+- [ ] If direct HTTPS still fails after the CKB native transport is aligned to
+  the Metis Feishu/provider direct HTTPS path, the next investigation is
+  production CA trust-store detection or explicit CA bundle support. Do not use
+  `network.insecureSkipTlsVerify=true` as a production workaround.
 - [ ] If an HTTP proxy is configured for live acceptance, HTTPS GitCode and
   documentation requests must route through native HTTP CONNECT before stdx
   TLS handles the final HTTPS request. Proxy credentials must be redacted in

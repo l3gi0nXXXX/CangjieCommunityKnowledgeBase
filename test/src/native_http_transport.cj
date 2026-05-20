@@ -351,10 +351,16 @@ public func ckbNativeHttpClassifyException(message: String): CkbNativeHttpTransp
     let lowered = safe.toAsciiLower()
     if (lowered.contains("timed out") || lowered.contains("timeout")) {
         diagnostic.transportErrorClass = "timeout"
-    } else if (lowered.contains("could not resolve") || lowered.contains("name lookup") || lowered.contains("dns") || lowered.contains("unknown host")) {
+    } else if (lowered.contains("could not resolve") || lowered.contains("failed to resolve address") || lowered.contains("resolve address") || lowered.contains("name lookup") || lowered.contains("dns") || lowered.contains("unknown host") || lowered.contains("nodename nor servname") || lowered.contains("name or service not known")) {
         diagnostic.transportErrorClass = "dns"
+    } else if (lowered.contains("unknown ca") || lowered.contains("certificate verify failed") || lowered.contains("self signed") || lowered.contains("unable to get local issuer")) {
+        diagnostic.transportErrorClass = "tls_unknown_ca"
+    } else if (lowered.contains("hostname mismatch") || lowered.contains("host name mismatch") || lowered.contains("does not match") || lowered.contains("not valid for")) {
+        diagnostic.transportErrorClass = "tls_hostname_mismatch"
+    } else if (lowered.contains("certificate has expired") || lowered.contains("certificate expired") || lowered.contains("expired certificate") || lowered.contains("not yet valid")) {
+        diagnostic.transportErrorClass = "tls_expired_certificate"
     } else if (lowered.contains("ssl") || lowered.contains("tls") || lowered.contains("certificate")) {
-        diagnostic.transportErrorClass = "tls"
+        diagnostic.transportErrorClass = "tls_handshake_failed"
     } else if (lowered.contains("proxy") || lowered.contains("connect failed")) {
         diagnostic.transportErrorClass = "proxy"
     } else if (lowered.contains("connection refused") || lowered.contains("failed to connect")) {

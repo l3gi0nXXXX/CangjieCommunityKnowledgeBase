@@ -102,6 +102,15 @@ knowledge data. It only performs a native GET for an allowlist URL and reports
 route mode, target host, TLS verify mode, HTTP status, transport class, and a
 redacted diagnostic.
 
+TLS failures are diagnosed by the native transport. DNS failures such as
+`Failed to resolve address` are reported as `dns`; certificate trust failures
+such as `unknown CA` or `certificate verify failed` are reported as
+`tls_unknown_ca`; hostname and expired-certificate failures have separate TLS
+diagnostic classes. If Metis-aligned direct HTTPS still fails after the native
+transport no longer installs a direct socket connector, the next production fix
+is CA trust-store discovery or explicit CA bundle support. Do not promote
+`network.insecureSkipTlsVerify=true` as an operating solution.
+
 ## Service Protocol
 
 CKB can run as a long-lived stdio service:

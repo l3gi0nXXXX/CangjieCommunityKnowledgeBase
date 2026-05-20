@@ -140,6 +140,18 @@ public class CkbNativeHttpTransportTest {
     }
 
     @TestCase
+    public func nativeExceptionClassifierSeparatesDnsAndTlsDiagnostics(): Unit {
+        @Expect(ckbNativeHttpClassifyException("Failed to resolve address example.invalid").transportErrorClass, "dns")
+        @Expect(ckbNativeHttpClassifyException("resolve address api.gitcode.com failed").transportErrorClass, "dns")
+        @Expect(ckbNativeHttpClassifyException("nodename nor servname provided, or not known").transportErrorClass, "dns")
+        @Expect(ckbNativeHttpClassifyException("Name or service not known").transportErrorClass, "dns")
+        @Expect(ckbNativeHttpClassifyException("TLS handshake failed (client): certificate verify failed (134), TLS alert unknown CA(F)").transportErrorClass, "tls_unknown_ca")
+        @Expect(ckbNativeHttpClassifyException("certificate hostname mismatch").transportErrorClass, "tls_hostname_mismatch")
+        @Expect(ckbNativeHttpClassifyException("certificate has expired").transportErrorClass, "tls_expired_certificate")
+        @Expect(ckbNativeHttpClassifyException("TLS handshake failed").transportErrorClass, "tls_handshake_failed")
+    }
+
+    @TestCase
     public func syncLiveWithFakeRunnerKeepsPrivateInternalUnknownReposExcluded(): Unit {
         let kb = newOfflineKnowledgeBase()
         let config = CkbRuntimeConfig()
