@@ -1030,6 +1030,12 @@ vector.activeCollection=prod-active
 vector.candidateCollection=prod-candidate
 network.timeoutMillis=1234
 network.retryCount=3
+network.proxy=http://user:pass@127.0.0.1:7897
+network.envProxyEnabled=true
+network.noProxy=api.gitcode.com,docs.cangjie-lang.cn
+network.insecureSkipTlsVerify=false
+network.allowPrivateNetwork=true
+network.allowedHosts=docs.example.org
 """.toArray())
 
         let config = loadCkbRuntimeConfig(path)
@@ -1043,6 +1049,12 @@ network.retryCount=3
         @Expect(config.gitCodeAccessTokenQuery, false)
         @Expect(config.timeoutMillis, 1234)
         @Expect(config.retryCount, 3)
+        @Expect(config.networkProxy, "http://user:pass@127.0.0.1:7897")
+        @Expect(config.networkEnvProxyEnabled, true)
+        @Expect(config.networkNoProxy, "api.gitcode.com,docs.cangjie-lang.cn")
+        @Expect(config.networkInsecureSkipTlsVerify, false)
+        @Expect(config.networkAllowPrivateNetwork, true)
+        @Expect(config.networkAllowedHosts, "docs.example.org")
         @Expect(config.embeddingProvider, "production-http")
         @Expect(config.embeddingModel, "remote-embedding")
         @Expect(config.embeddingDimensions, 128)
@@ -1054,6 +1066,11 @@ network.retryCount=3
         @Expect(summary.contains("gitcode.token=present"), true)
         @Expect(summary.contains("gitcode.authHeader=authorization"), true)
         @Expect(summary.contains("gitcode.accessTokenQuery=disabled"), true)
+        @Expect(summary.contains("network.proxy=http://[redacted]@127.0.0.1:7897"), true)
+        @Expect(summary.contains("network.envProxy=enabled"), true)
+        @Expect(summary.contains("network.noProxy=api.gitcode.com,docs.cangjie-lang.cn"), true)
+        @Expect(summary.contains("network.insecureSkipTlsVerify=disabled"), true)
+        @Expect(summary.contains("user:pass"), false)
         @Expect(summary.contains("embedding.endpoint=present"), true)
         @Expect(summary.contains("embedding.token=present"), true)
         @Expect(summary.contains("fake-live-token"), false)
@@ -1429,7 +1446,14 @@ network.retryCount=3
 
         @Expect(ckbNativeHttpClassifyException("operation timed out").transportErrorClass, "timeout")
         @Expect(ckbNativeHttpClassifyException("could not resolve host").transportErrorClass, "dns")
-        @Expect(ckbNativeHttpClassifyException("TLS certificate verify failed").transportErrorClass, "tls")
+        @Expect(ckbNativeHttpClassifyException("Failed to resolve address example.invalid").transportErrorClass, "dns")
+        @Expect(ckbNativeHttpClassifyException("nodename nor servname provided, or not known").transportErrorClass, "dns")
+        @Expect(ckbNativeHttpClassifyException("Name or service not known").transportErrorClass, "dns")
+        @Expect(ckbNativeHttpClassifyException("TLS handshake failed (client): certificate verify failed (134), TLS alert unknown CA(F)").transportErrorClass, "tls_unknown_ca")
+        @Expect(ckbNativeHttpClassifyException("TLS certificate verify failed").transportErrorClass, "tls_unknown_ca")
+        @Expect(ckbNativeHttpClassifyException("certificate hostname mismatch").transportErrorClass, "tls_hostname_mismatch")
+        @Expect(ckbNativeHttpClassifyException("certificate has expired").transportErrorClass, "tls_expired_certificate")
+        @Expect(ckbNativeHttpClassifyException("TLS handshake failed").transportErrorClass, "tls_handshake_failed")
         @Expect(ckbNativeHttpClassifyException("proxy CONNECT failed").transportErrorClass, "proxy")
         @Expect(ckbNativeHttpClassifyException("connection refused").transportErrorClass, "connection_refused")
         @Expect(ckbNativeHttpClassifyException("Authorization: Bearer secret-token").transportDiagnostic.contains("secret-token"), false)
