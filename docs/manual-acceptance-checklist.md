@@ -82,6 +82,9 @@ cjpm run --skip-build --run-args "native-http-smoke https://api.gitcode.com/api/
 - [ ] Production live sync uses the Cangjie native HTTP/TLS executor. Dry-run
   output must not contain `curl launch failed`, `curlExitCode=-1`, or any
   other diagnostic that proves the default path still shells out to `curl`.
+- [ ] GitCode source file dry-run requests report `sourceVariant=raw` for the
+  default `/raw/:path?ref=:ref` endpoint; `/contents/:path?ref=:ref` remains
+  the fallback contract, not the default source path.
 - [ ] Native HTTP dry-run is started with the ignored local config file:
 
 ```bash

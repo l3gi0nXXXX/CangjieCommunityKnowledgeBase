@@ -33,6 +33,7 @@ public class SourceFetchRequest {
     public var page: Int64 = 1
     public var perPage: Int64 = 100
     public var purpose: String = ""
+    public var sourceVariant: String = ""
     public var paginationParam: String = "page"
     public var perPageParam: String = "per_page"
     public var timeoutMillis: Int64 = 10000
@@ -50,6 +51,10 @@ public class SourceFetchRequest {
         this.accept = accept
         this.purpose = purpose
     }
+}
+
+public class SourceLimits {
+    public static let MAX_FILE_BYTES: Int64 = 262144
 }
 
 public class SourceFetchResult {
@@ -125,7 +130,13 @@ public class FakeSourceFetchRunner <: SourceFetchRunner {
         result.etag = "fake-etag"
         result.lastModified = "2026-05-19T00:00:00Z"
         result.body = if (this.body == "") { "fake ${request.kind} ${request.repo} ${request.path} func HttpClient Cangjie docs tutorial" } else { this.body }
-        result.contentType = if (request.accept == "text/html") { "text/html" } else { "application/json" }
+        result.contentType = if (request.accept == "text/html") {
+            "text/html"
+        } else if (request.kind == SourceKinds.GITCODE_SOURCE && request.sourceVariant == "raw") {
+            "text/plain"
+        } else {
+            "application/json"
+        }
         result.bytes = result.body.size
         result.bodyHash = stableSummaryHash(result.body)
         result.retryAfterSeconds = this.retryAfterSeconds
@@ -273,6 +284,7 @@ public class CkbRuntimeConfig {
         out += " gitcode.authMode=${this.gitCodeAuthMode}"
         out += " gitcode.authHeader=${normalizedGitCodeAuthHeader(this.gitCodeAuthHeader)}"
         out += " gitcode.accessTokenQuery=${if (this.gitCodeAccessTokenQuery) { "enabled" } else { "disabled" }}"
+        out += " source.maxFileBytes=${SourceLimits.MAX_FILE_BYTES}"
         out += " gitcode.token=${if (this.tokenPresent()) { "present" } else { "absent" }}"
         out += " gitcode.auth=${auth.state}"
         if (auth.diagnostic != "") {
@@ -975,20 +987,36 @@ public class SourceRequestBuilder {
     }
 
     public func gitCodeSource(repo: String, ref: String, path: String): SourceFetchRequest {
+        this.gitCodeSourceRaw(repo, ref, path)
+    }
+
+    public func gitCodeSourceRaw(repo: String, ref: String, path: String): SourceFetchRequest {
+        this.gitCodeSourceVariant(repo, ref, path, "raw")
+    }
+
+    public func gitCodeSourceContents(repo: String, ref: String, path: String): SourceFetchRequest {
+        this.gitCodeSourceVariant(repo, ref, path, "contents")
+    }
+
+    private func gitCodeSourceVariant(repo: String, ref: String, path: String, variant: String): SourceFetchRequest {
         let parts = parseGitCodeRepoPath(repo)
+        let purpose = if (variant == "contents") { "source_contents_snapshot" } else { "source_raw_snapshot" }
         if (!parts.valid) {
-            return invalidSourceFetchRequest(SourceKinds.GITCODE_SOURCE, "source_snapshot", parts.diagnostic)
+            return invalidSourceFetchRequest(SourceKinds.GITCODE_SOURCE, purpose, parts.diagnostic)
         }
         if (!isSafeGitCodeRef(ref)) {
-            return invalidSourceFetchRequest(SourceKinds.GITCODE_SOURCE, "source_snapshot", "invalid_ref")
+            return invalidSourceFetchRequest(SourceKinds.GITCODE_SOURCE, purpose, "invalid_ref")
         }
         let safePath = normalizeGitCodeSourcePath(path)
         if (safePath == "") {
-            return invalidSourceFetchRequest(SourceKinds.GITCODE_SOURCE, "source_snapshot", "invalid_source_path")
+            return invalidSourceFetchRequest(SourceKinds.GITCODE_SOURCE, purpose, "invalid_source_path")
         }
         let normalizedRepo = "${parts.owner}/${parts.repo}"
-        let request = SourceFetchRequest(SourceKinds.GITCODE_SOURCE, "${this.gitCodeApiRoot}/repos/${parts.owner}/${parts.repo}/contents/${safePath}?ref=${ref}", repo: normalizedRepo, ref: ref, path: safePath, accept: "text/plain", purpose: "source_snapshot")
+        let endpoint = if (variant == "contents") { "contents" } else { "raw" }
+        let accept = if (variant == "contents") { "application/json" } else { "text/plain, text/markdown, application/octet-stream" }
+        let request = SourceFetchRequest(SourceKinds.GITCODE_SOURCE, "${this.gitCodeApiRoot}/repos/${parts.owner}/${parts.repo}/${endpoint}/${safePath}?ref=${ref}", repo: normalizedRepo, ref: ref, path: safePath, accept: accept, purpose: purpose)
         request.authHint = "gitcode-token-optional-redacted"
+        request.sourceVariant = variant
         request
     }
 
@@ -1091,7 +1119,7 @@ private func isSafeGitCodePathPart(part: String): Bool {
 
 private func isSafeGitCodeRef(ref: String): Bool {
     let trimmed = ref.trimAscii()
-    if (trimmed == "" || trimmed.contains("%") || trimmed.contains("?") || trimmed.contains("#") || trimmed.contains("&") || trimmed.contains("=") || trimmed.contains("\n") || trimmed.contains("\r") || trimmed.contains("\t")) {
+    if (trimmed == "" || trimmed.contains("..") || trimmed.contains("%") || trimmed.contains("?") || trimmed.contains("#") || trimmed.contains("&") || trimmed.contains("=") || trimmed.contains("\n") || trimmed.contains("\r") || trimmed.contains("\t")) {
         return false
     }
     true
@@ -1245,16 +1273,38 @@ public class SourceResponseNormalizer {
         } else if (result.status == "not_started") {
             result.status = "http_${result.statusCode}"
         }
-        if (result.body.size > 200000) {
+        if (request.kind == SourceKinds.GITCODE_SOURCE && request.sourceVariant == "raw" && result.ok) {
+            if (result.body.size > SourceLimits.MAX_FILE_BYTES) {
+                result.ok = false
+                result.status = "source_too_large"
+                result.truncated = true
+                result.body = ""
+            } else if (!isSupportedRawSourceBody(result.contentType, result.body)) {
+                result.ok = false
+                result.status = "unsupported_binary"
+                result.body = ""
+            }
+        } else if (result.body.size > 200000) {
             result.truncated = true
             result.body = result.body[0..200000]
         }
         result.bytes = result.body.size
-        if (result.bodyHash == "") {
-            result.bodyHash = stableSummaryHash(result.body)
-        }
+        result.bodyHash = stableSummaryHash(result.body)
         result
     }
+}
+
+private func isSupportedRawSourceBody(contentType: String, body: String): Bool {
+    for (ch in body.runes()) {
+        if (UInt32(ch) == 0) {
+            return false
+        }
+    }
+    let normalized = contentType.toAsciiLower().replace(" ", "")
+    if (normalized == "" || normalized.startsWith("text/plain") || normalized.startsWith("text/markdown")) {
+        return true
+    }
+    normalized.startsWith("application/octet-stream") && normalized.contains("charset=utf-8")
 }
 
 public class SourceSyncPlan {
@@ -3064,6 +3114,9 @@ private func renderLiveFetchSummary(request: SourceFetchRequest, fetch: SourceFe
     }
     var out = "request kind=${request.kind} method=${request.method} sourceUrl=${redactSensitive(request.url)} pageParam=${request.paginationParam} perPageParam=${request.perPageParam} timeoutMillis=${request.timeoutMillis} retryCount=${request.retryCount} auth=${auth.state} authHeader=${auth.headerStrategy}"
     out += " -> status=${fetch.status} httpStatus=${fetch.statusCode} shape=${shape} bytes=${fetch.bytes} contentType=${fetch.contentType} bodyHash=${fetch.bodyHash} attempts=${fetch.attempts} errorClass=${classifyFetchError(fetch)}"
+    if (request.kind == SourceKinds.GITCODE_SOURCE && request.sourceVariant != "") {
+        out += " sourceVariant=${request.sourceVariant} sourceMaxFileBytes=${SourceLimits.MAX_FILE_BYTES}"
+    }
     if (auth.diagnostic != "") {
         out += " authDiagnostic=${auth.diagnostic}"
     }

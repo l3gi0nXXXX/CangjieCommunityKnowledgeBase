@@ -91,6 +91,12 @@ production acceptance unless a controlled diagnostic explicitly requires it.
 `SSL_CERT_FILE` for the native TLS child process; on macOS `/etc/ssl/cert.pem`
 matches the CA file reported by `curl -v`. Human-facing doctor and dry-run
 output redacts tokens, cookies, proxy passwords, and local absolute paths.
+GitCode source file fetches use the official source API in priority order:
+raw file (`/repos/:owner/:repo/raw/:path?ref=:ref`) first, then
+contents/base64 (`/repos/:owner/:repo/contents/:path?ref=:ref`) as the
+fallback contract, then degraded reporting. Raw responses are accepted only
+for text/Markdown or UTF-8 octet-stream bodies within the source file byte
+limit reported by dry-run output.
 
 On macOS, native network commands bootstrap their own TLS runtime before the
 request path runs. The bootstrap follows the Metis Gateway launch pattern by

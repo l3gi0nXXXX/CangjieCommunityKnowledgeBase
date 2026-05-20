@@ -189,16 +189,23 @@ public class CkbBaselineTest {
         let repo = builder.gitCodeRepo("cangjie/stdx")
         let cangjieRepo = builder.gitCodeRepo("cangjie/cangjie")
         let source = builder.gitCodeSource("cangjie/stdx", "main", "src/http/client.cj")
+        let sourceContents = builder.gitCodeSourceContents("Cangjie/community", "main", "README.md")
         let cangjieSource = builder.gitCodeSource("cangjie/cangjie", "main", "src/main.cj")
         let issues = builder.gitCodeIssueHistory("cangjie/cangjie")
         let pulls = builder.gitCodePrHistory("cangjie/cangjie")
-        let invalidRepo = builder.gitCodeRepo("cangjie/stdx/extra")
+        let communityReadme = builder.gitCodeSource("Cangjie/community", "main", "README.md")
+        let nestedSource = builder.gitCodeSource("cangjie/stdx", "main", "docs/source_zh_cn/a.md")
+        let invalidRepo = builder.gitCodeSource("bad repo/name", "main", "README.md")
+        let invalidRepoMetadata = builder.gitCodeRepo("cangjie/stdx/extra")
+        let invalidRef = builder.gitCodeSource("cangjie/stdx", "../main", "README.md")
+        let emptyRef = builder.gitCodeSource("cangjie/stdx", "", "README.md")
         let invalidPath = builder.gitCodeSource("cangjie/stdx", "main", "../secret.txt")
         let encodedTraversalPath = builder.gitCodeSource("cangjie/stdx", "main", "src/%2e%2e/secret.txt")
         let docs = builder.docs("https://docs.cangjie-lang.cn/docs/1.0.0/")
         let normalizer = SourceResponseNormalizer()
         let result = SourceFetchResult()
         result.statusCode = 206
+        result.contentType = "text/plain"
         result.body = "partial source"
 
         let normalized = normalizer.normalize(source, result)
@@ -208,9 +215,21 @@ public class CkbBaselineTest {
         @Expect(repo.url, "https://api.gitcode.com/api/v5/repos/cangjie/stdx?ref=main")
         @Expect(cangjieRepo.url, "https://api.gitcode.com/api/v5/repos/cangjie/cangjie?ref=main")
         @Expect(source.method, "GET")
-        @Expect(source.url, "https://api.gitcode.com/api/v5/repos/cangjie/stdx/contents/src/http/client.cj?ref=main")
-        @Expect(cangjieSource.url, "https://api.gitcode.com/api/v5/repos/cangjie/cangjie/contents/src/main.cj?ref=main")
-        @Expect(source.accept, "text/plain")
+        @Expect(source.url, "https://api.gitcode.com/api/v5/repos/cangjie/stdx/raw/src/http/client.cj?ref=main")
+        @Expect(source.purpose, "source_raw_snapshot")
+        @Expect(source.sourceVariant, "raw")
+        @Expect(source.url.contains("/raw/"), true)
+        @Expect(source.url.contains("/contents/"), false)
+        @Expect(sourceContents.url, "https://api.gitcode.com/api/v5/repos/Cangjie/community/contents/README.md?ref=main")
+        @Expect(sourceContents.purpose, "source_contents_snapshot")
+        @Expect(sourceContents.sourceVariant, "contents")
+        @Expect(sourceContents.accept, "application/json")
+        @Expect(communityReadme.url, "https://api.gitcode.com/api/v5/repos/Cangjie/community/raw/README.md?ref=main")
+        @Expect(nestedSource.url, "https://api.gitcode.com/api/v5/repos/cangjie/stdx/raw/docs/source_zh_cn/a.md?ref=main")
+        @Expect(cangjieSource.url, "https://api.gitcode.com/api/v5/repos/cangjie/cangjie/raw/src/main.cj?ref=main")
+        @Expect(source.accept.contains("application/json"), false)
+        @Expect(source.accept.contains("text/plain"), true)
+        @Expect(source.accept.contains("application/octet-stream"), true)
         @Expect(source.authHint.contains("redacted"), true)
         @Expect(issues.url, "https://api.gitcode.com/api/v5/repos/cangjie/cangjie/issues?state=all&page=1&per_page=100")
         @Expect(pulls.url, "https://api.gitcode.com/api/v5/repos/cangjie/cangjie/pulls?state=all&page=1&per_page=100")
@@ -221,6 +240,11 @@ public class CkbBaselineTest {
         @Expect(invalidRepo.diagnostic, "invalid_repo_path")
         @Expect(invalidRepo.url, "")
         @Expect(invalidRepo.repo, "")
+        @Expect(invalidRepoMetadata.status, "invalid_repo_path")
+        @Expect(invalidRef.status, "invalid_ref")
+        @Expect(invalidRef.url, "")
+        @Expect(emptyRef.status, "invalid_ref")
+        @Expect(emptyRef.url, "")
         @Expect(invalidPath.status, "invalid_source_path")
         @Expect(invalidPath.url, "")
         @Expect(invalidPath.path, "")
@@ -231,6 +255,53 @@ public class CkbBaselineTest {
         @Expect(normalized.status, "ok")
         @Expect(normalized.normalizedType, SourceKinds.GITCODE_SOURCE)
         @Expect(normalized.sourceUrl, source.url)
+    }
+
+    @TestCase
+    public func rawSourceNormalizerKeepsTextAndRejectsUnsafeBodies(): Unit {
+        let request = SourceRequestBuilder().gitCodeSource("Cangjie/community", "main", "README.md")
+        let normalizer = SourceResponseNormalizer()
+
+        let text = SourceFetchResult()
+        text.statusCode = 200
+        text.contentType = "text/markdown"
+        text.body = "# README"
+        let normalizedText = normalizer.normalize(request, text)
+        @Expect(normalizedText.ok, true)
+        @Expect(normalizedText.status, "ok")
+        @Expect(normalizedText.normalizedType, SourceKinds.GITCODE_SOURCE)
+        @Expect(normalizedText.body, "# README")
+        @Expect(normalizedText.bytes, "# README".size)
+        @Expect(normalizedText.bodyHash, stableSummaryHash("# README"))
+
+        let octet = SourceFetchResult()
+        octet.statusCode = 200
+        octet.contentType = "application/octet-stream;charset=UTF-8"
+        octet.body = "中文 body"
+        let normalizedOctet = normalizer.normalize(request, octet)
+        @Expect(normalizedOctet.ok, true)
+        @Expect(normalizedOctet.body, "中文 body")
+        @Expect(normalizedOctet.bytes, "中文 body".size)
+        @Expect(normalizedOctet.bodyHash, stableSummaryHash("中文 body"))
+
+        let image = SourceFetchResult()
+        image.statusCode = 200
+        image.contentType = "image/png"
+        image.body = "PNG data"
+        let normalizedImage = normalizer.normalize(request, image)
+        @Expect(normalizedImage.ok, false)
+        @Expect(normalizedImage.status, "unsupported_binary")
+        @Expect(normalizedImage.body, "")
+
+        let tooLarge = SourceFetchResult()
+        tooLarge.statusCode = 200
+        tooLarge.contentType = "text/plain"
+        tooLarge.body = repeatText("a", SourceLimits.MAX_FILE_BYTES + 1)
+        let normalizedLarge = normalizer.normalize(request, tooLarge)
+        @Expect(normalizedLarge.ok, false)
+        @Expect(normalizedLarge.status, "source_too_large")
+        @Expect(normalizedLarge.truncated, true)
+        @Expect(normalizedLarge.body, "")
     }
 
     @TestCase
@@ -1161,6 +1232,9 @@ network.allowedHosts=docs.example.org
         @Expect(text.contains("shape=history-list"), true)
         @Expect(text.contains("shape=source-tree"), true)
         @Expect(text.contains("shape=source-snapshot"), true)
+        @Expect(text.contains("sourceVariant=raw"), true)
+        @Expect(text.contains("source.maxFileBytes=${SourceLimits.MAX_FILE_BYTES}"), true)
+        @Expect(text.contains("sourceMaxFileBytes=${SourceLimits.MAX_FILE_BYTES}"), true)
         @Expect(text.contains("auth=token"), true)
         @Expect(text.contains("authHeader=private-token"), true)
         @Expect(text.contains("gitcode.accessTokenQuery=disabled"), true)
@@ -1699,7 +1773,13 @@ class ScriptedSourceFetchRunner <: SourceFetchRunner {
         result.ref = request.ref
         result.path = request.path
         result.repoVisibility = request.repoVisibility
-        result.contentType = if (request.accept == "text/html") { "text/html" } else { "application/json" }
+        result.contentType = if (request.accept == "text/html") {
+            "text/html"
+        } else if (request.kind == SourceKinds.GITCODE_SOURCE && request.sourceVariant == "raw") {
+            "text/plain"
+        } else {
+            "application/json"
+        }
         result.body = this.bodyFor(request)
         result.bytes = result.body.size
         result.bodyHash = stableSummaryHash(result.body)
@@ -1781,4 +1861,12 @@ private func intervalFor(scheduler: Scheduler, name: String): Int64 {
         }
     }
     -1
+}
+
+private func repeatText(value: String, count: Int64): String {
+    let out = StringBuilder()
+    for (_ in 0..count) {
+        out.append(value)
+    }
+    out.toString()
 }
