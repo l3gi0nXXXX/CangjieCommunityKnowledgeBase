@@ -260,7 +260,7 @@ public class CkbBaselineTest {
 
     @TestCase
     public func gitCodeOrgRepoListParserBuildsPathsFromNamespaceAndPath(): Unit {
-        let body = "[{\"id\":101,\"full_name\":\"Display Name With Spaces\",\"name\":\"stdx-display\",\"path\":\"stdx\",\"description\":\"仓颉 HTTP 客户端\",\"default_branch\":\"main\",\"visibility\":\"public\",\"web_url\":\"https://gitcode.com/cangjie/stdx\",\"namespace\":{\"path\":\"cangjie\"}},{\"id\":\"102\",\"full_name\":\"bad owner/bad repo\",\"name\":\"private-display\",\"path\":\"private-repo\",\"default_branch\":\"dev\",\"private\":true,\"visibility\":\"public\",\"web_url\":\"https://gitcode.com/cangjie/private-repo\",\"namespace\":{\"path\":\"cangjie\"}},{\"id\":103,\"name\":\"internal-repo\",\"defaultBranch\":\"trunk\",\"internal\":true,\"namespace\":{\"path\":\"cangjie-sig\"}},{\"id\":104,\"path\":\"mystery\",\"visibility\":\"friends\",\"namespace\":{\"path\":\"cangjie\"}},{\"id\":105,\"path\":\"broken\",\"visibility\":\"public\",\"namespace\":{\"path\":\"bad owner\"}}]"
+        let body = "[{\"id\":101,\"full_name\":\"Display Name With Spaces\",\"name\":\"stdx-display\",\"path\":\"stdx\",\"description\":\"仓颉 HTTP 客户端\",\"default_branch\":\"main\",\"visibility\":\"public\",\"web_url\":\"https://gitcode.com/cangjie/stdx\",\"namespace\":{\"name\":\"仓颉组织\",\"path\":\"cangjie\"}},{\"id\":\"102\",\"full_name\":\"bad owner/bad repo\",\"name\":\"private-display\",\"path\":\"private-repo\",\"default_branch\":\"dev\",\"private\":true,\"visibility\":\"public\",\"web_url\":\"https://gitcode.com/cangjie/private-repo\",\"namespace\":{\"path\":\"cangjie\"}},{\"id\":103,\"name\":\"internal-repo\",\"defaultBranch\":\"trunk\",\"internal\":true,\"namespace\":{\"path\":\"cangjie-sig\"}},{\"id\":104,\"path\":\"mystery\",\"visibility\":\"friends\",\"namespace\":{\"path\":\"cangjie\"}},{\"id\":105,\"path\":\"broken\",\"visibility\":\"public\",\"namespace\":{\"path\":\"bad owner\"}}]"
 
         let repos = parseGitCodeOrgReposJson(body)
 
@@ -287,6 +287,22 @@ public class CkbBaselineTest {
         @Expect(repos[3].visibility, RepoVisibility.UNKNOWN)
         @Expect(repos[3].public, false)
         @Expect(isRepoAllowedForKnowledge(repos[3]), false)
+    }
+
+    @TestCase
+    public func gitCodeOrgRepoListParserSurvivesUtf8FieldsBeforeAndAfterTargetKeys(): Unit {
+        let body = "[{\"display_name\":\"仓颉开源社区 {说明}\",\"id\":301,\"path\":\"repo-one\",\"namespace\":{\"display_name\":\"仓颉组织\",\"path\":\"cangjie\"},\"default_branch\":\"main\",\"visibility\":\"public\",\"description\":\"支持中文说明和括号 [] {}\"},{\"display_name\":\"私有仓库\",\"id\":302,\"path\":\"private-one\",\"namespace\":{\"path\":\"cangjie\"},\"private\":true,\"description\":\"这个字段不应影响 private 判定\"}]"
+
+        let repos = parseGitCodeOrgReposJson(body)
+
+        @Expect(repos.size, 2)
+        @Expect(repos[0].fullName, "cangjie/repo-one")
+        @Expect(repos[0].defaultBranch, "main")
+        @Expect(repos[0].visibility, RepoVisibility.PUBLIC)
+        @Expect(isRepoAllowedForKnowledge(repos[0]), true)
+        @Expect(repos[1].fullName, "cangjie/private-one")
+        @Expect(repos[1].visibility, RepoVisibility.PRIVATE)
+        @Expect(isRepoAllowedForKnowledge(repos[1]), false)
     }
 
     @TestCase
@@ -381,6 +397,18 @@ public class CkbBaselineTest {
         @Expect(selected[0], "src/main.cj")
         @Expect(selected[1], "README.md")
         @Expect(selected[2], "docs/guide.md")
+    }
+
+    @TestCase
+    public func sourceCandidateSelectorSurvivesUtf8TreeMetadata(): Unit {
+        let body = "{\"tree\":[{\"type\":\"blob\",\"display_name\":\"仓颉主入口 {源码}\",\"path\":\"src/main.cj\"},{\"type\":\"blob\",\"path\":\"docs/guide.md\",\"description\":\"中文文档 [] {}\"},{\"type\":\"tree\",\"path\":\"src\",\"name\":\"源码目录\"},{\"type\":\"blob\",\"path\":\"README.md\",\"name\":\"项目说明\"}]}"
+
+        let selected = SourceCandidateSelector().selectFromTree(body, maxFiles: 3)
+
+        @Expect(selected.size, 3)
+        @Expect(selected[0], "src/main.cj")
+        @Expect(selected[1], "docs/guide.md")
+        @Expect(selected[2], "README.md")
     }
 
     @TestCase
@@ -1146,6 +1174,34 @@ network.allowedHosts=docs.example.org
     }
 
     @TestCase
+    public func syncLiveDryRunSurvivesUtf8GitCodeDiscoveryAndTreePayloads(): Unit {
+        let kb = newOfflineKnowledgeBase()
+        let config = CkbRuntimeConfig()
+        config.networkEnabled = true
+        config.websiteEnabled = true
+        config.docsEnabled = true
+        config.gitCodeAuthMode = "token"
+        config.gitCodeTokenRef = "fake-live-token"
+        let options = LiveSyncOptions()
+        options.dryRun = true
+        options.maxRepos = 1
+        options.maxFilesPerRepo = 2
+        options.maxItems = 12
+        let store = FileKnowledgeStore("target/ckb-live-utf8-dry-run-store")
+
+        let text = ckbSyncLive(kb, config, options, runner: ScriptedSourceFetchRunner(), store: store)
+
+        @Expect(text.contains("repoIncluded cangjie/repo-one visibility=public defaultBranch=dev"), true)
+        @Expect(text.contains("repoFetch kind=gitcode_tree repo=cangjie/repo-one visibility=public"), true)
+        @Expect(text.contains("repoFetch kind=gitcode_source repo=cangjie/repo-one visibility=public"), true)
+        @Expect(text.contains("repoExcluded cangjie/private-one visibility=private"), true)
+        @Expect(text.contains("summary"), true)
+        @Expect(text.contains("rawWritten=false"), true)
+        @Expect(text.contains("fake-live-token"), false)
+        @Expect(store.has("raw/records.ckb"), false)
+    }
+
+    @TestCase
     public func syncLiveApplyPersistsOnlyPublicRepoVisibility(): Unit {
         let kb = newOfflineKnowledgeBase()
         let config = CkbRuntimeConfig()
@@ -1654,12 +1710,12 @@ class ScriptedSourceFetchRunner <: SourceFetchRunner {
     private func bodyFor(request: SourceFetchRequest): String {
         if (request.kind == SourceKinds.GITCODE_ORG) {
             if (request.repo == "cangjie") {
-                return "[{\"id\":1,\"path\":\"repo-one\",\"default_branch\":\"dev\",\"public\":true,\"namespace\":{\"path\":\"cangjie\"},\"web_url\":\"https://gitcode.com/cangjie/repo-one\",\"access_token\":\"fake-live-token\"},{\"id\":2,\"path\":\"private-one\",\"default_branch\":\"main\",\"private\":true,\"namespace\":{\"path\":\"cangjie\"}},{\"id\":3,\"path\":\"internal-one\",\"default_branch\":\"main\",\"internal\":true,\"namespace\":{\"path\":\"cangjie\"}},{\"id\":4,\"path\":\"unknown-one\",\"default_branch\":\"main\",\"namespace\":{\"path\":\"cangjie\"}}]"
+                return "[{\"id\":1,\"display_name\":\"仓颉公开仓库\",\"path\":\"repo-one\",\"description\":\"中文说明 {真实响应}\",\"default_branch\":\"dev\",\"public\":true,\"namespace\":{\"display_name\":\"仓颉组织\",\"path\":\"cangjie\"},\"web_url\":\"https://gitcode.com/cangjie/repo-one\",\"access_token\":\"fake-live-token\"},{\"id\":2,\"display_name\":\"仓颉私有仓库\",\"path\":\"private-one\",\"default_branch\":\"main\",\"private\":true,\"namespace\":{\"path\":\"cangjie\"}},{\"id\":3,\"path\":\"internal-one\",\"default_branch\":\"main\",\"internal\":true,\"namespace\":{\"path\":\"cangjie\"}},{\"id\":4,\"path\":\"unknown-one\",\"default_branch\":\"main\",\"namespace\":{\"path\":\"cangjie\"}}]"
             }
             return "[]"
         }
         if (request.kind == SourceKinds.GITCODE_TREE) {
-            return "{\"tree\":[{\"type\":\"blob\",\"path\":\"src/main.cj\"},{\"type\":\"blob\",\"path\":\"README.md\"},{\"type\":\"blob\",\"path\":\"target/generated.cj\"}]}"
+            return "{\"tree\":[{\"type\":\"blob\",\"path\":\"src/main.cj\",\"name\":\"仓颉主入口\"},{\"type\":\"blob\",\"path\":\"README.md\",\"description\":\"中文 README [] {}\"},{\"type\":\"blob\",\"path\":\"target/generated.cj\"}]}"
         }
         if (request.kind == SourceKinds.GITCODE_SOURCE) {
             return "public func repoOneMain(): Unit { println(\"repo one\") }"
