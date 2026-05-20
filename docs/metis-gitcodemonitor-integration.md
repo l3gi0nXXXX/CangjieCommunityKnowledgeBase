@@ -18,7 +18,7 @@ contract source for current builds.
 | status | `status` | `GET /status`, `cangjie.status` | Metis, operators | none | storage counts, index manifest, scheduler state, `activeKnowledgeVersion`, restore diagnostic |
 | query | `query <text>` | `POST /query`, `cangjie.query` | Metis | `q`, `budget`, optional source filters, `includeCandidates=false` by default | ranked evidence rows, citations, `knowledgeVersion`, truncation/degraded flags |
 | evidence | `evidence <text>` | `POST /evidence`, `cangjie.evidence` | Metis | `q`, `budget`, `includeCandidates=true` only for reviewed workflows | evidence pack, graph context, citations, `activeKnowledgeVersion` |
-| source analysis | `source_analysis repo=<owner/repo> ref=<ref> path=<path> query=<text>` | `POST /source-analysis`, `cangjie.source_analysis` | Metis, operators | `repo`, `ref`, `query`, optional `issueUrl`, `prUrl`, `changedFiles`, `candidatePaths`, `allowCloneFallback`, `maxFiles`, `maxBytes`, `timeoutMillis` | `analysisId`, `triggerReasons`, `sourceAcquisition`, `filesRead`, `citations`, `degraded`, `cleanupStatus` |
+| source analysis | `source_analysis repo=<owner/repo> ref=<ref> path=<path> query=<text> allowCloneFallback=<bool>` | `POST /source-analysis`, `cangjie.source_analysis` | Metis, operators | `repo`, `ref`, `query`, optional `issueUrl`, `prUrl`, `changedFiles`, `candidatePaths`, `allowCloneFallback`, `maxFiles`, `maxBytes`, `timeoutMillis`; clone fallback additionally requires `sourceAnalysis.enabled=true` and public repo visibility | API-first analysis result or clone analysis pack with trigger reasons, acquisition path, files, citations, body hashes, truncation, degraded flags, and cleanup status |
 | sync | `sync-live --dry-run` or `sync-live --apply` | `POST /sync`, `cangjie.sync` | operators, scheduled CKB runtime | `dryRun`, `apply`, `maxRepos`, `maxFilesPerRepo`, `maxItems`, `since` | source status summary, candidate version, active version, redacted errors |
 | rebuild | `rebuild-index` | `POST /rebuild-index`, `cangjie.rebuild` | operators, CKB runtime | store path or default store | candidate version, promoted active version, record count |
 
@@ -38,9 +38,16 @@ On-demand source analysis is separate from routine `sync-live`. It is triggered
 only by explicit source-analysis requests or classifier signals such as compile
 errors, runtime bugs, stack traces, mentioned file paths or symbols, PR diffs,
 insufficient source evidence, or fresh-source requirements. SRC-0/SRC-1/SRC-2
-use API raw reads first and contents reads as fallback. Clone fallback is only a
-reported plan/degraded status in this phase; CKB must not create a clone
-workspace for normal sync or for API-only source analysis.
+use API raw reads first and contents reads as fallback. Clone fallback is
+disabled by default with `sourceAnalysis.enabled=false`; when explicitly enabled
+for source-level questions, CKB creates an isolated temporary clone under
+`sourceAnalysis.workspaceRoot` or `${TMPDIR:-/tmp}/ckb-source-analysis`, allows
+only public GitCode clone hosts, uses shallow `git clone --depth <cloneDepth>`,
+reads only selected text/source files, and cleans the run directory after
+success and by default after failure. CKB must not create a clone workspace for
+normal sync. Returned packs contain repository-relative paths only; absolute
+checkout paths are redacted and must not be forwarded to Metis prompts or
+GitCodeMonitor logs.
 
 ## Redaction and Error Contract
 
@@ -60,6 +67,8 @@ Service bridges should normalize failures to these codes:
 | `ckb.source_unavailable` | upstream source failed, missing, or timed out | yes with backoff |
 | `ckb.rebuild_failed` | candidate index build failed | no active promotion |
 | `ckb.validation_failed` | candidate content failed validation | no active promotion |
+| `ckb.invalid_workspace_root` | source-analysis workspace root is empty, relative, project root, or path-escaping | fix config |
+| `ckb.invalid_clone_host` | source-analysis clone URL host is outside the GitCode public allowlist | no |
 
 ## GitCodeMonitor Boundary
 
@@ -71,8 +80,11 @@ acceptance window.
 GitCodeMonitor should go through Metis when the workflow includes user-facing
 answer generation, issue or PR reply drafting, comment writing, routing policy,
 or session context. In that path GitCodeMonitor sends the event to Metis, Metis
-queries CKB for evidence, and Metis owns the final response. CKB never scans
-GitCode monitor cursors and never writes GitCode comments.
+first queries CKB for `cangjie.evidence_pack`; only when evidence is insufficient
+or the issue explicitly needs source-level context should Metis call
+`cangjie.source_analysis`. CKB returns a structured analysis pack, Metis owns the
+final response, and GitCodeMonitor owns the final GitCode writeback. CKB never
+scans GitCode monitor cursors and never writes GitCode comments.
 
 ## Three-Project Startup
 

@@ -2,6 +2,7 @@ package cangjie_community_knowledge_base_test
 
 import std.collection.ArrayList
 import std.convert.Parsable
+import std.env.getVariable
 import std.fs.{Directory, File, Path, exists}
 import std.io.*
 import std.process.*
@@ -118,6 +119,7 @@ public class SourceAnalysisAcquisition {
 public class SourceAnalysisRequest {
     public var repo: String = ""
     public var ref: String = "main"
+    public var commit: String = ""
     public var query: String = ""
     public var issueUrl: String = ""
     public var prUrl: String = ""
@@ -128,6 +130,10 @@ public class SourceAnalysisRequest {
     public var maxBytes: Int64 = 200000
     public var timeoutMillis: Int64 = 10000
     public var repoVisibility: String = RepoVisibility.PUBLIC
+    public var visibility: String = RepoVisibility.PUBLIC
+    public var cloneUrl: String = ""
+    public var selector: String = ""
+    public var retainFailedWorkspace: Bool = false
 
     public init() {}
 }
@@ -151,6 +157,8 @@ public class SourceAnalysisFile {
     public var excerpt: String = ""
     public var bytes: Int64 = 0
     public var acquisition: String = ""
+    public var citation: String = ""
+    public var truncated: Bool = false
 
     public init() {}
 }
@@ -266,6 +274,14 @@ public class CkbRuntimeConfig {
     public var networkCaFile: String = ""
     public var networkAllowPrivateNetwork: Bool = false
     public var networkAllowedHosts: String = ""
+    public var sourceAnalysisEnabled: Bool = false
+    public var sourceAnalysisWorkspaceRoot: String = ""
+    public var sourceAnalysisRetainFailedWorkspace: Bool = false
+    public var sourceAnalysisCloneDepth: Int64 = 1
+    public var sourceAnalysisTimeoutMillis: Int64 = 30000
+    public var sourceAnalysisMaxFiles: Int64 = 8
+    public var sourceAnalysisMaxFileBytes: Int64 = 65536
+    public var sourceAnalysisCloneHostAllowlist: String = "gitcode.com"
 
     public init() {}
 
@@ -385,6 +401,10 @@ public class CkbRuntimeConfig {
         out += " network.caFile=${if (this.networkCaFile == "") { "absent" } else { "present" }}"
         out += " network.timeoutMillis=${this.timeoutMillis}"
         out += " network.retryCount=${this.retryCount}"
+        out += " sourceAnalysis.enabled=${if (this.sourceAnalysisEnabled) { "true" } else { "false" }}"
+        out += " sourceAnalysis.workspaceRoot=${if (this.sourceAnalysisWorkspaceRoot == "") { sourceAnalysisDefaultWorkspaceRoot() } else { redactSensitive(this.sourceAnalysisWorkspaceRoot) }}"
+        out += " sourceAnalysis.cloneDepth=${this.sourceAnalysisCloneDepth}"
+        out += " sourceAnalysis.maxFiles=${this.sourceAnalysisMaxFiles}"
         out += " website=${if (this.websiteEnabled) { "enabled" } else { "disabled" }}"
         out += " docs=${if (this.docsEnabled) { "enabled" } else { "disabled" }}"
         out += " index.backend=${this.indexBackend}"
@@ -1107,24 +1127,6 @@ public class SourceRequestBuilder {
         request
     }
 
-    public func gitCodeSourceRaw(repo: String, ref: String, path: String): SourceFetchRequest {
-        let parts = parseGitCodeRepoPath(repo)
-        if (!parts.valid) {
-            return invalidSourceFetchRequest(SourceKinds.GITCODE_SOURCE, "source_raw", parts.diagnostic)
-        }
-        if (!isSafeGitCodeRef(ref)) {
-            return invalidSourceFetchRequest(SourceKinds.GITCODE_SOURCE, "source_raw", "invalid_ref")
-        }
-        let safePath = normalizeGitCodeSourcePath(path)
-        if (safePath == "") {
-            return invalidSourceFetchRequest(SourceKinds.GITCODE_SOURCE, "source_raw", "invalid_source_path")
-        }
-        let normalizedRepo = "${parts.owner}/${parts.repo}"
-        let request = SourceFetchRequest(SourceKinds.GITCODE_SOURCE, "https://gitcode.com/${parts.owner}/${parts.repo}/-/raw/${ref}/${safePath}", repo: normalizedRepo, ref: ref, path: safePath, accept: "text/plain", purpose: "source_raw")
-        request.authHint = "gitcode-token-optional-redacted"
-        request
-    }
-
     public func gitCodeTree(repo: String, ref: String): SourceFetchRequest {
         let parts = parseGitCodeRepoPath(repo)
         if (!parts.valid) {
@@ -1428,6 +1430,422 @@ private func isSupportedRawSourceBody(contentType: String, body: String): Bool {
         return true
     }
     normalized.startsWith("application/octet-stream") && normalized.contains("charset=utf-8")
+}
+
+public class SourceAnalysisPack {
+    public var ok: Bool = false
+    public var status: String = "not_started"
+    public var diagnostic: String = ""
+    public var repo: String = ""
+    public var ref: String = ""
+    public var commit: String = ""
+    public var runId: String = ""
+    public var cleanupStatus: String = "not_started"
+    public var workspaceStatus: String = "redacted"
+    public var selectedFiles: ArrayList<SourceAnalysisFile> = ArrayList<SourceAnalysisFile>()
+    public var citations: ArrayList<String> = ArrayList<String>()
+    public var degraded: ArrayList<String> = ArrayList<String>()
+    public var truncated: Bool = false
+
+    public init() {}
+}
+
+public class SourceCloneWorkspace {
+    public var ok: Bool = false
+    public var status: String = "not_started"
+    public var diagnostic: String = ""
+    public var root: String = ""
+    public var runId: String = ""
+    public var runDir: Path = Path("")
+    public var checkoutPath: Path = Path("")
+    public var checkoutDisplay: String = "redacted"
+    public var cleanupStatus: String = "not_started"
+
+    public init() {}
+}
+
+public class CloneExecutionRequest {
+    public var repo: String = ""
+    public var ref: String = "main"
+    public var cloneUrl: String = ""
+    public var checkoutPath: String = ""
+    public var depth: Int64 = 1
+    public var timeoutMillis: Int64 = 30000
+
+    public init() {}
+}
+
+public class CloneExecutionResult {
+    public var ok: Bool = false
+    public var status: String = "not_started"
+    public var diagnostic: String = ""
+    public var commandSummary: String = ""
+
+    public init() {}
+}
+
+public interface SourceCloneExecutor {
+    func clone(request: CloneExecutionRequest): CloneExecutionResult
+}
+
+private var sourceAnalysisRunCounter: Int64 = 0
+
+public class GitSourceCloneExecutor <: SourceCloneExecutor {
+    public init() {}
+
+    public func clone(request: CloneExecutionRequest): CloneExecutionResult {
+        let result = CloneExecutionResult()
+        result.commandSummary = "git clone --depth ${request.depth} --branch ${request.ref} [clone-url-redacted] [checkout-path-redacted]"
+        try {
+            let seconds = if (request.timeoutMillis <= 0) { 30 } else { (request.timeoutMillis + 999) / 1000 }
+            let script = "git clone --depth " + ckbLocalShellQuote("${request.depth}") +
+                " --branch " + ckbLocalShellQuote(request.ref) +
+                " " + ckbLocalShellQuote(request.cloneUrl) +
+                " " + ckbLocalShellQuote(request.checkoutPath) +
+                " & pid=$!; " +
+                "( sleep " + ckbLocalShellQuote("${seconds}") + "; if kill -0 $pid 2>/dev/null; then echo CKB_CLONE_TIMEOUT >&2; kill -TERM $pid 2>/dev/null; fi ) & timer=$!; " +
+                "wait $pid; code=$?; kill $timer 2>/dev/null; exit $code"
+            let process = launch("/bin/zsh", ["-lc", script], stdOut: ProcessRedirect.Pipe, stdErr: ProcessRedirect.Pipe)
+            let err = StringReader<InputStream>(process.stdErrPipe).readToEnd()
+            let code = process.wait()
+            if (code == 0) {
+                result.ok = true
+                result.status = "ok"
+                return result
+            }
+            let lowered = err.toAsciiLower()
+            result.status = if (lowered.contains("authentication") || lowered.contains("permission denied")) {
+                "clone_auth_failed"
+            } else if (lowered.contains("ckb_clone_timeout") || lowered.contains("timeout") || lowered.contains("timed out")) {
+                "clone_timeout"
+            } else if (lowered.contains("command not found") || lowered.contains("no such file or directory")) {
+                "git_unavailable"
+            } else if (lowered.contains("not found") || lowered.contains("repository not found")) {
+                "clone_not_found"
+            } else {
+                "clone_failed"
+            }
+            result.diagnostic = sanitizedTransportDiagnostic(err)
+        } catch (_: Exception) {
+            result.status = "git_unavailable"
+            result.diagnostic = "git launch failed"
+        }
+        result
+    }
+}
+
+private func ckbLocalShellQuote(value: String): String {
+    "'" + value.replace("'", "'\\''") + "'"
+}
+
+public class SourceCloneWorkspaceManager {
+    private let config: CkbRuntimeConfig
+
+    public init(config: CkbRuntimeConfig) {
+        this.config = config
+    }
+
+    public func prepare(repo: String): SourceCloneWorkspace {
+        let ws = SourceCloneWorkspace()
+        let root = effectiveSourceAnalysisWorkspaceRoot(this.config)
+        ws.root = root
+        let invalid = validateSourceAnalysisWorkspaceRoot(root)
+        if (invalid != "") {
+            ws.status = invalid
+            ws.diagnostic = invalid
+            return ws
+        }
+        let parts = parseGitCodeRepoPath(repo)
+        if (!parts.valid) {
+            ws.status = parts.diagnostic
+            ws.diagnostic = parts.diagnostic
+            return ws
+        }
+        sourceAnalysisRunCounter += 1
+        ws.runId = "run-${sourceAnalysisRunCounter}-${stableSummaryHash(repo)}"
+        ws.runDir = Path(root).join(ws.runId)
+        ws.checkoutPath = ws.runDir.join(safeSourceAnalysisRepoDir(parts.owner, parts.repo))
+        ws.checkoutDisplay = "[workspace-redacted]/${ws.runId}/${safeSourceAnalysisRepoDir(parts.owner, parts.repo)}"
+        try {
+            Directory.create(ws.checkoutPath.parent, recursive: true)
+            let _ = launch("chmod", ["700", ws.runDir.toString()]).wait()
+            ws.ok = true
+            ws.status = "ready"
+        } catch (_: Exception) {
+            ws.status = "workspace_create_failed"
+            ws.diagnostic = "workspace_create_failed"
+        }
+        ws
+    }
+
+    public func cleanup(workspace: SourceCloneWorkspace, retain: Bool): String {
+        if (workspace.runId == "" || workspace.runDir.toString() == "") {
+            workspace.cleanupStatus = "not_created"
+            return workspace.cleanupStatus
+        }
+        if (retain) {
+            workspace.cleanupStatus = "retained_by_config"
+            return workspace.cleanupStatus
+        }
+        try {
+            let code = launch("rm", ["-rf", workspace.runDir.toString()]).wait()
+            workspace.cleanupStatus = if (code == 0 || !exists(workspace.runDir)) { "cleaned" } else { "cleanup_failed" }
+        } catch (_: Exception) {
+            workspace.cleanupStatus = "cleanup_failed"
+        }
+        workspace.cleanupStatus
+    }
+}
+
+public func sourceAnalysisDefaultWorkspaceRoot(): String {
+    let tmp = if (let Some(value) <- getVariable("TMPDIR")) {
+        if (value.trimAscii() == "") { "/tmp" } else { value.trimAscii() }
+    } else {
+        "/tmp"
+    }
+    trimTrailingSlash(tmp) + "/ckb-source-analysis"
+}
+
+public func effectiveSourceAnalysisWorkspaceRoot(config: CkbRuntimeConfig): String {
+    if (config.sourceAnalysisWorkspaceRoot.trimAscii() == "") {
+        return sourceAnalysisDefaultWorkspaceRoot()
+    }
+    config.sourceAnalysisWorkspaceRoot.trimAscii()
+}
+
+public func validateSourceAnalysisWorkspaceRoot(root: String): String {
+    let cleaned = trimTrailingSlash(root.trimAscii())
+    if (cleaned == "" || !cleaned.startsWith("/") || cleaned.contains("/../") || cleaned.endsWith("/..") || cleaned.contains("/./") || cleaned.endsWith("/.")) {
+        return "invalid_workspace_root"
+    }
+    let projectRoot = trimTrailingSlash(if (let Some(value) <- getVariable("PWD")) { value } else { "" })
+    if (projectRoot != "" && cleaned == projectRoot) {
+        return "invalid_workspace_root"
+    }
+    ""
+}
+
+public func safeSourceAnalysisRepoDir(owner: String, repo: String): String {
+    safeSourceAnalysisPathPart(owner) + "__" + safeSourceAnalysisPathPart(repo)
+}
+
+private func safeSourceAnalysisPathPart(raw: String): String {
+    let out = StringBuilder()
+    for (ch in raw.toRuneArray()) {
+        let code = UInt32(ch)
+        if ((code >= UInt32(r'a') && code <= UInt32(r'z')) || (code >= UInt32(r'A') && code <= UInt32(r'Z')) || (code >= UInt32(r'0') && code <= UInt32(r'9')) || ch == r'-' || ch == r'_') {
+            out.append(ch)
+        } else {
+            out.append(r'_')
+        }
+    }
+    let text = out.toString()
+    if (text == "" || text == "." || text == "..") {
+        return "repo"
+    }
+    text
+}
+
+public func cangjie_source_analysis(config: CkbRuntimeConfig, request: SourceAnalysisRequest, executor!: SourceCloneExecutor = GitSourceCloneExecutor()): SourceAnalysisPack {
+    let pack = SourceAnalysisPack()
+    pack.repo = request.repo
+    pack.ref = if (request.ref == "") { "main" } else { request.ref }
+    pack.commit = request.commit
+    if (!config.sourceAnalysisEnabled) {
+        pack.status = "source_analysis_disabled"
+        pack.diagnostic = "source_analysis_disabled"
+        return pack
+    }
+    if (request.visibility != RepoVisibility.PUBLIC) {
+        pack.status = "non_public_repo_blocked"
+        pack.diagnostic = "${request.visibility}_repo_excluded"
+        return pack
+    }
+    let parts = parseGitCodeRepoPath(request.repo)
+    if (!parts.valid) {
+        pack.status = parts.diagnostic
+        pack.diagnostic = parts.diagnostic
+        return pack
+    }
+    let cloneUrl = sourceAnalysisCloneUrl(request)
+    if (!sourceAnalysisCloneHostAllowed(cloneUrl, config.sourceAnalysisCloneHostAllowlist)) {
+        pack.status = "invalid_clone_host"
+        pack.diagnostic = "invalid_clone_host"
+        return pack
+    }
+    let manager = SourceCloneWorkspaceManager(config)
+    let workspace = manager.prepare(request.repo)
+    pack.runId = workspace.runId
+    pack.workspaceStatus = workspace.checkoutDisplay
+    if (!workspace.ok) {
+        pack.status = workspace.status
+        pack.diagnostic = workspace.diagnostic
+        pack.cleanupStatus = workspace.cleanupStatus
+        return pack
+    }
+    let cloneRequest = CloneExecutionRequest()
+    cloneRequest.repo = request.repo
+    cloneRequest.ref = pack.ref
+    cloneRequest.cloneUrl = cloneUrl
+    cloneRequest.checkoutPath = workspace.checkoutPath.toString()
+    cloneRequest.depth = if (config.sourceAnalysisCloneDepth <= 0) { 1 } else { config.sourceAnalysisCloneDepth }
+    cloneRequest.timeoutMillis = config.sourceAnalysisTimeoutMillis
+    let cloneResult = executor.clone(cloneRequest)
+    if (!cloneResult.ok) {
+        pack.status = cloneResult.status
+        pack.diagnostic = cloneResult.diagnostic
+        pack.cleanupStatus = manager.cleanup(workspace, request.retainFailedWorkspace || config.sourceAnalysisRetainFailedWorkspace)
+        return pack
+    }
+    buildSourceAnalysisPackFromCheckout(pack, request, workspace.checkoutPath, config)
+    pack.cleanupStatus = manager.cleanup(workspace, false)
+    pack.ok = pack.status == "ok"
+    pack
+}
+
+private func sourceAnalysisCloneUrl(request: SourceAnalysisRequest): String {
+    if (request.cloneUrl.trimAscii() != "") {
+        return request.cloneUrl.trimAscii()
+    }
+    let parts = parseGitCodeRepoPath(request.repo)
+    if (!parts.valid) {
+        return ""
+    }
+    "https://gitcode.com/${parts.owner}/${parts.repo}.git"
+}
+
+public func sourceAnalysisCloneHostAllowed(url: String, allowlist: String): Bool {
+    let host = sourceAnalysisUrlHost(url)
+    if (host == "") {
+        return false
+    }
+    for (allowed in allowlist.split(",")) {
+        if (host == allowed.trimAscii().toAsciiLower()) {
+            return true
+        }
+    }
+    false
+}
+
+private func sourceAnalysisUrlHost(url: String): String {
+    let lowered = url.trimAscii().toAsciiLower()
+    if (!lowered.startsWith("https://")) {
+        return ""
+    }
+    let start: Int64 = 8
+    var end = start
+    while (end < lowered.size) {
+        let ch = lowered[end..end + 1]
+        if (ch == "/" || ch == ":" || ch == "?" || ch == "#") {
+            break
+        }
+        end += 1
+    }
+    lowered[start..end]
+}
+
+private func buildSourceAnalysisPackFromCheckout(pack: SourceAnalysisPack, request: SourceAnalysisRequest, checkoutPath: Path, config: CkbRuntimeConfig): Unit {
+    let selected = sourceAnalysisSelectedPaths(request)
+    var count: Int64 = 0
+    for (path in selected) {
+        if (config.sourceAnalysisMaxFiles >= 0 && count >= config.sourceAnalysisMaxFiles) {
+            pack.truncated = true
+            addUniqueString(pack.degraded, "max_files")
+            break
+        }
+        let normalized = normalizeGitCodeSourcePath(path)
+        if (normalized == "" || sourceAnalysisPathExcluded(normalized)) {
+            continue
+        }
+        let filePath = checkoutPath.join(normalized)
+        if (!exists(filePath)) {
+            continue
+        }
+        let raw = try {
+            File.readFrom(filePath)
+        } catch (_: Exception) {
+            continue
+        }
+        if (sourceAnalysisLooksBinary(raw)) {
+            continue
+        }
+        let file = SourceAnalysisFile()
+        file.path = normalized
+        file.bytes = raw.size
+        var body = String.fromUtf8(raw)
+        if (config.sourceAnalysisMaxFileBytes >= 0 && raw.size > config.sourceAnalysisMaxFileBytes) {
+            pack.truncated = true
+            file.truncated = true
+            addUniqueString(pack.degraded, "max_file_bytes")
+            body = body[0..config.sourceAnalysisMaxFileBytes]
+        }
+        file.bodyHash = stableSummaryHash(body)
+        file.excerpt = sourceAnalysisExcerpt(body)
+        file.citation = "${request.repo}@${if (request.commit == "") { if (request.ref == "") { "main" } else { request.ref } } else { request.commit }}:${normalized}"
+        pack.selectedFiles.add(file)
+        pack.citations.add(file.citation)
+        count += 1
+    }
+    pack.status = "ok"
+}
+
+private func sourceAnalysisSelectedPaths(request: SourceAnalysisRequest): ArrayList<String> {
+    let out = ArrayList<String>()
+    for (path in request.changedFiles) {
+        addUniqueString(out, path)
+    }
+    for (path in request.candidatePaths) {
+        addUniqueString(out, path)
+    }
+    for (path in sourceAnalysisPathsFromSelector(request.selector)) {
+        addUniqueString(out, path)
+    }
+    out
+}
+
+private func sourceAnalysisPathsFromSelector(selector: String): ArrayList<String> {
+    let out = ArrayList<String>()
+    for (token in selector.replace(",", " ").replace("\n", " ").split(" ")) {
+        let value = token.trimAscii()
+        if (value.contains("/") && sourceAnalysisAllowedExtension(value.toAsciiLower())) {
+            addUniqueString(out, value)
+        }
+    }
+    out
+}
+
+private func sourceAnalysisPathExcluded(path: String): Bool {
+    let lower = path.toAsciiLower()
+    lower.startsWith(".git/") || lower.contains("/.git/") || lower.startsWith("target/") || lower.contains("/target/") || lower.startsWith("build/") || lower.contains("/build/") || lower.startsWith("vendor/") || lower.contains("/vendor/") || !sourceAnalysisAllowedExtension(lower)
+}
+
+private func sourceAnalysisAllowedExtension(lower: String): Bool {
+    lower.endsWith(".cj") || lower.endsWith(".md") || lower.endsWith(".txt") || lower.endsWith(".toml") || lower.endsWith(".json") || lower.endsWith(".yaml") || lower.endsWith(".yml")
+}
+
+private func sourceAnalysisLooksBinary(bytes: Array<UInt8>): Bool {
+    for (byte in bytes) {
+        if (byte == 0u8) {
+            return true
+        }
+    }
+    false
+}
+
+private func sourceAnalysisExcerpt(body: String): String {
+    let cleaned = body.replace("\r", "").trimAscii()
+    if (cleaned.size <= 800) {
+        return cleaned
+    }
+    cleaned[0..800]
+}
+
+private func trimTrailingSlash(raw: String): String {
+    var out = raw
+    while (out.size > 1 && out.endsWith("/")) {
+        out = out[0..out.size - 1]
+    }
+    out
 }
 
 public class SourceSyncPlan {
@@ -1823,6 +2241,10 @@ public class SourceAdapter {
         this.fetch(this.builder.gitCodeSourceRaw(repo, ref, path))
     }
 
+    public func fetchGitCodeSourceContents(repo: String, ref: String, path: String): SourceFetchResult {
+        this.fetch(this.builder.gitCodeSourceContents(repo, ref, path))
+    }
+
     public func fetchGitCodeTree(repo: String, ref: String): SourceFetchResult {
         this.fetch(this.builder.gitCodeTree(repo, ref))
     }
@@ -1941,7 +2363,7 @@ public func ckbSourceAnalysis(request: SourceAnalysisRequest, runner!: SourceFet
         var acquired = raw
         var acquisition = SourceAnalysisAcquisition.API_RAW
         if (!raw.ok) {
-            let contents = adapter.fetchGitCodeSource(request.repo, request.ref, cleanPath)
+            let contents = adapter.fetchGitCodeSourceContents(request.repo, request.ref, cleanPath)
             acquired = contents
             acquisition = SourceAnalysisAcquisition.API_CONTENTS
         }
@@ -2827,11 +3249,11 @@ public class QueryService {
 
 public class CkbSchema {
     public static func mcpTools(): String {
-        "tools: cangjie.health,cangjie.status,cangjie.query,cangjie.evidence,cangjie.sync,cangjie.rebuild,cangjie.source_analysis,cangjie.source_search,cangjie.doc_search,cangjie.website_search,cangjie.web_candidate_search,cangjie.hybrid_search,cangjie.evidence_pack; input: query{q,budget,sourceType,includeCandidates=false}, evidence{q,budget,includeCandidates=true}, source_analysis{repo,ref,query,issueUrl,prUrl,changedFiles,candidatePaths,allowCloneFallback,maxFiles,maxBytes,timeoutMillis}, sync{dryRun,apply,maxRepos,maxFilesPerRepo,maxItems,since}, rebuild{store}; liveGitCode: officialApi=https://api.gitcode.com/api/v5 authMode=token authHeader=private-token tokenFile=tokenFile tokenFileFormat=single PAT line without token/Bearer/PRIVATE-TOKEN prefix; acceptance: schema -> doctor/status -> anonymous dry-run -> credentialed dry-run if needed -> limited apply -> rebuild-index -> status/evidence; output: ok,status,errorCode,activeKnowledgeVersion,knowledgeVersion,citations,evidence,requiresReview,triggerReasons,sourceAcquisition,filesRead,cleanupStatus,truncated,degraded,transportDiagnostic; redaction: never returns tokenRef,tokenFile contents,PRIVATE-TOKEN,Authorization,Cookie,private-token values,absolute local paths; errors: ckb.bad_request,ckb.network_disabled,ckb.auth_degraded,ckb.rate_limited,ckb.source_unavailable,ckb.rebuild_failed,ckb.validation_failed"
+        "tools: cangjie.health,cangjie.status,cangjie.query,cangjie.evidence,cangjie.sync,cangjie.rebuild,cangjie.source_analysis,cangjie.source_search,cangjie.doc_search,cangjie.website_search,cangjie.web_candidate_search,cangjie.hybrid_search,cangjie.evidence_pack; input: query{q,budget,sourceType,includeCandidates=false}, evidence{q,budget,includeCandidates=true}, source_analysis{repo,ref,query,issueUrl,prUrl,changedFiles,candidatePaths,allowCloneFallback,maxFiles,maxBytes,timeoutMillis,visibility=public,retainFailedWorkspace=false}, sync{dryRun,apply,maxRepos,maxFilesPerRepo,maxItems,since}, rebuild{store}; liveGitCode: officialApi=https://api.gitcode.com/api/v5 authMode=token authHeader=private-token tokenFile=tokenFile tokenFileFormat=single PAT line without token/Bearer/PRIVATE-TOKEN prefix; sourceAnalysis: defaultEnabled=false workspaceRoot=TMPDIR-or-tmp/ckb-source-analysis publicOnly=true cloneHostAllowlist=gitcode.com cleanup=default; acceptance: schema -> doctor/status -> anonymous dry-run -> credentialed dry-run if needed -> limited apply -> rebuild-index -> status/evidence -> source_analysis fake/public repo; output: ok,status,errorCode,activeKnowledgeVersion,knowledgeVersion,citations,evidence,requiresReview,triggerReasons,sourceAcquisition,filesRead,cleanupStatus,truncated,degraded,transportDiagnostic; redaction: never returns tokenRef,tokenFile contents,PRIVATE-TOKEN,Authorization,Cookie,private-token values,absolute local paths; errors: ckb.bad_request,ckb.network_disabled,ckb.auth_degraded,ckb.rate_limited,ckb.source_unavailable,ckb.rebuild_failed,ckb.validation_failed,ckb.invalid_workspace_root,ckb.invalid_clone_host"
     }
 
     public static func httpLikeRoutes(): String {
-        "routes: STDIO ckb-stdio-v1 health,status,metrics,query <text>,evidence <text>,source_analysis repo=<owner/repo> ref=<ref> path=<path> query=<text>,sync,rebuild,scheduler-run,backup <name>,restore <name>,restart,stop; GET /health -> ok,status,activeKnowledgeVersion,degraded; GET /status -> storage,indexManifest,scheduler,activeKnowledgeVersion,restoreDiagnostic,authHeaderStrategy; POST /query -> query,evidence,citations,knowledgeVersion; POST /evidence -> evidencePack,graphContext,citations,activeKnowledgeVersion; POST /source-analysis -> analysisId,repo,ref,triggerReasons,sourceAcquisition,filesRead,citations,degraded,cleanupStatus; POST /sync -> dryRun|apply,candidateVersion,activeKnowledgeVersion,redactedSourceStatus,transportDiagnostic; POST /rebuild-index -> candidateVersion,activeKnowledgeVersion,count; compatibility: CLI service/status/rebuild-index/source_analysis provide the canonical local protocol"
+        "routes: STDIO ckb-stdio-v1 health,status,metrics,query <text>,evidence <text>,source_analysis repo=<owner/repo> ref=<ref> path=<path> query=<text> allowCloneFallback=<bool>,sync,rebuild,scheduler-run,backup <name>,restore <name>,restart,stop; GET /health -> ok,status,activeKnowledgeVersion,degraded; GET /status -> storage,indexManifest,scheduler,activeKnowledgeVersion,restoreDiagnostic,authHeaderStrategy,sourceAnalysis; POST /query -> query,evidence,citations,knowledgeVersion; POST /evidence -> evidencePack,graphContext,citations,activeKnowledgeVersion; POST /source-analysis -> analysisId,repo,ref,triggerReasons,sourceAcquisition,filesRead,citations,degraded,cleanupStatus or clone analysis pack when enabled; POST /sync -> dryRun|apply,candidateVersion,activeKnowledgeVersion,redactedSourceStatus,transportDiagnostic; POST /rebuild-index -> candidateVersion,activeKnowledgeVersion,count; compatibility: CLI service/status/rebuild-index/source_analysis provide the canonical local protocol"
     }
 }
 
@@ -2925,8 +3347,17 @@ public class CkbCommandLoopService {
         } else if (command == "evidence") {
             response.text = renderQuery(cangjie_evidence_pack(this.kb, if (tail == "") { "HttpClient" } else { tail }, 3))
         } else if (command == "source_analysis" || command == "source-analysis") {
-            let request = sourceAnalysisRequestFromText(tail)
-            response.text = renderSourceAnalysis(ckbSourceAnalysis(request, runner: this.sourceRunner))
+            var request = sourceAnalysisRequestFromText(tail)
+            if (request.repo == "") {
+                request = parseSourceAnalysisCommand(tail)
+            }
+            if (request.allowCloneFallback && this.config.sourceAnalysisEnabled) {
+                request.visibility = request.repoVisibility
+                request.selector = request.query
+                response.text = renderSourceAnalysis(cangjie_source_analysis(this.config, request))
+            } else {
+                response.text = renderSourceAnalysis(ckbSourceAnalysis(request, runner: this.sourceRunner))
+            }
         } else if (command == "sync") {
             let options = LiveSyncOptions()
             options.apply = true
@@ -2970,6 +3401,38 @@ public class CkbCommandLoopService {
         let status = this.kb.status()
         "log level=${level} event=${event} protocol=ckb-stdio-v1 activeKnowledgeVersion=${status.activeKnowledgeVersion} store=redacted\n"
     }
+}
+
+private func parseSourceAnalysisCommand(tail: String): SourceAnalysisRequest {
+    let request = SourceAnalysisRequest()
+    let parts = tail.split(" ")
+    if (parts.size > 0 && parts[0].trimAscii() != "") {
+        request.repo = parts[0].trimAscii()
+    }
+    if (parts.size > 1 && parts[1].trimAscii() != "") {
+        request.ref = parts[1].trimAscii()
+    }
+    request.visibility = RepoVisibility.PUBLIC
+    if (parts.size > 2) {
+        for (i in 2..parts.size) {
+            let path = parts[i].trimAscii()
+            if (path != "") {
+                request.changedFiles.add(path)
+            }
+        }
+    }
+    request
+}
+
+public func renderSourceAnalysis(pack: SourceAnalysisPack): String {
+    var out = "source_analysis ok=${pack.ok} status=${pack.status} repo=${pack.repo} ref=${pack.ref} files=${pack.selectedFiles.size} truncated=${pack.truncated} cleanupStatus=${pack.cleanupStatus} workspace=${pack.workspaceStatus}\n"
+    if (pack.diagnostic != "") {
+        out += "diagnostic=${redactSensitive(pack.diagnostic)}\n"
+    }
+    for (file in pack.selectedFiles) {
+        out += "file path=${file.path} bytes=${file.bytes} bodyHash=${file.bodyHash} truncated=${file.truncated} citation=${file.citation}\n"
+    }
+    redactSensitive(out)
 }
 
 public func ckbSyncOnce(kb: KnowledgeBase, adapter: SourceAdapter, store: FileKnowledgeStore): String {
@@ -3369,6 +3832,22 @@ private func configApply(config: CkbRuntimeConfig, key: String, value: String): 
         config.networkAllowPrivateNetwork = parseBool(value)
     } else if (key == "network.allowedHosts") {
         config.networkAllowedHosts = value
+    } else if (key == "sourceAnalysis.enabled") {
+        config.sourceAnalysisEnabled = parseBool(value)
+    } else if (key == "sourceAnalysis.workspaceRoot") {
+        config.sourceAnalysisWorkspaceRoot = value
+    } else if (key == "sourceAnalysis.retainFailedWorkspace") {
+        config.sourceAnalysisRetainFailedWorkspace = parseBool(value)
+    } else if (key == "sourceAnalysis.cloneDepth") {
+        config.sourceAnalysisCloneDepth = try { Int64.parse(value) } catch (_: Exception) { config.sourceAnalysisCloneDepth }
+    } else if (key == "sourceAnalysis.timeoutMillis") {
+        config.sourceAnalysisTimeoutMillis = try { Int64.parse(value) } catch (_: Exception) { config.sourceAnalysisTimeoutMillis }
+    } else if (key == "sourceAnalysis.maxFiles") {
+        config.sourceAnalysisMaxFiles = try { Int64.parse(value) } catch (_: Exception) { config.sourceAnalysisMaxFiles }
+    } else if (key == "sourceAnalysis.maxFileBytes") {
+        config.sourceAnalysisMaxFileBytes = try { Int64.parse(value) } catch (_: Exception) { config.sourceAnalysisMaxFileBytes }
+    } else if (key == "sourceAnalysis.cloneHostAllowlist") {
+        config.sourceAnalysisCloneHostAllowlist = value
     }
 }
 
