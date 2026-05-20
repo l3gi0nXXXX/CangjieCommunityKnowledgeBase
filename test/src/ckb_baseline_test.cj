@@ -1404,16 +1404,31 @@ network.retryCount=3
 
         let directRoute = ckbNativeHttpResolveRoute("https://api.gitcode.com/api/v5/orgs/cangjie/repos", direct)
         let tunnelRoute = ckbNativeHttpResolveRoute("https://api.gitcode.com/api/v5/orgs/cangjie/repos", proxied)
+        let httpProxyRoute = ckbNativeHttpResolveRoute("http://gitcode.com/cangjie/stdx", proxied)
         let unsupportedRoute = ckbNativeHttpResolveRoute("https://api.gitcode.com/api/v5/orgs/cangjie/repos", httpsProxy)
         let noProxyRoute = ckbNativeHttpResolveRoute("https://api.gitcode.com/api/v5/orgs/cangjie/repos", noProxy)
+        let directPlan = ckbNativeHttpDescribeBuildPlan("https://api.gitcode.com/api/v5/orgs/cangjie/repos", direct)
+        let tunnelPlan = ckbNativeHttpDescribeBuildPlan("https://api.gitcode.com/api/v5/orgs/cangjie/repos", proxied)
+        let httpProxyPlan = ckbNativeHttpDescribeBuildPlan("http://gitcode.com/cangjie/stdx", proxied)
 
         @Expect(directRoute.mode, "direct")
         @Expect(tunnelRoute.mode, "httpConnectTunnel")
+        @Expect(httpProxyRoute.mode, "httpProxy")
         @Expect(tunnelRoute.redactedProxy.contains("user:pass"), false)
         @Expect(tunnelRoute.redactedProxy.contains("[redacted]@127.0.0.1:7897"), true)
         @Expect(unsupportedRoute.mode, "unsupportedHttpsProxy")
         @Expect(unsupportedRoute.error.contains("true HTTPS proxy is not implemented"), true)
         @Expect(noProxyRoute.mode, "direct")
+        @Expect(directPlan.route.mode, "direct")
+        @Expect(directPlan.useConnector, false)
+        @Expect(directPlan.useTls, true)
+        @Expect(tunnelPlan.route.mode, "httpConnectTunnel")
+        @Expect(tunnelPlan.useConnector, true)
+        @Expect(tunnelPlan.useTls, true)
+        @Expect(httpProxyPlan.route.mode, "httpProxy")
+        @Expect(httpProxyPlan.useConnector, false)
+        @Expect(httpProxyPlan.useHttpProxy, true)
+        @Expect(httpProxyPlan.useTls, false)
     }
 
     @TestCase

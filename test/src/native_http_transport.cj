@@ -75,6 +75,20 @@ public class CkbNativeHttpTransportDiagnostic {
     public init() {}
 }
 
+public class CkbNativeHttpBuildPlan {
+    public let route: CkbNativeHttpRoute
+    public let useConnector: Bool
+    public let useHttpProxy: Bool
+    public let useTls: Bool
+
+    public init(route: CkbNativeHttpRoute, useConnector: Bool, useHttpProxy: Bool, useTls: Bool) {
+        this.route = route
+        this.useConnector = useConnector
+        this.useHttpProxy = useHttpProxy
+        this.useTls = useTls
+    }
+}
+
 public class NativeHttpRequestExecutor <: HttpRequestExecutor {
     private let config: CkbNativeHttpTransportConfig
 
@@ -277,16 +291,27 @@ public func ckbNativeHttpClassifyException(message: String): CkbNativeHttpTransp
     diagnostic
 }
 
+public func ckbNativeHttpDescribeBuildPlan(url: String, config: CkbNativeHttpTransportConfig): CkbNativeHttpBuildPlan {
+    let route = ckbNativeHttpResolveRoute(url, config)
+    CkbNativeHttpBuildPlan(
+        route,
+        route.mode == "httpConnectTunnel",
+        route.mode == "httpProxy",
+        ckbNativeHttpScheme(url) == "https"
+    )
+}
+
 private func ckbNativeHttpBuildClientBuilder(url: String, config: CkbNativeHttpTransportConfig, requestTimeoutMillis: Int64): (ClientBuilder, CkbNativeHttpRoute) {
     let effectiveTimeout = if (requestTimeoutMillis > 0) { requestTimeoutMillis } else { config.timeoutMillis }
-    let route = ckbNativeHttpResolveRoute(url, config)
+    let plan = ckbNativeHttpDescribeBuildPlan(url, config)
+    let route = plan.route
     let builder = ClientBuilder()
     builder.readTimeout(Duration.millisecond * effectiveTimeout)
     let proxyInfo = ckbNativeHttpProxyForUrl(url, config)
-    if (route.mode == "httpProxy") {
+    if (plan.useHttpProxy) {
         builder.httpProxy(proxyInfo[0])
     }
-    if (ckbNativeHttpScheme(url) == "https") {
+    if (plan.useTls) {
         var tlsConfig = TlsClientConfig()
         if (config.insecureSkipTlsVerify) {
             tlsConfig.verifyMode = TrustAll
@@ -295,7 +320,7 @@ private func ckbNativeHttpBuildClientBuilder(url: String, config: CkbNativeHttpT
         tlsConfig.alpnProtocolsList = ["http/1.1"]
         builder.tlsConfig(tlsConfig)
     }
-    if (route.mode == "httpConnectTunnel") {
+    if (plan.useConnector) {
         let endpoint = ckbNativeHttpParseProxyEndpoint(proxyInfo[0])
         let targetHost = route.targetHost
         let connectTimeoutMillis = if (effectiveTimeout > 0) { effectiveTimeout } else { 10000 }
@@ -305,16 +330,6 @@ private func ckbNativeHttpBuildClientBuilder(url: String, config: CkbNativeHttpT
             socket.writeTimeout = Duration.millisecond * connectTimeoutMillis
             socket.connect(timeout: Duration.millisecond * connectTimeoutMillis)
             ckbNativeHttpOpenConnectTunnel(socket, targetHost, 443u16, endpoint)
-            return socket
-        }
-        builder.connector(socketConnector)
-    } else if (route.mode == "direct") {
-        let connectTimeoutMillis = if (effectiveTimeout > 0) { effectiveTimeout } else { 10000 }
-        let socketConnector = { sa: SocketAddress =>
-            let socket = TcpSocket(sa)
-            socket.readTimeout = Duration.millisecond * connectTimeoutMillis
-            socket.writeTimeout = Duration.millisecond * connectTimeoutMillis
-            socket.connect(timeout: Duration.millisecond * connectTimeoutMillis)
             return socket
         }
         builder.connector(socketConnector)
