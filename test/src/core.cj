@@ -1,6 +1,7 @@
 package cangjie_community_knowledge_base_test
 
 import std.collection.ArrayList
+import std.convert.Parsable
 
 public class SourceTypes {
     public static let REPO: String = "repo"
@@ -277,6 +278,7 @@ public class VectorRecord {
 }
 
 public class VectorSearchFilters {
+    public var repo: String = ""
     public var sourceType: String = ""
     public var trustLevel: String = ""
     public var reviewState: String = ""
@@ -468,6 +470,773 @@ public class LocalVectorStore <: VectorStore {
         this.collections.add(stored)
         stored
     }
+}
+
+public class QdrantVectorStoreConfig {
+    public var endpoint: String = ""
+    public var dimensions: Int64 = 0
+    public var distance: String = "Cosine"
+    public var timeoutMillis: Int64 = 10000
+    public var retryCount: Int64 = 2
+    public var apiKey: String = ""
+
+    public init() {}
+}
+
+private class QdrantCachedCollection {
+    public var collection: String = ""
+    public var records: ArrayList<VectorRecord> = ArrayList<VectorRecord>()
+
+    public init() {}
+}
+
+private class QdrantJsonStringScan {
+    public var ok: Bool = false
+    public var value: String = ""
+    public var end: Int64 = 0
+
+    public init() {}
+}
+
+public class QdrantVectorStore <: VectorStore {
+    private let config: QdrantVectorStoreConfig
+    private let executor: HttpRequestExecutor
+    private var lastStatus: VectorStoreStatus = VectorStoreStatus()
+    private var cache: ArrayList<QdrantCachedCollection> = ArrayList<QdrantCachedCollection>()
+
+    public init(config: QdrantVectorStoreConfig, executor!: HttpRequestExecutor) {
+        this.config = config
+        this.executor = executor
+    }
+
+    public init(endpoint: String, dimensions: Int64, distance: String, executor!: HttpRequestExecutor) {
+        let config = QdrantVectorStoreConfig()
+        config.endpoint = endpoint
+        config.dimensions = dimensions
+        config.distance = distance
+        this.config = config
+        this.executor = executor
+    }
+
+    public func upsert(collection: String, vectors: ArrayList<VectorRecord>): VectorStoreStatus {
+        let validation = this.validateVectors(collection, vectors)
+        if (validation.degradedReason != "") {
+            this.lastStatus = validation
+            return validation
+        }
+        if (vectors.size == 0) {
+            let status = this.baseStatus(collection)
+            status.state = EmbeddingProviderState.READY
+            status.count = 0
+            this.lastStatus = status
+            return status
+        }
+        let response = this.execute("PUT", "${this.collectionUrl(collection)}/points?wait=true", qdrantUpsertBody(vectors))
+        let status = this.statusFromWriteResponse(collection, response, "upsert")
+        if (status.state == EmbeddingProviderState.READY) {
+            status.count = vectors.size
+            status.dimension = this.config.dimensions
+            this.remember(collection, vectors)
+        }
+        this.lastStatus = status
+        status
+    }
+
+    public func search(collection: String, queryVector: ArrayList<Float64>, filters: VectorSearchFilters, topK: Int64): ArrayList<VectorSearchResult> {
+        let out = ArrayList<VectorSearchResult>()
+        if (topK <= 0 || queryVector.size == 0) {
+            return out
+        }
+        if (this.config.dimensions > 0 && queryVector.size != this.config.dimensions) {
+            this.lastStatus = this.degradedStatus(collection, "dimension_mismatch")
+            return out
+        }
+        let response = this.execute("POST", "${this.collectionUrl(collection)}/points/query", qdrantQueryBody(queryVector, filters, topK))
+        if (!qdrantHttpOk(response)) {
+            this.lastStatus = this.statusFromHttpResponse(collection, response, "query")
+            return out
+        }
+        let parsed = qdrantParseSearchResponse(response.body, filters, topK)
+        if (parsed.size == 0 && !qdrantBodyLooksOk(response.body)) {
+            this.lastStatus = this.degradedStatus(collection, "malformed_json")
+            return out
+        }
+        for (item in parsed) {
+            insertVectorResult(out, item.record, item.score, topK)
+        }
+        let status = this.baseStatus(collection)
+        status.state = EmbeddingProviderState.READY
+        status.count = out.size
+        this.lastStatus = status
+        out
+    }
+
+    public func status(collection: String): VectorStoreStatus {
+        let response = this.execute("GET", this.collectionUrl(collection), "")
+        let status = this.statusFromCollectionResponse(collection, response)
+        this.lastStatus = status
+        status
+    }
+
+    public func clear(collection: String): VectorStoreStatus {
+        let response = this.execute("DELETE", this.collectionUrl(collection), "")
+        let status = this.statusFromClearResponse(collection, response)
+        if (status.state == EmbeddingProviderState.READY) {
+            this.remember(collection, ArrayList<VectorRecord>())
+        }
+        this.lastStatus = status
+        status
+    }
+
+    public func recreate(collection: String, vectors: ArrayList<VectorRecord>): VectorStoreStatus {
+        let validation = this.validateVectors(collection, vectors)
+        if (validation.degradedReason != "") {
+            this.lastStatus = validation
+            return validation
+        }
+        let cleared = this.clear(collection)
+        if (cleared.state == EmbeddingProviderState.DOWN || (cleared.state == EmbeddingProviderState.DEGRADED && cleared.degradedReason != "collection_missing")) {
+            this.lastStatus = cleared
+            return cleared
+        }
+        let created = this.createCollection(collection)
+        if (created.state != EmbeddingProviderState.READY) {
+            this.lastStatus = created
+            return created
+        }
+        if (vectors.size == 0) {
+            this.lastStatus = created
+            return created
+        }
+        this.upsert(collection, vectors)
+    }
+
+    public func backup(collection: String): VectorBackup {
+        let backup = VectorBackup()
+        backup.collection = collection
+        let cached = this.cached(collection)
+        if (cached.collection == "") {
+            backup.valid = false
+            backup.diagnostic = "qdrant_backup_requires_scroll"
+            return backup
+        }
+        for (record in cached.records) {
+            backup.records.add(record)
+        }
+        backup.valid = true
+        backup.diagnostic = "ok"
+        backup
+    }
+
+    public func restore(backup: VectorBackup): VectorStoreStatus {
+        if (!backup.valid) {
+            let status = this.baseStatus(backup.collection)
+            status.state = EmbeddingProviderState.DEGRADED
+            status.degradedReason = backup.diagnostic
+            this.lastStatus = status
+            return status
+        }
+        this.recreate(backup.collection, backup.records)
+    }
+
+    public func lastOperationStatus(): VectorStoreStatus {
+        this.lastStatus
+    }
+
+    private func createCollection(collection: String): VectorStoreStatus {
+        if (this.config.dimensions <= 0) {
+            return this.degradedStatus(collection, "qdrant_missing_dimensions")
+        }
+        let response = this.execute("PUT", this.collectionUrl(collection), qdrantCreateCollectionBody(this.config.dimensions, this.config.distance))
+        this.statusFromWriteResponse(collection, response, "create_collection")
+    }
+
+    private func execute(method: String, url: String, body: String): HttpExecutionResponse {
+        let request = HttpExecutionRequest()
+        request.method = method
+        request.url = url
+        request.accept = "application/json"
+        request.timeoutMillis = this.config.timeoutMillis
+        request.retryCount = this.config.retryCount
+        if (body != "") {
+            request.contentType = "application/json"
+            request.body = body
+            request.headers.add("Content-Type: application/json")
+        }
+        if (this.config.apiKey != "") {
+            request.headers.add("api-key: ${this.config.apiKey}")
+        }
+        try {
+            this.executor.execute(request)
+        } catch (_: Exception) {
+            let response = HttpExecutionResponse()
+            response.status = "transport_error"
+            response.transportErrorClass = "exception"
+            response.transportDiagnostic = "qdrant_executor_exception"
+            response
+        }
+    }
+
+    private func validateVectors(collection: String, vectors: ArrayList<VectorRecord>): VectorStoreStatus {
+        let status = this.baseStatus(collection)
+        if (this.config.endpoint == "") {
+            status.state = EmbeddingProviderState.DOWN
+            status.degradedReason = "qdrant_missing_endpoint"
+            return status
+        }
+        if (this.config.dimensions <= 0) {
+            status.state = EmbeddingProviderState.DEGRADED
+            status.degradedReason = "qdrant_missing_dimensions"
+            return status
+        }
+        for (record in vectors) {
+            if (record.vector.size == 0) {
+                status.state = EmbeddingProviderState.DEGRADED
+                status.degradedReason = "empty_vector"
+                return status
+            }
+            if (record.vector.size != this.config.dimensions) {
+                status.state = EmbeddingProviderState.DEGRADED
+                status.degradedReason = "dimension_mismatch"
+                return status
+            }
+        }
+        status
+    }
+
+    private func statusFromCollectionResponse(collection: String, response: HttpExecutionResponse): VectorStoreStatus {
+        if (!qdrantHttpOk(response)) {
+            return this.statusFromHttpResponse(collection, response, "status")
+        }
+        if (!qdrantBodyLooksOk(response.body)) {
+            return this.degradedStatus(collection, "malformed_json")
+        }
+        let status = qdrantParseCollectionStatus(response.body)
+        status.backend = "qdrant"
+        status.collection = collection
+        if (status.state == "") {
+            status.state = EmbeddingProviderState.DEGRADED
+            status.degradedReason = "malformed_json"
+        }
+        if (status.dimension == 0) {
+            status.dimension = this.config.dimensions
+        }
+        status
+    }
+
+    private func statusFromClearResponse(collection: String, response: HttpExecutionResponse): VectorStoreStatus {
+        let status = this.baseStatus(collection)
+        if (response.statusCode == 404 || response.status == "http_404") {
+            status.state = EmbeddingProviderState.READY
+            status.count = 0
+            status.degradedReason = ""
+            return status
+        }
+        if (!qdrantHttpOk(response)) {
+            return this.statusFromHttpResponse(collection, response, "clear")
+        }
+        if (!qdrantBodyLooksOk(response.body)) {
+            status.state = EmbeddingProviderState.DEGRADED
+            status.degradedReason = "malformed_json"
+            return status
+        }
+        status.state = EmbeddingProviderState.READY
+        status.count = 0
+        status
+    }
+
+    private func statusFromWriteResponse(collection: String, response: HttpExecutionResponse, operation: String): VectorStoreStatus {
+        let status = this.baseStatus(collection)
+        if (!qdrantHttpOk(response)) {
+            return this.statusFromHttpResponse(collection, response, operation)
+        }
+        if (!qdrantBodyLooksOk(response.body)) {
+            status.state = EmbeddingProviderState.DEGRADED
+            status.degradedReason = "malformed_json"
+            return status
+        }
+        status.state = EmbeddingProviderState.READY
+        status.dimension = this.config.dimensions
+        status
+    }
+
+    private func statusFromHttpResponse(collection: String, response: HttpExecutionResponse, operation: String): VectorStoreStatus {
+        let status = this.baseStatus(collection)
+        if (response.statusCode == 404 || response.status == "http_404") {
+            status.state = EmbeddingProviderState.DEGRADED
+            status.degradedReason = "collection_missing"
+            return status
+        }
+        if (response.status == "unsupported_method") {
+            status.state = EmbeddingProviderState.DEGRADED
+            status.degradedReason = "qdrant_http_execute_unavailable"
+            return status
+        }
+        if (response.status == "timeout" || response.status == "transport_error" || response.statusCode >= 500) {
+            status.state = EmbeddingProviderState.DOWN
+            status.degradedReason = if (response.transportErrorClass != "") { response.transportErrorClass } else { "qdrant_${operation}_failed" }
+            return status
+        }
+        status.state = EmbeddingProviderState.DEGRADED
+        status.degradedReason = if (response.status != "") { response.status } else { "qdrant_${operation}_failed" }
+        status
+    }
+
+    private func baseStatus(collection: String): VectorStoreStatus {
+        let status = VectorStoreStatus()
+        status.backend = "qdrant"
+        status.collection = collection
+        status.dimension = this.config.dimensions
+        status.state = EmbeddingProviderState.DEGRADED
+        status
+    }
+
+    private func degradedStatus(collection: String, reason: String): VectorStoreStatus {
+        let status = this.baseStatus(collection)
+        status.state = EmbeddingProviderState.DEGRADED
+        status.degradedReason = reason
+        status
+    }
+
+    private func collectionUrl(collection: String): String {
+        "${qdrantTrimRightSlash(this.config.endpoint)}/collections/${qdrantSafeCollection(collection)}"
+    }
+
+    private func cached(collection: String): QdrantCachedCollection {
+        for (entry in this.cache) {
+            if (entry.collection == collection) {
+                return entry
+            }
+        }
+        QdrantCachedCollection()
+    }
+
+    private func remember(collection: String, vectors: ArrayList<VectorRecord>): Unit {
+        var entry = this.cached(collection)
+        if (entry.collection == "") {
+            entry = QdrantCachedCollection()
+            entry.collection = collection
+            this.cache.add(entry)
+        }
+        entry.records.clear()
+        for (record in vectors) {
+            entry.records.add(record)
+        }
+    }
+}
+
+private func qdrantCreateCollectionBody(dimensions: Int64, distance: String): String {
+    "{\"vectors\":{\"size\":${dimensions},\"distance\":\"${qdrantJsonEscape(distance)}\"}}"
+}
+
+private func qdrantUpsertBody(vectors: ArrayList<VectorRecord>): String {
+    var out = "{\"points\":["
+    for (i in 0..vectors.size) {
+        if (i > 0) {
+            out += ","
+        }
+        let record = vectors[i]
+        out += "{\"id\":${qdrantStablePointId(record.id)},\"vector\":${qdrantVectorJson(record.vector)},\"payload\":${qdrantPayloadJson(record)}}"
+    }
+    out + "]}"
+}
+
+private func qdrantQueryBody(queryVector: ArrayList<Float64>, filters: VectorSearchFilters, topK: Int64): String {
+    var out = "{\"query\":${qdrantVectorJson(queryVector)},\"limit\":${topK},\"with_payload\":true"
+    let filter = qdrantFilterJson(filters)
+    if (filter != "") {
+        out += ",\"filter\":${filter}"
+    }
+    out + "}"
+}
+
+public func qdrantStablePointId(raw: String): String {
+    var hash: Int64 = 5381
+    let modulus: Int64 = 922337203685477000
+    let bytes = raw.toArray()
+    for (b in bytes) {
+        hash = ((hash * 33) % modulus + (Int64(b) % modulus)) % modulus
+    }
+    if (hash == 0) {
+        hash = 1
+    }
+    "${hash}"
+}
+
+private func qdrantPayloadJson(record: VectorRecord): String {
+    let metadata = record.metadata
+    var out = "{"
+    out += "\"ckb_id\":\"${qdrantJsonEscape(record.id)}\""
+    out += ",\"title\":\"${qdrantJsonEscape(record.title)}\""
+    out += ",\"chunk\":\"${qdrantJsonEscape(record.chunk)}\""
+    out += ",\"citation\":\"${qdrantJsonEscape(record.citation)}\""
+    out += ",\"sourceId\":\"${qdrantJsonEscape(metadata.sourceId)}\""
+    out += ",\"sourceType\":\"${qdrantJsonEscape(metadata.sourceType)}\""
+    out += ",\"sourceUrl\":\"${qdrantJsonEscape(metadata.sourceUrl)}\""
+    out += ",\"repo\":\"${qdrantJsonEscape(metadata.repo)}\""
+    out += ",\"path\":\"${qdrantJsonEscape(metadata.path)}\""
+    out += ",\"symbol\":\"${qdrantJsonEscape(metadata.symbol)}\""
+    out += ",\"trustLevel\":\"${qdrantJsonEscape(metadata.trustLevel)}\""
+    out += ",\"reviewState\":\"${qdrantJsonEscape(metadata.reviewState)}\""
+    out += ",\"knowledgeVersion\":\"${qdrantJsonEscape(metadata.knowledgeVersion)}\""
+    out + "}"
+}
+
+private func qdrantFilterJson(filters: VectorSearchFilters): String {
+    let clauses = ArrayList<String>()
+    qdrantAddFilterClause(clauses, "repo", filters.repo)
+    qdrantAddFilterClause(clauses, "sourceType", filters.sourceType)
+    qdrantAddFilterClause(clauses, "trustLevel", filters.trustLevel)
+    qdrantAddFilterClause(clauses, "reviewState", filters.reviewState)
+    if (clauses.size == 0) {
+        return ""
+    }
+    var out = "{\"must\":["
+    for (i in 0..clauses.size) {
+        if (i > 0) {
+            out += ","
+        }
+        out += clauses[i]
+    }
+    out + "]}"
+}
+
+private func qdrantAddFilterClause(clauses: ArrayList<String>, key: String, value: String): Unit {
+    if (value == "") {
+        return
+    }
+    clauses.add("{\"key\":\"${qdrantJsonEscape(key)}\",\"match\":{\"value\":\"${qdrantJsonEscape(value)}\"}}")
+}
+
+private func qdrantVectorJson(vector: ArrayList<Float64>): String {
+    var out = "["
+    for (i in 0..vector.size) {
+        if (i > 0) {
+            out += ","
+        }
+        out += "${vector[i]}"
+    }
+    out + "]"
+}
+
+private func qdrantParseCollectionStatus(body: String): VectorStoreStatus {
+    let status = VectorStoreStatus()
+    let result = qdrantJsonObjectField(body, "result")
+    if (result == "") {
+        return status
+    }
+    let qdrantState = qdrantJsonStringField(result, "status")
+    status.count = qdrantJsonIntField(result, "points_count", qdrantJsonIntField(result, "pointsCount", 0))
+    status.dimension = qdrantJsonIntField(result, "size", 0)
+    if (qdrantState == "green" || qdrantState == "ok" || qdrantState == "") {
+        status.state = EmbeddingProviderState.READY
+    } else {
+        status.state = EmbeddingProviderState.DEGRADED
+        status.degradedReason = "qdrant_status_${qdrantState}"
+    }
+    status
+}
+
+private func qdrantParseSearchResponse(body: String, filters: VectorSearchFilters, topK: Int64): ArrayList<VectorSearchResult> {
+    let out = ArrayList<VectorSearchResult>()
+    let result = qdrantResultPayload(body)
+    if (result == "") {
+        return out
+    }
+    var points = qdrantJsonArrayField(result, "points")
+    if (points == "" && result.startsWith("[")) {
+        points = result
+    }
+    for (object in qdrantJsonObjectChunks(points)) {
+        let payload = qdrantJsonObjectField(object, "payload")
+        let record = qdrantRecordFromPayload(payload)
+        if (record.id == "" || record.title == "" || record.chunk == "" || record.citation == "") {
+            continue
+        }
+        if (!vectorRecordAllowed(record, filters)) {
+            continue
+        }
+        let score = qdrantJsonFloatField(object, "score", 0.0)
+        insertVectorResult(out, record, score, topK)
+    }
+    out
+}
+
+private func qdrantRecordFromPayload(payload: String): VectorRecord {
+    let record = VectorRecord()
+    if (payload == "") {
+        return record
+    }
+    let metadata = KnowledgeMetadata()
+    record.id = qdrantJsonStringField(payload, "ckb_id")
+    if (record.id == "") {
+        record.id = qdrantJsonStringField(payload, "id")
+    }
+    record.title = qdrantJsonStringField(payload, "title")
+    record.chunk = qdrantJsonStringField(payload, "chunk")
+    record.citation = qdrantJsonStringField(payload, "citation")
+    metadata.sourceId = qdrantJsonStringField(payload, "sourceId")
+    metadata.sourceType = qdrantJsonStringField(payload, "sourceType")
+    metadata.sourceUrl = qdrantJsonStringField(payload, "sourceUrl")
+    metadata.repo = qdrantJsonStringField(payload, "repo")
+    metadata.path = qdrantJsonStringField(payload, "path")
+    metadata.symbol = qdrantJsonStringField(payload, "symbol")
+    metadata.trustLevel = qdrantJsonStringField(payload, "trustLevel")
+    metadata.reviewState = qdrantJsonStringField(payload, "reviewState")
+    metadata.knowledgeVersion = qdrantJsonStringField(payload, "knowledgeVersion")
+    record.metadata = metadata
+    record
+}
+
+private func qdrantResultPayload(body: String): String {
+    let object = qdrantJsonObjectField(body, "result")
+    if (object != "") {
+        return object
+    }
+    qdrantJsonArrayField(body, "result")
+}
+
+private func qdrantBodyLooksOk(body: String): Bool {
+    if (body.trimAscii() == "") {
+        return false
+    }
+    if (qdrantJsonStringField(body, "status") == "ok") {
+        return true
+    }
+    qdrantJsonObjectField(body, "result") != "" || qdrantJsonArrayField(body, "result") != ""
+}
+
+private func qdrantHttpOk(response: HttpExecutionResponse): Bool {
+    response.statusCode >= 200 && response.statusCode < 300
+}
+
+private func qdrantTrimRightSlash(raw: String): String {
+    var out = raw.trimAscii()
+    while (out.endsWith("/") && out.size > 0) {
+        out = out[0..out.size - 1]
+    }
+    out
+}
+
+private func qdrantSafeCollection(raw: String): String {
+    raw.replace("/", "_").replace("\\", "_").replace(" ", "_")
+}
+
+private func qdrantJsonEscape(raw: String): String {
+    raw.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
+}
+
+private func qdrantJsonStringField(raw: String, key: String): String {
+    let start = qdrantJsonValueStart(raw, key)
+    if (start < 0 || start >= raw.size || raw[start] != UInt8(34)) {
+        return ""
+    }
+    let scan = qdrantReadJsonStringAt(raw, start)
+    if (!scan.ok) {
+        return ""
+    }
+    scan.value
+}
+
+private func qdrantJsonObjectField(raw: String, key: String): String {
+    let start = qdrantJsonValueStart(raw, key)
+    if (start < 0) {
+        return ""
+    }
+    qdrantJsonEnclosedAt(raw, start, "{", "}")
+}
+
+private func qdrantJsonArrayField(raw: String, key: String): String {
+    let start = qdrantJsonValueStart(raw, key)
+    if (start < 0) {
+        return ""
+    }
+    qdrantJsonEnclosedAt(raw, start, "[", "]")
+}
+
+private func qdrantJsonIntField(raw: String, key: String, fallback: Int64): Int64 {
+    let value = qdrantJsonScalarField(raw, key)
+    if (value == "") {
+        return fallback
+    }
+    try { Int64.parse(value) } catch (_: Exception) { fallback }
+}
+
+private func qdrantJsonFloatField(raw: String, key: String, fallback: Float64): Float64 {
+    let value = qdrantJsonScalarField(raw, key)
+    if (value == "") {
+        return fallback
+    }
+    try { Float64.parse(value) } catch (_: Exception) { fallback }
+}
+
+private func qdrantJsonScalarField(raw: String, key: String): String {
+    let start = qdrantJsonValueStart(raw, key)
+    if (start < 0 || start >= raw.size) {
+        return ""
+    }
+    if (raw[start] == UInt8(34)) {
+        return qdrantJsonStringField(raw, key)
+    }
+    var end = start
+    while (end < raw.size && raw[end] != UInt8(44) && raw[end] != UInt8(125) && raw[end] != UInt8(93) && raw[end] != UInt8(32) && raw[end] != UInt8(10) && raw[end] != UInt8(13) && raw[end] != UInt8(9)) {
+        end += 1
+    }
+    raw[start..end].trimAscii()
+}
+
+private func qdrantJsonValueStart(raw: String, key: String): Int64 {
+    var i: Int64 = 0
+    var escaped = false
+    while (i < raw.size) {
+        let ch = raw[i]
+        if (ch == UInt8(34) && !escaped) {
+            let scan = qdrantReadJsonStringAt(raw, i)
+            if (scan.ok && scan.value == key) {
+                var colon = qdrantSkipJsonWhitespace(raw, scan.end)
+                if (colon < raw.size && raw[colon] == UInt8(58)) {
+                    return qdrantSkipJsonWhitespace(raw, colon + 1)
+                }
+            }
+            i = if (scan.end > i) { scan.end } else { i + 1 }
+            escaped = false
+            continue
+        }
+        if (ch == UInt8(92) && !escaped) {
+            escaped = true
+        } else {
+            escaped = false
+        }
+        i += 1
+    }
+    -1
+}
+
+private func qdrantReadJsonStringAt(raw: String, start: Int64): QdrantJsonStringScan {
+    let scan = QdrantJsonStringScan()
+    if (start < 0 || start >= raw.size || raw[start] != UInt8(34)) {
+        return scan
+    }
+    var i = start + 1
+    var escaped = false
+    while (i < raw.size) {
+        let ch = raw[i]
+        if (escaped) {
+            escaped = false
+        } else if (ch == UInt8(92)) {
+            escaped = true
+        } else if (ch == UInt8(34)) {
+            scan.ok = true
+            scan.value = qdrantJsonUnescapeString(raw[start + 1..i])
+            scan.end = i + 1
+            return scan
+        }
+        i += 1
+    }
+    scan
+}
+
+private func qdrantSkipJsonWhitespace(raw: String, start: Int64): Int64 {
+    var i = start
+    while (i < raw.size && (raw[i] == UInt8(32) || raw[i] == UInt8(10) || raw[i] == UInt8(13) || raw[i] == UInt8(9))) {
+        i += 1
+    }
+    i
+}
+
+private func qdrantJsonUnescapeString(raw: String): String {
+    raw.replace("\\\"", "\"").replace("\\n", "\n").replace("\\r", "\r").replace("\\t", "\t").replace("\\\\", "\\")
+}
+
+private func qdrantJsonEnclosedAt(raw: String, start: Int64, open: String, close: String): String {
+    let openByte = qdrantDelimiterByte(open)
+    let closeByte = qdrantDelimiterByte(close)
+    if (start < 0 || start >= raw.size || raw[start] != openByte) {
+        return ""
+    }
+    var depth: Int64 = 0
+    var escaped = false
+    var inString = false
+    var i = start
+    while (i < raw.size) {
+        let ch = raw[i]
+        if (inString) {
+            if (escaped) {
+                escaped = false
+            } else if (ch == UInt8(92)) {
+                escaped = true
+            } else if (ch == UInt8(34)) {
+                inString = false
+            }
+        } else if (ch == UInt8(34)) {
+            inString = true
+        } else if (ch == openByte) {
+            depth += 1
+        } else if (ch == closeByte) {
+            depth -= 1
+            if (depth == 0) {
+                return raw[start..i + 1]
+            }
+        }
+        i += 1
+    }
+    ""
+}
+
+private func qdrantDelimiterByte(value: String): UInt8 {
+    if (value == "{") {
+        return UInt8(123)
+    }
+    if (value == "}") {
+        return UInt8(125)
+    }
+    if (value == "[") {
+        return UInt8(91)
+    }
+    UInt8(93)
+}
+
+private func qdrantJsonObjectChunks(body: String): ArrayList<String> {
+    let objects = ArrayList<String>()
+    var depth: Int64 = 0
+    var escaped = false
+    var inString = false
+    var current = StringBuilder()
+    for (ch in body.toRuneArray()) {
+        let text = "${ch}"
+        if (inString) {
+            current.append(ch)
+            if (escaped) {
+                escaped = false
+            } else if (ch == r'\\') {
+                escaped = true
+            } else if (ch == r'"') {
+                inString = false
+            }
+            continue
+        }
+        if (ch == r'"') {
+            if (depth > 0) {
+                current.append(ch)
+            }
+            inString = true
+        } else if (text == "{") {
+            depth += 1
+            current.append(ch)
+        } else if (text == "}") {
+            if (depth > 0) {
+                current.append(ch)
+            }
+            depth -= 1
+            if (depth == 0) {
+                objects.add(current.toString())
+                current = StringBuilder()
+            }
+        } else if (depth > 0) {
+            current.append(ch)
+        }
+    }
+    objects
 }
 
 public class GraphNodeTypes {
@@ -2019,6 +2788,9 @@ private func cosineSimilarity(left: ArrayList<Float64>, right: ArrayList<Float64
 }
 
 private func vectorRecordAllowed(record: VectorRecord, filters: VectorSearchFilters): Bool {
+    if (filters.repo != "" && record.metadata.repo != filters.repo) {
+        return false
+    }
     if (filters.sourceType != "" && record.metadata.sourceType != filters.sourceType) {
         return false
     }
