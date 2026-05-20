@@ -79,6 +79,18 @@ public class SourceFetchResult {
     public init() {}
 }
 
+private class GitCodeContentsFile {
+    var ok: Bool = false
+    var status: String = "malformed_contents_response"
+    var body: String = ""
+    var path: String = ""
+    var sha: String = ""
+    var htmlUrl: String = ""
+    var downloadUrl: String = ""
+
+    init() {}
+}
+
 public interface SourceFetchRunner {
     func fetch(request: SourceFetchRequest): SourceFetchResult
 }
@@ -977,17 +989,35 @@ public class SourceRequestBuilder {
     public func gitCodeSource(repo: String, ref: String, path: String): SourceFetchRequest {
         let parts = parseGitCodeRepoPath(repo)
         if (!parts.valid) {
-            return invalidSourceFetchRequest(SourceKinds.GITCODE_SOURCE, "source_snapshot", parts.diagnostic)
+            return invalidSourceFetchRequest(SourceKinds.GITCODE_SOURCE, "source_raw_snapshot", parts.diagnostic)
         }
         if (!isSafeGitCodeRef(ref)) {
-            return invalidSourceFetchRequest(SourceKinds.GITCODE_SOURCE, "source_snapshot", "invalid_ref")
+            return invalidSourceFetchRequest(SourceKinds.GITCODE_SOURCE, "source_raw_snapshot", "invalid_ref")
         }
         let safePath = normalizeGitCodeSourcePath(path)
         if (safePath == "") {
-            return invalidSourceFetchRequest(SourceKinds.GITCODE_SOURCE, "source_snapshot", "invalid_source_path")
+            return invalidSourceFetchRequest(SourceKinds.GITCODE_SOURCE, "source_raw_snapshot", "invalid_source_path")
         }
         let normalizedRepo = "${parts.owner}/${parts.repo}"
-        let request = SourceFetchRequest(SourceKinds.GITCODE_SOURCE, "${this.gitCodeApiRoot}/repos/${parts.owner}/${parts.repo}/contents/${safePath}?ref=${ref}", repo: normalizedRepo, ref: ref, path: safePath, accept: "text/plain", purpose: "source_snapshot")
+        let request = SourceFetchRequest(SourceKinds.GITCODE_SOURCE, "${this.gitCodeApiRoot}/repos/${parts.owner}/${parts.repo}/raw/${safePath}?ref=${ref}", repo: normalizedRepo, ref: ref, path: safePath, accept: "text/plain, application/octet-stream", purpose: "source_raw_snapshot")
+        request.authHint = "gitcode-token-optional-redacted"
+        request
+    }
+
+    public func gitCodeSourceContents(repo: String, ref: String, path: String): SourceFetchRequest {
+        let parts = parseGitCodeRepoPath(repo)
+        if (!parts.valid) {
+            return invalidSourceFetchRequest(SourceKinds.GITCODE_SOURCE, "source_contents_snapshot", parts.diagnostic)
+        }
+        if (!isSafeGitCodeRef(ref)) {
+            return invalidSourceFetchRequest(SourceKinds.GITCODE_SOURCE, "source_contents_snapshot", "invalid_ref")
+        }
+        let safePath = normalizeGitCodeSourcePath(path)
+        if (safePath == "") {
+            return invalidSourceFetchRequest(SourceKinds.GITCODE_SOURCE, "source_contents_snapshot", "invalid_source_path")
+        }
+        let normalizedRepo = "${parts.owner}/${parts.repo}"
+        let request = SourceFetchRequest(SourceKinds.GITCODE_SOURCE, "${this.gitCodeApiRoot}/repos/${parts.owner}/${parts.repo}/contents/${safePath}?ref=${ref}", repo: normalizedRepo, ref: ref, path: safePath, accept: "application/json", purpose: "source_contents_snapshot")
         request.authHint = "gitcode-token-optional-redacted"
         request
     }
@@ -1248,6 +1278,24 @@ public class SourceResponseNormalizer {
         if (result.body.size > 200000) {
             result.truncated = true
             result.body = result.body[0..200000]
+        }
+        if (result.ok && request.kind == SourceKinds.GITCODE_SOURCE && request.purpose == "source_contents_snapshot") {
+            let parsed = parseGitCodeContentsFile(result.body, request.path)
+            if (!parsed.ok) {
+                result.ok = false
+                result.status = parsed.status
+                result.body = parsed.status
+            } else {
+                result.body = parsed.body
+                result.path = request.path
+                result.commit = parsed.sha
+                result.bodyHash = stableSummaryHash(result.body)
+                if (parsed.htmlUrl != "") {
+                    result.sourceUrl = parsed.htmlUrl
+                } else if (parsed.downloadUrl != "") {
+                    result.sourceUrl = parsed.downloadUrl
+                }
+            }
         }
         result.bytes = result.body.size
         if (result.bodyHash == "") {
@@ -1524,7 +1572,16 @@ private func fetchGitCodePublicRepo(kb: KnowledgeBase, config: CkbRuntimeConfig,
                     state.truncated = true
                     break
                 }
-                fetchLiveRequest(kb, config, options, runner, markPublicRepoRequest(builder.gitCodeSource(repo.fullName, repo.defaultBranch, path)), state)
+                let rawFetch = fetchLiveRequest(kb, config, options, runner, markPublicRepoRequest(builder.gitCodeSource(repo.fullName, repo.defaultBranch, path)), state)
+                if (!rawFetch.ok && shouldFallbackToGitCodeContents(rawFetch)) {
+                    if (!liveBudgetAllows(state, options)) {
+                        state.truncated = true
+                        state.out += "sourceFallback repo=${repo.fullName} path=${path} rawStatus=${rawFetch.status} contentsFallback=skipped reason=max_items\n"
+                        break
+                    }
+                    state.out += "sourceFallback repo=${repo.fullName} path=${path} rawStatus=${rawFetch.status} contentsFallback=attempted\n"
+                    fetchLiveRequest(kb, config, options, runner, markPublicRepoRequest(builder.gitCodeSourceContents(repo.fullName, repo.defaultBranch, path)), state)
+                }
             }
         }
     } else {
@@ -1567,6 +1624,13 @@ private func fetchLiveRequest(kb: KnowledgeBase, config: CkbRuntimeConfig, optio
 
 private func liveBudgetAllows(state: LiveSyncRunState, options: LiveSyncOptions): Bool {
     options.maxItems < 0 || state.requests < options.maxItems
+}
+
+private func shouldFallbackToGitCodeContents(fetch: SourceFetchResult): Bool {
+    if (fetch.ok) {
+        return false
+    }
+    fetch.status == "http_400" || fetch.status == "http_404" || fetch.status == "not_found" || fetch.status == "source_unavailable" || fetch.status == "server_error" || fetch.statusCode == 400 || fetch.statusCode == 404 || fetch.statusCode >= 500
 }
 
 private func markPublicRepoRequest(request: SourceFetchRequest): SourceFetchRequest {
@@ -3038,6 +3102,122 @@ private func parseCurlStatus(raw: String): Int64 {
     try { Int64.parse(line) } catch (_: Exception) { 0 }
 }
 
+private func parseGitCodeContentsFile(body: String, expectedPath: String): GitCodeContentsFile {
+    let parsed = GitCodeContentsFile()
+    let safeBody = asciiJsonProjection(body)
+    if (jsonStringField(safeBody, "type") != "file") {
+        parsed.status = "malformed_contents_response"
+        return parsed
+    }
+    let path = jsonStringField(safeBody, "path")
+    if (path == "" || path != expectedPath) {
+        parsed.status = "contents_path_mismatch"
+        return parsed
+    }
+    if (jsonStringField(safeBody, "encoding").toAsciiLower() != "base64") {
+        parsed.status = "unsupported_contents_encoding"
+        return parsed
+    }
+    let content = jsonStringField(safeBody, "content")
+    if (content == "") {
+        parsed.status = "malformed_contents_response"
+        return parsed
+    }
+    let decoded = decodeBase64Utf8(content)
+    if (!decoded.ok) {
+        parsed.status = decoded.status
+        return parsed
+    }
+    parsed.ok = true
+    parsed.status = "ok"
+    parsed.body = decoded.body
+    parsed.path = path
+    parsed.sha = jsonStringField(safeBody, "sha")
+    parsed.htmlUrl = jsonStringField(safeBody, "html_url")
+    parsed.downloadUrl = jsonStringField(safeBody, "download_url")
+    parsed
+}
+
+private class Base64DecodeResult {
+    var ok: Bool = false
+    var status: String = "invalid_base64"
+    var body: String = ""
+
+    init() {}
+}
+
+private func decodeBase64Utf8(raw: String): Base64DecodeResult {
+    let result = Base64DecodeResult()
+    let bytes = ArrayList<Byte>()
+    var buffer: Int64 = 0
+    var bits: Int64 = 0
+    var padding = false
+    for (ch in raw.toRuneArray()) {
+        if (ch == r' ' || ch == r'\n' || ch == r'\r' || ch == r'\t') {
+            continue
+        }
+        if (ch == r'=') {
+            padding = true
+            continue
+        }
+        if (padding) {
+            return result
+        }
+        let value = base64Value(ch)
+        if (value < 0) {
+            return result
+        }
+        buffer = buffer * 64 + value
+        bits += 6
+        while (bits >= 8) {
+            bits -= 8
+            let byteValue = (buffer / pow2(bits)) % 256
+            bytes.add(UInt8(byteValue))
+        }
+        if (bits > 0) {
+            buffer = buffer % pow2(bits)
+        } else {
+            buffer = 0
+        }
+    }
+    try {
+        result.body = String.fromUtf8(bytes.toArray())
+        result.ok = true
+        result.status = "ok"
+    } catch (_: Exception) {
+        result.status = "invalid_utf8_contents"
+    }
+    result
+}
+
+private func base64Value(ch: Rune): Int64 {
+    let code = Int64(UInt32(ch))
+    if (code >= Int64(UInt32(r'A')) && code <= Int64(UInt32(r'Z'))) {
+        return code - Int64(UInt32(r'A'))
+    }
+    if (code >= Int64(UInt32(r'a')) && code <= Int64(UInt32(r'z'))) {
+        return 26 + code - Int64(UInt32(r'a'))
+    }
+    if (code >= Int64(UInt32(r'0')) && code <= Int64(UInt32(r'9'))) {
+        return 52 + code - Int64(UInt32(r'0'))
+    }
+    if (ch == r'+') {
+        return 62
+    }
+    if (ch == r'/') {
+        return 63
+    }
+    -1
+}
+
+private func pow2(bits: Int64): Int64 {
+    var out: Int64 = 1
+    for (_ in 0..bits) {
+        out *= 2
+    }
+    out
+}
+
 private func parseCurlContentType(raw: String): String {
     let marker = "CKB_CONTENT_TYPE:"
     let idx = findText(raw, marker)
@@ -3063,6 +3243,9 @@ private func renderLiveFetchSummary(request: SourceFetchRequest, fetch: SourceFe
         shape = "source-snapshot"
     }
     var out = "request kind=${request.kind} method=${request.method} sourceUrl=${redactSensitive(request.url)} pageParam=${request.paginationParam} perPageParam=${request.perPageParam} timeoutMillis=${request.timeoutMillis} retryCount=${request.retryCount} auth=${auth.state} authHeader=${auth.headerStrategy}"
+    if (request.kind == SourceKinds.GITCODE_SOURCE) {
+        out += " sourceVariant=${if (request.purpose == "source_contents_snapshot") { "contents" } else { "raw" }}"
+    }
     out += " -> status=${fetch.status} httpStatus=${fetch.statusCode} shape=${shape} bytes=${fetch.bytes} contentType=${fetch.contentType} bodyHash=${fetch.bodyHash} attempts=${fetch.attempts} errorClass=${classifyFetchError(fetch)}"
     if (auth.diagnostic != "") {
         out += " authDiagnostic=${auth.diagnostic}"

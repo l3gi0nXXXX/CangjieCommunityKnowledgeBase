@@ -208,9 +208,12 @@ public class CkbBaselineTest {
         @Expect(repo.url, "https://api.gitcode.com/api/v5/repos/cangjie/stdx?ref=main")
         @Expect(cangjieRepo.url, "https://api.gitcode.com/api/v5/repos/cangjie/cangjie?ref=main")
         @Expect(source.method, "GET")
-        @Expect(source.url, "https://api.gitcode.com/api/v5/repos/cangjie/stdx/contents/src/http/client.cj?ref=main")
-        @Expect(cangjieSource.url, "https://api.gitcode.com/api/v5/repos/cangjie/cangjie/contents/src/main.cj?ref=main")
-        @Expect(source.accept, "text/plain")
+        @Expect(source.url, "https://api.gitcode.com/api/v5/repos/cangjie/stdx/raw/src/http/client.cj?ref=main")
+        @Expect(cangjieSource.url, "https://api.gitcode.com/api/v5/repos/cangjie/cangjie/raw/src/main.cj?ref=main")
+        @Expect(source.accept.contains("application/octet-stream"), true)
+        let fallbackSource = builder.gitCodeSourceContents("cangjie/stdx", "main", "src/http/client.cj")
+        @Expect(fallbackSource.url, "https://api.gitcode.com/api/v5/repos/cangjie/stdx/contents/src/http/client.cj?ref=main")
+        @Expect(fallbackSource.accept, "application/json")
         @Expect(source.authHint.contains("redacted"), true)
         @Expect(issues.url, "https://api.gitcode.com/api/v5/repos/cangjie/cangjie/issues?state=all&page=1&per_page=100")
         @Expect(pulls.url, "https://api.gitcode.com/api/v5/repos/cangjie/cangjie/pulls?state=all&page=1&per_page=100")
@@ -1174,6 +1177,109 @@ network.allowedHosts=docs.example.org
     }
 
     @TestCase
+    public func syncLiveRawSourceSuccessDoesNotCallContentsFallback(): Unit {
+        let kb = newOfflineKnowledgeBase()
+        let config = CkbRuntimeConfig()
+        config.networkEnabled = true
+        let options = LiveSyncOptions()
+        options.dryRun = true
+        options.maxRepos = 1
+        options.maxFilesPerRepo = 1
+        options.maxItems = 8
+        let runner = ScriptedSourceFetchRunner()
+
+        let text = ckbSyncLive(kb, config, options, runner: runner, store: FileKnowledgeStore("target/ckb-raw-no-fallback"))
+
+        @Expect(text.contains("sourceVariant=raw"), true)
+        @Expect(text.contains("contentsFallback=attempted"), false)
+        @Expect(countCallsContaining(runner.calls, "/contents/"), 0)
+    }
+
+    @TestCase
+    public func syncLiveRawFailureFallsBackToContentsBase64AndPreservesPublicMetadata(): Unit {
+        let kb = newOfflineKnowledgeBase()
+        let config = CkbRuntimeConfig()
+        config.networkEnabled = true
+        let options = LiveSyncOptions()
+        options.apply = true
+        options.maxRepos = 1
+        options.maxFilesPerRepo = 1
+        options.maxItems = 8
+        let runner = RawFailContentsSourceFetchRunner()
+        let store = FileKnowledgeStore("target/ckb-contents-fallback-apply")
+
+        let text = ckbSyncLive(kb, config, options, runner: runner, store: store)
+        let source = cangjie_source_search(kb, "fallbackMain", 5)
+        let pack = cangjie_evidence_pack(kb, "fallbackMain", 5)
+
+        @Expect(text.contains("contentsFallback=attempted"), true)
+        @Expect(text.contains("sourceVariant=contents"), true)
+        @Expect(text.contains("fallback-token"), false)
+        @Expect(countCallsContaining(runner.calls, "/raw/"), 1)
+        @Expect(countCallsContaining(runner.calls, "/contents/"), 1)
+        @Expect(source.records.size > 0, true)
+        @Expect(source.records[0].chunk.contains("fallbackMain"), true)
+        @Expect(source.records[0].metadata.repoVisibility, RepoVisibility.PUBLIC)
+        @Expect(source.records[0].metadata.repo, "cangjie/repo-one")
+        @Expect(source.records[0].metadata.path, "src/main.cj")
+        @Expect(pack.sourceEvidence.size > 0, true)
+        @Expect(store.loadRaw().size > 0, true)
+    }
+
+    @TestCase
+    public func contentsFallbackRejectsMalformedEncodingAndPathMismatch(): Unit {
+        let builder = SourceRequestBuilder()
+        let normalizer = SourceResponseNormalizer()
+        let request = builder.gitCodeSourceContents("cangjie/repo-one", "dev", "src/main.cj")
+        request.repoVisibility = RepoVisibility.PUBLIC
+
+        let missing = SourceFetchResult()
+        missing.ok = true
+        missing.statusCode = 200
+        missing.body = "{\"type\":\"file\",\"encoding\":\"base64\",\"path\":\"src/main.cj\"}"
+        let missingNormalized = normalizer.normalize(request, missing)
+        @Expect(missingNormalized.ok, false)
+        @Expect(missingNormalized.status, "malformed_contents_response")
+
+        let plain = SourceFetchResult()
+        plain.ok = true
+        plain.statusCode = 200
+        plain.body = "{\"type\":\"file\",\"encoding\":\"plain\",\"content\":\"hello\",\"path\":\"src/main.cj\"}"
+        let plainNormalized = normalizer.normalize(request, plain)
+        @Expect(plainNormalized.ok, false)
+        @Expect(plainNormalized.status, "unsupported_contents_encoding")
+
+        let mismatch = SourceFetchResult()
+        mismatch.ok = true
+        mismatch.statusCode = 200
+        mismatch.body = "{\"type\":\"file\",\"encoding\":\"base64\",\"content\":\"IyBSRUFETUUK\",\"path\":\"README.md\"}"
+        let mismatchNormalized = normalizer.normalize(request, mismatch)
+        @Expect(mismatchNormalized.ok, false)
+        @Expect(mismatchNormalized.status, "contents_path_mismatch")
+    }
+
+    @TestCase
+    public func contentsFallbackObeysMaxItemsBudgetAndDoesNotFetchPrivateRepos(): Unit {
+        let kb = newOfflineKnowledgeBase()
+        let config = CkbRuntimeConfig()
+        config.networkEnabled = true
+        let options = LiveSyncOptions()
+        options.dryRun = true
+        options.maxRepos = 1
+        options.maxFilesPerRepo = 1
+        options.maxItems = 3
+        let runner = RawFailContentsSourceFetchRunner()
+
+        let text = ckbSyncLive(kb, config, options, runner: runner, store: FileKnowledgeStore("target/ckb-contents-budget"))
+
+        @Expect(text.contains("contentsFallback=skipped reason=max_items"), true)
+        @Expect(countCallsContaining(runner.calls, "/contents/"), 0)
+        @Expect(text.contains("repo=cangjie/private-one visibility=public"), false)
+        @Expect(countCallsContaining(runner.calls, "private-one/raw/"), 0)
+        @Expect(countCallsContaining(runner.calls, "private-one/contents/"), 0)
+    }
+
+    @TestCase
     public func syncLiveDryRunSurvivesUtf8GitCodeDiscoveryAndTreePayloads(): Unit {
         let kb = newOfflineKnowledgeBase()
         let config = CkbRuntimeConfig()
@@ -1733,6 +1839,72 @@ class ScriptedSourceFetchRunner <: SourceFetchRunner {
             return "<html>Cangjie public documentation</html>"
         }
         "fixture body"
+    }
+}
+
+private func countCallsContaining(calls: ArrayList<SourceFetchRequest>, needle: String): Int64 {
+    var count: Int64 = 0
+    for (call in calls) {
+        if (call.url.contains(needle)) {
+            count += 1
+        }
+    }
+    count
+}
+
+class RawFailContentsSourceFetchRunner <: SourceFetchRunner {
+    public var calls: ArrayList<SourceFetchRequest> = ArrayList<SourceFetchRequest>()
+
+    public init() {}
+
+    public func fetch(request: SourceFetchRequest): SourceFetchResult {
+        this.calls.add(request)
+        let result = SourceFetchResult()
+        result.sourceUrl = request.url
+        result.normalizedType = request.kind
+        result.repo = request.repo
+        result.ref = request.ref
+        result.path = request.path
+        result.repoVisibility = request.repoVisibility
+        result.attempts = 1
+        if (request.kind == SourceKinds.GITCODE_ORG) {
+            result.ok = true
+            result.status = "ok"
+            result.statusCode = 200
+            result.contentType = "application/json"
+            if (request.repo == "cangjie") {
+                result.body = "[{\"id\":1,\"path\":\"repo-one\",\"default_branch\":\"dev\",\"public\":true,\"namespace\":{\"path\":\"cangjie\"}},{\"id\":2,\"path\":\"private-one\",\"default_branch\":\"main\",\"private\":true,\"namespace\":{\"path\":\"cangjie\"}}]"
+            } else {
+                result.body = "[]"
+            }
+        } else if (request.kind == SourceKinds.GITCODE_TREE) {
+            result.ok = true
+            result.status = "ok"
+            result.statusCode = 200
+            result.contentType = "application/json"
+            result.body = "{\"tree\":[{\"type\":\"blob\",\"path\":\"src/main.cj\"}]}"
+        } else if (request.kind == SourceKinds.GITCODE_SOURCE && request.purpose == "source_raw_snapshot") {
+            result.ok = false
+            result.status = "http_400"
+            result.statusCode = 400
+            result.contentType = "application/json"
+            result.body = "{\"message\":\"raw unavailable\",\"token\":\"fallback-token\"}"
+        } else if (request.kind == SourceKinds.GITCODE_SOURCE && request.purpose == "source_contents_snapshot") {
+            result.ok = true
+            result.status = "ok"
+            result.statusCode = 200
+            result.contentType = "application/json"
+            result.body = "{\"type\":\"file\",\"encoding\":\"base64\",\"content\":\"IyBSRUFETUUKcHVibGljIGZ1bmMgZmFsbGJhY2tNYWluKCk6IFVuaXQge30K\",\"path\":\"src/main.cj\",\"sha\":\"abc123\",\"html_url\":\"https://gitcode.com/cangjie/repo-one/blob/dev/src/main.cj\",\"download_url\":\"https://gitcode.com/cangjie/repo-one/raw/dev/src/main.cj\"}"
+        } else {
+            result.ok = true
+            result.status = "ok"
+            result.statusCode = 200
+            result.contentType = "application/json"
+            result.body = "[]"
+        }
+        result.bytes = result.body.size
+        result.bodyHash = stableSummaryHash(result.body)
+        result
     }
 }
 
