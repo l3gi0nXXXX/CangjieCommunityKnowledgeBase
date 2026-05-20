@@ -431,6 +431,27 @@ public class CkbBaselineTest {
     }
 
     @TestCase
+    public func sourceAnalysisRawUnicodeBodyDoesNotCrashDuringRedactionOrExcerpt(): Unit {
+        let request = SourceAnalysisRequest()
+        request.repo = "Cangjie/community"
+        request.ref = "main"
+        request.query = "source_analysis README.md"
+        request.allowCloneFallback = false
+        let runner = SourceAnalysisFakeRunner()
+        runner.body = "# 仓颉社区\n这是一个包含中文的 README，token=source-secret 后续文本用于验证 Rune 安全截断和脱敏。"
+        runner.sourceUrlSuffix = "?access_token=url-secret&x=1"
+
+        let result = ckbSourceAnalysis(request, runner: runner)
+        let rendered = renderSourceAnalysis(result)
+
+        @Expect(result.filesRead.size, 1)
+        @Expect(result.filesRead[0].excerpt.contains("仓颉社区"), true)
+        @Expect(rendered.contains("source-secret"), false)
+        @Expect(rendered.contains("url-secret"), false)
+        @Expect(rendered.contains("[redacted]"), true)
+    }
+
+    @TestCase
     public func sourceAnalysisDegradesWithoutCloneFallbackAndBlocksPrivateRepos(): Unit {
         let request = SourceAnalysisRequest()
         request.repo = "cangjie/stdx"

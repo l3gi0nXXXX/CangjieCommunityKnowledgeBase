@@ -2528,10 +2528,16 @@ private func sourceAnalysisCitation(repo: String, ref: String, path: String): St
 
 private func sourceExcerpt(body: String): String {
     let clean = redactSensitive(body).replace("\r", " ")
-    if (clean.size <= 160) {
-        return clean
+    let out = StringBuilder()
+    var count: Int64 = 0
+    for (ch in clean.toRuneArray()) {
+        if (count >= 160) {
+            break
+        }
+        out.append(ch)
+        count += 1
     }
-    clean[0..160]
+    out.toString()
 }
 
 private func containsAnyText(text: String, needles: Array<String>): Bool {
@@ -3760,15 +3766,10 @@ private func findText(raw: String, needle: String): Int64 {
     if (needle == "") {
         return 0
     }
-    if (raw.size < needle.size) {
+    if (!raw.contains(needle)) {
         return -1
     }
-    for (i in 0..=raw.size - needle.size) {
-        if (raw[i..i + needle.size] == needle) {
-            return i
-        }
-    }
-    -1
+    raw.split(needle)[0].size
 }
 
 private func configApply(config: CkbRuntimeConfig, key: String, value: String): Unit {
@@ -3877,31 +3878,80 @@ private func parseBool(value: String): Bool {
 
 private func stripAccessTokenQuery(raw: String): String {
     let needle = "access_token="
-    let idx = findText(raw, needle)
-    if (idx < 0) {
+    if (!raw.contains(needle)) {
         return raw
     }
-    var start = idx
+    var prefix = textBeforeFirst(raw, needle)
+    let tail = textAfterFirst(raw, needle)
     var delimiter = ""
-    if (idx > 0) {
-        let previous = raw[idx - 1..idx]
-        if (previous == "?" || previous == "&") {
-            start = idx - 1
-            delimiter = previous
+    if (prefix.endsWith("?")) {
+        prefix = prefix[0..prefix.size - 1]
+        delimiter = "?"
+    } else if (prefix.endsWith("&")) {
+        prefix = prefix[0..prefix.size - 1]
+        delimiter = "&"
+    }
+    let rest = tailAfterRedactedValue(tail, RedactStopMode.QUERY)
+    if (delimiter == "?" && rest.startsWith("&")) {
+        return prefix + "?" + rest[1..rest.size]
+    }
+    prefix + rest
+}
+
+private func textBeforeFirst(raw: String, needle: String): String {
+    raw.split(needle)[0]
+}
+
+private func textAfterFirst(raw: String, needle: String): String {
+    let parts = raw.split(needle)
+    if (parts.size <= 1) {
+        return ""
+    }
+    var out = ""
+    for (i in 1..parts.size) {
+        if (i > 1) {
+            out += needle
+        }
+        out += parts[i]
+    }
+    out
+}
+
+private class RedactStopMode {
+    public static const QUERY = "query"
+    public static const TOKEN = "token"
+    public static const LINE = "line"
+    public static const PATH = "path"
+    public static const URL_AUTHORITY = "url-authority"
+}
+
+private func tailAfterRedactedValue(tail: String, mode: String): String {
+    let out = StringBuilder()
+    var redacting = true
+    for (ch in tail.toRuneArray()) {
+        if (redacting) {
+            if (isRedactStopRune(ch, mode)) {
+                redacting = false
+                out.append(ch)
+            }
+        } else {
+            out.append(ch)
         }
     }
-    var end = idx + needle.size
-    while (end < raw.size) {
-        let ch = raw[end..end + 1]
-        if (ch == "&" || ch == "#" || ch == " " || ch == "\n" || ch == "\r" || ch == "\"" || ch == "'") {
-            break
-        }
-        end += 1
+    out.toString()
+}
+
+private func isRedactStopRune(ch: Rune, mode: String): Bool {
+    if (mode == RedactStopMode.LINE) {
+        return ch == r'\n' || ch == r'\r'
     }
-    if (delimiter == "?" && end < raw.size && raw[end..end + 1] == "&") {
-        return raw[0..start + 1] + raw[end + 1..raw.size]
+    if (mode == RedactStopMode.QUERY) {
+        return ch == r'&' || ch == r'#' || ch == r' ' || ch == r'\n' || ch == r'\r' || ch == r'"' || ch == r'\''
     }
-    raw[0..start] + raw[end..raw.size]
+    if (mode == RedactStopMode.URL_AUTHORITY) {
+        return ch == r'/' || ch == r' ' || ch == r'\n' || ch == r'\r' || ch == r'"' || ch == r'\''
+    }
+    ch == r'&' || ch == r' ' || ch == r'\n' || ch == r'\r' || ch == r'"' || ch == r'\''
 }
 
 private func unquoteConfigValue(value: String): String {
@@ -3939,35 +3989,17 @@ private func redactAssignment(raw: String, key: String): String {
 }
 
 private func redactAfterNeedle(raw: String, needle: String): String {
-    let idx = findText(raw, needle)
-    if (idx < 0) {
+    if (!raw.contains(needle)) {
         return raw
     }
-    var end = idx + needle.size
-    while (end < raw.size) {
-        let ch = raw[end..end + 1]
-        if (ch == "&" || ch == " " || ch == "\n" || ch == "\r" || ch == "\"" || ch == "'") {
-            break
-        }
-        end += 1
-    }
-    raw[0..idx + needle.size] + "[redacted]" + raw[end..raw.size]
+    textBeforeFirst(raw, needle) + needle + "[redacted]" + tailAfterRedactedValue(textAfterFirst(raw, needle), RedactStopMode.TOKEN)
 }
 
 private func redactLineAfterNeedle(raw: String, needle: String): String {
-    let idx = findText(raw, needle)
-    if (idx < 0) {
+    if (!raw.contains(needle)) {
         return raw
     }
-    var end = idx + needle.size
-    while (end < raw.size) {
-        let ch = raw[end..end + 1]
-        if (ch == "\n" || ch == "\r") {
-            break
-        }
-        end += 1
-    }
-    raw[0..idx + needle.size] + "[redacted]" + raw[end..raw.size]
+    textBeforeFirst(raw, needle) + needle + "[redacted]" + tailAfterRedactedValue(textAfterFirst(raw, needle), RedactStopMode.LINE)
 }
 
 private func redactProxyCredentials(raw: String): String {
@@ -3978,27 +4010,35 @@ private func redactProxyCredentials(raw: String): String {
 }
 
 private func redactProxyCredentialsForScheme(raw: String, scheme: String): String {
-    let idx = findText(raw, scheme)
-    if (idx < 0) {
+    if (!raw.contains(scheme)) {
         return raw
     }
-    let authStart = idx + scheme.size
-    var end = authStart
-    var atIndex: Int64 = -1
-    while (end < raw.size) {
-        let ch = raw[end..end + 1]
-        if (ch == "@" && atIndex < 0) {
-            atIndex = end
+    let prefix = textBeforeFirst(raw, scheme) + scheme
+    let tail = textAfterFirst(raw, scheme)
+    let authority = textBeforeFirstAuthorityStop(tail)
+    if (!authority.contains("@")) {
+        return raw
+    }
+    let authParts = authority.split("@")
+    var host = ""
+    for (i in 1..authParts.size) {
+        if (i > 1) {
+            host += "@"
         }
-        if (ch == "/" || ch == " " || ch == "\n" || ch == "\r" || ch == "\"" || ch == "'") {
+        host += authParts[i]
+    }
+    prefix + "[redacted]@" + host + tailAfterRedactedValue(tail, RedactStopMode.URL_AUTHORITY)
+}
+
+private func textBeforeFirstAuthorityStop(raw: String): String {
+    let out = StringBuilder()
+    for (ch in raw.toRuneArray()) {
+        if (isRedactStopRune(ch, RedactStopMode.URL_AUTHORITY)) {
             break
         }
-        end += 1
+        out.append(ch)
     }
-    if (atIndex < 0) {
-        return raw
-    }
-    raw[0..authStart] + "[redacted]@" + raw[atIndex + 1..raw.size]
+    out.toString()
 }
 
 private func redactAbsolutePath(raw: String): String {
@@ -4011,19 +4051,10 @@ private func redactAbsolutePath(raw: String): String {
 }
 
 private func redactPathPrefix(raw: String, prefix: String): String {
-    let idx = findText(raw, prefix)
-    if (idx < 0) {
+    if (!raw.contains(prefix)) {
         return raw
     }
-    var end = idx
-    while (end < raw.size) {
-        let ch = raw[end..end + 1]
-        if (ch == " " || ch == "\n" || ch == "\r" || ch == "\"" || ch == "'") {
-            break
-        }
-        end += 1
-    }
-    raw[0..idx] + "[local-path-redacted]" + raw[end..raw.size]
+    textBeforeFirst(raw, prefix) + "[local-path-redacted]" + tailAfterRedactedValue(textAfterFirst(raw, prefix), RedactStopMode.PATH)
 }
 
 public func stableSummaryHash(raw: String): String {
