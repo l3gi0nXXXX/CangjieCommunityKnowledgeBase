@@ -373,67 +373,52 @@ public func parseGitCodeOrgReposJson(body: String): ArrayList<GitCodeRepoMetadat
     if (!trimmed.startsWith("[") || !trimmed.endsWith("]")) {
         return repos
     }
-    var i: Int64 = 0
-    var inString = false
-    var escaped = false
-    var depth: Int64 = 0
-    var start: Int64 = -1
-    while (i < trimmed.size) {
-        let ch = trimmed[i..i + 1]
-        if (inString) {
-            if (escaped) {
-                escaped = false
-            } else if (ch == "\\") {
-                escaped = true
-            } else if (ch == "\"") {
-                inString = false
-            }
-        } else if (ch == "\"") {
-            inString = true
-        } else if (ch == "{") {
-            if (depth == 0) {
-                start = i
-            }
-            depth += 1
-        } else if (ch == "}") {
-            depth -= 1
-            if (depth == 0 && start >= 0) {
-                let metadata = parseGitCodeRepoObject(trimmed[start..i + 1])
-                if (metadata.fullName != "") {
-                    repos.add(metadata)
-                }
-                start = -1
-            }
+    for (object in jsonObjectChunks(trimmed)) {
+        let metadata = parseGitCodeRepoObject(object)
+        if (metadata.fullName != "") {
+            repos.add(metadata)
         }
-        i += 1
     }
     repos
 }
 
 private func parseGitCodeRepoObject(raw: String): GitCodeRepoMetadata {
+    let safeRaw = asciiJsonProjection(raw)
     let metadata = GitCodeRepoMetadata()
-    let namespaceObject = jsonObjectField(raw, "namespace")
+    let namespaceObject = jsonObjectField(safeRaw, "namespace")
     metadata.org = jsonStringField(namespaceObject, "path")
     metadata.owner = metadata.org
-    metadata.repo = jsonStringField(raw, "path")
+    metadata.repo = jsonStringField(safeRaw, "path")
     if (metadata.repo == "") {
-        metadata.repo = jsonStringField(raw, "name")
+        metadata.repo = jsonStringField(safeRaw, "name")
     }
     if (metadata.owner != "" && metadata.repo != "" && isSafeGitCodePathPart(metadata.owner) && isSafeGitCodePathPart(metadata.repo)) {
         metadata.fullName = "${metadata.owner}/${metadata.repo}"
     }
-    metadata.defaultBranch = jsonStringField(raw, "default_branch")
+    metadata.defaultBranch = jsonStringField(safeRaw, "default_branch")
     if (metadata.defaultBranch == "") {
-        metadata.defaultBranch = jsonStringField(raw, "defaultBranch")
+        metadata.defaultBranch = jsonStringField(safeRaw, "defaultBranch")
     }
-    metadata.sourceUrl = firstNonEmptyJsonString(raw, ["web_url", "html_url", "sourceUrl", "url"])
-    metadata.rawId = jsonScalarField(raw, "id")
-    let visibilityText = normalizeRepoVisibility(jsonStringField(raw, "visibility"))
-    metadata.private = jsonBoolField(raw, "private") || visibilityText == RepoVisibility.PRIVATE
-    metadata.internal = jsonBoolField(raw, "internal") || visibilityText == RepoVisibility.INTERNAL
-    metadata.public = jsonBoolField(raw, "public") || visibilityText == RepoVisibility.PUBLIC
+    metadata.sourceUrl = firstNonEmptyJsonString(safeRaw, ["web_url", "html_url", "sourceUrl", "url"])
+    metadata.rawId = jsonScalarField(safeRaw, "id")
+    let visibilityText = normalizeRepoVisibility(jsonStringField(safeRaw, "visibility"))
+    metadata.private = jsonBoolField(safeRaw, "private") || visibilityText == RepoVisibility.PRIVATE
+    metadata.internal = jsonBoolField(safeRaw, "internal") || visibilityText == RepoVisibility.INTERNAL
+    metadata.public = jsonBoolField(safeRaw, "public") || visibilityText == RepoVisibility.PUBLIC
     metadata.visibility = deriveRepoVisibility(metadata.private, metadata.internal, metadata.public)
     metadata
+}
+
+private func asciiJsonProjection(raw: String): String {
+    let out = StringBuilder()
+    for (ch in raw.toRuneArray()) {
+        if (UInt32(ch) <= 0x7Fu32) {
+            out.append(ch)
+        } else {
+            out.append(r' ')
+        }
+    }
+    out.toString()
 }
 
 private func normalizeRepoVisibility(raw: String): String {
@@ -1129,65 +1114,68 @@ private func normalizeGitCodeSourcePath(raw: String): String {
 private func jsonObjectChunks(body: String): ArrayList<String> {
     let objects = ArrayList<String>()
     var depth: Int64 = 0
-    var start: Int64 = -1
+    var current = StringBuilder()
     var inString = false
     var escaped = false
-    var i: Int64 = 0
-    while (i < body.size) {
-        let ch = body[i..i + 1]
+    for (ch in body.toRuneArray()) {
         if (inString) {
             if (escaped) {
                 escaped = false
-            } else if (ch == "\\") {
+            } else if (ch == r'\\') {
                 escaped = true
-            } else if (ch == "\"") {
+            } else if (ch == r'"') {
                 inString = false
             }
-        } else if (ch == "\"") {
+        } else if (ch == r'"') {
             inString = true
-        } else if (ch == "{") {
+        } else if (ch == r'{') {
             if (depth == 0) {
-                start = i
+                current = StringBuilder()
             }
             depth += 1
-        } else if (ch == "}") {
+        }
+        if (depth > 0) {
+            current.append(ch)
+        }
+        if (!inString && ch == r'}') {
             depth -= 1
-            if (depth == 0 && start >= 0) {
-                objects.add(body[start..i + 1])
-                start = -1
+            if (depth == 0) {
+                objects.add(current.toString())
             }
         }
-        i += 1
     }
     objects
 }
 
 private func nestedJsonObjectChunks(body: String): ArrayList<String> {
     let objects = ArrayList<String>()
-    let starts = ArrayList<Int64>()
+    let chunks = ArrayList<StringBuilder>()
     var inString = false
     var escaped = false
-    var i: Int64 = 0
-    while (i < body.size) {
-        let ch = body[i..i + 1]
+    for (ch in body.toRuneArray()) {
         if (inString) {
             if (escaped) {
                 escaped = false
-            } else if (ch == "\\") {
+            } else if (ch == r'\\') {
                 escaped = true
-            } else if (ch == "\"") {
+            } else if (ch == r'"') {
                 inString = false
             }
-        } else if (ch == "\"") {
+        } else if (ch == r'"') {
             inString = true
-        } else if (ch == "{") {
-            starts.add(i)
-        } else if (ch == "}" && starts.size > 0) {
-            let start = starts[starts.size - 1]
-            starts.remove(at: starts.size - 1)
-            objects.add(body[start..i + 1])
         }
-        i += 1
+        for (idx in 0..chunks.size) {
+            chunks[idx].append(ch)
+        }
+        if (!inString && ch == r'{') {
+            let chunk = StringBuilder()
+            chunk.append(ch)
+            chunks.add(chunk)
+        } else if (!inString && ch == r'}' && chunks.size > 0) {
+            let complete = chunks[chunks.size - 1]
+            chunks.remove(at: chunks.size - 1)
+            objects.add(complete.toString())
+        }
     }
     objects
 }
@@ -1308,12 +1296,13 @@ public class SourceCandidateSelector {
         let code = ArrayList<String>()
         let docs = ArrayList<String>()
         for (object in nestedJsonObjectChunks(body)) {
-            let rawPath = jsonStringField(object, "path")
+            let safeObject = asciiJsonProjection(object)
+            let rawPath = jsonStringField(safeObject, "path")
             let path = normalizeGitCodeSourcePath(rawPath)
             if (path == "" || excludedSourceCandidate(path)) {
                 continue
             }
-            let itemType = jsonStringField(object, "type").toAsciiLower()
+            let itemType = jsonStringField(safeObject, "type").toAsciiLower()
             if (itemType == "tree" || itemType == "commit") {
                 continue
             }

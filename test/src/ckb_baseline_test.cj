@@ -260,7 +260,7 @@ public class CkbBaselineTest {
 
     @TestCase
     public func gitCodeOrgRepoListParserBuildsPathsFromNamespaceAndPath(): Unit {
-        let body = "[{\"id\":101,\"full_name\":\"Display Name With Spaces\",\"name\":\"stdx-display\",\"path\":\"stdx\",\"default_branch\":\"main\",\"visibility\":\"public\",\"web_url\":\"https://gitcode.com/cangjie/stdx\",\"namespace\":{\"path\":\"cangjie\"}},{\"id\":\"102\",\"full_name\":\"bad owner/bad repo\",\"name\":\"private-display\",\"path\":\"private-repo\",\"default_branch\":\"dev\",\"private\":true,\"visibility\":\"public\",\"web_url\":\"https://gitcode.com/cangjie/private-repo\",\"namespace\":{\"path\":\"cangjie\"}},{\"id\":103,\"name\":\"internal-repo\",\"defaultBranch\":\"trunk\",\"internal\":true,\"namespace\":{\"path\":\"cangjie-sig\"}},{\"id\":104,\"path\":\"mystery\",\"visibility\":\"friends\",\"namespace\":{\"path\":\"cangjie\"}},{\"id\":105,\"path\":\"broken\",\"visibility\":\"public\",\"namespace\":{\"path\":\"bad owner\"}}]"
+        let body = "[{\"id\":101,\"full_name\":\"Display Name With Spaces\",\"name\":\"stdx-display\",\"path\":\"stdx\",\"description\":\"仓颉 HTTP 客户端\",\"default_branch\":\"main\",\"visibility\":\"public\",\"web_url\":\"https://gitcode.com/cangjie/stdx\",\"namespace\":{\"path\":\"cangjie\"}},{\"id\":\"102\",\"full_name\":\"bad owner/bad repo\",\"name\":\"private-display\",\"path\":\"private-repo\",\"default_branch\":\"dev\",\"private\":true,\"visibility\":\"public\",\"web_url\":\"https://gitcode.com/cangjie/private-repo\",\"namespace\":{\"path\":\"cangjie\"}},{\"id\":103,\"name\":\"internal-repo\",\"defaultBranch\":\"trunk\",\"internal\":true,\"namespace\":{\"path\":\"cangjie-sig\"}},{\"id\":104,\"path\":\"mystery\",\"visibility\":\"friends\",\"namespace\":{\"path\":\"cangjie\"}},{\"id\":105,\"path\":\"broken\",\"visibility\":\"public\",\"namespace\":{\"path\":\"bad owner\"}}]"
 
         let repos = parseGitCodeOrgReposJson(body)
 
@@ -373,7 +373,7 @@ public class CkbBaselineTest {
 
     @TestCase
     public func sourceCandidateSelectorPrefersCjThenReadmeAndDocs(): Unit {
-        let body = "{\"tree\":[{\"type\":\"blob\",\"path\":\"README.md\"},{\"type\":\"blob\",\"path\":\"docs/guide.md\"},{\"type\":\"blob\",\"path\":\"target/generated.cj\"},{\"type\":\"blob\",\"path\":\"src/main.cj\"},{\"type\":\"blob\",\"path\":\"src/lib.png\"},{\"type\":\"tree\",\"path\":\"src\"}]}"
+        let body = "{\"tree\":[{\"type\":\"blob\",\"path\":\"README.md\",\"name\":\"仓颉 说明\"},{\"type\":\"blob\",\"path\":\"docs/guide.md\"},{\"type\":\"blob\",\"path\":\"target/generated.cj\"},{\"type\":\"blob\",\"path\":\"src/main.cj\"},{\"type\":\"blob\",\"path\":\"src/lib.png\"},{\"type\":\"tree\",\"path\":\"src\"}]}"
 
         let selected = SourceCandidateSelector().selectFromTree(body, maxFiles: 3)
 
