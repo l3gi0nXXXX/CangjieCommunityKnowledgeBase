@@ -42,7 +42,7 @@ private class QdrantFakeExecutor <: HttpRequestExecutor {
         this.steps.add(step)
     }
 
-    public func get(request: HttpExecutionRequest): HttpExecutionResponse {
+    public func execute(request: HttpExecutionRequest): HttpExecutionResponse {
         this.calls += 1
         this.methods.add(request.method)
         this.urls.add(request.url)
@@ -69,6 +69,10 @@ private class QdrantFakeExecutor <: HttpRequestExecutor {
         response.transportErrorClass = step.transportClass
         response.transportDiagnostic = step.transportDiagnostic
         response
+    }
+
+    public func get(request: HttpExecutionRequest): HttpExecutionResponse {
+        this.execute(request)
     }
 }
 
@@ -205,6 +209,20 @@ public class CkbQdrantVectorStoreTest {
         @Expect(emptyStatus.state, EmbeddingProviderState.DEGRADED)
         @Expect(emptyStatus.degradedReason, "empty_vector")
         @Expect(invalidExecutor.calls, 0)
+    }
+
+    @TestCase
+    public func qdrantPointIdHashDoesNotOverflowForBaselineAndLongUnicodeIds(): Unit {
+        let baseline = qdrantStablePointId("source-http-client")
+        let longUnicode = qdrantStablePointId("Cangjie/community:docs/语言规范/很长很长很长很长的路径/README.md#source_analysis")
+
+        @Expect(baseline != "", true)
+        @Expect(longUnicode != "", true)
+        @Expect(baseline != "0", true)
+        @Expect(longUnicode != "0", true)
+        @Expect(baseline, qdrantStablePointId("source-http-client"))
+        @Expect(longUnicode, qdrantStablePointId("Cangjie/community:docs/语言规范/很长很长很长很长的路径/README.md#source_analysis"))
+        @Expect(baseline != longUnicode, true)
     }
 }
 

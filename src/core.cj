@@ -852,7 +852,7 @@ private func qdrantQueryBody(queryVector: ArrayList<Float64>, filters: VectorSea
 
 public func qdrantStablePointId(raw: String): String {
     var hash: Int64 = 5381
-    let modulus: Int64 = 922337203685477000
+    let modulus: Int64 = 100000000000000000
     let bytes = raw.toArray()
     for (b in bytes) {
         hash = ((hash * 33) % modulus + (Int64(b) % modulus)) % modulus

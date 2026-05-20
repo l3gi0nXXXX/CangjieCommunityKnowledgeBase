@@ -187,6 +187,7 @@ unless the controlled acceptance explicitly enables them.
 
 Stop GitCodeMonitor first to prevent new inbound events, then stop Metis, then
 stop or disable CKB sync. To roll back CKB knowledge, restart CKB with the last
-known good store or restore the previous `target/ckb-data` backup before
+known good store or restore the previous
+`/Users/l3gi0n/work/workspace_cangjie/CangjieCommunityKnowledgeBase/ckb-data` backup before
 re-enabling Metis queries. Never roll back by copying CKB generated data into
 Metis or GitCodeMonitor.

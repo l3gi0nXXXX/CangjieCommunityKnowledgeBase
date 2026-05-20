@@ -8,8 +8,17 @@ release ticket or run log, not in committed credential files.
 - [ ] CKB, Metis, and GitCodeMonitor are running from separate repositories or
   worktrees.
 - [ ] `.gitignore` ignores local credential files such as `tokenFile` and live
-  runtime configs.
+  runtime configs, and ignores the formal local knowledge store path when that
+  store is inside a parent workspace.
 - [ ] No real credential value is committed in docs, source, tests, or fixtures.
+- [ ] Formal CKB knowledge storage uses
+  `/Users/l3gi0n/work/workspace_cangjie/CangjieCommunityKnowledgeBase/ckb-data`, not `target/ckb-data`.
+- [ ] Every production-like command uses the same explicit
+  `--store /Users/l3gi0n/work/workspace_cangjie/CangjieCommunityKnowledgeBase/ckb-data` argument.
+- [ ] `target/ckb-data` is treated as disposable only. `cjpm clean` removes
+  files under `target/`, so it must not hold the formal active knowledge store.
+- [ ] The committed `data/` directory is only a logical layout skeleton and does
+  not contain live production knowledge records.
 - [ ] `cjpm run --run-args schema` lists health, status, query, evidence, sync,
   rebuild, GitCode official API, auth header strategy, transport diagnostics,
   public-only repository scope, and dry-run/apply acceptance order.
@@ -72,8 +81,8 @@ network.caFile=/etc/ssl/cert.pem
   reports a degraded private-endpoint diagnostic before any network call.
 - [ ] If `vector.allowPrivateEndpoint=false`, a Qdrant loopback endpoint
   reports a degraded private-endpoint diagnostic before any network call.
-- [ ] Until the concrete adapters are linked, `ollama` and `qdrant` factory
-  branches report pending degraded diagnostics instead of falling back to
+- [ ] `embedding.provider=ollama` and `vector.backend=qdrant` route to the real
+  Ollama and Qdrant adapters. They must not silently fall back to
   deterministic/local behavior.
 - [ ] Qdrant storage, `ckb-live.conf`, token files, api-key files, and
   acceptance logs stay ignored local files. Do not bypass `.gitignore`.
@@ -120,7 +129,7 @@ cjpm run --skip-build --run-args "native-http-smoke https://api.gitcode.com/api/
 - [ ] Native HTTP dry-run is started with the ignored local config file:
 
 ```bash
-cjpm run --skip-build --run-args "--config ckb-live.conf sync-live --dry-run --max-repos 5 --max-files-per-repo 2 --max-items 30"
+cjpm run --skip-build --run-args "--config ckb-live.conf --store /Users/l3gi0n/work/workspace_cangjie/CangjieCommunityKnowledgeBase/ckb-data sync-live --dry-run --max-repos 5 --max-files-per-repo 2 --max-items 30"
 ```
 
 - [ ] The native HTTP dry-run reports `network=enabled`, reaches the GitCode
@@ -224,6 +233,35 @@ cjpm run --skip-build --run-args "--config ckb-live.conf sync-live --dry-run --m
   trusted answer generation.
 - [ ] Output contains no token values, `Authorization` header values, `Cookie`
   header values, or private paths.
+
+## Production Embedding and Vector DB
+
+- [ ] Baseline mode explicitly reports `embedding.provider=deterministic` and
+  `vector.backend=local-file`; this mode is accepted only for functional and
+  integration verification.
+- [ ] Production semantic retrieval is not declared complete while CKB still
+  relies only on deterministic embeddings and local-file vectors.
+- [ ] A real embedding provider is selected, with model, dimensions, endpoint,
+  token source, timeout, retry count, batch size, and redaction behavior
+  documented.
+- [ ] A real vector backend is selected, such as Qdrant, Milvus, Chroma, or
+  pgvector. Qdrant is the preferred initial low-operations candidate unless a
+  different backend is explicitly chosen.
+- [ ] Local Ollama `bge-m3:latest` from `baai/bge-m3` is reachable at
+  `http://127.0.0.1:11434/api/embed` and returns 1024-dimensional embeddings.
+- [ ] Local Qdrant single-node container `ckb-qdrant` is reachable at
+  `http://127.0.0.1:6333`, with persistent storage under
+  `/Users/l3gi0n/work/workspace_cangjie/CangjieCommunityKnowledgeBase/ckb-data/qdrant/storage`.
+- [ ] Qdrant smoke verification can create, upsert into, inspect, and delete a
+  1024-dimensional temporary collection without leaving test collections behind.
+- [ ] Active and candidate vector collections are isolated by knowledge version
+  or collection name, and failed candidate vector writes do not replace active
+  retrieval.
+- [ ] Rebuild, backup, restore, health/status, and rollback behavior are tested
+  against the selected vector backend.
+- [ ] Evidence/query acceptance proves semantic retrieval quality against
+  Cangjie source, documentation, website, and GitCode community records, not
+  only keyword-like deterministic vector behavior.
 
 ## Rebuild and Version Safety
 

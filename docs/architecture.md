@@ -29,16 +29,28 @@ non-public repositories into knowledge acquisition.
 
 `FileKnowledgeStore` persists the required logical layout:
 
-- `data/raw`
-- `data/normalized`
-- `data/metadata`
-- `data/indexes`
-- `data/derived`
-- `data/cache`
+- `raw`
+- `normalized`
+- `metadata`
+- `index`
+- `derived`
+- `cache`
 
-Runtime CLI writes generated data under `target/ckb-data` by default. Doctor and
-status output report logical `data/...` paths and counts, but never expose local
-mirror or absolute host paths to Metis-facing evidence output.
+Doctor and status output report logical `data/...` paths and counts, but never
+expose local mirror or absolute host paths to Metis-facing evidence output. The
+project-level `data/` directory is a committed layout skeleton, not the formal
+runtime knowledge store.
+
+The accepted persistent store for this workspace is:
+
+```text
+/Users/l3gi0n/work/workspace_cangjie/CangjieCommunityKnowledgeBase/ckb-data
+```
+
+All production-like commands must pass the same `--store` path. Do not use
+`target/ckb-data` for formal knowledge storage: `target/` is a build artifact
+directory and `cjpm clean` removes it. `target/ckb-data` remains useful only as
+an explicitly disposable test store.
 
 Raw records are normalized into records that retain `sourceUrl`, `repo`,
 `commit`, `path`, `symbol`, crawl/index timestamps, `knowledgeVersion`,
@@ -65,19 +77,22 @@ credentials are present, not token contents or local credential paths.
 The runtime factory boundary is:
 
 - `embeddingProviderFromRuntime` maps deterministic/local values to
-  `DeterministicEmbeddingProvider`, `ollama` to the Ollama adapter branch, and
+  `DeterministicEmbeddingProvider`, `ollama` to `OllamaEmbeddingProvider`, and
   unknown providers to degraded `unsupported_provider`.
 - `vectorStoreFromRuntime` maps `local-file` to `LocalVectorStore`, `qdrant` to
-  the Qdrant adapter branch, and unknown backends to degraded
+  `QdrantVectorStore`, and unknown backends to degraded
   `unsupported_vector_backend`.
 - `newKnowledgeBaseFromStoreWithRuntime` injects both factories into
   `KnowledgeBase`; query, evidence, rebuild, and status code do not depend on
   concrete adapter classes.
 
-Until the HTTP/Ollama/Qdrant core adapters are merged, the Ollama and Qdrant
-factory branches intentionally return pending degraded wrappers. This preserves
-visible production wiring without silently routing production configs back to
-deterministic/local behavior.
+For this workspace, the local production-stack target is Ollama
+`bge-m3:latest` from `baai/bge-m3` plus single-node Qdrant. The embedding API is
+`http://127.0.0.1:11434/api/embed`, returns 1024-dimensional vectors, and the
+Qdrant HTTP API is `http://127.0.0.1:6333`. Qdrant storage is under
+`/Users/l3gi0n/work/workspace_cangjie/CangjieCommunityKnowledgeBase/ckb-data/qdrant/storage`.
+Operational commands and smoke verification are recorded in
+`docs/production-embedding-vector-db.md`.
 
 ## Source Sync
 

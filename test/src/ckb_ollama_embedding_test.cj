@@ -38,6 +38,7 @@ public class CkbOllamaEmbeddingTest {
         config.embeddingModel = "bge-m3:latest"
         config.embeddingEndpoint = "http://127.0.0.1:11434/api/embed"
         config.embeddingDimensions = 1024
+        config.embeddingAllowPrivateEndpoint = true
         let provider = embeddingProviderFromRuntime(config)
         let ready = provider.status()
 
