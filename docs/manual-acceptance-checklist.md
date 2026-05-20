@@ -47,6 +47,24 @@ network.insecureSkipTlsVerify=false
 
 ## Real Source Sync
 
+- [ ] Before full live sync, run the read-only native HTTP smoke command
+  against a public allowlist URL:
+
+```bash
+cjpm run --skip-build --run-args "native-http-smoke https://api.gitcode.com/api/v5/orgs/cangjie/repos?type=public&page=1&per_page=1"
+```
+
+- [ ] Smoke output includes `native-http-smoke`, `route=`, `targetHost=`,
+  `tlsVerifyMode=`, `httpStatus=`, `transportClass=`, and a redacted
+  `transportDiagnostic=`.
+- [ ] Smoke output reports `rawWritten=false`, `candidateWritten=false`, and
+  `activePromoted=false`; no raw/candidate/active knowledge files are created
+  by the smoke command.
+- [ ] Smoke does not read or require `tokenFile`, cookie files, or GitCode
+  credentials. It must not print token, cookie, proxy auth, or absolute local
+  path values even on failure.
+- [ ] Smoke blocks non-HTTP URLs and private-network URLs before any native
+  GET is attempted.
 - [ ] Production live sync uses the Cangjie native HTTP/TLS executor. Dry-run
   output must not contain `curl launch failed`, `curlExitCode=-1`, or any
   other diagnostic that proves the default path still shells out to `curl`.

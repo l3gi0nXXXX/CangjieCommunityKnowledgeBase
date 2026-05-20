@@ -89,6 +89,19 @@ production acceptance unless a controlled diagnostic explicitly requires it.
 Human-facing doctor and dry-run output redacts tokens, cookies, proxy passwords,
 and local absolute paths.
 
+For TLS or route diagnostics, use the read-only native HTTP smoke command
+before running live sync:
+
+```bash
+cjpm run --skip-build --run-args "native-http-smoke https://api.gitcode.com/api/v5/orgs/cangjie/repos?type=public&page=1&per_page=1"
+```
+
+The smoke command does not resolve GitCode credentials, does not read
+`tokenFile` or cookie files, and does not write raw, candidate, or active
+knowledge data. It only performs a native GET for an allowlist URL and reports
+route mode, target host, TLS verify mode, HTTP status, transport class, and a
+redacted diagnostic.
+
 ## Service Protocol
 
 CKB can run as a long-lived stdio service:

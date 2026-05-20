@@ -66,6 +66,15 @@ public func ckbCliMain(args: Array<String>): Int64 {
         print(text)
         return if (text.startsWith("usage error")) { 2 } else { 0 }
     }
+    if (cli.command == "native-http-smoke") {
+        let url = cliTail(input, "native-http-smoke", "")
+        if (url == "") {
+            println("usage error: native-http-smoke requires an allowlist URL")
+            return 2
+        }
+        print(ckbNativeHttpSmoke(url, config))
+        return 0
+    }
     if (cli.command == "rebuild-index") {
         let result = ckbRebuildIndex(kb, store)
         println("rebuild ok=${result.ok} activeKnowledgeVersion=${result.activeVersion} candidateKnowledgeVersion=${result.candidateVersion} count=${result.count}")
@@ -104,7 +113,7 @@ public func ckbCliMain(args: Array<String>): Int64 {
         print(renderQuery(cangjie_evidence_pack(kb, query, 3)))
         return 0
     }
-    println("Usage: cangjie_community_knowledge_base [--config <path>] [--store <path>] doctor | status | metrics | service | service-once <command> | start | stop | restart | sync-once | sync-live (--dry-run|--apply) | scheduler-run | rebuild-index | backup <path> | restore <path> | query <text> | evidence <text> | schema")
+    println("Usage: cangjie_community_knowledge_base [--config <path>] [--store <path>] doctor | status | metrics | service | service-once <command> | start | stop | restart | sync-once | sync-live (--dry-run|--apply) | native-http-smoke <url> | scheduler-run | rebuild-index | backup <path> | restore <path> | query <text> | evidence <text> | schema")
     2
 }
 

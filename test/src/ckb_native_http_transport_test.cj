@@ -1,7 +1,7 @@
 package cangjie_community_knowledge_base_test
 
 import std.collection.ArrayList
-import std.fs.{File, Path}
+import std.fs.{File, Path, exists}
 import std.unittest.*
 import std.unittest.testmacro.*
 
@@ -163,6 +163,71 @@ public class CkbNativeHttpTransportTest {
         @Expect(text.contains("repo=cangjie/unknown-one visibility=public"), false)
         @Expect(text.contains("dry-run-secret"), false)
         @Expect(text.contains("rawWritten=false"), true)
+    }
+
+    @TestCase
+    public func nativeHttpSmokeUsesAllowlistUrlWithoutCredentialsOrWrites(): Unit {
+        let executor = NativeContractSequenceHttpExecutor()
+        executor.add(204, "", "text/plain", "http_204", 0)
+        let config = CkbNativeHttpTransportConfig("", false, "", false, false, "", 10000)
+        let noWritePath = Path("target/ckb-native-smoke-no-write/raw/records.ckb")
+
+        let result = ckbNativeHttpSmokeWithExecutor("https://api.gitcode.com/api/v5/orgs/cangjie/repos?type=public", config, executor)
+        let text = ckbNativeHttpRenderSmokeResult(result)
+
+        @Expect(executor.calls, 1)
+        @Expect(executor.seenHeaders.size, 0)
+        @Expect(result.routeMode, "direct")
+        @Expect(result.targetHost, "api.gitcode.com")
+        @Expect(result.tlsVerifyMode, "strict")
+        @Expect(result.httpStatus, 204)
+        @Expect(text.contains("native-http-smoke"), true)
+        @Expect(text.contains("route=direct"), true)
+        @Expect(text.contains("targetHost=api.gitcode.com"), true)
+        @Expect(text.contains("tlsVerifyMode=strict"), true)
+        @Expect(text.contains("httpStatus=204"), true)
+        @Expect(text.contains("rawWritten=false"), true)
+        @Expect(text.contains("candidateWritten=false"), true)
+        @Expect(text.contains("activePromoted=false"), true)
+        @Expect(exists(noWritePath), false)
+    }
+
+    @TestCase
+    public func nativeHttpSmokeBlocksIllegalAndPrivateUrlsBeforeExecutor(): Unit {
+        let executor = NativeContractSequenceHttpExecutor()
+        executor.add(200, "should-not-run", "text/plain", "http_200", 0)
+        let config = CkbNativeHttpTransportConfig("", false, "", false, false, "", 10000)
+
+        let fileResult = ckbNativeHttpSmokeWithExecutor("file:///tmp/secret", config, executor)
+        let privateResult = ckbNativeHttpSmokeWithExecutor("https://127.0.0.1/secret", config, executor)
+        let privateText = ckbNativeHttpRenderSmokeResult(privateResult)
+
+        @Expect(executor.calls, 0)
+        @Expect(fileResult.status, "blocked_url")
+        @Expect(fileResult.transportClass, "blocked_url")
+        @Expect(fileResult.transportDiagnostic.contains("non-http"), true)
+        @Expect(privateResult.status, "blocked_url")
+        @Expect(privateResult.transportDiagnostic.contains("private-network"), true)
+        @Expect(privateText.contains("transportClass=blocked_url"), true)
+        @Expect(privateText.contains("httpStatus=0"), true)
+    }
+
+    @TestCase
+    public func nativeHttpSmokeRedactsProxyAndFailureDiagnostics(): Unit {
+        let executor = NativeContractSequenceHttpExecutor()
+        executor.addNativeTransportFailure("tls", "TLS failed Authorization: Bearer smoke-token Cookie=session=smoke-cookie proxy=http://user:proxy-secret@127.0.0.1:7897")
+        let config = CkbNativeHttpTransportConfig("http://user:proxy-secret@127.0.0.1:7897", false, "", false, false, "", 10000)
+
+        let result = ckbNativeHttpSmokeWithExecutor("https://api.gitcode.com/api/v5/orgs/cangjie/repos?type=public", config, executor)
+        let text = ckbNativeHttpRenderSmokeResult(result)
+
+        @Expect(result.routeMode, "httpConnectTunnel")
+        @Expect(text.contains("route=httpConnectTunnel"), true)
+        @Expect(text.contains("[redacted]@127.0.0.1:7897"), true)
+        @Expect(text.contains("smoke-token"), false)
+        @Expect(text.contains("smoke-cookie"), false)
+        @Expect(text.contains("proxy-secret"), false)
+        @Expect(text.contains("transportClass=tls"), true)
     }
 }
 
