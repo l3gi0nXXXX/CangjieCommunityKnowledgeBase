@@ -96,6 +96,81 @@ private class GitCodeContentsFile {
     init() {}
 }
 
+public class SourceAnalysisTriggerReasons {
+    public static let COMPILE_ERROR: String = "compile_error"
+    public static let RUNTIME_BUG: String = "runtime_bug"
+    public static let STACK_TRACE: String = "stack_trace"
+    public static let FILE_PATH_MENTIONED: String = "file_path_mentioned"
+    public static let SYMBOL_MENTIONED: String = "symbol_mentioned"
+    public static let PR_DIFF_REVIEW: String = "pr_diff_review"
+    public static let INSUFFICIENT_SOURCE_EVIDENCE: String = "insufficient_source_evidence"
+    public static let FRESH_SOURCE_REQUIRED: String = "fresh_source_required"
+    public static let MANUAL_REQUEST: String = "manual_request"
+}
+
+public class SourceAnalysisAcquisition {
+    public static let NONE: String = "none"
+    public static let API_RAW: String = "api_raw"
+    public static let API_CONTENTS: String = "api_contents"
+    public static let CLONE: String = "clone"
+}
+
+public class SourceAnalysisRequest {
+    public var repo: String = ""
+    public var ref: String = "main"
+    public var query: String = ""
+    public var issueUrl: String = ""
+    public var prUrl: String = ""
+    public var changedFiles: ArrayList<String> = ArrayList<String>()
+    public var candidatePaths: ArrayList<String> = ArrayList<String>()
+    public var allowCloneFallback: Bool = false
+    public var maxFiles: Int64 = 5
+    public var maxBytes: Int64 = 200000
+    public var timeoutMillis: Int64 = 10000
+    public var repoVisibility: String = RepoVisibility.PUBLIC
+
+    public init() {}
+}
+
+public class TriggerDecision {
+    public var shouldAnalyze: Bool = false
+    public var triggerReasons: ArrayList<String> = ArrayList<String>()
+    public var acquisitionPlan: String = "none"
+    public var degraded: Bool = false
+    public var diagnostic: String = ""
+
+    public init() {}
+}
+
+public class SourceAnalysisFile {
+    public var repo: String = ""
+    public var ref: String = ""
+    public var path: String = ""
+    public var sourceUrl: String = ""
+    public var bodyHash: String = ""
+    public var excerpt: String = ""
+    public var bytes: Int64 = 0
+    public var acquisition: String = ""
+
+    public init() {}
+}
+
+public class SourceAnalysisResult {
+    public var analysisId: String = ""
+    public var repo: String = ""
+    public var ref: String = ""
+    public var commit: String = ""
+    public var triggerReasons: ArrayList<String> = ArrayList<String>()
+    public var sourceAcquisition: String = SourceAnalysisAcquisition.NONE
+    public var filesRead: ArrayList<SourceAnalysisFile> = ArrayList<SourceAnalysisFile>()
+    public var citations: ArrayList<String> = ArrayList<String>()
+    public var degraded: Bool = false
+    public var cleanupStatus: String = "not_needed"
+    public var diagnostic: String = ""
+
+    public init() {}
+}
+
 public interface SourceFetchRunner {
     func fetch(request: SourceFetchRequest): SourceFetchResult
 }
@@ -1032,6 +1107,24 @@ public class SourceRequestBuilder {
         request
     }
 
+    public func gitCodeSourceRaw(repo: String, ref: String, path: String): SourceFetchRequest {
+        let parts = parseGitCodeRepoPath(repo)
+        if (!parts.valid) {
+            return invalidSourceFetchRequest(SourceKinds.GITCODE_SOURCE, "source_raw", parts.diagnostic)
+        }
+        if (!isSafeGitCodeRef(ref)) {
+            return invalidSourceFetchRequest(SourceKinds.GITCODE_SOURCE, "source_raw", "invalid_ref")
+        }
+        let safePath = normalizeGitCodeSourcePath(path)
+        if (safePath == "") {
+            return invalidSourceFetchRequest(SourceKinds.GITCODE_SOURCE, "source_raw", "invalid_source_path")
+        }
+        let normalizedRepo = "${parts.owner}/${parts.repo}"
+        let request = SourceFetchRequest(SourceKinds.GITCODE_SOURCE, "https://gitcode.com/${parts.owner}/${parts.repo}/-/raw/${ref}/${safePath}", repo: normalizedRepo, ref: ref, path: safePath, accept: "text/plain", purpose: "source_raw")
+        request.authHint = "gitcode-token-optional-redacted"
+        request
+    }
+
     public func gitCodeTree(repo: String, ref: String): SourceFetchRequest {
         let parts = parseGitCodeRepoPath(repo)
         if (!parts.valid) {
@@ -1726,6 +1819,10 @@ public class SourceAdapter {
         this.fetch(this.builder.gitCodeSource(repo, ref, path))
     }
 
+    public func fetchGitCodeSourceRaw(repo: String, ref: String, path: String): SourceFetchResult {
+        this.fetch(this.builder.gitCodeSourceRaw(repo, ref, path))
+    }
+
     public func fetchGitCodeTree(repo: String, ref: String): SourceFetchResult {
         this.fetch(this.builder.gitCodeTree(repo, ref))
     }
@@ -1753,6 +1850,353 @@ public class SourceAdapter {
     public func fetchWebCandidate(url: String): SourceFetchResult {
         this.fetch(this.builder.webCandidate(url))
     }
+}
+
+public class SourceAnalysisTriggerClassifier {
+    public init() {}
+
+    public func classify(request: SourceAnalysisRequest, hasSourceEvidence!: Bool = true): TriggerDecision {
+        let decision = TriggerDecision()
+        let text = ("${request.query} ${request.issueUrl} ${request.prUrl}").toAsciiLower()
+        if (containsAnyText(text, ["source_analysis", "source analysis", "analyze source", "read source", "fresh source", "latest source"])) {
+            addUniqueString(decision.triggerReasons, SourceAnalysisTriggerReasons.MANUAL_REQUEST)
+        }
+        if (containsAnyText(text, ["compile error", "build failed", "compiler error", "error:"]) || hasLineNumberSignal(text)) {
+            addUniqueString(decision.triggerReasons, SourceAnalysisTriggerReasons.COMPILE_ERROR)
+        }
+        if (containsAnyText(text, ["runtime bug", "panic", "exception", "crash", "segmentation fault"])) {
+            addUniqueString(decision.triggerReasons, SourceAnalysisTriggerReasons.RUNTIME_BUG)
+        }
+        if (containsAnyText(text, ["stack trace", "traceback", "\tat ", " at "]) || hasStackFrameSignal(text)) {
+            addUniqueString(decision.triggerReasons, SourceAnalysisTriggerReasons.STACK_TRACE)
+        }
+        if (request.changedFiles.size > 0 || request.prUrl != "" || containsAnyText(text, ["changed files", "pr diff", "pull request", "review diff", "regression"])) {
+            addUniqueString(decision.triggerReasons, SourceAnalysisTriggerReasons.PR_DIFF_REVIEW)
+        }
+        if (!hasSourceEvidence || containsAnyText(text, ["source evidence insufficient", "insufficient source evidence", "no source evidence"])) {
+            addUniqueString(decision.triggerReasons, SourceAnalysisTriggerReasons.INSUFFICIENT_SOURCE_EVIDENCE)
+        }
+        if (containsAnyText(text, ["fresh source", "latest source", "current source", "head source"])) {
+            addUniqueString(decision.triggerReasons, SourceAnalysisTriggerReasons.FRESH_SOURCE_REQUIRED)
+        }
+        let paths = sourceAnalysisCandidatePaths(request)
+        if (paths.size > 0) {
+            addUniqueString(decision.triggerReasons, SourceAnalysisTriggerReasons.FILE_PATH_MENTIONED)
+        }
+        if (hasSourceSymbolSignal(request.query)) {
+            addUniqueString(decision.triggerReasons, SourceAnalysisTriggerReasons.SYMBOL_MENTIONED)
+        }
+        decision.shouldAnalyze = decision.triggerReasons.size > 0
+        if (decision.shouldAnalyze) {
+            decision.acquisitionPlan = if (!hasSourceEvidence && request.allowCloneFallback) { "clone_fallback" } else { "api_or_existing" }
+            if (!hasSourceEvidence && !request.allowCloneFallback) {
+                decision.degraded = true
+                decision.diagnostic = "clone_fallback_disabled"
+                decision.acquisitionPlan = "api_only_degraded"
+            }
+        }
+        decision
+    }
+}
+
+public func ckbSourceAnalysis(request: SourceAnalysisRequest, runner!: SourceFetchRunner = DisabledNetworkFetchRunner(), hasSourceEvidence!: Bool = true): SourceAnalysisResult {
+    let result = SourceAnalysisResult()
+    result.repo = request.repo
+    result.ref = request.ref
+    result.analysisId = sourceAnalysisId(request)
+    let classifier = SourceAnalysisTriggerClassifier()
+    let decision = classifier.classify(request, hasSourceEvidence: hasSourceEvidence)
+    for (reason in decision.triggerReasons) {
+        result.triggerReasons.add(reason)
+    }
+    if (request.repoVisibility != "" && request.repoVisibility != RepoVisibility.PUBLIC) {
+        result.degraded = true
+        result.diagnostic = "blocked_non_public_repo"
+        return result
+    }
+    if (!decision.shouldAnalyze) {
+        result.diagnostic = "not_triggered"
+        return result
+    }
+    if (decision.degraded) {
+        result.degraded = true
+        result.diagnostic = decision.diagnostic
+    }
+    let adapter = SourceAdapter(runner: runner)
+    let paths = sourceAnalysisCandidatePaths(request)
+    var totalBytes: Int64 = 0
+    var attempted: Int64 = 0
+    for (path in paths) {
+        if (attempted >= normalizedMaxFiles(request.maxFiles)) {
+            break
+        }
+        let cleanPath = normalizeGitCodeSourcePath(path)
+        if (cleanPath == "") {
+            result.degraded = true
+            result.diagnostic = appendDiagnostic(result.diagnostic, "invalid_source_path")
+            continue
+        }
+        attempted += 1
+        let raw = adapter.fetchGitCodeSourceRaw(request.repo, request.ref, cleanPath)
+        var acquired = raw
+        var acquisition = SourceAnalysisAcquisition.API_RAW
+        if (!raw.ok) {
+            let contents = adapter.fetchGitCodeSource(request.repo, request.ref, cleanPath)
+            acquired = contents
+            acquisition = SourceAnalysisAcquisition.API_CONTENTS
+        }
+        if (!acquired.ok) {
+            result.degraded = true
+            result.diagnostic = appendDiagnostic(result.diagnostic, "source_unavailable:${cleanPath}")
+            continue
+        }
+        if (totalBytes + acquired.bytes > normalizedMaxBytes(request.maxBytes)) {
+            result.degraded = true
+            result.diagnostic = appendDiagnostic(result.diagnostic, "max_bytes_exceeded")
+            break
+        }
+        totalBytes += acquired.bytes
+        let file = SourceAnalysisFile()
+        file.repo = request.repo
+        file.ref = request.ref
+        file.path = cleanPath
+        file.sourceUrl = redactSensitive(acquired.sourceUrl)
+        file.bodyHash = acquired.bodyHash
+        file.excerpt = sourceExcerpt(acquired.body)
+        file.bytes = acquired.bytes
+        file.acquisition = acquisition
+        result.filesRead.add(file)
+        result.citations.add(sourceAnalysisCitation(request.repo, request.ref, cleanPath))
+        result.commit = if (result.commit == "" && acquired.commit != "") { acquired.commit } else { result.commit }
+        result.sourceAcquisition = if (result.sourceAcquisition == SourceAnalysisAcquisition.NONE) { acquisition } else { result.sourceAcquisition }
+    }
+    if (paths.size == 0) {
+        result.degraded = true
+        result.diagnostic = appendDiagnostic(result.diagnostic, "no_candidate_paths")
+    }
+    if (result.filesRead.size == 0 && request.allowCloneFallback) {
+        result.degraded = true
+        result.diagnostic = appendDiagnostic(result.diagnostic, "clone_fallback_not_implemented")
+    } else if (result.filesRead.size == 0 && !request.allowCloneFallback) {
+        result.degraded = true
+        result.diagnostic = appendDiagnostic(result.diagnostic, "clone_fallback_disabled")
+    }
+    result.cleanupStatus = "not_needed"
+    result
+}
+
+public func renderSourceAnalysis(result: SourceAnalysisResult): String {
+    var out = "source_analysis analysisId=${result.analysisId} repo=${result.repo} ref=${result.ref} commit=${if (result.commit == "") { "unknown" } else { result.commit }} sourceAcquisition=${result.sourceAcquisition} degraded=${result.degraded} cleanupStatus=${result.cleanupStatus} diagnostic=${redactSensitive(result.diagnostic)}\n"
+    out += "triggerReasons=${joinStrings(result.triggerReasons, ",")}\n"
+    out += "filesRead=${result.filesRead.size}\n"
+    for (file in result.filesRead) {
+        out += "file path=${file.path} acquisition=${file.acquisition} bytes=${file.bytes} bodyHash=${file.bodyHash} sourceUrl=${file.sourceUrl}\n"
+    }
+    out += "citations=${joinStrings(result.citations, ",")}\n"
+    out
+}
+
+public func sourceAnalysisRequestFromText(raw: String): SourceAnalysisRequest {
+    let request = SourceAnalysisRequest()
+    var queryParts = ArrayList<String>()
+    for (part in raw.split(" ")) {
+        let item = part.trimAscii()
+        if (item == "") {
+            continue
+        }
+        if (item.startsWith("repo=")) {
+            request.repo = item[5..item.size]
+        } else if (item.startsWith("ref=")) {
+            request.ref = item[4..item.size]
+        } else if (item.startsWith("query=")) {
+            queryParts.add(item[6..item.size])
+        } else if (item.startsWith("issueUrl=")) {
+            request.issueUrl = item[9..item.size]
+        } else if (item.startsWith("prUrl=")) {
+            request.prUrl = item[6..item.size]
+        } else if (item.startsWith("changedFiles=")) {
+            addCsvPaths(request.changedFiles, item[13..item.size])
+        } else if (item.startsWith("candidatePaths=")) {
+            addCsvPaths(request.candidatePaths, item[15..item.size])
+        } else if (item.startsWith("path=")) {
+            addCsvPaths(request.candidatePaths, item[5..item.size])
+        } else if (item.startsWith("allowCloneFallback=")) {
+            request.allowCloneFallback = parseBool(item[19..item.size])
+        } else if (item.startsWith("maxFiles=")) {
+            request.maxFiles = parseIntField(item[9..item.size], request.maxFiles)
+        } else if (item.startsWith("maxBytes=")) {
+            request.maxBytes = parseIntField(item[9..item.size], request.maxBytes)
+        } else if (item.startsWith("timeoutMillis=")) {
+            request.timeoutMillis = parseIntField(item[14..item.size], request.timeoutMillis)
+        } else if (item.startsWith("repoVisibility=")) {
+            request.repoVisibility = item[15..item.size]
+        } else {
+            queryParts.add(item)
+        }
+    }
+    request.query = joinStrings(queryParts, " ")
+    request
+}
+
+private func sourceAnalysisCandidatePaths(request: SourceAnalysisRequest): ArrayList<String> {
+    let paths = ArrayList<String>()
+    for (path in request.changedFiles) {
+        addNormalizedSourcePath(paths, path)
+    }
+    for (path in request.candidatePaths) {
+        addNormalizedSourcePath(paths, path)
+    }
+    for (path in extractMentionedSourcePaths(request.query)) {
+        addNormalizedSourcePath(paths, path)
+    }
+    paths
+}
+
+private func extractMentionedSourcePaths(text: String): ArrayList<String> {
+    let paths = ArrayList<String>()
+    let normalized = text.replace("\n", " ").replace("\r", " ").replace("\t", " ")
+    for (part in normalized.split(" ")) {
+        let candidate = stripSourcePathToken(part)
+        if (candidate != "") {
+            addNormalizedSourcePath(paths, candidate)
+        }
+    }
+    paths
+}
+
+private func stripSourcePathToken(raw: String): String {
+    var token = raw.trimAscii()
+    while (token.size > 0 && (token.endsWith(".") || token.endsWith(",") || token.endsWith(";") || token.endsWith(")") || token.endsWith("]") || token.endsWith("\"") || token.endsWith("'"))) {
+        token = token[0..token.size - 1]
+    }
+    while (token.size > 0 && (token.startsWith("(") || token.startsWith("[") || token.startsWith("\"") || token.startsWith("'"))) {
+        token = token[1..token.size]
+    }
+    let colon = lastColonIndex(token)
+    if (colon > 0 && colon + 1 < token.size && allDigits(token[colon + 1..token.size])) {
+        token = token[0..colon]
+    }
+    let lower = token.toAsciiLower()
+    if ((lower.startsWith("src/") || lower.startsWith("docs/") || lower.startsWith("test/") || lower == "readme.md" || lower.contains("/")) && (lower.endsWith(".cj") || lower.endsWith(".md") || lower.endsWith(".cjo") || lower.endsWith(".toml"))) {
+        return token
+    }
+    ""
+}
+
+private func addNormalizedSourcePath(paths: ArrayList<String>, raw: String): Unit {
+    let path = normalizeGitCodeSourcePath(stripSourcePathToken(raw))
+    if (path != "") {
+        addUniqueString(paths, path)
+    }
+}
+
+private func addCsvPaths(paths: ArrayList<String>, raw: String): Unit {
+    for (path in raw.split(",")) {
+        addNormalizedSourcePath(paths, path)
+    }
+}
+
+private func sourceAnalysisId(request: SourceAnalysisRequest): String {
+    stableSummaryHash("${request.repo}|${request.ref}|${request.query}|${request.changedFiles.size}|${request.candidatePaths.size}")
+}
+
+private func sourceAnalysisCitation(repo: String, ref: String, path: String): String {
+    "https://gitcode.com/${repo}/-/blob/${ref}/${path}"
+}
+
+private func sourceExcerpt(body: String): String {
+    let clean = redactSensitive(body).replace("\r", " ")
+    if (clean.size <= 160) {
+        return clean
+    }
+    clean[0..160]
+}
+
+private func containsAnyText(text: String, needles: Array<String>): Bool {
+    for (needle in needles) {
+        if (text.contains(needle)) {
+            return true
+        }
+    }
+    false
+}
+
+private func hasLineNumberSignal(text: String): Bool {
+    for (part in text.split(" ")) {
+        let token = stripSourcePathToken(part)
+        if (token != "" && part.contains(":")) {
+            return true
+        }
+    }
+    false
+}
+
+private func hasStackFrameSignal(text: String): Bool {
+    text.contains(".cj:") || text.contains(" at ") && text.contains(".")
+}
+
+private func hasSourceSymbolSignal(text: String): Bool {
+    let lower = text.toAsciiLower()
+    lower.contains("symbol ") || lower.contains("func ") || lower.contains("class ") || text.contains("()") || text.contains("::")
+}
+
+private func normalizedMaxFiles(raw: Int64): Int64 {
+    if (raw <= 0) {
+        return 1
+    }
+    raw
+}
+
+private func normalizedMaxBytes(raw: Int64): Int64 {
+    if (raw <= 0) {
+        return 1
+    }
+    raw
+}
+
+private func appendDiagnostic(current: String, next: String): String {
+    if (current == "") {
+        return next
+    }
+    if (current.contains(next)) {
+        return current
+    }
+    "${current},${next}"
+}
+
+private func joinStrings(values: ArrayList<String>, separator: String): String {
+    var out = ""
+    for (value in values) {
+        if (out == "") {
+            out = value
+        } else {
+            out += "${separator}${value}"
+        }
+    }
+    out
+}
+
+private func allDigits(value: String): Bool {
+    if (value == "") {
+        return false
+    }
+    for (ch in value.toRuneArray()) {
+        if (ch < r'0' || ch > r'9') {
+            return false
+        }
+    }
+    true
+}
+
+private func lastColonIndex(value: String): Int64 {
+    var i = value.size - 1
+    while (i >= 0) {
+        if (value[i..i + 1] == ":") {
+            return i
+        }
+        i -= 1
+    }
+    -1
 }
 
 public class FileKnowledgeStore {
@@ -2383,11 +2827,11 @@ public class QueryService {
 
 public class CkbSchema {
     public static func mcpTools(): String {
-        "tools: cangjie.health,cangjie.status,cangjie.query,cangjie.evidence,cangjie.sync,cangjie.rebuild,cangjie.source_search,cangjie.doc_search,cangjie.website_search,cangjie.web_candidate_search,cangjie.hybrid_search,cangjie.evidence_pack; input: query{q,budget,sourceType,includeCandidates=false}, evidence{q,budget,includeCandidates=true}, sync{dryRun,apply,maxRepos,maxFilesPerRepo,maxItems,since}, rebuild{store}; liveGitCode: officialApi=https://api.gitcode.com/api/v5 authMode=token authHeader=private-token tokenFile=tokenFile tokenFileFormat=single PAT line without token/Bearer/PRIVATE-TOKEN prefix; acceptance: schema -> doctor/status -> anonymous dry-run -> credentialed dry-run if needed -> limited apply -> rebuild-index -> status/evidence; output: ok,status,errorCode,activeKnowledgeVersion,knowledgeVersion,citations,evidence,requiresReview,truncated,degraded,transportDiagnostic; redaction: never returns tokenRef,tokenFile contents,PRIVATE-TOKEN,Authorization,Cookie,private-token values,absolute local paths; errors: ckb.bad_request,ckb.network_disabled,ckb.auth_degraded,ckb.rate_limited,ckb.source_unavailable,ckb.rebuild_failed,ckb.validation_failed"
+        "tools: cangjie.health,cangjie.status,cangjie.query,cangjie.evidence,cangjie.sync,cangjie.rebuild,cangjie.source_analysis,cangjie.source_search,cangjie.doc_search,cangjie.website_search,cangjie.web_candidate_search,cangjie.hybrid_search,cangjie.evidence_pack; input: query{q,budget,sourceType,includeCandidates=false}, evidence{q,budget,includeCandidates=true}, source_analysis{repo,ref,query,issueUrl,prUrl,changedFiles,candidatePaths,allowCloneFallback,maxFiles,maxBytes,timeoutMillis}, sync{dryRun,apply,maxRepos,maxFilesPerRepo,maxItems,since}, rebuild{store}; liveGitCode: officialApi=https://api.gitcode.com/api/v5 authMode=token authHeader=private-token tokenFile=tokenFile tokenFileFormat=single PAT line without token/Bearer/PRIVATE-TOKEN prefix; acceptance: schema -> doctor/status -> anonymous dry-run -> credentialed dry-run if needed -> limited apply -> rebuild-index -> status/evidence; output: ok,status,errorCode,activeKnowledgeVersion,knowledgeVersion,citations,evidence,requiresReview,triggerReasons,sourceAcquisition,filesRead,cleanupStatus,truncated,degraded,transportDiagnostic; redaction: never returns tokenRef,tokenFile contents,PRIVATE-TOKEN,Authorization,Cookie,private-token values,absolute local paths; errors: ckb.bad_request,ckb.network_disabled,ckb.auth_degraded,ckb.rate_limited,ckb.source_unavailable,ckb.rebuild_failed,ckb.validation_failed"
     }
 
     public static func httpLikeRoutes(): String {
-        "routes: STDIO ckb-stdio-v1 health,status,metrics,query <text>,evidence <text>,sync,rebuild,scheduler-run,backup <name>,restore <name>,restart,stop; GET /health -> ok,status,activeKnowledgeVersion,degraded; GET /status -> storage,indexManifest,scheduler,activeKnowledgeVersion,restoreDiagnostic,authHeaderStrategy; POST /query -> query,evidence,citations,knowledgeVersion; POST /evidence -> evidencePack,graphContext,citations,activeKnowledgeVersion; POST /sync -> dryRun|apply,candidateVersion,activeKnowledgeVersion,redactedSourceStatus,transportDiagnostic; POST /rebuild-index -> candidateVersion,activeKnowledgeVersion,count; compatibility: CLI service/status/rebuild-index provide the canonical local protocol"
+        "routes: STDIO ckb-stdio-v1 health,status,metrics,query <text>,evidence <text>,source_analysis repo=<owner/repo> ref=<ref> path=<path> query=<text>,sync,rebuild,scheduler-run,backup <name>,restore <name>,restart,stop; GET /health -> ok,status,activeKnowledgeVersion,degraded; GET /status -> storage,indexManifest,scheduler,activeKnowledgeVersion,restoreDiagnostic,authHeaderStrategy; POST /query -> query,evidence,citations,knowledgeVersion; POST /evidence -> evidencePack,graphContext,citations,activeKnowledgeVersion; POST /source-analysis -> analysisId,repo,ref,triggerReasons,sourceAcquisition,filesRead,citations,degraded,cleanupStatus; POST /sync -> dryRun|apply,candidateVersion,activeKnowledgeVersion,redactedSourceStatus,transportDiagnostic; POST /rebuild-index -> candidateVersion,activeKnowledgeVersion,count; compatibility: CLI service/status/rebuild-index/source_analysis provide the canonical local protocol"
     }
 }
 
@@ -2480,6 +2924,9 @@ public class CkbCommandLoopService {
             response.text = renderQuery(cangjie_evidence_pack(this.kb, if (tail == "") { "func syntax" } else { tail }, 5))
         } else if (command == "evidence") {
             response.text = renderQuery(cangjie_evidence_pack(this.kb, if (tail == "") { "HttpClient" } else { tail }, 3))
+        } else if (command == "source_analysis" || command == "source-analysis") {
+            let request = sourceAnalysisRequestFromText(tail)
+            response.text = renderSourceAnalysis(ckbSourceAnalysis(request, runner: this.sourceRunner))
         } else if (command == "sync") {
             let options = LiveSyncOptions()
             options.apply = true

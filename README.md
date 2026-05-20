@@ -31,6 +31,7 @@ cjpm run --run-args doctor
 cjpm run --run-args metrics
 cjpm run --run-args "query func named parameters"
 cjpm run --run-args "evidence HttpClient"
+cjpm run --run-args "source_analysis repo=cangjie/stdx ref=main path=src/http/client.cj query=compile_error"
 cjpm run --run-args "service-once health"
 cjpm run --run-args "backup target/ckb-active-copy"
 ```
@@ -39,6 +40,13 @@ The `doctor` command reports logical storage paths, source-scope coverage,
 index counts, and scheduler state. It does not expose local mirror paths.
 The `schema` command also reports the GitCode live official API, auth header
 strategy, transport diagnostics, and dry-run/apply acceptance order.
+
+`source_analysis` is an explicit on-demand capability for issue/PR debugging
+and review workflows. It accepts `repo`, `ref`, `query`, `issueUrl`, `prUrl`,
+`changedFiles`, `candidatePaths`, `allowCloneFallback`, `maxFiles`, `maxBytes`,
+and `timeoutMillis`. The current SRC-0/SRC-1/SRC-2 implementation reads source
+through API raw first and contents fallback second; it reports degraded status
+instead of cloning when fallback is disabled or unavailable.
 
 ## GitCode Live Sync Scope
 
@@ -136,7 +144,8 @@ cjpm run --run-args "--config ckb.conf --store target/ckb-data service"
 ```
 
 The service prints one key-value response per command. Supported commands are:
-`health`, `status`, `metrics`, `query <text>`, `evidence <text>`, `sync`,
+`health`, `status`, `metrics`, `query <text>`, `evidence <text>`,
+`source_analysis repo=<owner/repo> ref=<ref> path=<path> query=<text>`, `sync`,
 `rebuild`, `scheduler-run`, `backup <path>`, `restore <path>`, `restart`, and
 `stop`. `stop` performs a graceful exit. `restart` reloads the active snapshot
 from the configured `--store`. No user home files are read unless an explicit

@@ -18,6 +18,7 @@ contract source for current builds.
 | status | `status` | `GET /status`, `cangjie.status` | Metis, operators | none | storage counts, index manifest, scheduler state, `activeKnowledgeVersion`, restore diagnostic |
 | query | `query <text>` | `POST /query`, `cangjie.query` | Metis | `q`, `budget`, optional source filters, `includeCandidates=false` by default | ranked evidence rows, citations, `knowledgeVersion`, truncation/degraded flags |
 | evidence | `evidence <text>` | `POST /evidence`, `cangjie.evidence` | Metis | `q`, `budget`, `includeCandidates=true` only for reviewed workflows | evidence pack, graph context, citations, `activeKnowledgeVersion` |
+| source analysis | `source_analysis repo=<owner/repo> ref=<ref> path=<path> query=<text>` | `POST /source-analysis`, `cangjie.source_analysis` | Metis, operators | `repo`, `ref`, `query`, optional `issueUrl`, `prUrl`, `changedFiles`, `candidatePaths`, `allowCloneFallback`, `maxFiles`, `maxBytes`, `timeoutMillis` | `analysisId`, `triggerReasons`, `sourceAcquisition`, `filesRead`, `citations`, `degraded`, `cleanupStatus` |
 | sync | `sync-live --dry-run` or `sync-live --apply` | `POST /sync`, `cangjie.sync` | operators, scheduled CKB runtime | `dryRun`, `apply`, `maxRepos`, `maxFilesPerRepo`, `maxItems`, `since` | source status summary, candidate version, active version, redacted errors |
 | rebuild | `rebuild-index` | `POST /rebuild-index`, `cangjie.rebuild` | operators, CKB runtime | store path or default store | candidate version, promoted active version, record count |
 
@@ -32,6 +33,14 @@ unknown-visibility repositories are not valid CKB knowledge sources and must be
 rejected before fetch, normalization, indexing, or evidence publication. The
 CKB/Metis/GitCodeMonitor integration contract does not provide any
 repository-visibility mode or bypass mode for non-public repositories.
+
+On-demand source analysis is separate from routine `sync-live`. It is triggered
+only by explicit source-analysis requests or classifier signals such as compile
+errors, runtime bugs, stack traces, mentioned file paths or symbols, PR diffs,
+insufficient source evidence, or fresh-source requirements. SRC-0/SRC-1/SRC-2
+use API raw reads first and contents reads as fallback. Clone fallback is only a
+reported plan/degraded status in this phase; CKB must not create a clone
+workspace for normal sync or for API-only source analysis.
 
 ## Redaction and Error Contract
 
