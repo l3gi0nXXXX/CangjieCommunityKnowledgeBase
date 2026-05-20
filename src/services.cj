@@ -262,9 +262,11 @@ public class CkbRuntimeConfig {
     public var embeddingBatchSize: Int64 = 16
     public var embeddingTimeoutMillis: Int64 = 10000
     public var embeddingRetryCount: Int64 = 2
+    public var embeddingAllowPrivateEndpoint: Bool = false
     public var vectorBackend: String = "local-file"
     public var vectorActiveCollection: String = "active"
     public var vectorCandidateCollection: String = "candidate"
+    public var vectorAllowPrivateEndpoint: Bool = false
     public var timeoutMillis: Int64 = 10000
     public var retryCount: Int64 = 2
     public var networkProxy: String = ""
@@ -416,9 +418,11 @@ public class CkbRuntimeConfig {
         out += " embedding.batchSize=${this.embeddingBatchSize}"
         out += " embedding.timeoutMillis=${this.embeddingTimeoutMillis}"
         out += " embedding.retryCount=${this.embeddingRetryCount}"
+        out += " embedding.allowPrivateEndpoint=${if (this.embeddingAllowPrivateEndpoint) { "true" } else { "false" }}"
         out += " vector.backend=${this.vectorBackend}"
         out += " vector.activeCollection=${this.vectorActiveCollection}"
         out += " vector.candidateCollection=${this.vectorCandidateCollection}"
+        out += " vector.allowPrivateEndpoint=${if (this.vectorAllowPrivateEndpoint) { "true" } else { "false" }}"
         out
     }
 }
@@ -863,6 +867,8 @@ public class HttpExecutionRequest {
     public var method: String = "GET"
     public var url: String = ""
     public var accept: String = "application/json"
+    public var body: String = ""
+    public var contentType: String = ""
     public var headers: ArrayList<String> = ArrayList<String>()
     public var timeoutMillis: Int64 = 10000
     public var retryCount: Int64 = 2
@@ -918,20 +924,70 @@ public func diagnoseCurlTransportError(curlExitCode: Int64, stderr: String): Cur
 }
 
 public interface HttpRequestExecutor {
+    func execute(request: HttpExecutionRequest): HttpExecutionResponse
     func get(request: HttpExecutionRequest): HttpExecutionResponse
+}
+
+public func normalizeHttpExecutionMethod(method: String): String {
+    let normalized = method.trimAscii().toAsciiUpper()
+    if (normalized == "") {
+        return "GET"
+    }
+    normalized
+}
+
+public func httpExecutionMethodSupported(method: String): Bool {
+    let normalized = normalizeHttpExecutionMethod(method)
+    normalized == "GET" || normalized == "POST" || normalized == "PUT" || normalized == "DELETE"
+}
+
+public func unsupportedHttpExecutionResponse(method: String): HttpExecutionResponse {
+    let response = HttpExecutionResponse()
+    response.status = "unsupported_method"
+    response.transportErrorClass = "unsupported_method"
+    response.transportDiagnostic = "unsupported HTTP method: ${redactSensitive(normalizeHttpExecutionMethod(method))}"
+    response
+}
+
+private func copyHttpExecutionRequest(request: HttpExecutionRequest): HttpExecutionRequest {
+    let copied = HttpExecutionRequest()
+    copied.method = request.method
+    copied.url = request.url
+    copied.accept = request.accept
+    copied.body = request.body
+    copied.contentType = request.contentType
+    copied.timeoutMillis = request.timeoutMillis
+    copied.retryCount = request.retryCount
+    for (header in request.headers) {
+        copied.headers.add(header)
+    }
+    copied
 }
 
 private func curlRequestArgs(request: HttpExecutionRequest, timeoutSeconds: String): Array<String> {
     let args = ArrayList<String>()
+    let method = normalizeHttpExecutionMethod(request.method)
     args.add("-sS")
     args.add("-L")
     args.add("--max-time")
     args.add(timeoutSeconds)
+    if (method != "GET") {
+        args.add("-X")
+        args.add(method)
+    }
     args.add("-H")
     args.add("Accept: ${request.accept}")
+    if (request.contentType.trimAscii() != "") {
+        args.add("-H")
+        args.add("Content-Type: ${request.contentType.trimAscii()}")
+    }
     for (header in request.headers) {
         args.add("-H")
         args.add(header)
+    }
+    if (request.body != "") {
+        args.add("--data-binary")
+        args.add(request.body)
     }
     args.add("-w")
     args.add("\nCKB_HTTP_STATUS:%{http_code}\nCKB_CONTENT_TYPE:%{content_type}\n")
@@ -942,12 +998,11 @@ private func curlRequestArgs(request: HttpExecutionRequest, timeoutSeconds: Stri
 public class CurlHttpRequestExecutor <: HttpRequestExecutor {
     public init() {}
 
-    public func get(request: HttpExecutionRequest): HttpExecutionResponse {
-        let response = HttpExecutionResponse()
-        if (request.method != "GET") {
-            response.status = "unsupported_method"
-            return response
+    public func execute(request: HttpExecutionRequest): HttpExecutionResponse {
+        if (!httpExecutionMethodSupported(request.method)) {
+            return unsupportedHttpExecutionResponse(request.method)
         }
+        let response = HttpExecutionResponse()
         let timeoutSeconds = if (request.timeoutMillis <= 0) { "10" } else { "${(request.timeoutMillis + 999) / 1000}" }
         let args = curlRequestArgs(request, timeoutSeconds)
         try {
@@ -976,6 +1031,12 @@ public class CurlHttpRequestExecutor <: HttpRequestExecutor {
             response.curlExitCode = diagnostic.curlExitCode
         }
         response
+    }
+
+    public func get(request: HttpExecutionRequest): HttpExecutionResponse {
+        let getRequest = copyHttpExecutionRequest(request)
+        getRequest.method = "GET"
+        this.execute(getRequest)
     }
 }
 
@@ -3809,12 +3870,16 @@ private func configApply(config: CkbRuntimeConfig, key: String, value: String): 
         config.embeddingTimeoutMillis = try { Int64.parse(value) } catch (_: Exception) { config.embeddingTimeoutMillis }
     } else if (key == "embedding.retryCount") {
         config.embeddingRetryCount = try { Int64.parse(value) } catch (_: Exception) { config.embeddingRetryCount }
+    } else if (key == "embedding.allowPrivateEndpoint") {
+        config.embeddingAllowPrivateEndpoint = parseBool(value)
     } else if (key == "vector.backend") {
         config.vectorBackend = value
     } else if (key == "vector.activeCollection") {
         config.vectorActiveCollection = value
     } else if (key == "vector.candidateCollection") {
         config.vectorCandidateCollection = value
+    } else if (key == "vector.allowPrivateEndpoint") {
+        config.vectorAllowPrivateEndpoint = parseBool(value)
     } else if (key == "network.timeoutMillis") {
         config.timeoutMillis = try { Int64.parse(value) } catch (_: Exception) { config.timeoutMillis }
     } else if (key == "network.retryCount") {

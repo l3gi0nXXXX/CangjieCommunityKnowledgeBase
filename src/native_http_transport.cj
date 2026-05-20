@@ -125,12 +125,11 @@ public class NativeHttpRequestExecutor <: HttpRequestExecutor {
         this.config = config
     }
 
-    public func get(request: HttpExecutionRequest): HttpExecutionResponse {
-        let response = HttpExecutionResponse()
-        if (request.method != "GET") {
-            response.status = "unsupported_method"
-            return response
+    public func execute(request: HttpExecutionRequest): HttpExecutionResponse {
+        if (!httpExecutionMethodSupported(request.method)) {
+            return unsupportedHttpExecutionResponse(request.method)
         }
+        let response = HttpExecutionResponse()
         let urlPolicy = ckbNativeHttpValidateUrl(request.url, this.config)
         if (urlPolicy != "") {
             response.status = "blocked_url"
@@ -166,6 +165,12 @@ public class NativeHttpRequestExecutor <: HttpRequestExecutor {
         }
         response
     }
+
+    public func get(request: HttpExecutionRequest): HttpExecutionResponse {
+        let getRequest = ckbNativeHttpCopyExecutionRequest(request)
+        getRequest.method = "GET"
+        this.execute(getRequest)
+    }
 }
 
 public func ckbNativeHttpConfigFromRuntime(config: CkbRuntimeConfig): CkbNativeHttpTransportConfig {
@@ -175,6 +180,18 @@ public func ckbNativeHttpConfigFromRuntime(config: CkbRuntimeConfig): CkbNativeH
         config.networkNoProxy,
         config.networkInsecureSkipTlsVerify,
         config.networkAllowPrivateNetwork,
+        config.networkAllowedHosts,
+        config.timeoutMillis
+    )
+}
+
+public func ckbNativeHttpAdapterConfigFromRuntime(config: CkbRuntimeConfig, allowPrivateEndpoint: Bool): CkbNativeHttpTransportConfig {
+    CkbNativeHttpTransportConfig(
+        config.networkProxy,
+        config.networkEnvProxyEnabled,
+        config.networkNoProxy,
+        config.networkInsecureSkipTlsVerify,
+        config.networkAllowPrivateNetwork || allowPrivateEndpoint,
         config.networkAllowedHosts,
         config.timeoutMillis
     )
@@ -252,6 +269,9 @@ public func ckbNativeHttpValidateUrl(url: String, config: CkbNativeHttpTransport
     }
     if (!config.allowPrivateNetwork && ckbNativeHttpHostLooksPrivate(host)) {
         return "blocked private-network host: ${host}"
+    }
+    if (config.allowPrivateNetwork && ckbNativeHttpHostLooksPrivate(host)) {
+        return ""
     }
     if (!ckbNativeHttpHostAllowed(host, config.allowedHosts)) {
         return "blocked host: ${host}"
@@ -423,15 +443,44 @@ private func ckbNativeHttpBuildClientBuilder(url: String, config: CkbNativeHttpT
 }
 
 private func ckbNativeHttpBuildRequest(request: HttpExecutionRequest): HttpRequest {
-    let builder = HttpRequestBuilder().url(request.url).get()
+    let method = normalizeHttpExecutionMethod(request.method)
+    let builder = HttpRequestBuilder().url(request.url)
+    match (method) {
+        case "GET" => builder.get()
+        case "POST" => builder.post()
+        case "PUT" => builder.method("PUT")
+        case "DELETE" => builder.method("DELETE")
+        case _ => builder.get()
+    }
     builder.header("Accept", request.accept)
+    if (request.contentType.trimAscii() != "") {
+        builder.header("Content-Type", request.contentType.trimAscii())
+    }
     for (header in request.headers) {
         let parsed = ckbNativeHttpParseHeaderLine(header)
         if (parsed[0] != "") {
             builder.header(parsed[0], parsed[1])
         }
     }
+    if (request.body != "") {
+        builder.body(request.body)
+    }
     builder.build()
+}
+
+private func ckbNativeHttpCopyExecutionRequest(request: HttpExecutionRequest): HttpExecutionRequest {
+    let copied = HttpExecutionRequest()
+    copied.method = request.method
+    copied.url = request.url
+    copied.accept = request.accept
+    copied.body = request.body
+    copied.contentType = request.contentType
+    copied.timeoutMillis = request.timeoutMillis
+    copied.retryCount = request.retryCount
+    for (header in request.headers) {
+        copied.headers.add(header)
+    }
+    copied
 }
 
 private func ckbNativeHttpParseHeaderLine(header: String): (String, String) {

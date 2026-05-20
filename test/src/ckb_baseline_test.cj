@@ -2459,7 +2459,10 @@ class FakeHttpExecutor <: HttpRequestExecutor {
         this.retryAfter = retryAfter
     }
 
-    public func get(request: HttpExecutionRequest): HttpExecutionResponse {
+    public func execute(request: HttpExecutionRequest): HttpExecutionResponse {
+        if (!httpExecutionMethodSupported(request.method)) {
+            return unsupportedHttpExecutionResponse(request.method)
+        }
         this.calls += 1
         for (header in request.headers) {
             this.seenHeaders.add(header)
@@ -2474,6 +2477,21 @@ class FakeHttpExecutor <: HttpRequestExecutor {
         response.transportDiagnostic = this.transportDiagnostic
         response.curlExitCode = this.curlExitCode
         response
+    }
+
+    public func get(request: HttpExecutionRequest): HttpExecutionResponse {
+        let getRequest = HttpExecutionRequest()
+        getRequest.method = "GET"
+        getRequest.url = request.url
+        getRequest.accept = request.accept
+        getRequest.body = request.body
+        getRequest.contentType = request.contentType
+        getRequest.timeoutMillis = request.timeoutMillis
+        getRequest.retryCount = request.retryCount
+        for (header in request.headers) {
+            getRequest.headers.add(header)
+        }
+        this.execute(getRequest)
     }
 }
 

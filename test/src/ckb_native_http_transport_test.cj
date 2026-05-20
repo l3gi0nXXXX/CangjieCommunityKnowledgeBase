@@ -269,6 +269,87 @@ public class CkbNativeHttpTransportTest {
         @Expect(text.contains("proxy-secret"), false)
         @Expect(text.contains("transportClass=tls"), true)
     }
+
+    @TestCase
+    public func genericHttpExecutorRecordsJsonBodyForPostPutDeleteAndGetWrapper(): Unit {
+        let executor = NativeContractSequenceHttpExecutor()
+        executor.add(201, "{\"ok\":true}", "application/json", "http_201", 0)
+        executor.add(200, "{\"ok\":true}", "application/json", "http_200", 0)
+        executor.add(204, "", "application/json", "http_204", 0)
+        executor.add(200, "{}", "application/json", "http_200", 0)
+
+        let post = jsonHttpRequest("POST", "https://api.gitcode.com/api/v5/test", "{\"model\":\"bge-m3:latest\"}")
+        let put = jsonHttpRequest("PUT", "https://api.gitcode.com/api/v5/test", "{\"vectors\":[1,2,3]}")
+        let deleteRequest = jsonHttpRequest("DELETE", "https://api.gitcode.com/api/v5/test", "")
+        let getRequest = jsonHttpRequest("POST", "https://api.gitcode.com/api/v5/test", "{\"ignored\":true}")
+
+        let postResponse = executor.execute(post)
+        let putResponse = executor.execute(put)
+        let deleteResponse = executor.execute(deleteRequest)
+        let getResponse = executor.get(getRequest)
+
+        @Expect(postResponse.status, "http_201")
+        @Expect(putResponse.status, "http_200")
+        @Expect(deleteResponse.status, "http_204")
+        @Expect(getResponse.status, "http_200")
+        @Expect(executor.calls, 4)
+        @Expect(executor.seenMethods[0], "POST")
+        @Expect(executor.seenMethods[1], "PUT")
+        @Expect(executor.seenMethods[2], "DELETE")
+        @Expect(executor.seenMethods[3], "GET")
+        @Expect(executor.seenBodies[0], "{\"model\":\"bge-m3:latest\"}")
+        @Expect(executor.seenBodies[1], "{\"vectors\":[1,2,3]}")
+        @Expect(executor.seenContentTypes[0], "application/json")
+        @Expect(executor.seenContentTypes[1], "application/json")
+    }
+
+    @TestCase
+    public func unsupportedMethodReturnsDiagnosticBeforeUrlValidationOrExecutorCall(): Unit {
+        let executor = NativeContractSequenceHttpExecutor()
+        executor.add(200, "should-not-run", "application/json", "http_200", 0)
+        let request = jsonHttpRequest("PATCH", "file:///tmp/secret", "{\"ok\":true}")
+        let fakeResponse = executor.execute(request)
+
+        let nativeResponse = NativeHttpRequestExecutor(CkbNativeHttpTransportConfig("", false, "", false, false, "", 10000)).execute(request)
+
+        @Expect(fakeResponse.status, "unsupported_method")
+        @Expect(fakeResponse.transportErrorClass, "unsupported_method")
+        @Expect(fakeResponse.transportDiagnostic.contains("PATCH"), true)
+        @Expect(nativeResponse.status, "unsupported_method")
+        @Expect(nativeResponse.transportErrorClass, "unsupported_method")
+        @Expect(nativeResponse.transportDiagnostic.contains("PATCH"), true)
+        @Expect(executor.calls, 0)
+    }
+
+    @TestCase
+    public func adapterPrivateEndpointSwitchDoesNotExpandSourceFetchPrivateNetworkPolicy(): Unit {
+        let runtime = CkbRuntimeConfig()
+        runtime.networkEnabled = true
+        runtime.embeddingAllowPrivateEndpoint = true
+        let sourceConfig = ckbNativeHttpConfigFromRuntime(runtime)
+        let adapterConfig = ckbNativeHttpAdapterConfigFromRuntime(runtime, runtime.embeddingAllowPrivateEndpoint)
+
+        let sourcePolicy = ckbNativeHttpValidateUrl("http://127.0.0.1:11434/api/embed", sourceConfig)
+        let adapterPolicy = ckbNativeHttpValidateUrl("http://127.0.0.1:11434/api/embed", adapterConfig)
+        let sourceResponse = NativeHttpRequestExecutor(runtime).execute(jsonHttpRequest("GET", "http://127.0.0.1:11434/api/embed", ""))
+
+        @Expect(sourcePolicy.contains("private-network"), true)
+        @Expect(adapterPolicy, "")
+        @Expect(sourceResponse.status, "blocked_url")
+        @Expect(sourceResponse.transportDiagnostic.contains("private-network"), true)
+    }
+}
+
+private func jsonHttpRequest(method: String, url: String, body: String): HttpExecutionRequest {
+    let request = HttpExecutionRequest()
+    request.method = method
+    request.url = url
+    request.accept = "application/json"
+    request.body = body
+    request.contentType = "application/json"
+    request.timeoutMillis = 1000
+    request.retryCount = 0
+    request
 }
 
 private func singleStatusExecutor(code: Int64, status: String, retryAfter: Int64): NativeContractSequenceHttpExecutor {
@@ -293,6 +374,9 @@ private class NativeContractSequenceHttpExecutor <: HttpRequestExecutor {
     private var steps: ArrayList<NativeContractHttpStep> = ArrayList<NativeContractHttpStep>()
     public var calls: Int64 = 0
     public var seenHeaders: ArrayList<String> = ArrayList<String>()
+    public var seenMethods: ArrayList<String> = ArrayList<String>()
+    public var seenBodies: ArrayList<String> = ArrayList<String>()
+    public var seenContentTypes: ArrayList<String> = ArrayList<String>()
 
     public init() {}
 
@@ -315,8 +399,14 @@ private class NativeContractSequenceHttpExecutor <: HttpRequestExecutor {
         this.steps.add(step)
     }
 
-    public func get(request: HttpExecutionRequest): HttpExecutionResponse {
+    public func execute(request: HttpExecutionRequest): HttpExecutionResponse {
+        if (!httpExecutionMethodSupported(request.method)) {
+            return unsupportedHttpExecutionResponse(request.method)
+        }
         this.calls += 1
+        this.seenMethods.add(normalizeHttpExecutionMethod(request.method))
+        this.seenBodies.add(request.body)
+        this.seenContentTypes.add(request.contentType)
         for (header in request.headers) {
             this.seenHeaders.add(header)
         }
@@ -335,6 +425,21 @@ private class NativeContractSequenceHttpExecutor <: HttpRequestExecutor {
         response.transportDiagnostic = step.transportDiagnostic
         response.curlExitCode = 0
         response
+    }
+
+    public func get(request: HttpExecutionRequest): HttpExecutionResponse {
+        let getRequest = HttpExecutionRequest()
+        getRequest.method = "GET"
+        getRequest.url = request.url
+        getRequest.accept = request.accept
+        getRequest.body = request.body
+        getRequest.contentType = request.contentType
+        getRequest.timeoutMillis = request.timeoutMillis
+        getRequest.retryCount = request.retryCount
+        for (header in request.headers) {
+            getRequest.headers.add(header)
+        }
+        this.execute(getRequest)
     }
 }
 
