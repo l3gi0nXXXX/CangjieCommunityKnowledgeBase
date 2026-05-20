@@ -45,6 +45,9 @@ network.caFile=/etc/ssl/cert.pem
 - [ ] `doctor` reports `transport=native`, `network.proxy`, `network.envProxy`,
   `network.noProxy`, `network.insecureSkipTlsVerify`, `network.timeoutMillis`,
   and `network.retryCount` with sensitive values redacted.
+- [ ] Source analysis is off by default: `doctor`, `status`, or schema output
+  reports `sourceAnalysis.enabled=false` unless an ignored local config
+  explicitly enables it.
 
 ## Real Source Sync
 
@@ -131,6 +134,33 @@ cjpm run --skip-build --run-args "--config ckb-live.conf sync-live --dry-run --m
 - [ ] Issue and PR history are ingested as community evidence, not trusted
   official source evidence.
 - [ ] Governed web candidates remain `requiresReview=true`.
+- [ ] Ordinary `sync-live --dry-run` does not create or retain any checkout
+  under `${TMPDIR:-/tmp}/ckb-source-analysis` or the configured
+  `sourceAnalysis.workspaceRoot`.
+
+## Source Analysis
+
+- [ ] `cjpm run --run-args schema` lists `cangjie.source_analysis` and
+  `POST /source_analysis`.
+- [ ] With `sourceAnalysis.enabled=false`, a source-analysis request returns a
+  disabled diagnostic and performs no clone.
+- [ ] With an ignored local config that sets `sourceAnalysis.enabled=true`,
+  `sourceAnalysis.workspaceRoot` is absolute, not the project root, and not a
+  path containing `..` escape segments.
+- [ ] A bug-oriented fake or public repository request returns an analysis pack
+  with selected files, `citations`, `bodyHash`, `truncated` when budgets apply,
+  and `cleanupStatus`.
+- [ ] Private, internal, or unknown visibility fixture metadata returns a
+  non-public diagnostic and the clone executor is not called.
+- [ ] Clone URLs are accepted only for the GitCode public host allowlist.
+- [ ] Successful source analysis removes the run directory; failure also removes
+  it unless `retainFailedWorkspace=true` is set for an operator diagnostic run.
+- [ ] Retained failure output shows only a redacted workspace status, never the
+  absolute checkout path.
+- [ ] Binary files, `.git`, `target`, `build`, and `vendor` paths are absent
+  from the returned pack.
+- [ ] Timeout and missing-git failures return visible diagnostics such as
+  `clone_timeout` or `git_unavailable` without blocking the service.
 
 ## Service Health and Status
 

@@ -18,6 +18,7 @@ contract source for current builds.
 | status | `status` | `GET /status`, `cangjie.status` | Metis, operators | none | storage counts, index manifest, scheduler state, `activeKnowledgeVersion`, restore diagnostic |
 | query | `query <text>` | `POST /query`, `cangjie.query` | Metis | `q`, `budget`, optional source filters, `includeCandidates=false` by default | ranked evidence rows, citations, `knowledgeVersion`, truncation/degraded flags |
 | evidence | `evidence <text>` | `POST /evidence`, `cangjie.evidence` | Metis | `q`, `budget`, `includeCandidates=true` only for reviewed workflows | evidence pack, graph context, citations, `activeKnowledgeVersion` |
+| source analysis | `source-analysis <repo> <ref> <paths>` | `POST /source_analysis`, `cangjie.source_analysis` | Metis | public `repo`, `ref`, changed files, candidate paths, selector | source analysis pack with files, citations, body hashes, truncation and cleanup status |
 | sync | `sync-live --dry-run` or `sync-live --apply` | `POST /sync`, `cangjie.sync` | operators, scheduled CKB runtime | `dryRun`, `apply`, `maxRepos`, `maxFilesPerRepo`, `maxItems`, `since` | source status summary, candidate version, active version, redacted errors |
 | rebuild | `rebuild-index` | `POST /rebuild-index`, `cangjie.rebuild` | operators, CKB runtime | store path or default store | candidate version, promoted active version, record count |
 
@@ -32,6 +33,16 @@ unknown-visibility repositories are not valid CKB knowledge sources and must be
 rejected before fetch, normalization, indexing, or evidence publication. The
 CKB/Metis/GitCodeMonitor integration contract does not provide any
 repository-visibility mode or bypass mode for non-public repositories.
+
+`cangjie.source_analysis` is an on-demand fallback for source-level questions.
+It is disabled by default with `sourceAnalysis.enabled=false`. When enabled, CKB
+creates an isolated temporary clone under `sourceAnalysis.workspaceRoot` or
+`${TMPDIR:-/tmp}/ckb-source-analysis`, allows only public GitCode clone hosts,
+uses shallow `git clone --depth <cloneDepth>`, reads only selected text/source
+files, and cleans the run directory after success and by default after failure.
+The returned pack contains repository-relative paths only; absolute checkout
+paths are redacted and must not be forwarded to Metis prompts or
+GitCodeMonitor logs.
 
 ## Redaction and Error Contract
 
@@ -51,6 +62,8 @@ Service bridges should normalize failures to these codes:
 | `ckb.source_unavailable` | upstream source failed, missing, or timed out | yes with backoff |
 | `ckb.rebuild_failed` | candidate index build failed | no active promotion |
 | `ckb.validation_failed` | candidate content failed validation | no active promotion |
+| `ckb.invalid_workspace_root` | source-analysis workspace root is empty, relative, project root, or path-escaping | fix config |
+| `ckb.invalid_clone_host` | source-analysis clone URL host is outside the GitCode public allowlist | no |
 
 ## GitCodeMonitor Boundary
 
@@ -62,8 +75,11 @@ acceptance window.
 GitCodeMonitor should go through Metis when the workflow includes user-facing
 answer generation, issue or PR reply drafting, comment writing, routing policy,
 or session context. In that path GitCodeMonitor sends the event to Metis, Metis
-queries CKB for evidence, and Metis owns the final response. CKB never scans
-GitCode monitor cursors and never writes GitCode comments.
+first queries CKB for `cangjie.evidence_pack`; only when evidence is insufficient
+or the issue explicitly needs source-level context should Metis call
+`cangjie.source_analysis`. CKB returns a structured analysis pack, Metis owns the
+final response, and GitCodeMonitor owns the final GitCode writeback. CKB never
+scans GitCode monitor cursors and never writes GitCode comments.
 
 ## Three-Project Startup
 

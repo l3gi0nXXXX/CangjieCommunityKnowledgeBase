@@ -1,7 +1,9 @@
 package cangjie_community_knowledge_base_test
 
 import std.collection.ArrayList
-import std.fs.{File, Path}
+import std.env.getVariable
+import std.fs.{Directory, File, Path, exists}
+import std.process.*
 import std.unittest.*
 import std.unittest.testmacro.*
 
@@ -1658,6 +1660,180 @@ network.allowedHosts=docs.example.org
         @Expect(corrupted.diagnostic, "malformed_active_index")
         @Expect(renderBackupRestore(backup).contains("/Users/l3gi0n"), false)
     }
+
+    @TestCase
+    public func sourceCloneWorkspaceManagerValidatesRootsAndUsesSafeIsolatedDirs(): Unit {
+        let config = CkbRuntimeConfig()
+        let defaultRoot = sourceAnalysisDefaultWorkspaceRoot()
+        config.sourceAnalysisWorkspaceRoot = "/tmp/ckb-source-analysis-unit-manager"
+        let manager = SourceCloneWorkspaceManager(config)
+
+        let first = manager.prepare("Cangjie/community")
+        let second = manager.prepare("Cangjie/community")
+        let currentRoot = if (let Some(value) <- getVariable("PWD")) { value } else { "" }
+        let projectRoot = validateSourceAnalysisWorkspaceRoot(currentRoot)
+
+        @Expect(defaultRoot.endsWith("/ckb-source-analysis"), true)
+        @Expect(effectiveSourceAnalysisWorkspaceRoot(CkbRuntimeConfig()).endsWith("/ckb-source-analysis"), true)
+        @Expect(effectiveSourceAnalysisWorkspaceRoot(config), "/tmp/ckb-source-analysis-unit-manager")
+        @Expect(validateSourceAnalysisWorkspaceRoot(""), "invalid_workspace_root")
+        @Expect(validateSourceAnalysisWorkspaceRoot("relative/path"), "invalid_workspace_root")
+        @Expect(validateSourceAnalysisWorkspaceRoot("/tmp/../secret"), "invalid_workspace_root")
+        @Expect(projectRoot, "invalid_workspace_root")
+        @Expect(first.ok, true)
+        @Expect(second.ok, true)
+        @Expect(first.runId != second.runId, true)
+        @Expect(first.checkoutDisplay.contains("Cangjie__community"), true)
+        @Expect(first.checkoutDisplay.contains("/tmp/"), false)
+        @Expect(first.checkoutDisplay.contains("/Users/"), false)
+        @Expect(manager.cleanup(first, false), "cleaned")
+        @Expect(manager.cleanup(second, false), "cleaned")
+        @Expect(exists(first.runDir), false)
+    }
+
+    @TestCase
+    public func sourceAnalysisEnforcesPublicOnlyHostAllowlistDepthAndFailureCleanup(): Unit {
+        let config = sourceAnalysisTestConfig("/tmp/ckb-source-analysis-unit-enforcement")
+        config.sourceAnalysisCloneDepth = 3
+        let privateRequest = sourceAnalysisTestRequest()
+        privateRequest.visibility = RepoVisibility.PRIVATE
+        let internalRequest = sourceAnalysisTestRequest()
+        internalRequest.visibility = RepoVisibility.INTERNAL
+        let unknownRequest = sourceAnalysisTestRequest()
+        unknownRequest.visibility = RepoVisibility.UNKNOWN
+        let badHostRequest = sourceAnalysisTestRequest()
+        badHostRequest.cloneUrl = "https://evil.example/Cangjie/community.git"
+        let okExecutor = FakeSourceCloneExecutor()
+        let privatePack = cangjie_source_analysis(config, privateRequest, executor: okExecutor)
+        let internalPack = cangjie_source_analysis(config, internalRequest, executor: okExecutor)
+        let unknownPack = cangjie_source_analysis(config, unknownRequest, executor: okExecutor)
+        let badHostPack = cangjie_source_analysis(config, badHostRequest, executor: okExecutor)
+
+        let successExecutor = FakeSourceCloneExecutor()
+        let successPack = cangjie_source_analysis(config, sourceAnalysisTestRequest(), executor: successExecutor)
+        let timeoutExecutor = FakeSourceCloneExecutor()
+        timeoutExecutor.status = "clone_timeout"
+        let timeoutPack = cangjie_source_analysis(config, sourceAnalysisTestRequest(), executor: timeoutExecutor)
+        let missingExecutor = FakeSourceCloneExecutor()
+        missingExecutor.status = "git_unavailable"
+        let missingPack = cangjie_source_analysis(config, sourceAnalysisTestRequest(), executor: missingExecutor)
+        let retainedExecutor = FakeSourceCloneExecutor()
+        retainedExecutor.status = "clone_failed"
+        let retainRequest = sourceAnalysisTestRequest()
+        retainRequest.retainFailedWorkspace = true
+        let retainedPack = cangjie_source_analysis(config, retainRequest, executor: retainedExecutor)
+
+        @Expect(privatePack.status, "non_public_repo_blocked")
+        @Expect(internalPack.status, "non_public_repo_blocked")
+        @Expect(unknownPack.status, "non_public_repo_blocked")
+        @Expect(badHostPack.status, "invalid_clone_host")
+        @Expect(okExecutor.calls, 0)
+        @Expect(successExecutor.calls, 1)
+        @Expect(successExecutor.lastDepth, 3)
+        @Expect(successExecutor.lastCloneUrl, "https://gitcode.com/Cangjie/community.git")
+        @Expect(successPack.cleanupStatus, "cleaned")
+        @Expect(exists(Path(successExecutor.lastCheckoutPath)), false)
+        @Expect(timeoutPack.status, "clone_timeout")
+        @Expect(timeoutPack.cleanupStatus, "cleaned")
+        @Expect(exists(Path(timeoutExecutor.lastCheckoutPath)), false)
+        @Expect(missingPack.status, "git_unavailable")
+        @Expect(missingPack.cleanupStatus, "cleaned")
+        @Expect(retainedPack.cleanupStatus, "retained_by_config")
+        @Expect(retainedPack.workspaceStatus.contains("/tmp/"), false)
+        @Expect(exists(Path(retainedExecutor.lastCheckoutPath).parent), true)
+        launch("rm", ["-rf", "/tmp/ckb-source-analysis-unit-enforcement"]).wait()
+    }
+
+    @TestCase
+    public func sourceAnalysisPackSelectsFiltersTruncatesHashesCitationsAndRedactsPaths(): Unit {
+        let config = sourceAnalysisTestConfig("/tmp/ckb-source-analysis-unit-pack")
+        config.sourceAnalysisMaxFiles = 2
+        config.sourceAnalysisMaxFileBytes = 40
+        let request = sourceAnalysisTestRequest()
+        request.changedFiles.add("src/main.cj")
+        request.changedFiles.add("target/generated.cj")
+        request.changedFiles.add("assets/logo.png")
+        request.changedFiles.add("src/binary.txt")
+        request.candidatePaths.add("docs/readme.md")
+        request.candidatePaths.add("src/long.cj")
+        request.selector = "please inspect src/selector.cj"
+        let executor = FakeSourceCloneExecutor()
+
+        let pack = cangjie_source_analysis(config, request, executor: executor)
+        let rendered = renderSourceAnalysis(pack)
+
+        @Expect(pack.ok, true)
+        @Expect(pack.selectedFiles.size, 2)
+        @Expect(pack.selectedFiles[0].path, "src/main.cj")
+        @Expect(pack.selectedFiles[0].bodyHash != "", true)
+        @Expect(pack.selectedFiles[0].citation, "Cangjie/community@abc123:src/main.cj")
+        @Expect(pack.selectedFiles[1].path, "docs/readme.md")
+        @Expect(pack.truncated, true)
+        @Expect(pack.cleanupStatus, "cleaned")
+        @Expect(rendered.contains("target/generated.cj"), false)
+        @Expect(rendered.contains("assets/logo.png"), false)
+        @Expect(rendered.contains("src/binary.txt"), false)
+        @Expect(rendered.contains("/tmp/"), false)
+        @Expect(rendered.contains("/Users/"), false)
+        @Expect(exists(Path(executor.lastCheckoutPath)), false)
+    }
+}
+
+class FakeSourceCloneExecutor <: SourceCloneExecutor {
+    public var calls: Int64 = 0
+    public var status: String = "ok"
+    public var lastDepth: Int64 = 0
+    public var lastCloneUrl: String = ""
+    public var lastCheckoutPath: String = ""
+
+    public init() {}
+
+    public func clone(request: CloneExecutionRequest): CloneExecutionResult {
+        this.calls += 1
+        this.lastDepth = request.depth
+        this.lastCloneUrl = request.cloneUrl
+        this.lastCheckoutPath = request.checkoutPath
+        let result = CloneExecutionResult()
+        if (this.status != "ok") {
+            result.status = this.status
+            result.diagnostic = this.status
+            return result
+        }
+        writeFixtureFile(request.checkoutPath, "src/main.cj", "public func main(): Unit { println(\"hello\") }\n")
+        writeFixtureFile(request.checkoutPath, "docs/readme.md", "# README\nCangjie source analysis docs.\n")
+        writeFixtureFile(request.checkoutPath, "src/long.cj", "public func longBody(): Unit { println(\"abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnopqrstuvwxyz\") }\n")
+        writeFixtureFile(request.checkoutPath, "src/selector.cj", "public func selected(): Unit {}\n")
+        writeFixtureFile(request.checkoutPath, "target/generated.cj", "public func generated(): Unit {}\n")
+        writeFixtureFile(request.checkoutPath, "assets/logo.png", "not really png\n")
+        writeFixtureFile(request.checkoutPath, "src/binary.txt", "abc\0def")
+        result.ok = true
+        result.status = "ok"
+        result
+    }
+}
+
+private func sourceAnalysisTestConfig(root: String): CkbRuntimeConfig {
+    let config = CkbRuntimeConfig()
+    config.sourceAnalysisEnabled = true
+    config.sourceAnalysisWorkspaceRoot = root
+    config
+}
+
+private func sourceAnalysisTestRequest(): SourceAnalysisRequest {
+    let request = SourceAnalysisRequest()
+    request.repo = "Cangjie/community"
+    request.ref = "main"
+    request.commit = "abc123"
+    request.visibility = RepoVisibility.PUBLIC
+    request
+}
+
+private func writeFixtureFile(root: String, relative: String, body: String): Unit {
+    let path = Path(root).join(relative)
+    if (!exists(path.parent)) {
+        Directory.create(path.parent, recursive: true)
+    }
+    File.writeTo(path, body.toArray())
 }
 
 class ScriptedSchedulerTaskRunner <: SchedulerTaskRunner {

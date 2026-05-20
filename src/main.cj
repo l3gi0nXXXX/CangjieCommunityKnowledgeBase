@@ -109,6 +109,12 @@ public func ckbCliMain(args: Array<String>): Int64 {
         println(CkbSchema.httpLikeRoutes())
         return 0
     }
+    if (cli.command == "source-analysis" || cli.command == "source_analysis") {
+        let service = CkbCommandLoopService(config, store)
+        let response = service.handleLine("source-analysis " + cliTail(input, cli.command, ""))
+        print(response.text)
+        return if (response.text.contains("ok=true")) { 0 } else { 1 }
+    }
     if (cli.command == "query") {
         let query = cliTail(input, "query", "func syntax")
         print(renderQuery(cangjie_evidence_pack(kb, query, 5)))
@@ -119,7 +125,7 @@ public func ckbCliMain(args: Array<String>): Int64 {
         print(renderQuery(cangjie_evidence_pack(kb, query, 3)))
         return 0
     }
-    println("Usage: cangjie_community_knowledge_base [--config <path>] [--store <path>] doctor | status | metrics | service | service-once <command> | start | stop | restart | sync-once | sync-live (--dry-run|--apply) | native-http-smoke <url> | scheduler-run | rebuild-index | backup <path> | restore <path> | query <text> | evidence <text> | schema")
+    println("Usage: cangjie_community_knowledge_base [--config <path>] [--store <path>] doctor | status | metrics | service | service-once <command> | start | stop | restart | sync-once | sync-live (--dry-run|--apply) | source-analysis <repo> <ref> <paths> | native-http-smoke <url> | scheduler-run | rebuild-index | backup <path> | restore <path> | query <text> | evidence <text> | schema")
     2
 }
 

@@ -130,12 +130,13 @@ cjpm run --run-args "--config ckb.conf --store target/ckb-data service"
 ```
 
 The service prints one key-value response per command. Supported commands are:
-`health`, `status`, `metrics`, `query <text>`, `evidence <text>`, `sync`,
-`rebuild`, `scheduler-run`, `backup <path>`, `restore <path>`, `restart`, and
-`stop`. `stop` performs a graceful exit. `restart` reloads the active snapshot
-from the configured `--store`. No user home files are read unless an explicit
-`--config` path names them; token values and absolute local paths are redacted
-from human-facing output.
+`health`, `status`, `metrics`, `query <text>`, `evidence <text>`,
+`source-analysis <repo> <ref> <paths>`, `sync`, `rebuild`, `scheduler-run`,
+`backup <path>`, `restore <path>`, `restart`, and `stop`. `stop` performs a
+graceful exit. `restart` reloads the active snapshot from the configured
+`--store`. No user home files are read unless an explicit `--config` path names
+them; token values and absolute local paths are redacted from human-facing
+output.
 
 ## API Surface
 
@@ -147,9 +148,18 @@ The core MCP-like functions are available from `src/core.cj`:
 - `cangjie_web_candidate_search`
 - `cangjie_hybrid_search`
 - `cangjie_evidence_pack`
+- `cangjie_source_analysis`
 - `cangjie_knowledge_status`
 
 Web candidate evidence is always marked `requiresReview=true` by default.
+
+Source analysis is disabled by default. When `sourceAnalysis.enabled=true`, CKB
+may shallow-clone public GitCode repositories into
+`${TMPDIR:-/tmp}/ckb-source-analysis` or an absolute configured
+`sourceAnalysis.workspaceRoot`, select only requested source/text files, return
+repository-relative citations and body hashes, and clean temporary run
+directories by default. Private, internal, unknown visibility, non-GitCode clone
+hosts, binary files, build outputs, and absolute checkout paths are excluded.
 
 Operational integration with Metis and GitCodeMonitor is documented in
 `docs/metis-gitcodemonitor-integration.md`. Manual production acceptance is
