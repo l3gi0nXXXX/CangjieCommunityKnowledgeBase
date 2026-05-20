@@ -89,15 +89,13 @@ production acceptance unless a controlled diagnostic explicitly requires it.
 Human-facing doctor and dry-run output redacts tokens, cookies, proxy passwords,
 and local absolute paths.
 
-On macOS, the native Cangjie TLS runtime needs OpenSSL 3 visible to `dyld` and
-a PEM CA bundle visible to OpenSSL. This mirrors the Metis runtime prerequisite
-for native HTTPS. A local shell can prepare both without storing secrets:
-
-```bash
-security find-certificate -a -p /System/Library/Keychains/SystemRootCertificates.keychain > /tmp/ckb-system-roots.pem
-export DYLD_LIBRARY_PATH="/opt/homebrew/opt/openssl@3/lib:/opt/homebrew/opt/openssl@3.5/lib:/usr/local/opt/openssl@3/lib:$DYLD_LIBRARY_PATH"
-export SSL_CERT_FILE="/tmp/ckb-system-roots.pem"
-```
+On macOS, native network commands bootstrap their own TLS runtime before the
+request path runs. The bootstrap follows the Metis Gateway launch pattern by
+restarting the command with OpenSSL 3 and Cangjie/stdx dynamic library paths in
+`DYLD_LIBRARY_PATH`. If `SSL_CERT_FILE` is absent, it also creates a temporary
+system-root PEM at `/tmp/ckb-system-roots.pem` for the child process. Operators
+run the same CKB command; no token, cookie, or config file is read by the
+bootstrap itself.
 
 For TLS or route diagnostics, use the read-only native HTTP smoke command
 before running live sync:

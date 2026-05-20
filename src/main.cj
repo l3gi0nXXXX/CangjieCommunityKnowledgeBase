@@ -1,10 +1,16 @@
 package cangjie_community_knowledge_base
 
 import std.convert.Parsable
+import std.env.{getCommand, getVariable}
 import std.fs.{File, OpenMode}
 import std.io.*
+import std.process.*
 
 main(args: Array<String>): Int64 {
+    let bootstrap = ckbMaybeRelaunchWithNativeTlsEnv(args)
+    if (bootstrap[0]) {
+        return bootstrap[1]
+    }
     ckbCliMain(args)
 }
 
@@ -115,6 +121,47 @@ public func ckbCliMain(args: Array<String>): Int64 {
     }
     println("Usage: cangjie_community_knowledge_base [--config <path>] [--store <path>] doctor | status | metrics | service | service-once <command> | start | stop | restart | sync-once | sync-live (--dry-run|--apply) | native-http-smoke <url> | scheduler-run | rebuild-index | backup <path> | restore <path> | query <text> | evidence <text> | schema")
     2
+}
+
+private func ckbMaybeRelaunchWithNativeTlsEnv(args: Array<String>): (Bool, Int64) {
+    if (getVariable("CKB_NATIVE_TLS_BOOTSTRAPPED") == Some("1")) {
+        return (false, 0)
+    }
+    if (!ckbCommandNeedsNativeTlsBootstrap(parseCli(args).command)) {
+        return (false, 0)
+    }
+    let command = getCommand()
+    if (command.trimAscii() == "") {
+        return (false, 0)
+    }
+    var script = "export CKB_NATIVE_TLS_BOOTSTRAPPED=1; " +
+        "MAGIC_ROOT=\"" + "$" + "{MAGIC_PATH:-/Users/l3gi0n/work/workspace_cangjie/CangjieMagic}\"; " +
+        "CANGJIE_ROOT=\"" + "$" + "{CANGJIE_HOME:-/Users/l3gi0n/cangjie100}\"; " +
+        "export DYLD_LIBRARY_PATH=\"/opt/homebrew/opt/openssl@3/lib:/opt/homebrew/opt/openssl@3.5/lib:/usr/local/opt/openssl@3/lib:" +
+        "$" + "{CANGJIE_ROOT}/runtime/lib/darwin_aarch64_llvm:" +
+        "$" + "{MAGIC_ROOT}/libs/cangjie-stdx-mac-aarch64-1.0.0.1/darwin_aarch64_llvm/dynamic/stdx:" +
+        "$" + "{DYLD_LIBRARY_PATH}\"; " +
+        "if [ -z \"" + "$" + "{SSL_CERT_FILE:-}\" ] && command -v security >/dev/null 2>&1; then " +
+        "security find-certificate -a -p /System/Library/Keychains/SystemRootCertificates.keychain > /tmp/ckb-system-roots.pem 2>/dev/null && export SSL_CERT_FILE=/tmp/ckb-system-roots.pem; " +
+        "fi; exec " + ckbShellQuote(command)
+    for (arg in args) {
+        script += " " + ckbShellQuote(arg)
+    }
+    try {
+        let process = launch("/bin/zsh", ["-lc", script], stdIn: Inherit, stdOut: Inherit, stdErr: Inherit)
+        return (true, process.wait())
+    } catch (e: Exception) {
+        println("native tls bootstrap failed: ${e.message}")
+        return (true, 1)
+    }
+}
+
+private func ckbCommandNeedsNativeTlsBootstrap(command: String): Bool {
+    command == "native-http-smoke" || command == "sync-live" || command == "service" || command == "start" || command == "service-once" || command == "scheduler-run"
+}
+
+private func ckbShellQuote(value: String): String {
+    "'" + value.replace("'", "'\\''") + "'"
 }
 
 class CliOptions {

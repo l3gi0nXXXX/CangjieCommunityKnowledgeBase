@@ -1549,6 +1549,7 @@ network.allowedHosts=docs.example.org
     public func schedulerCheckpointsPersistAcrossKnowledgeBaseReload(): Unit {
         let store = FileKnowledgeStore("target/ckb-test-scheduler-persist")
         let kb = newKnowledgeBaseFromStore(store).kb
+        kb.scheduler.entries[0].nextRunAt = 0
         let runner = ScriptedSchedulerTaskRunner()
         runner.ok = true
         runner.status = "fixture_ok"

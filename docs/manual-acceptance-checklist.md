@@ -47,20 +47,13 @@ network.insecureSkipTlsVerify=false
 
 ## Real Source Sync
 
-- [ ] On macOS, prepare native TLS runtime dependencies before real network
-  acceptance. This follows the same OpenSSL 3 requirement documented by Metis
-  for native HTTPS:
-
-```bash
-security find-certificate -a -p /System/Library/Keychains/SystemRootCertificates.keychain > /tmp/ckb-system-roots.pem
-export DYLD_LIBRARY_PATH="/opt/homebrew/opt/openssl@3/lib:/opt/homebrew/opt/openssl@3.5/lib:/usr/local/opt/openssl@3/lib:$DYLD_LIBRARY_PATH"
-export SSL_CERT_FILE="/tmp/ckb-system-roots.pem"
-```
-
-- [ ] If the native transport reports `transportClass=tls_runtime`, OpenSSL 3
-  is not visible to the Cangjie runtime. If it reports
-  `transportClass=tls_unknown_ca`, OpenSSL is loaded but the CA bundle is not
-  visible or does not trust the remote certificate chain.
+- [ ] On macOS, no manual TLS environment export is required for CKB network
+  commands. The command relaunches itself once with the Metis-style OpenSSL 3
+  dynamic library path and a temporary system-root PEM when needed.
+- [ ] If the native transport still reports `transportClass=tls_runtime`, the
+  auto bootstrap could not make OpenSSL 3 visible to the child process. If it
+  reports `transportClass=tls_unknown_ca`, OpenSSL is loaded but the CA bundle
+  does not trust the remote certificate chain.
 - [ ] Before full live sync, run the read-only native HTTP smoke command
   against a public allowlist URL:
 
