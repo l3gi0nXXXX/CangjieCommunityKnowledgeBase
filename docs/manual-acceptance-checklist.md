@@ -48,12 +48,15 @@ network.insecureSkipTlsVerify=false
 ## Real Source Sync
 
 - [ ] On macOS, no manual TLS environment export is required for CKB network
-  commands. The command relaunches itself once with the Metis-style OpenSSL 3
-  dynamic library path and a temporary system-root PEM when needed.
+  commands. The command relaunches itself once with the Metis Gateway-style
+  OpenSSL 3 `DYLD_LIBRARY_PATH` handling.
 - [ ] If the native transport still reports `transportClass=tls_runtime`, the
-  auto bootstrap could not make OpenSSL 3 visible to the child process. If it
-  reports `transportClass=tls_unknown_ca`, OpenSSL is loaded but the CA bundle
-  does not trust the remote certificate chain.
+  bootstrap could not make OpenSSL 3 visible to the child process. If it
+  reports `transportClass=tls_unknown_ca`, OpenSSL is loaded but the remote
+  certificate chain is not trusted by the environment; CKB reports this
+  diagnostic and does not automatically repair CA trust.
+- [ ] Native TLS bootstrap does not generate `/tmp/ckb-system-roots.pem` and
+  does not require operators to manually copy certificates into a CA bundle.
 - [ ] Before full live sync, run the read-only native HTTP smoke command
   against a public allowlist URL:
 
@@ -94,11 +97,12 @@ cjpm run --skip-build --run-args "--config ckb-live.conf sync-live --dry-run --m
   is reported as `transportClass=dns`, not `unknown`.
 - [ ] A certificate trust failure such as `unknown CA` or `certificate verify
   failed` is reported as `transportClass=tls_unknown_ca` or an equivalent
-  visible TLS trust diagnostic.
+  visible TLS trust diagnostic; it is not automatically repaired by CKB.
 - [ ] If direct HTTPS still fails after the CKB native transport is aligned to
   the Metis Feishu/provider direct HTTPS path, the next investigation is
-  production CA trust-store detection or explicit CA bundle support. Do not use
-  `network.insecureSkipTlsVerify=true` as a production workaround.
+  environment-side CA trust-store configuration or a separately designed CA
+  support feature. Do not use `network.insecureSkipTlsVerify=true` as a
+  production workaround.
 - [ ] If an HTTP proxy is configured for live acceptance, HTTPS GitCode and
   documentation requests must route through native HTTP CONNECT before stdx
   TLS handles the final HTTPS request. Proxy credentials must be redacted in
