@@ -165,6 +165,7 @@ public class CkbRuntimeConfig {
     public var networkEnvProxyEnabled: Bool = false
     public var networkNoProxy: String = ""
     public var networkInsecureSkipTlsVerify: Bool = false
+    public var networkCaFile: String = ""
     public var networkAllowPrivateNetwork: Bool = false
     public var networkAllowedHosts: String = ""
 
@@ -282,6 +283,7 @@ public class CkbRuntimeConfig {
         out += " network.envProxy=${if (this.networkEnvProxyEnabled) { "enabled" } else { "disabled" }}"
         out += " network.noProxy=${if (this.networkNoProxy == "") { "absent" } else { redactSensitive(this.networkNoProxy) }}"
         out += " network.insecureSkipTlsVerify=${if (this.networkInsecureSkipTlsVerify) { "enabled" } else { "disabled" }}"
+        out += " network.caFile=${if (this.networkCaFile == "") { "absent" } else { "present" }}"
         out += " network.timeoutMillis=${this.timeoutMillis}"
         out += " network.retryCount=${this.retryCount}"
         out += " website=${if (this.websiteEnabled) { "enabled" } else { "disabled" }}"
@@ -2829,6 +2831,8 @@ private func configApply(config: CkbRuntimeConfig, key: String, value: String): 
         config.networkNoProxy = value
     } else if (key == "network.insecureSkipTlsVerify") {
         config.networkInsecureSkipTlsVerify = parseBool(value)
+    } else if (key == "network.caFile") {
+        config.networkCaFile = value
     } else if (key == "network.allowPrivateNetwork") {
         config.networkAllowPrivateNetwork = parseBool(value)
     } else if (key == "network.allowedHosts") {

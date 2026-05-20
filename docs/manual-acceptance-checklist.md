@@ -32,6 +32,7 @@ network.proxy=
 network.envProxyEnabled=false
 network.noProxy=
 network.insecureSkipTlsVerify=false
+network.caFile=/etc/ssl/cert.pem
 ```
 
 - [ ] Live GitCode sync is limited to public repositories. Private, internal,
@@ -50,13 +51,16 @@ network.insecureSkipTlsVerify=false
 - [ ] On macOS, no manual TLS environment export is required for CKB network
   commands. The command relaunches itself once with the Metis Gateway-style
   OpenSSL 3 `DYLD_LIBRARY_PATH` handling.
+- [ ] If `curl -v https://cangjie-lang.cn/` reports `CAfile: /etc/ssl/cert.pem`,
+  set `network.caFile=/etc/ssl/cert.pem` in the ignored local config so CKB
+  passes the same CA bundle to native OpenSSL.
 - [ ] If the native transport still reports `transportClass=tls_runtime`, the
   bootstrap could not make OpenSSL 3 visible to the child process. If it
   reports `transportClass=tls_unknown_ca`, OpenSSL is loaded but the remote
-  certificate chain is not trusted by the environment; CKB reports this
-  diagnostic and does not automatically repair CA trust.
+  certificate chain is not trusted by the configured CA file or environment;
+  CKB reports this diagnostic and does not automatically repair CA trust.
 - [ ] Native TLS bootstrap does not generate `/tmp/ckb-system-roots.pem` and
-  does not require operators to manually copy certificates into a CA bundle.
+  does not automatically copy certificates into a CA bundle.
 - [ ] Before full live sync, run the read-only native HTTP smoke command
   against a public allowlist URL:
 

@@ -127,14 +127,16 @@ private func ckbMaybeRelaunchWithNativeTlsEnv(args: Array<String>): (Bool, Int64
     if (getVariable("CKB_NATIVE_TLS_BOOTSTRAPPED") == Some("1")) {
         return (false, 0)
     }
-    if (!ckbCommandNeedsNativeTlsBootstrap(parseCli(args).command)) {
+    let cli = parseCli(args)
+    if (!ckbCommandNeedsNativeTlsBootstrap(cli.command)) {
         return (false, 0)
     }
     let command = getCommand()
     if (command.trimAscii() == "") {
         return (false, 0)
     }
-    var script = ckbNativeTlsBootstrapEnvScript() + " exec " + ckbShellQuote(command)
+    let config = loadCkbRuntimeConfig(cli.configPath)
+    var script = ckbNativeTlsBootstrapEnvScript(caFile: config.networkCaFile) + " exec " + ckbShellQuote(command)
     for (arg in args) {
         script += " " + ckbShellQuote(arg)
     }

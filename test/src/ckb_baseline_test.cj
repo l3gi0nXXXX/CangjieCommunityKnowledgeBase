@@ -1034,6 +1034,7 @@ network.proxy=http://user:pass@127.0.0.1:7897
 network.envProxyEnabled=true
 network.noProxy=api.gitcode.com,docs.cangjie-lang.cn
 network.insecureSkipTlsVerify=false
+network.caFile=/etc/ssl/cert.pem
 network.allowPrivateNetwork=true
 network.allowedHosts=docs.example.org
 """.toArray())
@@ -1053,6 +1054,7 @@ network.allowedHosts=docs.example.org
         @Expect(config.networkEnvProxyEnabled, true)
         @Expect(config.networkNoProxy, "api.gitcode.com,docs.cangjie-lang.cn")
         @Expect(config.networkInsecureSkipTlsVerify, false)
+        @Expect(config.networkCaFile, "/etc/ssl/cert.pem")
         @Expect(config.networkAllowPrivateNetwork, true)
         @Expect(config.networkAllowedHosts, "docs.example.org")
         @Expect(config.embeddingProvider, "production-http")
@@ -1070,6 +1072,8 @@ network.allowedHosts=docs.example.org
         @Expect(summary.contains("network.envProxy=enabled"), true)
         @Expect(summary.contains("network.noProxy=api.gitcode.com,docs.cangjie-lang.cn"), true)
         @Expect(summary.contains("network.insecureSkipTlsVerify=disabled"), true)
+        @Expect(summary.contains("network.caFile=present"), true)
+        @Expect(summary.contains("/etc/ssl/cert.pem"), false)
         @Expect(summary.contains("user:pass"), false)
         @Expect(summary.contains("embedding.endpoint=present"), true)
         @Expect(summary.contains("embedding.token=present"), true)

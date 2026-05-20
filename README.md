@@ -71,6 +71,7 @@ network.proxy=
 network.envProxyEnabled=false
 network.noProxy=
 network.insecureSkipTlsVerify=false
+network.caFile=/etc/ssl/cert.pem
 ```
 
 `tokenFile` must contain exactly one GitCode PAT line. Do not include `token=`,
@@ -86,15 +87,17 @@ transport to honor process proxy environment variables, while `network.noProxy`
 lists comma-separated hosts or suffixes that must bypass proxy routing.
 `network.insecureSkipTlsVerify` defaults to `false` and should stay disabled for
 production acceptance unless a controlled diagnostic explicitly requires it.
-Human-facing doctor and dry-run output redacts tokens, cookies, proxy passwords,
-and local absolute paths.
+`network.caFile` is optional and maps a user-provided CA bundle to
+`SSL_CERT_FILE` for the native TLS child process; on macOS `/etc/ssl/cert.pem`
+matches the CA file reported by `curl -v`. Human-facing doctor and dry-run
+output redacts tokens, cookies, proxy passwords, and local absolute paths.
 
 On macOS, native network commands bootstrap their own TLS runtime before the
 request path runs. The bootstrap follows the Metis Gateway launch pattern by
 restarting the command with OpenSSL 3 and Cangjie/stdx dynamic library paths in
-`DYLD_LIBRARY_PATH`. It does not manage CA bundles or certificate trust stores.
-Operators run the same CKB command; no token, cookie, or config file is read by
-the bootstrap itself.
+`DYLD_LIBRARY_PATH`. It does not generate CA bundles or repair certificate trust
+stores. When `network.caFile` is configured, the bootstrap passes that explicit
+file to OpenSSL through `SSL_CERT_FILE`.
 
 For TLS or route diagnostics, use the read-only native HTTP smoke command
 before running live sync:

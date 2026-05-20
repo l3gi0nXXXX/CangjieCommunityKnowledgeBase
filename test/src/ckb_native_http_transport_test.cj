@@ -170,6 +170,16 @@ public class CkbNativeHttpTransportTest {
     }
 
     @TestCase
+    public func nativeTlsBootstrapUsesConfiguredCaFileWithoutGeneratingBundle(): Unit {
+        let script = ckbNativeTlsBootstrapEnvScript(caFile: "/etc/ssl/cert.pem")
+
+        @Expect(script.contains("export SSL_CERT_FILE='/etc/ssl/cert.pem'"), true)
+        @Expect(script.contains("security find-certificate"), false)
+        @Expect(script.contains("ckb-system-roots"), false)
+        @Expect(script.contains("SystemRootCertificates"), false)
+    }
+
+    @TestCase
     public func syncLiveWithFakeRunnerKeepsPrivateInternalUnknownReposExcluded(): Unit {
         let kb = newOfflineKnowledgeBase()
         let config = CkbRuntimeConfig()
