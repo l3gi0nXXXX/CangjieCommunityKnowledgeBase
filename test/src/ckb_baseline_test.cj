@@ -74,7 +74,7 @@ public class CkbBaselineTest {
         @Expect(doctor.contains("data/indexes"), true)
         @Expect(doctor.contains("data/derived"), true)
         @Expect(doctor.contains("data/cache"), true)
-        @Expect(doctor.contains("/Users/l3gi0n"), false)
+        @Expect(doctor.contains("/Users/example"), false)
         @Expect(doctor.contains("localPathRedacted=true"), true)
     }
 
@@ -1371,9 +1371,12 @@ public class CkbBaselineTest {
     public func integrationDocsDefineBoundariesWithoutRealCredentials(): Unit {
         let integration = String.fromUtf8(File.readFrom(Path("../docs/metis-gitcodemonitor-integration.md")))
         let checklist = String.fromUtf8(File.readFrom(Path("../docs/manual-acceptance-checklist.md")))
+        let architecture = String.fromUtf8(File.readFrom(Path("../docs/architecture.md")))
+        let production = String.fromUtf8(File.readFrom(Path("../docs/production-embedding-vector-db.md")))
         let readme = String.fromUtf8(File.readFrom(Path("../README.md")))
         let ignore = String.fromUtf8(File.readFrom(Path("../.gitignore")))
-        let docs = integration + "\n" + checklist + "\n" + readme
+        let docs = integration + "\n" + checklist + "\n" + architecture + "\n" + production + "\n" + readme
+        let workspaceMarker = "workspace" + "_cangjie"
 
         @Expect(integration.contains("GET /health"), true)
         @Expect(integration.contains("POST /query"), true)
@@ -1399,7 +1402,10 @@ public class CkbBaselineTest {
         @Expect(docs.contains("gitcode_x"), false)
         @Expect(docs.contains("Authorization: Bearer"), false)
         @Expect(docs.contains("Cookie: "), false)
-        @Expect(docs.contains("/Users/l3gi0n/.metis"), false)
+        @Expect(docs.contains("/Users/example/.metis"), false)
+        @Expect(docs.contains("/Users/"), false)
+        @Expect(docs.contains(workspaceMarker), false)
+        @Expect(docs.contains("cangjie100"), false)
         @Expect(ignore.contains("tokenFile"), true)
         @Expect(ignore.contains("ckb-live.conf"), true)
         @Expect(ignore.contains("*.token"), true)
@@ -1410,7 +1416,7 @@ public class CkbBaselineTest {
     public func runtimeConfigDefaultsToOfflineAndRedactsSensitiveText(): Unit {
         let config = loadCkbRuntimeConfig("")
         let doctor = renderRuntimeDoctor(config)
-        let redacted = redactSensitive("PRIVATE-TOKEN: private-token-secret\nAuthorization: Bearer fake-token\nCookie=session=abc https://gitcode.com/api?access_token=secret&x=1 mirror=/Users/l3gi0n/private")
+        let redacted = redactSensitive("PRIVATE-TOKEN: private-token-secret\nAuthorization: Bearer fake-token\nCookie=session=abc https://gitcode.com/api?access_token=secret&x=1 mirror=/Users/example/private")
 
         @Expect(config.networkEnabled, false)
         @Expect(config.gitCodeAuthHeader, "private-token")
@@ -1433,7 +1439,7 @@ public class CkbBaselineTest {
         @Expect(redacted.contains("fake-token"), false)
         @Expect(redacted.contains("session=abc"), false)
         @Expect(redacted.contains("secret"), false)
-        @Expect(redacted.contains("/Users/l3gi0n"), false)
+        @Expect(redacted.contains("/Users/example"), false)
         @Expect(redacted.contains("[local-path-redacted]"), true)
     }
 
@@ -1446,7 +1452,7 @@ public class CkbBaselineTest {
         let refused = diagnoseCurlTransportError(7, "curl: (7) Failed to connect to 127.0.0.1 port 9: Connection refused")
         let curlExit = diagnoseCurlTransportError(22, "curl: (22) The requested URL returned error: 502")
         let unknown = diagnoseCurlTransportError(0, "unexpected transport state")
-        let sensitive = diagnoseCurlTransportError(6, "curl: (6) Could not resolve host: gitcode.com\nAuthorization: Bearer live-token-secret\nCookie: SESSION=cookie-secret\nretry token=token-secret path=/Users/l3gi0n/private/ckb-live.conf extra=abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz")
+        let sensitive = diagnoseCurlTransportError(6, "curl: (6) Could not resolve host: gitcode.com\nAuthorization: Bearer live-token-secret\nCookie: SESSION=cookie-secret\nretry token=token-secret path=/Users/example/private/ckb-live.conf extra=abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz")
 
         @Expect(timeout.transportErrorClass, "timeout")
         @Expect(dns.transportErrorClass, "dns")
@@ -1461,7 +1467,7 @@ public class CkbBaselineTest {
         @Expect(sensitive.transportDiagnostic.contains("live-token-secret"), false)
         @Expect(sensitive.transportDiagnostic.contains("cookie-secret"), false)
         @Expect(sensitive.transportDiagnostic.contains("token-secret"), false)
-        @Expect(sensitive.transportDiagnostic.contains("/Users/l3gi0n"), false)
+        @Expect(sensitive.transportDiagnostic.contains("/Users/example"), false)
         @Expect(sensitive.transportDiagnostic.contains("Authorization"), true)
         @Expect(sensitive.transportDiagnostic.contains("Cookie"), true)
         @Expect(sensitive.transportDiagnostic.contains("[local-path-redacted]"), true)
@@ -1476,7 +1482,7 @@ gitcode.baseUrl=https://api.gitcode.com/api/v5?access_token=fake-live-token
 gitcode.authMode=token
 gitcode.authHeader=authorization
 gitcode.tokenRef=fake-live-token
-gitcode.tokenFile=/Users/l3gi0n/.metis/gitcode-token
+gitcode.tokenFile=/Users/example/.metis/gitcode-token
 website.enabled=true
 docs.enabled=true
 index.backend=local-vector
@@ -1484,7 +1490,7 @@ embedding.provider=production-http
 embedding.model=remote-embedding
 embedding.dimensions=128
 embedding.endpoint=https://embedding.invalid/v1?access_token=fake-live-token
-embedding.tokenFile=/Users/l3gi0n/.metis/embedding-token
+embedding.tokenFile=/Users/example/.metis/embedding-token
 embedding.batchSize=24
 embedding.timeoutMillis=2345
 embedding.retryCount=5
@@ -1497,7 +1503,7 @@ vector.dimensions=1024
 vector.distance=Cosine
 vector.timeoutMillis=3456
 vector.retryCount=6
-vector.apiKeyFile=/Users/l3gi0n/.metis/qdrant-token
+vector.apiKeyFile=/Users/example/.metis/qdrant-token
 vector.allowPrivateEndpoint=true
 network.timeoutMillis=1234
 network.retryCount=3
@@ -1543,7 +1549,7 @@ network.allowedHosts=docs.example.org
         @Expect(config.vectorDistance, "Cosine")
         @Expect(config.vectorTimeoutMillis, 3456)
         @Expect(config.vectorRetryCount, 6)
-        @Expect(config.vectorApiKeyFile, "/Users/l3gi0n/.metis/qdrant-token")
+        @Expect(config.vectorApiKeyFile, "/Users/example/.metis/qdrant-token")
         @Expect(config.vectorAllowPrivateEndpoint, true)
         @Expect(summary.contains("gitcode.token=present"), true)
         @Expect(summary.contains("gitcode.authHeader=authorization"), true)
@@ -1567,7 +1573,7 @@ network.allowedHosts=docs.example.org
         @Expect(summary.contains("vector.apiKey=present"), true)
         @Expect(summary.contains("vector.allowPrivateEndpoint=true"), true)
         @Expect(summary.contains("fake-live-token"), false)
-        @Expect(summary.contains("/Users/l3gi0n"), false)
+        @Expect(summary.contains("/Users/example"), false)
     }
 
     @TestCase
@@ -2223,7 +2229,7 @@ network.allowedHosts=docs.example.org
         @Expect(pack.knowledgeVersion, "ckb-20260519-000200-active")
         @Expect(corrupted.ok, false)
         @Expect(corrupted.diagnostic, "malformed_active_index")
-        @Expect(renderBackupRestore(backup).contains("/Users/l3gi0n"), false)
+        @Expect(renderBackupRestore(backup).contains("/Users/example"), false)
     }
 
     @TestCase

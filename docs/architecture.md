@@ -44,7 +44,7 @@ runtime knowledge store.
 The accepted persistent store for this workspace is:
 
 ```text
-/Users/l3gi0n/work/workspace_cangjie/CangjieCommunityKnowledgeBase/ckb-data
+<CKB_PROJECT_ROOT>/ckb-data
 ```
 
 All production-like commands must pass the same `--store` path. Do not use
@@ -90,7 +90,7 @@ For this workspace, the local production-stack target is Ollama
 `bge-m3:latest` from `baai/bge-m3` plus single-node Qdrant. The embedding API is
 `http://127.0.0.1:11434/api/embed`, returns 1024-dimensional vectors, and the
 Qdrant HTTP API is `http://127.0.0.1:6333`. Qdrant storage is under
-`/Users/l3gi0n/work/workspace_cangjie/CangjieCommunityKnowledgeBase/ckb-data/qdrant/storage`.
+`<CKB_PROJECT_ROOT>/ckb-data/qdrant/storage`.
 Operational commands and smoke verification are recorded in
 `docs/production-embedding-vector-db.md`.
 

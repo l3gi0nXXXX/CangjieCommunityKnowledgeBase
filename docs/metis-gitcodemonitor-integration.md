@@ -94,7 +94,8 @@ GitCodeMonitor commands with their project-local production commands.
 ```bash
 # Terminal 1: CKB
 cd /path/to/CangjieCommunityKnowledgeBase
-source /Users/l3gi0n/cangjie100/envsetup.sh
+export CANGJIE_HOME=/path/to/cangjie
+source "${CANGJIE_HOME}/envsetup.sh"
 cjpm build -i
 cjpm run --skip-build --run-args "status"
 cjpm run --skip-build --run-args "schema"
@@ -116,7 +117,8 @@ to the Metis or GitCodeMonitor repositories.
 1. Build CKB and verify its offline status.
 
 ```bash
-source /Users/l3gi0n/cangjie100/envsetup.sh
+export CANGJIE_HOME=/path/to/cangjie
+source "${CANGJIE_HOME}/envsetup.sh"
 cjpm build -i
 cjpm run --skip-build --run-args "status"
 cjpm run --skip-build --run-args "query func named parameters"
@@ -188,6 +190,6 @@ unless the controlled acceptance explicitly enables them.
 Stop GitCodeMonitor first to prevent new inbound events, then stop Metis, then
 stop or disable CKB sync. To roll back CKB knowledge, restart CKB with the last
 known good store or restore the previous
-`/Users/l3gi0n/work/workspace_cangjie/CangjieCommunityKnowledgeBase/ckb-data` backup before
+`<CKB_PROJECT_ROOT>/ckb-data` backup before
 re-enabling Metis queries. Never roll back by copying CKB generated data into
 Metis or GitCodeMonitor.

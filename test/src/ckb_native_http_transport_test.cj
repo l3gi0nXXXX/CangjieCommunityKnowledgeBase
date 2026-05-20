@@ -123,7 +123,7 @@ public class CkbNativeHttpTransportTest {
 
     @TestCase
     public func redactionRemovesNativeSecretsCookiesProxyCredentialsAndLocalPaths(): Unit {
-        let text = "Authorization: Bearer native-token-secret\nPRIVATE-TOKEN: second-secret\nCookie: SESSION=cookie-secret\nproxy=http://user:proxy-secret@127.0.0.1:7897\nurl=https://api.gitcode.com/api/v5?access_token=query-secret&token=query-token\npath=/Users/l3gi0n/work/private/ckb-live.conf"
+        let text = "Authorization: Bearer native-token-secret\nPRIVATE-TOKEN: second-secret\nCookie: SESSION=cookie-secret\nproxy=http://user:proxy-secret@127.0.0.1:7897\nurl=https://api.gitcode.com/api/v5?access_token=query-secret&token=query-token\npath=/Users/example/work/private/ckb-live.conf"
 
         let redacted = redactSensitive(text)
 
@@ -133,7 +133,7 @@ public class CkbNativeHttpTransportTest {
         @Expect(redacted.contains("proxy-secret"), false)
         @Expect(redacted.contains("query-secret"), false)
         @Expect(redacted.contains("query-token"), false)
-        @Expect(redacted.contains("/Users/l3gi0n"), false)
+        @Expect(redacted.contains("/Users/example"), false)
         @Expect(redacted.contains("[local-path-redacted]"), true)
         @Expect(redacted.contains("Authorization"), true)
         @Expect(redacted.contains("Cookie"), true)
@@ -155,6 +155,7 @@ public class CkbNativeHttpTransportTest {
     @TestCase
     public func nativeTlsBootstrapEnvMatchesMetisOpenSslWithoutCaBundleWork(): Unit {
         let script = ckbNativeTlsBootstrapEnvScript()
+        let workspaceMarker = "workspace" + "_cangjie"
 
         @Expect(script.contains("CKB_NATIVE_TLS_BOOTSTRAPPED=1"), true)
         @Expect(script.contains("/opt/homebrew/opt/openssl@3/lib"), true)
@@ -162,6 +163,9 @@ public class CkbNativeHttpTransportTest {
         @Expect(script.contains("/usr/local/opt/openssl@3/lib"), true)
         @Expect(script.contains("CKB_CJPM_SKIP_BUILD_CANGJIE_ROOT"), true)
         @Expect(script.contains("CKB_CJPM_SKIP_BUILD_MAGIC_ROOT"), true)
+        @Expect(script.contains("/Users/"), false)
+        @Expect(script.contains(workspaceMarker), false)
+        @Expect(script.contains("cangjie100"), false)
         @Expect(script.contains("SSL_CERT_FILE"), false)
         @Expect(script.contains("SSL_CERT_DIR"), false)
         @Expect(script.contains("security find-certificate"), false)

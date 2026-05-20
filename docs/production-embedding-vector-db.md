@@ -8,7 +8,7 @@ for CKB acceptance in this workspace.
 The formal CKB knowledge store is local filesystem storage at:
 
 ```text
-/Users/l3gi0n/work/workspace_cangjie/CangjieCommunityKnowledgeBase/ckb-data
+<CKB_PROJECT_ROOT>/ckb-data
 ```
 
 This directory is inside the CKB project but must remain ignored by git. Use the
@@ -80,20 +80,21 @@ container=ckb-qdrant
 image=qdrant/qdrant:latest
 http=http://127.0.0.1:6333
 grpc=127.0.0.1:6334
-storage=/Users/l3gi0n/work/workspace_cangjie/CangjieCommunityKnowledgeBase/ckb-data/qdrant/storage
+storage=<CKB_PROJECT_ROOT>/ckb-data/qdrant/storage
 ```
 
 Start or recreate the single-node container:
 
 ```bash
-mkdir -p /Users/l3gi0n/work/workspace_cangjie/CangjieCommunityKnowledgeBase/ckb-data/qdrant/storage
+export CKB_PROJECT_ROOT=/path/to/CangjieCommunityKnowledgeBase
+mkdir -p "${CKB_PROJECT_ROOT}/ckb-data/qdrant/storage"
 
 docker run -d \
   --name ckb-qdrant \
   --restart unless-stopped \
   -p 6333:6333 \
   -p 6334:6334 \
-  -v /Users/l3gi0n/work/workspace_cangjie/CangjieCommunityKnowledgeBase/ckb-data/qdrant/storage:/qdrant/storage \
+  -v "${CKB_PROJECT_ROOT}/ckb-data/qdrant/storage:/qdrant/storage" \
   qdrant/qdrant:latest
 ```
 
@@ -143,7 +144,7 @@ The CKB code now includes the production adapter paths:
 3. Run `cjpm clean`.
 4. Run `cjpm build -i`.
 5. Run the test package from `test/` with `cjpm test`.
-6. Run `cjpm run --skip-build --run-args "--config ckb-live.conf --store /Users/l3gi0n/work/workspace_cangjie/CangjieCommunityKnowledgeBase/ckb-data doctor"`.
+6. Run `cjpm run --skip-build --run-args "--config ckb-live.conf --store ${CKB_PROJECT_ROOT}/ckb-data doctor"`.
 7. Run limited `sync-live --apply`, then `rebuild-index`, then `evidence <query>`.
 8. Check that active and candidate collection names remain distinct.
 

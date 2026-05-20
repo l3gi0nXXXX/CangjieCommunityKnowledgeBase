@@ -18,7 +18,8 @@ offline curation lifecycle tests.
 ## Build and Test
 
 ```bash
-source /Users/l3gi0n/cangjie100/envsetup.sh
+export CANGJIE_HOME=/path/to/cangjie
+source "${CANGJIE_HOME}/envsetup.sh"
 cjpm clean
 cjpm build -i
 cjpm test
@@ -54,16 +55,17 @@ CKB stores knowledge on the local filesystem. For this workspace, the formal
 persistent store is:
 
 ```text
-/Users/l3gi0n/work/workspace_cangjie/CangjieCommunityKnowledgeBase/ckb-data
+<CKB_PROJECT_ROOT>/ckb-data
 ```
 
 Use this same `--store` path for `sync-live`, `rebuild-index`, `query`,
 `evidence`, `source_analysis`, `service`, `backup`, and `restore`:
 
 ```bash
-cjpm run --skip-build --run-args "--config ckb-live.conf --store /Users/l3gi0n/work/workspace_cangjie/CangjieCommunityKnowledgeBase/ckb-data sync-live --apply --max-repos 5 --max-files-per-repo 2 --max-items 30"
-cjpm run --skip-build --run-args "--config ckb-live.conf --store /Users/l3gi0n/work/workspace_cangjie/CangjieCommunityKnowledgeBase/ckb-data rebuild-index"
-cjpm run --skip-build --run-args "--config ckb-live.conf --store /Users/l3gi0n/work/workspace_cangjie/CangjieCommunityKnowledgeBase/ckb-data evidence README"
+export CKB_PROJECT_ROOT="$(pwd)"
+cjpm run --skip-build --run-args "--config ckb-live.conf --store ${CKB_PROJECT_ROOT}/ckb-data sync-live --apply --max-repos 5 --max-files-per-repo 2 --max-items 30"
+cjpm run --skip-build --run-args "--config ckb-live.conf --store ${CKB_PROJECT_ROOT}/ckb-data rebuild-index"
+cjpm run --skip-build --run-args "--config ckb-live.conf --store ${CKB_PROJECT_ROOT}/ckb-data evidence README"
 ```
 
 Do not use `target/ckb-data` as a formal persistent knowledge store.
@@ -222,7 +224,7 @@ Detailed production semantic retrieval runbook:
 CKB can run as a long-lived stdio service:
 
 ```bash
-cjpm run --run-args "--config ckb-live.conf --store /Users/l3gi0n/work/workspace_cangjie/CangjieCommunityKnowledgeBase/ckb-data service"
+cjpm run --run-args "--config ckb-live.conf --store ${CKB_PROJECT_ROOT}/ckb-data service"
 ```
 
 The service prints one key-value response per command. Supported commands are:
@@ -256,58 +258,6 @@ may shallow-clone public GitCode repositories into
 repository-relative citations and body hashes, and clean temporary run
 directories by default. Private, internal, unknown visibility, non-GitCode clone
 hosts, binary files, build outputs, and absolute checkout paths are excluded.
-
-## Production Embedding and Vector DB
-
-The current verified baseline uses deterministic/local storage:
-
-```text
-embedding.provider=deterministic
-vector.backend=local-file
-```
-
-This is sufficient for functional verification, offline tests, active/candidate
-snapshot safety, and GitCode live-sync acceptance. It is not production-grade
-semantic retrieval: deterministic embeddings do not understand Cangjie source
-or documentation semantics, and the local-file vector backend is not a durable
-shared vector service.
-
-Switching CKB to a production embedding/vector stack means:
-
-- choosing a real embedding model or OpenAI-compatible embedding service;
-- configuring endpoint, model, token, dimensions, timeout, retry, and batch
-  limits with secret redaction;
-- choosing a real vector backend such as Qdrant, Milvus, Chroma, or pgvector;
-- writing vectors into active/candidate collections isolated by knowledge
-  version;
-- ensuring failed candidate writes never replace active retrieval;
-- defining backup/restore, health, rebuild, and rollback behavior for the
-  vector backend;
-- running acceptance tests that prove query/evidence quality uses semantic
-  retrieval rather than only keyword-like deterministic vectors.
-
-Recommended next operating choice is an OpenAI-compatible embedding provider
-plus Qdrant for a low-operational-cost single-node production path. The exact
-provider, model, vector DB, credentials, and deployment topology must be chosen
-before this becomes production semantic retrieval.
-
-For this workspace, the selected local stack is documented in
-`docs/production-embedding-vector-db.md`:
-
-```text
-embedding.provider=ollama
-embedding.model=bge-m3:latest
-embedding.endpoint=http://127.0.0.1:11434/api/embed
-embedding.dimensions=1024
-vector.backend=qdrant
-vector.endpoint=http://127.0.0.1:6333
-qdrant.storage=/Users/l3gi0n/work/workspace_cangjie/CangjieCommunityKnowledgeBase/ckb-data/qdrant/storage
-```
-
-The local Ollama model is `bge-m3:latest` from `baai/bge-m3`; the local Qdrant
-single-node container is `ckb-qdrant`. CKB includes the Ollama embedding adapter
-and Qdrant vector backend adapter, so production-stack acceptance should verify
-real semantic retrieval instead of the deterministic/local baseline.
 
 Operational integration with Metis and GitCodeMonitor is documented in
 `docs/metis-gitcodemonitor-integration.md`. Manual production acceptance is

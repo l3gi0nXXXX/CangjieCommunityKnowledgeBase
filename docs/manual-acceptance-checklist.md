@@ -12,9 +12,9 @@ release ticket or run log, not in committed credential files.
   store is inside a parent workspace.
 - [ ] No real credential value is committed in docs, source, tests, or fixtures.
 - [ ] Formal CKB knowledge storage uses
-  `/Users/l3gi0n/work/workspace_cangjie/CangjieCommunityKnowledgeBase/ckb-data`, not `target/ckb-data`.
+  `<CKB_PROJECT_ROOT>/ckb-data`, not `target/ckb-data`.
 - [ ] Every production-like command uses the same explicit
-  `--store /Users/l3gi0n/work/workspace_cangjie/CangjieCommunityKnowledgeBase/ckb-data` argument.
+  `--store <CKB_PROJECT_ROOT>/ckb-data` argument.
 - [ ] `target/ckb-data` is treated as disposable only. `cjpm clean` removes
   files under `target/`, so it must not hold the formal active knowledge store.
 - [ ] The committed `data/` directory is only a logical layout skeleton and does
@@ -129,7 +129,7 @@ cjpm run --skip-build --run-args "native-http-smoke https://api.gitcode.com/api/
 - [ ] Native HTTP dry-run is started with the ignored local config file:
 
 ```bash
-cjpm run --skip-build --run-args "--config ckb-live.conf --store /Users/l3gi0n/work/workspace_cangjie/CangjieCommunityKnowledgeBase/ckb-data sync-live --dry-run --max-repos 5 --max-files-per-repo 2 --max-items 30"
+cjpm run --skip-build --run-args "--config ckb-live.conf --store <CKB_PROJECT_ROOT>/ckb-data sync-live --dry-run --max-repos 5 --max-files-per-repo 2 --max-items 30"
 ```
 
 - [ ] The native HTTP dry-run reports `network=enabled`, reaches the GitCode
@@ -251,7 +251,7 @@ cjpm run --skip-build --run-args "--config ckb-live.conf --store /Users/l3gi0n/w
   `http://127.0.0.1:11434/api/embed` and returns 1024-dimensional embeddings.
 - [ ] Local Qdrant single-node container `ckb-qdrant` is reachable at
   `http://127.0.0.1:6333`, with persistent storage under
-  `/Users/l3gi0n/work/workspace_cangjie/CangjieCommunityKnowledgeBase/ckb-data/qdrant/storage`.
+  `<CKB_PROJECT_ROOT>/ckb-data/qdrant/storage`.
 - [ ] Qdrant smoke verification can create, upsert into, inspect, and delete a
   1024-dimensional temporary collection without leaving test collections behind.
 - [ ] Active and candidate vector collections are isolated by knowledge version

@@ -157,11 +157,13 @@ private func ckbMaybeRelaunchWithNativeTlsEnv(args: Array<String>): (Bool, Int64
 
 public func ckbNativeTlsBootstrapScript(command: String, args: Array<String>): String {
     var script = "export CKB_NATIVE_TLS_BOOTSTRAPPED=1; " +
-        "MAGIC_ROOT=\"" + "$" + "{MAGIC_PATH:-/Users/l3gi0n/work/workspace_cangjie/CangjieMagic}\"; " +
-        "CANGJIE_ROOT=\"" + "$" + "{CANGJIE_HOME:-/Users/l3gi0n/cangjie100}\"; " +
-        "export DYLD_LIBRARY_PATH=\"/opt/homebrew/opt/openssl@3/lib:/opt/homebrew/opt/openssl@3.5/lib:/usr/local/opt/openssl@3/lib:" +
-        "$" + "{CANGJIE_ROOT}/runtime/lib/darwin_aarch64_llvm:" +
-        "$" + "{MAGIC_ROOT}/libs/cangjie-stdx-mac-aarch64-1.0.0.1/darwin_aarch64_llvm/dynamic/stdx:" +
+        "MAGIC_ROOT=\"" + "$" + "{MAGIC_PATH:-" + "$" + "{CKB_MAGIC_ROOT:-}}\"; " +
+        "CANGJIE_ROOT=\"" + "$" + "{CANGJIE_HOME:-" + "$" + "{CKB_CANGJIE_ROOT:-}}\"; " +
+        "CKB_DYLD_EXTRA=\"/opt/homebrew/opt/openssl@3/lib:/opt/homebrew/opt/openssl@3.5/lib:/usr/local/opt/openssl@3/lib\"; " +
+        "if [ -n \"" + "$" + "{CANGJIE_ROOT}\" ]; then CKB_DYLD_EXTRA=\"" + "$" + "{CKB_DYLD_EXTRA}:" + "$" + "{CANGJIE_ROOT}/runtime/lib/darwin_aarch64_llvm\"; fi; " +
+        "if [ -n \"" + "$" + "{MAGIC_ROOT}\" ]; then CKB_DYLD_EXTRA=\"" + "$" + "{CKB_DYLD_EXTRA}:" + "$" + "{MAGIC_ROOT}/libs/cangjie-stdx-mac-aarch64-1.0.0.1/darwin_aarch64_llvm/dynamic/stdx\"; fi; " +
+        "export DYLD_LIBRARY_PATH=\"" +
+        "$" + "{CKB_DYLD_EXTRA}:" +
         "$" + "{DYLD_LIBRARY_PATH}\"; " +
         "exec " + ckbShellQuote(command)
     for (arg in args) {
