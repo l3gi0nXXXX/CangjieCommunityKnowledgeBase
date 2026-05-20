@@ -163,8 +163,10 @@ public class CkbNativeHttpTransportTest {
         @Expect(script.contains("CKB_CJPM_SKIP_BUILD_CANGJIE_ROOT"), true)
         @Expect(script.contains("CKB_CJPM_SKIP_BUILD_MAGIC_ROOT"), true)
         @Expect(script.contains("SSL_CERT_FILE"), false)
+        @Expect(script.contains("SSL_CERT_DIR"), false)
         @Expect(script.contains("security find-certificate"), false)
         @Expect(script.contains("ckb-system-roots"), false)
+        @Expect(script.contains("SystemRootCertificates"), false)
     }
 
     @TestCase
