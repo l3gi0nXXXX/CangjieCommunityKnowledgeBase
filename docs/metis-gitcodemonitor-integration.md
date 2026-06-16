@@ -12,6 +12,10 @@ CKB exposes a stable contract through its CLI schema output and the equivalent
 service bridge names below. `cjpm run --run-args schema` is the executable
 contract source for current builds.
 
+For the service-v1 HTTP/JSON capability matrix, caller boundaries, and update
+trigger rules, see
+[`external-knowledge-service-matrix.md`](external-knowledge-service-matrix.md).
+
 | Interface | CLI entry | Service route/tool | Caller | Input | Output |
 | --- | --- | --- | --- | --- | --- |
 | health | `status` | `GET /health`, `cangjie.health` | Metis, operators | none | `ok`, `status`, `activeKnowledgeVersion`, `degraded` |
