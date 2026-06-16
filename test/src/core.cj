@@ -1563,6 +1563,11 @@ public class ScheduleEntry {
     public var activeVersion: String = ""
     public var candidateVersion: String = ""
     public var lastStatus: String = "pending"
+    public var lastDurationMillis: Int64 = 0
+    public var lastRequestCount: Int64 = 0
+    public var lastUpdatedDataKinds: ArrayList<String> = ArrayList<String>()
+    public var lastTruncated: Bool = false
+    public var timeBudgetMillis: Int64 = 0
 
     public init() {}
 
@@ -1670,6 +1675,11 @@ public class SchedulerTaskResult {
     public var since: String = ""
     public var activeVersion: String = ""
     public var candidateVersion: String = ""
+    public var durationMillis: Int64 = 0
+    public var requestCount: Int64 = 0
+    public var updatedDataKinds: ArrayList<String> = ArrayList<String>()
+    public var truncated: Bool = false
+    public var timeBudgetMillis: Int64 = 0
 
     public init() {}
 }
@@ -1680,6 +1690,8 @@ public class SchedulerExecutorResult {
     public var failed: Int64 = 0
     public var degraded: Int64 = 0
     public var details: String = ""
+    public var forced: Bool = false
+    public var taskNames: ArrayList<String> = ArrayList<String>()
 
     public init() {}
 }
@@ -1707,6 +1719,42 @@ public class SchedulerExecutor {
             let entry = this.findEntry(name)
             let task = this.runner.runTask(name, entry.lastSince)
             result.ran += 1
+            result.taskNames.add(name)
+            if (task.ok) {
+                this.scheduler.markSuccess(name)
+                this.applyCheckpoint(name, task)
+                result.succeeded += 1
+            } else {
+                this.scheduler.markFailure(name)
+                this.applyCheckpoint(name, task)
+                result.failed += 1
+            }
+            let after = this.findEntry(name)
+            if (after.degraded) {
+                result.degraded += 1
+            }
+            result.details += "task ${name} ok=${task.ok} status=${task.status} nextRunAt=${after.nextRunAt} failureCount=${after.failureCount} degraded=${after.degraded}\n"
+        }
+        result
+    }
+
+    public func runTaskNames(taskNames: ArrayList<String>, force!: Bool = false): SchedulerExecutorResult {
+        let result = SchedulerExecutorResult()
+        result.forced = force
+        for (name in taskNames) {
+            let entry = this.findEntry(name)
+            if (entry.name == "" || entry.intervalMinutes == 0) {
+                result.failed += 1
+                result.details += "task ${name} ok=false status=unknown_task\n"
+                continue
+            }
+            if (!force && this.scheduler.clock.nowMinutes < entry.nextRunAt) {
+                result.details += "task ${name} ok=false status=not_due nextRunAt=${entry.nextRunAt}\n"
+                continue
+            }
+            let task = this.runner.runTask(name, entry.lastSince)
+            result.ran += 1
+            result.taskNames.add(name)
             if (task.ok) {
                 this.scheduler.markSuccess(name)
                 this.applyCheckpoint(name, task)
@@ -1742,6 +1790,14 @@ public class SchedulerExecutor {
                 entry.activeVersion = task.activeVersion
                 entry.candidateVersion = task.candidateVersion
                 entry.lastStatus = task.status
+                entry.lastDurationMillis = task.durationMillis
+                entry.lastRequestCount = task.requestCount
+                entry.lastUpdatedDataKinds.clear()
+                for (kind in task.updatedDataKinds) {
+                    entry.lastUpdatedDataKinds.add(kind)
+                }
+                entry.lastTruncated = task.truncated
+                entry.timeBudgetMillis = task.timeBudgetMillis
             }
         }
     }

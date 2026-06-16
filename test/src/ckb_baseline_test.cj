@@ -2417,6 +2417,11 @@ class ScriptedSchedulerTaskRunner <: SchedulerTaskRunner {
     public var since: String = ""
     public var activeVersion: String = ""
     public var candidateVersion: String = ""
+    public var durationMillis: Int64 = 0
+    public var requestCount: Int64 = 0
+    public var updatedDataKinds: ArrayList<String> = ArrayList<String>()
+    public var truncated: Bool = false
+    public var timeBudgetMillis: Int64 = 0
 
     public init() {}
 
@@ -2428,8 +2433,25 @@ class ScriptedSchedulerTaskRunner <: SchedulerTaskRunner {
         result.since = this.since
         result.activeVersion = this.activeVersion
         result.candidateVersion = this.candidateVersion
+        result.durationMillis = this.durationMillis
+        result.requestCount = this.requestCount
+        for (kind in this.updatedDataKinds) {
+            result.updatedDataKinds.add(kind)
+        }
+        result.truncated = this.truncated
+        result.timeBudgetMillis = this.timeBudgetMillis
         result
     }
+}
+
+private func countCallsOfKind(calls: ArrayList<SourceFetchRequest>, kind: String): Int64 {
+    var count: Int64 = 0
+    for (call in calls) {
+        if (call.kind == kind) {
+            count += 1
+        }
+    }
+    count
 }
 
 class ScriptedSourceFetchRunner <: SourceFetchRunner {
@@ -2722,6 +2744,328 @@ public class CkbServiceApiTest {
         @Expect(badContract.contains("\"code\":\"ckb.bad_request\""), true)
         @Expect(missingRepo.contains("\"code\":\"ckb.bad_request\""), true)
         @Expect(service.acceptedEventCountForTest(), before)
+    }
+
+    @TestCase
+    public func ckb3Ut001SchedulerCheckpointExposesRuntimeMetrics(): Unit {
+        let scheduler = Scheduler(FakeClock(0))
+        let runner = ScriptedSchedulerTaskRunner()
+        runner.ok = true
+        runner.status = "fixture_ok"
+        runner.durationMillis = 1234
+        runner.requestCount = 7
+        runner.updatedDataKinds.add("docs")
+        runner.updatedDataKinds.add("website")
+        runner.truncated = true
+        runner.timeBudgetMillis = 60000
+        let executor = SchedulerExecutor(scheduler, runner)
+
+        let result = executor.runDue(limit: 1)
+        let entry = scheduler.entries[0]
+
+        @Expect(result.succeeded, 1)
+        @Expect(entry.lastDurationMillis, 1234)
+        @Expect(entry.lastRequestCount, 7)
+        @Expect(entry.lastUpdatedDataKinds.contains("docs"), true)
+        @Expect(entry.lastUpdatedDataKinds.contains("website"), true)
+        @Expect(entry.lastTruncated, true)
+        @Expect(entry.timeBudgetMillis, 60000)
+    }
+
+    @TestCase
+    public func ckb3Ut002DefaultSchedulerContainsOnlyLowFrequencyAllowlist(): Unit {
+        let scheduler = Scheduler(FakeClock(0))
+        let expected = ckbSchedulerAllowlistTaskNames()
+
+        @Expect(scheduler.entries.size, expected.size)
+        for (name in expected) {
+            @Expect(intervalFor(scheduler, name) > 0, true)
+        }
+        @Expect(intervalFor(scheduler, "active_item_sync_10m"), -1)
+        @Expect(intervalFor(scheduler, "active_repo_fetch_30m"), -1)
+        @Expect(intervalFor(scheduler, "repo_list_6h"), -1)
+        @Expect(intervalFor(scheduler, "active_item_sync_on_merge"), -1)
+        @Expect(intervalFor(scheduler, "active_repo_fetch_on_merge"), -1)
+        @Expect(intervalFor(scheduler, "repo_list_refresh_on_merge"), -1)
+    }
+
+    @TestCase
+    public func ckb3Ut003ScheduleTaskProfilesMapAllowlistBudgetsAndDisableActive(): Unit {
+        let docs = ckbSyncProfileForScheduleTask("docs_probe_30d")
+        let catalog = ckbSyncProfileForScheduleTask("community_repo_discovery_30d")
+        let rebuild = ckbSyncProfileForScheduleTask("weekly_full_rebuild")
+        let active = ckbSyncProfileForScheduleTask("active_repo_fetch_on_merge")
+        let legacy = ckbSyncProfileForScheduleTask("repo_list_6h")
+
+        @Expect(docs.enabled, true)
+        @Expect(docs.profile, "docs_probe")
+        @Expect(docs.timeBudgetMillis, 60000)
+        @Expect(docs.updatedDataKinds.contains("docs"), true)
+        @Expect(catalog.updatedDataKinds.contains("repo_catalog"), true)
+        @Expect(rebuild.profile, "full_rebuild")
+        @Expect(active.enabled, false)
+        @Expect(active.status, "unsupported")
+        @Expect(legacy.enabled, false)
+    }
+
+    @TestCase
+    public func ckb3Ut004RepositoryChangedUnavailableSchedulesItemsOnly(): Unit {
+        let event = parseGitCodeRepositoryChangedEvent("{\"contractVersion\":\"gcm-ckb-repository-change-v1\",\"provider\":\"gitcode\",\"eventType\":\"merge_request\",\"action\":\"merge\",\"state\":\"merged\",\"reason\":\"pr_merged\",\"repo\":\"cangjie/stdx\",\"targetRef\":\"master\",\"prNumber\":42,\"changedFilesUnavailable\":true,\"changedFiles\":[]}")
+        let profiles = ckbProfilesForRepositoryChangedEvent(event, CkbRuntimeConfig())
+
+        @Expect(event.valid, true)
+        @Expect(event.changedFilesUnavailable, true)
+        @Expect(profiles.contains("items"), true)
+        @Expect(profiles.contains("repo_source_and_items"), false)
+        @Expect(profiles.contains("repo_list_refresh"), false)
+    }
+
+    @TestCase
+    public func ckb3Ut005RepositoryChangedCodeFilesScheduleRepoSourceAndItems(): Unit {
+        let event = parseGitCodeRepositoryChangedEvent("{\"contractVersion\":\"gcm-ckb-repository-change-v1\",\"provider\":\"gitcode\",\"eventType\":\"merge_request\",\"action\":\"merge\",\"state\":\"merged\",\"reason\":\"pr_merged\",\"repo\":\"cangjie/stdx\",\"targetRef\":\"master\",\"prNumber\":43,\"changedFiles\":[\"src/http/client.cj\",\"README.md\"],\"changedFilesUnavailable\":false}")
+        let profiles = ckbProfilesForRepositoryChangedEvent(event, CkbRuntimeConfig())
+
+        @Expect(profiles.contains("items"), false)
+        @Expect(profiles.contains("repo_source_and_items"), true)
+        @Expect(profiles.contains("repo_list_refresh"), false)
+    }
+
+    @TestCase
+    public func ckb3Ut006RepositoryChangedRepoListFilesAddRepoListRefresh(): Unit {
+        let event = parseGitCodeRepositoryChangedEvent("{\"contractVersion\":\"gcm-ckb-repository-change-v1\",\"provider\":\"gitcode\",\"eventType\":\"merge_request\",\"action\":\"merge\",\"state\":\"merged\",\"reason\":\"pr_merged\",\"repo\":\"cangjie/community\",\"targetRef\":\"master\",\"prNumber\":44,\"changedFiles\":[\"repo_lists.md\",\"src/main.cj\"],\"changedFilesUnavailable\":false}")
+        let profiles = ckbProfilesForRepositoryChangedEvent(event, CkbRuntimeConfig())
+
+        @Expect(profiles.contains("repo_source_and_items"), true)
+        @Expect(profiles.contains("repo_list_refresh"), true)
+    }
+
+    @TestCase
+    public func ckb3Ut007RepositoryChangedDedupeDoesNotIncreaseAcceptedCount(): Unit {
+        let service = CkbCommandLoopService(CkbRuntimeConfig(), FileKnowledgeStore("target/ckb3-dedupe-count"))
+        let body = "{\"contractVersion\":\"gcm-ckb-repository-change-v1\",\"provider\":\"gitcode\",\"eventType\":\"merge_request\",\"action\":\"merge\",\"state\":\"merged\",\"reason\":\"pr_merged\",\"repo\":\"cangjie/stdx\",\"targetRef\":\"master\",\"prNumber\":45,\"mergeCommitSha\":\"abc\",\"changedFiles\":[\"src/main.cj\"]}"
+
+        let first = ckbApiHandle(service, "POST", "/v1/events/gitcode/repository-changed", body, [])
+        let second = ckbApiHandle(service, "POST", "/v1/events/gitcode/repository-changed", body, [])
+
+        @Expect(first.contains("\"status\":\"accepted\""), true)
+        @Expect(second.contains("\"status\":\"duplicate\""), true)
+        @Expect(service.acceptedEventCountForTest(), 1)
+    }
+
+    @TestCase
+    public func ckb3Ut008AdminSchedulerRunTaskNamesForceAllowlist(): Unit {
+        let config = CkbRuntimeConfig()
+        config.networkEnabled = true
+        let fake = FakeSourceFetchRunner()
+        let service = CkbCommandLoopService(config, FileKnowledgeStore("target/ckb3-admin-scheduler-tasknames"), sourceRunner: fake)
+        let body = "{\"taskNames\":[\"docs_probe_30d\"],\"force\":true,\"reason\":\"operator_test\",\"requestedBy\":\"test\",\"source\":\"unit\"}"
+
+        let response = ckbApiHandle(service, "POST", "/v1/admin/scheduler/run", body, ["Authorization: Bearer admin"])
+
+        @Expect(response.contains("\"ok\":true"), true)
+        @Expect(response.contains("\"forced\":true"), true)
+        @Expect(response.contains("\"taskNames\":[\"docs_probe_30d\"]"), true)
+        @Expect(response.contains("\"succeeded\":1"), true)
+        @Expect(countCallsOfKind(fake.calls, SourceKinds.CANGJIE_DOCS), 1)
+    }
+
+    @TestCase
+    public func ckb3Ut009AdminRepositoriesSyncReturnsStructuredOfflineResult(): Unit {
+        let service = CkbCommandLoopService(CkbRuntimeConfig(), FileKnowledgeStore("target/ckb3-admin-repo-sync"))
+        let body = "{\"repo\":\"cangjie/stdx\",\"ref\":\"master\",\"profile\":\"repo_source_and_items\",\"changedFiles\":[\"src/main.cj\"],\"prNumber\":46,\"mode\":\"apply\",\"reason\":\"gitcode_pr_merged\"}"
+
+        let response = ckbApiHandle(service, "POST", "/v1/admin/repositories/sync", body, ["Authorization: Bearer admin"])
+
+        @Expect(response.contains("\"status\":\"not_implemented\""), false)
+        @Expect(response.contains("\"repo\":\"cangjie/stdx\""), true)
+        @Expect(response.contains("\"profile\":\"repo_source_and_items\""), true)
+        @Expect(response.contains("\"requestCount\":"), true)
+        @Expect(response.contains("\"updatedDataKinds\""), true)
+        @Expect(response.contains("\"truncated\":false"), true)
+    }
+
+    @TestCase
+    public func ckb3Ut010AdminRepoListRefreshReturnsStructuredOfflineResult(): Unit {
+        let service = CkbCommandLoopService(CkbRuntimeConfig(), FileKnowledgeStore("target/ckb3-admin-repo-list"))
+        let body = "{\"repo\":\"cangjie/community\",\"ref\":\"master\",\"paths\":[\"repo_list.md\"],\"prNumber\":47,\"mode\":\"apply\",\"reason\":\"gitcode_pr_merged\"}"
+
+        let response = ckbApiHandle(service, "POST", "/v1/admin/repo-list/refresh", body, ["Authorization: Bearer admin"])
+
+        @Expect(response.contains("\"status\":\"not_implemented\""), false)
+        @Expect(response.contains("\"matchedPaths\":[\"repo_list.md\"]"), true)
+        @Expect(response.contains("\"repoCount\":"), true)
+        @Expect(response.contains("\"updatedDataKinds\":[\"repo_list\"]"), true)
+    }
+
+    @TestCase
+    public func ckb3Bnd001RepositorySyncRejectsUnsafeRepoAndPaths(): Unit {
+        let service = CkbCommandLoopService(CkbRuntimeConfig(), FileKnowledgeStore("target/ckb3-repo-sync-bounds"))
+
+        let badRepo = ckbApiHandle(service, "POST", "/v1/admin/repositories/sync", "{\"repo\":\"private/secret\",\"profile\":\"items\",\"changedFiles\":[\"src/main.cj\"],\"mode\":\"apply\",\"reason\":\"operator\"}", ["Authorization: Bearer admin"])
+        let badPath = ckbApiHandle(service, "POST", "/v1/admin/repositories/sync", "{\"repo\":\"cangjie/stdx\",\"profile\":\"repo_source_and_items\",\"changedFiles\":[\"../secret.cj\"],\"mode\":\"apply\",\"reason\":\"operator\"}", ["Authorization: Bearer admin"])
+
+        @Expect(badRepo.contains("\"status\":\"rejected\"") || badRepo.contains("\"code\":\"ckb.bad_request\""), true)
+        @Expect(badPath.contains("\"status\":\"rejected\"") || badPath.contains("\"code\":\"ckb.bad_request\""), true)
+    }
+
+    @TestCase
+    public func ckb3Bnd002RepoListRefreshRejectsUnsafePaths(): Unit {
+        let service = CkbCommandLoopService(CkbRuntimeConfig(), FileKnowledgeStore("target/ckb3-repo-list-bounds"))
+
+        let absolute = ckbApiHandle(service, "POST", "/v1/admin/repo-list/refresh", "{\"repo\":\"cangjie/community\",\"paths\":[\"/tmp/repo_list.md\"],\"mode\":\"apply\",\"reason\":\"operator\"}", ["Authorization: Bearer admin"])
+        let nonTrigger = ckbApiHandle(service, "POST", "/v1/admin/repo-list/refresh", "{\"repo\":\"cangjie/community\",\"paths\":[\"README.md\"],\"mode\":\"apply\",\"reason\":\"operator\"}", ["Authorization: Bearer admin"])
+
+        @Expect(absolute.contains("\"status\":\"rejected\"") || absolute.contains("\"code\":\"ckb.bad_request\""), true)
+        @Expect(nonTrigger.contains("\"status\":\"rejected\"") || nonTrigger.contains("\"code\":\"ckb.bad_request\""), true)
+    }
+
+    @TestCase
+    public func ckb3Bnd003EventParserKeepsChangedFilesUnavailableFlag(): Unit {
+        let event = parseGitCodeRepositoryChangedEvent("{\"contractVersion\":\"gcm-ckb-repository-change-v1\",\"eventId\":\"evt-1\",\"deliveryId\":\"del-1\",\"provider\":\"gitcode\",\"eventType\":\"merge_request\",\"action\":\"merged\",\"state\":\"merged\",\"reason\":\"pr_merged\",\"repo\":\"cangjie/stdx\",\"targetBranch\":\"master\",\"targetRef\":\"master\",\"prNumber\":\"48\",\"changedFilesTruncated\":true,\"changedFilesUnavailable\":true,\"url\":\"https://gitcode.com/cangjie/stdx/merge_requests/48\"}")
+
+        @Expect(event.valid, true)
+        @Expect(event.eventId, "evt-1")
+        @Expect(event.deliveryId, "del-1")
+        @Expect(event.action, "merged")
+        @Expect(event.state, "merged")
+        @Expect(event.changedFilesTruncated, true)
+        @Expect(event.changedFilesUnavailable, true)
+        @Expect(event.ref, "master")
+        @Expect(event.prNumber, 48)
+    }
+
+    @TestCase
+    public func ckb3Pos001StatusAndSchedulesExposeSchedulerMetrics(): Unit {
+        let config = CkbRuntimeConfig()
+        config.networkEnabled = true
+        let service = CkbCommandLoopService(config, FileKnowledgeStore("target/ckb3-status-metrics"), sourceRunner: FakeSourceFetchRunner())
+        let body = "{\"taskNames\":[\"docs_probe_30d\"],\"force\":true}"
+        _ = ckbApiHandle(service, "POST", "/v1/admin/scheduler/run", body, ["Authorization: Bearer admin"])
+
+        let schedules = ckbApiHandle(service, "GET", "/v1/schedules", "", [])
+        let status = ckbApiHandle(service, "GET", "/v1/status", "", [])
+
+        @Expect(schedules.contains("\"lastDurationMillis\":"), true)
+        @Expect(schedules.contains("\"lastRequestCount\":1"), true)
+        @Expect(schedules.contains("\"lastUpdatedDataKinds\":[\"docs\"]"), true)
+        @Expect(schedules.contains("\"timeBudgetMillis\":60000"), true)
+        @Expect(status.contains("\"scheduler\""), true)
+        @Expect(status.contains("\"lastUpdatedDataKinds\":[\"docs\"]"), true)
+    }
+
+    @TestCase
+    public func ckb3Pos002HealthReflectsSchedulerDegraded(): Unit {
+        let scheduler = Scheduler(FakeClock(0))
+        scheduler.entries[0].degraded = true
+        let store = FileKnowledgeStore("target/ckb3-health-degraded")
+        store.saveScheduler(scheduler.entries)
+        let service = CkbCommandLoopService(CkbRuntimeConfig(), store)
+
+        let health = ckbApiHandle(service, "GET", "/v1/health", "", [])
+
+        @Expect(health.contains("\"status\":\"degraded\""), true)
+        @Expect(health.contains("\"schedulerDegraded\":true"), true)
+    }
+
+    @TestCase
+    public func ckb3Pos003SchedulerRunnerFillsProfileMetrics(): Unit {
+        let config = CkbRuntimeConfig()
+        config.networkEnabled = true
+        let fake = FakeSourceFetchRunner()
+        let store = FileKnowledgeStore("target/ckb3-runner-metrics")
+        let kb = newKnowledgeBaseFromStore(store).kb
+        let runner = CkbSchedulerTaskRunner(kb, config, store, sourceRunner: fake)
+
+        let result = runner.runTask("website_probe_weekly", "")
+
+        @Expect(result.ok, true)
+        @Expect(result.status, "profile_ok")
+        @Expect(result.requestCount, 3)
+        @Expect(result.updatedDataKinds.contains("website"), true)
+        @Expect(result.timeBudgetMillis, 90000)
+        @Expect(countCallsOfKind(fake.calls, SourceKinds.CANGJIE_WEBSITE), 3)
+    }
+
+    @TestCase
+    public func ckb3Pos004EventIntakeAcceptedProfilesInEnvelope(): Unit {
+        let service = CkbCommandLoopService(CkbRuntimeConfig(), FileKnowledgeStore("target/ckb3-event-envelope"))
+        let body = "{\"contractVersion\":\"gcm-ckb-repository-change-v1\",\"eventId\":\"evt-2\",\"deliveryId\":\"del-2\",\"provider\":\"gitcode\",\"eventType\":\"merge_request\",\"action\":\"merge\",\"state\":\"merged\",\"reason\":\"pr_merged\",\"repo\":\"cangjie/community\",\"targetRef\":\"master\",\"prNumber\":49,\"changedFiles\":[\"repo_list.md\",\"src/main.cj\"],\"changedFilesUnavailable\":false}"
+
+        let response = ckbApiHandle(service, "POST", "/v1/events/gitcode/repository-changed", body, [])
+
+        @Expect(response.contains("\"apiVersion\":\"ckb-http-v1\""), true)
+        @Expect(response.contains("\"status\":\"accepted\""), true)
+        @Expect(response.contains("\"dedupeKey\":\""), true)
+        @Expect(response.contains("\"repo_source_and_items\""), true)
+        @Expect(response.contains("\"repo_list_refresh\""), true)
+    }
+
+    @TestCase
+    public func ckb3Pos005AdminSchedulerRunEnvelopeIncludesTaskNamesAndForced(): Unit {
+        let config = CkbRuntimeConfig()
+        config.networkEnabled = true
+        let service = CkbCommandLoopService(config, FileKnowledgeStore("target/ckb3-admin-scheduler-envelope"), sourceRunner: FakeSourceFetchRunner())
+
+        let response = ckbApiHandle(service, "POST", "/v1/admin/scheduler/run", "{\"taskNames\":[\"community_repo_discovery_30d\",\"docs_probe_30d\"],\"force\":true}", ["Authorization: Bearer admin"])
+
+        @Expect(response.contains("\"forced\":true"), true)
+        @Expect(response.contains("\"taskNames\":[\"community_repo_discovery_30d\",\"docs_probe_30d\"]"), true)
+        @Expect(response.contains("\"ran\":2"), true)
+        @Expect(response.contains("\"details\""), true)
+    }
+
+    @TestCase
+    public func ckb3Pos006RepositorySyncProfileItemsUsesCommunityKinds(): Unit {
+        let service = CkbCommandLoopService(CkbRuntimeConfig(), FileKnowledgeStore("target/ckb3-repo-sync-items"))
+
+        let response = ckbApiHandle(service, "POST", "/v1/admin/repositories/sync", "{\"repo\":\"cangjie/stdx\",\"profile\":\"items\",\"prNumber\":50,\"mode\":\"apply\",\"reason\":\"gitcode_pr_merged\"}", ["Authorization: Bearer admin"])
+
+        @Expect(response.contains("\"status\":\"ok\"") || response.contains("\"status\":\"degraded\""), true)
+        @Expect(response.contains("\"updatedDataKinds\":[\"issues\",\"pull_requests\",\"comments\"]"), true)
+        @Expect(response.contains("\"requestCount\":3"), true)
+    }
+
+    @TestCase
+    public func ckb3Neg001AdminSchedulerRejectsActiveOnMergeTask(): Unit {
+        let service = CkbCommandLoopService(CkbRuntimeConfig(), FileKnowledgeStore("target/ckb3-admin-scheduler-neg"))
+
+        let response = ckbApiHandle(service, "POST", "/v1/admin/scheduler/run", "{\"taskNames\":[\"active_repo_fetch_on_merge\"],\"force\":true}", ["Authorization: Bearer admin"])
+
+        @Expect(response.contains("\"ok\":false") || response.contains("\"status\":\"rejected\""), true)
+        @Expect(response.contains("active_repo_fetch_on_merge"), true)
+    }
+
+    @TestCase
+    public func ckb3Neg002EventRejectsUnsupportedOwner(): Unit {
+        let service = CkbCommandLoopService(CkbRuntimeConfig(), FileKnowledgeStore("target/ckb3-event-owner-neg"))
+
+        let response = ckbApiHandle(service, "POST", "/v1/events/gitcode/repository-changed", "{\"contractVersion\":\"gcm-ckb-repository-change-v1\",\"provider\":\"gitcode\",\"eventType\":\"merge_request\",\"action\":\"merge\",\"state\":\"merged\",\"reason\":\"pr_merged\",\"repo\":\"thirdparty/project\",\"targetRef\":\"master\",\"prNumber\":51,\"changedFiles\":[\"src/main.cj\"]}", [])
+
+        @Expect(response.contains("\"code\":\"ckb.bad_request\"") || response.contains("\"status\":\"rejected\""), true)
+        @Expect(service.acceptedEventCountForTest(), 0)
+    }
+
+    @TestCase
+    public func ckb3Neg003EventWithOpenedStateRejected(): Unit {
+        let service = CkbCommandLoopService(CkbRuntimeConfig(), FileKnowledgeStore("target/ckb3-event-opened-neg"))
+
+        let response = ckbApiHandle(service, "POST", "/v1/events/gitcode/repository-changed", "{\"contractVersion\":\"gcm-ckb-repository-change-v1\",\"provider\":\"gitcode\",\"eventType\":\"merge_request\",\"action\":\"update\",\"state\":\"opened\",\"reason\":\"pr_merged\",\"repo\":\"cangjie/stdx\",\"targetRef\":\"master\",\"prNumber\":52,\"changedFiles\":[\"src/main.cj\"]}", [])
+
+        @Expect(response.contains("\"code\":\"ckb.bad_request\"") || response.contains("\"status\":\"rejected\""), true)
+        @Expect(service.acceptedEventCountForTest(), 0)
+    }
+
+    @TestCase
+    public func ckb3Neg004DuplicateEventDoesNotRunProfilesAgain(): Unit {
+        let service = CkbCommandLoopService(CkbRuntimeConfig(), FileKnowledgeStore("target/ckb3-event-duplicate-profiles"))
+        let body = "{\"contractVersion\":\"gcm-ckb-repository-change-v1\",\"eventId\":\"evt-3\",\"deliveryId\":\"del-3\",\"provider\":\"gitcode\",\"eventType\":\"merge_request\",\"action\":\"merge\",\"state\":\"merged\",\"reason\":\"pr_merged\",\"repo\":\"cangjie/stdx\",\"targetRef\":\"master\",\"prNumber\":53,\"mergeCommitSha\":\"def\",\"changedFiles\":[\"src/main.cj\"]}"
+
+        _ = ckbApiHandle(service, "POST", "/v1/events/gitcode/repository-changed", body, [])
+        let second = ckbApiHandle(service, "POST", "/v1/events/gitcode/repository-changed", body, [])
+
+        @Expect(second.contains("\"status\":\"duplicate\""), true)
+        @Expect(second.contains("\"scheduledProfiles\":[]"), true)
+        @Expect(service.acceptedEventCountForTest(), 1)
     }
 
     @TestCase

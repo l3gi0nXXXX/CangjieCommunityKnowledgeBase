@@ -37,12 +37,20 @@ public class CkbApiRequestContext {
 
 public class GitCodeRepositoryChangedEvent {
     public var contractVersion: String = ""
+    public var eventId: String = ""
+    public var deliveryId: String = ""
     public var provider: String = ""
     public var eventType: String = ""
+    public var action: String = ""
+    public var state: String = ""
     public var reason: String = ""
     public var repo: String = ""
     public var ref: String = ""
     public var prNumber: Int64 = 0
+    public var mergeCommitSha: String = ""
+    public var url: String = ""
+    public var changedFilesTruncated: Bool = false
+    public var changedFilesUnavailable: Bool = false
     public var changedFiles: ArrayList<String> = ArrayList<String>()
     public var valid: Bool = false
     public var errorCode: String = ""
@@ -66,8 +74,19 @@ public class CkbAdminOperationResult {
     public var status: String = "not_implemented"
     public var degraded: Bool = true
     public var diagnostic: String = ""
+    public var repo: String = ""
+    public var ref: String = ""
+    public var profile: String = ""
+    public var prNumber: Int64 = 0
+    public var truncated: Bool = false
+    public var matchedPaths: ArrayList<String> = ArrayList<String>()
+    public var repoCount: Int64 = 0
     public var requestCount: Int64 = 0
     public var updatedDataKinds: ArrayList<String> = ArrayList<String>()
+    public var activeKnowledgeVersion: String = ""
+    public var candidateKnowledgeVersion: String = ""
+    public var activeRepoListVersion: String = ""
+    public var candidateRepoListVersion: String = ""
 
     public init() {}
 }
@@ -131,12 +150,26 @@ public func parseGitCodeRepositoryChangedEvent(body: String): GitCodeRepositoryC
     let event = GitCodeRepositoryChangedEvent()
     let safe = ckbApiAsciiJsonProjection(body)
     event.contractVersion = ckbApiJsonStringField(safe, "contractVersion")
+    event.eventId = ckbApiJsonStringField(safe, "eventId")
+    event.deliveryId = ckbApiJsonStringField(safe, "deliveryId")
     event.provider = ckbApiJsonStringField(safe, "provider")
     event.eventType = ckbApiJsonStringField(safe, "eventType")
+    event.action = ckbApiJsonStringField(safe, "action")
+    event.state = ckbApiJsonStringField(safe, "state")
     event.reason = ckbApiJsonStringField(safe, "reason")
     event.repo = ckbApiJsonStringField(safe, "repo")
     event.ref = ckbApiJsonStringField(safe, "ref")
-    event.prNumber = ckbApiJsonIntField(safe, "prNumber", ckbApiJsonIntField(safe, "iid", 0))
+    if (event.ref == "") {
+        event.ref = ckbApiJsonStringField(safe, "targetRef")
+    }
+    if (event.ref == "") {
+        event.ref = ckbApiJsonStringField(safe, "targetBranch")
+    }
+    event.prNumber = ckbApiJsonIntOrStringField(safe, "prNumber", ckbApiJsonIntOrStringField(safe, "iid", 0))
+    event.mergeCommitSha = ckbApiJsonStringField(safe, "mergeCommitSha")
+    event.url = ckbApiJsonStringField(safe, "url")
+    event.changedFilesTruncated = ckbApiJsonBoolField(safe, "changedFilesTruncated")
+    event.changedFilesUnavailable = ckbApiJsonBoolField(safe, "changedFilesUnavailable")
     event.changedFiles = ckbApiJsonStringArrayField(safe, "changedFiles")
     if (event.contractVersion != "gcm-ckb-repository-change-v1") {
         event.errorCode = "ckb.bad_request"
@@ -148,9 +181,14 @@ public func parseGitCodeRepositoryChangedEvent(body: String): GitCodeRepositoryC
         event.diagnostic = "unsupported_repository_changed_event"
         return event
     }
-    if (!ckbApiSafeRepo(event.repo)) {
+    if (!ckbApiSafeRepo(event.repo) || !ckbApiCommunityRepoAllowed(event.repo)) {
         event.errorCode = "ckb.bad_request"
         event.diagnostic = "invalid_repo"
+        return event
+    }
+    if ((event.state != "" && event.state != "merged") || (event.action != "" && event.action != "merge" && event.action != "merged")) {
+        event.errorCode = "ckb.bad_request"
+        event.diagnostic = "event_not_merged"
         return event
     }
     if (event.ref == "") {
@@ -176,9 +214,13 @@ private func ckbApiHandleAdmin(service: CkbCommandLoopService, method: String, p
         return ckbApiEnvelope("{\"status\":\"${if (result.ok) { "ok" } else { "degraded" }}\",\"activeKnowledgeVersion\":\"${ckbApiJsonEscape(result.activeVersion)}\",\"candidateKnowledgeVersion\":\"${ckbApiJsonEscape(result.candidateVersion)}\",\"count\":${result.count}}")
     }
     if (path == "/v1/admin/scheduler/run") {
-        let limit = ckbApiJsonIntField(body, "limit", 1)
-        let result = service.runScheduler(limit)
-        return ckbApiEnvelope("{\"ran\":${result.ran},\"succeeded\":${result.succeeded},\"failed\":${result.failed},\"degraded\":${result.degraded},\"details\":\"${ckbApiJsonEscape(result.details)}\"}")
+        let taskNames = ckbApiJsonStringArrayField(body, "taskNames")
+        let force = ckbApiJsonBoolField(body, "force")
+        let result = if (taskNames.size > 0) { service.runSchedulerTasks(taskNames, force) } else { service.runScheduler(ckbApiJsonIntField(body, "limit", 1)) }
+        if (result.failed > 0 && result.ran == 0) {
+            return ckbApiErrorEnvelope("ckb.bad_request", "unsupported scheduler task", status: 400, diagnostics: "{\"details\":\"${ckbApiJsonEscape(result.details)}\"}")
+        }
+        return ckbApiEnvelope("{\"ran\":${result.ran},\"succeeded\":${result.succeeded},\"failed\":${result.failed},\"degraded\":${result.degraded},\"forced\":${result.forced},\"taskNames\":${ckbApiStringArrayJson(result.taskNames)},\"details\":\"${ckbApiJsonEscape(result.details)}\"}")
     }
     if (path == "/v1/admin/sync") {
         return ckbApiEnvelope(ckbApiAdminResultJson(service.runSync(body: body)))
@@ -273,7 +315,7 @@ private func ckbApiSchedulesDataJson(status: KnowledgeStatus): String {
             out += ","
         }
         let entry = status.schedules[i]
-        out += "{\"name\":\"${ckbApiJsonEscape(entry.name)}\",\"intervalMinutes\":${entry.intervalMinutes},\"nextRunAt\":${entry.nextRunAt},\"lastSuccessAt\":${entry.lastSuccessAt},\"lastFailureAt\":${entry.lastFailureAt},\"failureCount\":${entry.failureCount},\"degraded\":${entry.degraded},\"lastStatus\":\"${ckbApiJsonEscape(entry.lastStatus)}\",\"lastDurationMillis\":0,\"lastRequestCount\":0,\"lastUpdatedDataKinds\":[]}"
+        out += "{\"name\":\"${ckbApiJsonEscape(entry.name)}\",\"intervalMinutes\":${entry.intervalMinutes},\"nextRunAt\":${entry.nextRunAt},\"lastSuccessAt\":${entry.lastSuccessAt},\"lastFailureAt\":${entry.lastFailureAt},\"failureCount\":${entry.failureCount},\"degraded\":${entry.degraded},\"lastStatus\":\"${ckbApiJsonEscape(entry.lastStatus)}\",\"lastDurationMillis\":${entry.lastDurationMillis},\"lastRequestCount\":${entry.lastRequestCount},\"lastUpdatedDataKinds\":${ckbApiStringArrayJson(entry.lastUpdatedDataKinds)},\"lastTruncated\":${entry.lastTruncated},\"timeBudgetMillis\":${entry.timeBudgetMillis}}"
     }
     out += "],\"schedulerDegraded\":${ckbApiSchedulerDegraded(status)}}"
     out
@@ -350,7 +392,7 @@ private func ckbApiRepositoryEventResultJson(result: GitCodeRepositoryChangedEve
 }
 
 private func ckbApiAdminResultJson(result: CkbAdminOperationResult): String {
-    "{\"status\":\"${ckbApiJsonEscape(result.status)}\",\"degraded\":${result.degraded},\"diagnostic\":\"${ckbApiJsonEscape(redactSensitive(result.diagnostic))}\",\"requestCount\":${result.requestCount},\"updatedDataKinds\":${ckbApiStringArrayJson(result.updatedDataKinds)}}"
+    "{\"status\":\"${ckbApiJsonEscape(result.status)}\",\"degraded\":${result.degraded},\"diagnostic\":\"${ckbApiJsonEscape(redactSensitive(result.diagnostic))}\",\"repo\":\"${ckbApiJsonEscape(result.repo)}\",\"ref\":\"${ckbApiJsonEscape(result.ref)}\",\"profile\":\"${ckbApiJsonEscape(result.profile)}\",\"prNumber\":${result.prNumber},\"truncated\":${result.truncated},\"matchedPaths\":${ckbApiStringArrayJson(result.matchedPaths)},\"repoCount\":${result.repoCount},\"requestCount\":${result.requestCount},\"updatedDataKinds\":${ckbApiStringArrayJson(result.updatedDataKinds)},\"activeKnowledgeVersion\":\"${ckbApiJsonEscape(result.activeKnowledgeVersion)}\",\"candidateKnowledgeVersion\":\"${ckbApiJsonEscape(result.candidateKnowledgeVersion)}\",\"activeRepoListVersion\":\"${ckbApiJsonEscape(result.activeRepoListVersion)}\",\"candidateRepoListVersion\":\"${ckbApiJsonEscape(result.candidateRepoListVersion)}\"}"
 }
 
 private func ckbApiStringArrayJson(values: ArrayList<String>): String {
@@ -467,6 +509,18 @@ private func ckbApiJsonIntField(raw: String, key: String, fallback: Int64): Int6
         end += 1
     }
     try { Int64.parse(raw[start..end].trimAscii()) } catch (_: Exception) { fallback }
+}
+
+private func ckbApiJsonIntOrStringField(raw: String, key: String, fallback: Int64): Int64 {
+    let start = ckbApiJsonTopLevelValueStart(raw, key)
+    if (start < 0 || start >= raw.size) {
+        return fallback
+    }
+    if (raw[start..start + 1] == "\"") {
+        let value = ckbApiJsonStringField(raw, key).trimAscii()
+        return try { Int64.parse(value) } catch (_: Exception) { fallback }
+    }
+    ckbApiJsonIntField(raw, key, fallback)
 }
 
 private func ckbApiJsonStringArrayField(raw: String, key: String): ArrayList<String> {
@@ -597,6 +651,15 @@ private func ckbApiSafeRepo(raw: String): Bool {
         return false
     }
     ckbApiSafePathPart(parts[0]) && ckbApiSafePathPart(parts[1])
+}
+
+private func ckbApiCommunityRepoAllowed(raw: String): Bool {
+    let parts = raw.split("/")
+    if (parts.size != 2) {
+        return false
+    }
+    let owner = parts[0].toAsciiLower()
+    owner == "cangjie" || owner == "cangjie-sig" || owner == "cangjie-tpc"
 }
 
 private func ckbApiSafePathPart(raw: String): Bool {

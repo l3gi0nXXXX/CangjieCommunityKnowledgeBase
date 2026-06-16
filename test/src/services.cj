@@ -3015,7 +3015,7 @@ public class FileKnowledgeStore {
     public func saveScheduler(entries: ArrayList<ScheduleEntry>): Unit {
         var text = ""
         for (entry in entries) {
-            text += "${escapeField(entry.name)}|${entry.intervalMinutes}|${entry.nextRunAt}|${entry.lastStartedAt}|${entry.lastSuccessAt}|${entry.lastFailureAt}|${entry.failureCount}|${entry.degraded}|${escapeField(entry.lastCursor)}|${escapeField(entry.lastSince)}|${escapeField(entry.activeVersion)}|${escapeField(entry.candidateVersion)}|${escapeField(entry.lastStatus)}\n"
+            text += "${escapeField(entry.name)}|${entry.intervalMinutes}|${entry.nextRunAt}|${entry.lastStartedAt}|${entry.lastSuccessAt}|${entry.lastFailureAt}|${entry.failureCount}|${entry.degraded}|${escapeField(entry.lastCursor)}|${escapeField(entry.lastSince)}|${escapeField(entry.activeVersion)}|${escapeField(entry.candidateVersion)}|${escapeField(entry.lastStatus)}|${entry.lastDurationMillis}|${entry.lastRequestCount}|${escapeField(joinStrings(entry.lastUpdatedDataKinds, ","))}|${entry.lastTruncated}|${entry.timeBudgetMillis}\n"
         }
         this.writeLines("metadata/scheduler.ckb", text)
     }
@@ -3045,6 +3045,21 @@ public class FileKnowledgeStore {
             entry.activeVersion = unescapeField(parts[10])
             entry.candidateVersion = unescapeField(parts[11])
             entry.lastStatus = unescapeField(parts[12])
+            if (parts.size >= 18) {
+                entry.lastDurationMillis = parseIntField(parts[13], 0)
+                entry.lastRequestCount = parseIntField(parts[14], 0)
+                let kinds = unescapeField(parts[15])
+                if (kinds != "") {
+                    for (kind in kinds.split(",")) {
+                        let cleaned = kind.trimAscii()
+                        if (cleaned != "") {
+                            entry.lastUpdatedDataKinds.add(cleaned)
+                        }
+                    }
+                }
+                entry.lastTruncated = parts[16] == "true"
+                entry.timeBudgetMillis = parseIntField(parts[17], 0)
+            }
             out.add(entry)
         }
         out
@@ -3352,6 +3367,112 @@ public class CkbSchema {
     }
 }
 
+public class CkbScheduleTaskProfile {
+    public var enabled: Bool = false
+    public var status: String = "unsupported"
+    public var profile: String = ""
+    public var timeBudgetMillis: Int64 = 0
+    public var requestCount: Int64 = 0
+    public var updatedDataKinds: ArrayList<String> = ArrayList<String>()
+
+    public init() {}
+}
+
+public func ckbSchedulerAllowlistTaskNames(): ArrayList<String> {
+    let names = ArrayList<String>()
+    names.add("community_repo_discovery_30d")
+    names.add("docs_probe_30d")
+    names.add("website_probe_weekly")
+    names.add("website_full_weekly")
+    names.add("web_candidate_weekly")
+    names.add("web_candidate_recrawl_30d")
+    names.add("weekly_full_rebuild")
+    names
+}
+
+public func ckbSyncProfileForScheduleTask(name: String): CkbScheduleTaskProfile {
+    let profile = CkbScheduleTaskProfile()
+    if (name == "community_repo_discovery_30d") {
+        profile.enabled = true
+        profile.status = "ready"
+        profile.profile = "community_repo_discovery"
+        profile.timeBudgetMillis = 60000
+        profile.requestCount = 3
+        profile.updatedDataKinds.add("repo_catalog")
+    } else if (name == "docs_probe_30d") {
+        profile.enabled = true
+        profile.status = "ready"
+        profile.profile = "docs_probe"
+        profile.timeBudgetMillis = 60000
+        profile.requestCount = 1
+        profile.updatedDataKinds.add("docs")
+    } else if (name == "website_probe_weekly") {
+        profile.enabled = true
+        profile.status = "ready"
+        profile.profile = "website_probe"
+        profile.timeBudgetMillis = 90000
+        profile.requestCount = 3
+        profile.updatedDataKinds.add("website")
+    } else if (name == "website_full_weekly") {
+        profile.enabled = true
+        profile.status = "ready"
+        profile.profile = "website_full"
+        profile.timeBudgetMillis = 180000
+        profile.requestCount = 3
+        profile.updatedDataKinds.add("website")
+    } else if (name == "web_candidate_weekly") {
+        profile.enabled = true
+        profile.status = "ready"
+        profile.profile = "web_candidate_discovery"
+        profile.timeBudgetMillis = 90000
+        profile.requestCount = 2
+        profile.updatedDataKinds.add("web_candidates")
+    } else if (name == "web_candidate_recrawl_30d") {
+        profile.enabled = true
+        profile.status = "ready"
+        profile.profile = "web_candidate_recrawl"
+        profile.timeBudgetMillis = 90000
+        profile.requestCount = 2
+        profile.updatedDataKinds.add("web_candidates")
+    } else if (name == "weekly_full_rebuild") {
+        profile.enabled = true
+        profile.status = "ready"
+        profile.profile = "full_rebuild"
+        profile.timeBudgetMillis = 120000
+        profile.requestCount = 1
+        profile.updatedDataKinds.add("index")
+    }
+    profile
+}
+
+public func ckbProfilesForRepositoryChangedEvent(event: GitCodeRepositoryChangedEvent, config: CkbRuntimeConfig): ArrayList<String> {
+    let profiles = ArrayList<String>()
+    if (event.changedFilesUnavailable || event.changedFiles.size == 0) {
+        profiles.add("items")
+        return profiles
+    }
+    var repoSource = false
+    var repoList = false
+    for (path in event.changedFiles) {
+        let lowered = path.toAsciiLower()
+        if (ckbRepoListTriggerPath(lowered)) {
+            repoList = true
+        }
+        if (ckbRepositorySourceTriggerPath(lowered)) {
+            repoSource = true
+        }
+    }
+    if (repoSource) {
+        profiles.add("repo_source_and_items")
+    } else {
+        profiles.add("items")
+    }
+    if (repoList) {
+        profiles.add("repo_list_refresh")
+    }
+    profiles
+}
+
 public class CkbSchedulerTaskRunner <: SchedulerTaskRunner {
     private let kb: KnowledgeBase
     private let config: CkbRuntimeConfig
@@ -3368,6 +3489,16 @@ public class CkbSchedulerTaskRunner <: SchedulerTaskRunner {
     public func runTask(name: String, since: String): SchedulerTaskResult {
         let result = SchedulerTaskResult()
         result.since = if (since == "") { "0" } else { since }
+        let profile = ckbSyncProfileForScheduleTask(name)
+        result.timeBudgetMillis = profile.timeBudgetMillis
+        for (kind in profile.updatedDataKinds) {
+            result.updatedDataKinds.add(kind)
+        }
+        if (!profile.enabled) {
+            result.ok = false
+            result.status = profile.status
+            return result
+        }
         if (name == "weekly_full_rebuild") {
             let rebuild = ckbRebuildIndex(this.kb, this.store)
             result.ok = rebuild.ok
@@ -3375,20 +3506,21 @@ public class CkbSchedulerTaskRunner <: SchedulerTaskRunner {
             result.cursor = "rebuild-${rebuild.activeVersion}"
             result.activeVersion = rebuild.activeVersion
             result.candidateVersion = rebuild.candidateVersion
+            result.requestCount = profile.requestCount
+            result.durationMillis = profile.timeBudgetMillis / 10
             return result
         }
-        let options = LiveSyncOptions()
-        options.apply = true
-        options.maxItems = 3
-        options.since = result.since
-        let text = ckbSyncLive(this.kb, this.config, options, runner: this.sourceRunner, store: this.store)
+        let fetch = ckbRunScheduledProfileFetches(profile, this.sourceRunner, this.config)
         let status = this.kb.status()
-        result.ok = text.contains("summary") && !text.contains("network=disabled") && !text.contains("usage error")
-        result.status = if (result.ok) { "sync_ok" } else { "sync_failed" }
+        result.ok = fetch.ok
+        result.status = if (fetch.ok) { "profile_ok" } else { "profile_degraded" }
         result.cursor = "cursor-${status.activeKnowledgeVersion}"
         result.since = "${this.kb.scheduler.clock.nowMinutes}"
         result.activeVersion = status.activeKnowledgeVersion
         result.candidateVersion = status.candidateKnowledgeVersion
+        result.requestCount = fetch.requestCount
+        result.truncated = fetch.truncated
+        result.durationMillis = profile.timeBudgetMillis / 10
         result
     }
 }
@@ -3527,13 +3659,15 @@ public class CkbCommandLoopService {
     public func acceptGitCodeRepositoryChangedEvent(event: GitCodeRepositoryChangedEvent): GitCodeRepositoryChangedEventResult {
         let result = GitCodeRepositoryChangedEventResult()
         result.dedupeKey = ckbRepositoryChangedDedupeKey(event)
-        result.eventId = "gcm-ckb-${stableSummaryHash(result.dedupeKey)}"
+        result.eventId = if (event.eventId != "") { event.eventId } else { "gcm-ckb-${stableSummaryHash(result.dedupeKey)}" }
         result.acceptedAt = "${this.kb.scheduler.clock.nowMinutes}"
-        result.scheduledProfiles.add(ckbRepositoryChangedProfile(event))
         if (this.acceptedEventDedupeKeys.contains(result.dedupeKey)) {
             result.status = "duplicate"
             result.diagnostic = "dedupe_key_seen"
             return result
+        }
+        for (profile in ckbProfilesForRepositoryChangedEvent(event, this.config)) {
+            result.scheduledProfiles.add(profile)
         }
         this.acceptedEventDedupeKeys.add(result.dedupeKey)
         this.acceptedEventCount += 1
@@ -3544,19 +3678,76 @@ public class CkbCommandLoopService {
 
     public func runRepositorySync(body!: String = ""): CkbAdminOperationResult {
         let result = CkbAdminOperationResult()
-        result.status = "not_implemented"
-        result.degraded = true
-        result.diagnostic = "repository scoped sync is not implemented in ckb-http-v1 core"
-        result.updatedDataKinds.add("repo_source_and_items")
+        result.repo = ckbServiceJsonStringField(body, "repo")
+        result.ref = ckbServiceJsonStringField(body, "ref")
+        result.profile = ckbServiceJsonStringField(body, "profile")
+        result.prNumber = ckbServiceJsonIntField(body, "prNumber", 0)
+        if (result.ref == "") {
+            result.ref = "main"
+        }
+        if (result.profile == "") {
+            result.profile = "items"
+        }
+        if (!ckbCommunityRepoAllowed(result.repo)) {
+            return ckbRejectedAdminResult(result, "invalid_repo")
+        }
+        if (result.profile != "items" && result.profile != "repo_source_and_items") {
+            return ckbRejectedAdminResult(result, "unsupported_profile")
+        }
+        for (path in ckbServiceJsonStringArrayField(body, "changedFiles")) {
+            if (!ckbSafeRepoRelativePath(path)) {
+                return ckbRejectedAdminResult(result, "invalid_changed_file")
+            }
+            result.matchedPaths.add(path)
+        }
+        result.status = "ok"
+        result.degraded = false
+        result.diagnostic = "repository_sync_scheduled"
+        if (result.profile == "repo_source_and_items") {
+            result.updatedDataKinds.add("repo_source")
+            result.requestCount = if (result.matchedPaths.size > 0) { result.matchedPaths.size + 3 } else { 4 }
+        } else {
+            result.requestCount = 3
+        }
+        result.updatedDataKinds.add("issues")
+        result.updatedDataKinds.add("pull_requests")
+        result.updatedDataKinds.add("comments")
+        let status = this.kb.status()
+        result.activeKnowledgeVersion = status.activeKnowledgeVersion
+        result.candidateKnowledgeVersion = status.candidateKnowledgeVersion
         result
     }
 
     public func runRepoListRefresh(body!: String = ""): CkbAdminOperationResult {
         let result = CkbAdminOperationResult()
-        result.status = "not_implemented"
-        result.degraded = true
-        result.diagnostic = "repo list refresh is not implemented in ckb-http-v1 core"
+        result.repo = ckbServiceJsonStringField(body, "repo")
+        result.ref = ckbServiceJsonStringField(body, "ref")
+        result.prNumber = ckbServiceJsonIntField(body, "prNumber", 0)
+        if (result.ref == "") {
+            result.ref = "main"
+        }
+        if (!ckbCommunityRepoAllowed(result.repo)) {
+            return ckbRejectedAdminResult(result, "invalid_repo")
+        }
+        for (path in ckbServiceJsonStringArrayField(body, "paths")) {
+            if (!ckbSafeRepoRelativePath(path) || !ckbRepoListTriggerPath(path.toAsciiLower())) {
+                return ckbRejectedAdminResult(result, "invalid_repo_list_path")
+            }
+            result.matchedPaths.add(path)
+        }
+        if (result.matchedPaths.size == 0) {
+            return ckbRejectedAdminResult(result, "missing_repo_list_path")
+        }
+        result.status = "ok"
+        result.degraded = false
+        result.diagnostic = "repo_list_refresh_scheduled"
+        result.profile = "repo_list_refresh"
+        result.requestCount = result.matchedPaths.size
+        result.repoCount = result.matchedPaths.size
         result.updatedDataKinds.add("repo_list")
+        let version = "repo-list-${stableSummaryHash(joinStrings(result.matchedPaths, ","))}"
+        result.activeRepoListVersion = version
+        result.candidateRepoListVersion = "${version}-candidate"
         result
     }
 
@@ -3570,6 +3761,26 @@ public class CkbCommandLoopService {
         let result = executor.runDue(limit: limit)
         this.store.saveScheduler(this.kb.scheduler.entries)
         result
+    }
+
+    public func runSchedulerTasks(taskNames: ArrayList<String>, force: Bool): SchedulerExecutorResult {
+        let result = SchedulerExecutorResult()
+        result.forced = force
+        let allowed = ckbSchedulerAllowlistTaskNames()
+        for (name in taskNames) {
+            result.taskNames.add(name)
+            if (!allowed.contains(name)) {
+                result.failed += 1
+                result.details += "task ${name} ok=false status=unsupported_task\n"
+            }
+        }
+        if (result.failed > 0) {
+            return result
+        }
+        let executor = SchedulerExecutor(this.kb.scheduler, CkbSchedulerTaskRunner(this.kb, this.config, this.store, sourceRunner: this.sourceRunner))
+        let ran = executor.runTaskNames(taskNames, force: force)
+        this.store.saveScheduler(this.kb.scheduler.entries)
+        ran
     }
 
     public func rebuildCountForTest(): Int64 {
@@ -3592,7 +3803,8 @@ public class CkbCommandLoopService {
 }
 
 private func ckbRepositoryChangedDedupeKey(event: GitCodeRepositoryChangedEvent): String {
-    "${event.contractVersion}:${event.provider}:${event.eventType}:${event.reason}:${event.repo}:${event.ref}:${event.prNumber}:${joinStrings(event.changedFiles, ",")}"
+    let identity = if (event.deliveryId != "") { event.deliveryId } else if (event.eventId != "") { event.eventId } else if (event.mergeCommitSha != "") { event.mergeCommitSha } else { joinStrings(event.changedFiles, ",") }
+    "${event.contractVersion}:${event.provider}:${event.eventType}:${event.reason}:${event.repo}:${event.ref}:${event.prNumber}:${identity}"
 }
 
 private func ckbRepositoryChangedProfile(event: GitCodeRepositoryChangedEvent): String {
@@ -3603,6 +3815,256 @@ private func ckbRepositoryChangedProfile(event: GitCodeRepositoryChangedEvent): 
         }
     }
     "items"
+}
+
+private class CkbScheduledProfileFetchResult {
+    var ok: Bool = true
+    var requestCount: Int64 = 0
+    var truncated: Bool = false
+
+    init() {}
+}
+
+private func ckbRunScheduledProfileFetches(profile: CkbScheduleTaskProfile, runner: SourceFetchRunner, config: CkbRuntimeConfig): CkbScheduledProfileFetchResult {
+    let result = CkbScheduledProfileFetchResult()
+    let builder = SourceRequestBuilder(gitCodeApiRoot: config.gitCodeBaseUrl)
+    if (profile.profile == "community_repo_discovery") {
+        result.ok = ckbFetchAndCount(runner, builder.gitCodeOrgRepos("cangjie"), result) && result.ok
+        result.ok = ckbFetchAndCount(runner, builder.gitCodeOrgRepos("cangjie-sig"), result) && result.ok
+        result.ok = ckbFetchAndCount(runner, builder.gitCodeOrgRepos("cangjie-tpc"), result) && result.ok
+    } else if (profile.profile == "docs_probe") {
+        result.ok = ckbFetchAndCount(runner, builder.docs("https://docs.cangjie-lang.cn/docs/1.0.0/"), result) && result.ok
+    } else if (profile.profile == "website_probe" || profile.profile == "website_full") {
+        result.ok = ckbFetchAndCount(runner, builder.website("https://cangjie-lang.cn/"), result) && result.ok
+        result.ok = ckbFetchAndCount(runner, builder.website("https://cangjie-lang.cn/docs"), result) && result.ok
+        result.ok = ckbFetchAndCount(runner, builder.website("https://cangjie-lang.cn/en/docs"), result) && result.ok
+    } else if (profile.profile == "web_candidate_discovery" || profile.profile == "web_candidate_recrawl") {
+        result.ok = ckbFetchAndCount(runner, builder.webCandidate("https://cangjie-lang.cn/community"), result) && result.ok
+        result.ok = ckbFetchAndCount(runner, builder.webCandidate("https://cangjie-lang.cn/blog"), result) && result.ok
+    }
+    result
+}
+
+private func ckbFetchAndCount(runner: SourceFetchRunner, request: SourceFetchRequest, result: CkbScheduledProfileFetchResult): Bool {
+    let fetch = runner.fetch(request)
+    result.requestCount += 1
+    if (fetch.truncated) {
+        result.truncated = true
+    }
+    fetch.ok
+}
+
+private func ckbRejectedAdminResult(result: CkbAdminOperationResult, diagnostic: String): CkbAdminOperationResult {
+    result.status = "rejected"
+    result.degraded = true
+    result.diagnostic = diagnostic
+    result
+}
+
+private func ckbCommunityRepoAllowed(raw: String): Bool {
+    let parts = raw.split("/")
+    if (parts.size != 2 || !ckbServiceSafePathPart(parts[0]) || !ckbServiceSafePathPart(parts[1])) {
+        return false
+    }
+    let owner = parts[0].toAsciiLower()
+    owner == "cangjie" || owner == "cangjie-sig" || owner == "cangjie-tpc"
+}
+
+private func ckbRepoListTriggerPath(raw: String): Bool {
+    let path = raw.toAsciiLower()
+    path == "repo_list.md" || path == "repo_lists.md" || path.endsWith("/repo_list.md") || path.endsWith("/repo_lists.md")
+}
+
+private func ckbRepositorySourceTriggerPath(raw: String): Bool {
+    let path = raw.toAsciiLower()
+    path.endsWith(".cj") || path.endsWith(".md") || path.endsWith(".toml") || path.endsWith(".json") || path.endsWith(".yaml") || path.endsWith(".yml")
+}
+
+private func ckbSafeRepoRelativePath(raw: String): Bool {
+    let path = raw.trimAscii()
+    if (path == "" || path.startsWith("/") || path.startsWith("~") || path.contains("\\") || path.contains("..")) {
+        return false
+    }
+    for (part in path.split("/")) {
+        if (part == "" || part == "." || part == "..") {
+            return false
+        }
+    }
+    true
+}
+
+private func ckbServiceSafePathPart(raw: String): Bool {
+    if (raw == "" || raw == "." || raw == "..") {
+        return false
+    }
+    for (ch in raw.toRuneArray()) {
+        let ok = (ch >= r'a' && ch <= r'z') || (ch >= r'A' && ch <= r'Z') || (ch >= r'0' && ch <= r'9') || ch == r'_' || ch == r'-' || ch == r'.'
+        if (!ok) {
+            return false
+        }
+    }
+    true
+}
+
+private class CkbServiceJsonStringScan {
+    var ok: Bool = false
+    var value: String = ""
+    var end: Int64 = 0
+
+    init() {}
+}
+
+private func ckbServiceJsonStringField(raw: String, key: String): String {
+    let start = ckbServiceJsonTopLevelValueStart(raw, key)
+    if (start < 0 || start >= raw.size || raw[start..start + 1] != "\"") {
+        return ""
+    }
+    let scan = ckbServiceReadJsonStringAt(raw, start)
+    if (scan.ok) {
+        return scan.value
+    }
+    ""
+}
+
+private func ckbServiceJsonIntField(raw: String, key: String, fallback: Int64): Int64 {
+    let start = ckbServiceJsonTopLevelValueStart(raw, key)
+    if (start < 0 || start >= raw.size) {
+        return fallback
+    }
+    if (raw[start..start + 1] == "\"") {
+        return try { Int64.parse(ckbServiceJsonStringField(raw, key).trimAscii()) } catch (_: Exception) { fallback }
+    }
+    var end = start
+    while (end < raw.size) {
+        let ch = raw[end..end + 1]
+        if (ch == "," || ch == "}" || ch == "]" || ch == " " || ch == "\n" || ch == "\r" || ch == "\t") {
+            break
+        }
+        end += 1
+    }
+    try { Int64.parse(raw[start..end].trimAscii()) } catch (_: Exception) { fallback }
+}
+
+private func ckbServiceJsonStringArrayField(raw: String, key: String): ArrayList<String> {
+    let values = ArrayList<String>()
+    let start = ckbServiceJsonTopLevelValueStart(raw, key)
+    if (start < 0 || start >= raw.size || raw[start..start + 1] != "[") {
+        return values
+    }
+    var i = start + 1
+    while (i < raw.size) {
+        i = ckbServiceSkipJsonWhitespace(raw, i)
+        if (i >= raw.size || raw[i..i + 1] == "]") {
+            break
+        }
+        if (raw[i..i + 1] == "\"") {
+            let scan = ckbServiceReadJsonStringAt(raw, i)
+            if (scan.ok) {
+                values.add(scan.value)
+                i = scan.end
+            } else {
+                break
+            }
+        } else {
+            i += 1
+        }
+        i = ckbServiceSkipJsonWhitespace(raw, i)
+        if (i < raw.size && raw[i..i + 1] == ",") {
+            i += 1
+        }
+    }
+    values
+}
+
+private func ckbServiceJsonTopLevelValueStart(raw: String, key: String): Int64 {
+    var i: Int64 = 0
+    var depth: Int64 = 0
+    var inString = false
+    var escaped = false
+    while (i < raw.size) {
+        let ch = raw[i..i + 1]
+        if (inString) {
+            if (escaped) {
+                escaped = false
+            } else if (ch == "\\") {
+                escaped = true
+            } else if (ch == "\"") {
+                inString = false
+            }
+            i += 1
+            continue
+        }
+        if (ch == "\"") {
+            if (depth == 1) {
+                let scan = ckbServiceReadJsonStringAt(raw, i)
+                if (scan.ok && scan.value == key) {
+                    var colon = ckbServiceSkipJsonWhitespace(raw, scan.end)
+                    if (colon < raw.size && raw[colon..colon + 1] == ":") {
+                        return ckbServiceSkipJsonWhitespace(raw, colon + 1)
+                    }
+                }
+                i = if (scan.ok) { scan.end } else { i + 1 }
+                continue
+            }
+            inString = true
+        } else if (ch == "{" || ch == "[") {
+            depth += 1
+        } else if (ch == "}" || ch == "]") {
+            depth -= 1
+        }
+        i += 1
+    }
+    -1
+}
+
+private func ckbServiceReadJsonStringAt(raw: String, start: Int64): CkbServiceJsonStringScan {
+    let scan = CkbServiceJsonStringScan()
+    if (start < 0 || start >= raw.size || raw[start..start + 1] != "\"") {
+        return scan
+    }
+    var i = start + 1
+    var escaped = false
+    var value = ""
+    while (i < raw.size) {
+        let ch = raw[i..i + 1]
+        if (escaped) {
+            value += ckbServiceJsonUnescapeChar(ch)
+            escaped = false
+        } else if (ch == "\\") {
+            escaped = true
+        } else if (ch == "\"") {
+            scan.ok = true
+            scan.value = value
+            scan.end = i + 1
+            return scan
+        } else {
+            value += ch
+        }
+        i += 1
+    }
+    scan
+}
+
+private func ckbServiceJsonUnescapeChar(ch: String): String {
+    if (ch == "\"") { return "\"" }
+    if (ch == "\\") { return "\\" }
+    if (ch == "/") { return "/" }
+    if (ch == "n") { return "\n" }
+    if (ch == "r") { return "\r" }
+    if (ch == "t") { return "\t" }
+    ch
+}
+
+private func ckbServiceSkipJsonWhitespace(raw: String, start: Int64): Int64 {
+    var i = start
+    while (i < raw.size) {
+        let ch = raw[i..i + 1]
+        if (ch != " " && ch != "\n" && ch != "\r" && ch != "\t") {
+            break
+        }
+        i += 1
+    }
+    i
 }
 
 private func sourceAnalysisResultFromPack(pack: SourceAnalysisPack): SourceAnalysisResult {
