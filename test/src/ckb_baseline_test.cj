@@ -131,34 +131,37 @@ public class CkbBaselineTest {
     public func schedulerSlaUsesFakeClockAndFailureBackoff(): Unit {
         let clock = FakeClock(0)
         let scheduler = Scheduler(clock)
-        @Expect(scheduler.dueTaskNames().contains("repo_list_6h"), true)
-        @Expect(scheduler.dueTaskNames().contains("active_item_sync_10m"), true)
+        @Expect(scheduler.dueTaskNames().contains("community_repo_discovery_30d"), true)
+        @Expect(scheduler.dueTaskNames().contains("website_probe_weekly"), true)
 
-        scheduler.markSuccess("active_item_sync_10m")
-        @Expect(scheduler.dueTaskNames().contains("active_item_sync_10m"), false)
-        clock.advance(10)
-        @Expect(scheduler.dueTaskNames().contains("active_item_sync_10m"), true)
+        scheduler.markSuccess("website_probe_weekly")
+        @Expect(scheduler.dueTaskNames().contains("website_probe_weekly"), false)
+        clock.advance(10080)
+        @Expect(scheduler.dueTaskNames().contains("website_probe_weekly"), true)
 
-        scheduler.markFailure("active_repo_fetch_30m")
-        @Expect(scheduler.entries[4].nextRunAt, 15)
-        scheduler.markFailure("active_repo_fetch_30m")
-        @Expect(scheduler.entries[4].nextRunAt, 25)
-        scheduler.markFailure("active_repo_fetch_30m")
-        @Expect(scheduler.entries[4].nextRunAt, 70)
-        @Expect(scheduler.entries[4].degraded, true)
+        scheduler.markFailure("docs_probe_30d")
+        @Expect(scheduler.entries[1].nextRunAt, 10085)
+        scheduler.markFailure("docs_probe_30d")
+        @Expect(scheduler.entries[1].nextRunAt, 10095)
+        scheduler.markFailure("docs_probe_30d")
+        @Expect(scheduler.entries[1].nextRunAt, 10140)
+        @Expect(scheduler.entries[1].degraded, true)
     }
 
     @TestCase
-    public func schedulerEncodesRequiredR8R9SlaWindows(): Unit {
+    public func schedulerEncodesServiceV1SlaWindows(): Unit {
         let scheduler = Scheduler(FakeClock(0))
 
-        @Expect(intervalFor(scheduler, "active_item_sync_10m"), 10)
-        @Expect(intervalFor(scheduler, "active_repo_fetch_30m"), 30)
-        @Expect(intervalFor(scheduler, "website_probe_6h"), 360)
-        @Expect(intervalFor(scheduler, "docs_probe_6h"), 360)
-        @Expect(intervalFor(scheduler, "website_full_daily"), 1440)
+        @Expect(intervalFor(scheduler, "community_repo_discovery_30d"), 43200)
+        @Expect(intervalFor(scheduler, "docs_probe_30d"), 43200)
+        @Expect(intervalFor(scheduler, "website_probe_weekly"), 10080)
+        @Expect(intervalFor(scheduler, "website_full_weekly"), 10080)
+        @Expect(intervalFor(scheduler, "web_candidate_weekly"), 10080)
         @Expect(intervalFor(scheduler, "weekly_full_rebuild"), 10080)
         @Expect(intervalFor(scheduler, "web_candidate_recrawl_30d"), 43200)
+        @Expect(intervalFor(scheduler, "active_item_sync_10m"), -1)
+        @Expect(intervalFor(scheduler, "active_repo_fetch_30m"), -1)
+        @Expect(intervalFor(scheduler, "repo_list_6h"), -1)
     }
 
     @TestCase
@@ -2173,9 +2176,9 @@ network.allowedHosts=docs.example.org
         @Expect(firstFailure.failed, 1)
         @Expect(secondFailure.failed, 1)
         @Expect(thirdFailure.failed, 1)
-        @Expect(scheduler.entries[3].failureCount, 3)
-        @Expect(scheduler.entries[3].degraded, true)
-        @Expect(scheduler.entries[3].nextRunAt, 80)
+        @Expect(scheduler.entries[2].failureCount, 3)
+        @Expect(scheduler.entries[2].degraded, true)
+        @Expect(scheduler.entries[2].nextRunAt, 80)
     }
 
     @TestCase
@@ -2608,6 +2611,117 @@ class FakeHttpExecutor <: HttpRequestExecutor {
             getRequest.headers.add(header)
         }
         this.execute(getRequest)
+    }
+}
+
+@Test
+public class CkbServiceApiTest {
+    @TestCase
+    public func ckb1Ut001HealthReturnsVersionedEnvelope(): Unit {
+        let service = CkbCommandLoopService(CkbRuntimeConfig(), FileKnowledgeStore("target/ckb-api-health"))
+
+        let response = ckbApiHandle(service, "GET", "/v1/health", "", [])
+
+        @Expect(response.contains("\"ok\":true"), true)
+        @Expect(response.contains("\"apiVersion\":\"ckb-http-v1\""), true)
+        @Expect(response.contains("\"activeKnowledgeVersion\":\"ckb-"), true)
+    }
+
+    @TestCase
+    public func ckb1Ut002EvidencePackReturnsRedactedJsonEnvelope(): Unit {
+        let service = CkbCommandLoopService(CkbRuntimeConfig(), FileKnowledgeStore("target/ckb-api-evidence"))
+
+        let response = ckbApiHandle(service, "POST", "/v1/evidence-pack", "{\"q\":\"HttpClient\",\"budget\":3}", [])
+
+        @Expect(response.contains("\"ok\":true"), true)
+        @Expect(response.contains("\"knowledgeVersion\":\"ckb-"), true)
+        @Expect(response.contains("\"sourceEvidence\""), true)
+        @Expect(response.contains("/Users/"), false)
+    }
+
+    @TestCase
+    public func ckb1Bnd001EvidencePackRejectsUnsafeBudgetsAndEmptyQuery(): Unit {
+        let service = CkbCommandLoopService(CkbRuntimeConfig(), FileKnowledgeStore("target/ckb-api-bounds"))
+
+        let zero = ckbApiHandle(service, "POST", "/v1/evidence-pack", "{\"q\":\"HttpClient\",\"budget\":0}", [])
+        let tooLarge = ckbApiHandle(service, "POST", "/v1/evidence-pack", "{\"q\":\"HttpClient\",\"budget\":999}", [])
+        let empty = ckbApiHandle(service, "POST", "/v1/evidence-pack", "{\"q\":\"\",\"budget\":3}", [])
+
+        @Expect(zero.contains("\"code\":\"ckb.bad_request\""), true)
+        @Expect(tooLarge.contains("\"code\":\"ckb.bad_request\""), true)
+        @Expect(empty.contains("\"code\":\"ckb.bad_request\""), true)
+    }
+
+    @TestCase
+    public func ckb1Bnd002SourceAnalysisRejectsUnsafePathsWithoutFetch(): Unit {
+        let config = CkbRuntimeConfig()
+        config.networkEnabled = true
+        let fake = FakeSourceFetchRunner()
+        let service = CkbCommandLoopService(config, FileKnowledgeStore("target/ckb-api-source-paths"), sourceRunner: fake)
+
+        let absolute = ckbApiHandle(service, "POST", "/v1/source-analysis", "{\"repo\":\"cangjie/stdx\",\"ref\":\"main\",\"query\":\"HttpClient\",\"candidatePaths\":[\"/Users/a/b.cj\"]}", [])
+        let traversal = ckbApiHandle(service, "POST", "/v1/source-analysis", "{\"repo\":\"cangjie/stdx\",\"ref\":\"main\",\"query\":\"HttpClient\",\"candidatePaths\":[\"../x.cj\"]}", [])
+
+        @Expect(absolute.contains("\"code\":\"ckb.bad_request\"") || absolute.contains("\"code\":\"ckb.invalid_workspace_root\""), true)
+        @Expect(traversal.contains("\"code\":\"ckb.bad_request\"") || traversal.contains("\"code\":\"ckb.invalid_workspace_root\""), true)
+        @Expect(fake.calls.size, 0)
+    }
+
+    @TestCase
+    public func ckb1Pos001SchedulesExposeServiceV1FrequenciesOnly(): Unit {
+        let service = CkbCommandLoopService(CkbRuntimeConfig(), FileKnowledgeStore("target/ckb-api-schedules"))
+
+        let response = ckbApiHandle(service, "GET", "/v1/schedules", "", [])
+
+        @Expect(response.contains("\"name\":\"community_repo_discovery_30d\""), true)
+        @Expect(response.contains("\"intervalMinutes\":43200"), true)
+        @Expect(response.contains("\"name\":\"docs_probe_30d\""), true)
+        @Expect(response.contains("\"name\":\"website_probe_weekly\""), true)
+        @Expect(response.contains("\"intervalMinutes\":10080"), true)
+        @Expect(response.contains("\"name\":\"website_full_weekly\""), true)
+        @Expect(response.contains("\"name\":\"weekly_full_rebuild\""), true)
+        @Expect(response.contains("active_item_sync_10m"), false)
+        @Expect(response.contains("active_repo_fetch_30m"), false)
+        @Expect(response.contains("repo_list_6h"), false)
+    }
+
+    @TestCase
+    public func ckb1Pos002GitCodeRepositoryChangedEventAcceptsAndDeduplicates(): Unit {
+        let service = CkbCommandLoopService(CkbRuntimeConfig(), FileKnowledgeStore("target/ckb-api-events"))
+        let body = "{\"contractVersion\":\"gcm-ckb-repository-change-v1\",\"provider\":\"gitcode\",\"eventType\":\"merge_request\",\"reason\":\"pr_merged\",\"repo\":\"cangjie/stdx\",\"ref\":\"main\",\"prNumber\":12,\"changedFiles\":[\"src/http/client.cj\"]}"
+
+        let first = ckbApiHandle(service, "POST", "/v1/events/gitcode/repository-changed", body, [])
+        let second = ckbApiHandle(service, "POST", "/v1/events/gitcode/repository-changed", body, [])
+
+        @Expect(first.contains("\"ok\":true"), true)
+        @Expect(first.contains("\"status\":\"accepted\"") || first.contains("\"status\":\"duplicate\""), true)
+        @Expect(first.contains("\"scheduledProfiles\""), true)
+        @Expect(first.contains("\"repo_source_and_items\"") || first.contains("\"items\""), true)
+        @Expect(second.contains("\"status\":\"duplicate\""), true)
+    }
+
+    @TestCase
+    public func ckb1Neg001UnauthorizedAdminRebuildHasNoSideEffect(): Unit {
+        let service = CkbCommandLoopService(CkbRuntimeConfig(), FileKnowledgeStore("target/ckb-api-admin"))
+        let before = service.rebuildCountForTest()
+
+        let response = ckbApiHandle(service, "POST", "/v1/admin/rebuild", "{}", [])
+
+        @Expect(response.contains("\"code\":\"ckb.unauthorized\""), true)
+        @Expect(service.rebuildCountForTest(), before)
+    }
+
+    @TestCase
+    public func ckb1Neg002InvalidGitCodeEventIsRejectedBeforeQueue(): Unit {
+        let service = CkbCommandLoopService(CkbRuntimeConfig(), FileKnowledgeStore("target/ckb-api-event-neg"))
+        let before = service.acceptedEventCountForTest()
+
+        let badContract = ckbApiHandle(service, "POST", "/v1/events/gitcode/repository-changed", "{\"contractVersion\":\"bad\",\"provider\":\"gitcode\",\"eventType\":\"merge_request\",\"reason\":\"pr_merged\",\"repo\":\"cangjie/stdx\"}", [])
+        let missingRepo = ckbApiHandle(service, "POST", "/v1/events/gitcode/repository-changed", "{\"contractVersion\":\"gcm-ckb-repository-change-v1\",\"provider\":\"gitcode\",\"eventType\":\"merge_request\",\"reason\":\"pr_merged\"}", [])
+
+        @Expect(badContract.contains("\"code\":\"ckb.bad_request\""), true)
+        @Expect(missingRepo.contains("\"code\":\"ckb.bad_request\""), true)
+        @Expect(service.acceptedEventCountForTest(), before)
     }
 }
 

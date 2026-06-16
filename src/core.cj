@@ -1608,12 +1608,10 @@ public class Scheduler {
 
     public init(clock: FakeClock) {
         this.clock = clock
-        this.entries.add(ScheduleEntry("website_probe_6h", 360, 0))
-        this.entries.add(ScheduleEntry("website_full_daily", 1440, 200))
-        this.entries.add(ScheduleEntry("docs_probe_6h", 360, 40))
-        this.entries.add(ScheduleEntry("repo_list_6h", 360, 0))
-        this.entries.add(ScheduleEntry("active_repo_fetch_30m", 30, 0))
-        this.entries.add(ScheduleEntry("active_item_sync_10m", 10, 0))
+        this.entries.add(ScheduleEntry("community_repo_discovery_30d", 43200, 0))
+        this.entries.add(ScheduleEntry("docs_probe_30d", 43200, 40))
+        this.entries.add(ScheduleEntry("website_probe_weekly", 10080, 0))
+        this.entries.add(ScheduleEntry("website_full_weekly", 10080, 200))
         this.entries.add(ScheduleEntry("web_candidate_weekly", 10080, 240))
         this.entries.add(ScheduleEntry("web_candidate_recrawl_30d", 43200, 240))
         this.entries.add(ScheduleEntry("weekly_full_rebuild", 10080, 150))

@@ -1,0 +1,626 @@
+package cangjie_community_knowledge_base
+
+import std.collection.ArrayList
+import std.convert.Parsable
+
+public class CkbApiResponse {
+    public var ok: Bool = true
+    public var apiVersion: String = "ckb-http-v1"
+    public var data: String = "{}"
+    public var diagnostics: String = "{}"
+
+    public init() {}
+}
+
+public class CkbApiError {
+    public var code: String = ""
+    public var message: String = ""
+    public var status: Int64 = 400
+
+    public init() {}
+
+    public init(code: String, message: String, status: Int64) {
+        this.code = code
+        this.message = message
+        this.status = status
+    }
+}
+
+public class CkbApiRequestContext {
+    public var method: String = ""
+    public var path: String = ""
+    public var headers: ArrayList<String> = ArrayList<String>()
+    public var adminAuthorized: Bool = false
+
+    public init() {}
+}
+
+public class GitCodeRepositoryChangedEvent {
+    public var contractVersion: String = ""
+    public var provider: String = ""
+    public var eventType: String = ""
+    public var reason: String = ""
+    public var repo: String = ""
+    public var ref: String = ""
+    public var prNumber: Int64 = 0
+    public var changedFiles: ArrayList<String> = ArrayList<String>()
+    public var valid: Bool = false
+    public var errorCode: String = ""
+    public var diagnostic: String = ""
+
+    public init() {}
+}
+
+public class GitCodeRepositoryChangedEventResult {
+    public var eventId: String = ""
+    public var status: String = "rejected"
+    public var dedupeKey: String = ""
+    public var scheduledProfiles: ArrayList<String> = ArrayList<String>()
+    public var acceptedAt: String = ""
+    public var diagnostic: String = ""
+
+    public init() {}
+}
+
+public class CkbAdminOperationResult {
+    public var status: String = "not_implemented"
+    public var degraded: Bool = true
+    public var diagnostic: String = ""
+    public var requestCount: Int64 = 0
+    public var updatedDataKinds: ArrayList<String> = ArrayList<String>()
+
+    public init() {}
+}
+
+public func ckbApiEnvelope(data: String, diagnostics!: String = "{}"): String {
+    let response = CkbApiResponse()
+    response.data = data
+    response.diagnostics = ckbApiDiagnosticObject(diagnostics)
+    ckbApiRenderResponse(response)
+}
+
+public func ckbApiErrorEnvelope(error: CkbApiError, diagnostics!: String = "{}"): String {
+    "{\"ok\":false,\"apiVersion\":\"ckb-http-v1\",\"error\":{\"code\":\"${ckbApiJsonEscape(error.code)}\",\"message\":\"${ckbApiJsonEscape(error.message)}\",\"status\":${error.status}},\"diagnostics\":${ckbApiDiagnosticObject(diagnostics)}}"
+}
+
+public func ckbApiErrorEnvelope(code: String, message: String, status!: Int64 = 400, diagnostics!: String = "{}"): String {
+    ckbApiErrorEnvelope(CkbApiError(code, message, status), diagnostics: diagnostics)
+}
+
+public func ckbApiHandle(service: CkbCommandLoopService, method: String, path: String, body: String, headers: Array<String>): String {
+    let context = ckbApiRequestContext(method, path, headers)
+    let route = context.path
+    let verb = context.method
+
+    if (route.startsWith("/v1/admin/")) {
+        if (!context.adminAuthorized) {
+            return ckbApiErrorEnvelope("ckb.unauthorized", "admin authorization required", status: 401)
+        }
+        return ckbApiHandleAdmin(service, verb, route, body)
+    }
+
+    if (verb == "GET" && route == "/v1/health") {
+        return ckbApiEnvelope(ckbApiHealthJson(service.statusSnapshot()))
+    }
+    if (verb == "GET" && route == "/v1/status") {
+        return ckbApiEnvelope(ckbApiStatusJson(service.statusSnapshot()))
+    }
+    if (verb == "GET" && route == "/v1/schedules") {
+        return ckbApiEnvelope(ckbApiSchedulesJson(service.statusSnapshot()))
+    }
+    if (verb == "GET" && route == "/v1/schema") {
+        return ckbApiEnvelope(ckbApiSchemaJson())
+    }
+    if (verb == "POST" && route == "/v1/query") {
+        return ckbApiHandleEvidence(service, body, true)
+    }
+    if (verb == "POST" && route == "/v1/evidence-pack") {
+        return ckbApiHandleEvidence(service, body, false)
+    }
+    if (verb == "POST" && route == "/v1/source-analysis") {
+        return ckbApiHandleSourceAnalysis(service, body)
+    }
+    if (verb == "POST" && route == "/v1/events/gitcode/repository-changed") {
+        let event = parseGitCodeRepositoryChangedEvent(body)
+        return ckbApiGitCodeRepositoryChangedEvent(service, event)
+    }
+    ckbApiErrorEnvelope("ckb.not_found", "route not found", status: 404, diagnostics: "{\"path\":\"${ckbApiJsonEscape(route)}\"}")
+}
+
+public func parseGitCodeRepositoryChangedEvent(body: String): GitCodeRepositoryChangedEvent {
+    let event = GitCodeRepositoryChangedEvent()
+    let safe = ckbApiAsciiJsonProjection(body)
+    event.contractVersion = ckbApiJsonStringField(safe, "contractVersion")
+    event.provider = ckbApiJsonStringField(safe, "provider")
+    event.eventType = ckbApiJsonStringField(safe, "eventType")
+    event.reason = ckbApiJsonStringField(safe, "reason")
+    event.repo = ckbApiJsonStringField(safe, "repo")
+    event.ref = ckbApiJsonStringField(safe, "ref")
+    event.prNumber = ckbApiJsonIntField(safe, "prNumber", ckbApiJsonIntField(safe, "iid", 0))
+    event.changedFiles = ckbApiJsonStringArrayField(safe, "changedFiles")
+    if (event.contractVersion != "gcm-ckb-repository-change-v1") {
+        event.errorCode = "ckb.bad_request"
+        event.diagnostic = "invalid_contract_version"
+        return event
+    }
+    if (event.provider != "gitcode" || event.eventType != "merge_request" || event.reason != "pr_merged") {
+        event.errorCode = "ckb.bad_request"
+        event.diagnostic = "unsupported_repository_changed_event"
+        return event
+    }
+    if (!ckbApiSafeRepo(event.repo)) {
+        event.errorCode = "ckb.bad_request"
+        event.diagnostic = "invalid_repo"
+        return event
+    }
+    if (event.ref == "") {
+        event.ref = "main"
+    }
+    event.valid = true
+    event
+}
+
+public func ckbApiGitCodeRepositoryChangedEvent(service: CkbCommandLoopService, event: GitCodeRepositoryChangedEvent): String {
+    if (!event.valid) {
+        return ckbApiErrorEnvelope(event.errorCode, "invalid repository changed event", status: 400, diagnostics: "{\"reason\":\"${ckbApiJsonEscape(event.diagnostic)}\"}")
+    }
+    ckbApiEnvelope(ckbApiRepositoryEventResultJson(service.acceptGitCodeRepositoryChangedEvent(event)))
+}
+
+private func ckbApiHandleAdmin(service: CkbCommandLoopService, method: String, path: String, body: String): String {
+    if (method != "POST") {
+        return ckbApiErrorEnvelope("ckb.method_not_allowed", "admin route requires POST", status: 405)
+    }
+    if (path == "/v1/admin/rebuild") {
+        let result = service.runRebuild()
+        return ckbApiEnvelope("{\"status\":\"${if (result.ok) { "ok" } else { "degraded" }}\",\"activeKnowledgeVersion\":\"${ckbApiJsonEscape(result.activeVersion)}\",\"candidateKnowledgeVersion\":\"${ckbApiJsonEscape(result.candidateVersion)}\",\"count\":${result.count}}")
+    }
+    if (path == "/v1/admin/scheduler/run") {
+        let limit = ckbApiJsonIntField(body, "limit", 1)
+        let result = service.runScheduler(limit)
+        return ckbApiEnvelope("{\"ran\":${result.ran},\"succeeded\":${result.succeeded},\"failed\":${result.failed},\"degraded\":${result.degraded},\"details\":\"${ckbApiJsonEscape(result.details)}\"}")
+    }
+    if (path == "/v1/admin/sync") {
+        return ckbApiEnvelope(ckbApiAdminResultJson(service.runSync(body: body)))
+    }
+    if (path == "/v1/admin/repositories/sync") {
+        return ckbApiEnvelope(ckbApiAdminResultJson(service.runRepositorySync(body: body)))
+    }
+    if (path == "/v1/admin/repo-list/refresh") {
+        return ckbApiEnvelope(ckbApiAdminResultJson(service.runRepoListRefresh(body: body)))
+    }
+    ckbApiErrorEnvelope("ckb.not_found", "admin route not found", status: 404)
+}
+
+private func ckbApiHandleEvidence(service: CkbCommandLoopService, body: String, queryMode: Bool): String {
+    let q = ckbApiJsonStringField(body, "q").trimAscii()
+    let budget = ckbApiJsonIntField(body, "budget", 5)
+    if (q == "") {
+        return ckbApiErrorEnvelope("ckb.bad_request", "q must not be empty", status: 400)
+    }
+    if (budget <= 0 || budget > 20) {
+        return ckbApiErrorEnvelope("ckb.bad_request", "budget must be between 1 and 20", status: 400)
+    }
+    let pack = service.queryEvidencePack(q, budget)
+    if (queryMode) {
+        return ckbApiEnvelope(ckbApiQueryJson(pack))
+    }
+    ckbApiEnvelope(ckbApiEvidencePackJson(pack))
+}
+
+private func ckbApiHandleSourceAnalysis(service: CkbCommandLoopService, body: String): String {
+    let request = SourceAnalysisRequest()
+    request.repo = ckbApiJsonStringField(body, "repo")
+    request.ref = ckbApiJsonStringField(body, "ref")
+    request.query = ckbApiJsonStringField(body, "query")
+    request.issueUrl = ckbApiJsonStringField(body, "issueUrl")
+    request.prUrl = ckbApiJsonStringField(body, "prUrl")
+    request.allowCloneFallback = ckbApiJsonBoolField(body, "allowCloneFallback")
+    request.maxFiles = ckbApiJsonIntField(body, "maxFiles", request.maxFiles)
+    request.maxBytes = ckbApiJsonIntField(body, "maxBytes", request.maxBytes)
+    request.timeoutMillis = ckbApiJsonIntField(body, "timeoutMillis", request.timeoutMillis)
+    for (path in ckbApiJsonStringArrayField(body, "changedFiles")) {
+        request.changedFiles.add(path)
+    }
+    for (path in ckbApiJsonStringArrayField(body, "candidatePaths")) {
+        request.candidatePaths.add(path)
+    }
+    let singlePath = ckbApiJsonStringField(body, "path")
+    if (singlePath != "") {
+        request.candidatePaths.add(singlePath)
+    }
+    if (!ckbApiSafeRepo(request.repo)) {
+        return ckbApiErrorEnvelope("ckb.bad_request", "repo must be owner/repo", status: 400)
+    }
+    for (path in request.changedFiles) {
+        if (!ckbApiSafeRepoRelativePath(path)) {
+            return ckbApiErrorEnvelope("ckb.bad_request", "source paths must be repo-relative", status: 400)
+        }
+    }
+    for (path in request.candidatePaths) {
+        if (!ckbApiSafeRepoRelativePath(path)) {
+            return ckbApiErrorEnvelope("ckb.bad_request", "source paths must be repo-relative", status: 400)
+        }
+    }
+    if (request.ref == "") {
+        request.ref = "main"
+    }
+    ckbApiEnvelope(ckbApiSourceAnalysisJson(service.runSourceAnalysis(request)))
+}
+
+private func ckbApiRenderResponse(response: CkbApiResponse): String {
+    "{\"ok\":${response.ok},\"apiVersion\":\"${response.apiVersion}\",\"data\":${response.data},\"diagnostics\":${response.diagnostics}}"
+}
+
+private func ckbApiHealthJson(status: KnowledgeStatus): String {
+    let schedulerDegraded = ckbApiSchedulerDegraded(status)
+    let degraded = schedulerDegraded || status.storage.vectorState == EmbeddingProviderState.DEGRADED || status.storage.graphState == EmbeddingProviderState.DEGRADED
+    "{\"status\":\"${if (degraded) { "degraded" } else { "ok" }}\",\"activeKnowledgeVersion\":\"${ckbApiJsonEscape(status.activeKnowledgeVersion)}\",\"degraded\":${degraded},\"schedulerDegraded\":${schedulerDegraded}}"
+}
+
+private func ckbApiStatusJson(status: KnowledgeStatus): String {
+    "{\"activeKnowledgeVersion\":\"${ckbApiJsonEscape(status.activeKnowledgeVersion)}\",\"candidateKnowledgeVersion\":\"${ckbApiJsonEscape(status.candidateKnowledgeVersion)}\",\"activeStateSource\":\"${ckbApiJsonEscape(status.activeStateSource)}\",\"restoreDiagnostic\":\"${ckbApiJsonEscape(redactSensitive(status.restoreDiagnostic))}\",\"storage\":{\"rawCount\":${status.storage.rawCount},\"normalizedCount\":${status.storage.normalizedCount},\"indexCount\":${status.storage.indexCount},\"vectorState\":\"${ckbApiJsonEscape(status.storage.vectorState)}\",\"graphState\":\"${ckbApiJsonEscape(status.storage.graphState)}\",\"localPathRedacted\":${status.localPathRedacted}},\"scheduler\":${ckbApiSchedulesDataJson(status)}}"
+}
+
+private func ckbApiSchedulesJson(status: KnowledgeStatus): String {
+    ckbApiSchedulesDataJson(status)
+}
+
+private func ckbApiSchedulesDataJson(status: KnowledgeStatus): String {
+    var out = "{\"entries\":["
+    for (i in 0..status.schedules.size) {
+        if (i > 0) {
+            out += ","
+        }
+        let entry = status.schedules[i]
+        out += "{\"name\":\"${ckbApiJsonEscape(entry.name)}\",\"intervalMinutes\":${entry.intervalMinutes},\"nextRunAt\":${entry.nextRunAt},\"lastSuccessAt\":${entry.lastSuccessAt},\"lastFailureAt\":${entry.lastFailureAt},\"failureCount\":${entry.failureCount},\"degraded\":${entry.degraded},\"lastStatus\":\"${ckbApiJsonEscape(entry.lastStatus)}\",\"lastDurationMillis\":0,\"lastRequestCount\":0,\"lastUpdatedDataKinds\":[]}"
+    }
+    out += "],\"schedulerDegraded\":${ckbApiSchedulerDegraded(status)}}"
+    out
+}
+
+private func ckbApiSchemaJson(): String {
+    "{\"apiVersion\":\"ckb-http-v1\",\"envelope\":\"{ok,apiVersion,data|error,diagnostics}\",\"routes\":[\"GET /v1/health\",\"GET /v1/status\",\"GET /v1/schedules\",\"GET /v1/schema\",\"POST /v1/query\",\"POST /v1/evidence-pack\",\"POST /v1/source-analysis\",\"POST /v1/events/gitcode/repository-changed\",\"POST /v1/admin/rebuild\",\"POST /v1/admin/scheduler/run\",\"POST /v1/admin/repositories/sync\",\"POST /v1/admin/repo-list/refresh\",\"POST /v1/admin/sync\"],\"errorCodes\":[\"ckb.bad_request\",\"ckb.unauthorized\",\"ckb.not_found\",\"ckb.method_not_allowed\",\"ckb.invalid_workspace_root\"],\"limits\":{\"budgetMax\":20,\"apiVersion\":\"ckb-http-v1\"}}"
+}
+
+private func ckbApiQueryJson(pack: EvidencePack): String {
+    "{\"knowledgeVersion\":\"${ckbApiJsonEscape(pack.knowledgeVersion)}\",\"truncated\":${pack.truncated},\"degraded\":${pack.degraded},\"rows\":${ckbApiCitationsJson(pack.citations)},\"citations\":${ckbApiCitationsJson(pack.citations)}}"
+}
+
+private func ckbApiEvidencePackJson(pack: EvidencePack): String {
+    var out = "{\"queryId\":\"${ckbApiJsonEscape(pack.queryId)}\",\"knowledgeVersion\":\"${ckbApiJsonEscape(pack.knowledgeVersion)}\",\"truncated\":${pack.truncated},\"degraded\":${pack.degraded}"
+    out += ",\"sourceEvidence\":["
+    for (i in 0..pack.sourceEvidence.size) {
+        if (i > 0) { out += "," }
+        let item = pack.sourceEvidence[i]
+        out += "{\"citation\":\"${ckbApiJsonEscape(item.citation)}\",\"repo\":\"${ckbApiJsonEscape(item.repo)}\",\"path\":\"${ckbApiJsonEscape(item.path)}\",\"symbol\":\"${ckbApiJsonEscape(item.symbol)}\",\"knowledgeVersion\":\"${ckbApiJsonEscape(item.knowledgeVersion)}\"}"
+    }
+    out += "],\"docEvidence\":["
+    for (i in 0..pack.docEvidence.size) {
+        if (i > 0) { out += "," }
+        let item = pack.docEvidence[i]
+        out += "{\"citation\":\"${ckbApiJsonEscape(item.citation)}\",\"title\":\"${ckbApiJsonEscape(item.title)}\",\"docVersion\":\"${ckbApiJsonEscape(item.docVersion)}\",\"knowledgeVersion\":\"${ckbApiJsonEscape(item.knowledgeVersion)}\"}"
+    }
+    out += "],\"websiteEvidence\":["
+    for (i in 0..pack.websiteEvidence.size) {
+        if (i > 0) { out += "," }
+        let item = pack.websiteEvidence[i]
+        out += "{\"citation\":\"${ckbApiJsonEscape(item.citation)}\",\"url\":\"${ckbApiJsonEscape(item.url)}\",\"title\":\"${ckbApiJsonEscape(item.title)}\",\"knowledgeVersion\":\"${ckbApiJsonEscape(item.knowledgeVersion)}\"}"
+    }
+    out += "],\"communityEvidence\":["
+    for (i in 0..pack.communityEvidence.size) {
+        if (i > 0) { out += "," }
+        let item = pack.communityEvidence[i]
+        out += "{\"citation\":\"${ckbApiJsonEscape(item.citation)}\",\"repo\":\"${ckbApiJsonEscape(item.repo)}\",\"issueOrPr\":\"${ckbApiJsonEscape(item.issueOrPr)}\",\"knowledgeVersion\":\"${ckbApiJsonEscape(item.knowledgeVersion)}\"}"
+    }
+    out += "],\"webCandidateEvidence\":["
+    for (i in 0..pack.webCandidateEvidence.size) {
+        if (i > 0) { out += "," }
+        let item = pack.webCandidateEvidence[i]
+        out += "{\"citation\":\"${ckbApiJsonEscape(item.citation)}\",\"url\":\"${ckbApiJsonEscape(item.url)}\",\"requiresReview\":${item.requiresReview},\"knowledgeVersion\":\"${ckbApiJsonEscape(item.knowledgeVersion)}\"}"
+    }
+    out += "],\"citations\":${ckbApiCitationsJson(pack.citations)},\"graphContext\":{\"nodes\":${pack.graphContext.nodes.size},\"edges\":${pack.graphContext.edges.size},\"knowledgeVersion\":\"${ckbApiJsonEscape(pack.graphContext.knowledgeVersion)}\",\"truncated\":${pack.graphContext.truncated}}}"
+    out
+}
+
+private func ckbApiCitationsJson(citations: ArrayList<SourceReference>): String {
+    var out = "["
+    for (i in 0..citations.size) {
+        if (i > 0) { out += "," }
+        let citation = citations[i]
+        out += "{\"sourceId\":\"${ckbApiJsonEscape(citation.sourceId)}\",\"citation\":\"${ckbApiJsonEscape(citation.citation)}\",\"knowledgeVersion\":\"${ckbApiJsonEscape(citation.knowledgeVersion)}\"}"
+    }
+    out += "]"
+    out
+}
+
+private func ckbApiSourceAnalysisJson(result: SourceAnalysisResult): String {
+    var out = "{\"analysisId\":\"${ckbApiJsonEscape(result.analysisId)}\",\"repo\":\"${ckbApiJsonEscape(result.repo)}\",\"ref\":\"${ckbApiJsonEscape(result.ref)}\",\"sourceAcquisition\":\"${ckbApiJsonEscape(result.sourceAcquisition)}\",\"cleanupStatus\":\"${ckbApiJsonEscape(result.cleanupStatus)}\",\"degraded\":${result.degraded},\"diagnostic\":\"${ckbApiJsonEscape(redactSensitive(result.diagnostic))}\",\"filesRead\":["
+    for (i in 0..result.filesRead.size) {
+        if (i > 0) { out += "," }
+        let file = result.filesRead[i]
+        out += "{\"path\":\"${ckbApiJsonEscape(file.path)}\",\"citation\":\"${ckbApiJsonEscape(file.citation)}\",\"bytes\":${file.bytes},\"truncated\":${file.truncated}}"
+    }
+    out += "],\"citations\":${ckbApiStringArrayJson(result.citations)}}"
+    out
+}
+
+private func ckbApiRepositoryEventResultJson(result: GitCodeRepositoryChangedEventResult): String {
+    "{\"eventId\":\"${ckbApiJsonEscape(result.eventId)}\",\"status\":\"${ckbApiJsonEscape(result.status)}\",\"dedupeKey\":\"${ckbApiJsonEscape(result.dedupeKey)}\",\"scheduledProfiles\":${ckbApiStringArrayJson(result.scheduledProfiles)},\"acceptedAt\":\"${ckbApiJsonEscape(result.acceptedAt)}\",\"diagnostics\":{\"status\":\"${ckbApiJsonEscape(redactSensitive(result.diagnostic))}\"}}"
+}
+
+private func ckbApiAdminResultJson(result: CkbAdminOperationResult): String {
+    "{\"status\":\"${ckbApiJsonEscape(result.status)}\",\"degraded\":${result.degraded},\"diagnostic\":\"${ckbApiJsonEscape(redactSensitive(result.diagnostic))}\",\"requestCount\":${result.requestCount},\"updatedDataKinds\":${ckbApiStringArrayJson(result.updatedDataKinds)}}"
+}
+
+private func ckbApiStringArrayJson(values: ArrayList<String>): String {
+    var out = "["
+    for (i in 0..values.size) {
+        if (i > 0) { out += "," }
+        out += "\"${ckbApiJsonEscape(values[i])}\""
+    }
+    out += "]"
+    out
+}
+
+private func ckbApiSchedulerDegraded(status: KnowledgeStatus): Bool {
+    for (entry in status.schedules) {
+        if (entry.degraded) {
+            return true
+        }
+    }
+    false
+}
+
+private func ckbApiRequestContext(method: String, path: String, headers: Array<String>): CkbApiRequestContext {
+    let context = CkbApiRequestContext()
+    context.method = method.trimAscii().toAsciiUpper()
+    context.path = path.trimAscii()
+    for (header in headers) {
+        let cleaned = header.trimAscii()
+        context.headers.add(cleaned)
+        let lower = cleaned.toAsciiLower()
+        if ((lower.startsWith("authorization:") && lower != "authorization:") || (lower.startsWith("x-ckb-admin-token:") && lower != "x-ckb-admin-token:")) {
+            context.adminAuthorized = true
+        }
+    }
+    context
+}
+
+private func ckbApiDiagnosticObject(raw: String): String {
+    let text = redactSensitive(raw.trimAscii())
+    if (text.startsWith("{") && text.endsWith("}")) {
+        return text
+    }
+    "{\"message\":\"${ckbApiJsonEscape(text)}\"}"
+}
+
+private func ckbApiJsonEscape(raw: String): String {
+    let text = redactSensitive(raw)
+    let out = StringBuilder()
+    for (ch in text.toRuneArray()) {
+        if (ch == r'"') {
+            out.append("\\\"")
+        } else if (ch == r'\\') {
+            out.append("\\\\")
+        } else if (ch == r'\n') {
+            out.append("\\n")
+        } else if (ch == r'\r') {
+            out.append("\\r")
+        } else if (ch == r'\t') {
+            out.append("\\t")
+        } else {
+            out.append(ch)
+        }
+    }
+    out.toString()
+}
+
+private class CkbApiJsonStringScan {
+    var ok: Bool = false
+    var value: String = ""
+    var end: Int64 = 0
+
+    init() {}
+}
+
+private func ckbApiAsciiJsonProjection(raw: String): String {
+    let out = StringBuilder()
+    for (ch in raw.toRuneArray()) {
+        if (UInt32(ch) <= 0x7Fu32) {
+            out.append(ch)
+        } else {
+            out.append(r' ')
+        }
+    }
+    out.toString()
+}
+
+private func ckbApiJsonStringField(raw: String, key: String): String {
+    let start = ckbApiJsonTopLevelValueStart(raw, key)
+    if (start < 0 || start >= raw.size || raw[start..start + 1] != "\"") {
+        return ""
+    }
+    let scan = ckbApiReadJsonStringAt(raw, start)
+    if (scan.ok) {
+        return scan.value
+    }
+    ""
+}
+
+private func ckbApiJsonBoolField(raw: String, key: String): Bool {
+    let start = ckbApiJsonTopLevelValueStart(raw, key)
+    start >= 0 && raw[start..raw.size].startsWith("true")
+}
+
+private func ckbApiJsonIntField(raw: String, key: String, fallback: Int64): Int64 {
+    let start = ckbApiJsonTopLevelValueStart(raw, key)
+    if (start < 0 || start >= raw.size) {
+        return fallback
+    }
+    var end = start
+    while (end < raw.size) {
+        let ch = raw[end..end + 1]
+        if (ch == "," || ch == "}" || ch == "]" || ch == " " || ch == "\n" || ch == "\r" || ch == "\t") {
+            break
+        }
+        end += 1
+    }
+    try { Int64.parse(raw[start..end].trimAscii()) } catch (_: Exception) { fallback }
+}
+
+private func ckbApiJsonStringArrayField(raw: String, key: String): ArrayList<String> {
+    let values = ArrayList<String>()
+    let start = ckbApiJsonTopLevelValueStart(raw, key)
+    if (start < 0 || start >= raw.size || raw[start..start + 1] != "[") {
+        return values
+    }
+    var i = start + 1
+    while (i < raw.size) {
+        i = ckbApiSkipJsonWhitespace(raw, i)
+        if (i >= raw.size || raw[i..i + 1] == "]") {
+            break
+        }
+        if (raw[i..i + 1] == "\"") {
+            let scan = ckbApiReadJsonStringAt(raw, i)
+            if (scan.ok) {
+                values.add(scan.value)
+                i = scan.end
+            } else {
+                break
+            }
+        } else {
+            i += 1
+        }
+        i = ckbApiSkipJsonWhitespace(raw, i)
+        if (i < raw.size && raw[i..i + 1] == ",") {
+            i += 1
+        }
+    }
+    values
+}
+
+private func ckbApiJsonTopLevelValueStart(raw: String, key: String): Int64 {
+    var i: Int64 = 0
+    var depth: Int64 = 0
+    var inString = false
+    var escaped = false
+    while (i < raw.size) {
+        let ch = raw[i..i + 1]
+        if (inString) {
+            if (escaped) {
+                escaped = false
+            } else if (ch == "\\") {
+                escaped = true
+            } else if (ch == "\"") {
+                inString = false
+            }
+            i += 1
+            continue
+        }
+        if (ch == "\"") {
+            if (depth == 1) {
+                let scan = ckbApiReadJsonStringAt(raw, i)
+                if (scan.ok && scan.value == key) {
+                    var colon = ckbApiSkipJsonWhitespace(raw, scan.end)
+                    if (colon < raw.size && raw[colon..colon + 1] == ":") {
+                        return ckbApiSkipJsonWhitespace(raw, colon + 1)
+                    }
+                }
+                i = if (scan.ok) { scan.end } else { i + 1 }
+                continue
+            }
+            inString = true
+        } else if (ch == "{" || ch == "[") {
+            depth += 1
+        } else if (ch == "}" || ch == "]") {
+            depth -= 1
+        }
+        i += 1
+    }
+    -1
+}
+
+private func ckbApiReadJsonStringAt(raw: String, start: Int64): CkbApiJsonStringScan {
+    let scan = CkbApiJsonStringScan()
+    if (start < 0 || start >= raw.size || raw[start..start + 1] != "\"") {
+        return scan
+    }
+    var i = start + 1
+    var escaped = false
+    var value = ""
+    while (i < raw.size) {
+        let ch = raw[i..i + 1]
+        if (escaped) {
+            value += ckbApiJsonUnescapeChar(ch)
+            escaped = false
+        } else if (ch == "\\") {
+            escaped = true
+        } else if (ch == "\"") {
+            scan.ok = true
+            scan.value = value
+            scan.end = i + 1
+            return scan
+        } else {
+            value += ch
+        }
+        i += 1
+    }
+    scan
+}
+
+private func ckbApiJsonUnescapeChar(ch: String): String {
+    if (ch == "\"") { return "\"" }
+    if (ch == "\\") { return "\\" }
+    if (ch == "/") { return "/" }
+    if (ch == "n") { return "\n" }
+    if (ch == "r") { return "\r" }
+    if (ch == "t") { return "\t" }
+    ch
+}
+
+private func ckbApiSkipJsonWhitespace(raw: String, start: Int64): Int64 {
+    var i = start
+    while (i < raw.size) {
+        let ch = raw[i..i + 1]
+        if (ch != " " && ch != "\n" && ch != "\r" && ch != "\t") {
+            break
+        }
+        i += 1
+    }
+    i
+}
+
+private func ckbApiSafeRepo(raw: String): Bool {
+    let parts = raw.split("/")
+    if (parts.size != 2) {
+        return false
+    }
+    ckbApiSafePathPart(parts[0]) && ckbApiSafePathPart(parts[1])
+}
+
+private func ckbApiSafePathPart(raw: String): Bool {
+    if (raw == "" || raw == "." || raw == "..") {
+        return false
+    }
+    for (ch in raw.toRuneArray()) {
+        let ok = (ch >= r'a' && ch <= r'z') || (ch >= r'A' && ch <= r'Z') || (ch >= r'0' && ch <= r'9') || ch == r'_' || ch == r'-' || ch == r'.'
+        if (!ok) {
+            return false
+        }
+    }
+    true
+}
+
+private func ckbApiSafeRepoRelativePath(raw: String): Bool {
+    let path = raw.trimAscii()
+    if (path == "" || path.startsWith("/") || path.startsWith("~") || path.contains("\\") || path.contains("..")) {
+        return false
+    }
+    for (part in path.split("/")) {
+        if (part == "" || part == "." || part == "..") {
+            return false
+        }
+    }
+    true
+}

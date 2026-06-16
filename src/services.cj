@@ -3328,11 +3328,11 @@ public class QueryService {
 
 public class CkbSchema {
     public static func mcpTools(): String {
-        "tools: cangjie.health,cangjie.status,cangjie.query,cangjie.evidence,cangjie.sync,cangjie.rebuild,cangjie.source_analysis,cangjie.source_search,cangjie.doc_search,cangjie.website_search,cangjie.web_candidate_search,cangjie.hybrid_search,cangjie.evidence_pack; input: query{q,budget,sourceType,includeCandidates=false}, evidence{q,budget,includeCandidates=true}, source_analysis{repo,ref,query,issueUrl,prUrl,changedFiles,candidatePaths,allowCloneFallback,maxFiles,maxBytes,timeoutMillis,visibility=public,retainFailedWorkspace=false}, sync{dryRun,apply,maxRepos,maxFilesPerRepo,maxItems,since}, rebuild{store}; liveGitCode: officialApi=https://api.gitcode.com/api/v5 authMode=token authHeader=private-token tokenFile=tokenFile tokenFileFormat=single PAT line without token/Bearer/PRIVATE-TOKEN prefix; sourceAnalysis: defaultEnabled=false workspaceRoot=TMPDIR-or-tmp/ckb-source-analysis publicOnly=true cloneHostAllowlist=gitcode.com cleanup=default; acceptance: schema -> doctor/status -> anonymous dry-run -> credentialed dry-run if needed -> limited apply -> rebuild-index -> status/evidence -> source_analysis fake/public repo; output: ok,status,errorCode,activeKnowledgeVersion,knowledgeVersion,citations,evidence,requiresReview,triggerReasons,sourceAcquisition,filesRead,cleanupStatus,truncated,degraded,transportDiagnostic; redaction: never returns tokenRef,tokenFile contents,PRIVATE-TOKEN,Authorization,Cookie,private-token values,absolute local paths; errors: ckb.bad_request,ckb.network_disabled,ckb.auth_degraded,ckb.rate_limited,ckb.source_unavailable,ckb.rebuild_failed,ckb.validation_failed,ckb.invalid_workspace_root,ckb.invalid_clone_host"
+        "tools: cangjie.health,cangjie.status,cangjie.query,cangjie.evidence,cangjie.sync,cangjie.rebuild,cangjie.source_analysis,cangjie.source_search,cangjie.doc_search,cangjie.website_search,cangjie.web_candidate_search,cangjie.hybrid_search,cangjie.evidence_pack,cangjie.schedules,cangjie.gitcode_repository_changed,cangjie.admin_scheduler_run,cangjie.admin_repositories_sync,cangjie.admin_repo_list_refresh; apiVersion=ckb-http-v1 envelope={ok,apiVersion,data|error,diagnostics}; input: query{q,budget<=20,sourceType,includeCandidates=false}, evidence_pack{q,budget<=20,includeCandidates,parentUrl,repo,ref}, source_analysis{repo,ref,query,issueUrl,prUrl,changedFiles,candidatePaths,allowCloneFallback,maxFiles,maxBytes,timeoutMillis,visibility=public,retainFailedWorkspace=false}, gitcode_repository_changed{contractVersion=gcm-ckb-repository-change-v1,provider=gitcode,eventType=merge_request,reason=pr_merged,repo,ref,prNumber,changedFiles}, admin_scheduler_run{limit,taskNames,force,reason,requestedBy,source}, admin_repositories_sync{repo,ref,profile,changedFiles,prNumber,mode,reason}, admin_repo_list_refresh{repo,ref,paths,prNumber,mode,reason}, sync{dryRun,apply,maxRepos,maxFilesPerRepo,maxItems,since}, rebuild{store}; liveGitCode: officialApi=https://api.gitcode.com/api/v5 authMode=token authHeader=private-token tokenFile=tokenFile tokenFileFormat=single PAT line without token/Bearer/PRIVATE-TOKEN prefix; sourceAnalysis: defaultEnabled=false workspaceRoot=TMPDIR-or-tmp/ckb-source-analysis publicOnly=true cloneHostAllowlist=gitcode.com cleanup=default; acceptance: schema -> doctor/status -> anonymous dry-run -> credentialed dry-run if needed -> limited apply -> rebuild-index -> status/evidence -> source_analysis fake/public repo; output: ok,status,errorCode,activeKnowledgeVersion,knowledgeVersion,citations,evidence,requiresReview,triggerReasons,sourceAcquisition,filesRead,cleanupStatus,truncated,degraded,transportDiagnostic,scheduledProfiles; redaction: never returns tokenRef,tokenFile contents,PRIVATE-TOKEN,Authorization,Cookie,private-token values,absolute local paths; errors: ckb.bad_request,ckb.unauthorized,ckb.not_found,ckb.network_disabled,ckb.auth_degraded,ckb.rate_limited,ckb.source_unavailable,ckb.rebuild_failed,ckb.validation_failed,ckb.invalid_workspace_root,ckb.invalid_clone_host"
     }
 
     public static func httpLikeRoutes(): String {
-        "routes: STDIO ckb-stdio-v1 health,status,metrics,query <text>,evidence <text>,source_analysis repo=<owner/repo> ref=<ref> path=<path> query=<text> allowCloneFallback=<bool>,sync,rebuild,scheduler-run,backup <name>,restore <name>,restart,stop; GET /health -> ok,status,activeKnowledgeVersion,degraded; GET /status -> storage,indexManifest,scheduler,activeKnowledgeVersion,restoreDiagnostic,authHeaderStrategy,sourceAnalysis; POST /query -> query,evidence,citations,knowledgeVersion; POST /evidence -> evidencePack,graphContext,citations,activeKnowledgeVersion; POST /source-analysis -> analysisId,repo,ref,triggerReasons,sourceAcquisition,filesRead,citations,degraded,cleanupStatus or clone analysis pack when enabled; POST /sync -> dryRun|apply,candidateVersion,activeKnowledgeVersion,redactedSourceStatus,transportDiagnostic; POST /rebuild-index -> candidateVersion,activeKnowledgeVersion,count; compatibility: CLI service/status/rebuild-index/source_analysis provide the canonical local protocol"
+        "routes: STDIO ckb-stdio-v1 health,status,metrics,query <text>,evidence <text>,source_analysis repo=<owner/repo> ref=<ref> path=<path> query=<text> allowCloneFallback=<bool>,sync,rebuild,scheduler-run,backup <name>,restore <name>,restart,stop; legacy HTTP-like aliases GET /health -> ok,status,activeKnowledgeVersion,degraded; GET /status -> storage,indexManifest,scheduler,activeKnowledgeVersion,restoreDiagnostic,authHeaderStrategy,sourceAnalysis; POST /query -> query,evidence,citations,knowledgeVersion; POST /evidence -> evidencePack,graphContext,citations,activeKnowledgeVersion; POST /sync -> dryRun|apply,candidateVersion,activeKnowledgeVersion,redactedSourceStatus,transportDiagnostic; POST /rebuild-index -> candidateVersion,activeKnowledgeVersion,count; JSON ckb-http-v1 envelope={ok,apiVersion,data|error,diagnostics}; GET /v1/health -> status,activeKnowledgeVersion,degraded,schedulerDegraded; GET /v1/status -> storage,indexManifest,scheduler,activeKnowledgeVersion,restoreDiagnostic,authHeaderStrategy,sourceAnalysis; GET /v1/schedules -> entries interval,nextRunAt,lastSuccessAt,failureCount,lastDurationMillis,lastRequestCount,lastUpdatedDataKinds; GET /v1/schema -> routes,tools,errorCodes,apiVersion,limits; POST /v1/query -> rows,citations,knowledgeVersion,truncated; POST /v1/evidence-pack -> evidencePack,graphContext,citations,knowledgeVersion; POST /v1/source-analysis -> analysisId,repo,ref,triggerReasons,sourceAcquisition,filesRead,citations,degraded,cleanupStatus; POST /v1/events/gitcode/repository-changed -> accepted|duplicate|rejected,dedupeKey,scheduledProfiles; POST /v1/admin/scheduler/run -> ran,succeeded,failed,degraded,details; POST /v1/admin/repositories/sync -> repo,profile,requestCount,updatedDataKinds,truncated,candidateVersion,activeKnowledgeVersion; POST /v1/admin/repo-list/refresh -> matchedPaths,repoCount,candidateRepoListVersion,activeRepoListVersion,diagnostics; POST /v1/admin/sync -> source status,candidateVersion,activeKnowledgeVersion,transportDiagnostic; POST /v1/admin/rebuild -> candidateVersion,activeKnowledgeVersion,count; compatibility: CLI service/status/rebuild-index/source_analysis provide the canonical local protocol"
     }
 }
 
@@ -3390,6 +3390,9 @@ public class CkbCommandLoopService {
     private let sourceRunner: SourceFetchRunner
     private var kb: KnowledgeBase
     private var started: Bool = false
+    private var acceptedEventDedupeKeys: ArrayList<String> = ArrayList<String>()
+    private var acceptedEventCount: Int64 = 0
+    private var rebuildCount: Int64 = 0
 
     public init(config: CkbRuntimeConfig, store: FileKnowledgeStore, sourceRunner!: SourceFetchRunner = DisabledNetworkFetchRunner()) {
         this.config = config
@@ -3471,6 +3474,96 @@ public class CkbCommandLoopService {
         response
     }
 
+    public func statusSnapshot(): KnowledgeStatus {
+        this.kb.status()
+    }
+
+    public func queryEvidencePack(query: String, budget: Int64, includeCandidates!: Bool = true): EvidencePack {
+        let pack = cangjie_evidence_pack(this.kb, query, budget)
+        if (!includeCandidates) {
+            pack.webCandidateEvidence.clear()
+        }
+        pack
+    }
+
+    public func runSourceAnalysis(request: SourceAnalysisRequest): SourceAnalysisResult {
+        if (request.allowCloneFallback && this.config.sourceAnalysisEnabled) {
+            let pack = cangjie_source_analysis(this.config, request)
+            return sourceAnalysisResultFromPack(pack)
+        }
+        ckbSourceAnalysis(request, runner: this.sourceRunner)
+    }
+
+    public func runSync(body!: String = ""): CkbAdminOperationResult {
+        let result = CkbAdminOperationResult()
+        let options = LiveSyncOptions()
+        options.apply = true
+        options.maxItems = 3
+        let text = ckbSyncLive(this.kb, this.config, options, runner: this.sourceRunner, store: this.store)
+        result.status = if (text.contains("summary") && !text.contains("usage error")) { "ok" } else { "degraded" }
+        result.degraded = result.status != "ok"
+        result.diagnostic = text
+        result.requestCount = 1
+        result.updatedDataKinds.add("live_sync")
+        result
+    }
+
+    public func acceptGitCodeRepositoryChangedEvent(event: GitCodeRepositoryChangedEvent): GitCodeRepositoryChangedEventResult {
+        let result = GitCodeRepositoryChangedEventResult()
+        result.dedupeKey = ckbRepositoryChangedDedupeKey(event)
+        result.eventId = "gcm-ckb-${stableSummaryHash(result.dedupeKey)}"
+        result.acceptedAt = "${this.kb.scheduler.clock.nowMinutes}"
+        result.scheduledProfiles.add(ckbRepositoryChangedProfile(event))
+        if (this.acceptedEventDedupeKeys.contains(result.dedupeKey)) {
+            result.status = "duplicate"
+            result.diagnostic = "dedupe_key_seen"
+            return result
+        }
+        this.acceptedEventDedupeKeys.add(result.dedupeKey)
+        this.acceptedEventCount += 1
+        result.status = "accepted"
+        result.diagnostic = "queued_in_memory"
+        result
+    }
+
+    public func runRepositorySync(body!: String = ""): CkbAdminOperationResult {
+        let result = CkbAdminOperationResult()
+        result.status = "not_implemented"
+        result.degraded = true
+        result.diagnostic = "repository scoped sync is not implemented in ckb-http-v1 core"
+        result.updatedDataKinds.add("repo_source_and_items")
+        result
+    }
+
+    public func runRepoListRefresh(body!: String = ""): CkbAdminOperationResult {
+        let result = CkbAdminOperationResult()
+        result.status = "not_implemented"
+        result.degraded = true
+        result.diagnostic = "repo list refresh is not implemented in ckb-http-v1 core"
+        result.updatedDataKinds.add("repo_list")
+        result
+    }
+
+    public func runRebuild(): IndexBuildResult {
+        this.rebuildCount += 1
+        ckbRebuildIndex(this.kb, this.store)
+    }
+
+    public func runScheduler(limit: Int64): SchedulerExecutorResult {
+        let executor = SchedulerExecutor(this.kb.scheduler, CkbSchedulerTaskRunner(this.kb, this.config, this.store, sourceRunner: this.sourceRunner))
+        let result = executor.runDue(limit: limit)
+        this.store.saveScheduler(this.kb.scheduler.entries)
+        result
+    }
+
+    public func rebuildCountForTest(): Int64 {
+        this.rebuildCount
+    }
+
+    public func acceptedEventCountForTest(): Int64 {
+        this.acceptedEventCount
+    }
+
     private func health(): String {
         let status = this.kb.status()
         "health ok=true protocol=ckb-stdio-v1 activeKnowledgeVersion=${status.activeKnowledgeVersion} activeStateSource=${status.activeStateSource} restoreDiagnostic=${status.restoreDiagnostic} vectorState=${status.storage.vectorState} graphState=${status.storage.graphState}\n"
@@ -3480,6 +3573,38 @@ public class CkbCommandLoopService {
         let status = this.kb.status()
         "log level=${level} event=${event} protocol=ckb-stdio-v1 activeKnowledgeVersion=${status.activeKnowledgeVersion} store=redacted\n"
     }
+}
+
+private func ckbRepositoryChangedDedupeKey(event: GitCodeRepositoryChangedEvent): String {
+    "${event.contractVersion}:${event.provider}:${event.eventType}:${event.reason}:${event.repo}:${event.ref}:${event.prNumber}:${joinStrings(event.changedFiles, ",")}"
+}
+
+private func ckbRepositoryChangedProfile(event: GitCodeRepositoryChangedEvent): String {
+    for (path in event.changedFiles) {
+        let lowered = path.toAsciiLower()
+        if (lowered.endsWith(".cj") || lowered.endsWith(".md") || lowered.endsWith(".toml") || lowered.endsWith(".json") || lowered.endsWith(".yaml") || lowered.endsWith(".yml")) {
+            return "repo_source_and_items"
+        }
+    }
+    "items"
+}
+
+private func sourceAnalysisResultFromPack(pack: SourceAnalysisPack): SourceAnalysisResult {
+    let result = SourceAnalysisResult()
+    result.analysisId = stableSummaryHash("${pack.repo}:${pack.ref}:${pack.status}")
+    result.repo = pack.repo
+    result.ref = pack.ref
+    result.sourceAcquisition = if (pack.ok) { SourceAnalysisAcquisition.CLONE } else { SourceAnalysisAcquisition.NONE }
+    result.degraded = !pack.ok
+    result.cleanupStatus = pack.cleanupStatus
+    result.diagnostic = pack.diagnostic
+    for (file in pack.selectedFiles) {
+        result.filesRead.add(file)
+        if (file.citation != "") {
+            result.citations.add(file.citation)
+        }
+    }
+    result
 }
 
 private func parseSourceAnalysisCommand(tail: String): SourceAnalysisRequest {
