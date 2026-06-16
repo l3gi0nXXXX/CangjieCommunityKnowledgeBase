@@ -38,6 +38,9 @@ public func ckbCliMain(args: Array<String>): Int64 {
     if (cli.command == "service" || cli.command == "start") {
         return runCkbServiceLoop(config, store)
     }
+    if (cli.command == "service-http" || cli.command == "http-service") {
+        return runCkbHttpService(config, store)
+    }
     if (cli.command == "service-once") {
         let service = CkbCommandLoopService(config, store, sourceRunner: if (config.networkEnabled) { HttpSourceFetchRunner(config) } else { DisabledNetworkFetchRunner() })
         print(service.start())
@@ -125,7 +128,7 @@ public func ckbCliMain(args: Array<String>): Int64 {
         print(renderQuery(cangjie_evidence_pack(kb, query, 3)))
         return 0
     }
-    println("Usage: cangjie_community_knowledge_base [--config <path>] [--store <path>] doctor | status | metrics | service | service-once <command> | start | stop | restart | sync-once | sync-live (--dry-run|--apply) | source_analysis repo=<owner/repo> ref=<ref> path=<path> query=<text> | native-http-smoke <url> | scheduler-run | rebuild-index | backup <path> | restore <path> | query <text> | evidence <text> | schema")
+    println("Usage: cangjie_community_knowledge_base [--config <path>] [--store <path>] doctor | status | metrics | service | service-http | http-service | service-once <command> | start | stop | restart | sync-once | sync-live (--dry-run|--apply) | source_analysis repo=<owner/repo> ref=<ref> path=<path> query=<text> | native-http-smoke <url> | scheduler-run | rebuild-index | backup <path> | restore <path> | query <text> | evidence <text> | schema")
     2
 }
 
@@ -173,7 +176,7 @@ public func ckbNativeTlsBootstrapScript(command: String, args: Array<String>): S
 }
 
 private func ckbCommandNeedsNativeTlsBootstrap(command: String): Bool {
-    command == "native-http-smoke" || command == "sync-live" || command == "source_analysis" || command == "source-analysis" || command == "service" || command == "start" || command == "service-once" || command == "scheduler-run"
+    command == "native-http-smoke" || command == "sync-live" || command == "source_analysis" || command == "source-analysis" || command == "service" || command == "start" || command == "service-http" || command == "http-service" || command == "service-once" || command == "scheduler-run"
 }
 
 private func ckbShellQuote(value: String): String {

@@ -290,6 +290,14 @@ public class CkbRuntimeConfig {
     public var sourceAnalysisMaxFiles: Int64 = 8
     public var sourceAnalysisMaxFileBytes: Int64 = 65536
     public var sourceAnalysisCloneHostAllowlist: String = "gitcode.com"
+    public var serviceBind: String = "127.0.0.1"
+    public var servicePort: Int64 = 18890
+    public var serviceAdminTokenFile: String = ""
+    public var serviceEventIngestTokenFile: String = ""
+    public var serviceMaxRequestBytes: Int64 = 1048576
+    public var serviceReadOnlyPublic: Bool = true
+    public var serviceDefaultBudget: Int64 = 5
+    public var serviceMaxBudget: Int64 = 20
 
     public init() {}
 
@@ -413,6 +421,14 @@ public class CkbRuntimeConfig {
         out += " sourceAnalysis.workspaceRoot=${if (this.sourceAnalysisWorkspaceRoot == "") { sourceAnalysisDefaultWorkspaceRoot() } else { redactSensitive(this.sourceAnalysisWorkspaceRoot) }}"
         out += " sourceAnalysis.cloneDepth=${this.sourceAnalysisCloneDepth}"
         out += " sourceAnalysis.maxFiles=${this.sourceAnalysisMaxFiles}"
+        out += " service.bind=${redactSensitive(this.serviceBind)}"
+        out += " service.port=${this.servicePort}"
+        out += " service.adminToken=${if (this.serviceAdminTokenFile == "") { "absent" } else { "present" }}"
+        out += " service.eventIngestToken=${if (this.serviceEventIngestTokenFile == "") { "absent" } else { "present" }}"
+        out += " service.maxRequestBytes=${this.serviceMaxRequestBytes}"
+        out += " service.readOnlyPublic=${if (this.serviceReadOnlyPublic) { "true" } else { "false" }}"
+        out += " service.defaultBudget=${this.serviceDefaultBudget}"
+        out += " service.maxBudget=${this.serviceMaxBudget}"
         out += " website=${if (this.websiteEnabled) { "enabled" } else { "disabled" }}"
         out += " docs=${if (this.docsEnabled) { "enabled" } else { "disabled" }}"
         out += " index.backend=${this.indexBackend}"
@@ -4273,6 +4289,22 @@ private func configApply(config: CkbRuntimeConfig, key: String, value: String): 
         config.sourceAnalysisMaxFileBytes = try { Int64.parse(value) } catch (_: Exception) { config.sourceAnalysisMaxFileBytes }
     } else if (key == "sourceAnalysis.cloneHostAllowlist") {
         config.sourceAnalysisCloneHostAllowlist = value
+    } else if (key == "service.bind") {
+        config.serviceBind = value
+    } else if (key == "service.port") {
+        config.servicePort = try { Int64.parse(value) } catch (_: Exception) { config.servicePort }
+    } else if (key == "service.adminTokenFile") {
+        config.serviceAdminTokenFile = value
+    } else if (key == "service.eventIngestTokenFile") {
+        config.serviceEventIngestTokenFile = value
+    } else if (key == "service.maxRequestBytes") {
+        config.serviceMaxRequestBytes = try { Int64.parse(value) } catch (_: Exception) { config.serviceMaxRequestBytes }
+    } else if (key == "service.readOnlyPublic") {
+        config.serviceReadOnlyPublic = parseBool(value)
+    } else if (key == "service.defaultBudget") {
+        config.serviceDefaultBudget = try { Int64.parse(value) } catch (_: Exception) { config.serviceDefaultBudget }
+    } else if (key == "service.maxBudget") {
+        config.serviceMaxBudget = try { Int64.parse(value) } catch (_: Exception) { config.serviceMaxBudget }
     }
 }
 

@@ -2723,6 +2723,171 @@ public class CkbServiceApiTest {
         @Expect(missingRepo.contains("\"code\":\"ckb.bad_request\""), true)
         @Expect(service.acceptedEventCountForTest(), before)
     }
+
+    @TestCase
+    public func ckb2Ut001ConfigApplyParsesHttpServiceFieldsWithoutBreakingExistingConfig(): Unit {
+        let root = "target/ckb2-config"
+        let configPath = "${root}/runtime.conf"
+        writeFixtureFile(root, "runtime.conf", """
+network.enabled=true
+sourceAnalysis.enabled=true
+sourceAnalysis.maxFiles=11
+service.bind=127.0.0.1
+service.port=18890
+service.maxBudget=20
+""")
+
+        let config = loadCkbRuntimeConfig(configPath)
+
+        @Expect(config.serviceBind, "127.0.0.1")
+        @Expect(config.servicePort, 18890)
+        @Expect(config.serviceMaxBudget, 20)
+        @Expect(config.networkEnabled, true)
+        @Expect(config.sourceAnalysisEnabled, true)
+        @Expect(config.sourceAnalysisMaxFiles, 11)
+    }
+
+    @TestCase
+    public func ckb2Ut002AdminTokenAuthorizesWithoutLeakingSecret(): Unit {
+        let root = "target/ckb2-auth-admin"
+        writeFixtureFile(root, "admin.token", "admin-secret\n")
+        let runtime = CkbRuntimeConfig()
+        runtime.serviceAdminTokenFile = "${root}/admin.token"
+        let config = ckbHttpServiceConfigFromRuntime(runtime)
+
+        let auth = ckbHttpAuthorize(config, ["Authorization: Bearer admin-secret"], "admin")
+        let service = CkbCommandLoopService(runtime, FileKnowledgeStore("${root}/store"))
+        let response = handleCkbHttpRequest(service, "POST", "/v1/admin/sync", "{}", ["Authorization: Bearer admin-secret"], config)
+
+        @Expect(auth.authorized, true)
+        @Expect(auth.authKind, "admin")
+        @Expect(auth.diagnostic.contains("admin-secret"), false)
+        @Expect(response.body.contains("admin-secret"), false)
+        @Expect(response.body.contains("Authorization"), false)
+    }
+
+    @TestCase
+    public func ckb2Ut003EventTokenOnlyAuthorizesRepositoryChangedIntake(): Unit {
+        let root = "target/ckb2-auth-event"
+        writeFixtureFile(root, "event.token", "event-secret\n")
+        let runtime = CkbRuntimeConfig()
+        runtime.serviceEventIngestTokenFile = "${root}/event.token"
+        let config = ckbHttpServiceConfigFromRuntime(runtime)
+
+        let eventAuth = ckbHttpAuthorize(config, ["Authorization: Bearer event-secret"], "event")
+        let adminAuth = ckbHttpAuthorize(config, ["Authorization: Bearer event-secret"], "admin")
+        let readAuth = ckbHttpAuthorize(config, ["Authorization: Bearer event-secret"], "read")
+
+        @Expect(eventAuth.authorized, true)
+        @Expect(eventAuth.authKind, "event")
+        @Expect(adminAuth.authorized, false)
+        @Expect(readAuth.authorized, false)
+    }
+
+    @TestCase
+    public func ckb2Bnd001OversizedBodyReturnsPayloadTooLargeBeforeApiCore(): Unit {
+        let root = "target/ckb2-payload-too-large"
+        writeFixtureFile(root, "event.token", "event-secret\n")
+        let runtime = CkbRuntimeConfig()
+        runtime.serviceEventIngestTokenFile = "${root}/event.token"
+        runtime.serviceMaxRequestBytes = 8
+        let config = ckbHttpServiceConfigFromRuntime(runtime)
+        let service = CkbCommandLoopService(runtime, FileKnowledgeStore("${root}/store"))
+        let before = service.acceptedEventCountForTest()
+
+        let response = handleCkbHttpRequest(service, "POST", "/v1/events/gitcode/repository-changed", repeatText("x", 32), ["Authorization: Bearer event-secret"], config)
+
+        @Expect(response.statusCode, 413)
+        @Expect(response.body.contains("\"code\":\"ckb.payload_too_large\""), true)
+        @Expect(service.acceptedEventCountForTest(), before)
+    }
+
+    @TestCase
+    public func ckb2Bnd002InvalidServicePortFailsValidationWithRedactedDiagnostic(): Unit {
+        let low = CkbHttpServiceConfig()
+        low.port = 0
+        low.adminTokenFile = "/Users/example/admin-secret-token"
+        let high = CkbHttpServiceConfig()
+        high.port = 65536
+        high.eventIngestTokenFile = "/Users/example/event-secret-token"
+
+        let lowResult = ckbHttpValidateConfig(low)
+        let highResult = ckbHttpValidateConfig(high)
+
+        @Expect(lowResult.ok, false)
+        @Expect(lowResult.code, "ckb.invalid_config")
+        @Expect(lowResult.diagnostic.contains("admin-secret-token"), false)
+        @Expect(highResult.ok, false)
+        @Expect(highResult.code, "ckb.invalid_config")
+        @Expect(highResult.diagnostic.contains("event-secret-token"), false)
+    }
+
+    @TestCase
+    public func ckb2Pos001LocalHandlerHealthReturnsHttp200Json(): Unit {
+        let service = CkbCommandLoopService(CkbRuntimeConfig(), FileKnowledgeStore("target/ckb2-health"))
+        let config = CkbHttpServiceConfig()
+
+        let response = handleCkbHttpRequest(service, "GET", "/v1/health", "", [], config)
+
+        @Expect(response.statusCode, 200)
+        @Expect(response.body.contains("\"apiVersion\":\"ckb-http-v1\""), true)
+        @Expect(response.body.contains("\"ok\":true"), true)
+    }
+
+    @TestCase
+    public func ckb2Pos002EventTokenCanPostRepositoryChangedEvent(): Unit {
+        let root = "target/ckb2-event-post"
+        writeFixtureFile(root, "event.token", "event-secret\n")
+        let runtime = CkbRuntimeConfig()
+        runtime.serviceEventIngestTokenFile = "${root}/event.token"
+        let config = ckbHttpServiceConfigFromRuntime(runtime)
+        let service = CkbCommandLoopService(runtime, FileKnowledgeStore("${root}/store"))
+        let body = "{\"contractVersion\":\"gcm-ckb-repository-change-v1\",\"provider\":\"gitcode\",\"eventType\":\"merge_request\",\"reason\":\"pr_merged\",\"repo\":\"cangjie/stdx\",\"ref\":\"main\",\"prNumber\":12,\"changedFiles\":[\"src/http/client.cj\"]}"
+
+        let response = handleCkbHttpRequest(service, "POST", "/v1/events/gitcode/repository-changed", body, ["Authorization: Bearer event-secret"], config)
+
+        @Expect(response.statusCode == 202 || response.statusCode == 200, true)
+        @Expect(response.body.contains("\"ok\":true"), true)
+        @Expect(response.body.contains("\"status\":\"accepted\"") || response.body.contains("\"status\":\"duplicate\""), true)
+    }
+
+    @TestCase
+    public func ckb2Neg001NoTokenAdminSyncReturns401AndDoesNotMutateStore(): Unit {
+        let root = "target/ckb2-admin-no-token"
+        writeFixtureFile(root, "admin.token", "admin-secret\n")
+        let runtime = CkbRuntimeConfig()
+        runtime.serviceAdminTokenFile = "${root}/admin.token"
+        let config = ckbHttpServiceConfigFromRuntime(runtime)
+        let store = FileKnowledgeStore("${root}/store")
+        let service = CkbCommandLoopService(runtime, store)
+        let before = store.has("raw/records.ckb")
+
+        let response = handleCkbHttpRequest(service, "POST", "/v1/admin/sync", "{}", [], config)
+
+        @Expect(response.statusCode, 401)
+        @Expect(response.body.contains("\"ok\":false"), true)
+        @Expect(response.body.contains("\"code\":\"ckb.unauthorized\""), true)
+        @Expect(store.has("raw/records.ckb"), before)
+    }
+
+    @TestCase
+    public func ckb2Neg002EventTokenCannotAccessAdminOrQueryApi(): Unit {
+        let root = "target/ckb2-event-forbidden"
+        writeFixtureFile(root, "event.token", "event-secret\n")
+        let runtime = CkbRuntimeConfig()
+        runtime.serviceEventIngestTokenFile = "${root}/event.token"
+        let config = ckbHttpServiceConfigFromRuntime(runtime)
+        let service = CkbCommandLoopService(runtime, FileKnowledgeStore("${root}/store"))
+        let headers = ["Authorization: Bearer event-secret"]
+
+        let admin = handleCkbHttpRequest(service, "POST", "/v1/admin/sync", "{}", headers, config)
+        let evidence = handleCkbHttpRequest(service, "POST", "/v1/evidence-pack", "{\"q\":\"HttpClient\",\"budget\":1}", headers, config)
+
+        @Expect(admin.statusCode == 401 || admin.statusCode == 403, true)
+        @Expect(admin.body.contains("\"code\":\"ckb.unauthorized\"") || admin.body.contains("\"code\":\"ckb.forbidden\""), true)
+        @Expect(evidence.statusCode == 401 || evidence.statusCode == 403, true)
+        @Expect(evidence.body.contains("\"code\":\"ckb.unauthorized\"") || evidence.body.contains("\"code\":\"ckb.forbidden\""), true)
+    }
 }
 
 private func intervalFor(scheduler: Scheduler, name: String): Int64 {
