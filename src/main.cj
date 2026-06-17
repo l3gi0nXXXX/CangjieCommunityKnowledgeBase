@@ -2,7 +2,7 @@ package cangjie_community_knowledge_base
 
 import std.convert.Parsable
 import std.env.{getCommand, getVariable}
-import std.fs.{File, OpenMode}
+import std.fs.{File, OpenMode, Path}
 import std.io.*
 import std.process.*
 
@@ -40,6 +40,9 @@ public func ckbCliMain(args: Array<String>): Int64 {
     }
     if (cli.command == "service-http" || cli.command == "http-service") {
         return runCkbHttpService(config, store)
+    }
+    if (cli.command == "mcp-stdio") {
+        return runCkbMcpStdioLoop(config, store)
     }
     if (cli.command == "service-once") {
         let service = CkbCommandLoopService(config, store, sourceRunner: if (config.networkEnabled) { HttpSourceFetchRunner(config) } else { DisabledNetworkFetchRunner() })
@@ -90,6 +93,63 @@ public func ckbCliMain(args: Array<String>): Int64 {
         print(ckbNativeHttpSmoke(url, config))
         return 0
     }
+    if (cli.command == "cangjie-corpus-status") {
+        let service = CkbCommandLoopService(config, store)
+        print(service.handleLine("cangjie_corpus_status").text)
+        return 0
+    }
+    if (cli.command == "cangjie-knowledge-pack") {
+        let service = CkbCommandLoopService(config, store)
+        let tail = cliTail(input, cli.command, "Cangjie language context")
+        print(service.handleLine("cangjie_knowledge_pack ${tail}").text)
+        return 0
+    }
+    if (cli.command == "cangjie-api-search") {
+        let service = CkbCommandLoopService(config, store)
+        let tail = cliTail(input, cli.command, "stdx JSON")
+        print(service.handleLine("cangjie_api_search ${tail}").text)
+        return 0
+    }
+    if (cli.command == "cangjie-syntax-query") {
+        let service = CkbCommandLoopService(config, store)
+        let tail = cliTail(input, cli.command, "function syntax")
+        print(service.handleLine("cangjie_syntax_query ${tail}").text)
+        return 0
+    }
+    if (cli.command == "cangjie-cookbook") {
+        let service = CkbCommandLoopService(config, store)
+        let tail = cliTail(input, cli.command, "Cangjie task")
+        print(service.handleLine("cangjie_cookbook ${tail}").text)
+        return 0
+    }
+    if (cli.command == "cangjie-diagnose") {
+        let service = CkbCommandLoopService(config, store)
+        let tail = cliTail(input, cli.command, "Cangjie compiler diagnostic")
+        print(service.handleLine("cangjie_diagnose ${tail}").text)
+        return 0
+    }
+    if (cli.command == "cangjie-llms") {
+        let service = CkbCommandLoopService(config, store)
+        let task = cliTail(input, cli.command, "Cangjie language quick context")
+        print(renderCangjieLlmsTxt(service.statusSnapshot(), service.cangjieKnowledgePack(task, budget: 5)))
+        return 0
+    }
+    if (cli.command == "cangjie-context-pack") {
+        let service = CkbCommandLoopService(config, store)
+        let task = cliTail(input, cli.command, "Cangjie task")
+        print(renderCangjieContextPack(service.cangjieCookbook(task, budget: 5)))
+        return 0
+    }
+    if (cli.command == "cangjie-eval-summary") {
+        let manifestPath = cliTail(input, cli.command, "")
+        if (manifestPath == "") {
+            println("usage error: cangjie-eval-summary requires a manifest JSONL path")
+            return 2
+        }
+        let result = renderCangjieEvalManifestFileSummary(manifestPath)
+        print(result[0])
+        return result[1]
+    }
     if (cli.command == "rebuild-index") {
         let result = ckbRebuildIndex(kb, store)
         println("rebuild ok=${result.ok} activeKnowledgeVersion=${result.activeVersion} candidateKnowledgeVersion=${result.candidateVersion} count=${result.count}")
@@ -128,7 +188,7 @@ public func ckbCliMain(args: Array<String>): Int64 {
         print(renderQuery(cangjie_evidence_pack(kb, query, 3)))
         return 0
     }
-    println("Usage: cangjie_community_knowledge_base [--config <path>] [--store <path>] doctor | status | metrics | service | service-http | http-service | service-once <command> | start | stop | restart | sync-once | sync-live (--dry-run|--apply) | source_analysis repo=<owner/repo> ref=<ref> path=<path> query=<text> | native-http-smoke <url> | scheduler-run | rebuild-index | backup <path> | restore <path> | query <text> | evidence <text> | schema")
+    println("Usage: cangjie_community_knowledge_base [--config <path>] [--store <path>] doctor | status | metrics | service | service-http | http-service | mcp-stdio | service-once <command> | start | stop | restart | sync-once | sync-live (--dry-run|--apply) | source_analysis repo=<owner/repo> ref=<ref> path=<path> query=<text> | native-http-smoke <url> | cangjie-corpus-status | cangjie-knowledge-pack <task> | cangjie-api-search <query> | cangjie-syntax-query <query> | cangjie-cookbook <task> | cangjie-diagnose <compiler-output> | cangjie-llms [task] | cangjie-context-pack <task> | cangjie-eval-summary <manifest.jsonl> | scheduler-run | rebuild-index | backup <path> | restore <path> | query <text> | evidence <text> | schema")
     2
 }
 
@@ -313,6 +373,38 @@ private func parseNextInt(args: Array<String>, index: Int64, fallback: Int64): I
     } catch (_: Exception) {
         fallback
     }
+}
+
+private func renderCangjieEvalManifestFileSummary(path: String): (String, Int64) {
+    try {
+        let text = String.fromUtf8(File.readFrom(Path(path)))
+        let summary = parseCangjieEvalManifest(text)
+        return (renderCangjieEvalManifestSummary(summary), if (summary.invalidLines == 0) { 0 } else { 1 })
+    } catch (e: Exception) {
+        return ("CangjieEval v0 summary\nstatus=read_failed\ndiagnostic=${redactSensitive(e.message)}\n", 1)
+    }
+}
+
+private func runCkbMcpStdioLoop(config: CkbRuntimeConfig, store: FileKnowledgeStore): Int64 {
+    let service = CkbCommandLoopService(config, store, sourceRunner: if (config.networkEnabled) { HttpSourceFetchRunner(config) } else { DisabledNetworkFetchRunner() })
+    let server = CkbMcpStdioServer(service)
+    try (stdinFile = File("/dev/stdin", OpenMode.Read)) {
+        let reader = StringReader(stdinFile)
+        while (true) {
+            let line = if (let Some(line) <- reader.readln()) {
+                line
+            } else {
+                break
+            }
+            if (line.trimAscii() == "") {
+                continue
+            }
+            println(server.handleLine(line))
+        }
+    } catch (_: Exception) {
+        return 1
+    }
+    0
 }
 
 private func runCkbServiceLoop(config: CkbRuntimeConfig, store: FileKnowledgeStore): Int64 {

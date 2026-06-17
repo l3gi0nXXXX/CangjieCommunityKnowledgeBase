@@ -239,9 +239,31 @@ cjpm run --skip-build --run-args "--config ckb-live.conf --store <CKB_PROJECT_RO
 - [ ] Markdown outputs (`llms.txt`, `llms-full.txt`, and context-pack) include
   `knowledgeVersion` and citations, and do not contain local paths, tokens,
   authorization headers, cookies, or proxy credentials.
+- [ ] The CLI Cangjie ability commands are available and stay read-only:
+  `cangjie-corpus-status`, `cangjie-knowledge-pack <task>`,
+  `cangjie-api-search <query>`, `cangjie-syntax-query <query>`,
+  `cangjie-cookbook <task>`, `cangjie-diagnose <compiler-output>`,
+  `cangjie-llms [task]`, and `cangjie-context-pack <task>`.
+- [ ] `cjpm run --skip-build --run-args "cangjie-knowledge-pack JSON parsing"`
+  returns Markdown containing `knowledgeVersion`, `targetVersion`, and at
+  least one citation.
+- [ ] `cjpm run --skip-build --run-args "cangjie-api-search ArrayList"`
+  returns citation-backed `ArrayList` knowledge and does not surface unreviewed
+  `web_candidate` content as trusted evidence.
+- [ ] `cjpm run --skip-build --run-args "cangjie-syntax-query main function"`
+  returns the Cangjie `main() { ... }` entry-point rule with a citation.
+- [ ] `cjpm run --skip-build --run-args "cangjie-context-pack stdx JSON"`
+  returns Markdown context with citations and no local absolute paths or
+  credential-like strings.
+- [ ] `cjpm run --skip-build --run-args "cangjie-eval-summary test/cangjie_eval/manifest.jsonl"`
+  reports `executionMode=parse_only_offline`, `totalCases=24`,
+  `invalidLines=0`, and does not execute any manifest `testCommand`.
 - [ ] MCP stdio initializes with read-only tools/resources/prompts only. It
   does not expose admin refresh, repository sync, update, or `verify-snippet`
   tools.
+- [ ] MCP stdio is started with `mcp-stdio` and emits only JSON-RPC response
+  lines on stdout. It must not print service startup logs before JSON-RPC
+  responses.
 - [ ] HTTP `/v1/cangjie/verify-snippet` and MCP `verify-snippet` return
   not-found or not-enabled responses and do not execute external commands.
 

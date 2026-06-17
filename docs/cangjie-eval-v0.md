@@ -45,6 +45,16 @@ source "$CANGJIE_HOME/envsetup.sh"
 export DYLD_LIBRARY_PATH="/opt/homebrew/opt/openssl@3/lib:$DYLD_LIBRARY_PATH"
 ```
 
+The current parse-only CLI entry is:
+
+```bash
+cjpm run --skip-build --run-args "cangjie-eval-summary test/cangjie_eval/manifest.jsonl"
+```
+
+Expected v0 output includes `executionMode=parse_only_offline`,
+`totalCases=24`, and `invalidLines=0`. This command reads the manifest and
+renders category counts only; it does not execute any manifest `testCommand`.
+
 The manifest and fixtures must not contain real user paths, real access tokens, real proxy credentials, or real service endpoints.
 
 ## Network Policy

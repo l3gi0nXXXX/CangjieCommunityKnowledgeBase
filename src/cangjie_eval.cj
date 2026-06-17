@@ -30,6 +30,14 @@ public class CangjieEvalResult {
     public init() {}
 }
 
+public class CangjieEvalManifestSummary {
+    public var cases: ArrayList<CangjieEvalCase> = ArrayList<CangjieEvalCase>()
+    public var invalidLines: Int64 = 0
+    public var diagnostics: ArrayList<String> = ArrayList<String>()
+
+    public init() {}
+}
+
 public func parseCangjieEvalManifestLine(line: String): CangjieEvalResult {
     let result = CangjieEvalResult()
     let raw = line.trimAscii()
@@ -86,6 +94,25 @@ public func parseCangjieEvalManifestLine(line: String): CangjieEvalResult {
     result
 }
 
+public func parseCangjieEvalManifest(text: String): CangjieEvalManifestSummary {
+    let summary = CangjieEvalManifestSummary()
+    var lineNo: Int64 = 0
+    for (line in text.split("\n")) {
+        lineNo += 1
+        if (line.trimAscii() == "") {
+            continue
+        }
+        let parsed = parseCangjieEvalManifestLine(line)
+        if (parsed.ok) {
+            summary.cases.add(parsed.evalCase)
+        } else {
+            summary.invalidLines += 1
+            summary.diagnostics.add("line=${lineNo} status=${parsed.status} diagnostic=${parsed.diagnostic}")
+        }
+    }
+    summary
+}
+
 public func classifyCangjieEvalFailure(output: String): String {
     let text = output.toAsciiLower()
     if (text.contains("unknown package") || text.contains("no such member") || text.contains("not found") || text.contains("undefined")) {
@@ -130,6 +157,15 @@ public func renderCangjieEvalSummary(cases: ArrayList<CangjieEvalCase>): String 
     out += "repairPassRate=0\n"
     out += "apiHallucinationRate=0\n"
     out += "executionMode=parse_only_offline\n"
+    out
+}
+
+public func renderCangjieEvalManifestSummary(summary: CangjieEvalManifestSummary): String {
+    var out = renderCangjieEvalSummary(summary.cases)
+    out += "invalidLines=${summary.invalidLines}\n"
+    for (diagnostic in summary.diagnostics) {
+        out += "diagnostic ${diagnostic}\n"
+    }
     out
 }
 

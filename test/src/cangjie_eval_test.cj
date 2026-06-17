@@ -70,6 +70,22 @@ public class CangjieEvalTest {
         @Expect(parsedToken.status, "invalid")
         @Expect(parsedToken.evalCase.id, "")
     }
+
+    @TestCase
+    public func ckg7Ut001ManifestSummarySkipsBlankLinesAndCountsInvalidLines(): Unit {
+        let valid = "{\"id\":\"CKG7-EVAL-001\",\"category\":\"compile\",\"targetVersion\":\"1.0.0\",\"prompt\":\"Create a main function.\",\"entryPoint\":\"fixtures/compile-basic\",\"testCommand\":\"cjpm build -i\",\"expectedKnowledgeTags\":[\"main\"]}"
+        let invalid = "{\"id\":\"CKG7-EVAL-BAD\",\"category\":\"unknown\",\"targetVersion\":\"1.0.0\",\"prompt\":\"Bad category.\",\"entryPoint\":\"fixtures/compile-basic\",\"testCommand\":\"cjpm build -i\",\"expectedKnowledgeTags\":[\"main\"]}"
+
+        let summary = parseCangjieEvalManifest("${valid}\n\n${invalid}\n")
+        let text = renderCangjieEvalManifestSummary(summary)
+
+        @Expect(summary.cases.size, 1)
+        @Expect(summary.invalidLines, 1)
+        @Expect(text.contains("totalCases=1"), true)
+        @Expect(text.contains("invalidLines=1"), true)
+        @Expect(text.contains("unsupported_category"), true)
+        @Expect(text.contains("Bad category"), false)
+    }
 }
 
 private func cangjieEvalCase(id: String, category: String): CangjieEvalCase {
