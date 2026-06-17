@@ -860,6 +860,8 @@ public func redactSensitive(raw: String): String {
     text = redactAssignment(text, "cookie")
     text = redactAssignment(text, "token")
     text = redactAssignment(text, "access_token")
+    text = redactAfterNeedle(text, "Bearer ")
+    text = redactAfterNeedle(text, "bearer ")
     text = redactProxyCredentials(text)
     text = redactAbsolutePath(text)
     text
@@ -4923,14 +4925,19 @@ private func redactQueryParam(raw: String, key: String): String {
 
 private func redactAssignment(raw: String, key: String): String {
     var text = raw
-    if (key == "Authorization" || key == "authorization" || key == "Cookie" || key == "cookie") {
+    if (key == "Authorization" || key == "authorization") {
         text = redactLineAfterNeedle(text, "${key}: ")
         text = redactLineAfterNeedle(text, "${key}:")
+        text = redactLineAfterNeedle(text, "${key}=")
+    } else if (key == "Cookie" || key == "cookie") {
+        text = redactLineAfterNeedle(text, "${key}: ")
+        text = redactLineAfterNeedle(text, "${key}:")
+        text = redactAfterNeedle(text, "${key}=")
     } else {
         text = redactAfterNeedle(text, "${key}: ")
         text = redactAfterNeedle(text, "${key}:")
+        text = redactAfterNeedle(text, "${key}=")
     }
-    text = redactAfterNeedle(text, "${key}=")
     text
 }
 

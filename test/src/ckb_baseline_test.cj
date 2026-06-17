@@ -2809,6 +2809,85 @@ public class CkbServiceApiTest {
     }
 
     @TestCase
+    public func ckg3Ut001CangjieKnowledgePackReturnsVersionedEnvelope(): Unit {
+        let service = CkbCommandLoopService(CkbRuntimeConfig(), FileKnowledgeStore("target/ckb-api-cangjie-pack"))
+
+        let response = ckbApiHandle(service, "POST", "/v1/cangjie/knowledge-pack", "{\"task\":\"write JSON parser\",\"budget\":5}", [])
+
+        @Expect(response.contains("\"ok\":true"), true)
+        @Expect(response.contains("\"knowledgeVersion\":\"ckb-"), true)
+        @Expect(response.contains("\"targetVersion\":\"1.0.0\""), true)
+        @Expect(response.contains("\"citations\""), true)
+        @Expect(response.contains("\"apiItems\""), true)
+    }
+
+    @TestCase
+    public func ckg3Bnd001CangjieKnowledgePackRejectsEmptyTask(): Unit {
+        let service = CkbCommandLoopService(CkbRuntimeConfig(), FileKnowledgeStore("target/ckb-api-cangjie-empty"))
+
+        let response = ckbApiHandle(service, "POST", "/v1/cangjie/knowledge-pack", "{\"task\":\"\",\"budget\":3}", [])
+
+        @Expect(response.contains("\"ok\":false"), true)
+        @Expect(response.contains("\"code\":\"ckb.bad_request\""), true)
+    }
+
+    @TestCase
+    public func ckg3Bnd002CangjieApiSearchClampsOversizedBudget(): Unit {
+        let service = CkbCommandLoopService(CkbRuntimeConfig(), FileKnowledgeStore("target/ckb-api-cangjie-budget"))
+
+        let response = ckbApiHandle(service, "POST", "/v1/cangjie/api-search", "{\"q\":\"ArrayList\",\"module\":\"std.collection\",\"symbol\":\"ArrayList\",\"budget\":999}", [])
+
+        @Expect(response.contains("\"ok\":true"), true)
+        @Expect(response.contains("\"truncated\":true"), true)
+        @Expect(response.contains("budget_clamped"), true)
+    }
+
+    @TestCase
+    public func ckg3Pos001CangjieCorpusStatusIsObservable(): Unit {
+        let service = CkbCommandLoopService(CkbRuntimeConfig(), FileKnowledgeStore("target/ckb-api-cangjie-status"))
+
+        let response = ckbApiHandle(service, "GET", "/v1/cangjie/corpus/status", "", [])
+
+        @Expect(response.contains("\"ok\":true"), true)
+        @Expect(response.contains("\"activeKnowledgeVersion\":\"ckb-"), true)
+        @Expect(response.contains("\"docsUrls\""), true)
+        @Expect(response.contains("\"stdSources\""), true)
+    }
+
+    @TestCase
+    public func ckg3Pos002SchemaListsCangjieRoutesAndTools(): Unit {
+        let service = CkbCommandLoopService(CkbRuntimeConfig(), FileKnowledgeStore("target/ckb-api-cangjie-schema"))
+
+        let response = ckbApiHandle(service, "GET", "/v1/schema", "", [])
+
+        @Expect(response.contains("/v1/cangjie/knowledge-pack"), true)
+        @Expect(response.contains("/v1/cangjie/api-search"), true)
+        @Expect(response.contains("cangjie_knowledge_pack"), true)
+        @Expect(response.contains("/v1/cangjie/verify-snippet"), true)
+    }
+
+    @TestCase
+    public func ckg3Neg001VerifySnippetIsNotEnabled(): Unit {
+        let service = CkbCommandLoopService(CkbRuntimeConfig(), FileKnowledgeStore("target/ckb-api-cangjie-verify"))
+
+        let response = ckbApiHandle(service, "POST", "/v1/cangjie/verify-snippet", "{\"code\":\"main(){}\"}", [])
+
+        @Expect(response.contains("\"ok\":false"), true)
+        @Expect(response.contains("\"code\":\"ckb.not_found\""), true)
+    }
+
+    @TestCase
+    public func ckg3Neg002CangjieOutputRedactsRequestSecrets(): Unit {
+        let service = CkbCommandLoopService(CkbRuntimeConfig(), FileKnowledgeStore("target/ckb-api-cangjie-redact"))
+
+        let response = ckbApiHandle(service, "POST", "/v1/cangjie/diagnose", "{\"compilerOutput\":\"Authorization=Bearer secret-token main function declaration error\",\"code\":\"let token = secret-token\"}", [])
+
+        @Expect(response.contains("\"ok\":true"), true)
+        @Expect(response.contains("secret-token"), false)
+        @Expect(response.contains("Authorization=Bearer"), false)
+    }
+
+    @TestCase
     public func ckb1Bnd001EvidencePackRejectsUnsafeBudgetsAndEmptyQuery(): Unit {
         let service = CkbCommandLoopService(CkbRuntimeConfig(), FileKnowledgeStore("target/ckb-api-bounds"))
 
