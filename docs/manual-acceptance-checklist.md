@@ -212,6 +212,39 @@ cjpm run --skip-build --run-args "--config ckb-live.conf --store <CKB_PROJECT_RO
 - [ ] Timeout and missing-git failures return visible diagnostics such as
   `clone_timeout` or `git_unavailable` without blocking the service.
 
+## Cangjie Ability Layer
+
+- [ ] `cjpm run --run-args schema` lists the Cangjie read-only capability
+  names: `cangjie.knowledge_pack`, `cangjie.syntax_query`,
+  `cangjie.api_search`, `cangjie.cookbook`, `cangjie.diagnose`,
+  `cangjie.examples`, and `cangjie.corpus_status`.
+- [ ] `GET /v1/schema` lists `/v1/cangjie/knowledge-pack`,
+  `/v1/cangjie/syntax-query`, `/v1/cangjie/api-search`,
+  `/v1/cangjie/cookbook`, `/v1/cangjie/diagnose`,
+  `/v1/cangjie/examples`, `/v1/cangjie/context-pack`,
+  `/v1/cangjie/llms.txt`, `/v1/cangjie/llms-full.txt`, and
+  `/v1/cangjie/corpus/status` after the HTTP phase is enabled.
+- [ ] A Cangjie knowledge-pack query for JSON parsing returns
+  `knowledgeVersion`, `targetVersion`, citation-backed stdx/API knowledge,
+  `truncated`, and `degraded` fields.
+- [ ] A Cangjie API search for `ArrayList` prefers official/reviewed
+  `std.collection` evidence and returns an import or usage hint backed by a
+  citation.
+- [ ] A Cangjie syntax query for `main function` returns the `main() { ... }`
+  entry-point rule and citation.
+- [ ] A Cangjie diagnose request for a main-function compiler error returns
+  knowledge-only diagnostics with `executed=false`.
+- [ ] Cangjie examples exclude `web_candidate` records by default. If a
+  candidate is ever surfaced, it retains `requiresReview=true`.
+- [ ] Markdown outputs (`llms.txt`, `llms-full.txt`, and context-pack) include
+  `knowledgeVersion` and citations, and do not contain local paths, tokens,
+  authorization headers, cookies, or proxy credentials.
+- [ ] MCP stdio initializes with read-only tools/resources/prompts only. It
+  does not expose admin refresh, repository sync, update, or `verify-snippet`
+  tools.
+- [ ] HTTP `/v1/cangjie/verify-snippet` and MCP `verify-snippet` return
+  not-found or not-enabled responses and do not execute external commands.
+
 ## Service Health and Status
 
 - [ ] Health/status returns `activeKnowledgeVersion`.

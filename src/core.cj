@@ -1968,6 +1968,13 @@ public class KnowledgeBase {
         this.restoreDiagnostic = ""
         this.addRecord("doc-syntax", SourceTypes.DOC, "Cangjie function syntax", "https://docs.cangjie-lang.cn/docs/1.0.0/language/functions", "", "", "", "1.0.0", TrustLevels.OFFICIAL, ReviewStates.TRUSTED, "Function definitions use func. Named parameters use an exclamation marker in the declaration and parameter names in calls. Cangjie syntax covers classes, arrays, options, and tests.")
         this.addRecord("doc-stdx-json", SourceTypes.DOC, "stdx JSON API", "https://docs.cangjie-lang.cn/docs/1.0.0/libs/stdx/json", "", "", "", "1.0.0", TrustLevels.OFFICIAL, ReviewStates.TRUSTED, "stdx contains JSON support for structured encoding and decoding.")
+        this.addRecord("cangjie-syntax-option", SourceTypes.DOC, "Cangjie Option syntax", "https://docs.cangjie-lang.cn/docs/1.0.0/language/option", "", "", "Option", "1.0.0", TrustLevels.OFFICIAL, ReviewStates.TRUSTED, "Option<T> values are None<T> or Some<T>(value). Use Option when a value may be absent and avoid null-style checks.")
+        this.addRecord("cangjie-syntax-main", SourceTypes.DOC, "Cangjie main entry point syntax", "https://docs.cangjie-lang.cn/docs/1.0.0/language/main", "", "", "main", "1.0.0", TrustLevels.OFFICIAL, ReviewStates.TRUSTED, "The program entry point is declared as main() without the func keyword. Example: main() { println(\"Hello\") }.")
+        this.addRecord("cangjie-stdlib-arraylist", SourceTypes.DOC, "std.collection ArrayList", "https://docs.cangjie-lang.cn/docs/1.0.0/libs/std/collection", "cangjie/std", "std/collection/arraylist.cj", "ArrayList", "1.0.0", TrustLevels.OFFICIAL, ReviewStates.TRUSTED, "ArrayList<T> is the dynamic array collection. Import std.collection.* before using ArrayList, HashMap, or HashSet.")
+        this.addRecord("cangjie-stdlib-regex", SourceTypes.DOC, "std.regex usage", "https://docs.cangjie-lang.cn/docs/1.0.0/libs/std/regex", "cangjie/std", "std/regex/regex.cj", "Regex", "1.0.0", TrustLevels.OFFICIAL, ReviewStates.TRUSTED, "Regular expression matching, splitting, replacement, and capture groups are available after import std.regex.*.")
+        this.addRecord("cangjie-stdx-json", SourceTypes.DOC, "stdx JSON examples", "https://docs.cangjie-lang.cn/docs/1.0.0/libs/stdx/json", "cangjie/stdx", "stdx/json/json.cj", "Json", "1.0.0", TrustLevels.OFFICIAL, ReviewStates.TRUSTED, "stdx JSON APIs provide structured JSON parsing and encoding examples for Cangjie programs.")
+        this.addRecord("cangjie-toolchain-cjpm-test", SourceTypes.DOC, "cjpm test workflow", "https://docs.cangjie-lang.cn/docs/1.0.0/tools/cjpm", "", "", "cjpm test", "1.0.0", TrustLevels.OFFICIAL, ReviewStates.TRUSTED, "Use cjpm build and cjpm test to compile and run Cangjie package tests. Test fixtures should stay under test directories.")
+        this.addRecord("cangjie-antipattern-python-main", SourceTypes.DOC, "Cangjie anti-pattern: Python-style main", "https://docs.cangjie-lang.cn/docs/1.0.0/language/main", "", "", "main", "1.0.0", TrustLevels.OFFICIAL, ReviewStates.REVIEWED, "Do not write def main() or if __name__ == '__main__' in Cangjie. Cangjie uses main() { ... } without the func keyword.")
         this.addRecord("website-download", SourceTypes.WEBSITE, "Cangjie official download", "https://cangjie-lang.cn/download", "", "", "", "", TrustLevels.OFFICIAL, ReviewStates.TRUSTED, "The official website links Cangjie downloads, documentation, tools, and community entry points.")
         this.addRecord("source-http-client", SourceTypes.REPO, "HttpClient source", "https://gitcode.com/cangjie/stdx/blob/main/src/http/client.cj", "cangjie/stdx", "src/http/client.cj", "HttpClient", "", TrustLevels.OFFICIAL, ReviewStates.TRUSTED, "public class HttpClient provides HTTP request transport behavior for stdx examples.")
         this.addRecord("community-issue-1", SourceTypes.COMMUNITY, "Issue history for named parameter syntax", "https://gitcode.com/cangjie/cangjie/issues/1", "cangjie/cangjie", "", "", "", TrustLevels.COMMUNITY, ReviewStates.REVIEWED, "Maintainers clarified that named parameters are passed after positional parameters.")
@@ -2749,6 +2756,34 @@ public func cangjie_evidence_pack(kb: KnowledgeBase, query: String, budget: Int6
 
 public func cangjie_knowledge_status(kb: KnowledgeBase): KnowledgeStatus {
     kb.status()
+}
+
+public func cangjie_knowledge_pack(kb: KnowledgeBase, task: String, budget: Int64): CangjieKnowledgePack {
+    CangjieCapabilityService(kb).knowledgePack(task, budget: budget)
+}
+
+public func cangjie_api_search(kb: KnowledgeBase, query: String, module!: String = "", symbol!: String = "", sourceSet!: String = "", budget!: Int64 = 5): CangjieKnowledgePack {
+    CangjieCapabilityService(kb).apiSearch(query, module: module, symbol: symbol, sourceSet: sourceSet, budget: budget)
+}
+
+public func cangjie_syntax_query(kb: KnowledgeBase, query: String, budget!: Int64 = 5): CangjieKnowledgePack {
+    CangjieCapabilityService(kb).syntaxQuery(query, budget: budget)
+}
+
+public func cangjie_cookbook(kb: KnowledgeBase, task: String, constraints!: String = "", style!: String = "", budget!: Int64 = 5): CangjieKnowledgePack {
+    CangjieCapabilityService(kb).cookbook(task, constraints: constraints, style: style, budget: budget)
+}
+
+public func cangjie_diagnose(kb: KnowledgeBase, code: String, compilerOutput: String, context!: String = "", budget!: Int64 = 5): CangjieKnowledgePack {
+    CangjieCapabilityService(kb).diagnose(code, compilerOutput, context: context, budget: budget)
+}
+
+public func cangjie_examples(kb: KnowledgeBase, query: String, module!: String = "", symbol!: String = "", maxExamples!: Int64 = 3): CangjieKnowledgePack {
+    CangjieCapabilityService(kb).examples(query, module: module, symbol: symbol, maxExamples: maxExamples)
+}
+
+public func cangjie_corpus_status(kb: KnowledgeBase): CangjieCorpusStatus {
+    CangjieCapabilityService(kb).corpusStatus()
 }
 
 private func deterministicEmbedding(text: String, dimensions: Int64): ArrayList<Float64> {

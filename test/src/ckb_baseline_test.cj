@@ -102,6 +102,130 @@ public class CkbBaselineTest {
     }
 
     @TestCase
+    public func ckg0Ut001EvidencePackBaselineStillHasTypedEvidence(): Unit {
+        let kb = newOfflineKnowledgeBase()
+
+        let pack = cangjie_evidence_pack(kb, "HttpClient", 3)
+
+        @Expect(pack.knowledgeVersion.contains("ckb-"), true)
+        @Expect(pack.sourceEvidence.size > 0, true)
+        @Expect(pack.docEvidence.size > 0, true)
+        @Expect(pack.citations.size > 0, true)
+    }
+
+    @TestCase
+    public func ckg1Ut001CangjieKnowledgePackModelCarriesCitationFields(): Unit {
+        let pack = CangjieKnowledgePack()
+        let item = CangjieKnowledgeItem()
+        item.kind = "syntax"
+        item.title = "Option"
+        item.citation = "https://docs.cangjie-lang.cn/docs/1.0.0/language/option"
+        item.knowledgeVersion = "ckb-test"
+        pack.knowledgeVersion = "ckb-test"
+        pack.targetVersion = "1.0.0"
+        pack.citations.add(SourceReference("cangjie-syntax-option", item.citation, item.knowledgeVersion))
+        pack.items.add(item)
+
+        @Expect(pack.knowledgeVersion, "ckb-test")
+        @Expect(pack.targetVersion, "1.0.0")
+        @Expect(pack.citations.size, 1)
+        @Expect(pack.items[0].citation.contains("docs.cangjie-lang.cn"), true)
+    }
+
+    @TestCase
+    public func ckg1Bnd001TargetVersionNormalizationAndBudgetClampAreDeterministic(): Unit {
+        @Expect(cangjieNormalizeTargetVersion(""), "1.0.0")
+        @Expect(cangjieNormalizeTargetVersion("1.0.0"), "1.0.0")
+        @Expect(cangjieNormalizeTargetVersion("../../"), "1.0.0")
+        @Expect(cangjieNormalizeTargetVersion("1.0.0-alpha"), "1.0.0-alpha")
+        @Expect(cangjieCapabilityClampBudget(0, 5, 20), 5)
+        @Expect(cangjieCapabilityClampBudget(999, 5, 20), 20)
+    }
+
+    @TestCase
+    public func ckg1Pos001OfflineFixtureCoversArrayListMainAndJson(): Unit {
+        let kb = newOfflineKnowledgeBase()
+
+        let arrayList = cangjie_hybrid_search(kb, "ArrayList", 5)
+        let mainRule = cangjie_hybrid_search(kb, "main function", 5)
+        let json = cangjie_hybrid_search(kb, "JSON", 5)
+
+        @Expect(arrayList.records.size > 0, true)
+        @Expect(mainRule.records.size > 0, true)
+        @Expect(json.records.size > 0, true)
+        @Expect(arrayList.records[0].metadata.reviewState != ReviewStates.CANDIDATE, true)
+    }
+
+    @TestCase
+    public func ckg1Neg001WebCandidateDoesNotEnterDefaultExamples(): Unit {
+        let kb = newOfflineKnowledgeBase()
+
+        let pack = cangjie_examples(kb, "third party tutorial", maxExamples: 5)
+
+        for (example in pack.examples) {
+            @Expect(example.reviewState != ReviewStates.CANDIDATE, true)
+            @Expect(example.trustLevel != TrustLevels.WEB_CANDIDATE, true)
+        }
+    }
+
+    @TestCase
+    public func ckg2Ut001KnowledgePackIsCitationBackedOffline(): Unit {
+        let kb = newOfflineKnowledgeBase()
+
+        let pack = cangjie_knowledge_pack(kb, "write JSON parser", 5)
+
+        @Expect(pack.knowledgeVersion.contains("ckb-"), true)
+        @Expect(pack.targetVersion, "1.0.0")
+        @Expect(pack.citations.size > 0, true)
+        @Expect(pack.items.size + pack.apiItems.size + pack.examples.size > 0, true)
+    }
+
+    @TestCase
+    public func ckg2Bnd001KnowledgePackClampsOversizedBudget(): Unit {
+        let kb = newOfflineKnowledgeBase()
+
+        let pack = cangjie_knowledge_pack(kb, "ArrayList", 999)
+
+        @Expect(pack.truncated, true)
+        @Expect(pack.notes.contains("budget_clamped"), true)
+    }
+
+    @TestCase
+    public func ckg2Pos001ApiSearchPrefersArrayListSymbol(): Unit {
+        let kb = newOfflineKnowledgeBase()
+
+        let pack = cangjie_api_search(kb, "ArrayList", module: "std.collection", symbol: "ArrayList", budget: 5)
+
+        @Expect(pack.apiItems.size > 0, true)
+        @Expect(pack.apiItems[0].symbol.contains("ArrayList"), true)
+        @Expect(pack.apiItems[0].trustLevel == TrustLevels.OFFICIAL || pack.apiItems[0].reviewState == ReviewStates.REVIEWED, true)
+    }
+
+    @TestCase
+    public func ckg2Pos002DiagnoseIsKnowledgeOnlyAndDoesNotExecuteCode(): Unit {
+        let kb = newOfflineKnowledgeBase()
+
+        let pack = cangjie_diagnose(kb, "func main() {}", "main function declaration error", budget: 5)
+
+        @Expect(pack.executed, false)
+        @Expect(pack.diagnostics.size > 0, true)
+        @Expect(pack.diagnostics[0].executed, false)
+        @Expect(pack.citations.size > 0, true)
+    }
+
+    @TestCase
+    public func ckg2Neg001DefaultExamplesExcludeCandidateRecords(): Unit {
+        let kb = newOfflineKnowledgeBase()
+
+        let pack = CangjieCapabilityService(kb).examples("external tutorial", maxExamples: 5)
+
+        for (example in pack.examples) {
+            @Expect(example.requiresReview, false)
+            @Expect(example.reviewState != ReviewStates.CANDIDATE, true)
+        }
+    }
+
+    @TestCase
     public func hybridSearchFiltersCandidatesByDefaultAndCanTruncate(): Unit {
         let kb = newOfflineKnowledgeBase()
         let hybrid = cangjie_hybrid_search(kb, "tutorial", 5)
@@ -2659,6 +2783,29 @@ public class CkbServiceApiTest {
         @Expect(response.contains("\"knowledgeVersion\":\"ckb-"), true)
         @Expect(response.contains("\"sourceEvidence\""), true)
         @Expect(response.contains("/Users/"), false)
+    }
+
+    @TestCase
+    public func ckg0Pos001SchemaKeepsOldRoutesAndListsCangjieAbilityContract(): Unit {
+        let service = CkbCommandLoopService(CkbRuntimeConfig(), FileKnowledgeStore("target/ckb-api-schema-ckg0"))
+
+        let response = ckbApiHandle(service, "GET", "/v1/schema", "", [])
+
+        @Expect(response.contains("/v1/evidence-pack"), true)
+        @Expect(response.contains("/v1/source-analysis"), true)
+        @Expect(response.contains("/v1/events/gitcode/repository-changed"), true)
+        @Expect(CkbSchema.mcpTools().contains("cangjie.knowledge_pack"), true)
+        @Expect(CkbSchema.httpLikeRoutes().contains("/v1/cangjie/knowledge-pack"), true)
+    }
+
+    @TestCase
+    public func ckg0Neg001UnauthorizedAdminRebuildStillHasNoSideEffect(): Unit {
+        let service = CkbCommandLoopService(CkbRuntimeConfig(), FileKnowledgeStore("target/ckb-api-admin-ckg0"))
+
+        let response = ckbApiHandle(service, "POST", "/v1/admin/rebuild", "{}", [])
+
+        @Expect(response.contains("\"ok\":false"), true)
+        @Expect(response.contains("\"code\":\"ckb.unauthorized\""), true)
     }
 
     @TestCase
