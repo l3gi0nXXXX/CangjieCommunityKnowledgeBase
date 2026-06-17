@@ -600,3 +600,167 @@ private func cangjieExcerpt(raw: String): String {
     }
     clean[0..360]
 }
+
+public func renderCangjieKnowledgePackMarkdown(pack: CangjieKnowledgePack): String {
+    cangjieRenderPackMarkdown(pack, "knowledge-pack", CangjieMarkdownRenderLimits.PACK_MAX_CHARS)
+}
+
+public func renderCangjieLlmsTxt(status: KnowledgeStatus, pack: CangjieKnowledgePack): String {
+    let builder = CangjieMarkdownBuilder(CangjieMarkdownRenderLimits.LLMS_MAX_CHARS)
+    let knowledgeVersion = if (pack.knowledgeVersion != "") { pack.knowledgeVersion } else { status.activeKnowledgeVersion }
+    builder.add("# Cangjie\n\n")
+    builder.add("knowledgeVersion: ${cangjieMarkdownText(knowledgeVersion)}\n")
+    builder.add("targetVersion: ${cangjieMarkdownText(pack.targetVersion)}\n")
+    builder.add("truncated: ${pack.truncated}\n")
+    builder.add("degraded: ${pack.degraded}\n\n")
+    builder.add("## Official docs\n")
+    for (url in status.sourceScope.docsUrls) {
+        builder.add("- ${cangjieMarkdownText(url)}\n")
+    }
+    if (status.sourceScope.docsUrls.size == 0) {
+        builder.add("- https://docs.cangjie-lang.cn/docs/1.0.0/\n")
+    }
+    builder.add("\n")
+    builder.add(cangjieRenderPackBody(pack, builder.remaining()))
+    return builder.finish()
+}
+
+public func renderCangjieContextPack(pack: CangjieKnowledgePack): String {
+    cangjieRenderPackMarkdown(pack, "context-pack", CangjieMarkdownRenderLimits.CONTEXT_MAX_CHARS)
+}
+
+private class CangjieMarkdownRenderLimits {
+    static let PACK_MAX_CHARS: Int64 = 12000
+    static let LLMS_MAX_CHARS: Int64 = 8000
+    static let CONTEXT_MAX_CHARS: Int64 = 8000
+}
+
+private class CangjieMarkdownBuilder {
+    private let maxChars: Int64
+    public var out: String = ""
+    public var truncated: Bool = false
+
+    init(maxChars: Int64) {
+        this.maxChars = maxChars
+    }
+
+    public func add(raw: String): Unit {
+        if (this.out.size >= this.maxChars) {
+            this.truncated = true
+            return
+        }
+        let clean = redactSensitive(raw)
+        let room = this.maxChars - this.out.size
+        if (clean.size <= room) {
+            this.out += clean
+        } else {
+            this.out += clean[0..room]
+            this.truncated = true
+        }
+    }
+
+    public func remaining(): Int64 {
+        if (this.out.size >= this.maxChars) {
+            return 0
+        }
+        this.maxChars - this.out.size
+    }
+
+    public func finish(): String {
+        this.out
+    }
+}
+
+private func cangjieRenderPackMarkdown(pack: CangjieKnowledgePack, title: String, maxChars: Int64): String {
+    let body = CangjieMarkdownBuilder(maxChars)
+    body.add(cangjieRenderPackBody(pack, maxChars))
+    let truncated = pack.truncated || body.truncated
+    let header = "# Cangjie ${title}\n\nknowledgeVersion: ${cangjieMarkdownText(pack.knowledgeVersion)}\ntargetVersion: ${cangjieMarkdownText(pack.targetVersion)}\ncitations: ${pack.citations.size}\ntruncated=${truncated}\ndegraded=${pack.degraded}\nexecuted=${pack.executed}\n\n"
+    let builder = CangjieMarkdownBuilder(maxChars)
+    builder.add(header)
+    builder.add(body.out)
+    if (truncated || builder.truncated) {
+        builder.add("\n\ntruncated=true\n")
+    }
+    builder.finish()
+}
+
+private func cangjieRenderPackBody(pack: CangjieKnowledgePack, maxChars: Int64): String {
+    let builder = CangjieMarkdownBuilder(maxChars)
+    if (pack.task != "") {
+        builder.add("## Task\n${cangjieMarkdownText(pack.task)}\n\n")
+    }
+    if (pack.items.size > 0) {
+        builder.add("## Knowledge\n")
+        for (item in pack.items) {
+            builder.add("### ${cangjieMarkdownText(item.title)}\n")
+            builder.add("kind: ${cangjieMarkdownText(item.kind)}\n")
+            if (item.module != "") { builder.add("module: ${cangjieMarkdownText(item.module)}\n") }
+            if (item.symbol != "") { builder.add("symbol: ${cangjieMarkdownText(item.symbol)}\n") }
+            if (item.importLine != "") { builder.add("import: `${cangjieMarkdownInlineCode(item.importLine)}`\n") }
+            if (item.signature != "") { builder.add("signature: `${cangjieMarkdownInlineCode(item.signature)}`\n") }
+            builder.add("${cangjieMarkdownText(item.content)}\n\n")
+            if (item.example != "") {
+                builder.add("```cangjie\n${cangjieMarkdownCode(item.example)}\n```\n")
+            }
+            builder.add("citation: ${cangjieMarkdownText(item.citation)}\nknowledgeVersion: ${cangjieMarkdownText(item.knowledgeVersion)}\ntargetVersion: ${cangjieMarkdownText(item.targetVersion)}\n\n")
+        }
+    }
+    if (pack.apiItems.size > 0) {
+        builder.add("## APIs\n")
+        for (item in pack.apiItems) {
+            let name = if (item.symbol != "") { item.symbol } else { item.module }
+            builder.add("### ${cangjieMarkdownText(name)}\n")
+            if (item.module != "") { builder.add("module: ${cangjieMarkdownText(item.module)}\n") }
+            if (item.importLine != "") { builder.add("import: `${cangjieMarkdownInlineCode(item.importLine)}`\n") }
+            if (item.signature != "") { builder.add("signature: `${cangjieMarkdownInlineCode(item.signature)}`\n") }
+            builder.add("${cangjieMarkdownText(item.summary)}\n\n")
+            if (item.example != "") {
+                builder.add("```cangjie\n${cangjieMarkdownCode(item.example)}\n```\n")
+            }
+            builder.add("citation: ${cangjieMarkdownText(item.citation)}\nknowledgeVersion: ${cangjieMarkdownText(item.knowledgeVersion)}\ntargetVersion: ${cangjieMarkdownText(item.targetVersion)}\n\n")
+        }
+    }
+    if (pack.examples.size > 0) {
+        builder.add("## Examples\n")
+        for (item in pack.examples) {
+            builder.add("### ${cangjieMarkdownText(item.title)}\n")
+            builder.add("```cangjie\n${cangjieMarkdownCode(item.code)}\n```\n")
+            builder.add("${cangjieMarkdownText(item.explanation)}\n\ncitation: ${cangjieMarkdownText(item.citation)}\nknowledgeVersion: ${cangjieMarkdownText(item.knowledgeVersion)}\ntargetVersion: ${cangjieMarkdownText(item.targetVersion)}\n\n")
+        }
+    }
+    if (pack.diagnostics.size > 0) {
+        builder.add("## Diagnostics\n")
+        for (item in pack.diagnostics) {
+            builder.add("- rule=${cangjieMarkdownText(item.rule)} executed=${item.executed} message=${cangjieMarkdownText(item.message)} citation=${cangjieMarkdownText(item.citation)} knowledgeVersion=${cangjieMarkdownText(item.knowledgeVersion)} targetVersion=${cangjieMarkdownText(item.targetVersion)}\n")
+        }
+        builder.add("\n")
+    }
+    if (pack.notes.size > 0) {
+        builder.add("## Notes\n")
+        for (note in pack.notes) {
+            builder.add("- ${cangjieMarkdownText(note)}\n")
+        }
+        builder.add("\n")
+    }
+    builder.add("## citations\n")
+    for (citation in pack.citations) {
+        builder.add("- sourceId=${cangjieMarkdownText(citation.sourceId)} citation=${cangjieMarkdownText(citation.citation)} knowledgeVersion=${cangjieMarkdownText(citation.knowledgeVersion)}\n")
+    }
+    if (pack.citations.size == 0) {
+        builder.add("- none\n")
+    }
+    builder.finish()
+}
+
+private func cangjieMarkdownText(raw: String): String {
+    redactSensitive(raw).replace("\r", " ").trimAscii()
+}
+
+private func cangjieMarkdownInlineCode(raw: String): String {
+    cangjieMarkdownText(raw).replace("`", "'")
+}
+
+private func cangjieMarkdownCode(raw: String): String {
+    redactSensitive(raw).replace("```", "'''").trimAscii()
+}
