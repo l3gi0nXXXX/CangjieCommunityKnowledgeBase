@@ -3578,6 +3578,18 @@ public class CkbCommandLoopService {
             response.text = renderQuery(cangjie_evidence_pack(this.kb, if (tail == "") { "func syntax" } else { tail }, 5))
         } else if (command == "evidence") {
             response.text = renderQuery(cangjie_evidence_pack(this.kb, if (tail == "") { "HttpClient" } else { tail }, 3))
+        } else if (command == "cangjie_knowledge_pack") {
+            response.text = renderCangjieKnowledgePackMarkdown(this.cangjieKnowledgePack(if (tail == "") { "Cangjie language context" } else { tail }))
+        } else if (command == "cangjie_api_search") {
+            response.text = renderCangjieKnowledgePackMarkdown(this.cangjieApiSearch(if (tail == "") { "stdx JSON" } else { tail }))
+        } else if (command == "cangjie_syntax_query") {
+            response.text = renderCangjieKnowledgePackMarkdown(this.cangjieSyntaxQuery(if (tail == "") { "function syntax" } else { tail }))
+        } else if (command == "cangjie_cookbook") {
+            response.text = renderCangjieContextPack(this.cangjieCookbook(if (tail == "") { "Cangjie task" } else { tail }))
+        } else if (command == "cangjie_diagnose") {
+            response.text = renderCangjieKnowledgePackMarkdown(this.cangjieDiagnose("", if (tail == "") { "Cangjie compiler diagnostic" } else { tail }))
+        } else if (command == "cangjie_corpus_status") {
+            response.text = renderCangjieCorpusStatus(this.cangjieCorpusStatus())
         } else if (command == "source_analysis" || command == "source-analysis") {
             var request = sourceAnalysisRequestFromText(tail)
             if (request.repo == "") {
@@ -3830,6 +3842,16 @@ public class CkbCommandLoopService {
         let status = this.kb.status()
         "log level=${level} event=${event} protocol=ckb-stdio-v1 activeKnowledgeVersion=${status.activeKnowledgeVersion} store=redacted\n"
     }
+}
+
+private func renderCangjieCorpusStatus(status: CangjieCorpusStatus): String {
+    var out = "cangjie_corpus_status activeKnowledgeVersion=${status.activeKnowledgeVersion} knowledgeVersion=${status.activeKnowledgeVersion} targetVersion=${status.targetVersion} rawCount=${status.rawCount} normalizedCount=${status.normalizedCount} indexCount=${status.indexCount} degraded=${status.degraded}\n"
+    out += "docsUrls=${status.docsUrls}\n"
+    out += "stdSources=${status.stdSources}\n"
+    if (status.diagnostics.size > 0) {
+        out += "diagnostics=${status.diagnostics}\n"
+    }
+    redactSensitive(out)
 }
 
 private func ckbRepositoryChangedDedupeKey(event: GitCodeRepositoryChangedEvent): String {
