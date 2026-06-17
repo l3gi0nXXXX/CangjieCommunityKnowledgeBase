@@ -1,0 +1,112 @@
+package cangjie_community_knowledge_base_test
+
+import std.unittest.*
+import std.unittest.testmacro.*
+
+@Test
+public class CkbMcpStdioTest {
+    private func server(name: String): CkbMcpStdioServer {
+        CkbMcpStdioServer(CkbCommandLoopService(CkbRuntimeConfig(), FileKnowledgeStore("target/${name}")))
+    }
+
+    private func toolCall(name: String, arguments: String): String {
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"${name}\",\"arguments\":${arguments}}}"
+    }
+
+    private func repeatedText(count: Int64): String {
+        var out = ""
+        for (_ in 0..count) {
+            out += "x"
+        }
+        out
+    }
+
+    private func countOccurrences(text: String, needle: String): Int64 {
+        var count: Int64 = 0
+        if (needle == "" || text.size < needle.size) {
+            return count
+        }
+        for (i in 0..=text.size - needle.size) {
+            if (text[i..i + needle.size] == needle) {
+                count += 1
+            }
+        }
+        count
+    }
+
+    @TestCase
+    public func ckg5Ut001ToolsListReturnsSevenReadOnlyTools(): Unit {
+        let response = this.server("ckg5-ut-001").handleRequest("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\",\"params\":{}}")
+
+        @Expect(response.contains("\"result\""), true)
+        @Expect(this.countOccurrences(response, "\"name\":\"cangjie_"), 7)
+        @Expect(response.contains("\"name\":\"cangjie_knowledge_pack\""), true)
+        @Expect(response.contains("\"name\":\"cangjie_syntax_query\""), true)
+        @Expect(response.contains("\"name\":\"cangjie_api_search\""), true)
+        @Expect(response.contains("\"name\":\"cangjie_cookbook\""), true)
+        @Expect(response.contains("\"name\":\"cangjie_diagnose\""), true)
+        @Expect(response.contains("\"name\":\"cangjie_examples\""), true)
+        @Expect(response.contains("\"name\":\"cangjie_corpus_status\""), true)
+        @Expect(response.contains("admin"), false)
+        @Expect(response.contains("update"), false)
+        @Expect(response.contains("verify"), false)
+    }
+
+    @TestCase
+    public func ckg5Bnd001ToolCallOversizedTaskReturnsControlledError(): Unit {
+        let longTask = this.repeatedText(13000)
+        let response = this.server("ckg5-bnd-001").handleRequest(this.toolCall("cangjie_knowledge_pack", "{\"task\":\"${longTask}\"}"))
+
+        @Expect(response.contains("\"error\""), true)
+        @Expect(response.contains("-32602"), true)
+        @Expect(response.contains("parameter_too_long"), true)
+        @Expect(response.contains("\"field\":\"task\""), true)
+    }
+
+    @TestCase
+    public func ckg5Pos001ApiSearchArrayListReturnsStructuredContent(): Unit {
+        let response = this.server("ckg5-pos-001").handleRequest(this.toolCall("cangjie_api_search", "{\"q\":\"ArrayList\",\"module\":\"std.collection\",\"symbol\":\"ArrayList\",\"budget\":5}"))
+
+        @Expect(response.contains("\"structuredContent\""), true)
+        @Expect(response.contains("\"knowledgeVersion\""), true)
+        @Expect(response.contains("\"items\""), true)
+        @Expect(response.contains("\"apiItems\""), true)
+        @Expect(response.contains("\"citations\""), true)
+        @Expect(response.contains("ArrayList"), true)
+    }
+
+    @TestCase
+    public func ckg5Pos002LlmsTxtResourceReturnsMarkdownWithVersionAndDocsUrl(): Unit {
+        let request = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"resources/read\",\"params\":{\"uri\":\"ckb://cangjie/llms.txt\"}}"
+        let response = this.server("ckg5-pos-002").handleRequest(request)
+
+        @Expect(response.contains("\"mimeType\":\"text/markdown\""), true)
+        @Expect(response.contains("# Cangjie llms.txt"), true)
+        @Expect(response.contains("knowledgeVersion:"), true)
+        @Expect(response.contains("https://docs.cangjie-lang.cn/docs/1.0.0/"), true)
+    }
+
+    @TestCase
+    public func ckg5Neg001AdminRefreshIsNotAllowedAndDoesNotCallAdmin(): Unit {
+        let service = CkbCommandLoopService(CkbRuntimeConfig(), FileKnowledgeStore("target/ckg5-neg-001"))
+        let server = CkbMcpStdioServer(service)
+        let response = server.handleRequest(this.toolCall("cangjie_admin_refresh", "{\"reason\":\"test\"}"))
+
+        @Expect(response.contains("\"error\""), true)
+        @Expect(response.contains("-32601"), true)
+        @Expect(response.contains("not_allowed"), true)
+        @Expect(service.rebuildCountForTest(), 0)
+    }
+
+    @TestCase
+    public func ckg5Neg002VerifySnippetIsNotEnabledAndDoesNotExecuteExternalCommand(): Unit {
+        let service = CkbCommandLoopService(CkbRuntimeConfig(), FileKnowledgeStore("target/ckg5-neg-002"))
+        let server = CkbMcpStdioServer(service)
+        let response = server.handleRequest(this.toolCall("verify-snippet", "{\"code\":\"main() { println(1) }\"}"))
+
+        @Expect(response.contains("\"error\""), true)
+        @Expect(response.contains("-32601"), true)
+        @Expect(response.contains("not_enabled"), true)
+        @Expect(service.rebuildCountForTest(), 0)
+    }
+}
