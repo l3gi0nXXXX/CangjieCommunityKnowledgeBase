@@ -95,6 +95,16 @@ public func registerCkbHttpRoutes(server: Server, service: CkbCommandLoopService
     ckbHttpRegisterRoute(server, service, config, "/v1/status")
     ckbHttpRegisterRoute(server, service, config, "/v1/schedules")
     ckbHttpRegisterRoute(server, service, config, "/v1/schema")
+    ckbHttpRegisterRoute(server, service, config, "/v1/cangjie/corpus/status")
+    ckbHttpRegisterRoute(server, service, config, "/v1/cangjie/llms.txt")
+    ckbHttpRegisterRoute(server, service, config, "/v1/cangjie/llms-full.txt")
+    ckbHttpRegisterRoute(server, service, config, "/v1/cangjie/knowledge-pack")
+    ckbHttpRegisterRoute(server, service, config, "/v1/cangjie/syntax-query")
+    ckbHttpRegisterRoute(server, service, config, "/v1/cangjie/api-search")
+    ckbHttpRegisterRoute(server, service, config, "/v1/cangjie/cookbook")
+    ckbHttpRegisterRoute(server, service, config, "/v1/cangjie/diagnose")
+    ckbHttpRegisterRoute(server, service, config, "/v1/cangjie/examples")
+    ckbHttpRegisterRoute(server, service, config, "/v1/cangjie/context-pack")
     ckbHttpRegisterRoute(server, service, config, "/v1/query")
     ckbHttpRegisterRoute(server, service, config, "/v1/evidence-pack")
     ckbHttpRegisterRoute(server, service, config, "/v1/source-analysis")
@@ -287,6 +297,9 @@ private func ckbHttpRequiredAuthKind(path: String): String {
     }
     if (path == "/v1/events/gitcode/repository-changed") {
         return "event"
+    }
+    if (path.startsWith("/v1/cangjie/")) {
+        return "read"
     }
     if (path == "/v1/query" || path == "/v1/evidence-pack" || path == "/v1/source-analysis") {
         return "read"
