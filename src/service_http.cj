@@ -3,6 +3,7 @@ package cangjie_community_knowledge_base
 import std.collection.ArrayList
 import std.convert.Parsable
 import std.fs.{File, Path, exists}
+import std.time.DateTime
 import stdx.net.http.*
 
 public class CkbHttpServiceConfig {
@@ -278,17 +279,32 @@ private func ckbHttpRegisterRoute(server: Server, service: CkbCommandLoopService
 }
 
 private func ckbHttpServeContext(ctx: HttpContext, service: CkbCommandLoopService, path: String, config: CkbHttpServiceConfig): Unit {
+    let startMs = ckbHttpNowMillis()
     let rb = ctx.responseBuilder
     rb.header("content-type", "application/json; charset=utf-8")
     let bodyRead = ckbHttpReadBody(ctx, config.maxRequestBytes)
     if (!bodyRead.ok) {
         rb.status(UInt16(bodyRead.statusCode))
         rb.body(ckbApiErrorEnvelope(bodyRead.code, if (bodyRead.code == "ckb.payload_too_large") { "request body exceeds service.maxRequestBytes" } else { "request body is invalid" }, status: bodyRead.statusCode))
+        ckbHttpAccessLog(ctx.request.method, path, bodyRead.statusCode, "unavailable", 0, ckbHttpNowMillis() - startMs)
         return
     }
     let response = handleCkbHttpRequest(service, ctx.request.method, path, bodyRead.body, ckbHttpRequestHeaders(ctx), config)
     rb.status(UInt16(response.statusCode))
     rb.body(response.body)
+    ckbHttpAccessLog(ctx.request.method, path, response.statusCode, response.authKind, Int64(bodyRead.body.toArray().size), ckbHttpNowMillis() - startMs)
+}
+
+public func ckbHttpAccessLogLine(method: String, path: String, statusCode: Int64, authKind: String, requestBytes: Int64, durationMs: Int64): String {
+    "ckb.http.request method=${method.trimAscii().toAsciiUpper()} path=${path.trimAscii()} status=${statusCode} durationMs=${durationMs} authKind=${authKind.trimAscii()} requestBytes=${requestBytes}"
+}
+
+private func ckbHttpAccessLog(method: String, path: String, statusCode: Int64, authKind: String, requestBytes: Int64, durationMs: Int64): Unit {
+    println(ckbHttpAccessLogLine(method, path, statusCode, authKind, requestBytes, durationMs))
+}
+
+private func ckbHttpNowMillis(): Int64 {
+    DateTime.now().toUnixTimeStamp().toMilliseconds()
 }
 
 private func ckbHttpRequiredAuthKind(path: String): String {

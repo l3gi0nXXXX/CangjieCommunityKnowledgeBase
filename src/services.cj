@@ -572,6 +572,27 @@ private func asciiJsonProjection(raw: String): String {
     out.toString()
 }
 
+public func utf8SafePrefix(raw: String, maxBytes: Int64): String {
+    if (maxBytes <= 0) {
+        return ""
+    }
+    if (raw.size <= maxBytes) {
+        return raw
+    }
+    let out = StringBuilder()
+    var used: Int64 = 0
+    for (ch in raw.toRuneArray()) {
+        let piece = "${ch}"
+        let next = used + piece.size
+        if (next > maxBytes) {
+            break
+        }
+        out.append(ch)
+        used = next
+    }
+    out.toString()
+}
+
 private func normalizeRepoVisibility(raw: String): String {
     let value = raw.trimAscii().toAsciiLower()
     if (value == RepoVisibility.PUBLIC || value == RepoVisibility.PRIVATE || value == RepoVisibility.INTERNAL) {
@@ -888,7 +909,7 @@ public func redactProxyEndpoint(raw: String): String {
 private func sanitizedTransportDiagnostic(raw: String): String {
     var text = redactSensitive(raw).replace("\n", " ").replace("\r", " ").trimAscii()
     if (text.size > 160) {
-        text = text[0..160]
+        text = utf8SafePrefix(text, 160)
     }
     text
 }
@@ -1484,7 +1505,7 @@ public class SourceResponseNormalizer {
             }
         } else if (result.body.size > 200000) {
             result.truncated = true
-            result.body = result.body[0..200000]
+            result.body = utf8SafePrefix(result.body, 200000)
         }
         if (result.ok && request.kind == SourceKinds.GITCODE_SOURCE && request.purpose == "source_contents_snapshot") {
             let parsed = parseGitCodeContentsFile(result.body, request.path)
@@ -1868,7 +1889,7 @@ private func buildSourceAnalysisPackFromCheckout(pack: SourceAnalysisPack, reque
             pack.truncated = true
             file.truncated = true
             addUniqueString(pack.degraded, "max_file_bytes")
-            body = body[0..config.sourceAnalysisMaxFileBytes]
+            body = utf8SafePrefix(body, config.sourceAnalysisMaxFileBytes)
         }
         file.bodyHash = stableSummaryHash(body)
         file.excerpt = sourceAnalysisExcerpt(body)
@@ -1928,7 +1949,7 @@ private func sourceAnalysisExcerpt(body: String): String {
     if (cleaned.size <= 800) {
         return cleaned
     }
-    cleaned[0..800]
+    utf8SafePrefix(cleaned, 800)
 }
 
 private func trimTrailingSlash(raw: String): String {

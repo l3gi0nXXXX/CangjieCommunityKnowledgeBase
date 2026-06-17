@@ -509,7 +509,7 @@ private func cangjieSafeText(raw: String): String {
     if (trimmed.size <= CangjieCapabilityLimits.MAX_TEXT_CHARS) {
         return trimmed
     }
-    trimmed[0..CangjieCapabilityLimits.MAX_TEXT_CHARS]
+    utf8SafePrefix(trimmed, CangjieCapabilityLimits.MAX_TEXT_CHARS)
 }
 
 private func cangjieRecordTrusted(record: NormalizedRecord): Bool {
@@ -598,7 +598,7 @@ private func cangjieExcerpt(raw: String): String {
     if (clean.size <= 360) {
         return clean
     }
-    clean[0..360]
+    utf8SafePrefix(clean, 360)
 }
 
 public func renderCangjieKnowledgePackMarkdown(pack: CangjieKnowledgePack): String {
@@ -654,7 +654,7 @@ private class CangjieMarkdownBuilder {
         if (clean.size <= room) {
             this.out += clean
         } else {
-            this.out += clean[0..room]
+            this.out += utf8SafePrefix(clean, room)
             this.truncated = true
         }
     }

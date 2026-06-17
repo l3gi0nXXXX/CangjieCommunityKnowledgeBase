@@ -367,7 +367,7 @@ public func ckbNativeHttpBuildConnectRequest(targetHost: String, targetPort: UIn
 public func ckbNativeHttpClassifyException(message: String): CkbNativeHttpTransportDiagnostic {
     let diagnostic = CkbNativeHttpTransportDiagnostic()
     let safe = redactSensitive(message).replace("\n", " ").replace("\r", " ").trimAscii()
-    diagnostic.transportDiagnostic = if (safe.size > 160) { safe[0..160] } else { safe }
+    diagnostic.transportDiagnostic = if (safe.size > 160) { utf8SafePrefix(safe, 160) } else { safe }
     let lowered = safe.toAsciiLower()
     if (lowered.contains("timed out") || lowered.contains("timeout")) {
         diagnostic.transportErrorClass = "timeout"

@@ -143,6 +143,25 @@ public class CkbBaselineTest {
     }
 
     @TestCase
+    public func ckbUtf8SafePrefixKeepsByteBudgetWithoutSplittingRunes(): Unit {
+        @Expect(utf8SafePrefix("abcdef", 3), "abc")
+        @Expect(utf8SafePrefix("仓颉🙂abc", 10), "仓颉🙂")
+        @Expect(utf8SafePrefix("仓颉", 0), "")
+        @Expect(utf8SafePrefix("仓颉", -1), "")
+        @Expect(utf8SafePrefix("仓颉", 100), "仓颉")
+    }
+
+    @TestCase
+    public func ckbUtf8SafeDiagnosticsKeepRedactionAndDoNotSplitRunes(): Unit {
+        let diagnostic = ckbNativeHttpClassifyException("TLS 错误🙂 token=secret-token " + repeatText("仓颉🙂", 80))
+
+        @Expect(diagnostic.transportDiagnostic.size <= 160, true)
+        @Expect(diagnostic.transportDiagnostic.contains("TLS"), true)
+        @Expect(diagnostic.transportDiagnostic.contains("secret-token"), false)
+        @Expect(diagnostic.transportDiagnostic.contains("[redacted]"), true)
+    }
+
+    @TestCase
     public func ckg1Pos001OfflineFixtureCoversArrayListMainAndJson(): Unit {
         let kb = newOfflineKnowledgeBase()
 
@@ -188,6 +207,29 @@ public class CkbBaselineTest {
 
         @Expect(pack.truncated, true)
         @Expect(pack.notes.contains("budget_clamped"), true)
+    }
+
+    @TestCase
+    public func ckg2Bnd002MarkdownRenderingTruncatesUnicodeOnRuneBoundary(): Unit {
+        let pack = CangjieKnowledgePack()
+        let item = CangjieKnowledgeItem()
+        pack.knowledgeVersion = "ckb-test"
+        pack.targetVersion = "1.0.0"
+        pack.task = "生成仓颉代码"
+        item.kind = "syntax"
+        item.title = "仓颉 UTF-8"
+        item.content = repeatText("仓颉🙂知识片段", 1200)
+        item.citation = "https://docs.cangjie-lang.cn/docs/1.0.0/"
+        item.knowledgeVersion = "ckb-test"
+        item.targetVersion = "1.0.0"
+        pack.items.add(item)
+        pack.citations.add(SourceReference("utf8", item.citation, "ckb-test"))
+
+        let markdown = renderCangjieKnowledgePackMarkdown(pack)
+
+        @Expect(markdown.contains("# Cangjie knowledge-pack"), true)
+        @Expect(markdown.contains("truncated=true"), true)
+        @Expect(markdown.size <= 12000, true)
     }
 
     @TestCase
@@ -470,6 +512,34 @@ public class CkbBaselineTest {
         @Expect(normalizedLarge.status, "source_too_large")
         @Expect(normalizedLarge.truncated, true)
         @Expect(normalizedLarge.body, "")
+    }
+
+    @TestCase
+    public func sourceResponseNormalizerTruncatesLargeUnicodeJsonSafely(): Unit {
+        let request = SourceRequestBuilder().gitCodePrHistory("Cangjie/community")
+        let normalizer = SourceResponseNormalizer()
+        let exact = SourceFetchResult()
+        exact.statusCode = 200
+        exact.contentType = "application/json"
+        exact.body = repeatText("a", 200000)
+
+        let normalizedExact = normalizer.normalize(request, exact)
+
+        @Expect(normalizedExact.ok, true)
+        @Expect(normalizedExact.truncated, false)
+        @Expect(normalizedExact.body.size, 200000)
+
+        let unicode = SourceFetchResult()
+        unicode.statusCode = 200
+        unicode.contentType = "application/json"
+        unicode.body = repeatText("仓颉🙂", 50000)
+
+        let normalizedUnicode = normalizer.normalize(request, unicode)
+
+        @Expect(normalizedUnicode.ok, true)
+        @Expect(normalizedUnicode.truncated, true)
+        @Expect(normalizedUnicode.body.size <= 200000, true)
+        @Expect(normalizedUnicode.body.contains("仓颉"), true)
     }
 
     @TestCase
@@ -2475,6 +2545,29 @@ network.allowedHosts=docs.example.org
         @Expect(rendered.contains("/Users/"), false)
         @Expect(exists(Path(executor.lastCheckoutPath)), false)
     }
+
+    @TestCase
+    public func sourceAnalysisMaxFileBytesTruncatesUnicodeOnRuneBoundary(): Unit {
+        let config = sourceAnalysisTestConfig("/tmp/ckb-source-analysis-unit-unicode-budget")
+        config.sourceAnalysisMaxFiles = 1
+        config.sourceAnalysisMaxFileBytes = 9
+        let request = sourceAnalysisTestRequest()
+        request.changedFiles.add("src/main.cj")
+        let executor = FakeSourceCloneExecutor()
+        executor.mainBody = "仓颉🙂源码片段 token=source-secret " + repeatText("仓颉🙂", 20)
+
+        let pack = cangjie_source_analysis(config, request, executor: executor)
+        let rendered = renderSourceAnalysis(pack)
+
+        @Expect(pack.ok, true)
+        @Expect(pack.truncated, true)
+        @Expect(pack.selectedFiles.size, 1)
+        @Expect(pack.selectedFiles[0].truncated, true)
+        @Expect(pack.selectedFiles[0].excerpt.contains("仓颉"), true)
+        @Expect(pack.selectedFiles[0].excerpt.contains("source-secret"), false)
+        @Expect(rendered.contains("source-secret"), false)
+        @Expect(exists(Path(executor.lastCheckoutPath)), false)
+    }
 }
 
 class FakeSourceCloneExecutor <: SourceCloneExecutor {
@@ -2483,6 +2576,7 @@ class FakeSourceCloneExecutor <: SourceCloneExecutor {
     public var lastDepth: Int64 = 0
     public var lastCloneUrl: String = ""
     public var lastCheckoutPath: String = ""
+    public var mainBody: String = "public func main(): Unit { println(\"hello\") }\n"
 
     public init() {}
 
@@ -2497,7 +2591,7 @@ class FakeSourceCloneExecutor <: SourceCloneExecutor {
             result.diagnostic = this.status
             return result
         }
-        writeFixtureFile(request.checkoutPath, "src/main.cj", "public func main(): Unit { println(\"hello\") }\n")
+        writeFixtureFile(request.checkoutPath, "src/main.cj", this.mainBody)
         writeFixtureFile(request.checkoutPath, "docs/readme.md", "# README\nCangjie source analysis docs.\n")
         writeFixtureFile(request.checkoutPath, "src/long.cj", "public func longBody(): Unit { println(\"abcdefghijklmnopqrstuvwxyz0123456789abcdefghijklmnopqrstuvwxyz\") }\n")
         writeFixtureFile(request.checkoutPath, "src/selector.cj", "public func selected(): Unit {}\n")
@@ -3390,6 +3484,21 @@ service.maxBudget=20
         @Expect(highResult.ok, false)
         @Expect(highResult.code, "ckb.invalid_config")
         @Expect(highResult.diagnostic.contains("event-secret-token"), false)
+    }
+
+    @TestCase
+    public func ckb2Ut004AccessLogLineShowsRouteWithoutBodyOrSecret(): Unit {
+        let line = ckbHttpAccessLogLine("post", "/v1/evidence-pack", 200, "public", 128, 7)
+
+        @Expect(line.contains("ckb.http.request"), true)
+        @Expect(line.contains("method=POST"), true)
+        @Expect(line.contains("path=/v1/evidence-pack"), true)
+        @Expect(line.contains("status=200"), true)
+        @Expect(line.contains("durationMs=7"), true)
+        @Expect(line.contains("requestBytes=128"), true)
+        @Expect(line.contains("Authorization"), false)
+        @Expect(line.contains("Bearer"), false)
+        @Expect(line.contains("\"q\""), false)
     }
 
     @TestCase
