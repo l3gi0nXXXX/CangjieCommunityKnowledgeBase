@@ -264,6 +264,28 @@ cjpm run --skip-build --run-args "--config ckb-live.conf --store <CKB_PROJECT_RO
 - [ ] MCP stdio is started with `mcp-stdio` and emits only JSON-RPC response
   lines on stdout. It must not print service startup logs before JSON-RPC
   responses.
+- [ ] MCP Streamable HTTP is available from `service-http` at `/mcp`.
+  Initialize with:
+  `curl -sS -D /tmp/ckb-mcp-init.headers -o /tmp/ckb-mcp-init.body -X POST http://127.0.0.1:18890/mcp -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' --data '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"manual-mcp-client","version":"1.0.0"}}}'`.
+  `/tmp/ckb-mcp-init.headers` must contain `Mcp-Session-Id`, and
+  `/tmp/ckb-mcp-init.body` must contain `"protocolVersion":"2025-06-18"`.
+- [ ] MCP Streamable HTTP notification acknowledgement is empty:
+  after extracting `MCP_SESSION_ID` from `/tmp/ckb-mcp-init.headers`,
+  `POST /mcp` with `notifications/initialized`,
+  `MCP-Protocol-Version: 2025-06-18`, and `Mcp-Session-Id` returns HTTP `202`
+  with an empty body. Any `id:null`, `method_not_found`, or JSON-RPC error body
+  is a failure.
+- [ ] MCP Streamable HTTP `tools/list` returns the same seven Cangjie read-only
+  tools as stdio MCP and does not include admin, update, event, repository sync,
+  or `verify-snippet` tools.
+- [ ] MCP Streamable HTTP GET SSE works:
+  `curl --max-time 3 -N -i http://127.0.0.1:18890/mcp -H 'Accept: text/event-stream' -H 'MCP-Protocol-Version: 2025-06-18' -H "Mcp-Session-Id: $MCP_SESSION_ID"`
+  outputs `Content-Type: text/event-stream` and `: ckb-mcp-ready`. Curl timing
+  out after receiving the ready frame is acceptable because SSE is a long
+  connection.
+- [ ] MCP Streamable HTTP SSE is implemented through `HttpResponseWriter` in the
+  route handler. It must not use prebuilt `body(String)` or `body(Array<Byte>)`
+  as the SSE success path.
 - [ ] HTTP `/v1/cangjie/verify-snippet` and MCP `verify-snippet` return
   not-found or not-enabled responses and do not execute external commands.
 

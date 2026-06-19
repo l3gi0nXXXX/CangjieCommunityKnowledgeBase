@@ -49,6 +49,44 @@ and `timeoutMillis`. The current SRC-0/SRC-1/SRC-2 implementation reads source
 through API raw first and contents fallback second; it reports degraded status
 instead of cloning when fallback is disabled or unavailable.
 
+## MCP Access
+
+CKB exposes two MCP transports for read-only Cangjie knowledge access.
+
+`mcp-stdio` is for local MCP clients that launch CKB as a child process:
+
+```bash
+cjpm run --skip-build --run-args "--store $(pwd)/ckb-data mcp-stdio"
+```
+
+It writes only JSON-RPC responses to stdout. JSON-RPC notifications such as
+`notifications/initialized` and `notifications/cancelled` produce no stdout
+line.
+
+`service-http` exposes MCP Streamable HTTP on `/mcp`:
+
+```bash
+cjpm run --skip-build --run-args "--store $(pwd)/ckb-data service-http"
+```
+
+The first-stage Streamable HTTP contract is:
+
+- `POST /mcp` accepts one JSON-RPC object with
+  `Accept: application/json, text/event-stream` and
+  `Content-Type: application/json`.
+- `initialize` must request `protocolVersion=2025-06-18`; CKB returns
+  `Mcp-Session-Id`.
+- Follow-up POST/GET/DELETE requests must carry `Mcp-Session-Id` and
+  `MCP-Protocol-Version: 2025-06-18`.
+- JSON-RPC requests return `200 application/json`.
+- JSON-RPC notifications/responses return `202` with an empty body.
+- `GET /mcp` returns `text/event-stream` and starts with
+  `: ckb-mcp-ready`.
+
+MCP exposes only the Cangjie read-only tools/resources/prompts. It does not
+expose admin refresh, update, repository sync, event ingest, or code execution
+tools.
+
 ## Local Knowledge Store
 
 CKB stores knowledge on the local filesystem. For this workspace, the formal

@@ -1,7 +1,28 @@
-package cangjie_community_knowledge_base_test
+package cangjie_community_knowledge_base
 
 import std.collection.ArrayList
 import std.convert.Parsable
+
+public class CkbMcpDispatchResult {
+    public var shouldWrite: Bool = true
+    public var payload: String = ""
+
+    public init() {}
+}
+
+public func ckbMcpDispatchResponse(payload: String): CkbMcpDispatchResult {
+    let result = CkbMcpDispatchResult()
+    result.shouldWrite = true
+    result.payload = payload
+    result
+}
+
+public func ckbMcpDispatchNoOutput(): CkbMcpDispatchResult {
+    let result = CkbMcpDispatchResult()
+    result.shouldWrite = false
+    result.payload = ""
+    result
+}
 
 public class CkbMcpStdioServer {
     private let service: CkbCommandLoopService
@@ -12,38 +33,49 @@ public class CkbMcpStdioServer {
         this.service = service
     }
 
-    public func handleLine(line: String): String {
-        this.handleRequest(line)
+    public func handleLine(line: String): CkbMcpDispatchResult {
+        this.handleMessage(line, "2024-11-05", "ckb-cangjie-mcp-stdio")
     }
 
     public func handleRequest(request: String): String {
+        this.handleMessage(request, "2024-11-05", "ckb-cangjie-mcp-stdio").payload
+    }
+
+    public func handleMessage(request: String, protocolVersion: String, serverName: String): CkbMcpDispatchResult {
         if (request.size > this.maxRequestChars) {
-            return this.errorResponse("null", -32600, "request_too_large", "{\"limit\":${this.maxRequestChars}}")
+            return ckbMcpDispatchResponse(this.errorResponse("null", -32600, "request_too_large", "{\"limit\":${this.maxRequestChars}}"))
         }
         let id = ckbMcpJsonId(request)
+        let hasId = ckbMcpJsonHasId(request)
         let method = ckbMcpJsonStringField(request, "method")
+        if (!hasId) {
+            return ckbMcpDispatchNoOutput()
+        }
         if (method == "initialize") {
-            return this.resultResponse(id, this.initializeResult())
+            return ckbMcpDispatchResponse(this.resultResponse(id, this.initializeResult(protocolVersion, serverName)))
+        }
+        if (method == "ping") {
+            return ckbMcpDispatchResponse(this.resultResponse(id, "{}"))
         }
         if (method == "tools/list") {
-            return this.resultResponse(id, "{\"tools\":${this.toolsJson()}}")
+            return ckbMcpDispatchResponse(this.resultResponse(id, "{\"tools\":${this.toolsJson()}}"))
         }
         if (method == "tools/call") {
-            return this.handleToolCall(id, ckbMcpJsonObjectField(request, "params"))
+            return ckbMcpDispatchResponse(this.handleToolCall(id, ckbMcpJsonObjectField(request, "params")))
         }
         if (method == "resources/list") {
-            return this.resultResponse(id, "{\"resources\":${this.resourcesJson()}}")
+            return ckbMcpDispatchResponse(this.resultResponse(id, "{\"resources\":${this.resourcesJson()}}"))
         }
         if (method == "resources/read") {
-            return this.handleResourceRead(id, ckbMcpJsonObjectField(request, "params"))
+            return ckbMcpDispatchResponse(this.handleResourceRead(id, ckbMcpJsonObjectField(request, "params")))
         }
         if (method == "prompts/list") {
-            return this.resultResponse(id, "{\"prompts\":${this.promptsJson()}}")
+            return ckbMcpDispatchResponse(this.resultResponse(id, "{\"prompts\":${this.promptsJson()}}"))
         }
         if (method == "prompts/get") {
-            return this.handlePromptGet(id, ckbMcpJsonObjectField(request, "params"))
+            return ckbMcpDispatchResponse(this.handlePromptGet(id, ckbMcpJsonObjectField(request, "params")))
         }
-        this.errorResponse(id, -32601, "method_not_found", "{\"method\":\"${ckbMcpJsonEscape(method)}\"}")
+        ckbMcpDispatchResponse(this.errorResponse(id, -32601, "method_not_found", "{\"method\":\"${ckbMcpJsonEscape(method)}\"}"))
     }
 
     private func handleToolCall(id: String, params: String): String {
@@ -155,8 +187,7 @@ public class CkbMcpStdioServer {
     }
 
     private func toolResult(id: String, structured: String): String {
-        let text = "CKB returned citation-backed Cangjie knowledge. Use structuredContent.citations before relying on facts."
-        this.resultResponse(id, "{\"content\":[{\"type\":\"text\",\"text\":\"${ckbMcpJsonEscape(text)}\"}],\"structuredContent\":${structured},\"isError\":false}")
+        this.resultResponse(id, "{\"content\":[{\"type\":\"text\",\"text\":\"${ckbMcpJsonEscape(structured)}\"}],\"structuredContent\":${structured},\"isError\":false}")
     }
 
     private func resourceTextResult(id: String, uri: String, mimeType: String, text: String): String {
@@ -171,8 +202,8 @@ public class CkbMcpStdioServer {
         "{\"jsonrpc\":\"2.0\",\"id\":${id},\"error\":{\"code\":${code},\"message\":\"${ckbMcpJsonEscape(message)}\",\"data\":${redactSensitive(data)}}}"
     }
 
-    private func initializeResult(): String {
-        "{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{\"tools\":{\"listChanged\":false},\"resources\":{\"subscribe\":false,\"listChanged\":false},\"prompts\":{\"listChanged\":false}},\"serverInfo\":{\"name\":\"ckb-cangjie-mcp-stdio\",\"version\":\"0.1.0\"}}"
+    public func initializeResult(protocolVersion: String, serverName: String): String {
+        "{\"protocolVersion\":\"${ckbMcpJsonEscape(protocolVersion)}\",\"capabilities\":{\"tools\":{\"listChanged\":false},\"resources\":{\"subscribe\":false,\"listChanged\":false},\"prompts\":{\"listChanged\":false}},\"serverInfo\":{\"name\":\"${ckbMcpJsonEscape(serverName)}\",\"version\":\"0.1.0\"}}"
     }
 
     private func toolsJson(): String {
@@ -352,7 +383,7 @@ private func ckbMcpStringArrayJson(values: ArrayList<String>): String {
     out
 }
 
-private func ckbMcpJsonEscape(raw: String): String {
+public func ckbMcpJsonEscape(raw: String): String {
     let text = redactSensitive(raw)
     let out = StringBuilder()
     for (ch in text.toRuneArray()) {
@@ -381,7 +412,7 @@ private class CkbMcpJsonStringScan {
     init() {}
 }
 
-private func ckbMcpJsonId(raw: String): String {
+public func ckbMcpJsonId(raw: String): String {
     let start = ckbMcpJsonValueStart(raw, "id")
     if (start < 0) {
         return "null"
@@ -401,7 +432,11 @@ private func ckbMcpJsonId(raw: String): String {
     value
 }
 
-private func ckbMcpJsonStringField(raw: String, key: String): String {
+public func ckbMcpJsonHasId(raw: String): Bool {
+    ckbMcpJsonValueStart(raw, "id") >= 0
+}
+
+public func ckbMcpJsonStringField(raw: String, key: String): String {
     let start = ckbMcpJsonValueStart(raw, key)
     if (start < 0 || start >= raw.size || ckbMcpCharAt(raw, start) != "\"") {
         return ""
@@ -410,7 +445,7 @@ private func ckbMcpJsonStringField(raw: String, key: String): String {
     if (scan.ok) { scan.value } else { "" }
 }
 
-private func ckbMcpJsonObjectField(raw: String, key: String): String {
+public func ckbMcpJsonObjectField(raw: String, key: String): String {
     let start = ckbMcpJsonValueStart(raw, key)
     if (start < 0 || start >= raw.size || ckbMcpCharAt(raw, start) != "{") {
         return ""

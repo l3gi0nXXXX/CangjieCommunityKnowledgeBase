@@ -53,6 +53,67 @@ public class CkbMcpStdioTest {
     }
 
     @TestCase
+    public func msh0Pos001FullHandshakeInitializeInitializedToolsList(): Unit {
+        let server = this.server("msh0-pos-001")
+        let initialize = server.handleLine("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2024-11-05\",\"capabilities\":{},\"clientInfo\":{\"name\":\"manual-smoke\",\"version\":\"1\"}}}")
+        let initialized = server.handleLine("{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\",\"params\":{}}")
+        let tools = server.handleLine("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\",\"params\":{}}")
+
+        @Expect(initialize.shouldWrite, true)
+        @Expect(initialize.payload.contains("\"id\":1"), true)
+        @Expect(initialize.payload.contains("\"protocolVersion\":\"2024-11-05\""), true)
+        @Expect(initialized.shouldWrite, false)
+        @Expect(initialized.payload, "")
+        @Expect(tools.shouldWrite, true)
+        @Expect(this.countOccurrences(tools.payload, "\"name\":\"cangjie_"), 7)
+    }
+
+    @TestCase
+    public func msh0Neg001UnknownNotificationMustNotReturnResponse(): Unit {
+        let response = this.server("msh0-neg-001").handleLine("{\"jsonrpc\":\"2.0\",\"method\":\"unknown/notification\",\"params\":{}}")
+
+        @Expect(response.shouldWrite, false)
+        @Expect(response.payload, "")
+    }
+
+    @TestCase
+    public func msh1Ut001InitializedNotificationMustNotReturnResponse(): Unit {
+        let response = this.server("msh1-ut-001").handleLine("{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\",\"params\":{}}")
+
+        @Expect(response.shouldWrite, false)
+        @Expect(response.payload, "")
+    }
+
+    @TestCase
+    public func msh1Neg002UnknownRequestStillReturnsMethodNotFound(): Unit {
+        let response = this.server("msh1-neg-002").handleRequest("{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"unknown/request\",\"params\":{}}")
+
+        @Expect(response.contains("\"id\":9"), true)
+        @Expect(response.contains("\"error\""), true)
+        @Expect(response.contains("-32601"), true)
+    }
+
+    @TestCase
+    public func msh1Pos001PingRequestReturnsEmptyResult(): Unit {
+        let response = this.server("msh1-pos-001").handleRequest("{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"ping\",\"params\":{}}")
+
+        @Expect(response.contains("\"id\":3"), true)
+        @Expect(response.contains("\"result\":{}"), true)
+    }
+
+    @TestCase
+    public func msh2Ut001ProtocolServerToolsListReturnsSevenReadOnlyTools(): Unit {
+        let service = CkbCommandLoopService(CkbRuntimeConfig(), FileKnowledgeStore("target/msh2-ut-001"))
+        let server = CkbMcpProtocolServer(service)
+        let response = server.handleRequest("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\",\"params\":{}}", "2025-06-18", "ckb-cangjie-mcp-http")
+
+        @Expect(response.contains("\"result\""), true)
+        @Expect(this.countOccurrences(response, "\"name\":\"cangjie_"), 7)
+        @Expect(response.contains("admin"), false)
+        @Expect(response.contains("verify"), false)
+    }
+
+    @TestCase
     public func ckg5Bnd001ToolCallOversizedTaskReturnsControlledError(): Unit {
         let longTask = this.repeatedText(13000)
         let response = this.server("ckg5-bnd-001").handleRequest(this.toolCall("cangjie_knowledge_pack", "{\"task\":\"${longTask}\"}"))

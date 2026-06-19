@@ -399,7 +399,10 @@ private func runCkbMcpStdioLoop(config: CkbRuntimeConfig, store: FileKnowledgeSt
             if (line.trimAscii() == "") {
                 continue
             }
-            println(server.handleLine(line))
+            let response = server.handleLine(line)
+            if (response.shouldWrite) {
+                println(response.payload)
+            }
         }
     } catch (_: Exception) {
         return 1

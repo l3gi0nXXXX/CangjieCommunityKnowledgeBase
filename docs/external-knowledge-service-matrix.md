@@ -15,6 +15,7 @@ permissions beyond each service's authentication and boundary rules.
 | Full status | `GET /v1/status` | Any client, Metis, operators | none | storage, indexManifest, scheduler, restoreDiagnostic, activeKnowledgeVersion | active/candidate store, index, scheduler state | none or read-only access control | no | May report credential presence only; must not expose token contents or absolute local paths. |
 | Schedule status | `GET /v1/schedules` | Any client, Metis, operators | none | `entries[]` with interval, nextRunAt, lastSuccessAt, failureCount, lastDurationMillis, lastRequestCount, lastUpdatedDataKinds | observable scheduler state | none or read-only access control | no | Read-only observation; this API must not trigger refresh work. |
 | API schema | `GET /v1/schema` | Any client, SDKs, scripts, developers | none | routes, tools, errorCodes, apiVersion, limits | HTTP/JSON API contract | none or read-only access control | no | Schema must stay aligned with real handlers. |
+| MCP Streamable HTTP | `POST /mcp`, `GET /mcp`, `DELETE /mcp` | MCP clients, AI IDEs, agents, remote clients | JSON-RPC 2.0 object for POST; session/protocol headers for follow-up requests | JSON-RPC response, `202` empty notification acknowledgement, or SSE ready/keepalive stream | same read-only Cangjie tools/resources/prompts as stdio MCP | none or read-only access control | no | `POST /mcp` returns JSON for requests and `202` empty body for notifications; `GET /mcp` is SSE only; admin/update/event/repository sync/code execution tools are not exposed. |
 | General knowledge query | `POST /v1/query` | Any client, Metis, agents | `q`, `budget`, `sourceType`, `includeCandidates` | ranked rows, citations, knowledgeVersion, truncated | active knowledge from docs, website, source, issues, PRs, comments, and reviewed candidates | none or read-only access control | no | `budget` defaults to 5 and is capped at 20. Downstream clients must not cite rows without citation/source URL. |
 | Evidence pack | `POST /v1/evidence-pack` | Metis, agents, external tools | `q`, `budget`, `includeCandidates`, `parentUrl`, `repo`, `ref` | source/doc/website/community/webCandidate evidence, graphContext, citations, knowledgeVersion | structured evidence for answer generation | none or read-only access control | no | Recommended for Metis. `web_candidate` evidence must retain `requiresReview=true`. |
 | Cangjie corpus status | `GET /v1/cangjie/corpus/status`; MCP `cangjie_corpus_status`; CLI `cangjie-corpus-status` | Metis, agents, third-party clients, operators | none | activeKnowledgeVersion, targetVersion, docsUrls, stdSources, record counts, diagnostics | observable Cangjie docs/std/stdx/toolchain corpus state | none or read-only access control | no | Read-only. Must not expose local paths, tokens, or admin scheduler internals. |
@@ -48,8 +49,9 @@ permissions beyond each service's authentication and boundary rules.
 - Break-glass admin APIs must require an admin token and must audit `reason`,
   `requestedBy`, `source`, and `requestId`. Responses and logs must not expose
   tokens, authorization headers, proxy credentials, or unredacted local paths.
-- Cangjie MCP stdio exposes read-only tools/resources/prompts only. It must not
-  expose admin refresh, update, repository sync, or code execution tools.
+- Cangjie MCP stdio and Streamable HTTP expose read-only tools/resources/prompts
+  only. They must not expose admin refresh, update, repository sync, event
+  ingest, or code execution tools.
 
 ## Update Trigger Summary
 

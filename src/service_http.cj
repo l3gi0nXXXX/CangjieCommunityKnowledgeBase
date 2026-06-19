@@ -3,7 +3,7 @@ package cangjie_community_knowledge_base
 import std.collection.ArrayList
 import std.convert.Parsable
 import std.fs.{File, Path, exists}
-import std.time.DateTime
+import std.time.*
 import stdx.net.http.*
 
 public class CkbHttpServiceConfig {
@@ -81,7 +81,8 @@ public func runCkbHttpService(runtime: CkbRuntimeConfig, store: FileKnowledgeSto
             .addr(config.bind)
             .port(UInt16(config.port))
             .build()
-        registerCkbHttpRoutes(server, service, config)
+        let mcpSessionStore = CkbMcpHttpSessionStore()
+        registerCkbHttpRoutes(server, service, config, mcpSessionStore: mcpSessionStore)
         println("service-http protocol=ckb-http-v1 bind=${redactSensitive(config.bind)} port=${config.port}")
         server.serve()
         return 0
@@ -91,7 +92,7 @@ public func runCkbHttpService(runtime: CkbRuntimeConfig, store: FileKnowledgeSto
     }
 }
 
-public func registerCkbHttpRoutes(server: Server, service: CkbCommandLoopService, config: CkbHttpServiceConfig): Unit {
+public func registerCkbHttpRoutes(server: Server, service: CkbCommandLoopService, config: CkbHttpServiceConfig, mcpSessionStore!: CkbMcpHttpSessionStore = CkbMcpHttpSessionStore()): Unit {
     ckbHttpRegisterRoute(server, service, config, "/v1/health")
     ckbHttpRegisterRoute(server, service, config, "/v1/status")
     ckbHttpRegisterRoute(server, service, config, "/v1/schedules")
@@ -118,6 +119,7 @@ public func registerCkbHttpRoutes(server: Server, service: CkbCommandLoopService
     ckbHttpRegisterRoute(server, service, config, "/v1/admin/scheduler/run")
     ckbHttpRegisterRoute(server, service, config, "/v1/admin/repositories/sync")
     ckbHttpRegisterRoute(server, service, config, "/v1/admin/repo-list/refresh")
+    ckbMcpHttpRegisterRoute(server, service, config, mcpSessionStore, "/mcp")
 }
 
 public func handleCkbHttpRequest(
@@ -278,6 +280,12 @@ private func ckbHttpRegisterRoute(server: Server, service: CkbCommandLoopService
     })
 }
 
+private func ckbMcpHttpRegisterRoute(server: Server, service: CkbCommandLoopService, config: CkbHttpServiceConfig, sessionStore: CkbMcpHttpSessionStore, path: String): Unit {
+    server.distributor.register(path, { ctx =>
+        ckbMcpHttpServeContext(ctx, service, path, config, sessionStore)
+    })
+}
+
 private func ckbHttpServeContext(ctx: HttpContext, service: CkbCommandLoopService, path: String, config: CkbHttpServiceConfig): Unit {
     let startMs = ckbHttpNowMillis()
     let rb = ctx.responseBuilder
@@ -293,6 +301,58 @@ private func ckbHttpServeContext(ctx: HttpContext, service: CkbCommandLoopServic
     rb.status(UInt16(response.statusCode))
     rb.body(response.body)
     ckbHttpAccessLog(ctx.request.method, path, response.statusCode, response.authKind, Int64(bodyRead.body.toArray().size), ckbHttpNowMillis() - startMs)
+}
+
+private func ckbMcpHttpServeContext(ctx: HttpContext, service: CkbCommandLoopService, path: String, config: CkbHttpServiceConfig, sessionStore: CkbMcpHttpSessionStore): Unit {
+    let startMs = ckbHttpNowMillis()
+    let rb = ctx.responseBuilder
+    let bodyRead = ckbHttpReadBody(ctx, config.maxRequestBytes)
+    if (!bodyRead.ok) {
+        rb.header("content-type", "application/json; charset=utf-8")
+        rb.status(UInt16(bodyRead.statusCode))
+        rb.body("{\"jsonrpc\":\"2.0\",\"id\":null,\"error\":{\"code\":-32600,\"message\":\"${if (bodyRead.code == "ckb.payload_too_large") { "request_too_large" } else { "bad_request" }}\",\"data\":{}}}")
+        ckbHttpAccessLog(ctx.request.method, path, bodyRead.statusCode, "unavailable", 0, ckbHttpNowMillis() - startMs)
+        return
+    }
+    let response = handleCkbMcpHttpRequest(service, ctx.request.method, path, bodyRead.body, ckbHttpRequestHeaders(ctx), config, CkbMcpHttpServiceConfig(), sessionStore)
+    rb.status(UInt16(response.statusCode))
+    for (header in response.headers) {
+        ckbMcpHttpApplyHeader(rb, header)
+    }
+    if (response.streamMode) {
+        rb.header("content-type", response.contentType)
+        rb.header("cache-control", "no-cache")
+        rb.header("connection", "keep-alive")
+        rb.header("transfer-encoding", "chunked")
+        let writer = HttpResponseWriter(ctx)
+        try {
+            writer.write(response.body.toArray())
+            while (true) {
+                sleep(Duration.second * 15)
+                writer.write(": ckb-mcp-keepalive\n\n".toArray())
+            }
+        } catch (_: Exception) {
+            ckbHttpAccessLog(ctx.request.method, path, response.statusCode, response.authKind, Int64(bodyRead.body.toArray().size), ckbHttpNowMillis() - startMs)
+            return
+        }
+    } else {
+        rb.header("content-type", response.contentType)
+        rb.body(response.body)
+    }
+    ckbHttpAccessLog(ctx.request.method, path, response.statusCode, response.authKind, Int64(bodyRead.body.toArray().size), ckbHttpNowMillis() - startMs)
+}
+
+private func ckbMcpHttpApplyHeader(rb: HttpResponseBuilder, header: String): Unit {
+    match (header.indexOf(":")) {
+        case Some(idx) =>
+            let name = header[0..idx].trimAscii()
+            let value = header[idx + 1..header.size].trimAscii()
+            if (name != "") {
+                rb.header(name, value)
+            }
+        case None =>
+            ()
+    }
 }
 
 public func ckbHttpAccessLogLine(method: String, path: String, statusCode: Int64, authKind: String, requestBytes: Int64, durationMs: Int64): String {
@@ -371,6 +431,11 @@ private func ckbHttpRequestHeaders(ctx: HttpContext): Array<String> {
     ckbHttpAppendHeader(headers, "Authorization", ctx.request.headers.getFirst("Authorization") ?? ctx.request.headers.getFirst("authorization") ?? "")
     ckbHttpAppendHeader(headers, "X-CKB-Admin-Token", ctx.request.headers.getFirst("X-CKB-Admin-Token") ?? ctx.request.headers.getFirst("x-ckb-admin-token") ?? "")
     ckbHttpAppendHeader(headers, "X-CKB-Event-Token", ctx.request.headers.getFirst("X-CKB-Event-Token") ?? ctx.request.headers.getFirst("x-ckb-event-token") ?? "")
+    ckbHttpAppendHeader(headers, "Accept", ctx.request.headers.getFirst("Accept") ?? ctx.request.headers.getFirst("accept") ?? "")
+    ckbHttpAppendHeader(headers, "Content-Type", ctx.request.headers.getFirst("Content-Type") ?? ctx.request.headers.getFirst("content-type") ?? "")
+    ckbHttpAppendHeader(headers, "MCP-Protocol-Version", ctx.request.headers.getFirst("MCP-Protocol-Version") ?? ctx.request.headers.getFirst("mcp-protocol-version") ?? "")
+    ckbHttpAppendHeader(headers, "Mcp-Session-Id", ctx.request.headers.getFirst("Mcp-Session-Id") ?? ctx.request.headers.getFirst("mcp-session-id") ?? "")
+    ckbHttpAppendHeader(headers, "Last-Event-ID", ctx.request.headers.getFirst("Last-Event-ID") ?? ctx.request.headers.getFirst("last-event-id") ?? "")
     headers.toArray()
 }
 
