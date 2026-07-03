@@ -224,7 +224,7 @@ public class CangjieCapabilityService {
             return pack
         }
         let limit = this.effectiveBudget(pack, budget)
-        let result = cangjie_doc_search(this.kb, this.syntaxQueryText(query), limit)
+        let result = cangjieServingSearch(this.kb, this.syntaxQueryText(query), limit, targetVersion: pack.targetVersion)
         this.addKnowledgeItems(pack, result, "syntax")
         pack.degraded = pack.degraded || result.degraded
         pack.truncated = pack.truncated || result.truncated
@@ -240,7 +240,7 @@ public class CangjieCapabilityService {
             return pack
         }
         let limit = this.effectiveBudget(pack, budget)
-        let result = cangjie_hybrid_search(this.kb, "${query} ${module} ${symbol} ${sourceSet}", limit)
+        let result = cangjieServingSearch(this.kb, "${query} ${module} ${symbol} ${sourceSet}", limit, sourceSet: sourceSet, targetVersion: pack.targetVersion, symbol: symbol)
         this.addApiItems(pack, result, module, symbol, sourceSet)
         pack.degraded = pack.degraded || result.degraded
         pack.truncated = pack.truncated || result.truncated
@@ -270,7 +270,7 @@ public class CangjieCapabilityService {
             return pack
         }
         let limit = this.effectiveBudget(pack, budget)
-        let result = cangjie_doc_search(this.kb, this.diagnosticQueryText(query), limit)
+        let result = cangjieServingSearch(this.kb, this.diagnosticQueryText(query), limit, targetVersion: pack.targetVersion)
         for (record in result.records) {
             if (!cangjieRecordTrusted(record)) {
                 continue
@@ -307,7 +307,7 @@ public class CangjieCapabilityService {
             return pack
         }
         let limit = this.effectiveBudget(pack, maxExamples)
-        let result = cangjie_hybrid_search(this.kb, query, limit)
+        let result = cangjieServingSearch(this.kb, query, limit, targetVersion: pack.targetVersion, symbol: symbol)
         for (record in result.records) {
             if (!cangjieRecordTrusted(record)) {
                 continue
