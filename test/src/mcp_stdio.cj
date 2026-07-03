@@ -162,7 +162,7 @@ public class CkbMcpStdioServer {
                 budget: ckbMcpJsonIntField(args, "budget", CangjieCapabilityLimits.DEFAULT_BUDGET))))
         }
         if (name == "cangjie_corpus_freshness") {
-            return this.toolResult(id, this.corpusStatusJson(this.service.cangjieCorpusStatus()))
+            return this.toolResult(id, renderCangjieCorpusFreshnessJson(this.service.cangjieCorpusFreshness()))
         }
         if (name == "cangjie_syntax_query") {
             let q = ckbMcpFirstNonEmpty(ckbMcpJsonStringField(args, "q"), ckbMcpJsonStringField(args, "query")).trimAscii()

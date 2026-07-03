@@ -185,7 +185,7 @@ public func ckbApiHandle(service: CkbCommandLoopService, method: String, path: S
         return ckbApiHandleCangjieNegativeRules(service, body)
     }
     if (verb == "GET" && route == "/v1/cangjie/corpus/freshness") {
-        return ckbApiEnvelope(ckbApiCangjieCorpusStatusJson(service.cangjieCorpusStatus()))
+        return ckbApiEnvelope(renderCangjieCorpusFreshnessJson(service.cangjieCorpusFreshness()))
     }
     if (verb == "POST" && route == "/v1/query") {
         return ckbApiHandleEvidence(service, body, true)

@@ -2156,17 +2156,17 @@ public func ckbSyncLive(kb: KnowledgeBase, config: CkbRuntimeConfig, options: Li
     }
     var activePromoted = false
     var candidateWritten = false
+    var validationSummary = "candidateValidation status=not_run"
     if (options.apply) {
         kb.normalize()
-        kb.publishIndex(options.simulateValidationFailure)
-        kb.persistCandidateSnapshot(store)
-        candidateWritten = true
-        if (kb.status().failedCandidateVersion == "") {
-            kb.persistActiveSnapshot(store)
-            activePromoted = true
-        }
+        let promotion = cangjiePromoteCandidateAfterValidation(kb, store, forceFailure: options.simulateValidationFailure)
+        candidateWritten = promotion.candidateWritten
+        activePromoted = promotion.activePromoted
+        validationSummary = renderCangjieCandidateValidationSummary(promotion.validation)
     }
     state.out += "summary requests=${state.requests} ok=${state.okCount} degraded=${state.degradedCount} truncated=${state.truncated} rawWritten=${if (options.apply && activePromoted) { "true" } else { "false" }} candidateWritten=${candidateWritten} activePromoted=${activePromoted} since=${options.since}\n"
+    state.out += "${validationSummary}\n"
+    state.out += "freshness ${renderCangjieCorpusFreshnessJson(cangjieCorpusFreshnessReport(kb.status()))}\n"
     redactSensitive(state.out)
 }
 
@@ -3394,9 +3394,12 @@ public class CkbScheduleTaskProfile {
     public var enabled: Bool = false
     public var status: String = "unsupported"
     public var profile: String = ""
+    public var networkGate: String = "network_required"
+    public var candidateMode: String = "none"
     public var timeBudgetMillis: Int64 = 0
     public var requestCount: Int64 = 0
     public var updatedDataKinds: ArrayList<String> = ArrayList<String>()
+    public var sourceFamilies: ArrayList<String> = ArrayList<String>()
 
     public init() {}
 }
@@ -3410,6 +3413,12 @@ public func ckbSchedulerAllowlistTaskNames(): ArrayList<String> {
     names.add("web_candidate_weekly")
     names.add("web_candidate_recrawl_30d")
     names.add("weekly_full_rebuild")
+    names.add("cangjie_freshness_daily")
+    names.add("cangjie_docs_full_weekly")
+    names.add("cangjie_release_full_sync")
+    names.add("cangjie_source_event_sync")
+    names.add("cangjie_version_branch_refresh")
+    names.add("cangjie_benchmark_gap_curation")
     names
 }
 
@@ -3461,11 +3470,81 @@ public func ckbSyncProfileForScheduleTask(name: String): CkbScheduleTaskProfile 
         profile.enabled = true
         profile.status = "ready"
         profile.profile = "full_rebuild"
+        profile.candidateMode = "rebuild_candidate_then_promote"
         profile.timeBudgetMillis = 120000
         profile.requestCount = 1
         profile.updatedDataKinds.add("index")
+    } else if (name == "cangjie_freshness_daily") {
+        profile.enabled = true
+        profile.status = "ready"
+        profile.profile = "cangjie_freshness_probe"
+        profile.candidateMode = "probe_only"
+        profile.timeBudgetMillis = 60000
+        profile.requestCount = 5
+        profile.updatedDataKinds.add("freshness")
+        profile.updatedDataKinds.add("version_manifest")
+        ckbAddCangjieSourceFamilies(profile)
+    } else if (name == "cangjie_docs_full_weekly") {
+        profile.enabled = true
+        profile.status = "ready"
+        profile.profile = "cangjie_docs_full_sync"
+        profile.candidateMode = "candidate_validate_promote"
+        profile.timeBudgetMillis = 180000
+        profile.requestCount = 5
+        profile.updatedDataKinds.add("docs")
+        profile.updatedDataKinds.add("serving_feed")
+        profile.sourceFamilies.add("docs")
+    } else if (name == "cangjie_release_full_sync") {
+        profile.enabled = true
+        profile.status = "ready"
+        profile.profile = "cangjie_release_full_sync"
+        profile.candidateMode = "candidate_validate_promote"
+        profile.timeBudgetMillis = 240000
+        profile.requestCount = 5
+        profile.updatedDataKinds.add("release")
+        profile.updatedDataKinds.add("version_manifest")
+        ckbAddCangjieSourceFamilies(profile)
+    } else if (name == "cangjie_source_event_sync") {
+        profile.enabled = true
+        profile.status = "ready"
+        profile.profile = "cangjie_source_event_sync"
+        profile.candidateMode = "candidate_validate_promote"
+        profile.timeBudgetMillis = 120000
+        profile.requestCount = 4
+        profile.updatedDataKinds.add("repo_source")
+        profile.updatedDataKinds.add("serving_feed")
+        profile.sourceFamilies.add("std")
+        profile.sourceFamilies.add("stdx")
+        profile.sourceFamilies.add("tools")
+    } else if (name == "cangjie_version_branch_refresh") {
+        profile.enabled = true
+        profile.status = "ready"
+        profile.profile = "cangjie_version_branch_refresh"
+        profile.candidateMode = "manifest_candidate"
+        profile.timeBudgetMillis = 60000
+        profile.requestCount = 5
+        profile.updatedDataKinds.add("version_manifest")
+        ckbAddCangjieSourceFamilies(profile)
+    } else if (name == "cangjie_benchmark_gap_curation") {
+        profile.enabled = true
+        profile.status = "ready"
+        profile.profile = "cangjie_benchmark_gap_curation"
+        profile.networkGate = "offline_visible_artifacts_only"
+        profile.candidateMode = "curated_candidate_validate_promote"
+        profile.timeBudgetMillis = 90000
+        profile.requestCount = 0
+        profile.updatedDataKinds.add("benchmark_gap_curation")
+        profile.updatedDataKinds.add("negative_rules")
     }
     profile
+}
+
+private func ckbAddCangjieSourceFamilies(profile: CkbScheduleTaskProfile): Unit {
+    profile.sourceFamilies.add("docs")
+    profile.sourceFamilies.add("std")
+    profile.sourceFamilies.add("stdx")
+    profile.sourceFamilies.add("tools")
+    profile.sourceFamilies.add("eval-support")
 }
 
 public func ckbProfilesForRepositoryChangedEvent(event: GitCodeRepositoryChangedEvent, config: CkbRuntimeConfig): ArrayList<String> {
@@ -3729,6 +3808,10 @@ public class CkbCommandLoopService {
         CangjieCapabilityService(this.kb).corpusStatus()
     }
 
+    public func cangjieCorpusFreshness(): CangjieCorpusFreshnessReport {
+        cangjieCorpusFreshnessReport(this.kb.status())
+    }
+
     public func runSourceAnalysis(request: SourceAnalysisRequest): SourceAnalysisResult {
         if (request.allowCloneFallback && this.config.sourceAnalysisEnabled) {
             let pack = cangjie_source_analysis(this.config, request)
@@ -3946,6 +4029,22 @@ private func ckbRunScheduledProfileFetches(profile: CkbScheduleTaskProfile, runn
     } else if (profile.profile == "web_candidate_discovery" || profile.profile == "web_candidate_recrawl") {
         result.ok = ckbFetchAndCount(runner, builder.webCandidate("https://cangjie-lang.cn/community"), result) && result.ok
         result.ok = ckbFetchAndCount(runner, builder.webCandidate("https://cangjie-lang.cn/blog"), result) && result.ok
+    } else if (profile.profile == "cangjie_freshness_probe" || profile.profile == "cangjie_docs_full_sync" || profile.profile == "cangjie_release_full_sync") {
+        result.ok = ckbFetchAndCount(runner, builder.docs("https://docs.cangjie-lang.cn/docs/1.0.0/"), result) && result.ok
+        result.ok = ckbFetchAndCount(runner, builder.gitCodeRepo("Cangjie/cangjie_docs", ref: "release-1.0.0"), result) && result.ok
+        result.ok = ckbFetchAndCount(runner, builder.gitCodeRepo("Cangjie/cangjie_runtime", ref: "release-1.0.0"), result) && result.ok
+        result.ok = ckbFetchAndCount(runner, builder.gitCodeRepo("Cangjie/cangjie_stdx", ref: "release-1.0.0"), result) && result.ok
+        result.ok = ckbFetchAndCount(runner, builder.gitCodeRepo("Cangjie/cangjie_tools", ref: "release-1.0.0"), result) && result.ok
+    } else if (profile.profile == "cangjie_source_event_sync") {
+        result.ok = ckbFetchAndCount(runner, builder.gitCodeRepo("Cangjie/cangjie_stdx", ref: "release-1.0.0"), result) && result.ok
+        result.ok = ckbFetchAndCount(runner, builder.gitCodeRepo("Cangjie/cangjie_tools", ref: "release-1.0.0"), result) && result.ok
+    } else if (profile.profile == "cangjie_version_branch_refresh") {
+        result.ok = ckbFetchAndCount(runner, builder.gitCodeRepo("Cangjie/cangjie_docs", ref: "release-1.0.0"), result) && result.ok
+        result.ok = ckbFetchAndCount(runner, builder.gitCodeRepo("Cangjie/cangjie_runtime", ref: "release-1.0.0"), result) && result.ok
+        result.ok = ckbFetchAndCount(runner, builder.gitCodeRepo("Cangjie/cangjie_stdx", ref: "release-1.0.0"), result) && result.ok
+        result.ok = ckbFetchAndCount(runner, builder.gitCodeRepo("Cangjie/cangjie_tools", ref: "release-1.0.0"), result) && result.ok
+    } else if (profile.profile == "cangjie_benchmark_gap_curation") {
+        result.ok = true
     }
     result
 }
@@ -4287,19 +4386,18 @@ public func ckbSyncLiveApply(kb: KnowledgeBase, adapter: SourceAdapter, store: F
         }
     }
     kb.normalize()
-    kb.publishIndex(options.simulateValidationFailure)
+    let promotion = cangjiePromoteCandidateAfterValidation(kb, store, forceFailure: options.simulateValidationFailure)
     let status = kb.status()
     result.rawCount = status.storage.rawCount
     result.normalizedCount = status.storage.normalizedCount
     result.activeVersion = status.activeKnowledgeVersion
     result.candidateVersion = status.candidateKnowledgeVersion
     result.failedVersion = status.failedCandidateVersion
-    kb.persistCandidateSnapshot(store)
-    if (status.failedCandidateVersion != "") {
+    if (!promotion.ok) {
         result.ok = false
+        result.errorReport += renderCangjieCandidateValidationSummary(promotion.validation)
         return result
     }
-    kb.persistActiveSnapshot(store)
     result.ok = true
     result
 }
