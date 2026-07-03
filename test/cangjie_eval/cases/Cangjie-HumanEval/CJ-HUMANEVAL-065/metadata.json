@@ -1,0 +1,18 @@
+{
+  "id": "CJ-HUMANEVAL-065",
+  "source": "openai/human-eval",
+  "sourceTaskId": "HumanEval/65",
+  "entryPoint": "circular_shift",
+  "package": "cangjie_humaneval_065",
+  "targetVersion": "1.0.0",
+  "signature": "public func circular_shift(x: Int64, shift: Int64): String",
+  "argTypes": [
+    "Int64",
+    "Int64"
+  ],
+  "returnType": "String",
+  "callCount": 5,
+  "sourceLicense": "MIT",
+  "testStrategy": "official check(candidate) expanded through canonical recorder, then translated to Cangjie main assertions",
+  "staticLanguageAdaptations": []
+}

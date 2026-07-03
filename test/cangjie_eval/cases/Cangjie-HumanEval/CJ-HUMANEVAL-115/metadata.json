@@ -1,0 +1,18 @@
+{
+  "id": "CJ-HUMANEVAL-115",
+  "source": "openai/human-eval",
+  "sourceTaskId": "HumanEval/115",
+  "entryPoint": "max_fill",
+  "package": "cangjie_humaneval_115",
+  "targetVersion": "1.0.0",
+  "signature": "public func max_fill(grid: ArrayList<ArrayList<Int64>>, capacity: Int64): Int64",
+  "argTypes": [
+    "ArrayList<ArrayList<Int64>>",
+    "Int64"
+  ],
+  "returnType": "Int64",
+  "callCount": 5,
+  "sourceLicense": "MIT",
+  "testStrategy": "official check(candidate) expanded through canonical recorder, then translated to Cangjie main assertions",
+  "staticLanguageAdaptations": []
+}

@@ -1,0 +1,17 @@
+{
+  "id": "CJ-HUMANEVAL-080",
+  "source": "openai/human-eval",
+  "sourceTaskId": "HumanEval/80",
+  "entryPoint": "is_happy",
+  "package": "cangjie_humaneval_080",
+  "targetVersion": "1.0.0",
+  "signature": "public func is_happy(s: String): Bool",
+  "argTypes": [
+    "String"
+  ],
+  "returnType": "Bool",
+  "callCount": 8,
+  "sourceLicense": "MIT",
+  "testStrategy": "official check(candidate) expanded through canonical recorder, then translated to Cangjie main assertions",
+  "staticLanguageAdaptations": []
+}

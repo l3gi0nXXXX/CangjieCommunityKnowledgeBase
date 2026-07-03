@@ -1,0 +1,18 @@
+{
+  "id": "CJ-HUMANEVAL-144",
+  "source": "openai/human-eval",
+  "sourceTaskId": "HumanEval/144",
+  "entryPoint": "simplify",
+  "package": "cangjie_humaneval_144",
+  "targetVersion": "1.0.0",
+  "signature": "public func simplify(x: String, n: String): Bool",
+  "argTypes": [
+    "String",
+    "String"
+  ],
+  "returnType": "Bool",
+  "callCount": 13,
+  "sourceLicense": "MIT",
+  "testStrategy": "official check(candidate) expanded through canonical recorder, then translated to Cangjie main assertions",
+  "staticLanguageAdaptations": []
+}

@@ -1,0 +1,19 @@
+{
+  "id": "CJ-HUMANEVAL-159",
+  "source": "openai/human-eval",
+  "sourceTaskId": "HumanEval/159",
+  "entryPoint": "eat",
+  "package": "cangjie_humaneval_159",
+  "targetVersion": "1.0.0",
+  "signature": "public func eat(number: Int64, need: Int64, remaining: Int64): ArrayList<Int64>",
+  "argTypes": [
+    "Int64",
+    "Int64",
+    "Int64"
+  ],
+  "returnType": "ArrayList<Int64>",
+  "callCount": 6,
+  "sourceLicense": "MIT",
+  "testStrategy": "official check(candidate) expanded through canonical recorder, then translated to Cangjie main assertions",
+  "staticLanguageAdaptations": []
+}

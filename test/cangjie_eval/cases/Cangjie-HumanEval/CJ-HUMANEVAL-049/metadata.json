@@ -1,0 +1,18 @@
+{
+  "id": "CJ-HUMANEVAL-049",
+  "source": "openai/human-eval",
+  "sourceTaskId": "HumanEval/49",
+  "entryPoint": "modp",
+  "package": "cangjie_humaneval_049",
+  "targetVersion": "1.0.0",
+  "signature": "public func modp(n: Int64, p: Int64): Int64",
+  "argTypes": [
+    "Int64",
+    "Int64"
+  ],
+  "returnType": "Int64",
+  "callCount": 7,
+  "sourceLicense": "MIT",
+  "testStrategy": "official check(candidate) expanded through canonical recorder, then translated to Cangjie main assertions",
+  "staticLanguageAdaptations": []
+}

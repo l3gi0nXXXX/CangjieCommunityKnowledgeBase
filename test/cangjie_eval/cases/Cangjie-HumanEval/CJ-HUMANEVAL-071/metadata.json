@@ -1,0 +1,21 @@
+{
+  "id": "CJ-HUMANEVAL-071",
+  "source": "openai/human-eval",
+  "sourceTaskId": "HumanEval/71",
+  "entryPoint": "triangle_area",
+  "package": "cangjie_humaneval_071",
+  "targetVersion": "1.0.0",
+  "signature": "public func triangle_area(a: Int64, b: Int64, c: Int64): Float64",
+  "argTypes": [
+    "Int64",
+    "Int64",
+    "Int64"
+  ],
+  "returnType": "Float64",
+  "callCount": 9,
+  "sourceLicense": "MIT",
+  "testStrategy": "official check(candidate) expanded through canonical recorder, then translated to Cangjie main assertions",
+  "staticLanguageAdaptations": [
+    "Python int/float numeric unions are represented with Float64 where needed."
+  ]
+}

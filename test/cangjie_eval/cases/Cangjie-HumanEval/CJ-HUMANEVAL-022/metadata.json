@@ -1,0 +1,19 @@
+{
+  "id": "CJ-HUMANEVAL-022",
+  "source": "openai/human-eval",
+  "sourceTaskId": "HumanEval/22",
+  "entryPoint": "filter_integers",
+  "package": "cangjie_humaneval_022",
+  "targetVersion": "1.0.0",
+  "signature": "public func filter_integers(values: ArrayList<EvalValue>): ArrayList<Int64>",
+  "argTypes": [
+    "ArrayList<EvalValue>"
+  ],
+  "returnType": "ArrayList<Int64>",
+  "callCount": 3,
+  "sourceLicense": "MIT",
+  "testStrategy": "official check(candidate) expanded through canonical recorder, then translated to Cangjie main assertions",
+  "staticLanguageAdaptations": [
+    "Python dynamic values are represented by EvalValue/EvalEntry helper types."
+  ]
+}

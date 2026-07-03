@@ -1,0 +1,18 @@
+{
+  "id": "CJ-HUMANEVAL-097",
+  "source": "openai/human-eval",
+  "sourceTaskId": "HumanEval/97",
+  "entryPoint": "multiply",
+  "package": "cangjie_humaneval_097",
+  "targetVersion": "1.0.0",
+  "signature": "public func multiply(a: Int64, b: Int64): Int64",
+  "argTypes": [
+    "Int64",
+    "Int64"
+  ],
+  "returnType": "Int64",
+  "callCount": 8,
+  "sourceLicense": "MIT",
+  "testStrategy": "official check(candidate) expanded through canonical recorder, then translated to Cangjie main assertions",
+  "staticLanguageAdaptations": []
+}

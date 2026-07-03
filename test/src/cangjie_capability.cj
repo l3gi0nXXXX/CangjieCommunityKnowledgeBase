@@ -674,7 +674,7 @@ private class CangjieMarkdownBuilder {
 private func cangjieRenderPackMarkdown(pack: CangjieKnowledgePack, title: String, maxChars: Int64): String {
     let body = CangjieMarkdownBuilder(maxChars)
     body.add(cangjieRenderPackBody(pack, maxChars))
-    let truncated = pack.truncated || body.truncated
+    let truncated = pack.truncated || body.truncated || body.out.size >= maxChars
     let header = "# Cangjie ${title}\n\nknowledgeVersion: ${cangjieMarkdownText(pack.knowledgeVersion)}\ntargetVersion: ${cangjieMarkdownText(pack.targetVersion)}\ncitations: ${pack.citations.size}\ntruncated=${truncated}\ndegraded=${pack.degraded}\nexecuted=${pack.executed}\n\n"
     let builder = CangjieMarkdownBuilder(maxChars)
     builder.add(header)

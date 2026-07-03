@@ -1,0 +1,17 @@
+{
+  "id": "CJ-HUMANEVAL-158",
+  "source": "openai/human-eval",
+  "sourceTaskId": "HumanEval/158",
+  "entryPoint": "find_max",
+  "package": "cangjie_humaneval_158",
+  "targetVersion": "1.0.0",
+  "signature": "public func find_max(words: ArrayList<String>): String",
+  "argTypes": [
+    "ArrayList<String>"
+  ],
+  "returnType": "String",
+  "callCount": 10,
+  "sourceLicense": "MIT",
+  "testStrategy": "official check(candidate) expanded through canonical recorder, then translated to Cangjie main assertions",
+  "staticLanguageAdaptations": []
+}

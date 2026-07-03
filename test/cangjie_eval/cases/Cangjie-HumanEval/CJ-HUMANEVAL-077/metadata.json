@@ -1,0 +1,17 @@
+{
+  "id": "CJ-HUMANEVAL-077",
+  "source": "openai/human-eval",
+  "sourceTaskId": "HumanEval/77",
+  "entryPoint": "iscube",
+  "package": "cangjie_humaneval_077",
+  "targetVersion": "1.0.0",
+  "signature": "public func iscube(a: Int64): Bool",
+  "argTypes": [
+    "Int64"
+  ],
+  "returnType": "Bool",
+  "callCount": 8,
+  "sourceLicense": "MIT",
+  "testStrategy": "official check(candidate) expanded through canonical recorder, then translated to Cangjie main assertions",
+  "staticLanguageAdaptations": []
+}

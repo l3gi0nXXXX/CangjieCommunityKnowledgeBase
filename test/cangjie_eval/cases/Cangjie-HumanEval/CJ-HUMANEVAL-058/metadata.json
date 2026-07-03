@@ -1,0 +1,18 @@
+{
+  "id": "CJ-HUMANEVAL-058",
+  "source": "openai/human-eval",
+  "sourceTaskId": "HumanEval/58",
+  "entryPoint": "common",
+  "package": "cangjie_humaneval_058",
+  "targetVersion": "1.0.0",
+  "signature": "public func common(l1: ArrayList<Int64>, l2: ArrayList<Int64>): ArrayList<Int64>",
+  "argTypes": [
+    "ArrayList<Int64>",
+    "ArrayList<Int64>"
+  ],
+  "returnType": "ArrayList<Int64>",
+  "callCount": 4,
+  "sourceLicense": "MIT",
+  "testStrategy": "official check(candidate) expanded through canonical recorder, then translated to Cangjie main assertions",
+  "staticLanguageAdaptations": []
+}

@@ -1,0 +1,17 @@
+{
+  "id": "CJ-HUMANEVAL-061",
+  "source": "openai/human-eval",
+  "sourceTaskId": "HumanEval/61",
+  "entryPoint": "correct_bracketing",
+  "package": "cangjie_humaneval_061",
+  "targetVersion": "1.0.0",
+  "signature": "public func correct_bracketing(brackets: String): Bool",
+  "argTypes": [
+    "String"
+  ],
+  "returnType": "Bool",
+  "callCount": 12,
+  "sourceLicense": "MIT",
+  "testStrategy": "official check(candidate) expanded through canonical recorder, then translated to Cangjie main assertions",
+  "staticLanguageAdaptations": []
+}

@@ -1,0 +1,17 @@
+{
+  "id": "CJ-HUMANEVAL-146",
+  "source": "openai/human-eval",
+  "sourceTaskId": "HumanEval/146",
+  "entryPoint": "specialFilter",
+  "package": "cangjie_humaneval_146",
+  "targetVersion": "1.0.0",
+  "signature": "public func specialFilter(nums: ArrayList<Int64>): Int64",
+  "argTypes": [
+    "ArrayList<Int64>"
+  ],
+  "returnType": "Int64",
+  "callCount": 7,
+  "sourceLicense": "MIT",
+  "testStrategy": "official check(candidate) expanded through canonical recorder, then translated to Cangjie main assertions",
+  "staticLanguageAdaptations": []
+}

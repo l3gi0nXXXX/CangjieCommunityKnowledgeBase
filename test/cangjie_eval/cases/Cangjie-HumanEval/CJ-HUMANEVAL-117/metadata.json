@@ -1,0 +1,18 @@
+{
+  "id": "CJ-HUMANEVAL-117",
+  "source": "openai/human-eval",
+  "sourceTaskId": "HumanEval/117",
+  "entryPoint": "select_words",
+  "package": "cangjie_humaneval_117",
+  "targetVersion": "1.0.0",
+  "signature": "public func select_words(s: String, n: Int64): ArrayList<String>",
+  "argTypes": [
+    "String",
+    "Int64"
+  ],
+  "returnType": "ArrayList<String>",
+  "callCount": 7,
+  "sourceLicense": "MIT",
+  "testStrategy": "official check(candidate) expanded through canonical recorder, then translated to Cangjie main assertions",
+  "staticLanguageAdaptations": []
+}

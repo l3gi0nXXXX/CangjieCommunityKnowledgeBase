@@ -1,0 +1,17 @@
+{
+  "id": "CJ-HUMANEVAL-098",
+  "source": "openai/human-eval",
+  "sourceTaskId": "HumanEval/98",
+  "entryPoint": "count_upper",
+  "package": "cangjie_humaneval_098",
+  "targetVersion": "1.0.0",
+  "signature": "public func count_upper(s: String): Int64",
+  "argTypes": [
+    "String"
+  ],
+  "returnType": "Int64",
+  "callCount": 7,
+  "sourceLicense": "MIT",
+  "testStrategy": "official check(candidate) expanded through canonical recorder, then translated to Cangjie main assertions",
+  "staticLanguageAdaptations": []
+}

@@ -17,10 +17,14 @@ public class CkbMcpHttpTest {
     }
 
     private func sessionHeaders(sessionId: String): Array<String> {
+        this.sessionHeadersWithProtocol(sessionId, "2025-06-18")
+    }
+
+    private func sessionHeadersWithProtocol(sessionId: String, protocolVersion: String): Array<String> {
         [
             "Content-Type: application/json",
             "Accept: application/json, text/event-stream",
-            "MCP-Protocol-Version: 2025-06-18",
+            "MCP-Protocol-Version: ${protocolVersion}",
             "Mcp-Session-Id: ${sessionId}"
         ]
     }
@@ -35,7 +39,11 @@ public class CkbMcpHttpTest {
     }
 
     private func initializeBody(id: Int64): String {
-        "{\"jsonrpc\":\"2.0\",\"id\":${id},\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-06-18\",\"capabilities\":{},\"clientInfo\":{\"name\":\"mcp-http-test\",\"version\":\"1\"}}}"
+        this.initializeBodyWithProtocol(id, "2025-06-18")
+    }
+
+    private func initializeBodyWithProtocol(id: Int64, protocolVersion: String): String {
+        "{\"jsonrpc\":\"2.0\",\"id\":${id},\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"${protocolVersion}\",\"capabilities\":{},\"clientInfo\":{\"name\":\"mcp-http-test\",\"version\":\"1\"}}}"
     }
 
     private func extractSessionId(response: CkbMcpHttpResponse): String {
@@ -77,12 +85,12 @@ public class CkbMcpHttpTest {
     public func msh4Pos001InitializeInitializedToolsListLifecycle(): Unit {
         let store = CkbMcpHttpSessionStore()
         let service = this.service("msh4-pos-001")
-        let init = handleCkbMcpHttpRequest(service, "POST", "/mcp", this.initializeBody(1), this.initHeaders(), CkbHttpServiceConfig(), CkbMcpHttpServiceConfig(), store)
-        let sessionId = this.extractSessionId(init)
+        let initialize = handleCkbMcpHttpRequest(service, "POST", "/mcp", this.initializeBody(1), this.initHeaders(), CkbHttpServiceConfig(), CkbMcpHttpServiceConfig(), store)
+        let sessionId = this.extractSessionId(initialize)
         let initialized = handleCkbMcpHttpRequest(service, "POST", "/mcp", "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\",\"params\":{}}", this.sessionHeaders(sessionId), CkbHttpServiceConfig(), CkbMcpHttpServiceConfig(), store)
         let tools = handleCkbMcpHttpRequest(service, "POST", "/mcp", "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\",\"params\":{}}", this.sessionHeaders(sessionId), CkbHttpServiceConfig(), CkbMcpHttpServiceConfig(), store)
 
-        @Expect(init.statusCode, 200)
+        @Expect(initialize.statusCode, 200)
         @Expect(sessionId != "", true)
         @Expect(initialized.statusCode, 202)
         @Expect(initialized.body, "")
@@ -91,11 +99,26 @@ public class CkbMcpHttpTest {
     }
 
     @TestCase
+    public func msh4Pos003InitializeEchoesClientProtocolVersion(): Unit {
+        let store = CkbMcpHttpSessionStore()
+        let service = this.service("msh4-pos-003")
+        let initialize = handleCkbMcpHttpRequest(service, "POST", "/mcp", this.initializeBodyWithProtocol(1, "2024-11-05"), this.initHeaders(), CkbHttpServiceConfig(), CkbMcpHttpServiceConfig(), store)
+        let sessionId = this.extractSessionId(initialize)
+        let tools = handleCkbMcpHttpRequest(service, "POST", "/mcp", "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\",\"params\":{}}", this.sessionHeadersWithProtocol(sessionId, "2024-11-05"), CkbHttpServiceConfig(), CkbMcpHttpServiceConfig(), store)
+
+        @Expect(initialize.statusCode, 200)
+        @Expect(initialize.body.contains("\"protocolVersion\":\"2024-11-05\""), true)
+        @Expect(sessionId != "", true)
+        @Expect(tools.statusCode, 200)
+        @Expect(tools.body.contains("\"name\":\"cangjie_knowledge_pack\""), true)
+    }
+
+    @TestCase
     public func msh4Pos002GetSseRecordsLastEventId(): Unit {
         let store = CkbMcpHttpSessionStore()
         let service = this.service("msh4-pos-002")
-        let init = handleCkbMcpHttpRequest(service, "POST", "/mcp", this.initializeBody(1), this.initHeaders(), CkbHttpServiceConfig(), CkbMcpHttpServiceConfig(), store)
-        let sessionId = this.extractSessionId(init)
+        let initialize = handleCkbMcpHttpRequest(service, "POST", "/mcp", this.initializeBody(1), this.initHeaders(), CkbHttpServiceConfig(), CkbMcpHttpServiceConfig(), store)
+        let sessionId = this.extractSessionId(initialize)
         let sse = handleCkbMcpHttpRequest(service, "GET", "/mcp", "", this.sseHeaders(sessionId), CkbHttpServiceConfig(), CkbMcpHttpServiceConfig(), store)
 
         @Expect(sse.statusCode, 200)

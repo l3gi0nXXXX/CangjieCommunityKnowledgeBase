@@ -1,0 +1,18 @@
+{
+  "id": "CJ-HUMANEVAL-160",
+  "source": "openai/human-eval",
+  "sourceTaskId": "HumanEval/160",
+  "entryPoint": "do_algebra",
+  "package": "cangjie_humaneval_160",
+  "targetVersion": "1.0.0",
+  "signature": "public func do_algebra(operatorValue: ArrayList<String>, operand: ArrayList<Int64>): Int64",
+  "argTypes": [
+    "ArrayList<String>",
+    "ArrayList<Int64>"
+  ],
+  "returnType": "Int64",
+  "callCount": 3,
+  "sourceLicense": "MIT",
+  "testStrategy": "official check(candidate) expanded through canonical recorder, then translated to Cangjie main assertions",
+  "staticLanguageAdaptations": []
+}

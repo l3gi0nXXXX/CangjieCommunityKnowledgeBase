@@ -1,0 +1,7 @@
+[package]
+  cjc-version = "1.0.0"
+  name = "cangjie_humaneval_153"
+  version = "0.1.0"
+  output-type = "executable"
+  src-dir = "src"
+  compile-option = "-Woff unused"

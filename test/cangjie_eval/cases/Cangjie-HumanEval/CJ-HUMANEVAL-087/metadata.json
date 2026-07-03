@@ -1,0 +1,18 @@
+{
+  "id": "CJ-HUMANEVAL-087",
+  "source": "openai/human-eval",
+  "sourceTaskId": "HumanEval/87",
+  "entryPoint": "get_row",
+  "package": "cangjie_humaneval_087",
+  "targetVersion": "1.0.0",
+  "signature": "public func get_row(lst: ArrayList<ArrayList<Int64>>, x: Int64): ArrayList<(Int64, Int64)>",
+  "argTypes": [
+    "ArrayList<ArrayList<Int64>>",
+    "Int64"
+  ],
+  "returnType": "ArrayList<(Int64, Int64)>",
+  "callCount": 6,
+  "sourceLicense": "MIT",
+  "testStrategy": "official check(candidate) expanded through canonical recorder, then translated to Cangjie main assertions",
+  "staticLanguageAdaptations": []
+}

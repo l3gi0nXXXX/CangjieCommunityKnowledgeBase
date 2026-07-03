@@ -1,0 +1,18 @@
+{
+  "id": "CJ-HUMANEVAL-112",
+  "source": "openai/human-eval",
+  "sourceTaskId": "HumanEval/112",
+  "entryPoint": "reverse_delete",
+  "package": "cangjie_humaneval_112",
+  "targetVersion": "1.0.0",
+  "signature": "public func reverse_delete(s: String, c: String): (String, Bool)",
+  "argTypes": [
+    "String",
+    "String"
+  ],
+  "returnType": "(String, Bool)",
+  "callCount": 9,
+  "sourceLicense": "MIT",
+  "testStrategy": "official check(candidate) expanded through canonical recorder, then translated to Cangjie main assertions",
+  "staticLanguageAdaptations": []
+}

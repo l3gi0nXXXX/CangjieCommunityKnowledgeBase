@@ -55,6 +55,7 @@ todo.md
 
 # Generated or external test fixtures
 test_examples/
+test/cangjie_eval/cases/**/reference/
 
 # External modules
 CangjieMagic/

@@ -1,0 +1,19 @@
+{
+  "id": "CJ-HUMANEVAL-078",
+  "source": "openai/human-eval",
+  "sourceTaskId": "HumanEval/78",
+  "entryPoint": "hex_key",
+  "package": "cangjie_humaneval_078",
+  "targetVersion": "1.0.0",
+  "signature": "public func hex_key(num: String): Int64",
+  "argTypes": [
+    "String"
+  ],
+  "returnType": "Int64",
+  "callCount": 7,
+  "sourceLicense": "MIT",
+  "testStrategy": "official check(candidate) expanded through canonical recorder, then translated to Cangjie main assertions",
+  "staticLanguageAdaptations": [
+    "The official empty-list edge input is translated to the empty string because the task parameter is a hexadecimal string."
+  ]
+}

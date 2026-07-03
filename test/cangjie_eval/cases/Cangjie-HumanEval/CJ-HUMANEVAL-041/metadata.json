@@ -1,0 +1,17 @@
+{
+  "id": "CJ-HUMANEVAL-041",
+  "source": "openai/human-eval",
+  "sourceTaskId": "HumanEval/41",
+  "entryPoint": "car_race_collision",
+  "package": "cangjie_humaneval_041",
+  "targetVersion": "1.0.0",
+  "signature": "public func car_race_collision(n: Int64): Int64",
+  "argTypes": [
+    "Int64"
+  ],
+  "returnType": "Int64",
+  "callCount": 5,
+  "sourceLicense": "MIT",
+  "testStrategy": "official check(candidate) expanded through canonical recorder, then translated to Cangjie main assertions",
+  "staticLanguageAdaptations": []
+}

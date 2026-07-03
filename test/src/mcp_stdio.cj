@@ -1,4 +1,4 @@
-package cangjie_community_knowledge_base
+package cangjie_community_knowledge_base_test
 
 import std.collection.ArrayList
 import std.convert.Parsable
@@ -34,11 +34,11 @@ public class CkbMcpStdioServer {
     }
 
     public func handleLine(line: String): CkbMcpDispatchResult {
-        this.handleMessage(line, "2024-11-05", "ckb-cangjie-mcp-stdio")
+        this.handleMessage(line, ckbMcpProtocolVersionFromInitialize(line, "2024-11-05"), "ckb-cangjie-mcp-stdio")
     }
 
     public func handleRequest(request: String): String {
-        this.handleMessage(request, "2024-11-05", "ckb-cangjie-mcp-stdio").payload
+        this.handleMessage(request, ckbMcpProtocolVersionFromInitialize(request, "2024-11-05"), "ckb-cangjie-mcp-stdio").payload
     }
 
     public func handleMessage(request: String, protocolVersion: String, serverName: String): CkbMcpDispatchResult {
@@ -286,6 +286,18 @@ public class CkbMcpStdioServer {
     }
 }
 
+public func ckbMcpProtocolVersionFromInitialize(request: String, fallback: String): String {
+    if (ckbMcpJsonStringField(request, "method") != "initialize") {
+        return fallback
+    }
+    let params = ckbMcpJsonObjectField(request, "params")
+    let requested = ckbMcpJsonStringField(params, "protocolVersion").trimAscii()
+    if (requested == "") {
+        return fallback
+    }
+    requested
+}
+
 private func ckbMcpToolNames(): ArrayList<String> {
     let tools = ArrayList<String>()
     tools.add("cangjie_knowledge_pack")
@@ -414,20 +426,21 @@ private class CkbMcpJsonStringScan {
 
 public func ckbMcpJsonId(raw: String): String {
     let start = ckbMcpJsonValueStart(raw, "id")
+    let chars = raw.toRuneArray()
     if (start < 0) {
         return "null"
     }
-    if (ckbMcpCharAt(raw, start) == "\"") {
-        let scan = ckbMcpReadJsonStringAt(raw, start)
+    if (start < chars.size && chars[start] == r'"') {
+        let scan = ckbMcpReadJsonStringAt(chars, start)
         if (scan.ok) {
             return "\"${ckbMcpJsonEscape(scan.value)}\""
         }
     }
     var end = start
-    while (end < raw.size && ckbMcpCharAt(raw, end) != "," && ckbMcpCharAt(raw, end) != "}" && ckbMcpCharAt(raw, end) != "\n" && ckbMcpCharAt(raw, end) != "\r" && ckbMcpCharAt(raw, end) != "\t" && ckbMcpCharAt(raw, end) != " ") {
+    while (end < chars.size && chars[end] != r',' && chars[end] != r'}' && chars[end] != r']' && !ckbMcpIsJsonWhitespace(chars[end])) {
         end += 1
     }
-    let value = raw[start..end].trimAscii()
+    let value = ckbMcpRunesToString(chars, start, end).trimAscii()
     if (value == "") { return "null" }
     value
 }
@@ -438,98 +451,103 @@ public func ckbMcpJsonHasId(raw: String): Bool {
 
 public func ckbMcpJsonStringField(raw: String, key: String): String {
     let start = ckbMcpJsonValueStart(raw, key)
-    if (start < 0 || start >= raw.size || ckbMcpCharAt(raw, start) != "\"") {
+    let chars = raw.toRuneArray()
+    if (start < 0 || start >= chars.size || chars[start] != r'"') {
         return ""
     }
-    let scan = ckbMcpReadJsonStringAt(raw, start)
+    let scan = ckbMcpReadJsonStringAt(chars, start)
     if (scan.ok) { scan.value } else { "" }
 }
 
 public func ckbMcpJsonObjectField(raw: String, key: String): String {
     let start = ckbMcpJsonValueStart(raw, key)
-    if (start < 0 || start >= raw.size || ckbMcpCharAt(raw, start) != "{") {
+    let chars = raw.toRuneArray()
+    if (start < 0 || start >= chars.size || chars[start] != r'{') {
         return ""
     }
-    ckbMcpJsonEnclosedAt(raw, start, "{", "}")
+    ckbMcpJsonEnclosedAt(chars, start, r'{', r'}')
 }
 
 private func ckbMcpJsonIntField(raw: String, key: String, fallback: Int64): Int64 {
     let start = ckbMcpJsonValueStart(raw, key)
+    let chars = raw.toRuneArray()
     if (start < 0) { return fallback }
-    if (start < raw.size && ckbMcpCharAt(raw, start) == "\"") {
+    if (start < chars.size && chars[start] == r'"') {
         return try { Int64.parse(ckbMcpJsonStringField(raw, key).trimAscii()) } catch (_: Exception) { fallback }
     }
     var end = start
-    while (end < raw.size && ckbMcpCharAt(raw, end) >= "0" && ckbMcpCharAt(raw, end) <= "9") {
+    while (end < chars.size && ckbMcpIsDigit(chars[end])) {
         end += 1
     }
     if (end == start) { return fallback }
-    try { Int64.parse(raw[start..end]) } catch (_: Exception) { fallback }
+    try { Int64.parse(ckbMcpRunesToString(chars, start, end)) } catch (_: Exception) { fallback }
 }
 
 private func ckbMcpJsonBoolField(raw: String, key: String): Bool {
     let start = ckbMcpJsonValueStart(raw, key)
-    start >= 0 && start + 4 <= raw.size && raw[start..start + 4] == "true"
+    let chars = raw.toRuneArray()
+    start >= 0 && ckbMcpRunesStartWith(chars, start, "true")
 }
 
 private func ckbMcpJsonBoolFieldDefault(raw: String, key: String, fallback: Bool): Bool {
     let start = ckbMcpJsonValueStart(raw, key)
     if (start < 0) { return fallback }
-    start + 4 <= raw.size && raw[start..start + 4] == "true"
+    ckbMcpRunesStartWith(raw.toRuneArray(), start, "true")
 }
 
 private func ckbMcpJsonValueStart(raw: String, key: String): Int64 {
+    let chars = raw.toRuneArray()
     var i: Int64 = 0
     var depth: Int64 = 0
     var inString = false
     var escaped = false
-    while (i < raw.size) {
-        let ch = ckbMcpCharAt(raw, i)
+    while (i < chars.size) {
+        let ch = chars[i]
         if (inString) {
             if (escaped) {
                 escaped = false
-            } else if (ch == "\\") {
+            } else if (ch == r'\\') {
                 escaped = true
-            } else if (ch == "\"") {
+            } else if (ch == r'"') {
                 inString = false
             }
             i += 1
             continue
         }
-        if (ch == "\"") {
-            let scan = ckbMcpReadJsonStringAt(raw, i)
+        if (ch == r'"') {
+            let scan = ckbMcpReadJsonStringAt(chars, i)
             if (scan.ok && scan.value == key && depth == 1) {
-                var colon = ckbMcpSkipJsonWhitespace(raw, scan.end)
-                if (colon < raw.size && ckbMcpCharAt(raw, colon) == ":") {
-                    return ckbMcpSkipJsonWhitespace(raw, colon + 1)
+                var colon = ckbMcpSkipJsonWhitespace(chars, scan.end)
+                if (colon < chars.size && chars[colon] == r':') {
+                    return ckbMcpSkipJsonWhitespace(chars, colon + 1)
                 }
             }
             i = if (scan.ok) { scan.end } else { i + 1 }
             continue
         }
-        if (ch == "{") { depth += 1 }
-        if (ch == "}") { depth -= 1 }
+        if (ch == r'{' || ch == r'[') { depth += 1 }
+        if (ch == r'}' || ch == r']') { depth -= 1 }
         i += 1
     }
     -1
 }
 
-private func ckbMcpReadJsonStringAt(raw: String, start: Int64): CkbMcpJsonStringScan {
+private func ckbMcpReadJsonStringAt(chars: Array<Rune>, start: Int64): CkbMcpJsonStringScan {
     let scan = CkbMcpJsonStringScan()
-    if (start < 0 || start >= raw.size || ckbMcpCharAt(raw, start) != "\"") {
+    if (start < 0 || start >= chars.size || chars[start] != r'"') {
         return scan
     }
     var i = start + 1
     var escaped = false
     let out = StringBuilder()
-    while (i < raw.size) {
-        let ch = ckbMcpCharAt(raw, i)
+    while (i < chars.size) {
+        let ch = chars[i]
         if (escaped) {
             out.append(ckbMcpJsonUnescapeChar(ch))
             escaped = false
-        } else if (ch == "\\") {
+        } else if (ch == r'\\') {
             escaped = true
-        } else if (ch == "\"") {
+        } else if (ch == r'"') {
             scan.ok = true
             scan.value = out.toString()
             scan.end = i + 1
@@ -542,46 +560,46 @@ private func ckbMcpReadJsonStringAt(raw: String, start: Int64): CkbMcpJsonString
     scan
 }
 
-private func ckbMcpJsonUnescapeChar(ch: String): String {
-    if (ch == "n") { return "\n" }
-    if (ch == "r") { return "\r" }
-    if (ch == "t") { return "\t" }
-    if (ch == "\"") { return "\"" }
-    if (ch == "\\") { return "\\" }
-    ch
+private func ckbMcpJsonUnescapeChar(ch: Rune): String {
+    if (ch == r'n') { return "\n" }
+    if (ch == r'r') { return "\r" }
+    if (ch == r't') { return "\t" }
+    if (ch == r'"') { return "\"" }
+    if (ch == r'\\') { return "\\" }
+    ckbMcpRunesToString([ch], 0, 1)
 }
 
-private func ckbMcpSkipJsonWhitespace(raw: String, start: Int64): Int64 {
+private func ckbMcpSkipJsonWhitespace(chars: Array<Rune>, start: Int64): Int64 {
     var i = start
-    while (i < raw.size && (ckbMcpCharAt(raw, i) == " " || ckbMcpCharAt(raw, i) == "\n" || ckbMcpCharAt(raw, i) == "\r" || ckbMcpCharAt(raw, i) == "\t")) {
+    while (i < chars.size && ckbMcpIsJsonWhitespace(chars[i])) {
         i += 1
     }
     i
 }
 
-private func ckbMcpJsonEnclosedAt(raw: String, start: Int64, open: String, close: String): String {
+private func ckbMcpJsonEnclosedAt(chars: Array<Rune>, start: Int64, open: Rune, close: Rune): String {
     var i = start
     var depth: Int64 = 0
     var inString = false
     var escaped = false
-    while (i < raw.size) {
-        let ch = ckbMcpCharAt(raw, i)
+    while (i < chars.size) {
+        let ch = chars[i]
         if (inString) {
             if (escaped) {
                 escaped = false
-            } else if (ch == "\\") {
+            } else if (ch == r'\\') {
                 escaped = true
-            } else if (ch == "\"") {
+            } else if (ch == r'"') {
                 inString = false
             }
-        } else if (ch == "\"") {
+        } else if (ch == r'"') {
             inString = true
         } else if (ch == open) {
             depth += 1
         } else if (ch == close) {
             depth -= 1
             if (depth == 0) {
-                return raw[start..i + 1]
+                return ckbMcpRunesToString(chars, start, i + 1)
             }
         }
         i += 1
@@ -593,11 +611,36 @@ private func ckbMcpFirstNonEmpty(a: String, b: String): String {
     if (a != "") { a } else { b }
 }
 
-private func ckbMcpCharAt(raw: String, index: Int64): String {
-    if (index < 0 || index >= raw.size) {
-        return ""
+private func ckbMcpRunesStartWith(chars: Array<Rune>, start: Int64, literal: String): Bool {
+    let expected = literal.toRuneArray()
+    if (start < 0 || start + expected.size > chars.size) {
+        return false
     }
-    raw[index..index + 1]
+    for (i in 0..expected.size) {
+        if (chars[start + i] != expected[i]) {
+            return false
+        }
+    }
+    true
+}
+
+private func ckbMcpRunesToString(chars: Array<Rune>, start: Int64, end: Int64): String {
+    let out = StringBuilder()
+    var i = start
+    while (i < end && i < chars.size) {
+        out.append(chars[i])
+        i += 1
+    }
+    out.toString()
+}
+
+private func ckbMcpIsJsonWhitespace(ch: Rune): Bool {
+    ch == r' ' || ch == r'\n' || ch == r'\r' || ch == r'\t'
+}
+
+private func ckbMcpIsDigit(ch: Rune): Bool {
+    let value = UInt32(ch)
+    value >= UInt32(r'0') && value <= UInt32(r'9')
 }
 
 private func ckbMcpUriTail(uri: String, prefix: String): String {

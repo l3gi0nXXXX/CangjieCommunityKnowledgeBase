@@ -1,0 +1,18 @@
+{
+  "id": "CJ-HUMANEVAL-072",
+  "source": "openai/human-eval",
+  "sourceTaskId": "HumanEval/72",
+  "entryPoint": "will_it_fly",
+  "package": "cangjie_humaneval_072",
+  "targetVersion": "1.0.0",
+  "signature": "public func will_it_fly(q: ArrayList<Int64>, w: Int64): Bool",
+  "argTypes": [
+    "ArrayList<Int64>",
+    "Int64"
+  ],
+  "returnType": "Bool",
+  "callCount": 6,
+  "sourceLicense": "MIT",
+  "testStrategy": "official check(candidate) expanded through canonical recorder, then translated to Cangjie main assertions",
+  "staticLanguageAdaptations": []
+}

@@ -1,0 +1,17 @@
+{
+  "id": "CJ-HUMANEVAL-017",
+  "source": "openai/human-eval",
+  "sourceTaskId": "HumanEval/17",
+  "entryPoint": "parse_music",
+  "package": "cangjie_humaneval_017",
+  "targetVersion": "1.0.0",
+  "signature": "public func parse_music(music_string: String): ArrayList<Int64>",
+  "argTypes": [
+    "String"
+  ],
+  "returnType": "ArrayList<Int64>",
+  "callCount": 5,
+  "sourceLicense": "MIT",
+  "testStrategy": "official check(candidate) expanded through canonical recorder, then translated to Cangjie main assertions",
+  "staticLanguageAdaptations": []
+}

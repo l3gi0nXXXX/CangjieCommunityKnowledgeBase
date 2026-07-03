@@ -1,0 +1,18 @@
+{
+  "id": "CJ-HUMANEVAL-163",
+  "source": "openai/human-eval",
+  "sourceTaskId": "HumanEval/163",
+  "entryPoint": "generate_integers",
+  "package": "cangjie_humaneval_163",
+  "targetVersion": "1.0.0",
+  "signature": "public func generate_integers(a: Int64, b: Int64): ArrayList<Int64>",
+  "argTypes": [
+    "Int64",
+    "Int64"
+  ],
+  "returnType": "ArrayList<Int64>",
+  "callCount": 4,
+  "sourceLicense": "MIT",
+  "testStrategy": "official check(candidate) expanded through canonical recorder, then translated to Cangjie main assertions",
+  "staticLanguageAdaptations": []
+}

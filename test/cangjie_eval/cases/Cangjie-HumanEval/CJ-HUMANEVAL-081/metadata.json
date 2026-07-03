@@ -1,0 +1,19 @@
+{
+  "id": "CJ-HUMANEVAL-081",
+  "source": "openai/human-eval",
+  "sourceTaskId": "HumanEval/81",
+  "entryPoint": "numerical_letter_grade",
+  "package": "cangjie_humaneval_081",
+  "targetVersion": "1.0.0",
+  "signature": "public func numerical_letter_grade(grades: ArrayList<Float64>): ArrayList<String>",
+  "argTypes": [
+    "ArrayList<Float64>"
+  ],
+  "returnType": "ArrayList<String>",
+  "callCount": 6,
+  "sourceLicense": "MIT",
+  "testStrategy": "official check(candidate) expanded through canonical recorder, then translated to Cangjie main assertions",
+  "staticLanguageAdaptations": [
+    "Python int/float numeric unions are represented with Float64 where needed."
+  ]
+}

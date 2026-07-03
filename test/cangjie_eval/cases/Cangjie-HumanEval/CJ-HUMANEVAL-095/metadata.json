@@ -1,0 +1,19 @@
+{
+  "id": "CJ-HUMANEVAL-095",
+  "source": "openai/human-eval",
+  "sourceTaskId": "HumanEval/95",
+  "entryPoint": "check_dict_case",
+  "package": "cangjie_humaneval_095",
+  "targetVersion": "1.0.0",
+  "signature": "public func check_dict_case(dictValue: ArrayList<EvalEntry>): Bool",
+  "argTypes": [
+    "ArrayList<EvalEntry>"
+  ],
+  "returnType": "Bool",
+  "callCount": 7,
+  "sourceLicense": "MIT",
+  "testStrategy": "official check(candidate) expanded through canonical recorder, then translated to Cangjie main assertions",
+  "staticLanguageAdaptations": [
+    "Python dynamic values are represented by EvalValue/EvalEntry helper types."
+  ]
+}

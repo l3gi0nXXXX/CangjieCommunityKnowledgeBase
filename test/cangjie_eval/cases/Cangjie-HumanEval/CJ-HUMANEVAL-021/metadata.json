@@ -1,0 +1,17 @@
+{
+  "id": "CJ-HUMANEVAL-021",
+  "source": "openai/human-eval",
+  "sourceTaskId": "HumanEval/21",
+  "entryPoint": "rescale_to_unit",
+  "package": "cangjie_humaneval_021",
+  "targetVersion": "1.0.0",
+  "signature": "public func rescale_to_unit(numbers: ArrayList<Float64>): ArrayList<Float64>",
+  "argTypes": [
+    "ArrayList<Float64>"
+  ],
+  "returnType": "ArrayList<Float64>",
+  "callCount": 5,
+  "sourceLicense": "MIT",
+  "testStrategy": "official check(candidate) expanded through canonical recorder, then translated to Cangjie main assertions",
+  "staticLanguageAdaptations": []
+}

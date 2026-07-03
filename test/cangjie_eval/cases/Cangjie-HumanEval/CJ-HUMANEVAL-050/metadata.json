@@ -1,0 +1,17 @@
+{
+  "id": "CJ-HUMANEVAL-050",
+  "source": "openai/human-eval",
+  "sourceTaskId": "HumanEval/50",
+  "entryPoint": "decode_shift",
+  "package": "cangjie_humaneval_050",
+  "targetVersion": "1.0.0",
+  "signature": "public func decode_shift(s: String): String",
+  "argTypes": [
+    "String"
+  ],
+  "returnType": "String",
+  "callCount": 100,
+  "sourceLicense": "MIT",
+  "testStrategy": "official check(candidate) expanded through canonical recorder, then translated to Cangjie main assertions",
+  "staticLanguageAdaptations": []
+}

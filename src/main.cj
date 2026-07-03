@@ -1,7 +1,7 @@
 package cangjie_community_knowledge_base
 
 import std.convert.Parsable
-import std.env.{getCommand, getVariable}
+import std.env.{getCommand, getVariable, getStdOut}
 import std.fs.{File, OpenMode, Path}
 import std.io.*
 import std.process.*
@@ -150,6 +150,9 @@ public func ckbCliMain(args: Array<String>): Int64 {
         print(result[0])
         return result[1]
     }
+    if (cli.command == "cangjie-eval-abcde") {
+        return runCangjieEvalAbcde(args)
+    }
     if (cli.command == "rebuild-index") {
         let result = ckbRebuildIndex(kb, store)
         println("rebuild ok=${result.ok} activeKnowledgeVersion=${result.activeVersion} candidateKnowledgeVersion=${result.candidateVersion} count=${result.count}")
@@ -188,7 +191,7 @@ public func ckbCliMain(args: Array<String>): Int64 {
         print(renderQuery(cangjie_evidence_pack(kb, query, 3)))
         return 0
     }
-    println("Usage: cangjie_community_knowledge_base [--config <path>] [--store <path>] doctor | status | metrics | service | service-http | http-service | mcp-stdio | service-once <command> | start | stop | restart | sync-once | sync-live (--dry-run|--apply) | source_analysis repo=<owner/repo> ref=<ref> path=<path> query=<text> | native-http-smoke <url> | cangjie-corpus-status | cangjie-knowledge-pack <task> | cangjie-api-search <query> | cangjie-syntax-query <query> | cangjie-cookbook <task> | cangjie-diagnose <compiler-output> | cangjie-llms [task] | cangjie-context-pack <task> | cangjie-eval-summary <manifest.jsonl> | scheduler-run | rebuild-index | backup <path> | restore <path> | query <text> | evidence <text> | schema")
+    println("Usage: cangjie_community_knowledge_base [--config <path>] [--store <path>] doctor | status | metrics | service | service-http | http-service | mcp-stdio | service-once <command> | start | stop | restart | sync-once | sync-live (--dry-run|--apply) | source_analysis repo=<owner/repo> ref=<ref> path=<path> | native-http-smoke <url> | cangjie-corpus-status | cangjie-knowledge-pack <task> | cangjie-api-search <query> | cangjie-syntax-query <query> | cangjie-cookbook <task> | cangjie-diagnose <compiler-output> | cangjie-llms [task] | cangjie-context-pack <task> | cangjie-eval-summary <manifest.jsonl> | cangjie-eval-abcde [--preflight-only] | scheduler-run | rebuild-index | backup <path> | restore <path> | query <text> | evidence <text> | schema")
     2
 }
 
@@ -220,8 +223,10 @@ private func ckbMaybeRelaunchWithNativeTlsEnv(args: Array<String>): (Bool, Int64
 
 public func ckbNativeTlsBootstrapScript(command: String, args: Array<String>): String {
     var script = "export CKB_NATIVE_TLS_BOOTSTRAPPED=1; " +
-        "MAGIC_ROOT=\"" + "$" + "{MAGIC_PATH:-" + "$" + "{CKB_MAGIC_ROOT:-}}\"; " +
-        "CANGJIE_ROOT=\"" + "$" + "{CANGJIE_HOME:-" + "$" + "{CKB_CANGJIE_ROOT:-}}\"; " +
+        "MAGIC_ROOT=\"" + "$" + "{MAGIC_PATH:-}\"; " +
+        "if [ -z \"" + "$" + "{MAGIC_ROOT}\" ]; then MAGIC_ROOT=\"" + "$" + "{CKB_MAGIC_ROOT:-}\"; fi; " +
+        "CANGJIE_ROOT=\"" + "$" + "{CANGJIE_HOME:-}\"; " +
+        "if [ -z \"" + "$" + "{CANGJIE_ROOT}\" ]; then CANGJIE_ROOT=\"" + "$" + "{CKB_CANGJIE_ROOT:-}\"; fi; " +
         "CKB_DYLD_EXTRA=\"/opt/homebrew/opt/openssl@3/lib:/opt/homebrew/opt/openssl@3.5/lib:/usr/local/opt/openssl@3/lib\"; " +
         "if [ -n \"" + "$" + "{CANGJIE_ROOT}\" ]; then CKB_DYLD_EXTRA=\"" + "$" + "{CKB_DYLD_EXTRA}:" + "$" + "{CANGJIE_ROOT}/runtime/lib/darwin_aarch64_llvm\"; fi; " +
         "if [ -n \"" + "$" + "{MAGIC_ROOT}\" ]; then CKB_DYLD_EXTRA=\"" + "$" + "{CKB_DYLD_EXTRA}:" + "$" + "{MAGIC_ROOT}/libs/cangjie-stdx-mac-aarch64-1.0.0.1/darwin_aarch64_llvm/dynamic/stdx\"; fi; " +
@@ -388,6 +393,7 @@ private func renderCangjieEvalManifestFileSummary(path: String): (String, Int64)
 private func runCkbMcpStdioLoop(config: CkbRuntimeConfig, store: FileKnowledgeStore): Int64 {
     let service = CkbCommandLoopService(config, store, sourceRunner: if (config.networkEnabled) { HttpSourceFetchRunner(config) } else { DisabledNetworkFetchRunner() })
     let server = CkbMcpStdioServer(service)
+    let stdout = getStdOut()
     try (stdinFile = File("/dev/stdin", OpenMode.Read)) {
         let reader = StringReader(stdinFile)
         while (true) {
@@ -401,7 +407,8 @@ private func runCkbMcpStdioLoop(config: CkbRuntimeConfig, store: FileKnowledgeSt
             }
             let response = server.handleLine(line)
             if (response.shouldWrite) {
-                println(response.payload)
+                stdout.writeln(response.payload)
+                stdout.flush()
             }
         }
     } catch (_: Exception) {

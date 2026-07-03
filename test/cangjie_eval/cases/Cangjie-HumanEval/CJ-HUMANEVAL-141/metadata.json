@@ -1,0 +1,17 @@
+{
+  "id": "CJ-HUMANEVAL-141",
+  "source": "openai/human-eval",
+  "sourceTaskId": "HumanEval/141",
+  "entryPoint": "file_name_check",
+  "package": "cangjie_humaneval_141",
+  "targetVersion": "1.0.0",
+  "signature": "public func file_name_check(file_name: String): String",
+  "argTypes": [
+    "String"
+  ],
+  "returnType": "String",
+  "callCount": 26,
+  "sourceLicense": "MIT",
+  "testStrategy": "official check(candidate) expanded through canonical recorder, then translated to Cangjie main assertions",
+  "staticLanguageAdaptations": []
+}

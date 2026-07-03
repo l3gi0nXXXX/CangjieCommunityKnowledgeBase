@@ -1,0 +1,17 @@
+{
+  "id": "CJ-HUMANEVAL-100",
+  "source": "openai/human-eval",
+  "sourceTaskId": "HumanEval/100",
+  "entryPoint": "make_a_pile",
+  "package": "cangjie_humaneval_100",
+  "targetVersion": "1.0.0",
+  "signature": "public func make_a_pile(n: Int64): ArrayList<Int64>",
+  "argTypes": [
+    "Int64"
+  ],
+  "returnType": "ArrayList<Int64>",
+  "callCount": 5,
+  "sourceLicense": "MIT",
+  "testStrategy": "official check(candidate) expanded through canonical recorder, then translated to Cangjie main assertions",
+  "staticLanguageAdaptations": []
+}

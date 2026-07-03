@@ -1,0 +1,17 @@
+{
+  "id": "CJ-HUMANEVAL-155",
+  "source": "openai/human-eval",
+  "sourceTaskId": "HumanEval/155",
+  "entryPoint": "even_odd_count",
+  "package": "cangjie_humaneval_155",
+  "targetVersion": "1.0.0",
+  "signature": "public func even_odd_count(num: Int64): (Int64, Int64)",
+  "argTypes": [
+    "Int64"
+  ],
+  "returnType": "(Int64, Int64)",
+  "callCount": 8,
+  "sourceLicense": "MIT",
+  "testStrategy": "official check(candidate) expanded through canonical recorder, then translated to Cangjie main assertions",
+  "staticLanguageAdaptations": []
+}

@@ -1,0 +1,17 @@
+{
+  "id": "CJ-HUMANEVAL-038",
+  "source": "openai/human-eval",
+  "sourceTaskId": "HumanEval/38",
+  "entryPoint": "decode_cyclic",
+  "package": "cangjie_humaneval_038",
+  "targetVersion": "1.0.0",
+  "signature": "public func decode_cyclic(s: String): String",
+  "argTypes": [
+    "String"
+  ],
+  "returnType": "String",
+  "callCount": 100,
+  "sourceLicense": "MIT",
+  "testStrategy": "official check(candidate) expanded through canonical recorder, then translated to Cangjie main assertions",
+  "staticLanguageAdaptations": []
+}

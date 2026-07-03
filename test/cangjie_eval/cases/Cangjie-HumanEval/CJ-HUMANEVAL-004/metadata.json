@@ -1,0 +1,17 @@
+{
+  "id": "CJ-HUMANEVAL-004",
+  "source": "openai/human-eval",
+  "sourceTaskId": "HumanEval/4",
+  "entryPoint": "mean_absolute_deviation",
+  "package": "cangjie_humaneval_004",
+  "targetVersion": "1.0.0",
+  "signature": "public func mean_absolute_deviation(numbers: ArrayList<Float64>): Float64",
+  "argTypes": [
+    "ArrayList<Float64>"
+  ],
+  "returnType": "Float64",
+  "callCount": 3,
+  "sourceLicense": "MIT",
+  "testStrategy": "official check(candidate) expanded through canonical recorder, then translated to Cangjie main assertions",
+  "staticLanguageAdaptations": []
+}

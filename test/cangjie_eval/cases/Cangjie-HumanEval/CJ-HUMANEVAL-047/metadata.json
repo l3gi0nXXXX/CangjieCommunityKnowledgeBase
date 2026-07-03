@@ -1,0 +1,19 @@
+{
+  "id": "CJ-HUMANEVAL-047",
+  "source": "openai/human-eval",
+  "sourceTaskId": "HumanEval/47",
+  "entryPoint": "median",
+  "package": "cangjie_humaneval_047",
+  "targetVersion": "1.0.0",
+  "signature": "public func median(l: ArrayList<Int64>): Float64",
+  "argTypes": [
+    "ArrayList<Int64>"
+  ],
+  "returnType": "Float64",
+  "callCount": 5,
+  "sourceLicense": "MIT",
+  "testStrategy": "official check(candidate) expanded through canonical recorder, then translated to Cangjie main assertions",
+  "staticLanguageAdaptations": [
+    "Python int/float numeric unions are represented with Float64 where needed."
+  ]
+}

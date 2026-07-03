@@ -1,0 +1,17 @@
+{
+  "id": "CJ-HUMANEVAL-019",
+  "source": "openai/human-eval",
+  "sourceTaskId": "HumanEval/19",
+  "entryPoint": "sort_numbers",
+  "package": "cangjie_humaneval_019",
+  "targetVersion": "1.0.0",
+  "signature": "public func sort_numbers(numbers: String): String",
+  "argTypes": [
+    "String"
+  ],
+  "returnType": "String",
+  "callCount": 5,
+  "sourceLicense": "MIT",
+  "testStrategy": "official check(candidate) expanded through canonical recorder, then translated to Cangjie main assertions",
+  "staticLanguageAdaptations": []
+}

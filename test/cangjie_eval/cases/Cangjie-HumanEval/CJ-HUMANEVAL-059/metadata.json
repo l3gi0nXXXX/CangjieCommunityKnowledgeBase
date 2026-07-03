@@ -1,0 +1,17 @@
+{
+  "id": "CJ-HUMANEVAL-059",
+  "source": "openai/human-eval",
+  "sourceTaskId": "HumanEval/59",
+  "entryPoint": "largest_prime_factor",
+  "package": "cangjie_humaneval_059",
+  "targetVersion": "1.0.0",
+  "signature": "public func largest_prime_factor(n: Int64): Int64",
+  "argTypes": [
+    "Int64"
+  ],
+  "returnType": "Int64",
+  "callCount": 5,
+  "sourceLicense": "MIT",
+  "testStrategy": "official check(candidate) expanded through canonical recorder, then translated to Cangjie main assertions",
+  "staticLanguageAdaptations": []
+}

@@ -1,0 +1,17 @@
+{
+  "id": "CJ-HUMANEVAL-142",
+  "source": "openai/human-eval",
+  "sourceTaskId": "HumanEval/142",
+  "entryPoint": "sum_squares",
+  "package": "cangjie_humaneval_142",
+  "targetVersion": "1.0.0",
+  "signature": "public func sum_squares(lst: ArrayList<Int64>): Int64",
+  "argTypes": [
+    "ArrayList<Int64>"
+  ],
+  "returnType": "Int64",
+  "callCount": 11,
+  "sourceLicense": "MIT",
+  "testStrategy": "official check(candidate) expanded through canonical recorder, then translated to Cangjie main assertions",
+  "staticLanguageAdaptations": []
+}

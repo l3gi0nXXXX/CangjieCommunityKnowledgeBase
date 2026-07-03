@@ -1,0 +1,17 @@
+{
+  "id": "CJ-HUMANEVAL-027",
+  "source": "openai/human-eval",
+  "sourceTaskId": "HumanEval/27",
+  "entryPoint": "flip_case",
+  "package": "cangjie_humaneval_027",
+  "targetVersion": "1.0.0",
+  "signature": "public func flip_case(string: String): String",
+  "argTypes": [
+    "String"
+  ],
+  "returnType": "String",
+  "callCount": 3,
+  "sourceLicense": "MIT",
+  "testStrategy": "official check(candidate) expanded through canonical recorder, then translated to Cangjie main assertions",
+  "staticLanguageAdaptations": []
+}

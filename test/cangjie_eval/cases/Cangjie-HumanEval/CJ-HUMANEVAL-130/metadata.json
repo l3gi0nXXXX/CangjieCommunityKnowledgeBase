@@ -1,0 +1,19 @@
+{
+  "id": "CJ-HUMANEVAL-130",
+  "source": "openai/human-eval",
+  "sourceTaskId": "HumanEval/130",
+  "entryPoint": "tri",
+  "package": "cangjie_humaneval_130",
+  "targetVersion": "1.0.0",
+  "signature": "public func tri(n: Int64): ArrayList<Float64>",
+  "argTypes": [
+    "Int64"
+  ],
+  "returnType": "ArrayList<Float64>",
+  "callCount": 10,
+  "sourceLicense": "MIT",
+  "testStrategy": "official check(candidate) expanded through canonical recorder, then translated to Cangjie main assertions",
+  "staticLanguageAdaptations": [
+    "Python int/float numeric unions are represented with Float64 where needed."
+  ]
+}

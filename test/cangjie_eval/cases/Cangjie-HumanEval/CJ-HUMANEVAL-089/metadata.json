@@ -1,0 +1,17 @@
+{
+  "id": "CJ-HUMANEVAL-089",
+  "source": "openai/human-eval",
+  "sourceTaskId": "HumanEval/89",
+  "entryPoint": "encrypt",
+  "package": "cangjie_humaneval_089",
+  "targetVersion": "1.0.0",
+  "signature": "public func encrypt(s: String): String",
+  "argTypes": [
+    "String"
+  ],
+  "returnType": "String",
+  "callCount": 8,
+  "sourceLicense": "MIT",
+  "testStrategy": "official check(candidate) expanded through canonical recorder, then translated to Cangjie main assertions",
+  "staticLanguageAdaptations": []
+}

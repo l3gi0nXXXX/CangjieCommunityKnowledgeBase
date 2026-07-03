@@ -1,0 +1,20 @@
+{
+  "id": "CJ-HUMANEVAL-137",
+  "source": "openai/human-eval",
+  "sourceTaskId": "HumanEval/137",
+  "entryPoint": "compare_one",
+  "package": "cangjie_humaneval_137",
+  "targetVersion": "1.0.0",
+  "signature": "public func compare_one(a: EvalValue, b: EvalValue): EvalValue",
+  "argTypes": [
+    "EvalValue",
+    "EvalValue"
+  ],
+  "returnType": "EvalValue",
+  "callCount": 8,
+  "sourceLicense": "MIT",
+  "testStrategy": "official check(candidate) expanded through canonical recorder, then translated to Cangjie main assertions",
+  "staticLanguageAdaptations": [
+    "Python dynamic values are represented by EvalValue/EvalEntry helper types."
+  ]
+}

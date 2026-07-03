@@ -1,0 +1,17 @@
+{
+  "id": "CJ-HUMANEVAL-001",
+  "source": "openai/human-eval",
+  "sourceTaskId": "HumanEval/1",
+  "entryPoint": "separate_paren_groups",
+  "package": "cangjie_humaneval_001",
+  "targetVersion": "1.0.0",
+  "signature": "public func separate_paren_groups(paren_string: String): ArrayList<String>",
+  "argTypes": [
+    "String"
+  ],
+  "returnType": "ArrayList<String>",
+  "callCount": 4,
+  "sourceLicense": "MIT",
+  "testStrategy": "official check(candidate) expanded through canonical recorder, then translated to Cangjie main assertions",
+  "staticLanguageAdaptations": []
+}

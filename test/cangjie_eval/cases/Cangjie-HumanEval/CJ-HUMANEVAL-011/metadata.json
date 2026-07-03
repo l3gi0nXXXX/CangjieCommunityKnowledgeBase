@@ -1,0 +1,18 @@
+{
+  "id": "CJ-HUMANEVAL-011",
+  "source": "openai/human-eval",
+  "sourceTaskId": "HumanEval/11",
+  "entryPoint": "string_xor",
+  "package": "cangjie_humaneval_011",
+  "targetVersion": "1.0.0",
+  "signature": "public func string_xor(a: String, b: String): String",
+  "argTypes": [
+    "String",
+    "String"
+  ],
+  "returnType": "String",
+  "callCount": 3,
+  "sourceLicense": "MIT",
+  "testStrategy": "official check(candidate) expanded through canonical recorder, then translated to Cangjie main assertions",
+  "staticLanguageAdaptations": []
+}

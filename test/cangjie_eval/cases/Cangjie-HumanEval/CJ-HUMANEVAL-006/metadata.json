@@ -1,0 +1,17 @@
+{
+  "id": "CJ-HUMANEVAL-006",
+  "source": "openai/human-eval",
+  "sourceTaskId": "HumanEval/6",
+  "entryPoint": "parse_nested_parens",
+  "package": "cangjie_humaneval_006",
+  "targetVersion": "1.0.0",
+  "signature": "public func parse_nested_parens(paren_string: String): ArrayList<Int64>",
+  "argTypes": [
+    "String"
+  ],
+  "returnType": "ArrayList<Int64>",
+  "callCount": 3,
+  "sourceLicense": "MIT",
+  "testStrategy": "official check(candidate) expanded through canonical recorder, then translated to Cangjie main assertions",
+  "staticLanguageAdaptations": []
+}

@@ -69,6 +69,15 @@ public class CkbMcpStdioTest {
     }
 
     @TestCase
+    public func msh0Pos002InitializeEchoesRequested20250618Protocol(): Unit {
+        let initialize = this.server("msh0-pos-002").handleLine("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-06-18\",\"capabilities\":{},\"clientInfo\":{\"name\":\"claude-code\",\"version\":\"2\"}}}")
+
+        @Expect(initialize.shouldWrite, true)
+        @Expect(initialize.payload.contains("\"protocolVersion\":\"2025-06-18\""), true)
+        @Expect(initialize.payload.contains("\"name\":\"ckb-cangjie-mcp-stdio\""), true)
+    }
+
+    @TestCase
     public func msh0Neg001UnknownNotificationMustNotReturnResponse(): Unit {
         let response = this.server("msh0-neg-001").handleLine("{\"jsonrpc\":\"2.0\",\"method\":\"unknown/notification\",\"params\":{}}")
 
@@ -99,6 +108,26 @@ public class CkbMcpStdioTest {
 
         @Expect(response.contains("\"id\":3"), true)
         @Expect(response.contains("\"result\":{}"), true)
+    }
+
+    @TestCase
+    public func msh1Bnd001JsonScannerKeepsUtf8ToolArguments(): Unit {
+        let request = "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"tools/call\",\"params\":{\"name\":\"cangjie_knowledge_pack\",\"arguments\":{\"task\":\"仓颉 ArrayList 用法 😀\",\"targetVersion\":\"1.0.0\",\"budget\":2}}}"
+        let params = ckbMcpJsonObjectField(request, "params")
+        let args = ckbMcpJsonObjectField(params, "arguments")
+
+        @Expect(ckbMcpJsonStringField(args, "task"), "仓颉 ArrayList 用法 😀")
+        @Expect(ckbMcpJsonStringField(args, "targetVersion"), "1.0.0")
+    }
+
+    @TestCase
+    public func msh1Bnd002ToolCallWithUtf8TaskDoesNotCloseConnectionPath(): Unit {
+        let response = this.server("msh1-bnd-002").handleRequest(this.toolCall("cangjie_knowledge_pack", "{\"task\":\"仓颉 ArrayList 用法 😀\",\"targetVersion\":\"1.0.0\",\"budget\":2}"))
+
+        @Expect(response.contains("\"id\":1"), true)
+        @Expect(response.contains("\"structuredContent\""), true)
+        @Expect(response.contains("仓颉 ArrayList 用法 😀"), true)
+        @Expect(response.contains("\"knowledgeVersion\""), true)
     }
 
     @TestCase

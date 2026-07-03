@@ -1,0 +1,17 @@
+{
+  "id": "CJ-HUMANEVAL-042",
+  "source": "openai/human-eval",
+  "sourceTaskId": "HumanEval/42",
+  "entryPoint": "incr_list",
+  "package": "cangjie_humaneval_042",
+  "targetVersion": "1.0.0",
+  "signature": "public func incr_list(l: ArrayList<Int64>): ArrayList<Int64>",
+  "argTypes": [
+    "ArrayList<Int64>"
+  ],
+  "returnType": "ArrayList<Int64>",
+  "callCount": 3,
+  "sourceLicense": "MIT",
+  "testStrategy": "official check(candidate) expanded through canonical recorder, then translated to Cangjie main assertions",
+  "staticLanguageAdaptations": []
+}

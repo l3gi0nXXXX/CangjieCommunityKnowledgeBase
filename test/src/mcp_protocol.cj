@@ -1,4 +1,4 @@
-package cangjie_community_knowledge_base
+package cangjie_community_knowledge_base_test
 
 public class CkbMcpProtocolServer {
     private let delegate: CkbMcpStdioServer

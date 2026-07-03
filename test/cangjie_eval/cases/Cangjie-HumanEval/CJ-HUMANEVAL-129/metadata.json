@@ -1,0 +1,18 @@
+{
+  "id": "CJ-HUMANEVAL-129",
+  "source": "openai/human-eval",
+  "sourceTaskId": "HumanEval/129",
+  "entryPoint": "minPath",
+  "package": "cangjie_humaneval_129",
+  "targetVersion": "1.0.0",
+  "signature": "public func minPath(grid: ArrayList<ArrayList<Int64>>, k: Int64): ArrayList<Int64>",
+  "argTypes": [
+    "ArrayList<ArrayList<Int64>>",
+    "Int64"
+  ],
+  "returnType": "ArrayList<Int64>",
+  "callCount": 11,
+  "sourceLicense": "MIT",
+  "testStrategy": "official check(candidate) expanded through canonical recorder, then translated to Cangjie main assertions",
+  "staticLanguageAdaptations": []
+}

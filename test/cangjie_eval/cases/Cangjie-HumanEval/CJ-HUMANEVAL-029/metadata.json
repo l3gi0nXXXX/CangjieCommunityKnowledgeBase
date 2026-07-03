@@ -1,0 +1,18 @@
+{
+  "id": "CJ-HUMANEVAL-029",
+  "source": "openai/human-eval",
+  "sourceTaskId": "HumanEval/29",
+  "entryPoint": "filter_by_prefix",
+  "package": "cangjie_humaneval_029",
+  "targetVersion": "1.0.0",
+  "signature": "public func filter_by_prefix(strings: ArrayList<String>, prefix: String): ArrayList<String>",
+  "argTypes": [
+    "ArrayList<String>",
+    "String"
+  ],
+  "returnType": "ArrayList<String>",
+  "callCount": 2,
+  "sourceLicense": "MIT",
+  "testStrategy": "official check(candidate) expanded through canonical recorder, then translated to Cangjie main assertions",
+  "staticLanguageAdaptations": []
+}

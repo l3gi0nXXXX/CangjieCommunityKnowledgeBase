@@ -186,9 +186,6 @@ private func ckbMcpHttpHandlePost(
         if (protocolVersion == "") {
             return ckbMcpHttpError(400, id, -32602, "protocol_version_required", "{}", authKind)
         }
-        if (protocolVersion != mcpConfig.protocolVersion) {
-            return ckbMcpHttpError(400, id, -32602, "unsupported_protocol_version", "{\"supported\":\"${ckbMcpJsonEscape(mcpConfig.protocolVersion)}\"}", authKind)
-        }
         let clientInfo = ckbMcpJsonObjectField(params, "clientInfo")
         let session = sessionStore.create(protocolVersion, ckbMcpJsonStringField(clientInfo, "name"))
         let protocol = CkbMcpProtocolServer(service)
@@ -318,8 +315,8 @@ private func ckbMcpHttpRequireSession(
         result.response = ckbMcpHttpError(400, id, -32602, "protocol_version_required", "{}", authKind)
         return result
     }
-    if (protocolVersion != session.protocolVersion || protocolVersion != mcpConfig.protocolVersion) {
-        result.response = ckbMcpHttpError(400, id, -32602, "unsupported_protocol_version", "{\"supported\":\"${ckbMcpJsonEscape(mcpConfig.protocolVersion)}\"}", authKind)
+    if (protocolVersion != session.protocolVersion) {
+        result.response = ckbMcpHttpError(400, id, -32602, "unsupported_protocol_version", "{\"supported\":\"${ckbMcpJsonEscape(session.protocolVersion)}\"}", authKind)
         return result
     }
     result.ok = true

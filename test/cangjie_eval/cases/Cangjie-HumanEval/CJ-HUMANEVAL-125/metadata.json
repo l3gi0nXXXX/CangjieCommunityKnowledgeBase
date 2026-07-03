@@ -1,0 +1,19 @@
+{
+  "id": "CJ-HUMANEVAL-125",
+  "source": "openai/human-eval",
+  "sourceTaskId": "HumanEval/125",
+  "entryPoint": "split_words",
+  "package": "cangjie_humaneval_125",
+  "targetVersion": "1.0.0",
+  "signature": "public func split_words(txt: String): EvalValue",
+  "argTypes": [
+    "String"
+  ],
+  "returnType": "EvalValue",
+  "callCount": 8,
+  "sourceLicense": "MIT",
+  "testStrategy": "official check(candidate) expanded through canonical recorder, then translated to Cangjie main assertions",
+  "staticLanguageAdaptations": [
+    "Python dynamic values are represented by EvalValue/EvalEntry helper types."
+  ]
+}

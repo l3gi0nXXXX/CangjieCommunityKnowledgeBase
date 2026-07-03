@@ -1,0 +1,17 @@
+{
+  "id": "CJ-HUMANEVAL-156",
+  "source": "openai/human-eval",
+  "sourceTaskId": "HumanEval/156",
+  "entryPoint": "int_to_mini_roman",
+  "package": "cangjie_humaneval_156",
+  "targetVersion": "1.0.0",
+  "signature": "public func int_to_mini_roman(number: Int64): String",
+  "argTypes": [
+    "Int64"
+  ],
+  "returnType": "String",
+  "callCount": 14,
+  "sourceLicense": "MIT",
+  "testStrategy": "official check(candidate) expanded through canonical recorder, then translated to Cangjie main assertions",
+  "staticLanguageAdaptations": []
+}

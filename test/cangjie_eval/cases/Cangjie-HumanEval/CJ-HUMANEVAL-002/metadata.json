@@ -1,0 +1,17 @@
+{
+  "id": "CJ-HUMANEVAL-002",
+  "source": "openai/human-eval",
+  "sourceTaskId": "HumanEval/2",
+  "entryPoint": "truncate_number",
+  "package": "cangjie_humaneval_002",
+  "targetVersion": "1.0.0",
+  "signature": "public func truncate_number(number: Float64): Float64",
+  "argTypes": [
+    "Float64"
+  ],
+  "returnType": "Float64",
+  "callCount": 3,
+  "sourceLicense": "MIT",
+  "testStrategy": "official check(candidate) expanded through canonical recorder, then translated to Cangjie main assertions",
+  "staticLanguageAdaptations": []
+}

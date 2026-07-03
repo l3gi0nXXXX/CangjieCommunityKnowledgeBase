@@ -1,0 +1,17 @@
+{
+  "id": "CJ-HUMANEVAL-082",
+  "source": "openai/human-eval",
+  "sourceTaskId": "HumanEval/82",
+  "entryPoint": "prime_length",
+  "package": "cangjie_humaneval_082",
+  "targetVersion": "1.0.0",
+  "signature": "public func prime_length(string: String): Bool",
+  "argTypes": [
+    "String"
+  ],
+  "returnType": "Bool",
+  "callCount": 16,
+  "sourceLicense": "MIT",
+  "testStrategy": "official check(candidate) expanded through canonical recorder, then translated to Cangjie main assertions",
+  "staticLanguageAdaptations": []
+}
