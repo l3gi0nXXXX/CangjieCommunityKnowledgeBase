@@ -2101,7 +2101,13 @@ public class KnowledgeBase {
             symbol = if (path != "") { "HttpClient" } else { "" }
         }
         this.addRecord(sourceId, sourceType, title, fetch.sourceUrl, repo, path, symbol, "1.0.0", trustLevel, reviewState, fetch.body)
-        this.rawRecords[this.rawRecords.size - 1].metadata.repoVisibility = fetch.repoVisibility
+        let inserted = this.rawRecords[this.rawRecords.size - 1]
+        inserted.metadata.repoVisibility = fetch.repoVisibility
+        inserted.metadata.commit = if (fetch.commit != "") { fetch.commit } else { inserted.metadata.commit }
+        inserted.metadata.docVersion = if (fetch.ref != "") { fetch.ref } else { inserted.metadata.docVersion }
+        inserted.metadata.targetVersion = cangjieDefaultTargetVersion()
+        inserted.metadata.sourceSet = cangjieSourceSetForIngest(sourceType, repo, path, fetch.sourceUrl)
+        inserted.metadata.versionResolutionId = cangjieIngestVersionResolutionId(inserted.metadata)
         true
     }
 
@@ -2126,9 +2132,38 @@ public class KnowledgeBase {
             normalized.metadata = record.metadata
             normalized.requiresReview = record.requiresReview
             this.normalizedRecords.add(normalized)
+            let typed = cangjieTypedNormalizeRawRecord(record)
+            for (typedRecord in typed.records) {
+                this.normalizedRecords.add(cangjieTypedRecordToNormalized(typedRecord, record.metadata))
+            }
         }
         this.storage.rawCount = this.rawRecords.size
         this.storage.normalizedCount = this.normalizedRecords.size
+    }
+
+    private func cangjieSourceSetForIngest(sourceType: String, repo: String, path: String, sourceUrl: String): String {
+        if (sourceType == SourceTypes.DOC || sourceType == SourceTypes.WEBSITE) {
+            return cangjieSourceSetForDocPath(path, sourceUrl)
+        }
+        let value = "${repo}\n${path}\n${sourceUrl}".toAsciiLower()
+        if (value.contains("cangjie_stdx") || value.contains("/stdx/") || value.contains("stdx")) {
+            return CangjieSourceSets.STDX
+        }
+        if (value.contains("cangjie_runtime") || value.contains("/std/") || value.contains("stdlib")) {
+            return CangjieSourceSets.STD
+        }
+        ""
+    }
+
+    private func cangjieIngestVersionResolutionId(metadata: KnowledgeMetadata): String {
+        if (metadata.versionResolutionId != "") {
+            return metadata.versionResolutionId
+        }
+        if (metadata.sourceSet == "") {
+            return ""
+        }
+        let ref = if (metadata.docVersion != "") { metadata.docVersion } else { "release-1.0.0" }
+        "cangjie-${metadata.targetVersion}-${metadata.sourceSet}-${ref}"
     }
 
     private func normalizedKind(record: RawRecord): String {
