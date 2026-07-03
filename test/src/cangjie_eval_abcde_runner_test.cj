@@ -23,9 +23,11 @@ public class CangjieEvalAbcdeRunnerTest {
     public func ckg12Pos001PromptPoliciesAreGroupSpecific(): Unit {
         let task = "Implement `src/solution.cj`."
         let promptA = renderCkbAbcdePrompt(CkbAbcdeGroups.A, "CJ-HUMANEVAL-000", task, "")
-        let promptB = renderCkbAbcdePrompt(CkbAbcdeGroups.B, "CJ-HUMANEVAL-000", task, "{\"ok\":true}")
-        let promptC = renderCkbAbcdePrompt(CkbAbcdeGroups.C, "CJ-HUMANEVAL-000", task, "")
-        let promptD = renderCkbAbcdePrompt(CkbAbcdeGroups.D, "CJ-HUMANEVAL-000", task, "")
+        let canonicalContext = "{\"taskId\":\"CJ-HUMANEVAL-000\",\"targetVersion\":\"1.0.0\"}"
+        let restResponse = "{\"ok\":true,\"data\":{\"versionResolution\":{\"targetVersion\":\"1.0.0\"}}}"
+        let promptB = renderCkbAbcdePrompt(CkbAbcdeGroups.B, "CJ-HUMANEVAL-000", task, canonicalContext + "\n---CKB_RESPONSE---\n" + restResponse)
+        let promptC = renderCkbAbcdePrompt(CkbAbcdeGroups.C, "CJ-HUMANEVAL-000", task, canonicalContext)
+        let promptD = renderCkbAbcdePrompt(CkbAbcdeGroups.D, "CJ-HUMANEVAL-000", task, canonicalContext)
         let promptE = renderCkbAbcdePrompt(CkbAbcdeGroups.E, "CJ-HUMANEVAL-000", task, "")
 
         @Expect(promptA.contains("No CKB baseline"), true)
@@ -33,10 +35,14 @@ public class CangjieEvalAbcdeRunnerTest {
         @Expect(promptA.contains("Use at most three knowledge or documentation lookup tool calls"), true)
         @Expect(promptA.contains("still edit exactly `src/solution.cj`"), true)
         @Expect(promptB.contains("CKB REST Context"), true)
-        @Expect(promptB.contains("{\"ok\":true}"), true)
-        @Expect(promptC.contains("must call `mcp__ckb-cangjie__cangjie_knowledge_pack`"), true)
+        @Expect(promptB.contains(restResponse), true)
+        @Expect(promptB.contains("Canonical CKB Task Context"), true)
+        @Expect(promptB.contains(canonicalContext), true)
+        @Expect(promptC.contains("must call `mcp__ckb-cangjie__cangjie_task_knowledge_pack`"), true)
+        @Expect(promptC.contains(canonicalContext), true)
         @Expect(promptC.contains("invalid without that real tool call"), true)
-        @Expect(promptD.contains("must call `mcp__ckb-cangjie-http__cangjie_knowledge_pack`"), true)
+        @Expect(promptD.contains("must call `mcp__ckb-cangjie-http__cangjie_task_knowledge_pack`"), true)
+        @Expect(promptD.contains(canonicalContext), true)
         @Expect(promptD.contains("even if the task looks trivial"), true)
         @Expect(promptE.contains("summary_cjnative_EN.md"), true)
         @Expect(promptE.contains("You may use local official Cangjie docs"), true)
@@ -133,16 +139,36 @@ public class CangjieEvalAbcdeRunnerTest {
 
     @TestCase
     public func ckg12Neg003McpInitToolListIsNotCountedAsToolUse(): Unit {
-        let initOnly = "{\"type\":\"system\",\"subtype\":\"init\",\"tools\":[\"mcp__ckb-cangjie-http__cangjie_knowledge_pack\"]}"
-        let realUse = "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"mcp__ckb-cangjie-http__cangjie_knowledge_pack\"}]}}"
+        let initOnly = "{\"type\":\"system\",\"subtype\":\"init\",\"tools\":[\"mcp__ckb-cangjie-http__cangjie_task_knowledge_pack\"]}"
+        let realUse = "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"mcp__ckb-cangjie-http__cangjie_task_knowledge_pack\"}]}}"
         let failedInit = "{\"type\":\"system\",\"subtype\":\"init\",\"mcp_servers\":[{\"name\":\"ckb-cangjie-http\",\"status\":\"failed\"}]}"
         let mergedAttempts = ckbAbcdeJoinClaudeAttemptTextForTest(realUse, failedInit)
 
         @Expect(ckbAbcdeToolEvidenceForTest(CkbAbcdeGroups.D, initOnly), "manual_required")
-        @Expect(ckbAbcdeToolEvidenceForTest(CkbAbcdeGroups.D, initOnly + "\n" + realUse), "cangjie_knowledge_pack")
-        @Expect(ckbAbcdeToolEvidenceForTest(CkbAbcdeGroups.D, mergedAttempts), "cangjie_knowledge_pack")
+        @Expect(ckbAbcdeToolEvidenceForTest(CkbAbcdeGroups.D, initOnly + "\n" + realUse), "cangjie_task_knowledge_pack")
+        @Expect(ckbAbcdeToolEvidenceForTest(CkbAbcdeGroups.D, mergedAttempts), "cangjie_task_knowledge_pack")
         @Expect(mergedAttempts.contains(realUse), true)
         @Expect(mergedAttempts.contains(failedInit), true)
+    }
+
+    @TestCase
+    public func ckg12Pos009CanonicalTaskContextCarriesVersionAndTags(): Unit {
+        let context = CkbAbcdeTaskContext()
+        context.taskId = "CJ-HUMANEVAL-999"
+        context.taskText = "Use ArrayList and String."
+        context.signature = "func solution(s: String): ArrayList<String>"
+        context.expectedKnowledgeTags.add("ArrayList")
+        context.expectedKnowledgeTags.add("String")
+
+        let json = ckbAbcdeRenderTaskContextJson(context)
+
+        @Expect(json.contains("\"taskId\":\"CJ-HUMANEVAL-999\""), true)
+        @Expect(json.contains("\"benchmark\":\"Cangjie-HumanEval\""), true)
+        @Expect(json.contains("\"targetVersion\":\"1.0.0\""), true)
+        @Expect(json.contains("\"sourceSet\":\"all\""), true)
+        @Expect(json.contains("\"versionPolicy\":\"default\""), true)
+        @Expect(json.contains("\"expectedKnowledgeTags\":[\"ArrayList\",\"String\"]"), true)
+        @Expect(json.contains("\"responseMode\":\"evidence\""), true)
     }
 
     @TestCase
