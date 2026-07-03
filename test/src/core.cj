@@ -1627,6 +1627,12 @@ public class Scheduler {
         this.entries.add(ScheduleEntry("web_candidate_weekly", 10080, 240))
         this.entries.add(ScheduleEntry("web_candidate_recrawl_30d", 43200, 240))
         this.entries.add(ScheduleEntry("weekly_full_rebuild", 10080, 150))
+        this.entries.add(ScheduleEntry("cangjie_freshness_daily", 1440, 300))
+        this.entries.add(ScheduleEntry("cangjie_docs_full_weekly", 10080, 360))
+        this.entries.add(ScheduleEntry("cangjie_release_full_sync", 10080, 420))
+        this.entries.add(ScheduleEntry("cangjie_source_event_sync", 1440, 480))
+        this.entries.add(ScheduleEntry("cangjie_version_branch_refresh", 1440, 540))
+        this.entries.add(ScheduleEntry("cangjie_benchmark_gap_curation", 1440, 600))
     }
 
     public func dueTaskNames(): ArrayList<String> {
@@ -2192,22 +2198,30 @@ public class KnowledgeBase {
         record.metadata.sourceUrl
     }
 
-    public func publishIndex(simulateFailure: Bool): Bool {
-        this.candidateKnowledgeVersion = "ckb-20260519-000100-candidate"
+    public func stageCandidateIndex(candidateVersion: String): String {
+        this.candidateKnowledgeVersion = if (candidateVersion.trimAscii() == "") { "ckb-20260519-000100-candidate" } else { candidateVersion.trimAscii() }
         this.candidateIndex.clear()
         for (record in this.normalizedRecords) {
             record.metadata.candidateVersion = this.candidateKnowledgeVersion
             this.candidateIndex.add(record)
         }
-        if (simulateFailure) {
-            this.failedCandidateVersion = this.candidateKnowledgeVersion
+        this.candidateKnowledgeVersion
+    }
+
+    public func markCandidateValidationFailed(candidateVersion: String): Unit {
+        this.failedCandidateVersion = if (candidateVersion.trimAscii() == "") { this.candidateKnowledgeVersion } else { candidateVersion.trimAscii() }
+    }
+
+    public func promoteCandidateToActive(activeVersion: String): Bool {
+        if (this.candidateIndex.size == 0 || this.candidateKnowledgeVersion == "") {
+            this.failedCandidateVersion = if (this.candidateKnowledgeVersion == "") { "candidate_missing" } else { this.candidateKnowledgeVersion }
             return false
         }
         this.activeIndex.clear()
         for (record in this.candidateIndex) {
             this.activeIndex.add(record)
         }
-        this.activeKnowledgeVersion = "ckb-20260519-000100-active"
+        this.activeKnowledgeVersion = if (activeVersion.trimAscii() == "") { this.candidateKnowledgeVersion.replace("-candidate", "-active") } else { activeVersion.trimAscii() }
         for (record in this.activeIndex) {
             record.metadata.knowledgeVersion = this.activeKnowledgeVersion
             record.metadata.candidateVersion = this.candidateKnowledgeVersion
@@ -2217,6 +2231,23 @@ public class KnowledgeBase {
         this.rebuildProductionIndexes()
         this.rebuildIndexManifest()
         true
+    }
+
+    public func publishIndex(simulateFailure: Bool): Bool {
+        let candidateVersion = this.stageCandidateIndex("ckb-20260519-000100-candidate")
+        if (simulateFailure) {
+            this.markCandidateValidationFailed(candidateVersion)
+            return false
+        }
+        this.promoteCandidateToActive("ckb-20260519-000100-active")
+    }
+
+    public func candidateRecordSnapshot(): ArrayList<NormalizedRecord> {
+        let out = ArrayList<NormalizedRecord>()
+        for (record in this.candidateIndex) {
+            out.add(record)
+        }
+        out
     }
 
     public func rebuildIndex(simulateFailure: Bool): IndexBuildResult {
