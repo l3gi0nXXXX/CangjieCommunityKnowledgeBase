@@ -312,21 +312,42 @@ public class CangjieCapabilityService {
             if (!cangjieRecordTrusted(record)) {
                 continue
             }
-            let example = CangjieExampleItem()
-            example.title = record.title
-            example.code = cangjieExampleFromRecord(record)
-            example.explanation = cangjieExcerpt(record.chunk)
-            example.module = module
-            example.symbol = if (symbol != "") { symbol } else { record.metadata.symbol }
-            example.citation = record.citation
-            example.sourceId = record.sourceId
-            example.knowledgeVersion = record.metadata.knowledgeVersion
-            example.targetVersion = pack.targetVersion
-            example.trustLevel = record.metadata.trustLevel
-            example.reviewState = record.metadata.reviewState
-            example.requiresReview = record.requiresReview
-            pack.examples.add(example)
-            this.addCitation(pack, record)
+            let extracted = buildExampleRecords(record)
+            if (extracted.size > 0) {
+                for (candidate in extracted) {
+                    let example = CangjieExampleItem()
+                    example.title = candidate.title
+                    example.code = candidate.code
+                    example.explanation = candidate.explanation
+                    example.module = if (module != "") { module } else { candidate.module }
+                    example.symbol = if (symbol != "") { symbol } else { candidate.symbol }
+                    example.citation = candidate.citation
+                    example.sourceId = candidate.sourceId
+                    example.knowledgeVersion = record.metadata.knowledgeVersion
+                    example.targetVersion = pack.targetVersion
+                    example.trustLevel = candidate.trustLevel
+                    example.reviewState = candidate.reviewState
+                    example.requiresReview = record.requiresReview
+                    pack.examples.add(example)
+                    this.addCitation(pack, record)
+                }
+            } else {
+                let example = CangjieExampleItem()
+                example.title = record.title
+                example.code = cangjieExampleFromRecord(record)
+                example.explanation = cangjieExcerpt(record.chunk)
+                example.module = module
+                example.symbol = if (symbol != "") { symbol } else { record.metadata.symbol }
+                example.citation = record.citation
+                example.sourceId = record.sourceId
+                example.knowledgeVersion = record.metadata.knowledgeVersion
+                example.targetVersion = pack.targetVersion
+                example.trustLevel = record.metadata.trustLevel
+                example.reviewState = record.metadata.reviewState
+                example.requiresReview = record.requiresReview
+                pack.examples.add(example)
+                this.addCitation(pack, record)
+            }
         }
         pack.degraded = pack.degraded || result.degraded
         pack.truncated = pack.truncated || result.truncated
@@ -435,6 +456,33 @@ public class CangjieCapabilityService {
     private func addApiItems(pack: CangjieKnowledgePack, result: SearchResult, module: String, symbol: String, sourceSet: String): Unit {
         for (record in result.records) {
             if (!cangjieRecordTrusted(record)) {
+                continue
+            }
+            var addedFromSymbol = false
+            for (card in extractCangjieSymbols(record)) {
+                if (!cangjieSymbolCardMatches(card, symbol, module, sourceSet)) {
+                    continue
+                }
+                let item = CangjieApiItem()
+                item.module = card.module
+                item.symbol = card.symbolKey
+                item.importLine = card.importLine
+                item.signature = card.signature
+                item.summary = cangjieExcerpt(record.chunk)
+                item.example = cangjieExampleFromRecord(record)
+                item.citation = card.citation
+                item.sourceId = card.sourceId
+                item.knowledgeVersion = record.metadata.knowledgeVersion
+                item.targetVersion = pack.targetVersion
+                item.trustLevel = card.trustLevel
+                item.reviewState = card.reviewState
+                item.requiresReview = record.requiresReview || card.incomplete
+                item.score = record.score + 2.0 + cangjieExactApiBoost(record, module, symbol)
+                pack.apiItems.add(item)
+                this.addCitation(pack, record)
+                addedFromSymbol = true
+            }
+            if (addedFromSymbol) {
                 continue
             }
             if (!cangjieRecordMatchesApiFilter(record, module, symbol, sourceSet)) {
