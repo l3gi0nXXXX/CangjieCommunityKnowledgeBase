@@ -1538,6 +1538,12 @@ public class CkbBaselineTest {
         @Expect(tools.contains("cangjie.sync"), true)
         @Expect(tools.contains("cangjie.rebuild"), true)
         @Expect(tools.contains("cangjie.evidence_pack"), true)
+        @Expect(tools.contains("cangjie.version_resolve"), true)
+        @Expect(tools.contains("cangjie.task_knowledge_pack"), true)
+        @Expect(tools.contains("cangjie.knowledge_coverage"), true)
+        @Expect(tools.contains("cangjie.compile_diagnose_v2"), true)
+        @Expect(routes.contains("/v1/cangjie/task-knowledge-pack"), true)
+        @Expect(routes.contains("/v1/cangjie/version/resolve"), true)
         @Expect(tools.contains("activeKnowledgeVersion"), true)
         @Expect(tools.contains("citations"), true)
         @Expect(tools.contains("requiresReview"), true)
@@ -2888,8 +2894,12 @@ public class CkbServiceApiTest {
         @Expect(response.contains("/v1/evidence-pack"), true)
         @Expect(response.contains("/v1/source-analysis"), true)
         @Expect(response.contains("/v1/events/gitcode/repository-changed"), true)
+        @Expect(response.contains("/v1/cangjie/task-knowledge-pack"), true)
+        @Expect(response.contains("cangjie_task_knowledge_pack"), true)
         @Expect(CkbSchema.mcpTools().contains("cangjie.knowledge_pack"), true)
         @Expect(CkbSchema.httpLikeRoutes().contains("/v1/cangjie/knowledge-pack"), true)
+        @Expect(CkbSchema.mcpTools().contains("cangjie.task_knowledge_pack"), true)
+        @Expect(CkbSchema.httpLikeRoutes().contains("/v1/cangjie/task-knowledge-pack"), true)
     }
 
     @TestCase

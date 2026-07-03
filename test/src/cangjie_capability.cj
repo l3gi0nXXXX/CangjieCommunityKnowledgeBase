@@ -109,6 +109,7 @@ public class CangjieKnowledgePack {
     public var task: String = ""
     public var targetVersion: String = cangjieDefaultTargetVersion()
     public var knowledgeVersion: String = ""
+    public var versionResolutionId: String = ""
     public var truncated: Bool = false
     public var degraded: Bool = false
     public var executed: Bool = false
@@ -169,8 +170,9 @@ public class CangjieCapabilityService {
     public func knowledgePack(task: String, targetVersion!: String = "", budget!: Int64 = CangjieCapabilityLimits.DEFAULT_BUDGET, includeExamples!: Bool = true, includeAntiPatterns!: Bool = true): CangjieKnowledgePack {
         let cleanTask = cangjieSafeText(task)
         let pack = this.newPack(cleanTask, targetVersion, budget)
+        pack.degraded = true
+        pack.notes.add("legacy_endpoint_degraded")
         if (cleanTask == "") {
-            pack.degraded = true
             pack.notes.add("empty_task")
             return pack
         }
@@ -188,6 +190,29 @@ public class CangjieCapabilityService {
             pack.notes.add("no_cangjie_knowledge_match")
         }
         pack
+    }
+
+    public func resolveVersion(selector: CangjieVersionSelector): CangjieVersionResolution {
+        resolveCangjieVersion(selector, defaultCangjieVersionManifest())
+    }
+
+    public func taskKnowledgePack(request: CangjieTaskKnowledgeRequest): CangjieTaskKnowledgePack {
+        buildCangjieTaskKnowledgePack(this.kb.status(), request, defaultCangjieVersionManifest())
+    }
+
+    public func knowledgeCoverage(request: CangjieTaskKnowledgeRequest): CangjieKnowledgeCoverage {
+        let pack = this.taskKnowledgePack(request)
+        pack.coverage
+    }
+
+    public func compileDiagnoseV2(code: String, compilerOutput: String, context!: String = "", targetVersion!: String = "", sourceSet!: String = "", sourceRef!: String = "", budget!: Int64 = CangjieCapabilityLimits.DEFAULT_BUDGET): CangjieTaskKnowledgePack {
+        let request = CangjieTaskKnowledgeRequest()
+        request.taskText = if (context.trimAscii() == "") { compilerOutput } else { "${compilerOutput} ${context}" }
+        request.signature = code
+        request.compilerOutput = compilerOutput
+        request.versionSelector = cangjieVersionSelector(targetVersion: targetVersion, sourceSet: sourceSet, sourceRef: sourceRef, versionPolicy: if (sourceRef.trimAscii() == "") { CangjieVersionPolicies.DEFAULT } else { CangjieVersionPolicies.EXACT })
+        request.budget = budget
+        this.taskKnowledgePack(request)
     }
 
     public func syntaxQuery(q: String, targetVersion!: String = "", budget!: Int64 = CangjieCapabilityLimits.DEFAULT_BUDGET): CangjieKnowledgePack {
@@ -340,6 +365,7 @@ public class CangjieCapabilityService {
         pack.queryId = "cangjie-${stableSummaryHash(pack.task)}"
         pack.targetVersion = version.value
         pack.knowledgeVersion = status.activeKnowledgeVersion
+        pack.versionResolutionId = "legacy-${stableSummaryHash("${pack.targetVersion}:${pack.knowledgeVersion}")}"
         if (version.normalized) {
             pack.notes.add(version.diagnostic)
         }

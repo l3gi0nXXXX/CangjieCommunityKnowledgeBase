@@ -35,12 +35,16 @@ public class CkbMcpStdioTest {
     }
 
     @TestCase
-    public func ckg5Ut001ToolsListReturnsSevenReadOnlyTools(): Unit {
+    public func ckg5Ut001ToolsListReturnsElevenReadOnlyTools(): Unit {
         let response = this.server("ckg5-ut-001").handleRequest("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\",\"params\":{}}")
 
         @Expect(response.contains("\"result\""), true)
-        @Expect(this.countOccurrences(response, "\"name\":\"cangjie_"), 7)
+        @Expect(this.countOccurrences(response, "\"name\":\"cangjie_"), 11)
         @Expect(response.contains("\"name\":\"cangjie_knowledge_pack\""), true)
+        @Expect(response.contains("\"name\":\"cangjie_version_resolve\""), true)
+        @Expect(response.contains("\"name\":\"cangjie_task_knowledge_pack\""), true)
+        @Expect(response.contains("\"name\":\"cangjie_knowledge_coverage\""), true)
+        @Expect(response.contains("\"name\":\"cangjie_compile_diagnose_v2\""), true)
         @Expect(response.contains("\"name\":\"cangjie_syntax_query\""), true)
         @Expect(response.contains("\"name\":\"cangjie_api_search\""), true)
         @Expect(response.contains("\"name\":\"cangjie_cookbook\""), true)
@@ -65,7 +69,7 @@ public class CkbMcpStdioTest {
         @Expect(initialized.shouldWrite, false)
         @Expect(initialized.payload, "")
         @Expect(tools.shouldWrite, true)
-        @Expect(this.countOccurrences(tools.payload, "\"name\":\"cangjie_"), 7)
+        @Expect(this.countOccurrences(tools.payload, "\"name\":\"cangjie_"), 11)
     }
 
     @TestCase
@@ -131,13 +135,13 @@ public class CkbMcpStdioTest {
     }
 
     @TestCase
-    public func msh2Ut001ProtocolServerToolsListReturnsSevenReadOnlyTools(): Unit {
+    public func msh2Ut001ProtocolServerToolsListReturnsElevenReadOnlyTools(): Unit {
         let service = CkbCommandLoopService(CkbRuntimeConfig(), FileKnowledgeStore("target/msh2-ut-001"))
         let server = CkbMcpProtocolServer(service)
         let response = server.handleRequest("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\",\"params\":{}}", "2025-06-18", "ckb-cangjie-mcp-http")
 
         @Expect(response.contains("\"result\""), true)
-        @Expect(this.countOccurrences(response, "\"name\":\"cangjie_"), 7)
+        @Expect(this.countOccurrences(response, "\"name\":\"cangjie_"), 11)
         @Expect(response.contains("admin"), false)
         @Expect(response.contains("verify"), false)
     }
@@ -163,6 +167,30 @@ public class CkbMcpStdioTest {
         @Expect(response.contains("\"apiItems\""), true)
         @Expect(response.contains("\"citations\""), true)
         @Expect(response.contains("ArrayList"), true)
+    }
+
+    @TestCase
+    public func p1Pos001TaskKnowledgePackReturnsVersionPlanAndCoverage(): Unit {
+        let args = "{\"taskId\":\"CJ-HUMANEVAL-000\",\"benchmark\":\"Cangjie-HumanEval\",\"taskText\":\"Implement ArrayList helper\",\"signature\":\"func solve(xs: ArrayList<Int64>): Int64\",\"expectedKnowledgeTags\":[\"ArrayList\",\"symbol\"],\"targetVersion\":\"1.0.0\",\"sourceSet\":\"stdx\",\"sourceRef\":\"release-1.0.0\",\"versionPolicy\":\"exact\"}"
+        let response = this.server("p1-pos-mcp-001").handleRequest(this.toolCall("cangjie_task_knowledge_pack", args))
+
+        @Expect(response.contains("\"structuredContent\""), true)
+        @Expect(response.contains("\"versionResolution\""), true)
+        @Expect(response.contains("\"queryPlan\""), true)
+        @Expect(response.contains("\"coverage\""), true)
+        @Expect(response.contains("\"coveragePass\":true"), true)
+        @Expect(response.contains("\"versionPolicy\":\"exact\""), true)
+    }
+
+    @TestCase
+    public func p1Neg001VersionResolveMissingRefReturnsNoFallbackDiagnostic(): Unit {
+        let args = "{\"targetVersion\":\"1.0.0\",\"sourceSet\":\"stdx\",\"sourceRef\":\"missing-release\",\"versionPolicy\":\"exact\"}"
+        let response = this.server("p1-neg-mcp-001").handleRequest(this.toolCall("cangjie_version_resolve", args))
+
+        @Expect(response.contains("\"structuredContent\""), true)
+        @Expect(response.contains("\"ok\":false"), true)
+        @Expect(response.contains("version_not_resolved"), true)
+        @Expect(response.contains("\"sources\":[]"), true)
     }
 
     @TestCase
