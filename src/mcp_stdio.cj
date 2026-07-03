@@ -99,6 +99,33 @@ public class CkbMcpStdioServer {
                 includeExamples: ckbMcpJsonBoolFieldDefault(args, "includeExamples", true) && !ckbMcpJsonBoolField(args, "excludeExamples"),
                 includeAntiPatterns: ckbMcpJsonBoolFieldDefault(args, "includeAntiPatterns", true) && !ckbMcpJsonBoolField(args, "excludeAntiPatterns"))))
         }
+        if (name == "cangjie_version_resolve") {
+            return this.toolResult(id, cangjieVersionResolutionJson(this.service.cangjieResolveVersion(this.versionSelectorFromArgs(args))))
+        }
+        if (name == "cangjie_task_knowledge_pack") {
+            let request = this.taskKnowledgeRequestFromArgs(args)
+            let validation = validateCangjieTaskKnowledgeRequest(request)
+            if (validation != "") { return this.errorResponse(id, -32602, validation, "{}") }
+            return this.toolResult(id, cangjieTaskKnowledgePackJson(this.service.cangjieTaskKnowledgePack(request)))
+        }
+        if (name == "cangjie_knowledge_coverage") {
+            let request = this.taskKnowledgeRequestFromArgs(args)
+            let validation = validateCangjieTaskKnowledgeRequest(request)
+            if (validation != "") { return this.errorResponse(id, -32602, validation, "{}") }
+            return this.toolResult(id, cangjieKnowledgeCoverageJson(this.service.cangjieKnowledgeCoverage(request)))
+        }
+        if (name == "cangjie_compile_diagnose_v2") {
+            let compilerOutput = ckbMcpJsonStringField(args, "compilerOutput").trimAscii()
+            let context = ckbMcpJsonStringField(args, "context").trimAscii()
+            if (compilerOutput == "" && context == "") { return this.errorResponse(id, -32602, "diagnostic_context_required", "{}") }
+            return this.toolResult(id, cangjieTaskKnowledgePackJson(this.service.cangjieCompileDiagnoseV2(ckbMcpJsonStringField(args, "code"),
+                compilerOutput,
+                context: context,
+                targetVersion: ckbMcpJsonStringField(args, "targetVersion"),
+                sourceSet: ckbMcpJsonStringField(args, "sourceSet"),
+                sourceRef: ckbMcpJsonStringField(args, "sourceRef"),
+                budget: ckbMcpJsonIntField(args, "budget", CangjieCapabilityLimits.DEFAULT_BUDGET))))
+        }
         if (name == "cangjie_syntax_query") {
             let q = ckbMcpFirstNonEmpty(ckbMcpJsonStringField(args, "q"), ckbMcpJsonStringField(args, "query")).trimAscii()
             if (q == "") { return this.errorResponse(id, -32602, "query_required", "{}") }
@@ -235,7 +262,7 @@ public class CkbMcpStdioServer {
     }
 
     private func packJson(pack: CangjieKnowledgePack): String {
-        var out = "{\"queryId\":\"${ckbMcpJsonEscape(pack.queryId)}\",\"task\":\"${ckbMcpJsonEscape(pack.task)}\",\"knowledgeVersion\":\"${ckbMcpJsonEscape(pack.knowledgeVersion)}\",\"targetVersion\":\"${ckbMcpJsonEscape(pack.targetVersion)}\",\"truncated\":${pack.truncated},\"degraded\":${pack.degraded},\"executed\":${pack.executed}"
+        var out = "{\"queryId\":\"${ckbMcpJsonEscape(pack.queryId)}\",\"task\":\"${ckbMcpJsonEscape(pack.task)}\",\"knowledgeVersion\":\"${ckbMcpJsonEscape(pack.knowledgeVersion)}\",\"targetVersion\":\"${ckbMcpJsonEscape(pack.targetVersion)}\",\"versionResolutionId\":\"${ckbMcpJsonEscape(pack.versionResolutionId)}\",\"truncated\":${pack.truncated},\"degraded\":${pack.degraded},\"executed\":${pack.executed}"
         out += ",\"items\":["
         for (i in 0..pack.items.size) {
             if (i > 0) { out += "," }
@@ -262,6 +289,36 @@ public class CkbMcpStdioServer {
         }
         out += "],\"notes\":${ckbMcpStringArrayJson(pack.notes)},\"citations\":${ckbMcpCitationsJson(pack.citations)}}"
         out
+    }
+
+    private func versionSelectorFromArgs(args: String): CangjieVersionSelector {
+        cangjieVersionSelector(
+            targetVersion: ckbMcpJsonStringField(args, "targetVersion"),
+            sourceSet: ckbMcpJsonStringField(args, "sourceSet"),
+            sourceFamily: ckbMcpJsonStringField(args, "sourceFamily"),
+            sourceRepo: ckbMcpJsonStringField(args, "sourceRepo"),
+            sourceRef: ckbMcpJsonStringField(args, "sourceRef"),
+            refKind: ckbMcpJsonStringField(args, "refKind"),
+            versionPolicy: ckbMcpJsonStringField(args, "versionPolicy"),
+            includePrerelease: ckbMcpJsonBoolField(args, "includePrerelease"))
+    }
+
+    private func taskKnowledgeRequestFromArgs(args: String): CangjieTaskKnowledgeRequest {
+        let request = CangjieTaskKnowledgeRequest()
+        request.taskId = ckbMcpJsonStringField(args, "taskId")
+        request.benchmark = ckbMcpJsonStringField(args, "benchmark")
+        request.taskText = ckbMcpFirstNonEmpty(ckbMcpJsonStringField(args, "taskText"), ckbMcpJsonStringField(args, "task"))
+        request.signature = ckbMcpJsonStringField(args, "signature")
+        request.imports = ckbMcpJsonStringArrayField(args, "imports")
+        request.argTypes = ckbMcpJsonStringArrayField(args, "argTypes")
+        request.returnType = ckbMcpJsonStringField(args, "returnType")
+        request.expectedKnowledgeTags = ckbMcpJsonStringArrayField(args, "expectedKnowledgeTags")
+        request.starterCodeExcerpt = ckbMcpJsonStringField(args, "starterCodeExcerpt")
+        request.compilerOutput = ckbMcpJsonStringField(args, "compilerOutput")
+        request.versionSelector = this.versionSelectorFromArgs(args)
+        request.budget = ckbMcpJsonIntField(args, "budget", CangjieCapabilityLimits.DEFAULT_BUDGET)
+        request.responseMode = ckbMcpJsonStringField(args, "responseMode")
+        request
     }
 
     private func corpusStatusJson(status: CangjieCorpusStatus): String {
@@ -301,6 +358,10 @@ public func ckbMcpProtocolVersionFromInitialize(request: String, fallback: Strin
 private func ckbMcpToolNames(): ArrayList<String> {
     let tools = ArrayList<String>()
     tools.add("cangjie_knowledge_pack")
+    tools.add("cangjie_version_resolve")
+    tools.add("cangjie_task_knowledge_pack")
+    tools.add("cangjie_knowledge_coverage")
+    tools.add("cangjie_compile_diagnose_v2")
     tools.add("cangjie_syntax_query")
     tools.add("cangjie_api_search")
     tools.add("cangjie_cookbook")
@@ -316,6 +377,10 @@ private func ckbMcpAllowedTool(name: String): Bool {
 
 private func ckbMcpToolDescription(name: String): String {
     if (name == "cangjie_knowledge_pack") { return "Return a citation-backed Cangjie knowledge pack for a coding task." }
+    if (name == "cangjie_version_resolve") { return "Resolve Cangjie target version and source refs without default-branch fallback for exact refs." }
+    if (name == "cangjie_task_knowledge_pack") { return "Return a version-aware task knowledge contract with query plan and coverage fields." }
+    if (name == "cangjie_knowledge_coverage") { return "Return required Cangjie knowledge coverage for a task request." }
+    if (name == "cangjie_compile_diagnose_v2") { return "Return version-aware compile diagnostic query plan; does not execute code." }
     if (name == "cangjie_syntax_query") { return "Search citation-backed Cangjie syntax guidance." }
     if (name == "cangjie_api_search") { return "Search citation-backed Cangjie API and module knowledge." }
     if (name == "cangjie_cookbook") { return "Return grounded Cangjie implementation steps and examples." }
@@ -328,7 +393,7 @@ private func ckbMcpToolSchema(name: String): String {
     if (name == "cangjie_corpus_status") {
         return "{\"type\":\"object\",\"properties\":{},\"additionalProperties\":false}"
     }
-    "{\"type\":\"object\",\"properties\":{\"q\":{\"type\":\"string\"},\"query\":{\"type\":\"string\"},\"task\":{\"type\":\"string\"},\"code\":{\"type\":\"string\"},\"compilerOutput\":{\"type\":\"string\"},\"context\":{\"type\":\"string\"},\"module\":{\"type\":\"string\"},\"symbol\":{\"type\":\"string\"},\"targetVersion\":{\"type\":\"string\"},\"budget\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":20},\"maxExamples\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":20}},\"additionalProperties\":true}"
+    "{\"type\":\"object\",\"properties\":{\"q\":{\"type\":\"string\"},\"query\":{\"type\":\"string\"},\"task\":{\"type\":\"string\"},\"taskText\":{\"type\":\"string\"},\"taskId\":{\"type\":\"string\"},\"benchmark\":{\"type\":\"string\"},\"signature\":{\"type\":\"string\"},\"imports\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"argTypes\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"expectedKnowledgeTags\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"starterCodeExcerpt\":{\"type\":\"string\"},\"code\":{\"type\":\"string\"},\"compilerOutput\":{\"type\":\"string\"},\"context\":{\"type\":\"string\"},\"module\":{\"type\":\"string\"},\"symbol\":{\"type\":\"string\"},\"sourceSet\":{\"type\":\"string\"},\"sourceFamily\":{\"type\":\"string\"},\"sourceRepo\":{\"type\":\"string\"},\"sourceRef\":{\"type\":\"string\"},\"refKind\":{\"type\":\"string\"},\"versionPolicy\":{\"type\":\"string\"},\"targetVersion\":{\"type\":\"string\"},\"budget\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":20},\"maxExamples\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":20}},\"additionalProperties\":true}"
 }
 
 private func ckbMcpPromptNames(): ArrayList<String> {
@@ -353,10 +418,10 @@ private func ckbMcpPromptDescription(name: String): String {
 
 private func ckbMcpPromptText(name: String): String {
     if (name == "cangjie_write_code_with_ckb") {
-        return "Before writing Cangjie code, call cangjie_knowledge_pack for the task and relevant cangjie_syntax_query/cangjie_api_search tools. Use ckb://cangjie/llms.txt for baseline context. Do not state syntax or API facts unless they appear in returned citations."
+        return "Before writing Cangjie code, call cangjie_task_knowledge_pack with taskText, signature, expectedKnowledgeTags, and targetVersion to resolve the version and required coverage. Then call cangjie_syntax_query or cangjie_api_search for each planned knowledge area. Use ckb://cangjie/llms.txt for baseline context. Do not state syntax or API facts unless they appear in returned citations."
     }
     if (name == "cangjie_fix_compile_error") {
-        return "Call cangjie_diagnose with compilerOutput and context, then call cangjie_syntax_query or cangjie_api_search for each cited fix area. Propose changes only when supported by CKB citations; do not run or claim verification unless another explicit tool performs it."
+        return "Call cangjie_compile_diagnose_v2 with compilerOutput, context, and targetVersion, then call cangjie_syntax_query or cangjie_api_search for each planned fix area. Propose changes only when supported by CKB citations; do not run or claim verification unless another explicit tool performs it."
     }
     if (name == "cangjie_explain_api") {
         return "Call cangjie_api_search with module or symbol, read ckb://cangjie/api/{symbol} when useful, and explain only citation-backed behavior. Include citations for each API fact."
@@ -365,7 +430,7 @@ private func ckbMcpPromptText(name: String): String {
 }
 
 private func ckbMcpOversizedToolArguments(name: String, args: String, limit: Int64): String {
-    let fields = ["task", "q", "query", "code", "compilerOutput", "context", "constraints"]
+    let fields = ["task", "taskText", "q", "query", "signature", "code", "compilerOutput", "context", "constraints"]
     for (field in fields) {
         if (ckbMcpJsonStringField(args, field).size > limit) {
             return field
@@ -466,6 +531,38 @@ public func ckbMcpJsonObjectField(raw: String, key: String): String {
         return ""
     }
     ckbMcpJsonEnclosedAt(chars, start, r'{', r'}')
+}
+
+private func ckbMcpJsonStringArrayField(raw: String, key: String): ArrayList<String> {
+    let values = ArrayList<String>()
+    let start = ckbMcpJsonValueStart(raw, key)
+    let chars = raw.toRuneArray()
+    if (start < 0 || start >= chars.size || chars[start] != r'[') {
+        return values
+    }
+    var i = start + 1
+    while (i < chars.size) {
+        i = ckbMcpSkipJsonWhitespace(chars, i)
+        if (i >= chars.size || chars[i] == r']') {
+            break
+        }
+        if (chars[i] == r'"') {
+            let scan = ckbMcpReadJsonStringAt(chars, i)
+            if (scan.ok) {
+                values.add(scan.value)
+                i = scan.end
+            } else {
+                break
+            }
+        } else {
+            i += 1
+        }
+        i = ckbMcpSkipJsonWhitespace(chars, i)
+        if (i < chars.size && chars[i] == r',') {
+            i += 1
+        }
+    }
+    values
 }
 
 private func ckbMcpJsonIntField(raw: String, key: String, fallback: Int64): Int64 {

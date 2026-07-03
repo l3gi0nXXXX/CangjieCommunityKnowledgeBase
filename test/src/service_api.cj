@@ -160,6 +160,18 @@ public func ckbApiHandle(service: CkbCommandLoopService, method: String, path: S
     if (verb == "POST" && route == "/v1/cangjie/context-pack") {
         return ckbApiHandleCangjieContextPack(service, body)
     }
+    if (verb == "POST" && route == "/v1/cangjie/version/resolve") {
+        return ckbApiHandleCangjieVersionResolve(service, body)
+    }
+    if (verb == "POST" && route == "/v1/cangjie/task-knowledge-pack") {
+        return ckbApiHandleCangjieTaskKnowledgePack(service, body)
+    }
+    if (verb == "POST" && route == "/v1/cangjie/knowledge-coverage") {
+        return ckbApiHandleCangjieKnowledgeCoverage(service, body)
+    }
+    if (verb == "POST" && route == "/v1/cangjie/compile-diagnose-v2") {
+        return ckbApiHandleCangjieCompileDiagnoseV2(service, body)
+    }
     if (verb == "POST" && route == "/v1/query") {
         return ckbApiHandleEvidence(service, body, true)
     }
@@ -375,6 +387,74 @@ private func ckbApiHandleCangjieContextPack(service: CkbCommandLoopService, body
     ckbApiEnvelope(ckbApiCangjieMarkdownJson(pack, "context-pack"))
 }
 
+private func ckbApiHandleCangjieVersionResolve(service: CkbCommandLoopService, body: String): String {
+    let selector = ckbApiVersionSelectorFromBody(body)
+    ckbApiEnvelope(cangjieVersionResolutionJson(service.cangjieResolveVersion(selector)))
+}
+
+private func ckbApiHandleCangjieTaskKnowledgePack(service: CkbCommandLoopService, body: String): String {
+    let request = ckbApiTaskKnowledgeRequestFromBody(body)
+    let validation = validateCangjieTaskKnowledgeRequest(request)
+    if (validation != "") {
+        return ckbApiErrorEnvelope("ckb.bad_request", validation, status: 400)
+    }
+    ckbApiEnvelope(cangjieTaskKnowledgePackJson(service.cangjieTaskKnowledgePack(request)))
+}
+
+private func ckbApiHandleCangjieKnowledgeCoverage(service: CkbCommandLoopService, body: String): String {
+    let request = ckbApiTaskKnowledgeRequestFromBody(body)
+    let validation = validateCangjieTaskKnowledgeRequest(request)
+    if (validation != "") {
+        return ckbApiErrorEnvelope("ckb.bad_request", validation, status: 400)
+    }
+    ckbApiEnvelope(cangjieKnowledgeCoverageJson(service.cangjieKnowledgeCoverage(request)))
+}
+
+private func ckbApiHandleCangjieCompileDiagnoseV2(service: CkbCommandLoopService, body: String): String {
+    let compilerOutput = ckbApiJsonStringField(body, "compilerOutput").trimAscii()
+    let context = ckbApiJsonStringField(body, "context").trimAscii()
+    if (compilerOutput == "" && context == "") {
+        return ckbApiErrorEnvelope("ckb.bad_request", "compilerOutput or context must not be empty", status: 400)
+    }
+    ckbApiEnvelope(cangjieTaskKnowledgePackJson(service.cangjieCompileDiagnoseV2(ckbApiJsonStringField(body, "code"),
+        compilerOutput,
+        context: context,
+        targetVersion: ckbApiJsonStringField(body, "targetVersion"),
+        sourceSet: ckbApiJsonStringField(body, "sourceSet"),
+        sourceRef: ckbApiJsonStringField(body, "sourceRef"),
+        budget: ckbApiJsonIntField(body, "budget", CangjieCapabilityLimits.DEFAULT_BUDGET))))
+}
+
+private func ckbApiVersionSelectorFromBody(body: String): CangjieVersionSelector {
+    cangjieVersionSelector(
+        targetVersion: ckbApiJsonStringField(body, "targetVersion"),
+        sourceSet: ckbApiJsonStringField(body, "sourceSet"),
+        sourceFamily: ckbApiJsonStringField(body, "sourceFamily"),
+        sourceRepo: ckbApiJsonStringField(body, "sourceRepo"),
+        sourceRef: ckbApiJsonStringField(body, "sourceRef"),
+        refKind: ckbApiJsonStringField(body, "refKind"),
+        versionPolicy: ckbApiJsonStringField(body, "versionPolicy"),
+        includePrerelease: ckbApiJsonBoolField(body, "includePrerelease"))
+}
+
+private func ckbApiTaskKnowledgeRequestFromBody(body: String): CangjieTaskKnowledgeRequest {
+    let request = CangjieTaskKnowledgeRequest()
+    request.taskId = ckbApiJsonStringField(body, "taskId")
+    request.benchmark = ckbApiJsonStringField(body, "benchmark")
+    request.taskText = ckbApiFirstNonEmpty(ckbApiJsonStringField(body, "taskText"), ckbApiJsonStringField(body, "task"))
+    request.signature = ckbApiJsonStringField(body, "signature")
+    request.imports = ckbApiJsonStringArrayField(body, "imports")
+    request.argTypes = ckbApiJsonStringArrayField(body, "argTypes")
+    request.returnType = ckbApiJsonStringField(body, "returnType")
+    request.expectedKnowledgeTags = ckbApiJsonStringArrayField(body, "expectedKnowledgeTags")
+    request.starterCodeExcerpt = ckbApiJsonStringField(body, "starterCodeExcerpt")
+    request.compilerOutput = ckbApiJsonStringField(body, "compilerOutput")
+    request.versionSelector = ckbApiVersionSelectorFromBody(body)
+    request.budget = ckbApiJsonIntField(body, "budget", CangjieCapabilityLimits.DEFAULT_BUDGET)
+    request.responseMode = ckbApiJsonStringField(body, "responseMode")
+    request
+}
+
 private func ckbApiHandleSourceAnalysis(service: CkbCommandLoopService, body: String): String {
     let request = SourceAnalysisRequest()
     request.repo = ckbApiJsonStringField(body, "repo")
@@ -447,7 +527,7 @@ private func ckbApiSchedulesDataJson(status: KnowledgeStatus): String {
 }
 
 private func ckbApiSchemaJson(): String {
-    "{\"apiVersion\":\"ckb-http-v1\",\"envelope\":\"{ok,apiVersion,data|error,diagnostics}\",\"routes\":[\"GET /v1/health\",\"GET /v1/status\",\"GET /v1/schedules\",\"GET /v1/schema\",\"GET /mcp\",\"POST /mcp\",\"DELETE /mcp\",\"GET /v1/cangjie/corpus/status\",\"GET /v1/cangjie/llms.txt\",\"GET /v1/cangjie/llms-full.txt\",\"POST /v1/cangjie/knowledge-pack\",\"POST /v1/cangjie/syntax-query\",\"POST /v1/cangjie/api-search\",\"POST /v1/cangjie/cookbook\",\"POST /v1/cangjie/diagnose\",\"POST /v1/cangjie/examples\",\"POST /v1/cangjie/context-pack\",\"POST /v1/query\",\"POST /v1/evidence-pack\",\"POST /v1/source-analysis\",\"POST /v1/events/gitcode/repository-changed\",\"POST /v1/admin/rebuild\",\"POST /v1/admin/scheduler/run\",\"POST /v1/admin/repositories/sync\",\"POST /v1/admin/repo-list/refresh\",\"POST /v1/admin/sync\"],\"mcpTransports\":[\"stdio\",\"streamable-http\"],\"mcpEndpoint\":\"/mcp\",\"mcpProtocolVersions\":[\"2024-11-05\",\"2025-06-18\"],\"mcpSse\":true,\"tools\":[\"cangjie_knowledge_pack\",\"cangjie_syntax_query\",\"cangjie_api_search\",\"cangjie_cookbook\",\"cangjie_diagnose\",\"cangjie_examples\",\"cangjie_corpus_status\"],\"mcpResources\":[\"ckb://cangjie/corpus/status\",\"ckb://cangjie/llms.txt\",\"ckb://cangjie/llms-full.txt\",\"ckb://cangjie/syntax/{query}\",\"ckb://cangjie/api/{symbol}\",\"ckb://cangjie/cookbook/{task}\"],\"mcpPrompts\":[\"cangjie_write_code_with_ckb\",\"cangjie_fix_compile_error\",\"cangjie_explain_api\",\"cangjie_generate_tests\"],\"plannedNotEnabled\":[\"/v1/cangjie/verify-snippet\"],\"errorCodes\":[\"ckb.bad_request\",\"ckb.unauthorized\",\"ckb.not_found\",\"ckb.method_not_allowed\",\"ckb.invalid_workspace_root\"],\"limits\":{\"budgetDefault\":5,\"budgetMax\":20,\"apiVersion\":\"ckb-http-v1\"}}"
+    "{\"apiVersion\":\"ckb-http-v1\",\"envelope\":\"{ok,apiVersion,data|error,diagnostics}\",\"routes\":[\"GET /v1/health\",\"GET /v1/status\",\"GET /v1/schedules\",\"GET /v1/schema\",\"GET /mcp\",\"POST /mcp\",\"DELETE /mcp\",\"GET /v1/cangjie/corpus/status\",\"GET /v1/cangjie/llms.txt\",\"GET /v1/cangjie/llms-full.txt\",\"POST /v1/cangjie/knowledge-pack\",\"POST /v1/cangjie/syntax-query\",\"POST /v1/cangjie/api-search\",\"POST /v1/cangjie/cookbook\",\"POST /v1/cangjie/diagnose\",\"POST /v1/cangjie/examples\",\"POST /v1/cangjie/context-pack\",\"POST /v1/cangjie/version/resolve\",\"POST /v1/cangjie/task-knowledge-pack\",\"POST /v1/cangjie/knowledge-coverage\",\"POST /v1/cangjie/compile-diagnose-v2\",\"POST /v1/query\",\"POST /v1/evidence-pack\",\"POST /v1/source-analysis\",\"POST /v1/events/gitcode/repository-changed\",\"POST /v1/admin/rebuild\",\"POST /v1/admin/scheduler/run\",\"POST /v1/admin/repositories/sync\",\"POST /v1/admin/repo-list/refresh\",\"POST /v1/admin/sync\"],\"mcpTransports\":[\"stdio\",\"streamable-http\"],\"mcpEndpoint\":\"/mcp\",\"mcpProtocolVersions\":[\"2024-11-05\",\"2025-06-18\"],\"mcpSse\":true,\"tools\":[\"cangjie_knowledge_pack\",\"cangjie_syntax_query\",\"cangjie_api_search\",\"cangjie_cookbook\",\"cangjie_diagnose\",\"cangjie_examples\",\"cangjie_corpus_status\",\"cangjie_version_resolve\",\"cangjie_task_knowledge_pack\",\"cangjie_knowledge_coverage\",\"cangjie_compile_diagnose_v2\"],\"mcpResources\":[\"ckb://cangjie/corpus/status\",\"ckb://cangjie/llms.txt\",\"ckb://cangjie/llms-full.txt\",\"ckb://cangjie/syntax/{query}\",\"ckb://cangjie/api/{symbol}\",\"ckb://cangjie/cookbook/{task}\"],\"mcpPrompts\":[\"cangjie_write_code_with_ckb\",\"cangjie_fix_compile_error\",\"cangjie_explain_api\",\"cangjie_generate_tests\"],\"plannedNotEnabled\":[\"/v1/cangjie/verify-snippet\"],\"errorCodes\":[\"ckb.bad_request\",\"ckb.unauthorized\",\"ckb.not_found\",\"ckb.method_not_allowed\",\"ckb.invalid_workspace_root\",\"version_not_resolved\",\"unsupported_source_set\"],\"limits\":{\"budgetDefault\":5,\"budgetMax\":20,\"apiVersion\":\"ckb-http-v1\"}}"
 }
 
 private func ckbApiQueryJson(pack: EvidencePack): String {
@@ -491,7 +571,7 @@ private func ckbApiEvidencePackJson(pack: EvidencePack): String {
 }
 
 private func ckbApiCangjieKnowledgePackJson(pack: CangjieKnowledgePack): String {
-    var out = "{\"queryId\":\"${ckbApiJsonEscape(pack.queryId)}\",\"task\":\"${ckbApiJsonEscape(pack.task)}\",\"knowledgeVersion\":\"${ckbApiJsonEscape(pack.knowledgeVersion)}\",\"targetVersion\":\"${ckbApiJsonEscape(pack.targetVersion)}\",\"truncated\":${pack.truncated},\"degraded\":${pack.degraded},\"executed\":${pack.executed}"
+    var out = "{\"queryId\":\"${ckbApiJsonEscape(pack.queryId)}\",\"task\":\"${ckbApiJsonEscape(pack.task)}\",\"knowledgeVersion\":\"${ckbApiJsonEscape(pack.knowledgeVersion)}\",\"targetVersion\":\"${ckbApiJsonEscape(pack.targetVersion)}\",\"versionResolutionId\":\"${ckbApiJsonEscape(pack.versionResolutionId)}\",\"truncated\":${pack.truncated},\"degraded\":${pack.degraded},\"executed\":${pack.executed}"
     out += ",\"items\":["
     for (i in 0..pack.items.size) {
         if (i > 0) { out += "," }
@@ -576,6 +656,10 @@ private func ckbApiStringArrayJson(values: ArrayList<String>): String {
     }
     out += "]"
     out
+}
+
+private func ckbApiFirstNonEmpty(a: String, b: String): String {
+    if (a.trimAscii() != "") { a } else { b }
 }
 
 private func ckbApiSchedulerDegraded(status: KnowledgeStatus): Bool {

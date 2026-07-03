@@ -63,6 +63,9 @@ public class KnowledgeMetadata {
     public var symbol: String = ""
     public var commit: String = ""
     public var docVersion: String = ""
+    public var targetVersion: String = "1.0.0"
+    public var sourceSet: String = ""
+    public var versionResolutionId: String = ""
     public var crawlAt: String = ""
     public var indexedAt: String = ""
     public var knowledgeVersion: String = ""
@@ -1512,6 +1515,8 @@ public class StorageStatus {
     public var graphState: String = EmbeddingProviderState.DEGRADED
     public var graphNodeCount: Int64 = 0
     public var graphEdgeCount: Int64 = 0
+    public var targetVersion: String = "1.0.0"
+    public var versionManifestCount: Int64 = 0
 
     public init() {}
 }
@@ -1530,6 +1535,8 @@ public class IndexMetadata {
 public class IndexManifest {
     public var activeVersion: String = ""
     public var candidateVersion: String = ""
+    public var targetVersion: String = "1.0.0"
+    public var versionResolutionId: String = ""
     public var entries: ArrayList<IndexMetadata> = ArrayList<IndexMetadata>()
 
     public init() {}

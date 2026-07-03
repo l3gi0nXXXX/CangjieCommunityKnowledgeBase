@@ -107,6 +107,10 @@ public func registerCkbHttpRoutes(server: Server, service: CkbCommandLoopService
     ckbHttpRegisterRoute(server, service, config, "/v1/cangjie/diagnose")
     ckbHttpRegisterRoute(server, service, config, "/v1/cangjie/examples")
     ckbHttpRegisterRoute(server, service, config, "/v1/cangjie/context-pack")
+    ckbHttpRegisterRoute(server, service, config, "/v1/cangjie/version/resolve")
+    ckbHttpRegisterRoute(server, service, config, "/v1/cangjie/task-knowledge-pack")
+    ckbHttpRegisterRoute(server, service, config, "/v1/cangjie/knowledge-coverage")
+    ckbHttpRegisterRoute(server, service, config, "/v1/cangjie/compile-diagnose-v2")
     ckbHttpRegisterRoute(server, service, config, "/v1/query")
     ckbHttpRegisterRoute(server, service, config, "/v1/evidence-pack")
     ckbHttpRegisterRoute(server, service, config, "/v1/source-analysis")
@@ -384,7 +388,7 @@ private func ckbHttpRequiredAuthKind(path: String): String {
 }
 
 private func ckbHttpStatusFromApiBody(path: String, body: String): Int64 {
-    if (body.contains("\"ok\":false")) {
+    if (body.trimAscii().startsWith("{\"ok\":false")) {
         if (body.contains("\"code\":\"ckb.unauthorized\"")) { return 401 }
         if (body.contains("\"code\":\"ckb.forbidden\"")) { return 403 }
         if (body.contains("\"code\":\"ckb.not_found\"")) { return 404 }
