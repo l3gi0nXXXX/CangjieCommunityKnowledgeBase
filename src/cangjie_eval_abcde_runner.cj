@@ -82,6 +82,19 @@ public class CkbAbcdePreflightResult {
     }
 }
 
+public class CkbAbcdeTaskContext {
+    public var taskId: String = ""
+    public var benchmark: String = "Cangjie-HumanEval"
+    public var taskText: String = ""
+    public var signature: String = ""
+    public var targetVersion: String = "1.0.0"
+    public var sourceSet: String = CangjieSourceSets.ALL
+    public var versionPolicy: String = CangjieVersionPolicies.DEFAULT
+    public var expectedKnowledgeTags: ArrayList<String> = ArrayList<String>()
+
+    public init() {}
+}
+
 public func parseCkbAbcdeRunnerOptions(args: Array<String>): CkbAbcdeRunnerOptions {
     let options = CkbAbcdeRunnerOptions()
     var i: Int64 = 0
@@ -238,20 +251,51 @@ public func runCangjieEvalAbcde(args: Array<String>): Int64 {
     if (failed > 0) { 1 } else { 0 }
 }
 
+public func runCangjieAbcdeParitySmoke(args: Array<String>): Int64 {
+    let taskContextJson = ckbAbcdeSmokeTaskContextJson()
+    let restResponse = "{\"ok\":true,\"apiVersion\":\"ckb-http-v1\",\"data\":{\"knowledgeVersion\":\"ckb-smoke\",\"versionResolution\":{\"targetVersion\":\"1.0.0\",\"versionResolutionId\":\"cangjie-1.0.0-all-release-1.0.0\"},\"queryPlan\":[],\"coverage\":{\"coveragePass\":true},\"citations\":[{\"citation\":\"smoke\"}]}}"
+    let promptB = renderCkbAbcdePrompt(CkbAbcdeGroups.B, "CJ-HUMANEVAL-000", "Implement `src/solution.cj`.", taskContextJson + "\n---CKB_RESPONSE---\n" + restResponse)
+    let promptC = renderCkbAbcdePrompt(CkbAbcdeGroups.C, "CJ-HUMANEVAL-000", "Implement `src/solution.cj`.", taskContextJson)
+    let promptD = renderCkbAbcdePrompt(CkbAbcdeGroups.D, "CJ-HUMANEVAL-000", "Implement `src/solution.cj`.", taskContextJson)
+    let stdioUse = "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"mcp__ckb-cangjie__cangjie_task_knowledge_pack\"}]}}"
+    let httpUse = "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"mcp__ckb-cangjie-http__cangjie_task_knowledge_pack\"}]}}"
+    let canonicalOk = taskContextJson.contains("\"taskId\":\"CJ-HUMANEVAL-000\"") && taskContextJson.contains("\"targetVersion\":\"1.0.0\"")
+    let bPromptOk = promptB.contains("Canonical CKB Task Context") && promptB.contains("CKB REST Context") && promptB.contains("\"versionResolution\"")
+    let stdioPromptOk = promptC.contains("mcp__ckb-cangjie__cangjie_task_knowledge_pack")
+    let httpPromptOk = promptD.contains("mcp__ckb-cangjie-http__cangjie_task_knowledge_pack")
+    let toolEvidenceOk = ckbAbcdeToolEvidence(CkbAbcdeGroups.C, stdioUse) == "cangjie_task_knowledge_pack" &&
+        ckbAbcdeToolEvidence(CkbAbcdeGroups.D, httpUse) == "cangjie_task_knowledge_pack"
+    let ok = canonicalOk && bPromptOk && stdioPromptOk && httpPromptOk && toolEvidenceOk
+    println("abcde-parity-smoke ok=${ok}")
+    println("canonicalTaskContext=${canonicalOk}")
+    println("bRestTaskPackPrompt=${bPromptOk}")
+    println("stdioTaskToolPrompt=${stdioPromptOk}")
+    println("httpTaskToolPrompt=${httpPromptOk}")
+    println("toolEvidenceOk=${toolEvidenceOk}")
+    if (ok) { 0 } else { 1 }
+}
+
 public func renderCkbAbcdePrompt(group: String, caseId: String, modelTask: String, contextText: String): String {
+    let taskContextJson = ckbAbcdePromptTaskContextJson(contextText)
+    let restContextText = ckbAbcdePromptRestContext(contextText)
     var out = "# ${caseId} ${group}\n\n"
     out += "You are completing one Cangjie HumanEval case. Modify only `src/solution.cj` in the current workspace. Keep the public function signature unchanged. The copied workspace root is your current directory; if the task text below mentions `starter/src/solution.cj`, still edit exactly `src/solution.cj`. Do not read hidden tests, reference solutions, unrelated repositories, or files outside the allowed paths. Use at most three knowledge or documentation lookup tool calls before editing; do not perform prolonged research. If documentation is inconclusive, implement directly from the starter signature, examples, and common Cangjie syntax. After editing, reply with a short completion note.\n\n"
     if (group == CkbAbcdeGroups.A) {
         out += "Knowledge policy for this run: No CKB baseline. Do not use CKB HTTP APIs, MCP tools, local cangjie_docs, web search, or external source repositories.\n\n"
     } else if (group == CkbAbcdeGroups.B) {
         out += "Knowledge policy for this run: use only the CKB REST context embedded below. Do not use MCP tools, local cangjie_docs, web search, or external source repositories.\n\n"
-        out += "## CKB REST Context\n\n```json\n${contextText}\n```\n\n"
+        out += "## CKB REST Context\n\n```json\n${restContextText}\n```\n\n"
     } else if (group == CkbAbcdeGroups.C) {
-        out += "Knowledge policy for this run: use the configured stdio MCP server `ckb-cangjie`. Before reading or editing `src/solution.cj`, you must call `mcp__ckb-cangjie__cangjie_knowledge_pack` at least once with this case and task context. This run is invalid without that real tool call, even if the task looks trivial. Do not use CKB REST context, HTTP MCP, local cangjie_docs, web search, or external source repositories.\n\n"
+        out += "Knowledge policy for this run: use the configured stdio MCP server `ckb-cangjie`. Before reading or editing `src/solution.cj`, you must call `mcp__ckb-cangjie__cangjie_task_knowledge_pack` at least once with the canonical task context in this prompt. This run is invalid without that real tool call, even if the task looks trivial. Do not use CKB REST context, HTTP MCP, local cangjie_docs, web search, or external source repositories.\n\n"
     } else if (group == CkbAbcdeGroups.D) {
-        out += "Knowledge policy for this run: use the configured Streamable HTTP MCP server `ckb-cangjie-http`. Before reading or editing `src/solution.cj`, you must call `mcp__ckb-cangjie-http__cangjie_knowledge_pack` at least once with this case and task context. This run is invalid without that real tool call, even if the task looks trivial. Do not use CKB REST context, stdio MCP, local cangjie_docs, web search, or external source repositories.\n\n"
+        out += "Knowledge policy for this run: use the configured Streamable HTTP MCP server `ckb-cangjie-http`. Before reading or editing `src/solution.cj`, you must call `mcp__ckb-cangjie-http__cangjie_task_knowledge_pack` at least once with the canonical task context in this prompt. This run is invalid without that real tool call, even if the task looks trivial. Do not use CKB REST context, stdio MCP, local cangjie_docs, web search, or external source repositories.\n\n"
     } else if (group == CkbAbcdeGroups.E) {
         out += "Knowledge policy for this run: 当前这个项目是仓颉语言开发的项目。You may use local official Cangjie docs under /Users/l3gi0n/work/workspace_cangjie/cangjie_docs-release-1.0/docs when Cangjie syntax, standard library, stdx, or tool usage knowledge is needed. Start from /Users/l3gi0n/work/workspace_cangjie/cangjie_docs-release-1.0/docs/dev-guide/summary_cjnative_EN.md and /Users/l3gi0n/work/workspace_cangjie/cangjie_docs-release-1.0/docs/tools/summary_cjnative_EN.md when they are useful, and prefer targeted read-only Bash rg queries or focused Read calls over loading large documents. You may use Bash only for read-only inspection inside the current temporary workspace or read-only documentation queries under /Users/l3gi0n/work/workspace_cangjie/cangjie_docs-release-1.0/docs. For documentation Bash queries, prefer absolute paths such as `rg \"ArrayList\" /Users/l3gi0n/work/workspace_cangjie/cangjie_docs-release-1.0/docs`; do not rely on `cd` followed by later relative documentation queries. Do not use CKB REST APIs, MCP tools, web search, network commands, shell commands that write/delete/move files, or external source repositories.\n\n"
+    }
+    if (group == CkbAbcdeGroups.B || group == CkbAbcdeGroups.C || group == CkbAbcdeGroups.D) {
+        out += "## Canonical CKB Task Context\n\n"
+        out += "Use this exact JSON as the task context for CKB REST or MCP `cangjie_task_knowledge_pack`.\n\n"
+        out += "```json\n${taskContextJson}\n```\n\n"
     }
     out += "## Task\n\n"
     out += modelTask
@@ -259,6 +303,18 @@ public func renderCkbAbcdePrompt(group: String, caseId: String, modelTask: Strin
         out += "\n"
     }
     out
+}
+
+private func ckbAbcdePromptTaskContextJson(contextText: String): String {
+    let marker = "\n---CKB_RESPONSE---\n"
+    let parts = contextText.split(marker)
+    if (parts.size > 0) { parts[0] } else { contextText }
+}
+
+private func ckbAbcdePromptRestContext(contextText: String): String {
+    let marker = "\n---CKB_RESPONSE---\n"
+    let parts = contextText.split(marker)
+    if (parts.size > 1) { parts[1] } else { contextText }
 }
 
 public func renderCkbAbcdeMcpConfig(group: String, ckbBin: String, ckbStore: String, ckbHttpBase: String): String {
@@ -292,11 +348,86 @@ public func ckbAbcdeJsonEscape(value: String): String {
     out.toString()
 }
 
+public func ckbAbcdeBuildTaskContext(caseRoot: String, caseId: String): CkbAbcdeTaskContext {
+    let context = CkbAbcdeTaskContext()
+    context.taskId = caseId
+    context.taskText = ckbAbcdeReadText("${caseRoot}/prompt.md")
+    let starter = ckbAbcdeReadText("${caseRoot}/starter/src/solution.cj")
+    context.signature = ckbAbcdeExtractCangjieSignature(starter)
+    for (tag in ckbAbcdeInferKnowledgeTags("${context.taskText}\n${starter}")) {
+        context.expectedKnowledgeTags.add(tag)
+    }
+    context
+}
+
+public func ckbAbcdeRenderTaskContextJson(context: CkbAbcdeTaskContext): String {
+    "{\"taskId\":\"${ckbAbcdeJsonEscape(context.taskId)}\",\"benchmark\":\"${ckbAbcdeJsonEscape(context.benchmark)}\",\"taskText\":\"${ckbAbcdeJsonEscape(context.taskText)}\",\"signature\":\"${ckbAbcdeJsonEscape(context.signature)}\",\"expectedKnowledgeTags\":${ckbAbcdeStringArrayJson(context.expectedKnowledgeTags)},\"targetVersion\":\"${ckbAbcdeJsonEscape(context.targetVersion)}\",\"sourceSet\":\"${ckbAbcdeJsonEscape(context.sourceSet)}\",\"versionPolicy\":\"${ckbAbcdeJsonEscape(context.versionPolicy)}\",\"budget\":10,\"responseMode\":\"evidence\"}"
+}
+
+private func ckbAbcdeExtractCangjieSignature(source: String): String {
+    for (line in source.split("\n")) {
+        let trimmed = line.trimAscii()
+        if (trimmed.startsWith("func ")) {
+            match (trimmed.indexOf("{")) {
+                case Some(idx) => return trimmed[..idx].trimAscii()
+                case None => return trimmed
+            }
+        }
+    }
+    ""
+}
+
+private func ckbAbcdeInferKnowledgeTags(text: String): ArrayList<String> {
+    let tags = ArrayList<String>()
+    let lower = text.toAsciiLower()
+    ckbAbcdeAddTagIf(tags, lower.contains("arraylist") || lower.contains("array<"), "ArrayList")
+    ckbAbcdeAddTagIf(tags, lower.contains("string") || lower.contains("rune"), "String")
+    ckbAbcdeAddTagIf(tags, lower.contains("hashmap") || lower.contains("map"), "HashMap")
+    ckbAbcdeAddTagIf(tags, lower.contains("hashset") || lower.contains("set"), "HashSet")
+    ckbAbcdeAddTagIf(tags, lower.contains("sort"), "sort")
+    ckbAbcdeAddTagIf(tags, lower.contains("int64") || lower.contains("float"), "numeric")
+    ckbAbcdeAddTagIf(tags, lower.contains("option") || lower.contains("none") || lower.contains("some"), "Option")
+    if (tags.size == 0) {
+        tags.add("Cangjie syntax")
+    }
+    tags
+}
+
+private func ckbAbcdeAddTagIf(tags: ArrayList<String>, condition: Bool, tag: String): Unit {
+    if (condition && !tags.contains(tag)) {
+        tags.add(tag)
+    }
+}
+
+private func ckbAbcdeStringArrayJson(values: ArrayList<String>): String {
+    var out = "["
+    for (i in 0..values.size) {
+        if (i > 0) {
+            out += ","
+        }
+        out += "\"${ckbAbcdeJsonEscape(values[i])}\""
+    }
+    out + "]"
+}
+
+private func ckbAbcdeSmokeTaskContextJson(): String {
+    let context = CkbAbcdeTaskContext()
+    context.taskId = "CJ-HUMANEVAL-000"
+    context.taskText = "Implement a Cangjie ArrayList helper."
+    context.signature = "func solution(values: Array<Int64>): Int64"
+    context.expectedKnowledgeTags.add("ArrayList")
+    context.expectedKnowledgeTags.add("Cangjie syntax")
+    ckbAbcdeRenderTaskContextJson(context)
+}
+
 private func ckbAbcdeRunCaseGroup(options: CkbAbcdeRunnerOptions, runRoot: String, caseId: String, group: String, previousGroup: String): String {
     let caseSrc = "${options.datasetRoot}/${caseId}"
     let groupRoot = "${runRoot}/cases/${caseId}/${group}"
     let workspace = "${groupRoot}/workspace"
+    let taskContext = ckbAbcdeBuildTaskContext(caseSrc, caseId)
+    let taskContextJson = ckbAbcdeRenderTaskContextJson(taskContext)
     ckbAbcdeEnsureDir(groupRoot)
+    ckbAbcdeWriteText("${groupRoot}/canonical-task-context.json", taskContextJson + "\n")
     ckbAbcdeWriteText("${groupRoot}/switch-gate.json", "{\"caseId\":\"${caseId}\",\"group\":\"${group}\",\"status\":\"entered\"}\n")
     ckbAbcdeAppendText("${runRoot}/cases/${caseId}/env-switch-checks.jsonl", ckbAbcdeRenderEnvSwitchCheck(caseId, previousGroup, group, workspace, groupRoot) + "\n")
 
@@ -307,20 +438,18 @@ private func ckbAbcdeRunCaseGroup(options: CkbAbcdeRunnerOptions, runRoot: Strin
     var contextText = ""
     var knowledgeReady = true
     if (group == CkbAbcdeGroups.B) {
-        let body = "{\"task\":\"${ckbAbcdeJsonEscape(caseId)} Cangjie HumanEval implementation\",\"targetVersion\":\"1.0.0\",\"budget\":5,\"includeExamples\":true,\"includeAntiPatterns\":true}"
+        let body = taskContextJson
         ckbAbcdeWriteText("${groupRoot}/ckb-rest-request.json", body)
-        let rest = ckbAbcdeRunShell("curl ${ckbAbcdeCurlRetryFlags()} --max-time 20 -fsS -X POST -H 'Content-Type: application/json' --data-binary @${ckbAbcdeShellQuote("${groupRoot}/ckb-rest-request.json")} ${ckbAbcdeShellQuote("${options.ckbHttpBase}/v1/cangjie/knowledge-pack")}", "")
+        let rest = ckbAbcdeRunShell("curl ${ckbAbcdeCurlRetryFlags()} --max-time 20 -fsS -X POST -H 'Content-Type: application/json' --data-binary @${ckbAbcdeShellQuote("${groupRoot}/ckb-rest-request.json")} ${ckbAbcdeShellQuote("${options.ckbHttpBase}/v1/cangjie/task-knowledge-pack")}", "")
         contextText = rest.stdout
         knowledgeReady = rest.exitCode == 0 && rest.stdout.contains("\"ok\":true")
         ckbAbcdeWriteText("${groupRoot}/ckb-rest-response.json", rest.stdout)
+        ckbAbcdeWriteText("${groupRoot}/ckb-task-knowledge-pack.json", rest.stdout)
         ckbAbcdeWriteText("${groupRoot}/ckb-knowledge-pack.json", rest.stdout)
         ckbAbcdeWriteText("${groupRoot}/ckb-rest.stderr.log", rest.stderr)
-        let contextRest = ckbAbcdeRunShell("curl ${ckbAbcdeCurlRetryFlags()} --max-time 20 -fsS -X POST -H 'Content-Type: application/json' --data-binary @${ckbAbcdeShellQuote("${groupRoot}/ckb-rest-request.json")} ${ckbAbcdeShellQuote("${options.ckbHttpBase}/v1/cangjie/context-pack")}", "")
-        ckbAbcdeWriteText("${groupRoot}/ckb-context-pack.json", contextRest.stdout)
-        ckbAbcdeWriteText("${groupRoot}/ckb-context-pack.stderr.log", contextRest.stderr)
-        if (contextRest.stdout != "") {
-            contextText += "\n${contextRest.stdout}"
-        }
+        contextText = taskContextJson + "\n---CKB_RESPONSE---\n" + rest.stdout
+    } else if (group == CkbAbcdeGroups.C || group == CkbAbcdeGroups.D) {
+        contextText = taskContextJson
     }
 
     if (group == CkbAbcdeGroups.C) {
@@ -474,33 +603,43 @@ public func ckbAbcdeCurlRetryFlagsForTest(): String {
 }
 
 private func ckbAbcdeRunMcpStdioSmoke(options: CkbAbcdeRunnerOptions, groupRoot: String): Unit {
+    let taskContextJson = ckbAbcdeSmokeTaskContextJson()
     let requests = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-06-18\",\"capabilities\":{},\"clientInfo\":{\"name\":\"ckb-abcde-runner\",\"version\":\"1.0\"}}}\n" +
         "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\",\"params\":{}}\n" +
         "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\",\"params\":{}}\n" +
-        "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"cangjie_knowledge_pack\",\"arguments\":{\"task\":\"Cangjie ArrayList basic syntax\",\"targetVersion\":\"1.0.0\",\"budget\":2}}}\n"
+        "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"cangjie_task_knowledge_pack\",\"arguments\":${taskContextJson}}}\n"
     ckbAbcdeWriteText("${groupRoot}/mcp-stdio-smoke-requests.jsonl", requests)
     let script = "cat ${ckbAbcdeShellQuote("${groupRoot}/mcp-stdio-smoke-requests.jsonl")} | ( " +
         ckbAbcdeNativeTlsBootstrapScript(options.ckbBin, ["--store", options.ckbStore, "mcp-stdio"]) +
         " ) > ${ckbAbcdeShellQuote("${groupRoot}/mcp-stdio-smoke.stdout.jsonl")} 2> ${ckbAbcdeShellQuote("${groupRoot}/mcp-stdio-smoke.stderr.log")}"
     let result = ckbAbcdeRunShell(script, "")
     let stdout = ckbAbcdeReadText("${groupRoot}/mcp-stdio-smoke.stdout.jsonl")
-    let ok = result.exitCode == 0 && stdout.contains("cangjie_knowledge_pack")
-    ckbAbcdeWriteText("${groupRoot}/mcp-stdio-tools-list.json", "{\"exitCode\":${result.exitCode},\"knowledgePackCallOk\":${ok},\"toolNamesContainsKnowledgePack\":${stdout.contains("cangjie_knowledge_pack")}}\n")
+    let ok = result.exitCode == 0 && stdout.contains("cangjie_task_knowledge_pack") && stdout.contains("\"versionResolution\"")
+    ckbAbcdeWriteText("${groupRoot}/mcp-stdio-tools-list.json", "{\"exitCode\":${result.exitCode},\"knowledgePackCallOk\":${ok},\"taskKnowledgePackCallOk\":${ok},\"toolNamesContainsTaskKnowledgePack\":${stdout.contains("cangjie_task_knowledge_pack")},\"versionResolutionReturned\":${stdout.contains("\"versionResolution\"")}}\n")
 }
 
 private func ckbAbcdeRunMcpHttpSmoke(options: CkbAbcdeRunnerOptions, groupRoot: String): Unit {
+    let taskContextJson = ckbAbcdeSmokeTaskContextJson()
     let initBody = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-06-18\",\"capabilities\":{},\"clientInfo\":{\"name\":\"ckb-abcde-runner\",\"version\":\"1.0\"}}}"
+    let initializedBody = "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\",\"params\":{}}"
+    let callBody = "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"cangjie_task_knowledge_pack\",\"arguments\":${taskContextJson}}}"
     ckbAbcdeWriteText("${groupRoot}/mcp-http-initialize-request.json", initBody)
+    ckbAbcdeWriteText("${groupRoot}/mcp-http-initialized-request.json", initializedBody)
+    ckbAbcdeWriteText("${groupRoot}/mcp-http-tool-call-request.json", callBody)
     let script = "curl --max-time 5 -i -sS -X POST -H 'Accept: application/json, text/event-stream' -H 'Content-Type: application/json' --data-binary @${ckbAbcdeShellQuote("${groupRoot}/mcp-http-initialize-request.json")} ${ckbAbcdeShellQuote("${options.ckbHttpBase}/mcp")} > ${ckbAbcdeShellQuote("${groupRoot}/mcp-http-initialize-response.txt")} 2> ${ckbAbcdeShellQuote("${groupRoot}/mcp-http-initialize.stderr.log")}; " +
         "sid=$(grep -i '^mcp-session-id:' ${ckbAbcdeShellQuote("${groupRoot}/mcp-http-initialize-response.txt")} | head -n1 | cut -d' ' -f2 | tr -d '\\r'); " +
         "printf '%s\\n' \"$sid\" > ${ckbAbcdeShellQuote("${groupRoot}/mcp-http-session-id.txt")}; " +
         "if [ -z \"$sid\" ]; then exit 4; fi; " +
+        "curl --max-time 5 -fsS -X POST -H 'Accept: application/json, text/event-stream' -H 'Content-Type: application/json' -H \"Mcp-Session-Id: $sid\" -H 'MCP-Protocol-Version: 2025-06-18' --data-binary @${ckbAbcdeShellQuote("${groupRoot}/mcp-http-initialized-request.json")} ${ckbAbcdeShellQuote("${options.ckbHttpBase}/mcp")} > ${ckbAbcdeShellQuote("${groupRoot}/mcp-http-initialized-response.txt")} 2> ${ckbAbcdeShellQuote("${groupRoot}/mcp-http-initialized.stderr.log")}; " +
+        "curl --max-time 10 -fsS -X POST -H 'Accept: application/json, text/event-stream' -H 'Content-Type: application/json' -H \"Mcp-Session-Id: $sid\" -H 'MCP-Protocol-Version: 2025-06-18' --data-binary @${ckbAbcdeShellQuote("${groupRoot}/mcp-http-tool-call-request.json")} ${ckbAbcdeShellQuote("${options.ckbHttpBase}/mcp")} > ${ckbAbcdeShellQuote("${groupRoot}/mcp-http-tool-call-response.json")} 2> ${ckbAbcdeShellQuote("${groupRoot}/mcp-http-tool-call.stderr.log")}; " +
         "curl --max-time 5 -fsS -N -H 'Accept: text/event-stream' -H \"Mcp-Session-Id: $sid\" -H 'MCP-Protocol-Version: 2025-06-18' ${ckbAbcdeShellQuote("${options.ckbHttpBase}/mcp")}"
     let get = ckbAbcdeRunShell(script, "")
     ckbAbcdeWriteText("${groupRoot}/mcp-http-smoke.stdout.log", get.stdout)
     ckbAbcdeWriteText("${groupRoot}/mcp-http-smoke.stderr.log", get.stderr)
     let ready = get.stdout.contains("event") || get.stdout.contains("ready")
-    ckbAbcdeWriteText("${groupRoot}/mcp-http-smoke.json", "{\"exitCode\":${get.exitCode},\"ok\":${get.exitCode == 0 || ready},\"sseReady\":${ready}}\n")
+    let callResponse = ckbAbcdeReadText("${groupRoot}/mcp-http-tool-call-response.json")
+    let toolOk = callResponse.contains("\"versionResolution\"") && callResponse.contains("\"queryPlan\"")
+    ckbAbcdeWriteText("${groupRoot}/mcp-http-smoke.json", "{\"exitCode\":${get.exitCode},\"ok\":${toolOk},\"taskKnowledgePackCallOk\":${toolOk},\"sseReady\":${ready},\"versionResolutionReturned\":${callResponse.contains("\"versionResolution\"")}}\n")
 }
 
 private func ckbAbcdePreflight(options: CkbAbcdeRunnerOptions, runRoot: String): CkbAbcdePreflightResult {
@@ -517,7 +656,7 @@ private func ckbAbcdePreflight(options: CkbAbcdeRunnerOptions, runRoot: String):
     result.add("claude_glm52_settings", ckbAbcdeClaudeSettingsLooksGlm52(), "~/.claude/settings.json model keys")
     result.add("cjpm_cli", ckbAbcdeRunShell("command -v cjpm >/dev/null && cjpm --version >/dev/null", "").exitCode == 0, "cjpm command available")
     result.add("ckb_http_health", ckbAbcdeRunShell("curl --max-time 5 -fsS ${ckbAbcdeShellQuote("${options.ckbHttpBase}/v1/health")} >/dev/null", "").exitCode == 0, options.ckbHttpBase)
-    result.add("ckb_http_schema", ckbAbcdeRunShell("curl --max-time 5 -fsS ${ckbAbcdeShellQuote("${options.ckbHttpBase}/v1/schema")} | grep -q cangjie_knowledge_pack", "").exitCode == 0, "${options.ckbHttpBase}/v1/schema")
+    result.add("ckb_http_schema", ckbAbcdeRunShell("curl --max-time 5 -fsS ${ckbAbcdeShellQuote("${options.ckbHttpBase}/v1/schema")} | grep -q cangjie_task_knowledge_pack", "").exitCode == 0, "${options.ckbHttpBase}/v1/schema")
     let stdioRoot = "${runRoot}/preflight-stdio"
     ckbAbcdeEnsureDir(stdioRoot)
     ckbAbcdeRunMcpStdioSmoke(options, stdioRoot)
@@ -778,10 +917,10 @@ private func ckbAbcdeToolEvidence(group: String, transcript: String): String {
             if (line.contains("\"subtype\":\"init\"")) {
                 continue
             }
-            if (line.contains("mcp__ckb-cangjie__cangjie_knowledge_pack") ||
-                line.contains("mcp__ckb-cangjie-http__cangjie_knowledge_pack") ||
-                line.contains("\"name\":\"cangjie_knowledge_pack\"")) {
-                return "cangjie_knowledge_pack"
+            if (line.contains("mcp__ckb-cangjie__cangjie_task_knowledge_pack") ||
+                line.contains("mcp__ckb-cangjie-http__cangjie_task_knowledge_pack") ||
+                line.contains("\"name\":\"cangjie_task_knowledge_pack\"")) {
+                return "cangjie_task_knowledge_pack"
             }
         }
         return "manual_required"
@@ -812,7 +951,7 @@ private func ckbAbcdeUsesCkb(group: String): Bool {
 }
 
 private func ckbAbcdeToolCallCount(group: String, toolEvidence: String): Int64 {
-    if ((group == CkbAbcdeGroups.C || group == CkbAbcdeGroups.D) && toolEvidence == "cangjie_knowledge_pack") {
+    if ((group == CkbAbcdeGroups.C || group == CkbAbcdeGroups.D) && toolEvidence == "cangjie_task_knowledge_pack") {
         return 1
     }
     0
@@ -823,7 +962,7 @@ private func ckbAbcdeRequiredKnowledgeReady(group: String, knowledgeReady: Bool,
         return knowledgeReady
     }
     if (group == CkbAbcdeGroups.C || group == CkbAbcdeGroups.D) {
-        return toolEvidence == "cangjie_knowledge_pack"
+        return toolEvidence == "cangjie_task_knowledge_pack"
     }
     true
 }
@@ -874,7 +1013,8 @@ private func ckbAbcdeClaudeVersion(): String {
 }
 
 private func ckbAbcdeKnowledgeVersion(groupRoot: String): String {
-    let text = ckbAbcdeReadText("${groupRoot}/ckb-knowledge-pack.json") +
+    let text = ckbAbcdeReadText("${groupRoot}/ckb-task-knowledge-pack.json") +
+        ckbAbcdeReadText("${groupRoot}/ckb-knowledge-pack.json") +
         ckbAbcdeReadText("${groupRoot}/ckb-context-pack.json") +
         ckbAbcdeReadText("${groupRoot}/claude-transcript.jsonl") +
         ckbAbcdeReadText("${groupRoot}/claude.stdout.log")
@@ -882,7 +1022,8 @@ private func ckbAbcdeKnowledgeVersion(groupRoot: String): String {
 }
 
 private func ckbAbcdeCitationCount(groupRoot: String): Int64 {
-    ckbAbcdeCountOccurrences(ckbAbcdeReadText("${groupRoot}/ckb-knowledge-pack.json") +
+    ckbAbcdeCountOccurrences(ckbAbcdeReadText("${groupRoot}/ckb-task-knowledge-pack.json") +
+        ckbAbcdeReadText("${groupRoot}/ckb-knowledge-pack.json") +
         ckbAbcdeReadText("${groupRoot}/ckb-context-pack.json") +
         ckbAbcdeReadText("${groupRoot}/claude-transcript.jsonl"), "\"citation\"")
 }
@@ -1057,7 +1198,7 @@ private func ckbAbcdeTestLogContainsFailure(testLog: String): Bool {
 
 private func ckbAbcdeForbiddenEvidence(group: String, transcript: String): String {
     let lowered = transcript.toAsciiLower()
-    if (group == CkbAbcdeGroups.A && (lowered.contains("cangjie_knowledge_pack") || lowered.contains("/v1/cangjie") || lowered.contains("cangjie_docs-release"))) {
+    if (group == CkbAbcdeGroups.A && (lowered.contains("cangjie_knowledge_pack") || lowered.contains("cangjie_task_knowledge_pack") || lowered.contains("/v1/cangjie") || lowered.contains("cangjie_docs-release"))) {
         return "forbidden_knowledge_entry"
     }
     if (group == CkbAbcdeGroups.B && (lowered.contains("mcp__") || lowered.contains("cangjie_docs-release"))) {
