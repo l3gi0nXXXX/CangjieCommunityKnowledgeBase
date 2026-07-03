@@ -126,6 +126,44 @@ public class CkbMcpStdioServer {
                 sourceRef: ckbMcpJsonStringField(args, "sourceRef"),
                 budget: ckbMcpJsonIntField(args, "budget", CangjieCapabilityLimits.DEFAULT_BUDGET))))
         }
+        if (name == "cangjie_symbol_lookup") {
+            let symbol = ckbMcpFirstNonEmpty(ckbMcpJsonStringField(args, "symbol"), ckbMcpJsonStringField(args, "q")).trimAscii()
+            if (symbol == "") { return this.errorResponse(id, -32602, "symbol_required", "{}") }
+            return this.toolResult(id, this.packJson(this.service.cangjieSymbolLookup(symbol,
+                module: ckbMcpJsonStringField(args, "module"),
+                sourceSet: ckbMcpJsonStringField(args, "sourceSet"),
+                targetVersion: ckbMcpJsonStringField(args, "targetVersion"),
+                budget: ckbMcpJsonIntField(args, "budget", CangjieCapabilityLimits.DEFAULT_BUDGET))))
+        }
+        if (name == "cangjie_doc_section") {
+            let sectionId = ckbMcpJsonStringField(args, "sectionId").trimAscii()
+            let path = ckbMcpJsonStringField(args, "path").trimAscii()
+            let heading = ckbMcpJsonStringField(args, "heading").trimAscii()
+            if (sectionId == "" && path == "" && heading == "") { return this.errorResponse(id, -32602, "doc_section_selector_required", "{}") }
+            return this.toolResult(id, this.packJson(this.service.cangjieDocSection(sectionId,
+                path: path,
+                heading: heading,
+                targetVersion: ckbMcpJsonStringField(args, "targetVersion"),
+                budget: ckbMcpJsonIntField(args, "budget", CangjieCapabilityLimits.DEFAULT_BUDGET))))
+        }
+        if (name == "cangjie_tool_manual") {
+            let tool = ckbMcpFirstNonEmpty(ckbMcpJsonStringField(args, "tool"), ckbMcpJsonStringField(args, "command")).trimAscii()
+            if (tool == "") { return this.errorResponse(id, -32602, "tool_required", "{}") }
+            return this.toolResult(id, this.packJson(this.service.cangjieToolManual(tool,
+                command: ckbMcpJsonStringField(args, "command"),
+                targetVersion: ckbMcpJsonStringField(args, "targetVersion"),
+                budget: ckbMcpJsonIntField(args, "budget", CangjieCapabilityLimits.DEFAULT_BUDGET))))
+        }
+        if (name == "cangjie_negative_rules") {
+            let query = ckbMcpFirstNonEmpty(ckbMcpJsonStringField(args, "q"), ckbMcpJsonStringField(args, "query")).trimAscii()
+            if (query == "") { return this.errorResponse(id, -32602, "query_required", "{}") }
+            return this.toolResult(id, this.packJson(this.service.cangjieNegativeRules(query,
+                targetVersion: ckbMcpJsonStringField(args, "targetVersion"),
+                budget: ckbMcpJsonIntField(args, "budget", CangjieCapabilityLimits.DEFAULT_BUDGET))))
+        }
+        if (name == "cangjie_corpus_freshness") {
+            return this.toolResult(id, this.corpusStatusJson(this.service.cangjieCorpusStatus()))
+        }
         if (name == "cangjie_syntax_query") {
             let q = ckbMcpFirstNonEmpty(ckbMcpJsonStringField(args, "q"), ckbMcpJsonStringField(args, "query")).trimAscii()
             if (q == "") { return this.errorResponse(id, -32602, "query_required", "{}") }
@@ -362,6 +400,11 @@ private func ckbMcpToolNames(): ArrayList<String> {
     tools.add("cangjie_task_knowledge_pack")
     tools.add("cangjie_knowledge_coverage")
     tools.add("cangjie_compile_diagnose_v2")
+    tools.add("cangjie_symbol_lookup")
+    tools.add("cangjie_doc_section")
+    tools.add("cangjie_corpus_freshness")
+    tools.add("cangjie_tool_manual")
+    tools.add("cangjie_negative_rules")
     tools.add("cangjie_syntax_query")
     tools.add("cangjie_api_search")
     tools.add("cangjie_cookbook")
@@ -381,6 +424,11 @@ private func ckbMcpToolDescription(name: String): String {
     if (name == "cangjie_task_knowledge_pack") { return "Return a version-aware task knowledge contract with query plan and coverage fields." }
     if (name == "cangjie_knowledge_coverage") { return "Return required Cangjie knowledge coverage for a task request." }
     if (name == "cangjie_compile_diagnose_v2") { return "Return version-aware compile diagnostic query plan; does not execute code." }
+    if (name == "cangjie_symbol_lookup") { return "Lookup exact Cangjie symbol cards with version and source-set filters." }
+    if (name == "cangjie_doc_section") { return "Read Cangjie doc section evidence by sectionId, path, or heading." }
+    if (name == "cangjie_corpus_freshness") { return "Return Cangjie corpus freshness/status information." }
+    if (name == "cangjie_tool_manual") { return "Search Cangjie tool manuals for commands and usage." }
+    if (name == "cangjie_negative_rules") { return "Return reviewed negative Cangjie rules and antipattern guidance." }
     if (name == "cangjie_syntax_query") { return "Search citation-backed Cangjie syntax guidance." }
     if (name == "cangjie_api_search") { return "Search citation-backed Cangjie API and module knowledge." }
     if (name == "cangjie_cookbook") { return "Return grounded Cangjie implementation steps and examples." }
@@ -393,7 +441,7 @@ private func ckbMcpToolSchema(name: String): String {
     if (name == "cangjie_corpus_status") {
         return "{\"type\":\"object\",\"properties\":{},\"additionalProperties\":false}"
     }
-    "{\"type\":\"object\",\"properties\":{\"q\":{\"type\":\"string\"},\"query\":{\"type\":\"string\"},\"task\":{\"type\":\"string\"},\"taskText\":{\"type\":\"string\"},\"taskId\":{\"type\":\"string\"},\"benchmark\":{\"type\":\"string\"},\"signature\":{\"type\":\"string\"},\"imports\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"argTypes\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"expectedKnowledgeTags\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"starterCodeExcerpt\":{\"type\":\"string\"},\"code\":{\"type\":\"string\"},\"compilerOutput\":{\"type\":\"string\"},\"context\":{\"type\":\"string\"},\"module\":{\"type\":\"string\"},\"symbol\":{\"type\":\"string\"},\"sourceSet\":{\"type\":\"string\"},\"sourceFamily\":{\"type\":\"string\"},\"sourceRepo\":{\"type\":\"string\"},\"sourceRef\":{\"type\":\"string\"},\"refKind\":{\"type\":\"string\"},\"versionPolicy\":{\"type\":\"string\"},\"targetVersion\":{\"type\":\"string\"},\"budget\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":20},\"maxExamples\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":20}},\"additionalProperties\":true}"
+    "{\"type\":\"object\",\"properties\":{\"q\":{\"type\":\"string\"},\"query\":{\"type\":\"string\"},\"task\":{\"type\":\"string\"},\"taskText\":{\"type\":\"string\"},\"taskId\":{\"type\":\"string\"},\"benchmark\":{\"type\":\"string\"},\"signature\":{\"type\":\"string\"},\"imports\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"argTypes\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"expectedKnowledgeTags\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"starterCodeExcerpt\":{\"type\":\"string\"},\"code\":{\"type\":\"string\"},\"compilerOutput\":{\"type\":\"string\"},\"context\":{\"type\":\"string\"},\"sectionId\":{\"type\":\"string\"},\"path\":{\"type\":\"string\"},\"heading\":{\"type\":\"string\"},\"tool\":{\"type\":\"string\"},\"command\":{\"type\":\"string\"},\"module\":{\"type\":\"string\"},\"symbol\":{\"type\":\"string\"},\"sourceSet\":{\"type\":\"string\"},\"sourceFamily\":{\"type\":\"string\"},\"sourceRepo\":{\"type\":\"string\"},\"sourceRef\":{\"type\":\"string\"},\"refKind\":{\"type\":\"string\"},\"versionPolicy\":{\"type\":\"string\"},\"targetVersion\":{\"type\":\"string\"},\"budget\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":20},\"maxExamples\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":20}},\"additionalProperties\":true}"
 }
 
 private func ckbMcpPromptNames(): ArrayList<String> {

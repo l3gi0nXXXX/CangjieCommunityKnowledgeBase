@@ -354,6 +354,30 @@ public class CangjieCapabilityService {
         pack
     }
 
+    public func symbolLookup(symbol: String, module!: String = "", sourceSet!: String = "", targetVersion!: String = "", budget!: Int64 = CangjieCapabilityLimits.DEFAULT_BUDGET): CangjieKnowledgePack {
+        this.apiSearch(symbol, module: module, symbol: symbol, sourceSet: sourceSet, targetVersion: targetVersion, budget: budget)
+    }
+
+    public func docSection(sectionId: String, path!: String = "", heading!: String = "", targetVersion!: String = "", budget!: Int64 = CangjieCapabilityLimits.DEFAULT_BUDGET): CangjieKnowledgePack {
+        let query = cangjieSafeText("${sectionId} ${path} ${heading} doc section")
+        let pack = this.syntaxQuery(query, targetVersion: targetVersion, budget: budget)
+        pack.notes.add("doc_section_endpoint")
+        pack
+    }
+
+    public func toolManual(tool: String, command!: String = "", targetVersion!: String = "", budget!: Int64 = CangjieCapabilityLimits.DEFAULT_BUDGET): CangjieKnowledgePack {
+        let query = cangjieSafeText("${tool} ${command} tool manual")
+        let pack = this.apiSearch(query, module: "toolchain", symbol: tool, sourceSet: CangjieSourceSets.TOOLS, targetVersion: targetVersion, budget: budget)
+        pack.notes.add("tool_manual_endpoint")
+        pack
+    }
+
+    public func negativeRules(query: String, targetVersion!: String = "", budget!: Int64 = CangjieCapabilityLimits.DEFAULT_BUDGET): CangjieKnowledgePack {
+        let pack = this.syntaxQuery("${query} negative rule antipattern", targetVersion: targetVersion, budget: budget)
+        pack.notes.add("negative_rules_endpoint")
+        pack
+    }
+
     public func corpusStatus(): CangjieCorpusStatus {
         let status = this.kb.status()
         let out = CangjieCorpusStatus()

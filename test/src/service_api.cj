@@ -172,6 +172,21 @@ public func ckbApiHandle(service: CkbCommandLoopService, method: String, path: S
     if (verb == "POST" && route == "/v1/cangjie/compile-diagnose-v2") {
         return ckbApiHandleCangjieCompileDiagnoseV2(service, body)
     }
+    if (verb == "POST" && route == "/v1/cangjie/symbol-lookup") {
+        return ckbApiHandleCangjieSymbolLookup(service, body)
+    }
+    if (verb == "POST" && route == "/v1/cangjie/doc-section") {
+        return ckbApiHandleCangjieDocSection(service, body)
+    }
+    if (verb == "POST" && route == "/v1/cangjie/tool-manual") {
+        return ckbApiHandleCangjieToolManual(service, body)
+    }
+    if (verb == "POST" && route == "/v1/cangjie/negative-rules") {
+        return ckbApiHandleCangjieNegativeRules(service, body)
+    }
+    if (verb == "GET" && route == "/v1/cangjie/corpus/freshness") {
+        return ckbApiEnvelope(ckbApiCangjieCorpusStatusJson(service.cangjieCorpusStatus()))
+    }
     if (verb == "POST" && route == "/v1/query") {
         return ckbApiHandleEvidence(service, body, true)
     }
@@ -422,6 +437,53 @@ private func ckbApiHandleCangjieCompileDiagnoseV2(service: CkbCommandLoopService
         targetVersion: ckbApiJsonStringField(body, "targetVersion"),
         sourceSet: ckbApiJsonStringField(body, "sourceSet"),
         sourceRef: ckbApiJsonStringField(body, "sourceRef"),
+        budget: ckbApiJsonIntField(body, "budget", CangjieCapabilityLimits.DEFAULT_BUDGET))))
+}
+
+private func ckbApiHandleCangjieSymbolLookup(service: CkbCommandLoopService, body: String): String {
+    let symbol = ckbApiFirstNonEmpty(ckbApiJsonStringField(body, "symbol"), ckbApiJsonStringField(body, "q")).trimAscii()
+    if (symbol == "") {
+        return ckbApiErrorEnvelope("ckb.bad_request", "symbol must not be empty", status: 400)
+    }
+    ckbApiEnvelope(ckbApiCangjieKnowledgePackJson(service.cangjieSymbolLookup(symbol,
+        module: ckbApiJsonStringField(body, "module"),
+        sourceSet: ckbApiJsonStringField(body, "sourceSet"),
+        targetVersion: ckbApiJsonStringField(body, "targetVersion"),
+        budget: ckbApiJsonIntField(body, "budget", CangjieCapabilityLimits.DEFAULT_BUDGET))))
+}
+
+private func ckbApiHandleCangjieDocSection(service: CkbCommandLoopService, body: String): String {
+    let sectionId = ckbApiJsonStringField(body, "sectionId").trimAscii()
+    let path = ckbApiJsonStringField(body, "path").trimAscii()
+    let heading = ckbApiJsonStringField(body, "heading").trimAscii()
+    if (sectionId == "" && path == "" && heading == "") {
+        return ckbApiErrorEnvelope("ckb.bad_request", "sectionId, path, or heading must not be empty", status: 400)
+    }
+    ckbApiEnvelope(ckbApiCangjieKnowledgePackJson(service.cangjieDocSection(sectionId,
+        path: path,
+        heading: heading,
+        targetVersion: ckbApiJsonStringField(body, "targetVersion"),
+        budget: ckbApiJsonIntField(body, "budget", CangjieCapabilityLimits.DEFAULT_BUDGET))))
+}
+
+private func ckbApiHandleCangjieToolManual(service: CkbCommandLoopService, body: String): String {
+    let tool = ckbApiFirstNonEmpty(ckbApiJsonStringField(body, "tool"), ckbApiJsonStringField(body, "command")).trimAscii()
+    if (tool == "") {
+        return ckbApiErrorEnvelope("ckb.bad_request", "tool or command must not be empty", status: 400)
+    }
+    ckbApiEnvelope(ckbApiCangjieKnowledgePackJson(service.cangjieToolManual(tool,
+        command: ckbApiJsonStringField(body, "command"),
+        targetVersion: ckbApiJsonStringField(body, "targetVersion"),
+        budget: ckbApiJsonIntField(body, "budget", CangjieCapabilityLimits.DEFAULT_BUDGET))))
+}
+
+private func ckbApiHandleCangjieNegativeRules(service: CkbCommandLoopService, body: String): String {
+    let query = ckbApiFirstNonEmpty(ckbApiJsonStringField(body, "q"), ckbApiJsonStringField(body, "query")).trimAscii()
+    if (query == "") {
+        return ckbApiErrorEnvelope("ckb.bad_request", "q or query must not be empty", status: 400)
+    }
+    ckbApiEnvelope(ckbApiCangjieKnowledgePackJson(service.cangjieNegativeRules(query,
+        targetVersion: ckbApiJsonStringField(body, "targetVersion"),
         budget: ckbApiJsonIntField(body, "budget", CangjieCapabilityLimits.DEFAULT_BUDGET))))
 }
 

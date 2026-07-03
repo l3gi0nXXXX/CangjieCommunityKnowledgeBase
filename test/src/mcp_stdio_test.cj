@@ -35,11 +35,11 @@ public class CkbMcpStdioTest {
     }
 
     @TestCase
-    public func ckg5Ut001ToolsListReturnsElevenReadOnlyTools(): Unit {
+    public func ckg5Ut001ToolsListReturnsSixteenReadOnlyTools(): Unit {
         let response = this.server("ckg5-ut-001").handleRequest("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\",\"params\":{}}")
 
         @Expect(response.contains("\"result\""), true)
-        @Expect(this.countOccurrences(response, "\"name\":\"cangjie_"), 11)
+        @Expect(this.countOccurrences(response, "\"name\":\"cangjie_"), 16)
         @Expect(response.contains("\"name\":\"cangjie_knowledge_pack\""), true)
         @Expect(response.contains("\"name\":\"cangjie_version_resolve\""), true)
         @Expect(response.contains("\"name\":\"cangjie_task_knowledge_pack\""), true)
@@ -69,7 +69,7 @@ public class CkbMcpStdioTest {
         @Expect(initialized.shouldWrite, false)
         @Expect(initialized.payload, "")
         @Expect(tools.shouldWrite, true)
-        @Expect(this.countOccurrences(tools.payload, "\"name\":\"cangjie_"), 11)
+        @Expect(this.countOccurrences(tools.payload, "\"name\":\"cangjie_"), 16)
     }
 
     @TestCase
@@ -135,13 +135,13 @@ public class CkbMcpStdioTest {
     }
 
     @TestCase
-    public func msh2Ut001ProtocolServerToolsListReturnsElevenReadOnlyTools(): Unit {
+    public func msh2Ut001ProtocolServerToolsListReturnsSixteenReadOnlyTools(): Unit {
         let service = CkbCommandLoopService(CkbRuntimeConfig(), FileKnowledgeStore("target/msh2-ut-001"))
         let server = CkbMcpProtocolServer(service)
         let response = server.handleRequest("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\",\"params\":{}}", "2025-06-18", "ckb-cangjie-mcp-http")
 
         @Expect(response.contains("\"result\""), true)
-        @Expect(this.countOccurrences(response, "\"name\":\"cangjie_"), 11)
+        @Expect(this.countOccurrences(response, "\"name\":\"cangjie_"), 16)
         @Expect(response.contains("admin"), false)
         @Expect(response.contains("verify"), false)
     }
