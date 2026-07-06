@@ -4616,7 +4616,7 @@ private func ingestScheduledProfileSources(kb: KnowledgeBase, store: FileKnowled
     let result = CkbScheduledProfileIngestResult()
     result.status = if (fetch.ok) { "profile_ok" } else { fetch.status }
     if (profile.profile == "cangjie_benchmark_gap_curation") {
-        return ingestScheduledBenchmarkGapCuration(kb, store, profile, config)
+        return ingestScheduledBenchmarkGapCuration(kb, store, profile, config, manifest)
     }
     if (profile.candidateMode == "" || profile.candidateMode == "none" || profile.candidateMode == "probe_only") {
         result.ok = fetch.ok
@@ -4640,7 +4640,7 @@ private func ingestScheduledProfileSources(kb: KnowledgeBase, store: FileKnowled
     result
 }
 
-private func ingestScheduledBenchmarkGapCuration(kb: KnowledgeBase, store: FileKnowledgeStore, profile: CkbScheduleTaskProfile, config: CkbRuntimeConfig): CkbScheduledProfileIngestResult {
+private func ingestScheduledBenchmarkGapCuration(kb: KnowledgeBase, store: FileKnowledgeStore, profile: CkbScheduleTaskProfile, config: CkbRuntimeConfig, manifest: CangjieVersionManifest): CkbScheduledProfileIngestResult {
     let result = CkbScheduledProfileIngestResult()
     if (config.benchmarkGapCurationInputPath.trimAscii() == "") {
         result.ok = false
@@ -4665,6 +4665,9 @@ private func ingestScheduledBenchmarkGapCuration(kb: KnowledgeBase, store: FileK
         return result
     }
     for (record in curated.records) {
+        result.validationDiagnostics.add(ckbBenchmarkGapPreviewProof(curated.records, record))
+    }
+    for (record in curated.records) {
         let fetch = SourceFetchResult()
         fetch.ok = true
         fetch.status = "ok"
@@ -4683,7 +4686,74 @@ private func ingestScheduledBenchmarkGapCuration(kb: KnowledgeBase, store: FileK
     let candidateRecords = kb.activeRecordSnapshotOverlay(curated.records)
     let promotion = cangjiePromoteCandidateRecordsAfterValidationWithVersion(kb, store, candidateVersion, candidateRecords)
     ckbApplyScheduledPromotionResult(result, promotion, "benchmark_gap_candidate_promoted")
+    if (result.ok) {
+        for (record in curated.records) {
+            result.validationDiagnostics.add(ckbBenchmarkGapQueryProof(kb, record, manifest))
+        }
+    }
     result
+}
+
+private func ckbBenchmarkGapPreviewProof(records: ArrayList<NormalizedRecord>, record: NormalizedRecord): String {
+    let index = buildCangjieServingIndex(records, activeKnowledgeVersion: "benchmark-gap-preview")
+    let request = CangjieServingSearchRequest()
+    request.query = ckbBenchmarkGapTaskQuery(record)
+    request.sourceSet = CangjieSourceSets.EVAL_SUPPORT
+    request.targetVersion = record.metadata.targetVersion
+    request.budget = 5
+    let lookup = searchHybridServingIndex(index, request)
+    "benchmark_gap_preview:${ckbBenchmarkGapCaseId(record)}:hits=${lookup.hits.size}:ok=${lookup.hits.size > 0}"
+}
+
+private func ckbBenchmarkGapQueryProof(kb: KnowledgeBase, record: NormalizedRecord, manifest: CangjieVersionManifest): String {
+    let request = CangjieTaskKnowledgeRequest()
+    request.taskId = ckbBenchmarkGapCaseId(record)
+    request.benchmark = ckbBenchmarkGapBenchmark(record)
+    request.taskText = ckbBenchmarkGapLine(record.chunk, "Task:")
+    request.compilerOutput = ckbBenchmarkGapLine(record.chunk, "Compiler output:")
+    request.expectedKnowledgeTags.add(ckbBenchmarkGapMissingKnowledge(record))
+    request.versionSelector = cangjieVersionSelector(targetVersion: record.metadata.targetVersion, sourceSet: CangjieSourceSets.ALL)
+    request.budget = 5
+    let pack = buildCangjieTaskKnowledgePackFromEvidence(kb, request, manifest)
+    "benchmark_gap_query_proof:${request.taskId}:coveragePass=${pack.coverage.coveragePass}:citations=${pack.citations.size}:evidenceHash=${pack.evidenceHash}"
+}
+
+private func ckbBenchmarkGapTaskQuery(record: NormalizedRecord): String {
+    "visible-benchmark ${ckbBenchmarkGapBenchmark(record)} ${ckbBenchmarkGapCaseId(record)} ${ckbBenchmarkGapLine(record.chunk, "Task:")}"
+}
+
+private func ckbBenchmarkGapCaseId(record: NormalizedRecord): String {
+    let parts = record.metadata.path.split("/")
+    if (parts.size >= 3) {
+        return parts[2]
+    }
+    record.sourceId
+}
+
+private func ckbBenchmarkGapBenchmark(record: NormalizedRecord): String {
+    let parts = record.metadata.path.split("/")
+    if (parts.size >= 2) {
+        return parts[1]
+    }
+    "Cangjie-HumanEval"
+}
+
+private func ckbBenchmarkGapMissingKnowledge(record: NormalizedRecord): String {
+    let symbolParts = record.metadata.symbol.split(":")
+    if (symbolParts.size >= 2) {
+        return symbolParts[1]
+    }
+    ckbBenchmarkGapLine(record.chunk, "Missing knowledge:")
+}
+
+private func ckbBenchmarkGapLine(text: String, prefix: String): String {
+    for (line in text.split("\n")) {
+        let trimmed = line.trimAscii()
+        if (trimmed.startsWith(prefix)) {
+            return trimmed.replace(prefix, "").trimAscii()
+        }
+    }
+    ""
 }
 
 private func ckbApplyScheduledPromotionResult(result: CkbScheduledProfileIngestResult, promotion: CangjieCandidatePromotionResult, successStatus: String): Unit {

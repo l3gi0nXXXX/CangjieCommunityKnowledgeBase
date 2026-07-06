@@ -161,6 +161,9 @@ public func buildCangjieTaskQueryPlan(request: CangjieTaskKnowledgeRequest, reso
     let plan = ArrayList<CangjieQueryPlanItem>()
     let sourceSet = request.versionSelector.sourceSet.trimAscii()
     let resolvedSourceSet = if (sourceSet == "") { CangjieSourceSets.ALL } else { sourceSet }
+    if (request.taskId.trimAscii() != "" && request.benchmark.trimAscii() != "") {
+        plan.add(cangjieQueryPlanItem("KI-02", "benchmark_gap_lookup", "visible-benchmark ${request.benchmark} ${request.taskId} ${request.taskText}", cangjieBenchmarkGapQueryPlanSourceSet(resolvedSourceSet), "", "benchmark-gap", resolution.versionResolutionId))
+    }
     if (request.taskText.trimAscii() != "") {
         plan.add(cangjieQueryPlanItem("KI-02", "task_semantic_search", request.taskText, resolvedSourceSet, "", "task", resolution.versionResolutionId))
     }
@@ -183,6 +186,14 @@ public func buildCangjieTaskQueryPlan(request: CangjieTaskKnowledgeRequest, reso
         plan.add(cangjieQueryPlanItem("KI-09", "compiler_diagnostic_lookup", request.compilerOutput, resolvedSourceSet, "", "compiler-output", resolution.versionResolutionId))
     }
     plan
+}
+
+private func cangjieBenchmarkGapQueryPlanSourceSet(sourceSet: String): String {
+    let clean = sourceSet.trimAscii()
+    if (clean == "" || clean == CangjieSourceSets.ALL) {
+        return CangjieSourceSets.EVAL_SUPPORT
+    }
+    clean
 }
 
 public func buildCangjieKnowledgeCoverage(request: CangjieTaskKnowledgeRequest, resolution: CangjieVersionResolution, plan: ArrayList<CangjieQueryPlanItem>): CangjieKnowledgeCoverage {

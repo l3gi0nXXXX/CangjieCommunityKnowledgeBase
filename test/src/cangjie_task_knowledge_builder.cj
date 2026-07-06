@@ -60,6 +60,9 @@ public func buildCangjieTaskKnowledgePackFromEvidence(kb: KnowledgeBase, request
         if (result.hits.size > 0) {
             evidenceHit = true
             cangjieTaskAppendHits(pack, records, result.hits)
+            if (item.queryKind == "benchmark_gap_lookup") {
+                cangjieTaskMarkBenchmarkGapCoverage(pack)
+            }
             if (item.requiredTag != "") {
                 cangjieTaskMarkCoverage(pack.coverage, item.requiredTag, "covered", "evidence_hit")
             }
@@ -152,6 +155,9 @@ private func cangjieTaskCompilerEvidenceQuery(compilerOutput: String): String {
 
 private func cangjieTaskServingLookup(index: CangjieServingIndex, item: CangjieQueryPlanItem, query: String, targetVersion: String, budget: Int64): CangjieServingSearchResult {
     let sourceSet = if (item.sourceSet == "") { CangjieSourceSets.ALL } else { item.sourceSet }
+    if (item.queryKind == "benchmark_gap_lookup") {
+        return cangjieTaskBenchmarkGapLookup(index, query, sourceSet, targetVersion, budget)
+    }
     if ((item.queryKind == "symbol_signature_lookup" || item.queryKind == "import_api_lookup") && item.symbol.trimAscii() != "" && !item.symbol.contains("func ")) {
         let exact = lookupExactSymbol(index, item.symbol, sourceSet: sourceSet, targetVersion: targetVersion, budget: budget)
         if (exact.hits.size > 0) {
@@ -170,6 +176,52 @@ private func cangjieTaskServingLookup(index: CangjieServingIndex, item: CangjieQ
     request.targetVersion = targetVersion
     request.budget = budget
     searchHybridServingIndex(index, request)
+}
+
+private func cangjieTaskBenchmarkGapLookup(index: CangjieServingIndex, query: String, sourceSet: String, targetVersion: String, budget: Int64): CangjieServingSearchResult {
+    let result = CangjieServingSearchResult()
+    let limit = if (budget < 1) { CangjieCapabilityLimits.DEFAULT_BUDGET } else { budget }
+    for (doc in index.documents) {
+        if (result.hits.size >= limit) {
+            break
+        }
+        if (doc.recordKind != CangjieServingRecordKinds.DOC_SECTION || doc.sourceSet != CangjieSourceSets.EVAL_SUPPORT || !doc.sourceId.startsWith("curated-gap-")) {
+            continue
+        }
+        if (sourceSet != "" && sourceSet != CangjieSourceSets.ALL && doc.sourceSet != sourceSet) {
+            continue
+        }
+        if (targetVersion != "" && doc.targetVersion != "" && doc.targetVersion != targetVersion) {
+            continue
+        }
+        let contributions = rankServingHitStages(query, doc)
+        let score = cangjieTaskRankScore(contributions)
+        if (score <= 0.0) {
+            continue
+        }
+        let hit = CangjieRankedServingHit()
+        hit.document = doc
+        hit.score = score
+        hit.rankReason = "benchmark_gap"
+        hit.contributions = contributions
+        result.hits.add(hit)
+    }
+    if (result.hits.size == 0) {
+        result.ok = false
+        result.degraded = true
+        result.diagnostic = "benchmark_gap_no_hits"
+        return result
+    }
+    result.evidenceHash = servingEvidenceHash(result.hits)
+    result
+}
+
+private func cangjieTaskRankScore(contributions: ArrayList<CangjieRankingContribution>): Float64 {
+    var score = 0.0
+    for (contribution in contributions) {
+        score += contribution.score
+    }
+    score
 }
 
 private func cangjieTaskAppendHits(pack: CangjieTaskKnowledgePack, records: ArrayList<NormalizedRecord>, hits: ArrayList<CangjieRankedServingHit>): Unit {
@@ -274,10 +326,25 @@ private func cangjieTaskMarkCoverage(coverage: CangjieKnowledgeCoverage, tag: St
     let clean = tag.trimAscii()
     for (item in coverage.required) {
         if (item.tag == clean) {
+            if (item.status == "covered" && item.reason == "benchmark_gap_evidence_hit") {
+                return
+            }
             item.status = status
             item.reason = reason
             return
         }
+    }
+}
+
+private func cangjieTaskMarkBenchmarkGapCoverage(pack: CangjieTaskKnowledgePack): Unit {
+    for (required in pack.coverage.required) {
+        if (required.status != "covered") {
+            required.status = "covered"
+            required.reason = "benchmark_gap_evidence_hit"
+        }
+    }
+    if (!pack.notes.contains("benchmark_gap_evidence_hit")) {
+        pack.notes.add("benchmark_gap_evidence_hit")
     }
 }
 

@@ -202,6 +202,27 @@ public class CangjieCapabilityContractTest {
     }
 
     @TestCase
+    public func f7E2e001TaskKnowledgePackPrioritizesCuratedBenchmarkGap(): Unit {
+        let service = CangjieCapabilityService(f7CuratedGapKnowledgeBase())
+        let request = CangjieTaskKnowledgeRequest()
+        request.taskId = "CJ-HUMANEVAL-777"
+        request.benchmark = "Cangjie-HumanEval"
+        request.taskText = "Implement ArrayList helper."
+        request.compilerOutput = "compile_error"
+        request.expectedKnowledgeTags.add("G-ARRAYLIST")
+        request.versionSelector = cangjieVersionSelector(targetVersion: "1.0.0", sourceSet: CangjieSourceSets.ALL)
+
+        let pack = service.taskKnowledgePack(request)
+
+        @Expect(f7HasQueryKind(pack, "benchmark_gap_lookup"), true)
+        @Expect(pack.coverage.coveragePass, true)
+        @Expect(pack.requiredKnowledge[0].status, "covered")
+        @Expect(pack.requiredKnowledge[0].reason, "benchmark_gap_evidence_hit")
+        @Expect(pack.citations.size > 0, true)
+        @Expect(pack.notes.contains("benchmark_gap_evidence_hit"), true)
+    }
+
+    @TestCase
     public func f3Ut002ExamplesExposeUnknownCompileStatusAndProvenance(): Unit {
         let service = CangjieCapabilityService(f3EvidenceKnowledgeBase())
 
@@ -318,6 +339,23 @@ public func p6PersistExactLookupStore(name: String): FileKnowledgeStore {
     let kb = p6ExactLookupKnowledgeBase()
     kb.persistActiveSnapshot(store)
     store
+}
+
+public func f7CuratedGapKnowledgeBase(): KnowledgeBase {
+    let kb = newOfflineKnowledgeBase()
+    let curated = curateBenchmarkGapRecordsFromJsonl("{\"caseId\":\"CJ-HUMANEVAL-777\",\"benchmark\":\"Cangjie-HumanEval\",\"taskText\":\"Implement ArrayList helper.\",\"visibleTestExcerpt\":\"assert solve([1,2]) == 3\",\"compilerOutput\":\"compile_error\",\"missingKnowledge\":\"G-ARRAYLIST\",\"interfaceId\":\"KI-02\",\"contentFamily\":\"KC-02\",\"updateMechanism\":\"KU-11\",\"targetVersion\":\"1.0.0\",\"officialCitation\":\"https://docs.cangjie-lang.cn/docs/1.0.0/libs/std/collection\"}\n")
+    kb.stageCandidateRecords("f7-curated-gap-candidate", curated.records)
+    _ = kb.promoteCandidateToActive("f7-curated-gap-active")
+    kb
+}
+
+private func f7HasQueryKind(pack: CangjieTaskKnowledgePack, kind: String): Bool {
+    for (item in pack.queryPlan) {
+        if (item.queryKind == kind) {
+            return true
+        }
+    }
+    false
 }
 
 private func p6ExactSymbolRecord(symbol: String, module: String, sourceSet: String, targetVersion: String): CangjieTypedRecord {

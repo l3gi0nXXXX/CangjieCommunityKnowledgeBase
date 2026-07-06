@@ -118,6 +118,18 @@ private func validateBenchmarkGapInput(input: CangjieBenchmarkGapInput): String 
     if (input.officialCitation.trimAscii() == "") {
         return "official_citation_required"
     }
+    let expectedInterface = benchmarkGapInterfaceId(input.missingKnowledge)
+    if (input.interfaceId.trimAscii() != expectedInterface) {
+        return "interface_mapping_mismatch:${expectedInterface}"
+    }
+    let expectedFamily = benchmarkGapContentFamily(input.missingKnowledge)
+    if (input.contentFamily.trimAscii() != expectedFamily) {
+        return "content_family_mapping_mismatch:${expectedFamily}"
+    }
+    let expectedUpdate = benchmarkGapUpdateMechanism(input.missingKnowledge)
+    if (input.updateMechanism.trimAscii() != expectedUpdate) {
+        return "update_mechanism_mapping_mismatch:${expectedUpdate}"
+    }
     if (visible.contains("/reference/") || visible.contains("reference/") || visible.contains("\\reference\\") || visible.contains("/hidden/") || visible.contains("hidden/") || visible.contains("\\hidden\\")) {
         return "hidden_or_reference_source_rejected"
     }
@@ -163,6 +175,10 @@ private func benchmarkGapContentFamily(missingKnowledge: String): String {
     if (gap == "G-RECIPE" || gap == "G-TIMEOUT" || gap == "G-EDGE" || gap == "G-EVALVALUE" || gap == "G-EVALENTRY") { return "KC-05" }
     if (gap == "G-ARRAYLIST" || gap == "G-STRING" || gap == "G-HASHMAP" || gap == "G-FLOAT64") { return "KC-02" }
     "KC-01"
+}
+
+private func benchmarkGapUpdateMechanism(_missingKnowledge: String): String {
+    "KU-11"
 }
 
 private func benchmarkGapPrimaryCode(missingKnowledge: String): String {
