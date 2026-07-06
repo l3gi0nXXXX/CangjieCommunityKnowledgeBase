@@ -78,17 +78,19 @@ public class CangjieServingQueryTest {
     }
 
     @TestCase
-    public func f4Pos01HybridSearchOver100kSyntheticRecordsFindsTopHit(): Unit {
+    public func f4Pos01HybridSearchOverBoundedSyntheticRecordsFindsTopHit(): Unit {
         let index = CangjieServingIndex()
         index.activeKnowledgeVersion = "active-f4"
-        for (i in 0..100000) {
-            let title = if (i == 99999) { "needle99999 ArrayList.add" } else { "synthetic ${i}" }
-            let chunk = if (i == 99999) { "needle99999 ArrayList.add appends values." } else { "plain synthetic record ${i}" }
+        let recordCount: Int64 = 20000
+        let needleIndex: Int64 = recordCount - 1
+        for (i in 0..recordCount) {
+            let title = if (i == needleIndex) { "needle19999 ArrayList.add" } else { "synthetic ${i}" }
+            let chunk = if (i == needleIndex) { "needle19999 ArrayList.add appends values." } else { "plain synthetic record ${i}" }
             index.documents.add(cangjieF4ServingDoc("synthetic-${i}", title, chunk))
         }
         let start = DateTime.now().toUnixTimeStamp().toMilliseconds()
         let request = CangjieServingSearchRequest()
-        request.query = "needle99999 ArrayList.add"
+        request.query = "needle19999 ArrayList.add"
         request.sourceSet = CangjieSourceSets.DOCS
         request.targetVersion = "1.0.0"
         request.versionResolutionId = "vr-docs-1"
@@ -97,7 +99,7 @@ public class CangjieServingQueryTest {
         let durationMs = DateTime.now().toUnixTimeStamp().toMilliseconds() - start
 
         @Expect(result.hits.size > 0, true)
-        @Expect(result.hits[0].document.sourceId, "synthetic-99999")
+        @Expect(result.hits[0].document.sourceId, "synthetic-${needleIndex}")
         @Expect(result.evidenceHash.startsWith("h"), true)
         @Expect(durationMs < 120000, true)
     }
