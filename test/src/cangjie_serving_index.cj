@@ -33,8 +33,10 @@ public func buildCangjieServingIndex(records: ArrayList<NormalizedRecord>, activ
         }
         index.records.add(record)
         let direct = cangjieServingIndexDocumentFromRecord(record)
-        index.documents.add(direct)
-        cangjieServingIndexAddExactEntries(index, direct)
+        if (direct.recordKind != CangjieServingRecordKinds.SYMBOL_CARD) {
+            index.documents.add(direct)
+            cangjieServingIndexAddExactEntries(index, direct)
+        }
         for (card in extractCangjieSymbols(record)) {
             let symbolDoc = cangjieServingIndexDocumentFromSymbol(card, index.activeKnowledgeVersion)
             if (!symbolDoc.rejected) {
@@ -71,7 +73,7 @@ public func lookupExactSymbol(index: CangjieServingIndex, symbol: String, module
         if (!cangjieServingIndexDocAllowed(index, doc, sourceSet, targetVersion, versionResolutionId)) {
             continue
         }
-        if (doc.symbolKey.toAsciiLower() != clean && !doc.symbolKey.toAsciiLower().contains(clean)) {
+        if (!cangjieServingIndexSymbolMatches(doc, clean)) {
             continue
         }
         if (cleanModule != "" && doc.module.toAsciiLower() != cleanModule && !doc.module.toAsciiLower().contains(cleanModule)) {
@@ -79,7 +81,11 @@ public func lookupExactSymbol(index: CangjieServingIndex, symbol: String, module
         }
         docs.add(doc)
     }
-    cangjieServingIndexResultFromDocs(symbol, docs, budget, "exact_miss")
+    let result = cangjieServingIndexResultFromDocs(symbol, docs, budget, "exact_miss")
+    if (result.hits.size > 0) {
+        result.diagnostic = "exact_hit"
+    }
+    result
 }
 
 public func lookupDocSection(index: CangjieServingIndex, sectionId: String, path!: String = "", heading!: String = "", sourceSet!: String = "", targetVersion!: String = "", versionResolutionId!: String = "", budget!: Int64 = CangjieCapabilityLimits.DEFAULT_BUDGET): CangjieServingSearchResult {
@@ -311,7 +317,7 @@ private func cangjieServingIndexDocumentFromSymbol(card: CangjieSymbolCardRecord
     doc.documentId = "serving-symbol-${stableSummaryHash("${card.symbolKey}:${card.sourceSet}:${card.targetVersion}:${card.versionResolutionId}:${activeKnowledgeVersion}:${card.sourceRef}")}"
     doc.recordKind = CangjieServingRecordKinds.SYMBOL_CARD
     doc.title = card.symbolKey
-    doc.text = "${card.signature}\n${card.importLine}\navailability=${card.availability}"
+    doc.text = "${card.signature}\n${card.importLine}\navailability=${card.availability}\naliases=${cangjieServingIndexJoinAliases(card.aliases)}"
     doc.symbolKey = card.symbolKey
     doc.module = card.module
     doc.sourceSet = card.sourceSet
@@ -398,18 +404,76 @@ private func cangjieServingIndexAddExactEntries(index: CangjieServingIndex, doc:
 private func cangjieServingIndexSelectors(doc: CangjieServingDocument): ArrayList<String> {
     let out = ArrayList<String>()
     if (doc.symbolKey.trimAscii() != "") {
-        out.add(doc.symbolKey.trimAscii())
+        cangjieServingIndexAddSelector(out, doc.symbolKey.trimAscii())
     }
     if (doc.title.trimAscii() != "") {
-        out.add(doc.title.trimAscii())
+        cangjieServingIndexAddSelector(out, doc.title.trimAscii())
     }
     if (doc.sourceId.trimAscii() != "") {
-        out.add(doc.sourceId.trimAscii())
+        cangjieServingIndexAddSelector(out, doc.sourceId.trimAscii())
     }
     if (doc.module.trimAscii() != "") {
-        out.add(doc.module.trimAscii())
+        cangjieServingIndexAddSelector(out, doc.module.trimAscii())
+    }
+    for (alias in cangjieServingIndexAliases(doc)) {
+        cangjieServingIndexAddSelector(out, alias)
     }
     out
+}
+
+private func cangjieServingIndexSymbolMatches(doc: CangjieServingDocument, cleanSymbol: String): Bool {
+    if (doc.symbolKey.toAsciiLower() == cleanSymbol) {
+        return true
+    }
+    if (doc.module.trimAscii() != "" && "${doc.module}.${doc.symbolKey}".toAsciiLower() == cleanSymbol) {
+        return true
+    }
+    for (alias in cangjieServingIndexAliases(doc)) {
+        if (alias.toAsciiLower() == cleanSymbol) {
+            return true
+        }
+    }
+    false
+}
+
+private func cangjieServingIndexAliases(doc: CangjieServingDocument): ArrayList<String> {
+    let aliases = ArrayList<String>()
+    for (line in doc.text.split("\n")) {
+        let clean = line.trimAscii()
+        if (clean.startsWith("aliases=")) {
+            let parts = clean.split("aliases=")
+            if (parts.size > 1) {
+                for (alias in parts[1].split(";")) {
+                    cangjieServingIndexAddSelector(aliases, alias)
+                }
+            }
+        }
+    }
+    aliases
+}
+
+private func cangjieServingIndexJoinAliases(aliases: ArrayList<String>): String {
+    var out = ""
+    for (alias in aliases) {
+        if (out != "") {
+            out += ";"
+        }
+        out += alias
+    }
+    out
+}
+
+private func cangjieServingIndexAddSelector(selectors: ArrayList<String>, selector: String): Unit {
+    let clean = selector.trimAscii()
+    if (clean == "") {
+        return
+    }
+    for (existing in selectors) {
+        if (existing.toAsciiLower() == clean.toAsciiLower()) {
+            return
+        }
+    }
+    selectors.add(clean)
 }
 
 private func cangjieServingIndexLookupKind(doc: CangjieServingDocument): String {

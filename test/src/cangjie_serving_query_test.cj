@@ -8,6 +8,37 @@ import std.unittest.testmacro.*
 @Test
 public class CangjieServingQueryTest {
     @TestCase
+    public func p2Pos001ExactSymbolLookupReturnsExactHitCitationAndAlias(): Unit {
+        let records = ArrayList<NormalizedRecord>()
+        records.add(cangjieF4Record("sym-arraylist-add", CangjieTypedRecordKinds.SYMBOL_CARD, "ArrayList.add", "symbolKey=ArrayList.add\nmodule=std.collection\nimportLine=import std.collection.*\nsignature=public func add(value: T): Unit\naliases=ArrayList.add;std.collection.ArrayList.add;add\navailability=stable", CangjieSourceSets.STD, "1.0.0", "vr-std-1"))
+        let index = buildCangjieServingIndex(records, activeKnowledgeVersion: "active-p2")
+
+        let exact = lookupExactSymbol(index, "ArrayList.add", sourceSet: CangjieSourceSets.STD, targetVersion: "1.0.0", versionResolutionId: "vr-std-1", budget: 3)
+        let qualified = lookupExactSymbol(index, "std.collection.ArrayList.add", sourceSet: CangjieSourceSets.STD, targetVersion: "1.0.0", versionResolutionId: "vr-std-1", budget: 3)
+
+        @Expect(exact.ok, true)
+        @Expect(exact.diagnostic, "exact_hit")
+        @Expect(exact.hits.size, 1)
+        @Expect(exact.hits[0].document.citation, "test:sym-arraylist-add")
+        @Expect(qualified.ok, true)
+        @Expect(qualified.hits.size, 1)
+    }
+
+    @TestCase
+    public func p2Neg001ExactSymbolLookupDoesNotReturnBroadHit(): Unit {
+        let records = ArrayList<NormalizedRecord>()
+        records.add(cangjieF4Record("sym-arraylist-addall", CangjieTypedRecordKinds.SYMBOL_CARD, "ArrayList.addAll", "symbolKey=ArrayList.addAll\nmodule=std.collection\nsignature=public func addAll(values: ArrayList<T>): Unit\naliases=ArrayList.addAll;std.collection.ArrayList.addAll;addAll", CangjieSourceSets.STD, "1.0.0", "vr-std-1"))
+        let index = buildCangjieServingIndex(records, activeKnowledgeVersion: "active-p2")
+
+        let miss = lookupExactSymbol(index, "ArrayList.add", sourceSet: CangjieSourceSets.STD, targetVersion: "1.0.0", versionResolutionId: "vr-std-1", budget: 3)
+
+        @Expect(miss.ok, false)
+        @Expect(miss.degraded, true)
+        @Expect(miss.diagnostic, "exact_miss")
+        @Expect(miss.hits.size, 0)
+    }
+
+    @TestCase
     public func p4Pos001LocalBackendExactLookupReturnsEvidenceHash(): Unit {
         let records = ArrayList<NormalizedRecord>()
         records.add(cangjieP4QueryRecord("r1", "ArrayList.add docs", "ArrayList.add appends values. values.add(1)."))

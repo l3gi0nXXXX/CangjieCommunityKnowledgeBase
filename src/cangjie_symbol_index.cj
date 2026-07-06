@@ -4,6 +4,7 @@ import std.collection.ArrayList
 
 public class CangjieSymbolCardRecord {
     public var symbolKey: String = ""
+    public var aliases: ArrayList<String> = ArrayList<String>()
     public var module: String = ""
     public var importLine: String = ""
     public var signature: String = ""
@@ -88,6 +89,8 @@ private func cangjieSymbolCardFromStructuredRecord(record: NormalizedRecord): Ca
     if (card.availability == "") {
         card.availability = "stable"
     }
+    cangjieSymbolAddAliases(card, cangjieSymbolStructuredValue(record.chunk, "aliases"))
+    cangjieSymbolAddDefaultAliases(card, card.symbolKey, card.module)
     card.versionResolutionId = record.metadata.versionResolutionId
     card.targetVersion = record.metadata.targetVersion
     card.sourceSet = record.metadata.sourceSet
@@ -136,7 +139,7 @@ public func cangjieSymbolCardMatches(card: CangjieSymbolCardRecord, symbol: Stri
     let cleanSymbol = symbol.trimAscii().toAsciiLower()
     let cleanModule = module.trimAscii().toAsciiLower()
     let cleanSourceSet = sourceSet.trimAscii().toAsciiLower()
-    if (cleanSymbol != "" && card.symbolKey.toAsciiLower() != cleanSymbol && !card.symbolKey.toAsciiLower().contains(cleanSymbol)) {
+    if (cleanSymbol != "" && !cangjieSymbolCardAliasMatches(card, cleanSymbol)) {
         return false
     }
     if (cleanModule != "" && card.module.toAsciiLower() != cleanModule && !card.module.toAsciiLower().contains(cleanModule)) {
@@ -157,6 +160,7 @@ private func cangjieKnownSymbolCard(record: NormalizedRecord, symbolKey: String,
     card.receiver = cangjieSymbolReceiver(symbolKey)
     card.params = cangjieSymbolParams(signature)
     card.returnType = cangjieSymbolReturnType(signature)
+    cangjieSymbolAddDefaultAliases(card, symbolKey, module)
     card.versionResolutionId = record.metadata.versionResolutionId
     card.targetVersion = record.metadata.targetVersion
     card.sourceSet = record.metadata.sourceSet
@@ -167,6 +171,53 @@ private func cangjieKnownSymbolCard(record: NormalizedRecord, symbolKey: String,
     card.trustLevel = record.metadata.trustLevel
     card.reviewState = record.metadata.reviewState
     card
+}
+
+private func cangjieSymbolCardAliasMatches(card: CangjieSymbolCardRecord, cleanSymbol: String): Bool {
+    if (card.symbolKey.toAsciiLower() == cleanSymbol) {
+        return true
+    }
+    if (card.module.trimAscii() != "" && "${card.module}.${card.symbolKey}".toAsciiLower() == cleanSymbol) {
+        return true
+    }
+    for (alias in card.aliases) {
+        if (alias.toAsciiLower() == cleanSymbol) {
+            return true
+        }
+    }
+    false
+}
+
+private func cangjieSymbolAddDefaultAliases(card: CangjieSymbolCardRecord, symbolKey: String, module: String): Unit {
+    cangjieSymbolAddAlias(card, symbolKey)
+    if (module.trimAscii() != "") {
+        cangjieSymbolAddAlias(card, "${module}.${symbolKey}")
+    }
+    if (symbolKey.contains(".")) {
+        let parts = symbolKey.split(".")
+        if (parts.size > 1) {
+            cangjieSymbolAddAlias(card, parts[parts.size - 1])
+        }
+    }
+}
+
+private func cangjieSymbolAddAliases(card: CangjieSymbolCardRecord, aliases: String): Unit {
+    for (alias in aliases.split(";")) {
+        cangjieSymbolAddAlias(card, alias)
+    }
+}
+
+private func cangjieSymbolAddAlias(card: CangjieSymbolCardRecord, alias: String): Unit {
+    let clean = alias.trimAscii()
+    if (clean == "") {
+        return
+    }
+    for (existing in card.aliases) {
+        if (existing.toAsciiLower() == clean.toAsciiLower()) {
+            return
+        }
+    }
+    card.aliases.add(clean)
 }
 
 private func cangjieSymbolFindEquivalent(cards: ArrayList<CangjieSymbolCardRecord>, candidate: CangjieSymbolCardRecord): Int64 {
