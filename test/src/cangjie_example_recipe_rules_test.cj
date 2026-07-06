@@ -15,6 +15,8 @@ public class CangjieExampleRecipeRulesTest {
         @Expect(examples.size, 1)
         @Expect(examples[0].code.contains("xs.add(1)"), true)
         @Expect(examples[0].citation, "test:r1")
+        @Expect(examples[0].compileStatus, "unknown")
+        @Expect(examples[0].provenance != "", true)
     }
 
     @TestCase
@@ -40,6 +42,18 @@ public class CangjieExampleRecipeRulesTest {
         @Expect(result.records.size, 1)
         @Expect(result.records[0].reviewed, true)
         @Expect(result.records[0].evidenceCitation, "test:r1")
+    }
+
+    @TestCase
+    public func f3Ut003NegativeRulesKeepEvidenceProvenance(): Unit {
+        let evidence = ArrayList<NormalizedRecord>()
+        evidence.add(cangjieP3ExampleRecord("r1", "ArrayList official docs", "ArrayList.add official docs"))
+
+        let rules = buildNegativeRuleRecords(evidence)
+
+        @Expect(rules.size > 0, true)
+        @Expect(rules[0].citation, "test:r1")
+        @Expect(rules[0].provenance != "", true)
     }
 }
 

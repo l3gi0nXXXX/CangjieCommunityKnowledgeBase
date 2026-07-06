@@ -24,16 +24,68 @@ public class CangjieCapabilityContractTest {
     }
 
     @TestCase
-    public func p1Pos001TaskKnowledgePackIncludesVersionPlanAndCoverage(): Unit {
+    public func p1Pos001TaskKnowledgePackDoesNotPretendCoverageWithoutEvidence(): Unit {
         let pack = this.service("p1-pos-001").cangjieTaskKnowledgePack(this.request())
 
         @Expect(pack.versionResolution.ok, true)
         @Expect(pack.versionResolution.versionPolicy, "exact")
         @Expect(pack.queryPlan.size > 0, true)
         @Expect(pack.coverage.requiredCount, 2)
-        @Expect(pack.coverage.missingCount, 0)
+        @Expect(pack.coverage.coveragePass, false)
+        @Expect(pack.degraded, true)
+        @Expect(pack.notes.contains("task_knowledge_contract_skeleton"), false)
+    }
+
+    @TestCase
+    public func f3Ut001TaskKnowledgePackUsesEvidenceAndCoversRequiredKnowledge(): Unit {
+        let service = CangjieCapabilityService(f3EvidenceKnowledgeBase())
+        let pack = service.taskKnowledgePack(f3EvidenceRequest())
+
+        @Expect(pack.coverage.requiredCount, 3)
+        @Expect(pack.coverage.coveredCount, 3)
         @Expect(pack.coverage.coveragePass, true)
-        @Expect(pack.notes.contains("task_knowledge_contract_skeleton"), true)
+        @Expect(pack.requiredKnowledge[0].status, "covered")
+        @Expect(pack.citations.size > 0, true)
+        @Expect(pack.evidenceHash != "", true)
+        @Expect(pack.negativeRules.size > 0, true)
+        @Expect(pack.notes.contains("task_knowledge_contract_skeleton"), false)
+    }
+
+    @TestCase
+    public func f3Bnd001UnknownExpectedKnowledgeTagIsMissingNotPlanned(): Unit {
+        let service = CangjieCapabilityService(f3EvidenceKnowledgeBase())
+        let req = f3EvidenceRequest()
+        req.expectedKnowledgeTags = ArrayList<String>()
+        req.expectedKnowledgeTags.add("unknown-metaprogramming-tag")
+
+        let coverage = service.knowledgeCoverage(req)
+
+        @Expect(coverage.requiredCount, 1)
+        @Expect(coverage.required[0].status, "missing")
+        @Expect(coverage.required[0].status == "planned", false)
+        @Expect(coverage.coveragePass, false)
+    }
+
+    @TestCase
+    public func f3Pos001CompileDiagnoseMapsCompilerOutputToEvidence(): Unit {
+        let service = CangjieCapabilityService(f3EvidenceKnowledgeBase())
+        let pack = service.compileDiagnoseV2("main() {\n    let xs = ArrayList<Int64>()\n    xs.append(1)\n}", "error: import std.collection not found; unresolved symbol append", context: "ArrayList add", targetVersion: "1.0.0", budget: 5)
+
+        @Expect(pack.coverage.coveragePass, true)
+        @Expect(pack.coverage.coveredCount >= 3, true)
+        @Expect(pack.negativeRules.size > 0, true)
+        @Expect(f3HasOfficialCitation(pack), true)
+    }
+
+    @TestCase
+    public func f3Neg001VersionMismatchReturnsDegradedTaskPack(): Unit {
+        let service = CangjieCapabilityService(f3VersionMismatchKnowledgeBase())
+        let pack = service.taskKnowledgePack(f3EvidenceRequest())
+
+        @Expect(pack.degraded, true)
+        @Expect(pack.coverage.coveragePass, false)
+        @Expect(pack.diagnostics.contains("target_version_evidence_missing"), true)
+        @Expect(pack.evidenceHash, "")
     }
 
     @TestCase
@@ -148,6 +200,105 @@ public class CangjieCapabilityContractTest {
         @Expect(pack.apiItems.size, 0)
         @Expect(pack.citations.size, 0)
     }
+
+    @TestCase
+    public func f3Ut002ExamplesExposeUnknownCompileStatusAndProvenance(): Unit {
+        let service = CangjieCapabilityService(f3EvidenceKnowledgeBase())
+
+        let pack = service.examples("ArrayList.add", targetVersion: "1.0.0")
+
+        @Expect(pack.examples.size > 0, true)
+        @Expect(pack.examples[0].compileStatus, "unknown")
+        @Expect(pack.examples[0].provenance != "", true)
+        @Expect(pack.degraded, true)
+    }
+}
+
+public func f3EvidenceRequest(): CangjieTaskKnowledgeRequest {
+    let req = CangjieTaskKnowledgeRequest()
+    req.taskId = "F3-UT-01"
+    req.benchmark = "Cangjie-HumanEval"
+    req.taskText = "Use ArrayList.add, String.contains, and avoid append antipatterns."
+    req.signature = "func solve(xs: ArrayList<String>, needle: String): Bool"
+    req.imports.add("std.collection.ArrayList")
+    req.expectedKnowledgeTags.add("ArrayList.add")
+    req.expectedKnowledgeTags.add("String.contains")
+    req.expectedKnowledgeTags.add("negative rule")
+    req.versionSelector = cangjieVersionSelector(targetVersion: "1.0.0", sourceSet: CangjieSourceSets.ALL, sourceRef: "release-1.0.0", versionPolicy: "exact")
+    req
+}
+
+public func f3EvidenceKnowledgeBase(): KnowledgeBase {
+    let kb = newOfflineKnowledgeBase()
+    let records = ArrayList<CangjieTypedRecord>()
+    records.add(f3SymbolRecord("f3-arraylist-add", "ArrayList.add", "std.collection", "import std.collection.*", "public func add(value: T): Unit"))
+    records.add(f3SymbolRecord("f3-string-contains", "String.contains", "std.core", "", "public func contains(pattern: String): Bool"))
+    records.add(f3DocRecord())
+    kb.loadFirstInitializationTypedRecords(records, "f3-evidence-candidate")
+    _ = kb.promoteFirstInitializationCandidate("f3-evidence-active")
+    kb
+}
+
+public func f3VersionMismatchKnowledgeBase(): KnowledgeBase {
+    let kb = newOfflineKnowledgeBase()
+    let records = ArrayList<CangjieTypedRecord>()
+    let record = f3SymbolRecord("f3-arraylist-add-v2", "ArrayList.add", "std.collection", "import std.collection.*", "public func add(value: T): Unit")
+    record.targetVersion = "2.0.0"
+    record.sourceRef = "release-2.0.0"
+    record.versionResolutionId = "cangjie-2.0.0-std-release-2.0.0"
+    records.add(record)
+    kb.loadFirstInitializationTypedRecords(records, "f3-version-mismatch-candidate")
+    _ = kb.promoteFirstInitializationCandidate("f3-version-mismatch-active")
+    kb
+}
+
+private func f3SymbolRecord(sourceId: String, symbol: String, module: String, importLine: String, signature: String): CangjieTypedRecord {
+    let record = CangjieTypedRecord()
+    record.recordKind = CangjieTypedRecordKinds.SYMBOL_CARD
+    record.sourceId = sourceId
+    record.title = "Symbol: ${symbol}"
+    record.content = "symbolKey=${symbol}\nmodule=${module}\nimportLine=${importLine}\nsignature=${signature}\navailability=stable\n```cangjie\n${importLine}\nlet xs = ArrayList<Int64>()\nxs.add(1)\n```"
+    record.citation = "Cangjie/std@release-1.0.0:src/${symbol}.cj#${symbol}"
+    record.sourceSet = CangjieSourceSets.STD
+    record.sourceFamily = "stdlib"
+    record.path = "src/${symbol}.cj"
+    record.symbol = symbol
+    record.sectionId = "${module}#${symbol}"
+    record.targetVersion = "1.0.0"
+    record.sourceRef = "release-1.0.0"
+    record.versionResolutionId = "cangjie-1.0.0-std-release-1.0.0"
+    record.trustLevel = TrustLevels.OFFICIAL
+    record.reviewState = ReviewStates.TRUSTED
+    record
+}
+
+private func f3DocRecord(): CangjieTypedRecord {
+    let record = CangjieTypedRecord()
+    record.recordKind = CangjieTypedRecordKinds.DOC_SECTION
+    record.sourceId = "f3-doc-arraylist"
+    record.title = "ArrayList and import syntax"
+    record.content = "Import std.collection.* before using ArrayList. ArrayList.add appends values. String.contains checks substrings. Do not use .append(...); use ArrayList.add(...)."
+    record.citation = "docs.cangjie-lang.cn/docs/1.0.0/std/collection/arraylist#add"
+    record.sourceSet = CangjieSourceSets.DOCS
+    record.sourceFamily = "docs"
+    record.path = "docs/dev-guide/arraylist.md"
+    record.heading = "ArrayList"
+    record.sectionId = "docs/dev-guide/arraylist.md#arraylist"
+    record.targetVersion = "1.0.0"
+    record.sourceRef = "release-1.0.0"
+    record.versionResolutionId = "cangjie-1.0.0-docs-release-1.0.0"
+    record.trustLevel = TrustLevels.OFFICIAL
+    record.reviewState = ReviewStates.TRUSTED
+    record
+}
+
+private func f3HasOfficialCitation(pack: CangjieTaskKnowledgePack): Bool {
+    for (citation in pack.citations) {
+        if (citation.citation.contains("Cangjie/std@") || citation.citation.contains("docs.cangjie-lang.cn")) {
+            return true
+        }
+    }
+    false
 }
 
 public func p6ExactLookupKnowledgeBase(): KnowledgeBase {

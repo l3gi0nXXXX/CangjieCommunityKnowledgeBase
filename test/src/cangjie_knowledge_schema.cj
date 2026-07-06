@@ -57,8 +57,13 @@ public class CangjieTaskKnowledgePack {
     public var benchmark: String = ""
     public var knowledgeVersion: String = ""
     public var targetVersion: String = cangjieDefaultTargetVersion()
+    public var evidenceHash: String = ""
     public var versionResolution: CangjieVersionResolution = CangjieVersionResolution()
     public var queryPlan: ArrayList<CangjieQueryPlanItem> = ArrayList<CangjieQueryPlanItem>()
+    public var requiredKnowledge: ArrayList<CangjieRequiredKnowledge> = ArrayList<CangjieRequiredKnowledge>()
+    public var examples: ArrayList<CangjieExampleRecord> = ArrayList<CangjieExampleRecord>()
+    public var negativeRules: ArrayList<CangjieNegativeRuleRecord> = ArrayList<CangjieNegativeRuleRecord>()
+    public var citations: ArrayList<SourceReference> = ArrayList<SourceReference>()
     public var coverage: CangjieKnowledgeCoverage = CangjieKnowledgeCoverage()
     public var diagnostics: ArrayList<String> = ArrayList<String>()
     public var degraded: Bool = true
@@ -134,9 +139,9 @@ public func buildCangjieTaskKnowledgePack(status: KnowledgeStatus, request: Cang
     pack.targetVersion = pack.versionResolution.targetVersion
     pack.queryPlan = buildCangjieTaskQueryPlan(sanitized, pack.versionResolution)
     pack.coverage = buildCangjieKnowledgeCoverage(sanitized, pack.versionResolution, pack.queryPlan)
-    pack.degraded = !pack.versionResolution.ok || !pack.coverage.coveragePass
-    pack.notes.add("task_knowledge_contract_skeleton")
-    pack.notes.add("evidence_retrieval_deferred_to_p2_p4")
+    pack.requiredKnowledge = cangjieCopyRequiredKnowledge(pack.coverage.required)
+    pack.degraded = true
+    pack.notes.add("evidence_builder_not_available")
     if (originalStarterSize > CangjieCapabilityLimits.MAX_TEXT_CHARS) {
         pack.truncated = true
         pack.diagnostics.add("starter_code_excerpt_truncated")
@@ -188,8 +193,16 @@ public func buildCangjieKnowledgeCoverage(request: CangjieTaskKnowledgeRequest, 
             let required = CangjieRequiredKnowledge()
             required.tag = cleaned
             required.interfaceId = cangjieKnowledgeTagInterfaceId(cleaned)
-            required.status = if (resolution.ok && cangjiePlanHasTag(plan, cleaned)) { "planned" } else { "missing" }
-            required.reason = if (resolution.ok) { "query_plan_ready" } else { resolution.diagnostic }
+            if (!resolution.ok) {
+                required.status = "degraded"
+                required.reason = resolution.diagnostic
+            } else if (cangjiePlanHasTag(plan, cleaned)) {
+                required.status = "degraded"
+                required.reason = "evidence_not_evaluated"
+            } else {
+                required.status = "missing"
+                required.reason = "query_plan_missing"
+            }
             coverage.required.add(required)
         }
     }
@@ -197,13 +210,21 @@ public func buildCangjieKnowledgeCoverage(request: CangjieTaskKnowledgeRequest, 
         let required = CangjieRequiredKnowledge()
         required.tag = "task-context"
         required.interfaceId = "KI-02"
-        required.status = if (resolution.ok && plan.size > 0) { "planned" } else { "missing" }
-        required.reason = if (resolution.ok) { "query_plan_ready" } else { resolution.diagnostic }
+        if (!resolution.ok) {
+            required.status = "degraded"
+            required.reason = resolution.diagnostic
+        } else if (plan.size > 0) {
+            required.status = "degraded"
+            required.reason = "evidence_not_evaluated"
+        } else {
+            required.status = "missing"
+            required.reason = "query_plan_missing"
+        }
         coverage.required.add(required)
     }
     coverage.requiredCount = coverage.required.size
     for (required in coverage.required) {
-        if (required.status == "planned") {
+        if (required.status == "covered") {
             coverage.coveredCount += 1
         } else {
             coverage.missingCount += 1
@@ -224,12 +245,12 @@ public func cangjieVersionResolutionJson(resolution: CangjieVersionResolution): 
 }
 
 public func cangjieTaskKnowledgePackJson(pack: CangjieTaskKnowledgePack): String {
-    var out = "{\"queryId\":\"${cangjieKnowledgeJsonEscape(pack.queryId)}\",\"taskId\":\"${cangjieKnowledgeJsonEscape(pack.taskId)}\",\"benchmark\":\"${cangjieKnowledgeJsonEscape(pack.benchmark)}\",\"knowledgeVersion\":\"${cangjieKnowledgeJsonEscape(pack.knowledgeVersion)}\",\"targetVersion\":\"${cangjieKnowledgeJsonEscape(pack.targetVersion)}\",\"degraded\":${pack.degraded},\"truncated\":${pack.truncated},\"versionResolution\":${cangjieVersionResolutionJson(pack.versionResolution)},\"queryPlan\":["
+    var out = "{\"queryId\":\"${cangjieKnowledgeJsonEscape(pack.queryId)}\",\"taskId\":\"${cangjieKnowledgeJsonEscape(pack.taskId)}\",\"benchmark\":\"${cangjieKnowledgeJsonEscape(pack.benchmark)}\",\"knowledgeVersion\":\"${cangjieKnowledgeJsonEscape(pack.knowledgeVersion)}\",\"targetVersion\":\"${cangjieKnowledgeJsonEscape(pack.targetVersion)}\",\"evidenceHash\":\"${cangjieKnowledgeJsonEscape(pack.evidenceHash)}\",\"degraded\":${pack.degraded},\"truncated\":${pack.truncated},\"versionResolution\":${cangjieVersionResolutionJson(pack.versionResolution)},\"queryPlan\":["
     for (i in 0..pack.queryPlan.size) {
         if (i > 0) { out += "," }
         out += cangjieQueryPlanItemJson(pack.queryPlan[i])
     }
-    out += "],\"coverage\":${cangjieKnowledgeCoverageJson(pack.coverage)},\"diagnostics\":${cangjieKnowledgeStringArrayJson(pack.diagnostics)},\"notes\":${cangjieKnowledgeStringArrayJson(pack.notes)}}"
+    out += "],\"requiredKnowledge\":${cangjieRequiredKnowledgeArrayJson(pack.requiredKnowledge)},\"examples\":${cangjieTaskExamplesJson(pack.examples)},\"negativeRules\":${cangjieNegativeRulesJson(pack.negativeRules)},\"citations\":${cangjieTaskCitationsJson(pack.citations)},\"coverage\":${cangjieKnowledgeCoverageJson(pack.coverage)},\"diagnostics\":${cangjieKnowledgeStringArrayJson(pack.diagnostics)},\"notes\":${cangjieKnowledgeStringArrayJson(pack.notes)}}"
     out
 }
 
@@ -237,10 +258,22 @@ public func cangjieKnowledgeCoverageJson(coverage: CangjieKnowledgeCoverage): St
     var out = "{\"coveragePass\":${coverage.coveragePass},\"requiredCount\":${coverage.requiredCount},\"coveredCount\":${coverage.coveredCount},\"missingCount\":${coverage.missingCount},\"required\":["
     for (i in 0..coverage.required.size) {
         if (i > 0) { out += "," }
-        let item = coverage.required[i]
-        out += "{\"tag\":\"${cangjieKnowledgeJsonEscape(item.tag)}\",\"interfaceId\":\"${cangjieKnowledgeJsonEscape(item.interfaceId)}\",\"status\":\"${cangjieKnowledgeJsonEscape(item.status)}\",\"reason\":\"${cangjieKnowledgeJsonEscape(item.reason)}\"}"
+        out += cangjieRequiredKnowledgeJson(coverage.required[i])
     }
     out += "]}"
+    out
+}
+
+public func cangjieCopyRequiredKnowledge(source: ArrayList<CangjieRequiredKnowledge>): ArrayList<CangjieRequiredKnowledge> {
+    let out = ArrayList<CangjieRequiredKnowledge>()
+    for (item in source) {
+        let copy = CangjieRequiredKnowledge()
+        copy.tag = item.tag
+        copy.interfaceId = item.interfaceId
+        copy.status = item.status
+        copy.reason = item.reason
+        out.add(copy)
+    }
     out
 }
 
@@ -265,7 +298,7 @@ private func cangjiePlanHasTag(plan: ArrayList<CangjieQueryPlanItem>, tag: Strin
     false
 }
 
-private func cangjieKnowledgeTagInterfaceId(tag: String): String {
+public func cangjieKnowledgeTagInterfaceId(tag: String): String {
     let lower = tag.toAsciiLower()
     if (lower.contains("symbol") || lower.contains("api") || lower.contains("array") || lower.contains("string") || lower.contains("hash") || lower.contains("math")) {
         return "KI-04"
@@ -277,6 +310,53 @@ private func cangjieKnowledgeTagInterfaceId(tag: String): String {
         return "KI-07"
     }
     "KI-02"
+}
+
+private func cangjieRequiredKnowledgeArrayJson(items: ArrayList<CangjieRequiredKnowledge>): String {
+    var out = "["
+    for (i in 0..items.size) {
+        if (i > 0) { out += "," }
+        out += cangjieRequiredKnowledgeJson(items[i])
+    }
+    out += "]"
+    out
+}
+
+private func cangjieRequiredKnowledgeJson(item: CangjieRequiredKnowledge): String {
+    "{\"tag\":\"${cangjieKnowledgeJsonEscape(item.tag)}\",\"interfaceId\":\"${cangjieKnowledgeJsonEscape(item.interfaceId)}\",\"status\":\"${cangjieKnowledgeJsonEscape(item.status)}\",\"reason\":\"${cangjieKnowledgeJsonEscape(item.reason)}\"}"
+}
+
+private func cangjieTaskExamplesJson(items: ArrayList<CangjieExampleRecord>): String {
+    var out = "["
+    for (i in 0..items.size) {
+        if (i > 0) { out += "," }
+        let item = items[i]
+        out += "{\"exampleId\":\"${cangjieKnowledgeJsonEscape(item.exampleId)}\",\"title\":\"${cangjieKnowledgeJsonEscape(item.title)}\",\"code\":\"${cangjieKnowledgeJsonEscape(item.code)}\",\"explanation\":\"${cangjieKnowledgeJsonEscape(item.explanation)}\",\"module\":\"${cangjieKnowledgeJsonEscape(item.module)}\",\"symbol\":\"${cangjieKnowledgeJsonEscape(item.symbol)}\",\"citation\":\"${cangjieKnowledgeJsonEscape(item.citation)}\",\"sourceId\":\"${cangjieKnowledgeJsonEscape(item.sourceId)}\",\"versionResolutionId\":\"${cangjieKnowledgeJsonEscape(item.versionResolutionId)}\",\"trustLevel\":\"${cangjieKnowledgeJsonEscape(item.trustLevel)}\",\"reviewState\":\"${cangjieKnowledgeJsonEscape(item.reviewState)}\",\"compileStatus\":\"${cangjieKnowledgeJsonEscape(item.compileStatus)}\",\"provenance\":\"${cangjieKnowledgeJsonEscape(item.provenance)}\"}"
+    }
+    out += "]"
+    out
+}
+
+private func cangjieNegativeRulesJson(items: ArrayList<CangjieNegativeRuleRecord>): String {
+    var out = "["
+    for (i in 0..items.size) {
+        if (i > 0) { out += "," }
+        let item = items[i]
+        out += "{\"ruleId\":\"${cangjieKnowledgeJsonEscape(item.ruleId)}\",\"title\":\"${cangjieKnowledgeJsonEscape(item.title)}\",\"badPattern\":\"${cangjieKnowledgeJsonEscape(item.badPattern)}\",\"replacement\":\"${cangjieKnowledgeJsonEscape(item.replacement)}\",\"citation\":\"${cangjieKnowledgeJsonEscape(item.citation)}\",\"versionResolutionId\":\"${cangjieKnowledgeJsonEscape(item.versionResolutionId)}\",\"provenance\":\"${cangjieKnowledgeJsonEscape(item.provenance)}\"}"
+    }
+    out += "]"
+    out
+}
+
+private func cangjieTaskCitationsJson(items: ArrayList<SourceReference>): String {
+    var out = "["
+    for (i in 0..items.size) {
+        if (i > 0) { out += "," }
+        let item = items[i]
+        out += "{\"sourceId\":\"${cangjieKnowledgeJsonEscape(item.sourceId)}\",\"citation\":\"${cangjieKnowledgeJsonEscape(item.citation)}\",\"knowledgeVersion\":\"${cangjieKnowledgeJsonEscape(item.knowledgeVersion)}\"}"
+    }
+    out += "]"
+    out
 }
 
 private func cangjieVersionSourceJson(source: CangjieVersionSource): String {

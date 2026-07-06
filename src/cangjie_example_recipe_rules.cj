@@ -14,6 +14,8 @@ public class CangjieExampleRecord {
     public var versionResolutionId: String = ""
     public var trustLevel: String = ""
     public var reviewState: String = ""
+    public var compileStatus: String = "unknown"
+    public var provenance: String = ""
 
     public init() {}
 }
@@ -38,6 +40,7 @@ public class CangjieNegativeRuleRecord {
     public var replacement: String = ""
     public var citation: String = ""
     public var versionResolutionId: String = ""
+    public var provenance: String = ""
 
     public init() {}
 }
@@ -125,6 +128,8 @@ private func cangjieExampleRecord(record: NormalizedRecord, code: String, title:
     example.versionResolutionId = record.metadata.versionResolutionId
     example.trustLevel = record.metadata.trustLevel
     example.reviewState = record.metadata.reviewState
+    example.compileStatus = "unknown"
+    example.provenance = cangjieRecordProvenance(record)
     example
 }
 
@@ -207,7 +212,14 @@ private func cangjieNegativeRule(record: NormalizedRecord, ruleId: String, badPa
     rule.replacement = replacement
     rule.citation = record.citation
     rule.versionResolutionId = record.metadata.versionResolutionId
+    rule.provenance = cangjieRecordProvenance(record)
     rule
+}
+
+public func cangjieRecordProvenance(record: NormalizedRecord): String {
+    let sourceSet = if (record.metadata.sourceSet != "") { record.metadata.sourceSet } else { "unknown-source-set" }
+    let version = if (record.metadata.versionResolutionId != "") { record.metadata.versionResolutionId } else { record.metadata.targetVersion }
+    "${sourceSet}:${record.metadata.trustLevel}:${record.metadata.reviewState}:${version}"
 }
 
 private func cangjieExampleModule(record: NormalizedRecord): String {

@@ -10,7 +10,7 @@ public class CangjieHttpContractTest {
     }
 
     @TestCase
-    public func p1Pos001TaskKnowledgePackRouteReturnsVersionPlanAndCoverage(): Unit {
+    public func p1Pos001TaskKnowledgePackRouteDoesNotPretendCoverageWithoutEvidence(): Unit {
         let body = "{\"taskId\":\"CJ-HUMANEVAL-000\",\"benchmark\":\"Cangjie-HumanEval\",\"taskText\":\"Implement ArrayList helper\",\"signature\":\"func solve(xs: ArrayList<Int64>): Int64\",\"expectedKnowledgeTags\":[\"ArrayList\",\"symbol\"],\"targetVersion\":\"1.0.0\",\"sourceSet\":\"stdx\",\"sourceRef\":\"release-1.0.0\",\"versionPolicy\":\"exact\"}"
         let response = ckbApiHandle(this.service("p1-http-pos-001"), "POST", "/v1/cangjie/task-knowledge-pack", body, [])
 
@@ -18,7 +18,8 @@ public class CangjieHttpContractTest {
         @Expect(response.contains("\"versionResolution\""), true)
         @Expect(response.contains("\"queryPlan\""), true)
         @Expect(response.contains("\"coverage\""), true)
-        @Expect(response.contains("\"coveragePass\":true"), true)
+        @Expect(response.contains("\"coveragePass\":false"), true)
+        @Expect(response.contains("task_knowledge_contract_skeleton"), false)
     }
 
     @TestCase
