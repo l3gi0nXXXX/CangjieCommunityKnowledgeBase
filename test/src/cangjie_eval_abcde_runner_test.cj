@@ -3,6 +3,7 @@ package cangjie_community_knowledge_base_test
 import std.unittest.*
 import std.unittest.testmacro.*
 import std.collection.*
+import std.fs.{Directory, File, Path, exists}
 
 @Test
 public class CangjieEvalAbcdeRunnerTest {
@@ -226,6 +227,37 @@ public class CangjieEvalAbcdeRunnerTest {
         let http = ckbAbcdeParityObservationFromResponse("CJ-HUMANEVAL-000", "mcp_http", "{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"structuredContent\":{\"evidenceHash\":\"h1\",\"coverage\":{\"coveragePass\":true},\"citations\":[{\"citation\":\"doc\"}]}}}")
 
         @Expect(ckbAbcdeParityDiagnosticForTest(rest, stdio, http), "evidence_hash_mismatch")
+    }
+
+    @TestCase
+    public func f7Neg001RunnerWritesPass1GateAndCurationInputForFailedCdRun(): Unit {
+        let root = "target/f7-runner-pass1-gate"
+        if (!exists(Path(root))) {
+            Directory.create(Path(root), recursive: true)
+        }
+        let manifestPath = "${root}/manifest.jsonl"
+        let runRoot = "${root}/run"
+        if (!exists(Path(runRoot))) {
+            Directory.create(Path(runRoot), recursive: true)
+        }
+        File.writeTo(Path(manifestPath), "{\"id\":\"CJ-HUMANEVAL-000\",\"category\":\"unit\",\"targetVersion\":\"1.0.0\",\"prompt\":\"Implement ArrayList helper.\",\"entryPoint\":\"cases/CJ-HUMANEVAL-000/starter\",\"testCommand\":\"cjpm test\",\"expectedKnowledgeTags\":[\"ArrayList\"]}\n".toArray())
+        File.writeTo(Path("${runRoot}/results.jsonl"), "{\"runId\":\"unit\",\"benchmark\":\"Cangjie-HumanEval\",\"caseId\":\"CJ-HUMANEVAL-000\",\"group\":\"D-ckb-mcp-http\",\"unitPassAt1\":false,\"failureType\":\"compile_error\",\"protocolViolation\":false,\"toolEvidence\":\"cangjie_task_knowledge_pack\"}\n".toArray())
+        let options = CkbAbcdeRunnerOptions()
+        options.manifestPath = manifestPath
+        options.caseStart = 0
+        options.caseEnd = 0
+        options.groups.clear()
+        options.groups.add(CkbAbcdeGroups.D)
+
+        let ok = ckbAbcdeWritePass1GateArtifactsForTest(options, runRoot)
+
+        @Expect(ok, false)
+        @Expect(exists(Path("${runRoot}/pass1-gate.json")), true)
+        @Expect(exists(Path("${runRoot}/pass1-gate.md")), true)
+        @Expect(exists(Path("${runRoot}/gap-curation-input.jsonl")), true)
+        let curation = String.fromUtf8(File.readFrom(Path("${runRoot}/gap-curation-input.jsonl")))
+        @Expect(curation.contains("\"interfaceId\":\"KI-02\""), true)
+        @Expect(curation.contains("\"updateMechanism\":\"KU-11\""), true)
     }
 
     @TestCase

@@ -3433,6 +3433,8 @@ firstInit.stdRoot=/Users/example/cangjie_std
 firstInit.stdxRoot=/Users/example/cangjie_stdx
 firstInit.evalRoot=/Users/example/Cangjie-HumanEval
 firstInit.targetVersion=1.0.0
+benchmarkGap.curationInputPath=/Users/example/ckbtest/gap-curation-input.jsonl
+benchmarkGap.targetVersion=1.0.0
 """)
 
         let config = loadCkbRuntimeConfig(configPath)
@@ -3445,9 +3447,12 @@ firstInit.targetVersion=1.0.0
         @Expect(config.firstInitStdxRoot, "/Users/example/cangjie_stdx")
         @Expect(config.firstInitEvalRoot, "/Users/example/Cangjie-HumanEval")
         @Expect(config.firstInitTargetVersion, "1.0.0")
+        @Expect(config.benchmarkGapCurationInputPath, "/Users/example/ckbtest/gap-curation-input.jsonl")
+        @Expect(config.benchmarkGapTargetVersion, "1.0.0")
         @Expect(summary.contains("firstInit.enabled=true"), true)
         @Expect(summary.contains("firstInit.docsRoot=present"), true)
         @Expect(summary.contains("firstInit.evalRoot=present"), true)
+        @Expect(summary.contains("benchmarkGap.curationInput=present"), true)
         @Expect(summary.contains("/Users/example"), false)
     }
 
