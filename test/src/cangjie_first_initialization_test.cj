@@ -219,6 +219,62 @@ public class CangjieFirstInitializationTest {
         @Expect(response.contains("ckb.unauthorized"), true)
         @Expect(store.has("index/active.ckb"), false)
     }
+
+    @TestCase
+    public func p7E2E001FirstInitializationPersistsRestoresAndServesExactCorpus(): Unit {
+        let fixture = ckbFirstInitWriteFullFixture("target/p7-first-init-fixture", true)
+        let options = ckbFirstInitOptionsForFixture(fixture, true)
+        let store = FileKnowledgeStore("target/p7-first-init-store")
+
+        let result = runCkbFirstInitialization(options, store)
+        let loaded = newKnowledgeBaseFromStore(store)
+        let status = loaded.kb.status()
+        let capabilities = CangjieCapabilityService(loaded.kb)
+        let symbol = capabilities.symbolLookup("ArrayList.add", sourceSet: CangjieSourceSets.STD, targetVersion: "1.0.0")
+        let tool = capabilities.toolManual("cjpm", command: "test", targetVersion: "1.0.0")
+        let doc = capabilities.docSection("", path: "dev-guide/source_en/api/collections.md", heading: "Collections", targetVersion: "1.0.0")
+
+        @Expect(result.ok, true)
+        @Expect(result.persisted, true)
+        @Expect(result.validation.ok, true)
+        @Expect(result.validation.failedGates.size, 0)
+        @Expect(status.activeKnowledgeVersion, "ckb-first-init-1-0-0-active")
+        @Expect(status.activeStateSource, "first_initialization")
+        @Expect(store.has("raw/records.ckb"), true)
+        @Expect(store.has("normalized/records.ckb"), true)
+        @Expect(store.has("metadata/status.ckb"), true)
+        @Expect(store.has("index/active.version"), true)
+        @Expect(store.has("index/active.ckb"), true)
+        @Expect(store.has("index/vector-active.ckb"), true)
+        @Expect(store.has("index/graph-nodes.ckb"), true)
+        @Expect(store.has("index/graph-edges.ckb"), true)
+        @Expect(symbol.degraded, false)
+        @Expect(symbol.apiItems.size, 1)
+        @Expect(tool.degraded, false)
+        @Expect(tool.items.size, 1)
+        @Expect(doc.degraded, false)
+        @Expect(doc.items.size, 1)
+    }
+
+    @TestCase
+    public func p7E2E002HttpStdioAndStreamableHttpMcpReturnSameExactEvidence(): Unit {
+        let service = CkbCommandLoopService(CkbRuntimeConfig(), p6PersistExactLookupStore("p7-transport-equivalence-store"))
+        let args = "{\"symbol\":\"ArrayList.add\",\"sourceSet\":\"std\",\"targetVersion\":\"1.0.0\"}"
+        let jsonRpc = p7McpToolCall("cangjie_symbol_lookup", args)
+        let http = ckbApiHandle(service, "POST", "/v1/cangjie/symbol-lookup", args, [])
+        let stdio = CkbMcpStdioServer(service).handleRequest(jsonRpc)
+        let mcpHttp = p7RunStreamableHttpToolCall(service, jsonRpc)
+
+        @Expect(http.contains("\"knowledgeVersion\":\"p6-exact-active\""), true)
+        @Expect(stdio.contains("\"knowledgeVersion\":\"p6-exact-active\""), true)
+        @Expect(mcpHttp.contains("\"knowledgeVersion\":\"p6-exact-active\""), true)
+        @Expect(http.contains("\"symbol\":\"ArrayList.add\""), true)
+        @Expect(stdio.contains("\"symbol\":\"ArrayList.add\""), true)
+        @Expect(mcpHttp.contains("\"symbol\":\"ArrayList.add\""), true)
+        @Expect(http.contains("exact_symbol_lookup_endpoint"), true)
+        @Expect(stdio.contains("exact_symbol_lookup_endpoint"), true)
+        @Expect(mcpHttp.contains("exact_symbol_lookup_endpoint"), true)
+    }
 }
 
 private class CkbFirstInitFixturePaths {
@@ -290,4 +346,35 @@ private func ckbFirstInitWriteFile(path: Path, text: String): Unit {
         Directory.create(path.parent, recursive: true)
     }
     File.writeTo(path, text.toArray())
+}
+
+private func p7McpToolCall(name: String, arguments: String): String {
+    "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"tools/call\",\"params\":{\"name\":\"${name}\",\"arguments\":${arguments}}}"
+}
+
+private func p7RunStreamableHttpToolCall(service: CkbCommandLoopService, toolCall: String): String {
+    let sessions = CkbMcpHttpSessionStore()
+    let initHeaders = [
+        "Content-Type: application/json",
+        "Accept: application/json, text/event-stream"
+    ]
+    let initialize = handleCkbMcpHttpRequest(service, "POST", "/mcp", "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-06-18\",\"capabilities\":{},\"clientInfo\":{\"name\":\"p7-e2e\",\"version\":\"1\"}}}", initHeaders, CkbHttpServiceConfig(), CkbMcpHttpServiceConfig(), sessions)
+    let sessionId = p7ExtractMcpSessionId(initialize)
+    let headers = [
+        "Content-Type: application/json",
+        "Accept: application/json, text/event-stream",
+        "MCP-Protocol-Version: 2025-06-18",
+        "Mcp-Session-Id: ${sessionId}"
+    ]
+    _ = handleCkbMcpHttpRequest(service, "POST", "/mcp", "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\",\"params\":{}}", headers, CkbHttpServiceConfig(), CkbMcpHttpServiceConfig(), sessions)
+    handleCkbMcpHttpRequest(service, "POST", "/mcp", toolCall, headers, CkbHttpServiceConfig(), CkbMcpHttpServiceConfig(), sessions).body
+}
+
+private func p7ExtractMcpSessionId(response: CkbMcpHttpResponse): String {
+    for (header in response.headers) {
+        if (header.toAsciiLower().startsWith("mcp-session-id:")) {
+            return header["mcp-session-id:".size..header.size].trimAscii()
+        }
+    }
+    ""
 }
