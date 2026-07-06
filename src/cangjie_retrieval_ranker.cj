@@ -2,10 +2,19 @@ package cangjie_community_knowledge_base
 
 import std.collection.ArrayList
 
+public class CangjieRankingContribution {
+    public var stage: String = ""
+    public var score: Float64 = 0.0
+    public var reason: String = ""
+
+    public init() {}
+}
+
 public class CangjieRankedServingHit {
     public var document: CangjieServingDocument = CangjieServingDocument()
     public var score: Float64 = 0.0
     public var rankReason: String = ""
+    public var contributions: ArrayList<CangjieRankingContribution> = ArrayList<CangjieRankingContribution>()
 
     public init() {}
 }
@@ -16,14 +25,16 @@ public func rankServingHits(query: String, documents: ArrayList<CangjieServingDo
         if (doc.rejected) {
             continue
         }
-        let score = cangjieServingRankScore(query, doc)
+        let contributions = rankServingHitStages(query, doc)
+        let score = cangjieServingRankScore(contributions)
         if (score <= 0.0) {
             continue
         }
         let hit = CangjieRankedServingHit()
         hit.document = doc
         hit.score = score
-        hit.rankReason = cangjieServingRankReason(query, doc)
+        hit.rankReason = cangjieServingRankReason(doc)
+        hit.contributions = contributions
         cangjieInsertRankedHit(ranked, hit)
     }
     let out = ArrayList<CangjieRankedServingHit>()
@@ -37,31 +48,67 @@ public func rankServingHits(query: String, documents: ArrayList<CangjieServingDo
     out
 }
 
-private func cangjieServingRankScore(query: String, doc: CangjieServingDocument): Float64 {
+public func rankServingHitStages(query: String, doc: CangjieServingDocument): ArrayList<CangjieRankingContribution> {
+    let contributions = ArrayList<CangjieRankingContribution>()
     let q = query.toAsciiLower()
-    let text = "${doc.title}\n${doc.text}\n${doc.symbolKey}\n${doc.module}".toAsciiLower()
-    var score = 0.0
+    let text = "${doc.title}\n${doc.text}\n${doc.symbolKey}\n${doc.module}\n${doc.sourceId}\n${doc.citation}".toAsciiLower()
+    var relevant = false
     if (doc.recordKind == CangjieServingRecordKinds.SYMBOL_CARD) {
-        score += 10.0
         if (doc.symbolKey != "" && q.contains(doc.symbolKey.toAsciiLower())) {
-            score += 8.0
+            contributions.add(cangjieRankingContribution("exact_boost", 18.0, "exact_symbol_match"))
+            relevant = true
+        } else {
+            contributions.add(cangjieRankingContribution("exact_boost", 6.0, "symbol_card"))
         }
     } else if (doc.recordKind == CangjieServingRecordKinds.DOC_SECTION) {
-        score += 5.0
+        contributions.add(cangjieRankingContribution("exact_boost", 2.0, "doc_section"))
     } else if (doc.recordKind == CangjieServingRecordKinds.EXAMPLE) {
-        score += 4.0
+        contributions.add(cangjieRankingContribution("exact_boost", 2.0, "example"))
     } else if (doc.recordKind == CangjieServingRecordKinds.RECIPE) {
-        score += 3.0
+        contributions.add(cangjieRankingContribution("exact_boost", 1.5, "recipe"))
     } else if (doc.recordKind == CangjieServingRecordKinds.NEGATIVE_RULE) {
-        score += 2.0
+        contributions.add(cangjieRankingContribution("negative_rule_relevance", cangjieNegativeRuleRankScore(q, text), "negative_rule"))
+        relevant = relevant || cangjieNegativeRuleRankScore(q, text) > 0.0
     }
     if (doc.trustLevel == TrustLevels.OFFICIAL) {
-        score += 2.0
+        contributions.add(cangjieRankingContribution("source_trust", 2.0, "official"))
     }
     if (doc.reviewState == ReviewStates.TRUSTED || doc.reviewState == ReviewStates.REVIEWED) {
-        score += 1.0
+        contributions.add(cangjieRankingContribution("source_trust", 1.0, doc.reviewState))
     }
-    for (token in q.split(" ")) {
+    if (doc.targetVersion != "" && doc.targetVersion == cangjieNormalizeTargetVersion("")) {
+        contributions.add(cangjieRankingContribution("version_match", 2.0, "target_version_match"))
+    }
+    if (doc.symbolKey != "" && q.contains(doc.symbolKey.toAsciiLower())) {
+        contributions.add(cangjieRankingContribution("symbol_module_match", 4.0, "symbol_match"))
+        relevant = true
+    }
+    if (doc.module != "" && q.contains(doc.module.toAsciiLower())) {
+        contributions.add(cangjieRankingContribution("symbol_module_match", 2.0, "module_match"))
+        relevant = true
+    }
+    let lexical = cangjieLexicalOverlapRankScore(q, text)
+    if (lexical > 0.0) {
+        contributions.add(cangjieRankingContribution("lexical_overlap", lexical, "token_overlap"))
+        relevant = true
+    }
+    if (!relevant) {
+        contributions.add(cangjieRankingContribution("relevance_gate", -1000.0, "no_query_overlap"))
+    }
+    contributions
+}
+
+private func cangjieServingRankScore(contributions: ArrayList<CangjieRankingContribution>): Float64 {
+    var score = 0.0
+    for (contribution in contributions) {
+        score += contribution.score
+    }
+    score
+}
+
+private func cangjieLexicalOverlapRankScore(query: String, text: String): Float64 {
+    var score = 0.0
+    for (token in query.split(" ")) {
         let clean = token.trimAscii()
         if (clean != "" && text.contains(clean)) {
             score += 1.0
@@ -70,7 +117,26 @@ private func cangjieServingRankScore(query: String, doc: CangjieServingDocument)
     score
 }
 
-private func cangjieServingRankReason(query: String, doc: CangjieServingDocument): String {
+private func cangjieNegativeRuleRankScore(query: String, text: String): Float64 {
+    var score = 0.0
+    for (token in query.split(" ")) {
+        let clean = token.trimAscii()
+        if (clean.size >= 3 && text.contains(clean)) {
+            score += 2.0
+        }
+    }
+    score
+}
+
+private func cangjieRankingContribution(stage: String, score: Float64, reason: String): CangjieRankingContribution {
+    let contribution = CangjieRankingContribution()
+    contribution.stage = stage
+    contribution.score = score
+    contribution.reason = reason
+    contribution
+}
+
+private func cangjieServingRankReason(doc: CangjieServingDocument): String {
     if (doc.recordKind == CangjieServingRecordKinds.SYMBOL_CARD) {
         return "exact_symbol_or_symbol_card"
     }

@@ -17,6 +17,7 @@ public class IndexKinds {
     public static let VECTOR: String = "vector"
     public static let SYMBOL: String = "symbol"
     public static let GRAPH: String = "graph"
+    public static let SERVING: String = "serving"
 }
 
 public class TrustLevels {
@@ -1517,6 +1518,11 @@ public class StorageStatus {
     public var graphEdgeCount: Int64 = 0
     public var targetVersion: String = "1.0.0"
     public var versionManifestCount: Int64 = 0
+    public var servingIndexCount: Int64 = 0
+    public var servingIndexVersion: String = ""
+    public var servingIndexDiagnostic: String = ""
+    public var queryCacheSize: Int64 = 0
+    public var queryCacheDiagnostic: String = ""
 
     public init() {}
 }
@@ -1947,6 +1953,7 @@ public class KnowledgeBase {
     private var candidateVectorCollection: String = "candidate"
     private let embeddingModel: String = "deterministic-token-v1"
     private let embeddingDimensions: Int64 = 16
+    private var servingQueryCache: CangjieQueryCache = CangjieQueryCache(256)
 
     public init(clock: FakeClock) {
         this.scheduler = Scheduler(clock)
@@ -2038,6 +2045,7 @@ public class KnowledgeBase {
             }
             this.applyVectorStatus(this.vectorStore.restore(backup))
             this.rebuildGraphIndex()
+            this.rebuildServingIndexStatus()
         } else {
             this.rebuildProductionIndexes()
         }
@@ -2260,6 +2268,7 @@ public class KnowledgeBase {
         }
         this.failedCandidateVersion = ""
         this.storage.indexCount = this.activeIndex.size
+        this.invalidateServingCacheOnActiveVersionChange()
         this.rebuildProductionIndexes()
         this.rebuildIndexManifest()
         true
@@ -2312,12 +2321,14 @@ public class KnowledgeBase {
         this.activeKnowledgeVersion = result.activeVersion
         this.failedCandidateVersion = ""
         this.storage.indexCount = this.activeIndex.size
+        this.invalidateServingCacheOnActiveVersionChange()
         this.rebuildProductionIndexes()
         this.rebuildIndexManifest()
         result
     }
 
     private func rebuildProductionIndexes(): Unit {
+        this.rebuildServingIndexStatus()
         let vectorRecords = ArrayList<VectorRecord>()
         let texts = ArrayList<String>()
         for (record in this.activeIndex) {
@@ -2345,6 +2356,13 @@ public class KnowledgeBase {
             this.applyVectorStatus(vectorStatus)
         }
         this.rebuildGraphIndex()
+    }
+
+    private func rebuildServingIndexStatus(): Unit {
+        let servingIndex = buildCangjieServingIndex(this.activeIndex, activeKnowledgeVersion: this.activeKnowledgeVersion)
+        this.storage.servingIndexCount = servingIndex.documents.size
+        this.storage.servingIndexVersion = servingIndex.activeKnowledgeVersion
+        this.storage.servingIndexDiagnostic = cangjieServingIndexDiagnostics(servingIndex)
     }
 
     private func rebuildGraphIndex(): Unit {
@@ -2376,6 +2394,7 @@ public class KnowledgeBase {
         manifest.entries.add(this.indexMetadata(IndexKinds.VECTOR, this.storage.vectorIndexCount, "${this.storage.vectorBackend} vector backend state=${this.storage.vectorState} dimension=${this.storage.vectorDimension}"))
         manifest.entries.add(this.indexMetadata(IndexKinds.SYMBOL, this.countSymbolRecords(), "symbol metadata index"))
         manifest.entries.add(this.indexMetadata(IndexKinds.GRAPH, this.storage.graphEdgeCount, "${this.storage.graphBackend} neighbor graph nodes=${this.storage.graphNodeCount}"))
+        manifest.entries.add(this.indexMetadata(IndexKinds.SERVING, this.storage.servingIndexCount, "serving activeVersion=${this.storage.servingIndexVersion} cacheSize=${this.storage.queryCacheSize} diagnostic=${this.storage.servingIndexDiagnostic}"))
         this.indexManifest = manifest
         this.storage.textIndexCount = this.activeIndex.size
         this.storage.symbolIndexCount = this.countSymbolRecords()
@@ -2483,6 +2502,32 @@ public class KnowledgeBase {
 
     public func normalizedRecordCount(): Int64 {
         this.normalizedRecords.size
+    }
+
+    public func servingCacheLookup(key: CangjieQueryCacheKey): CangjieQueryCacheLookup {
+        let lookup = this.servingQueryCache.get(key)
+        this.storage.queryCacheSize = this.servingQueryCache.size()
+        this.storage.queryCacheDiagnostic = if (lookup.hit) { "cache_hit" } else { lookup.diagnostic }
+        lookup
+    }
+
+    public func servingCachePut(key: CangjieQueryCacheKey, valueHash: String): String {
+        let status = this.servingQueryCache.put(key, valueHash)
+        this.storage.queryCacheSize = this.servingQueryCache.size()
+        this.storage.queryCacheDiagnostic = status
+        status
+    }
+
+    public func recordServingCacheDiagnostic(diagnostic: String): Unit {
+        this.storage.queryCacheDiagnostic = diagnostic
+        this.storage.queryCacheSize = this.servingQueryCache.size()
+    }
+
+    public func invalidateServingCacheOnActiveVersionChange(): Int64 {
+        let removed = this.servingQueryCache.invalidateOnActiveVersionChange(this.activeKnowledgeVersion)
+        this.storage.queryCacheSize = this.servingQueryCache.size()
+        this.storage.queryCacheDiagnostic = "invalidate_removed:${removed}"
+        removed
     }
 
     public func search(query: String, options: SearchOptions): SearchResult {
@@ -3138,7 +3183,8 @@ public func renderDoctor(status: KnowledgeStatus): String {
     out += "activeKnowledgeVersion=${status.activeKnowledgeVersion}\n"
     out += "activeStateSource=${status.activeStateSource} restoreDiagnostic=${status.restoreDiagnostic}\n"
     out += "storage raw=${status.storage.rawCount} normalized=${status.storage.normalizedCount} indexes=${status.storage.indexCount} derived=${status.storage.derivedCount}\n"
-    out += "indexKinds text=${status.storage.textIndexCount} vector=${status.storage.vectorIndexCount} symbol=${status.storage.symbolIndexCount} graph=${status.storage.graphIndexCount}\n"
+    out += "indexKinds text=${status.storage.textIndexCount} vector=${status.storage.vectorIndexCount} symbol=${status.storage.symbolIndexCount} graph=${status.storage.graphIndexCount} serving=${status.storage.servingIndexCount}\n"
+    out += "servingIndex version=${status.storage.servingIndexVersion} diagnostic=${status.storage.servingIndexDiagnostic} cacheSize=${status.storage.queryCacheSize} cacheDiagnostic=${status.storage.queryCacheDiagnostic}\n"
     out += "vector backend=${status.storage.vectorBackend} state=${status.storage.vectorState} collection=${status.storage.vectorCollection} activeCollection=${status.storage.vectorActiveCollection} candidateCollection=${status.storage.vectorCandidateCollection} dimension=${status.storage.vectorDimension} count=${status.storage.vectorIndexCount} degradedReason=${status.storage.vectorDegradedReason}\n"
     out += "graph backend=${status.storage.graphBackend} state=${status.storage.graphState} nodes=${status.storage.graphNodeCount} edges=${status.storage.graphEdgeCount}\n"
     out += "paths raw=${status.storage.rawPath} normalized=${status.storage.normalizedPath} metadata=${status.storage.metadataPath} indexes=${status.storage.indexesPath} derived=${status.storage.derivedPath} cache=${status.storage.cachePath}\n"
@@ -3162,7 +3208,7 @@ public func renderMetrics(status: KnowledgeStatus): String {
         }
     }
     var out = "metrics activeKnowledgeVersion=${status.activeKnowledgeVersion} activeStateSource=${status.activeStateSource} restoreDiagnostic=${status.restoreDiagnostic}\n"
-    out += "metrics storage raw=${status.storage.rawCount} normalized=${status.storage.normalizedCount} activeIndex=${status.storage.indexCount} vector=${status.storage.vectorIndexCount} graphEdges=${status.storage.graphEdgeCount}\n"
+    out += "metrics storage raw=${status.storage.rawCount} normalized=${status.storage.normalizedCount} activeIndex=${status.storage.indexCount} vector=${status.storage.vectorIndexCount} graphEdges=${status.storage.graphEdgeCount} serving=${status.storage.servingIndexCount}\n"
     out += "metrics backend vectorState=${status.storage.vectorState} graphState=${status.storage.graphState}\n"
     out += "metrics scheduler total=${status.schedules.size} degraded=${degradedSchedules} stale=${staleSchedules}\n"
     out

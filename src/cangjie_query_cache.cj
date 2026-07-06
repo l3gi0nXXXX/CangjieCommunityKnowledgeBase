@@ -5,7 +5,10 @@ import std.collection.ArrayList
 public class CangjieQueryCacheKey {
     public var versionResolutionId: String = ""
     public var activeKnowledgeVersion: String = ""
+    public var targetVersion: String = cangjieDefaultTargetVersion()
     public var sourceSet: String = ""
+    public var interfaceId: String = ""
+    public var selectorHash: String = ""
     public var queryPlanHash: String = ""
     public var budget: Int64 = 0
     public var responseMode: String = "knowledge-pack"
@@ -13,11 +16,16 @@ public class CangjieQueryCacheKey {
     public init() {}
 
     public func valid(): Bool {
-        this.versionResolutionId != "" && this.activeKnowledgeVersion != "" && this.queryPlanHash != "" && this.budget > 0
+        this.activeKnowledgeVersion != "" &&
+            this.targetVersion != "" &&
+            this.interfaceId != "" &&
+            this.selectorHash != "" &&
+            this.queryPlanHash != "" &&
+            this.budget > 0
     }
 
     public func text(): String {
-        "${this.versionResolutionId}|${this.activeKnowledgeVersion}|${this.sourceSet}|${this.queryPlanHash}|${this.budget}|${this.responseMode}"
+        "${this.versionResolutionId}|${this.activeKnowledgeVersion}|${this.targetVersion}|${this.sourceSet}|${this.interfaceId}|${this.responseMode}|${this.selectorHash}|${this.queryPlanHash}|${this.budget}"
     }
 }
 
@@ -86,13 +94,30 @@ public class CangjieQueryCache {
     public func size(): Int64 {
         this.entries.size
     }
+
+    public func invalidateOnActiveVersionChange(activeKnowledgeVersion: String): Int64 {
+        var removed: Int64 = 0
+        var i: Int64 = 0
+        while (i < this.entries.size) {
+            if (this.entries[i].key.activeKnowledgeVersion != activeKnowledgeVersion) {
+                this.entries.remove(at: i)
+                removed += 1
+            } else {
+                i += 1
+            }
+        }
+        removed
+    }
 }
 
-public func cangjieServingCacheKey(versionResolutionId: String, activeKnowledgeVersion: String, sourceSet: String, query: String, budget: Int64, responseMode: String): CangjieQueryCacheKey {
+public func cangjieServingCacheKey(versionResolutionId: String, activeKnowledgeVersion: String, sourceSet: String, query: String, budget: Int64, responseMode: String, targetVersion!: String = "", interfaceId!: String = "", selector!: String = ""): CangjieQueryCacheKey {
     let key = CangjieQueryCacheKey()
     key.versionResolutionId = versionResolutionId
     key.activeKnowledgeVersion = activeKnowledgeVersion
+    key.targetVersion = cangjieNormalizeTargetVersion(targetVersion)
     key.sourceSet = sourceSet
+    key.interfaceId = if (interfaceId.trimAscii() == "") { responseMode } else { interfaceId.trimAscii() }
+    key.selectorHash = cangjieQueryCacheHash(if (selector.trimAscii() == "") { query } else { selector })
     key.queryPlanHash = cangjieQueryCacheHash(query)
     key.budget = budget
     key.responseMode = responseMode

@@ -28,6 +28,24 @@ public class CangjieQueryCacheTest {
     }
 
     @TestCase
+    public func f4Neg01ActiveVersionChangeInvalidatesOldCacheEntries(): Unit {
+        let cache = CangjieQueryCache(4)
+        let oldKey = cangjieServingCacheKey("vr1", "active-a", "std", "ArrayList.add", 2, "evidence", targetVersion: "1.0.0", interfaceId: "KI-09", selector: "std:ArrayList.add")
+        let newKey = cangjieServingCacheKey("vr1", "active-b", "std", "ArrayList.add", 2, "evidence", targetVersion: "1.0.0", interfaceId: "KI-09", selector: "std:ArrayList.add")
+
+        @Expect(oldKey.text().contains("active-a"), true)
+        @Expect(oldKey.text().contains("1.0.0"), true)
+        @Expect(oldKey.text().contains("std"), true)
+        @Expect(oldKey.text().contains("KI-09"), true)
+        @Expect(cache.put(oldKey, "hash-old"), "stored")
+        @Expect(cache.invalidateOnActiveVersionChange("active-b"), 1)
+        @Expect(cache.get(oldKey).diagnostic, "cache_miss")
+        @Expect(cache.put(newKey, "hash-new"), "stored")
+        @Expect(cache.get(newKey).hit, true)
+        @Expect(cache.get(newKey).valueHash, "hash-new")
+    }
+
+    @TestCase
     public func p4Bnd002CacheCapacityEvictsOldest(): Unit {
         let cache = CangjieQueryCache(1)
         let keyA = cangjieServingCacheKey("vr1", "active-a", "docs", "A", 1, "evidence")

@@ -10,6 +10,10 @@ public class CangjieCandidateValidationResult {
     public var servingDocumentCount: Int64 = 0
     public var exactSymbolHits: Int64 = 0
     public var docSectionHits: Int64 = 0
+    public var toolManualHits: Int64 = 0
+    public var negativeRuleHits: Int64 = 0
+    public var moduleHits: Int64 = 0
+    public var availabilityHits: Int64 = 0
     public var coveragePass: Bool = false
     public var transportParityPass: Bool = false
     public var performancePass: Bool = false
@@ -56,30 +60,47 @@ public func validateCandidateServingIndex(records: ArrayList<NormalizedRecord>, 
         result.diagnostics.add("candidate_validation_forced_failure")
         return result
     }
-    let feed = buildServingDocuments(records)
-    result.servingDocumentCount = feed.documents.size
-    for (doc in feed.documents) {
-        if (doc.recordKind == CangjieServingRecordKinds.SYMBOL_CARD && !doc.rejected) {
-            result.exactSymbolHits += 1
-        }
-        if (doc.recordKind == CangjieServingRecordKinds.DOC_SECTION && !doc.rejected) {
-            result.docSectionHits += 1
-        }
+    let index = buildCangjieServingIndex(records, activeKnowledgeVersion: result.activeVersion)
+    result.servingDocumentCount = index.documents.size
+    for (doc in index.documents) {
         if (doc.versionResolutionId == "") {
             result.legacyVersionGapCount += 1
         }
+        if (doc.recordKind == CangjieServingRecordKinds.SYMBOL_CARD && lookupExactSymbol(index, doc.symbolKey, sourceSet: doc.sourceSet, targetVersion: doc.targetVersion, versionResolutionId: doc.versionResolutionId, budget: 1).hits.size > 0) {
+            result.exactSymbolHits += 1
+        }
+        if (doc.recordKind == CangjieServingRecordKinds.DOC_SECTION && lookupDocSection(index, doc.sourceId, sourceSet: doc.sourceSet, targetVersion: doc.targetVersion, versionResolutionId: doc.versionResolutionId, budget: 1).hits.size > 0) {
+            result.docSectionHits += 1
+        }
+        if (doc.recordKind == CangjieTypedRecordKinds.TOOL_MANUAL && lookupToolManual(index, cangjieCandidateToolSelector(doc), command: cangjieCandidateToolCommandSelector(doc), targetVersion: doc.targetVersion, versionResolutionId: doc.versionResolutionId, budget: 1).hits.size > 0) {
+            result.toolManualHits += 1
+        }
+        if (doc.recordKind == CangjieServingRecordKinds.NEGATIVE_RULE && lookupNegativeRules(index, doc.title, targetVersion: doc.targetVersion, versionResolutionId: doc.versionResolutionId, budget: 1).hits.size > 0) {
+            result.negativeRuleHits += 1
+        }
+        if (doc.module != "" && lookupModule(index, doc.module, sourceSet: doc.sourceSet, targetVersion: doc.targetVersion, versionResolutionId: doc.versionResolutionId, budget: 1).hits.size > 0) {
+            result.moduleHits += 1
+        }
+        if ((doc.recordKind == CangjieTypedRecordKinds.AVAILABILITY || doc.recordKind == CangjieServingRecordKinds.SYMBOL_CARD) && lookupAvailability(index, if (doc.symbolKey == "") { doc.title } else { doc.symbolKey }, sourceSet: doc.sourceSet, targetVersion: doc.targetVersion, versionResolutionId: doc.versionResolutionId, budget: 1).hits.size > 0) {
+            result.availabilityHits += 1
+        }
     }
-    result.coveragePass = result.exactSymbolHits > 0 && result.docSectionHits > 0
-    result.transportParityPass = feed.ok && result.servingDocumentCount > 0
-    result.performancePass = result.servingDocumentCount > 0
-    result.evidenceHash = stableSummaryHash(cangjieServingDocumentHashSeed(feed.documents))
-    if (!feed.ok) {
-        result.diagnostics.add("serving_feed_not_ready")
+    result.coveragePass = result.exactSymbolHits > 0 && result.docSectionHits > 0 && result.negativeRuleHits > 0
+    result.transportParityPass = index.documents.size > 0 && index.exactEntries.size > 0
+    result.performancePass = index.documents.size > 0
+    result.evidenceHash = stableSummaryHash(cangjieServingDocumentHashSeed(index.documents))
+    if (index.documents.size == 0) {
+        result.diagnostics.add("serving_index_not_ready")
     }
     if (!result.coveragePass) {
         result.diagnostics.add("candidate_coverage_regression")
     }
-    result.ok = feed.ok && result.coveragePass && result.transportParityPass && result.performancePass
+    if (result.toolManualHits == 0) {
+        result.diagnostics.add("tool_manual_coverage_missing")
+    }
+    result.diagnostics.add("transport_diagnostic_placeholder")
+    result.diagnostics.add("performance_diagnostic_placeholder")
+    result.ok = index.documents.size > 0 && result.coveragePass && result.transportParityPass && result.performancePass
     result.status = if (result.ok) { "candidate_validation_passed" } else { "candidate_validation_failed" }
     result
 }
@@ -118,8 +139,28 @@ private func cangjieServingDocumentHashSeed(documents: ArrayList<CangjieServingD
     out.toString()
 }
 
+private func cangjieCandidateToolSelector(doc: CangjieServingDocument): String {
+    let text = "${doc.symbolKey} ${doc.title} ${doc.text}".trimAscii()
+    for (token in text.split(" ")) {
+        let clean = token.trimAscii().replace("`", "").replace(":", "")
+        if (clean != "" && !clean.contains("=")) {
+            return clean
+        }
+    }
+    "tool"
+}
+
+private func cangjieCandidateToolCommandSelector(doc: CangjieServingDocument): String {
+    let text = "${doc.symbolKey} ${doc.title} ${doc.text}".trimAscii()
+    let parts = text.split(" ")
+    if (parts.size > 1) {
+        return parts[1].trimAscii().replace("`", "").replace(":", "")
+    }
+    ""
+}
+
 public func renderCangjieCandidateValidationSummary(validation: CangjieCandidateValidationResult): String {
-    "candidateValidation status=${validation.status} ok=${validation.ok} candidateVersion=${validation.candidateVersion} activeVersion=${validation.activeVersion} documents=${validation.servingDocumentCount} exactSymbolHits=${validation.exactSymbolHits} docSectionHits=${validation.docSectionHits} coveragePass=${validation.coveragePass} transportParityPass=${validation.transportParityPass} performancePass=${validation.performancePass} legacyVersionGapCount=${validation.legacyVersionGapCount} evidenceHash=${validation.evidenceHash} diagnostics=${cangjieCandidateDiagnostics(validation.diagnostics)}"
+    "candidateValidation status=${validation.status} ok=${validation.ok} candidateVersion=${validation.candidateVersion} activeVersion=${validation.activeVersion} documents=${validation.servingDocumentCount} exactSymbolHits=${validation.exactSymbolHits} docSectionHits=${validation.docSectionHits} toolManualHits=${validation.toolManualHits} negativeRuleHits=${validation.negativeRuleHits} moduleHits=${validation.moduleHits} availabilityHits=${validation.availabilityHits} coveragePass=${validation.coveragePass} transportParityPass=${validation.transportParityPass} performancePass=${validation.performancePass} legacyVersionGapCount=${validation.legacyVersionGapCount} evidenceHash=${validation.evidenceHash} diagnostics=${cangjieCandidateDiagnostics(validation.diagnostics)}"
 }
 
 private func cangjieCandidateDiagnostics(values: ArrayList<String>): String {
