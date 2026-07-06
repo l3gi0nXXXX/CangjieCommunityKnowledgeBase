@@ -13,6 +13,10 @@ public class CangjieInterfaceResultsTest {
         pack.knowledgeVersion = "test-active"
         pack.targetVersion = "1.0.0"
         pack.versionResolutionId = "vr-f2"
+        pack.sourceRef = "release-1.0.0"
+        pack.resolvedCommit = "interface-commit"
+        pack.contentHash = "sha256:interface"
+        pack.sourceRepo = "Cangjie/cangjie_runtime"
         pack.notes.add("exact_hit")
         pack.citations.add(SourceReference("src-f2", "fixture:src-f2", "test-active"))
         let api = CangjieApiItem()
@@ -38,6 +42,10 @@ public class CangjieInterfaceResultsTest {
         @Expect(json.contains("\"diagnostic\""), true)
         @Expect(json.contains("\"targetVersion\""), true)
         @Expect(json.contains("\"versionResolutionId\""), true)
+        @Expect(json.contains("\"sourceRef\""), true)
+        @Expect(json.contains("\"resolvedCommit\""), true)
+        @Expect(json.contains("\"contentHash\""), true)
+        @Expect(json.contains("\"sourceRepo\""), true)
         @Expect(json.contains("\"evidenceHash\""), true)
         @Expect(json.contains("\"citations\""), true)
         @Expect(json.contains("\"sourceSet\""), true)

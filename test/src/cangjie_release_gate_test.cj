@@ -156,6 +156,10 @@ extend String {
     f8WriteFile(caseRoot.join("metadata.json"), "{\"id\":\"CJ-HUMANEVAL-000\"}\n")
     f8WriteFile(caseRoot.join("starter/src/eval_support.cj"), "public class EvalValue {}\npublic class EvalEntry {}\n")
     f8WriteFile(caseRoot.join("tests/TestMain.cj"), "public func helper(): Unit {}\nmain() {}\n")
+    f8WriteGitMetadata(fixture.docsRoot, "f8-docs-commit")
+    f8WriteGitMetadata(fixture.stdRoot, "f8-std-commit")
+    f8WriteGitMetadata(fixture.stdxRoot, "f8-stdx-commit")
+    f8WriteGitMetadata(fixture.evalRoot, "f8-eval-commit")
     fixture
 }
 
@@ -196,4 +200,9 @@ private func f8WriteFile(path: Path, text: String): Unit {
         Directory.create(path.parent, recursive: true)
     }
     File.writeTo(path, text.toArray())
+}
+
+private func f8WriteGitMetadata(root: String, commit: String): Unit {
+    f8WriteFile(Path(root).join(".git/HEAD"), "ref: refs/heads/release-1.0.0\n")
+    f8WriteFile(Path(root).join(".git/refs/heads/release-1.0.0"), commit)
 }

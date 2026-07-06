@@ -39,6 +39,7 @@ public class CangjieVersionSource {
     public var refKind: String = "branch"
     public var resolvedCommit: String = ""
     public var contentHash: String = ""
+    public var rootKind: String = ""
 
     public init() {}
 }
@@ -46,7 +47,9 @@ public class CangjieVersionSource {
 public class CangjieVersionManifest {
     public var manifestVersion: String = "cangjie-version-manifest-v1"
     public var defaultTargetVersion: String = cangjieDefaultTargetVersion()
+    public var degraded: Bool = false
     public var sources: ArrayList<CangjieVersionSource> = ArrayList<CangjieVersionSource>()
+    public var diagnostics: ArrayList<String> = ArrayList<String>()
 
     public init() {}
 }
@@ -77,6 +80,7 @@ public func defaultCangjieVersionManifest(): CangjieVersionManifest {
 public func buildCangjieVersionManifestFromRoots(targetVersion!: String = "", docsRoot!: String = "", toolDocsRoot!: String = "", stdRoot!: String = "", stdxRoot!: String = "", evalRoot!: String = ""): CangjieVersionManifest {
     let manifest = CangjieVersionManifest()
     manifest.defaultTargetVersion = if (targetVersion.trimAscii() == "") { cangjieDefaultTargetVersion() } else { targetVersion.trimAscii() }
+    let explicitRoot = cangjieManifestAnyRootConfigured(docsRoot, toolDocsRoot, stdRoot, stdxRoot, evalRoot)
     cangjieManifestAddRootSource(manifest, CangjieSourceSets.DOCS, "docs", "Cangjie/cangjie_docs", docsRoot)
     let toolsRoot = if (toolDocsRoot.trimAscii() == "") { docsRoot } else { toolDocsRoot }
     cangjieManifestAddRootSource(manifest, CangjieSourceSets.TOOLS, "tools", "Cangjie/cangjie_tools", toolsRoot)
@@ -84,6 +88,13 @@ public func buildCangjieVersionManifestFromRoots(targetVersion!: String = "", do
     cangjieManifestAddRootSource(manifest, CangjieSourceSets.STDX, "stdx", "Cangjie/cangjie_stdx", stdxRoot)
     cangjieManifestAddRootSource(manifest, CangjieSourceSets.EVAL_SUPPORT, "eval-support", "CangjieCommunityKnowledgeBase/Cangjie-HumanEval", evalRoot)
     if (manifest.sources.size == 0) {
+        if (explicitRoot) {
+            manifest.degraded = true
+            if (manifest.diagnostics.size == 0) {
+                manifest.diagnostics.add("version_manifest_no_valid_roots")
+            }
+            return manifest
+        }
         return defaultCangjieVersionManifest()
     }
     manifest
@@ -152,25 +163,38 @@ private func cangjieManifestSource(sourceSet: String, sourceFamily: String, sour
     source.refKind = refKind
     source.resolvedCommit = resolvedCommit
     source.contentHash = contentHash
+    source.rootKind = "offline-baseline"
     source
 }
 
 private func cangjieManifestAddRootSource(manifest: CangjieVersionManifest, sourceSet: String, sourceFamily: String, sourceRepo: String, root: String): Unit {
     let cleanRoot = root.trimAscii()
+    if (cleanRoot == "") {
+        return
+    }
     if (!cangjieManifestRootAllowed(cleanRoot)) {
+        cangjieManifestMarkDegraded(manifest, "${sourceSet}_root_invalid")
         return
     }
     let hash = cangjieManifestRootContentHash(cleanRoot)
     let git = cangjieManifestGitInfo(cleanRoot, manifest.defaultTargetVersion, hash)
+    if (!git.ok) {
+        cangjieManifestMarkDegraded(manifest, "${sourceSet}_${git.diagnostic}")
+        return
+    }
     let source = cangjieManifestSource(sourceSet, sourceFamily, sourceRepo, git.sourceRef, git.refKind, git.resolvedCommit, hash)
     source.targetVersion = manifest.defaultTargetVersion
+    source.rootKind = git.rootKind
     manifest.sources.add(source)
 }
 
 private class CangjieManifestGitInfo {
+    var ok: Bool = false
+    var diagnostic: String = "git_metadata_missing"
     var sourceRef: String = ""
     var refKind: String = "local"
     var resolvedCommit: String = ""
+    var rootKind: String = ""
 
     init() {}
 }
@@ -185,15 +209,15 @@ private class CangjieManifestHashState {
 
 private func cangjieManifestGitInfo(root: String, targetVersion: String, contentHash: String): CangjieManifestGitInfo {
     let info = CangjieManifestGitInfo()
-    info.sourceRef = "local-${cangjieManifestSafeId(targetVersion)}"
-    info.refKind = "local"
-    info.resolvedCommit = "local-${contentHash.replace("sha256:", "")}"
     let gitDir = cangjieManifestGitDir(root)
     if (gitDir == "") {
+        info.diagnostic = "git_metadata_missing"
         return info
     }
+    info.rootKind = if (gitDir == "${root}/.git") { "git-root" } else { "git-worktree" }
     let head = cangjieManifestReadText("${gitDir}/HEAD")
     if (head == "") {
+        info.diagnostic = "git_head_missing"
         return info
     }
     if (head.startsWith("ref: ")) {
@@ -203,12 +227,19 @@ private func cangjieManifestGitInfo(root: String, targetVersion: String, content
         let commit = cangjieManifestReadText("${gitDir}/${ref}")
         if (commit != "") {
             info.resolvedCommit = commit
+            info.ok = true
+            info.diagnostic = "ok"
+        }
+        if (!info.ok) {
+            info.diagnostic = "git_ref_commit_missing"
         }
         return info
     }
     info.sourceRef = head
     info.refKind = "commit"
     info.resolvedCommit = head
+    info.ok = true
+    info.diagnostic = "ok"
     info
 }
 
@@ -352,7 +383,21 @@ private func cangjieCopyVersionSource(source: CangjieVersionSource): CangjieVers
     out.refKind = source.refKind
     out.resolvedCommit = source.resolvedCommit
     out.contentHash = source.contentHash
+    out.rootKind = source.rootKind
     out
+}
+
+private func cangjieManifestAnyRootConfigured(docsRoot: String, toolDocsRoot: String, stdRoot: String, stdxRoot: String, evalRoot: String): Bool {
+    docsRoot.trimAscii() != "" ||
+        toolDocsRoot.trimAscii() != "" ||
+        stdRoot.trimAscii() != "" ||
+        stdxRoot.trimAscii() != "" ||
+        evalRoot.trimAscii() != ""
+}
+
+private func cangjieManifestMarkDegraded(manifest: CangjieVersionManifest, diagnostic: String): Unit {
+    manifest.degraded = true
+    manifest.diagnostics.add(diagnostic)
 }
 
 private func cangjieCleanVersionPolicy(raw: String): String {

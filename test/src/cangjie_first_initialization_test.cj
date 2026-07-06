@@ -134,8 +134,23 @@ public class CangjieFirstInitializationTest {
         @Expect(store.loadCangjieVersionManifest().sources.size, 5)
         @Expect(store.loadCangjieVersionManifest().sources[0].resolvedCommit.contains("offline-baseline"), false)
         @Expect(serviceResolution.ok, true)
-        @Expect(serviceResolution.sources[0].resolvedCommit.startsWith("local-"), true)
+        @Expect(serviceResolution.sources[0].sourceRef, "release-1.0.0")
+        @Expect(serviceResolution.sources[0].resolvedCommit, "ckb-firstinit-std-commit")
         @Expect(rendered.contains("queryCheck=symbol:ArrayList.add=hit"), true)
+    }
+
+    @TestCase
+    public func p1Bnd001ExplicitNonGitRootsDoNotPromote(): Unit {
+        let fixture = ckbFirstInitWriteFullFixture("target/p1-first-init-non-git", true, includeGit: false)
+        let store = FileKnowledgeStore("target/p1-first-init-non-git-store")
+        let options = ckbFirstInitOptionsForFixture(fixture, true)
+
+        let result = runCkbFirstInitialization(options, store)
+
+        @Expect(result.ok, false)
+        @Expect(result.persisted, false)
+        @Expect(result.diagnostics.contains("docs_git_metadata_missing"), true)
+        @Expect(store.has("index/active.ckb"), false)
     }
 
     @TestCase
@@ -295,7 +310,7 @@ private class CkbFirstInitFixturePaths {
     init() {}
 }
 
-private func ckbFirstInitWriteFullFixture(root: String, includeTool: Bool): CkbFirstInitFixturePaths {
+private func ckbFirstInitWriteFullFixture(root: String, includeTool: Bool, includeGit!: Bool = true): CkbFirstInitFixturePaths {
     let fixture = CkbFirstInitFixturePaths()
     fixture.docsRoot = "${root}/docs"
     fixture.stdRoot = "${root}/std"
@@ -324,6 +339,12 @@ extend String {
     ckbFirstInitWriteFile(caseRoot.join("metadata.json"), "{\"id\":\"CJ-HUMANEVAL-000\"}\n")
     ckbFirstInitWriteFile(caseRoot.join("starter/src/eval_support.cj"), "public class EvalValue {}\npublic class EvalEntry {}\n")
     ckbFirstInitWriteFile(caseRoot.join("tests/TestMain.cj"), "public func helper(): Unit {}\nmain() {}\n")
+    if (includeGit) {
+        ckbFirstInitWriteGitMetadata(fixture.docsRoot, "ckb-firstinit-docs-commit")
+        ckbFirstInitWriteGitMetadata(fixture.stdRoot, "ckb-firstinit-std-commit")
+        ckbFirstInitWriteGitMetadata(fixture.stdxRoot, "ckb-firstinit-stdx-commit")
+        ckbFirstInitWriteGitMetadata(fixture.evalRoot, "ckb-firstinit-eval-commit")
+    }
     fixture
 }
 
@@ -355,6 +376,11 @@ private func ckbFirstInitWriteFile(path: Path, text: String): Unit {
         Directory.create(path.parent, recursive: true)
     }
     File.writeTo(path, text.toArray())
+}
+
+private func ckbFirstInitWriteGitMetadata(root: String, commit: String): Unit {
+    ckbFirstInitWriteFile(Path(root).join(".git/HEAD"), "ref: refs/heads/release-1.0.0\n")
+    ckbFirstInitWriteFile(Path(root).join(".git/refs/heads/release-1.0.0"), commit)
 }
 
 private func ckbFirstInitCandidateHasNoOfflineBaseline(kb: KnowledgeBase): Bool {

@@ -3200,6 +3200,24 @@ public class CkbServiceApiTest {
     }
 
     @TestCase
+    public func p1Pos001SchedulerUsesPersistedManifestRefsInsteadOfHardcodedRelease(): Unit {
+        let config = CkbRuntimeConfig()
+        config.networkEnabled = true
+        let fake = FakeSourceFetchRunner()
+        let store = FileKnowledgeStore("target/p1-scheduler-manifest-ref")
+        store.saveCangjieVersionManifest(p1SchedulerManifest("release-9.9.9"))
+        let service = CkbCommandLoopService(config, store, sourceRunner: fake)
+
+        _ = ckbApiHandle(service, "POST", "/v1/admin/scheduler/run", "{\"taskNames\":[\"cangjie_release_full_sync\"],\"force\":true}", ["Authorization: Bearer admin"])
+
+        @Expect(p1HasRepoRef(fake.calls, "Cangjie/cangjie_docs", "release-9.9.9"), true)
+        @Expect(p1HasRepoRef(fake.calls, "Cangjie/cangjie_runtime", "release-9.9.9"), true)
+        @Expect(p1HasRepoRef(fake.calls, "Cangjie/cangjie_stdx", "release-9.9.9"), true)
+        @Expect(p1HasRepoRef(fake.calls, "Cangjie/cangjie_tools", "release-9.9.9"), true)
+        @Expect(p1HasRepoRef(fake.calls, "Cangjie/cangjie_runtime", "release-1.0.0"), false)
+    }
+
+    @TestCase
     public func ckb3Ut009AdminRepositoriesSyncReturnsStructuredOfflineResult(): Unit {
         let service = CkbCommandLoopService(CkbRuntimeConfig(), FileKnowledgeStore("target/ckb3-admin-repo-sync"))
         let body = "{\"repo\":\"cangjie/stdx\",\"ref\":\"master\",\"profile\":\"repo_source_and_items\",\"changedFiles\":[\"src/main.cj\"],\"prNumber\":46,\"mode\":\"apply\",\"reason\":\"gitcode_pr_merged\"}"
@@ -3621,6 +3639,39 @@ private func intervalFor(scheduler: Scheduler, name: String): Int64 {
         }
     }
     -1
+}
+
+private func p1SchedulerManifest(ref: String): CangjieVersionManifest {
+    let manifest = CangjieVersionManifest()
+    manifest.defaultTargetVersion = "1.0.0"
+    p1AddManifestSource(manifest, CangjieSourceSets.DOCS, "docs", "Cangjie/cangjie_docs", ref)
+    p1AddManifestSource(manifest, CangjieSourceSets.STD, "stdlib", "Cangjie/cangjie_runtime", ref)
+    p1AddManifestSource(manifest, CangjieSourceSets.STDX, "stdx", "Cangjie/cangjie_stdx", ref)
+    p1AddManifestSource(manifest, CangjieSourceSets.TOOLS, "tools", "Cangjie/cangjie_tools", ref)
+    manifest
+}
+
+private func p1AddManifestSource(manifest: CangjieVersionManifest, sourceSet: String, sourceFamily: String, repo: String, ref: String): Unit {
+    let source = CangjieVersionSource()
+    source.targetVersion = manifest.defaultTargetVersion
+    source.sourceSet = sourceSet
+    source.sourceFamily = sourceFamily
+    source.sourceRepo = repo
+    source.sourceRef = ref
+    source.refKind = "branch"
+    source.resolvedCommit = "${ref}-${sourceSet}-commit"
+    source.contentHash = "sha256:${ref}-${sourceSet}"
+    source.rootKind = "git-root"
+    manifest.sources.add(source)
+}
+
+private func p1HasRepoRef(calls: ArrayList<SourceFetchRequest>, repo: String, ref: String): Bool {
+    for (call in calls) {
+        if (call.repo == repo && call.ref == ref) {
+            return true
+        }
+    }
+    false
 }
 
 private func repeatText(value: String, count: Int64): String {
