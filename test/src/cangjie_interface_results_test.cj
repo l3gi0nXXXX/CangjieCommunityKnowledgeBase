@@ -34,11 +34,68 @@ public class CangjieInterfaceResultsTest {
         this.expectInterfaceFields(renderCangjieDocSectionResultJson(cangjieDocSectionResultFromPack(pack, sourceSet: CangjieSourceSets.DOCS)))
         this.expectInterfaceFields(renderCangjieToolManualResultJson(cangjieToolManualResultFromPack(pack, sourceSet: CangjieSourceSets.TOOLS)))
         this.expectInterfaceFields(renderCangjieNegativeRulesResultJson(cangjieNegativeRulesResultFromPack(pack, sourceSet: CangjieSourceSets.EVAL_SUPPORT)))
+        this.expectInterfaceFields(renderCangjieApiPatternResultJson(cangjieApiPatternResultFromPack(pack, sourceSet: CangjieSourceSets.STD)))
+        this.expectInterfaceFields(renderCangjieSyntaxRuleResultJson(cangjieSyntaxRuleResultFromPack(pack, sourceSet: CangjieSourceSets.DOCS)))
+        this.expectInterfaceFields(renderCangjieExampleSearchResultJson(cangjieExampleSearchResultFromPack(pack, sourceSet: CangjieSourceSets.EVAL_SUPPORT)))
+        this.expectInterfaceFields(renderCangjieRecipeResultJson(cangjieRecipeResultFromPack(pack, sourceSet: CangjieSourceSets.DOCS)))
+        this.expectInterfaceFields(renderCangjieDiagnosticResultJson(cangjieDiagnosticResultFromPack(pack, sourceSet: CangjieSourceSets.DOCS)))
         this.expectInterfaceFields(renderCangjieCorpusFreshnessResultJson(cangjieCorpusFreshnessResultFromReport(freshness)))
+    }
+
+    @TestCase
+    public func p3Bnd001CitationFreeSyntaxResultIsDegradedNotOk(): Unit {
+        let pack = CangjieKnowledgePack()
+        pack.queryId = "q-p3-empty"
+        pack.task = "syntax without citation"
+        pack.knowledgeVersion = "test-active"
+        pack.targetVersion = "1.0.0"
+        pack.versionResolutionId = "vr-p3"
+
+        let json = renderCangjieSyntaxRuleResultJson(cangjieSyntaxRuleResultFromPack(pack, sourceSet: CangjieSourceSets.DOCS))
+
+        @Expect(json.contains("\"ok\":false"), true)
+        @Expect(json.contains("\"degraded\":true"), true)
+        @Expect(json.contains("\"diagnostic\":\"missing_citation\""), true)
+        @Expect(json.contains("\"coveragePass\":false"), true)
+    }
+
+    @TestCase
+    public func p3Pos001ToolManualResultCarriesCommandUsageExpectedOutput(): Unit {
+        let pack = CangjieKnowledgePack()
+        pack.queryId = "q-p3-tool"
+        pack.task = "cjpm test"
+        pack.knowledgeVersion = "test-active"
+        pack.targetVersion = "1.0.0"
+        pack.versionResolutionId = "vr-p3-tool"
+        pack.sourceRef = "release-1.0.0"
+        pack.resolvedCommit = "tool-commit"
+        pack.contentHash = "sha256:tool"
+        pack.sourceRepo = "Cangjie/cangjie_tools"
+        pack.citations.add(SourceReference("tool-cjpm-test", "tools/cjpm.md#test", "test-active"))
+        let item = CangjieKnowledgeItem()
+        item.kind = "tool_manual"
+        item.title = "cjpm test"
+        item.content = "Run package tests."
+        item.symbol = "cjpm test"
+        item.example = "cjpm test success"
+        item.citation = "tools/cjpm.md#test"
+        item.sourceId = "tool-cjpm-test"
+        item.knowledgeVersion = "test-active"
+        pack.items.add(item)
+
+        let json = renderCangjieToolManualResultJson(cangjieToolManualResultFromPack(pack, sourceSet: CangjieSourceSets.TOOLS))
+
+        @Expect(json.contains("\"command\":\"cjpm test\""), true)
+        @Expect(json.contains("\"usage\":\"Run package tests.\""), true)
+        @Expect(json.contains("\"expectedOutput\":\"cjpm test success\""), true)
+        @Expect(json.contains("\"citation\":\"tools/cjpm.md#test\""), true)
     }
 
     private func expectInterfaceFields(json: String): Unit {
         @Expect(json.contains("\"ok\""), true)
+        @Expect(json.contains("\"interfaceId\""), true)
+        @Expect(json.contains("\"contentFamily\""), true)
+        @Expect(json.contains("\"updateMechanism\""), true)
         @Expect(json.contains("\"diagnostic\""), true)
         @Expect(json.contains("\"targetVersion\""), true)
         @Expect(json.contains("\"versionResolutionId\""), true)
@@ -46,8 +103,13 @@ public class CangjieInterfaceResultsTest {
         @Expect(json.contains("\"resolvedCommit\""), true)
         @Expect(json.contains("\"contentHash\""), true)
         @Expect(json.contains("\"sourceRepo\""), true)
+        @Expect(json.contains("\"provenance\""), true)
         @Expect(json.contains("\"evidenceHash\""), true)
         @Expect(json.contains("\"citations\""), true)
         @Expect(json.contains("\"sourceSet\""), true)
+        @Expect(json.contains("\"matchedItems\""), true)
+        @Expect(json.contains("\"requiredKnowledge\""), true)
+        @Expect(json.contains("\"queryPlan\""), true)
+        @Expect(json.contains("\"coverage\""), true)
     }
 }

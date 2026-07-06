@@ -108,14 +108,48 @@ public class CangjieServiceApiP5ContractTest {
         @Expect(response.contains("\"items\":[]"), true)
     }
 
+    @TestCase
+    public func p3E2E001RestAndMcpApiSearchShareStructuredEvidenceHash(): Unit {
+        let service = CkbCommandLoopService(CkbRuntimeConfig(), p6PersistExactLookupStore("p3-rest-mcp-parity-store"))
+        let config = CkbHttpServiceConfig()
+        let rest = handleCkbHttpRequest(service, "POST", "/v1/cangjie/api-search", "{\"q\":\"ArrayList\",\"module\":\"std.collection\",\"symbol\":\"ArrayList\",\"targetVersion\":\"1.0.0\"}", [], config)
+        let mcp = CkbMcpStdioServer(service).handleRequest("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"cangjie_api_search\",\"arguments\":{\"q\":\"ArrayList\",\"module\":\"std.collection\",\"symbol\":\"ArrayList\",\"targetVersion\":\"1.0.0\"}}}")
+        let restHash = this.p3JsonStringField(rest.body, "evidenceHash")
+        let mcpHash = this.p3JsonStringField(mcp, "evidenceHash")
+
+        @Expect(rest.statusCode, 200)
+        @Expect(rest.body.contains("\"resultType\":\"api_pattern\""), true)
+        @Expect(mcp.contains("\"structuredContent\""), true)
+        @Expect(mcp.contains("\"resultType\":\"api_pattern\""), true)
+        @Expect(restHash != "", true)
+        @Expect(mcpHash, restHash)
+    }
+
     private func expectStructuredHttpOk(response: CkbHttpHandlerResponse, resultType: String): Unit {
         @Expect(response.statusCode, 200)
         @Expect(response.body.contains("\"ok\":true"), true)
         @Expect(response.body.contains("\"resultType\":\"${resultType}\""), true)
+        @Expect(response.body.contains("\"interfaceId\""), true)
+        @Expect(response.body.contains("\"contentFamily\""), true)
+        @Expect(response.body.contains("\"updateMechanism\""), true)
         @Expect(response.body.contains("\"targetVersion\""), true)
         @Expect(response.body.contains("\"versionResolutionId\""), true)
         @Expect(response.body.contains("\"evidenceHash\""), true)
         @Expect(response.body.contains("\"citations\""), true)
         @Expect(response.body.contains("\"sourceSet\""), true)
+        @Expect(response.body.contains("\"provenance\""), true)
+    }
+
+    private func p3JsonStringField(raw: String, key: String): String {
+        let marker = "\"${key}\":\""
+        let parts = raw.split(marker)
+        if (parts.size < 2) {
+            return ""
+        }
+        let value = parts[1].split("\"")
+        if (value.size == 0) {
+            return ""
+        }
+        value[0]
     }
 }

@@ -166,6 +166,14 @@ public class CkbMcpStdioTest {
         @Expect(response.contains("\"items\""), true)
         @Expect(response.contains("\"apiItems\""), true)
         @Expect(response.contains("\"citations\""), true)
+        @Expect(response.contains("\"interfaceId\":\"KI-04\""), true)
+        @Expect(response.contains("\"contentFamily\":\"api_pattern\""), true)
+        @Expect(response.contains("\"updateMechanism\""), true)
+        @Expect(response.contains("\"matchedItems\""), true)
+        @Expect(response.contains("\"requiredKnowledge\""), true)
+        @Expect(response.contains("\"queryPlan\""), true)
+        @Expect(response.contains("\"coverage\""), true)
+        @Expect(response.contains("\"provenance\""), true)
         @Expect(response.contains("ArrayList"), true)
     }
 
