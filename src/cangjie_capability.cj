@@ -115,6 +115,10 @@ public class CangjieKnowledgePack {
     public var targetVersion: String = cangjieDefaultTargetVersion()
     public var knowledgeVersion: String = ""
     public var versionResolutionId: String = ""
+    public var sourceRef: String = ""
+    public var resolvedCommit: String = ""
+    public var contentHash: String = ""
+    public var sourceRepo: String = ""
     public var truncated: Bool = false
     public var degraded: Bool = false
     public var executed: Bool = false
@@ -378,6 +382,7 @@ public class CangjieCapabilityService {
     public func symbolLookup(symbol: String, module!: String = "", sourceSet!: String = "", targetVersion!: String = "", budget!: Int64 = CangjieCapabilityLimits.DEFAULT_BUDGET): CangjieKnowledgePack {
         let query = cangjieSafeText(symbol)
         let pack = this.newPack(query, targetVersion, budget)
+        this.applyVersionResolution(pack, cangjieVersionSelector(targetVersion: pack.targetVersion, sourceSet: if (sourceSet.trimAscii() == "") { CangjieSourceSets.ALL } else { sourceSet.trimAscii() }))
         pack.notes.add("exact_symbol_lookup_endpoint")
         if (query == "") {
             pack.degraded = true
@@ -393,6 +398,7 @@ public class CangjieCapabilityService {
     public func docSection(sectionId: String, path!: String = "", heading!: String = "", targetVersion!: String = "", budget!: Int64 = CangjieCapabilityLimits.DEFAULT_BUDGET): CangjieKnowledgePack {
         let query = cangjieSafeText("${sectionId} ${path} ${heading} doc section")
         let pack = this.newPack(query, targetVersion, budget)
+        this.applyVersionResolution(pack, cangjieVersionSelector(targetVersion: pack.targetVersion, sourceSet: CangjieSourceSets.DOCS))
         pack.notes.add("exact_doc_section_endpoint")
         let result = cangjieExactDocSectionLookup(this.kb, sectionId, path: path, heading: heading, targetVersion: pack.targetVersion, budget: this.effectiveBudget(pack, budget))
         this.addKnowledgeItems(pack, result, "doc_section")
@@ -403,6 +409,7 @@ public class CangjieCapabilityService {
     public func toolManual(tool: String, command!: String = "", targetVersion!: String = "", budget!: Int64 = CangjieCapabilityLimits.DEFAULT_BUDGET): CangjieKnowledgePack {
         let query = cangjieSafeText("${tool} ${command} tool manual")
         let pack = this.newPack(query, targetVersion, budget)
+        this.applyVersionResolution(pack, cangjieVersionSelector(targetVersion: pack.targetVersion, sourceSet: CangjieSourceSets.TOOLS))
         pack.notes.add("exact_tool_manual_endpoint")
         let result = cangjieExactToolManualLookup(this.kb, tool, command: command, targetVersion: pack.targetVersion, budget: this.effectiveBudget(pack, budget))
         this.addKnowledgeItems(pack, result, "tool_manual")
@@ -487,6 +494,7 @@ public class CangjieCapabilityService {
         pack.targetVersion = version.value
         pack.knowledgeVersion = status.activeKnowledgeVersion
         pack.versionResolutionId = "legacy-${stableSummaryHash("${pack.targetVersion}:${pack.knowledgeVersion}")}"
+        this.applyVersionResolution(pack, cangjieVersionSelector(targetVersion: pack.targetVersion, sourceSet: CangjieSourceSets.ALL))
         if (version.normalized) {
             pack.notes.add(version.diagnostic)
         }
@@ -495,6 +503,30 @@ public class CangjieCapabilityService {
             pack.notes.add("budget_clamped")
         }
         pack
+    }
+
+    private func applyVersionResolution(pack: CangjieKnowledgePack, selector: CangjieVersionSelector): Unit {
+        let resolution = resolveCangjieVersion(selector, this.manifest)
+        pack.versionResolutionId = resolution.versionResolutionId
+        if (!resolution.ok) {
+            pack.degraded = true
+            if (resolution.diagnostic != "") {
+                pack.notes.add(resolution.diagnostic)
+            }
+            return
+        }
+        if (resolution.sources.size == 1) {
+            let source = resolution.sources[0]
+            pack.sourceRef = source.sourceRef
+            pack.resolvedCommit = source.resolvedCommit
+            pack.contentHash = source.contentHash
+            pack.sourceRepo = source.sourceRepo
+        } else if (resolution.sources.size > 1) {
+            pack.sourceRef = "mixed"
+            pack.sourceRepo = "mixed"
+            pack.resolvedCommit = stableSummaryHash(cangjieVersionResolutionSourceSeed(resolution))
+            pack.contentHash = stableSummaryHash(cangjieVersionResolutionContentSeed(resolution))
+        }
     }
 
     private func effectiveBudget(pack: CangjieKnowledgePack, budget: Int64): Int64 {
@@ -745,6 +777,22 @@ private func cangjieRecordMatchesApiFilter(record: NormalizedRecord, module: Str
         return false
     }
     true
+}
+
+private func cangjieVersionResolutionSourceSeed(resolution: CangjieVersionResolution): String {
+    var seed = ""
+    for (source in resolution.sources) {
+        seed += "${source.sourceSet}:${source.sourceRepo}:${source.sourceRef}:${source.resolvedCommit}|"
+    }
+    seed
+}
+
+private func cangjieVersionResolutionContentSeed(resolution: CangjieVersionResolution): String {
+    var seed = ""
+    for (source in resolution.sources) {
+        seed += "${source.sourceSet}:${source.contentHash}|"
+    }
+    seed
 }
 
 private func cangjieExactApiBoost(record: NormalizedRecord, module: String, symbol: String): Float64 {

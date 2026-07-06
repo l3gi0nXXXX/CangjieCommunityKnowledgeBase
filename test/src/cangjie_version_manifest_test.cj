@@ -48,6 +48,11 @@ public class CangjieVersionManifestTest {
         cangjieP1WriteFile(Path(root).join("std/src/std/collection/a.cj"), "package std.collection\npublic class A {}\n")
         cangjieP1WriteFile(Path(root).join("stdx/src/stdx/http/client.cj"), "package stdx.http\npublic class HttpClient {}\n")
         cangjieP1WriteFile(Path(root).join("eval/CJ-HUMANEVAL-000/prompt.md"), "# task\n")
+        cangjieP1WriteGitMetadata("${root}/docs", "p1-docs-commit")
+        cangjieP1WriteGitMetadata("${root}/tools", "p1-tools-commit")
+        cangjieP1WriteGitMetadata("${root}/std", "p1-std-commit")
+        cangjieP1WriteGitMetadata("${root}/stdx", "p1-stdx-commit")
+        cangjieP1WriteGitMetadata("${root}/eval", "p1-eval-commit")
 
         let manifest = buildCangjieVersionManifestFromRoots(targetVersion: "1.0.0",
             docsRoot: "${root}/docs",
@@ -58,11 +63,25 @@ public class CangjieVersionManifestTest {
         let std = resolveCangjieVersion(cangjieVersionSelector(targetVersion: "1.0.0", sourceSet: "std"), manifest)
 
         @Expect(manifest.sources.size, 5)
+        @Expect(manifest.degraded, false)
         @Expect(std.ok, true)
-        @Expect(std.sources[0].sourceRef.startsWith("local-"), true)
-        @Expect(std.sources[0].resolvedCommit.startsWith("local-"), true)
+        @Expect(std.sources[0].sourceRef, "release-1.0.0")
+        @Expect(std.sources[0].resolvedCommit, "p1-std-commit")
         @Expect(std.sources[0].contentHash.startsWith("sha256:mh"), true)
+        @Expect(std.sources[0].rootKind, "git-root")
         @Expect(std.sources[0].resolvedCommit.contains("offline-baseline"), false)
+    }
+
+    @TestCase
+    public func p1Bnd003ExplicitNonGitRootReturnsDegradedManifest(): Unit {
+        let root = "target/p1-version-manifest-non-git"
+        cangjieP1WriteFile(Path(root).join("docs/dev-guide/summary.md"), "# docs\n")
+
+        let manifest = buildCangjieVersionManifestFromRoots(targetVersion: "1.0.0", docsRoot: "${root}/docs")
+
+        @Expect(manifest.degraded, true)
+        @Expect(manifest.sources.size, 0)
+        @Expect(manifest.diagnostics.contains("docs_git_metadata_missing"), true)
     }
 
     @TestCase
@@ -78,6 +97,7 @@ public class CangjieVersionManifestTest {
         @Expect(loaded.manifestVersion, manifest.manifestVersion)
         @Expect(loaded.defaultTargetVersion, manifest.defaultTargetVersion)
         @Expect(loaded.sources.size, manifest.sources.size)
+        @Expect(loaded.sources[0].rootKind, "offline-baseline")
         @Expect(docs.ok, true)
         @Expect(docs.sources[0].sourceRepo, "Cangjie/cangjie_docs")
     }
@@ -97,4 +117,9 @@ private func cangjieP1WriteFile(path: Path, text: String): Unit {
         Directory.create(path.parent, recursive: true)
     }
     File.writeTo(path, text.toArray())
+}
+
+private func cangjieP1WriteGitMetadata(root: String, commit: String): Unit {
+    cangjieP1WriteFile(Path(root).join(".git/HEAD"), "ref: refs/heads/release-1.0.0\n")
+    cangjieP1WriteFile(Path(root).join(".git/refs/heads/release-1.0.0"), commit)
 }

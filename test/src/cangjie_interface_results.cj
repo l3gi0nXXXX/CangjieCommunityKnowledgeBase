@@ -143,7 +143,7 @@ public func renderCangjieNegativeRulesResultJson(result: CangjieNegativeRulesRes
 }
 
 public func renderCangjieCorpusFreshnessResultJson(result: CangjieCorpusFreshnessResult): String {
-    var out = cangjieInterfaceResultPrefix("corpus_freshness", result.ok, result.diagnostic, result.targetVersion, result.versionResolutionId, result.evidenceHash, result.sourceSet, result.activeKnowledgeVersion, result.degraded, false, result.citations)
+    var out = cangjieInterfaceResultPrefix("corpus_freshness", result.ok, result.diagnostic, result.targetVersion, result.versionResolutionId, result.evidenceHash, result.sourceSet, result.activeKnowledgeVersion, result.degraded, false, result.citations, "", "", "", "")
     out += ",\"activeKnowledgeVersion\":\"${cangjieInterfaceJsonEscape(result.activeKnowledgeVersion)}\",\"candidateKnowledgeVersion\":\"${cangjieInterfaceJsonEscape(result.candidateKnowledgeVersion)}\",\"failedCandidateVersion\":\"${cangjieInterfaceJsonEscape(result.failedCandidateVersion)}\",\"diagnostics\":${cangjieInterfaceStringArrayJson(result.diagnostics)},\"sources\":["
     for (i in 0..result.report.sources.size) {
         if (i > 0) {
@@ -212,14 +212,14 @@ private func cangjieInterfaceCopyPackFields(result: CangjieNegativeRulesResult, 
 }
 
 private func cangjieInterfacePackResultJson(kind: String, ok: Bool, diagnostic: String, targetVersion: String, versionResolutionId: String, evidenceHash: String, sourceSet: String, knowledgeVersion: String, degraded: Bool, truncated: Bool, citations: ArrayList<SourceReference>, pack: CangjieKnowledgePack, itemAlias: String): String {
-    var out = cangjieInterfaceResultPrefix(kind, ok, diagnostic, targetVersion, versionResolutionId, evidenceHash, sourceSet, knowledgeVersion, degraded, truncated, citations)
+    var out = cangjieInterfaceResultPrefix(kind, ok, diagnostic, targetVersion, versionResolutionId, evidenceHash, sourceSet, knowledgeVersion, degraded, truncated, citations, pack.sourceRef, pack.resolvedCommit, pack.contentHash, pack.sourceRepo)
     out += ",\"queryId\":\"${cangjieInterfaceJsonEscape(pack.queryId)}\",\"task\":\"${cangjieInterfaceJsonEscape(pack.task)}\""
     out += ",\"${itemAlias}\":${cangjieInterfaceKnowledgeItemsJson(pack.items)},\"items\":${cangjieInterfaceKnowledgeItemsJson(pack.items)},\"apiItems\":${cangjieInterfaceApiItemsJson(pack.apiItems)},\"examples\":${cangjieInterfaceExamplesJson(pack.examples)},\"diagnostics\":${cangjieInterfaceDiagnosticItemsJson(pack.diagnostics)},\"notes\":${cangjieInterfaceStringArrayJson(pack.notes)}}"
     out
 }
 
-private func cangjieInterfaceResultPrefix(kind: String, ok: Bool, diagnostic: String, targetVersion: String, versionResolutionId: String, evidenceHash: String, sourceSet: String, knowledgeVersion: String, degraded: Bool, truncated: Bool, citations: ArrayList<SourceReference>): String {
-    "{\"resultType\":\"${cangjieInterfaceJsonEscape(kind)}\",\"ok\":${ok},\"diagnostic\":\"${cangjieInterfaceJsonEscape(diagnostic)}\",\"targetVersion\":\"${cangjieInterfaceJsonEscape(targetVersion)}\",\"versionResolutionId\":\"${cangjieInterfaceJsonEscape(versionResolutionId)}\",\"evidenceHash\":\"${cangjieInterfaceJsonEscape(evidenceHash)}\",\"citations\":${cangjieInterfaceCitationsJson(citations)},\"sourceSet\":\"${cangjieInterfaceJsonEscape(sourceSet)}\",\"knowledgeVersion\":\"${cangjieInterfaceJsonEscape(knowledgeVersion)}\",\"degraded\":${degraded},\"truncated\":${truncated}"
+private func cangjieInterfaceResultPrefix(kind: String, ok: Bool, diagnostic: String, targetVersion: String, versionResolutionId: String, evidenceHash: String, sourceSet: String, knowledgeVersion: String, degraded: Bool, truncated: Bool, citations: ArrayList<SourceReference>, sourceRef: String, resolvedCommit: String, contentHash: String, sourceRepo: String): String {
+    "{\"resultType\":\"${cangjieInterfaceJsonEscape(kind)}\",\"ok\":${ok},\"diagnostic\":\"${cangjieInterfaceJsonEscape(diagnostic)}\",\"targetVersion\":\"${cangjieInterfaceJsonEscape(targetVersion)}\",\"versionResolutionId\":\"${cangjieInterfaceJsonEscape(versionResolutionId)}\",\"sourceRef\":\"${cangjieInterfaceJsonEscape(sourceRef)}\",\"resolvedCommit\":\"${cangjieInterfaceJsonEscape(resolvedCommit)}\",\"contentHash\":\"${cangjieInterfaceJsonEscape(contentHash)}\",\"sourceRepo\":\"${cangjieInterfaceJsonEscape(sourceRepo)}\",\"evidenceHash\":\"${cangjieInterfaceJsonEscape(evidenceHash)}\",\"citations\":${cangjieInterfaceCitationsJson(citations)},\"sourceSet\":\"${cangjieInterfaceJsonEscape(sourceSet)}\",\"knowledgeVersion\":\"${cangjieInterfaceJsonEscape(knowledgeVersion)}\",\"degraded\":${degraded},\"truncated\":${truncated}"
 }
 
 private func cangjieInterfacePackDiagnostic(pack: CangjieKnowledgePack): String {

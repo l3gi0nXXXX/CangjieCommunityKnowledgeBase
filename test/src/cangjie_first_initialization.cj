@@ -52,6 +52,7 @@ public class CkbFirstInitResult {
 
 public class CkbFirstInitAssembly {
     public var ok: Bool = true
+    public var manifest: CangjieVersionManifest = CangjieVersionManifest()
     public var records: ArrayList<CangjieTypedRecord> = ArrayList<CangjieTypedRecord>()
     public var sources: ArrayList<CkbFirstInitSourceSummary> = ArrayList<CkbFirstInitSourceSummary>()
     public var diagnostics: ArrayList<String> = ArrayList<String>()
@@ -148,6 +149,12 @@ public func assembleCkbFirstInitializationRecords(options: CkbFirstInitOptions):
         stdRoot: options.stdRoot,
         stdxRoot: options.stdxRoot,
         evalRoot: options.evalRoot)
+    assembly.manifest = manifest
+    if (manifest.degraded) {
+        for (diagnostic in manifest.diagnostics) {
+            assembly.diagnostics.add(diagnostic)
+        }
+    }
     let allResolution = resolveCangjieVersion(cangjieVersionSelector(targetVersion: targetVersion, sourceSet: CangjieSourceSets.ALL), manifest)
     ckbFirstInitCollectDocs(assembly, "docs", options.docsRoot, allResolution)
     if (options.toolDocsRoot.trimAscii() != "" && options.toolDocsRoot.trimAscii() != options.docsRoot.trimAscii()) {
@@ -220,6 +227,17 @@ public func runCkbFirstInitialization(options: CkbFirstInitOptions, store: FileK
         result.diagnostics.add(diagnostic)
     }
     result.validation = validateCkbFirstInitializationRecords(assembly.records)
+    if (!assembly.ok) {
+        if (options.apply && assembly.records.size > 0) {
+            let loaded = newKnowledgeBaseFromStore(store)
+            let kb = loaded.kb
+            kb.loadFirstInitializationTypedRecords(assembly.records, result.candidateVersion)
+            kb.markCandidateValidationFailed(result.candidateVersion)
+            kb.persistCandidateSnapshot(store)
+            result.activeVersion = kb.status().activeKnowledgeVersion
+        }
+        return result
+    }
     if (!result.validation.ok) {
         if (options.apply && assembly.records.size > 0) {
             let loaded = newKnowledgeBaseFromStore(store)
@@ -253,12 +271,7 @@ public func runCkbFirstInitialization(options: CkbFirstInitOptions, store: FileK
     kb.persistCandidateSnapshot(store)
     if (promoted) {
         kb.persistActiveSnapshot(store)
-        store.saveCangjieVersionManifest(buildCangjieVersionManifestFromRoots(targetVersion: options.targetVersion,
-            docsRoot: options.docsRoot,
-            toolDocsRoot: options.toolDocsRoot,
-            stdRoot: options.stdRoot,
-            stdxRoot: options.stdxRoot,
-            evalRoot: options.evalRoot))
+        store.saveCangjieVersionManifest(assembly.manifest)
     }
     result.persisted = promoted
     result.ok = promoted
@@ -326,6 +339,11 @@ private func ckbFirstInitCollectDocs(assembly: CkbFirstInitAssembly, name: Strin
     for (diagnostic in records.diagnostics) {
         summary.diagnostics.add(diagnostic)
     }
+    if (!resolution.ok) {
+        for (diagnostic in resolution.diagnostics) {
+            summary.diagnostics.add(diagnostic)
+        }
+    }
     for (record in records.records) {
         assembly.records.add(record)
     }
@@ -353,6 +371,11 @@ private func ckbFirstInitCollectEval(assembly: CkbFirstInitAssembly, root: Strin
     summary.ok = records.ok && records.records.size > 0
     for (diagnostic in records.diagnostics) {
         summary.diagnostics.add(diagnostic)
+    }
+    if (!version.ok) {
+        for (diagnostic in version.diagnostics) {
+            summary.diagnostics.add(diagnostic)
+        }
     }
     for (record in records.records) {
         assembly.records.add(record)
