@@ -38,14 +38,14 @@ public func cangjieCorpusFreshnessReport(status: KnowledgeStatus, manifest!: Can
     report.candidateKnowledgeVersion = status.candidateKnowledgeVersion
     report.failedCandidateVersion = status.failedCandidateVersion
     report.targetVersion = manifest.defaultTargetVersion
+    report.degraded = true
+    report.diagnostics.add("synthetic_freshness")
     if (status.activeKnowledgeVersion == "") {
         report.ok = false
-        report.degraded = true
         report.diagnostics.add("missing_active_knowledge_version")
     }
     if (manifest.sources.size == 0) {
         report.ok = false
-        report.degraded = true
         report.diagnostics.add("version_manifest_empty")
     }
     for (source in manifest.sources) {
@@ -72,32 +72,5 @@ private func cangjieFreshnessSourceFromManifest(source: CangjieVersionSource, st
 }
 
 public func renderCangjieCorpusFreshnessJson(report: CangjieCorpusFreshnessReport): String {
-    var out = "{\"ok\":${cangjieJsonBool(report.ok)},\"activeKnowledgeVersion\":\"${cangjieFreshnessJsonEscape(report.activeKnowledgeVersion)}\",\"candidateKnowledgeVersion\":\"${cangjieFreshnessJsonEscape(report.candidateKnowledgeVersion)}\",\"failedCandidateVersion\":\"${cangjieFreshnessJsonEscape(report.failedCandidateVersion)}\",\"targetVersion\":\"${cangjieFreshnessJsonEscape(report.targetVersion)}\",\"degraded\":${cangjieJsonBool(report.degraded)},\"diagnostics\":${cangjieFreshnessStringArrayJson(report.diagnostics)},\"sources\":["
-    for (i in 0..report.sources.size) {
-        if (i > 0) {
-            out += ","
-        }
-        let source = report.sources[i]
-        out += "{\"sourceSet\":\"${cangjieFreshnessJsonEscape(source.sourceSet)}\",\"sourceFamily\":\"${cangjieFreshnessJsonEscape(source.sourceFamily)}\",\"sourceRepo\":\"${cangjieFreshnessJsonEscape(source.sourceRepo)}\",\"sourceRef\":\"${cangjieFreshnessJsonEscape(source.sourceRef)}\",\"refKind\":\"${cangjieFreshnessJsonEscape(source.refKind)}\",\"resolvedCommit\":\"${cangjieFreshnessJsonEscape(source.resolvedCommit)}\",\"contentHash\":\"${cangjieFreshnessJsonEscape(source.contentHash)}\",\"targetVersion\":\"${cangjieFreshnessJsonEscape(source.targetVersion)}\",\"crawlAt\":\"${cangjieFreshnessJsonEscape(source.crawlAt)}\",\"indexedAt\":\"${cangjieFreshnessJsonEscape(source.indexedAt)}\",\"staleness\":\"${cangjieFreshnessJsonEscape(source.staleness)}\",\"status\":\"${cangjieFreshnessJsonEscape(source.status)}\"}"
-    }
-    out + "]}"
-}
-
-private func cangjieFreshnessStringArrayJson(values: ArrayList<String>): String {
-    var out = "["
-    for (i in 0..values.size) {
-        if (i > 0) {
-            out += ","
-        }
-        out += "\"${cangjieFreshnessJsonEscape(values[i])}\""
-    }
-    out + "]"
-}
-
-private func cangjieJsonBool(value: Bool): String {
-    if (value) { "true" } else { "false" }
-}
-
-private func cangjieFreshnessJsonEscape(raw: String): String {
-    raw.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
+    renderCangjieCorpusFreshnessResultJson(cangjieCorpusFreshnessResultFromReport(report))
 }

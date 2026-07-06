@@ -185,7 +185,7 @@ public func ckbApiHandle(service: CkbCommandLoopService, method: String, path: S
         return ckbApiHandleCangjieNegativeRules(service, body)
     }
     if (verb == "GET" && route == "/v1/cangjie/corpus/freshness") {
-        return ckbApiEnvelope(renderCangjieCorpusFreshnessJson(service.cangjieCorpusFreshness()))
+        return ckbApiEnvelope(renderCangjieCorpusFreshnessResultJson(cangjieCorpusFreshnessResultFromReport(service.cangjieCorpusFreshness())))
     }
     if (verb == "POST" && route == "/v1/query") {
         return ckbApiHandleEvidence(service, body, true)
@@ -449,13 +449,15 @@ private func ckbApiHandleCangjieCompileDiagnoseV2(service: CkbCommandLoopService
 private func ckbApiHandleCangjieSymbolLookup(service: CkbCommandLoopService, body: String): String {
     let symbol = ckbApiFirstNonEmpty(ckbApiJsonStringField(body, "symbol"), ckbApiJsonStringField(body, "q")).trimAscii()
     if (symbol == "") {
-        return ckbApiErrorEnvelope("ckb.bad_request", "symbol must not be empty", status: 400)
+        return ckbApiErrorEnvelope("ckb.bad_request", "symbol must not be empty", status: 400, diagnostics: "{\"reason\":\"empty_symbol\"}")
     }
-    ckbApiEnvelope(ckbApiCangjieKnowledgePackJson(service.cangjieSymbolLookup(symbol,
+    let sourceSet = ckbApiJsonStringField(body, "sourceSet")
+    let pack = service.cangjieSymbolLookup(symbol,
         module: ckbApiJsonStringField(body, "module"),
-        sourceSet: ckbApiJsonStringField(body, "sourceSet"),
+        sourceSet: sourceSet,
         targetVersion: ckbApiJsonStringField(body, "targetVersion"),
-        budget: ckbApiJsonIntField(body, "budget", CangjieCapabilityLimits.DEFAULT_BUDGET))))
+        budget: ckbApiJsonIntField(body, "budget", CangjieCapabilityLimits.DEFAULT_BUDGET))
+    ckbApiEnvelope(renderCangjieSymbolCardResultJson(cangjieSymbolCardResultFromPack(pack, sourceSet: sourceSet)))
 }
 
 private func ckbApiHandleCangjieDocSection(service: CkbCommandLoopService, body: String): String {
@@ -463,34 +465,37 @@ private func ckbApiHandleCangjieDocSection(service: CkbCommandLoopService, body:
     let path = ckbApiJsonStringField(body, "path").trimAscii()
     let heading = ckbApiJsonStringField(body, "heading").trimAscii()
     if (sectionId == "" && path == "" && heading == "") {
-        return ckbApiErrorEnvelope("ckb.bad_request", "sectionId, path, or heading must not be empty", status: 400)
+        return ckbApiErrorEnvelope("ckb.bad_request", "sectionId, path, or heading must not be empty", status: 400, diagnostics: "{\"reason\":\"empty_doc_selector\"}")
     }
-    ckbApiEnvelope(ckbApiCangjieKnowledgePackJson(service.cangjieDocSection(sectionId,
+    let pack = service.cangjieDocSection(sectionId,
         path: path,
         heading: heading,
         targetVersion: ckbApiJsonStringField(body, "targetVersion"),
-        budget: ckbApiJsonIntField(body, "budget", CangjieCapabilityLimits.DEFAULT_BUDGET))))
+        budget: ckbApiJsonIntField(body, "budget", CangjieCapabilityLimits.DEFAULT_BUDGET))
+    ckbApiEnvelope(renderCangjieDocSectionResultJson(cangjieDocSectionResultFromPack(pack, sourceSet: CangjieSourceSets.DOCS)))
 }
 
 private func ckbApiHandleCangjieToolManual(service: CkbCommandLoopService, body: String): String {
     let tool = ckbApiFirstNonEmpty(ckbApiJsonStringField(body, "tool"), ckbApiJsonStringField(body, "command")).trimAscii()
     if (tool == "") {
-        return ckbApiErrorEnvelope("ckb.bad_request", "tool or command must not be empty", status: 400)
+        return ckbApiErrorEnvelope("ckb.bad_request", "tool or command must not be empty", status: 400, diagnostics: "{\"reason\":\"empty_tool\"}")
     }
-    ckbApiEnvelope(ckbApiCangjieKnowledgePackJson(service.cangjieToolManual(tool,
+    let pack = service.cangjieToolManual(tool,
         command: ckbApiJsonStringField(body, "command"),
         targetVersion: ckbApiJsonStringField(body, "targetVersion"),
-        budget: ckbApiJsonIntField(body, "budget", CangjieCapabilityLimits.DEFAULT_BUDGET))))
+        budget: ckbApiJsonIntField(body, "budget", CangjieCapabilityLimits.DEFAULT_BUDGET))
+    ckbApiEnvelope(renderCangjieToolManualResultJson(cangjieToolManualResultFromPack(pack, sourceSet: CangjieSourceSets.TOOLS)))
 }
 
 private func ckbApiHandleCangjieNegativeRules(service: CkbCommandLoopService, body: String): String {
     let query = ckbApiFirstNonEmpty(ckbApiJsonStringField(body, "q"), ckbApiJsonStringField(body, "query")).trimAscii()
     if (query == "") {
-        return ckbApiErrorEnvelope("ckb.bad_request", "q or query must not be empty", status: 400)
+        return ckbApiErrorEnvelope("ckb.bad_request", "q or query must not be empty", status: 400, diagnostics: "{\"reason\":\"empty_query\"}")
     }
-    ckbApiEnvelope(ckbApiCangjieKnowledgePackJson(service.cangjieNegativeRules(query,
+    let pack = service.cangjieNegativeRules(query,
         targetVersion: ckbApiJsonStringField(body, "targetVersion"),
-        budget: ckbApiJsonIntField(body, "budget", CangjieCapabilityLimits.DEFAULT_BUDGET))))
+        budget: ckbApiJsonIntField(body, "budget", CangjieCapabilityLimits.DEFAULT_BUDGET))
+    ckbApiEnvelope(renderCangjieNegativeRulesResultJson(cangjieNegativeRulesResultFromPack(pack, sourceSet: ckbApiJsonStringField(body, "sourceSet"))))
 }
 
 private func ckbApiVersionSelectorFromBody(body: String): CangjieVersionSelector {

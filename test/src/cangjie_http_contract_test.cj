@@ -50,4 +50,18 @@ public class CangjieHttpContractTest {
         @Expect(response.body.contains("\"data\":{\"ok\":false"), true)
         @Expect(response.body.contains("exact_source_ref_not_resolved"), true)
     }
+
+    @TestCase
+    public func f2Neg001UnknownRouteAndWrongMethodDoNotCallDesignHandlers(): Unit {
+        let service = this.service("f2-http-neg-001")
+        let config = CkbHttpServiceConfig()
+        let missing = handleCkbHttpRequest(service, "POST", "/v1/cangjie/not-a-route", "{}", [], config)
+        let wrongMethod = handleCkbHttpRequest(service, "GET", "/v1/cangjie/symbol-lookup", "{\"symbol\":\"ArrayList.add\"}", [], config)
+
+        @Expect(missing.statusCode, 404)
+        @Expect(missing.body.contains("\"code\":\"ckb.not_found\""), true)
+        @Expect(wrongMethod.statusCode, 404)
+        @Expect(wrongMethod.body.contains("\"code\":\"ckb.not_found\""), true)
+        @Expect(wrongMethod.body.contains("exact_symbol_lookup_endpoint"), false)
+    }
 }
