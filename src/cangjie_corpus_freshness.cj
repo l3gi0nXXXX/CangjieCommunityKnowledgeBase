@@ -38,18 +38,24 @@ public func cangjieCorpusFreshnessReport(status: KnowledgeStatus, manifest!: Can
     report.candidateKnowledgeVersion = status.candidateKnowledgeVersion
     report.failedCandidateVersion = status.failedCandidateVersion
     report.targetVersion = manifest.defaultTargetVersion
-    report.degraded = true
-    report.diagnostics.add("synthetic_freshness")
     if (status.activeKnowledgeVersion == "") {
         report.ok = false
+        report.degraded = true
         report.diagnostics.add("missing_active_knowledge_version")
     }
     if (manifest.sources.size == 0) {
         report.ok = false
+        report.degraded = true
         report.diagnostics.add("version_manifest_empty")
     }
     for (source in manifest.sources) {
-        report.sources.add(cangjieFreshnessSourceFromManifest(source, status))
+        let item = cangjieFreshnessSourceFromManifest(source, status)
+        if (item.staleness == "unknown" || item.status == "degraded") {
+            report.ok = false
+            report.degraded = true
+            report.diagnostics.add("${item.sourceSet}:freshness_${item.staleness}")
+        }
+        report.sources.add(item)
     }
     report
 }
@@ -64,10 +70,10 @@ private func cangjieFreshnessSourceFromManifest(source: CangjieVersionSource, st
     item.resolvedCommit = source.resolvedCommit
     item.contentHash = source.contentHash
     item.targetVersion = source.targetVersion
-    item.crawlAt = if (source.sourceRef == "" && source.resolvedCommit == "") { "unknown" } else { "manifest" }
+    item.crawlAt = if (source.sourceRef == "" && source.resolvedCommit == "") { "unknown" } else { "manifest:${source.sourceRef}" }
     item.indexedAt = status.activeKnowledgeVersion
     item.staleness = if (source.contentHash == "" || source.resolvedCommit == "") { "unknown" } else { "indexed" }
-    item.status = if (status.failedCandidateVersion != "") { "active_candidate_failed" } else if (status.candidateKnowledgeVersion != "") { "active_with_candidate" } else { "active" }
+    item.status = if (item.staleness == "unknown") { "degraded" } else if (status.failedCandidateVersion != "") { "active_candidate_failed" } else if (status.candidateKnowledgeVersion != "") { "active_with_candidate" } else { "active" }
     item
 }
 

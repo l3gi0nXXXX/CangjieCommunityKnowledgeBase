@@ -76,7 +76,6 @@ public func runCkbHttpService(runtime: CkbRuntimeConfig, store: FileKnowledgeSto
     }
     let service = CkbCommandLoopService(runtime, store, sourceRunner: if (runtime.networkEnabled) { HttpSourceFetchRunner(runtime) } else { DisabledNetworkFetchRunner() })
     print(service.start())
-    _ = startCkbSchedulerLoop(service, runtime)
     try {
         let server = ServerBuilder()
             .addr(config.bind)
@@ -85,6 +84,7 @@ public func runCkbHttpService(runtime: CkbRuntimeConfig, store: FileKnowledgeSto
         let mcpSessionStore = CkbMcpHttpSessionStore()
         registerCkbHttpRoutes(server, service, config, mcpSessionStore: mcpSessionStore)
         println("service-http protocol=ckb-http-v1 bind=${redactSensitive(config.bind)} port=${config.port}")
+        _ = startCkbSchedulerLoop(service, runtime, afterHttpReady: true, deferFirstTick: true)
         server.serve()
         return 0
     } catch (e: Exception) {

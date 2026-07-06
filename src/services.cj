@@ -2103,6 +2103,9 @@ public class LiveSyncOptions {
     public var maxFilesPerRepo: Int64 = -1
     public var maxItems: Int64 = -1
     public var since: String = ""
+    public var sourceSet: String = ""
+    public var sourceFamily: String = ""
+    public var sourceRef: String = ""
     public var simulateValidationFailure: Bool = false
 
     public init() {}
@@ -2159,8 +2162,12 @@ public func ckbSyncLive(kb: KnowledgeBase, config: CkbRuntimeConfig, options: Li
     let planner = SourceSyncPlanner(builder: SourceRequestBuilder(gitCodeApiRoot: config.gitCodeBaseUrl))
     let builder = SourceRequestBuilder(gitCodeApiRoot: config.gitCodeBaseUrl)
     let state = LiveSyncRunState()
-    state.out = "sync-live mode=${if (options.dryRun) { "dry-run" } else { "apply" }} requests=dynamic websiteEnabled=${config.websiteEnabled} docsEnabled=${config.docsEnabled} ${config.redactedSummary()}\n"
-    discoverAndFetchGitCodePublicRepos(kb, config, options, runner, builder, state)
+    state.out = "sync-live mode=${if (options.dryRun) { "dry-run" } else { "apply" }} requests=dynamic websiteEnabled=${config.websiteEnabled} docsEnabled=${config.docsEnabled} sourceSet=${if (options.sourceSet == "") { "all" } else { options.sourceSet }} sourceFamily=${if (options.sourceFamily == "") { "all" } else { options.sourceFamily }} sourceRef=${if (options.sourceRef == "") { "default" } else { options.sourceRef }} ${config.redactedSummary()}\n"
+    if (liveSyncShouldDiscoverRepos(options)) {
+        discoverAndFetchGitCodePublicRepos(kb, config, options, runner, builder, state)
+    } else {
+        state.out += "skip kind=${SourceKinds.GITCODE_ORG} reason=source_filter_excludes_repo_discovery\n"
+    }
     let staticPlan = planner.productionPlan(kb.sourceScope)
     for (request in staticPlan.requests) {
         if (request.kind == SourceKinds.GITCODE_ORG) {
@@ -2282,6 +2289,13 @@ private func fetchGitCodePublicRepo(kb: KnowledgeBase, config: CkbRuntimeConfig,
 }
 
 private func fetchLiveRequest(kb: KnowledgeBase, config: CkbRuntimeConfig, options: LiveSyncOptions, runner: SourceFetchRunner, request: SourceFetchRequest, state: LiveSyncRunState): SourceFetchResult {
+    if (!liveSyncRequestAllowed(options, request)) {
+        let skipped = SourceFetchResult()
+        skipped.ok = true
+        skipped.status = "filtered_out"
+        state.out += "skip kind=${request.kind} repo=${request.repo} ref=${request.ref} reason=source_filter\n"
+        return skipped
+    }
     request.timeoutMillis = config.timeoutMillis
     request.retryCount = config.retryCount
     state.requests += 1
@@ -2301,6 +2315,56 @@ private func fetchLiveRequest(kb: KnowledgeBase, config: CkbRuntimeConfig, optio
 
 private func liveBudgetAllows(state: LiveSyncRunState, options: LiveSyncOptions): Bool {
     options.maxItems < 0 || state.requests < options.maxItems
+}
+
+private func liveSyncShouldDiscoverRepos(options: LiveSyncOptions): Bool {
+    let sourceSet = options.sourceSet.trimAscii()
+    let sourceFamily = options.sourceFamily.trimAscii()
+    if (sourceSet == CangjieSourceSets.DOCS || sourceFamily == "docs") {
+        return false
+    }
+    if (sourceSet == CangjieSourceSets.TOOLS || sourceFamily == "tools") {
+        return false
+    }
+    true
+}
+
+private func liveSyncRequestAllowed(options: LiveSyncOptions, request: SourceFetchRequest): Bool {
+    let sourceSet = options.sourceSet.trimAscii()
+    let sourceFamily = options.sourceFamily.trimAscii()
+    let sourceRef = options.sourceRef.trimAscii()
+    if (sourceSet != "" && sourceSet != CangjieSourceSets.ALL && liveRequestSourceSet(request) != sourceSet) {
+        return false
+    }
+    if (sourceFamily != "" && liveRequestSourceFamily(request) != sourceFamily) {
+        return false
+    }
+    if (sourceRef != "" && request.ref != "" && request.ref != sourceRef) {
+        return false
+    }
+    if (sourceRef != "" && request.ref == "" && request.kind != SourceKinds.CANGJIE_DOCS && request.kind != SourceKinds.CANGJIE_WEBSITE && request.kind != SourceKinds.WEB_CANDIDATE) {
+        return false
+    }
+    true
+}
+
+private func liveRequestSourceSet(request: SourceFetchRequest): String {
+    if (request.kind == SourceKinds.CANGJIE_DOCS) { return CangjieSourceSets.DOCS }
+    if (request.repo.contains("cangjie_runtime")) { return CangjieSourceSets.STD }
+    if (request.repo.contains("cangjie_stdx")) { return CangjieSourceSets.STDX }
+    if (request.repo.contains("cangjie_tools")) { return CangjieSourceSets.TOOLS }
+    if (request.kind == SourceKinds.CANGJIE_WEBSITE || request.kind == SourceKinds.WEB_CANDIDATE) { return CangjieSourceSets.DOCS }
+    CangjieSourceSets.ALL
+}
+
+private func liveRequestSourceFamily(request: SourceFetchRequest): String {
+    if (request.kind == SourceKinds.CANGJIE_DOCS) { return "docs" }
+    if (request.repo.contains("cangjie_runtime")) { return "stdlib" }
+    if (request.repo.contains("cangjie_stdx")) { return "stdx" }
+    if (request.repo.contains("cangjie_tools")) { return "tools" }
+    if (request.kind == SourceKinds.CANGJIE_WEBSITE) { return "website" }
+    if (request.kind == SourceKinds.WEB_CANDIDATE) { return "web-candidate" }
+    "community"
 }
 
 private func shouldFallbackToGitCodeContents(fetch: SourceFetchResult): Bool {
@@ -2877,11 +2941,43 @@ public class FileKnowledgeStore {
     public func saveRepositoryListRefresh(result: CkbAdminOperationResult): Unit {
         var text = "repo=${escapeField(result.repo)}\n"
         text += "ref=${escapeField(result.ref)}\n"
+        text += "status=active\n"
         text += "activeRepoListVersion=${escapeField(result.activeRepoListVersion)}\n"
         text += "candidateRepoListVersion=${escapeField(result.candidateRepoListVersion)}\n"
         text += "repoCount=${result.repoCount}\n"
         text += "paths=${escapeField(joinStrings(result.matchedPaths, ","))}\n"
         this.writeLines("metadata/repo-list.ckb", text)
+    }
+
+    public func saveRepositoryEventCheckpoint(result: CkbAdminOperationResult): Unit {
+        var text = "repo=${escapeField(result.repo)}\n"
+        text += "ref=${escapeField(result.ref)}\n"
+        text += "profile=${escapeField(result.profile)}\n"
+        text += "status=${escapeField(result.status)}\n"
+        text += "diagnostic=${escapeField(result.diagnostic)}\n"
+        text += "prNumber=${result.prNumber}\n"
+        text += "requestCount=${result.requestCount}\n"
+        text += "updatedDataKinds=${escapeField(joinStrings(result.updatedDataKinds, ","))}\n"
+        text += "matchedPaths=${escapeField(joinStrings(result.matchedPaths, ","))}\n"
+        text += "activeKnowledgeVersion=${escapeField(result.activeKnowledgeVersion)}\n"
+        text += "candidateKnowledgeVersion=${escapeField(result.candidateKnowledgeVersion)}\n"
+        this.writeLines("metadata/repository-event-latest.ckb", text)
+    }
+
+    public func saveCangjieCorpusFreshness(report: CangjieCorpusFreshnessReport): Unit {
+        var text = "ok=${report.ok}\n"
+        text += "degraded=${report.degraded}\n"
+        text += "activeKnowledgeVersion=${escapeField(report.activeKnowledgeVersion)}\n"
+        text += "candidateKnowledgeVersion=${escapeField(report.candidateKnowledgeVersion)}\n"
+        text += "failedCandidateVersion=${escapeField(report.failedCandidateVersion)}\n"
+        text += "targetVersion=${escapeField(report.targetVersion)}\n"
+        for (diagnostic in report.diagnostics) {
+            text += "diagnostic|${escapeField(diagnostic)}\n"
+        }
+        for (source in report.sources) {
+            text += "source|${escapeField(source.sourceSet)}|${escapeField(source.sourceFamily)}|${escapeField(source.sourceRepo)}|${escapeField(source.sourceRef)}|${escapeField(source.resolvedCommit)}|${escapeField(source.contentHash)}|${escapeField(source.crawlAt)}|${escapeField(source.indexedAt)}|${escapeField(source.staleness)}|${escapeField(source.status)}\n"
+        }
+        this.writeLines("metadata/cangjie-freshness.ckb", text)
     }
 
     public func saveCangjieVersionManifest(manifest: CangjieVersionManifest): Unit {
@@ -3720,6 +3816,7 @@ public class CkbSchedulerTaskRunner <: SchedulerTaskRunner {
         }
         if (profile.profile == "cangjie_freshness_probe") {
             let freshness = probeCangjieCorpusFreshness(this.runtimeVersionManifest(), this.sourceRunner)
+            this.store.saveCangjieCorpusFreshness(freshness)
             let status = this.kb.status()
             result.ok = freshness.ok && !freshness.degraded
             result.status = if (result.ok) { "freshness_probe_ok" } else { "freshness_probe_degraded" }
@@ -3979,8 +4076,16 @@ public class CkbCommandLoopService {
         let result = CkbAdminOperationResult()
         let mode = ckbServiceJsonStringField(body, "mode").trimAscii()
         let sourceSet = ckbServiceJsonStringField(body, "sourceSet").trimAscii()
+        let sourceFamily = ckbServiceJsonStringField(body, "sourceFamily").trimAscii()
+        let sourceRef = ckbServiceJsonStringField(body, "sourceRef").trimAscii()
         if (sourceSet != "" && !ckbServiceCangjieSourceSetAllowed(sourceSet)) {
             return ckbRejectedAdminResult(result, "unsupported_source_set")
+        }
+        if (sourceFamily != "" && !ckbServiceCangjieSourceFamilyAllowed(sourceFamily)) {
+            return ckbRejectedAdminResult(result, "unsupported_source_family")
+        }
+        if (sourceRef != "" && !isSafeGitCodeRef(sourceRef)) {
+            return ckbRejectedAdminResult(result, "invalid_source_ref")
         }
         if (mode == "rollback") {
             let status = this.kb.status()
@@ -3999,6 +4104,9 @@ public class CkbCommandLoopService {
         options.maxRepos = ckbServiceJsonIntField(body, "maxRepos", -1)
         options.maxFilesPerRepo = ckbServiceJsonIntField(body, "maxFilesPerRepo", -1)
         options.since = ckbServiceJsonStringField(body, "since")
+        options.sourceSet = sourceSet
+        options.sourceFamily = sourceFamily
+        options.sourceRef = sourceRef
         let text = ckbSyncLive(this.kb, this.config, options, runner: this.sourceRunner, store: this.store)
         result.status = if (text.contains("summary") && !text.contains("usage error")) { if (options.apply) { "candidate_sync_ok" } else { "delta_sync_dry_run_ok" } } else { "degraded" }
         result.degraded = result.status != "ok"
@@ -4007,7 +4115,7 @@ public class CkbCommandLoopService {
         }
         result.diagnostic = text
         result.requestCount = options.maxItems
-        result.updatedDataKinds.add(if (sourceSet == "") { "live_sync" } else { "live_sync_${sourceSet}" })
+        result.updatedDataKinds.add(ckbServiceLiveSyncDataKind(sourceSet, sourceFamily, sourceRef))
         let status = this.kb.status()
         result.activeKnowledgeVersion = status.activeKnowledgeVersion
         result.candidateKnowledgeVersion = status.candidateKnowledgeVersion
@@ -4115,6 +4223,7 @@ public class CkbCommandLoopService {
         let status = this.kb.status()
         result.activeKnowledgeVersion = status.activeKnowledgeVersion
         result.candidateKnowledgeVersion = status.candidateKnowledgeVersion
+        this.store.saveRepositoryEventCheckpoint(result)
         result
     }
 
@@ -4424,25 +4533,25 @@ private func fetchScheduledProfileSources(profile: CkbScheduleTaskProfile, runne
     let result = CkbScheduledProfileFetchResult()
     let builder = SourceRequestBuilder(gitCodeApiRoot: config.gitCodeBaseUrl)
     if (profile.profile == "community_repo_discovery") {
-        ckbFetchScheduledSource(runner, builder.gitCodeOrgRepos("cangjie"), profile, result)
-        ckbFetchScheduledSource(runner, builder.gitCodeOrgRepos("cangjie-sig"), profile, result)
-        ckbFetchScheduledSource(runner, builder.gitCodeOrgRepos("cangjie-tpc"), profile, result)
+        ckbFetchScheduledSource(runner, builder.gitCodeOrgRepos("cangjie"), profile, result, config)
+        ckbFetchScheduledSource(runner, builder.gitCodeOrgRepos("cangjie-sig"), profile, result, config)
+        ckbFetchScheduledSource(runner, builder.gitCodeOrgRepos("cangjie-tpc"), profile, result, config)
     } else if (profile.profile == "docs_probe") {
-        ckbFetchScheduledSource(runner, builder.docs("https://docs.cangjie-lang.cn/docs/1.0.0/"), profile, result)
+        ckbFetchScheduledSource(runner, builder.docs("https://docs.cangjie-lang.cn/docs/1.0.0/"), profile, result, config)
     } else if (profile.profile == "website_probe" || profile.profile == "website_full") {
-        ckbFetchScheduledSource(runner, builder.website("https://cangjie-lang.cn/"), profile, result)
-        ckbFetchScheduledSource(runner, builder.website("https://cangjie-lang.cn/docs"), profile, result)
-        ckbFetchScheduledSource(runner, builder.website("https://cangjie-lang.cn/en/docs"), profile, result)
+        ckbFetchScheduledSource(runner, builder.website("https://cangjie-lang.cn/"), profile, result, config)
+        ckbFetchScheduledSource(runner, builder.website("https://cangjie-lang.cn/docs"), profile, result, config)
+        ckbFetchScheduledSource(runner, builder.website("https://cangjie-lang.cn/en/docs"), profile, result, config)
     } else if (profile.profile == "web_candidate_discovery" || profile.profile == "web_candidate_recrawl") {
-        ckbFetchScheduledSource(runner, builder.webCandidate("https://cangjie-lang.cn/community"), profile, result)
-        ckbFetchScheduledSource(runner, builder.webCandidate("https://cangjie-lang.cn/blog"), profile, result)
+        ckbFetchScheduledSource(runner, builder.webCandidate("https://cangjie-lang.cn/community"), profile, result, config)
+        ckbFetchScheduledSource(runner, builder.webCandidate("https://cangjie-lang.cn/blog"), profile, result, config)
     } else if (profile.profile == "cangjie_freshness_probe" || profile.profile == "cangjie_docs_full_sync" || profile.profile == "cangjie_release_full_sync") {
-        ckbFetchScheduledSource(runner, builder.docs("https://docs.cangjie-lang.cn/docs/1.0.0/"), profile, result)
-        ckbFetchScheduledManifestRepoSources(runner, builder, manifest, profile, result, true, true, true, true)
+        ckbFetchScheduledSource(runner, builder.docs("https://docs.cangjie-lang.cn/docs/1.0.0/"), profile, result, config)
+        ckbFetchScheduledManifestRepoSources(runner, builder, manifest, profile, result, config, true, true, true, true)
     } else if (profile.profile == "cangjie_source_event_sync") {
-        ckbFetchScheduledManifestRepoSources(runner, builder, manifest, profile, result, false, true, true, true)
+        ckbFetchScheduledManifestRepoSources(runner, builder, manifest, profile, result, config, false, true, true, true)
     } else if (profile.profile == "cangjie_version_branch_refresh") {
-        ckbFetchScheduledManifestRepoSources(runner, builder, manifest, profile, result, true, true, true, true)
+        ckbFetchScheduledManifestRepoSources(runner, builder, manifest, profile, result, config, true, true, true, true)
     } else if (profile.profile == "cangjie_benchmark_gap_curation") {
         result.ok = true
     }
@@ -4452,7 +4561,7 @@ private func fetchScheduledProfileSources(profile: CkbScheduleTaskProfile, runne
     result
 }
 
-private func ckbFetchScheduledManifestRepoSources(runner: SourceFetchRunner, builder: SourceRequestBuilder, manifest: CangjieVersionManifest, profile: CkbScheduleTaskProfile, result: CkbScheduledProfileFetchResult, docs: Bool, std: Bool, stdx: Bool, tools: Bool): Unit {
+private func ckbFetchScheduledManifestRepoSources(runner: SourceFetchRunner, builder: SourceRequestBuilder, manifest: CangjieVersionManifest, profile: CkbScheduleTaskProfile, result: CkbScheduledProfileFetchResult, config: CkbRuntimeConfig, docs: Bool, std: Bool, stdx: Bool, tools: Bool): Unit {
     let before = result.requestCount
     for (source in manifest.sources) {
         if (!ckbScheduledManifestSourceIncluded(source, docs, std, stdx, tools)) {
@@ -4463,7 +4572,7 @@ private func ckbFetchScheduledManifestRepoSources(runner: SourceFetchRunner, bui
             result.status = "manifest_source_missing"
             continue
         }
-        ckbFetchScheduledSource(runner, builder.gitCodeRepo(source.sourceRepo, ref: source.sourceRef), profile, result)
+        ckbFetchScheduledSource(runner, builder.gitCodeRepo(source.sourceRepo, ref: source.sourceRef), profile, result, config)
     }
     if (result.requestCount == before) {
         result.ok = false
@@ -4478,7 +4587,9 @@ private func ckbScheduledManifestSourceIncluded(source: CangjieVersionSource, do
         (tools && source.sourceSet == CangjieSourceSets.TOOLS)
 }
 
-private func ckbFetchScheduledSource(runner: SourceFetchRunner, request: SourceFetchRequest, profile: CkbScheduleTaskProfile, result: CkbScheduledProfileFetchResult): Unit {
+private func ckbFetchScheduledSource(runner: SourceFetchRunner, request: SourceFetchRequest, profile: CkbScheduleTaskProfile, result: CkbScheduledProfileFetchResult, config: CkbRuntimeConfig): Unit {
+    request.timeoutMillis = config.timeoutMillis
+    request.retryCount = config.retryCount
     let fetch = SourceResponseNormalizer().normalize(request, runner.fetch(request))
     result.requestCount += 1
     if (fetch.truncated) {
@@ -4739,6 +4850,37 @@ private func ckbServiceCangjieSourceSetAllowed(sourceSet: String): Bool {
         sourceSet == CangjieSourceSets.EVAL_SUPPORT
 }
 
+private func ckbServiceCangjieSourceFamilyAllowed(sourceFamily: String): Bool {
+    sourceFamily == "docs" ||
+        sourceFamily == "stdlib" ||
+        sourceFamily == "stdx" ||
+        sourceFamily == "tools" ||
+        sourceFamily == "eval-support" ||
+        sourceFamily == "website" ||
+        sourceFamily == "web-candidate" ||
+        sourceFamily == "community"
+}
+
+private func ckbServiceLiveSyncDataKind(sourceSet: String, sourceFamily: String, sourceRef: String): String {
+    if (sourceSet == "" && sourceFamily == "" && sourceRef == "") {
+        return "live_sync"
+    }
+    let out = StringBuilder()
+    out.append("live_sync")
+    if (sourceSet != "") {
+        out.append("_")
+        out.append(sourceSet)
+    }
+    if (sourceFamily != "") {
+        out.append("_")
+        out.append(sourceFamily)
+    }
+    if (sourceRef != "") {
+        out.append("_ref")
+    }
+    out.toString()
+}
+
 private func ckbRepositoryEventSyncBody(event: GitCodeRepositoryChangedEvent, profiles: ArrayList<String>): String {
     let profile = if (profiles.contains("repo_source_and_items")) { "repo_source_and_items" } else { "items" }
     "{\"repo\":\"${ckbServiceJsonQuote(event.repo)}\",\"ref\":\"${ckbServiceJsonQuote(if (event.ref == "") { "main" } else { event.ref })}\",\"profile\":\"${profile}\",\"prNumber\":${event.prNumber},\"changedFiles\":${ckbServiceStringArrayJson(event.changedFiles)}}"
@@ -4759,10 +4901,10 @@ private func ckbRunRepositoryChangedSourceSync(kb: KnowledgeBase, store: FileKno
     let result = CkbScheduledProfileFetchResult()
     let builder = SourceRequestBuilder(gitCodeApiRoot: config.gitCodeBaseUrl)
     if (changedFiles.size == 0) {
-        ckbFetchScheduledSource(runner, builder.gitCodeRepo(repo, ref: ref), profile, result)
+        ckbFetchScheduledSource(runner, builder.gitCodeRepo(repo, ref: ref), profile, result, config)
     } else {
         for (path in changedFiles) {
-            ckbFetchScheduledSource(runner, builder.gitCodeSource(repo, ref, path), profile, result)
+            ckbFetchScheduledSource(runner, builder.gitCodeSource(repo, ref, path), profile, result, config)
         }
     }
     let storedManifest = store.loadCangjieVersionManifest()
