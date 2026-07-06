@@ -18,6 +18,15 @@ public class CangjieServingIndex {
     public var records: ArrayList<NormalizedRecord> = ArrayList<NormalizedRecord>()
     public var documents: ArrayList<CangjieServingDocument> = ArrayList<CangjieServingDocument>()
     public var exactEntries: ArrayList<CangjieServingExactEntry> = ArrayList<CangjieServingExactEntry>()
+    public var lexicalViewCount: Int64 = 0
+    public var symbolViewCount: Int64 = 0
+    public var moduleViewCount: Int64 = 0
+    public var docViewCount: Int64 = 0
+    public var toolViewCount: Int64 = 0
+    public var negativeRuleViewCount: Int64 = 0
+    public var recipeViewCount: Int64 = 0
+    public var exampleViewCount: Int64 = 0
+    public var provenanceViewCount: Int64 = 0
     public var diagnostics: ArrayList<String> = ArrayList<String>()
 
     public init() {}
@@ -35,12 +44,14 @@ public func buildCangjieServingIndex(records: ArrayList<NormalizedRecord>, activ
         let direct = cangjieServingIndexDocumentFromRecord(record)
         if (direct.recordKind != CangjieServingRecordKinds.SYMBOL_CARD) {
             index.documents.add(direct)
+            cangjieServingIndexAddViewCounts(index, direct)
             cangjieServingIndexAddExactEntries(index, direct)
         }
         for (card in extractCangjieSymbols(record)) {
             let symbolDoc = cangjieServingIndexDocumentFromSymbol(card, index.activeKnowledgeVersion)
             if (!symbolDoc.rejected) {
                 index.documents.add(symbolDoc)
+                cangjieServingIndexAddViewCounts(index, symbolDoc)
                 cangjieServingIndexAddExactEntries(index, symbolDoc)
             }
         }
@@ -375,7 +386,32 @@ private func cangjieServingIndexAddNegativeRuleDocuments(index: CangjieServingIn
         doc.sourceId = "negative-rule-${rule.ruleId}"
         doc.rankProfile = "negative-rule"
         index.documents.add(doc)
+        cangjieServingIndexAddViewCounts(index, doc)
         cangjieServingIndexAddExactEntries(index, doc)
+    }
+}
+
+private func cangjieServingIndexAddViewCounts(index: CangjieServingIndex, doc: CangjieServingDocument): Unit {
+    if (doc.text != "" || doc.title != "") {
+        index.lexicalViewCount += 1
+    }
+    if (doc.sourceId != "" && doc.citation != "") {
+        index.provenanceViewCount += 1
+    }
+    if (doc.recordKind == CangjieServingRecordKinds.SYMBOL_CARD) {
+        index.symbolViewCount += 1
+    } else if (doc.recordKind == CangjieTypedRecordKinds.MODULE_TREE) {
+        index.moduleViewCount += 1
+    } else if (doc.recordKind == CangjieTypedRecordKinds.TOOL_MANUAL) {
+        index.toolViewCount += 1
+    } else if (doc.recordKind == CangjieServingRecordKinds.NEGATIVE_RULE) {
+        index.negativeRuleViewCount += 1
+    } else if (doc.recordKind == CangjieServingRecordKinds.RECIPE) {
+        index.recipeViewCount += 1
+    } else if (doc.recordKind == CangjieServingRecordKinds.EXAMPLE) {
+        index.exampleViewCount += 1
+    } else {
+        index.docViewCount += 1
     }
 }
 

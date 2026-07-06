@@ -18,7 +18,23 @@ public class CangjieCandidateValidationResult {
     public var taskPackCoveragePass: Bool = false
     public var transportParityPass: Bool = false
     public var performancePass: Bool = false
+    public var vectorHealthPass: Bool = false
+    public var vectorState: String = ""
+    public var vectorDimension: Int64 = 0
+    public var vectorDegradedReason: String = ""
+    public var performanceP95Cost: Int64 = 0
     public var legacyVersionGapCount: Int64 = 0
+    public var evidenceHash: String = ""
+    public var diagnostics: ArrayList<String> = ArrayList<String>()
+
+    public init() {}
+}
+
+public class CangjieServingPerformanceProbe {
+    public var pass: Bool = false
+    public var queryCount: Int64 = 0
+    public var p95Cost: Int64 = 0
+    public var threshold: Int64 = 0
     public var evidenceHash: String = ""
     public var diagnostics: ArrayList<String> = ArrayList<String>()
 
@@ -48,6 +64,10 @@ public func cangjieActiveVersionForCandidate(candidateVersion: String): String {
 }
 
 public func validateCandidateServingIndex(records: ArrayList<NormalizedRecord>, candidateVersion: String, forceFailure!: Bool = false): CangjieCandidateValidationResult {
+    validateCandidateServingIndexWithVectorStatus(records, candidateVersion, cangjieCandidateImplicitVectorStatus(records), forceFailure: forceFailure)
+}
+
+public func validateCandidateServingIndexWithVectorStatus(records: ArrayList<NormalizedRecord>, candidateVersion: String, vectorStatus: VectorStoreStatus, forceFailure!: Bool = false): CangjieCandidateValidationResult {
     let result = CangjieCandidateValidationResult()
     result.candidateVersion = candidateVersion
     result.activeVersion = cangjieActiveVersionForCandidate(candidateVersion)
@@ -92,7 +112,13 @@ public func validateCandidateServingIndex(records: ArrayList<NormalizedRecord>, 
         result.negativeRuleHits > 0
     result.coveragePass = result.exactSymbolHits > 0 && result.docSectionHits > 0 && result.negativeRuleHits > 0
     result.transportParityPass = cangjieCandidateRestMcpParityPass(index)
-    result.performancePass = cangjieCandidatePerformanceWithinThreshold(index)
+    let performance = cangjieServingPerformanceProbe(index, cangjieCandidatePerformanceQueries(index), budget: 5, p95Threshold: 10000000)
+    result.performancePass = performance.pass
+    result.performanceP95Cost = performance.p95Cost
+    result.vectorState = vectorStatus.state
+    result.vectorDimension = vectorStatus.dimension
+    result.vectorDegradedReason = vectorStatus.degradedReason
+    result.vectorHealthPass = cangjieCandidateVectorHealthPass(vectorStatus)
     result.evidenceHash = stableSummaryHash(cangjieServingDocumentHashSeed(index.documents))
     if (index.documents.size == 0) {
         result.diagnostics.add("serving_index_not_ready")
@@ -120,12 +146,17 @@ public func validateCandidateServingIndex(records: ArrayList<NormalizedRecord>, 
     } else {
         result.diagnostics.add("rest_mcp_parity_passed")
     }
+    if (!result.vectorHealthPass) {
+        result.diagnostics.add("vector_health_failed:${cangjieCandidateVectorDiagnostic(vectorStatus)}")
+    } else {
+        result.diagnostics.add("vector_health_passed")
+    }
     if (!result.performancePass) {
         result.diagnostics.add("performance_threshold_failed")
     } else {
         result.diagnostics.add("performance_threshold_passed")
     }
-    result.ok = index.documents.size > 0 && result.coveragePass && result.transportParityPass && result.performancePass
+    result.ok = index.documents.size > 0 && result.coveragePass && result.transportParityPass && result.vectorHealthPass && result.performancePass
     result.status = if (result.ok) { "candidate_validation_passed" } else { "candidate_validation_failed" }
     result
 }
@@ -148,7 +179,7 @@ private func cangjiePromoteStagedCandidateAfterValidation(kb: KnowledgeBase, sto
     let result = CangjieCandidatePromotionResult()
     result.candidateVersion = stagedCandidateVersion
     result.candidateWritten = true
-    result.validation = validateCandidateServingIndex(kb.candidateRecordSnapshot(), stagedCandidateVersion, forceFailure: forceFailure)
+    result.validation = validateCandidateServingIndexWithVectorStatus(kb.candidateRecordSnapshot(), stagedCandidateVersion, kb.vectorStatus(), forceFailure: forceFailure)
     if (!result.validation.ok) {
         kb.markCandidateValidationFailed(stagedCandidateVersion)
         kb.persistCandidateSnapshot(store)
@@ -187,11 +218,114 @@ private func cangjieCandidateRestMcpParityPass(index: CangjieServingIndex): Bool
 }
 
 private func cangjieCandidatePerformanceWithinThreshold(index: CangjieServingIndex): Bool {
+    cangjieServingPerformanceProbe(index, cangjieCandidatePerformanceQueries(index), budget: 5, p95Threshold: 10000000).pass
+}
+
+public func cangjieServingPerformanceProbe(index: CangjieServingIndex, queries: ArrayList<String>, budget!: Int64 = 5, p95Threshold!: Int64 = 10000000): CangjieServingPerformanceProbe {
+    let probe = CangjieServingPerformanceProbe()
+    probe.queryCount = queries.size
+    probe.threshold = p95Threshold
     if (index.documents.size == 0) {
-        return false
+        probe.diagnostics.add("serving_index_empty")
+        return probe
     }
-    let deterministicCost = index.documents.size * (if (index.exactEntries.size == 0) { 1 } else { index.exactEntries.size })
-    deterministicCost <= 10000000
+    if (queries.size == 0) {
+        probe.diagnostics.add("query_set_empty")
+        return probe
+    }
+    let costs = ArrayList<Int64>()
+    let seed = StringBuilder()
+    for (query in queries) {
+        let request = CangjieServingSearchRequest()
+        request.query = query
+        request.budget = budget
+        let serving = searchHybridServingIndex(index, request)
+        let cost = index.documents.size + (if (serving.hits.size == 0) { 10 } else { serving.hits.size * 3 })
+        cangjieServingProbeInsertCost(costs, cost)
+        seed.append(query)
+        seed.append("|")
+        seed.append(serving.evidenceHash)
+        seed.append("|")
+    }
+    probe.p95Cost = cangjieServingProbeP95(costs)
+    probe.evidenceHash = stableSummaryHash(seed.toString())
+    probe.pass = probe.p95Cost > 0 && probe.p95Cost <= p95Threshold
+    if (!probe.pass) {
+        probe.diagnostics.add("p95_cost_exceeded")
+    }
+    probe
+}
+
+private func cangjieCandidateImplicitVectorStatus(records: ArrayList<NormalizedRecord>): VectorStoreStatus {
+    let status = VectorStoreStatus()
+    status.backend = "local-file"
+    status.collection = "candidate"
+    status.activeCollection = "active"
+    status.candidateCollection = "candidate"
+    status.dimension = 16
+    status.count = records.size
+    status.state = if (records.size > 0) { EmbeddingProviderState.READY } else { EmbeddingProviderState.DEGRADED }
+    status.degradedReason = if (records.size > 0) { "" } else { "empty_candidate_vectors" }
+    status
+}
+
+private func cangjieCandidateVectorHealthPass(status: VectorStoreStatus): Bool {
+    status.state == EmbeddingProviderState.READY && status.dimension > 0 && status.degradedReason == ""
+}
+
+private func cangjieCandidateVectorDiagnostic(status: VectorStoreStatus): String {
+    if (status.degradedReason != "") {
+        return status.degradedReason
+    }
+    if (status.state == "") {
+        return "vector_state_missing"
+    }
+    if (status.dimension <= 0) {
+        return "vector_dimension_missing"
+    }
+    status.state
+}
+
+private func cangjieCandidatePerformanceQueries(index: CangjieServingIndex): ArrayList<String> {
+    let queries = ArrayList<String>()
+    for (doc in index.documents) {
+        if (queries.size >= 20) {
+            break
+        }
+        if (doc.symbolKey != "") {
+            queries.add(doc.symbolKey)
+        } else if (doc.title != "") {
+            queries.add(doc.title)
+        }
+    }
+    queries
+}
+
+private func cangjieServingProbeInsertCost(costs: ArrayList<Int64>, cost: Int64): Unit {
+    var inserted = false
+    var i: Int64 = 0
+    while (i < costs.size) {
+        if (cost < costs[i]) {
+            costs.add(cost, at: i)
+            inserted = true
+            break
+        }
+        i += 1
+    }
+    if (!inserted) {
+        costs.add(cost)
+    }
+}
+
+private func cangjieServingProbeP95(costs: ArrayList<Int64>): Int64 {
+    if (costs.size == 0) {
+        return 0
+    }
+    var index = (costs.size * 95) / 100
+    if (index >= costs.size) {
+        index = costs.size - 1
+    }
+    costs[index]
 }
 
 private func cangjieCandidateToolSelector(doc: CangjieServingDocument): String {
@@ -215,7 +349,7 @@ private func cangjieCandidateToolCommandSelector(doc: CangjieServingDocument): S
 }
 
 public func renderCangjieCandidateValidationSummary(validation: CangjieCandidateValidationResult): String {
-    "candidateValidation status=${validation.status} ok=${validation.ok} candidateVersion=${validation.candidateVersion} activeVersion=${validation.activeVersion} documents=${validation.servingDocumentCount} exactSymbolHits=${validation.exactSymbolHits} docSectionHits=${validation.docSectionHits} toolManualHits=${validation.toolManualHits} negativeRuleHits=${validation.negativeRuleHits} moduleHits=${validation.moduleHits} availabilityHits=${validation.availabilityHits} coveragePass=${validation.coveragePass} taskPackCoveragePass=${validation.taskPackCoveragePass} transportParityPass=${validation.transportParityPass} performancePass=${validation.performancePass} legacyVersionGapCount=${validation.legacyVersionGapCount} evidenceHash=${validation.evidenceHash} diagnostics=${cangjieCandidateDiagnostics(validation.diagnostics)}"
+    "candidateValidation status=${validation.status} ok=${validation.ok} candidateVersion=${validation.candidateVersion} activeVersion=${validation.activeVersion} documents=${validation.servingDocumentCount} exactSymbolHits=${validation.exactSymbolHits} docSectionHits=${validation.docSectionHits} toolManualHits=${validation.toolManualHits} negativeRuleHits=${validation.negativeRuleHits} moduleHits=${validation.moduleHits} availabilityHits=${validation.availabilityHits} coveragePass=${validation.coveragePass} taskPackCoveragePass=${validation.taskPackCoveragePass} transportParityPass=${validation.transportParityPass} vectorHealthPass=${validation.vectorHealthPass} vectorState=${validation.vectorState} vectorDimension=${validation.vectorDimension} vectorDegradedReason=${validation.vectorDegradedReason} performancePass=${validation.performancePass} performanceP95Cost=${validation.performanceP95Cost} legacyVersionGapCount=${validation.legacyVersionGapCount} evidenceHash=${validation.evidenceHash} diagnostics=${cangjieCandidateDiagnostics(validation.diagnostics)}"
 }
 
 private func cangjieCandidateDiagnostics(values: ArrayList<String>): String {

@@ -23,7 +23,7 @@ public func cangjieServingSearch(kb: KnowledgeBase, query: String, budget: Int64
     result.queryId = "serving-${stableSummaryHash("${query}:${sourceSet}:${request.targetVersion}:${symbol}")}"
     result.knowledgeVersion = status.activeKnowledgeVersion
     if (serving.evidenceHash != "") {
-        kb.servingCachePut(cacheKey, serving.evidenceHash)
+        kb.servingCachePutResult(cacheKey, serving.evidenceHash, cangjieServingCacheSummary(serving), cangjieServingCacheHitIds(serving))
     }
     if (cacheLookup.hit && !result.degraded) {
         kb.recordServingCacheDiagnostic("cache_hit")
@@ -32,6 +32,18 @@ public func cangjieServingSearch(kb: KnowledgeBase, query: String, budget: Int64
         cangjieServingAppendLegacyFallback(kb, result, query, request.budget, serving.diagnostic)
     }
     result
+}
+
+private func cangjieServingCacheSummary(serving: CangjieServingSearchResult): String {
+    "ok=${serving.ok};degraded=${serving.degraded};hits=${serving.hits.size};diagnostic=${serving.diagnostic}"
+}
+
+private func cangjieServingCacheHitIds(serving: CangjieServingSearchResult): ArrayList<String> {
+    let out = ArrayList<String>()
+    for (hit in serving.hits) {
+        out.add(hit.document.documentId)
+    }
+    out
 }
 
 public func cangjieExactSymbolLookup(kb: KnowledgeBase, symbol: String, module!: String = "", sourceSet!: String = "", targetVersion!: String = "", budget!: Int64 = CangjieCapabilityLimits.DEFAULT_BUDGET): SearchResult {

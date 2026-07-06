@@ -5396,6 +5396,7 @@ private func qdrantVectorStoreConfigFromRuntime(config: CkbRuntimeConfig, vector
 
 public func vectorStoreFromRuntime(config: CkbRuntimeConfig): VectorStore {
     let vector = vectorStoreConfigFromRuntime(config)
+    let embedding = embeddingConfigFromRuntime(config)
     let backend = vector.backend
     if (backend == "local-file" || backend == "local" || backend == "deterministic" || backend == "") {
         return LocalVectorStore()
@@ -5407,10 +5408,17 @@ public func vectorStoreFromRuntime(config: CkbRuntimeConfig): VectorStore {
         if (vector.endpoint == "" || vector.dimensions <= 0 || vector.distance == "") {
             return RuntimeUnavailableVectorStore(vector, "qdrant_vector_missing_config")
         }
+        if (cangjieRuntimeVectorDimensionMismatch(embedding, vector)) {
+            return RuntimeUnavailableVectorStore(vector, "embedding_vector_dimension_mismatch")
+        }
         let httpExecutor = NativeHttpRequestExecutor(ckbNativeHttpAdapterConfigFromRuntime(config, vector.allowPrivateEndpoint))
         return QdrantVectorStore(qdrantVectorStoreConfigFromRuntime(config, vector), executor: httpExecutor)
     }
     RuntimeUnavailableVectorStore(vector, "unsupported_vector_backend")
+}
+
+private func cangjieRuntimeVectorDimensionMismatch(embedding: EmbeddingConfig, vector: RuntimeVectorStoreConfig): Bool {
+    embedding.dimensions > 0 && vector.dimensions > 0 && embedding.dimensions != vector.dimensions
 }
 
 public func newKnowledgeBaseFromStoreWithRuntime(store: FileKnowledgeStore, config: CkbRuntimeConfig): KnowledgeBaseLoadResult {

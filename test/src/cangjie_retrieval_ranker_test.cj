@@ -20,6 +20,25 @@ public class CangjieRetrievalRankerTest {
         @Expect(cangjieP4RankHasStage(hits[0], "exact_boost"), true)
         @Expect(cangjieP4RankHasStage(hits[0], "source_trust"), true)
         @Expect(cangjieP4RankHasStage(hits[0], "symbol_module_match"), true)
+        @Expect(hits[0].score > hits[1].score, true)
+    }
+
+    @TestCase
+    public func p4Ut002AliasAndModuleStagesRankBeforeBroadLexical(): Unit {
+        let docs = ArrayList<CangjieServingDocument>()
+        let aliasDoc = cangjieP4RankDoc(CangjieServingRecordKinds.SYMBOL_CARD, "ArrayList.add", "func add(value: T): Unit\naliases=pushValue", "ArrayList.add")
+        aliasDoc.module = "std.collection"
+        let broadDoc = cangjieP4RankDoc(CangjieServingRecordKinds.DOC_SECTION, "pushValue collection notes", "pushValue collection notes", "")
+        docs.add(broadDoc)
+        docs.add(aliasDoc)
+
+        let hits = rankServingHits("std.collection pushValue", docs, 2)
+
+        @Expect(hits.size, 2)
+        @Expect(hits[0].document.symbolKey, "ArrayList.add")
+        @Expect(cangjieP4RankHasStage(hits[0], "alias_match"), true)
+        @Expect(cangjieP4RankHasStage(hits[0], "module_match"), true)
+        @Expect(cangjieP4RankHasStage(hits[0], "recency"), true)
     }
 
     @TestCase
@@ -59,6 +78,7 @@ private func cangjieP4RankDoc(kind: String, title: String, text: String, symbol:
     doc.reviewState = ReviewStates.TRUSTED
     doc.targetVersion = cangjieDefaultTargetVersion()
     doc.versionResolutionId = "v1"
+    doc.contentHash = stableSummaryHash("${title}:${text}:${symbol}")
     doc
 }
 

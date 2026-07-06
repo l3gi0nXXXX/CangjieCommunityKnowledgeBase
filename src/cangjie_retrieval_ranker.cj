@@ -54,11 +54,14 @@ public func rankServingHitStages(query: String, doc: CangjieServingDocument): Ar
     let text = "${doc.title}\n${doc.text}\n${doc.symbolKey}\n${doc.module}\n${doc.sourceId}\n${doc.citation}".toAsciiLower()
     var relevant = false
     if (doc.recordKind == CangjieServingRecordKinds.SYMBOL_CARD) {
-        if (doc.symbolKey != "" && q.contains(doc.symbolKey.toAsciiLower())) {
-            contributions.add(cangjieRankingContribution("exact_boost", 18.0, "exact_symbol_match"))
+        if (doc.symbolKey != "" && cangjieRankExactSymbolMatch(q, doc)) {
+            contributions.add(cangjieRankingContribution("exact_boost", 120.0, "exact_symbol_match"))
+            relevant = true
+        } else if (cangjieRankAliasMatch(q, doc)) {
+            contributions.add(cangjieRankingContribution("alias_match", 90.0, "alias_symbol_match"))
             relevant = true
         } else {
-            contributions.add(cangjieRankingContribution("exact_boost", 6.0, "symbol_card"))
+            contributions.add(cangjieRankingContribution("exact_boost", 12.0, "symbol_card"))
         }
     } else if (doc.recordKind == CangjieServingRecordKinds.DOC_SECTION) {
         contributions.add(cangjieRankingContribution("exact_boost", 2.0, "doc_section"))
@@ -80,17 +83,21 @@ public func rankServingHitStages(query: String, doc: CangjieServingDocument): Ar
         contributions.add(cangjieRankingContribution("version_match", 2.0, "target_version_match"))
     }
     if (doc.symbolKey != "" && q.contains(doc.symbolKey.toAsciiLower())) {
-        contributions.add(cangjieRankingContribution("symbol_module_match", 4.0, "symbol_match"))
+        contributions.add(cangjieRankingContribution("symbol_module_match", 24.0, "symbol_match"))
         relevant = true
     }
     if (doc.module != "" && q.contains(doc.module.toAsciiLower())) {
-        contributions.add(cangjieRankingContribution("symbol_module_match", 2.0, "module_match"))
+        contributions.add(cangjieRankingContribution("module_match", 16.0, "module_match"))
+        contributions.add(cangjieRankingContribution("symbol_module_match", 16.0, "module_match"))
         relevant = true
     }
     let lexical = cangjieLexicalOverlapRankScore(q, text)
     if (lexical > 0.0) {
-        contributions.add(cangjieRankingContribution("lexical_overlap", lexical, "token_overlap"))
+        contributions.add(cangjieRankingContribution("lexical_overlap", lexical, "bm25_like_token_overlap"))
         relevant = true
+    }
+    if (doc.versionResolutionId != "" && doc.contentHash != "") {
+        contributions.add(cangjieRankingContribution("recency", 0.5, "versioned_content_hash"))
     }
     if (!relevant) {
         contributions.add(cangjieRankingContribution("relevance_gate", -1000.0, "no_query_overlap"))
@@ -109,9 +116,9 @@ private func cangjieServingRankScore(contributions: ArrayList<CangjieRankingCont
 private func cangjieLexicalOverlapRankScore(query: String, text: String): Float64 {
     var score = 0.0
     for (token in query.split(" ")) {
-        let clean = token.trimAscii()
+        let clean = cangjieRankCleanToken(token)
         if (clean != "" && text.contains(clean)) {
-            score += 1.0
+            score += if (clean.size >= 6) { 3.0 } else { 1.5 }
         }
     }
     score
@@ -120,12 +127,59 @@ private func cangjieLexicalOverlapRankScore(query: String, text: String): Float6
 private func cangjieNegativeRuleRankScore(query: String, text: String): Float64 {
     var score = 0.0
     for (token in query.split(" ")) {
-        let clean = token.trimAscii()
+        let clean = cangjieRankCleanToken(token)
         if (clean.size >= 3 && text.contains(clean)) {
             score += 2.0
         }
     }
     score
+}
+
+private func cangjieRankExactSymbolMatch(query: String, doc: CangjieServingDocument): Bool {
+    let cleanSymbol = doc.symbolKey.toAsciiLower().trimAscii()
+    if (cleanSymbol == "") {
+        return false
+    }
+    query == cleanSymbol || query.contains(cleanSymbol)
+}
+
+private func cangjieRankAliasMatch(query: String, doc: CangjieServingDocument): Bool {
+    for (alias in cangjieRankAliases(doc)) {
+        let clean = alias.toAsciiLower().trimAscii()
+        if (clean != "" && (query == clean || query.contains(clean))) {
+            return true
+        }
+    }
+    false
+}
+
+private func cangjieRankAliases(doc: CangjieServingDocument): ArrayList<String> {
+    let aliases = ArrayList<String>()
+    for (line in doc.text.split("\n")) {
+        let clean = line.trimAscii()
+        if (clean.startsWith("aliases=")) {
+            let parts = clean.split("aliases=")
+            if (parts.size > 1) {
+                for (alias in parts[1].split(";")) {
+                    let value = alias.trimAscii()
+                    if (value != "") {
+                        aliases.add(value)
+                    }
+                }
+            }
+        }
+    }
+    aliases
+}
+
+private func cangjieRankCleanToken(token: String): String {
+    var clean = token.trimAscii()
+    clean = clean.replace("`", "")
+    clean = clean.replace("(", "")
+    clean = clean.replace(")", "")
+    clean = clean.replace(",", "")
+    clean = clean.replace(";", "")
+    clean.toAsciiLower()
 }
 
 private func cangjieRankingContribution(stage: String, score: Float64, reason: String): CangjieRankingContribution {
