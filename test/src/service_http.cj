@@ -76,6 +76,7 @@ public func runCkbHttpService(runtime: CkbRuntimeConfig, store: FileKnowledgeSto
     }
     let service = CkbCommandLoopService(runtime, store, sourceRunner: if (runtime.networkEnabled) { HttpSourceFetchRunner(runtime) } else { DisabledNetworkFetchRunner() })
     print(service.start())
+    _ = startCkbSchedulerLoop(service, runtime)
     try {
         let server = ServerBuilder()
             .addr(config.bind)

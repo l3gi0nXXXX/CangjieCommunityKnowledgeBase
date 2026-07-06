@@ -52,10 +52,11 @@ public class CangjieServingAdminTest {
         @Expect(validation.docSectionHits > 0, true)
         @Expect(validation.toolManualHits > 0, true)
         @Expect(validation.negativeRuleHits > 0, true)
+        @Expect(validation.taskPackCoveragePass, true)
         @Expect(validation.transportParityPass, true)
         @Expect(validation.performancePass, true)
-        @Expect(cangjieF4AdminDiagnosticsContain(validation, "transport_diagnostic_placeholder"), true)
-        @Expect(cangjieF4AdminDiagnosticsContain(validation, "performance_diagnostic_placeholder"), true)
+        @Expect(cangjieF4AdminDiagnosticsContain(validation, "rest_mcp_parity_passed"), true)
+        @Expect(cangjieF4AdminDiagnosticsContain(validation, "performance_threshold_passed"), true)
     }
 
     @TestCase
@@ -69,6 +70,7 @@ public class CangjieServingAdminTest {
         @Expect(validation.servingDocumentCount > 0, true)
         @Expect(validation.toolManualHits, 0)
         @Expect(cangjieF4AdminDiagnosticsContain(validation, "tool_manual_coverage_missing"), true)
+        @Expect(cangjieF4AdminDiagnosticsContain(validation, "task_pack_coverage_missing"), true)
     }
 }
 
