@@ -47,7 +47,7 @@ public class LocalFixtureServingBackend <: ServingSearchBackend {
     public func exactLookup(request: CangjieServingSearchRequest): CangjieServingSearchResult {
         let docs = ArrayList<CangjieServingDocument>()
         for (doc in this.feed.documents) {
-            if (doc.recordKind == CangjieServingRecordKinds.SYMBOL_CARD && cangjieServingDocAllowed(doc, request) && request.symbol != "" && doc.symbolKey.toAsciiLower().contains(request.symbol.toAsciiLower())) {
+            if (doc.recordKind == CangjieServingRecordKinds.SYMBOL_CARD && cangjieServingDocAllowed(doc, request) && cangjieLocalServingSymbolMatches(doc, request.symbol)) {
                 docs.add(doc)
             }
         }
@@ -71,6 +71,35 @@ public class LocalFixtureServingBackend <: ServingSearchBackend {
         status.diagnostic = if (this.feed.ok) { "ok" } else { "feed_not_ready" }
         status
     }
+}
+
+private func cangjieLocalServingSymbolMatches(doc: CangjieServingDocument, symbol: String): Bool {
+    let clean = symbol.trimAscii().toAsciiLower()
+    if (clean == "") {
+        return false
+    }
+    if (doc.symbolKey.toAsciiLower() == clean) {
+        return true
+    }
+    if (doc.module.trimAscii() != "" && "${doc.module}.${doc.symbolKey}".toAsciiLower() == clean) {
+        return true
+    }
+    for (line in doc.text.split("\n")) {
+        let trimmed = line.trimAscii()
+        if (!trimmed.startsWith("aliases=")) {
+            continue
+        }
+        let parts = trimmed.split("aliases=")
+        if (parts.size < 2) {
+            continue
+        }
+        for (alias in parts[1].split(";")) {
+            if (alias.trimAscii().toAsciiLower() == clean) {
+                return true
+            }
+        }
+    }
+    false
 }
 
 private func cangjieServingDocAllowed(doc: CangjieServingDocument, request: CangjieServingSearchRequest): Bool {

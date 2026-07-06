@@ -210,7 +210,43 @@ private func cangjieSourceBaseRecord(relativePath: String, moduleName: String, s
 }
 
 private func cangjieSourceSymbolCardContent(symbolKey: String, moduleName: String, imports: ArrayList<String>, signature: String, receiver: String, availability: String, diagnostic: String): String {
-    "symbolKey=${symbolKey}\nmodule=${moduleName}\nimportLine=${cangjieSourceBestImport(imports, moduleName)}\nsignature=${signature}\nreceiver=${receiver}\nparams=${cangjieSourceParams(signature)}\nreturnType=${cangjieSourceReturnType(signature)}\navailability=${availability}\ndiagnostic=${diagnostic}"
+    let signatureStatus = if (diagnostic == "") { "complete" } else { diagnostic }
+    "symbolKey=${symbolKey}\nmodule=${moduleName}\nimportLine=${cangjieSourceBestImport(imports, moduleName)}\nimportCandidates=${cangjieSourceJoinImports(imports)}\nsignature=${signature}\nreceiver=${receiver}\ndeclaringType=${receiver}\nparams=${cangjieSourceParams(signature)}\nreturnType=${cangjieSourceReturnType(signature)}\navailability=${availability}\naliases=${cangjieSourceSymbolAliases(symbolKey, moduleName, receiver)}\nmodulePath=${moduleName}\nsignatureStatus=${signatureStatus}\ndiagnostic=${diagnostic}"
+}
+
+private func cangjieSourceSymbolAliases(symbolKey: String, moduleName: String, receiver: String): String {
+    let aliases = ArrayList<String>()
+    cangjieSourceAddAlias(aliases, symbolKey)
+    if (moduleName.trimAscii() != "") {
+        cangjieSourceAddAlias(aliases, "${moduleName}.${symbolKey}")
+    }
+    if (receiver.trimAscii() != "" && symbolKey.contains(".")) {
+        let parts = symbolKey.split(".")
+        if (parts.size > 1) {
+            cangjieSourceAddAlias(aliases, parts[parts.size - 1].trimAscii())
+        }
+    }
+    var out = ""
+    for (alias in aliases) {
+        if (out != "") {
+            out += ";"
+        }
+        out += alias
+    }
+    out
+}
+
+private func cangjieSourceAddAlias(aliases: ArrayList<String>, alias: String): Unit {
+    let clean = alias.trimAscii()
+    if (clean == "") {
+        return
+    }
+    for (existing in aliases) {
+        if (existing.toAsciiLower() == clean.toAsciiLower()) {
+            return
+        }
+    }
+    aliases.add(clean)
 }
 
 private func cangjieSourceSymbolResolveSource(sourceSet: String, resolution: CangjieVersionResolution): CangjieVersionSource {
@@ -315,7 +351,7 @@ private func cangjieSourceSymbolModuleName(relativePath: String, content: String
     for (line in content.split("\n")) {
         let trimmed = cangjieSourceStripLineComment(line).trimAscii()
         if (trimmed.startsWith("package ")) {
-            let moduleName = cangjieSourceSymbolNameAfterPrefix(trimmed, "package ")
+            let moduleName = cangjieSourcePackageNameAfterPrefix(trimmed, "package ")
             if (moduleName != "") {
                 return moduleName
             }
@@ -397,10 +433,30 @@ private func cangjieSourceSymbolNameAfterPrefix(line: String, prefix: String): S
     cangjieSourceLeadingIdentifier(parts[1].trimAscii())
 }
 
+private func cangjieSourcePackageNameAfterPrefix(line: String, prefix: String): String {
+    let parts = line.split(prefix)
+    if (parts.size < 2) {
+        return ""
+    }
+    cangjieSourceLeadingModuleName(parts[1].trimAscii())
+}
+
 private func cangjieSourceLeadingIdentifier(raw: String): String {
     let out = StringBuilder()
     for (ch in raw.toRuneArray()) {
         if ((ch >= r'a' && ch <= r'z') || (ch >= r'A' && ch <= r'Z') || (ch >= r'0' && ch <= r'9') || ch == r'_') {
+            out.append(ch)
+        } else {
+            break
+        }
+    }
+    out.toString()
+}
+
+private func cangjieSourceLeadingModuleName(raw: String): String {
+    let out = StringBuilder()
+    for (ch in raw.toRuneArray()) {
+        if ((ch >= r'a' && ch <= r'z') || (ch >= r'A' && ch <= r'Z') || (ch >= r'0' && ch <= r'9') || ch == r'_' || ch == r'.') {
             out.append(ch)
         } else {
             break

@@ -8,6 +8,47 @@ import std.unittest.testmacro.*
 @Test
 public class CangjieSourceSymbolIngestTest {
     @TestCase
+    public func p2Ut001ExtendGenericReceiverGeneratesArrayListAddAlias(): Unit {
+        let result = extractCangjieSourceSymbolRecords("src/std/collection/arraylist_ext.cj", """
+package std.collection
+
+extend ArrayList<T> {
+    public func add(
+        value: T
+    ): Unit {}
+}
+""", CangjieSourceSets.STD, cangjieP3SourceSymbolResolution(CangjieSourceSets.STD))
+
+        @Expect(result.ok, true)
+        @Expect(cangjieP3SourceHasSymbol(result, "ArrayList.add"), true)
+        @Expect(cangjieP3SourceSymbolSignature(result, "ArrayList.add"), "public func add( value: T ): Unit")
+        @Expect(cangjieP3SourceFieldForSymbol(result, "ArrayList.add", "aliases").contains("std.collection.ArrayList.add"), true)
+        @Expect(cangjieP3SourceFieldForSymbol(result, "ArrayList.add", "aliases").contains("add"), true)
+        @Expect(cangjieP3SourceFieldForSymbol(result, "ArrayList.add", "declaringType"), "ArrayList")
+    }
+
+    @TestCase
+    public func p2Bnd001Utf8CommentsMultilineGenericAndEmptyFileAreSafe(): Unit {
+        let multiline = extractCangjieSourceSymbolRecords("src/std/core/string.cj", """
+package std.core
+
+extend String {
+    // 中文注释😀 must not break parsing.
+    public func contains(
+        pattern: String
+    ): Bool {}
+}
+""", CangjieSourceSets.STD, cangjieP3SourceSymbolResolution(CangjieSourceSets.STD))
+        let empty = extractCangjieSourceSymbolRecords("src/std/empty.cj", "\n  \n", CangjieSourceSets.STD, cangjieP3SourceSymbolResolution(CangjieSourceSets.STD))
+
+        @Expect(multiline.ok, true)
+        @Expect(cangjieP3SourceHasSymbol(multiline, "String.contains"), true)
+        @Expect(cangjieP3SourceSymbolSignature(multiline, "String.contains"), "public func contains( pattern: String ): Bool")
+        @Expect(empty.ok, false)
+        @Expect(empty.diagnostics.contains("empty_source_symbol_file"), true)
+    }
+
+    @TestCase
     public func p3Ut001ExtractsSymbolCardsAndModuleTreeFromSource(): Unit {
         let result = extractCangjieSourceSymbolRecords("src/std/collection/arraylist.cj", """
 package std.collection
@@ -111,9 +152,13 @@ private func cangjieP3SourceHasSymbol(result: CangjieTypedRecordResult, symbol: 
 }
 
 private func cangjieP3SourceSymbolSignature(result: CangjieTypedRecordResult, symbol: String): String {
+    cangjieP3SourceFieldForSymbol(result, symbol, "signature")
+}
+
+private func cangjieP3SourceFieldForSymbol(result: CangjieTypedRecordResult, symbol: String, field: String): String {
     for (record in result.records) {
         if (record.symbol == symbol) {
-            return cangjieP3SourceField(record.content, "signature")
+            return cangjieP3SourceField(record.content, field)
         }
     }
     ""

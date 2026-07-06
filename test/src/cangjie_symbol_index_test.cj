@@ -67,6 +67,8 @@ public class CangjieSymbolIndexTest {
         @Expect(cards[0].module, "std.collection")
         @Expect(cards[0].sourceSet, CangjieSourceSets.STD)
         @Expect(cards[0].signature, "public func add(value: T): Unit")
+        @Expect(cangjieSymbolCardMatches(cards[0], "std.collection.ArrayList.add", "", CangjieSourceSets.STD), true)
+        @Expect(cangjieSymbolCardMatches(cards[0], "ArrayList.addAll", "", CangjieSourceSets.STD), false)
     }
 }
 
