@@ -137,6 +137,97 @@ public class CkbSchedulerServiceF5Test {
         @Expect(accepted.status, "accepted")
         @Expect(accepted.diagnostic.contains("queued_in_memory"), false)
         @Expect(store.has("metadata/repo-list.ckb"), true)
+        @Expect(store.has("metadata/repository-event-latest.ckb"), true)
+    }
+
+    @TestCase
+    public func p5E2E001SchedulerCanStartAfterHttpReadyWithDeferredFirstTick(): Unit {
+        let config = CkbRuntimeConfig()
+        config.networkEnabled = true
+        config.schedulerLoopIntervalMillis = 600000
+        let service = CkbCommandLoopService(config, FileKnowledgeStore("target/p5-http-ready-scheduler"), sourceRunner: FakeSourceFetchRunner())
+        _ = service.start()
+
+        let started = startCkbSchedulerLoop(service, config, afterHttpReady: true, deferFirstTick: true)
+
+        @Expect(started.ok, true)
+        @Expect(started.status, "scheduler_started_after_http_ready")
+        @Expect(started.readinessGate, "http_routes_registered")
+        @Expect(started.firstTickDeferred, true)
+        @Expect(started.tick.ran, 0)
+    }
+
+    @TestCase
+    public func p5Pos001FreshnessProbePersistsFreshnessArtifactWithoutPromotingActive(): Unit {
+        let config = CkbRuntimeConfig()
+        config.networkEnabled = true
+        let store = FileKnowledgeStore("target/p5-freshness-artifact")
+        let service = CkbCommandLoopService(config, store, sourceRunner: F5FreshnessUpToDateRunner())
+        _ = service.start()
+        let before = service.statusSnapshot().activeKnowledgeVersion
+        let tasks = ArrayList<String>()
+        tasks.add("cangjie_freshness_daily")
+
+        let result = service.runSchedulerTasks(tasks, true)
+        let after = service.statusSnapshot()
+
+        @Expect(result.ran, 1)
+        @Expect(result.succeeded, 1)
+        @Expect(after.activeKnowledgeVersion, before)
+        @Expect(store.has("metadata/cangjie-freshness.ckb"), true)
+    }
+
+    @TestCase
+    public func p5Bnd001SchedulerFetchFailuresReturnStableDegradedStatuses(): Unit {
+        let config = CkbRuntimeConfig()
+        config.networkEnabled = true
+        config.docsEnabled = true
+        let service = CkbCommandLoopService(config, FileKnowledgeStore("target/p5-fetch-failures"), sourceRunner: F5DegradedFetchRunner())
+        _ = service.start()
+        let before = service.statusSnapshot().activeKnowledgeVersion
+        let tasks = ArrayList<String>()
+        tasks.add("cangjie_release_full_sync")
+
+        let result = service.runSchedulerTasks(tasks, true)
+        let after = service.statusSnapshot()
+
+        @Expect(result.ran, 1)
+        @Expect(result.failed, 1)
+        @Expect(result.details.contains("fetch_degraded_candidate_not_promoted"), true)
+        @Expect(after.activeKnowledgeVersion, before)
+        @Expect(after.failedCandidateVersion == "" || after.failedCandidateVersion.contains("candidate"), true)
+    }
+
+    @TestCase
+    public func p5Pos002AdminSyncHonorsSourceFamilyAndSourceRefFilters(): Unit {
+        let config = CkbRuntimeConfig()
+        config.networkEnabled = true
+        config.docsEnabled = true
+        let service = CkbCommandLoopService(config, FileKnowledgeStore("target/p5-sync-filters"), sourceRunner: FakeSourceFetchRunner())
+        _ = service.start()
+
+        let result = service.runSync(body: "{\"mode\":\"dry-run\",\"sourceSet\":\"docs\",\"sourceFamily\":\"docs\",\"sourceRef\":\"release-1.0.0\",\"maxItems\":3}")
+
+        @Expect(result.status, "delta_sync_dry_run_ok")
+        @Expect(result.degraded, false)
+        @Expect(result.updatedDataKinds.contains("live_sync_docs_docs_ref"), true)
+        @Expect(result.diagnostic.contains("sourceSet=docs"), true)
+        @Expect(result.diagnostic.contains("sourceFamily=docs"), true)
+        @Expect(result.diagnostic.contains("sourceRef=release-1.0.0"), true)
+        @Expect(result.diagnostic.contains("source_filter_excludes_repo_discovery"), true)
+    }
+
+    @TestCase
+    public func p5Pos003RepositoryItemsOnlyPersistsEventCheckpoint(): Unit {
+        let store = FileKnowledgeStore("target/p5-repository-items-checkpoint")
+        let service = CkbCommandLoopService(CkbRuntimeConfig(), store, sourceRunner: FakeSourceFetchRunner())
+        _ = service.start()
+
+        let result = service.runRepositorySync(body: "{\"repo\":\"cangjie/stdx\",\"ref\":\"main\",\"profile\":\"items\",\"changedFiles\":[\"README.md\"],\"prNumber\":99}")
+
+        @Expect(result.status, "ok")
+        @Expect(result.diagnostic, "repository_items_delta_scheduled")
+        @Expect(store.has("metadata/repository-event-latest.ckb"), true)
     }
 
     @TestCase
@@ -225,6 +316,85 @@ private class F5FreshnessProbeRunner <: SourceFetchRunner {
         result.commit = "changed-${this.calls}"
         result.body = "changed freshness body ${this.calls}"
         result.bodyHash = stableSummaryHash(result.body)
+        result
+    }
+}
+
+private class F5FreshnessUpToDateRunner <: SourceFetchRunner {
+    var calls: Int64 = 0
+
+    init() {}
+
+    public func fetch(request: SourceFetchRequest): SourceFetchResult {
+        this.calls += 1
+        let result = SourceFetchResult()
+        result.sourceUrl = request.url
+        result.repo = request.repo
+        result.ref = request.ref
+        result.path = request.path
+        result.normalizedType = request.kind
+        result.ok = true
+        result.status = "ok"
+        result.statusCode = 200
+        result.commit = this.expectedCommit(request)
+        result.lastModified = "2026-07-06T00:00:00Z"
+        result.body = "freshness probe ${request.kind} ${request.repo}"
+        result.bodyHash = stableSummaryHash(result.body)
+        result
+    }
+
+    private func expectedCommit(request: SourceFetchRequest): String {
+        if (request.kind == SourceKinds.CANGJIE_DOCS) {
+            return "offline-baseline-docs"
+        }
+        if (request.repo == "Cangjie/cangjie_runtime") {
+            return "offline-baseline-std"
+        }
+        if (request.repo == "Cangjie/cangjie_stdx") {
+            return "offline-baseline-stdx"
+        }
+        if (request.repo == "Cangjie/cangjie_tools") {
+            return "offline-baseline-tools"
+        }
+        if (request.repo == "CangjieCommunityKnowledgeBase/Cangjie-HumanEval") {
+            return "offline-baseline-eval"
+        }
+        "offline-baseline-unknown"
+    }
+}
+
+private class F5DegradedFetchRunner <: SourceFetchRunner {
+    var calls: Int64 = 0
+
+    init() {}
+
+    public func fetch(request: SourceFetchRequest): SourceFetchResult {
+        this.calls += 1
+        let result = SourceFetchResult()
+        result.sourceUrl = request.url
+        result.repo = request.repo
+        result.ref = request.ref
+        result.path = request.path
+        result.normalizedType = request.kind
+        result.ok = false
+        if (this.calls == 1) {
+            result.status = "timeout"
+            result.transportErrorClass = "timeout"
+            result.transportDiagnostic = "native request timed out"
+        } else if (this.calls == 2) {
+            result.status = "transport_error"
+            result.transportErrorClass = "tls"
+            result.transportDiagnostic = "TLS handshake failed"
+        } else if (this.calls == 3) {
+            result.status = "empty_body"
+        } else if (this.calls == 4) {
+            result.status = "malformed_json"
+            result.body = "{not-json"
+        } else {
+            result.status = "transport_error"
+            result.transportErrorClass = "dns"
+            result.transportDiagnostic = "dns lookup failed"
+        }
         result
     }
 }

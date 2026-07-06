@@ -7,6 +7,8 @@ public class CkbSchedulerLoopStartResult {
     public var ok: Bool = false
     public var status: String = "not_started"
     public var intervalMillis: Int64 = 0
+    public var readinessGate: String = ""
+    public var firstTickDeferred: Bool = false
     public var tick: SchedulerExecutorResult = SchedulerExecutorResult()
 
     public init() {}
@@ -23,25 +25,31 @@ public func runCkbSchedulerTick(service: CkbCommandLoopService, limit: Int64): S
     service.runScheduler(if (limit <= 0) { 1 } else { limit })
 }
 
-public func startCkbSchedulerLoop(service: CkbCommandLoopService, config: CkbRuntimeConfig): CkbSchedulerLoopStartResult {
+public func startCkbSchedulerLoop(service: CkbCommandLoopService, config: CkbRuntimeConfig, afterHttpReady!: Bool = false, deferFirstTick!: Bool = false): CkbSchedulerLoopStartResult {
     let result = CkbSchedulerLoopStartResult()
     result.intervalMillis = ckbSchedulerLoopIntervalMillis(config)
+    result.readinessGate = if (afterHttpReady) { "http_routes_registered" } else { "service_started" }
+    result.firstTickDeferred = deferFirstTick
     if (!config.schedulerEnabled) {
         service.markSchedulerDisabled()
         result.status = "scheduler_disabled"
         return result
     }
 
-    result.tick = runCkbSchedulerTick(service, 1)
-    if (result.tick.ran == 0) {
-        let taskNames = ArrayList<String>()
-        taskNames.add("community_repo_discovery_30d")
-        result.tick = service.runSchedulerTasks(taskNames, true)
+    if (!deferFirstTick) {
+        result.tick = runCkbSchedulerStartupTick(service)
     }
     result.ok = true
-    result.status = "scheduler_started"
+    result.status = if (afterHttpReady) { "scheduler_started_after_http_ready" } else { "scheduler_started" }
     let interval = result.intervalMillis
     spawn { =>
+        if (deferFirstTick) {
+            try {
+                _ = runCkbSchedulerStartupTick(service)
+            } catch (_: Exception) {
+                service.markSchedulerLoopFailure("scheduler_loop_startup_tick_failed")
+            }
+        }
         while (true) {
             sleep(Duration.millisecond * interval)
             try {
@@ -52,4 +60,14 @@ public func startCkbSchedulerLoop(service: CkbCommandLoopService, config: CkbRun
         }
     }
     result
+}
+
+private func runCkbSchedulerStartupTick(service: CkbCommandLoopService): SchedulerExecutorResult {
+    var tick = runCkbSchedulerTick(service, 1)
+    if (tick.ran == 0) {
+        let taskNames = ArrayList<String>()
+        taskNames.add("community_repo_discovery_30d")
+        tick = service.runSchedulerTasks(taskNames, true)
+    }
+    tick
 }

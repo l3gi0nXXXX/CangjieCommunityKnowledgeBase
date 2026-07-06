@@ -60,8 +60,9 @@ public class CangjieServiceApiP5ContractTest {
         @Expect(response.contains("\"ok\":true"), true)
         @Expect(response.contains("\"activeKnowledgeVersion\""), true)
         @Expect(response.contains("\"targetVersion\""), true)
-        @Expect(response.contains("\"diagnostic\":\"synthetic_freshness\""), true)
-        @Expect(response.contains("\"degraded\":true"), true)
+        @Expect(response.contains("\"sourceSet\":\"docs\""), true)
+        @Expect(response.contains("\"staleness\":\"indexed\""), true)
+        @Expect(response.contains("\"degraded\":false"), true)
     }
 
     @TestCase
@@ -79,7 +80,9 @@ public class CangjieServiceApiP5ContractTest {
         this.expectStructuredHttpOk(tool, "tool_manual")
         this.expectStructuredHttpOk(negative, "negative_rules")
         this.expectStructuredHttpOk(freshness, "corpus_freshness")
-        @Expect(freshness.body.contains("\"diagnostic\":\"synthetic_freshness\""), true)
+        @Expect(freshness.body.contains("\"sourceSet\":\"std\""), true)
+        @Expect(freshness.body.contains("\"staleness\":\"indexed\""), true)
+        @Expect(freshness.body.contains("\"degraded\":false"), true)
     }
 
     @TestCase

@@ -11,11 +11,14 @@ public class CangjieCorpusFreshnessTest {
         let report = cangjieCorpusFreshnessReport(newOfflineKnowledgeBase().status())
 
         @Expect(report.ok, true)
+        @Expect(report.degraded, false)
+        @Expect(report.diagnostics.contains("synthetic_freshness"), false)
         @Expect(report.sources.size >= 5, true)
         @Expect(cangjieP6HasFreshnessSource(report, CangjieSourceSets.DOCS), true)
         @Expect(cangjieP6HasFreshnessSource(report, CangjieSourceSets.STDX), true)
         @Expect(report.sources[0].targetVersion, cangjieDefaultTargetVersion())
         @Expect(report.sources[0].contentHash != "", true)
+        @Expect(report.sources[0].indexedAt != "", true)
     }
 
     @TestCase
