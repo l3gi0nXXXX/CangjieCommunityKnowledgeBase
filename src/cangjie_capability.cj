@@ -34,6 +34,7 @@ public class CangjieKnowledgeItem {
     public var reviewState: String = ""
     public var requiresReview: Bool = false
     public var score: Float64 = 0.0
+    public var provenance: String = ""
 
     public init() {}
 }
@@ -53,6 +54,7 @@ public class CangjieApiItem {
     public var reviewState: String = ""
     public var requiresReview: Bool = false
     public var score: Float64 = 0.0
+    public var provenance: String = ""
 
     public init() {}
 }
@@ -70,6 +72,8 @@ public class CangjieExampleItem {
     public var trustLevel: String = ""
     public var reviewState: String = ""
     public var requiresReview: Bool = false
+    public var compileStatus: String = "unknown"
+    public var provenance: String = ""
 
     public init() {}
 }
@@ -86,6 +90,7 @@ public class CangjieDiagnosticItem {
     public var trustLevel: String = ""
     public var reviewState: String = ""
     public var executed: Bool = false
+    public var provenance: String = ""
 
     public init() {}
 }
@@ -197,7 +202,7 @@ public class CangjieCapabilityService {
     }
 
     public func taskKnowledgePack(request: CangjieTaskKnowledgeRequest): CangjieTaskKnowledgePack {
-        buildCangjieTaskKnowledgePack(this.kb.status(), request, defaultCangjieVersionManifest())
+        buildCangjieTaskKnowledgePackFromEvidence(this.kb, request, defaultCangjieVersionManifest())
     }
 
     public func knowledgeCoverage(request: CangjieTaskKnowledgeRequest): CangjieKnowledgeCoverage {
@@ -210,6 +215,9 @@ public class CangjieCapabilityService {
         request.taskText = if (context.trimAscii() == "") { compilerOutput } else { "${compilerOutput} ${context}" }
         request.signature = code
         request.compilerOutput = compilerOutput
+        for (tag in cangjieCompilerOutputKnowledgeTags(compilerOutput)) {
+            request.expectedKnowledgeTags.add(tag)
+        }
         request.versionSelector = cangjieVersionSelector(targetVersion: targetVersion, sourceSet: sourceSet, sourceRef: sourceRef, versionPolicy: if (sourceRef.trimAscii() == "") { CangjieVersionPolicies.DEFAULT } else { CangjieVersionPolicies.EXACT })
         request.budget = budget
         this.taskKnowledgePack(request)
@@ -287,6 +295,7 @@ public class CangjieCapabilityService {
             item.trustLevel = record.metadata.trustLevel
             item.reviewState = record.metadata.reviewState
             item.executed = false
+            item.provenance = cangjieRecordProvenance(record)
             pack.diagnostics.add(item)
             this.addCitation(pack, record)
         }
@@ -328,6 +337,8 @@ public class CangjieCapabilityService {
                     example.trustLevel = candidate.trustLevel
                     example.reviewState = candidate.reviewState
                     example.requiresReview = record.requiresReview
+                    example.compileStatus = candidate.compileStatus
+                    example.provenance = candidate.provenance
                     pack.examples.add(example)
                     this.addCitation(pack, record)
                 }
@@ -345,8 +356,16 @@ public class CangjieCapabilityService {
                 example.trustLevel = record.metadata.trustLevel
                 example.reviewState = record.metadata.reviewState
                 example.requiresReview = record.requiresReview
+                example.compileStatus = "unknown"
+                example.provenance = cangjieRecordProvenance(record)
                 pack.examples.add(example)
                 this.addCitation(pack, record)
+            }
+        }
+        if (pack.examples.size > 0) {
+            pack.degraded = true
+            if (!pack.notes.contains("example_compile_status_unknown")) {
+                pack.notes.add("example_compile_status_unknown")
             }
         }
         pack.degraded = pack.degraded || result.degraded
@@ -390,8 +409,46 @@ public class CangjieCapabilityService {
     }
 
     public func negativeRules(query: String, targetVersion!: String = "", budget!: Int64 = CangjieCapabilityLimits.DEFAULT_BUDGET): CangjieKnowledgePack {
-        let pack = this.syntaxQuery("${query} negative rule antipattern", targetVersion: targetVersion, budget: budget)
+        let clean = cangjieSafeText(query)
+        let pack = this.newPack(clean, targetVersion, budget)
         pack.notes.add("negative_rules_endpoint")
+        if (clean == "") {
+            pack.degraded = true
+            pack.notes.add("empty_query")
+            return pack
+        }
+        let index = buildCangjieServingIndex(this.kb.activeRecordSnapshot(), activeKnowledgeVersion: pack.knowledgeVersion)
+        let result = lookupNegativeRules(index, clean, targetVersion: pack.targetVersion, budget: this.effectiveBudget(pack, budget))
+        for (hit in result.hits) {
+            let doc = hit.document
+            if (this.hasCitation(pack, doc.sourceId)) {
+                continue
+            }
+            let item = CangjieKnowledgeItem()
+            item.kind = "negative_rule"
+            item.title = doc.title
+            item.content = cangjieExcerpt(doc.text)
+            item.module = doc.module
+            item.symbol = doc.symbolKey
+            item.citation = doc.citation
+            item.sourceId = doc.sourceId
+            item.knowledgeVersion = pack.knowledgeVersion
+            item.targetVersion = pack.targetVersion
+            item.trustLevel = doc.trustLevel
+            item.reviewState = doc.reviewState
+            item.requiresReview = doc.rejected
+            item.score = hit.score
+            item.provenance = cangjieDocumentProvenance(doc)
+            pack.items.add(item)
+            pack.citations.add(SourceReference(doc.sourceId, doc.citation, pack.knowledgeVersion))
+        }
+        pack.degraded = pack.degraded || result.degraded
+        if (result.degraded && result.diagnostic != "") {
+            pack.notes.add(result.diagnostic)
+        }
+        if (pack.items.size == 0) {
+            pack.notes.add("no_negative_rule_match")
+        }
         pack
     }
 
@@ -489,6 +546,7 @@ public class CangjieCapabilityService {
             item.reviewState = record.metadata.reviewState
             item.requiresReview = record.requiresReview
             item.score = record.score
+            item.provenance = cangjieRecordProvenance(record)
             pack.items.add(item)
             this.addCitation(pack, record)
         }
@@ -519,6 +577,7 @@ public class CangjieCapabilityService {
                 item.reviewState = card.reviewState
                 item.requiresReview = record.requiresReview || card.incomplete
                 item.score = record.score + 2.0 + cangjieExactApiBoost(record, module, symbol)
+                item.provenance = cangjieRecordProvenance(record)
                 pack.apiItems.add(item)
                 this.addCitation(pack, record)
                 addedFromSymbol = true
@@ -544,6 +603,7 @@ public class CangjieCapabilityService {
             item.reviewState = record.metadata.reviewState
             item.requiresReview = record.requiresReview
             item.score = record.score + cangjieExactApiBoost(record, module, symbol)
+            item.provenance = cangjieRecordProvenance(record)
             pack.apiItems.add(item)
             this.addCitation(pack, record)
         }
@@ -612,6 +672,24 @@ public class CangjieCapabilityService {
     }
 }
 
+public func cangjieCompilerOutputKnowledgeTags(compilerOutput: String): ArrayList<String> {
+    let tags = ArrayList<String>()
+    let lower = compilerOutput.toAsciiLower()
+    if (lower.contains("import") || lower.contains("module") || lower.contains("package")) {
+        tags.add("syntax import")
+    }
+    if (lower.contains("symbol") || lower.contains("undeclared") || lower.contains("undefined") || lower.contains("not found") || lower.contains("cannot find")) {
+        tags.add("api symbol")
+    }
+    if (lower.contains("append") || lower.contains("null") || lower.contains("python") || lower.contains("__name__")) {
+        tags.add("negative rule")
+    }
+    if (tags.size == 0 && compilerOutput.trimAscii() != "") {
+        tags.add("compiler diagnostic")
+    }
+    tags
+}
+
 private func cangjieTargetVersionAllowed(value: String): Bool {
     if (value == "" || value.startsWith("-") || value.endsWith("-") || value.contains("..")) {
         return false
@@ -642,6 +720,12 @@ private func cangjieSafeText(raw: String): String {
 
 private func cangjieRecordTrusted(record: NormalizedRecord): Bool {
     record.metadata.reviewState != ReviewStates.CANDIDATE && record.metadata.trustLevel != TrustLevels.WEB_CANDIDATE
+}
+
+public func cangjieDocumentProvenance(doc: CangjieServingDocument): String {
+    let sourceSet = if (doc.sourceSet != "") { doc.sourceSet } else { "unknown-source-set" }
+    let version = if (doc.versionResolutionId != "") { doc.versionResolutionId } else { doc.targetVersion }
+    "${sourceSet}:${doc.trustLevel}:${doc.reviewState}:${version}"
 }
 
 private func cangjieRecordMatchesApiFilter(record: NormalizedRecord, module: String, symbol: String, sourceSet: String): Bool {

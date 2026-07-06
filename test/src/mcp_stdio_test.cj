@@ -170,7 +170,7 @@ public class CkbMcpStdioTest {
     }
 
     @TestCase
-    public func p1Pos001TaskKnowledgePackReturnsVersionPlanAndCoverage(): Unit {
+    public func p1Pos001TaskKnowledgePackDoesNotPretendCoverageWithoutEvidence(): Unit {
         let args = "{\"taskId\":\"CJ-HUMANEVAL-000\",\"benchmark\":\"Cangjie-HumanEval\",\"taskText\":\"Implement ArrayList helper\",\"signature\":\"func solve(xs: ArrayList<Int64>): Int64\",\"expectedKnowledgeTags\":[\"ArrayList\",\"symbol\"],\"targetVersion\":\"1.0.0\",\"sourceSet\":\"stdx\",\"sourceRef\":\"release-1.0.0\",\"versionPolicy\":\"exact\"}"
         let response = this.server("p1-pos-mcp-001").handleRequest(this.toolCall("cangjie_task_knowledge_pack", args))
 
@@ -178,7 +178,8 @@ public class CkbMcpStdioTest {
         @Expect(response.contains("\"versionResolution\""), true)
         @Expect(response.contains("\"queryPlan\""), true)
         @Expect(response.contains("\"coverage\""), true)
-        @Expect(response.contains("\"coveragePass\":true"), true)
+        @Expect(response.contains("\"coveragePass\":false"), true)
+        @Expect(response.contains("task_knowledge_contract_skeleton"), false)
         @Expect(response.contains("\"versionPolicy\":\"exact\""), true)
     }
 

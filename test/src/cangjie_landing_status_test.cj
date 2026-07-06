@@ -6,15 +6,15 @@ import std.unittest.testmacro.*
 @Test
 public class CangjieLandingStatusTest {
     @TestCase
-    public func f0Ut001SkeletonTaskPackIsPartialNotLanded(): Unit {
+    public func f0Ut001NonEvidenceTaskPackIsMissingNotLanded(): Unit {
         let service = CkbCommandLoopService(CkbRuntimeConfig(), FileKnowledgeStore("target/f0-landing-skeleton-store"))
         service.start()
 
         let report = collectCkbLandingStatus(service)
 
         @Expect(report.ok, false)
-        @Expect(ckbLandingTestStatus(report, "F3-task-pack-evidence"), "partial")
-        @Expect(ckbLandingTestDiagnostic(report, "F3-task-pack-evidence"), "skeleton_contract_detected")
+        @Expect(ckbLandingTestStatus(report, "F3-task-pack-evidence"), "missing")
+        @Expect(ckbLandingTestDiagnostic(report, "F3-task-pack-evidence"), "task_pack_not_evidence_backed")
     }
 
     @TestCase
