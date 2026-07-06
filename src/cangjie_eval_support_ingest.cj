@@ -1,6 +1,7 @@
 package cangjie_community_knowledge_base
 
-import std.fs.{File, Path, exists}
+import std.collection.ArrayList
+import std.fs.{Directory, File, Path, exists}
 
 public class CangjieEvalSupportPaths {
     public static let PROMPT: String = "prompt.md"
@@ -31,6 +32,71 @@ public func extractEvalSupportRecords(caseRoot: String): CangjieTypedRecordResul
         result.ok = false
         if (result.diagnostics.size == 0) {
             result.diagnostics.add("no_eval_support_records")
+        }
+    }
+    result
+}
+
+public func discoverCangjieHumanEvalCaseRoots(datasetRoot: String): ArrayList<String> {
+    let roots = ArrayList<String>()
+    let cleanRoot = datasetRoot.trimAscii()
+    if (!cangjieEvalSupportDatasetRootAllowed(cleanRoot)) {
+        return roots
+    }
+    let resolvedRoot = cangjieEvalSupportResolveCaseRoot(cleanRoot)
+    if (resolvedRoot == "") {
+        return roots
+    }
+    try {
+        for (entry in Directory.readFrom(Path(resolvedRoot))) {
+            if (entry.isDirectory() && entry.name.startsWith("CJ-HUMANEVAL-")) {
+                cangjieInsertEvalCaseRoot(roots, "${entry.path}")
+            }
+        }
+    } catch (_: Exception) {
+        return roots
+    }
+    roots
+}
+
+public func extractAllEvalSupportRecords(datasetRoot: String): CangjieTypedRecordResult {
+    let result = CangjieTypedRecordResult()
+    let cleanRoot = datasetRoot.trimAscii()
+    if (!cangjieEvalSupportDatasetRootAllowed(cleanRoot)) {
+        result.addDiagnostic("invalid_eval_support_dataset_root")
+        return result
+    }
+    let roots = discoverCangjieHumanEvalCaseRoots(cleanRoot)
+    if (roots.size == 0) {
+        result.addDiagnostic("no_eval_support_case_roots")
+        return result
+    }
+    for (root in roots) {
+        let caseResult = extractEvalSupportRecords(root)
+        for (diagnostic in caseResult.diagnostics) {
+            result.diagnostics.add("${cangjieCaseIdFromRoot(root)}:${diagnostic}")
+        }
+        for (record in caseResult.records) {
+            result.records.add(record)
+        }
+        result.ok = result.ok && caseResult.ok
+    }
+    let safety = validateEvalSupportRecordSafety(result.records)
+    for (diagnostic in safety.diagnostics) {
+        result.addDiagnostic(diagnostic)
+    }
+    if (result.records.size == 0 && result.diagnostics.size == 0) {
+        result.addDiagnostic("no_eval_support_records")
+    }
+    result
+}
+
+public func validateEvalSupportRecordSafety(records: ArrayList<CangjieTypedRecord>): CangjieTypedRecordResult {
+    let result = CangjieTypedRecordResult()
+    for (record in records) {
+        let value = "${record.sourceId}\n${record.path}\n${record.citation}".toAsciiLower().replace("\\", "/")
+        if (value.contains("/reference/") || value.contains("/hidden/") || value.contains("solution.cj")) {
+            result.addDiagnostic("forbidden_reference_solution_source:${record.sourceId}")
         }
     }
     result
@@ -122,6 +188,32 @@ private func cangjieEvalSupportCaseRootAllowed(root: String): Bool {
         return false
     }
     true
+}
+
+private func cangjieEvalSupportDatasetRootAllowed(root: String): Bool {
+    if (root == "" || root.contains("\u{0}") || root.contains("..")) {
+        return false
+    }
+    let lower = root.toAsciiLower().replace("\\", "/")
+    if (lower.contains("/reference/") || lower.endsWith("/reference") || lower.contains("/hidden/") || lower.endsWith("/hidden") || lower.contains("/.ssh") || lower.contains("/.config")) {
+        return false
+    }
+    cangjieEvalSupportResolveCaseRoot(root) != ""
+}
+
+private func cangjieInsertEvalCaseRoot(out: ArrayList<String>, value: String): Unit {
+    var i: Int64 = 0
+    while (i < out.size) {
+        if (out[i] > value) {
+            out.add(value, at: i)
+            return
+        }
+        if (out[i] == value) {
+            return
+        }
+        i += 1
+    }
+    out.add(value)
 }
 
 private func cangjieEvalSupportResolveCaseRoot(root: String): String {

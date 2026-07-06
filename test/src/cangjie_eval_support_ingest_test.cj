@@ -38,6 +38,40 @@ public class CangjieEvalSupportIngestTest {
         @Expect(result.diagnostics.contains("forbidden_reference_solution_source"), true)
         @Expect(result.records.size, 0)
     }
+
+    @TestCase
+    public func p2Pos003DiscoversAllVisibleHumanEvalCases(): Unit {
+        let roots = discoverCangjieHumanEvalCaseRoots("test/cangjie_eval/cases/Cangjie-HumanEval")
+
+        @Expect(roots.size, 164)
+        @Expect(roots[0].contains("CJ-HUMANEVAL-000"), true)
+    }
+
+    @TestCase
+    public func p2Pos004ExtractsAllVisibleHumanEvalSupportRecords(): Unit {
+        let result = extractAllEvalSupportRecords("test/cangjie_eval/cases/Cangjie-HumanEval")
+
+        @Expect(result.ok, true)
+        @Expect(result.records.size >= 164 * 4, true)
+        @Expect(cangjieEvalSupportTestContentContains(result, "EvalValue"), true)
+        @Expect(cangjieEvalSupportTestContentContains(result, "EvalEntry"), true)
+        @Expect(cangjieEvalSupportTestContainsForbiddenPath(result), false)
+    }
+
+    @TestCase
+    public func p2Bnd003SafetyValidationRejectsHiddenReferenceSignals(): Unit {
+        let records = ArrayList<CangjieTypedRecord>()
+        let record = CangjieTypedRecord()
+        record.sourceId = "bad-eval"
+        record.path = "hidden/solution.cj"
+        record.content = "reference solution"
+        records.add(record)
+
+        let safety = validateEvalSupportRecordSafety(records)
+
+        @Expect(safety.ok, false)
+        @Expect(safety.diagnostics[0].contains("forbidden_reference_solution_source"), true)
+    }
 }
 
 private func cangjieEvalSupportTestContainsFamily(result: CangjieTypedRecordResult, family: String): Bool {
@@ -65,4 +99,14 @@ private func cangjieEvalSupportTestFamilyContent(result: CangjieTypedRecordResul
         }
     }
     ""
+}
+
+private func cangjieEvalSupportTestContainsForbiddenPath(result: CangjieTypedRecordResult): Bool {
+    for (record in result.records) {
+        let value = "${record.path}\n${record.citation}".toAsciiLower()
+        if (value.contains("hidden") || value.contains("reference") || value.contains("solution.cj")) {
+            return true
+        }
+    }
+    false
 }

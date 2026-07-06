@@ -1,7 +1,7 @@
 package cangjie_community_knowledge_base
 
 import std.collection.ArrayList
-import std.fs.{File, Path, exists}
+import std.fs.{Directory, File, Path, exists}
 
 public class CangjieDocCorpusLimits {
     public static let MAX_SECTION_BYTES: Int64 = 60000
@@ -28,6 +28,20 @@ public func scanCangjieDocsRoot(root: String, resolution: CangjieVersionResoluti
     scanCangjieDocsRoot(root, resolution, cangjieDocsDefaultRelativePaths())
 }
 
+public func scanCangjieDocsRootFull(root: String, resolution: CangjieVersionResolution): CangjieTypedRecordResult {
+    let paths = discoverCangjieDocsRelativePaths(root)
+    scanCangjieDocsRoot(root, resolution, paths)
+}
+
+public func discoverCangjieDocsRelativePaths(root: String): ArrayList<String> {
+    let paths = ArrayList<String>()
+    if (!cangjieDocsRootAllowed(root)) {
+        return paths
+    }
+    cangjieDiscoverDocsRelativePaths(Path(root), "", paths)
+    paths
+}
+
 public func scanCangjieDocsRoot(root: String, resolution: CangjieVersionResolution, relativePaths: ArrayList<String>): CangjieTypedRecordResult {
     let result = CangjieTypedRecordResult()
     if (!cangjieDocsRootAllowed(root)) {
@@ -50,7 +64,7 @@ public func scanCangjieDocsRoot(root: String, resolution: CangjieVersionResoluti
             continue
         }
         let source = cangjieDocSourceFromText(clean, read.text, resolution)
-        let sections = splitMarkdownSections(source)
+        let sections = splitCangjieDocSections(source)
         for (diagnostic in sections.diagnostics) {
             result.diagnostics.add(diagnostic)
         }
@@ -72,6 +86,13 @@ public func scanCangjieDocsRoot(root: String, resolution: CangjieVersionResoluti
         }
     }
     result
+}
+
+public func splitCangjieDocSections(source: CangjieDocSourceRecord): CangjieTypedRecordResult {
+    if (source.path.toAsciiLower().endsWith(".html")) {
+        return splitCangjieHtmlSections(source)
+    }
+    splitMarkdownSections(source)
 }
 
 public func splitMarkdownSections(source: CangjieDocSourceRecord): CangjieTypedRecordResult {
@@ -108,6 +129,27 @@ public func splitMarkdownSections(source: CangjieDocSourceRecord): CangjieTypedR
     index = cangjieAddDocSection(result, source, heading, index, current.toString())
     if (result.records.size == 0) {
         result.addDiagnostic("no_markdown_sections")
+    }
+    result
+}
+
+public func splitCangjieHtmlSections(source: CangjieDocSourceRecord): CangjieTypedRecordResult {
+    let htmlSource = CangjieDocSourceRecord()
+    htmlSource.sourceId = source.sourceId
+    htmlSource.path = source.path
+    htmlSource.content = cangjieHtmlToPseudoMarkdown(source.content)
+    htmlSource.sourceUrl = source.sourceUrl
+    htmlSource.repo = source.repo
+    htmlSource.sourceSet = source.sourceSet
+    htmlSource.sourceFamily = source.sourceFamily
+    htmlSource.targetVersion = source.targetVersion
+    htmlSource.sourceRef = source.sourceRef
+    htmlSource.refKind = source.refKind
+    htmlSource.resolvedCommit = source.resolvedCommit
+    htmlSource.versionResolutionId = source.versionResolutionId
+    let result = splitMarkdownSections(htmlSource)
+    if (result.records.size == 0) {
+        result.addDiagnostic("no_html_sections")
     }
     result
 }
@@ -160,7 +202,7 @@ public func cangjieTypedNormalizeRawRecord(record: RawRecord): CangjieTypedRecor
     source.refKind = "branch"
     source.resolvedCommit = record.metadata.commit
     source.versionResolutionId = record.metadata.versionResolutionId
-    let sections = splitMarkdownSections(source)
+    let sections = splitCangjieDocSections(source)
     for (diagnostic in sections.diagnostics) {
         result.diagnostics.add(diagnostic)
     }
@@ -213,11 +255,53 @@ private func cangjieRelativeDocsPathAllowed(path: String): Bool {
     if (clean == "" || clean.startsWith("/") || clean.contains("..") || clean.contains("\u{0}")) {
         return false
     }
-    clean.endsWith(".md") || clean.endsWith(".markdown")
+    clean.endsWith(".md") || clean.endsWith(".markdown") || clean.endsWith(".html")
 }
 
 private func cangjieCleanRelativePath(path: String): String {
     path.trimAscii().replace("\\", "/")
+}
+
+private func cangjieDiscoverDocsRelativePaths(root: Path, relativeRoot: String, out: ArrayList<String>): Unit {
+    try {
+        for (entry in Directory.readFrom(root)) {
+            let name = entry.name.trimAscii()
+            if (name == "" || name.startsWith(".")) {
+                continue
+            }
+            if (cangjieDocsIgnoredDirName(name)) {
+                continue
+            }
+            let relative = if (relativeRoot == "") { name } else { "${relativeRoot}/${name}" }
+            if (entry.isDirectory()) {
+                cangjieDiscoverDocsRelativePaths(entry.path, relative, out)
+            } else if (entry.isRegular() && cangjieRelativeDocsPathAllowed(relative)) {
+                cangjieInsertSortedString(out, relative)
+            }
+        }
+    } catch (_: Exception) {
+        return
+    }
+}
+
+private func cangjieDocsIgnoredDirName(name: String): Bool {
+    let lower = name.toAsciiLower()
+    lower == ".git" || lower == "target" || lower == "node_modules" || lower == "build" || lower == "dist"
+}
+
+private func cangjieInsertSortedString(out: ArrayList<String>, value: String): Unit {
+    var i: Int64 = 0
+    while (i < out.size) {
+        if (out[i] > value) {
+            out.add(value, at: i)
+            return
+        }
+        if (out[i] == value) {
+            return
+        }
+        i += 1
+    }
+    out.add(value)
 }
 
 private func cangjieReadTextFile(path: Path): CangjieReadTextResult {
@@ -296,6 +380,49 @@ private func cangjieMarkdownHeadingText(line: String): String {
     if (text == "") { "Document" } else { text }
 }
 
+private func cangjieHtmlToPseudoMarkdown(html: String): String {
+    let out = StringBuilder()
+    for (line in html.split("\n")) {
+        let trimmed = line.trimAscii()
+        let lower = trimmed.toAsciiLower()
+        if (cangjieHtmlLineLooksLikeHeading(lower)) {
+            out.append("# ")
+            out.append(cangjieStripHtmlTags(trimmed).trimAscii())
+            out.append("\n")
+        } else {
+            let text = cangjieStripHtmlTags(trimmed).trimAscii()
+            if (text != "") {
+                out.append(text)
+                out.append("\n")
+            }
+        }
+    }
+    out.toString()
+}
+
+private func cangjieHtmlLineLooksLikeHeading(lower: String): Bool {
+    lower.contains("<h1") || lower.contains("<h2") || lower.contains("<h3") || lower.contains("<h4") || lower.contains("<h5") || lower.contains("<h6")
+}
+
+private func cangjieStripHtmlTags(raw: String): String {
+    let out = StringBuilder()
+    var inTag = false
+    for (ch in raw.toRuneArray()) {
+        if (ch == r'<') {
+            inTag = true
+            continue
+        }
+        if (ch == r'>') {
+            inTag = false
+            continue
+        }
+        if (!inTag) {
+            out.append(ch)
+        }
+    }
+    out.toString().replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
+}
+
 private func cangjieAddDocSection(result: CangjieTypedRecordResult, source: CangjieDocSourceRecord, heading: String, index: Int64, content: String): Int64 {
     let clean = content.trimAscii()
     if (clean == "") {
@@ -351,15 +478,15 @@ private func cangjieSectionLooksLikeToolManual(section: CangjieTypedRecord): Boo
 private func cangjieToolNameFromPath(path: String): String {
     let parts = path.split("/")
     var leaf = if (parts.size > 0) { parts[parts.size - 1] } else { path }
-    leaf = leaf.replace("_manual.md", "").replace(".md", "").replace(".markdown", "")
+    leaf = leaf.replace("_manual.md", "").replace("_manual.html", "").replace(".md", "").replace(".markdown", "").replace(".html", "")
     if (leaf == "") { "cangjie-tool" } else { leaf }
 }
 
 private func cangjieToolCommandFromHeading(heading: String, content: String, fallback: String): String {
     let lower = "${heading}\n${utf8SafePrefix(content, 1000)}".toAsciiLower()
-    for (name in ["cjpm", "cjc", "cjfmt", "cjdb", "cjprof", "cjcov"]) {
-        if (lower.contains(name)) {
-            return name
+    for (command in ["test", "build", "run", "clean", "init", "update", "debug", "list", "compile"]) {
+        if (lower.contains(" ${command}") || lower.contains("${fallback} ${command}") || lower.contains("`${command}`")) {
+            return command
         }
     }
     fallback
