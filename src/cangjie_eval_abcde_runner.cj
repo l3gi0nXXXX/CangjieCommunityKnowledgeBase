@@ -82,6 +82,32 @@ public class CkbAbcdePreflightResult {
     }
 }
 
+public class CkbAbcdeParityObservation {
+    public var caseId: String = ""
+    public var interfaceId: String = "cangjie_task_knowledge_pack"
+    public var transport: String = ""
+    public var ok: Bool = false
+    public var evidenceHash: String = ""
+    public var coveragePass: Bool = false
+    public var citationCount: Int64 = 0
+    public var diagnostic: String = ""
+    public var payloadPath: String = ""
+
+    public init() {}
+}
+
+public class CkbAbcdeParityReport {
+    public var caseId: String = ""
+    public var interfaceId: String = "cangjie_task_knowledge_pack"
+    public var ok: Bool = false
+    public var diagnostic: String = ""
+    public var rest: CkbAbcdeParityObservation = CkbAbcdeParityObservation()
+    public var stdio: CkbAbcdeParityObservation = CkbAbcdeParityObservation()
+    public var http: CkbAbcdeParityObservation = CkbAbcdeParityObservation()
+
+    public init() {}
+}
+
 public class CkbAbcdeTaskContext {
     public var taskId: String = ""
     public var benchmark: String = "Cangjie-HumanEval"
@@ -253,7 +279,9 @@ public func runCangjieEvalAbcde(args: Array<String>): Int64 {
 
 public func runCangjieAbcdeParitySmoke(args: Array<String>): Int64 {
     let taskContextJson = ckbAbcdeSmokeTaskContextJson()
-    let restResponse = "{\"ok\":true,\"apiVersion\":\"ckb-http-v1\",\"data\":{\"knowledgeVersion\":\"ckb-smoke\",\"versionResolution\":{\"targetVersion\":\"1.0.0\",\"versionResolutionId\":\"cangjie-1.0.0-all-release-1.0.0\"},\"queryPlan\":[],\"coverage\":{\"coveragePass\":true},\"citations\":[{\"citation\":\"smoke\"}]}}"
+    let service = CkbCommandLoopService(CkbRuntimeConfig(), FileKnowledgeStore("target/abcde-parity-smoke-store"))
+    let report = ckbAbcdeProbeInProcessTransportParity(service, "CJ-HUMANEVAL-000", taskContextJson)
+    let restResponse = ckbAbcdeParityStructuredPayload(ckbApiHandle(service, "POST", "/v1/cangjie/task-knowledge-pack", taskContextJson, []), "rest")
     let promptB = renderCkbAbcdePrompt(CkbAbcdeGroups.B, "CJ-HUMANEVAL-000", "Implement `src/solution.cj`.", taskContextJson + "\n---CKB_RESPONSE---\n" + restResponse)
     let promptC = renderCkbAbcdePrompt(CkbAbcdeGroups.C, "CJ-HUMANEVAL-000", "Implement `src/solution.cj`.", taskContextJson)
     let promptD = renderCkbAbcdePrompt(CkbAbcdeGroups.D, "CJ-HUMANEVAL-000", "Implement `src/solution.cj`.", taskContextJson)
@@ -265,13 +293,15 @@ public func runCangjieAbcdeParitySmoke(args: Array<String>): Int64 {
     let httpPromptOk = promptD.contains("mcp__ckb-cangjie-http__cangjie_task_knowledge_pack")
     let toolEvidenceOk = ckbAbcdeToolEvidence(CkbAbcdeGroups.C, stdioUse) == "cangjie_task_knowledge_pack" &&
         ckbAbcdeToolEvidence(CkbAbcdeGroups.D, httpUse) == "cangjie_task_knowledge_pack"
-    let ok = canonicalOk && bPromptOk && stdioPromptOk && httpPromptOk && toolEvidenceOk
+    let ok = canonicalOk && bPromptOk && stdioPromptOk && httpPromptOk && toolEvidenceOk && report.ok
     println("abcde-parity-smoke ok=${ok}")
     println("canonicalTaskContext=${canonicalOk}")
     println("bRestTaskPackPrompt=${bPromptOk}")
     println("stdioTaskToolPrompt=${stdioPromptOk}")
     println("httpTaskToolPrompt=${httpPromptOk}")
     println("toolEvidenceOk=${toolEvidenceOk}")
+    println("transportParity=${report.ok}")
+    println(ckbAbcdeRenderParityJsonl(report))
     if (ok) { 0 } else { 1 }
 }
 
@@ -420,6 +450,10 @@ private func ckbAbcdeSmokeTaskContextJson(): String {
     ckbAbcdeRenderTaskContextJson(context)
 }
 
+public func ckbAbcdeSmokeTaskContextJsonForTest(): String {
+    ckbAbcdeSmokeTaskContextJson()
+}
+
 private func ckbAbcdeRunCaseGroup(options: CkbAbcdeRunnerOptions, runRoot: String, caseId: String, group: String, previousGroup: String): String {
     let caseSrc = "${options.datasetRoot}/${caseId}"
     let groupRoot = "${runRoot}/cases/${caseId}/${group}"
@@ -453,10 +487,10 @@ private func ckbAbcdeRunCaseGroup(options: CkbAbcdeRunnerOptions, runRoot: Strin
     }
 
     if (group == CkbAbcdeGroups.C) {
-        ckbAbcdeRunMcpStdioSmoke(options, groupRoot)
+        ckbAbcdeRunMcpStdioSmoke(options, groupRoot, taskContextJson: taskContextJson)
     }
     if (group == CkbAbcdeGroups.D) {
-        ckbAbcdeRunMcpHttpSmoke(options, groupRoot)
+        ckbAbcdeRunMcpHttpSmoke(options, groupRoot, taskContextJson: taskContextJson)
     }
 
     let mcpConfig = renderCkbAbcdeMcpConfig(group, options.ckbBin, options.ckbStore, options.ckbHttpBase)
@@ -602,8 +636,7 @@ public func ckbAbcdeCurlRetryFlagsForTest(): String {
     ckbAbcdeCurlRetryFlags()
 }
 
-private func ckbAbcdeRunMcpStdioSmoke(options: CkbAbcdeRunnerOptions, groupRoot: String): Unit {
-    let taskContextJson = ckbAbcdeSmokeTaskContextJson()
+private func ckbAbcdeRunMcpStdioSmoke(options: CkbAbcdeRunnerOptions, groupRoot: String, taskContextJson!: String = ckbAbcdeSmokeTaskContextJson()): Unit {
     let requests = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-06-18\",\"capabilities\":{},\"clientInfo\":{\"name\":\"ckb-abcde-runner\",\"version\":\"1.0\"}}}\n" +
         "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\",\"params\":{}}\n" +
         "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\",\"params\":{}}\n" +
@@ -615,11 +648,12 @@ private func ckbAbcdeRunMcpStdioSmoke(options: CkbAbcdeRunnerOptions, groupRoot:
     let result = ckbAbcdeRunShell(script, "")
     let stdout = ckbAbcdeReadText("${groupRoot}/mcp-stdio-smoke.stdout.jsonl")
     let ok = result.exitCode == 0 && stdout.contains("cangjie_task_knowledge_pack") && stdout.contains("\"versionResolution\"")
+    let observation = ckbAbcdeParityObservationFromResponse("CJ-HUMANEVAL-smoke", "mcp_stdio", stdout)
     ckbAbcdeWriteText("${groupRoot}/mcp-stdio-tools-list.json", "{\"exitCode\":${result.exitCode},\"knowledgePackCallOk\":${ok},\"taskKnowledgePackCallOk\":${ok},\"toolNamesContainsTaskKnowledgePack\":${stdout.contains("cangjie_task_knowledge_pack")},\"versionResolutionReturned\":${stdout.contains("\"versionResolution\"")}}\n")
+    ckbAbcdeWriteText("${groupRoot}/parity.jsonl", ckbAbcdeRenderParityObservationJson(observation) + "\n")
 }
 
-private func ckbAbcdeRunMcpHttpSmoke(options: CkbAbcdeRunnerOptions, groupRoot: String): Unit {
-    let taskContextJson = ckbAbcdeSmokeTaskContextJson()
+private func ckbAbcdeRunMcpHttpSmoke(options: CkbAbcdeRunnerOptions, groupRoot: String, taskContextJson!: String = ckbAbcdeSmokeTaskContextJson()): Unit {
     let initBody = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-06-18\",\"capabilities\":{},\"clientInfo\":{\"name\":\"ckb-abcde-runner\",\"version\":\"1.0\"}}}"
     let initializedBody = "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\",\"params\":{}}"
     let callBody = "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"cangjie_task_knowledge_pack\",\"arguments\":${taskContextJson}}}"
@@ -639,7 +673,96 @@ private func ckbAbcdeRunMcpHttpSmoke(options: CkbAbcdeRunnerOptions, groupRoot: 
     let ready = get.stdout.contains("event") || get.stdout.contains("ready")
     let callResponse = ckbAbcdeReadText("${groupRoot}/mcp-http-tool-call-response.json")
     let toolOk = callResponse.contains("\"versionResolution\"") && callResponse.contains("\"queryPlan\"")
+    let observation = ckbAbcdeParityObservationFromResponse("CJ-HUMANEVAL-smoke", "mcp_http", callResponse)
     ckbAbcdeWriteText("${groupRoot}/mcp-http-smoke.json", "{\"exitCode\":${get.exitCode},\"ok\":${toolOk},\"taskKnowledgePackCallOk\":${toolOk},\"sseReady\":${ready},\"versionResolutionReturned\":${callResponse.contains("\"versionResolution\"")}}\n")
+    ckbAbcdeWriteText("${groupRoot}/parity.jsonl", ckbAbcdeRenderParityObservationJson(observation) + "\n")
+}
+
+public func ckbAbcdeProbeInProcessTransportParity(service: CkbCommandLoopService, caseId: String, taskContextJson: String): CkbAbcdeParityReport {
+    let report = CkbAbcdeParityReport()
+    report.caseId = caseId
+    report.rest = ckbAbcdeParityObservationFromResponse(caseId, "rest", ckbApiHandle(service, "POST", "/v1/cangjie/task-knowledge-pack", taskContextJson, []))
+    let jsonRpc = ckbAbcdeMcpTaskKnowledgePackRequest(taskContextJson)
+    report.stdio = ckbAbcdeParityObservationFromResponse(caseId, "mcp_stdio", CkbMcpStdioServer(service).handleRequest(jsonRpc))
+    report.http = ckbAbcdeParityObservationFromResponse(caseId, "mcp_http", ckbAbcdeRunInProcessMcpHttpToolCall(service, jsonRpc))
+    report.diagnostic = ckbAbcdeParityDiagnostic(report.rest, report.stdio, report.http)
+    report.ok = report.diagnostic == "ok"
+    report
+}
+
+private func ckbAbcdeMcpTaskKnowledgePackRequest(taskContextJson: String): String {
+    "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"cangjie_task_knowledge_pack\",\"arguments\":${taskContextJson}}}"
+}
+
+private func ckbAbcdeRunInProcessMcpHttpToolCall(service: CkbCommandLoopService, jsonRpc: String): String {
+    let sessionStore = CkbMcpHttpSessionStore()
+    let httpConfig = CkbHttpServiceConfig()
+    let mcpConfig = CkbMcpHttpServiceConfig()
+    let initBody = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-06-18\",\"capabilities\":{},\"clientInfo\":{\"name\":\"ckb-abcde-runner\",\"version\":\"1.0\"}}}"
+    let initHeaders = ["Content-Type: application/json", "Accept: application/json, text/event-stream"]
+    let initResponse = handleCkbMcpHttpRequest(service, "POST", "/mcp", initBody, initHeaders, httpConfig, mcpConfig, sessionStore)
+    let sessionId = ckbAbcdeMcpHttpSessionId(initResponse.headers)
+    if (sessionId == "") {
+        return initResponse.body
+    }
+    let sessionHeaders = ["Content-Type: application/json", "Accept: application/json, text/event-stream", "MCP-Protocol-Version: 2025-06-18", "Mcp-Session-Id: ${sessionId}"]
+    _ = handleCkbMcpHttpRequest(service, "POST", "/mcp", "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\",\"params\":{}}", sessionHeaders, httpConfig, mcpConfig, sessionStore)
+    handleCkbMcpHttpRequest(service, "POST", "/mcp", jsonRpc, sessionHeaders, httpConfig, mcpConfig, sessionStore).body
+}
+
+private func ckbAbcdeMcpHttpSessionId(headers: ArrayList<String>): String {
+    for (header in headers) {
+        let lower = header.toAsciiLower()
+        if (lower.startsWith("mcp-session-id:")) {
+            return header["mcp-session-id:".size..header.size].trimAscii()
+        }
+    }
+    ""
+}
+
+public func ckbAbcdeParityObservationFromResponse(caseId: String, transport: String, response: String): CkbAbcdeParityObservation {
+    let payload = ckbAbcdeParityStructuredPayload(response, transport)
+    let observation = CkbAbcdeParityObservation()
+    observation.caseId = caseId
+    observation.transport = transport
+    observation.evidenceHash = ckbAbcdeJsonStringField(payload, "evidenceHash")
+    observation.coveragePass = payload.contains("\"coveragePass\":true")
+    observation.citationCount = ckbAbcdeCountOccurrences(payload, "\"citation\"")
+    observation.ok = payload != "" && observation.evidenceHash != ""
+    observation.diagnostic = if (payload == "") { "missing_structured_payload" } else if (observation.evidenceHash == "") { "missing_evidence_hash" } else { "ok" }
+    observation
+}
+
+public func ckbAbcdeParityStructuredPayload(response: String, transport: String): String {
+    if (transport == "rest") {
+        return ckbMcpJsonObjectField(response, "data")
+    }
+    let result = ckbMcpJsonObjectField(response, "result")
+    ckbMcpJsonObjectField(result, "structuredContent")
+}
+
+private func ckbAbcdeParityDiagnostic(rest: CkbAbcdeParityObservation, stdio: CkbAbcdeParityObservation, http: CkbAbcdeParityObservation): String {
+    if (!rest.ok) { return "rest_${rest.diagnostic}" }
+    if (!stdio.ok) { return "mcp_stdio_${stdio.diagnostic}" }
+    if (!http.ok) { return "mcp_http_${http.diagnostic}" }
+    if (rest.evidenceHash != stdio.evidenceHash || rest.evidenceHash != http.evidenceHash) { return "evidence_hash_mismatch" }
+    if (rest.coveragePass != stdio.coveragePass || rest.coveragePass != http.coveragePass) { return "coverage_mismatch" }
+    if (rest.citationCount != stdio.citationCount || rest.citationCount != http.citationCount) { return "citation_count_mismatch" }
+    "ok"
+}
+
+public func ckbAbcdeParityDiagnosticForTest(rest: CkbAbcdeParityObservation, stdio: CkbAbcdeParityObservation, http: CkbAbcdeParityObservation): String {
+    ckbAbcdeParityDiagnostic(rest, stdio, http)
+}
+
+public func ckbAbcdeRenderParityJsonl(report: CkbAbcdeParityReport): String {
+    ckbAbcdeRenderParityObservationJson(report.rest) + "\n" +
+        ckbAbcdeRenderParityObservationJson(report.stdio) + "\n" +
+        ckbAbcdeRenderParityObservationJson(report.http)
+}
+
+public func ckbAbcdeRenderParityObservationJson(observation: CkbAbcdeParityObservation): String {
+    "{\"caseId\":\"${ckbAbcdeJsonEscape(observation.caseId)}\",\"interfaceId\":\"${ckbAbcdeJsonEscape(observation.interfaceId)}\",\"transport\":\"${ckbAbcdeJsonEscape(observation.transport)}\",\"ok\":${observation.ok},\"evidenceHash\":\"${ckbAbcdeJsonEscape(observation.evidenceHash)}\",\"coveragePass\":${observation.coveragePass},\"citationCount\":${observation.citationCount},\"diagnostic\":\"${ckbAbcdeJsonEscape(observation.diagnostic)}\",\"payloadPath\":\"${ckbAbcdeJsonEscape(observation.payloadPath)}\"}"
 }
 
 private func ckbAbcdePreflight(options: CkbAbcdeRunnerOptions, runRoot: String): CkbAbcdePreflightResult {
@@ -667,6 +790,9 @@ private func ckbAbcdePreflight(options: CkbAbcdeRunnerOptions, runRoot: String):
     ckbAbcdeRunMcpHttpSmoke(options, httpRoot)
     let httpJson = ckbAbcdeReadText("${httpRoot}/mcp-http-smoke.json")
     result.add("mcp_http", httpJson.contains("\"ok\":true"), "${httpRoot}/mcp-http-smoke.json")
+    let parity = ckbAbcdeProbeInProcessTransportParity(CkbCommandLoopService(CkbRuntimeConfig(), FileKnowledgeStore(options.ckbStore)), "preflight", ckbAbcdeSmokeTaskContextJson())
+    ckbAbcdeWriteText("${runRoot}/preflight-parity.jsonl", ckbAbcdeRenderParityJsonl(parity) + "\n")
+    result.add("transport_parity", parity.ok, "${runRoot}/preflight-parity.jsonl diagnostic=${parity.diagnostic}")
     result
 }
 
@@ -847,7 +973,7 @@ public func ckbAbcdeRenderCaseResult(
     let firstClaudeExitCode = ckbAbcdeFirstClaudeAttemptExitCode(groupRoot)
     let claudeAttemptCount = ckbAbcdeClaudeAttemptCount(groupRoot)
     let usage = ckbAbcdeParseClaudeUsageFile("${groupRoot}/claude-transcript.jsonl")
-    "{\"runId\":\"${ckbAbcdeJsonEscape(options.runId)}\",\"benchmark\":\"Cangjie-HumanEval\",\"caseId\":\"${caseId}\",\"group\":\"${group}\",\"model\":\"GLM-5.2\",\"claudeCodeVersion\":\"${ckbAbcdeJsonEscape(ckbAbcdeClaudeVersion())}\",\"knowledgeEntry\":\"${ckbAbcdeKnowledgeEntry(group)}\",\"preflightStatus\":\"ok\",\"modelRunStatus\":\"${modelRunStatus}\",\"status\":\"${status}\",\"claudeExitCode\":${claudeExitCode},\"firstClaudeExitCode\":${firstClaudeExitCode},\"claudeAttemptCount\":${claudeAttemptCount},\"testExitCode\":${testExitCode},\"unitPass\":${unitPass},\"unitPassAt1\":${unitPassAt1},\"failureType\":\"${failureType}\",\"usageParseStatus\":\"${usage.usageParseStatus}\",\"modelInputTokens\":${usage.modelInputTokens},\"modelOutputTokens\":${usage.modelOutputTokens},\"modelCacheReadTokens\":${usage.modelCacheReadTokens},\"modelCacheCreationTokens\":${usage.modelCacheCreationTokens},\"modelTotalTokens\":${usage.modelTotalTokens},\"llmTurnCount\":${usage.llmTurnCount},\"usageSourcePath\":\"${ckbAbcdeJsonEscape(usage.usageSourcePath)}\",\"ckbUsed\":${ckbAbcdeUsesCkb(group)},\"localDocsUsed\":${group == CkbAbcdeGroups.E},\"toolTransport\":\"${ckbAbcdeToolTransport(group)}\",\"toolCallCount\":${toolCallCount},\"toolEvidence\":\"${ckbAbcdeJsonEscape(toolEvidence)}\",\"knowledgeVersion\":\"${ckbAbcdeJsonEscape(ckbAbcdeKnowledgeVersion(groupRoot))}\",\"citationCount\":${ckbAbcdeCitationCount(groupRoot)},\"docsPathCount\":${if (group == CkbAbcdeGroups.E) { 2 } else { 0 }},\"protocolViolation\":${protocolViolation},\"protocolViolationReason\":\"${ckbAbcdeJsonEscape(violation)}\",\"durationMs\":0,\"promptPath\":\"${ckbAbcdeJsonEscape("${groupRoot}/prompt.final.md")}\",\"transcriptPath\":\"${ckbAbcdeJsonEscape("${groupRoot}/claude-transcript.jsonl")}\",\"testLogPath\":\"${ckbAbcdeJsonEscape("${groupRoot}/test.log")}\",\"resultPath\":\"${ckbAbcdeJsonEscape("${groupRoot}/case-result.json")}\",\"notes\":\"${ckbAbcdeJsonEscape(ckbAbcdeResultNotes(status, violation, toolEvidence))}\"}"
+    "{\"runId\":\"${ckbAbcdeJsonEscape(options.runId)}\",\"benchmark\":\"Cangjie-HumanEval\",\"caseId\":\"${caseId}\",\"group\":\"${group}\",\"model\":\"GLM-5.2\",\"claudeCodeVersion\":\"${ckbAbcdeJsonEscape(ckbAbcdeClaudeVersion())}\",\"knowledgeEntry\":\"${ckbAbcdeKnowledgeEntry(group)}\",\"preflightStatus\":\"ok\",\"modelRunStatus\":\"${modelRunStatus}\",\"status\":\"${status}\",\"claudeExitCode\":${claudeExitCode},\"firstClaudeExitCode\":${firstClaudeExitCode},\"claudeAttemptCount\":${claudeAttemptCount},\"testExitCode\":${testExitCode},\"unitPass\":${unitPass},\"unitPassAt1\":${unitPassAt1},\"failureType\":\"${failureType}\",\"usageParseStatus\":\"${usage.usageParseStatus}\",\"modelInputTokens\":${usage.modelInputTokens},\"modelOutputTokens\":${usage.modelOutputTokens},\"modelCacheReadTokens\":${usage.modelCacheReadTokens},\"modelCacheCreationTokens\":${usage.modelCacheCreationTokens},\"modelTotalTokens\":${usage.modelTotalTokens},\"llmTurnCount\":${usage.llmTurnCount},\"usageSourcePath\":\"${ckbAbcdeJsonEscape(usage.usageSourcePath)}\",\"ckbUsed\":${ckbAbcdeUsesCkb(group)},\"localDocsUsed\":${group == CkbAbcdeGroups.E},\"toolTransport\":\"${ckbAbcdeToolTransport(group)}\",\"toolCallCount\":${toolCallCount},\"toolEvidence\":\"${ckbAbcdeJsonEscape(toolEvidence)}\",\"toolEvidenceHash\":\"${ckbAbcdeJsonEscape(ckbAbcdeEvidenceHash(groupRoot))}\",\"toolCoveragePass\":${ckbAbcdeCoveragePass(groupRoot)},\"transportParityPath\":\"${ckbAbcdeJsonEscape("${groupRoot}/parity.jsonl")}\",\"knowledgeVersion\":\"${ckbAbcdeJsonEscape(ckbAbcdeKnowledgeVersion(groupRoot))}\",\"citationCount\":${ckbAbcdeCitationCount(groupRoot)},\"docsPathCount\":${if (group == CkbAbcdeGroups.E) { 2 } else { 0 }},\"protocolViolation\":${protocolViolation},\"protocolViolationReason\":\"${ckbAbcdeJsonEscape(violation)}\",\"durationMs\":0,\"promptPath\":\"${ckbAbcdeJsonEscape("${groupRoot}/prompt.final.md")}\",\"transcriptPath\":\"${ckbAbcdeJsonEscape("${groupRoot}/claude-transcript.jsonl")}\",\"testLogPath\":\"${ckbAbcdeJsonEscape("${groupRoot}/test.log")}\",\"resultPath\":\"${ckbAbcdeJsonEscape("${groupRoot}/case-result.json")}\",\"notes\":\"${ckbAbcdeJsonEscape(ckbAbcdeResultNotes(status, violation, toolEvidence))}\"}"
 }
 
 private func ckbAbcdeRenderCaseSummary(options: CkbAbcdeRunnerOptions, runRoot: String, caseId: String, summaries: ArrayList<String>): String {
@@ -1026,6 +1152,24 @@ private func ckbAbcdeCitationCount(groupRoot: String): Int64 {
         ckbAbcdeReadText("${groupRoot}/ckb-knowledge-pack.json") +
         ckbAbcdeReadText("${groupRoot}/ckb-context-pack.json") +
         ckbAbcdeReadText("${groupRoot}/claude-transcript.jsonl"), "\"citation\"")
+}
+
+private func ckbAbcdeEvidenceHash(groupRoot: String): String {
+    ckbAbcdeJsonStringField(ckbAbcdeReadText("${groupRoot}/parity.jsonl") +
+        ckbAbcdeReadText("${groupRoot}/ckb-task-knowledge-pack.json") +
+        ckbAbcdeReadText("${groupRoot}/ckb-knowledge-pack.json") +
+        ckbAbcdeReadText("${groupRoot}/ckb-context-pack.json") +
+        ckbAbcdeReadText("${groupRoot}/claude-transcript.jsonl") +
+        ckbAbcdeReadText("${groupRoot}/claude.stdout.log"), "evidenceHash")
+}
+
+private func ckbAbcdeCoveragePass(groupRoot: String): Bool {
+    (ckbAbcdeReadText("${groupRoot}/parity.jsonl") +
+        ckbAbcdeReadText("${groupRoot}/ckb-task-knowledge-pack.json") +
+        ckbAbcdeReadText("${groupRoot}/ckb-knowledge-pack.json") +
+        ckbAbcdeReadText("${groupRoot}/ckb-context-pack.json") +
+        ckbAbcdeReadText("${groupRoot}/claude-transcript.jsonl") +
+        ckbAbcdeReadText("${groupRoot}/claude.stdout.log")).contains("\"coveragePass\":true")
 }
 
 private func ckbAbcdeCountOccurrences(text: String, needle: String): Int64 {
