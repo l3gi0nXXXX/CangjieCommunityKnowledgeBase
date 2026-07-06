@@ -691,6 +691,96 @@ public func ckbAbcdeProbeInProcessTransportParity(service: CkbCommandLoopService
     report
 }
 
+public func ckbAbcdeProbeInProcessTransportParityArtifacts(service: CkbCommandLoopService, runRoot: String, caseId: String, taskContextJson: String): CkbAbcdeParityReport {
+    ckbAbcdeEnsureDir(runRoot)
+    let jsonRpc = ckbAbcdeMcpTaskKnowledgePackRequest(taskContextJson)
+    let restPath = "${runRoot}/transport-parity-rest.json"
+    let stdioPath = "${runRoot}/transport-parity-stdio.json"
+    let httpPath = "${runRoot}/transport-parity-http.json"
+    let restResponse = ckbApiHandle(service, "POST", "/v1/cangjie/task-knowledge-pack", taskContextJson, [])
+    let stdioResponse = CkbMcpStdioServer(service).handleRequest(jsonRpc)
+    let httpResponse = ckbAbcdeRunInProcessMcpHttpToolCall(service, jsonRpc)
+    ckbAbcdeWriteText(restPath, restResponse)
+    ckbAbcdeWriteText(stdioPath, stdioResponse)
+    ckbAbcdeWriteText(httpPath, httpResponse)
+    ckbAbcdeBuildParityReportFromPayloads(caseId, runRoot, restPath, restResponse, 0, "", stdioPath, stdioResponse, 0, "", httpPath, httpResponse, 0, "")
+}
+
+public func ckbAbcdeProbeRealTransportParity(options: CkbAbcdeRunnerOptions, runRoot: String, caseId: String, taskContextJson: String): CkbAbcdeParityReport {
+    ckbAbcdeEnsureDir(runRoot)
+    ckbAbcdeWriteText("${runRoot}/transport-parity-task-context.json", taskContextJson + "\n")
+
+    let restRequestPath = "${runRoot}/transport-parity-rest-request.json"
+    let restPath = "${runRoot}/transport-parity-rest.json"
+    ckbAbcdeWriteText(restRequestPath, taskContextJson)
+    let rest = ckbAbcdeRunShell("curl ${ckbAbcdeCurlRetryFlags()} --max-time 10 -fsS -X POST -H 'Content-Type: application/json' --data-binary @${ckbAbcdeShellQuote(restRequestPath)} ${ckbAbcdeShellQuote("${options.ckbHttpBase}/v1/cangjie/task-knowledge-pack")}", "")
+    ckbAbcdeWriteText(restPath, rest.stdout)
+    ckbAbcdeWriteText("${runRoot}/transport-parity-rest.stderr.log", rest.stderr)
+
+    let stdioRequestPath = "${runRoot}/transport-parity-stdio-requests.jsonl"
+    let stdioFullPath = "${runRoot}/transport-parity-stdio-full.jsonl"
+    let stdioPath = "${runRoot}/transport-parity-stdio.json"
+    let stdioRequests = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-06-18\",\"capabilities\":{},\"clientInfo\":{\"name\":\"ckb-transport-parity\",\"version\":\"1.0\"}}}\n" +
+        "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\",\"params\":{}}\n" +
+        ckbAbcdeMcpTaskKnowledgePackRequest(taskContextJson) + "\n"
+    ckbAbcdeWriteText(stdioRequestPath, stdioRequests)
+    let stdioScript = "cat ${ckbAbcdeShellQuote(stdioRequestPath)} | ( " +
+        ckbAbcdeNativeTlsBootstrapScript(options.ckbBin, ["--store", options.ckbStore, "mcp-stdio"]) +
+        " ) > ${ckbAbcdeShellQuote(stdioFullPath)} 2> ${ckbAbcdeShellQuote("${runRoot}/transport-parity-stdio.stderr.log")}"
+    let stdio = ckbAbcdeRunShell(stdioScript, "")
+    let stdioFull = ckbAbcdeReadText(stdioFullPath)
+    let stdioPayload = ckbAbcdeExtractMcpToolResponse(stdioFull)
+    ckbAbcdeWriteText(stdioPath, stdioPayload)
+
+    let initBody = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-06-18\",\"capabilities\":{},\"clientInfo\":{\"name\":\"ckb-transport-parity\",\"version\":\"1.0\"}}}"
+    let initializedBody = "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\",\"params\":{}}"
+    let callBody = ckbAbcdeMcpTaskKnowledgePackRequest(taskContextJson)
+    let httpInitPath = "${runRoot}/transport-parity-http-initialize-request.json"
+    let httpInitializedPath = "${runRoot}/transport-parity-http-initialized-request.json"
+    let httpRequestPath = "${runRoot}/transport-parity-http-request.json"
+    let httpPath = "${runRoot}/transport-parity-http.json"
+    ckbAbcdeWriteText(httpInitPath, initBody)
+    ckbAbcdeWriteText(httpInitializedPath, initializedBody)
+    ckbAbcdeWriteText(httpRequestPath, callBody)
+    let httpScript = "curl --max-time 5 -i -sS -X POST -H 'Accept: application/json, text/event-stream' -H 'Content-Type: application/json' --data-binary @${ckbAbcdeShellQuote(httpInitPath)} ${ckbAbcdeShellQuote("${options.ckbHttpBase}/mcp")} > ${ckbAbcdeShellQuote("${runRoot}/transport-parity-http-initialize-response.txt")} 2> ${ckbAbcdeShellQuote("${runRoot}/transport-parity-http-initialize.stderr.log")}; " +
+        "sid=$(grep -i '^mcp-session-id:' ${ckbAbcdeShellQuote("${runRoot}/transport-parity-http-initialize-response.txt")} | head -n1 | cut -d' ' -f2 | tr -d '\\r'); " +
+        "printf '%s\\n' \"$sid\" > ${ckbAbcdeShellQuote("${runRoot}/transport-parity-http-session-id.txt")}; " +
+        "if [ -z \"$sid\" ]; then exit 4; fi; " +
+        "curl --max-time 5 -fsS -X POST -H 'Accept: application/json, text/event-stream' -H 'Content-Type: application/json' -H \"Mcp-Session-Id: $sid\" -H 'MCP-Protocol-Version: 2025-06-18' --data-binary @${ckbAbcdeShellQuote(httpInitializedPath)} ${ckbAbcdeShellQuote("${options.ckbHttpBase}/mcp")} > ${ckbAbcdeShellQuote("${runRoot}/transport-parity-http-initialized-response.txt")} 2> ${ckbAbcdeShellQuote("${runRoot}/transport-parity-http-initialized.stderr.log")}; " +
+        "curl --max-time 10 -fsS -X POST -H 'Accept: application/json, text/event-stream' -H 'Content-Type: application/json' -H \"Mcp-Session-Id: $sid\" -H 'MCP-Protocol-Version: 2025-06-18' --data-binary @${ckbAbcdeShellQuote(httpRequestPath)} ${ckbAbcdeShellQuote("${options.ckbHttpBase}/mcp")} > ${ckbAbcdeShellQuote(httpPath)} 2> ${ckbAbcdeShellQuote("${runRoot}/transport-parity-http.stderr.log")}"
+    let http = ckbAbcdeRunShell(httpScript, "")
+    let httpPayload = ckbAbcdeReadText(httpPath)
+
+    ckbAbcdeBuildParityReportFromPayloads(caseId, runRoot, restPath, rest.stdout, rest.exitCode, rest.stderr, stdioPath, stdioPayload, stdio.exitCode, ckbAbcdeReadText("${runRoot}/transport-parity-stdio.stderr.log"), httpPath, httpPayload, http.exitCode, ckbAbcdeReadText("${runRoot}/transport-parity-http.stderr.log"))
+}
+
+private func ckbAbcdeBuildParityReportFromPayloads(
+    caseId: String,
+    runRoot: String,
+    restPath: String,
+    restResponse: String,
+    restExitCode: Int64,
+    restStderr: String,
+    stdioPath: String,
+    stdioResponse: String,
+    stdioExitCode: Int64,
+    stdioStderr: String,
+    httpPath: String,
+    httpResponse: String,
+    httpExitCode: Int64,
+    httpStderr: String
+): CkbAbcdeParityReport {
+    let report = CkbAbcdeParityReport()
+    report.caseId = caseId
+    report.rest = ckbAbcdeParityObservationFromArtifact(caseId, "rest", restPath, restResponse, restExitCode, restStderr)
+    report.stdio = ckbAbcdeParityObservationFromArtifact(caseId, "mcp_stdio", stdioPath, stdioResponse, stdioExitCode, stdioStderr)
+    report.http = ckbAbcdeParityObservationFromArtifact(caseId, "mcp_http", httpPath, httpResponse, httpExitCode, httpStderr)
+    report.diagnostic = ckbAbcdeParityDiagnostic(report.rest, report.stdio, report.http)
+    report.ok = report.diagnostic == "ok"
+    ckbAbcdeWriteText("${runRoot}/transport-parity.jsonl", ckbAbcdeRenderParityJsonl(report) + "\n")
+    report
+}
+
 private func ckbAbcdeMcpTaskKnowledgePackRequest(taskContextJson: String): String {
     "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"cangjie_task_knowledge_pack\",\"arguments\":${taskContextJson}}}"
 }
@@ -732,6 +822,36 @@ public func ckbAbcdeParityObservationFromResponse(caseId: String, transport: Str
     observation.ok = payload != "" && observation.evidenceHash != ""
     observation.diagnostic = if (payload == "") { "missing_structured_payload" } else if (observation.evidenceHash == "") { "missing_evidence_hash" } else { "ok" }
     observation
+}
+
+private func ckbAbcdeParityObservationFromArtifact(caseId: String, transport: String, payloadPath: String, response: String, exitCode: Int64, stderr: String): CkbAbcdeParityObservation {
+    let observation = ckbAbcdeParityObservationFromResponse(caseId, transport, response)
+    observation.payloadPath = payloadPath
+    if (exitCode != 0) {
+        observation.ok = false
+        observation.diagnostic = "${observation.diagnostic};transport_exit_${exitCode}:${utf8SafePrefix(stderr.replace("\n", " "), 160)}"
+    } else if (!observation.ok && stderr.trimAscii() != "") {
+        observation.diagnostic = "${observation.diagnostic};${utf8SafePrefix(stderr.replace("\n", " "), 160)}"
+    }
+    observation
+}
+
+public func ckbAbcdeParityObservationFromArtifactForTest(caseId: String, transport: String, payloadPath: String, response: String, exitCode: Int64, stderr: String): CkbAbcdeParityObservation {
+    ckbAbcdeParityObservationFromArtifact(caseId, transport, payloadPath, response, exitCode, stderr)
+}
+
+private func ckbAbcdeExtractMcpToolResponse(stdout: String): String {
+    for (line in stdout.split("\n")) {
+        if (line.contains("\"structuredContent\"") && line.contains("\"cangjie_task_knowledge_pack\"")) {
+            return line
+        }
+    }
+    for (line in stdout.split("\n")) {
+        if (line.contains("\"structuredContent\"")) {
+            return line
+        }
+    }
+    ""
 }
 
 public func ckbAbcdeParityStructuredPayload(response: String, transport: String): String {
@@ -791,7 +911,7 @@ private func ckbAbcdePreflight(options: CkbAbcdeRunnerOptions, runRoot: String):
     ckbAbcdeRunMcpHttpSmoke(options, httpRoot)
     let httpJson = ckbAbcdeReadText("${httpRoot}/mcp-http-smoke.json")
     result.add("mcp_http", httpJson.contains("\"ok\":true"), "${httpRoot}/mcp-http-smoke.json")
-    let parity = ckbAbcdeProbeInProcessTransportParity(CkbCommandLoopService(CkbRuntimeConfig(), FileKnowledgeStore(options.ckbStore)), "preflight", ckbAbcdeSmokeTaskContextJson())
+    let parity = ckbAbcdeProbeRealTransportParity(options, runRoot, "preflight", ckbAbcdeSmokeTaskContextJson())
     ckbAbcdeWriteText("${runRoot}/preflight-parity.jsonl", ckbAbcdeRenderParityJsonl(parity) + "\n")
     result.add("transport_parity", parity.ok, "${runRoot}/preflight-parity.jsonl diagnostic=${parity.diagnostic}")
     result
