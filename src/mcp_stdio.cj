@@ -129,37 +129,38 @@ public class CkbMcpStdioServer {
         if (name == "cangjie_symbol_lookup") {
             let symbol = ckbMcpFirstNonEmpty(ckbMcpJsonStringField(args, "symbol"), ckbMcpJsonStringField(args, "q")).trimAscii()
             if (symbol == "") { return this.errorResponse(id, -32602, "symbol_required", "{}") }
-            return this.toolResult(id, this.packJson(this.service.cangjieSymbolLookup(symbol,
+            let sourceSet = ckbMcpJsonStringField(args, "sourceSet")
+            return this.toolResult(id, renderCangjieSymbolCardResultJson(cangjieSymbolCardResultFromPack(this.service.cangjieSymbolLookup(symbol,
                 module: ckbMcpJsonStringField(args, "module"),
-                sourceSet: ckbMcpJsonStringField(args, "sourceSet"),
+                sourceSet: sourceSet,
                 targetVersion: ckbMcpJsonStringField(args, "targetVersion"),
-                budget: ckbMcpJsonIntField(args, "budget", CangjieCapabilityLimits.DEFAULT_BUDGET))))
+                budget: ckbMcpJsonIntField(args, "budget", CangjieCapabilityLimits.DEFAULT_BUDGET)), sourceSet: sourceSet)))
         }
         if (name == "cangjie_doc_section") {
             let sectionId = ckbMcpJsonStringField(args, "sectionId").trimAscii()
             let path = ckbMcpJsonStringField(args, "path").trimAscii()
             let heading = ckbMcpJsonStringField(args, "heading").trimAscii()
             if (sectionId == "" && path == "" && heading == "") { return this.errorResponse(id, -32602, "doc_section_selector_required", "{}") }
-            return this.toolResult(id, this.packJson(this.service.cangjieDocSection(sectionId,
+            return this.toolResult(id, renderCangjieDocSectionResultJson(cangjieDocSectionResultFromPack(this.service.cangjieDocSection(sectionId,
                 path: path,
                 heading: heading,
                 targetVersion: ckbMcpJsonStringField(args, "targetVersion"),
-                budget: ckbMcpJsonIntField(args, "budget", CangjieCapabilityLimits.DEFAULT_BUDGET))))
+                budget: ckbMcpJsonIntField(args, "budget", CangjieCapabilityLimits.DEFAULT_BUDGET)), sourceSet: CangjieSourceSets.DOCS)))
         }
         if (name == "cangjie_tool_manual") {
             let tool = ckbMcpFirstNonEmpty(ckbMcpJsonStringField(args, "tool"), ckbMcpJsonStringField(args, "command")).trimAscii()
             if (tool == "") { return this.errorResponse(id, -32602, "tool_required", "{}") }
-            return this.toolResult(id, this.packJson(this.service.cangjieToolManual(tool,
+            return this.toolResult(id, renderCangjieToolManualResultJson(cangjieToolManualResultFromPack(this.service.cangjieToolManual(tool,
                 command: ckbMcpJsonStringField(args, "command"),
                 targetVersion: ckbMcpJsonStringField(args, "targetVersion"),
-                budget: ckbMcpJsonIntField(args, "budget", CangjieCapabilityLimits.DEFAULT_BUDGET))))
+                budget: ckbMcpJsonIntField(args, "budget", CangjieCapabilityLimits.DEFAULT_BUDGET)), sourceSet: CangjieSourceSets.TOOLS)))
         }
         if (name == "cangjie_negative_rules") {
             let query = ckbMcpFirstNonEmpty(ckbMcpJsonStringField(args, "q"), ckbMcpJsonStringField(args, "query")).trimAscii()
             if (query == "") { return this.errorResponse(id, -32602, "query_required", "{}") }
-            return this.toolResult(id, this.packJson(this.service.cangjieNegativeRules(query,
+            return this.toolResult(id, renderCangjieNegativeRulesResultJson(cangjieNegativeRulesResultFromPack(this.service.cangjieNegativeRules(query,
                 targetVersion: ckbMcpJsonStringField(args, "targetVersion"),
-                budget: ckbMcpJsonIntField(args, "budget", CangjieCapabilityLimits.DEFAULT_BUDGET))))
+                budget: ckbMcpJsonIntField(args, "budget", CangjieCapabilityLimits.DEFAULT_BUDGET)), sourceSet: ckbMcpJsonStringField(args, "sourceSet"))))
         }
         if (name == "cangjie_corpus_freshness") {
             return this.toolResult(id, renderCangjieCorpusFreshnessJson(this.service.cangjieCorpusFreshness()))
@@ -167,51 +168,52 @@ public class CkbMcpStdioServer {
         if (name == "cangjie_syntax_query") {
             let q = ckbMcpFirstNonEmpty(ckbMcpJsonStringField(args, "q"), ckbMcpJsonStringField(args, "query")).trimAscii()
             if (q == "") { return this.errorResponse(id, -32602, "query_required", "{}") }
-            return this.toolResult(id, this.packJson(this.service.cangjieSyntaxQuery(q,
+            return this.toolResult(id, renderCangjieSyntaxRuleResultJson(cangjieSyntaxRuleResultFromPack(this.service.cangjieSyntaxQuery(q,
                 targetVersion: ckbMcpJsonStringField(args, "targetVersion"),
-                budget: ckbMcpJsonIntField(args, "budget", CangjieCapabilityLimits.DEFAULT_BUDGET))))
+                budget: ckbMcpJsonIntField(args, "budget", CangjieCapabilityLimits.DEFAULT_BUDGET)), sourceSet: ckbMcpJsonStringField(args, "sourceSet"))))
         }
         if (name == "cangjie_api_search") {
             let q = ckbMcpFirstNonEmpty(ckbMcpJsonStringField(args, "q"), ckbMcpJsonStringField(args, "query")).trimAscii()
             let module = ckbMcpJsonStringField(args, "module").trimAscii()
             let symbol = ckbMcpJsonStringField(args, "symbol").trimAscii()
             if (q == "" && module == "" && symbol == "") { return this.errorResponse(id, -32602, "query_required", "{}") }
-            return this.toolResult(id, this.packJson(this.service.cangjieApiSearch(q,
+            let sourceSet = ckbMcpJsonStringField(args, "sourceSet")
+            return this.toolResult(id, renderCangjieApiPatternResultJson(cangjieApiPatternResultFromPack(this.service.cangjieApiSearch(q,
                 module: module,
                 symbol: symbol,
-                sourceSet: ckbMcpJsonStringField(args, "sourceSet"),
+                sourceSet: sourceSet,
                 targetVersion: ckbMcpJsonStringField(args, "targetVersion"),
-                budget: ckbMcpJsonIntField(args, "budget", CangjieCapabilityLimits.DEFAULT_BUDGET))))
+                budget: ckbMcpJsonIntField(args, "budget", CangjieCapabilityLimits.DEFAULT_BUDGET)), sourceSet: sourceSet)))
         }
         if (name == "cangjie_cookbook") {
             let task = ckbMcpJsonStringField(args, "task").trimAscii()
             if (task == "") { return this.errorResponse(id, -32602, "task_required", "{}") }
-            return this.toolResult(id, this.packJson(this.service.cangjieCookbook(task,
+            return this.toolResult(id, renderCangjieRecipeResultJson(cangjieRecipeResultFromPack(this.service.cangjieCookbook(task,
                 constraints: ckbMcpJsonStringField(args, "constraints"),
                 targetVersion: ckbMcpJsonStringField(args, "targetVersion"),
                 style: ckbMcpJsonStringField(args, "style"),
-                budget: ckbMcpJsonIntField(args, "budget", CangjieCapabilityLimits.DEFAULT_BUDGET))))
+                budget: ckbMcpJsonIntField(args, "budget", CangjieCapabilityLimits.DEFAULT_BUDGET)), sourceSet: ckbMcpJsonStringField(args, "sourceSet"))))
         }
         if (name == "cangjie_diagnose") {
             let compilerOutput = ckbMcpJsonStringField(args, "compilerOutput").trimAscii()
             let context = ckbMcpJsonStringField(args, "context").trimAscii()
             if (compilerOutput == "" && context == "") { return this.errorResponse(id, -32602, "diagnostic_context_required", "{}") }
-            return this.toolResult(id, this.packJson(this.service.cangjieDiagnose(ckbMcpJsonStringField(args, "code"),
+            return this.toolResult(id, renderCangjieDiagnosticResultJson(cangjieDiagnosticResultFromPack(this.service.cangjieDiagnose(ckbMcpJsonStringField(args, "code"),
                 compilerOutput,
                 context: context,
                 targetVersion: ckbMcpJsonStringField(args, "targetVersion"),
-                budget: ckbMcpJsonIntField(args, "budget", CangjieCapabilityLimits.DEFAULT_BUDGET))))
+                budget: ckbMcpJsonIntField(args, "budget", CangjieCapabilityLimits.DEFAULT_BUDGET)), sourceSet: ckbMcpJsonStringField(args, "sourceSet"))))
         }
         if (name == "cangjie_examples") {
             let q = ckbMcpFirstNonEmpty(ckbMcpJsonStringField(args, "q"), ckbMcpJsonStringField(args, "query")).trimAscii()
             let module = ckbMcpJsonStringField(args, "module").trimAscii()
             let symbol = ckbMcpJsonStringField(args, "symbol").trimAscii()
             if (q == "" && module == "" && symbol == "") { return this.errorResponse(id, -32602, "query_required", "{}") }
-            return this.toolResult(id, this.packJson(this.service.cangjieExamples(q,
+            return this.toolResult(id, renderCangjieExampleSearchResultJson(cangjieExampleSearchResultFromPack(this.service.cangjieExamples(q,
                 module: module,
                 symbol: symbol,
                 maxExamples: ckbMcpJsonIntField(args, "maxExamples", CangjieCapabilityLimits.DEFAULT_EXAMPLE_LIMIT),
-                targetVersion: ckbMcpJsonStringField(args, "targetVersion"))))
+                targetVersion: ckbMcpJsonStringField(args, "targetVersion")), sourceSet: ckbMcpJsonStringField(args, "sourceSet"))))
         }
         this.toolResult(id, this.corpusStatusJson(this.service.cangjieCorpusStatus()))
     }

@@ -245,7 +245,7 @@ public func cangjieVersionResolutionJson(resolution: CangjieVersionResolution): 
 }
 
 public func cangjieTaskKnowledgePackJson(pack: CangjieTaskKnowledgePack): String {
-    var out = "{\"queryId\":\"${cangjieKnowledgeJsonEscape(pack.queryId)}\",\"taskId\":\"${cangjieKnowledgeJsonEscape(pack.taskId)}\",\"benchmark\":\"${cangjieKnowledgeJsonEscape(pack.benchmark)}\",\"knowledgeVersion\":\"${cangjieKnowledgeJsonEscape(pack.knowledgeVersion)}\",\"targetVersion\":\"${cangjieKnowledgeJsonEscape(pack.targetVersion)}\",\"evidenceHash\":\"${cangjieKnowledgeJsonEscape(pack.evidenceHash)}\",\"degraded\":${pack.degraded},\"truncated\":${pack.truncated},\"versionResolution\":${cangjieVersionResolutionJson(pack.versionResolution)},\"queryPlan\":["
+    var out = "{\"resultType\":\"task_knowledge_pack\",\"interfaceId\":\"KI-02\",\"contentFamily\":\"task_knowledge\",\"updateMechanism\":\"first_init_or_routine_update\",\"queryId\":\"${cangjieKnowledgeJsonEscape(pack.queryId)}\",\"taskId\":\"${cangjieKnowledgeJsonEscape(pack.taskId)}\",\"benchmark\":\"${cangjieKnowledgeJsonEscape(pack.benchmark)}\",\"knowledgeVersion\":\"${cangjieKnowledgeJsonEscape(pack.knowledgeVersion)}\",\"targetVersion\":\"${cangjieKnowledgeJsonEscape(pack.targetVersion)}\",\"evidenceHash\":\"${cangjieKnowledgeJsonEscape(pack.evidenceHash)}\",\"degraded\":${pack.degraded},\"truncated\":${pack.truncated},\"versionResolution\":${cangjieVersionResolutionJson(pack.versionResolution)},\"queryPlan\":["
     for (i in 0..pack.queryPlan.size) {
         if (i > 0) { out += "," }
         out += cangjieQueryPlanItemJson(pack.queryPlan[i])

@@ -334,7 +334,7 @@ private func ckbApiHandleCangjieSyntaxQuery(service: CkbCommandLoopService, body
     let pack = service.cangjieSyntaxQuery(q,
         targetVersion: ckbApiJsonStringField(body, "targetVersion"),
         budget: ckbApiJsonIntField(body, "budget", CangjieCapabilityLimits.DEFAULT_BUDGET))
-    ckbApiEnvelope(ckbApiCangjieKnowledgePackJson(pack))
+    ckbApiEnvelope(renderCangjieSyntaxRuleResultJson(cangjieSyntaxRuleResultFromPack(pack, sourceSet: ckbApiJsonStringField(body, "sourceSet"))))
 }
 
 private func ckbApiHandleCangjieApiSearch(service: CkbCommandLoopService, body: String): String {
@@ -350,7 +350,7 @@ private func ckbApiHandleCangjieApiSearch(service: CkbCommandLoopService, body: 
         sourceSet: ckbApiJsonStringField(body, "sourceSet"),
         targetVersion: ckbApiJsonStringField(body, "targetVersion"),
         budget: ckbApiJsonIntField(body, "budget", CangjieCapabilityLimits.DEFAULT_BUDGET))
-    ckbApiEnvelope(ckbApiCangjieKnowledgePackJson(pack))
+    ckbApiEnvelope(renderCangjieApiPatternResultJson(cangjieApiPatternResultFromPack(pack, sourceSet: ckbApiJsonStringField(body, "sourceSet"))))
 }
 
 private func ckbApiHandleCangjieCookbook(service: CkbCommandLoopService, body: String): String {
@@ -363,7 +363,7 @@ private func ckbApiHandleCangjieCookbook(service: CkbCommandLoopService, body: S
         targetVersion: ckbApiJsonStringField(body, "targetVersion"),
         style: ckbApiJsonStringField(body, "style"),
         budget: ckbApiJsonIntField(body, "budget", CangjieCapabilityLimits.DEFAULT_BUDGET))
-    ckbApiEnvelope(ckbApiCangjieKnowledgePackJson(pack))
+    ckbApiEnvelope(renderCangjieRecipeResultJson(cangjieRecipeResultFromPack(pack, sourceSet: ckbApiJsonStringField(body, "sourceSet"))))
 }
 
 private func ckbApiHandleCangjieDiagnose(service: CkbCommandLoopService, body: String): String {
@@ -377,7 +377,7 @@ private func ckbApiHandleCangjieDiagnose(service: CkbCommandLoopService, body: S
         context: context,
         targetVersion: ckbApiJsonStringField(body, "targetVersion"),
         budget: ckbApiJsonIntField(body, "budget", CangjieCapabilityLimits.DEFAULT_BUDGET))
-    ckbApiEnvelope(ckbApiCangjieKnowledgePackJson(pack))
+    ckbApiEnvelope(renderCangjieDiagnosticResultJson(cangjieDiagnosticResultFromPack(pack, sourceSet: ckbApiJsonStringField(body, "sourceSet"))))
 }
 
 private func ckbApiHandleCangjieExamples(service: CkbCommandLoopService, body: String): String {
@@ -392,7 +392,7 @@ private func ckbApiHandleCangjieExamples(service: CkbCommandLoopService, body: S
         symbol: symbol,
         maxExamples: ckbApiJsonIntField(body, "maxExamples", CangjieCapabilityLimits.DEFAULT_EXAMPLE_LIMIT),
         targetVersion: ckbApiJsonStringField(body, "targetVersion"))
-    ckbApiEnvelope(ckbApiCangjieKnowledgePackJson(pack))
+    ckbApiEnvelope(renderCangjieExampleSearchResultJson(cangjieExampleSearchResultFromPack(pack, sourceSet: ckbApiJsonStringField(body, "sourceSet"))))
 }
 
 private func ckbApiHandleCangjieContextPack(service: CkbCommandLoopService, body: String): String {
