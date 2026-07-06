@@ -189,7 +189,7 @@ public class CkbMcpStdioTest {
 
         @Expect(response.contains("\"structuredContent\""), true)
         @Expect(response.contains("\"ok\":false"), true)
-        @Expect(response.contains("version_not_resolved"), true)
+        @Expect(response.contains("exact_source_ref_not_resolved"), true)
         @Expect(response.contains("\"sources\":[]"), true)
     }
 

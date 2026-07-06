@@ -48,6 +48,6 @@ public class CangjieHttpContractTest {
         @Expect(response.statusCode, 200)
         @Expect(response.body.contains("\"ok\":true"), true)
         @Expect(response.body.contains("\"data\":{\"ok\":false"), true)
-        @Expect(response.body.contains("version_not_resolved"), true)
+        @Expect(response.body.contains("exact_source_ref_not_resolved"), true)
     }
 }

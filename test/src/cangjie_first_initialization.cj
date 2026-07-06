@@ -142,14 +142,20 @@ public func renderCkbFirstInitResult(result: CkbFirstInitResult): String {
 public func assembleCkbFirstInitializationRecords(options: CkbFirstInitOptions): CkbFirstInitAssembly {
     let assembly = CkbFirstInitAssembly()
     let targetVersion = if (options.targetVersion.trimAscii() == "") { cangjieDefaultTargetVersion() } else { options.targetVersion.trimAscii() }
-    let allResolution = resolveCangjieVersion(cangjieVersionSelector(targetVersion: targetVersion, sourceSet: CangjieSourceSets.ALL), defaultCangjieVersionManifest())
+    let manifest = buildCangjieVersionManifestFromRoots(targetVersion: targetVersion,
+        docsRoot: options.docsRoot,
+        toolDocsRoot: options.toolDocsRoot,
+        stdRoot: options.stdRoot,
+        stdxRoot: options.stdxRoot,
+        evalRoot: options.evalRoot)
+    let allResolution = resolveCangjieVersion(cangjieVersionSelector(targetVersion: targetVersion, sourceSet: CangjieSourceSets.ALL), manifest)
     ckbFirstInitCollectDocs(assembly, "docs", options.docsRoot, allResolution)
     if (options.toolDocsRoot.trimAscii() != "" && options.toolDocsRoot.trimAscii() != options.docsRoot.trimAscii()) {
         ckbFirstInitCollectDocs(assembly, "tools", options.toolDocsRoot, allResolution)
     }
-    ckbFirstInitCollectEval(assembly, options.evalRoot)
-    ckbFirstInitCollectSource(assembly, "std", options.stdRoot, CangjieSourceSets.STD, targetVersion)
-    ckbFirstInitCollectSource(assembly, "stdx", options.stdxRoot, CangjieSourceSets.STDX, targetVersion)
+    ckbFirstInitCollectEval(assembly, options.evalRoot, resolveCangjieVersion(cangjieVersionSelector(targetVersion: targetVersion, sourceSet: CangjieSourceSets.EVAL_SUPPORT), manifest))
+    ckbFirstInitCollectSource(assembly, "std", options.stdRoot, CangjieSourceSets.STD, resolveCangjieVersion(cangjieVersionSelector(targetVersion: targetVersion, sourceSet: CangjieSourceSets.STD), manifest))
+    ckbFirstInitCollectSource(assembly, "stdx", options.stdxRoot, CangjieSourceSets.STDX, resolveCangjieVersion(cangjieVersionSelector(targetVersion: targetVersion, sourceSet: CangjieSourceSets.STDX), manifest))
     assembly.records = dedupeCkbFirstInitializationRecords(assembly.records)
     assembly.ok = assembly.diagnostics.size == 0 && assembly.records.size > 0
     assembly
@@ -323,7 +329,7 @@ private func ckbFirstInitCollectDocs(assembly: CkbFirstInitAssembly, name: Strin
     assembly.sources.add(summary)
 }
 
-private func ckbFirstInitCollectEval(assembly: CkbFirstInitAssembly, root: String): Unit {
+private func ckbFirstInitCollectEval(assembly: CkbFirstInitAssembly, root: String, version: CangjieVersionResolution): Unit {
     let clean = root.trimAscii()
     let summary = CkbFirstInitSourceSummary()
     summary.name = "eval-support"
@@ -335,7 +341,7 @@ private func ckbFirstInitCollectEval(assembly: CkbFirstInitAssembly, root: Strin
         return
     }
     let roots = discoverCangjieHumanEvalCaseRoots(clean)
-    let records = extractAllEvalSupportRecords(clean)
+    let records = extractAllEvalSupportRecords(clean, version: version)
     summary.fileCount = roots.size
     summary.recordCount = records.records.size
     summary.ok = records.ok && records.records.size > 0
@@ -351,7 +357,7 @@ private func ckbFirstInitCollectEval(assembly: CkbFirstInitAssembly, root: Strin
     assembly.sources.add(summary)
 }
 
-private func ckbFirstInitCollectSource(assembly: CkbFirstInitAssembly, name: String, root: String, sourceSet: String, targetVersion: String): Unit {
+private func ckbFirstInitCollectSource(assembly: CkbFirstInitAssembly, name: String, root: String, sourceSet: String, resolution: CangjieVersionResolution): Unit {
     let clean = root.trimAscii()
     let summary = CkbFirstInitSourceSummary()
     summary.name = name
@@ -362,7 +368,11 @@ private func ckbFirstInitCollectSource(assembly: CkbFirstInitAssembly, name: Str
         assembly.sources.add(summary)
         return
     }
-    let resolution = resolveCangjieVersion(cangjieVersionSelector(targetVersion: targetVersion, sourceSet: sourceSet), defaultCangjieVersionManifest())
+    if (!resolution.ok) {
+        for (diagnostic in resolution.diagnostics) {
+            summary.diagnostics.add(diagnostic)
+        }
+    }
     let paths = discoverCangjieSourceRelativePaths(clean)
     let records = scanCangjieSourceSymbolsRoot(clean, sourceSet, resolution)
     summary.fileCount = paths.size
