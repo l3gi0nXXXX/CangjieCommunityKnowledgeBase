@@ -271,8 +271,22 @@ public class CkbSchedulerServiceF5Test {
         @Expect(result.ran, 1)
         @Expect(result.succeeded, 1)
         @Expect(result.details.contains("benchmark_gap_candidate_promoted"), true)
+        @Expect(f7SchedulerDiagnosticsContain(result, "benchmark_gap_preview:CJ-HUMANEVAL-004:"), true)
+        @Expect(f7SchedulerDiagnosticsContain(result, "benchmark_gap_preview:CJ-HUMANEVAL-004:") && f7SchedulerDiagnosticsContain(result, "ok=true"), true)
+        @Expect(f7SchedulerDiagnosticsContain(result, "benchmark_gap_query_proof:CJ-HUMANEVAL-004:coveragePass=true"), true)
         @Expect(status.activeKnowledgeVersion.endsWith("-active"), true)
         @Expect(store.has("index/active.ckb"), true)
+
+        let request = CangjieTaskKnowledgeRequest()
+        request.taskId = "CJ-HUMANEVAL-004"
+        request.benchmark = "Cangjie-HumanEval"
+        request.taskText = "Use ArrayList.add for visible input."
+        request.compilerOutput = "compile_error"
+        request.expectedKnowledgeTags.add("G-ARRAYLIST")
+        request.versionSelector = cangjieVersionSelector(targetVersion: "1.0.0", sourceSet: CangjieSourceSets.ALL)
+        let pack = service.cangjieTaskKnowledgePack(request)
+        @Expect(pack.coverage.coveragePass, true)
+        @Expect(pack.citations.size > 0, true)
     }
 
     @TestCase
@@ -288,6 +302,41 @@ public class CkbSchedulerServiceF5Test {
         @Expect(result.failed, 1)
         @Expect(result.details.contains("benchmark_gap_curation_input_missing"), true)
     }
+
+    @TestCase
+    public func f7Neg01BenchmarkGapSchedulerRejectsBadMappingWithoutPromoting(): Unit {
+        let root = "target/f7-scheduler-gap-bad-mapping"
+        if (!exists(Path(root))) {
+            Directory.create(Path(root), recursive: true)
+        }
+        let inputPath = "${root}/gap-curation-input.jsonl"
+        File.writeTo(Path(inputPath), "{\"caseId\":\"CJ-HUMANEVAL-005\",\"benchmark\":\"Cangjie-HumanEval\",\"taskText\":\"Use ArrayList.add for visible input.\",\"visibleTestExcerpt\":\"assert solve([1,2]) == 3\",\"compilerOutput\":\"compile_error\",\"missingKnowledge\":\"G-ARRAYLIST\",\"interfaceId\":\"KI-04\",\"contentFamily\":\"KC-02\",\"updateMechanism\":\"KU-11\",\"targetVersion\":\"1.0.0\",\"officialCitation\":\"https://docs.cangjie-lang.cn/docs/1.0.0/libs/std/collection\"}\n".toArray())
+        let config = CkbRuntimeConfig()
+        config.benchmarkGapCurationInputPath = inputPath
+        let service = CkbCommandLoopService(config, FileKnowledgeStore("${root}/store"))
+        _ = service.start()
+        let before = service.statusSnapshot().activeKnowledgeVersion
+        let tasks = ArrayList<String>()
+        tasks.add("cangjie_benchmark_gap_curation")
+
+        let result = service.runSchedulerTasks(tasks, true)
+        let after = service.statusSnapshot().activeKnowledgeVersion
+
+        @Expect(result.ran, 1)
+        @Expect(result.failed, 1)
+        @Expect(result.details.contains("no_gap_records_accepted"), true)
+        @Expect(result.details.contains("benchmark_gap_candidate_promoted"), false)
+        @Expect(after, before)
+    }
+}
+
+private func f7SchedulerDiagnosticsContain(result: SchedulerExecutorResult, needle: String): Bool {
+    for (diagnostic in result.validationDiagnostics) {
+        if (diagnostic.contains(needle)) {
+            return true
+        }
+    }
+    false
 }
 
 private class F5FreshnessProbeRunner <: SourceFetchRunner {

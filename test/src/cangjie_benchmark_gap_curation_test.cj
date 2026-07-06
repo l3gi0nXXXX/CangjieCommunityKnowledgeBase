@@ -72,4 +72,16 @@ public class CangjieBenchmarkGapCurationTest {
         @Expect(result.rejected, 1)
         @Expect(result.diagnostics[0].contains("official_citation_required"), true)
     }
+
+    @TestCase
+    public func f7Neg001CurationJsonlWithWrongInterfaceMappingIsRejected(): Unit {
+        let jsonl = "{\"caseId\":\"CJ-HUMANEVAL-004\",\"benchmark\":\"Cangjie-HumanEval\",\"taskText\":\"Implement ArrayList helper.\",\"compilerOutput\":\"compile_error\",\"missingKnowledge\":\"G-ARRAYLIST\",\"interfaceId\":\"KI-04\",\"contentFamily\":\"KC-02\",\"updateMechanism\":\"KU-11\",\"targetVersion\":\"1.0.0\",\"officialCitation\":\"https://docs.cangjie-lang.cn/docs/1.0.0/libs/std/collection\"}\n"
+
+        let result = curateBenchmarkGapRecordsFromJsonl(jsonl)
+
+        @Expect(result.ok, false)
+        @Expect(result.accepted, 0)
+        @Expect(result.rejected, 1)
+        @Expect(result.diagnostics[0].contains("interface_mapping_mismatch:KI-02"), true)
+    }
 }
