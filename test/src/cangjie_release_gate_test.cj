@@ -27,8 +27,12 @@ public class CangjieReleaseGateTest {
         @Expect(f8HasStep(report, "E2E-04-transport-parity", true), true)
         @Expect(f8HasStep(report, "E2E-05-pass1-gate", true), true)
         @Expect(exists(Path("${runRoot}/release-gate.json")), true)
+        @Expect(exists(Path("${runRoot}/release-gate-steps.jsonl")), true)
         @Expect(exists(Path("${runRoot}/route-probe.jsonl")), true)
+        @Expect(String.fromUtf8(File.readFrom(Path("${runRoot}/route-probe.jsonl"))).contains("\"evidenceHash\""), true)
+        @Expect(exists(Path("${runRoot}/scheduler-forced-run.jsonl")), true)
         @Expect(exists(Path("${runRoot}/transport-parity.jsonl")), true)
+        @Expect(exists(Path("${runRoot}/pass1-gate.json")), true)
     }
 
     @TestCase

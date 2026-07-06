@@ -1,6 +1,7 @@
 package cangjie_community_knowledge_base
 
 import std.collection.ArrayList
+import std.fs.{File, Path, exists}
 
 public class CkbLandingCapabilityStatus {
     public var id: String = ""
@@ -22,14 +23,18 @@ public class CkbLandingStatusReport {
 }
 
 public func collectCkbLandingStatus(service: CkbCommandLoopService): CkbLandingStatusReport {
+    collectCkbLandingStatusWithArtifacts(service, "")
+}
+
+public func collectCkbLandingStatusWithArtifacts(service: CkbCommandLoopService, runRoot: String): CkbLandingStatusReport {
     let report = CkbLandingStatusReport()
     let status = service.statusSnapshot()
     report.activeKnowledgeVersion = status.activeKnowledgeVersion
     report.capabilities.add(ckbLandingFirstInitStatus(status))
     report.capabilities.add(ckbLandingTaskPackStatus(service))
     report.capabilities.add(ckbLandingSchedulerStatus(status))
-    report.capabilities.add(ckbLandingRouteContractStatus())
-    report.capabilities.add(ckbLandingPass1GateStatus())
+    report.capabilities.add(ckbLandingRouteContractStatus(service))
+    report.capabilities.add(ckbLandingPass1GateStatus(runRoot))
     ckbLandingFinalize(report)
     report
 }
@@ -128,20 +133,94 @@ private func ckbLandingSchedulerStatus(status: KnowledgeStatus): CkbLandingCapab
     item
 }
 
-private func ckbLandingRouteContractStatus(): CkbLandingCapabilityStatus {
+private func ckbLandingRouteContractStatus(service: CkbCommandLoopService): CkbLandingCapabilityStatus {
     let item = ckbLandingCapability("F2-route-contract")
-    item.status = "partial"
-    item.diagnostic = "route_probe_required"
-    item.evidence = "schema_routes_declared_but_runtime_probe_required"
+    var passed: Int64 = 0
+    let total: Int64 = 15
+    if (ckbLandingRouteProbeOk(service, "GET", "/v1/health", "{}", [], "activeKnowledgeVersion")) { passed += 1 }
+    if (ckbLandingRouteProbeOk(service, "GET", "/v1/status", "{}", [], "storage")) { passed += 1 }
+    if (ckbLandingRouteProbeOk(service, "GET", "/v1/schedules", "{}", [], "entries")) { passed += 1 }
+    if (ckbLandingRouteProbeOk(service, "GET", "/v1/schema", "{}", [], "routes")) { passed += 1 }
+    if (ckbLandingRouteProbeOk(service, "GET", "/v1/cangjie/corpus/status", "{}", [], "activeKnowledgeVersion")) { passed += 1 }
+    if (ckbLandingRouteProbeOk(service, "POST", "/v1/cangjie/task-knowledge-pack", ckbLandingTaskContextJson(), [], "versionResolution")) { passed += 1 }
+    if (ckbLandingRouteProbeOk(service, "POST", "/v1/cangjie/knowledge-coverage", ckbLandingTaskContextJson(), [], "coveragePass")) { passed += 1 }
+    if (ckbLandingRouteProbeOk(service, "POST", "/v1/cangjie/compile-diagnose-v2", "{\"compilerOutput\":\"unknown symbol ArrayList.add\",\"targetVersion\":\"1.0.0\",\"budget\":3}", [], "versionResolution")) { passed += 1 }
+    if (ckbLandingRouteProbeOk(service, "POST", "/v1/cangjie/symbol-lookup", "{\"symbol\":\"ArrayList.add\",\"sourceSet\":\"std\",\"targetVersion\":\"1.0.0\"}", [], "resultType")) { passed += 1 }
+    if (ckbLandingRouteProbeOk(service, "POST", "/v1/cangjie/doc-section", "{\"path\":\"dev-guide/source_en/api/collections.md\",\"targetVersion\":\"1.0.0\"}", [], "resultType")) { passed += 1 }
+    if (ckbLandingRouteProbeOk(service, "GET", "/v1/cangjie/corpus/freshness", "{}", [], "resultType")) { passed += 1 }
+    if (ckbLandingRouteProbeOk(service, "POST", "/v1/cangjie/tool-manual", "{\"tool\":\"cjpm\",\"command\":\"test\",\"targetVersion\":\"1.0.0\"}", [], "resultType")) { passed += 1 }
+    if (ckbLandingRouteProbeOk(service, "POST", "/v1/cangjie/negative-rules", "{\"q\":\"ArrayList.add\",\"targetVersion\":\"1.0.0\"}", [], "resultType")) { passed += 1 }
+    if (ckbLandingRouteProbeOk(service, "POST", "/v1/evidence-pack", "{\"q\":\"ArrayList.add\",\"budget\":3}", [], "knowledgeVersion")) { passed += 1 }
+    if (ckbLandingRouteProbeOk(service, "POST", "/v1/admin/initialize", "{\"dryRun\":true}", ["X-CKB-Admin-Token: landing-status"], "activeKnowledgeVersion")) { passed += 1 }
+    item.evidence = "passed=${passed},total=${total}"
+    if (passed == total) {
+        item.status = "landed"
+        item.diagnostic = "route_contract_probe_passed"
+    } else {
+        item.status = "partial"
+        item.diagnostic = "route_contract_probe_failed:${passed}/${total}"
+    }
     item
 }
 
-private func ckbLandingPass1GateStatus(): CkbLandingCapabilityStatus {
+private func ckbLandingPass1GateStatus(runRoot: String): CkbLandingCapabilityStatus {
     let item = ckbLandingCapability("F8-humaneval-pass1-gate")
+    if (runRoot.trimAscii() == "") {
+        item.status = "missing"
+        item.diagnostic = "pass1_gate_result_missing"
+        item.evidence = "runRoot=absent"
+        return item
+    }
+    let jsonPath = Path(runRoot).join("pass1-gate.json")
+    let markdownPath = Path(runRoot).join("pass1-gate.md")
+    if (exists(jsonPath)) {
+        let text = ckbLandingReadText(jsonPath)
+        item.evidence = "artifact=pass1-gate.json"
+        if (text.contains("\"releaseGate\":\"pass\"") || text.contains("\"ok\":true")) {
+            item.status = "landed"
+            item.diagnostic = "pass1_gate_passed"
+        } else {
+            item.status = "missing"
+            item.diagnostic = "pass1_gate_failed"
+        }
+        return item
+    }
+    if (exists(markdownPath)) {
+        let text = ckbLandingReadText(markdownPath)
+        item.evidence = "artifact=pass1-gate.md"
+        if (text.contains("- releaseGate: pass")) {
+            item.status = "landed"
+            item.diagnostic = "pass1_gate_passed"
+        } else {
+            item.status = "missing"
+            item.diagnostic = "pass1_gate_failed"
+        }
+        return item
+    }
     item.status = "missing"
     item.diagnostic = "pass1_gate_result_missing"
-    item.evidence = "C/D full 164/164 pass@1 not recorded by landing status"
+    item.evidence = "artifact=absent"
     item
+}
+
+private func ckbLandingRouteProbeOk(service: CkbCommandLoopService, method: String, path: String, body: String, headers: Array<String>, expected: String): Bool {
+    let response = ckbApiHandle(service, method, path, body, headers)
+    if (response.contains("\"code\":\"ckb.not_found\"") || response.contains("\"code\":\"ckb.method_not_allowed\"") || response.contains("\"status\":404")) {
+        return false
+    }
+    expected == "" || response.contains(expected)
+}
+
+private func ckbLandingTaskContextJson(): String {
+    "{\"taskId\":\"landing-status\",\"benchmark\":\"Cangjie-HumanEval\",\"taskText\":\"Implement a Cangjie ArrayList helper.\",\"signature\":\"func solution(values: Array<Int64>): Int64\",\"imports\":[],\"argTypes\":[\"Array<Int64>\"],\"returnType\":\"Int64\",\"expectedKnowledgeTags\":[\"ArrayList\",\"Cangjie syntax\"],\"starterCodeExcerpt\":\"\",\"compilerOutput\":\"\",\"targetVersion\":\"1.0.0\",\"sourceSet\":\"all\",\"sourceRef\":\"\",\"versionPolicy\":\"default\",\"budget\":5}"
+}
+
+private func ckbLandingReadText(path: Path): String {
+    try {
+        String.fromUtf8(File.readFrom(path))
+    } catch (_: Exception) {
+        ""
+    }
 }
 
 private func ckbLandingFinalize(report: CkbLandingStatusReport): Unit {

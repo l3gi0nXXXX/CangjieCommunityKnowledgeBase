@@ -1,6 +1,7 @@
 package cangjie_community_knowledge_base_test
 
 import std.collection.ArrayList
+import std.fs.{Directory, File, Path, exists}
 import std.unittest.*
 import std.unittest.testmacro.*
 
@@ -50,6 +51,41 @@ public class CangjieLandingStatusTest {
     }
 
     @TestCase
+    public func f0Ut002RouteContractUsesRuntimeProbe(): Unit {
+        let service = CkbCommandLoopService(CkbRuntimeConfig(), FileKnowledgeStore("target/f0-landing-route-store"))
+        service.start()
+
+        let report = collectCkbLandingStatus(service)
+
+        @Expect(ckbLandingTestStatus(report, "F2-route-contract"), "landed")
+        @Expect(ckbLandingTestDiagnostic(report, "F2-route-contract"), "route_contract_probe_passed")
+    }
+
+    @TestCase
+    public func f0Bnd003Pass1WithoutArtifactIsMissing(): Unit {
+        let service = CkbCommandLoopService(CkbRuntimeConfig(), FileKnowledgeStore("target/f0-landing-pass1-missing-store"))
+        service.start()
+
+        let report = collectCkbLandingStatusWithArtifacts(service, "target/f0-landing-pass1-missing-run")
+
+        @Expect(ckbLandingTestStatus(report, "F8-humaneval-pass1-gate"), "missing")
+        @Expect(ckbLandingTestDiagnostic(report, "F8-humaneval-pass1-gate"), "pass1_gate_result_missing")
+    }
+
+    @TestCase
+    public func f0Pos002Pass1ArtifactCanBeLanded(): Unit {
+        let service = CkbCommandLoopService(CkbRuntimeConfig(), FileKnowledgeStore("target/f0-landing-pass1-artifact-store"))
+        service.start()
+        let runRoot = "target/f0-landing-pass1-artifact-run"
+        f0WriteFile(Path(runRoot).join("pass1-gate.json"), "{\"ok\":true,\"releaseGate\":\"pass\"}\n")
+
+        let report = collectCkbLandingStatusWithArtifacts(service, runRoot)
+
+        @Expect(ckbLandingTestStatus(report, "F8-humaneval-pass1-gate"), "landed")
+        @Expect(ckbLandingTestDiagnostic(report, "F8-humaneval-pass1-gate"), "pass1_gate_passed")
+    }
+
+    @TestCase
     public func f0Pos001CompleteReportRendersAsComplete(): Unit {
         let report = CkbLandingStatusReport()
         report.ok = true
@@ -75,6 +111,13 @@ public class CangjieLandingStatusTest {
         @Expect(denied.contains("ckb.unauthorized"), true)
         @Expect(allowed.contains("\"overallStatus\""), true)
     }
+}
+
+private func f0WriteFile(path: Path, text: String): Unit {
+    if (!exists(path.parent)) {
+        Directory.create(path.parent, recursive: true)
+    }
+    File.writeTo(path, text.toArray())
 }
 
 private func ckbLandingTestStatus(report: CkbLandingStatusReport, id: String): String {
