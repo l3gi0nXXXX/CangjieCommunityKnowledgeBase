@@ -32,6 +32,10 @@ public class CangjieQueryCacheKey {
 public class CangjieQueryCacheEntry {
     public var key: CangjieQueryCacheKey = CangjieQueryCacheKey()
     public var valueHash: String = ""
+    public var resultSummary: String = ""
+    public var hitIds: ArrayList<String> = ArrayList<String>()
+    public var createdAt: Int64 = 0
+    public var activeKnowledgeVersion: String = ""
     public var hitCount: Int64 = 0
 
     public init() {}
@@ -40,6 +44,10 @@ public class CangjieQueryCacheEntry {
 public class CangjieQueryCacheLookup {
     public var hit: Bool = false
     public var valueHash: String = ""
+    public var resultSummary: String = ""
+    public var hitIds: ArrayList<String> = ArrayList<String>()
+    public var createdAt: Int64 = 0
+    public var activeKnowledgeVersion: String = ""
     public var diagnostic: String = ""
 
     public init() {}
@@ -54,12 +62,20 @@ public class CangjieQueryCache {
     }
 
     public func put(key: CangjieQueryCacheKey, valueHash: String): String {
+        this.putResult(key, valueHash, resultSummary: "", hitIds: ArrayList<String>(), createdAt: 0)
+    }
+
+    public func putResult(key: CangjieQueryCacheKey, valueHash: String, resultSummary!: String = "", hitIds!: ArrayList<String> = ArrayList<String>(), createdAt!: Int64 = 0): String {
         if (!key.valid()) {
             return "invalid_cache_key"
         }
         for (entry in this.entries) {
             if (entry.key.text() == key.text()) {
                 entry.valueHash = valueHash
+                entry.resultSummary = resultSummary
+                entry.hitIds = cangjieQueryCacheCopyHitIds(hitIds)
+                entry.createdAt = createdAt
+                entry.activeKnowledgeVersion = key.activeKnowledgeVersion
                 return "updated"
             }
         }
@@ -69,6 +85,10 @@ public class CangjieQueryCache {
         let entry = CangjieQueryCacheEntry()
         entry.key = key
         entry.valueHash = valueHash
+        entry.resultSummary = resultSummary
+        entry.hitIds = cangjieQueryCacheCopyHitIds(hitIds)
+        entry.createdAt = createdAt
+        entry.activeKnowledgeVersion = key.activeKnowledgeVersion
         this.entries.add(entry)
         "stored"
     }
@@ -83,6 +103,10 @@ public class CangjieQueryCache {
             if (entry.key.text() == key.text()) {
                 lookup.hit = true
                 lookup.valueHash = entry.valueHash
+                lookup.resultSummary = entry.resultSummary
+                lookup.hitIds = cangjieQueryCacheCopyHitIds(entry.hitIds)
+                lookup.createdAt = entry.createdAt
+                lookup.activeKnowledgeVersion = entry.activeKnowledgeVersion
                 entry.hitCount += 1
                 return lookup
             }
@@ -134,4 +158,12 @@ private func cangjieQueryCacheHash(raw: String): String {
         hash = 1
     }
     "qh${hash}-${raw.size}"
+}
+
+private func cangjieQueryCacheCopyHitIds(values: ArrayList<String>): ArrayList<String> {
+    let out = ArrayList<String>()
+    for (value in values) {
+        out.add(value)
+    }
+    out
 }

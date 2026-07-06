@@ -1381,6 +1381,26 @@ public class CkbBaselineTest {
     }
 
     @TestCase
+    public func p4Neg001QdrantDimensionMismatchIsExplicitlyDegraded(): Unit {
+        let config = CkbRuntimeConfig()
+        config.embeddingProvider = "ollama"
+        config.embeddingModel = "bge-m3:latest"
+        config.embeddingDimensions = 1024
+        config.embeddingEndpoint = "http://127.0.0.1:11434/api/embed"
+        config.embeddingAllowPrivateEndpoint = true
+        config.vectorBackend = "qdrant"
+        config.vectorEndpoint = "http://127.0.0.1:6333"
+        config.vectorAllowPrivateEndpoint = true
+        config.vectorDimensions = 16
+
+        let vector = vectorStoreFromRuntime(config).status("ckb_active")
+
+        @Expect(vector.backend, "qdrant")
+        @Expect(vector.state, EmbeddingProviderState.DEGRADED)
+        @Expect(vector.degradedReason, "embedding_vector_dimension_mismatch")
+    }
+
+    @TestCase
     public func runtimeFactoriesRejectUnknownProductionProvidersWithoutDeterministicFallback(): Unit {
         let config = CkbRuntimeConfig()
         config.embeddingProvider = "unknown-provider"

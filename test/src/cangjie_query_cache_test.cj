@@ -1,5 +1,6 @@
 package cangjie_community_knowledge_base_test
 
+import std.collection.ArrayList
 import std.unittest.*
 import std.unittest.testmacro.*
 
@@ -43,6 +44,25 @@ public class CangjieQueryCacheTest {
         @Expect(cache.put(newKey, "hash-new"), "stored")
         @Expect(cache.get(newKey).hit, true)
         @Expect(cache.get(newKey).valueHash, "hash-new")
+    }
+
+    @TestCase
+    public func p4Pos001CacheStoresStructuredResultMetadata(): Unit {
+        let cache = CangjieQueryCache(2)
+        let key = cangjieServingCacheKey("vr1", "active-a", "std", "ArrayList.add", 2, "knowledge-pack", targetVersion: "1.0.0", interfaceId: "KI-03", selector: "ArrayList.add")
+        let hitIds = ArrayList<String>()
+        hitIds.add("serving-symbol-arraylist-add")
+
+        @Expect(cache.putResult(key, "hash-a", resultSummary: "ok=true;hits=1", hitIds: hitIds, createdAt: 42), "stored")
+        let lookup = cache.get(key)
+
+        @Expect(lookup.hit, true)
+        @Expect(lookup.valueHash, "hash-a")
+        @Expect(lookup.resultSummary, "ok=true;hits=1")
+        @Expect(lookup.hitIds.size, 1)
+        @Expect(lookup.hitIds[0], "serving-symbol-arraylist-add")
+        @Expect(lookup.createdAt, 42)
+        @Expect(lookup.activeKnowledgeVersion, "active-a")
     }
 
     @TestCase

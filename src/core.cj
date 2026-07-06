@@ -2593,6 +2593,13 @@ public class KnowledgeBase {
         status
     }
 
+    public func servingCachePutResult(key: CangjieQueryCacheKey, valueHash: String, resultSummary: String, hitIds: ArrayList<String>): String {
+        let status = this.servingQueryCache.putResult(key, valueHash, resultSummary: resultSummary, hitIds: hitIds, createdAt: this.scheduler.clock.nowMinutes)
+        this.storage.queryCacheSize = this.servingQueryCache.size()
+        this.storage.queryCacheDiagnostic = status
+        status
+    }
+
     public func recordServingCacheDiagnostic(diagnostic: String): Unit {
         this.storage.queryCacheDiagnostic = diagnostic
         this.storage.queryCacheSize = this.servingQueryCache.size()
