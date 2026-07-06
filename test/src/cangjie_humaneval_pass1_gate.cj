@@ -57,6 +57,7 @@ public class CangjieHumanEvalRemainingGap {
     public var caseId: String = ""
     public var group: String = ""
     public var status: String = ""
+    public var targetVersion: String = ""
     public var tags: ArrayList<String> = ArrayList<String>()
     public var gapCodes: ArrayList<String> = ArrayList<String>()
     public var kiInterfaces: ArrayList<String> = ArrayList<String>()
@@ -368,6 +369,7 @@ private func cangjieHumanEvalRemainingGapForCase(evalCase: CangjieEvalCase, grou
     gap.caseId = evalCase.id
     gap.group = group
     gap.status = status
+    gap.targetVersion = evalCase.targetVersion
     gap.taskText = evalCase.prompt
     for (tag in evalCase.expectedKnowledgeTags) {
         gap.tags.add(tag)
@@ -432,7 +434,7 @@ public func renderCangjieHumanEvalPass1GateJson(result: CangjieHumanEvalPass1Gat
     for (i in 0..result.remainingGaps.size) {
         if (i > 0) { gaps += "," }
         let gap = result.remainingGaps[i]
-        gaps += "{\"caseId\":\"${cangjieHumanEvalGateJsonEscape(gap.caseId)}\",\"group\":\"${cangjieHumanEvalGateJsonEscape(gap.group)}\",\"status\":\"${cangjieHumanEvalGateJsonEscape(gap.status)}\",\"gapCodes\":[${cangjieHumanEvalGateJsonStringArray(gap.gapCodes)}],\"kiInterfaces\":[${cangjieHumanEvalGateJsonStringArray(gap.kiInterfaces)}],\"tags\":[${cangjieHumanEvalGateJsonStringArray(gap.tags)}]}"
+        gaps += "{\"caseId\":\"${cangjieHumanEvalGateJsonEscape(gap.caseId)}\",\"group\":\"${cangjieHumanEvalGateJsonEscape(gap.group)}\",\"status\":\"${cangjieHumanEvalGateJsonEscape(gap.status)}\",\"targetVersion\":\"${cangjieHumanEvalGateJsonEscape(gap.targetVersion)}\",\"gapCodes\":[${cangjieHumanEvalGateJsonStringArray(gap.gapCodes)}],\"kiInterfaces\":[${cangjieHumanEvalGateJsonStringArray(gap.kiInterfaces)}],\"tags\":[${cangjieHumanEvalGateJsonStringArray(gap.tags)}]}"
     }
     "{\"ok\":${result.ok},\"releaseGate\":\"${if (result.ok) { "pass" } else { "fail" }}\",\"runRoot\":\"${cangjieHumanEvalGateJsonEscape(result.runRoot)}\",\"manifestPath\":\"${cangjieHumanEvalGateJsonEscape(result.manifestPath)}\",\"expectedTotal\":${result.expectedTotal},\"expectedPass\":${result.expectedPass},\"manifestCaseCount\":${result.manifestCaseCount},\"parsedResultRows\":${result.parsedResultRows},\"diagnostics\":[${cangjieHumanEvalGateJsonStringArray(result.diagnostics)}],\"groups\":[${groups}],\"remainingGaps\":[${gaps}]}\n"
 }
@@ -440,7 +442,9 @@ public func renderCangjieHumanEvalPass1GateJson(result: CangjieHumanEvalPass1Gat
 public func emitCangjieHumanEvalGapCurationInput(result: CangjieHumanEvalPass1GateResult): String {
     var out = ""
     for (gap in result.remainingGaps) {
-        out += "{\"caseId\":\"${cangjieHumanEvalGateJsonEscape(gap.caseId)}\",\"benchmark\":\"Cangjie-HumanEval\",\"taskText\":\"${cangjieHumanEvalGateJsonEscape(gap.taskText)}\",\"visibleTestExcerpt\":\"\",\"compilerOutput\":\"\",\"missingKnowledge\":\"${cangjieHumanEvalGateJsonEscape(cangjieHumanEvalGateJoin(gap.gapCodes, ","))}\",\"officialCitation\":\"https://docs.cangjie-lang.cn/docs/1.0.0/\"}\n"
+        for (gapCode in gap.gapCodes) {
+            out += "{\"caseId\":\"${cangjieHumanEvalGateJsonEscape(gap.caseId)}\",\"benchmark\":\"Cangjie-HumanEval\",\"taskText\":\"${cangjieHumanEvalGateJsonEscape(gap.taskText)}\",\"visibleTestExcerpt\":\"\",\"compilerOutput\":\"${cangjieHumanEvalGateJsonEscape(gap.status)}\",\"missingKnowledge\":\"${cangjieHumanEvalGateJsonEscape(gapCode)}\",\"interfaceId\":\"${cangjieHumanEvalGateJsonEscape(cangjieHumanEvalGatePrimaryInterface(gapCode))}\",\"contentFamily\":\"${cangjieHumanEvalGateContentFamily(gapCode)}\",\"updateMechanism\":\"KU-11\",\"targetVersion\":\"${cangjieHumanEvalGateJsonEscape(if (gap.targetVersion == "") { cangjieDefaultTargetVersion() } else { gap.targetVersion })}\",\"officialCitation\":\"https://docs.cangjie-lang.cn/docs/1.0.0/\"}\n"
+        }
     }
     out
 }
@@ -514,12 +518,35 @@ private func cangjieHumanEvalGateKiInterfaces(gapCode: String): ArrayList<String
         interfaces.add("KI-05")
         interfaces.add("KI-06")
         interfaces.add("KI-13")
+    } else if (gapCode == "G-ARRAYLIST" || gapCode == "G-STRING" || gapCode == "G-HASHMAP" || gapCode == "G-FLOAT64") {
+        interfaces.add("KI-02")
+        interfaces.add("KI-03")
+        interfaces.add("KI-06")
+        interfaces.add("KI-07")
     } else {
         interfaces.add("KI-04")
         interfaces.add("KI-06")
         interfaces.add("KI-07")
     }
     interfaces
+}
+
+private func cangjieHumanEvalGatePrimaryInterface(gapCode: String): String {
+    let interfaces = cangjieHumanEvalGateKiInterfaces(gapCode)
+    if (interfaces.size > 0) {
+        return interfaces[0]
+    }
+    "KI-07"
+}
+
+private func cangjieHumanEvalGateContentFamily(gapCode: String): String {
+    if (gapCode == "G-RECIPE" || gapCode == "G-TIMEOUT" || gapCode == "G-EDGE" || gapCode == "G-EVALVALUE" || gapCode == "G-EVALENTRY") {
+        return "KC-05"
+    }
+    if (gapCode == "G-ARRAYLIST" || gapCode == "G-STRING" || gapCode == "G-HASHMAP" || gapCode == "G-FLOAT64") {
+        return "KC-02"
+    }
+    "KC-01"
 }
 
 private func cangjieHumanEvalGateManifestLine(caseId: String, prompt: String, tagsJson: String): String {

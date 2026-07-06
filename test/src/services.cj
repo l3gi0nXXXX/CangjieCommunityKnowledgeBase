@@ -307,6 +307,8 @@ public class CkbRuntimeConfig {
     public var firstInitStdxRoot: String = ""
     public var firstInitEvalRoot: String = ""
     public var firstInitTargetVersion: String = cangjieDefaultTargetVersion()
+    public var benchmarkGapCurationInputPath: String = ""
+    public var benchmarkGapTargetVersion: String = cangjieDefaultTargetVersion()
 
     public init() {}
 
@@ -447,6 +449,8 @@ public class CkbRuntimeConfig {
         out += " firstInit.stdxRoot=${if (this.firstInitStdxRoot == "") { "absent" } else { "present" }}"
         out += " firstInit.evalRoot=${if (this.firstInitEvalRoot == "") { "absent" } else { "present" }}"
         out += " firstInit.targetVersion=${if (this.firstInitTargetVersion == "") { "unset" } else { this.firstInitTargetVersion }}"
+        out += " benchmarkGap.curationInput=${if (this.benchmarkGapCurationInputPath == "") { "absent" } else { "present" }}"
+        out += " benchmarkGap.targetVersion=${if (this.benchmarkGapTargetVersion == "") { "unset" } else { this.benchmarkGapTargetVersion }}"
         out += " website=${if (this.websiteEnabled) { "enabled" } else { "disabled" }}"
         out += " docs=${if (this.docsEnabled) { "enabled" } else { "disabled" }}"
         out += " index.backend=${this.indexBackend}"
@@ -3661,7 +3665,7 @@ public class CkbSchedulerTaskRunner <: SchedulerTaskRunner {
         }
         let fetch = ckbRunScheduledProfileFetches(profile, this.sourceRunner, this.config)
         fetch.runId = "${this.kb.scheduler.clock.nowMinutes}"
-        let ingest = ingestScheduledProfileSources(this.kb, this.store, profile, fetch)
+        let ingest = ingestScheduledProfileSources(this.kb, this.store, profile, fetch, this.config)
         let status = this.kb.status()
         result.ok = fetch.ok && ingest.ok
         result.status = if (result.ok) { ingest.status } else { if (ingest.status != "") { ingest.status } else { "profile_degraded" } }
@@ -4273,11 +4277,11 @@ private func ckbFetchScheduledSource(runner: SourceFetchRunner, request: SourceF
     result.records.add(record)
 }
 
-private func ingestScheduledProfileSources(kb: KnowledgeBase, store: FileKnowledgeStore, profile: CkbScheduleTaskProfile, fetch: CkbScheduledProfileFetchResult): CkbScheduledProfileIngestResult {
+private func ingestScheduledProfileSources(kb: KnowledgeBase, store: FileKnowledgeStore, profile: CkbScheduleTaskProfile, fetch: CkbScheduledProfileFetchResult, config: CkbRuntimeConfig): CkbScheduledProfileIngestResult {
     let result = CkbScheduledProfileIngestResult()
     result.status = if (fetch.ok) { "profile_ok" } else { fetch.status }
     if (profile.profile == "cangjie_benchmark_gap_curation") {
-        return ingestScheduledBenchmarkGapCuration(kb, store, profile)
+        return ingestScheduledBenchmarkGapCuration(kb, store, profile, config)
     }
     if (profile.candidateMode == "" || profile.candidateMode == "none" || profile.candidateMode == "probe_only") {
         result.ok = fetch.ok
@@ -4304,18 +4308,25 @@ private func ingestScheduledProfileSources(kb: KnowledgeBase, store: FileKnowled
     result
 }
 
-private func ingestScheduledBenchmarkGapCuration(kb: KnowledgeBase, store: FileKnowledgeStore, profile: CkbScheduleTaskProfile): CkbScheduledProfileIngestResult {
+private func ingestScheduledBenchmarkGapCuration(kb: KnowledgeBase, store: FileKnowledgeStore, profile: CkbScheduleTaskProfile, config: CkbRuntimeConfig): CkbScheduledProfileIngestResult {
     let result = CkbScheduledProfileIngestResult()
-    let inputs = ArrayList<CangjieBenchmarkGapInput>()
-    let input = CangjieBenchmarkGapInput()
-    input.caseId = "scheduled-visible-gap"
-    input.taskText = "Use ArrayList.add with official Cangjie collection knowledge."
-    input.visibleTestExcerpt = "assert solve([1, 2]) == 3"
-    input.compilerOutput = "ArrayList import required"
-    input.missingKnowledge = "ArrayList.add"
-    input.officialCitation = "https://docs.cangjie-lang.cn/docs/1.0.0/libs/std/collection"
-    inputs.add(input)
-    let curated = curateBenchmarkGapRecords(inputs)
+    if (config.benchmarkGapCurationInputPath.trimAscii() == "") {
+        result.ok = false
+        result.status = "benchmark_gap_curation_input_missing"
+        return result
+    }
+    if (!exists(Path(config.benchmarkGapCurationInputPath))) {
+        result.ok = false
+        result.status = "benchmark_gap_curation_input_not_found"
+        return result
+    }
+    let curationText = try { String.fromUtf8(File.readFrom(Path(config.benchmarkGapCurationInputPath))) } catch (_: Exception) { "" }
+    if (curationText.trimAscii() == "") {
+        result.ok = false
+        result.status = "benchmark_gap_curation_input_empty"
+        return result
+    }
+    let curated = curateBenchmarkGapRecordsFromJsonl(curationText, targetVersion: config.benchmarkGapTargetVersion)
     if (!curated.ok) {
         result.ok = false
         result.status = curated.diagnostic
@@ -4440,7 +4451,7 @@ private func ckbRunRepositoryChangedSourceSync(kb: KnowledgeBase, store: FileKno
             ckbFetchScheduledSource(runner, builder.gitCodeSource(repo, ref, path), profile, result)
         }
     }
-    let ingest = ingestScheduledProfileSources(kb, store, profile, result)
+    let ingest = ingestScheduledProfileSources(kb, store, profile, result, config)
     result.ok = result.ok && ingest.ok
     result.status = if (result.ok) { ingest.status } else { if (ingest.status != "") { ingest.status } else { result.status } }
     result
@@ -5435,6 +5446,10 @@ private func configApply(config: CkbRuntimeConfig, key: String, value: String): 
         config.firstInitEvalRoot = value
     } else if (key == "firstInit.targetVersion") {
         config.firstInitTargetVersion = value
+    } else if (key == "benchmarkGap.curationInputPath") {
+        config.benchmarkGapCurationInputPath = value
+    } else if (key == "benchmarkGap.targetVersion") {
+        config.benchmarkGapTargetVersion = value
     }
 }
 

@@ -89,6 +89,26 @@ public class CangjieHumanEvalPass1GateTest {
         @Expect(curation.contains("reference/"), false)
         @Expect(curation.contains("hidden/"), false)
     }
+
+    @TestCase
+    public func f7Ut001GateCurationInputCarriesInterfaceFamilyUpdateAndVersion(): Unit {
+        let options = CangjieHumanEvalPass1GateOptions()
+        options.expectedTotal = 1
+        options.expectedPass = 1
+        let manifest = p8ManifestLine("CJ-HUMANEVAL-010", "Implement ArrayList helper.", "[\"ArrayList\"]") + "\n"
+        let results = p8ResultLine("CJ-HUMANEVAL-010", CangjieHumanEvalPass1GateGroups.D, false, "compile_error", false, "cangjie_task_knowledge_pack") + "\n"
+
+        let gate = cangjieHumanEvalPass1GateFromText(results, manifest, options, "/tmp/f7-gate", "/tmp/manifest.jsonl")
+        let curation = emitCangjieHumanEvalGapCurationInput(gate)
+
+        @Expect(gate.ok, false)
+        @Expect(curation.contains("\"missingKnowledge\":\"G-ARRAYLIST\""), true)
+        @Expect(curation.contains("\"interfaceId\":\"KI-04\""), false)
+        @Expect(curation.contains("\"interfaceId\":\"KI-02\""), true)
+        @Expect(curation.contains("\"contentFamily\":\"KC-02\""), true)
+        @Expect(curation.contains("\"updateMechanism\":\"KU-11\""), true)
+        @Expect(curation.contains("\"targetVersion\":\"1.0.0\""), true)
+    }
 }
 
 private func p8ManifestLine(caseId: String, prompt: String, tagsJson: String): String {

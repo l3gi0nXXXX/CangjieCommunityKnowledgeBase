@@ -273,8 +273,9 @@ public func runCangjieEvalAbcde(args: Array<String>): Int64 {
         caseIndex += 1
     }
     ckbAbcdeWriteSummary(runRoot)
+    let pass1GateOk = ckbAbcdeWritePass1GateArtifactsIfFullRun(options, runRoot)
     println("ABCDE run complete: ${runRoot}")
-    if (failed > 0) { 1 } else { 0 }
+    if (failed > 0 || !pass1GateOk) { 1 } else { 0 }
 }
 
 public func runCangjieAbcdeParitySmoke(args: Array<String>): Int64 {
@@ -858,6 +859,46 @@ private func ckbAbcdeWriteSummary(runRoot: String): Unit {
     md += ckbAbcdeRenderSummaryMarkdownRow(CkbAbcdeGroups.D, lines)
     md += ckbAbcdeRenderSummaryMarkdownRow(CkbAbcdeGroups.E, lines)
     ckbAbcdeWriteText("${runRoot}/summary.md", md)
+}
+
+private func ckbAbcdeWritePass1GateArtifactsIfFullRun(options: CkbAbcdeRunnerOptions, runRoot: String): Bool {
+    if (!ckbAbcdeShouldRunPass1Gate(options)) {
+        return true
+    }
+    ckbAbcdeWritePass1GateArtifacts(options, runRoot)
+}
+
+public func ckbAbcdeWritePass1GateArtifactsForTest(options: CkbAbcdeRunnerOptions, runRoot: String): Bool {
+    ckbAbcdeWritePass1GateArtifacts(options, runRoot)
+}
+
+private func ckbAbcdeShouldRunPass1Gate(options: CkbAbcdeRunnerOptions): Bool {
+    options.caseStart == 0 && options.caseEnd == 163 && (options.groups.contains(CkbAbcdeGroups.C) || options.groups.contains(CkbAbcdeGroups.D))
+}
+
+private func ckbAbcdeWritePass1GateArtifacts(options: CkbAbcdeRunnerOptions, runRoot: String): Bool {
+    let gateOptions = CangjieHumanEvalPass1GateOptions()
+    gateOptions.runRoot = runRoot
+    gateOptions.manifestPath = options.manifestPath
+    gateOptions.expectedTotal = options.caseEnd - options.caseStart + 1
+    gateOptions.expectedPass = gateOptions.expectedTotal
+    gateOptions.groups.clear()
+    if (options.groups.contains(CkbAbcdeGroups.C)) {
+        gateOptions.groups.add(CangjieHumanEvalPass1GateGroups.C)
+    }
+    if (options.groups.contains(CkbAbcdeGroups.D)) {
+        gateOptions.groups.add(CangjieHumanEvalPass1GateGroups.D)
+    }
+    if (gateOptions.groups.size == 0) {
+        return true
+    }
+    let gate = cangjieHumanEvalPass1GateFromFiles(gateOptions)
+    ckbAbcdeWriteText("${runRoot}/pass1-gate.json", renderCangjieHumanEvalPass1GateJson(gate))
+    ckbAbcdeWriteText("${runRoot}/pass1-gate.md", renderCangjieHumanEvalPass1GateMarkdown(gate))
+    if (!gate.ok) {
+        ckbAbcdeWriteText("${runRoot}/gap-curation-input.jsonl", emitCangjieHumanEvalGapCurationInput(gate))
+    }
+    gate.ok
 }
 
 private func ckbAbcdeRenderSummaryCsvRow(group: String, lines: Array<String>): String {

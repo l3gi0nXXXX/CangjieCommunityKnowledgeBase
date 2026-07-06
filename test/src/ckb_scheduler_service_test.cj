@@ -1,6 +1,7 @@
 package cangjie_community_knowledge_base_test
 
 import std.collection.ArrayList
+import std.fs.{Directory, File, Path, exists}
 import std.unittest.*
 import std.unittest.testmacro.*
 
@@ -97,6 +98,46 @@ public class CkbSchedulerServiceF5Test {
         @Expect(f5ValidationHasDiagnostic(validation, "exact_symbol_coverage_missing"), true)
         @Expect(after.activeKnowledgeVersion, before)
         @Expect(after.failedCandidateVersion, "f5-bad-candidate")
+    }
+
+    @TestCase
+    public func f7Pos01BenchmarkGapSchedulerReadsGateJsonlAndPromotesCandidate(): Unit {
+        let root = "target/f7-scheduler-gap-curation"
+        if (!exists(Path(root))) {
+            Directory.create(Path(root), recursive: true)
+        }
+        let inputPath = "${root}/gap-curation-input.jsonl"
+        File.writeTo(Path(inputPath), "{\"caseId\":\"CJ-HUMANEVAL-004\",\"benchmark\":\"Cangjie-HumanEval\",\"taskText\":\"Use ArrayList.add for visible input.\",\"visibleTestExcerpt\":\"assert solve([1,2]) == 3\",\"compilerOutput\":\"compile_error\",\"missingKnowledge\":\"G-ARRAYLIST\",\"interfaceId\":\"KI-02\",\"contentFamily\":\"KC-02\",\"updateMechanism\":\"KU-11\",\"targetVersion\":\"1.0.0\",\"officialCitation\":\"https://docs.cangjie-lang.cn/docs/1.0.0/libs/std/collection\"}\n".toArray())
+        let config = CkbRuntimeConfig()
+        config.benchmarkGapCurationInputPath = inputPath
+        let store = FileKnowledgeStore("${root}/store")
+        let service = CkbCommandLoopService(config, store)
+        _ = service.start()
+        let tasks = ArrayList<String>()
+        tasks.add("cangjie_benchmark_gap_curation")
+
+        let result = service.runSchedulerTasks(tasks, true)
+        let status = service.statusSnapshot()
+
+        @Expect(result.ran, 1)
+        @Expect(result.succeeded, 1)
+        @Expect(result.details.contains("benchmark_gap_candidate_promoted"), true)
+        @Expect(status.activeKnowledgeVersion.endsWith("-active"), true)
+        @Expect(store.has("index/active.ckb"), true)
+    }
+
+    @TestCase
+    public func f7Bnd01BenchmarkGapSchedulerFailsWithoutConfiguredInput(): Unit {
+        let service = CkbCommandLoopService(CkbRuntimeConfig(), FileKnowledgeStore("target/f7-scheduler-gap-missing-input"))
+        _ = service.start()
+        let tasks = ArrayList<String>()
+        tasks.add("cangjie_benchmark_gap_curation")
+
+        let result = service.runSchedulerTasks(tasks, true)
+
+        @Expect(result.ran, 1)
+        @Expect(result.failed, 1)
+        @Expect(result.details.contains("benchmark_gap_curation_input_missing"), true)
     }
 }
 
