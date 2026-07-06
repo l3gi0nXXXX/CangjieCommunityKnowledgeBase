@@ -28,6 +28,7 @@ public class CangjieKnowledgeReleaseGateStep {
     public var status: String = "fail"
     public var diagnostic: String = ""
     public var artifactPath: String = ""
+    public var evidenceHash: String = ""
 
     public init() {}
 }
@@ -217,7 +218,7 @@ public func renderCangjieKnowledgeReleaseGateJson(report: CangjieKnowledgeReleas
             steps += ","
         }
         let step = report.steps[i]
-        steps += "{\"id\":\"${cangjieReleaseGateJsonEscape(step.id)}\",\"ok\":${step.ok},\"status\":\"${cangjieReleaseGateJsonEscape(step.status)}\",\"diagnostic\":\"${cangjieReleaseGateJsonEscape(step.diagnostic)}\",\"artifactPath\":\"${cangjieReleaseGateJsonEscape(step.artifactPath)}\"}"
+        steps += "{\"id\":\"${cangjieReleaseGateJsonEscape(step.id)}\",\"ok\":${step.ok},\"status\":\"${cangjieReleaseGateJsonEscape(step.status)}\",\"diagnostic\":\"${cangjieReleaseGateJsonEscape(step.diagnostic)}\",\"artifactPath\":\"${cangjieReleaseGateJsonEscape(step.artifactPath)}\",\"evidenceHash\":\"${cangjieReleaseGateJsonEscape(step.evidenceHash)}\"}"
     }
     "{\"ok\":${report.ok},\"releaseGate\":\"${cangjieReleaseGateJsonEscape(report.releaseGate)}\",\"runRoot\":\"${cangjieReleaseGateJsonEscape(report.runRoot)}\",\"activeKnowledgeVersion\":\"${cangjieReleaseGateJsonEscape(report.activeKnowledgeVersion)}\",\"steps\":[${steps}],\"diagnostics\":[${cangjieReleaseGateJsonStringArray(report.diagnostics)}]}\n"
 }
@@ -227,12 +228,12 @@ public func cangjieKnowledgeReleaseGateUsage(): String {
 }
 
 private func cangjieReleaseGateAddLandingStatusStep(report: CangjieKnowledgeReleaseGateReport, service: CkbCommandLoopService, id: String): Unit {
-    let landing = collectCkbLandingStatus(service)
+    let landing = if (id.endsWith("-final")) { collectCkbLandingStatusWithArtifacts(service, report.runRoot) } else { collectCkbLandingStatus(service) }
     let artifact = "${report.runRoot}/${id}.json"
     if (report.runRoot != "") {
         cangjieReleaseGateWriteText(artifact, renderCkbLandingStatusJson(landing) + "\n")
     }
-    cangjieReleaseGateAddStep(report, id, landing.capabilities.size > 0, "overall=${landing.overallStatus},ok=${landing.ok}", artifact)
+    cangjieReleaseGateAddStep(report, id, landing.capabilities.size > 0, "overall=${landing.overallStatus},ok=${landing.ok}", artifact, evidenceHash: stableSummaryHash(renderCkbLandingStatusJson(landing)))
 }
 
 private func cangjieReleaseGateAddFirstInitStep(report: CangjieKnowledgeReleaseGateReport, options: CangjieKnowledgeReleaseGateOptions, config: CkbRuntimeConfig, store: FileKnowledgeStore): Unit {
@@ -249,15 +250,21 @@ private func cangjieReleaseGateAddFirstInitStep(report: CangjieKnowledgeReleaseG
 
 private func cangjieReleaseGateAddRouteProbeStep(report: CangjieKnowledgeReleaseGateReport, service: CkbCommandLoopService, runRoot: String): Unit {
     let probes = ArrayList<CangjieKnowledgeReleaseGateStep>()
-    cangjieReleaseGateRouteProbe(probes, service, "GET", "/v1/health", "{}", [])
-    cangjieReleaseGateRouteProbe(probes, service, "GET", "/v1/status", "{}", [])
-    cangjieReleaseGateRouteProbe(probes, service, "GET", "/v1/schema", "{}", [])
-    cangjieReleaseGateRouteProbe(probes, service, "GET", "/v1/cangjie/corpus/status", "{}", [])
-    cangjieReleaseGateRouteProbe(probes, service, "POST", "/v1/cangjie/task-knowledge-pack", cangjieReleaseGateTaskContextJson(), [])
-    cangjieReleaseGateRouteProbe(probes, service, "POST", "/v1/cangjie/symbol-lookup", "{\"symbol\":\"ArrayList.add\",\"sourceSet\":\"std\",\"targetVersion\":\"1.0.0\"}", [])
-    cangjieReleaseGateRouteProbe(probes, service, "POST", "/v1/cangjie/tool-manual", "{\"tool\":\"cjpm\",\"command\":\"test\",\"targetVersion\":\"1.0.0\"}", [])
-    cangjieReleaseGateRouteProbe(probes, service, "POST", "/v1/evidence-pack", "{\"q\":\"ArrayList.add\",\"budget\":3}", [])
-    cangjieReleaseGateRouteProbe(probes, service, "POST", "/v1/admin/initialize", "{\"dryRun\":true}", ["X-CKB-Admin-Token: release-gate"])
+    cangjieReleaseGateRouteProbe(probes, service, "GET", "/v1/health", "{}", [], "activeKnowledgeVersion")
+    cangjieReleaseGateRouteProbe(probes, service, "GET", "/v1/status", "{}", [], "storage")
+    cangjieReleaseGateRouteProbe(probes, service, "GET", "/v1/schedules", "{}", [], "entries")
+    cangjieReleaseGateRouteProbe(probes, service, "GET", "/v1/schema", "{}", [], "routes")
+    cangjieReleaseGateRouteProbe(probes, service, "GET", "/v1/cangjie/corpus/status", "{}", [], "activeKnowledgeVersion")
+    cangjieReleaseGateRouteProbe(probes, service, "POST", "/v1/cangjie/task-knowledge-pack", cangjieReleaseGateTaskContextJson(), [], "versionResolution")
+    cangjieReleaseGateRouteProbe(probes, service, "POST", "/v1/cangjie/knowledge-coverage", cangjieReleaseGateTaskContextJson(), [], "coveragePass")
+    cangjieReleaseGateRouteProbe(probes, service, "POST", "/v1/cangjie/compile-diagnose-v2", "{\"compilerOutput\":\"unknown symbol ArrayList.add\",\"targetVersion\":\"1.0.0\",\"budget\":3}", [], "versionResolution")
+    cangjieReleaseGateRouteProbe(probes, service, "POST", "/v1/cangjie/symbol-lookup", "{\"symbol\":\"ArrayList.add\",\"sourceSet\":\"std\",\"targetVersion\":\"1.0.0\"}", [], "resultType")
+    cangjieReleaseGateRouteProbe(probes, service, "POST", "/v1/cangjie/doc-section", "{\"path\":\"dev-guide/source_en/api/collections.md\",\"targetVersion\":\"1.0.0\"}", [], "resultType")
+    cangjieReleaseGateRouteProbe(probes, service, "GET", "/v1/cangjie/corpus/freshness", "{}", [], "resultType")
+    cangjieReleaseGateRouteProbe(probes, service, "POST", "/v1/cangjie/tool-manual", "{\"tool\":\"cjpm\",\"command\":\"test\",\"targetVersion\":\"1.0.0\"}", [], "resultType")
+    cangjieReleaseGateRouteProbe(probes, service, "POST", "/v1/cangjie/negative-rules", "{\"q\":\"ArrayList.add\",\"targetVersion\":\"1.0.0\"}", [], "resultType")
+    cangjieReleaseGateRouteProbe(probes, service, "POST", "/v1/evidence-pack", "{\"q\":\"ArrayList.add\",\"budget\":3}", [], "knowledgeVersion")
+    cangjieReleaseGateRouteProbe(probes, service, "POST", "/v1/admin/initialize", "{\"dryRun\":true}", ["X-CKB-Admin-Token: release-gate"], "activeKnowledgeVersion")
     let artifact = "${runRoot}/route-probe.jsonl"
     var text = ""
     var ok = true
@@ -265,36 +272,42 @@ private func cangjieReleaseGateAddRouteProbeStep(report: CangjieKnowledgeRelease
         if (!probe.ok) {
             ok = false
         }
-        text += "{\"id\":\"${cangjieReleaseGateJsonEscape(probe.id)}\",\"ok\":${probe.ok},\"diagnostic\":\"${cangjieReleaseGateJsonEscape(probe.diagnostic)}\"}\n"
+        text += "{\"id\":\"${cangjieReleaseGateJsonEscape(probe.id)}\",\"ok\":${probe.ok},\"diagnostic\":\"${cangjieReleaseGateJsonEscape(probe.diagnostic)}\",\"evidenceHash\":\"${cangjieReleaseGateJsonEscape(probe.evidenceHash)}\"}\n"
     }
     cangjieReleaseGateWriteText(artifact, text)
-    cangjieReleaseGateAddStep(report, "E2E-02-route-probe", ok, "probes=${probes.size}", artifact)
+    cangjieReleaseGateAddStep(report, "E2E-02-route-probe", ok, "probes=${probes.size}", artifact, evidenceHash: stableSummaryHash(text))
 }
 
-private func cangjieReleaseGateRouteProbe(probes: ArrayList<CangjieKnowledgeReleaseGateStep>, service: CkbCommandLoopService, method: String, path: String, body: String, headers: Array<String>): Unit {
+private func cangjieReleaseGateRouteProbe(probes: ArrayList<CangjieKnowledgeReleaseGateStep>, service: CkbCommandLoopService, method: String, path: String, body: String, headers: Array<String>, expected: String): Unit {
     let response = ckbApiHandle(service, method, path, body, headers)
     let probe = CangjieKnowledgeReleaseGateStep()
     probe.id = "${method} ${path}"
-    probe.ok = !response.contains("\"code\":\"ckb.not_found\"") && !response.contains("\"code\":\"ckb.method_not_allowed\"") && !response.contains("\"status\":404")
+    probe.evidenceHash = stableSummaryHash(response)
+    let routeOk = !response.contains("\"code\":\"ckb.not_found\"") && !response.contains("\"code\":\"ckb.method_not_allowed\"") && !response.contains("\"status\":404")
+    let expectedOk = expected == "" || response.contains(expected)
+    probe.ok = routeOk && expectedOk
     probe.status = if (probe.ok) { "pass" } else { "fail" }
-    probe.diagnostic = if (probe.ok) { "reachable" } else { cangjieReleaseGateSafePreview(response) }
+    probe.diagnostic = if (probe.ok) { "reachable:${probe.evidenceHash}" } else { if (!routeOk) { cangjieReleaseGateSafePreview(response) } else { "missing_expected:${expected}:${cangjieReleaseGateSafePreview(response)}" } }
     probes.add(probe)
 }
 
 private func cangjieReleaseGateAddSchedulerStep(report: CangjieKnowledgeReleaseGateReport, service: CkbCommandLoopService, options: CangjieKnowledgeReleaseGateOptions): Unit {
     let taskNames = if (options.schedulerTaskNames.size > 0) { options.schedulerTaskNames } else { cangjieReleaseGateDefaultSchedulerTasks() }
     let result = service.runSchedulerTasks(taskNames, true)
-    let artifact = "${options.runRoot}/scheduler-forced-run.txt"
-    cangjieReleaseGateWriteText(artifact, "ran=${result.ran} succeeded=${result.succeeded} failed=${result.failed} degraded=${result.degraded} forced=${result.forced}\n${result.details}")
+    let textArtifact = "${options.runRoot}/scheduler-forced-run.txt"
+    let artifact = "${options.runRoot}/scheduler-forced-run.jsonl"
+    cangjieReleaseGateWriteText(textArtifact, "ran=${result.ran} succeeded=${result.succeeded} failed=${result.failed} degraded=${result.degraded} forced=${result.forced}\n${result.details}")
+    let jsonl = cangjieReleaseGateSchedulerRunJsonl(result, service.statusSnapshot())
+    cangjieReleaseGateWriteText(artifact, jsonl)
     let ok = result.failed == 0 && result.ran == taskNames.size
-    cangjieReleaseGateAddStep(report, "E2E-03-scheduler-forced-run", ok, "ran=${result.ran},succeeded=${result.succeeded},failed=${result.failed},tasks=${taskNames.size}", artifact)
+    cangjieReleaseGateAddStep(report, "E2E-03-scheduler-forced-run", ok, "ran=${result.ran},succeeded=${result.succeeded},failed=${result.failed},tasks=${taskNames.size}", artifact, evidenceHash: stableSummaryHash(jsonl))
 }
 
 private func cangjieReleaseGateAddTransportParityStep(report: CangjieKnowledgeReleaseGateReport, service: CkbCommandLoopService, runRoot: String): Unit {
     let parity = ckbAbcdeProbeInProcessTransportParity(service, "release-gate", cangjieReleaseGateTaskContextJson())
     let artifact = "${runRoot}/transport-parity.jsonl"
     cangjieReleaseGateWriteText(artifact, ckbAbcdeRenderParityJsonl(parity) + "\n")
-    cangjieReleaseGateAddStep(report, "E2E-04-transport-parity", parity.ok, parity.diagnostic, artifact)
+    cangjieReleaseGateAddStep(report, "E2E-04-transport-parity", parity.ok, parity.diagnostic, artifact, evidenceHash: stableSummaryHash(ckbAbcdeRenderParityJsonl(parity)))
 }
 
 private func cangjieReleaseGateAddPass1Step(report: CangjieKnowledgeReleaseGateReport, options: CangjieKnowledgeReleaseGateOptions): Unit {
@@ -307,24 +320,59 @@ private func cangjieReleaseGateAddPass1Step(report: CangjieKnowledgeReleaseGateR
     let gate = cangjieHumanEvalPass1GateFromFiles(gateOptions)
     let artifact = "${options.runRoot}/pass1-gate.md"
     cangjieReleaseGateWriteText(artifact, renderCangjieHumanEvalPass1GateMarkdown(gate))
+    cangjieReleaseGateWriteText("${options.runRoot}/pass1-gate.json", renderCangjieHumanEvalPass1GateJson(gate))
     let curation = emitCangjieHumanEvalGapCurationInput(gate)
     if (curation != "") {
         cangjieReleaseGateWriteText(gateOptions.emitCurationInputPath, curation)
     }
-    cangjieReleaseGateAddStep(report, "E2E-05-pass1-gate", gate.ok, "groups=${gate.groups.size},diagnostics=${gate.diagnostics.size},remainingGaps=${gate.remainingGaps.size}", artifact)
+    cangjieReleaseGateAddStep(report, "E2E-05-pass1-gate", gate.ok, "groups=${gate.groups.size},diagnostics=${gate.diagnostics.size},remainingGaps=${gate.remainingGaps.size}", artifact, evidenceHash: stableSummaryHash(renderCangjieHumanEvalPass1GateJson(gate)))
 }
 
-private func cangjieReleaseGateAddStep(report: CangjieKnowledgeReleaseGateReport, id: String, ok: Bool, diagnostic: String, artifactPath: String): Unit {
+private func cangjieReleaseGateAddStep(report: CangjieKnowledgeReleaseGateReport, id: String, ok: Bool, diagnostic: String, artifactPath: String, evidenceHash!: String = ""): Unit {
     let step = CangjieKnowledgeReleaseGateStep()
     step.id = id
     step.ok = ok
     step.status = if (ok) { "pass" } else { "fail" }
     step.diagnostic = diagnostic
     step.artifactPath = artifactPath
+    step.evidenceHash = evidenceHash
     report.steps.add(step)
     if (!ok) {
         report.diagnostics.add("${id}:${diagnostic}")
     }
+    cangjieReleaseGateWriteStepJsonl(report)
+}
+
+private func cangjieReleaseGateWriteStepJsonl(report: CangjieKnowledgeReleaseGateReport): Unit {
+    if (report.runRoot == "") {
+        return
+    }
+    var out = ""
+    for (step in report.steps) {
+        out += "{\"id\":\"${cangjieReleaseGateJsonEscape(step.id)}\",\"ok\":${step.ok},\"status\":\"${cangjieReleaseGateJsonEscape(step.status)}\",\"diagnostic\":\"${cangjieReleaseGateJsonEscape(step.diagnostic)}\",\"artifactPath\":\"${cangjieReleaseGateJsonEscape(step.artifactPath)}\",\"evidenceHash\":\"${cangjieReleaseGateJsonEscape(step.evidenceHash)}\"}\n"
+    }
+    cangjieReleaseGateWriteText("${report.runRoot}/release-gate-steps.jsonl", out)
+}
+
+private func cangjieReleaseGateSchedulerRunJsonl(result: SchedulerExecutorResult, status: KnowledgeStatus): String {
+    var out = "{\"type\":\"summary\",\"ran\":${result.ran},\"succeeded\":${result.succeeded},\"failed\":${result.failed},\"degraded\":${result.degraded},\"forced\":${result.forced},\"taskNames\":[${cangjieReleaseGateJsonStringArray(result.taskNames)}],\"validationEvidenceHashes\":[${cangjieReleaseGateJsonStringArray(result.validationEvidenceHashes)}]}\n"
+    for (name in result.taskNames) {
+        let entry = cangjieReleaseGateFindSchedule(status, name)
+        out += "{\"type\":\"task\",\"name\":\"${cangjieReleaseGateJsonEscape(name)}\",\"lastStatus\":\"${cangjieReleaseGateJsonEscape(entry.lastStatus)}\",\"lastSuccessAt\":${entry.lastSuccessAt},\"lastFailureAt\":${entry.lastFailureAt},\"failureCount\":${entry.failureCount},\"degraded\":${entry.degraded},\"lastDurationMillis\":${entry.lastDurationMillis},\"lastRequestCount\":${entry.lastRequestCount},\"activeVersion\":\"${cangjieReleaseGateJsonEscape(entry.activeVersion)}\",\"candidateVersion\":\"${cangjieReleaseGateJsonEscape(entry.candidateVersion)}\",\"updatedDataKinds\":[${cangjieReleaseGateJsonStringArray(entry.lastUpdatedDataKinds)}]}\n"
+    }
+    for (diagnostic in result.validationDiagnostics) {
+        out += "{\"type\":\"validationDiagnostic\",\"diagnostic\":\"${cangjieReleaseGateJsonEscape(diagnostic)}\"}\n"
+    }
+    out
+}
+
+private func cangjieReleaseGateFindSchedule(status: KnowledgeStatus, name: String): ScheduleEntry {
+    for (entry in status.schedules) {
+        if (entry.name == name) {
+            return entry
+        }
+    }
+    ScheduleEntry(name, 0, 0)
 }
 
 private func cangjieReleaseGateFinalize(report: CangjieKnowledgeReleaseGateReport): Unit {
