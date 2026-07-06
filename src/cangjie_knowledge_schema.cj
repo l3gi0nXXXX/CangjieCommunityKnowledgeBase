@@ -111,6 +111,7 @@ public func validateCangjieTaskKnowledgeRequest(request: CangjieTaskKnowledgeReq
 }
 
 public func buildCangjieTaskKnowledgePack(status: KnowledgeStatus, request: CangjieTaskKnowledgeRequest, manifest: CangjieVersionManifest): CangjieTaskKnowledgePack {
+    let originalStarterSize = request.starterCodeExcerpt.size
     let sanitized = sanitizeCangjieTaskKnowledgeRequest(request)
     let pack = CangjieTaskKnowledgePack()
     let validation = validateCangjieTaskKnowledgeRequest(sanitized)
@@ -129,7 +130,6 @@ public func buildCangjieTaskKnowledgePack(status: KnowledgeStatus, request: Cang
         pack.coverage = buildCangjieKnowledgeCoverage(sanitized, pack.versionResolution, pack.queryPlan)
         return pack
     }
-    let originalStarterSize = request.starterCodeExcerpt.size
     pack.versionResolution = resolveCangjieVersion(sanitized.versionSelector, manifest)
     pack.targetVersion = pack.versionResolution.targetVersion
     pack.queryPlan = buildCangjieTaskQueryPlan(sanitized, pack.versionResolution)

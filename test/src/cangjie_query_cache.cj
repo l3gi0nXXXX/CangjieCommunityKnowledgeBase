@@ -93,8 +93,20 @@ public func cangjieServingCacheKey(versionResolutionId: String, activeKnowledgeV
     key.versionResolutionId = versionResolutionId
     key.activeKnowledgeVersion = activeKnowledgeVersion
     key.sourceSet = sourceSet
-    key.queryPlanHash = stableSummaryHash(query)
+    key.queryPlanHash = cangjieQueryCacheHash(query)
     key.budget = budget
     key.responseMode = responseMode
     key
+}
+
+private func cangjieQueryCacheHash(raw: String): String {
+    var hash: Int64 = 5381
+    let modulus: Int64 = 2147483647
+    for (b in raw.toArray()) {
+        hash = ((hash * 33) % modulus + (Int64(b) % modulus)) % modulus
+    }
+    if (hash == 0) {
+        hash = 1
+    }
+    "qh${hash}-${raw.size}"
 }

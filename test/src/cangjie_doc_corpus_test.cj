@@ -1,7 +1,7 @@
 package cangjie_community_knowledge_base_test
 
-import std.collection.ArrayList
-import std.fs.{Directory, File, Path}
+import std.collection.*
+import std.fs.{Directory, File, Path, exists}
 import std.unittest.*
 import std.unittest.testmacro.*
 
@@ -43,8 +43,14 @@ public class CangjieDocCorpusTest {
     @TestCase
     public func p2Pos001ScansExplicitDocsManifestAndExtractsToolManual(): Unit {
         let root = "target/p2-docs-fixture"
-        Directory.create(Path(root).join("dev-guide"), recursive: true)
-        Directory.create(Path(root).join("tools/source_en/cmd-tools"), recursive: true)
+        let devGuideDir = Path(root).join("dev-guide")
+        let toolsDir = Path(root).join("tools/source_en/cmd-tools")
+        if (!exists(devGuideDir)) {
+            Directory.create(devGuideDir, recursive: true)
+        }
+        if (!exists(toolsDir)) {
+            Directory.create(toolsDir, recursive: true)
+        }
         File.writeTo(Path(root).join("dev-guide/summary_cjnative_EN.md"), "# Dev Guide\n仓颉 ArrayList\n".toArray())
         File.writeTo(Path(root).join("tools/source_en/cmd-tools/cjpm_manual.md"), "# cjpm\nUse cjpm build and cjpm test.\n".toArray())
         let paths = ArrayList<String>()

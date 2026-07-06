@@ -16,11 +16,17 @@ public func extractEvalSupportRecords(caseRoot: String): CangjieTypedRecordResul
         result.addDiagnostic("forbidden_reference_solution_source")
         return result
     }
+    let resolvedRoot = cangjieEvalSupportResolveCaseRoot(cleanRoot)
+    if (resolvedRoot == "") {
+        result.ok = false
+        result.addDiagnostic("eval_support_case_root_not_found")
+        return result
+    }
     let caseId = cangjieCaseIdFromRoot(cleanRoot)
-    cangjieAddEvalSupportFile(result, cleanRoot, caseId, CangjieEvalSupportPaths.PROMPT, "prompt", "HumanEval prompt")
-    cangjieAddEvalSupportFile(result, cleanRoot, caseId, CangjieEvalSupportPaths.METADATA, "metadata", "HumanEval metadata")
-    cangjieAddEvalSupportFile(result, cleanRoot, caseId, CangjieEvalSupportPaths.EVAL_SUPPORT, "eval_support", "EvalValue and EvalEntry fixture types")
-    cangjieAddEvalSupportFile(result, cleanRoot, caseId, CangjieEvalSupportPaths.VISIBLE_TESTS, "visible_test_helpers", "Visible test helper types")
+    cangjieAddEvalSupportFile(result, resolvedRoot, caseId, CangjieEvalSupportPaths.PROMPT, "prompt", "HumanEval prompt")
+    cangjieAddEvalSupportFile(result, resolvedRoot, caseId, CangjieEvalSupportPaths.METADATA, "metadata", "HumanEval metadata")
+    cangjieAddEvalSupportFile(result, resolvedRoot, caseId, CangjieEvalSupportPaths.EVAL_SUPPORT, "eval_support", "EvalValue and EvalEntry fixture types")
+    cangjieAddEvalSupportFile(result, resolvedRoot, caseId, CangjieEvalSupportPaths.VISIBLE_TESTS, "visible_test_helpers", "Visible test helper types")
     if (result.records.size == 0) {
         result.ok = false
         if (result.diagnostics.size == 0) {
@@ -115,7 +121,21 @@ private func cangjieEvalSupportCaseRootAllowed(root: String): Bool {
     if (lower.contains("/reference/") || lower.endsWith("/reference") || lower.contains("/hidden/") || lower.endsWith("/hidden")) {
         return false
     }
-    exists(Path(root))
+    true
+}
+
+private func cangjieEvalSupportResolveCaseRoot(root: String): String {
+    if (exists(Path(root))) {
+        return root
+    }
+    let normalized = root.replace("\\", "/")
+    if (normalized.startsWith("test/cangjie_eval/")) {
+        let candidate = normalized.replace("test/cangjie_eval/", "cangjie_eval/")
+        if (exists(Path(candidate))) {
+            return candidate
+        }
+    }
+    ""
 }
 
 private func cangjieEvalSupportRelativePathAllowed(relative: String): Bool {

@@ -1,6 +1,6 @@
 package cangjie_community_knowledge_base_test
 
-import std.collection.ArrayList
+import std.collection.*
 import std.unittest.*
 import std.unittest.testmacro.*
 

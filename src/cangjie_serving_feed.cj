@@ -4,11 +4,13 @@ import std.collection.ArrayList
 
 public func buildServingDocuments(records: ArrayList<NormalizedRecord>): CangjieServingFeed {
     let feed = CangjieServingFeed()
+    let acceptedRecords = ArrayList<NormalizedRecord>()
     for (record in records) {
         if (!cangjieServingRecordAllowed(record)) {
             feed.diagnostics.add("serving_record_rejected:${record.sourceId}")
             continue
         }
+        acceptedRecords.add(record)
         feed.documents.add(cangjieServingDocumentFromRecord(record))
         for (card in extractCangjieSymbols(record)) {
             feed.documents.add(cangjieServingDocumentFromSymbol(card))
@@ -17,7 +19,7 @@ public func buildServingDocuments(records: ArrayList<NormalizedRecord>): Cangjie
             feed.documents.add(cangjieServingDocumentFromExample(example))
         }
     }
-    let negativeRules = buildNegativeRuleRecords(records)
+    let negativeRules = buildNegativeRuleRecords(acceptedRecords)
     for (rule in negativeRules) {
         feed.documents.add(cangjieServingDocumentFromNegativeRule(rule))
     }

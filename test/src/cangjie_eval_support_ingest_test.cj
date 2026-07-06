@@ -2,6 +2,7 @@ package cangjie_community_knowledge_base_test
 
 import std.unittest.*
 import std.unittest.testmacro.*
+import std.collection.*
 
 @Test
 public class CangjieEvalSupportIngestTest {
