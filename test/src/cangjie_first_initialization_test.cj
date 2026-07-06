@@ -1,6 +1,7 @@
 package cangjie_community_knowledge_base_test
 
 import std.collection.*
+import std.fs.{Directory, File, Path, exists}
 import std.unittest.*
 import std.unittest.testmacro.*
 
@@ -62,6 +63,151 @@ public class CangjieFirstInitializationTest {
 
         @Expect(rendered.contains("first-init preflight ok=true"), true)
         @Expect(rendered.contains("source docs ok=true files=2 records=5"), true)
+        @Expect(rendered.contains("queryCheck="), false)
         @Expect(rendered.contains("\"ok\""), false)
     }
+
+    @TestCase
+    public func p4Ut001LoadsTypedRecordsIntoCandidateWithoutDroppingKinds(): Unit {
+        let fixture = ckbFirstInitWriteFullFixture("target/p4-first-init-load", true)
+        let options = ckbFirstInitOptionsForFixture(fixture, false)
+        let assembly = assembleCkbFirstInitializationRecords(options)
+        let kb = newOfflineKnowledgeBase()
+
+        let candidate = kb.loadFirstInitializationTypedRecords(assembly.records, ckbFirstInitCandidateVersion("1.0.0"))
+
+        @Expect(candidate, "ckb-first-init-1-0-0-candidate")
+        @Expect(kb.rawRecordCount(), assembly.records.size)
+        @Expect(kb.normalizedRecordCount(), assembly.records.size)
+        @Expect(kb.candidateRecordSnapshot().size, assembly.records.size)
+    }
+
+    @TestCase
+    public func p4Bnd001DedupesDuplicateTypedRecordsDeterministically(): Unit {
+        let records = ArrayList<CangjieTypedRecord>()
+        let first = CangjieTypedRecord()
+        first.recordKind = CangjieTypedRecordKinds.DOC_SECTION
+        first.sourceId = "dup"
+        first.content = "same"
+        first.contentHash = "h1"
+        let second = CangjieTypedRecord()
+        second.recordKind = CangjieTypedRecordKinds.DOC_SECTION
+        second.sourceId = "dup"
+        second.content = "same"
+        second.contentHash = "h1"
+        records.add(first)
+        records.add(second)
+
+        let deduped = dedupeCkbFirstInitializationRecords(records)
+
+        @Expect(deduped.size, 1)
+        @Expect(deduped[0].sourceId, "dup")
+    }
+
+    @TestCase
+    public func p4Pos001RunsFullFixtureApplyAndPersistsActiveSnapshot(): Unit {
+        let fixture = ckbFirstInitWriteFullFixture("target/p4-first-init-apply", true)
+        let options = ckbFirstInitOptionsForFixture(fixture, true)
+        let store = FileKnowledgeStore("target/p4-first-init-apply-store")
+
+        let result = runCkbFirstInitialization(options, store)
+        let loaded = newKnowledgeBaseFromStore(store)
+        let status = cangjie_knowledge_status(loaded.kb)
+        let rendered = renderCkbFirstInitResult(result)
+
+        @Expect(result.ok, true)
+        @Expect(result.persisted, true)
+        @Expect(result.validation.ok, true)
+        @Expect(result.activeVersion, "ckb-first-init-1-0-0-active")
+        @Expect(status.activeKnowledgeVersion, "ckb-first-init-1-0-0-active")
+        @Expect(status.activeStateSource, "first_initialization")
+        @Expect(store.has("raw/records.ckb"), true)
+        @Expect(store.has("normalized/records.ckb"), true)
+        @Expect(store.has("index/active.ckb"), true)
+        @Expect(store.has("index/vector-active.ckb"), true)
+        @Expect(store.has("index/graph-nodes.ckb"), true)
+        @Expect(rendered.contains("queryCheck=symbol:ArrayList.add=hit"), true)
+    }
+
+    @TestCase
+    public func p4Neg001ValidationFailureWritesCandidateButKeepsOldActive(): Unit {
+        let fixture = ckbFirstInitWriteFullFixture("target/p4-first-init-missing-tool", false)
+        let store = FileKnowledgeStore("target/p4-first-init-fail-store")
+        let beforeKb = newOfflineKnowledgeBase()
+        let rebuild = ckbRebuildIndex(beforeKb, store)
+        let before = cangjie_knowledge_status(beforeKb).activeKnowledgeVersion
+        let options = ckbFirstInitOptionsForFixture(fixture, true)
+
+        let result = runCkbFirstInitialization(options, store)
+        let loaded = newKnowledgeBaseFromStore(store)
+        let after = cangjie_knowledge_status(loaded.kb)
+
+        @Expect(rebuild.ok, true)
+        @Expect(result.ok, false)
+        @Expect(result.validation.ok, false)
+        @Expect(result.validation.failedGates.contains("missing_tool_cjpm_test"), true)
+        @Expect(after.activeKnowledgeVersion, before)
+        @Expect(store.has("raw/candidate/${result.candidateVersion}/records.ckb"), true)
+        @Expect(store.has("index/active.ckb"), true)
+    }
+}
+
+private class CkbFirstInitFixturePaths {
+    var docsRoot: String = ""
+    var stdRoot: String = ""
+    var stdxRoot: String = ""
+    var evalRoot: String = ""
+
+    init() {}
+}
+
+private func ckbFirstInitWriteFullFixture(root: String, includeTool: Bool): CkbFirstInitFixturePaths {
+    let fixture = CkbFirstInitFixturePaths()
+    fixture.docsRoot = "${root}/docs"
+    fixture.stdRoot = "${root}/std"
+    fixture.stdxRoot = "${root}/stdx"
+    fixture.evalRoot = "${root}/eval"
+    ckbFirstInitWriteFile(Path(fixture.docsRoot).join("dev-guide/source_en/api/collections.md"), "# Collections\nArrayList.add and HashMap are collection APIs.\n")
+    if (includeTool) {
+        ckbFirstInitWriteFile(Path(fixture.docsRoot).join("tools/source_en/cmd-tools/cjpm_manual.md"), "# cjpm test\nUse cjpm test to run package tests.\n")
+    }
+    ckbFirstInitWriteFile(Path(fixture.stdRoot).join("src/std/collection/arraylist.cj"), """
+package std.collection
+public class ArrayList<T> {
+    public func add(value: T): Unit {}
+}
+public class HashMap<K, V> {}
+""")
+    ckbFirstInitWriteFile(Path(fixture.stdRoot).join("src/std/core/string.cj"), """
+package std.core
+extend String {
+    public func contains(pattern: String): Bool {}
+}
+""")
+    ckbFirstInitWriteFile(Path(fixture.stdxRoot).join("src/stdx/options/option.cj"), "package stdx.options\npublic enum Option<T> { Some | None }\n")
+    let caseRoot = Path(fixture.evalRoot).join("CJ-HUMANEVAL-000")
+    ckbFirstInitWriteFile(caseRoot.join("prompt.md"), "# Task\nUse EvalValue and EvalEntry.\n")
+    ckbFirstInitWriteFile(caseRoot.join("metadata.json"), "{\"id\":\"CJ-HUMANEVAL-000\"}\n")
+    ckbFirstInitWriteFile(caseRoot.join("starter/src/eval_support.cj"), "public class EvalValue {}\npublic class EvalEntry {}\n")
+    ckbFirstInitWriteFile(caseRoot.join("tests/TestMain.cj"), "public func helper(): Unit {}\nmain() {}\n")
+    fixture
+}
+
+private func ckbFirstInitOptionsForFixture(fixture: CkbFirstInitFixturePaths, apply: Bool): CkbFirstInitOptions {
+    let options = CkbFirstInitOptions()
+    options.docsRoot = fixture.docsRoot
+    options.stdRoot = fixture.stdRoot
+    options.stdxRoot = fixture.stdxRoot
+    options.evalRoot = fixture.evalRoot
+    options.targetVersion = "1.0.0"
+    options.apply = apply
+    options.dryRun = !apply
+    options
+}
+
+private func ckbFirstInitWriteFile(path: Path, text: String): Unit {
+    if (!exists(path.parent)) {
+        Directory.create(path.parent, recursive: true)
+    }
+    File.writeTo(path, text.toArray())
 }

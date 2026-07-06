@@ -2023,7 +2023,7 @@ public class KnowledgeBase {
         this.activeKnowledgeVersion = snapshot.activeVersion
         this.candidateKnowledgeVersion = snapshot.candidateVersion
         this.failedCandidateVersion = snapshot.failedVersion
-        this.activeStateSource = "persisted"
+        this.activeStateSource = if (snapshot.activeStateSource == "first_initialization") { "first_initialization" } else { "persisted" }
         this.restoreDiagnostic = snapshot.diagnostic
         this.storage.rawCount = this.rawRecords.size
         this.storage.normalizedCount = this.normalizedRecords.size
@@ -2145,6 +2145,38 @@ public class KnowledgeBase {
         }
         this.storage.rawCount = this.rawRecords.size
         this.storage.normalizedCount = this.normalizedRecords.size
+    }
+
+    public func loadFirstInitializationTypedRecords(records: ArrayList<CangjieTypedRecord>, candidateVersion: String): String {
+        this.rawRecords.clear()
+        this.normalizedRecords.clear()
+        this.candidateIndex.clear()
+        this.candidateKnowledgeVersion = ""
+        this.failedCandidateVersion = ""
+        for (record in records) {
+            let normalized = cangjieTypedRecordToNormalized(record, KnowledgeMetadata())
+            let raw = RawRecord()
+            raw.sourceId = normalized.sourceId
+            raw.title = normalized.title
+            raw.content = normalized.chunk
+            raw.metadata = normalized.metadata
+            raw.contentHash = if (record.contentHash != "") { record.contentHash } else { cangjieTypedRecordContentHash(record.sourceId, record.content) }
+            raw.requiresReview = normalized.requiresReview
+            this.rawRecords.add(raw)
+            this.normalizedRecords.add(normalized)
+        }
+        this.storage.rawCount = this.rawRecords.size
+        this.storage.normalizedCount = this.normalizedRecords.size
+        this.stageCandidateIndex(candidateVersion)
+    }
+
+    public func promoteFirstInitializationCandidate(activeVersion: String): Bool {
+        let ok = this.promoteCandidateToActive(activeVersion)
+        if (ok) {
+            this.activeStateSource = "first_initialization"
+            this.restoreDiagnostic = "ok"
+        }
+        ok
     }
 
     private func cangjieSourceSetForIngest(sourceType: String, repo: String, path: String, sourceUrl: String): String {

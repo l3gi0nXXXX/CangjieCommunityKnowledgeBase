@@ -74,9 +74,11 @@ public func cangjieTypedMetadata(record: CangjieTypedRecord, base: KnowledgeMeta
     let metadata = cangjieCopyKnowledgeMetadata(base)
     metadata.sourceId = record.sourceId
     metadata.sourceType = cangjieTypedRecordSourceType(record)
+    metadata.sourceUrl = record.citation
     metadata.path = record.path
     metadata.symbol = record.symbol
     metadata.commit = if (record.resolvedCommit != "") { record.resolvedCommit } else { base.commit }
+    metadata.docVersion = if (record.sourceRef != "") { record.sourceRef } else { base.docVersion }
     metadata.targetVersion = if (record.targetVersion != "") { record.targetVersion } else { base.targetVersion }
     metadata.sourceSet = if (record.sourceSet != "") { record.sourceSet } else { base.sourceSet }
     metadata.versionResolutionId = if (record.versionResolutionId != "") { record.versionResolutionId } else { base.versionResolutionId }

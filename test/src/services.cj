@@ -2784,6 +2784,7 @@ public class FileKnowledgeStore {
         var text = "active=${status.activeKnowledgeVersion}\n"
         text += "candidate=${status.candidateKnowledgeVersion}\n"
         text += "failed=${status.failedCandidateVersion}\n"
+        text += "activeStateSource=${status.activeStateSource}\n"
         text += "rawCount=${status.storage.rawCount}\n"
         text += "normalizedCount=${status.storage.normalizedCount}\n"
         text += "indexCount=${status.storage.indexCount}\n"
@@ -2910,6 +2911,8 @@ public class FileKnowledgeStore {
                 status.candidateVersion = value
             } else if (key == "failed") {
                 status.failedVersion = value
+            } else if (key == "activeStateSource") {
+                status.activeStateSource = value
             } else if (key == "vectorActiveCollection") {
                 status.vectorActiveCollection = value
             } else if (key == "vectorCandidateCollection") {
@@ -2930,6 +2933,7 @@ public class FileKnowledgeStore {
         let metadata = this.loadMetadataStatus()
         snapshot.candidateVersion = metadata.candidateVersion
         snapshot.failedVersion = metadata.failedVersion
+        snapshot.activeStateSource = metadata.activeStateSource
         snapshot.vectorActiveCollection = metadata.vectorActiveCollection
         snapshot.vectorCandidateCollection = metadata.vectorCandidateCollection
         if (metadata.activeVersion != "" && metadata.activeVersion != snapshot.activeVersion) {
@@ -3265,6 +3269,7 @@ public class StoreMetadataStatus {
     public var activeVersion: String = ""
     public var candidateVersion: String = ""
     public var failedVersion: String = ""
+    public var activeStateSource: String = ""
     public var vectorActiveCollection: String = "active"
     public var vectorCandidateCollection: String = "candidate"
 
@@ -3277,6 +3282,7 @@ public class ActiveSnapshot {
     public var activeVersion: String = ""
     public var candidateVersion: String = ""
     public var failedVersion: String = ""
+    public var activeStateSource: String = ""
     public var rawRecords: ArrayList<RawRecord> = ArrayList<RawRecord>()
     public var normalizedRecords: ArrayList<NormalizedRecord> = ArrayList<NormalizedRecord>()
     public var activeIndex: ArrayList<NormalizedRecord> = ArrayList<NormalizedRecord>()

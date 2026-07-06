@@ -50,6 +50,15 @@ public class CkbFirstInitResult {
     public init() {}
 }
 
+public class CkbFirstInitAssembly {
+    public var ok: Bool = true
+    public var records: ArrayList<CangjieTypedRecord> = ArrayList<CangjieTypedRecord>()
+    public var sources: ArrayList<CkbFirstInitSourceSummary> = ArrayList<CkbFirstInitSourceSummary>()
+    public var diagnostics: ArrayList<String> = ArrayList<String>()
+
+    public init() {}
+}
+
 public func parseCkbFirstInitOptions(args: Array<String>): CkbFirstInitOptions {
     let options = CkbFirstInitOptions()
     var i: Int64 = 0
@@ -121,10 +130,294 @@ public func renderCkbFirstInitResult(result: CkbFirstInitResult): String {
     for (gate in result.validation.failedGates) {
         out.append("failedGate=${gate}\n")
     }
+    for (check in result.validation.queryChecks) {
+        out.append("queryCheck=${check}\n")
+    }
     for (diagnostic in result.diagnostics) {
         out.append("diagnostic=${diagnostic}\n")
     }
     out.toString()
+}
+
+public func assembleCkbFirstInitializationRecords(options: CkbFirstInitOptions): CkbFirstInitAssembly {
+    let assembly = CkbFirstInitAssembly()
+    let targetVersion = if (options.targetVersion.trimAscii() == "") { cangjieDefaultTargetVersion() } else { options.targetVersion.trimAscii() }
+    let allResolution = resolveCangjieVersion(cangjieVersionSelector(targetVersion: targetVersion, sourceSet: CangjieSourceSets.ALL), defaultCangjieVersionManifest())
+    ckbFirstInitCollectDocs(assembly, "docs", options.docsRoot, allResolution)
+    if (options.toolDocsRoot.trimAscii() != "" && options.toolDocsRoot.trimAscii() != options.docsRoot.trimAscii()) {
+        ckbFirstInitCollectDocs(assembly, "tools", options.toolDocsRoot, allResolution)
+    }
+    ckbFirstInitCollectEval(assembly, options.evalRoot)
+    ckbFirstInitCollectSource(assembly, "std", options.stdRoot, CangjieSourceSets.STD, targetVersion)
+    ckbFirstInitCollectSource(assembly, "stdx", options.stdxRoot, CangjieSourceSets.STDX, targetVersion)
+    assembly.records = dedupeCkbFirstInitializationRecords(assembly.records)
+    assembly.ok = assembly.diagnostics.size == 0 && assembly.records.size > 0
+    assembly
+}
+
+public func dedupeCkbFirstInitializationRecords(records: ArrayList<CangjieTypedRecord>): ArrayList<CangjieTypedRecord> {
+    let out = ArrayList<CangjieTypedRecord>()
+    for (record in records) {
+        var seen = false
+        for (existing in out) {
+            if (existing.sourceId == record.sourceId && existing.recordKind == record.recordKind && existing.contentHash == record.contentHash) {
+                seen = true
+                break
+            }
+        }
+        if (!seen) {
+            out.add(record)
+        }
+    }
+    out
+}
+
+public func validateCkbFirstInitializationRecords(records: ArrayList<CangjieTypedRecord>): CkbFirstInitValidationResult {
+    let validation = CkbFirstInitValidationResult()
+    ckbFirstInitRequireKind(validation, records, CangjieTypedRecordKinds.DOC_SECTION, "missing_doc_section")
+    ckbFirstInitRequireKind(validation, records, CangjieTypedRecordKinds.TOOL_MANUAL, "missing_tool_manual")
+    ckbFirstInitRequireTool(validation, records, "cjpm", "test")
+    ckbFirstInitRequireSymbol(validation, records, "ArrayList.add")
+    ckbFirstInitRequireSymbol(validation, records, "String.contains")
+    ckbFirstInitRequireSymbol(validation, records, "HashMap")
+    ckbFirstInitRequireSymbol(validation, records, "Option")
+    ckbFirstInitRequireContent(validation, records, CangjieTypedRecordKinds.EVAL_SUPPORT, "EvalValue", "missing_eval_EvalValue")
+    ckbFirstInitRequireContent(validation, records, CangjieTypedRecordKinds.EVAL_SUPPORT, "EvalEntry", "missing_eval_EvalEntry")
+    validation.ok = validation.failedGates.size == 0
+    validation
+}
+
+public func ckbFirstInitCandidateVersion(targetVersion: String): String {
+    "ckb-first-init-${ckbFirstInitSafeVersion(targetVersion)}-candidate"
+}
+
+public func ckbFirstInitActiveVersion(targetVersion: String): String {
+    "ckb-first-init-${ckbFirstInitSafeVersion(targetVersion)}-active"
+}
+
+public func runCkbFirstInitialization(options: CkbFirstInitOptions, store: FileKnowledgeStore): CkbFirstInitResult {
+    let result = CkbFirstInitResult()
+    result.dryRun = options.dryRun || !options.apply
+    result.candidateVersion = ckbFirstInitCandidateVersion(options.targetVersion)
+    result.activeVersion = ""
+    if (!validateCkbFirstInitOptions(options)) {
+        for (diagnostic in options.diagnostics) {
+            result.diagnostics.add(diagnostic)
+        }
+        return result
+    }
+    let assembly = assembleCkbFirstInitializationRecords(options)
+    for (source in assembly.sources) {
+        result.sources.add(source)
+    }
+    for (diagnostic in assembly.diagnostics) {
+        result.diagnostics.add(diagnostic)
+    }
+    result.validation = validateCkbFirstInitializationRecords(assembly.records)
+    if (!result.validation.ok) {
+        if (options.apply && assembly.records.size > 0) {
+            let loaded = newKnowledgeBaseFromStore(store)
+            let kb = loaded.kb
+            kb.loadFirstInitializationTypedRecords(assembly.records, result.candidateVersion)
+            kb.markCandidateValidationFailed(result.candidateVersion)
+            kb.persistCandidateSnapshot(store)
+            result.activeVersion = kb.status().activeKnowledgeVersion
+        }
+        return result
+    }
+    if (!options.apply || options.dryRun) {
+        result.ok = true
+        return result
+    }
+    let loaded = newKnowledgeBaseFromStore(store)
+    let kb = loaded.kb
+    kb.loadFirstInitializationTypedRecords(assembly.records, result.candidateVersion)
+    let candidateValidation = validateCandidateServingIndex(kb.candidateRecordSnapshot(), result.candidateVersion)
+    if (!candidateValidation.ok) {
+        for (diagnostic in candidateValidation.diagnostics) {
+            result.diagnostics.add(diagnostic)
+        }
+        kb.markCandidateValidationFailed(result.candidateVersion)
+        kb.persistCandidateSnapshot(store)
+        result.activeVersion = kb.status().activeKnowledgeVersion
+        return result
+    }
+    result.activeVersion = ckbFirstInitActiveVersion(options.targetVersion)
+    let promoted = kb.promoteFirstInitializationCandidate(result.activeVersion)
+    kb.persistCandidateSnapshot(store)
+    if (promoted) {
+        kb.persistActiveSnapshot(store)
+    }
+    result.persisted = promoted
+    result.ok = promoted
+    result.activeVersion = kb.status().activeKnowledgeVersion
+    result
+}
+
+private func ckbFirstInitCollectDocs(assembly: CkbFirstInitAssembly, name: String, root: String, resolution: CangjieVersionResolution): Unit {
+    let clean = root.trimAscii()
+    let summary = CkbFirstInitSourceSummary()
+    summary.name = name
+    summary.root = clean
+    if (clean == "") {
+        summary.diagnostics.add("missing_${name}_root")
+        assembly.diagnostics.add("missing_${name}_root")
+        assembly.sources.add(summary)
+        return
+    }
+    let paths = discoverCangjieDocsRelativePaths(clean)
+    let records = scanCangjieDocsRootFull(clean, resolution)
+    summary.fileCount = paths.size
+    summary.recordCount = records.records.size
+    summary.ok = records.ok && records.records.size > 0
+    for (diagnostic in records.diagnostics) {
+        summary.diagnostics.add(diagnostic)
+    }
+    for (record in records.records) {
+        assembly.records.add(record)
+    }
+    if (!summary.ok) {
+        assembly.diagnostics.add("${name}_scan_failed")
+    }
+    assembly.sources.add(summary)
+}
+
+private func ckbFirstInitCollectEval(assembly: CkbFirstInitAssembly, root: String): Unit {
+    let clean = root.trimAscii()
+    let summary = CkbFirstInitSourceSummary()
+    summary.name = "eval-support"
+    summary.root = clean
+    if (clean == "") {
+        summary.diagnostics.add("missing_eval_root")
+        assembly.diagnostics.add("missing_eval_root")
+        assembly.sources.add(summary)
+        return
+    }
+    let roots = discoverCangjieHumanEvalCaseRoots(clean)
+    let records = extractAllEvalSupportRecords(clean)
+    summary.fileCount = roots.size
+    summary.recordCount = records.records.size
+    summary.ok = records.ok && records.records.size > 0
+    for (diagnostic in records.diagnostics) {
+        summary.diagnostics.add(diagnostic)
+    }
+    for (record in records.records) {
+        assembly.records.add(record)
+    }
+    if (!summary.ok) {
+        assembly.diagnostics.add("eval_support_scan_failed")
+    }
+    assembly.sources.add(summary)
+}
+
+private func ckbFirstInitCollectSource(assembly: CkbFirstInitAssembly, name: String, root: String, sourceSet: String, targetVersion: String): Unit {
+    let clean = root.trimAscii()
+    let summary = CkbFirstInitSourceSummary()
+    summary.name = name
+    summary.root = clean
+    if (clean == "") {
+        summary.diagnostics.add("missing_${name}_root")
+        assembly.diagnostics.add("missing_${name}_root")
+        assembly.sources.add(summary)
+        return
+    }
+    let resolution = resolveCangjieVersion(cangjieVersionSelector(targetVersion: targetVersion, sourceSet: sourceSet), defaultCangjieVersionManifest())
+    let paths = discoverCangjieSourceRelativePaths(clean)
+    let records = scanCangjieSourceSymbolsRoot(clean, sourceSet, resolution)
+    summary.fileCount = paths.size
+    summary.recordCount = records.records.size
+    summary.ok = records.ok && records.records.size > 0
+    for (diagnostic in records.diagnostics) {
+        summary.diagnostics.add(diagnostic)
+    }
+    for (record in records.records) {
+        assembly.records.add(record)
+    }
+    if (!summary.ok) {
+        assembly.diagnostics.add("${name}_source_scan_failed")
+    }
+    assembly.sources.add(summary)
+}
+
+private func ckbFirstInitRequireKind(validation: CkbFirstInitValidationResult, records: ArrayList<CangjieTypedRecord>, kind: String, gate: String): Unit {
+    let hit = ckbFirstInitHasKind(records, kind)
+    validation.queryChecks.add("${kind}=${if (hit) { "hit" } else { "miss" }}")
+    if (!hit) {
+        validation.failedGates.add(gate)
+    }
+}
+
+private func ckbFirstInitRequireTool(validation: CkbFirstInitValidationResult, records: ArrayList<CangjieTypedRecord>, tool: String, command: String): Unit {
+    let hit = ckbFirstInitHasTool(records, tool, command)
+    validation.queryChecks.add("tool:${tool}:${command}=${if (hit) { "hit" } else { "miss" }}")
+    if (!hit) {
+        validation.failedGates.add("missing_tool_${tool}_${command}")
+    }
+}
+
+private func ckbFirstInitRequireSymbol(validation: CkbFirstInitValidationResult, records: ArrayList<CangjieTypedRecord>, symbol: String): Unit {
+    let hit = ckbFirstInitHasSymbol(records, symbol)
+    validation.queryChecks.add("symbol:${symbol}=${if (hit) { "hit" } else { "miss" }}")
+    if (!hit) {
+        validation.failedGates.add("missing_symbol_${symbol}")
+    }
+}
+
+private func ckbFirstInitRequireContent(validation: CkbFirstInitValidationResult, records: ArrayList<CangjieTypedRecord>, kind: String, needle: String, gate: String): Unit {
+    let hit = ckbFirstInitHasContent(records, kind, needle)
+    validation.queryChecks.add("${kind}:${needle}=${if (hit) { "hit" } else { "miss" }}")
+    if (!hit) {
+        validation.failedGates.add(gate)
+    }
+}
+
+private func ckbFirstInitHasKind(records: ArrayList<CangjieTypedRecord>, kind: String): Bool {
+    for (record in records) {
+        if (record.recordKind == kind) {
+            return true
+        }
+    }
+    false
+}
+
+private func ckbFirstInitHasTool(records: ArrayList<CangjieTypedRecord>, tool: String, command: String): Bool {
+    for (record in records) {
+        if (record.recordKind == CangjieTypedRecordKinds.TOOL_MANUAL && record.toolName == tool && record.command == command) {
+            return true
+        }
+    }
+    false
+}
+
+private func ckbFirstInitHasSymbol(records: ArrayList<CangjieTypedRecord>, symbol: String): Bool {
+    for (record in records) {
+        if (record.recordKind == CangjieTypedRecordKinds.SYMBOL_CARD && record.symbol == symbol) {
+            return true
+        }
+    }
+    false
+}
+
+private func ckbFirstInitHasContent(records: ArrayList<CangjieTypedRecord>, kind: String, needle: String): Bool {
+    for (record in records) {
+        if (record.recordKind == kind && record.content.contains(needle)) {
+            return true
+        }
+    }
+    false
+}
+
+private func ckbFirstInitSafeVersion(targetVersion: String): String {
+    let raw = if (targetVersion.trimAscii() == "") { cangjieDefaultTargetVersion() } else { targetVersion.trimAscii() }
+    let out = StringBuilder()
+    for (ch in raw.toRuneArray()) {
+        if ((ch >= r'a' && ch <= r'z') || (ch >= r'A' && ch <= r'Z') || (ch >= r'0' && ch <= r'9')) {
+            out.append(ch)
+        } else {
+            out.append("-")
+        }
+    }
+    out.toString().toAsciiLower()
 }
 
 private func ckbFirstInitValidatePath(path: String, name: String, diagnostics: ArrayList<String>): Unit {
