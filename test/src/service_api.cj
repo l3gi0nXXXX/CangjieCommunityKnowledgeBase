@@ -282,6 +282,9 @@ private func ckbApiHandleAdmin(service: CkbCommandLoopService, method: String, p
     if (path == "/v1/admin/sync") {
         return ckbApiEnvelope(ckbApiAdminResultJson(service.runSync(body: body)))
     }
+    if (path == "/v1/admin/initialize") {
+        return ckbApiEnvelope(ckbApiFirstInitResultJson(service.runFirstInitialization(body: body)))
+    }
     if (path == "/v1/admin/repositories/sync") {
         return ckbApiEnvelope(ckbApiAdminResultJson(service.runRepositorySync(body: body)))
     }
@@ -589,7 +592,7 @@ private func ckbApiSchedulesDataJson(status: KnowledgeStatus): String {
 }
 
 private func ckbApiSchemaJson(): String {
-    let routes = "\"GET /v1/health\",\"GET /v1/status\",\"GET /v1/schedules\",\"GET /v1/schema\",\"GET /mcp\",\"POST /mcp\",\"DELETE /mcp\",\"GET /v1/cangjie/corpus/status\",\"GET /v1/cangjie/llms.txt\",\"GET /v1/cangjie/llms-full.txt\",\"POST /v1/cangjie/knowledge-pack\",\"POST /v1/cangjie/syntax-query\",\"POST /v1/cangjie/api-search\",\"POST /v1/cangjie/cookbook\",\"POST /v1/cangjie/diagnose\",\"POST /v1/cangjie/examples\",\"POST /v1/cangjie/context-pack\",\"POST /v1/cangjie/version/resolve\",\"POST /v1/cangjie/task-knowledge-pack\",\"POST /v1/cangjie/knowledge-coverage\",\"POST /v1/cangjie/compile-diagnose-v2\",\"POST /v1/cangjie/symbol-lookup\",\"POST /v1/cangjie/doc-section\",\"GET /v1/cangjie/corpus/freshness\",\"POST /v1/cangjie/tool-manual\",\"POST /v1/cangjie/negative-rules\",\"POST /v1/query\",\"POST /v1/evidence-pack\",\"POST /v1/source-analysis\",\"POST /v1/events/gitcode/repository-changed\",\"POST /v1/admin/rebuild\",\"POST /v1/admin/scheduler/run\",\"POST /v1/admin/repositories/sync\",\"POST /v1/admin/repo-list/refresh\",\"POST /v1/admin/sync\""
+    let routes = "\"GET /v1/health\",\"GET /v1/status\",\"GET /v1/schedules\",\"GET /v1/schema\",\"GET /mcp\",\"POST /mcp\",\"DELETE /mcp\",\"GET /v1/cangjie/corpus/status\",\"GET /v1/cangjie/llms.txt\",\"GET /v1/cangjie/llms-full.txt\",\"POST /v1/cangjie/knowledge-pack\",\"POST /v1/cangjie/syntax-query\",\"POST /v1/cangjie/api-search\",\"POST /v1/cangjie/cookbook\",\"POST /v1/cangjie/diagnose\",\"POST /v1/cangjie/examples\",\"POST /v1/cangjie/context-pack\",\"POST /v1/cangjie/version/resolve\",\"POST /v1/cangjie/task-knowledge-pack\",\"POST /v1/cangjie/knowledge-coverage\",\"POST /v1/cangjie/compile-diagnose-v2\",\"POST /v1/cangjie/symbol-lookup\",\"POST /v1/cangjie/doc-section\",\"GET /v1/cangjie/corpus/freshness\",\"POST /v1/cangjie/tool-manual\",\"POST /v1/cangjie/negative-rules\",\"POST /v1/query\",\"POST /v1/evidence-pack\",\"POST /v1/source-analysis\",\"POST /v1/events/gitcode/repository-changed\",\"POST /v1/admin/rebuild\",\"POST /v1/admin/scheduler/run\",\"POST /v1/admin/repositories/sync\",\"POST /v1/admin/repo-list/refresh\",\"POST /v1/admin/sync\",\"POST /v1/admin/initialize\""
     let tools = "\"cangjie_knowledge_pack\",\"cangjie_syntax_query\",\"cangjie_api_search\",\"cangjie_cookbook\",\"cangjie_diagnose\",\"cangjie_examples\",\"cangjie_corpus_status\",\"cangjie_version_resolve\",\"cangjie_task_knowledge_pack\",\"cangjie_knowledge_coverage\",\"cangjie_compile_diagnose_v2\",\"cangjie_symbol_lookup\",\"cangjie_doc_section\",\"cangjie_corpus_freshness\",\"cangjie_tool_manual\",\"cangjie_negative_rules\""
     "{\"apiVersion\":\"ckb-http-v1\",\"envelope\":\"{ok,apiVersion,data|error,diagnostics}\",\"routes\":[${routes}],\"mcpTransports\":[\"stdio\",\"streamable-http\"],\"mcpEndpoint\":\"/mcp\",\"mcpProtocolVersions\":[\"2024-11-05\",\"2025-06-18\"],\"mcpSse\":true,\"tools\":[${tools}],\"mcpResources\":[\"ckb://cangjie/corpus/status\",\"ckb://cangjie/llms.txt\",\"ckb://cangjie/llms-full.txt\",\"ckb://cangjie/syntax/{query}\",\"ckb://cangjie/api/{symbol}\",\"ckb://cangjie/cookbook/{task}\"],\"mcpPrompts\":[\"cangjie_write_code_with_ckb\",\"cangjie_fix_compile_error\",\"cangjie_explain_api\",\"cangjie_generate_tests\"],\"plannedNotEnabled\":[\"/v1/cangjie/verify-snippet\"],\"errorCodes\":[\"ckb.bad_request\",\"ckb.unauthorized\",\"ckb.not_found\",\"ckb.method_not_allowed\",\"ckb.invalid_workspace_root\",\"version_not_resolved\",\"unsupported_source_set\"],\"limits\":{\"budgetDefault\":5,\"budgetMax\":20,\"apiVersion\":\"ckb-http-v1\"}}"
 }
@@ -710,6 +713,18 @@ private func ckbApiRepositoryEventResultJson(result: GitCodeRepositoryChangedEve
 
 private func ckbApiAdminResultJson(result: CkbAdminOperationResult): String {
     "{\"status\":\"${ckbApiJsonEscape(result.status)}\",\"degraded\":${result.degraded},\"diagnostic\":\"${ckbApiJsonEscape(redactSensitive(result.diagnostic))}\",\"repo\":\"${ckbApiJsonEscape(result.repo)}\",\"ref\":\"${ckbApiJsonEscape(result.ref)}\",\"profile\":\"${ckbApiJsonEscape(result.profile)}\",\"prNumber\":${result.prNumber},\"truncated\":${result.truncated},\"matchedPaths\":${ckbApiStringArrayJson(result.matchedPaths)},\"repoCount\":${result.repoCount},\"requestCount\":${result.requestCount},\"updatedDataKinds\":${ckbApiStringArrayJson(result.updatedDataKinds)},\"activeKnowledgeVersion\":\"${ckbApiJsonEscape(result.activeKnowledgeVersion)}\",\"candidateKnowledgeVersion\":\"${ckbApiJsonEscape(result.candidateKnowledgeVersion)}\",\"activeRepoListVersion\":\"${ckbApiJsonEscape(result.activeRepoListVersion)}\",\"candidateRepoListVersion\":\"${ckbApiJsonEscape(result.candidateRepoListVersion)}\"}"
+}
+
+private func ckbApiFirstInitResultJson(result: CkbFirstInitResult): String {
+    var out = "{\"status\":\"${if (result.ok) { "ok" } else { "degraded" }}\",\"degraded\":${!result.ok},\"dryRun\":${result.dryRun},\"persisted\":${result.persisted},\"activeKnowledgeVersion\":\"${ckbApiJsonEscape(result.activeVersion)}\",\"candidateKnowledgeVersion\":\"${ckbApiJsonEscape(result.candidateVersion)}\",\"validation\":{\"ok\":${result.validation.ok},\"failedGates\":${ckbApiStringArrayJson(result.validation.failedGates)},\"queryChecks\":${ckbApiStringArrayJson(result.validation.queryChecks)}}"
+    out += ",\"sources\":["
+    for (i in 0..result.sources.size) {
+        if (i > 0) { out += "," }
+        let source = result.sources[i]
+        out += "{\"name\":\"${ckbApiJsonEscape(source.name)}\",\"ok\":${source.ok},\"fileCount\":${source.fileCount},\"recordCount\":${source.recordCount},\"diagnostics\":${ckbApiStringArrayJson(source.diagnostics)}}"
+    }
+    out += "],\"diagnostics\":${ckbApiStringArrayJson(result.diagnostics)}}"
+    out
 }
 
 private func ckbApiStringArrayJson(values: ArrayList<String>): String {

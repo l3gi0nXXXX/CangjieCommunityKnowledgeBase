@@ -254,6 +254,47 @@ public func runCkbFirstInitialization(options: CkbFirstInitOptions, store: FileK
     result
 }
 
+public func ckbFirstInitOptionsFromRuntime(config: CkbRuntimeConfig, apply!: Bool = true, dryRun!: Bool = false): CkbFirstInitOptions {
+    let options = CkbFirstInitOptions()
+    options.docsRoot = config.firstInitDocsRoot
+    options.toolDocsRoot = config.firstInitToolDocsRoot
+    options.stdRoot = config.firstInitStdRoot
+    options.stdxRoot = config.firstInitStdxRoot
+    options.evalRoot = config.firstInitEvalRoot
+    options.targetVersion = if (config.firstInitTargetVersion.trimAscii() == "") { cangjieDefaultTargetVersion() } else { config.firstInitTargetVersion.trimAscii() }
+    options.apply = apply
+    options.dryRun = dryRun
+    options.autoMode = true
+    validateCkbFirstInitOptions(options)
+    options
+}
+
+public func runCkbFirstInitializationWithActiveGuard(options: CkbFirstInitOptions, store: FileKnowledgeStore): CkbFirstInitResult {
+    if (options.apply && !options.dryRun) {
+        let snapshot = store.loadActiveSnapshot()
+        if (snapshot.valid) {
+            let result = CkbFirstInitResult()
+            result.ok = true
+            result.validation.ok = true
+            result.activeVersion = snapshot.activeVersion
+            result.candidateVersion = snapshot.candidateVersion
+            result.persisted = false
+            result.diagnostics.add("already_initialized")
+            return result
+        }
+    }
+    runCkbFirstInitialization(options, store)
+}
+
+public func ckbEnsureFirstInitialized(config: CkbRuntimeConfig, store: FileKnowledgeStore): CkbFirstInitResult {
+    if (!config.firstInitEnabled) {
+        let result = CkbFirstInitResult()
+        result.diagnostics.add("first_init_disabled")
+        return result
+    }
+    runCkbFirstInitializationWithActiveGuard(ckbFirstInitOptionsFromRuntime(config, apply: true, dryRun: false), store)
+}
+
 private func ckbFirstInitCollectDocs(assembly: CkbFirstInitAssembly, name: String, root: String, resolution: CangjieVersionResolution): Unit {
     let clean = root.trimAscii()
     let summary = CkbFirstInitSourceSummary()

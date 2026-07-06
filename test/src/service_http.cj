@@ -123,6 +123,7 @@ public func registerCkbHttpRoutes(server: Server, service: CkbCommandLoopService
     ckbHttpRegisterRoute(server, service, config, "/v1/admin/scheduler/run")
     ckbHttpRegisterRoute(server, service, config, "/v1/admin/repositories/sync")
     ckbHttpRegisterRoute(server, service, config, "/v1/admin/repo-list/refresh")
+    ckbHttpRegisterRoute(server, service, config, "/v1/admin/initialize")
     ckbMcpHttpRegisterRoute(server, service, config, mcpSessionStore, "/mcp")
 }
 

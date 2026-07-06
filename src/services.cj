@@ -298,6 +298,13 @@ public class CkbRuntimeConfig {
     public var serviceReadOnlyPublic: Bool = true
     public var serviceDefaultBudget: Int64 = 5
     public var serviceMaxBudget: Int64 = 20
+    public var firstInitEnabled: Bool = false
+    public var firstInitDocsRoot: String = ""
+    public var firstInitToolDocsRoot: String = ""
+    public var firstInitStdRoot: String = ""
+    public var firstInitStdxRoot: String = ""
+    public var firstInitEvalRoot: String = ""
+    public var firstInitTargetVersion: String = cangjieDefaultTargetVersion()
 
     public init() {}
 
@@ -429,6 +436,13 @@ public class CkbRuntimeConfig {
         out += " service.readOnlyPublic=${if (this.serviceReadOnlyPublic) { "true" } else { "false" }}"
         out += " service.defaultBudget=${this.serviceDefaultBudget}"
         out += " service.maxBudget=${this.serviceMaxBudget}"
+        out += " firstInit.enabled=${if (this.firstInitEnabled) { "true" } else { "false" }}"
+        out += " firstInit.docsRoot=${if (this.firstInitDocsRoot == "") { "absent" } else { "present" }}"
+        out += " firstInit.toolDocsRoot=${if (this.firstInitToolDocsRoot == "") { "absent" } else { "present" }}"
+        out += " firstInit.stdRoot=${if (this.firstInitStdRoot == "") { "absent" } else { "present" }}"
+        out += " firstInit.stdxRoot=${if (this.firstInitStdxRoot == "") { "absent" } else { "present" }}"
+        out += " firstInit.evalRoot=${if (this.firstInitEvalRoot == "") { "absent" } else { "present" }}"
+        out += " firstInit.targetVersion=${if (this.firstInitTargetVersion == "") { "unset" } else { this.firstInitTargetVersion }}"
         out += " website=${if (this.websiteEnabled) { "enabled" } else { "disabled" }}"
         out += " docs=${if (this.docsEnabled) { "enabled" } else { "disabled" }}"
         out += " index.backend=${this.indexBackend}"
@@ -3388,11 +3402,11 @@ public class QueryService {
 
 public class CkbSchema {
     public static func mcpTools(): String {
-        "tools: cangjie.health,cangjie.status,cangjie.query,cangjie.evidence,cangjie.sync,cangjie.rebuild,cangjie.source_analysis,cangjie.source_search,cangjie.doc_search,cangjie.website_search,cangjie.web_candidate_search,cangjie.hybrid_search,cangjie.evidence_pack,cangjie.knowledge_pack,cangjie.syntax_query,cangjie.api_search,cangjie.cookbook,cangjie.diagnose,cangjie.examples,cangjie.corpus_status,cangjie.version_resolve,cangjie.task_knowledge_pack,cangjie.knowledge_coverage,cangjie.compile_diagnose_v2,cangjie.symbol_lookup,cangjie.doc_section,cangjie.corpus_freshness,cangjie.tool_manual,cangjie.negative_rules,cangjie.schedules,cangjie.gitcode_repository_changed,cangjie.admin_scheduler_run,cangjie.admin_repositories_sync,cangjie.admin_repo_list_refresh; mcpTransports=stdio,streamable-http mcpEndpoint=/mcp mcpProtocolVersions=2024-11-05,2025-06-18 mcpSse=true; apiVersion=ckb-http-v1 envelope={ok,apiVersion,data|error,diagnostics}; input: query{q,budget<=20,sourceType,includeCandidates=false}, evidence_pack{q,budget<=20,includeCandidates,parentUrl,repo,ref}, cangjie_knowledge_pack{task,targetVersion=1.0.0,budget<=20,includeExamples,includeAntiPatterns,legacy_endpoint_degraded=true}, cangjie_version_resolve{targetVersion,sourceSet,sourceFamily,sourceRepo,sourceRef,refKind,versionPolicy=default|exact,includePrerelease=false}, cangjie_task_knowledge_pack{taskId,benchmark,taskText,signature,imports,argTypes,returnType,expectedKnowledgeTags,starterCodeExcerpt,compilerOutput,targetVersion,sourceSet,sourceRef,versionPolicy,budget<=20}, cangjie_knowledge_coverage{same fields as cangjie_task_knowledge_pack}, cangjie_compile_diagnose_v2{code,compilerOutput,context,targetVersion,sourceSet,sourceRef,budget<=20,executed=false}, cangjie_symbol_lookup{symbol,module,sourceSet,targetVersion,budget<=20}, cangjie_doc_section{sectionId,path,heading,targetVersion,budget<=20}, cangjie_corpus_freshness{readOnly=true}, cangjie_tool_manual{tool,command,targetVersion,budget<=20}, cangjie_negative_rules{q,query,targetVersion,budget<=20}, cangjie_api_search{q,module,symbol,sourceSet,targetVersion,budget<=20}, cangjie_syntax_query{q,targetVersion,budget<=20}, cangjie_cookbook{task,constraints,targetVersion,style,budget<=20}, cangjie_diagnose{code,compilerOutput,context,targetVersion,budget<=20,executed=false}, cangjie_examples{q,module,symbol,maxExamples<=20}, cangjie_corpus_status{readOnly=true}, source_analysis{repo,ref,query,issueUrl,prUrl,changedFiles,candidatePaths,allowCloneFallback,maxFiles,maxBytes,timeoutMillis,visibility=public,retainFailedWorkspace=false}, gitcode_repository_changed{contractVersion=gcm-ckb-repository-change-v1,provider=gitcode,eventType=merge_request,reason=pr_merged,repo,ref,prNumber,changedFiles}, admin_scheduler_run{limit,taskNames,force,reason,requestedBy,source}, admin_repositories_sync{repo,ref,profile,changedFiles,prNumber,mode,reason}, admin_repo_list_refresh{repo,ref,paths,prNumber,mode,reason}, sync{dryRun,apply,maxRepos,maxFilesPerRepo,maxItems,since}, rebuild{store}; liveGitCode: officialApi=https://api.gitcode.com/api/v5 authMode=token authHeader=private-token tokenFile=tokenFile tokenFileFormat=single PAT line without token/Bearer/PRIVATE-TOKEN prefix; sourceAnalysis: defaultEnabled=false workspaceRoot=TMPDIR-or-tmp/ckb-source-analysis publicOnly=true cloneHostAllowlist=gitcode.com cleanup=default; acceptance: schema -> doctor/status -> anonymous dry-run -> credentialed dry-run if needed -> limited apply -> rebuild-index -> status/evidence -> source_analysis fake/public repo; output: ok,status,errorCode,activeKnowledgeVersion,knowledgeVersion,targetVersion,versionResolution,queryPlan,coverage,citations,evidence,requiresReview,triggerReasons,sourceAcquisition,filesRead,cleanupStatus,truncated,degraded,transportDiagnostic,scheduledProfiles; boundary: MCP JSON-RPC server exposes only read-only Cangjie tools/resources/prompts through stdio and /mcp; cangjie diagnose is knowledge-only; cangjie compile_diagnose_v2 is query-plan only and does not execute code; verify-snippet/admin/update/repository sync/event tools are not exposed to ordinary MCP clients; redaction: never returns tokenRef,tokenFile contents,PRIVATE-TOKEN,Authorization,Cookie,private-token values,absolute local paths; errors: ckb.bad_request,ckb.unauthorized,ckb.not_found,ckb.network_disabled,ckb.auth_degraded,ckb.rate_limited,ckb.source_unavailable,ckb.rebuild_failed,ckb.validation_failed,ckb.invalid_workspace_root,ckb.invalid_clone_host,version_not_resolved,unsupported_source_set"
+        "tools: cangjie.health,cangjie.status,cangjie.query,cangjie.evidence,cangjie.sync,cangjie.rebuild,cangjie.source_analysis,cangjie.source_search,cangjie.doc_search,cangjie.website_search,cangjie.web_candidate_search,cangjie.hybrid_search,cangjie.evidence_pack,cangjie.knowledge_pack,cangjie.syntax_query,cangjie.api_search,cangjie.cookbook,cangjie.diagnose,cangjie.examples,cangjie.corpus_status,cangjie.version_resolve,cangjie.task_knowledge_pack,cangjie.knowledge_coverage,cangjie.compile_diagnose_v2,cangjie.symbol_lookup,cangjie.doc_section,cangjie.corpus_freshness,cangjie.tool_manual,cangjie.negative_rules,cangjie.schedules,cangjie.gitcode_repository_changed,cangjie.admin_scheduler_run,cangjie.admin_repositories_sync,cangjie.admin_repo_list_refresh,cangjie.admin_initialize; mcpTransports=stdio,streamable-http mcpEndpoint=/mcp mcpProtocolVersions=2024-11-05,2025-06-18 mcpSse=true; apiVersion=ckb-http-v1 envelope={ok,apiVersion,data|error,diagnostics}; input: query{q,budget<=20,sourceType,includeCandidates=false}, evidence_pack{q,budget<=20,includeCandidates,parentUrl,repo,ref}, cangjie_knowledge_pack{task,targetVersion=1.0.0,budget<=20,includeExamples,includeAntiPatterns,legacy_endpoint_degraded=true}, cangjie_version_resolve{targetVersion,sourceSet,sourceFamily,sourceRepo,sourceRef,refKind,versionPolicy=default|exact,includePrerelease=false}, cangjie_task_knowledge_pack{taskId,benchmark,taskText,signature,imports,argTypes,returnType,expectedKnowledgeTags,starterCodeExcerpt,compilerOutput,targetVersion,sourceSet,sourceRef,versionPolicy,budget<=20}, cangjie_knowledge_coverage{same fields as cangjie_task_knowledge_pack}, cangjie_compile_diagnose_v2{code,compilerOutput,context,targetVersion,sourceSet,sourceRef,budget<=20,executed=false}, cangjie_symbol_lookup{symbol,module,sourceSet,targetVersion,budget<=20}, cangjie_doc_section{sectionId,path,heading,targetVersion,budget<=20}, cangjie_corpus_freshness{readOnly=true}, cangjie_tool_manual{tool,command,targetVersion,budget<=20}, cangjie_negative_rules{q,query,targetVersion,budget<=20}, cangjie_api_search{q,module,symbol,sourceSet,targetVersion,budget<=20}, cangjie_syntax_query{q,targetVersion,budget<=20}, cangjie_cookbook{task,constraints,targetVersion,style,budget<=20}, cangjie_diagnose{code,compilerOutput,context,targetVersion,budget<=20,executed=false}, cangjie_examples{q,module,symbol,maxExamples<=20}, cangjie_corpus_status{readOnly=true}, source_analysis{repo,ref,query,issueUrl,prUrl,changedFiles,candidatePaths,allowCloneFallback,maxFiles,maxBytes,timeoutMillis,visibility=public,retainFailedWorkspace=false}, gitcode_repository_changed{contractVersion=gcm-ckb-repository-change-v1,provider=gitcode,eventType=merge_request,reason=pr_merged,repo,ref,prNumber,changedFiles}, admin_scheduler_run{limit,taskNames,force,reason,requestedBy,source}, admin_repositories_sync{repo,ref,profile,changedFiles,prNumber,mode,reason}, admin_repo_list_refresh{repo,ref,paths,prNumber,mode,reason}, admin_initialize{dryRun,apply,docsRoot,toolDocsRoot,stdRoot,stdxRoot,evalRoot,targetVersion}, sync{dryRun,apply,maxRepos,maxFilesPerRepo,maxItems,since}, rebuild{store}; liveGitCode: officialApi=https://api.gitcode.com/api/v5 authMode=token authHeader=private-token tokenFile=tokenFile tokenFileFormat=single PAT line without token/Bearer/PRIVATE-TOKEN prefix; sourceAnalysis: defaultEnabled=false workspaceRoot=TMPDIR-or-tmp/ckb-source-analysis publicOnly=true cloneHostAllowlist=gitcode.com cleanup=default; acceptance: schema -> doctor/status -> anonymous dry-run -> credentialed dry-run if needed -> limited apply -> rebuild-index -> status/evidence -> source_analysis fake/public repo; output: ok,status,errorCode,activeKnowledgeVersion,knowledgeVersion,targetVersion,versionResolution,queryPlan,coverage,citations,evidence,requiresReview,triggerReasons,sourceAcquisition,filesRead,cleanupStatus,truncated,degraded,transportDiagnostic,scheduledProfiles; boundary: MCP JSON-RPC server exposes only read-only Cangjie tools/resources/prompts through stdio and /mcp; cangjie diagnose is knowledge-only; cangjie compile_diagnose_v2 is query-plan only and does not execute code; verify-snippet/admin/update/repository sync/event tools are not exposed to ordinary MCP clients; redaction: never returns tokenRef,tokenFile contents,PRIVATE-TOKEN,Authorization,Cookie,private-token values,absolute local paths; errors: ckb.bad_request,ckb.unauthorized,ckb.not_found,ckb.network_disabled,ckb.auth_degraded,ckb.rate_limited,ckb.source_unavailable,ckb.rebuild_failed,ckb.validation_failed,ckb.invalid_workspace_root,ckb.invalid_clone_host,version_not_resolved,unsupported_source_set"
     }
 
     public static func httpLikeRoutes(): String {
-        "routes: STDIO ckb-stdio-v1 health,status,metrics,query <text>,evidence <text>,source_analysis repo=<owner/repo> ref=<ref> path=<path> query=<text> allowCloneFallback=<bool>,sync,rebuild,scheduler-run,backup <name>,restore <name>,restart,stop; MCP stdio command mcp-stdio; MCP Streamable HTTP GET /mcp -> text/event-stream SSE ready/keepalive, POST /mcp -> JSON-RPC request JSON response or notification 202 empty, DELETE /mcp -> session close 202; legacy HTTP-like aliases GET /health -> ok,status,activeKnowledgeVersion,degraded; GET /status -> storage,indexManifest,scheduler,activeKnowledgeVersion,restoreDiagnostic,authHeaderStrategy,sourceAnalysis; POST /query -> query,evidence,citations,knowledgeVersion; POST /evidence -> evidencePack,graphContext,citations,activeKnowledgeVersion; POST /sync -> dryRun|apply,candidateVersion,activeKnowledgeVersion,redactedSourceStatus,transportDiagnostic; POST /rebuild-index -> candidateVersion,activeKnowledgeVersion,count; JSON ckb-http-v1 envelope={ok,apiVersion,data|error,diagnostics}; GET /v1/health -> status,activeKnowledgeVersion,degraded,schedulerDegraded; GET /v1/status -> storage,indexManifest,scheduler,activeKnowledgeVersion,restoreDiagnostic,authHeaderStrategy,sourceAnalysis; GET /v1/schedules -> entries interval,nextRunAt,lastSuccessAt,failureCount,lastDurationMillis,lastRequestCount,lastUpdatedDataKinds; GET /v1/schema -> routes,tools,errorCodes,apiVersion,limits,mcpTransports,mcpEndpoint,mcpSse; GET /v1/cangjie/corpus/status -> docsUrls,stdSources,activeKnowledgeVersion; GET /v1/cangjie/llms.txt -> markdown,knowledgeVersion; GET /v1/cangjie/llms-full.txt -> markdown,knowledgeVersion; POST /v1/cangjie/knowledge-pack -> knowledgeVersion,targetVersion,items,apiItems,examples,citations,truncated,degraded,legacy_endpoint_degraded; POST /v1/cangjie/version/resolve -> targetVersion,versionResolutionId,sources,diagnostics; POST /v1/cangjie/task-knowledge-pack -> versionResolution,queryPlan,coverage,diagnostics; POST /v1/cangjie/knowledge-coverage -> required,coveredCount,missingCount,coveragePass; POST /v1/cangjie/compile-diagnose-v2 -> versionResolution,queryPlan,coverage,executed=false; POST /v1/cangjie/syntax-query -> syntax items,citations; POST /v1/cangjie/api-search -> api items,citations; POST /v1/cangjie/cookbook -> grounded steps,citations; POST /v1/cangjie/diagnose -> diagnostics,executed=false,citations; POST /v1/cangjie/examples -> examples,citations; POST /v1/cangjie/context-pack -> markdown,citations; POST /v1/query -> rows,citations,knowledgeVersion,truncated; POST /v1/evidence-pack -> evidencePack,graphContext,citations,knowledgeVersion; POST /v1/source-analysis -> analysisId,repo,ref,triggerReasons,sourceAcquisition,filesRead,citations,degraded,cleanupStatus; POST /v1/events/gitcode/repository-changed -> accepted|duplicate|rejected,dedupeKey,scheduledProfiles; POST /v1/admin/scheduler/run -> ran,succeeded,failed,degraded,details; POST /v1/admin/repositories/sync -> repo,profile,requestCount,updatedDataKinds,truncated,candidateVersion,activeKnowledgeVersion; POST /v1/admin/repo-list/refresh -> matchedPaths,repoCount,candidateRepoListVersion,activeRepoListVersion,diagnostics; POST /v1/admin/sync -> source status,candidateVersion,activeKnowledgeVersion,transportDiagnostic; POST /v1/admin/rebuild -> candidateVersion,activeKnowledgeVersion,count; planned_not_enabled: /v1/cangjie/verify-snippet; compatibility: CLI service/status/rebuild-index/source_analysis provide the canonical local protocol"
+        "routes: STDIO ckb-stdio-v1 health,status,metrics,query <text>,evidence <text>,source_analysis repo=<owner/repo> ref=<ref> path=<path> query=<text> allowCloneFallback=<bool>,sync,cangjie_initialize,rebuild,scheduler-run,backup <name>,restore <name>,restart,stop; MCP stdio command mcp-stdio; MCP Streamable HTTP GET /mcp -> text/event-stream SSE ready/keepalive, POST /mcp -> JSON-RPC request JSON response or notification 202 empty, DELETE /mcp -> session close 202; legacy HTTP-like aliases GET /health -> ok,status,activeKnowledgeVersion,degraded; GET /status -> storage,indexManifest,scheduler,activeKnowledgeVersion,restoreDiagnostic,authHeaderStrategy,sourceAnalysis; POST /query -> query,evidence,citations,knowledgeVersion; POST /evidence -> evidencePack,graphContext,citations,activeKnowledgeVersion; POST /sync -> dryRun|apply,candidateVersion,activeKnowledgeVersion,redactedSourceStatus,transportDiagnostic; POST /rebuild-index -> candidateVersion,activeKnowledgeVersion,count; JSON ckb-http-v1 envelope={ok,apiVersion,data|error,diagnostics}; GET /v1/health -> status,activeKnowledgeVersion,degraded,schedulerDegraded; GET /v1/status -> storage,indexManifest,scheduler,activeKnowledgeVersion,restoreDiagnostic,authHeaderStrategy,sourceAnalysis; GET /v1/schedules -> entries interval,nextRunAt,lastSuccessAt,failureCount,lastDurationMillis,lastRequestCount,lastUpdatedDataKinds; GET /v1/schema -> routes,tools,errorCodes,apiVersion,limits,mcpTransports,mcpEndpoint,mcpSse; GET /v1/cangjie/corpus/status -> docsUrls,stdSources,activeKnowledgeVersion; GET /v1/cangjie/llms.txt -> markdown,knowledgeVersion; GET /v1/cangjie/llms-full.txt -> markdown,knowledgeVersion; POST /v1/cangjie/knowledge-pack -> knowledgeVersion,targetVersion,items,apiItems,examples,citations,truncated,degraded,legacy_endpoint_degraded; POST /v1/cangjie/version/resolve -> targetVersion,versionResolutionId,sources,diagnostics; POST /v1/cangjie/task-knowledge-pack -> versionResolution,queryPlan,coverage,diagnostics; POST /v1/cangjie/knowledge-coverage -> required,coveredCount,missingCount,coveragePass; POST /v1/cangjie/compile-diagnose-v2 -> versionResolution,queryPlan,coverage,executed=false; POST /v1/cangjie/syntax-query -> syntax items,citations; POST /v1/cangjie/api-search -> api items,citations; POST /v1/cangjie/cookbook -> grounded steps,citations; POST /v1/cangjie/diagnose -> diagnostics,executed=false,citations; POST /v1/cangjie/examples -> examples,citations; POST /v1/cangjie/context-pack -> markdown,citations; POST /v1/query -> rows,citations,knowledgeVersion,truncated; POST /v1/evidence-pack -> evidencePack,graphContext,citations,knowledgeVersion; POST /v1/source-analysis -> analysisId,repo,ref,triggerReasons,sourceAcquisition,filesRead,citations,degraded,cleanupStatus; POST /v1/events/gitcode/repository-changed -> accepted|duplicate|rejected,dedupeKey,scheduledProfiles; POST /v1/admin/scheduler/run -> ran,succeeded,failed,degraded,details; POST /v1/admin/repositories/sync -> repo,profile,requestCount,updatedDataKinds,truncated,candidateVersion,activeKnowledgeVersion; POST /v1/admin/repo-list/refresh -> matchedPaths,repoCount,candidateRepoListVersion,activeRepoListVersion,diagnostics; POST /v1/admin/sync -> source status,candidateVersion,activeKnowledgeVersion,transportDiagnostic; POST /v1/admin/initialize -> dryRun,persisted,activeKnowledgeVersion,candidateKnowledgeVersion,validation,sources; POST /v1/admin/rebuild -> candidateVersion,activeKnowledgeVersion,count; planned_not_enabled: /v1/cangjie/verify-snippet; compatibility: CLI service/status/rebuild-index/source_analysis provide the canonical local protocol"
     }
 }
 
@@ -3654,11 +3668,17 @@ public class CkbCommandLoopService {
         this.config = config
         this.store = store
         this.sourceRunner = sourceRunner
-        this.kb = newKnowledgeBaseFromStore(store).kb
+        this.kb = newKnowledgeBaseFromStoreWithRuntime(store, config).kb
     }
 
     public func start(): String {
         this.started = true
+        if (this.config.firstInitEnabled) {
+            let result = ckbEnsureFirstInitialized(this.config, this.store)
+            if (result.ok && result.persisted) {
+                this.reloadKnowledgeBase()
+            }
+        }
         this.logLine("info", "service_started")
     }
 
@@ -3713,6 +3733,8 @@ public class CkbCommandLoopService {
             options.apply = true
             options.maxItems = 3
             response.text = ckbSyncLive(this.kb, this.config, options, runner: this.sourceRunner, store: this.store)
+        } else if (command == "cangjie_initialize" || command == "cangjie-initialize" || command == "initialize") {
+            response.text = renderCkbFirstInitResult(this.runFirstInitialization(body: tail))
         } else if (command == "rebuild") {
             let result = ckbRebuildIndex(this.kb, this.store)
             response.text = "rebuild ok=${result.ok} activeKnowledgeVersion=${result.activeVersion} candidateKnowledgeVersion=${result.candidateVersion} count=${result.count}\n"
@@ -3726,11 +3748,11 @@ public class CkbCommandLoopService {
         } else if (command == "restore") {
             let result = this.store.restoreActiveSnapshotBackup(tail)
             if (result.ok) {
-                this.kb = newKnowledgeBaseFromStore(this.store).kb
+                this.reloadKnowledgeBase()
             }
             response.text = renderBackupRestore(result)
         } else if (command == "restart") {
-            this.kb = newKnowledgeBaseFromStore(this.store).kb
+            this.reloadKnowledgeBase()
             response.text = this.logLine("info", "service_restarted")
         } else if (command == "stop" || command == "shutdown" || command == "exit") {
             response.text = this.logLine("info", "service_stopped")
@@ -3837,6 +3859,16 @@ public class CkbCommandLoopService {
         result.diagnostic = text
         result.requestCount = 1
         result.updatedDataKinds.add("live_sync")
+        result
+    }
+
+    public func runFirstInitialization(body!: String = ""): CkbFirstInitResult {
+        let options = ckbFirstInitOptionsFromRuntime(this.config, apply: true, dryRun: false)
+        this.applyFirstInitializationBodyOverrides(options, body)
+        let result = runCkbFirstInitializationWithActiveGuard(options, this.store)
+        if (result.ok && result.persisted) {
+            this.reloadKnowledgeBase()
+        }
         result
     }
 
@@ -3973,6 +4005,43 @@ public class CkbCommandLoopService {
 
     public func acceptedEventCountForTest(): Int64 {
         this.acceptedEventCount
+    }
+
+    private func applyFirstInitializationBodyOverrides(options: CkbFirstInitOptions, body: String): Unit {
+        let docsRoot = ckbServiceJsonStringField(body, "docsRoot").trimAscii()
+        if (docsRoot != "") {
+            options.docsRoot = docsRoot
+        }
+        let toolDocsRoot = ckbServiceJsonStringField(body, "toolDocsRoot").trimAscii()
+        if (toolDocsRoot != "") {
+            options.toolDocsRoot = toolDocsRoot
+        }
+        let stdRoot = ckbServiceJsonStringField(body, "stdRoot").trimAscii()
+        if (stdRoot != "") {
+            options.stdRoot = stdRoot
+        }
+        let stdxRoot = ckbServiceJsonStringField(body, "stdxRoot").trimAscii()
+        if (stdxRoot != "") {
+            options.stdxRoot = stdxRoot
+        }
+        let evalRoot = ckbServiceJsonStringField(body, "evalRoot").trimAscii()
+        if (evalRoot != "") {
+            options.evalRoot = evalRoot
+        }
+        let targetVersion = ckbServiceJsonStringField(body, "targetVersion").trimAscii()
+        if (targetVersion != "") {
+            options.targetVersion = targetVersion
+        }
+        options.dryRun = ckbServiceJsonBoolFieldDefault(body, "dryRun", options.dryRun)
+        options.apply = ckbServiceJsonBoolFieldDefault(body, "apply", !options.dryRun)
+        if (options.dryRun) {
+            options.apply = false
+        }
+        validateCkbFirstInitOptions(options)
+    }
+
+    private func reloadKnowledgeBase(): Unit {
+        this.kb = newKnowledgeBaseFromStoreWithRuntime(this.store, this.config).kb
     }
 
     private func health(): String {
@@ -4153,6 +4222,39 @@ private func ckbServiceJsonIntField(raw: String, key: String, fallback: Int64): 
         end += 1
     }
     try { Int64.parse(raw[start..end].trimAscii()) } catch (_: Exception) { fallback }
+}
+
+private func ckbServiceJsonBoolFieldDefault(raw: String, key: String, fallback: Bool): Bool {
+    let start = ckbServiceJsonTopLevelValueStart(raw, key)
+    if (start < 0 || start >= raw.size) {
+        return fallback
+    }
+    if (raw[start..start + 1] == "\"") {
+        let value = ckbServiceJsonStringField(raw, key).trimAscii().toAsciiLower()
+        if (value == "true" || value == "1" || value == "yes" || value == "enabled") {
+            return true
+        }
+        if (value == "false" || value == "0" || value == "no" || value == "disabled") {
+            return false
+        }
+        return fallback
+    }
+    var end = start
+    while (end < raw.size) {
+        let ch = raw[end..end + 1]
+        if (ch == "," || ch == "}" || ch == "]" || ch == " " || ch == "\n" || ch == "\r" || ch == "\t") {
+            break
+        }
+        end += 1
+    }
+    let value = raw[start..end].trimAscii().toAsciiLower()
+    if (value == "true" || value == "1" || value == "yes" || value == "enabled") {
+        return true
+    }
+    if (value == "false" || value == "0" || value == "no" || value == "disabled") {
+        return false
+    }
+    fallback
 }
 
 private func ckbServiceJsonStringArrayField(raw: String, key: String): ArrayList<String> {
@@ -4663,10 +4765,12 @@ public func newKnowledgeBaseFromStoreWithRuntime(store: FileKnowledgeStore, conf
     let result = KnowledgeBaseLoadResult(kb)
     let snapshot = store.loadActiveSnapshot()
     if (kb.restoreActiveSnapshot(snapshot)) {
+        kb.restoreScheduler(store.loadScheduler())
         result.source = "persisted"
         result.diagnostic = snapshot.diagnostic
         return result
     }
+    kb.restoreScheduler(store.loadScheduler())
     result.source = "offline_baseline"
     result.diagnostic = snapshot.diagnostic
     return result
@@ -4985,6 +5089,20 @@ private func configApply(config: CkbRuntimeConfig, key: String, value: String): 
         config.serviceDefaultBudget = try { Int64.parse(value) } catch (_: Exception) { config.serviceDefaultBudget }
     } else if (key == "service.maxBudget") {
         config.serviceMaxBudget = try { Int64.parse(value) } catch (_: Exception) { config.serviceMaxBudget }
+    } else if (key == "firstInit.enabled") {
+        config.firstInitEnabled = parseBool(value)
+    } else if (key == "firstInit.docsRoot") {
+        config.firstInitDocsRoot = value
+    } else if (key == "firstInit.toolDocsRoot") {
+        config.firstInitToolDocsRoot = value
+    } else if (key == "firstInit.stdRoot") {
+        config.firstInitStdRoot = value
+    } else if (key == "firstInit.stdxRoot") {
+        config.firstInitStdxRoot = value
+    } else if (key == "firstInit.evalRoot") {
+        config.firstInitEvalRoot = value
+    } else if (key == "firstInit.targetVersion") {
+        config.firstInitTargetVersion = value
     }
 }
 

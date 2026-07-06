@@ -150,6 +150,75 @@ public class CangjieFirstInitializationTest {
         @Expect(store.has("raw/candidate/${result.candidateVersion}/records.ckb"), true)
         @Expect(store.has("index/active.ckb"), true)
     }
+
+    @TestCase
+    public func p5Ut001ParsesCangjieInitializeDryRunCommand(): Unit {
+        let options = parseCkbFirstInitOptions([
+            "cangjie-initialize",
+            "--dry-run",
+            "--docs-root", "target/p5-cli/docs",
+            "--std-root", "target/p5-cli/std",
+            "--stdx-root", "target/p5-cli/stdx",
+            "--eval-root", "target/p5-cli/eval",
+            "--target-version", "1.0.0"
+        ])
+
+        @Expect(options.dryRun, true)
+        @Expect(options.apply, false)
+        @Expect(options.docsRoot, "target/p5-cli/docs")
+        @Expect(options.stdRoot, "target/p5-cli/std")
+        @Expect(options.stdxRoot, "target/p5-cli/stdx")
+        @Expect(options.evalRoot, "target/p5-cli/eval")
+        @Expect(options.diagnostics.size, 0)
+    }
+
+    @TestCase
+    public func p5Bnd001AlreadyInitializedStoreNoOpsWithoutRewritingActive(): Unit {
+        let fixture = ckbFirstInitWriteFullFixture("target/p5-noop-fixture", true)
+        let store = FileKnowledgeStore("target/p5-noop-store")
+        let options = ckbFirstInitOptionsForFixture(fixture, true)
+        let first = runCkbFirstInitializationWithActiveGuard(options, store)
+
+        let second = runCkbFirstInitializationWithActiveGuard(options, store)
+
+        @Expect(first.ok, true)
+        @Expect(second.ok, true)
+        @Expect(second.persisted, false)
+        @Expect(second.activeVersion, first.activeVersion)
+        @Expect(second.diagnostics.contains("already_initialized"), true)
+    }
+
+    @TestCase
+    public func p5Pos001ServiceStartAutoInitializesEmptyStoreWhenEnabled(): Unit {
+        let fixture = ckbFirstInitWriteFullFixture("target/p5-auto-service-fixture", true)
+        let store = FileKnowledgeStore("target/p5-auto-service-store")
+        let config = ckbFirstInitRuntimeForFixture(fixture)
+        let service = CkbCommandLoopService(config, store)
+
+        let started = service.start()
+        let status = service.statusSnapshot()
+
+        @Expect(started.contains("service_started"), true)
+        @Expect(status.activeKnowledgeVersion, "ckb-first-init-1-0-0-active")
+        @Expect(status.activeStateSource, "first_initialization")
+        @Expect(store.has("index/active.ckb"), true)
+    }
+
+    @TestCase
+    public func p5Neg001AdminInitializeRequiresAuthorizationAndDoesNotWriteStore(): Unit {
+        let fixture = ckbFirstInitWriteFullFixture("target/p5-admin-denied-fixture", true)
+        let store = FileKnowledgeStore("target/p5-admin-denied-store")
+        let config = CkbRuntimeConfig()
+        let service = CkbCommandLoopService(config, store)
+        service.start()
+
+        let body = "{\"apply\":true,\"docsRoot\":\"${fixture.docsRoot}\",\"stdRoot\":\"${fixture.stdRoot}\",\"stdxRoot\":\"${fixture.stdxRoot}\",\"evalRoot\":\"${fixture.evalRoot}\",\"targetVersion\":\"1.0.0\"}"
+        let response = ckbApiHandle(service, "POST", "/v1/admin/initialize", body, [])
+
+        @Expect(response.contains("\"ok\":false"), true)
+        @Expect(response.contains("ckb.unauthorized"), true)
+        @Expect(store.has("index/active.ckb"), false)
+    }
 }
 
 private class CkbFirstInitFixturePaths {
@@ -203,6 +272,17 @@ private func ckbFirstInitOptionsForFixture(fixture: CkbFirstInitFixturePaths, ap
     options.apply = apply
     options.dryRun = !apply
     options
+}
+
+private func ckbFirstInitRuntimeForFixture(fixture: CkbFirstInitFixturePaths): CkbRuntimeConfig {
+    let config = CkbRuntimeConfig()
+    config.firstInitEnabled = true
+    config.firstInitDocsRoot = fixture.docsRoot
+    config.firstInitStdRoot = fixture.stdRoot
+    config.firstInitStdxRoot = fixture.stdxRoot
+    config.firstInitEvalRoot = fixture.evalRoot
+    config.firstInitTargetVersion = "1.0.0"
+    config
 }
 
 private func ckbFirstInitWriteFile(path: Path, text: String): Unit {

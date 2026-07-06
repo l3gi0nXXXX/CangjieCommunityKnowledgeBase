@@ -3422,6 +3422,36 @@ service.maxBudget=20
     }
 
     @TestCase
+    public func ckb2Ut001bConfigApplyParsesFirstInitFieldsAndRedactsPaths(): Unit {
+        let root = "target/ckb2-first-init-config"
+        let configPath = "${root}/runtime.conf"
+        writeFixtureFile(root, "runtime.conf", """
+firstInit.enabled=true
+firstInit.docsRoot=/Users/example/cangjie_docs
+firstInit.toolDocsRoot=/Users/example/cangjie_docs/docs/tools
+firstInit.stdRoot=/Users/example/cangjie_std
+firstInit.stdxRoot=/Users/example/cangjie_stdx
+firstInit.evalRoot=/Users/example/Cangjie-HumanEval
+firstInit.targetVersion=1.0.0
+""")
+
+        let config = loadCkbRuntimeConfig(configPath)
+        let summary = config.redactedSummary()
+
+        @Expect(config.firstInitEnabled, true)
+        @Expect(config.firstInitDocsRoot, "/Users/example/cangjie_docs")
+        @Expect(config.firstInitToolDocsRoot, "/Users/example/cangjie_docs/docs/tools")
+        @Expect(config.firstInitStdRoot, "/Users/example/cangjie_std")
+        @Expect(config.firstInitStdxRoot, "/Users/example/cangjie_stdx")
+        @Expect(config.firstInitEvalRoot, "/Users/example/Cangjie-HumanEval")
+        @Expect(config.firstInitTargetVersion, "1.0.0")
+        @Expect(summary.contains("firstInit.enabled=true"), true)
+        @Expect(summary.contains("firstInit.docsRoot=present"), true)
+        @Expect(summary.contains("firstInit.evalRoot=present"), true)
+        @Expect(summary.contains("/Users/example"), false)
+    }
+
+    @TestCase
     public func ckb2Ut002AdminTokenAuthorizesWithoutLeakingSecret(): Unit {
         let root = "target/ckb2-auth-admin"
         writeFixtureFile(root, "admin.token", "admin-secret\n")
