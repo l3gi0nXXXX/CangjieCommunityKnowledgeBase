@@ -121,6 +121,7 @@ public class CangjieFirstInitializationTest {
         @Expect(result.activeVersion, "ckb-first-init-1-0-0-active")
         @Expect(status.activeKnowledgeVersion, "ckb-first-init-1-0-0-active")
         @Expect(status.activeStateSource, "first_initialization")
+        @Expect(ckbFirstInitCandidateHasNoOfflineBaseline(loaded.kb), true)
         @Expect(store.has("raw/records.ckb"), true)
         @Expect(store.has("normalized/records.ckb"), true)
         @Expect(store.has("index/active.ckb"), true)
@@ -346,6 +347,15 @@ private func ckbFirstInitWriteFile(path: Path, text: String): Unit {
         Directory.create(path.parent, recursive: true)
     }
     File.writeTo(path, text.toArray())
+}
+
+private func ckbFirstInitCandidateHasNoOfflineBaseline(kb: KnowledgeBase): Bool {
+    for (record in kb.activeRecordSnapshot()) {
+        if (record.metadata.commit.contains("offline-baseline") || record.metadata.docVersion.contains("offline-baseline") || record.metadata.versionResolutionId.contains("offline-baseline")) {
+            return false
+        }
+    }
+    true
 }
 
 private func p7McpToolCall(name: String, arguments: String): String {

@@ -50,10 +50,10 @@ public class CangjieCapabilityContractTest {
         let pack = this.service("p1-neg-002").cangjieTaskKnowledgePack(req)
 
         @Expect(pack.versionResolution.ok, false)
-        @Expect(pack.versionResolution.diagnostic, "version_not_resolved")
+        @Expect(pack.versionResolution.diagnostic, "exact_source_ref_not_resolved")
         @Expect(pack.degraded, true)
         @Expect(pack.coverage.coveragePass, false)
-        @Expect(pack.diagnostics.contains("version_not_resolved"), true)
+        @Expect(pack.diagnostics.contains("exact_source_ref_not_resolved"), true)
     }
 
     @TestCase

@@ -32,12 +32,14 @@ public func scanCangjieSourceSymbolsRoot(root: String, sourceSet: String, resolu
         result.addDiagnostic("no_cangjie_source_files")
         return result
     }
+    var sawReadableFile = false
     for (relative in paths) {
         let read = cangjieReadSourceSymbolText(Path(root).join(relative))
         if (!read.ok) {
             result.diagnostics.add("${read.status}:${relative}")
             continue
         }
+        sawReadableFile = true
         let fileResult = extractCangjieSourceSymbolRecords(relative, read.text, cleanSet, resolution)
         for (diagnostic in fileResult.diagnostics) {
             result.diagnostics.add("${relative}:${diagnostic}")
@@ -45,10 +47,11 @@ public func scanCangjieSourceSymbolsRoot(root: String, sourceSet: String, resolu
         for (record in fileResult.records) {
             result.records.add(record)
         }
-        result.ok = result.ok && fileResult.ok
     }
     if (!cangjieSourceSymbolHasKind(result, CangjieTypedRecordKinds.SYMBOL_CARD)) {
         result.addDiagnostic("no_source_symbol_records")
+    } else {
+        result.ok = sawReadableFile
     }
     result
 }

@@ -10,7 +10,7 @@ public class CangjieEvalSupportPaths {
     public static let VISIBLE_TESTS: String = "tests/TestMain.cj"
 }
 
-public func extractEvalSupportRecords(caseRoot: String): CangjieTypedRecordResult {
+public func extractEvalSupportRecords(caseRoot: String, version!: CangjieVersionResolution = cangjieDefaultEvalSupportResolution()): CangjieTypedRecordResult {
     let result = CangjieTypedRecordResult()
     let cleanRoot = caseRoot.trimAscii()
     if (!cangjieEvalSupportCaseRootAllowed(cleanRoot)) {
@@ -24,10 +24,10 @@ public func extractEvalSupportRecords(caseRoot: String): CangjieTypedRecordResul
         return result
     }
     let caseId = cangjieCaseIdFromRoot(cleanRoot)
-    cangjieAddEvalSupportFile(result, resolvedRoot, caseId, CangjieEvalSupportPaths.PROMPT, "prompt", "HumanEval prompt")
-    cangjieAddEvalSupportFile(result, resolvedRoot, caseId, CangjieEvalSupportPaths.METADATA, "metadata", "HumanEval metadata")
-    cangjieAddEvalSupportFile(result, resolvedRoot, caseId, CangjieEvalSupportPaths.EVAL_SUPPORT, "eval_support", "EvalValue and EvalEntry fixture types")
-    cangjieAddEvalSupportFile(result, resolvedRoot, caseId, CangjieEvalSupportPaths.VISIBLE_TESTS, "visible_test_helpers", "Visible test helper types")
+    cangjieAddEvalSupportFile(result, resolvedRoot, caseId, CangjieEvalSupportPaths.PROMPT, "prompt", "HumanEval prompt", version)
+    cangjieAddEvalSupportFile(result, resolvedRoot, caseId, CangjieEvalSupportPaths.METADATA, "metadata", "HumanEval metadata", version)
+    cangjieAddEvalSupportFile(result, resolvedRoot, caseId, CangjieEvalSupportPaths.EVAL_SUPPORT, "eval_support", "EvalValue and EvalEntry fixture types", version)
+    cangjieAddEvalSupportFile(result, resolvedRoot, caseId, CangjieEvalSupportPaths.VISIBLE_TESTS, "visible_test_helpers", "Visible test helper types", version)
     if (result.records.size == 0) {
         result.ok = false
         if (result.diagnostics.size == 0) {
@@ -59,7 +59,7 @@ public func discoverCangjieHumanEvalCaseRoots(datasetRoot: String): ArrayList<St
     roots
 }
 
-public func extractAllEvalSupportRecords(datasetRoot: String): CangjieTypedRecordResult {
+public func extractAllEvalSupportRecords(datasetRoot: String, version!: CangjieVersionResolution = cangjieDefaultEvalSupportResolution()): CangjieTypedRecordResult {
     let result = CangjieTypedRecordResult()
     let cleanRoot = datasetRoot.trimAscii()
     if (!cangjieEvalSupportDatasetRootAllowed(cleanRoot)) {
@@ -72,7 +72,7 @@ public func extractAllEvalSupportRecords(datasetRoot: String): CangjieTypedRecor
         return result
     }
     for (root in roots) {
-        let caseResult = extractEvalSupportRecords(root)
+        let caseResult = extractEvalSupportRecords(root, version: version)
         for (diagnostic in caseResult.diagnostics) {
             result.diagnostics.add("${cangjieCaseIdFromRoot(root)}:${diagnostic}")
         }
@@ -138,7 +138,7 @@ private class CangjieEvalSupportReadResult {
     init() {}
 }
 
-private func cangjieAddEvalSupportFile(result: CangjieTypedRecordResult, caseRoot: String, caseId: String, relative: String, sourceFamily: String, title: String): Unit {
+private func cangjieAddEvalSupportFile(result: CangjieTypedRecordResult, caseRoot: String, caseId: String, relative: String, sourceFamily: String, title: String, version: CangjieVersionResolution): Unit {
     if (!cangjieEvalSupportRelativePathAllowed(relative)) {
         result.addDiagnostic("forbidden_reference_solution_source")
         return
@@ -169,14 +169,50 @@ private func cangjieAddEvalSupportFile(result: CangjieTypedRecordResult, caseRoo
     record.sectionId = "${caseId}#${sourceFamily}"
     record.caseId = caseId
     record.contentHash = cangjieTypedRecordContentHash(record.sourceId, record.content)
-    record.versionResolutionId = "cangjie-1.0.0-eval-support-release-1.0.0"
-    record.targetVersion = cangjieDefaultTargetVersion()
-    record.sourceRef = "release-1.0.0"
-    record.refKind = "branch"
-    record.resolvedCommit = "offline-baseline-eval"
+    let metadata = cangjieEvalSupportVersionMetadata(version)
+    record.versionResolutionId = metadata.versionResolutionId
+    record.targetVersion = metadata.targetVersion
+    record.sourceRef = metadata.sourceRef
+    record.refKind = metadata.refKind
+    record.resolvedCommit = metadata.resolvedCommit
     record.trustLevel = TrustLevels.OFFICIAL
     record.reviewState = ReviewStates.TRUSTED
     result.records.add(record)
+}
+
+private class CangjieEvalSupportVersionMetadata {
+    var targetVersion: String = cangjieDefaultTargetVersion()
+    var sourceRef: String = "release-1.0.0"
+    var refKind: String = "branch"
+    var resolvedCommit: String = "offline-baseline-eval"
+    var versionResolutionId: String = "cangjie-1.0.0-eval-support-release-1.0.0"
+
+    init() {}
+}
+
+private func cangjieEvalSupportVersionMetadata(version: CangjieVersionResolution): CangjieEvalSupportVersionMetadata {
+    let metadata = CangjieEvalSupportVersionMetadata()
+    metadata.targetVersion = if (version.targetVersion.trimAscii() == "") { cangjieDefaultTargetVersion() } else { version.targetVersion.trimAscii() }
+    if (version.versionResolutionId.trimAscii() != "") {
+        metadata.versionResolutionId = version.versionResolutionId.trimAscii()
+    }
+    if (version.sources.size > 0) {
+        let source = version.sources[0]
+        if (source.sourceRef.trimAscii() != "") {
+            metadata.sourceRef = source.sourceRef.trimAscii()
+        }
+        if (source.refKind.trimAscii() != "") {
+            metadata.refKind = source.refKind.trimAscii()
+        }
+        if (source.resolvedCommit.trimAscii() != "") {
+            metadata.resolvedCommit = source.resolvedCommit.trimAscii()
+        }
+    }
+    metadata
+}
+
+private func cangjieDefaultEvalSupportResolution(): CangjieVersionResolution {
+    resolveCangjieVersion(cangjieVersionSelector(targetVersion: cangjieDefaultTargetVersion(), sourceSet: CangjieSourceSets.EVAL_SUPPORT), defaultCangjieVersionManifest())
 }
 
 private func cangjieEvalSupportCaseRootAllowed(root: String): Bool {
