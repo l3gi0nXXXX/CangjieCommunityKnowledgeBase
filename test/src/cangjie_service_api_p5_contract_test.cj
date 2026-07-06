@@ -41,4 +41,30 @@ public class CangjieServiceApiP5ContractTest {
         @Expect(response.contains("\"activeKnowledgeVersion\""), true)
         @Expect(response.contains("\"targetVersion\""), true)
     }
+
+    @TestCase
+    public func p6Pos001SymbolLookupRouteUsesExactActiveCorpus(): Unit {
+        let service = CkbCommandLoopService(CkbRuntimeConfig(), p6PersistExactLookupStore("p6-api-symbol-store"))
+        let body = "{\"symbol\":\"ArrayList.add\",\"sourceSet\":\"std\",\"targetVersion\":\"1.0.0\"}"
+
+        let response = ckbApiHandle(service, "POST", "/v1/cangjie/symbol-lookup", body, [])
+
+        @Expect(response.contains("\"ok\":true"), true)
+        @Expect(response.contains("exact_symbol_lookup_endpoint"), true)
+        @Expect(response.contains("\"symbol\":\"ArrayList.add\""), true)
+        @Expect(response.contains("exact_miss"), false)
+    }
+
+    @TestCase
+    public func p6Neg001ToolManualRouteReturnsExactMissForUnknownCommand(): Unit {
+        let service = CkbCommandLoopService(CkbRuntimeConfig(), p6PersistExactLookupStore("p6-api-tool-miss-store"))
+        let body = "{\"tool\":\"cjpm\",\"command\":\"publish\",\"targetVersion\":\"1.0.0\"}"
+
+        let response = ckbApiHandle(service, "POST", "/v1/cangjie/tool-manual", body, [])
+
+        @Expect(response.contains("\"ok\":true"), true)
+        @Expect(response.contains("exact_tool_manual_endpoint"), true)
+        @Expect(response.contains("exact_miss"), true)
+        @Expect(response.contains("\"items\":[]"), true)
+    }
 }

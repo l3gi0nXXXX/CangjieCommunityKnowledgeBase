@@ -355,20 +355,37 @@ public class CangjieCapabilityService {
     }
 
     public func symbolLookup(symbol: String, module!: String = "", sourceSet!: String = "", targetVersion!: String = "", budget!: Int64 = CangjieCapabilityLimits.DEFAULT_BUDGET): CangjieKnowledgePack {
-        this.apiSearch(symbol, module: module, symbol: symbol, sourceSet: sourceSet, targetVersion: targetVersion, budget: budget)
+        let query = cangjieSafeText(symbol)
+        let pack = this.newPack(query, targetVersion, budget)
+        pack.notes.add("exact_symbol_lookup_endpoint")
+        if (query == "") {
+            pack.degraded = true
+            pack.notes.add("empty_symbol")
+            return pack
+        }
+        let result = cangjieExactSymbolLookup(this.kb, query, module: module, sourceSet: sourceSet, targetVersion: pack.targetVersion, budget: this.effectiveBudget(pack, budget))
+        this.addApiItems(pack, result, module, query, sourceSet)
+        this.applyExactLookupState(pack, result)
+        pack
     }
 
     public func docSection(sectionId: String, path!: String = "", heading!: String = "", targetVersion!: String = "", budget!: Int64 = CangjieCapabilityLimits.DEFAULT_BUDGET): CangjieKnowledgePack {
         let query = cangjieSafeText("${sectionId} ${path} ${heading} doc section")
-        let pack = this.syntaxQuery(query, targetVersion: targetVersion, budget: budget)
-        pack.notes.add("doc_section_endpoint")
+        let pack = this.newPack(query, targetVersion, budget)
+        pack.notes.add("exact_doc_section_endpoint")
+        let result = cangjieExactDocSectionLookup(this.kb, sectionId, path: path, heading: heading, targetVersion: pack.targetVersion, budget: this.effectiveBudget(pack, budget))
+        this.addKnowledgeItems(pack, result, "doc_section")
+        this.applyExactLookupState(pack, result)
         pack
     }
 
     public func toolManual(tool: String, command!: String = "", targetVersion!: String = "", budget!: Int64 = CangjieCapabilityLimits.DEFAULT_BUDGET): CangjieKnowledgePack {
         let query = cangjieSafeText("${tool} ${command} tool manual")
-        let pack = this.apiSearch(query, module: "toolchain", symbol: tool, sourceSet: CangjieSourceSets.TOOLS, targetVersion: targetVersion, budget: budget)
-        pack.notes.add("tool_manual_endpoint")
+        let pack = this.newPack(query, targetVersion, budget)
+        pack.notes.add("exact_tool_manual_endpoint")
+        let result = cangjieExactToolManualLookup(this.kb, tool, command: command, targetVersion: pack.targetVersion, budget: this.effectiveBudget(pack, budget))
+        this.addKnowledgeItems(pack, result, "tool_manual")
+        this.applyExactLookupState(pack, result)
         pack
     }
 
@@ -563,6 +580,19 @@ public class CangjieCapabilityService {
                 target.diagnostics.add(item)
                 target.citations.add(SourceReference(item.sourceId, item.citation, item.knowledgeVersion))
             }
+        }
+    }
+
+    private func applyExactLookupState(pack: CangjieKnowledgePack, result: SearchResult): Unit {
+        pack.degraded = pack.degraded || result.degraded
+        pack.truncated = pack.truncated || result.truncated
+        if (result.degraded) {
+            let reason = if (result.fallbackReason == "") { "exact_miss" } else { result.fallbackReason }
+            if (!pack.notes.contains(reason)) {
+                pack.notes.add(reason)
+            }
+        } else if (!pack.notes.contains("exact_hit")) {
+            pack.notes.add("exact_hit")
         }
     }
 

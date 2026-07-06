@@ -76,7 +76,7 @@ public func cangjieTypedMetadata(record: CangjieTypedRecord, base: KnowledgeMeta
     metadata.sourceType = cangjieTypedRecordSourceType(record)
     metadata.sourceUrl = record.citation
     metadata.path = record.path
-    metadata.symbol = record.symbol
+    metadata.symbol = cangjieTypedMetadataSymbol(record, base)
     metadata.commit = if (record.resolvedCommit != "") { record.resolvedCommit } else { base.commit }
     metadata.docVersion = if (record.sourceRef != "") { record.sourceRef } else { base.docVersion }
     metadata.targetVersion = if (record.targetVersion != "") { record.targetVersion } else { base.targetVersion }
@@ -86,6 +86,19 @@ public func cangjieTypedMetadata(record: CangjieTypedRecord, base: KnowledgeMeta
     metadata.trustLevel = record.trustLevel
     metadata.reviewState = record.reviewState
     metadata
+}
+
+private func cangjieTypedMetadataSymbol(record: CangjieTypedRecord, base: KnowledgeMetadata): String {
+    if (record.recordKind == CangjieTypedRecordKinds.TOOL_MANUAL && record.toolName.trimAscii() != "") {
+        if (record.command.trimAscii() != "") {
+            return "${record.toolName.trimAscii()} ${record.command.trimAscii()}"
+        }
+        return record.toolName.trimAscii()
+    }
+    if (record.symbol != "") {
+        return record.symbol
+    }
+    base.symbol
 }
 
 private func cangjieTypedRecordSourceType(record: CangjieTypedRecord): String {

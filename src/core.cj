@@ -2282,6 +2282,14 @@ public class KnowledgeBase {
         out
     }
 
+    public func activeRecordSnapshot(): ArrayList<NormalizedRecord> {
+        let out = ArrayList<NormalizedRecord>()
+        for (record in this.activeIndex) {
+            out.add(record)
+        }
+        out
+    }
+
     public func rebuildIndex(simulateFailure: Bool): IndexBuildResult {
         let builder = IndexBuilder()
         let result = builder.rebuild(this.normalizedRecords, this.activeKnowledgeVersion, "ckb-20260519-000200-candidate", fail: simulateFailure)
