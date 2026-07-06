@@ -40,6 +40,34 @@ public class CangjieSymbolIndexTest {
         @Expect(card.sourceSet, CangjieSourceSets.DOCS)
         @Expect(card.incomplete, false)
     }
+
+    @TestCase
+    public func p3Pos002StructuredSymbolCardBypassesTextGuessing(): Unit {
+        let typed = CangjieTypedRecord()
+        typed.recordKind = CangjieTypedRecordKinds.SYMBOL_CARD
+        typed.sourceId = "source-symbol-std-arraylist-add"
+        typed.title = "Symbol: ArrayList.add"
+        typed.content = "symbolKey=ArrayList.add\nmodule=std.collection\nimportLine=import std.collection.*\nsignature=public func add(value: T): Unit\nreceiver=ArrayList\nparams=value: T\nreturnType=Unit\navailability=stable\ndiagnostic="
+        typed.citation = "Cangjie/cangjie_runtime@offline-baseline-std:src/std/collection/arraylist.cj#ArrayList.add"
+        typed.sourceSet = CangjieSourceSets.STD
+        typed.path = "src/std/collection/arraylist.cj"
+        typed.symbol = "ArrayList.add"
+        typed.targetVersion = "1.0.0"
+        typed.versionResolutionId = "cangjie-1.0.0-std"
+        typed.sourceRef = "release-1.0.0"
+        typed.resolvedCommit = "offline-baseline-std"
+        typed.trustLevel = TrustLevels.OFFICIAL
+        typed.reviewState = ReviewStates.TRUSTED
+        let normalized = cangjieTypedRecordToNormalized(typed, KnowledgeMetadata())
+
+        let cards = extractCangjieSymbols(normalized)
+
+        @Expect(cards.size, 1)
+        @Expect(cards[0].symbolKey, "ArrayList.add")
+        @Expect(cards[0].module, "std.collection")
+        @Expect(cards[0].sourceSet, CangjieSourceSets.STD)
+        @Expect(cards[0].signature, "public func add(value: T): Unit")
+    }
 }
 
 private func cangjieP3SymbolTestRecord(sourceId: String, title: String, chunk: String, versionResolutionId: String): NormalizedRecord {

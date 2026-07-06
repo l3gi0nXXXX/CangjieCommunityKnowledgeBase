@@ -28,6 +28,13 @@ public class CangjieSymbolCardRecord {
 
 public func extractCangjieSymbols(record: NormalizedRecord): ArrayList<CangjieSymbolCardRecord> {
     let cards = ArrayList<CangjieSymbolCardRecord>()
+    if (record.recordKind == CangjieTypedRecordKinds.SYMBOL_CARD) {
+        let structured = cangjieSymbolCardFromStructuredRecord(record)
+        if (structured.symbolKey != "") {
+            cards.add(structured)
+        }
+        return mergeSymbolCards(cards)
+    }
     let haystack = "${record.title}\n${record.chunk}\n${record.metadata.symbol}\n${record.metadata.path}".toAsciiLower()
     if (haystack.contains("arraylist.add") || (haystack.contains("arraylist") && haystack.contains(".add"))) {
         cards.add(cangjieKnownSymbolCard(record, "ArrayList.add", "std.collection", "import std.collection.*", "func add(value: T): Unit"))
@@ -66,6 +73,46 @@ public func extractCangjieSymbols(record: NormalizedRecord): ArrayList<CangjieSy
         cards.add(cangjieKnownSymbolCard(record, "cjpm", "toolchain", "", "cjpm build | cjpm test"))
     }
     mergeSymbolCards(cards)
+}
+
+private func cangjieSymbolCardFromStructuredRecord(record: NormalizedRecord): CangjieSymbolCardRecord {
+    let card = CangjieSymbolCardRecord()
+    card.symbolKey = cangjieSymbolStructuredValue(record.chunk, "symbolKey")
+    card.module = cangjieSymbolStructuredValue(record.chunk, "module")
+    card.importLine = cangjieSymbolStructuredValue(record.chunk, "importLine")
+    card.signature = cangjieSymbolStructuredValue(record.chunk, "signature")
+    card.receiver = cangjieSymbolStructuredValue(record.chunk, "receiver")
+    card.params = cangjieSymbolStructuredValue(record.chunk, "params")
+    card.returnType = cangjieSymbolStructuredValue(record.chunk, "returnType")
+    card.availability = cangjieSymbolStructuredValue(record.chunk, "availability")
+    if (card.availability == "") {
+        card.availability = "stable"
+    }
+    card.versionResolutionId = record.metadata.versionResolutionId
+    card.targetVersion = record.metadata.targetVersion
+    card.sourceSet = record.metadata.sourceSet
+    card.sourceRef = record.metadata.docVersion
+    card.contentHash = stableSummaryHash("${record.sourceId}:${record.chunk}")
+    card.citation = record.citation
+    card.sourceId = record.sourceId
+    card.trustLevel = record.metadata.trustLevel
+    card.reviewState = record.metadata.reviewState
+    card.diagnostic = cangjieSymbolStructuredValue(record.chunk, "diagnostic")
+    card.incomplete = card.signature.trimAscii() == "" || card.diagnostic == "symbol_signature_incomplete"
+    card
+}
+
+private func cangjieSymbolStructuredValue(chunk: String, key: String): String {
+    let prefix = "${key}="
+    for (line in chunk.split("\n")) {
+        if (line.startsWith(prefix)) {
+            let parts = line.split(prefix)
+            if (parts.size > 1) {
+                return parts[1].trimAscii()
+            }
+        }
+    }
+    ""
 }
 
 public func mergeSymbolCards(cards: ArrayList<CangjieSymbolCardRecord>): ArrayList<CangjieSymbolCardRecord> {

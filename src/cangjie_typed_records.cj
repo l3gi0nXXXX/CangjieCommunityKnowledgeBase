@@ -6,6 +6,9 @@ public class CangjieTypedRecordKinds {
     public static let DOC_SECTION: String = "doc_section"
     public static let TOOL_MANUAL: String = "tool_manual"
     public static let EVAL_SUPPORT: String = "eval_support"
+    public static let SYMBOL_CARD: String = "symbol_card"
+    public static let MODULE_TREE: String = "module_tree"
+    public static let AVAILABILITY: String = "availability"
 }
 
 public class CangjieTypedRecord {
@@ -70,7 +73,7 @@ public func cangjieTypedRecordContentHash(sourceId: String, content: String): St
 public func cangjieTypedMetadata(record: CangjieTypedRecord, base: KnowledgeMetadata): KnowledgeMetadata {
     let metadata = cangjieCopyKnowledgeMetadata(base)
     metadata.sourceId = record.sourceId
-    metadata.sourceType = if (record.recordKind == CangjieTypedRecordKinds.EVAL_SUPPORT) { SourceTypes.DERIVED } else { SourceTypes.DOC }
+    metadata.sourceType = cangjieTypedRecordSourceType(record)
     metadata.path = record.path
     metadata.symbol = record.symbol
     metadata.commit = if (record.resolvedCommit != "") { record.resolvedCommit } else { base.commit }
@@ -81,6 +84,20 @@ public func cangjieTypedMetadata(record: CangjieTypedRecord, base: KnowledgeMeta
     metadata.trustLevel = record.trustLevel
     metadata.reviewState = record.reviewState
     metadata
+}
+
+private func cangjieTypedRecordSourceType(record: CangjieTypedRecord): String {
+    if (record.recordKind == CangjieTypedRecordKinds.EVAL_SUPPORT) {
+        return SourceTypes.DERIVED
+    }
+    if (record.recordKind == CangjieTypedRecordKinds.SYMBOL_CARD ||
+        record.recordKind == CangjieTypedRecordKinds.MODULE_TREE ||
+        record.recordKind == CangjieTypedRecordKinds.AVAILABILITY ||
+        record.sourceSet == CangjieSourceSets.STD ||
+        record.sourceSet == CangjieSourceSets.STDX) {
+        return SourceTypes.REPO
+    }
+    SourceTypes.DOC
 }
 
 public func cangjieCopyKnowledgeMetadata(base: KnowledgeMetadata): KnowledgeMetadata {
