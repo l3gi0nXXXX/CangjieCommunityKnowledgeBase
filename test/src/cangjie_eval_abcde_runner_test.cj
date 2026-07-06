@@ -109,6 +109,9 @@ public class CangjieEvalAbcdeRunnerTest {
         @Expect(row.contains("\"llmTurnCount\":0"), true)
         @Expect(row.contains("\"protocolViolation\":false"), true)
         @Expect(row.contains("\"failureType\":\"model_error\""), true)
+        @Expect(row.contains("\"toolEvidenceHash\":"), true)
+        @Expect(row.contains("\"toolCoveragePass\":"), true)
+        @Expect(row.contains("\"transportParityPath\":\"/tmp/group/parity.jsonl\""), true)
     }
 
     @TestCase
@@ -169,6 +172,60 @@ public class CangjieEvalAbcdeRunnerTest {
         @Expect(json.contains("\"versionPolicy\":\"default\""), true)
         @Expect(json.contains("\"expectedKnowledgeTags\":[\"ArrayList\",\"String\"]"), true)
         @Expect(json.contains("\"responseMode\":\"evidence\""), true)
+    }
+
+    @TestCase
+    public func f6Ut001RestStdioAndHttpTaskPackPayloadsHaveSameEvidence(): Unit {
+        let service = CkbCommandLoopService(CkbRuntimeConfig(), p6PersistExactLookupStore("f6-ut-parity-store"))
+        let context = CkbAbcdeTaskContext()
+        context.taskId = "CJ-HUMANEVAL-000"
+        context.taskText = "Use ArrayList.add and avoid append."
+        context.signature = "func solution(values: Array<Int64>): Int64"
+        context.expectedKnowledgeTags.add("ArrayList.add")
+        let report = ckbAbcdeProbeInProcessTransportParity(service, context.taskId, ckbAbcdeRenderTaskContextJson(context))
+
+        @Expect(report.ok, true)
+        @Expect(report.rest.evidenceHash != "", true)
+        @Expect(report.rest.evidenceHash, report.stdio.evidenceHash)
+        @Expect(report.rest.evidenceHash, report.http.evidenceHash)
+        @Expect(report.rest.coveragePass, report.stdio.coveragePass)
+        @Expect(report.rest.coveragePass, report.http.coveragePass)
+        @Expect(report.rest.citationCount, report.stdio.citationCount)
+        @Expect(report.rest.citationCount, report.http.citationCount)
+    }
+
+    @TestCase
+    public func f6Bnd001ProtocolErrorPayloadIsNotTreatedAsBusinessSuccess(): Unit {
+        let response = "{\"jsonrpc\":\"2.0\",\"id\":3,\"error\":{\"code\":-32602,\"message\":\"session_required\"}}"
+        let observation = ckbAbcdeParityObservationFromResponse("CJ-HUMANEVAL-000", "mcp_http", response)
+
+        @Expect(observation.ok, false)
+        @Expect(observation.diagnostic, "missing_structured_payload")
+        @Expect(observation.evidenceHash, "")
+    }
+
+    @TestCase
+    public func f6Pos001ParityJsonlRecordsEachTransportAndEvidenceFields(): Unit {
+        let service = CkbCommandLoopService(CkbRuntimeConfig(), p6PersistExactLookupStore("f6-pos-parity-store"))
+        let report = ckbAbcdeProbeInProcessTransportParity(service, "CJ-HUMANEVAL-001", ckbAbcdeSmokeTaskContextJsonForTest())
+        let jsonl = ckbAbcdeRenderParityJsonl(report)
+
+        @Expect(jsonl.contains("\"transport\":\"rest\""), true)
+        @Expect(jsonl.contains("\"transport\":\"mcp_stdio\""), true)
+        @Expect(jsonl.contains("\"transport\":\"mcp_http\""), true)
+        @Expect(jsonl.contains("\"interfaceId\":\"cangjie_task_knowledge_pack\""), true)
+        @Expect(jsonl.contains("\"evidenceHash\":\""), true)
+        @Expect(jsonl.contains("\"coveragePass\":"), true)
+        @Expect(jsonl.contains("\"citationCount\":"), true)
+    }
+
+    @TestCase
+    public func f6Neg001EvidenceHashMismatchIsProtocolFailureInput(): Unit {
+        let rest = ckbAbcdeParityObservationFromResponse("CJ-HUMANEVAL-000", "rest", "{\"ok\":true,\"data\":{\"evidenceHash\":\"h1\",\"coverage\":{\"coveragePass\":true},\"citations\":[{\"citation\":\"doc\"}]}}")
+        let stdio = ckbAbcdeParityObservationFromResponse("CJ-HUMANEVAL-000", "mcp_stdio", "{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"structuredContent\":{\"evidenceHash\":\"h2\",\"coverage\":{\"coveragePass\":true},\"citations\":[{\"citation\":\"doc\"}]}}}")
+        let http = ckbAbcdeParityObservationFromResponse("CJ-HUMANEVAL-000", "mcp_http", "{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"structuredContent\":{\"evidenceHash\":\"h1\",\"coverage\":{\"coveragePass\":true},\"citations\":[{\"citation\":\"doc\"}]}}}")
+
+        @Expect(ckbAbcdeParityDiagnosticForTest(rest, stdio, http), "evidence_hash_mismatch")
     }
 
     @TestCase
