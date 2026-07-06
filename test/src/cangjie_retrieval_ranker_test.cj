@@ -17,6 +17,9 @@ public class CangjieRetrievalRankerTest {
         @Expect(hits.size, 2)
         @Expect(hits[0].document.recordKind, CangjieServingRecordKinds.SYMBOL_CARD)
         @Expect(hits[0].rankReason, "exact_symbol_or_symbol_card")
+        @Expect(cangjieP4RankHasStage(hits[0], "exact_boost"), true)
+        @Expect(cangjieP4RankHasStage(hits[0], "source_trust"), true)
+        @Expect(cangjieP4RankHasStage(hits[0], "symbol_module_match"), true)
     }
 
     @TestCase
@@ -29,6 +32,19 @@ public class CangjieRetrievalRankerTest {
         let hits = rankServingHits("ArrayList.add", docs, 2)
 
         @Expect(hits.size, 0)
+    }
+
+    @TestCase
+    public func f4RankStagesExposeNegativeRuleAndLexicalContributions(): Unit {
+        let docs = ArrayList<CangjieServingDocument>()
+        docs.add(cangjieP4RankDoc(CangjieServingRecordKinds.NEGATIVE_RULE, "Negative Cangjie rule: arraylist_add_not_append", "Bad: .append(...)\nUse: ArrayList.add(...)", ""))
+
+        let hits = rankServingHits("ArrayList append", docs, 1)
+
+        @Expect(hits.size, 1)
+        @Expect(cangjieP4RankHasStage(hits[0], "negative_rule_relevance"), true)
+        @Expect(cangjieP4RankHasStage(hits[0], "lexical_overlap"), true)
+        @Expect(hits[0].score > 0.0, true)
     }
 }
 
@@ -44,4 +60,13 @@ private func cangjieP4RankDoc(kind: String, title: String, text: String, symbol:
     doc.targetVersion = cangjieDefaultTargetVersion()
     doc.versionResolutionId = "v1"
     doc
+}
+
+private func cangjieP4RankHasStage(hit: CangjieRankedServingHit, stage: String): Bool {
+    for (contribution in hit.contributions) {
+        if (contribution.stage == stage && contribution.score != 0.0) {
+            return true
+        }
+    }
+    false
 }

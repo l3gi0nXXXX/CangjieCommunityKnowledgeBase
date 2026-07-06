@@ -3,20 +3,35 @@ package cangjie_community_knowledge_base
 import std.collection.ArrayList
 
 public func cangjieServingSearch(kb: KnowledgeBase, query: String, budget: Int64, sourceSet!: String = "", targetVersion!: String = "", symbol!: String = ""): SearchResult {
-    let options = SearchOptions()
-    options.budget = cangjieServingWideBudget(budget)
-    options.includeCandidates = false
-    let wide = kb.search(query, options)
-    let feed = buildServingDocuments(wide.records)
+    let status = kb.status()
+    let index = buildCangjieServingIndex(kb.activeRecordSnapshot(), activeKnowledgeVersion: status.activeKnowledgeVersion)
     let request = CangjieServingSearchRequest()
     request.query = query
     request.symbol = symbol
     request.sourceSet = sourceSet
     request.targetVersion = if (targetVersion == "") { cangjieDefaultTargetVersion() } else { targetVersion }
     request.budget = if (budget < 1) { CangjieCapabilityLimits.DEFAULT_BUDGET } else { budget }
-    let backend = LocalFixtureServingBackend(feed)
-    let serving = if (symbol != "") { backend.exactLookup(request) } else { backend.hybridSearch(request) }
-    cangjieServingToSearchResult(wide, serving, request.budget)
+    let interfaceId = if (symbol.trimAscii() != "") { "exact-symbol" } else { "hybrid-search" }
+    let cacheKey = cangjieServingCacheKey("", status.activeKnowledgeVersion, sourceSet, query, request.budget, "knowledge-pack", targetVersion: request.targetVersion, interfaceId: interfaceId, selector: "${sourceSet}:${request.targetVersion}:${symbol}")
+    let cacheLookup = kb.servingCacheLookup(cacheKey)
+    let serving = if (symbol != "") {
+        lookupExactSymbol(index, symbol, sourceSet: sourceSet, targetVersion: request.targetVersion, budget: request.budget)
+    } else {
+        searchHybridServingIndex(index, request)
+    }
+    let result = cangjieServingToSearchResult(index, serving, request.budget)
+    result.queryId = "serving-${stableSummaryHash("${query}:${sourceSet}:${request.targetVersion}:${symbol}")}"
+    result.knowledgeVersion = status.activeKnowledgeVersion
+    if (serving.evidenceHash != "") {
+        kb.servingCachePut(cacheKey, serving.evidenceHash)
+    }
+    if (cacheLookup.hit && !result.degraded) {
+        kb.recordServingCacheDiagnostic("cache_hit")
+    }
+    if (serving.hits.size == 0) {
+        cangjieServingAppendLegacyFallback(kb, result, query, request.budget, serving.diagnostic)
+    }
+    result
 }
 
 public func cangjieExactSymbolLookup(kb: KnowledgeBase, symbol: String, module!: String = "", sourceSet!: String = "", targetVersion!: String = "", budget!: Int64 = CangjieCapabilityLimits.DEFAULT_BUDGET): SearchResult {
@@ -27,30 +42,15 @@ public func cangjieExactSymbolLookup(kb: KnowledgeBase, symbol: String, module!:
     }
     let target = cangjieNormalizeTargetVersion(targetVersion)
     let limit = cangjieCapabilityClampBudget(budget, CangjieCapabilityLimits.DEFAULT_BUDGET, CangjieCapabilityLimits.MAX_BUDGET)
-    for (record in kb.activeRecordSnapshot()) {
-        if (result.records.size >= limit) {
-            result.truncated = true
-            break
-        }
-        if (record.recordKind != CangjieTypedRecordKinds.SYMBOL_CARD) {
-            continue
-        }
-        if (!cangjieExactRecordTrusted(record) || !cangjieExactVersionMatches(record, target) || !cangjieExactSourceSetMatches(record, sourceSet)) {
-            continue
-        }
-        if (!cangjieExactTextEquals(record.metadata.symbol, query)) {
-            continue
-        }
-        if (module.trimAscii() != "" && !cangjieExactModuleMatches(record, module)) {
-            continue
-        }
-        record.score = 100.0
-        result.records.add(record)
+    let index = buildCangjieServingIndex(kb.activeRecordSnapshot(), activeKnowledgeVersion: result.knowledgeVersion)
+    let serving = lookupExactSymbol(index, query, module: module, sourceSet: sourceSet, targetVersion: target, budget: limit)
+    let out = cangjieServingToSearchResult(index, serving, limit)
+    out.queryId = result.queryId
+    out.knowledgeVersion = result.knowledgeVersion
+    if (out.records.size == 0) {
+        return cangjieExactLookupMiss(out, if (serving.diagnostic == "") { "exact_miss" } else { serving.diagnostic })
     }
-    if (result.records.size == 0) {
-        return cangjieExactLookupMiss(result, "exact_miss")
-    }
-    result
+    out
 }
 
 public func cangjieExactDocSectionLookup(kb: KnowledgeBase, sectionId: String, path!: String = "", heading!: String = "", targetVersion!: String = "", budget!: Int64 = CangjieCapabilityLimits.DEFAULT_BUDGET): SearchResult {
@@ -63,33 +63,15 @@ public func cangjieExactDocSectionLookup(kb: KnowledgeBase, sectionId: String, p
     }
     let target = cangjieNormalizeTargetVersion(targetVersion)
     let limit = cangjieCapabilityClampBudget(budget, CangjieCapabilityLimits.DEFAULT_BUDGET, CangjieCapabilityLimits.MAX_BUDGET)
-    for (record in kb.activeRecordSnapshot()) {
-        if (result.records.size >= limit) {
-            result.truncated = true
-            break
-        }
-        if (record.recordKind != CangjieTypedRecordKinds.DOC_SECTION) {
-            continue
-        }
-        if (!cangjieExactRecordTrusted(record) || !cangjieExactVersionMatches(record, target)) {
-            continue
-        }
-        if (cleanSection != "" && !cangjieExactDocSectionMatches(record, cleanSection)) {
-            continue
-        }
-        if (cleanPath != "" && record.metadata.path != cleanPath) {
-            continue
-        }
-        if (cleanHeading != "" && !cangjieExactHeadingMatches(record, cleanHeading)) {
-            continue
-        }
-        record.score = 100.0
-        result.records.add(record)
+    let index = buildCangjieServingIndex(kb.activeRecordSnapshot(), activeKnowledgeVersion: result.knowledgeVersion)
+    let serving = lookupDocSection(index, cleanSection, path: cleanPath, heading: cleanHeading, targetVersion: target, budget: limit)
+    let out = cangjieServingToSearchResult(index, serving, limit)
+    out.queryId = result.queryId
+    out.knowledgeVersion = result.knowledgeVersion
+    if (out.records.size == 0) {
+        return cangjieExactLookupMiss(out, if (serving.diagnostic == "") { "exact_miss" } else { serving.diagnostic })
     }
-    if (result.records.size == 0) {
-        return cangjieExactLookupMiss(result, "exact_miss")
-    }
-    result
+    out
 }
 
 public func cangjieExactToolManualLookup(kb: KnowledgeBase, tool: String, command!: String = "", targetVersion!: String = "", budget!: Int64 = CangjieCapabilityLimits.DEFAULT_BUDGET): SearchResult {
@@ -101,30 +83,15 @@ public func cangjieExactToolManualLookup(kb: KnowledgeBase, tool: String, comman
     }
     let target = cangjieNormalizeTargetVersion(targetVersion)
     let limit = cangjieCapabilityClampBudget(budget, CangjieCapabilityLimits.DEFAULT_BUDGET, CangjieCapabilityLimits.MAX_BUDGET)
-    for (record in kb.activeRecordSnapshot()) {
-        if (result.records.size >= limit) {
-            result.truncated = true
-            break
-        }
-        if (record.recordKind != CangjieTypedRecordKinds.TOOL_MANUAL) {
-            continue
-        }
-        if (!cangjieExactRecordTrusted(record) || !cangjieExactVersionMatches(record, target) || record.metadata.sourceSet != CangjieSourceSets.TOOLS) {
-            continue
-        }
-        if (!cangjieExactToolMatches(record, cleanTool)) {
-            continue
-        }
-        if (cleanCommand != "" && !cangjieExactToolCommandMatches(record, cleanCommand)) {
-            continue
-        }
-        record.score = 100.0
-        result.records.add(record)
+    let index = buildCangjieServingIndex(kb.activeRecordSnapshot(), activeKnowledgeVersion: result.knowledgeVersion)
+    let serving = lookupToolManual(index, cleanTool, command: cleanCommand, targetVersion: target, budget: limit)
+    let out = cangjieServingToSearchResult(index, serving, limit)
+    out.queryId = result.queryId
+    out.knowledgeVersion = result.knowledgeVersion
+    if (out.records.size == 0) {
+        return cangjieExactLookupMiss(out, if (serving.diagnostic == "") { "exact_miss" } else { serving.diagnostic })
     }
-    if (result.records.size == 0) {
-        return cangjieExactLookupMiss(result, "exact_miss")
-    }
-    result
+    out
 }
 
 public func runCangjieServingQuerySmoke(args: Array<String>): Int64 {
@@ -203,24 +170,38 @@ private func cangjieExactToolCommandMatches(record: NormalizedRecord, command: S
     symbol.contains(" ${clean}") || record.title.toAsciiLower().contains(clean) || record.chunk.toAsciiLower().contains(" ${clean}") || record.chunk.toAsciiLower().contains("`${clean}`")
 }
 
-private func cangjieServingToSearchResult(wide: SearchResult, serving: CangjieServingSearchResult, budget: Int64): SearchResult {
+private func cangjieServingToSearchResult(index: CangjieServingIndex, serving: CangjieServingSearchResult, budget: Int64): SearchResult {
     let result = SearchResult()
-    result.queryId = "${wide.queryId}-serving"
-    result.knowledgeVersion = wide.knowledgeVersion
-    result.degraded = wide.degraded || serving.degraded
-    result.fallbackReason = if (serving.diagnostic != "") { serving.diagnostic } else { wide.fallbackReason }
+    result.queryId = "serving-${serving.evidenceHash}"
+    result.knowledgeVersion = index.activeKnowledgeVersion
+    result.degraded = serving.degraded
+    result.fallbackReason = serving.diagnostic
     for (hit in serving.hits) {
         if (result.records.size >= budget) {
             result.truncated = true
             break
         }
-        let record = cangjieServingFindRecord(wide.records, hit.document.sourceId)
+        var record = cangjieServingFindRecord(index.records, hit.document.sourceId)
+        if (record.sourceId == "") {
+            record = cangjieServingRecordFromDocument(hit.document, index.activeKnowledgeVersion)
+        }
         if (record.sourceId != "" && !cangjieServingSearchResultContains(result, record.sourceId)) {
             record.score = hit.score
             result.records.add(record)
         }
     }
-    for (record in wide.records) {
+    result
+}
+
+private func cangjieServingAppendLegacyFallback(kb: KnowledgeBase, result: SearchResult, query: String, budget: Int64, servingDiagnostic: String): Unit {
+    let options = SearchOptions()
+    options.budget = cangjieServingWideBudget(budget)
+    options.includeCandidates = false
+    options.includeVector = false
+    let legacy = kb.search(query, options)
+    result.degraded = true
+    result.fallbackReason = if (servingDiagnostic == "") { "legacy_search_degraded" } else { "${servingDiagnostic};legacy_search_degraded" }
+    for (record in legacy.records) {
         if (result.records.size >= budget) {
             result.truncated = true
             break
@@ -229,8 +210,7 @@ private func cangjieServingToSearchResult(wide: SearchResult, serving: CangjieSe
             result.records.add(record)
         }
     }
-    result.truncated = result.truncated || wide.truncated
-    result
+    result.truncated = result.truncated || legacy.truncated
 }
 
 private func cangjieServingFindRecord(records: ArrayList<NormalizedRecord>, sourceId: String): NormalizedRecord {
@@ -240,6 +220,27 @@ private func cangjieServingFindRecord(records: ArrayList<NormalizedRecord>, sour
         }
     }
     NormalizedRecord()
+}
+
+private func cangjieServingRecordFromDocument(doc: CangjieServingDocument, activeKnowledgeVersion: String): NormalizedRecord {
+    let record = NormalizedRecord()
+    record.sourceId = doc.sourceId
+    record.recordKind = doc.recordKind
+    record.title = doc.title
+    record.chunk = doc.text
+    record.citation = doc.citation
+    record.metadata.sourceId = doc.sourceId
+    record.metadata.sourceType = SourceTypes.DERIVED
+    record.metadata.sourceUrl = doc.citation
+    record.metadata.path = doc.citation
+    record.metadata.symbol = doc.symbolKey
+    record.metadata.targetVersion = doc.targetVersion
+    record.metadata.sourceSet = doc.sourceSet
+    record.metadata.versionResolutionId = doc.versionResolutionId
+    record.metadata.knowledgeVersion = activeKnowledgeVersion
+    record.metadata.trustLevel = doc.trustLevel
+    record.metadata.reviewState = doc.reviewState
+    record
 }
 
 private func cangjieServingSearchResultContains(result: SearchResult, sourceId: String): Bool {
