@@ -277,7 +277,7 @@ private func ckbApiHandleAdmin(service: CkbCommandLoopService, method: String, p
         if (result.failed > 0 && result.ran == 0) {
             return ckbApiErrorEnvelope("ckb.bad_request", "unsupported scheduler task", status: 400, diagnostics: "{\"details\":\"${ckbApiJsonEscape(result.details)}\"}")
         }
-        return ckbApiEnvelope("{\"ran\":${result.ran},\"succeeded\":${result.succeeded},\"failed\":${result.failed},\"degraded\":${result.degraded},\"forced\":${result.forced},\"taskNames\":${ckbApiStringArrayJson(result.taskNames)},\"details\":\"${ckbApiJsonEscape(result.details)}\"}")
+        return ckbApiEnvelope("{\"ran\":${result.ran},\"succeeded\":${result.succeeded},\"failed\":${result.failed},\"degraded\":${result.degraded},\"forced\":${result.forced},\"taskNames\":${ckbApiStringArrayJson(result.taskNames)},\"details\":\"${ckbApiJsonEscape(result.details)}\",\"validationSummaries\":${ckbApiStringArrayJson(result.validationSummaries)},\"validationDiagnostics\":${ckbApiStringArrayJson(result.validationDiagnostics)},\"validationEvidenceHashes\":${ckbApiStringArrayJson(result.validationEvidenceHashes)}}")
     }
     if (path == "/v1/admin/sync") {
         return ckbApiEnvelope(ckbApiAdminResultJson(service.runSync(body: body)))

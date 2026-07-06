@@ -167,9 +167,11 @@ public func cangjieCapabilityClampBudget(raw: Int64, fallback: Int64, max: Int64
 
 public class CangjieCapabilityService {
     private let kb: KnowledgeBase
+    private let manifest: CangjieVersionManifest
 
-    public init(kb: KnowledgeBase) {
+    public init(kb: KnowledgeBase, manifest!: CangjieVersionManifest = defaultCangjieVersionManifest()) {
         this.kb = kb
+        this.manifest = manifest
     }
 
     public func knowledgePack(task: String, targetVersion!: String = "", budget!: Int64 = CangjieCapabilityLimits.DEFAULT_BUDGET, includeExamples!: Bool = true, includeAntiPatterns!: Bool = true): CangjieKnowledgePack {
@@ -198,11 +200,11 @@ public class CangjieCapabilityService {
     }
 
     public func resolveVersion(selector: CangjieVersionSelector): CangjieVersionResolution {
-        resolveCangjieVersion(selector, defaultCangjieVersionManifest())
+        resolveCangjieVersion(selector, this.manifest)
     }
 
     public func taskKnowledgePack(request: CangjieTaskKnowledgeRequest): CangjieTaskKnowledgePack {
-        buildCangjieTaskKnowledgePackFromEvidence(this.kb, request, defaultCangjieVersionManifest())
+        buildCangjieTaskKnowledgePackFromEvidence(this.kb, request, this.manifest)
     }
 
     public func knowledgeCoverage(request: CangjieTaskKnowledgeRequest): CangjieKnowledgeCoverage {

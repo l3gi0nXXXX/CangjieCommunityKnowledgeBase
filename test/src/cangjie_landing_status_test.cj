@@ -1,5 +1,6 @@
 package cangjie_community_knowledge_base_test
 
+import std.collection.ArrayList
 import std.unittest.*
 import std.unittest.testmacro.*
 
@@ -27,6 +28,25 @@ public class CangjieLandingStatusTest {
         @Expect(report.ok, false)
         @Expect(ckbLandingTestStatus(report, "F5-routine-update-scheduler"), "missing")
         @Expect(ckbLandingTestDiagnostic(report, "F5-routine-update-scheduler"), "scheduler_status_missing")
+    }
+
+    @TestCase
+    public func f0Bnd002SchedulerCandidateValidationFailureIsExplicit(): Unit {
+        let store = FileKnowledgeStore("target/f0-landing-validation-failure")
+        let entries = ArrayList<ScheduleEntry>()
+        let entry = ScheduleEntry("cangjie_docs_full_weekly", 10080, 0)
+        entry.lastStatus = "candidate_validation_failed"
+        entry.lastRequestCount = 5
+        entries.add(entry)
+        store.saveScheduler(entries)
+        let service = CkbCommandLoopService(CkbRuntimeConfig(), store)
+        service.start()
+
+        let report = collectCkbLandingStatus(service)
+
+        @Expect(report.ok, false)
+        @Expect(ckbLandingTestStatus(report, "F5-routine-update-scheduler"), "missing")
+        @Expect(ckbLandingTestDiagnostic(report, "F5-routine-update-scheduler"), "candidate_validation_failed:cangjie_docs_full_weekly")
     }
 
     @TestCase

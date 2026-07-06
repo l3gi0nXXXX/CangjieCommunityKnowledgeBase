@@ -253,6 +253,12 @@ public func runCkbFirstInitialization(options: CkbFirstInitOptions, store: FileK
     kb.persistCandidateSnapshot(store)
     if (promoted) {
         kb.persistActiveSnapshot(store)
+        store.saveCangjieVersionManifest(buildCangjieVersionManifestFromRoots(targetVersion: options.targetVersion,
+            docsRoot: options.docsRoot,
+            toolDocsRoot: options.toolDocsRoot,
+            stdRoot: options.stdRoot,
+            stdxRoot: options.stdxRoot,
+            evalRoot: options.evalRoot))
     }
     result.persisted = promoted
     result.ok = promoted

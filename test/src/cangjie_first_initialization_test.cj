@@ -113,6 +113,9 @@ public class CangjieFirstInitializationTest {
         let result = runCkbFirstInitialization(options, store)
         let loaded = newKnowledgeBaseFromStore(store)
         let status = cangjie_knowledge_status(loaded.kb)
+        let service = CkbCommandLoopService(CkbRuntimeConfig(), store)
+        _ = service.start()
+        let serviceResolution = service.cangjieResolveVersion(cangjieVersionSelector(targetVersion: "1.0.0", sourceSet: CangjieSourceSets.STD))
         let rendered = renderCkbFirstInitResult(result)
 
         @Expect(result.ok, true)
@@ -127,6 +130,11 @@ public class CangjieFirstInitializationTest {
         @Expect(store.has("index/active.ckb"), true)
         @Expect(store.has("index/vector-active.ckb"), true)
         @Expect(store.has("index/graph-nodes.ckb"), true)
+        @Expect(store.has("metadata/cangjie-version-manifest.ckb"), true)
+        @Expect(store.loadCangjieVersionManifest().sources.size, 5)
+        @Expect(store.loadCangjieVersionManifest().sources[0].resolvedCommit.contains("offline-baseline"), false)
+        @Expect(serviceResolution.ok, true)
+        @Expect(serviceResolution.sources[0].resolvedCommit.startsWith("local-"), true)
         @Expect(rendered.contains("queryCheck=symbol:ArrayList.add=hit"), true)
     }
 

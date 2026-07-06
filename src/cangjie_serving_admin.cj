@@ -135,8 +135,17 @@ public func cangjiePromoteCandidateAfterValidation(kb: KnowledgeBase, store: Fil
 }
 
 public func cangjiePromoteCandidateAfterValidationWithVersion(kb: KnowledgeBase, store: FileKnowledgeStore, candidateVersion: String, forceFailure!: Bool = false): CangjieCandidatePromotionResult {
-    let result = CangjieCandidatePromotionResult()
     let stagedCandidateVersion = kb.stageCandidateIndex(candidateVersion)
+    cangjiePromoteStagedCandidateAfterValidation(kb, store, stagedCandidateVersion, forceFailure: forceFailure)
+}
+
+public func cangjiePromoteCandidateRecordsAfterValidationWithVersion(kb: KnowledgeBase, store: FileKnowledgeStore, candidateVersion: String, records: ArrayList<NormalizedRecord>, forceFailure!: Bool = false): CangjieCandidatePromotionResult {
+    let stagedCandidateVersion = kb.stageCandidateRecords(candidateVersion, records)
+    cangjiePromoteStagedCandidateAfterValidation(kb, store, stagedCandidateVersion, forceFailure: forceFailure)
+}
+
+private func cangjiePromoteStagedCandidateAfterValidation(kb: KnowledgeBase, store: FileKnowledgeStore, stagedCandidateVersion: String, forceFailure!: Bool = false): CangjieCandidatePromotionResult {
+    let result = CangjieCandidatePromotionResult()
     result.candidateVersion = stagedCandidateVersion
     result.candidateWritten = true
     result.validation = validateCandidateServingIndex(kb.candidateRecordSnapshot(), stagedCandidateVersion, forceFailure: forceFailure)

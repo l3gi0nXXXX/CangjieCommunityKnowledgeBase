@@ -66,6 +66,23 @@ public class CangjieVersionManifestTest {
     }
 
     @TestCase
+    public func p3Pos001StoreRoundTripsActiveVersionManifest(): Unit {
+        let store = FileKnowledgeStore("target/p3-version-manifest-store")
+        let manifest = defaultCangjieVersionManifest()
+
+        store.saveCangjieVersionManifest(manifest)
+        let loaded = store.loadCangjieVersionManifest()
+        let docs = resolveCangjieVersion(cangjieVersionSelector(targetVersion: "1.0.0", sourceSet: "docs", sourceRef: "release-1.0.0", versionPolicy: "exact"), loaded)
+
+        @Expect(store.has("metadata/cangjie-version-manifest.ckb"), true)
+        @Expect(loaded.manifestVersion, manifest.manifestVersion)
+        @Expect(loaded.defaultTargetVersion, manifest.defaultTargetVersion)
+        @Expect(loaded.sources.size, manifest.sources.size)
+        @Expect(docs.ok, true)
+        @Expect(docs.sources[0].sourceRepo, "Cangjie/cangjie_docs")
+    }
+
+    @TestCase
     public func stB001UnsupportedSourceSetReturnsDiagnostic(): Unit {
         let resolution = resolveCangjieVersion(cangjieVersionSelector(targetVersion: "1.0.0", sourceSet: "private-src", versionPolicy: "exact"), defaultCangjieVersionManifest())
 

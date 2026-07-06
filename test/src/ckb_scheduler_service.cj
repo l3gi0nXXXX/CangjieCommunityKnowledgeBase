@@ -44,7 +44,11 @@ public func startCkbSchedulerLoop(service: CkbCommandLoopService, config: CkbRun
     spawn { =>
         while (true) {
             sleep(Duration.millisecond * interval)
-            _ = runCkbSchedulerTick(service, 1)
+            try {
+                _ = runCkbSchedulerTick(service, 1)
+            } catch (_: Exception) {
+                service.markSchedulerLoopFailure("scheduler_loop_tick_failed")
+            }
         }
     }
     result

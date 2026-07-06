@@ -1699,6 +1699,10 @@ public class SchedulerTaskResult {
     public var updatedDataKinds: ArrayList<String> = ArrayList<String>()
     public var truncated: Bool = false
     public var timeBudgetMillis: Int64 = 0
+    public var validationStatus: String = ""
+    public var validationSummary: String = ""
+    public var validationEvidenceHash: String = ""
+    public var validationDiagnostics: ArrayList<String> = ArrayList<String>()
 
     public init() {}
 }
@@ -1711,6 +1715,9 @@ public class SchedulerExecutorResult {
     public var details: String = ""
     public var forced: Bool = false
     public var taskNames: ArrayList<String> = ArrayList<String>()
+    public var validationSummaries: ArrayList<String> = ArrayList<String>()
+    public var validationDiagnostics: ArrayList<String> = ArrayList<String>()
+    public var validationEvidenceHashes: ArrayList<String> = ArrayList<String>()
 
     public init() {}
 }
@@ -1753,6 +1760,7 @@ public class SchedulerExecutor {
                 result.degraded += 1
             }
             result.details += "task ${name} ok=${task.ok} status=${task.status} nextRunAt=${after.nextRunAt} failureCount=${after.failureCount} degraded=${after.degraded}\n"
+            this.appendTaskValidation(result, name, task)
         }
         result
     }
@@ -1788,8 +1796,22 @@ public class SchedulerExecutor {
                 result.degraded += 1
             }
             result.details += "task ${name} ok=${task.ok} status=${task.status} nextRunAt=${after.nextRunAt} failureCount=${after.failureCount} degraded=${after.degraded}\n"
+            this.appendTaskValidation(result, name, task)
         }
         result
+    }
+
+    private func appendTaskValidation(result: SchedulerExecutorResult, name: String, task: SchedulerTaskResult): Unit {
+        if (task.validationSummary != "") {
+            result.details += "${task.validationSummary}\n"
+            result.validationSummaries.add(task.validationSummary)
+        }
+        if (task.validationEvidenceHash != "") {
+            result.validationEvidenceHashes.add("${name}:${task.validationEvidenceHash}")
+        }
+        for (diagnostic in task.validationDiagnostics) {
+            result.validationDiagnostics.add("${name}:${diagnostic}")
+        }
     }
 
     private func findEntry(name: String): ScheduleEntry {
@@ -2248,6 +2270,17 @@ public class KnowledgeBase {
         this.candidateKnowledgeVersion
     }
 
+    public func stageCandidateRecords(candidateVersion: String, records: ArrayList<NormalizedRecord>): String {
+        this.candidateKnowledgeVersion = if (candidateVersion.trimAscii() == "") { "ckb-20260519-000100-candidate" } else { candidateVersion.trimAscii() }
+        this.candidateIndex.clear()
+        for (record in records) {
+            let candidate = this.copyNormalizedRecord(record)
+            candidate.metadata.candidateVersion = this.candidateKnowledgeVersion
+            this.candidateIndex.add(candidate)
+        }
+        this.candidateKnowledgeVersion
+    }
+
     public func markCandidateValidationFailed(candidateVersion: String): Unit {
         this.failedCandidateVersion = if (candidateVersion.trimAscii() == "") { this.candidateKnowledgeVersion } else { candidateVersion.trimAscii() }
     }
@@ -2296,6 +2329,48 @@ public class KnowledgeBase {
         for (record in this.activeIndex) {
             out.add(record)
         }
+        out
+    }
+
+    public func activeRecordSnapshotOverlay(delta: ArrayList<NormalizedRecord>): ArrayList<NormalizedRecord> {
+        let out = ArrayList<NormalizedRecord>()
+        for (record in this.activeIndex) {
+            if (!this.normalizedRecordReplacedByDelta(record, delta)) {
+                out.add(this.copyNormalizedRecord(record))
+            }
+        }
+        for (record in delta) {
+            out.add(this.copyNormalizedRecord(record))
+        }
+        out
+    }
+
+    private func normalizedRecordReplacedByDelta(record: NormalizedRecord, delta: ArrayList<NormalizedRecord>): Bool {
+        for (candidate in delta) {
+            if (this.normalizedRecordSameIdentity(record, candidate)) {
+                return true
+            }
+        }
+        false
+    }
+
+    private func normalizedRecordSameIdentity(left: NormalizedRecord, right: NormalizedRecord): Bool {
+        if (left.sourceId != "" && right.sourceId != "") {
+            return left.sourceId == right.sourceId
+        }
+        left.recordKind == right.recordKind && left.title == right.title && left.citation == right.citation
+    }
+
+    private func copyNormalizedRecord(record: NormalizedRecord): NormalizedRecord {
+        let out = NormalizedRecord()
+        out.sourceId = record.sourceId
+        out.recordKind = record.recordKind
+        out.title = record.title
+        out.chunk = record.chunk
+        out.citation = record.citation
+        out.score = record.score
+        out.metadata = cangjieCopyKnowledgeMetadata(record.metadata)
+        out.requiresReview = record.requiresReview
         out
     }
 

@@ -101,14 +101,21 @@ private func ckbLandingSchedulerStatus(status: KnowledgeStatus): CkbLandingCapab
     let item = ckbLandingCapability("F5-routine-update-scheduler")
     var successCount: Int64 = 0
     var requestCount: Int64 = 0
+    var validationFailure = ""
     for (entry in status.schedules) {
         if (entry.lastSuccessAt > 0) {
             successCount += 1
         }
         requestCount += entry.lastRequestCount
+        if (entry.lastStatus == "candidate_validation_failed") {
+            validationFailure = entry.name
+        }
     }
     item.evidence = "successCount=${successCount},requestCount=${requestCount},entries=${status.schedules.size}"
-    if (successCount > 0 && requestCount > 0) {
+    if (validationFailure != "") {
+        item.status = "missing"
+        item.diagnostic = "candidate_validation_failed:${validationFailure}"
+    } else if (successCount > 0 && requestCount > 0) {
         item.status = "landed"
         item.diagnostic = "scheduler_has_successful_update"
     } else if (status.schedules.size > 0) {
