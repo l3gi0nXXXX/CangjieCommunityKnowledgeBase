@@ -304,9 +304,8 @@ private func cangjieReleaseGateAddSchedulerStep(report: CangjieKnowledgeReleaseG
 }
 
 private func cangjieReleaseGateAddTransportParityStep(report: CangjieKnowledgeReleaseGateReport, service: CkbCommandLoopService, runRoot: String): Unit {
-    let parity = ckbAbcdeProbeInProcessTransportParity(service, "release-gate", cangjieReleaseGateTaskContextJson())
+    let parity = ckbAbcdeProbeInProcessTransportParityArtifacts(service, runRoot, "release-gate", cangjieReleaseGateTaskContextJson())
     let artifact = "${runRoot}/transport-parity.jsonl"
-    cangjieReleaseGateWriteText(artifact, ckbAbcdeRenderParityJsonl(parity) + "\n")
     cangjieReleaseGateAddStep(report, "E2E-04-transport-parity", parity.ok, parity.diagnostic, artifact, evidenceHash: stableSummaryHash(ckbAbcdeRenderParityJsonl(parity)))
 }
 

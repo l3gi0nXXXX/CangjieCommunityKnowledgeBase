@@ -206,9 +206,20 @@ public class CangjieEvalAbcdeRunnerTest {
     }
 
     @TestCase
+    public func p6Bnd001ArtifactObservationRecordsTransportExitAndPayloadPath(): Unit {
+        let observation = ckbAbcdeParityObservationFromArtifactForTest("CJ-HUMANEVAL-000", "mcp_stdio", "/tmp/stdio.json", "", 127, "stdio process failed")
+
+        @Expect(observation.ok, false)
+        @Expect(observation.payloadPath, "/tmp/stdio.json")
+        @Expect(observation.diagnostic.contains("transport_exit_127"), true)
+        @Expect(observation.diagnostic.contains("stdio process failed"), true)
+    }
+
+    @TestCase
     public func f6Pos001ParityJsonlRecordsEachTransportAndEvidenceFields(): Unit {
         let service = CkbCommandLoopService(CkbRuntimeConfig(), p6PersistExactLookupStore("f6-pos-parity-store"))
-        let report = ckbAbcdeProbeInProcessTransportParity(service, "CJ-HUMANEVAL-001", ckbAbcdeSmokeTaskContextJsonForTest())
+        let root = "target/p6-parity-artifacts"
+        let report = ckbAbcdeProbeInProcessTransportParityArtifacts(service, root, "CJ-HUMANEVAL-001", ckbAbcdeSmokeTaskContextJsonForTest())
         let jsonl = ckbAbcdeRenderParityJsonl(report)
 
         @Expect(jsonl.contains("\"transport\":\"rest\""), true)
@@ -218,6 +229,11 @@ public class CangjieEvalAbcdeRunnerTest {
         @Expect(jsonl.contains("\"evidenceHash\":\""), true)
         @Expect(jsonl.contains("\"coveragePass\":"), true)
         @Expect(jsonl.contains("\"citationCount\":"), true)
+        @Expect(exists(Path("${root}/transport-parity-rest.json")), true)
+        @Expect(exists(Path("${root}/transport-parity-stdio.json")), true)
+        @Expect(exists(Path("${root}/transport-parity-http.json")), true)
+        @Expect(exists(Path("${root}/transport-parity.jsonl")), true)
+        @Expect(jsonl.contains("\"payloadPath\":\"${root}/transport-parity-rest.json\""), true)
     }
 
     @TestCase
@@ -227,6 +243,15 @@ public class CangjieEvalAbcdeRunnerTest {
         let http = ckbAbcdeParityObservationFromResponse("CJ-HUMANEVAL-000", "mcp_http", "{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"structuredContent\":{\"evidenceHash\":\"h1\",\"coverage\":{\"coveragePass\":true},\"citations\":[{\"citation\":\"doc\"}]}}}")
 
         @Expect(ckbAbcdeParityDiagnosticForTest(rest, stdio, http), "evidence_hash_mismatch")
+    }
+
+    @TestCase
+    public func p6Neg001CitationCountMismatchFailsTransportParity(): Unit {
+        let rest = ckbAbcdeParityObservationFromResponse("CJ-HUMANEVAL-000", "rest", "{\"ok\":true,\"data\":{\"evidenceHash\":\"h1\",\"coverage\":{\"coveragePass\":true},\"citations\":[{\"citation\":\"doc\"}]}}")
+        let stdio = ckbAbcdeParityObservationFromResponse("CJ-HUMANEVAL-000", "mcp_stdio", "{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"structuredContent\":{\"evidenceHash\":\"h1\",\"coverage\":{\"coveragePass\":true},\"citations\":[{\"citation\":\"doc\"},{\"citation\":\"std\"}]}}}")
+        let http = ckbAbcdeParityObservationFromResponse("CJ-HUMANEVAL-000", "mcp_http", "{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{\"structuredContent\":{\"evidenceHash\":\"h1\",\"coverage\":{\"coveragePass\":true},\"citations\":[{\"citation\":\"doc\"}]}}}")
+
+        @Expect(ckbAbcdeParityDiagnosticForTest(rest, stdio, http), "citation_count_mismatch")
     }
 
     @TestCase

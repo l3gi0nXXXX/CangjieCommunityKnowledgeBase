@@ -32,6 +32,9 @@ public class CangjieReleaseGateTest {
         @Expect(String.fromUtf8(File.readFrom(Path("${runRoot}/route-probe.jsonl"))).contains("\"evidenceHash\""), true)
         @Expect(exists(Path("${runRoot}/scheduler-forced-run.jsonl")), true)
         @Expect(exists(Path("${runRoot}/transport-parity.jsonl")), true)
+        @Expect(exists(Path("${runRoot}/transport-parity-rest.json")), true)
+        @Expect(exists(Path("${runRoot}/transport-parity-stdio.json")), true)
+        @Expect(exists(Path("${runRoot}/transport-parity-http.json")), true)
         @Expect(exists(Path("${runRoot}/pass1-gate.json")), true)
     }
 
