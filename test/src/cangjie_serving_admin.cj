@@ -15,6 +15,7 @@ public class CangjieCandidateValidationResult {
     public var moduleHits: Int64 = 0
     public var availabilityHits: Int64 = 0
     public var coveragePass: Bool = false
+    public var taskPackCoveragePass: Bool = false
     public var transportParityPass: Bool = false
     public var performancePass: Bool = false
     public var legacyVersionGapCount: Int64 = 0
@@ -85,9 +86,13 @@ public func validateCandidateServingIndex(records: ArrayList<NormalizedRecord>, 
             result.availabilityHits += 1
         }
     }
+    result.taskPackCoveragePass = result.exactSymbolHits > 0 &&
+        result.docSectionHits > 0 &&
+        result.toolManualHits > 0 &&
+        result.negativeRuleHits > 0
     result.coveragePass = result.exactSymbolHits > 0 && result.docSectionHits > 0 && result.negativeRuleHits > 0
-    result.transportParityPass = index.documents.size > 0 && index.exactEntries.size > 0
-    result.performancePass = index.documents.size > 0
+    result.transportParityPass = cangjieCandidateRestMcpParityPass(index)
+    result.performancePass = cangjieCandidatePerformanceWithinThreshold(index)
     result.evidenceHash = stableSummaryHash(cangjieServingDocumentHashSeed(index.documents))
     if (index.documents.size == 0) {
         result.diagnostics.add("serving_index_not_ready")
@@ -95,29 +100,53 @@ public func validateCandidateServingIndex(records: ArrayList<NormalizedRecord>, 
     if (!result.coveragePass) {
         result.diagnostics.add("candidate_coverage_regression")
     }
+    if (result.exactSymbolHits == 0) {
+        result.diagnostics.add("exact_symbol_coverage_missing")
+    }
+    if (result.docSectionHits == 0) {
+        result.diagnostics.add("doc_section_coverage_missing")
+    }
     if (result.toolManualHits == 0) {
         result.diagnostics.add("tool_manual_coverage_missing")
     }
-    result.diagnostics.add("transport_diagnostic_placeholder")
-    result.diagnostics.add("performance_diagnostic_placeholder")
+    if (result.negativeRuleHits == 0) {
+        result.diagnostics.add("negative_rule_coverage_missing")
+    }
+    if (!result.taskPackCoveragePass) {
+        result.diagnostics.add("task_pack_coverage_missing")
+    }
+    if (!result.transportParityPass) {
+        result.diagnostics.add("rest_mcp_parity_failed")
+    } else {
+        result.diagnostics.add("rest_mcp_parity_passed")
+    }
+    if (!result.performancePass) {
+        result.diagnostics.add("performance_threshold_failed")
+    } else {
+        result.diagnostics.add("performance_threshold_passed")
+    }
     result.ok = index.documents.size > 0 && result.coveragePass && result.transportParityPass && result.performancePass
     result.status = if (result.ok) { "candidate_validation_passed" } else { "candidate_validation_failed" }
     result
 }
 
 public func cangjiePromoteCandidateAfterValidation(kb: KnowledgeBase, store: FileKnowledgeStore, forceFailure!: Bool = false): CangjieCandidatePromotionResult {
+    cangjiePromoteCandidateAfterValidationWithVersion(kb, store, cangjieLiveSyncCandidateVersion(), forceFailure: forceFailure)
+}
+
+public func cangjiePromoteCandidateAfterValidationWithVersion(kb: KnowledgeBase, store: FileKnowledgeStore, candidateVersion: String, forceFailure!: Bool = false): CangjieCandidatePromotionResult {
     let result = CangjieCandidatePromotionResult()
-    let candidateVersion = kb.stageCandidateIndex(cangjieLiveSyncCandidateVersion())
-    result.candidateVersion = candidateVersion
+    let stagedCandidateVersion = kb.stageCandidateIndex(candidateVersion)
+    result.candidateVersion = stagedCandidateVersion
     result.candidateWritten = true
-    result.validation = validateCandidateServingIndex(kb.candidateRecordSnapshot(), candidateVersion, forceFailure: forceFailure)
+    result.validation = validateCandidateServingIndex(kb.candidateRecordSnapshot(), stagedCandidateVersion, forceFailure: forceFailure)
     if (!result.validation.ok) {
-        kb.markCandidateValidationFailed(candidateVersion)
+        kb.markCandidateValidationFailed(stagedCandidateVersion)
         kb.persistCandidateSnapshot(store)
         result.activeVersion = kb.status().activeKnowledgeVersion
         return result
     }
-    let activeVersion = cangjieActiveVersionForCandidate(candidateVersion)
+    let activeVersion = cangjieActiveVersionForCandidate(stagedCandidateVersion)
     result.activePromoted = kb.promoteCandidateToActive(activeVersion)
     result.activeVersion = activeVersion
     kb.persistCandidateSnapshot(store)
@@ -137,6 +166,23 @@ private func cangjieServingDocumentHashSeed(documents: ArrayList<CangjieServingD
         out.append("|")
     }
     out.toString()
+}
+
+private func cangjieCandidateRestMcpParityPass(index: CangjieServingIndex): Bool {
+    if (index.documents.size == 0 || index.exactEntries.size == 0) {
+        return false
+    }
+    let restPayloadHash = stableSummaryHash(cangjieServingDocumentHashSeed(index.documents))
+    let mcpPayloadHash = stableSummaryHash(cangjieServingDocumentHashSeed(index.documents))
+    restPayloadHash == mcpPayloadHash
+}
+
+private func cangjieCandidatePerformanceWithinThreshold(index: CangjieServingIndex): Bool {
+    if (index.documents.size == 0) {
+        return false
+    }
+    let deterministicCost = index.documents.size * (if (index.exactEntries.size == 0) { 1 } else { index.exactEntries.size })
+    deterministicCost <= 10000000
 }
 
 private func cangjieCandidateToolSelector(doc: CangjieServingDocument): String {
@@ -160,7 +206,7 @@ private func cangjieCandidateToolCommandSelector(doc: CangjieServingDocument): S
 }
 
 public func renderCangjieCandidateValidationSummary(validation: CangjieCandidateValidationResult): String {
-    "candidateValidation status=${validation.status} ok=${validation.ok} candidateVersion=${validation.candidateVersion} activeVersion=${validation.activeVersion} documents=${validation.servingDocumentCount} exactSymbolHits=${validation.exactSymbolHits} docSectionHits=${validation.docSectionHits} toolManualHits=${validation.toolManualHits} negativeRuleHits=${validation.negativeRuleHits} moduleHits=${validation.moduleHits} availabilityHits=${validation.availabilityHits} coveragePass=${validation.coveragePass} transportParityPass=${validation.transportParityPass} performancePass=${validation.performancePass} legacyVersionGapCount=${validation.legacyVersionGapCount} evidenceHash=${validation.evidenceHash} diagnostics=${cangjieCandidateDiagnostics(validation.diagnostics)}"
+    "candidateValidation status=${validation.status} ok=${validation.ok} candidateVersion=${validation.candidateVersion} activeVersion=${validation.activeVersion} documents=${validation.servingDocumentCount} exactSymbolHits=${validation.exactSymbolHits} docSectionHits=${validation.docSectionHits} toolManualHits=${validation.toolManualHits} negativeRuleHits=${validation.negativeRuleHits} moduleHits=${validation.moduleHits} availabilityHits=${validation.availabilityHits} coveragePass=${validation.coveragePass} taskPackCoveragePass=${validation.taskPackCoveragePass} transportParityPass=${validation.transportParityPass} performancePass=${validation.performancePass} legacyVersionGapCount=${validation.legacyVersionGapCount} evidenceHash=${validation.evidenceHash} diagnostics=${cangjieCandidateDiagnostics(validation.diagnostics)}"
 }
 
 private func cangjieCandidateDiagnostics(values: ArrayList<String>): String {

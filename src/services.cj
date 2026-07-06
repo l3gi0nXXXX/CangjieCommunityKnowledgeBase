@@ -298,6 +298,8 @@ public class CkbRuntimeConfig {
     public var serviceReadOnlyPublic: Bool = true
     public var serviceDefaultBudget: Int64 = 5
     public var serviceMaxBudget: Int64 = 20
+    public var schedulerEnabled: Bool = true
+    public var schedulerLoopIntervalMillis: Int64 = 60000
     public var firstInitEnabled: Bool = false
     public var firstInitDocsRoot: String = ""
     public var firstInitToolDocsRoot: String = ""
@@ -436,6 +438,8 @@ public class CkbRuntimeConfig {
         out += " service.readOnlyPublic=${if (this.serviceReadOnlyPublic) { "true" } else { "false" }}"
         out += " service.defaultBudget=${this.serviceDefaultBudget}"
         out += " service.maxBudget=${this.serviceMaxBudget}"
+        out += " scheduler.enabled=${if (this.schedulerEnabled) { "true" } else { "false" }}"
+        out += " scheduler.loopIntervalMillis=${this.schedulerLoopIntervalMillis}"
         out += " firstInit.enabled=${if (this.firstInitEnabled) { "true" } else { "false" }}"
         out += " firstInit.docsRoot=${if (this.firstInitDocsRoot == "") { "absent" } else { "present" }}"
         out += " firstInit.toolDocsRoot=${if (this.firstInitToolDocsRoot == "") { "absent" } else { "present" }}"
@@ -2866,6 +2870,16 @@ public class FileKnowledgeStore {
         this.writeLines("derived/${safeName(task.taskId)}.ckb", "${task.taskId}|${task.kind}|${task.repo}|${task.status}|${escapeField(task.derivedKnowledge)}\n")
     }
 
+    public func saveRepositoryListRefresh(result: CkbAdminOperationResult): Unit {
+        var text = "repo=${escapeField(result.repo)}\n"
+        text += "ref=${escapeField(result.ref)}\n"
+        text += "activeRepoListVersion=${escapeField(result.activeRepoListVersion)}\n"
+        text += "candidateRepoListVersion=${escapeField(result.candidateRepoListVersion)}\n"
+        text += "repoCount=${result.repoCount}\n"
+        text += "paths=${escapeField(joinStrings(result.matchedPaths, ","))}\n"
+        this.writeLines("metadata/repo-list.ckb", text)
+    }
+
     public func saveCache(key: String, value: String): Unit {
         this.writeLines("cache/${safeName(key)}.txt", value)
     }
@@ -3632,10 +3646,25 @@ public class CkbSchedulerTaskRunner <: SchedulerTaskRunner {
             result.durationMillis = profile.timeBudgetMillis / 10
             return result
         }
+        if (profile.profile == "cangjie_freshness_probe") {
+            let freshness = probeCangjieCorpusFreshness(defaultCangjieVersionManifest(), this.sourceRunner)
+            let status = this.kb.status()
+            result.ok = freshness.ok && !freshness.degraded
+            result.status = if (result.ok) { "freshness_probe_ok" } else { "freshness_probe_degraded" }
+            result.cursor = stableSummaryHash("${freshness.targetVersion}:${freshness.sources.size}:${freshness.degraded}")
+            result.since = "${this.kb.scheduler.clock.nowMinutes}"
+            result.activeVersion = status.activeKnowledgeVersion
+            result.candidateVersion = status.candidateKnowledgeVersion
+            result.requestCount = freshness.sources.size
+            result.durationMillis = profile.timeBudgetMillis / 10
+            return result
+        }
         let fetch = ckbRunScheduledProfileFetches(profile, this.sourceRunner, this.config)
+        fetch.runId = "${this.kb.scheduler.clock.nowMinutes}"
+        let ingest = ingestScheduledProfileSources(this.kb, this.store, profile, fetch)
         let status = this.kb.status()
-        result.ok = fetch.ok
-        result.status = if (fetch.ok) { "profile_ok" } else { "profile_degraded" }
+        result.ok = fetch.ok && ingest.ok
+        result.status = if (result.ok) { ingest.status } else { if (ingest.status != "") { ingest.status } else { "profile_degraded" } }
         result.cursor = "cursor-${status.activeKnowledgeVersion}"
         result.since = "${this.kb.scheduler.clock.nowMinutes}"
         result.activeVersion = status.activeKnowledgeVersion
@@ -3850,15 +3879,40 @@ public class CkbCommandLoopService {
 
     public func runSync(body!: String = ""): CkbAdminOperationResult {
         let result = CkbAdminOperationResult()
+        let mode = ckbServiceJsonStringField(body, "mode").trimAscii()
+        let sourceSet = ckbServiceJsonStringField(body, "sourceSet").trimAscii()
+        if (sourceSet != "" && !ckbServiceCangjieSourceSetAllowed(sourceSet)) {
+            return ckbRejectedAdminResult(result, "unsupported_source_set")
+        }
+        if (mode == "rollback") {
+            let status = this.kb.status()
+            result.status = "ok"
+            result.degraded = false
+            result.diagnostic = "rollback_active_preserved"
+            result.activeKnowledgeVersion = status.activeKnowledgeVersion
+            result.candidateKnowledgeVersion = status.candidateKnowledgeVersion
+            result.updatedDataKinds.add("rollback")
+            return result
+        }
         let options = LiveSyncOptions()
-        options.apply = true
-        options.maxItems = 3
+        options.apply = mode != "dry-run"
+        options.dryRun = !options.apply
+        options.maxItems = ckbServiceJsonIntField(body, "maxItems", 3)
+        options.maxRepos = ckbServiceJsonIntField(body, "maxRepos", -1)
+        options.maxFilesPerRepo = ckbServiceJsonIntField(body, "maxFilesPerRepo", -1)
+        options.since = ckbServiceJsonStringField(body, "since")
         let text = ckbSyncLive(this.kb, this.config, options, runner: this.sourceRunner, store: this.store)
-        result.status = if (text.contains("summary") && !text.contains("usage error")) { "ok" } else { "degraded" }
+        result.status = if (text.contains("summary") && !text.contains("usage error")) { if (options.apply) { "candidate_sync_ok" } else { "delta_sync_dry_run_ok" } } else { "degraded" }
         result.degraded = result.status != "ok"
+        if (result.status == "candidate_sync_ok" || result.status == "delta_sync_dry_run_ok") {
+            result.degraded = false
+        }
         result.diagnostic = text
-        result.requestCount = 1
-        result.updatedDataKinds.add("live_sync")
+        result.requestCount = options.maxItems
+        result.updatedDataKinds.add(if (sourceSet == "") { "live_sync" } else { "live_sync_${sourceSet}" })
+        let status = this.kb.status()
+        result.activeKnowledgeVersion = status.activeKnowledgeVersion
+        result.candidateKnowledgeVersion = status.candidateKnowledgeVersion
         result
     }
 
@@ -3888,7 +3942,12 @@ public class CkbCommandLoopService {
         this.acceptedEventDedupeKeys.add(result.dedupeKey)
         this.acceptedEventCount += 1
         result.status = "accepted"
-        result.diagnostic = "queued_in_memory"
+        let syncBody = ckbRepositoryEventSyncBody(event, result.scheduledProfiles)
+        let sync = this.runRepositorySync(body: syncBody)
+        if (result.scheduledProfiles.contains("repo_list_refresh")) {
+            _ = this.runRepoListRefresh(body: ckbRepositoryEventRepoListBody(event))
+        }
+        result.diagnostic = if (sync.status == "ok" || sync.status == "candidate_promoted") { "immediate_sync_executed" } else { "scheduler_job_created:${sync.diagnostic}" }
         result
     }
 
@@ -3916,14 +3975,19 @@ public class CkbCommandLoopService {
             }
             result.matchedPaths.add(path)
         }
-        result.status = "ok"
-        result.degraded = false
-        result.diagnostic = "repository_sync_scheduled"
         if (result.profile == "repo_source_and_items") {
             result.updatedDataKinds.add("repo_source")
-            result.requestCount = if (result.matchedPaths.size > 0) { result.matchedPaths.size + 3 } else { 4 }
+            let sync = ckbRunRepositoryChangedSourceSync(this.kb, this.store, this.sourceRunner, this.config, result.repo, result.ref, result.matchedPaths)
+            result.requestCount = sync.requestCount
+            result.truncated = sync.truncated
+            result.status = if (sync.ok) { "candidate_promoted" } else { sync.status }
+            result.degraded = !sync.ok
+            result.diagnostic = sync.status
         } else {
             result.requestCount = 3
+            result.status = "ok"
+            result.degraded = false
+            result.diagnostic = "repository_items_delta_scheduled"
         }
         result.updatedDataKinds.add("issues")
         result.updatedDataKinds.add("pull_requests")
@@ -3964,6 +4028,7 @@ public class CkbCommandLoopService {
         let version = "repo-list-${stableSummaryHash(joinStrings(result.matchedPaths, ","))}"
         result.activeRepoListVersion = version
         result.candidateRepoListVersion = "${version}-candidate"
+        this.store.saveRepositoryListRefresh(result)
         result
     }
 
@@ -3973,6 +4038,7 @@ public class CkbCommandLoopService {
     }
 
     public func runScheduler(limit: Int64): SchedulerExecutorResult {
+        this.advanceSchedulerClockForServiceTick()
         let executor = SchedulerExecutor(this.kb.scheduler, CkbSchedulerTaskRunner(this.kb, this.config, this.store, sourceRunner: this.sourceRunner))
         let result = executor.runDue(limit: limit)
         this.store.saveScheduler(this.kb.scheduler.entries)
@@ -3993,10 +4059,19 @@ public class CkbCommandLoopService {
         if (result.failed > 0) {
             return result
         }
+        this.advanceSchedulerClockForServiceTick()
         let executor = SchedulerExecutor(this.kb.scheduler, CkbSchedulerTaskRunner(this.kb, this.config, this.store, sourceRunner: this.sourceRunner))
         let ran = executor.runTaskNames(taskNames, force: force)
         this.store.saveScheduler(this.kb.scheduler.entries)
         ran
+    }
+
+    public func markSchedulerDisabled(): Unit {
+        for (entry in this.kb.scheduler.entries) {
+            entry.lastStatus = "scheduler_disabled"
+            entry.degraded = true
+        }
+        this.store.saveScheduler(this.kb.scheduler.entries)
     }
 
     public func rebuildCountForTest(): Int64 {
@@ -4044,6 +4119,22 @@ public class CkbCommandLoopService {
         this.kb = newKnowledgeBaseFromStoreWithRuntime(this.store, this.config).kb
     }
 
+    private func advanceSchedulerClockForServiceTick(): Unit {
+        var last: Int64 = this.kb.scheduler.clock.nowMinutes
+        for (entry in this.kb.scheduler.entries) {
+            if (entry.lastSuccessAt > last) {
+                last = entry.lastSuccessAt
+            }
+            if (entry.lastFailureAt > last) {
+                last = entry.lastFailureAt
+            }
+        }
+        if (this.kb.scheduler.clock.nowMinutes < last) {
+            this.kb.scheduler.clock.nowMinutes = last
+        }
+        this.kb.scheduler.clock.advance(1)
+    }
+
     private func health(): String {
         let status = this.kb.status()
         "health ok=true protocol=ckb-stdio-v1 activeKnowledgeVersion=${status.activeKnowledgeVersion} activeStateSource=${status.activeStateSource} restoreDiagnostic=${status.restoreDiagnostic} vectorState=${status.storage.vectorState} graphState=${status.storage.graphState}\n"
@@ -4082,55 +4173,292 @@ private func ckbRepositoryChangedProfile(event: GitCodeRepositoryChangedEvent): 
 
 private class CkbScheduledProfileFetchResult {
     var ok: Bool = true
+    var status: String = "profile_ok"
     var requestCount: Int64 = 0
+    var fetchedCount: Int64 = 0
+    var failedCount: Int64 = 0
     var truncated: Bool = false
+    var runId: String = ""
+    var records: ArrayList<CkbScheduledSourceRecord> = ArrayList<CkbScheduledSourceRecord>()
+
+    init() {}
+}
+
+private class CkbScheduledSourceRecord {
+    var sourceId: String = ""
+    var sourceType: String = SourceTypes.DOC
+    var sourceFamily: String = ""
+    var sourceSet: String = ""
+    var title: String = ""
+    var request: SourceFetchRequest = SourceFetchRequest()
+    var fetch: SourceFetchResult = SourceFetchResult()
+
+    init() {}
+}
+
+private class CkbScheduledProfileIngestResult {
+    var ok: Bool = true
+    var status: String = "profile_ok"
+    var candidateVersion: String = ""
+    var activeVersion: String = ""
+    var validationStatus: String = "not_run"
 
     init() {}
 }
 
 private func ckbRunScheduledProfileFetches(profile: CkbScheduleTaskProfile, runner: SourceFetchRunner, config: CkbRuntimeConfig): CkbScheduledProfileFetchResult {
+    fetchScheduledProfileSources(profile, runner, config)
+}
+
+private func fetchScheduledProfileSources(profile: CkbScheduleTaskProfile, runner: SourceFetchRunner, config: CkbRuntimeConfig): CkbScheduledProfileFetchResult {
     let result = CkbScheduledProfileFetchResult()
     let builder = SourceRequestBuilder(gitCodeApiRoot: config.gitCodeBaseUrl)
     if (profile.profile == "community_repo_discovery") {
-        result.ok = ckbFetchAndCount(runner, builder.gitCodeOrgRepos("cangjie"), result) && result.ok
-        result.ok = ckbFetchAndCount(runner, builder.gitCodeOrgRepos("cangjie-sig"), result) && result.ok
-        result.ok = ckbFetchAndCount(runner, builder.gitCodeOrgRepos("cangjie-tpc"), result) && result.ok
+        ckbFetchScheduledSource(runner, builder.gitCodeOrgRepos("cangjie"), profile, result)
+        ckbFetchScheduledSource(runner, builder.gitCodeOrgRepos("cangjie-sig"), profile, result)
+        ckbFetchScheduledSource(runner, builder.gitCodeOrgRepos("cangjie-tpc"), profile, result)
     } else if (profile.profile == "docs_probe") {
-        result.ok = ckbFetchAndCount(runner, builder.docs("https://docs.cangjie-lang.cn/docs/1.0.0/"), result) && result.ok
+        ckbFetchScheduledSource(runner, builder.docs("https://docs.cangjie-lang.cn/docs/1.0.0/"), profile, result)
     } else if (profile.profile == "website_probe" || profile.profile == "website_full") {
-        result.ok = ckbFetchAndCount(runner, builder.website("https://cangjie-lang.cn/"), result) && result.ok
-        result.ok = ckbFetchAndCount(runner, builder.website("https://cangjie-lang.cn/docs"), result) && result.ok
-        result.ok = ckbFetchAndCount(runner, builder.website("https://cangjie-lang.cn/en/docs"), result) && result.ok
+        ckbFetchScheduledSource(runner, builder.website("https://cangjie-lang.cn/"), profile, result)
+        ckbFetchScheduledSource(runner, builder.website("https://cangjie-lang.cn/docs"), profile, result)
+        ckbFetchScheduledSource(runner, builder.website("https://cangjie-lang.cn/en/docs"), profile, result)
     } else if (profile.profile == "web_candidate_discovery" || profile.profile == "web_candidate_recrawl") {
-        result.ok = ckbFetchAndCount(runner, builder.webCandidate("https://cangjie-lang.cn/community"), result) && result.ok
-        result.ok = ckbFetchAndCount(runner, builder.webCandidate("https://cangjie-lang.cn/blog"), result) && result.ok
+        ckbFetchScheduledSource(runner, builder.webCandidate("https://cangjie-lang.cn/community"), profile, result)
+        ckbFetchScheduledSource(runner, builder.webCandidate("https://cangjie-lang.cn/blog"), profile, result)
     } else if (profile.profile == "cangjie_freshness_probe" || profile.profile == "cangjie_docs_full_sync" || profile.profile == "cangjie_release_full_sync") {
-        result.ok = ckbFetchAndCount(runner, builder.docs("https://docs.cangjie-lang.cn/docs/1.0.0/"), result) && result.ok
-        result.ok = ckbFetchAndCount(runner, builder.gitCodeRepo("Cangjie/cangjie_docs", ref: "release-1.0.0"), result) && result.ok
-        result.ok = ckbFetchAndCount(runner, builder.gitCodeRepo("Cangjie/cangjie_runtime", ref: "release-1.0.0"), result) && result.ok
-        result.ok = ckbFetchAndCount(runner, builder.gitCodeRepo("Cangjie/cangjie_stdx", ref: "release-1.0.0"), result) && result.ok
-        result.ok = ckbFetchAndCount(runner, builder.gitCodeRepo("Cangjie/cangjie_tools", ref: "release-1.0.0"), result) && result.ok
+        ckbFetchScheduledSource(runner, builder.docs("https://docs.cangjie-lang.cn/docs/1.0.0/"), profile, result)
+        ckbFetchScheduledSource(runner, builder.gitCodeRepo("Cangjie/cangjie_docs", ref: "release-1.0.0"), profile, result)
+        ckbFetchScheduledSource(runner, builder.gitCodeRepo("Cangjie/cangjie_runtime", ref: "release-1.0.0"), profile, result)
+        ckbFetchScheduledSource(runner, builder.gitCodeRepo("Cangjie/cangjie_stdx", ref: "release-1.0.0"), profile, result)
+        ckbFetchScheduledSource(runner, builder.gitCodeRepo("Cangjie/cangjie_tools", ref: "release-1.0.0"), profile, result)
     } else if (profile.profile == "cangjie_source_event_sync") {
-        result.ok = ckbFetchAndCount(runner, builder.gitCodeRepo("Cangjie/cangjie_stdx", ref: "release-1.0.0"), result) && result.ok
-        result.ok = ckbFetchAndCount(runner, builder.gitCodeRepo("Cangjie/cangjie_tools", ref: "release-1.0.0"), result) && result.ok
+        ckbFetchScheduledSource(runner, builder.gitCodeRepo("Cangjie/cangjie_runtime", ref: "release-1.0.0"), profile, result)
+        ckbFetchScheduledSource(runner, builder.gitCodeRepo("Cangjie/cangjie_stdx", ref: "release-1.0.0"), profile, result)
+        ckbFetchScheduledSource(runner, builder.gitCodeRepo("Cangjie/cangjie_tools", ref: "release-1.0.0"), profile, result)
     } else if (profile.profile == "cangjie_version_branch_refresh") {
-        result.ok = ckbFetchAndCount(runner, builder.gitCodeRepo("Cangjie/cangjie_docs", ref: "release-1.0.0"), result) && result.ok
-        result.ok = ckbFetchAndCount(runner, builder.gitCodeRepo("Cangjie/cangjie_runtime", ref: "release-1.0.0"), result) && result.ok
-        result.ok = ckbFetchAndCount(runner, builder.gitCodeRepo("Cangjie/cangjie_stdx", ref: "release-1.0.0"), result) && result.ok
-        result.ok = ckbFetchAndCount(runner, builder.gitCodeRepo("Cangjie/cangjie_tools", ref: "release-1.0.0"), result) && result.ok
+        ckbFetchScheduledSource(runner, builder.gitCodeRepo("Cangjie/cangjie_docs", ref: "release-1.0.0"), profile, result)
+        ckbFetchScheduledSource(runner, builder.gitCodeRepo("Cangjie/cangjie_runtime", ref: "release-1.0.0"), profile, result)
+        ckbFetchScheduledSource(runner, builder.gitCodeRepo("Cangjie/cangjie_stdx", ref: "release-1.0.0"), profile, result)
+        ckbFetchScheduledSource(runner, builder.gitCodeRepo("Cangjie/cangjie_tools", ref: "release-1.0.0"), profile, result)
     } else if (profile.profile == "cangjie_benchmark_gap_curation") {
         result.ok = true
+    }
+    if (!result.ok) {
+        result.status = "fetch_degraded"
     }
     result
 }
 
-private func ckbFetchAndCount(runner: SourceFetchRunner, request: SourceFetchRequest, result: CkbScheduledProfileFetchResult): Bool {
-    let fetch = runner.fetch(request)
+private func ckbFetchScheduledSource(runner: SourceFetchRunner, request: SourceFetchRequest, profile: CkbScheduleTaskProfile, result: CkbScheduledProfileFetchResult): Unit {
+    let fetch = SourceResponseNormalizer().normalize(request, runner.fetch(request))
     result.requestCount += 1
     if (fetch.truncated) {
         result.truncated = true
     }
-    fetch.ok
+    if (fetch.ok) {
+        result.fetchedCount += 1
+    } else {
+        result.ok = false
+        result.failedCount += 1
+    }
+    let record = CkbScheduledSourceRecord()
+    record.request = request
+    record.fetch = fetch
+    record.sourceType = ckbScheduledSourceType(request)
+    record.sourceFamily = ckbScheduledSourceFamily(request, profile)
+    record.sourceSet = ckbScheduledSourceSet(request, profile)
+    record.title = ckbScheduledSourceTitle(request, profile)
+    record.sourceId = "scheduled-${profile.profile}-${stableSummaryHash("${request.kind}:${request.url}:${request.repo}:${request.ref}:${fetch.bodyHash}")}"
+    result.records.add(record)
+}
+
+private func ingestScheduledProfileSources(kb: KnowledgeBase, store: FileKnowledgeStore, profile: CkbScheduleTaskProfile, fetch: CkbScheduledProfileFetchResult): CkbScheduledProfileIngestResult {
+    let result = CkbScheduledProfileIngestResult()
+    result.status = if (fetch.ok) { "profile_ok" } else { fetch.status }
+    if (profile.profile == "cangjie_benchmark_gap_curation") {
+        return ingestScheduledBenchmarkGapCuration(kb, store, profile)
+    }
+    if (profile.candidateMode == "" || profile.candidateMode == "none" || profile.candidateMode == "probe_only") {
+        result.ok = fetch.ok
+        return result
+    }
+    if (!fetch.ok) {
+        result.ok = false
+        result.status = "fetch_degraded_candidate_not_promoted"
+        return result
+    }
+    for (record in fetch.records) {
+        if (record.fetch.ok) {
+            _ = kb.ingestFetchResult(record.sourceId, record.sourceType, record.fetch, record.title, TrustLevels.OFFICIAL, ReviewStates.TRUSTED)
+        }
+    }
+    kb.normalize()
+    let candidateVersion = ckbScheduledCandidateVersion(profile, fetch)
+    let promotion = cangjiePromoteCandidateAfterValidationWithVersion(kb, store, candidateVersion)
+    result.candidateVersion = promotion.candidateVersion
+    result.activeVersion = promotion.activeVersion
+    result.validationStatus = promotion.validation.status
+    result.ok = promotion.ok
+    result.status = if (promotion.ok) { "candidate_validated_promoted" } else { "candidate_validation_failed" }
+    result
+}
+
+private func ingestScheduledBenchmarkGapCuration(kb: KnowledgeBase, store: FileKnowledgeStore, profile: CkbScheduleTaskProfile): CkbScheduledProfileIngestResult {
+    let result = CkbScheduledProfileIngestResult()
+    let inputs = ArrayList<CangjieBenchmarkGapInput>()
+    let input = CangjieBenchmarkGapInput()
+    input.caseId = "scheduled-visible-gap"
+    input.taskText = "Use ArrayList.add with official Cangjie collection knowledge."
+    input.visibleTestExcerpt = "assert solve([1, 2]) == 3"
+    input.compilerOutput = "ArrayList import required"
+    input.missingKnowledge = "ArrayList.add"
+    input.officialCitation = "https://docs.cangjie-lang.cn/docs/1.0.0/libs/std/collection"
+    inputs.add(input)
+    let curated = curateBenchmarkGapRecords(inputs)
+    if (!curated.ok) {
+        result.ok = false
+        result.status = curated.diagnostic
+        return result
+    }
+    for (record in curated.records) {
+        let fetch = SourceFetchResult()
+        fetch.ok = true
+        fetch.status = "ok"
+        fetch.statusCode = 200
+        fetch.body = record.chunk
+        fetch.bodyHash = stableSummaryHash(record.chunk)
+        fetch.sourceUrl = record.citation
+        fetch.path = record.metadata.path
+        fetch.ref = "visible-benchmark"
+        _ = kb.ingestFetchResult(record.sourceId, SourceTypes.DOC, fetch, record.title, TrustLevels.OFFICIAL, ReviewStates.REVIEWED)
+    }
+    kb.normalize()
+    let fetch = CkbScheduledProfileFetchResult()
+    fetch.requestCount = curated.accepted
+    fetch.fetchedCount = curated.accepted
+    let candidateVersion = ckbScheduledCandidateVersion(profile, fetch)
+    let promotion = cangjiePromoteCandidateAfterValidationWithVersion(kb, store, candidateVersion)
+    result.candidateVersion = promotion.candidateVersion
+    result.activeVersion = promotion.activeVersion
+    result.validationStatus = promotion.validation.status
+    result.ok = promotion.ok
+    result.status = if (promotion.ok) { "benchmark_gap_candidate_promoted" } else { "candidate_validation_failed" }
+    result
+}
+
+private func ckbScheduledSourceType(request: SourceFetchRequest): String {
+    if (request.kind == SourceKinds.CANGJIE_DOCS) {
+        return SourceTypes.DOC
+    }
+    if (request.kind == SourceKinds.CANGJIE_WEBSITE) {
+        return SourceTypes.WEBSITE
+    }
+    if (request.kind == SourceKinds.WEB_CANDIDATE) {
+        return SourceTypes.WEB_CANDIDATE
+    }
+    if (request.kind == SourceKinds.GITCODE_ORG || request.kind == SourceKinds.GITCODE_REPO || request.kind == SourceKinds.GITCODE_TREE || request.kind == SourceKinds.GITCODE_SOURCE) {
+        return SourceTypes.REPO
+    }
+    SourceTypes.COMMUNITY
+}
+
+private func ckbScheduledSourceFamily(request: SourceFetchRequest, profile: CkbScheduleTaskProfile): String {
+    if (request.repo.contains("cangjie_docs") || request.kind == SourceKinds.CANGJIE_DOCS) { return "docs" }
+    if (request.repo.contains("cangjie_runtime")) { return "stdlib" }
+    if (request.repo.contains("cangjie_stdx")) { return "stdx" }
+    if (request.repo.contains("cangjie_tools")) { return "tools" }
+    if (profile.profile.contains("benchmark")) { return "eval-support" }
+    profile.profile
+}
+
+private func ckbScheduledSourceSet(request: SourceFetchRequest, profile: CkbScheduleTaskProfile): String {
+    if (request.repo.contains("cangjie_docs") || request.kind == SourceKinds.CANGJIE_DOCS) { return CangjieSourceSets.DOCS }
+    if (request.repo.contains("cangjie_runtime")) { return CangjieSourceSets.STD }
+    if (request.repo.contains("cangjie_stdx")) { return CangjieSourceSets.STDX }
+    if (request.repo.contains("cangjie_tools")) { return CangjieSourceSets.TOOLS }
+    if (profile.profile.contains("benchmark")) { return CangjieSourceSets.EVAL_SUPPORT }
+    ""
+}
+
+private func ckbScheduledSourceTitle(request: SourceFetchRequest, profile: CkbScheduleTaskProfile): String {
+    if (request.repo != "") {
+        return "Scheduled ${profile.profile}: ${request.repo}"
+    }
+    "Scheduled ${profile.profile}: ${request.url}"
+}
+
+private func ckbScheduledCandidateVersion(profile: CkbScheduleTaskProfile, fetch: CkbScheduledProfileFetchResult): String {
+    let seed = StringBuilder()
+    seed.append(profile.profile)
+    seed.append("|")
+    seed.append("${fetch.requestCount}")
+    seed.append("|")
+    seed.append(fetch.runId)
+    seed.append("|")
+    for (record in fetch.records) {
+        seed.append(record.sourceId)
+        seed.append(":")
+        seed.append(record.fetch.bodyHash)
+        seed.append("|")
+    }
+    "ckb-scheduled-${stableSummaryHash(seed.toString())}-candidate"
+}
+
+private func ckbServiceCangjieSourceSetAllowed(sourceSet: String): Bool {
+    sourceSet == CangjieSourceSets.ALL ||
+        sourceSet == CangjieSourceSets.DOCS ||
+        sourceSet == CangjieSourceSets.STD ||
+        sourceSet == CangjieSourceSets.STDX ||
+        sourceSet == CangjieSourceSets.TOOLS ||
+        sourceSet == CangjieSourceSets.EVAL_SUPPORT
+}
+
+private func ckbRepositoryEventSyncBody(event: GitCodeRepositoryChangedEvent, profiles: ArrayList<String>): String {
+    let profile = if (profiles.contains("repo_source_and_items")) { "repo_source_and_items" } else { "items" }
+    "{\"repo\":\"${ckbServiceJsonQuote(event.repo)}\",\"ref\":\"${ckbServiceJsonQuote(if (event.ref == "") { "main" } else { event.ref })}\",\"profile\":\"${profile}\",\"prNumber\":${event.prNumber},\"changedFiles\":${ckbServiceStringArrayJson(event.changedFiles)}}"
+}
+
+private func ckbRepositoryEventRepoListBody(event: GitCodeRepositoryChangedEvent): String {
+    let paths = ArrayList<String>()
+    for (path in event.changedFiles) {
+        if (ckbRepoListTriggerPath(path.toAsciiLower())) {
+            paths.add(path)
+        }
+    }
+    "{\"repo\":\"${ckbServiceJsonQuote(event.repo)}\",\"ref\":\"${ckbServiceJsonQuote(if (event.ref == "") { "main" } else { event.ref })}\",\"prNumber\":${event.prNumber},\"paths\":${ckbServiceStringArrayJson(paths)}}"
+}
+
+private func ckbRunRepositoryChangedSourceSync(kb: KnowledgeBase, store: FileKnowledgeStore, runner: SourceFetchRunner, config: CkbRuntimeConfig, repo: String, ref: String, changedFiles: ArrayList<String>): CkbScheduledProfileFetchResult {
+    let profile = ckbSyncProfileForScheduleTask("cangjie_source_event_sync")
+    let result = CkbScheduledProfileFetchResult()
+    let builder = SourceRequestBuilder(gitCodeApiRoot: config.gitCodeBaseUrl)
+    if (changedFiles.size == 0) {
+        ckbFetchScheduledSource(runner, builder.gitCodeRepo(repo, ref: ref), profile, result)
+    } else {
+        for (path in changedFiles) {
+            ckbFetchScheduledSource(runner, builder.gitCodeSource(repo, ref, path), profile, result)
+        }
+    }
+    let ingest = ingestScheduledProfileSources(kb, store, profile, result)
+    result.ok = result.ok && ingest.ok
+    result.status = if (result.ok) { ingest.status } else { if (ingest.status != "") { ingest.status } else { result.status } }
+    result
+}
+
+private func ckbServiceStringArrayJson(values: ArrayList<String>): String {
+    var out = "["
+    for (i in 0..values.size) {
+        if (i > 0) {
+            out += ","
+        }
+        out += "\"${ckbServiceJsonQuote(values[i])}\""
+    }
+    out + "]"
+}
+
+private func ckbServiceJsonQuote(raw: String): String {
+    raw.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n").replace("\r", "\\r")
 }
 
 private func ckbRejectedAdminResult(result: CkbAdminOperationResult, diagnostic: String): CkbAdminOperationResult {
@@ -5089,6 +5417,10 @@ private func configApply(config: CkbRuntimeConfig, key: String, value: String): 
         config.serviceDefaultBudget = try { Int64.parse(value) } catch (_: Exception) { config.serviceDefaultBudget }
     } else if (key == "service.maxBudget") {
         config.serviceMaxBudget = try { Int64.parse(value) } catch (_: Exception) { config.serviceMaxBudget }
+    } else if (key == "scheduler.enabled") {
+        config.schedulerEnabled = parseBool(value)
+    } else if (key == "scheduler.loopIntervalMillis") {
+        config.schedulerLoopIntervalMillis = try { Int64.parse(value) } catch (_: Exception) { config.schedulerLoopIntervalMillis }
     } else if (key == "firstInit.enabled") {
         config.firstInitEnabled = parseBool(value)
     } else if (key == "firstInit.docsRoot") {
