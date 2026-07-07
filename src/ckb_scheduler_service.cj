@@ -28,7 +28,8 @@ public func runCkbSchedulerTick(service: CkbCommandLoopService, limit: Int64): S
 public func runCkbSchedulerTickWithLifecycleMetadata(service: CkbCommandLoopService, limit: Int64, tickKind: String, intervalMillis!: Int64 = 0): SchedulerExecutorResult {
     let effectiveLimit = if (limit <= 0) { 1 } else { limit }
     let result = runCkbSchedulerTick(service, effectiveLimit)
-    service.saveSchedulerLoopMetadata("running", true, intervalMillis, tickKind, effectiveLimit, result.ran, result.taskNames, if (result.failed == 0) { "ok" } else { "scheduler_tick_failed" })
+    let ok = result.failed == 0 && result.degraded == 0
+    service.saveSchedulerLoopMetadata(if (ok) { "running" } else { "degraded" }, true, intervalMillis, tickKind, effectiveLimit, result.ran, result.taskNames, if (ok) { "ok" } else { "scheduler_tick_degraded" })
     result
 }
 
@@ -80,7 +81,8 @@ private func runCkbSchedulerStartupTick(service: CkbCommandLoopService, interval
         let taskNames = ArrayList<String>()
         taskNames.add("community_repo_discovery_30d")
         tick = service.runSchedulerTasks(taskNames, true)
-        service.saveSchedulerLoopMetadata("running", true, intervalMillis, "startup_forced_probe", 1, tick.ran, tick.taskNames, if (tick.failed == 0) { "ok" } else { "scheduler_startup_forced_probe_failed" })
+        let ok = tick.failed == 0 && tick.degraded == 0
+        service.saveSchedulerLoopMetadata(if (ok) { "running" } else { "degraded" }, true, intervalMillis, "startup_forced_probe", 1, tick.ran, tick.taskNames, if (ok) { "ok" } else { "scheduler_startup_forced_probe_degraded" })
     }
     tick
 }

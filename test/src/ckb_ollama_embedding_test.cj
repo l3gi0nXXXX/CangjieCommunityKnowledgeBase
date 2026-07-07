@@ -139,6 +139,34 @@ public class CkbOllamaEmbeddingTest {
         @Expect(timeout.status.state, EmbeddingProviderState.DOWN)
         @Expect(timeout.status.degradedReason, "ollama_timeout")
     }
+
+    @TestCase
+    public func ruP1RuntimeEmbeddingAndVectorConfigNormalizeInvalidTimeoutBatchAndRetry(): Unit {
+        let config = CkbRuntimeConfig()
+        config.embeddingProvider = "ollama"
+        config.embeddingModel = "bge-m3:latest"
+        config.embeddingEndpoint = "http://127.0.0.1:11434/api/embed"
+        config.embeddingDimensions = 1024
+        config.embeddingBatchSize = 0
+        config.embeddingTimeoutMillis = 0
+        config.embeddingRetryCount = -1
+        config.vectorBackend = "qdrant"
+        config.vectorEndpoint = "http://127.0.0.1:6333"
+        config.vectorDimensions = 1024
+        config.vectorTimeoutMillis = 0
+        config.vectorRetryCount = -1
+
+        let embedding = embeddingConfigFromRuntime(config)
+        let vector = vectorStoreConfigFromRuntime(config)
+        let readiness = ckbRuntimeVectorReadiness(config)
+
+        @Expect(embedding.batchSize, 16)
+        @Expect(embedding.timeoutMillis, 10000)
+        @Expect(embedding.retryCount, 0)
+        @Expect(vector.timeoutMillis, 10000)
+        @Expect(vector.retryCount, 0)
+        @Expect(readiness.ready, true)
+    }
 }
 
 private func ollamaConfig(): EmbeddingConfig {

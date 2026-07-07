@@ -200,7 +200,8 @@ public class OllamaEmbeddingProvider <: EmbeddingProvider {
     private func executeWithRetry(request: OllamaEmbeddingHttpRequest): OllamaEmbeddingHttpResponse {
         var attempt: Int64 = 0
         var last = OllamaEmbeddingHttpResponse()
-        while (attempt <= request.retryCount) {
+        let retryCount = if (request.retryCount < 0) { 0 } else { request.retryCount }
+        while (attempt <= retryCount) {
             attempt += 1
             try {
                 last = this.executor.execute(request)
@@ -210,7 +211,10 @@ public class OllamaEmbeddingProvider <: EmbeddingProvider {
                 last.transportErrorClass = "exception"
                 last.transportDiagnostic = "executor_exception"
             }
-            if (last.statusCode != 429 && last.statusCode < 500 && last.status != "timeout") {
+            if (last.status == "timeout" || last.transportErrorClass == "timeout") {
+                break
+            }
+            if (last.statusCode != 429 && last.statusCode < 500) {
                 break
             }
         }

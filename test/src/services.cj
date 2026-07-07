@@ -2825,6 +2825,123 @@ private func lastColonIndex(value: String): Int64 {
     -1
 }
 
+public class CkbRoutineRuntimePreflightResult {
+    public var ok: Bool = true
+    public var requiredHeapMiB: Int64 = 4096
+    public var actualHeapMiB: Int64 = 0
+    public var storeExists: Bool = false
+    public var vectorReadiness: String = "unknown"
+    public var embeddingReadiness: String = "unknown"
+    public var diagnostics: ArrayList<String> = ArrayList<String>()
+
+    public init() {}
+}
+
+public class CkbRuntimeVectorReadiness {
+    public var ready: Bool = true
+    public var state: String = "ready"
+    public var reason: String = ""
+    public var embeddingDimensions: Int64 = 0
+    public var vectorDimensions: Int64 = 0
+
+    public init() {}
+}
+
+public func ckbRoutineRuntimePreflightFromEnv(config: CkbRuntimeConfig, storePath: String): CkbRoutineRuntimePreflightResult {
+    let heap = if (let Some(value) <- getVariable("cjHeapSize")) { value } else { "" }
+    let dyld = if (let Some(value) <- getVariable("DYLD_LIBRARY_PATH")) { value } else { "" }
+    ckbRoutineRuntimePreflight(config, storePath, heap, dyld)
+}
+
+public func ckbRoutineRuntimePreflight(config: CkbRuntimeConfig, storePath: String, cjHeapSize: String, dyldLibraryPath: String): CkbRoutineRuntimePreflightResult {
+    let result = CkbRoutineRuntimePreflightResult()
+    result.storeExists = exists(Path(storePath))
+    result.actualHeapMiB = ckbParseHeapMiB(cjHeapSize)
+    if (result.actualHeapMiB <= 0) {
+        result.ok = false
+        result.diagnostics.add("missing_cjHeapSize")
+    } else if (result.actualHeapMiB < result.requiredHeapMiB) {
+        result.ok = false
+        result.diagnostics.add("heap_too_small:${result.actualHeapMiB}MiB<${result.requiredHeapMiB}MiB")
+    }
+    if (!result.storeExists) {
+        result.ok = false
+        result.diagnostics.add("store_not_found")
+    }
+    if (dyldLibraryPath.trimAscii() == "") {
+        result.diagnostics.add("dyld_library_path_not_set")
+    }
+    let vector = ckbRuntimeVectorReadiness(config)
+    result.vectorReadiness = vector.state
+    result.embeddingReadiness = if (config.embeddingProvider == "" || config.embeddingProvider == "none") { "missing" } else { "configured" }
+    if (!vector.ready) {
+        result.ok = false
+        result.diagnostics.add(vector.reason)
+    }
+    result
+}
+
+public func renderCkbRoutineRuntimePreflightJson(result: CkbRoutineRuntimePreflightResult): String {
+    "{\"ok\":${result.ok},\"errorCode\":\"${if (result.ok) { "" } else { "ckb.routine_runtime_preflight_failed" }}\",\"requiredHeapMiB\":${result.requiredHeapMiB},\"actualHeapMiB\":${result.actualHeapMiB},\"storeExists\":${result.storeExists},\"vectorReadiness\":\"${ckbRuntimePreflightJsonEscape(result.vectorReadiness)}\",\"embeddingReadiness\":\"${ckbRuntimePreflightJsonEscape(result.embeddingReadiness)}\",\"diagnostics\":${ckbRuntimePreflightStringListJson(result.diagnostics)}}"
+}
+
+public func renderCkbRoutineRuntimePreflightText(result: CkbRoutineRuntimePreflightResult): String {
+    "routine preflight ok=${result.ok} requiredHeapMiB=${result.requiredHeapMiB} actualHeapMiB=${result.actualHeapMiB} storeExists=${result.storeExists} vectorReadiness=${result.vectorReadiness} diagnostics=${joinStrings(result.diagnostics, ",")}\n"
+}
+
+public func ckbRuntimeVectorReadiness(config: CkbRuntimeConfig): CkbRuntimeVectorReadiness {
+    let result = CkbRuntimeVectorReadiness()
+    let embedding = embeddingConfigFromRuntime(config)
+    let vector = vectorStoreConfigFromRuntime(config)
+    result.embeddingDimensions = embedding.dimensions
+    result.vectorDimensions = vector.dimensions
+    if (vector.backend == "qdrant" && embedding.dimensions > 0 && vector.dimensions > 0 && embedding.dimensions != vector.dimensions) {
+        result.ready = false
+        result.state = "degraded"
+        result.reason = "vector_dimension_mismatch:${embedding.dimensions}:${vector.dimensions}"
+    }
+    result
+}
+
+private func ckbParseHeapMiB(raw: String): Int64 {
+    let value = raw.trimAscii().toAsciiLower()
+    if (value == "") {
+        return 0
+    }
+    if (value.endsWith("gb") && value.size > 2) {
+        return ckbRuntimePreflightParseIntSafe(value[0..value.size - 2], 0) * 1024
+    }
+    if (value.endsWith("g") && value.size > 1) {
+        return ckbRuntimePreflightParseIntSafe(value[0..value.size - 1], 0) * 1024
+    }
+    if (value.endsWith("mb") && value.size > 2) {
+        return ckbRuntimePreflightParseIntSafe(value[0..value.size - 2], 0)
+    }
+    if (value.endsWith("m") && value.size > 1) {
+        return ckbRuntimePreflightParseIntSafe(value[0..value.size - 1], 0)
+    }
+    ckbRuntimePreflightParseIntSafe(value, 0)
+}
+
+private func ckbRuntimePreflightParseIntSafe(raw: String, fallback: Int64): Int64 {
+    try { Int64.parse(raw.trimAscii()) } catch (_: Exception) { fallback }
+}
+
+private func ckbRuntimePreflightStringListJson(values: ArrayList<String>): String {
+    var out = "["
+    for (i in 0..values.size) {
+        if (i > 0) {
+            out += ","
+        }
+        out += "\"${ckbRuntimePreflightJsonEscape(values[i])}\""
+    }
+    out + "]"
+}
+
+private func ckbRuntimePreflightJsonEscape(raw: String): String {
+    redactSensitive(raw).replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
+}
+
 public class FileKnowledgeStore {
     public let root: Path
 
@@ -2946,7 +3063,7 @@ public class FileKnowledgeStore {
         text += "candidateRepoListVersion=${escapeField(result.candidateRepoListVersion)}\n"
         text += "repoCount=${result.repoCount}\n"
         text += "paths=${escapeField(joinStrings(result.matchedPaths, ","))}\n"
-        this.writeLines("metadata/repo-list.ckb", text)
+        this.writeLinesAtomically("metadata/repo-list.ckb", text)
     }
 
     public func saveRepositoryEventCheckpoint(result: CkbAdminOperationResult): Unit {
@@ -2961,7 +3078,7 @@ public class FileKnowledgeStore {
         text += "matchedPaths=${escapeField(joinStrings(result.matchedPaths, ","))}\n"
         text += "activeKnowledgeVersion=${escapeField(result.activeKnowledgeVersion)}\n"
         text += "candidateKnowledgeVersion=${escapeField(result.candidateKnowledgeVersion)}\n"
-        this.writeLines("metadata/repository-event-latest.ckb", text)
+        this.writeLinesAtomically("metadata/repository-event-latest.ckb", text)
     }
 
     public func saveSchedulerLoopMetadata(loopStatus: String, schedulerEnabled: Bool, intervalMillis: Int64, tickKind: String, limit: Int64, ran: Int64, taskNames: ArrayList<String>, diagnostic: String, readinessGate!: String = "", firstTickDeferred!: Bool = false): Unit {
@@ -2982,7 +3099,7 @@ public class FileKnowledgeStore {
         text += "diagnostic=${escapeField(redactSensitive(diagnostic))}\n"
         text += "heartbeatFresh=${loopStatus == "running"}\n"
         text += "loopFailureCount=${failureCount}\n"
-        this.writeLines("metadata/scheduler-loop.ckb", text)
+        this.writeLinesAtomically("metadata/scheduler-loop.ckb", text)
     }
 
     public func loadSchedulerLoopStatus(): CkbSchedulerLoopStatus {
@@ -3046,7 +3163,7 @@ public class FileKnowledgeStore {
         for (source in report.sources) {
             text += "source|${escapeField(source.sourceSet)}|${escapeField(source.sourceFamily)}|${escapeField(source.sourceRepo)}|${escapeField(source.sourceRef)}|${escapeField(source.resolvedCommit)}|${escapeField(source.contentHash)}|${escapeField(source.crawlAt)}|${escapeField(source.indexedAt)}|${escapeField(source.staleness)}|${escapeField(source.status)}\n"
         }
-        this.writeLines("metadata/cangjie-freshness.ckb", text)
+        this.writeLinesAtomically("metadata/cangjie-freshness.ckb", text)
     }
 
     public func saveCangjieVersionManifest(manifest: CangjieVersionManifest): Unit {
@@ -3059,7 +3176,7 @@ public class FileKnowledgeStore {
         for (source in manifest.sources) {
             text += "source|${escapeField(source.targetVersion)}|${escapeField(source.sourceSet)}|${escapeField(source.sourceFamily)}|${escapeField(source.sourceRepo)}|${escapeField(source.sourceRef)}|${escapeField(source.refKind)}|${escapeField(source.resolvedCommit)}|${escapeField(source.contentHash)}|${escapeField(source.rootKind)}\n"
         }
-        this.writeLines("metadata/cangjie-version-manifest.ckb", text)
+        this.writeLinesAtomically("metadata/cangjie-version-manifest.ckb", text)
     }
 
     public func loadCangjieVersionManifest(): CangjieVersionManifest {
@@ -3301,7 +3418,7 @@ public class FileKnowledgeStore {
         for (entry in entries) {
             text += "${escapeField(entry.name)}|${entry.intervalMinutes}|${entry.nextRunAt}|${entry.lastStartedAt}|${entry.lastSuccessAt}|${entry.lastFailureAt}|${entry.failureCount}|${entry.degraded}|${escapeField(entry.lastCursor)}|${escapeField(entry.lastSince)}|${escapeField(entry.activeVersion)}|${escapeField(entry.candidateVersion)}|${escapeField(entry.lastStatus)}|${entry.lastDurationMillis}|${entry.lastRequestCount}|${escapeField(joinStrings(entry.lastUpdatedDataKinds, ","))}|${entry.lastTruncated}|${entry.timeBudgetMillis}\n"
         }
-        this.writeLines("metadata/scheduler.ckb", text)
+        this.writeLinesAtomically("metadata/scheduler.ckb", text)
     }
 
     public func loadScheduler(): ArrayList<ScheduleEntry> {
@@ -3368,6 +3485,24 @@ public class FileKnowledgeStore {
         let path = this.root.join(relative)
         if (!exists(path)) {
             Directory.create(path, recursive: true)
+        }
+    }
+
+    public func writeLinesAtomically(relative: String, text: String): Unit {
+        this.ensureLayout()
+        let path = this.root.join(relative)
+        if (!exists(path.parent)) {
+            Directory.create(path.parent, recursive: true)
+        }
+        let tmp = path.parent.join(".tmp-${safeName(relative)}-${stableSummaryHash(text)}")
+        File.writeTo(tmp, text.toArray())
+        try {
+            let code = launch("/bin/mv", ["-f", tmp.toString(), path.toString()]).wait()
+            if (code != 0) {
+                throw Exception("atomic_write_replace_failed")
+            }
+        } catch (e: Exception) {
+            throw e
         }
     }
 
@@ -3841,7 +3976,10 @@ private func ckbRoutineArtifactExistsForTask(store: FileKnowledgeStore, config: 
         return task.candidateVersion != "" && store.has("normalized/candidate/${safeName(task.candidateVersion)}.ckb")
     }
     if (artifact == "gap-curation-input.jsonl") {
-        return config.benchmarkGapCurationInputPath.trimAscii() != "" && exists(Path(config.benchmarkGapCurationInputPath))
+        if (config.benchmarkGapCurationInputPath.trimAscii() != "" && exists(Path(config.benchmarkGapCurationInputPath))) {
+            return true
+        }
+        return store.has("metadata/gap-curation-input.jsonl") || store.has("gap-curation-input.jsonl")
     }
     store.has(artifact)
 }
@@ -4650,6 +4788,9 @@ private class CkbScheduledProfileFetchResult {
     var failedCount: Int64 = 0
     var truncated: Bool = false
     var runId: String = ""
+    var diagnostics: ArrayList<String> = ArrayList<String>()
+    var failedRequests: ArrayList<String> = ArrayList<String>()
+    var successfulRequests: ArrayList<String> = ArrayList<String>()
     var records: ArrayList<CkbScheduledSourceRecord> = ArrayList<CkbScheduledSourceRecord>()
 
     init() {}
@@ -4702,29 +4843,31 @@ private func fetchScheduledProfileSources(profile: CkbScheduleTaskProfile, runne
         ckbFetchScheduledSource(runner, builder.webCandidate("https://cangjie-lang.cn/blog"), profile, result, config)
     } else if (profile.profile == "cangjie_freshness_probe" || profile.profile == "cangjie_docs_full_sync" || profile.profile == "cangjie_release_full_sync") {
         ckbFetchScheduledSource(runner, builder.docs("https://docs.cangjie-lang.cn/docs/1.0.0/"), profile, result, config)
-        ckbFetchScheduledManifestRepoSources(runner, builder, manifest, profile, result, config, true, true, true, true)
+        ckbFetchScheduledManifestRepoSources(runner, builder, manifest, profile, result, config, true, true, true, true, true)
     } else if (profile.profile == "cangjie_source_event_sync") {
-        ckbFetchScheduledManifestRepoSources(runner, builder, manifest, profile, result, config, false, true, true, true)
+        ckbFetchScheduledManifestRepoSources(runner, builder, manifest, profile, result, config, false, true, true, true, true)
     } else if (profile.profile == "cangjie_version_branch_refresh") {
-        ckbFetchScheduledManifestRepoSources(runner, builder, manifest, profile, result, config, true, true, true, true)
+        ckbFetchScheduledManifestRepoSources(runner, builder, manifest, profile, result, config, true, true, true, true, true)
     } else if (profile.profile == "cangjie_benchmark_gap_curation") {
         result.ok = true
     }
-    if (!result.ok) {
-        result.status = "fetch_degraded"
+    if (!result.ok && !result.status.startsWith("manifest_source_missing")) {
+        result.status = "fetch_degraded:${ckbScheduledFetchPrimaryFailure(result)}"
     }
     result
 }
 
-private func ckbFetchScheduledManifestRepoSources(runner: SourceFetchRunner, builder: SourceRequestBuilder, manifest: CangjieVersionManifest, profile: CkbScheduleTaskProfile, result: CkbScheduledProfileFetchResult, config: CkbRuntimeConfig, docs: Bool, std: Bool, stdx: Bool, tools: Bool): Unit {
+private func ckbFetchScheduledManifestRepoSources(runner: SourceFetchRunner, builder: SourceRequestBuilder, manifest: CangjieVersionManifest, profile: CkbScheduleTaskProfile, result: CkbScheduledProfileFetchResult, config: CkbRuntimeConfig, docs: Bool, std: Bool, stdx: Bool, tools: Bool, evalSupport: Bool): Unit {
     let before = result.requestCount
     for (source in manifest.sources) {
-        if (!ckbScheduledManifestSourceIncluded(source, docs, std, stdx, tools)) {
+        if (!ckbScheduledManifestSourceIncluded(source, docs, std, stdx, tools, evalSupport)) {
             continue
         }
         if (source.sourceRepo.trimAscii() == "" || source.sourceRef.trimAscii() == "") {
             result.ok = false
             result.status = "manifest_source_missing"
+            result.diagnostics.add("manifest_source_missing:${source.sourceSet}:${source.sourceFamily}")
+            result.failedRequests.add("manifest_source_missing:${source.sourceSet}:${source.sourceRepo}:${source.sourceRef}")
             continue
         }
         ckbFetchScheduledSource(runner, builder.gitCodeRepo(source.sourceRepo, ref: source.sourceRef), profile, result, config)
@@ -4732,14 +4875,16 @@ private func ckbFetchScheduledManifestRepoSources(runner: SourceFetchRunner, bui
     if (result.requestCount == before) {
         result.ok = false
         result.status = "manifest_source_missing"
+        result.diagnostics.add("manifest_source_missing:no_matching_sources:${profile.profile}")
     }
 }
 
-private func ckbScheduledManifestSourceIncluded(source: CangjieVersionSource, docs: Bool, std: Bool, stdx: Bool, tools: Bool): Bool {
+private func ckbScheduledManifestSourceIncluded(source: CangjieVersionSource, docs: Bool, std: Bool, stdx: Bool, tools: Bool, evalSupport: Bool): Bool {
     (docs && source.sourceSet == CangjieSourceSets.DOCS) ||
         (std && source.sourceSet == CangjieSourceSets.STD) ||
         (stdx && source.sourceSet == CangjieSourceSets.STDX) ||
-        (tools && source.sourceSet == CangjieSourceSets.TOOLS)
+        (tools && source.sourceSet == CangjieSourceSets.TOOLS) ||
+        (evalSupport && source.sourceSet == CangjieSourceSets.EVAL_SUPPORT)
 }
 
 private func ckbFetchScheduledSource(runner: SourceFetchRunner, request: SourceFetchRequest, profile: CkbScheduleTaskProfile, result: CkbScheduledProfileFetchResult, config: CkbRuntimeConfig): Unit {
@@ -4752,10 +4897,13 @@ private func ckbFetchScheduledSource(runner: SourceFetchRunner, request: SourceF
     }
     if (fetch.ok) {
         result.fetchedCount += 1
+        result.successfulRequests.add(ckbScheduledFetchDiagnostic(profile, request, fetch))
     } else {
         result.ok = false
         result.failedCount += 1
+        result.failedRequests.add(ckbScheduledFetchDiagnostic(profile, request, fetch))
     }
+    result.diagnostics.add(ckbScheduledFetchDiagnostic(profile, request, fetch))
     let record = CkbScheduledSourceRecord()
     record.request = request
     record.fetch = fetch
@@ -4767,9 +4915,30 @@ private func ckbFetchScheduledSource(runner: SourceFetchRunner, request: SourceF
     result.records.add(record)
 }
 
+private func ckbScheduledFetchDiagnostic(profile: CkbScheduleTaskProfile, request: SourceFetchRequest, fetch: SourceFetchResult): String {
+    "profile=${profile.profile}|kind=${request.kind}|repo=${request.repo}|ref=${request.ref}|path=${request.path}|url=${request.url}|ok=${fetch.ok}|status=${fetch.status}|statusCode=${fetch.statusCode}|errorClass=${fetch.transportErrorClass}|bodyHash=${fetch.bodyHash}"
+}
+
+private func ckbScheduledFetchPrimaryFailure(result: CkbScheduledProfileFetchResult): String {
+    if (result.failedRequests.size == 0) {
+        return if (result.status == "" || result.status == "profile_ok") { "unknown" } else { result.status }
+    }
+    let first = result.failedRequests[0]
+    if (first.contains("status=timeout")) { return "timeout" }
+    if (first.contains("status=auth_degraded")) { return "auth_degraded" }
+    if (first.contains("status=not_found") || first.contains("status=http_404")) { return "not_found" }
+    if (first.contains("status=blocked_url")) { return "blocked_url" }
+    if (first.contains("errorClass=tls")) { return "tls" }
+    if (first.contains("errorClass=dns")) { return "dns" }
+    "request_failed"
+}
+
 private func ingestScheduledProfileSources(kb: KnowledgeBase, store: FileKnowledgeStore, profile: CkbScheduleTaskProfile, fetch: CkbScheduledProfileFetchResult, config: CkbRuntimeConfig, manifest: CangjieVersionManifest): CkbScheduledProfileIngestResult {
     let result = CkbScheduledProfileIngestResult()
     result.status = if (fetch.ok) { "profile_ok" } else { fetch.status }
+    for (diagnostic in fetch.diagnostics) {
+        result.validationDiagnostics.add("fetch:${diagnostic}")
+    }
     if (profile.profile == "cangjie_benchmark_gap_curation") {
         return ingestScheduledBenchmarkGapCuration(kb, store, profile, config, manifest)
     }
@@ -4786,6 +4955,12 @@ private func ingestScheduledProfileSources(kb: KnowledgeBase, store: FileKnowled
         return result
     }
     let delta = ckbScheduledTypedDeltaRecords(profile, fetch.records, config, manifest)
+    if (delta.size == 0) {
+        result.ok = false
+        result.status = "scheduled_delta_empty"
+        result.validationDiagnostics.add("scheduled_delta_empty:${profile.profile}:records=${fetch.records.size}")
+        return result
+    }
     for (record in fetch.records) {
         if (record.fetch.ok) {
             _ = kb.ingestFetchResult(record.sourceId, record.sourceType, record.fetch, record.title, TrustLevels.OFFICIAL, ReviewStates.TRUSTED)
@@ -4806,17 +4981,18 @@ private func ingestScheduledProfileSources(kb: KnowledgeBase, store: FileKnowled
 
 private func ingestScheduledBenchmarkGapCuration(kb: KnowledgeBase, store: FileKnowledgeStore, profile: CkbScheduleTaskProfile, config: CkbRuntimeConfig, manifest: CangjieVersionManifest): CkbScheduledProfileIngestResult {
     let result = CkbScheduledProfileIngestResult()
-    if (config.benchmarkGapCurationInputPath.trimAscii() == "") {
+    let inputPath = ckbBenchmarkGapCurationInputPath(config, store)
+    if (inputPath == "") {
         result.ok = false
         result.status = "benchmark_gap_curation_input_missing"
         return result
     }
-    if (!exists(Path(config.benchmarkGapCurationInputPath))) {
+    if (!exists(Path(inputPath))) {
         result.ok = false
         result.status = "benchmark_gap_curation_input_not_found"
         return result
     }
-    let curationText = try { String.fromUtf8(File.readFrom(Path(config.benchmarkGapCurationInputPath))) } catch (_: Exception) { "" }
+    let curationText = try { String.fromUtf8(File.readFrom(Path(inputPath))) } catch (_: Exception) { "" }
     if (curationText.trimAscii() == "") {
         result.ok = false
         result.status = "benchmark_gap_curation_input_empty"
@@ -4851,11 +5027,35 @@ private func ingestScheduledBenchmarkGapCuration(kb: KnowledgeBase, store: FileK
     let promotion = cangjiePromoteCandidateRecordsAfterValidationWithVersion(kb, store, candidateVersion, candidateRecords)
     ckbApplyScheduledPromotionResult(result, promotion, "benchmark_gap_candidate_promoted")
     if (result.ok) {
+        var coveragePass = true
         for (record in curated.records) {
-            result.validationDiagnostics.add(ckbBenchmarkGapQueryProof(kb, record, manifest))
+            let proof = ckbBenchmarkGapQueryProof(kb, record, manifest)
+            result.validationDiagnostics.add(proof)
+            if (!proof.contains("coveragePass=true")) {
+                coveragePass = false
+            }
+        }
+        if (!coveragePass) {
+            result.ok = false
+            result.status = "benchmark_gap_query_proof_failed"
         }
     }
     result
+}
+
+private func ckbBenchmarkGapCurationInputPath(config: CkbRuntimeConfig, store: FileKnowledgeStore): String {
+    if (config.benchmarkGapCurationInputPath.trimAscii() != "") {
+        return config.benchmarkGapCurationInputPath.trimAscii()
+    }
+    let metadataPath = store.root.join("metadata/gap-curation-input.jsonl")
+    if (exists(metadataPath)) {
+        return metadataPath.toString()
+    }
+    let rootPath = store.root.join("gap-curation-input.jsonl")
+    if (exists(rootPath)) {
+        return rootPath.toString()
+    }
+    ""
 }
 
 private func ckbBenchmarkGapPreviewProof(records: ArrayList<NormalizedRecord>, record: NormalizedRecord): String {
@@ -4965,7 +5165,7 @@ private func ckbRefreshVersionManifestFromScheduledFetch(profile: CkbScheduleTas
     }
     for (source in manifest.sources) {
         let next = ckbCopyVersionSourceForService(source)
-        if (ckbScheduledManifestSourceIncluded(source, true, true, true, true)) {
+        if (ckbScheduledManifestSourceIncluded(source, true, true, true, true, true)) {
             let record = ckbFindScheduledManifestRecord(fetch, source)
             if (record.sourceId == "" || !record.fetch.ok) {
                 out.degraded = true
@@ -5118,12 +5318,28 @@ private func ckbScheduledGenericDeltaRecords(profile: CkbScheduleTaskProfile, re
             continue
         }
         let raw = ckbScheduledRawRecord(profile, record, config, manifest)
+        let before = out.size
         ckbAppendTypedDeltaRecords(out, cangjieTypedNormalizeRawRecord(raw), raw.metadata)
         if (includeCangjieSymbols && ckbScheduledCangjieSourcePath(record)) {
             ckbAppendTypedDeltaRecords(out, extractCangjieSourceSymbolRecords(raw.metadata.path, raw.content, raw.metadata.sourceSet, ckbScheduledVersionResolution(record, config, manifest)), raw.metadata)
         }
+        if (out.size == before && raw.content.trimAscii() != "") {
+            out.add(ckbScheduledFallbackNormalizedRecord(raw, profile))
+        }
     }
     out
+}
+
+private func ckbScheduledFallbackNormalizedRecord(raw: RawRecord, profile: CkbScheduleTaskProfile): NormalizedRecord {
+    let record = NormalizedRecord()
+    record.sourceId = raw.sourceId
+    record.recordKind = CangjieTypedRecordKinds.DOC_SECTION
+    record.title = if (raw.title.trimAscii() == "") { "Scheduled ${profile.profile}" } else { raw.title }
+    record.chunk = raw.content
+    record.citation = if (raw.metadata.sourceUrl != "") { raw.metadata.sourceUrl } else { "scheduled:${profile.profile}:${raw.sourceId}" }
+    record.metadata = raw.metadata
+    record.requiresReview = raw.requiresReview
+    record
 }
 
 private func ckbAppendTypedDeltaRecords(out: ArrayList<NormalizedRecord>, typed: CangjieTypedRecordResult, base: KnowledgeMetadata): Unit {
@@ -5216,6 +5432,9 @@ private func ckbScheduledSourceFamily(request: SourceFetchRequest, profile: CkbS
     if (request.repo.contains("cangjie_runtime")) { return "stdlib" }
     if (request.repo.contains("cangjie_stdx")) { return "stdx" }
     if (request.repo.contains("cangjie_tools")) { return "tools" }
+    if (request.repo.contains("Cangjie-HumanEval") || request.repo.contains("cangjie_humaneval")) { return "eval-support" }
+    if (request.kind == SourceKinds.CANGJIE_WEBSITE) { return "website" }
+    if (request.kind == SourceKinds.WEB_CANDIDATE) { return "web-candidate" }
     if (profile.profile.contains("benchmark")) { return "eval-support" }
     profile.profile
 }
@@ -5225,6 +5444,9 @@ private func ckbScheduledSourceSet(request: SourceFetchRequest, profile: CkbSche
     if (request.repo.contains("cangjie_runtime")) { return CangjieSourceSets.STD }
     if (request.repo.contains("cangjie_stdx")) { return CangjieSourceSets.STDX }
     if (request.repo.contains("cangjie_tools")) { return CangjieSourceSets.TOOLS }
+    if (request.repo.contains("Cangjie-HumanEval") || request.repo.contains("cangjie_humaneval")) { return CangjieSourceSets.EVAL_SUPPORT }
+    if (request.kind == SourceKinds.CANGJIE_WEBSITE) { return CangjieSourceSets.DOCS }
+    if (request.kind == SourceKinds.WEB_CANDIDATE) { return CangjieSourceSets.DOCS }
     if (profile.profile.contains("benchmark")) { return CangjieSourceSets.EVAL_SUPPORT }
     ""
 }
@@ -5739,9 +5961,9 @@ public func embeddingConfigFromRuntime(config: CkbRuntimeConfig): EmbeddingConfi
     embedding.dimensions = if (config.embeddingDimensions <= 0 && localProvider) { 16 } else { config.embeddingDimensions }
     embedding.endpoint = config.embeddingEndpoint
     embedding.tokenFile = config.embeddingTokenFile
-    embedding.batchSize = config.embeddingBatchSize
-    embedding.timeoutMillis = config.embeddingTimeoutMillis
-    embedding.retryCount = config.embeddingRetryCount
+    embedding.batchSize = if (config.embeddingBatchSize <= 0) { 16 } else { config.embeddingBatchSize }
+    embedding.timeoutMillis = if (config.embeddingTimeoutMillis <= 0) { 10000 } else { config.embeddingTimeoutMillis }
+    embedding.retryCount = if (config.embeddingRetryCount < 0) { 0 } else { config.embeddingRetryCount }
     embedding.production = !localProvider
     embedding.configured = config.embeddingProvider != "" && config.embeddingProvider != "none"
     embedding
@@ -5774,8 +5996,8 @@ public func vectorStoreConfigFromRuntime(config: CkbRuntimeConfig): RuntimeVecto
     vector.candidateCollection = if (config.vectorCandidateCollection == "") { "candidate" } else { config.vectorCandidateCollection }
     vector.dimensions = if (config.vectorDimensions <= 0) { 16 } else { config.vectorDimensions }
     vector.distance = if (config.vectorDistance == "") { "Cosine" } else { config.vectorDistance }
-    vector.timeoutMillis = config.vectorTimeoutMillis
-    vector.retryCount = config.vectorRetryCount
+    vector.timeoutMillis = if (config.vectorTimeoutMillis <= 0) { 10000 } else { config.vectorTimeoutMillis }
+    vector.retryCount = if (config.vectorRetryCount < 0) { 0 } else { config.vectorRetryCount }
     vector.apiKeyFile = config.vectorApiKeyFile
     vector.allowPrivateEndpoint = config.vectorAllowPrivateEndpoint
     vector

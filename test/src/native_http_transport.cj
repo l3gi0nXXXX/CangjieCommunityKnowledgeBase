@@ -138,30 +138,16 @@ public class NativeHttpRequestExecutor <: HttpRequestExecutor {
             return response
         }
         try {
-            let clientParts = ckbNativeHttpBuildClientBuilder(request.url, this.config, request.timeoutMillis)
-            let route = clientParts[1]
-            if (route.error != "") {
-                response.status = "transport_error"
-                response.transportErrorClass = "proxy"
-                response.transportDiagnostic = route.error
-                return response
+            let timeoutMillis = if (request.timeoutMillis > 0) { request.timeoutMillis } else { this.config.timeoutMillis }
+            let future = spawn { =>
+                ckbNativeHttpExecuteOnce(request, this.config)
             }
-            let client = clientParts[0].build()
-            try {
-                let nativeResponse = client.send(ckbNativeHttpBuildRequest(request))
-                response.statusCode = Int64(nativeResponse.status)
-                response.body = ckbNativeHttpDecodeBody(nativeResponse)
-                response.contentType = nativeResponse.headers.getFirst("content-type") ?? nativeResponse.headers.getFirst("Content-Type") ?? ""
-                response.retryAfterSeconds = ckbNativeHttpParseRetryAfter(nativeResponse.headers.getFirst("retry-after") ?? nativeResponse.headers.getFirst("Retry-After") ?? "")
-                response.status = "http_${response.statusCode}"
-            } finally {
-                client.close()
-            }
+            return future.get(Duration.millisecond * timeoutMillis)
         } catch (e: Exception) {
             let diagnostic = ckbNativeHttpClassifyException(e.message)
             response.status = if (diagnostic.transportErrorClass == "timeout") { "timeout" } else { "transport_error" }
             response.transportErrorClass = diagnostic.transportErrorClass
-            response.transportDiagnostic = diagnostic.transportDiagnostic
+            response.transportDiagnostic = if (diagnostic.transportErrorClass == "timeout") { "native_http_total_timeout" } else { diagnostic.transportDiagnostic }
         }
         response
     }
@@ -171,6 +157,30 @@ public class NativeHttpRequestExecutor <: HttpRequestExecutor {
         getRequest.method = "GET"
         this.execute(getRequest)
     }
+}
+
+private func ckbNativeHttpExecuteOnce(request: HttpExecutionRequest, config: CkbNativeHttpTransportConfig): HttpExecutionResponse {
+    let response = HttpExecutionResponse()
+    let clientParts = ckbNativeHttpBuildClientBuilder(request.url, config, request.timeoutMillis)
+    let route = clientParts[1]
+    if (route.error != "") {
+        response.status = "transport_error"
+        response.transportErrorClass = "proxy"
+        response.transportDiagnostic = route.error
+        return response
+    }
+    let client = clientParts[0].build()
+    try {
+        let nativeResponse = client.send(ckbNativeHttpBuildRequest(request))
+        response.statusCode = Int64(nativeResponse.status)
+        response.body = ckbNativeHttpDecodeBody(nativeResponse)
+        response.contentType = nativeResponse.headers.getFirst("content-type") ?? nativeResponse.headers.getFirst("Content-Type") ?? ""
+        response.retryAfterSeconds = ckbNativeHttpParseRetryAfter(nativeResponse.headers.getFirst("retry-after") ?? nativeResponse.headers.getFirst("Retry-After") ?? "")
+        response.status = "http_${response.statusCode}"
+    } finally {
+        client.close()
+    }
+    response
 }
 
 public func ckbNativeHttpConfigFromRuntime(config: CkbRuntimeConfig): CkbNativeHttpTransportConfig {

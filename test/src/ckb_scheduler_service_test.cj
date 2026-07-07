@@ -8,6 +8,49 @@ import std.unittest.testmacro.*
 @Test
 public class CkbSchedulerServiceF5Test {
     @TestCase
+    public func ruP0PreflightAcceptsLargeHeapExistingStoreAndMatchingVectorDimensions(): Unit {
+        let root = "target/ru-p0-preflight-ok"
+        if (!exists(Path(root))) {
+            Directory.create(Path(root), recursive: true)
+        }
+        let config = CkbRuntimeConfig()
+        config.vectorBackend = "qdrant"
+        config.embeddingProvider = "ollama"
+        config.embeddingModel = "bge-m3:latest"
+        config.embeddingEndpoint = "http://127.0.0.1:11434/api/embed"
+        config.embeddingDimensions = 1024
+        config.vectorDimensions = 1024
+
+        let result = ckbRoutineRuntimePreflight(config, root, "4GB", "/opt/homebrew/opt/openssl@3/lib")
+
+        @Expect(result.ok, true)
+        @Expect(result.actualHeapMiB, 4096)
+        @Expect(result.storeExists, true)
+        @Expect(result.vectorReadiness, "ready")
+    }
+
+    @TestCase
+    public func ruP0PreflightRejectsMissingHeapSmallHeapMissingStoreAndVectorMismatch(): Unit {
+        let config = CkbRuntimeConfig()
+        config.vectorBackend = "qdrant"
+        config.embeddingProvider = "ollama"
+        config.embeddingModel = "bge-m3:latest"
+        config.embeddingEndpoint = "http://127.0.0.1:11434/api/embed"
+        config.embeddingDimensions = 768
+        config.vectorDimensions = 1024
+
+        let missingHeap = ckbRoutineRuntimePreflight(config, "target/ru-p0-missing-store", "", "")
+        let smallHeap = ckbRoutineRuntimePreflight(config, "target/ru-p0-missing-store", "256MB", "")
+
+        @Expect(missingHeap.ok, false)
+        @Expect(ruDiagnosticsContain(missingHeap.diagnostics, "missing_cjHeapSize"), true)
+        @Expect(ruDiagnosticsContain(missingHeap.diagnostics, "store_not_found"), true)
+        @Expect(ruDiagnosticsContain(missingHeap.diagnostics, "vector_dimension_mismatch"), true)
+        @Expect(smallHeap.ok, false)
+        @Expect(ruDiagnosticsContain(smallHeap.diagnostics, "heap_too_small"), true)
+    }
+
+    @TestCase
     public func f5Ut01SchedulerTaskIngestsCandidateAndPromotesActive(): Unit {
         let config = CkbRuntimeConfig()
         config.networkEnabled = true
@@ -267,6 +310,8 @@ public class CkbSchedulerServiceF5Test {
         @Expect(result.ran, 1)
         @Expect(result.failed, 1)
         @Expect(result.details.contains("fetch_degraded_candidate_not_promoted"), true)
+        @Expect(f7SchedulerDiagnosticsContain(result, "fetch:profile=cangjie_release_full_sync"), true)
+        @Expect(f7SchedulerDiagnosticsContain(result, "status=timeout"), true)
         @Expect(after.activeKnowledgeVersion, before)
         @Expect(after.failedCandidateVersion == "" || after.failedCandidateVersion.contains("candidate"), true)
     }
@@ -377,6 +422,28 @@ public class CkbSchedulerServiceF5Test {
     }
 
     @TestCase
+    public func ruP5BenchmarkGapSchedulerReadsStoreLocalInput(): Unit {
+        let root = "target/ru-p5-store-local-gap"
+        let metadata = Path(root).join("store/metadata")
+        if (!exists(metadata)) {
+            Directory.create(metadata, recursive: true)
+        }
+        File.writeTo(metadata.join("gap-curation-input.jsonl"), "{\"caseId\":\"CJ-HUMANEVAL-006\",\"benchmark\":\"Cangjie-HumanEval\",\"taskText\":\"Use ArrayList.add for visible input.\",\"visibleTestExcerpt\":\"assert solve([1,2]) == 3\",\"compilerOutput\":\"compile_error\",\"missingKnowledge\":\"G-ARRAYLIST\",\"interfaceId\":\"KI-02\",\"contentFamily\":\"KC-02\",\"updateMechanism\":\"KU-11\",\"targetVersion\":\"1.0.0\",\"officialCitation\":\"https://docs.cangjie-lang.cn/docs/1.0.0/libs/std/collection\"}\n".toArray())
+        let store = FileKnowledgeStore("${root}/store")
+        let service = CkbCommandLoopService(CkbRuntimeConfig(), store)
+        _ = service.start()
+        let tasks = ArrayList<String>()
+        tasks.add("cangjie_benchmark_gap_curation")
+
+        let result = service.runSchedulerTasks(tasks, true)
+
+        @Expect(result.ran, 1)
+        @Expect(result.succeeded, 1)
+        @Expect(result.details.contains("benchmark_gap_candidate_promoted"), true)
+        @Expect(f7SchedulerDiagnosticsContain(result, "benchmark_gap_query_proof:CJ-HUMANEVAL-006:coveragePass=true"), true)
+    }
+
+    @TestCase
     public func f7Neg01BenchmarkGapSchedulerRejectsBadMappingWithoutPromoting(): Unit {
         let root = "target/f7-scheduler-gap-bad-mapping"
         if (!exists(Path(root))) {
@@ -406,6 +473,15 @@ public class CkbSchedulerServiceF5Test {
 private func f7SchedulerDiagnosticsContain(result: SchedulerExecutorResult, needle: String): Bool {
     for (diagnostic in result.validationDiagnostics) {
         if (diagnostic.contains(needle)) {
+            return true
+        }
+    }
+    false
+}
+
+private func ruDiagnosticsContain(values: ArrayList<String>, needle: String): Bool {
+    for (value in values) {
+        if (value.contains(needle)) {
             return true
         }
     }

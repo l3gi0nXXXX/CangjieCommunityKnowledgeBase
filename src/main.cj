@@ -19,6 +19,17 @@ public func ckbCliMain(args: Array<String>): Int64 {
     let cli = parseCli(args)
     let config = loadCkbRuntimeConfig(cli.configPath)
     let store = FileKnowledgeStore(cli.storePath)
+    if (cli.command == "scheduler-run" && hasArg(args, "--force-all")) {
+        let preflight = ckbRoutineRuntimePreflightFromEnv(config, cli.storePath)
+        if (!preflight.ok) {
+            if (ckbCliWantsJson(args)) {
+                println(renderCkbRoutineRuntimePreflightJson(preflight))
+            } else {
+                print(renderCkbRoutineRuntimePreflightText(preflight))
+            }
+            return 2
+        }
+    }
     let kb = loadCliKnowledgeBase(cli.command, store, config)
     let input = cliInput(args)
     if (cli.command == "" || cli.command == "doctor") {
@@ -460,7 +471,8 @@ private func ckbCliSchedulerTaskNames(args: Array<String>): ArrayList<String> {
 }
 
 private func ckbCliSchedulerRunJson(result: SchedulerExecutorResult): String {
-    "{\"ran\":${result.ran},\"succeeded\":${result.succeeded},\"failed\":${result.failed},\"degraded\":${result.degraded},\"forced\":${result.forced},\"taskNames\":${ckbCliStringArrayJson(result.taskNames)},\"details\":\"${ckbCliJsonEscape(result.details)}\",\"validationSummaries\":${ckbCliStringArrayJson(result.validationSummaries)},\"validationDiagnostics\":${ckbCliStringArrayJson(result.validationDiagnostics)},\"validationEvidenceHashes\":${ckbCliStringArrayJson(result.validationEvidenceHashes)}}"
+    let ok = result.failed == 0 && result.degraded == 0
+    "{\"ok\":${ok},\"errorCode\":\"${if (ok) { "" } else { "ckb.scheduler_run_degraded" }}\",\"ran\":${result.ran},\"succeeded\":${result.succeeded},\"failed\":${result.failed},\"degraded\":${result.degraded},\"forced\":${result.forced},\"taskNames\":${ckbCliStringArrayJson(result.taskNames)},\"details\":\"${ckbCliJsonEscape(result.details)}\",\"validationSummaries\":${ckbCliStringArrayJson(result.validationSummaries)},\"validationDiagnostics\":${ckbCliStringArrayJson(result.validationDiagnostics)},\"validationEvidenceHashes\":${ckbCliStringArrayJson(result.validationEvidenceHashes)}}"
 }
 
 private func ckbCliStringArrayJson(values: ArrayList<String>): String {
