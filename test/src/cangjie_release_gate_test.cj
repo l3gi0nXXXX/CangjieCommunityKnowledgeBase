@@ -131,6 +131,25 @@ public class CangjieReleaseGateTest {
         @Expect(scheduler.contains("\"ok\":false"), false)
         @Expect(acceptance.contains("\"status\":\"failed\""), false)
     }
+
+    @TestCase
+    public func p0GateRoutineLiveShapeMetadata400TreeOkEvalLocalPasses(): Unit {
+        let fixture = f8WriteFirstInitFixture("target/p0-live-shape-fixture", true)
+        let runRoot = "target/p0-live-shape-run"
+        f8WritePass1Files(runRoot, true)
+        let options = f8ReleaseGateOptions(runRoot, fixture)
+        let store = FileKnowledgeStore("target/p0-live-shape-store")
+
+        let report = cangjieKnowledgeReleaseGate(options, f8ReleaseGateRuntimeConfig(), store, sourceRunner: F9ReleaseGateFreshRunner())
+        let scheduler = String.fromUtf8(File.readFrom(Path("${runRoot}/routine-update-task-results.jsonl")))
+
+        @Expect(report.ok, true)
+        @Expect(f8HasStep(report, "E2E-07-routine-update-full-run", true), true)
+        @Expect(scheduler.contains("\"ran\":13"), true)
+        @Expect(scheduler.contains("kind=gitcode_tree"), true)
+        @Expect(scheduler.contains("kind=gitcode_repo"), false)
+        @Expect(scheduler.contains("\"ok\":false"), false)
+    }
 }
 
 private class F8FirstInitFixturePaths {
@@ -275,21 +294,43 @@ private class F9ReleaseGateFreshRunner <: SourceFetchRunner {
 
     public func fetch(request: SourceFetchRequest): SourceFetchResult {
         let result = SourceFetchResult()
-        result.ok = true
-        result.status = "ok"
-        result.statusCode = 200
         result.sourceUrl = request.url
         result.repo = request.repo
         result.ref = request.ref
         result.path = request.path
         result.normalizedType = request.kind
+        if (request.kind == SourceKinds.GITCODE_REPO) {
+            result.ok = false
+            result.status = "http_400"
+            result.statusCode = 400
+            result.body = "Invalid header parameter: private-token, required"
+            result.bodyHash = stableSummaryHash(result.body)
+            result.bytes = result.body.size
+            return result
+        }
+        result.ok = true
+        result.status = "ok"
+        result.statusCode = 200
         result.commit = this.expectedCommit(request)
         result.lastModified = "2026-07-07T00:00:00Z"
-        result.body = "fake ${request.kind} ${request.repo} ${request.path} ArrayList.add HashMap String.contains cjpm test Cangjie docs tutorial"
+        result.body = this.bodyFor(request)
         result.bodyHash = stableSummaryHash(result.body)
-        result.contentType = if (request.accept == "text/html") { "text/html" } else { "application/json" }
+        result.contentType = if (request.accept == "text/html") { "text/html" } else if (request.kind == SourceKinds.GITCODE_SOURCE && request.sourceVariant == "raw") { "text/plain" } else { "application/json" }
         result.bytes = result.body.size
         result
+    }
+
+    private func bodyFor(request: SourceFetchRequest): String {
+        if (request.kind == SourceKinds.GITCODE_TREE) {
+            return "{\"tree\":[{\"path\":\"src/release_gate_fixture.cj\",\"type\":\"blob\"},{\"path\":\"README.md\",\"type\":\"blob\"}],\"sha\":\"${this.expectedCommit(request)}\"}"
+        }
+        if (request.kind == SourceKinds.GITCODE_SOURCE && request.path.endsWith(".cj")) {
+            return "package releasegate\npublic func releaseGateFixture(): Unit {}\n"
+        }
+        if (request.kind == SourceKinds.GITCODE_SOURCE) {
+            return "# Release gate source\nArrayList.add HashMap String.contains cjpm test Cangjie docs tutorial\n"
+        }
+        "fake ${request.kind} ${request.repo} ${request.path} ArrayList.add HashMap String.contains cjpm test Cangjie docs tutorial"
     }
 
     private func expectedCommit(request: SourceFetchRequest): String {

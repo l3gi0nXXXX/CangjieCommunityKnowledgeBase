@@ -32,6 +32,13 @@ public class CangjieCorpusFreshnessReport {
     public init() {}
 }
 
+public class CangjieCorpusFreshnessReadiness {
+    public var ready: Bool = true
+    public var diagnostics: ArrayList<String> = ArrayList<String>()
+
+    public init() {}
+}
+
 public func cangjieCorpusFreshnessReport(status: KnowledgeStatus, manifest!: CangjieVersionManifest = defaultCangjieVersionManifest()): CangjieCorpusFreshnessReport {
     let report = CangjieCorpusFreshnessReport()
     report.activeKnowledgeVersion = status.activeKnowledgeVersion
@@ -115,10 +122,23 @@ public func probeCangjieCorpusFreshness(manifest: CangjieVersionManifest, runner
     report
 }
 
+public func probeCangjieCorpusFreshnessWithReadiness(manifest: CangjieVersionManifest, runner: SourceFetchRunner, readiness: CangjieCorpusFreshnessReadiness): CangjieCorpusFreshnessReport {
+    let report = probeCangjieCorpusFreshness(manifest, runner)
+    for (diagnostic in readiness.diagnostics) {
+        report.diagnostics.add(diagnostic)
+    }
+    if (!readiness.ready) {
+        report.ok = false
+        report.degraded = true
+    }
+    report
+}
+
 private func cangjieFreshnessSourceIsLocalSemantic(source: CangjieVersionSource): Bool {
     source.rootKind == "git-root" ||
         source.rootKind == "git-worktree" ||
         source.rootKind == "offline-baseline" ||
+        source.rootKind == "local-eval-support" ||
         source.refKind == "local" ||
         source.sourceSet == CangjieSourceSets.EVAL_SUPPORT ||
         source.sourceRepo.startsWith("CangjieCommunityKnowledgeBase/")
@@ -154,7 +174,7 @@ private func cangjieFreshnessProbeRequest(builder: SourceRequestBuilder, source:
         return builder.docs("https://docs.cangjie-lang.cn/docs/1.0.0/")
     }
     if (source.sourceRepo != "") {
-        return builder.gitCodeRepo(source.sourceRepo, ref: if (source.sourceRef == "") { "release-1.0.0" } else { source.sourceRef })
+        return builder.gitCodeTree(source.sourceRepo, if (source.sourceRef == "") { "release-1.0.0" } else { source.sourceRef })
     }
     builder.docs("https://docs.cangjie-lang.cn/docs/1.0.0/")
 }

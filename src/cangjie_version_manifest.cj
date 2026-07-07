@@ -196,6 +196,20 @@ public func cangjieManifestEvidenceHash(manifest: CangjieVersionManifest): Strin
     stableSummaryHash(text.toString())
 }
 
+public func cangjieManifestEvalSupportLocalSource(targetVersion: String, sourceRef: String, resolvedCommit: String, contentHash: String): CangjieVersionSource {
+    let source = CangjieVersionSource()
+    source.targetVersion = if (targetVersion.trimAscii() == "") { cangjieDefaultTargetVersion() } else { targetVersion.trimAscii() }
+    source.sourceSet = CangjieSourceSets.EVAL_SUPPORT
+    source.sourceFamily = "eval-support"
+    source.sourceRepo = "ckb-local://eval-support"
+    source.sourceRef = if (sourceRef.trimAscii() == "") { source.targetVersion } else { sourceRef.trimAscii() }
+    source.refKind = "local"
+    source.resolvedCommit = resolvedCommit.trimAscii()
+    source.contentHash = contentHash.trimAscii()
+    source.rootKind = "local-eval-support"
+    source
+}
+
 private func cangjieManifestSource(sourceSet: String, sourceFamily: String, sourceRepo: String, sourceRef: String, refKind: String, resolvedCommit: String, contentHash: String): CangjieVersionSource {
     let source = CangjieVersionSource()
     source.targetVersion = cangjieDefaultTargetVersion()

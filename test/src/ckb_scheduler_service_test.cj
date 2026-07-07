@@ -294,6 +294,97 @@ public class CkbSchedulerServiceF5Test {
     }
 
     @TestCase
+    public func p7Pos003ReleaseRefreshUsesTreeFirstWhenRepoMetadataWouldFail(): Unit {
+        let config = CkbRuntimeConfig()
+        config.networkEnabled = true
+        let store = FileKnowledgeStore("target/p7-tree-first-release-refresh")
+        store.saveCangjieVersionManifest(f7OfficialManifestNoEval())
+        let runner = F7GitCodeMetadata400TreeOkRunner()
+        let service = CkbCommandLoopService(config, store, sourceRunner: runner)
+        _ = service.start()
+        let tasks = ArrayList<String>()
+        tasks.add("cangjie_release_full_sync")
+
+        let result = service.runSchedulerTasks(tasks, true)
+
+        @Expect(result.ran, 1)
+        @Expect(result.succeeded, 1)
+        @Expect(result.failed, 0)
+        @Expect(f7RunnerSawKind(runner, SourceKinds.GITCODE_TREE), true)
+        @Expect(f7RunnerSawKind(runner, SourceKinds.GITCODE_REPO), false)
+        @Expect(store.has("metadata/cangjie-version-manifest.ckb"), true)
+    }
+
+    @TestCase
+    public func p7Pos004EvalSupportUsesLocalProviderWhenRemoteWould404(): Unit {
+        let fixture = f7WriteFullRootFixture("target/p7-eval-local-fixture")
+        let config = CkbRuntimeConfig()
+        config.networkEnabled = true
+        config.firstInitEvalRoot = fixture.evalRoot
+        config.firstInitTargetVersion = "1.0.0"
+        let store = FileKnowledgeStore("target/p7-eval-local-provider")
+        store.saveCangjieVersionManifest(f5ScheduledManifest())
+        let service = CkbCommandLoopService(config, store, sourceRunner: F7GitCodeMetadata400TreeOkRunner())
+        _ = service.start()
+        let tasks = ArrayList<String>()
+        tasks.add("cangjie_version_branch_refresh")
+
+        let result = service.runSchedulerTasks(tasks, true)
+        let manifest = store.loadCangjieVersionManifest()
+
+        @Expect(result.ran, 1)
+        @Expect(result.succeeded, 1)
+        @Expect(f7SchedulerDiagnosticsContain(result, "eval_support_local_existing:"), true)
+        @Expect(f7ManifestHasEvalLocalSource(manifest), true)
+    }
+
+    @TestCase
+    public func p7Bnd002FreshnessRecoversOfflineManifestFromFirstInitRoots(): Unit {
+        let fixture = f7WriteFullRootFixture("target/p7-freshness-recovery-fixture")
+        let config = CkbRuntimeConfig()
+        config.networkEnabled = true
+        config.firstInitDocsRoot = fixture.docsRoot
+        config.firstInitStdRoot = fixture.stdRoot
+        config.firstInitStdxRoot = fixture.stdxRoot
+        config.firstInitEvalRoot = fixture.evalRoot
+        config.firstInitTargetVersion = "1.0.0"
+        let store = FileKnowledgeStore("target/p7-freshness-recovery")
+        store.saveCangjieVersionManifest(defaultCangjieVersionManifest())
+        let service = CkbCommandLoopService(config, store, sourceRunner: F7GitCodeMetadata400TreeOkRunner())
+        _ = service.start()
+        let tasks = ArrayList<String>()
+        tasks.add("cangjie_freshness_daily")
+
+        let result = service.runSchedulerTasks(tasks, true)
+
+        @Expect(result.ran, 1)
+        @Expect(result.succeeded, 1)
+        @Expect(f7SchedulerDiagnosticsContain(result, "manifest_recovered_for_freshness"), true)
+        @Expect(cangjieManifestHasOfflineBaseline(store.loadCangjieVersionManifest()), false)
+    }
+
+    @TestCase
+    public func p7Neg001TreeUnavailableFailsReadinessWithoutPromoting(): Unit {
+        let config = CkbRuntimeConfig()
+        config.networkEnabled = true
+        let store = FileKnowledgeStore("target/p7-tree-unavailable")
+        store.saveCangjieVersionManifest(f7OfficialManifestNoEval())
+        let service = CkbCommandLoopService(config, store, sourceRunner: F7GitCodeMetadata400TreeUnavailableRunner())
+        _ = service.start()
+        let before = service.statusSnapshot().activeKnowledgeVersion
+        let tasks = ArrayList<String>()
+        tasks.add("cangjie_release_full_sync")
+
+        let result = service.runSchedulerTasks(tasks, true)
+        let after = service.statusSnapshot()
+
+        @Expect(result.ran, 1)
+        @Expect(result.failed, 1)
+        @Expect(result.details.contains("scheduled_readiness_failed"), true)
+        @Expect(after.activeKnowledgeVersion, before)
+    }
+
+    @TestCase
     public func p5Bnd001SchedulerFetchFailuresReturnStableDegradedStatuses(): Unit {
         let config = CkbRuntimeConfig()
         config.networkEnabled = true
@@ -309,7 +400,7 @@ public class CkbSchedulerServiceF5Test {
 
         @Expect(result.ran, 1)
         @Expect(result.failed, 1)
-        @Expect(result.details.contains("fetch_degraded_candidate_not_promoted"), true)
+        @Expect(result.details.contains("scheduled_readiness_failed"), true)
         @Expect(f7SchedulerDiagnosticsContain(result, "fetch:profile=cangjie_release_full_sync"), true)
         @Expect(f7SchedulerDiagnosticsContain(result, "status=timeout"), true)
         @Expect(after.activeKnowledgeVersion, before)
@@ -597,6 +688,88 @@ private class F5DegradedFetchRunner <: SourceFetchRunner {
     }
 }
 
+private class F7GitCodeMetadata400TreeOkRunner <: SourceFetchRunner {
+    public var calls: ArrayList<SourceFetchRequest> = ArrayList<SourceFetchRequest>()
+
+    init() {}
+
+    public func fetch(request: SourceFetchRequest): SourceFetchResult {
+        this.calls.add(request)
+        let result = SourceFetchResult()
+        result.sourceUrl = request.url
+        result.repo = request.repo
+        result.ref = request.ref
+        result.path = request.path
+        result.normalizedType = request.kind
+        result.attempts = 1
+        if (request.kind == SourceKinds.GITCODE_REPO) {
+            result.ok = false
+            result.status = "http_400"
+            result.statusCode = 400
+            result.body = "Invalid header parameter: private-token, required"
+        } else if (request.kind == SourceKinds.GITCODE_TREE) {
+            result.ok = true
+            result.status = "ok"
+            result.statusCode = 200
+            result.commit = "tree-${stableSummaryHash(request.repo)}"
+            result.body = "{\"tree\":[{\"path\":\"src/scheduled_fixture.cj\",\"type\":\"blob\"},{\"path\":\"README.md\",\"type\":\"blob\"}],\"sha\":\"${result.commit}\"}"
+        } else if (request.kind == SourceKinds.GITCODE_SOURCE && request.path.endsWith(".cj")) {
+            result.ok = true
+            result.status = "ok"
+            result.statusCode = 200
+            result.commit = "source-${stableSummaryHash("${request.repo}:${request.path}")}"
+            result.contentType = "text/plain"
+            result.body = "package scheduled\npublic func scheduled_${stableSummaryHash(request.path)}(): Unit {}\n"
+        } else if (request.kind == SourceKinds.GITCODE_SOURCE) {
+            result.ok = true
+            result.status = "ok"
+            result.statusCode = 200
+            result.commit = "source-${stableSummaryHash("${request.repo}:${request.path}")}"
+            result.contentType = "text/markdown"
+            result.body = "# Scheduled source\nArrayList.add HashMap String.contains cjpm test\n"
+        } else {
+            result.ok = true
+            result.status = "ok"
+            result.statusCode = 200
+            result.body = "scheduled ${request.kind} ${request.repo}"
+        }
+        result.bytes = result.body.size
+        result.bodyHash = stableSummaryHash(result.body)
+        result
+    }
+}
+
+private class F7GitCodeMetadata400TreeUnavailableRunner <: SourceFetchRunner {
+    public var calls: ArrayList<SourceFetchRequest> = ArrayList<SourceFetchRequest>()
+
+    init() {}
+
+    public func fetch(request: SourceFetchRequest): SourceFetchResult {
+        this.calls.add(request)
+        let result = SourceFetchResult()
+        result.sourceUrl = request.url
+        result.repo = request.repo
+        result.ref = request.ref
+        result.path = request.path
+        result.normalizedType = request.kind
+        result.ok = false
+        result.status = if (request.kind == SourceKinds.GITCODE_REPO) { "http_400" } else { "source_tree_unavailable_fixture" }
+        result.statusCode = if (request.kind == SourceKinds.GITCODE_REPO) { 400 } else { 503 }
+        result.body = result.status
+        result.bodyHash = stableSummaryHash(result.body)
+        result
+    }
+}
+
+private class F7RootFixture {
+    var docsRoot: String = ""
+    var stdRoot: String = ""
+    var stdxRoot: String = ""
+    var evalRoot: String = ""
+
+    init() {}
+}
+
 private func f5HasStaleness(report: CangjieCorpusFreshnessReport, staleness: String): Bool {
     for (source in report.sources) {
         if (source.staleness == staleness) {
@@ -635,6 +808,15 @@ private func f5ValidationHasDiagnostic(validation: CangjieCandidateValidationRes
     false
 }
 
+private func f7RunnerSawKind(runner: F7GitCodeMetadata400TreeOkRunner, kind: String): Bool {
+    for (call in runner.calls) {
+        if (call.kind == kind) {
+            return true
+        }
+    }
+    false
+}
+
 private func f5ScheduledManifest(): CangjieVersionManifest {
     let manifest = CangjieVersionManifest()
     manifest.defaultTargetVersion = cangjieDefaultTargetVersion()
@@ -643,6 +825,16 @@ private func f5ScheduledManifest(): CangjieVersionManifest {
     f5AddManifestSource(manifest, CangjieSourceSets.STDX, "stdx", "Cangjie/cangjie_stdx", "release-1.0.0", "fresh-stdx")
     f5AddManifestSource(manifest, CangjieSourceSets.TOOLS, "tools", "Cangjie/cangjie_tools", "release-1.0.0", "fresh-tools")
     f5AddManifestSource(manifest, CangjieSourceSets.EVAL_SUPPORT, "eval-support", "CangjieCommunityKnowledgeBase/Cangjie-HumanEval", "release-1.0.0", "fresh-eval")
+    manifest
+}
+
+private func f7OfficialManifestNoEval(): CangjieVersionManifest {
+    let manifest = CangjieVersionManifest()
+    manifest.defaultTargetVersion = cangjieDefaultTargetVersion()
+    f5AddManifestSource(manifest, CangjieSourceSets.DOCS, "docs", "Cangjie/cangjie_docs", "release-1.0.0", "fresh-docs")
+    f5AddManifestSource(manifest, CangjieSourceSets.STD, "stdlib", "Cangjie/cangjie_runtime", "release-1.0.0", "fresh-std")
+    f5AddManifestSource(manifest, CangjieSourceSets.STDX, "stdx", "Cangjie/cangjie_stdx", "release-1.0.0", "fresh-stdx")
+    f5AddManifestSource(manifest, CangjieSourceSets.TOOLS, "tools", "Cangjie/cangjie_tools", "release-1.0.0", "fresh-tools")
     manifest
 }
 
@@ -658,6 +850,48 @@ private func f5AddManifestSource(manifest: CangjieVersionManifest, sourceSet: St
     source.contentHash = "sha256:${commit}"
     source.rootKind = "scheduled:test"
     manifest.sources.add(source)
+}
+
+private func f7ManifestHasEvalLocalSource(manifest: CangjieVersionManifest): Bool {
+    for (source in manifest.sources) {
+        if (source.sourceSet == CangjieSourceSets.EVAL_SUPPORT && source.sourceRepo == "ckb-local://eval-support" && source.rootKind == "local-eval-support") {
+            return true
+        }
+    }
+    false
+}
+
+private func f7WriteFullRootFixture(root: String): F7RootFixture {
+    let fixture = F7RootFixture()
+    fixture.docsRoot = "${root}/docs"
+    fixture.stdRoot = "${root}/std"
+    fixture.stdxRoot = "${root}/stdx"
+    fixture.evalRoot = "${root}/eval"
+    f7WriteFile(Path(fixture.docsRoot).join("dev-guide/source_en/api/collections.md"), "# Collections\nArrayList.add and HashMap are collection APIs.\n")
+    f7WriteFile(Path(fixture.stdRoot).join("src/std/collection/arraylist.cj"), "package std.collection\npublic class ArrayList<T> { public func add(value: T): Unit {} }\n")
+    f7WriteFile(Path(fixture.stdxRoot).join("src/stdx/options/option.cj"), "package stdx.options\npublic enum Option<T> { Some | None }\n")
+    let caseRoot = Path(fixture.evalRoot).join("CJ-HUMANEVAL-000")
+    f7WriteFile(caseRoot.join("prompt.md"), "# Task\nUse EvalValue and EvalEntry.\n")
+    f7WriteFile(caseRoot.join("metadata.json"), "{\"id\":\"CJ-HUMANEVAL-000\"}\n")
+    f7WriteFile(caseRoot.join("starter/src/eval_support.cj"), "public class EvalValue {}\npublic class EvalEntry {}\n")
+    f7WriteFile(caseRoot.join("tests/TestMain.cj"), "public func helper(): Unit {}\nmain() {}\n")
+    f7WriteGitMetadata(fixture.docsRoot, "f7-docs-commit")
+    f7WriteGitMetadata(fixture.stdRoot, "f7-std-commit")
+    f7WriteGitMetadata(fixture.stdxRoot, "f7-stdx-commit")
+    f7WriteGitMetadata(fixture.evalRoot, "f7-eval-commit")
+    fixture
+}
+
+private func f7WriteFile(path: Path, text: String): Unit {
+    if (!exists(path.parent)) {
+        Directory.create(path.parent, recursive: true)
+    }
+    File.writeTo(path, text.toArray())
+}
+
+private func f7WriteGitMetadata(root: String, commit: String): Unit {
+    f7WriteFile(Path(root).join(".git/HEAD"), "ref: refs/heads/release-1.0.0\n")
+    f7WriteFile(Path(root).join(".git/refs/heads/release-1.0.0"), commit)
 }
 
 private func f5HasManifestRootKind(manifest: CangjieVersionManifest, rootKind: String): Bool {

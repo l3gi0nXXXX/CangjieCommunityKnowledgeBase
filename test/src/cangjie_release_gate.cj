@@ -169,6 +169,7 @@ public func cangjieKnowledgeReleaseGate(
         return report
     }
     cangjieReleaseGateEnsureDir(options.runRoot)
+    cangjieReleaseGateApplyFirstInitRootsToConfig(options, config)
     var service = CkbCommandLoopService(config, store, sourceRunner: sourceRunner)
     _ = service.start()
     cangjieReleaseGateAddLandingStatusStep(report, service, "F0-landing-status-initial")
@@ -620,6 +621,30 @@ private func cangjieReleaseGateFirstInitOptions(options: CangjieKnowledgeRelease
     initOptions.dryRun = dryRun
     initOptions.autoMode = true
     initOptions
+}
+
+private func cangjieReleaseGateApplyFirstInitRootsToConfig(options: CangjieKnowledgeReleaseGateOptions, config: CkbRuntimeConfig): Unit {
+    if (options.docsRoot != "") {
+        config.firstInitDocsRoot = options.docsRoot
+        if (options.toolDocsRoot == "" && config.firstInitToolDocsRoot == "") {
+            config.firstInitToolDocsRoot = options.docsRoot
+        }
+    }
+    if (options.toolDocsRoot != "") {
+        config.firstInitToolDocsRoot = options.toolDocsRoot
+    }
+    if (options.stdRoot != "") {
+        config.firstInitStdRoot = options.stdRoot
+    }
+    if (options.stdxRoot != "") {
+        config.firstInitStdxRoot = options.stdxRoot
+    }
+    if (options.evalRoot != "") {
+        config.firstInitEvalRoot = options.evalRoot
+    }
+    if (options.targetVersion != "") {
+        config.firstInitTargetVersion = options.targetVersion
+    }
 }
 
 private func cangjieReleaseGateDefaultSchedulerTasks(): ArrayList<String> {

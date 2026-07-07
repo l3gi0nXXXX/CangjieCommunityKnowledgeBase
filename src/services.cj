@@ -224,7 +224,7 @@ public class FakeSourceFetchRunner <: SourceFetchRunner {
         result.normalizedType = request.kind
         result.etag = "fake-etag"
         result.lastModified = "2026-05-19T00:00:00Z"
-        result.body = if (this.body == "") { "fake ${request.kind} ${request.repo} ${request.path} func HttpClient Cangjie docs tutorial" } else { this.body }
+        result.body = if (this.body == "") { fakeSourceFetchBody(request) } else { this.body }
         result.contentType = if (request.accept == "text/html") {
             "text/html"
         } else if (request.kind == SourceKinds.GITCODE_SOURCE && request.sourceVariant == "raw") {
@@ -240,6 +240,18 @@ public class FakeSourceFetchRunner <: SourceFetchRunner {
         result.transportDiagnostic = this.transportDiagnostic
         result.curlExitCode = this.curlExitCode
         result
+    }
+}
+
+private func fakeSourceFetchBody(request: SourceFetchRequest): String {
+    if (request.kind == SourceKinds.GITCODE_TREE) {
+        "{\"tree\":[{\"path\":\"src/fake.cj\",\"type\":\"blob\"},{\"path\":\"README.md\",\"type\":\"blob\"}],\"sha\":\"fake-tree\"}"
+    } else if (request.kind == SourceKinds.GITCODE_SOURCE && request.path.endsWith(".cj")) {
+        "package fake\npublic class HttpClient {}\npublic func fakeScheduledSource(): Unit {}\n"
+    } else if (request.kind == SourceKinds.GITCODE_SOURCE) {
+        "# Fake scheduled source\nArrayList.add HashMap String.contains cjpm test Cangjie docs tutorial\n"
+    } else {
+        "fake ${request.kind} ${request.repo} ${request.path} func HttpClient Cangjie docs tutorial"
     }
 }
 
@@ -3814,11 +3826,11 @@ public func ckbSchedulerAllowlistTaskNames(): ArrayList<String> {
     names.add("web_candidate_weekly")
     names.add("web_candidate_recrawl_30d")
     names.add("weekly_full_rebuild")
+    names.add("cangjie_version_branch_refresh")
     names.add("cangjie_freshness_daily")
     names.add("cangjie_docs_full_weekly")
     names.add("cangjie_release_full_sync")
     names.add("cangjie_source_event_sync")
-    names.add("cangjie_version_branch_refresh")
     names.add("cangjie_benchmark_gap_curation")
     names
 }
@@ -3984,6 +3996,27 @@ private func ckbRoutineArtifactExistsForTask(store: FileKnowledgeStore, config: 
     store.has(artifact)
 }
 
+private func ckbEnsureManifestReadyForFreshness(store: FileKnowledgeStore, config: CkbRuntimeConfig, manifest: CangjieVersionManifest): CkbFreshnessManifestReadiness {
+    let readiness = CkbFreshnessManifestReadiness()
+    readiness.manifest = manifest
+    if (manifest.sources.size > 0 && !cangjieManifestHasOfflineBaseline(manifest)) {
+        readiness.ready = true
+        readiness.diagnostics.add("manifest_ready_for_freshness")
+        return readiness
+    }
+    let recovered = ckbRuntimeCangjieVersionManifest(config)
+    if (recovered.sources.size > 0 && !cangjieManifestHasOfflineBaseline(recovered)) {
+        store.saveCangjieVersionManifest(recovered)
+        readiness.manifest = recovered
+        readiness.ready = true
+        readiness.diagnostics.add("manifest_recovered_for_freshness")
+        return readiness
+    }
+    readiness.ready = false
+    readiness.diagnostics.add("manifest_not_ready_for_freshness")
+    readiness
+}
+
 public func ckbProfilesForRepositoryChangedEvent(event: GitCodeRepositoryChangedEvent, config: CkbRuntimeConfig): ArrayList<String> {
     let profiles = ArrayList<String>()
     if (event.changedFilesUnavailable || event.changedFiles.size == 0) {
@@ -4059,13 +4092,18 @@ public class CkbSchedulerTaskRunner <: SchedulerTaskRunner {
             return this.finalizeTaskResultWithContract(name, result, beforeInvariant)
         }
         if (profile.profile == "cangjie_freshness_probe") {
-            let manifest = this.runtimeVersionManifest()
-            let freshness = probeCangjieCorpusFreshness(manifest, this.sourceRunner)
+            let readiness = ckbEnsureManifestReadyForFreshness(this.store, this.config, this.runtimeVersionManifest())
+            let freshnessReadiness = CangjieCorpusFreshnessReadiness()
+            freshnessReadiness.ready = readiness.ready
+            for (diagnostic in readiness.diagnostics) {
+                freshnessReadiness.diagnostics.add(diagnostic)
+            }
+            let freshness = probeCangjieCorpusFreshnessWithReadiness(readiness.manifest, this.sourceRunner, freshnessReadiness)
             let status = this.kb.status()
             freshness.activeKnowledgeVersion = status.activeKnowledgeVersion
             freshness.candidateKnowledgeVersion = status.candidateKnowledgeVersion
             freshness.failedCandidateVersion = status.failedCandidateVersion
-            if (cangjieManifestHasOfflineBaseline(manifest)) {
+            if (cangjieManifestHasOfflineBaseline(readiness.manifest)) {
                 freshness.ok = false
                 freshness.degraded = true
                 freshness.diagnostics.add("version_manifest_contains_offline_baseline")
@@ -4079,10 +4117,16 @@ public class CkbSchedulerTaskRunner <: SchedulerTaskRunner {
             result.candidateVersion = status.candidateKnowledgeVersion
             result.requestCount = freshness.sources.size
             result.durationMillis = profile.timeBudgetMillis / 10
+            for (diagnostic in readiness.diagnostics) {
+                result.validationDiagnostics.add("freshness_readiness:${diagnostic}")
+            }
+            for (diagnostic in freshness.diagnostics) {
+                result.validationDiagnostics.add("freshness:${diagnostic}")
+            }
             return this.finalizeTaskResultWithContract(name, result, beforeInvariant)
         }
         let manifest = this.runtimeVersionManifest()
-        let fetch = ckbRunScheduledProfileFetches(profile, this.sourceRunner, this.config, manifest)
+        let fetch = ckbRunScheduledProfileFetches(profile, this.sourceRunner, this.config, this.store, manifest)
         fetch.runId = "${this.kb.scheduler.clock.nowMinutes}"
         let ingest = ingestScheduledProfileSources(this.kb, this.store, profile, fetch, this.config, manifest)
         let status = this.kb.status()
@@ -4808,6 +4852,24 @@ private class CkbScheduledSourceRecord {
     init() {}
 }
 
+private class CkbScheduledFetchReadiness {
+    var canPromote: Bool = true
+    var requiredFailedCount: Int64 = 0
+    var optionalFailedCount: Int64 = 0
+    var recoveredCount: Int64 = 0
+    var diagnostics: ArrayList<String> = ArrayList<String>()
+
+    init() {}
+}
+
+private class CkbFreshnessManifestReadiness {
+    var manifest: CangjieVersionManifest = CangjieVersionManifest()
+    var ready: Bool = true
+    var diagnostics: ArrayList<String> = ArrayList<String>()
+
+    init() {}
+}
+
 private class CkbScheduledProfileIngestResult {
     var ok: Bool = true
     var status: String = "profile_ok"
@@ -4821,11 +4883,11 @@ private class CkbScheduledProfileIngestResult {
     init() {}
 }
 
-private func ckbRunScheduledProfileFetches(profile: CkbScheduleTaskProfile, runner: SourceFetchRunner, config: CkbRuntimeConfig, manifest: CangjieVersionManifest): CkbScheduledProfileFetchResult {
-    fetchScheduledProfileSources(profile, runner, config, manifest)
+private func ckbRunScheduledProfileFetches(profile: CkbScheduleTaskProfile, runner: SourceFetchRunner, config: CkbRuntimeConfig, store: FileKnowledgeStore, manifest: CangjieVersionManifest): CkbScheduledProfileFetchResult {
+    fetchScheduledProfileSources(profile, runner, config, store, manifest)
 }
 
-private func fetchScheduledProfileSources(profile: CkbScheduleTaskProfile, runner: SourceFetchRunner, config: CkbRuntimeConfig, manifest: CangjieVersionManifest): CkbScheduledProfileFetchResult {
+private func fetchScheduledProfileSources(profile: CkbScheduleTaskProfile, runner: SourceFetchRunner, config: CkbRuntimeConfig, store: FileKnowledgeStore, manifest: CangjieVersionManifest): CkbScheduledProfileFetchResult {
     let result = CkbScheduledProfileFetchResult()
     let builder = SourceRequestBuilder(gitCodeApiRoot: config.gitCodeBaseUrl)
     if (profile.profile == "community_repo_discovery") {
@@ -4843,11 +4905,11 @@ private func fetchScheduledProfileSources(profile: CkbScheduleTaskProfile, runne
         ckbFetchScheduledSource(runner, builder.webCandidate("https://cangjie-lang.cn/blog"), profile, result, config)
     } else if (profile.profile == "cangjie_freshness_probe" || profile.profile == "cangjie_docs_full_sync" || profile.profile == "cangjie_release_full_sync") {
         ckbFetchScheduledSource(runner, builder.docs("https://docs.cangjie-lang.cn/docs/1.0.0/"), profile, result, config)
-        ckbFetchScheduledManifestRepoSources(runner, builder, manifest, profile, result, config, true, true, true, true, true)
+        ckbFetchScheduledManifestRepoSources(runner, builder, manifest, profile, result, config, store, true, true, true, true, true)
     } else if (profile.profile == "cangjie_source_event_sync") {
-        ckbFetchScheduledManifestRepoSources(runner, builder, manifest, profile, result, config, false, true, true, true, true)
+        ckbFetchScheduledManifestRepoSources(runner, builder, manifest, profile, result, config, store, false, true, true, true, true)
     } else if (profile.profile == "cangjie_version_branch_refresh") {
-        ckbFetchScheduledManifestRepoSources(runner, builder, manifest, profile, result, config, true, true, true, true, true)
+        ckbFetchScheduledManifestRepoSources(runner, builder, manifest, profile, result, config, store, true, true, true, true, true)
     } else if (profile.profile == "cangjie_benchmark_gap_curation") {
         result.ok = true
     }
@@ -4857,20 +4919,13 @@ private func fetchScheduledProfileSources(profile: CkbScheduleTaskProfile, runne
     result
 }
 
-private func ckbFetchScheduledManifestRepoSources(runner: SourceFetchRunner, builder: SourceRequestBuilder, manifest: CangjieVersionManifest, profile: CkbScheduleTaskProfile, result: CkbScheduledProfileFetchResult, config: CkbRuntimeConfig, docs: Bool, std: Bool, stdx: Bool, tools: Bool, evalSupport: Bool): Unit {
+private func ckbFetchScheduledManifestRepoSources(runner: SourceFetchRunner, builder: SourceRequestBuilder, manifest: CangjieVersionManifest, profile: CkbScheduleTaskProfile, result: CkbScheduledProfileFetchResult, config: CkbRuntimeConfig, store: FileKnowledgeStore, docs: Bool, std: Bool, stdx: Bool, tools: Bool, evalSupport: Bool): Unit {
     let before = result.requestCount
     for (source in manifest.sources) {
         if (!ckbScheduledManifestSourceIncluded(source, docs, std, stdx, tools, evalSupport)) {
             continue
         }
-        if (source.sourceRepo.trimAscii() == "" || source.sourceRef.trimAscii() == "") {
-            result.ok = false
-            result.status = "manifest_source_missing"
-            result.diagnostics.add("manifest_source_missing:${source.sourceSet}:${source.sourceFamily}")
-            result.failedRequests.add("manifest_source_missing:${source.sourceSet}:${source.sourceRepo}:${source.sourceRef}")
-            continue
-        }
-        ckbFetchScheduledSource(runner, builder.gitCodeRepo(source.sourceRepo, ref: source.sourceRef), profile, result, config)
+        ckbFetchScheduledManifestSource(runner, builder, source, profile, result, config, store)
     }
     if (result.requestCount == before) {
         result.ok = false
@@ -4887,10 +4942,181 @@ private func ckbScheduledManifestSourceIncluded(source: CangjieVersionSource, do
         (evalSupport && source.sourceSet == CangjieSourceSets.EVAL_SUPPORT)
 }
 
+private func ckbFetchScheduledManifestSource(runner: SourceFetchRunner, builder: SourceRequestBuilder, source: CangjieVersionSource, profile: CkbScheduleTaskProfile, result: CkbScheduledProfileFetchResult, config: CkbRuntimeConfig, store: FileKnowledgeStore): Unit {
+    if (source.sourceSet == CangjieSourceSets.EVAL_SUPPORT) {
+        ckbFetchScheduledEvalSupportSource(source, profile, result, config, store)
+        return
+    }
+    if (source.sourceRepo.trimAscii() == "" || source.sourceRef.trimAscii() == "") {
+        result.ok = false
+        result.status = "manifest_source_missing"
+        result.diagnostics.add("manifest_source_missing:${source.sourceSet}:${source.sourceFamily}")
+        result.failedRequests.add("manifest_source_missing:${source.sourceSet}:${source.sourceRepo}:${source.sourceRef}")
+        return
+    }
+    ckbFetchScheduledGitCodeTreeSnapshot(runner, builder, source, profile, result, config)
+}
+
+private func ckbFetchScheduledGitCodeTreeSnapshot(runner: SourceFetchRunner, builder: SourceRequestBuilder, source: CangjieVersionSource, profile: CkbScheduleTaskProfile, result: CkbScheduledProfileFetchResult, config: CkbRuntimeConfig): Unit {
+    let treeRequest = builder.gitCodeTree(source.sourceRepo, source.sourceRef)
+    let treeFetch = ckbFetchScheduledRequest(runner, treeRequest, config)
+    _ = ckbAppendScheduledSourceRecord(profile, result, treeRequest, treeFetch)
+    if (!treeFetch.ok) {
+        return
+    }
+    let selected = SourceCandidateSelector().selectFromTree(treeFetch.body, maxFiles: ckbScheduledSourceSnapshotLimit(profile, source))
+    if (selected.size == 0) {
+        let empty = SourceFetchResult()
+        empty.ok = false
+        empty.status = "source_tree_empty"
+        empty.statusCode = 200
+        empty.sourceUrl = treeRequest.url
+        empty.repo = treeRequest.repo
+        empty.ref = treeRequest.ref
+        empty.body = "source_tree_empty"
+        empty.bodyHash = stableSummaryHash(empty.body)
+        _ = ckbAppendScheduledSourceRecord(profile, result, treeRequest, empty)
+        return
+    }
+    ckbFetchScheduledSelectedSourceFiles(runner, builder, source, profile, result, config, selected)
+}
+
+private func ckbFetchScheduledSelectedSourceFiles(runner: SourceFetchRunner, builder: SourceRequestBuilder, source: CangjieVersionSource, profile: CkbScheduleTaskProfile, result: CkbScheduledProfileFetchResult, config: CkbRuntimeConfig, selected: ArrayList<String>): Unit {
+    for (path in selected) {
+        let rawRequest = builder.gitCodeSourceRaw(source.sourceRepo, source.sourceRef, path)
+        let rawFetch = ckbFetchScheduledRequest(runner, rawRequest, config)
+        if (rawFetch.ok) {
+            _ = ckbAppendScheduledSourceRecord(profile, result, rawRequest, rawFetch)
+            continue
+        }
+        result.diagnostics.add("source_raw_snapshot_fallback:${ckbScheduledFetchDiagnostic(profile, rawRequest, rawFetch)}")
+        let contentsRequest = builder.gitCodeSourceContents(source.sourceRepo, source.sourceRef, path)
+        let contentsFetch = ckbFetchScheduledRequest(runner, contentsRequest, config)
+        if (contentsFetch.ok) {
+            _ = ckbAppendScheduledSourceRecord(profile, result, contentsRequest, contentsFetch)
+        } else {
+            result.diagnostics.add("source_contents_snapshot_failed:${ckbScheduledFetchDiagnostic(profile, contentsRequest, contentsFetch)}")
+            _ = ckbAppendScheduledSourceRecord(profile, result, contentsRequest, contentsFetch)
+        }
+    }
+}
+
+private func ckbScheduledSourceSnapshotLimit(profile: CkbScheduleTaskProfile, source: CangjieVersionSource): Int64 {
+    if (profile.profile == "cangjie_version_branch_refresh") {
+        return 1
+    }
+    if (profile.profile == "cangjie_source_event_sync") {
+        return 3
+    }
+    if (source.sourceSet == CangjieSourceSets.STD || source.sourceSet == CangjieSourceSets.STDX) {
+        return 6
+    }
+    4
+}
+
+private func ckbFetchScheduledEvalSupportSource(source: CangjieVersionSource, profile: CkbScheduleTaskProfile, result: CkbScheduledProfileFetchResult, config: CkbRuntimeConfig, store: FileKnowledgeStore): Unit {
+    let root = ckbScheduledEvalSupportRoot(config)
+    let request = ckbScheduledEvalSupportLocalRequest(source, config)
+    if (root == "") {
+        let fetch = ckbScheduledEvalSupportUnavailableFetch(request, "eval_support_source_unavailable")
+        _ = ckbAppendScheduledSourceRecord(profile, result, request, fetch)
+        return
+    }
+    let resolution = resolveCangjieVersion(cangjieVersionSelector(targetVersion: ckbScheduledTargetVersion(config), sourceSet: CangjieSourceSets.EVAL_SUPPORT), ckbRuntimeCangjieVersionManifest(config))
+    let extracted = extractAllEvalSupportRecords(root, version: resolution)
+    if (extracted.records.size == 0) {
+        let fetch = ckbScheduledEvalSupportUnavailableFetch(request, "eval_support_source_unavailable")
+        for (diagnostic in extracted.diagnostics) {
+            result.diagnostics.add("eval_support_local:${diagnostic}")
+        }
+        _ = ckbAppendScheduledSourceRecord(profile, result, request, fetch)
+        return
+    }
+    let fetch = SourceFetchResult()
+    fetch.ok = true
+    fetch.status = "local_existing"
+    fetch.statusCode = 200
+    fetch.sourceUrl = request.url
+    fetch.repo = request.repo
+    fetch.ref = request.ref
+    fetch.path = request.path
+    fetch.normalizedType = request.kind
+    fetch.contentType = "text/plain"
+    fetch.body = ckbScheduledEvalSupportBody(extracted)
+    fetch.bytes = fetch.body.size
+    fetch.bodyHash = stableSummaryHash(fetch.body)
+    fetch.commit = stableSummaryHash("${root}:${fetch.bodyHash}")
+    _ = ckbAppendScheduledSourceRecord(profile, result, request, fetch)
+    result.diagnostics.add("eval_support_local_existing:${root}:${extracted.records.size}")
+}
+
+private func ckbScheduledEvalSupportRoot(config: CkbRuntimeConfig): String {
+    let configured = config.firstInitEvalRoot.trimAscii()
+    if (configured != "" && exists(Path(configured))) {
+        return configured
+    }
+    let candidates = [
+        "test/cangjie_eval/cases/Cangjie-HumanEval",
+        "cangjie_eval/cases/Cangjie-HumanEval",
+        "../test/cangjie_eval/cases/Cangjie-HumanEval",
+        "../cangjie_eval/cases/Cangjie-HumanEval"
+    ]
+    for (candidate in candidates) {
+        if (exists(Path(candidate))) {
+            return candidate
+        }
+    }
+    ""
+}
+
+private func ckbScheduledEvalSupportLocalRequest(source: CangjieVersionSource, config: CkbRuntimeConfig): SourceFetchRequest {
+    let ref = if (source.sourceRef.trimAscii() == "") { ckbScheduledTargetVersion(config) } else { source.sourceRef.trimAscii() }
+    let request = SourceFetchRequest(SourceKinds.GITCODE_SOURCE, "ckb-local://eval-support", repo: "ckb-local://eval-support", ref: ref, path: "eval-support-snapshot", accept: "text/plain", purpose: "local_eval_support_snapshot")
+    request.sourceVariant = "local"
+    request
+}
+
+private func ckbScheduledEvalSupportUnavailableFetch(request: SourceFetchRequest, status: String): SourceFetchResult {
+    let fetch = SourceFetchResult()
+    fetch.ok = false
+    fetch.status = status
+    fetch.sourceUrl = request.url
+    fetch.repo = request.repo
+    fetch.ref = request.ref
+    fetch.path = request.path
+    fetch.normalizedType = request.kind
+    fetch.body = status
+    fetch.bodyHash = stableSummaryHash(status)
+    fetch
+}
+
+private func ckbScheduledEvalSupportBody(extracted: CangjieTypedRecordResult): String {
+    let body = StringBuilder()
+    for (record in extracted.records) {
+        body.append("# ")
+        body.append(record.title)
+        body.append("\n")
+        body.append(record.content)
+        body.append("\n")
+        body.append("citation=")
+        body.append(record.citation)
+        body.append("\n\n")
+    }
+    body.toString()
+}
+
 private func ckbFetchScheduledSource(runner: SourceFetchRunner, request: SourceFetchRequest, profile: CkbScheduleTaskProfile, result: CkbScheduledProfileFetchResult, config: CkbRuntimeConfig): Unit {
+    let fetch = ckbFetchScheduledRequest(runner, request, config)
+    _ = ckbAppendScheduledSourceRecord(profile, result, request, fetch)
+}
+
+private func ckbFetchScheduledRequest(runner: SourceFetchRunner, request: SourceFetchRequest, config: CkbRuntimeConfig): SourceFetchResult {
     request.timeoutMillis = config.timeoutMillis
     request.retryCount = config.retryCount
-    let fetch = SourceResponseNormalizer().normalize(request, runner.fetch(request))
+    SourceResponseNormalizer().normalize(request, runner.fetch(request))
+}
+
+private func ckbAppendScheduledSourceRecord(profile: CkbScheduleTaskProfile, result: CkbScheduledProfileFetchResult, request: SourceFetchRequest, fetch: SourceFetchResult): CkbScheduledSourceRecord {
     result.requestCount += 1
     if (fetch.truncated) {
         result.truncated = true
@@ -4913,6 +5139,7 @@ private func ckbFetchScheduledSource(runner: SourceFetchRunner, request: SourceF
     record.title = ckbScheduledSourceTitle(request, profile)
     record.sourceId = "scheduled-${profile.profile}-${stableSummaryHash("${request.kind}:${request.url}:${request.repo}:${request.ref}:${fetch.bodyHash}")}"
     result.records.add(record)
+    record
 }
 
 private func ckbScheduledFetchDiagnostic(profile: CkbScheduleTaskProfile, request: SourceFetchRequest, fetch: SourceFetchResult): String {
@@ -4933,6 +5160,52 @@ private func ckbScheduledFetchPrimaryFailure(result: CkbScheduledProfileFetchRes
     "request_failed"
 }
 
+private func ckbEvaluateScheduledFetchReadiness(profile: CkbScheduleTaskProfile, fetch: CkbScheduledProfileFetchResult, manifest: CangjieVersionManifest): CkbScheduledFetchReadiness {
+    let readiness = CkbScheduledFetchReadiness()
+    if (fetch.records.size == 0) {
+        readiness.canPromote = false
+        readiness.requiredFailedCount += 1
+        readiness.diagnostics.add("scheduled_no_fetch_records:${profile.profile}")
+        return readiness
+    }
+    for (record in fetch.records) {
+        if (record.fetch.ok) {
+            if (record.request.repo == "ckb-local://eval-support" || record.fetch.status == "local_existing") {
+                readiness.recoveredCount += 1
+                readiness.diagnostics.add("source_recovered:${record.sourceSet}:${record.request.repo}:${record.fetch.status}")
+            }
+            continue
+        }
+        if (ckbScheduledSourceRequiredness(profile, record.sourceSet)) {
+            readiness.requiredFailedCount += 1
+            readiness.canPromote = false
+            readiness.diagnostics.add("required_source_failed:${record.sourceSet}:${record.request.repo}:${record.fetch.status}")
+        } else {
+            readiness.optionalFailedCount += 1
+            readiness.diagnostics.add("optional_source_failed:${record.sourceSet}:${record.request.repo}:${record.fetch.status}")
+        }
+    }
+    if (fetch.failedCount > readiness.requiredFailedCount + readiness.optionalFailedCount) {
+        readiness.canPromote = false
+        readiness.requiredFailedCount += fetch.failedCount - readiness.requiredFailedCount - readiness.optionalFailedCount
+        readiness.diagnostics.add("unclassified_fetch_failure:${profile.profile}:${fetch.failedCount}")
+    }
+    readiness
+}
+
+private func ckbScheduledSourceRequiredness(profile: CkbScheduleTaskProfile, sourceSet: String): Bool {
+    if (profile.profile == "cangjie_docs_full_sync") {
+        return sourceSet == CangjieSourceSets.DOCS || sourceSet == CangjieSourceSets.EVAL_SUPPORT
+    }
+    if (profile.profile == "cangjie_source_event_sync") {
+        return sourceSet == CangjieSourceSets.STD || sourceSet == CangjieSourceSets.STDX || sourceSet == CangjieSourceSets.TOOLS || sourceSet == CangjieSourceSets.EVAL_SUPPORT
+    }
+    if (profile.profile == "cangjie_release_full_sync" || profile.profile == "cangjie_version_branch_refresh") {
+        return sourceSet == CangjieSourceSets.DOCS || sourceSet == CangjieSourceSets.STD || sourceSet == CangjieSourceSets.STDX || sourceSet == CangjieSourceSets.TOOLS || sourceSet == CangjieSourceSets.EVAL_SUPPORT
+    }
+    true
+}
+
 private func ingestScheduledProfileSources(kb: KnowledgeBase, store: FileKnowledgeStore, profile: CkbScheduleTaskProfile, fetch: CkbScheduledProfileFetchResult, config: CkbRuntimeConfig, manifest: CangjieVersionManifest): CkbScheduledProfileIngestResult {
     let result = CkbScheduledProfileIngestResult()
     result.status = if (fetch.ok) { "profile_ok" } else { fetch.status }
@@ -4949,10 +5222,19 @@ private func ingestScheduledProfileSources(kb: KnowledgeBase, store: FileKnowled
         }
         return result
     }
-    if (!fetch.ok) {
+    let readiness = ckbEvaluateScheduledFetchReadiness(profile, fetch, manifest)
+    for (diagnostic in readiness.diagnostics) {
+        result.validationDiagnostics.add("readiness:${diagnostic}")
+    }
+    if (!readiness.canPromote) {
         result.ok = false
-        result.status = "fetch_degraded_candidate_not_promoted"
+        result.status = "scheduled_readiness_failed"
         return result
+    }
+    if (!fetch.ok) {
+        fetch.ok = true
+        fetch.status = "fetch_degraded_recovered"
+        result.validationDiagnostics.add("fetch_degraded_recovered:requiredFailed=${readiness.requiredFailedCount}:optionalFailed=${readiness.optionalFailedCount}:recovered=${readiness.recoveredCount}")
     }
     let delta = ckbScheduledTypedDeltaRecords(profile, fetch.records, config, manifest)
     if (delta.size == 0) {
@@ -5159,9 +5441,10 @@ private func ckbRefreshVersionManifestFromScheduledFetch(profile: CkbScheduleTas
     let out = CangjieVersionManifest()
     out.manifestVersion = manifest.manifestVersion
     out.defaultTargetVersion = if (manifest.defaultTargetVersion.trimAscii() == "") { ckbScheduledTargetVersion(config) } else { manifest.defaultTargetVersion }
-    out.degraded = manifest.degraded
     for (diagnostic in manifest.diagnostics) {
-        out.diagnostics.add(diagnostic)
+        if (ckbManifestDiagnosticStillRelevantAfterRefresh(diagnostic)) {
+            out.diagnostics.add(diagnostic)
+        }
     }
     for (source in manifest.sources) {
         let next = ckbCopyVersionSourceForService(source)
@@ -5171,12 +5454,15 @@ private func ckbRefreshVersionManifestFromScheduledFetch(profile: CkbScheduleTas
                 out.degraded = true
                 out.diagnostics.add("manifest_source_not_refreshed:${source.sourceSet}:${source.sourceRepo}:${source.sourceRef}")
             } else {
+                if (record.request.repo != "") {
+                    next.sourceRepo = record.request.repo
+                }
                 next.sourceRef = if (record.fetch.ref != "") { record.fetch.ref } else { if (record.request.ref != "") { record.request.ref } else { source.sourceRef } }
-                next.refKind = if (source.refKind == "") { "branch" } else { source.refKind }
+                next.refKind = if (record.request.repo == "ckb-local://eval-support") { "local" } else { if (source.refKind == "") { "branch" } else { source.refKind } }
                 next.resolvedCommit = if (record.fetch.commit != "") { record.fetch.commit } else { stableSummaryHash("${record.request.repo}:${record.request.ref}:${record.fetch.bodyHash}") }
                 next.contentHash = if (record.fetch.bodyHash != "") { record.fetch.bodyHash } else { source.contentHash }
                 next.targetVersion = ckbScheduledTargetVersion(config)
-                next.rootKind = "scheduled:${profile.profile}"
+                next.rootKind = ckbScheduledRecordRootKind(profile, record)
             }
         }
         out.sources.add(next)
@@ -5184,10 +5470,21 @@ private func ckbRefreshVersionManifestFromScheduledFetch(profile: CkbScheduleTas
     out
 }
 
+private func ckbManifestDiagnosticStillRelevantAfterRefresh(diagnostic: String): Bool {
+    !(diagnostic.contains("offline_baseline") || diagnostic.contains("offline-baseline") || diagnostic.contains("manifest_offline_baseline") || diagnostic.contains("version_manifest_contains_offline_baseline"))
+}
+
+private func ckbScheduledRecordRootKind(profile: CkbScheduleTaskProfile, record: CkbScheduledSourceRecord): String {
+    if (record.request.repo == "ckb-local://eval-support") {
+        return "local-eval-support"
+    }
+    "scheduled:${profile.profile}"
+}
+
 private func ckbFindScheduledManifestRecord(fetch: CkbScheduledProfileFetchResult, source: CangjieVersionSource): CkbScheduledSourceRecord {
     for (record in fetch.records) {
         let repo = if (record.request.repo != "") { record.request.repo } else { record.fetch.repo }
-        if (record.sourceSet == source.sourceSet && repo == source.sourceRepo) {
+        if (record.sourceSet == source.sourceSet && (repo == source.sourceRepo || source.sourceSet == CangjieSourceSets.EVAL_SUPPORT)) {
             return record
         }
     }
@@ -5221,12 +5518,18 @@ private func ckbPersistScheduledRepositoryEventCheckpoint(store: FileKnowledgeSt
     for (kind in profile.updatedDataKinds) {
         checkpoint.updatedDataKinds.add(kind)
     }
-    if (fetch.records.size > 0) {
-        let first = fetch.records[0]
-        checkpoint.repo = if (first.request.repo != "") { first.request.repo } else { first.fetch.repo }
-        checkpoint.ref = if (first.request.ref != "") { first.request.ref } else { first.fetch.ref }
-        if (first.request.path != "") {
-            checkpoint.matchedPaths.add(first.request.path)
+    for (record in fetch.records) {
+        if (!record.fetch.ok) {
+            continue
+        }
+        if (checkpoint.repo == "") {
+            checkpoint.repo = if (record.request.repo != "") { record.request.repo } else { record.fetch.repo }
+            checkpoint.ref = if (record.request.ref != "") { record.request.ref } else { record.fetch.ref }
+        }
+        if (record.request.path != "") {
+            checkpoint.matchedPaths.add(record.request.path)
+        } else if (record.request.repo != "") {
+            checkpoint.matchedPaths.add(record.request.repo)
         }
     }
     store.saveRepositoryEventCheckpoint(checkpoint)
@@ -5377,13 +5680,22 @@ private func ckbScheduledRawRecord(profile: CkbScheduleTaskProfile, record: CkbS
 }
 
 private func ckbScheduledVersionResolution(record: CkbScheduledSourceRecord, config: CkbRuntimeConfig, manifest: CangjieVersionManifest): CangjieVersionResolution {
-    resolveCangjieVersion(cangjieVersionSelector(
+    let resolution = resolveCangjieVersion(cangjieVersionSelector(
         targetVersion: ckbScheduledTargetVersion(config),
         sourceSet: if (record.sourceSet == "") { CangjieSourceSets.ALL } else { record.sourceSet },
         sourceFamily: record.sourceFamily,
         sourceRepo: if (record.request.repo != "") { record.request.repo } else { record.fetch.repo },
         sourceRef: if (record.request.ref != "") { record.request.ref } else { record.fetch.ref }),
         manifest)
+    if (!resolution.ok && record.sourceSet == CangjieSourceSets.EVAL_SUPPORT) {
+        return resolveCangjieVersion(cangjieVersionSelector(
+            targetVersion: ckbScheduledTargetVersion(config),
+            sourceSet: CangjieSourceSets.EVAL_SUPPORT,
+            sourceFamily: record.sourceFamily,
+            sourceRef: if (record.request.ref != "") { record.request.ref } else { record.fetch.ref }),
+            manifest)
+    }
+    resolution
 }
 
 private func ckbRuntimeCangjieVersionManifest(config: CkbRuntimeConfig): CangjieVersionManifest {
@@ -5428,6 +5740,7 @@ private func ckbScheduledSourceType(request: SourceFetchRequest): String {
 }
 
 private func ckbScheduledSourceFamily(request: SourceFetchRequest, profile: CkbScheduleTaskProfile): String {
+    if (request.repo == "ckb-local://eval-support" || request.url == "ckb-local://eval-support") { return "eval-support" }
     if (request.repo.contains("cangjie_docs") || request.kind == SourceKinds.CANGJIE_DOCS) { return "docs" }
     if (request.repo.contains("cangjie_runtime")) { return "stdlib" }
     if (request.repo.contains("cangjie_stdx")) { return "stdx" }
@@ -5440,6 +5753,7 @@ private func ckbScheduledSourceFamily(request: SourceFetchRequest, profile: CkbS
 }
 
 private func ckbScheduledSourceSet(request: SourceFetchRequest, profile: CkbScheduleTaskProfile): String {
+    if (request.repo == "ckb-local://eval-support" || request.url == "ckb-local://eval-support") { return CangjieSourceSets.EVAL_SUPPORT }
     if (request.repo.contains("cangjie_docs") || request.kind == SourceKinds.CANGJIE_DOCS) { return CangjieSourceSets.DOCS }
     if (request.repo.contains("cangjie_runtime")) { return CangjieSourceSets.STD }
     if (request.repo.contains("cangjie_stdx")) { return CangjieSourceSets.STDX }
@@ -5452,6 +5766,9 @@ private func ckbScheduledSourceSet(request: SourceFetchRequest, profile: CkbSche
 }
 
 private func ckbScheduledSourceTitle(request: SourceFetchRequest, profile: CkbScheduleTaskProfile): String {
+    if (request.repo == "ckb-local://eval-support") {
+        return "Scheduled ${profile.profile}: eval-support local HumanEval"
+    }
     if (request.repo != "") {
         return "Scheduled ${profile.profile}: ${request.repo}"
     }
