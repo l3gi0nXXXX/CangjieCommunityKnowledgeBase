@@ -1,5 +1,6 @@
 package cangjie_community_knowledge_base
 
+import std.collection.ArrayList
 import std.convert.Parsable
 import std.env.{getCommand, getVariable, getStdOut}
 import std.fs.{File, OpenMode, Path}
@@ -209,11 +210,23 @@ public func ckbCliMain(args: Array<String>): Int64 {
     }
     if (cli.command == "scheduler-run") {
         let executor = SchedulerExecutor(kb.scheduler, CkbSchedulerTaskRunner(kb, config, store, sourceRunner: if (config.networkEnabled) { HttpSourceFetchRunner(config) } else { DisabledNetworkFetchRunner() }))
-        let result = executor.runDue()
+        let taskNames = ckbCliSchedulerTaskNames(args)
+        let result = if (hasArg(args, "--force-all")) {
+            executor.runTaskNames(ckbSchedulerAllowlistTaskNames(), force: true)
+        } else if (taskNames.size > 0) {
+            executor.runTaskNames(taskNames, force: hasArg(args, "--force"))
+        } else {
+            executor.runDue()
+        }
         store.saveScheduler(kb.scheduler.entries)
-        print("scheduler ran=${result.ran} succeeded=${result.succeeded} failed=${result.failed} degraded=${result.degraded}\n")
-        print(result.details)
-        return if (result.failed > 0) { 1 } else { 0 }
+        store.saveSchedulerLoopMetadata(if (result.failed == 0 && result.degraded == 0) { "running" } else { "failed" }, config.schedulerEnabled, config.schedulerLoopIntervalMillis, if (result.forced) { "cli_forced" } else { "cli_due" }, 0, result.ran, result.taskNames, if (result.failed == 0 && result.degraded == 0) { "ok" } else { "scheduler_cli_run_degraded" })
+        if (ckbCliWantsJson(args)) {
+            println(ckbCliSchedulerRunJson(result))
+        } else {
+            print("scheduler ran=${result.ran} succeeded=${result.succeeded} failed=${result.failed} degraded=${result.degraded} forced=${result.forced}\n")
+            print(result.details)
+        }
+        return if (result.failed > 0 || result.degraded > 0) { 1 } else { 0 }
     }
     if (cli.command == "backup") {
         let result = store.backupActiveSnapshot(cliTail(input, "backup", ""))
@@ -240,7 +253,7 @@ public func ckbCliMain(args: Array<String>): Int64 {
         print(renderQuery(cangjie_evidence_pack(kb, query, 3)))
         return 0
     }
-    println("Usage: cangjie_community_knowledge_base [--config <path>] [--store <path>] doctor | status | metrics | service | service-http | http-service | mcp-stdio | cangjie-initialize (--dry-run|--apply) --docs-root <path> --std-root <path> --stdx-root <path> --eval-root <path> | cangjie-landing-status [--format json] | service-once <command> | start | stop | restart | sync-once | sync-live (--dry-run|--apply) | source_analysis repo=<owner/repo> ref=<ref> path=<path> | native-http-smoke <url> | cangjie-corpus-status | cangjie-knowledge-pack <task> | cangjie-api-search <query> | cangjie-syntax-query <query> | cangjie-cookbook <task> | cangjie-diagnose <compiler-output> | cangjie-llms [task] | cangjie-context-pack <task> | cangjie-eval-summary <manifest.jsonl> | cangjie-eval-abcde [--preflight-only] | cangjie-eval-knowledge-audit --run-root <path> | cangjie-humaneval-pass1-gate --run-root <path> | cangjie-knowledge-release-gate --run-root <path> --manifest <manifest.jsonl> | cangjie-typed-ingest-smoke --docs-root <path> --case-root <path> | cangjie-serving-feed-smoke | cangjie-serving-query-smoke | cangjie-update-promotion-smoke | cangjie-abcde-parity-smoke | cangjie-humaneval-pass1-gate-smoke | scheduler-run | rebuild-index | backup <path> | restore <path> | query <text> | evidence <text> | schema")
+    println("Usage: cangjie_community_knowledge_base [--config <path>] [--store <path>] doctor | status | metrics | service | service-http | http-service | mcp-stdio | cangjie-initialize (--dry-run|--apply) --docs-root <path> --std-root <path> --stdx-root <path> --eval-root <path> | cangjie-landing-status [--format json] | service-once <command> | start | stop | restart | sync-once | sync-live (--dry-run|--apply) | source_analysis repo=<owner/repo> ref=<ref> path=<path> | native-http-smoke <url> | cangjie-corpus-status | cangjie-knowledge-pack <task> | cangjie-api-search <query> | cangjie-syntax-query <query> | cangjie-cookbook <task> | cangjie-diagnose <compiler-output> | cangjie-llms [task] | cangjie-context-pack <task> | cangjie-eval-summary <manifest.jsonl> | cangjie-eval-abcde [--preflight-only] | cangjie-eval-knowledge-audit --run-root <path> | cangjie-humaneval-pass1-gate --run-root <path> | cangjie-knowledge-release-gate --run-root <path> --manifest <manifest.jsonl> | cangjie-typed-ingest-smoke --docs-root <path> --case-root <path> | cangjie-serving-feed-smoke | cangjie-serving-query-smoke | cangjie-update-promotion-smoke | cangjie-abcde-parity-smoke | cangjie-humaneval-pass1-gate-smoke | scheduler-run [--force-all|--task <name> [--force]] [--json] | rebuild-index | backup <path> | restore <path> | query <text> | evidence <text> | schema")
     2
 }
 
@@ -430,6 +443,39 @@ private func hasArg(args: Array<String>, name: String): Bool {
         }
     }
     false
+}
+
+private func ckbCliSchedulerTaskNames(args: Array<String>): ArrayList<String> {
+    let names = ArrayList<String>()
+    var i: Int64 = 0
+    while (i < args.size) {
+        if (args[i] == "--task" && i + 1 < args.size) {
+            names.add(args[i + 1])
+            i += 2
+            continue
+        }
+        i += 1
+    }
+    names
+}
+
+private func ckbCliSchedulerRunJson(result: SchedulerExecutorResult): String {
+    "{\"ran\":${result.ran},\"succeeded\":${result.succeeded},\"failed\":${result.failed},\"degraded\":${result.degraded},\"forced\":${result.forced},\"taskNames\":${ckbCliStringArrayJson(result.taskNames)},\"details\":\"${ckbCliJsonEscape(result.details)}\",\"validationSummaries\":${ckbCliStringArrayJson(result.validationSummaries)},\"validationDiagnostics\":${ckbCliStringArrayJson(result.validationDiagnostics)},\"validationEvidenceHashes\":${ckbCliStringArrayJson(result.validationEvidenceHashes)}}"
+}
+
+private func ckbCliStringArrayJson(values: ArrayList<String>): String {
+    var out = "["
+    for (i in 0..values.size) {
+        if (i > 0) {
+            out += ","
+        }
+        out += "\"${ckbCliJsonEscape(values[i])}\""
+    }
+    out + "]"
+}
+
+private func ckbCliJsonEscape(raw: String): String {
+    redactSensitive(raw).replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
 }
 
 private func parseNextInt(args: Array<String>, index: Int64, fallback: Int64): Int64 {

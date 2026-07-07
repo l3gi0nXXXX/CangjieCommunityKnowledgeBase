@@ -88,6 +88,16 @@ public func probeCangjieCorpusFreshness(manifest: CangjieVersionManifest, runner
     }
     let builder = SourceRequestBuilder()
     for (source in manifest.sources) {
+        if (cangjieFreshnessSourceIsLocalSemantic(source)) {
+            let item = cangjieFreshnessSourceFromLocalManifest(source)
+            report.sources.add(item)
+            if (item.status == "degraded") {
+                report.ok = false
+                report.degraded = true
+                report.diagnostics.add("${source.sourceSet}:manifest_${item.staleness}")
+            }
+            continue
+        }
         let request = cangjieFreshnessProbeRequest(builder, source)
         let fetch = SourceResponseNormalizer().normalize(request, runner.fetch(request))
         let item = cangjieFreshnessSourceFromProbe(source, fetch)
@@ -103,6 +113,40 @@ public func probeCangjieCorpusFreshness(manifest: CangjieVersionManifest, runner
         }
     }
     report
+}
+
+private func cangjieFreshnessSourceIsLocalSemantic(source: CangjieVersionSource): Bool {
+    source.rootKind == "git-root" ||
+        source.rootKind == "git-worktree" ||
+        source.rootKind == "offline-baseline" ||
+        source.refKind == "local" ||
+        source.sourceSet == CangjieSourceSets.EVAL_SUPPORT ||
+        source.sourceRepo.startsWith("CangjieCommunityKnowledgeBase/")
+}
+
+private func cangjieFreshnessSourceFromLocalManifest(source: CangjieVersionSource): CangjieCorpusFreshnessSource {
+    let item = CangjieCorpusFreshnessSource()
+    item.sourceSet = source.sourceSet
+    item.sourceFamily = source.sourceFamily
+    item.sourceRepo = source.sourceRepo
+    item.sourceRef = source.sourceRef
+    item.refKind = source.refKind
+    item.resolvedCommit = source.resolvedCommit
+    item.contentHash = source.contentHash
+    item.targetVersion = source.targetVersion
+    item.crawlAt = if (source.rootKind == "offline-baseline") { "offline-baseline" } else { "manifest:${source.rootKind}" }
+    item.indexedAt = source.resolvedCommit
+    if (source.rootKind == "offline-baseline" || source.resolvedCommit.startsWith("offline-baseline")) {
+        item.staleness = "offline_baseline"
+        item.status = "degraded"
+    } else if (source.contentHash == "" || source.resolvedCommit == "") {
+        item.staleness = "unknown"
+        item.status = "degraded"
+    } else {
+        item.staleness = "fresh"
+        item.status = "fresh"
+    }
+    item
 }
 
 private func cangjieFreshnessProbeRequest(builder: SourceRequestBuilder, source: CangjieVersionSource): SourceFetchRequest {

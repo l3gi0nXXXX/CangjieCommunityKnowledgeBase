@@ -103,6 +103,16 @@ public class CangjieVersionManifestTest {
     }
 
     @TestCase
+    public func p3Bnd001ManifestDetectsOfflineBaselineAndComputesEvidenceHash(): Unit {
+        let offline = defaultCangjieVersionManifest()
+        let local = buildCangjieVersionManifestFromRoots(targetVersion: "1.0.0")
+
+        @Expect(cangjieManifestHasOfflineBaseline(offline), true)
+        @Expect(cangjieManifestEvidenceHash(offline) != "", true)
+        @Expect(cangjieManifestEvidenceHash(local) != "", true)
+    }
+
+    @TestCase
     public func stB001UnsupportedSourceSetReturnsDiagnostic(): Unit {
         let resolution = resolveCangjieVersion(cangjieVersionSelector(targetVersion: "1.0.0", sourceSet: "private-src", versionPolicy: "exact"), defaultCangjieVersionManifest())
 

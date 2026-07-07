@@ -73,6 +73,31 @@ public class CangjieRoutineUpdateContractsTest {
         @Expect(validation.ok, false)
         @Expect(validation.diagnostic.contains("active_mutation_forbidden"), true)
     }
+
+    @TestCase
+    public func p7Neg02ContractFailsWhenRequiredArtifactIsMissing(): Unit {
+        let task = SchedulerTaskResult()
+        task.ok = true
+        task.status = "candidate_validated_promoted"
+        task.activeVersion = "active-v2"
+        task.candidateVersion = "candidate-v2"
+        task.validationStatus = "candidate_validation_passed"
+        task.updatedDataKinds.add("release")
+        task.updatedDataKinds.add("version_manifest")
+        let artifacts = CkbRoutineArtifactStatus()
+        artifacts.ok = false
+        artifacts.missingArtifacts.add("metadata/cangjie-version-manifest.ckb")
+        artifacts.evidenceHash = "artifact-missing"
+
+        let validation = validateSchedulerTaskResultAgainstContractWithArtifacts("cangjie_release_full_sync", task, p7Invariant("active-v1"), p7Invariant("active-v2"), artifacts)
+        let rendered = renderCkbRoutineContractValidationJson(validation)
+
+        @Expect(validation.ok, false)
+        @Expect(validation.diagnostic.contains("required_artifact_missing"), true)
+        @Expect(validation.missingArtifacts.contains("metadata/cangjie-version-manifest.ckb"), true)
+        @Expect(rendered.contains("\"missingArtifacts\""), true)
+        @Expect(rendered.contains("metadata/cangjie-version-manifest.ckb"), true)
+    }
 }
 
 private func p7HasKu(contracts: ArrayList<CkbRoutineUpdateContract>, id: String): Bool {

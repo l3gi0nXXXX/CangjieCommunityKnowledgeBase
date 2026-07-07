@@ -3818,6 +3818,34 @@ private func ckbAddCangjieSourceFamilies(profile: CkbScheduleTaskProfile): Unit 
     profile.sourceFamilies.add("eval-support")
 }
 
+private func ckbRoutineArtifactStatusForTask(store: FileKnowledgeStore, config: CkbRuntimeConfig, contract: CkbSchedulerTaskContract, task: SchedulerTaskResult): CkbRoutineArtifactStatus {
+    let status = CkbRoutineArtifactStatus()
+    if (contract.taskName == "") {
+        status.evidenceHash = stableSummaryHash("artifact_status:missing_contract")
+        return status
+    }
+    for (artifact in contract.requiredArtifacts) {
+        if (ckbRoutineArtifactExistsForTask(store, config, artifact, task)) {
+            status.presentArtifacts.add(artifact)
+        } else {
+            status.ok = false
+            status.missingArtifacts.add(artifact)
+        }
+    }
+    status.evidenceHash = stableSummaryHash("${contract.taskName}:${joinStrings(status.presentArtifacts, ",")}:${joinStrings(status.missingArtifacts, ",")}:${task.candidateVersion}:${task.activeVersion}")
+    status
+}
+
+private func ckbRoutineArtifactExistsForTask(store: FileKnowledgeStore, config: CkbRuntimeConfig, artifact: String, task: SchedulerTaskResult): Bool {
+    if (artifact == "normalized/candidate") {
+        return task.candidateVersion != "" && store.has("normalized/candidate/${safeName(task.candidateVersion)}.ckb")
+    }
+    if (artifact == "gap-curation-input.jsonl") {
+        return config.benchmarkGapCurationInputPath.trimAscii() != "" && exists(Path(config.benchmarkGapCurationInputPath))
+    }
+    store.has(artifact)
+}
+
 public func ckbProfilesForRepositoryChangedEvent(event: GitCodeRepositoryChangedEvent, config: CkbRuntimeConfig): ArrayList<String> {
     let profiles = ArrayList<String>()
     if (event.changedFilesUnavailable || event.changedFiles.size == 0) {
@@ -3893,9 +3921,18 @@ public class CkbSchedulerTaskRunner <: SchedulerTaskRunner {
             return this.finalizeTaskResultWithContract(name, result, beforeInvariant)
         }
         if (profile.profile == "cangjie_freshness_probe") {
-            let freshness = probeCangjieCorpusFreshness(this.runtimeVersionManifest(), this.sourceRunner)
-            this.store.saveCangjieCorpusFreshness(freshness)
+            let manifest = this.runtimeVersionManifest()
+            let freshness = probeCangjieCorpusFreshness(manifest, this.sourceRunner)
             let status = this.kb.status()
+            freshness.activeKnowledgeVersion = status.activeKnowledgeVersion
+            freshness.candidateKnowledgeVersion = status.candidateKnowledgeVersion
+            freshness.failedCandidateVersion = status.failedCandidateVersion
+            if (cangjieManifestHasOfflineBaseline(manifest)) {
+                freshness.ok = false
+                freshness.degraded = true
+                freshness.diagnostics.add("version_manifest_contains_offline_baseline")
+            }
+            this.store.saveCangjieCorpusFreshness(freshness)
             result.ok = freshness.ok && !freshness.degraded
             result.status = if (result.ok) { "freshness_probe_ok" } else { "freshness_probe_degraded" }
             result.cursor = stableSummaryHash("${freshness.targetVersion}:${freshness.sources.size}:${freshness.degraded}")
@@ -3930,7 +3967,9 @@ public class CkbSchedulerTaskRunner <: SchedulerTaskRunner {
     }
 
     private func finalizeTaskResultWithContract(name: String, result: SchedulerTaskResult, beforeInvariant: CkbRoutineActiveInvariant): SchedulerTaskResult {
-        let validation = validateSchedulerTaskResultAgainstContract(name, result, beforeInvariant, ckbRoutineActiveInvariantFromStatus(this.kb.status()))
+        let contract = ckbSchedulerTaskContractForName(name)
+        let artifactStatus = ckbRoutineArtifactStatusForTask(this.store, this.config, contract, result)
+        let validation = validateSchedulerTaskResultAgainstContractWithArtifacts(name, result, beforeInvariant, ckbRoutineActiveInvariantFromStatus(this.kb.status()), artifactStatus)
         result.validationDiagnostics.add("routine_contract:${renderCkbRoutineContractValidationJson(validation)}")
         if (!validation.ok) {
             result.ok = false
@@ -4736,6 +4775,9 @@ private func ingestScheduledProfileSources(kb: KnowledgeBase, store: FileKnowled
     }
     if (profile.candidateMode == "" || profile.candidateMode == "none" || profile.candidateMode == "probe_only") {
         result.ok = fetch.ok
+        if (result.ok) {
+            ckbPersistProbeOnlyScheduledArtifacts(store, profile, fetch, config, manifest, result)
+        }
         return result
     }
     if (!fetch.ok) {
@@ -4753,6 +4795,12 @@ private func ingestScheduledProfileSources(kb: KnowledgeBase, store: FileKnowled
     let candidateRecords = kb.activeRecordSnapshotOverlay(delta)
     let promotion = cangjiePromoteCandidateRecordsAfterValidationWithVersion(kb, store, candidateVersion, candidateRecords)
     ckbApplyScheduledPromotionResult(result, promotion, "candidate_validated_promoted")
+    if (result.ok && (profile.profile == "cangjie_release_full_sync" || profile.profile == "cangjie_version_branch_refresh")) {
+        ckbPersistScheduledVersionManifestAfterRefresh(store, profile, fetch, config, manifest, result)
+    }
+    if (result.ok && profile.profile == "cangjie_source_event_sync") {
+        ckbPersistScheduledRepositoryEventCheckpoint(store, profile, fetch, result)
+    }
     result
 }
 
@@ -4883,6 +4931,159 @@ private func ckbApplyScheduledPromotionResult(result: CkbScheduledProfileIngestR
     }
     result.ok = promotion.ok
     result.status = if (promotion.ok) { successStatus } else { "candidate_validation_failed" }
+}
+
+private func ckbPersistScheduledVersionManifestAfterRefresh(store: FileKnowledgeStore, profile: CkbScheduleTaskProfile, fetch: CkbScheduledProfileFetchResult, config: CkbRuntimeConfig, manifest: CangjieVersionManifest, result: CkbScheduledProfileIngestResult): Unit {
+    let refreshed = ckbRefreshVersionManifestFromScheduledFetch(profile, fetch, config, manifest)
+    if (refreshed.sources.size == 0) {
+        result.ok = false
+        result.status = "version_manifest_empty_after_refresh"
+        result.validationDiagnostics.add("version_manifest_empty_after_refresh")
+        return
+    }
+    store.saveCangjieVersionManifest(refreshed)
+    let loaded = store.loadCangjieVersionManifest()
+    if (loaded.sources.size != refreshed.sources.size) {
+        result.ok = false
+        result.status = "version_manifest_write_verify_failed"
+        result.validationDiagnostics.add("version_manifest_write_verify_failed")
+        return
+    }
+    result.validationDiagnostics.add("version_manifest_saved:${loaded.sources.size}:${cangjieManifestEvidenceHash(loaded)}")
+    for (diagnostic in refreshed.diagnostics) {
+        result.validationDiagnostics.add("version_manifest_diagnostic:${diagnostic}")
+    }
+}
+
+private func ckbRefreshVersionManifestFromScheduledFetch(profile: CkbScheduleTaskProfile, fetch: CkbScheduledProfileFetchResult, config: CkbRuntimeConfig, manifest: CangjieVersionManifest): CangjieVersionManifest {
+    let out = CangjieVersionManifest()
+    out.manifestVersion = manifest.manifestVersion
+    out.defaultTargetVersion = if (manifest.defaultTargetVersion.trimAscii() == "") { ckbScheduledTargetVersion(config) } else { manifest.defaultTargetVersion }
+    out.degraded = manifest.degraded
+    for (diagnostic in manifest.diagnostics) {
+        out.diagnostics.add(diagnostic)
+    }
+    for (source in manifest.sources) {
+        let next = ckbCopyVersionSourceForService(source)
+        if (ckbScheduledManifestSourceIncluded(source, true, true, true, true)) {
+            let record = ckbFindScheduledManifestRecord(fetch, source)
+            if (record.sourceId == "" || !record.fetch.ok) {
+                out.degraded = true
+                out.diagnostics.add("manifest_source_not_refreshed:${source.sourceSet}:${source.sourceRepo}:${source.sourceRef}")
+            } else {
+                next.sourceRef = if (record.fetch.ref != "") { record.fetch.ref } else { if (record.request.ref != "") { record.request.ref } else { source.sourceRef } }
+                next.refKind = if (source.refKind == "") { "branch" } else { source.refKind }
+                next.resolvedCommit = if (record.fetch.commit != "") { record.fetch.commit } else { stableSummaryHash("${record.request.repo}:${record.request.ref}:${record.fetch.bodyHash}") }
+                next.contentHash = if (record.fetch.bodyHash != "") { record.fetch.bodyHash } else { source.contentHash }
+                next.targetVersion = ckbScheduledTargetVersion(config)
+                next.rootKind = "scheduled:${profile.profile}"
+            }
+        }
+        out.sources.add(next)
+    }
+    out
+}
+
+private func ckbFindScheduledManifestRecord(fetch: CkbScheduledProfileFetchResult, source: CangjieVersionSource): CkbScheduledSourceRecord {
+    for (record in fetch.records) {
+        let repo = if (record.request.repo != "") { record.request.repo } else { record.fetch.repo }
+        if (record.sourceSet == source.sourceSet && repo == source.sourceRepo) {
+            return record
+        }
+    }
+    CkbScheduledSourceRecord()
+}
+
+private func ckbCopyVersionSourceForService(source: CangjieVersionSource): CangjieVersionSource {
+    let out = CangjieVersionSource()
+    out.targetVersion = source.targetVersion
+    out.sourceSet = source.sourceSet
+    out.sourceFamily = source.sourceFamily
+    out.sourceRepo = source.sourceRepo
+    out.sourceRef = source.sourceRef
+    out.refKind = source.refKind
+    out.resolvedCommit = source.resolvedCommit
+    out.contentHash = source.contentHash
+    out.rootKind = source.rootKind
+    out
+}
+
+private func ckbPersistScheduledRepositoryEventCheckpoint(store: FileKnowledgeStore, profile: CkbScheduleTaskProfile, fetch: CkbScheduledProfileFetchResult, ingest: CkbScheduledProfileIngestResult): Unit {
+    let checkpoint = CkbAdminOperationResult()
+    checkpoint.status = ingest.status
+    checkpoint.degraded = !ingest.ok
+    checkpoint.diagnostic = "scheduled_repository_event_checkpoint"
+    checkpoint.profile = profile.profile
+    checkpoint.requestCount = fetch.requestCount
+    checkpoint.truncated = fetch.truncated
+    checkpoint.activeKnowledgeVersion = ingest.activeVersion
+    checkpoint.candidateKnowledgeVersion = ingest.candidateVersion
+    for (kind in profile.updatedDataKinds) {
+        checkpoint.updatedDataKinds.add(kind)
+    }
+    if (fetch.records.size > 0) {
+        let first = fetch.records[0]
+        checkpoint.repo = if (first.request.repo != "") { first.request.repo } else { first.fetch.repo }
+        checkpoint.ref = if (first.request.ref != "") { first.request.ref } else { first.fetch.ref }
+        if (first.request.path != "") {
+            checkpoint.matchedPaths.add(first.request.path)
+        }
+    }
+    store.saveRepositoryEventCheckpoint(checkpoint)
+    ingest.validationDiagnostics.add("repository_event_checkpoint_saved:${checkpoint.repo}:${checkpoint.ref}")
+}
+
+private func ckbPersistProbeOnlyScheduledArtifacts(store: FileKnowledgeStore, profile: CkbScheduleTaskProfile, fetch: CkbScheduledProfileFetchResult, config: CkbRuntimeConfig, manifest: CangjieVersionManifest, ingest: CkbScheduledProfileIngestResult): Unit {
+    if (profile.profile == "community_repo_discovery") {
+        let result = CkbAdminOperationResult()
+        result.status = "ok"
+        result.degraded = false
+        result.diagnostic = "scheduled_repo_discovery_checkpoint"
+        result.repo = "cangjie"
+        result.ref = "scheduled"
+        result.requestCount = fetch.requestCount
+        result.repoCount = fetch.fetchedCount
+        result.activeRepoListVersion = stableSummaryHash("repo-list:${fetch.requestCount}:${fetch.fetchedCount}:${fetch.runId}")
+        result.candidateRepoListVersion = "${result.activeRepoListVersion}-candidate"
+        for (record in fetch.records) {
+            if (record.request.repo != "") {
+                result.matchedPaths.add(record.request.repo)
+            } else if (record.request.url != "") {
+                result.matchedPaths.add(record.request.url)
+            }
+        }
+        result.updatedDataKinds.add("repo_catalog")
+        store.saveRepositoryListRefresh(result)
+        ingest.validationDiagnostics.add("repo_list_checkpoint_saved:${result.repoCount}")
+    } else if (profile.profile == "docs_probe") {
+        let report = CangjieCorpusFreshnessReport()
+        report.targetVersion = if (manifest.defaultTargetVersion.trimAscii() == "") { ckbScheduledTargetVersion(config) } else { manifest.defaultTargetVersion }
+        report.ok = true
+        report.degraded = false
+        for (record in fetch.records) {
+            let source = CangjieCorpusFreshnessSource()
+            source.sourceSet = CangjieSourceSets.DOCS
+            source.sourceFamily = "docs"
+            source.sourceRepo = if (record.fetch.repo != "") { record.fetch.repo } else { record.request.repo }
+            source.sourceRef = if (record.fetch.ref != "") { record.fetch.ref } else { if (record.request.ref != "") { record.request.ref } else { ckbScheduledTargetVersion(config) } }
+            source.refKind = "probe"
+            source.resolvedCommit = if (record.fetch.commit != "") { record.fetch.commit } else { stableSummaryHash("${record.request.url}:${record.fetch.bodyHash}") }
+            source.contentHash = if (record.fetch.bodyHash != "") { record.fetch.bodyHash } else { stableSummaryHash(record.fetch.body) }
+            source.targetVersion = report.targetVersion
+            source.crawlAt = if (record.fetch.lastModified != "") { record.fetch.lastModified } else { "scheduled:${profile.profile}" }
+            source.indexedAt = source.resolvedCommit
+            source.staleness = "fresh"
+            source.status = "fresh"
+            report.sources.add(source)
+        }
+        if (report.sources.size == 0) {
+            report.ok = false
+            report.degraded = true
+            report.diagnostics.add("docs_probe_no_sources")
+        }
+        store.saveCangjieCorpusFreshness(report)
+        ingest.validationDiagnostics.add("docs_probe_freshness_saved:${report.sources.size}")
+    }
 }
 
 private func ckbScheduledTypedDeltaRecords(profile: CkbScheduleTaskProfile, records: ArrayList<CkbScheduledSourceRecord>, config: CkbRuntimeConfig, manifest: CangjieVersionManifest): ArrayList<NormalizedRecord> {

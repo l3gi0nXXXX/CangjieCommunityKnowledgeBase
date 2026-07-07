@@ -93,7 +93,7 @@ public class CkbSchedulerServiceF5Test {
     public func f5Bnd01FreshnessProbeMarksStaleAndFailedSourcesDegraded(): Unit {
         let runner = F5FreshnessProbeRunner()
 
-        let report = probeCangjieCorpusFreshness(defaultCangjieVersionManifest(), runner)
+        let report = probeCangjieCorpusFreshness(f5ScheduledManifest(), runner)
 
         @Expect(report.ok, false)
         @Expect(report.degraded, true)
@@ -191,6 +191,7 @@ public class CkbSchedulerServiceF5Test {
         let config = CkbRuntimeConfig()
         config.networkEnabled = true
         let store = FileKnowledgeStore("target/p5-freshness-artifact")
+        store.saveCangjieVersionManifest(f5ScheduledManifest())
         let service = CkbCommandLoopService(config, store, sourceRunner: F5FreshnessUpToDateRunner())
         _ = service.start()
         let before = service.statusSnapshot().activeKnowledgeVersion
@@ -204,6 +205,49 @@ public class CkbSchedulerServiceF5Test {
         @Expect(result.succeeded, 1)
         @Expect(after.activeKnowledgeVersion, before)
         @Expect(store.has("metadata/cangjie-freshness.ckb"), true)
+    }
+
+    @TestCase
+    public func p7Pos001ReleaseRefreshPersistsVersionManifestArtifact(): Unit {
+        let config = CkbRuntimeConfig()
+        config.networkEnabled = true
+        let store = FileKnowledgeStore("target/p7-release-refresh-manifest")
+        store.saveCangjieVersionManifest(f5ScheduledManifest())
+        let service = CkbCommandLoopService(config, store, sourceRunner: FakeSourceFetchRunner())
+        _ = service.start()
+        let tasks = ArrayList<String>()
+        tasks.add("cangjie_release_full_sync")
+
+        let result = service.runSchedulerTasks(tasks, true)
+        let manifest = store.loadCangjieVersionManifest()
+
+        @Expect(result.ran, 1)
+        @Expect(result.succeeded, 1)
+        @Expect(result.failed, 0)
+        @Expect(store.has("metadata/cangjie-version-manifest.ckb"), true)
+        @Expect(manifest.sources.size >= 4, true)
+        @Expect(f5HasManifestRootKind(manifest, "scheduled:cangjie_release_full_sync"), true)
+        @Expect(f7SchedulerDiagnosticsContain(result, "version_manifest_saved:"), true)
+    }
+
+    @TestCase
+    public func p7Pos002SourceEventSchedulerPersistsRepositoryEventArtifact(): Unit {
+        let config = CkbRuntimeConfig()
+        config.networkEnabled = true
+        let store = FileKnowledgeStore("target/p7-source-event-checkpoint")
+        store.saveCangjieVersionManifest(f5ScheduledManifest())
+        let service = CkbCommandLoopService(config, store, sourceRunner: FakeSourceFetchRunner())
+        _ = service.start()
+        let tasks = ArrayList<String>()
+        tasks.add("cangjie_source_event_sync")
+
+        let result = service.runSchedulerTasks(tasks, true)
+
+        @Expect(result.ran, 1)
+        @Expect(result.succeeded, 1)
+        @Expect(result.failed, 0)
+        @Expect(store.has("metadata/repository-event-latest.ckb"), true)
+        @Expect(f7SchedulerDiagnosticsContain(result, "repository_event_checkpoint_saved:"), true)
     }
 
     @TestCase
@@ -423,21 +467,21 @@ private class F5FreshnessUpToDateRunner <: SourceFetchRunner {
 
     private func expectedCommit(request: SourceFetchRequest): String {
         if (request.kind == SourceKinds.CANGJIE_DOCS) {
-            return "offline-baseline-docs"
+            return "fresh-docs"
         }
         if (request.repo == "Cangjie/cangjie_runtime") {
-            return "offline-baseline-std"
+            return "fresh-std"
         }
         if (request.repo == "Cangjie/cangjie_stdx") {
-            return "offline-baseline-stdx"
+            return "fresh-stdx"
         }
         if (request.repo == "Cangjie/cangjie_tools") {
-            return "offline-baseline-tools"
+            return "fresh-tools"
         }
         if (request.repo == "CangjieCommunityKnowledgeBase/Cangjie-HumanEval") {
-            return "offline-baseline-eval"
+            return "fresh-eval"
         }
-        "offline-baseline-unknown"
+        "fresh-unknown"
     }
 }
 
@@ -509,6 +553,40 @@ private func f5AnyScheduleLastRequestCount(status: KnowledgeStatus): Int64 {
 private func f5ValidationHasDiagnostic(validation: CangjieCandidateValidationResult, diagnostic: String): Bool {
     for (item in validation.diagnostics) {
         if (item == diagnostic) {
+            return true
+        }
+    }
+    false
+}
+
+private func f5ScheduledManifest(): CangjieVersionManifest {
+    let manifest = CangjieVersionManifest()
+    manifest.defaultTargetVersion = cangjieDefaultTargetVersion()
+    f5AddManifestSource(manifest, CangjieSourceSets.DOCS, "docs", "Cangjie/cangjie_docs", "release-1.0.0", "fresh-docs")
+    f5AddManifestSource(manifest, CangjieSourceSets.STD, "stdlib", "Cangjie/cangjie_runtime", "release-1.0.0", "fresh-std")
+    f5AddManifestSource(manifest, CangjieSourceSets.STDX, "stdx", "Cangjie/cangjie_stdx", "release-1.0.0", "fresh-stdx")
+    f5AddManifestSource(manifest, CangjieSourceSets.TOOLS, "tools", "Cangjie/cangjie_tools", "release-1.0.0", "fresh-tools")
+    f5AddManifestSource(manifest, CangjieSourceSets.EVAL_SUPPORT, "eval-support", "CangjieCommunityKnowledgeBase/Cangjie-HumanEval", "release-1.0.0", "fresh-eval")
+    manifest
+}
+
+private func f5AddManifestSource(manifest: CangjieVersionManifest, sourceSet: String, sourceFamily: String, repo: String, ref: String, commit: String): Unit {
+    let source = CangjieVersionSource()
+    source.targetVersion = cangjieDefaultTargetVersion()
+    source.sourceSet = sourceSet
+    source.sourceFamily = sourceFamily
+    source.sourceRepo = repo
+    source.sourceRef = ref
+    source.refKind = "branch"
+    source.resolvedCommit = commit
+    source.contentHash = "sha256:${commit}"
+    source.rootKind = "scheduled:test"
+    manifest.sources.add(source)
+}
+
+private func f5HasManifestRootKind(manifest: CangjieVersionManifest, rootKind: String): Bool {
+    for (source in manifest.sources) {
+        if (source.rootKind == rootKind) {
             return true
         }
     }

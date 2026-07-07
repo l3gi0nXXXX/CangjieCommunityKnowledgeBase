@@ -153,6 +153,49 @@ public func cangjieVersionSelector(targetVersion!: String = "", sourceSet!: Stri
     selector
 }
 
+public func cangjieManifestHasOfflineBaseline(manifest: CangjieVersionManifest): Bool {
+    for (source in manifest.sources) {
+        if (source.rootKind == "offline-baseline" || source.resolvedCommit.startsWith("offline-baseline")) {
+            return true
+        }
+    }
+    false
+}
+
+public func cangjieManifestEvidenceHash(manifest: CangjieVersionManifest): String {
+    let text = StringBuilder()
+    text.append(manifest.manifestVersion)
+    text.append("|")
+    text.append(manifest.defaultTargetVersion)
+    text.append("|")
+    text.append("${manifest.degraded}")
+    for (diagnostic in manifest.diagnostics) {
+        text.append("|diagnostic:")
+        text.append(diagnostic)
+    }
+    for (source in manifest.sources) {
+        text.append("|source:")
+        text.append(source.targetVersion)
+        text.append(":")
+        text.append(source.sourceSet)
+        text.append(":")
+        text.append(source.sourceFamily)
+        text.append(":")
+        text.append(source.sourceRepo)
+        text.append(":")
+        text.append(source.sourceRef)
+        text.append(":")
+        text.append(source.refKind)
+        text.append(":")
+        text.append(source.resolvedCommit)
+        text.append(":")
+        text.append(source.contentHash)
+        text.append(":")
+        text.append(source.rootKind)
+    }
+    stableSummaryHash(text.toString())
+}
+
 private func cangjieManifestSource(sourceSet: String, sourceFamily: String, sourceRepo: String, sourceRef: String, refKind: String, resolvedCommit: String, contentHash: String): CangjieVersionSource {
     let source = CangjieVersionSource()
     source.targetVersion = cangjieDefaultTargetVersion()

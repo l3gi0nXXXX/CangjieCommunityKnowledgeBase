@@ -55,6 +55,17 @@ public class CkbRoutineContractValidation {
     public var updateMechanismId: String = ""
     public var diagnostic: String = ""
     public var evidenceHash: String = ""
+    public var missingArtifacts: ArrayList<String> = ArrayList<String>()
+    public var artifactEvidenceHash: String = ""
+
+    public init() {}
+}
+
+public class CkbRoutineArtifactStatus {
+    public var ok: Bool = true
+    public var presentArtifacts: ArrayList<String> = ArrayList<String>()
+    public var missingArtifacts: ArrayList<String> = ArrayList<String>()
+    public var evidenceHash: String = ""
 
     public init() {}
 }
@@ -103,10 +114,18 @@ public func ckbRoutineActiveInvariantFromStatus(status: KnowledgeStatus): CkbRou
 }
 
 public func validateSchedulerTaskResultAgainstContract(taskName: String, task: SchedulerTaskResult, before: CkbRoutineActiveInvariant, after: CkbRoutineActiveInvariant): CkbRoutineContractValidation {
+    validateSchedulerTaskResultAgainstContractWithArtifacts(taskName, task, before, after, CkbRoutineArtifactStatus())
+}
+
+public func validateSchedulerTaskResultAgainstContractWithArtifacts(taskName: String, task: SchedulerTaskResult, before: CkbRoutineActiveInvariant, after: CkbRoutineActiveInvariant, artifactStatus: CkbRoutineArtifactStatus): CkbRoutineContractValidation {
     let validation = CkbRoutineContractValidation()
     validation.taskName = taskName
     let contract = ckbSchedulerTaskContractByName(taskName)
     validation.updateMechanismId = contract.updateMechanismId
+    validation.artifactEvidenceHash = artifactStatus.evidenceHash
+    for (artifact in artifactStatus.missingArtifacts) {
+        validation.missingArtifacts.add(artifact)
+    }
     if (contract.taskName == "") {
         ckbRoutineValidationFail(validation, "routine_task_contract_missing")
         return validation
@@ -137,6 +156,10 @@ public func validateSchedulerTaskResultAgainstContract(taskName: String, task: S
         ckbRoutineValidationFail(validation, "rebuild_active_version_missing")
         return validation
     }
+    if (contract.requiredArtifacts.size > 0 && !artifactStatus.ok) {
+        ckbRoutineValidationFail(validation, "required_artifact_missing:${ckbRoutineJoinStrings(artifactStatus.missingArtifacts, ",")}")
+        return validation
+    }
     validation.ok = true
     validation.status = "passed"
     validation.diagnostic = "routine_contract_passed"
@@ -145,7 +168,7 @@ public func validateSchedulerTaskResultAgainstContract(taskName: String, task: S
 }
 
 public func renderCkbRoutineContractValidationJson(validation: CkbRoutineContractValidation): String {
-    "{\"taskName\":\"${ckbRoutineJsonEscape(validation.taskName)}\",\"updateMechanismId\":\"${ckbRoutineJsonEscape(validation.updateMechanismId)}\",\"ok\":${validation.ok},\"status\":\"${ckbRoutineJsonEscape(validation.status)}\",\"diagnostic\":\"${ckbRoutineJsonEscape(validation.diagnostic)}\",\"evidenceHash\":\"${ckbRoutineJsonEscape(validation.evidenceHash)}\"}"
+    "{\"taskName\":\"${ckbRoutineJsonEscape(validation.taskName)}\",\"updateMechanismId\":\"${ckbRoutineJsonEscape(validation.updateMechanismId)}\",\"ok\":${validation.ok},\"status\":\"${ckbRoutineJsonEscape(validation.status)}\",\"diagnostic\":\"${ckbRoutineJsonEscape(validation.diagnostic)}\",\"evidenceHash\":\"${ckbRoutineJsonEscape(validation.evidenceHash)}\",\"missingArtifacts\":${ckbRoutineStringArrayJson(validation.missingArtifacts)},\"artifactEvidenceHash\":\"${ckbRoutineJsonEscape(validation.artifactEvidenceHash)}\"}"
 }
 
 public func renderCkbRoutineUpdateContractsJsonl(): String {
@@ -241,11 +264,11 @@ private func ckbRoutineValidationFail(validation: CkbRoutineContractValidation, 
     validation.ok = false
     validation.status = "failed"
     validation.diagnostic = diagnostic
-    validation.evidenceHash = stableSummaryHash("${validation.taskName}:${validation.updateMechanismId}:${diagnostic}")
+    validation.evidenceHash = stableSummaryHash("${validation.taskName}:${validation.updateMechanismId}:${diagnostic}:${ckbRoutineJoinStrings(validation.missingArtifacts, ",")}:${validation.artifactEvidenceHash}")
 }
 
 private func ckbRoutineValidationEvidence(validation: CkbRoutineContractValidation, contract: CkbSchedulerTaskContract, before: CkbRoutineActiveInvariant, after: CkbRoutineActiveInvariant, task: SchedulerTaskResult): String {
-    "${validation.taskName}:${contract.updateMechanismId}:${contract.activeMutationPolicy}:${before.evidenceHash}:${after.evidenceHash}:${task.status}:${task.validationStatus}:${ckbRoutineJoinStrings(task.updatedDataKinds, ",")}"
+    "${validation.taskName}:${contract.updateMechanismId}:${contract.activeMutationPolicy}:${before.evidenceHash}:${after.evidenceHash}:${task.status}:${task.validationStatus}:${ckbRoutineJoinStrings(task.updatedDataKinds, ",")}:${ckbRoutineJoinStrings(validation.missingArtifacts, ",")}:${validation.artifactEvidenceHash}"
 }
 
 private func ckbRoutineFindSchedule(status: KnowledgeStatus, name: String): ScheduleEntry {
