@@ -2964,16 +2964,73 @@ public class FileKnowledgeStore {
         this.writeLines("metadata/repository-event-latest.ckb", text)
     }
 
-    public func saveSchedulerLoopMetadata(loopStatus: String, schedulerEnabled: Bool, intervalMillis: Int64, tickKind: String, limit: Int64, ran: Int64, taskNames: ArrayList<String>, diagnostic: String): Unit {
+    public func saveSchedulerLoopMetadata(loopStatus: String, schedulerEnabled: Bool, intervalMillis: Int64, tickKind: String, limit: Int64, ran: Int64, taskNames: ArrayList<String>, diagnostic: String, readinessGate!: String = "", firstTickDeferred!: Bool = false): Unit {
+        let existing = this.loadSchedulerLoopStatus()
+        var failureCount = existing.loopFailureCount
+        if (loopStatus == "failed" || loopStatus == "scheduler_disabled" || diagnostic.contains("failed")) {
+            failureCount += 1
+        }
         var text = "loopStatus=${escapeField(loopStatus)}\n"
         text += "schedulerEnabled=${schedulerEnabled}\n"
         text += "intervalMillis=${intervalMillis}\n"
+        text += "readinessGate=${escapeField(readinessGate)}\n"
+        text += "firstTickDeferred=${firstTickDeferred}\n"
         text += "tickKind=${escapeField(tickKind)}\n"
         text += "limit=${limit}\n"
         text += "ran=${ran}\n"
         text += "taskNames=${escapeField(joinStrings(taskNames, ","))}\n"
         text += "diagnostic=${escapeField(redactSensitive(diagnostic))}\n"
+        text += "heartbeatFresh=${loopStatus == "running"}\n"
+        text += "loopFailureCount=${failureCount}\n"
         this.writeLines("metadata/scheduler-loop.ckb", text)
+    }
+
+    public func loadSchedulerLoopStatus(): CkbSchedulerLoopStatus {
+        let status = CkbSchedulerLoopStatus()
+        let text = this.readLines("metadata/scheduler-loop.ckb")
+        if (text == "") {
+            return status
+        }
+        for (line in text.split("\n")) {
+            let trimmed = line.trimAscii()
+            if (trimmed == "") {
+                continue
+            }
+            if (trimmed.startsWith("loopStatus=")) {
+                status.loopStatus = unescapeField(trimmed[11..trimmed.size])
+            } else if (trimmed.startsWith("schedulerEnabled=")) {
+                status.schedulerEnabled = parseBool(trimmed[17..trimmed.size])
+            } else if (trimmed.startsWith("intervalMillis=")) {
+                status.intervalMillis = parseIntField(trimmed[15..trimmed.size], 0)
+            } else if (trimmed.startsWith("readinessGate=")) {
+                status.readinessGate = unescapeField(trimmed[14..trimmed.size])
+            } else if (trimmed.startsWith("firstTickDeferred=")) {
+                status.firstTickDeferred = parseBool(trimmed[18..trimmed.size])
+            } else if (trimmed.startsWith("tickKind=")) {
+                status.tickKind = unescapeField(trimmed[9..trimmed.size])
+            } else if (trimmed.startsWith("limit=")) {
+                status.limit = parseIntField(trimmed[6..trimmed.size], 0)
+            } else if (trimmed.startsWith("ran=")) {
+                status.ran = parseIntField(trimmed[4..trimmed.size], 0)
+            } else if (trimmed.startsWith("taskNames=")) {
+                let value = unescapeField(trimmed[10..trimmed.size])
+                if (value != "") {
+                    for (name in value.split(",")) {
+                        let clean = name.trimAscii()
+                        if (clean != "") {
+                            status.taskNames.add(clean)
+                        }
+                    }
+                }
+            } else if (trimmed.startsWith("diagnostic=")) {
+                status.diagnostic = redactSensitive(unescapeField(trimmed[11..trimmed.size]))
+            } else if (trimmed.startsWith("heartbeatFresh=")) {
+                status.heartbeatFresh = parseBool(trimmed[15..trimmed.size])
+            } else if (trimmed.startsWith("loopFailureCount=")) {
+                status.loopFailureCount = parseIntField(trimmed[17..trimmed.size], 0)
+            }
+        }
+        status
     }
 
     public func saveCangjieCorpusFreshness(report: CangjieCorpusFreshnessReport): Unit {
@@ -3588,7 +3645,8 @@ public class QueryService {
 
 public class CkbSchema {
     public static func mcpTools(): String {
-        "tools: cangjie.health,cangjie.status,cangjie.query,cangjie.evidence,cangjie.sync,cangjie.rebuild,cangjie.source_analysis,cangjie.source_search,cangjie.doc_search,cangjie.website_search,cangjie.web_candidate_search,cangjie.hybrid_search,cangjie.evidence_pack,cangjie.knowledge_pack,cangjie.syntax_query,cangjie.api_search,cangjie.cookbook,cangjie.diagnose,cangjie.examples,cangjie.corpus_status,cangjie.version_resolve,cangjie.task_knowledge_pack,cangjie.knowledge_coverage,cangjie.compile_diagnose_v2,cangjie.symbol_lookup,cangjie.doc_section,cangjie.corpus_freshness,cangjie.tool_manual,cangjie.negative_rules,cangjie.schedules,cangjie.gitcode_repository_changed,cangjie.admin_scheduler_run,cangjie.admin_repositories_sync,cangjie.admin_repo_list_refresh,cangjie.admin_initialize; mcpTransports=stdio,streamable-http mcpEndpoint=/mcp mcpProtocolVersions=2024-11-05,2025-06-18 mcpSse=true; apiVersion=ckb-http-v1 envelope={ok,apiVersion,data|error,diagnostics}; input: query{q,budget<=20,sourceType,includeCandidates=false}, evidence_pack{q,budget<=20,includeCandidates,parentUrl,repo,ref}, cangjie_knowledge_pack{task,targetVersion=1.0.0,budget<=20,includeExamples,includeAntiPatterns,legacy_endpoint_degraded=true}, cangjie_version_resolve{targetVersion,sourceSet,sourceFamily,sourceRepo,sourceRef,refKind,versionPolicy=default|exact,includePrerelease=false}, cangjie_task_knowledge_pack{taskId,benchmark,taskText,signature,imports,argTypes,returnType,expectedKnowledgeTags,starterCodeExcerpt,compilerOutput,targetVersion,sourceSet,sourceRef,versionPolicy,budget<=20}, cangjie_knowledge_coverage{same fields as cangjie_task_knowledge_pack}, cangjie_compile_diagnose_v2{code,compilerOutput,context,targetVersion,sourceSet,sourceRef,budget<=20,executed=false}, cangjie_symbol_lookup{symbol,module,sourceSet,targetVersion,budget<=20}, cangjie_doc_section{sectionId,path,heading,targetVersion,budget<=20}, cangjie_corpus_freshness{readOnly=true}, cangjie_tool_manual{tool,command,targetVersion,budget<=20}, cangjie_negative_rules{q,query,targetVersion,budget<=20}, cangjie_api_search{q,module,symbol,sourceSet,targetVersion,budget<=20}, cangjie_syntax_query{q,targetVersion,budget<=20}, cangjie_cookbook{task,constraints,targetVersion,style,budget<=20}, cangjie_diagnose{code,compilerOutput,context,targetVersion,budget<=20,executed=false}, cangjie_examples{q,module,symbol,maxExamples<=20}, cangjie_corpus_status{readOnly=true}, source_analysis{repo,ref,query,issueUrl,prUrl,changedFiles,candidatePaths,allowCloneFallback,maxFiles,maxBytes,timeoutMillis,visibility=public,retainFailedWorkspace=false}, gitcode_repository_changed{contractVersion=gcm-ckb-repository-change-v1,provider=gitcode,eventType=merge_request,reason=pr_merged,repo,ref,prNumber,changedFiles}, admin_scheduler_run{limit,taskNames,force,reason,requestedBy,source}, admin_repositories_sync{repo,ref,profile,changedFiles,prNumber,mode,reason}, admin_repo_list_refresh{repo,ref,paths,prNumber,mode,reason}, admin_initialize{dryRun,apply,docsRoot,toolDocsRoot,stdRoot,stdxRoot,evalRoot,targetVersion}, sync{dryRun,apply,maxRepos,maxFilesPerRepo,maxItems,since}, rebuild{store}; liveGitCode: officialApi=https://api.gitcode.com/api/v5 authMode=token authHeader=private-token tokenFile=tokenFile tokenFileFormat=single PAT line without token/Bearer/PRIVATE-TOKEN prefix; sourceAnalysis: defaultEnabled=false workspaceRoot=TMPDIR-or-tmp/ckb-source-analysis publicOnly=true cloneHostAllowlist=gitcode.com cleanup=default; acceptance: schema -> doctor/status -> anonymous dry-run -> credentialed dry-run if needed -> limited apply -> rebuild-index -> status/evidence -> source_analysis fake/public repo; output: ok,status,errorCode,interfaceId,contentFamily,updateMechanism,activeKnowledgeVersion,knowledgeVersion,targetVersion,versionResolution,versionResolutionId,queryPlan,coverage,matchedItems,requiredKnowledge,citations,evidenceHash,provenance,evidence,requiresReview,triggerReasons,sourceAcquisition,filesRead,cleanupStatus,truncated,degraded,transportDiagnostic,scheduledProfiles; boundary: MCP JSON-RPC server exposes only read-only Cangjie tools/resources/prompts through stdio and /mcp; cangjie diagnose is knowledge-only; cangjie compile_diagnose_v2 is query-plan only and does not execute code; verify-snippet/admin/update/repository sync/event tools are not exposed to ordinary MCP clients; redaction: never returns tokenRef,tokenFile contents,PRIVATE-TOKEN,Authorization,Cookie,private-token values,absolute local paths; errors: ckb.bad_request,ckb.unauthorized,ckb.not_found,ckb.network_disabled,ckb.auth_degraded,ckb.rate_limited,ckb.source_unavailable,ckb.rebuild_failed,ckb.validation_failed,ckb.invalid_workspace_root,ckb.invalid_clone_host,version_not_resolved,unsupported_source_set"
+        let tools = joinStrings(ckbMcpToolNames(), ",")
+        "ordinaryMcpReadOnlyTools: ${tools}; mcpTransports=stdio,streamable-http mcpEndpoint=/mcp mcpProtocolVersions=2024-11-05,2025-06-18 mcpSse=true; apiVersion=ckb-http-v1 envelope={ok,apiVersion,data|error,diagnostics}; input: cangjie_knowledge_pack{task,targetVersion=1.0.0,budget<=20,includeExamples,includeAntiPatterns,legacy_endpoint_degraded=true}, cangjie_version_resolve{targetVersion,sourceSet,sourceFamily,sourceRepo,sourceRef,refKind,versionPolicy=default|exact,includePrerelease=false}, cangjie_task_knowledge_pack{taskId,benchmark,taskText,signature,imports,argTypes,returnType,expectedKnowledgeTags,starterCodeExcerpt,compilerOutput,targetVersion,sourceSet,sourceRef,versionPolicy,budget<=20}, cangjie_knowledge_coverage{same fields as cangjie_task_knowledge_pack}, cangjie_compile_diagnose_v2{code,compilerOutput,context,targetVersion,sourceSet,sourceRef,budget<=20,executed=false}, cangjie_symbol_lookup{symbol,module,sourceSet,targetVersion,budget<=20}, cangjie_doc_section{sectionId,path,heading,targetVersion,budget<=20}, cangjie_corpus_freshness{readOnly=true}, cangjie_tool_manual{tool,command,targetVersion,budget<=20}, cangjie_negative_rules{q,query,targetVersion,budget<=20}, cangjie_api_search{q,module,symbol,sourceSet,targetVersion,budget<=20}, cangjie_syntax_query{q,targetVersion,budget<=20}, cangjie_cookbook{task,constraints,targetVersion,style,budget<=20}, cangjie_diagnose{code,compilerOutput,context,targetVersion,budget<=20,executed=false}, cangjie_examples{q,module,symbol,maxExamples<=20}, cangjie_corpus_status{readOnly=true}; httpAdminRoutes: POST /v1/admin/scheduler/run,POST /v1/admin/repositories/sync,POST /v1/admin/repo-list/refresh,POST /v1/admin/initialize,POST /v1/admin/sync,POST /v1/admin/rebuild; httpEventRoutes: POST /v1/events/gitcode/repository-changed; legacyLocalCliCommands: health,status,query,evidence,source_analysis{repo,ref,query,issueUrl,prUrl,changedFiles,candidatePaths,allowCloneFallback,maxFiles,maxBytes,timeoutMillis},sync,rebuild,scheduler-run; liveGitCode: officialApi=https://api.gitcode.com/api/v5 authMode=token authHeader=private-token tokenFile=tokenFile tokenFileFormat=single PAT line without token/Bearer/PRIVATE-TOKEN prefix; sourceAnalysis: defaultEnabled=false workspaceRoot=TMPDIR-or-tmp/ckb-source-analysis publicOnly=true cloneHostAllowlist=gitcode.com cleanup=default; acceptance: schema -> doctor/status -> anonymous dry-run -> credentialed dry-run if needed -> limited apply -> rebuild-index -> status/evidence -> source_analysis fake/public repo; output: ok,status,errorCode,interfaceId,contentFamily,updateMechanism,activeKnowledgeVersion,knowledgeVersion,targetVersion,versionResolution,versionResolutionId,queryPlan,coverage,matchedItems,requiredKnowledge,citations,evidenceHash,provenance,evidence,requiresReview,triggerReasons,sourceAcquisition,filesRead,cleanupStatus,truncated,degraded,transportDiagnostic,scheduledProfiles; boundary: MCP JSON-RPC server exposes only read-only Cangjie tools/resources/prompts through stdio and /mcp; cangjie diagnose is knowledge-only; cangjie compile_diagnose_v2 is query-plan only and does not execute code; verify-snippet/admin/update/repository sync/event tools are not exposed to ordinary MCP clients; redaction: never returns tokenRef,tokenFile contents,PRIVATE-TOKEN,Authorization,Cookie,private-token values,absolute local paths; errors: ckb.bad_request,ckb.unauthorized,ckb.not_found,ckb.network_disabled,ckb.auth_degraded,ckb.rate_limited,ckb.source_unavailable,ckb.rebuild_failed,ckb.validation_failed,ckb.invalid_workspace_root,ckb.invalid_clone_host,version_not_resolved,unsupported_source_set"
     }
 
     public static func httpLikeRoutes(): String {
@@ -3997,11 +4055,13 @@ public class CkbCommandLoopService {
     }
 
     public func statusSnapshot(): KnowledgeStatus {
-        this.kb.status()
+        let status = this.kb.status()
+        status.schedulerLoop = this.store.loadSchedulerLoopStatus()
+        status
     }
 
-    public func saveSchedulerLoopMetadata(loopStatus: String, schedulerEnabled: Bool, intervalMillis: Int64, tickKind: String, limit: Int64, ran: Int64, taskNames: ArrayList<String>, diagnostic: String): Unit {
-        this.store.saveSchedulerLoopMetadata(loopStatus, schedulerEnabled, intervalMillis, tickKind, limit, ran, taskNames, diagnostic)
+    public func saveSchedulerLoopMetadata(loopStatus: String, schedulerEnabled: Bool, intervalMillis: Int64, tickKind: String, limit: Int64, ran: Int64, taskNames: ArrayList<String>, diagnostic: String, readinessGate!: String = "", firstTickDeferred!: Bool = false): Unit {
+        this.store.saveSchedulerLoopMetadata(loopStatus, schedulerEnabled, intervalMillis, tickKind, limit, ran, taskNames, diagnostic, readinessGate: readinessGate, firstTickDeferred: firstTickDeferred)
     }
 
     public func queryEvidencePack(query: String, budget: Int64, includeCandidates!: Bool = true): EvidencePack {
@@ -4388,6 +4448,8 @@ public class CkbCommandLoopService {
             entry.degraded = true
         }
         this.store.saveScheduler(this.kb.scheduler.entries)
+        let empty = ArrayList<String>()
+        this.store.saveSchedulerLoopMetadata("scheduler_disabled", false, this.config.schedulerLoopIntervalMillis, "disabled", 0, 0, empty, "scheduler_disabled")
     }
 
     public func markSchedulerLoopFailure(diagnostic: String): Unit {
@@ -4399,6 +4461,8 @@ public class CkbCommandLoopService {
             entry.degraded = true
         }
         this.store.saveScheduler(this.kb.scheduler.entries)
+        let empty = ArrayList<String>()
+        this.store.saveSchedulerLoopMetadata("failed", this.config.schedulerEnabled, this.config.schedulerLoopIntervalMillis, "failure", 0, 0, empty, diagnostic)
     }
 
     public func rebuildCountForTest(): Int64 {

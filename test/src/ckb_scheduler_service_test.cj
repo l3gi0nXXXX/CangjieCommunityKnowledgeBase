@@ -131,7 +131,12 @@ public class CkbSchedulerServiceF5Test {
         @Expect(started.status, "scheduler_started")
         @Expect(started.tick.ran > 0, true)
         @Expect(started.tick.succeeded > 0, true)
+        @Expect(store.has("metadata/scheduler-loop.ckb"), true)
+        @Expect(liveStatus.schedulerLoop.loopStatus, "running")
+        @Expect(liveStatus.schedulerLoop.heartbeatFresh, true)
+        @Expect(liveStatus.schedulerLoop.ran > 0, true)
         @Expect(f5AnyScheduleLastRequestCount(liveStatus) > 0, true)
+        @Expect(restoredStatus.schedulerLoop.loopStatus, "running")
         @Expect(f5AnyScheduleLastSuccess(restoredStatus) > 0, true)
         @Expect(store.has("metadata/scheduler.ckb"), true)
         @Expect(accepted.status, "accepted")
@@ -155,6 +160,30 @@ public class CkbSchedulerServiceF5Test {
         @Expect(started.readinessGate, "http_routes_registered")
         @Expect(started.firstTickDeferred, true)
         @Expect(started.tick.ran, 0)
+        let status = service.statusSnapshot()
+        @Expect(status.schedulerLoop.loopStatus, "running")
+        @Expect(status.schedulerLoop.readinessGate, "http_routes_registered")
+        @Expect(status.schedulerLoop.firstTickDeferred, true)
+    }
+
+    @TestCase
+    public func p0cBnd001SchedulerDisabledPersistsLoopStatusAndDegradesHealth(): Unit {
+        let config = CkbRuntimeConfig()
+        config.schedulerEnabled = false
+        let store = FileKnowledgeStore("target/p0c-disabled-loop")
+        let service = CkbCommandLoopService(config, store, sourceRunner: FakeSourceFetchRunner())
+        _ = service.start()
+
+        let started = startCkbSchedulerLoop(service, config)
+        let status = service.statusSnapshot()
+        let health = ckbApiHandle(service, "GET", "/v1/health", "", [])
+
+        @Expect(started.status, "scheduler_disabled")
+        @Expect(store.has("metadata/scheduler-loop.ckb"), true)
+        @Expect(status.schedulerLoop.loopStatus, "scheduler_disabled")
+        @Expect(status.schedulerLoop.loopFailureCount > 0, true)
+        @Expect(health.contains("\"schedulerLoop\""), true)
+        @Expect(health.contains("\"degraded\":true"), true)
     }
 
     @TestCase

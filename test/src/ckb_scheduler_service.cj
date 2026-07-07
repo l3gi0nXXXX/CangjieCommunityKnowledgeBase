@@ -39,7 +39,7 @@ public func startCkbSchedulerLoop(service: CkbCommandLoopService, config: CkbRun
     result.firstTickDeferred = deferFirstTick
     if (!config.schedulerEnabled) {
         service.markSchedulerDisabled()
-        service.saveSchedulerLoopMetadata("scheduler_disabled", false, result.intervalMillis, "disabled", 0, 0, ArrayList<String>(), "scheduler_disabled")
+        service.saveSchedulerLoopMetadata("scheduler_disabled", false, result.intervalMillis, "disabled", 0, 0, ArrayList<String>(), "scheduler_disabled", readinessGate: result.readinessGate, firstTickDeferred: deferFirstTick)
         result.status = "scheduler_disabled"
         return result
     }
@@ -47,7 +47,7 @@ public func startCkbSchedulerLoop(service: CkbCommandLoopService, config: CkbRun
     if (!deferFirstTick) {
         result.tick = runCkbSchedulerStartupTick(service, result.intervalMillis)
     } else {
-        service.saveSchedulerLoopMetadata("running", true, result.intervalMillis, "startup_deferred", 0, 0, ArrayList<String>(), "first_tick_deferred")
+        service.saveSchedulerLoopMetadata("running", true, result.intervalMillis, "startup_deferred", 0, 0, ArrayList<String>(), "first_tick_deferred", readinessGate: result.readinessGate, firstTickDeferred: true)
     }
     result.ok = true
     result.status = if (afterHttpReady) { "scheduler_started_after_http_ready" } else { "scheduler_started" }

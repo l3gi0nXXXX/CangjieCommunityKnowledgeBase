@@ -1600,8 +1600,26 @@ public class KnowledgeStatus {
     public var storage: StorageStatus = StorageStatus()
     public var sourceScope: SourceScope = SourceScope()
     public var schedules: ArrayList<ScheduleEntry> = ArrayList<ScheduleEntry>()
+    public var schedulerLoop: CkbSchedulerLoopStatus = CkbSchedulerLoopStatus()
     public var indexManifest: IndexManifest = IndexManifest()
     public var localPathRedacted: Bool = true
+
+    public init() {}
+}
+
+public class CkbSchedulerLoopStatus {
+    public var loopStatus: String = "unknown"
+    public var schedulerEnabled: Bool = false
+    public var intervalMillis: Int64 = 0
+    public var readinessGate: String = ""
+    public var firstTickDeferred: Bool = false
+    public var tickKind: String = ""
+    public var limit: Int64 = 0
+    public var ran: Int64 = 0
+    public var taskNames: ArrayList<String> = ArrayList<String>()
+    public var diagnostic: String = ""
+    public var heartbeatFresh: Bool = false
+    public var loopFailureCount: Int64 = 0
 
     public init() {}
 }

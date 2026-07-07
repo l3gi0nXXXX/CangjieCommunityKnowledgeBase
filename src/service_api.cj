@@ -577,11 +577,11 @@ private func ckbApiRenderResponse(response: CkbApiResponse): String {
 private func ckbApiHealthJson(status: KnowledgeStatus): String {
     let schedulerDegraded = ckbApiSchedulerDegraded(status)
     let degraded = schedulerDegraded || status.storage.vectorState == EmbeddingProviderState.DEGRADED || status.storage.graphState == EmbeddingProviderState.DEGRADED
-    "{\"status\":\"${if (degraded) { "degraded" } else { "ok" }}\",\"activeKnowledgeVersion\":\"${ckbApiJsonEscape(status.activeKnowledgeVersion)}\",\"degraded\":${degraded},\"schedulerDegraded\":${schedulerDegraded}}"
+    "{\"status\":\"${if (degraded) { "degraded" } else { "ok" }}\",\"activeKnowledgeVersion\":\"${ckbApiJsonEscape(status.activeKnowledgeVersion)}\",\"degraded\":${degraded},\"schedulerDegraded\":${schedulerDegraded},\"schedulerLoop\":${ckbApiSchedulerLoopJson(status.schedulerLoop)}}"
 }
 
 private func ckbApiStatusJson(status: KnowledgeStatus): String {
-    "{\"activeKnowledgeVersion\":\"${ckbApiJsonEscape(status.activeKnowledgeVersion)}\",\"candidateKnowledgeVersion\":\"${ckbApiJsonEscape(status.candidateKnowledgeVersion)}\",\"activeStateSource\":\"${ckbApiJsonEscape(status.activeStateSource)}\",\"restoreDiagnostic\":\"${ckbApiJsonEscape(redactSensitive(status.restoreDiagnostic))}\",\"storage\":{\"rawCount\":${status.storage.rawCount},\"normalizedCount\":${status.storage.normalizedCount},\"indexCount\":${status.storage.indexCount},\"vectorState\":\"${ckbApiJsonEscape(status.storage.vectorState)}\",\"graphState\":\"${ckbApiJsonEscape(status.storage.graphState)}\",\"localPathRedacted\":${status.localPathRedacted}},\"scheduler\":${ckbApiSchedulesDataJson(status)}}"
+    "{\"activeKnowledgeVersion\":\"${ckbApiJsonEscape(status.activeKnowledgeVersion)}\",\"candidateKnowledgeVersion\":\"${ckbApiJsonEscape(status.candidateKnowledgeVersion)}\",\"activeStateSource\":\"${ckbApiJsonEscape(status.activeStateSource)}\",\"restoreDiagnostic\":\"${ckbApiJsonEscape(redactSensitive(status.restoreDiagnostic))}\",\"storage\":{\"rawCount\":${status.storage.rawCount},\"normalizedCount\":${status.storage.normalizedCount},\"indexCount\":${status.storage.indexCount},\"vectorState\":\"${ckbApiJsonEscape(status.storage.vectorState)}\",\"graphState\":\"${ckbApiJsonEscape(status.storage.graphState)}\",\"localPathRedacted\":${status.localPathRedacted}},\"scheduler\":${ckbApiSchedulesDataJson(status)},\"schedulerLoop\":${ckbApiSchedulerLoopJson(status.schedulerLoop)}}"
 }
 
 private func ckbApiSchedulesJson(status: KnowledgeStatus): String {
@@ -597,8 +597,12 @@ private func ckbApiSchedulesDataJson(status: KnowledgeStatus): String {
         let entry = status.schedules[i]
         out += "{\"name\":\"${ckbApiJsonEscape(entry.name)}\",\"intervalMinutes\":${entry.intervalMinutes},\"nextRunAt\":${entry.nextRunAt},\"lastSuccessAt\":${entry.lastSuccessAt},\"lastFailureAt\":${entry.lastFailureAt},\"failureCount\":${entry.failureCount},\"degraded\":${entry.degraded},\"lastStatus\":\"${ckbApiJsonEscape(entry.lastStatus)}\",\"lastDurationMillis\":${entry.lastDurationMillis},\"lastRequestCount\":${entry.lastRequestCount},\"lastUpdatedDataKinds\":${ckbApiStringArrayJson(entry.lastUpdatedDataKinds)},\"lastTruncated\":${entry.lastTruncated},\"timeBudgetMillis\":${entry.timeBudgetMillis}}"
     }
-    out += "],\"schedulerDegraded\":${ckbApiSchedulerDegraded(status)}}"
+    out += "],\"schedulerDegraded\":${ckbApiSchedulerDegraded(status)},\"schedulerLoop\":${ckbApiSchedulerLoopJson(status.schedulerLoop)}}"
     out
+}
+
+private func ckbApiSchedulerLoopJson(loop: CkbSchedulerLoopStatus): String {
+    "{\"loopStatus\":\"${ckbApiJsonEscape(loop.loopStatus)}\",\"schedulerEnabled\":${loop.schedulerEnabled},\"intervalMillis\":${loop.intervalMillis},\"readinessGate\":\"${ckbApiJsonEscape(loop.readinessGate)}\",\"firstTickDeferred\":${loop.firstTickDeferred},\"tickKind\":\"${ckbApiJsonEscape(loop.tickKind)}\",\"limit\":${loop.limit},\"ran\":${loop.ran},\"taskNames\":${ckbApiStringArrayJson(loop.taskNames)},\"diagnostic\":\"${ckbApiJsonEscape(redactSensitive(loop.diagnostic))}\",\"heartbeatFresh\":${loop.heartbeatFresh},\"loopFailureCount\":${loop.loopFailureCount}}"
 }
 
 private func ckbApiSchemaJson(): String {
@@ -756,6 +760,13 @@ private func ckbApiFirstNonEmpty(a: String, b: String): String {
 }
 
 private func ckbApiSchedulerDegraded(status: KnowledgeStatus): Bool {
+    let loop = status.schedulerLoop
+    if (loop.loopStatus == "failed" || loop.loopStatus == "scheduler_disabled" || loop.loopFailureCount > 0) {
+        return true
+    }
+    if (loop.loopStatus == "running" && !loop.heartbeatFresh) {
+        return true
+    }
     for (entry in status.schedules) {
         if (entry.degraded) {
             return true

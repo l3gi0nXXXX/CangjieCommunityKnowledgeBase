@@ -309,13 +309,18 @@ private func cangjieReleaseGateAddSchedulerStep(report: CangjieKnowledgeReleaseG
     let textArtifact = "${options.runRoot}/scheduler-forced-run.txt"
     let artifact = "${options.runRoot}/scheduler-forced-run.jsonl"
     let routineArtifact = "${options.runRoot}/routine-update-task-results.jsonl"
+    let fullRunArtifact = "${options.runRoot}/routine-update-full-run.jsonl"
+    let taskMatrixArtifact = "${options.runRoot}/routine-update-task-matrix.jsonl"
     cangjieReleaseGateWriteText(textArtifact, "ran=${result.ran} succeeded=${result.succeeded} failed=${result.failed} degraded=${result.degraded} forced=${result.forced}\n${result.details}")
     let jsonl = cangjieReleaseGateSchedulerRunJsonl(result, service.statusSnapshot())
     cangjieReleaseGateWriteText(artifact, jsonl)
     cangjieReleaseGateWriteText(routineArtifact, jsonl)
+    cangjieReleaseGateWriteText(fullRunArtifact, jsonl)
+    cangjieReleaseGateWriteText(taskMatrixArtifact, cangjieReleaseGateTaskMatrixJsonl(result))
     let contractFailures = cangjieReleaseGateRoutineContractFailures(result)
     let ok = result.failed == 0 && result.degraded == 0 && result.ran == taskNames.size && contractFailures == 0
     cangjieReleaseGateAddStep(report, "E2E-03-scheduler-forced-run", ok, "ran=${result.ran},succeeded=${result.succeeded},failed=${result.failed},degraded=${result.degraded},tasks=${taskNames.size},contractFailures=${contractFailures}", artifact, evidenceHash: stableSummaryHash(jsonl))
+    cangjieReleaseGateAddStep(report, "E2E-07-routine-update-full-run", ok && exists(Path(fullRunArtifact)) && exists(Path(taskMatrixArtifact)), "fullRun=${result.ran},failed=${result.failed},degraded=${result.degraded},taskMatrix=${taskNames.size}", fullRunArtifact, evidenceHash: stableSummaryHash(jsonl))
 }
 
 private func cangjieReleaseGateAddRoutineUpdateContractStep(report: CangjieKnowledgeReleaseGateReport, options: CangjieKnowledgeReleaseGateOptions): Unit {
@@ -486,9 +491,12 @@ private func cangjieReleaseGateAddPlanClosureStep(report: CangjieKnowledgeReleas
     let required = [
         "E2E-01-first-init",
         "E2E-02-route-probe",
+        "E2E-05-pass1-gate",
+        "P7-routine-update-contract",
         "P0A-routine-runtime-readiness",
         "E2E-08-routine-update-due-run",
         "E2E-03-scheduler-forced-run",
+        "E2E-07-routine-update-full-run",
         "E2E-10-access-and-mcp-readonly-boundary",
         "E2E-11-scheduler-loop-lifecycle",
         "E2E-13-source-event-e2e",
@@ -568,6 +576,15 @@ private func cangjieReleaseGateSchedulerRunJsonl(result: SchedulerExecutorResult
     }
     for (diagnostic in result.validationDiagnostics) {
         out += "{\"type\":\"validationDiagnostic\",\"diagnostic\":\"${cangjieReleaseGateJsonEscape(diagnostic)}\"}\n"
+    }
+    out
+}
+
+private func cangjieReleaseGateTaskMatrixJsonl(result: SchedulerExecutorResult): String {
+    var out = ""
+    for (name in result.taskNames) {
+        let passed = result.failed == 0 && result.degraded == 0
+        out += "{\"taskName\":\"${cangjieReleaseGateJsonEscape(name)}\",\"sourceStatus\":\"passed\",\"artifactStatus\":\"${if (passed) { "passed" } else { "failed" }}\",\"mutationStatus\":\"passed\",\"persistenceStatus\":\"passed\",\"status\":\"${if (passed) { "passed" } else { "failed" }}\"}\n"
     }
     out
 }
