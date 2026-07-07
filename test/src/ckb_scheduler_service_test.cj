@@ -376,13 +376,18 @@ public class CkbSchedulerServiceF5Test {
         tasks.add("cangjie_version_branch_refresh")
 
         let result = service.runSchedulerTasks(tasks, true)
+        let manifest = store.loadCangjieVersionManifest()
 
         @Expect(result.ran, 1)
         @Expect(result.succeeded, 1)
         @Expect(result.failed, 0)
         @Expect(store.has("metadata/cangjie-version-manifest.ckb"), true)
-        @Expect(f7RunnerSawUrlFragment(runner, "/git/trees/release%2F1.0?"), true)
+        @Expect(f7RunnerSawUrlFragment(runner, "/branches?page=1&per_page=100"), true)
+        @Expect(f7RunnerSawUrlFragment(runner, "/git/trees/${f7SlashRefResolvedCommit()}?"), true)
+        @Expect(f7RunnerSawUrlFragment(runner, "/git/trees/release%2F1.0?"), false)
         @Expect(f7RunnerSawUrlFragment(runner, "/git/trees/release/1.0?"), false)
+        @Expect(f7ManifestSourceRef(manifest, CangjieSourceSets.STD), "release/1.0")
+        @Expect(f7ManifestResolvedCommit(manifest, CangjieSourceSets.STD), f7SlashRefResolvedCommit())
         @Expect(f7SchedulerDiagnosticsContain(result, "version_manifest_saved:"), true)
     }
 
@@ -399,14 +404,20 @@ public class CkbSchedulerServiceF5Test {
         tasks.add("cangjie_release_full_sync")
 
         let result = service.runSchedulerTasks(tasks, true)
+        let manifest = store.loadCangjieVersionManifest()
 
         @Expect(result.ran, 1)
         @Expect(result.succeeded, 1)
         @Expect(result.failed, 0)
         @Expect(store.has("metadata/cangjie-version-manifest.ckb"), true)
-        @Expect(f7RunnerSawUrlFragment(runner, "/git/trees/release%2F1.0?"), true)
-        @Expect(f7RunnerSawUrlFragment(runner, "?ref=release%2F1.0"), true)
+        @Expect(f7RunnerSawUrlFragment(runner, "/branches?page=1&per_page=100"), true)
+        @Expect(f7RunnerSawUrlFragment(runner, "/git/trees/${f7SlashRefResolvedCommit()}?"), true)
+        @Expect(f7RunnerSawUrlFragment(runner, "?ref=${f7SlashRefResolvedCommit()}"), true)
+        @Expect(f7RunnerSawUrlFragment(runner, "/git/trees/release%2F1.0?"), false)
+        @Expect(f7RunnerSawUrlFragment(runner, "?ref=release%2F1.0"), false)
         @Expect(f7RunnerSawUrlFragment(runner, "/git/trees/release/1.0?"), false)
+        @Expect(f7ManifestSourceRef(manifest, CangjieSourceSets.STDX), "release/1.0")
+        @Expect(f7ManifestResolvedCommit(manifest, CangjieSourceSets.STDX), f7SlashRefResolvedCommit())
         @Expect(f7SchedulerDiagnosticsContain(result, "version_manifest_saved:"), true)
     }
 
@@ -428,10 +439,37 @@ public class CkbSchedulerServiceF5Test {
         @Expect(result.succeeded, 1)
         @Expect(result.failed, 0)
         @Expect(store.has("metadata/repository-event-latest.ckb"), true)
-        @Expect(f7RunnerSawUrlFragment(runner, "/git/trees/release%2F1.0?"), true)
-        @Expect(f7RunnerSawUrlFragment(runner, "?ref=release%2F1.0"), true)
+        @Expect(f7RunnerSawUrlFragment(runner, "/branches?page=1&per_page=100"), true)
+        @Expect(f7RunnerSawUrlFragment(runner, "/git/trees/${f7SlashRefResolvedCommit()}?"), true)
+        @Expect(f7RunnerSawUrlFragment(runner, "?ref=${f7SlashRefResolvedCommit()}"), true)
+        @Expect(f7RunnerSawUrlFragment(runner, "/git/trees/release%2F1.0?"), false)
+        @Expect(f7RunnerSawUrlFragment(runner, "?ref=release%2F1.0"), false)
         @Expect(f7RunnerSawUrlFragment(runner, "/git/trees/release/1.0?"), false)
         @Expect(f7SchedulerDiagnosticsContain(result, "repository_event_checkpoint_saved:"), true)
+    }
+
+    @TestCase
+    public func p7Pos008SlashRefBranchEndpointFallbackUsesNativeSafeEncoding(): Unit {
+        let config = CkbRuntimeConfig()
+        config.networkEnabled = true
+        let store = FileKnowledgeStore("target/p7-slash-ref-branch-endpoint-fallback")
+        store.saveCangjieVersionManifest(f7OfficialManifestSlashRefNoEval())
+        let runner = F7SlashRefTreeOkRunner()
+        runner.branchListOmitsRelease = true
+        let service = CkbCommandLoopService(config, store, sourceRunner: runner)
+        _ = service.start()
+        let tasks = ArrayList<String>()
+        tasks.add("cangjie_release_full_sync")
+
+        let result = service.runSchedulerTasks(tasks, true)
+
+        @Expect(result.ran, 1)
+        @Expect(result.succeeded, 1)
+        @Expect(result.failed, 0)
+        @Expect(f7RunnerSawUrlFragment(runner, "/branches/release%252F1.0"), true)
+        @Expect(f7RunnerSawUrlFragment(runner, "/branches/release%2F1.0"), false)
+        @Expect(f7RunnerSawUrlFragment(runner, "/git/trees/${f7SlashRefResolvedCommit()}?"), true)
+        @Expect(f7SchedulerDiagnosticsContain(result, "version_manifest_saved:"), true)
     }
 
     @TestCase
@@ -456,13 +494,44 @@ public class CkbSchedulerServiceF5Test {
         @Expect(result.failed, 1)
         @Expect(result.details.contains("scheduled_readiness_failed"), true)
         @Expect(after.activeKnowledgeVersion, before)
-        @Expect(f7RunnerSawUrlFragment(runner, "/git/trees/release%2F1.0?"), true)
+        @Expect(f7RunnerSawUrlFragment(runner, "/branches?page=1&per_page=100"), true)
+        @Expect(f7RunnerSawUrlFragment(runner, "/git/trees/${f7SlashRefResolvedCommit()}?"), true)
+        @Expect(f7RunnerSawUrlFragment(runner, "/git/trees/release%2F1.0?"), false)
         @Expect(f7SchedulerDiagnosticsContain(result, "version_manifest_saved:"), false)
         @Expect(summaries.size, 1)
         @Expect(summaries[0].taskName, "cangjie_release_full_sync")
         @Expect(summaries[0].primaryFailure.contains("scheduled_readiness_failed"), true)
         @Expect(f7SummaryListContains(summaries[0].failedSources, "remote_tree_unavailable"), true)
         @Expect(summaries[0].missingArtifacts.size, 0)
+    }
+
+    @TestCase
+    public func p7Neg003MalformedBranchListBlocksSlashRefPromotion(): Unit {
+        let config = CkbRuntimeConfig()
+        config.networkEnabled = true
+        let store = FileKnowledgeStore("target/p7-slash-ref-malformed-branch-list")
+        store.saveCangjieVersionManifest(f7OfficialManifestSlashRefNoEval())
+        let runner = F7SlashRefTreeOkRunner()
+        runner.malformedBranchList = true
+        let service = CkbCommandLoopService(config, store, sourceRunner: runner)
+        _ = service.start()
+        let before = service.statusSnapshot().activeKnowledgeVersion
+        let tasks = ArrayList<String>()
+        tasks.add("cangjie_release_full_sync")
+
+        let result = service.runSchedulerTasks(tasks, true)
+        let after = service.statusSnapshot()
+        let summaries = ckbSchedulerFailureSummaries(result)
+
+        @Expect(result.ran, 1)
+        @Expect(result.failed, 1)
+        @Expect(after.activeKnowledgeVersion, before)
+        @Expect(f7RunnerSawUrlFragment(runner, "/branches?page=1&per_page=100"), true)
+        @Expect(f7RunnerSawUrlFragment(runner, "/git/trees/${f7SlashRefResolvedCommit()}?"), false)
+        @Expect(f7SchedulerDiagnosticsContain(result, "version_manifest_saved:"), false)
+        @Expect(summaries.size, 1)
+        @Expect(summaries[0].primaryFailure.contains("scheduled_readiness_failed"), true)
+        @Expect(f7SummaryListContains(summaries[0].failedSources, "gitcode_branch_list_malformed_json"), true)
     }
 
     @TestCase
@@ -910,6 +979,18 @@ private class F7GitCodeMetadata400TreeOkRunner <: SourceFetchRunner {
             result.status = "http_400"
             result.statusCode = 400
             result.body = "Invalid header parameter: private-token, required"
+        } else if (request.kind == SourceKinds.GITCODE_BRANCH && request.purpose == "branch_ref") {
+            result.ok = true
+            result.status = "ok"
+            result.statusCode = 200
+            result.contentType = "application/json"
+            result.body = "{\"name\":\"${request.ref}\",\"commit\":{\"id\":\"${f7GenericResolvedCommit()}\",\"sha\":\"${f7GenericResolvedCommit()}\"}}"
+        } else if (request.kind == SourceKinds.GITCODE_BRANCH) {
+            result.ok = true
+            result.status = "ok"
+            result.statusCode = 200
+            result.contentType = "application/json"
+            result.body = f7GenericBranchListBody()
         } else if (request.kind == SourceKinds.GITCODE_TREE) {
             result.ok = true
             result.status = "ok"
@@ -955,6 +1036,24 @@ private class F7GitCodeMetadata400TreeUnavailableRunner <: SourceFetchRunner {
         result.ref = request.ref
         result.path = request.path
         result.normalizedType = request.kind
+        if (request.kind == SourceKinds.GITCODE_BRANCH && request.purpose == "branch_ref") {
+            result.ok = true
+            result.status = "ok"
+            result.statusCode = 200
+            result.contentType = "application/json"
+            result.body = "{\"name\":\"${request.ref}\",\"commit\":{\"id\":\"${f7GenericResolvedCommit()}\",\"sha\":\"${f7GenericResolvedCommit()}\"}}"
+            result.bodyHash = stableSummaryHash(result.body)
+            return result
+        }
+        if (request.kind == SourceKinds.GITCODE_BRANCH) {
+            result.ok = true
+            result.status = "ok"
+            result.statusCode = 200
+            result.contentType = "application/json"
+            result.body = f7GenericBranchListBody()
+            result.bodyHash = stableSummaryHash(result.body)
+            return result
+        }
         result.ok = false
         result.status = if (request.kind == SourceKinds.GITCODE_REPO) { "http_400" } else { "source_tree_unavailable_fixture" }
         result.statusCode = if (request.kind == SourceKinds.GITCODE_REPO) { 400 } else { 503 }
@@ -964,9 +1063,19 @@ private class F7GitCodeMetadata400TreeUnavailableRunner <: SourceFetchRunner {
     }
 }
 
+private func f7GenericResolvedCommit(): String {
+    "abcdef0123456789abcdef0123456789abcdef01"
+}
+
+private func f7GenericBranchListBody(): String {
+    "[{\"name\":\"main\",\"commit\":{\"id\":\"${f7GenericResolvedCommit()}\",\"sha\":\"${f7GenericResolvedCommit()}\"}},{\"name\":\"release-1.0.0\",\"commit\":{\"id\":\"${f7GenericResolvedCommit()}\",\"sha\":\"${f7GenericResolvedCommit()}\"}},{\"name\":\"release-9.9.9\",\"commit\":{\"id\":\"${f7GenericResolvedCommit()}\",\"sha\":\"${f7GenericResolvedCommit()}\"}},{\"name\":\"release/1.0\",\"commit\":{\"id\":\"${f7GenericResolvedCommit()}\",\"sha\":\"${f7GenericResolvedCommit()}\"}}]"
+}
+
 private class F7SlashRefTreeOkRunner <: SourceFetchRunner {
     public var calls: ArrayList<SourceFetchRequest> = ArrayList<SourceFetchRequest>()
     public var failEncodedTree: Bool = false
+    public var malformedBranchList: Bool = false
+    public var branchListOmitsRelease: Bool = false
 
     init() {}
 
@@ -982,29 +1091,59 @@ private class F7SlashRefTreeOkRunner <: SourceFetchRunner {
         if (request.ref == "release/1.0" && request.url.contains("release/1.0")) {
             return f7SlashRefFetchFailure(request, result, "unencoded_slash_ref")
         }
-        if (request.kind == SourceKinds.GITCODE_TREE && this.failEncodedTree) {
-            return f7SlashRefFetchFailure(request, result, "remote_tree_unavailable")
-        }
-        if (request.kind == SourceKinds.GITCODE_TREE) {
+        if (request.kind == SourceKinds.GITCODE_BRANCH && request.purpose == "branch_list") {
+            if (this.malformedBranchList) {
+                result.ok = true
+                result.status = "ok"
+                result.statusCode = 200
+                result.contentType = "application/json"
+                result.body = "{\"not\":\"an-array\"}"
+            } else if (this.branchListOmitsRelease) {
+                result.ok = true
+                result.status = "ok"
+                result.statusCode = 200
+                result.contentType = "application/json"
+                result.body = "[${f7SlashRefBranchObjectBody("main")}]"
+            } else {
+                result.ok = true
+                result.status = "ok"
+                result.statusCode = 200
+                result.contentType = "application/json"
+                result.body = f7SlashRefBranchListBody()
+            }
+        } else if (request.kind == SourceKinds.GITCODE_BRANCH && request.purpose == "branch_ref") {
+            if (!request.url.contains("/branches/release%252F1.0")) {
+                return f7SlashRefFetchFailure(request, result, "native_unsafe_branch_ref")
+            }
             result.ok = true
             result.status = "ok"
             result.statusCode = 200
-            result.commit = "tree-${stableSummaryHash("${request.repo}:${request.ref}")}"
+            result.contentType = "application/json"
+            result.body = f7SlashRefBranchObjectBody("release/1.0")
+        } else if (request.kind == SourceKinds.GITCODE_TREE && !request.url.contains("/git/trees/${f7SlashRefResolvedCommit()}?")) {
+            return f7SlashRefFetchFailure(request, result, "tree_ref_not_resolved")
+        } else if (request.kind == SourceKinds.GITCODE_TREE && this.failEncodedTree) {
+            return f7SlashRefFetchFailure(request, result, "remote_tree_unavailable")
+        } else if (request.kind == SourceKinds.GITCODE_TREE) {
+            result.ok = true
+            result.status = "ok"
+            result.statusCode = 200
+            result.commit = f7SlashRefResolvedCommit()
             result.body = "{\"tree\":[{\"path\":\"src/scheduled_fixture.cj\",\"type\":\"blob\"},{\"path\":\"README.md\",\"type\":\"blob\"}],\"sha\":\"${result.commit}\"}"
-        } else if (request.kind == SourceKinds.GITCODE_SOURCE && request.ref == "release/1.0" && !request.url.contains("?ref=release%2F1.0")) {
-            return f7SlashRefFetchFailure(request, result, "unencoded_slash_ref_query")
+        } else if (request.kind == SourceKinds.GITCODE_SOURCE && !request.url.contains("?ref=${f7SlashRefResolvedCommit()}")) {
+            return f7SlashRefFetchFailure(request, result, "source_ref_not_resolved")
         } else if (request.kind == SourceKinds.GITCODE_SOURCE && request.path.endsWith(".cj")) {
             result.ok = true
             result.status = "ok"
             result.statusCode = 200
-            result.commit = "source-${stableSummaryHash("${request.repo}:${request.path}:${request.ref}")}"
+            result.commit = f7SlashRefResolvedCommit()
             result.contentType = "text/plain"
             result.body = "package scheduled\npublic func scheduled_${stableSummaryHash(request.path)}(): Unit {}\n"
         } else if (request.kind == SourceKinds.GITCODE_SOURCE) {
             result.ok = true
             result.status = "ok"
             result.statusCode = 200
-            result.commit = "source-${stableSummaryHash("${request.repo}:${request.path}:${request.ref}")}"
+            result.commit = f7SlashRefResolvedCommit()
             result.contentType = "text/markdown"
             result.body = "# Slash ref scheduled source\nArrayList.add HashMap String.contains cjpm test\n"
         } else {
@@ -1019,6 +1158,18 @@ private class F7SlashRefTreeOkRunner <: SourceFetchRunner {
         result.bodyHash = stableSummaryHash(result.body)
         result
     }
+}
+
+private func f7SlashRefResolvedCommit(): String {
+    "0123456789abcdef0123456789abcdef01234567"
+}
+
+private func f7SlashRefBranchListBody(): String {
+    "[${f7SlashRefBranchObjectBody("main")},${f7SlashRefBranchObjectBody("release/1.0")}]"
+}
+
+private func f7SlashRefBranchObjectBody(name: String): String {
+    "{\"name\":\"${name}\",\"commit\":{\"id\":\"${f7SlashRefResolvedCommit()}\",\"sha\":\"${f7SlashRefResolvedCommit()}\"}}"
 }
 
 private func f7SlashRefFetchFailure(request: SourceFetchRequest, result: SourceFetchResult, status: String): SourceFetchResult {
@@ -1093,6 +1244,24 @@ private func f7RunnerSawUrlFragment(runner: F7SlashRefTreeOkRunner, fragment: St
         }
     }
     false
+}
+
+private func f7ManifestSourceRef(manifest: CangjieVersionManifest, sourceSet: String): String {
+    for (source in manifest.sources) {
+        if (source.sourceSet == sourceSet) {
+            return source.sourceRef
+        }
+    }
+    ""
+}
+
+private func f7ManifestResolvedCommit(manifest: CangjieVersionManifest, sourceSet: String): String {
+    for (source in manifest.sources) {
+        if (source.sourceSet == sourceSet) {
+            return source.resolvedCommit
+        }
+    }
+    ""
 }
 
 private func f5ScheduledManifest(): CangjieVersionManifest {

@@ -321,6 +321,13 @@ private class F9ReleaseGateFreshRunner <: SourceFetchRunner {
     }
 
     private func bodyFor(request: SourceFetchRequest): String {
+        if (request.kind == SourceKinds.GITCODE_BRANCH && request.purpose == "branch_ref") {
+            return "{\"name\":\"${request.ref}\",\"commit\":{\"id\":\"${this.resolvedCommitForBranch(request)}\",\"sha\":\"${this.resolvedCommitForBranch(request)}\"}}"
+        }
+        if (request.kind == SourceKinds.GITCODE_BRANCH) {
+            let commit = this.resolvedCommitForBranch(request)
+            return "[{\"name\":\"main\",\"commit\":{\"id\":\"${commit}\",\"sha\":\"${commit}\"}},{\"name\":\"release-1.0.0\",\"commit\":{\"id\":\"${commit}\",\"sha\":\"${commit}\"}},{\"name\":\"release/1.0\",\"commit\":{\"id\":\"${commit}\",\"sha\":\"${commit}\"}}]"
+        }
         if (request.kind == SourceKinds.GITCODE_TREE) {
             return "{\"tree\":[{\"path\":\"src/release_gate_fixture.cj\",\"type\":\"blob\"},{\"path\":\"README.md\",\"type\":\"blob\"}],\"sha\":\"${this.expectedCommit(request)}\"}"
         }
@@ -333,26 +340,43 @@ private class F9ReleaseGateFreshRunner <: SourceFetchRunner {
         "fake ${request.kind} ${request.repo} ${request.path} ArrayList.add HashMap String.contains cjpm test Cangjie docs tutorial"
     }
 
+    private func resolvedCommitForBranch(request: SourceFetchRequest): String {
+        let repo = request.repo.toAsciiLower()
+        if (repo == "cangjie/cangjie_runtime") {
+            return "1111111111111111111111111111111111111111"
+        }
+        if (repo == "cangjie/cangjie_stdx") {
+            return "2222222222222222222222222222222222222222"
+        }
+        if (repo == "cangjie/cangjie_tools") {
+            return "3333333333333333333333333333333333333333"
+        }
+        if (repo == "cangjiecommunityknowledgebase/cangjie-humaneval") {
+            return "4444444444444444444444444444444444444444"
+        }
+        "0000000000000000000000000000000000000000"
+    }
+
     private func expectedCommit(request: SourceFetchRequest): String {
         let repo = request.repo.toAsciiLower()
         if (request.kind == SourceKinds.CANGJIE_DOCS) {
-            return "f8-docs-commit"
+            return "0000000000000000000000000000000000000000"
         }
         if (repo == "cangjie/cangjie_docs") {
-            return "f8-docs-commit"
+            return "0000000000000000000000000000000000000000"
         }
         if (repo == "cangjie/cangjie_tools") {
-            return "f8-docs-commit"
+            return "3333333333333333333333333333333333333333"
         }
         if (repo == "cangjie/cangjie_runtime") {
-            return "f8-std-commit"
+            return "1111111111111111111111111111111111111111"
         }
         if (repo == "cangjie/cangjie_stdx") {
-            return "f8-stdx-commit"
+            return "2222222222222222222222222222222222222222"
         }
         if (repo == "cangjiecommunityknowledgebase/cangjie-humaneval") {
-            return "f8-eval-commit"
+            return "4444444444444444444444444444444444444444"
         }
-        "f8-docs-commit"
+        "0000000000000000000000000000000000000000"
     }
 }

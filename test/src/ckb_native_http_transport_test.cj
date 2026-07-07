@@ -29,6 +29,24 @@ public class CkbNativeHttpTransportTest {
     }
 
     @TestCase
+    public func httpRunnerUsesNativeSafeGitCodeBranchUrlForSlashRefs(): Unit {
+        let config = CkbRuntimeConfig()
+        config.networkEnabled = true
+        let request = SourceRequestBuilder().gitCodeBranchNativeSafe("Cangjie/cangjie_runtime", "release/1.0")
+        let executor = NativeContractSequenceHttpExecutor()
+        executor.add(200, "{\"name\":\"release/1.0\",\"commit\":{\"id\":\"0123456789abcdef0123456789abcdef01234567\"}}", "application/json", "http_200", 0)
+
+        let fetch = HttpSourceFetchRunner(config, executor: executor).fetch(request)
+
+        @Expect(fetch.ok, true)
+        @Expect(fetch.status, "ok")
+        @Expect(executor.calls, 1)
+        @Expect(executor.seenUrls[0].contains("/branches/release%252F1.0"), true)
+        @Expect(executor.seenUrls[0].contains("/branches/release%2F1.0"), false)
+        @Expect(executor.seenUrls[0].contains("/branches/release/1.0"), false)
+    }
+
+    @TestCase
     public func httpRunnerMapsNativeTimeoutDiagnosticWithoutCurlExitCode(): Unit {
         let config = CkbRuntimeConfig()
         config.networkEnabled = true
@@ -382,6 +400,7 @@ private class NativeContractSequenceHttpExecutor <: HttpRequestExecutor {
     public var seenMethods: ArrayList<String> = ArrayList<String>()
     public var seenBodies: ArrayList<String> = ArrayList<String>()
     public var seenContentTypes: ArrayList<String> = ArrayList<String>()
+    public var seenUrls: ArrayList<String> = ArrayList<String>()
 
     public init() {}
 
@@ -409,6 +428,7 @@ private class NativeContractSequenceHttpExecutor <: HttpRequestExecutor {
             return unsupportedHttpExecutionResponse(request.method)
         }
         this.calls += 1
+        this.seenUrls.add(request.url)
         this.seenMethods.add(normalizeHttpExecutionMethod(request.method))
         this.seenBodies.add(request.body)
         this.seenContentTypes.add(request.contentType)

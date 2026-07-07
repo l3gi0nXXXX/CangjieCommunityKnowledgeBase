@@ -10,6 +10,7 @@ import std.process.*
 public class SourceKinds {
     public static let GITCODE_ORG: String = "gitcode_org"
     public static let GITCODE_REPO: String = "gitcode_repo"
+    public static let GITCODE_BRANCH: String = "gitcode_branch"
     public static let GITCODE_TREE: String = "gitcode_tree"
     public static let GITCODE_SOURCE: String = "gitcode_source"
     public static let GITCODE_ISSUE_HISTORY: String = "gitcode_issue_history"
@@ -244,7 +245,11 @@ public class FakeSourceFetchRunner <: SourceFetchRunner {
 }
 
 private func fakeSourceFetchBody(request: SourceFetchRequest): String {
-    if (request.kind == SourceKinds.GITCODE_TREE) {
+    if (request.kind == SourceKinds.GITCODE_BRANCH && request.purpose == "branch_ref") {
+        "{\"name\":\"${request.ref}\",\"commit\":{\"id\":\"${fakeGitCodeResolvedCommit()}\",\"sha\":\"${fakeGitCodeResolvedCommit()}\"}}"
+    } else if (request.kind == SourceKinds.GITCODE_BRANCH) {
+        "[{\"name\":\"main\",\"commit\":{\"id\":\"${fakeGitCodeResolvedCommit()}\",\"sha\":\"${fakeGitCodeResolvedCommit()}\"}},{\"name\":\"release-1.0.0\",\"commit\":{\"id\":\"${fakeGitCodeResolvedCommit()}\",\"sha\":\"${fakeGitCodeResolvedCommit()}\"}},{\"name\":\"release-9.9.9\",\"commit\":{\"id\":\"${fakeGitCodeResolvedCommit()}\",\"sha\":\"${fakeGitCodeResolvedCommit()}\"}},{\"name\":\"release/1.0\",\"commit\":{\"id\":\"${fakeGitCodeResolvedCommit()}\",\"sha\":\"${fakeGitCodeResolvedCommit()}\"}}]"
+    } else if (request.kind == SourceKinds.GITCODE_TREE) {
         "{\"tree\":[{\"path\":\"src/fake.cj\",\"type\":\"blob\"},{\"path\":\"README.md\",\"type\":\"blob\"}],\"sha\":\"fake-tree\"}"
     } else if (request.kind == SourceKinds.GITCODE_SOURCE && request.path.endsWith(".cj")) {
         "package fake\npublic class HttpClient {}\npublic func fakeScheduledSource(): Unit {}\n"
@@ -253,6 +258,10 @@ private func fakeSourceFetchBody(request: SourceFetchRequest): String {
     } else {
         "fake ${request.kind} ${request.repo} ${request.path} func HttpClient Cangjie docs tutorial"
     }
+}
+
+private func fakeGitCodeResolvedCommit(): String {
+    "abcdef0123456789abcdef0123456789abcdef01"
 }
 
 public class CkbRuntimeConfig {
@@ -1240,25 +1249,62 @@ public class SourceRequestBuilder {
         request
     }
 
+    public func gitCodeBranches(repo: String, page!: Int64 = 1): SourceFetchRequest {
+        let parts = parseGitCodeRepoPath(repo)
+        if (!parts.valid) {
+            return invalidSourceFetchRequest(SourceKinds.GITCODE_BRANCH, "branch_list", parts.diagnostic)
+        }
+        let normalizedRepo = "${parts.owner}/${parts.repo}"
+        let request = SourceFetchRequest(SourceKinds.GITCODE_BRANCH, "${this.gitCodeApiRoot}/repos/${parts.owner}/${parts.repo}/branches?page=${page}&per_page=100", repo: normalizedRepo, purpose: "branch_list")
+        request.authHint = "gitcode-token-optional-redacted"
+        request.paginationParam = "page"
+        request.perPageParam = "per_page"
+        request.page = page
+        request
+    }
+
+    public func gitCodeBranchNativeSafe(repo: String, ref: String): SourceFetchRequest {
+        let parts = parseGitCodeRepoPath(repo)
+        if (!parts.valid) {
+            return invalidSourceFetchRequest(SourceKinds.GITCODE_BRANCH, "branch_ref", parts.diagnostic)
+        }
+        if (!isSafeGitCodeRef(ref)) {
+            return invalidSourceFetchRequest(SourceKinds.GITCODE_BRANCH, "branch_ref", "invalid_ref")
+        }
+        let normalizedRepo = "${parts.owner}/${parts.repo}"
+        let encodedRef = urlEncodeGitCodeNativePathSegment(ref)
+        let request = SourceFetchRequest(SourceKinds.GITCODE_BRANCH, "${this.gitCodeApiRoot}/repos/${parts.owner}/${parts.repo}/branches/${encodedRef}", repo: normalizedRepo, ref: ref, purpose: "branch_ref")
+        request.authHint = "gitcode-token-optional-redacted"
+        request
+    }
+
     public func gitCodeSource(repo: String, ref: String, path: String): SourceFetchRequest {
         this.gitCodeSourceRaw(repo, ref, path)
     }
 
     public func gitCodeSourceRaw(repo: String, ref: String, path: String): SourceFetchRequest {
-        this.gitCodeSourceVariant(repo, ref, path, "raw")
+        this.gitCodeSourceVariantWithFetchRef(repo, ref, ref, path, "raw")
     }
 
     public func gitCodeSourceContents(repo: String, ref: String, path: String): SourceFetchRequest {
-        this.gitCodeSourceVariant(repo, ref, path, "contents")
+        this.gitCodeSourceVariantWithFetchRef(repo, ref, ref, path, "contents")
     }
 
-    private func gitCodeSourceVariant(repo: String, ref: String, path: String, variant: String): SourceFetchRequest {
+    public func gitCodeSourceRawWithFetchRef(repo: String, originalRef: String, fetchRef: String, path: String): SourceFetchRequest {
+        this.gitCodeSourceVariantWithFetchRef(repo, originalRef, fetchRef, path, "raw")
+    }
+
+    public func gitCodeSourceContentsWithFetchRef(repo: String, originalRef: String, fetchRef: String, path: String): SourceFetchRequest {
+        this.gitCodeSourceVariantWithFetchRef(repo, originalRef, fetchRef, path, "contents")
+    }
+
+    private func gitCodeSourceVariantWithFetchRef(repo: String, originalRef: String, fetchRef: String, path: String, variant: String): SourceFetchRequest {
         let parts = parseGitCodeRepoPath(repo)
         let purpose = if (variant == "contents") { "source_contents_snapshot" } else { "source_raw_snapshot" }
         if (!parts.valid) {
             return invalidSourceFetchRequest(SourceKinds.GITCODE_SOURCE, purpose, parts.diagnostic)
         }
-        if (!isSafeGitCodeRef(ref)) {
+        if (!isSafeGitCodeRef(originalRef) || !isSafeGitCodeRef(fetchRef)) {
             return invalidSourceFetchRequest(SourceKinds.GITCODE_SOURCE, purpose, "invalid_ref")
         }
         let safePath = normalizeGitCodeSourcePath(path)
@@ -1268,24 +1314,28 @@ public class SourceRequestBuilder {
         let normalizedRepo = "${parts.owner}/${parts.repo}"
         let endpoint = if (variant == "contents") { "contents" } else { "raw" }
         let accept = if (variant == "contents") { "application/json" } else { "text/plain, text/markdown, application/octet-stream" }
-        let encodedRef = urlEncodeGitCodeQueryValue(ref)
-        let request = SourceFetchRequest(SourceKinds.GITCODE_SOURCE, "${this.gitCodeApiRoot}/repos/${parts.owner}/${parts.repo}/${endpoint}/${safePath}?ref=${encodedRef}", repo: normalizedRepo, ref: ref, path: safePath, accept: accept, purpose: purpose)
+        let encodedRef = urlEncodeGitCodeQueryValue(fetchRef)
+        let request = SourceFetchRequest(SourceKinds.GITCODE_SOURCE, "${this.gitCodeApiRoot}/repos/${parts.owner}/${parts.repo}/${endpoint}/${safePath}?ref=${encodedRef}", repo: normalizedRepo, ref: originalRef, path: safePath, accept: accept, purpose: purpose)
         request.authHint = "gitcode-token-optional-redacted"
         request.sourceVariant = variant
         request
     }
 
     public func gitCodeTree(repo: String, ref: String): SourceFetchRequest {
+        this.gitCodeTreeWithFetchRef(repo, ref, ref)
+    }
+
+    public func gitCodeTreeWithFetchRef(repo: String, originalRef: String, fetchRef: String): SourceFetchRequest {
         let parts = parseGitCodeRepoPath(repo)
         if (!parts.valid) {
             return invalidSourceFetchRequest(SourceKinds.GITCODE_TREE, "source_tree", parts.diagnostic)
         }
-        if (!isSafeGitCodeRef(ref)) {
+        if (!isSafeGitCodeRef(originalRef) || !isSafeGitCodeRef(fetchRef)) {
             return invalidSourceFetchRequest(SourceKinds.GITCODE_TREE, "source_tree", "invalid_ref")
         }
         let normalizedRepo = "${parts.owner}/${parts.repo}"
-        let encodedRef = urlEncodeGitCodePathSegment(ref)
-        let request = SourceFetchRequest(SourceKinds.GITCODE_TREE, "${this.gitCodeApiRoot}/repos/${parts.owner}/${parts.repo}/git/trees/${encodedRef}?recursive=1&page=1&per_page=100", repo: normalizedRepo, ref: ref, purpose: "source_tree")
+        let encodedRef = urlEncodeGitCodePathSegment(fetchRef)
+        let request = SourceFetchRequest(SourceKinds.GITCODE_TREE, "${this.gitCodeApiRoot}/repos/${parts.owner}/${parts.repo}/git/trees/${encodedRef}?recursive=1&page=1&per_page=100", repo: normalizedRepo, ref: originalRef, purpose: "source_tree")
         request.authHint = "gitcode-token-optional-redacted"
         request
     }
@@ -1399,6 +1449,10 @@ private func urlEncodeGitCodePathSegment(value: String): String {
 
 private func urlEncodeGitCodeQueryValue(value: String): String {
     urlEncodeGitCodeRefValue(value)
+}
+
+private func urlEncodeGitCodeNativePathSegment(value: String): String {
+    urlEncodeGitCodePathSegment(value).replace("%", "%25")
 }
 
 private func urlEncodeGitCodeRefValue(value: String): String {
@@ -5227,9 +5281,41 @@ private func ckbFetchScheduledManifestSource(runner: SourceFetchRunner, builder:
     ckbFetchScheduledGitCodeTreeSnapshot(runner, builder, source, profile, result, config)
 }
 
+private class GitCodeRefResolution {
+    var ok: Bool = false
+    var status: String = "not_started"
+    var repo: String = ""
+    var originalRef: String = ""
+    var effectiveRef: String = ""
+    var resolvedCommit: String = ""
+    var refKind: String = "branch"
+    var diagnostics: ArrayList<String> = ArrayList<String>()
+    var failedRequests: ArrayList<String> = ArrayList<String>()
+
+    init() {}
+}
+
+private class GitCodeBranchResolutionParse {
+    var malformed: Bool = false
+    var found: Bool = false
+    var commit: String = ""
+    var count: Int64 = 0
+    var status: String = "not_found"
+
+    init() {}
+}
+
 private func ckbFetchScheduledGitCodeTreeSnapshot(runner: SourceFetchRunner, builder: SourceRequestBuilder, source: CangjieVersionSource, profile: CkbScheduleTaskProfile, result: CkbScheduledProfileFetchResult, config: CkbRuntimeConfig): Unit {
-    let treeRequest = builder.gitCodeTree(source.sourceRepo, source.sourceRef)
+    let resolution = ckbResolveGitCodeRefForScheduledFetch(runner, builder, source, profile, result, config)
+    if (!resolution.ok) {
+        let failureRequest = builder.gitCodeTree(source.sourceRepo, source.sourceRef)
+        let failureFetch = ckbGitCodeRefResolutionFailureFetch(failureRequest, resolution)
+        _ = ckbAppendScheduledSourceRecord(profile, result, failureRequest, failureFetch)
+        return
+    }
+    let treeRequest = builder.gitCodeTreeWithFetchRef(source.sourceRepo, source.sourceRef, resolution.effectiveRef)
     let treeFetch = ckbFetchScheduledRequest(runner, treeRequest, config)
+    ckbApplyGitCodeRefResolutionToFetch(treeFetch, resolution)
     _ = ckbAppendScheduledSourceRecord(profile, result, treeRequest, treeFetch)
     if (!treeFetch.ok) {
         return
@@ -5243,25 +5329,200 @@ private func ckbFetchScheduledGitCodeTreeSnapshot(runner: SourceFetchRunner, bui
         empty.sourceUrl = treeRequest.url
         empty.repo = treeRequest.repo
         empty.ref = treeRequest.ref
+        empty.commit = resolution.resolvedCommit
         empty.body = "source_tree_empty"
         empty.bodyHash = stableSummaryHash(empty.body)
         _ = ckbAppendScheduledSourceRecord(profile, result, treeRequest, empty)
         return
     }
-    ckbFetchScheduledSelectedSourceFiles(runner, builder, source, profile, result, config, selected)
+    ckbFetchScheduledSelectedSourceFiles(runner, builder, source, profile, result, config, selected, resolution)
 }
 
-private func ckbFetchScheduledSelectedSourceFiles(runner: SourceFetchRunner, builder: SourceRequestBuilder, source: CangjieVersionSource, profile: CkbScheduleTaskProfile, result: CkbScheduledProfileFetchResult, config: CkbRuntimeConfig, selected: ArrayList<String>): Unit {
+private func ckbResolveGitCodeRefForScheduledFetch(runner: SourceFetchRunner, builder: SourceRequestBuilder, source: CangjieVersionSource, profile: CkbScheduleTaskProfile, result: CkbScheduledProfileFetchResult, config: CkbRuntimeConfig): GitCodeRefResolution {
+    let resolution = GitCodeRefResolution()
+    resolution.repo = source.sourceRepo
+    resolution.originalRef = source.sourceRef
+    if (!isSafeGitCodeRef(source.sourceRef)) {
+        resolution.status = "invalid_ref"
+        resolution.diagnostics.add("gitcode_ref_resolution_invalid_ref:${source.sourceRepo}:${source.sourceRef}")
+        return resolution
+    }
+    if (ckbGitCodeLooksLikeCommit(source.sourceRef)) {
+        resolution.ok = true
+        resolution.status = "ok"
+        resolution.effectiveRef = source.sourceRef
+        resolution.resolvedCommit = source.sourceRef
+        resolution.refKind = "commit"
+        result.diagnostics.add("gitcode_ref_resolved_commit:${source.sourceRepo}:${source.sourceRef}")
+        return resolution
+    }
+    var page: Int64 = 1
+    while (page <= 10) {
+        let branchListRequest = builder.gitCodeBranches(source.sourceRepo, page: page)
+        let branchListFetch = ckbFetchScheduledRequest(runner, branchListRequest, config)
+        let diagnostic = ckbScheduledFetchDiagnostic(profile, branchListRequest, branchListFetch)
+        resolution.diagnostics.add(diagnostic)
+        result.diagnostics.add("gitcode_ref_resolution_branch_list:${diagnostic}")
+        if (!branchListFetch.ok) {
+            resolution.failedRequests.add(diagnostic)
+            break
+        }
+        let parsed = ckbParseGitCodeBranchListResolution(branchListFetch.body, source.sourceRef)
+        if (parsed.malformed) {
+            resolution.status = parsed.status
+            resolution.failedRequests.add(diagnostic)
+            result.diagnostics.add("gitcode_ref_resolution_malformed_json:${source.sourceRepo}:${source.sourceRef}:page=${page}")
+            return resolution
+        }
+        if (parsed.found && parsed.commit != "") {
+            resolution.ok = true
+            resolution.status = "ok"
+            resolution.effectiveRef = parsed.commit
+            resolution.resolvedCommit = parsed.commit
+            resolution.refKind = "branch"
+            result.diagnostics.add("gitcode_ref_resolved_branch_list:${source.sourceRepo}:${source.sourceRef}:${parsed.commit}")
+            return resolution
+        }
+        if (parsed.count < 100) {
+            break
+        }
+        page += 1
+    }
+    let branchRequest = builder.gitCodeBranchNativeSafe(source.sourceRepo, source.sourceRef)
+    let branchFetch = ckbFetchScheduledRequest(runner, branchRequest, config)
+    let branchDiagnostic = ckbScheduledFetchDiagnostic(profile, branchRequest, branchFetch)
+    resolution.diagnostics.add(branchDiagnostic)
+    result.diagnostics.add("gitcode_ref_resolution_branch_ref:${branchDiagnostic}")
+    if (branchFetch.ok) {
+        let parsed = ckbParseGitCodeBranchObjectResolution(branchFetch.body, source.sourceRef)
+        if (parsed.malformed) {
+            resolution.status = parsed.status
+            resolution.failedRequests.add(branchDiagnostic)
+            return resolution
+        }
+        if (parsed.found && parsed.commit != "") {
+            resolution.ok = true
+            resolution.status = "ok"
+            resolution.effectiveRef = parsed.commit
+            resolution.resolvedCommit = parsed.commit
+            resolution.refKind = "branch"
+            result.diagnostics.add("gitcode_ref_resolved_branch_ref:${source.sourceRepo}:${source.sourceRef}:${parsed.commit}")
+            return resolution
+        }
+    } else {
+        resolution.failedRequests.add(branchDiagnostic)
+    }
+    resolution.status = "gitcode_ref_resolution_failed"
+    result.diagnostics.add("gitcode_ref_resolution_failed:${source.sourceRepo}:${source.sourceRef}")
+    resolution
+}
+
+private func ckbGitCodeLooksLikeCommit(ref: String): Bool {
+    if (ref.size != 40) {
+        return false
+    }
+    for (b in ref.toArray()) {
+        if (!((b >= UInt8(48) && b <= UInt8(57)) || (b >= UInt8(65) && b <= UInt8(70)) || (b >= UInt8(97) && b <= UInt8(102)))) {
+            return false
+        }
+    }
+    true
+}
+
+private func ckbParseGitCodeBranchListResolution(body: String, ref: String): GitCodeBranchResolutionParse {
+    let parsed = GitCodeBranchResolutionParse()
+    let trimmed = body.trimAscii()
+    if (!trimmed.startsWith("[") || !trimmed.endsWith("]")) {
+        parsed.malformed = true
+        parsed.status = "gitcode_branch_list_malformed_json"
+        return parsed
+    }
+    for (object in jsonObjectChunks(trimmed)) {
+        parsed.count += 1
+        let objectParsed = ckbParseGitCodeBranchObjectResolution(object, ref)
+        if (objectParsed.malformed) {
+            parsed.malformed = true
+            parsed.status = objectParsed.status
+            return parsed
+        }
+        if (objectParsed.found) {
+            parsed.found = true
+            parsed.commit = objectParsed.commit
+            parsed.status = objectParsed.status
+            return parsed
+        }
+    }
+    parsed
+}
+
+private func ckbParseGitCodeBranchObjectResolution(body: String, ref: String): GitCodeBranchResolutionParse {
+    let parsed = GitCodeBranchResolutionParse()
+    let safe = asciiJsonProjection(body)
+    let name = jsonStringField(safe, "name")
+    if (name == "") {
+        parsed.malformed = true
+        parsed.status = "gitcode_branch_object_malformed_json"
+        return parsed
+    }
+    if (name != ref) {
+        return parsed
+    }
+    var commit = ""
+    let commitObject = jsonObjectField(safe, "commit")
+    if (commitObject != "") {
+        commit = firstNonEmptyJsonString(commitObject, ["id", "sha"])
+    }
+    if (commit == "") {
+        commit = firstNonEmptyJsonString(safe, ["commit_id", "commit_sha", "sha"])
+    }
+    if (!ckbGitCodeLooksLikeCommit(commit)) {
+        parsed.malformed = true
+        parsed.status = "gitcode_branch_commit_missing"
+        return parsed
+    }
+    parsed.found = true
+    parsed.commit = commit
+    parsed.status = "ok"
+    parsed
+}
+
+private func ckbGitCodeRefResolutionFailureFetch(request: SourceFetchRequest, resolution: GitCodeRefResolution): SourceFetchResult {
+    let fetch = SourceFetchResult()
+    fetch.ok = false
+    fetch.status = if (resolution.status == "") { "gitcode_ref_resolution_failed" } else { resolution.status }
+    fetch.sourceUrl = request.url
+    fetch.normalizedType = request.kind
+    fetch.repo = request.repo
+    fetch.ref = request.ref
+    fetch.path = request.path
+    fetch.body = joinStrings(resolution.diagnostics, "\n")
+    if (fetch.body == "") {
+        fetch.body = fetch.status
+    }
+    fetch.bodyHash = stableSummaryHash(fetch.body)
+    fetch
+}
+
+private func ckbApplyGitCodeRefResolutionToFetch(fetch: SourceFetchResult, resolution: GitCodeRefResolution): Unit {
+    fetch.ref = resolution.originalRef
+    if (resolution.resolvedCommit != "") {
+        fetch.commit = resolution.resolvedCommit
+    }
+}
+
+private func ckbFetchScheduledSelectedSourceFiles(runner: SourceFetchRunner, builder: SourceRequestBuilder, source: CangjieVersionSource, profile: CkbScheduleTaskProfile, result: CkbScheduledProfileFetchResult, config: CkbRuntimeConfig, selected: ArrayList<String>, resolution: GitCodeRefResolution): Unit {
     for (path in selected) {
-        let rawRequest = builder.gitCodeSourceRaw(source.sourceRepo, source.sourceRef, path)
+        let rawRequest = builder.gitCodeSourceRawWithFetchRef(source.sourceRepo, source.sourceRef, resolution.effectiveRef, path)
         let rawFetch = ckbFetchScheduledRequest(runner, rawRequest, config)
+        ckbApplyGitCodeRefResolutionToFetch(rawFetch, resolution)
         if (rawFetch.ok) {
             _ = ckbAppendScheduledSourceRecord(profile, result, rawRequest, rawFetch)
             continue
         }
         result.diagnostics.add("source_raw_snapshot_fallback:${ckbScheduledFetchDiagnostic(profile, rawRequest, rawFetch)}")
-        let contentsRequest = builder.gitCodeSourceContents(source.sourceRepo, source.sourceRef, path)
+        let contentsRequest = builder.gitCodeSourceContentsWithFetchRef(source.sourceRepo, source.sourceRef, resolution.effectiveRef, path)
         let contentsFetch = ckbFetchScheduledRequest(runner, contentsRequest, config)
+        ckbApplyGitCodeRefResolutionToFetch(contentsFetch, resolution)
         if (contentsFetch.ok) {
             _ = ckbAppendScheduledSourceRecord(profile, result, contentsRequest, contentsFetch)
         } else {
@@ -6003,7 +6264,7 @@ private func ckbScheduledSourceType(request: SourceFetchRequest): String {
     if (request.kind == SourceKinds.WEB_CANDIDATE) {
         return SourceTypes.WEB_CANDIDATE
     }
-    if (request.kind == SourceKinds.GITCODE_ORG || request.kind == SourceKinds.GITCODE_REPO || request.kind == SourceKinds.GITCODE_TREE || request.kind == SourceKinds.GITCODE_SOURCE) {
+    if (request.kind == SourceKinds.GITCODE_ORG || request.kind == SourceKinds.GITCODE_REPO || request.kind == SourceKinds.GITCODE_BRANCH || request.kind == SourceKinds.GITCODE_TREE || request.kind == SourceKinds.GITCODE_SOURCE) {
         return SourceTypes.REPO
     }
     SourceTypes.COMMUNITY
@@ -6908,7 +7169,7 @@ private func authSummaryForRequest(config: CkbRuntimeConfig, request: SourceFetc
 }
 
 private func isGitCodeRequest(request: SourceFetchRequest): Bool {
-    request.kind == SourceKinds.GITCODE_ORG || request.kind == SourceKinds.GITCODE_REPO || request.kind == SourceKinds.GITCODE_TREE || request.kind == SourceKinds.GITCODE_SOURCE || request.kind == SourceKinds.GITCODE_ISSUE_HISTORY || request.kind == SourceKinds.GITCODE_PR_HISTORY || request.kind == SourceKinds.GITCODE_COMMENT_HISTORY
+    request.kind == SourceKinds.GITCODE_ORG || request.kind == SourceKinds.GITCODE_REPO || request.kind == SourceKinds.GITCODE_BRANCH || request.kind == SourceKinds.GITCODE_TREE || request.kind == SourceKinds.GITCODE_SOURCE || request.kind == SourceKinds.GITCODE_ISSUE_HISTORY || request.kind == SourceKinds.GITCODE_PR_HISTORY || request.kind == SourceKinds.GITCODE_COMMENT_HISTORY
 }
 
 private func ingestLiveFetch(kb: KnowledgeBase, request: SourceFetchRequest, fetch: SourceFetchResult, index: Int64): Unit {
@@ -6916,6 +7177,8 @@ private func ingestLiveFetch(kb: KnowledgeBase, request: SourceFetchRequest, fet
         kb.ingestFetchResult("live-org-${safeName(request.repo)}", SourceTypes.COMMUNITY, fetch, "GitCode ${request.repo} org", TrustLevels.COMMUNITY, ReviewStates.REVIEWED)
     } else if (request.kind == SourceKinds.GITCODE_REPO) {
         kb.ingestFetchResult("live-repo-${safeName(request.repo)}", SourceTypes.REPO, fetch, "GitCode ${request.repo} repo", TrustLevels.OFFICIAL, ReviewStates.TRUSTED)
+    } else if (request.kind == SourceKinds.GITCODE_BRANCH) {
+        kb.ingestFetchResult("live-branch-${safeName(request.repo)}-${safeName(request.ref)}", SourceTypes.REPO, fetch, "GitCode ${request.repo} branch", TrustLevels.OFFICIAL, ReviewStates.TRUSTED)
     } else if (request.kind == SourceKinds.GITCODE_TREE) {
         kb.ingestFetchResult("live-tree-${safeName(request.repo)}", SourceTypes.REPO, fetch, "GitCode ${request.repo} tree", TrustLevels.OFFICIAL, ReviewStates.TRUSTED)
     } else if (request.kind == SourceKinds.GITCODE_SOURCE) {
@@ -7527,6 +7790,8 @@ private func renderLiveFetchSummary(request: SourceFetchRequest, fetch: SourceFe
         shape = "history-list"
     } else if (request.kind == SourceKinds.GITCODE_REPO) {
         shape = "repo-metadata"
+    } else if (request.kind == SourceKinds.GITCODE_BRANCH) {
+        shape = "branch-metadata"
     } else if (request.kind == SourceKinds.GITCODE_TREE) {
         shape = "source-tree"
     } else if (request.kind == SourceKinds.GITCODE_SOURCE) {
@@ -7593,6 +7858,8 @@ private func ingestLiveFetch(kb: KnowledgeBase, request: SourceFetchRequest, fet
         kb.ingestFetchResult("live-org-${safeName(request.repo)}", SourceTypes.COMMUNITY, fetch, "GitCode ${request.repo} repo list", TrustLevels.COMMUNITY, ReviewStates.REVIEWED)
     } else if (request.kind == SourceKinds.GITCODE_REPO) {
         kb.ingestFetchResult("live-repo-${safeName(request.repo)}", SourceTypes.REPO, fetch, "GitCode ${request.repo} repo", TrustLevels.OFFICIAL, ReviewStates.TRUSTED)
+    } else if (request.kind == SourceKinds.GITCODE_BRANCH) {
+        kb.ingestFetchResult("live-branch-${safeName(request.repo)}-${safeName(request.ref)}", SourceTypes.REPO, fetch, "GitCode ${request.repo} branch", TrustLevels.OFFICIAL, ReviewStates.TRUSTED)
     } else if (request.kind == SourceKinds.GITCODE_TREE) {
         kb.ingestFetchResult("live-tree-${safeName(request.repo)}", SourceTypes.REPO, fetch, "GitCode ${request.repo} tree", TrustLevels.OFFICIAL, ReviewStates.TRUSTED)
     } else if (request.kind == SourceKinds.GITCODE_SOURCE) {
