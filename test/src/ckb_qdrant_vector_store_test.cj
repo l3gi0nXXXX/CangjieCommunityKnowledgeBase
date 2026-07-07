@@ -149,6 +149,7 @@ public class CkbQdrantVectorStoreTest {
         @Expect(nested.state, EmbeddingProviderState.READY)
         @Expect(nested.count, 13)
         @Expect(nested.dimension, 1024)
+        @Expect(nested.distance, "Cosine")
 
         let statusExecutor = QdrantFakeExecutor()
         statusExecutor.add(404, "{\"status\":\"error\"}", "http_404")
@@ -235,6 +236,71 @@ public class CkbQdrantVectorStoreTest {
         @Expect(executor.methods[1], "PUT")
         @Expect(executor.urls[1], "http://qdrant.test/collections/ckb_active")
         @Expect(executor.bodies[1].contains("\"size\":3"), true)
+    }
+
+    @TestCase
+    public func qdrantEnsureReadyCollectionTreatsCreateConflictAsReadyWhenShapeMatches(): Unit {
+        let executor = QdrantFakeExecutor()
+        executor.add(404, "{\"status\":\"error\"}", "http_404")
+        executor.add(409, "{\"status\":\"error\",\"message\":\"already exists\"}", "http_409")
+        executor.add(200, "{\"status\":\"ok\",\"result\":{\"status\":\"green\",\"points_count\":13,\"config\":{\"params\":{\"vectors\":{\"size\":3,\"distance\":\"Cosine\"}}}}}", "http_200")
+        let store = QdrantVectorStore("http://qdrant.test", 3, "Cosine", executor: executor)
+
+        let status = store.ensureReadyCollection("ckb active")
+
+        @Expect(status.state, EmbeddingProviderState.READY)
+        @Expect(status.count, 13)
+        @Expect(status.dimension, 3)
+        @Expect(status.distance, "Cosine")
+        @Expect(status.degradedReason, "already_exists_ready")
+        @Expect(executor.calls, 3)
+        @Expect(executor.methods[0], "GET")
+        @Expect(executor.methods[1], "PUT")
+        @Expect(executor.methods[2], "GET")
+    }
+
+    @TestCase
+    public func qdrantEnsureReadyCollectionReportsConflictDimensionMismatch(): Unit {
+        let executor = QdrantFakeExecutor()
+        executor.add(404, "{\"status\":\"error\"}", "http_404")
+        executor.add(409, "{\"status\":\"error\",\"message\":\"already exists\"}", "http_409")
+        executor.add(200, "{\"status\":\"ok\",\"result\":{\"status\":\"green\",\"points_count\":13,\"config\":{\"params\":{\"vectors\":{\"size\":4,\"distance\":\"Cosine\"}}}}}", "http_200")
+        let store = QdrantVectorStore("http://qdrant.test", 3, "Cosine", executor: executor)
+
+        let status = store.ensureReadyCollection("ckb active")
+
+        @Expect(status.state, EmbeddingProviderState.DEGRADED)
+        @Expect(status.degradedReason, "dimension_mismatch:4:3")
+        @Expect(executor.calls, 3)
+    }
+
+    @TestCase
+    public func qdrantEnsureReadyCollectionReportsConflictDistanceMismatch(): Unit {
+        let executor = QdrantFakeExecutor()
+        executor.add(404, "{\"status\":\"error\"}", "http_404")
+        executor.add(409, "{\"status\":\"error\",\"message\":\"already exists\"}", "http_409")
+        executor.add(200, "{\"status\":\"ok\",\"result\":{\"status\":\"green\",\"points_count\":13,\"config\":{\"params\":{\"vectors\":{\"size\":3,\"distance\":\"Dot\"}}}}}", "http_200")
+        let store = QdrantVectorStore("http://qdrant.test", 3, "Cosine", executor: executor)
+
+        let status = store.ensureReadyCollection("ckb active")
+
+        @Expect(status.state, EmbeddingProviderState.DEGRADED)
+        @Expect(status.degradedReason, "distance_mismatch:Dot:Cosine")
+        @Expect(executor.calls, 3)
+    }
+
+    @TestCase
+    public func qdrantEnsureReadyCollectionDoesNotCreateWhenStatusTransportFails(): Unit {
+        let executor = QdrantFakeExecutor()
+        executor.addTransportFailure("timeout")
+        let store = QdrantVectorStore("http://qdrant.test", 3, "Cosine", executor: executor)
+
+        let status = store.ensureReadyCollection("ckb active")
+
+        @Expect(status.state, EmbeddingProviderState.DOWN)
+        @Expect(status.degradedReason, "timeout")
+        @Expect(executor.calls, 1)
+        @Expect(executor.methods[0], "GET")
     }
 
     @TestCase

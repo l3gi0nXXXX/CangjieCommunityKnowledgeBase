@@ -24,6 +24,21 @@ public class CkbVectorBootstrapRebuildTest {
     }
 
     @TestCase
+    public func vectorBootstrapTreatsExistingQdrantCollectionsAsReady(): Unit {
+        let config = qdrantRuntimeConfig()
+        let store = BootstrapExistingVectorStore()
+
+        let result = ckbVectorBootstrapWithStore(config, store)
+
+        @Expect(result.ok, true)
+        @Expect(result.activeState, EmbeddingProviderState.READY)
+        @Expect(result.candidateState, EmbeddingProviderState.READY)
+        @Expect(vectorTestContains(result.diagnostics, "qdrant_collection_ready:active:ckb_active"), true)
+        @Expect(vectorTestContains(result.diagnostics, "qdrant_collection_ready:candidate:ckb_candidate"), true)
+        @Expect(store.ensureCalls, 2)
+    }
+
+    @TestCase
     public func vectorBootstrapPreflightFailsFastWhenEmbeddingSmokeFails(): Unit {
         let config = qdrantRuntimeConfig()
         let vectorStore = BootstrapFakeVectorStore()
@@ -107,7 +122,7 @@ public class CkbVectorBootstrapRebuildTest {
     }
 
     @TestCase
-    public func restoreActiveSnapshotRebuildsWhenVectorDimensionMismatchesRuntime(): Unit {
+    public func restoreActiveSnapshotMarksRebuildRequiredWhenVectorDimensionMismatchesRuntime(): Unit {
         let source = KnowledgeBase(FakeClock(0), ChunkedFakeEmbeddingProvider(2), LocalVectorStore(), LocalGraphStore())
         source.bootstrapOffline()
         let sourceStatus = source.status()
@@ -129,9 +144,34 @@ public class CkbVectorBootstrapRebuildTest {
 
         @Expect(restored, true)
         @Expect(vectorStore.restoreCalls, 0)
-        @Expect(vectorStore.recreateCalls > 0, true)
-        @Expect(status.storage.vectorState, EmbeddingProviderState.READY)
+        @Expect(vectorStore.recreateCalls, 0)
+        @Expect(vectorStore.upsertBatchCalls, 0)
+        @Expect(status.storage.vectorState, EmbeddingProviderState.DEGRADED)
         @Expect(status.restoreDiagnostic.contains("vector_rebuild_required:dimension_mismatch:2:3"), true)
+    }
+
+    @TestCase
+    public func restoreActiveSnapshotMarksRebuildRequiredWhenVectorArtifactMissing(): Unit {
+        let source = KnowledgeBase(FakeClock(0), ChunkedFakeEmbeddingProvider(2), LocalVectorStore(), LocalGraphStore())
+        source.bootstrapOffline()
+        let sourceStatus = source.status()
+        let snapshot = ActiveSnapshot()
+        snapshot.valid = true
+        snapshot.diagnostic = "ok"
+        snapshot.activeVersion = sourceStatus.activeKnowledgeVersion
+        snapshot.activeIndex = source.activeRecordSnapshot()
+        let vectorStore = RestoreTrackingVectorStore()
+        let target = KnowledgeBase(FakeClock(0), ChunkedFakeEmbeddingProvider(2), vectorStore, LocalGraphStore())
+
+        let restored = target.restoreActiveSnapshot(snapshot)
+        let status = target.status()
+
+        @Expect(restored, true)
+        @Expect(vectorStore.restoreCalls, 0)
+        @Expect(vectorStore.recreateCalls, 0)
+        @Expect(vectorStore.upsertBatchCalls, 0)
+        @Expect(status.storage.vectorState, EmbeddingProviderState.DEGRADED)
+        @Expect(status.restoreDiagnostic.contains("vector_snapshot_missing"), true)
     }
 }
 
@@ -197,6 +237,66 @@ private class BootstrapFakeVectorStore <: VectorStore {
         status.activeCollection = "ckb_active"
         status.candidateCollection = "ckb_candidate"
         status.dimension = 3
+        status.state = EmbeddingProviderState.READY
+        status
+    }
+}
+
+private class BootstrapExistingVectorStore <: VectorStore {
+    public var ensureCalls: Int64 = 0
+
+    init() {}
+
+    public func upsert(collection: String, vectors: ArrayList<VectorRecord>): VectorStoreStatus {
+        this.readyStatus(collection)
+    }
+
+    public func upsertBatch(collection: String, vectors: ArrayList<VectorRecord>): VectorStoreStatus {
+        let status = this.readyStatus(collection)
+        status.count = vectors.size
+        status
+    }
+
+    public func search(collection: String, queryVector: ArrayList<Float64>, filters: VectorSearchFilters, topK: Int64): ArrayList<VectorSearchResult> {
+        ArrayList<VectorSearchResult>()
+    }
+
+    public func status(collection: String): VectorStoreStatus {
+        this.readyStatus(collection)
+    }
+
+    public func ensureReadyCollection(collection: String): VectorStoreStatus {
+        this.ensureCalls += 1
+        this.readyStatus(collection)
+    }
+
+    public func clear(collection: String): VectorStoreStatus {
+        this.readyStatus(collection)
+    }
+
+    public func recreate(collection: String, vectors: ArrayList<VectorRecord>): VectorStoreStatus {
+        this.readyStatus(collection)
+    }
+
+    public func backup(collection: String): VectorBackup {
+        let backup = VectorBackup()
+        backup.collection = collection
+        backup.valid = true
+        backup
+    }
+
+    public func restore(backup: VectorBackup): VectorStoreStatus {
+        this.readyStatus(backup.collection)
+    }
+
+    private func readyStatus(collection: String): VectorStoreStatus {
+        let status = VectorStoreStatus()
+        status.backend = "qdrant"
+        status.collection = collection
+        status.activeCollection = "ckb_active"
+        status.candidateCollection = "ckb_candidate"
+        status.dimension = 3
+        status.distance = "Cosine"
         status.state = EmbeddingProviderState.READY
         status
     }

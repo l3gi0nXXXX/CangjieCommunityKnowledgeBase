@@ -490,6 +490,7 @@ public class VectorStoreStatus {
     public var activeCollection: String = "active"
     public var candidateCollection: String = "candidate"
     public var dimension: Int64 = 0
+    public var distance: String = ""
     public var count: Int64 = 0
     public var state: String = EmbeddingProviderState.DEGRADED
     public var degradedReason: String = ""
@@ -833,10 +834,27 @@ public class QdrantVectorStore <: VectorStore {
     public func ensureReadyCollection(collection: String): VectorStoreStatus {
         let current = this.status(collection)
         if (current.state == EmbeddingProviderState.READY) {
-            return current
+            return this.statusWithCollectionConfigCheck(collection, current)
         }
         if (current.degradedReason == "collection_missing") {
             let created = this.createCollection(collection)
+            if (created.state == EmbeddingProviderState.READY) {
+                this.lastStatus = created
+                return created
+            }
+            if (created.degradedReason == "http_409") {
+                let afterConflict = this.status(collection)
+                if (afterConflict.state == EmbeddingProviderState.READY) {
+                    let checked = this.statusWithCollectionConfigCheck(collection, afterConflict)
+                    if (checked.state == EmbeddingProviderState.READY) {
+                        checked.degradedReason = "already_exists_ready"
+                    }
+                    this.lastStatus = checked
+                    return checked
+                }
+                this.lastStatus = afterConflict
+                return afterConflict
+            }
             this.lastStatus = created
             return created
         }
@@ -914,6 +932,32 @@ public class QdrantVectorStore <: VectorStore {
         }
         let response = this.execute("PUT", this.collectionUrl(collection), qdrantCreateCollectionBody(this.config.dimensions, this.config.distance))
         this.statusFromWriteResponse(collection, response, "create_collection")
+    }
+
+    private func statusWithCollectionConfigCheck(collection: String, status: VectorStoreStatus): VectorStoreStatus {
+        let mismatch = this.collectionConfigMismatch(status)
+        if (mismatch == "") {
+            return status
+        }
+        let degraded = this.baseStatus(collection)
+        degraded.state = EmbeddingProviderState.DEGRADED
+        degraded.count = status.count
+        degraded.dimension = status.dimension
+        degraded.distance = status.distance
+        degraded.degradedReason = mismatch
+        degraded
+    }
+
+    private func collectionConfigMismatch(status: VectorStoreStatus): String {
+        if (this.config.dimensions > 0 && status.dimension > 0 && status.dimension != this.config.dimensions) {
+            return "dimension_mismatch:${status.dimension}:${this.config.dimensions}"
+        }
+        let expectedDistance = this.config.distance.trimAscii().toAsciiLower()
+        let actualDistance = status.distance.trimAscii().toAsciiLower()
+        if (expectedDistance != "" && actualDistance != "" && expectedDistance != actualDistance) {
+            return "distance_mismatch:${status.distance}:${this.config.distance}"
+        }
+        ""
     }
 
     private func execute(method: String, url: String, body: String): HttpExecutionResponse {
@@ -1032,6 +1076,11 @@ public class QdrantVectorStore <: VectorStore {
             status.degradedReason = "collection_missing"
             return status
         }
+        if (response.statusCode == 409 || response.status == "http_409") {
+            status.state = EmbeddingProviderState.DEGRADED
+            status.degradedReason = "http_409"
+            return status
+        }
         if (response.status == "unsupported_method") {
             status.state = EmbeddingProviderState.DEGRADED
             status.degradedReason = "qdrant_http_execute_unavailable"
@@ -1052,6 +1101,7 @@ public class QdrantVectorStore <: VectorStore {
         status.backend = "qdrant"
         status.collection = collection
         status.dimension = this.config.dimensions
+        status.distance = this.config.distance
         status.state = EmbeddingProviderState.DEGRADED
         status
     }
@@ -1221,6 +1271,7 @@ private func qdrantParseCollectionStatus(body: String): VectorStoreStatus {
     let qdrantState = qdrantJsonStringField(result, "status")
     status.count = qdrantJsonIntField(result, "points_count", qdrantJsonIntField(result, "pointsCount", qdrantJsonIntField(result, "indexed_vectors_count", 0)))
     status.dimension = qdrantJsonIntField(result, "size", qdrantNestedVectorSize(result))
+    status.distance = qdrantNestedVectorDistance(result)
     if (qdrantState == "green" || qdrantState == "ok" || qdrantState == "") {
         status.state = EmbeddingProviderState.READY
     } else {
@@ -1244,6 +1295,22 @@ private func qdrantNestedVectorSize(result: String): Int64 {
         return 0
     }
     qdrantJsonIntField(vectors, "size", 0)
+}
+
+private func qdrantNestedVectorDistance(result: String): String {
+    let config = qdrantJsonObjectField(result, "config")
+    if (config == "") {
+        return ""
+    }
+    let params = qdrantJsonObjectField(config, "params")
+    if (params == "") {
+        return ""
+    }
+    let vectors = qdrantJsonObjectField(params, "vectors")
+    if (vectors == "") {
+        return ""
+    }
+    qdrantJsonStringField(vectors, "distance")
 }
 
 private func qdrantParseSearchResponse(body: String, filters: VectorSearchFilters, topK: Int64): ArrayList<VectorSearchResult> {
@@ -2490,12 +2557,12 @@ public class KnowledgeBase {
 
     private func restoreOrRebuildActiveVectorIndex(snapshot: ActiveSnapshot): VectorIndexBuildResult {
         if (snapshot.vectorRecords.size == 0) {
-            return this.rebuildProductionIndexesWithResult("vector_snapshot_missing")
+            return this.markVectorRebuildRequired("vector_snapshot_missing")
         }
         let backupDimension = vectorBackupDimension(snapshot.vectorRecords)
         let expectedDimension = this.activeEmbeddingDimensions()
         if (backupDimension <= 0 || (expectedDimension > 0 && backupDimension != expectedDimension)) {
-            return this.rebuildProductionIndexesWithResult("vector_rebuild_required:dimension_mismatch:${backupDimension}:${expectedDimension}")
+            return this.markVectorRebuildRequired("vector_rebuild_required:dimension_mismatch:${backupDimension}:${expectedDimension}")
         }
         let result = VectorIndexBuildResult()
         let backup = VectorBackup()
@@ -2515,6 +2582,25 @@ public class KnowledgeBase {
         result.graphNodes = this.storage.graphNodeCount
         result.servingCount = this.storage.servingIndexCount
         result.diagnostic = vectorStatus.degradedReason
+        result
+    }
+
+    private func markVectorRebuildRequired(reason: String): VectorIndexBuildResult {
+        let result = VectorIndexBuildResult()
+        result.ok = false
+        result.status = EmbeddingProviderState.DEGRADED
+        result.vectorCount = 0
+        result.diagnostic = reason
+        this.rebuildServingIndexStatus()
+        this.rebuildGraphIndex()
+        let status = this.vectorStore.status(this.vectorCollection)
+        status.state = EmbeddingProviderState.DEGRADED
+        status.count = 0
+        status.dimension = this.activeEmbeddingDimensions()
+        status.degradedReason = reason
+        this.applyVectorStatus(status)
+        result.graphNodes = this.storage.graphNodeCount
+        result.servingCount = this.storage.servingIndexCount
         result
     }
 

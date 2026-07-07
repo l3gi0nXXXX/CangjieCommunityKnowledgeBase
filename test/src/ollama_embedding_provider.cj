@@ -1,4 +1,4 @@
-package cangjie_community_knowledge_base
+package cangjie_community_knowledge_base_test
 
 import std.collection.ArrayList
 import std.convert.Parsable
