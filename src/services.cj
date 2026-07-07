@@ -2964,10 +2964,41 @@ public class CkbRuntimeVectorReadiness {
     public init() {}
 }
 
+public class CkbRuntimeEmbeddingReadiness {
+    public var ready: Bool = true
+    public var state: String = "ready"
+    public var reason: String = ""
+    public var provider: String = ""
+    public var model: String = ""
+    public var dimensions: Int64 = 0
+
+    public init() {}
+}
+
+public class CkbVectorBootstrapResult {
+    public var ok: Bool = true
+    public var backend: String = ""
+    public var activeCollection: String = ""
+    public var candidateCollection: String = ""
+    public var activeState: String = "unknown"
+    public var candidateState: String = "unknown"
+    public var vectorReadiness: String = "unknown"
+    public var embeddingReadiness: String = "unknown"
+    public var diagnostics: ArrayList<String> = ArrayList<String>()
+
+    public init() {}
+}
+
 public func ckbRoutineRuntimePreflightFromEnv(config: CkbRuntimeConfig, storePath: String): CkbRoutineRuntimePreflightResult {
     let heap = if (let Some(value) <- getVariable("cjHeapSize")) { value } else { "" }
     let dyld = if (let Some(value) <- getVariable("DYLD_LIBRARY_PATH")) { value } else { "" }
     ckbRoutineRuntimePreflight(config, storePath, heap, dyld)
+}
+
+public func ckbRoutineRuntimePreflightFromEnvWithBootstrap(config: CkbRuntimeConfig, storePath: String): CkbRoutineRuntimePreflightResult {
+    let heap = if (let Some(value) <- getVariable("cjHeapSize")) { value } else { "" }
+    let dyld = if (let Some(value) <- getVariable("DYLD_LIBRARY_PATH")) { value } else { "" }
+    ckbRoutineRuntimePreflightWithBootstrap(config, storePath, heap, dyld, vectorStoreFromRuntime(config), embeddingProviderFromRuntime(config))
 }
 
 public func ckbRoutineRuntimePreflight(config: CkbRuntimeConfig, storePath: String, cjHeapSize: String, dyldLibraryPath: String): CkbRoutineRuntimePreflightResult {
@@ -2976,6 +3007,25 @@ public func ckbRoutineRuntimePreflight(config: CkbRuntimeConfig, storePath: Stri
 
 public func ckbRoutineRuntimePreflightWithVectorStore(config: CkbRuntimeConfig, storePath: String, cjHeapSize: String, dyldLibraryPath: String, vectorStore: VectorStore): CkbRoutineRuntimePreflightResult {
     ckbRoutineRuntimePreflightWithVectorReadiness(config, storePath, cjHeapSize, dyldLibraryPath, ckbRuntimeVectorReadinessWithStore(config, vectorStore))
+}
+
+public func ckbRoutineRuntimePreflightWithBootstrap(config: CkbRuntimeConfig, storePath: String, cjHeapSize: String, dyldLibraryPath: String, vectorStore: VectorStore, embeddingProvider: EmbeddingProvider): CkbRoutineRuntimePreflightResult {
+    let bootstrap = ckbVectorBootstrapWithStore(config, vectorStore)
+    let vector = ckbRuntimeVectorReadinessWithStore(config, vectorStore)
+    let embedding = ckbRuntimeEmbeddingReadinessWithProvider(config, embeddingProvider)
+    let result = ckbRoutineRuntimePreflightWithVectorReadiness(config, storePath, cjHeapSize, dyldLibraryPath, vector)
+    result.embeddingReadiness = embedding.state
+    if (!bootstrap.ok) {
+        result.ok = false
+    }
+    for (diagnostic in bootstrap.diagnostics) {
+        result.diagnostics.add(diagnostic)
+    }
+    if (!embedding.ready) {
+        result.ok = false
+        result.diagnostics.add(embedding.reason)
+    }
+    result
 }
 
 private func ckbRoutineRuntimePreflightWithVectorReadiness(config: CkbRuntimeConfig, storePath: String, cjHeapSize: String, dyldLibraryPath: String, vector: CkbRuntimeVectorReadiness): CkbRoutineRuntimePreflightResult {
@@ -3011,6 +3061,133 @@ public func renderCkbRoutineRuntimePreflightJson(result: CkbRoutineRuntimePrefli
 
 public func renderCkbRoutineRuntimePreflightText(result: CkbRoutineRuntimePreflightResult): String {
     "routine preflight ok=${result.ok} requiredHeapMiB=${result.requiredHeapMiB} actualHeapMiB=${result.actualHeapMiB} storeExists=${result.storeExists} vectorReadiness=${result.vectorReadiness} diagnostics=${joinStrings(result.diagnostics, ",")}\n"
+}
+
+public func ckbVectorBootstrapFromRuntime(config: CkbRuntimeConfig): CkbVectorBootstrapResult {
+    ckbVectorBootstrapWithStore(config, vectorStoreFromRuntime(config))
+}
+
+public func ckbVectorBootstrapWithStore(config: CkbRuntimeConfig, vectorStore: VectorStore): CkbVectorBootstrapResult {
+    let result = CkbVectorBootstrapResult()
+    let vector = vectorStoreConfigFromRuntime(config)
+    result.backend = vector.backend
+    result.activeCollection = vector.activeCollection
+    result.candidateCollection = vector.candidateCollection
+    if (vector.backend != "qdrant") {
+        result.activeState = "skipped"
+        result.candidateState = "skipped"
+        result.vectorReadiness = "ready"
+        result.embeddingReadiness = if (config.embeddingProvider == "" || config.embeddingProvider == "none") { "missing" } else { "configured" }
+        result.diagnostics.add("vector_bootstrap_skipped_backend:${vector.backend}")
+        return result
+    }
+    let active = ckbEnsureVectorCollection(vectorStore, vector.activeCollection, "active")
+    result.activeState = active.state
+    for (diagnostic in active.diagnostics) {
+        result.diagnostics.add(diagnostic)
+    }
+    let candidate = ckbEnsureVectorCollection(vectorStore, vector.candidateCollection, "candidate")
+    result.candidateState = candidate.state
+    for (diagnostic in candidate.diagnostics) {
+        result.diagnostics.add(diagnostic)
+    }
+    let readiness = ckbRuntimeVectorReadinessWithStore(config, vectorStore)
+    result.vectorReadiness = readiness.state
+    result.embeddingReadiness = if (config.embeddingProvider == "" || config.embeddingProvider == "none") { "missing" } else { "configured" }
+    if (!active.ok || !candidate.ok || !readiness.ready) {
+        result.ok = false
+    }
+    if (!readiness.ready) {
+        result.diagnostics.add(readiness.reason)
+    }
+    result
+}
+
+public func renderCkbVectorBootstrapJson(result: CkbVectorBootstrapResult): String {
+    "{\"ok\":${result.ok},\"errorCode\":\"${if (result.ok) { "" } else { "ckb.vector_bootstrap_failed" }}\",\"backend\":\"${ckbRuntimePreflightJsonEscape(result.backend)}\",\"activeCollection\":\"${ckbRuntimePreflightJsonEscape(result.activeCollection)}\",\"candidateCollection\":\"${ckbRuntimePreflightJsonEscape(result.candidateCollection)}\",\"activeState\":\"${ckbRuntimePreflightJsonEscape(result.activeState)}\",\"candidateState\":\"${ckbRuntimePreflightJsonEscape(result.candidateState)}\",\"vectorReadiness\":\"${ckbRuntimePreflightJsonEscape(result.vectorReadiness)}\",\"embeddingReadiness\":\"${ckbRuntimePreflightJsonEscape(result.embeddingReadiness)}\",\"diagnostics\":${ckbRuntimePreflightStringListJson(result.diagnostics)}}"
+}
+
+public func renderCkbVectorBootstrapText(result: CkbVectorBootstrapResult): String {
+    "vector bootstrap ok=${result.ok} backend=${result.backend} activeCollection=${result.activeCollection} activeState=${result.activeState} candidateCollection=${result.candidateCollection} candidateState=${result.candidateState} vectorReadiness=${result.vectorReadiness} embeddingReadiness=${result.embeddingReadiness} diagnostics=${joinStrings(result.diagnostics, ",")}\n"
+}
+
+public func ckbRuntimeEmbeddingReadiness(config: CkbRuntimeConfig): CkbRuntimeEmbeddingReadiness {
+    ckbRuntimeEmbeddingReadinessWithProvider(config, embeddingProviderFromRuntime(config))
+}
+
+public func ckbRuntimeEmbeddingReadinessWithProvider(config: CkbRuntimeConfig, provider: EmbeddingProvider): CkbRuntimeEmbeddingReadiness {
+    let result = CkbRuntimeEmbeddingReadiness()
+    let embedding = embeddingConfigFromRuntime(config)
+    result.provider = embedding.provider
+    result.model = embedding.model
+    result.dimensions = embedding.dimensions
+    if (embedding.provider == "" || embedding.provider == "none") {
+        result.ready = false
+        result.state = "missing"
+        result.reason = "embedding_provider_missing"
+        return result
+    }
+    let status = provider.status()
+    result.provider = status.provider
+    result.model = if (status.model != "") { status.model } else { embedding.model }
+    result.dimensions = if (status.dimensions > 0) { status.dimensions } else { embedding.dimensions }
+    if (status.state != EmbeddingProviderState.READY) {
+        result.ready = false
+        result.state = status.state
+        result.reason = if (status.degradedReason != "") { status.degradedReason } else { "embedding_provider_not_ready" }
+        return result
+    }
+    let smoke = ArrayList<String>()
+    smoke.add("CKB embedding readiness smoke 仓颉")
+    let batch = provider.embed(smoke, result.model, result.dimensions)
+    if (batch.status.state != EmbeddingProviderState.READY) {
+        result.ready = false
+        result.state = batch.status.state
+        result.reason = if (batch.status.degradedReason != "") { batch.status.degradedReason } else { "embedding_smoke_failed" }
+        return result
+    }
+    if (batch.vectors.size != 1 || batch.vectors[0].size != result.dimensions) {
+        result.ready = false
+        result.state = EmbeddingProviderState.DEGRADED
+        result.reason = "embedding_smoke_dimension_mismatch:${batch.vectors.size}:${if (batch.vectors.size > 0) { batch.vectors[0].size } else { 0 }}:${result.dimensions}"
+        return result
+    }
+    result.state = EmbeddingProviderState.READY
+    result.reason = ""
+    result
+}
+
+private class CkbEnsureVectorCollectionResult {
+    public var ok: Bool = true
+    public var state: String = "unknown"
+    public var diagnostics: ArrayList<String> = ArrayList<String>()
+
+    public init() {}
+}
+
+private func ckbEnsureVectorCollection(vectorStore: VectorStore, collection: String, role: String): CkbEnsureVectorCollectionResult {
+    let result = CkbEnsureVectorCollectionResult()
+    try {
+        let before = vectorStore.status(collection)
+        let after = vectorStore.ensureReadyCollection(collection)
+        result.state = after.state
+        if (after.state == EmbeddingProviderState.READY) {
+            if (before.state == EmbeddingProviderState.READY) {
+                result.diagnostics.add("qdrant_collection_ready:${role}:${collection}")
+            } else {
+                result.diagnostics.add("qdrant_collection_created:${role}:${collection}")
+            }
+            return result
+        }
+        result.ok = false
+        result.diagnostics.add("qdrant_collection_bootstrap_failed:${role}:${collection}:${if (after.degradedReason != "") { after.degradedReason } else { after.state }}")
+        return result
+    } catch (_: Exception) {
+        result.ok = false
+        result.state = EmbeddingProviderState.DEGRADED
+        result.diagnostics.add("qdrant_collection_bootstrap_failed:${role}:${collection}:exception")
+        return result
+    }
 }
 
 public func ckbRuntimeVectorReadiness(config: CkbRuntimeConfig): CkbRuntimeVectorReadiness {
@@ -4117,11 +4294,14 @@ public class QueryService {
 public class CkbSchema {
     public static func mcpTools(): String {
         let tools = joinStrings(ckbMcpToolNames(), ",")
-        "ordinaryMcpReadOnlyTools: ${tools}; mcpTransports=stdio,streamable-http mcpEndpoint=/mcp mcpProtocolVersions=2024-11-05,2025-06-18 mcpSse=true; apiVersion=ckb-http-v1 envelope={ok,apiVersion,data|error,diagnostics}; input: cangjie_knowledge_pack{task,targetVersion=1.0.0,budget<=20,includeExamples,includeAntiPatterns,legacy_endpoint_degraded=true}, cangjie_version_resolve{targetVersion,sourceSet,sourceFamily,sourceRepo,sourceRef,refKind,versionPolicy=default|exact,includePrerelease=false}, cangjie_task_knowledge_pack{taskId,benchmark,taskText,signature,imports,argTypes,returnType,expectedKnowledgeTags,starterCodeExcerpt,compilerOutput,targetVersion,sourceSet,sourceRef,versionPolicy,budget<=20}, cangjie_knowledge_coverage{same fields as cangjie_task_knowledge_pack}, cangjie_compile_diagnose_v2{code,compilerOutput,context,targetVersion,sourceSet,sourceRef,budget<=20,executed=false}, cangjie_symbol_lookup{symbol,module,sourceSet,targetVersion,budget<=20}, cangjie_doc_section{sectionId,path,heading,targetVersion,budget<=20}, cangjie_corpus_freshness{readOnly=true}, cangjie_tool_manual{tool,command,targetVersion,budget<=20}, cangjie_negative_rules{q,query,targetVersion,budget<=20}, cangjie_api_search{q,module,symbol,sourceSet,targetVersion,budget<=20}, cangjie_syntax_query{q,targetVersion,budget<=20}, cangjie_cookbook{task,constraints,targetVersion,style,budget<=20}, cangjie_diagnose{code,compilerOutput,context,targetVersion,budget<=20,executed=false}, cangjie_examples{q,module,symbol,maxExamples<=20}, cangjie_corpus_status{readOnly=true}; httpAdminRoutes: POST /v1/admin/scheduler/run,POST /v1/admin/repositories/sync,POST /v1/admin/repo-list/refresh,POST /v1/admin/initialize,POST /v1/admin/sync,POST /v1/admin/rebuild; httpEventRoutes: POST /v1/events/gitcode/repository-changed; legacyLocalCliCommands: health,status,query,evidence,source_analysis{repo,ref,query,issueUrl,prUrl,changedFiles,candidatePaths,allowCloneFallback,maxFiles,maxBytes,timeoutMillis},sync,rebuild,scheduler-run; liveGitCode: officialApi=https://api.gitcode.com/api/v5 authMode=token authHeader=private-token tokenFile=tokenFile tokenFileFormat=single PAT line without token/Bearer/PRIVATE-TOKEN prefix; sourceAnalysis: defaultEnabled=false workspaceRoot=TMPDIR-or-tmp/ckb-source-analysis publicOnly=true cloneHostAllowlist=gitcode.com cleanup=default; acceptance: schema -> doctor/status -> anonymous dry-run -> credentialed dry-run if needed -> limited apply -> rebuild-index -> status/evidence -> source_analysis fake/public repo; output: ok,status,errorCode,interfaceId,contentFamily,updateMechanism,activeKnowledgeVersion,knowledgeVersion,targetVersion,versionResolution,versionResolutionId,queryPlan,coverage,matchedItems,requiredKnowledge,citations,evidenceHash,provenance,evidence,requiresReview,triggerReasons,sourceAcquisition,filesRead,cleanupStatus,truncated,degraded,transportDiagnostic,scheduledProfiles; boundary: MCP JSON-RPC server exposes only read-only Cangjie tools/resources/prompts through stdio and /mcp; cangjie diagnose is knowledge-only; cangjie compile_diagnose_v2 is query-plan only and does not execute code; verify-snippet/admin/update/repository sync/event tools are not exposed to ordinary MCP clients; redaction: never returns tokenRef,tokenFile contents,PRIVATE-TOKEN,Authorization,Cookie,private-token values,absolute local paths; errors: ckb.bad_request,ckb.unauthorized,ckb.not_found,ckb.network_disabled,ckb.auth_degraded,ckb.rate_limited,ckb.source_unavailable,ckb.rebuild_failed,ckb.validation_failed,ckb.invalid_workspace_root,ckb.invalid_clone_host,version_not_resolved,unsupported_source_set"
+        let inputs = "cangjie_knowledge_pack{task,targetVersion=1.0.0,budget<=20,includeExamples,includeAntiPatterns,legacy_endpoint_degraded=true}, cangjie_version_resolve{targetVersion,sourceSet,sourceFamily,sourceRepo,sourceRef,refKind,versionPolicy=default|exact,includePrerelease=false}, cangjie_task_knowledge_pack{taskId,benchmark,taskText,signature,imports,argTypes,returnType,expectedKnowledgeTags,starterCodeExcerpt,compilerOutput,targetVersion,sourceSet,sourceRef,versionPolicy,budget<=20}, cangjie_knowledge_coverage{same fields as cangjie_task_knowledge_pack}, cangjie_compile_diagnose_v2{code,compilerOutput,context,targetVersion,budget<=20,executed=false}, cangjie_symbol_lookup{symbol,module,sourceSet,targetVersion,budget<=20}, cangjie_doc_section{sectionId,path,heading,targetVersion,budget<=20}, cangjie_corpus_freshness{readOnly=true}, cangjie_tool_manual{tool,command,targetVersion,budget<=20}, cangjie_negative_rules{q,query,targetVersion,budget<=20}, cangjie_api_search{q,module,symbol,sourceSet,targetVersion,budget<=20}, cangjie_syntax_query{q,targetVersion,budget<=20}, cangjie_cookbook{task,constraints,targetVersion,style,budget<=20}, cangjie_diagnose{code,compilerOutput,context,targetVersion,budget<=20,executed=false}, cangjie_examples{q,module,symbol,maxExamples<=20}, cangjie_corpus_status{readOnly=true}"
+        let adminRoutes = "POST /v1/admin/scheduler/run,POST /v1/admin/vector/bootstrap,POST /v1/admin/repositories/sync,POST /v1/admin/repo-list/refresh,POST /v1/admin/initialize,POST /v1/admin/sync,POST /v1/admin/rebuild"
+        let legacyCommands = "health,status,query,evidence,source_analysis{repo,ref,query,issueUrl,prUrl,changedFiles,candidatePaths,allowCloneFallback,maxFiles,maxBytes,timeoutMillis},sync,rebuild,vector-bootstrap,scheduler-run"
+        "ordinaryMcpReadOnlyTools: ${tools}; mcpTransports=stdio,streamable-http mcpEndpoint=/mcp mcpProtocolVersions=2024-11-05,2025-06-18 mcpSse=true; apiVersion=ckb-http-v1 envelope={ok,apiVersion,data|error,diagnostics}; input: ${inputs}; httpAdminRoutes: ${adminRoutes}; httpEventRoutes: POST /v1/events/gitcode/repository-changed; legacyLocalCliCommands: ${legacyCommands}; liveGitCode: officialApi=https://api.gitcode.com/api/v5 authMode=token authHeader=private-token tokenFile=tokenFile tokenFileFormat=single PAT line without token/Bearer/PRIVATE-TOKEN prefix; sourceAnalysis: defaultEnabled=false workspaceRoot=TMPDIR-or-tmp/ckb-source-analysis publicOnly=true cloneHostAllowlist=gitcode.com cleanup=default; acceptance: schema -> doctor/status -> anonymous dry-run -> credentialed dry-run if needed -> limited apply -> vector-bootstrap -> rebuild-index -> status/evidence -> source_analysis fake/public repo; output: ok,status,errorCode,interfaceId,contentFamily,updateMechanism,activeKnowledgeVersion,knowledgeVersion,targetVersion,versionResolution,versionResolutionId,queryPlan,coverage,matchedItems,requiredKnowledge,citations,evidenceHash,provenance,evidence,requiresReview,triggerReasons,sourceAcquisition,filesRead,cleanupStatus,truncated,degraded,transportDiagnostic,scheduledProfiles; boundary: MCP JSON-RPC server exposes only read-only Cangjie tools/resources/prompts through stdio and /mcp; cangjie diagnose is knowledge-only; cangjie compile_diagnose_v2 is query-plan only and does not execute code; verify-snippet/admin/update/repository sync/event tools are not exposed to ordinary MCP clients; redaction: never returns tokenRef,tokenFile contents,PRIVATE-TOKEN,Authorization,Cookie,private-token values,absolute local paths; errors: ckb.bad_request,ckb.unauthorized,ckb.not_found,ckb.network_disabled,ckb.auth_degraded,ckb.rate_limited,ckb.source_unavailable,ckb.rebuild_failed,ckb.validation_failed,ckb.invalid_workspace_root,ckb.invalid_clone_host,version_not_resolved,unsupported_source_set"
     }
 
     public static func httpLikeRoutes(): String {
-        "routes: STDIO ckb-stdio-v1 health,status,metrics,query <text>,evidence <text>,source_analysis repo=<owner/repo> ref=<ref> path=<path> query=<text> allowCloneFallback=<bool>,sync,cangjie_initialize,rebuild,scheduler-run,backup <name>,restore <name>,restart,stop; MCP stdio command mcp-stdio; MCP Streamable HTTP GET /mcp -> text/event-stream SSE ready/keepalive, POST /mcp -> JSON-RPC request JSON response or notification 202 empty, DELETE /mcp -> session close 202; legacy HTTP-like aliases GET /health -> ok,status,activeKnowledgeVersion,degraded; GET /status -> storage,indexManifest,scheduler,activeKnowledgeVersion,restoreDiagnostic,authHeaderStrategy,sourceAnalysis; POST /query -> query,evidence,citations,knowledgeVersion; POST /evidence -> evidencePack,graphContext,citations,activeKnowledgeVersion; POST /sync -> dryRun|apply,candidateVersion,activeKnowledgeVersion,redactedSourceStatus,transportDiagnostic; POST /rebuild-index -> candidateVersion,activeKnowledgeVersion,count; JSON ckb-http-v1 envelope={ok,apiVersion,data|error,diagnostics}; GET /v1/health -> status,activeKnowledgeVersion,degraded,schedulerDegraded; GET /v1/status -> storage,indexManifest,scheduler,activeKnowledgeVersion,restoreDiagnostic,authHeaderStrategy,sourceAnalysis; GET /v1/schedules -> entries interval,nextRunAt,lastSuccessAt,failureCount,lastDurationMillis,lastRequestCount,lastUpdatedDataKinds; GET /v1/schema -> routes,tools,errorCodes,apiVersion,limits,mcpTransports,mcpEndpoint,mcpSse; GET /v1/cangjie/corpus/status -> docsUrls,stdSources,activeKnowledgeVersion; GET /v1/cangjie/llms.txt -> markdown,knowledgeVersion; GET /v1/cangjie/llms-full.txt -> markdown,knowledgeVersion; POST /v1/cangjie/knowledge-pack -> knowledgeVersion,targetVersion,items,apiItems,examples,citations,truncated,degraded,legacy_endpoint_degraded; POST /v1/cangjie/version/resolve -> targetVersion,versionResolutionId,sources,diagnostics; POST /v1/cangjie/task-knowledge-pack -> interfaceId,contentFamily,updateMechanism,versionResolution,queryPlan,coverage,diagnostics; POST /v1/cangjie/knowledge-coverage -> required,coveredCount,missingCount,coveragePass; POST /v1/cangjie/compile-diagnose-v2 -> interfaceId,contentFamily,updateMechanism,versionResolution,queryPlan,coverage,executed=false; POST /v1/cangjie/syntax-query -> interfaceId,contentFamily,updateMechanism,matchedItems,requiredKnowledge,queryPlan,coverage,citations,evidenceHash,provenance,syntaxItems; POST /v1/cangjie/api-search -> interfaceId,contentFamily,updateMechanism,matchedItems,requiredKnowledge,queryPlan,coverage,citations,evidenceHash,provenance,apiItems; POST /v1/cangjie/cookbook -> interfaceId,contentFamily,updateMechanism,matchedItems,requiredKnowledge,queryPlan,coverage,citations,evidenceHash,provenance,steps; POST /v1/cangjie/diagnose -> interfaceId,contentFamily,updateMechanism,matchedItems,requiredKnowledge,queryPlan,coverage,diagnostics,executed=false,citations,evidenceHash,provenance; POST /v1/cangjie/examples -> interfaceId,contentFamily,updateMechanism,matchedItems,requiredKnowledge,queryPlan,coverage,examples,citations,evidenceHash,provenance; POST /v1/cangjie/context-pack -> markdown,citations; POST /v1/query -> rows,citations,knowledgeVersion,truncated; POST /v1/evidence-pack -> evidencePack,graphContext,citations,knowledgeVersion; POST /v1/source-analysis -> analysisId,repo,ref,triggerReasons,sourceAcquisition,filesRead,citations,degraded,cleanupStatus; POST /v1/events/gitcode/repository-changed -> accepted|duplicate|rejected,dedupeKey,scheduledProfiles; POST /v1/admin/scheduler/run -> ran,succeeded,failed,degraded,details; POST /v1/admin/repositories/sync -> repo,profile,requestCount,updatedDataKinds,truncated,candidateVersion,activeKnowledgeVersion; POST /v1/admin/repo-list/refresh -> matchedPaths,repoCount,candidateRepoListVersion,activeRepoListVersion,diagnostics; POST /v1/admin/sync -> source status,candidateVersion,activeKnowledgeVersion,transportDiagnostic; POST /v1/admin/initialize -> dryRun,persisted,activeKnowledgeVersion,candidateKnowledgeVersion,validation,sources; POST /v1/admin/rebuild -> candidateVersion,activeKnowledgeVersion,count; planned_not_enabled: /v1/cangjie/verify-snippet; compatibility: CLI service/status/rebuild-index/source_analysis provide the canonical local protocol"
+        "routes: STDIO ckb-stdio-v1 health,status,metrics,query <text>,evidence <text>,source_analysis repo=<owner/repo> ref=<ref> path=<path> query=<text> allowCloneFallback=<bool>,sync,cangjie_initialize,rebuild,vector-bootstrap,scheduler-run,backup <name>,restore <name>,restart,stop; MCP stdio command mcp-stdio; MCP Streamable HTTP GET /mcp -> text/event-stream SSE ready/keepalive, POST /mcp -> JSON-RPC request JSON response or notification 202 empty, DELETE /mcp -> session close 202; legacy HTTP-like aliases GET /health -> ok,status,activeKnowledgeVersion,degraded; GET /status -> storage,indexManifest,scheduler,activeKnowledgeVersion,restoreDiagnostic,authHeaderStrategy,sourceAnalysis; POST /query -> query,evidence,citations,knowledgeVersion; POST /evidence -> evidencePack,graphContext,citations,activeKnowledgeVersion; POST /sync -> dryRun|apply,candidateVersion,activeKnowledgeVersion,redactedSourceStatus,transportDiagnostic; POST /rebuild-index -> candidateVersion,activeKnowledgeVersion,count; JSON ckb-http-v1 envelope={ok,apiVersion,data|error,diagnostics}; GET /v1/health -> status,activeKnowledgeVersion,degraded,schedulerDegraded; GET /v1/status -> storage,indexManifest,scheduler,activeKnowledgeVersion,restoreDiagnostic,authHeaderStrategy,sourceAnalysis; GET /v1/schedules -> entries interval,nextRunAt,lastSuccessAt,failureCount,lastDurationMillis,lastRequestCount,lastUpdatedDataKinds; GET /v1/schema -> routes,tools,errorCodes,apiVersion,limits,mcpTransports,mcpEndpoint,mcpSse; GET /v1/cangjie/corpus/status -> docsUrls,stdSources,activeKnowledgeVersion; GET /v1/cangjie/llms.txt -> markdown,knowledgeVersion; GET /v1/cangjie/llms-full.txt -> markdown,knowledgeVersion; POST /v1/cangjie/knowledge-pack -> knowledgeVersion,targetVersion,items,apiItems,examples,citations,truncated,degraded,legacy_endpoint_degraded; POST /v1/cangjie/version/resolve -> targetVersion,versionResolutionId,sources,diagnostics; POST /v1/cangjie/task-knowledge-pack -> interfaceId,contentFamily,updateMechanism,versionResolution,queryPlan,coverage,diagnostics; POST /v1/cangjie/knowledge-coverage -> required,coveredCount,missingCount,coveragePass; POST /v1/cangjie/compile-diagnose-v2 -> interfaceId,contentFamily,updateMechanism,versionResolution,queryPlan,coverage,executed=false; POST /v1/cangjie/syntax-query -> interfaceId,contentFamily,updateMechanism,matchedItems,requiredKnowledge,queryPlan,coverage,citations,evidenceHash,provenance,syntaxItems; POST /v1/cangjie/api-search -> interfaceId,contentFamily,updateMechanism,matchedItems,requiredKnowledge,queryPlan,coverage,citations,evidenceHash,provenance,apiItems; POST /v1/cangjie/cookbook -> interfaceId,contentFamily,updateMechanism,matchedItems,requiredKnowledge,queryPlan,coverage,citations,evidenceHash,provenance,steps; POST /v1/cangjie/diagnose -> interfaceId,contentFamily,updateMechanism,matchedItems,requiredKnowledge,queryPlan,coverage,diagnostics,executed=false,citations,evidenceHash,provenance; POST /v1/cangjie/examples -> interfaceId,contentFamily,updateMechanism,matchedItems,requiredKnowledge,queryPlan,coverage,examples,citations,evidenceHash,provenance; POST /v1/cangjie/context-pack -> markdown,citations; POST /v1/query -> rows,citations,knowledgeVersion,truncated; POST /v1/evidence-pack -> evidencePack,graphContext,citations,knowledgeVersion; POST /v1/source-analysis -> analysisId,repo,ref,triggerReasons,sourceAcquisition,filesRead,citations,degraded,cleanupStatus; POST /v1/events/gitcode/repository-changed -> accepted|duplicate|rejected,dedupeKey,scheduledProfiles; POST /v1/admin/scheduler/run -> ran,succeeded,failed,degraded,details; POST /v1/admin/vector/bootstrap -> activeCollection,candidateCollection,diagnostics; POST /v1/admin/repositories/sync -> repo,profile,requestCount,updatedDataKinds,truncated,candidateVersion,activeKnowledgeVersion; POST /v1/admin/repo-list/refresh -> matchedPaths,repoCount,candidateRepoListVersion,activeRepoListVersion,diagnostics; POST /v1/admin/sync -> source status,candidateVersion,activeKnowledgeVersion,transportDiagnostic; POST /v1/admin/initialize -> dryRun,persisted,activeKnowledgeVersion,candidateKnowledgeVersion,validation,sources; POST /v1/admin/rebuild -> candidateVersion,activeKnowledgeVersion,count; planned_not_enabled: /v1/cangjie/verify-snippet; compatibility: CLI service/status/rebuild-index/source_analysis provide the canonical local protocol"
     }
 }
 
@@ -4575,6 +4755,8 @@ public class CkbCommandLoopService {
         } else if (command == "rebuild") {
             let result = this.runRebuild()
             response.text = "rebuild ok=${result.ok} activeKnowledgeVersion=${result.activeVersion} candidateKnowledgeVersion=${result.candidateVersion} count=${result.count}\n"
+        } else if (command == "vector-bootstrap") {
+            response.text = renderCkbVectorBootstrapText(this.runVectorBootstrap())
         } else if (command == "scheduler-run") {
             let result = this.runScheduler(1)
             response.text = "scheduler ran=${result.ran} succeeded=${result.succeeded} failed=${result.failed} degraded=${result.degraded}\n${result.details}"
@@ -4924,6 +5106,19 @@ public class CkbCommandLoopService {
     private func runRebuildUnlocked(): IndexBuildResult {
         this.rebuildCount += 1
         ckbRebuildIndex(this.kb, this.store)
+    }
+
+    public func runVectorBootstrap(): CkbVectorBootstrapResult {
+        let busy = this.tryEnterAdminOperation("vector_bootstrap")
+        if (busy != "") {
+            let result = CkbVectorBootstrapResult()
+            result.ok = false
+            result.diagnostics.add(busy)
+            return result
+        }
+        let result = ckbVectorBootstrapFromRuntime(this.config)
+        this.leaveAdminOperation("vector_bootstrap")
+        result
     }
 
     public func runScheduler(limit: Int64): SchedulerExecutorResult {
@@ -6899,6 +7094,10 @@ public class RuntimeUnavailableVectorStore <: VectorStore {
         this.status(collection)
     }
 
+    public func upsertBatch(collection: String, vectors: ArrayList<VectorRecord>): VectorStoreStatus {
+        this.status(collection)
+    }
+
     public func search(collection: String, queryVector: ArrayList<Float64>, filters: VectorSearchFilters, topK: Int64): ArrayList<VectorSearchResult> {
         ArrayList<VectorSearchResult>()
     }
@@ -6917,6 +7116,10 @@ public class RuntimeUnavailableVectorStore <: VectorStore {
     }
 
     public func clear(collection: String): VectorStoreStatus {
+        this.status(collection)
+    }
+
+    public func ensureReadyCollection(collection: String): VectorStoreStatus {
         this.status(collection)
     }
 

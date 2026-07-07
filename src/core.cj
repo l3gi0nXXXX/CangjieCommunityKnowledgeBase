@@ -2,6 +2,7 @@ package cangjie_community_knowledge_base
 
 import std.collection.ArrayList
 import std.convert.Parsable
+import std.time.DateTime
 
 public class SourceTypes {
     public static let REPO: String = "repo"
@@ -181,9 +182,29 @@ public class EmbeddingBatch {
     public init() {}
 }
 
+public class VectorBuildProgress {
+    public var collection: String = ""
+    public var total: Int64 = 0
+    public var completed: Int64 = 0
+    public var failed: Int64 = 0
+    public var currentBatch: Int64 = 0
+    public var batchSize: Int64 = 0
+    public var startedAtMillis: Int64 = 0
+    public var updatedAtMillis: Int64 = 0
+    public var elapsedMillis: Int64 = 0
+    public var state: String = "idle"
+    public var diagnostic: String = ""
+
+    public init() {}
+}
+
 public interface EmbeddingProvider {
     func embed(texts: ArrayList<String>, model: String, dimensions: Int64): EmbeddingBatch
     func status(): EmbeddingStatus
+}
+
+private func ckbCoreNowMillis(): Int64 {
+    DateTime.now().toUnixTimeStamp().toMilliseconds()
 }
 
 public class DeterministicEmbeddingProvider <: EmbeddingProvider {
@@ -315,8 +336,10 @@ public class VectorStoreStatus {
 
 public interface VectorStore {
     func upsert(collection: String, vectors: ArrayList<VectorRecord>): VectorStoreStatus
+    func upsertBatch(collection: String, vectors: ArrayList<VectorRecord>): VectorStoreStatus
     func search(collection: String, queryVector: ArrayList<Float64>, filters: VectorSearchFilters, topK: Int64): ArrayList<VectorSearchResult>
     func status(collection: String): VectorStoreStatus
+    func ensureReadyCollection(collection: String): VectorStoreStatus
     func clear(collection: String): VectorStoreStatus
     func recreate(collection: String, vectors: ArrayList<VectorRecord>): VectorStoreStatus
     func backup(collection: String): VectorBackup
@@ -367,6 +390,36 @@ public class LocalVectorStore <: VectorStore {
         this.status(collection)
     }
 
+    public func upsertBatch(collection: String, vectors: ArrayList<VectorRecord>): VectorStoreStatus {
+        if (!this.available) {
+            return this.status(collection)
+        }
+        let stored = this.ensureCollection(collection)
+        let merged = ArrayList<VectorRecord>()
+        for (existing in stored.records) {
+            var replaced = false
+            for (record in vectors) {
+                if (existing.id == record.id) {
+                    replaced = true
+                }
+            }
+            if (!replaced) {
+                merged.add(existing)
+            }
+        }
+        for (record in vectors) {
+            if (stored.dimension == 0) {
+                stored.dimension = record.vector.size
+            }
+            merged.add(record)
+        }
+        stored.records.clear()
+        for (record in merged) {
+            stored.records.add(record)
+        }
+        this.status(collection)
+    }
+
     public func search(collection: String, queryVector: ArrayList<Float64>, filters: VectorSearchFilters, topK: Int64): ArrayList<VectorSearchResult> {
         let out = ArrayList<VectorSearchResult>()
         if (!this.available || queryVector.size == 0) {
@@ -403,6 +456,14 @@ public class LocalVectorStore <: VectorStore {
         }
         status.state = EmbeddingProviderState.READY
         status
+    }
+
+    public func ensureReadyCollection(collection: String): VectorStoreStatus {
+        if (!this.available) {
+            return this.status(collection)
+        }
+        this.ensureCollection(collection)
+        this.status(collection)
     }
 
     public func clear(collection: String): VectorStoreStatus {
@@ -546,6 +607,30 @@ public class QdrantVectorStore <: VectorStore {
         status
     }
 
+    public func upsertBatch(collection: String, vectors: ArrayList<VectorRecord>): VectorStoreStatus {
+        let validation = this.validateVectors(collection, vectors)
+        if (validation.degradedReason != "") {
+            this.lastStatus = validation
+            return validation
+        }
+        if (vectors.size == 0) {
+            let status = this.baseStatus(collection)
+            status.state = EmbeddingProviderState.READY
+            status.count = this.cached(collection).records.size
+            this.lastStatus = status
+            return status
+        }
+        let response = this.execute("PUT", "${this.collectionUrl(collection)}/points?wait=true", qdrantUpsertBody(vectors))
+        let status = this.statusFromWriteResponse(collection, response, "upsert")
+        if (status.state == EmbeddingProviderState.READY) {
+            this.rememberBatch(collection, vectors)
+            status.count = this.cached(collection).records.size
+            status.dimension = this.config.dimensions
+        }
+        this.lastStatus = status
+        status
+    }
+
     public func search(collection: String, queryVector: ArrayList<Float64>, filters: VectorSearchFilters, topK: Int64): ArrayList<VectorSearchResult> {
         let out = ArrayList<VectorSearchResult>()
         if (topK <= 0 || queryVector.size == 0) {
@@ -580,6 +665,19 @@ public class QdrantVectorStore <: VectorStore {
         let status = this.statusFromCollectionResponse(collection, response)
         this.lastStatus = status
         status
+    }
+
+    public func ensureReadyCollection(collection: String): VectorStoreStatus {
+        let current = this.status(collection)
+        if (current.state == EmbeddingProviderState.READY) {
+            return current
+        }
+        if (current.degradedReason == "collection_missing") {
+            let created = this.createCollection(collection)
+            this.lastStatus = created
+            return created
+        }
+        current
     }
 
     public func clear(collection: String): VectorStoreStatus {
@@ -824,6 +922,34 @@ public class QdrantVectorStore <: VectorStore {
         }
         entry.records.clear()
         for (record in vectors) {
+            entry.records.add(record)
+        }
+    }
+
+    private func rememberBatch(collection: String, vectors: ArrayList<VectorRecord>): Unit {
+        var entry = this.cached(collection)
+        if (entry.collection == "") {
+            entry = QdrantCachedCollection()
+            entry.collection = collection
+            this.cache.add(entry)
+        }
+        let merged = ArrayList<VectorRecord>()
+        for (existing in entry.records) {
+            var replaced = false
+            for (record in vectors) {
+                if (existing.id == record.id) {
+                    replaced = true
+                }
+            }
+            if (!replaced) {
+                merged.add(existing)
+            }
+        }
+        for (record in vectors) {
+            merged.add(record)
+        }
+        entry.records.clear()
+        for (record in merged) {
             entry.records.add(record)
         }
     }
@@ -1994,6 +2120,7 @@ public class KnowledgeBase {
     private let embeddingModel: String = "deterministic-token-v1"
     private let embeddingDimensions: Int64 = 16
     private var servingQueryCache: CangjieQueryCache = CangjieQueryCache(256)
+    private var lastVectorBuildProgress: VectorBuildProgress = VectorBuildProgress()
 
     public init(clock: FakeClock) {
         this.scheduler = Scheduler(clock)
@@ -2422,33 +2549,110 @@ public class KnowledgeBase {
 
     private func rebuildProductionIndexes(): Unit {
         this.rebuildServingIndexStatus()
-        let vectorRecords = ArrayList<VectorRecord>()
-        let texts = ArrayList<String>()
-        for (record in this.activeIndex) {
-            texts.add("${record.title} ${record.chunk} ${record.metadata.repo} ${record.metadata.path} ${record.metadata.symbol}")
-        }
-        let batch = this.embeddingProvider.embed(texts, this.activeEmbeddingModel(), this.activeEmbeddingDimensions())
-        if (batch.status.state == EmbeddingProviderState.READY && batch.vectors.size == this.activeIndex.size) {
-            for (i in 0..this.activeIndex.size) {
-                let source = this.activeIndex[i]
-                let vectorRecord = VectorRecord()
-                vectorRecord.id = source.sourceId
-                vectorRecord.vector = batch.vectors[i]
-                vectorRecord.metadata = source.metadata
-                vectorRecord.title = source.title
-                vectorRecord.chunk = source.chunk
-                vectorRecord.citation = source.citation
-                vectorRecords.add(vectorRecord)
-            }
-            let vectorStatus = this.vectorStore.upsert(this.vectorCollection, vectorRecords)
-            this.applyVectorStatus(vectorStatus)
-        } else {
-            let vectorStatus = this.vectorStore.status(this.vectorCollection)
-            vectorStatus.state = EmbeddingProviderState.DEGRADED
-            vectorStatus.degradedReason = batch.status.degradedReason
-            this.applyVectorStatus(vectorStatus)
-        }
+        this.rebuildProductionVectorIndex()
         this.rebuildGraphIndex()
+    }
+
+    private func rebuildProductionVectorIndex(): Unit {
+        let progress = VectorBuildProgress()
+        progress.collection = this.vectorCollection
+        progress.total = this.activeIndex.size
+        let embeddingStatus = this.embeddingProvider.status()
+        progress.batchSize = if (embeddingStatus.batchSize > 0) { embeddingStatus.batchSize } else { 16 }
+        progress.startedAtMillis = ckbCoreNowMillis()
+        progress.updatedAtMillis = progress.startedAtMillis
+        progress.state = "running"
+        this.lastVectorBuildProgress = progress
+        let empty = ArrayList<VectorRecord>()
+        var vectorStatus = this.vectorStore.recreate(this.vectorCollection, empty)
+        if (vectorStatus.state != EmbeddingProviderState.READY) {
+            progress.state = vectorStatus.state
+            progress.diagnostic = vectorStatus.degradedReason
+            progress.updatedAtMillis = ckbCoreNowMillis()
+            progress.elapsedMillis = progress.updatedAtMillis - progress.startedAtMillis
+            this.applyVectorStatus(vectorStatus)
+            return
+        }
+        if (this.activeIndex.size == 0) {
+            progress.state = EmbeddingProviderState.READY
+            progress.updatedAtMillis = ckbCoreNowMillis()
+            progress.elapsedMillis = progress.updatedAtMillis - progress.startedAtMillis
+            vectorStatus.count = 0
+            this.applyVectorStatus(vectorStatus)
+            return
+        }
+        var start: Int64 = 0
+        var batchIndex: Int64 = 0
+        while (start < this.activeIndex.size) {
+            var end = start + progress.batchSize
+            if (end > this.activeIndex.size) {
+                end = this.activeIndex.size
+            }
+            let texts = ArrayList<String>()
+            for (i in start..end) {
+                texts.add(this.vectorText(this.activeIndex[i]))
+            }
+            progress.currentBatch = batchIndex
+            let batch = this.embeddingProvider.embed(texts, this.activeEmbeddingModel(), this.activeEmbeddingDimensions())
+            if (batch.status.state != EmbeddingProviderState.READY || batch.vectors.size != texts.size) {
+                vectorStatus = this.vectorStore.status(this.vectorCollection)
+                vectorStatus.state = EmbeddingProviderState.DEGRADED
+                vectorStatus.count = progress.completed
+                vectorStatus.degradedReason = if (batch.status.degradedReason != "") {
+                    "embedding_batch_failed:batch=${batchIndex}:${batch.status.degradedReason}"
+                } else {
+                    "embedding_batch_failed:batch=${batchIndex}:vector_count_mismatch:${batch.vectors.size}:${texts.size}"
+                }
+                progress.failed = texts.size
+                progress.state = vectorStatus.state
+                progress.diagnostic = vectorStatus.degradedReason
+                progress.updatedAtMillis = ckbCoreNowMillis()
+                progress.elapsedMillis = progress.updatedAtMillis - progress.startedAtMillis
+                this.applyVectorStatus(vectorStatus)
+                return
+            }
+            let vectorRecords = ArrayList<VectorRecord>()
+            for (i in 0..texts.size) {
+                let source = this.activeIndex[start + i]
+                vectorRecords.add(this.vectorRecordFrom(source, batch.vectors[i]))
+            }
+            vectorStatus = this.vectorStore.upsertBatch(this.vectorCollection, vectorRecords)
+            if (vectorStatus.state != EmbeddingProviderState.READY) {
+                progress.failed = texts.size
+                progress.state = vectorStatus.state
+                progress.diagnostic = vectorStatus.degradedReason
+                progress.updatedAtMillis = ckbCoreNowMillis()
+                progress.elapsedMillis = progress.updatedAtMillis - progress.startedAtMillis
+                vectorStatus.count = progress.completed
+                this.applyVectorStatus(vectorStatus)
+                return
+            }
+            progress.completed += texts.size
+            progress.updatedAtMillis = ckbCoreNowMillis()
+            progress.elapsedMillis = progress.updatedAtMillis - progress.startedAtMillis
+            start = end
+            batchIndex += 1
+        }
+        progress.state = EmbeddingProviderState.READY
+        progress.updatedAtMillis = ckbCoreNowMillis()
+        progress.elapsedMillis = progress.updatedAtMillis - progress.startedAtMillis
+        vectorStatus.count = progress.completed
+        this.applyVectorStatus(vectorStatus)
+    }
+
+    private func vectorText(record: NormalizedRecord): String {
+        "${record.title} ${record.chunk} ${record.metadata.repo} ${record.metadata.path} ${record.metadata.symbol}"
+    }
+
+    private func vectorRecordFrom(source: NormalizedRecord, vector: ArrayList<Float64>): VectorRecord {
+        let vectorRecord = VectorRecord()
+        vectorRecord.id = source.sourceId
+        vectorRecord.vector = vector
+        vectorRecord.metadata = source.metadata
+        vectorRecord.title = source.title
+        vectorRecord.chunk = source.chunk
+        vectorRecord.citation = source.citation
+        vectorRecord
     }
 
     private func rebuildServingIndexStatus(): Unit {
@@ -2563,24 +2767,28 @@ public class KnowledgeBase {
 
     public func activeVectorRecords(): ArrayList<VectorRecord> {
         let out = ArrayList<VectorRecord>()
-        let texts = ArrayList<String>()
-        for (record in this.activeIndex) {
-            texts.add("${record.title} ${record.chunk} ${record.metadata.repo} ${record.metadata.path} ${record.metadata.symbol}")
-        }
-        let batch = this.embeddingProvider.embed(texts, this.activeEmbeddingModel(), this.activeEmbeddingDimensions())
-        if (batch.vectors.size != this.activeIndex.size) {
-            return out
-        }
-        for (i in 0..this.activeIndex.size) {
-            let source = this.activeIndex[i]
-            let vectorRecord = VectorRecord()
-            vectorRecord.id = source.sourceId
-            vectorRecord.vector = batch.vectors[i]
-            vectorRecord.metadata = source.metadata
-            vectorRecord.title = source.title
-            vectorRecord.chunk = source.chunk
-            vectorRecord.citation = source.citation
-            out.add(vectorRecord)
+        let embeddingStatus = this.embeddingProvider.status()
+        let batchSize = if (embeddingStatus.batchSize > 0) { embeddingStatus.batchSize } else { 16 }
+        var start: Int64 = 0
+        while (start < this.activeIndex.size) {
+            var end = start + batchSize
+            if (end > this.activeIndex.size) {
+                end = this.activeIndex.size
+            }
+            let texts = ArrayList<String>()
+            for (i in start..end) {
+                texts.add(this.vectorText(this.activeIndex[i]))
+            }
+            let batch = this.embeddingProvider.embed(texts, this.activeEmbeddingModel(), this.activeEmbeddingDimensions())
+            if (batch.status.state != EmbeddingProviderState.READY || batch.vectors.size != texts.size) {
+                out.clear()
+                return out
+            }
+            for (i in 0..texts.size) {
+                let source = this.activeIndex[start + i]
+                out.add(this.vectorRecordFrom(source, batch.vectors[i]))
+            }
+            start = end
         }
         out
     }
@@ -2841,6 +3049,10 @@ public class KnowledgeBase {
 
     public func vectorStatus(): VectorStoreStatus {
         this.vectorStore.status(this.vectorCollection)
+    }
+
+    public func vectorBuildProgress(): VectorBuildProgress {
+        this.lastVectorBuildProgress
     }
 
     private func activeEmbeddingModel(): String {

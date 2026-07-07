@@ -212,6 +212,45 @@ public class CkbQdrantVectorStoreTest {
     }
 
     @TestCase
+    public func qdrantEnsureReadyCollectionCreatesOnlyWhenMissing(): Unit {
+        let executor = QdrantFakeExecutor()
+        executor.add(404, "{\"status\":\"error\"}", "http_404")
+        executor.add(200, "{\"status\":\"ok\",\"result\":true}", "http_200")
+        let store = QdrantVectorStore("http://qdrant.test", 3, "Cosine", executor: executor)
+
+        let status = store.ensureReadyCollection("ckb active")
+
+        @Expect(status.state, EmbeddingProviderState.READY)
+        @Expect(executor.calls, 2)
+        @Expect(executor.methods[0], "GET")
+        @Expect(executor.methods[1], "PUT")
+        @Expect(executor.urls[1], "http://qdrant.test/collections/ckb_active")
+        @Expect(executor.bodies[1].contains("\"size\":3"), true)
+    }
+
+    @TestCase
+    public func qdrantUpsertBatchAppendsCacheWithoutDroppingPreviousBatch(): Unit {
+        let executor = QdrantFakeExecutor()
+        executor.add(200, "{\"status\":\"ok\",\"result\":{\"status\":\"acknowledged\"}}", "http_200")
+        executor.add(200, "{\"status\":\"ok\",\"result\":{\"status\":\"acknowledged\"}}", "http_200")
+        let store = QdrantVectorStore("http://qdrant.test", 3, "Cosine", executor: executor)
+        let first = ArrayList<VectorRecord>()
+        first.add(qdrantRecord("id-1", "标题 1", "chunk 1", "cite://1", "cangjie", ReviewStates.TRUSTED))
+        let second = ArrayList<VectorRecord>()
+        second.add(qdrantRecord("id-2", "标题 2", "chunk 2", "cite://2", "cangjie", ReviewStates.TRUSTED))
+
+        let firstStatus = store.upsertBatch("ckb_active", first)
+        let secondStatus = store.upsertBatch("ckb_active", second)
+        let backup = store.backup("ckb_active")
+
+        @Expect(firstStatus.count, 1)
+        @Expect(secondStatus.count, 2)
+        @Expect(backup.valid, true)
+        @Expect(backup.records.size, 2)
+        @Expect(executor.calls, 2)
+    }
+
+    @TestCase
     public func qdrantPointIdHashDoesNotOverflowForBaselineAndLongUnicodeIds(): Unit {
         let baseline = qdrantStablePointId("source-http-client")
         let longUnicode = qdrantStablePointId("Cangjie/community:docs/语言规范/很长很长很长很长的路径/README.md#source_analysis")

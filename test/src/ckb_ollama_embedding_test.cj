@@ -167,6 +167,38 @@ public class CkbOllamaEmbeddingTest {
         @Expect(vector.retryCount, 0)
         @Expect(readiness.ready, true)
     }
+
+    @TestCase
+    public func ollamaRuntimeEmbeddingReadinessRunsOneSmokeRequest(): Unit {
+        let fake = FakeOllamaEmbeddingExecutor()
+        fake.add(responseWith(200, embeddingResponseJson(1, 1024), "http_200"))
+        let provider = OllamaEmbeddingProvider(ollamaConfig(), executor: fake)
+
+        let readiness = ckbRuntimeEmbeddingReadinessWithProvider(ollamaRuntimeConfig(), provider)
+
+        @Expect(readiness.ready, true)
+        @Expect(readiness.state, EmbeddingProviderState.READY)
+        @Expect(fake.calls, 1)
+    }
+
+    @TestCase
+    public func ollamaRuntimeEmbeddingReadinessReportsTimeoutBeforeFullRebuild(): Unit {
+        let readiness = ckbRuntimeEmbeddingReadinessWithProvider(ollamaRuntimeConfig(), providerFor(timeoutResponse()))
+
+        @Expect(readiness.ready, false)
+        @Expect(readiness.state, EmbeddingProviderState.DOWN)
+        @Expect(readiness.reason, "ollama_timeout")
+    }
+}
+
+private func ollamaRuntimeConfig(): CkbRuntimeConfig {
+    let config = CkbRuntimeConfig()
+    config.embeddingProvider = "ollama"
+    config.embeddingModel = "bge-m3:latest"
+    config.embeddingEndpoint = "http://127.0.0.1:11434/api/embed"
+    config.embeddingDimensions = 1024
+    config.embeddingAllowPrivateEndpoint = true
+    config
 }
 
 private func ollamaConfig(): EmbeddingConfig {

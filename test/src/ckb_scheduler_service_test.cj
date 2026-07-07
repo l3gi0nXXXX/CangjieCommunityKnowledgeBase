@@ -814,6 +814,10 @@ private class F7StatusVectorStore <: VectorStore {
         this.status(collection)
     }
 
+    public func upsertBatch(collection: String, vectors: ArrayList<VectorRecord>): VectorStoreStatus {
+        this.status(collection)
+    }
+
     public func search(collection: String, queryVector: ArrayList<Float64>, filters: VectorSearchFilters, topK: Int64): ArrayList<VectorSearchResult> {
         ArrayList<VectorSearchResult>()
     }
@@ -831,6 +835,10 @@ private class F7StatusVectorStore <: VectorStore {
     }
 
     public func clear(collection: String): VectorStoreStatus {
+        this.status(collection)
+    }
+
+    public func ensureReadyCollection(collection: String): VectorStoreStatus {
         this.status(collection)
     }
 

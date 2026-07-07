@@ -123,6 +123,7 @@ public func registerCkbHttpRoutes(server: Server, service: CkbCommandLoopService
     ckbHttpRegisterRoute(server, service, config, "/v1/events/gitcode/repository-changed")
     ckbHttpRegisterRoute(server, service, config, "/v1/admin/sync")
     ckbHttpRegisterRoute(server, service, config, "/v1/admin/rebuild")
+    ckbHttpRegisterRoute(server, service, config, "/v1/admin/vector/bootstrap")
     ckbHttpRegisterRoute(server, service, config, "/v1/admin/restart")
     ckbHttpRegisterRoute(server, service, config, "/v1/admin/backup")
     ckbHttpRegisterRoute(server, service, config, "/v1/admin/restore")
