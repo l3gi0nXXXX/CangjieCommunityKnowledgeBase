@@ -158,7 +158,7 @@ public class CkbOllamaEmbeddingTest {
 
         let embedding = embeddingConfigFromRuntime(config)
         let vector = vectorStoreConfigFromRuntime(config)
-        let readiness = ckbRuntimeVectorReadiness(config)
+        let readiness = ckbRuntimeVectorReadinessWithStore(config, LocalVectorStore())
 
         @Expect(embedding.batchSize, 16)
         @Expect(embedding.timeoutMillis, 10000)

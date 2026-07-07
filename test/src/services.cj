@@ -1234,7 +1234,8 @@ public class SourceRequestBuilder {
             return invalidSourceFetchRequest(SourceKinds.GITCODE_REPO, "repo_metadata", "invalid_ref")
         }
         let normalizedRepo = "${parts.owner}/${parts.repo}"
-        let request = SourceFetchRequest(SourceKinds.GITCODE_REPO, "${this.gitCodeApiRoot}/repos/${parts.owner}/${parts.repo}?ref=${ref}", repo: normalizedRepo, ref: ref, purpose: "repo_metadata")
+        let encodedRef = urlEncodeGitCodeQueryValue(ref)
+        let request = SourceFetchRequest(SourceKinds.GITCODE_REPO, "${this.gitCodeApiRoot}/repos/${parts.owner}/${parts.repo}?ref=${encodedRef}", repo: normalizedRepo, ref: ref, purpose: "repo_metadata")
         request.authHint = "gitcode-token-optional-redacted"
         request
     }
@@ -1267,7 +1268,8 @@ public class SourceRequestBuilder {
         let normalizedRepo = "${parts.owner}/${parts.repo}"
         let endpoint = if (variant == "contents") { "contents" } else { "raw" }
         let accept = if (variant == "contents") { "application/json" } else { "text/plain, text/markdown, application/octet-stream" }
-        let request = SourceFetchRequest(SourceKinds.GITCODE_SOURCE, "${this.gitCodeApiRoot}/repos/${parts.owner}/${parts.repo}/${endpoint}/${safePath}?ref=${ref}", repo: normalizedRepo, ref: ref, path: safePath, accept: accept, purpose: purpose)
+        let encodedRef = urlEncodeGitCodeQueryValue(ref)
+        let request = SourceFetchRequest(SourceKinds.GITCODE_SOURCE, "${this.gitCodeApiRoot}/repos/${parts.owner}/${parts.repo}/${endpoint}/${safePath}?ref=${encodedRef}", repo: normalizedRepo, ref: ref, path: safePath, accept: accept, purpose: purpose)
         request.authHint = "gitcode-token-optional-redacted"
         request.sourceVariant = variant
         request
@@ -1282,7 +1284,8 @@ public class SourceRequestBuilder {
             return invalidSourceFetchRequest(SourceKinds.GITCODE_TREE, "source_tree", "invalid_ref")
         }
         let normalizedRepo = "${parts.owner}/${parts.repo}"
-        let request = SourceFetchRequest(SourceKinds.GITCODE_TREE, "${this.gitCodeApiRoot}/repos/${parts.owner}/${parts.repo}/git/trees/${ref}?recursive=1&page=1&per_page=100", repo: normalizedRepo, ref: ref, purpose: "source_tree")
+        let encodedRef = urlEncodeGitCodePathSegment(ref)
+        let request = SourceFetchRequest(SourceKinds.GITCODE_TREE, "${this.gitCodeApiRoot}/repos/${parts.owner}/${parts.repo}/git/trees/${encodedRef}?recursive=1&page=1&per_page=100", repo: normalizedRepo, ref: ref, purpose: "source_tree")
         request.authHint = "gitcode-token-optional-redacted"
         request
     }
@@ -1372,10 +1375,58 @@ private func isSafeGitCodePathPart(part: String): Bool {
 
 private func isSafeGitCodeRef(ref: String): Bool {
     let trimmed = ref.trimAscii()
-    if (trimmed == "" || trimmed.contains("..") || trimmed.contains("%") || trimmed.contains("?") || trimmed.contains("#") || trimmed.contains("&") || trimmed.contains("=") || trimmed.contains("\n") || trimmed.contains("\r") || trimmed.contains("\t")) {
+    if (trimmed == "" || trimmed != ref || trimmed.contains("..")) {
         return false
     }
+    for (b in trimmed.toArray()) {
+        if (!isSafeGitCodeRefByte(b)) {
+            return false
+        }
+    }
     true
+}
+
+private func isSafeGitCodeRefByte(b: UInt8): Bool {
+    (b >= UInt8(65) && b <= UInt8(90)) ||
+        (b >= UInt8(97) && b <= UInt8(122)) ||
+        (b >= UInt8(48) && b <= UInt8(57)) ||
+        b == UInt8(45) || b == UInt8(46) || b == UInt8(47) || b == UInt8(95) || b == UInt8(43)
+}
+
+private func urlEncodeGitCodePathSegment(value: String): String {
+    urlEncodeGitCodeRefValue(value)
+}
+
+private func urlEncodeGitCodeQueryValue(value: String): String {
+    urlEncodeGitCodeRefValue(value)
+}
+
+private func urlEncodeGitCodeRefValue(value: String): String {
+    let out = StringBuilder()
+    for (b in value.toArray()) {
+        if (isGitCodeUrlUnreservedByte(b)) {
+            out.append(String.fromUtf8([b]))
+        } else {
+            out.append("%")
+            out.append(urlEncodeGitCodeHexByte(b / UInt8(16)))
+            out.append(urlEncodeGitCodeHexByte(b % UInt8(16)))
+        }
+    }
+    out.toString()
+}
+
+private func isGitCodeUrlUnreservedByte(b: UInt8): Bool {
+    (b >= UInt8(65) && b <= UInt8(90)) ||
+        (b >= UInt8(97) && b <= UInt8(122)) ||
+        (b >= UInt8(48) && b <= UInt8(57)) ||
+        b == UInt8(45) || b == UInt8(46) || b == UInt8(95) || b == UInt8(126)
+}
+
+private func urlEncodeGitCodeHexByte(value: UInt8): String {
+    if (value < UInt8(10)) {
+        return String.fromUtf8([UInt8(48) + value])
+    }
+    String.fromUtf8([UInt8(55) + value])
 }
 
 private func normalizeGitCodeSourcePath(raw: String): String {
@@ -2866,6 +2917,14 @@ public func ckbRoutineRuntimePreflightFromEnv(config: CkbRuntimeConfig, storePat
 }
 
 public func ckbRoutineRuntimePreflight(config: CkbRuntimeConfig, storePath: String, cjHeapSize: String, dyldLibraryPath: String): CkbRoutineRuntimePreflightResult {
+    ckbRoutineRuntimePreflightWithVectorReadiness(config, storePath, cjHeapSize, dyldLibraryPath, ckbRuntimeVectorReadiness(config))
+}
+
+public func ckbRoutineRuntimePreflightWithVectorStore(config: CkbRuntimeConfig, storePath: String, cjHeapSize: String, dyldLibraryPath: String, vectorStore: VectorStore): CkbRoutineRuntimePreflightResult {
+    ckbRoutineRuntimePreflightWithVectorReadiness(config, storePath, cjHeapSize, dyldLibraryPath, ckbRuntimeVectorReadinessWithStore(config, vectorStore))
+}
+
+private func ckbRoutineRuntimePreflightWithVectorReadiness(config: CkbRuntimeConfig, storePath: String, cjHeapSize: String, dyldLibraryPath: String, vector: CkbRuntimeVectorReadiness): CkbRoutineRuntimePreflightResult {
     let result = CkbRoutineRuntimePreflightResult()
     result.storeExists = exists(Path(storePath))
     result.actualHeapMiB = ckbParseHeapMiB(cjHeapSize)
@@ -2883,7 +2942,6 @@ public func ckbRoutineRuntimePreflight(config: CkbRuntimeConfig, storePath: Stri
     if (dyldLibraryPath.trimAscii() == "") {
         result.diagnostics.add("dyld_library_path_not_set")
     }
-    let vector = ckbRuntimeVectorReadiness(config)
     result.vectorReadiness = vector.state
     result.embeddingReadiness = if (config.embeddingProvider == "" || config.embeddingProvider == "none") { "missing" } else { "configured" }
     if (!vector.ready) {
@@ -2902,6 +2960,46 @@ public func renderCkbRoutineRuntimePreflightText(result: CkbRoutineRuntimePrefli
 }
 
 public func ckbRuntimeVectorReadiness(config: CkbRuntimeConfig): CkbRuntimeVectorReadiness {
+    let vector = vectorStoreConfigFromRuntime(config)
+    let readiness = ckbRuntimeVectorConfigReadiness(config)
+    if (!readiness.ready || vector.backend != "qdrant") {
+        return readiness
+    }
+    ckbRuntimeVectorReadinessWithStore(config, vectorStoreFromRuntime(config))
+}
+
+public func ckbRuntimeVectorReadinessWithStore(config: CkbRuntimeConfig, vectorStore: VectorStore): CkbRuntimeVectorReadiness {
+    let vector = vectorStoreConfigFromRuntime(config)
+    let result = ckbRuntimeVectorConfigReadiness(config)
+    if (!result.ready || vector.backend != "qdrant") {
+        return result
+    }
+    try {
+        let status = vectorStore.status(vector.activeCollection)
+        if (status.dimension > 0) {
+            result.vectorDimensions = status.dimension
+        }
+        if (status.state == EmbeddingProviderState.READY) {
+            if (result.embeddingDimensions > 0 && result.vectorDimensions > 0 && result.embeddingDimensions != result.vectorDimensions) {
+                result.ready = false
+                result.state = "degraded"
+                result.reason = "qdrant_collection_dimension_mismatch:${result.embeddingDimensions}:${result.vectorDimensions}"
+            }
+            return result
+        }
+        result.ready = false
+        result.state = "degraded"
+        result.reason = ckbRuntimeQdrantReadinessReason(status)
+        return result
+    } catch (_: Exception) {
+        result.ready = false
+        result.state = "degraded"
+        result.reason = "qdrant_unreachable:exception"
+        return result
+    }
+}
+
+private func ckbRuntimeVectorConfigReadiness(config: CkbRuntimeConfig): CkbRuntimeVectorReadiness {
     let result = CkbRuntimeVectorReadiness()
     let embedding = embeddingConfigFromRuntime(config)
     let vector = vectorStoreConfigFromRuntime(config)
@@ -2913,6 +3011,178 @@ public func ckbRuntimeVectorReadiness(config: CkbRuntimeConfig): CkbRuntimeVecto
         result.reason = "vector_dimension_mismatch:${embedding.dimensions}:${vector.dimensions}"
     }
     result
+}
+
+private func ckbRuntimeQdrantReadinessReason(status: VectorStoreStatus): String {
+    let reason = if (status.degradedReason != "") { status.degradedReason } else { "status_${status.state}" }
+    if (status.state == EmbeddingProviderState.DOWN) {
+        return "qdrant_unreachable:${reason}"
+    }
+    "qdrant_degraded:${reason}"
+}
+
+public class CkbSchedulerFailedTaskSummary {
+    public var taskName: String = ""
+    public var status: String = ""
+    public var primaryFailure: String = ""
+    public var failedSources: ArrayList<String> = ArrayList<String>()
+    public var missingArtifacts: ArrayList<String> = ArrayList<String>()
+
+    public init() {}
+}
+
+public func ckbSchedulerFailureSummaries(result: SchedulerExecutorResult): ArrayList<CkbSchedulerFailedTaskSummary> {
+    let summaries = ArrayList<CkbSchedulerFailedTaskSummary>()
+    for (line in result.details.split("\n")) {
+        ckbSchedulerCollectFailedDetailLine(summaries, line.trimAscii())
+    }
+    for (diagnostic in result.validationDiagnostics) {
+        ckbSchedulerCollectFailedDiagnostic(summaries, diagnostic)
+    }
+    let out = ArrayList<CkbSchedulerFailedTaskSummary>()
+    for (summary in summaries) {
+        if (summary.primaryFailure == "") {
+            summary.primaryFailure = if (summary.status != "") {
+                summary.status
+            } else if (summary.failedSources.size > 0) {
+                summary.failedSources[0]
+            } else if (summary.missingArtifacts.size > 0) {
+                "missing_artifacts"
+            } else {
+                ""
+            }
+        }
+        if (summary.status != "" || summary.primaryFailure != "" || summary.failedSources.size > 0 || summary.missingArtifacts.size > 0) {
+            out.add(summary)
+        }
+    }
+    out
+}
+
+private func ckbSchedulerCollectFailedDetailLine(summaries: ArrayList<CkbSchedulerFailedTaskSummary>, line: String): Unit {
+    if (!line.startsWith("task ") || !line.contains("ok=false")) {
+        return
+    }
+    let parts = line.split(" ")
+    if (parts.size < 2) {
+        return
+    }
+    let summary = ckbSchedulerFindOrCreateFailedSummary(summaries, parts[1])
+    let status = ckbSchedulerTokenValue(line, "status=")
+    if (summary.status == "" && status != "") {
+        summary.status = status
+    }
+    if (summary.primaryFailure == "" && status != "") {
+        summary.primaryFailure = status
+    }
+}
+
+private func ckbSchedulerCollectFailedDiagnostic(summaries: ArrayList<CkbSchedulerFailedTaskSummary>, diagnostic: String): Unit {
+    let taskName = ckbSchedulerDiagnosticTaskName(diagnostic)
+    if (taskName == "") {
+        return
+    }
+    let summary = ckbSchedulerFindOrCreateFailedSummary(summaries, taskName)
+    if (diagnostic.contains("fetch:") && diagnostic.contains("ok=false")) {
+        ckbSchedulerAddUniqueString(summary.failedSources, redactSensitive(diagnostic))
+    }
+    if (diagnostic.contains("required_source_failed")) {
+        let failure = ckbSchedulerDiagnosticSuffix(diagnostic, "readiness:")
+        if (summary.primaryFailure == "" && failure != "") {
+            summary.primaryFailure = failure
+        }
+    }
+    if (diagnostic.contains("routine_contract:")) {
+        ckbSchedulerCollectRoutineContractDiagnostic(summary, diagnostic)
+    }
+}
+
+private func ckbSchedulerCollectRoutineContractDiagnostic(summary: CkbSchedulerFailedTaskSummary, diagnostic: String): Unit {
+    let parts = diagnostic.split("routine_contract:")
+    if (parts.size < 2) {
+        return
+    }
+    let raw = parts[1]
+    let status = jsonStringField(raw, "diagnostic")
+    if (summary.status == "" && status != "") {
+        summary.status = status
+    }
+    if (summary.primaryFailure == "" && status != "") {
+        summary.primaryFailure = status
+    }
+    for (artifact in ckbSchedulerJsonStringArrayField(raw, "missingArtifacts")) {
+        ckbSchedulerAddUniqueString(summary.missingArtifacts, artifact)
+    }
+}
+
+private func ckbSchedulerDiagnosticTaskName(diagnostic: String): String {
+    let parts = diagnostic.split(":")
+    if (parts.size < 2) {
+        return ""
+    }
+    parts[0]
+}
+
+private func ckbSchedulerDiagnosticSuffix(diagnostic: String, marker: String): String {
+    let parts = diagnostic.split(marker)
+    if (parts.size < 2) {
+        return ""
+    }
+    redactSensitive(parts[1])
+}
+
+private func ckbSchedulerTokenValue(raw: String, prefix: String): String {
+    for (part in raw.split(" ")) {
+        if (part.startsWith(prefix) && part.size > prefix.size) {
+            return part[prefix.size..part.size]
+        }
+    }
+    ""
+}
+
+private func ckbSchedulerFindOrCreateFailedSummary(summaries: ArrayList<CkbSchedulerFailedTaskSummary>, taskName: String): CkbSchedulerFailedTaskSummary {
+    for (summary in summaries) {
+        if (summary.taskName == taskName) {
+            return summary
+        }
+    }
+    let summary = CkbSchedulerFailedTaskSummary()
+    summary.taskName = taskName
+    summaries.add(summary)
+    summary
+}
+
+private func ckbSchedulerJsonStringArrayField(raw: String, key: String): ArrayList<String> {
+    let out = ArrayList<String>()
+    let parts = raw.split("\"${key}\":[")
+    if (parts.size < 2) {
+        return out
+    }
+    let tailParts = parts[1].split("]")
+    if (tailParts.size == 0) {
+        return out
+    }
+    let tokens = tailParts[0].split("\"")
+    var i: Int64 = 1
+    while (i < tokens.size) {
+        if (tokens[i] != "") {
+            ckbSchedulerAddUniqueString(out, tokens[i])
+        }
+        i += 2
+    }
+    out
+}
+
+private func ckbSchedulerAddUniqueString(values: ArrayList<String>, value: String): Unit {
+    if (value == "") {
+        return
+    }
+    for (existing in values) {
+        if (existing == value) {
+            return
+        }
+    }
+    values.add(value)
 }
 
 private func ckbParseHeapMiB(raw: String): Int64 {

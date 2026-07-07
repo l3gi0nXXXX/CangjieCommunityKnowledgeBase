@@ -21,12 +21,37 @@ public class CkbSchedulerServiceF5Test {
         config.embeddingDimensions = 1024
         config.vectorDimensions = 1024
 
-        let result = ckbRoutineRuntimePreflight(config, root, "4GB", "/opt/homebrew/opt/openssl@3/lib")
+        let result = ckbRoutineRuntimePreflightWithVectorStore(config, root, "4GB", "/opt/homebrew/opt/openssl@3/lib", F7StatusVectorStore(EmbeddingProviderState.READY, "", 1024))
 
         @Expect(result.ok, true)
         @Expect(result.actualHeapMiB, 4096)
         @Expect(result.storeExists, true)
         @Expect(result.vectorReadiness, "ready")
+    }
+
+    @TestCase
+    public func ruP0PreflightRejectsQdrantDownAndCollectionDimensionMismatch(): Unit {
+        let root = "target/ru-p0-preflight-qdrant-down"
+        if (!exists(Path(root))) {
+            Directory.create(Path(root), recursive: true)
+        }
+        let config = CkbRuntimeConfig()
+        config.vectorBackend = "qdrant"
+        config.vectorEndpoint = "http://127.0.0.1:6333"
+        config.embeddingProvider = "ollama"
+        config.embeddingModel = "bge-m3:latest"
+        config.embeddingEndpoint = "http://127.0.0.1:11434/api/embed"
+        config.embeddingDimensions = 1024
+        config.vectorDimensions = 1024
+
+        let down = ckbRoutineRuntimePreflightWithVectorStore(config, root, "4GB", "/opt/homebrew/opt/openssl@3/lib", F7StatusVectorStore(EmbeddingProviderState.DOWN, "connection_refused", 1024))
+        let mismatch = ckbRoutineRuntimePreflightWithVectorStore(config, root, "4GB", "/opt/homebrew/opt/openssl@3/lib", F7StatusVectorStore(EmbeddingProviderState.READY, "", 768))
+
+        @Expect(down.ok, false)
+        @Expect(down.vectorReadiness, "degraded")
+        @Expect(ruDiagnosticsContain(down.diagnostics, "qdrant_unreachable:connection_refused"), true)
+        @Expect(mismatch.ok, false)
+        @Expect(ruDiagnosticsContain(mismatch.diagnostics, "qdrant_collection_dimension_mismatch:1024:768"), true)
     }
 
     @TestCase
@@ -425,13 +450,34 @@ public class CkbSchedulerServiceF5Test {
 
         let result = service.runSchedulerTasks(tasks, true)
         let after = service.statusSnapshot()
+        let summaries = ckbSchedulerFailureSummaries(result)
 
         @Expect(result.ran, 1)
         @Expect(result.failed, 1)
         @Expect(result.details.contains("scheduled_readiness_failed"), true)
-        @Expect(store.has("metadata/cangjie-version-manifest.ckb"), false)
         @Expect(after.activeKnowledgeVersion, before)
         @Expect(f7RunnerSawUrlFragment(runner, "/git/trees/release%2F1.0?"), true)
+        @Expect(f7SchedulerDiagnosticsContain(result, "version_manifest_saved:"), false)
+        @Expect(summaries.size, 1)
+        @Expect(summaries[0].taskName, "cangjie_release_full_sync")
+        @Expect(summaries[0].primaryFailure.contains("scheduled_readiness_failed"), true)
+        @Expect(f7SummaryListContains(summaries[0].failedSources, "remote_tree_unavailable"), true)
+        @Expect(summaries[0].missingArtifacts.size, 0)
+    }
+
+    @TestCase
+    public func p7Neg003SchedulerFailureSummaryRedactsSensitiveDiagnostics(): Unit {
+        let result = SchedulerExecutorResult()
+        result.details = "task cangjie_release_full_sync ok=false status=scheduled_readiness_failed\n"
+        result.validationDiagnostics.add("cangjie_release_full_sync:fetch:profile=cangjie_release_full_sync|ok=false|status=http_401|Authorization: Bearer secret-token|path=/Users/l3gi0n/private")
+
+        let summaries = ckbSchedulerFailureSummaries(result)
+
+        @Expect(summaries.size, 1)
+        @Expect(summaries[0].failedSources.size, 1)
+        @Expect(summaries[0].failedSources[0].contains("secret-token"), false)
+        @Expect(summaries[0].failedSources[0].contains("/Users/l3gi0n/private"), false)
+        @Expect(summaries[0].failedSources[0].contains("/Users/"), false)
     }
 
     @TestCase
@@ -666,6 +712,15 @@ private func f7SchedulerDiagnosticsContain(result: SchedulerExecutorResult, need
     false
 }
 
+private func f7SummaryListContains(values: ArrayList<String>, needle: String): Bool {
+    for (value in values) {
+        if (value.contains(needle)) {
+            return true
+        }
+    }
+    false
+}
+
 private func ruDiagnosticsContain(values: ArrayList<String>, needle: String): Bool {
     for (value in values) {
         if (value.contains(needle)) {
@@ -673,6 +728,58 @@ private func ruDiagnosticsContain(values: ArrayList<String>, needle: String): Bo
         }
     }
     false
+}
+
+private class F7StatusVectorStore <: VectorStore {
+    private let state: String
+    private let reason: String
+    private let dimension: Int64
+
+    init(state: String, reason: String, dimension: Int64) {
+        this.state = state
+        this.reason = reason
+        this.dimension = dimension
+    }
+
+    public func upsert(collection: String, vectors: ArrayList<VectorRecord>): VectorStoreStatus {
+        this.status(collection)
+    }
+
+    public func search(collection: String, queryVector: ArrayList<Float64>, filters: VectorSearchFilters, topK: Int64): ArrayList<VectorSearchResult> {
+        ArrayList<VectorSearchResult>()
+    }
+
+    public func status(collection: String): VectorStoreStatus {
+        let status = VectorStoreStatus()
+        status.backend = "qdrant"
+        status.collection = collection
+        status.activeCollection = "ckb_active"
+        status.candidateCollection = "ckb_candidate"
+        status.dimension = this.dimension
+        status.state = this.state
+        status.degradedReason = this.reason
+        status
+    }
+
+    public func clear(collection: String): VectorStoreStatus {
+        this.status(collection)
+    }
+
+    public func recreate(collection: String, vectors: ArrayList<VectorRecord>): VectorStoreStatus {
+        this.status(collection)
+    }
+
+    public func backup(collection: String): VectorBackup {
+        let backup = VectorBackup()
+        backup.collection = collection
+        backup.valid = false
+        backup.diagnostic = this.reason
+        backup
+    }
+
+    public func restore(backup: VectorBackup): VectorStoreStatus {
+        this.status(backup.collection)
+    }
 }
 
 private class F5FreshnessProbeRunner <: SourceFetchRunner {

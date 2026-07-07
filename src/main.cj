@@ -314,7 +314,7 @@ public func ckbNativeTlsBootstrapScript(command: String, args: Array<String>): S
         "if [ -z \"" + "$" + "{MAGIC_ROOT}\" ]; then MAGIC_ROOT=\"" + "$" + "{CKB_MAGIC_ROOT:-}\"; fi; " +
         "CANGJIE_ROOT=\"" + "$" + "{CANGJIE_HOME:-}\"; " +
         "if [ -z \"" + "$" + "{CANGJIE_ROOT}\" ]; then CANGJIE_ROOT=\"" + "$" + "{CKB_CANGJIE_ROOT:-}\"; fi; " +
-        "CKB_DYLD_EXTRA=\"/opt/homebrew/opt/openssl@3/lib:/opt/homebrew/opt/openssl@3.5/lib:/usr/local/opt/openssl@3/lib\"; " +
+        "CKB_DYLD_EXTRA=\"/opt/homebrew/opt/openssl@3/lib:/opt/homebrew/opt/openssl@3.5/lib:/usr/local/opt/openssl@3/lib:/Users/l3gi0n/cangjie100/runtime/lib/darwin_aarch64_llvm:/Users/l3gi0n/work/workspace_cangjie/CangjieMagic/libs/cangjie-stdx-mac-aarch64-1.0.0.1/darwin_aarch64_llvm/dynamic/stdx:/Users/l3gi0n/work/workspace_cangjie/Metis/ffi\"; " +
         "if [ -n \"" + "$" + "{CANGJIE_ROOT}\" ]; then CKB_DYLD_EXTRA=\"" + "$" + "{CKB_DYLD_EXTRA}:" + "$" + "{CANGJIE_ROOT}/runtime/lib/darwin_aarch64_llvm\"; fi; " +
         "if [ -n \"" + "$" + "{MAGIC_ROOT}\" ]; then CKB_DYLD_EXTRA=\"" + "$" + "{CKB_DYLD_EXTRA}:" + "$" + "{MAGIC_ROOT}/libs/cangjie-stdx-mac-aarch64-1.0.0.1/darwin_aarch64_llvm/dynamic/stdx\"; fi; " +
         "export DYLD_LIBRARY_PATH=\"" +
@@ -472,7 +472,19 @@ private func ckbCliSchedulerTaskNames(args: Array<String>): ArrayList<String> {
 
 private func ckbCliSchedulerRunJson(result: SchedulerExecutorResult): String {
     let ok = result.failed == 0 && result.degraded == 0
-    "{\"ok\":${ok},\"errorCode\":\"${if (ok) { "" } else { "ckb.scheduler_run_degraded" }}\",\"ran\":${result.ran},\"succeeded\":${result.succeeded},\"failed\":${result.failed},\"degraded\":${result.degraded},\"forced\":${result.forced},\"taskNames\":${ckbCliStringArrayJson(result.taskNames)},\"details\":\"${ckbCliJsonEscape(result.details)}\",\"validationSummaries\":${ckbCliStringArrayJson(result.validationSummaries)},\"validationDiagnostics\":${ckbCliStringArrayJson(result.validationDiagnostics)},\"validationEvidenceHashes\":${ckbCliStringArrayJson(result.validationEvidenceHashes)}}"
+    "{\"ok\":${ok},\"errorCode\":\"${if (ok) { "" } else { "ckb.scheduler_run_degraded" }}\",\"ran\":${result.ran},\"succeeded\":${result.succeeded},\"failed\":${result.failed},\"degraded\":${result.degraded},\"forced\":${result.forced},\"taskNames\":${ckbCliStringArrayJson(result.taskNames)},\"details\":\"${ckbCliJsonEscape(result.details)}\",\"validationSummaries\":${ckbCliStringArrayJson(result.validationSummaries)},\"validationDiagnostics\":${ckbCliStringArrayJson(result.validationDiagnostics)},\"validationEvidenceHashes\":${ckbCliStringArrayJson(result.validationEvidenceHashes)},\"failedTasks\":${ckbCliSchedulerFailedTasksJson(ckbSchedulerFailureSummaries(result))}}"
+}
+
+private func ckbCliSchedulerFailedTasksJson(values: ArrayList<CkbSchedulerFailedTaskSummary>): String {
+    var out = "["
+    for (i in 0..values.size) {
+        if (i > 0) {
+            out += ","
+        }
+        let summary = values[i]
+        out += "{\"taskName\":\"${ckbCliJsonEscape(summary.taskName)}\",\"status\":\"${ckbCliJsonEscape(summary.status)}\",\"primaryFailure\":\"${ckbCliJsonEscape(summary.primaryFailure)}\",\"failedSources\":${ckbCliStringArrayJson(summary.failedSources)},\"missingArtifacts\":${ckbCliStringArrayJson(summary.missingArtifacts)}}"
+    }
+    out + "]"
 }
 
 private func ckbCliStringArrayJson(values: ArrayList<String>): String {
