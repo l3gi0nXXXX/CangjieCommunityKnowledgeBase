@@ -2,6 +2,7 @@ package cangjie_community_knowledge_base
 
 import std.collection.ArrayList
 import std.convert.Parsable
+import std.time.*
 
 public class OllamaEmbeddingHttpRequest {
     public var method: String = "POST"
@@ -68,6 +69,7 @@ public class OllamaEmbeddingProvider <: EmbeddingProvider {
 
     public func embed(texts: ArrayList<String>, model: String, dimensions: Int64): EmbeddingBatch {
         let batch = EmbeddingBatch()
+        let started = ollamaNowMillis()
         batch.requested = texts.size
         batch.batchSize = effectiveBatchSize(this.config.batchSize)
         batch.status = this.status()
@@ -82,22 +84,21 @@ public class OllamaEmbeddingProvider <: EmbeddingProvider {
             return batch
         }
 
-        var offset: Int64 = 0
         var degradedReason = ""
         var down = false
-        while (offset < texts.size) {
-            let chunk = ArrayList<String>()
-            let limit = minInt64(texts.size, offset + batch.batchSize)
-            for (idx in offset..limit) {
-                chunk.add(texts[idx])
-            }
-            let chunkResult = this.embedChunk(chunk, effectiveModel, effectiveDimensions)
+        let textBatches = CkbEmbeddingTextBudgeter(ckbEmbeddingTextBudgetFromConfig(this.config)).batches(texts)
+        for (textBatch in textBatches) {
+            batch.inputBytes += textBatch.originalBytes
+            batch.preparedBytes += textBatch.preparedBytes
+            batch.truncatedCount += textBatch.truncatedCount
+            let chunkResult = this.embedChunk(textBatch.texts, effectiveModel, effectiveDimensions)
             if (chunkResult.status.state == EmbeddingProviderState.READY) {
                 for (vector in chunkResult.vectors) {
                     batch.vectors.add(vector)
                 }
+                batch.processed += textBatch.texts.size
             } else {
-                batch.failed += chunk.size
+                batch.failed += textBatch.texts.size
                 if (degradedReason == "") {
                     degradedReason = chunkResult.status.degradedReason
                 }
@@ -105,10 +106,10 @@ public class OllamaEmbeddingProvider <: EmbeddingProvider {
                     down = true
                 }
             }
-            offset = limit
         }
         batch.succeeded = batch.vectors.size
         batch.failed = batch.requested - batch.succeeded
+        batch.elapsedMillis = ollamaNowMillis() - started
         if (batch.failed > 0) {
             batch.status.state = if (down && batch.succeeded == 0) { EmbeddingProviderState.DOWN } else { EmbeddingProviderState.DEGRADED }
             batch.status.degradedReason = if (degradedReason == "") { "ollama_embedding_failed" } else { degradedReason }
@@ -127,6 +128,9 @@ public class OllamaEmbeddingProvider <: EmbeddingProvider {
         status.endpointConfigured = this.config.endpoint != ""
         status.tokenConfigured = this.config.credentialPresent()
         status.batchSize = effectiveBatchSize(this.config.batchSize)
+        status.maxBatchBytes = this.config.maxBatchBytes
+        status.maxTextBytes = this.config.maxTextBytes
+        status.totalTimeoutMillis = this.config.totalTimeoutMillis
         status.timeoutMillis = this.config.timeoutMillis
         status.retryCount = this.config.retryCount
         status.production = true
@@ -201,15 +205,24 @@ public class OllamaEmbeddingProvider <: EmbeddingProvider {
         var attempt: Int64 = 0
         var last = OllamaEmbeddingHttpResponse()
         let retryCount = if (request.retryCount < 0) { 0 } else { request.retryCount }
+        let totalDeadline = ollamaNowMillis() + ollamaEffectiveTotalTimeoutMillis(request.timeoutMillis, retryCount, this.config.totalTimeoutMillis)
         while (attempt <= retryCount) {
             attempt += 1
             try {
-                last = this.executor.execute(request)
+                let remaining = totalDeadline - ollamaNowMillis()
+                if (remaining <= 0) {
+                    last = ollamaTimeoutResponse("ollama_embedding_total_timeout")
+                    break
+                }
+                let attemptTimeout = if (request.timeoutMillis > 0 && request.timeoutMillis < remaining) { request.timeoutMillis } else { remaining }
+                let attemptRequest = ollamaCopyRequest(request)
+                attemptRequest.timeoutMillis = attemptTimeout
+                let future = spawn { =>
+                    this.executor.execute(attemptRequest)
+                }
+                last = future.get(Duration.millisecond * attemptTimeout)
             } catch (_: Exception) {
-                last = OllamaEmbeddingHttpResponse()
-                last.status = "transport_error"
-                last.transportErrorClass = "exception"
-                last.transportDiagnostic = "executor_exception"
+                last = ollamaTimeoutResponse("ollama_embedding_timeout")
             }
             if (last.status == "timeout" || last.transportErrorClass == "timeout") {
                 break
@@ -258,6 +271,42 @@ private func ollamaStatusFromHttpResponse(response: OllamaEmbeddingHttpResponse)
     status.state = EmbeddingProviderState.DEGRADED
     status.degradedReason = "ollama_http_${response.statusCode}"
     status
+}
+
+private func ollamaNowMillis(): Int64 {
+    DateTime.now().toUnixTimeStamp().toMilliseconds()
+}
+
+private func ollamaEffectiveTotalTimeoutMillis(timeoutMillis: Int64, retryCount: Int64, configuredTotal: Int64): Int64 {
+    if (configuredTotal > 0) {
+        return configuredTotal
+    }
+    let perAttempt = if (timeoutMillis > 0) { timeoutMillis } else { 10000 }
+    let attempts = if (retryCount < 0) { 1 } else { retryCount + 1 }
+    perAttempt * attempts
+}
+
+private func ollamaTimeoutResponse(diagnostic: String): OllamaEmbeddingHttpResponse {
+    let response = OllamaEmbeddingHttpResponse()
+    response.status = "timeout"
+    response.transportErrorClass = "timeout"
+    response.transportDiagnostic = diagnostic
+    response
+}
+
+private func ollamaCopyRequest(request: OllamaEmbeddingHttpRequest): OllamaEmbeddingHttpRequest {
+    let copy = OllamaEmbeddingHttpRequest()
+    copy.method = request.method
+    copy.url = request.url
+    copy.accept = request.accept
+    copy.contentType = request.contentType
+    for (header in request.headers) {
+        copy.headers.add(header)
+    }
+    copy.body = request.body
+    copy.timeoutMillis = request.timeoutMillis
+    copy.retryCount = request.retryCount
+    copy
 }
 
 private func ollamaEmbeddingRequestBody(model: String, texts: ArrayList<String>, dimensions: Int64): String {

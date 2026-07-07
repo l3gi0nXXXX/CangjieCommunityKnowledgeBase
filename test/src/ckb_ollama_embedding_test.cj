@@ -1,6 +1,7 @@
 package cangjie_community_knowledge_base_test
 
 import std.collection.ArrayList
+import std.time.*
 import std.unittest.*
 import std.unittest.testmacro.*
 
@@ -26,6 +27,18 @@ private class FakeOllamaEmbeddingExecutor <: OllamaEmbeddingHttpExecutor {
             index = this.responses.size - 1
         }
         this.responses[index]
+    }
+}
+
+private class SlowOllamaEmbeddingExecutor <: OllamaEmbeddingHttpExecutor {
+    public var calls: Int64 = 0
+
+    public init() {}
+
+    public func execute(request: OllamaEmbeddingHttpRequest): OllamaEmbeddingHttpResponse {
+        this.calls += 1
+        sleep(Duration.millisecond * 200)
+        responseWith(200, embeddingResponseJson(1, 1024), "http_200")
     }
 }
 
@@ -188,6 +201,46 @@ public class CkbOllamaEmbeddingTest {
         @Expect(readiness.ready, false)
         @Expect(readiness.state, EmbeddingProviderState.DOWN)
         @Expect(readiness.reason, "ollama_timeout")
+    }
+
+    @TestCase
+    public func ollamaProviderOuterTimeoutReturnsWithoutBlockingScheduler(): Unit {
+        let config = ollamaConfig()
+        config.timeoutMillis = 20
+        config.totalTimeoutMillis = 20
+        let slow = SlowOllamaEmbeddingExecutor()
+        let provider = OllamaEmbeddingProvider(config, executor: slow)
+        let started = DateTime.now().toUnixTimeStamp().toMilliseconds()
+
+        let batch = provider.embed(textBatch(["slow request"]), "bge-m3:latest", 1024)
+        let elapsed = DateTime.now().toUnixTimeStamp().toMilliseconds() - started
+
+        @Expect(batch.status.state, EmbeddingProviderState.DOWN)
+        @Expect(batch.status.degradedReason, "ollama_timeout")
+        @Expect(batch.failed, 1)
+        @Expect(elapsed < 1000, true)
+        @Expect(slow.calls, 1)
+    }
+
+    @TestCase
+    public func ollamaProviderAppliesUtf8SafeTextBudgetBeforeRequest(): Unit {
+        let config = ollamaConfig()
+        config.batchSize = 2
+        config.maxBatchBytes = 16
+        config.maxTextBytes = 8
+        let fake = FakeOllamaEmbeddingExecutor()
+        fake.add(responseWith(200, embeddingResponseJson(2, 1024), "http_200"))
+        fake.add(responseWith(200, embeddingResponseJson(1, 1024), "http_200"))
+        let provider = OllamaEmbeddingProvider(config, executor: fake)
+
+        let batch = provider.embed(textBatch(["仓颉🙂abcdef", "plain", "third"]), "bge-m3:latest", 1024)
+
+        @Expect(batch.status.state, EmbeddingProviderState.READY)
+        @Expect(batch.succeeded, 3)
+        @Expect(batch.truncatedCount, 1)
+        @Expect(fake.calls, 2)
+        @Expect(fake.requests[0].body.contains("仓颉"), true)
+        @Expect(fake.requests[0].body.contains("🙂"), false)
     }
 }
 

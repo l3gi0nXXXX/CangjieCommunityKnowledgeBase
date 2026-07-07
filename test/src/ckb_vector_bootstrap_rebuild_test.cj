@@ -105,6 +105,34 @@ public class CkbVectorBootstrapRebuildTest {
         @Expect(progress.state, EmbeddingProviderState.DEGRADED)
         @Expect(progress.completed, 2)
     }
+
+    @TestCase
+    public func restoreActiveSnapshotRebuildsWhenVectorDimensionMismatchesRuntime(): Unit {
+        let source = KnowledgeBase(FakeClock(0), ChunkedFakeEmbeddingProvider(2), LocalVectorStore(), LocalGraphStore())
+        source.bootstrapOffline()
+        let sourceStatus = source.status()
+        let snapshot = ActiveSnapshot()
+        snapshot.valid = true
+        snapshot.diagnostic = "ok"
+        snapshot.activeVersion = sourceStatus.activeKnowledgeVersion
+        snapshot.activeIndex = source.activeRecordSnapshot()
+        let wrong = VectorRecord()
+        wrong.id = snapshot.activeIndex[0].sourceId
+        wrong.vector.add(1.0)
+        wrong.vector.add(2.0)
+        snapshot.vectorRecords.add(wrong)
+        let vectorStore = RestoreTrackingVectorStore()
+        let target = KnowledgeBase(FakeClock(0), ChunkedFakeEmbeddingProvider(2), vectorStore, LocalGraphStore())
+
+        let restored = target.restoreActiveSnapshot(snapshot)
+        let status = target.status()
+
+        @Expect(restored, true)
+        @Expect(vectorStore.restoreCalls, 0)
+        @Expect(vectorStore.recreateCalls > 0, true)
+        @Expect(status.storage.vectorState, EmbeddingProviderState.READY)
+        @Expect(status.restoreDiagnostic.contains("vector_rebuild_required:dimension_mismatch:2:3"), true)
+    }
 }
 
 private class BootstrapFakeVectorStore <: VectorStore {
@@ -169,6 +197,66 @@ private class BootstrapFakeVectorStore <: VectorStore {
         status.activeCollection = "ckb_active"
         status.candidateCollection = "ckb_candidate"
         status.dimension = 3
+        status.state = EmbeddingProviderState.READY
+        status
+    }
+}
+
+private class RestoreTrackingVectorStore <: VectorStore {
+    public var recreateCalls: Int64 = 0
+    public var restoreCalls: Int64 = 0
+    public var upsertBatchCalls: Int64 = 0
+
+    init() {}
+
+    public func upsert(collection: String, vectors: ArrayList<VectorRecord>): VectorStoreStatus {
+        this.readyStatus(collection, vectors.size)
+    }
+
+    public func upsertBatch(collection: String, vectors: ArrayList<VectorRecord>): VectorStoreStatus {
+        this.upsertBatchCalls += 1
+        this.readyStatus(collection, vectors.size)
+    }
+
+    public func search(collection: String, queryVector: ArrayList<Float64>, filters: VectorSearchFilters, topK: Int64): ArrayList<VectorSearchResult> {
+        ArrayList<VectorSearchResult>()
+    }
+
+    public func status(collection: String): VectorStoreStatus {
+        this.readyStatus(collection, 0)
+    }
+
+    public func ensureReadyCollection(collection: String): VectorStoreStatus {
+        this.readyStatus(collection, 0)
+    }
+
+    public func clear(collection: String): VectorStoreStatus {
+        this.readyStatus(collection, 0)
+    }
+
+    public func recreate(collection: String, vectors: ArrayList<VectorRecord>): VectorStoreStatus {
+        this.recreateCalls += 1
+        this.readyStatus(collection, vectors.size)
+    }
+
+    public func backup(collection: String): VectorBackup {
+        let backup = VectorBackup()
+        backup.collection = collection
+        backup.valid = true
+        backup
+    }
+
+    public func restore(backup: VectorBackup): VectorStoreStatus {
+        this.restoreCalls += 1
+        this.readyStatus(backup.collection, backup.records.size)
+    }
+
+    private func readyStatus(collection: String, count: Int64): VectorStoreStatus {
+        let status = VectorStoreStatus()
+        status.backend = "tracking"
+        status.collection = collection
+        status.dimension = 3
+        status.count = count
         status.state = EmbeddingProviderState.READY
         status
     }

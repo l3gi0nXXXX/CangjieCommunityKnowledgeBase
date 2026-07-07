@@ -223,13 +223,22 @@ public func ckbCliMain(args: Array<String>): Int64 {
     if (cli.command == "cangjie-knowledge-release-gate") {
         return runCangjieKnowledgeReleaseGate(args, config: config, store: store, sourceRunner: if (config.networkEnabled) { HttpSourceFetchRunner(config) } else { DisabledNetworkFetchRunner() })
     }
+    if (cli.command == "ollama-embedding-benchmark") {
+        let result = ckbRunOllamaEmbeddingBenchmark(kb, config, ckbCliSampleSize(args))
+        if (ckbCliWantsJson(args)) {
+            println(renderCkbOllamaEmbeddingBenchmarkJson(result))
+        } else {
+            print("ollama embedding benchmark ok=${result.ok} status=${result.status} sampleSize=${result.sampleSize} p50Bytes=${result.p50Bytes} p95Bytes=${result.p95Bytes} p99Bytes=${result.p99Bytes} maxBytes=${result.maxBytes} measuredLatencyMillis=${result.measuredLatencyMillis} recommendation maxBatchItems=${result.maxBatchItems} maxBatchBytes=${result.maxBatchBytes} maxTextBytes=${result.maxTextBytes} diagnostic=${result.diagnostic}\n")
+        }
+        return if (result.ok) { 0 } else { 1 }
+    }
     if (cli.command == "rebuild-index") {
         let result = ckbRebuildIndex(kb, store)
         println("rebuild ok=${result.ok} activeKnowledgeVersion=${result.activeVersion} candidateKnowledgeVersion=${result.candidateVersion} count=${result.count}")
         return 0
     }
     if (cli.command == "scheduler-run") {
-        let executor = SchedulerExecutor(kb.scheduler, CkbSchedulerTaskRunner(kb, config, store, sourceRunner: if (config.networkEnabled) { HttpSourceFetchRunner(config) } else { DisabledNetworkFetchRunner() }))
+        let executor = SchedulerExecutor(kb.scheduler, CkbSchedulerTaskRunner(kb, config, store, sourceRunner: if (config.networkEnabled) { HttpSourceFetchRunner(config) } else { DisabledNetworkFetchRunner() }), FileSchedulerProgressSink(store), 300000)
         let taskNames = ckbCliSchedulerTaskNames(args)
         let result = if (hasArg(args, "--force-all")) {
             executor.runTaskNames(ckbSchedulerAllowlistTaskNames(), force: true)
@@ -273,7 +282,7 @@ public func ckbCliMain(args: Array<String>): Int64 {
         print(renderQuery(cangjie_evidence_pack(kb, query, 3)))
         return 0
     }
-    println("Usage: cangjie_community_knowledge_base [--config <path>] [--store <path>] doctor | status | metrics | service | service-http | http-service | mcp-stdio | cangjie-initialize (--dry-run|--apply) --docs-root <path> --std-root <path> --stdx-root <path> --eval-root <path> | cangjie-landing-status [--format json] | service-once <command> | start | stop | restart | sync-once | sync-live (--dry-run|--apply) | source_analysis repo=<owner/repo> ref=<ref> path=<path> | native-http-smoke <url> | cangjie-corpus-status | cangjie-knowledge-pack <task> | cangjie-api-search <query> | cangjie-syntax-query <query> | cangjie-cookbook <task> | cangjie-diagnose <compiler-output> | cangjie-llms [task] | cangjie-context-pack <task> | cangjie-eval-summary <manifest.jsonl> | cangjie-eval-abcde [--preflight-only] | cangjie-eval-knowledge-audit --run-root <path> | cangjie-humaneval-pass1-gate --run-root <path> | cangjie-knowledge-release-gate --run-root <path> --manifest <manifest.jsonl> | cangjie-typed-ingest-smoke --docs-root <path> --case-root <path> | cangjie-serving-feed-smoke | cangjie-serving-query-smoke | cangjie-update-promotion-smoke | cangjie-abcde-parity-smoke | cangjie-humaneval-pass1-gate-smoke | vector-bootstrap [--json] | scheduler-run [--force-all|--task <name> [--force]] [--json] | rebuild-index | backup <path> | restore <path> | query <text> | evidence <text> | schema")
+    println("Usage: cangjie_community_knowledge_base [--config <path>] [--store <path>] doctor | status | metrics | service | service-http | http-service | mcp-stdio | cangjie-initialize (--dry-run|--apply) --docs-root <path> --std-root <path> --stdx-root <path> --eval-root <path> | cangjie-landing-status [--format json] | service-once <command> | start | stop | restart | sync-once | sync-live (--dry-run|--apply) | source_analysis repo=<owner/repo> ref=<ref> path=<path> | native-http-smoke <url> | cangjie-corpus-status | cangjie-knowledge-pack <task> | cangjie-api-search <query> | cangjie-syntax-query <query> | cangjie-cookbook <task> | cangjie-diagnose <compiler-output> | cangjie-llms [task] | cangjie-context-pack <task> | cangjie-eval-summary <manifest.jsonl> | cangjie-eval-abcde [--preflight-only] | cangjie-eval-knowledge-audit --run-root <path> | cangjie-humaneval-pass1-gate --run-root <path> | cangjie-knowledge-release-gate --run-root <path> --manifest <manifest.jsonl> | cangjie-typed-ingest-smoke --docs-root <path> --case-root <path> | cangjie-serving-feed-smoke | cangjie-serving-query-smoke | cangjie-update-promotion-smoke | cangjie-abcde-parity-smoke | cangjie-humaneval-pass1-gate-smoke | vector-bootstrap [--json] | ollama-embedding-benchmark [--json] [--sample-size <n>] | scheduler-run [--force-all|--task <name> [--force]] [--json] | rebuild-index | backup <path> | restore <path> | query <text> | evidence <text> | schema")
     2
 }
 
@@ -481,7 +490,7 @@ private func ckbCliSchedulerTaskNames(args: Array<String>): ArrayList<String> {
 
 private func ckbCliSchedulerRunJson(result: SchedulerExecutorResult): String {
     let ok = result.failed == 0 && result.degraded == 0
-    "{\"ok\":${ok},\"errorCode\":\"${if (ok) { "" } else { "ckb.scheduler_run_degraded" }}\",\"ran\":${result.ran},\"succeeded\":${result.succeeded},\"failed\":${result.failed},\"degraded\":${result.degraded},\"forced\":${result.forced},\"taskNames\":${ckbCliStringArrayJson(result.taskNames)},\"details\":\"${ckbCliJsonEscape(result.details)}\",\"validationSummaries\":${ckbCliStringArrayJson(result.validationSummaries)},\"validationDiagnostics\":${ckbCliStringArrayJson(result.validationDiagnostics)},\"validationEvidenceHashes\":${ckbCliStringArrayJson(result.validationEvidenceHashes)},\"failedTasks\":${ckbCliSchedulerFailedTasksJson(ckbSchedulerFailureSummaries(result))}}"
+    "{\"ok\":${ok},\"errorCode\":\"${if (ok) { "" } else { "ckb.scheduler_run_degraded" }}\",\"runId\":\"${ckbCliJsonEscape(result.runId)}\",\"progressPath\":\"${ckbCliJsonEscape(result.progressPath)}\",\"startedAtMillis\":${result.startedAtMillis},\"endedAtMillis\":${result.endedAtMillis},\"timedOut\":${result.timedOut},\"partial\":${result.partial},\"ran\":${result.ran},\"succeeded\":${result.succeeded},\"failed\":${result.failed},\"degraded\":${result.degraded},\"forced\":${result.forced},\"taskNames\":${ckbCliStringArrayJson(result.taskNames)},\"details\":\"${ckbCliJsonEscape(result.details)}\",\"validationSummaries\":${ckbCliStringArrayJson(result.validationSummaries)},\"validationDiagnostics\":${ckbCliStringArrayJson(result.validationDiagnostics)},\"validationEvidenceHashes\":${ckbCliStringArrayJson(result.validationEvidenceHashes)},\"failedTasks\":${ckbCliSchedulerFailedTasksJson(ckbSchedulerFailureSummaries(result))}}"
 }
 
 private func ckbCliSchedulerFailedTasksJson(values: ArrayList<CkbSchedulerFailedTaskSummary>): String {
@@ -520,6 +529,17 @@ private func parseNextInt(args: Array<String>, index: Int64, fallback: Int64): I
     } catch (_: Exception) {
         fallback
     }
+}
+
+private func ckbCliSampleSize(args: Array<String>): Int64 {
+    var i: Int64 = 0
+    while (i < args.size) {
+        if (args[i] == "--sample-size") {
+            return parseNextInt(args, i, 64)
+        }
+        i += 1
+    }
+    64
 }
 
 private func renderCangjieEvalManifestFileSummary(path: String): (String, Int64) {

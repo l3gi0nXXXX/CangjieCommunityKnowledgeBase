@@ -141,6 +141,15 @@ public class CkbQdrantVectorStoreTest {
 
     @TestCase
     public func qdrantStatusAndClearMapMissingAndServerFailure(): Unit {
+        let nestedStatusExecutor = QdrantFakeExecutor()
+        nestedStatusExecutor.add(200, "{\"status\":\"ok\",\"result\":{\"status\":\"green\",\"points_count\":13,\"config\":{\"params\":{\"vectors\":{\"size\":1024,\"distance\":\"Cosine\"}}}}}", "http_200")
+        let nestedStatusStore = QdrantVectorStore("http://qdrant.test", 1024, "Cosine", executor: nestedStatusExecutor)
+        let nested = nestedStatusStore.status("ckb_active")
+
+        @Expect(nested.state, EmbeddingProviderState.READY)
+        @Expect(nested.count, 13)
+        @Expect(nested.dimension, 1024)
+
         let statusExecutor = QdrantFakeExecutor()
         statusExecutor.add(404, "{\"status\":\"error\"}", "http_404")
         let missingStore = QdrantVectorStore("http://qdrant.test", 3, "Cosine", executor: statusExecutor)

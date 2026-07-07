@@ -2,7 +2,7 @@ package cangjie_community_knowledge_base
 
 import std.collection.ArrayList
 import std.convert.Parsable
-import std.time.DateTime
+import std.time.*
 
 public class SourceTypes {
     public static let REPO: String = "repo"
@@ -143,6 +143,9 @@ public class EmbeddingConfig {
     public var tokenFile: String = ""
     public var tokenRef: String = ""
     public var batchSize: Int64 = 16
+    public var maxBatchBytes: Int64 = 65536
+    public var maxTextBytes: Int64 = 8192
+    public var totalTimeoutMillis: Int64 = 0
     public var timeoutMillis: Int64 = 10000
     public var retryCount: Int64 = 2
     public var production: Bool = true
@@ -162,6 +165,9 @@ public class EmbeddingStatus {
     public var endpointConfigured: Bool = false
     public var tokenConfigured: Bool = false
     public var batchSize: Int64 = 0
+    public var maxBatchBytes: Int64 = 0
+    public var maxTextBytes: Int64 = 0
+    public var totalTimeoutMillis: Int64 = 0
     public var timeoutMillis: Int64 = 0
     public var retryCount: Int64 = 0
     public var state: String = EmbeddingProviderState.DEGRADED
@@ -178,8 +184,117 @@ public class EmbeddingBatch {
     public var succeeded: Int64 = 0
     public var failed: Int64 = 0
     public var batchSize: Int64 = 0
+    public var processed: Int64 = 0
+    public var inputBytes: Int64 = 0
+    public var preparedBytes: Int64 = 0
+    public var truncatedCount: Int64 = 0
+    public var elapsedMillis: Int64 = 0
 
     public init() {}
+}
+
+public class CkbEmbeddingTextBudget {
+    public var maxBatchItems: Int64 = 16
+    public var maxBatchBytes: Int64 = 65536
+    public var maxTextBytes: Int64 = 8192
+
+    public init() {}
+}
+
+public class CkbEmbeddingPreparedText {
+    public var text: String = ""
+    public var originalBytes: Int64 = 0
+    public var preparedBytes: Int64 = 0
+    public var truncated: Bool = false
+
+    public init() {}
+}
+
+public class CkbEmbeddingTextBatch {
+    public var startIndex: Int64 = 0
+    public var endIndex: Int64 = 0
+    public var texts: ArrayList<String> = ArrayList<String>()
+    public var originalBytes: Int64 = 0
+    public var preparedBytes: Int64 = 0
+    public var truncatedCount: Int64 = 0
+
+    public init() {}
+}
+
+public class CkbEmbeddingTextBudgeter {
+    private let budget: CkbEmbeddingTextBudget
+
+    public init(budget: CkbEmbeddingTextBudget) {
+        this.budget = budget
+    }
+
+    public func prepare(raw: String): CkbEmbeddingPreparedText {
+        let prepared = CkbEmbeddingPreparedText()
+        prepared.originalBytes = raw.size
+        let maxTextBytes = this.effectiveMaxTextBytes()
+        prepared.text = if (maxTextBytes > 0 && raw.size > maxTextBytes) {
+            ckbUtf8SafePrefix(raw, maxTextBytes)
+        } else {
+            raw
+        }
+        prepared.preparedBytes = prepared.text.size
+        prepared.truncated = prepared.preparedBytes < prepared.originalBytes
+        prepared
+    }
+
+    public func batches(texts: ArrayList<String>): ArrayList<CkbEmbeddingTextBatch> {
+        let out = ArrayList<CkbEmbeddingTextBatch>()
+        if (texts.size == 0) {
+            return out
+        }
+        var current = CkbEmbeddingTextBatch()
+        current.startIndex = 0
+        let maxItems = this.effectiveMaxBatchItems()
+        let maxBytes = this.effectiveMaxBatchBytes()
+        for (idx in 0..texts.size) {
+            let prepared = this.prepare(texts[idx])
+            let wouldExceedItems = current.texts.size > 0 && current.texts.size >= maxItems
+            let wouldExceedBytes = current.texts.size > 0 && maxBytes > 0 && current.preparedBytes + prepared.preparedBytes > maxBytes
+            if (wouldExceedItems || wouldExceedBytes) {
+                current.endIndex = idx
+                out.add(current)
+                current = CkbEmbeddingTextBatch()
+                current.startIndex = idx
+            }
+            current.texts.add(prepared.text)
+            current.originalBytes += prepared.originalBytes
+            current.preparedBytes += prepared.preparedBytes
+            if (prepared.truncated) {
+                current.truncatedCount += 1
+            }
+            current.endIndex = idx + 1
+        }
+        if (current.texts.size > 0) {
+            out.add(current)
+        }
+        out
+    }
+
+    private func effectiveMaxBatchItems(): Int64 {
+        if (this.budget.maxBatchItems <= 0) {
+            return 16
+        }
+        this.budget.maxBatchItems
+    }
+
+    private func effectiveMaxBatchBytes(): Int64 {
+        if (this.budget.maxBatchBytes < 0) {
+            return 0
+        }
+        this.budget.maxBatchBytes
+    }
+
+    private func effectiveMaxTextBytes(): Int64 {
+        if (this.budget.maxTextBytes < 0) {
+            return 0
+        }
+        this.budget.maxTextBytes
+    }
 }
 
 public class VectorBuildProgress {
@@ -198,9 +313,51 @@ public class VectorBuildProgress {
     public init() {}
 }
 
+public class VectorIndexBuildResult {
+    public var ok: Bool = false
+    public var status: String = "not_started"
+    public var vectorCount: Int64 = 0
+    public var graphNodes: Int64 = 0
+    public var servingCount: Int64 = 0
+    public var diagnostic: String = ""
+    public var truncatedCount: Int64 = 0
+    public var elapsedMillis: Int64 = 0
+
+    public init() {}
+}
+
+public class VectorRecordsBuildResult {
+    public var ok: Bool = false
+    public var status: String = "not_started"
+    public var records: ArrayList<VectorRecord> = ArrayList<VectorRecord>()
+    public var processed: Int64 = 0
+    public var failed: Int64 = 0
+    public var diagnostic: String = ""
+    public var truncatedCount: Int64 = 0
+    public var elapsedMillis: Int64 = 0
+
+    public init() {}
+}
+
 public interface EmbeddingProvider {
     func embed(texts: ArrayList<String>, model: String, dimensions: Int64): EmbeddingBatch
     func status(): EmbeddingStatus
+}
+
+public func ckbEmbeddingTextBudgetFromStatus(status: EmbeddingStatus): CkbEmbeddingTextBudget {
+    let budget = CkbEmbeddingTextBudget()
+    budget.maxBatchItems = if (status.batchSize > 0) { status.batchSize } else { 16 }
+    budget.maxBatchBytes = if (status.maxBatchBytes > 0) { status.maxBatchBytes } else { 65536 }
+    budget.maxTextBytes = if (status.maxTextBytes > 0) { status.maxTextBytes } else { 8192 }
+    budget
+}
+
+public func ckbEmbeddingTextBudgetFromConfig(config: EmbeddingConfig): CkbEmbeddingTextBudget {
+    let budget = CkbEmbeddingTextBudget()
+    budget.maxBatchItems = if (config.batchSize > 0) { config.batchSize } else { 16 }
+    budget.maxBatchBytes = if (config.maxBatchBytes > 0) { config.maxBatchBytes } else { 65536 }
+    budget.maxTextBytes = if (config.maxTextBytes > 0) { config.maxTextBytes } else { 8192 }
+    budget
 }
 
 private func ckbCoreNowMillis(): Int64 {
@@ -242,6 +399,9 @@ public class DeterministicEmbeddingProvider <: EmbeddingProvider {
         status.endpointConfigured = this.config.endpoint != ""
         status.tokenConfigured = this.config.credentialPresent()
         status.batchSize = this.config.batchSize
+        status.maxBatchBytes = this.config.maxBatchBytes
+        status.maxTextBytes = this.config.maxTextBytes
+        status.totalTimeoutMillis = this.config.totalTimeoutMillis
         status.timeoutMillis = this.config.timeoutMillis
         status.retryCount = this.config.retryCount
         status.production = this.config.production
@@ -279,6 +439,9 @@ public class ProductionEmbeddingProvider <: EmbeddingProvider {
         status.endpointConfigured = this.config.endpoint != ""
         status.tokenConfigured = this.config.credentialPresent()
         status.batchSize = this.config.batchSize
+        status.maxBatchBytes = this.config.maxBatchBytes
+        status.maxTextBytes = this.config.maxTextBytes
+        status.totalTimeoutMillis = this.config.totalTimeoutMillis
         status.timeoutMillis = this.config.timeoutMillis
         status.retryCount = this.config.retryCount
         status.production = true
@@ -1056,8 +1219,8 @@ private func qdrantParseCollectionStatus(body: String): VectorStoreStatus {
         return status
     }
     let qdrantState = qdrantJsonStringField(result, "status")
-    status.count = qdrantJsonIntField(result, "points_count", qdrantJsonIntField(result, "pointsCount", 0))
-    status.dimension = qdrantJsonIntField(result, "size", 0)
+    status.count = qdrantJsonIntField(result, "points_count", qdrantJsonIntField(result, "pointsCount", qdrantJsonIntField(result, "indexed_vectors_count", 0)))
+    status.dimension = qdrantJsonIntField(result, "size", qdrantNestedVectorSize(result))
     if (qdrantState == "green" || qdrantState == "ok" || qdrantState == "") {
         status.state = EmbeddingProviderState.READY
     } else {
@@ -1065,6 +1228,22 @@ private func qdrantParseCollectionStatus(body: String): VectorStoreStatus {
         status.degradedReason = "qdrant_status_${qdrantState}"
     }
     status
+}
+
+private func qdrantNestedVectorSize(result: String): Int64 {
+    let config = qdrantJsonObjectField(result, "config")
+    if (config == "") {
+        return 0
+    }
+    let params = qdrantJsonObjectField(config, "params")
+    if (params == "") {
+        return 0
+    }
+    let vectors = qdrantJsonObjectField(params, "vectors")
+    if (vectors == "") {
+        return 0
+    }
+    qdrantJsonIntField(vectors, "size", 0)
 }
 
 private func qdrantParseSearchResponse(body: String, filters: VectorSearchFilters, topK: Int64): ArrayList<VectorSearchResult> {
@@ -1707,6 +1886,11 @@ public class ScheduleEntry {
     public var lastUpdatedDataKinds: ArrayList<String> = ArrayList<String>()
     public var lastTruncated: Bool = false
     public var timeBudgetMillis: Int64 = 0
+    public var lastRunId: String = ""
+    public var lastRunStartedAtMillis: Int64 = 0
+    public var lastRunFinishedAtMillis: Int64 = 0
+    public var lastBinaryEvidenceHash: String = ""
+    public var lastTerminalState: String = ""
 
     public init() {}
 
@@ -1852,6 +2036,12 @@ public class SchedulerTaskResult {
 }
 
 public class SchedulerExecutorResult {
+    public var runId: String = ""
+    public var startedAtMillis: Int64 = 0
+    public var endedAtMillis: Int64 = 0
+    public var timedOut: Bool = false
+    public var partial: Bool = false
+    public var progressPath: String = ""
     public var ran: Int64 = 0
     public var succeeded: Int64 = 0
     public var failed: Int64 = 0
@@ -1870,48 +2060,62 @@ public interface SchedulerTaskRunner {
     func runTask(name: String, since: String): SchedulerTaskResult
 }
 
+public interface SchedulerProgressSink {
+    func onRunStarted(result: SchedulerExecutorResult): Unit
+    func onTaskStarted(runId: String, taskName: String): Unit
+    func onTaskFinished(runId: String, taskName: String, task: SchedulerTaskResult): Unit
+    func onRunFinished(result: SchedulerExecutorResult): Unit
+}
+
+public class NoopSchedulerProgressSink <: SchedulerProgressSink {
+    public init() {}
+
+    public func onRunStarted(result: SchedulerExecutorResult): Unit {}
+
+    public func onTaskStarted(runId: String, taskName: String): Unit {}
+
+    public func onTaskFinished(runId: String, taskName: String, task: SchedulerTaskResult): Unit {}
+
+    public func onRunFinished(result: SchedulerExecutorResult): Unit {}
+}
+
 public class SchedulerExecutor {
     private let scheduler: Scheduler
     private let runner: SchedulerTaskRunner
+    private let progressSink: SchedulerProgressSink
+    private let taskTimeoutMillis: Int64
 
     public init(scheduler: Scheduler, runner: SchedulerTaskRunner) {
         this.scheduler = scheduler
         this.runner = runner
+        this.progressSink = NoopSchedulerProgressSink()
+        this.taskTimeoutMillis = 0
+    }
+
+    public init(scheduler: Scheduler, runner: SchedulerTaskRunner, progressSink: SchedulerProgressSink, taskTimeoutMillis: Int64) {
+        this.scheduler = scheduler
+        this.runner = runner
+        this.progressSink = progressSink
+        this.taskTimeoutMillis = taskTimeoutMillis
     }
 
     public func runDue(limit!: Int64 = 1): SchedulerExecutorResult {
         let result = SchedulerExecutorResult()
+        this.startRun(result, false)
         let due = this.scheduler.dueTaskNames()
         for (name in due) {
             if (limit > 0 && result.ran >= limit) {
                 break
             }
-            let entry = this.findEntry(name)
-            let task = this.runner.runTask(name, entry.lastSince)
-            result.ran += 1
-            result.taskNames.add(name)
-            if (task.ok) {
-                this.scheduler.markSuccess(name)
-                this.applyCheckpoint(name, task)
-                result.succeeded += 1
-            } else {
-                this.scheduler.markFailure(name)
-                this.applyCheckpoint(name, task)
-                result.failed += 1
-            }
-            let after = this.findEntry(name)
-            if (after.degraded) {
-                result.degraded += 1
-            }
-            result.details += "task ${name} ok=${task.ok} status=${task.status} nextRunAt=${after.nextRunAt} failureCount=${after.failureCount} degraded=${after.degraded}\n"
-            this.appendTaskValidation(result, name, task)
+            this.runOneTask(result, name, true)
         }
+        this.finishRun(result)
         result
     }
 
     public func runTaskNames(taskNames: ArrayList<String>, force!: Bool = false): SchedulerExecutorResult {
         let result = SchedulerExecutorResult()
-        result.forced = force
+        this.startRun(result, force)
         for (name in taskNames) {
             let entry = this.findEntry(name)
             if (entry.name == "" || entry.intervalMinutes == 0) {
@@ -1923,26 +2127,87 @@ public class SchedulerExecutor {
                 result.details += "task ${name} ok=false status=not_due nextRunAt=${entry.nextRunAt}\n"
                 continue
             }
-            let task = this.runner.runTask(name, entry.lastSince)
-            result.ran += 1
-            result.taskNames.add(name)
-            if (task.ok) {
-                this.scheduler.markSuccess(name)
-                this.applyCheckpoint(name, task)
-                result.succeeded += 1
-            } else {
-                this.scheduler.markFailure(name)
-                this.applyCheckpoint(name, task)
-                result.failed += 1
-            }
-            let after = this.findEntry(name)
-            if (after.degraded) {
-                result.degraded += 1
-            }
-            result.details += "task ${name} ok=${task.ok} status=${task.status} nextRunAt=${after.nextRunAt} failureCount=${after.failureCount} degraded=${after.degraded}\n"
-            this.appendTaskValidation(result, name, task)
+            this.runOneTask(result, name, force)
         }
+        this.finishRun(result)
         result
+    }
+
+    private func startRun(result: SchedulerExecutorResult, forced: Bool): Unit {
+        result.runId = "scheduler-${ckbCoreNowMillis()}"
+        result.startedAtMillis = ckbCoreNowMillis()
+        result.forced = forced
+        this.progressSink.onRunStarted(result)
+    }
+
+    private func finishRun(result: SchedulerExecutorResult): Unit {
+        result.endedAtMillis = ckbCoreNowMillis()
+        this.progressSink.onRunFinished(result)
+    }
+
+    private func runOneTask(result: SchedulerExecutorResult, name: String, force: Bool): Unit {
+        let entry = this.findEntry(name)
+        this.progressSink.onTaskStarted(result.runId, name)
+        let task = this.runTaskWithTimeout(name, entry.lastSince, this.effectiveTaskTimeoutMillis(entry))
+        result.ran += 1
+        result.taskNames.add(name)
+        if (task.status.startsWith("task_timeout:")) {
+            result.timedOut = true
+            result.partial = true
+        }
+        if (task.ok) {
+            this.scheduler.markSuccess(name)
+            this.applyCheckpoint(name, task, result.runId)
+            result.succeeded += 1
+        } else {
+            this.scheduler.markFailure(name)
+            this.applyCheckpoint(name, task, result.runId)
+            result.failed += 1
+        }
+        let after = this.findEntry(name)
+        if (after.degraded) {
+            result.degraded += 1
+        }
+        result.details += "task ${name} ok=${task.ok} status=${task.status} nextRunAt=${after.nextRunAt} failureCount=${after.failureCount} degraded=${after.degraded}\n"
+        this.appendTaskValidation(result, name, task)
+        this.progressSink.onTaskFinished(result.runId, name, task)
+    }
+
+    private func runTaskWithTimeout(name: String, since: String, timeoutMillis: Int64): SchedulerTaskResult {
+        let started = ckbCoreNowMillis()
+        if (timeoutMillis <= 0) {
+            try {
+                let task = this.runner.runTask(name, since)
+                if (task.durationMillis <= 0) {
+                    task.durationMillis = ckbCoreNowMillis() - started
+                }
+                return task
+            } catch (_: Exception) {
+                return schedulerExceptionTaskResult(name, "task_exception", ckbCoreNowMillis() - started)
+            }
+        }
+        try {
+            let future = spawn { =>
+                this.runner.runTask(name, since)
+            }
+            let task = future.get(Duration.millisecond * timeoutMillis)
+            if (task.durationMillis <= 0) {
+                task.durationMillis = ckbCoreNowMillis() - started
+            }
+            return task
+        } catch (_: Exception) {
+            return schedulerExceptionTaskResult(name, "task_timeout:${name}", ckbCoreNowMillis() - started)
+        }
+    }
+
+    private func effectiveTaskTimeoutMillis(entry: ScheduleEntry): Int64 {
+        if (entry.timeBudgetMillis > 0) {
+            return entry.timeBudgetMillis
+        }
+        if (this.taskTimeoutMillis > 0) {
+            return this.taskTimeoutMillis
+        }
+        0
     }
 
     private func appendTaskValidation(result: SchedulerExecutorResult, name: String, task: SchedulerTaskResult): Unit {
@@ -1967,7 +2232,7 @@ public class SchedulerExecutor {
         ScheduleEntry(name, 0, 0)
     }
 
-    private func applyCheckpoint(name: String, task: SchedulerTaskResult): Unit {
+    private func applyCheckpoint(name: String, task: SchedulerTaskResult, runId: String): Unit {
         for (entry in this.scheduler.entries) {
             if (entry.name == name) {
                 entry.lastCursor = task.cursor
@@ -1983,9 +2248,22 @@ public class SchedulerExecutor {
                 }
                 entry.lastTruncated = task.truncated
                 entry.timeBudgetMillis = task.timeBudgetMillis
+                entry.lastRunId = runId
+                entry.lastRunStartedAtMillis = ckbCoreNowMillis() - task.durationMillis
+                entry.lastRunFinishedAtMillis = ckbCoreNowMillis()
+                entry.lastTerminalState = if (task.ok) { "succeeded" } else { task.status }
             }
         }
     }
+}
+
+private func schedulerExceptionTaskResult(name: String, status: String, durationMillis: Int64): SchedulerTaskResult {
+    let task = SchedulerTaskResult()
+    task.ok = false
+    task.status = status
+    task.durationMillis = durationMillis
+    task.validationDiagnostics.add("${name}:${status}")
+    task
 }
 
 public class FreshnessResult {
@@ -2202,22 +2480,42 @@ public class KnowledgeBase {
         this.storage.rawCount = this.rawRecords.size
         this.storage.normalizedCount = this.normalizedRecords.size
         this.storage.indexCount = this.activeIndex.size
-        if (snapshot.vectorRecords.size > 0) {
-            let backup = VectorBackup()
-            backup.collection = this.vectorCollection
-            backup.valid = true
-            backup.diagnostic = "ok"
-            for (record in snapshot.vectorRecords) {
-                backup.records.add(record)
-            }
-            this.applyVectorStatus(this.vectorStore.restore(backup))
-            this.rebuildGraphIndex()
-            this.rebuildServingIndexStatus()
-        } else {
-            this.rebuildProductionIndexes()
+        let vectorResult = this.restoreOrRebuildActiveVectorIndex(snapshot)
+        if (!vectorResult.ok && vectorResult.diagnostic != "") {
+            this.restoreDiagnostic = "${this.restoreDiagnostic};${vectorResult.diagnostic}"
         }
         this.rebuildIndexManifest()
         return true
+    }
+
+    private func restoreOrRebuildActiveVectorIndex(snapshot: ActiveSnapshot): VectorIndexBuildResult {
+        if (snapshot.vectorRecords.size == 0) {
+            return this.rebuildProductionIndexesWithResult("vector_snapshot_missing")
+        }
+        let backupDimension = vectorBackupDimension(snapshot.vectorRecords)
+        let expectedDimension = this.activeEmbeddingDimensions()
+        if (backupDimension <= 0 || (expectedDimension > 0 && backupDimension != expectedDimension)) {
+            return this.rebuildProductionIndexesWithResult("vector_rebuild_required:dimension_mismatch:${backupDimension}:${expectedDimension}")
+        }
+        let result = VectorIndexBuildResult()
+        let backup = VectorBackup()
+        backup.collection = this.vectorCollection
+        backup.valid = true
+        backup.diagnostic = "ok"
+        for (record in snapshot.vectorRecords) {
+            backup.records.add(record)
+        }
+        let vectorStatus = this.vectorStore.restore(backup)
+        this.applyVectorStatus(vectorStatus)
+        this.rebuildGraphIndex()
+        this.rebuildServingIndexStatus()
+        result.ok = vectorStatus.state == EmbeddingProviderState.READY
+        result.status = vectorStatus.state
+        result.vectorCount = vectorStatus.count
+        result.graphNodes = this.storage.graphNodeCount
+        result.servingCount = this.storage.servingIndexCount
+        result.diagnostic = vectorStatus.degradedReason
+        result
     }
 
     public func restoreScheduler(entries: ArrayList<ScheduleEntry>): Unit {
@@ -2235,6 +2533,19 @@ public class KnowledgeBase {
                     entry.activeVersion = checkpoint.activeVersion
                     entry.candidateVersion = checkpoint.candidateVersion
                     entry.lastStatus = checkpoint.lastStatus
+                    entry.lastDurationMillis = checkpoint.lastDurationMillis
+                    entry.lastRequestCount = checkpoint.lastRequestCount
+                    entry.lastUpdatedDataKinds.clear()
+                    for (kind in checkpoint.lastUpdatedDataKinds) {
+                        entry.lastUpdatedDataKinds.add(kind)
+                    }
+                    entry.lastTruncated = checkpoint.lastTruncated
+                    entry.timeBudgetMillis = checkpoint.timeBudgetMillis
+                    entry.lastRunId = checkpoint.lastRunId
+                    entry.lastRunStartedAtMillis = checkpoint.lastRunStartedAtMillis
+                    entry.lastRunFinishedAtMillis = checkpoint.lastRunFinishedAtMillis
+                    entry.lastBinaryEvidenceHash = checkpoint.lastBinaryEvidenceHash
+                    entry.lastTerminalState = checkpoint.lastTerminalState
                 }
             }
         }
@@ -2477,6 +2788,17 @@ public class KnowledgeBase {
         out
     }
 
+    public func activeEmbeddingTextSnapshot(limit!: Int64 = -1): ArrayList<String> {
+        let out = ArrayList<String>()
+        for (record in this.activeIndex) {
+            if (limit >= 0 && out.size >= limit) {
+                break
+            }
+            out.add(this.vectorText(record))
+        }
+        out
+    }
+
     public func activeRecordSnapshotOverlay(delta: ArrayList<NormalizedRecord>): ArrayList<NormalizedRecord> {
         let out = ArrayList<NormalizedRecord>()
         for (record in this.activeIndex) {
@@ -2548,12 +2870,33 @@ public class KnowledgeBase {
     }
 
     private func rebuildProductionIndexes(): Unit {
-        this.rebuildServingIndexStatus()
-        this.rebuildProductionVectorIndex()
-        this.rebuildGraphIndex()
+        _ = this.rebuildProductionIndexesWithResult("")
     }
 
-    private func rebuildProductionVectorIndex(): Unit {
+    private func rebuildProductionIndexesWithResult(reason: String): VectorIndexBuildResult {
+        let started = ckbCoreNowMillis()
+        let result = VectorIndexBuildResult()
+        result.diagnostic = reason
+        this.rebuildServingIndexStatus()
+        let vector = this.rebuildProductionVectorIndexWithResult()
+        this.rebuildGraphIndex()
+        result.ok = vector.ok
+        result.status = vector.status
+        result.vectorCount = vector.vectorCount
+        result.graphNodes = this.storage.graphNodeCount
+        result.servingCount = this.storage.servingIndexCount
+        result.truncatedCount = vector.truncatedCount
+        result.elapsedMillis = ckbCoreNowMillis() - started
+        if (result.diagnostic == "") {
+            result.diagnostic = vector.diagnostic
+        } else if (vector.diagnostic != "") {
+            result.diagnostic += ";${vector.diagnostic}"
+        }
+        result
+    }
+
+    private func rebuildProductionVectorIndexWithResult(): VectorIndexBuildResult {
+        let result = VectorIndexBuildResult()
         let progress = VectorBuildProgress()
         progress.collection = this.vectorCollection
         progress.total = this.activeIndex.size
@@ -2571,7 +2914,11 @@ public class KnowledgeBase {
             progress.updatedAtMillis = ckbCoreNowMillis()
             progress.elapsedMillis = progress.updatedAtMillis - progress.startedAtMillis
             this.applyVectorStatus(vectorStatus)
-            return
+            result.ok = false
+            result.status = vectorStatus.state
+            result.diagnostic = vectorStatus.degradedReason
+            result.elapsedMillis = progress.elapsedMillis
+            return result
         }
         if (this.activeIndex.size == 0) {
             progress.state = EmbeddingProviderState.READY
@@ -2579,21 +2926,24 @@ public class KnowledgeBase {
             progress.elapsedMillis = progress.updatedAtMillis - progress.startedAtMillis
             vectorStatus.count = 0
             this.applyVectorStatus(vectorStatus)
-            return
+            result.ok = true
+            result.status = EmbeddingProviderState.READY
+            result.vectorCount = 0
+            result.elapsedMillis = progress.elapsedMillis
+            return result
         }
-        var start: Int64 = 0
         var batchIndex: Int64 = 0
-        while (start < this.activeIndex.size) {
-            var end = start + progress.batchSize
-            if (end > this.activeIndex.size) {
-                end = this.activeIndex.size
-            }
-            let texts = ArrayList<String>()
-            for (i in start..end) {
-                texts.add(this.vectorText(this.activeIndex[i]))
-            }
+        let rawTexts = ArrayList<String>()
+        for (record in this.activeIndex) {
+            rawTexts.add(this.vectorText(record))
+        }
+        let textBatches = CkbEmbeddingTextBudgeter(ckbEmbeddingTextBudgetFromStatus(embeddingStatus)).batches(rawTexts)
+        for (textBatch in textBatches) {
+            let texts = textBatch.texts
             progress.currentBatch = batchIndex
             let batch = this.embeddingProvider.embed(texts, this.activeEmbeddingModel(), this.activeEmbeddingDimensions())
+            progress.failed += batch.failed
+            result.truncatedCount += textBatch.truncatedCount + batch.truncatedCount
             if (batch.status.state != EmbeddingProviderState.READY || batch.vectors.size != texts.size) {
                 vectorStatus = this.vectorStore.status(this.vectorCollection)
                 vectorStatus.state = EmbeddingProviderState.DEGRADED
@@ -2609,11 +2959,16 @@ public class KnowledgeBase {
                 progress.updatedAtMillis = ckbCoreNowMillis()
                 progress.elapsedMillis = progress.updatedAtMillis - progress.startedAtMillis
                 this.applyVectorStatus(vectorStatus)
-                return
+                result.ok = false
+                result.status = vectorStatus.state
+                result.vectorCount = progress.completed
+                result.diagnostic = vectorStatus.degradedReason
+                result.elapsedMillis = progress.elapsedMillis
+                return result
             }
             let vectorRecords = ArrayList<VectorRecord>()
             for (i in 0..texts.size) {
-                let source = this.activeIndex[start + i]
+                let source = this.activeIndex[textBatch.startIndex + i]
                 vectorRecords.add(this.vectorRecordFrom(source, batch.vectors[i]))
             }
             vectorStatus = this.vectorStore.upsertBatch(this.vectorCollection, vectorRecords)
@@ -2625,12 +2980,16 @@ public class KnowledgeBase {
                 progress.elapsedMillis = progress.updatedAtMillis - progress.startedAtMillis
                 vectorStatus.count = progress.completed
                 this.applyVectorStatus(vectorStatus)
-                return
+                result.ok = false
+                result.status = vectorStatus.state
+                result.vectorCount = progress.completed
+                result.diagnostic = vectorStatus.degradedReason
+                result.elapsedMillis = progress.elapsedMillis
+                return result
             }
             progress.completed += texts.size
             progress.updatedAtMillis = ckbCoreNowMillis()
             progress.elapsedMillis = progress.updatedAtMillis - progress.startedAtMillis
-            start = end
             batchIndex += 1
         }
         progress.state = EmbeddingProviderState.READY
@@ -2638,6 +2997,11 @@ public class KnowledgeBase {
         progress.elapsedMillis = progress.updatedAtMillis - progress.startedAtMillis
         vectorStatus.count = progress.completed
         this.applyVectorStatus(vectorStatus)
+        result.ok = true
+        result.status = EmbeddingProviderState.READY
+        result.vectorCount = progress.completed
+        result.elapsedMillis = progress.elapsedMillis
+        result
     }
 
     private func vectorText(record: NormalizedRecord): String {
@@ -2653,6 +3017,22 @@ public class KnowledgeBase {
         vectorRecord.chunk = source.chunk
         vectorRecord.citation = source.citation
         vectorRecord
+    }
+
+    private func vectorBackupDimension(records: ArrayList<VectorRecord>): Int64 {
+        var dimension: Int64 = 0
+        for (record in records) {
+            let size = record.vector.size
+            if (size <= 0) {
+                return 0
+            }
+            if (dimension == 0) {
+                dimension = size
+            } else if (dimension != size) {
+                return -1
+            }
+        }
+        dimension
     }
 
     private func rebuildServingIndexStatus(): Unit {
@@ -2766,31 +3146,40 @@ public class KnowledgeBase {
     }
 
     public func activeVectorRecords(): ArrayList<VectorRecord> {
-        let out = ArrayList<VectorRecord>()
+        this.activeVectorRecordsWithResult().records
+    }
+
+    public func activeVectorRecordsWithResult(): VectorRecordsBuildResult {
+        let result = VectorRecordsBuildResult()
+        let started = ckbCoreNowMillis()
         let embeddingStatus = this.embeddingProvider.status()
-        let batchSize = if (embeddingStatus.batchSize > 0) { embeddingStatus.batchSize } else { 16 }
-        var start: Int64 = 0
-        while (start < this.activeIndex.size) {
-            var end = start + batchSize
-            if (end > this.activeIndex.size) {
-                end = this.activeIndex.size
-            }
-            let texts = ArrayList<String>()
-            for (i in start..end) {
-                texts.add(this.vectorText(this.activeIndex[i]))
-            }
+        let rawTexts = ArrayList<String>()
+        for (record in this.activeIndex) {
+            rawTexts.add(this.vectorText(record))
+        }
+        let textBatches = CkbEmbeddingTextBudgeter(ckbEmbeddingTextBudgetFromStatus(embeddingStatus)).batches(rawTexts)
+        for (textBatch in textBatches) {
+            let texts = textBatch.texts
             let batch = this.embeddingProvider.embed(texts, this.activeEmbeddingModel(), this.activeEmbeddingDimensions())
+            result.truncatedCount += textBatch.truncatedCount + batch.truncatedCount
             if (batch.status.state != EmbeddingProviderState.READY || batch.vectors.size != texts.size) {
-                out.clear()
-                return out
+                result.ok = false
+                result.status = "embedding_rebuild_failed"
+                result.failed = texts.size
+                result.diagnostic = if (batch.status.degradedReason != "") { batch.status.degradedReason } else { "vector_count_mismatch:${batch.vectors.size}:${texts.size}" }
+                result.elapsedMillis = ckbCoreNowMillis() - started
+                return result
             }
             for (i in 0..texts.size) {
-                let source = this.activeIndex[start + i]
-                out.add(this.vectorRecordFrom(source, batch.vectors[i]))
+                let source = this.activeIndex[textBatch.startIndex + i]
+                result.records.add(this.vectorRecordFrom(source, batch.vectors[i]))
             }
-            start = end
+            result.processed += texts.size
         }
-        out
+        result.ok = true
+        result.status = EmbeddingProviderState.READY
+        result.elapsedMillis = ckbCoreNowMillis() - started
+        result
     }
 
     public func activeGraphBuild(): GraphBuildResult {
@@ -3503,7 +3892,8 @@ public func renderDoctor(status: KnowledgeStatus): String {
     out += "scope organizations=${status.sourceScope.organizations} repoScope=${status.sourceScope.repoScope} websiteUrls=${status.sourceScope.websiteUrls} docsUrls=${status.sourceScope.docsUrls} stdSources=${status.sourceScope.stdSources} issuePrHistory=${status.sourceScope.includesIssuePrHistory} governedWebCandidates=${status.sourceScope.includesGovernedWebCandidates}\n"
     out += "localPathRedacted=${status.localPathRedacted}\n"
     for (entry in status.schedules) {
-        out += "schedule ${entry.name} nextRunAt=${entry.nextRunAt} lastStartedAt=${entry.lastStartedAt} lastSuccessAt=${entry.lastSuccessAt} lastFailureAt=${entry.lastFailureAt} failureCount=${entry.failureCount} stale=${entry.stale} degraded=${entry.degraded} cursor=${entry.lastCursor} since=${entry.lastSince} active=${entry.activeVersion} candidate=${entry.candidateVersion} status=${entry.lastStatus}\n"
+        let staleFailure = entry.failureCount > 0 && (entry.lastRunId == "" || entry.lastTerminalState == "" || entry.lastTerminalState == "succeeded")
+        out += "schedule ${entry.name} nextRunAt=${entry.nextRunAt} lastStartedAt=${entry.lastStartedAt} lastSuccessAt=${entry.lastSuccessAt} lastFailureAt=${entry.lastFailureAt} failureCount=${entry.failureCount} stale=${entry.stale} degraded=${entry.degraded} staleFailure=${staleFailure} runId=${entry.lastRunId} runStartedAtMillis=${entry.lastRunStartedAtMillis} runFinishedAtMillis=${entry.lastRunFinishedAtMillis} terminalState=${entry.lastTerminalState} cursor=${entry.lastCursor} since=${entry.lastSince} active=${entry.activeVersion} candidate=${entry.candidateVersion} status=${entry.lastStatus}\n"
     }
     out
 }

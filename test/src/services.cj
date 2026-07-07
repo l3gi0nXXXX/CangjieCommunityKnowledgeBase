@@ -1,4 +1,4 @@
-package cangjie_community_knowledge_base_test
+package cangjie_community_knowledge_base
 
 import std.collection.ArrayList
 import std.convert.Parsable
@@ -6,6 +6,7 @@ import std.env.getVariable
 import std.fs.{Directory, File, Path, exists}
 import std.io.*
 import std.process.*
+import std.time.DateTime
 
 public class SourceKinds {
     public static let GITCODE_ORG: String = "gitcode_org"
@@ -281,6 +282,9 @@ public class CkbRuntimeConfig {
     public var embeddingEndpoint: String = ""
     public var embeddingTokenFile: String = ""
     public var embeddingBatchSize: Int64 = 16
+    public var embeddingMaxBatchBytes: Int64 = 65536
+    public var embeddingMaxTextBytes: Int64 = 8192
+    public var embeddingTotalTimeoutMillis: Int64 = 0
     public var embeddingTimeoutMillis: Int64 = 10000
     public var embeddingRetryCount: Int64 = 2
     public var embeddingAllowPrivateEndpoint: Bool = false
@@ -481,6 +485,9 @@ public class CkbRuntimeConfig {
         out += " embedding.endpoint=${if (this.embeddingEndpoint == "") { "absent" } else { "present" }}"
         out += " embedding.token=${if (this.embeddingTokenFile == "") { "absent" } else { "present" }}"
         out += " embedding.batchSize=${this.embeddingBatchSize}"
+        out += " embedding.maxBatchBytes=${this.embeddingMaxBatchBytes}"
+        out += " embedding.maxTextBytes=${this.embeddingMaxTextBytes}"
+        out += " embedding.totalTimeoutMillis=${this.embeddingTotalTimeoutMillis}"
         out += " embedding.timeoutMillis=${this.embeddingTimeoutMillis}"
         out += " embedding.retryCount=${this.embeddingRetryCount}"
         out += " embedding.allowPrivateEndpoint=${if (this.embeddingAllowPrivateEndpoint) { "true" } else { "false" }}"
@@ -616,24 +623,7 @@ private func asciiJsonProjection(raw: String): String {
 }
 
 public func utf8SafePrefix(raw: String, maxBytes: Int64): String {
-    if (maxBytes <= 0) {
-        return ""
-    }
-    if (raw.size <= maxBytes) {
-        return raw
-    }
-    let out = StringBuilder()
-    var used: Int64 = 0
-    for (ch in raw.toRuneArray()) {
-        let piece = "${ch}"
-        let next = used + piece.size
-        if (next > maxBytes) {
-            break
-        }
-        out.append(ch)
-        used = next
-    }
-    out.toString()
+    ckbUtf8SafePrefix(raw, maxBytes)
 }
 
 private func normalizeRepoVisibility(raw: String): String {
@@ -3157,6 +3147,91 @@ public func ckbRuntimeEmbeddingReadinessWithProvider(config: CkbRuntimeConfig, p
     result
 }
 
+public class CkbOllamaEmbeddingBenchmarkResult {
+    public var ok: Bool = false
+    public var status: String = "not_started"
+    public var sampleSize: Int64 = 0
+    public var totalBytes: Int64 = 0
+    public var p50Bytes: Int64 = 0
+    public var p95Bytes: Int64 = 0
+    public var p99Bytes: Int64 = 0
+    public var maxBytes: Int64 = 0
+    public var measuredBatchItems: Int64 = 0
+    public var measuredBatchBytes: Int64 = 0
+    public var measuredLatencyMillis: Int64 = 0
+    public var maxBatchItems: Int64 = 0
+    public var maxBatchBytes: Int64 = 0
+    public var maxTextBytes: Int64 = 0
+    public var diagnostic: String = ""
+
+    public init() {}
+}
+
+public func ckbRunOllamaEmbeddingBenchmark(kb: KnowledgeBase, config: CkbRuntimeConfig, sampleSize: Int64): CkbOllamaEmbeddingBenchmarkResult {
+    let result = CkbOllamaEmbeddingBenchmarkResult()
+    let limit = if (sampleSize <= 0) { 64 } else { sampleSize }
+    let texts = kb.activeEmbeddingTextSnapshot(limit: limit)
+    result.sampleSize = texts.size
+    if (texts.size == 0) {
+        result.status = "empty_active_index"
+        result.diagnostic = "empty_active_index"
+        return result
+    }
+    let lengths = ArrayList<Int64>()
+    for (text in texts) {
+        lengths.add(text.size)
+        result.totalBytes += text.size
+        if (text.size > result.maxBytes) {
+            result.maxBytes = text.size
+        }
+    }
+    ckbSortInt64(lengths)
+    result.p50Bytes = ckbPercentileInt64(lengths, 50)
+    result.p95Bytes = ckbPercentileInt64(lengths, 95)
+    result.p99Bytes = ckbPercentileInt64(lengths, 99)
+
+    let embedding = embeddingConfigFromRuntime(config)
+    let provider = embeddingProviderFromRuntime(config)
+    let smoke = ArrayList<String>()
+    let smokeLimit = if (texts.size < 4) { texts.size } else { 4 }
+    for (i in 0..smokeLimit) {
+        smoke.add(ckbUtf8SafePrefix(texts[i], embedding.maxTextBytes))
+        result.measuredBatchBytes += smoke[i].size
+    }
+    result.measuredBatchItems = smoke.size
+    let started = DateTime.now().toUnixTimeStamp().toMilliseconds()
+    let batch = provider.embed(smoke, embedding.model, embedding.dimensions)
+    result.measuredLatencyMillis = DateTime.now().toUnixTimeStamp().toMilliseconds() - started
+    let recommended = ckbRecommendOllamaEmbeddingBudget(config, result)
+    result.maxBatchItems = recommended.maxBatchItems
+    result.maxBatchBytes = recommended.maxBatchBytes
+    result.maxTextBytes = recommended.maxTextBytes
+    result.ok = batch.status.state == EmbeddingProviderState.READY
+    result.status = if (result.ok) { "ready" } else { batch.status.state }
+    result.diagnostic = if (result.ok) { "ok" } else { batch.status.degradedReason }
+    result
+}
+
+public func ckbRecommendOllamaEmbeddingBudget(config: CkbRuntimeConfig, benchmark: CkbOllamaEmbeddingBenchmarkResult): CkbEmbeddingTextBudget {
+    let budget = CkbEmbeddingTextBudget()
+    let configured = embeddingConfigFromRuntime(config)
+    let targetMillis = if (configured.timeoutMillis > 0) { configured.timeoutMillis / 2 } else { 5000 }
+    var latencyBytes = configured.maxBatchBytes
+    if (benchmark.measuredLatencyMillis > 0 && benchmark.measuredBatchBytes > 0 && targetMillis > 0) {
+        latencyBytes = (benchmark.measuredBatchBytes * targetMillis) / benchmark.measuredLatencyMillis
+    }
+    budget.maxBatchBytes = ckbClampInt64(latencyBytes, 8192, configured.maxBatchBytes)
+    let p95Items = if (benchmark.p95Bytes > 0) { budget.maxBatchBytes / benchmark.p95Bytes } else { configured.batchSize }
+    budget.maxBatchItems = ckbClampInt64(p95Items, 1, configured.batchSize)
+    let textLimit = if (benchmark.p99Bytes > 0 && benchmark.p99Bytes < configured.maxTextBytes) { benchmark.p99Bytes } else { configured.maxTextBytes }
+    budget.maxTextBytes = ckbClampInt64(textLimit, 1024, configured.maxTextBytes)
+    budget
+}
+
+public func renderCkbOllamaEmbeddingBenchmarkJson(result: CkbOllamaEmbeddingBenchmarkResult): String {
+    "{\"ok\":${result.ok},\"status\":\"${ckbRuntimePreflightJsonEscape(result.status)}\",\"sampleSize\":${result.sampleSize},\"lengthDistribution\":{\"totalBytes\":${result.totalBytes},\"p50Bytes\":${result.p50Bytes},\"p95Bytes\":${result.p95Bytes},\"p99Bytes\":${result.p99Bytes},\"maxBytes\":${result.maxBytes}},\"latencyMatrix\":{\"measuredBatchItems\":${result.measuredBatchItems},\"measuredBatchBytes\":${result.measuredBatchBytes},\"measuredLatencyMillis\":${result.measuredLatencyMillis}},\"recommendation\":{\"maxBatchItems\":${result.maxBatchItems},\"maxBatchBytes\":${result.maxBatchBytes},\"maxTextBytes\":${result.maxTextBytes}},\"diagnostic\":\"${ckbRuntimePreflightJsonEscape(result.diagnostic)}\"}"
+}
+
 private class CkbEnsureVectorCollectionResult {
     public var ok: Bool = true
     public var state: String = "unknown"
@@ -3929,7 +4004,7 @@ public class FileKnowledgeStore {
     public func saveScheduler(entries: ArrayList<ScheduleEntry>): Unit {
         var text = ""
         for (entry in entries) {
-            text += "${escapeField(entry.name)}|${entry.intervalMinutes}|${entry.nextRunAt}|${entry.lastStartedAt}|${entry.lastSuccessAt}|${entry.lastFailureAt}|${entry.failureCount}|${entry.degraded}|${escapeField(entry.lastCursor)}|${escapeField(entry.lastSince)}|${escapeField(entry.activeVersion)}|${escapeField(entry.candidateVersion)}|${escapeField(entry.lastStatus)}|${entry.lastDurationMillis}|${entry.lastRequestCount}|${escapeField(joinStrings(entry.lastUpdatedDataKinds, ","))}|${entry.lastTruncated}|${entry.timeBudgetMillis}\n"
+            text += "${escapeField(entry.name)}|${entry.intervalMinutes}|${entry.nextRunAt}|${entry.lastStartedAt}|${entry.lastSuccessAt}|${entry.lastFailureAt}|${entry.failureCount}|${entry.degraded}|${escapeField(entry.lastCursor)}|${escapeField(entry.lastSince)}|${escapeField(entry.activeVersion)}|${escapeField(entry.candidateVersion)}|${escapeField(entry.lastStatus)}|${entry.lastDurationMillis}|${entry.lastRequestCount}|${escapeField(joinStrings(entry.lastUpdatedDataKinds, ","))}|${entry.lastTruncated}|${entry.timeBudgetMillis}|${escapeField(entry.lastRunId)}|${entry.lastRunStartedAtMillis}|${entry.lastRunFinishedAtMillis}|${escapeField(entry.lastBinaryEvidenceHash)}|${escapeField(entry.lastTerminalState)}\n"
         }
         this.writeLinesAtomically("metadata/scheduler.ckb", text)
     }
@@ -3974,6 +4049,13 @@ public class FileKnowledgeStore {
                 entry.lastTruncated = parts[16] == "true"
                 entry.timeBudgetMillis = parseIntField(parts[17], 0)
             }
+            if (parts.size >= 23) {
+                entry.lastRunId = unescapeField(parts[18])
+                entry.lastRunStartedAtMillis = parseIntField(parts[19], 0)
+                entry.lastRunFinishedAtMillis = parseIntField(parts[20], 0)
+                entry.lastBinaryEvidenceHash = unescapeField(parts[21])
+                entry.lastTerminalState = unescapeField(parts[22])
+            }
             out.add(entry)
         }
         out
@@ -4017,6 +4099,10 @@ public class FileKnowledgeStore {
         } catch (e: Exception) {
             throw e
         }
+    }
+
+    public func appendLinesAtomically(relative: String, text: String): Unit {
+        this.writeLinesAtomically(relative, this.readLines(relative) + text)
     }
 
     private func writeLines(relative: String, text: String): Unit {
@@ -4179,6 +4265,62 @@ public class StoreMetadataStatus {
     public var vectorCandidateCollection: String = "candidate"
 
     public init() {}
+}
+
+public class FileSchedulerProgressSink <: SchedulerProgressSink {
+    private let store: FileKnowledgeStore
+    private var progressPath: String = ""
+
+    public init(store: FileKnowledgeStore) {
+        this.store = store
+    }
+
+    public func onRunStarted(result: SchedulerExecutorResult): Unit {
+        this.progressPath = "metadata/scheduler-runs/${safeName(result.runId)}.jsonl"
+        result.progressPath = this.progressPath
+        this.store.writeLinesAtomically(this.progressPath, schedulerProgressJson(result.runId, "run_started", "", "running", "", 0))
+        this.store.writeLinesAtomically("metadata/scheduler-current.ckb", schedulerCurrentText(result.runId, "", "running", this.progressPath, ""))
+    }
+
+    public func onTaskStarted(runId: String, taskName: String): Unit {
+        this.ensureProgressPath(runId)
+        this.store.appendLinesAtomically(this.progressPath, schedulerProgressJson(runId, "task_started", taskName, "running", "", 0))
+        this.store.writeLinesAtomically("metadata/scheduler-current.ckb", schedulerCurrentText(runId, taskName, "running", this.progressPath, ""))
+    }
+
+    public func onTaskFinished(runId: String, taskName: String, task: SchedulerTaskResult): Unit {
+        this.ensureProgressPath(runId)
+        let status = if (task.ok) { "succeeded" } else { task.status }
+        let diagnostic = if (task.validationDiagnostics.size > 0) { task.validationDiagnostics[0] } else { task.status }
+        this.store.appendLinesAtomically(this.progressPath, schedulerProgressJson(runId, "task_finished", taskName, status, diagnostic, task.durationMillis))
+        this.store.writeLinesAtomically("metadata/scheduler-current.ckb", schedulerCurrentText(runId, taskName, status, this.progressPath, diagnostic))
+    }
+
+    public func onRunFinished(result: SchedulerExecutorResult): Unit {
+        this.ensureProgressPath(result.runId)
+        let status = if (result.failed == 0 && result.degraded == 0) { "succeeded" } else { "failed" }
+        this.store.appendLinesAtomically(this.progressPath, schedulerProgressJson(result.runId, "run_finished", "", status, "", result.endedAtMillis - result.startedAtMillis))
+        this.store.writeLinesAtomically("metadata/scheduler-current.ckb", schedulerCurrentText(result.runId, "", status, this.progressPath, ""))
+    }
+
+    private func ensureProgressPath(runId: String): Unit {
+        if (this.progressPath == "") {
+            this.progressPath = "metadata/scheduler-runs/${safeName(runId)}.jsonl"
+        }
+    }
+}
+
+private func schedulerProgressJson(runId: String, event: String, taskName: String, status: String, diagnostic: String, durationMillis: Int64): String {
+    "{\"runId\":\"${ckbRuntimePreflightJsonEscape(runId)}\",\"event\":\"${ckbRuntimePreflightJsonEscape(event)}\",\"taskName\":\"${ckbRuntimePreflightJsonEscape(taskName)}\",\"status\":\"${ckbRuntimePreflightJsonEscape(status)}\",\"diagnostic\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(diagnostic), 240))}\",\"durationMillis\":${durationMillis},\"atMillis\":${DateTime.now().toUnixTimeStamp().toMilliseconds()}}\n"
+}
+
+private func schedulerCurrentText(runId: String, taskName: String, status: String, progressPath: String, diagnostic: String): String {
+    var text = "runId=${escapeField(runId)}\n"
+    text += "taskName=${escapeField(taskName)}\n"
+    text += "status=${escapeField(status)}\n"
+    text += "progressPath=${escapeField(progressPath)}\n"
+    text += "diagnostic=${escapeField(utf8SafePrefix(redactSensitive(diagnostic), 240))}\n"
+    text
 }
 
 public class ActiveSnapshot {
@@ -5133,7 +5275,7 @@ public class CkbCommandLoopService {
 
     private func runSchedulerUnlocked(limit: Int64): SchedulerExecutorResult {
         this.advanceSchedulerClockForServiceTick()
-        let executor = SchedulerExecutor(this.kb.scheduler, CkbSchedulerTaskRunner(this.kb, this.config, this.store, sourceRunner: this.sourceRunner))
+        let executor = SchedulerExecutor(this.kb.scheduler, CkbSchedulerTaskRunner(this.kb, this.config, this.store, sourceRunner: this.sourceRunner), FileSchedulerProgressSink(this.store), 300000)
         let result = executor.runDue(limit: limit)
         this.store.saveScheduler(this.kb.scheduler.entries)
         result
@@ -5164,7 +5306,7 @@ public class CkbCommandLoopService {
             return result
         }
         this.advanceSchedulerClockForServiceTick()
-        let executor = SchedulerExecutor(this.kb.scheduler, CkbSchedulerTaskRunner(this.kb, this.config, this.store, sourceRunner: this.sourceRunner))
+        let executor = SchedulerExecutor(this.kb.scheduler, CkbSchedulerTaskRunner(this.kb, this.config, this.store, sourceRunner: this.sourceRunner), FileSchedulerProgressSink(this.store), 300000)
         let ran = executor.runTaskNames(taskNames, force: force)
         this.store.saveScheduler(this.kb.scheduler.entries)
         ran
@@ -5480,6 +5622,8 @@ private class GitCodeRefResolution {
     var ok: Bool = false
     var status: String = "not_started"
     var repo: String = ""
+    var sourceSet: String = ""
+    var sourceFamily: String = ""
     var originalRef: String = ""
     var effectiveRef: String = ""
     var resolvedCommit: String = ""
@@ -5511,6 +5655,7 @@ private func ckbFetchScheduledGitCodeTreeSnapshot(runner: SourceFetchRunner, bui
     let treeRequest = builder.gitCodeTreeWithFetchRef(source.sourceRepo, source.sourceRef, resolution.effectiveRef)
     let treeFetch = ckbFetchScheduledRequest(runner, treeRequest, config)
     ckbApplyGitCodeRefResolutionToFetch(treeFetch, resolution)
+    result.diagnostics.add("gitcode_tree_fetch_resolution:${ckbScheduledFetchDiagnosticWithResolution(profile, treeRequest, treeFetch, resolution)}")
     _ = ckbAppendScheduledSourceRecord(profile, result, treeRequest, treeFetch)
     if (!treeFetch.ok) {
         return
@@ -5536,6 +5681,8 @@ private func ckbFetchScheduledGitCodeTreeSnapshot(runner: SourceFetchRunner, bui
 private func ckbResolveGitCodeRefForScheduledFetch(runner: SourceFetchRunner, builder: SourceRequestBuilder, source: CangjieVersionSource, profile: CkbScheduleTaskProfile, result: CkbScheduledProfileFetchResult, config: CkbRuntimeConfig): GitCodeRefResolution {
     let resolution = GitCodeRefResolution()
     resolution.repo = source.sourceRepo
+    resolution.sourceSet = source.sourceSet
+    resolution.sourceFamily = source.sourceFamily
     resolution.originalRef = source.sourceRef
     if (!isSafeGitCodeRef(source.sourceRef)) {
         resolution.status = "invalid_ref"
@@ -5714,14 +5861,14 @@ private func ckbFetchScheduledSelectedSourceFiles(runner: SourceFetchRunner, bui
             _ = ckbAppendScheduledSourceRecord(profile, result, rawRequest, rawFetch)
             continue
         }
-        result.diagnostics.add("source_raw_snapshot_fallback:${ckbScheduledFetchDiagnostic(profile, rawRequest, rawFetch)}")
+        result.diagnostics.add("source_raw_snapshot_fallback:${ckbScheduledFetchDiagnosticWithResolution(profile, rawRequest, rawFetch, resolution)}")
         let contentsRequest = builder.gitCodeSourceContentsWithFetchRef(source.sourceRepo, source.sourceRef, resolution.effectiveRef, path)
         let contentsFetch = ckbFetchScheduledRequest(runner, contentsRequest, config)
         ckbApplyGitCodeRefResolutionToFetch(contentsFetch, resolution)
         if (contentsFetch.ok) {
             _ = ckbAppendScheduledSourceRecord(profile, result, contentsRequest, contentsFetch)
         } else {
-            result.diagnostics.add("source_contents_snapshot_failed:${ckbScheduledFetchDiagnostic(profile, contentsRequest, contentsFetch)}")
+            result.diagnostics.add("source_contents_snapshot_failed:${ckbScheduledFetchDiagnosticWithResolution(profile, contentsRequest, contentsFetch, resolution)}")
             _ = ckbAppendScheduledSourceRecord(profile, result, contentsRequest, contentsFetch)
         }
     }
@@ -5870,6 +6017,10 @@ private func ckbAppendScheduledSourceRecord(profile: CkbScheduleTaskProfile, res
 
 private func ckbScheduledFetchDiagnostic(profile: CkbScheduleTaskProfile, request: SourceFetchRequest, fetch: SourceFetchResult): String {
     "profile=${profile.profile}|kind=${request.kind}|repo=${request.repo}|ref=${request.ref}|path=${request.path}|url=${request.url}|ok=${fetch.ok}|status=${fetch.status}|statusCode=${fetch.statusCode}|errorClass=${fetch.transportErrorClass}|bodyHash=${fetch.bodyHash}"
+}
+
+private func ckbScheduledFetchDiagnosticWithResolution(profile: CkbScheduleTaskProfile, request: SourceFetchRequest, fetch: SourceFetchResult, resolution: GitCodeRefResolution): String {
+    "${ckbScheduledFetchDiagnostic(profile, request, fetch)}|sourceSet=${resolution.sourceSet}|sourceFamily=${resolution.sourceFamily}|originalRef=${resolution.originalRef}|effectiveRef=${resolution.effectiveRef}|resolvedCommit=${resolution.resolvedCommit}|resolutionStatus=${resolution.status}|refKind=${resolution.refKind}"
 }
 
 private func ckbScheduledFetchPrimaryFailure(result: CkbScheduledProfileFetchResult): String {
@@ -7005,6 +7156,9 @@ public func embeddingConfigFromRuntime(config: CkbRuntimeConfig): EmbeddingConfi
     embedding.endpoint = config.embeddingEndpoint
     embedding.tokenFile = config.embeddingTokenFile
     embedding.batchSize = if (config.embeddingBatchSize <= 0) { 16 } else { config.embeddingBatchSize }
+    embedding.maxBatchBytes = if (config.embeddingMaxBatchBytes <= 0) { 65536 } else { config.embeddingMaxBatchBytes }
+    embedding.maxTextBytes = if (config.embeddingMaxTextBytes <= 0) { 8192 } else { config.embeddingMaxTextBytes }
+    embedding.totalTimeoutMillis = if (config.embeddingTotalTimeoutMillis < 0) { 0 } else { config.embeddingTotalTimeoutMillis }
     embedding.timeoutMillis = if (config.embeddingTimeoutMillis <= 0) { 10000 } else { config.embeddingTimeoutMillis }
     embedding.retryCount = if (config.embeddingRetryCount < 0) { 0 } else { config.embeddingRetryCount }
     embedding.production = !localProvider
@@ -7505,6 +7659,12 @@ private func configApply(config: CkbRuntimeConfig, key: String, value: String): 
         config.embeddingTokenFile = value
     } else if (key == "embedding.batchSize") {
         config.embeddingBatchSize = try { Int64.parse(value) } catch (_: Exception) { config.embeddingBatchSize }
+    } else if (key == "embedding.maxBatchBytes") {
+        config.embeddingMaxBatchBytes = try { Int64.parse(value) } catch (_: Exception) { config.embeddingMaxBatchBytes }
+    } else if (key == "embedding.maxTextBytes") {
+        config.embeddingMaxTextBytes = try { Int64.parse(value) } catch (_: Exception) { config.embeddingMaxTextBytes }
+    } else if (key == "embedding.totalTimeoutMillis") {
+        config.embeddingTotalTimeoutMillis = try { Int64.parse(value) } catch (_: Exception) { config.embeddingTotalTimeoutMillis }
     } else if (key == "embedding.timeoutMillis") {
         config.embeddingTimeoutMillis = try { Int64.parse(value) } catch (_: Exception) { config.embeddingTimeoutMillis }
     } else if (key == "embedding.retryCount") {
@@ -7608,6 +7768,45 @@ private func configApply(config: CkbRuntimeConfig, key: String, value: String): 
 
 private func parseIntField(value: String, fallback: Int64): Int64 {
     try { Int64.parse(value) } catch (_: Exception) { fallback }
+}
+
+private func ckbSortInt64(values: ArrayList<Int64>): Unit {
+    var i: Int64 = 1
+    while (i < values.size) {
+        let key = values[i]
+        var j = i - 1
+        while (j >= 0 && values[j] > key) {
+            values[j + 1] = values[j]
+            j -= 1
+        }
+        values[j + 1] = key
+        i += 1
+    }
+}
+
+private func ckbPercentileInt64(values: ArrayList<Int64>, percentile: Int64): Int64 {
+    if (values.size == 0) {
+        return 0
+    }
+    var p = percentile
+    if (p < 0) {
+        p = 0
+    }
+    if (p > 100) {
+        p = 100
+    }
+    let index = ((values.size - 1) * p) / 100
+    values[index]
+}
+
+private func ckbClampInt64(value: Int64, minValue: Int64, maxValue: Int64): Int64 {
+    if (maxValue > 0 && value > maxValue) {
+        return maxValue
+    }
+    if (value < minValue) {
+        return minValue
+    }
+    value
 }
 
 private func firstToken(line: String): String {
