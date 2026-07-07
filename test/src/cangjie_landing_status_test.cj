@@ -86,6 +86,21 @@ public class CangjieLandingStatusTest {
     }
 
     @TestCase
+    public func p9Pos001RoutineUpdateCompleteRequiresAcceptanceArtifacts(): Unit {
+        let service = CkbCommandLoopService(CkbRuntimeConfig(), FileKnowledgeStore("target/p9-landing-routine-store"))
+        service.start()
+        let runRoot = "target/p9-landing-routine-run"
+        f0WriteFile(Path(runRoot).join("routine-update-acceptance-matrix.jsonl"), "{\"phase\":\"P9\",\"testId\":\"P9-routine-update-acceptance\",\"status\":\"passed\",\"artifactPath\":\"routine\",\"evidenceHash\":\"hash\"}\n")
+        f0WriteFile(Path(runRoot).join("routine-update-contract.jsonl"), "{\"type\":\"ku\",\"id\":\"KU-06\"}\n{\"type\":\"task\",\"name\":\"cangjie_freshness_daily\"}\n")
+        f0WriteFile(Path(runRoot).join("routine-update-task-results.jsonl"), "{\"type\":\"summary\",\"ran\":13,\"failed\":0}\n")
+
+        let report = collectCkbLandingStatusWithArtifacts(service, runRoot)
+
+        @Expect(ckbLandingTestStatus(report, "routine-update-complete"), "landed")
+        @Expect(ckbLandingTestDiagnostic(report, "routine-update-complete"), "routine_update_acceptance_passed")
+    }
+
+    @TestCase
     public func f0Pos001CompleteReportRendersAsComplete(): Unit {
         let report = CkbLandingStatusReport()
         report.ok = true

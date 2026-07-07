@@ -63,6 +63,8 @@ public class CangjieServiceApiP5ContractTest {
         @Expect(response.contains("\"sourceSet\":\"docs\""), true)
         @Expect(response.contains("\"staleness\":\"indexed\""), true)
         @Expect(response.contains("\"degraded\":false"), true)
+        @Expect(response.contains("\"routineUpdateStatus\""), true)
+        @Expect(response.contains("\"totalTasks\":13"), true)
     }
 
     @TestCase

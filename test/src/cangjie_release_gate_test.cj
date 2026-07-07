@@ -80,6 +80,33 @@ public class CangjieReleaseGateTest {
         @Expect(f8DiagnosticsContain(report, "E2E-05-pass1-gate"), true)
         @Expect(exists(Path("${runRoot}/gap-curation-input.jsonl")), true)
     }
+
+    @TestCase
+    public func p9Pos001ReleaseGateDefaultSchedulerRunsAllRoutineTasks(): Unit {
+        let fixture = f8WriteFirstInitFixture("target/p9-default-fixture", true)
+        let runRoot = "target/p9-default-run"
+        f8WritePass1Files(runRoot, true)
+        let options = f8ReleaseGateOptions(runRoot, fixture)
+        let store = FileKnowledgeStore("target/p9-default-store")
+
+        let report = cangjieKnowledgeReleaseGate(options, CkbRuntimeConfig(), store, sourceRunner: F9ReleaseGateFreshRunner())
+        let scheduler = String.fromUtf8(File.readFrom(Path("${runRoot}/routine-update-task-results.jsonl")))
+        let acceptance = String.fromUtf8(File.readFrom(Path("${runRoot}/routine-update-acceptance-matrix.jsonl")))
+
+        @Expect(report.ok, true)
+        @Expect(f8HasStep(report, "P7-routine-update-contract", true), true)
+        @Expect(f8HasStep(report, "P9-routine-update-due-run", true), true)
+        @Expect(f8HasStep(report, "P9-routine-update-rollback", true), true)
+        @Expect(f8HasStep(report, "P9-routine-update-acceptance", true), true)
+        @Expect(exists(Path("${runRoot}/routine-update-contract.jsonl")), true)
+        @Expect(exists(Path("${runRoot}/routine-update-task-results.jsonl")), true)
+        @Expect(exists(Path("${runRoot}/routine-update-active-invariant.jsonl")), true)
+        @Expect(exists(Path("${runRoot}/routine-update-rollback.jsonl")), true)
+        @Expect(scheduler.contains("\"ran\":13"), true)
+        @Expect(scheduler.contains("routine_contract"), true)
+        @Expect(scheduler.contains("\"ok\":false"), false)
+        @Expect(acceptance.contains("\"status\":\"failed\""), false)
+    }
 }
 
 private class F8FirstInitFixturePaths {
@@ -208,4 +235,49 @@ private func f8WriteFile(path: Path, text: String): Unit {
 private func f8WriteGitMetadata(root: String, commit: String): Unit {
     f8WriteFile(Path(root).join(".git/HEAD"), "ref: refs/heads/release-1.0.0\n")
     f8WriteFile(Path(root).join(".git/refs/heads/release-1.0.0"), commit)
+}
+
+private class F9ReleaseGateFreshRunner <: SourceFetchRunner {
+    init() {}
+
+    public func fetch(request: SourceFetchRequest): SourceFetchResult {
+        let result = SourceFetchResult()
+        result.ok = true
+        result.status = "ok"
+        result.statusCode = 200
+        result.sourceUrl = request.url
+        result.repo = request.repo
+        result.ref = request.ref
+        result.path = request.path
+        result.normalizedType = request.kind
+        result.commit = this.expectedCommit(request)
+        result.lastModified = "2026-07-07T00:00:00Z"
+        result.body = "fake ${request.kind} ${request.repo} ${request.path} ArrayList.add HashMap String.contains cjpm test Cangjie docs tutorial"
+        result.bodyHash = stableSummaryHash(result.body)
+        result.contentType = if (request.accept == "text/html") { "text/html" } else { "application/json" }
+        result.bytes = result.body.size
+        result
+    }
+
+    private func expectedCommit(request: SourceFetchRequest): String {
+        if (request.kind == SourceKinds.CANGJIE_DOCS) {
+            return "f8-docs-commit"
+        }
+        if (request.repo == "Cangjie/cangjie_docs") {
+            return "f8-docs-commit"
+        }
+        if (request.repo == "Cangjie/cangjie_tools") {
+            return "f8-docs-commit"
+        }
+        if (request.repo == "Cangjie/cangjie_runtime") {
+            return "f8-std-commit"
+        }
+        if (request.repo == "Cangjie/cangjie_stdx") {
+            return "f8-stdx-commit"
+        }
+        if (request.repo == "CangjieCommunityKnowledgeBase/Cangjie-HumanEval") {
+            return "f8-eval-commit"
+        }
+        "f8-docs-commit"
+    }
 }

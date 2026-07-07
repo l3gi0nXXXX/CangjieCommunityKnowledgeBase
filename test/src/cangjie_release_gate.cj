@@ -176,9 +176,14 @@ public func cangjieKnowledgeReleaseGate(
     service = CkbCommandLoopService(config, store, sourceRunner: sourceRunner)
     _ = service.start()
     cangjieReleaseGateAddRouteProbeStep(report, service, options.runRoot)
-    cangjieReleaseGateAddSchedulerStep(report, service, options)
-    cangjieReleaseGateAddTransportParityStep(report, service, options.runRoot)
     cangjieReleaseGateAddPass1Step(report, options)
+    cangjieReleaseGateEnsureRoutineCurationInput(options, config)
+    cangjieReleaseGateAddRoutineUpdateContractStep(report, options)
+    cangjieReleaseGateAddRoutineUpdateDueRunStep(report, options, config, sourceRunner)
+    cangjieReleaseGateAddSchedulerStep(report, service, options)
+    cangjieReleaseGateAddRoutineRollbackStep(report, service, options)
+    cangjieReleaseGateAddTransportParityStep(report, service, options.runRoot)
+    cangjieReleaseGateAddRoutineUpdateAcceptanceStep(report, options)
     cangjieReleaseGateAddLandingStatusStep(report, service, "F8-landing-status-final")
     report.activeKnowledgeVersion = service.statusSnapshot().activeKnowledgeVersion
     cangjieReleaseGateFinalize(report)
@@ -296,11 +301,65 @@ private func cangjieReleaseGateAddSchedulerStep(report: CangjieKnowledgeReleaseG
     let result = service.runSchedulerTasks(taskNames, true)
     let textArtifact = "${options.runRoot}/scheduler-forced-run.txt"
     let artifact = "${options.runRoot}/scheduler-forced-run.jsonl"
+    let routineArtifact = "${options.runRoot}/routine-update-task-results.jsonl"
     cangjieReleaseGateWriteText(textArtifact, "ran=${result.ran} succeeded=${result.succeeded} failed=${result.failed} degraded=${result.degraded} forced=${result.forced}\n${result.details}")
     let jsonl = cangjieReleaseGateSchedulerRunJsonl(result, service.statusSnapshot())
     cangjieReleaseGateWriteText(artifact, jsonl)
-    let ok = result.failed == 0 && result.ran == taskNames.size
-    cangjieReleaseGateAddStep(report, "E2E-03-scheduler-forced-run", ok, "ran=${result.ran},succeeded=${result.succeeded},failed=${result.failed},tasks=${taskNames.size}", artifact, evidenceHash: stableSummaryHash(jsonl))
+    cangjieReleaseGateWriteText(routineArtifact, jsonl)
+    let contractFailures = cangjieReleaseGateRoutineContractFailures(result)
+    let ok = result.failed == 0 && result.degraded == 0 && result.ran == taskNames.size && contractFailures == 0
+    cangjieReleaseGateAddStep(report, "E2E-03-scheduler-forced-run", ok, "ran=${result.ran},succeeded=${result.succeeded},failed=${result.failed},degraded=${result.degraded},tasks=${taskNames.size},contractFailures=${contractFailures}", artifact, evidenceHash: stableSummaryHash(jsonl))
+}
+
+private func cangjieReleaseGateAddRoutineUpdateContractStep(report: CangjieKnowledgeReleaseGateReport, options: CangjieKnowledgeReleaseGateOptions): Unit {
+    let jsonl = renderCkbRoutineUpdateContractsJsonl()
+    let artifact = "${options.runRoot}/routine-update-contract.jsonl"
+    cangjieReleaseGateWriteText(artifact, jsonl)
+    let kuCount = cangjieRoutineUpdateContracts().size
+    let taskCount = cangjieSchedulerTaskContracts().size
+    let ok = kuCount == 8 && taskCount == ckbSchedulerAllowlistTaskNames().size && cangjieReleaseGateContractsCoverAllowlist()
+    cangjieReleaseGateAddStep(report, "P7-routine-update-contract", ok, "ku=${kuCount},taskContracts=${taskCount},allowlist=${ckbSchedulerAllowlistTaskNames().size}", artifact, evidenceHash: stableSummaryHash(jsonl))
+}
+
+private func cangjieReleaseGateAddRoutineUpdateDueRunStep(report: CangjieKnowledgeReleaseGateReport, options: CangjieKnowledgeReleaseGateOptions, config: CkbRuntimeConfig, sourceRunner: SourceFetchRunner): Unit {
+    let dueStore = FileKnowledgeStore("${options.runRoot}/routine-due-store")
+    let dueService = CkbCommandLoopService(config, dueStore, sourceRunner: sourceRunner)
+    _ = dueService.start()
+    let result = dueService.runScheduler(1)
+    let jsonl = cangjieReleaseGateSchedulerRunJsonl(result, dueService.statusSnapshot())
+    let artifact = "${options.runRoot}/routine-update-due-run.jsonl"
+    cangjieReleaseGateWriteText(artifact, jsonl)
+    let ok = result.ran > 0 && result.succeeded > 0 && result.failed == 0 && dueStore.has("metadata/scheduler.ckb")
+    cangjieReleaseGateAddStep(report, "P9-routine-update-due-run", ok, "ran=${result.ran},succeeded=${result.succeeded},failed=${result.failed},schedulerPersisted=${dueStore.has("metadata/scheduler.ckb")}", artifact, evidenceHash: stableSummaryHash(jsonl))
+}
+
+private func cangjieReleaseGateAddRoutineRollbackStep(report: CangjieKnowledgeReleaseGateReport, service: CkbCommandLoopService, options: CangjieKnowledgeReleaseGateOptions): Unit {
+    let before = ckbRoutineActiveInvariantFromStatus(service.statusSnapshot())
+    let records = ArrayList<NormalizedRecord>()
+    let validation = validateCandidateServingIndex(records, "routine-rollback-bad-candidate")
+    let after = ckbRoutineActiveInvariantFromStatus(service.statusSnapshot())
+    let ok = !validation.ok && before.evidenceHash == after.evidenceHash
+    let text = "{\"validationOk\":${validation.ok},\"beforeActive\":\"${cangjieReleaseGateJsonEscape(before.activeKnowledgeVersion)}\",\"afterActive\":\"${cangjieReleaseGateJsonEscape(after.activeKnowledgeVersion)}\",\"beforeEvidenceHash\":\"${cangjieReleaseGateJsonEscape(before.evidenceHash)}\",\"afterEvidenceHash\":\"${cangjieReleaseGateJsonEscape(after.evidenceHash)}\",\"activeInvariantPreserved\":${before.evidenceHash == after.evidenceHash}}\n"
+    let artifact = "${options.runRoot}/routine-update-rollback.jsonl"
+    let invariantArtifact = "${options.runRoot}/routine-update-active-invariant.jsonl"
+    cangjieReleaseGateWriteText(artifact, text)
+    cangjieReleaseGateWriteText(invariantArtifact, text)
+    cangjieReleaseGateAddStep(report, "P9-routine-update-rollback", ok, "validationOk=${validation.ok},activeInvariantPreserved=${before.evidenceHash == after.evidenceHash}", artifact, evidenceHash: stableSummaryHash(text))
+}
+
+private func cangjieReleaseGateAddRoutineUpdateAcceptanceStep(report: CangjieKnowledgeReleaseGateReport, options: CangjieKnowledgeReleaseGateOptions): Unit {
+    let artifact = "${options.runRoot}/routine-update-acceptance-matrix.jsonl"
+    var text = ""
+    var ok = true
+    for (step in report.steps) {
+        if (!step.ok) {
+            ok = false
+        }
+        let phase = cangjieReleaseGateAcceptancePhase(step.id)
+        text += "{\"phase\":\"${phase}\",\"testId\":\"${cangjieReleaseGateJsonEscape(step.id)}\",\"status\":\"${if (step.ok) { "passed" } else { "failed" }}\",\"artifactPath\":\"${cangjieReleaseGateJsonEscape(step.artifactPath)}\",\"evidenceHash\":\"${cangjieReleaseGateJsonEscape(step.evidenceHash)}\"}\n"
+    }
+    cangjieReleaseGateWriteText(artifact, text)
+    cangjieReleaseGateAddStep(report, "P9-routine-update-acceptance", ok, "steps=${report.steps.size},failed=${if (ok) { 0 } else { 1 }}", artifact, evidenceHash: stableSummaryHash(text))
 }
 
 private func cangjieReleaseGateAddTransportParityStep(report: CangjieKnowledgeReleaseGateReport, service: CkbCommandLoopService, runRoot: String): Unit {
@@ -399,14 +458,85 @@ private func cangjieReleaseGateFirstInitOptions(options: CangjieKnowledgeRelease
 }
 
 private func cangjieReleaseGateDefaultSchedulerTasks(): ArrayList<String> {
-    let tasks = ArrayList<String>()
-    tasks.add("cangjie_freshness_daily")
-    tasks.add("cangjie_docs_full_weekly")
-    tasks.add("cangjie_release_full_sync")
-    tasks.add("cangjie_source_event_sync")
-    tasks.add("cangjie_version_branch_refresh")
-    tasks.add("cangjie_benchmark_gap_curation")
-    tasks
+    ckbSchedulerAllowlistTaskNames()
+}
+
+private func cangjieReleaseGateContractsCoverAllowlist(): Bool {
+    let allowlist = ckbSchedulerAllowlistTaskNames()
+    let contracts = cangjieSchedulerTaskContracts()
+    for (name in allowlist) {
+        var found = false
+        for (contract in contracts) {
+            if (contract.taskName == name) {
+                found = true
+            }
+        }
+        if (!found) {
+            return false
+        }
+    }
+    true
+}
+
+private func cangjieReleaseGateRoutineContractFailures(result: SchedulerExecutorResult): Int64 {
+    var failures: Int64 = 0
+    for (diagnostic in result.validationDiagnostics) {
+        if (diagnostic.contains("routine_contract:") && diagnostic.contains("\"ok\":false")) {
+            failures += 1
+        }
+    }
+    failures
+}
+
+private func cangjieReleaseGateEnsureRoutineCurationInput(options: CangjieKnowledgeReleaseGateOptions, config: CkbRuntimeConfig): Unit {
+    let pass1Curation = "${options.runRoot}/gap-curation-input.jsonl"
+    if (cangjieReleaseGateReadText(pass1Curation).trimAscii() != "") {
+        config.benchmarkGapCurationInputPath = pass1Curation
+        config.benchmarkGapTargetVersion = options.targetVersion
+        return
+    }
+    let path = "${options.runRoot}/routine-update-gap-curation-input.jsonl"
+    let line = "{\"caseId\":\"CKB-ROUTINE-001\",\"benchmark\":\"Cangjie-HumanEval\",\"taskText\":\"Use ArrayList.add for visible input.\",\"visibleTestExcerpt\":\"assert solve([1,2]) == 3\",\"compilerOutput\":\"compile_error\",\"missingKnowledge\":\"G-ARRAYLIST\",\"interfaceId\":\"KI-02\",\"contentFamily\":\"KC-02\",\"updateMechanism\":\"KU-11\",\"targetVersion\":\"${cangjieReleaseGateJsonEscape(options.targetVersion)}\",\"officialCitation\":\"https://docs.cangjie-lang.cn/docs/1.0.0/libs/std/collection\"}\n"
+    cangjieReleaseGateWriteText(path, line)
+    config.benchmarkGapCurationInputPath = path
+    config.benchmarkGapTargetVersion = options.targetVersion
+}
+
+private func cangjieReleaseGateAcceptancePhase(stepId: String): String {
+    if (stepId.startsWith("P7-")) {
+        return "P7"
+    }
+    if (stepId.startsWith("P9-")) {
+        return "P9"
+    }
+    if (stepId.contains("scheduler")) {
+        return "P7/P9"
+    }
+    if (stepId.contains("pass1")) {
+        return "P5"
+    }
+    if (stepId.contains("transport")) {
+        return "P4"
+    }
+    if (stepId.contains("route")) {
+        return "P2"
+    }
+    if (stepId.contains("first-init")) {
+        return "P0"
+    }
+    "global"
+}
+
+private func cangjieReleaseGateReadText(path: String): String {
+    let target = Path(path)
+    if (!exists(target)) {
+        return ""
+    }
+    try {
+        String.fromUtf8(File.readFrom(target))
+    } catch (_: Exception) {
+        ""
+    }
 }
 
 private func cangjieReleaseGateParseTaskNames(raw: String): ArrayList<String> {

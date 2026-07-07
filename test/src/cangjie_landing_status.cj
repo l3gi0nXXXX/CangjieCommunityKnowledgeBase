@@ -35,6 +35,7 @@ public func collectCkbLandingStatusWithArtifacts(service: CkbCommandLoopService,
     report.capabilities.add(ckbLandingSchedulerStatus(status))
     report.capabilities.add(ckbLandingRouteContractStatus(service))
     report.capabilities.add(ckbLandingPass1GateStatus(runRoot))
+    report.capabilities.add(ckbLandingRoutineUpdateCompleteStatus(runRoot))
     ckbLandingFinalize(report)
     report
 }
@@ -200,6 +201,42 @@ private func ckbLandingPass1GateStatus(runRoot: String): CkbLandingCapabilitySta
     item.status = "missing"
     item.diagnostic = "pass1_gate_result_missing"
     item.evidence = "artifact=absent"
+    item
+}
+
+private func ckbLandingRoutineUpdateCompleteStatus(runRoot: String): CkbLandingCapabilityStatus {
+    let item = ckbLandingCapability("routine-update-complete")
+    if (runRoot.trimAscii() == "") {
+        item.status = "missing"
+        item.diagnostic = "routine_update_acceptance_missing"
+        item.evidence = "runRoot=absent"
+        return item
+    }
+    let matrixPath = Path(runRoot).join("routine-update-acceptance-matrix.jsonl")
+    let contractPath = Path(runRoot).join("routine-update-contract.jsonl")
+    let taskPath = Path(runRoot).join("routine-update-task-results.jsonl")
+    if (!exists(matrixPath) || !exists(contractPath) || !exists(taskPath)) {
+        item.status = "missing"
+        item.diagnostic = "routine_update_acceptance_missing"
+        item.evidence = "artifact=absent"
+        return item
+    }
+    let matrix = ckbLandingReadText(matrixPath)
+    let contracts = ckbLandingReadText(contractPath)
+    let tasks = ckbLandingReadText(taskPath)
+    item.evidence = "artifacts=routine-update-acceptance-matrix,routine-update-contract,routine-update-task-results"
+    if (matrix.contains("\"status\":\"failed\"") || matrix.contains("\"status\":\"blocked\"") || matrix.contains("\"status\":\"not-run\"")) {
+        item.status = "missing"
+        item.diagnostic = "routine_update_acceptance_failed"
+        return item
+    }
+    if (!contracts.contains("\"type\":\"ku\"") || !contracts.contains("\"type\":\"task\"") || !tasks.contains("\"type\":\"summary\"")) {
+        item.status = "partial"
+        item.diagnostic = "routine_update_artifacts_incomplete"
+        return item
+    }
+    item.status = "landed"
+    item.diagnostic = "routine_update_acceptance_passed"
     item
 }
 

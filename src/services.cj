@@ -3590,8 +3590,10 @@ public class CkbScheduleTaskProfile {
     public var profile: String = ""
     public var networkGate: String = "network_required"
     public var candidateMode: String = "none"
+    public var activeMutationPolicy: String = ""
     public var timeBudgetMillis: Int64 = 0
     public var requestCount: Int64 = 0
+    public var updateMechanismIds: ArrayList<String> = ArrayList<String>()
     public var updatedDataKinds: ArrayList<String> = ArrayList<String>()
     public var sourceFamilies: ArrayList<String> = ArrayList<String>()
 
@@ -3730,6 +3732,11 @@ public func ckbSyncProfileForScheduleTask(name: String): CkbScheduleTaskProfile 
         profile.updatedDataKinds.add("benchmark_gap_curation")
         profile.updatedDataKinds.add("negative_rules")
     }
+    let contract = ckbSchedulerTaskContractForName(name)
+    if (contract.taskName != "") {
+        profile.activeMutationPolicy = contract.activeMutationPolicy
+        profile.updateMechanismIds.add(contract.updateMechanismId)
+    }
     profile
 }
 
@@ -3792,6 +3799,7 @@ public class CkbSchedulerTaskRunner <: SchedulerTaskRunner {
 
     public func runTask(name: String, since: String): SchedulerTaskResult {
         let result = SchedulerTaskResult()
+        let beforeInvariant = ckbRoutineActiveInvariantFromStatus(this.kb.status())
         result.since = if (since == "") { "0" } else { since }
         let profile = ckbSyncProfileForScheduleTask(name)
         result.timeBudgetMillis = profile.timeBudgetMillis
@@ -3801,7 +3809,7 @@ public class CkbSchedulerTaskRunner <: SchedulerTaskRunner {
         if (!profile.enabled) {
             result.ok = false
             result.status = profile.status
-            return result
+            return this.finalizeTaskResultWithContract(name, result, beforeInvariant)
         }
         if (name == "weekly_full_rebuild") {
             let rebuild = ckbRebuildIndex(this.kb, this.store)
@@ -3812,7 +3820,7 @@ public class CkbSchedulerTaskRunner <: SchedulerTaskRunner {
             result.candidateVersion = rebuild.candidateVersion
             result.requestCount = profile.requestCount
             result.durationMillis = profile.timeBudgetMillis / 10
-            return result
+            return this.finalizeTaskResultWithContract(name, result, beforeInvariant)
         }
         if (profile.profile == "cangjie_freshness_probe") {
             let freshness = probeCangjieCorpusFreshness(this.runtimeVersionManifest(), this.sourceRunner)
@@ -3826,7 +3834,7 @@ public class CkbSchedulerTaskRunner <: SchedulerTaskRunner {
             result.candidateVersion = status.candidateKnowledgeVersion
             result.requestCount = freshness.sources.size
             result.durationMillis = profile.timeBudgetMillis / 10
-            return result
+            return this.finalizeTaskResultWithContract(name, result, beforeInvariant)
         }
         let manifest = this.runtimeVersionManifest()
         let fetch = ckbRunScheduledProfileFetches(profile, this.sourceRunner, this.config, manifest)
@@ -3847,6 +3855,16 @@ public class CkbSchedulerTaskRunner <: SchedulerTaskRunner {
         result.validationEvidenceHash = ingest.validationEvidenceHash
         for (diagnostic in ingest.validationDiagnostics) {
             result.validationDiagnostics.add(diagnostic)
+        }
+        this.finalizeTaskResultWithContract(name, result, beforeInvariant)
+    }
+
+    private func finalizeTaskResultWithContract(name: String, result: SchedulerTaskResult, beforeInvariant: CkbRoutineActiveInvariant): SchedulerTaskResult {
+        let validation = validateSchedulerTaskResultAgainstContract(name, result, beforeInvariant, ckbRoutineActiveInvariantFromStatus(this.kb.status()))
+        result.validationDiagnostics.add("routine_contract:${renderCkbRoutineContractValidationJson(validation)}")
+        if (!validation.ok) {
+            result.ok = false
+            result.status = validation.diagnostic
         }
         result
     }
@@ -4770,6 +4788,31 @@ private func ckbApplyScheduledPromotionResult(result: CkbScheduledProfileIngestR
 }
 
 private func ckbScheduledTypedDeltaRecords(profile: CkbScheduleTaskProfile, records: ArrayList<CkbScheduledSourceRecord>, config: CkbRuntimeConfig, manifest: CangjieVersionManifest): ArrayList<NormalizedRecord> {
+    if (profile.profile == "cangjie_docs_full_sync") {
+        return ckbScheduledDocsDeltaRecords(profile, records, config, manifest)
+    }
+    if (profile.profile == "cangjie_release_full_sync" || profile.profile == "cangjie_version_branch_refresh") {
+        return ckbScheduledReleaseDeltaRecords(profile, records, config, manifest)
+    }
+    if (profile.profile == "cangjie_source_event_sync") {
+        return ckbScheduledSourceEventDeltaRecords(profile, records, config, manifest)
+    }
+    ckbScheduledGenericDeltaRecords(profile, records, config, manifest, includeCangjieSymbols: true)
+}
+
+private func ckbScheduledDocsDeltaRecords(profile: CkbScheduleTaskProfile, records: ArrayList<CkbScheduledSourceRecord>, config: CkbRuntimeConfig, manifest: CangjieVersionManifest): ArrayList<NormalizedRecord> {
+    ckbScheduledGenericDeltaRecords(profile, records, config, manifest, includeCangjieSymbols: false)
+}
+
+private func ckbScheduledReleaseDeltaRecords(profile: CkbScheduleTaskProfile, records: ArrayList<CkbScheduledSourceRecord>, config: CkbRuntimeConfig, manifest: CangjieVersionManifest): ArrayList<NormalizedRecord> {
+    ckbScheduledGenericDeltaRecords(profile, records, config, manifest, includeCangjieSymbols: true)
+}
+
+private func ckbScheduledSourceEventDeltaRecords(profile: CkbScheduleTaskProfile, records: ArrayList<CkbScheduledSourceRecord>, config: CkbRuntimeConfig, manifest: CangjieVersionManifest): ArrayList<NormalizedRecord> {
+    ckbScheduledGenericDeltaRecords(profile, records, config, manifest, includeCangjieSymbols: true)
+}
+
+private func ckbScheduledGenericDeltaRecords(profile: CkbScheduleTaskProfile, records: ArrayList<CkbScheduledSourceRecord>, config: CkbRuntimeConfig, manifest: CangjieVersionManifest, includeCangjieSymbols!: Bool): ArrayList<NormalizedRecord> {
     let out = ArrayList<NormalizedRecord>()
     for (record in records) {
         if (!record.fetch.ok) {
@@ -4777,7 +4820,7 @@ private func ckbScheduledTypedDeltaRecords(profile: CkbScheduleTaskProfile, reco
         }
         let raw = ckbScheduledRawRecord(profile, record, config, manifest)
         ckbAppendTypedDeltaRecords(out, cangjieTypedNormalizeRawRecord(raw), raw.metadata)
-        if (ckbScheduledCangjieSourcePath(record)) {
+        if (includeCangjieSymbols && ckbScheduledCangjieSourcePath(record)) {
             ckbAppendTypedDeltaRecords(out, extractCangjieSourceSymbolRecords(raw.metadata.path, raw.content, raw.metadata.sourceSet, ckbScheduledVersionResolution(record, config, manifest)), raw.metadata)
         }
     }
