@@ -1234,7 +1234,8 @@ public class SourceRequestBuilder {
             return invalidSourceFetchRequest(SourceKinds.GITCODE_REPO, "repo_metadata", "invalid_ref")
         }
         let normalizedRepo = "${parts.owner}/${parts.repo}"
-        let request = SourceFetchRequest(SourceKinds.GITCODE_REPO, "${this.gitCodeApiRoot}/repos/${parts.owner}/${parts.repo}?ref=${ref}", repo: normalizedRepo, ref: ref, purpose: "repo_metadata")
+        let encodedRef = urlEncodeGitCodeQueryValue(ref)
+        let request = SourceFetchRequest(SourceKinds.GITCODE_REPO, "${this.gitCodeApiRoot}/repos/${parts.owner}/${parts.repo}?ref=${encodedRef}", repo: normalizedRepo, ref: ref, purpose: "repo_metadata")
         request.authHint = "gitcode-token-optional-redacted"
         request
     }
@@ -1267,7 +1268,8 @@ public class SourceRequestBuilder {
         let normalizedRepo = "${parts.owner}/${parts.repo}"
         let endpoint = if (variant == "contents") { "contents" } else { "raw" }
         let accept = if (variant == "contents") { "application/json" } else { "text/plain, text/markdown, application/octet-stream" }
-        let request = SourceFetchRequest(SourceKinds.GITCODE_SOURCE, "${this.gitCodeApiRoot}/repos/${parts.owner}/${parts.repo}/${endpoint}/${safePath}?ref=${ref}", repo: normalizedRepo, ref: ref, path: safePath, accept: accept, purpose: purpose)
+        let encodedRef = urlEncodeGitCodeQueryValue(ref)
+        let request = SourceFetchRequest(SourceKinds.GITCODE_SOURCE, "${this.gitCodeApiRoot}/repos/${parts.owner}/${parts.repo}/${endpoint}/${safePath}?ref=${encodedRef}", repo: normalizedRepo, ref: ref, path: safePath, accept: accept, purpose: purpose)
         request.authHint = "gitcode-token-optional-redacted"
         request.sourceVariant = variant
         request
@@ -1282,7 +1284,8 @@ public class SourceRequestBuilder {
             return invalidSourceFetchRequest(SourceKinds.GITCODE_TREE, "source_tree", "invalid_ref")
         }
         let normalizedRepo = "${parts.owner}/${parts.repo}"
-        let request = SourceFetchRequest(SourceKinds.GITCODE_TREE, "${this.gitCodeApiRoot}/repos/${parts.owner}/${parts.repo}/git/trees/${ref}?recursive=1&page=1&per_page=100", repo: normalizedRepo, ref: ref, purpose: "source_tree")
+        let encodedRef = urlEncodeGitCodePathSegment(ref)
+        let request = SourceFetchRequest(SourceKinds.GITCODE_TREE, "${this.gitCodeApiRoot}/repos/${parts.owner}/${parts.repo}/git/trees/${encodedRef}?recursive=1&page=1&per_page=100", repo: normalizedRepo, ref: ref, purpose: "source_tree")
         request.authHint = "gitcode-token-optional-redacted"
         request
     }
@@ -1372,10 +1375,58 @@ private func isSafeGitCodePathPart(part: String): Bool {
 
 private func isSafeGitCodeRef(ref: String): Bool {
     let trimmed = ref.trimAscii()
-    if (trimmed == "" || trimmed.contains("..") || trimmed.contains("%") || trimmed.contains("?") || trimmed.contains("#") || trimmed.contains("&") || trimmed.contains("=") || trimmed.contains("\n") || trimmed.contains("\r") || trimmed.contains("\t")) {
+    if (trimmed == "" || trimmed != ref || trimmed.contains("..")) {
         return false
     }
+    for (b in trimmed.toArray()) {
+        if (!isSafeGitCodeRefByte(b)) {
+            return false
+        }
+    }
     true
+}
+
+private func isSafeGitCodeRefByte(b: UInt8): Bool {
+    (b >= UInt8(65) && b <= UInt8(90)) ||
+        (b >= UInt8(97) && b <= UInt8(122)) ||
+        (b >= UInt8(48) && b <= UInt8(57)) ||
+        b == UInt8(45) || b == UInt8(46) || b == UInt8(47) || b == UInt8(95) || b == UInt8(43)
+}
+
+private func urlEncodeGitCodePathSegment(value: String): String {
+    urlEncodeGitCodeRefValue(value)
+}
+
+private func urlEncodeGitCodeQueryValue(value: String): String {
+    urlEncodeGitCodeRefValue(value)
+}
+
+private func urlEncodeGitCodeRefValue(value: String): String {
+    let out = StringBuilder()
+    for (b in value.toArray()) {
+        if (isGitCodeUrlUnreservedByte(b)) {
+            out.append(String.fromUtf8([b]))
+        } else {
+            out.append("%")
+            out.append(urlEncodeGitCodeHexByte(b / UInt8(16)))
+            out.append(urlEncodeGitCodeHexByte(b % UInt8(16)))
+        }
+    }
+    out.toString()
+}
+
+private func isGitCodeUrlUnreservedByte(b: UInt8): Bool {
+    (b >= UInt8(65) && b <= UInt8(90)) ||
+        (b >= UInt8(97) && b <= UInt8(122)) ||
+        (b >= UInt8(48) && b <= UInt8(57)) ||
+        b == UInt8(45) || b == UInt8(46) || b == UInt8(95) || b == UInt8(126)
+}
+
+private func urlEncodeGitCodeHexByte(value: UInt8): String {
+    if (value < UInt8(10)) {
+        return String.fromUtf8([UInt8(48) + value])
+    }
+    String.fromUtf8([UInt8(55) + value])
 }
 
 private func normalizeGitCodeSourcePath(raw: String): String {
