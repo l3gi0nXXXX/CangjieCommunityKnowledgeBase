@@ -339,6 +339,102 @@ public class CkbSchedulerServiceF5Test {
     }
 
     @TestCase
+    public func p7Pos005SlashRefVersionBranchRefreshPersistsManifest(): Unit {
+        let config = CkbRuntimeConfig()
+        config.networkEnabled = true
+        let store = FileKnowledgeStore("target/p7-slash-ref-version-branch-refresh")
+        store.saveCangjieVersionManifest(f7OfficialManifestSlashRefNoEval())
+        let runner = F7SlashRefTreeOkRunner()
+        let service = CkbCommandLoopService(config, store, sourceRunner: runner)
+        _ = service.start()
+        let tasks = ArrayList<String>()
+        tasks.add("cangjie_version_branch_refresh")
+
+        let result = service.runSchedulerTasks(tasks, true)
+
+        @Expect(result.ran, 1)
+        @Expect(result.succeeded, 1)
+        @Expect(result.failed, 0)
+        @Expect(store.has("metadata/cangjie-version-manifest.ckb"), true)
+        @Expect(f7RunnerSawUrlFragment(runner, "/git/trees/release%2F1.0?"), true)
+        @Expect(f7RunnerSawUrlFragment(runner, "/git/trees/release/1.0?"), false)
+        @Expect(f7SchedulerDiagnosticsContain(result, "version_manifest_saved:"), true)
+    }
+
+    @TestCase
+    public func p7Pos006SlashRefReleaseFullSyncPersistsManifest(): Unit {
+        let config = CkbRuntimeConfig()
+        config.networkEnabled = true
+        let store = FileKnowledgeStore("target/p7-slash-ref-release-full-sync")
+        store.saveCangjieVersionManifest(f7OfficialManifestSlashRefNoEval())
+        let runner = F7SlashRefTreeOkRunner()
+        let service = CkbCommandLoopService(config, store, sourceRunner: runner)
+        _ = service.start()
+        let tasks = ArrayList<String>()
+        tasks.add("cangjie_release_full_sync")
+
+        let result = service.runSchedulerTasks(tasks, true)
+
+        @Expect(result.ran, 1)
+        @Expect(result.succeeded, 1)
+        @Expect(result.failed, 0)
+        @Expect(store.has("metadata/cangjie-version-manifest.ckb"), true)
+        @Expect(f7RunnerSawUrlFragment(runner, "/git/trees/release%2F1.0?"), true)
+        @Expect(f7RunnerSawUrlFragment(runner, "?ref=release%2F1.0"), true)
+        @Expect(f7RunnerSawUrlFragment(runner, "/git/trees/release/1.0?"), false)
+        @Expect(f7SchedulerDiagnosticsContain(result, "version_manifest_saved:"), true)
+    }
+
+    @TestCase
+    public func p7Pos007SlashRefSourceEventSyncPersistsCheckpoint(): Unit {
+        let config = CkbRuntimeConfig()
+        config.networkEnabled = true
+        let store = FileKnowledgeStore("target/p7-slash-ref-source-event-sync")
+        store.saveCangjieVersionManifest(f7OfficialManifestSlashRefNoEval())
+        let runner = F7SlashRefTreeOkRunner()
+        let service = CkbCommandLoopService(config, store, sourceRunner: runner)
+        _ = service.start()
+        let tasks = ArrayList<String>()
+        tasks.add("cangjie_source_event_sync")
+
+        let result = service.runSchedulerTasks(tasks, true)
+
+        @Expect(result.ran, 1)
+        @Expect(result.succeeded, 1)
+        @Expect(result.failed, 0)
+        @Expect(store.has("metadata/repository-event-latest.ckb"), true)
+        @Expect(f7RunnerSawUrlFragment(runner, "/git/trees/release%2F1.0?"), true)
+        @Expect(f7RunnerSawUrlFragment(runner, "?ref=release%2F1.0"), true)
+        @Expect(f7RunnerSawUrlFragment(runner, "/git/trees/release/1.0?"), false)
+        @Expect(f7SchedulerDiagnosticsContain(result, "repository_event_checkpoint_saved:"), true)
+    }
+
+    @TestCase
+    public func p7Neg002SlashRefRemoteTreeFailureStillBlocksPromotion(): Unit {
+        let config = CkbRuntimeConfig()
+        config.networkEnabled = true
+        let store = FileKnowledgeStore("target/p7-slash-ref-remote-tree-failure")
+        store.saveCangjieVersionManifest(f7OfficialManifestSlashRefNoEval())
+        let runner = F7SlashRefTreeOkRunner()
+        runner.failEncodedTree = true
+        let service = CkbCommandLoopService(config, store, sourceRunner: runner)
+        _ = service.start()
+        let before = service.statusSnapshot().activeKnowledgeVersion
+        let tasks = ArrayList<String>()
+        tasks.add("cangjie_release_full_sync")
+
+        let result = service.runSchedulerTasks(tasks, true)
+        let after = service.statusSnapshot()
+
+        @Expect(result.ran, 1)
+        @Expect(result.failed, 1)
+        @Expect(result.details.contains("scheduled_readiness_failed"), true)
+        @Expect(store.has("metadata/cangjie-version-manifest.ckb"), false)
+        @Expect(after.activeKnowledgeVersion, before)
+        @Expect(f7RunnerSawUrlFragment(runner, "/git/trees/release%2F1.0?"), true)
+    }
+
+    @TestCase
     public func p7Bnd002FreshnessRecoversOfflineManifestFromFirstInitRoots(): Unit {
         let fixture = f7WriteFullRootFixture("target/p7-freshness-recovery-fixture")
         let config = CkbRuntimeConfig()
@@ -761,6 +857,72 @@ private class F7GitCodeMetadata400TreeUnavailableRunner <: SourceFetchRunner {
     }
 }
 
+private class F7SlashRefTreeOkRunner <: SourceFetchRunner {
+    public var calls: ArrayList<SourceFetchRequest> = ArrayList<SourceFetchRequest>()
+    public var failEncodedTree: Bool = false
+
+    init() {}
+
+    public func fetch(request: SourceFetchRequest): SourceFetchResult {
+        this.calls.add(request)
+        let result = SourceFetchResult()
+        result.sourceUrl = request.url
+        result.repo = request.repo
+        result.ref = request.ref
+        result.path = request.path
+        result.normalizedType = request.kind
+        result.attempts = 1
+        if (request.ref == "release/1.0" && request.url.contains("release/1.0")) {
+            return f7SlashRefFetchFailure(request, result, "unencoded_slash_ref")
+        }
+        if (request.kind == SourceKinds.GITCODE_TREE && this.failEncodedTree) {
+            return f7SlashRefFetchFailure(request, result, "remote_tree_unavailable")
+        }
+        if (request.kind == SourceKinds.GITCODE_TREE) {
+            result.ok = true
+            result.status = "ok"
+            result.statusCode = 200
+            result.commit = "tree-${stableSummaryHash("${request.repo}:${request.ref}")}"
+            result.body = "{\"tree\":[{\"path\":\"src/scheduled_fixture.cj\",\"type\":\"blob\"},{\"path\":\"README.md\",\"type\":\"blob\"}],\"sha\":\"${result.commit}\"}"
+        } else if (request.kind == SourceKinds.GITCODE_SOURCE && request.ref == "release/1.0" && !request.url.contains("?ref=release%2F1.0")) {
+            return f7SlashRefFetchFailure(request, result, "unencoded_slash_ref_query")
+        } else if (request.kind == SourceKinds.GITCODE_SOURCE && request.path.endsWith(".cj")) {
+            result.ok = true
+            result.status = "ok"
+            result.statusCode = 200
+            result.commit = "source-${stableSummaryHash("${request.repo}:${request.path}:${request.ref}")}"
+            result.contentType = "text/plain"
+            result.body = "package scheduled\npublic func scheduled_${stableSummaryHash(request.path)}(): Unit {}\n"
+        } else if (request.kind == SourceKinds.GITCODE_SOURCE) {
+            result.ok = true
+            result.status = "ok"
+            result.statusCode = 200
+            result.commit = "source-${stableSummaryHash("${request.repo}:${request.path}:${request.ref}")}"
+            result.contentType = "text/markdown"
+            result.body = "# Slash ref scheduled source\nArrayList.add HashMap String.contains cjpm test\n"
+        } else {
+            result.ok = true
+            result.status = "ok"
+            result.statusCode = 200
+            result.commit = "other-${stableSummaryHash("${request.kind}:${request.url}")}"
+            result.contentType = "text/plain"
+            result.body = "slash ref scheduled ${request.kind} ${request.repo}"
+        }
+        result.bytes = result.body.size
+        result.bodyHash = stableSummaryHash(result.body)
+        result
+    }
+}
+
+private func f7SlashRefFetchFailure(request: SourceFetchRequest, result: SourceFetchResult, status: String): SourceFetchResult {
+    result.ok = false
+    result.status = status
+    result.statusCode = 404
+    result.body = status
+    result.bodyHash = stableSummaryHash(status)
+    result
+}
+
 private class F7RootFixture {
     var docsRoot: String = ""
     var stdRoot: String = ""
@@ -817,6 +979,15 @@ private func f7RunnerSawKind(runner: F7GitCodeMetadata400TreeOkRunner, kind: Str
     false
 }
 
+private func f7RunnerSawUrlFragment(runner: F7SlashRefTreeOkRunner, fragment: String): Bool {
+    for (call in runner.calls) {
+        if (call.url.contains(fragment)) {
+            return true
+        }
+    }
+    false
+}
+
 private func f5ScheduledManifest(): CangjieVersionManifest {
     let manifest = CangjieVersionManifest()
     manifest.defaultTargetVersion = cangjieDefaultTargetVersion()
@@ -825,6 +996,16 @@ private func f5ScheduledManifest(): CangjieVersionManifest {
     f5AddManifestSource(manifest, CangjieSourceSets.STDX, "stdx", "Cangjie/cangjie_stdx", "release-1.0.0", "fresh-stdx")
     f5AddManifestSource(manifest, CangjieSourceSets.TOOLS, "tools", "Cangjie/cangjie_tools", "release-1.0.0", "fresh-tools")
     f5AddManifestSource(manifest, CangjieSourceSets.EVAL_SUPPORT, "eval-support", "CangjieCommunityKnowledgeBase/Cangjie-HumanEval", "release-1.0.0", "fresh-eval")
+    manifest
+}
+
+private func f7OfficialManifestSlashRefNoEval(): CangjieVersionManifest {
+    let manifest = CangjieVersionManifest()
+    manifest.defaultTargetVersion = cangjieDefaultTargetVersion()
+    f5AddManifestSource(manifest, CangjieSourceSets.DOCS, "docs", "Cangjie/cangjie_docs", "release/1.0", "fresh-docs")
+    f5AddManifestSource(manifest, CangjieSourceSets.STD, "stdlib", "Cangjie/cangjie_runtime", "release/1.0", "fresh-std")
+    f5AddManifestSource(manifest, CangjieSourceSets.STDX, "stdx", "Cangjie/cangjie_stdx", "release/1.0", "fresh-stdx")
+    f5AddManifestSource(manifest, CangjieSourceSets.TOOLS, "tools", "Cangjie/cangjie_tools", "release/1.0", "fresh-tools")
     manifest
 }
 
