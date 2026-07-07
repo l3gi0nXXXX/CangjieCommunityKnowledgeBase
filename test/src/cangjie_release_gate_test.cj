@@ -15,7 +15,7 @@ public class CangjieReleaseGateTest {
         options.schedulerTaskNames.add("cangjie_docs_full_weekly")
         let store = FileKnowledgeStore("target/f8-ut-store")
 
-        let report = cangjieKnowledgeReleaseGate(options, CkbRuntimeConfig(), store, sourceRunner: FakeSourceFetchRunner())
+        let report = cangjieKnowledgeReleaseGate(options, f8ReleaseGateRuntimeConfig(), store, sourceRunner: F9ReleaseGateFreshRunner())
         let json = renderCangjieKnowledgeReleaseGateJson(report)
 
         @Expect(report.ok, true)
@@ -26,6 +26,13 @@ public class CangjieReleaseGateTest {
         @Expect(f8HasStep(report, "E2E-03-scheduler-forced-run", true), true)
         @Expect(f8HasStep(report, "E2E-04-transport-parity", true), true)
         @Expect(f8HasStep(report, "E2E-05-pass1-gate", true), true)
+        @Expect(f8HasStep(report, "P0A-routine-runtime-readiness", true), true)
+        @Expect(f8HasStep(report, "E2E-08-routine-update-due-run", true), true)
+        @Expect(f8HasStep(report, "E2E-10-access-and-mcp-readonly-boundary", true), true)
+        @Expect(f8HasStep(report, "E2E-11-scheduler-loop-lifecycle", true), true)
+        @Expect(f8HasStep(report, "E2E-12-interface-e2e", true), true)
+        @Expect(f8HasStep(report, "E2E-13-source-event-e2e", true), true)
+        @Expect(f8HasStep(report, "E2E-14-plan-closure", true), true)
         @Expect(exists(Path("${runRoot}/release-gate.json")), true)
         @Expect(exists(Path("${runRoot}/release-gate-steps.jsonl")), true)
         @Expect(exists(Path("${runRoot}/route-probe.jsonl")), true)
@@ -36,6 +43,15 @@ public class CangjieReleaseGateTest {
         @Expect(exists(Path("${runRoot}/transport-parity-stdio.json")), true)
         @Expect(exists(Path("${runRoot}/transport-parity-http.json")), true)
         @Expect(exists(Path("${runRoot}/pass1-gate.json")), true)
+        @Expect(exists(Path("${runRoot}/routine-update-runtime-readiness.jsonl")), true)
+        @Expect(exists(Path("${runRoot}/routine-update-due-run.jsonl")), true)
+        @Expect(exists(Path("${runRoot}/routine-update-access-boundary.jsonl")), true)
+        @Expect(exists(Path("${runRoot}/routine-update-mcp-readonly-boundary.jsonl")), true)
+        @Expect(exists(Path("${runRoot}/routine-update-scheduler-loop-lifecycle.jsonl")), true)
+        @Expect(exists(Path("${runRoot}/routine-update-interface-e2e.jsonl")), true)
+        @Expect(exists(Path("${runRoot}/routine-update-source-event-e2e.jsonl")), true)
+        @Expect(exists(Path("${runRoot}/routine-update-plan-closure.jsonl")), true)
+        @Expect(String.fromUtf8(File.readFrom(Path("${runRoot}/routine-update-plan-closure.jsonl"))).contains("\"status\":\"not-run\""), false)
     }
 
     @TestCase
@@ -56,7 +72,7 @@ public class CangjieReleaseGateTest {
         f8WritePass1Files(runRoot, true)
         let store = FileKnowledgeStore("target/f8-pos-store")
 
-        let exitCode = runCangjieKnowledgeReleaseGate(f8ReleaseGateArgs(runRoot, fixture), store: store, sourceRunner: FakeSourceFetchRunner())
+        let exitCode = runCangjieKnowledgeReleaseGate(f8ReleaseGateArgs(runRoot, fixture), config: f8ReleaseGateRuntimeConfig(), store: store, sourceRunner: F9ReleaseGateFreshRunner())
 
         @Expect(exitCode, 0)
         @Expect(exists(Path("${runRoot}/release-gate.md")), true)
@@ -72,7 +88,7 @@ public class CangjieReleaseGateTest {
         let options = f8ReleaseGateOptions(runRoot, fixture)
         options.schedulerTaskNames.add("cangjie_docs_full_weekly")
 
-        let report = cangjieKnowledgeReleaseGate(options, CkbRuntimeConfig(), FileKnowledgeStore("target/f8-neg-store"), sourceRunner: FakeSourceFetchRunner())
+        let report = cangjieKnowledgeReleaseGate(options, f8ReleaseGateRuntimeConfig(), FileKnowledgeStore("target/f8-neg-store"), sourceRunner: F9ReleaseGateFreshRunner())
 
         @Expect(report.ok, false)
         @Expect(report.releaseGate, "fail")
@@ -89,19 +105,21 @@ public class CangjieReleaseGateTest {
         let options = f8ReleaseGateOptions(runRoot, fixture)
         let store = FileKnowledgeStore("target/p9-default-store")
 
-        let report = cangjieKnowledgeReleaseGate(options, CkbRuntimeConfig(), store, sourceRunner: F9ReleaseGateFreshRunner())
+        let report = cangjieKnowledgeReleaseGate(options, f8ReleaseGateRuntimeConfig(), store, sourceRunner: F9ReleaseGateFreshRunner())
         let scheduler = String.fromUtf8(File.readFrom(Path("${runRoot}/routine-update-task-results.jsonl")))
         let acceptance = String.fromUtf8(File.readFrom(Path("${runRoot}/routine-update-acceptance-matrix.jsonl")))
 
         @Expect(report.ok, true)
         @Expect(f8HasStep(report, "P7-routine-update-contract", true), true)
-        @Expect(f8HasStep(report, "P9-routine-update-due-run", true), true)
+        @Expect(f8HasStep(report, "E2E-08-routine-update-due-run", true), true)
         @Expect(f8HasStep(report, "P9-routine-update-rollback", true), true)
         @Expect(f8HasStep(report, "P9-routine-update-acceptance", true), true)
+        @Expect(f8HasStep(report, "E2E-14-plan-closure", true), true)
         @Expect(exists(Path("${runRoot}/routine-update-contract.jsonl")), true)
         @Expect(exists(Path("${runRoot}/routine-update-task-results.jsonl")), true)
         @Expect(exists(Path("${runRoot}/routine-update-active-invariant.jsonl")), true)
         @Expect(exists(Path("${runRoot}/routine-update-rollback.jsonl")), true)
+        @Expect(exists(Path("${runRoot}/routine-update-plan-closure.jsonl")), true)
         @Expect(scheduler.contains("\"ran\":13"), true)
         @Expect(scheduler.contains("routine_contract"), true)
         @Expect(scheduler.contains("\"ok\":false"), false)
@@ -146,6 +164,15 @@ private func f8ReleaseGateArgs(runRoot: String, fixture: F8FirstInitFixturePaths
         "--target-version", "1.0.0",
         "--scheduler-tasks", "cangjie_docs_full_weekly"
     ]
+}
+
+private func f8ReleaseGateRuntimeConfig(): CkbRuntimeConfig {
+    let config = CkbRuntimeConfig()
+    config.networkEnabled = true
+    config.networkAllowedHosts = "gitcode.com,docs.cangjie-lang.cn,cangjie-lang.cn"
+    config.timeoutMillis = 10000
+    config.retryCount = 1
+    config
 }
 
 private func f8WritePass1Files(runRoot: String, pass: Bool): Unit {
@@ -260,22 +287,23 @@ private class F9ReleaseGateFreshRunner <: SourceFetchRunner {
     }
 
     private func expectedCommit(request: SourceFetchRequest): String {
+        let repo = request.repo.toAsciiLower()
         if (request.kind == SourceKinds.CANGJIE_DOCS) {
             return "f8-docs-commit"
         }
-        if (request.repo == "Cangjie/cangjie_docs") {
+        if (repo == "cangjie/cangjie_docs") {
             return "f8-docs-commit"
         }
-        if (request.repo == "Cangjie/cangjie_tools") {
+        if (repo == "cangjie/cangjie_tools") {
             return "f8-docs-commit"
         }
-        if (request.repo == "Cangjie/cangjie_runtime") {
+        if (repo == "cangjie/cangjie_runtime") {
             return "f8-std-commit"
         }
-        if (request.repo == "Cangjie/cangjie_stdx") {
+        if (repo == "cangjie/cangjie_stdx") {
             return "f8-stdx-commit"
         }
-        if (request.repo == "CangjieCommunityKnowledgeBase/Cangjie-HumanEval") {
+        if (repo == "cangjiecommunityknowledgebase/cangjie-humaneval") {
             return "f8-eval-commit"
         }
         "f8-docs-commit"

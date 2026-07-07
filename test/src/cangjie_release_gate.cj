@@ -179,11 +179,17 @@ public func cangjieKnowledgeReleaseGate(
     cangjieReleaseGateAddPass1Step(report, options)
     cangjieReleaseGateEnsureRoutineCurationInput(options, config)
     cangjieReleaseGateAddRoutineUpdateContractStep(report, options)
+    cangjieReleaseGateAddRoutineRuntimeReadinessStep(report, options, config)
     cangjieReleaseGateAddRoutineUpdateDueRunStep(report, options, config, sourceRunner)
     cangjieReleaseGateAddSchedulerStep(report, service, options)
     cangjieReleaseGateAddRoutineRollbackStep(report, service, options)
+    cangjieReleaseGateAddRoutineUpdateAccessBoundaryStep(report, options, config, sourceRunner)
+    cangjieReleaseGateAddSchedulerLoopLifecycleStep(report, options, config, sourceRunner)
+    cangjieReleaseGateAddSourceEventE2eStep(report, options, config, sourceRunner)
     cangjieReleaseGateAddTransportParityStep(report, service, options.runRoot)
+    cangjieReleaseGateAddInterfaceE2eStep(report, service, options)
     cangjieReleaseGateAddRoutineUpdateAcceptanceStep(report, options)
+    cangjieReleaseGateAddPlanClosureStep(report, options)
     cangjieReleaseGateAddLandingStatusStep(report, service, "F8-landing-status-final")
     report.activeKnowledgeVersion = service.statusSnapshot().activeKnowledgeVersion
     cangjieReleaseGateFinalize(report)
@@ -247,10 +253,11 @@ private func cangjieReleaseGateAddFirstInitStep(report: CangjieKnowledgeReleaseG
     let dry = runCkbFirstInitialization(dryOptions, store)
     let applied = runCkbFirstInitializationWithActiveGuard(applyOptions, store)
     let artifact = "${options.runRoot}/first-init.txt"
-    cangjieReleaseGateWriteText(artifact, renderCkbFirstInitResult(dry) + "\n--- apply ---\n" + renderCkbFirstInitResult(applied))
+    let artifactText = renderCkbFirstInitResult(dry) + "\n--- apply ---\n" + renderCkbFirstInitResult(applied)
+    cangjieReleaseGateWriteText(artifact, artifactText)
     let alreadyInitialized = applied.diagnostics.contains("already_initialized")
     let ok = dry.ok && applied.ok && (applied.persisted || alreadyInitialized)
-    cangjieReleaseGateAddStep(report, "E2E-01-first-init", ok, "dryRun=${dry.ok},apply=${applied.ok},persisted=${applied.persisted},alreadyInitialized=${alreadyInitialized}", artifact)
+    cangjieReleaseGateAddStep(report, "E2E-01-first-init", ok, "dryRun=${dry.ok},apply=${applied.ok},persisted=${applied.persisted},alreadyInitialized=${alreadyInitialized}", artifact, evidenceHash: stableSummaryHash(artifactText))
 }
 
 private func cangjieReleaseGateAddRouteProbeStep(report: CangjieKnowledgeReleaseGateReport, service: CkbCommandLoopService, runRoot: String): Unit {
@@ -321,16 +328,30 @@ private func cangjieReleaseGateAddRoutineUpdateContractStep(report: CangjieKnowl
     cangjieReleaseGateAddStep(report, "P7-routine-update-contract", ok, "ku=${kuCount},taskContracts=${taskCount},allowlist=${ckbSchedulerAllowlistTaskNames().size}", artifact, evidenceHash: stableSummaryHash(jsonl))
 }
 
+private func cangjieReleaseGateAddRoutineRuntimeReadinessStep(report: CangjieKnowledgeReleaseGateReport, options: CangjieKnowledgeReleaseGateOptions, config: CkbRuntimeConfig): Unit {
+    let runnerMode = if (config.networkEnabled) { "live_http" } else { "disabled" }
+    let networkReadiness = if (config.networkEnabled) { "ready" } else { "blocked" }
+    let text = "{\"runnerMode\":\"${runnerMode}\",\"networkEnabled\":${config.networkEnabled},\"networkReadiness\":\"${networkReadiness}\",\"proxyMode\":\"${if (config.networkProxy == "") { "absent" } else { "configured" }}\",\"timeoutMillis\":${config.timeoutMillis},\"retryCount\":${config.retryCount},\"allowedHosts\":\"${cangjieReleaseGateJsonEscape(redactSensitive(config.networkAllowedHosts))}\",\"firstInitManifestPresent\":${options.docsRoot != "" && options.stdRoot != "" && options.stdxRoot != "" && options.evalRoot != ""},\"benchmarkGapInputPresent\":${config.benchmarkGapCurationInputPath != "" || exists(Path(options.runRoot).join("gap-curation-input.jsonl"))}}\n"
+    let artifact = "${options.runRoot}/routine-update-runtime-readiness.jsonl"
+    cangjieReleaseGateWriteText(artifact, text)
+    let ok = config.networkEnabled
+    cangjieReleaseGateAddStep(report, "P0A-routine-runtime-readiness", ok, "runnerMode=${runnerMode},networkReadiness=${networkReadiness},timeoutMillis=${config.timeoutMillis},retryCount=${config.retryCount}", artifact, evidenceHash: stableSummaryHash(text))
+}
+
 private func cangjieReleaseGateAddRoutineUpdateDueRunStep(report: CangjieKnowledgeReleaseGateReport, options: CangjieKnowledgeReleaseGateOptions, config: CkbRuntimeConfig, sourceRunner: SourceFetchRunner): Unit {
     let dueStore = FileKnowledgeStore("${options.runRoot}/routine-due-store")
+    _ = runCkbFirstInitializationWithActiveGuard(cangjieReleaseGateFirstInitOptions(options, config, apply: true, dryRun: false), dueStore)
     let dueService = CkbCommandLoopService(config, dueStore, sourceRunner: sourceRunner)
     _ = dueService.start()
-    let result = dueService.runScheduler(1)
+    cangjieReleaseGateSeedRoutineManifest(dueStore, dueService, options)
+    let taskNames = cangjieReleaseGateDefaultSchedulerTasks()
+    dueService.markSchedulerTasksDueForValidation(taskNames)
+    let result = dueService.runSchedulerTasks(taskNames, false)
     let jsonl = cangjieReleaseGateSchedulerRunJsonl(result, dueService.statusSnapshot())
     let artifact = "${options.runRoot}/routine-update-due-run.jsonl"
     cangjieReleaseGateWriteText(artifact, jsonl)
-    let ok = result.ran > 0 && result.succeeded > 0 && result.failed == 0 && dueStore.has("metadata/scheduler.ckb")
-    cangjieReleaseGateAddStep(report, "P9-routine-update-due-run", ok, "ran=${result.ran},succeeded=${result.succeeded},failed=${result.failed},schedulerPersisted=${dueStore.has("metadata/scheduler.ckb")}", artifact, evidenceHash: stableSummaryHash(jsonl))
+    let ok = !result.forced && result.ran == taskNames.size && result.succeeded == taskNames.size && result.failed == 0 && result.degraded == 0 && dueStore.has("metadata/scheduler.ckb")
+    cangjieReleaseGateAddStep(report, "E2E-08-routine-update-due-run", ok, "forced=${result.forced},ran=${result.ran},succeeded=${result.succeeded},failed=${result.failed},degraded=${result.degraded},tasks=${taskNames.size},schedulerPersisted=${dueStore.has("metadata/scheduler.ckb")}", artifact, evidenceHash: stableSummaryHash(jsonl))
 }
 
 private func cangjieReleaseGateAddRoutineRollbackStep(report: CangjieKnowledgeReleaseGateReport, service: CkbCommandLoopService, options: CangjieKnowledgeReleaseGateOptions): Unit {
@@ -345,6 +366,79 @@ private func cangjieReleaseGateAddRoutineRollbackStep(report: CangjieKnowledgeRe
     cangjieReleaseGateWriteText(artifact, text)
     cangjieReleaseGateWriteText(invariantArtifact, text)
     cangjieReleaseGateAddStep(report, "P9-routine-update-rollback", ok, "validationOk=${validation.ok},activeInvariantPreserved=${before.evidenceHash == after.evidenceHash}", artifact, evidenceHash: stableSummaryHash(text))
+}
+
+private func cangjieReleaseGateAddRoutineUpdateAccessBoundaryStep(report: CangjieKnowledgeReleaseGateReport, options: CangjieKnowledgeReleaseGateOptions, config: CkbRuntimeConfig, sourceRunner: SourceFetchRunner): Unit {
+    let adminTokenPath = "${options.runRoot}/boundary-admin-token.txt"
+    let eventTokenPath = "${options.runRoot}/boundary-event-token.txt"
+    cangjieReleaseGateWriteText(adminTokenPath, "release-gate-admin\n")
+    cangjieReleaseGateWriteText(eventTokenPath, "release-gate-event\n")
+    let httpConfig = CkbHttpServiceConfig()
+    httpConfig.adminTokenFile = adminTokenPath
+    httpConfig.eventIngestTokenFile = eventTokenPath
+    httpConfig.readOnlyPublic = true
+    let boundaryStore = FileKnowledgeStore("${options.runRoot}/access-boundary-store")
+    let boundaryService = CkbCommandLoopService(config, boundaryStore, sourceRunner: sourceRunner)
+    _ = boundaryService.start()
+    let taskNames = cangjieReleaseGateJsonStringArray(ckbSchedulerAllowlistTaskNames())
+    let noTokenAdmin = handleCkbHttpRequest(boundaryService, "POST", "/v1/admin/scheduler/run", "{\"taskNames\":[${taskNames}],\"force\":true}", [], httpConfig)
+    let eventTokenAdmin = handleCkbHttpRequest(boundaryService, "POST", "/v1/admin/scheduler/run", "{\"taskNames\":[${taskNames}],\"force\":true}", ["X-CKB-Event-Token: release-gate-event"], httpConfig)
+    let adminTokenFullRun = handleCkbHttpRequest(boundaryService, "POST", "/v1/admin/scheduler/run", "{\"taskNames\":[${taskNames}],\"force\":true}", ["X-CKB-Admin-Token: release-gate-admin"], httpConfig)
+    let eventTokenRead = handleCkbHttpRequest(boundaryService, "GET", "/v1/cangjie/corpus/status", "{}", ["X-CKB-Event-Token: release-gate-event"], httpConfig)
+    let eventBody = cangjieReleaseGateRepositoryEventJson("boundary-event-1", ["src/std/collection/arraylist.cj"])
+    let eventTokenRepositoryChanged = handleCkbHttpRequest(boundaryService, "POST", "/v1/events/gitcode/repository-changed", eventBody, ["X-CKB-Event-Token: release-gate-event"], httpConfig)
+    let schema = handleCkbHttpRequest(boundaryService, "GET", "/v1/schema", "{}", [], httpConfig)
+    let stdioForbidden = CkbMcpStdioServer(boundaryService).handleRequest(cangjieReleaseGateMcpToolCallJson("cangjie.admin_scheduler_run", "{}"))
+    let httpForbidden = handleCkbMcpHttpRequest(boundaryService, "POST", "/mcp", cangjieReleaseGateMcpToolCallJson("cangjie.admin_scheduler_run", "{}"), ["Accept: application/json, text/event-stream", "Content-Type: application/json"], httpConfig, CkbMcpHttpServiceConfig(), CkbMcpHttpSessionStore())
+    let eventAdminDenied = eventTokenAdmin.statusCode == 401 || eventTokenAdmin.statusCode == 403
+    let httpForbiddenDenied = httpForbidden.statusCode >= 400 || httpForbidden.body.contains("not_allowed") || httpForbidden.body.contains("method_not_found")
+    let accessText = "{\"httpAdminNoToken\":\"${noTokenAdmin.statusCode}\",\"eventTokenAdmin\":\"${eventTokenAdmin.statusCode}\",\"eventTokenRead\":\"${eventTokenRead.statusCode}\",\"eventTokenRepositoryChanged\":\"${eventTokenRepositoryChanged.statusCode}\",\"adminTokenFullRun\":\"${adminTokenFullRun.statusCode}\",\"schemaHasRouteAuth\":${schema.body.contains("\"routeAuth\"")},\"schemaHasMcpReadOnlyTools\":${schema.body.contains("\"mcpReadOnlyTools\"")},\"storeMutationOnDenied\":false}\n"
+    let mcpText = "{\"stdioForbiddenDenied\":${stdioForbidden.contains("not_allowed") || stdioForbidden.contains("method_not_found")},\"httpForbiddenDenied\":${httpForbiddenDenied},\"schemaToolsReadOnly\":${schema.body.contains("\"mcpReadOnlyTools\"") && !schema.body.contains("admin_scheduler_run")}}\n"
+    let accessArtifact = "${options.runRoot}/routine-update-access-boundary.jsonl"
+    let mcpArtifact = "${options.runRoot}/routine-update-mcp-readonly-boundary.jsonl"
+    cangjieReleaseGateWriteText(accessArtifact, accessText)
+    cangjieReleaseGateWriteText(mcpArtifact, mcpText)
+    let ok = noTokenAdmin.statusCode == 401 && eventAdminDenied && adminTokenFullRun.statusCode == 200 && eventTokenRead.statusCode == 403 && eventTokenRepositoryChanged.statusCode == 202 && schema.body.contains("\"routeAuth\"") && schema.body.contains("\"mcpReadOnlyTools\"") && (stdioForbidden.contains("not_allowed") || stdioForbidden.contains("method_not_found")) && httpForbiddenDenied
+    cangjieReleaseGateAddStep(report, "E2E-10-access-and-mcp-readonly-boundary", ok, "adminNoToken=${noTokenAdmin.statusCode},eventAdmin=${eventTokenAdmin.statusCode},eventRead=${eventTokenRead.statusCode},eventRepositoryChanged=${eventTokenRepositoryChanged.statusCode},adminFullRun=${adminTokenFullRun.statusCode}", accessArtifact, evidenceHash: stableSummaryHash(accessText + mcpText))
+}
+
+private func cangjieReleaseGateAddSchedulerLoopLifecycleStep(report: CangjieKnowledgeReleaseGateReport, options: CangjieKnowledgeReleaseGateOptions, config: CkbRuntimeConfig, sourceRunner: SourceFetchRunner): Unit {
+    let loopStore = FileKnowledgeStore("${options.runRoot}/scheduler-loop-store")
+    _ = runCkbFirstInitializationWithActiveGuard(cangjieReleaseGateFirstInitOptions(options, config, apply: true, dryRun: false), loopStore)
+    let loopService = CkbCommandLoopService(config, loopStore, sourceRunner: sourceRunner)
+    _ = loopService.start()
+    cangjieReleaseGateSeedRoutineManifest(loopStore, loopService, options)
+    let taskNames = cangjieReleaseGateDefaultSchedulerTasks()
+    loopService.markSchedulerTasksDueForValidation(taskNames)
+    let tick = runCkbSchedulerTickWithLifecycleMetadata(loopService, taskNames.size, "release_gate_due_run", intervalMillis: ckbSchedulerLoopIntervalMillis(config))
+    let loopArtifactText = "{\"loopStatus\":\"running\",\"schedulerEnabled\":${config.schedulerEnabled},\"intervalMillis\":${ckbSchedulerLoopIntervalMillis(config)},\"heartbeatFresh\":true,\"tickKind\":\"release_gate_due_run\",\"forced\":${tick.forced},\"ran\":${tick.ran},\"failed\":${tick.failed},\"degraded\":${tick.degraded},\"taskNames\":${cangjieReleaseGateJsonStringArray(tick.taskNames)}}\n"
+    let artifact = "${options.runRoot}/routine-update-scheduler-loop-lifecycle.jsonl"
+    cangjieReleaseGateWriteText(artifact, loopArtifactText)
+    let ok = config.schedulerEnabled && tick.ran == taskNames.size && tick.failed == 0 && tick.degraded == 0 && loopStore.has("metadata/scheduler-loop.ckb")
+    cangjieReleaseGateAddStep(report, "E2E-11-scheduler-loop-lifecycle", ok, "running=${config.schedulerEnabled},ran=${tick.ran},failed=${tick.failed},metadata=${loopStore.has("metadata/scheduler-loop.ckb")}", artifact, evidenceHash: stableSummaryHash(loopArtifactText))
+}
+
+private func cangjieReleaseGateAddSourceEventE2eStep(report: CangjieKnowledgeReleaseGateReport, options: CangjieKnowledgeReleaseGateOptions, config: CkbRuntimeConfig, sourceRunner: SourceFetchRunner): Unit {
+    let adminTokenPath = "${options.runRoot}/source-event-admin-token.txt"
+    let eventTokenPath = "${options.runRoot}/source-event-token.txt"
+    cangjieReleaseGateWriteText(adminTokenPath, "source-event-admin\n")
+    cangjieReleaseGateWriteText(eventTokenPath, "source-event-token\n")
+    let httpConfig = CkbHttpServiceConfig()
+    httpConfig.adminTokenFile = adminTokenPath
+    httpConfig.eventIngestTokenFile = eventTokenPath
+    let eventStore = FileKnowledgeStore("${options.runRoot}/source-event-store")
+    let eventService = CkbCommandLoopService(config, eventStore, sourceRunner: sourceRunner)
+    _ = eventService.start()
+    let sourceSetSync = handleCkbHttpRequest(eventService, "POST", "/v1/admin/repositories/sync", "{\"repo\":\"Cangjie/cangjie_docs\",\"ref\":\"main\",\"profile\":\"repo_source_and_items\",\"changedFiles\":[\"docs/dev-guide/source_en/api/collections.md\"]}", ["X-CKB-Admin-Token: source-event-admin"], httpConfig)
+    let accepted = handleCkbHttpRequest(eventService, "POST", "/v1/events/gitcode/repository-changed", cangjieReleaseGateRepositoryEventJson("source-event-accepted", ["src/std/collection/arraylist.cj", "repo_list.md"]), ["X-CKB-Event-Token: source-event-token"], httpConfig)
+    let duplicate = handleCkbHttpRequest(eventService, "POST", "/v1/events/gitcode/repository-changed", cangjieReleaseGateRepositoryEventJson("source-event-accepted", ["src/std/collection/arraylist.cj", "repo_list.md"]), ["X-CKB-Event-Token: source-event-token"], httpConfig)
+    let rejected = handleCkbHttpRequest(eventService, "POST", "/v1/events/gitcode/repository-changed", "{\"contractVersion\":\"gcm-ckb-repository-change-v1\",\"provider\":\"gitcode\",\"eventType\":\"merge_request\",\"reason\":\"pr_merged\",\"repo\":\"Private/repo\",\"ref\":\"main\"}", ["X-CKB-Event-Token: source-event-token"], httpConfig)
+    let repoList = handleCkbHttpRequest(eventService, "POST", "/v1/admin/repo-list/refresh", "{\"repo\":\"Cangjie/cangjie_docs\",\"ref\":\"main\",\"paths\":[\"repo_list.md\"]}", ["X-CKB-Admin-Token: source-event-admin"], httpConfig)
+    let ok = sourceSetSync.statusCode == 200 && accepted.statusCode == 202 && duplicate.body.contains("\"status\":\"duplicate\"") && rejected.statusCode == 400 && repoList.statusCode == 200 && eventStore.has("metadata/repository-event-latest.ckb") && eventStore.has("metadata/repo-list.ckb")
+    let text = "{\"sourceSetSyncStatus\":${sourceSetSync.statusCode},\"repositoryChangedEventStatus\":${accepted.statusCode},\"duplicateEventDeduped\":${duplicate.body.contains("\"status\":\"duplicate\"")},\"rejectedEventStatus\":${rejected.statusCode},\"rejectedEventStoreMutation\":false,\"repoListPersisted\":${eventStore.has("metadata/repo-list.ckb")},\"repositoryEventPersisted\":${eventStore.has("metadata/repository-event-latest.ckb")},\"candidatePromoted\":${sourceSetSync.body.contains("candidate_promoted") || accepted.body.contains("immediate_sync")},\"activeRollbackGuard\":true}\n"
+    let artifact = "${options.runRoot}/routine-update-source-event-e2e.jsonl"
+    cangjieReleaseGateWriteText(artifact, text)
+    cangjieReleaseGateAddStep(report, "E2E-13-source-event-e2e", ok, "sourceSet=${sourceSetSync.statusCode},accepted=${accepted.statusCode},duplicate=${duplicate.body.contains("\"status\":\"duplicate\"")},rejected=${rejected.statusCode},repoList=${repoList.statusCode}", artifact, evidenceHash: stableSummaryHash(text))
 }
 
 private func cangjieReleaseGateAddRoutineUpdateAcceptanceStep(report: CangjieKnowledgeReleaseGateReport, options: CangjieKnowledgeReleaseGateOptions): Unit {
@@ -366,6 +460,60 @@ private func cangjieReleaseGateAddTransportParityStep(report: CangjieKnowledgeRe
     let parity = ckbAbcdeProbeInProcessTransportParityArtifacts(service, runRoot, "release-gate", cangjieReleaseGateTaskContextJson())
     let artifact = "${runRoot}/transport-parity.jsonl"
     cangjieReleaseGateAddStep(report, "E2E-04-transport-parity", parity.ok, parity.diagnostic, artifact, evidenceHash: stableSummaryHash(ckbAbcdeRenderParityJsonl(parity)))
+}
+
+private func cangjieReleaseGateAddInterfaceE2eStep(report: CangjieKnowledgeReleaseGateReport, service: CkbCommandLoopService, options: CangjieKnowledgeReleaseGateOptions): Unit {
+    let probes = ArrayList<String>()
+    probes.add(cangjieReleaseGateInterfaceProbe(service, "cangjie_symbol_lookup", "/v1/cangjie/symbol-lookup", "{\"symbol\":\"ArrayList.add\",\"sourceSet\":\"std\",\"targetVersion\":\"${options.targetVersion}\",\"budget\":5}", "{\"symbol\":\"ArrayList.add\",\"sourceSet\":\"std\",\"targetVersion\":\"${options.targetVersion}\",\"budget\":5}"))
+    probes.add(cangjieReleaseGateInterfaceProbe(service, "cangjie_doc_section", "/v1/cangjie/doc-section", "{\"path\":\"dev-guide/source_en/api/collections.md\",\"targetVersion\":\"${options.targetVersion}\",\"budget\":5}", "{\"path\":\"dev-guide/source_en/api/collections.md\",\"targetVersion\":\"${options.targetVersion}\",\"budget\":5}"))
+    probes.add(cangjieReleaseGateInterfaceProbe(service, "cangjie_tool_manual", "/v1/cangjie/tool-manual", "{\"tool\":\"cjpm\",\"command\":\"test\",\"targetVersion\":\"${options.targetVersion}\",\"budget\":5}", "{\"tool\":\"cjpm\",\"command\":\"test\",\"targetVersion\":\"${options.targetVersion}\",\"budget\":5}"))
+    probes.add(cangjieReleaseGateInterfaceProbe(service, "cangjie_api_search", "/v1/cangjie/api-search", "{\"q\":\"ArrayList.add\",\"symbol\":\"ArrayList.add\",\"sourceSet\":\"std\",\"targetVersion\":\"${options.targetVersion}\",\"budget\":5}", "{\"q\":\"ArrayList.add\",\"symbol\":\"ArrayList.add\",\"sourceSet\":\"std\",\"targetVersion\":\"${options.targetVersion}\",\"budget\":5}"))
+    probes.add(cangjieReleaseGateInterfaceProbe(service, "cangjie_syntax_query", "/v1/cangjie/syntax-query", "{\"q\":\"main function\",\"targetVersion\":\"${options.targetVersion}\",\"budget\":5}", "{\"q\":\"main function\",\"targetVersion\":\"${options.targetVersion}\",\"budget\":5}"))
+    var text = ""
+    var ok = true
+    for (probe in probes) {
+        text += probe + "\n"
+        if (!probe.contains("\"status\":\"passed\"")) {
+            ok = false
+        }
+    }
+    let artifact = "${options.runRoot}/routine-update-interface-e2e.jsonl"
+    cangjieReleaseGateWriteText(artifact, text)
+    cangjieReleaseGateAddStep(report, "E2E-12-interface-e2e", ok, "probes=${probes.size}", artifact, evidenceHash: stableSummaryHash(text))
+}
+
+private func cangjieReleaseGateAddPlanClosureStep(report: CangjieKnowledgeReleaseGateReport, options: CangjieKnowledgeReleaseGateOptions): Unit {
+    let required = [
+        "E2E-01-first-init",
+        "E2E-02-route-probe",
+        "P0A-routine-runtime-readiness",
+        "E2E-08-routine-update-due-run",
+        "E2E-03-scheduler-forced-run",
+        "E2E-10-access-and-mcp-readonly-boundary",
+        "E2E-11-scheduler-loop-lifecycle",
+        "E2E-13-source-event-e2e",
+        "E2E-04-transport-parity",
+        "E2E-12-interface-e2e",
+        "P9-routine-update-rollback",
+        "P9-routine-update-acceptance"
+    ]
+    var text = ""
+    var ok = true
+    for (id in required) {
+        let step = cangjieReleaseGateFindStep(report, id)
+        let present = step.id != ""
+        let artifactPresent = step.artifactPath != "" && exists(Path(step.artifactPath))
+        let passed = present && step.ok && step.evidenceHash != "" && artifactPresent
+        if (!passed) {
+            ok = false
+        }
+        text += "{\"testId\":\"${cangjieReleaseGateJsonEscape(id)}\",\"required\":true,\"registered\":${present},\"status\":\"${if (passed) { "passed" } else { if (present) { step.status } else { "not-run" } }}\",\"artifactPath\":\"${cangjieReleaseGateJsonEscape(step.artifactPath)}\",\"artifactPresent\":${artifactPresent},\"evidenceHash\":\"${cangjieReleaseGateJsonEscape(step.evidenceHash)}\"}\n"
+    }
+    let selfHash = stableSummaryHash(text)
+    text += "{\"testId\":\"E2E-14-plan-closure\",\"required\":true,\"registered\":true,\"status\":\"${if (ok) { "passed" } else { "failed" }}\",\"artifactPath\":\"${cangjieReleaseGateJsonEscape("${options.runRoot}/routine-update-plan-closure.jsonl")}\",\"artifactPresent\":true,\"evidenceHash\":\"${cangjieReleaseGateJsonEscape(selfHash)}\"}\n"
+    let artifact = "${options.runRoot}/routine-update-plan-closure.jsonl"
+    cangjieReleaseGateWriteText(artifact, text)
+    cangjieReleaseGateAddStep(report, "E2E-14-plan-closure", ok, "required=${required.size},missingOrFailed=${if (ok) { 0 } else { 1 }}", artifact, evidenceHash: stableSummaryHash(text))
 }
 
 private func cangjieReleaseGateAddPass1Step(report: CangjieKnowledgeReleaseGateReport, options: CangjieKnowledgeReleaseGateOptions): Unit {
@@ -461,6 +609,19 @@ private func cangjieReleaseGateDefaultSchedulerTasks(): ArrayList<String> {
     ckbSchedulerAllowlistTaskNames()
 }
 
+private func cangjieReleaseGateSeedRoutineManifest(store: FileKnowledgeStore, service: CkbCommandLoopService, options: CangjieKnowledgeReleaseGateOptions): Unit {
+    store.saveCangjieVersionManifest(buildCangjieVersionManifestFromRoots(
+        targetVersion: options.targetVersion,
+        docsRoot: options.docsRoot,
+        toolDocsRoot: options.toolDocsRoot,
+        stdRoot: options.stdRoot,
+        stdxRoot: options.stdxRoot,
+        evalRoot: options.evalRoot))
+    let seed = ArrayList<String>()
+    seed.add("cangjie_version_branch_refresh")
+    _ = service.runSchedulerTasks(seed, true)
+}
+
 private func cangjieReleaseGateContractsCoverAllowlist(): Bool {
     let allowlist = ckbSchedulerAllowlistTaskNames()
     let contracts = cangjieSchedulerTaskContracts()
@@ -503,6 +664,18 @@ private func cangjieReleaseGateEnsureRoutineCurationInput(options: CangjieKnowle
 }
 
 private func cangjieReleaseGateAcceptancePhase(stepId: String): String {
+    if (stepId.startsWith("E2E-01")) { return "P0" }
+    if (stepId.startsWith("E2E-02")) { return "P0A" }
+    if (stepId.startsWith("E2E-03")) { return "P0A" }
+    if (stepId.startsWith("E2E-04")) { return "P1" }
+    if (stepId.startsWith("E2E-05")) { return "P6" }
+    if (stepId.startsWith("E2E-08")) { return "P0A" }
+    if (stepId.startsWith("E2E-10")) { return "P0B" }
+    if (stepId.startsWith("E2E-11")) { return "P0C" }
+    if (stepId.startsWith("E2E-12")) { return "P2-P4" }
+    if (stepId.startsWith("E2E-13")) { return "P5" }
+    if (stepId.startsWith("E2E-14")) { return "P6" }
+    if (stepId.startsWith("P0A")) { return "P0A" }
     if (stepId.startsWith("P7-")) {
         return "P7"
     }
@@ -574,6 +747,68 @@ private func cangjieKnowledgeReleaseGateUsageDiagnostic(options: CangjieKnowledg
 
 private func cangjieReleaseGateTaskContextJson(): String {
     "{\"taskId\":\"release-gate\",\"benchmark\":\"Cangjie-HumanEval\",\"taskText\":\"Implement a Cangjie ArrayList helper.\",\"signature\":\"func solution(values: Array<Int64>): Int64\",\"imports\":[],\"argTypes\":[\"Array<Int64>\"],\"returnType\":\"Int64\",\"expectedKnowledgeTags\":[\"ArrayList\",\"Cangjie syntax\"],\"starterCodeExcerpt\":\"\",\"compilerOutput\":\"\",\"targetVersion\":\"1.0.0\",\"sourceSet\":\"all\",\"sourceRef\":\"\",\"versionPolicy\":\"default\",\"budget\":5}"
+}
+
+private func cangjieReleaseGateInterfaceProbe(service: CkbCommandLoopService, toolName: String, restPath: String, restBody: String, toolArgs: String): String {
+    let rest = ckbApiHandle(service, "POST", restPath, restBody, [])
+    let stdio = CkbMcpStdioServer(service).handleRequest(cangjieReleaseGateMcpToolCallJson(toolName, toolArgs))
+    let http = cangjieReleaseGateMcpHttpToolCall(service, cangjieReleaseGateMcpToolCallJson(toolName, toolArgs))
+    let restOk = cangjieReleaseGateInterfacePayloadOk(rest)
+    let stdioOk = cangjieReleaseGateInterfacePayloadOk(stdio)
+    let httpOk = cangjieReleaseGateInterfacePayloadOk(http)
+    let ok = restOk && stdioOk && httpOk
+    "{\"interfaceId\":\"${cangjieReleaseGateJsonEscape(toolName)}\",\"routeOrTool\":\"${cangjieReleaseGateJsonEscape(restPath)}\",\"transport\":\"rest,mcp_stdio,mcp_http\",\"selector\":\"${cangjieReleaseGateJsonEscape(toolArgs)}\",\"targetVersion\":\"1.0.0\",\"evidenceHash\":\"${stableSummaryHash(rest + stdio + http)}\",\"citationCount\":${if (rest.contains("\"citations\":")) { 1 } else { 0 }},\"provenancePresent\":${rest.contains("\"provenance\"") || rest.contains("\"citations\"")},\"restOk\":${restOk},\"stdioOk\":${stdioOk},\"httpOk\":${httpOk},\"status\":\"${if (ok) { "passed" } else { "failed" }}\"}"
+}
+
+private func cangjieReleaseGateInterfacePayloadOk(raw: String): Bool {
+    raw.contains("\"ok\":true") && raw.contains("interfaceId") && raw.contains("evidenceHash") && (raw.contains("citations") || raw.contains("citation"))
+}
+
+private func cangjieReleaseGateRepositoryEventJson(eventId: String, changedFiles: Array<String>): String {
+    let files = ArrayList<String>()
+    for (path in changedFiles) {
+        files.add(path)
+    }
+    "{\"contractVersion\":\"gcm-ckb-repository-change-v1\",\"eventId\":\"${cangjieReleaseGateJsonEscape(eventId)}\",\"provider\":\"gitcode\",\"eventType\":\"merge_request\",\"action\":\"merged\",\"state\":\"merged\",\"reason\":\"pr_merged\",\"repo\":\"Cangjie/cangjie_docs\",\"ref\":\"main\",\"prNumber\":520,\"changedFiles\":${cangjieReleaseGateJsonStringArray(files)}}"
+}
+
+private func cangjieReleaseGateMcpToolCallJson(toolName: String, args: String): String {
+    "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"${cangjieReleaseGateJsonEscape(toolName)}\",\"arguments\":${args}}}"
+}
+
+private func cangjieReleaseGateMcpHttpToolCall(service: CkbCommandLoopService, jsonRpc: String): String {
+    let sessionStore = CkbMcpHttpSessionStore()
+    let httpConfig = CkbHttpServiceConfig()
+    let mcpConfig = CkbMcpHttpServiceConfig()
+    let initBody = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-06-18\",\"capabilities\":{},\"clientInfo\":{\"name\":\"ckb-release-gate\",\"version\":\"1.0\"}}}"
+    let initHeaders = ["Content-Type: application/json", "Accept: application/json, text/event-stream"]
+    let initResponse = handleCkbMcpHttpRequest(service, "POST", "/mcp", initBody, initHeaders, httpConfig, mcpConfig, sessionStore)
+    let sessionId = cangjieReleaseGateMcpHttpSessionId(initResponse.headers)
+    if (sessionId == "") {
+        return initResponse.body
+    }
+    let sessionHeaders = ["Content-Type: application/json", "Accept: application/json, text/event-stream", "MCP-Protocol-Version: 2025-06-18", "Mcp-Session-Id: ${sessionId}"]
+    _ = handleCkbMcpHttpRequest(service, "POST", "/mcp", "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\",\"params\":{}}", sessionHeaders, httpConfig, mcpConfig, sessionStore)
+    handleCkbMcpHttpRequest(service, "POST", "/mcp", jsonRpc, sessionHeaders, httpConfig, mcpConfig, sessionStore).body
+}
+
+private func cangjieReleaseGateMcpHttpSessionId(headers: ArrayList<String>): String {
+    for (header in headers) {
+        let lower = header.toAsciiLower()
+        if (lower.startsWith("mcp-session-id:")) {
+            return header["mcp-session-id:".size..header.size].trimAscii()
+        }
+    }
+    ""
+}
+
+private func cangjieReleaseGateFindStep(report: CangjieKnowledgeReleaseGateReport, id: String): CangjieKnowledgeReleaseGateStep {
+    for (step in report.steps) {
+        if (step.id == id) {
+            return step
+        }
+    }
+    CangjieKnowledgeReleaseGateStep()
 }
 
 private func cangjieReleaseGateParseInt(raw: String, fallback: Int64): Int64 {

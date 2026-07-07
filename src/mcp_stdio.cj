@@ -395,7 +395,7 @@ public func ckbMcpProtocolVersionFromInitialize(request: String, fallback: Strin
     requested
 }
 
-private func ckbMcpToolNames(): ArrayList<String> {
+public func ckbMcpToolNames(): ArrayList<String> {
     let tools = ArrayList<String>()
     tools.add("cangjie_knowledge_pack")
     tools.add("cangjie_version_resolve")

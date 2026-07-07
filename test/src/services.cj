@@ -2964,6 +2964,18 @@ public class FileKnowledgeStore {
         this.writeLines("metadata/repository-event-latest.ckb", text)
     }
 
+    public func saveSchedulerLoopMetadata(loopStatus: String, schedulerEnabled: Bool, intervalMillis: Int64, tickKind: String, limit: Int64, ran: Int64, taskNames: ArrayList<String>, diagnostic: String): Unit {
+        var text = "loopStatus=${escapeField(loopStatus)}\n"
+        text += "schedulerEnabled=${schedulerEnabled}\n"
+        text += "intervalMillis=${intervalMillis}\n"
+        text += "tickKind=${escapeField(tickKind)}\n"
+        text += "limit=${limit}\n"
+        text += "ran=${ran}\n"
+        text += "taskNames=${escapeField(joinStrings(taskNames, ","))}\n"
+        text += "diagnostic=${escapeField(redactSensitive(diagnostic))}\n"
+        this.writeLines("metadata/scheduler-loop.ckb", text)
+    }
+
     public func saveCangjieCorpusFreshness(report: CangjieCorpusFreshnessReport): Unit {
         var text = "ok=${report.ok}\n"
         text += "degraded=${report.degraded}\n"
@@ -3988,6 +4000,10 @@ public class CkbCommandLoopService {
         this.kb.status()
     }
 
+    public func saveSchedulerLoopMetadata(loopStatus: String, schedulerEnabled: Bool, intervalMillis: Int64, tickKind: String, limit: Int64, ran: Int64, taskNames: ArrayList<String>, diagnostic: String): Unit {
+        this.store.saveSchedulerLoopMetadata(loopStatus, schedulerEnabled, intervalMillis, tickKind, limit, ran, taskNames, diagnostic)
+    }
+
     public func queryEvidencePack(query: String, budget: Int64, includeCandidates!: Bool = true): EvidencePack {
         let pack = cangjie_evidence_pack(this.kb, query, budget)
         if (!includeCandidates) {
@@ -4180,10 +4196,16 @@ public class CkbCommandLoopService {
         result.status = "accepted"
         let syncBody = ckbRepositoryEventSyncBody(event, result.scheduledProfiles)
         let sync = this.runRepositorySync(body: syncBody)
+        var repoListRefreshed = false
         if (result.scheduledProfiles.contains("repo_list_refresh")) {
             _ = this.runRepoListRefresh(body: ckbRepositoryEventRepoListBody(event))
+            repoListRefreshed = true
         }
-        result.diagnostic = if (sync.status == "ok" || sync.status == "candidate_promoted") { "immediate_sync_executed" } else { "scheduler_job_created:${sync.diagnostic}" }
+        result.diagnostic = if (sync.status == "ok" || sync.status == "candidate_promoted") {
+            if (repoListRefreshed) { "immediate_sync_and_repo_list_refresh_executed" } else { "immediate_sync_executed" }
+        } else {
+            "immediate_sync_failed:${sync.diagnostic}"
+        }
         result
     }
 
@@ -4346,6 +4368,18 @@ public class CkbCommandLoopService {
         let ran = executor.runTaskNames(taskNames, force: force)
         this.store.saveScheduler(this.kb.scheduler.entries)
         ran
+    }
+
+    public func markSchedulerTasksDueForValidation(taskNames: ArrayList<String>): Unit {
+        for (entry in this.kb.scheduler.entries) {
+            if (taskNames.contains(entry.name)) {
+                entry.nextRunAt = 0
+                entry.lastFailureAt = -1
+                entry.failureCount = 0
+                entry.degraded = false
+            }
+        }
+        this.store.saveScheduler(this.kb.scheduler.entries)
     }
 
     public func markSchedulerDisabled(): Unit {
