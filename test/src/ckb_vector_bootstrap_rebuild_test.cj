@@ -222,6 +222,10 @@ private class BootstrapFakeVectorStore <: VectorStore {
         status
     }
 
+    public func upsertBatchWithDeadline(collection: String, vectors: ArrayList<VectorRecord>, deadlineAtMillis: Int64): VectorStoreStatus {
+        this.upsertBatch(collection, vectors)
+    }
+
     public func search(collection: String, queryVector: ArrayList<Float64>, filters: VectorSearchFilters, topK: Int64): ArrayList<VectorSearchResult> {
         ArrayList<VectorSearchResult>()
     }
@@ -252,6 +256,10 @@ private class BootstrapFakeVectorStore <: VectorStore {
 
     public func recreate(collection: String, vectors: ArrayList<VectorRecord>): VectorStoreStatus {
         this.readyStatus(collection)
+    }
+
+    public func recreateWithDeadline(collection: String, vectors: ArrayList<VectorRecord>, deadlineAtMillis: Int64): VectorStoreStatus {
+        this.recreate(collection, vectors)
     }
 
     public func backup(collection: String): VectorBackup {
@@ -292,6 +300,10 @@ private class BootstrapExistingVectorStore <: VectorStore {
         status
     }
 
+    public func upsertBatchWithDeadline(collection: String, vectors: ArrayList<VectorRecord>, deadlineAtMillis: Int64): VectorStoreStatus {
+        this.upsertBatch(collection, vectors)
+    }
+
     public func search(collection: String, queryVector: ArrayList<Float64>, filters: VectorSearchFilters, topK: Int64): ArrayList<VectorSearchResult> {
         ArrayList<VectorSearchResult>()
     }
@@ -315,6 +327,10 @@ private class BootstrapExistingVectorStore <: VectorStore {
 
     public func recreate(collection: String, vectors: ArrayList<VectorRecord>): VectorStoreStatus {
         this.readyStatus(collection)
+    }
+
+    public func recreateWithDeadline(collection: String, vectors: ArrayList<VectorRecord>, deadlineAtMillis: Int64): VectorStoreStatus {
+        this.recreate(collection, vectors)
     }
 
     public func backup(collection: String): VectorBackup {
@@ -357,6 +373,10 @@ private class RestoreTrackingVectorStore <: VectorStore {
         this.readyStatus(collection, vectors.size)
     }
 
+    public func upsertBatchWithDeadline(collection: String, vectors: ArrayList<VectorRecord>, deadlineAtMillis: Int64): VectorStoreStatus {
+        this.upsertBatch(collection, vectors)
+    }
+
     public func search(collection: String, queryVector: ArrayList<Float64>, filters: VectorSearchFilters, topK: Int64): ArrayList<VectorSearchResult> {
         ArrayList<VectorSearchResult>()
     }
@@ -380,6 +400,10 @@ private class RestoreTrackingVectorStore <: VectorStore {
     public func recreate(collection: String, vectors: ArrayList<VectorRecord>): VectorStoreStatus {
         this.recreateCalls += 1
         this.readyStatus(collection, vectors.size)
+    }
+
+    public func recreateWithDeadline(collection: String, vectors: ArrayList<VectorRecord>, deadlineAtMillis: Int64): VectorStoreStatus {
+        this.recreate(collection, vectors)
     }
 
     public func backup(collection: String): VectorBackup {
@@ -442,6 +466,10 @@ private class ChunkedFakeEmbeddingProvider <: EmbeddingProvider {
         }
         batch.succeeded = texts.size
         batch
+    }
+
+    public func embedWithDeadline(texts: ArrayList<String>, model: String, dimensions: Int64, deadlineAtMillis: Int64): EmbeddingBatch {
+        this.embed(texts, model, dimensions)
     }
 
     public func status(): EmbeddingStatus {

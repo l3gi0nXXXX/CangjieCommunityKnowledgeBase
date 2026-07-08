@@ -50,6 +50,16 @@ public func ckbCliMain(args: Array<String>): Int64 {
     }
     let kb = loadCliKnowledgeBase(cli.command, store, config)
     let input = cliInput(args)
+    if (cli.command == "scheduler-task-worker") {
+        let taskName = ckbCliOption(args, "--task")
+        let resultRelativePath = ckbCliOption(args, "--result-rel")
+        if (taskName == "" || resultRelativePath == "") {
+            println("usage error: scheduler-task-worker requires --task and --result-rel")
+            return 2
+        }
+        let task = ckbRunSchedulerTaskWorker(kb, config, store, taskName, ckbCliOption(args, "--since"), ckbCliOptionInt(args, "--deadline", 0), resultRelativePath)
+        return if (task.ok) { 0 } else { 1 }
+    }
     if (cli.command == "" || cli.command == "doctor") {
         print(renderDoctor(cangjie_knowledge_status(kb)))
         print(renderRuntimeDoctor(config))
@@ -265,7 +275,15 @@ public func ckbCliMain(args: Array<String>): Int64 {
         return 0
     }
     if (cli.command == "scheduler-run") {
-        let executor = SchedulerExecutor(kb.scheduler, CkbSchedulerTaskRunner(kb, config, store, sourceRunner: if (config.networkEnabled) { HttpSourceFetchRunner(config) } else { DisabledNetworkFetchRunner() }), FileSchedulerProgressSink(store), 300000)
+        let preRepair = store.repairActiveLiveShadowFromManifest()
+        var schedulerKb = kb
+        if (preRepair.repairPerformed) {
+            schedulerKb = newKnowledgeBaseFromStoreWithRuntime(store, config).kb
+        }
+        let recovery = ckbRecoverStaleSchedulerRunsWithVectorStore(store, vectorStoreFromRuntime(config))
+        ckbApplySchedulerProfileBudgets(schedulerKb.scheduler)
+        let runner = ckbSchedulerTaskRunnerForRuntime(schedulerKb, config, store, cli.configPath, cli.storePath, if (config.networkEnabled) { HttpSourceFetchRunner(config) } else { DisabledNetworkFetchRunner() })
+        let executor = SchedulerExecutor(schedulerKb.scheduler, runner, FileSchedulerProgressSink(store), 300000)
         let taskNames = ckbCliSchedulerTaskNames(args)
         let result = if (hasArg(args, "--force-all")) {
             executor.runTaskNames(ckbSchedulerAllowlistTaskNames(), force: true)
@@ -274,8 +292,16 @@ public func ckbCliMain(args: Array<String>): Int64 {
         } else {
             executor.runDue()
         }
-        ckbCliApplyFinalSchedulerConsistency(result, kb, store, config, cli.storePath)
-        store.saveScheduler(kb.scheduler.entries)
+        for (diagnostic in recovery.diagnostics) {
+            result.validationDiagnostics.add("recovery:${diagnostic}")
+            result.details += "recovery ${diagnostic}\n"
+        }
+        ckbAppendSnapshotRepairDiagnostic(result, "pre", preRepair)
+        let finalKb = newKnowledgeBaseFromStoreWithRuntime(store, config).kb
+        ckbCliApplyFinalSchedulerConsistency(result, finalKb, store, config, cli.storePath)
+        let postRepair = store.repairActiveLiveShadowFromManifest()
+        ckbAppendSnapshotRepairDiagnostic(result, "post", postRepair)
+        store.saveScheduler(schedulerKb.scheduler.entries)
         store.saveSchedulerLoopMetadata(if (result.failed == 0 && result.degraded == 0) { "running" } else { "failed" }, config.schedulerEnabled, config.schedulerLoopIntervalMillis, if (result.forced) { "cli_forced" } else { "cli_due" }, 0, result.ran, result.taskNames, if (result.failed == 0 && result.degraded == 0) { "ok" } else { "scheduler_cli_run_degraded" })
         if (ckbCliWantsJson(args)) {
             println(ckbCliSchedulerRunJson(result))
@@ -374,7 +400,7 @@ public func ckbNativeTlsBootstrapScript(command: String, args: Array<String>): S
 }
 
 private func ckbCommandNeedsNativeTlsBootstrap(command: String): Bool {
-    command == "native-http-smoke" || command == "sync-live" || command == "source_analysis" || command == "source-analysis" || command == "service" || command == "start" || command == "service-http" || command == "http-service" || command == "service-once" || command == "scheduler-run" || command == "vector-bootstrap" || command == "vector-clean-derived" || command == "vector-reconcile" || command == "routine-repair" || command == "rebuild-index" || command == "cangjie-update-promotion-smoke"
+    command == "native-http-smoke" || command == "sync-live" || command == "source_analysis" || command == "source-analysis" || command == "service" || command == "start" || command == "service-http" || command == "http-service" || command == "service-once" || command == "scheduler-run" || command == "scheduler-task-worker" || command == "vector-bootstrap" || command == "vector-clean-derived" || command == "vector-reconcile" || command == "routine-repair" || command == "rebuild-index" || command == "cangjie-update-promotion-smoke"
 }
 
 private func ckbShellQuote(value: String): String {
@@ -500,6 +526,29 @@ private func hasArg(args: Array<String>, name: String): Bool {
         }
     }
     false
+}
+
+private func ckbCliOption(args: Array<String>, name: String): String {
+    var i: Int64 = 0
+    while (i < args.size) {
+        if (args[i] == name && i + 1 < args.size) {
+            return args[i + 1]
+        }
+        i += 1
+    }
+    ""
+}
+
+private func ckbCliOptionInt(args: Array<String>, name: String, fallback: Int64): Int64 {
+    let value = ckbCliOption(args, name)
+    if (value == "") {
+        return fallback
+    }
+    try {
+        Int64.parse(value)
+    } catch (_: Exception) {
+        fallback
+    }
 }
 
 private func ckbCliSchedulerTaskNames(args: Array<String>): ArrayList<String> {
