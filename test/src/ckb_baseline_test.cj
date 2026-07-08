@@ -2777,7 +2777,7 @@ class ScriptedSchedulerTaskRunner <: SchedulerTaskRunner {
 
     public init() {}
 
-    public func runTask(name: String, since: String): SchedulerTaskResult {
+    public func runTask(name: String, since: String, deadlineAtMillis: Int64): SchedulerTaskResult {
         let result = SchedulerTaskResult()
         result.ok = this.ok
         result.status = this.status
@@ -3463,7 +3463,7 @@ public class CkbServiceApiTest {
         let kb = newKnowledgeBaseFromStore(store).kb
         let runner = CkbSchedulerTaskRunner(kb, config, store, sourceRunner: fake)
 
-        let result = runner.runTask("website_probe_weekly", "")
+        let result = runner.runTask("website_probe_weekly", "", 0)
 
         @Expect(result.ok, true)
         @Expect(result.status, "profile_ok")

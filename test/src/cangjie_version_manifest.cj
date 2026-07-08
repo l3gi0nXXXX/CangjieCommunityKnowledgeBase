@@ -77,6 +77,16 @@ public func defaultCangjieVersionManifest(): CangjieVersionManifest {
     manifest
 }
 
+public func cangjieSourceRefAliasesForTargetVersion(targetVersion: String): ArrayList<String> {
+    let aliases = ArrayList<String>()
+    let version = if (targetVersion.trimAscii() == "") { cangjieDefaultTargetVersion() } else { targetVersion.trimAscii() }
+    if (version == "1.0.0") {
+        aliases.add("release/1.0")
+        aliases.add("release-1.0.0")
+    }
+    aliases
+}
+
 public func buildCangjieVersionManifestFromRoots(targetVersion!: String = "", docsRoot!: String = "", toolDocsRoot!: String = "", stdRoot!: String = "", stdxRoot!: String = "", evalRoot!: String = ""): CangjieVersionManifest {
     let manifest = CangjieVersionManifest()
     manifest.defaultTargetVersion = if (targetVersion.trimAscii() == "") { cangjieDefaultTargetVersion() } else { targetVersion.trimAscii() }

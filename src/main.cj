@@ -274,6 +274,7 @@ public func ckbCliMain(args: Array<String>): Int64 {
         } else {
             executor.runDue()
         }
+        ckbCliApplyFinalSchedulerConsistency(result, kb, store, config, cli.storePath)
         store.saveScheduler(kb.scheduler.entries)
         store.saveSchedulerLoopMetadata(if (result.failed == 0 && result.degraded == 0) { "running" } else { "failed" }, config.schedulerEnabled, config.schedulerLoopIntervalMillis, if (result.forced) { "cli_forced" } else { "cli_due" }, 0, result.ran, result.taskNames, if (result.failed == 0 && result.degraded == 0) { "ok" } else { "scheduler_cli_run_degraded" })
         if (ckbCliWantsJson(args)) {
@@ -517,7 +518,61 @@ private func ckbCliSchedulerTaskNames(args: Array<String>): ArrayList<String> {
 
 private func ckbCliSchedulerRunJson(result: SchedulerExecutorResult): String {
     let ok = result.failed == 0 && result.degraded == 0
-    "{\"ok\":${ok},\"errorCode\":\"${if (ok) { "" } else { "ckb.scheduler_run_degraded" }}\",\"runId\":\"${ckbCliJsonEscape(result.runId)}\",\"progressPath\":\"${ckbCliJsonEscape(result.progressPath)}\",\"startedAtMillis\":${result.startedAtMillis},\"endedAtMillis\":${result.endedAtMillis},\"timedOut\":${result.timedOut},\"partial\":${result.partial},\"ran\":${result.ran},\"succeeded\":${result.succeeded},\"failed\":${result.failed},\"degraded\":${result.degraded},\"forced\":${result.forced},\"taskNames\":${ckbCliStringArrayJson(result.taskNames)},\"details\":\"${ckbCliJsonEscape(result.details)}\",\"validationSummaries\":${ckbCliStringArrayJson(result.validationSummaries)},\"validationDiagnostics\":${ckbCliStringArrayJson(result.validationDiagnostics)},\"validationEvidenceHashes\":${ckbCliStringArrayJson(result.validationEvidenceHashes)},\"failedTasks\":${ckbCliSchedulerFailedTasksJson(ckbSchedulerFailureSummaries(result))}}"
+    "{\"ok\":${ok},\"errorCode\":\"${if (ok) { "" } else { "ckb.scheduler_run_degraded" }}\",\"runId\":\"${ckbCliJsonEscape(result.runId)}\",\"progressPath\":\"${ckbCliJsonEscape(result.progressPath)}\",\"startedAtMillis\":${result.startedAtMillis},\"endedAtMillis\":${result.endedAtMillis},\"timedOut\":${result.timedOut},\"partial\":${result.partial},\"ran\":${result.ran},\"succeeded\":${result.succeeded},\"failed\":${result.failed},\"degraded\":${result.degraded},\"forced\":${result.forced},\"taskNames\":${ckbCliStringArrayJson(result.taskNames)},\"details\":\"${ckbCliJsonEscape(result.details)}\",\"validationSummaries\":${ckbCliStringArrayJson(result.validationSummaries)},\"validationDiagnostics\":${ckbCliStringArrayJson(result.validationDiagnostics)},\"validationEvidenceHashes\":${ckbCliStringArrayJson(result.validationEvidenceHashes)},\"finalPreflightOk\":${result.finalPreflightOk},\"finalPreflightDiagnostics\":${ckbCliStringArrayJson(result.finalPreflightDiagnostics)},\"postRepairAttempted\":${result.postRepairAttempted},\"postRepairOk\":${result.postRepairOk},\"failedTasks\":${ckbCliSchedulerFailedTasksJson(ckbSchedulerFailureSummaries(result))}}"
+}
+
+private func ckbCliApplyFinalSchedulerConsistency(result: SchedulerExecutorResult, kb: KnowledgeBase, store: FileKnowledgeStore, config: CkbRuntimeConfig, storePath: String): Unit {
+    let preflight = ckbRoutineRuntimePreflightFromEnvWithBootstrap(config, storePath)
+    result.finalPreflightOk = preflight.ok
+    for (diagnostic in preflight.diagnostics) {
+        result.finalPreflightDiagnostics.add("preflight:${diagnostic}")
+    }
+    if (preflight.ok || !ckbCliPreflightNeedsVectorRepair(preflight.diagnostics)) {
+        if (!preflight.ok) {
+            result.degraded += 1
+            result.details += "final_preflight ok=false diagnostics=${ckbCliJoinStrings(preflight.diagnostics, ",")}\n"
+        }
+        return
+    }
+    result.postRepairAttempted = true
+    let repair = ckbRoutineRepair(kb, store, config, storePath, true)
+    result.postRepairOk = repair.ok
+    for (diagnostic in repair.diagnostics) {
+        result.finalPreflightDiagnostics.add("repair:${diagnostic}")
+    }
+    let after = ckbRoutineRuntimePreflightFromEnvWithBootstrap(config, storePath)
+    result.finalPreflightOk = after.ok
+    for (diagnostic in after.diagnostics) {
+        result.finalPreflightDiagnostics.add("post_preflight:${diagnostic}")
+    }
+    if (!after.ok) {
+        result.degraded += 1
+        result.details += "final_preflight ok=false repairAttempted=true repairOk=${repair.ok} diagnostics=${ckbCliJoinStrings(after.diagnostics, ",")}\n"
+    } else {
+        result.details += "final_preflight ok=true repairAttempted=true repairOk=${repair.ok}\n"
+    }
+}
+
+private func ckbCliPreflightNeedsVectorRepair(diagnostics: ArrayList<String>): Bool {
+    for (diagnostic in diagnostics) {
+        if (diagnostic.contains("qdrant_active_count_mismatch") || diagnostic.contains("qdrant_active_dimension_mismatch") || diagnostic.contains("qdrant_active_distance_mismatch") || diagnostic.contains("repair_required:vector_reconcile")) {
+            return true
+        }
+    }
+    false
+}
+
+private func ckbCliJoinStrings(values: ArrayList<String>, separator: String): String {
+    var out = ""
+    var first = true
+    for (value in values) {
+        if (!first) {
+            out += separator
+        }
+        out += value
+        first = false
+    }
+    out
 }
 
 private func ckbCliSchedulerFailedTasksJson(values: ArrayList<CkbSchedulerFailedTaskSummary>): String {

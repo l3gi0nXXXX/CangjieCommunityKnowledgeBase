@@ -41,6 +41,15 @@ public class CangjieVersionManifestTest {
     }
 
     @TestCase
+    public func p1Pos000Release100ExposesDashAndSlashRefAliases(): Unit {
+        let aliases = cangjieSourceRefAliasesForTargetVersion("1.0.0")
+
+        @Expect(aliases.size, 2)
+        @Expect(aliases.contains("release/1.0"), true)
+        @Expect(aliases.contains("release-1.0.0"), true)
+    }
+
+    @TestCase
     public func p1Pos001BuildsManifestFromLocalRootsWithoutOfflineBaseline(): Unit {
         let root = "target/p1-version-manifest-local-roots"
         cangjieP1WriteFile(Path(root).join("docs/dev-guide/summary.md"), "# docs\n")

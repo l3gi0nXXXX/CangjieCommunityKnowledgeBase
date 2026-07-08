@@ -422,6 +422,33 @@ public class CkbSchedulerServiceF5Test {
     }
 
     @TestCase
+    public func p7Pos006bLegacyReleaseRefUsesSlashReleaseAliasWhenRemoteOmitsDashBranch(): Unit {
+        let config = CkbRuntimeConfig()
+        config.networkEnabled = true
+        let store = FileKnowledgeStore("target/p7-legacy-release-ref-alias")
+        store.saveCangjieVersionManifest(f7OfficialManifestNoEval())
+        let runner = F7SlashRefTreeOkRunner()
+        let service = CkbCommandLoopService(config, store, sourceRunner: runner)
+        _ = service.start()
+        let tasks = ArrayList<String>()
+        tasks.add("cangjie_release_full_sync")
+
+        let result = service.runSchedulerTasks(tasks, true)
+        let manifest = store.loadCangjieVersionManifest()
+
+        @Expect(result.ran, 1)
+        @Expect(result.succeeded, 1)
+        @Expect(result.failed, 0)
+        @Expect(f7RunnerSawUrlFragment(runner, "/branches?page=1&per_page=100"), true)
+        @Expect(f7SchedulerDiagnosticsContain(result, "gitcode_ref_alias_used:Cangjie/cangjie_stdx:release-1.0.0:release/1.0"), true)
+        @Expect(f7RunnerSawUrlFragment(runner, "/git/trees/${f7SlashRefResolvedCommit()}?"), true)
+        @Expect(f7RunnerSawUrlFragment(runner, "/git/trees/release-1.0.0?"), false)
+        @Expect(f7RunnerSawUrlFragment(runner, "/git/trees/release/1.0?"), false)
+        @Expect(f7ManifestSourceRef(manifest, CangjieSourceSets.STDX), "release-1.0.0")
+        @Expect(f7ManifestResolvedCommit(manifest, CangjieSourceSets.STDX), f7SlashRefResolvedCommit())
+    }
+
+    @TestCase
     public func p7Pos007SlashRefSourceEventSyncPersistsCheckpoint(): Unit {
         let config = CkbRuntimeConfig()
         config.networkEnabled = true

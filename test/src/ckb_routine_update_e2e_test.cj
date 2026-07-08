@@ -138,6 +138,54 @@ public class CkbRoutineUpdateE2ETest {
         @Expect(status.activeKnowledgeVersion, oldVersion)
         @Expect(reloaded.diagnostic.contains("ignored_uncommitted_snapshot_tx:pending-tx"), true)
     }
+
+    @TestCase
+    public func p5E2E05StagedFullRebuildFailureKeepsOldActiveAndDeletesStaging(): Unit {
+        let root = "target/ckb-routine-update-e2e-staged-rebuild-fail"
+        p5EnsureEmptyDir(root)
+        let config = p5RuntimeConfig(root)
+        let store = FileKnowledgeStore("${root}/store")
+        let provider = P5FakeEmbeddingProvider(2)
+        let vectorStore = P5FakeQdrantStore("ckb_active", "ckb_candidate")
+        let kb = p5OfflineKnowledgeBase(provider, vectorStore)
+        let initial = ckbRebuildIndex(kb, store)
+        let oldActiveCount = vectorStore.status("ckb_active").count
+        provider.resetCalls()
+        provider.failAtCall = 1
+
+        let rebuild = ckbStagedFullRebuildWithVectorStore(kb, store, config, vectorStore, FileVectorBuildProgressSink(store), 0)
+        let metadata = store.loadMetadataStatus()
+        let status = cangjie_knowledge_status(kb)
+
+        @Expect(initial.ok, true)
+        @Expect(rebuild.ok, false)
+        @Expect(rebuild.failedVersion.contains("vector_rebuild_failed") || rebuild.failedVersion.contains("embedding_batch_failed"), true)
+        @Expect(vectorStore.status("ckb_active").count, oldActiveCount)
+        @Expect(vectorStore.deleteCollectionCalls > 0, true)
+        @Expect(metadata.vectorActiveCollection, "ckb_active")
+        @Expect(status.storage.indexCount, oldActiveCount)
+    }
+
+    @TestCase
+    public func p5E2E06VectorStatusMismatchMarksKnowledgeStatusDegraded(): Unit {
+        let root = "target/ckb-routine-update-e2e-vector-status-mismatch"
+        p5EnsureEmptyDir(root)
+        let store = FileKnowledgeStore("${root}/store")
+        let provider = P5FakeEmbeddingProvider(2)
+        let vectorStore = P5FakeQdrantStore("ckb_active", "ckb_candidate")
+        let kb = p5SingleRecordKnowledgeBase(provider, vectorStore)
+        let initial = ckbRebuildIndex(kb, store)
+        _ = vectorStore.deleteCollection("ckb_active")
+
+        let verified = kb.verifyAndApplyVectorStoreStatus("ckb_active", 1)
+        let status = cangjie_knowledge_status(kb)
+
+        @Expect(initial.ok, true)
+        @Expect(verified.state, EmbeddingProviderState.DEGRADED)
+        @Expect(verified.degradedReason.contains("vector_store_count_mismatch:0:1:ckb_active"), true)
+        @Expect(status.storage.vectorState, EmbeddingProviderState.DEGRADED)
+        @Expect(status.indexManifest.entries[1].itemCount, 0)
+    }
 }
 
 private class P5FakeEmbeddingProvider <: EmbeddingProvider {

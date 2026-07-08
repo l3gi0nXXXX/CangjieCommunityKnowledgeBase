@@ -3465,6 +3465,15 @@ private func ckbVectorReconcileDeleteStaging(vectorStore: VectorStore, stagingCo
     }
 }
 
+private func ckbDeleteStagingBestEffort(vectorStore: VectorStore, stagingCollection: String): Unit {
+    let diagnostics = ArrayList<String>()
+    ckbVectorReconcileDeleteStaging(vectorStore, stagingCollection, diagnostics)
+}
+
+private func ckbDeleteKnowledgeBaseStagingBestEffort(kb: KnowledgeBase, stagingCollection: String): Unit {
+    _ = kb.deleteVectorCollection(stagingCollection)
+}
+
 private func ckbAppendStrings(target: ArrayList<String>, source: ArrayList<String>): Unit {
     for (item in source) {
         target.add(item)
@@ -5368,7 +5377,7 @@ public class CkbSchedulerTaskRunner <: SchedulerTaskRunner {
         ckbRuntimeCangjieVersionManifest(this.config)
     }
 
-    public func runTask(name: String, since: String): SchedulerTaskResult {
+    public func runTask(name: String, since: String, deadlineAtMillis: Int64): SchedulerTaskResult {
         let result = SchedulerTaskResult()
         let beforeInvariant = ckbRoutineActiveInvariantFromStatus(this.kb.status())
         result.since = if (since == "") { "0" } else { since }
@@ -5383,9 +5392,10 @@ public class CkbSchedulerTaskRunner <: SchedulerTaskRunner {
             return this.finalizeTaskResultWithContract(name, result, beforeInvariant)
         }
         if (name == "weekly_full_rebuild") {
-            let rebuild = ckbRebuildIndex(this.kb, this.store)
+            let progressSink = FileVectorBuildProgressSink(this.store)
+            let rebuild = ckbStagedFullRebuild(this.kb, this.store, this.config, progressSink, deadlineAtMillis)
             result.ok = rebuild.ok
-            result.status = if (rebuild.ok) { "rebuild_ok" } else { "rebuild_failed" }
+            result.status = if (rebuild.ok) { "rebuild_ok" } else { "rebuild_failed:${rebuild.failedVersion}" }
             result.cursor = "rebuild-${rebuild.activeVersion}"
             result.activeVersion = rebuild.activeVersion
             result.candidateVersion = rebuild.candidateVersion
@@ -6397,6 +6407,7 @@ private func ckbResolveGitCodeRefForFetch(runner: SourceFetchRunner, builder: So
         resolution.diagnostics.add("gitcode_ref_resolved_commit:${repo}:${ref}")
         return resolution
     }
+    let candidateRefs = ckbGitCodeRefResolutionCandidates(ref, config)
     var page: Int64 = 1
     while (page <= 10) {
         let branchListRequest = builder.gitCodeBranches(repo, page: page)
@@ -6407,53 +6418,79 @@ private func ckbResolveGitCodeRefForFetch(runner: SourceFetchRunner, builder: So
             resolution.failedRequests.add(diagnostic)
             break
         }
-        let parsed = ckbParseGitCodeBranchListResolution(branchListFetch.body, ref)
-        if (parsed.malformed) {
-            resolution.status = parsed.status
-            resolution.failedRequests.add(diagnostic)
-            resolution.diagnostics.add("gitcode_ref_resolution_malformed_json:${repo}:${ref}:page=${page}")
-            return resolution
+        var parsedCount: Int64 = 0
+        for (candidateRef in candidateRefs) {
+            let parsed = ckbParseGitCodeBranchListResolution(branchListFetch.body, candidateRef)
+            if (parsed.malformed) {
+                resolution.status = parsed.status
+                resolution.failedRequests.add(diagnostic)
+                resolution.diagnostics.add("gitcode_ref_resolution_malformed_json:${repo}:${candidateRef}:page=${page}")
+                return resolution
+            }
+            if (parsed.count > parsedCount) {
+                parsedCount = parsed.count
+            }
+            if (parsed.found && parsed.commit != "") {
+                resolution.ok = true
+                resolution.status = "ok"
+                resolution.effectiveRef = parsed.commit
+                resolution.resolvedCommit = parsed.commit
+                resolution.refKind = "branch"
+                resolution.diagnostics.add("gitcode_ref_resolved_branch_list:${repo}:${candidateRef}:${parsed.commit}")
+                if (candidateRef != ref) {
+                    resolution.diagnostics.add("gitcode_ref_alias_used:${repo}:${ref}:${candidateRef}")
+                }
+                return resolution
+            }
         }
-        if (parsed.found && parsed.commit != "") {
-            resolution.ok = true
-            resolution.status = "ok"
-            resolution.effectiveRef = parsed.commit
-            resolution.resolvedCommit = parsed.commit
-            resolution.refKind = "branch"
-            resolution.diagnostics.add("gitcode_ref_resolved_branch_list:${repo}:${ref}:${parsed.commit}")
-            return resolution
-        }
-        if (parsed.count < 100) {
+        if (parsedCount < 100) {
             break
         }
         page += 1
     }
-    let branchRequest = builder.gitCodeBranchNativeSafe(repo, ref)
-    let branchFetch = ckbFetchScheduledRequest(runner, branchRequest, config)
-    let branchDiagnostic = ckbGitCodeRefResolutionFetchDiagnostic(branchRequest, branchFetch)
-    resolution.diagnostics.add("gitcode_ref_resolution_branch_ref:${branchDiagnostic}")
-    if (branchFetch.ok) {
-        let parsed = ckbParseGitCodeBranchObjectResolution(branchFetch.body, ref)
-        if (parsed.malformed) {
-            resolution.status = parsed.status
+    for (candidateRef in candidateRefs) {
+        let branchRequest = builder.gitCodeBranchNativeSafe(repo, candidateRef)
+        let branchFetch = ckbFetchScheduledRequest(runner, branchRequest, config)
+        let branchDiagnostic = ckbGitCodeRefResolutionFetchDiagnostic(branchRequest, branchFetch)
+        resolution.diagnostics.add("gitcode_ref_resolution_branch_ref:${branchDiagnostic}")
+        if (branchFetch.ok) {
+            let parsed = ckbParseGitCodeBranchObjectResolution(branchFetch.body, candidateRef)
+            if (parsed.malformed) {
+                resolution.status = parsed.status
+                resolution.failedRequests.add(branchDiagnostic)
+                return resolution
+            }
+            if (parsed.found && parsed.commit != "") {
+                resolution.ok = true
+                resolution.status = "ok"
+                resolution.effectiveRef = parsed.commit
+                resolution.resolvedCommit = parsed.commit
+                resolution.refKind = "branch"
+                resolution.diagnostics.add("gitcode_ref_resolved_branch_ref:${repo}:${candidateRef}:${parsed.commit}")
+                if (candidateRef != ref) {
+                    resolution.diagnostics.add("gitcode_ref_alias_used:${repo}:${ref}:${candidateRef}")
+                }
+                return resolution
+            }
+        } else {
             resolution.failedRequests.add(branchDiagnostic)
-            return resolution
         }
-        if (parsed.found && parsed.commit != "") {
-            resolution.ok = true
-            resolution.status = "ok"
-            resolution.effectiveRef = parsed.commit
-            resolution.resolvedCommit = parsed.commit
-            resolution.refKind = "branch"
-            resolution.diagnostics.add("gitcode_ref_resolved_branch_ref:${repo}:${ref}:${parsed.commit}")
-            return resolution
-        }
-    } else {
-        resolution.failedRequests.add(branchDiagnostic)
     }
     resolution.status = "gitcode_ref_resolution_failed"
     resolution.diagnostics.add("gitcode_ref_resolution_failed:${repo}:${ref}")
     resolution
+}
+
+private func ckbGitCodeRefResolutionCandidates(ref: String, config: CkbRuntimeConfig): ArrayList<String> {
+    let candidates = ArrayList<String>()
+    addUniqueString(candidates, ref)
+    if (ref.startsWith("release")) {
+        let aliases = cangjieSourceRefAliasesForTargetVersion(ckbScheduledTargetVersion(config))
+        for (alias in aliases) {
+            addUniqueString(candidates, alias)
+        }
+    }
+    candidates
 }
 
 private func ckbGitCodeRefResolutionFetchDiagnostic(request: SourceFetchRequest, fetch: SourceFetchResult): String {
@@ -7836,13 +7873,15 @@ public func ckbSyncLiveApply(kb: KnowledgeBase, adapter: SourceAdapter, store: F
     result
 }
 
-public func ckbRebuildIndex(kb: KnowledgeBase, store: FileKnowledgeStore, fail!: Bool = false, progressSink!: VectorBuildProgressSink = NoopVectorBuildProgressSink(), targetVectorCollection!: String = "", persistSnapshot!: Bool = true): IndexBuildResult {
-    let result = kb.rebuildIndex(fail, progressSink: progressSink, targetVectorCollection: targetVectorCollection)
+public func ckbRebuildIndex(kb: KnowledgeBase, store: FileKnowledgeStore, fail!: Bool = false, progressSink!: VectorBuildProgressSink = NoopVectorBuildProgressSink(), targetVectorCollection!: String = "", persistSnapshot!: Bool = true, deadlineAtMillis!: Int64 = 0): IndexBuildResult {
+    let result = kb.rebuildIndex(fail, progressSink: progressSink, targetVectorCollection: targetVectorCollection, deadlineAtMillis: deadlineAtMillis)
     if (result.ok) {
         let vector = kb.lastVectorIndexBuild()
         if (!vector.ok) {
             result.ok = false
-            result.failedVersion = if (result.failedVersion != "") {
+            result.failedVersion = if (vector.diagnostic != "") {
+                vector.diagnostic
+            } else if (result.failedVersion != "") {
                 result.failedVersion
             } else if (result.candidateVersion != "") {
                 result.candidateVersion
@@ -7851,10 +7890,150 @@ public func ckbRebuildIndex(kb: KnowledgeBase, store: FileKnowledgeStore, fail!:
             }
             return result
         }
+        if (targetVectorCollection.trimAscii() == "") {
+            let verified = kb.verifyAndApplyVectorStoreStatus(kb.status().storage.vectorActiveCollection, result.count)
+            if (verified.state != EmbeddingProviderState.READY) {
+                result.ok = false
+                result.failedVersion = if (verified.degradedReason != "") { verified.degradedReason } else { "vector_store_status_not_ready" }
+                return result
+            }
+        }
         if (persistSnapshot) {
             kb.persistActiveSnapshotUsingVectorRecords(store, vector.vectorRecords)
         }
     }
+    result
+}
+
+public func ckbStagedFullRebuildWithVectorStore(kb: KnowledgeBase, store: FileKnowledgeStore, config: CkbRuntimeConfig, vectorStore: VectorStore, progressSink: VectorBuildProgressSink, deadlineAtMillis: Int64): IndexBuildResult {
+    let vector = vectorStoreConfigFromRuntime(config)
+    if (vector.backend != "qdrant") {
+        return ckbRebuildIndex(kb, store, progressSink: progressSink, deadlineAtMillis: deadlineAtMillis)
+    }
+    let oldSnapshot = store.loadActiveSnapshot()
+    let stagingCollection = ckbVectorReconcileStagingCollection(vector.activeCollection)
+    let result = ckbRebuildIndex(kb, store, progressSink: progressSink, targetVectorCollection: stagingCollection, persistSnapshot: false, deadlineAtMillis: deadlineAtMillis)
+    if (!result.ok) {
+        ckbDeleteStagingBestEffort(vectorStore, stagingCollection)
+        if (oldSnapshot.valid) {
+            _ = kb.restoreActiveSnapshot(oldSnapshot)
+        }
+        return result
+    }
+    let staging = vectorStore.status(stagingCollection)
+    if (staging.state != EmbeddingProviderState.READY) {
+        result.ok = false
+        result.failedVersion = "qdrant_staging_not_ready:${staging.degradedReason}"
+        ckbDeleteStagingBestEffort(vectorStore, stagingCollection)
+        if (oldSnapshot.valid) {
+            _ = kb.restoreActiveSnapshot(oldSnapshot)
+        }
+        return result
+    }
+    if (staging.count != result.count) {
+        result.ok = false
+        result.failedVersion = "qdrant_staging_count_mismatch:${staging.count}:${result.count}:${stagingCollection}"
+        ckbDeleteStagingBestEffort(vectorStore, stagingCollection)
+        if (oldSnapshot.valid) {
+            _ = kb.restoreActiveSnapshot(oldSnapshot)
+        }
+        return result
+    }
+    if (vector.dimensions > 0 && staging.dimension > 0 && staging.dimension != vector.dimensions) {
+        result.ok = false
+        result.failedVersion = "qdrant_staging_dimension_mismatch:${staging.dimension}:${vector.dimensions}:${stagingCollection}"
+        ckbDeleteStagingBestEffort(vectorStore, stagingCollection)
+        if (oldSnapshot.valid) {
+            _ = kb.restoreActiveSnapshot(oldSnapshot)
+        }
+        return result
+    }
+    if (vector.distance != "" && staging.distance != "" && staging.distance.trimAscii().toAsciiLower() != vector.distance.trimAscii().toAsciiLower()) {
+        result.ok = false
+        result.failedVersion = "qdrant_staging_distance_mismatch:${staging.distance}:${vector.distance}:${stagingCollection}"
+        ckbDeleteStagingBestEffort(vectorStore, stagingCollection)
+        if (oldSnapshot.valid) {
+            _ = kb.restoreActiveSnapshot(oldSnapshot)
+        }
+        return result
+    }
+    kb.promoteVectorActiveCollection(stagingCollection)
+    let verified = kb.verifyAndApplyVectorStoreStatus(stagingCollection, result.count)
+    if (verified.state != EmbeddingProviderState.READY) {
+        result.ok = false
+        result.failedVersion = if (verified.degradedReason != "") { verified.degradedReason } else { "qdrant_active_status_not_ready:${stagingCollection}" }
+        if (oldSnapshot.valid) {
+            _ = kb.restoreActiveSnapshot(oldSnapshot)
+        }
+        return result
+    }
+    kb.persistActiveSnapshotUsingVectorRecords(store, kb.lastVectorIndexBuild().vectorRecords, persistVectorFile: false)
+    result
+}
+
+public func ckbStagedFullRebuild(kb: KnowledgeBase, store: FileKnowledgeStore, config: CkbRuntimeConfig, progressSink: VectorBuildProgressSink, deadlineAtMillis: Int64): IndexBuildResult {
+    let vector = vectorStoreConfigFromRuntime(config)
+    if (vector.backend != "qdrant") {
+        return ckbRebuildIndex(kb, store, progressSink: progressSink, deadlineAtMillis: deadlineAtMillis)
+    }
+    let oldSnapshot = store.loadActiveSnapshot()
+    let stagingCollection = ckbVectorReconcileStagingCollection(vector.activeCollection)
+    let result = ckbRebuildIndex(kb, store, progressSink: progressSink, targetVectorCollection: stagingCollection, persistSnapshot: false, deadlineAtMillis: deadlineAtMillis)
+    if (!result.ok) {
+        ckbDeleteKnowledgeBaseStagingBestEffort(kb, stagingCollection)
+        if (oldSnapshot.valid) {
+            _ = kb.restoreActiveSnapshot(oldSnapshot)
+        }
+        return result
+    }
+    let staging = kb.vectorCollectionStatus(stagingCollection)
+    if (staging.state != EmbeddingProviderState.READY) {
+        result.ok = false
+        result.failedVersion = "qdrant_staging_not_ready:${staging.degradedReason}"
+        ckbDeleteKnowledgeBaseStagingBestEffort(kb, stagingCollection)
+        if (oldSnapshot.valid) {
+            _ = kb.restoreActiveSnapshot(oldSnapshot)
+        }
+        return result
+    }
+    if (staging.count != result.count) {
+        result.ok = false
+        result.failedVersion = "qdrant_staging_count_mismatch:${staging.count}:${result.count}:${stagingCollection}"
+        ckbDeleteKnowledgeBaseStagingBestEffort(kb, stagingCollection)
+        if (oldSnapshot.valid) {
+            _ = kb.restoreActiveSnapshot(oldSnapshot)
+        }
+        return result
+    }
+    if (vector.dimensions > 0 && staging.dimension > 0 && staging.dimension != vector.dimensions) {
+        result.ok = false
+        result.failedVersion = "qdrant_staging_dimension_mismatch:${staging.dimension}:${vector.dimensions}:${stagingCollection}"
+        ckbDeleteKnowledgeBaseStagingBestEffort(kb, stagingCollection)
+        if (oldSnapshot.valid) {
+            _ = kb.restoreActiveSnapshot(oldSnapshot)
+        }
+        return result
+    }
+    if (vector.distance != "" && staging.distance != "" && staging.distance.trimAscii().toAsciiLower() != vector.distance.trimAscii().toAsciiLower()) {
+        result.ok = false
+        result.failedVersion = "qdrant_staging_distance_mismatch:${staging.distance}:${vector.distance}:${stagingCollection}"
+        ckbDeleteKnowledgeBaseStagingBestEffort(kb, stagingCollection)
+        if (oldSnapshot.valid) {
+            _ = kb.restoreActiveSnapshot(oldSnapshot)
+        }
+        return result
+    }
+    kb.promoteVectorActiveCollection(stagingCollection)
+    let verified = kb.verifyAndApplyVectorStoreStatus(stagingCollection, result.count)
+    if (verified.state != EmbeddingProviderState.READY) {
+        result.ok = false
+        result.failedVersion = if (verified.degradedReason != "") { verified.degradedReason } else { "qdrant_active_status_not_ready:${stagingCollection}" }
+        if (oldSnapshot.valid) {
+            _ = kb.restoreActiveSnapshot(oldSnapshot)
+        }
+        return result
+    }
+    kb.persistActiveSnapshotUsingVectorRecords(store, kb.lastVectorIndexBuild().vectorRecords, persistVectorFile: false)
     result
 }
 

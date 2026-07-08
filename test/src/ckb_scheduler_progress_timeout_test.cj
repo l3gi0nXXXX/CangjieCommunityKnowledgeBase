@@ -14,12 +14,15 @@ private class ProgressFakeRunner <: SchedulerTaskRunner {
 
     public init() {}
 
-    public func runTask(name: String, since: String): SchedulerTaskResult {
+    public func runTask(name: String, since: String, deadlineAtMillis: Int64): SchedulerTaskResult {
         this.calls.add(name)
-        if (name == this.timeoutTask) {
-            sleep(Duration.millisecond * 200)
-        }
         let result = SchedulerTaskResult()
+        if (name == this.timeoutTask && deadlineAtMillis > 0) {
+            result.ok = false
+            result.status = "task_timeout:${name}"
+            result.durationMillis = 20
+            return result
+        }
         result.ok = name != this.failTask
         result.status = if (result.ok) { "ok" } else { "fake_failed" }
         result.durationMillis = 1

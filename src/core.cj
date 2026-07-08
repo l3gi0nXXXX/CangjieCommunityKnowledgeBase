@@ -394,6 +394,10 @@ private func ckbCoreNowMillis(): Int64 {
     DateTime.now().toUnixTimeStamp().toMilliseconds()
 }
 
+private func ckbDeadlineExceeded(deadlineAtMillis: Int64): Bool {
+    deadlineAtMillis > 0 && ckbCoreNowMillis() >= deadlineAtMillis
+}
+
 private func ckbVectorBuildRunId(): String {
     "vector-reconcile-${ckbCoreNowMillis()}"
 }
@@ -2186,12 +2190,16 @@ public class SchedulerExecutorResult {
     public var validationSummaries: ArrayList<String> = ArrayList<String>()
     public var validationDiagnostics: ArrayList<String> = ArrayList<String>()
     public var validationEvidenceHashes: ArrayList<String> = ArrayList<String>()
+    public var finalPreflightOk: Bool = true
+    public var finalPreflightDiagnostics: ArrayList<String> = ArrayList<String>()
+    public var postRepairAttempted: Bool = false
+    public var postRepairOk: Bool = false
 
     public init() {}
 }
 
 public interface SchedulerTaskRunner {
-    func runTask(name: String, since: String): SchedulerTaskResult
+    func runTask(name: String, since: String, deadlineAtMillis: Int64): SchedulerTaskResult
 }
 
 public interface SchedulerProgressSink {
@@ -2309,9 +2317,10 @@ public class SchedulerExecutor {
 
     private func runTaskWithTimeout(name: String, since: String, timeoutMillis: Int64): SchedulerTaskResult {
         let started = ckbCoreNowMillis()
+        let deadlineAtMillis = if (timeoutMillis > 0) { started + timeoutMillis } else { 0 }
         if (timeoutMillis <= 0) {
             try {
-                let task = this.runner.runTask(name, since)
+                let task = this.runner.runTask(name, since, deadlineAtMillis)
                 if (task.durationMillis <= 0) {
                     task.durationMillis = ckbCoreNowMillis() - started
                 }
@@ -2321,12 +2330,15 @@ public class SchedulerExecutor {
             }
         }
         try {
-            let future = spawn { =>
-                this.runner.runTask(name, since)
-            }
-            let task = future.get(Duration.millisecond * timeoutMillis)
+            let task = this.runner.runTask(name, since, deadlineAtMillis)
             if (task.durationMillis <= 0) {
                 task.durationMillis = ckbCoreNowMillis() - started
+            }
+            if (task.status.startsWith("task_timeout:")) {
+                return task
+            }
+            if (ckbDeadlineExceeded(deadlineAtMillis)) {
+                return schedulerExceptionTaskResult(name, "task_timeout:${name}", ckbCoreNowMillis() - started)
             }
             return task
         } catch (_: Exception) {
@@ -2648,6 +2660,20 @@ public class KnowledgeBase {
 
     private func restoreOrRebuildActiveVectorIndex(snapshot: ActiveSnapshot): VectorIndexBuildResult {
         if (snapshot.vectorRecords.size == 0) {
+            let existing = this.vectorStore.status(this.vectorCollection)
+            if (existing.state == EmbeddingProviderState.READY && existing.count == this.activeIndex.size) {
+                this.applyVectorStatus(existing)
+                this.rebuildGraphIndex()
+                this.rebuildServingIndexStatus()
+                let ready = VectorIndexBuildResult()
+                ready.ok = true
+                ready.status = existing.state
+                ready.vectorCount = existing.count
+                ready.graphNodes = this.storage.graphNodeCount
+                ready.servingCount = this.storage.servingIndexCount
+                ready.diagnostic = "vector_snapshot_missing_but_active_collection_consistent"
+                return ready
+            }
             return this.markVectorRebuildRequired("vector_snapshot_missing")
         }
         let backupDimension = vectorBackupDimension(snapshot.vectorRecords)
@@ -3018,7 +3044,7 @@ public class KnowledgeBase {
         out
     }
 
-    public func rebuildIndex(simulateFailure: Bool, progressSink!: VectorBuildProgressSink = NoopVectorBuildProgressSink(), targetVectorCollection!: String = ""): IndexBuildResult {
+    public func rebuildIndex(simulateFailure: Bool, progressSink!: VectorBuildProgressSink = NoopVectorBuildProgressSink(), targetVectorCollection!: String = "", deadlineAtMillis!: Int64 = 0): IndexBuildResult {
         let builder = IndexBuilder()
         let result = builder.rebuild(this.normalizedRecords, this.activeKnowledgeVersion, "ckb-20260519-000200-candidate", fail: simulateFailure)
         this.candidateKnowledgeVersion = result.candidateVersion
@@ -3041,7 +3067,7 @@ public class KnowledgeBase {
         this.failedCandidateVersion = ""
         this.storage.indexCount = this.activeIndex.size
         this.invalidateServingCacheOnActiveVersionChange()
-        this.lastVectorIndexBuildResult = this.rebuildProductionIndexesWithResult("", progressSink: progressSink, targetVectorCollection: targetVectorCollection)
+        this.lastVectorIndexBuildResult = this.rebuildProductionIndexesWithResult("", progressSink: progressSink, targetVectorCollection: targetVectorCollection, deadlineAtMillis: deadlineAtMillis)
         this.rebuildIndexManifest()
         result
     }
@@ -3050,12 +3076,12 @@ public class KnowledgeBase {
         this.lastVectorIndexBuildResult = this.rebuildProductionIndexesWithResult("", progressSink: NoopVectorBuildProgressSink())
     }
 
-    private func rebuildProductionIndexesWithResult(reason: String, progressSink!: VectorBuildProgressSink = NoopVectorBuildProgressSink(), targetVectorCollection!: String = ""): VectorIndexBuildResult {
+    private func rebuildProductionIndexesWithResult(reason: String, progressSink!: VectorBuildProgressSink = NoopVectorBuildProgressSink(), targetVectorCollection!: String = "", deadlineAtMillis!: Int64 = 0): VectorIndexBuildResult {
         let started = ckbCoreNowMillis()
         let result = VectorIndexBuildResult()
         result.diagnostic = reason
         this.rebuildServingIndexStatus()
-        let vector = this.rebuildProductionVectorIndexWithResult(progressSink: progressSink, targetVectorCollection: targetVectorCollection)
+        let vector = this.rebuildProductionVectorIndexWithResult(progressSink: progressSink, targetVectorCollection: targetVectorCollection, deadlineAtMillis: deadlineAtMillis)
         this.rebuildGraphIndex()
         result.ok = vector.ok
         result.status = vector.status
@@ -3075,7 +3101,7 @@ public class KnowledgeBase {
         result
     }
 
-    private func rebuildProductionVectorIndexWithResult(progressSink!: VectorBuildProgressSink = NoopVectorBuildProgressSink(), targetVectorCollection!: String = ""): VectorIndexBuildResult {
+    private func rebuildProductionVectorIndexWithResult(progressSink!: VectorBuildProgressSink = NoopVectorBuildProgressSink(), targetVectorCollection!: String = "", deadlineAtMillis!: Int64 = 0): VectorIndexBuildResult {
         let result = VectorIndexBuildResult()
         let progress = VectorBuildProgress()
         let effectiveVectorCollection = if (targetVectorCollection.trimAscii() == "") { this.vectorCollection } else { targetVectorCollection.trimAscii() }
@@ -3126,6 +3152,25 @@ public class KnowledgeBase {
         }
         let textBatches = CkbEmbeddingTextBudgeter(ckbEmbeddingTextBudgetFromStatus(embeddingStatus)).batches(rawTexts)
         for (textBatch in textBatches) {
+            if (ckbDeadlineExceeded(deadlineAtMillis)) {
+                vectorStatus = this.vectorStore.status(effectiveVectorCollection)
+                vectorStatus.state = EmbeddingProviderState.DEGRADED
+                vectorStatus.count = progress.completed
+                vectorStatus.degradedReason = "vector_build_deadline_exceeded:${effectiveVectorCollection}:${progress.completed}:${progress.total}"
+                progress.state = vectorStatus.state
+                progress.diagnostic = vectorStatus.degradedReason
+                progress.lastDiagnostic = vectorStatus.degradedReason
+                progress.updatedAtMillis = ckbCoreNowMillis()
+                progress.elapsedMillis = progress.updatedAtMillis - progress.startedAtMillis
+                this.applyVectorStatus(vectorStatus)
+                result.ok = false
+                result.status = vectorStatus.state
+                result.vectorCount = progress.completed
+                result.diagnostic = vectorStatus.degradedReason
+                result.elapsedMillis = progress.elapsedMillis
+                progressSink.onVectorBuildFinished(progress)
+                return result
+            }
             let texts = textBatch.texts
             progress.currentBatch = batchIndex
             progress.currentBatchStart = textBatch.startIndex
@@ -3644,6 +3689,34 @@ public class KnowledgeBase {
 
     public func vectorStatus(): VectorStoreStatus {
         this.vectorStore.status(this.vectorCollection)
+    }
+
+    public func vectorCollectionStatus(collection: String): VectorStoreStatus {
+        this.vectorStore.status(collection)
+    }
+
+    public func deleteVectorCollection(collection: String): VectorStoreStatus {
+        this.vectorStore.deleteCollection(collection)
+    }
+
+    public func verifyAndApplyVectorStoreStatus(collection: String, expectedCount: Int64): VectorStoreStatus {
+        let effectiveCollection = if (collection.trimAscii() == "") { this.vectorCollection } else { collection.trimAscii() }
+        let status = this.vectorStore.status(effectiveCollection)
+        let expectedDimension = this.activeEmbeddingDimensions()
+        if (status.collection == "") {
+            status.collection = effectiveCollection
+        }
+        if (status.state == EmbeddingProviderState.READY && expectedCount >= 0 && status.count != expectedCount) {
+            status.state = EmbeddingProviderState.DEGRADED
+            status.degradedReason = "vector_store_count_mismatch:${status.count}:${expectedCount}:${effectiveCollection}"
+        }
+        if (status.state == EmbeddingProviderState.READY && expectedDimension > 0 && status.dimension > 0 && status.dimension != expectedDimension) {
+            status.state = EmbeddingProviderState.DEGRADED
+            status.degradedReason = "vector_store_dimension_mismatch:${status.dimension}:${expectedDimension}:${effectiveCollection}"
+        }
+        this.applyVectorStatus(status)
+        this.rebuildIndexManifest()
+        status
     }
 
     public func vectorBuildProgress(): VectorBuildProgress {
