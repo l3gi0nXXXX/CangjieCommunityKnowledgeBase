@@ -139,7 +139,7 @@ public class CkbVectorReconcileTest {
         @Expect(progress.contains("\"event\":\"batch_finished\""), true)
         @Expect(progress.contains("\"event\":\"vector_build_finished\""), true)
         @Expect(renderCkbVectorReconcileJson(result).contains("\"progressPath\""), true)
-        @Expect(store.has("index/vector-${vectorStore.lastCollection}.ckb"), true)
+        @Expect(store.has("index/vector-${vectorStore.lastCollection}.ckb"), false)
         @Expect(store.has("index/active.ckb"), true)
         @Expect(store.has("raw/records.ckb"), true)
         @Expect(store.has("metadata/status.ckb"), true)
@@ -156,12 +156,15 @@ public class CkbVectorReconcileTest {
         let vectorStore = ReconcileTrackingVectorStore()
         vectorStore.reportCountMismatchAfterRebuild = true
         let kb = ckbVectorReconcileKnowledgeBase(vectorStore)
+        ckbVectorReconcileWriteDuplicateActiveSnapshot(store, kb)
         vectorStore.deletedActiveCollection = false
 
         let result = ckbVectorReconcileWithVectorStore(kb, store, ckbVectorReconcileRuntimeConfig(), vectorStore, true)
 
         @Expect(result.ok, false)
         @Expect(ckbVectorReconcileContainsPrefix(result.diagnostics, "qdrant_staging_count_mismatch:"), true)
+        @Expect(ckbVectorReconcileContains(result.diagnostics, "duplicate_vector_ids:1:1"), true)
+        @Expect(ckbVectorReconcileContains(result.diagnostics, "duplicate_vector_id:duplicate-source:2"), true)
         @Expect(result.qdrantAfterCount < result.rebuiltVectorCount, true)
         @Expect(vectorStore.deletedActiveCollection, false)
         @Expect(vectorStore.deleteCollectionCalls, 1)
@@ -189,6 +192,31 @@ public class CkbVectorReconcileTest {
         let progress = String.fromUtf8(File.readFrom(Path(root).join(result.progressPath)))
         @Expect(progress.contains("\"event\":\"batch_finished\""), true)
         @Expect(progress.contains("upsert_failed"), true)
+    }
+
+    @TestCase
+    public func routineRepairRequiresForceAndThenPassesPostRepairPreflight(): Unit {
+        let root = "target/ckb-routine-repair-e2e"
+        ckbVectorReconcileEnsureEmptyDir(root)
+        let store = FileKnowledgeStore(root)
+        let vectorStore = ReconcileTrackingVectorStore()
+        let provider = ReconcileEmbeddingProvider(batchSize: 2)
+        let kb = ckbVectorReconcileKnowledgeBaseWithProvider(vectorStore, provider)
+        let config = ckbVectorReconcileRuntimeConfig()
+
+        let dry = ckbRoutineRepairWithStoresAndEnv(kb, store, config, root, false, vectorStore, provider, "4096M", "/opt/homebrew/opt/openssl@3/lib")
+        let repaired = ckbRoutineRepairWithStoresAndEnv(kb, store, config, root, true, vectorStore, provider, "4096M", "/opt/homebrew/opt/openssl@3/lib")
+
+        @Expect(dry.ok, false)
+        @Expect(ckbVectorReconcileContains(dry.diagnostics, "routine_repair_requires_force"), true)
+        @Expect(repaired.ok, true)
+        @Expect(repaired.repairPerformed, true)
+        @Expect(repaired.vectorReconcile.ok, true)
+        @Expect(repaired.preflight.ok, true)
+        @Expect(ckbVectorReconcileContains(repaired.diagnostics, "routine_repair_succeeded"), true)
+        @Expect(store.has("metadata/active-snapshot.manifest"), true)
+        @Expect(store.has("metadata/status.ckb"), true)
+        @Expect(store.has("index/vector-${vectorStore.lastCollection}.ckb"), false)
     }
 
     @TestCase
@@ -448,6 +476,56 @@ private func ckbVectorReconcileWriteFile(root: String, relative: String, body: S
         Directory.create(path.parent, recursive: true)
     }
     File.writeTo(path, body.toArray())
+}
+
+private func ckbVectorReconcileWriteDuplicateActiveSnapshot(store: FileKnowledgeStore, kb: KnowledgeBase): Unit {
+    let status = kb.status()
+    let active = kb.activeRecordSnapshot()
+    let duplicateIndex = ArrayList<NormalizedRecord>()
+    let rawRecords = ArrayList<RawRecord>()
+    let first = ckbVectorReconcileDuplicateRecord("duplicate-source", status.activeKnowledgeVersion, "first chunk")
+    let second = ckbVectorReconcileDuplicateRecord("duplicate-source", status.activeKnowledgeVersion, "second chunk")
+    duplicateIndex.add(first)
+    duplicateIndex.add(second)
+    rawRecords.add(ckbVectorReconcileRawRecord(first))
+    rawRecords.add(ckbVectorReconcileRawRecord(second))
+    if (active.size > 0) {
+        let third = ckbVectorReconcileDuplicateRecord("unique-source", status.activeKnowledgeVersion, active[0].chunk)
+        duplicateIndex.add(third)
+        rawRecords.add(ckbVectorReconcileRawRecord(third))
+    }
+    store.writeActiveSnapshotTransaction(status, rawRecords, duplicateIndex, duplicateIndex, ArrayList<VectorRecord>(), "ckb_active", GraphBuildResult(), persistVectorFile: false)
+}
+
+private func ckbVectorReconcileDuplicateRecord(sourceId: String, activeVersion: String, chunk: String): NormalizedRecord {
+    let metadata = KnowledgeMetadata()
+    metadata.sourceId = sourceId
+    metadata.sourceType = SourceTypes.DOC
+    metadata.sourceUrl = "https://example.test/${sourceId}"
+    metadata.knowledgeVersion = activeVersion
+    metadata.trustLevel = TrustLevels.OFFICIAL
+    metadata.reviewState = ReviewStates.TRUSTED
+    metadata.license = "declared-or-unknown"
+    metadata.contentSize = chunk.size
+    let record = NormalizedRecord()
+    record.sourceId = sourceId
+    record.recordKind = SourceTypes.DOC
+    record.title = "Duplicate ${sourceId}"
+    record.chunk = chunk
+    record.citation = "cite://${sourceId}"
+    record.score = 1.0
+    record.metadata = metadata
+    record
+}
+
+private func ckbVectorReconcileRawRecord(record: NormalizedRecord): RawRecord {
+    let raw = RawRecord()
+    raw.sourceId = record.sourceId
+    raw.title = record.title
+    raw.content = record.chunk
+    raw.metadata = record.metadata
+    raw.contentHash = "hash-${record.sourceId}-${record.chunk.size}"
+    raw
 }
 
 private func ckbVectorReconcileContains(values: ArrayList<String>, needle: String): Bool {

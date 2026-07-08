@@ -490,6 +490,7 @@ public class ProductionEmbeddingProvider <: EmbeddingProvider {
 
 public class VectorRecord {
     public var id: String = ""
+    public var pointId: String = ""
     public var vector: ArrayList<Float64> = ArrayList<Float64>()
     public var metadata: KnowledgeMetadata = KnowledgeMetadata()
     public var title: String = ""
@@ -497,6 +498,14 @@ public class VectorRecord {
     public var citation: String = ""
 
     public init() {}
+}
+
+public func vectorPointIdentity(record: VectorRecord): String {
+    let pointId = record.pointId.trimAscii()
+    if (pointId != "") {
+        return pointId
+    }
+    record.id
 }
 
 public class VectorSearchFilters {
@@ -598,7 +607,7 @@ public class LocalVectorStore <: VectorStore {
         for (existing in stored.records) {
             var replaced = false
             for (record in vectors) {
-                if (existing.id == record.id) {
+                if (vectorPointIdentity(existing) == vectorPointIdentity(record)) {
                     replaced = true
                 }
             }
@@ -1206,7 +1215,7 @@ public class QdrantVectorStore <: VectorStore {
         for (existing in entry.records) {
             var replaced = false
             for (record in vectors) {
-                if (existing.id == record.id) {
+                if (vectorPointIdentity(existing) == vectorPointIdentity(record)) {
                     replaced = true
                 }
             }
@@ -1235,7 +1244,7 @@ private func qdrantUpsertBody(vectors: ArrayList<VectorRecord>): String {
             out += ","
         }
         let record = vectors[i]
-        out += "{\"id\":${qdrantStablePointId(record.id)},\"vector\":${qdrantVectorJson(record.vector)},\"payload\":${qdrantPayloadJson(record)}}"
+        out += "{\"id\":${qdrantStablePointId(vectorPointIdentity(record))},\"vector\":${qdrantVectorJson(record.vector)},\"payload\":${qdrantPayloadJson(record)}}"
     }
     out + "]}"
 }
@@ -1266,6 +1275,7 @@ private func qdrantPayloadJson(record: VectorRecord): String {
     let metadata = record.metadata
     var out = "{"
     out += "\"ckb_id\":\"${qdrantJsonEscape(record.id)}\""
+    out += ",\"pointId\":\"${qdrantJsonEscape(vectorPointIdentity(record))}\""
     out += ",\"title\":\"${qdrantJsonEscape(record.title)}\""
     out += ",\"chunk\":\"${qdrantJsonEscape(record.chunk)}\""
     out += ",\"citation\":\"${qdrantJsonEscape(record.citation)}\""
@@ -1404,6 +1414,7 @@ private func qdrantRecordFromPayload(payload: String): VectorRecord {
     if (record.id == "") {
         record.id = qdrantJsonStringField(payload, "id")
     }
+    record.pointId = qdrantJsonStringField(payload, "pointId")
     record.title = qdrantJsonStringField(payload, "title")
     record.chunk = qdrantJsonStringField(payload, "chunk")
     record.citation = qdrantJsonStringField(payload, "citation")
@@ -3155,7 +3166,7 @@ public class KnowledgeBase {
             let vectorRecords = ArrayList<VectorRecord>()
             for (i in 0..texts.size) {
                 let source = this.activeIndex[textBatch.startIndex + i]
-                vectorRecords.add(this.vectorRecordFrom(source, batch.vectors[i]))
+                vectorRecords.add(this.vectorRecordFrom(source, batch.vectors[i], ckbVectorPointId(source, textBatch.startIndex + i)))
             }
             vectorStatus = this.vectorStore.upsertBatch(effectiveVectorCollection, vectorRecords)
             if (vectorStatus.state != EmbeddingProviderState.READY) {
@@ -3202,9 +3213,10 @@ public class KnowledgeBase {
         "${record.title} ${record.chunk} ${record.metadata.repo} ${record.metadata.path} ${record.metadata.symbol}"
     }
 
-    private func vectorRecordFrom(source: NormalizedRecord, vector: ArrayList<Float64>): VectorRecord {
+    private func vectorRecordFrom(source: NormalizedRecord, vector: ArrayList<Float64>, pointId: String): VectorRecord {
         let vectorRecord = VectorRecord()
         vectorRecord.id = source.sourceId
+        vectorRecord.pointId = pointId
         vectorRecord.vector = vector
         vectorRecord.metadata = source.metadata
         vectorRecord.title = source.title
@@ -3366,7 +3378,7 @@ public class KnowledgeBase {
             }
             for (i in 0..texts.size) {
                 let source = this.activeIndex[textBatch.startIndex + i]
-                result.records.add(this.vectorRecordFrom(source, batch.vectors[i]))
+                result.records.add(this.vectorRecordFrom(source, batch.vectors[i], ckbVectorPointId(source, textBatch.startIndex + i)))
             }
             result.processed += texts.size
         }
@@ -4135,4 +4147,9 @@ private func contentHash(sourceId: String, content: String): String {
         hash = ((hash * 33) % modulus + (Int64(b) % modulus)) % modulus
     }
     "hash-${hash}-${content.size}"
+}
+
+private func ckbVectorPointId(source: NormalizedRecord, activeIndexOrdinal: Int64): String {
+    let summary = contentHash(source.sourceId, "${source.title}\n${source.chunk}\n${source.citation}")
+    "${source.sourceId}#${activeIndexOrdinal}#${summary}"
 }

@@ -107,6 +107,11 @@ public class CkbVectorBootstrapRebuildTest {
         @Expect(provider.calls, expectedCalls)
         @Expect(kb.lastVectorIndexBuild().vectorRecords.size, result.count)
         @Expect(store.has("index/vector-active.ckb"), true)
+        let snapshot = store.loadActiveSnapshot()
+        @Expect(snapshot.valid, true)
+        @Expect(snapshot.vectorRecords.size, result.count)
+        @Expect(snapshot.vectorRecords[0].pointId != "", true)
+        @Expect(snapshot.vectorRecords[0].id, snapshot.activeIndex[0].sourceId)
     }
 
     @TestCase
