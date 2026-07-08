@@ -58,7 +58,8 @@ public class CkbRoutineF6Test {
         @Expect(secondCheckpoint.contains("completed=200"), true)
         @Expect(secondCheckpoint.contains("status=success"), true)
         @Expect(f6SchedulerDiagnosticsContain(second, "benchmark_gap_proof_resume_skip:CJ-HUMANEVAL-F6-000"), true)
-        @Expect(f6SchedulerDiagnosticsContain(second, "benchmark_gap_query_proof:CJ-HUMANEVAL-F6-000:"), false)
+        @Expect(f6SchedulerDiagnosticsContain(second, "benchmark_gap_query_proof:CJ-HUMANEVAL-F6-000:coveragePass=true"), true)
+        @Expect(f6SchedulerDiagnosticsContain(second, "source=checkpoint"), true)
     }
 
     @TestCase

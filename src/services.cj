@@ -8573,6 +8573,7 @@ private func ingestScheduledBenchmarkGapCuration(kb: KnowledgeBase, store: FileK
         for (record in curated.records) {
             let caseId = ckbBenchmarkGapCaseId(record)
             if (ckbBenchmarkGapProofCompleted(checkpoint, caseId)) {
+                result.validationDiagnostics.add(ckbBenchmarkGapCheckpointQueryProof(record, checkpoint, batchId))
                 result.validationDiagnostics.add("benchmark_gap_proof_resume_skip:${caseId}:batchId=${batchId}")
                 continue
             }
@@ -8715,6 +8716,12 @@ private func ckbBenchmarkGapProofCompleted(checkpoint: CkbBenchmarkGapProofCheck
 
 private func ckbBenchmarkGapProofCheckpointDiagnostic(prefix: String, checkpoint: CkbBenchmarkGapProofCheckpoint, batchId: String): String {
     "${prefix}:batchId=${batchId}|completed=${checkpoint.completed}|total=${checkpoint.total}|remaining=${checkpoint.total - checkpoint.completed}|coveragePass=${checkpoint.coveragePass}|candidateVersion=${checkpoint.candidateVersion}"
+}
+
+private func ckbBenchmarkGapCheckpointQueryProof(record: NormalizedRecord, checkpoint: CkbBenchmarkGapProofCheckpoint, batchId: String): String {
+    let caseId = ckbBenchmarkGapCaseId(record)
+    let evidenceHash = stableSummaryHash("${checkpoint.inputHash}:${checkpoint.candidateVersion}:${caseId}:${checkpoint.coveragePass}")
+    "benchmark_gap_query_proof:${caseId}:coveragePass=${checkpoint.coveragePass}:citations=0:evidenceHash=${evidenceHash}:source=checkpoint:batchId=${batchId}"
 }
 
 private func ckbBenchmarkGapCurationInputPath(config: CkbRuntimeConfig, store: FileKnowledgeStore): String {
