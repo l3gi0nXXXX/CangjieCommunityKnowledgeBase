@@ -3046,7 +3046,55 @@ public func ckbRoutineRuntimePreflightWithBootstrap(config: CkbRuntimeConfig, st
         result.ok = false
         result.diagnostics.add(embedding.reason)
     }
+    ckbRoutineRuntimePreflightSnapshotAndVectorChecks(result, config, storePath, vectorStore)
     result
+}
+
+private func ckbRoutineRuntimePreflightSnapshotAndVectorChecks(result: CkbRoutineRuntimePreflightResult, config: CkbRuntimeConfig, storePath: String, vectorStore: VectorStore): Unit {
+    if (!result.storeExists) {
+        return
+    }
+    let store = FileKnowledgeStore(storePath)
+    let metadata = store.loadMetadataStatus()
+    if (metadata.snapshotManifestTxId == "") {
+        result.ok = false
+        result.diagnostics.add("active_snapshot_manifest_missing")
+    } else if (!store.has("transactions/${safeName(metadata.snapshotManifestTxId)}/COMMIT")) {
+        result.ok = false
+        result.diagnostics.add("active_snapshot_manifest_uncommitted:${metadata.snapshotManifestTxId}")
+    }
+    let snapshot = store.loadActiveSnapshot()
+    if (!snapshot.valid) {
+        result.ok = false
+        result.diagnostics.add("active_snapshot_invalid:${snapshot.diagnostic}")
+        return
+    }
+    if (snapshot.diagnostic.contains("metadata_active_mismatch")) {
+        result.ok = false
+        result.diagnostics.add("metadata_active_mismatch:${snapshot.diagnostic}")
+    }
+    let vector = vectorStoreConfigFromRuntime(config)
+    if (vector.backend != "qdrant") {
+        return
+    }
+    let activeCollection = if (metadata.vectorActiveCollection != "") { metadata.vectorActiveCollection } else { vector.activeCollection }
+    let qdrant = vectorStore.status(activeCollection)
+    if (qdrant.state != EmbeddingProviderState.READY) {
+        result.ok = false
+        result.diagnostics.add("qdrant_active_not_ready:${activeCollection}:${qdrant.degradedReason}")
+    }
+    if (qdrant.count != snapshot.activeIndex.size) {
+        result.ok = false
+        result.diagnostics.add("qdrant_active_count_mismatch:${qdrant.count}:${snapshot.activeIndex.size}:${activeCollection}")
+    }
+    if (vector.dimensions > 0 && qdrant.dimension > 0 && qdrant.dimension != vector.dimensions) {
+        result.ok = false
+        result.diagnostics.add("qdrant_active_dimension_mismatch:${qdrant.dimension}:${vector.dimensions}:${activeCollection}")
+    }
+    if (vector.distance != "" && qdrant.distance != "" && qdrant.distance.trimAscii().toAsciiLower() != vector.distance.trimAscii().toAsciiLower()) {
+        result.ok = false
+        result.diagnostics.add("qdrant_active_distance_mismatch:${qdrant.distance}:${vector.distance}:${activeCollection}")
+    }
 }
 
 private func ckbRoutineRuntimePreflightWithVectorReadiness(config: CkbRuntimeConfig, storePath: String, cjHeapSize: String, dyldLibraryPath: String, vector: CkbRuntimeVectorReadiness): CkbRoutineRuntimePreflightResult {

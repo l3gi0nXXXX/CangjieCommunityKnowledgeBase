@@ -230,6 +230,12 @@ private func ckbLandingRoutineUpdateCompleteStatus(runRoot: String): CkbLandingC
         item.diagnostic = "routine_update_acceptance_failed"
         return item
     }
+    let missingAcceptance = ckbLandingMissingRoutineUpdateAcceptance(matrix)
+    if (missingAcceptance != "") {
+        item.status = "partial"
+        item.diagnostic = "routine_update_acceptance_incomplete:${missingAcceptance}"
+        return item
+    }
     if (!contracts.contains("\"type\":\"ku\"") || !contracts.contains("\"type\":\"task\"") || !tasks.contains("\"type\":\"summary\"")) {
         item.status = "partial"
         item.diagnostic = "routine_update_artifacts_incomplete"
@@ -238,6 +244,16 @@ private func ckbLandingRoutineUpdateCompleteStatus(runRoot: String): CkbLandingC
     item.status = "landed"
     item.diagnostic = "routine_update_acceptance_passed"
     item
+}
+
+private func ckbLandingMissingRoutineUpdateAcceptance(matrix: String): String {
+    let required = ["vector_reconcile_completed", "qdrant_count_matches_active_index", "no_metadata_active_mismatch", "no_offline_baseline_after_reload"]
+    for (acceptance in required) {
+        if (!matrix.contains("\"acceptance\":\"${acceptance}\"")) {
+            return acceptance
+        }
+    }
+    ""
 }
 
 private func ckbLandingRouteProbeOk(service: CkbCommandLoopService, method: String, path: String, body: String, headers: Array<String>, expected: String): Bool {

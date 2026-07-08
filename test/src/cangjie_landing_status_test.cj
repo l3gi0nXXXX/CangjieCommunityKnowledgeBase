@@ -90,7 +90,7 @@ public class CangjieLandingStatusTest {
         let service = CkbCommandLoopService(CkbRuntimeConfig(), FileKnowledgeStore("target/p9-landing-routine-store"))
         service.start()
         let runRoot = "target/p9-landing-routine-run"
-        f0WriteFile(Path(runRoot).join("routine-update-acceptance-matrix.jsonl"), "{\"phase\":\"P9\",\"testId\":\"P9-routine-update-acceptance\",\"status\":\"passed\",\"artifactPath\":\"routine\",\"evidenceHash\":\"hash\"}\n")
+        f0WriteFile(Path(runRoot).join("routine-update-acceptance-matrix.jsonl"), "{\"phase\":\"P9\",\"testId\":\"P9-routine-update-acceptance\",\"acceptance\":\"vector_reconcile_completed\",\"status\":\"passed\",\"artifactPath\":\"routine\",\"evidenceHash\":\"hash\"}\n{\"phase\":\"P9\",\"testId\":\"P9-routine-update-acceptance\",\"acceptance\":\"qdrant_count_matches_active_index\",\"status\":\"passed\",\"artifactPath\":\"routine\",\"evidenceHash\":\"hash\"}\n{\"phase\":\"P9\",\"testId\":\"P9-routine-update-acceptance\",\"acceptance\":\"no_metadata_active_mismatch\",\"status\":\"passed\",\"artifactPath\":\"routine\",\"evidenceHash\":\"hash\"}\n{\"phase\":\"P9\",\"testId\":\"P9-routine-update-acceptance\",\"acceptance\":\"no_offline_baseline_after_reload\",\"status\":\"passed\",\"artifactPath\":\"routine\",\"evidenceHash\":\"hash\"}\n")
         f0WriteFile(Path(runRoot).join("routine-update-contract.jsonl"), "{\"type\":\"ku\",\"id\":\"KU-06\"}\n{\"type\":\"task\",\"name\":\"cangjie_freshness_daily\"}\n")
         f0WriteFile(Path(runRoot).join("routine-update-task-results.jsonl"), "{\"type\":\"summary\",\"ran\":13,\"failed\":0}\n")
 
