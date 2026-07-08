@@ -241,6 +241,10 @@ private class BootstrapFakeVectorStore <: VectorStore {
         this.readyStatus(collection)
     }
 
+    public func deleteCollection(collection: String): VectorStoreStatus {
+        this.readyStatus(collection)
+    }
+
     public func recreate(collection: String, vectors: ArrayList<VectorRecord>): VectorStoreStatus {
         this.readyStatus(collection)
     }
@@ -297,6 +301,10 @@ private class BootstrapExistingVectorStore <: VectorStore {
     }
 
     public func clear(collection: String): VectorStoreStatus {
+        this.readyStatus(collection)
+    }
+
+    public func deleteCollection(collection: String): VectorStoreStatus {
         this.readyStatus(collection)
     }
 
@@ -357,6 +365,10 @@ private class RestoreTrackingVectorStore <: VectorStore {
     }
 
     public func clear(collection: String): VectorStoreStatus {
+        this.readyStatus(collection, 0)
+    }
+
+    public func deleteCollection(collection: String): VectorStoreStatus {
         this.readyStatus(collection, 0)
     }
 

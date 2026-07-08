@@ -113,6 +113,7 @@ public class CkbVectorReconcileTest {
         let activeRecords = kb.status().storage.indexCount
         let beforeRecreateCalls = vectorStore.recreateCalls
         let beforeUpsertBatchCalls = vectorStore.upsertBatchCalls
+        vectorStore.deletedActiveCollection = false
         provider.resetCalls()
 
         let result = ckbVectorReconcileWithVectorStore(kb, store, ckbVectorReconcileRuntimeConfig(), vectorStore, true)
@@ -126,6 +127,9 @@ public class CkbVectorReconcileTest {
         @Expect(ckbVectorReconcileContains(result.deletedVectorArtifacts, "index/vector-ckb_active.ckb"), true)
         @Expect(vectorStore.recreateCalls, beforeRecreateCalls + 1)
         @Expect(vectorStore.upsertBatchCalls > beforeUpsertBatchCalls, true)
+        @Expect(vectorStore.deletedActiveCollection, false)
+        @Expect(vectorStore.lastCollection.startsWith("ckb_active_reconcile_"), true)
+        @Expect(vectorStore.stagingCount, activeRecords)
         @Expect(provider.calls, expectedCalls)
         @Expect(result.progressPath != "", true)
         @Expect(store.has(result.progressPath), true)
@@ -135,10 +139,13 @@ public class CkbVectorReconcileTest {
         @Expect(progress.contains("\"event\":\"batch_finished\""), true)
         @Expect(progress.contains("\"event\":\"vector_build_finished\""), true)
         @Expect(renderCkbVectorReconcileJson(result).contains("\"progressPath\""), true)
-        @Expect(store.has("index/vector-ckb_active.ckb"), true)
+        @Expect(store.has("index/vector-${vectorStore.lastCollection}.ckb"), true)
         @Expect(store.has("index/active.ckb"), true)
         @Expect(store.has("raw/records.ckb"), true)
         @Expect(store.has("metadata/status.ckb"), true)
+        let metadata = String.fromUtf8(File.readFrom(Path(root).join("metadata/status.ckb")))
+        @Expect(metadata.contains("vectorActiveCollection=${vectorStore.lastCollection}"), true)
+        @Expect(ckbVectorReconcileContainsPrefix(result.diagnostics, "qdrant_logical_promote_succeeded:"), true)
     }
 
     @TestCase
@@ -149,12 +156,15 @@ public class CkbVectorReconcileTest {
         let vectorStore = ReconcileTrackingVectorStore()
         vectorStore.reportCountMismatchAfterRebuild = true
         let kb = ckbVectorReconcileKnowledgeBase(vectorStore)
+        vectorStore.deletedActiveCollection = false
 
         let result = ckbVectorReconcileWithVectorStore(kb, store, ckbVectorReconcileRuntimeConfig(), vectorStore, true)
 
         @Expect(result.ok, false)
-        @Expect(ckbVectorReconcileContainsPrefix(result.diagnostics, "qdrant_point_count_mismatch:"), true)
+        @Expect(ckbVectorReconcileContainsPrefix(result.diagnostics, "qdrant_staging_count_mismatch:"), true)
         @Expect(result.qdrantAfterCount < result.rebuiltVectorCount, true)
+        @Expect(vectorStore.deletedActiveCollection, false)
+        @Expect(vectorStore.deleteCollectionCalls, 1)
     }
 
     @TestCase
@@ -165,12 +175,15 @@ public class CkbVectorReconcileTest {
         let vectorStore = ReconcileTrackingVectorStore()
         vectorStore.failUpsertBatch = true
         let kb = ckbVectorReconcileKnowledgeBase(vectorStore)
+        vectorStore.deletedActiveCollection = false
 
         let result = ckbVectorReconcileWithVectorStore(kb, store, ckbVectorReconcileRuntimeConfig(), vectorStore, true)
 
         @Expect(result.ok, false)
         @Expect(ckbVectorReconcileContainsPrefix(result.diagnostics, "vector_store_not_ready:"), true)
         @Expect(result.vectorState, EmbeddingProviderState.DEGRADED)
+        @Expect(vectorStore.deletedActiveCollection, false)
+        @Expect(vectorStore.deleteCollectionCalls, 1)
         @Expect(result.progressPath != "", true)
         @Expect(store.has(result.progressPath), true)
         let progress = String.fromUtf8(File.readFrom(Path(root).join(result.progressPath)))
@@ -273,14 +286,19 @@ private class ReconcileEmbeddingProvider <: EmbeddingProvider {
 private class ReconcileTrackingVectorStore <: VectorStore {
     public var recreateCalls: Int64 = 0
     public var upsertBatchCalls: Int64 = 0
+    public var deleteCollectionCalls: Int64 = 0
+    public var deletedActiveCollection: Bool = false
+    public var lastCollection: String = ""
+    public var stagingCount: Int64 = 0
     public var failUpsertBatch: Bool = false
     public var reportCountMismatchAfterRebuild: Bool = false
-    private var storedCount: Int64 = 0
+    private var activeCount: Int64 = 0
+    private var stagingCollection: String = ""
     private var state: String = EmbeddingProviderState.READY
     private var diagnostic: String = ""
 
     public init(initialCount!: Int64 = 0) {
-        this.storedCount = initialCount
+        this.activeCount = initialCount
     }
 
     public func upsert(collection: String, vectors: ArrayList<VectorRecord>): VectorStoreStatus {
@@ -289,12 +307,18 @@ private class ReconcileTrackingVectorStore <: VectorStore {
 
     public func upsertBatch(collection: String, vectors: ArrayList<VectorRecord>): VectorStoreStatus {
         this.upsertBatchCalls += 1
+        this.lastCollection = collection
         if (this.failUpsertBatch) {
             this.state = EmbeddingProviderState.DEGRADED
             this.diagnostic = "upsert_failed"
             return this.status(collection)
         }
-        this.storedCount += vectors.size
+        if (collection == "ckb_active") {
+            this.activeCount += vectors.size
+        } else {
+            this.stagingCollection = collection
+            this.stagingCount += vectors.size
+        }
         this.status(collection)
     }
 
@@ -312,8 +336,14 @@ private class ReconcileTrackingVectorStore <: VectorStore {
         status.distance = "Cosine"
         status.state = this.state
         status.degradedReason = this.diagnostic
-        status.count = this.storedCount
-        if (this.reportCountMismatchAfterRebuild && this.upsertBatchCalls > 0 && status.count > 0) {
+        status.count = if (collection == "ckb_active") {
+            this.activeCount
+        } else if (collection == this.stagingCollection) {
+            this.stagingCount
+        } else {
+            0
+        }
+        if (this.reportCountMismatchAfterRebuild && collection == this.stagingCollection && this.upsertBatchCalls > 0 && status.count > 0) {
             status.count -= 1
         }
         status
@@ -324,7 +354,14 @@ private class ReconcileTrackingVectorStore <: VectorStore {
     }
 
     public func clear(collection: String): VectorStoreStatus {
-        this.storedCount = 0
+        this.lastCollection = collection
+        if (collection == "ckb_active") {
+            this.deletedActiveCollection = true
+            this.activeCount = 0
+        } else {
+            this.stagingCollection = collection
+            this.stagingCount = 0
+        }
         this.state = EmbeddingProviderState.READY
         this.diagnostic = ""
         this.status(collection)
@@ -336,6 +373,20 @@ private class ReconcileTrackingVectorStore <: VectorStore {
         if (vectors.size > 0) {
             return this.upsertBatch(collection, vectors)
         }
+        this.status(collection)
+    }
+
+    public func deleteCollection(collection: String): VectorStoreStatus {
+        this.deleteCollectionCalls += 1
+        this.lastCollection = collection
+        if (collection == "ckb_active") {
+            this.deletedActiveCollection = true
+            this.activeCount = 0
+        } else if (collection == this.stagingCollection) {
+            this.stagingCount = 0
+        }
+        this.state = EmbeddingProviderState.READY
+        this.diagnostic = ""
         this.status(collection)
     }
 

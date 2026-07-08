@@ -168,6 +168,16 @@ public class CkbQdrantVectorStoreTest {
         @Expect(clearMissing.state, EmbeddingProviderState.READY)
         @Expect(clearMissing.count, 0)
 
+        let deleteExecutor = QdrantFakeExecutor()
+        deleteExecutor.add(200, "{\"status\":\"ok\",\"result\":true}", "http_200")
+        let deleteStore = QdrantVectorStore("http://qdrant.test", 3, "Cosine", executor: deleteExecutor)
+        let deleted = deleteStore.deleteCollection("ckb_staging")
+
+        @Expect(deleted.state, EmbeddingProviderState.READY)
+        @Expect(deleted.count, 0)
+        @Expect(deleteExecutor.methods[0], "DELETE")
+        @Expect(deleteExecutor.urls[0], "http://qdrant.test/collections/ckb_staging")
+
         let clearFailedExecutor = QdrantFakeExecutor()
         clearFailedExecutor.add(500, "{\"status\":\"error\"}", "http_500")
         let clearFailedStore = QdrantVectorStore("http://qdrant.test", 3, "Cosine", executor: clearFailedExecutor)

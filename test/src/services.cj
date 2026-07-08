@@ -3181,34 +3181,71 @@ public func ckbVectorReconcileWithVectorStore(kb: KnowledgeBase, store: FileKnow
         result.diagnostics.add("dry_run")
         return result
     }
+    let stagingCollection = ckbVectorReconcileStagingCollection(vector.activeCollection)
     let progressSink = FileVectorBuildProgressSink(store)
-    let rebuild = ckbRebuildIndex(kb, store, progressSink: progressSink)
+    let rebuild = ckbRebuildIndex(kb, store, progressSink: progressSink, targetVectorCollection: stagingCollection, persistSnapshot: false)
     result.progressPath = progressSink.currentProgressPath()
     result.rebuiltVectorCount = rebuild.count
     result.activeKnowledgeVersion = rebuild.activeVersion
     if (!rebuild.ok) {
         result.ok = false
         result.diagnostics.add("rebuild_failed:${rebuild.failedVersion}")
-        let failedStatus = vectorStore.status(vector.activeCollection)
+        let failedStatus = vectorStore.status(stagingCollection)
         result.qdrantAfterCount = failedStatus.count
         result.vectorState = failedStatus.state
         if (failedStatus.state != EmbeddingProviderState.READY) {
             result.diagnostics.add("vector_store_not_ready:${failedStatus.degradedReason}")
         }
+        ckbVectorReconcileDeleteStaging(vectorStore, stagingCollection, result.diagnostics)
         return result
     }
-    let after = vectorStore.status(vector.activeCollection)
-    result.qdrantAfterCount = after.count
-    result.vectorState = after.state
-    if (after.state != EmbeddingProviderState.READY) {
+    let staging = vectorStore.status(stagingCollection)
+    result.qdrantAfterCount = staging.count
+    result.vectorState = staging.state
+    if (staging.state != EmbeddingProviderState.READY) {
         result.ok = false
-        result.diagnostics.add("vector_store_not_ready:${after.degradedReason}")
+        result.diagnostics.add("vector_store_not_ready:${staging.degradedReason}")
+        ckbVectorReconcileDeleteStaging(vectorStore, stagingCollection, result.diagnostics)
+        return result
     }
-    if (vector.backend == "qdrant" && after.count != rebuild.count) {
+    if (vector.backend == "qdrant" && staging.count != rebuild.count) {
         result.ok = false
-        result.diagnostics.add("qdrant_point_count_mismatch:${after.count}:${rebuild.count}")
+        result.diagnostics.add("qdrant_staging_count_mismatch:${staging.count}:${rebuild.count}")
+        ckbVectorReconcileDeleteStaging(vectorStore, stagingCollection, result.diagnostics)
+        return result
     }
+    if (vector.dimensions > 0 && staging.dimension > 0 && staging.dimension != vector.dimensions) {
+        result.ok = false
+        result.diagnostics.add("qdrant_staging_dimension_mismatch:${staging.dimension}:${vector.dimensions}")
+        ckbVectorReconcileDeleteStaging(vectorStore, stagingCollection, result.diagnostics)
+        return result
+    }
+    if (vector.distance != "" && staging.distance != "" && staging.distance.trimAscii().toAsciiLower() != vector.distance.trimAscii().toAsciiLower()) {
+        result.ok = false
+        result.diagnostics.add("qdrant_staging_distance_mismatch:${staging.distance}:${vector.distance}")
+        ckbVectorReconcileDeleteStaging(vectorStore, stagingCollection, result.diagnostics)
+        return result
+    }
+    kb.promoteVectorActiveCollection(stagingCollection)
+    kb.persistActiveSnapshotUsingVectorRecords(store, kb.lastVectorIndexBuild().vectorRecords)
+    result.activeKnowledgeVersion = kb.status().activeKnowledgeVersion
+    result.vectorState = EmbeddingProviderState.READY
+    result.diagnostics.add("qdrant_logical_promote_succeeded:${stagingCollection}")
     result
+}
+
+private func ckbVectorReconcileStagingCollection(activeCollection: String): String {
+    let base = if (activeCollection.trimAscii() == "") { "active" } else { activeCollection.trimAscii() }
+    "${safeName(base)}_reconcile_${DateTime.now().toUnixTimeStamp().toMilliseconds()}"
+}
+
+private func ckbVectorReconcileDeleteStaging(vectorStore: VectorStore, stagingCollection: String, diagnostics: ArrayList<String>): Unit {
+    let deleted = vectorStore.deleteCollection(stagingCollection)
+    if (deleted.state == EmbeddingProviderState.READY) {
+        diagnostics.add("qdrant_staging_deleted:${stagingCollection}")
+    } else {
+        diagnostics.add("qdrant_staging_delete_failed:${deleted.degradedReason}")
+    }
 }
 
 private func ckbAppendStrings(target: ArrayList<String>, source: ArrayList<String>): Unit {
@@ -7427,8 +7464,8 @@ public func ckbSyncLiveApply(kb: KnowledgeBase, adapter: SourceAdapter, store: F
     result
 }
 
-public func ckbRebuildIndex(kb: KnowledgeBase, store: FileKnowledgeStore, fail!: Bool = false, progressSink!: VectorBuildProgressSink = NoopVectorBuildProgressSink()): IndexBuildResult {
-    let result = kb.rebuildIndex(fail, progressSink: progressSink)
+public func ckbRebuildIndex(kb: KnowledgeBase, store: FileKnowledgeStore, fail!: Bool = false, progressSink!: VectorBuildProgressSink = NoopVectorBuildProgressSink(), targetVectorCollection!: String = "", persistSnapshot!: Bool = true): IndexBuildResult {
+    let result = kb.rebuildIndex(fail, progressSink: progressSink, targetVectorCollection: targetVectorCollection)
     if (result.ok) {
         let vector = kb.lastVectorIndexBuild()
         if (!vector.ok) {
@@ -7442,7 +7479,9 @@ public func ckbRebuildIndex(kb: KnowledgeBase, store: FileKnowledgeStore, fail!:
             }
             return result
         }
-        kb.persistActiveSnapshotUsingVectorRecords(store, vector.vectorRecords)
+        if (persistSnapshot) {
+            kb.persistActiveSnapshotUsingVectorRecords(store, vector.vectorRecords)
+        }
     }
     result
 }
@@ -7574,6 +7613,10 @@ public class RuntimeUnavailableVectorStore <: VectorStore {
     }
 
     public func clear(collection: String): VectorStoreStatus {
+        this.status(collection)
+    }
+
+    public func deleteCollection(collection: String): VectorStoreStatus {
         this.status(collection)
     }
 

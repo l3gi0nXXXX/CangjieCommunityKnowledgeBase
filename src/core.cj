@@ -539,6 +539,7 @@ public interface VectorStore {
     func status(collection: String): VectorStoreStatus
     func ensureReadyCollection(collection: String): VectorStoreStatus
     func clear(collection: String): VectorStoreStatus
+    func deleteCollection(collection: String): VectorStoreStatus
     func recreate(collection: String, vectors: ArrayList<VectorRecord>): VectorStoreStatus
     func backup(collection: String): VectorBackup
     func restore(backup: VectorBackup): VectorStoreStatus
@@ -672,6 +673,23 @@ public class LocalVectorStore <: VectorStore {
         if (stored.name != "") {
             stored.records.clear()
             stored.dimension = 0
+        }
+        this.status(collection)
+    }
+
+    public func deleteCollection(collection: String): VectorStoreStatus {
+        if (!this.available) {
+            return this.status(collection)
+        }
+        let kept = ArrayList<LocalVectorCollection>()
+        for (stored in this.collections) {
+            if (stored.name != collection) {
+                kept.add(stored)
+            }
+        }
+        this.collections.clear()
+        for (stored in kept) {
+            this.collections.add(stored)
         }
         this.status(collection)
     }
@@ -903,6 +921,10 @@ public class QdrantVectorStore <: VectorStore {
         }
         this.lastStatus = status
         status
+    }
+
+    public func deleteCollection(collection: String): VectorStoreStatus {
+        this.clear(collection)
     }
 
     public func recreate(collection: String, vectors: ArrayList<VectorRecord>): VectorStoreStatus {
@@ -2528,6 +2550,16 @@ public class KnowledgeBase {
         }
     }
 
+    public func promoteVectorActiveCollection(collection: String): Unit {
+        let trimmed = collection.trimAscii()
+        if (trimmed == "") {
+            return
+        }
+        this.vectorCollection = trimmed
+        this.storage.vectorCollection = trimmed
+        this.storage.vectorActiveCollection = trimmed
+    }
+
     public func bootstrapOffline(): Unit {
         this.rawRecords.clear()
         this.normalizedRecords.clear()
@@ -2962,7 +2994,7 @@ public class KnowledgeBase {
         out
     }
 
-    public func rebuildIndex(simulateFailure: Bool, progressSink!: VectorBuildProgressSink = NoopVectorBuildProgressSink()): IndexBuildResult {
+    public func rebuildIndex(simulateFailure: Bool, progressSink!: VectorBuildProgressSink = NoopVectorBuildProgressSink(), targetVectorCollection!: String = ""): IndexBuildResult {
         let builder = IndexBuilder()
         let result = builder.rebuild(this.normalizedRecords, this.activeKnowledgeVersion, "ckb-20260519-000200-candidate", fail: simulateFailure)
         this.candidateKnowledgeVersion = result.candidateVersion
@@ -2985,7 +3017,7 @@ public class KnowledgeBase {
         this.failedCandidateVersion = ""
         this.storage.indexCount = this.activeIndex.size
         this.invalidateServingCacheOnActiveVersionChange()
-        this.lastVectorIndexBuildResult = this.rebuildProductionIndexesWithResult("", progressSink: progressSink)
+        this.lastVectorIndexBuildResult = this.rebuildProductionIndexesWithResult("", progressSink: progressSink, targetVectorCollection: targetVectorCollection)
         this.rebuildIndexManifest()
         result
     }
@@ -2994,12 +3026,12 @@ public class KnowledgeBase {
         this.lastVectorIndexBuildResult = this.rebuildProductionIndexesWithResult("", progressSink: NoopVectorBuildProgressSink())
     }
 
-    private func rebuildProductionIndexesWithResult(reason: String, progressSink!: VectorBuildProgressSink = NoopVectorBuildProgressSink()): VectorIndexBuildResult {
+    private func rebuildProductionIndexesWithResult(reason: String, progressSink!: VectorBuildProgressSink = NoopVectorBuildProgressSink(), targetVectorCollection!: String = ""): VectorIndexBuildResult {
         let started = ckbCoreNowMillis()
         let result = VectorIndexBuildResult()
         result.diagnostic = reason
         this.rebuildServingIndexStatus()
-        let vector = this.rebuildProductionVectorIndexWithResult(progressSink: progressSink)
+        let vector = this.rebuildProductionVectorIndexWithResult(progressSink: progressSink, targetVectorCollection: targetVectorCollection)
         this.rebuildGraphIndex()
         result.ok = vector.ok
         result.status = vector.status
@@ -3019,12 +3051,13 @@ public class KnowledgeBase {
         result
     }
 
-    private func rebuildProductionVectorIndexWithResult(progressSink!: VectorBuildProgressSink = NoopVectorBuildProgressSink()): VectorIndexBuildResult {
+    private func rebuildProductionVectorIndexWithResult(progressSink!: VectorBuildProgressSink = NoopVectorBuildProgressSink(), targetVectorCollection!: String = ""): VectorIndexBuildResult {
         let result = VectorIndexBuildResult()
         let progress = VectorBuildProgress()
+        let effectiveVectorCollection = if (targetVectorCollection.trimAscii() == "") { this.vectorCollection } else { targetVectorCollection.trimAscii() }
         progress.runId = ckbVectorBuildRunId()
-        progress.collection = this.vectorCollection
-        progress.targetCollection = this.vectorCollection
+        progress.collection = effectiveVectorCollection
+        progress.targetCollection = effectiveVectorCollection
         progress.total = this.activeIndex.size
         let embeddingStatus = this.embeddingProvider.status()
         progress.batchSize = if (embeddingStatus.batchSize > 0) { embeddingStatus.batchSize } else { 16 }
@@ -3034,7 +3067,7 @@ public class KnowledgeBase {
         this.lastVectorBuildProgress = progress
         progressSink.onVectorBuildStarted(progress)
         let empty = ArrayList<VectorRecord>()
-        var vectorStatus = this.vectorStore.recreate(this.vectorCollection, empty)
+        var vectorStatus = this.vectorStore.recreate(effectiveVectorCollection, empty)
         if (vectorStatus.state != EmbeddingProviderState.READY) {
             progress.state = vectorStatus.state
             progress.diagnostic = vectorStatus.degradedReason
@@ -3082,7 +3115,7 @@ public class KnowledgeBase {
             progress.failed += batch.failed
             result.truncatedCount += textBatch.truncatedCount + batch.truncatedCount
             if (batch.status.state != EmbeddingProviderState.READY || batch.vectors.size != texts.size) {
-                vectorStatus = this.vectorStore.status(this.vectorCollection)
+                vectorStatus = this.vectorStore.status(effectiveVectorCollection)
                 vectorStatus.state = EmbeddingProviderState.DEGRADED
                 vectorStatus.count = progress.completed
                 vectorStatus.degradedReason = if (batch.status.degradedReason != "") {
@@ -3111,7 +3144,7 @@ public class KnowledgeBase {
                 let source = this.activeIndex[textBatch.startIndex + i]
                 vectorRecords.add(this.vectorRecordFrom(source, batch.vectors[i]))
             }
-            vectorStatus = this.vectorStore.upsertBatch(this.vectorCollection, vectorRecords)
+            vectorStatus = this.vectorStore.upsertBatch(effectiveVectorCollection, vectorRecords)
             if (vectorStatus.state != EmbeddingProviderState.READY) {
                 progress.failed = texts.size
                 progress.state = vectorStatus.state

@@ -838,6 +838,10 @@ private class F7StatusVectorStore <: VectorStore {
         this.status(collection)
     }
 
+    public func deleteCollection(collection: String): VectorStoreStatus {
+        this.status(collection)
+    }
+
     public func ensureReadyCollection(collection: String): VectorStoreStatus {
         this.status(collection)
     }
