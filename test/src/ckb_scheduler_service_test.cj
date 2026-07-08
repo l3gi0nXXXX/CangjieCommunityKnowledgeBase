@@ -366,6 +366,7 @@ public class CkbSchedulerServiceF5Test {
 
     @TestCase
     public func p7Pos005SlashRefVersionBranchRefreshPersistsManifest(): Unit {
+        // F2-U1: branch list resolves release/1.0 to a commit before tree fetch.
         let config = CkbRuntimeConfig()
         config.networkEnabled = true
         let store = FileKnowledgeStore("target/p7-slash-ref-version-branch-refresh")
@@ -784,7 +785,7 @@ public class CkbSchedulerServiceF5Test {
 
     @TestCase
     public func tP2U01ToolsTreeContinuesPastFirstTenDirectoryPages(): Unit {
-        // T-P2-U01: cangjie_tools has directories on pages 1..10 and a documentation file on page 11.
+        // F2-B1: cangjie_tools has directories on pages 1..10 and a documentation file on page 11.
         let root = "target/t-p2-u01-tools-page11"
         s1s2EnsureEmptyDir(root)
         let config = CkbRuntimeConfig()
@@ -814,7 +815,7 @@ public class CkbSchedulerServiceF5Test {
 
     @TestCase
     public func tP2N01AllDirectoryPagesReportNoCandidate(): Unit {
-        // T-P2-N01: directories followed by an empty tree page are a clear no-candidate result, not a first-page failure.
+        // F2-N1: directories followed by an empty tree page are a clear no-candidate result, not a first-page failure.
         let root = "target/s1-bnd001-directory-pages"
         s1s2EnsureEmptyDir(root)
         let config = CkbRuntimeConfig()
@@ -953,7 +954,7 @@ public class CkbSchedulerServiceF5Test {
 
     @TestCase
     public func s2Pos001FreshnessRunsAfterResolvedVersionRefresh(): Unit {
-        // POS-S2-001: a real non-offline manifest from branch refresh lets freshness run without offline-baseline degraded.
+        // F3-P1/F3-E2E: version refresh writes a non-offline manifest/baseline and immediate freshness is not stale.
         let root = "target/s2-pos001-refresh-then-freshness"
         s1s2EnsureEmptyDir(root)
         let config = CkbRuntimeConfig()
@@ -970,17 +971,20 @@ public class CkbSchedulerServiceF5Test {
 
         let refresh = service.runSchedulerTasks(refreshTasks, true)
         let freshness = service.runSchedulerTasks(freshnessTasks, true)
+        let artifact = store.loadCangjieCorpusFreshness()
 
         @Expect(refresh.succeeded, 1)
         @Expect(freshness.ran, 1)
         @Expect(freshness.failed, 0)
+        @Expect(artifact.sources.size >= 4, true)
         @Expect(f7SchedulerDiagnosticsContain(freshness, "manifest_ready_for_freshness"), true)
         @Expect(f7SchedulerDiagnosticsContain(freshness, "version_manifest_contains_offline_baseline"), false)
+        @Expect(f7SchedulerDiagnosticsContain(freshness, "staleness=stale"), false)
     }
 
     @TestCase
     public func tP2P01AllRequiredSourcesCanPromoteWithEvalSupport(): Unit {
-        // T-P2-P01: docs/std/stdx/tools/eval-support all resolve, so readiness allows promotion.
+        // F2-P1: docs/std/stdx/tools/eval-support all resolve, so readiness allows promotion.
         let fixture = f7WriteFullRootFixture("target/t-p2-p01-eval-fixture")
         let root = "target/t-p2-p01-all-required-sources"
         s1s2EnsureEmptyDir(root)
@@ -1003,6 +1007,75 @@ public class CkbSchedulerServiceF5Test {
         @Expect(f7SchedulerDiagnosticsContain(result, "required_source_failed"), false)
         @Expect(f7SchedulerDiagnosticsContain(result, "eval_support_local_existing:"), true)
         @Expect(f7SchedulerDiagnosticsContain(result, "version_manifest_saved:"), true)
+    }
+
+    @TestCase
+    public func f3U1FreshnessArtifactRoundTripsFreshSourceHashes(): Unit {
+        // F3-U1: manifest and freshness artifact commit/hash equality remains fresh after load.
+        let root = "target/f3-u1-freshness-artifact-roundtrip"
+        s1s2EnsureEmptyDir(root)
+        let store = FileKnowledgeStore("${root}/store")
+        let report = f3FreshnessReportFromManifest(f5ScheduledManifest())
+
+        store.saveCangjieCorpusFreshness(report)
+        let loaded = store.loadCangjieCorpusFreshness()
+
+        @Expect(loaded.ok, true)
+        @Expect(loaded.degraded, false)
+        @Expect(loaded.sources.size, report.sources.size)
+        @Expect(f3FreshnessSourceHasState(loaded, CangjieSourceSets.TOOLS, "fresh", "fresh"), true)
+        @Expect(f3FreshnessSourceHasHash(loaded, CangjieSourceSets.TOOLS, "sha256:fresh-tools", "fresh-tools"), true)
+    }
+
+    @TestCase
+    public func f3B1MissingIndexedAtDegradesOnlyThatFreshnessSource(): Unit {
+        // F3-B1: a source with commit/hash but no indexedAt is diagnosed without changing other source staleness.
+        let root = "target/f3-b1-missing-indexed-at"
+        s1s2EnsureEmptyDir(root)
+        let config = CkbRuntimeConfig()
+        config.networkEnabled = true
+        let manifest = f5ScheduledManifest()
+        let store = FileKnowledgeStore("${root}/store")
+        store.saveCangjieVersionManifest(manifest)
+        store.saveCangjieCorpusFreshness(f3FreshnessReportFromManifestWithMissingIndexedAt(manifest, CangjieSourceSets.TOOLS))
+        let service = CkbCommandLoopService(config, store, sourceRunner: F5FreshnessUpToDateRunner())
+        _ = service.start()
+        let tasks = ArrayList<String>()
+        tasks.add("cangjie_freshness_daily")
+
+        let result = service.runSchedulerTasks(tasks, true)
+
+        @Expect(result.ran, 1)
+        @Expect(result.failed, 1)
+        @Expect(f7SchedulerDiagnosticsContain(result, "freshness_source_missing_indexedAt:sourceSet=tools"), true)
+        @Expect(f7SchedulerDiagnosticsContain(result, "sourceSet=docs"), true)
+        @Expect(f7SchedulerDiagnosticsContain(result, "sourceSet=docs|sourceFamily=docs|repo=Cangjie/cangjie_docs|ref=release-1.0.0|status=fresh|staleness=fresh"), true)
+    }
+
+    @TestCase
+    public func f3N1ChangedToolsHashReportsOldAndNewFreshnessHash(): Unit {
+        // F3-N1: changed tools source hash without a refresh is stale with old/new hash diagnostics.
+        let root = "target/f3-n1-tools-hash-changed"
+        s1s2EnsureEmptyDir(root)
+        let config = CkbRuntimeConfig()
+        config.networkEnabled = true
+        let manifest = f5ScheduledManifest()
+        let store = FileKnowledgeStore("${root}/store")
+        store.saveCangjieVersionManifest(manifest)
+        store.saveCangjieCorpusFreshness(f3FreshnessReportFromManifest(manifest))
+        let service = CkbCommandLoopService(config, store, sourceRunner: F3ToolsHashChangedFreshnessRunner())
+        _ = service.start()
+        let tasks = ArrayList<String>()
+        tasks.add("cangjie_freshness_daily")
+
+        let result = service.runSchedulerTasks(tasks, true)
+
+        @Expect(result.ran, 1)
+        @Expect(result.failed, 1)
+        @Expect(f7SchedulerDiagnosticsContain(result, "freshness_source_hash_changed:sourceSet=tools"), true)
+        @Expect(f7SchedulerDiagnosticsContain(result, "oldHash=sha256:fresh-tools"), true)
+        @Expect(f7SchedulerDiagnosticsContain(result, "newCommit=changed-tools"), true)
+        @Expect(f7SchedulerDiagnosticsContain(result, "sourceSet=tools|sourceFamily=tools|repo=Cangjie/cangjie_tools|ref=release-1.0.0|status=stale|staleness=stale"), true)
     }
 
     @TestCase
@@ -1030,7 +1103,7 @@ public class CkbSchedulerServiceF5Test {
 
     @TestCase
     public func s6E2E004LargeRepoFixtureNoSourceTreeEmptyAcrossRoutineTasks(): Unit {
-        // E2E-S6-004: page 1 all directories for version/release/source-event, artifacts exist.
+        // F2-E2E: temp store + fake GitCode covers docs/std/stdx/tools/eval-support without source_tree_empty.
         let root = "target/s6-e2e004-large-repo-page1-dirs"
         s1s2EnsureEmptyDir(root)
         let config = CkbRuntimeConfig()
@@ -1349,6 +1422,52 @@ private func ruDiagnosticsContain(values: ArrayList<String>, needle: String): Bo
     false
 }
 
+private func f3FreshnessReportFromManifest(manifest: CangjieVersionManifest): CangjieCorpusFreshnessReport {
+    f3FreshnessReportFromManifestWithMissingIndexedAt(manifest, "")
+}
+
+private func f3FreshnessReportFromManifestWithMissingIndexedAt(manifest: CangjieVersionManifest, missingIndexedAtSourceSet: String): CangjieCorpusFreshnessReport {
+    let report = CangjieCorpusFreshnessReport()
+    report.ok = true
+    report.degraded = false
+    report.targetVersion = manifest.defaultTargetVersion
+    for (source in manifest.sources) {
+        let item = CangjieCorpusFreshnessSource()
+        item.sourceSet = source.sourceSet
+        item.sourceFamily = source.sourceFamily
+        item.sourceRepo = source.sourceRepo
+        item.sourceRef = source.sourceRef
+        item.refKind = source.refKind
+        item.resolvedCommit = source.resolvedCommit
+        item.contentHash = source.contentHash
+        item.targetVersion = source.targetVersion
+        item.crawlAt = "scheduled:test"
+        item.indexedAt = if (source.sourceSet == missingIndexedAtSourceSet) { "" } else { source.resolvedCommit }
+        item.staleness = "fresh"
+        item.status = "fresh"
+        report.sources.add(item)
+    }
+    report
+}
+
+private func f3FreshnessSourceHasState(report: CangjieCorpusFreshnessReport, sourceSet: String, staleness: String, status: String): Bool {
+    for (source in report.sources) {
+        if (source.sourceSet == sourceSet && source.staleness == staleness && source.status == status) {
+            return true
+        }
+    }
+    false
+}
+
+private func f3FreshnessSourceHasHash(report: CangjieCorpusFreshnessReport, sourceSet: String, contentHash: String, resolvedCommit: String): Bool {
+    for (source in report.sources) {
+        if (source.sourceSet == sourceSet && source.contentHash == contentHash && source.resolvedCommit == resolvedCommit) {
+            return true
+        }
+    }
+    false
+}
+
 private class F7StatusVectorStore <: VectorStore {
     private let state: String
     private let reason: String
@@ -1519,6 +1638,54 @@ private class F5FreshnessUpToDateRunner <: SourceFetchRunner {
         }
         "fresh-unknown"
     }
+}
+
+private class F3ToolsHashChangedFreshnessRunner <: SourceFetchRunner {
+    var calls: Int64 = 0
+
+    init() {}
+
+    public func fetch(request: SourceFetchRequest): SourceFetchResult {
+        this.calls += 1
+        let result = SourceFetchResult()
+        result.sourceUrl = request.url
+        result.repo = request.repo
+        result.ref = request.ref
+        result.path = request.path
+        result.normalizedType = request.kind
+        result.ok = true
+        result.status = "ok"
+        result.statusCode = 200
+        result.lastModified = "2026-07-09T00:00:00Z"
+        if (request.repo == "Cangjie/cangjie_tools") {
+            result.commit = "changed-tools"
+            result.body = "changed tools source hash"
+        } else {
+            result.commit = f3ExpectedFreshnessCommit(request)
+            result.body = "unchanged freshness ${request.kind} ${request.repo}"
+        }
+        result.bodyHash = stableSummaryHash(result.body)
+        result
+    }
+}
+
+private func f3ExpectedFreshnessCommit(request: SourceFetchRequest): String {
+    if (request.kind == SourceKinds.CANGJIE_DOCS) {
+        return "fresh-docs"
+    }
+    if (request.repo == "Cangjie/cangjie_runtime") {
+        return "fresh-std"
+    }
+    if (request.repo == "Cangjie/cangjie_stdx") {
+        return "fresh-stdx"
+    }
+    if (request.repo == "Cangjie/cangjie_tools") {
+        return "fresh-tools"
+    }
+    if (request.repo == "CangjieCommunityKnowledgeBase/Cangjie-HumanEval") {
+        return "fresh-eval"
+    }
+    "fresh-unknown"
 }
 
 private class F5DegradedFetchRunner <: SourceFetchRunner {

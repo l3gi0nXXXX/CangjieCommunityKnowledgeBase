@@ -141,9 +141,9 @@ public class CkbQdrantVectorStoreTest {
 
     @TestCase
     public func tP2B01QdrantJsonUnescapesEscapedSlashAndUnicode(): Unit {
-        // T-P2-B01: Qdrant JSON escaped slash and BMP unicode escapes round-trip into metadata paths.
+        // F2-B2: Qdrant JSON escaped slash, Chinese, emoji-safe BMP unicode escapes round-trip into metadata paths.
         let executor = QdrantFakeExecutor()
-        executor.add(200, "{\"status\":\"ok\",\"result\":{\"points\":[{\"id\":1,\"score\":0.92,\"payload\":{\"ckb_id\":\"ok-id\",\"title\":\"\\u4ed3\\u9889 tools\",\"chunk\":\"chunk \\u6807\\u9898\",\"citation\":\"https:\\/\\/example.test\\/cite\\/ok\",\"sourceId\":\"src-ok\",\"sourceType\":\"repo\",\"sourceUrl\":\"https:\\/\\/example.test\\/docs\\/\\u6807\\u9898\",\"repo\":\"cangjie\",\"path\":\"docs\\/std\\/\\u6807\\u9898\\/README.md\",\"symbol\":\"\",\"trustLevel\":\"official\",\"reviewState\":\"trusted\",\"knowledgeVersion\":\"active\"}}]}}", "http_200")
+        executor.add(200, "{\"status\":\"ok\",\"result\":{\"points\":[{\"id\":1,\"score\":0.92,\"payload\":{\"ckb_id\":\"ok-id\",\"title\":\"\\u4ed3\\u9889 tools 🚀\",\"chunk\":\"chunk \\u6807\\u9898\",\"citation\":\"https:\\/\\/example.test\\/cite\\/ok\",\"sourceId\":\"src-ok\",\"sourceType\":\"repo\",\"sourceUrl\":\"https:\\/\\/example.test\\/docs\\/\\u6807\\u9898\",\"repo\":\"cangjie\",\"path\":\"docs\\/std\\/\\u6807\\u9898\\/README.md\",\"symbol\":\"\",\"trustLevel\":\"official\",\"reviewState\":\"trusted\",\"knowledgeVersion\":\"active\"}}]}}", "http_200")
         let store = QdrantVectorStore("http://qdrant.test", 3, "Cosine", executor: executor)
         let query = ArrayList<Float64>()
         query.add(1.0)
@@ -153,7 +153,7 @@ public class CkbQdrantVectorStoreTest {
         let results = store.search("ckb_active", query, VectorSearchFilters(), 5)
 
         @Expect(results.size, 1)
-        @Expect(results[0].record.title, "仓颉 tools")
+        @Expect(results[0].record.title, "仓颉 tools 🚀")
         @Expect(results[0].record.chunk, "chunk 标题")
         @Expect(results[0].record.citation, "https://example.test/cite/ok")
         @Expect(results[0].record.metadata.sourceUrl, "https://example.test/docs/标题")
@@ -162,7 +162,7 @@ public class CkbQdrantVectorStoreTest {
 
     @TestCase
     public func tP2B01QdrantInvalidUnicodeEscapeDegradesWithoutThrowing(): Unit {
-        // T-P2-B01 boundary: malformed unicode escapes are diagnosed as malformed_json and do not throw.
+        // F2-B2 boundary: malformed unicode escapes are diagnosed as malformed_json and do not throw.
         let executor = QdrantFakeExecutor()
         executor.add(200, "{\"status\":\"ok\",\"result\":{\"points\":[{\"id\":1,\"score\":0.92,\"payload\":{\"ckb_id\":\"bad-\\uZZZZ\",\"title\":\"bad\",\"chunk\":\"bad\",\"citation\":\"cite://bad\",\"sourceId\":\"src-bad\",\"sourceType\":\"repo\",\"repo\":\"cangjie\",\"path\":\"docs\\/bad.md\",\"symbol\":\"\",\"trustLevel\":\"official\",\"reviewState\":\"trusted\",\"knowledgeVersion\":\"active\"}}]}}", "http_200")
         let store = QdrantVectorStore("http://qdrant.test", 3, "Cosine", executor: executor)
