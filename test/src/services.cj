@@ -5783,7 +5783,7 @@ public class ProcessIsolatedSchedulerTaskRunner <: SchedulerTaskRunner {
         let resultPath = Path(this.storePath).join(resultRelativePath).toString()
         let outPath = resultPath + ".out"
         let errPath = resultPath + ".err"
-        var script = "export CKB_SCHEDULER_TASK_WORKER=1; "
+        var script = ckbSchedulerWorkerShellPrelude(ckbSchedulerWorkerDyldLibraryPath())
         script += ckbLocalShellQuote(this.command)
         if (this.configPath.trimAscii() != "") {
             script += " --config " + ckbLocalShellQuote(this.configPath)
@@ -5804,6 +5804,22 @@ public class ProcessIsolatedSchedulerTaskRunner <: SchedulerTaskRunner {
             125
         }
     }
+}
+
+private func ckbSchedulerWorkerDyldLibraryPath(): String {
+    if (let Some(value) <- getVariable("DYLD_LIBRARY_PATH")) {
+        return value
+    }
+    ""
+}
+
+public func ckbSchedulerWorkerShellPrelude(dyldLibraryPath: String): String {
+    var script = "export CKB_SCHEDULER_TASK_WORKER=1; "
+    let trimmed = dyldLibraryPath.trimAscii()
+    if (trimmed != "") {
+        script += "export DYLD_LIBRARY_PATH=" + ckbLocalShellQuote(trimmed) + "; "
+    }
+    script
 }
 
 private func ckbReadSchedulerWorkerResult(storePath: String, resultRelativePath: String, name: String, since: String, durationMillis: Int64, timeoutMillis: Int64): SchedulerTaskResult {

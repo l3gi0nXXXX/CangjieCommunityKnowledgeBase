@@ -83,6 +83,17 @@ public class CkbSchedulerProgressTimeoutTest {
     }
 
     @TestCase
+    public func schedulerWorkerPreludeRestoresDyldForZshWorker(): Unit {
+        let withDyld = ckbSchedulerWorkerShellPrelude("/tmp/runtime:/tmp/stdx")
+        let withoutDyld = ckbSchedulerWorkerShellPrelude("")
+
+        @Expect(withDyld.contains("export CKB_SCHEDULER_TASK_WORKER=1;"), true)
+        @Expect(withDyld.contains("export DYLD_LIBRARY_PATH='/tmp/runtime:/tmp/stdx';"), true)
+        @Expect(withoutDyld.contains("export CKB_SCHEDULER_TASK_WORKER=1;"), true)
+        @Expect(withoutDyld.contains("DYLD_LIBRARY_PATH"), false)
+    }
+
+    @TestCase
     public func schedulerTimeoutMarksPartialAndContinuesFollowingTask(): Unit {
         let scheduler = Scheduler(FakeClock(1000))
         let runner = ProgressFakeRunner()
