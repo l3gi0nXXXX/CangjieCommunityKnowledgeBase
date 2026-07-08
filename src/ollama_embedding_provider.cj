@@ -88,8 +88,10 @@ public class OllamaEmbeddingProvider <: EmbeddingProvider {
         var down = false
         let textBatches = CkbEmbeddingTextBudgeter(ckbEmbeddingTextBudgetFromConfig(this.config)).batches(texts)
         for (textBatch in textBatches) {
+            batch.chunksAttempted += 1
             batch.inputBytes += textBatch.originalBytes
             batch.preparedBytes += textBatch.preparedBytes
+            batch.lastChunkPreparedBytes = textBatch.preparedBytes
             batch.truncatedCount += textBatch.truncatedCount
             let chunkResult = this.embedChunk(textBatch.texts, effectiveModel, effectiveDimensions)
             if (chunkResult.status.state == EmbeddingProviderState.READY) {
@@ -102,6 +104,7 @@ public class OllamaEmbeddingProvider <: EmbeddingProvider {
                 if (degradedReason == "") {
                     degradedReason = chunkResult.status.degradedReason
                 }
+                batch.lastDiagnostic = chunkResult.status.degradedReason
                 if (chunkResult.status.state == EmbeddingProviderState.DOWN) {
                     down = true
                 }
@@ -211,7 +214,7 @@ public class OllamaEmbeddingProvider <: EmbeddingProvider {
             try {
                 let remaining = totalDeadline - ollamaNowMillis()
                 if (remaining <= 0) {
-                    last = ollamaTimeoutResponse("ollama_embedding_total_timeout")
+                    last = ollamaTimeoutResponse("ollama_embedding_total_timeout:attempt=${attempt}:timeoutMillis=0")
                     break
                 }
                 let attemptTimeout = if (request.timeoutMillis > 0 && request.timeoutMillis < remaining) { request.timeoutMillis } else { remaining }
@@ -222,7 +225,8 @@ public class OllamaEmbeddingProvider <: EmbeddingProvider {
                 }
                 last = future.get(Duration.millisecond * attemptTimeout)
             } catch (_: Exception) {
-                last = ollamaTimeoutResponse("ollama_embedding_timeout")
+                let timeout = if (request.timeoutMillis > 0) { request.timeoutMillis } else { 0 }
+                last = ollamaTimeoutResponse("ollama_embedding_timeout:attempt=${attempt}:timeoutMillis=${timeout}")
             }
             if (last.status == "timeout" || last.transportErrorClass == "timeout") {
                 break
@@ -241,7 +245,7 @@ private func ollamaStatusFromHttpResponse(response: OllamaEmbeddingHttpResponse)
     status.production = true
     if (response.status == "timeout" || response.transportErrorClass == "timeout") {
         status.state = EmbeddingProviderState.DOWN
-        status.degradedReason = "ollama_timeout"
+        status.degradedReason = ollamaTimeoutDiagnostic(response.transportDiagnostic)
         return status
     }
     if (response.status == "blocked_url") {
@@ -292,6 +296,17 @@ private func ollamaTimeoutResponse(diagnostic: String): OllamaEmbeddingHttpRespo
     response.transportErrorClass = "timeout"
     response.transportDiagnostic = diagnostic
     response
+}
+
+private func ollamaTimeoutDiagnostic(diagnostic: String): String {
+    let clean = diagnostic.trimAscii()
+    if (clean == "") {
+        return "ollama_timeout"
+    }
+    if (clean.startsWith("ollama_")) {
+        return clean
+    }
+    "ollama_timeout:${clean}"
 }
 
 private func ollamaCopyRequest(request: OllamaEmbeddingHttpRequest): OllamaEmbeddingHttpRequest {

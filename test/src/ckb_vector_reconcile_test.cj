@@ -127,6 +127,14 @@ public class CkbVectorReconcileTest {
         @Expect(vectorStore.recreateCalls, beforeRecreateCalls + 1)
         @Expect(vectorStore.upsertBatchCalls > beforeUpsertBatchCalls, true)
         @Expect(provider.calls, expectedCalls)
+        @Expect(result.progressPath != "", true)
+        @Expect(store.has(result.progressPath), true)
+        let progress = String.fromUtf8(File.readFrom(Path(root).join(result.progressPath)))
+        @Expect(progress.contains("\"event\":\"vector_build_started\""), true)
+        @Expect(progress.contains("\"event\":\"batch_started\""), true)
+        @Expect(progress.contains("\"event\":\"batch_finished\""), true)
+        @Expect(progress.contains("\"event\":\"vector_build_finished\""), true)
+        @Expect(renderCkbVectorReconcileJson(result).contains("\"progressPath\""), true)
         @Expect(store.has("index/vector-ckb_active.ckb"), true)
         @Expect(store.has("index/active.ckb"), true)
         @Expect(store.has("raw/records.ckb"), true)
@@ -163,6 +171,11 @@ public class CkbVectorReconcileTest {
         @Expect(result.ok, false)
         @Expect(ckbVectorReconcileContainsPrefix(result.diagnostics, "vector_store_not_ready:"), true)
         @Expect(result.vectorState, EmbeddingProviderState.DEGRADED)
+        @Expect(result.progressPath != "", true)
+        @Expect(store.has(result.progressPath), true)
+        let progress = String.fromUtf8(File.readFrom(Path(root).join(result.progressPath)))
+        @Expect(progress.contains("\"event\":\"batch_finished\""), true)
+        @Expect(progress.contains("upsert_failed"), true)
     }
 
     @TestCase

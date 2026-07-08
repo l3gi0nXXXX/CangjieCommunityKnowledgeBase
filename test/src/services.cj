@@ -3004,6 +3004,7 @@ public class CkbVectorReconcileResult {
     public var rebuiltVectorCount: Int64 = 0
     public var activeKnowledgeVersion: String = ""
     public var vectorState: String = "unknown"
+    public var progressPath: String = ""
     public var diagnostics: ArrayList<String> = ArrayList<String>()
 
     public init() {}
@@ -3140,11 +3141,11 @@ public func renderCkbDerivedVectorCleanupText(result: CkbDerivedVectorCleanupRes
 }
 
 public func renderCkbVectorReconcileJson(result: CkbVectorReconcileResult): String {
-    "{\"ok\":${result.ok},\"errorCode\":\"${if (result.ok) { "" } else { "ckb.vector_reconcile_failed" }}\",\"dryRun\":${result.dryRun},\"force\":${result.force},\"activeRecords\":${result.activeRecords},\"deletedVectorArtifacts\":${ckbRuntimePreflightStringListJson(result.deletedVectorArtifacts)},\"plannedVectorArtifacts\":${ckbRuntimePreflightStringListJson(result.plannedVectorArtifacts)},\"qdrantBeforeCount\":${result.qdrantBeforeCount},\"qdrantAfterCount\":${result.qdrantAfterCount},\"rebuiltVectorCount\":${result.rebuiltVectorCount},\"activeKnowledgeVersion\":\"${ckbRuntimePreflightJsonEscape(result.activeKnowledgeVersion)}\",\"vectorState\":\"${ckbRuntimePreflightJsonEscape(result.vectorState)}\",\"diagnostics\":${ckbRuntimePreflightStringListJson(result.diagnostics)}}"
+    "{\"ok\":${result.ok},\"errorCode\":\"${if (result.ok) { "" } else { "ckb.vector_reconcile_failed" }}\",\"dryRun\":${result.dryRun},\"force\":${result.force},\"activeRecords\":${result.activeRecords},\"deletedVectorArtifacts\":${ckbRuntimePreflightStringListJson(result.deletedVectorArtifacts)},\"plannedVectorArtifacts\":${ckbRuntimePreflightStringListJson(result.plannedVectorArtifacts)},\"qdrantBeforeCount\":${result.qdrantBeforeCount},\"qdrantAfterCount\":${result.qdrantAfterCount},\"rebuiltVectorCount\":${result.rebuiltVectorCount},\"activeKnowledgeVersion\":\"${ckbRuntimePreflightJsonEscape(result.activeKnowledgeVersion)}\",\"vectorState\":\"${ckbRuntimePreflightJsonEscape(result.vectorState)}\",\"progressPath\":\"${ckbRuntimePreflightJsonEscape(result.progressPath)}\",\"diagnostics\":${ckbRuntimePreflightStringListJson(result.diagnostics)}}"
 }
 
 public func renderCkbVectorReconcileText(result: CkbVectorReconcileResult): String {
-    "vector reconcile ok=${result.ok} dryRun=${result.dryRun} force=${result.force} activeRecords=${result.activeRecords} rebuiltVectorCount=${result.rebuiltVectorCount} qdrantBeforeCount=${result.qdrantBeforeCount} qdrantAfterCount=${result.qdrantAfterCount} vectorState=${result.vectorState} diagnostics=${joinStrings(result.diagnostics, ",")}\n"
+    "vector reconcile ok=${result.ok} dryRun=${result.dryRun} force=${result.force} activeRecords=${result.activeRecords} rebuiltVectorCount=${result.rebuiltVectorCount} qdrantBeforeCount=${result.qdrantBeforeCount} qdrantAfterCount=${result.qdrantAfterCount} vectorState=${result.vectorState} progressPath=${result.progressPath} diagnostics=${joinStrings(result.diagnostics, ",")}\n"
 }
 
 public func ckbCleanDerivedVectorArtifacts(config: CkbRuntimeConfig, store: FileKnowledgeStore, force: Bool): CkbDerivedVectorCleanupResult {
@@ -3180,7 +3181,9 @@ public func ckbVectorReconcileWithVectorStore(kb: KnowledgeBase, store: FileKnow
         result.diagnostics.add("dry_run")
         return result
     }
-    let rebuild = ckbRebuildIndex(kb, store)
+    let progressSink = FileVectorBuildProgressSink(store)
+    let rebuild = ckbRebuildIndex(kb, store, progressSink: progressSink)
+    result.progressPath = progressSink.currentProgressPath()
     result.rebuiltVectorCount = rebuild.count
     result.activeKnowledgeVersion = rebuild.activeVersion
     if (!rebuild.ok) {
@@ -4505,6 +4508,68 @@ public class FileSchedulerProgressSink <: SchedulerProgressSink {
             this.progressPath = "metadata/scheduler-runs/${safeName(runId)}.jsonl"
         }
     }
+}
+
+public class FileVectorBuildProgressSink <: VectorBuildProgressSink {
+    private let store: FileKnowledgeStore
+    private var progressPath: String = ""
+
+    public init(store: FileKnowledgeStore) {
+        this.store = store
+    }
+
+    public func currentProgressPath(): String {
+        this.progressPath
+    }
+
+    public func onVectorBuildStarted(progress: VectorBuildProgress): Unit {
+        this.ensureProgressPath(progress.runId)
+        this.store.writeLinesAtomically(this.progressPath, vectorBuildProgressJson(progress, "vector_build_started"))
+        this.store.writeLinesAtomically("metadata/vector-reconcile-current.ckb", vectorBuildCurrentText(progress, this.progressPath))
+    }
+
+    public func onVectorBatchStarted(progress: VectorBuildProgress): Unit {
+        this.ensureProgressPath(progress.runId)
+        this.store.appendLinesAtomically(this.progressPath, vectorBuildProgressJson(progress, "batch_started"))
+        this.store.writeLinesAtomically("metadata/vector-reconcile-current.ckb", vectorBuildCurrentText(progress, this.progressPath))
+    }
+
+    public func onVectorBatchFinished(progress: VectorBuildProgress): Unit {
+        this.ensureProgressPath(progress.runId)
+        this.store.appendLinesAtomically(this.progressPath, vectorBuildProgressJson(progress, "batch_finished"))
+        this.store.writeLinesAtomically("metadata/vector-reconcile-current.ckb", vectorBuildCurrentText(progress, this.progressPath))
+    }
+
+    public func onVectorBuildFinished(progress: VectorBuildProgress): Unit {
+        this.ensureProgressPath(progress.runId)
+        this.store.appendLinesAtomically(this.progressPath, vectorBuildProgressJson(progress, "vector_build_finished"))
+        this.store.writeLinesAtomically("metadata/vector-reconcile-current.ckb", vectorBuildCurrentText(progress, this.progressPath))
+    }
+
+    private func ensureProgressPath(runId: String): Unit {
+        if (this.progressPath == "") {
+            this.progressPath = "metadata/vector-reconcile-runs/${safeName(runId)}.jsonl"
+        }
+    }
+}
+
+private func vectorBuildProgressJson(progress: VectorBuildProgress, event: String): String {
+    let diagnostic = utf8SafePrefix(redactSensitive(if (progress.lastDiagnostic != "") { progress.lastDiagnostic } else { progress.diagnostic }), 240)
+    "{\"runId\":\"${ckbRuntimePreflightJsonEscape(progress.runId)}\",\"event\":\"${ckbRuntimePreflightJsonEscape(event)}\",\"collection\":\"${ckbRuntimePreflightJsonEscape(progress.collection)}\",\"targetCollection\":\"${ckbRuntimePreflightJsonEscape(progress.targetCollection)}\",\"total\":${progress.total},\"completed\":${progress.completed},\"failed\":${progress.failed},\"currentBatch\":${progress.currentBatch},\"currentBatchStart\":${progress.currentBatchStart},\"currentBatchEnd\":${progress.currentBatchEnd},\"batchSize\":${progress.batchSize},\"inputBytes\":${progress.inputBytes},\"preparedBytes\":${progress.preparedBytes},\"state\":\"${ckbRuntimePreflightJsonEscape(progress.state)}\",\"diagnostic\":\"${ckbRuntimePreflightJsonEscape(diagnostic)}\",\"elapsedMillis\":${progress.elapsedMillis},\"atMillis\":${DateTime.now().toUnixTimeStamp().toMilliseconds()}}\n"
+}
+
+private func vectorBuildCurrentText(progress: VectorBuildProgress, progressPath: String): String {
+    let diagnostic = utf8SafePrefix(redactSensitive(if (progress.lastDiagnostic != "") { progress.lastDiagnostic } else { progress.diagnostic }), 240)
+    var text = "runId=${escapeField(progress.runId)}\n"
+    text += "collection=${escapeField(progress.collection)}\n"
+    text += "targetCollection=${escapeField(progress.targetCollection)}\n"
+    text += "state=${escapeField(progress.state)}\n"
+    text += "currentBatch=${progress.currentBatch}\n"
+    text += "completed=${progress.completed}\n"
+    text += "failed=${progress.failed}\n"
+    text += "progressPath=${escapeField(progressPath)}\n"
+    text += "diagnostic=${escapeField(diagnostic)}\n"
+    text
 }
 
 private func schedulerProgressJson(runId: String, event: String, taskName: String, status: String, diagnostic: String, durationMillis: Int64): String {
@@ -7362,8 +7427,8 @@ public func ckbSyncLiveApply(kb: KnowledgeBase, adapter: SourceAdapter, store: F
     result
 }
 
-public func ckbRebuildIndex(kb: KnowledgeBase, store: FileKnowledgeStore, fail!: Bool = false): IndexBuildResult {
-    let result = kb.rebuildIndex(fail)
+public func ckbRebuildIndex(kb: KnowledgeBase, store: FileKnowledgeStore, fail!: Bool = false, progressSink!: VectorBuildProgressSink = NoopVectorBuildProgressSink()): IndexBuildResult {
+    let result = kb.rebuildIndex(fail, progressSink: progressSink)
     if (result.ok) {
         let vector = kb.lastVectorIndexBuild()
         if (!vector.ok) {

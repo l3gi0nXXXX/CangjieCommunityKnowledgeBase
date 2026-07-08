@@ -150,7 +150,7 @@ public class CkbOllamaEmbeddingTest {
         let timeout = providerFor(timeoutResponse())
             .embed(textBatch(["timeout"]), "bge-m3:latest", 1024)
         @Expect(timeout.status.state, EmbeddingProviderState.DOWN)
-        @Expect(timeout.status.degradedReason, "ollama_timeout")
+        @Expect(timeout.status.degradedReason.contains("ollama"), true)
     }
 
     @TestCase
@@ -200,7 +200,7 @@ public class CkbOllamaEmbeddingTest {
 
         @Expect(readiness.ready, false)
         @Expect(readiness.state, EmbeddingProviderState.DOWN)
-        @Expect(readiness.reason, "ollama_timeout")
+        @Expect(readiness.reason.contains("ollama"), true)
     }
 
     @TestCase
@@ -216,7 +216,8 @@ public class CkbOllamaEmbeddingTest {
         let elapsed = DateTime.now().toUnixTimeStamp().toMilliseconds() - started
 
         @Expect(batch.status.state, EmbeddingProviderState.DOWN)
-        @Expect(batch.status.degradedReason, "ollama_timeout")
+        @Expect(batch.status.degradedReason.contains("ollama_embedding_timeout:attempt=1"), true)
+        @Expect(batch.lastDiagnostic.contains("timeoutMillis=20"), true)
         @Expect(batch.failed, 1)
         @Expect(elapsed < 1000, true)
         @Expect(slow.calls, 1)
@@ -237,6 +238,8 @@ public class CkbOllamaEmbeddingTest {
 
         @Expect(batch.status.state, EmbeddingProviderState.READY)
         @Expect(batch.succeeded, 3)
+        @Expect(batch.chunksAttempted, 2)
+        @Expect(batch.lastChunkPreparedBytes > 0, true)
         @Expect(batch.truncatedCount, 1)
         @Expect(fake.calls, 2)
         @Expect(fake.requests[0].body.contains("仓颉"), true)

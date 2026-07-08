@@ -189,6 +189,9 @@ public class EmbeddingBatch {
     public var preparedBytes: Int64 = 0
     public var truncatedCount: Int64 = 0
     public var elapsedMillis: Int64 = 0
+    public var chunksAttempted: Int64 = 0
+    public var lastChunkPreparedBytes: Int64 = 0
+    public var lastDiagnostic: String = ""
 
     public init() {}
 }
@@ -298,19 +301,45 @@ public class CkbEmbeddingTextBudgeter {
 }
 
 public class VectorBuildProgress {
+    public var runId: String = ""
     public var collection: String = ""
+    public var targetCollection: String = ""
     public var total: Int64 = 0
     public var completed: Int64 = 0
     public var failed: Int64 = 0
     public var currentBatch: Int64 = 0
+    public var currentBatchStart: Int64 = 0
+    public var currentBatchEnd: Int64 = 0
     public var batchSize: Int64 = 0
+    public var inputBytes: Int64 = 0
+    public var preparedBytes: Int64 = 0
     public var startedAtMillis: Int64 = 0
     public var updatedAtMillis: Int64 = 0
     public var elapsedMillis: Int64 = 0
     public var state: String = "idle"
     public var diagnostic: String = ""
+    public var lastDiagnostic: String = ""
 
     public init() {}
+}
+
+public interface VectorBuildProgressSink {
+    func onVectorBuildStarted(progress: VectorBuildProgress): Unit
+    func onVectorBatchStarted(progress: VectorBuildProgress): Unit
+    func onVectorBatchFinished(progress: VectorBuildProgress): Unit
+    func onVectorBuildFinished(progress: VectorBuildProgress): Unit
+}
+
+public class NoopVectorBuildProgressSink <: VectorBuildProgressSink {
+    public init() {}
+
+    public func onVectorBuildStarted(progress: VectorBuildProgress): Unit {}
+
+    public func onVectorBatchStarted(progress: VectorBuildProgress): Unit {}
+
+    public func onVectorBatchFinished(progress: VectorBuildProgress): Unit {}
+
+    public func onVectorBuildFinished(progress: VectorBuildProgress): Unit {}
 }
 
 public class VectorIndexBuildResult {
@@ -363,6 +392,10 @@ public func ckbEmbeddingTextBudgetFromConfig(config: EmbeddingConfig): CkbEmbedd
 
 private func ckbCoreNowMillis(): Int64 {
     DateTime.now().toUnixTimeStamp().toMilliseconds()
+}
+
+private func ckbVectorBuildRunId(): String {
+    "vector-reconcile-${ckbCoreNowMillis()}"
 }
 
 public class DeterministicEmbeddingProvider <: EmbeddingProvider {
@@ -2929,7 +2962,7 @@ public class KnowledgeBase {
         out
     }
 
-    public func rebuildIndex(simulateFailure: Bool): IndexBuildResult {
+    public func rebuildIndex(simulateFailure: Bool, progressSink!: VectorBuildProgressSink = NoopVectorBuildProgressSink()): IndexBuildResult {
         let builder = IndexBuilder()
         let result = builder.rebuild(this.normalizedRecords, this.activeKnowledgeVersion, "ckb-20260519-000200-candidate", fail: simulateFailure)
         this.candidateKnowledgeVersion = result.candidateVersion
@@ -2952,21 +2985,21 @@ public class KnowledgeBase {
         this.failedCandidateVersion = ""
         this.storage.indexCount = this.activeIndex.size
         this.invalidateServingCacheOnActiveVersionChange()
-        this.lastVectorIndexBuildResult = this.rebuildProductionIndexesWithResult("")
+        this.lastVectorIndexBuildResult = this.rebuildProductionIndexesWithResult("", progressSink: progressSink)
         this.rebuildIndexManifest()
         result
     }
 
     private func rebuildProductionIndexes(): Unit {
-        this.lastVectorIndexBuildResult = this.rebuildProductionIndexesWithResult("")
+        this.lastVectorIndexBuildResult = this.rebuildProductionIndexesWithResult("", progressSink: NoopVectorBuildProgressSink())
     }
 
-    private func rebuildProductionIndexesWithResult(reason: String): VectorIndexBuildResult {
+    private func rebuildProductionIndexesWithResult(reason: String, progressSink!: VectorBuildProgressSink = NoopVectorBuildProgressSink()): VectorIndexBuildResult {
         let started = ckbCoreNowMillis()
         let result = VectorIndexBuildResult()
         result.diagnostic = reason
         this.rebuildServingIndexStatus()
-        let vector = this.rebuildProductionVectorIndexWithResult()
+        let vector = this.rebuildProductionVectorIndexWithResult(progressSink: progressSink)
         this.rebuildGraphIndex()
         result.ok = vector.ok
         result.status = vector.status
@@ -2986,10 +3019,12 @@ public class KnowledgeBase {
         result
     }
 
-    private func rebuildProductionVectorIndexWithResult(): VectorIndexBuildResult {
+    private func rebuildProductionVectorIndexWithResult(progressSink!: VectorBuildProgressSink = NoopVectorBuildProgressSink()): VectorIndexBuildResult {
         let result = VectorIndexBuildResult()
         let progress = VectorBuildProgress()
+        progress.runId = ckbVectorBuildRunId()
         progress.collection = this.vectorCollection
+        progress.targetCollection = this.vectorCollection
         progress.total = this.activeIndex.size
         let embeddingStatus = this.embeddingProvider.status()
         progress.batchSize = if (embeddingStatus.batchSize > 0) { embeddingStatus.batchSize } else { 16 }
@@ -2997,6 +3032,7 @@ public class KnowledgeBase {
         progress.updatedAtMillis = progress.startedAtMillis
         progress.state = "running"
         this.lastVectorBuildProgress = progress
+        progressSink.onVectorBuildStarted(progress)
         let empty = ArrayList<VectorRecord>()
         var vectorStatus = this.vectorStore.recreate(this.vectorCollection, empty)
         if (vectorStatus.state != EmbeddingProviderState.READY) {
@@ -3009,6 +3045,8 @@ public class KnowledgeBase {
             result.status = vectorStatus.state
             result.diagnostic = vectorStatus.degradedReason
             result.elapsedMillis = progress.elapsedMillis
+            progress.lastDiagnostic = progress.diagnostic
+            progressSink.onVectorBuildFinished(progress)
             return result
         }
         if (this.activeIndex.size == 0) {
@@ -3021,6 +3059,7 @@ public class KnowledgeBase {
             result.status = EmbeddingProviderState.READY
             result.vectorCount = 0
             result.elapsedMillis = progress.elapsedMillis
+            progressSink.onVectorBuildFinished(progress)
             return result
         }
         var batchIndex: Int64 = 0
@@ -3032,6 +3071,13 @@ public class KnowledgeBase {
         for (textBatch in textBatches) {
             let texts = textBatch.texts
             progress.currentBatch = batchIndex
+            progress.currentBatchStart = textBatch.startIndex
+            progress.currentBatchEnd = textBatch.endIndex
+            progress.inputBytes = textBatch.originalBytes
+            progress.preparedBytes = textBatch.preparedBytes
+            progress.updatedAtMillis = ckbCoreNowMillis()
+            progress.elapsedMillis = progress.updatedAtMillis - progress.startedAtMillis
+            progressSink.onVectorBatchStarted(progress)
             let batch = this.embeddingProvider.embed(texts, this.activeEmbeddingModel(), this.activeEmbeddingDimensions())
             progress.failed += batch.failed
             result.truncatedCount += textBatch.truncatedCount + batch.truncatedCount
@@ -3047,6 +3093,7 @@ public class KnowledgeBase {
                 progress.failed = texts.size
                 progress.state = vectorStatus.state
                 progress.diagnostic = vectorStatus.degradedReason
+                progress.lastDiagnostic = vectorStatus.degradedReason
                 progress.updatedAtMillis = ckbCoreNowMillis()
                 progress.elapsedMillis = progress.updatedAtMillis - progress.startedAtMillis
                 this.applyVectorStatus(vectorStatus)
@@ -3055,6 +3102,8 @@ public class KnowledgeBase {
                 result.vectorCount = progress.completed
                 result.diagnostic = vectorStatus.degradedReason
                 result.elapsedMillis = progress.elapsedMillis
+                progressSink.onVectorBatchFinished(progress)
+                progressSink.onVectorBuildFinished(progress)
                 return result
             }
             let vectorRecords = ArrayList<VectorRecord>()
@@ -3067,6 +3116,7 @@ public class KnowledgeBase {
                 progress.failed = texts.size
                 progress.state = vectorStatus.state
                 progress.diagnostic = vectorStatus.degradedReason
+                progress.lastDiagnostic = vectorStatus.degradedReason
                 progress.updatedAtMillis = ckbCoreNowMillis()
                 progress.elapsedMillis = progress.updatedAtMillis - progress.startedAtMillis
                 vectorStatus.count = progress.completed
@@ -3076,6 +3126,8 @@ public class KnowledgeBase {
                 result.vectorCount = progress.completed
                 result.diagnostic = vectorStatus.degradedReason
                 result.elapsedMillis = progress.elapsedMillis
+                progressSink.onVectorBatchFinished(progress)
+                progressSink.onVectorBuildFinished(progress)
                 return result
             }
             for (record in vectorRecords) {
@@ -3084,6 +3136,7 @@ public class KnowledgeBase {
             progress.completed += texts.size
             progress.updatedAtMillis = ckbCoreNowMillis()
             progress.elapsedMillis = progress.updatedAtMillis - progress.startedAtMillis
+            progressSink.onVectorBatchFinished(progress)
             batchIndex += 1
         }
         progress.state = EmbeddingProviderState.READY
@@ -3095,6 +3148,7 @@ public class KnowledgeBase {
         result.status = EmbeddingProviderState.READY
         result.vectorCount = progress.completed
         result.elapsedMillis = progress.elapsedMillis
+        progressSink.onVectorBuildFinished(progress)
         result
     }
 

@@ -145,9 +145,10 @@ public class NativeHttpRequestExecutor <: HttpRequestExecutor {
             return future.get(Duration.millisecond * timeoutMillis)
         } catch (e: Exception) {
             let diagnostic = ckbNativeHttpClassifyException(e.message)
+            let timeoutMillis = if (request.timeoutMillis > 0) { request.timeoutMillis } else { this.config.timeoutMillis }
             response.status = if (diagnostic.transportErrorClass == "timeout") { "timeout" } else { "transport_error" }
             response.transportErrorClass = diagnostic.transportErrorClass
-            response.transportDiagnostic = if (diagnostic.transportErrorClass == "timeout") { "native_http_total_timeout" } else { diagnostic.transportDiagnostic }
+            response.transportDiagnostic = ckbNativeHttpExecutionDiagnostic(request, diagnostic, timeoutMillis)
         }
         response
     }
@@ -404,6 +405,13 @@ public func ckbNativeHttpClassifyException(message: String): CkbNativeHttpTransp
         diagnostic.transportDiagnostic = diagnostic.transportErrorClass
     }
     diagnostic
+}
+
+private func ckbNativeHttpExecutionDiagnostic(request: HttpExecutionRequest, diagnostic: CkbNativeHttpTransportDiagnostic, timeoutMillis: Int64): String {
+    let host = ckbNativeHttpTargetHost(request.url)
+    let base = if (diagnostic.transportErrorClass == "timeout") { "native_http_total_timeout" } else { diagnostic.transportDiagnostic }
+    let clean = utf8SafePrefix(redactSensitive(base), 160)
+    "method=${normalizeHttpExecutionMethod(request.method)} host=${if (host == "") { "unknown" } else { host }} timeoutMillis=${timeoutMillis} diagnostic=${clean}"
 }
 
 public func ckbNativeHttpDescribeBuildPlan(url: String, config: CkbNativeHttpTransportConfig): CkbNativeHttpBuildPlan {
