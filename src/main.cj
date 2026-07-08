@@ -19,17 +19,6 @@ public func ckbCliMain(args: Array<String>): Int64 {
     let cli = parseCli(args)
     let config = loadCkbRuntimeConfig(cli.configPath)
     let store = FileKnowledgeStore(cli.storePath)
-    if (cli.command == "scheduler-run" && hasArg(args, "--force-all")) {
-        let preflight = ckbRoutineRuntimePreflightFromEnvWithBootstrap(config, cli.storePath)
-        if (!preflight.ok) {
-            if (ckbCliWantsJson(args)) {
-                println(renderCkbRoutineRuntimePreflightJson(preflight))
-            } else {
-                print(renderCkbRoutineRuntimePreflightText(preflight))
-            }
-            return 2
-        }
-    }
     if (cli.command == "vector-bootstrap") {
         let result = ckbVectorBootstrapFromRuntime(config)
         if (ckbCliWantsJson(args)) {
@@ -281,6 +270,24 @@ public func ckbCliMain(args: Array<String>): Int64 {
             schedulerKb = newKnowledgeBaseFromStoreWithRuntime(store, config).kb
         }
         let recovery = ckbRecoverStaleSchedulerRunsWithVectorStore(store, vectorStoreFromRuntime(config))
+        let lock = ckbAcquireSchedulerRunLock(store, "scheduler-cli-${ckbCoreNowMillis()}", ckbCoreNowMillis() + ckbCliSchedulerRunLockBudgetMillis(args), stableSummaryHash(getCommand()))
+        if (!lock.ok) {
+            let busy = SchedulerExecutorResult()
+            busy.runId = lock.runId
+            busy.startedAtMillis = ckbCoreNowMillis()
+            busy.endedAtMillis = busy.startedAtMillis
+            busy.failed = 1
+            busy.details = "scheduler lock ok=false status=${lock.status} diagnostic=${lock.diagnostic}\n"
+            busy.validationDiagnostics.add("scheduler_lock:${lock.diagnostic}")
+            ckbCliPopulateSchedulerRunEvidence(busy, config, cli.storePath)
+            if (ckbCliWantsJson(args)) {
+                println(ckbCliSchedulerRunJson(busy))
+            } else {
+                print("scheduler ran=0 succeeded=0 failed=1 degraded=0 forced=false\n")
+                print(busy.details)
+            }
+            return 1
+        }
         ckbApplySchedulerProfileBudgets(schedulerKb.scheduler)
         let runner = ckbSchedulerTaskRunnerForRuntime(schedulerKb, config, store, cli.configPath, cli.storePath, if (config.networkEnabled) { HttpSourceFetchRunner(config) } else { DisabledNetworkFetchRunner() })
         let executor = SchedulerExecutor(schedulerKb.scheduler, runner, FileSchedulerProgressSink(store), 300000)
@@ -296,13 +303,19 @@ public func ckbCliMain(args: Array<String>): Int64 {
             result.validationDiagnostics.add("recovery:${diagnostic}")
             result.details += "recovery ${diagnostic}\n"
         }
+        if (lock.diagnostic != "") {
+            result.validationDiagnostics.add("scheduler_lock:${lock.diagnostic}")
+            result.details += "scheduler_lock ${lock.diagnostic}\n"
+        }
         ckbAppendSnapshotRepairDiagnostic(result, "pre", preRepair)
         let finalKb = newKnowledgeBaseFromStoreWithRuntime(store, config).kb
         ckbCliApplyFinalSchedulerConsistency(result, finalKb, store, config, cli.storePath)
         let postRepair = store.repairActiveLiveShadowFromManifest()
         ckbAppendSnapshotRepairDiagnostic(result, "post", postRepair)
+        ckbCliPopulateSchedulerRunEvidence(result, config, cli.storePath)
         store.saveScheduler(schedulerKb.scheduler.entries)
         store.saveSchedulerLoopMetadata(if (result.failed == 0 && result.degraded == 0) { "running" } else { "failed" }, config.schedulerEnabled, config.schedulerLoopIntervalMillis, if (result.forced) { "cli_forced" } else { "cli_due" }, 0, result.ran, result.taskNames, if (result.failed == 0 && result.degraded == 0) { "ok" } else { "scheduler_cli_run_degraded" })
+        ckbReleaseSchedulerRunLock(store, lock, result.runId, if (result.failed == 0 && result.degraded == 0) { "succeeded" } else { "failed" })
         if (ckbCliWantsJson(args)) {
             println(ckbCliSchedulerRunJson(result))
         } else {
@@ -567,7 +580,30 @@ private func ckbCliSchedulerTaskNames(args: Array<String>): ArrayList<String> {
 
 private func ckbCliSchedulerRunJson(result: SchedulerExecutorResult): String {
     let ok = result.failed == 0 && result.degraded == 0
-    "{\"ok\":${ok},\"errorCode\":\"${if (ok) { "" } else { "ckb.scheduler_run_degraded" }}\",\"runId\":\"${ckbCliJsonEscape(result.runId)}\",\"progressPath\":\"${ckbCliJsonEscape(result.progressPath)}\",\"startedAtMillis\":${result.startedAtMillis},\"endedAtMillis\":${result.endedAtMillis},\"timedOut\":${result.timedOut},\"partial\":${result.partial},\"ran\":${result.ran},\"succeeded\":${result.succeeded},\"failed\":${result.failed},\"degraded\":${result.degraded},\"forced\":${result.forced},\"taskNames\":${ckbCliStringArrayJson(result.taskNames)},\"tasks\":${ckbSchedulerRunTaskRecordsJson(result.taskRecords)},\"details\":\"${ckbCliJsonEscape(result.details)}\",\"validationSummaries\":${ckbCliStringArrayJson(result.validationSummaries)},\"validationDiagnostics\":${ckbCliStringArrayJson(result.validationDiagnostics)},\"validationEvidenceHashes\":${ckbCliStringArrayJson(result.validationEvidenceHashes)},\"finalPreflightOk\":${result.finalPreflightOk},\"finalPreflightDiagnostics\":${ckbCliStringArrayJson(result.finalPreflightDiagnostics)},\"postRepairAttempted\":${result.postRepairAttempted},\"postRepairOk\":${result.postRepairOk},\"failedTasks\":${ckbCliSchedulerFailedTasksJson(ckbSchedulerFailureSummaries(result))}}"
+    "{\"ok\":${ok},\"errorCode\":\"${if (ok) { "" } else { "ckb.scheduler_run_degraded" }}\",\"runId\":\"${ckbCliJsonEscape(result.runId)}\",\"progressPath\":\"${ckbCliJsonEscape(result.progressPath)}\",\"startedAtMillis\":${result.startedAtMillis},\"endedAtMillis\":${result.endedAtMillis},\"timedOut\":${result.timedOut},\"partial\":${result.partial},\"ran\":${result.ran},\"succeeded\":${result.succeeded},\"failed\":${result.failed},\"degraded\":${result.degraded},\"forced\":${result.forced},\"buildCommit\":\"${ckbCliJsonEscape(result.buildCommit)}\",\"configHash\":\"${ckbCliJsonEscape(result.configHash)}\",\"storeHash\":\"${ckbCliJsonEscape(result.storeHash)}\",\"taskNames\":${ckbCliStringArrayJson(result.taskNames)},\"tasks\":${ckbSchedulerRunTaskRecordsJson(result.taskRecords)},\"details\":\"${ckbCliJsonEscape(result.details)}\",\"validationSummaries\":${ckbCliStringArrayJson(result.validationSummaries)},\"validationDiagnostics\":${ckbCliStringArrayJson(result.validationDiagnostics)},\"validationEvidenceHashes\":${ckbCliStringArrayJson(result.validationEvidenceHashes)},\"finalPreflightOk\":${result.finalPreflightOk},\"finalPreflightDiagnostics\":${ckbCliStringArrayJson(result.finalPreflightDiagnostics)},\"postRepairAttempted\":${result.postRepairAttempted},\"postRepairOk\":${result.postRepairOk},\"failedTasks\":${ckbCliSchedulerFailedTasksJson(ckbSchedulerFailureSummaries(result))}}"
+}
+
+private func ckbCliPopulateSchedulerRunEvidence(result: SchedulerExecutorResult, config: CkbRuntimeConfig, storePath: String): Unit {
+    result.buildCommit = ckbCliBuildCommitEvidence()
+    result.configHash = stableSummaryHash(config.redactedSummary())
+    result.storeHash = stableSummaryHash(storePath)
+}
+
+private func ckbCliBuildCommitEvidence(): String {
+    if (let Some(value) <- getVariable("CKB_BUILD_COMMIT")) {
+        let trimmed = value.trimAscii()
+        if (trimmed != "") {
+            return trimmed
+        }
+    }
+    "command:${stableSummaryHash(getCommand())}"
+}
+
+private func ckbCliSchedulerRunLockBudgetMillis(args: Array<String>): Int64 {
+    if (hasArg(args, "--force-all")) {
+        return 7200000
+    }
+    1800000
 }
 
 private func ckbCliApplyFinalSchedulerConsistency(result: SchedulerExecutorResult, kb: KnowledgeBase, store: FileKnowledgeStore, config: CkbRuntimeConfig, storePath: String): Unit {
