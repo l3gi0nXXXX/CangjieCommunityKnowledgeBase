@@ -2193,7 +2193,11 @@ public class SourceSyncPlanner {
                 continue
             }
             if (repo.defaultBranch != "") {
-                plan.requests.add(markPublicRepoRequest(this.builder.gitCodeTree(repo.fullName, repo.defaultBranch)))
+                if (repo.defaultBranch.contains("/")) {
+                    plan.requests.add(markPublicRepoRequest(this.builder.gitCodeBranchNativeSafe(repo.fullName, repo.defaultBranch)))
+                } else {
+                    plan.requests.add(markPublicRepoRequest(this.builder.gitCodeTree(repo.fullName, repo.defaultBranch)))
+                }
             }
             plan.requests.add(markPublicRepoRequest(this.builder.gitCodeIssueHistory(repo.fullName)))
             plan.requests.add(markPublicRepoRequest(this.builder.gitCodePrHistory(repo.fullName)))
@@ -2354,24 +2358,42 @@ private func fetchGitCodePublicRepo(kb: KnowledgeBase, config: CkbRuntimeConfig,
         return
     }
     if (repo.defaultBranch != "") {
-        let treeRequest = markPublicRepoRequest(builder.gitCodeTree(repo.fullName, repo.defaultBranch))
-        let treeFetch = fetchLiveRequest(kb, config, options, runner, treeRequest, state)
-        if (treeFetch.ok) {
-            let candidates = SourceCandidateSelector().selectFromTree(treeFetch.body, maxFiles: options.maxFilesPerRepo)
-            for (path in candidates) {
-                if (!liveBudgetAllows(state, options)) {
-                    state.truncated = true
-                    break
-                }
-                let rawFetch = fetchLiveRequest(kb, config, options, runner, markPublicRepoRequest(builder.gitCodeSource(repo.fullName, repo.defaultBranch, path)), state)
-                if (!rawFetch.ok && shouldFallbackToGitCodeContents(rawFetch)) {
+        var fetchRef = repo.defaultBranch
+        var resolved = true
+        if (repo.defaultBranch.contains("/")) {
+            let resolution = ckbResolveGitCodeRefForFetch(runner, builder, repo.fullName, repo.defaultBranch, CangjieSourceSets.ALL, "community", config)
+            for (diagnostic in resolution.diagnostics) {
+                state.out += "repoRefResolution ${diagnostic}\n"
+            }
+            if (resolution.ok) {
+                fetchRef = resolution.effectiveRef
+                state.out += "repoRefResolved repo=${repo.fullName} originalRef=${repo.defaultBranch} effectiveRef=${resolution.effectiveRef} status=${resolution.status}\n"
+            } else {
+                resolved = false
+                state.degradedCount += 1
+                state.out += "repoSkippedSource ${repo.fullName} visibility=public reason=gitcode_ref_resolution_failed ref=${repo.defaultBranch} status=${resolution.status}\n"
+            }
+        }
+        if (resolved) {
+            let treeRequest = markPublicRepoRequest(builder.gitCodeTreeWithFetchRef(repo.fullName, repo.defaultBranch, fetchRef))
+            let treeFetch = fetchLiveRequest(kb, config, options, runner, treeRequest, state)
+            if (treeFetch.ok) {
+                let candidates = SourceCandidateSelector().selectFromTree(treeFetch.body, maxFiles: options.maxFilesPerRepo)
+                for (path in candidates) {
                     if (!liveBudgetAllows(state, options)) {
                         state.truncated = true
-                        state.out += "sourceFallback repo=${repo.fullName} path=${path} rawStatus=${rawFetch.status} contentsFallback=skipped reason=max_items\n"
                         break
                     }
-                    state.out += "sourceFallback repo=${repo.fullName} path=${path} rawStatus=${rawFetch.status} contentsFallback=attempted\n"
-                    fetchLiveRequest(kb, config, options, runner, markPublicRepoRequest(builder.gitCodeSourceContents(repo.fullName, repo.defaultBranch, path)), state)
+                    let rawFetch = fetchLiveRequest(kb, config, options, runner, markPublicRepoRequest(builder.gitCodeSourceRawWithFetchRef(repo.fullName, repo.defaultBranch, fetchRef, path)), state)
+                    if (!rawFetch.ok && shouldFallbackToGitCodeContents(rawFetch)) {
+                        if (!liveBudgetAllows(state, options)) {
+                            state.truncated = true
+                            state.out += "sourceFallback repo=${repo.fullName} path=${path} rawStatus=${rawFetch.status} contentsFallback=skipped reason=max_items\n"
+                            break
+                        }
+                        state.out += "sourceFallback repo=${repo.fullName} path=${path} rawStatus=${rawFetch.status} contentsFallback=attempted\n"
+                        fetchLiveRequest(kb, config, options, runner, markPublicRepoRequest(builder.gitCodeSourceContentsWithFetchRef(repo.fullName, repo.defaultBranch, fetchRef, path)), state)
+                    }
                 }
             }
         }
@@ -3010,6 +3032,25 @@ public class CkbVectorReconcileResult {
     public init() {}
 }
 
+public class CkbRoutineRepairResult {
+    public var ok: Bool = false
+    public var force: Bool = false
+    public var repairPerformed: Bool = false
+    public var vectorReconcile: CkbVectorReconcileResult = CkbVectorReconcileResult()
+    public var preflight: CkbRoutineRuntimePreflightResult = CkbRoutineRuntimePreflightResult()
+    public var diagnostics: ArrayList<String> = ArrayList<String>()
+
+    public init() {}
+}
+
+private class CkbDuplicateVectorIdentitySummary {
+    public var duplicateIdCount: Int64 = 0
+    public var duplicateRows: Int64 = 0
+    public var diagnostics: ArrayList<String> = ArrayList<String>()
+
+    public init() {}
+}
+
 public func ckbRoutineRuntimePreflightFromEnv(config: CkbRuntimeConfig, storePath: String): CkbRoutineRuntimePreflightResult {
     let heap = if (let Some(value) <- getVariable("cjHeapSize")) { value } else { "" }
     let dyld = if (let Some(value) <- getVariable("DYLD_LIBRARY_PATH")) { value } else { "" }
@@ -3059,6 +3100,7 @@ private func ckbRoutineRuntimePreflightSnapshotAndVectorChecks(result: CkbRoutin
     if (metadata.snapshotManifestTxId == "") {
         result.ok = false
         result.diagnostics.add("active_snapshot_manifest_missing")
+        result.diagnostics.add("repair_required:vector_reconcile:active_snapshot_manifest_missing")
     } else if (!store.has("transactions/${safeName(metadata.snapshotManifestTxId)}/COMMIT")) {
         result.ok = false
         result.diagnostics.add("active_snapshot_manifest_uncommitted:${metadata.snapshotManifestTxId}")
@@ -3072,10 +3114,18 @@ private func ckbRoutineRuntimePreflightSnapshotAndVectorChecks(result: CkbRoutin
     if (snapshot.diagnostic.contains("metadata_active_mismatch")) {
         result.ok = false
         result.diagnostics.add("metadata_active_mismatch:${snapshot.diagnostic}")
+        result.diagnostics.add("repair_required:vector_reconcile:metadata_active_mismatch")
     }
     let vector = vectorStoreConfigFromRuntime(config)
     if (vector.backend != "qdrant") {
         return
+    }
+    if (metadata.vectorBackend != "" && metadata.vectorBackend != "qdrant") {
+        result.ok = false
+        result.diagnostics.add("repair_required:vector_reconcile:legacy_vector_metadata")
+    } else if (metadata.vectorActiveCollection == "active" || metadata.vectorActiveCollection == "candidate") {
+        result.ok = false
+        result.diagnostics.add("repair_required:vector_reconcile:legacy_vector_metadata")
     }
     let activeCollection = if (metadata.vectorActiveCollection != "") { metadata.vectorActiveCollection } else { vector.activeCollection }
     let qdrant = vectorStore.status(activeCollection)
@@ -3196,6 +3246,17 @@ public func renderCkbVectorReconcileText(result: CkbVectorReconcileResult): Stri
     "vector reconcile ok=${result.ok} dryRun=${result.dryRun} force=${result.force} activeRecords=${result.activeRecords} rebuiltVectorCount=${result.rebuiltVectorCount} qdrantBeforeCount=${result.qdrantBeforeCount} qdrantAfterCount=${result.qdrantAfterCount} vectorState=${result.vectorState} progressPath=${result.progressPath} diagnostics=${joinStrings(result.diagnostics, ",")}\n"
 }
 
+public func renderCkbRoutineRepairJson(result: CkbRoutineRepairResult): String {
+    "{\"ok\":${result.ok},\"errorCode\":\"${if (result.ok) { "" } else { "ckb.routine_repair_failed" }}\",\"force\":${result.force},\"repairPerformed\":${result.repairPerformed},\"vectorReconcile\":${renderCkbVectorReconcileJson(result.vectorReconcile)},\"preflight\":${renderCkbRoutineRuntimePreflightJson(result.preflight)},\"diagnostics\":${ckbRuntimePreflightStringListJson(result.diagnostics)}}"
+}
+
+public func renderCkbRoutineRepairText(result: CkbRoutineRepairResult): String {
+    var out = "routine repair ok=${result.ok} force=${result.force} repairPerformed=${result.repairPerformed} diagnostics=${joinStrings(result.diagnostics, ",")}\n"
+    out += renderCkbVectorReconcileText(result.vectorReconcile)
+    out += renderCkbRoutineRuntimePreflightText(result.preflight)
+    out
+}
+
 public func ckbCleanDerivedVectorArtifacts(config: CkbRuntimeConfig, store: FileKnowledgeStore, force: Bool): CkbDerivedVectorCleanupResult {
     let vector = vectorStoreConfigFromRuntime(config)
     store.deleteAllDerivedVectorArtifacts(vector.activeCollection, vector.candidateCollection, force: force)
@@ -3203,6 +3264,43 @@ public func ckbCleanDerivedVectorArtifacts(config: CkbRuntimeConfig, store: File
 
 public func ckbVectorReconcile(kb: KnowledgeBase, store: FileKnowledgeStore, config: CkbRuntimeConfig, force: Bool): CkbVectorReconcileResult {
     ckbVectorReconcileWithVectorStore(kb, store, config, vectorStoreFromRuntime(config), force)
+}
+
+public func ckbRoutineRepair(kb: KnowledgeBase, store: FileKnowledgeStore, config: CkbRuntimeConfig, storePath: String, force: Bool): CkbRoutineRepairResult {
+    ckbRoutineRepairWithStores(kb, store, config, storePath, force, vectorStoreFromRuntime(config), embeddingProviderFromRuntime(config))
+}
+
+public func ckbRoutineRepairWithStores(kb: KnowledgeBase, store: FileKnowledgeStore, config: CkbRuntimeConfig, storePath: String, force: Bool, vectorStore: VectorStore, embeddingProvider: EmbeddingProvider): CkbRoutineRepairResult {
+    let heap = if (let Some(value) <- getVariable("cjHeapSize")) { value } else { "" }
+    let dyld = if (let Some(value) <- getVariable("DYLD_LIBRARY_PATH")) { value } else { "" }
+    ckbRoutineRepairWithStoresAndEnv(kb, store, config, storePath, force, vectorStore, embeddingProvider, heap, dyld)
+}
+
+public func ckbRoutineRepairWithStoresAndEnv(kb: KnowledgeBase, store: FileKnowledgeStore, config: CkbRuntimeConfig, storePath: String, force: Bool, vectorStore: VectorStore, embeddingProvider: EmbeddingProvider, cjHeapSize: String, dyldLibraryPath: String): CkbRoutineRepairResult {
+    let result = CkbRoutineRepairResult()
+    result.force = force
+    if (!force) {
+        result.ok = false
+        result.diagnostics.add("routine_repair_requires_force")
+        result.preflight = ckbRoutineRuntimePreflightWithBootstrap(config, storePath, cjHeapSize, dyldLibraryPath, vectorStore, embeddingProvider)
+        return result
+    }
+    result.vectorReconcile = ckbVectorReconcileWithVectorStore(kb, store, config, vectorStore, true)
+    result.repairPerformed = result.vectorReconcile.ok
+    if (!result.vectorReconcile.ok) {
+        result.ok = false
+        result.diagnostics.add("vector_reconcile_failed")
+        result.preflight = ckbRoutineRuntimePreflightWithBootstrap(config, storePath, cjHeapSize, dyldLibraryPath, vectorStore, embeddingProvider)
+        return result
+    }
+    result.preflight = ckbRoutineRuntimePreflightWithBootstrap(config, storePath, cjHeapSize, dyldLibraryPath, vectorStore, embeddingProvider)
+    result.ok = result.preflight.ok
+    if (!result.preflight.ok) {
+        result.diagnostics.add("post_repair_preflight_failed")
+    } else {
+        result.diagnostics.add("routine_repair_succeeded")
+    }
+    result
 }
 
 public func ckbVectorReconcileWithVectorStore(kb: KnowledgeBase, store: FileKnowledgeStore, config: CkbRuntimeConfig, vectorStore: VectorStore, force: Bool): CkbVectorReconcileResult {
@@ -3259,6 +3357,11 @@ public func ckbVectorReconcileWithVectorStore(kb: KnowledgeBase, store: FileKnow
     if (vector.backend == "qdrant" && staging.count != rebuild.count) {
         result.ok = false
         result.diagnostics.add("qdrant_staging_count_mismatch:${staging.count}:${rebuild.count}")
+        let duplicateSummary = ckbActiveIndexDuplicateIdentitySummary(store)
+        if (duplicateSummary.duplicateIdCount > 0) {
+            result.diagnostics.add("duplicate_vector_ids:${duplicateSummary.duplicateIdCount}:${duplicateSummary.duplicateRows}")
+        }
+        ckbAppendStrings(result.diagnostics, duplicateSummary.diagnostics)
         ckbVectorReconcileDeleteStaging(vectorStore, stagingCollection, result.diagnostics)
         return result
     }
@@ -3275,11 +3378,77 @@ public func ckbVectorReconcileWithVectorStore(kb: KnowledgeBase, store: FileKnow
         return result
     }
     kb.promoteVectorActiveCollection(stagingCollection)
-    kb.persistActiveSnapshotUsingVectorRecords(store, kb.lastVectorIndexBuild().vectorRecords)
+    kb.persistActiveSnapshotUsingVectorRecords(store, kb.lastVectorIndexBuild().vectorRecords, persistVectorFile: false)
     result.activeKnowledgeVersion = kb.status().activeKnowledgeVersion
     result.vectorState = EmbeddingProviderState.READY
     result.diagnostics.add("qdrant_logical_promote_succeeded:${stagingCollection}")
     result
+}
+
+private func ckbActiveIndexDuplicateIdentitySummary(store: FileKnowledgeStore): CkbDuplicateVectorIdentitySummary {
+    let summary = CkbDuplicateVectorIdentitySummary()
+    let snapshot = store.loadActiveSnapshot()
+    if (!snapshot.valid) {
+        summary.diagnostics.add("duplicate_vector_summary_unavailable:${snapshot.diagnostic}")
+        return summary
+    }
+    let ids = ArrayList<String>()
+    let counts = ArrayList<Int64>()
+    for (record in snapshot.activeIndex) {
+        let id = record.sourceId
+        if (id == "") {
+            continue
+        }
+        var found: Int64 = -1
+        var i: Int64 = 0
+        while (i < ids.size) {
+            if (ids[i] == id) {
+                found = i
+                break
+            }
+            i += 1
+        }
+        if (found >= 0) {
+            counts[found] = counts[found] + 1
+        } else {
+            ids.add(id)
+            counts.add(1)
+        }
+    }
+    for (count in counts) {
+        if (count > 1) {
+            summary.duplicateIdCount += 1
+            summary.duplicateRows += count - 1
+        }
+    }
+    let selected = ArrayList<Int64>()
+    while (selected.size < 10 && selected.size < ids.size) {
+        var bestIndex: Int64 = -1
+        var bestCount: Int64 = 1
+        var i: Int64 = 0
+        while (i < ids.size) {
+            if (!ckbInt64ListContains(selected, i) && counts[i] > bestCount) {
+                bestIndex = i
+                bestCount = counts[i]
+            }
+            i += 1
+        }
+        if (bestIndex < 0) {
+            break
+        }
+        selected.add(bestIndex)
+        summary.diagnostics.add("duplicate_vector_id:${ids[bestIndex]}:${counts[bestIndex]}")
+    }
+    summary
+}
+
+private func ckbInt64ListContains(values: ArrayList<Int64>, target: Int64): Bool {
+    for (value in values) {
+        if (value == target) {
+            return true
+        }
+    }
+    false
 }
 
 private func ckbVectorReconcileStagingCollection(activeCollection: String): String {
@@ -4561,7 +4730,7 @@ public class FileKnowledgeStore {
     private func vectorLines(records: ArrayList<VectorRecord>): String {
         var out = ""
         for (record in records) {
-            out += "${escapeField(record.id)}|${escapeField(record.title)}|${escapeField(record.chunk)}|${escapeField(record.metadata.knowledgeVersion)}|${escapeField(record.metadata.sourceId)}|${escapeField(record.metadata.sourceType)}|${escapeField(record.metadata.trustLevel)}|${escapeField(record.metadata.reviewState)}|${escapeField(record.citation)}|${vectorToLine(record.vector)}\n"
+            out += "${escapeField(vectorPointIdentity(record))}|${escapeField(record.id)}|${escapeField(record.title)}|${escapeField(record.chunk)}|${escapeField(record.metadata.knowledgeVersion)}|${escapeField(record.metadata.sourceId)}|${escapeField(record.metadata.sourceType)}|${escapeField(record.metadata.trustLevel)}|${escapeField(record.metadata.reviewState)}|${escapeField(record.citation)}|${vectorToLine(record.vector)}\n"
         }
         out
     }
@@ -4576,16 +4745,18 @@ public class FileKnowledgeStore {
                 continue
             }
             let parts = line.split("|")
-            if (parts.size >= 10) {
-                out.add(this.vectorRecordFromParts(parts, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9))
+            if (parts.size >= 11) {
+                out.add(this.vectorRecordFromParts(parts, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10))
+            } else if (parts.size >= 10) {
+                out.add(this.vectorRecordFromParts(parts, -1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9))
             } else if (parts.size >= 8) {
-                out.add(this.vectorRecordFromParts(parts, 0, -1, -1, 1, 2, 3, 4, 5, 6, 7))
+                out.add(this.vectorRecordFromParts(parts, -1, 0, -1, -1, 1, 2, 3, 4, 5, 6, 7))
             }
         }
         out
     }
 
-    private func vectorRecordFromParts(parts: Array<String>, idIndex: Int64, titleIndex: Int64, chunkIndex: Int64, versionIndex: Int64, sourceIdIndex: Int64, sourceTypeIndex: Int64, trustIndex: Int64, reviewIndex: Int64, citationIndex: Int64, vectorIndex: Int64): VectorRecord {
+    private func vectorRecordFromParts(parts: Array<String>, pointIdIndex: Int64, idIndex: Int64, titleIndex: Int64, chunkIndex: Int64, versionIndex: Int64, sourceIdIndex: Int64, sourceTypeIndex: Int64, trustIndex: Int64, reviewIndex: Int64, citationIndex: Int64, vectorIndex: Int64): VectorRecord {
         let metadata = KnowledgeMetadata()
         metadata.knowledgeVersion = unescapeField(parts[versionIndex])
         metadata.sourceId = unescapeField(parts[sourceIdIndex])
@@ -4593,6 +4764,7 @@ public class FileKnowledgeStore {
         metadata.trustLevel = unescapeField(parts[trustIndex])
         metadata.reviewState = unescapeField(parts[reviewIndex])
         let record = VectorRecord()
+        record.pointId = if (pointIdIndex >= 0) { unescapeField(parts[pointIdIndex]) } else { "" }
         record.id = unescapeField(parts[idIndex])
         record.title = if (titleIndex >= 0) { unescapeField(parts[titleIndex]) } else { "" }
         record.chunk = if (chunkIndex >= 0) { unescapeField(parts[chunkIndex]) } else { "" }
@@ -6193,41 +6365,53 @@ private func ckbFetchScheduledGitCodeTreeSnapshot(runner: SourceFetchRunner, bui
 }
 
 private func ckbResolveGitCodeRefForScheduledFetch(runner: SourceFetchRunner, builder: SourceRequestBuilder, source: CangjieVersionSource, profile: CkbScheduleTaskProfile, result: CkbScheduledProfileFetchResult, config: CkbRuntimeConfig): GitCodeRefResolution {
+    let resolution = ckbResolveGitCodeRefForFetch(runner, builder, source.sourceRepo, source.sourceRef, source.sourceSet, source.sourceFamily, config)
+    for (diagnostic in resolution.diagnostics) {
+        result.diagnostics.add(diagnostic)
+    }
+    for (failed in resolution.failedRequests) {
+        if (!failed.startsWith("gitcode_ref_resolved")) {
+            result.failedRequests.add(failed)
+        }
+    }
+    resolution
+}
+
+private func ckbResolveGitCodeRefForFetch(runner: SourceFetchRunner, builder: SourceRequestBuilder, repo: String, ref: String, sourceSet: String, sourceFamily: String, config: CkbRuntimeConfig): GitCodeRefResolution {
     let resolution = GitCodeRefResolution()
-    resolution.repo = source.sourceRepo
-    resolution.sourceSet = source.sourceSet
-    resolution.sourceFamily = source.sourceFamily
-    resolution.originalRef = source.sourceRef
-    if (!isSafeGitCodeRef(source.sourceRef)) {
+    resolution.repo = repo
+    resolution.sourceSet = sourceSet
+    resolution.sourceFamily = sourceFamily
+    resolution.originalRef = ref
+    if (!isSafeGitCodeRef(ref)) {
         resolution.status = "invalid_ref"
-        resolution.diagnostics.add("gitcode_ref_resolution_invalid_ref:${source.sourceRepo}:${source.sourceRef}")
+        resolution.diagnostics.add("gitcode_ref_resolution_invalid_ref:${repo}:${ref}")
         return resolution
     }
-    if (ckbGitCodeLooksLikeCommit(source.sourceRef)) {
+    if (ckbGitCodeLooksLikeCommit(ref)) {
         resolution.ok = true
         resolution.status = "ok"
-        resolution.effectiveRef = source.sourceRef
-        resolution.resolvedCommit = source.sourceRef
+        resolution.effectiveRef = ref
+        resolution.resolvedCommit = ref
         resolution.refKind = "commit"
-        result.diagnostics.add("gitcode_ref_resolved_commit:${source.sourceRepo}:${source.sourceRef}")
+        resolution.diagnostics.add("gitcode_ref_resolved_commit:${repo}:${ref}")
         return resolution
     }
     var page: Int64 = 1
     while (page <= 10) {
-        let branchListRequest = builder.gitCodeBranches(source.sourceRepo, page: page)
+        let branchListRequest = builder.gitCodeBranches(repo, page: page)
         let branchListFetch = ckbFetchScheduledRequest(runner, branchListRequest, config)
-        let diagnostic = ckbScheduledFetchDiagnostic(profile, branchListRequest, branchListFetch)
-        resolution.diagnostics.add(diagnostic)
-        result.diagnostics.add("gitcode_ref_resolution_branch_list:${diagnostic}")
+        let diagnostic = ckbGitCodeRefResolutionFetchDiagnostic(branchListRequest, branchListFetch)
+        resolution.diagnostics.add("gitcode_ref_resolution_branch_list:${diagnostic}")
         if (!branchListFetch.ok) {
             resolution.failedRequests.add(diagnostic)
             break
         }
-        let parsed = ckbParseGitCodeBranchListResolution(branchListFetch.body, source.sourceRef)
+        let parsed = ckbParseGitCodeBranchListResolution(branchListFetch.body, ref)
         if (parsed.malformed) {
             resolution.status = parsed.status
             resolution.failedRequests.add(diagnostic)
-            result.diagnostics.add("gitcode_ref_resolution_malformed_json:${source.sourceRepo}:${source.sourceRef}:page=${page}")
+            resolution.diagnostics.add("gitcode_ref_resolution_malformed_json:${repo}:${ref}:page=${page}")
             return resolution
         }
         if (parsed.found && parsed.commit != "") {
@@ -6236,7 +6420,7 @@ private func ckbResolveGitCodeRefForScheduledFetch(runner: SourceFetchRunner, bu
             resolution.effectiveRef = parsed.commit
             resolution.resolvedCommit = parsed.commit
             resolution.refKind = "branch"
-            result.diagnostics.add("gitcode_ref_resolved_branch_list:${source.sourceRepo}:${source.sourceRef}:${parsed.commit}")
+            resolution.diagnostics.add("gitcode_ref_resolved_branch_list:${repo}:${ref}:${parsed.commit}")
             return resolution
         }
         if (parsed.count < 100) {
@@ -6244,13 +6428,12 @@ private func ckbResolveGitCodeRefForScheduledFetch(runner: SourceFetchRunner, bu
         }
         page += 1
     }
-    let branchRequest = builder.gitCodeBranchNativeSafe(source.sourceRepo, source.sourceRef)
+    let branchRequest = builder.gitCodeBranchNativeSafe(repo, ref)
     let branchFetch = ckbFetchScheduledRequest(runner, branchRequest, config)
-    let branchDiagnostic = ckbScheduledFetchDiagnostic(profile, branchRequest, branchFetch)
-    resolution.diagnostics.add(branchDiagnostic)
-    result.diagnostics.add("gitcode_ref_resolution_branch_ref:${branchDiagnostic}")
+    let branchDiagnostic = ckbGitCodeRefResolutionFetchDiagnostic(branchRequest, branchFetch)
+    resolution.diagnostics.add("gitcode_ref_resolution_branch_ref:${branchDiagnostic}")
     if (branchFetch.ok) {
-        let parsed = ckbParseGitCodeBranchObjectResolution(branchFetch.body, source.sourceRef)
+        let parsed = ckbParseGitCodeBranchObjectResolution(branchFetch.body, ref)
         if (parsed.malformed) {
             resolution.status = parsed.status
             resolution.failedRequests.add(branchDiagnostic)
@@ -6262,15 +6445,19 @@ private func ckbResolveGitCodeRefForScheduledFetch(runner: SourceFetchRunner, bu
             resolution.effectiveRef = parsed.commit
             resolution.resolvedCommit = parsed.commit
             resolution.refKind = "branch"
-            result.diagnostics.add("gitcode_ref_resolved_branch_ref:${source.sourceRepo}:${source.sourceRef}:${parsed.commit}")
+            resolution.diagnostics.add("gitcode_ref_resolved_branch_ref:${repo}:${ref}:${parsed.commit}")
             return resolution
         }
     } else {
         resolution.failedRequests.add(branchDiagnostic)
     }
     resolution.status = "gitcode_ref_resolution_failed"
-    result.diagnostics.add("gitcode_ref_resolution_failed:${source.sourceRepo}:${source.sourceRef}")
+    resolution.diagnostics.add("gitcode_ref_resolution_failed:${repo}:${ref}")
     resolution
+}
+
+private func ckbGitCodeRefResolutionFetchDiagnostic(request: SourceFetchRequest, fetch: SourceFetchResult): String {
+    "kind=${request.kind}|repo=${request.repo}|ref=${request.ref}|path=${request.path}|url=${request.url}|ok=${fetch.ok}|status=${fetch.status}|statusCode=${fetch.statusCode}|errorClass=${fetch.transportErrorClass}|bodyHash=${fetch.bodyHash}"
 }
 
 private func ckbGitCodeLooksLikeCommit(ref: String): Bool {

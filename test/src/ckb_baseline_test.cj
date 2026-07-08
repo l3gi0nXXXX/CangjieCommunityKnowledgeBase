@@ -2081,6 +2081,31 @@ network.allowedHosts=docs.example.org
     }
 
     @TestCase
+    public func syncLiveResolvesSlashDefaultBranchBeforeTreeAndSourceFetch(): Unit {
+        let kb = newOfflineKnowledgeBase()
+        let config = CkbRuntimeConfig()
+        config.networkEnabled = true
+        let options = LiveSyncOptions()
+        options.dryRun = true
+        options.maxRepos = 1
+        options.maxFilesPerRepo = 1
+        options.maxItems = 8
+        let runner = ScriptedSourceFetchRunner()
+        runner.slashDefaultBranch = true
+
+        let text = ckbSyncLive(kb, config, options, runner: runner, store: FileKnowledgeStore("target/ckb-live-slash-ref-dry-run"))
+
+        @Expect(text.contains("repoIncluded cangjie/repo-one visibility=public defaultBranch=release/1.0"), true)
+        @Expect(text.contains("repoRefResolved repo=cangjie/repo-one originalRef=release/1.0 effectiveRef=${scriptedResolvedCommit()}"), true)
+        @Expect(countCallsContaining(runner.calls, "/branches?page=1&per_page=100"), 1)
+        @Expect(countCallsContaining(runner.calls, "/git/trees/${scriptedResolvedCommit()}?"), 1)
+        @Expect(countCallsContaining(runner.calls, "?ref=${scriptedResolvedCommit()}"), 1)
+        @Expect(countCallsContaining(runner.calls, "/git/trees/release%2F1.0?"), 0)
+        @Expect(countCallsContaining(runner.calls, "?ref=release%2F1.0"), 0)
+        @Expect(countCallsContaining(runner.calls, "/git/trees/release/1.0?"), 0)
+    }
+
+    @TestCase
     public func syncLiveApplyPersistsOnlyPublicRepoVisibility(): Unit {
         let kb = newOfflineKnowledgeBase()
         let config = CkbRuntimeConfig()
@@ -2783,6 +2808,7 @@ private func countCallsOfKind(calls: ArrayList<SourceFetchRequest>, kind: String
 
 class ScriptedSourceFetchRunner <: SourceFetchRunner {
     public var calls: ArrayList<SourceFetchRequest> = ArrayList<SourceFetchRequest>()
+    public var slashDefaultBranch: Bool = false
 
     public init() {}
 
@@ -2815,9 +2841,15 @@ class ScriptedSourceFetchRunner <: SourceFetchRunner {
     private func bodyFor(request: SourceFetchRequest): String {
         if (request.kind == SourceKinds.GITCODE_ORG) {
             if (request.repo == "cangjie") {
+                if (this.slashDefaultBranch) {
+                    return "[{\"id\":1,\"display_name\":\"仓颉公开仓库\",\"path\":\"repo-one\",\"description\":\"中文说明 {真实响应}\",\"default_branch\":\"release/1.0\",\"public\":true,\"namespace\":{\"display_name\":\"仓颉组织\",\"path\":\"cangjie\"},\"web_url\":\"https://gitcode.com/cangjie/repo-one\"}]"
+                }
                 return "[{\"id\":1,\"display_name\":\"仓颉公开仓库\",\"path\":\"repo-one\",\"description\":\"中文说明 {真实响应}\",\"default_branch\":\"dev\",\"public\":true,\"namespace\":{\"display_name\":\"仓颉组织\",\"path\":\"cangjie\"},\"web_url\":\"https://gitcode.com/cangjie/repo-one\",\"access_token\":\"fake-live-token\"},{\"id\":2,\"display_name\":\"仓颉私有仓库\",\"path\":\"private-one\",\"default_branch\":\"main\",\"private\":true,\"namespace\":{\"path\":\"cangjie\"}},{\"id\":3,\"path\":\"internal-one\",\"default_branch\":\"main\",\"internal\":true,\"namespace\":{\"path\":\"cangjie\"}},{\"id\":4,\"path\":\"unknown-one\",\"default_branch\":\"main\",\"namespace\":{\"path\":\"cangjie\"}}]"
             }
             return "[]"
+        }
+        if (request.kind == SourceKinds.GITCODE_BRANCH) {
+            return "[{\"name\":\"release/1.0\",\"commit\":{\"id\":\"${scriptedResolvedCommit()}\",\"sha\":\"${scriptedResolvedCommit()}\"}}]"
         }
         if (request.kind == SourceKinds.GITCODE_TREE) {
             return "{\"tree\":[{\"type\":\"blob\",\"path\":\"src/main.cj\",\"name\":\"仓颉主入口\"},{\"type\":\"blob\",\"path\":\"README.md\",\"description\":\"中文 README [] {}\"},{\"type\":\"blob\",\"path\":\"target/generated.cj\"}]}"
@@ -2839,6 +2871,10 @@ class ScriptedSourceFetchRunner <: SourceFetchRunner {
         }
         "fixture body"
     }
+}
+
+private func scriptedResolvedCommit(): String {
+    "abcdef0123456789abcdef0123456789abcdef01"
 }
 
 private func countCallsContaining(calls: ArrayList<SourceFetchRequest>, needle: String): Int64 {

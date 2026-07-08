@@ -336,6 +336,55 @@ public class CkbQdrantVectorStoreTest {
     }
 
     @TestCase
+    public func qdrantUpsertUsesPointIdSoDuplicateCkbIdsDoNotOverwriteChunks(): Unit {
+        let executor = QdrantFakeExecutor()
+        executor.add(200, "{\"status\":\"ok\",\"result\":{\"status\":\"acknowledged\"}}", "http_200")
+        let store = QdrantVectorStore("http://qdrant.test", 3, "Cosine", executor: executor)
+        let records = ArrayList<VectorRecord>()
+        let first = qdrantRecord("same-source", "标题 1", "chunk 1", "cite://1", "cangjie", ReviewStates.TRUSTED)
+        let second = qdrantRecord("same-source", "标题 2", "chunk 2", "cite://2", "cangjie", ReviewStates.TRUSTED)
+        first.pointId = "same-source#0#hash-a"
+        second.pointId = "same-source#1#hash-b"
+        records.add(first)
+        records.add(second)
+
+        let status = store.upsertBatch("ckb_active", records)
+        let backup = store.backup("ckb_active")
+
+        @Expect(status.count, 2)
+        @Expect(backup.records.size, 2)
+        @Expect(executor.bodies[0].contains("\"pointId\":\"same-source#0#hash-a\""), true)
+        @Expect(executor.bodies[0].contains("\"pointId\":\"same-source#1#hash-b\""), true)
+        @Expect(executor.bodies[0].contains("\"ckb_id\":\"same-source\""), true)
+        @Expect(executor.bodies[0].contains("\"id\":${qdrantStablePointId("same-source#0#hash-a")}"), true)
+        @Expect(executor.bodies[0].contains("\"id\":${qdrantStablePointId("same-source#1#hash-b")}"), true)
+    }
+
+    @TestCase
+    public func qdrantUpsertStillOverwritesWhenPointIdIsDuplicated(): Unit {
+        let executor = QdrantFakeExecutor()
+        executor.add(200, "{\"status\":\"ok\",\"result\":{\"status\":\"acknowledged\"}}", "http_200")
+        executor.add(200, "{\"status\":\"ok\",\"result\":{\"status\":\"acknowledged\"}}", "http_200")
+        let store = QdrantVectorStore("http://qdrant.test", 3, "Cosine", executor: executor)
+        let firstBatch = ArrayList<VectorRecord>()
+        let secondBatch = ArrayList<VectorRecord>()
+        let first = qdrantRecord("same-source", "标题 1", "chunk 1", "cite://1", "cangjie", ReviewStates.TRUSTED)
+        let second = qdrantRecord("same-source", "标题 2", "chunk 2", "cite://2", "cangjie", ReviewStates.TRUSTED)
+        first.pointId = "same-source#0#hash-a"
+        second.pointId = "same-source#0#hash-a"
+        firstBatch.add(first)
+        secondBatch.add(second)
+
+        _ = store.upsertBatch("ckb_active", firstBatch)
+        let status = store.upsertBatch("ckb_active", secondBatch)
+        let backup = store.backup("ckb_active")
+
+        @Expect(status.count, 1)
+        @Expect(backup.records.size, 1)
+        @Expect(backup.records[0].title, "标题 2")
+    }
+
+    @TestCase
     public func qdrantPointIdHashDoesNotOverflowForBaselineAndLongUnicodeIds(): Unit {
         let baseline = qdrantStablePointId("source-http-client")
         let longUnicode = qdrantStablePointId("Cangjie/community:docs/语言规范/很长很长很长很长的路径/README.md#source_analysis")

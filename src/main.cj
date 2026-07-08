@@ -250,6 +250,15 @@ public func ckbCliMain(args: Array<String>): Int64 {
         }
         return if (result.ok) { 0 } else { 1 }
     }
+    if (cli.command == "routine-repair") {
+        let result = ckbRoutineRepair(kb, store, config, cli.storePath, hasArg(args, "--force"))
+        if (ckbCliWantsJson(args)) {
+            println(renderCkbRoutineRepairJson(result))
+        } else {
+            print(renderCkbRoutineRepairText(result))
+        }
+        return if (result.ok) { 0 } else { 1 }
+    }
     if (cli.command == "rebuild-index") {
         let result = ckbRebuildIndex(kb, store)
         println("rebuild ok=${result.ok} activeKnowledgeVersion=${result.activeVersion} candidateKnowledgeVersion=${result.candidateVersion} count=${result.count}")
@@ -300,7 +309,7 @@ public func ckbCliMain(args: Array<String>): Int64 {
         print(renderQuery(cangjie_evidence_pack(kb, query, 3)))
         return 0
     }
-    println("Usage: cangjie_community_knowledge_base [--config <path>] [--store <path>] doctor | status | metrics | service | service-http | http-service | mcp-stdio | cangjie-initialize (--dry-run|--apply) --docs-root <path> --std-root <path> --stdx-root <path> --eval-root <path> | cangjie-landing-status [--format json] | service-once <command> | start | stop | restart | sync-once | sync-live (--dry-run|--apply) | source_analysis repo=<owner/repo> ref=<ref> path=<path> | native-http-smoke <url> | cangjie-corpus-status | cangjie-knowledge-pack <task> | cangjie-api-search <query> | cangjie-syntax-query <query> | cangjie-cookbook <task> | cangjie-diagnose <compiler-output> | cangjie-llms [task] | cangjie-context-pack <task> | cangjie-eval-summary <manifest.jsonl> | cangjie-eval-abcde [--preflight-only] | cangjie-eval-knowledge-audit --run-root <path> | cangjie-humaneval-pass1-gate --run-root <path> | cangjie-knowledge-release-gate --run-root <path> --manifest <manifest.jsonl> | cangjie-typed-ingest-smoke --docs-root <path> --case-root <path> | cangjie-serving-feed-smoke | cangjie-serving-query-smoke | cangjie-update-promotion-smoke | cangjie-abcde-parity-smoke | cangjie-humaneval-pass1-gate-smoke | vector-bootstrap [--json] | vector-clean-derived [--force] [--json] | vector-reconcile [--force] [--json] | ollama-embedding-benchmark [--json] [--sample-size <n>] | scheduler-run [--force-all|--task <name> [--force]] [--json] | rebuild-index | backup <path> | restore <path> | query <text> | evidence <text> | schema")
+    println("Usage: cangjie_community_knowledge_base [--config <path>] [--store <path>] doctor | status | metrics | service | service-http | http-service | mcp-stdio | cangjie-initialize (--dry-run|--apply) --docs-root <path> --std-root <path> --stdx-root <path> --eval-root <path> | cangjie-landing-status [--format json] | service-once <command> | start | stop | restart | sync-once | sync-live (--dry-run|--apply) | source_analysis repo=<owner/repo> ref=<ref> path=<path> | native-http-smoke <url> | cangjie-corpus-status | cangjie-knowledge-pack <task> | cangjie-api-search <query> | cangjie-syntax-query <query> | cangjie-cookbook <task> | cangjie-diagnose <compiler-output> | cangjie-llms [task] | cangjie-context-pack <task> | cangjie-eval-summary <manifest.jsonl> | cangjie-eval-abcde [--preflight-only] | cangjie-eval-knowledge-audit --run-root <path> | cangjie-humaneval-pass1-gate --run-root <path> | cangjie-knowledge-release-gate --run-root <path> --manifest <manifest.jsonl> | cangjie-typed-ingest-smoke --docs-root <path> --case-root <path> | cangjie-serving-feed-smoke | cangjie-serving-query-smoke | cangjie-update-promotion-smoke | cangjie-abcde-parity-smoke | cangjie-humaneval-pass1-gate-smoke | vector-bootstrap [--json] | vector-clean-derived [--force] [--json] | vector-reconcile [--force] [--json] | routine-repair --force [--json] | ollama-embedding-benchmark [--json] [--sample-size <n>] | scheduler-run [--force-all|--task <name> [--force]] [--json] | rebuild-index | backup <path> | restore <path> | query <text> | evidence <text> | schema")
     2
 }
 
@@ -364,7 +373,7 @@ public func ckbNativeTlsBootstrapScript(command: String, args: Array<String>): S
 }
 
 private func ckbCommandNeedsNativeTlsBootstrap(command: String): Bool {
-    command == "native-http-smoke" || command == "sync-live" || command == "source_analysis" || command == "source-analysis" || command == "service" || command == "start" || command == "service-http" || command == "http-service" || command == "service-once" || command == "scheduler-run" || command == "vector-bootstrap" || command == "vector-clean-derived" || command == "vector-reconcile" || command == "rebuild-index" || command == "cangjie-update-promotion-smoke"
+    command == "native-http-smoke" || command == "sync-live" || command == "source_analysis" || command == "source-analysis" || command == "service" || command == "start" || command == "service-http" || command == "http-service" || command == "service-once" || command == "scheduler-run" || command == "vector-bootstrap" || command == "vector-clean-derived" || command == "vector-reconcile" || command == "routine-repair" || command == "rebuild-index" || command == "cangjie-update-promotion-smoke"
 }
 
 private func ckbShellQuote(value: String): String {
