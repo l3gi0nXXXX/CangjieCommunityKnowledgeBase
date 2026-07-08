@@ -84,13 +84,15 @@ public class CkbSchedulerProgressTimeoutTest {
 
     @TestCase
     public func schedulerWorkerPreludeRestoresDyldForZshWorker(): Unit {
-        let withDyld = ckbSchedulerWorkerShellPrelude("/tmp/runtime:/tmp/stdx")
-        let withoutDyld = ckbSchedulerWorkerShellPrelude("")
+        let withDyld = ckbSchedulerWorkerShellPreludeWithHeap("/tmp/runtime:/tmp/stdx", "4GB")
+        let withoutDyld = ckbSchedulerWorkerShellPreludeWithHeap("", "")
 
         @Expect(withDyld.contains("export CKB_SCHEDULER_TASK_WORKER=1;"), true)
+        @Expect(withDyld.contains("export cjHeapSize='4GB';"), true)
         @Expect(withDyld.contains("export DYLD_LIBRARY_PATH='/tmp/runtime:/tmp/stdx';"), true)
         @Expect(withoutDyld.contains("export CKB_SCHEDULER_TASK_WORKER=1;"), true)
         @Expect(withoutDyld.contains("DYLD_LIBRARY_PATH"), false)
+        @Expect(withoutDyld.contains("cjHeapSize"), false)
     }
 
     @TestCase
@@ -229,11 +231,18 @@ public class CkbSchedulerProgressTimeoutTest {
         let resultPath = "metadata/scheduler-workers/weekly-empty.ckb"
         store.writeLinesAtomically(resultPath, "")
 
-        let task = ckbWriteSchedulerWorkerTimeoutCompensation(store, resultPath, "weekly_full_rebuild", "0", 120001, 120000, "task_worker_hard_timeout")
+        let task = ckbWriteSchedulerWorkerTimeoutCompensation(store, resultPath, "weekly_full_rebuild", "0", 120001, 120000, "task_worker_hard_timeout", lastStage: "native_http_timeout", lastProgress: "vector:completed=64,currentBatch=1", workerPid: 12345, outSnippet: "WARN timeout", errSnippet: "Authorization: Bearer secret-value timeout")
+        let text = store.readText(resultPath)
 
         @Expect(task.status, "task_timeout:weekly_full_rebuild")
+        @Expect(task.lastStage, "native_http_timeout")
+        @Expect(task.lastProgress.contains("completed=64"), true)
+        @Expect(task.workerPid, 12345)
         @Expect(store.readText(resultPath).size > 0, true)
         @Expect(store.readText("${resultPath}.sidecar").contains("task_worker_hard_timeout"), true)
+        @Expect(text.contains("lastStage=native_http_timeout"), true)
+        @Expect(text.contains("workerPid=12345"), true)
+        @Expect(text.contains("secret-value"), false)
     }
 
     @TestCase
@@ -279,6 +288,11 @@ public class CkbSchedulerProgressTimeoutTest {
         task.since = "0"
         task.durationMillis = 5
         task.timeBudgetMillis = 100
+        task.lastStage = "fetch"
+        task.lastProgress = "requests=1"
+        task.workerPid = 88
+        task.workerOutSnippet = "ok 中文🙂"
+        task.workerErrSnippet = "stderr empty"
         task.validationDiagnostics.add("progress=complete")
         store.writeLinesAtomically(resultPath, ckbSchedulerTaskResultText(task))
 
@@ -287,7 +301,33 @@ public class CkbSchedulerProgressTimeoutTest {
         @Expect(parsed.ok, true)
         @Expect(parsed.status, "ok")
         @Expect(parsed.timeBudgetMillis, 100)
+        @Expect(parsed.lastStage, "fetch")
+        @Expect(parsed.lastProgress, "requests=1")
+        @Expect(parsed.workerPid, 88)
+        @Expect(parsed.workerOutSnippet.contains("中文🙂"), true)
+        @Expect(parsed.workerErrSnippet, "stderr empty")
         @Expect(parsed.validationDiagnostics.contains("progress=complete"), true)
+    }
+
+    @TestCase
+    public func s5Pos002TaskFinishedProgressIncludesWorkerTimeoutFields(): Unit {
+        let root = "target/s5-pos002-progress-timeout-fields"
+        ensureEmptyDir(root)
+        let store = FileKnowledgeStore(root)
+        let scheduler = Scheduler(FakeClock(1000))
+        let runner = ProgressFakeRunner()
+        runner.timeoutTask = "docs_probe_30d"
+        let executor = SchedulerExecutor(scheduler, runner, FileSchedulerProgressSink(store), 20)
+        let tasks = ArrayList<String>()
+        tasks.add("docs_probe_30d")
+
+        let result = executor.runTaskNames(tasks, force: true)
+        let progress = store.readText(result.progressPath)
+
+        @Expect(result.failed, 1)
+        @Expect(progress.contains("\"event\":\"task_finished\""), true)
+        @Expect(progress.contains("\"lastStage\""), true)
+        @Expect(progress.contains("\"workerErrSnippet\""), true)
     }
 
     @TestCase

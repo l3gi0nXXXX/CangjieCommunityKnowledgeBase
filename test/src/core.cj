@@ -2496,6 +2496,11 @@ public class SchedulerTaskResult {
     public var validationSummary: String = ""
     public var validationEvidenceHash: String = ""
     public var validationDiagnostics: ArrayList<String> = ArrayList<String>()
+    public var lastStage: String = ""
+    public var lastProgress: String = ""
+    public var workerPid: Int64 = 0
+    public var workerOutSnippet: String = ""
+    public var workerErrSnippet: String = ""
 
     public init() {}
 }
