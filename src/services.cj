@@ -334,6 +334,7 @@ public class CkbRuntimeConfig {
     public var firstInitTargetVersion: String = cangjieDefaultTargetVersion()
     public var benchmarkGapCurationInputPath: String = ""
     public var benchmarkGapTargetVersion: String = cangjieDefaultTargetVersion()
+    public var benchmarkGapProofBatchSize: Int64 = 0
 
     public init() {}
 
@@ -476,6 +477,7 @@ public class CkbRuntimeConfig {
         out += " firstInit.targetVersion=${if (this.firstInitTargetVersion == "") { "unset" } else { this.firstInitTargetVersion }}"
         out += " benchmarkGap.curationInput=${if (this.benchmarkGapCurationInputPath == "") { "absent" } else { "present" }}"
         out += " benchmarkGap.targetVersion=${if (this.benchmarkGapTargetVersion == "") { "unset" } else { this.benchmarkGapTargetVersion }}"
+        out += " benchmarkGap.proofBatchSize=${this.benchmarkGapProofBatchSize}"
         out += " website=${if (this.websiteEnabled) { "enabled" } else { "disabled" }}"
         out += " docs=${if (this.docsEnabled) { "enabled" } else { "disabled" }}"
         out += " index.backend=${this.indexBackend}"
@@ -5802,6 +5804,12 @@ public class CkbScheduleTaskProfile {
     public var candidateMode: String = "none"
     public var activeMutationPolicy: String = ""
     public var timeBudgetMillis: Int64 = 0
+    public var fetchBudgetMillis: Int64 = 0
+    public var ingestBudgetMillis: Int64 = 0
+    public var vectorBudgetMillis: Int64 = 0
+    public var validationBudgetMillis: Int64 = 0
+    public var snapshotBudgetMillis: Int64 = 0
+    public var proofBudgetMillis: Int64 = 0
     public var requestCount: Int64 = 0
     public var updateMechanismIds: ArrayList<String> = ArrayList<String>()
     public var updatedDataKinds: ArrayList<String> = ArrayList<String>()
@@ -5947,6 +5955,7 @@ public func ckbSyncProfileForScheduleTask(name: String): CkbScheduleTaskProfile 
         profile.activeMutationPolicy = contract.activeMutationPolicy
         profile.updateMechanismIds.add(contract.updateMechanismId)
     }
+    ckbApplySchedulerProfileStageBudgets(profile)
     profile
 }
 
@@ -5965,6 +5974,73 @@ public func ckbApplySchedulerProfileBudgets(scheduler: Scheduler): Unit {
             entry.timeBudgetMillis = profile.timeBudgetMillis
         }
     }
+}
+
+private func ckbApplySchedulerProfileStageBudgets(profile: CkbScheduleTaskProfile): Unit {
+    if (profile.timeBudgetMillis <= 0) {
+        return
+    }
+    if (profile.profile == "cangjie_benchmark_gap_curation") {
+        ckbSetSchedulerProfileStageBudgets(profile, 0, 10000, 30000, 15000, 10000, 25000)
+    } else if (profile.profile == "cangjie_release_full_sync") {
+        ckbSetSchedulerProfileStageBudgets(profile, 80000, 30000, 80000, 30000, 20000, 0)
+    } else if (profile.profile == "cangjie_docs_full_sync") {
+        ckbSetSchedulerProfileStageBudgets(profile, 60000, 20000, 60000, 25000, 15000, 0)
+    } else if (profile.profile == "cangjie_source_event_sync") {
+        ckbSetSchedulerProfileStageBudgets(profile, 45000, 15000, 40000, 12000, 8000, 0)
+    } else if (profile.profile == "cangjie_version_branch_refresh") {
+        ckbSetSchedulerProfileStageBudgets(profile, 45000, 15000, 0, 0, 0, 0)
+    } else if (profile.candidateMode == "probe_only" || profile.candidateMode == "none" || profile.candidateMode == "") {
+        ckbSetSchedulerProfileStageBudgets(profile, ckbBudgetPercent(profile.timeBudgetMillis, 80), ckbBudgetPercent(profile.timeBudgetMillis, 20), 0, 0, 0, 0)
+    } else {
+        ckbSetSchedulerProfileStageBudgets(profile, ckbBudgetPercent(profile.timeBudgetMillis, 35), ckbBudgetPercent(profile.timeBudgetMillis, 15), ckbBudgetPercent(profile.timeBudgetMillis, 30), ckbBudgetPercent(profile.timeBudgetMillis, 10), ckbBudgetPercent(profile.timeBudgetMillis, 10), 0)
+    }
+}
+
+private func ckbSetSchedulerProfileStageBudgets(profile: CkbScheduleTaskProfile, fetch: Int64, ingest: Int64, vector: Int64, validation: Int64, snapshot: Int64, proof: Int64): Unit {
+    profile.fetchBudgetMillis = fetch
+    profile.ingestBudgetMillis = ingest
+    profile.vectorBudgetMillis = vector
+    profile.validationBudgetMillis = validation
+    profile.snapshotBudgetMillis = snapshot
+    profile.proofBudgetMillis = proof
+}
+
+private func ckbBudgetPercent(total: Int64, percent: Int64): Int64 {
+    if (total <= 0 || percent <= 0) {
+        return 0
+    }
+    (total * percent) / 100
+}
+
+public func ckbSchedulerProfileStageBudgetDiagnostic(profile: CkbScheduleTaskProfile): String {
+    "profile_stage_budget:profile=${profile.profile}|fetchBudgetMs=${profile.fetchBudgetMillis}|ingestBudgetMs=${profile.ingestBudgetMillis}|vectorBudgetMs=${profile.vectorBudgetMillis}|validationBudgetMs=${profile.validationBudgetMillis}|snapshotBudgetMs=${profile.snapshotBudgetMillis}|proofBudgetMs=${profile.proofBudgetMillis}|timeBudgetMs=${profile.timeBudgetMillis}"
+}
+
+private func ckbStageDeadline(parentDeadlineAtMillis: Int64, stageBudgetMillis: Int64): Int64 {
+    if (stageBudgetMillis <= 0) {
+        return parentDeadlineAtMillis
+    }
+    let stageDeadline = ckbCoreNowMillis() + stageBudgetMillis
+    if (parentDeadlineAtMillis > 0 && parentDeadlineAtMillis < stageDeadline) {
+        return parentDeadlineAtMillis
+    }
+    stageDeadline
+}
+
+private func ckbProfileIngestBudgetMillis(profile: CkbScheduleTaskProfile): Int64 {
+    profile.ingestBudgetMillis + profile.vectorBudgetMillis + profile.validationBudgetMillis + profile.snapshotBudgetMillis + profile.proofBudgetMillis
+}
+
+private func ckbWriteScheduledProfileStageCheckpoint(store: FileKnowledgeStore, profile: CkbScheduleTaskProfile, stage: String, status: String, budgetMillis: Int64, deadlineAtMillis: Int64, diagnostic: String): Unit {
+    var text = "profile=${escapeField(profile.profile)}\n"
+    text += "stage=${escapeField(stage)}\n"
+    text += "status=${escapeField(status)}\n"
+    text += "budgetMillis=${budgetMillis}\n"
+    text += "deadlineAtMillis=${deadlineAtMillis}\n"
+    text += "remainingMillis=${ckbRemainingMillis(deadlineAtMillis)}\n"
+    text += "diagnostic=${escapeField(redactSensitive(diagnostic))}\n"
+    store.writeLinesAtomically("metadata/routine-stage-checkpoints/${safeName(profile.profile)}-${safeName(stage)}.ckb", text)
 }
 
 private func ckbTaskWorkerNowMillis(): Int64 {
@@ -6635,10 +6711,12 @@ public class CkbSchedulerTaskRunner <: SchedulerTaskRunner {
             return this.finalizeTaskResultWithContract(name, result, beforeInvariant)
         }
         let manifest = this.runtimeVersionManifest()
-        let fetch = ckbRunScheduledProfileFetches(profile, this.sourceRunner, this.config, this.store, manifest, deadlineAtMillis: deadlineAtMillis)
+        let fetchDeadlineAtMillis = ckbStageDeadline(deadlineAtMillis, profile.fetchBudgetMillis)
+        let fetch = ckbRunScheduledProfileFetches(profile, this.sourceRunner, this.config, this.store, manifest, deadlineAtMillis: fetchDeadlineAtMillis)
         fetch.runId = "${this.kb.scheduler.clock.nowMinutes}"
         let progressSink = FileVectorBuildProgressSink(this.store, schedulerRunId: ckbSchedulerCurrentRunId(this.store), schedulerTaskName: name)
-        let ingest = ingestScheduledProfileSources(this.kb, this.store, profile, fetch, this.config, manifest, progressSink: progressSink, deadlineAtMillis: deadlineAtMillis)
+        let ingestDeadlineAtMillis = ckbStageDeadline(deadlineAtMillis, ckbProfileIngestBudgetMillis(profile))
+        let ingest = ingestScheduledProfileSources(this.kb, this.store, profile, fetch, this.config, manifest, progressSink: progressSink, deadlineAtMillis: ingestDeadlineAtMillis)
         let status = this.kb.status()
         result.ok = fetch.ok && ingest.ok
         result.status = if (result.ok) {
@@ -6661,6 +6739,7 @@ public class CkbSchedulerTaskRunner <: SchedulerTaskRunner {
         for (diagnostic in ingest.validationDiagnostics) {
             result.validationDiagnostics.add(diagnostic)
         }
+        result.validationDiagnostics.add(ckbSchedulerProfileStageBudgetDiagnostic(profile))
         if (!result.ok && ckbScheduledIngestTimedOut(ingest.status)) {
             result.validationDiagnostics.add("internal_timeout:${ingest.status}")
         }
@@ -7540,8 +7619,25 @@ private class CkbScheduledProfileIngestResult {
     init() {}
 }
 
+private class CkbBenchmarkGapProofCheckpoint {
+    var status: String = "not_started"
+    var inputHash: String = ""
+    var targetVersion: String = ""
+    var candidateVersion: String = ""
+    var total: Int64 = 0
+    var completed: Int64 = 0
+    var coveragePass: Bool = true
+    var completedCaseIds: ArrayList<String> = ArrayList<String>()
+
+    init() {}
+}
+
 private func ckbRunScheduledProfileFetches(profile: CkbScheduleTaskProfile, runner: SourceFetchRunner, config: CkbRuntimeConfig, store: FileKnowledgeStore, manifest: CangjieVersionManifest, deadlineAtMillis!: Int64 = 0): CkbScheduledProfileFetchResult {
-    fetchScheduledProfileSources(profile, runner, config, store, manifest, deadlineAtMillis: deadlineAtMillis)
+    let result = fetchScheduledProfileSources(profile, runner, config, store, manifest, deadlineAtMillis: deadlineAtMillis)
+    result.diagnostics.add(ckbSchedulerProfileStageBudgetDiagnostic(profile))
+    ckbWriteScheduledProfileStageCheckpoint(store, profile, "fetch", result.status, profile.fetchBudgetMillis, deadlineAtMillis, "requests=${result.requestCount}|fetched=${result.fetchedCount}|failed=${result.failedCount}")
+    result.diagnostics.add("profile_stage_checkpoint:profile=${profile.profile}|stage=fetch|status=${result.status}|budgetMs=${profile.fetchBudgetMillis}|deadlineAtMillis=${deadlineAtMillis}|remainingMs=${ckbRemainingMillis(deadlineAtMillis)}")
+    result
 }
 
 private func fetchScheduledProfileSources(profile: CkbScheduleTaskProfile, runner: SourceFetchRunner, config: CkbRuntimeConfig, store: FileKnowledgeStore, manifest: CangjieVersionManifest, deadlineAtMillis!: Int64 = 0): CkbScheduledProfileFetchResult {
@@ -8315,6 +8411,9 @@ private func ckbScheduledSourceRequiredness(profile: CkbScheduleTaskProfile, sou
 private func ingestScheduledProfileSources(kb: KnowledgeBase, store: FileKnowledgeStore, profile: CkbScheduleTaskProfile, fetch: CkbScheduledProfileFetchResult, config: CkbRuntimeConfig, manifest: CangjieVersionManifest, progressSink!: VectorBuildProgressSink = NoopVectorBuildProgressSink(), deadlineAtMillis!: Int64 = 0): CkbScheduledProfileIngestResult {
     let result = CkbScheduledProfileIngestResult()
     result.status = if (fetch.ok) { "profile_ok" } else { fetch.status }
+    result.validationDiagnostics.add(ckbSchedulerProfileStageBudgetDiagnostic(profile))
+    ckbWriteScheduledProfileStageCheckpoint(store, profile, "ingest_started", result.status, ckbProfileIngestBudgetMillis(profile), deadlineAtMillis, "fetchRequests=${fetch.requestCount}|fetched=${fetch.fetchedCount}|failed=${fetch.failedCount}")
+    result.validationDiagnostics.add("profile_stage_checkpoint:profile=${profile.profile}|stage=ingest_started|status=${result.status}|budgetMs=${ckbProfileIngestBudgetMillis(profile)}|deadlineAtMillis=${deadlineAtMillis}|remainingMs=${ckbRemainingMillis(deadlineAtMillis)}")
     for (diagnostic in fetch.diagnostics) {
         result.validationDiagnostics.add("fetch:${diagnostic}")
     }
@@ -8373,6 +8472,8 @@ private func ingestScheduledProfileSources(kb: KnowledgeBase, store: FileKnowled
     if (profile.profile == "cangjie_source_event_sync") {
         ckbPersistScheduledRepositoryEventCheckpoint(store, profile, fetch, result)
     }
+    ckbWriteScheduledProfileStageCheckpoint(store, profile, "ingest_finished", result.status, ckbProfileIngestBudgetMillis(profile), deadlineAtMillis, "activeVersion=${result.activeVersion}|candidateVersion=${result.candidateVersion}|validationStatus=${result.validationStatus}")
+    result.validationDiagnostics.add("profile_stage_checkpoint:profile=${profile.profile}|stage=ingest_finished|status=${result.status}|budgetMs=${ckbProfileIngestBudgetMillis(profile)}|deadlineAtMillis=${deadlineAtMillis}|remainingMs=${ckbRemainingMillis(deadlineAtMillis)}")
     result
 }
 
@@ -8421,7 +8522,10 @@ private func ingestScheduledBenchmarkGapCuration(kb: KnowledgeBase, store: FileK
         result.validationDiagnostics.add("benchmark_gap_input_gate:accepted=${curated.records.size}:maxRecords=${ckbBenchmarkGapCurationMaxRecords()}:bytes=${curationBytes.size}")
         return result
     }
-    result.validationDiagnostics.add("benchmark_gap_input_gate:bytes=${curationBytes.size}:accepted=${curated.records.size}:rejected=${curated.rejected}:maxRecords=${ckbBenchmarkGapCurationMaxRecords()}")
+    let inputHash = stableSummaryHash(curationText)
+    result.validationDiagnostics.add("benchmark_gap_input_gate:bytes=${curationBytes.size}:accepted=${curated.records.size}:rejected=${curated.rejected}:maxRecords=${ckbBenchmarkGapCurationMaxRecords()}:inputHash=${inputHash}")
+    ckbWriteScheduledProfileStageCheckpoint(store, profile, "input_parsed", "ok", profile.ingestBudgetMillis, deadlineAtMillis, "accepted=${curated.records.size}|rejected=${curated.rejected}|inputHash=${inputHash}")
+    result.validationDiagnostics.add("profile_stage_checkpoint:profile=${profile.profile}|stage=input_parsed|status=ok|budgetMs=${profile.ingestBudgetMillis}|deadlineAtMillis=${deadlineAtMillis}|remainingMs=${ckbRemainingMillis(deadlineAtMillis)}")
     for (record in curated.records) {
         result.validationDiagnostics.add(ckbBenchmarkGapPreviewProof(curated.records, record))
     }
@@ -8443,30 +8547,76 @@ private func ingestScheduledBenchmarkGapCuration(kb: KnowledgeBase, store: FileK
     let candidateVersion = ckbScheduledCandidateVersion(profile, fetch)
     let candidateRecords = kb.activeRecordSnapshotOverlay(curated.records)
     result.validationDiagnostics.add("benchmark_gap_promotion_started:accepted=${curated.records.size}:candidateVersion=${candidateVersion}")
-    let promotion = cangjiePromoteCandidateRecordsAfterValidationWithVersion(kb, store, candidateVersion, candidateRecords, progressSink: progressSink, deadlineAtMillis: deadlineAtMillis)
+    let promotionDeadlineAtMillis = ckbStageDeadline(deadlineAtMillis, profile.ingestBudgetMillis + profile.vectorBudgetMillis + profile.validationBudgetMillis + profile.snapshotBudgetMillis)
+    ckbWriteScheduledProfileStageCheckpoint(store, profile, "promotion_started", "running", profile.ingestBudgetMillis + profile.vectorBudgetMillis + profile.validationBudgetMillis + profile.snapshotBudgetMillis, promotionDeadlineAtMillis, "accepted=${curated.records.size}|candidateVersion=${candidateVersion}")
+    result.validationDiagnostics.add("profile_stage_checkpoint:profile=${profile.profile}|stage=promotion_started|status=running|budgetMs=${profile.ingestBudgetMillis + profile.vectorBudgetMillis + profile.validationBudgetMillis + profile.snapshotBudgetMillis}|deadlineAtMillis=${promotionDeadlineAtMillis}|remainingMs=${ckbRemainingMillis(promotionDeadlineAtMillis)}")
+    let promotion = cangjiePromoteCandidateRecordsAfterValidationWithVersion(kb, store, candidateVersion, candidateRecords, progressSink: progressSink, deadlineAtMillis: promotionDeadlineAtMillis)
     ckbApplyScheduledPromotionResult(result, promotion, "benchmark_gap_candidate_promoted")
+    ckbWriteScheduledProfileStageCheckpoint(store, profile, "promotion_finished", result.status, profile.ingestBudgetMillis + profile.vectorBudgetMillis + profile.validationBudgetMillis + profile.snapshotBudgetMillis, promotionDeadlineAtMillis, "activeVersion=${result.activeVersion}|candidateVersion=${result.candidateVersion}|validationStatus=${result.validationStatus}")
+    result.validationDiagnostics.add("profile_stage_checkpoint:profile=${profile.profile}|stage=promotion_finished|status=${result.status}|budgetMs=${profile.ingestBudgetMillis + profile.vectorBudgetMillis + profile.validationBudgetMillis + profile.snapshotBudgetMillis}|deadlineAtMillis=${promotionDeadlineAtMillis}|remainingMs=${ckbRemainingMillis(promotionDeadlineAtMillis)}")
     if (result.ok) {
-        var coveragePass = true
-        var completedProofs: Int64 = 0
+        let proofDeadlineAtMillis = ckbStageDeadline(deadlineAtMillis, profile.proofBudgetMillis)
         let totalProofs = curated.records.size
+        let batchId = "proof-${stableSummaryHash("${inputHash}:${candidateVersion}")}"
+        let checkpoint = ckbLoadBenchmarkGapProofCheckpoint(store, inputHash, config.benchmarkGapTargetVersion)
+        checkpoint.inputHash = inputHash
+        checkpoint.targetVersion = config.benchmarkGapTargetVersion
+        checkpoint.candidateVersion = candidateVersion
+        checkpoint.total = totalProofs
+        checkpoint.status = "running"
+        var coveragePass = checkpoint.coveragePass
+        var completedProofs: Int64 = checkpoint.completed
+        var proofsThisRun: Int64 = 0
+        result.validationDiagnostics.add(ckbBenchmarkGapProofCheckpointDiagnostic("benchmark_gap_proof_checkpoint_loaded", checkpoint, batchId))
+        ckbWriteScheduledProfileStageCheckpoint(store, profile, "proof_started", "running", profile.proofBudgetMillis, proofDeadlineAtMillis, "batchId=${batchId}|completed=${completedProofs}|total=${totalProofs}")
+        result.validationDiagnostics.add("profile_stage_checkpoint:profile=${profile.profile}|stage=proof_started|status=running|budgetMs=${profile.proofBudgetMillis}|deadlineAtMillis=${proofDeadlineAtMillis}|remainingMs=${ckbRemainingMillis(proofDeadlineAtMillis)}")
         for (record in curated.records) {
+            let caseId = ckbBenchmarkGapCaseId(record)
+            if (ckbBenchmarkGapProofCompleted(checkpoint, caseId)) {
+                result.validationDiagnostics.add("benchmark_gap_proof_resume_skip:${caseId}:batchId=${batchId}")
+                continue
+            }
             result.validationDiagnostics.add("benchmark_gap_proof_progress:completed=${completedProofs}:total=${totalProofs}")
-            let proofTimeout = ckbBenchmarkGapQueryProofDeadlineDiagnostic(deadlineAtMillis, completedProofs, totalProofs)
-            if (proofTimeout != "") {
+            if (config.benchmarkGapProofBatchSize > 0 && proofsThisRun >= config.benchmarkGapProofBatchSize) {
+                checkpoint.status = "recoverable"
+                checkpoint.coveragePass = coveragePass
+                ckbSaveBenchmarkGapProofCheckpoint(store, checkpoint)
                 result.ok = false
-                result.status = "benchmark_gap_query_proof_timeout"
-                result.validationStatus = "benchmark_gap_query_proof_timeout"
+                result.status = "benchmark_gap_query_proof_recoverable"
+                result.validationStatus = "benchmark_gap_query_proof_recoverable"
+                result.validationDiagnostics.add(ckbBenchmarkGapProofCheckpointDiagnostic("benchmark_gap_proof_checkpoint_saved", checkpoint, batchId))
+                return result
+            }
+            let proofTimeout = ckbBenchmarkGapQueryProofDeadlineDiagnostic(proofDeadlineAtMillis, completedProofs, totalProofs, batchId: batchId)
+            if (proofTimeout != "") {
+                checkpoint.status = "recoverable"
+                checkpoint.coveragePass = coveragePass
+                ckbSaveBenchmarkGapProofCheckpoint(store, checkpoint)
+                result.ok = false
+                result.status = "benchmark_gap_query_proof_recoverable"
+                result.validationStatus = "benchmark_gap_query_proof_recoverable"
                 result.validationDiagnostics.add(proofTimeout)
+                result.validationDiagnostics.add(ckbBenchmarkGapProofCheckpointDiagnostic("benchmark_gap_proof_checkpoint_saved", checkpoint, batchId))
                 return result
             }
             let proof = ckbBenchmarkGapQueryProof(kb, record, manifest)
             result.validationDiagnostics.add(proof)
+            addUniqueString(checkpoint.completedCaseIds, caseId)
             completedProofs += 1
+            proofsThisRun += 1
             if (!proof.contains("coveragePass=true")) {
                 coveragePass = false
             }
+            checkpoint.coveragePass = coveragePass
+            ckbSaveBenchmarkGapProofCheckpoint(store, checkpoint)
         }
         result.validationDiagnostics.add("benchmark_gap_proof_progress:completed=${completedProofs}:total=${totalProofs}")
+        checkpoint.status = if (coveragePass) { "success" } else { "failed" }
+        checkpoint.coveragePass = coveragePass
+        ckbSaveBenchmarkGapProofCheckpoint(store, checkpoint)
+        result.validationDiagnostics.add(ckbBenchmarkGapProofCheckpointDiagnostic("benchmark_gap_proof_checkpoint_saved", checkpoint, batchId))
+        ckbWriteScheduledProfileStageCheckpoint(store, profile, "proof_finished", checkpoint.status, profile.proofBudgetMillis, proofDeadlineAtMillis, "batchId=${batchId}|completed=${completedProofs}|total=${totalProofs}|coveragePass=${coveragePass}")
+        result.validationDiagnostics.add("profile_stage_checkpoint:profile=${profile.profile}|stage=proof_finished|status=${checkpoint.status}|budgetMs=${profile.proofBudgetMillis}|deadlineAtMillis=${proofDeadlineAtMillis}|remainingMs=${ckbRemainingMillis(proofDeadlineAtMillis)}")
         if (!coveragePass) {
             result.ok = false
             result.status = "benchmark_gap_query_proof_failed"
@@ -8483,12 +8633,88 @@ public func ckbBenchmarkGapCurationMaxRecords(): Int64 {
     200
 }
 
-public func ckbBenchmarkGapQueryProofDeadlineDiagnostic(deadlineAtMillis: Int64, completed: Int64, total: Int64): String {
+public func ckbBenchmarkGapQueryProofDeadlineDiagnostic(deadlineAtMillis: Int64, completed: Int64, total: Int64, batchId!: String = ""): String {
     let deadline = ckbDeadlineGuard("benchmark_gap_query_proof", deadlineAtMillis)
     if (!deadline.exceeded) {
         return ""
     }
-    "benchmark_gap_query_proof_timeout:${deadline.diagnostic}:completed=${completed}:total=${total}"
+    "benchmark_gap_query_proof_timeout:${deadline.diagnostic}:batchId=${if (batchId == "") { "default" } else { batchId }}:completed=${completed}:total=${total}:remainingMs=${deadline.remainingMillis}"
+}
+
+private func ckbBenchmarkGapProofCheckpointPath(): String {
+    "metadata/benchmark-gap-curation-proof.ckb"
+}
+
+private func ckbLoadBenchmarkGapProofCheckpoint(store: FileKnowledgeStore, inputHash: String, targetVersion: String): CkbBenchmarkGapProofCheckpoint {
+    let checkpoint = CkbBenchmarkGapProofCheckpoint()
+    let text = store.readText(ckbBenchmarkGapProofCheckpointPath())
+    if (text == "") {
+        return checkpoint
+    }
+    for (line in text.split("\n")) {
+        let trimmed = line.trimAscii()
+        if (trimmed == "") {
+            continue
+        }
+        let parts = trimmed.split("=")
+        if (parts.size < 2) {
+            continue
+        }
+        let key = parts[0]
+        let value = unescapeField(trimmed[key.size + 1..trimmed.size])
+        if (key == "status") {
+            checkpoint.status = value
+        } else if (key == "inputHash") {
+            checkpoint.inputHash = value
+        } else if (key == "targetVersion") {
+            checkpoint.targetVersion = value
+        } else if (key == "candidateVersion") {
+            checkpoint.candidateVersion = value
+        } else if (key == "total") {
+            checkpoint.total = parseIntField(value, 0)
+        } else if (key == "completed") {
+            checkpoint.completed = parseIntField(value, 0)
+        } else if (key == "coveragePass") {
+            checkpoint.coveragePass = value != "false"
+        } else if (key == "completedCaseIds") {
+            for (caseId in value.split(",")) {
+                let cleaned = caseId.trimAscii()
+                if (cleaned != "") {
+                    addUniqueString(checkpoint.completedCaseIds, cleaned)
+                }
+            }
+        }
+    }
+    if (checkpoint.inputHash != inputHash || checkpoint.targetVersion != targetVersion) {
+        return CkbBenchmarkGapProofCheckpoint()
+    }
+    checkpoint.completed = ckbBenchmarkGapProofCompletedCount(checkpoint)
+    checkpoint
+}
+
+private func ckbSaveBenchmarkGapProofCheckpoint(store: FileKnowledgeStore, checkpoint: CkbBenchmarkGapProofCheckpoint): Unit {
+    checkpoint.completed = ckbBenchmarkGapProofCompletedCount(checkpoint)
+    var text = "status=${escapeField(checkpoint.status)}\n"
+    text += "inputHash=${escapeField(checkpoint.inputHash)}\n"
+    text += "targetVersion=${escapeField(checkpoint.targetVersion)}\n"
+    text += "candidateVersion=${escapeField(checkpoint.candidateVersion)}\n"
+    text += "total=${checkpoint.total}\n"
+    text += "completed=${checkpoint.completed}\n"
+    text += "coveragePass=${checkpoint.coveragePass}\n"
+    text += "completedCaseIds=${escapeField(joinStrings(checkpoint.completedCaseIds, ","))}\n"
+    store.writeLinesAtomically(ckbBenchmarkGapProofCheckpointPath(), text)
+}
+
+private func ckbBenchmarkGapProofCompletedCount(checkpoint: CkbBenchmarkGapProofCheckpoint): Int64 {
+    checkpoint.completedCaseIds.size
+}
+
+private func ckbBenchmarkGapProofCompleted(checkpoint: CkbBenchmarkGapProofCheckpoint, caseId: String): Bool {
+    checkpoint.completedCaseIds.contains(caseId)
+}
+
+private func ckbBenchmarkGapProofCheckpointDiagnostic(prefix: String, checkpoint: CkbBenchmarkGapProofCheckpoint, batchId: String): String {
+    "${prefix}:batchId=${batchId}|completed=${checkpoint.completed}|total=${checkpoint.total}|remaining=${checkpoint.total - checkpoint.completed}|coveragePass=${checkpoint.coveragePass}|candidateVersion=${checkpoint.candidateVersion}"
 }
 
 private func ckbBenchmarkGapCurationInputPath(config: CkbRuntimeConfig, store: FileKnowledgeStore): String {
@@ -10525,6 +10751,8 @@ private func configApply(config: CkbRuntimeConfig, key: String, value: String): 
         config.benchmarkGapCurationInputPath = value
     } else if (key == "benchmarkGap.targetVersion") {
         config.benchmarkGapTargetVersion = value
+    } else if (key == "benchmarkGap.proofBatchSize") {
+        config.benchmarkGapProofBatchSize = try { Int64.parse(value) } catch (_: Exception) { config.benchmarkGapProofBatchSize }
     }
 }
 
