@@ -58,6 +58,11 @@ public class CkbSchedulerProgressTimeoutTest {
         @Expect(store.has("metadata/scheduler-current.ckb"), true)
         @Expect(scheduler.entries[0].lastRunId, result.runId)
         @Expect(scheduler.entries[0].lastTerminalState, "succeeded")
+        let progress = store.readText(result.progressPath)
+        @Expect(progress.contains("\"subsystem\":\"scheduler\""), true)
+        @Expect(progress.contains("\"stage\":\"task_finish\""), true)
+        @Expect(progress.contains("\"durationMs\""), true)
+        @Expect(progress.contains("\"deadlineAtMillis\""), true)
     }
 
     @TestCase
@@ -138,6 +143,55 @@ public class CkbSchedulerProgressTimeoutTest {
         @Expect(store.readText("metadata/vector-reconcile-current.ckb").contains("reused=64"), true)
         @Expect(store.readText("metadata/scheduler-runs/stale-scheduler.jsonl").contains("stale_recovered"), true)
         @Expect(store.readText("metadata/vector-reconcile-runs/stale-vector.jsonl").contains("stale_recovered"), true)
+    }
+
+    @TestCase
+    public func schedulerRunLockBlocksConcurrentUnexpiredRunAndRecoversExpiredRun(): Unit {
+        let root = "target/ckb-scheduler-run-lock"
+        ensureEmptyDir(root)
+        let store = FileKnowledgeStore(root)
+        let first = ckbAcquireSchedulerRunLock(store, "run-a", ckbCoreNowMillis() + 60000, "cmd-a")
+        let busy = ckbAcquireSchedulerRunLock(store, "run-b", ckbCoreNowMillis() + 60000, "cmd-b")
+
+        @Expect(first.ok, true)
+        @Expect(busy.ok, false)
+        @Expect(busy.status, "scheduler_busy")
+        @Expect(busy.diagnostic.contains("run-a"), true)
+
+        store.writeLinesAtomically("metadata/scheduler-lock.ckb", "runId=old-run\nstatus=running\ndeadlineAtMillis=1\nownerCommandHash=old\ndiagnostic=stale\n")
+        let recovered = ckbAcquireSchedulerRunLock(store, "run-c", ckbCoreNowMillis() + 60000, "cmd-c")
+
+        @Expect(recovered.ok, true)
+        @Expect(recovered.diagnostic.contains("scheduler_lock_recovered_expired"), true)
+        @Expect(store.readText("metadata/scheduler-lock.ckb").contains("runId=run-c"), true)
+
+        ckbReleaseSchedulerRunLock(store, recovered, "run-c-final", "succeeded")
+        @Expect(store.readText("metadata/scheduler-lock.ckb").contains("status=succeeded"), true)
+    }
+
+    @TestCase
+    public func scopedVectorCurrentIsWrittenForSchedulerTask(): Unit {
+        let root = "target/ckb-scoped-vector-current"
+        ensureEmptyDir(root)
+        let store = FileKnowledgeStore(root)
+        store.writeLinesAtomically("metadata/scheduler-current.ckb", "runId=scheduler-a\ntaskName=weekly_full_rebuild\nstatus=running\nprogressPath=metadata/scheduler-runs/scheduler-a.jsonl\ndiagnostic=\n")
+        let progress = VectorBuildProgress()
+        progress.runId = "vector-a"
+        progress.collection = "ckb_candidate"
+        progress.targetCollection = "ckb_staging"
+        progress.state = "running"
+        progress.currentBatch = 3
+        progress.completed = 42
+        let sink = FileVectorBuildProgressSink(store, schedulerRunId: "scheduler-a", schedulerTaskName: "weekly_full_rebuild")
+
+        sink.onVectorBatchStarted(progress)
+
+        let scoped = "metadata/scheduler-runs/scheduler-a-weekly_full_rebuild-vector-current.ckb"
+        @Expect(store.has("metadata/vector-reconcile-current.ckb"), true)
+        @Expect(store.has(scoped), true)
+        @Expect(store.readText(scoped).contains("schedulerRunId=scheduler-a"), true)
+        @Expect(store.readText(scoped).contains("schedulerTaskName=weekly_full_rebuild"), true)
+        @Expect(store.readText(scoped).contains("completed=42"), true)
     }
 
     @TestCase
@@ -274,6 +328,21 @@ public class CkbSchedulerProgressTimeoutTest {
         @Expect(parsed.ok, false)
         @Expect(parsed.status, "task_worker_result_malformed")
         @Expect(store.readText(resultPath), "this is not a scheduler result\n")
+    }
+
+    @TestCase
+    public func s5Bnd002WorkerStartedResultIsReportedAsIncomplete(): Unit {
+        let root = "target/s5-bnd002-worker-started-incomplete"
+        ensureEmptyDir(root)
+        let store = FileKnowledgeStore(root)
+        let resultPath = "metadata/scheduler-workers/started.ckb"
+        store.writeLinesAtomically(resultPath, "status=worker_started\ntaskName=weekly_full_rebuild\nsince=0\nstartedAtMillis=10\ndeadlineAtMillis=110\n")
+
+        let parsed = ckbReadSchedulerWorkerResultFile(root, resultPath, "weekly_full_rebuild", "0", 20, 100)
+
+        @Expect(parsed.ok, false)
+        @Expect(parsed.status, "task_worker_result_incomplete")
+        @Expect(parsed.validationDiagnostics.contains("weekly_full_rebuild:task_worker_result_incomplete"), true)
     }
 
     @TestCase

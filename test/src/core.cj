@@ -2659,6 +2659,9 @@ public class SchedulerTaskResult {
     public var since: String = ""
     public var activeVersion: String = ""
     public var candidateVersion: String = ""
+    public var startedAtMillis: Int64 = 0
+    public var endedAtMillis: Int64 = 0
+    public var deadlineAtMillis: Int64 = 0
     public var durationMillis: Int64 = 0
     public var requestCount: Int64 = 0
     public var updatedDataKinds: ArrayList<String> = ArrayList<String>()
@@ -2698,6 +2701,9 @@ public class SchedulerExecutorResult {
     public var finalPreflightDiagnostics: ArrayList<String> = ArrayList<String>()
     public var postRepairAttempted: Bool = false
     public var postRepairOk: Bool = false
+    public var buildCommit: String = ""
+    public var configHash: String = ""
+    public var storeHash: String = ""
     public var taskRecords: ArrayList<SchedulerTaskRunRecord> = ArrayList<SchedulerTaskRunRecord>()
 
     public init() {}
@@ -2707,11 +2713,17 @@ public class SchedulerTaskRunRecord {
     public var taskName: String = ""
     public var ok: Bool = false
     public var status: String = ""
+    public var startedAtMillis: Int64 = 0
+    public var endedAtMillis: Int64 = 0
+    public var deadlineAtMillis: Int64 = 0
     public var durationMillis: Int64 = 0
     public var timeBudgetMillis: Int64 = 0
     public var requestCount: Int64 = 0
     public var lastStage: String = ""
     public var lastProgress: String = ""
+    public var workerPid: Int64 = 0
+    public var workerOutSnippet: String = ""
+    public var workerErrSnippet: String = ""
     public var primaryFailure: String = ""
 
     public init() {}
@@ -2841,43 +2853,47 @@ public class SchedulerExecutor {
         if (timeoutMillis <= 0) {
             try {
                 let task = this.runner.runTask(name, since, deadlineAtMillis)
-                if (task.durationMillis <= 0) {
-                    task.durationMillis = ckbCoreNowMillis() - started
-                }
-                if (task.timeBudgetMillis <= 0) {
-                    task.timeBudgetMillis = timeoutMillis
-                }
-                return task
+                return this.finalizeTaskTiming(task, started, deadlineAtMillis, timeoutMillis)
             } catch (e: Exception) {
                 let task = schedulerExceptionTaskResult(name, "task_exception", ckbCoreNowMillis() - started, message: schedulerExceptionMessage(e))
-                task.timeBudgetMillis = timeoutMillis
-                return task
+                return this.finalizeTaskTiming(task, started, deadlineAtMillis, timeoutMillis)
             }
         }
         try {
             let task = this.runner.runTask(name, since, deadlineAtMillis)
-            if (task.durationMillis <= 0) {
-                task.durationMillis = ckbCoreNowMillis() - started
-            }
-            if (task.timeBudgetMillis <= 0) {
-                task.timeBudgetMillis = timeoutMillis
-            }
             if (task.status.startsWith("task_timeout:")) {
-                return task
+                return this.finalizeTaskTiming(task, started, deadlineAtMillis, timeoutMillis)
             }
             if (ckbDeadlineExceeded(deadlineAtMillis)) {
                 task.ok = false
                 task.status = "task_timeout:${name}"
                 task.durationMillis = ckbCoreNowMillis() - started
-                return task
+                return this.finalizeTaskTiming(task, started, deadlineAtMillis, timeoutMillis)
             }
-            return task
+            return this.finalizeTaskTiming(task, started, deadlineAtMillis, timeoutMillis)
         } catch (e: Exception) {
             let status = if (ckbDeadlineExceeded(deadlineAtMillis)) { "task_timeout:${name}" } else { "task_exception" }
             let task = schedulerExceptionTaskResult(name, status, ckbCoreNowMillis() - started, message: schedulerExceptionMessage(e))
-            task.timeBudgetMillis = timeoutMillis
-            return task
+            return this.finalizeTaskTiming(task, started, deadlineAtMillis, timeoutMillis)
         }
+    }
+
+    private func finalizeTaskTiming(task: SchedulerTaskResult, startedAtMillis: Int64, deadlineAtMillis: Int64, timeoutMillis: Int64): SchedulerTaskResult {
+        let ended = ckbCoreNowMillis()
+        if (task.startedAtMillis <= 0) {
+            task.startedAtMillis = startedAtMillis
+        }
+        if (task.endedAtMillis <= 0) {
+            task.endedAtMillis = ended
+        }
+        task.deadlineAtMillis = deadlineAtMillis
+        if (task.durationMillis <= 0) {
+            task.durationMillis = task.endedAtMillis - task.startedAtMillis
+        }
+        if (task.timeBudgetMillis <= 0) {
+            task.timeBudgetMillis = timeoutMillis
+        }
+        task
     }
 
     private func effectiveTaskTimeoutMillis(entry: ScheduleEntry): Int64 {
@@ -2942,11 +2958,17 @@ private func schedulerTaskRunRecord(name: String, task: SchedulerTaskResult): Sc
     record.taskName = name
     record.ok = task.ok
     record.status = task.status
+    record.startedAtMillis = task.startedAtMillis
+    record.endedAtMillis = task.endedAtMillis
+    record.deadlineAtMillis = task.deadlineAtMillis
     record.durationMillis = task.durationMillis
     record.timeBudgetMillis = task.timeBudgetMillis
     record.requestCount = task.requestCount
     record.lastStage = task.lastStage
     record.lastProgress = task.lastProgress
+    record.workerPid = task.workerPid
+    record.workerOutSnippet = task.workerOutSnippet
+    record.workerErrSnippet = task.workerErrSnippet
     record.primaryFailure = schedulerPrimaryFailureFromTask(task)
     record
 }
