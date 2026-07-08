@@ -68,6 +68,14 @@ public class OllamaEmbeddingProvider <: EmbeddingProvider {
     }
 
     public func embed(texts: ArrayList<String>, model: String, dimensions: Int64): EmbeddingBatch {
+        this.embedInternal(texts, model, dimensions, 0)
+    }
+
+    public func embedWithDeadline(texts: ArrayList<String>, model: String, dimensions: Int64, deadlineAtMillis: Int64): EmbeddingBatch {
+        this.embedInternal(texts, model, dimensions, deadlineAtMillis)
+    }
+
+    private func embedInternal(texts: ArrayList<String>, model: String, dimensions: Int64, deadlineAtMillis: Int64): EmbeddingBatch {
         let batch = EmbeddingBatch()
         let started = ollamaNowMillis()
         batch.requested = texts.size
@@ -88,12 +96,21 @@ public class OllamaEmbeddingProvider <: EmbeddingProvider {
         var down = false
         let textBatches = CkbEmbeddingTextBudgeter(ckbEmbeddingTextBudgetFromConfig(this.config)).batches(texts)
         for (textBatch in textBatches) {
+            if (ckbDeadlineExceeded(deadlineAtMillis)) {
+                batch.failed += textBatch.texts.size
+                if (degradedReason == "") {
+                    degradedReason = "ollama_embedding_deadline_exceeded"
+                }
+                batch.lastDiagnostic = "ollama_embedding_deadline_exceeded"
+                down = true
+                continue
+            }
             batch.chunksAttempted += 1
             batch.inputBytes += textBatch.originalBytes
             batch.preparedBytes += textBatch.preparedBytes
             batch.lastChunkPreparedBytes = textBatch.preparedBytes
             batch.truncatedCount += textBatch.truncatedCount
-            let chunkResult = this.embedChunk(textBatch.texts, effectiveModel, effectiveDimensions)
+            let chunkResult = this.embedChunkWithDeadline(textBatch.texts, effectiveModel, effectiveDimensions, deadlineAtMillis)
             if (chunkResult.status.state == EmbeddingProviderState.READY) {
                 for (vector in chunkResult.vectors) {
                     batch.vectors.add(vector)
@@ -147,6 +164,13 @@ public class OllamaEmbeddingProvider <: EmbeddingProvider {
     }
 
     private func embedChunk(texts: ArrayList<String>, model: String, dimensions: Int64): EmbeddingBatch {
+        this.embedChunkWithDeadline(texts, model, dimensions, 0)
+    }
+
+    private func embedChunkWithDeadline(texts: ArrayList<String>, model: String, dimensions: Int64, deadlineAtMillis: Int64): EmbeddingBatch {
+        if (ckbDeadlineExceeded(deadlineAtMillis)) {
+            return ckbDeadlineEmbeddingBatch(texts, "ollama_embedding_deadline_exceeded")
+        }
         let batch = EmbeddingBatch()
         batch.requested = texts.size
         batch.batchSize = effectiveBatchSize(this.config.batchSize)
@@ -157,10 +181,11 @@ public class OllamaEmbeddingProvider <: EmbeddingProvider {
         request.accept = "application/json"
         request.contentType = "application/json"
         request.body = ollamaEmbeddingRequestBody(model, texts, dimensions)
-        request.timeoutMillis = this.config.timeoutMillis
+        let remaining = ckbRemainingMillis(deadlineAtMillis)
+        request.timeoutMillis = if (remaining > 0 && (this.config.timeoutMillis <= 0 || remaining < this.config.timeoutMillis)) { remaining } else { this.config.timeoutMillis }
         request.retryCount = this.config.retryCount
 
-        let response = this.executeWithRetry(request)
+        let response = this.executeWithRetryUntil(request, deadlineAtMillis)
         let httpState = ollamaStatusFromHttpResponse(response)
         if (httpState.state != EmbeddingProviderState.READY) {
             batch.status.state = httpState.state
@@ -205,19 +230,43 @@ public class OllamaEmbeddingProvider <: EmbeddingProvider {
     }
 
     private func executeWithRetry(request: OllamaEmbeddingHttpRequest): OllamaEmbeddingHttpResponse {
+        this.executeWithRetryUntil(request, 0)
+    }
+
+    private func executeWithRetryUntil(request: OllamaEmbeddingHttpRequest, deadlineAtMillis: Int64): OllamaEmbeddingHttpResponse {
+        if (ckbDeadlineExceeded(deadlineAtMillis)) {
+            return ollamaTimeoutResponse("ollama_embedding_deadline_exceeded")
+        }
         var attempt: Int64 = 0
         var last = OllamaEmbeddingHttpResponse()
         let retryCount = if (request.retryCount < 0) { 0 } else { request.retryCount }
-        let totalDeadline = ollamaNowMillis() + ollamaEffectiveTotalTimeoutMillis(request.timeoutMillis, retryCount, this.config.totalTimeoutMillis)
+        var totalBudget = ollamaEffectiveTotalTimeoutMillis(request.timeoutMillis, retryCount, this.config.totalTimeoutMillis)
+        let deadlineRemaining = ckbRemainingMillis(deadlineAtMillis)
+        if (deadlineRemaining > 0 && deadlineRemaining < totalBudget) {
+            totalBudget = deadlineRemaining
+        }
+        let totalDeadline = ollamaNowMillis() + totalBudget
         while (attempt <= retryCount) {
             attempt += 1
             try {
+                if (ckbDeadlineExceeded(deadlineAtMillis)) {
+                    last = ollamaTimeoutResponse("ollama_embedding_deadline_exceeded")
+                    break
+                }
                 let remaining = totalDeadline - ollamaNowMillis()
                 if (remaining <= 0) {
                     last = ollamaTimeoutResponse("ollama_embedding_total_timeout:attempt=${attempt}:timeoutMillis=0")
                     break
                 }
-                let attemptTimeout = if (request.timeoutMillis > 0 && request.timeoutMillis < remaining) { request.timeoutMillis } else { remaining }
+                var attemptTimeout = if (request.timeoutMillis > 0 && request.timeoutMillis < remaining) { request.timeoutMillis } else { remaining }
+                let absoluteRemaining = ckbRemainingMillis(deadlineAtMillis)
+                if (absoluteRemaining > 0 && absoluteRemaining < attemptTimeout) {
+                    attemptTimeout = absoluteRemaining
+                }
+                if (attemptTimeout <= 0) {
+                    last = ollamaTimeoutResponse("ollama_embedding_deadline_exceeded")
+                    break
+                }
                 let attemptRequest = ollamaCopyRequest(request)
                 attemptRequest.timeoutMillis = attemptTimeout
                 let future = spawn { =>

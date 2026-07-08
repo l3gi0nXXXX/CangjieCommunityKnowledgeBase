@@ -224,6 +224,33 @@ public class CkbOllamaEmbeddingTest {
     }
 
     @TestCase
+    public func ollamaProviderDeadlineClampsRequestTimeoutAndStopsExpiredCalls(): Unit {
+        let config = ollamaConfig()
+        config.timeoutMillis = 30000
+        config.totalTimeoutMillis = 30000
+        let fake = FakeOllamaEmbeddingExecutor()
+        fake.add(responseWith(200, embeddingResponseJson(1, 1024), "http_200"))
+        let provider = OllamaEmbeddingProvider(config, executor: fake)
+        let deadline = DateTime.now().toUnixTimeStamp().toMilliseconds() + 5000
+
+        let batch = provider.embedWithDeadline(textBatch(["deadline clamp"]), "bge-m3:latest", 1024, deadline)
+
+        @Expect(batch.status.state, EmbeddingProviderState.READY)
+        @Expect(fake.calls, 1)
+        @Expect(fake.requests[0].timeoutMillis > 0, true)
+        @Expect(fake.requests[0].timeoutMillis <= 5000, true)
+
+        let expiredFake = FakeOllamaEmbeddingExecutor()
+        let expiredProvider = OllamaEmbeddingProvider(config, executor: expiredFake)
+        let expired = expiredProvider.embedWithDeadline(textBatch(["expired"]), "bge-m3:latest", 1024, DateTime.now().toUnixTimeStamp().toMilliseconds() - 1)
+
+        @Expect(expired.status.state, EmbeddingProviderState.DOWN)
+        @Expect(expired.status.degradedReason, "ollama_embedding_deadline_exceeded")
+        @Expect(expired.failed, 1)
+        @Expect(expiredFake.calls, 0)
+    }
+
+    @TestCase
     public func ollamaProviderAppliesUtf8SafeTextBudgetBeforeRequest(): Unit {
         let config = ollamaConfig()
         config.batchSize = 2

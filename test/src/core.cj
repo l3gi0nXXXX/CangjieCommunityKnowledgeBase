@@ -313,6 +313,8 @@ public class VectorBuildProgress {
     public var batchSize: Int64 = 0
     public var inputBytes: Int64 = 0
     public var preparedBytes: Int64 = 0
+    public var reused: Int64 = 0
+    public var embedded: Int64 = 0
     public var startedAtMillis: Int64 = 0
     public var updatedAtMillis: Int64 = 0
     public var elapsedMillis: Int64 = 0
@@ -371,6 +373,7 @@ public class VectorRecordsBuildResult {
 
 public interface EmbeddingProvider {
     func embed(texts: ArrayList<String>, model: String, dimensions: Int64): EmbeddingBatch
+    func embedWithDeadline(texts: ArrayList<String>, model: String, dimensions: Int64, deadlineAtMillis: Int64): EmbeddingBatch
     func status(): EmbeddingStatus
 }
 
@@ -390,12 +393,29 @@ public func ckbEmbeddingTextBudgetFromConfig(config: EmbeddingConfig): CkbEmbedd
     budget
 }
 
-private func ckbCoreNowMillis(): Int64 {
+public func ckbCoreNowMillis(): Int64 {
     DateTime.now().toUnixTimeStamp().toMilliseconds()
 }
 
-private func ckbDeadlineExceeded(deadlineAtMillis: Int64): Bool {
+public func ckbDeadlineExceeded(deadlineAtMillis: Int64): Bool {
     deadlineAtMillis > 0 && ckbCoreNowMillis() >= deadlineAtMillis
+}
+
+public func ckbRemainingMillis(deadlineAtMillis: Int64): Int64 {
+    if (deadlineAtMillis <= 0) {
+        return 0
+    }
+    deadlineAtMillis - ckbCoreNowMillis()
+}
+
+public func ckbDeadlineEmbeddingBatch(texts: ArrayList<String>, reason: String): EmbeddingBatch {
+    let batch = EmbeddingBatch()
+    batch.requested = texts.size
+    batch.failed = texts.size
+    batch.status.state = EmbeddingProviderState.DEGRADED
+    batch.status.degradedReason = reason
+    batch.lastDiagnostic = reason
+    batch
 }
 
 private func ckbVectorBuildRunId(): String {
@@ -427,6 +447,13 @@ public class DeterministicEmbeddingProvider <: EmbeddingProvider {
         }
         batch.succeeded = batch.vectors.size
         batch
+    }
+
+    public func embedWithDeadline(texts: ArrayList<String>, model: String, dimensions: Int64, deadlineAtMillis: Int64): EmbeddingBatch {
+        if (ckbDeadlineExceeded(deadlineAtMillis)) {
+            return ckbDeadlineEmbeddingBatch(texts, "embedding_deadline_exceeded")
+        }
+        this.embed(texts, model, dimensions)
     }
 
     public func status(): EmbeddingStatus {
@@ -467,6 +494,13 @@ public class ProductionEmbeddingProvider <: EmbeddingProvider {
         batch.status = this.status()
         batch.failed = texts.size
         batch
+    }
+
+    public func embedWithDeadline(texts: ArrayList<String>, model: String, dimensions: Int64, deadlineAtMillis: Int64): EmbeddingBatch {
+        if (ckbDeadlineExceeded(deadlineAtMillis)) {
+            return ckbDeadlineEmbeddingBatch(texts, "embedding_deadline_exceeded")
+        }
+        this.embed(texts, model, dimensions)
     }
 
     public func status(): EmbeddingStatus {
@@ -548,12 +582,14 @@ public class VectorStoreStatus {
 public interface VectorStore {
     func upsert(collection: String, vectors: ArrayList<VectorRecord>): VectorStoreStatus
     func upsertBatch(collection: String, vectors: ArrayList<VectorRecord>): VectorStoreStatus
+    func upsertBatchWithDeadline(collection: String, vectors: ArrayList<VectorRecord>, deadlineAtMillis: Int64): VectorStoreStatus
     func search(collection: String, queryVector: ArrayList<Float64>, filters: VectorSearchFilters, topK: Int64): ArrayList<VectorSearchResult>
     func status(collection: String): VectorStoreStatus
     func ensureReadyCollection(collection: String): VectorStoreStatus
     func clear(collection: String): VectorStoreStatus
     func deleteCollection(collection: String): VectorStoreStatus
     func recreate(collection: String, vectors: ArrayList<VectorRecord>): VectorStoreStatus
+    func recreateWithDeadline(collection: String, vectors: ArrayList<VectorRecord>, deadlineAtMillis: Int64): VectorStoreStatus
     func backup(collection: String): VectorBackup
     func restore(backup: VectorBackup): VectorStoreStatus
 }
@@ -630,6 +666,16 @@ public class LocalVectorStore <: VectorStore {
             stored.records.add(record)
         }
         this.status(collection)
+    }
+
+    public func upsertBatchWithDeadline(collection: String, vectors: ArrayList<VectorRecord>, deadlineAtMillis: Int64): VectorStoreStatus {
+        if (ckbDeadlineExceeded(deadlineAtMillis)) {
+            let status = this.status(collection)
+            status.state = EmbeddingProviderState.DEGRADED
+            status.degradedReason = "vector_store_deadline_exceeded:${collection}"
+            return status
+        }
+        this.upsertBatch(collection, vectors)
     }
 
     public func search(collection: String, queryVector: ArrayList<Float64>, filters: VectorSearchFilters, topK: Int64): ArrayList<VectorSearchResult> {
@@ -712,6 +758,16 @@ public class LocalVectorStore <: VectorStore {
         this.upsert(collection, vectors)
     }
 
+    public func recreateWithDeadline(collection: String, vectors: ArrayList<VectorRecord>, deadlineAtMillis: Int64): VectorStoreStatus {
+        if (ckbDeadlineExceeded(deadlineAtMillis)) {
+            let status = this.status(collection)
+            status.state = EmbeddingProviderState.DEGRADED
+            status.degradedReason = "vector_store_deadline_exceeded:${collection}"
+            return status
+        }
+        this.recreate(collection, vectors)
+    }
+
     public func backup(collection: String): VectorBackup {
         let backup = VectorBackup()
         backup.collection = collection
@@ -792,6 +848,15 @@ private class QdrantJsonStringScan {
     public init() {}
 }
 
+private class QdrantScrollPage {
+    public var ok: Bool = false
+    public var diagnostic: String = ""
+    public var records: ArrayList<VectorRecord> = ArrayList<VectorRecord>()
+    public var nextOffsetJson: String = ""
+
+    public init() {}
+}
+
 public class QdrantVectorStore <: VectorStore {
     private let config: QdrantVectorStoreConfig
     private let executor: HttpRequestExecutor
@@ -850,6 +915,38 @@ public class QdrantVectorStore <: VectorStore {
             return status
         }
         let response = this.execute("PUT", "${this.collectionUrl(collection)}/points?wait=true", qdrantUpsertBody(vectors))
+        let status = this.statusFromWriteResponse(collection, response, "upsert")
+        if (status.state == EmbeddingProviderState.READY) {
+            this.rememberBatch(collection, vectors)
+            status.count = this.cached(collection).records.size
+            status.dimension = this.config.dimensions
+        }
+        this.lastStatus = status
+        status
+    }
+
+    public func upsertBatchWithDeadline(collection: String, vectors: ArrayList<VectorRecord>, deadlineAtMillis: Int64): VectorStoreStatus {
+        if (ckbDeadlineExceeded(deadlineAtMillis)) {
+            let status = this.baseStatus(collection)
+            status.state = EmbeddingProviderState.DEGRADED
+            status.count = this.cached(collection).records.size
+            status.degradedReason = "vector_store_deadline_exceeded:${collection}"
+            this.lastStatus = status
+            return status
+        }
+        let validation = this.validateVectors(collection, vectors)
+        if (validation.degradedReason != "") {
+            this.lastStatus = validation
+            return validation
+        }
+        if (vectors.size == 0) {
+            let status = this.baseStatus(collection)
+            status.state = EmbeddingProviderState.READY
+            status.count = this.cached(collection).records.size
+            this.lastStatus = status
+            return status
+        }
+        let response = this.executeWithDeadline("PUT", "${this.collectionUrl(collection)}/points?wait=true", qdrantUpsertBody(vectors), deadlineAtMillis)
         let status = this.statusFromWriteResponse(collection, response, "upsert")
         if (status.state == EmbeddingProviderState.READY) {
             this.rememberBatch(collection, vectors)
@@ -963,21 +1060,56 @@ public class QdrantVectorStore <: VectorStore {
         this.upsert(collection, vectors)
     }
 
+    public func recreateWithDeadline(collection: String, vectors: ArrayList<VectorRecord>, deadlineAtMillis: Int64): VectorStoreStatus {
+        if (ckbDeadlineExceeded(deadlineAtMillis)) {
+            let status = this.baseStatus(collection)
+            status.state = EmbeddingProviderState.DEGRADED
+            status.degradedReason = "vector_store_deadline_exceeded:${collection}"
+            this.lastStatus = status
+            return status
+        }
+        let validation = this.validateVectors(collection, vectors)
+        if (validation.degradedReason != "") {
+            this.lastStatus = validation
+            return validation
+        }
+        let cleared = this.clear(collection)
+        if (cleared.state == EmbeddingProviderState.DOWN || (cleared.state == EmbeddingProviderState.DEGRADED && cleared.degradedReason != "collection_missing")) {
+            this.lastStatus = cleared
+            return cleared
+        }
+        if (ckbDeadlineExceeded(deadlineAtMillis)) {
+            let status = this.baseStatus(collection)
+            status.state = EmbeddingProviderState.DEGRADED
+            status.degradedReason = "vector_store_deadline_exceeded:${collection}"
+            this.lastStatus = status
+            return status
+        }
+        let created = this.createCollectionWithDeadline(collection, deadlineAtMillis)
+        if (created.state != EmbeddingProviderState.READY) {
+            this.lastStatus = created
+            return created
+        }
+        if (vectors.size == 0) {
+            this.lastStatus = created
+            return created
+        }
+        this.upsertBatchWithDeadline(collection, vectors, deadlineAtMillis)
+    }
+
     public func backup(collection: String): VectorBackup {
         let backup = VectorBackup()
         backup.collection = collection
         let cached = this.cached(collection)
-        if (cached.collection == "") {
-            backup.valid = false
-            backup.diagnostic = "qdrant_backup_requires_scroll"
+        if (cached.collection != "") {
+            for (record in cached.records) {
+                backup.records.add(record)
+            }
+            backup.valid = true
+            backup.diagnostic = "ok"
             return backup
         }
-        for (record in cached.records) {
-            backup.records.add(record)
-        }
-        backup.valid = true
-        backup.diagnostic = "ok"
-        backup
+        this.scrollBackup(collection)
     }
 
     public func restore(backup: VectorBackup): VectorStoreStatus {
@@ -1000,6 +1132,14 @@ public class QdrantVectorStore <: VectorStore {
             return this.degradedStatus(collection, "qdrant_missing_dimensions")
         }
         let response = this.execute("PUT", this.collectionUrl(collection), qdrantCreateCollectionBody(this.config.dimensions, this.config.distance))
+        this.statusFromWriteResponse(collection, response, "create_collection")
+    }
+
+    private func createCollectionWithDeadline(collection: String, deadlineAtMillis: Int64): VectorStoreStatus {
+        if (this.config.dimensions <= 0) {
+            return this.degradedStatus(collection, "qdrant_missing_dimensions")
+        }
+        let response = this.executeWithDeadline("PUT", this.collectionUrl(collection), qdrantCreateCollectionBody(this.config.dimensions, this.config.distance), deadlineAtMillis)
         this.statusFromWriteResponse(collection, response, "create_collection")
     }
 
@@ -1035,6 +1175,40 @@ public class QdrantVectorStore <: VectorStore {
         request.url = url
         request.accept = "application/json"
         request.timeoutMillis = this.config.timeoutMillis
+        request.retryCount = this.config.retryCount
+        if (body != "") {
+            request.contentType = "application/json"
+            request.body = body
+            request.headers.add("Content-Type: application/json")
+        }
+        if (this.config.apiKey != "") {
+            request.headers.add("api-key: ${this.config.apiKey}")
+        }
+        try {
+            this.executor.execute(request)
+        } catch (_: Exception) {
+            let response = HttpExecutionResponse()
+            response.status = "transport_error"
+            response.transportErrorClass = "exception"
+            response.transportDiagnostic = "qdrant_executor_exception"
+            response
+        }
+    }
+
+    private func executeWithDeadline(method: String, url: String, body: String, deadlineAtMillis: Int64): HttpExecutionResponse {
+        if (ckbDeadlineExceeded(deadlineAtMillis)) {
+            let response = HttpExecutionResponse()
+            response.status = "timeout"
+            response.transportErrorClass = "timeout"
+            response.transportDiagnostic = "qdrant_deadline_exceeded"
+            return response
+        }
+        let request = HttpExecutionRequest()
+        request.method = method
+        request.url = url
+        request.accept = "application/json"
+        let remaining = ckbRemainingMillis(deadlineAtMillis)
+        request.timeoutMillis = if (remaining > 0 && remaining < this.config.timeoutMillis) { remaining } else { this.config.timeoutMillis }
         request.retryCount = this.config.retryCount
         if (body != "") {
             request.contentType = "application/json"
@@ -1235,6 +1409,46 @@ public class QdrantVectorStore <: VectorStore {
             entry.records.add(record)
         }
     }
+
+    private func scrollBackup(collection: String): VectorBackup {
+        let backup = VectorBackup()
+        backup.collection = collection
+        var offsetJson = ""
+        var pages: Int64 = 0
+        while (pages < 1000) {
+            pages += 1
+            let response = this.execute("POST", "${this.collectionUrl(collection)}/points/scroll", qdrantScrollBody(offsetJson))
+            if (!qdrantHttpOk(response)) {
+                backup.valid = false
+                backup.diagnostic = this.statusFromHttpResponse(collection, response, "scroll").degradedReason
+                return backup
+            }
+            if (!qdrantBodyLooksOk(response.body)) {
+                backup.valid = false
+                backup.diagnostic = "malformed_json"
+                return backup
+            }
+            let page = qdrantParseScrollPage(response.body)
+            if (!page.ok) {
+                backup.valid = false
+                backup.diagnostic = page.diagnostic
+                return backup
+            }
+            for (record in page.records) {
+                backup.records.add(record)
+            }
+            if (page.nextOffsetJson == "") {
+                backup.valid = true
+                backup.diagnostic = "ok"
+                this.remember(collection, backup.records)
+                return backup
+            }
+            offsetJson = page.nextOffsetJson
+        }
+        backup.valid = false
+        backup.diagnostic = "qdrant_scroll_page_limit_exceeded"
+        backup
+    }
 }
 
 private func qdrantCreateCollectionBody(dimensions: Int64, distance: String): String {
@@ -1258,6 +1472,14 @@ private func qdrantQueryBody(queryVector: ArrayList<Float64>, filters: VectorSea
     let filter = qdrantFilterJson(filters)
     if (filter != "") {
         out += ",\"filter\":${filter}"
+    }
+    out + "}"
+}
+
+private func qdrantScrollBody(offsetJson: String): String {
+    var out = "{\"limit\":256,\"with_payload\":true,\"with_vector\":true"
+    if (offsetJson.trimAscii() != "") {
+        out += ",\"offset\":${offsetJson.trimAscii()}"
     }
     out + "}"
 }
@@ -1406,6 +1628,81 @@ private func qdrantParseSearchResponse(body: String, filters: VectorSearchFilter
         insertVectorResult(out, record, score, topK)
     }
     out
+}
+
+private func qdrantParseScrollPage(body: String): QdrantScrollPage {
+    let page = QdrantScrollPage()
+    let result = qdrantJsonObjectField(body, "result")
+    if (result == "") {
+        page.diagnostic = "malformed_json"
+        return page
+    }
+    let points = qdrantJsonArrayField(result, "points")
+    if (points == "") {
+        page.diagnostic = "malformed_json"
+        return page
+    }
+    for (object in qdrantJsonObjectChunks(points)) {
+        let payload = qdrantJsonObjectField(object, "payload")
+        let vector = qdrantParseVectorArray(qdrantJsonArrayField(object, "vector"))
+        let record = qdrantRecordFromPayload(payload)
+        if (record.id == "" || record.title == "" || record.chunk == "" || record.citation == "" || vector.size == 0) {
+            continue
+        }
+        record.vector = vector
+        page.records.add(record)
+    }
+    page.nextOffsetJson = qdrantNextOffsetJson(result)
+    page.ok = true
+    page.diagnostic = "ok"
+    page
+}
+
+private func qdrantParseVectorArray(raw: String): ArrayList<Float64> {
+    let out = ArrayList<Float64>()
+    let clean = raw.trimAscii()
+    if (clean.size < 2 || clean[0] != UInt8(91) || clean[clean.size - 1] != UInt8(93)) {
+        return out
+    }
+    let inner = clean[1..clean.size - 1].trimAscii()
+    if (inner == "") {
+        return out
+    }
+    for (part in inner.split(",")) {
+        let token = part.trimAscii()
+        if (token == "") {
+            return ArrayList<Float64>()
+        }
+        try {
+            out.add(Float64.parse(token))
+        } catch (_: Exception) {
+            return ArrayList<Float64>()
+        }
+    }
+    out
+}
+
+private func qdrantNextOffsetJson(result: String): String {
+    let start = qdrantJsonValueStart(result, "next_page_offset")
+    if (start < 0 || start >= result.size) {
+        return ""
+    }
+    if (result[start] == UInt8(34)) {
+        let scan = qdrantReadJsonStringAt(result, start)
+        if (!scan.ok || scan.value == "") {
+            return ""
+        }
+        return "\"${qdrantJsonEscape(scan.value)}\""
+    }
+    var end = start
+    while (end < result.size && result[end] != UInt8(44) && result[end] != UInt8(125) && result[end] != UInt8(93) && result[end] != UInt8(32) && result[end] != UInt8(10) && result[end] != UInt8(13) && result[end] != UInt8(9)) {
+        end += 1
+    }
+    let raw = result[start..end].trimAscii()
+    if (raw == "" || raw == "null") {
+        return ""
+    }
+    raw
 }
 
 private func qdrantRecordFromPayload(payload: String): VectorRecord {
@@ -3194,7 +3491,7 @@ public class KnowledgeBase {
         this.lastVectorBuildProgress = progress
         progressSink.onVectorBuildStarted(progress)
         let empty = ArrayList<VectorRecord>()
-        var vectorStatus = this.vectorStore.recreate(effectiveVectorCollection, empty)
+        var vectorStatus = this.vectorStore.recreateWithDeadline(effectiveVectorCollection, empty, deadlineAtMillis)
         if (vectorStatus.state != EmbeddingProviderState.READY) {
             progress.state = vectorStatus.state
             progress.diagnostic = vectorStatus.degradedReason
@@ -3226,10 +3523,43 @@ public class KnowledgeBase {
             progressSink.onVectorBuildFinished(progress)
             return result
         }
+        let reusable = this.reusableVectorRecordsForBuild(records, this.vectorCollection, deadlineAtMillis)
         var batchIndex: Int64 = 0
+        if (reusable.size > 0) {
+            let reuseStatus = this.upsertVectorRecordsInBatches(effectiveVectorCollection, reusable, progress, progressSink, deadlineAtMillis, batchIndex)
+            if (reuseStatus.state != EmbeddingProviderState.READY) {
+                progress.state = reuseStatus.state
+                progress.diagnostic = reuseStatus.degradedReason
+                progress.lastDiagnostic = reuseStatus.degradedReason
+                progress.updatedAtMillis = ckbCoreNowMillis()
+                progress.elapsedMillis = progress.updatedAtMillis - progress.startedAtMillis
+                if (applyToStorage) {
+                    this.applyVectorStatus(reuseStatus)
+                }
+                result.ok = false
+                result.status = reuseStatus.state
+                result.vectorCount = progress.completed
+                result.diagnostic = reuseStatus.degradedReason
+                result.elapsedMillis = progress.elapsedMillis
+                progressSink.onVectorBuildFinished(progress)
+                return result
+            }
+            for (record in reusable) {
+                result.vectorRecords.add(record)
+            }
+            batchIndex += (reusable.size + 63) / 64
+        }
         let rawTexts = ArrayList<String>()
-        for (record in records) {
+        let pendingRecords = ArrayList<NormalizedRecord>()
+        let pendingOrdinals = ArrayList<Int64>()
+        for (i in 0..records.size) {
+            let record = records[i]
+            if (this.vectorRecordListContainsPoint(reusable, ckbVectorPointId(record, i))) {
+                continue
+            }
             rawTexts.add(this.vectorText(record))
+            pendingRecords.add(record)
+            pendingOrdinals.add(i)
         }
         let textBatches = CkbEmbeddingTextBudgeter(ckbEmbeddingTextBudgetFromStatus(embeddingStatus)).batches(rawTexts)
         for (textBatch in textBatches) {
@@ -3263,7 +3593,7 @@ public class KnowledgeBase {
             progress.updatedAtMillis = ckbCoreNowMillis()
             progress.elapsedMillis = progress.updatedAtMillis - progress.startedAtMillis
             progressSink.onVectorBatchStarted(progress)
-            let batch = this.embeddingProvider.embed(texts, this.activeEmbeddingModel(), this.activeEmbeddingDimensions())
+            let batch = this.embeddingProvider.embedWithDeadline(texts, this.activeEmbeddingModel(), this.activeEmbeddingDimensions(), deadlineAtMillis)
             progress.failed += batch.failed
             result.truncatedCount += textBatch.truncatedCount + batch.truncatedCount
             if (batch.status.state != EmbeddingProviderState.READY || batch.vectors.size != texts.size) {
@@ -3293,10 +3623,11 @@ public class KnowledgeBase {
             }
             let vectorRecords = ArrayList<VectorRecord>()
             for (i in 0..texts.size) {
-                let source = records[textBatch.startIndex + i]
-                vectorRecords.add(this.vectorRecordFrom(source, batch.vectors[i], ckbVectorPointId(source, textBatch.startIndex + i)))
+                let source = pendingRecords[textBatch.startIndex + i]
+                let ordinal = pendingOrdinals[textBatch.startIndex + i]
+                vectorRecords.add(this.vectorRecordFrom(source, batch.vectors[i], ckbVectorPointId(source, ordinal)))
             }
-            vectorStatus = this.vectorStore.upsertBatch(effectiveVectorCollection, vectorRecords)
+            vectorStatus = this.vectorStore.upsertBatchWithDeadline(effectiveVectorCollection, vectorRecords, deadlineAtMillis)
             if (vectorStatus.state != EmbeddingProviderState.READY) {
                 progress.failed = texts.size
                 progress.state = vectorStatus.state
@@ -3320,6 +3651,7 @@ public class KnowledgeBase {
             for (record in vectorRecords) {
                 result.vectorRecords.add(record)
             }
+            progress.embedded += texts.size
             progress.completed += texts.size
             progress.updatedAtMillis = ckbCoreNowMillis()
             progress.elapsedMillis = progress.updatedAtMillis - progress.startedAtMillis
@@ -3355,6 +3687,92 @@ public class KnowledgeBase {
         vectorRecord.chunk = source.chunk
         vectorRecord.citation = source.citation
         vectorRecord
+    }
+
+    private func reusableVectorRecordsForBuild(records: ArrayList<NormalizedRecord>, sourceCollection: String, deadlineAtMillis: Int64): ArrayList<VectorRecord> {
+        let out = ArrayList<VectorRecord>()
+        if (records.size == 0 || sourceCollection.trimAscii() == "" || ckbDeadlineExceeded(deadlineAtMillis)) {
+            return out
+        }
+        let backup = this.vectorStore.backup(sourceCollection)
+        if (!backup.valid || backup.records.size == 0) {
+            return out
+        }
+        let dimension = this.activeEmbeddingDimensions()
+        if (dimension <= 0 || this.vectorBackupDimension(backup.records) != dimension) {
+            return out
+        }
+        for (i in 0..records.size) {
+            if (ckbDeadlineExceeded(deadlineAtMillis)) {
+                return out
+            }
+            let source = records[i]
+            let pointId = ckbVectorPointId(source, i)
+            let reusable = this.reusableVectorRecordForPoint(backup.records, source, pointId, dimension)
+            if (reusable.pointId != "") {
+                out.add(reusable)
+            }
+        }
+        out
+    }
+
+    private func reusableVectorRecordForPoint(records: ArrayList<VectorRecord>, source: NormalizedRecord, pointId: String, dimension: Int64): VectorRecord {
+        for (record in records) {
+            if (vectorPointIdentity(record) == pointId && record.vector.size == dimension) {
+                return this.vectorRecordFrom(source, record.vector, pointId)
+            }
+        }
+        VectorRecord()
+    }
+
+    private func vectorRecordListContainsPoint(records: ArrayList<VectorRecord>, pointId: String): Bool {
+        for (record in records) {
+            if (vectorPointIdentity(record) == pointId) {
+                return true
+            }
+        }
+        false
+    }
+
+    private func upsertVectorRecordsInBatches(collection: String, records: ArrayList<VectorRecord>, progress: VectorBuildProgress, progressSink: VectorBuildProgressSink, deadlineAtMillis: Int64, startBatchIndex: Int64): VectorStoreStatus {
+        var last = VectorStoreStatus()
+        last.collection = collection
+        last.state = EmbeddingProviderState.READY
+        last.count = progress.completed
+        var start: Int64 = 0
+        var batchIndex = startBatchIndex
+        while (start < records.size) {
+            if (ckbDeadlineExceeded(deadlineAtMillis)) {
+                last.state = EmbeddingProviderState.DEGRADED
+                last.count = progress.completed
+                last.degradedReason = "vector_build_deadline_exceeded:${collection}:${progress.completed}:${progress.total}"
+                return last
+            }
+            let end = if (start + 64 < records.size) { start + 64 } else { records.size }
+            let batch = ArrayList<VectorRecord>()
+            for (i in start..end) {
+                batch.add(records[i])
+            }
+            progress.currentBatch = batchIndex
+            progress.currentBatchStart = start
+            progress.currentBatchEnd = end
+            progress.updatedAtMillis = ckbCoreNowMillis()
+            progress.elapsedMillis = progress.updatedAtMillis - progress.startedAtMillis
+            progressSink.onVectorBatchStarted(progress)
+            last = this.vectorStore.upsertBatchWithDeadline(collection, batch, deadlineAtMillis)
+            if (last.state != EmbeddingProviderState.READY) {
+                return last
+            }
+            progress.completed += batch.size
+            progress.reused += batch.size
+            progress.updatedAtMillis = ckbCoreNowMillis()
+            progress.elapsedMillis = progress.updatedAtMillis - progress.startedAtMillis
+            progressSink.onVectorBatchFinished(progress)
+            batchIndex += 1
+            start = end
+        }
+        last.count = progress.completed
+        last
     }
 
     private func vectorBackupDimension(records: ArrayList<VectorRecord>): Int64 {

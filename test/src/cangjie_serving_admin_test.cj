@@ -251,6 +251,10 @@ private class CangjieAdminEmbeddingProvider <: EmbeddingProvider {
         batch
     }
 
+    public func embedWithDeadline(texts: ArrayList<String>, model: String, dimensions: Int64, deadlineAtMillis: Int64): EmbeddingBatch {
+        this.embed(texts, model, dimensions)
+    }
+
     public func status(): EmbeddingStatus {
         let status = EmbeddingStatus()
         status.provider = "ollama"
@@ -292,6 +296,10 @@ private class CangjieAdminTrackingVectorStore <: VectorStore {
             this.stagingCount += vectors.size
         }
         this.status(collection)
+    }
+
+    public func upsertBatchWithDeadline(collection: String, vectors: ArrayList<VectorRecord>, deadlineAtMillis: Int64): VectorStoreStatus {
+        this.upsertBatch(collection, vectors)
     }
 
     public func search(collection: String, queryVector: ArrayList<Float64>, filters: VectorSearchFilters, topK: Int64): ArrayList<VectorSearchResult> {
@@ -339,6 +347,10 @@ private class CangjieAdminTrackingVectorStore <: VectorStore {
             return this.upsertBatch(collection, vectors)
         }
         this.status(collection)
+    }
+
+    public func recreateWithDeadline(collection: String, vectors: ArrayList<VectorRecord>, deadlineAtMillis: Int64): VectorStoreStatus {
+        this.recreate(collection, vectors)
     }
 
     public func deleteCollection(collection: String): VectorStoreStatus {

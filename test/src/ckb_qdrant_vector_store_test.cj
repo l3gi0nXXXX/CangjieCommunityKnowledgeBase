@@ -385,6 +385,26 @@ public class CkbQdrantVectorStoreTest {
     }
 
     @TestCase
+    public func qdrantBackupScrollsRemoteCollectionWhenCacheIsEmpty(): Unit {
+        let executor = QdrantFakeExecutor()
+        executor.add(200, "{\"status\":\"ok\",\"result\":{\"points\":[{\"id\":1,\"vector\":[0.1,0.2,0.3],\"payload\":{\"ckb_id\":\"scroll-id\",\"pointId\":\"scroll-id#0#hash\",\"title\":\"滚动标题\",\"chunk\":\"滚动 chunk\",\"citation\":\"cite://scroll\",\"sourceId\":\"src-scroll\",\"sourceType\":\"repo\",\"repo\":\"cangjie\",\"path\":\"src/main.cj\",\"symbol\":\"main\",\"trustLevel\":\"official\",\"reviewState\":\"trusted\",\"knowledgeVersion\":\"active\"}}],\"next_page_offset\":null}}", "http_200")
+        let store = QdrantVectorStore("http://qdrant.test", 3, "Cosine", executor: executor)
+
+        let backup = store.backup("ckb_active")
+
+        @Expect(backup.valid, true)
+        @Expect(backup.records.size, 1)
+        @Expect(backup.records[0].id, "scroll-id")
+        @Expect(backup.records[0].pointId, "scroll-id#0#hash")
+        @Expect(backup.records[0].title, "滚动标题")
+        @Expect(backup.records[0].vector.size, 3)
+        @Expect(executor.calls, 1)
+        @Expect(executor.methods[0], "POST")
+        @Expect(executor.urls[0], "http://qdrant.test/collections/ckb_active/points/scroll")
+        @Expect(executor.bodies[0].contains("\"with_vector\":true"), true)
+    }
+
+    @TestCase
     public func qdrantPointIdHashDoesNotOverflowForBaselineAndLongUnicodeIds(): Unit {
         let baseline = qdrantStablePointId("source-http-client")
         let longUnicode = qdrantStablePointId("Cangjie/community:docs/语言规范/很长很长很长很长的路径/README.md#source_analysis")

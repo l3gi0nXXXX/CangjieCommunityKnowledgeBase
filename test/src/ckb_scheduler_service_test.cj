@@ -889,6 +889,10 @@ private class F7StatusVectorStore <: VectorStore {
         this.status(collection)
     }
 
+    public func upsertBatchWithDeadline(collection: String, vectors: ArrayList<VectorRecord>, deadlineAtMillis: Int64): VectorStoreStatus {
+        this.status(collection)
+    }
+
     public func search(collection: String, queryVector: ArrayList<Float64>, filters: VectorSearchFilters, topK: Int64): ArrayList<VectorSearchResult> {
         ArrayList<VectorSearchResult>()
     }
@@ -920,6 +924,10 @@ private class F7StatusVectorStore <: VectorStore {
     }
 
     public func recreate(collection: String, vectors: ArrayList<VectorRecord>): VectorStoreStatus {
+        this.status(collection)
+    }
+
+    public func recreateWithDeadline(collection: String, vectors: ArrayList<VectorRecord>, deadlineAtMillis: Int64): VectorStoreStatus {
         this.status(collection)
     }
 
