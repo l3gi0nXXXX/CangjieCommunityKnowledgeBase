@@ -2,6 +2,7 @@ package cangjie_community_knowledge_base_test
 
 import std.collection.ArrayList
 import std.fs.{Directory, File, Path, exists}
+import std.process.*
 import std.unittest.*
 import std.unittest.testmacro.*
 
@@ -697,6 +698,247 @@ public class CkbSchedulerServiceF5Test {
     }
 
     @TestCase
+    public func s1Ut001Pos001PaginatedTreeFindsSecondPageCandidateAndManifest(): Unit {
+        // UT-S1-001, POS-S1-001: page 1 directories, page 2 README candidate via fake runner.
+        let root = "target/s1-ut001-pos001-paginated-tree"
+        s1s2EnsureEmptyDir(root)
+        let config = CkbRuntimeConfig()
+        config.networkEnabled = true
+        let store = FileKnowledgeStore("${root}/store")
+        store.saveCangjieVersionManifest(f7OfficialManifestNoEval())
+        let runner = S1S2PaginatedGitCodeRunner()
+        let service = CkbCommandLoopService(config, store, sourceRunner: runner)
+        _ = service.start()
+        let tasks = ArrayList<String>()
+        tasks.add("cangjie_version_branch_refresh")
+
+        let result = service.runSchedulerTasks(tasks, true)
+
+        @Expect(result.ran, 1)
+        @Expect(result.succeeded, 1)
+        @Expect(result.failed, 0)
+        @Expect(store.has("metadata/cangjie-version-manifest.ckb"), true)
+        @Expect(s1s2RunnerSawTreePage(runner, 2), true)
+        @Expect(f7SchedulerDiagnosticsContain(result, "pagesScanned=2"), true)
+        @Expect(f7SchedulerDiagnosticsContain(result, "source_tree_empty"), false)
+    }
+
+    @TestCase
+    public func s1Bnd001AllDirectoryPagesReportEmptyAfterPages(): Unit {
+        // BND-S1-001: page 1..N only directories, then empty page; task is not reported successful.
+        let root = "target/s1-bnd001-directory-pages"
+        s1s2EnsureEmptyDir(root)
+        let config = CkbRuntimeConfig()
+        config.networkEnabled = true
+        let store = FileKnowledgeStore("${root}/store")
+        store.saveCangjieVersionManifest(f7OfficialManifestNoEval())
+        let runner = S1S2PaginatedGitCodeRunner()
+        runner.directoriesOnly = true
+        let service = CkbCommandLoopService(config, store, sourceRunner: runner)
+        _ = service.start()
+        let tasks = ArrayList<String>()
+        tasks.add("cangjie_version_branch_refresh")
+
+        let result = service.runSchedulerTasks(tasks, true)
+
+        @Expect(result.ran, 1)
+        @Expect(result.failed, 1)
+        @Expect(result.details.contains("scheduled_readiness_failed"), true)
+        @Expect(f7SchedulerDiagnosticsContain(result, "source_tree_empty_after_pages"), true)
+        @Expect(f7SchedulerDiagnosticsContain(result, "pagesScanned=3"), true)
+        @Expect(f7SchedulerDiagnosticsContain(result, "directories="), true)
+        @Expect(f7SchedulerDiagnosticsContain(result, "candidates=0"), true)
+    }
+
+    @TestCase
+    public func s1Neg001SecondTreePage500BlocksRequiredSource(): Unit {
+        // NEG-S1-001: page 2 HTTP 500 is a failed request and required source does not silently succeed.
+        let root = "target/s1-neg001-tree-page2-500"
+        s1s2EnsureEmptyDir(root)
+        let config = CkbRuntimeConfig()
+        config.networkEnabled = true
+        let store = FileKnowledgeStore("${root}/store")
+        store.saveCangjieVersionManifest(f7OfficialManifestNoEval())
+        let runner = S1S2PaginatedGitCodeRunner()
+        runner.failTreePage2 = true
+        let service = CkbCommandLoopService(config, store, sourceRunner: runner)
+        _ = service.start()
+        let tasks = ArrayList<String>()
+        tasks.add("cangjie_release_full_sync")
+
+        let result = service.runSchedulerTasks(tasks, true)
+
+        @Expect(result.ran, 1)
+        @Expect(result.failed, 1)
+        @Expect(result.details.contains("scheduled_readiness_failed"), true)
+        @Expect(f7SchedulerDiagnosticsContain(result, "gitcode_tree_page_failed"), true)
+        @Expect(f7SchedulerDiagnosticsContain(result, "status=server_error"), true)
+        @Expect(f7SchedulerDiagnosticsContain(result, "version_manifest_saved:"), false)
+    }
+
+    @TestCase
+    public func s2Ut001ContentSampleFailureStillSavesManifest(): Unit {
+        // UT-S2-001: ref/tree metadata resolved, content sample fails, manifest exists without offline baseline.
+        let root = "target/s2-ut001-content-fail-manifest"
+        s1s2EnsureEmptyDir(root)
+        let config = CkbRuntimeConfig()
+        config.networkEnabled = true
+        let store = FileKnowledgeStore("${root}/store")
+        store.saveCangjieVersionManifest(f7OfficialManifestNoEval())
+        let runner = S1S2PaginatedGitCodeRunner()
+        runner.failContentSamples = true
+        let service = CkbCommandLoopService(config, store, sourceRunner: runner)
+        _ = service.start()
+        let tasks = ArrayList<String>()
+        tasks.add("cangjie_version_branch_refresh")
+
+        let result = service.runSchedulerTasks(tasks, true)
+        let manifest = store.loadCangjieVersionManifest()
+
+        @Expect(result.ran, 1)
+        @Expect(result.failed, 1)
+        @Expect(store.has("metadata/cangjie-version-manifest.ckb"), true)
+        @Expect(cangjieManifestHasOfflineBaseline(manifest), false)
+        @Expect(f7SchedulerDiagnosticsContain(result, "version_manifest_saved:"), true)
+        @Expect(f7SchedulerDiagnosticsContain(result, "manifest_source_content_sample_degraded"), true)
+        @Expect(f7SchedulerDiagnosticsContain(result, "content_blocking_source_failed"), true)
+    }
+
+    @TestCase
+    public func s2Ut002SourceEventResolvedCheckpointDiffersFromIngested(): Unit {
+        // UT-S2-002: resolved source-event checkpoint is saved even when content ingestion is not complete.
+        let root = "target/s2-ut002-source-event-checkpoint"
+        s1s2EnsureEmptyDir(root)
+        let config = CkbRuntimeConfig()
+        config.networkEnabled = true
+        let store = FileKnowledgeStore("${root}/store")
+        store.saveCangjieVersionManifest(f7OfficialManifestNoEval())
+        let runner = S1S2PaginatedGitCodeRunner()
+        runner.failContentSamples = true
+        let service = CkbCommandLoopService(config, store, sourceRunner: runner)
+        _ = service.start()
+        let tasks = ArrayList<String>()
+        tasks.add("cangjie_source_event_sync")
+
+        let result = service.runSchedulerTasks(tasks, true)
+        let checkpoint = String.fromUtf8(File.readFrom(Path(root).join("store/metadata/repository-event-latest.ckb")))
+
+        @Expect(result.ran, 1)
+        @Expect(result.failed, 1)
+        @Expect(store.has("metadata/repository-event-latest.ckb"), true)
+        @Expect(checkpoint.contains("resolvedWatermark="), true)
+        @Expect(checkpoint.contains("ingestedWatermark=not_ingested"), true)
+        @Expect(f7SchedulerDiagnosticsContain(result, "repository_event_checkpoint_degraded:"), true)
+    }
+
+    @TestCase
+    public func s2Bnd001RefFailureLeavesFreshnessNotReady(): Unit {
+        // BND-S2-001: one source ref cannot resolve; no ready manifest is written and freshness stays degraded.
+        let root = "target/s2-bnd001-ref-failure-freshness"
+        s1s2EnsureEmptyDir(root)
+        let config = CkbRuntimeConfig()
+        config.networkEnabled = true
+        let store = FileKnowledgeStore("${root}/store")
+        store.saveCangjieVersionManifest(defaultCangjieVersionManifest())
+        let runner = S1S2PaginatedGitCodeRunner()
+        runner.failRefRepo = "Cangjie/cangjie_stdx"
+        let service = CkbCommandLoopService(config, store, sourceRunner: runner)
+        _ = service.start()
+        let refreshTasks = ArrayList<String>()
+        refreshTasks.add("cangjie_version_branch_refresh")
+        let freshnessTasks = ArrayList<String>()
+        freshnessTasks.add("cangjie_freshness_daily")
+
+        let refresh = service.runSchedulerTasks(refreshTasks, true)
+        let freshness = service.runSchedulerTasks(freshnessTasks, true)
+
+        @Expect(refresh.failed, 1)
+        @Expect(f7SchedulerDiagnosticsContain(refresh, "manifest_blocking_source_failed:stdx"), true)
+        @Expect(f7SchedulerDiagnosticsContain(refresh, "version_manifest_saved:"), false)
+        @Expect(freshness.failed, 1)
+        @Expect(f7SchedulerDiagnosticsContain(freshness, "manifest_offline_baseline_for_freshness"), true)
+        @Expect(f7SchedulerDiagnosticsContain(freshness, "manifest_ready_for_freshness"), false)
+    }
+
+    @TestCase
+    public func s2Pos001FreshnessRunsAfterResolvedVersionRefresh(): Unit {
+        // POS-S2-001: a real non-offline manifest from branch refresh lets freshness run without offline-baseline degraded.
+        let root = "target/s2-pos001-refresh-then-freshness"
+        s1s2EnsureEmptyDir(root)
+        let config = CkbRuntimeConfig()
+        config.networkEnabled = true
+        let store = FileKnowledgeStore("${root}/store")
+        store.saveCangjieVersionManifest(f7OfficialManifestNoEval())
+        let runner = S1S2PaginatedGitCodeRunner()
+        let service = CkbCommandLoopService(config, store, sourceRunner: runner)
+        _ = service.start()
+        let refreshTasks = ArrayList<String>()
+        refreshTasks.add("cangjie_version_branch_refresh")
+        let freshnessTasks = ArrayList<String>()
+        freshnessTasks.add("cangjie_freshness_daily")
+
+        let refresh = service.runSchedulerTasks(refreshTasks, true)
+        let freshness = service.runSchedulerTasks(freshnessTasks, true)
+
+        @Expect(refresh.succeeded, 1)
+        @Expect(freshness.ran, 1)
+        @Expect(freshness.failed, 0)
+        @Expect(f7SchedulerDiagnosticsContain(freshness, "manifest_ready_for_freshness"), true)
+        @Expect(f7SchedulerDiagnosticsContain(freshness, "version_manifest_contains_offline_baseline"), false)
+    }
+
+    @TestCase
+    public func s2Neg001InvalidUtf8ManifestFreshnessDegradesWithoutThrowing(): Unit {
+        // NEG-S2-001: invalid UTF-8 manifest produces an explicit degraded diagnostic instead of an exception.
+        let root = "target/s2-neg001-invalid-utf8-manifest"
+        s1s2EnsureEmptyDir(root)
+        let config = CkbRuntimeConfig()
+        config.networkEnabled = true
+        let store = FileKnowledgeStore("${root}/store")
+        store.ensureLayout()
+        File.writeTo(Path(root).join("store/metadata/cangjie-version-manifest.ckb"), [UInt8(255), UInt8(254), UInt8(253)])
+        let service = CkbCommandLoopService(config, store, sourceRunner: S1S2PaginatedGitCodeRunner())
+        _ = service.start()
+        let tasks = ArrayList<String>()
+        tasks.add("cangjie_freshness_daily")
+
+        let result = service.runSchedulerTasks(tasks, true)
+
+        @Expect(result.ran, 1)
+        @Expect(result.failed, 1)
+        @Expect(result.details.contains("freshness_probe_degraded"), true)
+        @Expect(f7SchedulerDiagnosticsContain(result, "version_manifest_invalid_encoding"), true)
+    }
+
+    @TestCase
+    public func s6E2E004LargeRepoFixtureNoSourceTreeEmptyAcrossRoutineTasks(): Unit {
+        // E2E-S6-004: page 1 all directories for version/release/source-event, artifacts exist.
+        let root = "target/s6-e2e004-large-repo-page1-dirs"
+        s1s2EnsureEmptyDir(root)
+        let config = CkbRuntimeConfig()
+        config.networkEnabled = true
+        let store = FileKnowledgeStore("${root}/store")
+        store.saveCangjieVersionManifest(f7OfficialManifestNoEval())
+        let runner = S1S2PaginatedGitCodeRunner()
+        let service = CkbCommandLoopService(config, store, sourceRunner: runner)
+        _ = service.start()
+        let tasks = ArrayList<String>()
+        tasks.add("cangjie_version_branch_refresh")
+        tasks.add("cangjie_release_full_sync")
+        tasks.add("cangjie_source_event_sync")
+
+        let result = service.runSchedulerTasks(tasks, true)
+
+        @Expect(result.ran, 3)
+        @Expect(result.failed, 0)
+        @Expect(result.succeeded, 3)
+        @Expect(store.has("metadata/cangjie-version-manifest.ckb"), true)
+        @Expect(store.has("metadata/repository-event-latest.ckb"), true)
+        @Expect(s1s2RunnerSawTreePage(runner, 2), true)
+        @Expect(f7SchedulerDiagnosticsContain(result, "source_tree_empty"), false)
+    }
+
+    @TestCase
     public func f7Pos01BenchmarkGapSchedulerReadsGateJsonlAndPromotesCandidate(): Unit {
         let root = "target/f7-scheduler-gap-curation"
         if (!exists(Path(root))) {
@@ -848,6 +1090,22 @@ private func f7SchedulerDiagnosticsContain(result: SchedulerExecutorResult, need
         }
     }
     false
+}
+
+private func s1s2RunnerSawTreePage(runner: S1S2PaginatedGitCodeRunner, page: Int64): Bool {
+    for (call in runner.calls) {
+        if (call.kind == SourceKinds.GITCODE_TREE && call.page == page) {
+            return true
+        }
+    }
+    false
+}
+
+private func s1s2EnsureEmptyDir(path: String): Unit {
+    if (exists(Path(path))) {
+        _ = launch("/bin/rm", ["-rf", path]).wait()
+    }
+    Directory.create(Path(path), recursive: true)
 }
 
 private func f7SummaryListContains(values: ArrayList<String>, needle: String): Bool {
@@ -1050,6 +1308,124 @@ private class F5DegradedFetchRunner <: SourceFetchRunner {
             result.transportDiagnostic = "dns lookup failed"
         }
         result
+    }
+}
+
+private class S1S2PaginatedGitCodeRunner <: SourceFetchRunner {
+    public var calls: ArrayList<SourceFetchRequest> = ArrayList<SourceFetchRequest>()
+    public var directoriesOnly: Bool = false
+    public var failTreePage2: Bool = false
+    public var failContentSamples: Bool = false
+    public var failRefRepo: String = ""
+
+    init() {}
+
+    public func fetch(request: SourceFetchRequest): SourceFetchResult {
+        this.calls.add(request)
+        let result = SourceFetchResult()
+        result.sourceUrl = request.url
+        result.repo = request.repo
+        result.ref = request.ref
+        result.path = request.path
+        result.normalizedType = request.kind
+        result.attempts = 1
+        if (request.kind == SourceKinds.GITCODE_BRANCH && this.failRefRepo == request.repo) {
+            result.ok = false
+            result.status = "gitcode_ref_fixture_failed"
+            result.statusCode = 500
+            result.body = result.status
+        } else if (request.kind == SourceKinds.GITCODE_BRANCH && request.purpose == "branch_ref") {
+            result.ok = true
+            result.status = "ok"
+            result.statusCode = 200
+            result.contentType = "application/json"
+            result.commit = f7GenericResolvedCommit()
+            result.body = "{\"name\":\"${request.ref}\",\"commit\":{\"id\":\"${f7GenericResolvedCommit()}\",\"sha\":\"${f7GenericResolvedCommit()}\"}}"
+        } else if (request.kind == SourceKinds.GITCODE_BRANCH) {
+            result.ok = true
+            result.status = "ok"
+            result.statusCode = 200
+            result.contentType = "application/json"
+            result.commit = f7GenericResolvedCommit()
+            result.body = f7GenericBranchListBody()
+        } else if (request.kind == SourceKinds.GITCODE_TREE && this.failTreePage2 && request.page == 2) {
+            result.ok = false
+            result.status = "server_error"
+            result.statusCode = 500
+            result.body = "tree page 2 failed"
+        } else if (request.kind == SourceKinds.GITCODE_TREE) {
+            result.ok = true
+            result.status = "ok"
+            result.statusCode = 200
+            result.contentType = "application/json"
+            result.commit = f7GenericResolvedCommit()
+            result.body = this.treeBody(request)
+        } else if (request.kind == SourceKinds.GITCODE_SOURCE && this.failContentSamples) {
+            result.ok = false
+            result.status = "content_sample_unavailable"
+            result.statusCode = 503
+            result.contentType = "text/plain"
+            result.body = result.status
+        } else if (request.kind == SourceKinds.GITCODE_SOURCE && request.path.endsWith(".cj")) {
+            result.ok = true
+            result.status = "ok"
+            result.statusCode = 200
+            result.commit = f7GenericResolvedCommit()
+            result.contentType = "text/plain"
+            result.body = "package scheduled\npublic func scheduled_${stableSummaryHash(request.path)}(): Unit {}\n"
+        } else if (request.kind == SourceKinds.GITCODE_SOURCE) {
+            result.ok = true
+            result.status = "ok"
+            result.statusCode = 200
+            result.commit = f7GenericResolvedCommit()
+            result.contentType = "text/markdown"
+            result.body = "# Scheduled source\nArrayList.add HashMap String.contains cjpm test Cangjie docs tutorial\n"
+        } else if (request.kind == SourceKinds.CANGJIE_DOCS) {
+            result.ok = true
+            result.status = "ok"
+            result.statusCode = 200
+            result.commit = f7GenericResolvedCommit()
+            result.contentType = "text/html"
+            result.body = "<html><body>Cangjie docs ArrayList HashMap</body></html>"
+        } else {
+            result.ok = true
+            result.status = "ok"
+            result.statusCode = 200
+            result.commit = f7GenericResolvedCommit()
+            result.contentType = "text/plain"
+            result.body = "scheduled ${request.kind} ${request.repo}"
+        }
+        result.bytes = result.body.size
+        result.bodyHash = stableSummaryHash(result.body)
+        result
+    }
+
+    private func treeBody(request: SourceFetchRequest): String {
+        if (this.directoriesOnly) {
+            if (request.page <= 2) {
+                return "{\"tree\":[{\"path\":\"runtime\",\"type\":\"tree\"},{\"path\":\"docs\",\"type\":\"tree\"},{\"path\":\"tools\",\"type\":\"tree\"}],\"sha\":\"${f7GenericResolvedCommit()}\"}"
+            }
+            return "{\"tree\":[],\"sha\":\"${f7GenericResolvedCommit()}\"}"
+        }
+        if (request.page == 1) {
+            return "{\"tree\":[{\"path\":\"runtime\",\"type\":\"tree\"},{\"path\":\"docs\",\"type\":\"tree\"},{\"path\":\"tools\",\"type\":\"tree\"}],\"sha\":\"${f7GenericResolvedCommit()}\"}"
+        }
+        if (request.page == 2) {
+            if (request.repo == "Cangjie/cangjie_docs") {
+                return "{\"tree\":[{\"path\":\"docs/guide.md\",\"type\":\"blob\"}],\"sha\":\"${f7GenericResolvedCommit()}\"}"
+            }
+            if (request.repo == "Cangjie/cangjie_runtime") {
+                return "{\"tree\":[{\"path\":\"README.md\",\"type\":\"blob\"},{\"path\":\"cjpm.toml\",\"type\":\"blob\"}],\"sha\":\"${f7GenericResolvedCommit()}\"}"
+            }
+            if (request.repo == "Cangjie/cangjie_stdx") {
+                return "{\"tree\":[{\"path\":\"doc/http.md\",\"type\":\"blob\"},{\"path\":\"src/stdx/http/client.cj\",\"type\":\"blob\"}],\"sha\":\"${f7GenericResolvedCommit()}\"}"
+            }
+            if (request.repo == "Cangjie/cangjie_tools") {
+                return "{\"tree\":[{\"path\":\"tools/README.md\",\"type\":\"blob\"},{\"path\":\"tools/runner.cj\",\"type\":\"blob\"}],\"sha\":\"${f7GenericResolvedCommit()}\"}"
+            }
+            return "{\"tree\":[{\"path\":\"README.md\",\"type\":\"blob\"}],\"sha\":\"${f7GenericResolvedCommit()}\"}"
+        }
+        "{\"tree\":[],\"sha\":\"${f7GenericResolvedCommit()}\"}"
     }
 }
 

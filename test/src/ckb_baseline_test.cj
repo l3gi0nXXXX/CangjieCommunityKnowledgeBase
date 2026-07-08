@@ -410,6 +410,8 @@ public class CkbBaselineTest {
         let slashRefBranch = builder.gitCodeBranchNativeSafe("Cangjie/cangjie_runtime", "release/1.0")
         let resolvedCommit = "0123456789abcdef0123456789abcdef01234567"
         let resolvedTree = builder.gitCodeTreeWithFetchRef("Cangjie/cangjie_runtime", "release/1.0", resolvedCommit)
+        let resolvedTreePage2 = builder.gitCodeTreePageWithFetchRef("Cangjie/cangjie_runtime", "release/1.0", resolvedCommit, page: 2, perPage: 50)
+        let invalidTreePage = builder.gitCodeTreePageWithFetchRef("Cangjie/cangjie_runtime", "release/1.0", resolvedCommit, page: 0, perPage: 50)
         let resolvedRaw = builder.gitCodeSourceRawWithFetchRef("Cangjie/cangjie_runtime", "release/1.0", resolvedCommit, "runtime/src/main.cj")
         let plusRefTree = builder.gitCodeTree("Cangjie/cangjie_runtime", "feature/a+b")
         let invalidRepo = builder.gitCodeSource("bad repo/name", "main", "README.md")
@@ -460,6 +462,10 @@ public class CkbBaselineTest {
         @Expect(slashRefBranch.ref, "release/1.0")
         @Expect(resolvedTree.url, "https://api.gitcode.com/api/v5/repos/Cangjie/cangjie_runtime/git/trees/0123456789abcdef0123456789abcdef01234567?recursive=1&page=1&per_page=100")
         @Expect(resolvedTree.ref, "release/1.0")
+        @Expect(resolvedTreePage2.url, "https://api.gitcode.com/api/v5/repos/Cangjie/cangjie_runtime/git/trees/0123456789abcdef0123456789abcdef01234567?recursive=1&page=2&per_page=50")
+        @Expect(resolvedTreePage2.page, 2)
+        @Expect(resolvedTreePage2.perPage, 50)
+        @Expect(invalidTreePage.diagnostic, "invalid_pagination")
         @Expect(resolvedRaw.url, "https://api.gitcode.com/api/v5/repos/Cangjie/cangjie_runtime/raw/runtime/src/main.cj?ref=0123456789abcdef0123456789abcdef01234567")
         @Expect(resolvedRaw.ref, "release/1.0")
         @Expect(plusRefTree.url, "https://api.gitcode.com/api/v5/repos/Cangjie/cangjie_runtime/git/trees/feature%2Fa%2Bb?recursive=1&page=1&per_page=100")
@@ -993,6 +999,22 @@ public class CkbBaselineTest {
         @Expect(selected[0], "src/main.cj")
         @Expect(selected[1], "docs/guide.md")
         @Expect(selected[2], "README.md")
+    }
+
+    @TestCase
+    public func s1Ut002SourceCandidateSelectorAllowsRuntimeMetadataOnly(): Unit {
+        // UT-S1-002: runtime/std source with README and metadata but no .cj is still selectable.
+        let source = CangjieVersionSource()
+        source.sourceSet = CangjieSourceSets.STD
+        source.sourceFamily = "stdlib"
+        let profile = ckbSyncProfileForScheduleTask("cangjie_version_branch_refresh")
+        let body = "{\"tree\":[{\"type\":\"tree\",\"path\":\"runtime\"},{\"type\":\"blob\",\"path\":\"README.md\"},{\"type\":\"blob\",\"path\":\"cjpm.toml\"},{\"type\":\"blob\",\"path\":\"target/generated.cj\"}]}"
+
+        let selected = SourceCandidateSelector().selectFromTreeForSource(source, profile, body, maxFiles: 2)
+
+        @Expect(selected.size, 2)
+        @Expect(selected[0], "README.md")
+        @Expect(selected[1], "cjpm.toml")
     }
 
     @TestCase

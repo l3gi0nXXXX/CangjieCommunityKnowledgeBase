@@ -1316,6 +1316,10 @@ public class SourceRequestBuilder {
     }
 
     public func gitCodeTreeWithFetchRef(repo: String, originalRef: String, fetchRef: String): SourceFetchRequest {
+        this.gitCodeTreePageWithFetchRef(repo, originalRef, fetchRef, page: 1, perPage: 100)
+    }
+
+    public func gitCodeTreePageWithFetchRef(repo: String, originalRef: String, fetchRef: String, page!: Int64 = 1, perPage!: Int64 = 100): SourceFetchRequest {
         let parts = parseGitCodeRepoPath(repo)
         if (!parts.valid) {
             return invalidSourceFetchRequest(SourceKinds.GITCODE_TREE, "source_tree", parts.diagnostic)
@@ -1323,10 +1327,19 @@ public class SourceRequestBuilder {
         if (!isSafeGitCodeRef(originalRef) || !isSafeGitCodeRef(fetchRef)) {
             return invalidSourceFetchRequest(SourceKinds.GITCODE_TREE, "source_tree", "invalid_ref")
         }
+        if (page <= 0 || perPage <= 0) {
+            return invalidSourceFetchRequest(SourceKinds.GITCODE_TREE, "source_tree", "invalid_pagination")
+        }
         let normalizedRepo = "${parts.owner}/${parts.repo}"
         let encodedRef = urlEncodeGitCodePathSegment(fetchRef)
-        let request = SourceFetchRequest(SourceKinds.GITCODE_TREE, "${this.gitCodeApiRoot}/repos/${parts.owner}/${parts.repo}/git/trees/${encodedRef}?recursive=1&page=1&per_page=100", repo: normalizedRepo, ref: originalRef, purpose: "source_tree")
+        let boundedPage = if (page > 1000) { 1000 } else { page }
+        let boundedPerPage = if (perPage > 100) { 100 } else { perPage }
+        let request = SourceFetchRequest(SourceKinds.GITCODE_TREE, "${this.gitCodeApiRoot}/repos/${parts.owner}/${parts.repo}/git/trees/${encodedRef}?recursive=1&page=${boundedPage}&per_page=${boundedPerPage}", repo: normalizedRepo, ref: originalRef, purpose: "source_tree")
         request.authHint = "gitcode-token-optional-redacted"
+        request.paginationParam = "page"
+        request.perPageParam = "per_page"
+        request.page = boundedPage
+        request.perPage = boundedPerPage
         request
     }
 
@@ -1575,6 +1588,131 @@ private func isReadmeOrDocsMarkdown(lower: String): Bool {
         return false
     }
     lower == "readme.md" || lower.endsWith("/readme.md") || lower.startsWith("docs/") || lower.contains("/docs/") || lower.startsWith("doc/") || lower.contains("/doc/")
+}
+
+private func appendSelectedSourceCandidates(selected: ArrayList<String>, candidates: ArrayList<String>, maxFiles: Int64): Unit {
+    for (path in candidates) {
+        if (maxFiles >= 0 && selected.size >= maxFiles) {
+            return
+        }
+        selected.add(path)
+    }
+}
+
+private func sourceCandidatePriorityForScheduledSource(source: CangjieVersionSource, profile: CkbScheduleTaskProfile, lower: String): Int64 {
+    let sourceSet = if (source.sourceSet.trimAscii() != "") { source.sourceSet } else { ckbSourceSetFromSourceFamily(source.sourceFamily) }
+    if (sourceSet == CangjieSourceSets.DOCS) {
+        return sourceCandidatePriorityForDocs(lower)
+    }
+    if (sourceSet == CangjieSourceSets.STD) {
+        return sourceCandidatePriorityForStd(lower)
+    }
+    if (sourceSet == CangjieSourceSets.STDX) {
+        return sourceCandidatePriorityForStdx(lower)
+    }
+    if (sourceSet == CangjieSourceSets.TOOLS) {
+        return sourceCandidatePriorityForTools(lower)
+    }
+    if (profile.profile == "cangjie_version_branch_refresh" && isReadmeOrDocsMarkdown(lower)) {
+        return 1
+    }
+    if (lower.endsWith(".cj")) {
+        return 0
+    }
+    if (isReadmeOrDocsMarkdown(lower)) {
+        return 1
+    }
+    if (isSourceMetadataCandidate(lower)) {
+        return 2
+    }
+    -1
+}
+
+private func sourceCandidatePriorityForDocs(lower: String): Int64 {
+    if (isDocsMarkdown(lower)) {
+        return 0
+    }
+    if (isReadmeMarkdown(lower)) {
+        return 1
+    }
+    if (isMarkdown(lower)) {
+        return 2
+    }
+    if (isSourceMetadataCandidate(lower)) {
+        return 3
+    }
+    -1
+}
+
+private func sourceCandidatePriorityForStd(lower: String): Int64 {
+    if (lower.endsWith(".cj")) {
+        return 0
+    }
+    if (isReadmeOrDocsMarkdown(lower)) {
+        return 1
+    }
+    if (isSourceMetadataCandidate(lower)) {
+        return 2
+    }
+    -1
+}
+
+private func sourceCandidatePriorityForStdx(lower: String): Int64 {
+    if (lower.endsWith(".cj")) {
+        return 0
+    }
+    if (lower.startsWith("doc/") || lower.contains("/doc/") || isReadmeOrDocsMarkdown(lower)) {
+        return 1
+    }
+    if (isSourceMetadataCandidate(lower)) {
+        return 2
+    }
+    -1
+}
+
+private func sourceCandidatePriorityForTools(lower: String): Int64 {
+    if (isReadmeOrDocsMarkdown(lower) || (lower.startsWith("tools/") && isMarkdown(lower)) || (lower.contains("/tools/") && isMarkdown(lower))) {
+        return 0
+    }
+    if (lower.endsWith(".cj") || lower.endsWith(".sh") || lower.endsWith(".py")) {
+        return 1
+    }
+    if (isSourceMetadataCandidate(lower) || lower.endsWith(".json") || lower.endsWith(".yaml") || lower.endsWith(".yml")) {
+        return 2
+    }
+    -1
+}
+
+private func ckbSourceSetFromSourceFamily(sourceFamily: String): String {
+    let family = sourceFamily.trimAscii()
+    if (family == "docs") { return CangjieSourceSets.DOCS }
+    if (family == "stdlib") { return CangjieSourceSets.STD }
+    if (family == "stdx") { return CangjieSourceSets.STDX }
+    if (family == "tools") { return CangjieSourceSets.TOOLS }
+    if (family == "eval-support") { return CangjieSourceSets.EVAL_SUPPORT }
+    ""
+}
+
+private func isMarkdown(lower: String): Bool {
+    lower.endsWith(".md") || lower.endsWith(".markdown")
+}
+
+private func isReadmeMarkdown(lower: String): Bool {
+    lower == "readme.md" || lower.endsWith("/readme.md") || lower == "readme.markdown" || lower.endsWith("/readme.markdown")
+}
+
+private func isDocsMarkdown(lower: String): Bool {
+    isMarkdown(lower) && (lower.startsWith("docs/") || lower.contains("/docs/") || lower.startsWith("doc/") || lower.contains("/doc/"))
+}
+
+private func isSourceMetadataCandidate(lower: String): Bool {
+    lower == "cjpm.toml" || lower.endsWith("/cjpm.toml") ||
+        lower == "package.json" || lower.endsWith("/package.json") ||
+        lower == "manifest.json" || lower.endsWith("/manifest.json") ||
+        lower == "readme.md" || lower.endsWith("/readme.md") ||
+        lower == "license" || lower.endsWith("/license") ||
+        lower == "license.txt" || lower.endsWith("/license.txt") ||
+        lower == "license.md" || lower.endsWith("/license.md")
 }
 
 private func invalidSourceFetchRequest(kind: String, purpose: String, diagnostic: String): SourceFetchRequest {
@@ -2158,6 +2296,41 @@ public class SourceCandidateSelector {
             }
             selected.add(path)
         }
+        selected
+    }
+
+    public func selectFromTreeForSource(source: CangjieVersionSource, profile: CkbScheduleTaskProfile, body: String, maxFiles!: Int64 = -1): ArrayList<String> {
+        let primary = ArrayList<String>()
+        let secondary = ArrayList<String>()
+        let tertiary = ArrayList<String>()
+        let fallback = ArrayList<String>()
+        for (object in nestedJsonObjectChunks(body)) {
+            let safeObject = asciiJsonProjection(object)
+            let rawPath = jsonStringField(safeObject, "path")
+            let path = normalizeGitCodeSourcePath(rawPath)
+            if (path == "" || excludedSourceCandidate(path)) {
+                continue
+            }
+            let itemType = jsonStringField(safeObject, "type").toAsciiLower()
+            if (itemType == "tree" || itemType == "commit") {
+                continue
+            }
+            let priority = sourceCandidatePriorityForScheduledSource(source, profile, path.toAsciiLower())
+            if (priority == 0) {
+                addUniqueString(primary, path)
+            } else if (priority == 1) {
+                addUniqueString(secondary, path)
+            } else if (priority == 2) {
+                addUniqueString(tertiary, path)
+            } else if (priority == 3) {
+                addUniqueString(fallback, path)
+            }
+        }
+        let selected = ArrayList<String>()
+        appendSelectedSourceCandidates(selected, primary, maxFiles)
+        appendSelectedSourceCandidates(selected, secondary, maxFiles)
+        appendSelectedSourceCandidates(selected, tertiary, maxFiles)
+        appendSelectedSourceCandidates(selected, fallback, maxFiles)
         selected
     }
 }
@@ -4273,27 +4446,40 @@ public class FileKnowledgeStore {
     public func loadCangjieVersionManifest(): CangjieVersionManifest {
         let manifest = CangjieVersionManifest()
         manifest.sources.clear()
-        let text = this.readLines("metadata/cangjie-version-manifest.ckb")
+        var text = ""
+        try {
+            text = this.readLines("metadata/cangjie-version-manifest.ckb")
+        } catch (_: Exception) {
+            manifest.degraded = true
+            manifest.diagnostics.add("version_manifest_invalid_encoding")
+            return manifest
+        }
         if (text == "") {
             return manifest
         }
+        var recognizedLineCount: Int64 = 0
         for (line in text.split("\n")) {
             let trimmed = line.trimAscii()
             if (trimmed == "") {
                 continue
             }
             if (trimmed.startsWith("manifestVersion=")) {
+                recognizedLineCount += 1
                 manifest.manifestVersion = unescapeField(trimmed[16..trimmed.size])
             } else if (trimmed.startsWith("defaultTargetVersion=")) {
+                recognizedLineCount += 1
                 manifest.defaultTargetVersion = unescapeField(trimmed[21..trimmed.size])
             } else if (trimmed.startsWith("degraded=")) {
+                recognizedLineCount += 1
                 manifest.degraded = unescapeField(trimmed[9..trimmed.size]) == "true"
             } else if (trimmed.startsWith("diagnostic|")) {
+                recognizedLineCount += 1
                 let parts = trimmed.split("|")
                 if (parts.size >= 2) {
                     manifest.diagnostics.add(unescapeField(parts[1]))
                 }
             } else if (trimmed.startsWith("source|")) {
+                recognizedLineCount += 1
                 let parts = trimmed.split("|")
                 if (parts.size >= 9) {
                     let source = CangjieVersionSource()
@@ -4309,8 +4495,15 @@ public class FileKnowledgeStore {
                         source.rootKind = unescapeField(parts[9])
                     }
                     manifest.sources.add(source)
+                } else {
+                    manifest.degraded = true
+                    manifest.diagnostics.add("version_manifest_malformed_source_line")
                 }
             }
+        }
+        if (text.trimAscii() != "" && manifest.sources.size == 0 && recognizedLineCount == 0) {
+            manifest.degraded = true
+            manifest.diagnostics.add("version_manifest_malformed")
         }
         manifest
     }
@@ -5665,10 +5858,20 @@ private func ckbRoutineArtifactExistsForTask(store: FileKnowledgeStore, config: 
 private func ckbEnsureManifestReadyForFreshness(store: FileKnowledgeStore, config: CkbRuntimeConfig, manifest: CangjieVersionManifest): CkbFreshnessManifestReadiness {
     let readiness = CkbFreshnessManifestReadiness()
     readiness.manifest = manifest
-    if (manifest.sources.size > 0 && !cangjieManifestHasOfflineBaseline(manifest)) {
+    for (diagnostic in manifest.diagnostics) {
+        readiness.diagnostics.add("manifest_diagnostic:${diagnostic}")
+    }
+    if (manifest.sources.size > 0 && !cangjieManifestHasOfflineBaseline(manifest) && !ckbManifestHasFreshnessBlockingDiagnostic(manifest)) {
         readiness.ready = true
         readiness.diagnostics.add("manifest_ready_for_freshness")
         return readiness
+    }
+    if (manifest.sources.size > 0 && ckbManifestHasFreshnessBlockingDiagnostic(manifest)) {
+        readiness.diagnostics.add("manifest_blocking_for_freshness")
+    } else if (manifest.sources.size > 0 && cangjieManifestHasOfflineBaseline(manifest)) {
+        readiness.diagnostics.add("manifest_offline_baseline_for_freshness")
+    } else {
+        readiness.diagnostics.add("manifest_missing_for_freshness")
     }
     let recovered = ckbRuntimeCangjieVersionManifest(config)
     if (recovered.sources.size > 0 && !cangjieManifestHasOfflineBaseline(recovered)) {
@@ -5681,6 +5884,18 @@ private func ckbEnsureManifestReadyForFreshness(store: FileKnowledgeStore, confi
     readiness.ready = false
     readiness.diagnostics.add("manifest_not_ready_for_freshness")
     readiness
+}
+
+private func ckbManifestHasFreshnessBlockingDiagnostic(manifest: CangjieVersionManifest): Bool {
+    for (diagnostic in manifest.diagnostics) {
+        if (diagnostic.contains("version_manifest_invalid_encoding") ||
+            diagnostic.contains("version_manifest_malformed") ||
+            diagnostic.contains("manifest_source_not_refreshed") ||
+            diagnostic.contains("manifest_source_metadata_degraded")) {
+            return true
+        }
+    }
+    false
 }
 
 public func ckbProfilesForRepositoryChangedEvent(event: GitCodeRepositoryChangedEvent, config: CkbRuntimeConfig): ArrayList<String> {
@@ -5879,7 +6094,12 @@ public class CkbSchedulerTaskRunner <: SchedulerTaskRunner {
         if (stored.sources.size > 0) {
             return stored
         }
-        ckbRuntimeCangjieVersionManifest(this.config)
+        let runtime = ckbRuntimeCangjieVersionManifest(this.config)
+        for (diagnostic in stored.diagnostics) {
+            runtime.degraded = true
+            runtime.diagnostics.add("stored_manifest_${diagnostic}")
+        }
+        runtime
     }
 
     public func runTask(name: String, since: String, deadlineAtMillis: Int64): SchedulerTaskResult {
@@ -6748,6 +6968,9 @@ private class CkbScheduledFetchReadiness {
     var requiredFailedCount: Int64 = 0
     var optionalFailedCount: Int64 = 0
     var recoveredCount: Int64 = 0
+    var manifestBlockingCount: Int64 = 0
+    var contentBlockingCount: Int64 = 0
+    var optionalContentFailedCount: Int64 = 0
     var diagnostics: ArrayList<String> = ArrayList<String>()
 
     init() {}
@@ -6874,6 +7097,30 @@ private class GitCodeBranchResolutionParse {
     init() {}
 }
 
+private class GitCodeTreePageStats {
+    var objectsSeen: Int64 = 0
+    var filesSeen: Int64 = 0
+    var directoriesSeen: Int64 = 0
+    var candidatesSeen: Int64 = 0
+
+    init() {}
+}
+
+private class GitCodeTreePageScan {
+    var pagesScanned: Int64 = 0
+    var objectsSeen: Int64 = 0
+    var filesSeen: Int64 = 0
+    var directoriesSeen: Int64 = 0
+    var candidatesSeen: Int64 = 0
+    var failed: Bool = false
+    var completed: Bool = false
+    var stopReason: String = ""
+    var lastRequest: SourceFetchRequest = SourceFetchRequest()
+    var selected: ArrayList<String> = ArrayList<String>()
+
+    init() {}
+}
+
 private func ckbFetchScheduledGitCodeTreeSnapshot(runner: SourceFetchRunner, builder: SourceRequestBuilder, source: CangjieVersionSource, profile: CkbScheduleTaskProfile, result: CkbScheduledProfileFetchResult, config: CkbRuntimeConfig): Unit {
     let resolution = ckbResolveGitCodeRefForScheduledFetch(runner, builder, source, profile, result, config)
     if (!resolution.ok) {
@@ -6882,30 +7129,109 @@ private func ckbFetchScheduledGitCodeTreeSnapshot(runner: SourceFetchRunner, bui
         _ = ckbAppendScheduledSourceRecord(profile, result, failureRequest, failureFetch)
         return
     }
-    let treeRequest = builder.gitCodeTreeWithFetchRef(source.sourceRepo, source.sourceRef, resolution.effectiveRef)
-    let treeFetch = ckbFetchScheduledRequest(runner, treeRequest, config)
-    ckbApplyGitCodeRefResolutionToFetch(treeFetch, resolution)
-    result.diagnostics.add("gitcode_tree_fetch_resolution:${ckbScheduledFetchDiagnosticWithResolution(profile, treeRequest, treeFetch, resolution)}")
-    _ = ckbAppendScheduledSourceRecord(profile, result, treeRequest, treeFetch)
-    if (!treeFetch.ok) {
+    let scan = ckbFetchScheduledGitCodeTreePages(runner, builder, source, profile, result, config, resolution)
+    result.diagnostics.add("gitcode_tree_pages_scanned:${source.sourceSet}:${source.sourceRepo}:pagesScanned=${scan.pagesScanned}|objects=${scan.objectsSeen}|files=${scan.filesSeen}|directories=${scan.directoriesSeen}|candidates=${scan.candidatesSeen}|stop=${scan.stopReason}")
+    if (scan.failed) {
         return
     }
-    let selected = SourceCandidateSelector().selectFromTree(treeFetch.body, maxFiles: ckbScheduledSourceSnapshotLimit(profile, source))
-    if (selected.size == 0) {
+    if (scan.selected.size == 0) {
         let empty = SourceFetchResult()
         empty.ok = false
-        empty.status = "source_tree_empty"
+        empty.status = "source_tree_empty_after_pages"
         empty.statusCode = 200
-        empty.sourceUrl = treeRequest.url
-        empty.repo = treeRequest.repo
-        empty.ref = treeRequest.ref
+        empty.sourceUrl = scan.lastRequest.url
+        empty.repo = scan.lastRequest.repo
+        empty.ref = scan.lastRequest.ref
         empty.commit = resolution.resolvedCommit
-        empty.body = "source_tree_empty"
+        empty.body = "source_tree_empty_after_pages pagesScanned=${scan.pagesScanned} objects=${scan.objectsSeen} files=${scan.filesSeen} directories=${scan.directoriesSeen} candidates=${scan.candidatesSeen}"
         empty.bodyHash = stableSummaryHash(empty.body)
-        _ = ckbAppendScheduledSourceRecord(profile, result, treeRequest, empty)
+        _ = ckbAppendScheduledSourceRecord(profile, result, scan.lastRequest, empty)
+        result.diagnostics.add("source_tree_empty_after_pages:${source.sourceSet}:${source.sourceRepo}:pagesScanned=${scan.pagesScanned}|objects=${scan.objectsSeen}|files=${scan.filesSeen}|directories=${scan.directoriesSeen}|candidates=${scan.candidatesSeen}")
         return
     }
-    ckbFetchScheduledSelectedSourceFiles(runner, builder, source, profile, result, config, selected, resolution)
+    ckbFetchScheduledSelectedSourceFiles(runner, builder, source, profile, result, config, scan.selected, resolution)
+}
+
+private func ckbFetchScheduledGitCodeTreePages(runner: SourceFetchRunner, builder: SourceRequestBuilder, source: CangjieVersionSource, profile: CkbScheduleTaskProfile, result: CkbScheduledProfileFetchResult, config: CkbRuntimeConfig, resolution: GitCodeRefResolution): GitCodeTreePageScan {
+    let scan = GitCodeTreePageScan()
+    let selector = SourceCandidateSelector()
+    let maxFiles = ckbScheduledSourceSnapshotLimit(profile, source)
+    let maxPages = ckbScheduledGitCodeTreeMaxPages(profile, source)
+    let perPage: Int64 = 100
+    var page: Int64 = 1
+    while (page <= maxPages) {
+        let treeRequest = builder.gitCodeTreePageWithFetchRef(source.sourceRepo, source.sourceRef, resolution.effectiveRef, page: page, perPage: perPage)
+        let treeFetch = ckbFetchScheduledRequest(runner, treeRequest, config)
+        ckbApplyGitCodeRefResolutionToFetch(treeFetch, resolution)
+        scan.lastRequest = treeRequest
+        scan.pagesScanned += 1
+        result.diagnostics.add("gitcode_tree_fetch_resolution:${ckbScheduledFetchDiagnosticWithResolution(profile, treeRequest, treeFetch, resolution)}|page=${page}")
+        _ = ckbAppendScheduledSourceRecord(profile, result, treeRequest, treeFetch)
+        if (!treeFetch.ok) {
+            scan.failed = true
+            scan.stopReason = "tree_page_failed:${treeFetch.status}"
+            result.diagnostics.add("gitcode_tree_page_failed:${source.sourceSet}:${source.sourceRepo}:page=${page}|pagesScanned=${scan.pagesScanned}|objects=${scan.objectsSeen}|files=${scan.filesSeen}|directories=${scan.directoriesSeen}|candidates=${scan.candidatesSeen}|status=${treeFetch.status}")
+            return scan
+        }
+        let stats = ckbGitCodeTreePageStats(source, profile, treeFetch.body)
+        scan.objectsSeen += stats.objectsSeen
+        scan.filesSeen += stats.filesSeen
+        scan.directoriesSeen += stats.directoriesSeen
+        scan.candidatesSeen += stats.candidatesSeen
+        if (stats.objectsSeen == 0) {
+            scan.completed = true
+            scan.stopReason = "empty_page"
+            return scan
+        }
+        let remaining = if (maxFiles < 0) { -1 } else { maxFiles - scan.selected.size }
+        if (remaining != 0) {
+            let selected = selector.selectFromTreeForSource(source, profile, treeFetch.body, maxFiles: remaining)
+            for (path in selected) {
+                addUniqueString(scan.selected, path)
+            }
+        }
+        if (scan.selected.size > 0) {
+            scan.completed = true
+            scan.stopReason = "candidates_found"
+            return scan
+        }
+        page += 1
+    }
+    scan.completed = true
+    scan.stopReason = "max_pages_reached"
+    scan
+}
+
+private func ckbGitCodeTreePageStats(source: CangjieVersionSource, profile: CkbScheduleTaskProfile, body: String): GitCodeTreePageStats {
+    let stats = GitCodeTreePageStats()
+    for (object in nestedJsonObjectChunks(body)) {
+        let safeObject = asciiJsonProjection(object)
+        let path = normalizeGitCodeSourcePath(jsonStringField(safeObject, "path"))
+        if (path == "") {
+            continue
+        }
+        stats.objectsSeen += 1
+        let itemType = jsonStringField(safeObject, "type").toAsciiLower()
+        if (itemType == "tree") {
+            stats.directoriesSeen += 1
+        } else if (itemType != "commit") {
+            stats.filesSeen += 1
+            if (!excludedSourceCandidate(path) && sourceCandidatePriorityForScheduledSource(source, profile, path.toAsciiLower()) >= 0) {
+                stats.candidatesSeen += 1
+            }
+        }
+    }
+    stats
+}
+
+private func ckbScheduledGitCodeTreeMaxPages(profile: CkbScheduleTaskProfile, source: CangjieVersionSource): Int64 {
+    if (profile.profile == "cangjie_version_branch_refresh") {
+        return 10
+    }
+    if (source.sourceSet == CangjieSourceSets.STD || source.sourceSet == CangjieSourceSets.STDX || source.sourceSet == CangjieSourceSets.TOOLS) {
+        return 20
+    }
+    10
 }
 
 private func ckbResolveGitCodeRefForScheduledFetch(runner: SourceFetchRunner, builder: SourceRequestBuilder, source: CangjieVersionSource, profile: CkbScheduleTaskProfile, result: CkbScheduledProfileFetchResult, config: CkbRuntimeConfig): GitCodeRefResolution {
@@ -7328,18 +7654,50 @@ private func ckbEvaluateScheduledFetchReadiness(profile: CkbScheduleTaskProfile,
         if (ckbScheduledSourceRequiredness(profile, record.sourceSet)) {
             readiness.requiredFailedCount += 1
             readiness.canPromote = false
+            let failureClass = ckbScheduledReadinessFailureClass(record)
+            if (failureClass == "manifest") {
+                readiness.manifestBlockingCount += 1
+                readiness.diagnostics.add("manifest_blocking_source_failed:${record.sourceSet}:${record.request.repo}:${record.fetch.status}")
+            } else {
+                readiness.contentBlockingCount += 1
+                readiness.diagnostics.add("content_blocking_source_failed:${record.sourceSet}:${record.request.repo}:${record.fetch.status}")
+            }
             readiness.diagnostics.add("required_source_failed:${record.sourceSet}:${record.request.repo}:${record.fetch.status}")
         } else {
             readiness.optionalFailedCount += 1
+            if (ckbScheduledReadinessFailureClass(record) == "content") {
+                readiness.optionalContentFailedCount += 1
+            }
             readiness.diagnostics.add("optional_source_failed:${record.sourceSet}:${record.request.repo}:${record.fetch.status}")
         }
     }
     if (fetch.failedCount > readiness.requiredFailedCount + readiness.optionalFailedCount) {
         readiness.canPromote = false
-        readiness.requiredFailedCount += fetch.failedCount - readiness.requiredFailedCount - readiness.optionalFailedCount
+        let unclassified = fetch.failedCount - readiness.requiredFailedCount - readiness.optionalFailedCount
+        readiness.requiredFailedCount += unclassified
+        readiness.manifestBlockingCount += unclassified
         readiness.diagnostics.add("unclassified_fetch_failure:${profile.profile}:${fetch.failedCount}")
     }
     readiness
+}
+
+private func ckbScheduledReadinessFailureClass(record: CkbScheduledSourceRecord): String {
+    if (record.request.kind == SourceKinds.GITCODE_SOURCE ||
+        record.request.kind == SourceKinds.CANGJIE_DOCS ||
+        record.request.kind == SourceKinds.CANGJIE_WEBSITE ||
+        record.request.kind == SourceKinds.WEB_CANDIDATE ||
+        record.fetch.status == "source_tree_empty_after_pages" ||
+        record.fetch.status == "eval_support_source_unavailable") {
+        return "content"
+    }
+    "manifest"
+}
+
+private func ckbScheduledCanPersistResolvedArtifacts(profile: CkbScheduleTaskProfile, readiness: CkbScheduledFetchReadiness): Bool {
+    if (!(profile.profile == "cangjie_version_branch_refresh" || profile.profile == "cangjie_release_full_sync" || profile.profile == "cangjie_source_event_sync")) {
+        return false
+    }
+    readiness.manifestBlockingCount == 0
 }
 
 private func ckbScheduledSourceRequiredness(profile: CkbScheduleTaskProfile, sourceSet: String): Bool {
@@ -7376,6 +7734,9 @@ private func ingestScheduledProfileSources(kb: KnowledgeBase, store: FileKnowled
         result.validationDiagnostics.add("readiness:${diagnostic}")
     }
     if (!readiness.canPromote) {
+        if (ckbScheduledCanPersistResolvedArtifacts(profile, readiness)) {
+            ckbPersistScheduledResolvedMetadataArtifacts(store, profile, fetch, config, manifest, result, "readiness_content_degraded")
+        }
         result.ok = false
         result.status = "scheduled_readiness_failed"
         return result
@@ -7385,11 +7746,20 @@ private func ingestScheduledProfileSources(kb: KnowledgeBase, store: FileKnowled
         fetch.status = "fetch_degraded_recovered"
         result.validationDiagnostics.add("fetch_degraded_recovered:requiredFailed=${readiness.requiredFailedCount}:optionalFailed=${readiness.optionalFailedCount}:recovered=${readiness.recoveredCount}")
     }
+    if (profile.profile == "cangjie_release_full_sync" || profile.profile == "cangjie_version_branch_refresh") {
+        ckbPersistScheduledResolvedMetadataArtifacts(store, profile, fetch, config, manifest, result, "metadata_resolved_before_content_promotion")
+        if (!result.ok) {
+            return result
+        }
+    }
     let delta = ckbScheduledTypedDeltaRecords(profile, fetch.records, config, manifest)
     if (delta.size == 0) {
         result.ok = false
         result.status = "scheduled_delta_empty"
         result.validationDiagnostics.add("scheduled_delta_empty:${profile.profile}:records=${fetch.records.size}")
+        if (profile.profile == "cangjie_source_event_sync" && ckbScheduledCanPersistResolvedArtifacts(profile, readiness)) {
+            ckbPersistScheduledRepositoryEventCheckpoint(store, profile, fetch, result)
+        }
         return result
     }
     for (record in fetch.records) {
@@ -7401,10 +7771,7 @@ private func ingestScheduledProfileSources(kb: KnowledgeBase, store: FileKnowled
     let candidateRecords = kb.activeRecordSnapshotOverlay(delta)
     let promotion = cangjiePromoteCandidateRecordsAfterValidationWithVersion(kb, store, candidateVersion, candidateRecords, progressSink: progressSink, deadlineAtMillis: deadlineAtMillis)
     ckbApplyScheduledPromotionResult(result, promotion, "candidate_validated_promoted")
-    if (result.ok && (profile.profile == "cangjie_release_full_sync" || profile.profile == "cangjie_version_branch_refresh")) {
-        ckbPersistScheduledVersionManifestAfterRefresh(store, profile, fetch, config, manifest, result)
-    }
-    if (result.ok && profile.profile == "cangjie_source_event_sync") {
+    if (profile.profile == "cangjie_source_event_sync") {
         ckbPersistScheduledRepositoryEventCheckpoint(store, profile, fetch, result)
     }
     result
@@ -7551,6 +7918,16 @@ private func ckbBenchmarkGapLine(text: String, prefix: String): String {
     ""
 }
 
+private func ckbPersistScheduledResolvedMetadataArtifacts(store: FileKnowledgeStore, profile: CkbScheduleTaskProfile, fetch: CkbScheduledProfileFetchResult, config: CkbRuntimeConfig, manifest: CangjieVersionManifest, result: CkbScheduledProfileIngestResult, reason: String): Unit {
+    if (profile.profile == "cangjie_release_full_sync" || profile.profile == "cangjie_version_branch_refresh") {
+        ckbPersistScheduledVersionManifestAfterRefresh(store, profile, fetch, config, manifest, result)
+        result.validationDiagnostics.add("resolved_metadata_artifact_persisted:${profile.profile}:${reason}")
+    } else if (profile.profile == "cangjie_source_event_sync") {
+        ckbPersistScheduledRepositoryEventCheckpoint(store, profile, fetch, result)
+        result.validationDiagnostics.add("resolved_metadata_artifact_persisted:${profile.profile}:${reason}")
+    }
+}
+
 private func ckbApplyScheduledPromotionResult(result: CkbScheduledProfileIngestResult, promotion: CangjieCandidatePromotionResult, successStatus: String): Unit {
     result.candidateVersion = promotion.candidateVersion
     result.activeVersion = promotion.activeVersion
@@ -7598,6 +7975,13 @@ private func ckbRefreshVersionManifestFromScheduledFetch(profile: CkbScheduleTas
     for (source in manifest.sources) {
         let next = ckbCopyVersionSourceForService(source)
         if (ckbScheduledManifestSourceIncluded(source, true, true, true, true, true)) {
+            let sourceDiagnostics = ckbScheduledManifestSourceRefreshDiagnostics(fetch, source)
+            for (diagnostic in sourceDiagnostics) {
+                out.diagnostics.add(diagnostic)
+                if (diagnostic.contains("_degraded")) {
+                    out.degraded = true
+                }
+            }
             let record = ckbFindScheduledManifestRecord(fetch, source)
             if (record.sourceId == "" || !record.fetch.ok) {
                 out.degraded = true
@@ -7623,6 +8007,26 @@ private func ckbManifestDiagnosticStillRelevantAfterRefresh(diagnostic: String):
     !(diagnostic.contains("offline_baseline") || diagnostic.contains("offline-baseline") || diagnostic.contains("manifest_offline_baseline") || diagnostic.contains("version_manifest_contains_offline_baseline"))
 }
 
+private func ckbScheduledManifestSourceRefreshDiagnostics(fetch: CkbScheduledProfileFetchResult, source: CangjieVersionSource): ArrayList<String> {
+    let diagnostics = ArrayList<String>()
+    for (record in fetch.records) {
+        if (!ckbScheduledRecordMatchesManifestSource(record, source)) {
+            continue
+        }
+        let repo = if (record.request.repo != "") { record.request.repo } else { record.fetch.repo }
+        if (record.request.kind == SourceKinds.GITCODE_TREE && record.fetch.ok) {
+            diagnostics.add("manifest_source_tree_resolved:${source.sourceSet}:${repo}:${record.fetch.commit}:page=${record.request.page}:bodyHash=${record.fetch.bodyHash}")
+        } else if (record.request.kind == SourceKinds.GITCODE_SOURCE && record.fetch.ok) {
+            diagnostics.add("manifest_source_content_sample_ok:${source.sourceSet}:${repo}:${record.request.path}:${record.fetch.bodyHash}")
+        } else if (!record.fetch.ok && ckbScheduledReadinessFailureClass(record) == "content") {
+            diagnostics.add("manifest_source_content_sample_degraded:${source.sourceSet}:${repo}:${record.fetch.status}")
+        } else if (!record.fetch.ok) {
+            diagnostics.add("manifest_source_metadata_degraded:${source.sourceSet}:${repo}:${record.fetch.status}")
+        }
+    }
+    diagnostics
+}
+
 private func ckbScheduledRecordRootKind(profile: CkbScheduleTaskProfile, record: CkbScheduledSourceRecord): String {
     if (record.request.repo == "ckb-local://eval-support") {
         return "local-eval-support"
@@ -7632,12 +8036,16 @@ private func ckbScheduledRecordRootKind(profile: CkbScheduleTaskProfile, record:
 
 private func ckbFindScheduledManifestRecord(fetch: CkbScheduledProfileFetchResult, source: CangjieVersionSource): CkbScheduledSourceRecord {
     for (record in fetch.records) {
-        let repo = if (record.request.repo != "") { record.request.repo } else { record.fetch.repo }
-        if (record.sourceSet == source.sourceSet && (repo == source.sourceRepo || source.sourceSet == CangjieSourceSets.EVAL_SUPPORT)) {
+        if (ckbScheduledRecordMatchesManifestSource(record, source)) {
             return record
         }
     }
     CkbScheduledSourceRecord()
+}
+
+private func ckbScheduledRecordMatchesManifestSource(record: CkbScheduledSourceRecord, source: CangjieVersionSource): Bool {
+    let repo = if (record.request.repo != "") { record.request.repo } else { record.fetch.repo }
+    record.sourceSet == source.sourceSet && (repo == source.sourceRepo || source.sourceSet == CangjieSourceSets.EVAL_SUPPORT)
 }
 
 private func ckbCopyVersionSourceForService(source: CangjieVersionSource): CangjieVersionSource {
@@ -7654,11 +8062,20 @@ private func ckbCopyVersionSourceForService(source: CangjieVersionSource): Cangj
     out
 }
 
+private class CkbScheduledRepositoryEventWatermarks {
+    var resolvedWatermark: String = ""
+    var ingestedWatermark: String = ""
+    var contentState: String = "not_ingested"
+
+    init() {}
+}
+
 private func ckbPersistScheduledRepositoryEventCheckpoint(store: FileKnowledgeStore, profile: CkbScheduleTaskProfile, fetch: CkbScheduledProfileFetchResult, ingest: CkbScheduledProfileIngestResult): Unit {
+    let watermarks = ckbScheduledRepositoryEventWatermarks(fetch, ingest)
     let checkpoint = CkbAdminOperationResult()
     checkpoint.status = ingest.status
     checkpoint.degraded = !ingest.ok
-    checkpoint.diagnostic = "scheduled_repository_event_checkpoint"
+    checkpoint.diagnostic = "scheduled_repository_event_checkpoint|resolvedWatermark=${watermarks.resolvedWatermark}|ingestedWatermark=${watermarks.ingestedWatermark}|contentState=${watermarks.contentState}"
     checkpoint.profile = profile.profile
     checkpoint.requestCount = fetch.requestCount
     checkpoint.truncated = fetch.truncated
@@ -7682,7 +8099,43 @@ private func ckbPersistScheduledRepositoryEventCheckpoint(store: FileKnowledgeSt
         }
     }
     store.saveRepositoryEventCheckpoint(checkpoint)
-    ingest.validationDiagnostics.add("repository_event_checkpoint_saved:${checkpoint.repo}:${checkpoint.ref}")
+    ingest.validationDiagnostics.add("repository_event_checkpoint_saved:${checkpoint.repo}:${checkpoint.ref}:resolvedWatermark=${watermarks.resolvedWatermark}:ingestedWatermark=${watermarks.ingestedWatermark}")
+    if (watermarks.contentState != "ingested") {
+        ingest.validationDiagnostics.add("repository_event_checkpoint_degraded:resolvedWatermark=${watermarks.resolvedWatermark}:ingestedWatermark=${watermarks.ingestedWatermark}:contentState=${watermarks.contentState}")
+    }
+}
+
+private func ckbScheduledRepositoryEventWatermarks(fetch: CkbScheduledProfileFetchResult, ingest: CkbScheduledProfileIngestResult): CkbScheduledRepositoryEventWatermarks {
+    let watermarks = CkbScheduledRepositoryEventWatermarks()
+    let resolvedSeed = StringBuilder()
+    let ingestedSeed = StringBuilder()
+    for (record in fetch.records) {
+        if (!record.fetch.ok) {
+            continue
+        }
+        let repo = if (record.request.repo != "") { record.request.repo } else { record.fetch.repo }
+        let ref = if (record.fetch.ref != "") { record.fetch.ref } else { record.request.ref }
+        if (record.request.kind == SourceKinds.GITCODE_TREE || record.request.repo == "ckb-local://eval-support") {
+            resolvedSeed.append("${record.sourceSet}:${repo}:${ref}:${record.fetch.commit}:${record.fetch.bodyHash}|")
+        }
+        if (record.request.kind == SourceKinds.GITCODE_SOURCE || record.request.repo == "ckb-local://eval-support") {
+            ingestedSeed.append("${record.sourceSet}:${repo}:${record.request.path}:${record.fetch.commit}:${record.fetch.bodyHash}|")
+        }
+    }
+    let resolvedText = resolvedSeed.toString()
+    let ingestedText = ingestedSeed.toString()
+    watermarks.resolvedWatermark = if (resolvedText == "") { "unresolved" } else { stableSummaryHash(resolvedText) }
+    if (ingest.ok && ingestedText != "") {
+        watermarks.ingestedWatermark = stableSummaryHash("${ingestedText}:${ingest.activeVersion}:${ingest.candidateVersion}")
+        watermarks.contentState = "ingested"
+    } else if (ingestedText != "") {
+        watermarks.ingestedWatermark = "pending:${stableSummaryHash(ingestedText)}"
+        watermarks.contentState = "content_degraded"
+    } else {
+        watermarks.ingestedWatermark = "not_ingested"
+        watermarks.contentState = "content_degraded"
+    }
+    watermarks
 }
 
 private func ckbPersistProbeOnlyScheduledArtifacts(store: FileKnowledgeStore, profile: CkbScheduleTaskProfile, fetch: CkbScheduledProfileFetchResult, config: CkbRuntimeConfig, manifest: CangjieVersionManifest, ingest: CkbScheduledProfileIngestResult): Unit {
