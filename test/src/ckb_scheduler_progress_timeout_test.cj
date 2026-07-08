@@ -75,6 +75,7 @@ public class CkbSchedulerProgressTimeoutTest {
         @Expect(result.partial, true)
         @Expect(result.details.contains("task community_repo_discovery_30d ok=false status=task_timeout:community_repo_discovery_30d"), true)
         @Expect(result.details.contains("task docs_probe_30d ok=true status=ok"), true)
+        @Expect(scheduler.entries[0].timeBudgetMillis, 20)
     }
 }
 
