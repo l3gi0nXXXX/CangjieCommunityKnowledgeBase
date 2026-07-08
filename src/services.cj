@@ -3692,6 +3692,13 @@ private func ckbRuntimePreflightJsonEscape(raw: String): String {
     redactSensitive(raw).replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
 }
 
+private func snapshotDiagnostic(primary: String, extra: String): String {
+    if (extra == "") {
+        return primary
+    }
+    "${primary};${extra}"
+}
+
 public class FileKnowledgeStore {
     public let root: Path
 
@@ -3734,30 +3741,7 @@ public class FileKnowledgeStore {
     }
 
     public func saveMetadata(status: KnowledgeStatus): Unit {
-        var text = "active=${status.activeKnowledgeVersion}\n"
-        text += "candidate=${status.candidateKnowledgeVersion}\n"
-        text += "failed=${status.failedCandidateVersion}\n"
-        text += "activeStateSource=${status.activeStateSource}\n"
-        text += "rawCount=${status.storage.rawCount}\n"
-        text += "normalizedCount=${status.storage.normalizedCount}\n"
-        text += "indexCount=${status.storage.indexCount}\n"
-        text += "textIndexCount=${status.storage.textIndexCount}\n"
-        text += "vectorIndexCount=${status.storage.vectorIndexCount}\n"
-        text += "symbolIndexCount=${status.storage.symbolIndexCount}\n"
-        text += "graphIndexCount=${status.storage.graphIndexCount}\n"
-        text += "vectorBackend=${status.storage.vectorBackend}\n"
-        text += "vectorState=${status.storage.vectorState}\n"
-        text += "vectorCollection=${status.storage.vectorCollection}\n"
-        text += "vectorActiveCollection=${status.storage.vectorActiveCollection}\n"
-        text += "vectorCandidateCollection=${status.storage.vectorCandidateCollection}\n"
-        text += "vectorDimension=${status.storage.vectorDimension}\n"
-        text += "vectorDegradedReason=${escapeField(status.storage.vectorDegradedReason)}\n"
-        text += "graphBackend=${status.storage.graphBackend}\n"
-        text += "graphState=${status.storage.graphState}\n"
-        text += "graphNodeCount=${status.storage.graphNodeCount}\n"
-        text += "graphEdgeCount=${status.storage.graphEdgeCount}\n"
-        text += this.indexManifestLines(status.indexManifest)
-        this.writeLines("metadata/status.ckb", text)
+        this.writeLines("metadata/status.ckb", this.metadataLines(status))
     }
 
     public func saveActiveIndex(records: ArrayList<NormalizedRecord>, version: String): Unit {
@@ -3858,6 +3842,26 @@ public class FileKnowledgeStore {
     public func saveGraph(graph: GraphBuildResult): Unit {
         this.writeLines("index/graph-nodes.ckb", this.graphNodeLines(graph.nodes))
         this.writeLines("index/graph-edges.ckb", this.graphEdgeLines(graph.edges))
+    }
+
+    public func writeActiveSnapshotTransaction(status: KnowledgeStatus, rawRecords: ArrayList<RawRecord>, normalizedRecords: ArrayList<NormalizedRecord>, activeIndex: ArrayList<NormalizedRecord>, vectorRecords: ArrayList<VectorRecord>, vectorCollection: String, graph: GraphBuildResult, persistVectorFile!: Bool = true): String {
+        this.ensureLayout()
+        let txId = this.newActiveSnapshotTxId(status.activeKnowledgeVersion)
+        let txRoot = "transactions/${safeName(txId)}"
+        this.writeRawFilesAtomically(txRoot, rawRecords)
+        this.writeLinesAtomically("${txRoot}/normalized/records.ckb", this.normalizedLines(normalizedRecords))
+        this.writeLinesAtomically("${txRoot}/index/active.version", status.activeKnowledgeVersion + "\n")
+        this.writeLinesAtomically("${txRoot}/index/active.ckb", this.normalizedLines(activeIndex))
+        if (persistVectorFile) {
+            this.writeLinesAtomically("${txRoot}/index/vector-${safeName(vectorCollection)}.ckb", this.vectorLines(vectorRecords))
+        }
+        this.writeLinesAtomically("${txRoot}/index/graph-nodes.ckb", this.graphNodeLines(graph.nodes))
+        this.writeLinesAtomically("${txRoot}/index/graph-edges.ckb", this.graphEdgeLines(graph.edges))
+        this.writeLinesAtomically("${txRoot}/metadata/status.ckb", this.metadataLines(status))
+        this.writeLinesAtomically("${txRoot}/COMMIT", this.activeSnapshotCommitLines(txId, status))
+        this.writeLinesAtomically("metadata/active-snapshot.manifest", this.activeSnapshotManifestLines(txId, status))
+        this.writeActiveSnapshotLiveShadow(status, rawRecords, normalizedRecords, activeIndex, vectorRecords, vectorCollection, graph, persistVectorFile: persistVectorFile)
+        txId
     }
 
     public func saveDerived(task: CurationTask): Unit {
@@ -4038,26 +4042,7 @@ public class FileKnowledgeStore {
     }
 
     public func loadRaw(): ArrayList<RawRecord> {
-        let out = ArrayList<RawRecord>()
-        let text = this.readLines("raw/records.ckb")
-        if (text == "") {
-            return out
-        }
-        for (line in text.split("\n")) {
-            let parts = line.split("|")
-            if (parts.size >= 19) {
-                let metadata = metadataFromParts(parts, 4)
-                let record = RawRecord()
-                record.sourceId = unescapeField(parts[0])
-                record.title = unescapeField(parts[1])
-                record.content = unescapeField(parts[2])
-                record.contentHash = unescapeField(parts[3])
-                record.metadata = metadata
-                record.requiresReview = metadata.reviewState == ReviewStates.CANDIDATE
-                out.add(record)
-            }
-        }
-        out
+        this.parseRaw(this.readLines("raw/records.ckb"))
     }
 
     public func loadNormalized(): ArrayList<NormalizedRecord> {
@@ -4073,85 +4058,21 @@ public class FileKnowledgeStore {
     }
 
     public func loadMetadataStatus(): StoreMetadataStatus {
-        let status = StoreMetadataStatus()
-        let text = this.readLines("metadata/status.ckb")
-        for (line in text.split("\n")) {
-            let trimmed = line.trimAscii()
-            if (trimmed == "") {
-                continue
-            }
-            let parts = trimmed.split("=")
-            if (parts.size < 2) {
-                continue
-            }
-            let key = parts[0]
-            let value = trimmed[(key.size + 1)..trimmed.size]
-            if (key == "active") {
-                status.activeVersion = value
-            } else if (key == "candidate") {
-                status.candidateVersion = value
-            } else if (key == "failed") {
-                status.failedVersion = value
-            } else if (key == "activeStateSource") {
-                status.activeStateSource = value
-            } else if (key == "vectorActiveCollection") {
-                status.vectorActiveCollection = value
-            } else if (key == "vectorCandidateCollection") {
-                status.vectorCandidateCollection = value
-            }
-        }
+        let status = this.loadMetadataStatusFromPrefix("")
+        status.snapshotManifestTxId = this.loadActiveSnapshotManifestTxId()
         status
     }
 
     public func loadActiveSnapshot(): ActiveSnapshot {
-        let snapshot = ActiveSnapshot()
-        snapshot.activeVersion = this.loadActiveVersion()
-        if (snapshot.activeVersion == "") {
-            snapshot.valid = false
-            snapshot.diagnostic = "missing_active_version"
-            return snapshot
-        }
-        let metadata = this.loadMetadataStatus()
-        snapshot.candidateVersion = metadata.candidateVersion
-        snapshot.failedVersion = metadata.failedVersion
-        snapshot.activeStateSource = metadata.activeStateSource
-        snapshot.vectorActiveCollection = metadata.vectorActiveCollection
-        snapshot.vectorCandidateCollection = metadata.vectorCandidateCollection
-        if (metadata.activeVersion != "" && metadata.activeVersion != snapshot.activeVersion) {
-            snapshot.valid = false
-            snapshot.diagnostic = "metadata_active_mismatch"
-            return snapshot
-        }
-        let diagnostics = ArrayList<String>()
-        snapshot.activeIndex = this.parseNormalizedStrict(this.readLines("index/active.ckb"), diagnostics)
-        if (diagnostics.size > 0) {
-            snapshot.valid = false
-            snapshot.diagnostic = "malformed_active_index"
-            return snapshot
-        }
-        if (snapshot.activeIndex.size == 0) {
-            snapshot.valid = false
-            snapshot.diagnostic = "missing_or_empty_active_index"
-            return snapshot
-        }
-        for (record in snapshot.activeIndex) {
-            if (record.metadata.knowledgeVersion != snapshot.activeVersion) {
-                snapshot.valid = false
-                snapshot.diagnostic = "active_index_version_mismatch"
-                return snapshot
+        let txId = this.loadActiveSnapshotManifestTxId()
+        if (txId != "") {
+            let txRoot = "transactions/${safeName(txId)}"
+            if (this.has("${txRoot}/COMMIT")) {
+                return this.loadActiveSnapshotFromPrefix(txRoot, "")
             }
+            return this.loadActiveSnapshotFromPrefix("", "ignored_uncommitted_snapshot_tx:${txId}")
         }
-        snapshot.rawRecords = this.loadRaw()
-        snapshot.normalizedRecords = this.loadNormalized()
-        snapshot.valid = true
-        snapshot.diagnostic = "ok"
-        let vectorCollection = if (metadata.vectorActiveCollection == "") { "active" } else { metadata.vectorActiveCollection }
-        snapshot.hasVectorArtifact = this.has("index/vector-${safeName(vectorCollection)}.ckb")
-        if (snapshot.hasVectorArtifact) {
-            snapshot.vectorRecords = this.loadVectorCollection(vectorCollection)
-        }
-        snapshot.hasGraphArtifacts = this.has("index/graph-nodes.ckb") && this.has("index/graph-edges.ckb")
-        snapshot
+        this.loadActiveSnapshotFromPrefix("", "")
     }
 
     public func backupActiveSnapshot(backupRoot: String): BackupRestoreResult {
@@ -4343,6 +4264,129 @@ public class FileKnowledgeStore {
         String.fromUtf8(File.readFrom(path))
     }
 
+    private func readLinesFromPrefix(prefix: String, relative: String): String {
+        if (prefix == "") {
+            return this.readLines(relative)
+        }
+        this.readLines("${prefix}/${relative}")
+    }
+
+    private func loadActiveSnapshotManifestTxId(): String {
+        let text = this.readLines("metadata/active-snapshot.manifest")
+        for (line in text.split("\n")) {
+            let trimmed = line.trimAscii()
+            if (trimmed.startsWith("txId=")) {
+                return trimmed[5..trimmed.size]
+            }
+        }
+        ""
+    }
+
+    private func loadActiveSnapshotFromPrefix(prefix: String, extraDiagnostic: String): ActiveSnapshot {
+        let snapshot = ActiveSnapshot()
+        snapshot.activeVersion = this.readLinesFromPrefix(prefix, "index/active.version").trimAscii()
+        if (snapshot.activeVersion == "") {
+            snapshot.valid = false
+            snapshot.diagnostic = snapshotDiagnostic("missing_active_version", extraDiagnostic)
+            return snapshot
+        }
+        let metadata = this.activeSnapshotMetadataWithLiveOverlay(prefix, snapshot.activeVersion)
+        snapshot.candidateVersion = metadata.candidateVersion
+        snapshot.failedVersion = metadata.failedVersion
+        snapshot.activeStateSource = metadata.activeStateSource
+        snapshot.vectorActiveCollection = metadata.vectorActiveCollection
+        snapshot.vectorCandidateCollection = metadata.vectorCandidateCollection
+        let mismatch = metadata.activeVersion != "" && metadata.activeVersion != snapshot.activeVersion
+        let diagnostics = ArrayList<String>()
+        snapshot.activeIndex = this.parseNormalizedStrict(this.readLinesFromPrefix(prefix, "index/active.ckb"), diagnostics)
+        if (diagnostics.size > 0) {
+            snapshot.valid = false
+            snapshot.diagnostic = snapshotDiagnostic("malformed_active_index", extraDiagnostic)
+            return snapshot
+        }
+        if (snapshot.activeIndex.size == 0) {
+            snapshot.valid = false
+            snapshot.diagnostic = snapshotDiagnostic("missing_or_empty_active_index", extraDiagnostic)
+            return snapshot
+        }
+        for (record in snapshot.activeIndex) {
+            if (record.metadata.knowledgeVersion != snapshot.activeVersion) {
+                snapshot.valid = false
+                snapshot.diagnostic = snapshotDiagnostic("active_index_version_mismatch", extraDiagnostic)
+                return snapshot
+            }
+        }
+        snapshot.rawRecords = this.parseRaw(this.readLinesFromPrefix(prefix, "raw/records.ckb"))
+        snapshot.normalizedRecords = this.parseNormalized(this.readLinesFromPrefix(prefix, "normalized/records.ckb"))
+        snapshot.valid = true
+        snapshot.degraded = mismatch
+        snapshot.diagnostic = snapshotDiagnostic(if (mismatch) { "metadata_active_mismatch" } else { "ok" }, extraDiagnostic)
+        let vectorCollection = if (metadata.vectorActiveCollection == "") { "active" } else { metadata.vectorActiveCollection }
+        let vectorRelative = "index/vector-${safeName(vectorCollection)}.ckb"
+        snapshot.hasVectorArtifact = this.has(if (prefix == "") { vectorRelative } else { "${prefix}/${vectorRelative}" })
+        if (snapshot.hasVectorArtifact) {
+            snapshot.vectorRecords = this.parseVector(this.readLinesFromPrefix(prefix, vectorRelative))
+        }
+        snapshot.hasGraphArtifacts = this.has(if (prefix == "") { "index/graph-nodes.ckb" } else { "${prefix}/index/graph-nodes.ckb" }) && this.has(if (prefix == "") { "index/graph-edges.ckb" } else { "${prefix}/index/graph-edges.ckb" })
+        snapshot
+    }
+
+    private func loadMetadataStatusFromPrefix(prefix: String): StoreMetadataStatus {
+        let status = StoreMetadataStatus()
+        let text = this.readLinesFromPrefix(prefix, "metadata/status.ckb")
+        for (line in text.split("\n")) {
+            let trimmed = line.trimAscii()
+            if (trimmed == "") {
+                continue
+            }
+            let parts = trimmed.split("=")
+            if (parts.size < 2) {
+                continue
+            }
+            let key = parts[0]
+            let value = trimmed[(key.size + 1)..trimmed.size]
+            if (key == "active") {
+                status.activeVersion = value
+            } else if (key == "candidate") {
+                status.candidateVersion = value
+            } else if (key == "failed") {
+                status.failedVersion = value
+            } else if (key == "activeStateSource") {
+                status.activeStateSource = value
+            } else if (key == "vectorBackend") {
+                status.vectorBackend = value
+            } else if (key == "vectorState") {
+                status.vectorState = value
+            } else if (key == "vectorActiveCollection") {
+                status.vectorActiveCollection = value
+            } else if (key == "vectorCandidateCollection") {
+                status.vectorCandidateCollection = value
+            } else if (key == "vectorDimension") {
+                status.vectorDimension = parseIntField(value, 0)
+            }
+        }
+        status
+    }
+
+    private func activeSnapshotMetadataWithLiveOverlay(prefix: String, activeVersion: String): StoreMetadataStatus {
+        let metadata = this.loadMetadataStatusFromPrefix(prefix)
+        if (prefix != "") {
+            let live = this.loadMetadataStatusFromPrefix("")
+            if (live.activeVersion == activeVersion) {
+                if (live.candidateVersion != "") {
+                    metadata.candidateVersion = live.candidateVersion
+                }
+                if (live.failedVersion != "") {
+                    metadata.failedVersion = live.failedVersion
+                }
+                if (live.activeStateSource != "") {
+                    metadata.activeStateSource = live.activeStateSource
+                }
+            }
+        }
+        metadata
+    }
+
     private func copyIfPresentTo(destination: FileKnowledgeStore, relative: String): Int64 {
         if (!this.has(relative)) {
             return 0
@@ -4370,6 +4414,28 @@ public class FileKnowledgeStore {
     private func parseNormalized(text: String): ArrayList<NormalizedRecord> {
         let diagnostics = ArrayList<String>()
         this.parseNormalizedInternal(text, false, diagnostics)
+    }
+
+    private func parseRaw(text: String): ArrayList<RawRecord> {
+        let out = ArrayList<RawRecord>()
+        if (text == "") {
+            return out
+        }
+        for (line in text.split("\n")) {
+            let parts = line.split("|")
+            if (parts.size >= 19) {
+                let metadata = metadataFromParts(parts, 4)
+                let record = RawRecord()
+                record.sourceId = unescapeField(parts[0])
+                record.title = unescapeField(parts[1])
+                record.content = unescapeField(parts[2])
+                record.contentHash = unescapeField(parts[3])
+                record.metadata = metadata
+                record.requiresReview = metadata.reviewState == ReviewStates.CANDIDATE
+                out.add(record)
+            }
+        }
+        out
     }
 
     private func parseNormalizedStrict(text: String, diagnostics: ArrayList<String>): ArrayList<NormalizedRecord> {
@@ -4413,6 +4479,27 @@ public class FileKnowledgeStore {
             out += "${escapeField(record.sourceId)}|${escapeField(record.title)}|${escapeField(record.content)}|${escapeField(record.contentHash)}|${metadataLine(record.metadata)}\n"
         }
         out
+    }
+
+    private func writeRawFilesAtomically(prefix: String, records: ArrayList<RawRecord>): Unit {
+        let base = if (prefix == "") { "" } else { "${prefix}/" }
+        this.writeLinesAtomically("${base}raw/records.ckb", this.rawLines(records))
+        for (record in records) {
+            this.writeLinesAtomically("${base}raw/${safeName(record.metadata.sourceType)}/${safeName(record.sourceId)}.ckb", this.rawLines(singleRawRecord(record)))
+        }
+    }
+
+    private func writeActiveSnapshotLiveShadow(status: KnowledgeStatus, rawRecords: ArrayList<RawRecord>, normalizedRecords: ArrayList<NormalizedRecord>, activeIndex: ArrayList<NormalizedRecord>, vectorRecords: ArrayList<VectorRecord>, vectorCollection: String, graph: GraphBuildResult, persistVectorFile!: Bool = true): Unit {
+        this.writeRawFilesAtomically("", rawRecords)
+        this.writeLinesAtomically("normalized/records.ckb", this.normalizedLines(normalizedRecords))
+        this.writeLinesAtomically("index/active.version", status.activeKnowledgeVersion + "\n")
+        this.writeLinesAtomically("index/active.ckb", this.normalizedLines(activeIndex))
+        if (persistVectorFile) {
+            this.writeLinesAtomically("index/vector-${safeName(vectorCollection)}.ckb", this.vectorLines(vectorRecords))
+        }
+        this.writeLinesAtomically("index/graph-nodes.ckb", this.graphNodeLines(graph.nodes))
+        this.writeLinesAtomically("index/graph-edges.ckb", this.graphEdgeLines(graph.edges))
+        this.writeLinesAtomically("metadata/status.ckb", this.metadataLines(status))
     }
 
     private func normalizedLines(records: ArrayList<NormalizedRecord>): String {
@@ -4491,6 +4578,51 @@ public class FileKnowledgeStore {
         }
         out
     }
+
+    private func metadataLines(status: KnowledgeStatus): String {
+        var text = "active=${status.activeKnowledgeVersion}\n"
+        text += "candidate=${status.candidateKnowledgeVersion}\n"
+        text += "failed=${status.failedCandidateVersion}\n"
+        text += "activeStateSource=${status.activeStateSource}\n"
+        text += "rawCount=${status.storage.rawCount}\n"
+        text += "normalizedCount=${status.storage.normalizedCount}\n"
+        text += "indexCount=${status.storage.indexCount}\n"
+        text += "textIndexCount=${status.storage.textIndexCount}\n"
+        text += "vectorIndexCount=${status.storage.vectorIndexCount}\n"
+        text += "symbolIndexCount=${status.storage.symbolIndexCount}\n"
+        text += "graphIndexCount=${status.storage.graphIndexCount}\n"
+        text += "vectorBackend=${status.storage.vectorBackend}\n"
+        text += "vectorState=${status.storage.vectorState}\n"
+        text += "vectorCollection=${status.storage.vectorCollection}\n"
+        text += "vectorActiveCollection=${status.storage.vectorActiveCollection}\n"
+        text += "vectorCandidateCollection=${status.storage.vectorCandidateCollection}\n"
+        text += "vectorDimension=${status.storage.vectorDimension}\n"
+        text += "vectorDegradedReason=${escapeField(status.storage.vectorDegradedReason)}\n"
+        text += "graphBackend=${status.storage.graphBackend}\n"
+        text += "graphState=${status.storage.graphState}\n"
+        text += "graphNodeCount=${status.storage.graphNodeCount}\n"
+        text += "graphEdgeCount=${status.storage.graphEdgeCount}\n"
+        text + this.indexManifestLines(status.indexManifest)
+    }
+
+    private func newActiveSnapshotTxId(activeVersion: String): String {
+        "${safeName(activeVersion)}-${DateTime.now().toUnixTimeStamp().toMilliseconds()}-${stableSummaryHash(activeVersion)}"
+    }
+
+    private func activeSnapshotCommitLines(txId: String, status: KnowledgeStatus): String {
+        var text = "txId=${txId}\n"
+        text += "active=${status.activeKnowledgeVersion}\n"
+        text += "committed=true\n"
+        text
+    }
+
+    private func activeSnapshotManifestLines(txId: String, status: KnowledgeStatus): String {
+        var text = "txId=${txId}\n"
+        text += "active=${status.activeKnowledgeVersion}\n"
+        text += "vectorActiveCollection=${status.storage.vectorActiveCollection}\n"
+        text += "committed=true\n"
+        text
+    }
 }
 
 public class StoreMetadataStatus {
@@ -4498,6 +4630,10 @@ public class StoreMetadataStatus {
     public var candidateVersion: String = ""
     public var failedVersion: String = ""
     public var activeStateSource: String = ""
+    public var snapshotManifestTxId: String = ""
+    public var vectorBackend: String = ""
+    public var vectorState: String = ""
+    public var vectorDimension: Int64 = 0
     public var vectorActiveCollection: String = "active"
     public var vectorCandidateCollection: String = "candidate"
 
@@ -4624,6 +4760,7 @@ private func schedulerCurrentText(runId: String, taskName: String, status: Strin
 
 public class ActiveSnapshot {
     public var valid: Bool = false
+    public var degraded: Bool = false
     public var diagnostic: String = ""
     public var activeVersion: String = ""
     public var candidateVersion: String = ""

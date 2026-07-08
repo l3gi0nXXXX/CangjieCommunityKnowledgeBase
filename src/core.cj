@@ -2609,7 +2609,14 @@ public class KnowledgeBase {
         this.activeKnowledgeVersion = snapshot.activeVersion
         this.candidateKnowledgeVersion = snapshot.candidateVersion
         this.failedCandidateVersion = snapshot.failedVersion
-        this.activeStateSource = if (snapshot.activeStateSource == "first_initialization") { "first_initialization" } else { "persisted" }
+        this.configureVectorCollections(snapshot.vectorActiveCollection, snapshot.vectorCandidateCollection)
+        this.activeStateSource = if (snapshot.activeStateSource == "first_initialization") {
+            "first_initialization"
+        } else if (snapshot.degraded || snapshot.activeStateSource == "persisted_degraded") {
+            "persisted_degraded"
+        } else {
+            "persisted"
+        }
         this.restoreDiagnostic = snapshot.diagnostic
         this.storage.rawCount = this.rawRecords.size
         this.storage.normalizedCount = this.normalizedRecords.size
@@ -2617,6 +2624,12 @@ public class KnowledgeBase {
         let vectorResult = this.restoreOrRebuildActiveVectorIndex(snapshot)
         if (!vectorResult.ok && vectorResult.diagnostic != "") {
             this.restoreDiagnostic = "${this.restoreDiagnostic};${vectorResult.diagnostic}"
+        }
+        if (snapshot.degraded) {
+            let vectorStatus = this.vectorStore.status(this.vectorCollection)
+            vectorStatus.state = EmbeddingProviderState.DEGRADED
+            vectorStatus.degradedReason = snapshot.diagnostic
+            this.applyVectorStatus(vectorStatus)
         }
         this.rebuildIndexManifest()
         return true
@@ -3311,24 +3324,12 @@ public class KnowledgeBase {
 
     public func persistActiveSnapshot(store: FileKnowledgeStore): Unit {
         store.ensureLayout()
-        store.saveRaw(this.rawRecords)
-        store.saveNormalized(this.activeIndex)
-        store.saveActiveIndex(this.activeIndex, this.activeKnowledgeVersion)
-        store.saveVectorCollection(this.activeVectorRecords(), this.vectorCollection)
-        store.saveGraph(this.activeGraphBuild())
-        store.saveMetadata(this.status())
+        store.writeActiveSnapshotTransaction(this.status(), this.rawRecords, this.activeIndex, this.activeIndex, this.activeVectorRecords(), this.vectorCollection, this.activeGraphBuild())
     }
 
     public func persistActiveSnapshotUsingVectorRecords(store: FileKnowledgeStore, vectorRecords: ArrayList<VectorRecord>, persistVectorFile!: Bool = true): Unit {
         store.ensureLayout()
-        store.saveRaw(this.rawRecords)
-        store.saveNormalized(this.activeIndex)
-        store.saveActiveIndex(this.activeIndex, this.activeKnowledgeVersion)
-        if (persistVectorFile) {
-            store.saveVectorCollection(vectorRecords, this.vectorCollection)
-        }
-        store.saveGraph(this.activeGraphBuild())
-        store.saveMetadata(this.status())
+        store.writeActiveSnapshotTransaction(this.status(), this.rawRecords, this.activeIndex, this.activeIndex, vectorRecords, this.vectorCollection, this.activeGraphBuild(), persistVectorFile: persistVectorFile)
     }
 
     public func persistCandidateSnapshot(store: FileKnowledgeStore): Unit {
@@ -3773,7 +3774,7 @@ public func newKnowledgeBaseFromStore(store: FileKnowledgeStore): KnowledgeBaseL
     let snapshot = store.loadActiveSnapshot()
     if (kb.restoreActiveSnapshot(snapshot)) {
         kb.restoreScheduler(store.loadScheduler())
-        result.source = "persisted"
+        result.source = kb.status().activeStateSource
         result.diagnostic = snapshot.diagnostic
         return result
     }

@@ -1045,20 +1045,67 @@ public class CkbBaselineTest {
     }
 
     @TestCase
-    public func activeSnapshotRejectsMissingVersionAndMismatchedMetadata(): Unit {
+    public func activeSnapshotTransactionWritesManifestCommitAndLiveShadow(): Unit {
+        let root = "target/ckb-test-snapshot-tx-commit"
+        let store = FileKnowledgeStore(root)
+        let kb = newOfflineKnowledgeBase()
+        let rebuild = ckbRebuildIndex(kb, store)
+        let metadata = store.loadMetadataStatus()
+        let txId = metadata.snapshotManifestTxId
+        let loaded = newKnowledgeBaseFromStore(store)
+
+        @Expect(rebuild.ok, true)
+        @Expect(txId != "", true)
+        @Expect(store.has("transactions/${txId}/COMMIT"), true)
+        @Expect(store.has("transactions/${txId}/index/active.ckb"), true)
+        @Expect(store.has("transactions/${txId}/metadata/status.ckb"), true)
+        @Expect(store.has("metadata/active-snapshot.manifest"), true)
+        @Expect(store.has("index/active.ckb"), true)
+        @Expect(loaded.source, "persisted")
+        @Expect(loaded.diagnostic, "ok")
+    }
+
+    @TestCase
+    public func activeSnapshotIgnoresUncommittedManifestTransaction(): Unit {
+        let root = "target/ckb-test-snapshot-tx-uncommitted"
+        let store = FileKnowledgeStore(root)
+        let kb = newOfflineKnowledgeBase()
+        let rebuild = ckbRebuildIndex(kb, store)
+        let oldVersion = store.loadActiveVersion()
+
+        store.writeLinesAtomically("transactions/pending-tx/index/active.version", "ckb-broken-active\n")
+        store.writeLinesAtomically("transactions/pending-tx/index/active.ckb", "broken\n")
+        store.writeLinesAtomically("metadata/active-snapshot.manifest", "txId=pending-tx\nactive=ckb-broken-active\ncommitted=true\n")
+        let snapshot = store.loadActiveSnapshot()
+
+        @Expect(rebuild.ok, true)
+        @Expect(snapshot.valid, true)
+        @Expect(snapshot.activeVersion, oldVersion)
+        @Expect(snapshot.diagnostic.contains("ignored_uncommitted_snapshot_tx:pending-tx"), true)
+    }
+
+    @TestCase
+    public func activeSnapshotRejectsMissingVersionAndRecoversMismatchedMetadataAsDegraded(): Unit {
         let missing = FileKnowledgeStore("target/ckb-test-restore-missing")
         let missingSnapshot = missing.loadActiveSnapshot()
         let store = FileKnowledgeStore("target/ckb-test-restore-mismatch")
         let kb = newOfflineKnowledgeBase()
         let rebuild = ckbRebuildIndex(kb, store)
+        _ = launch("/bin/rm", ["-f", Path("target/ckb-test-restore-mismatch/metadata/active-snapshot.manifest").toString()]).wait()
         File.writeTo(Path("target/ckb-test-restore-mismatch/metadata/status.ckb"), "active=wrong-active\n".toArray())
         let mismatched = store.loadActiveSnapshot()
+        let loaded = newKnowledgeBaseFromStore(store)
+        let status = cangjie_knowledge_status(loaded.kb)
 
         @Expect(missingSnapshot.valid, false)
         @Expect(missingSnapshot.diagnostic, "missing_active_version")
         @Expect(rebuild.ok, true)
-        @Expect(mismatched.valid, false)
+        @Expect(mismatched.valid, true)
+        @Expect(mismatched.degraded, true)
         @Expect(mismatched.diagnostic, "metadata_active_mismatch")
+        @Expect(loaded.source, "persisted_degraded")
+        @Expect(status.storage.indexCount, mismatched.activeIndex.size)
+        @Expect(status.restoreDiagnostic.contains("metadata_active_mismatch"), true)
     }
 
     @TestCase
