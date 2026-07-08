@@ -445,6 +445,24 @@ public class CkbQdrantVectorStoreTest {
     }
 
     @TestCase
+    public func tP4B01QdrantBackupAndRecreateHonorExpiredDeadlineWithoutNetworkCall(): Unit {
+        let executor = QdrantFakeExecutor()
+        let store = QdrantVectorStore("http://qdrant.test", 3, "Cosine", executor: executor)
+        let records = ArrayList<VectorRecord>()
+        records.add(qdrantRecord("id-deadline", "deadline", "deadline chunk", "cite://deadline", "cangjie", ReviewStates.TRUSTED))
+        let expired = ckbCoreNowMillis() - 1
+
+        let backup = store.backupWithDeadline("ckb_active", expired)
+        let recreate = store.recreateWithDeadline("ckb_active", records, expired)
+
+        @Expect(backup.valid, false)
+        @Expect(backup.diagnostic, "vector_store_deadline_exceeded:ckb_active")
+        @Expect(recreate.state, EmbeddingProviderState.DEGRADED)
+        @Expect(recreate.degradedReason, "vector_store_deadline_exceeded:ckb_active")
+        @Expect(executor.calls, 0)
+    }
+
+    @TestCase
     public func qdrantPointIdHashDoesNotOverflowForBaselineAndLongUnicodeIds(): Unit {
         let baseline = qdrantStablePointId("source-http-client")
         let longUnicode = qdrantStablePointId("Cangjie/community:docs/语言规范/很长很长很长很长的路径/README.md#source_analysis")

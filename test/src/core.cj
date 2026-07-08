@@ -617,6 +617,7 @@ public interface VectorStore {
     func recreate(collection: String, vectors: ArrayList<VectorRecord>): VectorStoreStatus
     func recreateWithDeadline(collection: String, vectors: ArrayList<VectorRecord>, deadlineAtMillis: Int64): VectorStoreStatus
     func backup(collection: String): VectorBackup
+    func backupWithDeadline(collection: String, deadlineAtMillis: Int64): VectorBackup
     func restore(backup: VectorBackup): VectorStoreStatus
 }
 
@@ -795,8 +796,17 @@ public class LocalVectorStore <: VectorStore {
     }
 
     public func backup(collection: String): VectorBackup {
+        this.backupWithDeadline(collection, 0)
+    }
+
+    public func backupWithDeadline(collection: String, deadlineAtMillis: Int64): VectorBackup {
         let backup = VectorBackup()
         backup.collection = collection
+        if (ckbDeadlineExceeded(deadlineAtMillis)) {
+            backup.valid = false
+            backup.diagnostic = "vector_store_deadline_exceeded:${collection}"
+            return backup
+        }
         if (!this.available) {
             backup.valid = false
             backup.diagnostic = "vector_store_unavailable"
@@ -1067,6 +1077,24 @@ public class QdrantVectorStore <: VectorStore {
         status
     }
 
+    private func clearWithDeadline(collection: String, deadlineAtMillis: Int64): VectorStoreStatus {
+        if (ckbDeadlineExceeded(deadlineAtMillis)) {
+            let status = this.baseStatus(collection)
+            status.state = EmbeddingProviderState.DEGRADED
+            status.count = this.cached(collection).records.size
+            status.degradedReason = "vector_store_deadline_exceeded:${collection}"
+            this.lastStatus = status
+            return status
+        }
+        let response = this.executeWithDeadline("DELETE", this.collectionUrl(collection), "", deadlineAtMillis)
+        let status = this.statusFromClearResponse(collection, response)
+        if (status.state == EmbeddingProviderState.READY) {
+            this.remember(collection, ArrayList<VectorRecord>())
+        }
+        this.lastStatus = status
+        status
+    }
+
     public func deleteCollection(collection: String): VectorStoreStatus {
         this.clear(collection)
     }
@@ -1107,7 +1135,7 @@ public class QdrantVectorStore <: VectorStore {
             this.lastStatus = validation
             return validation
         }
-        let cleared = this.clear(collection)
+        let cleared = this.clearWithDeadline(collection, deadlineAtMillis)
         if (cleared.state == EmbeddingProviderState.DOWN || (cleared.state == EmbeddingProviderState.DEGRADED && cleared.degradedReason != "collection_missing")) {
             this.lastStatus = cleared
             return cleared
@@ -1132,6 +1160,17 @@ public class QdrantVectorStore <: VectorStore {
     }
 
     public func backup(collection: String): VectorBackup {
+        this.backupWithDeadline(collection, 0)
+    }
+
+    public func backupWithDeadline(collection: String, deadlineAtMillis: Int64): VectorBackup {
+        if (ckbDeadlineExceeded(deadlineAtMillis)) {
+            let backup = VectorBackup()
+            backup.collection = collection
+            backup.valid = false
+            backup.diagnostic = "vector_store_deadline_exceeded:${collection}"
+            return backup
+        }
         let backup = VectorBackup()
         backup.collection = collection
         let cached = this.cached(collection)
@@ -1143,7 +1182,7 @@ public class QdrantVectorStore <: VectorStore {
             backup.diagnostic = "ok"
             return backup
         }
-        this.scrollBackup(collection)
+        this.scrollBackupWithDeadline(collection, deadlineAtMillis)
     }
 
     public func restore(backup: VectorBackup): VectorStoreStatus {
@@ -1444,14 +1483,19 @@ public class QdrantVectorStore <: VectorStore {
         }
     }
 
-    private func scrollBackup(collection: String): VectorBackup {
+    private func scrollBackupWithDeadline(collection: String, deadlineAtMillis: Int64): VectorBackup {
         let backup = VectorBackup()
         backup.collection = collection
         var offsetJson = ""
         var pages: Int64 = 0
         while (pages < 1000) {
+            if (ckbDeadlineExceeded(deadlineAtMillis)) {
+                backup.valid = false
+                backup.diagnostic = "qdrant_scroll_deadline_exceeded:${collection}:pages=${pages}"
+                return backup
+            }
             pages += 1
-            let response = this.execute("POST", "${this.collectionUrl(collection)}/points/scroll", qdrantScrollBody(offsetJson))
+            let response = this.executeWithDeadline("POST", "${this.collectionUrl(collection)}/points/scroll", qdrantScrollBody(offsetJson), deadlineAtMillis)
             if (!qdrantHttpOk(response)) {
                 backup.valid = false
                 backup.diagnostic = this.statusFromHttpResponse(collection, response, "scroll").degradedReason
@@ -3956,7 +4000,7 @@ public class KnowledgeBase {
         if (records.size == 0 || sourceCollection.trimAscii() == "" || ckbDeadlineExceeded(deadlineAtMillis)) {
             return out
         }
-        let backup = this.vectorStore.backup(sourceCollection)
+        let backup = this.vectorStore.backupWithDeadline(sourceCollection, deadlineAtMillis)
         if (!backup.valid || backup.records.size == 0) {
             return out
         }

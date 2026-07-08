@@ -438,6 +438,10 @@ private class ReconcileTrackingVectorStore <: VectorStore {
         backup
     }
 
+    public func backupWithDeadline(collection: String, deadlineAtMillis: Int64): VectorBackup {
+        this.backup(collection)
+    }
+
     public func restore(backup: VectorBackup): VectorStoreStatus {
         this.status(backup.collection)
     }
