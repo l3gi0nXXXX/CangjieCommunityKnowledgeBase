@@ -423,6 +423,33 @@ public class CkbSchedulerServiceF5Test {
     }
 
     @TestCase
+    public func tP2B01SlashRefAndEscapedSlashTreePathFetchContent(): Unit {
+        // T-P2-B01: release/1.0 is resolved safely and GitCode tree JSON escaped slashes become normal source paths.
+        let config = CkbRuntimeConfig()
+        config.networkEnabled = true
+        let store = FileKnowledgeStore("target/t-p2-b01-slash-ref-escaped-path")
+        store.saveCangjieVersionManifest(f7OfficialManifestSlashRefNoEval())
+        let runner = F7SlashRefTreeOkRunner()
+        runner.escapedSlashTreePath = true
+        let service = CkbCommandLoopService(config, store, sourceRunner: runner)
+        _ = service.start()
+        let tasks = ArrayList<String>()
+        tasks.add("cangjie_release_full_sync")
+
+        let result = service.runSchedulerTasks(tasks, true)
+
+        @Expect(result.ran, 1)
+        @Expect(result.succeeded, 1)
+        @Expect(result.failed, 0)
+        @Expect(f7RunnerSawUrlFragment(runner, "/git/trees/${f7SlashRefResolvedCommit()}?"), true)
+        @Expect(f7RunnerSawUrlFragment(runner, "/git/trees/release/1.0?"), false)
+        @Expect(f7RunnerSawSourcePath(runner, "Cangjie/cangjie_tools", "docs/std/stdx/tools/eval-support/README.md"), true)
+        @Expect(f7RunnerSawSourcePath(runner, "Cangjie/cangjie_tools", "target/generated/ignored.md"), false)
+        @Expect(f7RunnerSawUrlFragment(runner, "/raw/docs/std/stdx/tools/eval-support/README.md?ref=${f7SlashRefResolvedCommit()}"), true)
+        @Expect(f7SchedulerDiagnosticsContain(result, "required_source_failed"), false)
+    }
+
+    @TestCase
     public func p7Pos006bLegacyReleaseRefUsesSlashReleaseAliasWhenRemoteOmitsDashBranch(): Unit {
         let config = CkbRuntimeConfig()
         config.networkEnabled = true
@@ -724,8 +751,38 @@ public class CkbSchedulerServiceF5Test {
     }
 
     @TestCase
-    public func s1Bnd001AllDirectoryPagesReportEmptyAfterPages(): Unit {
-        // BND-S1-001: page 1..N only directories, then empty page; task is not reported successful.
+    public func tP2U01ToolsTreeContinuesPastFirstTenDirectoryPages(): Unit {
+        // T-P2-U01: cangjie_tools has directories on pages 1..10 and a documentation file on page 11.
+        let root = "target/t-p2-u01-tools-page11"
+        s1s2EnsureEmptyDir(root)
+        let config = CkbRuntimeConfig()
+        config.networkEnabled = true
+        let store = FileKnowledgeStore("${root}/store")
+        store.saveCangjieVersionManifest(f7OfficialManifestNoEval())
+        let runner = S1S2PaginatedGitCodeRunner()
+        runner.toolsCandidateAfterTenDirectoryPages = true
+        let service = CkbCommandLoopService(config, store, sourceRunner: runner)
+        _ = service.start()
+        let tasks = ArrayList<String>()
+        tasks.add("cangjie_version_branch_refresh")
+
+        let result = service.runSchedulerTasks(tasks, true)
+
+        @Expect(result.ran, 1)
+        @Expect(result.succeeded, 1)
+        @Expect(result.failed, 0)
+        @Expect(s1s2RunnerSawRepoTreePage(runner, "Cangjie/cangjie_tools", 11), true)
+        @Expect(s1s2RunnerSawSourcePath(runner, "Cangjie/cangjie_tools", "docs/tools/cjpm_manual.md"), true)
+        @Expect(s1s2RunnerSawSourcePath(runner, "Cangjie/cangjie_tools", "target/generated/ignored.md"), false)
+        @Expect(f7SchedulerDiagnosticsContain(result, "tools_required_source"), true)
+        @Expect(f7SchedulerDiagnosticsContain(result, "Cangjie/cangjie_tools:pagesScanned=11"), true)
+        @Expect(f7SchedulerDiagnosticsContain(result, "source_tree_empty_after_pages"), false)
+        @Expect(f7SchedulerDiagnosticsContain(result, "source_tree_no_candidate"), false)
+    }
+
+    @TestCase
+    public func tP2N01AllDirectoryPagesReportNoCandidate(): Unit {
+        // T-P2-N01: directories followed by an empty tree page are a clear no-candidate result, not a first-page failure.
         let root = "target/s1-bnd001-directory-pages"
         s1s2EnsureEmptyDir(root)
         let config = CkbRuntimeConfig()
@@ -744,10 +801,12 @@ public class CkbSchedulerServiceF5Test {
         @Expect(result.ran, 1)
         @Expect(result.failed, 1)
         @Expect(result.details.contains("scheduled_readiness_failed"), true)
-        @Expect(f7SchedulerDiagnosticsContain(result, "source_tree_empty_after_pages"), true)
+        @Expect(f7SchedulerDiagnosticsContain(result, "source_tree_no_candidate"), true)
+        @Expect(f7SchedulerDiagnosticsContain(result, "source_tree_empty_after_pages"), false)
         @Expect(f7SchedulerDiagnosticsContain(result, "pagesScanned=3"), true)
         @Expect(f7SchedulerDiagnosticsContain(result, "directories="), true)
         @Expect(f7SchedulerDiagnosticsContain(result, "candidates=0"), true)
+        @Expect(f7SchedulerDiagnosticsContain(result, "stop=empty_page"), true)
     }
 
     @TestCase
@@ -885,6 +944,33 @@ public class CkbSchedulerServiceF5Test {
         @Expect(freshness.failed, 0)
         @Expect(f7SchedulerDiagnosticsContain(freshness, "manifest_ready_for_freshness"), true)
         @Expect(f7SchedulerDiagnosticsContain(freshness, "version_manifest_contains_offline_baseline"), false)
+    }
+
+    @TestCase
+    public func tP2P01AllRequiredSourcesCanPromoteWithEvalSupport(): Unit {
+        // T-P2-P01: docs/std/stdx/tools/eval-support all resolve, so readiness allows promotion.
+        let fixture = f7WriteFullRootFixture("target/t-p2-p01-eval-fixture")
+        let root = "target/t-p2-p01-all-required-sources"
+        s1s2EnsureEmptyDir(root)
+        let config = CkbRuntimeConfig()
+        config.networkEnabled = true
+        config.firstInitEvalRoot = fixture.evalRoot
+        let store = FileKnowledgeStore("${root}/store")
+        store.saveCangjieVersionManifest(f5ScheduledManifest())
+        let runner = S1S2PaginatedGitCodeRunner()
+        let service = CkbCommandLoopService(config, store, sourceRunner: runner)
+        _ = service.start()
+        let tasks = ArrayList<String>()
+        tasks.add("cangjie_release_full_sync")
+
+        let result = service.runSchedulerTasks(tasks, true)
+
+        @Expect(result.ran, 1)
+        @Expect(result.succeeded, 1)
+        @Expect(result.failed, 0)
+        @Expect(f7SchedulerDiagnosticsContain(result, "required_source_failed"), false)
+        @Expect(f7SchedulerDiagnosticsContain(result, "eval_support_local_existing:"), true)
+        @Expect(f7SchedulerDiagnosticsContain(result, "version_manifest_saved:"), true)
     }
 
     @TestCase
@@ -1110,6 +1196,24 @@ private func s1s2RunnerSawTreePage(runner: S1S2PaginatedGitCodeRunner, page: Int
     false
 }
 
+private func s1s2RunnerSawRepoTreePage(runner: S1S2PaginatedGitCodeRunner, repo: String, page: Int64): Bool {
+    for (call in runner.calls) {
+        if (call.kind == SourceKinds.GITCODE_TREE && call.repo == repo && call.page == page) {
+            return true
+        }
+    }
+    false
+}
+
+private func s1s2RunnerSawSourcePath(runner: S1S2PaginatedGitCodeRunner, repo: String, path: String): Bool {
+    for (call in runner.calls) {
+        if (call.kind == SourceKinds.GITCODE_SOURCE && call.repo == repo && call.path == path) {
+            return true
+        }
+    }
+    false
+}
+
 private func s1s2EnsureEmptyDir(path: String): Unit {
     if (exists(Path(path))) {
         _ = launch("/bin/rm", ["-rf", path]).wait()
@@ -1326,6 +1430,7 @@ private class S1S2PaginatedGitCodeRunner <: SourceFetchRunner {
     public var failTreePage2: Bool = false
     public var failContentSamples: Bool = false
     public var failRefRepo: String = ""
+    public var toolsCandidateAfterTenDirectoryPages: Bool = false
 
     init() {}
 
@@ -1410,6 +1515,15 @@ private class S1S2PaginatedGitCodeRunner <: SourceFetchRunner {
     }
 
     private func treeBody(request: SourceFetchRequest): String {
+        if (this.toolsCandidateAfterTenDirectoryPages && request.repo == "Cangjie/cangjie_tools") {
+            if (request.page <= 10) {
+                return "{\"tree\":[{\"path\":\"tools/page-${request.page}\",\"type\":\"tree\"},{\"path\":\"docs/page-${request.page}\",\"type\":\"tree\"}],\"sha\":\"${f7GenericResolvedCommit()}\"}"
+            }
+            if (request.page == 11) {
+                return "{\"tree\":[{\"path\":\"target/generated/ignored.md\",\"type\":\"blob\"},{\"path\":\"docs/tools/cjpm_manual.md\",\"type\":\"blob\"},{\"path\":\"src/tools/generated_runner.cj\",\"type\":\"blob\"}],\"sha\":\"${f7GenericResolvedCommit()}\"}"
+            }
+            return "{\"tree\":[],\"sha\":\"${f7GenericResolvedCommit()}\"}"
+        }
         if (this.directoriesOnly) {
             if (request.page <= 2) {
                 return "{\"tree\":[{\"path\":\"runtime\",\"type\":\"tree\"},{\"path\":\"docs\",\"type\":\"tree\"},{\"path\":\"tools\",\"type\":\"tree\"}],\"sha\":\"${f7GenericResolvedCommit()}\"}"
@@ -1554,6 +1668,7 @@ private class F7SlashRefTreeOkRunner <: SourceFetchRunner {
     public var failEncodedTree: Bool = false
     public var malformedBranchList: Bool = false
     public var branchListOmitsRelease: Bool = false
+    public var escapedSlashTreePath: Bool = false
 
     init() {}
 
@@ -1602,6 +1717,12 @@ private class F7SlashRefTreeOkRunner <: SourceFetchRunner {
             return f7SlashRefFetchFailure(request, result, "tree_ref_not_resolved")
         } else if (request.kind == SourceKinds.GITCODE_TREE && this.failEncodedTree) {
             return f7SlashRefFetchFailure(request, result, "remote_tree_unavailable")
+        } else if (request.kind == SourceKinds.GITCODE_TREE && this.escapedSlashTreePath && request.repo == "Cangjie/cangjie_tools") {
+            result.ok = true
+            result.status = "ok"
+            result.statusCode = 200
+            result.commit = f7SlashRefResolvedCommit()
+            result.body = "{\"tree\":[{\"path\":\"target\\/generated\\/ignored.md\",\"type\":\"blob\"},{\"path\":\"docs\\/std\\/stdx\\/tools\\/eval-support\\/README.md\",\"type\":\"blob\"}],\"sha\":\"${result.commit}\"}"
         } else if (request.kind == SourceKinds.GITCODE_TREE) {
             result.ok = true
             result.status = "ok"
@@ -1718,6 +1839,15 @@ private func f7RunnerSawKind(runner: F7GitCodeMetadata400TreeOkRunner, kind: Str
 private func f7RunnerSawUrlFragment(runner: F7SlashRefTreeOkRunner, fragment: String): Bool {
     for (call in runner.calls) {
         if (call.url.contains(fragment)) {
+            return true
+        }
+    }
+    false
+}
+
+private func f7RunnerSawSourcePath(runner: F7SlashRefTreeOkRunner, repo: String, path: String): Bool {
+    for (call in runner.calls) {
+        if (call.kind == SourceKinds.GITCODE_SOURCE && call.repo == repo && call.path == path) {
             return true
         }
     }
