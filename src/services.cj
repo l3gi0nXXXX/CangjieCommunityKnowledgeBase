@@ -4085,8 +4085,8 @@ public class FileKnowledgeStore {
         this.writeLinesAtomically("${txRoot}/index/graph-edges.ckb", this.graphEdgeLines(graph.edges))
         this.writeLinesAtomically("${txRoot}/metadata/status.ckb", this.metadataLines(status))
         this.writeLinesAtomically("${txRoot}/COMMIT", this.activeSnapshotCommitLines(txId, status))
-        this.writeLinesAtomically("metadata/active-snapshot.manifest", this.activeSnapshotManifestLines(txId, status))
         this.writeActiveSnapshotLiveShadow(status, rawRecords, normalizedRecords, activeIndex, vectorRecords, vectorCollection, graph, persistVectorFile: persistVectorFile)
+        this.writeLinesAtomically("metadata/active-snapshot.manifest", this.activeSnapshotManifestLines(txId, status))
         txId
     }
 
@@ -4893,7 +4893,7 @@ public class FileSchedulerProgressSink <: SchedulerProgressSink {
     public func onTaskFinished(runId: String, taskName: String, task: SchedulerTaskResult): Unit {
         this.ensureProgressPath(runId)
         let status = if (task.ok) { "succeeded" } else { task.status }
-        let diagnostic = if (task.validationDiagnostics.size > 0) { task.validationDiagnostics[0] } else { task.status }
+        let diagnostic = schedulerTaskProgressDiagnostic(task)
         this.store.appendLinesAtomically(this.progressPath, schedulerProgressJson(runId, "task_finished", taskName, status, diagnostic, task.durationMillis))
         this.store.writeLinesAtomically("metadata/scheduler-current.ckb", schedulerCurrentText(runId, taskName, status, this.progressPath, diagnostic))
     }
@@ -4953,6 +4953,23 @@ public class FileVectorBuildProgressSink <: VectorBuildProgressSink {
             this.progressPath = "metadata/vector-reconcile-runs/${safeName(runId)}.jsonl"
         }
     }
+}
+
+private func schedulerTaskProgressDiagnostic(task: SchedulerTaskResult): String {
+    for (diagnostic in task.validationDiagnostics) {
+        if (diagnostic.contains("readiness:") || diagnostic.contains("routine_contract:") || diagnostic.contains("candidate_validation") || diagnostic.contains("vector_health_failed")) {
+            return diagnostic
+        }
+    }
+    for (diagnostic in task.validationDiagnostics) {
+        if (!diagnostic.startsWith("fetch:")) {
+            return diagnostic
+        }
+    }
+    if (task.validationDiagnostics.size > 0) {
+        return task.validationDiagnostics[0]
+    }
+    task.status
 }
 
 private func vectorBuildProgressJson(progress: VectorBuildProgress, event: String): String {
@@ -5440,7 +5457,8 @@ public class CkbSchedulerTaskRunner <: SchedulerTaskRunner {
         let manifest = this.runtimeVersionManifest()
         let fetch = ckbRunScheduledProfileFetches(profile, this.sourceRunner, this.config, this.store, manifest)
         fetch.runId = "${this.kb.scheduler.clock.nowMinutes}"
-        let ingest = ingestScheduledProfileSources(this.kb, this.store, profile, fetch, this.config, manifest)
+        let progressSink = FileVectorBuildProgressSink(this.store)
+        let ingest = ingestScheduledProfileSources(this.kb, this.store, profile, fetch, this.config, manifest, progressSink: progressSink, deadlineAtMillis: deadlineAtMillis)
         let status = this.kb.status()
         result.ok = fetch.ok && ingest.ok
         result.status = if (result.ok) { ingest.status } else { if (ingest.status != "") { ingest.status } else { "profile_degraded" } }
@@ -6821,14 +6839,14 @@ private func ckbScheduledSourceRequiredness(profile: CkbScheduleTaskProfile, sou
     true
 }
 
-private func ingestScheduledProfileSources(kb: KnowledgeBase, store: FileKnowledgeStore, profile: CkbScheduleTaskProfile, fetch: CkbScheduledProfileFetchResult, config: CkbRuntimeConfig, manifest: CangjieVersionManifest): CkbScheduledProfileIngestResult {
+private func ingestScheduledProfileSources(kb: KnowledgeBase, store: FileKnowledgeStore, profile: CkbScheduleTaskProfile, fetch: CkbScheduledProfileFetchResult, config: CkbRuntimeConfig, manifest: CangjieVersionManifest, progressSink!: VectorBuildProgressSink = NoopVectorBuildProgressSink(), deadlineAtMillis!: Int64 = 0): CkbScheduledProfileIngestResult {
     let result = CkbScheduledProfileIngestResult()
     result.status = if (fetch.ok) { "profile_ok" } else { fetch.status }
     for (diagnostic in fetch.diagnostics) {
         result.validationDiagnostics.add("fetch:${diagnostic}")
     }
     if (profile.profile == "cangjie_benchmark_gap_curation") {
-        return ingestScheduledBenchmarkGapCuration(kb, store, profile, config, manifest)
+        return ingestScheduledBenchmarkGapCuration(kb, store, profile, config, manifest, progressSink: progressSink, deadlineAtMillis: deadlineAtMillis)
     }
     if (profile.candidateMode == "" || profile.candidateMode == "none" || profile.candidateMode == "probe_only") {
         result.ok = fetch.ok
@@ -6865,7 +6883,7 @@ private func ingestScheduledProfileSources(kb: KnowledgeBase, store: FileKnowled
     }
     let candidateVersion = ckbScheduledCandidateVersion(profile, fetch)
     let candidateRecords = kb.activeRecordSnapshotOverlay(delta)
-    let promotion = cangjiePromoteCandidateRecordsAfterValidationWithVersion(kb, store, candidateVersion, candidateRecords)
+    let promotion = cangjiePromoteCandidateRecordsAfterValidationWithVersion(kb, store, candidateVersion, candidateRecords, progressSink: progressSink, deadlineAtMillis: deadlineAtMillis)
     ckbApplyScheduledPromotionResult(result, promotion, "candidate_validated_promoted")
     if (result.ok && (profile.profile == "cangjie_release_full_sync" || profile.profile == "cangjie_version_branch_refresh")) {
         ckbPersistScheduledVersionManifestAfterRefresh(store, profile, fetch, config, manifest, result)
@@ -6876,7 +6894,7 @@ private func ingestScheduledProfileSources(kb: KnowledgeBase, store: FileKnowled
     result
 }
 
-private func ingestScheduledBenchmarkGapCuration(kb: KnowledgeBase, store: FileKnowledgeStore, profile: CkbScheduleTaskProfile, config: CkbRuntimeConfig, manifest: CangjieVersionManifest): CkbScheduledProfileIngestResult {
+private func ingestScheduledBenchmarkGapCuration(kb: KnowledgeBase, store: FileKnowledgeStore, profile: CkbScheduleTaskProfile, config: CkbRuntimeConfig, manifest: CangjieVersionManifest, progressSink!: VectorBuildProgressSink = NoopVectorBuildProgressSink(), deadlineAtMillis!: Int64 = 0): CkbScheduledProfileIngestResult {
     let result = CkbScheduledProfileIngestResult()
     let inputPath = ckbBenchmarkGapCurationInputPath(config, store)
     if (inputPath == "") {
@@ -6921,7 +6939,7 @@ private func ingestScheduledBenchmarkGapCuration(kb: KnowledgeBase, store: FileK
     fetch.fetchedCount = curated.accepted
     let candidateVersion = ckbScheduledCandidateVersion(profile, fetch)
     let candidateRecords = kb.activeRecordSnapshotOverlay(curated.records)
-    let promotion = cangjiePromoteCandidateRecordsAfterValidationWithVersion(kb, store, candidateVersion, candidateRecords)
+    let promotion = cangjiePromoteCandidateRecordsAfterValidationWithVersion(kb, store, candidateVersion, candidateRecords, progressSink: progressSink, deadlineAtMillis: deadlineAtMillis)
     ckbApplyScheduledPromotionResult(result, promotion, "benchmark_gap_candidate_promoted")
     if (result.ok) {
         var coveragePass = true

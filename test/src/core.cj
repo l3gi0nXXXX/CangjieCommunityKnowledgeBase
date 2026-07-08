@@ -2324,9 +2324,14 @@ public class SchedulerExecutor {
                 if (task.durationMillis <= 0) {
                     task.durationMillis = ckbCoreNowMillis() - started
                 }
+                if (task.timeBudgetMillis <= 0) {
+                    task.timeBudgetMillis = timeoutMillis
+                }
                 return task
-            } catch (_: Exception) {
-                return schedulerExceptionTaskResult(name, "task_exception", ckbCoreNowMillis() - started)
+            } catch (e: Exception) {
+                let task = schedulerExceptionTaskResult(name, "task_exception", ckbCoreNowMillis() - started, message: schedulerExceptionMessage(e))
+                task.timeBudgetMillis = timeoutMillis
+                return task
             }
         }
         try {
@@ -2334,15 +2339,24 @@ public class SchedulerExecutor {
             if (task.durationMillis <= 0) {
                 task.durationMillis = ckbCoreNowMillis() - started
             }
+            if (task.timeBudgetMillis <= 0) {
+                task.timeBudgetMillis = timeoutMillis
+            }
             if (task.status.startsWith("task_timeout:")) {
                 return task
             }
             if (ckbDeadlineExceeded(deadlineAtMillis)) {
-                return schedulerExceptionTaskResult(name, "task_timeout:${name}", ckbCoreNowMillis() - started)
+                task.ok = false
+                task.status = "task_timeout:${name}"
+                task.durationMillis = ckbCoreNowMillis() - started
+                return task
             }
             return task
-        } catch (_: Exception) {
-            return schedulerExceptionTaskResult(name, "task_timeout:${name}", ckbCoreNowMillis() - started)
+        } catch (e: Exception) {
+            let status = if (ckbDeadlineExceeded(deadlineAtMillis)) { "task_timeout:${name}" } else { "task_exception" }
+            let task = schedulerExceptionTaskResult(name, status, ckbCoreNowMillis() - started, message: schedulerExceptionMessage(e))
+            task.timeBudgetMillis = timeoutMillis
+            return task
         }
     }
 
@@ -2403,13 +2417,38 @@ public class SchedulerExecutor {
     }
 }
 
-private func schedulerExceptionTaskResult(name: String, status: String, durationMillis: Int64): SchedulerTaskResult {
+private func schedulerExceptionTaskResult(name: String, status: String, durationMillis: Int64, message!: String = ""): SchedulerTaskResult {
     let task = SchedulerTaskResult()
     task.ok = false
     task.status = status
     task.durationMillis = durationMillis
-    task.validationDiagnostics.add("${name}:${status}")
+    let detail = schedulerDiagnosticSafePrefix(message, 160)
+    task.validationDiagnostics.add(if (detail == "") { "${name}:${status}" } else { "${name}:${status}:${detail}" })
     task
+}
+
+private func schedulerExceptionMessage(e: Exception): String {
+    let message = e.message.replace("\n", " ").replace("\r", " ").trimAscii()
+    if (message != "") {
+        return message
+    }
+    e.toString().replace("\n", " ").replace("\r", " ").trimAscii()
+}
+
+private func schedulerDiagnosticSafePrefix(raw: String, limit: Int64): String {
+    if (limit <= 0) {
+        return ""
+    }
+    var out = ""
+    var count: Int64 = 0
+    for (r in raw.runes()) {
+        if (count >= limit) {
+            return out
+        }
+        out += r.toString()
+        count += 1
+    }
+    out
 }
 
 public class FreshnessResult {
@@ -2966,6 +3005,35 @@ public class KnowledgeBase {
         true
     }
 
+    public func commitCandidateToActiveAfterVectorReady(activeVersion: String, vectorCollection: String, vectorStatus: VectorStoreStatus): Bool {
+        if (this.candidateIndex.size == 0 || this.candidateKnowledgeVersion == "") {
+            this.failedCandidateVersion = if (this.candidateKnowledgeVersion == "") { "candidate_missing" } else { this.candidateKnowledgeVersion }
+            return false
+        }
+        if (vectorStatus.state != EmbeddingProviderState.READY) {
+            this.failedCandidateVersion = this.candidateKnowledgeVersion
+            return false
+        }
+        this.activeIndex.clear()
+        for (record in this.candidateIndex) {
+            this.activeIndex.add(record)
+        }
+        this.activeKnowledgeVersion = if (activeVersion.trimAscii() == "") { this.candidateKnowledgeVersion.replace("-candidate", "-active") } else { activeVersion.trimAscii() }
+        for (record in this.activeIndex) {
+            record.metadata.knowledgeVersion = this.activeKnowledgeVersion
+            record.metadata.candidateVersion = this.candidateKnowledgeVersion
+        }
+        this.failedCandidateVersion = ""
+        this.storage.indexCount = this.activeIndex.size
+        this.promoteVectorActiveCollection(vectorCollection)
+        this.applyVectorStatus(vectorStatus)
+        this.invalidateServingCacheOnActiveVersionChange()
+        this.rebuildServingIndexStatus()
+        this.rebuildGraphIndex()
+        this.rebuildIndexManifest()
+        true
+    }
+
     public func publishIndex(simulateFailure: Bool): Bool {
         let candidateVersion = this.stageCandidateIndex("ckb-20260519-000100-candidate")
         if (simulateFailure) {
@@ -3102,13 +3170,22 @@ public class KnowledgeBase {
     }
 
     private func rebuildProductionVectorIndexWithResult(progressSink!: VectorBuildProgressSink = NoopVectorBuildProgressSink(), targetVectorCollection!: String = "", deadlineAtMillis!: Int64 = 0): VectorIndexBuildResult {
+        let effectiveVectorCollection = if (targetVectorCollection.trimAscii() == "") { this.vectorCollection } else { targetVectorCollection.trimAscii() }
+        this.buildVectorIndexForRecordsInternal(this.activeIndex, effectiveVectorCollection, progressSink: progressSink, deadlineAtMillis: deadlineAtMillis, applyToStorage: true)
+    }
+
+    public func buildVectorIndexForRecords(records: ArrayList<NormalizedRecord>, collection: String, progressSink!: VectorBuildProgressSink = NoopVectorBuildProgressSink(), deadlineAtMillis!: Int64 = 0): VectorIndexBuildResult {
+        this.buildVectorIndexForRecordsInternal(records, collection, progressSink: progressSink, deadlineAtMillis: deadlineAtMillis, applyToStorage: false)
+    }
+
+    private func buildVectorIndexForRecordsInternal(records: ArrayList<NormalizedRecord>, collection: String, progressSink!: VectorBuildProgressSink = NoopVectorBuildProgressSink(), deadlineAtMillis!: Int64 = 0, applyToStorage!: Bool = false): VectorIndexBuildResult {
         let result = VectorIndexBuildResult()
         let progress = VectorBuildProgress()
-        let effectiveVectorCollection = if (targetVectorCollection.trimAscii() == "") { this.vectorCollection } else { targetVectorCollection.trimAscii() }
+        let effectiveVectorCollection = if (collection.trimAscii() == "") { this.vectorCollection } else { collection.trimAscii() }
         progress.runId = ckbVectorBuildRunId()
         progress.collection = effectiveVectorCollection
         progress.targetCollection = effectiveVectorCollection
-        progress.total = this.activeIndex.size
+        progress.total = records.size
         let embeddingStatus = this.embeddingProvider.status()
         progress.batchSize = if (embeddingStatus.batchSize > 0) { embeddingStatus.batchSize } else { 16 }
         progress.startedAtMillis = ckbCoreNowMillis()
@@ -3123,7 +3200,9 @@ public class KnowledgeBase {
             progress.diagnostic = vectorStatus.degradedReason
             progress.updatedAtMillis = ckbCoreNowMillis()
             progress.elapsedMillis = progress.updatedAtMillis - progress.startedAtMillis
-            this.applyVectorStatus(vectorStatus)
+            if (applyToStorage) {
+                this.applyVectorStatus(vectorStatus)
+            }
             result.ok = false
             result.status = vectorStatus.state
             result.diagnostic = vectorStatus.degradedReason
@@ -3132,12 +3211,14 @@ public class KnowledgeBase {
             progressSink.onVectorBuildFinished(progress)
             return result
         }
-        if (this.activeIndex.size == 0) {
+        if (records.size == 0) {
             progress.state = EmbeddingProviderState.READY
             progress.updatedAtMillis = ckbCoreNowMillis()
             progress.elapsedMillis = progress.updatedAtMillis - progress.startedAtMillis
             vectorStatus.count = 0
-            this.applyVectorStatus(vectorStatus)
+            if (applyToStorage) {
+                this.applyVectorStatus(vectorStatus)
+            }
             result.ok = true
             result.status = EmbeddingProviderState.READY
             result.vectorCount = 0
@@ -3147,7 +3228,7 @@ public class KnowledgeBase {
         }
         var batchIndex: Int64 = 0
         let rawTexts = ArrayList<String>()
-        for (record in this.activeIndex) {
+        for (record in records) {
             rawTexts.add(this.vectorText(record))
         }
         let textBatches = CkbEmbeddingTextBudgeter(ckbEmbeddingTextBudgetFromStatus(embeddingStatus)).batches(rawTexts)
@@ -3162,7 +3243,9 @@ public class KnowledgeBase {
                 progress.lastDiagnostic = vectorStatus.degradedReason
                 progress.updatedAtMillis = ckbCoreNowMillis()
                 progress.elapsedMillis = progress.updatedAtMillis - progress.startedAtMillis
-                this.applyVectorStatus(vectorStatus)
+                if (applyToStorage) {
+                    this.applyVectorStatus(vectorStatus)
+                }
                 result.ok = false
                 result.status = vectorStatus.state
                 result.vectorCount = progress.completed
@@ -3210,7 +3293,7 @@ public class KnowledgeBase {
             }
             let vectorRecords = ArrayList<VectorRecord>()
             for (i in 0..texts.size) {
-                let source = this.activeIndex[textBatch.startIndex + i]
+                let source = records[textBatch.startIndex + i]
                 vectorRecords.add(this.vectorRecordFrom(source, batch.vectors[i], ckbVectorPointId(source, textBatch.startIndex + i)))
             }
             vectorStatus = this.vectorStore.upsertBatch(effectiveVectorCollection, vectorRecords)
@@ -3222,7 +3305,9 @@ public class KnowledgeBase {
                 progress.updatedAtMillis = ckbCoreNowMillis()
                 progress.elapsedMillis = progress.updatedAtMillis - progress.startedAtMillis
                 vectorStatus.count = progress.completed
-                this.applyVectorStatus(vectorStatus)
+                if (applyToStorage) {
+                    this.applyVectorStatus(vectorStatus)
+                }
                 result.ok = false
                 result.status = vectorStatus.state
                 result.vectorCount = progress.completed
@@ -3245,7 +3330,9 @@ public class KnowledgeBase {
         progress.updatedAtMillis = ckbCoreNowMillis()
         progress.elapsedMillis = progress.updatedAtMillis - progress.startedAtMillis
         vectorStatus.count = progress.completed
-        this.applyVectorStatus(vectorStatus)
+        if (applyToStorage) {
+            this.applyVectorStatus(vectorStatus)
+        }
         result.ok = true
         result.status = EmbeddingProviderState.READY
         result.vectorCount = progress.completed

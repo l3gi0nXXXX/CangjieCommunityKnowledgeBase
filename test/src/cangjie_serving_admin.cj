@@ -1,6 +1,7 @@
 package cangjie_community_knowledge_base_test
 
 import std.collection.ArrayList
+import std.time.DateTime
 
 public class CangjieCandidateValidationResult {
     public var ok: Bool = false
@@ -165,36 +166,88 @@ public func cangjiePromoteCandidateAfterValidation(kb: KnowledgeBase, store: Fil
     cangjiePromoteCandidateAfterValidationWithVersion(kb, store, cangjieLiveSyncCandidateVersion(), forceFailure: forceFailure)
 }
 
-public func cangjiePromoteCandidateAfterValidationWithVersion(kb: KnowledgeBase, store: FileKnowledgeStore, candidateVersion: String, forceFailure!: Bool = false): CangjieCandidatePromotionResult {
+public func cangjiePromoteCandidateAfterValidationWithVersion(kb: KnowledgeBase, store: FileKnowledgeStore, candidateVersion: String, forceFailure!: Bool = false, progressSink!: VectorBuildProgressSink = NoopVectorBuildProgressSink(), deadlineAtMillis!: Int64 = 0): CangjieCandidatePromotionResult {
     let stagedCandidateVersion = kb.stageCandidateIndex(candidateVersion)
-    cangjiePromoteStagedCandidateAfterValidation(kb, store, stagedCandidateVersion, forceFailure: forceFailure)
+    cangjiePromoteStagedCandidateAfterValidation(kb, store, stagedCandidateVersion, forceFailure: forceFailure, progressSink: progressSink, deadlineAtMillis: deadlineAtMillis)
 }
 
-public func cangjiePromoteCandidateRecordsAfterValidationWithVersion(kb: KnowledgeBase, store: FileKnowledgeStore, candidateVersion: String, records: ArrayList<NormalizedRecord>, forceFailure!: Bool = false): CangjieCandidatePromotionResult {
+public func cangjiePromoteCandidateRecordsAfterValidationWithVersion(kb: KnowledgeBase, store: FileKnowledgeStore, candidateVersion: String, records: ArrayList<NormalizedRecord>, forceFailure!: Bool = false, progressSink!: VectorBuildProgressSink = NoopVectorBuildProgressSink(), deadlineAtMillis!: Int64 = 0): CangjieCandidatePromotionResult {
     let stagedCandidateVersion = kb.stageCandidateRecords(candidateVersion, records)
-    cangjiePromoteStagedCandidateAfterValidation(kb, store, stagedCandidateVersion, forceFailure: forceFailure)
+    cangjiePromoteStagedCandidateAfterValidation(kb, store, stagedCandidateVersion, forceFailure: forceFailure, progressSink: progressSink, deadlineAtMillis: deadlineAtMillis)
 }
 
-private func cangjiePromoteStagedCandidateAfterValidation(kb: KnowledgeBase, store: FileKnowledgeStore, stagedCandidateVersion: String, forceFailure!: Bool = false): CangjieCandidatePromotionResult {
+private func cangjiePromoteStagedCandidateAfterValidation(kb: KnowledgeBase, store: FileKnowledgeStore, stagedCandidateVersion: String, forceFailure!: Bool = false, progressSink!: VectorBuildProgressSink = NoopVectorBuildProgressSink(), deadlineAtMillis!: Int64 = 0): CangjieCandidatePromotionResult {
     let result = CangjieCandidatePromotionResult()
     result.candidateVersion = stagedCandidateVersion
     result.candidateWritten = true
-    result.validation = validateCandidateServingIndexWithVectorStatus(kb.candidateRecordSnapshot(), stagedCandidateVersion, kb.vectorStatus(), forceFailure: forceFailure)
-    if (!result.validation.ok) {
+    kb.persistCandidateSnapshot(store)
+    let candidateRecords = kb.candidateRecordSnapshot()
+    if (forceFailure) {
+        result.validation = validateCandidateServingIndexWithVectorStatus(candidateRecords, stagedCandidateVersion, cangjieCandidateImplicitVectorStatus(candidateRecords), forceFailure: true)
         kb.markCandidateValidationFailed(stagedCandidateVersion)
         kb.persistCandidateSnapshot(store)
         result.activeVersion = kb.status().activeKnowledgeVersion
         return result
     }
+    let stagingCollection = cangjieCandidateStagingCollection(kb, stagedCandidateVersion)
+    let vectorBuild = kb.buildVectorIndexForRecords(candidateRecords, stagingCollection, progressSink: progressSink, deadlineAtMillis: deadlineAtMillis)
+    var vectorStatus = cangjieCandidateVerifiedVectorStatus(kb, stagingCollection, candidateRecords.size, vectorBuild)
+    result.validation = validateCandidateServingIndexWithVectorStatus(candidateRecords, stagedCandidateVersion, vectorStatus, forceFailure: false)
+    if (!result.validation.ok) {
+        kb.markCandidateValidationFailed(stagedCandidateVersion)
+        kb.persistCandidateSnapshot(store)
+        cangjieDeleteCandidateStaging(kb, stagingCollection, result.validation)
+        result.activeVersion = kb.status().activeKnowledgeVersion
+        return result
+    }
     let activeVersion = cangjieActiveVersionForCandidate(stagedCandidateVersion)
-    result.activePromoted = kb.promoteCandidateToActive(activeVersion)
+    result.activePromoted = kb.commitCandidateToActiveAfterVectorReady(activeVersion, stagingCollection, vectorStatus)
     result.activeVersion = activeVersion
-    kb.persistCandidateSnapshot(store)
     if (result.activePromoted) {
-        kb.persistActiveSnapshot(store)
+        kb.persistActiveSnapshotUsingVectorRecords(store, vectorBuild.vectorRecords, persistVectorFile: cangjieCandidateShouldPersistVectorFile(vectorStatus))
+    } else {
+        cangjieDeleteCandidateStaging(kb, stagingCollection, result.validation)
     }
     result.ok = result.activePromoted
     result
+}
+
+private func cangjieCandidateStagingCollection(kb: KnowledgeBase, candidateVersion: String): String {
+    let status = kb.status()
+    let activeCollection = status.storage.vectorActiveCollection.trimAscii()
+    let identity = "${candidateVersion}:${activeCollection}"
+    "ckb_candidate_stage_${DateTime.now().toUnixTimeStamp().toMilliseconds()}_${stableSummaryHash(identity)}"
+}
+
+private func cangjieCandidateVerifiedVectorStatus(kb: KnowledgeBase, stagingCollection: String, expectedCount: Int64, vectorBuild: VectorIndexBuildResult): VectorStoreStatus {
+    let status = kb.vectorCollectionStatus(stagingCollection)
+    if (status.collection == "") {
+        status.collection = stagingCollection
+    }
+    if (!vectorBuild.ok) {
+        status.state = EmbeddingProviderState.DEGRADED
+        status.degradedReason = if (vectorBuild.diagnostic != "") { vectorBuild.diagnostic } else { "candidate_vector_build_failed" }
+        status.count = vectorBuild.vectorCount
+        return status
+    }
+    if (status.state == EmbeddingProviderState.READY && status.count != expectedCount) {
+        status.state = EmbeddingProviderState.DEGRADED
+        status.degradedReason = "candidate_vector_count_mismatch:${status.count}:${expectedCount}:${stagingCollection}"
+    }
+    status
+}
+
+private func cangjieCandidateShouldPersistVectorFile(status: VectorStoreStatus): Bool {
+    status.backend != "qdrant"
+}
+
+private func cangjieDeleteCandidateStaging(kb: KnowledgeBase, stagingCollection: String, validation: CangjieCandidateValidationResult): Unit {
+    let deleted = kb.deleteVectorCollection(stagingCollection)
+    if (deleted.state == EmbeddingProviderState.READY) {
+        validation.diagnostics.add("candidate_staging_deleted:${stagingCollection}")
+    } else if (deleted.degradedReason != "") {
+        validation.diagnostics.add("candidate_staging_delete_failed:${deleted.degradedReason}")
+    }
 }
 
 private func cangjieServingDocumentHashSeed(documents: ArrayList<CangjieServingDocument>): String {
