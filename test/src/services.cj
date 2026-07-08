@@ -4467,6 +4467,84 @@ public class FileKnowledgeStore {
         this.writeLinesAtomically("metadata/cangjie-freshness.ckb", text)
     }
 
+    public func loadCangjieCorpusFreshness(): CangjieCorpusFreshnessReport {
+        let report = CangjieCorpusFreshnessReport()
+        var text = ""
+        try {
+            text = this.readLines("metadata/cangjie-freshness.ckb")
+        } catch (_: Exception) {
+            report.ok = false
+            report.degraded = true
+            report.diagnostics.add("freshness_artifact_invalid_encoding")
+            return report
+        }
+        if (text == "") {
+            report.ok = false
+            report.degraded = true
+            report.diagnostics.add("freshness_artifact_missing")
+            return report
+        }
+        var recognizedLineCount: Int64 = 0
+        for (line in text.split("\n")) {
+            let trimmed = line.trimAscii()
+            if (trimmed == "") {
+                continue
+            }
+            if (trimmed.startsWith("ok=")) {
+                recognizedLineCount += 1
+                report.ok = parseBool(trimmed[3..trimmed.size])
+            } else if (trimmed.startsWith("degraded=")) {
+                recognizedLineCount += 1
+                report.degraded = parseBool(trimmed[9..trimmed.size])
+            } else if (trimmed.startsWith("activeKnowledgeVersion=")) {
+                recognizedLineCount += 1
+                report.activeKnowledgeVersion = unescapeField(trimmed[23..trimmed.size])
+            } else if (trimmed.startsWith("candidateKnowledgeVersion=")) {
+                recognizedLineCount += 1
+                report.candidateKnowledgeVersion = unescapeField(trimmed[26..trimmed.size])
+            } else if (trimmed.startsWith("failedCandidateVersion=")) {
+                recognizedLineCount += 1
+                report.failedCandidateVersion = unescapeField(trimmed[23..trimmed.size])
+            } else if (trimmed.startsWith("targetVersion=")) {
+                recognizedLineCount += 1
+                report.targetVersion = unescapeField(trimmed[14..trimmed.size])
+            } else if (trimmed.startsWith("diagnostic|")) {
+                recognizedLineCount += 1
+                let parts = trimmed.split("|")
+                if (parts.size >= 2) {
+                    report.diagnostics.add(unescapeField(parts[1]))
+                }
+            } else if (trimmed.startsWith("source|")) {
+                recognizedLineCount += 1
+                let parts = trimmed.split("|")
+                if (parts.size >= 11) {
+                    let source = CangjieCorpusFreshnessSource()
+                    source.sourceSet = unescapeField(parts[1])
+                    source.sourceFamily = unescapeField(parts[2])
+                    source.sourceRepo = unescapeField(parts[3])
+                    source.sourceRef = unescapeField(parts[4])
+                    source.resolvedCommit = unescapeField(parts[5])
+                    source.contentHash = unescapeField(parts[6])
+                    source.crawlAt = unescapeField(parts[7])
+                    source.indexedAt = unescapeField(parts[8])
+                    source.staleness = unescapeField(parts[9])
+                    source.status = unescapeField(parts[10])
+                    report.sources.add(source)
+                } else {
+                    report.ok = false
+                    report.degraded = true
+                    report.diagnostics.add("freshness_artifact_malformed_source_line")
+                }
+            }
+        }
+        if (text.trimAscii() != "" && report.sources.size == 0 && recognizedLineCount == 0) {
+            report.ok = false
+            report.degraded = true
+            report.diagnostics.add("freshness_artifact_malformed")
+        }
+        report
+    }
+
     public func saveCangjieVersionManifest(manifest: CangjieVersionManifest): Unit {
         var text = "manifestVersion=${escapeField(manifest.manifestVersion)}\n"
         text += "defaultTargetVersion=${escapeField(manifest.defaultTargetVersion)}\n"
@@ -6372,7 +6450,9 @@ public class CkbSchedulerTaskRunner <: SchedulerTaskRunner {
             for (diagnostic in readiness.diagnostics) {
                 freshnessReadiness.diagnostics.add(diagnostic)
             }
+            let previousFreshness = this.store.loadCangjieCorpusFreshness()
             let freshness = probeCangjieCorpusFreshnessWithReadiness(readiness.manifest, this.sourceRunner, freshnessReadiness)
+            ckbApplyFreshnessArtifactSemantics(freshness, previousFreshness)
             let status = this.kb.status()
             freshness.activeKnowledgeVersion = status.activeKnowledgeVersion
             freshness.candidateKnowledgeVersion = status.candidateKnowledgeVersion
@@ -8383,10 +8463,71 @@ private func ckbPersistScheduledVersionManifestAfterRefresh(store: FileKnowledge
         result.validationDiagnostics.add("version_manifest_write_verify_failed")
         return
     }
+    ckbSaveFreshnessBaselineFromManifest(store, loaded, "scheduled:${profile.profile}")
     result.validationDiagnostics.add("version_manifest_saved:${loaded.sources.size}:${cangjieManifestEvidenceHash(loaded)}")
     for (diagnostic in refreshed.diagnostics) {
         result.validationDiagnostics.add("version_manifest_diagnostic:${diagnostic}")
     }
+}
+
+private func ckbSaveFreshnessBaselineFromManifest(store: FileKnowledgeStore, manifest: CangjieVersionManifest, crawlAt: String): Unit {
+    let report = CangjieCorpusFreshnessReport()
+    report.ok = true
+    report.degraded = false
+    report.targetVersion = manifest.defaultTargetVersion
+    for (source in manifest.sources) {
+        let item = CangjieCorpusFreshnessSource()
+        item.sourceSet = source.sourceSet
+        item.sourceFamily = source.sourceFamily
+        item.sourceRepo = source.sourceRepo
+        item.sourceRef = source.sourceRef
+        item.refKind = source.refKind
+        item.resolvedCommit = source.resolvedCommit
+        item.contentHash = source.contentHash
+        item.targetVersion = source.targetVersion
+        item.crawlAt = crawlAt
+        item.indexedAt = source.resolvedCommit
+        if (source.resolvedCommit == "" || source.contentHash == "") {
+            item.staleness = "unknown"
+            item.status = "degraded"
+            report.ok = false
+            report.degraded = true
+            report.diagnostics.add("freshness_baseline_incomplete:${source.sourceSet}:${source.sourceRepo}")
+        } else {
+            item.staleness = "fresh"
+            item.status = "fresh"
+        }
+        report.sources.add(item)
+    }
+    store.saveCangjieCorpusFreshness(report)
+}
+
+private func ckbApplyFreshnessArtifactSemantics(report: CangjieCorpusFreshnessReport, previous: CangjieCorpusFreshnessReport): Unit {
+    for (source in report.sources) {
+        let baseline = ckbFindFreshnessSource(previous, source.sourceSet, source.sourceRepo)
+        if (baseline.sourceSet == "") {
+            continue
+        }
+        if (baseline.indexedAt == "" && baseline.resolvedCommit != "" && baseline.contentHash != "") {
+            source.status = "degraded"
+            source.staleness = "unknown"
+            report.ok = false
+            report.degraded = true
+            report.diagnostics.add("freshness_source_missing_indexedAt:sourceSet=${source.sourceSet}|repo=${source.sourceRepo}|resolvedCommit=${baseline.resolvedCommit}|contentHash=${baseline.contentHash}")
+        }
+        if (source.staleness == "stale") {
+            report.diagnostics.add("freshness_source_hash_changed:sourceSet=${source.sourceSet}|repo=${source.sourceRepo}|oldHash=${baseline.contentHash}|newHash=${source.contentHash}|oldCommit=${baseline.resolvedCommit}|newCommit=${source.resolvedCommit}")
+        }
+    }
+}
+
+private func ckbFindFreshnessSource(report: CangjieCorpusFreshnessReport, sourceSet: String, repo: String): CangjieCorpusFreshnessSource {
+    for (source in report.sources) {
+        if (source.sourceSet == sourceSet && (repo == "" || source.sourceRepo == repo)) {
+            return source
+        }
+    }
+    CangjieCorpusFreshnessSource()
 }
 
 private func ckbRefreshVersionManifestFromScheduledFetch(profile: CkbScheduleTaskProfile, fetch: CkbScheduledProfileFetchResult, config: CkbRuntimeConfig, manifest: CangjieVersionManifest): CangjieVersionManifest {
