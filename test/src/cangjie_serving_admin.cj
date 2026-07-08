@@ -68,7 +68,7 @@ public func validateCandidateServingIndex(records: ArrayList<NormalizedRecord>, 
     validateCandidateServingIndexWithVectorStatus(records, candidateVersion, cangjieCandidateImplicitVectorStatus(records), forceFailure: forceFailure)
 }
 
-public func validateCandidateServingIndexWithVectorStatus(records: ArrayList<NormalizedRecord>, candidateVersion: String, vectorStatus: VectorStoreStatus, forceFailure!: Bool = false): CangjieCandidateValidationResult {
+public func validateCandidateServingIndexWithVectorStatus(records: ArrayList<NormalizedRecord>, candidateVersion: String, vectorStatus: VectorStoreStatus, forceFailure!: Bool = false, deadlineAtMillis!: Int64 = 0, validationScope!: String = "full"): CangjieCandidateValidationResult {
     let result = CangjieCandidateValidationResult()
     result.candidateVersion = candidateVersion
     result.activeVersion = cangjieActiveVersionForCandidate(candidateVersion)
@@ -84,7 +84,14 @@ public func validateCandidateServingIndexWithVectorStatus(records: ArrayList<Nor
     }
     let index = buildCangjieServingIndex(records, activeKnowledgeVersion: result.activeVersion)
     result.servingDocumentCount = index.documents.size
+    if (cangjieCandidateValidationDeadline(result, validationScope, "doc_loop_before", deadlineAtMillis, 0, index.documents.size)) {
+        return result
+    }
+    var completedDocs: Int64 = 0
     for (doc in index.documents) {
+        if (completedDocs % 64 == 0 && cangjieCandidateValidationDeadline(result, validationScope, "doc_loop", deadlineAtMillis, completedDocs, index.documents.size)) {
+            return result
+        }
         if (doc.versionResolutionId == "") {
             result.legacyVersionGapCount += 1
         }
@@ -106,13 +113,20 @@ public func validateCandidateServingIndexWithVectorStatus(records: ArrayList<Nor
         if ((doc.recordKind == CangjieTypedRecordKinds.AVAILABILITY || doc.recordKind == CangjieServingRecordKinds.SYMBOL_CARD) && lookupAvailability(index, if (doc.symbolKey == "") { doc.title } else { doc.symbolKey }, sourceSet: doc.sourceSet, targetVersion: doc.targetVersion, versionResolutionId: doc.versionResolutionId, budget: 1).hits.size > 0) {
             result.availabilityHits += 1
         }
+        completedDocs += 1
     }
     result.taskPackCoveragePass = result.exactSymbolHits > 0 &&
         result.docSectionHits > 0 &&
         result.toolManualHits > 0 &&
         result.negativeRuleHits > 0
     result.coveragePass = result.exactSymbolHits > 0 && result.docSectionHits > 0 && result.negativeRuleHits > 0
+    if (cangjieCandidateValidationDeadline(result, validationScope, "parity_probe_before", deadlineAtMillis, completedDocs, index.documents.size)) {
+        return result
+    }
     result.transportParityPass = cangjieCandidateRestMcpParityPass(index)
+    if (cangjieCandidateValidationDeadline(result, validationScope, "performance_probe_before", deadlineAtMillis, completedDocs, index.documents.size)) {
+        return result
+    }
     let performance = cangjieServingPerformanceProbe(index, cangjieCandidatePerformanceQueries(index), budget: 5, p95Threshold: 10000000)
     result.performancePass = performance.pass
     result.performanceP95Cost = performance.p95Cost
@@ -162,6 +176,17 @@ public func validateCandidateServingIndexWithVectorStatus(records: ArrayList<Nor
     result
 }
 
+private func cangjieCandidateValidationDeadline(result: CangjieCandidateValidationResult, validationScope: String, stage: String, deadlineAtMillis: Int64, completed: Int64, total: Int64): Bool {
+    let deadline = ckbDeadlineGuard("candidate_validation_${stage}", deadlineAtMillis)
+    if (!deadline.exceeded) {
+        return false
+    }
+    result.ok = false
+    result.status = "candidate_validation_timeout"
+    result.diagnostics.add("${deadline.diagnostic}:scope=${validationScope}:completed=${completed}:total=${total}")
+    true
+}
+
 public func cangjiePromoteCandidateAfterValidation(kb: KnowledgeBase, store: FileKnowledgeStore, forceFailure!: Bool = false): CangjieCandidatePromotionResult {
     cangjiePromoteCandidateAfterValidationWithVersion(kb, store, cangjieLiveSyncCandidateVersion(), forceFailure: forceFailure)
 }
@@ -183,16 +208,19 @@ private func cangjiePromoteStagedCandidateAfterValidation(kb: KnowledgeBase, sto
     kb.persistCandidateSnapshot(store)
     let candidateRecords = kb.candidateRecordSnapshot()
     if (forceFailure) {
-        result.validation = validateCandidateServingIndexWithVectorStatus(candidateRecords, stagedCandidateVersion, cangjieCandidateImplicitVectorStatus(candidateRecords), forceFailure: true)
+        result.validation = validateCandidateServingIndexWithVectorStatus(candidateRecords, stagedCandidateVersion, cangjieCandidateImplicitVectorStatus(candidateRecords), forceFailure: true, deadlineAtMillis: deadlineAtMillis, validationScope: "candidate_promotion")
         kb.markCandidateValidationFailed(stagedCandidateVersion)
         kb.persistCandidateSnapshot(store)
         result.activeVersion = kb.status().activeKnowledgeVersion
         return result
     }
+    if (cangjieCandidatePromotionDeadline(result, kb, store, stagedCandidateVersion, "candidate_vector_before", deadlineAtMillis)) {
+        return result
+    }
     let stagingCollection = cangjieCandidateStagingCollection(kb, stagedCandidateVersion)
     let vectorBuild = kb.buildVectorIndexForRecords(candidateRecords, stagingCollection, progressSink: progressSink, deadlineAtMillis: deadlineAtMillis)
     var vectorStatus = cangjieCandidateVerifiedVectorStatus(kb, stagingCollection, candidateRecords.size, vectorBuild)
-    result.validation = validateCandidateServingIndexWithVectorStatus(candidateRecords, stagedCandidateVersion, vectorStatus, forceFailure: false)
+    result.validation = validateCandidateServingIndexWithVectorStatus(candidateRecords, stagedCandidateVersion, vectorStatus, forceFailure: false, deadlineAtMillis: deadlineAtMillis, validationScope: "candidate_promotion")
     if (!result.validation.ok) {
         kb.markCandidateValidationFailed(stagedCandidateVersion)
         kb.persistCandidateSnapshot(store)
@@ -200,16 +228,56 @@ private func cangjiePromoteStagedCandidateAfterValidation(kb: KnowledgeBase, sto
         result.activeVersion = kb.status().activeKnowledgeVersion
         return result
     }
+    if (cangjieCandidatePromotionDeadline(result, kb, store, stagedCandidateVersion, "candidate_active_commit_before", deadlineAtMillis)) {
+        cangjieDeleteCandidateStaging(kb, stagingCollection, result.validation)
+        return result
+    }
     let activeVersion = cangjieActiveVersionForCandidate(stagedCandidateVersion)
+    let oldSnapshot = store.loadActiveSnapshot()
     result.activePromoted = kb.commitCandidateToActiveAfterVectorReady(activeVersion, stagingCollection, vectorStatus)
     result.activeVersion = activeVersion
     if (result.activePromoted) {
-        kb.persistActiveSnapshotUsingVectorRecords(store, vectorBuild.vectorRecords, persistVectorFile: cangjieCandidateShouldPersistVectorFile(vectorStatus))
+        if (cangjieCandidatePromotionDeadline(result, kb, store, stagedCandidateVersion, "candidate_active_snapshot_before", deadlineAtMillis)) {
+            if (oldSnapshot.valid) {
+                _ = kb.restoreActiveSnapshot(oldSnapshot)
+            }
+            cangjieDeleteCandidateStaging(kb, stagingCollection, result.validation)
+            return result
+        }
+        try {
+            kb.persistActiveSnapshotUsingVectorRecords(store, vectorBuild.vectorRecords, persistVectorFile: cangjieCandidateShouldPersistVectorFile(vectorStatus), deadlineAtMillis: deadlineAtMillis)
+        } catch (e: Exception) {
+            result.validation.ok = false
+            result.validation.status = if (e.message.startsWith("deadline_exceeded:")) { "candidate_validation_timeout" } else { "candidate_active_snapshot_failed" }
+            result.validation.diagnostics.add(if (e.message == "") { "candidate_active_snapshot_failed" } else { e.message })
+            if (oldSnapshot.valid) {
+                _ = kb.restoreActiveSnapshot(oldSnapshot)
+            }
+            cangjieDeleteCandidateStaging(kb, stagingCollection, result.validation)
+            return result
+        }
+        _ = ckbDeadlineGuard("candidate_active_snapshot_after", deadlineAtMillis)
     } else {
         cangjieDeleteCandidateStaging(kb, stagingCollection, result.validation)
     }
     result.ok = result.activePromoted
     result
+}
+
+private func cangjieCandidatePromotionDeadline(result: CangjieCandidatePromotionResult, kb: KnowledgeBase, store: FileKnowledgeStore, stagedCandidateVersion: String, stage: String, deadlineAtMillis: Int64): Bool {
+    let deadline = ckbDeadlineGuard(stage, deadlineAtMillis)
+    if (!deadline.exceeded) {
+        return false
+    }
+    result.validation.ok = false
+    result.validation.status = "candidate_validation_timeout"
+    result.validation.candidateVersion = stagedCandidateVersion
+    result.validation.activeVersion = cangjieActiveVersionForCandidate(stagedCandidateVersion)
+    result.validation.diagnostics.add(deadline.diagnostic)
+    kb.markCandidateValidationFailed(stagedCandidateVersion)
+    kb.persistCandidateSnapshot(store)
+    result.activeVersion = kb.status().activeKnowledgeVersion
+    true
 }
 
 private func cangjieCandidateStagingCollection(kb: KnowledgeBase, candidateVersion: String): String {

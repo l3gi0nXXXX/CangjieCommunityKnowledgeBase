@@ -186,6 +186,30 @@ public class CkbRoutineUpdateE2ETest {
         @Expect(status.storage.vectorState, EmbeddingProviderState.DEGRADED)
         @Expect(status.indexManifest.entries[1].itemCount, 0)
     }
+
+    @TestCase
+    public func e2eS6003ShortDeadlineWorkerResultsAreStructuredAndNonEmpty(): Unit {
+        let root = "target/e2e-s6-003-short-deadline"
+        p5EnsureEmptyDir(root)
+        p5WriteBenchmarkGapInput(root)
+        let config = CkbRuntimeConfig()
+        config.benchmarkGapCurationInputPath = "${root}/gap-curation-input.jsonl"
+        let store = FileKnowledgeStore("${root}/store")
+        let kb = newOfflineKnowledgeBase()
+        let expired = ckbCoreNowMillis() - 1
+        let weeklyPath = "metadata/scheduler-workers/e2e-s6-003-weekly.ckb"
+        let benchmarkPath = "metadata/scheduler-workers/e2e-s6-003-benchmark.ckb"
+
+        let weekly = ckbRunSchedulerTaskWorker(kb, config, store, "weekly_full_rebuild", "0", expired, weeklyPath)
+        let benchmark = ckbRunSchedulerTaskWorker(kb, config, store, "cangjie_benchmark_gap_curation", "0", expired, benchmarkPath)
+
+        @Expect(weekly.status, "task_timeout:weekly_full_rebuild")
+        @Expect(benchmark.status, "task_timeout:cangjie_benchmark_gap_curation")
+        @Expect(store.readText(weeklyPath).size > 0, true)
+        @Expect(store.readText(benchmarkPath).size > 0, true)
+        @Expect(store.readText(weeklyPath).contains("task_timeout:weekly_full_rebuild"), true)
+        @Expect(store.readText(benchmarkPath).contains("task_timeout:cangjie_benchmark_gap_curation"), true)
+    }
 }
 
 private class P5FakeEmbeddingProvider <: EmbeddingProvider {

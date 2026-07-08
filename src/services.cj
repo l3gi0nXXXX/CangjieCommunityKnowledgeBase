@@ -4074,25 +4074,41 @@ public class FileKnowledgeStore {
         this.writeLines("index/graph-edges.ckb", this.graphEdgeLines(graph.edges))
     }
 
-    public func writeActiveSnapshotTransaction(status: KnowledgeStatus, rawRecords: ArrayList<RawRecord>, normalizedRecords: ArrayList<NormalizedRecord>, activeIndex: ArrayList<NormalizedRecord>, vectorRecords: ArrayList<VectorRecord>, vectorCollection: String, graph: GraphBuildResult, persistVectorFile!: Bool = true): String {
+    public func writeActiveSnapshotTransaction(status: KnowledgeStatus, rawRecords: ArrayList<RawRecord>, normalizedRecords: ArrayList<NormalizedRecord>, activeIndex: ArrayList<NormalizedRecord>, vectorRecords: ArrayList<VectorRecord>, vectorCollection: String, graph: GraphBuildResult, persistVectorFile!: Bool = true, deadlineAtMillis!: Int64 = 0): String {
         this.ensureLayout()
         let txId = this.newActiveSnapshotTxId(status.activeKnowledgeVersion)
         let txRoot = "transactions/${safeName(txId)}"
-        this.writeRawFilesAtomically(txRoot, rawRecords)
+        this.ensureActiveSnapshotDeadline("active_snapshot_tx_raw_before", deadlineAtMillis)
+        this.writeRawFilesAtomically(txRoot, rawRecords, deadlineAtMillis: deadlineAtMillis, progressStage: "active_snapshot_tx_raw")
+        this.ensureActiveSnapshotDeadline("active_snapshot_tx_normalized_before", deadlineAtMillis)
         this.writeLinesAtomically("${txRoot}/normalized/records.ckb", this.normalizedLines(normalizedRecords))
+        this.ensureActiveSnapshotDeadline("active_snapshot_tx_index_before", deadlineAtMillis)
         this.writeLinesAtomically("${txRoot}/index/active.version", status.activeKnowledgeVersion + "\n")
         this.writeLinesAtomically("${txRoot}/index/active.ckb", this.normalizedLines(activeIndex))
         if (persistVectorFile) {
+            this.ensureActiveSnapshotDeadline("active_snapshot_tx_vector_before", deadlineAtMillis)
             this.writeLinesAtomically("${txRoot}/index/vector-${safeName(vectorCollection)}.ckb", this.vectorLines(vectorRecords))
         }
+        this.ensureActiveSnapshotDeadline("active_snapshot_tx_graph_before", deadlineAtMillis)
         this.writeLinesAtomically("${txRoot}/index/graph-nodes.ckb", this.graphNodeLines(graph.nodes))
         this.writeLinesAtomically("${txRoot}/index/graph-edges.ckb", this.graphEdgeLines(graph.edges))
+        this.ensureActiveSnapshotDeadline("active_snapshot_tx_status_before", deadlineAtMillis)
         this.writeLinesAtomically("${txRoot}/metadata/status.ckb", this.metadataLines(status))
+        this.ensureActiveSnapshotDeadline("active_snapshot_tx_commit_before", deadlineAtMillis)
         this.writeLinesAtomically("${txRoot}/COMMIT", this.activeSnapshotCommitLines(txId, status))
-        this.writeActiveSnapshotLiveShadow(status, rawRecords, normalizedRecords, activeIndex, vectorRecords, vectorCollection, graph, persistVectorFile: persistVectorFile)
+        this.ensureActiveSnapshotDeadline("active_snapshot_live_shadow_before", deadlineAtMillis)
+        this.writeActiveSnapshotLiveShadow(status, rawRecords, normalizedRecords, activeIndex, vectorRecords, vectorCollection, graph, persistVectorFile: persistVectorFile, deadlineAtMillis: deadlineAtMillis)
+        this.ensureActiveSnapshotDeadline("active_snapshot_manifest_before", deadlineAtMillis)
         this.writeLinesAtomically("metadata/active-snapshot.manifest", this.activeSnapshotManifestLines(txId, status))
         this.writeLinesAtomically("metadata/active-snapshot-commits/${safeName(txId)}.ckb", this.activeSnapshotCommitSidecarLines(txId, status, vectorCollection, activeIndex.size, vectorRecords.size, persistVectorFile))
         txId
+    }
+
+    private func ensureActiveSnapshotDeadline(stage: String, deadlineAtMillis: Int64): Unit {
+        let deadline = ckbDeadlineGuard(stage, deadlineAtMillis)
+        if (deadline.exceeded) {
+            throw Exception(deadline.diagnostic)
+        }
     }
 
     public func repairActiveLiveShadowFromManifest(): ActiveSnapshotRepairResult {
@@ -4782,24 +4798,35 @@ public class FileKnowledgeStore {
         out
     }
 
-    private func writeRawFilesAtomically(prefix: String, records: ArrayList<RawRecord>): Unit {
+    private func writeRawFilesAtomically(prefix: String, records: ArrayList<RawRecord>, deadlineAtMillis!: Int64 = 0, progressStage!: String = "raw_write"): Unit {
         let base = if (prefix == "") { "" } else { "${prefix}/" }
+        this.ensureActiveSnapshotDeadline("${progressStage}_aggregate_before", deadlineAtMillis)
         this.writeLinesAtomically("${base}raw/records.ckb", this.rawLines(records))
+        var written: Int64 = 0
         for (record in records) {
+            if (written % 64 == 0) {
+                this.ensureActiveSnapshotDeadline("${progressStage}_record:${written}:${records.size}", deadlineAtMillis)
+            }
             this.writeLinesAtomically("${base}raw/${safeName(record.metadata.sourceType)}/${safeName(record.sourceId)}.ckb", this.rawLines(singleRawRecord(record)))
+            written += 1
         }
     }
 
-    private func writeActiveSnapshotLiveShadow(status: KnowledgeStatus, rawRecords: ArrayList<RawRecord>, normalizedRecords: ArrayList<NormalizedRecord>, activeIndex: ArrayList<NormalizedRecord>, vectorRecords: ArrayList<VectorRecord>, vectorCollection: String, graph: GraphBuildResult, persistVectorFile!: Bool = true): Unit {
-        this.writeRawFilesAtomically("", rawRecords)
+    private func writeActiveSnapshotLiveShadow(status: KnowledgeStatus, rawRecords: ArrayList<RawRecord>, normalizedRecords: ArrayList<NormalizedRecord>, activeIndex: ArrayList<NormalizedRecord>, vectorRecords: ArrayList<VectorRecord>, vectorCollection: String, graph: GraphBuildResult, persistVectorFile!: Bool = true, deadlineAtMillis!: Int64 = 0): Unit {
+        this.writeRawFilesAtomically("", rawRecords, deadlineAtMillis: deadlineAtMillis, progressStage: "active_snapshot_live_raw")
+        this.ensureActiveSnapshotDeadline("active_snapshot_live_normalized_before", deadlineAtMillis)
         this.writeLinesAtomically("normalized/records.ckb", this.normalizedLines(normalizedRecords))
+        this.ensureActiveSnapshotDeadline("active_snapshot_live_index_before", deadlineAtMillis)
         this.writeLinesAtomically("index/active.version", status.activeKnowledgeVersion + "\n")
         this.writeLinesAtomically("index/active.ckb", this.normalizedLines(activeIndex))
         if (persistVectorFile) {
+            this.ensureActiveSnapshotDeadline("active_snapshot_live_vector_before", deadlineAtMillis)
             this.writeLinesAtomically("index/vector-${safeName(vectorCollection)}.ckb", this.vectorLines(vectorRecords))
         }
+        this.ensureActiveSnapshotDeadline("active_snapshot_live_graph_before", deadlineAtMillis)
         this.writeLinesAtomically("index/graph-nodes.ckb", this.graphNodeLines(graph.nodes))
         this.writeLinesAtomically("index/graph-edges.ckb", this.graphEdgeLines(graph.edges))
+        this.ensureActiveSnapshotDeadline("active_snapshot_live_status_before", deadlineAtMillis)
         this.writeLinesAtomically("metadata/status.ckb", this.metadataLines(status))
     }
 
@@ -5535,6 +5562,16 @@ private func ckbTaskWorkerResultRelativePath(taskName: String): String {
     "metadata/scheduler-workers/${safeName(taskName)}-${ckbTaskWorkerNowMillis()}.ckb"
 }
 
+private func ckbTaskWorkerStartedText(taskName: String, since: String, deadlineAtMillis: Int64, resultRelativePath: String, startedAtMillis: Int64): String {
+    var text = "status=worker_started\n"
+    text += "taskName=${escapeField(taskName)}\n"
+    text += "since=${escapeField(since)}\n"
+    text += "deadlineAtMillis=${deadlineAtMillis}\n"
+    text += "startedAtMillis=${startedAtMillis}\n"
+    text += "resultRelativePath=${escapeField(resultRelativePath)}\n"
+    text
+}
+
 public func ckbSchedulerTaskResultText(task: SchedulerTaskResult): String {
     var text = "ok=${task.ok}\n"
     text += "status=${escapeField(task.status)}\n"
@@ -5610,6 +5647,13 @@ public func ckbSchedulerTaskResultFromText(text: String): SchedulerTaskResult {
     task
 }
 
+public func ckbWriteSchedulerWorkerTimeoutCompensation(store: FileKnowledgeStore, resultRelativePath: String, name: String, since: String, durationMillis: Int64, timeoutMillis: Int64, diagnostic: String): SchedulerTaskResult {
+    let task = ckbSchedulerWorkerTimeoutResult(name, since, durationMillis, timeoutMillis, diagnostic)
+    store.writeLinesAtomically(resultRelativePath, ckbSchedulerTaskResultText(task))
+    store.writeLinesAtomically("${resultRelativePath}.sidecar", ckbSchedulerTaskResultText(task))
+    task
+}
+
 public func ckbRunSchedulerTaskWorker(kb: KnowledgeBase, config: CkbRuntimeConfig, store: FileKnowledgeStore, taskName: String, since: String, deadlineAtMillis: Int64, resultRelativePath: String): SchedulerTaskResult {
     let started = ckbTaskWorkerNowMillis()
     let runner = CkbSchedulerTaskRunner(kb, config, store, sourceRunner: if (config.networkEnabled) { HttpSourceFetchRunner(config) } else { DisabledNetworkFetchRunner() })
@@ -5629,6 +5673,10 @@ public func ckbRunSchedulerTaskWorker(kb: KnowledgeBase, config: CkbRuntimeConfi
     }
     store.writeLinesAtomically(resultRelativePath, ckbSchedulerTaskResultText(task))
     task
+}
+
+public func ckbReadSchedulerWorkerResultFile(storePath: String, resultRelativePath: String, name: String, since: String, durationMillis: Int64, timeoutMillis: Int64): SchedulerTaskResult {
+    ckbReadSchedulerWorkerResult(storePath, resultRelativePath, name, since, durationMillis, timeoutMillis)
 }
 
 private func ckbRoutineArtifactStatusForTask(store: FileKnowledgeStore, config: CkbRuntimeConfig, contract: CkbSchedulerTaskContract, task: SchedulerTaskResult): CkbRoutineArtifactStatus {
@@ -5760,6 +5808,7 @@ public class ProcessIsolatedSchedulerTaskRunner <: SchedulerTaskRunner {
         }
         let resultRelativePath = ckbTaskWorkerResultRelativePath(name)
         this.store.writeLinesAtomically(resultRelativePath, "")
+        this.store.writeLinesAtomically("${resultRelativePath}.started", ckbTaskWorkerStartedText(name, since, deadlineAtMillis, resultRelativePath, started))
         let code = this.launchWorker(name, since, deadlineAtMillis, resultRelativePath, timeoutMillis)
         let elapsed = ckbTaskWorkerNowMillis() - started
         let parsed = ckbReadSchedulerWorkerResult(this.storePath, resultRelativePath, name, since, elapsed, timeoutMillis)
@@ -5773,7 +5822,10 @@ public class ProcessIsolatedSchedulerTaskRunner <: SchedulerTaskRunner {
             return parsed
         }
         if (code == 124 || elapsed >= timeoutMillis) {
-            return ckbSchedulerWorkerTimeoutResult(name, since, elapsed, timeoutMillis, "task_worker_hard_timeout")
+            if (ckbSchedulerWorkerResultMissingOrEmpty(this.storePath, resultRelativePath)) {
+                return ckbWriteSchedulerWorkerTimeoutCompensation(this.store, resultRelativePath, name, since, elapsed, timeoutMillis, "task_worker_hard_timeout")
+            }
+            return parsed
         }
         parsed
     }
@@ -5839,6 +5891,18 @@ private func ckbReadSchedulerWorkerResult(storePath: String, resultRelativePath:
     }
 }
 
+private func ckbSchedulerWorkerResultMissingOrEmpty(storePath: String, resultRelativePath: String): Bool {
+    let path = Path(storePath).join(resultRelativePath)
+    if (!exists(path)) {
+        return true
+    }
+    try {
+        File.readFrom(path).size == 0
+    } catch (_: Exception) {
+        true
+    }
+}
+
 private func ckbSchedulerWorkerFailureResult(name: String, since: String, durationMillis: Int64, timeoutMillis: Int64, status: String): SchedulerTaskResult {
     let task = SchedulerTaskResult()
     task.ok = false
@@ -5900,7 +5964,16 @@ public class CkbSchedulerTaskRunner <: SchedulerTaskRunner {
             let progressSink = FileVectorBuildProgressSink(this.store)
             let rebuild = ckbStagedFullRebuild(this.kb, this.store, this.config, progressSink, deadlineAtMillis)
             result.ok = rebuild.ok
-            result.status = if (rebuild.ok) { "rebuild_ok" } else { "rebuild_failed:${rebuild.failedVersion}" }
+            result.status = if (rebuild.ok) {
+                "rebuild_ok"
+            } else if (rebuild.failedVersion.startsWith("deadline_exceeded:")) {
+                "task_timeout:${name}"
+            } else {
+                "rebuild_failed:${rebuild.failedVersion}"
+            }
+            if (!rebuild.ok && rebuild.failedVersion != "") {
+                result.validationDiagnostics.add("rebuild:${rebuild.failedVersion}")
+            }
             result.cursor = "rebuild-${rebuild.activeVersion}"
             result.activeVersion = rebuild.activeVersion
             result.candidateVersion = rebuild.candidateVersion
@@ -5949,7 +6022,13 @@ public class CkbSchedulerTaskRunner <: SchedulerTaskRunner {
         let ingest = ingestScheduledProfileSources(this.kb, this.store, profile, fetch, this.config, manifest, progressSink: progressSink, deadlineAtMillis: deadlineAtMillis)
         let status = this.kb.status()
         result.ok = fetch.ok && ingest.ok
-        result.status = if (result.ok) { ingest.status } else { if (ingest.status != "") { ingest.status } else { "profile_degraded" } }
+        result.status = if (result.ok) {
+            ingest.status
+        } else if (ckbScheduledIngestTimedOut(ingest.status)) {
+            "task_timeout:${name}"
+        } else {
+            if (ingest.status != "") { ingest.status } else { "profile_degraded" }
+        }
         result.cursor = "cursor-${status.activeKnowledgeVersion}"
         result.since = "${this.kb.scheduler.clock.nowMinutes}"
         result.activeVersion = status.activeKnowledgeVersion
@@ -5963,6 +6042,9 @@ public class CkbSchedulerTaskRunner <: SchedulerTaskRunner {
         for (diagnostic in ingest.validationDiagnostics) {
             result.validationDiagnostics.add(diagnostic)
         }
+        if (!result.ok && ckbScheduledIngestTimedOut(ingest.status)) {
+            result.validationDiagnostics.add("internal_timeout:${ingest.status}")
+        }
         this.finalizeTaskResultWithContract(name, result, beforeInvariant)
     }
 
@@ -5973,10 +6055,18 @@ public class CkbSchedulerTaskRunner <: SchedulerTaskRunner {
         result.validationDiagnostics.add("routine_contract:${renderCkbRoutineContractValidationJson(validation)}")
         if (!validation.ok) {
             result.ok = false
-            result.status = validation.diagnostic
+            if (result.status.startsWith("task_timeout:")) {
+                result.validationDiagnostics.add("routine_contract_degraded:${validation.diagnostic}")
+            } else {
+                result.status = validation.diagnostic
+            }
         }
         result
     }
+}
+
+private func ckbScheduledIngestTimedOut(status: String): Bool {
+    status == "candidate_validation_timeout" || status == "benchmark_gap_query_proof_timeout" || status.startsWith("deadline_exceeded:")
 }
 
 public class CkbServiceResponse {
@@ -7459,9 +7549,20 @@ private func ingestScheduledBenchmarkGapCuration(kb: KnowledgeBase, store: FileK
     ckbApplyScheduledPromotionResult(result, promotion, "benchmark_gap_candidate_promoted")
     if (result.ok) {
         var coveragePass = true
+        var completedProofs: Int64 = 0
+        let totalProofs = curated.records.size
         for (record in curated.records) {
+            let proofTimeout = ckbBenchmarkGapQueryProofDeadlineDiagnostic(deadlineAtMillis, completedProofs, totalProofs)
+            if (proofTimeout != "") {
+                result.ok = false
+                result.status = "benchmark_gap_query_proof_timeout"
+                result.validationStatus = "benchmark_gap_query_proof_timeout"
+                result.validationDiagnostics.add(proofTimeout)
+                return result
+            }
             let proof = ckbBenchmarkGapQueryProof(kb, record, manifest)
             result.validationDiagnostics.add(proof)
+            completedProofs += 1
             if (!proof.contains("coveragePass=true")) {
                 coveragePass = false
             }
@@ -7472,6 +7573,14 @@ private func ingestScheduledBenchmarkGapCuration(kb: KnowledgeBase, store: FileK
         }
     }
     result
+}
+
+public func ckbBenchmarkGapQueryProofDeadlineDiagnostic(deadlineAtMillis: Int64, completed: Int64, total: Int64): String {
+    let deadline = ckbDeadlineGuard("benchmark_gap_query_proof", deadlineAtMillis)
+    if (!deadline.exceeded) {
+        return ""
+    }
+    "benchmark_gap_query_proof_timeout:${deadline.diagnostic}:completed=${completed}:total=${total}"
 }
 
 private func ckbBenchmarkGapCurationInputPath(config: CkbRuntimeConfig, store: FileKnowledgeStore): String {
@@ -7561,7 +7670,13 @@ private func ckbApplyScheduledPromotionResult(result: CkbScheduledProfileIngestR
         result.validationDiagnostics.add(diagnostic)
     }
     result.ok = promotion.ok
-    result.status = if (promotion.ok) { successStatus } else { "candidate_validation_failed" }
+    result.status = if (promotion.ok) {
+        successStatus
+    } else if (promotion.validation.status == "candidate_validation_timeout") {
+        "candidate_validation_timeout"
+    } else {
+        "candidate_validation_failed"
+    }
 }
 
 private func ckbPersistScheduledVersionManifestAfterRefresh(store: FileKnowledgeStore, profile: CkbScheduleTaskProfile, fetch: CkbScheduledProfileFetchResult, config: CkbRuntimeConfig, manifest: CangjieVersionManifest, result: CkbScheduledProfileIngestResult): Unit {
@@ -8408,6 +8523,10 @@ public func ckbSyncLiveApply(kb: KnowledgeBase, adapter: SourceAdapter, store: F
 }
 
 public func ckbRebuildIndex(kb: KnowledgeBase, store: FileKnowledgeStore, fail!: Bool = false, progressSink!: VectorBuildProgressSink = NoopVectorBuildProgressSink(), targetVectorCollection!: String = "", persistSnapshot!: Bool = true, deadlineAtMillis!: Int64 = 0): IndexBuildResult {
+    let before = ckbIndexDeadlineFailure("rebuild_start", deadlineAtMillis)
+    if (!before.ok) {
+        return before
+    }
     let result = kb.rebuildIndex(fail, progressSink: progressSink, targetVectorCollection: targetVectorCollection, deadlineAtMillis: deadlineAtMillis)
     if (result.ok) {
         let vector = kb.lastVectorIndexBuild()
@@ -8424,19 +8543,77 @@ public func ckbRebuildIndex(kb: KnowledgeBase, store: FileKnowledgeStore, fail!:
             }
             return result
         }
+        if (ckbApplyIndexDeadlineFailure(result, "rebuild_vector_complete", deadlineAtMillis)) {
+            return result
+        }
         if (targetVectorCollection.trimAscii() == "") {
+            if (ckbApplyIndexDeadlineFailure(result, "rebuild_verify_before", deadlineAtMillis)) {
+                return result
+            }
             let verified = kb.verifyAndApplyVectorStoreStatus(kb.status().storage.vectorActiveCollection, result.count)
             if (verified.state != EmbeddingProviderState.READY) {
                 result.ok = false
                 result.failedVersion = if (verified.degradedReason != "") { verified.degradedReason } else { "vector_store_status_not_ready" }
                 return result
             }
+            if (ckbApplyIndexDeadlineFailure(result, "rebuild_verify_after", deadlineAtMillis)) {
+                return result
+            }
         }
         if (persistSnapshot) {
-            kb.persistActiveSnapshotUsingVectorRecords(store, vector.vectorRecords)
+            if (ckbApplyIndexDeadlineFailure(result, "rebuild_persist_snapshot_before", deadlineAtMillis)) {
+                return result
+            }
+            try {
+                kb.persistActiveSnapshotUsingVectorRecords(store, vector.vectorRecords, deadlineAtMillis: deadlineAtMillis)
+            } catch (e: Exception) {
+                result.ok = false
+                result.failedVersion = ckbSnapshotWriteFailureDiagnostic(e)
+                return result
+            }
+            _ = ckbDeadlineGuard("rebuild_persist_snapshot_after", deadlineAtMillis)
         }
     }
     result
+}
+
+private func ckbIndexDeadlineFailure(stage: String, deadlineAtMillis: Int64): IndexBuildResult {
+    let result = IndexBuildResult()
+    let deadline = ckbDeadlineGuard(stage, deadlineAtMillis)
+    if (deadline.exceeded) {
+        result.ok = false
+        result.failedVersion = deadline.diagnostic
+    } else {
+        result.ok = true
+    }
+    result
+}
+
+private func ckbApplyIndexDeadlineFailure(result: IndexBuildResult, stage: String, deadlineAtMillis: Int64): Bool {
+    let deadline = ckbDeadlineGuard(stage, deadlineAtMillis)
+    if (!deadline.exceeded) {
+        return false
+    }
+    result.ok = false
+    result.failedVersion = deadline.diagnostic
+    true
+}
+
+private func ckbSnapshotWriteFailureDiagnostic(e: Exception): String {
+    let message = e.message.trimAscii()
+    if (message.startsWith("deadline_exceeded:")) {
+        return message
+    }
+    if (message != "") {
+        return "active_snapshot_write_failed:${utf8SafePrefix(message, 160)}"
+    }
+    "active_snapshot_write_failed"
+}
+
+private func ckbRestoreOldSnapshotBestEffort(kb: KnowledgeBase, snapshot: ActiveSnapshot): Unit {
+    if (snapshot.valid) {
+        _ = kb.restoreActiveSnapshot(snapshot)
+    }
 }
 
 public func ckbStagedFullRebuildWithVectorStore(kb: KnowledgeBase, store: FileKnowledgeStore, config: CkbRuntimeConfig, vectorStore: VectorStore, progressSink: VectorBuildProgressSink, deadlineAtMillis: Int64): IndexBuildResult {
@@ -8444,64 +8621,105 @@ public func ckbStagedFullRebuildWithVectorStore(kb: KnowledgeBase, store: FileKn
     if (vector.backend != "qdrant") {
         return ckbRebuildIndex(kb, store, progressSink: progressSink, deadlineAtMillis: deadlineAtMillis)
     }
+    let before = ckbIndexDeadlineFailure("staged_rebuild_start", deadlineAtMillis)
+    if (!before.ok) {
+        return before
+    }
     let oldSnapshot = store.loadActiveSnapshot()
     let stagingCollection = ckbVectorReconcileStagingCollection(vector.activeCollection)
     let result = ckbRebuildIndex(kb, store, progressSink: progressSink, targetVectorCollection: stagingCollection, persistSnapshot: false, deadlineAtMillis: deadlineAtMillis)
     if (!result.ok) {
         ckbDeleteStagingBestEffort(vectorStore, stagingCollection)
-        if (oldSnapshot.valid) {
-            _ = kb.restoreActiveSnapshot(oldSnapshot)
-        }
+        ckbRestoreOldSnapshotBestEffort(kb, oldSnapshot)
+        return result
+    }
+    if (ckbApplyIndexDeadlineFailure(result, "staged_rebuild_vector_after", deadlineAtMillis)) {
+        ckbDeleteStagingBestEffort(vectorStore, stagingCollection)
+        ckbRestoreOldSnapshotBestEffort(kb, oldSnapshot)
+        return result
+    }
+    if (ckbApplyIndexDeadlineFailure(result, "staged_rebuild_status_before", deadlineAtMillis)) {
+        ckbDeleteStagingBestEffort(vectorStore, stagingCollection)
+        ckbRestoreOldSnapshotBestEffort(kb, oldSnapshot)
         return result
     }
     let staging = vectorStore.status(stagingCollection)
+    if (ckbApplyIndexDeadlineFailure(result, "staged_rebuild_status_after", deadlineAtMillis)) {
+        ckbDeleteStagingBestEffort(vectorStore, stagingCollection)
+        ckbRestoreOldSnapshotBestEffort(kb, oldSnapshot)
+        return result
+    }
     if (staging.state != EmbeddingProviderState.READY) {
         result.ok = false
         result.failedVersion = "qdrant_staging_not_ready:${staging.degradedReason}"
         ckbDeleteStagingBestEffort(vectorStore, stagingCollection)
-        if (oldSnapshot.valid) {
-            _ = kb.restoreActiveSnapshot(oldSnapshot)
-        }
+        ckbRestoreOldSnapshotBestEffort(kb, oldSnapshot)
         return result
     }
     if (staging.count != result.count) {
         result.ok = false
         result.failedVersion = "qdrant_staging_count_mismatch:${staging.count}:${result.count}:${stagingCollection}"
         ckbDeleteStagingBestEffort(vectorStore, stagingCollection)
-        if (oldSnapshot.valid) {
-            _ = kb.restoreActiveSnapshot(oldSnapshot)
-        }
+        ckbRestoreOldSnapshotBestEffort(kb, oldSnapshot)
         return result
     }
     if (vector.dimensions > 0 && staging.dimension > 0 && staging.dimension != vector.dimensions) {
         result.ok = false
         result.failedVersion = "qdrant_staging_dimension_mismatch:${staging.dimension}:${vector.dimensions}:${stagingCollection}"
         ckbDeleteStagingBestEffort(vectorStore, stagingCollection)
-        if (oldSnapshot.valid) {
-            _ = kb.restoreActiveSnapshot(oldSnapshot)
-        }
+        ckbRestoreOldSnapshotBestEffort(kb, oldSnapshot)
         return result
     }
     if (vector.distance != "" && staging.distance != "" && staging.distance.trimAscii().toAsciiLower() != vector.distance.trimAscii().toAsciiLower()) {
         result.ok = false
         result.failedVersion = "qdrant_staging_distance_mismatch:${staging.distance}:${vector.distance}:${stagingCollection}"
         ckbDeleteStagingBestEffort(vectorStore, stagingCollection)
-        if (oldSnapshot.valid) {
-            _ = kb.restoreActiveSnapshot(oldSnapshot)
-        }
+        ckbRestoreOldSnapshotBestEffort(kb, oldSnapshot)
+        return result
+    }
+    if (ckbApplyIndexDeadlineFailure(result, "staged_rebuild_promote_before", deadlineAtMillis)) {
+        ckbDeleteStagingBestEffort(vectorStore, stagingCollection)
+        ckbRestoreOldSnapshotBestEffort(kb, oldSnapshot)
         return result
     }
     kb.promoteVectorActiveCollection(stagingCollection)
+    if (ckbApplyIndexDeadlineFailure(result, "staged_rebuild_promote_after", deadlineAtMillis)) {
+        ckbRestoreOldSnapshotBestEffort(kb, oldSnapshot)
+        ckbDeleteStagingBestEffort(vectorStore, stagingCollection)
+        return result
+    }
+    if (ckbApplyIndexDeadlineFailure(result, "staged_rebuild_verify_before", deadlineAtMillis)) {
+        ckbRestoreOldSnapshotBestEffort(kb, oldSnapshot)
+        ckbDeleteStagingBestEffort(vectorStore, stagingCollection)
+        return result
+    }
     let verified = kb.verifyAndApplyVectorStoreStatus(stagingCollection, result.count)
+    if (ckbApplyIndexDeadlineFailure(result, "staged_rebuild_verify_after", deadlineAtMillis)) {
+        ckbRestoreOldSnapshotBestEffort(kb, oldSnapshot)
+        ckbDeleteStagingBestEffort(vectorStore, stagingCollection)
+        return result
+    }
     if (verified.state != EmbeddingProviderState.READY) {
         result.ok = false
         result.failedVersion = if (verified.degradedReason != "") { verified.degradedReason } else { "qdrant_active_status_not_ready:${stagingCollection}" }
-        if (oldSnapshot.valid) {
-            _ = kb.restoreActiveSnapshot(oldSnapshot)
-        }
+        ckbRestoreOldSnapshotBestEffort(kb, oldSnapshot)
         return result
     }
-    kb.persistActiveSnapshotUsingVectorRecords(store, kb.lastVectorIndexBuild().vectorRecords, persistVectorFile: false)
+    if (ckbApplyIndexDeadlineFailure(result, "staged_rebuild_persist_snapshot_before", deadlineAtMillis)) {
+        ckbRestoreOldSnapshotBestEffort(kb, oldSnapshot)
+        ckbDeleteStagingBestEffort(vectorStore, stagingCollection)
+        return result
+    }
+    try {
+        kb.persistActiveSnapshotUsingVectorRecords(store, kb.lastVectorIndexBuild().vectorRecords, persistVectorFile: false, deadlineAtMillis: deadlineAtMillis)
+    } catch (e: Exception) {
+        result.ok = false
+        result.failedVersion = ckbSnapshotWriteFailureDiagnostic(e)
+        ckbRestoreOldSnapshotBestEffort(kb, oldSnapshot)
+        ckbDeleteStagingBestEffort(vectorStore, stagingCollection)
+        return result
+    }
+    _ = ckbDeadlineGuard("staged_rebuild_persist_snapshot_after", deadlineAtMillis)
     result
 }
 
@@ -8510,64 +8728,105 @@ public func ckbStagedFullRebuild(kb: KnowledgeBase, store: FileKnowledgeStore, c
     if (vector.backend != "qdrant") {
         return ckbRebuildIndex(kb, store, progressSink: progressSink, deadlineAtMillis: deadlineAtMillis)
     }
+    let before = ckbIndexDeadlineFailure("staged_rebuild_start", deadlineAtMillis)
+    if (!before.ok) {
+        return before
+    }
     let oldSnapshot = store.loadActiveSnapshot()
     let stagingCollection = ckbVectorReconcileStagingCollection(vector.activeCollection)
     let result = ckbRebuildIndex(kb, store, progressSink: progressSink, targetVectorCollection: stagingCollection, persistSnapshot: false, deadlineAtMillis: deadlineAtMillis)
     if (!result.ok) {
         ckbDeleteKnowledgeBaseStagingBestEffort(kb, stagingCollection)
-        if (oldSnapshot.valid) {
-            _ = kb.restoreActiveSnapshot(oldSnapshot)
-        }
+        ckbRestoreOldSnapshotBestEffort(kb, oldSnapshot)
+        return result
+    }
+    if (ckbApplyIndexDeadlineFailure(result, "staged_rebuild_vector_after", deadlineAtMillis)) {
+        ckbDeleteKnowledgeBaseStagingBestEffort(kb, stagingCollection)
+        ckbRestoreOldSnapshotBestEffort(kb, oldSnapshot)
+        return result
+    }
+    if (ckbApplyIndexDeadlineFailure(result, "staged_rebuild_status_before", deadlineAtMillis)) {
+        ckbDeleteKnowledgeBaseStagingBestEffort(kb, stagingCollection)
+        ckbRestoreOldSnapshotBestEffort(kb, oldSnapshot)
         return result
     }
     let staging = kb.vectorCollectionStatus(stagingCollection)
+    if (ckbApplyIndexDeadlineFailure(result, "staged_rebuild_status_after", deadlineAtMillis)) {
+        ckbDeleteKnowledgeBaseStagingBestEffort(kb, stagingCollection)
+        ckbRestoreOldSnapshotBestEffort(kb, oldSnapshot)
+        return result
+    }
     if (staging.state != EmbeddingProviderState.READY) {
         result.ok = false
         result.failedVersion = "qdrant_staging_not_ready:${staging.degradedReason}"
         ckbDeleteKnowledgeBaseStagingBestEffort(kb, stagingCollection)
-        if (oldSnapshot.valid) {
-            _ = kb.restoreActiveSnapshot(oldSnapshot)
-        }
+        ckbRestoreOldSnapshotBestEffort(kb, oldSnapshot)
         return result
     }
     if (staging.count != result.count) {
         result.ok = false
         result.failedVersion = "qdrant_staging_count_mismatch:${staging.count}:${result.count}:${stagingCollection}"
         ckbDeleteKnowledgeBaseStagingBestEffort(kb, stagingCollection)
-        if (oldSnapshot.valid) {
-            _ = kb.restoreActiveSnapshot(oldSnapshot)
-        }
+        ckbRestoreOldSnapshotBestEffort(kb, oldSnapshot)
         return result
     }
     if (vector.dimensions > 0 && staging.dimension > 0 && staging.dimension != vector.dimensions) {
         result.ok = false
         result.failedVersion = "qdrant_staging_dimension_mismatch:${staging.dimension}:${vector.dimensions}:${stagingCollection}"
         ckbDeleteKnowledgeBaseStagingBestEffort(kb, stagingCollection)
-        if (oldSnapshot.valid) {
-            _ = kb.restoreActiveSnapshot(oldSnapshot)
-        }
+        ckbRestoreOldSnapshotBestEffort(kb, oldSnapshot)
         return result
     }
     if (vector.distance != "" && staging.distance != "" && staging.distance.trimAscii().toAsciiLower() != vector.distance.trimAscii().toAsciiLower()) {
         result.ok = false
         result.failedVersion = "qdrant_staging_distance_mismatch:${staging.distance}:${vector.distance}:${stagingCollection}"
         ckbDeleteKnowledgeBaseStagingBestEffort(kb, stagingCollection)
-        if (oldSnapshot.valid) {
-            _ = kb.restoreActiveSnapshot(oldSnapshot)
-        }
+        ckbRestoreOldSnapshotBestEffort(kb, oldSnapshot)
+        return result
+    }
+    if (ckbApplyIndexDeadlineFailure(result, "staged_rebuild_promote_before", deadlineAtMillis)) {
+        ckbDeleteKnowledgeBaseStagingBestEffort(kb, stagingCollection)
+        ckbRestoreOldSnapshotBestEffort(kb, oldSnapshot)
         return result
     }
     kb.promoteVectorActiveCollection(stagingCollection)
+    if (ckbApplyIndexDeadlineFailure(result, "staged_rebuild_promote_after", deadlineAtMillis)) {
+        ckbRestoreOldSnapshotBestEffort(kb, oldSnapshot)
+        ckbDeleteKnowledgeBaseStagingBestEffort(kb, stagingCollection)
+        return result
+    }
+    if (ckbApplyIndexDeadlineFailure(result, "staged_rebuild_verify_before", deadlineAtMillis)) {
+        ckbRestoreOldSnapshotBestEffort(kb, oldSnapshot)
+        ckbDeleteKnowledgeBaseStagingBestEffort(kb, stagingCollection)
+        return result
+    }
     let verified = kb.verifyAndApplyVectorStoreStatus(stagingCollection, result.count)
+    if (ckbApplyIndexDeadlineFailure(result, "staged_rebuild_verify_after", deadlineAtMillis)) {
+        ckbRestoreOldSnapshotBestEffort(kb, oldSnapshot)
+        ckbDeleteKnowledgeBaseStagingBestEffort(kb, stagingCollection)
+        return result
+    }
     if (verified.state != EmbeddingProviderState.READY) {
         result.ok = false
         result.failedVersion = if (verified.degradedReason != "") { verified.degradedReason } else { "qdrant_active_status_not_ready:${stagingCollection}" }
-        if (oldSnapshot.valid) {
-            _ = kb.restoreActiveSnapshot(oldSnapshot)
-        }
+        ckbRestoreOldSnapshotBestEffort(kb, oldSnapshot)
         return result
     }
-    kb.persistActiveSnapshotUsingVectorRecords(store, kb.lastVectorIndexBuild().vectorRecords, persistVectorFile: false)
+    if (ckbApplyIndexDeadlineFailure(result, "staged_rebuild_persist_snapshot_before", deadlineAtMillis)) {
+        ckbRestoreOldSnapshotBestEffort(kb, oldSnapshot)
+        ckbDeleteKnowledgeBaseStagingBestEffort(kb, stagingCollection)
+        return result
+    }
+    try {
+        kb.persistActiveSnapshotUsingVectorRecords(store, kb.lastVectorIndexBuild().vectorRecords, persistVectorFile: false, deadlineAtMillis: deadlineAtMillis)
+    } catch (e: Exception) {
+        result.ok = false
+        result.failedVersion = ckbSnapshotWriteFailureDiagnostic(e)
+        ckbRestoreOldSnapshotBestEffort(kb, oldSnapshot)
+        ckbDeleteKnowledgeBaseStagingBestEffort(kb, stagingCollection)
+        return result
+    }
+    _ = ckbDeadlineGuard("staged_rebuild_persist_snapshot_after", deadlineAtMillis)
     result
 }
 
