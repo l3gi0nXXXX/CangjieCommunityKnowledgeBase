@@ -5203,7 +5203,7 @@ public class FileSchedulerProgressSink <: SchedulerProgressSink {
         this.ensureProgressPath(runId)
         let status = if (task.ok) { "succeeded" } else { task.status }
         let diagnostic = schedulerTaskProgressDiagnostic(task)
-        this.store.appendLinesAtomically(this.progressPath, schedulerProgressJson(runId, "task_finished", taskName, status, diagnostic, task.durationMillis))
+        this.store.appendLinesAtomically(this.progressPath, schedulerTaskProgressJson(runId, "task_finished", taskName, status, diagnostic, task))
         this.writeTaskDiagnostics(runId, taskName, status, task)
         this.store.writeLinesAtomically("metadata/scheduler-current.ckb", schedulerCurrentText(runId, taskName, status, this.progressPath, diagnostic))
     }
@@ -5403,6 +5403,10 @@ private func vectorBuildCurrentText(progress: VectorBuildProgress, progressPath:
 
 private func schedulerProgressJson(runId: String, event: String, taskName: String, status: String, diagnostic: String, durationMillis: Int64): String {
     "{\"runId\":\"${ckbRuntimePreflightJsonEscape(runId)}\",\"event\":\"${ckbRuntimePreflightJsonEscape(event)}\",\"taskName\":\"${ckbRuntimePreflightJsonEscape(taskName)}\",\"status\":\"${ckbRuntimePreflightJsonEscape(status)}\",\"diagnostic\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(diagnostic), 240))}\",\"durationMillis\":${durationMillis},\"atMillis\":${DateTime.now().toUnixTimeStamp().toMilliseconds()}}\n"
+}
+
+private func schedulerTaskProgressJson(runId: String, event: String, taskName: String, status: String, diagnostic: String, task: SchedulerTaskResult): String {
+    "{\"runId\":\"${ckbRuntimePreflightJsonEscape(runId)}\",\"event\":\"${ckbRuntimePreflightJsonEscape(event)}\",\"taskName\":\"${ckbRuntimePreflightJsonEscape(taskName)}\",\"status\":\"${ckbRuntimePreflightJsonEscape(status)}\",\"diagnostic\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(diagnostic), 240))}\",\"durationMillis\":${task.durationMillis},\"timeBudgetMillis\":${task.timeBudgetMillis},\"lastStage\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(task.lastStage), 120))}\",\"lastProgress\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(task.lastProgress), 240))}\",\"workerPid\":${task.workerPid},\"workerOutSnippet\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(task.workerOutSnippet), 240))}\",\"workerErrSnippet\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(task.workerErrSnippet), 240))}\",\"atMillis\":${DateTime.now().toUnixTimeStamp().toMilliseconds()}}\n"
 }
 
 private func schedulerDiagnosticJson(runId: String, taskName: String, status: String, diagnostic: String): String {
@@ -5779,6 +5783,11 @@ public func ckbSchedulerTaskResultText(task: SchedulerTaskResult): String {
     text += "validationStatus=${escapeField(task.validationStatus)}\n"
     text += "validationSummary=${escapeField(task.validationSummary)}\n"
     text += "validationEvidenceHash=${escapeField(task.validationEvidenceHash)}\n"
+    text += "lastStage=${escapeField(task.lastStage)}\n"
+    text += "lastProgress=${escapeField(task.lastProgress)}\n"
+    text += "workerPid=${task.workerPid}\n"
+    text += "workerOutSnippet=${escapeField(task.workerOutSnippet)}\n"
+    text += "workerErrSnippet=${escapeField(task.workerErrSnippet)}\n"
     for (kind in task.updatedDataKinds) {
         text += "updatedDataKind|${escapeField(kind)}\n"
     }
@@ -5835,13 +5844,30 @@ public func ckbSchedulerTaskResultFromText(text: String): SchedulerTaskResult {
             task.validationSummary = value
         } else if (key == "validationEvidenceHash") {
             task.validationEvidenceHash = value
+        } else if (key == "lastStage") {
+            task.lastStage = value
+        } else if (key == "lastProgress") {
+            task.lastProgress = value
+        } else if (key == "workerPid") {
+            task.workerPid = parseIntField(value, 0)
+        } else if (key == "workerOutSnippet") {
+            task.workerOutSnippet = value
+        } else if (key == "workerErrSnippet") {
+            task.workerErrSnippet = value
         }
     }
     task
 }
 
-public func ckbWriteSchedulerWorkerTimeoutCompensation(store: FileKnowledgeStore, resultRelativePath: String, name: String, since: String, durationMillis: Int64, timeoutMillis: Int64, diagnostic: String): SchedulerTaskResult {
+public func ckbWriteSchedulerWorkerTimeoutCompensation(store: FileKnowledgeStore, resultRelativePath: String, name: String, since: String, durationMillis: Int64, timeoutMillis: Int64, diagnostic: String, lastStage!: String = "", lastProgress!: String = "", workerPid!: Int64 = 0, outSnippet!: String = "", errSnippet!: String = ""): SchedulerTaskResult {
     let task = ckbSchedulerWorkerTimeoutResult(name, since, durationMillis, timeoutMillis, diagnostic)
+    if (lastStage != "") {
+        task.lastStage = lastStage
+    }
+    task.lastProgress = lastProgress
+    task.workerPid = workerPid
+    task.workerOutSnippet = utf8SafePrefix(redactSensitive(outSnippet), 240)
+    task.workerErrSnippet = utf8SafePrefix(redactSensitive(errSnippet), 240)
     store.writeLinesAtomically(resultRelativePath, ckbSchedulerTaskResultText(task))
     store.writeLinesAtomically("${resultRelativePath}.sidecar", ckbSchedulerTaskResultText(task))
     task
@@ -6026,6 +6052,9 @@ public class ProcessIsolatedSchedulerTaskRunner <: SchedulerTaskRunner {
         this.store.writeLinesAtomically("${resultRelativePath}.started", ckbTaskWorkerStartedText(name, since, deadlineAtMillis, resultRelativePath, started))
         let code = this.launchWorker(name, since, deadlineAtMillis, resultRelativePath, timeoutMillis)
         let elapsed = ckbTaskWorkerNowMillis() - started
+        let workerPid = ckbSchedulerWorkerPidFromStarted(this.storePath, resultRelativePath)
+        let outSnippet = ckbSchedulerWorkerArtifactSnippet(this.storePath, resultRelativePath + ".out")
+        let errSnippet = ckbSchedulerWorkerArtifactSnippet(this.storePath, resultRelativePath + ".err")
         let parsed = ckbReadSchedulerWorkerResult(this.storePath, resultRelativePath, name, since, elapsed, timeoutMillis)
         if (parsed.status != "task_worker_result_missing" && parsed.status != "task_worker_result_malformed") {
             if (parsed.timeBudgetMillis <= 0) {
@@ -6034,11 +6063,29 @@ public class ProcessIsolatedSchedulerTaskRunner <: SchedulerTaskRunner {
             if (parsed.durationMillis <= 0) {
                 parsed.durationMillis = elapsed
             }
+            if (parsed.workerPid <= 0) {
+                parsed.workerPid = workerPid
+            }
+            if (parsed.workerOutSnippet == "") {
+                parsed.workerOutSnippet = outSnippet
+            }
+            if (parsed.workerErrSnippet == "") {
+                parsed.workerErrSnippet = errSnippet
+            }
             return parsed
         }
         if (code == 124 || elapsed >= timeoutMillis) {
             if (ckbSchedulerWorkerResultMissingOrEmpty(this.storePath, resultRelativePath)) {
-                return ckbWriteSchedulerWorkerTimeoutCompensation(this.store, resultRelativePath, name, since, elapsed, timeoutMillis, "task_worker_hard_timeout")
+                return ckbWriteSchedulerWorkerTimeoutCompensation(this.store, resultRelativePath, name, since, elapsed, timeoutMillis, "task_worker_hard_timeout", lastStage: ckbSchedulerWorkerLastStageFromArtifacts(outSnippet, errSnippet), lastProgress: ckbSchedulerWorkerLastProgressFromStore(this.store), workerPid: workerPid, outSnippet: outSnippet, errSnippet: errSnippet)
+            }
+            parsed.workerPid = workerPid
+            parsed.workerOutSnippet = outSnippet
+            parsed.workerErrSnippet = errSnippet
+            if (parsed.lastStage == "") {
+                parsed.lastStage = ckbSchedulerWorkerLastStageFromArtifacts(outSnippet, errSnippet)
+            }
+            if (parsed.lastProgress == "") {
+                parsed.lastProgress = ckbSchedulerWorkerLastProgressFromStore(this.store)
             }
             return parsed
         }
@@ -6062,6 +6109,7 @@ public class ProcessIsolatedSchedulerTaskRunner <: SchedulerTaskRunner {
         script += " --result-rel " + ckbLocalShellQuote(resultRelativePath)
         script += " > " + ckbLocalShellQuote(outPath) + " 2> " + ckbLocalShellQuote(errPath)
         script += " & pid=$!; "
+        script += "echo workerPid=$pid >> " + ckbLocalShellQuote(resultPath + ".started") + "; "
         script += "( sleep " + ckbLocalShellQuote("${seconds}") + "; if kill -0 $pid 2>/dev/null; then echo CKB_SCHEDULER_TASK_TIMEOUT >&2; pkill -TERM -P $pid 2>/dev/null || true; kill -TERM $pid 2>/dev/null || true; sleep 2; pkill -KILL -P $pid 2>/dev/null || true; kill -KILL $pid 2>/dev/null || true; fi ) & timer=$!; "
         script += "wait $pid; code=$?; kill $timer 2>/dev/null || true; if grep -q CKB_SCHEDULER_TASK_TIMEOUT " + ckbLocalShellQuote(errPath) + " 2>/dev/null; then exit 124; fi; exit $code"
         try {
@@ -6080,13 +6128,90 @@ private func ckbSchedulerWorkerDyldLibraryPath(): String {
     ""
 }
 
+private func ckbSchedulerWorkerCjHeapSize(): String {
+    if (let Some(value) <- getVariable("cjHeapSize")) {
+        return value
+    }
+    ""
+}
+
 public func ckbSchedulerWorkerShellPrelude(dyldLibraryPath: String): String {
+    ckbSchedulerWorkerShellPreludeWithHeap(dyldLibraryPath, ckbSchedulerWorkerCjHeapSize())
+}
+
+public func ckbSchedulerWorkerShellPreludeWithHeap(dyldLibraryPath: String, cjHeapSize: String): String {
     var script = "export CKB_SCHEDULER_TASK_WORKER=1; "
+    let heap = cjHeapSize.trimAscii()
+    if (heap != "") {
+        script += "export cjHeapSize=" + ckbLocalShellQuote(heap) + "; "
+    }
     let trimmed = dyldLibraryPath.trimAscii()
     if (trimmed != "") {
         script += "export DYLD_LIBRARY_PATH=" + ckbLocalShellQuote(trimmed) + "; "
     }
     script
+}
+
+private func ckbSchedulerWorkerPidFromStarted(storePath: String, resultRelativePath: String): Int64 {
+    let startedPath = Path(storePath).join(resultRelativePath + ".started")
+    if (!exists(startedPath)) {
+        return 0
+    }
+    try {
+        parseIntField(ckbCurrentField(String.fromUtf8(File.readFrom(startedPath)), "workerPid"), 0)
+    } catch (_: Exception) {
+        0
+    }
+}
+
+private func ckbSchedulerWorkerArtifactSnippet(storePath: String, relativePath: String): String {
+    let path = Path(storePath).join(relativePath)
+    if (!exists(path)) {
+        return ""
+    }
+    try {
+        utf8SafePrefix(redactSensitive(String.fromUtf8(File.readFrom(path)).replace("\n", " ").replace("\r", " ").trimAscii()), 240)
+    } catch (_: Exception) {
+        "invalid_response_encoding"
+    }
+}
+
+private func ckbSchedulerWorkerLastStageFromArtifacts(outSnippet: String, errSnippet: String): String {
+    let combined = "${outSnippet} ${errSnippet}".toAsciiLower()
+    if (combined.contains("ckb_scheduler_task_timeout")) {
+        return "worker_hard_timeout"
+    }
+    if (combined.contains("httptimeoutexception") || combined.contains("read response timeout") || combined.contains("timeout")) {
+        return "native_http_timeout"
+    }
+    if (combined.contains("qdrant")) {
+        return "qdrant"
+    }
+    if (combined.contains("ollama")) {
+        return "ollama_embedding"
+    }
+    if (combined.trimAscii() != "") {
+        return "worker_artifact"
+    }
+    "worker_timeout"
+}
+
+private func ckbSchedulerWorkerLastProgressFromStore(store: FileKnowledgeStore): String {
+    let vectorCurrent = store.readText("metadata/vector-reconcile-current.ckb")
+    if (vectorCurrent != "") {
+        let state = ckbCurrentField(vectorCurrent, "state")
+        let completed = ckbCurrentField(vectorCurrent, "completed")
+        let currentBatch = ckbCurrentField(vectorCurrent, "currentBatch")
+        let progressPath = ckbCurrentField(vectorCurrent, "progressPath")
+        if (state != "" || completed != "" || currentBatch != "") {
+            return "vector:state=${state},completed=${completed},currentBatch=${currentBatch},progressPath=${progressPath}"
+        }
+    }
+    let schedulerCurrent = store.readText("metadata/scheduler-current.ckb")
+    if (schedulerCurrent != "") {
+        return "scheduler:status=${ckbCurrentField(schedulerCurrent, "status")},taskName=${ckbCurrentField(schedulerCurrent, "taskName")},progressPath=${ckbCurrentField(schedulerCurrent, "progressPath")}"
+    }
+    ""
 }
 
 private func ckbReadSchedulerWorkerResult(storePath: String, resultRelativePath: String, name: String, since: String, durationMillis: Int64, timeoutMillis: Int64): SchedulerTaskResult {
