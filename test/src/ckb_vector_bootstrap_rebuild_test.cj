@@ -269,6 +269,10 @@ private class BootstrapFakeVectorStore <: VectorStore {
         backup
     }
 
+    public func backupWithDeadline(collection: String, deadlineAtMillis: Int64): VectorBackup {
+        this.backup(collection)
+    }
+
     public func restore(backup: VectorBackup): VectorStoreStatus {
         this.readyStatus(backup.collection)
     }
@@ -338,6 +342,10 @@ private class BootstrapExistingVectorStore <: VectorStore {
         backup.collection = collection
         backup.valid = true
         backup
+    }
+
+    public func backupWithDeadline(collection: String, deadlineAtMillis: Int64): VectorBackup {
+        this.backup(collection)
     }
 
     public func restore(backup: VectorBackup): VectorStoreStatus {
@@ -411,6 +419,10 @@ private class RestoreTrackingVectorStore <: VectorStore {
         backup.collection = collection
         backup.valid = true
         backup
+    }
+
+    public func backupWithDeadline(collection: String, deadlineAtMillis: Int64): VectorBackup {
+        this.backup(collection)
     }
 
     public func restore(backup: VectorBackup): VectorStoreStatus {

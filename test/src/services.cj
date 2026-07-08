@@ -6077,6 +6077,7 @@ public class ProcessIsolatedSchedulerTaskRunner <: SchedulerTaskRunner {
         let outSnippet = ckbSchedulerWorkerArtifactSnippet(this.storePath, resultRelativePath + ".out")
         let errSnippet = ckbSchedulerWorkerArtifactSnippet(this.storePath, resultRelativePath + ".err")
         let parsed = ckbReadSchedulerWorkerResult(this.storePath, resultRelativePath, name, since, elapsed, timeoutMillis)
+        let artifactClass = ckbClassifyWorkerArtifact(outSnippet, errSnippet)
         if (parsed.status != "task_worker_result_missing" && parsed.status != "task_worker_result_malformed") {
             if (parsed.timeBudgetMillis <= 0) {
                 parsed.timeBudgetMillis = timeoutMillis
@@ -6093,11 +6094,15 @@ public class ProcessIsolatedSchedulerTaskRunner <: SchedulerTaskRunner {
             if (parsed.workerErrSnippet == "") {
                 parsed.workerErrSnippet = errSnippet
             }
+            if (artifactClass != "") {
+                parsed.validationDiagnostics.add("${name}:worker_artifact:${artifactClass}")
+            }
             return parsed
         }
         if (code == 124 || elapsed >= timeoutMillis) {
             if (ckbSchedulerWorkerResultMissingOrEmpty(this.storePath, resultRelativePath)) {
-                return ckbWriteSchedulerWorkerTimeoutCompensation(this.store, resultRelativePath, name, since, elapsed, timeoutMillis, "task_worker_hard_timeout", lastStage: ckbSchedulerWorkerLastStageFromArtifacts(outSnippet, errSnippet), lastProgress: ckbSchedulerWorkerLastProgressFromStore(this.store), workerPid: workerPid, outSnippet: outSnippet, errSnippet: errSnippet)
+                let timeoutDiagnostic = if (artifactClass == "") { "task_worker_hard_timeout" } else { "task_worker_hard_timeout:${artifactClass}" }
+                return ckbWriteSchedulerWorkerTimeoutCompensation(this.store, resultRelativePath, name, since, elapsed, timeoutMillis, timeoutDiagnostic, lastStage: ckbSchedulerWorkerLastStageFromArtifacts(outSnippet, errSnippet), lastProgress: ckbSchedulerWorkerLastProgressFromStore(this.store), workerPid: workerPid, outSnippet: outSnippet, errSnippet: errSnippet)
             }
             parsed.workerPid = workerPid
             parsed.workerOutSnippet = outSnippet
@@ -6107,6 +6112,9 @@ public class ProcessIsolatedSchedulerTaskRunner <: SchedulerTaskRunner {
             }
             if (parsed.lastProgress == "") {
                 parsed.lastProgress = ckbSchedulerWorkerLastProgressFromStore(this.store)
+            }
+            if (artifactClass != "") {
+                parsed.validationDiagnostics.add("${name}:worker_artifact:${artifactClass}")
             }
             return parsed
         }
@@ -6198,6 +6206,14 @@ private func ckbSchedulerWorkerArtifactSnippet(storePath: String, relativePath: 
 }
 
 private func ckbSchedulerWorkerLastStageFromArtifacts(outSnippet: String, errSnippet: String): String {
+    let artifactClass = ckbClassifyWorkerArtifact(outSnippet, errSnippet)
+    if (artifactClass != "") {
+        return artifactClass
+    }
+    "worker_timeout"
+}
+
+public func ckbClassifyWorkerArtifact(outSnippet: String, errSnippet: String): String {
     let combined = "${outSnippet} ${errSnippet}".toAsciiLower()
     if (combined.contains("ckb_scheduler_task_timeout")) {
         return "worker_hard_timeout"
@@ -6214,7 +6230,7 @@ private func ckbSchedulerWorkerLastStageFromArtifacts(outSnippet: String, errSni
     if (combined.trimAscii() != "") {
         return "worker_artifact"
     }
-    "worker_timeout"
+    ""
 }
 
 private func ckbSchedulerWorkerLastProgressFromStore(store: FileKnowledgeStore): String {
@@ -6345,6 +6361,8 @@ public class CkbSchedulerTaskRunner <: SchedulerTaskRunner {
             result.candidateVersion = rebuild.candidateVersion
             result.requestCount = profile.requestCount
             result.durationMillis = profile.timeBudgetMillis / 10
+            result.lastStage = if (rebuild.ok) { "weekly_full_rebuild_finished" } else { ckbSchedulerResultStageFromStatus(result.status) }
+            result.lastProgress = "activeVersion=${rebuild.activeVersion},candidateVersion=${rebuild.candidateVersion},failedVersion=${rebuild.failedVersion},count=${rebuild.count}"
             return this.finalizeTaskResultWithContract(name, result, beforeInvariant)
         }
         if (profile.profile == "cangjie_freshness_probe") {
@@ -6379,10 +6397,15 @@ public class CkbSchedulerTaskRunner <: SchedulerTaskRunner {
             for (diagnostic in freshness.diagnostics) {
                 result.validationDiagnostics.add("freshness:${diagnostic}")
             }
+            for (source in freshness.sources) {
+                result.validationDiagnostics.add("freshness_source:sourceSet=${source.sourceSet}|sourceFamily=${source.sourceFamily}|repo=${source.sourceRepo}|ref=${source.sourceRef}|status=${source.status}|staleness=${source.staleness}|resolvedCommit=${source.resolvedCommit}|contentHash=${source.contentHash}|crawlAt=${source.crawlAt}|indexedAt=${source.indexedAt}")
+            }
+            result.lastStage = if (result.ok) { "freshness_probe_finished" } else { "freshness_probe_degraded" }
+            result.lastProgress = "sources=${freshness.sources.size},diagnostics=${freshness.diagnostics.size},activeVersion=${status.activeKnowledgeVersion},candidateVersion=${status.candidateKnowledgeVersion}"
             return this.finalizeTaskResultWithContract(name, result, beforeInvariant)
         }
         let manifest = this.runtimeVersionManifest()
-        let fetch = ckbRunScheduledProfileFetches(profile, this.sourceRunner, this.config, this.store, manifest)
+        let fetch = ckbRunScheduledProfileFetches(profile, this.sourceRunner, this.config, this.store, manifest, deadlineAtMillis: deadlineAtMillis)
         fetch.runId = "${this.kb.scheduler.clock.nowMinutes}"
         let progressSink = FileVectorBuildProgressSink(this.store)
         let ingest = ingestScheduledProfileSources(this.kb, this.store, profile, fetch, this.config, manifest, progressSink: progressSink, deadlineAtMillis: deadlineAtMillis)
@@ -6411,10 +6434,24 @@ public class CkbSchedulerTaskRunner <: SchedulerTaskRunner {
         if (!result.ok && ckbScheduledIngestTimedOut(ingest.status)) {
             result.validationDiagnostics.add("internal_timeout:${ingest.status}")
         }
+        result.lastStage = ckbSchedulerResultStageFromStatus(result.status)
+        result.lastProgress = "fetchRequests=${fetch.requestCount},fetched=${fetch.fetchedCount},failed=${fetch.failedCount},ingestStatus=${ingest.status},activeVersion=${status.activeKnowledgeVersion},candidateVersion=${status.candidateKnowledgeVersion}"
         this.finalizeTaskResultWithContract(name, result, beforeInvariant)
     }
 
     private func finalizeTaskResultWithContract(name: String, result: SchedulerTaskResult, beforeInvariant: CkbRoutineActiveInvariant): SchedulerTaskResult {
+        let activeInvariantDiagnostic = ckbActiveSnapshotVectorInvariantDiagnostic(this.kb.status())
+        if (result.ok && activeInvariantDiagnostic != "") {
+            result.ok = false
+            result.status = "active_vector_invariant_failed"
+            result.validationDiagnostics.add("${name}:${activeInvariantDiagnostic}")
+            if (result.lastStage == "") {
+                result.lastStage = "active_vector_invariant"
+            }
+            if (result.lastProgress == "") {
+                result.lastProgress = activeInvariantDiagnostic
+            }
+        }
         let contract = ckbSchedulerTaskContractForName(name)
         let artifactStatus = ckbRoutineArtifactStatusForTask(this.store, this.config, contract, result)
         let validation = validateSchedulerTaskResultAgainstContractWithArtifacts(name, result, beforeInvariant, ckbRoutineActiveInvariantFromStatus(this.kb.status()), artifactStatus)
@@ -6429,6 +6466,46 @@ public class CkbSchedulerTaskRunner <: SchedulerTaskRunner {
         }
         result
     }
+}
+
+private func ckbSchedulerResultStageFromStatus(status: String): String {
+    if (status.startsWith("task_timeout:") || status.contains("deadline_exceeded")) {
+        return "deadline_exceeded"
+    }
+    if (status.contains("readiness")) {
+        return "readiness"
+    }
+    if (status.contains("validation")) {
+        return "candidate_validation"
+    }
+    if (status.contains("benchmark_gap")) {
+        return "benchmark_gap_curation"
+    }
+    if (status.contains("rebuild")) {
+        return "weekly_full_rebuild"
+    }
+    if (status == "profile_ok" || status == "rebuild_ok" || status.endsWith("_ok")) {
+        return "finished"
+    }
+    if (status != "") {
+        return status
+    }
+    "unknown"
+}
+
+private func ckbActiveSnapshotVectorInvariantDiagnostic(status: KnowledgeStatus): String {
+    let indexCount = status.storage.indexCount
+    let vectorCount = status.storage.vectorIndexCount
+    if (indexCount <= 0 || vectorCount <= 0) {
+        return ""
+    }
+    if (status.storage.vectorState != EmbeddingProviderState.READY) {
+        return ""
+    }
+    if (indexCount == vectorCount) {
+        return ""
+    }
+    "active_vector_count_mismatch:indexCount=${indexCount}:vectorIndexCount=${vectorCount}:activeCollection=${status.storage.vectorActiveCollection}"
 }
 
 private func ckbScheduledIngestTimedOut(status: String): Bool {
@@ -7233,33 +7310,33 @@ private class CkbScheduledProfileIngestResult {
     init() {}
 }
 
-private func ckbRunScheduledProfileFetches(profile: CkbScheduleTaskProfile, runner: SourceFetchRunner, config: CkbRuntimeConfig, store: FileKnowledgeStore, manifest: CangjieVersionManifest): CkbScheduledProfileFetchResult {
-    fetchScheduledProfileSources(profile, runner, config, store, manifest)
+private func ckbRunScheduledProfileFetches(profile: CkbScheduleTaskProfile, runner: SourceFetchRunner, config: CkbRuntimeConfig, store: FileKnowledgeStore, manifest: CangjieVersionManifest, deadlineAtMillis!: Int64 = 0): CkbScheduledProfileFetchResult {
+    fetchScheduledProfileSources(profile, runner, config, store, manifest, deadlineAtMillis: deadlineAtMillis)
 }
 
-private func fetchScheduledProfileSources(profile: CkbScheduleTaskProfile, runner: SourceFetchRunner, config: CkbRuntimeConfig, store: FileKnowledgeStore, manifest: CangjieVersionManifest): CkbScheduledProfileFetchResult {
+private func fetchScheduledProfileSources(profile: CkbScheduleTaskProfile, runner: SourceFetchRunner, config: CkbRuntimeConfig, store: FileKnowledgeStore, manifest: CangjieVersionManifest, deadlineAtMillis!: Int64 = 0): CkbScheduledProfileFetchResult {
     let result = CkbScheduledProfileFetchResult()
     let builder = SourceRequestBuilder(gitCodeApiRoot: config.gitCodeBaseUrl)
     if (profile.profile == "community_repo_discovery") {
-        ckbFetchScheduledSource(runner, builder.gitCodeOrgRepos("cangjie"), profile, result, config)
-        ckbFetchScheduledSource(runner, builder.gitCodeOrgRepos("cangjie-sig"), profile, result, config)
-        ckbFetchScheduledSource(runner, builder.gitCodeOrgRepos("cangjie-tpc"), profile, result, config)
+        ckbFetchScheduledSource(runner, builder.gitCodeOrgRepos("cangjie"), profile, result, config, deadlineAtMillis: deadlineAtMillis)
+        ckbFetchScheduledSource(runner, builder.gitCodeOrgRepos("cangjie-sig"), profile, result, config, deadlineAtMillis: deadlineAtMillis)
+        ckbFetchScheduledSource(runner, builder.gitCodeOrgRepos("cangjie-tpc"), profile, result, config, deadlineAtMillis: deadlineAtMillis)
     } else if (profile.profile == "docs_probe") {
-        ckbFetchScheduledSource(runner, builder.docs("https://docs.cangjie-lang.cn/docs/1.0.0/"), profile, result, config)
+        ckbFetchScheduledSource(runner, builder.docs("https://docs.cangjie-lang.cn/docs/1.0.0/"), profile, result, config, deadlineAtMillis: deadlineAtMillis)
     } else if (profile.profile == "website_probe" || profile.profile == "website_full") {
-        ckbFetchScheduledSource(runner, builder.website("https://cangjie-lang.cn/"), profile, result, config)
-        ckbFetchScheduledSource(runner, builder.website("https://cangjie-lang.cn/docs"), profile, result, config)
-        ckbFetchScheduledSource(runner, builder.website("https://cangjie-lang.cn/en/docs"), profile, result, config)
+        ckbFetchScheduledSource(runner, builder.website("https://cangjie-lang.cn/"), profile, result, config, deadlineAtMillis: deadlineAtMillis)
+        ckbFetchScheduledSource(runner, builder.website("https://cangjie-lang.cn/docs"), profile, result, config, deadlineAtMillis: deadlineAtMillis)
+        ckbFetchScheduledSource(runner, builder.website("https://cangjie-lang.cn/en/docs"), profile, result, config, deadlineAtMillis: deadlineAtMillis)
     } else if (profile.profile == "web_candidate_discovery" || profile.profile == "web_candidate_recrawl") {
-        ckbFetchScheduledSource(runner, builder.webCandidate("https://cangjie-lang.cn/community"), profile, result, config)
-        ckbFetchScheduledSource(runner, builder.webCandidate("https://cangjie-lang.cn/blog"), profile, result, config)
+        ckbFetchScheduledSource(runner, builder.webCandidate("https://cangjie-lang.cn/community"), profile, result, config, deadlineAtMillis: deadlineAtMillis)
+        ckbFetchScheduledSource(runner, builder.webCandidate("https://cangjie-lang.cn/blog"), profile, result, config, deadlineAtMillis: deadlineAtMillis)
     } else if (profile.profile == "cangjie_freshness_probe" || profile.profile == "cangjie_docs_full_sync" || profile.profile == "cangjie_release_full_sync") {
-        ckbFetchScheduledSource(runner, builder.docs("https://docs.cangjie-lang.cn/docs/1.0.0/"), profile, result, config)
-        ckbFetchScheduledManifestRepoSources(runner, builder, manifest, profile, result, config, store, true, true, true, true, true)
+        ckbFetchScheduledSource(runner, builder.docs("https://docs.cangjie-lang.cn/docs/1.0.0/"), profile, result, config, deadlineAtMillis: deadlineAtMillis)
+        ckbFetchScheduledManifestRepoSources(runner, builder, manifest, profile, result, config, store, true, true, true, true, true, deadlineAtMillis: deadlineAtMillis)
     } else if (profile.profile == "cangjie_source_event_sync") {
-        ckbFetchScheduledManifestRepoSources(runner, builder, manifest, profile, result, config, store, false, true, true, true, true)
+        ckbFetchScheduledManifestRepoSources(runner, builder, manifest, profile, result, config, store, false, true, true, true, true, deadlineAtMillis: deadlineAtMillis)
     } else if (profile.profile == "cangjie_version_branch_refresh") {
-        ckbFetchScheduledManifestRepoSources(runner, builder, manifest, profile, result, config, store, true, true, true, true, true)
+        ckbFetchScheduledManifestRepoSources(runner, builder, manifest, profile, result, config, store, true, true, true, true, true, deadlineAtMillis: deadlineAtMillis)
     } else if (profile.profile == "cangjie_benchmark_gap_curation") {
         result.ok = true
     }
@@ -7269,13 +7346,13 @@ private func fetchScheduledProfileSources(profile: CkbScheduleTaskProfile, runne
     result
 }
 
-private func ckbFetchScheduledManifestRepoSources(runner: SourceFetchRunner, builder: SourceRequestBuilder, manifest: CangjieVersionManifest, profile: CkbScheduleTaskProfile, result: CkbScheduledProfileFetchResult, config: CkbRuntimeConfig, store: FileKnowledgeStore, docs: Bool, std: Bool, stdx: Bool, tools: Bool, evalSupport: Bool): Unit {
+private func ckbFetchScheduledManifestRepoSources(runner: SourceFetchRunner, builder: SourceRequestBuilder, manifest: CangjieVersionManifest, profile: CkbScheduleTaskProfile, result: CkbScheduledProfileFetchResult, config: CkbRuntimeConfig, store: FileKnowledgeStore, docs: Bool, std: Bool, stdx: Bool, tools: Bool, evalSupport: Bool, deadlineAtMillis!: Int64 = 0): Unit {
     let before = result.requestCount
     for (source in manifest.sources) {
         if (!ckbScheduledManifestSourceIncluded(source, docs, std, stdx, tools, evalSupport)) {
             continue
         }
-        ckbFetchScheduledManifestSource(runner, builder, source, profile, result, config, store)
+        ckbFetchScheduledManifestSource(runner, builder, source, profile, result, config, store, deadlineAtMillis: deadlineAtMillis)
     }
     if (result.requestCount == before) {
         result.ok = false
@@ -7292,7 +7369,7 @@ private func ckbScheduledManifestSourceIncluded(source: CangjieVersionSource, do
         (evalSupport && source.sourceSet == CangjieSourceSets.EVAL_SUPPORT)
 }
 
-private func ckbFetchScheduledManifestSource(runner: SourceFetchRunner, builder: SourceRequestBuilder, source: CangjieVersionSource, profile: CkbScheduleTaskProfile, result: CkbScheduledProfileFetchResult, config: CkbRuntimeConfig, store: FileKnowledgeStore): Unit {
+private func ckbFetchScheduledManifestSource(runner: SourceFetchRunner, builder: SourceRequestBuilder, source: CangjieVersionSource, profile: CkbScheduleTaskProfile, result: CkbScheduledProfileFetchResult, config: CkbRuntimeConfig, store: FileKnowledgeStore, deadlineAtMillis!: Int64 = 0): Unit {
     if (source.sourceSet == CangjieSourceSets.EVAL_SUPPORT) {
         ckbFetchScheduledEvalSupportSource(source, profile, result, config, store)
         return
@@ -7304,7 +7381,7 @@ private func ckbFetchScheduledManifestSource(runner: SourceFetchRunner, builder:
         result.failedRequests.add("manifest_source_missing:${source.sourceSet}:${source.sourceRepo}:${source.sourceRef}")
         return
     }
-    ckbFetchScheduledGitCodeTreeSnapshot(runner, builder, source, profile, result, config)
+    ckbFetchScheduledGitCodeTreeSnapshot(runner, builder, source, profile, result, config, deadlineAtMillis: deadlineAtMillis)
 }
 
 private class GitCodeRefResolution {
@@ -7365,15 +7442,15 @@ private class GitCodeTreeScanBudget {
     init() {}
 }
 
-private func ckbFetchScheduledGitCodeTreeSnapshot(runner: SourceFetchRunner, builder: SourceRequestBuilder, source: CangjieVersionSource, profile: CkbScheduleTaskProfile, result: CkbScheduledProfileFetchResult, config: CkbRuntimeConfig): Unit {
-    let resolution = ckbResolveGitCodeRefForScheduledFetch(runner, builder, source, profile, result, config)
+private func ckbFetchScheduledGitCodeTreeSnapshot(runner: SourceFetchRunner, builder: SourceRequestBuilder, source: CangjieVersionSource, profile: CkbScheduleTaskProfile, result: CkbScheduledProfileFetchResult, config: CkbRuntimeConfig, deadlineAtMillis!: Int64 = 0): Unit {
+    let resolution = ckbResolveGitCodeRefForScheduledFetch(runner, builder, source, profile, result, config, deadlineAtMillis: deadlineAtMillis)
     if (!resolution.ok) {
         let failureRequest = builder.gitCodeTree(source.sourceRepo, source.sourceRef)
         let failureFetch = ckbGitCodeRefResolutionFailureFetch(failureRequest, resolution)
         _ = ckbAppendScheduledSourceRecord(profile, result, failureRequest, failureFetch)
         return
     }
-    let scan = ckbFetchScheduledGitCodeTreePages(runner, builder, source, profile, result, config, resolution)
+    let scan = ckbFetchScheduledGitCodeTreePages(runner, builder, source, profile, result, config, resolution, deadlineAtMillis: deadlineAtMillis)
     result.diagnostics.add("gitcode_tree_pages_scanned:${source.sourceSet}:${source.sourceRepo}:pagesScanned=${scan.pagesScanned}|objects=${scan.objectsSeen}|files=${scan.filesSeen}|directories=${scan.directoriesSeen}|candidates=${scan.candidatesSeen}|stop=${scan.stopReason}")
     if (scan.failed) {
         return
@@ -7393,10 +7470,10 @@ private func ckbFetchScheduledGitCodeTreeSnapshot(runner: SourceFetchRunner, bui
         result.diagnostics.add("source_tree_no_candidate:${source.sourceSet}:${source.sourceRepo}:pagesScanned=${scan.pagesScanned}|objects=${scan.objectsSeen}|files=${scan.filesSeen}|directories=${scan.directoriesSeen}|candidates=${scan.candidatesSeen}|stop=${scan.stopReason}")
         return
     }
-    ckbFetchScheduledSelectedSourceFiles(runner, builder, source, profile, result, config, scan.selected, resolution)
+    ckbFetchScheduledSelectedSourceFiles(runner, builder, source, profile, result, config, scan.selected, resolution, deadlineAtMillis: deadlineAtMillis)
 }
 
-private func ckbFetchScheduledGitCodeTreePages(runner: SourceFetchRunner, builder: SourceRequestBuilder, source: CangjieVersionSource, profile: CkbScheduleTaskProfile, result: CkbScheduledProfileFetchResult, config: CkbRuntimeConfig, resolution: GitCodeRefResolution): GitCodeTreePageScan {
+private func ckbFetchScheduledGitCodeTreePages(runner: SourceFetchRunner, builder: SourceRequestBuilder, source: CangjieVersionSource, profile: CkbScheduleTaskProfile, result: CkbScheduledProfileFetchResult, config: CkbRuntimeConfig, resolution: GitCodeRefResolution, deadlineAtMillis!: Int64 = 0): GitCodeTreePageScan {
     let scan = GitCodeTreePageScan()
     let selector = SourceCandidateSelector()
     let maxFiles = ckbScheduledSourceSnapshotLimit(profile, source)
@@ -7407,7 +7484,7 @@ private func ckbFetchScheduledGitCodeTreePages(runner: SourceFetchRunner, builde
     result.diagnostics.add("gitcode_tree_scan_budget:${source.sourceSet}:${source.sourceRepo}:pages=${budget.maxPages}|objects=${budget.maxObjects}|reason=${budget.reason}")
     while (page <= maxPages) {
         let treeRequest = builder.gitCodeTreePageWithFetchRef(source.sourceRepo, source.sourceRef, resolution.effectiveRef, page: page, perPage: perPage)
-        let treeFetch = ckbFetchScheduledRequest(runner, treeRequest, config)
+        let treeFetch = ckbFetchScheduledRequest(runner, treeRequest, config, deadlineAtMillis: deadlineAtMillis)
         ckbApplyGitCodeRefResolutionToFetch(treeFetch, resolution)
         scan.lastRequest = treeRequest
         scan.pagesScanned += 1
@@ -7503,8 +7580,8 @@ private func ckbScheduledGitCodeTreeMaxPages(profile: CkbScheduleTaskProfile, so
     budget
 }
 
-private func ckbResolveGitCodeRefForScheduledFetch(runner: SourceFetchRunner, builder: SourceRequestBuilder, source: CangjieVersionSource, profile: CkbScheduleTaskProfile, result: CkbScheduledProfileFetchResult, config: CkbRuntimeConfig): GitCodeRefResolution {
-    let resolution = ckbResolveGitCodeRefForFetch(runner, builder, source.sourceRepo, source.sourceRef, source.sourceSet, source.sourceFamily, config)
+private func ckbResolveGitCodeRefForScheduledFetch(runner: SourceFetchRunner, builder: SourceRequestBuilder, source: CangjieVersionSource, profile: CkbScheduleTaskProfile, result: CkbScheduledProfileFetchResult, config: CkbRuntimeConfig, deadlineAtMillis!: Int64 = 0): GitCodeRefResolution {
+    let resolution = ckbResolveGitCodeRefForFetch(runner, builder, source.sourceRepo, source.sourceRef, source.sourceSet, source.sourceFamily, config, deadlineAtMillis: deadlineAtMillis)
     for (diagnostic in resolution.diagnostics) {
         result.diagnostics.add(diagnostic)
     }
@@ -7516,7 +7593,7 @@ private func ckbResolveGitCodeRefForScheduledFetch(runner: SourceFetchRunner, bu
     resolution
 }
 
-private func ckbResolveGitCodeRefForFetch(runner: SourceFetchRunner, builder: SourceRequestBuilder, repo: String, ref: String, sourceSet: String, sourceFamily: String, config: CkbRuntimeConfig): GitCodeRefResolution {
+private func ckbResolveGitCodeRefForFetch(runner: SourceFetchRunner, builder: SourceRequestBuilder, repo: String, ref: String, sourceSet: String, sourceFamily: String, config: CkbRuntimeConfig, deadlineAtMillis!: Int64 = 0): GitCodeRefResolution {
     let resolution = GitCodeRefResolution()
     resolution.repo = repo
     resolution.sourceSet = sourceSet
@@ -7540,7 +7617,7 @@ private func ckbResolveGitCodeRefForFetch(runner: SourceFetchRunner, builder: So
     var page: Int64 = 1
     while (page <= 10) {
         let branchListRequest = builder.gitCodeBranches(repo, page: page)
-        let branchListFetch = ckbFetchScheduledRequest(runner, branchListRequest, config)
+        let branchListFetch = ckbFetchScheduledRequest(runner, branchListRequest, config, deadlineAtMillis: deadlineAtMillis)
         let diagnostic = ckbGitCodeRefResolutionFetchDiagnostic(branchListRequest, branchListFetch)
         resolution.diagnostics.add("gitcode_ref_resolution_branch_list:${diagnostic}")
         if (!branchListFetch.ok) {
@@ -7579,7 +7656,7 @@ private func ckbResolveGitCodeRefForFetch(runner: SourceFetchRunner, builder: So
     }
     for (candidateRef in candidateRefs) {
         let branchRequest = builder.gitCodeBranchNativeSafe(repo, candidateRef)
-        let branchFetch = ckbFetchScheduledRequest(runner, branchRequest, config)
+        let branchFetch = ckbFetchScheduledRequest(runner, branchRequest, config, deadlineAtMillis: deadlineAtMillis)
         let branchDiagnostic = ckbGitCodeRefResolutionFetchDiagnostic(branchRequest, branchFetch)
         resolution.diagnostics.add("gitcode_ref_resolution_branch_ref:${branchDiagnostic}")
         if (branchFetch.ok) {
@@ -7719,10 +7796,10 @@ private func ckbApplyGitCodeRefResolutionToFetch(fetch: SourceFetchResult, resol
     }
 }
 
-private func ckbFetchScheduledSelectedSourceFiles(runner: SourceFetchRunner, builder: SourceRequestBuilder, source: CangjieVersionSource, profile: CkbScheduleTaskProfile, result: CkbScheduledProfileFetchResult, config: CkbRuntimeConfig, selected: ArrayList<String>, resolution: GitCodeRefResolution): Unit {
+private func ckbFetchScheduledSelectedSourceFiles(runner: SourceFetchRunner, builder: SourceRequestBuilder, source: CangjieVersionSource, profile: CkbScheduleTaskProfile, result: CkbScheduledProfileFetchResult, config: CkbRuntimeConfig, selected: ArrayList<String>, resolution: GitCodeRefResolution, deadlineAtMillis!: Int64 = 0): Unit {
     for (path in selected) {
         let rawRequest = builder.gitCodeSourceRawWithFetchRef(source.sourceRepo, source.sourceRef, resolution.effectiveRef, path)
-        let rawFetch = ckbFetchScheduledRequest(runner, rawRequest, config)
+        let rawFetch = ckbFetchScheduledRequest(runner, rawRequest, config, deadlineAtMillis: deadlineAtMillis)
         ckbApplyGitCodeRefResolutionToFetch(rawFetch, resolution)
         if (rawFetch.ok) {
             _ = ckbAppendScheduledSourceRecord(profile, result, rawRequest, rawFetch)
@@ -7730,7 +7807,7 @@ private func ckbFetchScheduledSelectedSourceFiles(runner: SourceFetchRunner, bui
         }
         result.diagnostics.add("source_raw_snapshot_fallback:${ckbScheduledFetchDiagnosticWithResolution(profile, rawRequest, rawFetch, resolution)}")
         let contentsRequest = builder.gitCodeSourceContentsWithFetchRef(source.sourceRepo, source.sourceRef, resolution.effectiveRef, path)
-        let contentsFetch = ckbFetchScheduledRequest(runner, contentsRequest, config)
+        let contentsFetch = ckbFetchScheduledRequest(runner, contentsRequest, config, deadlineAtMillis: deadlineAtMillis)
         ckbApplyGitCodeRefResolutionToFetch(contentsFetch, resolution)
         if (contentsFetch.ok) {
             _ = ckbAppendScheduledSourceRecord(profile, result, contentsRequest, contentsFetch)
@@ -7845,15 +7922,36 @@ private func ckbScheduledEvalSupportBody(extracted: CangjieTypedRecordResult): S
     body.toString()
 }
 
-private func ckbFetchScheduledSource(runner: SourceFetchRunner, request: SourceFetchRequest, profile: CkbScheduleTaskProfile, result: CkbScheduledProfileFetchResult, config: CkbRuntimeConfig): Unit {
-    let fetch = ckbFetchScheduledRequest(runner, request, config)
+private func ckbFetchScheduledSource(runner: SourceFetchRunner, request: SourceFetchRequest, profile: CkbScheduleTaskProfile, result: CkbScheduledProfileFetchResult, config: CkbRuntimeConfig, deadlineAtMillis!: Int64 = 0): Unit {
+    let fetch = ckbFetchScheduledRequest(runner, request, config, deadlineAtMillis: deadlineAtMillis)
     _ = ckbAppendScheduledSourceRecord(profile, result, request, fetch)
 }
 
-private func ckbFetchScheduledRequest(runner: SourceFetchRunner, request: SourceFetchRequest, config: CkbRuntimeConfig): SourceFetchResult {
-    request.timeoutMillis = config.timeoutMillis
+private func ckbFetchScheduledRequest(runner: SourceFetchRunner, request: SourceFetchRequest, config: CkbRuntimeConfig, deadlineAtMillis!: Int64 = 0): SourceFetchResult {
+    if (ckbDeadlineExceeded(deadlineAtMillis)) {
+        return ckbFetchScheduledDeadlineExceededResult(request, deadlineAtMillis)
+    }
+    let remaining = ckbRemainingMillis(deadlineAtMillis)
+    request.timeoutMillis = if (remaining > 0 && remaining < config.timeoutMillis) { remaining } else { config.timeoutMillis }
     request.retryCount = config.retryCount
     SourceResponseNormalizer().normalize(request, runner.fetch(request))
+}
+
+private func ckbFetchScheduledDeadlineExceededResult(request: SourceFetchRequest, deadlineAtMillis: Int64): SourceFetchResult {
+    let result = SourceFetchResult()
+    result.ok = false
+    result.status = "fetch_deadline_exceeded"
+    result.statusCode = 0
+    result.sourceUrl = request.url
+    result.normalizedType = request.kind
+    result.repo = request.repo
+    result.ref = request.ref
+    result.path = request.path
+    result.transportErrorClass = "timeout"
+    result.transportDiagnostic = "fetch_deadline_exceeded:deadline=${deadlineAtMillis}"
+    result.body = result.transportDiagnostic
+    result.bodyHash = stableSummaryHash(result.body)
+    result
 }
 
 private func ckbAppendScheduledSourceRecord(profile: CkbScheduleTaskProfile, result: CkbScheduledProfileFetchResult, request: SourceFetchRequest, fetch: SourceFetchResult): CkbScheduledSourceRecord {
@@ -7883,7 +7981,7 @@ private func ckbAppendScheduledSourceRecord(profile: CkbScheduleTaskProfile, res
 }
 
 private func ckbScheduledFetchDiagnostic(profile: CkbScheduleTaskProfile, request: SourceFetchRequest, fetch: SourceFetchResult): String {
-    "profile=${profile.profile}|kind=${request.kind}|repo=${request.repo}|ref=${request.ref}|path=${request.path}|url=${request.url}|ok=${fetch.ok}|status=${fetch.status}|statusCode=${fetch.statusCode}|errorClass=${fetch.transportErrorClass}|bodyHash=${fetch.bodyHash}"
+    "profile=${profile.profile}|kind=${request.kind}|purpose=${request.purpose}|page=${request.page}|perPage=${request.perPage}|repo=${request.repo}|ref=${request.ref}|path=${request.path}|url=${request.url}|ok=${fetch.ok}|status=${fetch.status}|statusCode=${fetch.statusCode}|errorClass=${fetch.transportErrorClass}|attempts=${fetch.attempts}|timeoutMillis=${request.timeoutMillis}|retryCount=${request.retryCount}|transportDiagnostic=${utf8SafePrefix(redactSensitive(fetch.transportDiagnostic), 120)}|bodyHash=${fetch.bodyHash}"
 }
 
 private func ckbScheduledFetchDiagnosticWithResolution(profile: CkbScheduleTaskProfile, request: SourceFetchRequest, fetch: SourceFetchResult, resolution: GitCodeRefResolution): String {
@@ -7896,6 +7994,7 @@ private func ckbScheduledFetchPrimaryFailure(result: CkbScheduledProfileFetchRes
     }
     let first = result.failedRequests[0]
     if (first.contains("status=timeout")) { return "timeout" }
+    if (first.contains("errorClass=timeout")) { return "timeout" }
     if (first.contains("status=auth_degraded")) { return "auth_degraded" }
     if (first.contains("status=not_found") || first.contains("status=http_404")) { return "not_found" }
     if (first.contains("status=blocked_url")) { return "blocked_url" }
@@ -8060,7 +8159,21 @@ private func ingestScheduledBenchmarkGapCuration(kb: KnowledgeBase, store: FileK
         result.status = "benchmark_gap_curation_input_not_found"
         return result
     }
-    let curationText = try { String.fromUtf8(File.readFrom(Path(inputPath))) } catch (_: Exception) { "" }
+    let curationBytes = File.readFrom(Path(inputPath))
+    if (curationBytes.size > ckbBenchmarkGapCurationMaxInputBytes()) {
+        result.ok = false
+        result.status = "benchmark_gap_curation_input_too_large"
+        result.validationDiagnostics.add("benchmark_gap_input_gate:bytes=${curationBytes.size}:maxBytes=${ckbBenchmarkGapCurationMaxInputBytes()}")
+        return result
+    }
+    let curationText = try {
+        String.fromUtf8(curationBytes)
+    } catch (_: Exception) {
+        result.ok = false
+        result.status = "benchmark_gap_curation_input_invalid_encoding"
+        result.validationDiagnostics.add("benchmark_gap_input_gate:invalid_encoding:bytes=${curationBytes.size}")
+        return result
+    }
     if (curationText.trimAscii() == "") {
         result.ok = false
         result.status = "benchmark_gap_curation_input_empty"
@@ -8072,6 +8185,13 @@ private func ingestScheduledBenchmarkGapCuration(kb: KnowledgeBase, store: FileK
         result.status = curated.diagnostic
         return result
     }
+    if (curated.records.size > ckbBenchmarkGapCurationMaxRecords()) {
+        result.ok = false
+        result.status = "benchmark_gap_curation_record_limit_exceeded"
+        result.validationDiagnostics.add("benchmark_gap_input_gate:accepted=${curated.records.size}:maxRecords=${ckbBenchmarkGapCurationMaxRecords()}:bytes=${curationBytes.size}")
+        return result
+    }
+    result.validationDiagnostics.add("benchmark_gap_input_gate:bytes=${curationBytes.size}:accepted=${curated.records.size}:rejected=${curated.rejected}:maxRecords=${ckbBenchmarkGapCurationMaxRecords()}")
     for (record in curated.records) {
         result.validationDiagnostics.add(ckbBenchmarkGapPreviewProof(curated.records, record))
     }
@@ -8092,6 +8212,7 @@ private func ingestScheduledBenchmarkGapCuration(kb: KnowledgeBase, store: FileK
     fetch.fetchedCount = curated.accepted
     let candidateVersion = ckbScheduledCandidateVersion(profile, fetch)
     let candidateRecords = kb.activeRecordSnapshotOverlay(curated.records)
+    result.validationDiagnostics.add("benchmark_gap_promotion_started:accepted=${curated.records.size}:candidateVersion=${candidateVersion}")
     let promotion = cangjiePromoteCandidateRecordsAfterValidationWithVersion(kb, store, candidateVersion, candidateRecords, progressSink: progressSink, deadlineAtMillis: deadlineAtMillis)
     ckbApplyScheduledPromotionResult(result, promotion, "benchmark_gap_candidate_promoted")
     if (result.ok) {
@@ -8099,6 +8220,7 @@ private func ingestScheduledBenchmarkGapCuration(kb: KnowledgeBase, store: FileK
         var completedProofs: Int64 = 0
         let totalProofs = curated.records.size
         for (record in curated.records) {
+            result.validationDiagnostics.add("benchmark_gap_proof_progress:completed=${completedProofs}:total=${totalProofs}")
             let proofTimeout = ckbBenchmarkGapQueryProofDeadlineDiagnostic(deadlineAtMillis, completedProofs, totalProofs)
             if (proofTimeout != "") {
                 result.ok = false
@@ -8114,12 +8236,21 @@ private func ingestScheduledBenchmarkGapCuration(kb: KnowledgeBase, store: FileK
                 coveragePass = false
             }
         }
+        result.validationDiagnostics.add("benchmark_gap_proof_progress:completed=${completedProofs}:total=${totalProofs}")
         if (!coveragePass) {
             result.ok = false
             result.status = "benchmark_gap_query_proof_failed"
         }
     }
     result
+}
+
+public func ckbBenchmarkGapCurationMaxInputBytes(): Int64 {
+    1048576
+}
+
+public func ckbBenchmarkGapCurationMaxRecords(): Int64 {
+    200
 }
 
 public func ckbBenchmarkGapQueryProofDeadlineDiagnostic(deadlineAtMillis: Int64, completed: Int64, total: Int64): String {
@@ -9623,6 +9754,10 @@ public class RuntimeUnavailableVectorStore <: VectorStore {
         backup.valid = false
         backup.diagnostic = this.degradedReason
         backup
+    }
+
+    public func backupWithDeadline(collection: String, deadlineAtMillis: Int64): VectorBackup {
+        this.backup(collection)
     }
 
     public func restore(backup: VectorBackup): VectorStoreStatus {

@@ -1166,6 +1166,84 @@ public class CkbSchedulerServiceF5Test {
         @Expect(result.details.contains("benchmark_gap_candidate_promoted"), false)
         @Expect(after, before)
     }
+
+    @TestCase
+    public func tP3U01FetchDeadlineDoesNotCallRunnerAndAddsStableDiagnostic(): Unit {
+        let config = CkbRuntimeConfig()
+        config.networkEnabled = true
+        let runner = DeadlineCountingFetchRunner()
+        let task = CkbSchedulerTaskRunner(newOfflineKnowledgeBase(), config, FileKnowledgeStore("target/t-p3-u01-fetch-deadline"), sourceRunner: runner).runTask("docs_probe_30d", "0", ckbCoreNowMillis() - 1)
+
+        @Expect(task.ok, false)
+        @Expect(task.status.contains("fetch_degraded:timeout") || task.status.contains("task_not_ok:fetch_degraded:timeout"), true)
+        @Expect(ruDiagnosticsContain(task.validationDiagnostics, "fetch_deadline_exceeded"), true)
+        @Expect(ruDiagnosticsContain(task.validationDiagnostics, "errorClass=timeout"), true)
+        @Expect(runner.calls, 0)
+    }
+
+    @TestCase
+    public func tP3B01WorkerArtifactClassifierMapsStdxTimeout(): Unit {
+        let classified = ckbClassifyWorkerArtifact("", "stdx.net HttpTimeoutException: read response timeout")
+
+        @Expect(classified, "native_http_timeout")
+    }
+
+    @TestCase
+    public func tP5B01ActiveVectorInvariantBlocksSuccessfulTaskWhenCountsMismatch(): Unit {
+        let config = CkbRuntimeConfig()
+        config.networkEnabled = true
+        let vectorStore = F7StatusVectorStore(EmbeddingProviderState.READY, "", 16, count: 1)
+        let kb = KnowledgeBase(FakeClock(0), DeterministicEmbeddingProvider(), vectorStore, LocalGraphStore())
+        kb.configureVectorCollections("ckb_active", "ckb_candidate")
+        kb.bootstrapOffline()
+        _ = kb.verifyAndApplyVectorStoreStatus("ckb_active", 1)
+
+        let task = CkbSchedulerTaskRunner(kb, config, FileKnowledgeStore("target/t-p5-b01-active-vector-invariant"), sourceRunner: FakeSourceFetchRunner()).runTask("docs_probe_30d", "0", ckbCoreNowMillis() + 60000)
+
+        @Expect(task.ok, false)
+        @Expect(task.status.contains("active_vector_invariant_failed") || task.status.contains("task_not_ok:active_vector_invariant_failed"), true)
+        @Expect(ruDiagnosticsContain(task.validationDiagnostics, "active_vector_count_mismatch"), true)
+    }
+
+    @TestCase
+    public func tP6B01BenchmarkGapCurationRejectsInvalidEncodingAndTooManyRecords(): Unit {
+        let invalidRoot = "target/t-p6-b01-gap-invalid-encoding"
+        s1s2EnsureEmptyDir(invalidRoot)
+        let invalidPath = "${invalidRoot}/gap-curation-input.jsonl"
+        File.writeTo(Path(invalidPath), [UInt8(255), UInt8(254), UInt8(253)])
+        let invalidConfig = CkbRuntimeConfig()
+        invalidConfig.benchmarkGapCurationInputPath = invalidPath
+        let invalidService = CkbCommandLoopService(invalidConfig, FileKnowledgeStore("${invalidRoot}/store"))
+        _ = invalidService.start()
+        let invalidTasks = ArrayList<String>()
+        invalidTasks.add("cangjie_benchmark_gap_curation")
+
+        let invalid = invalidService.runSchedulerTasks(invalidTasks, true)
+
+        @Expect(invalid.failed, 1)
+        @Expect(invalid.details.contains("benchmark_gap_curation_input_invalid_encoding"), true)
+
+        let limitRoot = "target/t-p6-b01-gap-record-limit"
+        s1s2EnsureEmptyDir(limitRoot)
+        var text = ""
+        for (i in 0..201) {
+            text += "{\"caseId\":\"CJ-HUMANEVAL-LIMIT-${i}\",\"benchmark\":\"Cangjie-HumanEval\",\"taskText\":\"Use ArrayList.add for visible input ${i}.\",\"visibleTestExcerpt\":\"assert solve([1,2]) == 3\",\"compilerOutput\":\"compile_error\",\"missingKnowledge\":\"G-ARRAYLIST\",\"interfaceId\":\"KI-02\",\"contentFamily\":\"KC-02\",\"updateMechanism\":\"KU-11\",\"targetVersion\":\"1.0.0\",\"officialCitation\":\"https://docs.cangjie-lang.cn/docs/1.0.0/libs/std/collection\"}\n"
+        }
+        let limitPath = "${limitRoot}/gap-curation-input.jsonl"
+        File.writeTo(Path(limitPath), text.toArray())
+        let limitConfig = CkbRuntimeConfig()
+        limitConfig.benchmarkGapCurationInputPath = limitPath
+        let limitService = CkbCommandLoopService(limitConfig, FileKnowledgeStore("${limitRoot}/store"))
+        _ = limitService.start()
+        let limitTasks = ArrayList<String>()
+        limitTasks.add("cangjie_benchmark_gap_curation")
+
+        let limited = limitService.runSchedulerTasks(limitTasks, true)
+
+        @Expect(limited.failed, 1)
+        @Expect(limited.details.contains("benchmark_gap_curation_record_limit_exceeded"), true)
+        @Expect(f7SchedulerDiagnosticsContain(limited, "benchmark_gap_input_gate:accepted=201"), true)
+    }
 }
 
 @Test
@@ -1342,6 +1420,10 @@ private class F7StatusVectorStore <: VectorStore {
         backup
     }
 
+    public func backupWithDeadline(collection: String, deadlineAtMillis: Int64): VectorBackup {
+        this.backup(collection)
+    }
+
     public func restore(backup: VectorBackup): VectorStoreStatus {
         this.status(backup.collection)
     }
@@ -1372,6 +1454,25 @@ private class F5FreshnessProbeRunner <: SourceFetchRunner {
         result.statusCode = 200
         result.commit = "changed-${this.calls}"
         result.body = "changed freshness body ${this.calls}"
+        result.bodyHash = stableSummaryHash(result.body)
+        result
+    }
+}
+
+private class DeadlineCountingFetchRunner <: SourceFetchRunner {
+    public var calls: Int64 = 0
+
+    init() {}
+
+    public func fetch(request: SourceFetchRequest): SourceFetchResult {
+        this.calls += 1
+        let result = SourceFetchResult()
+        result.ok = true
+        result.status = "ok"
+        result.statusCode = 200
+        result.sourceUrl = request.url
+        result.normalizedType = request.kind
+        result.body = "deadline runner should not be called"
         result.bodyHash = stableSummaryHash(result.body)
         result
     }
