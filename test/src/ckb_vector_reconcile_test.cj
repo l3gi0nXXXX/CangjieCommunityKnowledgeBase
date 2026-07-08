@@ -108,12 +108,15 @@ public class CkbVectorReconcileTest {
         ckbVectorReconcileWriteFile(root, "index/vector-ckb_active.ckb", "old-vector\n")
         let store = FileKnowledgeStore(root)
         let vectorStore = ReconcileTrackingVectorStore(initialCount: 1)
-        let kb = ckbVectorReconcileKnowledgeBase(vectorStore)
+        let provider = ReconcileEmbeddingProvider(batchSize: 2)
+        let kb = ckbVectorReconcileKnowledgeBaseWithProvider(vectorStore, provider)
         let activeRecords = kb.status().storage.indexCount
         let beforeRecreateCalls = vectorStore.recreateCalls
         let beforeUpsertBatchCalls = vectorStore.upsertBatchCalls
+        provider.resetCalls()
 
         let result = ckbVectorReconcileWithVectorStore(kb, store, ckbVectorReconcileRuntimeConfig(), vectorStore, true)
+        let expectedCalls = (activeRecords + 1) / 2
 
         @Expect(result.ok, true)
         @Expect(result.dryRun, false)
@@ -123,6 +126,7 @@ public class CkbVectorReconcileTest {
         @Expect(ckbVectorReconcileContains(result.deletedVectorArtifacts, "index/vector-ckb_active.ckb"), true)
         @Expect(vectorStore.recreateCalls, beforeRecreateCalls + 1)
         @Expect(vectorStore.upsertBatchCalls > beforeUpsertBatchCalls, true)
+        @Expect(provider.calls, expectedCalls)
         @Expect(store.has("index/vector-ckb_active.ckb"), true)
         @Expect(store.has("index/active.ckb"), true)
         @Expect(store.has("raw/records.ckb"), true)
@@ -209,12 +213,14 @@ public class CkbVectorReconcileTest {
 
 private class ReconcileEmbeddingProvider <: EmbeddingProvider {
     private let configuredBatchSize: Int64
+    public var calls: Int64 = 0
 
     public init(batchSize!: Int64 = 2) {
         this.configuredBatchSize = batchSize
     }
 
     public func embed(texts: ArrayList<String>, model: String, dimensions: Int64): EmbeddingBatch {
+        this.calls += 1
         let batch = EmbeddingBatch()
         batch.requested = texts.size
         batch.batchSize = this.configuredBatchSize
@@ -244,6 +250,10 @@ private class ReconcileEmbeddingProvider <: EmbeddingProvider {
         status.production = true
         status.state = EmbeddingProviderState.READY
         status
+    }
+
+    public func resetCalls(): Unit {
+        this.calls = 0
     }
 }
 
@@ -331,6 +341,13 @@ private class ReconcileTrackingVectorStore <: VectorStore {
 
 private func ckbVectorReconcileKnowledgeBase(vectorStore: ReconcileTrackingVectorStore): KnowledgeBase {
     let kb = KnowledgeBase(FakeClock(0), ReconcileEmbeddingProvider(), vectorStore, LocalGraphStore())
+    kb.configureVectorCollections("ckb_active", "ckb_candidate")
+    kb.bootstrapOffline()
+    kb
+}
+
+private func ckbVectorReconcileKnowledgeBaseWithProvider(vectorStore: ReconcileTrackingVectorStore, provider: ReconcileEmbeddingProvider): KnowledgeBase {
+    let kb = KnowledgeBase(FakeClock(0), provider, vectorStore, LocalGraphStore())
     kb.configureVectorCollections("ckb_active", "ckb_candidate")
     kb.bootstrapOffline()
     kb

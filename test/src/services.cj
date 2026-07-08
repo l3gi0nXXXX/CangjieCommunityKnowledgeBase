@@ -3186,6 +3186,12 @@ public func ckbVectorReconcileWithVectorStore(kb: KnowledgeBase, store: FileKnow
     if (!rebuild.ok) {
         result.ok = false
         result.diagnostics.add("rebuild_failed:${rebuild.failedVersion}")
+        let failedStatus = vectorStore.status(vector.activeCollection)
+        result.qdrantAfterCount = failedStatus.count
+        result.vectorState = failedStatus.state
+        if (failedStatus.state != EmbeddingProviderState.READY) {
+            result.diagnostics.add("vector_store_not_ready:${failedStatus.degradedReason}")
+        }
         return result
     }
     let after = vectorStore.status(vector.activeCollection)
@@ -7359,7 +7365,19 @@ public func ckbSyncLiveApply(kb: KnowledgeBase, adapter: SourceAdapter, store: F
 public func ckbRebuildIndex(kb: KnowledgeBase, store: FileKnowledgeStore, fail!: Bool = false): IndexBuildResult {
     let result = kb.rebuildIndex(fail)
     if (result.ok) {
-        kb.persistActiveSnapshot(store)
+        let vector = kb.lastVectorIndexBuild()
+        if (!vector.ok) {
+            result.ok = false
+            result.failedVersion = if (result.failedVersion != "") {
+                result.failedVersion
+            } else if (result.candidateVersion != "") {
+                result.candidateVersion
+            } else {
+                "vector_rebuild_failed"
+            }
+            return result
+        }
+        kb.persistActiveSnapshotUsingVectorRecords(store, vector.vectorRecords)
     }
     result
 }

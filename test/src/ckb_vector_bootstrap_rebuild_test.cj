@@ -2,6 +2,7 @@ package cangjie_community_knowledge_base_test
 
 import std.collection.ArrayList
 import std.fs.{Directory, File, Path, exists}
+import std.process.*
 import std.unittest.*
 import std.unittest.testmacro.*
 
@@ -94,13 +95,38 @@ public class CkbVectorBootstrapRebuildTest {
         let provider = ChunkedFakeEmbeddingProvider(2)
         let kb = KnowledgeBase(FakeClock(0), provider, LocalVectorStore(), LocalGraphStore())
         kb.bootstrapOffline()
-        let store = FileKnowledgeStore("target/ckb-vector-bootstrap-persist-store")
+        let root = "target/ckb-vector-bootstrap-persist-store"
+        ckbVectorBootstrapEnsureEmptyDir(root)
+        let store = FileKnowledgeStore(root)
+        provider.resetCalls()
+
+        let result = ckbRebuildIndex(kb, store)
+        let expectedCalls = (result.count + 1) / 2
+
+        @Expect(result.ok, true)
+        @Expect(provider.calls, expectedCalls)
+        @Expect(kb.lastVectorIndexBuild().vectorRecords.size, result.count)
+        @Expect(store.has("index/vector-active.ckb"), true)
+    }
+
+    @TestCase
+    public func ckbRebuildIndexDoesNotPersistSnapshotWhenVectorBuildFails(): Unit {
+        let provider = ChunkedFakeEmbeddingProvider(2, failReason: "ollama_timeout")
+        let kb = KnowledgeBase(FakeClock(0), provider, LocalVectorStore(), LocalGraphStore())
+        kb.bootstrapOffline()
+        provider.resetCalls()
+        provider.failAtCall = 2
+        let root = "target/ckb-vector-bootstrap-persist-fail-store"
+        ckbVectorBootstrapEnsureEmptyDir(root)
+        let store = FileKnowledgeStore(root)
 
         let result = ckbRebuildIndex(kb, store)
 
-        @Expect(result.ok, true)
-        @Expect(provider.maxRequested <= 2, true)
-        @Expect(store.has("index/vector-active.ckb"), true)
+        @Expect(result.ok, false)
+        @Expect(provider.calls, 2)
+        @Expect(kb.lastVectorIndexBuild().diagnostic.contains("embedding_batch_failed:batch=1:ollama_timeout"), true)
+        @Expect(store.has("metadata/status.ckb"), false)
+        @Expect(store.has("index/vector-active.ckb"), false)
     }
 
     @TestCase
@@ -414,6 +440,11 @@ private class ChunkedFakeEmbeddingProvider <: EmbeddingProvider {
         status.state = EmbeddingProviderState.READY
         status
     }
+
+    public func resetCalls(): Unit {
+        this.calls = 0
+        this.maxRequested = 0
+    }
 }
 
 private func qdrantRuntimeConfig(): CkbRuntimeConfig {
@@ -456,4 +487,11 @@ private func ckbVectorTestWriteFile(root: String, relative: String, body: String
         Directory.create(path.parent, recursive: true)
     }
     File.writeTo(path, body.toArray())
+}
+
+private func ckbVectorBootstrapEnsureEmptyDir(path: String): Unit {
+    if (exists(Path(path))) {
+        _ = launch("/bin/rm", ["-rf", path]).wait()
+    }
+    Directory.create(Path(path), recursive: true)
 }

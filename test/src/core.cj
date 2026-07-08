@@ -316,6 +316,7 @@ public class VectorBuildProgress {
 public class VectorIndexBuildResult {
     public var ok: Bool = false
     public var status: String = "not_started"
+    public var vectorRecords: ArrayList<VectorRecord> = ArrayList<VectorRecord>()
     public var vectorCount: Int64 = 0
     public var graphNodes: Int64 = 0
     public var servingCount: Int64 = 0
@@ -2466,6 +2467,7 @@ public class KnowledgeBase {
     private let embeddingDimensions: Int64 = 16
     private var servingQueryCache: CangjieQueryCache = CangjieQueryCache(256)
     private var lastVectorBuildProgress: VectorBuildProgress = VectorBuildProgress()
+    private var lastVectorIndexBuildResult: VectorIndexBuildResult = VectorIndexBuildResult()
 
     public init(clock: FakeClock) {
         this.scheduler = Scheduler(clock)
@@ -2950,13 +2952,13 @@ public class KnowledgeBase {
         this.failedCandidateVersion = ""
         this.storage.indexCount = this.activeIndex.size
         this.invalidateServingCacheOnActiveVersionChange()
-        this.rebuildProductionIndexes()
+        this.lastVectorIndexBuildResult = this.rebuildProductionIndexesWithResult("")
         this.rebuildIndexManifest()
         result
     }
 
     private func rebuildProductionIndexes(): Unit {
-        _ = this.rebuildProductionIndexesWithResult("")
+        this.lastVectorIndexBuildResult = this.rebuildProductionIndexesWithResult("")
     }
 
     private func rebuildProductionIndexesWithResult(reason: String): VectorIndexBuildResult {
@@ -2968,6 +2970,9 @@ public class KnowledgeBase {
         this.rebuildGraphIndex()
         result.ok = vector.ok
         result.status = vector.status
+        for (record in vector.vectorRecords) {
+            result.vectorRecords.add(record)
+        }
         result.vectorCount = vector.vectorCount
         result.graphNodes = this.storage.graphNodeCount
         result.servingCount = this.storage.servingIndexCount
@@ -3072,6 +3077,9 @@ public class KnowledgeBase {
                 result.diagnostic = vectorStatus.degradedReason
                 result.elapsedMillis = progress.elapsedMillis
                 return result
+            }
+            for (record in vectorRecords) {
+                result.vectorRecords.add(record)
             }
             progress.completed += texts.size
             progress.updatedAtMillis = ckbCoreNowMillis()
@@ -3220,6 +3228,18 @@ public class KnowledgeBase {
         store.saveNormalized(this.activeIndex)
         store.saveActiveIndex(this.activeIndex, this.activeKnowledgeVersion)
         store.saveVectorCollection(this.activeVectorRecords(), this.vectorCollection)
+        store.saveGraph(this.activeGraphBuild())
+        store.saveMetadata(this.status())
+    }
+
+    public func persistActiveSnapshotUsingVectorRecords(store: FileKnowledgeStore, vectorRecords: ArrayList<VectorRecord>, persistVectorFile!: Bool = true): Unit {
+        store.ensureLayout()
+        store.saveRaw(this.rawRecords)
+        store.saveNormalized(this.activeIndex)
+        store.saveActiveIndex(this.activeIndex, this.activeKnowledgeVersion)
+        if (persistVectorFile) {
+            store.saveVectorCollection(vectorRecords, this.vectorCollection)
+        }
         store.saveGraph(this.activeGraphBuild())
         store.saveMetadata(this.status())
     }
@@ -3528,6 +3548,10 @@ public class KnowledgeBase {
 
     public func vectorBuildProgress(): VectorBuildProgress {
         this.lastVectorBuildProgress
+    }
+
+    public func lastVectorIndexBuild(): VectorIndexBuildResult {
+        this.lastVectorIndexBuildResult
     }
 
     private func activeEmbeddingModel(): String {
