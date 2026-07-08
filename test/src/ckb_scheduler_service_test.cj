@@ -76,45 +76,6 @@ public class CkbSchedulerServiceF5Test {
     }
 
     @TestCase
-    public func ruP0PreflightClassifiesLegacyVectorMetadataAsRepairRequired(): Unit {
-        let root = "target/ru-p0-preflight-legacy-vector-metadata"
-        let config = f7QdrantRoutineConfig()
-        let embedding = DeterministicEmbeddingProvider(embeddingConfigFromRuntime(config))
-        let kb = KnowledgeBase(FakeClock(0), embedding, LocalVectorStore(), LocalGraphStore())
-        kb.configureVectorCollections("ckb_active", "ckb_candidate")
-        kb.bootstrapOffline()
-        let store = FileKnowledgeStore(root)
-        _ = ckbRebuildIndex(kb, store)
-        let activeCount = kb.status().storage.indexCount
-        f7WriteFile(Path(root).join("metadata/status.ckb"), "active=${kb.status().activeKnowledgeVersion}\nvectorBackend=local-file\nvectorActiveCollection=active\nvectorCandidateCollection=candidate\nvectorDimension=16\n")
-
-        let result = ckbRoutineRuntimePreflightWithBootstrap(config, root, "4096M", "/opt/homebrew/opt/openssl@3/lib", F7StatusVectorStore(EmbeddingProviderState.READY, "", 3, count: activeCount), embedding)
-
-        @Expect(result.ok, false)
-        @Expect(ruDiagnosticsContain(result.diagnostics, "repair_required:vector_reconcile:legacy_vector_metadata"), true)
-        @Expect(ruDiagnosticsContain(result.diagnostics, "qdrant_active_not_ready:active"), false)
-    }
-
-    @TestCase
-    public func ruP0PreflightClassifiesMissingManifestAsRepairRequired(): Unit {
-        let root = "target/ru-p0-preflight-missing-manifest"
-        let config = f7QdrantRoutineConfig()
-        let embedding = DeterministicEmbeddingProvider(embeddingConfigFromRuntime(config))
-        let kb = KnowledgeBase(FakeClock(0), embedding, LocalVectorStore(), LocalGraphStore())
-        kb.configureVectorCollections("ckb_active", "ckb_candidate")
-        kb.bootstrapOffline()
-        let store = FileKnowledgeStore(root)
-        _ = ckbRebuildIndex(kb, store)
-        f7WriteFile(Path(root).join("metadata/active-snapshot.manifest"), "")
-
-        let result = ckbRoutineRuntimePreflightWithBootstrap(config, root, "4096M", "/opt/homebrew/opt/openssl@3/lib", F7StatusVectorStore(EmbeddingProviderState.READY, "", 3, count: kb.status().storage.indexCount), embedding)
-
-        @Expect(result.ok, false)
-        @Expect(ruDiagnosticsContain(result.diagnostics, "active_snapshot_manifest_missing"), true)
-        @Expect(ruDiagnosticsContain(result.diagnostics, "repair_required:vector_reconcile:active_snapshot_manifest_missing"), true)
-    }
-
-    @TestCase
     public func f5Ut01SchedulerTaskIngestsCandidateAndPromotesActive(): Unit {
         let config = CkbRuntimeConfig()
         config.networkEnabled = true
@@ -808,6 +769,48 @@ public class CkbSchedulerServiceF5Test {
         @Expect(result.details.contains("no_gap_records_accepted"), true)
         @Expect(result.details.contains("benchmark_gap_candidate_promoted"), false)
         @Expect(after, before)
+    }
+}
+
+@Test
+public class CkbRoutinePreflightRepairHintTest {
+    @TestCase
+    public func ruP0PreflightClassifiesLegacyVectorMetadataAsRepairRequired(): Unit {
+        let root = "target/ru-p0-preflight-legacy-vector-metadata"
+        let config = f7QdrantRoutineConfig()
+        let embedding = DeterministicEmbeddingProvider(embeddingConfigFromRuntime(config))
+        let kb = KnowledgeBase(FakeClock(0), embedding, LocalVectorStore(), LocalGraphStore())
+        kb.configureVectorCollections("ckb_active", "ckb_candidate")
+        kb.bootstrapOffline()
+        let store = FileKnowledgeStore(root)
+        _ = ckbRebuildIndex(kb, store)
+        let activeCount = kb.status().storage.indexCount
+        f7WriteFile(Path(root).join("metadata/status.ckb"), "active=${kb.status().activeKnowledgeVersion}\nvectorBackend=local-file\nvectorActiveCollection=active\nvectorCandidateCollection=candidate\nvectorDimension=16\n")
+
+        let result = ckbRoutineRuntimePreflightWithBootstrap(config, root, "4096M", "/opt/homebrew/opt/openssl@3/lib", F7StatusVectorStore(EmbeddingProviderState.READY, "", 3, count: activeCount), embedding)
+
+        @Expect(result.ok, false)
+        @Expect(ruDiagnosticsContain(result.diagnostics, "repair_required:vector_reconcile:legacy_vector_metadata"), true)
+        @Expect(ruDiagnosticsContain(result.diagnostics, "qdrant_active_not_ready:active"), false)
+    }
+
+    @TestCase
+    public func ruP0PreflightClassifiesMissingManifestAsRepairRequired(): Unit {
+        let root = "target/ru-p0-preflight-missing-manifest"
+        let config = f7QdrantRoutineConfig()
+        let embedding = DeterministicEmbeddingProvider(embeddingConfigFromRuntime(config))
+        let kb = KnowledgeBase(FakeClock(0), embedding, LocalVectorStore(), LocalGraphStore())
+        kb.configureVectorCollections("ckb_active", "ckb_candidate")
+        kb.bootstrapOffline()
+        let store = FileKnowledgeStore(root)
+        _ = ckbRebuildIndex(kb, store)
+        f7WriteFile(Path(root).join("metadata/active-snapshot.manifest"), "")
+
+        let result = ckbRoutineRuntimePreflightWithBootstrap(config, root, "4096M", "/opt/homebrew/opt/openssl@3/lib", F7StatusVectorStore(EmbeddingProviderState.READY, "", 3, count: kb.status().storage.indexCount), embedding)
+
+        @Expect(result.ok, false)
+        @Expect(ruDiagnosticsContain(result.diagnostics, "active_snapshot_manifest_missing"), true)
+        @Expect(ruDiagnosticsContain(result.diagnostics, "repair_required:vector_reconcile:active_snapshot_manifest_missing"), true)
     }
 }
 
