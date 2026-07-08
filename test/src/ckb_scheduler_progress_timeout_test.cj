@@ -117,6 +117,7 @@ public class CkbSchedulerProgressTimeoutTest {
 
     @TestCase
     public func staleSchedulerAndVectorCurrentFilesRecoverBeforeNextRun(): Unit {
+        // NEG-S5-001: stale recovery marks old scheduler/vector runs and clears current blockers.
         let root = "target/ckb-scheduler-stale-recovery"
         ensureEmptyDir(root)
         let store = FileKnowledgeStore(root)
@@ -135,6 +136,158 @@ public class CkbSchedulerProgressTimeoutTest {
         @Expect(store.readText("metadata/vector-reconcile-current.ckb").contains("reused=64"), true)
         @Expect(store.readText("metadata/scheduler-runs/stale-scheduler.jsonl").contains("stale_recovered"), true)
         @Expect(store.readText("metadata/vector-reconcile-runs/stale-vector.jsonl").contains("stale_recovered"), true)
+    }
+
+    @TestCase
+    public func s3Ut001ExpiredStagedFullRebuildReturnsDeadlineWithoutActiveManifest(): Unit {
+        let root = "target/s3-ut001-expired-staged-rebuild"
+        ensureEmptyDir(root)
+        let store = FileKnowledgeStore(root)
+        let kb = newOfflineKnowledgeBase()
+        kb.configureVectorCollections("ckb_active", "ckb_candidate")
+        let config = s3QdrantRuntimeConfig()
+
+        let result = ckbStagedFullRebuild(kb, store, config, NoopVectorBuildProgressSink(), ckbCoreNowMillis() - 1)
+
+        @Expect(result.ok, false)
+        @Expect(result.failedVersion.contains("deadline_exceeded:"), true)
+        @Expect(store.has("metadata/active-snapshot.manifest"), false)
+    }
+
+    @TestCase
+    public func s3Ut002SnapshotDeadlineDoesNotWriteCommitOrActiveManifest(): Unit {
+        let root = "target/s3-ut002-snapshot-deadline"
+        ensureEmptyDir(root)
+        let store = FileKnowledgeStore(root)
+        let kb = newOfflineKnowledgeBase()
+        var diagnostic = ""
+
+        try {
+            kb.persistActiveSnapshot(store, deadlineAtMillis: ckbCoreNowMillis() - 1)
+        } catch (e: Exception) {
+            diagnostic = e.message
+        }
+
+        @Expect(diagnostic.contains("deadline_exceeded:"), true)
+        @Expect(store.has("metadata/active-snapshot.manifest"), false)
+        @Expect(store.has("transactions"), false)
+        @Expect(store.readText("metadata/active-snapshot.manifest"), "")
+    }
+
+    @TestCase
+    public func s3Bnd001LargeTimeoutHasStructuredNonEmptyWorkerResult(): Unit {
+        let root = "target/s3-bnd001-worker-timeout-result"
+        ensureEmptyDir(root)
+        let store = FileKnowledgeStore(root)
+        let resultPath = "metadata/scheduler-workers/weekly_full_rebuild-bnd.ckb"
+
+        let task = ckbWriteSchedulerWorkerTimeoutCompensation(store, resultPath, "weekly_full_rebuild", "0", 120001, 120000, "deadline_exceeded:rebuild_graph_after:records=9001")
+
+        @Expect(task.ok, false)
+        @Expect(task.status, "task_timeout:weekly_full_rebuild")
+        @Expect(store.readText(resultPath).size > 0, true)
+        @Expect(store.readText(resultPath).contains("task_worker_hard_timeout"), false)
+        @Expect(store.readText(resultPath).contains("deadline_exceeded:rebuild_graph_after"), true)
+    }
+
+    @TestCase
+    public func s3Pos001FullRebuildWithDeadlinePersistsActiveSnapshot(): Unit {
+        let root = "target/s3-pos001-full-rebuild"
+        ensureEmptyDir(root)
+        let store = FileKnowledgeStore(root)
+        let kb = newOfflineKnowledgeBase()
+
+        let result = ckbRebuildIndex(kb, store, deadlineAtMillis: ckbCoreNowMillis() + 60000)
+        let snapshot = store.loadActiveSnapshot()
+
+        @Expect(result.ok, true)
+        @Expect(store.has("metadata/active-snapshot.manifest"), true)
+        @Expect(snapshot.valid, true)
+        @Expect(snapshot.activeIndex.size, result.count)
+    }
+
+    @TestCase
+    public func s3Neg001SnapshotWriteExceptionReturnsFailureWithoutManifest(): Unit {
+        let parent = "target/s3-neg001-snapshot-write-exception"
+        ensureEmptyDir(parent)
+        let root = "${parent}/store-file"
+        File.writeTo(Path(root), "not-a-directory\n".toArray())
+        let store = FileKnowledgeStore(root)
+        let kb = newOfflineKnowledgeBase()
+
+        let result = ckbRebuildIndex(kb, store, deadlineAtMillis: ckbCoreNowMillis() + 60000)
+
+        @Expect(result.ok, false)
+        @Expect(result.failedVersion.contains("active_snapshot_write_failed"), true)
+    }
+
+    @TestCase
+    public func s5Ut001HardTimeoutEmptyResultWritesCompensationSidecar(): Unit {
+        let root = "target/s5-ut001-worker-compensation"
+        ensureEmptyDir(root)
+        let store = FileKnowledgeStore(root)
+        let resultPath = "metadata/scheduler-workers/weekly-empty.ckb"
+        store.writeLinesAtomically(resultPath, "")
+
+        let task = ckbWriteSchedulerWorkerTimeoutCompensation(store, resultPath, "weekly_full_rebuild", "0", 120001, 120000, "task_worker_hard_timeout")
+
+        @Expect(task.status, "task_timeout:weekly_full_rebuild")
+        @Expect(store.readText(resultPath).size > 0, true)
+        @Expect(store.readText("${resultPath}.sidecar").contains("task_worker_hard_timeout"), true)
+    }
+
+    @TestCase
+    public func s5Ut002WorkerInternalDeadlineWritesTaskTimeoutResult(): Unit {
+        let root = "target/s5-ut002-worker-internal-deadline"
+        ensureEmptyDir(root)
+        let store = FileKnowledgeStore(root)
+        let kb = newOfflineKnowledgeBase()
+        let resultPath = "metadata/scheduler-workers/weekly-internal-timeout.ckb"
+
+        let task = ckbRunSchedulerTaskWorker(kb, CkbRuntimeConfig(), store, "weekly_full_rebuild", "0", ckbCoreNowMillis() - 1, resultPath)
+
+        @Expect(task.ok, false)
+        @Expect(task.status, "task_timeout:weekly_full_rebuild")
+        @Expect(store.readText(resultPath).contains("task_timeout:weekly_full_rebuild"), true)
+        @Expect(store.readText(resultPath).size > 0, true)
+    }
+
+    @TestCase
+    public func s5Bnd001MalformedWorkerResultIsReportedAndPreserved(): Unit {
+        let root = "target/s5-bnd001-malformed-worker"
+        ensureEmptyDir(root)
+        let store = FileKnowledgeStore(root)
+        let resultPath = "metadata/scheduler-workers/malformed.ckb"
+        store.writeLinesAtomically(resultPath, "this is not a scheduler result\n")
+
+        let parsed = ckbReadSchedulerWorkerResultFile(root, resultPath, "weekly_full_rebuild", "0", 10, 100)
+
+        @Expect(parsed.ok, false)
+        @Expect(parsed.status, "task_worker_result_malformed")
+        @Expect(store.readText(resultPath), "this is not a scheduler result\n")
+    }
+
+    @TestCase
+    public func s5Pos001NormalWorkerResultRoundTripsWithProgressFields(): Unit {
+        let root = "target/s5-pos001-worker-success"
+        ensureEmptyDir(root)
+        let store = FileKnowledgeStore(root)
+        let resultPath = "metadata/scheduler-workers/docs-ok.ckb"
+        let task = SchedulerTaskResult()
+        task.ok = true
+        task.status = "ok"
+        task.since = "0"
+        task.durationMillis = 5
+        task.timeBudgetMillis = 100
+        task.validationDiagnostics.add("progress=complete")
+        store.writeLinesAtomically(resultPath, ckbSchedulerTaskResultText(task))
+
+        let parsed = ckbReadSchedulerWorkerResultFile(root, resultPath, "docs_probe_30d", "0", 5, 100)
+
+        @Expect(parsed.ok, true)
+        @Expect(parsed.status, "ok")
+        @Expect(parsed.timeBudgetMillis, 100)
+        @Expect(parsed.validationDiagnostics.contains("progress=complete"), true)
     }
 
     @TestCase
@@ -162,6 +315,16 @@ public class CkbSchedulerProgressTimeoutTest {
         @Expect(store.readText("metadata/status.ckb"), statusText)
         @Expect(store.has("metadata/active-snapshot-commits/${txId}.ckb"), true)
     }
+}
+
+private func s3QdrantRuntimeConfig(): CkbRuntimeConfig {
+    let config = CkbRuntimeConfig()
+    config.vectorBackend = "qdrant"
+    config.vectorActiveCollection = "ckb_active"
+    config.vectorCandidateCollection = "ckb_candidate"
+    config.vectorDimensions = 16
+    config.vectorDistance = "Cosine"
+    config
 }
 
 private func ensureEmptyDir(path: String): Unit {

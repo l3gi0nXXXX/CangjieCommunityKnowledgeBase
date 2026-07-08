@@ -123,6 +123,68 @@ public class CangjieServingAdminTest {
     }
 
     @TestCase
+    public func s4Ut001ValidationDeadlineTimeoutDoesNotCommitActive(): Unit {
+        let records = cangjieF4AdminPromotionRecords()
+        let expired = ckbCoreNowMillis() - 1
+        let validation = validateCandidateServingIndexWithVectorStatus(records, "ckb-s4-timeout-candidate", cangjieCandidateTestVectorStatus(records), deadlineAtMillis: expired, validationScope: "UT-S4-001")
+        let kb = KnowledgeBase(FakeClock(0))
+        let before = kb.status().activeKnowledgeVersion
+        let store = FileKnowledgeStore("target/s4-ut001-validation-timeout")
+
+        let promotion = cangjiePromoteCandidateRecordsAfterValidationWithVersion(kb, store, "ckb-s4-timeout-candidate", records, deadlineAtMillis: expired)
+        let after = kb.status()
+
+        @Expect(validation.ok, false)
+        @Expect(validation.status, "candidate_validation_timeout")
+        @Expect(cangjieF4AdminDiagnosticsContainPrefix(validation, "deadline_exceeded:candidate_validation_doc_loop_before"), true)
+        @Expect(promotion.ok, false)
+        @Expect(promotion.activePromoted, false)
+        @Expect(promotion.validation.status, "candidate_validation_timeout")
+        @Expect(after.activeKnowledgeVersion, before)
+        @Expect(store.has("metadata/active-snapshot.manifest"), false)
+    }
+
+    @TestCase
+    public func s4Bnd001EmptyCandidateRecordsReturnValidationFailed(): Unit {
+        let records = ArrayList<NormalizedRecord>()
+
+        let validation = validateCandidateServingIndex(records, "ckb-s4-empty-candidate")
+
+        @Expect(validation.ok, false)
+        @Expect(validation.status, "candidate_validation_failed")
+        @Expect(cangjieF4AdminDiagnosticsContain(validation, "serving_index_not_ready"), true)
+    }
+
+    @TestCase
+    public func s4Pos001SmallCandidateValidationPromotesActive(): Unit {
+        let provider = CangjieAdminEmbeddingProvider(2)
+        let vectorStore = CangjieAdminTrackingVectorStore(initialCount: 3)
+        let kb = KnowledgeBase(FakeClock(0), provider, vectorStore, LocalGraphStore())
+        kb.configureVectorCollections("ckb_active", "ckb_candidate")
+        let store = FileKnowledgeStore("target/s4-pos001-candidate-promotion")
+        let records = cangjieF4AdminPromotionRecords()
+
+        let promotion = cangjiePromoteCandidateRecordsAfterValidationWithVersion(kb, store, "ckb-s4-pos-candidate", records)
+
+        @Expect(promotion.ok, true)
+        @Expect(promotion.validation.status, "candidate_validation_passed")
+        @Expect(promotion.activePromoted, true)
+        @Expect(store.has("metadata/active-snapshot.manifest"), true)
+    }
+
+    @TestCase
+    public func s4Neg001ParityFailureIsNotReportedAsTimeout(): Unit {
+        let records = ArrayList<NormalizedRecord>()
+
+        let validation = validateCandidateServingIndexWithVectorStatus(records, "ckb-s4-parity-candidate", cangjieCandidateTestVectorStatus(records), deadlineAtMillis: ckbCoreNowMillis() + 60000, validationScope: "NEG-S4-001")
+
+        @Expect(validation.ok, false)
+        @Expect(validation.status, "candidate_validation_failed")
+        @Expect(cangjieF4AdminDiagnosticsContain(validation, "rest_mcp_parity_failed"), true)
+        @Expect(cangjieF4AdminDiagnosticsContainPrefix(validation, "deadline_exceeded:"), false)
+    }
+
+    @TestCase
     public func f9Pos001CandidatePromotionUsesStagingVectorAndSingleEmbeddingPass(): Unit {
         let provider = CangjieAdminEmbeddingProvider(2)
         let vectorStore = CangjieAdminTrackingVectorStore(initialCount: 3)
@@ -214,6 +276,19 @@ private func cangjieF4AdminPromotionRecords(): ArrayList<NormalizedRecord> {
     records.add(cangjieF4AdminRecord("doc-arraylist-add", CangjieTypedRecordKinds.DOC_SECTION, "ArrayList.add docs", "ArrayList.add appends values. Do not use append.", CangjieSourceSets.DOCS, "vr-docs-1"))
     records.add(cangjieF4AdminRecord("tool-cjpm-test", CangjieTypedRecordKinds.TOOL_MANUAL, "cjpm test", "Run cjpm test to execute package tests.", CangjieSourceSets.TOOLS, "vr-tools-1"))
     records
+}
+
+private func cangjieCandidateTestVectorStatus(records: ArrayList<NormalizedRecord>): VectorStoreStatus {
+    let status = VectorStoreStatus()
+    status.backend = "qdrant"
+    status.collection = "ckb_candidate"
+    status.activeCollection = "ckb_active"
+    status.candidateCollection = "ckb_candidate"
+    status.dimension = 3
+    status.count = records.size
+    status.state = if (records.size > 0) { EmbeddingProviderState.READY } else { EmbeddingProviderState.DEGRADED }
+    status.degradedReason = if (records.size > 0) { "" } else { "empty_candidate_vectors" }
+    status
 }
 
 private class CangjieAdminEmbeddingProvider <: EmbeddingProvider {

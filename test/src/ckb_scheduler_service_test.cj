@@ -979,6 +979,15 @@ public class CkbSchedulerServiceF5Test {
     }
 
     @TestCase
+    public func s4Ut002BenchmarkProofDeadlineDiagnosticIncludesCompletedAndTotal(): Unit {
+        let diagnostic = ckbBenchmarkGapQueryProofDeadlineDiagnostic(ckbCoreNowMillis() - 1, 2, 5)
+
+        @Expect(diagnostic.contains("benchmark_gap_query_proof_timeout"), true)
+        @Expect(diagnostic.contains("completed=2"), true)
+        @Expect(diagnostic.contains("total=5"), true)
+    }
+
+    @TestCase
     public func f7Bnd01BenchmarkGapSchedulerFailsWithoutConfiguredInput(): Unit {
         let service = CkbCommandLoopService(CkbRuntimeConfig(), FileKnowledgeStore("target/f7-scheduler-gap-missing-input"))
         _ = service.start()

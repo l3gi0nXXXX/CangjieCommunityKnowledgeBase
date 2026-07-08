@@ -401,6 +401,32 @@ public func ckbDeadlineExceeded(deadlineAtMillis: Int64): Bool {
     deadlineAtMillis > 0 && ckbCoreNowMillis() >= deadlineAtMillis
 }
 
+public class CkbDeadlineCheckResult {
+    public var exceeded: Bool = false
+    public var status: String = "ok"
+    public var diagnostic: String = ""
+    public var stage: String = ""
+    public var nowMillis: Int64 = 0
+    public var deadlineAtMillis: Int64 = 0
+    public var remainingMillis: Int64 = 0
+
+    public init() {}
+}
+
+public func ckbDeadlineGuard(stage: String, deadlineAtMillis: Int64): CkbDeadlineCheckResult {
+    let result = CkbDeadlineCheckResult()
+    result.stage = stage
+    result.deadlineAtMillis = deadlineAtMillis
+    result.nowMillis = ckbCoreNowMillis()
+    result.remainingMillis = if (deadlineAtMillis > 0) { deadlineAtMillis - result.nowMillis } else { 0 }
+    result.exceeded = deadlineAtMillis > 0 && result.nowMillis >= deadlineAtMillis
+    if (result.exceeded) {
+        result.status = "deadline_exceeded"
+        result.diagnostic = "deadline_exceeded:${stage}:now=${result.nowMillis}:deadline=${deadlineAtMillis}"
+    }
+    result
+}
+
 public func ckbRemainingMillis(deadlineAtMillis: Int64): Int64 {
     if (deadlineAtMillis <= 0) {
         return 0
@@ -2046,6 +2072,10 @@ public class GraphContext {
 }
 
 public class GraphBuildResult {
+    public var ok: Bool = true
+    public var diagnostic: String = ""
+    public var processed: Int64 = 0
+    public var total: Int64 = 0
     public var nodes: ArrayList<GraphNode> = ArrayList<GraphNode>()
     public var edges: ArrayList<GraphEdge> = ArrayList<GraphEdge>()
 
@@ -3445,9 +3475,46 @@ public class KnowledgeBase {
         let started = ckbCoreNowMillis()
         let result = VectorIndexBuildResult()
         result.diagnostic = reason
+        if (this.applyDeadlineToVectorResult(result, "rebuild_serving_before", deadlineAtMillis, started)) {
+            return result
+        }
         this.rebuildServingIndexStatus()
+        if (this.applyDeadlineToVectorResult(result, "rebuild_serving_after", deadlineAtMillis, started)) {
+            return result
+        }
+        if (this.applyDeadlineToVectorResult(result, "rebuild_vector_before", deadlineAtMillis, started)) {
+            return result
+        }
         let vector = this.rebuildProductionVectorIndexWithResult(progressSink: progressSink, targetVectorCollection: targetVectorCollection, deadlineAtMillis: deadlineAtMillis)
-        this.rebuildGraphIndex()
+        if (this.applyDeadlineToVectorResult(result, "rebuild_vector_after", deadlineAtMillis, started)) {
+            result.vectorCount = vector.vectorCount
+            result.truncatedCount = vector.truncatedCount
+            for (record in vector.vectorRecords) {
+                result.vectorRecords.add(record)
+            }
+            return result
+        }
+        if (this.applyDeadlineToVectorResult(result, "rebuild_graph_before", deadlineAtMillis, started)) {
+            result.vectorCount = vector.vectorCount
+            result.truncatedCount = vector.truncatedCount
+            for (record in vector.vectorRecords) {
+                result.vectorRecords.add(record)
+            }
+            return result
+        }
+        let graphDiagnostic = this.rebuildGraphIndex(deadlineAtMillis: deadlineAtMillis)
+        if (graphDiagnostic != "") {
+            result.ok = false
+            result.status = "deadline_exceeded"
+            result.vectorCount = vector.vectorCount
+            result.truncatedCount = vector.truncatedCount
+            result.elapsedMillis = ckbCoreNowMillis() - started
+            for (record in vector.vectorRecords) {
+                result.vectorRecords.add(record)
+            }
+            result.diagnostic = if (result.diagnostic == "") { graphDiagnostic } else { "${result.diagnostic};${graphDiagnostic}" }
+            return result
+        }
         result.ok = vector.ok
         result.status = vector.status
         for (record in vector.vectorRecords) {
@@ -3464,6 +3531,18 @@ public class KnowledgeBase {
             result.diagnostic += ";${vector.diagnostic}"
         }
         result
+    }
+
+    private func applyDeadlineToVectorResult(result: VectorIndexBuildResult, stage: String, deadlineAtMillis: Int64, started: Int64): Bool {
+        let deadline = ckbDeadlineGuard(stage, deadlineAtMillis)
+        if (!deadline.exceeded) {
+            return false
+        }
+        result.ok = false
+        result.status = deadline.status
+        result.elapsedMillis = ckbCoreNowMillis() - started
+        result.diagnostic = if (result.diagnostic == "") { deadline.diagnostic } else { "${result.diagnostic};${deadline.diagnostic}" }
+        true
     }
 
     private func rebuildProductionVectorIndexWithResult(progressSink!: VectorBuildProgressSink = NoopVectorBuildProgressSink(), targetVectorCollection!: String = "", deadlineAtMillis!: Int64 = 0): VectorIndexBuildResult {
@@ -3798,14 +3877,30 @@ public class KnowledgeBase {
         this.storage.servingIndexDiagnostic = cangjieServingIndexDiagnostics(servingIndex)
     }
 
-    private func rebuildGraphIndex(): Unit {
-        let graph = buildGraphFromRecords(this.activeIndex, this.activeKnowledgeVersion)
+    private func rebuildGraphIndex(deadlineAtMillis!: Int64 = 0): String {
+        let beforeBuild = ckbDeadlineGuard("graph_build_before", deadlineAtMillis)
+        if (beforeBuild.exceeded) {
+            return beforeBuild.diagnostic
+        }
+        let graph = buildGraphFromRecords(this.activeIndex, this.activeKnowledgeVersion, deadlineAtMillis: deadlineAtMillis)
+        if (!graph.ok) {
+            return graph.diagnostic
+        }
+        let beforeUpsert = ckbDeadlineGuard("graph_upsert_before", deadlineAtMillis)
+        if (beforeUpsert.exceeded) {
+            return beforeUpsert.diagnostic
+        }
         this.graphStore.upsert(graph.nodes, graph.edges)
+        let afterUpsert = ckbDeadlineGuard("graph_upsert_after", deadlineAtMillis)
+        if (afterUpsert.exceeded) {
+            return afterUpsert.diagnostic
+        }
         let graphStatus = this.graphStore.status()
         this.storage.graphBackend = graphStatus.backend
         this.storage.graphState = graphStatus.state
         this.storage.graphNodeCount = graphStatus.dimension
         this.storage.graphEdgeCount = graphStatus.count
+        ""
     }
 
     private func applyVectorStatus(status: VectorStoreStatus): Unit {
@@ -3884,14 +3979,14 @@ public class KnowledgeBase {
         store.saveMetadata(this.status())
     }
 
-    public func persistActiveSnapshot(store: FileKnowledgeStore): Unit {
+    public func persistActiveSnapshot(store: FileKnowledgeStore, deadlineAtMillis!: Int64 = 0): Unit {
         store.ensureLayout()
-        store.writeActiveSnapshotTransaction(this.status(), this.rawRecords, this.activeIndex, this.activeIndex, this.activeVectorRecords(), this.vectorCollection, this.activeGraphBuild())
+        store.writeActiveSnapshotTransaction(this.status(), this.rawRecords, this.activeIndex, this.activeIndex, this.activeVectorRecords(), this.vectorCollection, this.activeGraphBuild(), deadlineAtMillis: deadlineAtMillis)
     }
 
-    public func persistActiveSnapshotUsingVectorRecords(store: FileKnowledgeStore, vectorRecords: ArrayList<VectorRecord>, persistVectorFile!: Bool = true): Unit {
+    public func persistActiveSnapshotUsingVectorRecords(store: FileKnowledgeStore, vectorRecords: ArrayList<VectorRecord>, persistVectorFile!: Bool = true, deadlineAtMillis!: Int64 = 0): Unit {
         store.ensureLayout()
-        store.writeActiveSnapshotTransaction(this.status(), this.rawRecords, this.activeIndex, this.activeIndex, vectorRecords, this.vectorCollection, this.activeGraphBuild(), persistVectorFile: persistVectorFile)
+        store.writeActiveSnapshotTransaction(this.status(), this.rawRecords, this.activeIndex, this.activeIndex, vectorRecords, this.vectorCollection, this.activeGraphBuild(), persistVectorFile: persistVectorFile, deadlineAtMillis: deadlineAtMillis)
     }
 
     public func persistCandidateSnapshot(store: FileKnowledgeStore): Unit {
@@ -4570,9 +4665,18 @@ private func insertVectorResult(out: ArrayList<VectorSearchResult>, record: Vect
     }
 }
 
-private func buildGraphFromRecords(records: ArrayList<NormalizedRecord>, knowledgeVersion: String): GraphBuildResult {
+private func buildGraphFromRecords(records: ArrayList<NormalizedRecord>, knowledgeVersion: String, deadlineAtMillis!: Int64 = 0): GraphBuildResult {
     let result = GraphBuildResult()
+    result.total = records.size
     for (record in records) {
+        if (result.processed % 64 == 0) {
+            let deadline = ckbDeadlineGuard("graph_build_records", deadlineAtMillis)
+            if (deadline.exceeded) {
+                result.ok = false
+                result.diagnostic = "${deadline.diagnostic}:processed=${result.processed}:total=${result.total}"
+                return result
+            }
+        }
         let citationNode = graphNode("citation:${record.sourceId}", GraphNodeTypes.CITATION, record.citation, record.sourceId, knowledgeVersion)
         addGraphNode(result.nodes, citationNode)
         if (record.metadata.repo != "") {
@@ -4606,6 +4710,7 @@ private func buildGraphFromRecords(records: ArrayList<NormalizedRecord>, knowled
             }
             addGraphEdge(result.edges, GraphEdgeTypes.CITES, issueNode.nodeId, citationNode.nodeId, record.sourceId, knowledgeVersion)
         }
+        result.processed += 1
     }
     result
 }
