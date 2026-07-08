@@ -578,6 +578,38 @@ public class CkbSchedulerServiceF5Test {
     }
 
     @TestCase
+    public func p7Ut004RoutineContractPassedDoesNotCreateFailedSummary(): Unit {
+        let result = SchedulerExecutorResult()
+        result.validationDiagnostics.add("docs_probe_30d:routine_contract:{\"taskName\":\"docs_probe_30d\",\"ok\":true,\"status\":\"passed\",\"diagnostic\":\"routine_contract_passed\",\"missingArtifacts\":[]}")
+
+        let summaries = ckbSchedulerFailureSummaries(result)
+
+        @Expect(summaries.size, 0)
+    }
+
+    @TestCase
+    public func p7Pos009SchedulerTaskRecordsRenderMachineReadableJson(): Unit {
+        let config = CkbRuntimeConfig()
+        config.networkEnabled = true
+        config.docsEnabled = true
+        let service = CkbCommandLoopService(config, FileKnowledgeStore("target/p7-pos-task-records-json"), sourceRunner: FakeSourceFetchRunner())
+        _ = service.start()
+        let tasks = ArrayList<String>()
+        tasks.add("docs_probe_30d")
+
+        let result = service.runSchedulerTasks(tasks, true)
+        let tasksJson = ckbSchedulerRunTaskRecordsJson(result.taskRecords)
+
+        @Expect(result.ran, 1)
+        @Expect(result.taskRecords.size, 1)
+        @Expect(result.taskRecords[0].taskName, "docs_probe_30d")
+        @Expect(tasksJson.startsWith("["), true)
+        @Expect(tasksJson.contains("\"taskName\":\"docs_probe_30d\""), true)
+        @Expect(tasksJson.contains("\"durationMillis\""), true)
+        @Expect(tasksJson.contains("\"primaryFailure\""), true)
+    }
+
+    @TestCase
     public func p7Bnd002FreshnessRecoversOfflineManifestFromFirstInitRoots(): Unit {
         let fixture = f7WriteFullRootFixture("target/p7-freshness-recovery-fixture")
         let config = CkbRuntimeConfig()

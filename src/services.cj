@@ -3926,6 +3926,14 @@ public func ckbSchedulerFailureSummaries(result: SchedulerExecutorResult): Array
     out
 }
 
+public func ckbSchedulerRunTaskRecordsJson(records: ArrayList<SchedulerTaskRunRecord>): String {
+    let parts = ArrayList<String>()
+    for (record in records) {
+        parts.add("{\"taskName\":\"${ckbRuntimePreflightJsonEscape(record.taskName)}\",\"ok\":${record.ok},\"status\":\"${ckbRuntimePreflightJsonEscape(record.status)}\",\"durationMillis\":${record.durationMillis},\"timeBudgetMillis\":${record.timeBudgetMillis},\"requestCount\":${record.requestCount},\"lastStage\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(record.lastStage), 120))}\",\"lastProgress\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(record.lastProgress), 240))}\",\"primaryFailure\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(record.primaryFailure), 240))}\"}")
+    }
+    "[${joinStrings(parts, ",")}]"
+}
+
 private func ckbSchedulerCollectFailedDetailLine(summaries: ArrayList<CkbSchedulerFailedTaskSummary>, line: String): Unit {
     if (!line.startsWith("task ") || !line.contains("ok=false")) {
         return
@@ -3971,6 +3979,9 @@ private func ckbSchedulerCollectRoutineContractDiagnostic(summary: CkbSchedulerF
     }
     let raw = parts[1]
     let status = jsonStringField(raw, "diagnostic")
+    if (status == "routine_contract_passed") {
+        return
+    }
     if (summary.status == "" && status != "") {
         summary.status = status
     }

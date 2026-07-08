@@ -2526,6 +2526,21 @@ public class SchedulerExecutorResult {
     public var finalPreflightDiagnostics: ArrayList<String> = ArrayList<String>()
     public var postRepairAttempted: Bool = false
     public var postRepairOk: Bool = false
+    public var taskRecords: ArrayList<SchedulerTaskRunRecord> = ArrayList<SchedulerTaskRunRecord>()
+
+    public init() {}
+}
+
+public class SchedulerTaskRunRecord {
+    public var taskName: String = ""
+    public var ok: Bool = false
+    public var status: String = ""
+    public var durationMillis: Int64 = 0
+    public var timeBudgetMillis: Int64 = 0
+    public var requestCount: Int64 = 0
+    public var lastStage: String = ""
+    public var lastProgress: String = ""
+    public var primaryFailure: String = ""
 
     public init() {}
 }
@@ -2644,6 +2659,7 @@ public class SchedulerExecutor {
         }
         result.details += "task ${name} ok=${task.ok} status=${task.status} nextRunAt=${after.nextRunAt} failureCount=${after.failureCount} degraded=${after.degraded}\n"
         this.appendTaskValidation(result, name, task)
+        result.taskRecords.add(schedulerTaskRunRecord(name, task))
         this.progressSink.onTaskFinished(result.runId, name, task)
     }
 
@@ -2747,6 +2763,40 @@ public class SchedulerExecutor {
             }
         }
     }
+}
+
+private func schedulerTaskRunRecord(name: String, task: SchedulerTaskResult): SchedulerTaskRunRecord {
+    let record = SchedulerTaskRunRecord()
+    record.taskName = name
+    record.ok = task.ok
+    record.status = task.status
+    record.durationMillis = task.durationMillis
+    record.timeBudgetMillis = task.timeBudgetMillis
+    record.requestCount = task.requestCount
+    record.lastStage = task.lastStage
+    record.lastProgress = task.lastProgress
+    record.primaryFailure = schedulerPrimaryFailureFromTask(task)
+    record
+}
+
+private func schedulerPrimaryFailureFromTask(task: SchedulerTaskResult): String {
+    if (task.ok) {
+        return ""
+    }
+    for (diagnostic in task.validationDiagnostics) {
+        if (diagnostic.contains("routine_contract_passed")) {
+            continue
+        }
+        if (!diagnostic.startsWith("fetch:")) {
+            return schedulerDiagnosticSafePrefix(diagnostic, 240)
+        }
+    }
+    for (diagnostic in task.validationDiagnostics) {
+        if (!diagnostic.contains("routine_contract_passed")) {
+            return schedulerDiagnosticSafePrefix(diagnostic, 240)
+        }
+    }
+    task.status
 }
 
 private func schedulerExceptionTaskResult(name: String, status: String, durationMillis: Int64, message!: String = ""): SchedulerTaskResult {
