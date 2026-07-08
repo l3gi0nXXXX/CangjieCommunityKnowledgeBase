@@ -870,6 +870,14 @@ private class QdrantJsonStringScan {
     public var ok: Bool = false
     public var value: String = ""
     public var end: Int64 = 0
+    public var malformed: Bool = false
+
+    public init() {}
+}
+
+private class QdrantJsonStringUnescape {
+    public var value: String = ""
+    public var malformed: Bool = false
 
     public init() {}
 }
@@ -998,7 +1006,7 @@ public class QdrantVectorStore <: VectorStore {
             return out
         }
         let parsed = qdrantParseSearchResponse(response.body, filters, topK)
-        if (parsed.size == 0 && !qdrantBodyLooksOk(response.body)) {
+        if (!qdrantBodyLooksOk(response.body)) {
             this.lastStatus = this.degradedStatus(collection, "malformed_json")
             return out
         }
@@ -1770,6 +1778,9 @@ private func qdrantBodyLooksOk(body: String): Bool {
     if (body.trimAscii() == "") {
         return false
     }
+    if (qdrantJsonHasMalformedString(body)) {
+        return false
+    }
     if (qdrantJsonStringField(body, "status") == "ok") {
         return true
     }
@@ -1896,13 +1907,20 @@ private func qdrantReadJsonStringAt(raw: String, start: Int64): QdrantJsonString
         } else if (ch == UInt8(92)) {
             escaped = true
         } else if (ch == UInt8(34)) {
-            scan.ok = true
-            scan.value = qdrantJsonUnescapeString(raw[start + 1..i])
             scan.end = i + 1
+            let unescaped = qdrantJsonUnescapeStringScan(raw[start + 1..i])
+            if (unescaped.malformed) {
+                scan.malformed = true
+                return scan
+            }
+            scan.ok = true
+            scan.value = unescaped.value
             return scan
         }
         i += 1
     }
+    scan.end = raw.size
+    scan.malformed = true
     scan
 }
 
@@ -1915,7 +1933,117 @@ private func qdrantSkipJsonWhitespace(raw: String, start: Int64): Int64 {
 }
 
 private func qdrantJsonUnescapeString(raw: String): String {
-    raw.replace("\\\"", "\"").replace("\\n", "\n").replace("\\r", "\r").replace("\\t", "\t").replace("\\\\", "\\")
+    qdrantJsonUnescapeStringScan(raw).value
+}
+
+private func qdrantJsonUnescapeStringScan(raw: String): QdrantJsonStringUnescape {
+    let result = QdrantJsonStringUnescape()
+    let chars = raw.toRuneArray()
+    let out = StringBuilder()
+    var i: Int64 = 0
+    while (i < chars.size) {
+        let ch = chars[i]
+        if (ch != r'\\') {
+            out.append(ch)
+            i += 1
+            continue
+        }
+        if (i + 1 >= chars.size) {
+            result.malformed = true
+            break
+        }
+        let escaped = chars[i + 1]
+        if (escaped == r'"') {
+            out.append(r'"')
+            i += 2
+        } else if (escaped == r'\\') {
+            out.append(r'\\')
+            i += 2
+        } else if (escaped == r'/') {
+            out.append(r'/')
+            i += 2
+        } else if (escaped == r'n') {
+            out.append(r'\n')
+            i += 2
+        } else if (escaped == r'r') {
+            out.append(r'\r')
+            i += 2
+        } else if (escaped == r't') {
+            out.append(r'\t')
+            i += 2
+        } else if (escaped == r'b') {
+            out.append(qdrantUnicodeCodePointString(8))
+            i += 2
+        } else if (escaped == r'f') {
+            out.append(qdrantUnicodeCodePointString(12))
+            i += 2
+        } else if (escaped == r'u') {
+            if (i + 5 >= chars.size) {
+                result.malformed = true
+                break
+            }
+            var code: Int64 = 0
+            var valid = true
+            for (j in 0..4) {
+                let digit = qdrantJsonHexValue(chars[i + 2 + j])
+                if (digit < 0) {
+                    valid = false
+                } else {
+                    code = code * 16 + digit
+                }
+            }
+            if (!valid || (code >= 55296 && code <= 57343)) {
+                result.malformed = true
+                break
+            }
+            out.append(qdrantUnicodeCodePointString(code))
+            i += 6
+        } else {
+            result.malformed = true
+            break
+        }
+    }
+    result.value = out.toString()
+    result
+}
+
+private func qdrantUnicodeCodePointString(code: Int64): String {
+    if (code < 0 || code > 65535 || (code >= 55296 && code <= 57343)) {
+        return ""
+    }
+    let out = StringBuilder()
+    out.append(Rune(UInt32(code)))
+    out.toString()
+}
+
+private func qdrantJsonHexValue(ch: Rune): Int64 {
+    let code = Int64(UInt32(ch))
+    if (code >= Int64(UInt32(r'0')) && code <= Int64(UInt32(r'9'))) {
+        return code - Int64(UInt32(r'0'))
+    }
+    if (code >= Int64(UInt32(r'a')) && code <= Int64(UInt32(r'f'))) {
+        return 10 + code - Int64(UInt32(r'a'))
+    }
+    if (code >= Int64(UInt32(r'A')) && code <= Int64(UInt32(r'F'))) {
+        return 10 + code - Int64(UInt32(r'A'))
+    }
+    -1
+}
+
+private func qdrantJsonHasMalformedString(raw: String): Bool {
+    var i: Int64 = 0
+    while (i < raw.size) {
+        if (raw[i] == UInt8(34)) {
+            let scan = qdrantReadJsonStringAt(raw, i)
+            if (scan.malformed) {
+                return true
+            }
+            i = if (scan.end > i) { scan.end } else { i + 1 }
+        } else {
+            i += 1
+        }
+    }
+    false
 }
 
 private func qdrantJsonEnclosedAt(raw: String, start: Int64, open: String, close: String): String {

@@ -1580,7 +1580,7 @@ private func addUniqueString(out: ArrayList<String>, value: String): Unit {
 
 private func excludedSourceCandidate(path: String): Bool {
     let lower = path.toAsciiLower()
-    lower.startsWith("target/") || lower.contains("/target/") || lower.startsWith("build/") || lower.contains("/build/") || lower.startsWith("vendor/") || lower.contains("/vendor/") || lower.startsWith("binary/") || lower.contains("/binary/") || lower.endsWith(".png") || lower.endsWith(".jpg") || lower.endsWith(".jpeg") || lower.endsWith(".gif") || lower.endsWith(".zip") || lower.endsWith(".tar") || lower.endsWith(".gz") || lower.endsWith(".so") || lower.endsWith(".dylib") || lower.endsWith(".a") || lower.endsWith(".o") || lower.endsWith(".jar") || lower.endsWith(".class")
+    lower.startsWith("target/") || lower.contains("/target/") || lower.startsWith("generated/") || lower.contains("/generated/") || lower.startsWith("build/") || lower.contains("/build/") || lower.startsWith("vendor/") || lower.contains("/vendor/") || lower.startsWith("binary/") || lower.contains("/binary/") || lower.endsWith(".png") || lower.endsWith(".jpg") || lower.endsWith(".jpeg") || lower.endsWith(".gif") || lower.endsWith(".zip") || lower.endsWith(".tar") || lower.endsWith(".gz") || lower.endsWith(".so") || lower.endsWith(".dylib") || lower.endsWith(".a") || lower.endsWith(".o") || lower.endsWith(".jar") || lower.endsWith(".class")
 }
 
 private func isReadmeOrDocsMarkdown(lower: String): Bool {
@@ -1671,7 +1671,7 @@ private func sourceCandidatePriorityForStdx(lower: String): Int64 {
 }
 
 private func sourceCandidatePriorityForTools(lower: String): Int64 {
-    if (isReadmeOrDocsMarkdown(lower) || (lower.startsWith("tools/") && isMarkdown(lower)) || (lower.contains("/tools/") && isMarkdown(lower))) {
+    if (isToolsDocumentationCandidate(lower)) {
         return 0
     }
     if (lower.endsWith(".cj") || lower.endsWith(".sh") || lower.endsWith(".py")) {
@@ -1681,6 +1681,16 @@ private func sourceCandidatePriorityForTools(lower: String): Int64 {
         return 2
     }
     -1
+}
+
+private func isToolsDocumentationCandidate(lower: String): Bool {
+    if (!isMarkdown(lower)) {
+        return false
+    }
+    if (isReadmeOrDocsMarkdown(lower) || lower.startsWith("tools/") || lower.contains("/tools/")) {
+        return true
+    }
+    lower.contains("cjpm") || lower.contains("cjfmt") || lower.contains("cjdb") || lower.contains("cjc")
 }
 
 private func ckbSourceSetFromSourceFamily(sourceFamily: String): String {
@@ -7347,6 +7357,14 @@ private class GitCodeTreePageScan {
     init() {}
 }
 
+private class GitCodeTreeScanBudget {
+    var maxPages: Int64 = 10
+    var maxObjects: Int64 = 1000
+    var reason: String = "default"
+
+    init() {}
+}
+
 private func ckbFetchScheduledGitCodeTreeSnapshot(runner: SourceFetchRunner, builder: SourceRequestBuilder, source: CangjieVersionSource, profile: CkbScheduleTaskProfile, result: CkbScheduledProfileFetchResult, config: CkbRuntimeConfig): Unit {
     let resolution = ckbResolveGitCodeRefForScheduledFetch(runner, builder, source, profile, result, config)
     if (!resolution.ok) {
@@ -7363,16 +7381,16 @@ private func ckbFetchScheduledGitCodeTreeSnapshot(runner: SourceFetchRunner, bui
     if (scan.selected.size == 0) {
         let empty = SourceFetchResult()
         empty.ok = false
-        empty.status = "source_tree_empty_after_pages"
+        empty.status = "source_tree_no_candidate"
         empty.statusCode = 200
         empty.sourceUrl = scan.lastRequest.url
         empty.repo = scan.lastRequest.repo
         empty.ref = scan.lastRequest.ref
         empty.commit = resolution.resolvedCommit
-        empty.body = "source_tree_empty_after_pages pagesScanned=${scan.pagesScanned} objects=${scan.objectsSeen} files=${scan.filesSeen} directories=${scan.directoriesSeen} candidates=${scan.candidatesSeen}"
+        empty.body = "source_tree_no_candidate pagesScanned=${scan.pagesScanned} objects=${scan.objectsSeen} files=${scan.filesSeen} directories=${scan.directoriesSeen} candidates=${scan.candidatesSeen} stop=${scan.stopReason}"
         empty.bodyHash = stableSummaryHash(empty.body)
         _ = ckbAppendScheduledSourceRecord(profile, result, scan.lastRequest, empty)
-        result.diagnostics.add("source_tree_empty_after_pages:${source.sourceSet}:${source.sourceRepo}:pagesScanned=${scan.pagesScanned}|objects=${scan.objectsSeen}|files=${scan.filesSeen}|directories=${scan.directoriesSeen}|candidates=${scan.candidatesSeen}")
+        result.diagnostics.add("source_tree_no_candidate:${source.sourceSet}:${source.sourceRepo}:pagesScanned=${scan.pagesScanned}|objects=${scan.objectsSeen}|files=${scan.filesSeen}|directories=${scan.directoriesSeen}|candidates=${scan.candidatesSeen}|stop=${scan.stopReason}")
         return
     }
     ckbFetchScheduledSelectedSourceFiles(runner, builder, source, profile, result, config, scan.selected, resolution)
@@ -7382,9 +7400,11 @@ private func ckbFetchScheduledGitCodeTreePages(runner: SourceFetchRunner, builde
     let scan = GitCodeTreePageScan()
     let selector = SourceCandidateSelector()
     let maxFiles = ckbScheduledSourceSnapshotLimit(profile, source)
-    let maxPages = ckbScheduledGitCodeTreeMaxPages(profile, source)
+    let budget = ckbScheduledGitCodeTreeMaxPages(profile, source)
+    let maxPages = budget.maxPages
     let perPage: Int64 = 100
     var page: Int64 = 1
+    result.diagnostics.add("gitcode_tree_scan_budget:${source.sourceSet}:${source.sourceRepo}:pages=${budget.maxPages}|objects=${budget.maxObjects}|reason=${budget.reason}")
     while (page <= maxPages) {
         let treeRequest = builder.gitCodeTreePageWithFetchRef(source.sourceRepo, source.sourceRef, resolution.effectiveRef, page: page, perPage: perPage)
         let treeFetch = ckbFetchScheduledRequest(runner, treeRequest, config)
@@ -7404,6 +7424,7 @@ private func ckbFetchScheduledGitCodeTreePages(runner: SourceFetchRunner, builde
         scan.filesSeen += stats.filesSeen
         scan.directoriesSeen += stats.directoriesSeen
         scan.candidatesSeen += stats.candidatesSeen
+        result.diagnostics.add("gitcode_tree_page_scanned:${source.sourceSet}:${source.sourceRepo}:page=${page}|objects=${stats.objectsSeen}|files=${stats.filesSeen}|directories=${stats.directoriesSeen}|candidates=${stats.candidatesSeen}|pagesScanned=${scan.pagesScanned}|objectsSeen=${scan.objectsSeen}|filesSeen=${scan.filesSeen}|directoriesSeen=${scan.directoriesSeen}|candidatesSeen=${scan.candidatesSeen}|stop=continue")
         if (stats.objectsSeen == 0) {
             scan.completed = true
             scan.stopReason = "empty_page"
@@ -7419,6 +7440,11 @@ private func ckbFetchScheduledGitCodeTreePages(runner: SourceFetchRunner, builde
         if (scan.selected.size > 0) {
             scan.completed = true
             scan.stopReason = "candidates_found"
+            return scan
+        }
+        if (budget.maxObjects > 0 && scan.objectsSeen >= budget.maxObjects) {
+            scan.completed = true
+            scan.stopReason = "object_budget_reached"
             return scan
         }
         page += 1
@@ -7450,14 +7476,31 @@ private func ckbGitCodeTreePageStats(source: CangjieVersionSource, profile: CkbS
     stats
 }
 
-private func ckbScheduledGitCodeTreeMaxPages(profile: CkbScheduleTaskProfile, source: CangjieVersionSource): Int64 {
+private func ckbScheduledGitCodeTreeMaxPages(profile: CkbScheduleTaskProfile, source: CangjieVersionSource): GitCodeTreeScanBudget {
+    let budget = GitCodeTreeScanBudget()
+    let sourceSet = if (source.sourceSet.trimAscii() != "") { source.sourceSet } else { ckbSourceSetFromSourceFamily(source.sourceFamily) }
+    if (sourceSet == CangjieSourceSets.TOOLS) {
+        budget.maxPages = 50
+        budget.maxObjects = 5000
+        budget.reason = "tools_required_source"
+        return budget
+    }
+    if (sourceSet == CangjieSourceSets.STD || sourceSet == CangjieSourceSets.STDX) {
+        budget.maxPages = 20
+        budget.maxObjects = 2000
+        budget.reason = "runtime_library_source"
+        return budget
+    }
+    if (sourceSet == CangjieSourceSets.DOCS) {
+        budget.maxPages = 20
+        budget.maxObjects = 2000
+        budget.reason = "docs_source"
+        return budget
+    }
     if (profile.profile == "cangjie_version_branch_refresh") {
-        return 10
+        budget.reason = "version_refresh_default"
     }
-    if (source.sourceSet == CangjieSourceSets.STD || source.sourceSet == CangjieSourceSets.STDX || source.sourceSet == CangjieSourceSets.TOOLS) {
-        return 20
-    }
-    10
+    budget
 }
 
 private func ckbResolveGitCodeRefForScheduledFetch(runner: SourceFetchRunner, builder: SourceRequestBuilder, source: CangjieVersionSource, profile: CkbScheduleTaskProfile, result: CkbScheduledProfileFetchResult, config: CkbRuntimeConfig): GitCodeRefResolution {
@@ -7913,6 +7956,7 @@ private func ckbScheduledReadinessFailureClass(record: CkbScheduledSourceRecord)
         record.request.kind == SourceKinds.CANGJIE_WEBSITE ||
         record.request.kind == SourceKinds.WEB_CANDIDATE ||
         record.fetch.status == "source_tree_empty_after_pages" ||
+        record.fetch.status == "source_tree_no_candidate" ||
         record.fetch.status == "eval_support_source_unavailable") {
         return "content"
     }
