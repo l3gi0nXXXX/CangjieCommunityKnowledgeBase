@@ -98,6 +98,42 @@ public class CangjieRoutineUpdateContractsTest {
         @Expect(rendered.contains("\"missingArtifacts\""), true)
         @Expect(rendered.contains("metadata/cangjie-version-manifest.ckb"), true)
     }
+
+    @TestCase
+    public func p2Ut001ManifestCandidateContractAcceptsManifestWriteGate(): Unit {
+        let task = SchedulerTaskResult()
+        task.ok = true
+        task.status = "version_manifest_refreshed_with_content_warnings"
+        task.validationStatus = "version_manifest_write_verified"
+        task.validationDiagnostics.add("version_manifest_write_verified:sources=5:evidence=manifest-hash")
+        task.updatedDataKinds.add("version_manifest")
+        let artifacts = CkbRoutineArtifactStatus()
+        artifacts.ok = true
+        artifacts.presentArtifacts.add("metadata/cangjie-version-manifest.ckb")
+        artifacts.evidenceHash = "artifact-ok"
+
+        let validation = validateSchedulerTaskResultAgainstContractWithArtifacts("cangjie_version_branch_refresh", task, p7Invariant("active-v1"), p7Invariant("active-v1"), artifacts)
+
+        @Expect(validation.ok, true)
+        @Expect(validation.diagnostic, "routine_contract_passed")
+    }
+
+    @TestCase
+    public func p2Neg001ManifestCandidateContractRejectsMissingManifestWriteGate(): Unit {
+        let task = SchedulerTaskResult()
+        task.ok = true
+        task.status = "version_manifest_refreshed_with_content_warnings"
+        task.validationStatus = "not_run"
+        task.updatedDataKinds.add("version_manifest")
+        let artifacts = CkbRoutineArtifactStatus()
+        artifacts.ok = true
+        artifacts.presentArtifacts.add("metadata/cangjie-version-manifest.ckb")
+
+        let validation = validateSchedulerTaskResultAgainstContractWithArtifacts("cangjie_version_branch_refresh", task, p7Invariant("active-v1"), p7Invariant("active-v1"), artifacts)
+
+        @Expect(validation.ok, false)
+        @Expect(validation.diagnostic.contains("manifest_write_gate_missing"), true)
+    }
 }
 
 private func p7HasKu(contracts: ArrayList<CkbRoutineUpdateContract>, id: String): Bool {

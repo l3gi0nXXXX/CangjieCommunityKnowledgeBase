@@ -832,9 +832,12 @@ public class CkbSchedulerServiceF5Test {
         let result = service.runSchedulerTasks(tasks, true)
 
         @Expect(result.ran, 1)
-        @Expect(result.failed, 1)
-        @Expect(result.details.contains("scheduled_readiness_failed"), true)
+        @Expect(result.succeeded, 1)
+        @Expect(result.failed, 0)
+        @Expect(result.details.contains("version_manifest_refreshed_with_content_warnings"), true)
         @Expect(f7SchedulerDiagnosticsContain(result, "source_tree_no_candidate"), true)
+        @Expect(f7SchedulerDiagnosticsContain(result, "content_warning_source_failed"), true)
+        @Expect(f7SchedulerDiagnosticsContain(result, "version_manifest_write_verified:"), true)
         @Expect(f7SchedulerDiagnosticsContain(result, "source_tree_empty_after_pages"), false)
         @Expect(f7SchedulerDiagnosticsContain(result, "pagesScanned=3"), true)
         @Expect(f7SchedulerDiagnosticsContain(result, "directories="), true)
@@ -888,12 +891,16 @@ public class CkbSchedulerServiceF5Test {
         let manifest = store.loadCangjieVersionManifest()
 
         @Expect(result.ran, 1)
-        @Expect(result.failed, 1)
+        @Expect(result.succeeded, 1)
+        @Expect(result.failed, 0)
+        @Expect(result.details.contains("version_manifest_refreshed_with_content_warnings"), true)
         @Expect(store.has("metadata/cangjie-version-manifest.ckb"), true)
         @Expect(cangjieManifestHasOfflineBaseline(manifest), false)
         @Expect(f7SchedulerDiagnosticsContain(result, "version_manifest_saved:"), true)
+        @Expect(f7SchedulerDiagnosticsContain(result, "version_manifest_write_verified:"), true)
         @Expect(f7SchedulerDiagnosticsContain(result, "manifest_source_content_sample_degraded"), true)
-        @Expect(f7SchedulerDiagnosticsContain(result, "content_blocking_source_failed"), true)
+        @Expect(f7SchedulerDiagnosticsContain(result, "content_warning_source_failed"), true)
+        @Expect(f7SchedulerDiagnosticsContain(result, "content_blocking_source_failed"), false)
     }
 
     @TestCase

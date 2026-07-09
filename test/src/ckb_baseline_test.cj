@@ -1018,6 +1018,20 @@ public class CkbBaselineTest {
     }
 
     @TestCase
+    public func p2Ut001VersionBranchRefreshUsesManifestOnlyBudget(): Unit {
+        let profile = ckbSyncProfileForScheduleTask("cangjie_version_branch_refresh")
+
+        @Expect(profile.timeBudgetMillis, 90000)
+        @Expect(profile.fetchBudgetMillis, 70000)
+        @Expect(profile.ingestBudgetMillis, 15000)
+        @Expect(profile.vectorBudgetMillis, 0)
+        @Expect(profile.validationBudgetMillis, 0)
+        @Expect(profile.snapshotBudgetMillis, 0)
+        @Expect(profile.proofBudgetMillis, 0)
+        @Expect(ckbSchedulerProfileStageBudgetDiagnostic(profile).contains("profile=cangjie_version_branch_refresh"), true)
+    }
+
+    @TestCase
     public func fileStoragePersistsRawNormalizedMetadataIndexDerivedAndCache(): Unit {
         let kb = newOfflineKnowledgeBase()
         let store = FileKnowledgeStore("target/ckb-test-storage")

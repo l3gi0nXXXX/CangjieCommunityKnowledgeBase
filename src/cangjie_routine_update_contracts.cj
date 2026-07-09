@@ -96,7 +96,7 @@ public func cangjieSchedulerTaskContracts(): ArrayList<CkbSchedulerTaskContract>
     out.add(ckbSchedulerTaskContract("cangjie_docs_full_weekly", "KU-07", "cangjie_docs_full_sync", "candidate_validate_promote", CkbRoutineUpdatePolicies.CANDIDATE_PROMOTE, ["docs", "serving_feed"], ["normalized/candidate"], ["candidate_validation_passed"]))
     out.add(ckbSchedulerTaskContract("cangjie_release_full_sync", "KU-09", "cangjie_release_full_sync", "candidate_validate_promote", CkbRoutineUpdatePolicies.CANDIDATE_PROMOTE, ["release", "version_manifest"], ["metadata/cangjie-version-manifest.ckb"], ["candidate_validation_passed"]))
     out.add(ckbSchedulerTaskContract("cangjie_source_event_sync", "KU-10", "cangjie_source_event_sync", "candidate_validate_promote", CkbRoutineUpdatePolicies.CANDIDATE_PROMOTE, ["repo_source", "serving_feed"], ["metadata/repository-event-latest.ckb"], ["candidate_validation_passed"]))
-    out.add(ckbSchedulerTaskContract("cangjie_version_branch_refresh", "KU-13", "cangjie_version_branch_refresh", "manifest_candidate", CkbRoutineUpdatePolicies.MANIFEST_CANDIDATE, ["version_manifest"], ["metadata/cangjie-version-manifest.ckb"], ["candidate_validation_passed"]))
+    out.add(ckbSchedulerTaskContract("cangjie_version_branch_refresh", "KU-13", "cangjie_version_branch_refresh", "manifest_candidate", CkbRoutineUpdatePolicies.MANIFEST_CANDIDATE, ["version_manifest"], ["metadata/cangjie-version-manifest.ckb"], ["version_manifest_write_verified"]))
     out.add(ckbSchedulerTaskContract("cangjie_benchmark_gap_curation", "KU-11/KU-12", "cangjie_benchmark_gap_curation", "curated_candidate_validate_promote", CkbRoutineUpdatePolicies.CURATED_CANDIDATE, ["benchmark_gap_curation", "negative_rules"], ["gap-curation-input.jsonl"], ["candidate_validation_passed", "query_proof"]))
     out
 }
@@ -142,6 +142,10 @@ public func validateSchedulerTaskResultAgainstContractWithArtifacts(taskName: St
     }
     if (ckbRoutinePolicyRequiresNoActiveMutation(contract.activeMutationPolicy) && before.activeKnowledgeVersion != after.activeKnowledgeVersion) {
         ckbRoutineValidationFail(validation, "active_mutation_forbidden:${before.activeKnowledgeVersion}->${after.activeKnowledgeVersion}")
+        return validation
+    }
+    if (ckbRoutinePolicyRequiresManifestWriteGate(contract.activeMutationPolicy) && task.validationStatus != "version_manifest_write_verified") {
+        ckbRoutineValidationFail(validation, "manifest_write_gate_missing:${task.validationStatus}")
         return validation
     }
     if (ckbRoutinePolicyRequiresCandidateValidation(contract.activeMutationPolicy) && task.validationStatus != "candidate_validation_passed") {
@@ -253,11 +257,15 @@ private func ckbSchedulerTaskContractByName(name: String): CkbSchedulerTaskContr
 }
 
 private func ckbRoutinePolicyRequiresNoActiveMutation(policy: String): Bool {
-    policy == CkbRoutineUpdatePolicies.PROBE_ONLY || policy == CkbRoutineUpdatePolicies.CHECKPOINT_ONLY || policy == CkbRoutineUpdatePolicies.REVIEW_QUEUE_ONLY
+    policy == CkbRoutineUpdatePolicies.PROBE_ONLY || policy == CkbRoutineUpdatePolicies.CHECKPOINT_ONLY || policy == CkbRoutineUpdatePolicies.REVIEW_QUEUE_ONLY || policy == CkbRoutineUpdatePolicies.MANIFEST_CANDIDATE
 }
 
 private func ckbRoutinePolicyRequiresCandidateValidation(policy: String): Bool {
-    policy == CkbRoutineUpdatePolicies.CANDIDATE_PROMOTE || policy == CkbRoutineUpdatePolicies.MANIFEST_CANDIDATE || policy == CkbRoutineUpdatePolicies.CURATED_CANDIDATE
+    policy == CkbRoutineUpdatePolicies.CANDIDATE_PROMOTE || policy == CkbRoutineUpdatePolicies.CURATED_CANDIDATE
+}
+
+private func ckbRoutinePolicyRequiresManifestWriteGate(policy: String): Bool {
+    policy == CkbRoutineUpdatePolicies.MANIFEST_CANDIDATE
 }
 
 private func ckbRoutineValidationFail(validation: CkbRoutineContractValidation, diagnostic: String): Unit {

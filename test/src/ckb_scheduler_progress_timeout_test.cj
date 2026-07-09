@@ -207,6 +207,22 @@ public class CkbSchedulerProgressTimeoutTest {
     }
 
     @TestCase
+    public func p2Ut001TaskScopedProgressPrefersVersionRefreshCheckpoint(): Unit {
+        let root = "target/p2-ut001-task-scoped-progress"
+        ensureEmptyDir(root)
+        let store = FileKnowledgeStore(root)
+        store.writeLinesAtomically("metadata/routine-stage-checkpoints/cangjie_version_branch_refresh-fetch_tree_page.ckb", "profile=cangjie_version_branch_refresh\nstage=fetch_tree_page\nstatus=running\nbudgetMillis=70000\ndeadlineAtMillis=999999999999\nremainingMillis=70000\ndiagnostic=sourceSet=tools|repo=Cangjie/cangjie_tools|page=11\n")
+        store.writeLinesAtomically("metadata/vector-reconcile-current.ckb", "runId=old-vector\ncollection=ckb_active\nstate=running\ncurrentBatch=9\ncompleted=800\nprogressPath=metadata/vector-reconcile-runs/old-vector.jsonl\ndiagnostic=weekly_full_rebuild\n")
+
+        let progress = ckbSchedulerWorkerLastProgressFromStoreForTask(store, "cangjie_version_branch_refresh")
+
+        @Expect(progress.contains("routine:profile=cangjie_version_branch_refresh"), true)
+        @Expect(progress.contains("stage=fetch_tree_page"), true)
+        @Expect(progress.contains("sourceSet=tools"), true)
+        @Expect(progress.contains("vector:"), false)
+    }
+
+    @TestCase
     public func p1Ut001StagedRebuildFileSinkWritesSchedulerProgressAndCurrent(): Unit {
         let root = "target/p1-ut001-staged-rebuild-file-sink"
         ensureEmptyDir(root)
