@@ -40,6 +40,42 @@ public class CkbVectorBootstrapRebuildTest {
     }
 
     @TestCase
+    public func vectorBootstrapUsesMetadataEffectiveActiveCollection(): Unit {
+        let root = "target/ckb-vector-bootstrap-effective-active"
+        ckbVectorBootstrapEnsureEmptyDir(root)
+        ckbVectorTestWriteFile(root, "metadata/status.ckb", "active=ckb-active\nvectorBackend=qdrant\nvectorState=ready\nvectorActiveCollection=ckb_active_reconcile_ready\nvectorCandidateCollection=ckb_candidate\nvectorDimension=3\n")
+        let config = qdrantRuntimeConfig()
+        let store = FileKnowledgeStore(root)
+        let vectorStore = BootstrapEffectiveVectorStore()
+
+        let effective = ckbEffectiveVectorCollections(config, store)
+        let result = ckbVectorBootstrapWithStoreAndKnowledgeStore(config, store, vectorStore)
+
+        @Expect(effective.effectiveActiveCollection, "ckb_active_reconcile_ready")
+        @Expect(effective.source, "metadata")
+        @Expect(result.ok, true)
+        @Expect(result.activeCollection, "ckb_active_reconcile_ready")
+        @Expect(result.effectiveActiveCollection, "ckb_active_reconcile_ready")
+        @Expect(result.configuredActiveCollection, "ckb_active")
+        @Expect(vectorStore.sawStatus("ckb_active_reconcile_ready"), true)
+        @Expect(vectorStore.sawStatus("ckb_active"), false)
+        @Expect(vectorTestContains(result.diagnostics, "effective_active_collection:ckb_active_reconcile_ready:source=metadata"), true)
+    }
+
+    @TestCase
+    public func effectiveActiveCollectionFallsBackToConfigWhenMetadataMissing(): Unit {
+        let root = "target/ckb-vector-bootstrap-effective-fallback"
+        ckbVectorBootstrapEnsureEmptyDir(root)
+        let config = qdrantRuntimeConfig()
+        let store = FileKnowledgeStore(root)
+
+        let effective = ckbEffectiveVectorCollections(config, store)
+
+        @Expect(effective.effectiveActiveCollection, "ckb_active")
+        @Expect(effective.source, "config")
+    }
+
+    @TestCase
     public func vectorBootstrapPreflightFailsFastWhenEmbeddingSmokeFails(): Unit {
         let config = qdrantRuntimeConfig()
         let vectorStore = BootstrapFakeVectorStore()
@@ -357,6 +393,98 @@ private class BootstrapExistingVectorStore <: VectorStore {
         status.backend = "qdrant"
         status.collection = collection
         status.activeCollection = "ckb_active"
+        status.candidateCollection = "ckb_candidate"
+        status.dimension = 3
+        status.distance = "Cosine"
+        status.state = EmbeddingProviderState.READY
+        status
+    }
+}
+
+private class BootstrapEffectiveVectorStore <: VectorStore {
+    public var ensureCalls: Int64 = 0
+    private let statusCalls: ArrayList<String> = ArrayList<String>()
+
+    init() {}
+
+    public func upsert(collection: String, vectors: ArrayList<VectorRecord>): VectorStoreStatus {
+        this.readyStatus(collection)
+    }
+
+    public func upsertBatch(collection: String, vectors: ArrayList<VectorRecord>): VectorStoreStatus {
+        this.readyStatus(collection)
+    }
+
+    public func upsertBatchWithDeadline(collection: String, vectors: ArrayList<VectorRecord>, deadlineAtMillis: Int64): VectorStoreStatus {
+        this.upsertBatch(collection, vectors)
+    }
+
+    public func search(collection: String, queryVector: ArrayList<Float64>, filters: VectorSearchFilters, topK: Int64): ArrayList<VectorSearchResult> {
+        ArrayList<VectorSearchResult>()
+    }
+
+    public func status(collection: String): VectorStoreStatus {
+        this.statusCalls.add(collection)
+        if (collection == "ckb_active") {
+            let status = this.readyStatus(collection)
+            status.state = EmbeddingProviderState.DEGRADED
+            status.degradedReason = "wrong_config_active"
+            status.count = 13
+            return status
+        }
+        if (collection == "ckb_active_reconcile_ready") {
+            let status = this.readyStatus(collection)
+            status.count = 9025
+            return status
+        }
+        this.readyStatus(collection)
+    }
+
+    public func ensureReadyCollection(collection: String): VectorStoreStatus {
+        this.ensureCalls += 1
+        this.readyStatus(collection)
+    }
+
+    public func clear(collection: String): VectorStoreStatus {
+        this.readyStatus(collection)
+    }
+
+    public func deleteCollection(collection: String): VectorStoreStatus {
+        this.readyStatus(collection)
+    }
+
+    public func recreate(collection: String, vectors: ArrayList<VectorRecord>): VectorStoreStatus {
+        this.readyStatus(collection)
+    }
+
+    public func recreateWithDeadline(collection: String, vectors: ArrayList<VectorRecord>, deadlineAtMillis: Int64): VectorStoreStatus {
+        this.recreate(collection, vectors)
+    }
+
+    public func backup(collection: String): VectorBackup {
+        let backup = VectorBackup()
+        backup.collection = collection
+        backup.valid = true
+        backup
+    }
+
+    public func backupWithDeadline(collection: String, deadlineAtMillis: Int64): VectorBackup {
+        this.backup(collection)
+    }
+
+    public func restore(backup: VectorBackup): VectorStoreStatus {
+        this.readyStatus(backup.collection)
+    }
+
+    public func sawStatus(collection: String): Bool {
+        vectorTestSeen(this.statusCalls, collection)
+    }
+
+    private func readyStatus(collection: String): VectorStoreStatus {
+        let status = VectorStoreStatus()
+        status.backend = "qdrant"
+        status.collection = collection
+        status.activeCollection = collection
         status.candidateCollection = "ckb_candidate"
         status.dimension = 3
         status.distance = "Cosine"

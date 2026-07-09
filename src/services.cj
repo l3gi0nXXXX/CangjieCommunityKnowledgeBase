@@ -3175,12 +3175,27 @@ public class CkbRuntimeEmbeddingReadiness {
 public class CkbVectorBootstrapResult {
     public var ok: Bool = true
     public var backend: String = ""
+    public var configuredActiveCollection: String = ""
+    public var effectiveActiveCollection: String = ""
+    public var effectiveActiveSource: String = "config"
     public var activeCollection: String = ""
     public var candidateCollection: String = ""
     public var activeState: String = "unknown"
     public var candidateState: String = "unknown"
     public var vectorReadiness: String = "unknown"
     public var embeddingReadiness: String = "unknown"
+    public var diagnostics: ArrayList<String> = ArrayList<String>()
+
+    public init() {}
+}
+
+public class CkbEffectiveVectorCollections {
+    public var backend: String = ""
+    public var configuredActiveCollection: String = ""
+    public var configuredCandidateCollection: String = ""
+    public var effectiveActiveCollection: String = ""
+    public var candidateCollection: String = ""
+    public var source: String = "config"
     public var diagnostics: ArrayList<String> = ArrayList<String>()
 
     public init() {}
@@ -3204,6 +3219,9 @@ public class CkbVectorReconcileResult {
     public var dryRun: Bool = true
     public var force: Bool = false
     public var activeRecords: Int64 = 0
+    public var configuredActiveCollection: String = ""
+    public var effectiveActiveCollection: String = ""
+    public var effectiveActiveSource: String = "config"
     public var deletedVectorArtifacts: ArrayList<String> = ArrayList<String>()
     public var plannedVectorArtifacts: ArrayList<String> = ArrayList<String>()
     public var qdrantBeforeCount: Int64 = 0
@@ -3223,6 +3241,13 @@ public class CkbRoutineRepairResult {
     public var repairPerformed: Bool = false
     public var vectorReconcile: CkbVectorReconcileResult = CkbVectorReconcileResult()
     public var preflight: CkbRoutineRuntimePreflightResult = CkbRoutineRuntimePreflightResult()
+    public var diagnostics: ArrayList<String> = ArrayList<String>()
+
+    public init() {}
+}
+
+public class CkbSchedulerPreRunGateResult {
+    public var ok: Bool = true
     public var diagnostics: ArrayList<String> = ArrayList<String>()
 
     public init() {}
@@ -3257,8 +3282,9 @@ public func ckbRoutineRuntimePreflightWithVectorStore(config: CkbRuntimeConfig, 
 }
 
 public func ckbRoutineRuntimePreflightWithBootstrap(config: CkbRuntimeConfig, storePath: String, cjHeapSize: String, dyldLibraryPath: String, vectorStore: VectorStore, embeddingProvider: EmbeddingProvider): CkbRoutineRuntimePreflightResult {
-    let bootstrap = ckbVectorBootstrapWithStore(config, vectorStore)
-    let vector = ckbRuntimeVectorReadinessWithStore(config, vectorStore)
+    let knowledgeStore = FileKnowledgeStore(storePath)
+    let bootstrap = ckbVectorBootstrapWithStoreAndKnowledgeStore(config, knowledgeStore, vectorStore)
+    let vector = ckbRuntimeVectorReadinessWithKnowledgeStore(config, knowledgeStore, vectorStore)
     let embedding = ckbRuntimeEmbeddingReadinessWithProvider(config, embeddingProvider)
     let result = ckbRoutineRuntimePreflightWithVectorReadiness(config, storePath, cjHeapSize, dyldLibraryPath, vector)
     result.embeddingReadiness = embedding.state
@@ -3274,6 +3300,82 @@ public func ckbRoutineRuntimePreflightWithBootstrap(config: CkbRuntimeConfig, st
     }
     ckbRoutineRuntimePreflightSnapshotAndVectorChecks(result, config, storePath, vectorStore)
     result
+}
+
+private func ckbIsLegacyVectorCollectionName(value: String): Bool {
+    let cleaned = value.trimAscii()
+    cleaned == "active" || cleaned == "candidate"
+}
+
+public func ckbEffectiveVectorCollections(config: CkbRuntimeConfig, store: FileKnowledgeStore): CkbEffectiveVectorCollections {
+    let vector = vectorStoreConfigFromRuntime(config)
+    let result = CkbEffectiveVectorCollections()
+    result.backend = vector.backend
+    result.configuredActiveCollection = vector.activeCollection
+    result.configuredCandidateCollection = vector.candidateCollection
+    result.effectiveActiveCollection = vector.activeCollection
+    result.candidateCollection = vector.candidateCollection
+    result.source = "config"
+    let metadata = store.loadMetadataStatus()
+    let metadataActive = metadata.vectorActiveCollection.trimAscii()
+    if (metadataActive != "") {
+        if (ckbIsLegacyVectorCollectionName(metadataActive)) {
+            result.diagnostics.add("legacy_vector_metadata:${metadataActive}")
+        } else {
+            result.effectiveActiveCollection = metadataActive
+            result.source = "metadata"
+        }
+    }
+    if (result.effectiveActiveCollection.trimAscii() == "") {
+        result.effectiveActiveCollection = vector.activeCollection
+        result.source = "config"
+    }
+    if (result.candidateCollection.trimAscii() == "") {
+        result.candidateCollection = vector.candidateCollection
+    }
+    if (result.effectiveActiveCollection != result.configuredActiveCollection || result.source != "config") {
+        result.diagnostics.add("effective_active_collection:${result.effectiveActiveCollection}:source=${result.source}:configured=${result.configuredActiveCollection}")
+    }
+    result
+}
+
+public func ckbRuntimeVectorReadinessWithKnowledgeStore(config: CkbRuntimeConfig, store: FileKnowledgeStore, vectorStore: VectorStore): CkbRuntimeVectorReadiness {
+    let vector = vectorStoreConfigFromRuntime(config)
+    let result = ckbRuntimeVectorConfigReadiness(config)
+    if (!result.ready || vector.backend != "qdrant") {
+        return result
+    }
+    let effective = ckbEffectiveVectorCollections(config, store)
+    try {
+        let status = vectorStore.status(effective.effectiveActiveCollection)
+        if (status.dimension > 0) {
+            result.vectorDimensions = status.dimension
+        }
+        if (status.state == EmbeddingProviderState.READY) {
+            if (result.embeddingDimensions > 0 && result.vectorDimensions > 0 && result.embeddingDimensions != result.vectorDimensions) {
+                result.ready = false
+                result.state = "degraded"
+                result.reason = "qdrant_collection_dimension_mismatch:${result.embeddingDimensions}:${result.vectorDimensions}"
+            }
+            let expectedDistance = vector.distance.trimAscii().toAsciiLower()
+            let actualDistance = status.distance.trimAscii().toAsciiLower()
+            if (result.ready && expectedDistance != "" && actualDistance != "" && expectedDistance != actualDistance) {
+                result.ready = false
+                result.state = "degraded"
+                result.reason = "qdrant_collection_distance_mismatch:${status.distance}:${vector.distance}"
+            }
+            return result
+        }
+        result.ready = false
+        result.state = "degraded"
+        result.reason = "qdrant_active_not_ready:${effective.effectiveActiveCollection}:${status.degradedReason}"
+        return result
+    } catch (_: Exception) {
+        result.ready = false
+        result.state = "degraded"
+        result.reason = "qdrant_unreachable:exception"
+        return result
+    }
 }
 
 private func ckbRoutineRuntimePreflightSnapshotAndVectorChecks(result: CkbRoutineRuntimePreflightResult, config: CkbRuntimeConfig, storePath: String, vectorStore: VectorStore): Unit {
@@ -3312,7 +3414,11 @@ private func ckbRoutineRuntimePreflightSnapshotAndVectorChecks(result: CkbRoutin
         result.ok = false
         result.diagnostics.add("repair_required:vector_reconcile:legacy_vector_metadata")
     }
-    let activeCollection = if (metadata.vectorActiveCollection != "") { metadata.vectorActiveCollection } else { vector.activeCollection }
+    let effective = ckbEffectiveVectorCollections(config, store)
+    for (diagnostic in effective.diagnostics) {
+        result.diagnostics.add(diagnostic)
+    }
+    let activeCollection = effective.effectiveActiveCollection
     let qdrant = vectorStore.status(activeCollection)
     if (qdrant.state != EmbeddingProviderState.READY) {
         result.ok = false
@@ -3372,33 +3478,69 @@ public func ckbVectorBootstrapFromRuntime(config: CkbRuntimeConfig): CkbVectorBo
 }
 
 public func ckbVectorBootstrapWithStore(config: CkbRuntimeConfig, vectorStore: VectorStore): CkbVectorBootstrapResult {
-    let result = CkbVectorBootstrapResult()
     let vector = vectorStoreConfigFromRuntime(config)
-    result.backend = vector.backend
+    let result = CkbVectorBootstrapResult()
+    result.configuredActiveCollection = vector.activeCollection
+    result.effectiveActiveCollection = vector.activeCollection
+    result.effectiveActiveSource = "config"
     result.activeCollection = vector.activeCollection
     result.candidateCollection = vector.candidateCollection
-    if (vector.backend != "qdrant") {
+    ckbVectorBootstrapWithCollections(config, vectorStore, result, vector.backend, vector.activeCollection, vector.candidateCollection, "config", true)
+}
+
+public func ckbVectorBootstrapWithStoreAndKnowledgeStore(config: CkbRuntimeConfig, store: FileKnowledgeStore, vectorStore: VectorStore): CkbVectorBootstrapResult {
+    let result = CkbVectorBootstrapResult()
+    let vector = vectorStoreConfigFromRuntime(config)
+    let effective = ckbEffectiveVectorCollections(config, store)
+    result.backend = vector.backend
+    result.configuredActiveCollection = effective.configuredActiveCollection
+    result.effectiveActiveCollection = effective.effectiveActiveCollection
+    result.effectiveActiveSource = effective.source
+    result.activeCollection = effective.effectiveActiveCollection
+    result.candidateCollection = effective.candidateCollection
+    for (diagnostic in effective.diagnostics) {
+        result.diagnostics.add(diagnostic)
+    }
+    ckbVectorBootstrapWithCollections(config, vectorStore, result, vector.backend, effective.effectiveActiveCollection, effective.candidateCollection, effective.source, false)
+}
+
+private func ckbVectorBootstrapWithCollections(config: CkbRuntimeConfig, vectorStore: VectorStore, result: CkbVectorBootstrapResult, backend: String, activeCollection: String, candidateCollection: String, activeSource: String, ensureActive: Bool): CkbVectorBootstrapResult {
+    result.backend = backend
+    if (backend != "qdrant") {
         result.activeState = "skipped"
         result.candidateState = "skipped"
         result.vectorReadiness = "ready"
         result.embeddingReadiness = if (config.embeddingProvider == "" || config.embeddingProvider == "none") { "missing" } else { "configured" }
-        result.diagnostics.add("vector_bootstrap_skipped_backend:${vector.backend}")
+        result.diagnostics.add("vector_bootstrap_skipped_backend:${backend}")
         return result
     }
-    let active = ckbEnsureVectorCollection(vectorStore, vector.activeCollection, "active")
-    result.activeState = active.state
-    for (diagnostic in active.diagnostics) {
-        result.diagnostics.add(diagnostic)
+    var activeOk = true
+    if (ensureActive || activeSource == "config") {
+        let active = ckbEnsureVectorCollection(vectorStore, activeCollection, "active")
+        result.activeState = active.state
+        activeOk = active.ok
+        for (diagnostic in active.diagnostics) {
+            result.diagnostics.add(diagnostic)
+        }
+    } else {
+        let active = vectorStore.status(activeCollection)
+        result.activeState = active.state
+        activeOk = active.state == EmbeddingProviderState.READY
+        if (activeOk) {
+            result.diagnostics.add("qdrant_collection_ready:active:${activeCollection}")
+        } else {
+            result.diagnostics.add("qdrant_collection_bootstrap_failed:active:${activeCollection}:${if (active.degradedReason != "") { active.degradedReason } else { active.state }}")
+        }
     }
-    let candidate = ckbEnsureVectorCollection(vectorStore, vector.candidateCollection, "candidate")
+    let candidate = ckbEnsureVectorCollection(vectorStore, candidateCollection, "candidate")
     result.candidateState = candidate.state
     for (diagnostic in candidate.diagnostics) {
         result.diagnostics.add(diagnostic)
     }
-    let readiness = ckbRuntimeVectorReadinessWithStore(config, vectorStore)
+    let readiness = ckbRuntimeVectorReadinessForCollection(config, vectorStore, activeCollection)
     result.vectorReadiness = readiness.state
     result.embeddingReadiness = if (config.embeddingProvider == "" || config.embeddingProvider == "none") { "missing" } else { "configured" }
-    if (!active.ok || !candidate.ok || !readiness.ready) {
+    if (!activeOk || !candidate.ok || !readiness.ready) {
         result.ok = false
     }
     if (!readiness.ready) {
@@ -3407,12 +3549,54 @@ public func ckbVectorBootstrapWithStore(config: CkbRuntimeConfig, vectorStore: V
     result
 }
 
+private func ckbRuntimeVectorReadinessForCollection(config: CkbRuntimeConfig, vectorStore: VectorStore, activeCollection: String): CkbRuntimeVectorReadiness {
+    let vector = vectorStoreConfigFromRuntime(config)
+    let result = ckbRuntimeVectorConfigReadiness(config)
+    if (!result.ready || vector.backend != "qdrant") {
+        return result
+    }
+    try {
+        let status = vectorStore.status(activeCollection)
+        if (status.dimension > 0) {
+            result.vectorDimensions = status.dimension
+        }
+        if (status.state != EmbeddingProviderState.READY) {
+            result.ready = false
+            result.state = "degraded"
+            result.reason = "qdrant_active_not_ready:${activeCollection}:${status.degradedReason}"
+            return result
+        }
+        if (result.embeddingDimensions > 0 && result.vectorDimensions > 0 && result.embeddingDimensions != result.vectorDimensions) {
+            result.ready = false
+            result.state = "degraded"
+            result.reason = "qdrant_collection_dimension_mismatch:${result.embeddingDimensions}:${result.vectorDimensions}"
+            return result
+        }
+        let expectedDistance = vector.distance.trimAscii().toAsciiLower()
+        let actualDistance = status.distance.trimAscii().toAsciiLower()
+        if (expectedDistance != "" && actualDistance != "" && expectedDistance != actualDistance) {
+            result.ready = false
+            result.state = "degraded"
+            result.reason = "qdrant_collection_distance_mismatch:${status.distance}:${vector.distance}"
+            return result
+        }
+        result.state = EmbeddingProviderState.READY
+        result.reason = ""
+        return result
+    } catch (_: Exception) {
+        result.ready = false
+        result.state = "degraded"
+        result.reason = "qdrant_unreachable:exception"
+        return result
+    }
+}
+
 public func renderCkbVectorBootstrapJson(result: CkbVectorBootstrapResult): String {
-    "{\"ok\":${result.ok},\"errorCode\":\"${if (result.ok) { "" } else { "ckb.vector_bootstrap_failed" }}\",\"backend\":\"${ckbRuntimePreflightJsonEscape(result.backend)}\",\"activeCollection\":\"${ckbRuntimePreflightJsonEscape(result.activeCollection)}\",\"candidateCollection\":\"${ckbRuntimePreflightJsonEscape(result.candidateCollection)}\",\"activeState\":\"${ckbRuntimePreflightJsonEscape(result.activeState)}\",\"candidateState\":\"${ckbRuntimePreflightJsonEscape(result.candidateState)}\",\"vectorReadiness\":\"${ckbRuntimePreflightJsonEscape(result.vectorReadiness)}\",\"embeddingReadiness\":\"${ckbRuntimePreflightJsonEscape(result.embeddingReadiness)}\",\"diagnostics\":${ckbRuntimePreflightStringListJson(result.diagnostics)}}"
+    "{\"ok\":${result.ok},\"errorCode\":\"${if (result.ok) { "" } else { "ckb.vector_bootstrap_failed" }}\",\"backend\":\"${ckbRuntimePreflightJsonEscape(result.backend)}\",\"configuredActiveCollection\":\"${ckbRuntimePreflightJsonEscape(result.configuredActiveCollection)}\",\"effectiveActiveCollection\":\"${ckbRuntimePreflightJsonEscape(result.effectiveActiveCollection)}\",\"effectiveActiveSource\":\"${ckbRuntimePreflightJsonEscape(result.effectiveActiveSource)}\",\"activeCollection\":\"${ckbRuntimePreflightJsonEscape(result.activeCollection)}\",\"candidateCollection\":\"${ckbRuntimePreflightJsonEscape(result.candidateCollection)}\",\"activeState\":\"${ckbRuntimePreflightJsonEscape(result.activeState)}\",\"candidateState\":\"${ckbRuntimePreflightJsonEscape(result.candidateState)}\",\"vectorReadiness\":\"${ckbRuntimePreflightJsonEscape(result.vectorReadiness)}\",\"embeddingReadiness\":\"${ckbRuntimePreflightJsonEscape(result.embeddingReadiness)}\",\"diagnostics\":${ckbRuntimePreflightStringListJson(result.diagnostics)}}"
 }
 
 public func renderCkbVectorBootstrapText(result: CkbVectorBootstrapResult): String {
-    "vector bootstrap ok=${result.ok} backend=${result.backend} activeCollection=${result.activeCollection} activeState=${result.activeState} candidateCollection=${result.candidateCollection} candidateState=${result.candidateState} vectorReadiness=${result.vectorReadiness} embeddingReadiness=${result.embeddingReadiness} diagnostics=${joinStrings(result.diagnostics, ",")}\n"
+    "vector bootstrap ok=${result.ok} backend=${result.backend} configuredActiveCollection=${result.configuredActiveCollection} effectiveActiveCollection=${result.effectiveActiveCollection} effectiveActiveSource=${result.effectiveActiveSource} activeCollection=${result.activeCollection} activeState=${result.activeState} candidateCollection=${result.candidateCollection} candidateState=${result.candidateState} vectorReadiness=${result.vectorReadiness} embeddingReadiness=${result.embeddingReadiness} diagnostics=${joinStrings(result.diagnostics, ",")}\n"
 }
 
 public func renderCkbDerivedVectorCleanupJson(result: CkbDerivedVectorCleanupResult): String {
@@ -3424,11 +3608,11 @@ public func renderCkbDerivedVectorCleanupText(result: CkbDerivedVectorCleanupRes
 }
 
 public func renderCkbVectorReconcileJson(result: CkbVectorReconcileResult): String {
-    "{\"ok\":${result.ok},\"errorCode\":\"${if (result.ok) { "" } else { "ckb.vector_reconcile_failed" }}\",\"dryRun\":${result.dryRun},\"force\":${result.force},\"activeRecords\":${result.activeRecords},\"deletedVectorArtifacts\":${ckbRuntimePreflightStringListJson(result.deletedVectorArtifacts)},\"plannedVectorArtifacts\":${ckbRuntimePreflightStringListJson(result.plannedVectorArtifacts)},\"qdrantBeforeCount\":${result.qdrantBeforeCount},\"qdrantAfterCount\":${result.qdrantAfterCount},\"rebuiltVectorCount\":${result.rebuiltVectorCount},\"activeKnowledgeVersion\":\"${ckbRuntimePreflightJsonEscape(result.activeKnowledgeVersion)}\",\"vectorState\":\"${ckbRuntimePreflightJsonEscape(result.vectorState)}\",\"progressPath\":\"${ckbRuntimePreflightJsonEscape(result.progressPath)}\",\"diagnostics\":${ckbRuntimePreflightStringListJson(result.diagnostics)}}"
+    "{\"ok\":${result.ok},\"errorCode\":\"${if (result.ok) { "" } else { "ckb.vector_reconcile_failed" }}\",\"dryRun\":${result.dryRun},\"force\":${result.force},\"activeRecords\":${result.activeRecords},\"configuredActiveCollection\":\"${ckbRuntimePreflightJsonEscape(result.configuredActiveCollection)}\",\"effectiveActiveCollection\":\"${ckbRuntimePreflightJsonEscape(result.effectiveActiveCollection)}\",\"effectiveActiveSource\":\"${ckbRuntimePreflightJsonEscape(result.effectiveActiveSource)}\",\"deletedVectorArtifacts\":${ckbRuntimePreflightStringListJson(result.deletedVectorArtifacts)},\"plannedVectorArtifacts\":${ckbRuntimePreflightStringListJson(result.plannedVectorArtifacts)},\"qdrantBeforeCount\":${result.qdrantBeforeCount},\"qdrantAfterCount\":${result.qdrantAfterCount},\"rebuiltVectorCount\":${result.rebuiltVectorCount},\"activeKnowledgeVersion\":\"${ckbRuntimePreflightJsonEscape(result.activeKnowledgeVersion)}\",\"vectorState\":\"${ckbRuntimePreflightJsonEscape(result.vectorState)}\",\"progressPath\":\"${ckbRuntimePreflightJsonEscape(result.progressPath)}\",\"diagnostics\":${ckbRuntimePreflightStringListJson(result.diagnostics)}}"
 }
 
 public func renderCkbVectorReconcileText(result: CkbVectorReconcileResult): String {
-    "vector reconcile ok=${result.ok} dryRun=${result.dryRun} force=${result.force} activeRecords=${result.activeRecords} rebuiltVectorCount=${result.rebuiltVectorCount} qdrantBeforeCount=${result.qdrantBeforeCount} qdrantAfterCount=${result.qdrantAfterCount} vectorState=${result.vectorState} progressPath=${result.progressPath} diagnostics=${joinStrings(result.diagnostics, ",")}\n"
+    "vector reconcile ok=${result.ok} dryRun=${result.dryRun} force=${result.force} activeRecords=${result.activeRecords} configuredActiveCollection=${result.configuredActiveCollection} effectiveActiveCollection=${result.effectiveActiveCollection} effectiveActiveSource=${result.effectiveActiveSource} rebuiltVectorCount=${result.rebuiltVectorCount} qdrantBeforeCount=${result.qdrantBeforeCount} qdrantAfterCount=${result.qdrantAfterCount} vectorState=${result.vectorState} progressPath=${result.progressPath} diagnostics=${joinStrings(result.diagnostics, ",")}\n"
 }
 
 public func renderCkbRoutineRepairJson(result: CkbRoutineRepairResult): String {
@@ -3461,7 +3645,7 @@ public func ckbRoutineRepairWithStores(kb: KnowledgeBase, store: FileKnowledgeSt
     ckbRoutineRepairWithStoresAndEnv(kb, store, config, storePath, force, vectorStore, embeddingProvider, heap, dyld)
 }
 
-public func ckbRoutineRepairWithStoresAndEnv(kb: KnowledgeBase, store: FileKnowledgeStore, config: CkbRuntimeConfig, storePath: String, force: Bool, vectorStore: VectorStore, embeddingProvider: EmbeddingProvider, cjHeapSize: String, dyldLibraryPath: String): CkbRoutineRepairResult {
+public func ckbRoutineRepairWithStoresAndEnv(kb: KnowledgeBase, store: FileKnowledgeStore, config: CkbRuntimeConfig, storePath: String, force: Bool, vectorStore: VectorStore, embeddingProvider: EmbeddingProvider, cjHeapSize: String, dyldLibraryPath: String, deadlineAtMillis!: Int64 = 0): CkbRoutineRepairResult {
     let result = CkbRoutineRepairResult()
     result.force = force
     if (!force) {
@@ -3470,7 +3654,7 @@ public func ckbRoutineRepairWithStoresAndEnv(kb: KnowledgeBase, store: FileKnowl
         result.preflight = ckbRoutineRuntimePreflightWithBootstrap(config, storePath, cjHeapSize, dyldLibraryPath, vectorStore, embeddingProvider)
         return result
     }
-    result.vectorReconcile = ckbVectorReconcileWithVectorStore(kb, store, config, vectorStore, true)
+    result.vectorReconcile = ckbVectorReconcileWithVectorStore(kb, store, config, vectorStore, true, deadlineAtMillis: deadlineAtMillis)
     result.repairPerformed = result.vectorReconcile.ok
     if (!result.vectorReconcile.ok) {
         result.ok = false
@@ -3488,7 +3672,29 @@ public func ckbRoutineRepairWithStoresAndEnv(kb: KnowledgeBase, store: FileKnowl
     result
 }
 
-public func ckbVectorReconcileWithVectorStore(kb: KnowledgeBase, store: FileKnowledgeStore, config: CkbRuntimeConfig, vectorStore: VectorStore, force: Bool): CkbVectorReconcileResult {
+public func ckbRoutineRepairWorkerTimeoutResult(force: Bool, timeoutMillis: Int64, diagnostic: String, workerPid!: Int64 = 0, outSnippet!: String = "", errSnippet!: String = ""): CkbRoutineRepairResult {
+    let result = CkbRoutineRepairResult()
+    result.ok = false
+    result.force = force
+    result.repairPerformed = false
+    result.diagnostics.add(diagnostic)
+    if (workerPid > 0) {
+        result.diagnostics.add("worker_pid:${workerPid}")
+    }
+    let combined = "${outSnippet} ${errSnippet}".toAsciiLower()
+    if (combined.contains("out of memory") || combined.contains("outofmemory") || combined.contains("oom")) {
+        result.diagnostics.add("worker_out_of_memory")
+    }
+    if (outSnippet.trimAscii() != "") {
+        result.diagnostics.add("worker_out:${utf8SafePrefix(redactSensitive(outSnippet.replace("\n", " ").replace("\r", " ")), 160)}")
+    }
+    if (errSnippet.trimAscii() != "") {
+        result.diagnostics.add("worker_err:${utf8SafePrefix(redactSensitive(errSnippet.replace("\n", " ").replace("\r", " ")), 160)}")
+    }
+    result
+}
+
+public func ckbVectorReconcileWithVectorStore(kb: KnowledgeBase, store: FileKnowledgeStore, config: CkbRuntimeConfig, vectorStore: VectorStore, force: Bool, deadlineAtMillis!: Int64 = 0): CkbVectorReconcileResult {
     let result = CkbVectorReconcileResult()
     result.force = force
     result.dryRun = !force
@@ -3496,10 +3702,22 @@ public func ckbVectorReconcileWithVectorStore(kb: KnowledgeBase, store: FileKnow
     result.activeRecords = status.storage.indexCount
     result.activeKnowledgeVersion = status.activeKnowledgeVersion
     let vector = vectorStoreConfigFromRuntime(config)
-    let before = vectorStore.status(vector.activeCollection)
+    let effective = ckbEffectiveVectorCollections(config, store)
+    result.configuredActiveCollection = effective.configuredActiveCollection
+    result.effectiveActiveCollection = effective.effectiveActiveCollection
+    result.effectiveActiveSource = effective.source
+    for (diagnostic in effective.diagnostics) {
+        result.diagnostics.add(diagnostic)
+    }
+    let before = vectorStore.status(effective.effectiveActiveCollection)
     result.qdrantBeforeCount = before.count
     result.vectorState = before.state
-    let cleanup = store.deleteAllDerivedVectorArtifacts(vector.activeCollection, vector.candidateCollection, force: force)
+    if (before.state == EmbeddingProviderState.DOWN) {
+        result.ok = false
+        result.diagnostics.add("qdrant_active_not_ready:${effective.effectiveActiveCollection}:${if (before.degradedReason != "") { before.degradedReason } else { before.state }}")
+        return result
+    }
+    let cleanup = store.deleteAllDerivedVectorArtifacts(effective.effectiveActiveCollection, effective.candidateCollection, force: force)
     ckbAppendStrings(result.deletedVectorArtifacts, cleanup.deletedFiles)
     ckbAppendStrings(result.plannedVectorArtifacts, cleanup.plannedFiles)
     ckbAppendStrings(result.diagnostics, cleanup.diagnostics)
@@ -3512,9 +3730,12 @@ public func ckbVectorReconcileWithVectorStore(kb: KnowledgeBase, store: FileKnow
         result.diagnostics.add("dry_run")
         return result
     }
-    let stagingCollection = ckbVectorReconcileStagingCollection(vector.activeCollection)
+    if (ckbVectorReconcileDeadlineExceeded(result, "before_rebuild", deadlineAtMillis)) {
+        return result
+    }
+    let stagingCollection = ckbVectorReconcileStagingCollection(effective.effectiveActiveCollection)
     let progressSink = FileVectorBuildProgressSink(store)
-    let rebuild = ckbRebuildIndex(kb, store, progressSink: progressSink, targetVectorCollection: stagingCollection, persistSnapshot: false)
+    let rebuild = ckbRebuildIndex(kb, store, progressSink: progressSink, targetVectorCollection: stagingCollection, persistSnapshot: false, deadlineAtMillis: deadlineAtMillis)
     result.progressPath = progressSink.currentProgressPath()
     result.rebuiltVectorCount = rebuild.count
     result.activeKnowledgeVersion = rebuild.activeVersion
@@ -3527,6 +3748,10 @@ public func ckbVectorReconcileWithVectorStore(kb: KnowledgeBase, store: FileKnow
         if (failedStatus.state != EmbeddingProviderState.READY) {
             result.diagnostics.add("vector_store_not_ready:${failedStatus.degradedReason}")
         }
+        ckbVectorReconcileDeleteStaging(vectorStore, stagingCollection, result.diagnostics)
+        return result
+    }
+    if (ckbVectorReconcileDeadlineExceeded(result, "after_rebuild", deadlineAtMillis)) {
         ckbVectorReconcileDeleteStaging(vectorStore, stagingCollection, result.diagnostics)
         return result
     }
@@ -3562,12 +3787,27 @@ public func ckbVectorReconcileWithVectorStore(kb: KnowledgeBase, store: FileKnow
         ckbVectorReconcileDeleteStaging(vectorStore, stagingCollection, result.diagnostics)
         return result
     }
+    if (ckbVectorReconcileDeadlineExceeded(result, "before_promote", deadlineAtMillis)) {
+        ckbVectorReconcileDeleteStaging(vectorStore, stagingCollection, result.diagnostics)
+        return result
+    }
     kb.promoteVectorActiveCollection(stagingCollection)
-    kb.persistActiveSnapshotUsingVectorRecords(store, kb.lastVectorIndexBuild().vectorRecords, persistVectorFile: false)
+    kb.persistActiveSnapshotUsingVectorRecords(store, kb.lastVectorIndexBuild().vectorRecords, persistVectorFile: false, deadlineAtMillis: deadlineAtMillis)
     result.activeKnowledgeVersion = kb.status().activeKnowledgeVersion
     result.vectorState = EmbeddingProviderState.READY
     result.diagnostics.add("qdrant_logical_promote_succeeded:${stagingCollection}")
     result
+}
+
+private func ckbVectorReconcileDeadlineExceeded(result: CkbVectorReconcileResult, stage: String, deadlineAtMillis: Int64): Bool {
+    let deadline = ckbDeadlineGuard("vector_reconcile_${stage}", deadlineAtMillis)
+    if (!deadline.exceeded) {
+        return false
+    }
+    result.ok = false
+    result.vectorState = "deadline_exceeded"
+    result.diagnostics.add("deadline_exceeded:${stage}:deadlineAtMillis=${deadlineAtMillis}:nowMillis=${deadline.nowMillis}")
+    true
 }
 
 private func ckbActiveIndexDuplicateIdentitySummary(store: FileKnowledgeStore): CkbDuplicateVectorIdentitySummary {
@@ -3936,6 +4176,69 @@ public func ckbSchedulerFailureSummaries(result: SchedulerExecutorResult): Array
         }
     }
     out
+}
+
+public func ckbSchedulerPreRunGate(config: CkbRuntimeConfig, store: FileKnowledgeStore, vectorStore: VectorStore, taskNames: ArrayList<String>): CkbSchedulerPreRunGateResult {
+    let result = CkbSchedulerPreRunGateResult()
+    if (!taskNames.contains("weekly_full_rebuild")) {
+        return result
+    }
+    let vector = vectorStoreConfigFromRuntime(config)
+    if (vector.backend != "qdrant") {
+        result.diagnostics.add("scheduler_pre_run_gate_skipped_backend:${vector.backend}")
+        return result
+    }
+    let effective = ckbEffectiveVectorCollections(config, store)
+    for (diagnostic in effective.diagnostics) {
+        result.diagnostics.add(diagnostic)
+    }
+    let snapshot = store.loadActiveSnapshot()
+    if (!snapshot.valid) {
+        result.ok = false
+        result.diagnostics.add("scheduler_pre_run_gate_failed:active_snapshot_invalid:${snapshot.diagnostic}")
+        return result
+    }
+    let qdrant = vectorStore.status(effective.effectiveActiveCollection)
+    if (qdrant.state != EmbeddingProviderState.READY) {
+        result.ok = false
+        result.diagnostics.add("scheduler_pre_run_gate_failed:qdrant_active_not_ready:${effective.effectiveActiveCollection}:${if (qdrant.degradedReason != "") { qdrant.degradedReason } else { qdrant.state }}")
+        return result
+    }
+    if (qdrant.count != snapshot.activeIndex.size) {
+        result.ok = false
+        result.diagnostics.add("scheduler_pre_run_gate_failed:qdrant_active_count_mismatch:${qdrant.count}:${snapshot.activeIndex.size}:${effective.effectiveActiveCollection}")
+    }
+    if (vector.dimensions > 0 && qdrant.dimension > 0 && qdrant.dimension != vector.dimensions) {
+        result.ok = false
+        result.diagnostics.add("scheduler_pre_run_gate_failed:qdrant_active_dimension_mismatch:${qdrant.dimension}:${vector.dimensions}:${effective.effectiveActiveCollection}")
+    }
+    if (vector.distance != "" && qdrant.distance != "" && qdrant.distance.trimAscii().toAsciiLower() != vector.distance.trimAscii().toAsciiLower()) {
+        result.ok = false
+        result.diagnostics.add("scheduler_pre_run_gate_failed:qdrant_active_distance_mismatch:${qdrant.distance}:${vector.distance}:${effective.effectiveActiveCollection}")
+    }
+    result
+}
+
+public func ckbSchedulerPreRunGateFailureResult(gate: CkbSchedulerPreRunGateResult, taskNames: ArrayList<String>, force: Bool): SchedulerExecutorResult {
+    let result = SchedulerExecutorResult()
+    result.forced = force
+    result.runId = "scheduler-pre-run-gate-${ckbCoreNowMillis()}"
+    result.startedAtMillis = ckbCoreNowMillis()
+    result.endedAtMillis = result.startedAtMillis
+    if (taskNames.size == 0) {
+        result.taskNames.add("weekly_full_rebuild")
+    } else {
+        for (name in taskNames) {
+            result.taskNames.add(name)
+        }
+    }
+    result.failed = 1
+    result.details = "task weekly_full_rebuild ok=false status=scheduler_pre_run_gate_failed\n"
+    for (diagnostic in gate.diagnostics) {
+        result.validationDiagnostics.add(diagnostic)
+        result.details += "scheduler_pre_run_gate ${diagnostic}\n"
+    }
+    result
 }
 
 public func ckbSchedulerRunTaskRecordsJson(records: ArrayList<SchedulerTaskRunRecord>): String {
@@ -7471,7 +7774,7 @@ public class CkbCommandLoopService {
             result.diagnostics.add(busy)
             return result
         }
-        let result = ckbVectorBootstrapFromRuntime(this.config)
+        let result = ckbVectorBootstrapWithStoreAndKnowledgeStore(this.config, this.store, vectorStoreFromRuntime(this.config))
         this.leaveAdminOperation("vector_bootstrap")
         result
     }
@@ -7557,6 +7860,10 @@ public class CkbCommandLoopService {
         }
         if (result.failed > 0) {
             return result
+        }
+        let gate = ckbSchedulerPreRunGate(this.config, this.store, vectorStoreFromRuntime(this.config), taskNames)
+        if (!gate.ok) {
+            return ckbSchedulerPreRunGateFailureResult(gate, taskNames, force)
         }
         let preRepair = this.store.repairActiveLiveShadowFromManifest()
         if (preRepair.repairPerformed) {

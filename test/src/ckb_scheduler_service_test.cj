@@ -1359,6 +1359,26 @@ public class CkbRoutinePreflightRepairHintTest {
         @Expect(ruDiagnosticsContain(result.diagnostics, "active_snapshot_manifest_missing"), true)
         @Expect(ruDiagnosticsContain(result.diagnostics, "repair_required:vector_reconcile:active_snapshot_manifest_missing"), true)
     }
+
+    @TestCase
+    public func p1CurrentPreRunGateRejectsWeeklyFullRebuildWhenEffectiveActiveCountMismatches(): Unit {
+        let root = "target/p1-current-pre-run-gate-count-mismatch"
+        let config = f7QdrantRoutineConfig()
+        let embedding = DeterministicEmbeddingProvider(embeddingConfigFromRuntime(config))
+        let kb = KnowledgeBase(FakeClock(0), embedding, LocalVectorStore(), LocalGraphStore())
+        kb.configureVectorCollections("ckb_active_reconcile_ready", "ckb_candidate")
+        kb.bootstrapOffline()
+        let store = FileKnowledgeStore(root)
+        _ = ckbRebuildIndex(kb, store)
+        let taskNames = ArrayList<String>()
+        taskNames.add("weekly_full_rebuild")
+
+        let gate = ckbSchedulerPreRunGate(config, store, F7StatusVectorStore(EmbeddingProviderState.READY, "", 3, count: 1), taskNames)
+
+        @Expect(gate.ok, false)
+        @Expect(ruDiagnosticsContain(gate.diagnostics, "scheduler_pre_run_gate_failed:qdrant_active_count_mismatch:1:"), true)
+        @Expect(ruDiagnosticsContain(gate.diagnostics, "ckb_active_reconcile_ready"), true)
+    }
 }
 
 private func f7SchedulerDiagnosticsContain(result: SchedulerExecutorResult, needle: String): Bool {

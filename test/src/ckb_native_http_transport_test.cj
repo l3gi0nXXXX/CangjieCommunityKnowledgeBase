@@ -203,6 +203,15 @@ public class CkbNativeHttpTransportTest {
     }
 
     @TestCase
+    public func validationCommandsNeedNativeTlsBootstrap(): Unit {
+        @Expect(ckbCommandNeedsNativeTlsBootstrap("status"), true)
+        @Expect(ckbCommandNeedsNativeTlsBootstrap("doctor"), true)
+        @Expect(ckbCommandNeedsNativeTlsBootstrap("metrics"), true)
+        @Expect(ckbCommandNeedsNativeTlsBootstrap("cangjie-landing-status"), true)
+        @Expect(ckbCommandNeedsNativeTlsBootstrap("cangjie-corpus-status"), true)
+    }
+
+    @TestCase
     public func syncLiveWithFakeRunnerKeepsPrivateInternalUnknownReposExcluded(): Unit {
         let kb = newOfflineKnowledgeBase()
         let config = CkbRuntimeConfig()

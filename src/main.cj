@@ -20,7 +20,7 @@ public func ckbCliMain(args: Array<String>): Int64 {
     let config = loadCkbRuntimeConfig(cli.configPath)
     let store = FileKnowledgeStore(cli.storePath)
     if (cli.command == "vector-bootstrap") {
-        let result = ckbVectorBootstrapFromRuntime(config)
+        let result = ckbVectorBootstrapWithStoreAndKnowledgeStore(config, store, vectorStoreFromRuntime(config))
         if (ckbCliWantsJson(args)) {
             println(renderCkbVectorBootstrapJson(result))
         } else {
@@ -292,6 +292,31 @@ public func ckbCliMain(args: Array<String>): Int64 {
         let runner = ckbSchedulerTaskRunnerForRuntime(schedulerKb, config, store, cli.configPath, cli.storePath, if (config.networkEnabled) { HttpSourceFetchRunner(config) } else { DisabledNetworkFetchRunner() })
         let executor = SchedulerExecutor(schedulerKb.scheduler, runner, FileSchedulerProgressSink(store), 300000)
         let taskNames = ckbCliSchedulerTaskNames(args)
+        let gateTaskNames = if (hasArg(args, "--force-all")) {
+            ckbSchedulerAllowlistTaskNames()
+        } else {
+            taskNames
+        }
+        let gate = ckbSchedulerPreRunGate(config, store, vectorStoreFromRuntime(config), gateTaskNames)
+        if (!gate.ok) {
+            let blocked = ckbSchedulerPreRunGateFailureResult(gate, gateTaskNames, hasArg(args, "--force") || hasArg(args, "--force-all"))
+            blocked.runId = lock.runId
+            ckbAppendSnapshotRepairDiagnostic(blocked, "pre", preRepair)
+            for (diagnostic in recovery.diagnostics) {
+                blocked.validationDiagnostics.add("recovery:${diagnostic}")
+                blocked.details += "recovery ${diagnostic}\n"
+            }
+            ckbCliPopulateSchedulerRunEvidence(blocked, config, cli.storePath)
+            store.saveSchedulerLoopMetadata("failed", config.schedulerEnabled, config.schedulerLoopIntervalMillis, if (blocked.forced) { "cli_forced" } else { "cli_due" }, 0, 0, blocked.taskNames, "scheduler_pre_run_gate_failed")
+            ckbReleaseSchedulerRunLock(store, lock, blocked.runId, "failed")
+            if (ckbCliWantsJson(args)) {
+                println(ckbCliSchedulerRunJson(blocked))
+            } else {
+                print("scheduler ran=0 succeeded=0 failed=1 degraded=0 forced=${blocked.forced}\n")
+                print(blocked.details)
+            }
+            return 1
+        }
         let result = if (hasArg(args, "--force-all")) {
             executor.runTaskNames(ckbSchedulerAllowlistTaskNames(), force: true)
         } else if (taskNames.size > 0) {
@@ -410,10 +435,6 @@ public func ckbNativeTlsBootstrapScript(command: String, args: Array<String>): S
         script += " " + ckbShellQuote(arg)
     }
     script
-}
-
-private func ckbCommandNeedsNativeTlsBootstrap(command: String): Bool {
-    command == "native-http-smoke" || command == "sync-live" || command == "source_analysis" || command == "source-analysis" || command == "service" || command == "start" || command == "service-http" || command == "http-service" || command == "service-once" || command == "scheduler-run" || command == "scheduler-task-worker" || command == "vector-bootstrap" || command == "vector-clean-derived" || command == "vector-reconcile" || command == "routine-repair" || command == "rebuild-index" || command == "cangjie-update-promotion-smoke"
 }
 
 private func ckbShellQuote(value: String): String {

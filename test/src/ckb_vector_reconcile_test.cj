@@ -102,6 +102,28 @@ public class CkbVectorReconcileTest {
     }
 
     @TestCase
+    public func vectorReconcileDryRunUsesMetadataEffectiveActiveCollection(): Unit {
+        let root = "target/ckb-vector-reconcile-effective-active"
+        ckbVectorReconcileEnsureEmptyDir(root)
+        ckbVectorReconcileWriteFile(root, "metadata/status.ckb", "active=ckb-active\nvectorBackend=qdrant\nvectorState=ready\nvectorActiveCollection=ckb_active_reconcile_ready\nvectorCandidateCollection=ckb_candidate\nvectorDimension=3\n")
+        let store = FileKnowledgeStore(root)
+        let vectorStore = ReconcileTrackingVectorStore(initialCount: 13)
+        vectorStore.effectiveCollection = "ckb_active_reconcile_ready"
+        vectorStore.effectiveCount = 9025
+        let kb = ckbVectorReconcileKnowledgeBase(vectorStore)
+
+        let result = ckbVectorReconcileWithVectorStore(kb, store, ckbVectorReconcileRuntimeConfig(), vectorStore, false)
+
+        @Expect(result.ok, true)
+        @Expect(result.dryRun, true)
+        @Expect(result.qdrantBeforeCount, 9025)
+        @Expect(result.effectiveActiveCollection, "ckb_active_reconcile_ready")
+        @Expect(result.configuredActiveCollection, "ckb_active")
+        @Expect(vectorStore.lastStatusCollection, "ckb_active_reconcile_ready")
+        @Expect(ckbVectorReconcileContains(result.diagnostics, "effective_active_collection:ckb_active_reconcile_ready:source=metadata"), true)
+    }
+
+    @TestCase
     public func vectorReconcileForceDeletesDerivedArtifactsAndRebuildsVectors(): Unit {
         let root = "target/ckb-vector-reconcile-force"
         ckbVectorReconcileEnsureEmptyDir(root)
@@ -220,6 +242,19 @@ public class CkbVectorReconcileTest {
     }
 
     @TestCase
+    public func routineRepairWorkerTimeoutClassifiesOomAsStructuredDiagnostic(): Unit {
+        let result = ckbRoutineRepairWorkerTimeoutResult(true, 120000, "routine_repair_worker_hard_timeout:worker_started", workerPid: 42, outSnippet: "", errSnippet: "An exception has occurred:\n    Out of memory\n")
+        let json = renderCkbRoutineRepairJson(result)
+
+        @Expect(result.ok, false)
+        @Expect(result.force, true)
+        @Expect(ckbVectorReconcileContains(result.diagnostics, "routine_repair_worker_hard_timeout:worker_started"), true)
+        @Expect(ckbVectorReconcileContains(result.diagnostics, "worker_out_of_memory"), true)
+        @Expect(json.contains("\"ok\":false"), true)
+        @Expect(json.contains("worker_out_of_memory"), true)
+    }
+
+    @TestCase
     public func httpAdminVectorCleanupRouteDeletesDerivedArtifactsOnlyWithForce(): Unit {
         let root = "target/ckb-vector-cleanup-http"
         let storeRoot = "target/ckb-vector-cleanup-http-store"
@@ -324,6 +359,9 @@ private class ReconcileTrackingVectorStore <: VectorStore {
     public var stagingCount: Int64 = 0
     public var failUpsertBatch: Bool = false
     public var reportCountMismatchAfterRebuild: Bool = false
+    public var effectiveCollection: String = ""
+    public var effectiveCount: Int64 = 0
+    public var lastStatusCollection: String = ""
     private var activeCount: Int64 = 0
     private var stagingCollection: String = ""
     private var state: String = EmbeddingProviderState.READY
@@ -363,6 +401,7 @@ private class ReconcileTrackingVectorStore <: VectorStore {
     }
 
     public func status(collection: String): VectorStoreStatus {
+        this.lastStatusCollection = collection
         let status = VectorStoreStatus()
         status.backend = "qdrant"
         status.collection = collection
@@ -372,7 +411,9 @@ private class ReconcileTrackingVectorStore <: VectorStore {
         status.distance = "Cosine"
         status.state = this.state
         status.degradedReason = this.diagnostic
-        status.count = if (collection == "ckb_active") {
+        status.count = if (collection == this.effectiveCollection && this.effectiveCollection != "") {
+            this.effectiveCount
+        } else if (collection == "ckb_active") {
             this.activeCount
         } else if (collection == this.stagingCollection) {
             this.stagingCount

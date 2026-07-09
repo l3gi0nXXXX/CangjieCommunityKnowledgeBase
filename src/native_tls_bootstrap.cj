@@ -20,6 +20,31 @@ public func ckbNativeTlsBootstrapEnvScript(caFile!: String = ""): String {
     script
 }
 
+public func ckbCommandNeedsNativeTlsBootstrap(command: String): Bool {
+    command == "native-http-smoke" ||
+        command == "sync-live" ||
+        command == "source_analysis" ||
+        command == "source-analysis" ||
+        command == "service" ||
+        command == "start" ||
+        command == "service-http" ||
+        command == "http-service" ||
+        command == "service-once" ||
+        command == "scheduler-run" ||
+        command == "scheduler-task-worker" ||
+        command == "vector-bootstrap" ||
+        command == "vector-clean-derived" ||
+        command == "vector-reconcile" ||
+        command == "routine-repair" ||
+        command == "rebuild-index" ||
+        command == "cangjie-update-promotion-smoke" ||
+        command == "status" ||
+        command == "doctor" ||
+        command == "metrics" ||
+        command == "cangjie-landing-status" ||
+        command == "cangjie-corpus-status"
+}
+
 private func ckbNativeTlsShellQuote(value: String): String {
     "'" + value.replace("'", "'\\''") + "'"
 }
