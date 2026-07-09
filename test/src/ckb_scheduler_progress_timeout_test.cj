@@ -34,6 +34,18 @@ private class ProgressFakeRunner <: SchedulerTaskRunner {
     }
 }
 
+private class CaptureStageSink <: CkbStagedRebuildStageSink {
+    public var stages: ArrayList<String> = ArrayList<String>()
+    public var diagnostics: ArrayList<String> = ArrayList<String>()
+
+    public init() {}
+
+    public func onStagedRebuildStage(progress: CkbStagedRebuildStageProgress): Unit {
+        this.stages.add("${progress.stage}|${progress.status}")
+        this.diagnostics.add(progress.diagnostic)
+    }
+}
+
 @Test
 public class CkbSchedulerProgressTimeoutTest {
     @TestCase
@@ -192,6 +204,70 @@ public class CkbSchedulerProgressTimeoutTest {
         @Expect(store.readText(scoped).contains("schedulerRunId=scheduler-a"), true)
         @Expect(store.readText(scoped).contains("schedulerTaskName=weekly_full_rebuild"), true)
         @Expect(store.readText(scoped).contains("completed=42"), true)
+    }
+
+    @TestCase
+    public func p1Ut001StagedRebuildFileSinkWritesSchedulerProgressAndCurrent(): Unit {
+        let root = "target/p1-ut001-staged-rebuild-file-sink"
+        ensureEmptyDir(root)
+        let store = FileKnowledgeStore(root)
+        let sink = FileCkbStagedRebuildStageSink(store, schedulerRunId: "run-p1", schedulerTaskName: "weekly_full_rebuild")
+        let progress = CkbStagedRebuildStageProgress()
+        progress.stage = "staged_rebuild_status_before"
+        progress.status = "running"
+        progress.diagnostic = "diagnostic 中文🙂 Authorization: Bearer secret-value"
+        progress.deadlineAtMillis = ckbCoreNowMillis() + 60000
+        progress.remainingMillis = 60000
+        progress.atMillis = ckbCoreNowMillis()
+
+        sink.onStagedRebuildStage(progress)
+
+        let progressPath = "metadata/scheduler-runs/run-p1.jsonl"
+        let scopedPath = "metadata/scheduler-runs/run-p1-weekly_full_rebuild-staged-rebuild-current.ckb"
+        let progressText = store.readText(progressPath)
+        @Expect(progressText.contains("\"subsystem\":\"routine_update\""), true)
+        @Expect(progressText.contains("\"event\":\"staged_rebuild_stage\""), true)
+        @Expect(progressText.contains("\"stage\":\"staged_rebuild_status_before\""), true)
+        @Expect(progressText.contains("secret-value"), false)
+        @Expect(store.readText("metadata/staged-rebuild-current.ckb").contains("stage=staged_rebuild_status_before"), true)
+        @Expect(store.has(scopedPath), true)
+        @Expect(store.readText("metadata/scheduler-current.ckb").contains("taskName=weekly_full_rebuild"), true)
+    }
+
+    @TestCase
+    public func p1Ut002WeeklyFullRebuildUsesDedicatedBudget(): Unit {
+        let profile = ckbSyncProfileForScheduleTask("weekly_full_rebuild")
+
+        @Expect(profile.timeBudgetMillis, 300000)
+        @Expect(profile.fetchBudgetMillis, 0)
+        @Expect(profile.ingestBudgetMillis, 30000)
+        @Expect(profile.vectorBudgetMillis, 150000)
+        @Expect(profile.validationBudgetMillis, 60000)
+        @Expect(profile.snapshotBudgetMillis, 45000)
+        @Expect(profile.proofBudgetMillis, 15000)
+        @Expect(ckbSchedulerProfileStageBudgetDiagnostic(profile).contains("profile=full_rebuild"), true)
+    }
+
+    @TestCase
+    public func p1Ut003SnapshotTransactionEmitsStageCheckpoints(): Unit {
+        let root = "target/p1-ut003-snapshot-stage-checkpoints"
+        ensureEmptyDir(root)
+        let store = FileKnowledgeStore(root)
+        let kb = newOfflineKnowledgeBase()
+        let rebuild = ckbRebuildIndex(kb, store, deadlineAtMillis: ckbCoreNowMillis() + 60000)
+        let sink = CaptureStageSink()
+
+        kb.persistActiveSnapshotUsingVectorRecords(store, kb.lastVectorIndexBuild().vectorRecords, persistVectorFile: false, deadlineAtMillis: ckbCoreNowMillis() + 60000, stageSink: sink)
+
+        @Expect(rebuild.ok, true)
+        @Expect(sink.stages.contains("active_snapshot_tx_raw_before|running"), true)
+        @Expect(sink.stages.contains("active_snapshot_tx_raw_after|ok"), true)
+        @Expect(sink.stages.contains("active_snapshot_tx_vector_skipped|skipped"), true)
+        @Expect(sink.stages.contains("active_snapshot_tx_graph_before|running"), true)
+        @Expect(sink.stages.contains("active_snapshot_live_vector_skipped|skipped"), true)
+        @Expect(sink.stages.contains("active_snapshot_manifest_after|ok"), true)
+        @Expect(captureContains(sink.diagnostics, "graphEdgeCount="), true)
+        @Expect(captureContains(sink.diagnostics, "persistVectorFile=false"), true)
     }
 
     @TestCase
@@ -441,6 +517,15 @@ private func ensureEmptyDir(path: String): Unit {
         _ = launch("/bin/rm", ["-rf", path]).wait()
     }
     Directory.create(Path(path), recursive: true)
+}
+
+private func captureContains(items: ArrayList<String>, expected: String): Bool {
+    for (item in items) {
+        if (item.contains(expected)) {
+            return true
+        }
+    }
+    false
 }
 
 private func testField(text: String, key: String): String {

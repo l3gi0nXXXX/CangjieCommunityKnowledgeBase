@@ -4233,9 +4233,9 @@ public class KnowledgeBase {
         store.writeActiveSnapshotTransaction(this.status(), this.rawRecords, this.activeIndex, this.activeIndex, this.activeVectorRecords(), this.vectorCollection, this.activeGraphBuild(), deadlineAtMillis: deadlineAtMillis)
     }
 
-    public func persistActiveSnapshotUsingVectorRecords(store: FileKnowledgeStore, vectorRecords: ArrayList<VectorRecord>, persistVectorFile!: Bool = true, deadlineAtMillis!: Int64 = 0): Unit {
+    public func persistActiveSnapshotUsingVectorRecords(store: FileKnowledgeStore, vectorRecords: ArrayList<VectorRecord>, persistVectorFile!: Bool = true, deadlineAtMillis!: Int64 = 0, stageSink!: CkbStagedRebuildStageSink = NoopCkbStagedRebuildStageSink()): Unit {
         store.ensureLayout()
-        store.writeActiveSnapshotTransaction(this.status(), this.rawRecords, this.activeIndex, this.activeIndex, vectorRecords, this.vectorCollection, this.activeGraphBuild(), persistVectorFile: persistVectorFile, deadlineAtMillis: deadlineAtMillis)
+        store.writeActiveSnapshotTransaction(this.status(), this.rawRecords, this.activeIndex, this.activeIndex, vectorRecords, this.vectorCollection, this.activeGraphBuild(), persistVectorFile: persistVectorFile, deadlineAtMillis: deadlineAtMillis, stageSink: stageSink)
     }
 
     public func persistCandidateSnapshot(store: FileKnowledgeStore): Unit {

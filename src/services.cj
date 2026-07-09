@@ -4270,34 +4270,59 @@ public class FileKnowledgeStore {
         this.writeLines("index/graph-edges.ckb", this.graphEdgeLines(graph.edges))
     }
 
-    public func writeActiveSnapshotTransaction(status: KnowledgeStatus, rawRecords: ArrayList<RawRecord>, normalizedRecords: ArrayList<NormalizedRecord>, activeIndex: ArrayList<NormalizedRecord>, vectorRecords: ArrayList<VectorRecord>, vectorCollection: String, graph: GraphBuildResult, persistVectorFile!: Bool = true, deadlineAtMillis!: Int64 = 0): String {
+    public func writeActiveSnapshotTransaction(status: KnowledgeStatus, rawRecords: ArrayList<RawRecord>, normalizedRecords: ArrayList<NormalizedRecord>, activeIndex: ArrayList<NormalizedRecord>, vectorRecords: ArrayList<VectorRecord>, vectorCollection: String, graph: GraphBuildResult, persistVectorFile!: Bool = true, deadlineAtMillis!: Int64 = 0, stageSink!: CkbStagedRebuildStageSink = NoopCkbStagedRebuildStageSink()): String {
         this.ensureLayout()
         let txId = this.newActiveSnapshotTxId(status.activeKnowledgeVersion)
         let txRoot = "transactions/${safeName(txId)}"
+        this.emitActiveSnapshotStage(stageSink, "active_snapshot_tx_raw_before", "running", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
         this.ensureActiveSnapshotDeadline("active_snapshot_tx_raw_before", deadlineAtMillis)
         this.writeRawFilesAtomically(txRoot, rawRecords, deadlineAtMillis: deadlineAtMillis, progressStage: "active_snapshot_tx_raw")
+        this.emitActiveSnapshotStage(stageSink, "active_snapshot_tx_raw_after", "ok", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
+        this.emitActiveSnapshotStage(stageSink, "active_snapshot_tx_normalized_before", "running", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
         this.ensureActiveSnapshotDeadline("active_snapshot_tx_normalized_before", deadlineAtMillis)
         this.writeLinesAtomically("${txRoot}/normalized/records.ckb", this.normalizedLines(normalizedRecords))
+        this.emitActiveSnapshotStage(stageSink, "active_snapshot_tx_normalized_after", "ok", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
+        this.emitActiveSnapshotStage(stageSink, "active_snapshot_tx_index_before", "running", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
         this.ensureActiveSnapshotDeadline("active_snapshot_tx_index_before", deadlineAtMillis)
         this.writeLinesAtomically("${txRoot}/index/active.version", status.activeKnowledgeVersion + "\n")
         this.writeLinesAtomically("${txRoot}/index/active.ckb", this.normalizedLines(activeIndex))
+        this.emitActiveSnapshotStage(stageSink, "active_snapshot_tx_index_after", "ok", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
         if (persistVectorFile) {
+            this.emitActiveSnapshotStage(stageSink, "active_snapshot_tx_vector_before", "running", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
             this.ensureActiveSnapshotDeadline("active_snapshot_tx_vector_before", deadlineAtMillis)
             this.writeLinesAtomically("${txRoot}/index/vector-${safeName(vectorCollection)}.ckb", this.vectorLines(vectorRecords))
+            this.emitActiveSnapshotStage(stageSink, "active_snapshot_tx_vector_after", "ok", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
+        } else {
+            this.emitActiveSnapshotStage(stageSink, "active_snapshot_tx_vector_skipped", "skipped", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
         }
+        this.emitActiveSnapshotStage(stageSink, "active_snapshot_tx_graph_before", "running", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
         this.ensureActiveSnapshotDeadline("active_snapshot_tx_graph_before", deadlineAtMillis)
         this.writeLinesAtomically("${txRoot}/index/graph-nodes.ckb", this.graphNodeLines(graph.nodes))
         this.writeLinesAtomically("${txRoot}/index/graph-edges.ckb", this.graphEdgeLines(graph.edges))
+        this.emitActiveSnapshotStage(stageSink, "active_snapshot_tx_graph_after", "ok", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
+        this.emitActiveSnapshotStage(stageSink, "active_snapshot_tx_status_before", "running", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
         this.ensureActiveSnapshotDeadline("active_snapshot_tx_status_before", deadlineAtMillis)
         this.writeLinesAtomically("${txRoot}/metadata/status.ckb", this.metadataLines(status))
+        this.emitActiveSnapshotStage(stageSink, "active_snapshot_tx_status_after", "ok", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
+        this.emitActiveSnapshotStage(stageSink, "active_snapshot_tx_commit_before", "running", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
         this.ensureActiveSnapshotDeadline("active_snapshot_tx_commit_before", deadlineAtMillis)
         this.writeLinesAtomically("${txRoot}/COMMIT", this.activeSnapshotCommitLines(txId, status))
+        this.emitActiveSnapshotStage(stageSink, "active_snapshot_tx_commit_after", "ok", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
+        this.emitActiveSnapshotStage(stageSink, "active_snapshot_live_shadow_before", "running", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
         this.ensureActiveSnapshotDeadline("active_snapshot_live_shadow_before", deadlineAtMillis)
-        this.writeActiveSnapshotLiveShadow(status, rawRecords, normalizedRecords, activeIndex, vectorRecords, vectorCollection, graph, persistVectorFile: persistVectorFile, deadlineAtMillis: deadlineAtMillis)
+        this.writeActiveSnapshotLiveShadow(status, rawRecords, normalizedRecords, activeIndex, vectorRecords, vectorCollection, graph, persistVectorFile: persistVectorFile, deadlineAtMillis: deadlineAtMillis, stageSink: stageSink)
+        this.emitActiveSnapshotStage(stageSink, "active_snapshot_live_shadow_after", "ok", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
+        this.emitActiveSnapshotStage(stageSink, "active_snapshot_manifest_before", "running", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
         this.ensureActiveSnapshotDeadline("active_snapshot_manifest_before", deadlineAtMillis)
         this.writeLinesAtomically("metadata/active-snapshot.manifest", this.activeSnapshotManifestLines(txId, status))
         this.writeLinesAtomically("metadata/active-snapshot-commits/${safeName(txId)}.ckb", this.activeSnapshotCommitSidecarLines(txId, status, vectorCollection, activeIndex.size, vectorRecords.size, persistVectorFile))
+        this.emitActiveSnapshotStage(stageSink, "active_snapshot_manifest_after", "ok", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
         txId
+    }
+
+    private func emitActiveSnapshotStage(stageSink: CkbStagedRebuildStageSink, stage: String, statusText: String, status: KnowledgeStatus, rawRecords: ArrayList<RawRecord>, normalizedRecords: ArrayList<NormalizedRecord>, activeIndex: ArrayList<NormalizedRecord>, vectorRecords: ArrayList<VectorRecord>, graph: GraphBuildResult, deadlineAtMillis: Int64, persistVectorFile: Bool): Unit {
+        let diagnostic = "active=${status.activeKnowledgeVersion}|rawCount=${rawRecords.size}|normalizedCount=${normalizedRecords.size}|indexCount=${activeIndex.size}|vectorCount=${vectorRecords.size}|graphNodeCount=${graph.nodes.size}|graphEdgeCount=${graph.edges.size}|persistVectorFile=${persistVectorFile}"
+        ckbEmitStagedRebuildStage(stageSink, stage, statusText, deadlineAtMillis, diagnostic)
     }
 
     private func ensureActiveSnapshotDeadline(stage: String, deadlineAtMillis: Int64): Unit {
@@ -5106,22 +5131,36 @@ public class FileKnowledgeStore {
         }
     }
 
-    private func writeActiveSnapshotLiveShadow(status: KnowledgeStatus, rawRecords: ArrayList<RawRecord>, normalizedRecords: ArrayList<NormalizedRecord>, activeIndex: ArrayList<NormalizedRecord>, vectorRecords: ArrayList<VectorRecord>, vectorCollection: String, graph: GraphBuildResult, persistVectorFile!: Bool = true, deadlineAtMillis!: Int64 = 0): Unit {
+    private func writeActiveSnapshotLiveShadow(status: KnowledgeStatus, rawRecords: ArrayList<RawRecord>, normalizedRecords: ArrayList<NormalizedRecord>, activeIndex: ArrayList<NormalizedRecord>, vectorRecords: ArrayList<VectorRecord>, vectorCollection: String, graph: GraphBuildResult, persistVectorFile!: Bool = true, deadlineAtMillis!: Int64 = 0, stageSink!: CkbStagedRebuildStageSink = NoopCkbStagedRebuildStageSink()): Unit {
+        this.emitActiveSnapshotStage(stageSink, "active_snapshot_live_raw_before", "running", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
         this.writeRawFilesAtomically("", rawRecords, deadlineAtMillis: deadlineAtMillis, progressStage: "active_snapshot_live_raw")
+        this.emitActiveSnapshotStage(stageSink, "active_snapshot_live_raw_after", "ok", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
+        this.emitActiveSnapshotStage(stageSink, "active_snapshot_live_normalized_before", "running", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
         this.ensureActiveSnapshotDeadline("active_snapshot_live_normalized_before", deadlineAtMillis)
         this.writeLinesAtomically("normalized/records.ckb", this.normalizedLines(normalizedRecords))
+        this.emitActiveSnapshotStage(stageSink, "active_snapshot_live_normalized_after", "ok", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
+        this.emitActiveSnapshotStage(stageSink, "active_snapshot_live_index_before", "running", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
         this.ensureActiveSnapshotDeadline("active_snapshot_live_index_before", deadlineAtMillis)
         this.writeLinesAtomically("index/active.version", status.activeKnowledgeVersion + "\n")
         this.writeLinesAtomically("index/active.ckb", this.normalizedLines(activeIndex))
+        this.emitActiveSnapshotStage(stageSink, "active_snapshot_live_index_after", "ok", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
         if (persistVectorFile) {
+            this.emitActiveSnapshotStage(stageSink, "active_snapshot_live_vector_before", "running", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
             this.ensureActiveSnapshotDeadline("active_snapshot_live_vector_before", deadlineAtMillis)
             this.writeLinesAtomically("index/vector-${safeName(vectorCollection)}.ckb", this.vectorLines(vectorRecords))
+            this.emitActiveSnapshotStage(stageSink, "active_snapshot_live_vector_after", "ok", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
+        } else {
+            this.emitActiveSnapshotStage(stageSink, "active_snapshot_live_vector_skipped", "skipped", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
         }
+        this.emitActiveSnapshotStage(stageSink, "active_snapshot_live_graph_before", "running", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
         this.ensureActiveSnapshotDeadline("active_snapshot_live_graph_before", deadlineAtMillis)
         this.writeLinesAtomically("index/graph-nodes.ckb", this.graphNodeLines(graph.nodes))
         this.writeLinesAtomically("index/graph-edges.ckb", this.graphEdgeLines(graph.edges))
+        this.emitActiveSnapshotStage(stageSink, "active_snapshot_live_graph_after", "ok", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
+        this.emitActiveSnapshotStage(stageSink, "active_snapshot_live_status_before", "running", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
         this.ensureActiveSnapshotDeadline("active_snapshot_live_status_before", deadlineAtMillis)
         this.writeLinesAtomically("metadata/status.ckb", this.metadataLines(status))
+        this.emitActiveSnapshotStage(stageSink, "active_snapshot_live_status_after", "ok", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
     }
 
     private func normalizedLines(records: ArrayList<NormalizedRecord>): String {
@@ -5275,6 +5314,78 @@ public class StoreMetadataStatus {
     public var vectorCandidateCollection: String = "candidate"
 
     public init() {}
+}
+
+public class CkbStagedRebuildStageProgress {
+    public var runId: String = ""
+    public var taskName: String = ""
+    public var stage: String = ""
+    public var status: String = ""
+    public var diagnostic: String = ""
+    public var deadlineAtMillis: Int64 = 0
+    public var remainingMillis: Int64 = 0
+    public var atMillis: Int64 = 0
+
+    public init() {}
+}
+
+public interface CkbStagedRebuildStageSink {
+    func onStagedRebuildStage(progress: CkbStagedRebuildStageProgress): Unit
+}
+
+public class NoopCkbStagedRebuildStageSink <: CkbStagedRebuildStageSink {
+    public init() {}
+
+    public func onStagedRebuildStage(progress: CkbStagedRebuildStageProgress): Unit {}
+}
+
+public class FileCkbStagedRebuildStageSink <: CkbStagedRebuildStageSink {
+    private let store: FileKnowledgeStore
+    private let schedulerRunId: String
+    private let schedulerTaskName: String
+    private var progressPath: String = ""
+
+    public init(store: FileKnowledgeStore, schedulerRunId!: String = "", schedulerTaskName!: String = "") {
+        this.store = store
+        this.schedulerRunId = if (schedulerRunId.trimAscii() != "") { schedulerRunId } else { ckbSchedulerCurrentRunId(store) }
+        this.schedulerTaskName = if (schedulerTaskName.trimAscii() != "") { schedulerTaskName } else { ckbSchedulerCurrentTaskName(store) }
+    }
+
+    public func onStagedRebuildStage(progress: CkbStagedRebuildStageProgress): Unit {
+        let effectiveRunId = if (progress.runId.trimAscii() != "") { progress.runId } else { this.schedulerRunId }
+        let effectiveTaskName = if (progress.taskName.trimAscii() != "") { progress.taskName } else { this.schedulerTaskName }
+        if (effectiveRunId.trimAscii() == "") {
+            this.writeCurrent(progress, "", effectiveTaskName)
+            return
+        }
+        this.ensureProgressPath(effectiveRunId)
+        try {
+            this.store.appendLinesAtomically(this.progressPath, ckbStagedRebuildStageProgressJson(progress, effectiveRunId, effectiveTaskName))
+            this.writeCurrent(progress, effectiveRunId, effectiveTaskName)
+            this.store.writeLinesAtomically("metadata/scheduler-current.ckb", schedulerCurrentText(effectiveRunId, effectiveTaskName, progress.status, this.progressPath, "stage=${progress.stage}|${progress.diagnostic}"))
+        } catch (_: Exception) {
+            ()
+        }
+    }
+
+    private func ensureProgressPath(runId: String): Unit {
+        if (this.progressPath == "") {
+            this.progressPath = "metadata/scheduler-runs/${safeName(runId)}.jsonl"
+        }
+    }
+
+    private func writeCurrent(progress: CkbStagedRebuildStageProgress, runId: String, taskName: String): Unit {
+        try {
+            let text = ckbStagedRebuildStageCurrentText(progress, this.progressPath, runId, taskName)
+            this.store.writeLinesAtomically("metadata/staged-rebuild-current.ckb", text)
+            let scoped = ckbSchedulerScopedStagedRebuildCurrentPath(runId, taskName)
+            if (scoped != "") {
+                this.store.writeLinesAtomically(scoped, text)
+            }
+        } catch (_: Exception) {
+            ()
+        }
+    }
 }
 
 public class FileSchedulerProgressSink <: SchedulerProgressSink {
@@ -5552,6 +5663,13 @@ private func ckbSchedulerScopedVectorCurrentPath(runId: String, taskName: String
     "metadata/scheduler-runs/${safeName(runId)}-${safeName(taskName)}-vector-current.ckb"
 }
 
+private func ckbSchedulerScopedStagedRebuildCurrentPath(runId: String, taskName: String): String {
+    if (runId.trimAscii() == "" || taskName.trimAscii() == "") {
+        return ""
+    }
+    "metadata/scheduler-runs/${safeName(runId)}-${safeName(taskName)}-staged-rebuild-current.ckb"
+}
+
 private func schedulerTaskProgressDiagnostic(task: SchedulerTaskResult): String {
     for (diagnostic in task.validationDiagnostics) {
         if (diagnostic.contains("readiness:") || diagnostic.contains("routine_contract:") || diagnostic.contains("candidate_validation") || diagnostic.contains("vector_health_failed")) {
@@ -5644,6 +5762,48 @@ private func schedulerCurrentText(runId: String, taskName: String, status: Strin
     text
 }
 
+private func ckbStagedRebuildStageProgressJson(progress: CkbStagedRebuildStageProgress, runId: String, taskName: String): String {
+    let diagnostic = utf8SafePrefix(redactSensitive(progress.diagnostic), 240)
+    "{\"subsystem\":\"routine_update\",\"runId\":\"${ckbRuntimePreflightJsonEscape(runId)}\",\"event\":\"staged_rebuild_stage\",\"stage\":\"${ckbRuntimePreflightJsonEscape(progress.stage)}\",\"taskName\":\"${ckbRuntimePreflightJsonEscape(taskName)}\",\"status\":\"${ckbRuntimePreflightJsonEscape(progress.status)}\",\"diagnostic\":\"${ckbRuntimePreflightJsonEscape(diagnostic)}\",\"deadlineAtMillis\":${progress.deadlineAtMillis},\"remainingMillis\":${progress.remainingMillis},\"atMillis\":${progress.atMillis}}\n"
+}
+
+private func ckbStagedRebuildStageCurrentText(progress: CkbStagedRebuildStageProgress, progressPath: String, runId: String, taskName: String): String {
+    var text = "runId=${escapeField(runId)}\n"
+    text += "taskName=${escapeField(taskName)}\n"
+    text += "stage=${escapeField(progress.stage)}\n"
+    text += "status=${escapeField(progress.status)}\n"
+    text += "deadlineAtMillis=${progress.deadlineAtMillis}\n"
+    text += "remainingMillis=${progress.remainingMillis}\n"
+    text += "progressPath=${escapeField(progressPath)}\n"
+    text += "diagnostic=${escapeField(utf8SafePrefix(redactSensitive(progress.diagnostic), 240))}\n"
+    text += "atMillis=${progress.atMillis}\n"
+    text
+}
+
+private func ckbStagedRebuildCurrentProgressSummary(text: String): String {
+    if (text == "") {
+        return ""
+    }
+    "staged_rebuild:stage=${ckbCurrentField(text, "stage")},status=${ckbCurrentField(text, "status")},remainingMillis=${ckbCurrentField(text, "remainingMillis")},progressPath=${ckbCurrentField(text, "progressPath")},diagnostic=${ckbCurrentField(text, "diagnostic")}"
+}
+
+private func ckbEmitStagedRebuildStage(stageSink: CkbStagedRebuildStageSink, stage: String, status: String, deadlineAtMillis: Int64, diagnostic: String, runId!: String = "", taskName!: String = ""): Unit {
+    let progress = CkbStagedRebuildStageProgress()
+    progress.runId = runId
+    progress.taskName = taskName
+    progress.stage = stage
+    progress.status = status
+    progress.diagnostic = diagnostic
+    progress.deadlineAtMillis = deadlineAtMillis
+    progress.remainingMillis = ckbRemainingMillis(deadlineAtMillis)
+    progress.atMillis = ckbCoreNowMillis()
+    try {
+        stageSink.onStagedRebuildStage(progress)
+    } catch (_: Exception) {
+        ()
+    }
+}
+
 private func vectorBuildRecoveredCurrentText(previous: String, state: String, diagnostic: String): String {
     var text = "runId=${escapeField(ckbCurrentField(previous, "runId"))}\n"
     text += "collection=${escapeField(ckbCurrentField(previous, "collection"))}\n"
@@ -5720,6 +5880,8 @@ public class IndexBuildResult {
     public var candidateVersion: String = ""
     public var failedVersion: String = ""
     public var count: Int64 = 0
+    public var lastStage: String = ""
+    public var lastProgress: String = ""
 
     public init() {}
 }
@@ -5885,7 +6047,7 @@ public func ckbSyncProfileForScheduleTask(name: String): CkbScheduleTaskProfile 
         profile.status = "ready"
         profile.profile = "full_rebuild"
         profile.candidateMode = "rebuild_candidate_then_promote"
-        profile.timeBudgetMillis = 120000
+        profile.timeBudgetMillis = 300000
         profile.requestCount = 1
         profile.updatedDataKinds.add("index")
     } else if (name == "cangjie_freshness_daily") {
@@ -5980,7 +6142,9 @@ private func ckbApplySchedulerProfileStageBudgets(profile: CkbScheduleTaskProfil
     if (profile.timeBudgetMillis <= 0) {
         return
     }
-    if (profile.profile == "cangjie_benchmark_gap_curation") {
+    if (profile.profile == "full_rebuild") {
+        ckbSetSchedulerProfileStageBudgets(profile, 0, 30000, 150000, 60000, 45000, 15000)
+    } else if (profile.profile == "cangjie_benchmark_gap_curation") {
         ckbSetSchedulerProfileStageBudgets(profile, 0, 10000, 30000, 15000, 10000, 25000)
     } else if (profile.profile == "cangjie_release_full_sync") {
         ckbSetSchedulerProfileStageBudgets(profile, 80000, 30000, 80000, 30000, 20000, 0)
@@ -6045,6 +6209,10 @@ private func ckbWriteScheduledProfileStageCheckpoint(store: FileKnowledgeStore, 
 
 private func ckbTaskWorkerNowMillis(): Int64 {
     DateTime.now().toUnixTimeStamp().toMilliseconds()
+}
+
+public func ckbSchedulerWorkerResultFlushMarginMillis(): Int64 {
+    5000
 }
 
 private func ckbTaskWorkerResultRelativePath(taskName: String): String {
@@ -6188,6 +6356,12 @@ public func ckbRunSchedulerTaskWorker(kb: KnowledgeBase, config: CkbRuntimeConfi
         task.ok = false
         task.status = if (deadlineAtMillis > 0 && ckbTaskWorkerNowMillis() >= deadlineAtMillis) { "task_timeout:${taskName}" } else { "task_exception" }
         task.validationDiagnostics.add("${taskName}:${task.status}:${utf8SafePrefix(e.message, 160)}")
+    }
+    if (!task.ok && task.lastStage == "") {
+        task.lastStage = ckbSchedulerWorkerLastStageFromStore(store)
+    }
+    if (!task.ok && task.lastProgress == "") {
+        task.lastProgress = ckbSchedulerWorkerLastProgressFromStore(store)
     }
     if (task.durationMillis <= 0) {
         task.durationMillis = ckbTaskWorkerNowMillis() - started
@@ -6359,10 +6533,12 @@ public class ProcessIsolatedSchedulerTaskRunner <: SchedulerTaskRunner {
         if (timeoutMillis <= 0) {
             return CkbSchedulerTaskRunner(this.kb, this.config, this.store, sourceRunner: this.sourceRunner).runTask(name, since, deadlineAtMillis)
         }
+        let flushMarginMillis = ckbSchedulerWorkerResultFlushMarginMillis()
+        let workerDeadlineAtMillis = if (deadlineAtMillis > started + flushMarginMillis) { deadlineAtMillis - flushMarginMillis } else { deadlineAtMillis }
         let resultRelativePath = ckbTaskWorkerResultRelativePath(name)
-        this.store.writeLinesAtomically(resultRelativePath, ckbTaskWorkerStartedText(name, since, deadlineAtMillis, resultRelativePath, started))
-        this.store.writeLinesAtomically("${resultRelativePath}.started", ckbTaskWorkerStartedText(name, since, deadlineAtMillis, resultRelativePath, started))
-        let code = this.launchWorker(name, since, deadlineAtMillis, resultRelativePath, timeoutMillis)
+        this.store.writeLinesAtomically(resultRelativePath, ckbTaskWorkerStartedText(name, since, workerDeadlineAtMillis, resultRelativePath, started))
+        this.store.writeLinesAtomically("${resultRelativePath}.started", ckbTaskWorkerStartedText(name, since, workerDeadlineAtMillis, resultRelativePath, started))
+        let code = this.launchWorker(name, since, workerDeadlineAtMillis, resultRelativePath, timeoutMillis)
         let elapsed = ckbTaskWorkerNowMillis() - started
         let workerPid = ckbSchedulerWorkerPidFromStarted(this.storePath, resultRelativePath)
         let outSnippet = ckbSchedulerWorkerArtifactSnippet(this.storePath, resultRelativePath + ".out")
@@ -6392,7 +6568,9 @@ public class ProcessIsolatedSchedulerTaskRunner <: SchedulerTaskRunner {
         }
         if (code == 124 || elapsed >= timeoutMillis) {
             let timeoutDiagnostic = if (artifactClass == "") { "task_worker_hard_timeout:${parsed.status}" } else { "task_worker_hard_timeout:${parsed.status}:${artifactClass}" }
-            return ckbWriteSchedulerWorkerTimeoutCompensation(this.store, resultRelativePath, name, since, elapsed, timeoutMillis, timeoutDiagnostic, lastStage: ckbSchedulerWorkerLastStageFromArtifacts(outSnippet, errSnippet), lastProgress: ckbSchedulerWorkerLastProgressFromStore(this.store), workerPid: workerPid, outSnippet: outSnippet, errSnippet: errSnippet)
+            let storeStage = ckbSchedulerWorkerLastStageFromStore(this.store)
+            let lastStage = if (storeStage != "") { storeStage } else { ckbSchedulerWorkerLastStageFromArtifacts(outSnippet, errSnippet) }
+            return ckbWriteSchedulerWorkerTimeoutCompensation(this.store, resultRelativePath, name, since, elapsed, timeoutMillis, timeoutDiagnostic, lastStage: lastStage, lastProgress: ckbSchedulerWorkerLastProgressFromStore(this.store), workerPid: workerPid, outSnippet: outSnippet, errSnippet: errSnippet)
         }
         if (ckbSchedulerWorkerResultNeedsCompensation(parsed.status)) {
             parsed.workerPid = workerPid
@@ -6504,6 +6682,13 @@ private func ckbSchedulerWorkerLastStageFromArtifacts(outSnippet: String, errSni
     "worker_timeout"
 }
 
+private func ckbSchedulerWorkerLastStageFromStore(store: FileKnowledgeStore): String {
+    let scopedPath = ckbSchedulerScopedStagedRebuildCurrentPath(ckbSchedulerCurrentRunId(store), ckbSchedulerCurrentTaskName(store))
+    let scopedCurrent = if (scopedPath != "") { store.readText(scopedPath) } else { "" }
+    let stagedCurrent = if (scopedCurrent != "") { scopedCurrent } else { store.readText("metadata/staged-rebuild-current.ckb") }
+    ckbCurrentField(stagedCurrent, "stage")
+}
+
 public func ckbClassifyWorkerArtifact(outSnippet: String, errSnippet: String): String {
     let combined = "${outSnippet} ${errSnippet}".toAsciiLower()
     if (combined.contains("ckb_scheduler_task_timeout")) {
@@ -6525,6 +6710,13 @@ public func ckbClassifyWorkerArtifact(outSnippet: String, errSnippet: String): S
 }
 
 private func ckbSchedulerWorkerLastProgressFromStore(store: FileKnowledgeStore): String {
+    let stagedPath = ckbSchedulerScopedStagedRebuildCurrentPath(ckbSchedulerCurrentRunId(store), ckbSchedulerCurrentTaskName(store))
+    let scopedStagedCurrent = if (stagedPath != "") { store.readText(stagedPath) } else { "" }
+    let stagedCurrent = if (scopedStagedCurrent != "") { scopedStagedCurrent } else { store.readText("metadata/staged-rebuild-current.ckb") }
+    let stagedSummary = ckbStagedRebuildCurrentProgressSummary(stagedCurrent)
+    if (stagedSummary != "") {
+        return stagedSummary
+    }
     let scopedPath = ckbSchedulerScopedVectorCurrentPath(ckbSchedulerCurrentRunId(store), ckbSchedulerCurrentTaskName(store))
     let scopedVectorCurrent = if (scopedPath != "") { store.readText(scopedPath) } else { "" }
     let vectorCurrent = if (scopedVectorCurrent != "") { scopedVectorCurrent } else { store.readText("metadata/vector-reconcile-current.ckb") }
@@ -6647,8 +6839,11 @@ public class CkbSchedulerTaskRunner <: SchedulerTaskRunner {
             return this.finalizeTaskResultWithContract(name, result, beforeInvariant)
         }
         if (name == "weekly_full_rebuild") {
-            let progressSink = FileVectorBuildProgressSink(this.store, schedulerRunId: ckbSchedulerCurrentRunId(this.store), schedulerTaskName: name)
-            let rebuild = ckbStagedFullRebuild(this.kb, this.store, this.config, progressSink, deadlineAtMillis)
+            let runId = ckbSchedulerCurrentRunId(this.store)
+            result.validationDiagnostics.add(ckbSchedulerProfileStageBudgetDiagnostic(profile))
+            let progressSink = FileVectorBuildProgressSink(this.store, schedulerRunId: runId, schedulerTaskName: name)
+            let stageSink = FileCkbStagedRebuildStageSink(this.store, schedulerRunId: runId, schedulerTaskName: name)
+            let rebuild = ckbStagedFullRebuild(this.kb, this.store, this.config, progressSink, deadlineAtMillis, stageSink: stageSink, profile: profile)
             result.ok = rebuild.ok
             result.status = if (rebuild.ok) {
                 "rebuild_ok"
@@ -6665,8 +6860,8 @@ public class CkbSchedulerTaskRunner <: SchedulerTaskRunner {
             result.candidateVersion = rebuild.candidateVersion
             result.requestCount = profile.requestCount
             result.durationMillis = profile.timeBudgetMillis / 10
-            result.lastStage = if (rebuild.ok) { "weekly_full_rebuild_finished" } else { ckbSchedulerResultStageFromStatus(result.status) }
-            result.lastProgress = "activeVersion=${rebuild.activeVersion},candidateVersion=${rebuild.candidateVersion},failedVersion=${rebuild.failedVersion},count=${rebuild.count}"
+            result.lastStage = if (rebuild.ok) { "weekly_full_rebuild_finished" } else if (rebuild.lastStage != "") { rebuild.lastStage } else { ckbSchedulerResultStageFromStatus(result.status) }
+            result.lastProgress = if (rebuild.lastProgress != "") { rebuild.lastProgress } else { "activeVersion=${rebuild.activeVersion},candidateVersion=${rebuild.candidateVersion},failedVersion=${rebuild.failedVersion},count=${rebuild.count}" }
             return this.finalizeTaskResultWithContract(name, result, beforeInvariant)
         }
         if (profile.profile == "cangjie_freshness_probe") {
@@ -9871,6 +10066,8 @@ private func ckbIndexDeadlineFailure(stage: String, deadlineAtMillis: Int64): In
     if (deadline.exceeded) {
         result.ok = false
         result.failedVersion = deadline.diagnostic
+        result.lastStage = stage
+        result.lastProgress = deadline.diagnostic
     } else {
         result.ok = true
     }
@@ -9884,7 +10081,34 @@ private func ckbApplyIndexDeadlineFailure(result: IndexBuildResult, stage: Strin
     }
     result.ok = false
     result.failedVersion = deadline.diagnostic
+    result.lastStage = stage
+    result.lastProgress = deadline.diagnostic
     true
+}
+
+private func ckbSetIndexBuildFailure(result: IndexBuildResult, stage: String, failedVersion: String, progress: String): Unit {
+    result.ok = false
+    result.failedVersion = failedVersion
+    result.lastStage = stage
+    result.lastProgress = progress
+}
+
+private func ckbSetIndexBuildProgress(result: IndexBuildResult, stage: String, progress: String): Unit {
+    result.lastStage = stage
+    result.lastProgress = progress
+}
+
+private func ckbStagedRebuildStageDeadline(result: IndexBuildResult, stage: String, parentDeadlineAtMillis: Int64, stageBudgetMillis: Int64): Int64 {
+    if (parentDeadlineAtMillis <= 0 || stageBudgetMillis <= 0) {
+        return parentDeadlineAtMillis
+    }
+    let remaining = ckbRemainingMillis(parentDeadlineAtMillis)
+    let required = stageBudgetMillis + ckbSchedulerWorkerResultFlushMarginMillis()
+    if (remaining < required) {
+        ckbSetIndexBuildFailure(result, stage, "deadline_exceeded:${stage}_budget_insufficient:remaining=${remaining}:required=${required}:deadline=${parentDeadlineAtMillis}", "remainingMillis=${remaining},requiredMillis=${required}")
+        return parentDeadlineAtMillis
+    }
+    ckbStageDeadline(parentDeadlineAtMillis, stageBudgetMillis)
 }
 
 private func ckbSnapshotWriteFailureDiagnostic(e: Exception): String {
@@ -9904,217 +10128,301 @@ private func ckbRestoreOldSnapshotBestEffort(kb: KnowledgeBase, snapshot: Active
     }
 }
 
-public func ckbStagedFullRebuildWithVectorStore(kb: KnowledgeBase, store: FileKnowledgeStore, config: CkbRuntimeConfig, vectorStore: VectorStore, progressSink: VectorBuildProgressSink, deadlineAtMillis: Int64): IndexBuildResult {
+public func ckbStagedFullRebuildWithVectorStore(kb: KnowledgeBase, store: FileKnowledgeStore, config: CkbRuntimeConfig, vectorStore: VectorStore, progressSink: VectorBuildProgressSink, deadlineAtMillis: Int64, stageSink!: CkbStagedRebuildStageSink = NoopCkbStagedRebuildStageSink(), profile!: CkbScheduleTaskProfile = CkbScheduleTaskProfile()): IndexBuildResult {
     let vector = vectorStoreConfigFromRuntime(config)
     if (vector.backend != "qdrant") {
         return ckbRebuildIndex(kb, store, progressSink: progressSink, deadlineAtMillis: deadlineAtMillis)
     }
+    let runId = ckbSchedulerCurrentRunId(store)
+    let taskName = if (ckbSchedulerCurrentTaskName(store) != "") { ckbSchedulerCurrentTaskName(store) } else { "weekly_full_rebuild" }
+    ckbEmitStagedRebuildStage(stageSink, "staged_rebuild_start", "running", deadlineAtMillis, "backend=qdrant", runId: runId, taskName: taskName)
     let before = ckbIndexDeadlineFailure("staged_rebuild_start", deadlineAtMillis)
     if (!before.ok) {
+        ckbEmitStagedRebuildStage(stageSink, "staged_rebuild_start", "timeout", deadlineAtMillis, before.failedVersion, runId: runId, taskName: taskName)
         return before
     }
     let oldSnapshot = store.loadActiveSnapshot()
     let stagingCollection = ckbVectorReconcileStagingCollection(vector.activeCollection)
+    ckbEmitStagedRebuildStage(stageSink, "staged_rebuild_vector_before", "running", deadlineAtMillis, "stagingCollection=${stagingCollection}", runId: runId, taskName: taskName)
     let result = ckbRebuildIndex(kb, store, progressSink: progressSink, targetVectorCollection: stagingCollection, persistSnapshot: false, deadlineAtMillis: deadlineAtMillis)
     if (!result.ok) {
+        if (result.lastStage == "") {
+            ckbSetIndexBuildProgress(result, "staged_rebuild_vector_after", "stagingCollection=${stagingCollection},failedVersion=${result.failedVersion}")
+        }
+        ckbEmitStagedRebuildStage(stageSink, "staged_rebuild_vector_after", "failed", deadlineAtMillis, result.failedVersion, runId: runId, taskName: taskName)
         ckbDeleteStagingBestEffort(vectorStore, stagingCollection)
         ckbRestoreOldSnapshotBestEffort(kb, oldSnapshot)
         return result
     }
+    ckbSetIndexBuildProgress(result, "staged_rebuild_vector_after", "stagingCollection=${stagingCollection},count=${result.count}")
+    ckbEmitStagedRebuildStage(stageSink, "staged_rebuild_vector_after", "ok", deadlineAtMillis, "stagingCollection=${stagingCollection}|count=${result.count}", runId: runId, taskName: taskName)
     if (ckbApplyIndexDeadlineFailure(result, "staged_rebuild_vector_after", deadlineAtMillis)) {
+        ckbEmitStagedRebuildStage(stageSink, "staged_rebuild_vector_after", "timeout", deadlineAtMillis, result.failedVersion, runId: runId, taskName: taskName)
         ckbDeleteStagingBestEffort(vectorStore, stagingCollection)
         ckbRestoreOldSnapshotBestEffort(kb, oldSnapshot)
         return result
     }
-    if (ckbApplyIndexDeadlineFailure(result, "staged_rebuild_status_before", deadlineAtMillis)) {
+    let validationDeadlineAtMillis = ckbStagedRebuildStageDeadline(result, "staged_rebuild_validation_budget", deadlineAtMillis, profile.validationBudgetMillis)
+    if (!result.ok) {
+        ckbEmitStagedRebuildStage(stageSink, "staged_rebuild_validation_budget", "timeout", deadlineAtMillis, result.failedVersion, runId: runId, taskName: taskName)
+        ckbDeleteStagingBestEffort(vectorStore, stagingCollection)
+        ckbRestoreOldSnapshotBestEffort(kb, oldSnapshot)
+        return result
+    }
+    ckbEmitStagedRebuildStage(stageSink, "staged_rebuild_status_before", "running", validationDeadlineAtMillis, "stagingCollection=${stagingCollection}", runId: runId, taskName: taskName)
+    if (ckbApplyIndexDeadlineFailure(result, "staged_rebuild_status_before", validationDeadlineAtMillis)) {
+        ckbEmitStagedRebuildStage(stageSink, "staged_rebuild_status_before", "timeout", validationDeadlineAtMillis, result.failedVersion, runId: runId, taskName: taskName)
         ckbDeleteStagingBestEffort(vectorStore, stagingCollection)
         ckbRestoreOldSnapshotBestEffort(kb, oldSnapshot)
         return result
     }
     let staging = vectorStore.status(stagingCollection)
-    if (ckbApplyIndexDeadlineFailure(result, "staged_rebuild_status_after", deadlineAtMillis)) {
+    ckbEmitStagedRebuildStage(stageSink, "staged_rebuild_status_after", staging.state, validationDeadlineAtMillis, "stagingCollection=${stagingCollection}|count=${staging.count}|dimension=${staging.dimension}|distance=${staging.distance}|reason=${staging.degradedReason}", runId: runId, taskName: taskName)
+    ckbSetIndexBuildProgress(result, "staged_rebuild_status_after", "stagingCollection=${stagingCollection},state=${staging.state},count=${staging.count},expected=${result.count}")
+    if (ckbApplyIndexDeadlineFailure(result, "staged_rebuild_status_after", validationDeadlineAtMillis)) {
+        ckbEmitStagedRebuildStage(stageSink, "staged_rebuild_status_after", "timeout", validationDeadlineAtMillis, result.failedVersion, runId: runId, taskName: taskName)
         ckbDeleteStagingBestEffort(vectorStore, stagingCollection)
         ckbRestoreOldSnapshotBestEffort(kb, oldSnapshot)
         return result
     }
     if (staging.state != EmbeddingProviderState.READY) {
-        result.ok = false
-        result.failedVersion = "qdrant_staging_not_ready:${staging.degradedReason}"
+        ckbSetIndexBuildFailure(result, "staged_rebuild_status_after", "qdrant_staging_not_ready:${staging.degradedReason}", "stagingCollection=${stagingCollection},state=${staging.state},reason=${staging.degradedReason}")
         ckbDeleteStagingBestEffort(vectorStore, stagingCollection)
         ckbRestoreOldSnapshotBestEffort(kb, oldSnapshot)
         return result
     }
     if (staging.count != result.count) {
-        result.ok = false
-        result.failedVersion = "qdrant_staging_count_mismatch:${staging.count}:${result.count}:${stagingCollection}"
+        ckbSetIndexBuildFailure(result, "staged_rebuild_status_after", "qdrant_staging_count_mismatch:${staging.count}:${result.count}:${stagingCollection}", "stagingCollection=${stagingCollection},count=${staging.count},expected=${result.count}")
         ckbDeleteStagingBestEffort(vectorStore, stagingCollection)
         ckbRestoreOldSnapshotBestEffort(kb, oldSnapshot)
         return result
     }
     if (vector.dimensions > 0 && staging.dimension > 0 && staging.dimension != vector.dimensions) {
-        result.ok = false
-        result.failedVersion = "qdrant_staging_dimension_mismatch:${staging.dimension}:${vector.dimensions}:${stagingCollection}"
+        ckbSetIndexBuildFailure(result, "staged_rebuild_status_after", "qdrant_staging_dimension_mismatch:${staging.dimension}:${vector.dimensions}:${stagingCollection}", "stagingCollection=${stagingCollection},dimension=${staging.dimension},expected=${vector.dimensions}")
         ckbDeleteStagingBestEffort(vectorStore, stagingCollection)
         ckbRestoreOldSnapshotBestEffort(kb, oldSnapshot)
         return result
     }
     if (vector.distance != "" && staging.distance != "" && staging.distance.trimAscii().toAsciiLower() != vector.distance.trimAscii().toAsciiLower()) {
-        result.ok = false
-        result.failedVersion = "qdrant_staging_distance_mismatch:${staging.distance}:${vector.distance}:${stagingCollection}"
+        ckbSetIndexBuildFailure(result, "staged_rebuild_status_after", "qdrant_staging_distance_mismatch:${staging.distance}:${vector.distance}:${stagingCollection}", "stagingCollection=${stagingCollection},distance=${staging.distance},expected=${vector.distance}")
         ckbDeleteStagingBestEffort(vectorStore, stagingCollection)
         ckbRestoreOldSnapshotBestEffort(kb, oldSnapshot)
         return result
     }
-    if (ckbApplyIndexDeadlineFailure(result, "staged_rebuild_promote_before", deadlineAtMillis)) {
+    ckbEmitStagedRebuildStage(stageSink, "staged_rebuild_promote_before", "running", validationDeadlineAtMillis, "stagingCollection=${stagingCollection}", runId: runId, taskName: taskName)
+    if (ckbApplyIndexDeadlineFailure(result, "staged_rebuild_promote_before", validationDeadlineAtMillis)) {
+        ckbEmitStagedRebuildStage(stageSink, "staged_rebuild_promote_before", "timeout", validationDeadlineAtMillis, result.failedVersion, runId: runId, taskName: taskName)
         ckbDeleteStagingBestEffort(vectorStore, stagingCollection)
         ckbRestoreOldSnapshotBestEffort(kb, oldSnapshot)
         return result
     }
     kb.promoteVectorActiveCollection(stagingCollection)
-    if (ckbApplyIndexDeadlineFailure(result, "staged_rebuild_promote_after", deadlineAtMillis)) {
+    ckbEmitStagedRebuildStage(stageSink, "staged_rebuild_promote_after", "ok", validationDeadlineAtMillis, "stagingCollection=${stagingCollection}", runId: runId, taskName: taskName)
+    ckbSetIndexBuildProgress(result, "staged_rebuild_promote_after", "stagingCollection=${stagingCollection}")
+    if (ckbApplyIndexDeadlineFailure(result, "staged_rebuild_promote_after", validationDeadlineAtMillis)) {
+        ckbEmitStagedRebuildStage(stageSink, "staged_rebuild_promote_after", "timeout", validationDeadlineAtMillis, result.failedVersion, runId: runId, taskName: taskName)
         ckbRestoreOldSnapshotBestEffort(kb, oldSnapshot)
         ckbDeleteStagingBestEffort(vectorStore, stagingCollection)
         return result
     }
-    if (ckbApplyIndexDeadlineFailure(result, "staged_rebuild_verify_before", deadlineAtMillis)) {
+    ckbEmitStagedRebuildStage(stageSink, "staged_rebuild_verify_before", "running", validationDeadlineAtMillis, "stagingCollection=${stagingCollection}|expected=${result.count}", runId: runId, taskName: taskName)
+    if (ckbApplyIndexDeadlineFailure(result, "staged_rebuild_verify_before", validationDeadlineAtMillis)) {
+        ckbEmitStagedRebuildStage(stageSink, "staged_rebuild_verify_before", "timeout", validationDeadlineAtMillis, result.failedVersion, runId: runId, taskName: taskName)
         ckbRestoreOldSnapshotBestEffort(kb, oldSnapshot)
         ckbDeleteStagingBestEffort(vectorStore, stagingCollection)
         return result
     }
     let verified = kb.verifyAndApplyVectorStoreStatus(stagingCollection, result.count)
-    if (ckbApplyIndexDeadlineFailure(result, "staged_rebuild_verify_after", deadlineAtMillis)) {
+    ckbEmitStagedRebuildStage(stageSink, "staged_rebuild_verify_after", verified.state, validationDeadlineAtMillis, "stagingCollection=${stagingCollection}|count=${verified.count}|reason=${verified.degradedReason}", runId: runId, taskName: taskName)
+    ckbSetIndexBuildProgress(result, "staged_rebuild_verify_after", "stagingCollection=${stagingCollection},state=${verified.state},count=${verified.count}")
+    if (ckbApplyIndexDeadlineFailure(result, "staged_rebuild_verify_after", validationDeadlineAtMillis)) {
+        ckbEmitStagedRebuildStage(stageSink, "staged_rebuild_verify_after", "timeout", validationDeadlineAtMillis, result.failedVersion, runId: runId, taskName: taskName)
         ckbRestoreOldSnapshotBestEffort(kb, oldSnapshot)
         ckbDeleteStagingBestEffort(vectorStore, stagingCollection)
         return result
     }
     if (verified.state != EmbeddingProviderState.READY) {
-        result.ok = false
-        result.failedVersion = if (verified.degradedReason != "") { verified.degradedReason } else { "qdrant_active_status_not_ready:${stagingCollection}" }
+        ckbSetIndexBuildFailure(result, "staged_rebuild_verify_after", if (verified.degradedReason != "") { verified.degradedReason } else { "qdrant_active_status_not_ready:${stagingCollection}" }, "stagingCollection=${stagingCollection},state=${verified.state},reason=${verified.degradedReason}")
         ckbRestoreOldSnapshotBestEffort(kb, oldSnapshot)
         return result
     }
-    if (ckbApplyIndexDeadlineFailure(result, "staged_rebuild_persist_snapshot_before", deadlineAtMillis)) {
+    let snapshotDeadlineAtMillis = ckbStagedRebuildStageDeadline(result, "staged_rebuild_snapshot_budget", deadlineAtMillis, profile.snapshotBudgetMillis)
+    if (!result.ok) {
+        ckbEmitStagedRebuildStage(stageSink, "staged_rebuild_snapshot_budget", "timeout", deadlineAtMillis, result.failedVersion, runId: runId, taskName: taskName)
+        ckbRestoreOldSnapshotBestEffort(kb, oldSnapshot)
+        ckbDeleteStagingBestEffort(vectorStore, stagingCollection)
+        return result
+    }
+    ckbEmitStagedRebuildStage(stageSink, "staged_rebuild_persist_snapshot_before", "running", snapshotDeadlineAtMillis, "stagingCollection=${stagingCollection}|count=${result.count}", runId: runId, taskName: taskName)
+    if (ckbApplyIndexDeadlineFailure(result, "staged_rebuild_persist_snapshot_before", snapshotDeadlineAtMillis)) {
+        ckbEmitStagedRebuildStage(stageSink, "staged_rebuild_persist_snapshot_before", "timeout", snapshotDeadlineAtMillis, result.failedVersion, runId: runId, taskName: taskName)
         ckbRestoreOldSnapshotBestEffort(kb, oldSnapshot)
         ckbDeleteStagingBestEffort(vectorStore, stagingCollection)
         return result
     }
     try {
-        kb.persistActiveSnapshotUsingVectorRecords(store, kb.lastVectorIndexBuild().vectorRecords, persistVectorFile: false, deadlineAtMillis: deadlineAtMillis)
+        kb.persistActiveSnapshotUsingVectorRecords(store, kb.lastVectorIndexBuild().vectorRecords, persistVectorFile: false, deadlineAtMillis: snapshotDeadlineAtMillis, stageSink: stageSink)
     } catch (e: Exception) {
-        result.ok = false
-        result.failedVersion = ckbSnapshotWriteFailureDiagnostic(e)
+        let snapshotStage = ckbSchedulerWorkerLastStageFromStore(store)
+        ckbSetIndexBuildFailure(result, if (snapshotStage != "") { snapshotStage } else { "staged_rebuild_persist_snapshot_before" }, ckbSnapshotWriteFailureDiagnostic(e), ckbSchedulerWorkerLastProgressFromStore(store))
         ckbRestoreOldSnapshotBestEffort(kb, oldSnapshot)
         ckbDeleteStagingBestEffort(vectorStore, stagingCollection)
         return result
     }
-    _ = ckbDeadlineGuard("staged_rebuild_persist_snapshot_after", deadlineAtMillis)
+    ckbEmitStagedRebuildStage(stageSink, "staged_rebuild_persist_snapshot_after", "ok", snapshotDeadlineAtMillis, "stagingCollection=${stagingCollection}|count=${result.count}", runId: runId, taskName: taskName)
+    ckbSetIndexBuildProgress(result, "staged_rebuild_persist_snapshot_after", "stagingCollection=${stagingCollection},count=${result.count}")
+    if (ckbApplyIndexDeadlineFailure(result, "staged_rebuild_persist_snapshot_after", snapshotDeadlineAtMillis)) {
+        ckbEmitStagedRebuildStage(stageSink, "staged_rebuild_persist_snapshot_after", "timeout", snapshotDeadlineAtMillis, result.failedVersion, runId: runId, taskName: taskName)
+    }
     result
 }
 
-public func ckbStagedFullRebuild(kb: KnowledgeBase, store: FileKnowledgeStore, config: CkbRuntimeConfig, progressSink: VectorBuildProgressSink, deadlineAtMillis: Int64): IndexBuildResult {
+public func ckbStagedFullRebuild(kb: KnowledgeBase, store: FileKnowledgeStore, config: CkbRuntimeConfig, progressSink: VectorBuildProgressSink, deadlineAtMillis: Int64, stageSink!: CkbStagedRebuildStageSink = NoopCkbStagedRebuildStageSink(), profile!: CkbScheduleTaskProfile = CkbScheduleTaskProfile()): IndexBuildResult {
     let vector = vectorStoreConfigFromRuntime(config)
     if (vector.backend != "qdrant") {
         return ckbRebuildIndex(kb, store, progressSink: progressSink, deadlineAtMillis: deadlineAtMillis)
     }
+    let runId = ckbSchedulerCurrentRunId(store)
+    let taskName = if (ckbSchedulerCurrentTaskName(store) != "") { ckbSchedulerCurrentTaskName(store) } else { "weekly_full_rebuild" }
+    ckbEmitStagedRebuildStage(stageSink, "staged_rebuild_start", "running", deadlineAtMillis, "backend=qdrant", runId: runId, taskName: taskName)
     let before = ckbIndexDeadlineFailure("staged_rebuild_start", deadlineAtMillis)
     if (!before.ok) {
+        ckbEmitStagedRebuildStage(stageSink, "staged_rebuild_start", "timeout", deadlineAtMillis, before.failedVersion, runId: runId, taskName: taskName)
         return before
     }
     let oldSnapshot = store.loadActiveSnapshot()
     let stagingCollection = ckbVectorReconcileStagingCollection(vector.activeCollection)
+    ckbEmitStagedRebuildStage(stageSink, "staged_rebuild_vector_before", "running", deadlineAtMillis, "stagingCollection=${stagingCollection}", runId: runId, taskName: taskName)
     let result = ckbRebuildIndex(kb, store, progressSink: progressSink, targetVectorCollection: stagingCollection, persistSnapshot: false, deadlineAtMillis: deadlineAtMillis)
     if (!result.ok) {
+        if (result.lastStage == "") {
+            ckbSetIndexBuildProgress(result, "staged_rebuild_vector_after", "stagingCollection=${stagingCollection},failedVersion=${result.failedVersion}")
+        }
+        ckbEmitStagedRebuildStage(stageSink, "staged_rebuild_vector_after", "failed", deadlineAtMillis, result.failedVersion, runId: runId, taskName: taskName)
         ckbDeleteKnowledgeBaseStagingBestEffort(kb, stagingCollection)
         ckbRestoreOldSnapshotBestEffort(kb, oldSnapshot)
         return result
     }
+    ckbSetIndexBuildProgress(result, "staged_rebuild_vector_after", "stagingCollection=${stagingCollection},count=${result.count}")
+    ckbEmitStagedRebuildStage(stageSink, "staged_rebuild_vector_after", "ok", deadlineAtMillis, "stagingCollection=${stagingCollection}|count=${result.count}", runId: runId, taskName: taskName)
     if (ckbApplyIndexDeadlineFailure(result, "staged_rebuild_vector_after", deadlineAtMillis)) {
+        ckbEmitStagedRebuildStage(stageSink, "staged_rebuild_vector_after", "timeout", deadlineAtMillis, result.failedVersion, runId: runId, taskName: taskName)
         ckbDeleteKnowledgeBaseStagingBestEffort(kb, stagingCollection)
         ckbRestoreOldSnapshotBestEffort(kb, oldSnapshot)
         return result
     }
-    if (ckbApplyIndexDeadlineFailure(result, "staged_rebuild_status_before", deadlineAtMillis)) {
+    let validationDeadlineAtMillis = ckbStagedRebuildStageDeadline(result, "staged_rebuild_validation_budget", deadlineAtMillis, profile.validationBudgetMillis)
+    if (!result.ok) {
+        ckbEmitStagedRebuildStage(stageSink, "staged_rebuild_validation_budget", "timeout", deadlineAtMillis, result.failedVersion, runId: runId, taskName: taskName)
+        ckbDeleteKnowledgeBaseStagingBestEffort(kb, stagingCollection)
+        ckbRestoreOldSnapshotBestEffort(kb, oldSnapshot)
+        return result
+    }
+    ckbEmitStagedRebuildStage(stageSink, "staged_rebuild_status_before", "running", validationDeadlineAtMillis, "stagingCollection=${stagingCollection}", runId: runId, taskName: taskName)
+    if (ckbApplyIndexDeadlineFailure(result, "staged_rebuild_status_before", validationDeadlineAtMillis)) {
+        ckbEmitStagedRebuildStage(stageSink, "staged_rebuild_status_before", "timeout", validationDeadlineAtMillis, result.failedVersion, runId: runId, taskName: taskName)
         ckbDeleteKnowledgeBaseStagingBestEffort(kb, stagingCollection)
         ckbRestoreOldSnapshotBestEffort(kb, oldSnapshot)
         return result
     }
     let staging = kb.vectorCollectionStatus(stagingCollection)
-    if (ckbApplyIndexDeadlineFailure(result, "staged_rebuild_status_after", deadlineAtMillis)) {
+    ckbEmitStagedRebuildStage(stageSink, "staged_rebuild_status_after", staging.state, validationDeadlineAtMillis, "stagingCollection=${stagingCollection}|count=${staging.count}|dimension=${staging.dimension}|distance=${staging.distance}|reason=${staging.degradedReason}", runId: runId, taskName: taskName)
+    ckbSetIndexBuildProgress(result, "staged_rebuild_status_after", "stagingCollection=${stagingCollection},state=${staging.state},count=${staging.count},expected=${result.count}")
+    if (ckbApplyIndexDeadlineFailure(result, "staged_rebuild_status_after", validationDeadlineAtMillis)) {
+        ckbEmitStagedRebuildStage(stageSink, "staged_rebuild_status_after", "timeout", validationDeadlineAtMillis, result.failedVersion, runId: runId, taskName: taskName)
         ckbDeleteKnowledgeBaseStagingBestEffort(kb, stagingCollection)
         ckbRestoreOldSnapshotBestEffort(kb, oldSnapshot)
         return result
     }
     if (staging.state != EmbeddingProviderState.READY) {
-        result.ok = false
-        result.failedVersion = "qdrant_staging_not_ready:${staging.degradedReason}"
+        ckbSetIndexBuildFailure(result, "staged_rebuild_status_after", "qdrant_staging_not_ready:${staging.degradedReason}", "stagingCollection=${stagingCollection},state=${staging.state},reason=${staging.degradedReason}")
         ckbDeleteKnowledgeBaseStagingBestEffort(kb, stagingCollection)
         ckbRestoreOldSnapshotBestEffort(kb, oldSnapshot)
         return result
     }
     if (staging.count != result.count) {
-        result.ok = false
-        result.failedVersion = "qdrant_staging_count_mismatch:${staging.count}:${result.count}:${stagingCollection}"
+        ckbSetIndexBuildFailure(result, "staged_rebuild_status_after", "qdrant_staging_count_mismatch:${staging.count}:${result.count}:${stagingCollection}", "stagingCollection=${stagingCollection},count=${staging.count},expected=${result.count}")
         ckbDeleteKnowledgeBaseStagingBestEffort(kb, stagingCollection)
         ckbRestoreOldSnapshotBestEffort(kb, oldSnapshot)
         return result
     }
     if (vector.dimensions > 0 && staging.dimension > 0 && staging.dimension != vector.dimensions) {
-        result.ok = false
-        result.failedVersion = "qdrant_staging_dimension_mismatch:${staging.dimension}:${vector.dimensions}:${stagingCollection}"
+        ckbSetIndexBuildFailure(result, "staged_rebuild_status_after", "qdrant_staging_dimension_mismatch:${staging.dimension}:${vector.dimensions}:${stagingCollection}", "stagingCollection=${stagingCollection},dimension=${staging.dimension},expected=${vector.dimensions}")
         ckbDeleteKnowledgeBaseStagingBestEffort(kb, stagingCollection)
         ckbRestoreOldSnapshotBestEffort(kb, oldSnapshot)
         return result
     }
     if (vector.distance != "" && staging.distance != "" && staging.distance.trimAscii().toAsciiLower() != vector.distance.trimAscii().toAsciiLower()) {
-        result.ok = false
-        result.failedVersion = "qdrant_staging_distance_mismatch:${staging.distance}:${vector.distance}:${stagingCollection}"
+        ckbSetIndexBuildFailure(result, "staged_rebuild_status_after", "qdrant_staging_distance_mismatch:${staging.distance}:${vector.distance}:${stagingCollection}", "stagingCollection=${stagingCollection},distance=${staging.distance},expected=${vector.distance}")
         ckbDeleteKnowledgeBaseStagingBestEffort(kb, stagingCollection)
         ckbRestoreOldSnapshotBestEffort(kb, oldSnapshot)
         return result
     }
-    if (ckbApplyIndexDeadlineFailure(result, "staged_rebuild_promote_before", deadlineAtMillis)) {
+    ckbEmitStagedRebuildStage(stageSink, "staged_rebuild_promote_before", "running", validationDeadlineAtMillis, "stagingCollection=${stagingCollection}", runId: runId, taskName: taskName)
+    if (ckbApplyIndexDeadlineFailure(result, "staged_rebuild_promote_before", validationDeadlineAtMillis)) {
+        ckbEmitStagedRebuildStage(stageSink, "staged_rebuild_promote_before", "timeout", validationDeadlineAtMillis, result.failedVersion, runId: runId, taskName: taskName)
         ckbDeleteKnowledgeBaseStagingBestEffort(kb, stagingCollection)
         ckbRestoreOldSnapshotBestEffort(kb, oldSnapshot)
         return result
     }
     kb.promoteVectorActiveCollection(stagingCollection)
-    if (ckbApplyIndexDeadlineFailure(result, "staged_rebuild_promote_after", deadlineAtMillis)) {
+    ckbEmitStagedRebuildStage(stageSink, "staged_rebuild_promote_after", "ok", validationDeadlineAtMillis, "stagingCollection=${stagingCollection}", runId: runId, taskName: taskName)
+    ckbSetIndexBuildProgress(result, "staged_rebuild_promote_after", "stagingCollection=${stagingCollection}")
+    if (ckbApplyIndexDeadlineFailure(result, "staged_rebuild_promote_after", validationDeadlineAtMillis)) {
+        ckbEmitStagedRebuildStage(stageSink, "staged_rebuild_promote_after", "timeout", validationDeadlineAtMillis, result.failedVersion, runId: runId, taskName: taskName)
         ckbRestoreOldSnapshotBestEffort(kb, oldSnapshot)
         ckbDeleteKnowledgeBaseStagingBestEffort(kb, stagingCollection)
         return result
     }
-    if (ckbApplyIndexDeadlineFailure(result, "staged_rebuild_verify_before", deadlineAtMillis)) {
+    ckbEmitStagedRebuildStage(stageSink, "staged_rebuild_verify_before", "running", validationDeadlineAtMillis, "stagingCollection=${stagingCollection}|expected=${result.count}", runId: runId, taskName: taskName)
+    if (ckbApplyIndexDeadlineFailure(result, "staged_rebuild_verify_before", validationDeadlineAtMillis)) {
+        ckbEmitStagedRebuildStage(stageSink, "staged_rebuild_verify_before", "timeout", validationDeadlineAtMillis, result.failedVersion, runId: runId, taskName: taskName)
         ckbRestoreOldSnapshotBestEffort(kb, oldSnapshot)
         ckbDeleteKnowledgeBaseStagingBestEffort(kb, stagingCollection)
         return result
     }
     let verified = kb.verifyAndApplyVectorStoreStatus(stagingCollection, result.count)
-    if (ckbApplyIndexDeadlineFailure(result, "staged_rebuild_verify_after", deadlineAtMillis)) {
+    ckbEmitStagedRebuildStage(stageSink, "staged_rebuild_verify_after", verified.state, validationDeadlineAtMillis, "stagingCollection=${stagingCollection}|count=${verified.count}|reason=${verified.degradedReason}", runId: runId, taskName: taskName)
+    ckbSetIndexBuildProgress(result, "staged_rebuild_verify_after", "stagingCollection=${stagingCollection},state=${verified.state},count=${verified.count}")
+    if (ckbApplyIndexDeadlineFailure(result, "staged_rebuild_verify_after", validationDeadlineAtMillis)) {
+        ckbEmitStagedRebuildStage(stageSink, "staged_rebuild_verify_after", "timeout", validationDeadlineAtMillis, result.failedVersion, runId: runId, taskName: taskName)
         ckbRestoreOldSnapshotBestEffort(kb, oldSnapshot)
         ckbDeleteKnowledgeBaseStagingBestEffort(kb, stagingCollection)
         return result
     }
     if (verified.state != EmbeddingProviderState.READY) {
-        result.ok = false
-        result.failedVersion = if (verified.degradedReason != "") { verified.degradedReason } else { "qdrant_active_status_not_ready:${stagingCollection}" }
+        ckbSetIndexBuildFailure(result, "staged_rebuild_verify_after", if (verified.degradedReason != "") { verified.degradedReason } else { "qdrant_active_status_not_ready:${stagingCollection}" }, "stagingCollection=${stagingCollection},state=${verified.state},reason=${verified.degradedReason}")
         ckbRestoreOldSnapshotBestEffort(kb, oldSnapshot)
         return result
     }
-    if (ckbApplyIndexDeadlineFailure(result, "staged_rebuild_persist_snapshot_before", deadlineAtMillis)) {
+    let snapshotDeadlineAtMillis = ckbStagedRebuildStageDeadline(result, "staged_rebuild_snapshot_budget", deadlineAtMillis, profile.snapshotBudgetMillis)
+    if (!result.ok) {
+        ckbEmitStagedRebuildStage(stageSink, "staged_rebuild_snapshot_budget", "timeout", deadlineAtMillis, result.failedVersion, runId: runId, taskName: taskName)
+        ckbRestoreOldSnapshotBestEffort(kb, oldSnapshot)
+        ckbDeleteKnowledgeBaseStagingBestEffort(kb, stagingCollection)
+        return result
+    }
+    ckbEmitStagedRebuildStage(stageSink, "staged_rebuild_persist_snapshot_before", "running", snapshotDeadlineAtMillis, "stagingCollection=${stagingCollection}|count=${result.count}", runId: runId, taskName: taskName)
+    if (ckbApplyIndexDeadlineFailure(result, "staged_rebuild_persist_snapshot_before", snapshotDeadlineAtMillis)) {
+        ckbEmitStagedRebuildStage(stageSink, "staged_rebuild_persist_snapshot_before", "timeout", snapshotDeadlineAtMillis, result.failedVersion, runId: runId, taskName: taskName)
         ckbRestoreOldSnapshotBestEffort(kb, oldSnapshot)
         ckbDeleteKnowledgeBaseStagingBestEffort(kb, stagingCollection)
         return result
     }
     try {
-        kb.persistActiveSnapshotUsingVectorRecords(store, kb.lastVectorIndexBuild().vectorRecords, persistVectorFile: false, deadlineAtMillis: deadlineAtMillis)
+        kb.persistActiveSnapshotUsingVectorRecords(store, kb.lastVectorIndexBuild().vectorRecords, persistVectorFile: false, deadlineAtMillis: snapshotDeadlineAtMillis, stageSink: stageSink)
     } catch (e: Exception) {
-        result.ok = false
-        result.failedVersion = ckbSnapshotWriteFailureDiagnostic(e)
+        let snapshotStage = ckbSchedulerWorkerLastStageFromStore(store)
+        ckbSetIndexBuildFailure(result, if (snapshotStage != "") { snapshotStage } else { "staged_rebuild_persist_snapshot_before" }, ckbSnapshotWriteFailureDiagnostic(e), ckbSchedulerWorkerLastProgressFromStore(store))
         ckbRestoreOldSnapshotBestEffort(kb, oldSnapshot)
         ckbDeleteKnowledgeBaseStagingBestEffort(kb, stagingCollection)
         return result
     }
-    _ = ckbDeadlineGuard("staged_rebuild_persist_snapshot_after", deadlineAtMillis)
+    ckbEmitStagedRebuildStage(stageSink, "staged_rebuild_persist_snapshot_after", "ok", snapshotDeadlineAtMillis, "stagingCollection=${stagingCollection}|count=${result.count}", runId: runId, taskName: taskName)
+    ckbSetIndexBuildProgress(result, "staged_rebuild_persist_snapshot_after", "stagingCollection=${stagingCollection},count=${result.count}")
+    if (ckbApplyIndexDeadlineFailure(result, "staged_rebuild_persist_snapshot_after", snapshotDeadlineAtMillis)) {
+        ckbEmitStagedRebuildStage(stageSink, "staged_rebuild_persist_snapshot_after", "timeout", snapshotDeadlineAtMillis, result.failedVersion, runId: runId, taskName: taskName)
+    }
     result
 }
 
