@@ -11,7 +11,7 @@ public func ckbUtf8SafePrefix(raw: String, maxBytes: Int64): String {
     }
     let out = StringBuilder()
     var used: Int64 = 0
-    for (ch in raw.toRuneArray()) {
+    for (ch in raw.runes()) {
         let piece = "${ch}"
         let next = used + piece.size
         if (next > maxBytes) {
@@ -35,7 +35,7 @@ public func ckbUtf8SafeChunks(raw: String, maxChunkBytes: Int64): ArrayList<Stri
     }
     var current = StringBuilder()
     var used: Int64 = 0
-    for (ch in raw.toRuneArray()) {
+    for (ch in raw.runes()) {
         let piece = "${ch}"
         let pieceSize = piece.size
         if (pieceSize > maxChunkBytes) {

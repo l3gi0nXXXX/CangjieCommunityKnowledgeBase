@@ -50,4 +50,25 @@ public class CkbTextSafetyBudgetTest {
         @Expect(batches[0].preparedBytes <= 16, true)
         @Expect(batches[1].texts.size, 1)
     }
+
+    @TestCase
+    public func embeddingTextBudgeterTruncatesLargeUtf8TextWithinBudget(): Unit {
+        let raw = StringBuilder()
+        for (_ in 0..20000) {
+            raw.append("仓颉🙂abcdef")
+        }
+        let budget = CkbEmbeddingTextBudget()
+        budget.maxBatchItems = 1
+        budget.maxBatchBytes = 64
+        budget.maxTextBytes = 64
+        let texts = ArrayList<String>()
+        texts.add(raw.toString())
+
+        let batches = CkbEmbeddingTextBudgeter(budget).batches(texts)
+
+        @Expect(batches.size, 1)
+        @Expect(batches[0].texts.size, 1)
+        @Expect(batches[0].texts[0].size <= 64, true)
+        @Expect(batches[0].truncatedCount, 1)
+    }
 }
