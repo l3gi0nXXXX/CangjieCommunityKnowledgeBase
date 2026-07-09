@@ -3,7 +3,7 @@ package cangjie_community_knowledge_base_test
 import std.collection.ArrayList
 import std.convert.Parsable
 import std.env.{getVariable, getCommand}
-import std.fs.{Directory, File, Path, exists}
+import std.fs.{Directory, File, Path, OpenMode, exists}
 import std.io.*
 import std.process.*
 import std.time.DateTime
@@ -3392,19 +3392,13 @@ private func ckbRoutineRuntimePreflightSnapshotAndVectorChecks(result: CkbRoutin
         result.ok = false
         result.diagnostics.add("active_snapshot_manifest_uncommitted:${metadata.snapshotManifestTxId}")
     }
-    let snapshot = store.loadActiveSnapshot()
-    if (!snapshot.valid) {
-        result.ok = false
-        result.diagnostics.add("active_snapshot_invalid:${snapshot.diagnostic}")
-        return
-    }
-    if (snapshot.diagnostic.contains("metadata_active_mismatch")) {
-        result.ok = false
-        result.diagnostics.add("metadata_active_mismatch:${snapshot.diagnostic}")
-        result.diagnostics.add("repair_required:vector_reconcile:metadata_active_mismatch")
-    }
+    let activeCount = ckbRoutineExpectedActiveCount(metadata)
     let vector = vectorStoreConfigFromRuntime(config)
     if (vector.backend != "qdrant") {
+        if (activeCount <= 0) {
+            result.ok = false
+            result.diagnostics.add("active_snapshot_invalid:active_count_missing")
+        }
         return
     }
     if (metadata.vectorBackend != "" && metadata.vectorBackend != "qdrant") {
@@ -3418,15 +3412,20 @@ private func ckbRoutineRuntimePreflightSnapshotAndVectorChecks(result: CkbRoutin
     for (diagnostic in effective.diagnostics) {
         result.diagnostics.add(diagnostic)
     }
+    if (activeCount <= 0) {
+        result.ok = false
+        result.diagnostics.add("active_snapshot_invalid:active_count_missing")
+        return
+    }
     let activeCollection = effective.effectiveActiveCollection
     let qdrant = vectorStore.status(activeCollection)
     if (qdrant.state != EmbeddingProviderState.READY) {
         result.ok = false
         result.diagnostics.add("qdrant_active_not_ready:${activeCollection}:${qdrant.degradedReason}")
     }
-    if (qdrant.count != snapshot.activeIndex.size) {
+    if (qdrant.count != activeCount) {
         result.ok = false
-        result.diagnostics.add("qdrant_active_count_mismatch:${qdrant.count}:${snapshot.activeIndex.size}:${activeCollection}")
+        result.diagnostics.add("qdrant_active_count_mismatch:${qdrant.count}:${activeCount}:${activeCollection}")
     }
     if (vector.dimensions > 0 && qdrant.dimension > 0 && qdrant.dimension != vector.dimensions) {
         result.ok = false
@@ -3436,6 +3435,16 @@ private func ckbRoutineRuntimePreflightSnapshotAndVectorChecks(result: CkbRoutin
         result.ok = false
         result.diagnostics.add("qdrant_active_distance_mismatch:${qdrant.distance}:${vector.distance}:${activeCollection}")
     }
+}
+
+private func ckbRoutineExpectedActiveCount(status: StoreMetadataStatus): Int64 {
+    if (status.indexCount > 0) {
+        return status.indexCount
+    }
+    if (status.normalizedCount > 0) {
+        return status.normalizedCount
+    }
+    status.rawCount
 }
 
 private func ckbRoutineRuntimePreflightWithVectorReadiness(config: CkbRuntimeConfig, storePath: String, cjHeapSize: String, dyldLibraryPath: String, vector: CkbRuntimeVectorReadiness): CkbRoutineRuntimePreflightResult {
@@ -4192,10 +4201,16 @@ public func ckbSchedulerPreRunGate(config: CkbRuntimeConfig, store: FileKnowledg
     for (diagnostic in effective.diagnostics) {
         result.diagnostics.add(diagnostic)
     }
-    let snapshot = store.loadActiveSnapshot()
-    if (!snapshot.valid) {
+    let metadata = store.loadMetadataStatus()
+    if (metadata.snapshotManifestTxId == "" || !store.has("transactions/${safeName(metadata.snapshotManifestTxId)}/COMMIT")) {
         result.ok = false
-        result.diagnostics.add("scheduler_pre_run_gate_failed:active_snapshot_invalid:${snapshot.diagnostic}")
+        result.diagnostics.add("scheduler_pre_run_gate_failed:active_snapshot_invalid:manifest_missing_or_uncommitted")
+        return result
+    }
+    let activeCount = ckbRoutineExpectedActiveCount(metadata)
+    if (activeCount <= 0) {
+        result.ok = false
+        result.diagnostics.add("scheduler_pre_run_gate_failed:active_snapshot_invalid:active_count_missing")
         return result
     }
     let qdrant = vectorStore.status(effective.effectiveActiveCollection)
@@ -4204,9 +4219,9 @@ public func ckbSchedulerPreRunGate(config: CkbRuntimeConfig, store: FileKnowledg
         result.diagnostics.add("scheduler_pre_run_gate_failed:qdrant_active_not_ready:${effective.effectiveActiveCollection}:${if (qdrant.degradedReason != "") { qdrant.degradedReason } else { qdrant.state }}")
         return result
     }
-    if (qdrant.count != snapshot.activeIndex.size) {
+    if (qdrant.count != activeCount) {
         result.ok = false
-        result.diagnostics.add("scheduler_pre_run_gate_failed:qdrant_active_count_mismatch:${qdrant.count}:${snapshot.activeIndex.size}:${effective.effectiveActiveCollection}")
+        result.diagnostics.add("scheduler_pre_run_gate_failed:qdrant_active_count_mismatch:${qdrant.count}:${activeCount}:${effective.effectiveActiveCollection}")
     }
     if (vector.dimensions > 0 && qdrant.dimension > 0 && qdrant.dimension != vector.dimensions) {
         result.ok = false
@@ -4583,25 +4598,25 @@ public class FileKnowledgeStore {
         this.emitActiveSnapshotStage(stageSink, "active_snapshot_tx_raw_after", "ok", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
         this.emitActiveSnapshotStage(stageSink, "active_snapshot_tx_normalized_before", "running", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
         this.ensureActiveSnapshotDeadline("active_snapshot_tx_normalized_before", deadlineAtMillis)
-        this.writeLinesAtomically("${txRoot}/normalized/records.ckb", this.normalizedLines(normalizedRecords))
+        this.writeNormalizedRecordsAtomically("${txRoot}/normalized/records.ckb", normalizedRecords, deadlineAtMillis, "active_snapshot_tx_normalized")
         this.emitActiveSnapshotStage(stageSink, "active_snapshot_tx_normalized_after", "ok", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
         this.emitActiveSnapshotStage(stageSink, "active_snapshot_tx_index_before", "running", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
         this.ensureActiveSnapshotDeadline("active_snapshot_tx_index_before", deadlineAtMillis)
         this.writeLinesAtomically("${txRoot}/index/active.version", status.activeKnowledgeVersion + "\n")
-        this.writeLinesAtomically("${txRoot}/index/active.ckb", this.normalizedLines(activeIndex))
+        this.writeNormalizedRecordsAtomically("${txRoot}/index/active.ckb", activeIndex, deadlineAtMillis, "active_snapshot_tx_index")
         this.emitActiveSnapshotStage(stageSink, "active_snapshot_tx_index_after", "ok", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
         if (persistVectorFile) {
             this.emitActiveSnapshotStage(stageSink, "active_snapshot_tx_vector_before", "running", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
             this.ensureActiveSnapshotDeadline("active_snapshot_tx_vector_before", deadlineAtMillis)
-            this.writeLinesAtomically("${txRoot}/index/vector-${safeName(vectorCollection)}.ckb", this.vectorLines(vectorRecords))
+            this.writeVectorRecordsAtomically("${txRoot}/index/vector-${safeName(vectorCollection)}.ckb", vectorRecords, deadlineAtMillis, "active_snapshot_tx_vector")
             this.emitActiveSnapshotStage(stageSink, "active_snapshot_tx_vector_after", "ok", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
         } else {
             this.emitActiveSnapshotStage(stageSink, "active_snapshot_tx_vector_skipped", "skipped", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
         }
         this.emitActiveSnapshotStage(stageSink, "active_snapshot_tx_graph_before", "running", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
         this.ensureActiveSnapshotDeadline("active_snapshot_tx_graph_before", deadlineAtMillis)
-        this.writeLinesAtomically("${txRoot}/index/graph-nodes.ckb", this.graphNodeLines(graph.nodes))
-        this.writeLinesAtomically("${txRoot}/index/graph-edges.ckb", this.graphEdgeLines(graph.edges))
+        this.writeGraphNodesAtomically("${txRoot}/index/graph-nodes.ckb", graph.nodes, deadlineAtMillis, "active_snapshot_tx_graph_nodes")
+        this.writeGraphEdgesAtomically("${txRoot}/index/graph-edges.ckb", graph.edges, deadlineAtMillis, "active_snapshot_tx_graph_edges")
         this.emitActiveSnapshotStage(stageSink, "active_snapshot_tx_graph_after", "ok", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
         this.emitActiveSnapshotStage(stageSink, "active_snapshot_tx_status_before", "running", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
         this.ensureActiveSnapshotDeadline("active_snapshot_tx_status_before", deadlineAtMillis)
@@ -4617,14 +4632,16 @@ public class FileKnowledgeStore {
         this.emitActiveSnapshotStage(stageSink, "active_snapshot_live_shadow_after", "ok", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
         this.emitActiveSnapshotStage(stageSink, "active_snapshot_manifest_before", "running", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
         this.ensureActiveSnapshotDeadline("active_snapshot_manifest_before", deadlineAtMillis)
+        let manifestVectorCount = if (persistVectorFile) { vectorRecords.size } else { status.storage.vectorIndexCount }
         this.writeLinesAtomically("metadata/active-snapshot.manifest", this.activeSnapshotManifestLines(txId, status))
-        this.writeLinesAtomically("metadata/active-snapshot-commits/${safeName(txId)}.ckb", this.activeSnapshotCommitSidecarLines(txId, status, vectorCollection, activeIndex.size, vectorRecords.size, persistVectorFile))
+        this.writeLinesAtomically("metadata/active-snapshot-commits/${safeName(txId)}.ckb", this.activeSnapshotCommitSidecarLines(txId, status, vectorCollection, activeIndex.size, manifestVectorCount, persistVectorFile))
         this.emitActiveSnapshotStage(stageSink, "active_snapshot_manifest_after", "ok", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
         txId
     }
 
     private func emitActiveSnapshotStage(stageSink: CkbStagedRebuildStageSink, stage: String, statusText: String, status: KnowledgeStatus, rawRecords: ArrayList<RawRecord>, normalizedRecords: ArrayList<NormalizedRecord>, activeIndex: ArrayList<NormalizedRecord>, vectorRecords: ArrayList<VectorRecord>, graph: GraphBuildResult, deadlineAtMillis: Int64, persistVectorFile: Bool): Unit {
-        let diagnostic = "active=${status.activeKnowledgeVersion}|rawCount=${rawRecords.size}|normalizedCount=${normalizedRecords.size}|indexCount=${activeIndex.size}|vectorCount=${vectorRecords.size}|graphNodeCount=${graph.nodes.size}|graphEdgeCount=${graph.edges.size}|persistVectorFile=${persistVectorFile}"
+        let vectorCount = if (persistVectorFile) { vectorRecords.size } else { status.storage.vectorIndexCount }
+        let diagnostic = "active=${status.activeKnowledgeVersion}|rawCount=${rawRecords.size}|normalizedCount=${normalizedRecords.size}|indexCount=${activeIndex.size}|vectorCount=${vectorCount}|graphNodeCount=${graph.nodes.size}|graphEdgeCount=${graph.edges.size}|persistVectorFile=${persistVectorFile}"
         ckbEmitStagedRebuildStage(stageSink, stage, statusText, deadlineAtMillis, diagnostic)
     }
 
@@ -5153,6 +5170,29 @@ public class FileKnowledgeStore {
         }
         let tmp = path.parent.join(".tmp-${safeName(relative)}-${stableSummaryHash(text)}")
         File.writeTo(tmp, text.toArray())
+        this.replaceFileWithTmp(path, tmp)
+    }
+
+    private func atomicTmpPath(path: Path, relative: String): Path {
+        path.parent.join(".tmp-${safeName(relative)}-${DateTime.now().toUnixTimeStamp().toMilliseconds()}")
+    }
+
+    private func writeRecordsFileAtomically(relative: String, lines: ArrayList<String>): Unit {
+        this.ensureLayout()
+        let path = this.root.join(relative)
+        if (!exists(path.parent)) {
+            Directory.create(path.parent, recursive: true)
+        }
+        let tmp = this.atomicTmpPath(path, relative)
+        try (file = File(tmp, OpenMode.Write)) {
+            for (line in lines) {
+                file.write(line.toArray())
+            }
+        }
+        this.replaceFileWithTmp(path, tmp)
+    }
+
+    private func replaceFileWithTmp(path: Path, tmp: Path): Unit {
         try {
             let code = launch("/bin/mv", ["-f", tmp.toString(), path.toString()]).wait()
             if (code != 0) {
@@ -5292,6 +5332,14 @@ public class FileKnowledgeStore {
                 status.failedVersion = value
             } else if (key == "activeStateSource") {
                 status.activeStateSource = value
+            } else if (key == "rawCount") {
+                status.rawCount = parseIntField(value, 0)
+            } else if (key == "normalizedCount") {
+                status.normalizedCount = parseIntField(value, 0)
+            } else if (key == "indexCount") {
+                status.indexCount = parseIntField(value, 0)
+            } else if (key == "vectorIndexCount") {
+                status.vectorIndexCount = parseIntField(value, 0)
             } else if (key == "vectorBackend") {
                 status.vectorBackend = value
             } else if (key == "vectorState") {
@@ -5413,23 +5461,51 @@ public class FileKnowledgeStore {
     }
 
     private func rawLines(records: ArrayList<RawRecord>): String {
-        var out = ""
+        let out = StringBuilder()
         for (record in records) {
-            out += "${escapeField(record.sourceId)}|${escapeField(record.title)}|${escapeField(record.content)}|${escapeField(record.contentHash)}|${metadataLine(record.metadata)}\n"
+            out.append(this.rawLine(record))
         }
-        out
+        out.toString()
+    }
+
+    private func rawLine(record: RawRecord): String {
+        "${escapeField(record.sourceId)}|${escapeField(record.title)}|${escapeField(record.content)}|${escapeField(record.contentHash)}|${metadataLine(record.metadata)}\n"
+    }
+
+    private func writeRawRecordsAtomically(relative: String, records: ArrayList<RawRecord>, deadlineAtMillis: Int64, progressStage: String): Unit {
+        this.ensureLayout()
+        let path = this.root.join(relative)
+        if (!exists(path.parent)) {
+            Directory.create(path.parent, recursive: true)
+        }
+        let tmp = this.atomicTmpPath(path, relative)
+        try (file = File(tmp, OpenMode.Write)) {
+            var written: Int64 = 0
+            for (record in records) {
+                if (written % 256 == 0) {
+                    this.ensureActiveSnapshotDeadline("${progressStage}_aggregate:${written}:${records.size}", deadlineAtMillis)
+                }
+                file.write(this.rawLine(record).toArray())
+                written += 1
+            }
+        }
+        this.replaceFileWithTmp(path, tmp)
+    }
+
+    private func writeRawRecordAtomically(relative: String, record: RawRecord): Unit {
+        this.writeLinesAtomically(relative, this.rawLine(record))
     }
 
     private func writeRawFilesAtomically(prefix: String, records: ArrayList<RawRecord>, deadlineAtMillis!: Int64 = 0, progressStage!: String = "raw_write"): Unit {
         let base = if (prefix == "") { "" } else { "${prefix}/" }
         this.ensureActiveSnapshotDeadline("${progressStage}_aggregate_before", deadlineAtMillis)
-        this.writeLinesAtomically("${base}raw/records.ckb", this.rawLines(records))
+        this.writeRawRecordsAtomically("${base}raw/records.ckb", records, deadlineAtMillis, progressStage)
         var written: Int64 = 0
         for (record in records) {
             if (written % 64 == 0) {
                 this.ensureActiveSnapshotDeadline("${progressStage}_record:${written}:${records.size}", deadlineAtMillis)
             }
-            this.writeLinesAtomically("${base}raw/${safeName(record.metadata.sourceType)}/${safeName(record.sourceId)}.ckb", this.rawLines(singleRawRecord(record)))
+            this.writeRawRecordAtomically("${base}raw/${safeName(record.metadata.sourceType)}/${safeName(record.sourceId)}.ckb", record)
             written += 1
         }
     }
@@ -5440,25 +5516,25 @@ public class FileKnowledgeStore {
         this.emitActiveSnapshotStage(stageSink, "active_snapshot_live_raw_after", "ok", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
         this.emitActiveSnapshotStage(stageSink, "active_snapshot_live_normalized_before", "running", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
         this.ensureActiveSnapshotDeadline("active_snapshot_live_normalized_before", deadlineAtMillis)
-        this.writeLinesAtomically("normalized/records.ckb", this.normalizedLines(normalizedRecords))
+        this.writeNormalizedRecordsAtomically("normalized/records.ckb", normalizedRecords, deadlineAtMillis, "active_snapshot_live_normalized")
         this.emitActiveSnapshotStage(stageSink, "active_snapshot_live_normalized_after", "ok", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
         this.emitActiveSnapshotStage(stageSink, "active_snapshot_live_index_before", "running", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
         this.ensureActiveSnapshotDeadline("active_snapshot_live_index_before", deadlineAtMillis)
         this.writeLinesAtomically("index/active.version", status.activeKnowledgeVersion + "\n")
-        this.writeLinesAtomically("index/active.ckb", this.normalizedLines(activeIndex))
+        this.writeNormalizedRecordsAtomically("index/active.ckb", activeIndex, deadlineAtMillis, "active_snapshot_live_index")
         this.emitActiveSnapshotStage(stageSink, "active_snapshot_live_index_after", "ok", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
         if (persistVectorFile) {
             this.emitActiveSnapshotStage(stageSink, "active_snapshot_live_vector_before", "running", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
             this.ensureActiveSnapshotDeadline("active_snapshot_live_vector_before", deadlineAtMillis)
-            this.writeLinesAtomically("index/vector-${safeName(vectorCollection)}.ckb", this.vectorLines(vectorRecords))
+            this.writeVectorRecordsAtomically("index/vector-${safeName(vectorCollection)}.ckb", vectorRecords, deadlineAtMillis, "active_snapshot_live_vector")
             this.emitActiveSnapshotStage(stageSink, "active_snapshot_live_vector_after", "ok", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
         } else {
             this.emitActiveSnapshotStage(stageSink, "active_snapshot_live_vector_skipped", "skipped", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
         }
         this.emitActiveSnapshotStage(stageSink, "active_snapshot_live_graph_before", "running", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
         this.ensureActiveSnapshotDeadline("active_snapshot_live_graph_before", deadlineAtMillis)
-        this.writeLinesAtomically("index/graph-nodes.ckb", this.graphNodeLines(graph.nodes))
-        this.writeLinesAtomically("index/graph-edges.ckb", this.graphEdgeLines(graph.edges))
+        this.writeGraphNodesAtomically("index/graph-nodes.ckb", graph.nodes, deadlineAtMillis, "active_snapshot_live_graph_nodes")
+        this.writeGraphEdgesAtomically("index/graph-edges.ckb", graph.edges, deadlineAtMillis, "active_snapshot_live_graph_edges")
         this.emitActiveSnapshotStage(stageSink, "active_snapshot_live_graph_after", "ok", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
         this.emitActiveSnapshotStage(stageSink, "active_snapshot_live_status_before", "running", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
         this.ensureActiveSnapshotDeadline("active_snapshot_live_status_before", deadlineAtMillis)
@@ -5467,19 +5543,67 @@ public class FileKnowledgeStore {
     }
 
     private func normalizedLines(records: ArrayList<NormalizedRecord>): String {
-        var out = ""
+        let out = StringBuilder()
         for (record in records) {
-            out += "${escapeField(record.sourceId)}|${escapeField(record.recordKind)}|${escapeField(record.title)}|${escapeField(record.chunk)}|${escapeField(record.citation)}|${record.score}|${metadataLine(record.metadata)}\n"
+            out.append(this.normalizedLine(record))
         }
-        out
+        out.toString()
+    }
+
+    private func normalizedLine(record: NormalizedRecord): String {
+        "${escapeField(record.sourceId)}|${escapeField(record.recordKind)}|${escapeField(record.title)}|${escapeField(record.chunk)}|${escapeField(record.citation)}|${record.score}|${metadataLine(record.metadata)}\n"
+    }
+
+    private func writeNormalizedRecordsAtomically(relative: String, records: ArrayList<NormalizedRecord>, deadlineAtMillis: Int64, progressStage: String): Unit {
+        this.ensureLayout()
+        let path = this.root.join(relative)
+        if (!exists(path.parent)) {
+            Directory.create(path.parent, recursive: true)
+        }
+        let tmp = this.atomicTmpPath(path, relative)
+        try (file = File(tmp, OpenMode.Write)) {
+            var written: Int64 = 0
+            for (record in records) {
+                if (written % 256 == 0) {
+                    this.ensureActiveSnapshotDeadline("${progressStage}:${written}:${records.size}", deadlineAtMillis)
+                }
+                file.write(this.normalizedLine(record).toArray())
+                written += 1
+            }
+        }
+        this.replaceFileWithTmp(path, tmp)
     }
 
     private func vectorLines(records: ArrayList<VectorRecord>): String {
-        var out = ""
+        let out = StringBuilder()
         for (record in records) {
-            out += "${escapeField(vectorPointIdentity(record))}|${escapeField(record.id)}|${escapeField(record.title)}|${escapeField(record.chunk)}|${escapeField(record.metadata.knowledgeVersion)}|${escapeField(record.metadata.sourceId)}|${escapeField(record.metadata.sourceType)}|${escapeField(record.metadata.trustLevel)}|${escapeField(record.metadata.reviewState)}|${escapeField(record.citation)}|${vectorToLine(record.vector)}\n"
+            out.append(this.vectorLine(record))
         }
-        out
+        out.toString()
+    }
+
+    private func vectorLine(record: VectorRecord): String {
+        "${escapeField(vectorPointIdentity(record))}|${escapeField(record.id)}|${escapeField(record.title)}|${escapeField(record.chunk)}|${escapeField(record.metadata.knowledgeVersion)}|${escapeField(record.metadata.sourceId)}|${escapeField(record.metadata.sourceType)}|${escapeField(record.metadata.trustLevel)}|${escapeField(record.metadata.reviewState)}|${escapeField(record.citation)}|${vectorToLine(record.vector)}\n"
+    }
+
+    private func writeVectorRecordsAtomically(relative: String, records: ArrayList<VectorRecord>, deadlineAtMillis: Int64, progressStage: String): Unit {
+        this.ensureLayout()
+        let path = this.root.join(relative)
+        if (!exists(path.parent)) {
+            Directory.create(path.parent, recursive: true)
+        }
+        let tmp = this.atomicTmpPath(path, relative)
+        try (file = File(tmp, OpenMode.Write)) {
+            var written: Int64 = 0
+            for (record in records) {
+                if (written % 128 == 0) {
+                    this.ensureActiveSnapshotDeadline("${progressStage}:${written}:${records.size}", deadlineAtMillis)
+                }
+                file.write(this.vectorLine(record).toArray())
+                written += 1
+            }
+        }
+        this.replaceFileWithTmp(path, tmp)
     }
 
     private func parseVector(text: String): ArrayList<VectorRecord> {
@@ -5522,19 +5646,67 @@ public class FileKnowledgeStore {
     }
 
     private func graphNodeLines(nodes: ArrayList<GraphNode>): String {
-        var out = ""
+        let out = StringBuilder()
         for (node in nodes) {
-            out += "${escapeField(node.nodeId)}|${escapeField(node.nodeType)}|${escapeField(node.label)}|${escapeField(node.sourceId)}|${escapeField(node.knowledgeVersion)}\n"
+            out.append(this.graphNodeLine(node))
         }
-        out
+        out.toString()
     }
 
     private func graphEdgeLines(edges: ArrayList<GraphEdge>): String {
-        var out = ""
+        let out = StringBuilder()
         for (edge in edges) {
-            out += "${escapeField(edge.edgeId)}|${escapeField(edge.edgeType)}|${escapeField(edge.fromNodeId)}|${escapeField(edge.toNodeId)}|${escapeField(edge.sourceId)}|${escapeField(edge.knowledgeVersion)}\n"
+            out.append(this.graphEdgeLine(edge))
         }
-        out
+        out.toString()
+    }
+
+    private func graphNodeLine(node: GraphNode): String {
+        "${escapeField(node.nodeId)}|${escapeField(node.nodeType)}|${escapeField(node.label)}|${escapeField(node.sourceId)}|${escapeField(node.knowledgeVersion)}\n"
+    }
+
+    private func graphEdgeLine(edge: GraphEdge): String {
+        "${escapeField(edge.edgeId)}|${escapeField(edge.edgeType)}|${escapeField(edge.fromNodeId)}|${escapeField(edge.toNodeId)}|${escapeField(edge.sourceId)}|${escapeField(edge.knowledgeVersion)}\n"
+    }
+
+    private func writeGraphNodesAtomically(relative: String, nodes: ArrayList<GraphNode>, deadlineAtMillis: Int64, progressStage: String): Unit {
+        this.ensureLayout()
+        let path = this.root.join(relative)
+        if (!exists(path.parent)) {
+            Directory.create(path.parent, recursive: true)
+        }
+        let tmp = this.atomicTmpPath(path, relative)
+        try (file = File(tmp, OpenMode.Write)) {
+            var written: Int64 = 0
+            for (node in nodes) {
+                if (written % 512 == 0) {
+                    this.ensureActiveSnapshotDeadline("${progressStage}:${written}:${nodes.size}", deadlineAtMillis)
+                }
+                file.write(this.graphNodeLine(node).toArray())
+                written += 1
+            }
+        }
+        this.replaceFileWithTmp(path, tmp)
+    }
+
+    private func writeGraphEdgesAtomically(relative: String, edges: ArrayList<GraphEdge>, deadlineAtMillis: Int64, progressStage: String): Unit {
+        this.ensureLayout()
+        let path = this.root.join(relative)
+        if (!exists(path.parent)) {
+            Directory.create(path.parent, recursive: true)
+        }
+        let tmp = this.atomicTmpPath(path, relative)
+        try (file = File(tmp, OpenMode.Write)) {
+            var written: Int64 = 0
+            for (edge in edges) {
+                if (written % 512 == 0) {
+                    this.ensureActiveSnapshotDeadline("${progressStage}:${written}:${edges.size}", deadlineAtMillis)
+                }
+                file.write(this.graphEdgeLine(edge).toArray())
+                written += 1
+            }
+        }
+        this.replaceFileWithTmp(path, tmp)
     }
 
     private func indexManifestLines(manifest: IndexManifest): String {
@@ -5610,6 +5782,10 @@ public class StoreMetadataStatus {
     public var failedVersion: String = ""
     public var activeStateSource: String = ""
     public var snapshotManifestTxId: String = ""
+    public var rawCount: Int64 = 0
+    public var normalizedCount: Int64 = 0
+    public var indexCount: Int64 = 0
+    public var vectorIndexCount: Int64 = 0
     public var vectorBackend: String = ""
     public var vectorState: String = ""
     public var vectorDimension: Int64 = 0
@@ -6879,6 +7055,10 @@ public class ProcessIsolatedSchedulerTaskRunner <: SchedulerTaskRunner {
             parsed.workerPid = workerPid
             parsed.workerOutSnippet = outSnippet
             parsed.workerErrSnippet = errSnippet
+            if (artifactClass == "worker_out_of_memory") {
+                parsed.status = "task_worker_out_of_memory"
+                parsed.validationDiagnostics.add("${name}:task_worker_out_of_memory")
+            }
             if (parsed.lastStage == "") {
                 parsed.lastStage = ckbSchedulerWorkerLastStageFromArtifacts(outSnippet, errSnippet)
             }
@@ -6996,6 +7176,9 @@ public func ckbClassifyWorkerArtifact(outSnippet: String, errSnippet: String): S
     let combined = "${outSnippet} ${errSnippet}".toAsciiLower()
     if (combined.contains("ckb_scheduler_task_timeout")) {
         return "worker_hard_timeout"
+    }
+    if (combined.contains("out of memory") || combined.contains("outofmemory") || combined.contains("memory allocation failed")) {
+        return "worker_out_of_memory"
     }
     if (combined.contains("httptimeoutexception") || combined.contains("read response timeout") || combined.contains("timeout")) {
         return "native_http_timeout"

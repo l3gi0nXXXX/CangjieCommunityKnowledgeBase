@@ -127,6 +127,41 @@ public class CkbVectorBootstrapRebuildTest {
     }
 
     @TestCase
+    public func stagedVectorRebuildDoesNotMaterializeFullVectorRecords(): Unit {
+        let provider = ChunkedFakeEmbeddingProvider(2)
+        let vectorStore = LocalVectorStore()
+        let kb = KnowledgeBase(FakeClock(0), provider, vectorStore, LocalGraphStore())
+        kb.configureVectorCollections("ckb_active", "ckb_candidate")
+        kb.bootstrapOffline()
+
+        let result = kb.rebuildIndex(false, targetVectorCollection: "ckb_active_reconcile_test")
+        let vector = kb.lastVectorIndexBuild()
+        let stagedStatus = kb.vectorCollectionStatus("ckb_active_reconcile_test")
+
+        @Expect(result.ok, true)
+        @Expect(vector.vectorRecordsMaterialized, false)
+        @Expect(vector.vectorRecords.size, 0)
+        @Expect(vector.persistedVectorCollection, "ckb_active_reconcile_test")
+        @Expect(vector.vectorCount, result.count)
+        @Expect(stagedStatus.count, result.count)
+    }
+
+    @TestCase
+    public func explicitVectorBuildStillMaterializesRecordsForCompatibility(): Unit {
+        let provider = ChunkedFakeEmbeddingProvider(2)
+        let kb = KnowledgeBase(FakeClock(0), provider, LocalVectorStore(), LocalGraphStore())
+        kb.bootstrapOffline()
+        let records = kb.activeRecordSnapshot()
+
+        let result = kb.buildVectorIndexForRecords(records, "manual_collection")
+
+        @Expect(result.ok, true)
+        @Expect(result.vectorRecordsMaterialized, true)
+        @Expect(result.vectorRecords.size, records.size)
+        @Expect(result.persistedVectorCollection, "manual_collection")
+    }
+
+    @TestCase
     public func ckbRebuildIndexPersistsSnapshotWithoutFullBatchEmbedding(): Unit {
         let provider = ChunkedFakeEmbeddingProvider(2)
         let kb = KnowledgeBase(FakeClock(0), provider, LocalVectorStore(), LocalGraphStore())

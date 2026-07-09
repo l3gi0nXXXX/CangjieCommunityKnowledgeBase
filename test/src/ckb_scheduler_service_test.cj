@@ -1262,6 +1262,13 @@ public class CkbSchedulerServiceF5Test {
     }
 
     @TestCase
+    public func tP3B02WorkerArtifactClassifierMapsOutOfMemoryBeforeGenericArtifacts(): Unit {
+        let classified = ckbClassifyWorkerArtifact("", "An exception has occurred: Out of memory")
+
+        @Expect(classified, "worker_out_of_memory")
+    }
+
+    @TestCase
     public func tP5B01ActiveVectorInvariantBlocksSuccessfulTaskWhenCountsMismatch(): Unit {
         let config = CkbRuntimeConfig()
         config.networkEnabled = true
@@ -1358,6 +1365,23 @@ public class CkbRoutinePreflightRepairHintTest {
         @Expect(result.ok, false)
         @Expect(ruDiagnosticsContain(result.diagnostics, "active_snapshot_manifest_missing"), true)
         @Expect(ruDiagnosticsContain(result.diagnostics, "repair_required:vector_reconcile:active_snapshot_manifest_missing"), true)
+    }
+
+    @TestCase
+    public func ruP0PreflightUsesMetadataCountsWithoutLoadingFullActiveSnapshot(): Unit {
+        let root = "target/ru-p0-preflight-lightweight-metadata"
+        s1s2EnsureEmptyDir(root)
+        let config = f7QdrantRoutineConfig()
+        let embedding = DeterministicEmbeddingProvider(embeddingConfigFromRuntime(config))
+        f7WriteFile(Path(root).join("metadata/status.ckb"), "active=ckb-active\ncandidate=ckb-candidate\nfailed=\nactiveStateSource=test\nrawCount=10\nnormalizedCount=10\nindexCount=10\nvectorIndexCount=10\nvectorBackend=qdrant\nvectorState=ready\nvectorActiveCollection=ckb_active\nvectorCandidateCollection=ckb_candidate\nvectorDimension=3\n")
+        f7WriteFile(Path(root).join("metadata/active-snapshot.manifest"), "txId=tx-active\nactive=ckb-active\nvectorActiveCollection=ckb_active\ncommitted=true\n")
+        f7WriteFile(Path(root).join("transactions/tx-active/COMMIT"), "ok\n")
+
+        let result = ckbRoutineRuntimePreflightWithBootstrap(config, root, "4096M", "/opt/homebrew/opt/openssl@3/lib", F7StatusVectorStore(EmbeddingProviderState.READY, "", 3, count: 10), embedding)
+
+        @Expect(result.ok, true)
+        @Expect(ruDiagnosticsContain(result.diagnostics, "active_snapshot_invalid"), false)
+        @Expect(ruDiagnosticsContain(result.diagnostics, "qdrant_active_count_mismatch"), false)
     }
 
     @TestCase

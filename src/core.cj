@@ -348,6 +348,8 @@ public class VectorIndexBuildResult {
     public var ok: Bool = false
     public var status: String = "not_started"
     public var vectorRecords: ArrayList<VectorRecord> = ArrayList<VectorRecord>()
+    public var vectorRecordsMaterialized: Bool = true
+    public var persistedVectorCollection: String = ""
     public var vectorCount: Int64 = 0
     public var graphNodes: Int64 = 0
     public var servingCount: Int64 = 0
@@ -3738,17 +3740,13 @@ public class KnowledgeBase {
         if (this.applyDeadlineToVectorResult(result, "rebuild_vector_after", deadlineAtMillis, started)) {
             result.vectorCount = vector.vectorCount
             result.truncatedCount = vector.truncatedCount
-            for (record in vector.vectorRecords) {
-                result.vectorRecords.add(record)
-            }
+            this.copyVectorBuildPayload(result, vector)
             return result
         }
         if (this.applyDeadlineToVectorResult(result, "rebuild_graph_before", deadlineAtMillis, started)) {
             result.vectorCount = vector.vectorCount
             result.truncatedCount = vector.truncatedCount
-            for (record in vector.vectorRecords) {
-                result.vectorRecords.add(record)
-            }
+            this.copyVectorBuildPayload(result, vector)
             return result
         }
         let graphDiagnostic = this.rebuildGraphIndex(deadlineAtMillis: deadlineAtMillis)
@@ -3758,17 +3756,13 @@ public class KnowledgeBase {
             result.vectorCount = vector.vectorCount
             result.truncatedCount = vector.truncatedCount
             result.elapsedMillis = ckbCoreNowMillis() - started
-            for (record in vector.vectorRecords) {
-                result.vectorRecords.add(record)
-            }
+            this.copyVectorBuildPayload(result, vector)
             result.diagnostic = if (result.diagnostic == "") { graphDiagnostic } else { "${result.diagnostic};${graphDiagnostic}" }
             return result
         }
         result.ok = vector.ok
         result.status = vector.status
-        for (record in vector.vectorRecords) {
-            result.vectorRecords.add(record)
-        }
+        this.copyVectorBuildPayload(result, vector)
         result.vectorCount = vector.vectorCount
         result.graphNodes = this.storage.graphNodeCount
         result.servingCount = this.storage.servingIndexCount
@@ -3780,6 +3774,16 @@ public class KnowledgeBase {
             result.diagnostic += ";${vector.diagnostic}"
         }
         result
+    }
+
+    private func copyVectorBuildPayload(target: VectorIndexBuildResult, source: VectorIndexBuildResult): Unit {
+        target.vectorRecordsMaterialized = source.vectorRecordsMaterialized
+        target.persistedVectorCollection = source.persistedVectorCollection
+        if (source.vectorRecordsMaterialized) {
+            for (record in source.vectorRecords) {
+                target.vectorRecords.add(record)
+            }
+        }
     }
 
     private func applyDeadlineToVectorResult(result: VectorIndexBuildResult, stage: String, deadlineAtMillis: Int64, started: Int64): Bool {
@@ -3807,6 +3811,10 @@ public class KnowledgeBase {
         let result = VectorIndexBuildResult()
         let progress = VectorBuildProgress()
         let effectiveVectorCollection = if (collection.trimAscii() == "") { this.vectorCollection } else { collection.trimAscii() }
+        let stagedCollection = applyToStorage && effectiveVectorCollection != this.vectorCollection
+        let materializeVectorRecords = !stagedCollection
+        result.vectorRecordsMaterialized = materializeVectorRecords
+        result.persistedVectorCollection = effectiveVectorCollection
         progress.runId = ckbVectorBuildRunId()
         progress.collection = effectiveVectorCollection
         progress.targetCollection = effectiveVectorCollection
@@ -3851,7 +3859,7 @@ public class KnowledgeBase {
             progressSink.onVectorBuildFinished(progress)
             return result
         }
-        let reusable = this.reusableVectorRecordsForBuild(records, this.vectorCollection, deadlineAtMillis)
+        let reusable = if (stagedCollection) { ArrayList<VectorRecord>() } else { this.reusableVectorRecordsForBuild(records, this.vectorCollection, deadlineAtMillis) }
         var batchIndex: Int64 = 0
         if (reusable.size > 0) {
             let reuseStatus = this.upsertVectorRecordsInBatches(effectiveVectorCollection, reusable, progress, progressSink, deadlineAtMillis, batchIndex)
@@ -3872,8 +3880,10 @@ public class KnowledgeBase {
                 progressSink.onVectorBuildFinished(progress)
                 return result
             }
-            for (record in reusable) {
-                result.vectorRecords.add(record)
+            if (materializeVectorRecords) {
+                for (record in reusable) {
+                    result.vectorRecords.add(record)
+                }
             }
             batchIndex += (reusable.size + 63) / 64
         }
@@ -3976,8 +3986,10 @@ public class KnowledgeBase {
                 progressSink.onVectorBuildFinished(progress)
                 return result
             }
-            for (record in vectorRecords) {
-                result.vectorRecords.add(record)
+            if (materializeVectorRecords) {
+                for (record in vectorRecords) {
+                    result.vectorRecords.add(record)
+                }
             }
             progress.embedded += texts.size
             progress.completed += texts.size
