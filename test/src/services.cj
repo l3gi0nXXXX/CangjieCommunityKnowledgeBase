@@ -4294,7 +4294,15 @@ private func ckbSchedulerPreRunGateTaskName(taskNames: ArrayList<String>): Strin
 public func ckbSchedulerRunTaskRecordsJson(records: ArrayList<SchedulerTaskRunRecord>): String {
     let parts = ArrayList<String>()
     for (record in records) {
-        parts.add("{\"taskName\":\"${ckbRuntimePreflightJsonEscape(record.taskName)}\",\"ok\":${record.ok},\"status\":\"${ckbRuntimePreflightJsonEscape(record.status)}\",\"startedAtMillis\":${record.startedAtMillis},\"endedAtMillis\":${record.endedAtMillis},\"deadlineAtMillis\":${record.deadlineAtMillis},\"durationMillis\":${record.durationMillis},\"timeBudgetMillis\":${record.timeBudgetMillis},\"requestCount\":${record.requestCount},\"lastStage\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(record.lastStage), 120))}\",\"lastProgress\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(record.lastProgress), 240))}\",\"workerPid\":${record.workerPid},\"workerOutSnippet\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(record.workerOutSnippet), 240))}\",\"workerErrSnippet\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(record.workerErrSnippet), 240))}\",\"primaryFailure\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(record.primaryFailure), 240))}\"}")
+        parts.add("{\"taskName\":\"${ckbRuntimePreflightJsonEscape(record.taskName)}\",\"ok\":${record.ok},\"status\":\"${ckbRuntimePreflightJsonEscape(record.status)}\",\"schedulerRunId\":\"${ckbRuntimePreflightJsonEscape(record.schedulerRunId)}\",\"schedulerTaskName\":\"${ckbRuntimePreflightJsonEscape(record.schedulerTaskName)}\",\"startedAtMillis\":${record.startedAtMillis},\"endedAtMillis\":${record.endedAtMillis},\"deadlineAtMillis\":${record.deadlineAtMillis},\"durationMillis\":${record.durationMillis},\"bootstrapStartedAtMillis\":${record.bootstrapStartedAtMillis},\"taskBodyStartedAtMillis\":${record.taskBodyStartedAtMillis},\"taskBodyEndedAtMillis\":${record.taskBodyEndedAtMillis},\"bootstrapDurationMillis\":${record.bootstrapDurationMillis},\"resultWrittenAtMillis\":${record.resultWrittenAtMillis},\"resultFlushDurationMillis\":${record.resultFlushDurationMillis},\"stageDurations\":${ckbSchedulerStageDurationsJson(record.stageDurations)},\"timeBudgetMillis\":${record.timeBudgetMillis},\"requestCount\":${record.requestCount},\"lastStage\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(record.lastStage), 120))}\",\"lastProgress\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(record.lastProgress), 240))}\",\"workerPid\":${record.workerPid},\"workerOutSnippet\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(record.workerOutSnippet), 240))}\",\"workerErrSnippet\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(record.workerErrSnippet), 240))}\",\"primaryFailure\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(record.primaryFailure), 240))}\"}")
+    }
+    "[${joinStrings(parts, ",")}]"
+}
+
+private func ckbSchedulerStageDurationsJson(values: ArrayList<String>): String {
+    let parts = ArrayList<String>()
+    for (value in values) {
+        parts.add("\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(value), 240))}\"")
     }
     "[${joinStrings(parts, ",")}]"
 }
@@ -4718,10 +4726,11 @@ public class FileKnowledgeStore {
         this.ensureActiveSnapshotDeadline("active_snapshot_tx_commit_before", deadlineAtMillis)
         this.writeLinesAtomically("${txRoot}/COMMIT", this.activeSnapshotCommitLines(txId, status))
         this.emitActiveSnapshotStage(stageSink, "active_snapshot_tx_commit_after", "ok", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
+        let liveShadowStartedAtMillis = ckbCoreNowMillis()
         this.emitActiveSnapshotStage(stageSink, "active_snapshot_live_shadow_before", "running", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
         this.ensureActiveSnapshotDeadline("active_snapshot_live_shadow_before", deadlineAtMillis)
         this.writeActiveSnapshotLiveShadow(txRoot, status, rawRecords, normalizedRecords, activeIndex, vectorRecords, vectorCollection, graph, persistVectorFile: persistVectorFile, deadlineAtMillis: deadlineAtMillis, stageSink: stageSink)
-        this.emitActiveSnapshotStage(stageSink, "active_snapshot_live_shadow_after", "ok", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
+        this.emitActiveSnapshotStage(stageSink, "active_snapshot_live_shadow_after", "ok", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile, durationMillis: ckbCoreNowMillis() - liveShadowStartedAtMillis)
         this.emitActiveSnapshotStage(stageSink, "active_snapshot_manifest_before", "running", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
         this.ensureActiveSnapshotDeadline("active_snapshot_manifest_before", deadlineAtMillis)
         let manifestVectorCount = if (persistVectorFile) { vectorRecords.size } else { status.storage.vectorIndexCount }
@@ -4731,10 +4740,10 @@ public class FileKnowledgeStore {
         txId
     }
 
-    private func emitActiveSnapshotStage(stageSink: CkbStagedRebuildStageSink, stage: String, statusText: String, status: KnowledgeStatus, rawRecords: ArrayList<RawRecord>, normalizedRecords: ArrayList<NormalizedRecord>, activeIndex: ArrayList<NormalizedRecord>, vectorRecords: ArrayList<VectorRecord>, graph: GraphBuildResult, deadlineAtMillis: Int64, persistVectorFile: Bool): Unit {
+    private func emitActiveSnapshotStage(stageSink: CkbStagedRebuildStageSink, stage: String, statusText: String, status: KnowledgeStatus, rawRecords: ArrayList<RawRecord>, normalizedRecords: ArrayList<NormalizedRecord>, activeIndex: ArrayList<NormalizedRecord>, vectorRecords: ArrayList<VectorRecord>, graph: GraphBuildResult, deadlineAtMillis: Int64, persistVectorFile: Bool, durationMillis!: Int64 = 0): Unit {
         let vectorCount = if (persistVectorFile) { vectorRecords.size } else { status.storage.vectorIndexCount }
         let diagnostic = "active=${status.activeKnowledgeVersion}|rawCount=${rawRecords.size}|normalizedCount=${normalizedRecords.size}|indexCount=${activeIndex.size}|vectorCount=${vectorCount}|graphNodeCount=${graph.nodes.size}|graphEdgeCount=${graph.edges.size}|persistVectorFile=${persistVectorFile}"
-        ckbEmitStagedRebuildStage(stageSink, stage, statusText, deadlineAtMillis, diagnostic)
+        ckbEmitStagedRebuildStage(stageSink, stage, statusText, deadlineAtMillis, diagnostic, durationMillis: durationMillis, itemCount: activeIndex.size)
     }
 
     private func ensureActiveSnapshotDeadline(stage: String, deadlineAtMillis: Int64): Unit {
@@ -5929,6 +5938,8 @@ public class CkbStagedRebuildStageProgress {
     public var deadlineAtMillis: Int64 = 0
     public var remainingMillis: Int64 = 0
     public var atMillis: Int64 = 0
+    public var durationMillis: Int64 = 0
+    public var itemCount: Int64 = 0
 
     public init() {}
 }
@@ -5941,6 +5952,35 @@ public class NoopCkbStagedRebuildStageSink <: CkbStagedRebuildStageSink {
     public init() {}
 
     public func onStagedRebuildStage(progress: CkbStagedRebuildStageProgress): Unit {}
+}
+
+public class RecordingCkbStagedRebuildStageSink <: CkbStagedRebuildStageSink {
+    private let delegate: CkbStagedRebuildStageSink
+    public var stageDurations: ArrayList<String> = ArrayList<String>()
+
+    public init(delegate: CkbStagedRebuildStageSink) {
+        this.delegate = delegate
+    }
+
+    public func onStagedRebuildStage(progress: CkbStagedRebuildStageProgress): Unit {
+        if (ckbSchedulerRecordsStageDuration(progress.stage)) {
+            this.stageDurations.add(ckbSchedulerStageDurationText(progress.stage, progress.durationMillis, progress.itemCount, progress.status))
+        }
+        try {
+            this.delegate.onStagedRebuildStage(progress)
+        } catch (_: Exception) {
+            ()
+        }
+    }
+}
+
+private func ckbSchedulerRecordsStageDuration(stage: String): Bool {
+    stage == "candidate_vector_finished" || stage == "candidate_validation_finished" ||
+        stage == "candidate_active_commit_finished" || stage == "candidate_active_snapshot_finished"
+}
+
+private func ckbSchedulerStageDurationText(stage: String, durationMillis: Int64, itemCount: Int64, status: String): String {
+    "stage=${utf8SafePrefix(redactSensitive(stage), 80)}|durationMillis=${if (durationMillis >= 0) { durationMillis } else { 0 }}|itemCount=${if (itemCount >= 0) { itemCount } else { 0 }}|status=${utf8SafePrefix(redactSensitive(status), 80)}"
 }
 
 public class FileCkbStagedRebuildStageSink <: CkbStagedRebuildStageSink {
@@ -5959,16 +5999,30 @@ public class FileCkbStagedRebuildStageSink <: CkbStagedRebuildStageSink {
         let effectiveRunId = if (progress.runId.trimAscii() != "") { progress.runId } else { this.schedulerRunId }
         let effectiveTaskName = if (progress.taskName.trimAscii() != "") { progress.taskName } else { this.schedulerTaskName }
         if (effectiveRunId.trimAscii() == "") {
-            this.writeCurrent(progress, "", effectiveTaskName)
+            _ = this.writeCurrent(progress, "", effectiveTaskName)
             return
         }
         this.ensureProgressPath(effectiveRunId)
+        var degraded = false
         try {
             this.store.appendLinesAtomically(this.progressPath, ckbStagedRebuildStageProgressJson(progress, effectiveRunId, effectiveTaskName))
-            this.writeCurrent(progress, effectiveRunId, effectiveTaskName)
+        } catch (_: Exception) {
+            degraded = true
+        }
+        if (!this.writeCurrent(progress, effectiveRunId, effectiveTaskName)) {
+            degraded = true
+        }
+        try {
             this.store.writeLinesAtomically("metadata/scheduler-current.ckb", schedulerCurrentText(effectiveRunId, effectiveTaskName, progress.status, this.progressPath, "stage=${progress.stage}|${progress.diagnostic}"))
         } catch (_: Exception) {
-            ()
+            degraded = true
+        }
+        if (degraded) {
+            try {
+                this.store.appendLinesAtomically("metadata/scheduler-runs/${safeName(effectiveRunId)}-diagnostics.jsonl", schedulerDiagnosticJson(effectiveRunId, effectiveTaskName, "degraded", "staged_rebuild_stage_write_degraded:stage=${progress.stage}"))
+            } catch (_: Exception) {
+                ()
+            }
         }
     }
 
@@ -5978,17 +6032,23 @@ public class FileCkbStagedRebuildStageSink <: CkbStagedRebuildStageSink {
         }
     }
 
-    private func writeCurrent(progress: CkbStagedRebuildStageProgress, runId: String, taskName: String): Unit {
+    private func writeCurrent(progress: CkbStagedRebuildStageProgress, runId: String, taskName: String): Bool {
+        var ok = true
+        let text = ckbStagedRebuildStageCurrentText(progress, this.progressPath, runId, taskName)
         try {
-            let text = ckbStagedRebuildStageCurrentText(progress, this.progressPath, runId, taskName)
             this.store.writeLinesAtomically("metadata/staged-rebuild-current.ckb", text)
-            let scoped = ckbSchedulerScopedStagedRebuildCurrentPath(runId, taskName)
-            if (scoped != "") {
-                this.store.writeLinesAtomically(scoped, text)
-            }
         } catch (_: Exception) {
-            ()
+            ok = false
         }
+        let scoped = ckbSchedulerScopedStagedRebuildCurrentPath(runId, taskName)
+        if (scoped != "") {
+            try {
+                this.store.writeLinesAtomically(scoped, text)
+            } catch (_: Exception) {
+                ok = false
+            }
+        }
+        ok
     }
 }
 
@@ -6067,27 +6127,19 @@ public class FileVectorBuildProgressSink <: VectorBuildProgressSink {
     }
 
     public func onVectorBuildStarted(progress: VectorBuildProgress): Unit {
-        this.ensureProgressPath(progress.runId)
-        this.store.writeLinesAtomically(this.progressPath, vectorBuildProgressJson(progress, "vector_build_started"))
-        this.writeCurrent(progress)
+        this.writeEvent(progress, "vector_build_started", true)
     }
 
     public func onVectorBatchStarted(progress: VectorBuildProgress): Unit {
-        this.ensureProgressPath(progress.runId)
-        this.store.appendLinesAtomically(this.progressPath, vectorBuildProgressJson(progress, "batch_started"))
-        this.writeCurrent(progress)
+        this.writeEvent(progress, "batch_started", false)
     }
 
     public func onVectorBatchFinished(progress: VectorBuildProgress): Unit {
-        this.ensureProgressPath(progress.runId)
-        this.store.appendLinesAtomically(this.progressPath, vectorBuildProgressJson(progress, "batch_finished"))
-        this.writeCurrent(progress)
+        this.writeEvent(progress, "batch_finished", false)
     }
 
     public func onVectorBuildFinished(progress: VectorBuildProgress): Unit {
-        this.ensureProgressPath(progress.runId)
-        this.store.appendLinesAtomically(this.progressPath, vectorBuildProgressJson(progress, "vector_build_finished"))
-        this.writeCurrent(progress)
+        this.writeEvent(progress, "vector_build_finished", false)
     }
 
     private func ensureProgressPath(runId: String): Unit {
@@ -6096,12 +6148,53 @@ public class FileVectorBuildProgressSink <: VectorBuildProgressSink {
         }
     }
 
-    private func writeCurrent(progress: VectorBuildProgress): Unit {
+    private func writeEvent(progress: VectorBuildProgress, event: String, replace: Bool): Unit {
+        this.ensureProgressPath(progress.runId)
+        var degraded = false
+        try {
+            if (replace) {
+                this.store.writeLinesAtomically(this.progressPath, vectorBuildProgressJson(progress, event))
+            } else {
+                this.store.appendLinesAtomically(this.progressPath, vectorBuildProgressJson(progress, event))
+            }
+        } catch (_: Exception) {
+            degraded = true
+        }
+        if (!this.writeCurrent(progress)) {
+            degraded = true
+        }
+        if (degraded) {
+            this.writeDegradedDiagnostic(event)
+        }
+    }
+
+    private func writeCurrent(progress: VectorBuildProgress): Bool {
         let text = vectorBuildCurrentText(progress, this.progressPath, schedulerRunId: this.schedulerRunId, schedulerTaskName: this.schedulerTaskName)
-        this.store.writeLinesAtomically("metadata/vector-reconcile-current.ckb", text)
+        var ok = true
+        try {
+            this.store.writeLinesAtomically("metadata/vector-reconcile-current.ckb", text)
+        } catch (_: Exception) {
+            ok = false
+        }
         let scoped = ckbSchedulerScopedVectorCurrentPath(this.schedulerRunId, this.schedulerTaskName)
         if (scoped != "") {
-            this.store.writeLinesAtomically(scoped, text)
+            try {
+                this.store.writeLinesAtomically(scoped, text)
+            } catch (_: Exception) {
+                ok = false
+            }
+        }
+        ok
+    }
+
+    private func writeDegradedDiagnostic(event: String): Unit {
+        if (this.schedulerRunId.trimAscii() == "") {
+            return
+        }
+        try {
+            this.store.appendLinesAtomically("metadata/scheduler-runs/${safeName(this.schedulerRunId)}-diagnostics.jsonl", schedulerDiagnosticJson(this.schedulerRunId, this.schedulerTaskName, "degraded", "vector_progress_observer_degraded:event=${event}"))
+        } catch (_: Exception) {
+            ()
         }
     }
 }
@@ -6167,7 +6260,7 @@ public func ckbReleaseSchedulerRunLock(store: FileKnowledgeStore, lock: CkbSched
 
 public func ckbRecoverStaleSchedulerRuns(store: FileKnowledgeStore): CkbSchedulerStaleRecoveryResult {
     let result = CkbSchedulerStaleRecoveryResult()
-    let schedulerCurrent = store.readText("metadata/scheduler-current.ckb")
+    let schedulerCurrent = ckbSchedulerReadProgressArtifact(store, "metadata/scheduler-current.ckb")
     if (ckbCurrentField(schedulerCurrent, "status") == "running") {
         let runId = ckbCurrentField(schedulerCurrent, "runId")
         let taskName = ckbCurrentField(schedulerCurrent, "taskName")
@@ -6180,7 +6273,7 @@ public func ckbRecoverStaleSchedulerRuns(store: FileKnowledgeStore): CkbSchedule
         result.recoveredScheduler = true
         result.diagnostics.add(diagnostic)
     }
-    let vectorCurrent = store.readText("metadata/vector-reconcile-current.ckb")
+    let vectorCurrent = ckbSchedulerReadProgressArtifact(store, "metadata/vector-reconcile-current.ckb")
     if (ckbCurrentField(vectorCurrent, "state") == "running") {
         let runId = ckbCurrentField(vectorCurrent, "runId")
         let collection = ckbCurrentField(vectorCurrent, "collection")
@@ -6200,7 +6293,7 @@ public func ckbRecoverStaleSchedulerRuns(store: FileKnowledgeStore): CkbSchedule
 public func ckbRecoverStaleSchedulerRunsWithVectorStore(store: FileKnowledgeStore, vectorStore: VectorStore): CkbSchedulerStaleRecoveryResult {
     let result = ckbRecoverStaleSchedulerRuns(store)
     if (result.recoveredVector) {
-        let current = store.readText("metadata/vector-reconcile-current.ckb")
+        let current = ckbSchedulerReadProgressArtifact(store, "metadata/vector-reconcile-current.ckb")
         let targetCollection = ckbCurrentField(current, "targetCollection")
         let activeCollection = store.loadMetadataStatus().vectorActiveCollection
         if (ckbSafeRecoveredStagingCollection(targetCollection, activeCollection)) {
@@ -6253,11 +6346,19 @@ private func ckbSchedulerRunLockText(lock: CkbSchedulerRunLock, updatedAtMillis:
 }
 
 private func ckbSchedulerCurrentRunId(store: FileKnowledgeStore): String {
-    ckbCurrentField(store.readText("metadata/scheduler-current.ckb"), "runId")
+    ckbCurrentField(ckbSchedulerReadProgressArtifact(store, "metadata/scheduler-current.ckb"), "runId")
 }
 
 private func ckbSchedulerCurrentTaskName(store: FileKnowledgeStore): String {
-    ckbCurrentField(store.readText("metadata/scheduler-current.ckb"), "taskName")
+    ckbCurrentField(ckbSchedulerReadProgressArtifact(store, "metadata/scheduler-current.ckb"), "taskName")
+}
+
+public func ckbSchedulerCurrentRunIdForTask(store: FileKnowledgeStore, taskName: String): String {
+    let current = ckbSchedulerReadProgressArtifact(store, "metadata/scheduler-current.ckb")
+    if (taskName.trimAscii() == "" || ckbCurrentField(current, "taskName") != taskName) {
+        return ""
+    }
+    ckbCurrentField(current, "runId")
 }
 
 private func ckbSchedulerScopedVectorCurrentPath(runId: String, taskName: String): String {
@@ -6272,6 +6373,13 @@ private func ckbSchedulerScopedStagedRebuildCurrentPath(runId: String, taskName:
         return ""
     }
     "metadata/scheduler-runs/${safeName(runId)}-${safeName(taskName)}-staged-rebuild-current.ckb"
+}
+
+private func ckbSchedulerScopedRoutineStageCurrentPath(runId: String, taskName: String, stage: String): String {
+    if (runId.trimAscii() == "" || taskName.trimAscii() == "" || stage.trimAscii() == "") {
+        return ""
+    }
+    "metadata/scheduler-runs/${safeName(runId)}-${safeName(taskName)}-routine-${safeName(stage)}-current.ckb"
 }
 
 private func schedulerTaskProgressDiagnostic(task: SchedulerTaskResult): String {
@@ -6315,6 +6423,7 @@ private func vectorBuildCurrentText(progress: VectorBuildProgress, progressPath:
         text += "schedulerTaskName=${escapeField(schedulerTaskName)}\n"
     }
     text += "diagnostic=${escapeField(diagnostic)}\n"
+    text += "atMillis=${DateTime.now().toUnixTimeStamp().toMilliseconds()}\n"
     text
 }
 
@@ -6327,7 +6436,7 @@ private func schedulerProgressJson(runId: String, event: String, taskName: Strin
 private func schedulerTaskProgressJson(runId: String, event: String, taskName: String, status: String, diagnostic: String, task: SchedulerTaskResult): String {
     let now = DateTime.now().toUnixTimeStamp().toMilliseconds()
     let remainingMillis = if (task.deadlineAtMillis > now) { task.deadlineAtMillis - now } else { 0 }
-    "{\"subsystem\":\"scheduler\",\"runId\":\"${ckbRuntimePreflightJsonEscape(runId)}\",\"event\":\"${ckbRuntimePreflightJsonEscape(event)}\",\"stage\":\"${ckbRuntimePreflightJsonEscape(schedulerStageForEvent(event))}\",\"taskName\":\"${ckbRuntimePreflightJsonEscape(taskName)}\",\"status\":\"${ckbRuntimePreflightJsonEscape(status)}\",\"diagnostic\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(diagnostic), 240))}\",\"startedAtMillis\":${task.startedAtMillis},\"endedAtMillis\":${task.endedAtMillis},\"deadlineAtMillis\":${task.deadlineAtMillis},\"remainingMillis\":${remainingMillis},\"durationMillis\":${task.durationMillis},\"durationMs\":${task.durationMillis},\"timeBudgetMillis\":${task.timeBudgetMillis},\"lastStage\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(task.lastStage), 120))}\",\"lastProgress\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(task.lastProgress), 240))}\",\"workerPid\":${task.workerPid},\"workerOutSnippet\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(task.workerOutSnippet), 240))}\",\"workerErrSnippet\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(task.workerErrSnippet), 240))}\",\"atMillis\":${now}}\n"
+    "{\"subsystem\":\"scheduler\",\"runId\":\"${ckbRuntimePreflightJsonEscape(runId)}\",\"event\":\"${ckbRuntimePreflightJsonEscape(event)}\",\"stage\":\"${ckbRuntimePreflightJsonEscape(schedulerStageForEvent(event))}\",\"taskName\":\"${ckbRuntimePreflightJsonEscape(taskName)}\",\"status\":\"${ckbRuntimePreflightJsonEscape(status)}\",\"diagnostic\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(diagnostic), 240))}\",\"schedulerRunId\":\"${ckbRuntimePreflightJsonEscape(task.schedulerRunId)}\",\"schedulerTaskName\":\"${ckbRuntimePreflightJsonEscape(task.schedulerTaskName)}\",\"startedAtMillis\":${task.startedAtMillis},\"endedAtMillis\":${task.endedAtMillis},\"deadlineAtMillis\":${task.deadlineAtMillis},\"remainingMillis\":${remainingMillis},\"durationMillis\":${task.durationMillis},\"durationMs\":${task.durationMillis},\"bootstrapStartedAtMillis\":${task.bootstrapStartedAtMillis},\"taskBodyStartedAtMillis\":${task.taskBodyStartedAtMillis},\"taskBodyEndedAtMillis\":${task.taskBodyEndedAtMillis},\"bootstrapDurationMillis\":${task.bootstrapDurationMillis},\"resultWrittenAtMillis\":${task.resultWrittenAtMillis},\"resultFlushDurationMillis\":${task.resultFlushDurationMillis},\"stageDurations\":${ckbSchedulerStageDurationsJson(task.stageDurations)},\"timeBudgetMillis\":${task.timeBudgetMillis},\"lastStage\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(task.lastStage), 120))}\",\"lastProgress\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(task.lastProgress), 240))}\",\"workerPid\":${task.workerPid},\"workerOutSnippet\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(task.workerOutSnippet), 240))}\",\"workerErrSnippet\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(task.workerErrSnippet), 240))}\",\"atMillis\":${now}}\n"
 }
 
 private func schedulerStageForEvent(event: String): String {
@@ -6368,7 +6477,7 @@ private func schedulerCurrentText(runId: String, taskName: String, status: Strin
 
 private func ckbStagedRebuildStageProgressJson(progress: CkbStagedRebuildStageProgress, runId: String, taskName: String): String {
     let diagnostic = utf8SafePrefix(redactSensitive(progress.diagnostic), 240)
-    "{\"subsystem\":\"routine_update\",\"runId\":\"${ckbRuntimePreflightJsonEscape(runId)}\",\"event\":\"staged_rebuild_stage\",\"stage\":\"${ckbRuntimePreflightJsonEscape(progress.stage)}\",\"taskName\":\"${ckbRuntimePreflightJsonEscape(taskName)}\",\"status\":\"${ckbRuntimePreflightJsonEscape(progress.status)}\",\"diagnostic\":\"${ckbRuntimePreflightJsonEscape(diagnostic)}\",\"deadlineAtMillis\":${progress.deadlineAtMillis},\"remainingMillis\":${progress.remainingMillis},\"atMillis\":${progress.atMillis}}\n"
+    "{\"subsystem\":\"routine_update\",\"runId\":\"${ckbRuntimePreflightJsonEscape(runId)}\",\"event\":\"staged_rebuild_stage\",\"stage\":\"${ckbRuntimePreflightJsonEscape(progress.stage)}\",\"taskName\":\"${ckbRuntimePreflightJsonEscape(taskName)}\",\"status\":\"${ckbRuntimePreflightJsonEscape(progress.status)}\",\"diagnostic\":\"${ckbRuntimePreflightJsonEscape(diagnostic)}\",\"deadlineAtMillis\":${progress.deadlineAtMillis},\"remainingMillis\":${progress.remainingMillis},\"durationMillis\":${progress.durationMillis},\"itemCount\":${progress.itemCount},\"atMillis\":${progress.atMillis}}\n"
 }
 
 private func ckbStagedRebuildStageCurrentText(progress: CkbStagedRebuildStageProgress, progressPath: String, runId: String, taskName: String): String {
@@ -6378,6 +6487,8 @@ private func ckbStagedRebuildStageCurrentText(progress: CkbStagedRebuildStagePro
     text += "status=${escapeField(progress.status)}\n"
     text += "deadlineAtMillis=${progress.deadlineAtMillis}\n"
     text += "remainingMillis=${progress.remainingMillis}\n"
+    text += "durationMillis=${progress.durationMillis}\n"
+    text += "itemCount=${progress.itemCount}\n"
     text += "progressPath=${escapeField(progressPath)}\n"
     text += "diagnostic=${escapeField(utf8SafePrefix(redactSensitive(progress.diagnostic), 240))}\n"
     text += "atMillis=${progress.atMillis}\n"
@@ -6391,7 +6502,7 @@ private func ckbStagedRebuildCurrentProgressSummary(text: String): String {
     "staged_rebuild:stage=${ckbCurrentField(text, "stage")},status=${ckbCurrentField(text, "status")},remainingMillis=${ckbCurrentField(text, "remainingMillis")},progressPath=${ckbCurrentField(text, "progressPath")},diagnostic=${ckbCurrentField(text, "diagnostic")}"
 }
 
-private func ckbEmitStagedRebuildStage(stageSink: CkbStagedRebuildStageSink, stage: String, status: String, deadlineAtMillis: Int64, diagnostic: String, runId!: String = "", taskName!: String = ""): Unit {
+private func ckbEmitStagedRebuildStage(stageSink: CkbStagedRebuildStageSink, stage: String, status: String, deadlineAtMillis: Int64, diagnostic: String, runId!: String = "", taskName!: String = "", durationMillis!: Int64 = 0, itemCount!: Int64 = 0): Unit {
     let progress = CkbStagedRebuildStageProgress()
     progress.runId = runId
     progress.taskName = taskName
@@ -6401,6 +6512,8 @@ private func ckbEmitStagedRebuildStage(stageSink: CkbStagedRebuildStageSink, sta
     progress.deadlineAtMillis = deadlineAtMillis
     progress.remainingMillis = ckbRemainingMillis(deadlineAtMillis)
     progress.atMillis = ckbCoreNowMillis()
+    progress.durationMillis = durationMillis
+    progress.itemCount = itemCount
     try {
         stageSink.onStagedRebuildStage(progress)
     } catch (_: Exception) {
@@ -6420,6 +6533,7 @@ private func vectorBuildRecoveredCurrentText(previous: String, state: String, di
     text += "embedded=${parseIntField(ckbCurrentField(previous, "embedded"), 0)}\n"
     text += "progressPath=${escapeField(ckbCurrentField(previous, "progressPath"))}\n"
     text += "diagnostic=${escapeField(utf8SafePrefix(redactSensitive(diagnostic), 240))}\n"
+    text += "atMillis=${DateTime.now().toUnixTimeStamp().toMilliseconds()}\n"
     text
 }
 
@@ -6802,14 +6916,58 @@ private func ckbProfileIngestBudgetMillis(profile: CkbScheduleTaskProfile): Int6
 }
 
 private func ckbWriteScheduledProfileStageCheckpoint(store: FileKnowledgeStore, profile: CkbScheduleTaskProfile, stage: String, status: String, budgetMillis: Int64, deadlineAtMillis: Int64, diagnostic: String): Unit {
+    let runId = ckbSchedulerCurrentRunId(store)
+    let taskName = ckbSchedulerCurrentTaskName(store)
+    let atMillis = ckbCoreNowMillis()
+    let progressPath = if (runId != "") { "metadata/scheduler-runs/${safeName(runId)}.jsonl" } else { "" }
     var text = "profile=${escapeField(profile.profile)}\n"
+    text += "runId=${escapeField(runId)}\n"
+    text += "taskName=${escapeField(taskName)}\n"
     text += "stage=${escapeField(stage)}\n"
     text += "status=${escapeField(status)}\n"
     text += "budgetMillis=${budgetMillis}\n"
     text += "deadlineAtMillis=${deadlineAtMillis}\n"
     text += "remainingMillis=${ckbRemainingMillis(deadlineAtMillis)}\n"
+    text += "progressPath=${escapeField(progressPath)}\n"
     text += "diagnostic=${escapeField(utf8SafePrefix(redactSensitive(diagnostic), 240))}\n"
-    store.writeLinesAtomically("metadata/routine-stage-checkpoints/${safeName(profile.profile)}-${safeName(stage)}.ckb", text)
+    text += "atMillis=${atMillis}\n"
+    var degraded = false
+    try {
+        store.writeLinesAtomically("metadata/routine-stage-checkpoints/${safeName(profile.profile)}-${safeName(stage)}.ckb", text)
+    } catch (_: Exception) {
+        degraded = true
+    }
+    let scopedPath = ckbSchedulerScopedRoutineStageCurrentPath(runId, taskName, stage)
+    if (scopedPath != "") {
+        try {
+            store.writeLinesAtomically(scopedPath, text)
+        } catch (_: Exception) {
+            degraded = true
+        }
+    }
+    if (progressPath != "") {
+        let progress = CkbStagedRebuildStageProgress()
+        progress.runId = runId
+        progress.taskName = taskName
+        progress.stage = stage
+        progress.status = status
+        progress.diagnostic = diagnostic
+        progress.deadlineAtMillis = deadlineAtMillis
+        progress.remainingMillis = ckbRemainingMillis(deadlineAtMillis)
+        progress.atMillis = atMillis
+        try {
+            store.appendLinesAtomically(progressPath, ckbStagedRebuildStageProgressJson(progress, runId, taskName))
+        } catch (_: Exception) {
+            degraded = true
+        }
+    }
+    if (degraded && progressPath != "") {
+        try {
+            store.appendLinesAtomically("metadata/scheduler-runs/${safeName(runId)}-diagnostics.jsonl", schedulerDiagnosticJson(runId, taskName, "degraded", "profile_stage_checkpoint_write_degraded:profile=${profile.profile}|stage=${stage}"))
+        } catch (_: Exception) {
+            ()
+        }
+    }
 }
 
 private func ckbTaskWorkerNowMillis(): Int64 {
@@ -6824,8 +6982,9 @@ private func ckbTaskWorkerResultRelativePath(taskName: String): String {
     "metadata/scheduler-workers/${safeName(taskName)}-${ckbTaskWorkerNowMillis()}.ckb"
 }
 
-private func ckbTaskWorkerStartedText(taskName: String, since: String, deadlineAtMillis: Int64, resultRelativePath: String, startedAtMillis: Int64, commandHash!: String = "", dyldLibraryPath!: String = "", cjHeapSize!: String = ""): String {
+private func ckbTaskWorkerStartedText(taskName: String, since: String, deadlineAtMillis: Int64, resultRelativePath: String, startedAtMillis: Int64, schedulerRunId!: String = "", commandHash!: String = "", dyldLibraryPath!: String = "", cjHeapSize!: String = ""): String {
     var text = "status=worker_started\n"
+    text += "schedulerRunId=${escapeField(schedulerRunId)}\n"
     text += "taskName=${escapeField(taskName)}\n"
     text += "since=${escapeField(since)}\n"
     text += "deadlineAtMillis=${deadlineAtMillis}\n"
@@ -6852,24 +7011,39 @@ public func ckbSchedulerTaskResultText(task: SchedulerTaskResult): String {
     text += "endedAtMillis=${task.endedAtMillis}\n"
     text += "deadlineAtMillis=${task.deadlineAtMillis}\n"
     text += "durationMillis=${task.durationMillis}\n"
+    text += "schedulerRunId=${escapeField(task.schedulerRunId)}\n"
+    text += "schedulerTaskName=${escapeField(task.schedulerTaskName)}\n"
+    text += "bootstrapStartedAtMillis=${task.bootstrapStartedAtMillis}\n"
+    text += "taskBodyStartedAtMillis=${task.taskBodyStartedAtMillis}\n"
+    text += "taskBodyEndedAtMillis=${task.taskBodyEndedAtMillis}\n"
+    text += "bootstrapDurationMillis=${task.bootstrapDurationMillis}\n"
+    text += "resultWrittenAtMillis=${task.resultWrittenAtMillis}\n"
+    text += "resultFlushDurationMillis=${task.resultFlushDurationMillis}\n"
     text += "requestCount=${task.requestCount}\n"
     text += "truncated=${task.truncated}\n"
     text += "timeBudgetMillis=${task.timeBudgetMillis}\n"
     text += "validationStatus=${escapeField(task.validationStatus)}\n"
-    text += "validationSummary=${escapeField(task.validationSummary)}\n"
+    text += "validationSummary=${ckbSchedulerResultSafeField(task.validationSummary, 480)}\n"
     text += "validationEvidenceHash=${escapeField(task.validationEvidenceHash)}\n"
-    text += "lastStage=${escapeField(task.lastStage)}\n"
-    text += "lastProgress=${escapeField(task.lastProgress)}\n"
+    text += "lastStage=${ckbSchedulerResultSafeField(task.lastStage, 120)}\n"
+    text += "lastProgress=${ckbSchedulerResultSafeField(task.lastProgress, 240)}\n"
     text += "workerPid=${task.workerPid}\n"
-    text += "workerOutSnippet=${escapeField(task.workerOutSnippet)}\n"
-    text += "workerErrSnippet=${escapeField(task.workerErrSnippet)}\n"
+    text += "workerOutSnippet=${ckbSchedulerResultSafeField(task.workerOutSnippet, 240)}\n"
+    text += "workerErrSnippet=${ckbSchedulerResultSafeField(task.workerErrSnippet, 240)}\n"
     for (kind in task.updatedDataKinds) {
         text += "updatedDataKind|${escapeField(kind)}\n"
     }
+    for (duration in task.stageDurations) {
+        text += "stageDuration|${ckbSchedulerResultSafeField(duration, 240)}\n"
+    }
     for (diagnostic in task.validationDiagnostics) {
-        text += "diagnostic|${escapeField(diagnostic)}\n"
+        text += "diagnostic|${ckbSchedulerResultSafeField(diagnostic, 480)}\n"
     }
     text
+}
+
+private func ckbSchedulerResultSafeField(value: String, maxBytes: Int64): String {
+    escapeField(utf8SafePrefix(redactSensitive(value), maxBytes))
 }
 
 public func ckbSchedulerTaskResultFromText(text: String): SchedulerTaskResult {
@@ -6884,7 +7058,11 @@ public func ckbSchedulerTaskResultFromText(text: String): SchedulerTaskResult {
             continue
         }
         if (trimmed.startsWith("diagnostic|")) {
-            task.validationDiagnostics.add(unescapeField(trimmed[11..trimmed.size]))
+            task.validationDiagnostics.add(utf8SafePrefix(redactSensitive(unescapeField(trimmed[11..trimmed.size])), 480))
+            continue
+        }
+        if (trimmed.startsWith("stageDuration|")) {
+            task.stageDurations.add(utf8SafePrefix(redactSensitive(unescapeField(trimmed[14..trimmed.size])), 240))
             continue
         }
         let parts = trimmed.split("=")
@@ -6913,6 +7091,22 @@ public func ckbSchedulerTaskResultFromText(text: String): SchedulerTaskResult {
             task.deadlineAtMillis = parseIntField(value, 0)
         } else if (key == "durationMillis") {
             task.durationMillis = parseIntField(value, 0)
+        } else if (key == "schedulerRunId") {
+            task.schedulerRunId = value
+        } else if (key == "schedulerTaskName") {
+            task.schedulerTaskName = value
+        } else if (key == "bootstrapStartedAtMillis") {
+            task.bootstrapStartedAtMillis = parseIntField(value, 0)
+        } else if (key == "taskBodyStartedAtMillis") {
+            task.taskBodyStartedAtMillis = parseIntField(value, 0)
+        } else if (key == "taskBodyEndedAtMillis") {
+            task.taskBodyEndedAtMillis = parseIntField(value, 0)
+        } else if (key == "bootstrapDurationMillis") {
+            task.bootstrapDurationMillis = parseIntField(value, 0)
+        } else if (key == "resultWrittenAtMillis") {
+            task.resultWrittenAtMillis = parseIntField(value, 0)
+        } else if (key == "resultFlushDurationMillis") {
+            task.resultFlushDurationMillis = parseIntField(value, 0)
         } else if (key == "requestCount") {
             task.requestCount = parseIntField(value, 0)
         } else if (key == "truncated") {
@@ -6922,30 +7116,34 @@ public func ckbSchedulerTaskResultFromText(text: String): SchedulerTaskResult {
         } else if (key == "validationStatus") {
             task.validationStatus = value
         } else if (key == "validationSummary") {
-            task.validationSummary = value
+            task.validationSummary = utf8SafePrefix(redactSensitive(value), 480)
         } else if (key == "validationEvidenceHash") {
             task.validationEvidenceHash = value
         } else if (key == "lastStage") {
-            task.lastStage = value
+            task.lastStage = utf8SafePrefix(redactSensitive(value), 120)
         } else if (key == "lastProgress") {
-            task.lastProgress = value
+            task.lastProgress = utf8SafePrefix(redactSensitive(value), 240)
         } else if (key == "workerPid") {
             task.workerPid = parseIntField(value, 0)
         } else if (key == "workerOutSnippet") {
-            task.workerOutSnippet = value
+            task.workerOutSnippet = utf8SafePrefix(redactSensitive(value), 240)
         } else if (key == "workerErrSnippet") {
-            task.workerErrSnippet = value
+            task.workerErrSnippet = utf8SafePrefix(redactSensitive(value), 240)
         }
     }
     task
 }
 
-public func ckbWriteSchedulerWorkerTimeoutCompensation(store: FileKnowledgeStore, resultRelativePath: String, name: String, since: String, durationMillis: Int64, timeoutMillis: Int64, diagnostic: String, lastStage!: String = "", lastProgress!: String = "", workerPid!: Int64 = 0, outSnippet!: String = "", errSnippet!: String = ""): SchedulerTaskResult {
+public func ckbWriteSchedulerWorkerTimeoutCompensation(store: FileKnowledgeStore, resultRelativePath: String, name: String, since: String, durationMillis: Int64, timeoutMillis: Int64, diagnostic: String, lastStage!: String = "", lastProgress!: String = "", workerPid!: Int64 = 0, outSnippet!: String = "", errSnippet!: String = "", schedulerRunId!: String = ""): SchedulerTaskResult {
     let task = ckbSchedulerWorkerTimeoutResult(name, since, durationMillis, timeoutMillis, diagnostic)
-    let ended = ckbTaskWorkerNowMillis()
-    task.endedAtMillis = ended
-    task.startedAtMillis = if (durationMillis > 0 && ended > durationMillis) { ended - durationMillis } else { ended }
+    let flushStartedAtMillis = ckbTaskWorkerNowMillis()
+    task.endedAtMillis = flushStartedAtMillis
+    task.startedAtMillis = if (durationMillis > 0 && flushStartedAtMillis > durationMillis) { flushStartedAtMillis - durationMillis } else { flushStartedAtMillis }
     task.deadlineAtMillis = if (timeoutMillis > 0) { task.startedAtMillis + timeoutMillis } else { 0 }
+    task.schedulerRunId = schedulerRunId
+    task.schedulerTaskName = name
+    task.bootstrapStartedAtMillis = task.startedAtMillis
+    task.taskBodyEndedAtMillis = flushStartedAtMillis
     if (lastStage != "") {
         task.lastStage = lastStage
     }
@@ -6953,13 +7151,81 @@ public func ckbWriteSchedulerWorkerTimeoutCompensation(store: FileKnowledgeStore
     task.workerPid = workerPid
     task.workerOutSnippet = utf8SafePrefix(redactSensitive(outSnippet), 240)
     task.workerErrSnippet = utf8SafePrefix(redactSensitive(errSnippet), 240)
-    store.writeLinesAtomically(resultRelativePath, ckbSchedulerTaskResultText(task))
-    store.writeLinesAtomically("${resultRelativePath}.sidecar", ckbSchedulerTaskResultText(task))
+    ckbWriteSchedulerTerminalResultArtifacts(store, resultRelativePath, task, flushStartedAtMillis)
+}
+
+public func ckbWriteSchedulerTaskBootstrapFailure(store: FileKnowledgeStore, taskName: String, since: String, deadlineAtMillis: Int64, resultRelativePath: String, schedulerRunId: String, bootstrapStartedAtMillis: Int64, diagnostic: String): SchedulerTaskResult {
+    let task = SchedulerTaskResult()
+    let flushStartedAtMillis = ckbTaskWorkerNowMillis()
+    task.ok = false
+    task.status = "task_bootstrap_failed"
+    task.since = since
+    task.schedulerRunId = schedulerRunId
+    task.schedulerTaskName = taskName
+    task.bootstrapStartedAtMillis = bootstrapStartedAtMillis
+    task.startedAtMillis = bootstrapStartedAtMillis
+    task.taskBodyEndedAtMillis = flushStartedAtMillis
+    task.endedAtMillis = flushStartedAtMillis
+    task.durationMillis = if (flushStartedAtMillis >= bootstrapStartedAtMillis) { flushStartedAtMillis - bootstrapStartedAtMillis } else { 0 }
+    task.deadlineAtMillis = deadlineAtMillis
+    task.lastStage = "bootstrap_failed"
+    task.validationDiagnostics.add("${taskName}:task_bootstrap_failed:${utf8SafePrefix(redactSensitive(diagnostic), 160)}")
+    ckbWriteSchedulerTerminalResultArtifacts(store, resultRelativePath, task, flushStartedAtMillis)
+}
+
+private func ckbWriteSchedulerTerminalResultArtifacts(store: FileKnowledgeStore, resultRelativePath: String, task: SchedulerTaskResult, flushStartedAtMillis: Int64): SchedulerTaskResult {
+    ckbSanitizeSchedulerTaskHumanFields(task)
+    task.resultWrittenAtMillis = 0
+    task.resultFlushDurationMillis = 0
+    let recoveryText = ckbSchedulerTaskResultText(task)
+    try {
+        store.writeLinesAtomically(resultRelativePath, recoveryText)
+    } catch (_: Exception) {
+        task.validationDiagnostics.add("${task.schedulerTaskName}:task_result_primary_write_failed")
+        return task
+    }
+    let confirmedAtMillis = ckbTaskWorkerNowMillis()
+    task.resultWrittenAtMillis = confirmedAtMillis
+    task.resultFlushDurationMillis = if (confirmedAtMillis >= flushStartedAtMillis) { confirmedAtMillis - flushStartedAtMillis } else { 0 }
+    task.endedAtMillis = confirmedAtMillis
+    task.durationMillis = if (confirmedAtMillis >= task.startedAtMillis) { confirmedAtMillis - task.startedAtMillis } else { 0 }
+    let confirmedText = ckbSchedulerTaskResultText(task)
+    try {
+        store.writeLinesAtomically("${resultRelativePath}.sidecar", confirmedText)
+    } catch (_: Exception) {
+        task.validationDiagnostics.add("${task.schedulerTaskName}:task_result_sidecar_write_degraded")
+    }
     task
 }
 
-public func ckbRunSchedulerTaskWorker(kb: KnowledgeBase, config: CkbRuntimeConfig, store: FileKnowledgeStore, taskName: String, since: String, deadlineAtMillis: Int64, resultRelativePath: String): SchedulerTaskResult {
-    let started = ckbTaskWorkerNowMillis()
+private func ckbSanitizeSchedulerTaskHumanFields(task: SchedulerTaskResult): Unit {
+    task.validationSummary = utf8SafePrefix(redactSensitive(task.validationSummary), 480)
+    task.lastStage = utf8SafePrefix(redactSensitive(task.lastStage), 120)
+    task.lastProgress = utf8SafePrefix(redactSensitive(task.lastProgress), 240)
+    task.workerOutSnippet = utf8SafePrefix(redactSensitive(task.workerOutSnippet), 240)
+    task.workerErrSnippet = utf8SafePrefix(redactSensitive(task.workerErrSnippet), 240)
+    let stageDurations = ArrayList<String>()
+    for (duration in task.stageDurations) {
+        stageDurations.add(utf8SafePrefix(redactSensitive(duration), 240))
+    }
+    task.stageDurations.clear()
+    for (duration in stageDurations) {
+        task.stageDurations.add(duration)
+    }
+    let diagnostics = ArrayList<String>()
+    for (diagnostic in task.validationDiagnostics) {
+        diagnostics.add(utf8SafePrefix(redactSensitive(diagnostic), 480))
+    }
+    task.validationDiagnostics.clear()
+    for (diagnostic in diagnostics) {
+        task.validationDiagnostics.add(diagnostic)
+    }
+}
+
+public func ckbRunSchedulerTaskWorker(kb: KnowledgeBase, config: CkbRuntimeConfig, store: FileKnowledgeStore, taskName: String, since: String, deadlineAtMillis: Int64, resultRelativePath: String, schedulerRunId!: String = "", bootstrapStartedAtMillis!: Int64 = 0, taskBodyStartedAtMillis!: Int64 = 0): SchedulerTaskResult {
+    let enteredAtMillis = ckbTaskWorkerNowMillis()
+    let bootstrapStarted = if (bootstrapStartedAtMillis > 0) { bootstrapStartedAtMillis } else { enteredAtMillis }
+    let bodyStarted = if (taskBodyStartedAtMillis > 0) { taskBodyStartedAtMillis } else { enteredAtMillis }
     let runner = CkbSchedulerTaskRunner(kb, config, store, sourceRunner: if (config.networkEnabled) { HttpSourceFetchRunner(config) } else { DisabledNetworkFetchRunner() })
     var task = SchedulerTaskResult()
     try {
@@ -6969,31 +7235,31 @@ public func ckbRunSchedulerTaskWorker(kb: KnowledgeBase, config: CkbRuntimeConfi
         task.status = if (deadlineAtMillis > 0 && ckbTaskWorkerNowMillis() >= deadlineAtMillis) { "task_timeout:${taskName}" } else { "task_exception" }
         task.validationDiagnostics.add("${taskName}:${task.status}:${utf8SafePrefix(e.message, 160)}")
     }
+    let bodyEndedAtMillis = ckbTaskWorkerNowMillis()
     if (!task.ok && task.lastStage == "") {
         task.lastStage = ckbSchedulerWorkerLastStageFromStore(store)
     }
     if (!task.ok && task.lastProgress == "") {
         task.lastProgress = ckbSchedulerWorkerLastProgressFromStoreForTask(store, taskName)
     }
-    if (task.durationMillis <= 0) {
-        task.durationMillis = ckbTaskWorkerNowMillis() - started
-    }
-    if (task.startedAtMillis <= 0) {
-        task.startedAtMillis = started
-    }
-    if (task.endedAtMillis <= 0) {
-        task.endedAtMillis = started + task.durationMillis
-    }
+    task.schedulerRunId = schedulerRunId
+    task.schedulerTaskName = taskName
+    task.bootstrapStartedAtMillis = bootstrapStarted
+    task.taskBodyStartedAtMillis = bodyStarted
+    task.taskBodyEndedAtMillis = bodyEndedAtMillis
+    task.bootstrapDurationMillis = if (bodyStarted >= bootstrapStarted) { bodyStarted - bootstrapStarted } else { 0 }
+    task.startedAtMillis = bootstrapStarted
+    task.endedAtMillis = bodyEndedAtMillis
+    task.durationMillis = if (bodyEndedAtMillis >= bootstrapStarted) { bodyEndedAtMillis - bootstrapStarted } else { 0 }
     task.deadlineAtMillis = deadlineAtMillis
-    if (task.timeBudgetMillis <= 0 && deadlineAtMillis > started) {
-        task.timeBudgetMillis = deadlineAtMillis - started
+    if (task.timeBudgetMillis <= 0 && deadlineAtMillis > bootstrapStarted) {
+        task.timeBudgetMillis = deadlineAtMillis - bootstrapStarted
     }
-    store.writeLinesAtomically(resultRelativePath, ckbSchedulerTaskResultText(task))
-    task
+    ckbWriteSchedulerTerminalResultArtifacts(store, resultRelativePath, task, bodyEndedAtMillis)
 }
 
-public func ckbReadSchedulerWorkerResultFile(storePath: String, resultRelativePath: String, name: String, since: String, durationMillis: Int64, timeoutMillis: Int64): SchedulerTaskResult {
-    ckbReadSchedulerWorkerResult(storePath, resultRelativePath, name, since, durationMillis, timeoutMillis)
+public func ckbReadSchedulerWorkerResultFile(storePath: String, resultRelativePath: String, name: String, since: String, durationMillis: Int64, timeoutMillis: Int64, schedulerRunId!: String = "", strictIdentity!: Bool = false): SchedulerTaskResult {
+    ckbReadSchedulerWorkerResult(storePath, resultRelativePath, name, since, durationMillis, timeoutMillis, schedulerRunId: schedulerRunId, strictIdentity: strictIdentity)
 }
 
 private func ckbRoutineArtifactStatusForTask(store: FileKnowledgeStore, config: CkbRuntimeConfig, contract: CkbSchedulerTaskContract, task: SchedulerTaskResult): CkbRoutineArtifactStatus {
@@ -7138,6 +7404,7 @@ public class ProcessIsolatedSchedulerTaskRunner <: SchedulerTaskRunner {
 
     public func runTask(name: String, since: String, deadlineAtMillis: Int64): SchedulerTaskResult {
         let started = ckbTaskWorkerNowMillis()
+        let schedulerRunId = ckbSchedulerCurrentRunIdForTask(this.store, name)
         let timeoutMillis = if (deadlineAtMillis > started) { deadlineAtMillis - started } else { 0 }
         if (deadlineAtMillis > 0 && timeoutMillis <= 0) {
             return ckbSchedulerWorkerTimeoutResult(name, since, 0, 0, "task_deadline_already_exceeded")
@@ -7149,17 +7416,17 @@ public class ProcessIsolatedSchedulerTaskRunner <: SchedulerTaskRunner {
         let workerDeadlineAtMillis = if (deadlineAtMillis > started + flushMarginMillis) { deadlineAtMillis - flushMarginMillis } else { deadlineAtMillis }
         let resultRelativePath = ckbTaskWorkerResultRelativePath(name)
         let workerHeap = ckbSchedulerWorkerCjHeapSizeForTask(name)
-        let startedText = ckbTaskWorkerStartedText(name, since, workerDeadlineAtMillis, resultRelativePath, started, commandHash: stableSummaryHash(this.command), dyldLibraryPath: ckbSchedulerWorkerDyldLibraryPath(), cjHeapSize: workerHeap)
+        let startedText = ckbTaskWorkerStartedText(name, since, workerDeadlineAtMillis, resultRelativePath, started, schedulerRunId: schedulerRunId, commandHash: stableSummaryHash(this.command), dyldLibraryPath: ckbSchedulerWorkerDyldLibraryPath(), cjHeapSize: workerHeap)
         this.store.writeLinesAtomically(resultRelativePath, startedText)
         this.store.writeLinesAtomically("${resultRelativePath}.started", startedText)
-        let code = this.launchWorker(name, since, workerDeadlineAtMillis, resultRelativePath, timeoutMillis, workerHeap)
+        let code = this.launchWorker(name, since, workerDeadlineAtMillis, resultRelativePath, timeoutMillis, workerHeap, schedulerRunId)
         let elapsed = ckbTaskWorkerNowMillis() - started
         let workerPid = ckbSchedulerWorkerPidFromStarted(this.storePath, resultRelativePath)
         let outSnippet = ckbSchedulerWorkerArtifactSnippet(this.storePath, resultRelativePath + ".out")
         let errSnippet = ckbSchedulerWorkerArtifactSnippet(this.storePath, resultRelativePath + ".err")
-        let parsed = ckbReadSchedulerWorkerResult(this.storePath, resultRelativePath, name, since, elapsed, timeoutMillis)
+        let parsed = ckbReadSchedulerWorkerResult(this.storePath, resultRelativePath, name, since, elapsed, timeoutMillis, schedulerRunId: schedulerRunId, strictIdentity: true)
         let artifactClass = ckbClassifyWorkerArtifact(outSnippet, errSnippet)
-        if (!ckbSchedulerWorkerResultNeedsCompensation(parsed.status)) {
+        if (!ckbSchedulerWorkerResultNeedsFailureHandling(parsed.status)) {
             if (parsed.timeBudgetMillis <= 0) {
                 parsed.timeBudgetMillis = timeoutMillis
             }
@@ -7178,23 +7445,24 @@ public class ProcessIsolatedSchedulerTaskRunner <: SchedulerTaskRunner {
             if (artifactClass != "") {
                 parsed.validationDiagnostics.add("${name}:worker_artifact:${artifactClass}")
             }
-            return parsed
+            return ckbApplySchedulerProcessWallTiming(parsed, started, ckbTaskWorkerNowMillis())
         }
-        if (code == 124 || elapsed >= timeoutMillis) {
+        if ((code == 124 || elapsed >= timeoutMillis) && ckbSchedulerWorkerResultAllowsTimeoutCompensation(parsed.status)) {
             let timeoutDiagnostic = if (artifactClass == "") { "task_worker_hard_timeout:${parsed.status}" } else { "task_worker_hard_timeout:${parsed.status}:${artifactClass}" }
             let storeStage = ckbSchedulerWorkerLastStageFromStoreForTask(this.store, name)
             let lastStage = if (storeStage != "") { storeStage } else { ckbSchedulerWorkerLastStageFromArtifacts(outSnippet, errSnippet) }
-            return ckbWriteSchedulerWorkerTimeoutCompensation(this.store, resultRelativePath, name, since, elapsed, timeoutMillis, timeoutDiagnostic, lastStage: lastStage, lastProgress: ckbSchedulerWorkerLastProgressFromStoreForTask(this.store, name), workerPid: workerPid, outSnippet: outSnippet, errSnippet: errSnippet)
+            let compensated = ckbWriteSchedulerWorkerTimeoutCompensation(this.store, resultRelativePath, name, since, elapsed, timeoutMillis, timeoutDiagnostic, lastStage: lastStage, lastProgress: ckbSchedulerWorkerLastProgressFromStoreForTask(this.store, name), workerPid: workerPid, outSnippet: outSnippet, errSnippet: errSnippet, schedulerRunId: schedulerRunId)
+            return ckbApplySchedulerProcessWallTiming(compensated, started, ckbTaskWorkerNowMillis())
         }
-        if (ckbSchedulerWorkerResultNeedsCompensation(parsed.status)) {
+        if (ckbSchedulerWorkerResultNeedsFailureHandling(parsed.status)) {
             parsed.workerPid = workerPid
             parsed.workerOutSnippet = outSnippet
             parsed.workerErrSnippet = errSnippet
-            if (artifactClass == "worker_out_of_memory") {
+            if (ckbSchedulerWorkerResultAllowsArtifactClassification(parsed.status) && artifactClass == "worker_out_of_memory") {
                 parsed.status = "task_worker_out_of_memory"
                 parsed.validationDiagnostics.add("${name}:task_worker_out_of_memory")
             }
-            if (artifactClass == "worker_dynamic_library_missing") {
+            if (ckbSchedulerWorkerResultAllowsArtifactClassification(parsed.status) && artifactClass == "worker_dynamic_library_missing") {
                 parsed.status = "task_worker_dynamic_library_missing"
                 parsed.validationDiagnostics.add("${name}:task_worker_dynamic_library_missing")
             }
@@ -7208,12 +7476,12 @@ public class ProcessIsolatedSchedulerTaskRunner <: SchedulerTaskRunner {
             if (artifactClass != "") {
                 parsed.validationDiagnostics.add("${name}:worker_artifact:${artifactClass}")
             }
-            return parsed
+            return ckbApplySchedulerProcessWallTiming(parsed, started, ckbTaskWorkerNowMillis())
         }
-        parsed
+        ckbApplySchedulerProcessWallTiming(parsed, started, ckbTaskWorkerNowMillis())
     }
 
-    private func launchWorker(name: String, since: String, deadlineAtMillis: Int64, resultRelativePath: String, timeoutMillis: Int64, workerHeap: String): Int64 {
+    private func launchWorker(name: String, since: String, deadlineAtMillis: Int64, resultRelativePath: String, timeoutMillis: Int64, workerHeap: String, schedulerRunId: String): Int64 {
         let seconds = if (timeoutMillis <= 0) { 1 } else { (timeoutMillis + 999) / 1000 }
         let resultPath = Path(this.storePath).join(resultRelativePath).toString()
         let outPath = resultPath + ".out"
@@ -7225,6 +7493,7 @@ public class ProcessIsolatedSchedulerTaskRunner <: SchedulerTaskRunner {
         }
         script += " --store " + ckbLocalShellQuote(this.storePath)
         script += " scheduler-task-worker --task " + ckbLocalShellQuote(name)
+        script += " --scheduler-run-id " + ckbLocalShellQuote(schedulerRunId)
         script += " --since " + ckbLocalShellQuote(since)
         script += " --deadline " + ckbLocalShellQuote("${deadlineAtMillis}")
         script += " --result-rel " + ckbLocalShellQuote(resultRelativePath)
@@ -7240,6 +7509,13 @@ public class ProcessIsolatedSchedulerTaskRunner <: SchedulerTaskRunner {
             125
         }
     }
+}
+
+public func ckbApplySchedulerProcessWallTiming(task: SchedulerTaskResult, startedAtMillis: Int64, endedAtMillis: Int64): SchedulerTaskResult {
+    task.startedAtMillis = startedAtMillis
+    task.endedAtMillis = if (endedAtMillis >= startedAtMillis) { endedAtMillis } else { startedAtMillis }
+    task.durationMillis = task.endedAtMillis - task.startedAtMillis
+    task
 }
 
 private func ckbSchedulerWorkerDyldLibraryPath(): String {
@@ -7333,7 +7609,29 @@ private func ckbSchedulerWorkerLastStageFromStore(store: FileKnowledgeStore): St
     ckbSchedulerWorkerLastStageFromStoreForTask(store, "")
 }
 
+private class CkbSchedulerWorkerProgressSelection {
+    var identityAvailable: Bool = false
+    var identityMatches: Bool = false
+    var valid: Bool = false
+    var atMillis: Int64 = 0
+    var priority: Int64 = 0
+    var stage: String = ""
+    var progress: String = ""
+
+    init() {}
+}
+
 public func ckbSchedulerWorkerLastStageFromStoreForTask(store: FileKnowledgeStore, taskName: String): String {
+    let selection = ckbSchedulerWorkerLatestScopedSelection(store, taskName)
+    if (selection.valid) {
+        return selection.stage
+    }
+    if (selection.identityAvailable && !selection.identityMatches) {
+        return ""
+    }
+    if (selection.identityAvailable) {
+        return ""
+    }
     let routineStage = ckbSchedulerRoutineCheckpointStageFromStoreForTask(store, taskName)
     if (routineStage != "") {
         return routineStage
@@ -7343,11 +7641,11 @@ public func ckbSchedulerWorkerLastStageFromStoreForTask(store: FileKnowledgeStor
     let scopedTaskName = if (taskName.trimAscii() != "") { taskName } else { currentTaskName }
     let allowGlobalStage = taskName.trimAscii() == "" && (scopedTaskName == "" || scopedTaskName == currentTaskName)
     let stagedPath = ckbSchedulerScopedStagedRebuildCurrentPath(runId, scopedTaskName)
-    let scopedStagedCurrent = if (stagedPath != "") { store.readText(stagedPath) } else { "" }
+    let scopedStagedCurrent = if (stagedPath != "") { ckbSchedulerReadProgressArtifact(store, stagedPath) } else { "" }
     let stagedCurrent = if (scopedStagedCurrent != "") {
         scopedStagedCurrent
     } else if (allowGlobalStage) {
-        store.readText("metadata/staged-rebuild-current.ckb")
+        ckbSchedulerReadProgressArtifact(store, "metadata/staged-rebuild-current.ckb")
     } else {
         ""
     }
@@ -7356,11 +7654,11 @@ public func ckbSchedulerWorkerLastStageFromStoreForTask(store: FileKnowledgeStor
         return stagedStage
     }
     let scopedVectorPath = ckbSchedulerScopedVectorCurrentPath(runId, scopedTaskName)
-    let scopedVectorCurrent = if (scopedVectorPath != "") { store.readText(scopedVectorPath) } else { "" }
+    let scopedVectorCurrent = if (scopedVectorPath != "") { ckbSchedulerReadProgressArtifact(store, scopedVectorPath) } else { "" }
     let vectorCurrent = if (scopedVectorCurrent != "") {
         scopedVectorCurrent
     } else if (allowGlobalStage) {
-        store.readText("metadata/vector-reconcile-current.ckb")
+        ckbSchedulerReadProgressArtifact(store, "metadata/vector-reconcile-current.ckb")
     } else {
         ""
     }
@@ -7398,6 +7696,20 @@ public func ckbClassifyWorkerArtifact(outSnippet: String, errSnippet: String): S
 }
 
 public func ckbSchedulerWorkerLastProgressFromStoreForTask(store: FileKnowledgeStore, taskName: String): String {
+    let selection = ckbSchedulerWorkerLatestScopedSelection(store, taskName)
+    if (selection.valid) {
+        return selection.progress
+    }
+    if (selection.identityAvailable && !selection.identityMatches) {
+        return ""
+    }
+    if (selection.identityAvailable) {
+        let schedulerCurrent = ckbSchedulerReadProgressArtifact(store, "metadata/scheduler-current.ckb")
+        if (schedulerCurrent != "") {
+            return "scheduler:status=${ckbCurrentField(schedulerCurrent, "status")},taskName=${ckbCurrentField(schedulerCurrent, "taskName")},progressPath=${ckbCurrentField(schedulerCurrent, "progressPath")}"
+        }
+        return ""
+    }
     let routineSummary = ckbSchedulerRoutineCheckpointProgressFromStoreForTask(store, taskName)
     if (routineSummary != "") {
         return routineSummary
@@ -7408,11 +7720,11 @@ public func ckbSchedulerWorkerLastProgressFromStoreForTask(store: FileKnowledgeS
     let allowGlobalProgress = taskName.trimAscii() == "" && (scopedTaskName == "" || scopedTaskName == currentTaskName)
     let isManifestOnlyTask = scopedTaskName == "cangjie_version_branch_refresh"
     let stagedPath = ckbSchedulerScopedStagedRebuildCurrentPath(runId, scopedTaskName)
-    let scopedStagedCurrent = if (stagedPath != "") { store.readText(stagedPath) } else { "" }
+    let scopedStagedCurrent = if (stagedPath != "") { ckbSchedulerReadProgressArtifact(store, stagedPath) } else { "" }
     let stagedCurrent = if (scopedStagedCurrent != "") {
         scopedStagedCurrent
     } else if (allowGlobalProgress && !isManifestOnlyTask) {
-        store.readText("metadata/staged-rebuild-current.ckb")
+        ckbSchedulerReadProgressArtifact(store, "metadata/staged-rebuild-current.ckb")
     } else {
         ""
     }
@@ -7421,11 +7733,11 @@ public func ckbSchedulerWorkerLastProgressFromStoreForTask(store: FileKnowledgeS
         return stagedSummary
     }
     let scopedPath = ckbSchedulerScopedVectorCurrentPath(runId, scopedTaskName)
-    let scopedVectorCurrent = if (scopedPath != "") { store.readText(scopedPath) } else { "" }
+    let scopedVectorCurrent = if (scopedPath != "") { ckbSchedulerReadProgressArtifact(store, scopedPath) } else { "" }
     let vectorCurrent = if (scopedVectorCurrent != "") {
         scopedVectorCurrent
     } else if (allowGlobalProgress && !isManifestOnlyTask) {
-        store.readText("metadata/vector-reconcile-current.ckb")
+        ckbSchedulerReadProgressArtifact(store, "metadata/vector-reconcile-current.ckb")
     } else {
         ""
     }
@@ -7438,11 +7750,72 @@ public func ckbSchedulerWorkerLastProgressFromStoreForTask(store: FileKnowledgeS
             return "vector:state=${state},completed=${completed},currentBatch=${currentBatch},progressPath=${progressPath}"
         }
     }
-    let schedulerCurrent = store.readText("metadata/scheduler-current.ckb")
+    let schedulerCurrent = ckbSchedulerReadProgressArtifact(store, "metadata/scheduler-current.ckb")
     if (schedulerCurrent != "") {
         return "scheduler:status=${ckbCurrentField(schedulerCurrent, "status")},taskName=${ckbCurrentField(schedulerCurrent, "taskName")},progressPath=${ckbCurrentField(schedulerCurrent, "progressPath")}"
     }
     ""
+}
+
+private func ckbSchedulerWorkerLatestScopedSelection(store: FileKnowledgeStore, taskName: String): CkbSchedulerWorkerProgressSelection {
+    let selection = CkbSchedulerWorkerProgressSelection()
+    let schedulerCurrent = ckbSchedulerReadProgressArtifact(store, "metadata/scheduler-current.ckb")
+    let runId = ckbCurrentField(schedulerCurrent, "runId")
+    let currentTaskName = ckbCurrentField(schedulerCurrent, "taskName")
+    let effectiveTaskName = if (taskName.trimAscii() != "") { taskName } else { currentTaskName }
+    selection.identityAvailable = runId != "" && currentTaskName != ""
+    selection.identityMatches = selection.identityAvailable && effectiveTaskName != "" && currentTaskName == effectiveTaskName
+    if (!selection.identityMatches) {
+        return selection
+    }
+    let profile = ckbSyncProfileForScheduleTask(effectiveTaskName)
+    for (stage in ckbSchedulerRoutineCheckpointStagePriority(profile.profile)) {
+        let scopedPath = ckbSchedulerScopedRoutineStageCurrentPath(runId, effectiveTaskName, stage)
+        let scopedText = ckbSchedulerReadProgressArtifact(store, scopedPath)
+        ckbSchedulerConsiderProgressSelection(selection, scopedText, runId, effectiveTaskName, "runId", "taskName", if (ckbCurrentField(scopedText, "stage") != "") { ckbCurrentField(scopedText, "stage") } else { stage }, ckbRoutineCheckpointProgressSummary(scopedText), 1)
+        let profileCurrentText = ckbSchedulerReadProgressArtifact(store, "metadata/routine-stage-checkpoints/${safeName(profile.profile)}-${safeName(stage)}.ckb")
+        ckbSchedulerConsiderProgressSelection(selection, profileCurrentText, runId, effectiveTaskName, "runId", "taskName", if (ckbCurrentField(profileCurrentText, "stage") != "") { ckbCurrentField(profileCurrentText, "stage") } else { stage }, ckbRoutineCheckpointProgressSummary(profileCurrentText), 1)
+    }
+    let stagedText = ckbSchedulerReadProgressArtifact(store, ckbSchedulerScopedStagedRebuildCurrentPath(runId, effectiveTaskName))
+    ckbSchedulerConsiderProgressSelection(selection, stagedText, runId, effectiveTaskName, "runId", "taskName", ckbCurrentField(stagedText, "stage"), ckbStagedRebuildCurrentProgressSummary(stagedText), 3)
+    let vectorText = ckbSchedulerReadProgressArtifact(store, ckbSchedulerScopedVectorCurrentPath(runId, effectiveTaskName))
+    let vectorState = ckbCurrentField(vectorText, "state")
+    let vectorSummary = if (vectorState != "") {
+        "vector:state=${vectorState},completed=${ckbCurrentField(vectorText, "completed")},currentBatch=${ckbCurrentField(vectorText, "currentBatch")},progressPath=${ckbCurrentField(vectorText, "progressPath")}"
+    } else {
+        ""
+    }
+    ckbSchedulerConsiderProgressSelection(selection, vectorText, runId, effectiveTaskName, "schedulerRunId", "schedulerTaskName", if (vectorState != "") { "vector_${vectorState}" } else { "" }, vectorSummary, 2)
+    selection
+}
+
+private func ckbSchedulerConsiderProgressSelection(selection: CkbSchedulerWorkerProgressSelection, text: String, runId: String, taskName: String, runField: String, taskField: String, stage: String, progress: String, priority: Int64): Unit {
+    if (text == "" || stage == "" || progress == "") {
+        return
+    }
+    if (ckbCurrentField(text, runField) != runId || ckbCurrentField(text, taskField) != taskName) {
+        return
+    }
+    let atMillis = parseIntField(ckbCurrentField(text, "atMillis"), 0)
+    if (atMillis <= 0 || (selection.valid && (atMillis < selection.atMillis || (atMillis == selection.atMillis && priority <= selection.priority)))) {
+        return
+    }
+    selection.valid = true
+    selection.atMillis = atMillis
+    selection.priority = priority
+    selection.stage = stage
+    selection.progress = utf8SafePrefix(redactSensitive(progress), 240)
+}
+
+private func ckbSchedulerReadProgressArtifact(store: FileKnowledgeStore, relativePath: String): String {
+    if (relativePath == "") {
+        return ""
+    }
+    try {
+        store.readText(relativePath)
+    } catch (_: Exception) {
+        ""
+    }
 }
 
 private func ckbSchedulerWorkerLastProgressFromStore(store: FileKnowledgeStore): String {
@@ -7455,7 +7828,7 @@ private func ckbSchedulerRoutineCheckpointProgressFromStoreForTask(store: FileKn
         return ""
     }
     for (stage in ckbSchedulerRoutineCheckpointStagePriority(profile.profile)) {
-        let text = store.readText("metadata/routine-stage-checkpoints/${safeName(profile.profile)}-${safeName(stage)}.ckb")
+        let text = ckbSchedulerReadProgressArtifact(store, "metadata/routine-stage-checkpoints/${safeName(profile.profile)}-${safeName(stage)}.ckb")
         let summary = ckbRoutineCheckpointProgressSummary(text)
         if (summary != "") {
             return summary
@@ -7470,7 +7843,7 @@ private func ckbSchedulerRoutineCheckpointStageFromStoreForTask(store: FileKnowl
         return ""
     }
     for (stage in ckbSchedulerRoutineCheckpointStagePriority(profile.profile)) {
-        let text = store.readText("metadata/routine-stage-checkpoints/${safeName(profile.profile)}-${safeName(stage)}.ckb")
+        let text = ckbSchedulerReadProgressArtifact(store, "metadata/routine-stage-checkpoints/${safeName(profile.profile)}-${safeName(stage)}.ckb")
         if (ckbRoutineCheckpointProgressSummary(text) != "") {
             let currentStage = ckbCurrentField(text, "stage")
             return if (currentStage != "") { currentStage } else { stage }
@@ -7521,6 +7894,10 @@ private func ckbSchedulerRoutineCheckpointStagePriority(profile: String): ArrayL
         stages.add("input_parsed")
         stages.add("ingest_started")
         stages.add("fetch")
+    } else if (profile != "") {
+        stages.add("ingest_finished")
+        stages.add("ingest_started")
+        stages.add("fetch")
     }
     stages
 }
@@ -7540,28 +7917,75 @@ private func ckbRoutineCheckpointProgressSummary(text: String): String {
     utf8SafePrefix(redactSensitive("routine:profile=${profile},stage=${stage},status=${status},remainingMs=${remaining},diagnostic=${diagnostic}"), 240)
 }
 
-private func ckbReadSchedulerWorkerResult(storePath: String, resultRelativePath: String, name: String, since: String, durationMillis: Int64, timeoutMillis: Int64): SchedulerTaskResult {
-    let path = Path(storePath).join(resultRelativePath)
+private func ckbReadSchedulerWorkerResult(storePath: String, resultRelativePath: String, name: String, since: String, durationMillis: Int64, timeoutMillis: Int64, schedulerRunId!: String = "", strictIdentity!: Bool = false): SchedulerTaskResult {
+    let sidecarRelativePath = "${resultRelativePath}.sidecar"
+    let sidecarPath = Path(storePath).join(sidecarRelativePath)
+    if (exists(sidecarPath)) {
+        return ckbReadSchedulerWorkerResultArtifact(storePath, sidecarRelativePath, name, since, durationMillis, timeoutMillis, schedulerRunId, strictIdentity, true)
+    }
+    if (strictIdentity) {
+        let primary = ckbReadSchedulerWorkerResultArtifact(storePath, resultRelativePath, name, since, durationMillis, timeoutMillis, schedulerRunId, true, false)
+        let failure = ckbSchedulerWorkerFailureResult(name, since, durationMillis, timeoutMillis, "task_worker_sidecar_missing")
+        failure.schedulerRunId = schedulerRunId
+        failure.validationDiagnostics.add("${name}:primary_recovery_status:${utf8SafePrefix(redactSensitive(primary.status), 80)}")
+        if (!ckbSchedulerWorkerArtifactReadFailure(primary.status)) {
+            failure.lastStage = utf8SafePrefix(redactSensitive(primary.lastStage), 120)
+            failure.lastProgress = utf8SafePrefix(redactSensitive(primary.lastProgress), 240)
+            failure.workerPid = primary.workerPid
+        }
+        return failure
+    }
+    ckbReadSchedulerWorkerResultArtifact(storePath, resultRelativePath, name, since, durationMillis, timeoutMillis, schedulerRunId, strictIdentity, false)
+}
+
+private func ckbReadSchedulerWorkerResultArtifact(storePath: String, relativePath: String, name: String, since: String, durationMillis: Int64, timeoutMillis: Int64, schedulerRunId: String, strictIdentity: Bool, sidecar: Bool): SchedulerTaskResult {
+    let path = Path(storePath).join(relativePath)
+    let prefix = if (sidecar) { "task_worker_sidecar" } else { "task_worker_result" }
     if (!exists(path)) {
-        return ckbSchedulerWorkerFailureResult(name, since, durationMillis, timeoutMillis, "task_worker_result_missing")
+        return ckbSchedulerWorkerFailureResult(name, since, durationMillis, timeoutMillis, "${prefix}_missing")
     }
     try {
         let text = String.fromUtf8(File.readFrom(path))
         let task = ckbSchedulerTaskResultFromText(text)
         if (task.status == "worker_started") {
-            return ckbSchedulerWorkerFailureResult(name, since, durationMillis, timeoutMillis, "task_worker_result_incomplete")
+            return ckbSchedulerWorkerFailureResult(name, since, durationMillis, timeoutMillis, "${prefix}_incomplete")
         }
         if (task.status == "not_started") {
-            return ckbSchedulerWorkerFailureResult(name, since, durationMillis, timeoutMillis, "task_worker_result_malformed")
+            return ckbSchedulerWorkerFailureResult(name, since, durationMillis, timeoutMillis, "${prefix}_malformed")
+        }
+        if (strictIdentity && schedulerRunId != "" && task.schedulerRunId != schedulerRunId) {
+            return ckbSchedulerWorkerFailureResult(name, since, durationMillis, timeoutMillis, "${prefix}_run_mismatch")
+        }
+        if (strictIdentity && task.schedulerTaskName != name) {
+            return ckbSchedulerWorkerFailureResult(name, since, durationMillis, timeoutMillis, "${prefix}_task_mismatch")
+        }
+        if (sidecar && task.resultWrittenAtMillis <= 0) {
+            return ckbSchedulerWorkerFailureResult(name, since, durationMillis, timeoutMillis, "task_worker_sidecar_unconfirmed")
         }
         task
     } catch (_: Exception) {
-        ckbSchedulerWorkerFailureResult(name, since, durationMillis, timeoutMillis, "task_worker_result_malformed")
+        ckbSchedulerWorkerFailureResult(name, since, durationMillis, timeoutMillis, "${prefix}_malformed")
     }
 }
 
-private func ckbSchedulerWorkerResultNeedsCompensation(status: String): Bool {
-    status == "task_worker_result_missing" || status == "task_worker_result_malformed" || status == "task_worker_result_incomplete"
+private func ckbSchedulerWorkerArtifactReadFailure(status: String): Bool {
+    status == "task_worker_result_missing" || status == "task_worker_result_malformed" || status == "task_worker_result_incomplete" ||
+        status == "task_worker_result_run_mismatch" || status == "task_worker_result_task_mismatch" ||
+        status == "task_worker_sidecar_missing" || status == "task_worker_sidecar_malformed" || status == "task_worker_sidecar_incomplete" ||
+        status == "task_worker_sidecar_run_mismatch" || status == "task_worker_sidecar_task_mismatch" || status == "task_worker_sidecar_unconfirmed"
+}
+
+private func ckbSchedulerWorkerResultNeedsFailureHandling(status: String): Bool {
+    ckbSchedulerWorkerArtifactReadFailure(status)
+}
+
+private func ckbSchedulerWorkerResultAllowsTimeoutCompensation(status: String): Bool {
+    status == "task_worker_result_missing" || status == "task_worker_result_incomplete" ||
+        status == "task_worker_sidecar_missing" || status == "task_worker_sidecar_incomplete"
+}
+
+private func ckbSchedulerWorkerResultAllowsArtifactClassification(status: String): Bool {
+    ckbSchedulerWorkerResultAllowsTimeoutCompensation(status) || status == "task_worker_result_malformed"
 }
 
 private func ckbSchedulerWorkerResultMissingOrEmpty(storePath: String, resultRelativePath: String): Bool {
@@ -7582,6 +8006,7 @@ private func ckbSchedulerWorkerFailureResult(name: String, since: String, durati
     task.ok = false
     task.status = status
     task.since = since
+    task.schedulerTaskName = name
     task.durationMillis = durationMillis
     task.timeBudgetMillis = timeoutMillis
     task.endedAtMillis = ended
@@ -7646,8 +8071,11 @@ public class CkbSchedulerTaskRunner <: SchedulerTaskRunner {
             let runId = ckbSchedulerCurrentRunId(this.store)
             result.validationDiagnostics.add(ckbSchedulerProfileStageBudgetDiagnostic(profile))
             let progressSink = FileVectorBuildProgressSink(this.store, schedulerRunId: runId, schedulerTaskName: name)
-            let stageSink = FileCkbStagedRebuildStageSink(this.store, schedulerRunId: runId, schedulerTaskName: name)
+            let fileStageSink = FileCkbStagedRebuildStageSink(this.store, schedulerRunId: runId, schedulerTaskName: name)
+            let stageSink = RecordingCkbStagedRebuildStageSink(fileStageSink)
+            let rebuildStartedAtMillis = ckbTaskWorkerNowMillis()
             let rebuild = ckbStagedFullRebuild(this.kb, this.store, this.config, progressSink, deadlineAtMillis, stageSink: stageSink, profile: profile)
+            let rebuildDurationMillis = ckbTaskWorkerNowMillis() - rebuildStartedAtMillis
             result.ok = rebuild.ok
             result.status = if (rebuild.ok) {
                 "rebuild_ok"
@@ -7663,9 +8091,12 @@ public class CkbSchedulerTaskRunner <: SchedulerTaskRunner {
             result.activeVersion = rebuild.activeVersion
             result.candidateVersion = rebuild.candidateVersion
             result.requestCount = profile.requestCount
-            result.durationMillis = profile.timeBudgetMillis / 10
             result.lastStage = if (rebuild.ok) { "weekly_full_rebuild_finished" } else if (rebuild.lastStage != "") { rebuild.lastStage } else { ckbSchedulerResultStageFromStatus(result.status) }
             result.lastProgress = if (rebuild.lastProgress != "") { rebuild.lastProgress } else { "activeVersion=${rebuild.activeVersion},candidateVersion=${rebuild.candidateVersion},failedVersion=${rebuild.failedVersion},count=${rebuild.count}" }
+            result.stageDurations.add(ckbSchedulerStageDurationText("weekly_full_rebuild", rebuildDurationMillis, rebuild.count, result.status))
+            for (duration in stageSink.stageDurations) {
+                result.stageDurations.add(duration)
+            }
             return this.finalizeTaskResultWithContract(name, result, beforeInvariant)
         }
         if (profile.profile == "cangjie_freshness_probe") {
@@ -7696,7 +8127,6 @@ public class CkbSchedulerTaskRunner <: SchedulerTaskRunner {
             result.activeVersion = status.activeKnowledgeVersion
             result.candidateVersion = status.candidateKnowledgeVersion
             result.requestCount = freshness.sources.size
-            result.durationMillis = profile.timeBudgetMillis / 10
             for (diagnostic in readiness.diagnostics) {
                 result.validationDiagnostics.add("freshness_readiness:${diagnostic}")
             }
@@ -7712,12 +8142,17 @@ public class CkbSchedulerTaskRunner <: SchedulerTaskRunner {
         }
         let manifest = this.runtimeVersionManifest()
         let fetchDeadlineAtMillis = ckbStageDeadline(deadlineAtMillis, profile.fetchBudgetMillis)
+        let fetchStartedAtMillis = ckbTaskWorkerNowMillis()
         let fetch = ckbRunScheduledProfileFetches(profile, this.sourceRunner, this.config, this.store, manifest, deadlineAtMillis: fetchDeadlineAtMillis)
+        let fetchDurationMillis = ckbTaskWorkerNowMillis() - fetchStartedAtMillis
         fetch.runId = "${this.kb.scheduler.clock.nowMinutes}"
         let progressSink = FileVectorBuildProgressSink(this.store, schedulerRunId: ckbSchedulerCurrentRunId(this.store), schedulerTaskName: name)
-        let stageSink = FileCkbStagedRebuildStageSink(this.store, schedulerRunId: ckbSchedulerCurrentRunId(this.store), schedulerTaskName: name)
+        let fileStageSink = FileCkbStagedRebuildStageSink(this.store, schedulerRunId: ckbSchedulerCurrentRunId(this.store), schedulerTaskName: name)
+        let stageSink = RecordingCkbStagedRebuildStageSink(fileStageSink)
         let ingestDeadlineAtMillis = ckbStageDeadline(deadlineAtMillis, ckbProfileIngestBudgetMillis(profile))
+        let ingestStartedAtMillis = ckbTaskWorkerNowMillis()
         let ingest = ingestScheduledProfileSources(this.kb, this.store, profile, fetch, this.config, manifest, progressSink: progressSink, stageSink: stageSink, deadlineAtMillis: ingestDeadlineAtMillis)
+        let ingestDurationMillis = ckbTaskWorkerNowMillis() - ingestStartedAtMillis
         let status = this.kb.status()
         result.ok = fetch.ok && ingest.ok
         result.status = if (result.ok) {
@@ -7733,7 +8168,6 @@ public class CkbSchedulerTaskRunner <: SchedulerTaskRunner {
         result.candidateVersion = status.candidateKnowledgeVersion
         result.requestCount = fetch.requestCount
         result.truncated = fetch.truncated
-        result.durationMillis = profile.timeBudgetMillis / 10
         result.validationStatus = ingest.validationStatus
         result.validationSummary = ingest.validationSummary
         result.validationEvidenceHash = ingest.validationEvidenceHash
@@ -7746,6 +8180,11 @@ public class CkbSchedulerTaskRunner <: SchedulerTaskRunner {
         }
         result.lastStage = ckbSchedulerResultStageFromStatus(result.status)
         result.lastProgress = "fetchRequests=${fetch.requestCount},fetched=${fetch.fetchedCount},failed=${fetch.failedCount},ingestStatus=${ingest.status},activeVersion=${status.activeKnowledgeVersion},candidateVersion=${status.candidateKnowledgeVersion}"
+        result.stageDurations.add(ckbSchedulerStageDurationText("fetch", fetchDurationMillis, fetch.requestCount, fetch.status))
+        for (duration in stageSink.stageDurations) {
+            result.stageDurations.add(duration)
+        }
+        result.stageDurations.add(ckbSchedulerStageDurationText("ingest", ingestDurationMillis, fetch.fetchedCount, ingest.status))
         this.finalizeTaskResultWithContract(name, result, beforeInvariant)
     }
 
@@ -7762,13 +8201,14 @@ public class CkbSchedulerTaskRunner <: SchedulerTaskRunner {
                 result.lastProgress = activeInvariantDiagnostic
             }
         }
+        let operationallyFailedBeforeContract = !result.ok
         let contract = ckbSchedulerTaskContractForName(name)
         let artifactStatus = ckbRoutineArtifactStatusForTask(this.store, this.config, contract, result)
         let validation = validateSchedulerTaskResultAgainstContractWithArtifacts(name, result, beforeInvariant, ckbRoutineActiveInvariantFromStatus(this.kb.status()), artifactStatus)
         result.validationDiagnostics.add("routine_contract:${renderCkbRoutineContractValidationJson(validation)}")
         if (!validation.ok) {
             result.ok = false
-            if (result.status.startsWith("task_timeout:")) {
+            if (operationallyFailedBeforeContract) {
                 result.validationDiagnostics.add("routine_contract_degraded:${validation.diagnostic}")
             } else {
                 result.status = validation.diagnostic
@@ -10141,13 +10581,20 @@ private func ckbApplyScheduledPromotionResult(result: CkbScheduledProfileIngestR
         result.validationDiagnostics.add(diagnostic)
     }
     result.ok = promotion.ok
-    result.status = if (promotion.ok) {
-        successStatus
-    } else if (promotion.validation.status == "candidate_validation_timeout") {
-        "candidate_validation_timeout"
-    } else {
-        "candidate_validation_failed"
+    result.status = ckbScheduledPromotionTerminalStatus(promotion.ok, promotion.validation.status, successStatus)
+}
+
+public func ckbScheduledPromotionTerminalStatus(ok: Bool, validationStatus: String, successStatus: String): String {
+    if (ok) {
+        return successStatus
     }
+    if (validationStatus == "candidate_validation_timeout" ||
+        validationStatus == "candidate_vector_failed" ||
+        validationStatus == "candidate_active_commit_failed" ||
+        validationStatus == "candidate_active_snapshot_failed") {
+        return validationStatus
+    }
+    "candidate_validation_failed"
 }
 
 private func ckbPersistScheduledVersionManifestAfterRefresh(store: FileKnowledgeStore, profile: CkbScheduleTaskProfile, fetch: CkbScheduledProfileFetchResult, config: CkbRuntimeConfig, manifest: CangjieVersionManifest, result: CkbScheduledProfileIngestResult): Unit {

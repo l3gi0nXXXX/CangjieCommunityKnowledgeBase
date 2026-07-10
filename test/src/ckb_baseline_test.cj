@@ -2806,6 +2806,8 @@ class ScriptedSchedulerTaskRunner <: SchedulerTaskRunner {
     public var activeVersion: String = ""
     public var candidateVersion: String = ""
     public var durationMillis: Int64 = 0
+    public var startedAtMillis: Int64 = 0
+    public var endedAtMillis: Int64 = 0
     public var requestCount: Int64 = 0
     public var updatedDataKinds: ArrayList<String> = ArrayList<String>()
     public var truncated: Bool = false
@@ -2822,6 +2824,8 @@ class ScriptedSchedulerTaskRunner <: SchedulerTaskRunner {
         result.activeVersion = this.activeVersion
         result.candidateVersion = this.candidateVersion
         result.durationMillis = this.durationMillis
+        result.startedAtMillis = this.startedAtMillis
+        result.endedAtMillis = this.endedAtMillis
         result.requestCount = this.requestCount
         for (kind in this.updatedDataKinds) {
             result.updatedDataKinds.add(kind)
@@ -3258,6 +3262,8 @@ public class CkbServiceApiTest {
         runner.ok = true
         runner.status = "fixture_ok"
         runner.durationMillis = 1234
+        runner.startedAtMillis = 1000
+        runner.endedAtMillis = 2234
         runner.requestCount = 7
         runner.updatedDataKinds.add("docs")
         runner.updatedDataKinds.add("website")

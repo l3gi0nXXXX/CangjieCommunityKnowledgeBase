@@ -1,6 +1,8 @@
 package cangjie_community_knowledge_base_test
 
 import std.collection.ArrayList
+import std.fs.{Directory, File, Path, exists}
+import std.process.*
 import std.unittest.*
 import std.unittest.testmacro.*
 
@@ -190,6 +192,111 @@ public class CangjieServingAdminTest {
         @Expect(adminCaptureContains(sink.stages, "candidate_active_commit_started|running"), true)
         @Expect(adminCaptureContains(sink.stages, "candidate_active_snapshot_finished|ok"), true)
         @Expect(store.has("metadata/active-snapshot.manifest"), true)
+    }
+
+    @TestCase
+    public func p5S1P01CandidateAndLiveShadowStagesExposeDurationAndCounts(): Unit {
+        let root = "target/p5-s1-p01-stage-duration"
+        adminEnsureEmptyDir(root)
+        let provider = CangjieAdminEmbeddingProvider(2)
+        let vectorStore = CangjieAdminTrackingVectorStore(initialCount: 3)
+        let kb = KnowledgeBase(FakeClock(0), provider, vectorStore, LocalGraphStore())
+        kb.configureVectorCollections("ckb_active", "ckb_candidate")
+        let store = FileKnowledgeStore(root)
+        store.writeLinesAtomically("metadata/scheduler-current.ckb", "runId=p5-s1-p01\ntaskName=cangjie_release_full_sync\nstatus=running\nprogressPath=metadata/scheduler-runs/p5-s1-p01.jsonl\n")
+        let records = cangjieF4AdminPromotionRecords()
+        let fileSink = FileCkbStagedRebuildStageSink(store, schedulerRunId: "p5-s1-p01", schedulerTaskName: "cangjie_release_full_sync")
+        let sink = RecordingCkbStagedRebuildStageSink(fileSink)
+
+        let promotion = cangjiePromoteCandidateRecordsAfterValidationWithVersion(kb, store, "ckb-p5-s1-p01-candidate", records, stageSink: sink)
+        let progress = store.readText("metadata/scheduler-runs/p5-s1-p01.jsonl")
+        let validationLine = adminStageProgressLine(progress, "candidate_validation_finished")
+        let snapshotLine = adminStageProgressLine(progress, "candidate_active_snapshot_finished")
+
+        @Expect(promotion.ok, true)
+        @Expect(promotion.validation.servingDocumentCount >= records.size, true)
+        @Expect(validationLine.contains("\"durationMillis\":"), true)
+        @Expect(validationLine.contains("\"itemCount\":${promotion.validation.servingDocumentCount}"), true)
+        @Expect(snapshotLine.contains("\"durationMillis\":"), true)
+        @Expect(snapshotLine.contains("\"itemCount\":${records.size}"), true)
+        @Expect(progress.contains("\"stage\":\"active_snapshot_live_shadow_after\""), true)
+        @Expect(sink.stageDurations.size, 4)
+        @Expect(adminCaptureContains(sink.stageDurations, "stage=candidate_vector_finished|durationMillis="), true)
+        @Expect(adminCaptureContains(sink.stageDurations, "stage=candidate_validation_finished|durationMillis="), true)
+        @Expect(adminCaptureContains(sink.stageDurations, "stage=candidate_active_commit_finished|durationMillis="), true)
+        @Expect(adminCaptureContains(sink.stageDurations, "stage=candidate_active_snapshot_finished|durationMillis="), true)
+        @Expect(store.has("metadata/active-snapshot.manifest"), true)
+    }
+
+    @TestCase
+    public func p5S1N02VectorProgressObserverFailureDoesNotFailPromotion(): Unit {
+        let root = "target/p5-s1-n02-vector-observer"
+        adminEnsureEmptyDir(root)
+        let provider = CangjieAdminEmbeddingProvider(2)
+        let vectorStore = CangjieAdminTrackingVectorStore(initialCount: 3)
+        let kb = KnowledgeBase(FakeClock(0), provider, vectorStore, LocalGraphStore())
+        kb.configureVectorCollections("ckb_active", "ckb_candidate")
+        let store = FileKnowledgeStore(root)
+        store.ensureLayout()
+        File.writeTo(Path(root).join("metadata/vector-reconcile-runs"), "observer-path-blocked 中文🙂".toArray())
+        let sink = FileVectorBuildProgressSink(store, schedulerRunId: "p5-s1-vector-observer", schedulerTaskName: "cangjie_release_full_sync")
+
+        let promotion = cangjiePromoteCandidateRecordsAfterValidationWithVersion(kb, store, "ckb-p5-s1-vector-observer-candidate", cangjieF4AdminPromotionRecords(), progressSink: sink)
+        let diagnostics = store.readText("metadata/scheduler-runs/p5-s1-vector-observer-diagnostics.jsonl")
+
+        @Expect(promotion.ok, true)
+        @Expect(promotion.activePromoted, true)
+        @Expect(store.has("metadata/active-snapshot.manifest"), true)
+        @Expect(diagnostics.contains("vector_progress_observer_degraded"), true)
+        @Expect(diagnostics.contains("Authorization"), false)
+    }
+
+    @TestCase
+    public func p5S1N01ThrowingStageSinkKeepsPreciseVectorFailureAndOldActive(): Unit {
+        let provider = CangjieAdminEmbeddingProvider(2, failAtCall: 1, failReason: "ollama_timeout")
+        let vectorStore = CangjieAdminTrackingVectorStore(initialCount: 3)
+        let kb = KnowledgeBase(FakeClock(0), provider, vectorStore, LocalGraphStore())
+        kb.configureVectorCollections("ckb_active", "ckb_candidate")
+        let before = kb.status()
+        let store = FileKnowledgeStore("target/p5-s1-n01-throwing-stage")
+
+        let sink = RecordingCkbStagedRebuildStageSink(ThrowingAdminStageSink())
+        let promotion = cangjiePromoteCandidateRecordsAfterValidationWithVersion(kb, store, "ckb-p5-s1-n01-candidate", cangjieF4AdminPromotionRecords(), stageSink: sink)
+        let after = kb.status()
+
+        @Expect(promotion.ok, false)
+        @Expect(promotion.validation.status, "candidate_vector_failed")
+        @Expect(after.activeKnowledgeVersion, before.activeKnowledgeVersion)
+        @Expect(after.storage.vectorActiveCollection, before.storage.vectorActiveCollection)
+        @Expect(after.storage.vectorIndexCount, before.storage.vectorIndexCount)
+        @Expect(adminCaptureContains(sink.stageDurations, "stage=candidate_vector_finished|durationMillis="), true)
+    }
+
+    @TestCase
+    public func p5S1P02ThrowingStageDelegateDoesNotFailSuccessfulPromotion(): Unit {
+        let root = "target/p5-s1-p02-success-throwing-stage"
+        adminEnsureEmptyDir(root)
+        let provider = CangjieAdminEmbeddingProvider(2)
+        let vectorStore = CangjieAdminTrackingVectorStore(initialCount: 3)
+        let kb = KnowledgeBase(FakeClock(0), provider, vectorStore, LocalGraphStore())
+        kb.configureVectorCollections("ckb_active", "ckb_candidate")
+        let before = kb.status().activeKnowledgeVersion
+        let store = FileKnowledgeStore(root)
+        let sink = RecordingCkbStagedRebuildStageSink(ThrowingAdminStageSink())
+
+        let promotion = cangjiePromoteCandidateRecordsAfterValidationWithVersion(kb, store, "ckb-p5-s1-p02-candidate", cangjieF4AdminPromotionRecords(), stageSink: sink)
+        let after = kb.status()
+
+        @Expect(promotion.ok, true)
+        @Expect(promotion.activePromoted, true)
+        @Expect(after.activeKnowledgeVersion, promotion.activeVersion)
+        @Expect(after.activeKnowledgeVersion == before, false)
+        @Expect(store.has("metadata/active-snapshot.manifest"), true)
+        @Expect(sink.stageDurations.size, 4)
+        @Expect(adminCaptureContains(sink.stageDurations, "stage=candidate_vector_finished|durationMillis="), true)
+        @Expect(adminCaptureContains(sink.stageDurations, "stage=candidate_validation_finished|durationMillis="), true)
+        @Expect(adminCaptureContains(sink.stageDurations, "stage=candidate_active_commit_finished|durationMillis="), true)
+        @Expect(adminCaptureContains(sink.stageDurations, "stage=candidate_active_snapshot_finished|durationMillis="), true)
     }
 
     @TestCase
@@ -393,6 +500,31 @@ private class AdminCaptureStageSink <: CkbStagedRebuildStageSink {
     public func onStagedRebuildStage(progress: CkbStagedRebuildStageProgress): Unit {
         this.stages.add("${progress.stage}|${progress.status}")
     }
+}
+
+private class ThrowingAdminStageSink <: CkbStagedRebuildStageSink {
+    public init() {}
+
+    public func onStagedRebuildStage(progress: CkbStagedRebuildStageProgress): Unit {
+        throw Exception("stage sink fixture failure 中文🙂")
+    }
+}
+
+private func adminEnsureEmptyDir(path: String): Unit {
+    if (exists(Path(path))) {
+        _ = launch("/bin/rm", ["-rf", path]).wait()
+    }
+    Directory.create(Path(path), recursive: true)
+}
+
+private func adminStageProgressLine(text: String, stage: String): String {
+    let needle = "\"stage\":\"${stage}\""
+    for (line in text.split("\n")) {
+        if (line.contains(needle)) {
+            return line
+        }
+    }
+    ""
 }
 
 private func adminCaptureContains(values: ArrayList<String>, needle: String): Bool {

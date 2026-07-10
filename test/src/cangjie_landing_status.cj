@@ -108,19 +108,21 @@ private func ckbLandingSchedulerStatus(status: KnowledgeStatus): CkbLandingCapab
     var successCount: Int64 = 0
     var requestCount: Int64 = 0
     var validationFailure = ""
+    var validationFailureStatus = ""
     for (entry in status.schedules) {
         if (entry.lastSuccessAt > 0) {
             successCount += 1
         }
         requestCount += entry.lastRequestCount
-        if (entry.lastStatus == "candidate_validation_failed") {
+        if (ckbLandingCandidateFailureStatus(entry.lastStatus)) {
             validationFailure = entry.name
+            validationFailureStatus = entry.lastStatus
         }
     }
     item.evidence = "successCount=${successCount},requestCount=${requestCount},entries=${status.schedules.size}"
     if (validationFailure != "") {
         item.status = "missing"
-        item.diagnostic = "candidate_validation_failed:${validationFailure}"
+        item.diagnostic = "${validationFailureStatus}:${validationFailure}"
     } else if (successCount > 0 && requestCount > 0) {
         item.status = "landed"
         item.diagnostic = "scheduler_has_successful_update"
@@ -132,6 +134,14 @@ private func ckbLandingSchedulerStatus(status: KnowledgeStatus): CkbLandingCapab
         item.diagnostic = "scheduler_entries_missing"
     }
     item
+}
+
+private func ckbLandingCandidateFailureStatus(status: String): Bool {
+    status == "candidate_validation_failed" ||
+        status == "candidate_validation_timeout" ||
+        status == "candidate_vector_failed" ||
+        status == "candidate_active_commit_failed" ||
+        status == "candidate_active_snapshot_failed"
 }
 
 private func ckbLandingRouteContractStatus(service: CkbCommandLoopService): CkbLandingCapabilityStatus {

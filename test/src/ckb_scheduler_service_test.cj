@@ -357,6 +357,57 @@ public class CkbSchedulerServiceF5Test {
     }
 
     @TestCase
+    public func p5S1E2EBOperationalFailureSurvivesContractPersistenceAndLanding(): Unit {
+        let root = "target/p5-s1-e2e-b-operational-status"
+        s1s2EnsureEmptyDir(root)
+        let store = FileKnowledgeStore(root)
+        store.saveCangjieVersionManifest(f5ScheduledManifest())
+        let provider = P5S1ToggleFailEmbeddingProvider()
+        let kb = KnowledgeBase(FakeClock(1000), provider, LocalVectorStore(), LocalGraphStore())
+        kb.configureVectorCollections("ckb_active", "ckb_candidate")
+        kb.bootstrapOffline()
+        kb.persist(store)
+        provider.fail = true
+        let config = CkbRuntimeConfig()
+        config.networkEnabled = true
+        let runner = CkbSchedulerTaskRunner(kb, config, store, sourceRunner: FakeSourceFetchRunner())
+        let executor = SchedulerExecutor(kb.scheduler, runner, FileSchedulerProgressSink(store), 0)
+        let tasks = ArrayList<String>()
+        tasks.add("cangjie_release_full_sync")
+
+        let result = executor.runTaskNames(tasks, force: true)
+        store.saveScheduler(kb.scheduler.entries)
+        var persistedStatus = ""
+        for (entry in store.loadScheduler()) {
+            if (entry.name == "cangjie_release_full_sync") {
+                persistedStatus = entry.lastStatus
+            }
+        }
+        let reloaded = CkbCommandLoopService(config, store, sourceRunner: FakeSourceFetchRunner())
+        _ = reloaded.start()
+        let landing = collectCkbLandingStatus(reloaded)
+        var landingDiagnostic = ""
+        for (capability in landing.capabilities) {
+            if (capability.id == "F5-routine-update-scheduler") {
+                landingDiagnostic = capability.diagnostic
+            }
+        }
+
+        @Expect(result.ran, 1)
+        @Expect(result.failed, 1)
+        @Expect(result.taskRecords.size, 1)
+        @Expect(result.taskRecords[0].ok, false)
+        @Expect(result.taskRecords[0].status, "candidate_vector_failed")
+        @Expect(result.taskRecords[0].status.startsWith("task_not_ok:"), false)
+        @Expect(ruDiagnosticsContain(result.validationDiagnostics, "routine_contract_degraded:task_not_ok:candidate_vector_failed"), true)
+        @Expect(ruDiagnosticsContain(result.validationDiagnostics, "candidate_vector_failed"), true)
+        @Expect(persistedStatus, "candidate_vector_failed")
+        @Expect(landingDiagnostic, "candidate_vector_failed:cangjie_release_full_sync")
+        @Expect(result.taskRecords[0].stageDurations.size >= 3, true)
+        @Expect(ruDiagnosticsContain(result.taskRecords[0].stageDurations, "stage=candidate_vector_finished|durationMillis="), true)
+    }
+
+    @TestCase
     public func p7Pos002SourceEventSchedulerPersistsRepositoryEventArtifact(): Unit {
         let config = CkbRuntimeConfig()
         config.networkEnabled = true
@@ -1817,6 +1868,35 @@ private class F7StatusVectorStore <: VectorStore {
 
     public func restore(backup: VectorBackup): VectorStoreStatus {
         this.status(backup.collection)
+    }
+}
+
+private class P5S1ToggleFailEmbeddingProvider <: EmbeddingProvider {
+    private let delegate: DeterministicEmbeddingProvider = DeterministicEmbeddingProvider()
+    public var fail: Bool = false
+
+    public init() {}
+
+    public func embed(texts: ArrayList<String>, model: String, dimensions: Int64): EmbeddingBatch {
+        if (!this.fail) {
+            return this.delegate.embed(texts, model, dimensions)
+        }
+        let batch = EmbeddingBatch()
+        batch.requested = texts.size
+        batch.failed = texts.size
+        batch.status = this.status()
+        batch.status.state = EmbeddingProviderState.DOWN
+        batch.status.degradedReason = "ollama_timeout"
+        batch.lastDiagnostic = "ollama_timeout"
+        batch
+    }
+
+    public func embedWithDeadline(texts: ArrayList<String>, model: String, dimensions: Int64, deadlineAtMillis: Int64): EmbeddingBatch {
+        this.embed(texts, model, dimensions)
+    }
+
+    public func status(): EmbeddingStatus {
+        this.delegate.status()
     }
 }
 

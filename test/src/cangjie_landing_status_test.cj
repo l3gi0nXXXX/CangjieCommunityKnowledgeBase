@@ -51,6 +51,25 @@ public class CangjieLandingStatusTest {
     }
 
     @TestCase
+    public func p5S1N01SchedulerPreciseCandidateFailureIsExplicit(): Unit {
+        let store = FileKnowledgeStore("target/p5-s1-landing-precise-failure")
+        let entries = ArrayList<ScheduleEntry>()
+        let entry = ScheduleEntry("cangjie_release_full_sync", 10080, 0)
+        entry.lastStatus = "candidate_active_snapshot_failed"
+        entry.lastRequestCount = 44
+        entries.add(entry)
+        store.saveScheduler(entries)
+        let service = CkbCommandLoopService(CkbRuntimeConfig(), store)
+        service.start()
+
+        let report = collectCkbLandingStatus(service)
+
+        @Expect(report.ok, false)
+        @Expect(ckbLandingTestStatus(report, "F5-routine-update-scheduler"), "missing")
+        @Expect(ckbLandingTestDiagnostic(report, "F5-routine-update-scheduler"), "candidate_active_snapshot_failed:cangjie_release_full_sync")
+    }
+
+    @TestCase
     public func f0Ut002RouteContractUsesRuntimeProbe(): Unit {
         let service = CkbCommandLoopService(CkbRuntimeConfig(), FileKnowledgeStore("target/f0-landing-route-store"))
         service.start()

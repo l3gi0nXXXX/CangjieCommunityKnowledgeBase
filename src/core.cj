@@ -2673,6 +2673,15 @@ public class SchedulerTaskResult {
     public var endedAtMillis: Int64 = 0
     public var deadlineAtMillis: Int64 = 0
     public var durationMillis: Int64 = 0
+    public var schedulerRunId: String = ""
+    public var schedulerTaskName: String = ""
+    public var bootstrapStartedAtMillis: Int64 = 0
+    public var taskBodyStartedAtMillis: Int64 = 0
+    public var taskBodyEndedAtMillis: Int64 = 0
+    public var bootstrapDurationMillis: Int64 = 0
+    public var resultWrittenAtMillis: Int64 = 0
+    public var resultFlushDurationMillis: Int64 = 0
+    public var stageDurations: ArrayList<String> = ArrayList<String>()
     public var requestCount: Int64 = 0
     public var updatedDataKinds: ArrayList<String> = ArrayList<String>()
     public var truncated: Bool = false
@@ -2738,6 +2747,15 @@ public class SchedulerTaskRunRecord {
     public var endedAtMillis: Int64 = 0
     public var deadlineAtMillis: Int64 = 0
     public var durationMillis: Int64 = 0
+    public var schedulerRunId: String = ""
+    public var schedulerTaskName: String = ""
+    public var bootstrapStartedAtMillis: Int64 = 0
+    public var taskBodyStartedAtMillis: Int64 = 0
+    public var taskBodyEndedAtMillis: Int64 = 0
+    public var bootstrapDurationMillis: Int64 = 0
+    public var resultWrittenAtMillis: Int64 = 0
+    public var resultFlushDurationMillis: Int64 = 0
+    public var stageDurations: ArrayList<String> = ArrayList<String>()
     public var timeBudgetMillis: Int64 = 0
     public var requestCount: Int64 = 0
     public var lastStage: String = ""
@@ -2831,18 +2849,18 @@ public class SchedulerExecutor {
         result.runId = "scheduler-${ckbCoreNowMillis()}"
         result.startedAtMillis = ckbCoreNowMillis()
         result.forced = forced
-        this.progressSink.onRunStarted(result)
+        this.safeNotifyRunStarted(result)
     }
 
     private func finishRun(result: SchedulerExecutorResult): Unit {
         result.endedAtMillis = ckbCoreNowMillis()
         result.businessOk = result.failed == 0 && result.degraded == 0
-        this.progressSink.onRunFinished(result)
+        this.safeNotifyRunFinished(result)
     }
 
     private func runOneTask(result: SchedulerExecutorResult, name: String, force: Bool): Unit {
         let entry = this.findEntry(name)
-        this.progressSink.onTaskStarted(result.runId, name)
+        this.safeNotifyTaskStarted(result, name)
         let task = this.runTaskWithTimeout(name, entry.lastSince, this.effectiveTaskTimeoutMillis(entry))
         result.ran += 1
         result.taskNames.add(name)
@@ -2865,8 +2883,45 @@ public class SchedulerExecutor {
         }
         result.details += "task ${name} ok=${task.ok} status=${task.status} nextRunAt=${after.nextRunAt} failureCount=${after.failureCount} degraded=${after.degraded}\n"
         this.appendTaskValidation(result, name, task)
-        result.taskRecords.add(schedulerTaskRunRecord(name, task))
-        this.progressSink.onTaskFinished(result.runId, name, task)
+        result.taskRecords.add(schedulerTaskRunRecord(name, task, result.runId))
+        this.safeNotifyTaskFinished(result, name, task)
+    }
+
+    private func safeNotifyRunStarted(result: SchedulerExecutorResult): Unit {
+        try {
+            this.progressSink.onRunStarted(result)
+        } catch (_: Exception) {
+            this.recordProgressObserverFailure(result, "run_started")
+        }
+    }
+
+    private func safeNotifyTaskStarted(result: SchedulerExecutorResult, taskName: String): Unit {
+        try {
+            this.progressSink.onTaskStarted(result.runId, taskName)
+        } catch (_: Exception) {
+            this.recordProgressObserverFailure(result, "task_started:${taskName}")
+        }
+    }
+
+    private func safeNotifyTaskFinished(result: SchedulerExecutorResult, taskName: String, task: SchedulerTaskResult): Unit {
+        try {
+            this.progressSink.onTaskFinished(result.runId, taskName, task)
+        } catch (_: Exception) {
+            this.recordProgressObserverFailure(result, "task_finished:${taskName}")
+        }
+    }
+
+    private func safeNotifyRunFinished(result: SchedulerExecutorResult): Unit {
+        try {
+            this.progressSink.onRunFinished(result)
+        } catch (_: Exception) {
+            this.recordProgressObserverFailure(result, "run_finished")
+        }
+    }
+
+    private func recordProgressObserverFailure(result: SchedulerExecutorResult, event: String): Unit {
+        result.finalizationOk = false
+        result.finalizationDiagnostics.add("scheduler_progress_observer_degraded:event=${event}")
     }
 
     private func runTaskWithTimeout(name: String, since: String, timeoutMillis: Int64): SchedulerTaskResult {
@@ -2909,9 +2964,7 @@ public class SchedulerExecutor {
             task.endedAtMillis = ended
         }
         task.deadlineAtMillis = deadlineAtMillis
-        if (task.durationMillis <= 0) {
-            task.durationMillis = task.endedAtMillis - task.startedAtMillis
-        }
+        task.durationMillis = if (task.endedAtMillis >= task.startedAtMillis) { task.endedAtMillis - task.startedAtMillis } else { 0 }
         if (task.timeBudgetMillis <= 0) {
             task.timeBudgetMillis = timeoutMillis
         }
@@ -2967,15 +3020,15 @@ public class SchedulerExecutor {
                 entry.lastTruncated = task.truncated
                 entry.timeBudgetMillis = task.timeBudgetMillis
                 entry.lastRunId = runId
-                entry.lastRunStartedAtMillis = ckbCoreNowMillis() - task.durationMillis
-                entry.lastRunFinishedAtMillis = ckbCoreNowMillis()
+                entry.lastRunStartedAtMillis = task.startedAtMillis
+                entry.lastRunFinishedAtMillis = task.endedAtMillis
                 entry.lastTerminalState = if (task.ok) { "succeeded" } else { task.status }
             }
         }
     }
 }
 
-private func schedulerTaskRunRecord(name: String, task: SchedulerTaskResult): SchedulerTaskRunRecord {
+private func schedulerTaskRunRecord(name: String, task: SchedulerTaskResult, runId: String): SchedulerTaskRunRecord {
     let record = SchedulerTaskRunRecord()
     record.taskName = name
     record.ok = task.ok
@@ -2984,6 +3037,17 @@ private func schedulerTaskRunRecord(name: String, task: SchedulerTaskResult): Sc
     record.endedAtMillis = task.endedAtMillis
     record.deadlineAtMillis = task.deadlineAtMillis
     record.durationMillis = task.durationMillis
+    record.schedulerRunId = if (task.schedulerRunId != "") { task.schedulerRunId } else { runId }
+    record.schedulerTaskName = if (task.schedulerTaskName != "") { task.schedulerTaskName } else { name }
+    record.bootstrapStartedAtMillis = task.bootstrapStartedAtMillis
+    record.taskBodyStartedAtMillis = task.taskBodyStartedAtMillis
+    record.taskBodyEndedAtMillis = task.taskBodyEndedAtMillis
+    record.bootstrapDurationMillis = task.bootstrapDurationMillis
+    record.resultWrittenAtMillis = task.resultWrittenAtMillis
+    record.resultFlushDurationMillis = task.resultFlushDurationMillis
+    for (duration in task.stageDurations) {
+        record.stageDurations.add(duration)
+    }
     record.timeBudgetMillis = task.timeBudgetMillis
     record.requestCount = task.requestCount
     record.lastStage = task.lastStage

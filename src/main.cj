@@ -19,6 +19,25 @@ public func ckbCliMain(args: Array<String>): Int64 {
     let cli = parseCli(args)
     let config = loadCkbRuntimeConfig(cli.configPath)
     let store = FileKnowledgeStore(cli.storePath)
+    if (cli.command == "scheduler-task-worker") {
+        let taskName = ckbCliOption(args, "--task")
+        let resultRelativePath = ckbCliOption(args, "--result-rel")
+        if (taskName == "" || resultRelativePath == "") {
+            println("usage error: scheduler-task-worker requires --task and --result-rel")
+            return 2
+        }
+        let schedulerRunId = ckbCliOption(args, "--scheduler-run-id")
+        let bootstrapStartedAtMillis = ckbCoreNowMillis()
+        try {
+            let kb = loadCliKnowledgeBase(cli.command, store, config)
+            let taskBodyStartedAtMillis = ckbCoreNowMillis()
+            let task = ckbRunSchedulerTaskWorker(kb, config, store, taskName, ckbCliOption(args, "--since"), ckbCliOptionInt(args, "--deadline", 0), resultRelativePath, schedulerRunId: schedulerRunId, bootstrapStartedAtMillis: bootstrapStartedAtMillis, taskBodyStartedAtMillis: taskBodyStartedAtMillis)
+            return if (task.ok) { 0 } else { 1 }
+        } catch (e: Exception) {
+            _ = ckbWriteSchedulerTaskBootstrapFailure(store, taskName, ckbCliOption(args, "--since"), ckbCliOptionInt(args, "--deadline", 0), resultRelativePath, schedulerRunId, bootstrapStartedAtMillis, e.message)
+            return 1
+        }
+    }
     if (cli.command == "vector-bootstrap") {
         let result = ckbVectorBootstrapWithStoreAndKnowledgeStore(config, store, vectorStoreFromRuntime(config))
         if (ckbCliWantsJson(args)) {
@@ -39,16 +58,6 @@ public func ckbCliMain(args: Array<String>): Int64 {
     }
     let kb = loadCliKnowledgeBase(cli.command, store, config)
     let input = cliInput(args)
-    if (cli.command == "scheduler-task-worker") {
-        let taskName = ckbCliOption(args, "--task")
-        let resultRelativePath = ckbCliOption(args, "--result-rel")
-        if (taskName == "" || resultRelativePath == "") {
-            println("usage error: scheduler-task-worker requires --task and --result-rel")
-            return 2
-        }
-        let task = ckbRunSchedulerTaskWorker(kb, config, store, taskName, ckbCliOption(args, "--since"), ckbCliOptionInt(args, "--deadline", 0), resultRelativePath)
-        return if (task.ok) { 0 } else { 1 }
-    }
     if (cli.command == "" || cli.command == "doctor") {
         print(renderDoctor(cangjie_knowledge_status(kb)))
         print(renderRuntimeDoctor(config))
@@ -616,7 +625,6 @@ private func ckbCliFinalizeBlockedSchedulerRun(result: SchedulerExecutorResult, 
 
 private func ckbCliFinalizeSchedulerRun(result: SchedulerExecutorResult, schedulerKb: KnowledgeBase, store: FileKnowledgeStore, config: CkbRuntimeConfig, storePath: String, lock: CkbSchedulerRunLock): Unit {
     result.businessOk = result.failed == 0 && result.degraded == 0
-    result.finalizationOk = true
     try {
         ckbCliPopulateSchedulerRunEvidence(result, config, storePath)
     } catch (e: Exception) {

@@ -1,7 +1,10 @@
 package cangjie_community_knowledge_base_test
 
 import std.collection.ArrayList
+import std.convert.Parsable
+import std.env.getVariable
 import std.fs.{Directory, File, Path, exists}
+import std.io.*
 import std.process.*
 import std.time.*
 import std.unittest.*
@@ -34,6 +37,27 @@ private class ProgressFakeRunner <: SchedulerTaskRunner {
     }
 }
 
+private class P5S1TruthTimingRunner <: SchedulerTaskRunner {
+    public init() {}
+
+    public func runTask(name: String, since: String, deadlineAtMillis: Int64): SchedulerTaskResult {
+        let result = SchedulerTaskResult()
+        result.ok = true
+        result.status = "truth_ok"
+        result.startedAtMillis = 100
+        result.endedAtMillis = 255
+        result.bootstrapStartedAtMillis = 100
+        result.taskBodyStartedAtMillis = 137
+        result.taskBodyEndedAtMillis = 250
+        result.bootstrapDurationMillis = 37
+        result.resultWrittenAtMillis = 255
+        result.resultFlushDurationMillis = 5
+        result.durationMillis = 24000
+        result.stageDurations.add("candidate_validation=113")
+        result
+    }
+}
+
 private class CaptureStageSink <: CkbStagedRebuildStageSink {
     public var stages: ArrayList<String> = ArrayList<String>()
     public var diagnostics: ArrayList<String> = ArrayList<String>()
@@ -46,8 +70,590 @@ private class CaptureStageSink <: CkbStagedRebuildStageSink {
     }
 }
 
+private class P5S1ThrowingSchedulerProgressSink <: SchedulerProgressSink {
+    public var calls: Int64 = 0
+
+    public init() {}
+
+    public func onRunStarted(result: SchedulerExecutorResult): Unit {
+        this.fail("run_started")
+    }
+
+    public func onTaskStarted(runId: String, taskName: String): Unit {
+        this.fail("task_started")
+    }
+
+    public func onTaskFinished(runId: String, taskName: String, task: SchedulerTaskResult): Unit {
+        this.fail("task_finished")
+    }
+
+    public func onRunFinished(result: SchedulerExecutorResult): Unit {
+        this.fail("run_finished")
+    }
+
+    private func fail(event: String): Unit {
+        this.calls += 1
+        throw Exception("progress observer fixture ${event} 中文🙂")
+    }
+}
+
 @Test
 public class CkbSchedulerProgressTimeoutTest {
+    @TestCase
+    public func p5S1U01TrueTimingRoundTripsToRunRecordAndJson(): Unit {
+        let scheduler = Scheduler(FakeClock(1000))
+        let executor = SchedulerExecutor(scheduler, P5S1TruthTimingRunner())
+        let tasks = ArrayList<String>()
+        tasks.add("docs_probe_30d")
+
+        let result = executor.runTaskNames(tasks, force: true)
+        let record = result.taskRecords[0]
+        let task = SchedulerTaskResult()
+        task.ok = true
+        task.status = "truth_ok"
+        task.schedulerRunId = result.runId
+        task.schedulerTaskName = "docs_probe_30d"
+        task.startedAtMillis = 100
+        task.endedAtMillis = 255
+        task.bootstrapStartedAtMillis = 100
+        task.taskBodyStartedAtMillis = 137
+        task.taskBodyEndedAtMillis = 250
+        task.bootstrapDurationMillis = 37
+        task.resultWrittenAtMillis = 255
+        task.resultFlushDurationMillis = 5
+        task.durationMillis = 155
+        task.stageDurations.add("candidate_validation=113")
+        let parsed = ckbSchedulerTaskResultFromText(ckbSchedulerTaskResultText(task))
+        let legacy = ckbSchedulerTaskResultFromText("ok=true\nstatus=legacy_ok\ndurationMillis=7\nfutureField=future-value\n")
+        var longUnicodeIdentity = "运行🙂"
+        for (i in 0..80) {
+            longUnicodeIdentity += "阶段${i}中文🙂"
+        }
+        let unicodeTask = SchedulerTaskResult()
+        unicodeTask.status = "稳定状态-${longUnicodeIdentity}"
+        unicodeTask.cursor = "游标-${longUnicodeIdentity}"
+        unicodeTask.since = "起点-${longUnicodeIdentity}"
+        unicodeTask.activeVersion = "活动-${longUnicodeIdentity}"
+        unicodeTask.candidateVersion = "候选-${longUnicodeIdentity}"
+        unicodeTask.schedulerRunId = "运行-${longUnicodeIdentity}"
+        unicodeTask.schedulerTaskName = "任务-${longUnicodeIdentity}"
+        unicodeTask.validationStatus = "验证-${longUnicodeIdentity}"
+        unicodeTask.validationEvidenceHash = "证据-${longUnicodeIdentity}"
+        unicodeTask.updatedDataKinds.add("数据-${longUnicodeIdentity}")
+        let parsedUnicode = ckbSchedulerTaskResultFromText(ckbSchedulerTaskResultText(unicodeTask))
+        let json = ckbSchedulerRunOutputJson(result)
+        let wall = ckbApplySchedulerProcessWallTiming(task, 90, 260)
+
+        @Expect(result.succeeded, 1)
+        @Expect(record.schedulerRunId, result.runId)
+        @Expect(record.schedulerTaskName, "docs_probe_30d")
+        @Expect(record.durationMillis, 155)
+        @Expect(record.bootstrapDurationMillis, 37)
+        @Expect(record.taskBodyEndedAtMillis - record.taskBodyStartedAtMillis, 113)
+        @Expect(record.resultFlushDurationMillis, 5)
+        @Expect(scheduler.entries[1].lastRunStartedAtMillis, 100)
+        @Expect(scheduler.entries[1].lastRunFinishedAtMillis, 255)
+        @Expect(parsed.schedulerRunId, result.runId)
+        @Expect(parsed.schedulerTaskName, "docs_probe_30d")
+        @Expect(parsed.stageDurations.size, 1)
+        @Expect(parsed.stageDurations[0], "candidate_validation=113")
+        @Expect(legacy.status, "legacy_ok")
+        @Expect(legacy.bootstrapStartedAtMillis, 0)
+        @Expect(legacy.taskBodyEndedAtMillis, 0)
+        @Expect(legacy.resultFlushDurationMillis, 0)
+        @Expect(parsedUnicode.status, unicodeTask.status)
+        @Expect(parsedUnicode.cursor, unicodeTask.cursor)
+        @Expect(parsedUnicode.since, unicodeTask.since)
+        @Expect(parsedUnicode.activeVersion, unicodeTask.activeVersion)
+        @Expect(parsedUnicode.candidateVersion, unicodeTask.candidateVersion)
+        @Expect(parsedUnicode.schedulerRunId, unicodeTask.schedulerRunId)
+        @Expect(parsedUnicode.schedulerTaskName, unicodeTask.schedulerTaskName)
+        @Expect(parsedUnicode.validationStatus, unicodeTask.validationStatus)
+        @Expect(parsedUnicode.validationEvidenceHash, unicodeTask.validationEvidenceHash)
+        @Expect(parsedUnicode.updatedDataKinds[0], unicodeTask.updatedDataKinds[0])
+        @Expect(json.contains("\"bootstrapStartedAtMillis\":100"), true)
+        @Expect(json.contains("\"taskBodyEndedAtMillis\":250"), true)
+        @Expect(json.contains("\"resultFlushDurationMillis\":5"), true)
+        @Expect(json.contains("\"schedulerTaskName\":\"docs_probe_30d\""), true)
+        @Expect(result.details.contains("\"ok\""), false)
+        @Expect(result.details.contains("\"schedulerRunId\""), false)
+        @Expect(wall.durationMillis, 170)
+        @Expect(wall.bootstrapDurationMillis, 37)
+    }
+
+    @TestCase
+    public func p5S1N02ThrowingSchedulerObserverKeepsBusinessOutcome(): Unit {
+        let scheduler = Scheduler(FakeClock(1000))
+        let sink = P5S1ThrowingSchedulerProgressSink()
+        let executor = SchedulerExecutor(scheduler, ProgressFakeRunner(), sink, 0)
+        let tasks = ArrayList<String>()
+        tasks.add("community_repo_discovery_30d")
+        tasks.add("docs_probe_30d")
+
+        let result = executor.runTaskNames(tasks, force: true)
+
+        @Expect(result.ran, 2)
+        @Expect(result.succeeded, 2)
+        @Expect(result.failed, 0)
+        @Expect(result.businessOk, true)
+        @Expect(result.finalizationOk, false)
+        @Expect(result.taskRecords.size, 2)
+        @Expect(result.taskRecords[0].status, "ok")
+        @Expect(result.taskRecords[1].status, "ok")
+        @Expect(sink.calls, 6)
+        @Expect(p5S1StringListContains(result.finalizationDiagnostics, "scheduler_progress_observer_degraded:event=run_started"), true)
+        @Expect(p5S1StringListContains(result.finalizationDiagnostics, "scheduler_progress_observer_degraded:event=run_finished"), true)
+        @Expect(p5S1StringListContains(result.finalizationDiagnostics, "task_exception"), false)
+        @Expect(p5S1StringListContains(result.finalizationDiagnostics, "Authorization"), false)
+    }
+
+    @TestCase
+    public func p5S1B01LatestStageUsesCurrentIdentityTimestampAndPriority(): Unit {
+        let root = "target/p5-s1-b01-stage-selection"
+        ensureEmptyDir(root)
+        let store = FileKnowledgeStore(root)
+        store.writeLinesAtomically("metadata/scheduler-current.ckb", "runId=current-run\ntaskName=cangjie_release_full_sync\nstatus=running\nprogressPath=metadata/scheduler-runs/current-run.jsonl\ndiagnostic=\n")
+        store.writeLinesAtomically("metadata/routine-stage-checkpoints/cangjie_release_full_sync-ingest_finished.ckb", "profile=cangjie_release_full_sync\nrunId=old-run\ntaskName=cangjie_release_full_sync\nstage=ingest_finished\nstatus=running\ndiagnostic=old-routine\natMillis=1\n")
+        store.writeLinesAtomically("metadata/scheduler-runs/current-run-cangjie_release_full_sync-vector-current.ckb", "schedulerRunId=old-run\nschedulerTaskName=cangjie_release_full_sync\nstate=ready\ncompleted=99\ncurrentBatch=2\nprogressPath=metadata/vector-reconcile-runs/old.jsonl\natMillis=2\n")
+        store.writeLinesAtomically("metadata/scheduler-runs/current-run-cangjie_release_full_sync-staged-rebuild-current.ckb", "runId=current-run\ntaskName=cangjie_release_full_sync\nstage=candidate_active_commit_started\nstatus=running\nprogressPath=metadata/scheduler-runs/current-run.jsonl\ndiagnostic=current-candidate\natMillis=3\n")
+        store.writeLinesAtomically("metadata/routine-stage-checkpoints/cangjie_release_full_sync-ingest_started.ckb", "profile=cangjie_release_full_sync\nrunId=\ntaskName=\nstage=ingest_started\nstatus=running\ndiagnostic=empty-identity\natMillis=4\n")
+        store.writeLinesAtomically("metadata/scheduler-runs/current-run-cangjie_release_full_sync-routine-active_snapshot_manifest_after-current.ckb", "profile=cangjie_release_full_sync\nrunId=wrong-run\ntaskName=cangjie_release_full_sync\nstage=active_snapshot_manifest_after\nstatus=ok\nprogressPath=metadata/scheduler-runs/wrong-run.jsonl\ndiagnostic=wrong-run-newer\natMillis=99\n")
+
+        @Expect(ckbSchedulerWorkerLastStageFromStoreForTask(store, "cangjie_release_full_sync"), "candidate_active_commit_started")
+        @Expect(ckbSchedulerWorkerLastProgressFromStoreForTask(store, "cangjie_release_full_sync").contains("current-candidate"), true)
+        @Expect(ckbSchedulerCurrentRunIdForTask(store, "cangjie_docs_full_weekly"), "")
+        @Expect(ckbSchedulerWorkerLastStageFromStoreForTask(store, "cangjie_docs_full_weekly"), "")
+        @Expect(ckbSchedulerWorkerLastProgressFromStoreForTask(store, "cangjie_docs_full_weekly"), "")
+
+        store.writeLinesAtomically("metadata/scheduler-runs/current-run-cangjie_release_full_sync-routine-ingest_started-current.ckb", "profile=cangjie_release_full_sync\nrunId=current-run\ntaskName=cangjie_release_full_sync\nstage=ingest_started\nstatus=running\nprogressPath=metadata/scheduler-runs/current-run.jsonl\ndiagnostic=current-routine-tie\natMillis=3\n")
+        for (_ in 0..100) {
+            @Expect(ckbSchedulerWorkerLastStageFromStoreForTask(store, "cangjie_release_full_sync"), "candidate_active_commit_started")
+        }
+    }
+
+    @TestCase
+    public func p5S1N01CheckpointFailureIsDegradedAndMalformedUtf8Isolated(): Unit {
+        let root = "target/p5-s1-n01-checkpoint-degraded"
+        ensureEmptyDir(root)
+        let store = FileKnowledgeStore("${root}/store")
+        store.ensureLayout()
+        File.writeTo(Path(root).join("store/metadata/routine-stage-checkpoints"), "blocked".toArray())
+        let config = CkbRuntimeConfig()
+        config.networkEnabled = true
+        let service = CkbCommandLoopService(config, store, sourceRunner: FakeSourceFetchRunner())
+        _ = service.start()
+        let tasks = ArrayList<String>()
+        tasks.add("docs_probe_30d")
+
+        let result = service.runSchedulerTasks(tasks, true)
+        let diagnosticPath = "metadata/scheduler-runs/${result.runId}-diagnostics.jsonl"
+
+        @Expect(result.succeeded, 1)
+        @Expect(store.readText(diagnosticPath).contains("profile_stage_checkpoint_write_degraded"), true)
+        @Expect(ckbScheduledPromotionTerminalStatus(false, "candidate_vector_failed", "ok"), "candidate_vector_failed")
+        @Expect(ckbScheduledPromotionTerminalStatus(false, "candidate_active_commit_failed", "ok"), "candidate_active_commit_failed")
+        @Expect(ckbScheduledPromotionTerminalStatus(false, "candidate_active_snapshot_failed", "ok"), "candidate_active_snapshot_failed")
+
+        let malformedRoot = "target/p5-s1-n01-invalid-utf8-stage"
+        ensureEmptyDir(malformedRoot)
+        let malformedStore = FileKnowledgeStore(malformedRoot)
+        malformedStore.writeLinesAtomically("metadata/scheduler-current.ckb", "runId=utf8-run\ntaskName=cangjie_release_full_sync\nstatus=running\nprogressPath=metadata/scheduler-runs/utf8-run.jsonl\n")
+        malformedStore.writeLinesAtomically("metadata/scheduler-runs/utf8-run-cangjie_release_full_sync-staged-rebuild-current.ckb", "runId=utf8-run\ntaskName=cangjie_release_full_sync\nstage=candidate_validation_finished\nstatus=failed\nprogressPath=metadata/scheduler-runs/utf8-run.jsonl\ndiagnostic=中文🙂\natMillis=5\n")
+        File.writeTo(Path(malformedRoot).join("metadata/scheduler-runs/utf8-run-cangjie_release_full_sync-routine-active_snapshot_manifest_after-current.ckb"), [UInt8(255), UInt8(254), UInt8(253)])
+
+        @Expect(ckbSchedulerWorkerLastStageFromStoreForTask(malformedStore, "cangjie_release_full_sync"), "candidate_validation_finished")
+        @Expect(ckbSchedulerWorkerLastProgressFromStoreForTask(malformedStore, "cangjie_release_full_sync").contains("中文🙂"), true)
+
+        let invalidCurrentRoot = "target/p5-s1-n01-invalid-utf8-current"
+        ensureEmptyDir(invalidCurrentRoot)
+        let invalidCurrentStore = FileKnowledgeStore(invalidCurrentRoot)
+        invalidCurrentStore.ensureLayout()
+        File.writeTo(Path(invalidCurrentRoot).join("metadata/scheduler-current.ckb"), [UInt8(255), UInt8(254), UInt8(253)])
+        File.writeTo(Path(invalidCurrentRoot).join("metadata/staged-rebuild-current.ckb"), [UInt8(255), UInt8(254), UInt8(253)])
+        File.writeTo(Path(invalidCurrentRoot).join("metadata/vector-reconcile-current.ckb"), [UInt8(255), UInt8(254), UInt8(253)])
+
+        @Expect(ckbSchedulerCurrentRunIdForTask(invalidCurrentStore, "cangjie_release_full_sync"), "")
+        @Expect(ckbSchedulerWorkerLastStageFromStoreForTask(invalidCurrentStore, "cangjie_release_full_sync"), "")
+        @Expect(ckbSchedulerWorkerLastProgressFromStoreForTask(invalidCurrentStore, "cangjie_release_full_sync"), "")
+    }
+
+    @TestCase
+    public func p5S1B02WrongScopedCheckpointStillAllowsValidProfileCurrent(): Unit {
+        let root = "target/p5-s1-b02-profile-current-fallback"
+        ensureEmptyDir(root)
+        let store = FileKnowledgeStore(root)
+        store.writeLinesAtomically("metadata/scheduler-current.ckb", "runId=current-run\ntaskName=cangjie_release_full_sync\nstatus=running\nprogressPath=metadata/scheduler-runs/current-run.jsonl\n")
+        store.writeLinesAtomically("metadata/scheduler-runs/current-run-cangjie_release_full_sync-routine-fetch-current.ckb", "profile=cangjie_release_full_sync\nrunId=wrong-run\ntaskName=cangjie_release_full_sync\nstage=fetch\nstatus=failed\ndiagnostic=wrong-scoped\natMillis=99\n")
+        store.writeLinesAtomically("metadata/routine-stage-checkpoints/cangjie_release_full_sync-fetch.ckb", "profile=cangjie_release_full_sync\nrunId=current-run\ntaskName=cangjie_release_full_sync\nstage=fetch\nstatus=running\nprogressPath=metadata/scheduler-runs/current-run.jsonl\ndiagnostic=valid-profile-current 中文🙂\natMillis=5\n")
+
+        @Expect(ckbSchedulerWorkerLastStageFromStoreForTask(store, "cangjie_release_full_sync"), "fetch")
+        @Expect(ckbSchedulerWorkerLastProgressFromStoreForTask(store, "cangjie_release_full_sync").contains("valid-profile-current 中文🙂"), true)
+        @Expect(ckbSchedulerWorkerLastProgressFromStoreForTask(store, "cangjie_release_full_sync").contains("wrong-scoped"), false)
+    }
+
+    @TestCase
+    public func p5S1N03StrictWorkerReaderRequiresAuthoritativeSidecar(): Unit {
+        let root = "target/p5-s1-n03-sidecar-authority"
+        ensureEmptyDir(root)
+        let store = FileKnowledgeStore(root)
+        let resultPath = "metadata/scheduler-workers/docs-authority.ckb"
+        let primary = SchedulerTaskResult()
+        primary.ok = true
+        primary.status = "primary_ok"
+        primary.schedulerRunId = "run-authority"
+        primary.schedulerTaskName = "docs_probe_30d"
+        primary.lastStage = "fetch"
+        primary.lastProgress = "完成 中文🙂 Authorization: Bearer secret-value"
+        store.writeLinesAtomically(resultPath, ckbSchedulerTaskResultText(primary))
+        let primaryArtifact = store.readText(resultPath)
+
+        let strictMissing = ckbReadSchedulerWorkerResultFile(root, resultPath, "docs_probe_30d", "0", 5, 100, schedulerRunId: "run-authority", strictIdentity: true)
+        let legacy = ckbReadSchedulerWorkerResultFile(root, resultPath, "docs_probe_30d", "0", 5, 100, schedulerRunId: "run-authority", strictIdentity: false)
+
+        @Expect(strictMissing.ok, false)
+        @Expect(strictMissing.status, "task_worker_sidecar_missing")
+        @Expect(strictMissing.lastStage, "fetch")
+        @Expect(strictMissing.lastProgress.contains("中文🙂"), true)
+        @Expect(strictMissing.lastProgress.contains("secret-value"), false)
+        @Expect(primaryArtifact.contains("中文🙂"), true)
+        @Expect(primaryArtifact.contains("secret-value"), false)
+        @Expect(legacy.ok, true)
+        @Expect(legacy.status, "primary_ok")
+
+        let confirmed = SchedulerTaskResult()
+        confirmed.ok = true
+        confirmed.status = "confirmed_ok"
+        confirmed.schedulerRunId = "run-authority"
+        confirmed.schedulerTaskName = "docs_probe_30d"
+        confirmed.resultWrittenAtMillis = 123
+        confirmed.resultFlushDurationMillis = 3
+        confirmed.lastProgress = "确认完成 中文🙂 Authorization: Bearer secret-value"
+        confirmed.workerErrSnippet = "Authorization: Bearer secret-value"
+        confirmed.validationDiagnostics.add("诊断🙂 Authorization: Bearer secret-value")
+        confirmed.stageDurations.add("stage=fetch|durationMillis=2|itemCount=1|status=profile_ok")
+        store.writeLinesAtomically("${resultPath}.sidecar", ckbSchedulerTaskResultText(confirmed))
+        let sidecarArtifact = store.readText("${resultPath}.sidecar")
+        let strictConfirmed = ckbReadSchedulerWorkerResultFile(root, resultPath, "docs_probe_30d", "0", 5, 100, schedulerRunId: "run-authority", strictIdentity: true)
+
+        @Expect(strictConfirmed.ok, true)
+        @Expect(strictConfirmed.status, "confirmed_ok")
+        @Expect(strictConfirmed.stageDurations.size, 1)
+        @Expect(strictConfirmed.lastProgress.contains("中文🙂"), true)
+        @Expect(strictConfirmed.lastProgress.contains("secret-value"), false)
+        @Expect(strictConfirmed.workerErrSnippet.contains("secret-value"), false)
+        @Expect(p5S1StringListContains(strictConfirmed.validationDiagnostics, "secret-value"), false)
+        @Expect(sidecarArtifact.contains("中文🙂"), true)
+        @Expect(sidecarArtifact.contains("secret-value"), false)
+
+        confirmed.schedulerRunId = "wrong-run"
+        store.writeLinesAtomically("${resultPath}.sidecar", ckbSchedulerTaskResultText(confirmed))
+        let wrongRun = ckbReadSchedulerWorkerResultFile(root, resultPath, "docs_probe_30d", "0", 5, 100, schedulerRunId: "run-authority", strictIdentity: true)
+        @Expect(wrongRun.ok, false)
+        @Expect(wrongRun.status, "task_worker_sidecar_run_mismatch")
+
+        confirmed.schedulerRunId = "run-authority"
+        confirmed.schedulerTaskName = "wrong-task"
+        store.writeLinesAtomically("${resultPath}.sidecar", ckbSchedulerTaskResultText(confirmed))
+        let wrongTask = ckbReadSchedulerWorkerResultFile(root, resultPath, "docs_probe_30d", "0", 5, 100, schedulerRunId: "run-authority", strictIdentity: true)
+        @Expect(wrongTask.status, "task_worker_sidecar_task_mismatch")
+
+        confirmed.schedulerTaskName = "docs_probe_30d"
+        confirmed.resultWrittenAtMillis = 0
+        store.writeLinesAtomically("${resultPath}.sidecar", ckbSchedulerTaskResultText(confirmed))
+        let unconfirmed = ckbReadSchedulerWorkerResultFile(root, resultPath, "docs_probe_30d", "0", 5, 100, schedulerRunId: "run-authority", strictIdentity: true)
+        @Expect(unconfirmed.status, "task_worker_sidecar_unconfirmed")
+
+        File.writeTo(Path(root).join("${resultPath}.sidecar"), [UInt8(255), UInt8(254), UInt8(253)])
+        let malformed = ckbReadSchedulerWorkerResultFile(root, resultPath, "docs_probe_30d", "0", 5, 100, schedulerRunId: "run-authority", strictIdentity: true)
+        @Expect(malformed.status, "task_worker_sidecar_malformed")
+    }
+
+    @TestCase
+    public func p5S1E2EATrueChildKeepsRunIdentityAndTerminalArtifacts(): Unit {
+        let root = "target/p5-s1-e2e-a-child"
+        ensureEmptyDir(root)
+        let storePath = "${root}/store"
+        let configPath = "${root}/ckb-test.conf"
+        File.writeTo(Path(configPath), "networkEnabled=false\n".toArray())
+        let store = FileKnowledgeStore(storePath)
+        store.writeLinesAtomically("metadata/scheduler-current.ckb", "runId=s1-child-run\ntaskName=docs_probe_30d\nstatus=running\nprogressPath=metadata/scheduler-runs/s1-child-run.jsonl\ndiagnostic=\n")
+        let config = CkbRuntimeConfig()
+        let runner = ProcessIsolatedSchedulerTaskRunner(newOfflineKnowledgeBase(), config, store, configPath, storePath, DisabledNetworkFetchRunner(), "../target/release/bin/main")
+        let scheduler = Scheduler(FakeClock(1000))
+        let executor = SchedulerExecutor(scheduler, runner, NoopSchedulerProgressSink(), 120000)
+        let tasks = ArrayList<String>()
+        tasks.add("docs_probe_30d")
+
+        let result = executor.runTaskNames(tasks, force: true)
+        let record = result.taskRecords[0]
+        var terminalName = ""
+        let workerDir = Path(storePath).join("metadata/scheduler-workers")
+        if (exists(workerDir)) {
+            for (entry in Directory.readFrom(workerDir)) {
+                if (entry.isRegular() && entry.name.endsWith(".ckb")) {
+                    let text = String.fromUtf8(File.readFrom(entry.path))
+                    if (text.contains("schedulerRunId=s1-child-run") && !text.contains("status=worker_started")) {
+                        terminalName = entry.name
+                    }
+                }
+            }
+        }
+
+        let resultPath = "metadata/scheduler-workers/${terminalName}"
+        let primaryText = if (terminalName != "") { store.readText(resultPath) } else { "" }
+        let sidecarText = if (terminalName != "") { store.readText("${resultPath}.sidecar") } else { "" }
+        let confirmed = ckbReadSchedulerWorkerResultFile(storePath, resultPath, "docs_probe_30d", "0", record.durationMillis, 120000, schedulerRunId: "s1-child-run", strictIdentity: true)
+        let taskRecordsJson = ckbSchedulerRunTaskRecordsJson(result.taskRecords)
+        let outText = if (terminalName != "") { String.fromUtf8(File.readFrom(Path(storePath).join("${resultPath}.out"))) } else { "missing" }
+        let errText = if (terminalName != "") { String.fromUtf8(File.readFrom(Path(storePath).join("${resultPath}.err"))) } else { "missing" }
+        let childExitProbe = if (record.workerPid > 0) { launch("/bin/sh", ["-c", "kill -0 ${record.workerPid} 2>/dev/null"]).wait() } else { 0 }
+
+        @Expect(result.ran, 1)
+        @Expect(result.failed, 1)
+        @Expect(record.ok, false)
+        @Expect(record.status, "fetch_degraded:request_failed")
+        @Expect(record.schedulerRunId, "s1-child-run")
+        @Expect(record.schedulerTaskName, "docs_probe_30d")
+        @Expect(record.startedAtMillis <= record.bootstrapStartedAtMillis, true)
+        @Expect(record.bootstrapStartedAtMillis <= record.taskBodyStartedAtMillis, true)
+        @Expect(record.taskBodyStartedAtMillis <= record.taskBodyEndedAtMillis, true)
+        @Expect(record.taskBodyEndedAtMillis <= record.resultWrittenAtMillis, true)
+        @Expect(record.resultWrittenAtMillis <= record.endedAtMillis, true)
+        @Expect(record.resultFlushDurationMillis, record.resultWrittenAtMillis - record.taskBodyEndedAtMillis)
+        @Expect(record.durationMillis, record.endedAtMillis - record.startedAtMillis)
+        @Expect(record.workerOutSnippet, "")
+        @Expect(record.workerErrSnippet, "")
+        @Expect(record.stageDurations.size >= 2, true)
+        @Expect(p5S1StringListContains(record.stageDurations, "stage=fetch|durationMillis="), true)
+        @Expect(p5S1StringListContains(record.stageDurations, "stage=ingest|durationMillis="), true)
+        @Expect(terminalName != "", true)
+        @Expect(store.has("metadata/scheduler-workers/${terminalName}.sidecar"), true)
+        @Expect(primaryText.contains("resultWrittenAtMillis=0"), true)
+        @Expect(sidecarText.contains("resultWrittenAtMillis=0"), false)
+        @Expect(confirmed.status, record.status)
+        @Expect(confirmed.schedulerTaskName, record.schedulerTaskName)
+        @Expect(confirmed.taskBodyEndedAtMillis, record.taskBodyEndedAtMillis)
+        @Expect(confirmed.resultWrittenAtMillis, record.resultWrittenAtMillis)
+        @Expect(confirmed.resultFlushDurationMillis, record.resultFlushDurationMillis)
+        @Expect(confirmed.stageDurations.size, record.stageDurations.size)
+        @Expect(taskRecordsJson.contains("\"schedulerTaskName\":\"docs_probe_30d\""), true)
+        @Expect(taskRecordsJson.contains("stage=fetch|durationMillis="), true)
+        @Expect(outText, "")
+        @Expect(errText, "")
+        @Expect(record.workerPid > 0, true)
+        @Expect(childExitProbe != 0, true)
+        @Expect(ckbSchedulerWorkerLastStageFromStoreForTask(store, "docs_probe_30d") != "", true)
+        @Expect(ckbSchedulerCurrentRunIdForTask(store, "cangjie_release_full_sync"), "")
+    }
+
+    @TestCase
+    public func p5S1E2ECHardTimeoutProcessWritesConfirmedCompensation(): Unit {
+        let root = "target/p5-s1-e2e-c-hard-timeout"
+        ensureEmptyDir(root)
+        let storePath = "${root}/store"
+        let workerPath = "${root}/sleep-worker.zsh"
+        let childPidPath = "${root}/sleep-child.pid"
+        File.writeTo(Path(workerPath), "#!/bin/zsh\nsleep 30 &\nchild=$!\necho $child > ${childPidPath}\nwait $child\n".toArray())
+        let chmodCode = launch("/bin/chmod", ["700", workerPath]).wait()
+        let store = FileKnowledgeStore(storePath)
+        store.writeLinesAtomically("metadata/scheduler-current.ckb", "runId=hard-timeout-run\ntaskName=docs_probe_30d\nstatus=running\nprogressPath=metadata/scheduler-runs/hard-timeout-run.jsonl\ndiagnostic=\n")
+        let runner = ProcessIsolatedSchedulerTaskRunner(newOfflineKnowledgeBase(), CkbRuntimeConfig(), store, "", storePath, DisabledNetworkFetchRunner(), workerPath)
+
+        let task = runner.runTask("docs_probe_30d", "0", ckbCoreNowMillis() + 500)
+        let terminalName = p5S1TerminalWorkerFileName(storePath, "hard-timeout-run")
+        let resultPath = "metadata/scheduler-workers/${terminalName}"
+        let primaryText = if (terminalName != "") { store.readText(resultPath) } else { "" }
+        let sidecarText = if (terminalName != "") { store.readText("${resultPath}.sidecar") } else { "" }
+        let primary = ckbSchedulerTaskResultFromText(primaryText)
+        let confirmed = ckbSchedulerTaskResultFromText(sidecarText)
+        var childPid: Int64 = 0
+        if (exists(Path(childPidPath))) {
+            try {
+                childPid = Int64.parse(String.fromUtf8(File.readFrom(Path(childPidPath))).trimAscii())
+            } catch (_: Exception) {
+                childPid = 0
+            }
+        }
+        let outText = if (terminalName != "") { p5S1SafeReadFile(Path(storePath).join("${resultPath}.out")) } else { "missing" }
+        let errText = if (terminalName != "") { p5S1SafeReadFile(Path(storePath).join("${resultPath}.err")) } else { "missing" }
+
+        @Expect(chmodCode, 0)
+        @Expect(task.ok, false)
+        @Expect(task.status, "task_timeout:docs_probe_30d")
+        @Expect(task.schedulerRunId, "hard-timeout-run")
+        @Expect(task.schedulerTaskName, "docs_probe_30d")
+        @Expect(task.lastStage, "worker_timeout")
+        @Expect(task.workerPid > 0, true)
+        @Expect(terminalName != "", true)
+        @Expect(primary.status, "task_timeout:docs_probe_30d")
+        @Expect(primary.resultWrittenAtMillis, 0)
+        @Expect(confirmed.status, "task_timeout:docs_probe_30d")
+        @Expect(confirmed.schedulerRunId, "hard-timeout-run")
+        @Expect(confirmed.schedulerTaskName, "docs_probe_30d")
+        @Expect(confirmed.resultWrittenAtMillis >= confirmed.taskBodyEndedAtMillis, true)
+        @Expect(confirmed.resultFlushDurationMillis, confirmed.resultWrittenAtMillis - confirmed.taskBodyEndedAtMillis)
+        @Expect(outText, "")
+        @Expect(errText, "")
+        @Expect(p5S1ProcessExited(task.workerPid), true)
+        @Expect(childPid > 0, true)
+        @Expect(p5S1ProcessExited(childPid), true)
+        @Expect(primaryText.contains("secret-value"), false)
+        @Expect(sidecarText.contains("secret-value"), false)
+    }
+
+    @TestCase
+    public func p5S1N04FastWorkerWithoutSidecarRemainsProtocolFailure(): Unit {
+        let root = "target/p5-s1-n04-fast-worker-protocol"
+        ensureEmptyDir(root)
+        let storePath = "${root}/store"
+        let workerPath = "${root}/fast-worker.zsh"
+        File.writeTo(Path(workerPath), "#!/bin/zsh\nexit 0\n".toArray())
+        @Expect(launch("/bin/chmod", ["700", workerPath]).wait(), 0)
+        let store = FileKnowledgeStore(storePath)
+        store.writeLinesAtomically("metadata/scheduler-current.ckb", "runId=fast-protocol-run\ntaskName=docs_probe_30d\nstatus=running\nprogressPath=metadata/scheduler-runs/fast-protocol-run.jsonl\ndiagnostic=\n")
+        let runner = ProcessIsolatedSchedulerTaskRunner(newOfflineKnowledgeBase(), CkbRuntimeConfig(), store, "", storePath, DisabledNetworkFetchRunner(), workerPath)
+
+        let task = runner.runTask("docs_probe_30d", "0", ckbCoreNowMillis() + 10000)
+
+        @Expect(task.ok, false)
+        @Expect(task.status, "task_worker_sidecar_missing")
+        @Expect(task.status.startsWith("task_timeout:"), false)
+        @Expect(task.schedulerRunId, "fast-protocol-run")
+        @Expect(task.schedulerTaskName, "docs_probe_30d")
+        @Expect(task.workerPid > 0, true)
+        @Expect(p5S1ProcessExited(task.workerPid), true)
+    }
+
+    @TestCase
+    public func p5S1N05HardTimeoutDoesNotOverwriteWrongIdentitySidecar(): Unit {
+        let root = "target/p5-s1-n05-timeout-wrong-sidecar"
+        ensureEmptyDir(root)
+        let storePath = "${root}/store"
+        let workerPath = "${root}/wrong-sidecar-worker.zsh"
+        let childPidPath = "${root}/sleep-child.pid"
+        let script = "#!/bin/zsh\nstorePath=''\nresultRel=''\nwhile [[ $# -gt 0 ]]; do\n  case \"$1\" in\n    --store) storePath=\"$2\"; shift 2 ;;\n    --result-rel) resultRel=\"$2\"; shift 2 ;;\n    *) shift ;;\n  esac\ndone\nsidecar=\"$storePath/$resultRel.sidecar\"\nprint -r -- 'ok=true\nstatus=conflicting_terminal\nschedulerRunId=wrong-run\nschedulerTaskName=docs_probe_30d\nresultWrittenAtMillis=123\n' > \"$sidecar\"\necho 'Out of memory 中文🙂' >&2\nsleep 30 &\nchild=$!\necho $child > ${childPidPath}\nwait $child\n"
+        File.writeTo(Path(workerPath), script.toArray())
+        @Expect(launch("/bin/chmod", ["700", workerPath]).wait(), 0)
+        let store = FileKnowledgeStore(storePath)
+        store.writeLinesAtomically("metadata/scheduler-current.ckb", "runId=protected-run\ntaskName=docs_probe_30d\nstatus=running\nprogressPath=metadata/scheduler-runs/protected-run.jsonl\ndiagnostic=\n")
+        let runner = ProcessIsolatedSchedulerTaskRunner(newOfflineKnowledgeBase(), CkbRuntimeConfig(), store, "", storePath, DisabledNetworkFetchRunner(), workerPath)
+
+        let task = runner.runTask("docs_probe_30d", "0", ckbCoreNowMillis() + 500)
+        let workerName = p5S1WorkerFileNameForRun(storePath, "protected-run")
+        let sidecarText = if (workerName != "") { store.readText("metadata/scheduler-workers/${workerName}.sidecar") } else { "" }
+        var childPid: Int64 = 0
+        if (exists(Path(childPidPath))) {
+            try {
+                childPid = Int64.parse(String.fromUtf8(File.readFrom(Path(childPidPath))).trimAscii())
+            } catch (_: Exception) {
+                childPid = 0
+            }
+        }
+
+        @Expect(task.ok, false)
+        @Expect(task.status, "task_worker_sidecar_run_mismatch")
+        @Expect(task.status.startsWith("task_timeout:"), false)
+        @Expect(task.lastStage, "worker_out_of_memory")
+        @Expect(task.workerPid > 0, true)
+        @Expect(task.workerErrSnippet.contains("Out of memory 中文🙂"), true)
+        @Expect(p5S1StringListContains(task.validationDiagnostics, "worker_artifact:worker_out_of_memory"), true)
+        @Expect(p5S1StringListContains(task.validationDiagnostics, "task_worker_out_of_memory"), false)
+        @Expect(workerName != "", true)
+        @Expect(sidecarText.contains("status=conflicting_terminal"), true)
+        @Expect(sidecarText.contains("schedulerRunId=wrong-run"), true)
+        @Expect(sidecarText.contains("task_timeout:docs_probe_30d"), false)
+        @Expect(p5S1ProcessExited(task.workerPid), true)
+        @Expect(childPid > 0, true)
+        @Expect(p5S1ProcessExited(childPid), true)
+    }
+
+    @TestCase
+    public func p5S1N06HardTimeoutDoesNotOverwriteUnconfirmedSidecar(): Unit {
+        let root = "target/p5-s1-n06-timeout-unconfirmed-sidecar"
+        ensureEmptyDir(root)
+        let storePath = "${root}/store"
+        let workerPath = "${root}/unconfirmed-sidecar-worker.zsh"
+        let childPidPath = "${root}/sleep-child.pid"
+        let script = "#!/bin/zsh\nstorePath=''\nresultRel=''\nwhile [[ $# -gt 0 ]]; do\n  case \"$1\" in\n    --store) storePath=\"$2\"; shift 2 ;;\n    --result-rel) resultRel=\"$2\"; shift 2 ;;\n    *) shift ;;\n  esac\ndone\nsidecar=\"$storePath/$resultRel.sidecar\"\nprint -r -- 'ok=true\nstatus=unconfirmed_candidate\nschedulerRunId=unconfirmed-run\nschedulerTaskName=docs_probe_30d\nresultWrittenAtMillis=0\n' > \"$sidecar\"\necho 'Out of memory 中文🙂' >&2\nsleep 30 &\nchild=$!\necho $child > ${childPidPath}\nwait $child\n"
+        File.writeTo(Path(workerPath), script.toArray())
+        @Expect(launch("/bin/chmod", ["700", workerPath]).wait(), 0)
+        let store = FileKnowledgeStore(storePath)
+        store.writeLinesAtomically("metadata/scheduler-current.ckb", "runId=unconfirmed-run\ntaskName=docs_probe_30d\nstatus=running\nprogressPath=metadata/scheduler-runs/unconfirmed-run.jsonl\ndiagnostic=\n")
+        let runner = ProcessIsolatedSchedulerTaskRunner(newOfflineKnowledgeBase(), CkbRuntimeConfig(), store, "", storePath, DisabledNetworkFetchRunner(), workerPath)
+
+        let task = runner.runTask("docs_probe_30d", "0", ckbCoreNowMillis() + 500)
+        let workerName = p5S1WorkerFileNameForRun(storePath, "unconfirmed-run")
+        let sidecarText = if (workerName != "") { store.readText("metadata/scheduler-workers/${workerName}.sidecar") } else { "" }
+        var childPid: Int64 = 0
+        if (exists(Path(childPidPath))) {
+            try {
+                childPid = Int64.parse(String.fromUtf8(File.readFrom(Path(childPidPath))).trimAscii())
+            } catch (_: Exception) {
+                childPid = 0
+            }
+        }
+
+        @Expect(task.ok, false)
+        @Expect(task.status, "task_worker_sidecar_unconfirmed")
+        @Expect(task.status.startsWith("task_timeout:"), false)
+        @Expect(task.lastStage, "worker_out_of_memory")
+        @Expect(task.workerPid > 0, true)
+        @Expect(task.workerErrSnippet.contains("Out of memory 中文🙂"), true)
+        @Expect(p5S1StringListContains(task.validationDiagnostics, "worker_artifact:worker_out_of_memory"), true)
+        @Expect(p5S1StringListContains(task.validationDiagnostics, "task_worker_out_of_memory"), false)
+        @Expect(workerName != "", true)
+        @Expect(sidecarText.contains("status=unconfirmed_candidate"), true)
+        @Expect(sidecarText.contains("schedulerRunId=unconfirmed-run"), true)
+        @Expect(sidecarText.contains("resultWrittenAtMillis=0"), true)
+        @Expect(sidecarText.contains("task_timeout:docs_probe_30d"), false)
+        @Expect(p5S1ProcessExited(task.workerPid), true)
+        @Expect(childPid > 0, true)
+        @Expect(p5S1ProcessExited(childPid), true)
+    }
+
+    @TestCase
+    public func p5S1E2EDCliFinalizerPreservesSchedulerObserverFailure(): Unit {
+        let root = "target/p5-s1-e2e-d-cli-observer"
+        ensureEmptyDir(root)
+        let storePath = "${root}/store"
+        let configPath = "${root}/ckb-test.conf"
+        let stdoutPath = "${root}/scheduler-run.stdout"
+        let stderrPath = "${root}/scheduler-run.stderr"
+        File.writeTo(Path(configPath), "networkEnabled=false\nschedulerEnabled=false\n".toArray())
+        let store = FileKnowledgeStore(storePath)
+        store.ensureLayout()
+        File.writeTo(Path(storePath).join("metadata/scheduler-runs"), "blocked observer projection 中文🙂".toArray())
+
+        var dyldLibraryPath = ""
+        if (let Some(value) <- getVariable("DYLD_LIBRARY_PATH")) {
+            dyldLibraryPath = value
+        }
+        let prelude = ckbSchedulerWorkerShellPreludeWithHeap(dyldLibraryPath, "") + "unset CKB_SCHEDULER_TASK_WORKER; "
+        let command = prelude + "../target/release/bin/main --config ${configPath} --store ${storePath} scheduler-run --task weekly_full_rebuild --force --json > ${stdoutPath} 2> ${stderrPath}"
+        let process = launch("/bin/zsh", ["-c", command], stdOut: ProcessRedirect.Pipe, stdErr: ProcessRedirect.Pipe)
+        let code = process.wait()
+        let wrapperStdout = p5S1SafeReadPipe(process.stdOutPipe)
+        let wrapperStderr = p5S1SafeReadPipe(process.stdErrPipe)
+        let stdout = p5S1SafeReadFile(Path(stdoutPath))
+        let stderr = p5S1SafeReadFile(Path(stderrPath))
+
+        @Expect(dyldLibraryPath != "", true)
+        @Expect(code, 1)
+        @Expect(stdout.contains("\"ran\":1"), true)
+        @Expect(stdout.contains("\"succeeded\":1"), true)
+        @Expect(stdout.contains("\"failed\":0"), true)
+        @Expect(stdout.contains("\"businessOk\":true"), true)
+        @Expect(stdout.contains("\"finalizationOk\":false"), true)
+        @Expect(stdout.contains("scheduler_progress_observer_degraded:event=run_started"), true)
+        @Expect(stdout.contains("scheduler_progress_observer_degraded:event=run_finished"), true)
+        @Expect(stdout.contains("\"status\":\"rebuild_ok\""), true)
+        @Expect(stdout.contains("task_exception"), false)
+        @Expect(stdout.contains("blocked observer projection"), false)
+        @Expect(wrapperStdout, "")
+        @Expect(wrapperStderr, "")
+        @Expect(stderr, "")
+    }
+
     @TestCase
     public func schedulerRunWritesProgressArtifacts(): Unit {
         let root = "target/ckb-scheduler-progress-artifacts"
@@ -276,7 +882,7 @@ public class CkbSchedulerProgressTimeoutTest {
         let store = FileKnowledgeStore(root)
         store.writeLinesAtomically("metadata/scheduler-current.ckb", "runId=scheduler-p4\ntaskName=cangjie_docs_full_weekly\nstatus=running\nprogressPath=metadata/scheduler-runs/scheduler-p4.jsonl\ndiagnostic=\n")
         store.writeLinesAtomically("metadata/staged-rebuild-current.ckb", "stage=staged_rebuild_vector_before\nstatus=running\ndiagnostic=old-global-stage\n")
-        store.writeLinesAtomically("metadata/scheduler-runs/scheduler-p4-cangjie_docs_full_weekly-staged-rebuild-current.ckb", "stage=candidate_active_commit_started\nstatus=running\ndiagnostic=p4-active-commit\n")
+        store.writeLinesAtomically("metadata/scheduler-runs/scheduler-p4-cangjie_docs_full_weekly-staged-rebuild-current.ckb", "runId=scheduler-p4\ntaskName=cangjie_docs_full_weekly\nstage=candidate_active_commit_started\nstatus=running\nprogressPath=metadata/scheduler-runs/scheduler-p4.jsonl\ndiagnostic=p4-active-commit\natMillis=3\n")
 
         let stage = ckbSchedulerWorkerLastStageFromStoreForTask(store, "cangjie_docs_full_weekly")
 
@@ -478,18 +1084,63 @@ public class CkbSchedulerProgressTimeoutTest {
         let resultPath = "metadata/scheduler-workers/weekly-empty.ckb"
         store.writeLinesAtomically(resultPath, "")
 
-        let task = ckbWriteSchedulerWorkerTimeoutCompensation(store, resultPath, "weekly_full_rebuild", "0", 120001, 120000, "task_worker_hard_timeout", lastStage: "native_http_timeout", lastProgress: "vector:completed=64,currentBatch=1", workerPid: 12345, outSnippet: "WARN timeout", errSnippet: "Authorization: Bearer secret-value timeout")
+        let task = ckbWriteSchedulerWorkerTimeoutCompensation(store, resultPath, "weekly_full_rebuild", "0", 120001, 120000, "task_worker_hard_timeout", lastStage: "native_http_timeout", lastProgress: "vector:completed=64,currentBatch=1", workerPid: 12345, outSnippet: "WARN timeout", errSnippet: "Authorization: Bearer secret-value timeout", schedulerRunId: "timeout-run")
         let text = store.readText(resultPath)
+        let primary = ckbSchedulerTaskResultFromText(text)
+        let confirmed = ckbSchedulerTaskResultFromText(store.readText("${resultPath}.sidecar"))
 
         @Expect(task.status, "task_timeout:weekly_full_rebuild")
         @Expect(task.lastStage, "native_http_timeout")
         @Expect(task.lastProgress.contains("completed=64"), true)
         @Expect(task.workerPid, 12345)
+        @Expect(task.schedulerRunId, "timeout-run")
+        @Expect(task.schedulerTaskName, "weekly_full_rebuild")
+        @Expect(primary.resultWrittenAtMillis, 0)
+        @Expect(confirmed.schedulerRunId, "timeout-run")
+        @Expect(confirmed.schedulerTaskName, "weekly_full_rebuild")
+        @Expect(confirmed.status, "task_timeout:weekly_full_rebuild")
+        @Expect(confirmed.resultWrittenAtMillis >= confirmed.taskBodyEndedAtMillis, true)
+        @Expect(confirmed.resultFlushDurationMillis, confirmed.resultWrittenAtMillis - confirmed.taskBodyEndedAtMillis)
+        @Expect(task.resultWrittenAtMillis, confirmed.resultWrittenAtMillis)
+        @Expect(task.resultFlushDurationMillis, confirmed.resultFlushDurationMillis)
         @Expect(store.readText(resultPath).size > 0, true)
         @Expect(store.readText("${resultPath}.sidecar").contains("task_worker_hard_timeout"), true)
         @Expect(text.contains("lastStage=native_http_timeout"), true)
         @Expect(text.contains("workerPid=12345"), true)
         @Expect(text.contains("secret-value"), false)
+        @Expect(store.readText("${resultPath}.sidecar").contains("secret-value"), false)
+    }
+
+    @TestCase
+    public func p5S1U02BootstrapFailureUsesRecoveryPrimaryAndConfirmedSidecar(): Unit {
+        let root = "target/p5-s1-u02-bootstrap-terminal"
+        ensureEmptyDir(root)
+        let store = FileKnowledgeStore(root)
+        let resultPath = "metadata/scheduler-workers/docs-bootstrap.ckb"
+        let bootstrapStartedAtMillis = ckbCoreNowMillis() - 10
+
+        let task = ckbWriteSchedulerTaskBootstrapFailure(store, "docs_probe_30d", "0", ckbCoreNowMillis() + 1000, resultPath, "bootstrap-run", bootstrapStartedAtMillis, "启动失败 中文🙂 Authorization: Bearer secret-value")
+        let primaryText = store.readText(resultPath)
+        let sidecarText = store.readText("${resultPath}.sidecar")
+        let primary = ckbSchedulerTaskResultFromText(primaryText)
+        let confirmed = ckbSchedulerTaskResultFromText(sidecarText)
+
+        @Expect(task.ok, false)
+        @Expect(task.status, "task_bootstrap_failed")
+        @Expect(primary.resultWrittenAtMillis, 0)
+        @Expect(primary.schedulerRunId, "bootstrap-run")
+        @Expect(primary.schedulerTaskName, "docs_probe_30d")
+        @Expect(confirmed.status, "task_bootstrap_failed")
+        @Expect(confirmed.schedulerRunId, "bootstrap-run")
+        @Expect(confirmed.schedulerTaskName, "docs_probe_30d")
+        @Expect(confirmed.resultWrittenAtMillis >= confirmed.taskBodyEndedAtMillis, true)
+        @Expect(confirmed.resultFlushDurationMillis, confirmed.resultWrittenAtMillis - confirmed.taskBodyEndedAtMillis)
+        @Expect(task.resultWrittenAtMillis, confirmed.resultWrittenAtMillis)
+        @Expect(task.resultFlushDurationMillis, confirmed.resultFlushDurationMillis)
+        @Expect(primaryText.contains("中文🙂"), true)
+        @Expect(sidecarText.contains("中文🙂"), true)
+        @Expect(primaryText.contains("secret-value"), false)
+        @Expect(sidecarText.contains("secret-value"), false)
     }
 
     @TestCase
@@ -643,6 +1294,68 @@ private func captureContains(items: ArrayList<String>, expected: String): Bool {
         }
     }
     false
+}
+
+private func p5S1StringListContains(items: ArrayList<String>, expected: String): Bool {
+    for (item in items) {
+        if (item.contains(expected)) {
+            return true
+        }
+    }
+    false
+}
+
+private func p5S1TerminalWorkerFileName(storePath: String, schedulerRunId: String): String {
+    let workerDir = Path(storePath).join("metadata/scheduler-workers")
+    if (!exists(workerDir)) {
+        return ""
+    }
+    for (entry in Directory.readFrom(workerDir)) {
+        if (!entry.isRegular() || !entry.name.endsWith(".ckb")) {
+            continue
+        }
+        let text = p5S1SafeReadFile(entry.path)
+        if (text.contains("schedulerRunId=${schedulerRunId}") && !text.contains("status=worker_started")) {
+            return entry.name
+        }
+    }
+    ""
+}
+
+private func p5S1WorkerFileNameForRun(storePath: String, schedulerRunId: String): String {
+    let workerDir = Path(storePath).join("metadata/scheduler-workers")
+    if (!exists(workerDir)) {
+        return ""
+    }
+    for (entry in Directory.readFrom(workerDir)) {
+        if (entry.isRegular() && entry.name.endsWith(".ckb") && p5S1SafeReadFile(entry.path).contains("schedulerRunId=${schedulerRunId}")) {
+            return entry.name
+        }
+    }
+    ""
+}
+
+private func p5S1ProcessExited(pid: Int64): Bool {
+    pid > 0 && launch("/bin/sh", ["-c", "kill -0 ${pid} 2>/dev/null"]).wait() != 0
+}
+
+private func p5S1SafeReadFile(path: Path): String {
+    if (!exists(path)) {
+        return ""
+    }
+    try {
+        String.fromUtf8(File.readFrom(path))
+    } catch (_: Exception) {
+        "invalid_response_encoding"
+    }
+}
+
+private func p5S1SafeReadPipe(pipe: InputStream): String {
+    try {
+        StringReader<InputStream>(pipe).readToEnd()
+    } catch (_: Exception) {
+        "invalid_response_encoding"
+    }
 }
 
 private func testField(text: String, key: String): String {
