@@ -2699,6 +2699,17 @@ public class SchedulerExecutorResult {
     public var validationSummaries: ArrayList<String> = ArrayList<String>()
     public var validationDiagnostics: ArrayList<String> = ArrayList<String>()
     public var validationEvidenceHashes: ArrayList<String> = ArrayList<String>()
+    public var businessOk: Bool = false
+    public var finalizationOk: Bool = true
+    public var schedulerSaved: Bool = false
+    public var loopMetadataSaved: Bool = false
+    public var lockReleased: Bool = false
+    public var jsonPrinted: Bool = false
+    public var schedulerSaveStatus: String = "not_run"
+    public var loopMetadataStatus: String = "not_run"
+    public var lockReleaseStatus: String = "not_run"
+    public var jsonReadyAtMillis: Int64 = 0
+    public var finalizationDiagnostics: ArrayList<String> = ArrayList<String>()
     public var finalPreflightOk: Bool = true
     public var finalPreflightDiagnostics: ArrayList<String> = ArrayList<String>()
     public var postRepairAttempted: Bool = false
@@ -2817,6 +2828,7 @@ public class SchedulerExecutor {
 
     private func finishRun(result: SchedulerExecutorResult): Unit {
         result.endedAtMillis = ckbCoreNowMillis()
+        result.businessOk = result.failed == 0 && result.degraded == 0
         this.progressSink.onRunFinished(result)
     }
 
@@ -3001,6 +3013,9 @@ private func schedulerDiagnosticIsPrimaryFailure(diagnostic: String): Bool {
     if (schedulerDiagnosticIsContextOnly(diagnostic)) {
         return false
     }
+    if (schedulerFreshnessDiagnosticIsBlocking(diagnostic)) {
+        return true
+    }
     diagnostic.startsWith("readiness:") ||
         diagnostic.contains("version_manifest_write_verify_failed") ||
         diagnostic.contains("version_manifest_empty_after_refresh") ||
@@ -3011,7 +3026,29 @@ private func schedulerDiagnosticIsPrimaryFailure(diagnostic: String): Bool {
 private func schedulerDiagnosticIsContextOnly(diagnostic: String): Bool {
     diagnostic.contains("routine_contract_passed") ||
         diagnostic.contains("profile_stage_budget") ||
-        diagnostic.contains("profile_stage_checkpoint")
+        diagnostic.contains("profile_stage_checkpoint") ||
+        schedulerFreshnessDiagnosticIsSignal(diagnostic)
+}
+
+private func schedulerFreshnessDiagnosticIsBlocking(diagnostic: String): Bool {
+    diagnostic.contains("probe_failed") ||
+        diagnostic.contains("manifest_not_ready_for_freshness") ||
+        diagnostic.contains("manifest_blocking_for_freshness") ||
+        diagnostic.contains("manifest_missing_for_freshness") ||
+        diagnostic.contains("manifest_offline_baseline_for_freshness") ||
+        diagnostic.contains("version_manifest_contains_offline_baseline") ||
+        diagnostic.contains("version_manifest_invalid_encoding") ||
+        diagnostic.contains("version_manifest_malformed")
+}
+
+private func schedulerFreshnessDiagnosticIsSignal(diagnostic: String): Bool {
+    diagnostic.contains("freshness_source_hash_changed") ||
+        diagnostic.contains("staleness_stale") ||
+        diagnostic.contains("freshness_stale_signal") ||
+        diagnostic.contains("freshness_source:") ||
+        diagnostic.contains("manifest_source_tree_resolved") ||
+        diagnostic.contains("manifest_source_content_sample_ok") ||
+        diagnostic.contains("manifest_ready_for_freshness")
 }
 
 private func schedulerExceptionTaskResult(name: String, status: String, durationMillis: Int64, message!: String = ""): SchedulerTaskResult {

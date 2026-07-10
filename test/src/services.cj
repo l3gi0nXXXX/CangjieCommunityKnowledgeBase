@@ -4298,6 +4298,12 @@ private func ckbSchedulerCollectFailedDiagnostic(summaries: ArrayList<CkbSchedul
 }
 
 private func ckbSchedulerPrimaryFailureFromDiagnostic(diagnostic: String): String {
+    if (ckbSchedulerFreshnessDiagnosticIsSignal(diagnostic)) {
+        return ""
+    }
+    if (ckbSchedulerFreshnessDiagnosticIsBlocking(diagnostic)) {
+        return redactSensitive(diagnostic)
+    }
     if (diagnostic.contains("routine_contract_passed") ||
         diagnostic.contains("profile_stage_budget") ||
         diagnostic.contains("profile_stage_checkpoint")) {
@@ -4322,6 +4328,27 @@ private func ckbSchedulerPrimaryFailureFromDiagnostic(diagnostic: String): Strin
         return redactSensitive(diagnostic)
     }
     ""
+}
+
+private func ckbSchedulerFreshnessDiagnosticIsBlocking(diagnostic: String): Bool {
+    diagnostic.contains("probe_failed") ||
+        diagnostic.contains("manifest_not_ready_for_freshness") ||
+        diagnostic.contains("manifest_blocking_for_freshness") ||
+        diagnostic.contains("manifest_missing_for_freshness") ||
+        diagnostic.contains("manifest_offline_baseline_for_freshness") ||
+        diagnostic.contains("version_manifest_contains_offline_baseline") ||
+        diagnostic.contains("version_manifest_invalid_encoding") ||
+        diagnostic.contains("version_manifest_malformed")
+}
+
+private func ckbSchedulerFreshnessDiagnosticIsSignal(diagnostic: String): Bool {
+    diagnostic.contains("freshness_source_hash_changed") ||
+        diagnostic.contains("staleness_stale") ||
+        diagnostic.contains("freshness_stale_signal") ||
+        diagnostic.contains("freshness_source:") ||
+        diagnostic.contains("manifest_source_tree_resolved") ||
+        diagnostic.contains("manifest_source_content_sample_ok") ||
+        diagnostic.contains("manifest_ready_for_freshness")
 }
 
 private func ckbSchedulerCanReplacePrimaryFailure(current: String): Bool {
@@ -6728,14 +6755,21 @@ private func ckbTaskWorkerResultRelativePath(taskName: String): String {
     "metadata/scheduler-workers/${safeName(taskName)}-${ckbTaskWorkerNowMillis()}.ckb"
 }
 
-private func ckbTaskWorkerStartedText(taskName: String, since: String, deadlineAtMillis: Int64, resultRelativePath: String, startedAtMillis: Int64): String {
+private func ckbTaskWorkerStartedText(taskName: String, since: String, deadlineAtMillis: Int64, resultRelativePath: String, startedAtMillis: Int64, commandHash!: String = "", dyldLibraryPath!: String = "", cjHeapSize!: String = ""): String {
     var text = "status=worker_started\n"
     text += "taskName=${escapeField(taskName)}\n"
     text += "since=${escapeField(since)}\n"
     text += "deadlineAtMillis=${deadlineAtMillis}\n"
     text += "startedAtMillis=${startedAtMillis}\n"
     text += "resultRelativePath=${escapeField(resultRelativePath)}\n"
+    text += "commandHash=${escapeField(commandHash)}\n"
+    text += "dyldStdxPresent=${ckbSchedulerDyldHasStdx(dyldLibraryPath)}\n"
+    text += "heapConfigured=${cjHeapSize.trimAscii() != ""}\n"
     text
+}
+
+private func ckbSchedulerDyldHasStdx(dyldLibraryPath: String): Bool {
+    dyldLibraryPath.contains("stdx") || dyldLibraryPath.contains("cangjie-stdx")
 }
 
 public func ckbSchedulerTaskResultText(task: SchedulerTaskResult): String {
@@ -7045,8 +7079,9 @@ public class ProcessIsolatedSchedulerTaskRunner <: SchedulerTaskRunner {
         let flushMarginMillis = ckbSchedulerWorkerResultFlushMarginMillis()
         let workerDeadlineAtMillis = if (deadlineAtMillis > started + flushMarginMillis) { deadlineAtMillis - flushMarginMillis } else { deadlineAtMillis }
         let resultRelativePath = ckbTaskWorkerResultRelativePath(name)
-        this.store.writeLinesAtomically(resultRelativePath, ckbTaskWorkerStartedText(name, since, workerDeadlineAtMillis, resultRelativePath, started))
-        this.store.writeLinesAtomically("${resultRelativePath}.started", ckbTaskWorkerStartedText(name, since, workerDeadlineAtMillis, resultRelativePath, started))
+        let startedText = ckbTaskWorkerStartedText(name, since, workerDeadlineAtMillis, resultRelativePath, started, commandHash: stableSummaryHash(this.command), dyldLibraryPath: ckbSchedulerWorkerDyldLibraryPath(), cjHeapSize: ckbSchedulerWorkerCjHeapSize())
+        this.store.writeLinesAtomically(resultRelativePath, startedText)
+        this.store.writeLinesAtomically("${resultRelativePath}.started", startedText)
         let code = this.launchWorker(name, since, workerDeadlineAtMillis, resultRelativePath, timeoutMillis)
         let elapsed = ckbTaskWorkerNowMillis() - started
         let workerPid = ckbSchedulerWorkerPidFromStarted(this.storePath, resultRelativePath)
@@ -7088,6 +7123,10 @@ public class ProcessIsolatedSchedulerTaskRunner <: SchedulerTaskRunner {
             if (artifactClass == "worker_out_of_memory") {
                 parsed.status = "task_worker_out_of_memory"
                 parsed.validationDiagnostics.add("${name}:task_worker_out_of_memory")
+            }
+            if (artifactClass == "worker_dynamic_library_missing") {
+                parsed.status = "task_worker_dynamic_library_missing"
+                parsed.validationDiagnostics.add("${name}:task_worker_dynamic_library_missing")
             }
             if (parsed.lastStage == "") {
                 parsed.lastStage = ckbSchedulerWorkerLastStageFromArtifacts(outSnippet, errSnippet)
@@ -7210,6 +7249,9 @@ public func ckbClassifyWorkerArtifact(outSnippet: String, errSnippet: String): S
     if (combined.contains("out of memory") || combined.contains("outofmemory") || combined.contains("memory allocation failed")) {
         return "worker_out_of_memory"
     }
+    if (combined.contains("library not loaded") || combined.contains("image not found") || combined.contains("libstdx") || combined.contains("@rpath")) {
+        return "worker_dynamic_library_missing"
+    }
     if (combined.contains("httptimeoutexception") || combined.contains("read response timeout") || combined.contains("timeout")) {
         return "native_http_timeout"
     }
@@ -7233,7 +7275,7 @@ public func ckbSchedulerWorkerLastProgressFromStoreForTask(store: FileKnowledgeS
     let runId = ckbSchedulerCurrentRunId(store)
     let currentTaskName = ckbSchedulerCurrentTaskName(store)
     let scopedTaskName = if (taskName.trimAscii() != "") { taskName } else { currentTaskName }
-    let allowGlobalProgress = scopedTaskName == "" || scopedTaskName == currentTaskName
+    let allowGlobalProgress = taskName.trimAscii() == "" && (scopedTaskName == "" || scopedTaskName == currentTaskName)
     let isManifestOnlyTask = scopedTaskName == "cangjie_version_branch_refresh"
     let stagedPath = ckbSchedulerScopedStagedRebuildCurrentPath(runId, scopedTaskName)
     let scopedStagedCurrent = if (stagedPath != "") { store.readText(stagedPath) } else { "" }
@@ -7301,6 +7343,22 @@ private func ckbSchedulerRoutineCheckpointStagePriority(profile: String): ArrayL
         stages.add("fetch_tree_page")
         stages.add("fetch_source_finished")
         stages.add("fetch_source_started")
+        stages.add("fetch")
+    } else if (profile == "cangjie_docs_full_sync" || profile == "cangjie_release_full_sync" || profile == "cangjie_source_event_sync") {
+        stages.add("ingest_finished")
+        stages.add("ingest_started")
+        stages.add("fetch_content_sample")
+        stages.add("fetch_tree_page")
+        stages.add("fetch_source_finished")
+        stages.add("fetch_source_started")
+        stages.add("fetch")
+    } else if (profile == "cangjie_benchmark_gap_curation") {
+        stages.add("proof_finished")
+        stages.add("proof_started")
+        stages.add("promotion_finished")
+        stages.add("promotion_started")
+        stages.add("input_parsed")
+        stages.add("ingest_started")
         stages.add("fetch")
     }
     stages
@@ -7468,10 +7526,11 @@ public class CkbSchedulerTaskRunner <: SchedulerTaskRunner {
                 freshness.degraded = true
                 freshness.diagnostics.add("version_manifest_contains_offline_baseline")
             }
+            let staleSignals = ckbFreshnessStaleSignalCount(freshness)
             this.store.saveCangjieCorpusFreshness(freshness)
             result.ok = freshness.ok && !freshness.degraded
-            result.status = if (result.ok) { "freshness_probe_ok" } else { "freshness_probe_degraded" }
-            result.cursor = stableSummaryHash("${freshness.targetVersion}:${freshness.sources.size}:${freshness.degraded}")
+            result.status = if (result.ok) { if (staleSignals > 0) { "freshness_probe_completed_with_stale_sources" } else { "freshness_probe_ok" } } else { "freshness_probe_degraded" }
+            result.cursor = stableSummaryHash("${freshness.targetVersion}:${freshness.sources.size}:${freshness.degraded}:${staleSignals}")
             result.since = "${this.kb.scheduler.clock.nowMinutes}"
             result.activeVersion = status.activeKnowledgeVersion
             result.candidateVersion = status.candidateKnowledgeVersion
@@ -7487,7 +7546,7 @@ public class CkbSchedulerTaskRunner <: SchedulerTaskRunner {
                 result.validationDiagnostics.add("freshness_source:sourceSet=${source.sourceSet}|sourceFamily=${source.sourceFamily}|repo=${source.sourceRepo}|ref=${source.sourceRef}|status=${source.status}|staleness=${source.staleness}|resolvedCommit=${source.resolvedCommit}|contentHash=${source.contentHash}|crawlAt=${source.crawlAt}|indexedAt=${source.indexedAt}")
             }
             result.lastStage = if (result.ok) { "freshness_probe_finished" } else { "freshness_probe_degraded" }
-            result.lastProgress = "sources=${freshness.sources.size},diagnostics=${freshness.diagnostics.size},activeVersion=${status.activeKnowledgeVersion},candidateVersion=${status.candidateKnowledgeVersion}"
+            result.lastProgress = "sources=${freshness.sources.size},staleSignals=${staleSignals},diagnostics=${freshness.diagnostics.size},activeVersion=${status.activeKnowledgeVersion},candidateVersion=${status.candidateKnowledgeVersion}"
             return this.finalizeTaskResultWithContract(name, result, beforeInvariant)
         }
         let manifest = this.runtimeVersionManifest()
@@ -9876,6 +9935,16 @@ private func ckbApplyFreshnessArtifactSemantics(report: CangjieCorpusFreshnessRe
             report.diagnostics.add("freshness_source_hash_changed:sourceSet=${source.sourceSet}|repo=${source.sourceRepo}|oldHash=${baseline.contentHash}|newHash=${source.contentHash}|oldCommit=${baseline.resolvedCommit}|newCommit=${source.resolvedCommit}")
         }
     }
+}
+
+private func ckbFreshnessStaleSignalCount(report: CangjieCorpusFreshnessReport): Int64 {
+    var count: Int64 = 0
+    for (source in report.sources) {
+        if (source.staleness == "stale" || source.status == "stale_signal") {
+            count += 1
+        }
+    }
+    count
 }
 
 private func ckbFindFreshnessSource(report: CangjieCorpusFreshnessReport, sourceSet: String, repo: String): CangjieCorpusFreshnessSource {

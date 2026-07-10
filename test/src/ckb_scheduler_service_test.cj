@@ -1168,7 +1168,7 @@ public class CkbSchedulerServiceF5Test {
 
     @TestCase
     public func f3N1ChangedToolsHashReportsOldAndNewFreshnessHash(): Unit {
-        // F3-N1: changed tools source hash without a refresh is stale with old/new hash diagnostics.
+        // P3-S1/P3-S2: changed tools source hash is a stale signal with old/new hash diagnostics, not a failed task.
         let root = "target/f3-n1-tools-hash-changed"
         s1s2EnsureEmptyDir(root)
         let config = CkbRuntimeConfig()
@@ -1185,11 +1185,16 @@ public class CkbSchedulerServiceF5Test {
         let result = service.runSchedulerTasks(tasks, true)
 
         @Expect(result.ran, 1)
-        @Expect(result.failed, 1)
+        @Expect(result.succeeded, 1)
+        @Expect(result.failed, 0)
+        @Expect(result.degraded, 0)
+        @Expect(result.details.contains("freshness_probe_completed_with_stale_sources"), true)
         @Expect(f7SchedulerDiagnosticsContain(result, "freshness_source_hash_changed:sourceSet=tools"), true)
         @Expect(f7SchedulerDiagnosticsContain(result, "oldHash=sha256:fresh-tools"), true)
         @Expect(f7SchedulerDiagnosticsContain(result, "newCommit=changed-tools"), true)
-        @Expect(f7SchedulerDiagnosticsContain(result, "sourceSet=tools|sourceFamily=tools|repo=Cangjie/cangjie_tools|ref=release-1.0.0|status=stale|staleness=stale"), true)
+        @Expect(f7SchedulerDiagnosticsContain(result, "sourceSet=tools|sourceFamily=tools|repo=Cangjie/cangjie_tools|ref=release-1.0.0|status=stale_signal|staleness=stale"), true)
+        @Expect(result.taskRecords[0].lastProgress.contains("staleSignals=1"), true)
+        @Expect(ckbSchedulerFailureSummaries(result).size, 0)
     }
 
     @TestCase
@@ -1213,6 +1218,9 @@ public class CkbSchedulerServiceF5Test {
         @Expect(result.failed, 1)
         @Expect(result.details.contains("freshness_probe_degraded"), true)
         @Expect(f7SchedulerDiagnosticsContain(result, "version_manifest_invalid_encoding"), true)
+        let summaries = ckbSchedulerFailureSummaries(result)
+        @Expect(summaries.size > 0, true)
+        @Expect(summaries[0].primaryFailure.contains("version_manifest_invalid_encoding"), true)
     }
 
     @TestCase
@@ -1380,6 +1388,13 @@ public class CkbSchedulerServiceF5Test {
         let classified = ckbClassifyWorkerArtifact("", "An exception has occurred: Out of memory")
 
         @Expect(classified, "worker_out_of_memory")
+    }
+
+    @TestCase
+    public func tP3B03WorkerArtifactClassifierMapsDynamicLibraryFailureBeforeTimeout(): Unit {
+        let classified = ckbClassifyWorkerArtifact("", "dyld[1]: Library not loaded: @rpath/libstdx.net.http.dylib image not found timeout")
+
+        @Expect(classified, "worker_dynamic_library_missing")
     }
 
     @TestCase

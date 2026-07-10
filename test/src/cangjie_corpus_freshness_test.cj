@@ -66,6 +66,65 @@ public class CangjieCorpusFreshnessTest {
         @Expect(runner.calls, 0)
         @Expect(cangjieP6HasFreshnessStaleness(report, "offline_baseline"), true)
     }
+
+    @TestCase
+    public func p3U1ProbeFallbackCommitPreventsFalseStaleWhenBodyHashDiffers(): Unit {
+        let manifest = cangjieP3SingleRemoteManifest("old-commit", "sha256:old")
+        let runner = P3StaticFreshnessRunner(true, "ok", "", "sha256:new")
+
+        let report = probeCangjieCorpusFreshness(manifest, runner)
+
+        @Expect(report.ok, true)
+        @Expect(report.degraded, false)
+        @Expect(report.sources[0].resolvedCommit, "old-commit")
+        @Expect(report.sources[0].staleness, "fresh")
+        @Expect(report.sources[0].status, "fresh")
+        @Expect(report.diagnostics.contains("tools:staleness_stale"), false)
+    }
+
+    @TestCase
+    public func p3U3ProbeReportsStaleSignalWithoutFailingWhenCommitChanges(): Unit {
+        let manifest = cangjieP3SingleRemoteManifest("old-commit", "sha256:old")
+        let runner = P3StaticFreshnessRunner(true, "ok", "new-commit", "sha256:new")
+
+        let report = probeCangjieCorpusFreshness(manifest, runner)
+
+        @Expect(report.ok, true)
+        @Expect(report.degraded, false)
+        @Expect(report.sources[0].staleness, "stale")
+        @Expect(report.sources[0].status, "stale_signal")
+        @Expect(report.diagnostics.contains("tools:staleness_stale"), true)
+        @Expect(report.diagnostics.contains("freshness_stale_signal:tools:Cangjie/cangjie_tools"), true)
+    }
+
+    @TestCase
+    public func p3U4ProbeFailureStillDegradesFreshnessReport(): Unit {
+        let manifest = cangjieP3SingleRemoteManifest("old-commit", "sha256:old")
+        let runner = P3StaticFreshnessRunner(false, "timeout", "", "")
+
+        let report = probeCangjieCorpusFreshness(manifest, runner)
+
+        @Expect(report.ok, false)
+        @Expect(report.degraded, true)
+        @Expect(report.sources[0].staleness, "failed")
+        @Expect(report.diagnostics.contains("tools:probe_failed:timeout"), true)
+    }
+}
+
+private func cangjieP3SingleRemoteManifest(commit: String, contentHash: String): CangjieVersionManifest {
+    let manifest = CangjieVersionManifest()
+    manifest.defaultTargetVersion = cangjieDefaultTargetVersion()
+    let source = CangjieVersionSource()
+    source.targetVersion = cangjieDefaultTargetVersion()
+    source.sourceSet = CangjieSourceSets.TOOLS
+    source.sourceFamily = "tools"
+    source.sourceRepo = "Cangjie/cangjie_tools"
+    source.sourceRef = "release-1.0.0"
+    source.refKind = "branch"
+    source.resolvedCommit = commit
+    source.contentHash = contentHash
+    manifest.sources.add(source)
+    manifest
 }
 
 private func cangjieP6HasFreshnessSource(report: CangjieCorpusFreshnessReport, sourceSet: String): Bool {
@@ -96,6 +155,32 @@ private class P6CountingFetchRunner <: SourceFetchRunner {
         let result = SourceFetchResult()
         result.ok = false
         result.status = "should_not_fetch"
+        result
+    }
+}
+
+private class P3StaticFreshnessRunner <: SourceFetchRunner {
+    let ok: Bool
+    let status: String
+    let commit: String
+    let bodyHash: String
+
+    init(ok: Bool, status: String, commit: String, bodyHash: String) {
+        this.ok = ok
+        this.status = status
+        this.commit = commit
+        this.bodyHash = bodyHash
+    }
+
+    public func fetch(request: SourceFetchRequest): SourceFetchResult {
+        let result = SourceFetchResult()
+        result.ok = this.ok
+        result.status = this.status
+        result.commit = this.commit
+        result.bodyHash = this.bodyHash
+        result.repo = request.repo
+        result.ref = request.ref
+        result.sourceUrl = request.url
         result
     }
 }

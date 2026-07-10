@@ -113,10 +113,13 @@ public func probeCangjieCorpusFreshness(manifest: CangjieVersionManifest, runner
             report.ok = false
             report.degraded = true
             report.diagnostics.add("${source.sourceSet}:probe_failed:${fetch.status}")
-        } else if (item.staleness == "stale" || item.staleness == "unknown") {
+        } else if (item.staleness == "unknown") {
             report.ok = false
             report.degraded = true
             report.diagnostics.add("${source.sourceSet}:staleness_${item.staleness}")
+        } else if (item.staleness == "stale") {
+            report.diagnostics.add("${source.sourceSet}:staleness_stale")
+            report.diagnostics.add("freshness_stale_signal:${source.sourceSet}:${source.sourceRepo}")
         }
     }
     report
@@ -197,12 +200,12 @@ private func cangjieFreshnessSourceFromProbe(source: CangjieVersionSource, fetch
     } else if (source.contentHash == "" && source.resolvedCommit == "") {
         item.staleness = "unknown"
         item.status = "degraded"
-    } else if ((source.contentHash != "" && source.contentHash == fetch.bodyHash) || (source.resolvedCommit != "" && source.resolvedCommit == fetch.commit)) {
+    } else if ((source.contentHash != "" && source.contentHash == item.contentHash) || (source.resolvedCommit != "" && source.resolvedCommit == item.resolvedCommit)) {
         item.staleness = "fresh"
         item.status = "fresh"
     } else {
         item.staleness = "stale"
-        item.status = "stale"
+        item.status = "stale_signal"
     }
     item
 }

@@ -223,6 +223,36 @@ public class CkbSchedulerProgressTimeoutTest {
     }
 
     @TestCase
+    public func p3Ut001TaskScopedProgressPrefersDocsRoutineCheckpoint(): Unit {
+        let root = "target/p3-ut001-docs-task-scoped-progress"
+        ensureEmptyDir(root)
+        let store = FileKnowledgeStore(root)
+        store.writeLinesAtomically("metadata/routine-stage-checkpoints/cangjie_docs_full_sync-fetch_tree_page.ckb", "profile=cangjie_docs_full_sync\nstage=fetch_tree_page\nstatus=running\nbudgetMillis=60000\ndeadlineAtMillis=999999999999\nremainingMillis=60000\ndiagnostic=sourceSet=docs|repo=Cangjie/cangjie_docs|page=14\n")
+        store.writeLinesAtomically("metadata/staged-rebuild-current.ckb", "stage=staged_rebuild_status_before\nstatus=running\ndiagnostic=old-global-progress\n")
+
+        let progress = ckbSchedulerWorkerLastProgressFromStoreForTask(store, "cangjie_docs_full_weekly")
+
+        @Expect(progress.contains("routine:profile=cangjie_docs_full_sync"), true)
+        @Expect(progress.contains("stage=fetch_tree_page"), true)
+        @Expect(progress.contains("sourceSet=docs"), true)
+        @Expect(progress.contains("old-global-progress"), false)
+    }
+
+    @TestCase
+    public func p3Neg001ExplicitTaskProgressDoesNotReadStaleGlobalVectorCurrent(): Unit {
+        let root = "target/p3-neg001-explicit-task-no-global-vector"
+        ensureEmptyDir(root)
+        let store = FileKnowledgeStore(root)
+        store.writeLinesAtomically("metadata/vector-reconcile-current.ckb", "runId=old-vector\ncollection=ckb_active\nstate=running\ncurrentBatch=9\ncompleted=800\nprogressPath=metadata/vector-reconcile-runs/old-vector.jsonl\ndiagnostic=old-global-vector\n")
+
+        let progress = ckbSchedulerWorkerLastProgressFromStoreForTask(store, "cangjie_release_full_sync")
+
+        @Expect(progress.contains("vector:"), false)
+        @Expect(progress.contains("old-global-vector"), false)
+        @Expect(progress, "")
+    }
+
+    @TestCase
     public func p1Ut001StagedRebuildFileSinkWritesSchedulerProgressAndCurrent(): Unit {
         let root = "target/p1-ut001-staged-rebuild-file-sink"
         ensureEmptyDir(root)
