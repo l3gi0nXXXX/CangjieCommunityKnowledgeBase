@@ -34,6 +34,25 @@ public class CkbSchedulerCliOutputTest {
     }
 
     @TestCase
+    public func cliJsonSuccessKeepsNonBlockingFreshnessDiagnosticsOutOfFailedTasks(): Unit {
+        let result = SchedulerExecutorResult()
+        result.runId = "run-success-with-freshness-diagnostics"
+        result.ran = 1
+        result.succeeded = 1
+        result.validationDiagnostics.add("cangjie_freshness_daily:freshness_readiness:manifest_diagnostic:manifest_source_content_sample_degraded:tools:Cangjie/cangjie_tools:source_tree_empty_after_pages")
+        result.validationDiagnostics.add("cangjie_freshness_daily:freshness:manifest_ready_for_freshness")
+
+        let json = ckbSchedulerRunOutputJson(result)
+
+        @Expect(json.contains("\"ok\":true"), true)
+        @Expect(json.contains("\"businessOk\":true"), true)
+        @Expect(json.contains("\"failed\":0"), true)
+        @Expect(json.contains("\"degraded\":0"), true)
+        @Expect(json.contains("\"failedTasks\":[]"), true)
+        @Expect(json.contains("source_tree_empty_after_pages"), true)
+    }
+
+    @TestCase
     public func cliJsonBusinessFailureKeepsFailedTaskSummary(): Unit {
         let result = SchedulerExecutorResult()
         result.runId = "run-business-failed"
