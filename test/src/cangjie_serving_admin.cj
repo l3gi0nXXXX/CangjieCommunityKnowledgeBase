@@ -97,33 +97,9 @@ public func validateCandidateServingIndexWithVectorStatus(records: ArrayList<Nor
     if (cangjieCandidateValidationDeadline(result, validationScope, "doc_loop_before", deadlineAtMillis, 0, index.documents.size)) {
         return result
     }
-    var completedDocs: Int64 = 0
-    for (doc in index.documents) {
-        if (completedDocs % 64 == 0 && cangjieCandidateValidationDeadline(result, validationScope, "doc_loop", deadlineAtMillis, completedDocs, index.documents.size)) {
-            return result
-        }
-        if (doc.versionResolutionId == "") {
-            result.legacyVersionGapCount += 1
-        }
-        if (doc.recordKind == CangjieServingRecordKinds.SYMBOL_CARD && lookupExactSymbol(index, doc.symbolKey, sourceSet: doc.sourceSet, targetVersion: doc.targetVersion, versionResolutionId: doc.versionResolutionId, budget: 1).hits.size > 0) {
-            result.exactSymbolHits += 1
-        }
-        if (doc.recordKind == CangjieServingRecordKinds.DOC_SECTION && lookupDocSection(index, doc.sourceId, sourceSet: doc.sourceSet, targetVersion: doc.targetVersion, versionResolutionId: doc.versionResolutionId, budget: 1).hits.size > 0) {
-            result.docSectionHits += 1
-        }
-        if (doc.recordKind == CangjieTypedRecordKinds.TOOL_MANUAL && lookupToolManual(index, cangjieCandidateToolSelector(doc), command: cangjieCandidateToolCommandSelector(doc), targetVersion: doc.targetVersion, versionResolutionId: doc.versionResolutionId, budget: 1).hits.size > 0) {
-            result.toolManualHits += 1
-        }
-        if (doc.recordKind == CangjieServingRecordKinds.NEGATIVE_RULE && lookupNegativeRules(index, doc.title, targetVersion: doc.targetVersion, versionResolutionId: doc.versionResolutionId, budget: 1).hits.size > 0) {
-            result.negativeRuleHits += 1
-        }
-        if (doc.module != "" && lookupModule(index, doc.module, sourceSet: doc.sourceSet, targetVersion: doc.targetVersion, versionResolutionId: doc.versionResolutionId, budget: 1).hits.size > 0) {
-            result.moduleHits += 1
-        }
-        if ((doc.recordKind == CangjieTypedRecordKinds.AVAILABILITY || doc.recordKind == CangjieServingRecordKinds.SYMBOL_CARD) && lookupAvailability(index, if (doc.symbolKey == "") { doc.title } else { doc.symbolKey }, sourceSet: doc.sourceSet, targetVersion: doc.targetVersion, versionResolutionId: doc.versionResolutionId, budget: 1).hits.size > 0) {
-            result.availabilityHits += 1
-        }
-        completedDocs += 1
+    let completedDocs = cangjieCandidateAccumulateCoverage(index, result, validationScope, deadlineAtMillis)
+    if (result.status == "candidate_validation_timeout") {
+        return result
     }
     result.taskPackCoveragePass = result.exactSymbolHits > 0 &&
         result.docSectionHits > 0 &&
@@ -195,6 +171,55 @@ private func cangjieCandidateValidationDeadline(result: CangjieCandidateValidati
     result.status = "candidate_validation_timeout"
     result.diagnostics.add("${deadline.diagnostic}:scope=${validationScope}:completed=${completed}:total=${total}")
     true
+}
+
+private func cangjieCandidateAccumulateCoverage(index: CangjieServingIndex, result: CangjieCandidateValidationResult, validationScope: String, deadlineAtMillis: Int64): Int64 {
+    var completedDocs: Int64 = 0
+    for (doc in index.documents) {
+        if (completedDocs % 512 == 0 && cangjieCandidateValidationDeadline(result, validationScope, "doc_loop", deadlineAtMillis, completedDocs, index.documents.size)) {
+            return completedDocs
+        }
+        if (doc.rejected) {
+            completedDocs += 1
+            continue
+        }
+        if (doc.versionResolutionId == "") {
+            result.legacyVersionGapCount += 1
+        }
+        if (doc.recordKind == CangjieServingRecordKinds.SYMBOL_CARD && doc.symbolKey.trimAscii() != "") {
+            result.exactSymbolHits += 1
+        } else if (doc.recordKind == CangjieServingRecordKinds.DOC_SECTION && cangjieCandidateDocSectionCovered(doc)) {
+            result.docSectionHits += 1
+        } else if (doc.recordKind == CangjieTypedRecordKinds.TOOL_MANUAL && cangjieCandidateToolSelector(doc).trimAscii() != "") {
+            result.toolManualHits += 1
+        } else if (doc.recordKind == CangjieServingRecordKinds.NEGATIVE_RULE && cangjieCandidateNegativeRuleCovered(doc)) {
+            result.negativeRuleHits += 1
+        }
+        if (doc.module.trimAscii() != "") {
+            result.moduleHits += 1
+        }
+        if ((doc.recordKind == CangjieTypedRecordKinds.AVAILABILITY || doc.recordKind == CangjieServingRecordKinds.SYMBOL_CARD) && cangjieCandidateAvailabilitySelector(doc) != "") {
+            result.availabilityHits += 1
+        }
+        completedDocs += 1
+    }
+    completedDocs
+}
+
+private func cangjieCandidateDocSectionCovered(doc: CangjieServingDocument): Bool {
+    doc.sourceId.trimAscii() != "" || doc.title.trimAscii() != "" || doc.citation.trimAscii() != ""
+}
+
+private func cangjieCandidateNegativeRuleCovered(doc: CangjieServingDocument): Bool {
+    doc.title.trimAscii() != "" || doc.text.trimAscii() != ""
+}
+
+private func cangjieCandidateAvailabilitySelector(doc: CangjieServingDocument): String {
+    let symbol = doc.symbolKey.trimAscii()
+    if (symbol != "") {
+        return symbol
+    }
+    doc.title.trimAscii()
 }
 
 public func cangjiePromoteCandidateAfterValidation(kb: KnowledgeBase, store: FileKnowledgeStore, forceFailure!: Bool = false): CangjieCandidatePromotionResult {
