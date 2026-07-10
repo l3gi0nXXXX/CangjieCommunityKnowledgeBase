@@ -341,6 +341,29 @@ public class CangjieServingAdminTest {
         @Expect(progress.embedded, 1)
         @Expect(candidateBuild.vectorRecords.size, 3)
     }
+
+    @TestCase
+    public func p4P4CandidateVectorReuseUsesLargeStagingBatches(): Unit {
+        let provider = CangjieAdminEmbeddingProvider(2)
+        let vectorStore = CangjieAdminTrackingVectorStore()
+        let kb = KnowledgeBase(FakeClock(0), provider, vectorStore, LocalGraphStore())
+        kb.configureVectorCollections("ckb_active", "ckb_candidate")
+        let records = cangjieAdminGeneratedRecords(2050)
+
+        let activeBuild = kb.buildVectorIndexForRecords(records, "ckb_active")
+        let callsAfterActive = provider.calls
+        let stagingCallsBefore = vectorStore.stagingUpsertBatchCalls
+        let candidateBuild = kb.buildVectorIndexForRecords(records, "ckb_candidate_stage_large_reuse")
+        let progress = kb.vectorBuildProgress()
+
+        @Expect(activeBuild.ok, true)
+        @Expect(candidateBuild.ok, true)
+        @Expect(provider.calls, callsAfterActive)
+        @Expect(progress.reused, 2050)
+        @Expect(progress.embedded, 0)
+        @Expect(vectorStore.stagingUpsertBatchCalls - stagingCallsBefore, 3)
+        @Expect(vectorStore.stagingMaxBatchSize, 1024)
+    }
 }
 
 private class AdminCaptureStageSink <: CkbStagedRebuildStageSink {
@@ -379,6 +402,14 @@ private func cangjieF4AdminRecord(sourceId: String, kind: String, title: String,
     record.metadata.trustLevel = TrustLevels.OFFICIAL
     record.metadata.reviewState = ReviewStates.TRUSTED
     record
+}
+
+private func cangjieAdminGeneratedRecords(count: Int64): ArrayList<NormalizedRecord> {
+    let records = ArrayList<NormalizedRecord>()
+    for (i in 0..count) {
+        records.add(cangjieF4AdminRecord("generated-${i}", CangjieTypedRecordKinds.DOC_SECTION, "Generated ${i}", "generated reusable chunk ${i}", CangjieSourceSets.DOCS, "vr-docs-1"))
+    }
+    records
 }
 
 private func cangjieF4AdminPromotionRecords(): ArrayList<NormalizedRecord> {
@@ -459,6 +490,9 @@ private class CangjieAdminEmbeddingProvider <: EmbeddingProvider {
 private class CangjieAdminTrackingVectorStore <: VectorStore {
     public var recreateCalls: Int64 = 0
     public var upsertBatchCalls: Int64 = 0
+    public var activeUpsertBatchCalls: Int64 = 0
+    public var stagingUpsertBatchCalls: Int64 = 0
+    public var stagingMaxBatchSize: Int64 = 0
     public var deleteCollectionCalls: Int64 = 0
     public var deletedActiveCollection: Bool = false
     private var activeCount: Int64 = 0
@@ -478,11 +512,16 @@ private class CangjieAdminTrackingVectorStore <: VectorStore {
     public func upsertBatch(collection: String, vectors: ArrayList<VectorRecord>): VectorStoreStatus {
         this.upsertBatchCalls += 1
         if (collection == "ckb_active") {
+            this.activeUpsertBatchCalls += 1
             this.activeCount += vectors.size
             for (record in vectors) {
                 this.activeRecords.add(record)
             }
         } else {
+            this.stagingUpsertBatchCalls += 1
+            if (vectors.size > this.stagingMaxBatchSize) {
+                this.stagingMaxBatchSize = vectors.size
+            }
             this.stagingCollection = collection
             this.stagingCount += vectors.size
             for (record in vectors) {

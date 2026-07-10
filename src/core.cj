@@ -1,6 +1,7 @@
 package cangjie_community_knowledge_base
 
 import std.collection.ArrayList
+import std.collection.HashMap
 import std.convert.Parsable
 import std.time.*
 
@@ -628,6 +629,13 @@ public class VectorBackup {
     public var records: ArrayList<VectorRecord> = ArrayList<VectorRecord>()
     public var valid: Bool = false
     public var diagnostic: String = ""
+
+    public init() {}
+}
+
+private class VectorBackupReuseIndex {
+    public var byPoint: HashMap<String, VectorRecord> = HashMap<String, VectorRecord>()
+    public var byContent: HashMap<String, VectorRecord> = HashMap<String, VectorRecord>()
 
     public init() {}
 }
@@ -3935,9 +3943,11 @@ public class KnowledgeBase {
             return result
         }
         let reusable = if (stagedCollection) { ArrayList<VectorRecord>() } else { this.reusableVectorRecordsForBuild(records, this.vectorCollection, deadlineAtMillis) }
+        let reusablePoints = this.vectorRecordPointIndex(reusable)
         var batchIndex: Int64 = 0
         if (reusable.size > 0) {
-            let reuseStatus = this.upsertVectorRecordsInBatches(effectiveVectorCollection, reusable, progress, progressSink, deadlineAtMillis, batchIndex)
+            let reuseBatchSize = ckbReusableVectorUpsertBatchSize()
+            let reuseStatus = this.upsertVectorRecordsInBatches(effectiveVectorCollection, reusable, progress, progressSink, deadlineAtMillis, batchIndex, reuseBatchSize)
             if (reuseStatus.state != EmbeddingProviderState.READY) {
                 progress.state = reuseStatus.state
                 progress.diagnostic = reuseStatus.degradedReason
@@ -3960,14 +3970,15 @@ public class KnowledgeBase {
                     result.vectorRecords.add(record)
                 }
             }
-            batchIndex += (reusable.size + 63) / 64
+            batchIndex += ckbVectorBatchCount(reusable.size, reuseBatchSize)
+            progress.batchSize = if (embeddingStatus.batchSize > 0) { embeddingStatus.batchSize } else { 16 }
         }
         let rawTexts = ArrayList<String>()
         let pendingRecords = ArrayList<NormalizedRecord>()
         let pendingOrdinals = ArrayList<Int64>()
         for (i in 0..records.size) {
             let record = records[i]
-            if (this.vectorRecordListContainsPoint(reusable, ckbVectorPointId(record, i))) {
+            if (reusablePoints.contains(ckbVectorPointId(record, i))) {
                 continue
             }
             rawTexts.add(this.vectorText(record))
@@ -4119,13 +4130,14 @@ public class KnowledgeBase {
         if (dimension <= 0 || this.vectorBackupDimension(backup.records) != dimension) {
             return out
         }
+        let index = this.vectorBackupReuseIndex(backup.records, dimension)
         for (i in 0..records.size) {
             if (ckbDeadlineExceeded(deadlineAtMillis)) {
                 return out
             }
             let source = records[i]
             let pointId = ckbVectorPointId(source, i)
-            let reusable = this.reusableVectorRecordForPoint(backup.records, source, pointId, dimension)
+            let reusable = this.reusableVectorRecordForPoint(index, source, pointId)
             if (reusable.pointId != "") {
                 out.add(reusable)
             }
@@ -4133,37 +4145,56 @@ public class KnowledgeBase {
         out
     }
 
-    private func reusableVectorRecordForPoint(records: ArrayList<VectorRecord>, source: NormalizedRecord, pointId: String, dimension: Int64): VectorRecord {
+    private func vectorBackupReuseIndex(records: ArrayList<VectorRecord>, dimension: Int64): VectorBackupReuseIndex {
+        let index = VectorBackupReuseIndex()
         for (record in records) {
-            if (vectorPointIdentity(record) == pointId && record.vector.size == dimension) {
-                return this.vectorRecordFrom(source, record.vector, pointId)
+            if (record.vector.size != dimension) {
+                continue
+            }
+            let pointId = vectorPointIdentity(record)
+            if (pointId != "" && !index.byPoint.contains(pointId)) {
+                index.byPoint[pointId] = record
+            }
+            let reuseIdentity = ckbVectorReuseIdentity(record.id, record.title, record.chunk, record.citation)
+            if (!index.byContent.contains(reuseIdentity)) {
+                index.byContent[reuseIdentity] = record
             }
         }
+        index
+    }
+
+    private func reusableVectorRecordForPoint(index: VectorBackupReuseIndex, source: NormalizedRecord, pointId: String): VectorRecord {
+        if (index.byPoint.contains(pointId)) {
+            let record = index.byPoint[pointId]
+            return this.vectorRecordFrom(source, record.vector, pointId)
+        }
         let reuseIdentity = ckbVectorReuseIdentity(source.sourceId, source.title, source.chunk, source.citation)
-        for (record in records) {
-            if (record.vector.size == dimension && ckbVectorReuseIdentity(record.id, record.title, record.chunk, record.citation) == reuseIdentity) {
-                return this.vectorRecordFrom(source, record.vector, pointId)
-            }
+        if (index.byContent.contains(reuseIdentity)) {
+            let record = index.byContent[reuseIdentity]
+            return this.vectorRecordFrom(source, record.vector, pointId)
         }
         VectorRecord()
     }
 
-    private func vectorRecordListContainsPoint(records: ArrayList<VectorRecord>, pointId: String): Bool {
+    private func vectorRecordPointIndex(records: ArrayList<VectorRecord>): HashMap<String, Bool> {
+        let index = HashMap<String, Bool>()
         for (record in records) {
-            if (vectorPointIdentity(record) == pointId) {
-                return true
+            let pointId = vectorPointIdentity(record)
+            if (pointId != "") {
+                index[pointId] = true
             }
         }
-        false
+        index
     }
 
-    private func upsertVectorRecordsInBatches(collection: String, records: ArrayList<VectorRecord>, progress: VectorBuildProgress, progressSink: VectorBuildProgressSink, deadlineAtMillis: Int64, startBatchIndex: Int64): VectorStoreStatus {
+    private func upsertVectorRecordsInBatches(collection: String, records: ArrayList<VectorRecord>, progress: VectorBuildProgress, progressSink: VectorBuildProgressSink, deadlineAtMillis: Int64, startBatchIndex: Int64, batchSize: Int64): VectorStoreStatus {
         var last = VectorStoreStatus()
         last.collection = collection
         last.state = EmbeddingProviderState.READY
         last.count = progress.completed
         var start: Int64 = 0
         var batchIndex = startBatchIndex
+        let effectiveBatchSize = if (batchSize > 0) { batchSize } else { 64 }
         while (start < records.size) {
             if (ckbDeadlineExceeded(deadlineAtMillis)) {
                 last.state = EmbeddingProviderState.DEGRADED
@@ -4171,7 +4202,7 @@ public class KnowledgeBase {
                 last.degradedReason = "vector_build_deadline_exceeded:${collection}:${progress.completed}:${progress.total}"
                 return last
             }
-            let end = if (start + 64 < records.size) { start + 64 } else { records.size }
+            let end = if (start + effectiveBatchSize < records.size) { start + effectiveBatchSize } else { records.size }
             let batch = ArrayList<VectorRecord>()
             for (i in start..end) {
                 batch.add(records[i])
@@ -4179,6 +4210,7 @@ public class KnowledgeBase {
             progress.currentBatch = batchIndex
             progress.currentBatchStart = start
             progress.currentBatchEnd = end
+            progress.batchSize = effectiveBatchSize
             progress.updatedAtMillis = ckbCoreNowMillis()
             progress.elapsedMillis = progress.updatedAtMillis - progress.startedAtMillis
             progressSink.onVectorBatchStarted(progress)
@@ -5203,4 +5235,16 @@ private func ckbVectorPointId(source: NormalizedRecord, activeIndexOrdinal: Int6
 
 private func ckbVectorReuseIdentity(sourceId: String, title: String, chunk: String, citation: String): String {
     contentHash(sourceId, "${title}\n${chunk}\n${citation}")
+}
+
+private func ckbReusableVectorUpsertBatchSize(): Int64 {
+    1024
+}
+
+private func ckbVectorBatchCount(size: Int64, batchSize: Int64): Int64 {
+    if (size <= 0) {
+        return 0
+    }
+    let effective = if (batchSize > 0) { batchSize } else { 1 }
+    (size + effective - 1) / effective
 }
