@@ -4202,7 +4202,7 @@ public func ckbSchedulerFailureSummaries(result: SchedulerExecutorResult): Array
 
 public func ckbSchedulerPreRunGate(config: CkbRuntimeConfig, store: FileKnowledgeStore, vectorStore: VectorStore, taskNames: ArrayList<String>): CkbSchedulerPreRunGateResult {
     let result = CkbSchedulerPreRunGateResult()
-    if (!taskNames.contains("weekly_full_rebuild")) {
+    if (!ckbSchedulerPreRunGateRequiresActiveVector(taskNames)) {
         return result
     }
     let vector = vectorStoreConfigFromRuntime(config)
@@ -4249,24 +4249,46 @@ public func ckbSchedulerPreRunGate(config: CkbRuntimeConfig, store: FileKnowledg
 
 public func ckbSchedulerPreRunGateFailureResult(gate: CkbSchedulerPreRunGateResult, taskNames: ArrayList<String>, force: Bool): SchedulerExecutorResult {
     let result = SchedulerExecutorResult()
+    let failedTask = ckbSchedulerPreRunGateTaskName(taskNames)
     result.forced = force
     result.runId = "scheduler-pre-run-gate-${ckbCoreNowMillis()}"
     result.startedAtMillis = ckbCoreNowMillis()
     result.endedAtMillis = result.startedAtMillis
     if (taskNames.size == 0) {
-        result.taskNames.add("weekly_full_rebuild")
+        result.taskNames.add(failedTask)
     } else {
         for (name in taskNames) {
             result.taskNames.add(name)
         }
     }
     result.failed = 1
-    result.details = "task weekly_full_rebuild ok=false status=scheduler_pre_run_gate_failed\n"
+    result.details = "task ${failedTask} ok=false status=scheduler_pre_run_gate_failed\n"
     for (diagnostic in gate.diagnostics) {
         result.validationDiagnostics.add(diagnostic)
         result.details += "scheduler_pre_run_gate ${diagnostic}\n"
     }
     result
+}
+
+private func ckbSchedulerPreRunGateRequiresActiveVector(taskNames: ArrayList<String>): Bool {
+    for (name in taskNames) {
+        if (ckbSchedulerTaskNeedsRoutineHeap(name)) {
+            return true
+        }
+    }
+    false
+}
+
+private func ckbSchedulerPreRunGateTaskName(taskNames: ArrayList<String>): String {
+    for (name in taskNames) {
+        if (ckbSchedulerTaskNeedsRoutineHeap(name)) {
+            return name
+        }
+    }
+    if (taskNames.size > 0) {
+        return taskNames[0]
+    }
+    "weekly_full_rebuild"
 }
 
 public func ckbSchedulerRunTaskRecordsJson(records: ArrayList<SchedulerTaskRunRecord>): String {
@@ -7093,10 +7115,11 @@ public class ProcessIsolatedSchedulerTaskRunner <: SchedulerTaskRunner {
         let flushMarginMillis = ckbSchedulerWorkerResultFlushMarginMillis()
         let workerDeadlineAtMillis = if (deadlineAtMillis > started + flushMarginMillis) { deadlineAtMillis - flushMarginMillis } else { deadlineAtMillis }
         let resultRelativePath = ckbTaskWorkerResultRelativePath(name)
-        let startedText = ckbTaskWorkerStartedText(name, since, workerDeadlineAtMillis, resultRelativePath, started, commandHash: stableSummaryHash(this.command), dyldLibraryPath: ckbSchedulerWorkerDyldLibraryPath(), cjHeapSize: ckbSchedulerWorkerCjHeapSize())
+        let workerHeap = ckbSchedulerWorkerCjHeapSizeForTask(name)
+        let startedText = ckbTaskWorkerStartedText(name, since, workerDeadlineAtMillis, resultRelativePath, started, commandHash: stableSummaryHash(this.command), dyldLibraryPath: ckbSchedulerWorkerDyldLibraryPath(), cjHeapSize: workerHeap)
         this.store.writeLinesAtomically(resultRelativePath, startedText)
         this.store.writeLinesAtomically("${resultRelativePath}.started", startedText)
-        let code = this.launchWorker(name, since, workerDeadlineAtMillis, resultRelativePath, timeoutMillis)
+        let code = this.launchWorker(name, since, workerDeadlineAtMillis, resultRelativePath, timeoutMillis, workerHeap)
         let elapsed = ckbTaskWorkerNowMillis() - started
         let workerPid = ckbSchedulerWorkerPidFromStarted(this.storePath, resultRelativePath)
         let outSnippet = ckbSchedulerWorkerArtifactSnippet(this.storePath, resultRelativePath + ".out")
@@ -7157,12 +7180,12 @@ public class ProcessIsolatedSchedulerTaskRunner <: SchedulerTaskRunner {
         parsed
     }
 
-    private func launchWorker(name: String, since: String, deadlineAtMillis: Int64, resultRelativePath: String, timeoutMillis: Int64): Int64 {
+    private func launchWorker(name: String, since: String, deadlineAtMillis: Int64, resultRelativePath: String, timeoutMillis: Int64, workerHeap: String): Int64 {
         let seconds = if (timeoutMillis <= 0) { 1 } else { (timeoutMillis + 999) / 1000 }
         let resultPath = Path(this.storePath).join(resultRelativePath).toString()
         let outPath = resultPath + ".out"
         let errPath = resultPath + ".err"
-        var script = ckbSchedulerWorkerShellPrelude(ckbSchedulerWorkerDyldLibraryPath())
+        var script = ckbSchedulerWorkerShellPreludeWithHeap(ckbSchedulerWorkerDyldLibraryPath(), workerHeap)
         script += ckbLocalShellQuote(this.command)
         if (this.configPath.trimAscii() != "") {
             script += " --config " + ckbLocalShellQuote(this.configPath)
@@ -7198,6 +7221,30 @@ private func ckbSchedulerWorkerCjHeapSize(): String {
         return value
     }
     ""
+}
+
+private func ckbSchedulerWorkerCjHeapSizeForTask(taskName: String): String {
+    ckbSchedulerDefaultCjHeapSizeForTask(taskName, ckbSchedulerWorkerCjHeapSize())
+}
+
+public func ckbSchedulerDefaultCjHeapSizeForTask(taskName: String, configuredHeap: String): String {
+    let configured = configuredHeap.trimAscii()
+    if (configured != "") {
+        return configured
+    }
+    if (ckbSchedulerTaskNeedsRoutineHeap(taskName)) {
+        return "4GB"
+    }
+    ""
+}
+
+private func ckbSchedulerTaskNeedsRoutineHeap(taskName: String): Bool {
+    if (taskName == "weekly_full_rebuild") {
+        return true
+    }
+    let profile = ckbSyncProfileForScheduleTask(taskName)
+    profile.candidateMode == "candidate_validate_promote" ||
+        profile.candidateMode == "curated_candidate_validate_promote"
 }
 
 public func ckbSchedulerWorkerShellPrelude(dyldLibraryPath: String): String {

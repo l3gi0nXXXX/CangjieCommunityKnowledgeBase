@@ -110,6 +110,9 @@ public class CkbSchedulerProgressTimeoutTest {
         @Expect(withoutDyld.contains("export CKB_SCHEDULER_TASK_WORKER=1;"), true)
         @Expect(withoutDyld.contains("DYLD_LIBRARY_PATH"), false)
         @Expect(withoutDyld.contains("cjHeapSize"), false)
+        @Expect(ckbSchedulerDefaultCjHeapSizeForTask("cangjie_docs_full_weekly", ""), "4GB")
+        @Expect(ckbSchedulerDefaultCjHeapSizeForTask("cangjie_docs_full_weekly", "6GB"), "6GB")
+        @Expect(ckbSchedulerDefaultCjHeapSizeForTask("docs_probe_30d", ""), "")
     }
 
     @TestCase

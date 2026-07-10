@@ -4024,7 +4024,9 @@ public class KnowledgeBase {
                 progress.lastDiagnostic = vectorStatus.degradedReason
                 progress.updatedAtMillis = ckbCoreNowMillis()
                 progress.elapsedMillis = progress.updatedAtMillis - progress.startedAtMillis
-                this.applyVectorStatus(vectorStatus)
+                if (applyToStorage) {
+                    this.applyVectorStatus(vectorStatus)
+                }
                 result.ok = false
                 result.status = vectorStatus.state
                 result.vectorCount = progress.completed
@@ -4134,6 +4136,12 @@ public class KnowledgeBase {
     private func reusableVectorRecordForPoint(records: ArrayList<VectorRecord>, source: NormalizedRecord, pointId: String, dimension: Int64): VectorRecord {
         for (record in records) {
             if (vectorPointIdentity(record) == pointId && record.vector.size == dimension) {
+                return this.vectorRecordFrom(source, record.vector, pointId)
+            }
+        }
+        let reuseIdentity = ckbVectorReuseIdentity(source.sourceId, source.title, source.chunk, source.citation)
+        for (record in records) {
+            if (record.vector.size == dimension && ckbVectorReuseIdentity(record.id, record.title, record.chunk, record.citation) == reuseIdentity) {
                 return this.vectorRecordFrom(source, record.vector, pointId)
             }
         }
@@ -5191,4 +5199,8 @@ private func contentHash(sourceId: String, content: String): String {
 private func ckbVectorPointId(source: NormalizedRecord, activeIndexOrdinal: Int64): String {
     let summary = contentHash(source.sourceId, "${source.title}\n${source.chunk}\n${source.citation}")
     "${source.sourceId}#${activeIndexOrdinal}#${summary}"
+}
+
+private func ckbVectorReuseIdentity(sourceId: String, title: String, chunk: String, citation: String): String {
+    contentHash(sourceId, "${title}\n${chunk}\n${citation}")
 }

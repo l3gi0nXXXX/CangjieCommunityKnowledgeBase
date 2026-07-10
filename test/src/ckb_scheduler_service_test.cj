@@ -1589,6 +1589,27 @@ public class CkbRoutinePreflightRepairHintTest {
         @Expect(ruDiagnosticsContain(gate.diagnostics, "scheduler_pre_run_gate_failed:qdrant_active_count_mismatch:1:"), true)
         @Expect(ruDiagnosticsContain(gate.diagnostics, "ckb_active_reconcile_ready"), true)
     }
+
+    @TestCase
+    public func p4N4PreRunGateRejectsDocsFullWeeklyWhenEffectiveActiveCountMismatches(): Unit {
+        let root = "target/p4-docs-pre-run-gate-count-mismatch"
+        let config = f7QdrantRoutineConfig()
+        let embedding = DeterministicEmbeddingProvider(embeddingConfigFromRuntime(config))
+        let kb = KnowledgeBase(FakeClock(0), embedding, LocalVectorStore(), LocalGraphStore())
+        kb.configureVectorCollections("ckb_active_reconcile_ready", "ckb_candidate")
+        kb.bootstrapOffline()
+        let store = FileKnowledgeStore(root)
+        _ = ckbRebuildIndex(kb, store)
+        let taskNames = ArrayList<String>()
+        taskNames.add("cangjie_docs_full_weekly")
+
+        let gate = ckbSchedulerPreRunGate(config, store, F7StatusVectorStore(EmbeddingProviderState.READY, "", 3, count: 1), taskNames)
+        let blocked = ckbSchedulerPreRunGateFailureResult(gate, taskNames, true)
+
+        @Expect(gate.ok, false)
+        @Expect(ruDiagnosticsContain(gate.diagnostics, "scheduler_pre_run_gate_failed:qdrant_active_count_mismatch:1:"), true)
+        @Expect(blocked.details.contains("task cangjie_docs_full_weekly ok=false status=scheduler_pre_run_gate_failed"), true)
+    }
 }
 
 private func f7SchedulerDiagnosticsContain(result: SchedulerExecutorResult, needle: String): Bool {

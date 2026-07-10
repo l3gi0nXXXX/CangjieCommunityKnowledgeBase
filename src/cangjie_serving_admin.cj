@@ -232,6 +232,15 @@ private func cangjiePromoteStagedCandidateAfterValidation(kb: KnowledgeBase, sto
     let vectorBuild = kb.buildVectorIndexForRecords(candidateRecords, stagingCollection, progressSink: progressSink, deadlineAtMillis: deadlineAtMillis)
     var vectorStatus = cangjieCandidateVerifiedVectorStatus(kb, stagingCollection, candidateRecords.size, vectorBuild)
     cangjieCandidateEmitStage(stageSink, "candidate_vector_finished", if (vectorBuild.ok) { "ok" } else { "failed" }, deadlineAtMillis, "candidate=${stagedCandidateVersion}|stagingCollection=${stagingCollection}|vectorCount=${vectorBuild.vectorCount}|diagnostic=${vectorBuild.diagnostic}")
+    if (!vectorBuild.ok) {
+        result.validation = cangjieCandidateVectorFailureValidation(stagedCandidateVersion, vectorStatus)
+        kb.markCandidateValidationFailed(stagedCandidateVersion)
+        kb.persistCandidateSnapshot(store)
+        cangjieDeleteCandidateStaging(kb, stagingCollection, result.validation)
+        cangjieCandidateEmitStage(stageSink, "candidate_validation_finished", result.validation.status, deadlineAtMillis, "candidate=${stagedCandidateVersion}|ok=false|vectorReason=${result.validation.vectorDegradedReason}")
+        result.activeVersion = kb.status().activeKnowledgeVersion
+        return result
+    }
     cangjieCandidateEmitStage(stageSink, "candidate_validation_started", "running", deadlineAtMillis, "candidate=${stagedCandidateVersion}|records=${candidateRecords.size}")
     result.validation = validateCandidateServingIndexWithVectorStatus(candidateRecords, stagedCandidateVersion, vectorStatus, forceFailure: false, deadlineAtMillis: deadlineAtMillis, validationScope: "candidate_promotion")
     cangjieCandidateEmitStage(stageSink, "candidate_validation_finished", result.validation.status, deadlineAtMillis, "candidate=${stagedCandidateVersion}|ok=${result.validation.ok}|documents=${result.validation.servingDocumentCount}")
@@ -359,6 +368,20 @@ private func cangjieCandidateVerifiedVectorStatus(kb: KnowledgeBase, stagingColl
         status.degradedReason = "candidate_vector_count_mismatch:${status.count}:${expectedCount}:${stagingCollection}"
     }
     status
+}
+
+private func cangjieCandidateVectorFailureValidation(candidateVersion: String, vectorStatus: VectorStoreStatus): CangjieCandidateValidationResult {
+    let result = CangjieCandidateValidationResult()
+    result.candidateVersion = candidateVersion
+    result.activeVersion = cangjieActiveVersionForCandidate(candidateVersion)
+    result.status = "candidate_vector_failed"
+    result.vectorState = vectorStatus.state
+    result.vectorDimension = vectorStatus.dimension
+    result.vectorDegradedReason = cangjieCandidateVectorDiagnostic(vectorStatus)
+    result.vectorHealthPass = false
+    result.diagnostics.add("candidate_vector_failed:${result.vectorDegradedReason}")
+    result.diagnostics.add("vector_health_failed:${result.vectorDegradedReason}")
+    result
 }
 
 private func cangjieCandidateShouldPersistVectorFile(status: VectorStoreStatus): Bool {

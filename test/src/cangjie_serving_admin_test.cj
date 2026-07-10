@@ -288,6 +288,59 @@ public class CangjieServingAdminTest {
         @Expect(after.activeKnowledgeVersion, before)
         @Expect(promotion.validation.vectorDegradedReason.contains("ollama_timeout"), true)
     }
+
+    @TestCase
+    public func p4N4CandidateVectorFailureDoesNotPolluteActiveVectorStatus(): Unit {
+        let provider = CangjieAdminEmbeddingProvider(2, failAtCall: 1, failReason: "ollama_timeout")
+        let vectorStore = CangjieAdminTrackingVectorStore(initialCount: 3)
+        let kb = KnowledgeBase(FakeClock(0), provider, vectorStore, LocalGraphStore())
+        kb.configureVectorCollections("ckb_active", "ckb_candidate")
+        let before = kb.status()
+        let store = FileKnowledgeStore("target/ckb-admin-p4-vector-failure-status")
+
+        let promotion = cangjiePromoteCandidateRecordsAfterValidationWithVersion(kb, store, "ckb-admin-p4-vector-fail-candidate", cangjieF4AdminPromotionRecords())
+        let after = kb.status()
+
+        @Expect(promotion.ok, false)
+        @Expect(promotion.validation.status, "candidate_vector_failed")
+        @Expect(promotion.validation.vectorDegradedReason.contains("ollama_timeout"), true)
+        @Expect(vectorStore.deleteCollectionCalls, 1)
+        @Expect(after.activeKnowledgeVersion, before.activeKnowledgeVersion)
+        @Expect(after.storage.vectorActiveCollection, before.storage.vectorActiveCollection)
+        @Expect(after.storage.vectorCollection, before.storage.vectorCollection)
+        @Expect(after.storage.vectorState, before.storage.vectorState)
+        @Expect(after.storage.vectorDegradedReason, before.storage.vectorDegradedReason)
+        @Expect(after.storage.vectorIndexCount, before.storage.vectorIndexCount)
+        @Expect(after.storage.vectorDegradedReason.contains("ollama_timeout"), false)
+    }
+
+    @TestCase
+    public func p4P3CandidateVectorBuildReusesActiveVectorsWhenOrdinalChanges(): Unit {
+        let provider = CangjieAdminEmbeddingProvider(2)
+        let vectorStore = CangjieAdminTrackingVectorStore()
+        let kb = KnowledgeBase(FakeClock(0), provider, vectorStore, LocalGraphStore())
+        kb.configureVectorCollections("ckb_active", "ckb_candidate")
+        let active = ArrayList<NormalizedRecord>()
+        let first = cangjieF4AdminRecord("reuse-a", CangjieTypedRecordKinds.DOC_SECTION, "Reuse A", "first active record", CangjieSourceSets.DOCS, "vr-docs-1")
+        let second = cangjieF4AdminRecord("reuse-b", CangjieTypedRecordKinds.DOC_SECTION, "Reuse B", "second active record", CangjieSourceSets.DOCS, "vr-docs-1")
+        active.add(first)
+        active.add(second)
+
+        let activeBuild = kb.buildVectorIndexForRecords(active, "ckb_active")
+        let candidate = ArrayList<NormalizedRecord>()
+        candidate.add(second)
+        candidate.add(first)
+        candidate.add(cangjieF4AdminRecord("reuse-c", CangjieTypedRecordKinds.DOC_SECTION, "Reuse C", "new candidate record", CangjieSourceSets.DOCS, "vr-docs-1"))
+        let candidateBuild = kb.buildVectorIndexForRecords(candidate, "ckb_candidate_stage_reuse")
+        let progress = kb.vectorBuildProgress()
+
+        @Expect(activeBuild.ok, true)
+        @Expect(candidateBuild.ok, true)
+        @Expect(provider.calls, 2)
+        @Expect(progress.reused, 2)
+        @Expect(progress.embedded, 1)
+        @Expect(candidateBuild.vectorRecords.size, 3)
+    }
 }
 
 private class AdminCaptureStageSink <: CkbStagedRebuildStageSink {
@@ -411,6 +464,8 @@ private class CangjieAdminTrackingVectorStore <: VectorStore {
     private var activeCount: Int64 = 0
     private var stagingCollection: String = ""
     private var stagingCount: Int64 = 0
+    private var activeRecords: ArrayList<VectorRecord> = ArrayList<VectorRecord>()
+    private var stagingRecords: ArrayList<VectorRecord> = ArrayList<VectorRecord>()
 
     init(initialCount!: Int64 = 0) {
         this.activeCount = initialCount
@@ -424,9 +479,15 @@ private class CangjieAdminTrackingVectorStore <: VectorStore {
         this.upsertBatchCalls += 1
         if (collection == "ckb_active") {
             this.activeCount += vectors.size
+            for (record in vectors) {
+                this.activeRecords.add(record)
+            }
         } else {
             this.stagingCollection = collection
             this.stagingCount += vectors.size
+            for (record in vectors) {
+                this.stagingRecords.add(record)
+            }
         }
         this.status(collection)
     }
@@ -466,9 +527,11 @@ private class CangjieAdminTrackingVectorStore <: VectorStore {
         if (collection == "ckb_active") {
             this.deletedActiveCollection = true
             this.activeCount = 0
+            this.activeRecords.clear()
         } else {
             this.stagingCollection = collection
             this.stagingCount = 0
+            this.stagingRecords.clear()
         }
         this.status(collection)
     }
@@ -491,8 +554,10 @@ private class CangjieAdminTrackingVectorStore <: VectorStore {
         if (collection == "ckb_active") {
             this.deletedActiveCollection = true
             this.activeCount = 0
+            this.activeRecords.clear()
         } else if (collection == this.stagingCollection) {
             this.stagingCount = 0
+            this.stagingRecords.clear()
         }
         this.status(collection)
     }
@@ -502,6 +567,15 @@ private class CangjieAdminTrackingVectorStore <: VectorStore {
         backup.collection = collection
         backup.valid = true
         backup.diagnostic = "ok"
+        if (collection == "ckb_active") {
+            for (record in this.activeRecords) {
+                backup.records.add(record)
+            }
+        } else if (collection == this.stagingCollection) {
+            for (record in this.stagingRecords) {
+                backup.records.add(record)
+            }
+        }
         backup
     }
 
