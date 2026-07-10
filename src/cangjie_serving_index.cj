@@ -32,12 +32,21 @@ public class CangjieServingIndex {
     public init() {}
 }
 
-public func buildCangjieServingIndex(records: ArrayList<NormalizedRecord>, activeKnowledgeVersion!: String = ""): CangjieServingIndex {
+public func buildCangjieServingIndex(records: ArrayList<NormalizedRecord>, activeKnowledgeVersion!: String = "", deadlineAtMillis!: Int64 = 0): CangjieServingIndex {
     let index = CangjieServingIndex()
     index.activeKnowledgeVersion = cangjieServingIndexActiveVersion(records, activeKnowledgeVersion)
+    var processed: Int64 = 0
     for (record in records) {
+        if (processed % 64 == 0) {
+            let deadline = ckbDeadlineGuard("serving_index_build_records", deadlineAtMillis)
+            if (deadline.exceeded) {
+                index.diagnostics.add("${deadline.diagnostic}:processed=${processed}:total=${records.size}")
+                return index
+            }
+        }
         if (!cangjieServingIndexRecordAllowed(record)) {
             index.diagnostics.add("serving_index_record_rejected:${record.sourceId}")
+            processed += 1
             continue
         }
         index.records.add(record)
@@ -55,12 +64,27 @@ public func buildCangjieServingIndex(records: ArrayList<NormalizedRecord>, activ
                 cangjieServingIndexAddExactEntries(index, symbolDoc)
             }
         }
+        processed += 1
+    }
+    let afterDeadline = ckbDeadlineGuard("serving_index_build_after", deadlineAtMillis)
+    if (afterDeadline.exceeded) {
+        index.diagnostics.add("${afterDeadline.diagnostic}:processed=${processed}:total=${records.size}")
+        return index
     }
     cangjieServingIndexAddNegativeRuleDocuments(index)
     if (index.documents.size == 0) {
         index.diagnostics.add("serving_index_empty")
     }
     index
+}
+
+public func cangjieServingIndexDeadlineDiagnostic(index: CangjieServingIndex): String {
+    for (diagnostic in index.diagnostics) {
+        if (diagnostic.startsWith("deadline_exceeded:")) {
+            return diagnostic
+        }
+    }
+    ""
 }
 
 public func cangjieServingIndexKey(activeKnowledgeVersion: String, sourceSet: String, targetVersion: String, versionResolutionId: String, lookupKind: String, selector: String): String {

@@ -69,6 +69,43 @@ public class CkbNativeHttpTransportTest {
     }
 
     @TestCase
+    public func p4U3HttpRunnerMapsThrownNativeTimeoutToStructuredFetchFailure(): Unit {
+        let config = CkbRuntimeConfig()
+        config.networkEnabled = true
+        let request = SourceRequestBuilder().gitCodeOrgRepos("cangjie")
+        request.retryCount = 1
+        let executor = ThrowingNativeContractHttpExecutor("Read response timeout 中文🙂 Authorization: Bearer secret-token")
+
+        let fetch = HttpSourceFetchRunner(config, executor: executor).fetch(request)
+
+        @Expect(fetch.ok, false)
+        @Expect(fetch.status, "timeout")
+        @Expect(fetch.statusCode, 0)
+        @Expect(fetch.attempts, 2)
+        @Expect(fetch.transportErrorClass, "timeout")
+        @Expect(fetch.transportDiagnostic.contains("timeout"), true)
+        @Expect(fetch.transportDiagnostic.contains("secret-token"), false)
+    }
+
+    @TestCase
+    public func p4U4HttpRunnerMapsThrownDnsAndTlsToTransportError(): Unit {
+        let config = CkbRuntimeConfig()
+        config.networkEnabled = true
+        let dnsRequest = SourceRequestBuilder().gitCodeOrgRepos("cangjie")
+        let tlsRequest = SourceRequestBuilder().gitCodeOrgRepos("cangjie")
+
+        let dns = HttpSourceFetchRunner(config, executor: ThrowingNativeContractHttpExecutor("Failed to resolve address api.gitcode.com")).fetch(dnsRequest)
+        let tls = HttpSourceFetchRunner(config, executor: ThrowingNativeContractHttpExecutor("TLS handshake failed certificate hostname mismatch")).fetch(tlsRequest)
+
+        @Expect(dns.ok, false)
+        @Expect(dns.status, "transport_error")
+        @Expect(dns.transportErrorClass, "dns")
+        @Expect(tls.ok, false)
+        @Expect(tls.status, "transport_error")
+        @Expect(tls.transportErrorClass, "tls_hostname_mismatch")
+    }
+
+    @TestCase
     public func httpRunnerMapsAuthRateLimitNotFoundAndServerStatuses(): Unit {
         let config = CkbRuntimeConfig()
         config.networkEnabled = true
@@ -474,6 +511,24 @@ private class NativeContractSequenceHttpExecutor <: HttpRequestExecutor {
             getRequest.headers.add(header)
         }
         this.execute(getRequest)
+    }
+}
+
+private class ThrowingNativeContractHttpExecutor <: HttpRequestExecutor {
+    private let message: String
+    public var calls: Int64 = 0
+
+    public init(message: String) {
+        this.message = message
+    }
+
+    public func execute(request: HttpExecutionRequest): HttpExecutionResponse {
+        this.calls += 1
+        throw Exception(this.message)
+    }
+
+    public func get(request: HttpExecutionRequest): HttpExecutionResponse {
+        this.execute(request)
     }
 }
 

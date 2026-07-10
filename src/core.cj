@@ -3639,7 +3639,8 @@ public class KnowledgeBase {
         true
     }
 
-    public func commitCandidateToActiveAfterVectorReady(activeVersion: String, vectorCollection: String, vectorStatus: VectorStoreStatus): Bool {
+    public func commitCandidateToActiveAfterVectorReady(activeVersion: String, vectorCollection: String, vectorStatus: VectorStoreStatus, deadlineAtMillis!: Int64 = 0): Bool {
+        this.ensureActiveCommitDeadline("candidate_active_commit_before", deadlineAtMillis)
         if (this.candidateIndex.size == 0 || this.candidateKnowledgeVersion == "") {
             this.failedCandidateVersion = if (this.candidateKnowledgeVersion == "") { "candidate_missing" } else { this.candidateKnowledgeVersion }
             return false
@@ -3649,22 +3650,40 @@ public class KnowledgeBase {
             return false
         }
         this.activeIndex.clear()
+        var copied: Int64 = 0
         for (record in this.candidateIndex) {
+            if (copied % 256 == 0) {
+                this.ensureActiveCommitDeadline("candidate_active_commit_copy", deadlineAtMillis)
+            }
             this.activeIndex.add(record)
+            copied += 1
         }
         this.activeKnowledgeVersion = if (activeVersion.trimAscii() == "") { this.candidateKnowledgeVersion.replace("-candidate", "-active") } else { activeVersion.trimAscii() }
+        var updated: Int64 = 0
         for (record in this.activeIndex) {
+            if (updated % 256 == 0) {
+                this.ensureActiveCommitDeadline("candidate_active_commit_metadata", deadlineAtMillis)
+            }
             record.metadata.knowledgeVersion = this.activeKnowledgeVersion
             record.metadata.candidateVersion = this.candidateKnowledgeVersion
+            updated += 1
         }
         this.failedCandidateVersion = ""
         this.storage.indexCount = this.activeIndex.size
         this.promoteVectorActiveCollection(vectorCollection)
         this.applyVectorStatus(vectorStatus)
         this.invalidateServingCacheOnActiveVersionChange()
-        this.rebuildServingIndexStatus()
-        this.rebuildGraphIndex()
+        let servingDiagnostic = this.rebuildServingIndexStatus(deadlineAtMillis: deadlineAtMillis)
+        if (servingDiagnostic != "") {
+            throw Exception(servingDiagnostic)
+        }
+        let graphDiagnostic = this.rebuildGraphIndex(deadlineAtMillis: deadlineAtMillis)
+        if (graphDiagnostic != "") {
+            throw Exception(graphDiagnostic)
+        }
+        this.ensureActiveCommitDeadline("candidate_active_manifest_before", deadlineAtMillis)
         this.rebuildIndexManifest()
+        this.ensureActiveCommitDeadline("candidate_active_commit_after", deadlineAtMillis)
         true
     }
 
@@ -4187,11 +4206,23 @@ public class KnowledgeBase {
         dimension
     }
 
-    private func rebuildServingIndexStatus(): Unit {
-        let servingIndex = buildCangjieServingIndex(this.activeIndex, activeKnowledgeVersion: this.activeKnowledgeVersion)
+    private func rebuildServingIndexStatus(deadlineAtMillis!: Int64 = 0): String {
+        let servingIndex = buildCangjieServingIndex(this.activeIndex, activeKnowledgeVersion: this.activeKnowledgeVersion, deadlineAtMillis: deadlineAtMillis)
+        let deadlineDiagnostic = cangjieServingIndexDeadlineDiagnostic(servingIndex)
+        if (deadlineDiagnostic != "") {
+            return deadlineDiagnostic
+        }
         this.storage.servingIndexCount = servingIndex.documents.size
         this.storage.servingIndexVersion = servingIndex.activeKnowledgeVersion
         this.storage.servingIndexDiagnostic = cangjieServingIndexDiagnostics(servingIndex)
+        ""
+    }
+
+    private func ensureActiveCommitDeadline(stage: String, deadlineAtMillis: Int64): Unit {
+        let deadline = ckbDeadlineGuard(stage, deadlineAtMillis)
+        if (deadline.exceeded) {
+            throw Exception(deadline.diagnostic)
+        }
     }
 
     private func rebuildGraphIndex(deadlineAtMillis!: Int64 = 0): String {
@@ -4298,12 +4329,20 @@ public class KnowledgeBase {
 
     public func persistActiveSnapshot(store: FileKnowledgeStore, deadlineAtMillis!: Int64 = 0): Unit {
         store.ensureLayout()
-        store.writeActiveSnapshotTransaction(this.status(), this.rawRecords, this.activeIndex, this.activeIndex, this.activeVectorRecords(), this.vectorCollection, this.activeGraphBuild(), deadlineAtMillis: deadlineAtMillis)
+        let graph = this.activeGraphBuild(deadlineAtMillis: deadlineAtMillis)
+        if (!graph.ok) {
+            throw Exception(graph.diagnostic)
+        }
+        store.writeActiveSnapshotTransaction(this.status(), this.rawRecords, this.activeIndex, this.activeIndex, this.activeVectorRecords(), this.vectorCollection, graph, deadlineAtMillis: deadlineAtMillis)
     }
 
     public func persistActiveSnapshotUsingVectorRecords(store: FileKnowledgeStore, vectorRecords: ArrayList<VectorRecord>, persistVectorFile!: Bool = true, deadlineAtMillis!: Int64 = 0, stageSink!: CkbStagedRebuildStageSink = NoopCkbStagedRebuildStageSink()): Unit {
         store.ensureLayout()
-        store.writeActiveSnapshotTransaction(this.status(), this.rawRecords, this.activeIndex, this.activeIndex, vectorRecords, this.vectorCollection, this.activeGraphBuild(), persistVectorFile: persistVectorFile, deadlineAtMillis: deadlineAtMillis, stageSink: stageSink)
+        let graph = this.activeGraphBuild(deadlineAtMillis: deadlineAtMillis)
+        if (!graph.ok) {
+            throw Exception(graph.diagnostic)
+        }
+        store.writeActiveSnapshotTransaction(this.status(), this.rawRecords, this.activeIndex, this.activeIndex, vectorRecords, this.vectorCollection, graph, persistVectorFile: persistVectorFile, deadlineAtMillis: deadlineAtMillis, stageSink: stageSink)
     }
 
     public func persistCandidateSnapshot(store: FileKnowledgeStore): Unit {
@@ -4350,8 +4389,8 @@ public class KnowledgeBase {
         result
     }
 
-    public func activeGraphBuild(): GraphBuildResult {
-        buildGraphFromRecords(this.activeIndex, this.activeKnowledgeVersion)
+    public func activeGraphBuild(deadlineAtMillis!: Int64 = 0): GraphBuildResult {
+        buildGraphFromRecords(this.activeIndex, this.activeKnowledgeVersion, deadlineAtMillis: deadlineAtMillis)
     }
 
     public func rawRecordCount(): Int64 {

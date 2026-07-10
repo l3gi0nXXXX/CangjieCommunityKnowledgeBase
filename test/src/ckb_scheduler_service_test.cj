@@ -104,6 +104,63 @@ public class CkbSchedulerServiceF5Test {
     }
 
     @TestCase
+    public func p4U1DocsFullSyncFetchesOnlyDocsAndEvalSupportSources(): Unit {
+        let root = "target/p4-u1-docs-source-boundary"
+        s1s2EnsureEmptyDir(root)
+        let config = CkbRuntimeConfig()
+        config.networkEnabled = true
+        config.docsEnabled = true
+        let store = FileKnowledgeStore("${root}/store")
+        store.saveCangjieVersionManifest(f5ScheduledManifest())
+        let runner = S1S2PaginatedGitCodeRunner()
+        let service = CkbCommandLoopService(config, store, sourceRunner: runner)
+        _ = service.start()
+        let tasks = ArrayList<String>()
+        tasks.add("cangjie_docs_full_weekly")
+
+        let result = service.runSchedulerTasks(tasks, true)
+
+        @Expect(result.ran, 1)
+        @Expect(result.succeeded, 1)
+        @Expect(s1s2RunnerSawRepo(runner, "Cangjie/cangjie_docs"), true)
+        @Expect(s1s2RunnerSawRepo(runner, "Cangjie/cangjie_runtime"), false)
+        @Expect(s1s2RunnerSawRepo(runner, "Cangjie/cangjie_stdx"), false)
+        @Expect(s1s2RunnerSawRepo(runner, "Cangjie/cangjie_tools"), false)
+        @Expect(f7SchedulerDiagnosticsContain(result, "scheduled_source_boundary:profile=cangjie_docs_full_sync"), true)
+        @Expect(f7SchedulerDiagnosticsContain(result, "manifest_ref_record_resolved:docs:Cangjie/cangjie_docs"), true)
+        @Expect(f7SchedulerDiagnosticsContain(result, "manifest_ref_record_resolved:tools:Cangjie/cangjie_tools"), false)
+    }
+
+    @TestCase
+    public func p4U5DocsFullSyncResumesTreePageCheckpoint(): Unit {
+        let root = "target/p4-u5-docs-fetch-checkpoint"
+        s1s2EnsureEmptyDir(root)
+        let config = CkbRuntimeConfig()
+        config.networkEnabled = true
+        config.docsEnabled = true
+        let store = FileKnowledgeStore("${root}/store")
+        store.saveCangjieVersionManifest(f5ScheduledManifest())
+        store.writeLinesAtomically(
+            "metadata/scheduled-fetch-checkpoints/cangjie_docs_full_sync-docs-Cangjie_cangjie_docs.ckb",
+            "profile=cangjie_docs_full_sync\nsourceSet=docs\nsourceFamily=docs\nrepo=Cangjie/cangjie_docs\nref=release-1.0.0\nresolvedCommit=${f7GenericResolvedCommit()}\nphase=tree_pages\nnextPage=2\ncurrentPath=\nselectedPaths=\ncompletedPaths=\nupdatedAtMillis=1\n"
+        )
+        let runner = S1S2PaginatedGitCodeRunner()
+        let service = CkbCommandLoopService(config, store, sourceRunner: runner)
+        _ = service.start()
+        let tasks = ArrayList<String>()
+        tasks.add("cangjie_docs_full_weekly")
+
+        let result = service.runSchedulerTasks(tasks, true)
+
+        @Expect(result.ran, 1)
+        @Expect(result.succeeded, 1)
+        @Expect(s1s2RunnerSawRepoTreePage(runner, "Cangjie/cangjie_docs", 1), false)
+        @Expect(s1s2RunnerSawRepoTreePage(runner, "Cangjie/cangjie_docs", 2), true)
+        @Expect(f7SchedulerDiagnosticsContain(result, "scheduled_fetch_checkpoint_resume:cangjie_docs_full_sync:docs:Cangjie/cangjie_docs:phase=tree_pages|nextPage=2"), true)
+        @Expect(store.readText("metadata/scheduled-fetch-checkpoints/cangjie_docs_full_sync-docs-Cangjie_cangjie_docs.ckb").contains("phase=completed"), true)
+    }
+
+    @TestCase
     public func f5Ut02CandidateOverlayPreservesActiveTypedRecordsAndReplacesDeltaIdentity(): Unit {
         let kb = newOfflineKnowledgeBase()
         let active = kb.activeRecordSnapshot()
@@ -1555,6 +1612,15 @@ private func s1s2RunnerSawTreePage(runner: S1S2PaginatedGitCodeRunner, page: Int
 private func s1s2RunnerSawRepoTreePage(runner: S1S2PaginatedGitCodeRunner, repo: String, page: Int64): Bool {
     for (call in runner.calls) {
         if (call.kind == SourceKinds.GITCODE_TREE && call.repo == repo && call.page == page) {
+            return true
+        }
+    }
+    false
+}
+
+private func s1s2RunnerSawRepo(runner: S1S2PaginatedGitCodeRunner, repo: String): Bool {
+    for (call in runner.calls) {
+        if (call.repo == repo) {
             return true
         }
     }

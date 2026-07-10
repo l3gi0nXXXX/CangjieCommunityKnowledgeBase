@@ -173,6 +173,45 @@ public class CangjieServingAdminTest {
     }
 
     @TestCase
+    public func p4U6CandidatePromotionEmitsScheduledStageSinkEvents(): Unit {
+        let provider = CangjieAdminEmbeddingProvider(2)
+        let vectorStore = CangjieAdminTrackingVectorStore(initialCount: 3)
+        let kb = KnowledgeBase(FakeClock(0), provider, vectorStore, LocalGraphStore())
+        kb.configureVectorCollections("ckb_active", "ckb_candidate")
+        let store = FileKnowledgeStore("target/p4-u6-candidate-stage-sink")
+        let records = cangjieF4AdminPromotionRecords()
+        let sink = AdminCaptureStageSink()
+
+        let promotion = cangjiePromoteCandidateRecordsAfterValidationWithVersion(kb, store, "ckb-p4-stage-candidate", records, stageSink: sink)
+
+        @Expect(promotion.ok, true)
+        @Expect(adminCaptureContains(sink.stages, "candidate_vector_started|running"), true)
+        @Expect(adminCaptureContains(sink.stages, "candidate_validation_finished|candidate_validation_passed"), true)
+        @Expect(adminCaptureContains(sink.stages, "candidate_active_commit_started|running"), true)
+        @Expect(adminCaptureContains(sink.stages, "candidate_active_snapshot_finished|ok"), true)
+        @Expect(store.has("metadata/active-snapshot.manifest"), true)
+    }
+
+    @TestCase
+    public func p4N2ActiveCommitDeadlineThrowsBeforeHalfCommittedManifest(): Unit {
+        let kb = KnowledgeBase(FakeClock(0))
+        kb.configureVectorCollections("ckb_active", "ckb_candidate")
+        let records = cangjieF4AdminPromotionRecords()
+        let candidateVersion = kb.stageCandidateRecords("ckb-p4-deadline-candidate", records)
+        let vector = cangjieCandidateTestVectorStatus(records)
+        var diagnostic = ""
+
+        try {
+            _ = kb.commitCandidateToActiveAfterVectorReady(cangjieActiveVersionForCandidate(candidateVersion), "ckb_candidate", vector, deadlineAtMillis: ckbCoreNowMillis() - 1)
+        } catch (e: Exception) {
+            diagnostic = e.message
+        }
+
+        @Expect(diagnostic.startsWith("deadline_exceeded:candidate_active_commit_before"), true)
+        @Expect(kb.status().activeKnowledgeVersion.contains("ckb-p4-deadline"), false)
+    }
+
+    @TestCase
     public func s4Neg001ParityFailureIsNotReportedAsTimeout(): Unit {
         let records = ArrayList<NormalizedRecord>()
 
@@ -249,6 +288,25 @@ public class CangjieServingAdminTest {
         @Expect(after.activeKnowledgeVersion, before)
         @Expect(promotion.validation.vectorDegradedReason.contains("ollama_timeout"), true)
     }
+}
+
+private class AdminCaptureStageSink <: CkbStagedRebuildStageSink {
+    public var stages: ArrayList<String> = ArrayList<String>()
+
+    public init() {}
+
+    public func onStagedRebuildStage(progress: CkbStagedRebuildStageProgress): Unit {
+        this.stages.add("${progress.stage}|${progress.status}")
+    }
+}
+
+private func adminCaptureContains(values: ArrayList<String>, needle: String): Bool {
+    for (value in values) {
+        if (value.contains(needle)) {
+            return true
+        }
+    }
+    false
 }
 
 private func cangjieF4AdminRecord(sourceId: String, kind: String, title: String, chunk: String, sourceSet: String, versionResolutionId: String): NormalizedRecord {

@@ -253,6 +253,34 @@ public class CkbSchedulerProgressTimeoutTest {
     }
 
     @TestCase
+    public func p4U7ExplicitDocsTaskLastStageDoesNotReadStaleGlobalStagedCurrent(): Unit {
+        let root = "target/p4-u7-docs-task-no-global-stage"
+        ensureEmptyDir(root)
+        let store = FileKnowledgeStore(root)
+        store.writeLinesAtomically("metadata/staged-rebuild-current.ckb", "stage=staged_rebuild_vector_before\nstatus=running\nremainingMillis=1\ndiagnostic=old-global-stage\n")
+
+        let stage = ckbSchedulerWorkerLastStageFromStoreForTask(store, "cangjie_docs_full_weekly")
+
+        @Expect(stage.contains("staged_rebuild_vector_before"), false)
+        @Expect(stage.contains("old-global-stage"), false)
+        @Expect(stage, "")
+    }
+
+    @TestCase
+    public func p4N3ExplicitDocsTaskLastStagePrefersScopedCandidateStage(): Unit {
+        let root = "target/p4-n3-docs-task-scoped-stage"
+        ensureEmptyDir(root)
+        let store = FileKnowledgeStore(root)
+        store.writeLinesAtomically("metadata/scheduler-current.ckb", "runId=scheduler-p4\ntaskName=cangjie_docs_full_weekly\nstatus=running\nprogressPath=metadata/scheduler-runs/scheduler-p4.jsonl\ndiagnostic=\n")
+        store.writeLinesAtomically("metadata/staged-rebuild-current.ckb", "stage=staged_rebuild_vector_before\nstatus=running\ndiagnostic=old-global-stage\n")
+        store.writeLinesAtomically("metadata/scheduler-runs/scheduler-p4-cangjie_docs_full_weekly-staged-rebuild-current.ckb", "stage=candidate_active_commit_started\nstatus=running\ndiagnostic=p4-active-commit\n")
+
+        let stage = ckbSchedulerWorkerLastStageFromStoreForTask(store, "cangjie_docs_full_weekly")
+
+        @Expect(stage, "candidate_active_commit_started")
+    }
+
+    @TestCase
     public func p1Ut001StagedRebuildFileSinkWritesSchedulerProgressAndCurrent(): Unit {
         let root = "target/p1-ut001-staged-rebuild-file-sink"
         ensureEmptyDir(root)
