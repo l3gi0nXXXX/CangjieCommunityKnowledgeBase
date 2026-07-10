@@ -364,6 +364,25 @@ public class CangjieServingAdminTest {
         @Expect(vectorStore.stagingUpsertBatchCalls - stagingCallsBefore, 3)
         @Expect(vectorStore.stagingMaxBatchSize, 1024)
     }
+
+    @TestCase
+    public func p4P5LargeCandidateValidationUsesLinearCoverageScan(): Unit {
+        let records = cangjieF4AdminPromotionRecords()
+        for (record in cangjieAdminGeneratedRecords(1024)) {
+            records.add(record)
+        }
+
+        let validation = validateCandidateServingIndexWithVectorStatus(records, "ckb-admin-p4-large-validation-candidate", cangjieCandidateTestVectorStatus(records), deadlineAtMillis: ckbCoreNowMillis() + 10000, validationScope: "P4-P5")
+
+        @Expect(validation.ok, true)
+        @Expect(validation.status, "candidate_validation_passed")
+        @Expect(validation.servingDocumentCount >= 1024, true)
+        @Expect(validation.exactSymbolHits > 0, true)
+        @Expect(validation.docSectionHits >= 1024, true)
+        @Expect(validation.toolManualHits > 0, true)
+        @Expect(validation.negativeRuleHits > 0, true)
+        @Expect(cangjieF4AdminDiagnosticsContainPrefix(validation, "deadline_exceeded:"), false)
+    }
 }
 
 private class AdminCaptureStageSink <: CkbStagedRebuildStageSink {
