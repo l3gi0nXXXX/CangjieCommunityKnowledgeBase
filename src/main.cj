@@ -264,11 +264,7 @@ public func ckbCliMain(args: Array<String>): Int64 {
         return 0
     }
     if (cli.command == "scheduler-run") {
-        let preRepair = store.repairActiveLiveShadowFromManifest()
-        var schedulerKb = kb
-        if (preRepair.repairPerformed) {
-            schedulerKb = newKnowledgeBaseFromStoreWithRuntime(store, config).kb
-        }
+        let schedulerKb = kb
         let recovery = ckbRecoverStaleSchedulerRunsWithVectorStore(store, vectorStoreFromRuntime(config))
         let lock = ckbAcquireSchedulerRunLock(store, "scheduler-cli-${ckbCoreNowMillis()}", ckbCoreNowMillis() + ckbCliSchedulerRunLockBudgetMillis(args), stableSummaryHash(getCommand()))
         if (!lock.ok) {
@@ -302,7 +298,6 @@ public func ckbCliMain(args: Array<String>): Int64 {
         if (!gate.ok) {
             let blocked = ckbSchedulerPreRunGateFailureResult(gate, gateTaskNames, hasArg(args, "--force") || hasArg(args, "--force-all"))
             blocked.runId = lock.runId
-            ckbAppendSnapshotRepairDiagnostic(blocked, "pre", preRepair)
             for (diagnostic in recovery.diagnostics) {
                 blocked.validationDiagnostics.add("recovery:${diagnostic}")
                 blocked.details += "recovery ${diagnostic}\n"
@@ -333,7 +328,6 @@ public func ckbCliMain(args: Array<String>): Int64 {
             result.validationDiagnostics.add("scheduler_lock:${lock.diagnostic}")
             result.details += "scheduler_lock ${lock.diagnostic}\n"
         }
-        ckbAppendSnapshotRepairDiagnostic(result, "pre", preRepair)
         ckbCliFinalizeSchedulerRun(result, schedulerKb, store, config, cli.storePath, lock)
         if (ckbCliWantsJson(args)) {
             result.jsonPrinted = true
@@ -624,18 +618,6 @@ private func ckbCliFinalizeSchedulerRun(result: SchedulerExecutorResult, schedul
     result.businessOk = result.failed == 0 && result.degraded == 0
     result.finalizationOk = true
     try {
-        let finalKb = newKnowledgeBaseFromStoreWithRuntime(store, config).kb
-        ckbCliApplyFinalSchedulerConsistency(result, finalKb, store, config, storePath)
-    } catch (e: Exception) {
-        ckbCliMarkFinalizationFailure(result, "final_preflight_failed", e)
-    }
-    try {
-        let postRepair = store.repairActiveLiveShadowFromManifest()
-        ckbAppendSnapshotRepairDiagnostic(result, "post", postRepair)
-    } catch (e: Exception) {
-        ckbCliMarkFinalizationFailure(result, "post_repair_failed", e)
-    }
-    try {
         ckbCliPopulateSchedulerRunEvidence(result, config, storePath)
     } catch (e: Exception) {
         ckbCliMarkFinalizationFailure(result, "evidence_populate_failed", e)
@@ -696,66 +678,6 @@ private func ckbCliSchedulerRunLockBudgetMillis(args: Array<String>): Int64 {
         return 7200000
     }
     1800000
-}
-
-private func ckbCliApplyFinalSchedulerConsistency(result: SchedulerExecutorResult, kb: KnowledgeBase, store: FileKnowledgeStore, config: CkbRuntimeConfig, storePath: String): Unit {
-    let preflight = ckbRoutineRuntimePreflightFromEnvWithBootstrap(config, storePath)
-    result.finalPreflightOk = preflight.ok
-    for (diagnostic in preflight.diagnostics) {
-        result.finalPreflightDiagnostics.add("preflight:${diagnostic}")
-    }
-    if (preflight.ok || !ckbCliPreflightNeedsVectorRepair(preflight.diagnostics)) {
-        if (!preflight.ok) {
-            result.details += "final_preflight ok=false diagnostics=${ckbCliJoinStrings(preflight.diagnostics, ",")}\n"
-            ckbCliMarkFinalizationFailureWithDiagnostic(result, "final_preflight_failed", ckbCliJoinStrings(preflight.diagnostics, ","))
-        }
-        return
-    }
-    result.postRepairAttempted = true
-    let repair = ckbRoutineRepair(kb, store, config, storePath, true)
-    result.postRepairOk = repair.ok
-    for (diagnostic in repair.diagnostics) {
-        result.finalPreflightDiagnostics.add("repair:${diagnostic}")
-    }
-    let after = ckbRoutineRuntimePreflightFromEnvWithBootstrap(config, storePath)
-    result.finalPreflightOk = after.ok
-    for (diagnostic in after.diagnostics) {
-        result.finalPreflightDiagnostics.add("post_preflight:${diagnostic}")
-    }
-    if (!after.ok) {
-        result.details += "final_preflight ok=false repairAttempted=true repairOk=${repair.ok} diagnostics=${ckbCliJoinStrings(after.diagnostics, ",")}\n"
-        ckbCliMarkFinalizationFailureWithDiagnostic(result, "final_preflight_failed_after_repair", ckbCliJoinStrings(after.diagnostics, ","))
-    } else {
-        result.details += "final_preflight ok=true repairAttempted=true repairOk=${repair.ok}\n"
-    }
-}
-
-private func ckbCliMarkFinalizationFailureWithDiagnostic(result: SchedulerExecutorResult, step: String, raw: String): Unit {
-    result.finalizationOk = false
-    let diagnostic = "${step}:${utf8SafePrefix(redactSensitive(raw.replace("\n", " ").replace("\r", " ").trimAscii()), 240)}"
-    result.finalizationDiagnostics.add(diagnostic)
-}
-
-private func ckbCliPreflightNeedsVectorRepair(diagnostics: ArrayList<String>): Bool {
-    for (diagnostic in diagnostics) {
-        if (diagnostic.contains("qdrant_active_count_mismatch") || diagnostic.contains("qdrant_active_dimension_mismatch") || diagnostic.contains("qdrant_active_distance_mismatch") || diagnostic.contains("repair_required:vector_reconcile")) {
-            return true
-        }
-    }
-    false
-}
-
-private func ckbCliJoinStrings(values: ArrayList<String>, separator: String): String {
-    var out = ""
-    var first = true
-    for (value in values) {
-        if (!first) {
-            out += separator
-        }
-        out += value
-        first = false
-    }
-    out
 }
 
 private func parseNextInt(args: Array<String>, index: Int64, fallback: Int64): Int64 {
