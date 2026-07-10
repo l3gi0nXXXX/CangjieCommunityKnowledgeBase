@@ -4720,7 +4720,7 @@ public class FileKnowledgeStore {
         this.emitActiveSnapshotStage(stageSink, "active_snapshot_tx_commit_after", "ok", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
         this.emitActiveSnapshotStage(stageSink, "active_snapshot_live_shadow_before", "running", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
         this.ensureActiveSnapshotDeadline("active_snapshot_live_shadow_before", deadlineAtMillis)
-        this.writeActiveSnapshotLiveShadow(status, rawRecords, normalizedRecords, activeIndex, vectorRecords, vectorCollection, graph, persistVectorFile: persistVectorFile, deadlineAtMillis: deadlineAtMillis, stageSink: stageSink)
+        this.writeActiveSnapshotLiveShadow(txRoot, status, rawRecords, normalizedRecords, activeIndex, vectorRecords, vectorCollection, graph, persistVectorFile: persistVectorFile, deadlineAtMillis: deadlineAtMillis, stageSink: stageSink)
         this.emitActiveSnapshotStage(stageSink, "active_snapshot_live_shadow_after", "ok", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
         this.emitActiveSnapshotStage(stageSink, "active_snapshot_manifest_before", "running", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
         this.ensureActiveSnapshotDeadline("active_snapshot_manifest_before", deadlineAtMillis)
@@ -5353,6 +5353,44 @@ public class FileKnowledgeStore {
         }
     }
 
+    private func copySnapshotFileAtomicallyFromTx(txRoot: String, relative: String, deadlineAtMillis: Int64, progressStage: String): Unit {
+        this.ensureActiveSnapshotDeadline("${progressStage}_copy_before", deadlineAtMillis)
+        let sourceRelative = "${txRoot}/${relative}"
+        if (!this.has(sourceRelative)) {
+            throw Exception("active_snapshot_tx_missing:${relative}")
+        }
+        let source = this.root.join(sourceRelative)
+        let path = this.root.join(relative)
+        if (!exists(path.parent)) {
+            Directory.create(path.parent, recursive: true)
+        }
+        let tmp = this.atomicTmpPath(path, relative)
+        let code = launch("/bin/cp", ["-f", source.toString(), tmp.toString()]).wait()
+        if (code != 0) {
+            throw Exception("active_snapshot_live_copy_failed:${relative}")
+        }
+        this.replaceFileWithTmp(path, tmp)
+        this.ensureActiveSnapshotDeadline("${progressStage}_copy_after", deadlineAtMillis)
+    }
+
+    private func copySnapshotDirectoryContentsFromTx(txRoot: String, relative: String, deadlineAtMillis: Int64, progressStage: String): Unit {
+        this.ensureActiveSnapshotDeadline("${progressStage}_copy_before", deadlineAtMillis)
+        let sourceRelative = "${txRoot}/${relative}"
+        if (!this.has(sourceRelative)) {
+            throw Exception("active_snapshot_tx_missing:${relative}")
+        }
+        let source = this.root.join(sourceRelative)
+        let destination = this.root.join(relative)
+        if (!exists(destination)) {
+            Directory.create(destination, recursive: true)
+        }
+        let code = launch("/bin/cp", ["-Rf", "${source.toString()}/.", destination.toString()]).wait()
+        if (code != 0) {
+            throw Exception("active_snapshot_live_copy_failed:${relative}")
+        }
+        this.ensureActiveSnapshotDeadline("${progressStage}_copy_after", deadlineAtMillis)
+    }
+
     private func loadActiveSnapshotFromPrefix(prefix: String, extraDiagnostic: String): ActiveSnapshot {
         let snapshot = ActiveSnapshot()
         snapshot.activeVersion = this.readLinesFromPrefix(prefix, "index/active.version").trimAscii()
@@ -5602,35 +5640,30 @@ public class FileKnowledgeStore {
         }
     }
 
-    private func writeActiveSnapshotLiveShadow(status: KnowledgeStatus, rawRecords: ArrayList<RawRecord>, normalizedRecords: ArrayList<NormalizedRecord>, activeIndex: ArrayList<NormalizedRecord>, vectorRecords: ArrayList<VectorRecord>, vectorCollection: String, graph: GraphBuildResult, persistVectorFile!: Bool = true, deadlineAtMillis!: Int64 = 0, stageSink!: CkbStagedRebuildStageSink = NoopCkbStagedRebuildStageSink()): Unit {
+    private func writeActiveSnapshotLiveShadow(txRoot: String, status: KnowledgeStatus, rawRecords: ArrayList<RawRecord>, normalizedRecords: ArrayList<NormalizedRecord>, activeIndex: ArrayList<NormalizedRecord>, vectorRecords: ArrayList<VectorRecord>, vectorCollection: String, graph: GraphBuildResult, persistVectorFile!: Bool = true, deadlineAtMillis!: Int64 = 0, stageSink!: CkbStagedRebuildStageSink = NoopCkbStagedRebuildStageSink()): Unit {
         this.emitActiveSnapshotStage(stageSink, "active_snapshot_live_raw_before", "running", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
-        this.writeRawFilesAtomically("", rawRecords, deadlineAtMillis: deadlineAtMillis, progressStage: "active_snapshot_live_raw")
+        this.copySnapshotDirectoryContentsFromTx(txRoot, "raw", deadlineAtMillis, "active_snapshot_live_raw")
         this.emitActiveSnapshotStage(stageSink, "active_snapshot_live_raw_after", "ok", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
         this.emitActiveSnapshotStage(stageSink, "active_snapshot_live_normalized_before", "running", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
-        this.ensureActiveSnapshotDeadline("active_snapshot_live_normalized_before", deadlineAtMillis)
-        this.writeNormalizedRecordsAtomically("normalized/records.ckb", normalizedRecords, deadlineAtMillis, "active_snapshot_live_normalized")
+        this.copySnapshotFileAtomicallyFromTx(txRoot, "normalized/records.ckb", deadlineAtMillis, "active_snapshot_live_normalized")
         this.emitActiveSnapshotStage(stageSink, "active_snapshot_live_normalized_after", "ok", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
         this.emitActiveSnapshotStage(stageSink, "active_snapshot_live_index_before", "running", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
-        this.ensureActiveSnapshotDeadline("active_snapshot_live_index_before", deadlineAtMillis)
-        this.writeLinesAtomically("index/active.version", status.activeKnowledgeVersion + "\n")
-        this.writeNormalizedRecordsAtomically("index/active.ckb", activeIndex, deadlineAtMillis, "active_snapshot_live_index")
+        this.copySnapshotFileAtomicallyFromTx(txRoot, "index/active.version", deadlineAtMillis, "active_snapshot_live_index_version")
+        this.copySnapshotFileAtomicallyFromTx(txRoot, "index/active.ckb", deadlineAtMillis, "active_snapshot_live_index")
         this.emitActiveSnapshotStage(stageSink, "active_snapshot_live_index_after", "ok", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
         if (persistVectorFile) {
             this.emitActiveSnapshotStage(stageSink, "active_snapshot_live_vector_before", "running", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
-            this.ensureActiveSnapshotDeadline("active_snapshot_live_vector_before", deadlineAtMillis)
-            this.writeVectorRecordsAtomically("index/vector-${safeName(vectorCollection)}.ckb", vectorRecords, deadlineAtMillis, "active_snapshot_live_vector")
+            this.copySnapshotFileAtomicallyFromTx(txRoot, "index/vector-${safeName(vectorCollection)}.ckb", deadlineAtMillis, "active_snapshot_live_vector")
             this.emitActiveSnapshotStage(stageSink, "active_snapshot_live_vector_after", "ok", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
         } else {
             this.emitActiveSnapshotStage(stageSink, "active_snapshot_live_vector_skipped", "skipped", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
         }
         this.emitActiveSnapshotStage(stageSink, "active_snapshot_live_graph_before", "running", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
-        this.ensureActiveSnapshotDeadline("active_snapshot_live_graph_before", deadlineAtMillis)
-        this.writeGraphNodesAtomically("index/graph-nodes.ckb", graph.nodes, deadlineAtMillis, "active_snapshot_live_graph_nodes")
-        this.writeGraphEdgesAtomically("index/graph-edges.ckb", graph.edges, deadlineAtMillis, "active_snapshot_live_graph_edges")
+        this.copySnapshotFileAtomicallyFromTx(txRoot, "index/graph-nodes.ckb", deadlineAtMillis, "active_snapshot_live_graph_nodes")
+        this.copySnapshotFileAtomicallyFromTx(txRoot, "index/graph-edges.ckb", deadlineAtMillis, "active_snapshot_live_graph_edges")
         this.emitActiveSnapshotStage(stageSink, "active_snapshot_live_graph_after", "ok", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
         this.emitActiveSnapshotStage(stageSink, "active_snapshot_live_status_before", "running", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
-        this.ensureActiveSnapshotDeadline("active_snapshot_live_status_before", deadlineAtMillis)
-        this.writeLinesAtomically("metadata/status.ckb", this.metadataLines(status))
+        this.copySnapshotFileAtomicallyFromTx(txRoot, "metadata/status.ckb", deadlineAtMillis, "active_snapshot_live_status")
         this.emitActiveSnapshotStage(stageSink, "active_snapshot_live_status_after", "ok", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
     }
 
