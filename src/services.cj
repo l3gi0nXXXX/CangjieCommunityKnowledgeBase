@@ -6636,7 +6636,7 @@ public func ckbSyncProfileForScheduleTask(name: String): CkbScheduleTaskProfile 
         profile.status = "ready"
         profile.profile = "cangjie_docs_full_sync"
         profile.candidateMode = "candidate_validate_promote"
-        profile.timeBudgetMillis = 180000
+        profile.timeBudgetMillis = 360000
         profile.requestCount = 5
         profile.updatedDataKinds.add("docs")
         profile.updatedDataKinds.add("serving_feed")
@@ -6721,7 +6721,7 @@ private func ckbApplySchedulerProfileStageBudgets(profile: CkbScheduleTaskProfil
     } else if (profile.profile == "cangjie_release_full_sync") {
         ckbSetSchedulerProfileStageBudgets(profile, 80000, 30000, 80000, 30000, 20000, 0)
     } else if (profile.profile == "cangjie_docs_full_sync") {
-        ckbSetSchedulerProfileStageBudgets(profile, 60000, 20000, 60000, 25000, 15000, 0)
+        ckbSetSchedulerProfileStageBudgets(profile, 60000, 20000, 180000, 40000, 50000, 0)
     } else if (profile.profile == "cangjie_source_event_sync") {
         ckbSetSchedulerProfileStageBudgets(profile, 45000, 15000, 40000, 12000, 8000, 0)
     } else if (profile.profile == "cangjie_version_branch_refresh") {
