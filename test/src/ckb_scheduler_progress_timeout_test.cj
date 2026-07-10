@@ -326,6 +326,22 @@ public class CkbSchedulerProgressTimeoutTest {
     }
 
     @TestCase
+    public func p4P6DocsFullWeeklyUsesObservedEndToEndBudget(): Unit {
+        let profile = ckbSyncProfileForScheduleTask("cangjie_docs_full_weekly")
+        let diagnostic = ckbSchedulerProfileStageBudgetDiagnostic(profile)
+
+        @Expect(profile.timeBudgetMillis, 360000)
+        @Expect(profile.fetchBudgetMillis, 60000)
+        @Expect(profile.ingestBudgetMillis, 20000)
+        @Expect(profile.vectorBudgetMillis, 180000)
+        @Expect(profile.validationBudgetMillis, 40000)
+        @Expect(profile.snapshotBudgetMillis, 50000)
+        @Expect(profile.proofBudgetMillis, 0)
+        @Expect(diagnostic.contains("profile=cangjie_docs_full_sync"), true)
+        @Expect(diagnostic.contains("timeBudgetMs=360000"), true)
+    }
+
+    @TestCase
     public func p1Ut003SnapshotTransactionEmitsStageCheckpoints(): Unit {
         let root = "target/p1-ut003-snapshot-stage-checkpoints"
         ensureEmptyDir(root)
