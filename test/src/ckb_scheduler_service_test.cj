@@ -556,7 +556,9 @@ public class CkbSchedulerServiceF5Test {
         @Expect(f7SchedulerDiagnosticsContain(result, "version_manifest_saved:"), false)
         @Expect(summaries.size, 1)
         @Expect(summaries[0].taskName, "cangjie_release_full_sync")
-        @Expect(summaries[0].primaryFailure.contains("scheduled_readiness_failed"), true)
+        @Expect(summaries[0].primaryFailure != "", true)
+        @Expect(summaries[0].primaryFailure.contains("scheduled_readiness_failed"), false)
+        @Expect(summaries[0].primaryFailure.contains("profile_stage_budget"), false)
         @Expect(f7SummaryListContains(summaries[0].failedSources, "remote_tree_unavailable"), true)
         @Expect(summaries[0].missingArtifacts.size, 0)
     }
@@ -586,7 +588,9 @@ public class CkbSchedulerServiceF5Test {
         @Expect(f7RunnerSawUrlFragment(runner, "/git/trees/${f7SlashRefResolvedCommit()}?"), false)
         @Expect(f7SchedulerDiagnosticsContain(result, "version_manifest_saved:"), false)
         @Expect(summaries.size, 1)
-        @Expect(summaries[0].primaryFailure.contains("scheduled_readiness_failed"), true)
+        @Expect(summaries[0].primaryFailure != "", true)
+        @Expect(summaries[0].primaryFailure.contains("scheduled_readiness_failed"), false)
+        @Expect(summaries[0].primaryFailure.contains("profile_stage_budget"), false)
         @Expect(f7SummaryListContains(summaries[0].failedSources, "gitcode_branch_list_malformed_json"), true)
     }
 
@@ -603,6 +607,23 @@ public class CkbSchedulerServiceF5Test {
         @Expect(summaries[0].failedSources[0].contains("secret-token"), false)
         @Expect(summaries[0].failedSources[0].contains("/Users/l3gi0n/private"), false)
         @Expect(summaries[0].failedSources[0].contains("/Users/"), false)
+    }
+
+    @TestCase
+    public func p7Ut005SchedulerFailureSummaryPrefersSpecificReadinessFailure(): Unit {
+        let result = SchedulerExecutorResult()
+        result.details = "task cangjie_version_branch_refresh ok=false status=scheduled_readiness_failed\n"
+        result.validationDiagnostics.add("cangjie_version_branch_refresh:profile_stage_budget:profile=cangjie_version_branch_refresh|fetchBudgetMs=70000")
+        result.validationDiagnostics.add("cangjie_version_branch_refresh:readiness:manifest_blocking_source_failed:tools:Cangjie/cangjie_tools:transport_error")
+        result.validationDiagnostics.add("cangjie_version_branch_refresh:fetch:profile=cangjie_version_branch_refresh|kind=gitcode_tree|purpose=source_tree|repo=Cangjie/cangjie_tools|ok=false|status=transport_error|errorClass=timeout")
+
+        let summaries = ckbSchedulerFailureSummaries(result)
+
+        @Expect(summaries.size, 1)
+        @Expect(summaries[0].status, "scheduled_readiness_failed")
+        @Expect(summaries[0].primaryFailure.contains("manifest_blocking_source_failed:tools"), true)
+        @Expect(summaries[0].primaryFailure.contains("profile_stage_budget"), false)
+        @Expect(f7SummaryListContains(summaries[0].failedSources, "status=transport_error"), true)
     }
 
     @TestCase
@@ -814,6 +835,68 @@ public class CkbSchedulerServiceF5Test {
     }
 
     @TestCase
+    public func tP2U02ToolsTreePage9TransportBecomesContentWarning(): Unit {
+        // P2-CUR-U1: tools ref is resolved, then source_tree page 9 times out as optional content sample.
+        let root = "target/t-p2-u02-tools-page9-transport"
+        s1s2EnsureEmptyDir(root)
+        let config = CkbRuntimeConfig()
+        config.networkEnabled = true
+        let store = FileKnowledgeStore("${root}/store")
+        store.saveCangjieVersionManifest(f7OfficialManifestNoEval())
+        let runner = S1S2PaginatedGitCodeRunner()
+        runner.directoriesOnly = true
+        runner.failToolsTreePage9Transport = true
+        let service = CkbCommandLoopService(config, store, sourceRunner: runner)
+        _ = service.start()
+        let tasks = ArrayList<String>()
+        tasks.add("cangjie_version_branch_refresh")
+
+        let result = service.runSchedulerTasks(tasks, true)
+
+        @Expect(result.ran, 1)
+        @Expect(result.succeeded, 1)
+        @Expect(result.failed, 0)
+        @Expect(result.details.contains("version_manifest_refreshed_with_content_warnings"), true)
+        @Expect(s1s2RunnerSawRepoTreePage(runner, "Cangjie/cangjie_tools", 9), true)
+        @Expect(f7SchedulerDiagnosticsContain(result, "manifest_ref_record_resolved:tools:Cangjie/cangjie_tools"), true)
+        @Expect(f7SchedulerDiagnosticsContain(result, "content_warning_source_failed:tools:Cangjie/cangjie_tools:transport_error"), true)
+        @Expect(f7SchedulerDiagnosticsContain(result, "manifest_source_content_sample_degraded:tools:Cangjie/cangjie_tools:transport_error"), true)
+        @Expect(f7SchedulerDiagnosticsContain(result, "manifest_blocking_source_failed:tools:Cangjie/cangjie_tools:transport_error"), false)
+        @Expect(f7SchedulerDiagnosticsContain(result, "version_manifest_write_verified:"), true)
+        @Expect(result.taskRecords.size, 1)
+        @Expect(result.taskRecords[0].primaryFailure, "")
+    }
+
+    @TestCase
+    public func tP2U03VersionRefreshFetchesAllRefsBeforeSamples(): Unit {
+        // P2-CUR-U4: branch/ref metadata is fetched for all manifest sources before tree/raw samples.
+        let root = "target/t-p2-u03-metadata-first"
+        s1s2EnsureEmptyDir(root)
+        let config = CkbRuntimeConfig()
+        config.networkEnabled = true
+        let store = FileKnowledgeStore("${root}/store")
+        store.saveCangjieVersionManifest(f7OfficialManifestNoEval())
+        let runner = S1S2PaginatedGitCodeRunner()
+        runner.failContentSamples = true
+        let service = CkbCommandLoopService(config, store, sourceRunner: runner)
+        _ = service.start()
+        let tasks = ArrayList<String>()
+        tasks.add("cangjie_version_branch_refresh")
+
+        let result = service.runSchedulerTasks(tasks, true)
+
+        @Expect(result.ran, 1)
+        @Expect(result.succeeded, 1)
+        @Expect(result.failed, 0)
+        @Expect(s1s2RunnerAllBranchFetchesBeforeSamples(runner), true)
+        @Expect(f7SchedulerDiagnosticsContain(result, "manifest_ref_record_resolved:docs:Cangjie/cangjie_docs"), true)
+        @Expect(f7SchedulerDiagnosticsContain(result, "manifest_ref_record_resolved:std:Cangjie/cangjie_runtime"), true)
+        @Expect(f7SchedulerDiagnosticsContain(result, "manifest_ref_record_resolved:stdx:Cangjie/cangjie_stdx"), true)
+        @Expect(f7SchedulerDiagnosticsContain(result, "manifest_ref_record_resolved:tools:Cangjie/cangjie_tools"), true)
+        @Expect(f7SchedulerDiagnosticsContain(result, "version_manifest_write_verified:"), true)
+    }
+
+    @TestCase
     public func tP2N01AllDirectoryPagesReportNoCandidate(): Unit {
         // F2-N1: directories followed by an empty tree page are a clear no-candidate result, not a first-page failure.
         let root = "target/s1-bnd001-directory-pages"
@@ -957,6 +1040,30 @@ public class CkbSchedulerServiceF5Test {
         @Expect(freshness.failed, 1)
         @Expect(f7SchedulerDiagnosticsContain(freshness, "manifest_offline_baseline_for_freshness"), true)
         @Expect(f7SchedulerDiagnosticsContain(freshness, "manifest_ready_for_freshness"), false)
+    }
+
+    @TestCase
+    public func s2Bnd002RefFailurePrimaryFailureSkipsStageBudget(): Unit {
+        // P2-CUR-U6: task record primaryFailure points at readiness root cause, not profile_stage_budget.
+        let root = "target/s2-bnd002-ref-failure-primary"
+        s1s2EnsureEmptyDir(root)
+        let config = CkbRuntimeConfig()
+        config.networkEnabled = true
+        let store = FileKnowledgeStore("${root}/store")
+        store.saveCangjieVersionManifest(defaultCangjieVersionManifest())
+        let runner = S1S2PaginatedGitCodeRunner()
+        runner.failRefRepo = "Cangjie/cangjie_stdx"
+        let service = CkbCommandLoopService(config, store, sourceRunner: runner)
+        _ = service.start()
+        let tasks = ArrayList<String>()
+        tasks.add("cangjie_version_branch_refresh")
+
+        let result = service.runSchedulerTasks(tasks, true)
+
+        @Expect(result.failed, 1)
+        @Expect(result.taskRecords.size, 1)
+        @Expect(result.taskRecords[0].primaryFailure.contains("readiness:manifest_blocking_source_failed:stdx"), true)
+        @Expect(result.taskRecords[0].primaryFailure.contains("profile_stage_budget"), false)
     }
 
     @TestCase
@@ -1448,6 +1555,18 @@ private func s1s2RunnerSawSourcePath(runner: S1S2PaginatedGitCodeRunner, repo: S
     false
 }
 
+private func s1s2RunnerAllBranchFetchesBeforeSamples(runner: S1S2PaginatedGitCodeRunner): Bool {
+    var sawSample = false
+    for (call in runner.calls) {
+        if (call.kind == SourceKinds.GITCODE_TREE || call.kind == SourceKinds.GITCODE_SOURCE) {
+            sawSample = true
+        } else if (sawSample && call.kind == SourceKinds.GITCODE_BRANCH) {
+            return false
+        }
+    }
+    true
+}
+
 private func s1s2EnsureEmptyDir(path: String): Unit {
     if (exists(Path(path))) {
         _ = launch("/bin/rm", ["-rf", path]).wait()
@@ -1779,6 +1898,7 @@ private class S1S2PaginatedGitCodeRunner <: SourceFetchRunner {
     public var calls: ArrayList<SourceFetchRequest> = ArrayList<SourceFetchRequest>()
     public var directoriesOnly: Bool = false
     public var failTreePage2: Bool = false
+    public var failToolsTreePage9Transport: Bool = false
     public var failContentSamples: Bool = false
     public var failRefRepo: String = ""
     public var toolsCandidateAfterTenDirectoryPages: Bool = false
@@ -1813,6 +1933,13 @@ private class S1S2PaginatedGitCodeRunner <: SourceFetchRunner {
             result.contentType = "application/json"
             result.commit = f7GenericResolvedCommit()
             result.body = f7GenericBranchListBody()
+        } else if (request.kind == SourceKinds.GITCODE_TREE && this.failToolsTreePage9Transport && request.repo == "Cangjie/cangjie_tools" && request.page == 9) {
+            result.ok = false
+            result.status = "transport_error"
+            result.statusCode = 0
+            result.transportErrorClass = "timeout"
+            result.transportDiagnostic = "native request timed out"
+            result.body = "tools tree page 9 timeout"
         } else if (request.kind == SourceKinds.GITCODE_TREE && this.failTreePage2 && request.page == 2) {
             result.ok = false
             result.status = "server_error"
@@ -1866,6 +1993,9 @@ private class S1S2PaginatedGitCodeRunner <: SourceFetchRunner {
     }
 
     private func treeBody(request: SourceFetchRequest): String {
+        if (this.failToolsTreePage9Transport && request.repo == "Cangjie/cangjie_tools" && request.page < 9) {
+            return "{\"tree\":[{\"path\":\"tools/page-${request.page}\",\"type\":\"tree\"},{\"path\":\"docs/page-${request.page}\",\"type\":\"tree\"}],\"sha\":\"${f7GenericResolvedCommit()}\"}"
+        }
         if (this.toolsCandidateAfterTenDirectoryPages && request.repo == "Cangjie/cangjie_tools") {
             if (request.page <= 10) {
                 return "{\"tree\":[{\"path\":\"tools/page-${request.page}\",\"type\":\"tree\"},{\"path\":\"docs/page-${request.page}\",\"type\":\"tree\"}],\"sha\":\"${f7GenericResolvedCommit()}\"}"

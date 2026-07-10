@@ -2980,19 +2980,38 @@ private func schedulerPrimaryFailureFromTask(task: SchedulerTaskResult): String 
         return ""
     }
     for (diagnostic in task.validationDiagnostics) {
-        if (diagnostic.contains("routine_contract_passed")) {
-            continue
-        }
-        if (!diagnostic.startsWith("fetch:")) {
+        if (schedulerDiagnosticIsPrimaryFailure(diagnostic)) {
             return schedulerDiagnosticSafePrefix(diagnostic, 240)
         }
     }
     for (diagnostic in task.validationDiagnostics) {
-        if (!diagnostic.contains("routine_contract_passed")) {
+        if (diagnostic.startsWith("fetch:") && diagnostic.contains("ok=false")) {
+            return schedulerDiagnosticSafePrefix(diagnostic, 240)
+        }
+    }
+    for (diagnostic in task.validationDiagnostics) {
+        if (!schedulerDiagnosticIsContextOnly(diagnostic)) {
             return schedulerDiagnosticSafePrefix(diagnostic, 240)
         }
     }
     task.status
+}
+
+private func schedulerDiagnosticIsPrimaryFailure(diagnostic: String): Bool {
+    if (schedulerDiagnosticIsContextOnly(diagnostic)) {
+        return false
+    }
+    diagnostic.startsWith("readiness:") ||
+        diagnostic.contains("version_manifest_write_verify_failed") ||
+        diagnostic.contains("version_manifest_empty_after_refresh") ||
+        diagnostic.startsWith("internal_timeout:") ||
+        diagnostic.contains("worker_artifact:")
+}
+
+private func schedulerDiagnosticIsContextOnly(diagnostic: String): Bool {
+    diagnostic.contains("routine_contract_passed") ||
+        diagnostic.contains("profile_stage_budget") ||
+        diagnostic.contains("profile_stage_checkpoint")
 }
 
 private func schedulerExceptionTaskResult(name: String, status: String, durationMillis: Int64, message!: String = ""): SchedulerTaskResult {
