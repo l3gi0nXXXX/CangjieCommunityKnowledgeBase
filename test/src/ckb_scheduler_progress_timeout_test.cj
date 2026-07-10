@@ -364,6 +364,30 @@ public class CkbSchedulerProgressTimeoutTest {
     }
 
     @TestCase
+    public func p4P7ActiveSnapshotLiveShadowCopiesCommittedSnapshotFiles(): Unit {
+        let root = "target/p4-p7-active-snapshot-live-shadow-copy"
+        ensureEmptyDir(root)
+        let store = FileKnowledgeStore(root)
+        let kb = newOfflineKnowledgeBase()
+        let sink = CaptureStageSink()
+
+        kb.persistActiveSnapshotUsingVectorRecords(store, ArrayList<VectorRecord>(), persistVectorFile: false, deadlineAtMillis: ckbCoreNowMillis() + 60000, stageSink: sink)
+        let txId = testField(store.readText("metadata/active-snapshot.manifest"), "txId")
+
+        @Expect(txId != "", true)
+        @Expect(store.readText("raw/records.ckb"), store.readText("transactions/${txId}/raw/records.ckb"))
+        @Expect(store.readText("normalized/records.ckb"), store.readText("transactions/${txId}/normalized/records.ckb"))
+        @Expect(store.readText("index/active.ckb"), store.readText("transactions/${txId}/index/active.ckb"))
+        @Expect(store.readText("metadata/status.ckb"), store.readText("transactions/${txId}/metadata/status.ckb"))
+        @Expect(store.has("transactions/${txId}/raw/doc/doc-syntax.ckb"), true)
+        @Expect(store.has("raw/doc/doc-syntax.ckb"), true)
+        @Expect(store.readText("raw/doc/doc-syntax.ckb"), store.readText("transactions/${txId}/raw/doc/doc-syntax.ckb"))
+        @Expect(sink.stages.contains("active_snapshot_live_raw_after|ok"), true)
+        @Expect(sink.stages.contains("active_snapshot_live_status_after|ok"), true)
+        @Expect(sink.stages.contains("active_snapshot_manifest_after|ok"), true)
+    }
+
+    @TestCase
     public func s3Ut001ExpiredStagedFullRebuildReturnsDeadlineWithoutActiveManifest(): Unit {
         let root = "target/s3-ut001-expired-staged-rebuild"
         ensureEmptyDir(root)
