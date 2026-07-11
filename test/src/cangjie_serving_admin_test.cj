@@ -7,6 +7,9 @@ import std.time.*
 import std.unittest.*
 import std.unittest.testmacro.*
 
+private let ADMIN_DEADLINE_TEST_BUDGET_MILLIS: Int64 = 200
+private let ADMIN_DEADLINE_TEST_DELAY_MILLIS: Int64 = 250
+
 @Test
 public class CangjieServingAdminTest {
     @TestCase
@@ -311,15 +314,16 @@ public class CangjieServingAdminTest {
         let vectorRoot = "target/p5-s2-n01-vector"
         adminEnsureEmptyDir(vectorRoot)
         let vectorStore = CangjieAdminTrackingVectorStore(initialCount: 3)
-        let vectorKb = KnowledgeBase(FakeClock(0), CangjieAdminEmbeddingProvider(2, delayMillis: 30), vectorStore, LocalGraphStore())
+        let vectorKb = KnowledgeBase(FakeClock(0), CangjieAdminEmbeddingProvider(2), vectorStore, LocalGraphStore())
         vectorKb.configureVectorCollections("ckb_active", "ckb_candidate")
         let vectorFileStore = FileKnowledgeStore(vectorRoot)
         vectorKb.bootstrapOffline()
         vectorKb.persistActiveSnapshot(vectorFileStore)
         vectorStore.deletedActiveCollection = false
         let vectorBefore = vectorKb.status().activeKnowledgeVersion
-        let vectorSink = AdminCaptureStageSink()
-        let vector = cangjiePromoteCandidateRecordsAfterValidationWithVersion(vectorKb, vectorFileStore, "ckb-p5-s2-vector-candidate", records, stageSink: vectorSink, budgetPlan: adminP5S2BudgetPlan(SystemCkbMillisClock(), ckbCoreNowMillis() + 435000, vectorBudgetMillis: 20))
+        let vectorSink = AdminCaptureStageSink(delayStage: "candidate_vector_started",
+            delayMillis: ADMIN_DEADLINE_TEST_DELAY_MILLIS)
+        let vector = cangjiePromoteCandidateRecordsAfterValidationWithVersion(vectorKb, vectorFileStore, "ckb-p5-s2-vector-candidate", records, stageSink: vectorSink, budgetPlan: adminP5S2BudgetPlan(SystemCkbMillisClock(), ckbCoreNowMillis() + 435000, vectorBudgetMillis: ADMIN_DEADLINE_TEST_BUDGET_MILLIS))
         @Expect(vector.ok, false)
         @Expect(vector.validation.status, "candidate_vector_deadline_exceeded")
         @Expect(vectorKb.status().activeKnowledgeVersion, vectorBefore)
@@ -338,8 +342,9 @@ public class CangjieServingAdminTest {
         validationKb.persistActiveSnapshot(validationFileStore)
         validationStore.deletedActiveCollection = false
         let validationBefore = validationKb.status().activeKnowledgeVersion
-        let validationSink = AdminCaptureStageSink()
-        let validation = cangjiePromoteCandidateRecordsAfterValidationWithVersion(validationKb, validationFileStore, "ckb-p5-s2-validation-candidate", largeRecords, stageSink: validationSink, budgetPlan: adminP5S2BudgetPlan(SystemCkbMillisClock(), ckbCoreNowMillis() + 435000, validationBudgetMillis: 1))
+        let validationSink = AdminCaptureStageSink(delayStage: "candidate_validation_started",
+            delayMillis: ADMIN_DEADLINE_TEST_DELAY_MILLIS)
+        let validation = cangjiePromoteCandidateRecordsAfterValidationWithVersion(validationKb, validationFileStore, "ckb-p5-s2-validation-candidate", largeRecords, stageSink: validationSink, budgetPlan: adminP5S2BudgetPlan(SystemCkbMillisClock(), ckbCoreNowMillis() + 435000, validationBudgetMillis: ADMIN_DEADLINE_TEST_BUDGET_MILLIS))
         @Expect(validation.ok, false)
         @Expect(validation.validation.status, "candidate_validation_deadline_exceeded")
         @Expect(validationKb.status().activeKnowledgeVersion, validationBefore)
@@ -358,8 +363,9 @@ public class CangjieServingAdminTest {
         commitKb.persistActiveSnapshot(commitFileStore)
         commitStore.deletedActiveCollection = false
         let commitBefore = commitKb.status().activeKnowledgeVersion
-        let commitSink = AdminCaptureStageSink()
-        let commit = cangjiePromoteCandidateRecordsAfterValidationWithVersion(commitKb, commitFileStore, "ckb-p5-s2-commit-candidate", largeRecords, stageSink: commitSink, budgetPlan: adminP5S2BudgetPlan(SystemCkbMillisClock(), ckbCoreNowMillis() + 435000, activeCommitBudgetMillis: 20))
+        let commitSink = AdminCaptureStageSink(delayStage: "candidate_active_commit_started",
+            delayMillis: ADMIN_DEADLINE_TEST_DELAY_MILLIS)
+        let commit = cangjiePromoteCandidateRecordsAfterValidationWithVersion(commitKb, commitFileStore, "ckb-p5-s2-commit-candidate", largeRecords, stageSink: commitSink, budgetPlan: adminP5S2BudgetPlan(SystemCkbMillisClock(), ckbCoreNowMillis() + 435000, activeCommitBudgetMillis: ADMIN_DEADLINE_TEST_BUDGET_MILLIS))
         @Expect(commit.ok, false)
         @Expect(commit.validation.status, "candidate_active_commit_deadline_exceeded")
         @Expect(commitKb.status().activeKnowledgeVersion, commitBefore)
@@ -378,8 +384,9 @@ public class CangjieServingAdminTest {
         snapshotKb.persistActiveSnapshot(snapshotFileStore)
         snapshotStore.deletedActiveCollection = false
         let snapshotBefore = snapshotKb.status().activeKnowledgeVersion
-        let snapshotSink = AdminCaptureStageSink()
-        let snapshot = cangjiePromoteCandidateRecordsAfterValidationWithVersion(snapshotKb, snapshotFileStore, "ckb-p5-s2-snapshot-candidate", largeRecords, stageSink: snapshotSink, budgetPlan: adminP5S2BudgetPlan(SystemCkbMillisClock(), ckbCoreNowMillis() + 435000, snapshotBudgetMillis: 20))
+        let snapshotSink = AdminCaptureStageSink(delayStage: "candidate_active_snapshot_started",
+            delayMillis: ADMIN_DEADLINE_TEST_DELAY_MILLIS)
+        let snapshot = cangjiePromoteCandidateRecordsAfterValidationWithVersion(snapshotKb, snapshotFileStore, "ckb-p5-s2-snapshot-candidate", largeRecords, stageSink: snapshotSink, budgetPlan: adminP5S2BudgetPlan(SystemCkbMillisClock(), ckbCoreNowMillis() + 435000, snapshotBudgetMillis: ADMIN_DEADLINE_TEST_BUDGET_MILLIS))
         @Expect(snapshot.ok, false)
         @Expect(snapshot.validation.status, "candidate_active_snapshot_deadline_exceeded")
         @Expect(snapshotKb.status().activeKnowledgeVersion, snapshotBefore)
@@ -786,11 +793,19 @@ private func adminP5S2BudgetPlan(clock: CkbMillisClock, softDeadlineAtMillis: In
 
 private class AdminCaptureStageSink <: CkbStagedRebuildStageSink {
     public var stages: ArrayList<String> = ArrayList<String>()
+    private let delayStage: String
+    private let delayMillis: Int64
 
-    public init() {}
+    public init(delayStage!: String = "", delayMillis!: Int64 = 0) {
+        this.delayStage = delayStage
+        this.delayMillis = delayMillis
+    }
 
     public func onStagedRebuildStage(progress: CkbStagedRebuildStageProgress): Unit {
         this.stages.add("${progress.stage}|${progress.status}")
+        if (this.delayMillis > 0 && progress.stage == this.delayStage) {
+            sleep(Duration.millisecond * this.delayMillis)
+        }
     }
 }
 
