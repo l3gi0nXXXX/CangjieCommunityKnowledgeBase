@@ -41,6 +41,7 @@ public class SourceFetchRequest {
     public var perPageParam: String = "per_page"
     public var timeoutMillis: Int64 = 10000
     public var retryCount: Int64 = 2
+    public var deadlineAtMillis: Int64 = 0
     public var repoVisibility: String = ""
 
     public init() {}
@@ -1129,15 +1130,24 @@ public class CurlHttpRequestExecutor <: HttpRequestExecutor {
 public class HttpSourceFetchRunner <: SourceFetchRunner {
     private let config: CkbRuntimeConfig
     private let executor: HttpRequestExecutor
+    private let clock: CkbMillisClock
 
     public init(config: CkbRuntimeConfig) {
         this.config = config
         this.executor = NativeHttpRequestExecutor(config)
+        this.clock = SystemCkbMillisClock()
     }
 
     public init(config: CkbRuntimeConfig, executor!: HttpRequestExecutor) {
         this.config = config
         this.executor = executor
+        this.clock = SystemCkbMillisClock()
+    }
+
+    public init(config: CkbRuntimeConfig, executor: HttpRequestExecutor, clock: CkbMillisClock) {
+        this.config = config
+        this.executor = executor
+        this.clock = clock
     }
 
     public func fetch(request: SourceFetchRequest): SourceFetchResult {
@@ -1173,16 +1183,32 @@ public class HttpSourceFetchRunner <: SourceFetchRunner {
         }
         var attempt: Int64 = 0
         var last = HttpExecutionResponse()
+        var deadlineExceeded = false
         while (attempt <= request.retryCount) {
+            let attemptTimeoutMillis = ckbHttpAttemptTimeoutMillis(request.timeoutMillis, request.deadlineAtMillis, this.clock.nowMillis())
+            if (request.deadlineAtMillis > 0 && attemptTimeoutMillis <= 0) {
+                deadlineExceeded = true
+                break
+            }
+            http.timeoutMillis = attemptTimeoutMillis
             attempt += 1
             try {
                 last = this.executor.get(http)
             } catch (e: Exception) {
                 last = ckbHttpExecutionExceptionResponse(http, e.message)
             }
+            if (request.deadlineAtMillis > 0 && this.clock.nowMillis() >= request.deadlineAtMillis) {
+                deadlineExceeded = true
+                break
+            }
             if (last.statusCode != 429 && last.statusCode < 500 && last.status != "timeout") {
                 break
             }
+        }
+        if (deadlineExceeded) {
+            let deadline = ckbFetchScheduledDeadlineExceededResult(request, request.deadlineAtMillis)
+            deadline.attempts = attempt
+            return deadline
         }
         result.attempts = attempt
         result.statusCode = last.statusCode
@@ -1212,6 +1238,20 @@ public class HttpSourceFetchRunner <: SourceFetchRunner {
         }
         result
     }
+}
+
+public func ckbHttpAttemptTimeoutMillis(configuredTimeoutMillis: Int64, deadlineAtMillis: Int64, nowMillis: Int64): Int64 {
+    if (deadlineAtMillis <= 0) {
+        return if (configuredTimeoutMillis > 0) { configuredTimeoutMillis } else { 10000 }
+    }
+    let remaining = deadlineAtMillis - nowMillis
+    if (remaining <= 0) {
+        return 0
+    }
+    if (configuredTimeoutMillis <= 0 || remaining < configuredTimeoutMillis) {
+        return remaining
+    }
+    configuredTimeoutMillis
 }
 
 private func ckbHttpExecutionExceptionResponse(request: HttpExecutionRequest, message: String): HttpExecutionResponse {
@@ -4294,7 +4334,7 @@ private func ckbSchedulerPreRunGateTaskName(taskNames: ArrayList<String>): Strin
 public func ckbSchedulerRunTaskRecordsJson(records: ArrayList<SchedulerTaskRunRecord>): String {
     let parts = ArrayList<String>()
     for (record in records) {
-        parts.add("{\"taskName\":\"${ckbRuntimePreflightJsonEscape(record.taskName)}\",\"ok\":${record.ok},\"status\":\"${ckbRuntimePreflightJsonEscape(record.status)}\",\"schedulerRunId\":\"${ckbRuntimePreflightJsonEscape(record.schedulerRunId)}\",\"schedulerTaskName\":\"${ckbRuntimePreflightJsonEscape(record.schedulerTaskName)}\",\"startedAtMillis\":${record.startedAtMillis},\"endedAtMillis\":${record.endedAtMillis},\"deadlineAtMillis\":${record.deadlineAtMillis},\"durationMillis\":${record.durationMillis},\"bootstrapStartedAtMillis\":${record.bootstrapStartedAtMillis},\"taskBodyStartedAtMillis\":${record.taskBodyStartedAtMillis},\"taskBodyEndedAtMillis\":${record.taskBodyEndedAtMillis},\"bootstrapDurationMillis\":${record.bootstrapDurationMillis},\"resultWrittenAtMillis\":${record.resultWrittenAtMillis},\"resultFlushDurationMillis\":${record.resultFlushDurationMillis},\"stageDurations\":${ckbSchedulerStageDurationsJson(record.stageDurations)},\"timeBudgetMillis\":${record.timeBudgetMillis},\"requestCount\":${record.requestCount},\"lastStage\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(record.lastStage), 120))}\",\"lastProgress\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(record.lastProgress), 240))}\",\"workerPid\":${record.workerPid},\"workerOutSnippet\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(record.workerOutSnippet), 240))}\",\"workerErrSnippet\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(record.workerErrSnippet), 240))}\",\"primaryFailure\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(record.primaryFailure), 240))}\"}")
+        parts.add("{\"taskName\":\"${ckbRuntimePreflightJsonEscape(record.taskName)}\",\"ok\":${record.ok},\"status\":\"${ckbRuntimePreflightJsonEscape(record.status)}\",\"schedulerRunId\":\"${ckbRuntimePreflightJsonEscape(record.schedulerRunId)}\",\"schedulerTaskName\":\"${ckbRuntimePreflightJsonEscape(record.schedulerTaskName)}\",\"startedAtMillis\":${record.startedAtMillis},\"endedAtMillis\":${record.endedAtMillis},\"deadlineAtMillis\":${record.deadlineAtMillis},\"durationMillis\":${record.durationMillis},\"bootstrapStartedAtMillis\":${record.bootstrapStartedAtMillis},\"taskBodyStartedAtMillis\":${record.taskBodyStartedAtMillis},\"taskBodyEndedAtMillis\":${record.taskBodyEndedAtMillis},\"bootstrapDurationMillis\":${record.bootstrapDurationMillis},\"resultWrittenAtMillis\":${record.resultWrittenAtMillis},\"resultFlushDurationMillis\":${record.resultFlushDurationMillis},\"stageDurations\":${ckbSchedulerStageDurationsJson(record.stageDurations)},\"timeBudgetMillis\":${record.timeBudgetMillis},\"requestCount\":${record.requestCount},\"actualAttempts\":${record.actualAttempts},\"successfulAttempts\":${record.successfulAttempts},\"retryAttempts\":${record.retryAttempts},\"plannedRequests\":${record.plannedRequests},\"completedRequests\":${record.completedRequests},\"failedRequests\":${record.failedRequests},\"lastStage\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(record.lastStage), 120))}\",\"lastProgress\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(record.lastProgress), 240))}\",\"workerPid\":${record.workerPid},\"workerOutSnippet\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(record.workerOutSnippet), 240))}\",\"workerErrSnippet\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(record.workerErrSnippet), 240))}\",\"primaryFailure\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(record.primaryFailure), 240))}\"}")
     }
     "[${joinStrings(parts, ",")}]"
 }
@@ -6436,7 +6476,7 @@ private func schedulerProgressJson(runId: String, event: String, taskName: Strin
 private func schedulerTaskProgressJson(runId: String, event: String, taskName: String, status: String, diagnostic: String, task: SchedulerTaskResult): String {
     let now = DateTime.now().toUnixTimeStamp().toMilliseconds()
     let remainingMillis = if (task.deadlineAtMillis > now) { task.deadlineAtMillis - now } else { 0 }
-    "{\"subsystem\":\"scheduler\",\"runId\":\"${ckbRuntimePreflightJsonEscape(runId)}\",\"event\":\"${ckbRuntimePreflightJsonEscape(event)}\",\"stage\":\"${ckbRuntimePreflightJsonEscape(schedulerStageForEvent(event))}\",\"taskName\":\"${ckbRuntimePreflightJsonEscape(taskName)}\",\"status\":\"${ckbRuntimePreflightJsonEscape(status)}\",\"diagnostic\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(diagnostic), 240))}\",\"schedulerRunId\":\"${ckbRuntimePreflightJsonEscape(task.schedulerRunId)}\",\"schedulerTaskName\":\"${ckbRuntimePreflightJsonEscape(task.schedulerTaskName)}\",\"startedAtMillis\":${task.startedAtMillis},\"endedAtMillis\":${task.endedAtMillis},\"deadlineAtMillis\":${task.deadlineAtMillis},\"remainingMillis\":${remainingMillis},\"durationMillis\":${task.durationMillis},\"durationMs\":${task.durationMillis},\"bootstrapStartedAtMillis\":${task.bootstrapStartedAtMillis},\"taskBodyStartedAtMillis\":${task.taskBodyStartedAtMillis},\"taskBodyEndedAtMillis\":${task.taskBodyEndedAtMillis},\"bootstrapDurationMillis\":${task.bootstrapDurationMillis},\"resultWrittenAtMillis\":${task.resultWrittenAtMillis},\"resultFlushDurationMillis\":${task.resultFlushDurationMillis},\"stageDurations\":${ckbSchedulerStageDurationsJson(task.stageDurations)},\"timeBudgetMillis\":${task.timeBudgetMillis},\"lastStage\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(task.lastStage), 120))}\",\"lastProgress\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(task.lastProgress), 240))}\",\"workerPid\":${task.workerPid},\"workerOutSnippet\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(task.workerOutSnippet), 240))}\",\"workerErrSnippet\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(task.workerErrSnippet), 240))}\",\"atMillis\":${now}}\n"
+    "{\"subsystem\":\"scheduler\",\"runId\":\"${ckbRuntimePreflightJsonEscape(runId)}\",\"event\":\"${ckbRuntimePreflightJsonEscape(event)}\",\"stage\":\"${ckbRuntimePreflightJsonEscape(schedulerStageForEvent(event))}\",\"taskName\":\"${ckbRuntimePreflightJsonEscape(taskName)}\",\"status\":\"${ckbRuntimePreflightJsonEscape(status)}\",\"diagnostic\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(diagnostic), 240))}\",\"schedulerRunId\":\"${ckbRuntimePreflightJsonEscape(task.schedulerRunId)}\",\"schedulerTaskName\":\"${ckbRuntimePreflightJsonEscape(task.schedulerTaskName)}\",\"startedAtMillis\":${task.startedAtMillis},\"endedAtMillis\":${task.endedAtMillis},\"deadlineAtMillis\":${task.deadlineAtMillis},\"remainingMillis\":${remainingMillis},\"durationMillis\":${task.durationMillis},\"durationMs\":${task.durationMillis},\"bootstrapStartedAtMillis\":${task.bootstrapStartedAtMillis},\"taskBodyStartedAtMillis\":${task.taskBodyStartedAtMillis},\"taskBodyEndedAtMillis\":${task.taskBodyEndedAtMillis},\"bootstrapDurationMillis\":${task.bootstrapDurationMillis},\"resultWrittenAtMillis\":${task.resultWrittenAtMillis},\"resultFlushDurationMillis\":${task.resultFlushDurationMillis},\"stageDurations\":${ckbSchedulerStageDurationsJson(task.stageDurations)},\"timeBudgetMillis\":${task.timeBudgetMillis},\"requestCount\":${task.requestCount},\"actualAttempts\":${task.actualAttempts},\"successfulAttempts\":${task.successfulAttempts},\"retryAttempts\":${task.retryAttempts},\"plannedRequests\":${task.plannedRequests},\"completedRequests\":${task.completedRequests},\"failedRequests\":${task.failedRequests},\"lastStage\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(task.lastStage), 120))}\",\"lastProgress\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(task.lastProgress), 240))}\",\"workerPid\":${task.workerPid},\"workerOutSnippet\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(task.workerOutSnippet), 240))}\",\"workerErrSnippet\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(task.workerErrSnippet), 240))}\",\"atMillis\":${now}}\n"
 }
 
 private func schedulerStageForEvent(event: String): String {
@@ -6684,12 +6724,16 @@ public class CkbScheduleTaskProfile {
     public var candidateMode: String = "none"
     public var activeMutationPolicy: String = ""
     public var timeBudgetMillis: Int64 = 0
+    public var bootstrapBudgetMillis: Int64 = 0
     public var fetchBudgetMillis: Int64 = 0
     public var ingestBudgetMillis: Int64 = 0
     public var vectorBudgetMillis: Int64 = 0
     public var validationBudgetMillis: Int64 = 0
+    public var activeCommitBudgetMillis: Int64 = 0
     public var snapshotBudgetMillis: Int64 = 0
     public var proofBudgetMillis: Int64 = 0
+    public var resultFlushBudgetMillis: Int64 = 0
+    public var unallocatedSafetyMillis: Int64 = 0
     public var requestCount: Int64 = 0
     public var updateMechanismIds: ArrayList<String> = ArrayList<String>()
     public var updatedDataKinds: ArrayList<String> = ArrayList<String>()
@@ -6794,7 +6838,7 @@ public func ckbSyncProfileForScheduleTask(name: String): CkbScheduleTaskProfile 
         profile.status = "ready"
         profile.profile = "cangjie_release_full_sync"
         profile.candidateMode = "candidate_validate_promote"
-        profile.timeBudgetMillis = 240000
+        profile.timeBudgetMillis = 440000
         profile.requestCount = 5
         profile.updatedDataKinds.add("release")
         profile.updatedDataKinds.add("version_manifest")
@@ -6866,7 +6910,11 @@ private func ckbApplySchedulerProfileStageBudgets(profile: CkbScheduleTaskProfil
     } else if (profile.profile == "cangjie_benchmark_gap_curation") {
         ckbSetSchedulerProfileStageBudgets(profile, 0, 10000, 30000, 15000, 10000, 25000)
     } else if (profile.profile == "cangjie_release_full_sync") {
-        ckbSetSchedulerProfileStageBudgets(profile, 80000, 30000, 80000, 30000, 20000, 0)
+        profile.bootstrapBudgetMillis = 40000
+        ckbSetSchedulerProfileStageBudgets(profile, 80000, 20000, 180000, 40000, 50000, 0)
+        profile.activeCommitBudgetMillis = 20000
+        profile.resultFlushBudgetMillis = 5000
+        profile.unallocatedSafetyMillis = 5000
     } else if (profile.profile == "cangjie_docs_full_sync") {
         ckbSetSchedulerProfileStageBudgets(profile, 60000, 20000, 180000, 40000, 50000, 0)
     } else if (profile.profile == "cangjie_source_event_sync") {
@@ -6897,21 +6945,84 @@ private func ckbBudgetPercent(total: Int64, percent: Int64): Int64 {
 }
 
 public func ckbSchedulerProfileStageBudgetDiagnostic(profile: CkbScheduleTaskProfile): String {
-    "profile_stage_budget:profile=${profile.profile}|fetchBudgetMs=${profile.fetchBudgetMillis}|ingestBudgetMs=${profile.ingestBudgetMillis}|vectorBudgetMs=${profile.vectorBudgetMillis}|validationBudgetMs=${profile.validationBudgetMillis}|snapshotBudgetMs=${profile.snapshotBudgetMillis}|proofBudgetMs=${profile.proofBudgetMillis}|timeBudgetMs=${profile.timeBudgetMillis}"
+    "profile_stage_budget:profile=${profile.profile}|bootstrapBudgetMs=${profile.bootstrapBudgetMillis}|fetchBudgetMs=${profile.fetchBudgetMillis}|ingestBudgetMs=${profile.ingestBudgetMillis}|vectorBudgetMs=${profile.vectorBudgetMillis}|validationBudgetMs=${profile.validationBudgetMillis}|activeCommitBudgetMs=${profile.activeCommitBudgetMillis}|snapshotBudgetMs=${profile.snapshotBudgetMillis}|proofBudgetMs=${profile.proofBudgetMillis}|resultFlushBudgetMs=${profile.resultFlushBudgetMillis}|unallocatedSafetyMs=${profile.unallocatedSafetyMillis}|timeBudgetMs=${profile.timeBudgetMillis}"
 }
 
-private func ckbStageDeadline(parentDeadlineAtMillis: Int64, stageBudgetMillis: Int64): Int64 {
+public class CkbSchedulerProfileBudgetValidation {
+    public var ok: Bool = false
+    public var status: String = "invalid_profile_budget_plan"
+    public var diagnostic: String = ""
+    public var businessBudgetMillis: Int64 = 0
+    public var executionBudgetMillis: Int64 = 0
+    public var plannedBudgetMillis: Int64 = 0
+    public var workerSoftBudgetMillis: Int64 = 0
+
+    public init() {}
+}
+
+public func ckbValidateSchedulerProfileBudgetPlan(profile: CkbScheduleTaskProfile): CkbSchedulerProfileBudgetValidation {
+    let result = CkbSchedulerProfileBudgetValidation()
+    let hasNegative = profile.timeBudgetMillis < 0 || profile.bootstrapBudgetMillis < 0 ||
+        profile.fetchBudgetMillis < 0 || profile.ingestBudgetMillis < 0 ||
+        profile.vectorBudgetMillis < 0 || profile.validationBudgetMillis < 0 ||
+        profile.activeCommitBudgetMillis < 0 || profile.snapshotBudgetMillis < 0 ||
+        profile.proofBudgetMillis < 0 || profile.resultFlushBudgetMillis < 0 ||
+        profile.unallocatedSafetyMillis < 0
+    result.businessBudgetMillis = profile.bootstrapBudgetMillis + profile.fetchBudgetMillis +
+        profile.ingestBudgetMillis + profile.vectorBudgetMillis + profile.validationBudgetMillis +
+        profile.activeCommitBudgetMillis + profile.snapshotBudgetMillis + profile.proofBudgetMillis
+    result.executionBudgetMillis = result.businessBudgetMillis + profile.resultFlushBudgetMillis
+    result.plannedBudgetMillis = result.executionBudgetMillis + profile.unallocatedSafetyMillis
+    result.workerSoftBudgetMillis = profile.timeBudgetMillis - profile.resultFlushBudgetMillis
+    let isRelease = profile.profile == "cangjie_release_full_sync"
+    let invalidRelease = isRelease && (profile.timeBudgetMillis != 440000 ||
+        profile.resultFlushBudgetMillis <= 0 || result.plannedBudgetMillis != profile.timeBudgetMillis ||
+        result.businessBudgetMillis != 430000 || result.workerSoftBudgetMillis != 435000)
+    let invalidHistorical = !isRelease && result.plannedBudgetMillis > profile.timeBudgetMillis
+    if (hasNegative || profile.timeBudgetMillis <= 0 || invalidRelease || invalidHistorical) {
+        result.diagnostic = "invalid_profile_budget_plan:profile=${profile.profile}|businessBudgetMs=${result.businessBudgetMillis}|executionBudgetMs=${result.executionBudgetMillis}|plannedBudgetMs=${result.plannedBudgetMillis}|workerSoftBudgetMs=${result.workerSoftBudgetMillis}|timeBudgetMs=${profile.timeBudgetMillis}"
+        return result
+    }
+    result.ok = true
+    result.status = "profile_budget_plan_valid"
+    result.diagnostic = "profile_budget_plan_valid:profile=${profile.profile}|businessBudgetMs=${result.businessBudgetMillis}|executionBudgetMs=${result.executionBudgetMillis}|plannedBudgetMs=${result.plannedBudgetMillis}|workerSoftBudgetMs=${result.workerSoftBudgetMillis}|timeBudgetMs=${profile.timeBudgetMillis}"
+    result
+}
+
+public func ckbCandidatePromotionBudgetPlanForProfile(profile: CkbScheduleTaskProfile, workerSoftDeadlineAtMillis: Int64, clock: CkbMillisClock): CangjieCandidatePromotionBudgetPlan {
+    let plan = CangjieCandidatePromotionBudgetPlan()
+    if (profile.profile != "cangjie_release_full_sync") {
+        return plan
+    }
+    plan.segmented = true
+    plan.vectorBudgetMillis = profile.vectorBudgetMillis
+    plan.validationBudgetMillis = profile.validationBudgetMillis
+    plan.activeCommitBudgetMillis = profile.activeCommitBudgetMillis
+    plan.snapshotBudgetMillis = profile.snapshotBudgetMillis
+    plan.workerSoftDeadlineAtMillis = workerSoftDeadlineAtMillis
+    plan.deadlineClock = clock
+    plan
+}
+
+public func ckbStageDeadlineAt(nowMillis: Int64, parentDeadlineAtMillis: Int64, stageBudgetMillis: Int64): Int64 {
     if (stageBudgetMillis <= 0) {
         return parentDeadlineAtMillis
     }
-    let stageDeadline = ckbCoreNowMillis() + stageBudgetMillis
+    let stageDeadline = nowMillis + stageBudgetMillis
     if (parentDeadlineAtMillis > 0 && parentDeadlineAtMillis < stageDeadline) {
         return parentDeadlineAtMillis
     }
     stageDeadline
 }
 
+private func ckbStageDeadline(parentDeadlineAtMillis: Int64, stageBudgetMillis: Int64, clock!: CkbMillisClock = SystemCkbMillisClock()): Int64 {
+    ckbStageDeadlineAt(clock.nowMillis(), parentDeadlineAtMillis, stageBudgetMillis)
+}
+
 private func ckbProfileIngestBudgetMillis(profile: CkbScheduleTaskProfile): Int64 {
+    if (profile.profile == "cangjie_release_full_sync") {
+        return profile.ingestBudgetMillis
+    }
     profile.ingestBudgetMillis + profile.vectorBudgetMillis + profile.validationBudgetMillis + profile.snapshotBudgetMillis + profile.proofBudgetMillis
 }
 
@@ -6978,6 +7089,45 @@ public func ckbSchedulerWorkerResultFlushMarginMillis(): Int64 {
     5000
 }
 
+public func ckbSchedulerWorkerResultFlushMarginMillisForTask(taskName: String): Int64 {
+    let configured = ckbSyncProfileForScheduleTask(taskName).resultFlushBudgetMillis
+    if (configured > 0) { configured } else { ckbSchedulerWorkerResultFlushMarginMillis() }
+}
+
+public func ckbSchedulerWorkerUsesStrictFlushReservation(taskName: String): Bool {
+    ckbSyncProfileForScheduleTask(taskName).resultFlushBudgetMillis > 0
+}
+
+public func ckbSchedulerWorkerSoftDeadlineAtMillis(parentHardDeadlineAtMillis: Int64, resultFlushBudgetMillis: Int64, nowMillis!: Int64 = 0, strictReservation!: Bool = true): Int64 {
+    if (parentHardDeadlineAtMillis <= 0 || resultFlushBudgetMillis <= 0) {
+        return parentHardDeadlineAtMillis
+    }
+    if (!strictReservation && nowMillis > 0 && parentHardDeadlineAtMillis <= nowMillis + resultFlushBudgetMillis) {
+        return parentHardDeadlineAtMillis
+    }
+    if (parentHardDeadlineAtMillis <= resultFlushBudgetMillis) {
+        return if (strictReservation) { 0 } else { parentHardDeadlineAtMillis }
+    }
+    parentHardDeadlineAtMillis - resultFlushBudgetMillis
+}
+
+public func ckbSchedulerBootstrapDeadlineAtMillis(taskName: String, bootstrapStartedAtMillis: Int64, workerSoftDeadlineAtMillis: Int64): Int64 {
+    let budget = ckbSyncProfileForScheduleTask(taskName).bootstrapBudgetMillis
+    if (budget <= 0 || bootstrapStartedAtMillis <= 0) {
+        return workerSoftDeadlineAtMillis
+    }
+    ckbStageDeadlineAt(bootstrapStartedAtMillis, workerSoftDeadlineAtMillis, budget)
+}
+
+public func ckbSchedulerBootstrapDeadlineExceededAt(taskName: String, bootstrapStartedAtMillis: Int64, nowMillis: Int64, workerSoftDeadlineAtMillis: Int64): Bool {
+    let budget = ckbSyncProfileForScheduleTask(taskName).bootstrapBudgetMillis
+    if (budget <= 0) {
+        return false
+    }
+    let deadline = ckbSchedulerBootstrapDeadlineAtMillis(taskName, bootstrapStartedAtMillis, workerSoftDeadlineAtMillis)
+    deadline > 0 && nowMillis >= deadline
+}
+
 private func ckbTaskWorkerResultRelativePath(taskName: String): String {
     "metadata/scheduler-workers/${safeName(taskName)}-${ckbTaskWorkerNowMillis()}.ckb"
 }
@@ -7020,6 +7170,12 @@ public func ckbSchedulerTaskResultText(task: SchedulerTaskResult): String {
     text += "resultWrittenAtMillis=${task.resultWrittenAtMillis}\n"
     text += "resultFlushDurationMillis=${task.resultFlushDurationMillis}\n"
     text += "requestCount=${task.requestCount}\n"
+    text += "actualAttempts=${task.actualAttempts}\n"
+    text += "successfulAttempts=${task.successfulAttempts}\n"
+    text += "retryAttempts=${task.retryAttempts}\n"
+    text += "plannedRequests=${task.plannedRequests}\n"
+    text += "completedRequests=${task.completedRequests}\n"
+    text += "failedRequests=${task.failedRequests}\n"
     text += "truncated=${task.truncated}\n"
     text += "timeBudgetMillis=${task.timeBudgetMillis}\n"
     text += "validationStatus=${escapeField(task.validationStatus)}\n"
@@ -7109,6 +7265,18 @@ public func ckbSchedulerTaskResultFromText(text: String): SchedulerTaskResult {
             task.resultFlushDurationMillis = parseIntField(value, 0)
         } else if (key == "requestCount") {
             task.requestCount = parseIntField(value, 0)
+        } else if (key == "actualAttempts") {
+            task.actualAttempts = parseIntField(value, 0)
+        } else if (key == "successfulAttempts") {
+            task.successfulAttempts = parseIntField(value, 0)
+        } else if (key == "retryAttempts") {
+            task.retryAttempts = parseIntField(value, 0)
+        } else if (key == "plannedRequests") {
+            task.plannedRequests = parseIntField(value, 0)
+        } else if (key == "completedRequests") {
+            task.completedRequests = parseIntField(value, 0)
+        } else if (key == "failedRequests") {
+            task.failedRequests = parseIntField(value, 0)
         } else if (key == "truncated") {
             task.truncated = value == "true"
         } else if (key == "timeBudgetMillis") {
@@ -7170,6 +7338,27 @@ public func ckbWriteSchedulerTaskBootstrapFailure(store: FileKnowledgeStore, tas
     task.deadlineAtMillis = deadlineAtMillis
     task.lastStage = "bootstrap_failed"
     task.validationDiagnostics.add("${taskName}:task_bootstrap_failed:${utf8SafePrefix(redactSensitive(diagnostic), 160)}")
+    ckbWriteSchedulerTerminalResultArtifacts(store, resultRelativePath, task, flushStartedAtMillis)
+}
+
+public func ckbWriteSchedulerTaskBootstrapDeadlineFailure(store: FileKnowledgeStore, taskName: String, since: String, deadlineAtMillis: Int64, resultRelativePath: String, schedulerRunId: String, bootstrapStartedAtMillis: Int64): SchedulerTaskResult {
+    let task = SchedulerTaskResult()
+    let flushStartedAtMillis = ckbTaskWorkerNowMillis()
+    task.ok = false
+    task.status = "bootstrap_deadline_exceeded"
+    task.since = since
+    task.schedulerRunId = schedulerRunId
+    task.schedulerTaskName = taskName
+    task.bootstrapStartedAtMillis = bootstrapStartedAtMillis
+    task.startedAtMillis = bootstrapStartedAtMillis
+    task.taskBodyEndedAtMillis = flushStartedAtMillis
+    task.endedAtMillis = flushStartedAtMillis
+    task.durationMillis = if (flushStartedAtMillis >= bootstrapStartedAtMillis) { flushStartedAtMillis - bootstrapStartedAtMillis } else { 0 }
+    task.deadlineAtMillis = deadlineAtMillis
+    task.timeBudgetMillis = ckbSyncProfileForScheduleTask(taskName).timeBudgetMillis
+    task.lastStage = "bootstrap_deadline_exceeded"
+    task.lastProgress = "bootstrapBudgetMillis=${ckbSyncProfileForScheduleTask(taskName).bootstrapBudgetMillis}"
+    task.validationDiagnostics.add("${taskName}:bootstrap_deadline_exceeded")
     ckbWriteSchedulerTerminalResultArtifacts(store, resultRelativePath, task, flushStartedAtMillis)
 }
 
@@ -7412,9 +7601,16 @@ public class ProcessIsolatedSchedulerTaskRunner <: SchedulerTaskRunner {
         if (timeoutMillis <= 0) {
             return CkbSchedulerTaskRunner(this.kb, this.config, this.store, sourceRunner: this.sourceRunner).runTask(name, since, deadlineAtMillis)
         }
-        let flushMarginMillis = ckbSchedulerWorkerResultFlushMarginMillis()
-        let workerDeadlineAtMillis = if (deadlineAtMillis > started + flushMarginMillis) { deadlineAtMillis - flushMarginMillis } else { deadlineAtMillis }
+        let flushMarginMillis = ckbSchedulerWorkerResultFlushMarginMillisForTask(name)
+        let strictFlushReservation = ckbSchedulerWorkerUsesStrictFlushReservation(name)
+        let workerDeadlineAtMillis = ckbSchedulerWorkerSoftDeadlineAtMillis(deadlineAtMillis, flushMarginMillis, nowMillis: started, strictReservation: strictFlushReservation)
         let resultRelativePath = ckbTaskWorkerResultRelativePath(name)
+        if (workerDeadlineAtMillis <= started) {
+            if (name == "cangjie_release_full_sync") {
+                return ckbWriteSchedulerTaskBootstrapDeadlineFailure(this.store, name, since, workerDeadlineAtMillis, resultRelativePath, schedulerRunId, started)
+            }
+            return ckbWriteSchedulerWorkerTimeoutCompensation(this.store, resultRelativePath, name, since, 0, timeoutMillis, "worker_soft_deadline_already_exceeded", lastStage: "task_deadline_already_exceeded", schedulerRunId: schedulerRunId)
+        }
         let workerHeap = ckbSchedulerWorkerCjHeapSizeForTask(name)
         let startedText = ckbTaskWorkerStartedText(name, since, workerDeadlineAtMillis, resultRelativePath, started, schedulerRunId: schedulerRunId, commandHash: stableSummaryHash(this.command), dyldLibraryPath: ckbSchedulerWorkerDyldLibraryPath(), cjHeapSize: workerHeap)
         this.store.writeLinesAtomically(resultRelativePath, startedText)
@@ -8032,12 +8228,14 @@ public class CkbSchedulerTaskRunner <: SchedulerTaskRunner {
     private let config: CkbRuntimeConfig
     private let store: FileKnowledgeStore
     private let sourceRunner: SourceFetchRunner
+    private let deadlineClock: CkbMillisClock
 
-    public init(kb: KnowledgeBase, config: CkbRuntimeConfig, store: FileKnowledgeStore, sourceRunner!: SourceFetchRunner = DisabledNetworkFetchRunner()) {
+    public init(kb: KnowledgeBase, config: CkbRuntimeConfig, store: FileKnowledgeStore, sourceRunner!: SourceFetchRunner = DisabledNetworkFetchRunner(), deadlineClock!: CkbMillisClock = SystemCkbMillisClock()) {
         this.kb = kb
         this.config = config
         this.store = store
         this.sourceRunner = sourceRunner
+        this.deadlineClock = deadlineClock
     }
 
     private func runtimeVersionManifest(): CangjieVersionManifest {
@@ -8065,6 +8263,15 @@ public class CkbSchedulerTaskRunner <: SchedulerTaskRunner {
         if (!profile.enabled) {
             result.ok = false
             result.status = profile.status
+            return this.finalizeTaskResultWithContract(name, result, beforeInvariant)
+        }
+        let budgetValidation = ckbValidateSchedulerProfileBudgetPlan(profile)
+        result.validationDiagnostics.add(budgetValidation.diagnostic)
+        if (!budgetValidation.ok) {
+            result.ok = false
+            result.status = "invalid_profile_budget_plan"
+            result.lastStage = "profile_budget_validation"
+            result.lastProgress = budgetValidation.diagnostic
             return this.finalizeTaskResultWithContract(name, result, beforeInvariant)
         }
         if (name == "weekly_full_rebuild") {
@@ -8141,24 +8348,43 @@ public class CkbSchedulerTaskRunner <: SchedulerTaskRunner {
             return this.finalizeTaskResultWithContract(name, result, beforeInvariant)
         }
         let manifest = this.runtimeVersionManifest()
-        let fetchDeadlineAtMillis = ckbStageDeadline(deadlineAtMillis, profile.fetchBudgetMillis)
+        let fetchDeadlineAtMillis = ckbStageDeadline(deadlineAtMillis, profile.fetchBudgetMillis, clock: this.deadlineClock)
         let fetchStartedAtMillis = ckbTaskWorkerNowMillis()
         let fetch = ckbRunScheduledProfileFetches(profile, this.sourceRunner, this.config, this.store, manifest, deadlineAtMillis: fetchDeadlineAtMillis)
         let fetchDurationMillis = ckbTaskWorkerNowMillis() - fetchStartedAtMillis
         fetch.runId = "${this.kb.scheduler.clock.nowMinutes}"
+        ckbApplyScheduledFetchAccountingToTask(result, fetch)
+        if (fetch.status == "fetch_deadline_exceeded") {
+            let status = this.kb.status()
+            result.ok = false
+            result.status = "fetch_deadline_exceeded"
+            result.cursor = "cursor-${status.activeKnowledgeVersion}"
+            result.activeVersion = status.activeKnowledgeVersion
+            result.candidateVersion = status.candidateKnowledgeVersion
+            result.truncated = fetch.truncated
+            for (diagnostic in fetch.diagnostics) {
+                result.validationDiagnostics.add("fetch:${diagnostic}")
+            }
+            result.lastStage = "fetch_deadline_exceeded"
+            result.lastProgress = ckbScheduledFetchAccountingProgress(fetch)
+            result.stageDurations.add(ckbSchedulerStageDurationText("fetch", fetchDurationMillis, fetch.actualAttempts, fetch.status))
+            return this.finalizeTaskResultWithContract(name, result, beforeInvariant)
+        }
         let progressSink = FileVectorBuildProgressSink(this.store, schedulerRunId: ckbSchedulerCurrentRunId(this.store), schedulerTaskName: name)
         let fileStageSink = FileCkbStagedRebuildStageSink(this.store, schedulerRunId: ckbSchedulerCurrentRunId(this.store), schedulerTaskName: name)
         let stageSink = RecordingCkbStagedRebuildStageSink(fileStageSink)
-        let ingestDeadlineAtMillis = ckbStageDeadline(deadlineAtMillis, ckbProfileIngestBudgetMillis(profile))
+        let ingestBudgetMillis = if (profile.profile == "cangjie_release_full_sync") { profile.ingestBudgetMillis } else { ckbProfileIngestBudgetMillis(profile) }
+        let ingestDeadlineAtMillis = ckbStageDeadline(deadlineAtMillis, ingestBudgetMillis, clock: this.deadlineClock)
+        let promotionBudgetPlan = ckbCandidatePromotionBudgetPlanForProfile(profile, deadlineAtMillis, this.deadlineClock)
         let ingestStartedAtMillis = ckbTaskWorkerNowMillis()
-        let ingest = ingestScheduledProfileSources(this.kb, this.store, profile, fetch, this.config, manifest, progressSink: progressSink, stageSink: stageSink, deadlineAtMillis: ingestDeadlineAtMillis)
+        let ingest = ingestScheduledProfileSources(this.kb, this.store, profile, fetch, this.config, manifest, progressSink: progressSink, stageSink: stageSink, deadlineAtMillis: ingestDeadlineAtMillis, promotionBudgetPlan: promotionBudgetPlan)
         let ingestDurationMillis = ckbTaskWorkerNowMillis() - ingestStartedAtMillis
         let status = this.kb.status()
         result.ok = fetch.ok && ingest.ok
         result.status = if (result.ok) {
             ingest.status
         } else if (ckbScheduledIngestTimedOut(ingest.status)) {
-            "task_timeout:${name}"
+            if (profile.profile == "cangjie_release_full_sync") { ingest.status } else { "task_timeout:${name}" }
         } else {
             if (ingest.status != "") { ingest.status } else { "profile_degraded" }
         }
@@ -8166,7 +8392,7 @@ public class CkbSchedulerTaskRunner <: SchedulerTaskRunner {
         result.since = "${this.kb.scheduler.clock.nowMinutes}"
         result.activeVersion = status.activeKnowledgeVersion
         result.candidateVersion = status.candidateKnowledgeVersion
-        result.requestCount = fetch.requestCount
+        ckbApplyScheduledFetchAccountingToTask(result, fetch)
         result.truncated = fetch.truncated
         result.validationStatus = ingest.validationStatus
         result.validationSummary = ingest.validationSummary
@@ -8179,8 +8405,8 @@ public class CkbSchedulerTaskRunner <: SchedulerTaskRunner {
             result.validationDiagnostics.add("internal_timeout:${ingest.status}")
         }
         result.lastStage = ckbSchedulerResultStageFromStatus(result.status)
-        result.lastProgress = "fetchRequests=${fetch.requestCount},fetched=${fetch.fetchedCount},failed=${fetch.failedCount},ingestStatus=${ingest.status},activeVersion=${status.activeKnowledgeVersion},candidateVersion=${status.candidateKnowledgeVersion}"
-        result.stageDurations.add(ckbSchedulerStageDurationText("fetch", fetchDurationMillis, fetch.requestCount, fetch.status))
+        result.lastProgress = "${ckbScheduledFetchAccountingProgress(fetch)},fetched=${fetch.fetchedCount},failed=${fetch.failedCount},ingestStatus=${ingest.status},activeVersion=${status.activeKnowledgeVersion},candidateVersion=${status.candidateKnowledgeVersion}"
+        result.stageDurations.add(ckbSchedulerStageDurationText("fetch", fetchDurationMillis, fetch.actualAttempts, fetch.status))
         for (duration in stageSink.stageDurations) {
             result.stageDurations.add(duration)
         }
@@ -8219,6 +8445,9 @@ public class CkbSchedulerTaskRunner <: SchedulerTaskRunner {
 }
 
 private func ckbSchedulerResultStageFromStatus(status: String): String {
+    if (status.endsWith("_deadline_exceeded")) {
+        return status
+    }
     if (status.startsWith("task_timeout:") || status.contains("deadline_exceeded")) {
         return "deadline_exceeded"
     }
@@ -8259,7 +8488,13 @@ private func ckbActiveSnapshotVectorInvariantDiagnostic(status: KnowledgeStatus)
 }
 
 private func ckbScheduledIngestTimedOut(status: String): Bool {
-    status == "candidate_validation_timeout" || status == "benchmark_gap_query_proof_timeout" || status.startsWith("deadline_exceeded:")
+    status == "candidate_validation_timeout" || status == "benchmark_gap_query_proof_timeout" ||
+        status == "ingest_deadline_exceeded" ||
+        status == "candidate_vector_deadline_exceeded" ||
+        status == "candidate_validation_deadline_exceeded" ||
+        status == "candidate_active_commit_deadline_exceeded" ||
+        status == "candidate_active_snapshot_deadline_exceeded" ||
+        status.startsWith("deadline_exceeded:")
 }
 
 public class CkbServiceResponse {
@@ -9002,10 +9237,27 @@ private func ckbRepositoryChangedProfile(event: GitCodeRepositoryChangedEvent): 
     "items"
 }
 
+public class CkbScheduledRequestAccounting {
+    public var actualAttempts: Int64 = 0
+    public var successfulAttempts: Int64 = 0
+    public var retryAttempts: Int64 = 0
+    public var plannedRequests: Int64 = 0
+    public var completedRequests: Int64 = 0
+    public var failedRequests: Int64 = 0
+
+    public init() {}
+}
+
 private class CkbScheduledProfileFetchResult {
     var ok: Bool = true
     var status: String = "profile_ok"
     var requestCount: Int64 = 0
+    var actualAttempts: Int64 = 0
+    var successfulAttempts: Int64 = 0
+    var retryAttempts: Int64 = 0
+    var plannedRequests: Int64 = 0
+    var completedRequests: Int64 = 0
+    var failedRequestCount: Int64 = 0
     var fetchedCount: Int64 = 0
     var failedCount: Int64 = 0
     var truncated: Bool = false
@@ -9014,8 +9266,24 @@ private class CkbScheduledProfileFetchResult {
     var failedRequests: ArrayList<String> = ArrayList<String>()
     var successfulRequests: ArrayList<String> = ArrayList<String>()
     var records: ArrayList<CkbScheduledSourceRecord> = ArrayList<CkbScheduledSourceRecord>()
+    var accounting: CkbScheduledRequestAccounting = CkbScheduledRequestAccounting()
 
     init() {}
+}
+
+private func ckbApplyScheduledFetchAccountingToTask(task: SchedulerTaskResult, fetch: CkbScheduledProfileFetchResult): Unit {
+    ckbSyncScheduledRequestAccounting(fetch)
+    task.requestCount = fetch.actualAttempts
+    task.actualAttempts = fetch.actualAttempts
+    task.successfulAttempts = fetch.successfulAttempts
+    task.retryAttempts = fetch.retryAttempts
+    task.plannedRequests = fetch.plannedRequests
+    task.completedRequests = fetch.completedRequests
+    task.failedRequests = fetch.failedRequestCount
+}
+
+private func ckbScheduledFetchAccountingProgress(fetch: CkbScheduledProfileFetchResult): String {
+    "plannedRequests=${fetch.plannedRequests},actualAttempts=${fetch.actualAttempts},successfulAttempts=${fetch.successfulAttempts},retryAttempts=${fetch.retryAttempts},completedRequests=${fetch.completedRequests},failedRequests=${fetch.failedRequestCount}"
 }
 
 private class CkbScheduledSourceRecord {
@@ -9079,8 +9347,9 @@ private class CkbBenchmarkGapProofCheckpoint {
 
 private func ckbRunScheduledProfileFetches(profile: CkbScheduleTaskProfile, runner: SourceFetchRunner, config: CkbRuntimeConfig, store: FileKnowledgeStore, manifest: CangjieVersionManifest, deadlineAtMillis!: Int64 = 0): CkbScheduledProfileFetchResult {
     let result = fetchScheduledProfileSources(profile, runner, config, store, manifest, deadlineAtMillis: deadlineAtMillis)
+    ckbSyncScheduledRequestAccounting(result)
     result.diagnostics.add(ckbSchedulerProfileStageBudgetDiagnostic(profile))
-    ckbWriteScheduledProfileStageCheckpoint(store, profile, "fetch", result.status, profile.fetchBudgetMillis, deadlineAtMillis, "plannedRequests=${profile.requestCount}|actualRequests=${result.requestCount}|fetched=${result.fetchedCount}|failed=${result.failedCount}")
+    ckbWriteScheduledProfileStageCheckpoint(store, profile, "fetch", result.status, profile.fetchBudgetMillis, deadlineAtMillis, "plannedRequests=${result.plannedRequests}|actualAttempts=${result.actualAttempts}|successfulAttempts=${result.successfulAttempts}|retryAttempts=${result.retryAttempts}|completedRequests=${result.completedRequests}|failedRequests=${result.failedRequestCount}|fetched=${result.fetchedCount}|failed=${result.failedCount}")
     result.diagnostics.add("profile_stage_checkpoint:profile=${profile.profile}|stage=fetch|status=${result.status}|budgetMs=${profile.fetchBudgetMillis}|deadlineAtMillis=${deadlineAtMillis}|remainingMs=${ckbRemainingMillis(deadlineAtMillis)}")
     result
 }
@@ -9115,18 +9384,39 @@ private func fetchScheduledProfileSources(profile: CkbScheduleTaskProfile, runne
     } else if (profile.profile == "cangjie_benchmark_gap_curation") {
         result.ok = true
     }
-    if (!result.ok && !result.status.startsWith("manifest_source_missing")) {
+    ckbSyncScheduledRequestAccounting(result)
+    if (!result.ok && profile.profile == "cangjie_release_full_sync" && ckbScheduledFetchDeadlineWasExceeded(result)) {
+        result.status = "fetch_deadline_exceeded"
+    } else if (!result.ok && !result.status.startsWith("manifest_source_missing")) {
         result.status = "fetch_degraded:${ckbScheduledFetchPrimaryFailure(result)}"
     }
     result
 }
 
+private func ckbScheduledFetchDeadlineWasExceeded(result: CkbScheduledProfileFetchResult): Bool {
+    if (result.status == "fetch_deadline_exceeded") {
+        return true
+    }
+    for (diagnostic in result.diagnostics) {
+        if (diagnostic.contains("fetch_deadline_exceeded")) {
+            return true
+        }
+    }
+    for (failed in result.failedRequests) {
+        if (failed.contains("fetch_deadline_exceeded")) {
+            return true
+        }
+    }
+    false
+}
+
 private func ckbFetchScheduledManifestRepoSources(runner: SourceFetchRunner, builder: SourceRequestBuilder, manifest: CangjieVersionManifest, profile: CkbScheduleTaskProfile, result: CkbScheduledProfileFetchResult, config: CkbRuntimeConfig, store: FileKnowledgeStore, docs: Bool, std: Bool, stdx: Bool, tools: Bool, evalSupport: Bool, deadlineAtMillis!: Int64 = 0): Unit {
-    let before = result.requestCount
+    var matchedSources: Int64 = 0
     for (source in manifest.sources) {
         if (!ckbScheduledManifestSourceIncluded(source, docs, std, stdx, tools, evalSupport)) {
             continue
         }
+        matchedSources += 1
         let sourceRequestStart = result.requestCount
         let sourceFetchedStart = result.fetchedCount
         let sourceFailedStart = result.failedCount
@@ -9134,7 +9424,7 @@ private func ckbFetchScheduledManifestRepoSources(runner: SourceFetchRunner, bui
         ckbFetchScheduledManifestSource(runner, builder, source, profile, result, config, store, deadlineAtMillis: deadlineAtMillis)
         ckbWriteScheduledProfileStageCheckpoint(store, profile, "fetch_source_finished", result.status, profile.fetchBudgetMillis, deadlineAtMillis, "sourceSet=${source.sourceSet}|sourceFamily=${source.sourceFamily}|repo=${source.sourceRepo}|ref=${source.sourceRef}|requests=${result.requestCount - sourceRequestStart}|fetched=${result.fetchedCount - sourceFetchedStart}|failed=${result.failedCount - sourceFailedStart}")
     }
-    if (result.requestCount == before) {
+    if (matchedSources == 0) {
         result.ok = false
         result.status = "manifest_source_missing"
         result.diagnostics.add("manifest_source_missing:no_matching_sources:${profile.profile}")
@@ -9150,12 +9440,13 @@ private func ckbScheduledManifestSourceIncluded(source: CangjieVersionSource, do
 }
 
 private func ckbFetchVersionBranchRefreshSources(runner: SourceFetchRunner, builder: SourceRequestBuilder, manifest: CangjieVersionManifest, profile: CkbScheduleTaskProfile, result: CkbScheduledProfileFetchResult, config: CkbRuntimeConfig, store: FileKnowledgeStore, deadlineAtMillis!: Int64 = 0): Unit {
-    let before = result.requestCount
+    var matchedSources: Int64 = 0
     let resolved = ArrayList<CkbVersionBranchRefreshResolvedSource>()
     for (source in manifest.sources) {
         if (!ckbScheduledManifestSourceIncluded(source, true, true, true, true, true)) {
             continue
         }
+        matchedSources += 1
         let sourceRequestStart = result.requestCount
         let sourceFetchedStart = result.fetchedCount
         let sourceFailedStart = result.failedCount
@@ -9183,7 +9474,7 @@ private func ckbFetchVersionBranchRefreshSources(runner: SourceFetchRunner, buil
         }
         ckbWriteScheduledProfileStageCheckpoint(store, profile, "fetch_manifest_ref_finished", result.status, profile.fetchBudgetMillis, deadlineAtMillis, "sourceSet=${source.sourceSet}|sourceFamily=${source.sourceFamily}|repo=${source.sourceRepo}|ref=${source.sourceRef}|requests=${result.requestCount - sourceRequestStart}|fetched=${result.fetchedCount - sourceFetchedStart}|failed=${result.failedCount - sourceFailedStart}")
     }
-    if (result.requestCount == before) {
+    if (matchedSources == 0) {
         result.ok = false
         result.status = "manifest_source_missing"
         result.diagnostics.add("manifest_source_missing:no_matching_sources:${profile.profile}")
@@ -9421,7 +9712,7 @@ private func ckbFetchScheduledGitCodeTreePages(runner: SourceFetchRunner, builde
     result.diagnostics.add("gitcode_tree_scan_budget:${source.sourceSet}:${source.sourceRepo}:pages=${budget.maxPages}|objects=${budget.maxObjects}|reason=${budget.reason}")
     while (page <= maxPages) {
         let treeRequest = builder.gitCodeTreePageWithFetchRef(source.sourceRepo, source.sourceRef, resolution.effectiveRef, page: page, perPage: perPage)
-        let treeFetch = ckbFetchScheduledRequest(runner, treeRequest, config, deadlineAtMillis: deadlineAtMillis)
+        let treeFetch = ckbFetchScheduledRequest(runner, treeRequest, config, deadlineAtMillis: deadlineAtMillis, accounting: result.accounting)
         ckbApplyGitCodeRefResolutionToFetch(treeFetch, resolution)
         scan.lastRequest = treeRequest
         scan.pagesScanned += 1
@@ -9561,7 +9852,7 @@ private func ckbScheduledGitCodeTreeMaxPages(profile: CkbScheduleTaskProfile, so
 }
 
 private func ckbResolveGitCodeRefForScheduledFetch(runner: SourceFetchRunner, builder: SourceRequestBuilder, source: CangjieVersionSource, profile: CkbScheduleTaskProfile, result: CkbScheduledProfileFetchResult, config: CkbRuntimeConfig, deadlineAtMillis!: Int64 = 0): GitCodeRefResolution {
-    let resolution = ckbResolveGitCodeRefForFetch(runner, builder, source.sourceRepo, source.sourceRef, source.sourceSet, source.sourceFamily, config, deadlineAtMillis: deadlineAtMillis)
+    let resolution = ckbResolveGitCodeRefForFetch(runner, builder, source.sourceRepo, source.sourceRef, source.sourceSet, source.sourceFamily, config, deadlineAtMillis: deadlineAtMillis, accounting: result.accounting)
     for (diagnostic in resolution.diagnostics) {
         result.diagnostics.add(diagnostic)
     }
@@ -9573,7 +9864,7 @@ private func ckbResolveGitCodeRefForScheduledFetch(runner: SourceFetchRunner, bu
     resolution
 }
 
-private func ckbResolveGitCodeRefForFetch(runner: SourceFetchRunner, builder: SourceRequestBuilder, repo: String, ref: String, sourceSet: String, sourceFamily: String, config: CkbRuntimeConfig, deadlineAtMillis!: Int64 = 0): GitCodeRefResolution {
+private func ckbResolveGitCodeRefForFetch(runner: SourceFetchRunner, builder: SourceRequestBuilder, repo: String, ref: String, sourceSet: String, sourceFamily: String, config: CkbRuntimeConfig, deadlineAtMillis!: Int64 = 0, accounting!: CkbScheduledRequestAccounting = CkbScheduledRequestAccounting()): GitCodeRefResolution {
     let resolution = GitCodeRefResolution()
     resolution.repo = repo
     resolution.sourceSet = sourceSet
@@ -9597,7 +9888,7 @@ private func ckbResolveGitCodeRefForFetch(runner: SourceFetchRunner, builder: So
     var page: Int64 = 1
     while (page <= 10) {
         let branchListRequest = builder.gitCodeBranches(repo, page: page)
-        let branchListFetch = ckbFetchScheduledRequest(runner, branchListRequest, config, deadlineAtMillis: deadlineAtMillis)
+        let branchListFetch = ckbFetchScheduledRequest(runner, branchListRequest, config, deadlineAtMillis: deadlineAtMillis, accounting: accounting)
         let diagnostic = ckbGitCodeRefResolutionFetchDiagnostic(branchListRequest, branchListFetch)
         resolution.diagnostics.add("gitcode_ref_resolution_branch_list:${diagnostic}")
         if (!branchListFetch.ok) {
@@ -9636,7 +9927,7 @@ private func ckbResolveGitCodeRefForFetch(runner: SourceFetchRunner, builder: So
     }
     for (candidateRef in candidateRefs) {
         let branchRequest = builder.gitCodeBranchNativeSafe(repo, candidateRef)
-        let branchFetch = ckbFetchScheduledRequest(runner, branchRequest, config, deadlineAtMillis: deadlineAtMillis)
+        let branchFetch = ckbFetchScheduledRequest(runner, branchRequest, config, deadlineAtMillis: deadlineAtMillis, accounting: accounting)
         let branchDiagnostic = ckbGitCodeRefResolutionFetchDiagnostic(branchRequest, branchFetch)
         resolution.diagnostics.add("gitcode_ref_resolution_branch_ref:${branchDiagnostic}")
         if (branchFetch.ok) {
@@ -9791,7 +10082,7 @@ private func ckbFetchScheduledSelectedSourceFiles(runner: SourceFetchRunner, bui
         }
         ckbSaveScheduledFetchCheckpoint(store, profile, source, resolution, "selected_paths", checkpoint.nextPage, path, selected, completedPaths)
         let rawRequest = builder.gitCodeSourceRawWithFetchRef(source.sourceRepo, source.sourceRef, resolution.effectiveRef, path)
-        let rawFetch = ckbFetchScheduledRequest(runner, rawRequest, config, deadlineAtMillis: deadlineAtMillis)
+        let rawFetch = ckbFetchScheduledRequest(runner, rawRequest, config, deadlineAtMillis: deadlineAtMillis, accounting: result.accounting)
         ckbApplyGitCodeRefResolutionToFetch(rawFetch, resolution)
         if (rawFetch.ok) {
             _ = ckbAppendScheduledSourceRecord(profile, result, rawRequest, rawFetch)
@@ -9806,7 +10097,7 @@ private func ckbFetchScheduledSelectedSourceFiles(runner: SourceFetchRunner, bui
             return
         }
         let contentsRequest = builder.gitCodeSourceContentsWithFetchRef(source.sourceRepo, source.sourceRef, resolution.effectiveRef, path)
-        let contentsFetch = ckbFetchScheduledRequest(runner, contentsRequest, config, deadlineAtMillis: deadlineAtMillis)
+        let contentsFetch = ckbFetchScheduledRequest(runner, contentsRequest, config, deadlineAtMillis: deadlineAtMillis, accounting: result.accounting)
         ckbApplyGitCodeRefResolutionToFetch(contentsFetch, resolution)
         if (contentsFetch.ok) {
             _ = ckbAppendScheduledSourceRecord(profile, result, contentsRequest, contentsFetch)
@@ -9933,18 +10224,36 @@ private func ckbScheduledEvalSupportBody(extracted: CangjieTypedRecordResult): S
 }
 
 private func ckbFetchScheduledSource(runner: SourceFetchRunner, request: SourceFetchRequest, profile: CkbScheduleTaskProfile, result: CkbScheduledProfileFetchResult, config: CkbRuntimeConfig, deadlineAtMillis!: Int64 = 0): Unit {
-    let fetch = ckbFetchScheduledRequest(runner, request, config, deadlineAtMillis: deadlineAtMillis)
+    let fetch = ckbFetchScheduledRequest(runner, request, config, deadlineAtMillis: deadlineAtMillis, accounting: result.accounting)
     _ = ckbAppendScheduledSourceRecord(profile, result, request, fetch)
 }
 
-private func ckbFetchScheduledRequest(runner: SourceFetchRunner, request: SourceFetchRequest, config: CkbRuntimeConfig, deadlineAtMillis!: Int64 = 0): SourceFetchResult {
+private func ckbFetchScheduledRequest(runner: SourceFetchRunner, request: SourceFetchRequest, config: CkbRuntimeConfig, deadlineAtMillis!: Int64 = 0, accounting!: CkbScheduledRequestAccounting = CkbScheduledRequestAccounting()): SourceFetchResult {
+    accounting.plannedRequests += 1
+    request.deadlineAtMillis = deadlineAtMillis
     if (ckbDeadlineExceeded(deadlineAtMillis)) {
-        return ckbFetchScheduledDeadlineExceededResult(request, deadlineAtMillis)
+        let deadline = ckbFetchScheduledDeadlineExceededResult(request, deadlineAtMillis)
+        accounting.failedRequests += 1
+        return deadline
     }
     let remaining = ckbRemainingMillis(deadlineAtMillis)
     request.timeoutMillis = if (remaining > 0 && remaining < config.timeoutMillis) { remaining } else { config.timeoutMillis }
     request.retryCount = config.retryCount
-    SourceResponseNormalizer().normalize(request, runner.fetch(request))
+    let fetch = SourceResponseNormalizer().normalize(request, runner.fetch(request))
+    let attempts = if (fetch.attempts > 0) { fetch.attempts } else { 0 }
+    accounting.actualAttempts += attempts
+    if (attempts > 1) {
+        accounting.retryAttempts += attempts - 1
+    }
+    if (attempts > 0 && fetch.statusCode >= 200 && fetch.statusCode < 300) {
+        accounting.successfulAttempts += 1
+    }
+    if (fetch.ok) {
+        accounting.completedRequests += 1
+    } else {
+        accounting.failedRequests += 1
+    }
+    fetch
 }
 
 private func ckbFetchScheduledDeadlineExceededResult(request: SourceFetchRequest, deadlineAtMillis: Int64): SourceFetchResult {
@@ -9965,7 +10274,7 @@ private func ckbFetchScheduledDeadlineExceededResult(request: SourceFetchRequest
 }
 
 private func ckbAppendScheduledSourceRecord(profile: CkbScheduleTaskProfile, result: CkbScheduledProfileFetchResult, request: SourceFetchRequest, fetch: SourceFetchResult): CkbScheduledSourceRecord {
-    result.requestCount += 1
+    ckbSyncScheduledRequestAccounting(result)
     if (fetch.truncated) {
         result.truncated = true
     }
@@ -9988,6 +10297,16 @@ private func ckbAppendScheduledSourceRecord(profile: CkbScheduleTaskProfile, res
     record.sourceId = "scheduled-${profile.profile}-${stableSummaryHash("${request.kind}:${request.url}:${request.repo}:${request.ref}:${fetch.bodyHash}")}"
     result.records.add(record)
     record
+}
+
+private func ckbSyncScheduledRequestAccounting(result: CkbScheduledProfileFetchResult): Unit {
+    result.actualAttempts = result.accounting.actualAttempts
+    result.successfulAttempts = result.accounting.successfulAttempts
+    result.retryAttempts = result.accounting.retryAttempts
+    result.plannedRequests = result.accounting.plannedRequests
+    result.completedRequests = result.accounting.completedRequests
+    result.failedRequestCount = result.accounting.failedRequests
+    result.requestCount = result.actualAttempts
 }
 
 private func ckbScheduledFetchDiagnostic(profile: CkbScheduleTaskProfile, request: SourceFetchRequest, fetch: SourceFetchResult): String {
@@ -10139,12 +10458,15 @@ private func ckbScheduledSourceRequiredness(profile: CkbScheduleTaskProfile, sou
     true
 }
 
-private func ingestScheduledProfileSources(kb: KnowledgeBase, store: FileKnowledgeStore, profile: CkbScheduleTaskProfile, fetch: CkbScheduledProfileFetchResult, config: CkbRuntimeConfig, manifest: CangjieVersionManifest, progressSink!: VectorBuildProgressSink = NoopVectorBuildProgressSink(), stageSink!: CkbStagedRebuildStageSink = NoopCkbStagedRebuildStageSink(), deadlineAtMillis!: Int64 = 0): CkbScheduledProfileIngestResult {
+private func ingestScheduledProfileSources(kb: KnowledgeBase, store: FileKnowledgeStore, profile: CkbScheduleTaskProfile, fetch: CkbScheduledProfileFetchResult, config: CkbRuntimeConfig, manifest: CangjieVersionManifest, progressSink!: VectorBuildProgressSink = NoopVectorBuildProgressSink(), stageSink!: CkbStagedRebuildStageSink = NoopCkbStagedRebuildStageSink(), deadlineAtMillis!: Int64 = 0, promotionBudgetPlan!: CangjieCandidatePromotionBudgetPlan = CangjieCandidatePromotionBudgetPlan()): CkbScheduledProfileIngestResult {
     let result = CkbScheduledProfileIngestResult()
     result.status = if (fetch.ok) { "profile_ok" } else { fetch.status }
     result.validationDiagnostics.add(ckbSchedulerProfileStageBudgetDiagnostic(profile))
     ckbWriteScheduledProfileStageCheckpoint(store, profile, "ingest_started", result.status, ckbProfileIngestBudgetMillis(profile), deadlineAtMillis, "fetchRequests=${fetch.requestCount}|fetched=${fetch.fetchedCount}|failed=${fetch.failedCount}")
     result.validationDiagnostics.add("profile_stage_checkpoint:profile=${profile.profile}|stage=ingest_started|status=${result.status}|budgetMs=${ckbProfileIngestBudgetMillis(profile)}|deadlineAtMillis=${deadlineAtMillis}|remainingMs=${ckbRemainingMillis(deadlineAtMillis)}")
+    if (ckbApplyScheduledIngestDeadline(result, profile, "ingest_started", deadlineAtMillis)) {
+        return result
+    }
     for (diagnostic in fetch.diagnostics) {
         result.validationDiagnostics.add("fetch:${diagnostic}")
     }
@@ -10196,6 +10518,9 @@ private func ingestScheduledProfileSources(kb: KnowledgeBase, store: FileKnowled
         }
     }
     let delta = ckbScheduledTypedDeltaRecords(profile, fetch.records, config, manifest)
+    if (ckbApplyScheduledIngestDeadline(result, profile, "ingest_delta_built", deadlineAtMillis)) {
+        return result
+    }
     if (delta.size == 0) {
         result.ok = false
         result.status = "scheduled_delta_empty"
@@ -10205,14 +10530,22 @@ private func ingestScheduledProfileSources(kb: KnowledgeBase, store: FileKnowled
         }
         return result
     }
+    var ingestedRecords: Int64 = 0
     for (record in fetch.records) {
         if (record.fetch.ok) {
             _ = kb.ingestFetchResult(record.sourceId, record.sourceType, record.fetch, record.title, TrustLevels.OFFICIAL, ReviewStates.TRUSTED)
         }
+        ingestedRecords += 1
+        if (ingestedRecords % 64 == 0 && ckbApplyScheduledIngestDeadline(result, profile, "ingest_records", deadlineAtMillis)) {
+            return result
+        }
+    }
+    if (ckbApplyScheduledIngestDeadline(result, profile, "ingest_records_finished", deadlineAtMillis)) {
+        return result
     }
     let candidateVersion = ckbScheduledCandidateVersion(profile, fetch)
     let candidateRecords = kb.activeRecordSnapshotOverlay(delta)
-    let promotion = cangjiePromoteCandidateRecordsAfterValidationWithVersion(kb, store, candidateVersion, candidateRecords, progressSink: progressSink, stageSink: stageSink, deadlineAtMillis: deadlineAtMillis)
+    let promotion = cangjiePromoteCandidateRecordsAfterValidationWithVersion(kb, store, candidateVersion, candidateRecords, progressSink: progressSink, stageSink: stageSink, deadlineAtMillis: deadlineAtMillis, budgetPlan: promotionBudgetPlan)
     ckbApplyScheduledPromotionResult(result, promotion, "candidate_validated_promoted")
     if (profile.profile == "cangjie_source_event_sync") {
         ckbPersistScheduledRepositoryEventCheckpoint(store, profile, fetch, result)
@@ -10220,6 +10553,21 @@ private func ingestScheduledProfileSources(kb: KnowledgeBase, store: FileKnowled
     ckbWriteScheduledProfileStageCheckpoint(store, profile, "ingest_finished", result.status, ckbProfileIngestBudgetMillis(profile), deadlineAtMillis, "activeVersion=${result.activeVersion}|candidateVersion=${result.candidateVersion}|validationStatus=${result.validationStatus}")
     result.validationDiagnostics.add("profile_stage_checkpoint:profile=${profile.profile}|stage=ingest_finished|status=${result.status}|budgetMs=${ckbProfileIngestBudgetMillis(profile)}|deadlineAtMillis=${deadlineAtMillis}|remainingMs=${ckbRemainingMillis(deadlineAtMillis)}")
     result
+}
+
+private func ckbApplyScheduledIngestDeadline(result: CkbScheduledProfileIngestResult, profile: CkbScheduleTaskProfile, stage: String, deadlineAtMillis: Int64): Bool {
+    if (profile.profile != "cangjie_release_full_sync") {
+        return false
+    }
+    let deadline = ckbDeadlineGuard(stage, deadlineAtMillis)
+    if (!deadline.exceeded) {
+        return false
+    }
+    result.ok = false
+    result.status = "ingest_deadline_exceeded"
+    result.validationStatus = "ingest_deadline_exceeded"
+    result.validationDiagnostics.add("ingest_deadline_exceeded:stage=${stage}|remainingMillis=${deadline.remainingMillis}")
+    true
 }
 
 private func ckbVersionBranchRefreshHasContentWarnings(fetch: CkbScheduledProfileFetchResult): Bool {
@@ -10589,6 +10937,10 @@ public func ckbScheduledPromotionTerminalStatus(ok: Bool, validationStatus: Stri
         return successStatus
     }
     if (validationStatus == "candidate_validation_timeout" ||
+        validationStatus == "candidate_vector_deadline_exceeded" ||
+        validationStatus == "candidate_validation_deadline_exceeded" ||
+        validationStatus == "candidate_active_commit_deadline_exceeded" ||
+        validationStatus == "candidate_active_snapshot_deadline_exceeded" ||
         validationStatus == "candidate_vector_failed" ||
         validationStatus == "candidate_active_commit_failed" ||
         validationStatus == "candidate_active_snapshot_failed") {

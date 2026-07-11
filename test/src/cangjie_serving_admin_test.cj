@@ -3,6 +3,7 @@ package cangjie_community_knowledge_base_test
 import std.collection.ArrayList
 import std.fs.{Directory, File, Path, exists}
 import std.process.*
+import std.time.*
 import std.unittest.*
 import std.unittest.testmacro.*
 
@@ -300,6 +301,95 @@ public class CangjieServingAdminTest {
     }
 
     @TestCase
+    public func p5S2N01BCandidateStageDeadlinesKeepOldActiveAndCleanStaging(): Unit {
+        let records = cangjieF4AdminPromotionRecords()
+        let largeRecords = cangjieF4AdminPromotionRecords()
+        for (record in cangjieAdminGeneratedRecords(1024)) {
+            largeRecords.add(record)
+        }
+
+        let vectorRoot = "target/p5-s2-n01-vector"
+        adminEnsureEmptyDir(vectorRoot)
+        let vectorStore = CangjieAdminTrackingVectorStore(initialCount: 3)
+        let vectorKb = KnowledgeBase(FakeClock(0), CangjieAdminEmbeddingProvider(2, delayMillis: 30), vectorStore, LocalGraphStore())
+        vectorKb.configureVectorCollections("ckb_active", "ckb_candidate")
+        let vectorFileStore = FileKnowledgeStore(vectorRoot)
+        vectorKb.bootstrapOffline()
+        vectorKb.persistActiveSnapshot(vectorFileStore)
+        vectorStore.deletedActiveCollection = false
+        let vectorBefore = vectorKb.status().activeKnowledgeVersion
+        let vectorSink = AdminCaptureStageSink()
+        let vector = cangjiePromoteCandidateRecordsAfterValidationWithVersion(vectorKb, vectorFileStore, "ckb-p5-s2-vector-candidate", records, stageSink: vectorSink, budgetPlan: adminP5S2BudgetPlan(SystemCkbMillisClock(), ckbCoreNowMillis() + 435000, vectorBudgetMillis: 20))
+        @Expect(vector.ok, false)
+        @Expect(vector.validation.status, "candidate_vector_deadline_exceeded")
+        @Expect(vectorKb.status().activeKnowledgeVersion, vectorBefore)
+        @Expect(vectorStore.deleteCollectionCalls, 1)
+        @Expect(vectorStore.deletedActiveCollection, false)
+        @Expect(adminCaptureContains(vectorSink.stages, "candidate_vector_started|running"), true)
+        @Expect(adminCaptureContains(vectorSink.stages, "candidate_validation_started|running"), false)
+
+        let validationRoot = "target/p5-s2-n01-validation"
+        adminEnsureEmptyDir(validationRoot)
+        let validationStore = CangjieAdminTrackingVectorStore(initialCount: 3)
+        let validationKb = KnowledgeBase(FakeClock(0), CangjieAdminEmbeddingProvider(2), validationStore, LocalGraphStore())
+        validationKb.configureVectorCollections("ckb_active", "ckb_candidate")
+        let validationFileStore = FileKnowledgeStore(validationRoot)
+        validationKb.bootstrapOffline()
+        validationKb.persistActiveSnapshot(validationFileStore)
+        validationStore.deletedActiveCollection = false
+        let validationBefore = validationKb.status().activeKnowledgeVersion
+        let validationSink = AdminCaptureStageSink()
+        let validation = cangjiePromoteCandidateRecordsAfterValidationWithVersion(validationKb, validationFileStore, "ckb-p5-s2-validation-candidate", largeRecords, stageSink: validationSink, budgetPlan: adminP5S2BudgetPlan(SystemCkbMillisClock(), ckbCoreNowMillis() + 435000, validationBudgetMillis: 1))
+        @Expect(validation.ok, false)
+        @Expect(validation.validation.status, "candidate_validation_deadline_exceeded")
+        @Expect(validationKb.status().activeKnowledgeVersion, validationBefore)
+        @Expect(validationStore.deleteCollectionCalls, 1)
+        @Expect(validationStore.deletedActiveCollection, false)
+        @Expect(adminCaptureContains(validationSink.stages, "candidate_validation_started|running"), true)
+        @Expect(adminCaptureContains(validationSink.stages, "candidate_active_commit_started|running"), false)
+
+        let commitRoot = "target/p5-s2-n01-commit"
+        adminEnsureEmptyDir(commitRoot)
+        let commitStore = CangjieAdminTrackingVectorStore(initialCount: 3)
+        let commitKb = KnowledgeBase(FakeClock(0), CangjieAdminEmbeddingProvider(2), commitStore, LocalGraphStore())
+        commitKb.configureVectorCollections("ckb_active", "ckb_candidate")
+        let commitFileStore = FileKnowledgeStore(commitRoot)
+        commitKb.bootstrapOffline()
+        commitKb.persistActiveSnapshot(commitFileStore)
+        commitStore.deletedActiveCollection = false
+        let commitBefore = commitKb.status().activeKnowledgeVersion
+        let commitSink = AdminCaptureStageSink()
+        let commit = cangjiePromoteCandidateRecordsAfterValidationWithVersion(commitKb, commitFileStore, "ckb-p5-s2-commit-candidate", largeRecords, stageSink: commitSink, budgetPlan: adminP5S2BudgetPlan(SystemCkbMillisClock(), ckbCoreNowMillis() + 435000, activeCommitBudgetMillis: 20))
+        @Expect(commit.ok, false)
+        @Expect(commit.validation.status, "candidate_active_commit_deadline_exceeded")
+        @Expect(commitKb.status().activeKnowledgeVersion, commitBefore)
+        @Expect(commitStore.deleteCollectionCalls, 1)
+        @Expect(commitStore.deletedActiveCollection, false)
+        @Expect(adminCaptureContains(commitSink.stages, "candidate_active_commit_started|running"), true)
+        @Expect(adminCaptureContains(commitSink.stages, "candidate_active_snapshot_started|running"), false)
+
+        let snapshotRoot = "target/p5-s2-n01-snapshot"
+        adminEnsureEmptyDir(snapshotRoot)
+        let snapshotStore = CangjieAdminTrackingVectorStore(initialCount: 3)
+        let snapshotKb = KnowledgeBase(FakeClock(0), CangjieAdminEmbeddingProvider(2), snapshotStore, LocalGraphStore())
+        snapshotKb.configureVectorCollections("ckb_active", "ckb_candidate")
+        let snapshotFileStore = FileKnowledgeStore(snapshotRoot)
+        snapshotKb.bootstrapOffline()
+        snapshotKb.persistActiveSnapshot(snapshotFileStore)
+        snapshotStore.deletedActiveCollection = false
+        let snapshotBefore = snapshotKb.status().activeKnowledgeVersion
+        let snapshotSink = AdminCaptureStageSink()
+        let snapshot = cangjiePromoteCandidateRecordsAfterValidationWithVersion(snapshotKb, snapshotFileStore, "ckb-p5-s2-snapshot-candidate", largeRecords, stageSink: snapshotSink, budgetPlan: adminP5S2BudgetPlan(SystemCkbMillisClock(), ckbCoreNowMillis() + 435000, snapshotBudgetMillis: 20))
+        @Expect(snapshot.ok, false)
+        @Expect(snapshot.validation.status, "candidate_active_snapshot_deadline_exceeded")
+        @Expect(snapshotKb.status().activeKnowledgeVersion, snapshotBefore)
+        @Expect(snapshotStore.deleteCollectionCalls, 1)
+        @Expect(snapshotStore.deletedActiveCollection, false)
+        @Expect(adminCaptureContains(snapshotSink.stages, "candidate_active_snapshot_started|running"), true)
+        @Expect(adminCaptureContains(snapshotSink.stages, "candidate_active_snapshot_finished|candidate_active_snapshot_deadline_exceeded"), true)
+    }
+
+    @TestCase
     public func p4N2ActiveCommitDeadlineThrowsBeforeHalfCommittedManifest(): Unit {
         let kb = KnowledgeBase(FakeClock(0))
         kb.configureVectorCollections("ckb_active", "ckb_candidate")
@@ -492,6 +582,39 @@ public class CangjieServingAdminTest {
     }
 }
 
+private class AdminP5S2SequenceClock <: CkbMillisClock {
+    private var values: ArrayList<Int64> = ArrayList<Int64>()
+    private var index: Int64 = 0
+
+    public init() {}
+
+    public func add(value: Int64): Unit {
+        this.values.add(value)
+    }
+
+    public func nowMillis(): Int64 {
+        var selected = this.index
+        if (selected >= this.values.size) {
+            selected = this.values.size - 1
+        }
+        let value = this.values[selected]
+        this.index += 1
+        value
+    }
+}
+
+private func adminP5S2BudgetPlan(clock: CkbMillisClock, softDeadlineAtMillis: Int64, vectorBudgetMillis!: Int64 = 180000, validationBudgetMillis!: Int64 = 40000, activeCommitBudgetMillis!: Int64 = 20000, snapshotBudgetMillis!: Int64 = 50000): CangjieCandidatePromotionBudgetPlan {
+    let plan = CangjieCandidatePromotionBudgetPlan()
+    plan.segmented = true
+    plan.vectorBudgetMillis = vectorBudgetMillis
+    plan.validationBudgetMillis = validationBudgetMillis
+    plan.activeCommitBudgetMillis = activeCommitBudgetMillis
+    plan.snapshotBudgetMillis = snapshotBudgetMillis
+    plan.workerSoftDeadlineAtMillis = softDeadlineAtMillis
+    plan.deadlineClock = clock
+    plan
+}
+
 private class AdminCaptureStageSink <: CkbStagedRebuildStageSink {
     public var stages: ArrayList<String> = ArrayList<String>()
 
@@ -587,17 +710,22 @@ private func cangjieCandidateTestVectorStatus(records: ArrayList<NormalizedRecor
 private class CangjieAdminEmbeddingProvider <: EmbeddingProvider {
     private let configuredBatchSize: Int64
     private let failReason: String
+    private let delayMillis: Int64
     public var calls: Int64 = 0
     public var failAtCall: Int64 = -1
 
-    init(batchSize: Int64, failAtCall!: Int64 = -1, failReason!: String = "") {
+    init(batchSize: Int64, failAtCall!: Int64 = -1, failReason!: String = "", delayMillis!: Int64 = 0) {
         this.configuredBatchSize = batchSize
         this.failAtCall = failAtCall
         this.failReason = failReason
+        this.delayMillis = delayMillis
     }
 
     public func embed(texts: ArrayList<String>, model: String, dimensions: Int64): EmbeddingBatch {
         this.calls += 1
+        if (this.delayMillis > 0) {
+            sleep(Duration.millisecond * this.delayMillis)
+        }
         let batch = EmbeddingBatch()
         batch.requested = texts.size
         batch.batchSize = this.configuredBatchSize

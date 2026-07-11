@@ -400,6 +400,18 @@ public func ckbCoreNowMillis(): Int64 {
     DateTime.now().toUnixTimeStamp().toMilliseconds()
 }
 
+public interface CkbMillisClock {
+    func nowMillis(): Int64
+}
+
+public class SystemCkbMillisClock <: CkbMillisClock {
+    public init() {}
+
+    public func nowMillis(): Int64 {
+        ckbCoreNowMillis()
+    }
+}
+
 public func ckbDeadlineExceeded(deadlineAtMillis: Int64): Bool {
     deadlineAtMillis > 0 && ckbCoreNowMillis() >= deadlineAtMillis
 }
@@ -2683,6 +2695,12 @@ public class SchedulerTaskResult {
     public var resultFlushDurationMillis: Int64 = 0
     public var stageDurations: ArrayList<String> = ArrayList<String>()
     public var requestCount: Int64 = 0
+    public var actualAttempts: Int64 = 0
+    public var successfulAttempts: Int64 = 0
+    public var retryAttempts: Int64 = 0
+    public var plannedRequests: Int64 = 0
+    public var completedRequests: Int64 = 0
+    public var failedRequests: Int64 = 0
     public var updatedDataKinds: ArrayList<String> = ArrayList<String>()
     public var truncated: Bool = false
     public var timeBudgetMillis: Int64 = 0
@@ -2758,6 +2776,12 @@ public class SchedulerTaskRunRecord {
     public var stageDurations: ArrayList<String> = ArrayList<String>()
     public var timeBudgetMillis: Int64 = 0
     public var requestCount: Int64 = 0
+    public var actualAttempts: Int64 = 0
+    public var successfulAttempts: Int64 = 0
+    public var retryAttempts: Int64 = 0
+    public var plannedRequests: Int64 = 0
+    public var completedRequests: Int64 = 0
+    public var failedRequests: Int64 = 0
     public var lastStage: String = ""
     public var lastProgress: String = ""
     public var workerPid: Int64 = 0
@@ -2864,7 +2888,7 @@ public class SchedulerExecutor {
         let task = this.runTaskWithTimeout(name, entry.lastSince, this.effectiveTaskTimeoutMillis(entry))
         result.ran += 1
         result.taskNames.add(name)
-        if (task.status.startsWith("task_timeout:")) {
+        if (schedulerTaskStatusIsTimeout(task.status)) {
             result.timedOut = true
             result.partial = true
         }
@@ -2938,7 +2962,7 @@ public class SchedulerExecutor {
         }
         try {
             let task = this.runner.runTask(name, since, deadlineAtMillis)
-            if (task.status.startsWith("task_timeout:")) {
+            if (schedulerTaskStatusIsTimeout(task.status)) {
                 return this.finalizeTaskTiming(task, started, deadlineAtMillis, timeoutMillis)
             }
             if (ckbDeadlineExceeded(deadlineAtMillis)) {
@@ -3050,6 +3074,12 @@ private func schedulerTaskRunRecord(name: String, task: SchedulerTaskResult, run
     }
     record.timeBudgetMillis = task.timeBudgetMillis
     record.requestCount = task.requestCount
+    record.actualAttempts = task.actualAttempts
+    record.successfulAttempts = task.successfulAttempts
+    record.retryAttempts = task.retryAttempts
+    record.plannedRequests = task.plannedRequests
+    record.completedRequests = task.completedRequests
+    record.failedRequests = task.failedRequests
     record.lastStage = task.lastStage
     record.lastProgress = task.lastProgress
     record.workerPid = task.workerPid
@@ -3057,6 +3087,18 @@ private func schedulerTaskRunRecord(name: String, task: SchedulerTaskResult, run
     record.workerErrSnippet = task.workerErrSnippet
     record.primaryFailure = schedulerPrimaryFailureFromTask(task)
     record
+}
+
+public func schedulerTaskStatusIsTimeout(status: String): Bool {
+    status.startsWith("task_timeout:") ||
+        status == "bootstrap_deadline_exceeded" ||
+        status == "fetch_deadline_exceeded" ||
+        status == "ingest_deadline_exceeded" ||
+        status == "candidate_vector_deadline_exceeded" ||
+        status == "candidate_validation_deadline_exceeded" ||
+        status == "candidate_active_commit_deadline_exceeded" ||
+        status == "candidate_active_snapshot_deadline_exceeded" ||
+        status.startsWith("deadline_exceeded:")
 }
 
 private func schedulerPrimaryFailureFromTask(task: SchedulerTaskResult): String {
@@ -3549,6 +3591,27 @@ public class KnowledgeBase {
         inserted.metadata.sourceSet = cangjieSourceSetForIngest(sourceType, repo, path, fetch.sourceUrl)
         inserted.metadata.versionResolutionId = cangjieIngestVersionResolutionId(inserted.metadata)
         true
+    }
+
+    public func activeSnapshotForRollback(): ActiveSnapshot {
+        let snapshot = ActiveSnapshot()
+        snapshot.valid = true
+        snapshot.activeVersion = this.activeKnowledgeVersion
+        snapshot.candidateVersion = this.candidateKnowledgeVersion
+        snapshot.failedVersion = this.failedCandidateVersion
+        snapshot.activeStateSource = this.activeStateSource
+        snapshot.vectorActiveCollection = this.vectorCollection
+        snapshot.vectorCandidateCollection = this.candidateVectorCollection
+        for (record in this.rawRecords) {
+            snapshot.rawRecords.add(record)
+        }
+        for (record in this.normalizedRecords) {
+            snapshot.normalizedRecords.add(record)
+        }
+        for (record in this.activeIndex) {
+            snapshot.activeIndex.add(record)
+        }
+        snapshot
     }
 
     private func hasRawRecord(sourceId: String): Bool {

@@ -1,12 +1,138 @@
 package cangjie_community_knowledge_base_test
 
 import std.collection.ArrayList
-import std.fs.{File, Path, exists}
+import std.fs.{Directory, File, Path, exists}
+import std.process.*
 import std.unittest.*
 import std.unittest.testmacro.*
 
 @Test
 public class CkbNativeHttpTransportTest {
+    @TestCase
+    public func p5S2B01RetryRecomputesRemainingWithoutDoubleFlush(): Unit {
+        @Expect(ckbSchedulerWorkerSoftDeadlineAtMillis(440000, 5000), 435000)
+        @Expect(ckbSchedulerWorkerResultFlushMarginMillisForTask("cangjie_release_full_sync"), 5000)
+        @Expect(ckbSchedulerWorkerResultFlushMarginMillisForTask("docs_probe_30d"), 5000)
+        @Expect(ckbSchedulerWorkerUsesStrictFlushReservation("cangjie_release_full_sync"), true)
+        @Expect(ckbSchedulerWorkerUsesStrictFlushReservation("docs_probe_30d"), false)
+        let boundaryNow: Int64 = 100000
+        @Expect(ckbSchedulerWorkerSoftDeadlineAtMillis(boundaryNow + 4999, 5000, nowMillis: boundaryNow), boundaryNow - 1)
+        @Expect(ckbSchedulerWorkerSoftDeadlineAtMillis(boundaryNow + 5000, 5000, nowMillis: boundaryNow), boundaryNow)
+        @Expect(ckbSchedulerWorkerSoftDeadlineAtMillis(boundaryNow + 5001, 5000, nowMillis: boundaryNow), boundaryNow + 1)
+        @Expect(ckbSchedulerWorkerSoftDeadlineAtMillis(boundaryNow + 4999, 5000, nowMillis: boundaryNow) <= boundaryNow, true)
+        @Expect(ckbSchedulerWorkerSoftDeadlineAtMillis(boundaryNow + 5000, 5000, nowMillis: boundaryNow) <= boundaryNow, true)
+        @Expect(ckbSchedulerWorkerSoftDeadlineAtMillis(boundaryNow + 5001, 5000, nowMillis: boundaryNow) <= boundaryNow, false)
+        @Expect(ckbSchedulerWorkerSoftDeadlineAtMillis(boundaryNow + 500, 5000, nowMillis: boundaryNow, strictReservation: false), boundaryNow + 500)
+        @Expect(ckbSchedulerWorkerSoftDeadlineAtMillis(boundaryNow + 5000, 5000, nowMillis: boundaryNow, strictReservation: false), boundaryNow + 5000)
+        @Expect(ckbSchedulerWorkerSoftDeadlineAtMillis(boundaryNow + 5001, 5000, nowMillis: boundaryNow, strictReservation: false), boundaryNow + 1)
+        @Expect(ckbSchedulerWorkerSoftDeadlineAtMillis(boundaryNow + 6000, 5000, nowMillis: boundaryNow, strictReservation: false), boundaryNow + 1000)
+        @Expect(ckbHttpAttemptTimeoutMillis(10000, 1000, 1000), 0)
+        @Expect(ckbHttpAttemptTimeoutMillis(10000, 1001, 1000), 1)
+        @Expect(ckbHttpAttemptTimeoutMillis(10000, 5999, 1000), 4999)
+        @Expect(ckbHttpAttemptTimeoutMillis(10000, 6000, 1000), 5000)
+        @Expect(ckbHttpAttemptTimeoutMillis(10000, 10999, 1000), 9999)
+        @Expect(ckbHttpAttemptTimeoutMillis(10000, 11000, 1000), 10000)
+
+        let config = CkbRuntimeConfig()
+        config.networkEnabled = true
+        let request = SourceRequestBuilder().gitCodeOrgRepos("cangjie")
+        request.retryCount = 3
+        request.timeoutMillis = 1000
+        request.deadlineAtMillis = 1500
+        let clock = P5S2SequenceMillisClock()
+        clock.add(1000)
+        clock.add(1200)
+        clock.add(1499)
+        clock.add(1500)
+        let executor = NativeContractSequenceHttpExecutor()
+        executor.add(500, "{\"message\":\"服务暂不可用 中文🙂\"}", "application/json", "http_500", 0)
+        executor.add(500, "{\"message\":\"malformed_json invalid_response_encoding\"}", "application/json", "http_500", 0)
+
+        let fetch = HttpSourceFetchRunner(config, executor, clock).fetch(request)
+
+        @Expect(fetch.ok, false)
+        @Expect(fetch.status, "fetch_deadline_exceeded")
+        @Expect(fetch.attempts, 2)
+        @Expect(executor.calls, 2)
+        @Expect(executor.seenTimeouts.size, 2)
+        @Expect(executor.seenTimeouts[0], 500)
+        @Expect(executor.seenTimeouts[1], 1)
+
+        let expiredRequest = SourceRequestBuilder().gitCodeOrgRepos("cangjie")
+        expiredRequest.retryCount = 3
+        expiredRequest.timeoutMillis = 1000
+        expiredRequest.deadlineAtMillis = 2000
+        let expiredClock = P5S2SequenceMillisClock()
+        expiredClock.add(2000)
+        let expiredExecutor = NativeContractSequenceHttpExecutor()
+        expiredExecutor.add(200, "[]", "application/json", "http_200", 0)
+        let expired = HttpSourceFetchRunner(config, expiredExecutor, expiredClock).fetch(expiredRequest)
+
+        @Expect(expired.status, "fetch_deadline_exceeded")
+        @Expect(expired.attempts, 0)
+        @Expect(expiredExecutor.calls, 0)
+
+        let lastAttemptRequest = SourceRequestBuilder().gitCodeOrgRepos("cangjie")
+        lastAttemptRequest.retryCount = 0
+        lastAttemptRequest.timeoutMillis = 1000
+        lastAttemptRequest.deadlineAtMillis = 3000
+        let lastAttemptClock = P5S2SequenceMillisClock()
+        lastAttemptClock.add(2500)
+        lastAttemptClock.add(3000)
+        let lastAttemptExecutor = NativeContractSequenceHttpExecutor()
+        lastAttemptExecutor.add(200, "[]", "application/json", "http_200", 0)
+        let lastAttempt = HttpSourceFetchRunner(config, lastAttemptExecutor, lastAttemptClock).fetch(lastAttemptRequest)
+
+        @Expect(lastAttempt.status, "fetch_deadline_exceeded")
+        @Expect(lastAttempt.ok, false)
+        @Expect(lastAttempt.attempts, 1)
+        @Expect(lastAttemptExecutor.calls, 1)
+        @Expect(lastAttemptExecutor.seenTimeouts[0], 500)
+
+        let boundaryRoot = "target/p5-s2-b01-flush-boundary"
+        nativeP5S2EnsureEmptyDir(boundaryRoot)
+        let marker = "${boundaryRoot}/worker-launched"
+        let worker = "${boundaryRoot}/must-not-launch.zsh"
+        File.writeTo(Path(worker), "#!/bin/zsh\n: > '${marker}'\nexit 99\n".toArray())
+        @Expect(launch("/bin/chmod", ["700", worker]).wait(), 0)
+        let boundaryStore = FileKnowledgeStore("${boundaryRoot}/store")
+        let boundaryRunner = ProcessIsolatedSchedulerTaskRunner(newOfflineKnowledgeBase(), CkbRuntimeConfig(), boundaryStore, "", "${boundaryRoot}/store", DisabledNetworkFetchRunner(), worker)
+        let flushMinusOne = boundaryRunner.runTask("cangjie_release_full_sync", "0", ckbCoreNowMillis() + 4999)
+
+        @Expect(flushMinusOne.status, "bootstrap_deadline_exceeded")
+        @Expect(exists(Path(marker)), false)
+        @Expect(nativeP5S2SidecarCount("${boundaryRoot}/store/metadata/scheduler-workers") > 0, true)
+
+        let flushRoot = "target/p5-s2-b01-flush-exact"
+        nativeP5S2EnsureEmptyDir(flushRoot)
+        let flushMarker = "${flushRoot}/worker-launched"
+        let flushWorker = "${flushRoot}/must-not-launch.zsh"
+        File.writeTo(Path(flushWorker), "#!/bin/zsh\n: > '${flushMarker}'\nexit 99\n".toArray())
+        @Expect(launch("/bin/chmod", ["700", flushWorker]).wait(), 0)
+        let flushStore = FileKnowledgeStore("${flushRoot}/store")
+        let flushRunner = ProcessIsolatedSchedulerTaskRunner(newOfflineKnowledgeBase(), CkbRuntimeConfig(), flushStore, "", "${flushRoot}/store", DisabledNetworkFetchRunner(), flushWorker)
+        let flushExact = flushRunner.runTask("cangjie_release_full_sync", "0", ckbCoreNowMillis() + 5000)
+
+        @Expect(flushExact.status, "bootstrap_deadline_exceeded")
+        @Expect(exists(Path(flushMarker)), false)
+        @Expect(nativeP5S2SidecarCount("${flushRoot}/store/metadata/scheduler-workers") > 0, true)
+
+        let legacyRoot = "target/p5-s2-b01-legacy-conditional-flush"
+        nativeP5S2EnsureEmptyDir(legacyRoot)
+        let legacyMarker = "${legacyRoot}/worker-deadline"
+        let legacyWorker = "${legacyRoot}/capture-deadline.zsh"
+        let legacyScript = "#!/bin/zsh\ndeadline=''\nwhile [[ $# -gt 0 ]]; do\n  if [[ \"$1\" == '--deadline' ]]; then deadline=\"$2\"; shift 2; else shift; fi\ndone\nprint -r -- \"$deadline\" > '${legacyMarker}'\nexit 99\n"
+        File.writeTo(Path(legacyWorker), legacyScript.toArray())
+        @Expect(launch("/bin/chmod", ["700", legacyWorker]).wait(), 0)
+        let legacyStore = FileKnowledgeStore("${legacyRoot}/store")
+        let legacyRunner = ProcessIsolatedSchedulerTaskRunner(newOfflineKnowledgeBase(), CkbRuntimeConfig(), legacyStore, "", "${legacyRoot}/store", DisabledNetworkFetchRunner(), legacyWorker)
+        let legacyHardDeadline = ckbCoreNowMillis() + 6000
+        _ = legacyRunner.runTask("docs_probe_30d", "0", legacyHardDeadline)
+
+        @Expect(exists(Path(legacyMarker)), true)
+        @Expect(String.fromUtf8(File.readFrom(Path(legacyMarker))).trimAscii(), "${legacyHardDeadline - 5000}")
+    }
+
     @TestCase
     public func httpRunnerKeepsStatusMappingAndRetryWithoutCurlExitDependency(): Unit {
         let config = CkbRuntimeConfig()
@@ -447,6 +573,7 @@ private class NativeContractSequenceHttpExecutor <: HttpRequestExecutor {
     public var seenBodies: ArrayList<String> = ArrayList<String>()
     public var seenContentTypes: ArrayList<String> = ArrayList<String>()
     public var seenUrls: ArrayList<String> = ArrayList<String>()
+    public var seenTimeouts: ArrayList<Int64> = ArrayList<Int64>()
 
     public init() {}
 
@@ -475,6 +602,7 @@ private class NativeContractSequenceHttpExecutor <: HttpRequestExecutor {
         }
         this.calls += 1
         this.seenUrls.add(request.url)
+        this.seenTimeouts.add(request.timeoutMillis)
         this.seenMethods.add(normalizeHttpExecutionMethod(request.method))
         this.seenBodies.add(request.body)
         this.seenContentTypes.add(request.contentType)
@@ -511,6 +639,50 @@ private class NativeContractSequenceHttpExecutor <: HttpRequestExecutor {
             getRequest.headers.add(header)
         }
         this.execute(getRequest)
+    }
+}
+
+private func nativeP5S2EnsureEmptyDir(path: String): Unit {
+    if (exists(Path(path))) {
+        _ = launch("/bin/rm", ["-rf", path]).wait()
+    }
+    Directory.create(Path(path), recursive: true)
+}
+
+private func nativeP5S2SidecarCount(path: String): Int64 {
+    if (!exists(Path(path))) {
+        return 0
+    }
+    var count: Int64 = 0
+    for (entry in Directory.readFrom(Path(path))) {
+        if (entry.isRegular() && entry.name.endsWith(".sidecar")) {
+            count += 1
+        }
+    }
+    count
+}
+
+private class P5S2SequenceMillisClock <: CkbMillisClock {
+    private var values: ArrayList<Int64> = ArrayList<Int64>()
+    private var index: Int64 = 0
+
+    public init() {}
+
+    public func add(value: Int64): Unit {
+        this.values.add(value)
+    }
+
+    public func nowMillis(): Int64 {
+        if (this.values.size == 0) {
+            return 0
+        }
+        var selected = this.index
+        if (selected >= this.values.size) {
+            selected = this.values.size - 1
+        }
+        let value = this.values[selected]
+        this.index += 1
+        value
     }
 }
 

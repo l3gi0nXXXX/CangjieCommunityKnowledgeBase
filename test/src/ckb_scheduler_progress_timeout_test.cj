@@ -58,6 +58,25 @@ private class P5S1TruthTimingRunner <: SchedulerTaskRunner {
     }
 }
 
+private class P5S2AccountingRunner <: SchedulerTaskRunner {
+    public init() {}
+
+    public func runTask(name: String, since: String, deadlineAtMillis: Int64): SchedulerTaskResult {
+        let result = SchedulerTaskResult()
+        result.ok = true
+        result.status = "candidate_validated_promoted"
+        result.requestCount = 7
+        result.actualAttempts = 7
+        result.successfulAttempts = 6
+        result.retryAttempts = 1
+        result.plannedRequests = 6
+        result.completedRequests = 6
+        result.failedRequests = 0
+        result.validationDiagnostics.add("计量完成🙂 malformed_json invalid_response_encoding Authorization: Bearer fixture-secret")
+        result
+    }
+}
+
 private class CaptureStageSink <: CkbStagedRebuildStageSink {
     public var stages: ArrayList<String> = ArrayList<String>()
     public var diagnostics: ArrayList<String> = ArrayList<String>()
@@ -99,6 +118,97 @@ private class P5S1ThrowingSchedulerProgressSink <: SchedulerProgressSink {
 
 @Test
 public class CkbSchedulerProgressTimeoutTest {
+    @TestCase
+    public func p5S2U01BudgetPlanAndAttemptFactsRoundTrip(): Unit {
+        let release = ckbSyncProfileForScheduleTask("cangjie_release_full_sync")
+        let valid = ckbValidateSchedulerProfileBudgetPlan(release)
+        let negative = ckbSyncProfileForScheduleTask("cangjie_release_full_sync")
+        negative.vectorBudgetMillis = -1
+        let overflow = ckbSyncProfileForScheduleTask("cangjie_release_full_sync")
+        overflow.unallocatedSafetyMillis = 5001
+        let noFlush = ckbSyncProfileForScheduleTask("cangjie_release_full_sync")
+        noFlush.resultFlushBudgetMillis = 0
+        let historical = ckbSyncProfileForScheduleTask("cangjie_docs_full_weekly")
+        let historicalValidation = ckbValidateSchedulerProfileBudgetPlan(historical)
+
+        let scheduler = Scheduler(FakeClock(1000))
+        let tasks = ArrayList<String>()
+        tasks.add("cangjie_release_full_sync")
+        let run = SchedulerExecutor(scheduler, P5S2AccountingRunner()).runTaskNames(tasks, force: true)
+        let record = run.taskRecords[0]
+        let task = SchedulerTaskResult()
+        task.ok = true
+        task.status = "candidate_validated_promoted"
+        task.requestCount = 7
+        task.actualAttempts = 7
+        task.successfulAttempts = 6
+        task.retryAttempts = 1
+        task.plannedRequests = 6
+        task.completedRequests = 6
+        task.failedRequests = 0
+        task.validationDiagnostics.add("计量完成🙂 malformed_json invalid_response_encoding Authorization: Bearer fixture-secret")
+        let terminal = ckbSchedulerTaskResultText(task)
+        let parsed = ckbSchedulerTaskResultFromText(terminal)
+        let legacy = ckbSchedulerTaskResultFromText("ok=true\nstatus=legacy_ok\nrequestCount=2\n")
+        let json = ckbSchedulerRunOutputJson(run)
+        let progressRoot = "target/p5-s2-u01-task-finished-progress"
+        ensureEmptyDir(progressRoot)
+        let progressStore = FileKnowledgeStore(progressRoot)
+        let progressScheduler = Scheduler(FakeClock(2000))
+        let progressRun = SchedulerExecutor(progressScheduler, P5S2AccountingRunner(), FileSchedulerProgressSink(progressStore), 0).runTaskNames(tasks, force: true)
+        let progressJson = progressStore.readText(progressRun.progressPath)
+
+        @Expect(release.timeBudgetMillis, 440000)
+        @Expect(release.bootstrapBudgetMillis, 40000)
+        @Expect(release.fetchBudgetMillis, 80000)
+        @Expect(release.ingestBudgetMillis, 20000)
+        @Expect(release.vectorBudgetMillis, 180000)
+        @Expect(release.validationBudgetMillis, 40000)
+        @Expect(release.activeCommitBudgetMillis, 20000)
+        @Expect(release.snapshotBudgetMillis, 50000)
+        @Expect(release.resultFlushBudgetMillis, 5000)
+        @Expect(release.unallocatedSafetyMillis, 5000)
+        @Expect(valid.ok, true)
+        @Expect(valid.businessBudgetMillis, 430000)
+        @Expect(valid.executionBudgetMillis, 435000)
+        @Expect(valid.plannedBudgetMillis, 440000)
+        @Expect(valid.workerSoftBudgetMillis, 435000)
+        @Expect(ckbValidateSchedulerProfileBudgetPlan(negative).status, "invalid_profile_budget_plan")
+        @Expect(ckbValidateSchedulerProfileBudgetPlan(overflow).status, "invalid_profile_budget_plan")
+        @Expect(ckbValidateSchedulerProfileBudgetPlan(noFlush).status, "invalid_profile_budget_plan")
+        @Expect(historicalValidation.ok, true)
+        @Expect(historical.timeBudgetMillis, 360000)
+        @Expect(parsed.requestCount, parsed.actualAttempts)
+        @Expect(parsed.actualAttempts, 7)
+        @Expect(parsed.successfulAttempts, 6)
+        @Expect(parsed.retryAttempts, 1)
+        @Expect(parsed.plannedRequests, 6)
+        @Expect(parsed.completedRequests, 6)
+        @Expect(parsed.failedRequests, 0)
+        @Expect(legacy.actualAttempts, 0)
+        @Expect(record.requestCount, record.actualAttempts)
+        @Expect(record.retryAttempts, 1)
+        @Expect(json.contains("\"actualAttempts\":7"), true)
+        @Expect(json.contains("\"successfulAttempts\":6"), true)
+        @Expect(json.contains("\"plannedRequests\":6"), true)
+        @Expect(json.contains("\"completedRequests\":6"), true)
+        @Expect(json.contains("\"failedRequests\":0"), true)
+        @Expect(json.contains("\"retryAttempts\":1"), true)
+        @Expect(progressJson.contains("\"event\":\"task_finished\""), true)
+        @Expect(progressJson.contains("\"requestCount\":7"), true)
+        @Expect(progressJson.contains("\"actualAttempts\":7"), true)
+        @Expect(progressJson.contains("\"successfulAttempts\":6"), true)
+        @Expect(progressJson.contains("\"retryAttempts\":1"), true)
+        @Expect(progressJson.contains("\"plannedRequests\":6"), true)
+        @Expect(progressJson.contains("\"completedRequests\":6"), true)
+        @Expect(progressJson.contains("\"failedRequests\":0"), true)
+        @Expect(terminal.contains("fixture-secret"), false)
+        @Expect(terminal.contains("计量完成🙂"), true)
+        @Expect(terminal.contains("malformed_json"), true)
+        @Expect(terminal.contains("invalid_response_encoding"), true)
+        @Expect(run.details.contains("\"actualAttempts\""), false)
+    }
+
     @TestCase
     public func p5S1U01TrueTimingRoundTripsToRunRecordAndJson(): Unit {
         let scheduler = Scheduler(FakeClock(1000))
@@ -444,6 +554,122 @@ public class CkbSchedulerProgressTimeoutTest {
         @Expect(childExitProbe != 0, true)
         @Expect(ckbSchedulerWorkerLastStageFromStoreForTask(store, "docs_probe_30d") != "", true)
         @Expect(ckbSchedulerCurrentRunIdForTask(store, "cangjie_release_full_sync"), "")
+    }
+
+    @TestCase
+    public func p5S2E2EAChildKeepsSoftMarginStagesAndAttemptFacts(): Unit {
+        let root = "target/p5-s2-e2e-a-child-budget"
+        ensureEmptyDir(root)
+        let storePath = "${root}/store"
+        let hardDeadlineAtMillis = ckbCoreNowMillis() + 440000
+        let softDeadlineAtMillis = hardDeadlineAtMillis - 5000
+        let resultRel = "metadata/scheduler-workers/p5-s2-real-child.ckb"
+        var dyldLibraryPath = ""
+        if (let Some(value) <- getVariable("DYLD_LIBRARY_PATH")) {
+            dyldLibraryPath = value
+        }
+        let childPrelude = ckbSchedulerWorkerShellPreludeWithHeap(dyldLibraryPath, "")
+        let childCommand = childPrelude +
+            "export CKB_P5_S2_E2E_CHILD='1'; " +
+            "export CKB_P5_S2_E2E_STORE='${storePath}'; " +
+            "export CKB_P5_S2_E2E_RESULT_REL='${resultRel}'; " +
+            "export CKB_P5_S2_E2E_HARD_DEADLINE='${hardDeadlineAtMillis}'; " +
+            "export CKB_P5_S2_E2E_SOFT_DEADLINE='${softDeadlineAtMillis}'; " +
+            "target/release/unittest_bin/cangjie_community_knowledge_base_test --filter='*CkbSchedulerProgressTimeoutTest.p5S2E2EARealChildWorkerFixture' --no-color --no-progress"
+        let child = launch("/bin/zsh", ["-c", childCommand], stdOut: ProcessRedirect.Pipe, stdErr: ProcessRedirect.Pipe)
+        let childCode = child.wait()
+        let childStdout = p5S1SafeReadPipe(child.stdOutPipe)
+        let childStderr = p5S1SafeReadPipe(child.stdErrPipe)
+        let store = FileKnowledgeStore(storePath)
+        let task = ckbSchedulerTaskResultFromText(store.readText("${resultRel}.sidecar"))
+
+        @Expect(childCode, 0)
+        @Expect(task.ok, true)
+        @Expect(task.status, "candidate_validated_promoted")
+        @Expect(task.deadlineAtMillis, softDeadlineAtMillis)
+        @Expect(task.timeBudgetMillis, 440000)
+        @Expect(task.requestCount, task.actualAttempts)
+        @Expect(task.actualAttempts > 0, true)
+        @Expect(task.successfulAttempts, task.actualAttempts)
+        @Expect(task.retryAttempts, 0)
+        @Expect(task.plannedRequests, task.actualAttempts)
+        @Expect(task.completedRequests, task.plannedRequests)
+        @Expect(task.failedRequests, 0)
+        @Expect(task.stageDurations.size, 7)
+        @Expect(p5S1StringListContains(task.stageDurations, "stage=bootstrap|durationMillis=0"), true)
+        @Expect(p5S1StringListContains(task.stageDurations, "stage=fetch|durationMillis="), true)
+        @Expect(p5S1StringListContains(task.stageDurations, "stage=ingest|durationMillis="), true)
+        @Expect(p5S1StringListContains(task.stageDurations, "stage=candidate_vector_finished|durationMillis="), true)
+        @Expect(p5S1StringListContains(task.stageDurations, "stage=candidate_validation_finished|durationMillis="), true)
+        @Expect(p5S1StringListContains(task.stageDurations, "stage=candidate_active_commit_finished|durationMillis="), true)
+        @Expect(p5S1StringListContains(task.stageDurations, "stage=candidate_active_snapshot_finished|durationMillis="), true)
+        @Expect(childStdout.contains("FAILED"), false)
+        @Expect(childStderr.contains("Authorization"), false)
+
+        let bootstrapRoot = "${root}/bootstrap-real-child"
+        let bootstrapStorePath = "${bootstrapRoot}/store"
+        let bootstrapConfigPath = "${bootstrapRoot}/ckb-test.conf"
+        let bootstrapResultRel = "metadata/scheduler-workers/bootstrap-expired.ckb"
+        Directory.create(Path(bootstrapRoot), recursive: true)
+        File.writeTo(Path(bootstrapConfigPath), "networkEnabled=false\n".toArray())
+        let bootstrapProcess = launch("../target/release/bin/main", ["--config", bootstrapConfigPath, "--store", bootstrapStorePath, "scheduler-task-worker", "--task", "cangjie_release_full_sync", "--scheduler-run-id", "p5-s2-bootstrap-real", "--since", "0", "--deadline", "1", "--result-rel", bootstrapResultRel], stdOut: ProcessRedirect.Pipe, stdErr: ProcessRedirect.Pipe)
+        let bootstrapCode = bootstrapProcess.wait()
+        let bootstrapStdout = p5S1SafeReadPipe(bootstrapProcess.stdOutPipe)
+        let bootstrapStderr = p5S1SafeReadPipe(bootstrapProcess.stdErrPipe)
+        let bootstrapStore = FileKnowledgeStore(bootstrapStorePath)
+        let bootstrapResult = ckbSchedulerTaskResultFromText(bootstrapStore.readText("${bootstrapResultRel}.sidecar"))
+
+        @Expect(bootstrapCode, 1)
+        @Expect(bootstrapResult.status, "bootstrap_deadline_exceeded")
+        @Expect(bootstrapResult.schedulerRunId, "p5-s2-bootstrap-real")
+        @Expect(bootstrapResult.schedulerTaskName, "cangjie_release_full_sync")
+        @Expect(bootstrapResult.resultWrittenAtMillis > 0, true)
+        @Expect(bootstrapStdout, "")
+        @Expect(bootstrapStderr, "")
+    }
+
+    @TestCase
+    public func p5S2E2EARealChildWorkerFixture(): Unit {
+        if (getVariable("CKB_P5_S2_E2E_CHILD") != Some("1")) {
+            return
+        }
+        let storePath = p5S2RequiredChildVariable("CKB_P5_S2_E2E_STORE")
+        let resultRel = p5S2RequiredChildVariable("CKB_P5_S2_E2E_RESULT_REL")
+        let hardDeadlineAtMillis = Int64.parse(p5S2RequiredChildVariable("CKB_P5_S2_E2E_HARD_DEADLINE"))
+        let softDeadlineAtMillis = Int64.parse(p5S2RequiredChildVariable("CKB_P5_S2_E2E_SOFT_DEADLINE"))
+        let store = FileKnowledgeStore(storePath)
+        store.saveCangjieVersionManifest(p5S2E2EManifest())
+        let config = CkbRuntimeConfig()
+        config.networkEnabled = true
+        let bootstrapStartedAtMillis = ckbCoreNowMillis()
+        let taskBodyStartedAtMillis = ckbCoreNowMillis()
+        let task = CkbSchedulerTaskRunner(newOfflineKnowledgeBase(), config, store, sourceRunner: FakeSourceFetchRunner()).runTask("cangjie_release_full_sync", "0", softDeadlineAtMillis)
+        let taskBodyEndedAtMillis = ckbCoreNowMillis()
+        task.schedulerRunId = "p5-s2-e2e-a"
+        task.schedulerTaskName = "cangjie_release_full_sync"
+        task.startedAtMillis = bootstrapStartedAtMillis
+        task.bootstrapStartedAtMillis = bootstrapStartedAtMillis
+        task.taskBodyStartedAtMillis = taskBodyStartedAtMillis
+        task.taskBodyEndedAtMillis = taskBodyEndedAtMillis
+        task.bootstrapDurationMillis = taskBodyStartedAtMillis - bootstrapStartedAtMillis
+        task.deadlineAtMillis = softDeadlineAtMillis
+        task.timeBudgetMillis = 440000
+        task.stageDurations.add("stage=bootstrap|durationMillis=${task.bootstrapDurationMillis}|itemCount=1|status=ok")
+        task.resultWrittenAtMillis = 0
+        task.resultFlushDurationMillis = 0
+        store.writeLinesAtomically(resultRel, ckbSchedulerTaskResultText(task))
+        let resultWrittenAtMillis = ckbCoreNowMillis()
+        task.resultWrittenAtMillis = resultWrittenAtMillis
+        task.resultFlushDurationMillis = resultWrittenAtMillis - taskBodyEndedAtMillis
+        task.endedAtMillis = resultWrittenAtMillis
+        task.durationMillis = resultWrittenAtMillis - bootstrapStartedAtMillis
+        store.writeLinesAtomically("${resultRel}.sidecar", ckbSchedulerTaskResultText(task))
+
+        @Expect(softDeadlineAtMillis, hardDeadlineAtMillis - 5000)
+        @Expect(task.ok, true)
+        @Expect(task.stageDurations.size, 7)
+        @Expect(task.requestCount, task.actualAttempts)
+        @Expect(task.plannedRequests, task.completedRequests + task.failedRequests)
     }
 
     @TestCase
@@ -1278,6 +1504,30 @@ private func s3QdrantRuntimeConfig(): CkbRuntimeConfig {
     config.vectorDimensions = 16
     config.vectorDistance = "Cosine"
     config
+}
+
+private func p5S2RequiredChildVariable(name: String): String {
+    if (let Some(value) <- getVariable(name)) {
+        return value
+    }
+    throw Exception("missing p5 s2 child variable ${name}")
+}
+
+private func p5S2E2EManifest(): CangjieVersionManifest {
+    let manifest = CangjieVersionManifest()
+    manifest.defaultTargetVersion = cangjieDefaultTargetVersion()
+    let source = CangjieVersionSource()
+    source.targetVersion = cangjieDefaultTargetVersion()
+    source.sourceSet = CangjieSourceSets.DOCS
+    source.sourceFamily = "docs"
+    source.sourceRepo = "Cangjie/cangjie_docs"
+    source.sourceRef = "release-1.0.0"
+    source.refKind = "branch"
+    source.resolvedCommit = "abcdef0123456789abcdef0123456789abcdef01"
+    source.contentHash = "sha256:p5-s2-e2e-docs"
+    source.rootKind = "scheduled:test-child"
+    manifest.sources.add(source)
+    manifest
 }
 
 private func ensureEmptyDir(path: String): Unit {

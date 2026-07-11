@@ -28,13 +28,26 @@ public func ckbCliMain(args: Array<String>): Int64 {
         }
         let schedulerRunId = ckbCliOption(args, "--scheduler-run-id")
         let bootstrapStartedAtMillis = ckbCoreNowMillis()
+        let workerSoftDeadlineAtMillis = ckbCliOptionInt(args, "--deadline", 0)
+        if (ckbSchedulerBootstrapDeadlineExceededAt(taskName, bootstrapStartedAtMillis, ckbCoreNowMillis(), workerSoftDeadlineAtMillis)) {
+            _ = ckbWriteSchedulerTaskBootstrapDeadlineFailure(store, taskName, ckbCliOption(args, "--since"), workerSoftDeadlineAtMillis, resultRelativePath, schedulerRunId, bootstrapStartedAtMillis)
+            return 1
+        }
         try {
             let kb = loadCliKnowledgeBase(cli.command, store, config)
             let taskBodyStartedAtMillis = ckbCoreNowMillis()
-            let task = ckbRunSchedulerTaskWorker(kb, config, store, taskName, ckbCliOption(args, "--since"), ckbCliOptionInt(args, "--deadline", 0), resultRelativePath, schedulerRunId: schedulerRunId, bootstrapStartedAtMillis: bootstrapStartedAtMillis, taskBodyStartedAtMillis: taskBodyStartedAtMillis)
+            if (ckbSchedulerBootstrapDeadlineExceededAt(taskName, bootstrapStartedAtMillis, taskBodyStartedAtMillis, workerSoftDeadlineAtMillis)) {
+                _ = ckbWriteSchedulerTaskBootstrapDeadlineFailure(store, taskName, ckbCliOption(args, "--since"), workerSoftDeadlineAtMillis, resultRelativePath, schedulerRunId, bootstrapStartedAtMillis)
+                return 1
+            }
+            let task = ckbRunSchedulerTaskWorker(kb, config, store, taskName, ckbCliOption(args, "--since"), workerSoftDeadlineAtMillis, resultRelativePath, schedulerRunId: schedulerRunId, bootstrapStartedAtMillis: bootstrapStartedAtMillis, taskBodyStartedAtMillis: taskBodyStartedAtMillis)
             return if (task.ok) { 0 } else { 1 }
         } catch (e: Exception) {
-            _ = ckbWriteSchedulerTaskBootstrapFailure(store, taskName, ckbCliOption(args, "--since"), ckbCliOptionInt(args, "--deadline", 0), resultRelativePath, schedulerRunId, bootstrapStartedAtMillis, e.message)
+            if (ckbSchedulerBootstrapDeadlineExceededAt(taskName, bootstrapStartedAtMillis, ckbCoreNowMillis(), workerSoftDeadlineAtMillis)) {
+                _ = ckbWriteSchedulerTaskBootstrapDeadlineFailure(store, taskName, ckbCliOption(args, "--since"), workerSoftDeadlineAtMillis, resultRelativePath, schedulerRunId, bootstrapStartedAtMillis)
+            } else {
+                _ = ckbWriteSchedulerTaskBootstrapFailure(store, taskName, ckbCliOption(args, "--since"), workerSoftDeadlineAtMillis, resultRelativePath, schedulerRunId, bootstrapStartedAtMillis, e.message)
+            }
             return 1
         }
     }

@@ -53,6 +53,18 @@ public class CangjieCandidatePromotionResult {
     public init() {}
 }
 
+public class CangjieCandidatePromotionBudgetPlan {
+    public var segmented: Bool = false
+    public var vectorBudgetMillis: Int64 = 0
+    public var validationBudgetMillis: Int64 = 0
+    public var activeCommitBudgetMillis: Int64 = 0
+    public var snapshotBudgetMillis: Int64 = 0
+    public var workerSoftDeadlineAtMillis: Int64 = 0
+    public var deadlineClock: CkbMillisClock = SystemCkbMillisClock()
+
+    public init() {}
+}
+
 public func cangjieLiveSyncCandidateVersion(): String {
     "ckb-20260519-000100-candidate"
 }
@@ -226,51 +238,60 @@ public func cangjiePromoteCandidateAfterValidation(kb: KnowledgeBase, store: Fil
     cangjiePromoteCandidateAfterValidationWithVersion(kb, store, cangjieLiveSyncCandidateVersion(), forceFailure: forceFailure)
 }
 
-public func cangjiePromoteCandidateAfterValidationWithVersion(kb: KnowledgeBase, store: FileKnowledgeStore, candidateVersion: String, forceFailure!: Bool = false, progressSink!: VectorBuildProgressSink = NoopVectorBuildProgressSink(), stageSink!: CkbStagedRebuildStageSink = NoopCkbStagedRebuildStageSink(), deadlineAtMillis!: Int64 = 0): CangjieCandidatePromotionResult {
+public func cangjiePromoteCandidateAfterValidationWithVersion(kb: KnowledgeBase, store: FileKnowledgeStore, candidateVersion: String, forceFailure!: Bool = false, progressSink!: VectorBuildProgressSink = NoopVectorBuildProgressSink(), stageSink!: CkbStagedRebuildStageSink = NoopCkbStagedRebuildStageSink(), deadlineAtMillis!: Int64 = 0, budgetPlan!: CangjieCandidatePromotionBudgetPlan = CangjieCandidatePromotionBudgetPlan()): CangjieCandidatePromotionResult {
     let stagedCandidateVersion = kb.stageCandidateIndex(candidateVersion)
-    cangjiePromoteStagedCandidateAfterValidation(kb, store, stagedCandidateVersion, forceFailure: forceFailure, progressSink: progressSink, stageSink: stageSink, deadlineAtMillis: deadlineAtMillis)
+    cangjiePromoteStagedCandidateAfterValidation(kb, store, stagedCandidateVersion, forceFailure: forceFailure, progressSink: progressSink, stageSink: stageSink, deadlineAtMillis: deadlineAtMillis, budgetPlan: budgetPlan)
 }
 
-public func cangjiePromoteCandidateRecordsAfterValidationWithVersion(kb: KnowledgeBase, store: FileKnowledgeStore, candidateVersion: String, records: ArrayList<NormalizedRecord>, forceFailure!: Bool = false, progressSink!: VectorBuildProgressSink = NoopVectorBuildProgressSink(), stageSink!: CkbStagedRebuildStageSink = NoopCkbStagedRebuildStageSink(), deadlineAtMillis!: Int64 = 0): CangjieCandidatePromotionResult {
+public func cangjiePromoteCandidateRecordsAfterValidationWithVersion(kb: KnowledgeBase, store: FileKnowledgeStore, candidateVersion: String, records: ArrayList<NormalizedRecord>, forceFailure!: Bool = false, progressSink!: VectorBuildProgressSink = NoopVectorBuildProgressSink(), stageSink!: CkbStagedRebuildStageSink = NoopCkbStagedRebuildStageSink(), deadlineAtMillis!: Int64 = 0, budgetPlan!: CangjieCandidatePromotionBudgetPlan = CangjieCandidatePromotionBudgetPlan()): CangjieCandidatePromotionResult {
     let stagedCandidateVersion = kb.stageCandidateRecords(candidateVersion, records)
-    cangjiePromoteStagedCandidateAfterValidation(kb, store, stagedCandidateVersion, forceFailure: forceFailure, progressSink: progressSink, stageSink: stageSink, deadlineAtMillis: deadlineAtMillis)
+    cangjiePromoteStagedCandidateAfterValidation(kb, store, stagedCandidateVersion, forceFailure: forceFailure, progressSink: progressSink, stageSink: stageSink, deadlineAtMillis: deadlineAtMillis, budgetPlan: budgetPlan)
 }
 
-private func cangjiePromoteStagedCandidateAfterValidation(kb: KnowledgeBase, store: FileKnowledgeStore, stagedCandidateVersion: String, forceFailure!: Bool = false, progressSink!: VectorBuildProgressSink = NoopVectorBuildProgressSink(), stageSink!: CkbStagedRebuildStageSink = NoopCkbStagedRebuildStageSink(), deadlineAtMillis!: Int64 = 0): CangjieCandidatePromotionResult {
+private func cangjiePromoteStagedCandidateAfterValidation(kb: KnowledgeBase, store: FileKnowledgeStore, stagedCandidateVersion: String, forceFailure!: Bool = false, progressSink!: VectorBuildProgressSink = NoopVectorBuildProgressSink(), stageSink!: CkbStagedRebuildStageSink = NoopCkbStagedRebuildStageSink(), deadlineAtMillis!: Int64 = 0, budgetPlan!: CangjieCandidatePromotionBudgetPlan = CangjieCandidatePromotionBudgetPlan()): CangjieCandidatePromotionResult {
     let result = CangjieCandidatePromotionResult()
     result.candidateVersion = stagedCandidateVersion
     result.candidateWritten = true
     kb.persistCandidateSnapshot(store)
     let candidateRecords = kb.candidateRecordSnapshot()
+    let vectorDeadlineAtMillis = cangjieCandidateStageDeadline(budgetPlan, budgetPlan.vectorBudgetMillis, deadlineAtMillis)
     if (forceFailure) {
-        result.validation = validateCandidateServingIndexWithVectorStatus(candidateRecords, stagedCandidateVersion, cangjieCandidateImplicitVectorStatus(candidateRecords), forceFailure: true, deadlineAtMillis: deadlineAtMillis, validationScope: "candidate_promotion")
+        let validationDeadlineAtMillis = cangjieCandidateStageDeadline(budgetPlan, budgetPlan.validationBudgetMillis, deadlineAtMillis)
+        result.validation = validateCandidateServingIndexWithVectorStatus(candidateRecords, stagedCandidateVersion, cangjieCandidateImplicitVectorStatus(candidateRecords), forceFailure: true, deadlineAtMillis: validationDeadlineAtMillis, validationScope: "candidate_promotion")
         kb.markCandidateValidationFailed(stagedCandidateVersion)
         kb.persistCandidateSnapshot(store)
         result.activeVersion = kb.status().activeKnowledgeVersion
         return result
     }
-    if (cangjieCandidatePromotionDeadline(result, kb, store, stagedCandidateVersion, "candidate_vector_before", deadlineAtMillis)) {
+    if (cangjieCandidatePromotionDeadline(result, kb, store, stagedCandidateVersion, "candidate_vector_before", vectorDeadlineAtMillis, status: cangjieCandidateTimeoutStatus(budgetPlan, "candidate_vector_deadline_exceeded"))) {
         return result
     }
     let stagingCollection = cangjieCandidateStagingCollection(kb, stagedCandidateVersion)
     let vectorStartedAtMillis = ckbCoreNowMillis()
-    cangjieCandidateEmitStage(stageSink, "candidate_vector_started", "running", deadlineAtMillis, "candidate=${stagedCandidateVersion}|stagingCollection=${stagingCollection}|records=${candidateRecords.size}", itemCount: candidateRecords.size)
-    let vectorBuild = kb.buildVectorIndexForRecords(candidateRecords, stagingCollection, progressSink: progressSink, deadlineAtMillis: deadlineAtMillis)
+    cangjieCandidateEmitStage(stageSink, "candidate_vector_started", "running", vectorDeadlineAtMillis, "candidate=${stagedCandidateVersion}|stagingCollection=${stagingCollection}|records=${candidateRecords.size}", itemCount: candidateRecords.size)
+    let vectorBuild = kb.buildVectorIndexForRecords(candidateRecords, stagingCollection, progressSink: progressSink, deadlineAtMillis: vectorDeadlineAtMillis)
     var vectorStatus = cangjieCandidateVerifiedVectorStatus(kb, stagingCollection, candidateRecords.size, vectorBuild)
-    cangjieCandidateEmitStage(stageSink, "candidate_vector_finished", if (vectorBuild.ok) { "ok" } else { "failed" }, deadlineAtMillis, "candidate=${stagedCandidateVersion}|stagingCollection=${stagingCollection}|vectorCount=${vectorBuild.vectorCount}|diagnostic=${vectorBuild.diagnostic}", durationMillis: ckbCoreNowMillis() - vectorStartedAtMillis, itemCount: vectorBuild.vectorCount)
+    cangjieCandidateEmitStage(stageSink, "candidate_vector_finished", if (vectorBuild.ok) { "ok" } else { "failed" }, vectorDeadlineAtMillis, "candidate=${stagedCandidateVersion}|stagingCollection=${stagingCollection}|vectorCount=${vectorBuild.vectorCount}|diagnostic=${vectorBuild.diagnostic}", durationMillis: ckbCoreNowMillis() - vectorStartedAtMillis, itemCount: vectorBuild.vectorCount)
     if (!vectorBuild.ok) {
         result.validation = cangjieCandidateVectorFailureValidation(stagedCandidateVersion, vectorStatus)
+        if (cangjieCandidateHasDeadlineDiagnostic(vectorBuild.diagnostic)) {
+            result.validation.status = cangjieCandidateTimeoutStatus(budgetPlan, "candidate_vector_deadline_exceeded")
+        }
         kb.markCandidateValidationFailed(stagedCandidateVersion)
         kb.persistCandidateSnapshot(store)
         cangjieDeleteCandidateStaging(kb, stagingCollection, result.validation)
-        cangjieCandidateEmitStage(stageSink, "candidate_validation_finished", result.validation.status, deadlineAtMillis, "candidate=${stagedCandidateVersion}|ok=false|vectorReason=${result.validation.vectorDegradedReason}")
+        cangjieCandidateEmitStage(stageSink, "candidate_validation_finished", result.validation.status, vectorDeadlineAtMillis, "candidate=${stagedCandidateVersion}|ok=false|vectorReason=${result.validation.vectorDegradedReason}")
         result.activeVersion = kb.status().activeKnowledgeVersion
         return result
     }
+    let validationDeadlineAtMillis = cangjieCandidateStageDeadline(budgetPlan, budgetPlan.validationBudgetMillis, deadlineAtMillis)
     let validationStartedAtMillis = ckbCoreNowMillis()
-    cangjieCandidateEmitStage(stageSink, "candidate_validation_started", "running", deadlineAtMillis, "candidate=${stagedCandidateVersion}|records=${candidateRecords.size}", itemCount: candidateRecords.size)
-    result.validation = validateCandidateServingIndexWithVectorStatus(candidateRecords, stagedCandidateVersion, vectorStatus, forceFailure: false, deadlineAtMillis: deadlineAtMillis, validationScope: "candidate_promotion")
-    cangjieCandidateEmitStage(stageSink, "candidate_validation_finished", result.validation.status, deadlineAtMillis, "candidate=${stagedCandidateVersion}|ok=${result.validation.ok}|documents=${result.validation.servingDocumentCount}", durationMillis: ckbCoreNowMillis() - validationStartedAtMillis, itemCount: result.validation.servingDocumentCount)
+    cangjieCandidateEmitStage(stageSink, "candidate_validation_started", "running", validationDeadlineAtMillis, "candidate=${stagedCandidateVersion}|records=${candidateRecords.size}", itemCount: candidateRecords.size)
+    result.validation = validateCandidateServingIndexWithVectorStatus(candidateRecords, stagedCandidateVersion, vectorStatus, forceFailure: false, deadlineAtMillis: validationDeadlineAtMillis, validationScope: "candidate_promotion")
+    if (result.validation.status == "candidate_validation_timeout" && budgetPlan.segmented) {
+        result.validation.status = "candidate_validation_deadline_exceeded"
+    }
+    cangjieCandidateEmitStage(stageSink, "candidate_validation_finished", result.validation.status, validationDeadlineAtMillis, "candidate=${stagedCandidateVersion}|ok=${result.validation.ok}|documents=${result.validation.servingDocumentCount}", durationMillis: ckbCoreNowMillis() - validationStartedAtMillis, itemCount: result.validation.servingDocumentCount)
     if (!result.validation.ok) {
         kb.markCandidateValidationFailed(stagedCandidateVersion)
         kb.persistCandidateSnapshot(store)
@@ -278,19 +299,23 @@ private func cangjiePromoteStagedCandidateAfterValidation(kb: KnowledgeBase, sto
         result.activeVersion = kb.status().activeKnowledgeVersion
         return result
     }
-    if (cangjieCandidatePromotionDeadline(result, kb, store, stagedCandidateVersion, "candidate_active_commit_before", deadlineAtMillis)) {
+    let activeCommitDeadlineAtMillis = cangjieCandidateStageDeadline(budgetPlan, budgetPlan.activeCommitBudgetMillis, deadlineAtMillis)
+    if (cangjieCandidatePromotionDeadline(result, kb, store, stagedCandidateVersion, "candidate_active_commit_before", activeCommitDeadlineAtMillis, status: cangjieCandidateTimeoutStatus(budgetPlan, "candidate_active_commit_deadline_exceeded"))) {
         cangjieDeleteCandidateStaging(kb, stagingCollection, result.validation)
         return result
     }
     let activeVersion = cangjieActiveVersionForCandidate(stagedCandidateVersion)
-    let oldSnapshot = store.loadActiveSnapshot()
+    var oldSnapshot = store.loadActiveSnapshot()
+    if (!oldSnapshot.valid) {
+        oldSnapshot = kb.activeSnapshotForRollback()
+    }
     let activeCommitStartedAtMillis = ckbCoreNowMillis()
-    cangjieCandidateEmitStage(stageSink, "candidate_active_commit_started", "running", deadlineAtMillis, "candidate=${stagedCandidateVersion}|active=${activeVersion}|stagingCollection=${stagingCollection}", itemCount: candidateRecords.size)
+    cangjieCandidateEmitStage(stageSink, "candidate_active_commit_started", "running", activeCommitDeadlineAtMillis, "candidate=${stagedCandidateVersion}|active=${activeVersion}|stagingCollection=${stagingCollection}", itemCount: candidateRecords.size)
     try {
-        result.activePromoted = kb.commitCandidateToActiveAfterVectorReady(activeVersion, stagingCollection, vectorStatus, deadlineAtMillis: deadlineAtMillis)
+        result.activePromoted = kb.commitCandidateToActiveAfterVectorReady(activeVersion, stagingCollection, vectorStatus, deadlineAtMillis: activeCommitDeadlineAtMillis)
     } catch (e: Exception) {
-        cangjieCandidatePromotionException(result, kb, store, stagedCandidateVersion, e.message)
-        cangjieCandidateEmitStage(stageSink, "candidate_active_commit_finished", result.validation.status, deadlineAtMillis, "candidate=${stagedCandidateVersion}|active=${activeVersion}|diagnostic=${e.message}", durationMillis: ckbCoreNowMillis() - activeCommitStartedAtMillis, itemCount: candidateRecords.size)
+        cangjieCandidatePromotionException(result, kb, store, stagedCandidateVersion, e.message, deadlineStatus: cangjieCandidateTimeoutStatus(budgetPlan, "candidate_active_commit_deadline_exceeded"))
+        cangjieCandidateEmitStage(stageSink, "candidate_active_commit_finished", result.validation.status, activeCommitDeadlineAtMillis, "candidate=${stagedCandidateVersion}|active=${activeVersion}|diagnostic=${e.message}", durationMillis: ckbCoreNowMillis() - activeCommitStartedAtMillis, itemCount: candidateRecords.size)
         if (oldSnapshot.valid) {
             _ = kb.restoreActiveSnapshot(oldSnapshot)
         }
@@ -298,9 +323,17 @@ private func cangjiePromoteStagedCandidateAfterValidation(kb: KnowledgeBase, sto
         return result
     }
     result.activeVersion = activeVersion
-    cangjieCandidateEmitStage(stageSink, "candidate_active_commit_finished", if (result.activePromoted) { "ok" } else { "failed" }, deadlineAtMillis, "candidate=${stagedCandidateVersion}|active=${activeVersion}|promoted=${result.activePromoted}", durationMillis: ckbCoreNowMillis() - activeCommitStartedAtMillis, itemCount: candidateRecords.size)
+    cangjieCandidateEmitStage(stageSink, "candidate_active_commit_finished", if (result.activePromoted) { "ok" } else { "failed" }, activeCommitDeadlineAtMillis, "candidate=${stagedCandidateVersion}|active=${activeVersion}|promoted=${result.activePromoted}", durationMillis: ckbCoreNowMillis() - activeCommitStartedAtMillis, itemCount: candidateRecords.size)
+    if (cangjieCandidatePromotionDeadline(result, kb, store, stagedCandidateVersion, "candidate_active_commit_after", activeCommitDeadlineAtMillis, status: cangjieCandidateTimeoutStatus(budgetPlan, "candidate_active_commit_deadline_exceeded"))) {
+        if (oldSnapshot.valid) {
+            _ = kb.restoreActiveSnapshot(oldSnapshot)
+        }
+        cangjieDeleteCandidateStaging(kb, stagingCollection, result.validation)
+        return result
+    }
     if (result.activePromoted) {
-        if (cangjieCandidatePromotionDeadline(result, kb, store, stagedCandidateVersion, "candidate_active_snapshot_before", deadlineAtMillis)) {
+        let snapshotDeadlineAtMillis = cangjieCandidateStageDeadline(budgetPlan, budgetPlan.snapshotBudgetMillis, deadlineAtMillis)
+        if (cangjieCandidatePromotionDeadline(result, kb, store, stagedCandidateVersion, "candidate_active_snapshot_before", snapshotDeadlineAtMillis, status: cangjieCandidateTimeoutStatus(budgetPlan, "candidate_active_snapshot_deadline_exceeded"))) {
             if (oldSnapshot.valid) {
                 _ = kb.restoreActiveSnapshot(oldSnapshot)
             }
@@ -308,27 +341,48 @@ private func cangjiePromoteStagedCandidateAfterValidation(kb: KnowledgeBase, sto
             return result
         }
         let activeSnapshotStartedAtMillis = ckbCoreNowMillis()
-        cangjieCandidateEmitStage(stageSink, "candidate_active_snapshot_started", "running", deadlineAtMillis, "candidate=${stagedCandidateVersion}|active=${activeVersion}|vectorRecords=${vectorBuild.vectorRecords.size}", itemCount: vectorBuild.vectorRecords.size)
+        cangjieCandidateEmitStage(stageSink, "candidate_active_snapshot_started", "running", snapshotDeadlineAtMillis, "candidate=${stagedCandidateVersion}|active=${activeVersion}|vectorRecords=${vectorBuild.vectorRecords.size}", itemCount: vectorBuild.vectorRecords.size)
         try {
-            kb.persistActiveSnapshotUsingVectorRecords(store, vectorBuild.vectorRecords, persistVectorFile: cangjieCandidateShouldPersistVectorFile(vectorStatus), deadlineAtMillis: deadlineAtMillis, stageSink: stageSink)
+            kb.persistActiveSnapshotUsingVectorRecords(store, vectorBuild.vectorRecords, persistVectorFile: cangjieCandidateShouldPersistVectorFile(vectorStatus), deadlineAtMillis: snapshotDeadlineAtMillis, stageSink: stageSink)
         } catch (e: Exception) {
             result.validation.ok = false
-            result.validation.status = if (e.message.startsWith("deadline_exceeded:")) { "candidate_validation_timeout" } else { "candidate_active_snapshot_failed" }
-            result.validation.diagnostics.add(if (e.message == "") { "candidate_active_snapshot_failed" } else { e.message })
-            cangjieCandidateEmitStage(stageSink, "candidate_active_snapshot_finished", result.validation.status, deadlineAtMillis, "candidate=${stagedCandidateVersion}|active=${activeVersion}|diagnostic=${e.message}", durationMillis: ckbCoreNowMillis() - activeSnapshotStartedAtMillis, itemCount: vectorBuild.vectorRecords.size)
+            result.validation.status = if (e.message.startsWith("deadline_exceeded:")) { cangjieCandidateTimeoutStatus(budgetPlan, "candidate_active_snapshot_deadline_exceeded") } else { "candidate_active_snapshot_failed" }
+            result.validation.diagnostics.add(if (e.message == "") { "candidate_active_snapshot_failed" } else { utf8SafePrefix(redactSensitive(e.message), 240) })
+            cangjieCandidateEmitStage(stageSink, "candidate_active_snapshot_finished", result.validation.status, snapshotDeadlineAtMillis, "candidate=${stagedCandidateVersion}|active=${activeVersion}|diagnostic=${e.message}", durationMillis: ckbCoreNowMillis() - activeSnapshotStartedAtMillis, itemCount: vectorBuild.vectorRecords.size)
             if (oldSnapshot.valid) {
                 _ = kb.restoreActiveSnapshot(oldSnapshot)
             }
             cangjieDeleteCandidateStaging(kb, stagingCollection, result.validation)
             return result
         }
-        cangjieCandidateEmitStage(stageSink, "candidate_active_snapshot_finished", "ok", deadlineAtMillis, "candidate=${stagedCandidateVersion}|active=${activeVersion}|vectorRecords=${vectorBuild.vectorRecords.size}", durationMillis: ckbCoreNowMillis() - activeSnapshotStartedAtMillis, itemCount: vectorBuild.vectorRecords.size)
-        _ = ckbDeadlineGuard("candidate_active_snapshot_after", deadlineAtMillis)
+        cangjieCandidateEmitStage(stageSink, "candidate_active_snapshot_finished", "ok", snapshotDeadlineAtMillis, "candidate=${stagedCandidateVersion}|active=${activeVersion}|vectorRecords=${vectorBuild.vectorRecords.size}", durationMillis: ckbCoreNowMillis() - activeSnapshotStartedAtMillis, itemCount: vectorBuild.vectorRecords.size)
+        if (cangjieCandidatePromotionDeadline(result, kb, store, stagedCandidateVersion, "candidate_active_snapshot_after", snapshotDeadlineAtMillis, status: cangjieCandidateTimeoutStatus(budgetPlan, "candidate_active_snapshot_deadline_exceeded"))) {
+            if (oldSnapshot.valid) {
+                _ = kb.restoreActiveSnapshot(oldSnapshot)
+            }
+            cangjieDeleteCandidateStaging(kb, stagingCollection, result.validation)
+            return result
+        }
     } else {
         cangjieDeleteCandidateStaging(kb, stagingCollection, result.validation)
     }
     result.ok = result.activePromoted
     result
+}
+
+private func cangjieCandidateStageDeadline(plan: CangjieCandidatePromotionBudgetPlan, stageBudgetMillis: Int64, legacyDeadlineAtMillis: Int64): Int64 {
+    if (!plan.segmented) {
+        return legacyDeadlineAtMillis
+    }
+    ckbStageDeadlineAt(plan.deadlineClock.nowMillis(), plan.workerSoftDeadlineAtMillis, stageBudgetMillis)
+}
+
+private func cangjieCandidateTimeoutStatus(plan: CangjieCandidatePromotionBudgetPlan, segmentedStatus: String): String {
+    if (plan.segmented) { segmentedStatus } else { "candidate_validation_timeout" }
+}
+
+private func cangjieCandidateHasDeadlineDiagnostic(diagnostic: String): Bool {
+    diagnostic.contains("deadline_exceeded:") || diagnostic.contains("_deadline_exceeded")
 }
 
 private func cangjieCandidateEmitStage(stageSink: CkbStagedRebuildStageSink, stage: String, status: String, deadlineAtMillis: Int64, diagnostic: String, durationMillis!: Int64 = 0, itemCount!: Int64 = 0): Unit {
@@ -348,10 +402,10 @@ private func cangjieCandidateEmitStage(stageSink: CkbStagedRebuildStageSink, sta
     }
 }
 
-private func cangjieCandidatePromotionException(result: CangjieCandidatePromotionResult, kb: KnowledgeBase, store: FileKnowledgeStore, stagedCandidateVersion: String, message: String): Unit {
+private func cangjieCandidatePromotionException(result: CangjieCandidatePromotionResult, kb: KnowledgeBase, store: FileKnowledgeStore, stagedCandidateVersion: String, message: String, deadlineStatus!: String = "candidate_validation_timeout"): Unit {
     result.activePromoted = false
     result.validation.ok = false
-    result.validation.status = if (message.startsWith("deadline_exceeded:")) { "candidate_validation_timeout" } else { "candidate_active_commit_failed" }
+    result.validation.status = if (message.startsWith("deadline_exceeded:")) { deadlineStatus } else { "candidate_active_commit_failed" }
     result.validation.candidateVersion = stagedCandidateVersion
     result.validation.activeVersion = cangjieActiveVersionForCandidate(stagedCandidateVersion)
     result.validation.diagnostics.add(if (message == "") { result.validation.status } else { redactSensitive(message) })
@@ -360,13 +414,13 @@ private func cangjieCandidatePromotionException(result: CangjieCandidatePromotio
     result.activeVersion = kb.status().activeKnowledgeVersion
 }
 
-private func cangjieCandidatePromotionDeadline(result: CangjieCandidatePromotionResult, kb: KnowledgeBase, store: FileKnowledgeStore, stagedCandidateVersion: String, stage: String, deadlineAtMillis: Int64): Bool {
+private func cangjieCandidatePromotionDeadline(result: CangjieCandidatePromotionResult, kb: KnowledgeBase, store: FileKnowledgeStore, stagedCandidateVersion: String, stage: String, deadlineAtMillis: Int64, status!: String = "candidate_validation_timeout"): Bool {
     let deadline = ckbDeadlineGuard(stage, deadlineAtMillis)
     if (!deadline.exceeded) {
         return false
     }
     result.validation.ok = false
-    result.validation.status = "candidate_validation_timeout"
+    result.validation.status = status
     result.validation.candidateVersion = stagedCandidateVersion
     result.validation.activeVersion = cangjieActiveVersionForCandidate(stagedCandidateVersion)
     result.validation.diagnostics.add(deadline.diagnostic)

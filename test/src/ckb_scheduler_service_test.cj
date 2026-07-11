@@ -357,6 +357,122 @@ public class CkbSchedulerServiceF5Test {
     }
 
     @TestCase
+    public func p5S2P01ReleaseUsesIndependentStagesAndRealAttemptAccounting(): Unit {
+        let root = "target/p5-s2-p01-release-attempt-accounting"
+        s1s2EnsureEmptyDir(root)
+        let config = CkbRuntimeConfig()
+        config.networkEnabled = true
+        let store = FileKnowledgeStore(root)
+        store.saveCangjieVersionManifest(f5ScheduledManifest())
+        let sourceRunner = P5S2RetryAccountingRunner()
+        let service = CkbCommandLoopService(config, store, sourceRunner: sourceRunner)
+        _ = service.start()
+        let tasks = ArrayList<String>()
+        tasks.add("cangjie_release_full_sync")
+
+        let result = service.runSchedulerTasks(tasks, true)
+        let record = result.taskRecords[0]
+        let json = ckbSchedulerRunOutputJson(result)
+
+        @Expect(result.ran, 1)
+        @Expect(result.succeeded, 1)
+        @Expect(result.failed, 0)
+        @Expect(record.status, "candidate_validated_promoted")
+        @Expect(record.timeBudgetMillis, 440000)
+        @Expect(p5S2RequestPurposeCount(sourceRunner.calls, "docs_probe"), 1)
+        @Expect(p5S2RequestPurposeCount(sourceRunner.calls, "branch_list"), 4)
+        @Expect(p5S2RequestPurposeCount(sourceRunner.calls, "branch_ref"), 1)
+        @Expect(p5S2RequestPurposeCount(sourceRunner.calls, "source_tree"), 4)
+        @Expect(p5S2RequestPurposeCount(sourceRunner.calls, "source_raw_snapshot"), 7)
+        @Expect(p5S2RequestPurposeCount(sourceRunner.calls, "source_contents_snapshot"), 1)
+        @Expect(sourceRunner.calls.size, 18)
+        @Expect(p5S2RequestPurposeSequence(sourceRunner.calls), "docs_probe>branch_list>source_tree>source_raw_snapshot>branch_list>branch_ref>source_tree>source_raw_snapshot>source_raw_snapshot>branch_list>source_tree>source_raw_snapshot>source_contents_snapshot>source_raw_snapshot>branch_list>source_tree>source_raw_snapshot>source_raw_snapshot")
+        @Expect(record.requestCount, record.actualAttempts)
+        @Expect(record.actualAttempts, 19)
+        @Expect(record.successfulAttempts, 17)
+        @Expect(record.retryAttempts, 1)
+        @Expect(record.plannedRequests, 18)
+        @Expect(record.completedRequests, 17)
+        @Expect(record.failedRequests, 1)
+        @Expect(record.plannedRequests, record.completedRequests + record.failedRequests)
+        @Expect(p5S2RequestUrlPrefixCount(sourceRunner.calls, "ckb-manifest-ref://"), 0)
+        @Expect(p5S2RequestUrlPrefixCount(sourceRunner.calls, "ckb-local://"), 0)
+        @Expect(p5S2ActiveRawSourceUrlCount(store, "ckb-manifest-ref://"), 3)
+        @Expect(p5S2ActiveRawSourceUrlCount(store, "ckb-local://"), 1)
+        @Expect(record.plannedRequests, sourceRunner.calls.size)
+        @Expect(record.durationMillis == 44000, false)
+        @Expect(ruDiagnosticsContain(record.stageDurations, "stage=fetch|durationMillis="), true)
+        @Expect(ruDiagnosticsContain(record.stageDurations, "stage=ingest|durationMillis="), true)
+        @Expect(ruDiagnosticsContain(record.stageDurations, "stage=candidate_vector_finished|durationMillis="), true)
+        @Expect(ruDiagnosticsContain(record.stageDurations, "stage=candidate_validation_finished|durationMillis="), true)
+        @Expect(ruDiagnosticsContain(record.stageDurations, "stage=candidate_active_commit_finished|durationMillis="), true)
+        @Expect(ruDiagnosticsContain(record.stageDurations, "stage=candidate_active_snapshot_finished|durationMillis="), true)
+        @Expect(json.contains("\"actualAttempts\":${record.actualAttempts}"), true)
+        @Expect(json.contains("\"retryAttempts\":1"), true)
+        @Expect(json.contains("\"failedRequests\":1"), true)
+    }
+
+    @TestCase
+    public func p5S2N01ABootstrapFetchAndIngestDeadlinesStayPrecise(): Unit {
+        let base = ckbCoreNowMillis()
+        @Expect(ckbSchedulerBootstrapDeadlineAtMillis("cangjie_release_full_sync", base, base + 435000), base + 40000)
+        @Expect(ckbSchedulerBootstrapDeadlineExceededAt("cangjie_release_full_sync", base, base + 39999, base + 435000), false)
+        @Expect(ckbSchedulerBootstrapDeadlineExceededAt("cangjie_release_full_sync", base, base + 40000, base + 435000), true)
+
+        let bootstrapRoot = "target/p5-s2-n01-bootstrap"
+        s1s2EnsureEmptyDir(bootstrapRoot)
+        let bootstrapStore = FileKnowledgeStore(bootstrapRoot)
+        let bootstrapTask = ckbWriteSchedulerTaskBootstrapDeadlineFailure(bootstrapStore, "cangjie_release_full_sync", "0", base + 435000, "metadata/scheduler-workers/bootstrap.ckb", "p5-s2-bootstrap", base)
+        let bootstrapConfirmed = ckbSchedulerTaskResultFromText(bootstrapStore.readText("metadata/scheduler-workers/bootstrap.ckb.sidecar"))
+        @Expect(bootstrapTask.status, "bootstrap_deadline_exceeded")
+        @Expect(bootstrapConfirmed.status, "bootstrap_deadline_exceeded")
+        @Expect(bootstrapConfirmed.resultWrittenAtMillis > 0, true)
+        @Expect(bootstrapConfirmed.lastStage, "bootstrap_deadline_exceeded")
+
+        let fetchRoot = "target/p5-s2-n01-fetch"
+        s1s2EnsureEmptyDir(fetchRoot)
+        let fetchStore = FileKnowledgeStore(fetchRoot)
+        fetchStore.saveCangjieVersionManifest(f5ScheduledManifest())
+        let fetchClock = P5S2SchedulerSequenceClock()
+        fetchClock.add(base - 80001)
+        let fetchSource = P5S2RetryAccountingRunner()
+        let fetchKb = newOfflineKnowledgeBase()
+        let fetchBefore = fetchKb.status().activeKnowledgeVersion
+        let fetchTask = CkbSchedulerTaskRunner(fetchKb, CkbRuntimeConfig(), fetchStore, sourceRunner: fetchSource, deadlineClock: fetchClock).runTask("cangjie_release_full_sync", "0", base + 435000)
+        @Expect(fetchTask.ok, false)
+        @Expect(fetchTask.status, "fetch_deadline_exceeded")
+        @Expect(fetchTask.lastStage, "fetch_deadline_exceeded")
+        @Expect(fetchTask.actualAttempts, 0)
+        @Expect(fetchTask.plannedRequests > 0, true)
+        @Expect(fetchTask.failedRequests, fetchTask.plannedRequests)
+        @Expect(fetchSource.calls.size, 0)
+        @Expect(fetchKb.status().activeKnowledgeVersion, fetchBefore)
+
+        let ingestRoot = "target/p5-s2-n01-ingest"
+        s1s2EnsureEmptyDir(ingestRoot)
+        let ingestStore = FileKnowledgeStore(ingestRoot)
+        ingestStore.saveCangjieVersionManifest(f5ScheduledManifest())
+        let ingestClock = P5S2SchedulerSequenceClock()
+        ingestClock.add(base)
+        ingestClock.add(base - 20001)
+        let ingestKb = newOfflineKnowledgeBase()
+        let ingestBefore = ingestKb.status().activeKnowledgeVersion
+        let ingestTask = CkbSchedulerTaskRunner(ingestKb, CkbRuntimeConfig(), ingestStore, sourceRunner: P5S2RetryAccountingRunner(), deadlineClock: ingestClock).runTask("cangjie_release_full_sync", "0", base + 435000)
+        @Expect(ingestTask.ok, false)
+        @Expect(ingestTask.status, "ingest_deadline_exceeded")
+        @Expect(ingestTask.lastStage, "ingest_deadline_exceeded")
+        @Expect(ingestKb.status().activeKnowledgeVersion, ingestBefore)
+
+        let timeoutScheduler = Scheduler(FakeClock(1000))
+        let timeoutTasks = ArrayList<String>()
+        timeoutTasks.add("cangjie_release_full_sync")
+        let timeoutResult = SchedulerExecutor(timeoutScheduler, P5S2FixedDeadlineStatusRunner("candidate_active_snapshot_deadline_exceeded")).runTaskNames(timeoutTasks, force: true)
+        @Expect(timeoutResult.timedOut, true)
+        @Expect(timeoutResult.partial, true)
+        @Expect(timeoutResult.taskRecords[0].status, "candidate_active_snapshot_deadline_exceeded")
+    }
+
+    @TestCase
     public func p5S1E2EBOperationalFailureSurvivesContractPersistenceAndLanding(): Unit {
         let root = "target/p5-s1-e2e-b-operational-status"
         s1s2EnsureEmptyDir(root)
@@ -1949,6 +2065,74 @@ private class DeadlineCountingFetchRunner <: SourceFetchRunner {
     }
 }
 
+private class P5S2RetryAccountingRunner <: SourceFetchRunner {
+    public var calls: ArrayList<SourceFetchRequest> = ArrayList<SourceFetchRequest>()
+    private let delegate: FakeSourceFetchRunner = FakeSourceFetchRunner()
+
+    public init() {}
+
+    public func fetch(request: SourceFetchRequest): SourceFetchResult {
+        this.calls.add(request)
+        let result = this.delegate.fetch(request)
+        if (request.purpose == "branch_list" && request.repo == "Cangjie/cangjie_runtime") {
+            result.body = "[]"
+            result.bodyHash = stableSummaryHash(result.body)
+        } else if (request.purpose == "source_raw_snapshot" && request.repo == "Cangjie/cangjie_stdx" && request.path.endsWith(".cj")) {
+            result.ok = false
+            result.status = "server_error"
+            result.statusCode = 500
+            result.body = "raw unavailable 中文🙂"
+            result.bodyHash = stableSummaryHash(result.body)
+        } else if (request.purpose == "source_contents_snapshot" && request.repo == "Cangjie/cangjie_stdx") {
+            result.ok = true
+            result.status = "ok"
+            result.statusCode = 200
+            result.contentType = "application/json"
+            result.body = "{\"type\":\"file\",\"encoding\":\"base64\",\"content\":\"cGFja2FnZSBmYWtlXG5wdWJsaWMgZnVuYyBmYWtlU2NoZWR1bGVkU291cmNlKCk6IFVuaXQge31cbg==\",\"path\":\"${request.path}\",\"sha\":\"abcdef0123456789abcdef0123456789abcdef01\"}"
+            result.bodyHash = stableSummaryHash(result.body)
+        }
+        result.attempts = if (request.kind == SourceKinds.CANGJIE_DOCS) { 2 } else { 1 }
+        result
+    }
+}
+
+private class P5S2SchedulerSequenceClock <: CkbMillisClock {
+    private var values: ArrayList<Int64> = ArrayList<Int64>()
+    private var index: Int64 = 0
+
+    public init() {}
+
+    public func add(value: Int64): Unit {
+        this.values.add(value)
+    }
+
+    public func nowMillis(): Int64 {
+        var selected = this.index
+        if (selected >= this.values.size) {
+            selected = this.values.size - 1
+        }
+        let value = this.values[selected]
+        this.index += 1
+        value
+    }
+}
+
+private class P5S2FixedDeadlineStatusRunner <: SchedulerTaskRunner {
+    private let status: String
+
+    public init(status: String) {
+        this.status = status
+    }
+
+    public func runTask(name: String, since: String, deadlineAtMillis: Int64): SchedulerTaskResult {
+        let result = SchedulerTaskResult()
+        result.ok = false
+        result.status = this.status
+        result.lastStage = this.status
+        result
+    }
+}
+
 private class F5FreshnessUpToDateRunner <: SourceFetchRunner {
     var calls: Int64 = 0
 
@@ -2497,6 +2681,48 @@ private func f7RunnerSawKind(runner: F7GitCodeMetadata400TreeOkRunner, kind: Str
         }
     }
     false
+}
+
+private func p5S2RequestPurposeCount(calls: ArrayList<SourceFetchRequest>, purpose: String): Int64 {
+    var count: Int64 = 0
+    for (call in calls) {
+        if (call.purpose == purpose) {
+            count += 1
+        }
+    }
+    count
+}
+
+private func p5S2RequestPurposeSequence(calls: ArrayList<SourceFetchRequest>): String {
+    var sequence = ""
+    for (call in calls) {
+        if (sequence != "") {
+            sequence += ">"
+        }
+        sequence += call.purpose
+    }
+    sequence
+}
+
+private func p5S2RequestUrlPrefixCount(calls: ArrayList<SourceFetchRequest>, prefix: String): Int64 {
+    var count: Int64 = 0
+    for (call in calls) {
+        if (call.url.startsWith(prefix)) {
+            count += 1
+        }
+    }
+    count
+}
+
+private func p5S2ActiveRawSourceUrlCount(store: FileKnowledgeStore, prefix: String): Int64 {
+    let snapshot = store.loadActiveSnapshot()
+    var count: Int64 = 0
+    for (record in snapshot.rawRecords) {
+        if (record.metadata.sourceUrl.startsWith(prefix)) {
+            count += 1
+        }
+    }
+    count
 }
 
 private func f7RunnerSawUrlFragment(runner: F7SlashRefTreeOkRunner, fragment: String): Bool {
