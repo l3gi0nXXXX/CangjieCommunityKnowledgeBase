@@ -329,6 +329,9 @@ private class F9ReleaseGateFreshRunner <: SourceFetchRunner {
             return "[{\"name\":\"main\",\"commit\":{\"id\":\"${commit}\",\"sha\":\"${commit}\"}},{\"name\":\"release-1.0.0\",\"commit\":{\"id\":\"${commit}\",\"sha\":\"${commit}\"}},{\"name\":\"release/1.0\",\"commit\":{\"id\":\"${commit}\",\"sha\":\"${commit}\"}}]"
         }
         if (request.kind == SourceKinds.GITCODE_TREE) {
+            if (request.page > 1) {
+                return "{\"tree\":[],\"sha\":\"${this.expectedCommit(request)}\"}"
+            }
             return "{\"tree\":[{\"path\":\"src/release_gate_fixture.cj\",\"type\":\"blob\"},{\"path\":\"README.md\",\"type\":\"blob\"}],\"sha\":\"${this.expectedCommit(request)}\"}"
         }
         if (request.kind == SourceKinds.GITCODE_SOURCE && request.path.endsWith(".cj")) {

@@ -3384,13 +3384,16 @@ public class CkbServiceApiTest {
     public func p1Pos001SchedulerUsesPersistedManifestRefsInsteadOfHardcodedRelease(): Unit {
         let config = CkbRuntimeConfig()
         config.networkEnabled = true
-        let fake = FakeSourceFetchRunner()
+        config.firstInitEvalRoot = p1WriteEvalFixture("target/p1-scheduler-manifest-ref-eval")
+        config.firstInitTargetVersion = "1.0.0"
+        let fake = P1ReleaseFullRunner()
         let store = FileKnowledgeStore("target/p1-scheduler-manifest-ref")
         store.saveCangjieVersionManifest(p1SchedulerManifest("release-9.9.9"))
         let service = CkbCommandLoopService(config, store, sourceRunner: fake)
 
-        _ = ckbApiHandle(service, "POST", "/v1/admin/scheduler/run", "{\"taskNames\":[\"cangjie_release_full_sync\"],\"force\":true}", ["Authorization: Bearer admin"])
+        let response = ckbApiHandle(service, "POST", "/v1/admin/scheduler/run", "{\"taskNames\":[\"cangjie_release_full_sync\"],\"force\":true}", ["Authorization: Bearer admin"])
 
+        @Expect(response.contains("\"succeeded\":1"), true)
         @Expect(p1HasRepoRef(fake.calls, "Cangjie/cangjie_docs", "release-9.9.9"), true)
         @Expect(p1HasRepoRef(fake.calls, "Cangjie/cangjie_runtime", "release-9.9.9"), true)
         @Expect(p1HasRepoRef(fake.calls, "Cangjie/cangjie_stdx", "release-9.9.9"), true)
@@ -3829,7 +3832,53 @@ private func p1SchedulerManifest(ref: String): CangjieVersionManifest {
     p1AddManifestSource(manifest, CangjieSourceSets.STD, "stdlib", "Cangjie/cangjie_runtime", ref)
     p1AddManifestSource(manifest, CangjieSourceSets.STDX, "stdx", "Cangjie/cangjie_stdx", ref)
     p1AddManifestSource(manifest, CangjieSourceSets.TOOLS, "tools", "Cangjie/cangjie_tools", ref)
+    p1AddManifestSource(manifest, CangjieSourceSets.EVAL_SUPPORT, "eval-support", "CangjieCommunityKnowledgeBase/Cangjie-HumanEval", ref)
     manifest
+}
+
+private class P1ReleaseFullRunner <: SourceFetchRunner {
+    public var calls: ArrayList<SourceFetchRequest> = ArrayList<SourceFetchRequest>()
+    private let delegate: FakeSourceFetchRunner = FakeSourceFetchRunner()
+
+    init() {}
+
+    public func fetch(request: SourceFetchRequest): SourceFetchResult {
+        this.calls.add(request)
+        if (request.kind == SourceKinds.GITCODE_TREE && request.page > 1) {
+            let result = SourceFetchResult()
+            result.ok = true
+            result.status = "ok"
+            result.statusCode = 200
+            result.sourceUrl = request.url
+            result.repo = request.repo
+            result.ref = request.ref
+            result.path = request.path
+            result.normalizedType = request.kind
+            result.contentType = "application/json"
+            result.commit = "abcdef0123456789abcdef0123456789abcdef01"
+            result.body = "{\"tree\":[],\"sha\":\"${result.commit}\"}"
+            result.bytes = result.body.size
+            result.bodyHash = stableSummaryHash(result.body)
+            result.attempts = 1
+            return result
+        }
+        this.delegate.fetch(request)
+    }
+}
+
+private func p1WriteEvalFixture(root: String): String {
+    p1WriteFixtureFile(Path(root).join("CJ-HUMANEVAL-000/prompt.md"), "# Task\nUse EvalValue and EvalEntry.\n")
+    p1WriteFixtureFile(Path(root).join("CJ-HUMANEVAL-000/metadata.json"), "{\"id\":\"CJ-HUMANEVAL-000\"}\n")
+    p1WriteFixtureFile(Path(root).join("CJ-HUMANEVAL-000/starter/src/eval_support.cj"), "public class EvalValue {}\npublic class EvalEntry {}\n")
+    p1WriteFixtureFile(Path(root).join("CJ-HUMANEVAL-000/tests/TestMain.cj"), "public func helper(): Unit {}\nmain() {}\n")
+    root
+}
+
+private func p1WriteFixtureFile(path: Path, content: String): Unit {
+    if (!exists(path.parent)) {
+        Directory.create(path.parent, recursive: true)
+    }
+    File.writeTo(path, content.toArray())
 }
 
 private func p1AddManifestSource(manifest: CangjieVersionManifest, sourceSet: String, sourceFamily: String, repo: String, ref: String): Unit {

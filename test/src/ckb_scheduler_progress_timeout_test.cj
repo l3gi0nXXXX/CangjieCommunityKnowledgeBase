@@ -641,9 +641,11 @@ public class CkbSchedulerProgressTimeoutTest {
         store.saveCangjieVersionManifest(p5S2E2EManifest())
         let config = CkbRuntimeConfig()
         config.networkEnabled = true
+        config.firstInitEvalRoot = p5S2WriteEvalFixture("${storePath}/eval-fixture")
+        config.firstInitTargetVersion = "1.0.0"
         let bootstrapStartedAtMillis = ckbCoreNowMillis()
         let taskBodyStartedAtMillis = ckbCoreNowMillis()
-        let task = CkbSchedulerTaskRunner(newOfflineKnowledgeBase(), config, store, sourceRunner: FakeSourceFetchRunner()).runTask("cangjie_release_full_sync", "0", softDeadlineAtMillis)
+        let task = CkbSchedulerTaskRunner(newOfflineKnowledgeBase(), config, store, sourceRunner: P5S2E2EReleaseRunner()).runTask("cangjie_release_full_sync", "0", softDeadlineAtMillis)
         let taskBodyEndedAtMillis = ckbCoreNowMillis()
         task.schedulerRunId = "p5-s2-e2e-a"
         task.schedulerTaskName = "cangjie_release_full_sync"
@@ -1516,18 +1518,69 @@ private func p5S2RequiredChildVariable(name: String): String {
 private func p5S2E2EManifest(): CangjieVersionManifest {
     let manifest = CangjieVersionManifest()
     manifest.defaultTargetVersion = cangjieDefaultTargetVersion()
+    p5S2AddE2ESource(manifest, CangjieSourceSets.DOCS, "docs", "Cangjie/cangjie_docs")
+    p5S2AddE2ESource(manifest, CangjieSourceSets.STD, "stdlib", "Cangjie/cangjie_runtime")
+    p5S2AddE2ESource(manifest, CangjieSourceSets.STDX, "stdx", "Cangjie/cangjie_stdx")
+    p5S2AddE2ESource(manifest, CangjieSourceSets.TOOLS, "tools", "Cangjie/cangjie_tools")
+    p5S2AddE2ESource(manifest, CangjieSourceSets.EVAL_SUPPORT, "eval-support", "CangjieCommunityKnowledgeBase/Cangjie-HumanEval")
+    manifest
+}
+
+private func p5S2AddE2ESource(manifest: CangjieVersionManifest, sourceSet: String, sourceFamily: String, repo: String): Unit {
     let source = CangjieVersionSource()
     source.targetVersion = cangjieDefaultTargetVersion()
-    source.sourceSet = CangjieSourceSets.DOCS
-    source.sourceFamily = "docs"
-    source.sourceRepo = "Cangjie/cangjie_docs"
+    source.sourceSet = sourceSet
+    source.sourceFamily = sourceFamily
+    source.sourceRepo = repo
     source.sourceRef = "release-1.0.0"
     source.refKind = "branch"
     source.resolvedCommit = "abcdef0123456789abcdef0123456789abcdef01"
-    source.contentHash = "sha256:p5-s2-e2e-docs"
+    source.contentHash = "sha256:p5-s2-e2e-${sourceSet}"
     source.rootKind = "scheduled:test-child"
     manifest.sources.add(source)
-    manifest
+}
+
+private class P5S2E2EReleaseRunner <: SourceFetchRunner {
+    private let delegate: FakeSourceFetchRunner = FakeSourceFetchRunner()
+
+    init() {}
+
+    public func fetch(request: SourceFetchRequest): SourceFetchResult {
+        if (request.kind == SourceKinds.GITCODE_TREE && request.page > 1) {
+            let result = SourceFetchResult()
+            result.ok = true
+            result.status = "ok"
+            result.statusCode = 200
+            result.sourceUrl = request.url
+            result.repo = request.repo
+            result.ref = request.ref
+            result.path = request.path
+            result.normalizedType = request.kind
+            result.contentType = "application/json"
+            result.commit = "abcdef0123456789abcdef0123456789abcdef01"
+            result.body = "{\"tree\":[],\"sha\":\"${result.commit}\"}"
+            result.bytes = result.body.size
+            result.bodyHash = stableSummaryHash(result.body)
+            result.attempts = 1
+            return result
+        }
+        this.delegate.fetch(request)
+    }
+}
+
+private func p5S2WriteEvalFixture(root: String): String {
+    p5S2WriteFixtureFile(Path(root).join("CJ-HUMANEVAL-000/prompt.md"), "# Task\nUse EvalValue and EvalEntry.\n")
+    p5S2WriteFixtureFile(Path(root).join("CJ-HUMANEVAL-000/metadata.json"), "{\"id\":\"CJ-HUMANEVAL-000\"}\n")
+    p5S2WriteFixtureFile(Path(root).join("CJ-HUMANEVAL-000/starter/src/eval_support.cj"), "public class EvalValue {}\npublic class EvalEntry {}\n")
+    p5S2WriteFixtureFile(Path(root).join("CJ-HUMANEVAL-000/tests/TestMain.cj"), "public func helper(): Unit {}\nmain() {}\n")
+    root
+}
+
+private func p5S2WriteFixtureFile(path: Path, content: String): Unit {
+    if (!exists(path.parent)) {
+        Directory.create(path.parent, recursive: true)
+    }
+    File.writeTo(path, content.toArray())
 }
 
 private func ensureEmptyDir(path: String): Unit {

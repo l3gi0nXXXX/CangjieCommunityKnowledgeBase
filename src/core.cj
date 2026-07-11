@@ -2,6 +2,7 @@ package cangjie_community_knowledge_base
 
 import std.collection.ArrayList
 import std.collection.HashMap
+import std.collection.HashSet
 import std.convert.Parsable
 import std.time.*
 
@@ -3402,19 +3403,20 @@ public class KnowledgeBase {
         this.activeIndex.clear()
         this.candidateIndex.clear()
         for (record in snapshot.rawRecords) {
-            this.rawRecords.add(record)
+            this.rawRecords.add(this.copyRawRecord(record))
         }
         for (record in snapshot.normalizedRecords) {
-            this.normalizedRecords.add(record)
+            this.normalizedRecords.add(this.copyNormalizedRecord(record))
         }
         if (this.normalizedRecords.size == 0) {
             for (record in snapshot.activeIndex) {
-                this.normalizedRecords.add(record)
+                this.normalizedRecords.add(this.copyNormalizedRecord(record))
             }
         }
         for (record in snapshot.activeIndex) {
-            record.metadata.knowledgeVersion = snapshot.activeVersion
-            this.activeIndex.add(record)
+            let active = this.copyNormalizedRecord(record)
+            active.metadata.knowledgeVersion = snapshot.activeVersion
+            this.activeIndex.add(active)
         }
         this.activeKnowledgeVersion = snapshot.activeVersion
         this.candidateKnowledgeVersion = snapshot.candidateVersion
@@ -3541,9 +3543,10 @@ public class KnowledgeBase {
         }
     }
 
-    private func addRecord(sourceId: String, sourceType: String, title: String, sourceUrl: String, repo: String, path: String, symbol: String, docVersion: String, trustLevel: String, reviewState: String, content: String): Unit {
-        if (this.hasRawRecord(sourceId)) {
-            return
+    private func addRecord(sourceId: String, sourceType: String, title: String, sourceUrl: String, repo: String, path: String, symbol: String, docVersion: String, trustLevel: String, reviewState: String, content: String): Int64 {
+        let existing = this.rawRecordIndex(sourceId)
+        if (existing >= 0) {
+            return existing
         }
         let metadata = KnowledgeMetadata()
         metadata.sourceId = sourceId
@@ -3570,6 +3573,7 @@ public class KnowledgeBase {
         record.contentHash = contentHash(sourceId, content)
         record.requiresReview = reviewState == ReviewStates.CANDIDATE
         this.rawRecords.add(record)
+        this.rawRecords.size - 1
     }
 
     public func ingestFetchResult(sourceId: String, sourceType: String, fetch: SourceFetchResult, title: String, trustLevel: String, reviewState: String): Bool {
@@ -3582,8 +3586,22 @@ public class KnowledgeBase {
         if (sourceType == SourceTypes.REPO) {
             symbol = if (path != "") { "HttpClient" } else { "" }
         }
-        this.addRecord(sourceId, sourceType, title, fetch.sourceUrl, repo, path, symbol, "1.0.0", trustLevel, reviewState, fetch.body)
-        let inserted = this.rawRecords[this.rawRecords.size - 1]
+        let index = this.addRecord(sourceId, sourceType, title, fetch.sourceUrl, repo, path, symbol, "1.0.0", trustLevel, reviewState, fetch.body)
+        let inserted = this.rawRecords[index]
+        inserted.sourceId = sourceId
+        inserted.title = title
+        inserted.content = fetch.body
+        inserted.contentHash = contentHash(sourceId, fetch.body)
+        inserted.requiresReview = reviewState == ReviewStates.CANDIDATE
+        inserted.metadata.sourceId = sourceId
+        inserted.metadata.sourceType = sourceType
+        inserted.metadata.sourceUrl = fetch.sourceUrl
+        inserted.metadata.repo = repo
+        inserted.metadata.path = path
+        inserted.metadata.symbol = symbol
+        inserted.metadata.contentSize = fetch.body.size
+        inserted.metadata.trustLevel = trustLevel
+        inserted.metadata.reviewState = reviewState
         inserted.metadata.repoVisibility = fetch.repoVisibility
         inserted.metadata.commit = if (fetch.commit != "") { fetch.commit } else { inserted.metadata.commit }
         inserted.metadata.docVersion = if (fetch.ref != "") { fetch.ref } else { inserted.metadata.docVersion }
@@ -3603,24 +3621,28 @@ public class KnowledgeBase {
         snapshot.vectorActiveCollection = this.vectorCollection
         snapshot.vectorCandidateCollection = this.candidateVectorCollection
         for (record in this.rawRecords) {
-            snapshot.rawRecords.add(record)
+            snapshot.rawRecords.add(this.copyRawRecord(record))
         }
         for (record in this.normalizedRecords) {
-            snapshot.normalizedRecords.add(record)
+            snapshot.normalizedRecords.add(this.copyNormalizedRecord(record))
         }
         for (record in this.activeIndex) {
-            snapshot.activeIndex.add(record)
+            snapshot.activeIndex.add(this.copyNormalizedRecord(record))
         }
         snapshot
     }
 
     private func hasRawRecord(sourceId: String): Bool {
-        for (record in this.rawRecords) {
-            if (record.sourceId == sourceId) {
-                return true
+        this.rawRecordIndex(sourceId) >= 0
+    }
+
+    private func rawRecordIndex(sourceId: String): Int64 {
+        for (i in 0..this.rawRecords.size) {
+            if (this.rawRecords[i].sourceId == sourceId) {
+                return i
             }
         }
-        false
+        -1
     }
 
     public func normalize(): Unit {
@@ -3766,6 +3788,7 @@ public class KnowledgeBase {
             record.metadata.knowledgeVersion = this.activeKnowledgeVersion
             record.metadata.candidateVersion = this.candidateKnowledgeVersion
         }
+        this.adoptActiveCandidateAsNormalized()
         this.failedCandidateVersion = ""
         this.storage.indexCount = this.activeIndex.size
         this.invalidateServingCacheOnActiveVersionChange()
@@ -3803,6 +3826,7 @@ public class KnowledgeBase {
             record.metadata.candidateVersion = this.candidateKnowledgeVersion
             updated += 1
         }
+        this.adoptActiveCandidateAsNormalized()
         this.failedCandidateVersion = ""
         this.storage.indexCount = this.activeIndex.size
         this.promoteVectorActiveCollection(vectorCollection)
@@ -3820,6 +3844,14 @@ public class KnowledgeBase {
         this.rebuildIndexManifest()
         this.ensureActiveCommitDeadline("candidate_active_commit_after", deadlineAtMillis)
         true
+    }
+
+    private func adoptActiveCandidateAsNormalized(): Unit {
+        this.normalizedRecords.clear()
+        for (record in this.candidateIndex) {
+            this.normalizedRecords.add(this.copyNormalizedRecord(record))
+        }
+        this.storage.normalizedCount = this.normalizedRecords.size
     }
 
     public func publishIndex(simulateFailure: Bool): Bool {
@@ -3847,6 +3879,42 @@ public class KnowledgeBase {
         out
     }
 
+    func rawRecordSnapshot(): ArrayList<RawRecord> {
+        let out = ArrayList<RawRecord>()
+        for (record in this.rawRecords) {
+            out.add(this.copyRawRecord(record))
+        }
+        out
+    }
+
+    func rawRecordSnapshotOverlayForOwner(owner: String, targetVersion: String, removedSourceIds: ArrayList<String>, current: ArrayList<RawRecord>): ArrayList<RawRecord> {
+        let out = ArrayList<RawRecord>()
+        let removedIds = HashSet<String>(removedSourceIds)
+        let currentIds = HashSet<String>()
+        for (record in current) {
+            if (record.sourceId != "") {
+                currentIds.add(record.sourceId)
+            }
+        }
+        for (record in this.rawRecords) {
+            if (this.recordOwnedBy(record.metadata, owner, targetVersion)) { continue }
+            if (record.sourceId != "" && (removedIds.contains(record.sourceId) || currentIds.contains(record.sourceId))) { continue }
+            out.add(this.copyRawRecord(record))
+        }
+        for (record in current) {
+            out.add(this.copyRawRecord(record))
+        }
+        out
+    }
+
+    func replaceRawRecords(records: ArrayList<RawRecord>): Unit {
+        this.rawRecords.clear()
+        for (record in records) {
+            this.rawRecords.add(this.copyRawRecord(record))
+        }
+        this.storage.rawCount = this.rawRecords.size
+    }
+
     public func activeEmbeddingTextSnapshot(limit!: Int64 = -1): ArrayList<String> {
         let out = ArrayList<String>()
         for (record in this.activeIndex) {
@@ -3869,6 +3937,37 @@ public class KnowledgeBase {
             out.add(this.copyNormalizedRecord(record))
         }
         out
+    }
+
+    func activeRecordSnapshotOverlayForOwner(delta: ArrayList<NormalizedRecord>, owner: String, targetVersion: String, removedSourceIds: ArrayList<String>): ArrayList<NormalizedRecord> {
+        let out = ArrayList<NormalizedRecord>()
+        let deltaIds = HashSet<String>()
+        let removedIds = HashSet<String>(removedSourceIds)
+        for (record in delta) {
+            if (record.sourceId != "") {
+                deltaIds.add(record.sourceId)
+            }
+        }
+        for (record in this.activeIndex) {
+            if (this.recordOwnedBy(record.metadata, owner, targetVersion)) {
+                continue
+            }
+            if (record.sourceId != "" && removedIds.contains(record.sourceId)) {
+                continue
+            }
+            if (record.sourceId != "" && deltaIds.contains(record.sourceId)) {
+                continue
+            }
+            out.add(this.copyNormalizedRecord(record))
+        }
+        for (record in delta) {
+            out.add(this.copyNormalizedRecord(record))
+        }
+        out
+    }
+
+    private func recordOwnedBy(metadata: KnowledgeMetadata, owner: String, targetVersion: String): Bool {
+        metadata.crawlAt == owner && (targetVersion == "" || metadata.targetVersion == targetVersion)
     }
 
     private func normalizedRecordReplacedByDelta(record: NormalizedRecord, delta: ArrayList<NormalizedRecord>): Bool {
@@ -3896,6 +3995,17 @@ public class KnowledgeBase {
         out.citation = record.citation
         out.score = record.score
         out.metadata = cangjieCopyKnowledgeMetadata(record.metadata)
+        out.requiresReview = record.requiresReview
+        out
+    }
+
+    private func copyRawRecord(record: RawRecord): RawRecord {
+        let out = RawRecord()
+        out.sourceId = record.sourceId
+        out.title = record.title
+        out.content = record.content
+        out.metadata = cangjieCopyKnowledgeMetadata(record.metadata)
+        out.contentHash = record.contentHash
         out.requiresReview = record.requiresReview
         out
     }

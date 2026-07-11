@@ -137,7 +137,11 @@ public func cangjieCopyKnowledgeMetadata(base: KnowledgeMetadata): KnowledgeMeta
     metadata.reviewState = base.reviewState
     metadata.license = base.license
     metadata.repoVisibility = base.repoVisibility
-    metadata.derivedFrom = base.derivedFrom
+    let derivedFrom = ArrayList<String>()
+    for (item in base.derivedFrom) {
+        derivedFrom.add(item)
+    }
+    metadata.derivedFrom = derivedFrom.toArray()
     metadata
 }
 

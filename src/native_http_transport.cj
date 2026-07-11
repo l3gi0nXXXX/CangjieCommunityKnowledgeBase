@@ -146,7 +146,7 @@ public class NativeHttpRequestExecutor <: HttpRequestExecutor {
         } catch (e: Exception) {
             let diagnostic = ckbNativeHttpClassifyException(e.message)
             let timeoutMillis = if (request.timeoutMillis > 0) { request.timeoutMillis } else { this.config.timeoutMillis }
-            response.status = if (diagnostic.transportErrorClass == "timeout") { "timeout" } else { "transport_error" }
+            response.status = ckbNativeHttpFailureStatus(diagnostic.transportErrorClass)
             response.transportErrorClass = diagnostic.transportErrorClass
             response.transportDiagnostic = ckbNativeHttpExecutionDiagnostic(request, diagnostic, timeoutMillis)
         }
@@ -175,8 +175,12 @@ private func ckbNativeHttpExecuteOnce(request: HttpExecutionRequest, config: Ckb
         let client = clientParts[0].build()
         try {
             let nativeResponse = client.send(ckbNativeHttpBuildRequest(request))
+            let decoded = ckbNativeHttpDecodeBody(nativeResponse)
+            if (!decoded[0]) {
+                return ckbNativeHttpInvalidEncodingResponse(request, timeoutMillis)
+            }
             response.statusCode = Int64(nativeResponse.status)
-            response.body = ckbNativeHttpDecodeBody(nativeResponse)
+            response.body = decoded[1]
             response.contentType = nativeResponse.headers.getFirst("content-type") ?? nativeResponse.headers.getFirst("Content-Type") ?? ""
             response.retryAfterSeconds = ckbNativeHttpParseRetryAfter(nativeResponse.headers.getFirst("retry-after") ?? nativeResponse.headers.getFirst("Retry-After") ?? "")
             response.status = "http_${response.statusCode}"
@@ -192,7 +196,7 @@ private func ckbNativeHttpExecuteOnce(request: HttpExecutionRequest, config: Ckb
 private func ckbNativeHttpExceptionResponse(request: HttpExecutionRequest, message: String, timeoutMillis: Int64): HttpExecutionResponse {
     let diagnostic = ckbNativeHttpClassifyException(message)
     let response = HttpExecutionResponse()
-    response.status = if (diagnostic.transportErrorClass == "timeout") { "timeout" } else { "transport_error" }
+    response.status = ckbNativeHttpFailureStatus(diagnostic.transportErrorClass)
     response.transportErrorClass = diagnostic.transportErrorClass
     response.transportDiagnostic = ckbNativeHttpExecutionDiagnostic(request, diagnostic, timeoutMillis)
     response
@@ -391,6 +395,11 @@ public func ckbNativeHttpBuildConnectRequest(targetHost: String, targetPort: UIn
 
 public func ckbNativeHttpClassifyException(message: String): CkbNativeHttpTransportDiagnostic {
     let diagnostic = CkbNativeHttpTransportDiagnostic()
+    if (message.toAsciiLower().contains("invalid_response_encoding") || message.toAsciiLower().contains("invalid utf-8")) {
+        diagnostic.transportErrorClass = "invalid_response_encoding"
+        diagnostic.transportDiagnostic = "invalid_response_encoding"
+        return diagnostic
+    }
     let safe = redactSensitive(message).replace("\n", " ").replace("\r", " ").trimAscii()
     diagnostic.transportDiagnostic = if (safe.size > 160) { utf8SafePrefix(safe, 160) } else { safe }
     let lowered = safe.toAsciiLower()
@@ -419,6 +428,25 @@ public func ckbNativeHttpClassifyException(message: String): CkbNativeHttpTransp
         diagnostic.transportDiagnostic = diagnostic.transportErrorClass
     }
     diagnostic
+}
+
+private func ckbNativeHttpFailureStatus(errorClass: String): String {
+    if (errorClass == "timeout") { return "timeout" }
+    if (errorClass == "invalid_response_encoding") { return "invalid_response_encoding" }
+    "transport_error"
+}
+
+private func ckbNativeHttpInvalidEncodingResponse(request: HttpExecutionRequest, timeoutMillis: Int64): HttpExecutionResponse {
+    let response = HttpExecutionResponse()
+    let diagnostic = CkbNativeHttpTransportDiagnostic()
+    diagnostic.transportErrorClass = "invalid_response_encoding"
+    diagnostic.transportDiagnostic = "invalid_response_encoding"
+    response.status = "invalid_response_encoding"
+    response.statusCode = 0
+    response.body = ""
+    response.transportErrorClass = "invalid_response_encoding"
+    response.transportDiagnostic = ckbNativeHttpExecutionDiagnostic(request, diagnostic, timeoutMillis)
+    response
 }
 
 private func ckbNativeHttpExecutionDiagnostic(request: HttpExecutionRequest, diagnostic: CkbNativeHttpTransportDiagnostic, timeoutMillis: Int64): String {
@@ -528,7 +556,7 @@ private func ckbNativeHttpParseHeaderLine(header: String): (String, String) {
     }
 }
 
-private func ckbNativeHttpDecodeBody(response: HttpResponse): String {
+private func ckbNativeHttpDecodeBody(response: HttpResponse): (Bool, String) {
     let out = ArrayList<Byte>()
     let buffer = Array<Byte>(8192, repeat: 0)
     while (true) {
@@ -538,7 +566,15 @@ private func ckbNativeHttpDecodeBody(response: HttpResponse): String {
         }
         out.add(all: buffer[..n])
     }
-    String.fromUtf8(out.toArray())
+    ckbNativeHttpDecodeUtf8Bytes(out.toArray())
+}
+
+func ckbNativeHttpDecodeUtf8Bytes(bytes: Array<Byte>): (Bool, String) {
+    try {
+        (true, String.fromUtf8(bytes))
+    } catch (_: Exception) {
+        (false, "")
+    }
 }
 
 private func ckbNativeHttpOpenConnectTunnel(socket: TcpSocket, targetHost: String, targetPort: UInt16, endpoint: CkbNativeHttpProxyEndpoint): Unit {
@@ -564,12 +600,27 @@ private func ckbNativeHttpReadConnectResponse(socket: TcpSocket): String {
         }
         output.add(all: buffer[..n])
         total += n
-        let text = String.fromUtf8(output.toArray())
-        if (text.contains("\r\n\r\n")) {
-            return text
+        if (ckbNativeHttpHeaderBytesComplete(output)) {
+            let decoded = ckbNativeHttpDecodeUtf8Bytes(output.toArray())
+            if (!decoded[0]) { throw Exception("invalid_response_encoding") }
+            return decoded[1]
         }
     }
-    String.fromUtf8(output.toArray())
+    let decoded = ckbNativeHttpDecodeUtf8Bytes(output.toArray())
+    if (!decoded[0]) { throw Exception("invalid_response_encoding") }
+    decoded[1]
+}
+
+private func ckbNativeHttpHeaderBytesComplete(bytes: ArrayList<Byte>): Bool {
+    if (bytes.size < 4) { return false }
+    var i: Int64 = 0
+    while (i + 3 < bytes.size) {
+        if (bytes[i] == UInt8(13) && bytes[i + 1] == UInt8(10) && bytes[i + 2] == UInt8(13) && bytes[i + 3] == UInt8(10)) {
+            return true
+        }
+        i += 1
+    }
+    false
 }
 
 private func ckbNativeHttpParseRetryAfter(raw: String): Int64 {

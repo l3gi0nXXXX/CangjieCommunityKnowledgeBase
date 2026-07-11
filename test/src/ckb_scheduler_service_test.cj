@@ -81,6 +81,7 @@ public class CkbSchedulerServiceF5Test {
         let config = CkbRuntimeConfig()
         config.networkEnabled = true
         config.docsEnabled = true
+        f7ConfigureExplicitEval(config, "target/f5-ut-scheduler-ingest-eval")
         let store = FileKnowledgeStore("target/f5-ut-scheduler-ingest")
         let service = CkbCommandLoopService(config, store, sourceRunner: FakeSourceFetchRunner())
         _ = service.start()
@@ -110,6 +111,7 @@ public class CkbSchedulerServiceF5Test {
         let config = CkbRuntimeConfig()
         config.networkEnabled = true
         config.docsEnabled = true
+        f7ConfigureExplicitEval(config, "${root}/eval-fixture")
         let store = FileKnowledgeStore("${root}/store")
         store.saveCangjieVersionManifest(f5ScheduledManifest())
         let runner = S1S2PaginatedGitCodeRunner()
@@ -138,6 +140,7 @@ public class CkbSchedulerServiceF5Test {
         let config = CkbRuntimeConfig()
         config.networkEnabled = true
         config.docsEnabled = true
+        f7ConfigureExplicitEval(config, "${root}/eval-fixture")
         let store = FileKnowledgeStore("${root}/store")
         store.saveCangjieVersionManifest(f5ScheduledManifest())
         store.writeLinesAtomically(
@@ -204,6 +207,7 @@ public class CkbSchedulerServiceF5Test {
         let config = CkbRuntimeConfig()
         config.networkEnabled = true
         config.docsEnabled = true
+        f7ConfigureExplicitEval(config, "target/f5-pos-admin-scheduler-validation-eval")
         let service = CkbCommandLoopService(config, FileKnowledgeStore("target/f5-pos-admin-scheduler-validation"), sourceRunner: FakeSourceFetchRunner())
         _ = service.start()
 
@@ -337,9 +341,10 @@ public class CkbSchedulerServiceF5Test {
     public func p7Pos001ReleaseRefreshPersistsVersionManifestArtifact(): Unit {
         let config = CkbRuntimeConfig()
         config.networkEnabled = true
+        f7ConfigureExplicitEval(config, "target/p7-release-refresh-manifest-eval")
         let store = FileKnowledgeStore("target/p7-release-refresh-manifest")
         store.saveCangjieVersionManifest(f5ScheduledManifest())
-        let service = CkbCommandLoopService(config, store, sourceRunner: FakeSourceFetchRunner())
+        let service = CkbCommandLoopService(config, store, sourceRunner: F7CompleteFakeSourceFetchRunner())
         _ = service.start()
         let tasks = ArrayList<String>()
         tasks.add("cangjie_release_full_sync")
@@ -362,6 +367,7 @@ public class CkbSchedulerServiceF5Test {
         s1s2EnsureEmptyDir(root)
         let config = CkbRuntimeConfig()
         config.networkEnabled = true
+        f7ConfigureExplicitEval(config, "${root}/eval-fixture")
         let store = FileKnowledgeStore(root)
         store.saveCangjieVersionManifest(f5ScheduledManifest())
         let sourceRunner = P5S2RetryAccountingRunner()
@@ -379,26 +385,27 @@ public class CkbSchedulerServiceF5Test {
         @Expect(result.failed, 0)
         @Expect(record.status, "candidate_validated_promoted")
         @Expect(record.timeBudgetMillis, 440000)
-        @Expect(p5S2RequestPurposeCount(sourceRunner.calls, "docs_probe"), 1)
+        @Expect(p5S2RequestPurposeCount(sourceRunner.calls, "docs_probe"), 0)
         @Expect(p5S2RequestPurposeCount(sourceRunner.calls, "branch_list"), 4)
         @Expect(p5S2RequestPurposeCount(sourceRunner.calls, "branch_ref"), 1)
-        @Expect(p5S2RequestPurposeCount(sourceRunner.calls, "source_tree"), 4)
+        @Expect(p5S2RequestPurposeCount(sourceRunner.calls, "source_tree"), 8)
         @Expect(p5S2RequestPurposeCount(sourceRunner.calls, "source_raw_snapshot"), 7)
         @Expect(p5S2RequestPurposeCount(sourceRunner.calls, "source_contents_snapshot"), 1)
-        @Expect(sourceRunner.calls.size, 18)
-        @Expect(p5S2RequestPurposeSequence(sourceRunner.calls), "docs_probe>branch_list>source_tree>source_raw_snapshot>branch_list>branch_ref>source_tree>source_raw_snapshot>source_raw_snapshot>branch_list>source_tree>source_raw_snapshot>source_contents_snapshot>source_raw_snapshot>branch_list>source_tree>source_raw_snapshot>source_raw_snapshot")
+        @Expect(sourceRunner.calls.size, 21)
+        @Expect(p5S2RequestPurposeSequence(sourceRunner.calls), "branch_list>source_tree>source_tree>source_raw_snapshot>branch_list>branch_ref>source_tree>source_tree>source_raw_snapshot>source_raw_snapshot>branch_list>source_tree>source_tree>source_raw_snapshot>source_raw_snapshot>source_contents_snapshot>branch_list>source_tree>source_tree>source_raw_snapshot>source_raw_snapshot")
         @Expect(record.requestCount, record.actualAttempts)
-        @Expect(record.actualAttempts, 19)
-        @Expect(record.successfulAttempts, 17)
+        @Expect(record.actualAttempts, 22)
+        @Expect(record.successfulAttempts, 20)
         @Expect(record.retryAttempts, 1)
-        @Expect(record.plannedRequests, 18)
-        @Expect(record.completedRequests, 17)
+        @Expect(record.plannedRequests, 21)
+        @Expect(record.completedRequests, 20)
         @Expect(record.failedRequests, 1)
         @Expect(record.plannedRequests, record.completedRequests + record.failedRequests)
         @Expect(p5S2RequestUrlPrefixCount(sourceRunner.calls, "ckb-manifest-ref://"), 0)
         @Expect(p5S2RequestUrlPrefixCount(sourceRunner.calls, "ckb-local://"), 0)
-        @Expect(p5S2ActiveRawSourceUrlCount(store, "ckb-manifest-ref://"), 3)
-        @Expect(p5S2ActiveRawSourceUrlCount(store, "ckb-local://"), 1)
+        @Expect(p5S2ActiveRawSourceUrlCount(store, "ckb-manifest-ref://"), 0)
+        @Expect(p5S2ActiveRawSourceUrlCount(store, "ckb-local://"), 0)
+        @Expect(p5S2ActiveRawSourceUrlCount(store, "https://api.gitcode.com/"), 7)
         @Expect(record.plannedRequests, sourceRunner.calls.size)
         @Expect(record.durationMillis == 44000, false)
         @Expect(ruDiagnosticsContain(record.stageDurations, "stage=fetch|durationMillis="), true)
@@ -486,7 +493,8 @@ public class CkbSchedulerServiceF5Test {
         provider.fail = true
         let config = CkbRuntimeConfig()
         config.networkEnabled = true
-        let runner = CkbSchedulerTaskRunner(kb, config, store, sourceRunner: FakeSourceFetchRunner())
+        f7ConfigureExplicitEval(config, "${root}/eval-fixture")
+        let runner = CkbSchedulerTaskRunner(kb, config, store, sourceRunner: F7CompleteFakeSourceFetchRunner())
         let executor = SchedulerExecutor(kb.scheduler, runner, FileSchedulerProgressSink(store), 0)
         let tasks = ArrayList<String>()
         tasks.add("cangjie_release_full_sync")
@@ -499,7 +507,7 @@ public class CkbSchedulerServiceF5Test {
                 persistedStatus = entry.lastStatus
             }
         }
-        let reloaded = CkbCommandLoopService(config, store, sourceRunner: FakeSourceFetchRunner())
+        let reloaded = CkbCommandLoopService(config, store, sourceRunner: F7CompleteFakeSourceFetchRunner())
         _ = reloaded.start()
         let landing = collectCkbLandingStatus(reloaded)
         var landingDiagnostic = ""
@@ -527,9 +535,10 @@ public class CkbSchedulerServiceF5Test {
     public func p7Pos002SourceEventSchedulerPersistsRepositoryEventArtifact(): Unit {
         let config = CkbRuntimeConfig()
         config.networkEnabled = true
+        f7ConfigureExplicitEval(config, "target/p7-source-event-checkpoint-eval")
         let store = FileKnowledgeStore("target/p7-source-event-checkpoint")
         store.saveCangjieVersionManifest(f5ScheduledManifest())
-        let service = CkbCommandLoopService(config, store, sourceRunner: FakeSourceFetchRunner())
+        let service = CkbCommandLoopService(config, store, sourceRunner: F7CompleteFakeSourceFetchRunner())
         _ = service.start()
         let tasks = ArrayList<String>()
         tasks.add("cangjie_source_event_sync")
@@ -547,8 +556,9 @@ public class CkbSchedulerServiceF5Test {
     public func p7Pos003ReleaseRefreshUsesTreeFirstWhenRepoMetadataWouldFail(): Unit {
         let config = CkbRuntimeConfig()
         config.networkEnabled = true
+        f7ConfigureExplicitEval(config, "target/p7-tree-first-release-refresh-eval")
         let store = FileKnowledgeStore("target/p7-tree-first-release-refresh")
-        store.saveCangjieVersionManifest(f7OfficialManifestNoEval())
+        store.saveCangjieVersionManifest(f7OfficialReleaseManifest())
         let runner = F7GitCodeMetadata400TreeOkRunner()
         let service = CkbCommandLoopService(config, store, sourceRunner: runner)
         _ = service.start()
@@ -621,8 +631,9 @@ public class CkbSchedulerServiceF5Test {
     public func p7Pos006SlashRefReleaseFullSyncPersistsManifest(): Unit {
         let config = CkbRuntimeConfig()
         config.networkEnabled = true
+        f7ConfigureExplicitEval(config, "target/p7-slash-ref-release-full-sync-eval")
         let store = FileKnowledgeStore("target/p7-slash-ref-release-full-sync")
-        store.saveCangjieVersionManifest(f7OfficialManifestSlashRefNoEval())
+        store.saveCangjieVersionManifest(f7OfficialReleaseManifestSlashRef())
         let runner = F7SlashRefTreeOkRunner()
         let service = CkbCommandLoopService(config, store, sourceRunner: runner)
         _ = service.start()
@@ -652,8 +663,9 @@ public class CkbSchedulerServiceF5Test {
         // T-P2-B01: release/1.0 is resolved safely and GitCode tree JSON escaped slashes become normal source paths.
         let config = CkbRuntimeConfig()
         config.networkEnabled = true
+        f7ConfigureExplicitEval(config, "target/t-p2-b01-slash-ref-escaped-path-eval")
         let store = FileKnowledgeStore("target/t-p2-b01-slash-ref-escaped-path")
-        store.saveCangjieVersionManifest(f7OfficialManifestSlashRefNoEval())
+        store.saveCangjieVersionManifest(f7OfficialReleaseManifestSlashRef())
         let runner = F7SlashRefTreeOkRunner()
         runner.escapedSlashTreePath = true
         let service = CkbCommandLoopService(config, store, sourceRunner: runner)
@@ -678,8 +690,9 @@ public class CkbSchedulerServiceF5Test {
     public func p7Pos006bLegacyReleaseRefUsesSlashReleaseAliasWhenRemoteOmitsDashBranch(): Unit {
         let config = CkbRuntimeConfig()
         config.networkEnabled = true
+        f7ConfigureExplicitEval(config, "target/p7-legacy-release-ref-alias-eval")
         let store = FileKnowledgeStore("target/p7-legacy-release-ref-alias")
-        store.saveCangjieVersionManifest(f7OfficialManifestNoEval())
+        store.saveCangjieVersionManifest(f7OfficialReleaseManifest())
         let runner = F7SlashRefTreeOkRunner()
         let service = CkbCommandLoopService(config, store, sourceRunner: runner)
         _ = service.start()
@@ -693,7 +706,7 @@ public class CkbSchedulerServiceF5Test {
         @Expect(result.succeeded, 1)
         @Expect(result.failed, 0)
         @Expect(f7RunnerSawUrlFragment(runner, "/branches?page=1&per_page=100"), true)
-        @Expect(f7SchedulerDiagnosticsContain(result, "gitcode_ref_alias_used:Cangjie/cangjie_stdx:release-1.0.0:release/1.0"), true)
+        @Expect(f7SchedulerDiagnosticsContain(result, "release_ref_evidence:sourceSet=stdx|repo=Cangjie/cangjie_stdx|status=ok|commit=${f7SlashRefResolvedCommit()}"), true)
         @Expect(f7RunnerSawUrlFragment(runner, "/git/trees/${f7SlashRefResolvedCommit()}?"), true)
         @Expect(f7RunnerSawUrlFragment(runner, "/git/trees/release-1.0.0?"), false)
         @Expect(f7RunnerSawUrlFragment(runner, "/git/trees/release/1.0?"), false)
@@ -732,8 +745,9 @@ public class CkbSchedulerServiceF5Test {
     public func p7Pos008SlashRefBranchEndpointFallbackUsesNativeSafeEncoding(): Unit {
         let config = CkbRuntimeConfig()
         config.networkEnabled = true
+        f7ConfigureExplicitEval(config, "target/p7-slash-ref-branch-endpoint-fallback-eval")
         let store = FileKnowledgeStore("target/p7-slash-ref-branch-endpoint-fallback")
-        store.saveCangjieVersionManifest(f7OfficialManifestSlashRefNoEval())
+        store.saveCangjieVersionManifest(f7OfficialReleaseManifestSlashRef())
         let runner = F7SlashRefTreeOkRunner()
         runner.branchListOmitsRelease = true
         let service = CkbCommandLoopService(config, store, sourceRunner: runner)
@@ -756,8 +770,9 @@ public class CkbSchedulerServiceF5Test {
     public func p7Neg002SlashRefRemoteTreeFailureStillBlocksPromotion(): Unit {
         let config = CkbRuntimeConfig()
         config.networkEnabled = true
+        f7ConfigureExplicitEval(config, "target/p7-slash-ref-remote-tree-failure-eval")
         let store = FileKnowledgeStore("target/p7-slash-ref-remote-tree-failure")
-        store.saveCangjieVersionManifest(f7OfficialManifestSlashRefNoEval())
+        store.saveCangjieVersionManifest(f7OfficialReleaseManifestSlashRef())
         let runner = F7SlashRefTreeOkRunner()
         runner.failEncodedTree = true
         let service = CkbCommandLoopService(config, store, sourceRunner: runner)
@@ -772,7 +787,7 @@ public class CkbSchedulerServiceF5Test {
 
         @Expect(result.ran, 1)
         @Expect(result.failed, 1)
-        @Expect(result.details.contains("scheduled_readiness_failed"), true)
+        @Expect(result.details.contains("status=remote_tree_unavailable"), true)
         @Expect(after.activeKnowledgeVersion, before)
         @Expect(f7RunnerSawUrlFragment(runner, "/branches?page=1&per_page=100"), true)
         @Expect(f7RunnerSawUrlFragment(runner, "/git/trees/${f7SlashRefResolvedCommit()}?"), true)
@@ -783,7 +798,8 @@ public class CkbSchedulerServiceF5Test {
         @Expect(summaries[0].primaryFailure != "", true)
         @Expect(summaries[0].primaryFailure.contains("scheduled_readiness_failed"), false)
         @Expect(summaries[0].primaryFailure.contains("profile_stage_budget"), false)
-        @Expect(f7SummaryListContains(summaries[0].failedSources, "remote_tree_unavailable"), true)
+        @Expect(summaries[0].status, "remote_tree_unavailable")
+        @Expect(summaries[0].primaryFailure, "task_not_ok:remote_tree_unavailable")
         @Expect(summaries[0].missingArtifacts.size, 0)
     }
 
@@ -791,8 +807,9 @@ public class CkbSchedulerServiceF5Test {
     public func p7Neg003MalformedBranchListBlocksSlashRefPromotion(): Unit {
         let config = CkbRuntimeConfig()
         config.networkEnabled = true
+        f7ConfigureExplicitEval(config, "target/p7-slash-ref-malformed-branch-list-eval")
         let store = FileKnowledgeStore("target/p7-slash-ref-malformed-branch-list")
-        store.saveCangjieVersionManifest(f7OfficialManifestSlashRefNoEval())
+        store.saveCangjieVersionManifest(f7OfficialReleaseManifestSlashRef())
         let runner = F7SlashRefTreeOkRunner()
         runner.malformedBranchList = true
         let service = CkbCommandLoopService(config, store, sourceRunner: runner)
@@ -815,7 +832,8 @@ public class CkbSchedulerServiceF5Test {
         @Expect(summaries[0].primaryFailure != "", true)
         @Expect(summaries[0].primaryFailure.contains("scheduled_readiness_failed"), false)
         @Expect(summaries[0].primaryFailure.contains("profile_stage_budget"), false)
-        @Expect(f7SummaryListContains(summaries[0].failedSources, "gitcode_branch_list_malformed_json"), true)
+        @Expect(summaries[0].status, "malformed_json")
+        @Expect(summaries[0].primaryFailure, "task_not_ok:malformed_json")
     }
 
     @TestCase
@@ -911,8 +929,9 @@ public class CkbSchedulerServiceF5Test {
     public func p7Neg001TreeUnavailableFailsReadinessWithoutPromoting(): Unit {
         let config = CkbRuntimeConfig()
         config.networkEnabled = true
+        f7ConfigureExplicitEval(config, "target/p7-tree-unavailable-eval")
         let store = FileKnowledgeStore("target/p7-tree-unavailable")
-        store.saveCangjieVersionManifest(f7OfficialManifestNoEval())
+        store.saveCangjieVersionManifest(f7OfficialReleaseManifest())
         let service = CkbCommandLoopService(config, store, sourceRunner: F7GitCodeMetadata400TreeUnavailableRunner())
         _ = service.start()
         let before = service.statusSnapshot().activeKnowledgeVersion
@@ -924,7 +943,8 @@ public class CkbSchedulerServiceF5Test {
 
         @Expect(result.ran, 1)
         @Expect(result.failed, 1)
-        @Expect(result.details.contains("scheduled_readiness_failed"), true)
+        @Expect(result.details.contains("status=source_tree_unavailable_fixture"), true)
+        @Expect(f7SchedulerDiagnosticsContain(result, "release_source_failed:sourceSet=docs|repo=Cangjie/cangjie_docs|status=source_tree_unavailable_fixture|reason=tree_page_failed"), true)
         @Expect(after.activeKnowledgeVersion, before)
     }
 
@@ -933,7 +953,10 @@ public class CkbSchedulerServiceF5Test {
         let config = CkbRuntimeConfig()
         config.networkEnabled = true
         config.docsEnabled = true
-        let service = CkbCommandLoopService(config, FileKnowledgeStore("target/p5-fetch-failures"), sourceRunner: F5DegradedFetchRunner())
+        f7ConfigureExplicitEval(config, "target/p5-fetch-failures-eval")
+        let store = FileKnowledgeStore("target/p5-fetch-failures")
+        store.saveCangjieVersionManifest(f5ScheduledManifest())
+        let service = CkbCommandLoopService(config, store, sourceRunner: F5DegradedFetchRunner())
         _ = service.start()
         let before = service.statusSnapshot().activeKnowledgeVersion
         let tasks = ArrayList<String>()
@@ -944,9 +967,9 @@ public class CkbSchedulerServiceF5Test {
 
         @Expect(result.ran, 1)
         @Expect(result.failed, 1)
-        @Expect(result.details.contains("scheduled_readiness_failed"), true)
-        @Expect(f7SchedulerDiagnosticsContain(result, "fetch:profile=cangjie_release_full_sync"), true)
-        @Expect(f7SchedulerDiagnosticsContain(result, "status=timeout"), true)
+        @Expect(result.details.contains("status=timeout"), true)
+        @Expect(f7SchedulerDiagnosticsContain(result, "release_source_failed:sourceSet=docs|repo=Cangjie/cangjie_docs|status=timeout|reason=ref_resolution_failed"), true)
+        @Expect(f7SchedulerDiagnosticsContain(result, "release_full_sync_acquisition_failed:status=timeout"), true)
         @Expect(after.activeKnowledgeVersion, before)
         @Expect(after.failedCandidateVersion == "" || after.failedCandidateVersion.contains("candidate"), true)
     }
@@ -1159,8 +1182,9 @@ public class CkbSchedulerServiceF5Test {
         s1s2EnsureEmptyDir(root)
         let config = CkbRuntimeConfig()
         config.networkEnabled = true
+        f7ConfigureExplicitEval(config, "${root}/eval-fixture")
         let store = FileKnowledgeStore("${root}/store")
-        store.saveCangjieVersionManifest(f7OfficialManifestNoEval())
+        store.saveCangjieVersionManifest(f7OfficialReleaseManifest())
         let runner = S1S2PaginatedGitCodeRunner()
         runner.failTreePage2 = true
         let service = CkbCommandLoopService(config, store, sourceRunner: runner)
@@ -1172,9 +1196,9 @@ public class CkbSchedulerServiceF5Test {
 
         @Expect(result.ran, 1)
         @Expect(result.failed, 1)
-        @Expect(result.details.contains("scheduled_readiness_failed"), true)
-        @Expect(f7SchedulerDiagnosticsContain(result, "gitcode_tree_page_failed"), true)
-        @Expect(f7SchedulerDiagnosticsContain(result, "status=server_error"), true)
+        @Expect(result.details.contains("status=server_error"), true)
+        @Expect(f7SchedulerDiagnosticsContain(result, "release_source_failed:sourceSet=docs|repo=Cangjie/cangjie_docs|status=server_error|reason=tree_page_failed"), true)
+        @Expect(f7SchedulerDiagnosticsContain(result, "release_full_sync_acquisition_failed:status=server_error"), true)
         @Expect(f7SchedulerDiagnosticsContain(result, "version_manifest_saved:"), false)
     }
 
@@ -1186,7 +1210,7 @@ public class CkbSchedulerServiceF5Test {
         let config = CkbRuntimeConfig()
         config.networkEnabled = true
         let store = FileKnowledgeStore("${root}/store")
-        store.saveCangjieVersionManifest(f7OfficialManifestNoEval())
+        store.saveCangjieVersionManifest(f7OfficialReleaseManifest())
         let runner = S1S2PaginatedGitCodeRunner()
         runner.failContentSamples = true
         let service = CkbCommandLoopService(config, store, sourceRunner: runner)
@@ -1343,7 +1367,7 @@ public class CkbSchedulerServiceF5Test {
         @Expect(result.succeeded, 1)
         @Expect(result.failed, 0)
         @Expect(f7SchedulerDiagnosticsContain(result, "required_source_failed"), false)
-        @Expect(f7SchedulerDiagnosticsContain(result, "eval_support_local_existing:"), true)
+        @Expect(f7SchedulerDiagnosticsContain(result, "release_inventory_complete:"), true)
         @Expect(f7SchedulerDiagnosticsContain(result, "version_manifest_saved:"), true)
     }
 
@@ -1454,8 +1478,9 @@ public class CkbSchedulerServiceF5Test {
         s1s2EnsureEmptyDir(root)
         let config = CkbRuntimeConfig()
         config.networkEnabled = true
+        f7ConfigureExplicitEval(config, "${root}/eval-fixture")
         let store = FileKnowledgeStore("${root}/store")
-        store.saveCangjieVersionManifest(f7OfficialManifestNoEval())
+        store.saveCangjieVersionManifest(f7OfficialReleaseManifest())
         let runner = S1S2PaginatedGitCodeRunner()
         let service = CkbCommandLoopService(config, store, sourceRunner: runner)
         _ = service.start()
@@ -2065,6 +2090,34 @@ private class DeadlineCountingFetchRunner <: SourceFetchRunner {
     }
 }
 
+private class F7CompleteFakeSourceFetchRunner <: SourceFetchRunner {
+    private let delegate: FakeSourceFetchRunner = FakeSourceFetchRunner()
+
+    init() {}
+
+    public func fetch(request: SourceFetchRequest): SourceFetchResult {
+        if (request.kind == SourceKinds.GITCODE_TREE && request.page > 1) {
+            let result = SourceFetchResult()
+            result.ok = true
+            result.status = "ok"
+            result.statusCode = 200
+            result.sourceUrl = request.url
+            result.repo = request.repo
+            result.ref = request.ref
+            result.path = request.path
+            result.normalizedType = request.kind
+            result.contentType = "application/json"
+            result.commit = f7GenericResolvedCommit()
+            result.body = "{\"tree\":[],\"sha\":\"${f7GenericResolvedCommit()}\"}"
+            result.bytes = result.body.size
+            result.bodyHash = stableSummaryHash(result.body)
+            result.attempts = 1
+            return result
+        }
+        this.delegate.fetch(request)
+    }
+}
+
 private class P5S2RetryAccountingRunner <: SourceFetchRunner {
     public var calls: ArrayList<SourceFetchRequest> = ArrayList<SourceFetchRequest>()
     private let delegate: FakeSourceFetchRunner = FakeSourceFetchRunner()
@@ -2074,7 +2127,14 @@ private class P5S2RetryAccountingRunner <: SourceFetchRunner {
     public func fetch(request: SourceFetchRequest): SourceFetchResult {
         this.calls.add(request)
         let result = this.delegate.fetch(request)
-        if (request.purpose == "branch_list" && request.repo == "Cangjie/cangjie_runtime") {
+        if (request.kind == SourceKinds.GITCODE_TREE && request.page > 1) {
+            result.ok = true
+            result.status = "ok"
+            result.statusCode = 200
+            result.contentType = "application/json"
+            result.body = "{\"tree\":[],\"sha\":\"${f7GenericResolvedCommit()}\"}"
+            result.bodyHash = stableSummaryHash(result.body)
+        } else if (request.purpose == "branch_list" && request.repo == "Cangjie/cangjie_runtime") {
             result.body = "[]"
             result.bodyHash = stableSummaryHash(result.body)
         } else if (request.purpose == "source_raw_snapshot" && request.repo == "Cangjie/cangjie_stdx" && request.path.endsWith(".cj")) {
@@ -2091,7 +2151,7 @@ private class P5S2RetryAccountingRunner <: SourceFetchRunner {
             result.body = "{\"type\":\"file\",\"encoding\":\"base64\",\"content\":\"cGFja2FnZSBmYWtlXG5wdWJsaWMgZnVuYyBmYWtlU2NoZWR1bGVkU291cmNlKCk6IFVuaXQge31cbg==\",\"path\":\"${request.path}\",\"sha\":\"abcdef0123456789abcdef0123456789abcdef01\"}"
             result.bodyHash = stableSummaryHash(result.body)
         }
-        result.attempts = if (request.kind == SourceKinds.CANGJIE_DOCS) { 2 } else { 1 }
+        result.attempts = if (request.purpose == "branch_list" && request.repo == "Cangjie/cangjie_docs") { 2 } else { 1 }
         result
     }
 }
@@ -2430,6 +2490,12 @@ private class F7GitCodeMetadata400TreeOkRunner <: SourceFetchRunner {
             result.statusCode = 200
             result.contentType = "application/json"
             result.body = f7GenericBranchListBody()
+        } else if (request.kind == SourceKinds.GITCODE_TREE && request.page > 1) {
+            result.ok = true
+            result.status = "ok"
+            result.statusCode = 200
+            result.commit = "tree-${stableSummaryHash(request.repo)}"
+            result.body = "{\"tree\":[],\"sha\":\"${result.commit}\"}"
         } else if (request.kind == SourceKinds.GITCODE_TREE) {
             result.ok = true
             result.status = "ok"
@@ -2564,6 +2630,12 @@ private class F7SlashRefTreeOkRunner <: SourceFetchRunner {
             return f7SlashRefFetchFailure(request, result, "tree_ref_not_resolved")
         } else if (request.kind == SourceKinds.GITCODE_TREE && this.failEncodedTree) {
             return f7SlashRefFetchFailure(request, result, "remote_tree_unavailable")
+        } else if (request.kind == SourceKinds.GITCODE_TREE && request.page > 1) {
+            result.ok = true
+            result.status = "ok"
+            result.statusCode = 200
+            result.commit = f7SlashRefResolvedCommit()
+            result.body = "{\"tree\":[],\"sha\":\"${result.commit}\"}"
         } else if (request.kind == SourceKinds.GITCODE_TREE && this.escapedSlashTreePath && request.repo == "Cangjie/cangjie_tools") {
             result.ok = true
             result.status = "ok"
@@ -2792,6 +2864,18 @@ private func f7OfficialManifestNoEval(): CangjieVersionManifest {
     manifest
 }
 
+private func f7OfficialReleaseManifestSlashRef(): CangjieVersionManifest {
+    let manifest = f7OfficialManifestSlashRefNoEval()
+    f5AddManifestSource(manifest, CangjieSourceSets.EVAL_SUPPORT, "eval-support", "CangjieCommunityKnowledgeBase/Cangjie-HumanEval", "release/1.0", "fresh-eval")
+    manifest
+}
+
+private func f7OfficialReleaseManifest(): CangjieVersionManifest {
+    let manifest = f7OfficialManifestNoEval()
+    f5AddManifestSource(manifest, CangjieSourceSets.EVAL_SUPPORT, "eval-support", "CangjieCommunityKnowledgeBase/Cangjie-HumanEval", "release-1.0.0", "fresh-eval")
+    manifest
+}
+
 private func f5AddManifestSource(manifest: CangjieVersionManifest, sourceSet: String, sourceFamily: String, repo: String, ref: String, commit: String): Unit {
     let source = CangjieVersionSource()
     source.targetVersion = cangjieDefaultTargetVersion()
@@ -2808,7 +2892,7 @@ private func f5AddManifestSource(manifest: CangjieVersionManifest, sourceSet: St
 
 private func f7ManifestHasEvalLocalSource(manifest: CangjieVersionManifest): Bool {
     for (source in manifest.sources) {
-        if (source.sourceSet == CangjieSourceSets.EVAL_SUPPORT && source.sourceRepo == "ckb-local://eval-support" && source.rootKind == "local-eval-support") {
+        if (source.sourceSet == CangjieSourceSets.EVAL_SUPPORT && source.sourceRepo == "CangjieCommunityKnowledgeBase/Cangjie-HumanEval" && source.refKind == "local" && source.rootKind == "local-eval-support") {
             return true
         }
     }
@@ -2834,6 +2918,12 @@ private func f7WriteFullRootFixture(root: String): F7RootFixture {
     f7WriteGitMetadata(fixture.stdxRoot, "f7-stdx-commit")
     f7WriteGitMetadata(fixture.evalRoot, "f7-eval-commit")
     fixture
+}
+
+private func f7ConfigureExplicitEval(config: CkbRuntimeConfig, root: String): Unit {
+    let fixture = f7WriteFullRootFixture(root)
+    config.firstInitEvalRoot = fixture.evalRoot
+    config.firstInitTargetVersion = "1.0.0"
 }
 
 private func f7WriteFile(path: Path, text: String): Unit {

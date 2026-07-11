@@ -1,12 +1,14 @@
 package cangjie_community_knowledge_base_test
 
-import std.collection.ArrayList
+import std.collection.{ArrayList, HashSet}
 import std.convert.Parsable
 import std.env.{getVariable, getCommand}
 import std.fs.{Directory, File, Path, OpenMode, exists}
 import std.io.*
 import std.process.*
 import std.time.DateTime
+import std.sort.*
+import stdx.encoding.json.*
 
 public class SourceKinds {
     public static let GITCODE_ORG: String = "gitcode_org"
@@ -1201,7 +1203,7 @@ public class HttpSourceFetchRunner <: SourceFetchRunner {
                 deadlineExceeded = true
                 break
             }
-            if (last.statusCode != 429 && last.statusCode < 500 && last.status != "timeout") {
+            if (!ckbHttpExecutionShouldRetry(last)) {
                 break
             }
         }
@@ -1240,6 +1242,13 @@ public class HttpSourceFetchRunner <: SourceFetchRunner {
     }
 }
 
+func ckbHttpExecutionShouldRetry(response: HttpExecutionResponse): Bool {
+    if (response.status == "invalid_response_encoding" || response.transportErrorClass == "invalid_response_encoding") {
+        return false
+    }
+    response.statusCode == 429 || response.statusCode >= 500 || response.status == "timeout"
+}
+
 public func ckbHttpAttemptTimeoutMillis(configuredTimeoutMillis: Int64, deadlineAtMillis: Int64, nowMillis: Int64): Int64 {
     if (deadlineAtMillis <= 0) {
         return if (configuredTimeoutMillis > 0) { configuredTimeoutMillis } else { 10000 }
@@ -1257,7 +1266,7 @@ public func ckbHttpAttemptTimeoutMillis(configuredTimeoutMillis: Int64, deadline
 private func ckbHttpExecutionExceptionResponse(request: HttpExecutionRequest, message: String): HttpExecutionResponse {
     let diagnostic = ckbNativeHttpClassifyException(message)
     let response = HttpExecutionResponse()
-    response.status = if (diagnostic.transportErrorClass == "timeout") { "timeout" } else { "transport_error" }
+    response.status = if (diagnostic.transportErrorClass == "timeout") { "timeout" } else if (diagnostic.transportErrorClass == "invalid_response_encoding") { "invalid_response_encoding" } else { "transport_error" }
     response.transportErrorClass = diagnostic.transportErrorClass
     response.transportDiagnostic = "method=${normalizeHttpExecutionMethod(request.method)} timeoutMillis=${request.timeoutMillis} diagnostic=${utf8SafePrefix(redactSensitive(diagnostic.transportDiagnostic), 160)}"
     response
@@ -1343,7 +1352,15 @@ public class SourceRequestBuilder {
         this.gitCodeSourceVariantWithFetchRef(repo, originalRef, fetchRef, path, "contents")
     }
 
-    private func gitCodeSourceVariantWithFetchRef(repo: String, originalRef: String, fetchRef: String, path: String, variant: String): SourceFetchRequest {
+    func gitCodeReleaseSourceRawWithFetchRef(repo: String, originalRef: String, fetchRef: String, path: String): SourceFetchRequest {
+        this.gitCodeSourceVariantWithFetchRef(repo, originalRef, fetchRef, path, "raw", releasePath: true)
+    }
+
+    func gitCodeReleaseSourceContentsWithFetchRef(repo: String, originalRef: String, fetchRef: String, path: String): SourceFetchRequest {
+        this.gitCodeSourceVariantWithFetchRef(repo, originalRef, fetchRef, path, "contents", releasePath: true)
+    }
+
+    private func gitCodeSourceVariantWithFetchRef(repo: String, originalRef: String, fetchRef: String, path: String, variant: String, releasePath!: Bool = false): SourceFetchRequest {
         let parts = parseGitCodeRepoPath(repo)
         let purpose = if (variant == "contents") { "source_contents_snapshot" } else { "source_raw_snapshot" }
         if (!parts.valid) {
@@ -1352,7 +1369,7 @@ public class SourceRequestBuilder {
         if (!isSafeGitCodeRef(originalRef) || !isSafeGitCodeRef(fetchRef)) {
             return invalidSourceFetchRequest(SourceKinds.GITCODE_SOURCE, purpose, "invalid_ref")
         }
-        let safePath = normalizeGitCodeSourcePath(path)
+        let safePath = if (releasePath) { ckbReleaseNormalizeSourcePath(path) } else { normalizeGitCodeSourcePath(path) }
         if (safePath == "") {
             return invalidSourceFetchRequest(SourceKinds.GITCODE_SOURCE, purpose, "invalid_source_path")
         }
@@ -1360,7 +1377,8 @@ public class SourceRequestBuilder {
         let endpoint = if (variant == "contents") { "contents" } else { "raw" }
         let accept = if (variant == "contents") { "application/json" } else { "text/plain, text/markdown, application/octet-stream" }
         let encodedRef = urlEncodeGitCodeQueryValue(fetchRef)
-        let request = SourceFetchRequest(SourceKinds.GITCODE_SOURCE, "${this.gitCodeApiRoot}/repos/${parts.owner}/${parts.repo}/${endpoint}/${safePath}?ref=${encodedRef}", repo: normalizedRepo, ref: originalRef, path: safePath, accept: accept, purpose: purpose)
+        let encodedPath = ckbReleasePercentEncodePath(safePath)
+        let request = SourceFetchRequest(SourceKinds.GITCODE_SOURCE, "${this.gitCodeApiRoot}/repos/${parts.owner}/${parts.repo}/${endpoint}/${encodedPath}?ref=${encodedRef}", repo: normalizedRepo, ref: originalRef, path: safePath, accept: accept, purpose: purpose)
         request.authHint = "gitcode-token-optional-redacted"
         request.sourceVariant = variant
         request
@@ -1845,6 +1863,10 @@ public class SourceResponseNormalizer {
                 result.ok = false
                 result.status = parsed.status
                 result.body = parsed.status
+            } else if (!isSupportedRawSourceBody("text/plain", parsed.body)) {
+                result.ok = false
+                result.status = "unsupported_binary"
+                result.body = ""
             } else {
                 result.body = parsed.body
                 result.path = request.path
@@ -9248,7 +9270,7 @@ public class CkbScheduledRequestAccounting {
     public init() {}
 }
 
-private class CkbScheduledProfileFetchResult {
+class CkbScheduledProfileFetchResult {
     var ok: Bool = true
     var status: String = "profile_ok"
     var requestCount: Int64 = 0
@@ -9266,6 +9288,10 @@ private class CkbScheduledProfileFetchResult {
     var failedRequests: ArrayList<String> = ArrayList<String>()
     var successfulRequests: ArrayList<String> = ArrayList<String>()
     var records: ArrayList<CkbScheduledSourceRecord> = ArrayList<CkbScheduledSourceRecord>()
+    var contentRecords: ArrayList<CkbScheduledSourceRecord> = ArrayList<CkbScheduledSourceRecord>()
+    var controlEvidence: ArrayList<CkbReleaseControlEvidence> = ArrayList<CkbReleaseControlEvidence>()
+    var releaseInventories: ArrayList<CkbReleaseSourceInventory> = ArrayList<CkbReleaseSourceInventory>()
+    var releasePlan: CkbReleaseFullSyncPlan = CkbReleaseFullSyncPlan()
     var accounting: CkbScheduledRequestAccounting = CkbScheduledRequestAccounting()
 
     init() {}
@@ -9286,7 +9312,7 @@ private func ckbScheduledFetchAccountingProgress(fetch: CkbScheduledProfileFetch
     "plannedRequests=${fetch.plannedRequests},actualAttempts=${fetch.actualAttempts},successfulAttempts=${fetch.successfulAttempts},retryAttempts=${fetch.retryAttempts},completedRequests=${fetch.completedRequests},failedRequests=${fetch.failedRequestCount}"
 }
 
-private class CkbScheduledSourceRecord {
+class CkbScheduledSourceRecord {
     var sourceId: String = ""
     var sourceType: String = SourceTypes.DOC
     var sourceFamily: String = ""
@@ -9294,6 +9320,8 @@ private class CkbScheduledSourceRecord {
     var title: String = ""
     var request: SourceFetchRequest = SourceFetchRequest()
     var fetch: SourceFetchResult = SourceFetchResult()
+    var releaseSource: CkbReleaseSourcePlan = CkbReleaseSourcePlan()
+    var preparedTypedRecords: ArrayList<CangjieTypedRecord> = ArrayList<CangjieTypedRecord>()
 
     init() {}
 }
@@ -9332,6 +9360,16 @@ private class CkbScheduledProfileIngestResult {
     init() {}
 }
 
+private class CkbReleaseDeltaBuildResult {
+    var ok: Bool = true
+    var status: String = "ok"
+    var rawRecords: ArrayList<RawRecord> = ArrayList<RawRecord>()
+    var normalizedRecords: ArrayList<NormalizedRecord> = ArrayList<NormalizedRecord>()
+    var diagnostics: ArrayList<String> = ArrayList<String>()
+
+    init() {}
+}
+
 private class CkbBenchmarkGapProofCheckpoint {
     var status: String = "not_started"
     var inputHash: String = ""
@@ -9354,10 +9392,21 @@ private func ckbRunScheduledProfileFetches(profile: CkbScheduleTaskProfile, runn
     result
 }
 
-private func fetchScheduledProfileSources(profile: CkbScheduleTaskProfile, runner: SourceFetchRunner, config: CkbRuntimeConfig, store: FileKnowledgeStore, manifest: CangjieVersionManifest, deadlineAtMillis!: Int64 = 0): CkbScheduledProfileFetchResult {
+func fetchScheduledProfileSources(profile: CkbScheduleTaskProfile, runner: SourceFetchRunner, config: CkbRuntimeConfig, store: FileKnowledgeStore, manifest: CangjieVersionManifest, deadlineAtMillis!: Int64 = 0): CkbScheduledProfileFetchResult {
     let result = CkbScheduledProfileFetchResult()
     let builder = SourceRequestBuilder(gitCodeApiRoot: config.gitCodeBaseUrl)
-    if (profile.profile == "community_repo_discovery") {
+    if (profile.profile == "cangjie_release_full_sync") {
+        result.releasePlan = ckbBuildReleaseFullSyncPlan(profile, manifest, ckbScheduledTargetVersion(config))
+        if (!result.releasePlan.ok) {
+            result.ok = false
+            result.status = result.releasePlan.status
+            for (diagnostic in result.releasePlan.diagnostics) {
+                result.diagnostics.add(diagnostic)
+            }
+            return result
+        }
+        ckbFetchReleaseFullSyncPlan(runner, builder, profile, result, config, store, deadlineAtMillis: deadlineAtMillis)
+    } else if (profile.profile == "community_repo_discovery") {
         ckbFetchScheduledSource(runner, builder.gitCodeOrgRepos("cangjie"), profile, result, config, deadlineAtMillis: deadlineAtMillis)
         ckbFetchScheduledSource(runner, builder.gitCodeOrgRepos("cangjie-sig"), profile, result, config, deadlineAtMillis: deadlineAtMillis)
         ckbFetchScheduledSource(runner, builder.gitCodeOrgRepos("cangjie-tpc"), profile, result, config, deadlineAtMillis: deadlineAtMillis)
@@ -9370,7 +9419,7 @@ private func fetchScheduledProfileSources(profile: CkbScheduleTaskProfile, runne
     } else if (profile.profile == "web_candidate_discovery" || profile.profile == "web_candidate_recrawl") {
         ckbFetchScheduledSource(runner, builder.webCandidate("https://cangjie-lang.cn/community"), profile, result, config, deadlineAtMillis: deadlineAtMillis)
         ckbFetchScheduledSource(runner, builder.webCandidate("https://cangjie-lang.cn/blog"), profile, result, config, deadlineAtMillis: deadlineAtMillis)
-    } else if (profile.profile == "cangjie_freshness_probe" || profile.profile == "cangjie_release_full_sync") {
+    } else if (profile.profile == "cangjie_freshness_probe") {
         ckbFetchScheduledSource(runner, builder.docs("https://docs.cangjie-lang.cn/docs/1.0.0/"), profile, result, config, deadlineAtMillis: deadlineAtMillis)
         ckbFetchScheduledManifestRepoSources(runner, builder, manifest, profile, result, config, store, true, true, true, true, true, deadlineAtMillis: deadlineAtMillis)
     } else if (profile.profile == "cangjie_docs_full_sync") {
@@ -9385,12 +9434,470 @@ private func fetchScheduledProfileSources(profile: CkbScheduleTaskProfile, runne
         result.ok = true
     }
     ckbSyncScheduledRequestAccounting(result)
-    if (!result.ok && profile.profile == "cangjie_release_full_sync" && ckbScheduledFetchDeadlineWasExceeded(result)) {
-        result.status = "fetch_deadline_exceeded"
+    if (!result.ok && profile.profile == "cangjie_release_full_sync") {
+        // P5 statuses are a durable acquisition contract. Do not collapse
+        // plan, inventory, decoding, or content failures into fetch_degraded.
+        if (ckbScheduledFetchDeadlineWasExceeded(result)) {
+            result.status = "fetch_deadline_exceeded"
+        }
     } else if (!result.ok && !result.status.startsWith("manifest_source_missing")) {
         result.status = "fetch_degraded:${ckbScheduledFetchPrimaryFailure(result)}"
     }
     result
+}
+
+private func ckbFetchReleaseFullSyncPlan(runner: SourceFetchRunner, builder: SourceRequestBuilder, profile: CkbScheduleTaskProfile, result: CkbScheduledProfileFetchResult, config: CkbRuntimeConfig, store: FileKnowledgeStore, deadlineAtMillis!: Int64 = 0): Unit {
+    for (source in result.releasePlan.sources) {
+        let inventory = ckbReleaseInventoryForSource(source)
+        result.releaseInventories.add(inventory)
+        if (source.sourceSet == CangjieSourceSets.EVAL_SUPPORT) {
+            ckbFetchReleaseEvalSupportSource(source, profile, result, inventory, config, store)
+        } else {
+            ckbFetchReleaseRemoteSource(runner, builder, source, profile, result, inventory, config, store, deadlineAtMillis: deadlineAtMillis)
+        }
+        ckbReleaseInventorySortPaths(inventory)
+        if (!inventory.complete) {
+            if (result.ok) {
+                ckbReleaseFailFetchResult(result, inventory.status, source, "source_incomplete")
+            }
+            break
+        }
+    }
+    ckbSyncScheduledRequestAccounting(result)
+    if (result.ok && ckbReleaseAllInventoriesComplete(result.releasePlan, result.releaseInventories)) {
+        result.status = "profile_ok"
+        result.diagnostics.add("release_inventory_complete:planHash=${result.releasePlan.planHash}|sources=${result.releaseInventories.size}|contentRecords=${result.contentRecords.size}|controlEvidence=${result.controlEvidence.size}")
+    } else if (result.ok) {
+        result.ok = false
+        result.status = "release_inventory_incomplete"
+        result.diagnostics.add("release_inventory_incomplete:planHash=${result.releasePlan.planHash}|inventories=${result.releaseInventories.size}|plannedSources=${result.releasePlan.sources.size}")
+    }
+}
+
+func ckbReleaseInventoryForSource(source: CkbReleaseSourcePlan): CkbReleaseSourceInventory {
+    let inventory = CkbReleaseSourceInventory()
+    inventory.sourceIdentity = source.canonicalIdentity
+    inventory.sourceSet = source.sourceSet
+    inventory.sourceFamily = source.sourceFamily
+    inventory.repo = source.normalizedRepo
+    inventory.originalRef = source.originalRef
+    inventory
+}
+
+func ckbFetchReleaseRemoteSource(runner: SourceFetchRunner, builder: SourceRequestBuilder, source: CkbReleaseSourcePlan, profile: CkbScheduleTaskProfile, result: CkbScheduledProfileFetchResult, inventory: CkbReleaseSourceInventory, config: CkbRuntimeConfig, store: FileKnowledgeStore, deadlineAtMillis!: Int64 = 0): Unit {
+    let resolution = ckbResolveGitCodeRefForFetch(runner, builder, source.source.sourceRepo, source.originalRef, source.sourceSet, source.sourceFamily, config, deadlineAtMillis: deadlineAtMillis, accounting: result.accounting)
+    ckbAppendReleaseRefEvidence(result, source, resolution)
+    if (!resolution.ok) {
+        let status = ckbReleaseAcquisitionFailureStatus(resolution.status)
+        ckbReleaseInventoryFailure(inventory, status)
+        ckbReleaseFailFetchResult(result, status, source, "ref_resolution_failed")
+        return
+    }
+    inventory.resolvedCommit = resolution.resolvedCommit
+    var page: Int64 = 1
+    while (true) {
+        let request = builder.gitCodeTreePageWithFetchRef(source.source.sourceRepo, source.originalRef, resolution.effectiveRef, page: page, perPage: 100)
+        let fetch = ckbFetchScheduledRequest(runner, request, config, deadlineAtMillis: deadlineAtMillis, accounting: result.accounting)
+        ckbApplyGitCodeRefResolutionToFetch(fetch, resolution)
+        if (fetch.body != "") {
+            fetch.bodyHash = ckbReleaseEvidenceHash(fetch.body)
+        }
+        inventory.pagesScanned += 1
+        if (fetch.truncated) {
+            ckbAppendReleaseControlEvidence(result, source, "tree_page", request, fetch, resolution, 0, 0)
+            ckbReleaseInventoryLimitFailure(result, inventory, source, "tree_response_truncated")
+            return
+        }
+        if (!fetch.ok) {
+            ckbAppendReleaseControlEvidence(result, source, "tree_page", request, fetch, resolution, 0, 0)
+            let status = ckbReleaseAcquisitionFailureStatus(fetch.status)
+            ckbReleaseInventoryFailure(inventory, status)
+            ckbReleaseFailFetchResult(result, status, source, "tree_page_failed")
+            return
+        }
+        let parsed = ckbReleaseParseTreePage(source.sourceSet, fetch.body)
+        ckbAppendReleaseControlEvidence(result, source, "tree_page", request, fetch, resolution, parsed.objectsSeen, parsed.filesSeen)
+        if (!parsed.ok) {
+            if (parsed.truncated || parsed.status == CkbReleaseAcquisitionStatus.INVENTORY_LIMIT_EXCEEDED) {
+                ckbReleaseInventoryLimitFailure(result, inventory, source, "tree_response_truncated")
+                return
+            }
+            ckbReleaseInventoryFailure(inventory, parsed.status)
+            ckbReleaseFailFetchResult(result, parsed.status, source, "tree_page_parse_failed")
+            return
+        }
+        if (parsed.explicitEnd) {
+            inventory.explicitEnd = true
+            break
+        }
+        inventory.nonEmptyPages += 1
+        if (inventory.nonEmptyPages > source.maxNonEmptyPages) {
+            ckbReleaseInventoryLimitFailure(result, inventory, source, "nonempty_pages")
+            return
+        }
+        inventory.objectsSeen += parsed.objectsSeen
+        inventory.filesSeen += parsed.filesSeen
+        if (inventory.objectsSeen > source.maxObjects) {
+            ckbReleaseInventoryLimitFailure(result, inventory, source, "objects")
+            return
+        }
+        if (inventory.filesSeen > source.maxFiles) {
+            ckbReleaseInventoryLimitFailure(result, inventory, source, "files")
+            return
+        }
+        for (path in parsed.eligiblePaths) {
+            _ = ckbReleaseInventoryPlanPath(inventory, path)
+        }
+        page += 1
+    }
+    ckbReleaseInventorySortPaths(inventory)
+    if (inventory.plannedPaths.size == 0) {
+        let status = "release_source_empty"
+        ckbReleaseInventoryFailure(inventory, status)
+        ckbReleaseFailFetchResult(result, status, source, "no_eligible_content")
+        return
+    }
+    for (path in inventory.plannedPaths) {
+        if (!ckbFetchReleaseContentPath(runner, builder, source, profile, result, inventory, config, resolution, path, deadlineAtMillis: deadlineAtMillis)) {
+            return
+        }
+    }
+    let checkpointSource = source.source
+    ckbSaveScheduledFetchCheckpoint(store, profile, checkpointSource, resolution, "completed", inventory.pagesScanned, "", inventory.plannedPaths, inventory.completedPaths)
+    inventory.complete = true
+    inventory.status = CkbReleaseAcquisitionStatus.OK
+}
+
+private func ckbFetchReleaseContentPath(runner: SourceFetchRunner, builder: SourceRequestBuilder, source: CkbReleaseSourcePlan, profile: CkbScheduleTaskProfile, result: CkbScheduledProfileFetchResult, inventory: CkbReleaseSourceInventory, config: CkbRuntimeConfig, resolution: GitCodeRefResolution, path: String, deadlineAtMillis!: Int64 = 0): Bool {
+    let rawRequest = builder.gitCodeReleaseSourceRawWithFetchRef(source.source.sourceRepo, source.originalRef, resolution.effectiveRef, path)
+    var contentRequest = rawRequest
+    var contentFetch = ckbFetchScheduledRequest(runner, rawRequest, config, deadlineAtMillis: deadlineAtMillis, accounting: result.accounting)
+    ckbApplyGitCodeRefResolutionToFetch(contentFetch, resolution)
+    if (contentFetch.body != "") {
+        contentFetch.bodyHash = ckbReleaseEvidenceHash(contentFetch.body)
+    }
+    ckbAppendReleaseControlEvidence(result, source, "content_raw", rawRequest, contentFetch, resolution, 0, 1)
+    if (contentFetch.truncated || contentFetch.status == "source_too_large") {
+        ckbReleaseInventoryLimitFailure(result, inventory, source, "bytes")
+        return false
+    }
+    if (!contentFetch.ok) {
+        let rawStatus = ckbReleaseAcquisitionFailureStatus(contentFetch.status)
+        if (rawStatus == "invalid_response_encoding" || rawStatus == "fetch_deadline_exceeded" || rawStatus == "timeout") {
+            ckbReleaseInventoryFailure(inventory, rawStatus)
+            ckbReleaseFailFetchResult(result, rawStatus, source, "content_raw_failed")
+            return false
+        }
+        let contentsRequest = builder.gitCodeReleaseSourceContentsWithFetchRef(source.source.sourceRepo, source.originalRef, resolution.effectiveRef, path)
+        let contentsFetch = ckbFetchScheduledRequest(runner, contentsRequest, config, deadlineAtMillis: deadlineAtMillis, accounting: result.accounting)
+        ckbApplyGitCodeRefResolutionToFetch(contentsFetch, resolution)
+        if (contentsFetch.body != "") {
+            contentsFetch.bodyHash = ckbReleaseEvidenceHash(contentsFetch.body)
+        }
+        ckbAppendReleaseControlEvidence(result, source, "content_contents", contentsRequest, contentsFetch, resolution, 0, 1)
+        if (contentsFetch.truncated || contentsFetch.status == "source_too_large") {
+            ckbReleaseInventoryLimitFailure(result, inventory, source, "bytes")
+            return false
+        }
+        contentRequest = contentsRequest
+        contentFetch = contentsFetch
+    }
+    if (!contentFetch.ok) {
+        let status = ckbReleaseAcquisitionFailureStatus(contentFetch.status)
+        ckbReleaseInventoryFailure(inventory, status)
+        ckbReleaseFailFetchResult(result, status, source, "content_fetch_failed")
+        return false
+    }
+    let nextBytes = inventory.contentBytes + contentFetch.body.size
+    if (nextBytes > source.maxBytes) {
+        ckbReleaseInventoryLimitFailure(result, inventory, source, "bytes")
+        return false
+    }
+    inventory.contentBytes = nextBytes
+    contentFetch.bodyHash = ckbReleaseEvidenceHash(contentFetch.body)
+    ckbAppendReleaseContentRecord(profile, result, source, contentRequest, contentFetch)
+    _ = ckbReleaseInventoryCompletePath(inventory, path)
+    true
+}
+
+private func ckbFetchReleaseEvalSupportSource(source: CkbReleaseSourcePlan, profile: CkbScheduleTaskProfile, result: CkbScheduledProfileFetchResult, inventory: CkbReleaseSourceInventory, config: CkbRuntimeConfig, store: FileKnowledgeStore): Unit {
+    let root = ckbScheduledEvalSupportRoot(config)
+    let extracted = if (root != "") {
+        extractAllEvalSupportRecords(root, version: resolveCangjieVersion(cangjieVersionSelector(targetVersion: source.targetVersion, sourceSet: CangjieSourceSets.EVAL_SUPPORT), ckbRuntimeCangjieVersionManifest(config)))
+    } else {
+        ckbReleaseEvalSupportFromActive(store, source)
+    }
+    if (ckbReleaseDiagnosticsContain(extracted.diagnostics, "invalid_eval_support_encoding") || ckbReleaseDiagnosticsContain(extracted.diagnostics, "eval_support_artifact_invalid_encoding")) {
+        let status = "eval_support_artifact_invalid_encoding"
+        ckbReleaseInventoryFailure(inventory, status)
+        ckbReleaseFailFetchResult(result, status, source, "eval_support_invalid_encoding")
+        return
+    }
+    if (!extracted.ok || extracted.records.size == 0 || extracted.diagnostics.size > 0) {
+        let status = "eval_support_source_unavailable"
+        ckbReleaseInventoryFailure(inventory, status)
+        ckbReleaseFailFetchResult(result, status, source, "eval_support_unavailable")
+        return
+    }
+    for (record in extracted.records) {
+        let typed = ckbReleaseCopyEvalTypedRecord(record, source)
+        let logicalPath = ckbReleaseEvalLogicalPath(typed)
+        if (logicalPath == "") {
+            let status = CkbReleaseAcquisitionStatus.UNSAFE_PATH
+            ckbReleaseInventoryFailure(inventory, status)
+            ckbReleaseFailFetchResult(result, status, source, "eval_support_path_invalid")
+            return
+        }
+        _ = ckbReleaseInventoryPlanPath(inventory, logicalPath)
+        inventory.objectsSeen += 1
+        inventory.filesSeen += 1
+        let nextBytes = inventory.contentBytes + typed.content.size
+        if (inventory.objectsSeen > source.maxObjects) {
+            ckbReleaseInventoryLimitFailure(result, inventory, source, "objects")
+            return
+        }
+        if (inventory.filesSeen > source.maxFiles) {
+            ckbReleaseInventoryLimitFailure(result, inventory, source, "files")
+            return
+        }
+        if (nextBytes > source.maxBytes) {
+            ckbReleaseInventoryLimitFailure(result, inventory, source, "bytes")
+            return
+        }
+        inventory.contentBytes = nextBytes
+        let request = ckbScheduledEvalSupportLocalRequest(source.source, config)
+        request.path = logicalPath
+        request.sourceVariant = if (root == "") { "active_snapshot" } else { "local" }
+        let fetch = SourceFetchResult()
+        fetch.ok = true
+        fetch.status = if (root == "") { "active_existing" } else { "local_existing" }
+        fetch.statusCode = 200
+        fetch.sourceUrl = typed.citation
+        fetch.repo = "ckb-local://eval-support"
+        fetch.ref = source.originalRef
+        fetch.path = logicalPath
+        fetch.normalizedType = request.kind
+        fetch.contentType = "text/plain"
+        fetch.body = typed.content
+        fetch.bytes = typed.content.size
+        fetch.bodyHash = ckbReleaseEvidenceHash(typed.content)
+        fetch.commit = if (typed.resolvedCommit != "") { typed.resolvedCommit } else { fetch.bodyHash }
+        let scheduled = ckbAppendReleaseContentRecord(profile, result, source, request, fetch)
+        scheduled.preparedTypedRecords.add(typed)
+        _ = ckbReleaseInventoryCompletePath(inventory, logicalPath)
+        ckbAppendReleaseControlEvidence(result, source, "eval_support_selection", request, fetch, GitCodeRefResolution(), 1, 1)
+    }
+    inventory.explicitEnd = true
+    inventory.complete = true
+    inventory.status = CkbReleaseAcquisitionStatus.OK
+    inventory.resolvedCommit = ckbReleaseEvalInventoryCommit(extracted.records)
+}
+
+private func ckbReleaseEvalSupportFromActive(store: FileKnowledgeStore, source: CkbReleaseSourcePlan): CangjieTypedRecordResult {
+    let result = CangjieTypedRecordResult()
+    let snapshot = try {
+        store.loadActiveSnapshot()
+    } catch (_: Exception) {
+        result.addDiagnostic("eval_support_artifact_invalid_encoding")
+        return result
+    }
+    if (!snapshot.valid) {
+        result.addDiagnostic("eval_support_active_snapshot_unavailable")
+        return result
+    }
+    for (record in snapshot.activeIndex) {
+        // Only first-initialization artifacts are a valid fallback input.
+        // Prior P5 canonical records and benchmark-curated eval records are
+        // outputs/other scopes and must never feed the next acquisition run.
+        if (record.recordKind != CangjieTypedRecordKinds.EVAL_SUPPORT ||
+            record.metadata.targetVersion != source.targetVersion ||
+            !record.sourceId.startsWith("eval-support-CJ-HUMANEVAL-") ||
+            record.sourceId.startsWith("p5typed|") ||
+            record.metadata.sourceSet != CangjieSourceSets.EVAL_SUPPORT) {
+            continue
+        }
+        let typed = CangjieTypedRecord()
+        typed.recordKind = CangjieTypedRecordKinds.EVAL_SUPPORT
+        typed.sourceId = record.sourceId
+        typed.title = record.title
+        typed.content = record.chunk
+        typed.citation = record.citation
+        typed.sourceSet = CangjieSourceSets.EVAL_SUPPORT
+        typed.path = record.metadata.path
+        typed.sourceFamily = ckbReleaseEvalSourceFamily(typed.path)
+        typed.caseId = ckbReleaseEvalCaseId(record.citation)
+        typed.contentHash = ckbReleaseEvidenceHash(record.chunk)
+        typed.versionResolutionId = record.metadata.versionResolutionId
+        typed.targetVersion = record.metadata.targetVersion
+        typed.sourceRef = record.metadata.docVersion
+        typed.refKind = "local"
+        typed.resolvedCommit = record.metadata.commit
+        typed.trustLevel = record.metadata.trustLevel
+        typed.reviewState = record.metadata.reviewState
+        if (typed.path == "" || typed.sourceFamily == "" || typed.caseId == "" || typed.content == "") {
+            result.addDiagnostic("eval_support_active_record_malformed")
+            return result
+        }
+        result.records.add(typed)
+    }
+    if (result.records.size == 0) {
+        result.addDiagnostic("eval_support_active_target_missing")
+    }
+    result
+}
+
+private func ckbReleaseCopyEvalTypedRecord(record: CangjieTypedRecord, source: CkbReleaseSourcePlan): CangjieTypedRecord {
+    let out = CangjieTypedRecord()
+    out.recordKind = CangjieTypedRecordKinds.EVAL_SUPPORT
+    out.sourceId = record.sourceId
+    out.title = record.title
+    out.content = record.content
+    out.citation = record.citation
+    out.sourceSet = CangjieSourceSets.EVAL_SUPPORT
+    out.sourceFamily = record.sourceFamily
+    out.path = record.path
+    out.heading = record.heading
+    out.sectionId = record.sectionId
+    out.caseId = record.caseId
+    out.contentHash = ckbReleaseEvidenceHash(record.content)
+    out.versionResolutionId = record.versionResolutionId
+    out.targetVersion = source.targetVersion
+    out.sourceRef = source.originalRef
+    out.refKind = if (record.refKind == "") { source.refKind } else { record.refKind }
+    out.resolvedCommit = record.resolvedCommit
+    out.trustLevel = record.trustLevel
+    out.reviewState = record.reviewState
+    out
+}
+
+private func ckbReleaseEvalLogicalPath(record: CangjieTypedRecord): String {
+    ckbReleaseNormalizeSourcePath("${record.caseId}/${record.path}")
+}
+
+private func ckbReleaseEvalCaseId(citation: String): String {
+    let parts = citation.split(":")
+    if (parts.size < 2) { return "" }
+    parts[0].trimAscii()
+}
+
+private func ckbReleaseEvalSourceFamily(path: String): String {
+    if (path == CangjieEvalSupportPaths.PROMPT) { return "prompt" }
+    if (path == CangjieEvalSupportPaths.METADATA) { return "metadata" }
+    if (path == CangjieEvalSupportPaths.EVAL_SUPPORT) { return "eval_support" }
+    if (path == CangjieEvalSupportPaths.VISIBLE_TESTS) { return "visible_test_helpers" }
+    ""
+}
+
+private func ckbReleaseEvalInventoryCommit(records: ArrayList<CangjieTypedRecord>): String {
+    let values = ArrayList<String>()
+    for (record in records) {
+        values.add("${ckbReleaseEvalLogicalPath(record)}:${ckbReleaseEvidenceHash(record.content)}")
+    }
+    let ordered = values.toArray()
+    sort(ordered)
+    ckbReleaseEvidenceHash(joinStrings(ArrayList<String>(ordered), "|"))
+}
+
+private func ckbAppendReleaseContentRecord(profile: CkbScheduleTaskProfile, result: CkbScheduledProfileFetchResult, source: CkbReleaseSourcePlan, request: SourceFetchRequest, fetch: SourceFetchResult): CkbScheduledSourceRecord {
+    let record = CkbScheduledSourceRecord()
+    record.request = request
+    record.fetch = fetch
+    record.releaseSource = source
+    record.sourceType = SourceTypes.REPO
+    record.sourceFamily = source.sourceFamily
+    record.sourceSet = source.sourceSet
+    record.title = "Scheduled ${profile.profile}: ${source.sourceSet}:${ckbReleaseSafePathSummary(request.path)}"
+    record.sourceId = ckbReleaseCanonicalRawId(source, request.path)
+    result.records.add(record)
+    result.contentRecords.add(record)
+    result.fetchedCount += 1
+    result.successfulRequests.add("release_content_ok:sourceSet=${source.sourceSet}|repo=${source.normalizedRepo}|pathHash=${ckbReleaseEvidenceHash(request.path)}|bodyHash=${fetch.bodyHash}|bytes=${fetch.body.size}")
+    record
+}
+
+private func ckbAppendReleaseRefEvidence(result: CkbScheduledProfileFetchResult, source: CkbReleaseSourcePlan, resolution: GitCodeRefResolution): Unit {
+    let evidence = CkbReleaseControlEvidence()
+    evidence.kind = "ref_resolution"
+    evidence.sourceIdentity = source.canonicalIdentity
+    evidence.sourceSet = source.sourceSet
+    evidence.repo = source.normalizedRepo
+    evidence.originalRef = source.originalRef
+    evidence.resolvedCommit = resolution.resolvedCommit
+    evidence.status = ckbReleaseAcquisitionFailureStatus(resolution.status)
+    evidence.bodyHash = if (resolution.evidenceBodyHash != "") { resolution.evidenceBodyHash } else { ckbReleaseEvidenceHash(resolution.resolvedCommit) }
+    evidence.attemptCount = resolution.evidenceAttempts
+    result.controlEvidence.add(evidence)
+    result.diagnostics.add("release_ref_evidence:sourceSet=${source.sourceSet}|repo=${source.normalizedRepo}|status=${evidence.status}|commit=${utf8SafePrefix(resolution.resolvedCommit, 64)}|bodyHash=${evidence.bodyHash}|attempts=${evidence.attemptCount}")
+}
+
+private func ckbAppendReleaseControlEvidence(result: CkbScheduledProfileFetchResult, source: CkbReleaseSourcePlan, kind: String, request: SourceFetchRequest, fetch: SourceFetchResult, resolution: GitCodeRefResolution, objectCount: Int64, fileCount: Int64): Unit {
+    let evidence = CkbReleaseControlEvidence()
+    evidence.kind = kind
+    evidence.sourceIdentity = source.canonicalIdentity
+    evidence.sourceSet = source.sourceSet
+    evidence.repo = source.normalizedRepo
+    evidence.originalRef = source.originalRef
+    evidence.resolvedCommit = if (resolution.resolvedCommit != "") { resolution.resolvedCommit } else { fetch.commit }
+    evidence.path = request.path
+    evidence.page = request.page
+    evidence.status = ckbReleaseAcquisitionFailureStatus(fetch.status)
+    evidence.bodyHash = fetch.bodyHash
+    evidence.attemptCount = fetch.attempts
+    evidence.objectCount = objectCount
+    evidence.fileCount = fileCount
+    result.controlEvidence.add(evidence)
+    let safePath = ckbReleaseSafePathSummary(request.path)
+    let safeUrl = ckbReleaseSafeUrlSummary(request.url)
+    result.diagnostics.add("release_control_evidence:kind=${kind}|sourceSet=${source.sourceSet}|repo=${source.normalizedRepo}|page=${request.page}|path=${safePath}|pathHash=${ckbReleaseEvidenceHash(request.path)}|url=${safeUrl}|urlHash=${ckbReleaseEvidenceHash(request.url)}|status=${evidence.status}|bodyHash=${evidence.bodyHash}|attempts=${evidence.attemptCount}|objects=${objectCount}|files=${fileCount}")
+}
+
+private func ckbReleaseSafePathSummary(path: String): String {
+    let lower = path.toAsciiLower()
+    if (lower.contains("authorization") || lower.contains("bearer") || lower.contains("token") || lower.contains("secret") || lower.contains("password") || lower.contains("proxy")) {
+        return "[redacted-path]"
+    }
+    utf8SafePrefix(redactSensitive(path), 120)
+}
+
+private func ckbReleaseSafeUrlSummary(url: String): String {
+    let lower = url.toAsciiLower()
+    if (lower.contains("authorization") || lower.contains("bearer") || lower.contains("token") || lower.contains("secret") || lower.contains("password") || lower.contains("proxy")) {
+        return "[redacted-url]"
+    }
+    utf8SafePrefix(redactSensitive(url), 160)
+}
+
+private func ckbReleaseInventoryLimitFailure(result: CkbScheduledProfileFetchResult, inventory: CkbReleaseSourceInventory, source: CkbReleaseSourcePlan, dimension: String): Unit {
+    let status = CkbReleaseAcquisitionStatus.INVENTORY_LIMIT_EXCEEDED
+    ckbReleaseInventoryFailure(inventory, status)
+    result.diagnostics.add("release_inventory_limit_exceeded:sourceSet=${source.sourceSet}|repo=${source.normalizedRepo}|dimension=${dimension}|nonEmptyPages=${inventory.nonEmptyPages}|objects=${inventory.objectsSeen}|files=${inventory.filesSeen}|bytes=${inventory.contentBytes}")
+    ckbReleaseFailFetchResult(result, status, source, "inventory_limit:${dimension}")
+}
+
+private func ckbReleaseFailFetchResult(result: CkbScheduledProfileFetchResult, status: String, source: CkbReleaseSourcePlan, reason: String): Unit {
+    result.ok = false
+    if (result.status == "profile_ok" || result.status == "") {
+        result.status = status
+    }
+    result.failedCount += 1
+    let diagnostic = "release_source_failed:sourceSet=${source.sourceSet}|repo=${source.normalizedRepo}|status=${status}|reason=${reason}"
+    result.failedRequests.add(diagnostic)
+    result.diagnostics.add(diagnostic)
+}
+
+private func ckbReleaseAcquisitionFailureStatus(status: String): String {
+    if (status == "ok" || status == "local_existing" || status == "active_existing") { return CkbReleaseAcquisitionStatus.OK }
+    if (status == "invalid_response_encoding" || status == "invalid_utf8_contents") { return "invalid_response_encoding" }
+    if (status.contains("malformed_json") || status == "malformed_contents_response" || status == "gitcode_branch_commit_missing") { return CkbReleaseAcquisitionStatus.MALFORMED_JSON }
+    if (status == "") { return "request_failed" }
+    status
+}
+
+private func ckbReleaseDiagnosticsContain(diagnostics: ArrayList<String>, needle: String): Bool {
+    for (diagnostic in diagnostics) {
+        if (diagnostic.contains(needle)) { return true }
+    }
+    false
 }
 
 private func ckbScheduledFetchDeadlineWasExceeded(result: CkbScheduledProfileFetchResult): Bool {
@@ -9511,6 +10018,8 @@ private class GitCodeRefResolution {
     var effectiveRef: String = ""
     var resolvedCommit: String = ""
     var refKind: String = "branch"
+    var evidenceBodyHash: String = ""
+    var evidenceAttempts: Int64 = 0
     var diagnostics: ArrayList<String> = ArrayList<String>()
     var failedRequests: ArrayList<String> = ArrayList<String>()
 
@@ -9653,14 +10162,28 @@ private func ckbLoadScheduledFetchCheckpoint(store: FileKnowledgeStore, profile:
     checkpoint.phase = ckbCurrentField(text, "phase")
     checkpoint.nextPage = parseIntField(ckbCurrentField(text, "nextPage"), 1)
     checkpoint.currentPath = ckbCurrentField(text, "currentPath")
-    ckbScheduledFetchSplitPaths(ckbCurrentField(text, "selectedPaths"), checkpoint.selectedPaths)
-    ckbScheduledFetchSplitPaths(ckbCurrentField(text, "completedPaths"), checkpoint.completedPaths)
+    let selectedJson = ckbCurrentField(text, "selectedPathsJson")
+    let completedJson = ckbCurrentField(text, "completedPathsJson")
+    if (selectedJson != "") {
+        if (!ckbScheduledFetchDecodePathsJson(selectedJson, checkpoint.selectedPaths)) {
+            checkpoint.valid = false
+            return checkpoint
+        }
+    } else {
+        ckbScheduledFetchSplitPaths(ckbCurrentField(text, "selectedPaths"), checkpoint.selectedPaths)
+    }
+    if (completedJson != "") {
+        if (!ckbScheduledFetchDecodePathsJson(completedJson, checkpoint.completedPaths)) {
+            checkpoint.valid = false
+            return checkpoint
+        }
+    } else {
+        ckbScheduledFetchSplitPaths(ckbCurrentField(text, "completedPaths"), checkpoint.completedPaths)
+    }
     checkpoint
 }
 
 private func ckbSaveScheduledFetchCheckpoint(store: FileKnowledgeStore, profile: CkbScheduleTaskProfile, source: CangjieVersionSource, resolution: GitCodeRefResolution, phase: String, nextPage: Int64, currentPath: String, selectedPaths: ArrayList<String>, completedPaths: ArrayList<String>): Unit {
-    let selectedJoined = joinStrings(selectedPaths, ",")
-    let completedJoined = joinStrings(completedPaths, ",")
     var text = "profile=${escapeField(profile.profile)}\n"
     text += "sourceSet=${escapeField(source.sourceSet)}\n"
     text += "sourceFamily=${escapeField(source.sourceFamily)}\n"
@@ -9670,8 +10193,8 @@ private func ckbSaveScheduledFetchCheckpoint(store: FileKnowledgeStore, profile:
     text += "phase=${escapeField(phase)}\n"
     text += "nextPage=${nextPage}\n"
     text += "currentPath=${escapeField(currentPath)}\n"
-    text += "selectedPaths=${escapeField(selectedJoined)}\n"
-    text += "completedPaths=${escapeField(completedJoined)}\n"
+    text += "selectedPathsJson=${escapeField(ckbScheduledFetchPathsJson(selectedPaths))}\n"
+    text += "completedPathsJson=${escapeField(ckbScheduledFetchPathsJson(completedPaths))}\n"
     text += "updatedAtMillis=${ckbTaskWorkerNowMillis()}\n"
     store.writeLinesAtomically(ckbScheduledFetchCheckpointPath(profile, source), text)
 }
@@ -9682,6 +10205,55 @@ private func ckbScheduledFetchSplitPaths(raw: String, out: ArrayList<String>): U
         if (path != "") {
             addUniqueString(out, path)
         }
+    }
+}
+
+func ckbScheduledFetchPathsJson(paths: ArrayList<String>): String {
+    let out = StringBuilder()
+    out.append("[")
+    var first = true
+    for (path in paths) {
+        if (!first) { out.append(",") }
+        first = false
+        out.append("\"")
+        out.append(ckbScheduledFetchJsonEscape(path))
+        out.append("\"")
+    }
+    out.append("]")
+    out.toString()
+}
+
+func ckbScheduledFetchJsonEscape(raw: String): String {
+    let out = StringBuilder()
+    for (ch in raw.toRuneArray()) {
+        if (ch == r'"') {
+            out.append("\\\"")
+        } else if (ch == r'\\') {
+            out.append("\\\\")
+        } else if (ch == r'\n') {
+            out.append("\\n")
+        } else if (ch == r'\r') {
+            out.append("\\r")
+        } else if (ch == r'\t') {
+            out.append("\\t")
+        } else {
+            out.append(ch)
+        }
+    }
+    out.toString()
+}
+
+func ckbScheduledFetchDecodePathsJson(raw: String, out: ArrayList<String>): Bool {
+    try {
+        let items = JsonValue.fromStr(raw).asArray().getItems()
+        for (item in items) {
+            let path = item.asString().getValue()
+            if (path == "") { return false }
+            addUniqueString(out, path)
+        }
+        true
+    } catch (_: Exception) {
+        false
     }
 }
 
@@ -9881,6 +10453,7 @@ private func ckbResolveGitCodeRefForFetch(runner: SourceFetchRunner, builder: So
         resolution.effectiveRef = ref
         resolution.resolvedCommit = ref
         resolution.refKind = "commit"
+        resolution.evidenceBodyHash = ckbReleaseEvidenceHash(ref)
         resolution.diagnostics.add("gitcode_ref_resolved_commit:${repo}:${ref}")
         return resolution
     }
@@ -9893,6 +10466,12 @@ private func ckbResolveGitCodeRefForFetch(runner: SourceFetchRunner, builder: So
         resolution.diagnostics.add("gitcode_ref_resolution_branch_list:${diagnostic}")
         if (!branchListFetch.ok) {
             resolution.failedRequests.add(diagnostic)
+            if (ckbGitCodeRefResolutionTerminalStatus(branchListFetch.status)) {
+                resolution.status = branchListFetch.status
+                resolution.evidenceBodyHash = branchListFetch.bodyHash
+                resolution.evidenceAttempts = branchListFetch.attempts
+                return resolution
+            }
             break
         }
         var parsedCount: Int64 = 0
@@ -9913,6 +10492,8 @@ private func ckbResolveGitCodeRefForFetch(runner: SourceFetchRunner, builder: So
                 resolution.effectiveRef = parsed.commit
                 resolution.resolvedCommit = parsed.commit
                 resolution.refKind = "branch"
+                resolution.evidenceBodyHash = ckbReleaseEvidenceHash(branchListFetch.body)
+                resolution.evidenceAttempts = branchListFetch.attempts
                 resolution.diagnostics.add("gitcode_ref_resolved_branch_list:${repo}:${candidateRef}:${parsed.commit}")
                 if (candidateRef != ref) {
                     resolution.diagnostics.add("gitcode_ref_alias_used:${repo}:${ref}:${candidateRef}")
@@ -9943,6 +10524,8 @@ private func ckbResolveGitCodeRefForFetch(runner: SourceFetchRunner, builder: So
                 resolution.effectiveRef = parsed.commit
                 resolution.resolvedCommit = parsed.commit
                 resolution.refKind = "branch"
+                resolution.evidenceBodyHash = ckbReleaseEvidenceHash(branchFetch.body)
+                resolution.evidenceAttempts = branchFetch.attempts
                 resolution.diagnostics.add("gitcode_ref_resolved_branch_ref:${repo}:${candidateRef}:${parsed.commit}")
                 if (candidateRef != ref) {
                     resolution.diagnostics.add("gitcode_ref_alias_used:${repo}:${ref}:${candidateRef}")
@@ -9951,11 +10534,26 @@ private func ckbResolveGitCodeRefForFetch(runner: SourceFetchRunner, builder: So
             }
         } else {
             resolution.failedRequests.add(branchDiagnostic)
+            if (ckbGitCodeRefResolutionTerminalStatus(branchFetch.status)) {
+                resolution.status = branchFetch.status
+                resolution.evidenceBodyHash = branchFetch.bodyHash
+                resolution.evidenceAttempts = branchFetch.attempts
+                return resolution
+            }
         }
     }
     resolution.status = "gitcode_ref_resolution_failed"
     resolution.diagnostics.add("gitcode_ref_resolution_failed:${repo}:${ref}")
     resolution
+}
+
+private func ckbGitCodeRefResolutionTerminalStatus(status: String): Bool {
+    status == "invalid_response_encoding" ||
+        status == "fetch_deadline_exceeded" ||
+        status == "timeout" ||
+        status == "auth_degraded" ||
+        status == "rate_limited" ||
+        status == "blocked_url"
 }
 
 private func ckbGitCodeRefResolutionCandidates(ref: String, config: CkbRuntimeConfig): ArrayList<String> {
@@ -9988,15 +10586,22 @@ private func ckbGitCodeLooksLikeCommit(ref: String): Bool {
 
 private func ckbParseGitCodeBranchListResolution(body: String, ref: String): GitCodeBranchResolutionParse {
     let parsed = GitCodeBranchResolutionParse()
-    let trimmed = body.trimAscii()
-    if (!trimmed.startsWith("[") || !trimmed.endsWith("]")) {
+    let items = try {
+        JsonValue.fromStr(body).asArray().getItems()
+    } catch (_: Exception) {
         parsed.malformed = true
         parsed.status = "gitcode_branch_list_malformed_json"
         return parsed
     }
-    for (object in jsonObjectChunks(trimmed)) {
+    for (value in items) {
         parsed.count += 1
-        let objectParsed = ckbParseGitCodeBranchObjectResolution(object, ref)
+        let objectParsed = try {
+            ckbParseGitCodeBranchObjectValue(value.asObject(), ref)
+        } catch (_: Exception) {
+            parsed.malformed = true
+            parsed.status = "gitcode_branch_list_malformed_json"
+            return parsed
+        }
         if (objectParsed.malformed) {
             parsed.malformed = true
             parsed.status = objectParsed.status
@@ -10014,8 +10619,19 @@ private func ckbParseGitCodeBranchListResolution(body: String, ref: String): Git
 
 private func ckbParseGitCodeBranchObjectResolution(body: String, ref: String): GitCodeBranchResolutionParse {
     let parsed = GitCodeBranchResolutionParse()
-    let safe = asciiJsonProjection(body)
-    let name = jsonStringField(safe, "name")
+    let object = try {
+        JsonValue.fromStr(body).asObject()
+    } catch (_: Exception) {
+        parsed.malformed = true
+        parsed.status = "gitcode_branch_object_malformed_json"
+        return parsed
+    }
+    ckbParseGitCodeBranchObjectValue(object, ref)
+}
+
+private func ckbParseGitCodeBranchObjectValue(object: JsonObject, ref: String): GitCodeBranchResolutionParse {
+    let parsed = GitCodeBranchResolutionParse()
+    let name = ckbStrictJsonString(object, "name")
     if (name == "") {
         parsed.malformed = true
         parsed.status = "gitcode_branch_object_malformed_json"
@@ -10025,12 +10641,18 @@ private func ckbParseGitCodeBranchObjectResolution(body: String, ref: String): G
         return parsed
     }
     var commit = ""
-    let commitObject = jsonObjectField(safe, "commit")
-    if (commitObject != "") {
-        commit = firstNonEmptyJsonString(commitObject, ["id", "sha"])
+    match (object.get("commit")) {
+        case Some(value) =>
+            try {
+                let commitObject = value.asObject()
+                commit = ckbStrictFirstJsonString(commitObject, ["id", "sha"])
+            } catch (_: Exception) {
+                try { commit = value.asString().getValue() } catch (_inner: Exception) { () }
+            }
+        case None => ()
     }
     if (commit == "") {
-        commit = firstNonEmptyJsonString(safe, ["commit_id", "commit_sha", "sha"])
+        commit = ckbStrictFirstJsonString(object, ["commit_id", "commit_sha", "sha"])
     }
     if (!ckbGitCodeLooksLikeCommit(commit)) {
         parsed.malformed = true
@@ -10041,6 +10663,21 @@ private func ckbParseGitCodeBranchObjectResolution(body: String, ref: String): G
     parsed.commit = commit
     parsed.status = "ok"
     parsed
+}
+
+private func ckbStrictJsonString(object: JsonObject, key: String): String {
+    match (object.get(key)) {
+        case Some(value) => try { value.asString().getValue() } catch (_: Exception) { "" }
+        case None => ""
+    }
+}
+
+private func ckbStrictFirstJsonString(object: JsonObject, keys: Array<String>): String {
+    for (key in keys) {
+        let value = ckbStrictJsonString(object, key)
+        if (value != "") { return value }
+    }
+    ""
 }
 
 private func ckbGitCodeRefResolutionFailureFetch(request: SourceFetchRequest, resolution: GitCodeRefResolution): SourceFetchResult {
@@ -10172,17 +10809,6 @@ private func ckbScheduledEvalSupportRoot(config: CkbRuntimeConfig): String {
     let configured = config.firstInitEvalRoot.trimAscii()
     if (configured != "" && exists(Path(configured))) {
         return configured
-    }
-    let candidates = [
-        "test/cangjie_eval/cases/Cangjie-HumanEval",
-        "cangjie_eval/cases/Cangjie-HumanEval",
-        "../test/cangjie_eval/cases/Cangjie-HumanEval",
-        "../cangjie_eval/cases/Cangjie-HumanEval"
-    ]
-    for (candidate in candidates) {
-        if (exists(Path(candidate))) {
-            return candidate
-        }
     }
     ""
 }
@@ -10473,6 +11099,9 @@ private func ingestScheduledProfileSources(kb: KnowledgeBase, store: FileKnowled
     if (profile.profile == "cangjie_benchmark_gap_curation") {
         return ingestScheduledBenchmarkGapCuration(kb, store, profile, config, manifest, progressSink: progressSink, deadlineAtMillis: deadlineAtMillis)
     }
+    if (profile.profile == "cangjie_release_full_sync") {
+        return ckbIngestReleaseFullSync(kb, store, profile, fetch, config, manifest, result, progressSink, stageSink, deadlineAtMillis, promotionBudgetPlan)
+    }
     if (profile.candidateMode == "" || profile.candidateMode == "none" || profile.candidateMode == "probe_only") {
         result.ok = fetch.ok
         if (result.ok) {
@@ -10553,6 +11182,92 @@ private func ingestScheduledProfileSources(kb: KnowledgeBase, store: FileKnowled
     ckbWriteScheduledProfileStageCheckpoint(store, profile, "ingest_finished", result.status, ckbProfileIngestBudgetMillis(profile), deadlineAtMillis, "activeVersion=${result.activeVersion}|candidateVersion=${result.candidateVersion}|validationStatus=${result.validationStatus}")
     result.validationDiagnostics.add("profile_stage_checkpoint:profile=${profile.profile}|stage=ingest_finished|status=${result.status}|budgetMs=${ckbProfileIngestBudgetMillis(profile)}|deadlineAtMillis=${deadlineAtMillis}|remainingMs=${ckbRemainingMillis(deadlineAtMillis)}")
     result
+}
+
+private func ckbIngestReleaseFullSync(kb: KnowledgeBase, store: FileKnowledgeStore, profile: CkbScheduleTaskProfile, fetch: CkbScheduledProfileFetchResult, config: CkbRuntimeConfig, manifest: CangjieVersionManifest, result: CkbScheduledProfileIngestResult, progressSink: VectorBuildProgressSink, stageSink: CkbStagedRebuildStageSink, deadlineAtMillis: Int64, promotionBudgetPlan: CangjieCandidatePromotionBudgetPlan): CkbScheduledProfileIngestResult {
+    if (!fetch.ok || !fetch.releasePlan.ok || !ckbReleaseAllInventoriesComplete(fetch.releasePlan, fetch.releaseInventories)) {
+        result.ok = false
+        result.status = if (fetch.status == "" || fetch.status == "profile_ok") { "release_inventory_incomplete" } else { fetch.status }
+        result.validationStatus = result.status
+        result.validationDiagnostics.add("release_full_sync_acquisition_failed:status=${result.status}|plan=${fetch.releasePlan.status}|inventories=${fetch.releaseInventories.size}|plannedSources=${fetch.releasePlan.sources.size}")
+        return result
+    }
+    if (ckbApplyScheduledIngestDeadline(result, profile, "release_delta_before", deadlineAtMillis)) {
+        return result
+    }
+    let delta = ckbBuildReleaseDelta(profile, fetch, config)
+    for (diagnostic in delta.diagnostics) {
+        result.validationDiagnostics.add("release_delta:${diagnostic}")
+    }
+    if (!delta.ok) {
+        result.ok = false
+        result.status = delta.status
+        result.validationStatus = delta.status
+        return result
+    }
+    if (delta.rawRecords.size == 0 || delta.normalizedRecords.size == 0) {
+        result.ok = false
+        result.status = "scheduled_delta_empty"
+        result.validationStatus = result.status
+        result.validationDiagnostics.add("scheduled_delta_empty:${profile.profile}:raw=${delta.rawRecords.size}|normalized=${delta.normalizedRecords.size}")
+        return result
+    }
+    let targetVersion = fetch.releasePlan.targetVersion
+    let owner = "scheduled:${profile.profile}"
+    let oldRaw = kb.rawRecordSnapshot()
+    let removedRawIds = ckbReleaseRemovedRawIds(oldRaw, delta.rawRecords, fetch.releasePlan, owner, targetVersion)
+    let activeBefore = kb.activeRecordSnapshot()
+    let removedNormalizedIds = ckbReleaseRemovedNormalizedIds(activeBefore, delta.normalizedRecords, fetch.releasePlan, owner, targetVersion)
+    let candidateRaw = kb.rawRecordSnapshotOverlayForOwner(owner, targetVersion, removedRawIds, delta.rawRecords)
+    let candidateRecords = kb.activeRecordSnapshotOverlayForOwner(delta.normalizedRecords, owner, targetVersion, removedNormalizedIds)
+    result.validationDiagnostics.add("release_reconciliation:owner=${owner}|target=${targetVersion}|rawBefore=${oldRaw.size}|rawCurrent=${delta.rawRecords.size}|rawRemoved=${removedRawIds.size}|rawCandidate=${candidateRaw.size}|activeBefore=${activeBefore.size}|activeCurrent=${delta.normalizedRecords.size}|activeRemoved=${removedNormalizedIds.size}|activeCandidate=${candidateRecords.size}")
+    result.validationDiagnostics.add(ckbReleaseRemovedIdsDiagnostic("raw", removedRawIds))
+    result.validationDiagnostics.add(ckbReleaseRemovedIdsDiagnostic("normalized", removedNormalizedIds))
+    kb.replaceRawRecords(candidateRaw)
+    if (ckbApplyScheduledIngestDeadline(result, profile, "release_candidate_before", deadlineAtMillis)) {
+        kb.replaceRawRecords(oldRaw)
+        return result
+    }
+    let candidateVersion = ckbScheduledCandidateVersion(profile, fetch)
+    let promotion = cangjiePromoteCandidateRecordsAfterValidationWithVersion(kb, store, candidateVersion, candidateRecords, progressSink: progressSink, stageSink: stageSink, deadlineAtMillis: deadlineAtMillis, budgetPlan: promotionBudgetPlan)
+    ckbApplyScheduledPromotionResult(result, promotion, "candidate_validated_promoted")
+    if (!result.ok) {
+        kb.replaceRawRecords(oldRaw)
+        result.validationDiagnostics.add("release_reconciliation_rolled_back:status=${result.status}|rawRestored=${oldRaw.size}")
+        return result
+    }
+    // S3 persists resolved metadata only after the complete acquisition and
+    // candidate promotion succeeded. S5 will bind these companions into the
+    // active transaction; this stage must not pre-write them on failure.
+    ckbPersistScheduledResolvedMetadataArtifacts(store, profile, fetch, config, manifest, result, "metadata_resolved_after_content_promotion")
+    ckbWriteScheduledProfileStageCheckpoint(store, profile, "ingest_finished", result.status, ckbProfileIngestBudgetMillis(profile), deadlineAtMillis, "activeVersion=${result.activeVersion}|candidateVersion=${result.candidateVersion}|validationStatus=${result.validationStatus}|rawCurrent=${delta.rawRecords.size}|activeCurrent=${delta.normalizedRecords.size}")
+    result.validationDiagnostics.add("profile_stage_checkpoint:profile=${profile.profile}|stage=ingest_finished|status=${result.status}|budgetMs=${ckbProfileIngestBudgetMillis(profile)}|deadlineAtMillis=${deadlineAtMillis}|remainingMs=${ckbRemainingMillis(deadlineAtMillis)}")
+    result
+}
+
+func ckbReleaseRemovedIdsEvidenceHash(sourceIds: ArrayList<String>): String {
+    let ordered = sourceIds.toArray()
+    sort(ordered)
+    let seed = StringBuilder()
+    for (sourceId in ordered) {
+        seed.append(sourceId)
+        seed.append("\n")
+    }
+    ckbReleaseEvidenceHash(seed.toString())
+}
+
+private func ckbReleaseRemovedIdsDiagnostic(kind: String, sourceIds: ArrayList<String>): String {
+    let ordered = sourceIds.toArray()
+    sort(ordered)
+    let preview = StringBuilder()
+    var count: Int64 = 0
+    for (sourceId in ordered) {
+        if (count >= 8) { break }
+        if (count > 0) { preview.append(",") }
+        preview.append(utf8SafePrefix(redactSensitive(sourceId), 120))
+        count += 1
+    }
+    "release_reconciliation_removed_${kind}:count=${sourceIds.size}|evidenceHash=${ckbReleaseRemovedIdsEvidenceHash(sourceIds)}|preview=${preview.toString()}|previewTruncated=${sourceIds.size > 8}"
 }
 
 private func ckbApplyScheduledIngestDeadline(result: CkbScheduledProfileIngestResult, profile: CkbScheduleTaskProfile, stage: String, deadlineAtMillis: Int64): Bool {
@@ -11068,7 +11783,11 @@ private func ckbRefreshVersionManifestFromScheduledFetch(profile: CkbScheduleTas
                 out.degraded = true
                 out.diagnostics.add("manifest_source_not_refreshed:${source.sourceSet}:${source.sourceRepo}:${source.sourceRef}")
             } else {
-                if (record.request.repo != "") {
+                // EVAL_SUPPORT is acquired from a local snapshot, but its
+                // manifest repository remains the logical bootstrap source.
+                // Rewriting it to ckb-local:// would make the next full-sync
+                // plan depend on a transient acquisition representation.
+                if (record.request.repo != "" && source.sourceSet != CangjieSourceSets.EVAL_SUPPORT) {
                     next.sourceRepo = record.request.repo
                 }
                 next.sourceRef = if (record.fetch.ref != "") { record.fetch.ref } else { if (record.request.ref != "") { record.request.ref } else { source.sourceRef } }
@@ -11295,6 +12014,199 @@ private func ckbScheduledReleaseDeltaRecords(profile: CkbScheduleTaskProfile, re
     ckbScheduledGenericDeltaRecords(profile, records, config, manifest, includeCangjieSymbols: true)
 }
 
+private func ckbBuildReleaseDelta(profile: CkbScheduleTaskProfile, fetch: CkbScheduledProfileFetchResult, config: CkbRuntimeConfig): CkbReleaseDeltaBuildResult {
+    let result = CkbReleaseDeltaBuildResult()
+    let allocator = CkbReleaseLogicalIdAllocator()
+    let rawIds = HashSet<String>()
+    let normalizedIds = HashSet<String>()
+    for (scheduled in fetch.contentRecords) {
+        let source = scheduled.releaseSource
+        let path = scheduled.request.path
+        if (source.canonicalIdentity == "" || path == "") {
+            result.ok = false
+            result.status = CkbReleaseAcquisitionStatus.DUPLICATE_LOGICAL_RECORD_ID
+            result.diagnostics.add("release_content_identity_missing")
+            return result
+        }
+        let raw = ckbReleaseRawRecord(profile, scheduled, fetch.releasePlan.targetVersion)
+        if (rawIds.contains(raw.sourceId)) {
+            result.ok = false
+            result.status = CkbReleaseAcquisitionStatus.DUPLICATE_LOGICAL_RECORD_ID
+            result.diagnostics.add("duplicate_raw_logical_record_id:${raw.sourceId}")
+            return result
+        }
+        rawIds.add(raw.sourceId)
+        result.rawRecords.add(raw)
+        let typed = ArrayList<CangjieTypedRecord>()
+        for (prepared in scheduled.preparedTypedRecords) {
+            typed.add(prepared)
+        }
+        if (typed.size == 0) {
+            let docs = cangjieTypedNormalizeRawRecord(raw)
+            for (record in docs.records) {
+                typed.add(record)
+            }
+            if (ckbScheduledCangjieSourcePath(scheduled)) {
+                let symbols = extractCangjieSourceSymbolRecords(raw.metadata.path, raw.content, raw.metadata.sourceSet, ckbReleaseVersionResolution(source, scheduled.fetch.commit))
+                for (record in symbols.records) {
+                    typed.add(record)
+                }
+            }
+        }
+        if (typed.size == 0 && raw.content != "") {
+            typed.add(ckbReleaseFallbackTypedRecord(raw, source))
+        }
+        for (record in typed) {
+            ckbReleaseCompleteTypedRecord(record, source, path, scheduled.fetch.commit)
+            let subkey = ckbReleaseTypedBaseSubkey(record)
+            record.sourceId = allocator.typedId(source, path, record)
+            record.contentHash = ckbReleaseEvidenceHash(record.content)
+            if (normalizedIds.contains(record.sourceId)) {
+                result.ok = false
+                result.status = CkbReleaseAcquisitionStatus.DUPLICATE_LOGICAL_RECORD_ID
+                result.diagnostics.add("duplicate_typed_logical_record_id:${record.sourceId}")
+                return result
+            }
+            normalizedIds.add(record.sourceId)
+            let normalized = cangjieTypedRecordToNormalized(record, raw.metadata)
+            normalized.metadata.crawlAt = "scheduled:${profile.profile}"
+            normalized.metadata.indexedAt = "scheduled:${profile.profile}"
+            normalized.metadata.derivedFrom = ["p5-logical:${ckbReleaseCanonicalTypedKey(source, path, record.recordKind, subkey)}"]
+            result.normalizedRecords.add(normalized)
+        }
+    }
+    result.diagnostics.add("release_delta_built:raw=${result.rawRecords.size}|normalized=${result.normalizedRecords.size}|planHash=${fetch.releasePlan.planHash}")
+    result
+}
+
+private func ckbReleaseRawRecord(profile: CkbScheduleTaskProfile, scheduled: CkbScheduledSourceRecord, targetVersion: String): RawRecord {
+    let source = scheduled.releaseSource
+    let path = scheduled.request.path
+    let raw = RawRecord()
+    raw.sourceId = ckbReleaseCanonicalRawId(source, path)
+    raw.title = scheduled.title
+    raw.content = scheduled.fetch.body
+    raw.contentHash = if (scheduled.fetch.bodyHash != "") { scheduled.fetch.bodyHash } else { ckbReleaseEvidenceHash(scheduled.fetch.body) }
+    raw.requiresReview = false
+    let metadata = KnowledgeMetadata()
+    metadata.sourceId = raw.sourceId
+    metadata.sourceType = scheduled.sourceType
+    metadata.sourceUrl = scheduled.fetch.sourceUrl
+    metadata.repo = source.normalizedRepo
+    metadata.path = path
+    metadata.commit = scheduled.fetch.commit
+    metadata.docVersion = source.originalRef
+    metadata.targetVersion = targetVersion
+    metadata.sourceSet = source.sourceSet
+    metadata.versionResolutionId = "p5:${source.canonicalIdentity}:${scheduled.fetch.commit}"
+    metadata.crawlAt = "scheduled:${profile.profile}"
+    metadata.indexedAt = "scheduled:${profile.profile}"
+    metadata.contentSize = scheduled.fetch.body.size
+    metadata.trustLevel = TrustLevels.OFFICIAL
+    metadata.reviewState = ReviewStates.TRUSTED
+    metadata.license = "declared-or-unknown"
+    metadata.repoVisibility = scheduled.fetch.repoVisibility
+    metadata.derivedFrom = ["p5-logical:${ckbReleaseCanonicalRawKey(source, path)}"]
+    raw.metadata = metadata
+    raw
+}
+
+private func ckbReleaseVersionResolution(source: CkbReleaseSourcePlan, commit: String): CangjieVersionResolution {
+    let resolution = CangjieVersionResolution()
+    resolution.ok = true
+    resolution.targetVersion = source.targetVersion
+    resolution.versionResolutionId = "p5:${source.canonicalIdentity}:${commit}"
+    let versionSource = CangjieVersionSource()
+    versionSource.sourceSet = source.sourceSet
+    versionSource.sourceFamily = source.sourceFamily
+    versionSource.sourceRepo = source.normalizedRepo
+    versionSource.sourceRef = source.originalRef
+    versionSource.refKind = source.refKind
+    versionSource.targetVersion = source.targetVersion
+    versionSource.resolvedCommit = commit
+    resolution.sources.add(versionSource)
+    resolution
+}
+
+private func ckbReleaseFallbackTypedRecord(raw: RawRecord, source: CkbReleaseSourcePlan): CangjieTypedRecord {
+    let record = CangjieTypedRecord()
+    record.recordKind = CangjieTypedRecordKinds.DOC_SECTION
+    record.title = raw.title
+    record.content = raw.content
+    record.citation = "${source.normalizedRepo}:${raw.metadata.path}@${raw.metadata.commit}"
+    record.sourceSet = source.sourceSet
+    record.sourceFamily = source.sourceFamily
+    record.path = raw.metadata.path
+    record.heading = "whole"
+    record.sectionId = "whole"
+    record.targetVersion = source.targetVersion
+    record.sourceRef = source.originalRef
+    record.refKind = source.refKind
+    record.resolvedCommit = raw.metadata.commit
+    record.trustLevel = TrustLevels.OFFICIAL
+    record.reviewState = ReviewStates.TRUSTED
+    record
+}
+
+private func ckbReleaseCompleteTypedRecord(record: CangjieTypedRecord, source: CkbReleaseSourcePlan, path: String, commit: String): Unit {
+    record.sourceSet = source.sourceSet
+    if (record.sourceFamily == "") { record.sourceFamily = source.sourceFamily }
+    if (record.path == "") { record.path = path }
+    record.targetVersion = source.targetVersion
+    record.sourceRef = source.originalRef
+    if (record.refKind == "") { record.refKind = source.refKind }
+    record.resolvedCommit = commit
+    record.trustLevel = TrustLevels.OFFICIAL
+    record.reviewState = ReviewStates.TRUSTED
+}
+
+private func ckbReleaseRemovedRawIds(records: ArrayList<RawRecord>, current: ArrayList<RawRecord>, plan: CkbReleaseFullSyncPlan, owner: String, targetVersion: String): ArrayList<String> {
+    let out = ArrayList<String>()
+    let currentIds = HashSet<String>()
+    for (record in current) { currentIds.add(record.sourceId) }
+    for (record in records) {
+        if (!currentIds.contains(record.sourceId) && (ckbReleaseOwnedMetadata(record.metadata, owner, targetVersion) || ckbReleaseLegacyRawOwned(record, plan, targetVersion))) {
+            addUniqueString(out, record.sourceId)
+        }
+    }
+    out
+}
+
+private func ckbReleaseRemovedNormalizedIds(records: ArrayList<NormalizedRecord>, current: ArrayList<NormalizedRecord>, plan: CkbReleaseFullSyncPlan, owner: String, targetVersion: String): ArrayList<String> {
+    let out = ArrayList<String>()
+    let currentIds = HashSet<String>()
+    for (record in current) { currentIds.add(record.sourceId) }
+    for (record in records) {
+        if (!currentIds.contains(record.sourceId) && (ckbReleaseOwnedMetadata(record.metadata, owner, targetVersion) || ckbReleaseLegacyNormalizedOwned(record, plan, targetVersion))) {
+            addUniqueString(out, record.sourceId)
+        }
+    }
+    out
+}
+
+private func ckbReleaseOwnedMetadata(metadata: KnowledgeMetadata, owner: String, targetVersion: String): Bool {
+    metadata.crawlAt == owner && metadata.targetVersion == targetVersion
+}
+
+private func ckbReleaseLegacyRawOwned(record: RawRecord, plan: CkbReleaseFullSyncPlan, targetVersion: String): Bool {
+    record.sourceId.startsWith("scheduled-cangjie_release_full_sync-") &&
+        record.metadata.targetVersion == targetVersion &&
+        ckbReleaseRequiredMetadataSourceSet(record.metadata.sourceSet, plan)
+}
+
+private func ckbReleaseLegacyNormalizedOwned(record: NormalizedRecord, plan: CkbReleaseFullSyncPlan, targetVersion: String): Bool {
+    record.sourceId.startsWith("scheduled-cangjie_release_full_sync-") &&
+        record.metadata.targetVersion == targetVersion &&
+        ckbReleaseRequiredMetadataSourceSet(record.metadata.sourceSet, plan)
+}
+
+private func ckbReleaseRequiredMetadataSourceSet(sourceSet: String, plan: CkbReleaseFullSyncPlan): Bool {
+    for (source in plan.sources) {
+        if (source.sourceSet == sourceSet) { return true }
+    }
+    false
+}
+
 private func ckbScheduledSourceEventDeltaRecords(profile: CkbScheduleTaskProfile, records: ArrayList<CkbScheduledSourceRecord>, config: CkbRuntimeConfig, manifest: CangjieVersionManifest): ArrayList<NormalizedRecord> {
     ckbScheduledGenericDeltaRecords(profile, records, config, manifest, includeCangjieSymbols: true)
 }
@@ -11461,6 +12373,16 @@ private func ckbScheduledSourceTitle(request: SourceFetchRequest, profile: CkbSc
 }
 
 private func ckbScheduledCandidateVersion(profile: CkbScheduleTaskProfile, fetch: CkbScheduledProfileFetchResult): String {
+    if (profile.profile == "cangjie_release_full_sync" && fetch.releasePlan.ok) {
+        let evidence = ArrayList<String>()
+        for (record in fetch.contentRecords) {
+            evidence.add("${record.sourceId}:${record.fetch.bodyHash}:${record.fetch.commit}")
+        }
+        let ordered = evidence.toArray()
+        sort(ordered)
+        let seed = "${profile.profile}|${fetch.releasePlan.planHash}|${joinStrings(ArrayList<String>(ordered), "|")}"
+        return "ckb-scheduled-${ckbReleaseEvidenceHash(seed)}-candidate"
+    }
     let seed = StringBuilder()
     seed.append(profile.profile)
     seed.append("|")
@@ -13302,21 +14224,48 @@ private func parseCurlStatus(raw: String): Int64 {
 
 private func parseGitCodeContentsFile(body: String, expectedPath: String): GitCodeContentsFile {
     let parsed = GitCodeContentsFile()
-    let safeBody = asciiJsonProjection(body)
-    if (jsonStringField(safeBody, "type") != "file") {
+    let object = try {
+        JsonValue.fromStr(body).asObject()
+    } catch (_: Exception) {
         parsed.status = "malformed_contents_response"
         return parsed
     }
-    let path = jsonStringField(safeBody, "path")
+    let fileType = try {
+        ckbRequiredContentsJsonString(object, "type")
+    } catch (_: Exception) {
+        parsed.status = "malformed_contents_response"
+        return parsed
+    }
+    if (fileType != "file") {
+        parsed.status = "malformed_contents_response"
+        return parsed
+    }
+    let path = try {
+        ckbRequiredContentsJsonString(object, "path")
+    } catch (_: Exception) {
+        parsed.status = "malformed_contents_response"
+        return parsed
+    }
     if (path == "" || path != expectedPath) {
         parsed.status = "contents_path_mismatch"
         return parsed
     }
-    if (jsonStringField(safeBody, "encoding").toAsciiLower() != "base64") {
+    let encoding = try {
+        ckbRequiredContentsJsonString(object, "encoding")
+    } catch (_: Exception) {
+        parsed.status = "malformed_contents_response"
+        return parsed
+    }
+    if (encoding.toAsciiLower() != "base64") {
         parsed.status = "unsupported_contents_encoding"
         return parsed
     }
-    let content = jsonStringField(safeBody, "content")
+    let content = try {
+        ckbRequiredContentsJsonString(object, "content")
+    } catch (_: Exception) {
+        parsed.status = "malformed_contents_response"
+        return parsed
+    }
     if (content == "") {
         parsed.status = "malformed_contents_response"
         return parsed
@@ -13330,10 +14279,30 @@ private func parseGitCodeContentsFile(body: String, expectedPath: String): GitCo
     parsed.status = "ok"
     parsed.body = decoded.body
     parsed.path = path
-    parsed.sha = jsonStringField(safeBody, "sha")
-    parsed.htmlUrl = jsonStringField(safeBody, "html_url")
-    parsed.downloadUrl = jsonStringField(safeBody, "download_url")
+    try {
+        parsed.sha = ckbOptionalContentsJsonString(object, "sha")
+        parsed.htmlUrl = ckbOptionalContentsJsonString(object, "html_url")
+        parsed.downloadUrl = ckbOptionalContentsJsonString(object, "download_url")
+    } catch (_: Exception) {
+        parsed.ok = false
+        parsed.status = "malformed_contents_response"
+        parsed.body = ""
+    }
     parsed
+}
+
+private func ckbRequiredContentsJsonString(object: JsonObject, key: String): String {
+    match (object.get(key)) {
+        case Some(value) => value.asString().getValue()
+        case None => throw Exception("required contents field missing")
+    }
+}
+
+private func ckbOptionalContentsJsonString(object: JsonObject, key: String): String {
+    match (object.get(key)) {
+        case Some(value) => value.asString().getValue()
+        case None => ""
+    }
 }
 
 private class Base64DecodeResult {

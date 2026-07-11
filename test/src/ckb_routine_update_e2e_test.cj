@@ -19,6 +19,7 @@ public class CkbRoutineUpdateE2ETest {
         let vectorStore = P5FakeQdrantStore("ckb_active", "ckb_candidate")
         let kb = p5SingleRecordKnowledgeBase(provider, vectorStore)
         let initialRebuild = ckbRebuildIndex(kb, store)
+        store.saveCangjieVersionManifest(p5E2EVersionManifest())
         provider.resetCalls()
 
         let reconcile = ckbVectorReconcileWithVectorStore(kb, store, config, vectorStore, true)
@@ -404,7 +405,43 @@ private func p5RuntimeConfig(root: String): CkbRuntimeConfig {
     config.vectorDimensions = 3
     config.vectorDistance = "Cosine"
     config.benchmarkGapCurationInputPath = "${root}/gap-curation-input.jsonl"
+    config.firstInitEvalRoot = p5WriteEvalFixture(root)
+    config.firstInitTargetVersion = "1.0.0"
     config
+}
+
+private func p5E2EVersionManifest(): CangjieVersionManifest {
+    let manifest = CangjieVersionManifest()
+    manifest.defaultTargetVersion = "1.0.0"
+    p5AddE2EManifestSource(manifest, CangjieSourceSets.DOCS, "docs", "Cangjie/cangjie_docs")
+    p5AddE2EManifestSource(manifest, CangjieSourceSets.STD, "stdlib", "Cangjie/cangjie_runtime")
+    p5AddE2EManifestSource(manifest, CangjieSourceSets.STDX, "stdx", "Cangjie/cangjie_stdx")
+    p5AddE2EManifestSource(manifest, CangjieSourceSets.TOOLS, "tools", "Cangjie/cangjie_tools")
+    p5AddE2EManifestSource(manifest, CangjieSourceSets.EVAL_SUPPORT, "eval-support", "CangjieCommunityKnowledgeBase/Cangjie-HumanEval")
+    manifest
+}
+
+private func p5AddE2EManifestSource(manifest: CangjieVersionManifest, sourceSet: String, sourceFamily: String, repo: String): Unit {
+    let source = CangjieVersionSource()
+    source.targetVersion = "1.0.0"
+    source.sourceSet = sourceSet
+    source.sourceFamily = sourceFamily
+    source.sourceRepo = repo
+    source.sourceRef = "release-1.0.0"
+    source.refKind = "branch"
+    source.resolvedCommit = "p5-e2e-${sourceSet}-commit"
+    source.contentHash = "sha256:p5-e2e-${sourceSet}"
+    source.rootKind = "scheduled:test"
+    manifest.sources.add(source)
+}
+
+private func p5WriteEvalFixture(root: String): String {
+    let evalRoot = "${root}/eval-fixture"
+    p5WriteFile("${evalRoot}/CJ-HUMANEVAL-000/prompt.md", "# Task\nUse EvalValue and EvalEntry.\n")
+    p5WriteFile("${evalRoot}/CJ-HUMANEVAL-000/metadata.json", "{\"id\":\"CJ-HUMANEVAL-000\"}\n")
+    p5WriteFile("${evalRoot}/CJ-HUMANEVAL-000/starter/src/eval_support.cj", "public class EvalValue {}\npublic class EvalEntry {}\n")
+    p5WriteFile("${evalRoot}/CJ-HUMANEVAL-000/tests/TestMain.cj", "public func helper(): Unit {}\nmain() {}\n")
+    evalRoot
 }
 
 private func p5OfflineKnowledgeBase(provider: P5FakeEmbeddingProvider, vectorStore: P5FakeQdrantStore): KnowledgeBase {
