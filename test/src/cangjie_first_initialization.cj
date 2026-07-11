@@ -307,6 +307,13 @@ public func runCkbFirstInitializationWithActiveGuard(options: CkbFirstInitOption
             result.diagnostics.add("already_initialized")
             return result
         }
+        if (store.hasAuthoritativeActiveSnapshotPointer()) {
+            let result = CkbFirstInitResult()
+            result.ok = false
+            result.persisted = false
+            result.diagnostics.add("active_snapshot_invalid:${snapshot.diagnostic}")
+            return result
+        }
     }
     runCkbFirstInitialization(options, store)
 }

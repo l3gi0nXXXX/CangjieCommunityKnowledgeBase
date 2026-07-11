@@ -565,6 +565,1314 @@ public class CkbReleaseAcquisitionTest {
         @Expect(ckbReleaseTestVectorContains(snapshot.vectorRecords, "\"commit\":{\"id\""), false)
         @Expect(ckbBuildReleaseFullSyncPlan(ckbReleaseTestProfile(), store.loadCangjieVersionManifest(), "1.0.0").ok, true)
     }
+
+    @TestCase
+    public func p5S5U01PreparedBundleUsesSingleRefreshedManifestAndBoundedEvidence(): Unit {
+        let fixture = ckbS5ReleaseFixture("target/p5-s5-u01", 1)
+        @Expect(fixture.task.ok, true)
+        let firstPointer = fixture.store.loadActiveSnapshotPointer()
+        let firstManifest = fixture.store.loadActiveCangjieVersionManifest()
+        let second = CkbSchedulerTaskRunner(fixture.kb, fixture.config, fixture.store,
+            sourceRunner: CkbReleaseFullRunner(2)).runTask(
+            "cangjie_release_full_sync", "0", ckbCoreNowMillis() + 435000)
+        let pointer = fixture.store.loadActiveSnapshotPointer()
+        let manifest = fixture.store.loadActiveCangjieVersionManifest()
+        let freshness = fixture.store.loadActiveCangjieCorpusFreshness()
+        let snapshot = fixture.store.loadActiveSnapshot()
+        let txRoot = "transactions/${pointer.txId}"
+
+        @Expect(second.ok, true)
+        @Expect(pointer.valid, true)
+        @Expect(pointer.txId == firstPointer.txId, false)
+        @Expect(pointer.companionMode, CkbActiveSnapshotCompanionMode.RELEASE)
+        @Expect(pointer.manifestHash, ckbReleaseCompanionEvidenceHash(
+            fixture.store.readText("${txRoot}/metadata/cangjie-version-manifest.ckb")))
+        @Expect(pointer.freshnessHash, ckbReleaseCompanionEvidenceHash(
+            fixture.store.readText("${txRoot}/metadata/cangjie-freshness.ckb")))
+        @Expect(pointer.coverageHash, ckbReleaseCompanionEvidenceHash(
+            fixture.store.readText("${txRoot}/metadata/cangjie-release-coverage.ckb")))
+        @Expect(manifest.sources.size, 5)
+        @Expect(freshness.sources.size, 5)
+        @Expect(manifest.diagnostics.size <= 64, true)
+        @Expect(firstManifest.manifestVersion, CangjieVersionManifestVersions.V2)
+        @Expect(manifest.manifestVersion, CangjieVersionManifestVersions.V2)
+        for (source in manifest.sources) {
+            if (source.sourceSet != CangjieSourceSets.EVAL_SUPPORT) {
+                @Expect(source.resolvedCommit, "2222222222222222222222222222222222222222")
+            }
+        }
+        for (record in snapshot.activeIndex) {
+            if (record.sourceId.startsWith("p5typed-") &&
+                record.metadata.sourceSet != CangjieSourceSets.EVAL_SUPPORT) {
+                let selector = cangjieVersionSelector(targetVersion: "1.0.0",
+                    sourceSet: record.metadata.sourceSet)
+                let expectedB = resolveCangjieVersion(selector, manifest).versionResolutionId
+                let oldA = resolveCangjieVersion(selector, firstManifest).versionResolutionId
+                let selectedB = ckbReleaseTestManifestSource(manifest,
+                    record.metadata.sourceSet)
+                @Expect(record.metadata.commit, "2222222222222222222222222222222222222222")
+                @Expect(record.metadata.commit, selectedB.resolvedCommit)
+                @Expect(record.metadata.commit.contains("1111111111111111"), false)
+                @Expect(record.metadata.versionResolutionId, expectedB)
+                @Expect(record.metadata.versionResolutionId == oldA, false)
+            }
+        }
+
+        let docsSelector = cangjieVersionSelector(targetVersion: "1.0.0",
+            sourceSet: CangjieSourceSets.DOCS)
+        let activeDocsResolution = resolveCangjieVersion(docsSelector, manifest)
+        let consumer = CkbCommandLoopService(fixture.config, fixture.store,
+            sourceRunner: DisabledNetworkFetchRunner())
+        @Expect(consumer.cangjieResolveVersion(docsSelector).versionResolutionId,
+            activeDocsResolution.versionResolutionId)
+        let strictRequest = CangjieServingSearchRequest()
+        strictRequest.query = "new-a-token"
+        strictRequest.sourceSet = CangjieSourceSets.DOCS
+        strictRequest.targetVersion = "1.0.0"
+        strictRequest.versionResolutionId = activeDocsResolution.versionResolutionId
+        strictRequest.budget = 5
+        let strictV2 = searchHybridServingIndex(buildCangjieServingIndex(snapshot.activeIndex,
+            activeKnowledgeVersion: pointer.activeVersion), strictRequest)
+        @Expect(strictV2.hits.size > 0, true)
+
+        let v1Manifest = ckbReleaseTestManifest()
+        let v1Resolution = resolveCangjieVersion(docsSelector, v1Manifest)
+        var v1Seed = "${v1Resolution.targetVersion}:${v1Resolution.versionPolicy}:${v1Resolution.diagnostic}"
+        for (source in v1Resolution.sources) {
+            v1Seed += "|${source.sourceSet}:${source.sourceRepo}:${source.sourceRef}:${source.resolvedCommit}:${source.contentHash}"
+        }
+        @Expect(v1Manifest.manifestVersion, CangjieVersionManifestVersions.V1)
+        @Expect(v1Resolution.versionResolutionId,
+            "cangjie-version-${stableSummaryHash(v1Seed)}")
+        let legacyRoot = "target/p5-s5-u01-v1-persisted"
+        ckbReleaseTestEnsureEmptyDir(legacyRoot)
+        let legacyStore = FileKnowledgeStore(legacyRoot)
+        let legacyRaw = RawRecord()
+        legacyRaw.sourceId = "legacy-v1-doc"
+        legacyRaw.title = "Legacy V1 document"
+        legacyRaw.content = "legacy-v1-token"
+        legacyRaw.contentHash = ckbReleaseEvidenceHash(legacyRaw.content)
+        legacyRaw.metadata.sourceId = legacyRaw.sourceId
+        legacyRaw.metadata.sourceType = SourceTypes.DOC
+        legacyRaw.metadata.sourceSet = CangjieSourceSets.DOCS
+        legacyRaw.metadata.targetVersion = "1.0.0"
+        legacyRaw.metadata.versionResolutionId = v1Resolution.versionResolutionId
+        legacyRaw.metadata.knowledgeVersion = "legacy-v1-active"
+        legacyRaw.metadata.commit = v1Resolution.sources[0].resolvedCommit
+        legacyRaw.metadata.trustLevel = TrustLevels.OFFICIAL
+        legacyRaw.metadata.reviewState = ReviewStates.TRUSTED
+        let legacyRecord = NormalizedRecord()
+        legacyRecord.sourceId = legacyRaw.sourceId
+        legacyRecord.recordKind = CangjieTypedRecordKinds.DOC_SECTION
+        legacyRecord.title = legacyRaw.title
+        legacyRecord.chunk = legacyRaw.content
+        legacyRecord.citation = "legacy-v1-doc"
+        legacyRecord.metadata = legacyRaw.metadata
+        let legacyRawRecords = ArrayList<RawRecord>()
+        legacyRawRecords.add(legacyRaw)
+        let legacyRecords = ArrayList<NormalizedRecord>()
+        legacyRecords.add(legacyRecord)
+        let legacyStatus = KnowledgeStatus()
+        legacyStatus.activeKnowledgeVersion = "legacy-v1-active"
+        legacyStatus.storage.rawCount = 1
+        legacyStatus.storage.normalizedCount = 1
+        legacyStatus.storage.indexCount = 1
+        legacyStatus.storage.textIndexCount = 1
+        legacyStatus.storage.vectorActiveCollection = "legacy-v1-vector"
+        let legacyTx = legacyStore.writeActiveSnapshotTransaction(legacyStatus,
+            legacyRawRecords, legacyRecords, legacyRecords, ArrayList<VectorRecord>(),
+            "legacy-v1-vector", GraphBuildResult(), persistVectorFile: false)
+        @Expect(legacyTx.ok, true)
+        let legacyLoaded = newKnowledgeBaseFromStore(legacyStore)
+        @Expect(legacyLoaded.source, "persisted")
+        let strictV1 = lookupDocSection(buildCangjieServingIndex(
+            legacyLoaded.kb.activeRecordSnapshot(), activeKnowledgeVersion: "legacy-v1-active"),
+            "legacy-v1-doc", sourceSet: CangjieSourceSets.DOCS,
+            targetVersion: "1.0.0",
+            versionResolutionId: v1Resolution.versionResolutionId, budget: 5)
+        @Expect(strictV1.hits.size, 1)
+
+        let noisyManifest = ckbS5CopyManifest(manifest)
+        for (i in 0..100) {
+            noisyManifest.diagnostics.add("重复诊断🙂-${i % 70}")
+            noisyManifest.diagnostics.add("重复诊断🙂-${i % 70}")
+        }
+        let fetchStore = FileKnowledgeStore("target/p5-s5-u01-fetch")
+        ckbReleaseTestEnsureEmptyDir(fetchStore.rootPath())
+        let fetch = fetchScheduledProfileSources(ckbReleaseTestProfile(),
+            CkbReleaseFullRunner(2), fixture.config, fetchStore,
+            ckbReleaseTestManifest())
+        var stableEvidence = ""
+        var stableRender = ""
+        for (i in 0..100) {
+            let bundle = ckbPrepareReleaseCommitBundle(ckbReleaseTestProfile(), fetch,
+                noisyManifest, "ckb-p5-s5-u01-${i}-candidate",
+                "ckb-p5-s5-u01-${i}-active", ArrayList<String>(), ArrayList<String>())
+            @Expect(bundle.valid, true)
+            @Expect(bundle.diagnostics.size <= 64, true)
+            @Expect(ckbS5StringsUnique(bundle.diagnostics), true)
+            let render = ckbRenderCangjieVersionManifestArtifact(bundle.manifest)
+            @Expect(bundle.manifest.diagnostics.size <= 64, true)
+            if (i == 0) {
+                stableEvidence = bundle.manifestEvidenceHash
+                stableRender = render
+            } else {
+                @Expect(bundle.manifestEvidenceHash, stableEvidence)
+                @Expect(render, stableRender)
+            }
+        }
+    }
+
+    @TestCase
+    public func p5S5B01AllCommitFaultsHaveDeterministicRollbackOrRollForwardAndRepair(): Unit {
+        let fixture = ckbS5ReleaseFixture("target/p5-s5-b01", 2)
+        @Expect(fixture.task.ok, true)
+        let oldPointer = fixture.store.loadActiveSnapshotPointer()
+        let oldPointerText = fixture.store.readText("metadata/active-snapshot.manifest")
+        let oldEvidence = ckbS5ActiveCompanionEvidence(fixture.store)
+        let oldCommit = fixture.store.readText("transactions/${oldPointer.txId}/COMMIT")
+        let prePointerFaults: Array<String> = [
+            CkbActiveSnapshotFaultPoints.MANIFEST,
+            CkbActiveSnapshotFaultPoints.FRESHNESS,
+            CkbActiveSnapshotFaultPoints.COVERAGE,
+            CkbActiveSnapshotFaultPoints.COMMIT,
+            CkbActiveSnapshotFaultPoints.POINTER_BEFORE
+        ]
+        for (point in prePointerFaults) {
+            let failed = ckbS5WriteCopyForward(fixture.store, point)
+            @Expect(failed.ok, false)
+            @Expect(failed.pointerCommitted, false)
+            @Expect(fixture.store.readText("metadata/active-snapshot.manifest"), oldPointerText)
+            @Expect(ckbS5ActiveCompanionEvidence(fixture.store), oldEvidence)
+            @Expect(fixture.store.readText("transactions/${oldPointer.txId}/COMMIT"), oldCommit)
+        }
+
+        let bindingFetchRoot = "target/p5-s5-b01-bundle-binding"
+        ckbReleaseTestEnsureEmptyDir(bindingFetchRoot)
+        let bindingFetch = fetchScheduledProfileSources(ckbReleaseTestProfile(),
+            CkbReleaseFullRunner(2), fixture.config,
+            FileKnowledgeStore(bindingFetchRoot), ckbReleaseTestManifest())
+        @Expect(bindingFetch.ok, true)
+        let bindingLoaded = newKnowledgeBaseFromStore(fixture.store)
+        let bindingStatus = bindingLoaded.kb.status()
+        let bindingSnapshot = fixture.store.loadActiveSnapshot()
+        let bindingGraph = bindingLoaded.kb.activeGraphBuild()
+        for (mode in ["candidate", "freshness", "manifest_version", "aggregate"]) {
+            let bundle = ckbPrepareReleaseCommitBundle(ckbReleaseTestProfile(),
+                bindingFetch, fixture.store.loadActiveCangjieVersionManifest(),
+                bindingStatus.candidateKnowledgeVersion,
+                bindingStatus.activeKnowledgeVersion,
+                ArrayList<String>(), ArrayList<String>())
+            @Expect(bundle.valid, true)
+            if (mode == "candidate") {
+                bundle.candidateVersion += "-tampered"
+                bundle.freshness.candidateKnowledgeVersion = bundle.candidateVersion
+            } else if (mode == "freshness") {
+                bundle.freshness.activeKnowledgeVersion += "-tampered"
+            } else if (mode == "manifest_version") {
+                bundle.manifest.manifestVersion = CangjieVersionManifestVersions.V1
+            }
+            ckbS5RehashReleaseBundle(bundle)
+            if (mode == "aggregate") {
+                bundle.evidenceHash = ckbReleaseCompanionEvidenceHash("tampered-aggregate")
+            }
+            let rejected = fixture.store.writeActiveSnapshotTransaction(bindingStatus,
+                bindingSnapshot.rawRecords, bindingSnapshot.normalizedRecords,
+                bindingSnapshot.activeIndex, bindingSnapshot.vectorRecords,
+                bindingSnapshot.vectorActiveCollection, bindingGraph,
+                persistVectorFile: bindingSnapshot.hasVectorArtifact,
+                releaseBundle: bundle)
+            @Expect(rejected.ok, false)
+            @Expect(rejected.pointerCommitted, false)
+            @Expect(rejected.txId, "")
+            @Expect(rejected.failureDiagnostic.startsWith(
+                "release_commit_bundle_"), true)
+            @Expect(fixture.store.readText("metadata/active-snapshot.manifest"),
+                oldPointerText)
+            @Expect(ckbS5ActiveCompanionEvidence(fixture.store), oldEvidence)
+        }
+
+        for (mode in ["active_identity", "source_indexed_at"]) {
+            let tamperedCopy = fixture.store.loadActiveSnapshotCompanionCopy()
+            @Expect(tamperedCopy.valid, true)
+            let originalFreshness = tamperedCopy.freshnessText
+            if (mode == "active_identity") {
+                tamperedCopy.freshnessText = tamperedCopy.freshnessText.replace(
+                    "activeKnowledgeVersion=${bindingStatus.activeKnowledgeVersion}\n",
+                    "activeKnowledgeVersion=${bindingStatus.activeKnowledgeVersion}-tampered\n")
+            } else {
+                tamperedCopy.freshnessText = tamperedCopy.freshnessText.replace(
+                    "|${bindingStatus.activeKnowledgeVersion}|", "|tampered-indexed-at|")
+            }
+            @Expect(tamperedCopy.freshnessText == originalFreshness, false)
+            tamperedCopy.freshnessHash = ckbReleaseCompanionEvidenceHash(
+                tamperedCopy.freshnessText)
+            let rejectedCopy = fixture.store.writeActiveSnapshotTransaction(bindingStatus,
+                bindingSnapshot.rawRecords, bindingSnapshot.normalizedRecords,
+                bindingSnapshot.activeIndex, bindingSnapshot.vectorRecords,
+                bindingSnapshot.vectorActiveCollection, bindingGraph,
+                persistVectorFile: bindingSnapshot.hasVectorArtifact,
+                companionCopy: tamperedCopy)
+            @Expect(rejectedCopy.ok, false)
+            @Expect(rejectedCopy.pointerCommitted, false)
+            @Expect(rejectedCopy.txId, "")
+            @Expect(rejectedCopy.failureDiagnostic,
+                "active_companion_restore_semantic_mismatch")
+            @Expect(fixture.store.readText("metadata/active-snapshot.manifest"),
+                oldPointerText)
+            @Expect(ckbS5ActiveCompanionEvidence(fixture.store), oldEvidence)
+        }
+
+        let durableCandidateVersion = "ckb-p5-s5-b01-durable-candidate"
+        let durableCandidate = fixture.store.saveCandidateSnapshotImmutable(
+            bindingSnapshot.rawRecords, bindingSnapshot.activeIndex,
+            durableCandidateVersion)
+        let durableRawPath =
+            "raw/candidate/${durableCandidateVersion}/records.ckb"
+        let durableManifestPath =
+            "candidate-artifacts/${durableCandidateVersion}/manifest.ckb"
+        let durableCheckpointPath =
+            "candidate-artifacts/${durableCandidateVersion}/checkpoint.ckb"
+        let durableRawEvidence = ckbReleaseEvidenceHash(
+            fixture.store.readText(durableRawPath))
+        let durableManifest = fixture.store.readText(durableManifestPath)
+        let durableCheckpoint = fixture.store.readText(durableCheckpointPath)
+        @Expect(durableCandidate.ok, true)
+        @Expect(durableRawEvidence == ckbReleaseEvidenceHash(""), false)
+        @Expect(durableManifest == "", false)
+        @Expect(durableCheckpoint == "", false)
+
+        let pointerAfter = ckbS5WriteCopyForward(fixture.store,
+            CkbActiveSnapshotFaultPoints.POINTER_AFTER)
+        @Expect(pointerAfter.ok, true)
+        @Expect(pointerAfter.pointerCommitted, true)
+        @Expect(pointerAfter.txId == oldPointer.txId, false)
+        @Expect(fixture.store.loadActiveSnapshot().valid, true)
+        @Expect(newKnowledgeBaseFromStore(fixture.store).source, "persisted")
+        @Expect(ckbReleaseEvidenceHash(fixture.store.readText(durableRawPath)),
+            durableRawEvidence)
+        @Expect(fixture.store.readText(durableManifestPath), durableManifest)
+        @Expect(fixture.store.readText(durableCheckpointPath), durableCheckpoint)
+        @Expect(ckbS5RootAtomicTmpCount(fixture.store.rootPath()), 0)
+
+        fixture.store.writeLinesAtomically("index/active.version", "stale-live-shadow\n")
+        let liveFailure = ckbS5WriteCopyForward(fixture.store,
+            CkbActiveSnapshotFaultPoints.LIVE_SHADOW)
+        @Expect(liveFailure.ok, true)
+        @Expect(liveFailure.pointerCommitted, true)
+        @Expect(liveFailure.liveShadowConsistent, false)
+        @Expect(fixture.store.loadActiveSnapshot().valid, true)
+        let repaired = fixture.store.repairActiveLiveShadowFromManifest()
+        @Expect(repaired.ok, true)
+        @Expect(repaired.repairPerformed, true)
+        @Expect(repaired.liveShadowConsistent, true)
+        @Expect(ckbReleaseEvidenceHash(fixture.store.readText(durableRawPath)),
+            durableRawEvidence)
+        @Expect(fixture.store.readText(durableManifestPath), durableManifest)
+        let reusedCandidate = fixture.store.saveCandidateSnapshotImmutable(
+            bindingSnapshot.rawRecords, bindingSnapshot.activeIndex,
+            durableCandidateVersion)
+        @Expect(reusedCandidate.ok, true)
+        @Expect(reusedCandidate.immutableReused, true)
+        @Expect(reusedCandidate.status, "candidate_immutable_reused")
+        @Expect(ckbS5RootAtomicTmpCount(fixture.store.rootPath()), 0)
+
+        let invalidLivePaths: Array<String> = [
+            "normalized/records.ckb",
+            "metadata/active-cangjie-version-manifest.ckb",
+            "index/vector-${fixture.store.loadActiveSnapshotPointer().vectorActiveCollection}.ckb"
+        ]
+        for (relative in invalidLivePaths) {
+            File.writeTo(Path(fixture.store.rootPath()).join(relative),
+                [UInt8(255), UInt8(254), UInt8(253)])
+            @Expect(fixture.store.loadActiveSnapshot().valid, true)
+            let binaryRepair = fixture.store.repairActiveLiveShadowFromManifest()
+            @Expect(binaryRepair.ok, true)
+            @Expect(binaryRepair.liveShadowConsistent, true)
+        }
+
+        let frozenRoot = "target/p5-s5-b01-frozen"
+        ckbReleaseTestEnsureEmptyDir(frozenRoot)
+        let frozenStore = FileKnowledgeStore(frozenRoot,
+            txClock: CkbS5FrozenTxClock(1770000000000))
+        let frozenKb = newOfflineKnowledgeBase()
+        let first = frozenKb.persistActiveSnapshot(frozenStore)
+        let firstBytes = frozenStore.readText("transactions/${first.txId}/COMMIT")
+        let second = frozenKb.persistActiveSnapshot(frozenStore)
+        let secondBytes = frozenStore.readText("transactions/${second.txId}/COMMIT")
+        @Expect(first.txId == second.txId, false)
+        @Expect(frozenStore.readText("transactions/${first.txId}/COMMIT"), firstBytes)
+        let third = ckbS5WriteCopyForward(frozenStore,
+            CkbActiveSnapshotFaultPoints.POINTER_BEFORE)
+        @Expect(third.pointerCommitted, false)
+        @Expect(frozenStore.loadActiveSnapshotPointer().txId, second.txId)
+        @Expect(frozenStore.readText("transactions/${first.txId}/COMMIT"), firstBytes)
+        @Expect(frozenStore.readText("transactions/${second.txId}/COMMIT"), secondBytes)
+
+        let consumeRoot = "target/p5-s5-b01-consume-degraded"
+        ckbReleaseTestEnsureEmptyDir(consumeRoot)
+        let consumeStore = FileKnowledgeStore(consumeRoot)
+        let consumePlan = ckbBuildReleaseFullSyncPlan(ckbReleaseTestProfile(),
+            ckbReleaseTestManifest(), "1.0.0")
+        let normalKey = ckbReleaseScheduledFetchRunKey(ckbReleaseTestProfile(),
+            consumePlan.sources[0], consumePlan.planHash)
+        let blockedKey = ckbReleaseScheduledFetchRunKey(ckbReleaseTestProfile(),
+            consumePlan.sources[1], consumePlan.planHash)
+        ckbMarkReleaseAcquisitionState(consumeStore, normalKey, "active")
+        Directory.create(Path(consumeRoot).join(
+            "${ckbReleaseAcquisitionRoot(blockedKey)}/state.json"), recursive: true)
+        let consumeDiagnostics = ArrayList<String>()
+        let consumeKeys = ArrayList<CkbScheduledFetchRunKey>()
+        consumeKeys.add(normalKey)
+        consumeKeys.add(blockedKey)
+        let pointerBeforeConsume = fixture.store.readText("metadata/active-snapshot.manifest")
+        let evidenceBeforeConsume = ckbS5ActiveCompanionEvidence(fixture.store)
+        let consumed = ckbConsumeReleaseAcquisitionStatesBestEffort(consumeStore,
+            consumeKeys, "candidate-consume",
+            oldPointer.activeVersion, consumeDiagnostics)
+        @Expect(consumed.consumed, 1)
+        @Expect(consumed.failed, 1)
+        @Expect(ckbLoadReleaseAcquisitionState(consumeStore, normalKey).state,
+            "consumed")
+        @Expect(ckbLoadReleaseAcquisitionState(consumeStore, blockedKey).state ==
+            "consumed", false)
+        @Expect(consumeDiagnostics.size, 1)
+        @Expect(consumeDiagnostics[0].startsWith(
+            "release_acquisition_consume_degraded:"), true)
+        @Expect(consumeDiagnostics[0].size <= 320, true)
+        @Expect(consumeDiagnostics[0].contains(consumeRoot), false)
+        @Expect(fixture.task.ok, true)
+        @Expect(fixture.store.readText("metadata/active-snapshot.manifest"),
+            pointerBeforeConsume)
+        @Expect(ckbS5ActiveCompanionEvidence(fixture.store), evidenceBeforeConsume)
+        _ = launch("/bin/rm", ["-rf", Path(consumeRoot).join(
+            "${ckbReleaseAcquisitionRoot(blockedKey)}/state.json").toString()]).wait()
+        ckbMarkReleaseAcquisitionState(consumeStore, blockedKey, "active")
+        @Expect(ckbReleaseAcquisitionCanResume(consumeStore, blockedKey), true)
+
+        let mismatchSnapshot = frozenStore.loadActiveSnapshot()
+        let mismatchLoaded = newKnowledgeBaseFromStore(frozenStore)
+        let mismatchStatus = mismatchLoaded.kb.status()
+        let mismatchGraph = mismatchLoaded.kb.activeGraphBuild()
+        let pointerBeforeMismatch = frozenStore.readText("metadata/active-snapshot.manifest")
+        let mismatch = frozenStore.writeActiveSnapshotTransaction(mismatchStatus,
+            mismatchSnapshot.rawRecords, mismatchSnapshot.normalizedRecords,
+            mismatchSnapshot.activeIndex, mismatchSnapshot.vectorRecords,
+            "wrong-collection", mismatchGraph)
+        @Expect(mismatch.ok, false)
+        @Expect(mismatch.failureDiagnostic, "active_snapshot_identity_invalid")
+        @Expect(frozenStore.readText("metadata/active-snapshot.manifest"), pointerBeforeMismatch)
+    }
+
+    @TestCase
+    public func p5S5P01NewProcessLoadsSameTransactionAndBackupRestorePreservesExternalMetadata(): Unit {
+        let fixture = ckbS5ReleaseFixture("target/p5-s5-p01", 2)
+        @Expect(fixture.task.ok, true)
+        let pointer = fixture.store.loadActiveSnapshotPointer()
+        let loaded = newKnowledgeBaseFromStore(fixture.store)
+        let service = CkbCommandLoopService(fixture.config, fixture.store,
+            sourceRunner: DisabledNetworkFetchRunner())
+        let activeManifest = service.activeVersionManifest()
+        let activeFreshness = service.cangjieCorpusFreshness()
+        let query = cangjie_evidence_pack(loaded.kb, "new-a-token", 5)
+        @Expect(pointer.valid, true)
+        @Expect(pointer.companionMode, CkbActiveSnapshotCompanionMode.RELEASE)
+        @Expect(loaded.source, "persisted")
+        @Expect(query.docEvidence.size + query.sourceEvidence.size > 0, true)
+        @Expect(activeManifest.sources.size, 5)
+        @Expect(activeFreshness.sources.size, 5)
+        @Expect(activeFreshness.activeKnowledgeVersion, pointer.activeVersion)
+        @Expect(activeFreshness.degraded, false)
+        for (source in activeFreshness.sources) {
+            if (source.sourceSet != CangjieSourceSets.EVAL_SUPPORT) {
+                @Expect(source.resolvedCommit,
+                    "2222222222222222222222222222222222222222")
+            }
+        }
+        @Expect(ckbReleaseTestManifestSource(activeManifest, CangjieSourceSets.DOCS).resolvedCommit,
+            "2222222222222222222222222222222222222222")
+        @Expect(ckbS5LiveShadowEqualsTransaction(fixture.store, pointer), true)
+        let noOpRepair = fixture.store.repairActiveLiveShadowFromManifest()
+        @Expect(noOpRepair.ok, true)
+        @Expect(noOpRepair.repairPerformed, false)
+
+        let genericTaskRoot = "target/p5-s5-p01-generic-task"
+        ckbReleaseTestEnsureEmptyDir(genericTaskRoot)
+        @Expect(fixture.store.backupActiveSnapshot(genericTaskRoot).ok, true)
+        let genericTaskStore = FileKnowledgeStore(genericTaskRoot)
+        genericTaskStore.saveCangjieVersionManifest(ckbReleaseTestManifest())
+        @Expect(genericTaskStore.loadCangjieVersionManifest().manifestVersion,
+            CangjieVersionManifestVersions.V1)
+        let genericBeforePointer = genericTaskStore.loadActiveSnapshotPointer()
+        let genericTaskRunner = CkbS5GenericDeltaRunner()
+        let genericTaskKb = newKnowledgeBaseFromStore(genericTaskStore).kb
+        let genericTask = CkbSchedulerTaskRunner(genericTaskKb, fixture.config,
+            genericTaskStore, sourceRunner: genericTaskRunner).runTask(
+                "cangjie_source_event_sync", "0", ckbCoreNowMillis() + 125000)
+        let genericTaskPointer = genericTaskStore.loadActiveSnapshotPointer()
+        let genericTaskManifest = genericTaskStore.loadActiveCangjieVersionManifest()
+        let genericTaskFreshness = genericTaskStore.loadActiveCangjieCorpusFreshness()
+        let genericResolution = resolveCangjieVersion(cangjieVersionSelector(
+            targetVersion: "1.0.0", sourceSet: CangjieSourceSets.STD),
+            genericTaskManifest)
+        @Expect(genericTask.ok, true)
+        @Expect(genericTaskRunner.calls > 0, true)
+        @Expect(genericTaskPointer.valid, true)
+        @Expect(genericTaskPointer.companionMode,
+            CkbActiveSnapshotCompanionMode.COPY_FORWARD)
+        @Expect(genericTaskPointer.manifestHash, genericBeforePointer.manifestHash)
+        @Expect(genericTaskPointer.coverageHash, genericBeforePointer.coverageHash)
+        @Expect(genericTaskManifest.manifestVersion,
+            CangjieVersionManifestVersions.V2)
+        @Expect(genericResolution.ok, true)
+        @Expect(genericResolution.versionResolutionId.startsWith(
+            "cangjie-version-v2-"), true)
+        var genericDeltaFound = false
+        for (record in genericTaskStore.loadActiveSnapshot().activeIndex) {
+            if (record.metadata.symbol == "p5S5GenericV2Only") {
+                genericDeltaFound = true
+                @Expect(record.metadata.versionResolutionId,
+                    genericResolution.versionResolutionId)
+            }
+        }
+        @Expect(genericDeltaFound, true)
+        let genericServing = buildCangjieServingIndex(
+            genericTaskStore.loadActiveSnapshot().activeIndex,
+            activeKnowledgeVersion: genericTaskPointer.activeVersion)
+        let genericStrict = lookupExactSymbol(genericServing,
+            "p5S5GenericV2Only", sourceSet: CangjieSourceSets.STD,
+            targetVersion: "1.0.0",
+            versionResolutionId: genericResolution.versionResolutionId, budget: 5)
+        @Expect(genericStrict.ok, true)
+        @Expect(genericStrict.hits.size > 0, true)
+        @Expect(genericTaskFreshness.activeKnowledgeVersion,
+            genericTaskPointer.activeVersion)
+        @Expect(genericTaskFreshness.candidateKnowledgeVersion,
+            genericTask.candidateVersion)
+        for (source in genericTaskFreshness.sources) {
+            @Expect(source.indexedAt, genericTaskPointer.activeVersion)
+        }
+
+        let lifecycleSourceRoot = "target/p5-s5-p01-lifecycle-source"
+        let lifecycleBackupRoot = "target/p5-s5-p01-lifecycle-backup"
+        let lifecycleRestoreRoot = "target/p5-s5-p01-lifecycle-restored"
+        ckbReleaseTestEnsureEmptyDir(lifecycleSourceRoot)
+        ckbReleaseTestEnsureEmptyDir(lifecycleBackupRoot)
+        ckbReleaseTestEnsureEmptyDir(lifecycleRestoreRoot)
+        @Expect(fixture.store.backupActiveSnapshot(lifecycleSourceRoot).ok, true)
+        let lifecycleSource = FileKnowledgeStore(lifecycleSourceRoot)
+        let failedCandidateVersion = "ckb-p5-s5-p01-failed-candidate"
+        let failedLifecycle = cangjiePromoteCandidateRecordsAfterValidationWithVersion(
+            newKnowledgeBaseFromStore(lifecycleSource).kb, lifecycleSource,
+            failedCandidateVersion, lifecycleSource.loadActiveSnapshot().activeIndex,
+            forceFailure: true)
+        @Expect(failedLifecycle.ok, false)
+        @Expect(failedLifecycle.validation.ok, false)
+        @Expect(newKnowledgeBaseFromStore(lifecycleSource).kb.status().candidateKnowledgeVersion,
+            failedCandidateVersion)
+        @Expect(newKnowledgeBaseFromStore(lifecycleSource).kb.status().failedCandidateVersion,
+            failedCandidateVersion)
+
+        let lifecycleBackup = lifecycleSource.backupActiveSnapshot(lifecycleBackupRoot)
+        let lifecycleBackupStore = FileKnowledgeStore(lifecycleBackupRoot)
+        let lifecycleRestoreStore = FileKnowledgeStore(lifecycleRestoreRoot)
+        let lifecycleRestore = lifecycleRestoreStore.restoreActiveSnapshotBackup(
+            lifecycleBackupRoot)
+        @Expect(lifecycleBackup.ok, true)
+        @Expect(lifecycleRestore.ok, true)
+        for (copiedStore in [lifecycleBackupStore, lifecycleRestoreStore]) {
+            let copiedPointer = copiedStore.loadActiveSnapshotPointer()
+            let copiedTxStatus = copiedStore.loadMetadataStatus()
+            let copiedManifest = copiedStore.loadActiveCangjieVersionManifest()
+            let copiedFreshness = copiedStore.loadActiveCangjieCorpusFreshness()
+            let copiedReload = newKnowledgeBaseFromStore(copiedStore)
+            @Expect(copiedPointer.valid, true)
+            @Expect(copiedPointer.companionMode,
+                CkbActiveSnapshotCompanionMode.COPY_FORWARD)
+            @Expect(copiedManifest.manifestVersion, CangjieVersionManifestVersions.V2)
+            @Expect(copiedManifest.sources.size, 5)
+            @Expect(copiedFreshness.sources.size, copiedManifest.sources.size)
+            @Expect(copiedFreshness.activeKnowledgeVersion,
+                copiedTxStatus.activeVersion)
+            @Expect(copiedFreshness.candidateKnowledgeVersion,
+                copiedTxStatus.candidateVersion)
+            @Expect(copiedFreshness.failedCandidateVersion,
+                copiedTxStatus.failedVersion)
+            @Expect(copiedFreshness.targetVersion,
+                copiedManifest.defaultTargetVersion)
+            @Expect(copiedTxStatus.candidateVersion == failedCandidateVersion, false)
+            @Expect(copiedTxStatus.failedVersion == failedCandidateVersion, false)
+            for (source in copiedFreshness.sources) {
+                @Expect(source.indexedAt, copiedTxStatus.activeVersion)
+                let manifestSource = ckbReleaseTestManifestSource(copiedManifest,
+                    source.sourceSet)
+                @Expect(source.resolvedCommit, manifestSource.resolvedCommit)
+                @Expect(source.contentHash, manifestSource.contentHash)
+                @Expect(source.targetVersion, manifestSource.targetVersion)
+            }
+            @Expect(copiedReload.source, "persisted")
+            @Expect(copiedReload.kb.status().candidateKnowledgeVersion,
+                failedCandidateVersion)
+            @Expect(copiedReload.kb.status().failedCandidateVersion,
+                failedCandidateVersion)
+            @Expect(copiedStore.has(
+                "candidate-artifacts/${failedCandidateVersion}/status.ckb"), false)
+            let lifecycleRepair = copiedStore.repairActiveLiveShadowFromManifest()
+            @Expect(lifecycleRepair.ok, true)
+            @Expect(lifecycleRepair.repairPerformed, false)
+            let repairedReload = newKnowledgeBaseFromStore(copiedStore)
+            @Expect(repairedReload.kb.status().candidateKnowledgeVersion,
+                failedCandidateVersion)
+            @Expect(repairedReload.kb.status().failedCandidateVersion,
+                failedCandidateVersion)
+            copiedStore.writeLinesAtomically("index/active.ckb", "damaged-live-shadow\n")
+            let performedRepair = copiedStore.repairActiveLiveShadowFromManifest()
+            @Expect(performedRepair.ok, true)
+            @Expect(performedRepair.repairPerformed, true)
+            @Expect(performedRepair.liveShadowConsistent, true)
+            let repairedAfterDamage = newKnowledgeBaseFromStore(copiedStore)
+            @Expect(repairedAfterDamage.source, "persisted")
+            @Expect(repairedAfterDamage.kb.status().candidateKnowledgeVersion,
+                failedCandidateVersion)
+            @Expect(repairedAfterDamage.kb.status().failedCandidateVersion,
+                failedCandidateVersion)
+        }
+
+        let markerBackupRoot = "target/p5-s5-p01-marker-degraded"
+        let markerRestoreRoot = "target/p5-s5-p01-marker-restored"
+        ckbReleaseTestEnsureEmptyDir(markerBackupRoot)
+        ckbReleaseTestEnsureEmptyDir(markerRestoreRoot)
+        Directory.create(Path(markerBackupRoot).join("metadata/backup.ckb"),
+            recursive: true)
+        let markerBackup = fixture.store.backupActiveSnapshot(markerBackupRoot)
+        let markerStore = FileKnowledgeStore(markerBackupRoot)
+        @Expect(markerBackup.ok, true)
+        @Expect(markerBackup.diagnostic.startsWith("backup_marker_degraded:"), true)
+        @Expect(markerStore.loadActiveSnapshotPointer().valid, true)
+        @Expect(markerStore.loadActiveSnapshot().valid, true)
+        @Expect(markerStore.loadActiveSnapshotPointer().manifestHash, pointer.manifestHash)
+        @Expect(markerStore.loadActiveSnapshotPointer().freshnessHash, pointer.freshnessHash)
+        @Expect(markerStore.loadActiveSnapshotPointer().coverageHash, pointer.coverageHash)
+        let markerRestored = FileKnowledgeStore(markerRestoreRoot)
+        @Expect(markerRestored.restoreActiveSnapshotBackup(markerBackupRoot).ok, true)
+        @Expect(markerRestored.loadActiveSnapshot().valid, true)
+
+        let backupRoot = "target/p5-s5-p01-backup"
+        let restoreRoot = "target/p5-s5-p01-restored"
+        ckbReleaseTestEnsureEmptyDir(backupRoot)
+        ckbReleaseTestEnsureEmptyDir(restoreRoot)
+        let backup = fixture.store.backupActiveSnapshot(backupRoot)
+        let restoredStore = FileKnowledgeStore(restoreRoot,
+            txClock: CkbS5FrozenTxClock(1888000000000))
+        let restored = restoredStore.restoreActiveSnapshotBackup(backupRoot)
+        let backupPointer = FileKnowledgeStore(backupRoot).loadActiveSnapshotPointer()
+        let restoredPointer = restoredStore.loadActiveSnapshotPointer()
+        @Expect(backup.ok, true)
+        @Expect(backup.files, markerBackup.files + 1)
+        @Expect(restored.ok, true)
+        @Expect(backupPointer.companionMode, CkbActiveSnapshotCompanionMode.COPY_FORWARD)
+        @Expect(backupPointer.manifestHash, pointer.manifestHash)
+        @Expect(backupPointer.freshnessHash, pointer.freshnessHash)
+        @Expect(backupPointer.coverageHash, pointer.coverageHash)
+        @Expect(restoredPointer.txId == backupPointer.txId, false)
+        @Expect(restoredPointer.companionMode, CkbActiveSnapshotCompanionMode.COPY_FORWARD)
+        @Expect(restoredPointer.manifestHash, pointer.manifestHash)
+        @Expect(restoredPointer.freshnessHash, pointer.freshnessHash)
+        @Expect(restoredPointer.coverageHash, pointer.coverageHash)
+        @Expect(newKnowledgeBaseFromStore(restoredStore).source, "persisted")
+        @Expect(cangjie_evidence_pack(newKnowledgeBaseFromStore(restoredStore).kb,
+            "new-a-token", 5).citations.size > 0, true)
+
+        let genericLoaded = newKnowledgeBaseFromStore(restoredStore)
+        let genericCandidate = "ckb-p5-s5-p01-generic-candidate"
+        let genericPromotion = cangjiePromoteCandidateRecordsAfterValidationWithVersion(
+            genericLoaded.kb, restoredStore, genericCandidate,
+            restoredStore.loadActiveSnapshot().activeIndex)
+        let genericPointer = restoredStore.loadActiveSnapshotPointer()
+        let genericFreshness = restoredStore.loadActiveCangjieCorpusFreshness()
+        @Expect(genericPromotion.ok, true)
+        @Expect(genericPromotion.validation.status, "candidate_validation_passed")
+        @Expect(genericPointer.valid, true)
+        @Expect(genericPointer.companionMode,
+            CkbActiveSnapshotCompanionMode.COPY_FORWARD)
+        @Expect(genericPointer.manifestHash, restoredPointer.manifestHash)
+        @Expect(genericPointer.coverageHash, restoredPointer.coverageHash)
+        @Expect(genericPointer.freshnessHash == restoredPointer.freshnessHash, false)
+        @Expect(genericFreshness.activeKnowledgeVersion, genericPointer.activeVersion)
+        @Expect(genericFreshness.candidateKnowledgeVersion,
+            genericPromotion.candidateVersion)
+        for (source in genericFreshness.sources) {
+            @Expect(source.indexedAt, genericPointer.activeVersion)
+        }
+        let genericService = CkbCommandLoopService(fixture.config, restoredStore,
+            sourceRunner: DisabledNetworkFetchRunner())
+        let servedGenericFreshness = genericService.cangjieCorpusFreshness()
+        @Expect(servedGenericFreshness.degraded, false)
+        @Expect(ckbReleaseTestDiagnosticsContain(servedGenericFreshness.diagnostics,
+            "active_freshness_transaction_identity_invalid"), false)
+        @Expect(genericService.queryEvidencePack("new-a-token", 5).citations.size > 0,
+            true)
+
+        let externalRoot = "target/p5-s5-p01-external"
+        let externalBackup = "target/p5-s5-p01-external-backup"
+        let externalRestore = "target/p5-s5-p01-external-restored"
+        ckbReleaseTestEnsureEmptyDir(externalRoot)
+        ckbReleaseTestEnsureEmptyDir(externalBackup)
+        ckbReleaseTestEnsureEmptyDir(externalRestore)
+        let externalStore = FileKnowledgeStore(externalRoot)
+        let snapshot = fixture.store.loadActiveSnapshot()
+        let sourceLoaded = newKnowledgeBaseFromStore(fixture.store)
+        let externalStatus = sourceLoaded.kb.status()
+        externalStatus.storage.vectorBackend = "qdrant"
+        externalStatus.storage.vectorState = EmbeddingProviderState.READY
+        externalStatus.storage.vectorCollection = "qdrant_active"
+        externalStatus.storage.vectorActiveCollection = "qdrant_active"
+        externalStatus.storage.vectorCandidateCollection = "qdrant_candidate"
+        externalStatus.storage.vectorIndexCount = snapshot.activeIndex.size
+        externalStatus.storage.vectorDimension = 1024
+        externalStatus.storage.graphBackend = "external-graph"
+        externalStatus.storage.graphState = EmbeddingProviderState.READY
+        externalStatus.storage.graphNodeCount = 123
+        externalStatus.storage.graphEdgeCount = 456
+        externalStatus.storage.graphIndexCount = 456
+        let externalTx = externalStore.writeActiveSnapshotTransaction(externalStatus,
+            snapshot.rawRecords, snapshot.normalizedRecords, snapshot.activeIndex,
+            ArrayList<VectorRecord>(), "qdrant_active", sourceLoaded.kb.activeGraphBuild(),
+            persistVectorFile: false,
+            companionCopy: fixture.store.loadActiveSnapshotCompanionCopy())
+        @Expect(externalTx.ok, true)
+        @Expect(externalStore.backupActiveSnapshot(externalBackup).ok, true)
+        let externalRestoredStore = FileKnowledgeStore(externalRestore)
+        @Expect(externalRestoredStore.restoreActiveSnapshotBackup(externalBackup).ok, true)
+        let externalMetadata = externalRestoredStore.loadMetadataStatus()
+        @Expect(externalMetadata.vectorBackend, "qdrant")
+        @Expect(externalMetadata.vectorState, EmbeddingProviderState.READY)
+        @Expect(externalMetadata.vectorActiveCollection, "qdrant_active")
+        @Expect(externalMetadata.vectorIndexCount, snapshot.activeIndex.size)
+        @Expect(externalMetadata.vectorDimension, 1024)
+        @Expect(externalMetadata.graphBackend, "external-graph")
+        @Expect(externalMetadata.graphState, EmbeddingProviderState.READY)
+        @Expect(externalMetadata.graphNodeCount, 123)
+        @Expect(externalMetadata.graphEdgeCount, 456)
+        @Expect(externalMetadata.graphIndexCount, 456)
+
+        let noneSourceRoot = "target/p5-s5-p01-none-source"
+        let noneBackupRoot = "target/p5-s5-p01-none-backup"
+        let noneRestoreRoot = "target/p5-s5-p01-none-over-release"
+        ckbReleaseTestEnsureEmptyDir(noneSourceRoot)
+        ckbReleaseTestEnsureEmptyDir(noneBackupRoot)
+        ckbReleaseTestEnsureEmptyDir(noneRestoreRoot)
+        let noneSource = FileKnowledgeStore(noneSourceRoot)
+        let noneStatus = sourceLoaded.kb.status()
+        let noneTx = noneSource.writeActiveSnapshotTransaction(noneStatus,
+            snapshot.rawRecords, snapshot.normalizedRecords, snapshot.activeIndex,
+            snapshot.vectorRecords, noneStatus.storage.vectorActiveCollection,
+            sourceLoaded.kb.activeGraphBuild())
+        @Expect(noneTx.ok, true)
+        @Expect(noneTx.companionMode, CkbActiveSnapshotCompanionMode.NONE)
+        noneSource.saveCangjieVersionManifest(ckbReleaseTestManifest())
+        let nonePlanning = CkbCommandLoopService(fixture.config, noneSource,
+            sourceRunner: DisabledNetworkFetchRunner()).activeVersionManifest()
+        @Expect(nonePlanning.manifestVersion, CangjieVersionManifestVersions.V1)
+        @Expect(nonePlanning.sources.size, 5)
+        @Expect(noneSource.backupActiveSnapshot(noneBackupRoot).ok, true)
+
+        let noneRestore = FileKnowledgeStore(noneRestoreRoot)
+        @Expect(noneRestore.restoreActiveSnapshotBackup(backupRoot).ok, true)
+        @Expect(noneRestore.has("metadata/active-cangjie-version-manifest.ckb"), true)
+        @Expect(noneRestore.has("metadata/active-cangjie-freshness.ckb"), true)
+        @Expect(noneRestore.has("metadata/active-cangjie-release-coverage.ckb"), true)
+        noneRestore.writeLinesAtomically("metadata/cangjie-version-manifest.ckb", "planning-manifest\n")
+        noneRestore.writeLinesAtomically("metadata/cangjie-freshness.ckb", "planning-freshness\n")
+        noneRestore.writeLinesAtomically("metadata/cangjie-release-coverage.ckb", "planning-coverage\n")
+        @Expect(noneRestore.restoreActiveSnapshotBackup(noneBackupRoot).ok, true)
+        @Expect(noneRestore.loadActiveSnapshotPointer().companionMode,
+            CkbActiveSnapshotCompanionMode.NONE)
+        @Expect(noneRestore.has("metadata/active-cangjie-version-manifest.ckb"), false)
+        @Expect(noneRestore.has("metadata/active-cangjie-freshness.ckb"), false)
+        @Expect(noneRestore.has("metadata/active-cangjie-release-coverage.ckb"), false)
+        @Expect(noneRestore.readText("metadata/cangjie-version-manifest.ckb"), "planning-manifest\n")
+        @Expect(noneRestore.readText("metadata/cangjie-freshness.ckb"), "planning-freshness\n")
+        @Expect(noneRestore.readText("metadata/cangjie-release-coverage.ckb"), "planning-coverage\n")
+
+        noneRestore.writeLinesAtomically("metadata/active-cangjie-version-manifest.ckb", "stale\n")
+        noneRestore.writeLinesAtomically("metadata/active-cangjie-freshness.ckb", "stale\n")
+        noneRestore.writeLinesAtomically("metadata/active-cangjie-release-coverage.ckb", "stale\n")
+        let noneRepair = noneRestore.repairActiveLiveShadowFromManifest()
+        @Expect(noneRepair.ok, true)
+        @Expect(noneRepair.repairPerformed, true)
+        @Expect(noneRepair.liveShadowConsistent, true)
+        @Expect(noneRepair.removedFiles.size, 3)
+        @Expect(noneRestore.has("metadata/active-cangjie-version-manifest.ckb"), false)
+        @Expect(noneRestore.has("metadata/active-cangjie-freshness.ckb"), false)
+        @Expect(noneRestore.has("metadata/active-cangjie-release-coverage.ckb"), false)
+        @Expect(noneRestore.readText("metadata/cangjie-version-manifest.ckb"), "planning-manifest\n")
+        @Expect(noneRestore.readText("metadata/cangjie-freshness.ckb"), "planning-freshness\n")
+        @Expect(noneRestore.readText("metadata/cangjie-release-coverage.ckb"), "planning-coverage\n")
+    }
+
+    @TestCase
+    public func p5S5N01FetchVectorValidationCommitSnapshotAndV2TamperFailClosed(): Unit {
+        let fixture = ckbS5ReleaseFixture("target/p5-s5-n01", 2)
+        @Expect(fixture.task.ok, true)
+        let oldPointer = fixture.store.readText("metadata/active-snapshot.manifest")
+        let oldEvidence = ckbS5AuthoritativeSnapshotEvidence(fixture.store)
+        let fetchFailure = CkbSchedulerTaskRunner(fixture.kb, fixture.config, fixture.store,
+            sourceRunner: CkbReleaseFailureRunner("malformed_branch")).runTask(
+            "cangjie_release_full_sync", "0", ckbCoreNowMillis() + 435000)
+        @Expect(fetchFailure.ok, false)
+        @Expect(fixture.store.readText("metadata/active-snapshot.manifest"), oldPointer)
+        @Expect(ckbS5AuthoritativeSnapshotEvidence(fixture.store), oldEvidence)
+
+        let validationLoaded = newKnowledgeBaseFromStore(fixture.store)
+        let records = fixture.store.loadActiveSnapshot().activeIndex
+        let validationFailure = cangjiePromoteCandidateRecordsAfterValidationWithVersion(
+            validationLoaded.kb, fixture.store, "ckb-p5-s5-validation-candidate", records,
+            forceFailure: true)
+        @Expect(validationFailure.ok, false)
+        @Expect(fixture.store.readText(
+            "candidate-artifacts/${validationFailure.candidateVersion}/status.ckb").contains(
+            "state=failed"), true)
+        @Expect(fixture.store.readText("metadata/active-snapshot.manifest"), oldPointer)
+        @Expect(ckbS5AuthoritativeSnapshotEvidence(fixture.store), oldEvidence)
+
+        let downProvider = CkbS5DownEmbeddingProvider()
+        let vectorKb = KnowledgeBase(FakeClock(0), downProvider,
+            LocalVectorStore(), LocalGraphStore())
+        @Expect(vectorKb.restoreActiveSnapshot(fixture.store.loadActiveSnapshot()), true)
+        let changedRecords = fixture.store.loadActiveSnapshot().activeIndex
+        changedRecords[0].sourceId = "p5typed-forced-new-vector-identity"
+        changedRecords[0].chunk += " forced-new-vector-content"
+        let vectorFailure = cangjiePromoteCandidateRecordsAfterValidationWithVersion(
+            vectorKb, fixture.store, "ckb-p5-s5-vector-candidate", changedRecords)
+        @Expect(vectorFailure.ok, false)
+        @Expect(vectorFailure.validation.status, "candidate_vector_failed")
+        @Expect(downProvider.calls > 0, true)
+        @Expect(fixture.store.readText(
+            "candidate-artifacts/${vectorFailure.candidateVersion}/status.ckb").contains(
+            "state=failed"), true)
+        @Expect(fixture.store.readText("metadata/active-snapshot.manifest"), oldPointer)
+        @Expect(ckbS5AuthoritativeSnapshotEvidence(fixture.store), oldEvidence)
+
+        let commitLoaded = newKnowledgeBaseFromStore(fixture.store)
+        let staged = commitLoaded.kb.stageCandidateRecords(
+            "ckb-p5-s5-commit-candidate", records)
+        var commitDiagnostic = ""
+        try {
+            _ = commitLoaded.kb.commitCandidateToActiveAfterVectorReady(
+                cangjieActiveVersionForCandidate(staged),
+                commitLoaded.kb.status().storage.vectorCandidateCollection,
+                ckbS5ReadyVectorStatus(records),
+                deadlineAtMillis: ckbCoreNowMillis() - 1)
+        } catch (e: Exception) { commitDiagnostic = e.message }
+        @Expect(commitDiagnostic.contains("deadline_exceeded:"), true)
+        @Expect(fixture.store.readText("metadata/active-snapshot.manifest"), oldPointer)
+        @Expect(ckbS5AuthoritativeSnapshotEvidence(fixture.store), oldEvidence)
+
+        let snapshotLoaded = newKnowledgeBaseFromStore(fixture.store)
+        let snapshotFailure = cangjiePromoteCandidateRecordsAfterValidationWithVersion(
+            snapshotLoaded.kb, fixture.store, "ckb-p5-s5-snapshot-candidate", records,
+            snapshotFaultInjector: CkbS5FaultInjector(CkbActiveSnapshotFaultPoints.COMMIT))
+        @Expect(snapshotFailure.ok, false)
+        @Expect(snapshotFailure.activePromoted, false)
+        @Expect(snapshotFailure.validation.ok, false)
+        @Expect(snapshotFailure.snapshotPointerCommitted, false)
+        @Expect(fixture.store.readText(
+            "candidate-artifacts/${snapshotFailure.candidateVersion}/status.ckb").contains(
+            "state=failed"), true)
+        @Expect(snapshotFailure.activeVersion,
+            fixture.store.loadActiveSnapshotPointer().activeVersion)
+        @Expect(fixture.store.readText("metadata/active-snapshot.manifest"), oldPointer)
+        @Expect(ckbS5AuthoritativeSnapshotEvidence(fixture.store), oldEvidence)
+        @Expect(ckbReleaseTestDiagnosticsContain(snapshotFailure.validation.diagnostics,
+            "candidate_staging_deleted:"), true)
+
+        let tamperRoot = "target/p5-s5-n01-schema-tamper"
+        ckbReleaseTestEnsureEmptyDir(tamperRoot)
+        @Expect(FileKnowledgeStore(tamperRoot).restoreActiveSnapshotBackup(
+            ckbS5BackupFixture(fixture.store, "target/p5-s5-n01-backup")).ok, true)
+        let tamperStore = FileKnowledgeStore(tamperRoot)
+        let tamperPointerText = tamperStore.readText("metadata/active-snapshot.manifest")
+        tamperStore.writeLinesAtomically("metadata/active-snapshot.manifest",
+            ckbS5RemoveLines(tamperPointerText, ["schema="]))
+        tamperStore.saveCangjieVersionManifest(ckbReleaseTestManifest())
+        @Expect(tamperStore.loadActiveSnapshotPointer().valid, false)
+        let invalidManifest = CkbCommandLoopService(fixture.config, tamperStore,
+            sourceRunner: DisabledNetworkFetchRunner()).activeVersionManifest()
+        @Expect(invalidManifest.sources.size, 0)
+        @Expect(invalidManifest.degraded, true)
+        let invalidRunner = CkbS5GenericDeltaRunner()
+        let invalidTask = CkbSchedulerTaskRunner(newKnowledgeBaseFromStore(
+            tamperStore).kb, fixture.config, tamperStore,
+            sourceRunner: invalidRunner).runTask("cangjie_source_event_sync", "0",
+                ckbCoreNowMillis() + 125000)
+        @Expect(invalidTask.ok, false)
+        @Expect(invalidRunner.calls, 0)
+        let tamperLoaded = newKnowledgeBaseFromStore(tamperStore)
+        @Expect(tamperLoaded.source, "persisted_invalid")
+        @Expect(cangjie_source_search(tamperLoaded.kb, "HttpClient", 3).records.size, 0)
+        let guardOptions = CkbFirstInitOptions()
+        guardOptions.apply = true
+        guardOptions.dryRun = false
+        let guard = runCkbFirstInitializationWithActiveGuard(guardOptions, tamperStore)
+        @Expect(guard.ok, false)
+        @Expect(guard.persisted, false)
+
+        let legacyLookingRoot = "target/p5-s5-n01-legacy-looking"
+        ckbReleaseTestEnsureEmptyDir(legacyLookingRoot)
+        @Expect(FileKnowledgeStore(legacyLookingRoot).restoreActiveSnapshotBackup(
+            ckbS5BackupFixture(fixture.store, "target/p5-s5-n01-backup-2")).ok, true)
+        let legacyLooking = FileKnowledgeStore(legacyLookingRoot)
+        let legacyPointer = legacyLooking.readText("metadata/active-snapshot.manifest")
+        legacyLooking.writeLinesAtomically("metadata/active-snapshot.manifest",
+            ckbS5RemoveLines(legacyPointer,
+                ["schema=", "companionMode=", "manifestHash=", "freshnessHash=", "coverageHash="]))
+        @Expect(legacyLooking.loadActiveSnapshotPointer().valid, false)
+        @Expect(legacyLooking.loadActiveSnapshotPointer().legacy, false)
+        @Expect(newKnowledgeBaseFromStore(legacyLooking).source, "persisted_invalid")
+
+        for (mode in ["pointer_committed", "commit_persist", "commit_schema",
+            "companion_utf8", "payload_utf8", "pointer_zero",
+            "pointer_whitespace", "pointer_garbage"]) {
+            let damaged = ckbS5TamperedClone(fixture.store,
+                "target/p5-s5-n01-${mode}", mode)
+            @Expect(damaged.loadActiveSnapshotPointer().valid, false)
+            @Expect(damaged.hasAuthoritativeActiveSnapshotPointer(), true)
+            let damagedLoaded = newKnowledgeBaseFromStore(damaged)
+            @Expect(damagedLoaded.source, "persisted_invalid")
+            @Expect(cangjie_source_search(damagedLoaded.kb, "HttpClient", 3).records.size, 0)
+            let damagedService = CkbCommandLoopService(fixture.config, damaged,
+                sourceRunner: DisabledNetworkFetchRunner())
+            let damagedManifest = damagedService.activeVersionManifest()
+            let damagedFreshness = damagedService.cangjieCorpusFreshness()
+            @Expect(damagedManifest.sources.size, 0)
+            @Expect(damagedManifest.degraded, true)
+            @Expect(damagedFreshness.degraded, true)
+            @Expect(damagedFreshness.sources.size, 0)
+            let damagedCollections = ckbEffectiveVectorCollections(fixture.config,
+                damaged)
+            @Expect(damagedCollections.valid, false)
+            @Expect(damagedCollections.effectiveActiveCollection, "")
+        }
+    }
+
+    @TestCase
+    public func p5S5E2EAFullCandidateAndCommitBoundaryMatrixKeepOneAuthoritativeTransaction(): Unit {
+        let root = "target/p5-s5-e2e-a"
+        ckbReleaseTestEnsureEmptyDir(root)
+        let evalRoot = "${root}/eval"
+        ckbReleaseTestWriteEvalFixture(evalRoot)
+        let config = ckbS5Config(evalRoot)
+        let store = FileKnowledgeStore("${root}/store")
+        store.saveCangjieVersionManifest(ckbReleaseTestManifest())
+        let service = CkbCommandLoopService(config, store,
+            sourceRunner: CkbReleaseFullRunner(2))
+        _ = service.start()
+        let tasks = ArrayList<String>()
+        tasks.add("cangjie_release_full_sync")
+        let run = service.runSchedulerTasks(tasks, true)
+        let successPointer = store.loadActiveSnapshotPointer()
+        let successEvidence = ckbS5AuthoritativeSnapshotEvidence(store)
+        @Expect(run.succeeded, 1)
+        @Expect(run.failed, 0)
+        @Expect(successPointer.valid, true)
+        @Expect(successPointer.companionMode, CkbActiveSnapshotCompanionMode.RELEASE)
+        @Expect(service.activeVersionManifest().sources.size, 5)
+        @Expect(service.queryEvidencePack("new-a-token", 5).citations.size > 0, true)
+
+        let matrixFetchRoot = "${root}/matrix-fetch"
+        ckbReleaseTestEnsureEmptyDir(matrixFetchRoot)
+        let matrixFetch = fetchScheduledProfileSources(ckbReleaseTestProfile(),
+            CkbReleaseFullRunner(2), config, FileKnowledgeStore(matrixFetchRoot),
+            ckbReleaseTestManifest())
+        let matrixManifest = service.activeVersionManifest()
+
+        var faultIndex: Int64 = 0
+        for (point in [CkbActiveSnapshotFaultPoints.MANIFEST,
+            CkbActiveSnapshotFaultPoints.FRESHNESS,
+            CkbActiveSnapshotFaultPoints.COVERAGE,
+            CkbActiveSnapshotFaultPoints.COMMIT,
+            CkbActiveSnapshotFaultPoints.POINTER_BEFORE]) {
+            let beforeVersion = store.loadActiveSnapshotPointer().activeVersion
+            let faultKb = newKnowledgeBaseFromStore(store).kb
+            let candidateVersion = "ckb-p5-s5-e2e-pre-${faultIndex}-candidate"
+            let bundle = ckbPrepareReleaseCommitBundle(ckbReleaseTestProfile(), matrixFetch,
+                matrixManifest, candidateVersion,
+                cangjieActiveVersionForCandidate(candidateVersion),
+                ArrayList<String>(), ArrayList<String>())
+            @Expect(bundle.valid, true)
+            let failed = cangjiePromoteCandidateRecordsAfterValidationWithVersion(
+                faultKb, store, candidateVersion, store.loadActiveSnapshot().activeIndex,
+                releaseBundle: bundle,
+                snapshotFaultInjector: CkbS5FaultInjector(point))
+            @Expect(failed.ok, false)
+            @Expect(failed.activePromoted, false)
+            @Expect(failed.validation.ok, false)
+            @Expect(failed.snapshotPointerCommitted, false)
+            @Expect(failed.activeVersion, beforeVersion)
+            @Expect(faultKb.status().activeKnowledgeVersion, beforeVersion)
+            @Expect(store.loadActiveSnapshotPointer().txId, successPointer.txId)
+            @Expect(ckbS5AuthoritativeSnapshotEvidence(store), successEvidence)
+            let failedReload = newKnowledgeBaseFromStore(store)
+            @Expect(failedReload.source, "persisted")
+            @Expect(failedReload.kb.status().candidateKnowledgeVersion,
+                failed.candidateVersion)
+            @Expect(failedReload.kb.status().failedCandidateVersion,
+                failed.candidateVersion)
+            let failedArtifact = store.readText(
+                "candidate-artifacts/${failed.candidateVersion}/status.ckb")
+            @Expect(failedArtifact.contains("activeVersion=${beforeVersion}"), true)
+            @Expect(failedArtifact.contains("state=failed"), true)
+            @Expect(ckbReleaseTestDiagnosticsContain(failed.validation.diagnostics,
+                "candidate_staging_deleted:"), true)
+            faultIndex += 1
+        }
+
+        let pointerAfterKb = newKnowledgeBaseFromStore(store).kb
+        let pointerAfterCandidate = "ckb-p5-s5-e2e-pointer-after-candidate"
+        let pointerAfterBundle = ckbPrepareReleaseCommitBundle(ckbReleaseTestProfile(),
+            matrixFetch, matrixManifest, pointerAfterCandidate,
+            cangjieActiveVersionForCandidate(pointerAfterCandidate),
+            ArrayList<String>(), ArrayList<String>())
+        let pointerAfter = cangjiePromoteCandidateRecordsAfterValidationWithVersion(
+            pointerAfterKb, store, pointerAfterCandidate,
+            store.loadActiveSnapshot().activeIndex,
+            releaseBundle: pointerAfterBundle,
+            snapshotFaultInjector: CkbS5FaultInjector(CkbActiveSnapshotFaultPoints.POINTER_AFTER))
+        @Expect(pointerAfter.ok, true)
+        @Expect(pointerAfter.activePromoted, true)
+        @Expect(pointerAfter.validation.ok, true)
+        @Expect(pointerAfter.validation.status, "candidate_validation_passed")
+        @Expect(pointerAfter.snapshotPointerCommitted, true)
+        @Expect(pointerAfter.snapshotLiveShadowConsistent, true)
+        @Expect(store.loadActiveSnapshotPointer().activeVersion, pointerAfter.activeVersion)
+        @Expect(newKnowledgeBaseFromStore(store).source, "persisted")
+        let pointerAfterStatus = pointerAfterKb.vectorCollectionStatus(
+            store.loadActiveSnapshotPointer().vectorActiveCollection)
+        @Expect(pointerAfterStatus.state, EmbeddingProviderState.READY)
+        @Expect(pointerAfterStatus.count, store.loadActiveSnapshot().activeIndex.size)
+
+        let liveKb = newKnowledgeBaseFromStore(store).kb
+        let liveCandidate = "ckb-p5-s5-e2e-live-shadow-candidate"
+        let liveBundle = ckbPrepareReleaseCommitBundle(ckbReleaseTestProfile(), matrixFetch,
+            matrixManifest, liveCandidate, cangjieActiveVersionForCandidate(liveCandidate),
+            ArrayList<String>(), ArrayList<String>())
+        let rolledForward = cangjiePromoteCandidateRecordsAfterValidationWithVersion(
+            liveKb, store, liveCandidate,
+            store.loadActiveSnapshot().activeIndex,
+            releaseBundle: liveBundle,
+            snapshotFaultInjector: CkbS5FaultInjector(CkbActiveSnapshotFaultPoints.LIVE_SHADOW))
+        @Expect(rolledForward.ok, true)
+        @Expect(rolledForward.activePromoted, true)
+        @Expect(rolledForward.validation.ok, true)
+        @Expect(rolledForward.validation.status, "candidate_validation_passed")
+        @Expect(rolledForward.snapshotPointerCommitted, true)
+        @Expect(rolledForward.snapshotLiveShadowConsistent, false)
+        @Expect(ckbReleaseTestDiagnosticsContain(rolledForward.validation.diagnostics,
+            "candidate_active_live_shadow_degraded"), true)
+        let liveVectorStatus = liveKb.vectorCollectionStatus(
+            store.loadActiveSnapshotPointer().vectorActiveCollection)
+        @Expect(liveVectorStatus.state, EmbeddingProviderState.READY)
+        @Expect(liveVectorStatus.count, store.loadActiveSnapshot().activeIndex.size)
+        @Expect(newKnowledgeBaseFromStore(store).source, "persisted")
+        @Expect(store.loadActiveCangjieVersionManifest().sources.size, 5)
+        @Expect(store.loadActiveCangjieCorpusFreshness().sources.size, 5)
+        let reloadedService = CkbCommandLoopService(config, store,
+            sourceRunner: DisabledNetworkFetchRunner())
+        @Expect(reloadedService.cangjieCorpusFreshness().activeKnowledgeVersion,
+            rolledForward.activeVersion)
+        @Expect(reloadedService.queryEvidencePack("new-a-token", 5).citations.size > 0, true)
+    }
+}
+
+private class CkbS5ReleaseFixture {
+    var config: CkbRuntimeConfig = CkbRuntimeConfig()
+    var store: FileKnowledgeStore = FileKnowledgeStore("target/p5-s5-unused")
+    var kb: KnowledgeBase = newOfflineKnowledgeBase()
+    var task: SchedulerTaskResult = SchedulerTaskResult()
+
+    init() {}
+}
+
+private func ckbS5Config(evalRoot: String): CkbRuntimeConfig {
+    let config = CkbRuntimeConfig()
+    config.networkEnabled = true
+    config.firstInitEvalRoot = evalRoot
+    config.firstInitTargetVersion = "1.0.0"
+    config.benchmarkGapTargetVersion = "1.0.0"
+    config
+}
+
+private func ckbS5CopyManifest(source: CangjieVersionManifest): CangjieVersionManifest {
+    let out = CangjieVersionManifest()
+    out.manifestVersion = source.manifestVersion
+    out.defaultTargetVersion = source.defaultTargetVersion
+    out.degraded = source.degraded
+    for (diagnostic in source.diagnostics) { out.diagnostics.add(diagnostic) }
+    for (item in source.sources) {
+        let copied = CangjieVersionSource()
+        copied.targetVersion = item.targetVersion
+        copied.sourceSet = item.sourceSet
+        copied.sourceFamily = item.sourceFamily
+        copied.sourceRepo = item.sourceRepo
+        copied.sourceRef = item.sourceRef
+        copied.refKind = item.refKind
+        copied.resolvedCommit = item.resolvedCommit
+        copied.contentHash = item.contentHash
+        copied.rootKind = item.rootKind
+        out.sources.add(copied)
+    }
+    out
+}
+
+private func ckbS5StringsUnique(values: ArrayList<String>): Bool {
+    let seen = HashSet<String>()
+    for (value in values) {
+        if (seen.contains(value)) { return false }
+        seen.add(value)
+    }
+    true
+}
+
+private func ckbS5RootAtomicTmpCount(root: String): Int64 {
+    var count: Int64 = 0
+    for (entry in Directory.readFrom(Path(root))) {
+        if (entry.name.startsWith(".tmp-")) { count += 1 }
+    }
+    count
+}
+
+private func ckbS5ReleaseFixture(root: String, generation: Int64): CkbS5ReleaseFixture {
+    ckbReleaseTestEnsureEmptyDir(root)
+    let fixture = CkbS5ReleaseFixture()
+    let evalRoot = "${root}/eval"
+    ckbReleaseTestWriteEvalFixture(evalRoot)
+    fixture.config = ckbS5Config(evalRoot)
+    fixture.store = FileKnowledgeStore("${root}/store")
+    fixture.store.saveCangjieVersionManifest(ckbReleaseTestManifest())
+    fixture.kb = newOfflineKnowledgeBase()
+    fixture.task = CkbSchedulerTaskRunner(fixture.kb, fixture.config, fixture.store,
+        sourceRunner: CkbReleaseFullRunner(generation)).runTask(
+        "cangjie_release_full_sync", "0", ckbCoreNowMillis() + 435000)
+    fixture
+}
+
+private func ckbS5ActiveCompanionEvidence(store: FileKnowledgeStore): String {
+    let pointer = store.loadActiveSnapshotPointer()
+    if (!pointer.valid) { return "invalid:${pointer.diagnostic}" }
+    let txRoot = "transactions/${pointer.txId}"
+    "tx=${pointer.txId}|pointer=${ckbReleaseEvidenceHash(store.readText("metadata/active-snapshot.manifest"))}|" +
+        "manifest=${ckbReleaseEvidenceHash(store.readText("${txRoot}/metadata/cangjie-version-manifest.ckb"))}|" +
+        "freshness=${ckbReleaseEvidenceHash(store.readText("${txRoot}/metadata/cangjie-freshness.ckb"))}|" +
+        "coverage=${ckbReleaseEvidenceHash(store.readText("${txRoot}/metadata/cangjie-release-coverage.ckb"))}|" +
+        "liveManifest=${ckbReleaseEvidenceHash(store.readText("metadata/active-cangjie-version-manifest.ckb"))}|" +
+        "liveFreshness=${ckbReleaseEvidenceHash(store.readText("metadata/active-cangjie-freshness.ckb"))}|" +
+        "liveCoverage=${ckbReleaseEvidenceHash(store.readText("metadata/active-cangjie-release-coverage.ckb"))}|" +
+        "liveStatus=${ckbReleaseEvidenceHash(store.readText("metadata/status.ckb"))}|" +
+        "liveRaw=${ckbReleaseEvidenceHash(store.readText("raw/records.ckb"))}|" +
+        "liveIndex=${ckbReleaseEvidenceHash(store.readText("index/active.ckb"))}|" +
+        "planningManifest=${ckbReleaseEvidenceHash(store.readText("metadata/cangjie-version-manifest.ckb"))}|" +
+        "operationalFreshness=${ckbReleaseEvidenceHash(store.readText("metadata/cangjie-freshness.ckb"))}"
+}
+
+private func ckbS5AuthoritativeSnapshotEvidence(store: FileKnowledgeStore): String {
+    let pointer = store.loadActiveSnapshotPointer()
+    if (!pointer.valid) { return "invalid:${pointer.diagnostic}" }
+    let txRoot = "transactions/${pointer.txId}"
+    "tx=${pointer.txId}|pointer=${ckbReleaseEvidenceHash(store.readText("metadata/active-snapshot.manifest"))}|" +
+        "manifest=${ckbReleaseEvidenceHash(store.readText("${txRoot}/metadata/cangjie-version-manifest.ckb"))}|" +
+        "freshness=${ckbReleaseEvidenceHash(store.readText("${txRoot}/metadata/cangjie-freshness.ckb"))}|" +
+        "coverage=${ckbReleaseEvidenceHash(store.readText("${txRoot}/metadata/cangjie-release-coverage.ckb"))}|" +
+        "liveManifest=${ckbReleaseEvidenceHash(store.readText("metadata/active-cangjie-version-manifest.ckb"))}|" +
+        "liveFreshness=${ckbReleaseEvidenceHash(store.readText("metadata/active-cangjie-freshness.ckb"))}|" +
+        "liveCoverage=${ckbReleaseEvidenceHash(store.readText("metadata/active-cangjie-release-coverage.ckb"))}|" +
+        "activeStatus=${ckbReleaseEvidenceHash(ckbS5ActiveOnlyStatusEvidence(store.readText("metadata/status.ckb")))}|" +
+        "liveRaw=${ckbReleaseEvidenceHash(store.readText("raw/records.ckb"))}|" +
+        "liveIndex=${ckbReleaseEvidenceHash(store.readText("index/active.ckb"))}"
+}
+
+private func ckbS5ActiveOnlyStatusEvidence(text: String): String {
+    let out = StringBuilder()
+    for (line in text.split("\n")) {
+        if (line.startsWith("active=") || line.startsWith("activeStateSource=") ||
+            line.startsWith("rawCount=") || line.startsWith("normalizedCount=") ||
+            line.startsWith("indexCount=") || line.startsWith("textIndexCount=") ||
+            line.startsWith("vectorIndexCount=") || line.startsWith("symbolIndexCount=") ||
+            line.startsWith("graphIndexCount=") || line.startsWith("vectorBackend=") ||
+            line.startsWith("vectorState=") || line.startsWith("vectorCollection=") ||
+            line.startsWith("vectorActiveCollection=") || line.startsWith("vectorDimension=") ||
+            line.startsWith("vectorDegradedReason=") || line.startsWith("graphBackend=") ||
+            line.startsWith("graphState=") || line.startsWith("graphNodeCount=") ||
+            line.startsWith("graphEdgeCount=") || line.startsWith("indexManifestActive=")) {
+            out.append(line)
+            out.append("\n")
+        }
+    }
+    out.toString()
+}
+
+private func ckbS5LiveShadowEqualsTransaction(store: FileKnowledgeStore,
+    pointer: CkbActiveSnapshotPointer): Bool {
+    if (!pointer.valid) { return false }
+    let txRoot = "transactions/${pointer.txId}"
+    let vectorRelative = "index/vector-${pointer.vectorActiveCollection}.ckb"
+    store.readText("raw/records.ckb") == store.readText("${txRoot}/raw/records.ckb") &&
+        store.readText("normalized/records.ckb") == store.readText("${txRoot}/normalized/records.ckb") &&
+        store.readText("index/active.version") == store.readText("${txRoot}/index/active.version") &&
+        store.readText("index/active.ckb") == store.readText("${txRoot}/index/active.ckb") &&
+        store.readText("index/graph-nodes.ckb") == store.readText("${txRoot}/index/graph-nodes.ckb") &&
+        store.readText("index/graph-edges.ckb") == store.readText("${txRoot}/index/graph-edges.ckb") &&
+        store.readText("metadata/status.ckb") == store.readText("${txRoot}/metadata/status.ckb") &&
+        store.readText(vectorRelative) == store.readText("${txRoot}/${vectorRelative}") &&
+        store.readText("metadata/active-cangjie-version-manifest.ckb") ==
+            store.readText("${txRoot}/metadata/cangjie-version-manifest.ckb") &&
+        store.readText("metadata/active-cangjie-freshness.ckb") ==
+            store.readText("${txRoot}/metadata/cangjie-freshness.ckb") &&
+        store.readText("metadata/active-cangjie-release-coverage.ckb") ==
+            store.readText("${txRoot}/metadata/cangjie-release-coverage.ckb")
+}
+
+private func ckbS5WriteCopyForward(store: FileKnowledgeStore,
+    point: String): CkbActiveSnapshotTransactionResult {
+    let loaded = newKnowledgeBaseFromStore(store)
+    let snapshot = store.loadActiveSnapshot()
+    let graph = loaded.kb.activeGraphBuild()
+    store.writeActiveSnapshotTransaction(loaded.kb.status(), snapshot.rawRecords,
+        snapshot.normalizedRecords, snapshot.activeIndex, snapshot.vectorRecords,
+        snapshot.vectorActiveCollection, graph,
+        persistVectorFile: snapshot.hasVectorArtifact,
+        faultInjector: CkbS5FaultInjector(point))
+}
+
+private func ckbS5RehashReleaseBundle(bundle: CkbReleaseCommitBundle): Unit {
+    bundle.manifestEvidenceHash = ckbReleaseCompanionEvidenceHash(
+        ckbRenderCangjieVersionManifestArtifact(bundle.manifest))
+    bundle.freshnessEvidenceHash = ckbReleaseCompanionEvidenceHash(
+        ckbRenderCangjieFreshnessArtifact(bundle.freshness))
+    bundle.coverageEvidenceHash = ckbReleaseCompanionEvidenceHash(
+        ckbRenderReleaseCoverageArtifact(bundle.coverage, bundle.removed))
+    bundle.evidenceHash = ckbReleaseCompanionEvidenceHash(
+        "manifest=${bundle.manifestEvidenceHash}|freshness=${bundle.freshnessEvidenceHash}|" +
+        "coverage=${bundle.coverageEvidenceHash}|removed=${bundle.removed.aggregateEvidenceHash}|" +
+        "candidate=${bundle.candidateVersion}|active=${bundle.activeVersion}")
+}
+
+private class CkbS5FaultInjector <: CkbActiveSnapshotFaultInjector {
+    let point: String
+
+    init(point: String) { this.point = point }
+
+    public func checkpoint(point: String): Unit {
+        if (point == this.point) { throw Exception("fixture_fault:${point}") }
+    }
+}
+
+private class CkbS5FrozenTxClock <: CkbActiveSnapshotTxClock {
+    let value: Int64
+    init(value: Int64) { this.value = value }
+    public func nowMillis(): Int64 { this.value }
+}
+
+private class CkbS5DownEmbeddingProvider <: EmbeddingProvider {
+    public var calls: Int64 = 0
+
+    public func embed(texts: ArrayList<String>, model: String,
+        dimensions: Int64): EmbeddingBatch {
+        this.calls += 1
+        let batch = EmbeddingBatch()
+        batch.requested = texts.size
+        batch.failed = texts.size
+        batch.status = this.status()
+        batch
+    }
+
+    public func embedWithDeadline(texts: ArrayList<String>, model: String,
+        dimensions: Int64, deadlineAtMillis: Int64): EmbeddingBatch {
+        this.embed(texts, model, dimensions)
+    }
+
+    public func status(): EmbeddingStatus {
+        let status = EmbeddingStatus()
+        status.provider = "fixture-down"
+        status.model = "fixture"
+        status.dimensions = 16
+        status.batchSize = 4
+        status.production = true
+        status.state = EmbeddingProviderState.DOWN
+        status.degradedReason = "fixture_embedding_down"
+        status
+    }
+}
+
+private func ckbS5ReadyVectorStatus(records: ArrayList<NormalizedRecord>): VectorStoreStatus {
+    let status = VectorStoreStatus()
+    status.backend = "local-file"
+    status.collection = "candidate"
+    status.activeCollection = "active"
+    status.candidateCollection = "candidate"
+    status.dimension = 16
+    status.count = records.size
+    status.state = EmbeddingProviderState.READY
+    status
+}
+
+private func ckbS5BackupFixture(store: FileKnowledgeStore, backupRoot: String): String {
+    ckbReleaseTestEnsureEmptyDir(backupRoot)
+    _ = store.backupActiveSnapshot(backupRoot)
+    backupRoot
+}
+
+private func ckbS5TamperedClone(source: FileKnowledgeStore, root: String,
+    mode: String): FileKnowledgeStore {
+    let backupRoot = "${root}-backup"
+    ckbReleaseTestEnsureEmptyDir(backupRoot)
+    ckbReleaseTestEnsureEmptyDir(root)
+    _ = source.backupActiveSnapshot(backupRoot)
+    let store = FileKnowledgeStore(root)
+    _ = store.restoreActiveSnapshotBackup(backupRoot)
+    let pointer = store.loadActiveSnapshotPointer()
+    if (mode == "pointer_committed") {
+        store.writeLinesAtomically("metadata/active-snapshot.manifest",
+            store.readText("metadata/active-snapshot.manifest").replace(
+                "committed=true", "committed=false"))
+    } else if (mode == "commit_persist") {
+        store.writeLinesAtomically("transactions/${pointer.txId}/COMMIT",
+            store.readText("transactions/${pointer.txId}/COMMIT").replace(
+                "persistVectorFile=true", "persistVectorFile=invalid"))
+    } else if (mode == "commit_schema") {
+        store.writeLinesAtomically("transactions/${pointer.txId}/COMMIT",
+            ckbS5RemoveLines(store.readText("transactions/${pointer.txId}/COMMIT"),
+                ["schema="]))
+    } else if (mode == "companion_utf8") {
+        File.writeTo(Path(root).join(
+            "transactions/${pointer.txId}/metadata/cangjie-version-manifest.ckb"),
+            [UInt8(255), UInt8(254), UInt8(253)])
+    } else if (mode == "payload_utf8") {
+        File.writeTo(Path(root).join("transactions/${pointer.txId}/index/active.ckb"),
+            [UInt8(255), UInt8(254), UInt8(253)])
+    } else if (mode == "pointer_zero") {
+        File.writeTo(Path(root).join("metadata/active-snapshot.manifest"),
+            "".toArray())
+    } else if (mode == "pointer_whitespace") {
+        store.writeLinesAtomically("metadata/active-snapshot.manifest", " \n\t\n")
+    } else if (mode == "pointer_garbage") {
+        store.writeLinesAtomically("metadata/active-snapshot.manifest",
+            "garbage=中文🙂\n")
+    }
+    store
+}
+
+private func ckbS5RemoveLines(text: String, prefixes: Array<String>): String {
+    let out = StringBuilder()
+    for (line in text.split("\n")) {
+        if (line == "") { continue }
+        var remove = false
+        for (prefix in prefixes) {
+            if (line.startsWith(prefix)) { remove = true }
+        }
+        if (!remove) { out.append("${line}\n") }
+    }
+    out.toString()
 }
 
 private class CkbReleaseFullRunner <: SourceFetchRunner {
@@ -595,16 +1903,24 @@ private class CkbReleaseFullRunner <: SourceFetchRunner {
         result.statusCode = 200
         if (request.kind == SourceKinds.GITCODE_BRANCH) {
             result.contentType = "application/json"
-            result.body = "[{\"name\":\"release-1.0.0\",\"commit\":{\"id\":\"0123456789abcdef0123456789abcdef01234567\"}}]"
+            result.body = "[{\"name\":\"release-1.0.0\",\"commit\":{\"id\":\"${this.commit()}\"}}]"
         } else if (request.kind == SourceKinds.GITCODE_TREE) {
             result.contentType = "application/json"
             result.body = if (request.page == 1) { this.treeBody(request.repo) } else { "[]" }
         } else if (request.kind == SourceKinds.GITCODE_SOURCE) {
             result.contentType = if (request.path.endsWith(".cj")) { "text/plain" } else { "text/markdown" }
             result.body = this.contentBody(request.repo, request.path)
-            result.commit = "0123456789abcdef0123456789abcdef01234567"
+            result.commit = this.commit()
         }
         result
+    }
+
+    private func commit(): String {
+        if (this.generation == 1) {
+            "1111111111111111111111111111111111111111"
+        } else {
+            "2222222222222222222222222222222222222222"
+        }
     }
 
     private func treeBody(repo: String): String {
@@ -642,6 +1958,24 @@ private class CkbReleaseFullRunner <: SourceFetchRunner {
             return "# cjpm test\nRun cjpm clean, cjpm build -i, and cjpm test.\n"
         }
         "# Cangjie API 路径🙂\nArrayList and HashMap are standard collections.\n"
+    }
+}
+
+private class CkbS5GenericDeltaRunner <: SourceFetchRunner {
+    public static let UNIQUE_TOKEN = "p5-s5-generic-v2-only-token"
+    private let delegate = CkbReleaseFullRunner(2)
+    public var calls: Int64 = 0
+
+    public func fetch(request: SourceFetchRequest): SourceFetchResult {
+        this.calls += 1
+        let result = this.delegate.fetch(request)
+        if (request.kind == SourceKinds.GITCODE_SOURCE &&
+            request.repo == "Cangjie/cangjie_runtime") {
+            result.contentType = "text/plain"
+            result.body = "package runtime_fixture\npublic func p5S5GenericV2Only(): Unit {}\n// ${CkbS5GenericDeltaRunner.UNIQUE_TOKEN}\n"
+            result.bodyHash = stableSummaryHash(result.body)
+        }
+        result
     }
 }
 

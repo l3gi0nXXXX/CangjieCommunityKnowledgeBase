@@ -556,6 +556,7 @@ public class CkbS4DurableResumeTest {
 
         let retrieveCallsBeforePromotion = executor.retrieveCalls
         let upsertsBeforePromotion = executor.candidateUpsertCalls
+        let materializationsBeforePromotion = store.activeSnapshotMaterializationCount()
         let promotion = cangjiePromoteCandidateRecordsAfterValidationWithVersion(kb, store,
             "candidate-s4-p01", candidate, acquisitionContext: context)
         @Expect(promotion.ok, true)
@@ -570,6 +571,7 @@ public class CkbS4DurableResumeTest {
         @Expect(executor.retrieveCalls, retrieveCallsBeforePromotion)
         @Expect(executor.candidateUpsertCalls, upsertsBeforePromotion)
         @Expect(provider.embeddedItems, 0)
+        @Expect(store.activeSnapshotMaterializationCount(), materializationsBeforePromotion)
         @Expect(store.has("metadata/active-snapshot.manifest"), true)
         @Expect(store.has("metadata/vector-builds/${context.acquisitionId}/checkpoint.ckb"), false)
         @Expect(store.has("metadata/vector-builds/${context.acquisitionId}/manifest.ckb"), false)
@@ -587,7 +589,13 @@ public class CkbS4DurableResumeTest {
         @Expect(store.has("index/graph-edges.ckb"), true)
 
         let reloaded = KnowledgeBase(FakeClock(0), S4EmbeddingProvider(64), vectorStore, LocalGraphStore())
+        let materializationsBeforePointerReads = store.activeSnapshotMaterializationCount()
+        @Expect(store.loadActiveSnapshotPointer().valid, true)
+        @Expect(store.loadMetadataStatus().valid, true)
+        @Expect(store.hasAuthoritativeActiveSnapshotPointer(), true)
+        @Expect(store.activeSnapshotMaterializationCount(), materializationsBeforePointerReads)
         let persisted = store.loadActiveSnapshot()
+        @Expect(store.activeSnapshotMaterializationCount(), materializationsBeforePointerReads + 1)
         @Expect(persisted.valid, true)
         @Expect(reloaded.restoreActiveSnapshot(persisted), true)
         let reloadedStatus = reloaded.status()
@@ -854,7 +862,11 @@ public class CkbS4DurableResumeTest {
         status.storage.vectorActiveCollection = activeCollection
         status.storage.vectorCollection = activeCollection
         store.saveMetadata(status)
-        store.writeLinesAtomically("metadata/active-snapshot.manifest", "vectorActiveCollection=${activeCollection}\n")
+        let authorityTxId = "legacy-active-authority"
+        store.writeLinesAtomically("transactions/${authorityTxId}/metadata/status.ckb",
+            store.readText("metadata/status.ckb"))
+        store.writeLinesAtomically("metadata/active-snapshot.manifest",
+            "txId=${authorityTxId}\nactive=${status.activeKnowledgeVersion}\nvectorActiveCollection=${activeCollection}\ncommitted=true\n")
         let ownerTmp = Path(root).join("metadata/candidate-collection-owners/.tmp-owner-registry-interrupted")
         File.writeTo(ownerTmp, "partial-owner".toArray())
         let recovery = ckbRecoverStaleSchedulerRunsWithVectorStore(store, tracking)

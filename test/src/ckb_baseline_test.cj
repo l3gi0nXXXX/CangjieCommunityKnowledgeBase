@@ -1104,14 +1104,18 @@ public class CkbBaselineTest {
     @TestCase
     public func activeSnapshotIgnoresUncommittedManifestTransaction(): Unit {
         let root = "target/ckb-test-snapshot-tx-uncommitted"
+        _ = launch("/bin/rm", ["-rf", root]).wait()
         let store = FileKnowledgeStore(root)
         let kb = newOfflineKnowledgeBase()
         let rebuild = ckbRebuildIndex(kb, store)
         let oldVersion = store.loadActiveVersion()
+        let vectorActiveCollection = store.loadMetadataStatus().vectorActiveCollection
+        let pendingTxId = "pending-tx"
+        let pendingActiveVersion = "ckb-broken-active"
 
-        store.writeLinesAtomically("transactions/pending-tx/index/active.version", "ckb-broken-active\n")
-        store.writeLinesAtomically("transactions/pending-tx/index/active.ckb", "broken\n")
-        store.writeLinesAtomically("metadata/active-snapshot.manifest", "txId=pending-tx\nactive=ckb-broken-active\ncommitted=true\n")
+        store.writeLinesAtomically("transactions/${pendingTxId}/index/active.version", "${pendingActiveVersion}\n")
+        store.writeLinesAtomically("transactions/${pendingTxId}/index/active.ckb", "broken\n")
+        store.writeLinesAtomically("metadata/active-snapshot.manifest", "txId=${pendingTxId}\nactive=${pendingActiveVersion}\nvectorActiveCollection=${vectorActiveCollection}\ncommitted=true\n")
         let snapshot = store.loadActiveSnapshot()
 
         @Expect(rebuild.ok, true)
@@ -1161,7 +1165,9 @@ public class CkbBaselineTest {
 
     @TestCase
     public func invalidSnapshotFactoryFallsBackToOfflineBaseline(): Unit {
-        let loaded = newKnowledgeBaseFromStore(FileKnowledgeStore("target/ckb-test-restore-invalid-fallback"))
+        let root = "target/ckb-test-restore-invalid-fallback"
+        _ = launch("/bin/rm", ["-rf", root]).wait()
+        let loaded = newKnowledgeBaseFromStore(FileKnowledgeStore(root))
         let status = cangjie_knowledge_status(loaded.kb)
         let source = cangjie_source_search(loaded.kb, "HttpClient", 3)
 
@@ -1329,6 +1335,8 @@ public class CkbBaselineTest {
         let next = newKnowledgeBaseFromStore(store)
         let status = cangjie_knowledge_status(next.kb)
         let pack = cangjie_evidence_pack(next.kb, "HttpClient", 3)
+        let repair = store.repairActiveLiveShadowFromManifest()
+        let afterRepair = newKnowledgeBaseFromStore(store)
 
         @Expect(rebuild.ok, true)
         @Expect(failed.ok, false)
@@ -1337,6 +1345,10 @@ public class CkbBaselineTest {
         @Expect(status.activeKnowledgeVersion, "ckb-20260519-000200-active")
         @Expect(status.failedCandidateVersion.contains("candidate"), true)
         @Expect(pack.knowledgeVersion, "ckb-20260519-000200-active")
+        @Expect(repair.ok, true)
+        @Expect(repair.repairPerformed, false)
+        @Expect(cangjie_knowledge_status(afterRepair.kb).failedCandidateVersion,
+            status.failedCandidateVersion)
     }
 
     @TestCase
@@ -2584,7 +2596,9 @@ network.allowedHosts=docs.example.org
         let restore = restoredStore.restoreActiveSnapshotBackup(backupPath)
         let loaded = newKnowledgeBaseFromStore(restoredStore)
         let pack = cangjie_evidence_pack(loaded.kb, "HttpClient", 3)
-        File.writeTo(Path("${backupPath}/index/active.ckb"), "corrupted|snapshot\n".toArray())
+        let backupPointer = FileKnowledgeStore(backupPath).loadActiveSnapshotPointer()
+        File.writeTo(Path("${backupPath}/transactions/${backupPointer.txId}/index/active.ckb"),
+            "corrupted|snapshot\n".toArray())
         let corrupted = FileKnowledgeStore("target/ckb-test-backup-corrupted-target").restoreActiveSnapshotBackup(backupPath)
 
         @Expect(rebuild.ok, true)
@@ -2595,7 +2609,7 @@ network.allowedHosts=docs.example.org
         @Expect(loaded.source, "persisted")
         @Expect(pack.knowledgeVersion, "ckb-20260519-000200-active")
         @Expect(corrupted.ok, false)
-        @Expect(corrupted.diagnostic, "malformed_active_index")
+        @Expect(corrupted.diagnostic, "active_pointer_v2_malformed_or_uncommitted")
         @Expect(renderBackupRestore(backup).contains("/Users/example"), false)
     }
 

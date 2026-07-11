@@ -17,6 +17,11 @@ public class CangjieSourceSets {
     public static let EVAL_SUPPORT: String = "eval-support"
 }
 
+public class CangjieVersionManifestVersions {
+    public static let V1: String = "cangjie-version-manifest-v1"
+    public static let V2: String = "cangjie-version-manifest-v2"
+}
+
 public class CangjieVersionSelector {
     public var targetVersion: String = ""
     public var sourceSet: String = CangjieSourceSets.ALL
@@ -45,7 +50,7 @@ public class CangjieVersionSource {
 }
 
 public class CangjieVersionManifest {
-    public var manifestVersion: String = "cangjie-version-manifest-v1"
+    public var manifestVersion: String = CangjieVersionManifestVersions.V1
     public var defaultTargetVersion: String = cangjieDefaultTargetVersion()
     public var degraded: Bool = false
     public var sources: ArrayList<CangjieVersionSource> = ArrayList<CangjieVersionSource>()
@@ -124,13 +129,15 @@ public func resolveCangjieVersion(selector: CangjieVersionSelector, manifest: Ca
     if (!cangjieSourceSetAllowed(sourceSet)) {
         resolution.diagnostic = "unsupported_source_set"
         resolution.diagnostics.add("unsupported_source_set:${sourceSet}")
-        resolution.versionResolutionId = cangjieVersionResolutionId(resolution)
+        resolution.versionResolutionId = cangjieVersionResolutionId(resolution,
+            manifest.manifestVersion)
         return resolution
     }
     if (policy == CangjieVersionPolicies.EXACT && selector.sourceRef.trimAscii() == "") {
         resolution.diagnostic = "exact_source_ref_required"
         resolution.diagnostics.add("exact_source_ref_required")
-        resolution.versionResolutionId = cangjieVersionResolutionId(resolution)
+        resolution.versionResolutionId = cangjieVersionResolutionId(resolution,
+            manifest.manifestVersion)
         return resolution
     }
     for (source in manifest.sources) {
@@ -141,12 +148,14 @@ public func resolveCangjieVersion(selector: CangjieVersionSelector, manifest: Ca
     if (resolution.sources.size == 0) {
         resolution.diagnostic = if (policy == CangjieVersionPolicies.EXACT) { "exact_source_ref_not_resolved" } else { "version_not_resolved" }
         resolution.diagnostics.add(resolution.diagnostic)
-        resolution.versionResolutionId = cangjieVersionResolutionId(resolution)
+        resolution.versionResolutionId = cangjieVersionResolutionId(resolution,
+            manifest.manifestVersion)
         return resolution
     }
     resolution.ok = true
     resolution.diagnostic = if (resolution.defaulted) { "target_version_defaulted" } else { "ok" }
-    resolution.versionResolutionId = cangjieVersionResolutionId(resolution)
+    resolution.versionResolutionId = cangjieVersionResolutionId(resolution,
+        manifest.manifestVersion)
     resolution
 }
 
@@ -514,10 +523,16 @@ private func cangjieVersionSourceMatches(source: CangjieVersionSource, selector:
     true
 }
 
-private func cangjieVersionResolutionId(resolution: CangjieVersionResolution): String {
+private func cangjieVersionResolutionId(resolution: CangjieVersionResolution,
+    manifestVersion: String): String {
     var seed = "${resolution.targetVersion}:${resolution.versionPolicy}:${resolution.diagnostic}"
     for (source in resolution.sources) {
         seed += "|${source.sourceSet}:${source.sourceRepo}:${source.sourceRef}:${source.resolvedCommit}:${source.contentHash}"
     }
+    if (manifestVersion == CangjieVersionManifestVersions.V2) {
+        return "cangjie-version-v2-${ckbReleaseEvidenceHash(seed)}"
+    }
+    // V1 and unknown legacy manifests retain the historical identifier so
+    // persisted records remain query-compatible after upgrade.
     "cangjie-version-${stableSummaryHash(seed)}"
 }

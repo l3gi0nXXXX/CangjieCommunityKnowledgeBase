@@ -3266,6 +3266,7 @@ public class CkbVectorBootstrapResult {
 }
 
 public class CkbEffectiveVectorCollections {
+    public var valid: Bool = true
     public var backend: String = ""
     public var configuredActiveCollection: String = ""
     public var configuredCandidateCollection: String = ""
@@ -3393,6 +3394,13 @@ public func ckbEffectiveVectorCollections(config: CkbRuntimeConfig, store: FileK
     result.candidateCollection = vector.candidateCollection
     result.source = "config"
     let metadata = store.loadMetadataStatus()
+    if (!metadata.valid) {
+        result.valid = false
+        result.effectiveActiveCollection = ""
+        result.source = "invalid_active_pointer"
+        result.diagnostics.add("active_snapshot_invalid:${metadata.diagnostic}")
+        return result
+    }
     let metadataActive = metadata.vectorActiveCollection.trimAscii()
     if (metadataActive != "") {
         if (ckbIsLegacyVectorCollectionName(metadataActive)) {
@@ -3422,6 +3430,12 @@ public func ckbRuntimeVectorReadinessWithKnowledgeStore(config: CkbRuntimeConfig
         return result
     }
     let effective = ckbEffectiveVectorCollections(config, store)
+    if (!effective.valid) {
+        result.ready = false
+        result.state = "degraded"
+        result.reason = "active_snapshot_invalid"
+        return result
+    }
     try {
         let status = vectorStore.status(effective.effectiveActiveCollection)
         if (status.dimension > 0) {
@@ -3460,7 +3474,10 @@ private func ckbRoutineRuntimePreflightSnapshotAndVectorChecks(result: CkbRoutin
     }
     let store = FileKnowledgeStore(storePath)
     let metadata = store.loadMetadataStatus()
-    if (metadata.snapshotManifestTxId == "") {
+    if (!metadata.valid) {
+        result.ok = false
+        result.diagnostics.add("active_snapshot_invalid:${metadata.diagnostic}")
+    } else if (metadata.snapshotManifestTxId == "") {
         result.ok = false
         result.diagnostics.add("active_snapshot_manifest_missing")
         result.diagnostics.add("repair_required:vector_reconcile:active_snapshot_manifest_missing")
@@ -4278,9 +4295,9 @@ public func ckbSchedulerPreRunGate(config: CkbRuntimeConfig, store: FileKnowledg
         result.diagnostics.add(diagnostic)
     }
     let metadata = store.loadMetadataStatus()
-    if (metadata.snapshotManifestTxId == "" || !store.has("transactions/${safeName(metadata.snapshotManifestTxId)}/COMMIT")) {
+    if (!effective.valid || !metadata.valid || metadata.snapshotManifestTxId == "" || !store.has("transactions/${safeName(metadata.snapshotManifestTxId)}/COMMIT")) {
         result.ok = false
-        result.diagnostics.add("scheduler_pre_run_gate_failed:active_snapshot_invalid:manifest_missing_or_uncommitted")
+        result.diagnostics.add("scheduler_pre_run_gate_failed:active_snapshot_invalid:${if (!metadata.valid) { metadata.diagnostic } else { "manifest_missing_or_uncommitted" }}")
         return result
     }
     let activeCount = ckbRoutineExpectedActiveCount(metadata)
@@ -4602,15 +4619,34 @@ private func snapshotDiagnostic(primary: String, extra: String): String {
     "${primary};${extra}"
 }
 
+public interface CkbActiveSnapshotTxClock {
+    func nowMillis(): Int64
+}
+
+public class SystemCkbActiveSnapshotTxClock <: CkbActiveSnapshotTxClock {
+    public init() {}
+    public func nowMillis(): Int64 {
+        DateTime.now().toUnixTimeStamp().toMilliseconds()
+    }
+}
+
 public class FileKnowledgeStore {
     public let root: Path
+    private var atomicTmpSequence: Int64 = 0
+    private var activeSnapshotMaterializations: Int64 = 0
+    private let activeSnapshotTxClock: CkbActiveSnapshotTxClock
 
-    public init(root: String) {
+    public init(root: String, txClock!: CkbActiveSnapshotTxClock = SystemCkbActiveSnapshotTxClock()) {
         this.root = Path(root)
+        this.activeSnapshotTxClock = txClock
     }
 
     public func rootPath(): String {
         this.root.toString()
+    }
+
+    func activeSnapshotMaterializationCount(): Int64 {
+        this.activeSnapshotMaterializations
     }
 
     public func ensureLayout(): Unit {
@@ -4803,7 +4839,50 @@ public class FileKnowledgeStore {
             text += "updatedAtMillis=${ckbCoreNowMillis()}\n"
             this.writeLinesAtomically("candidate-artifacts/${safeName(version)}/status.ckb", text)
         }
-        this.saveMetadata(status)
+        this.saveLiveCandidateLifecycleMetadata(status)
+    }
+
+    private func saveLiveCandidateLifecycleMetadata(status: KnowledgeStatus): Unit {
+        let pointer = this.loadActiveSnapshotPointer()
+        if (pointer.valid) {
+            let liveText = this.readLines("metadata/status.ckb")
+            let live = this.loadMetadataStatusFromPrefix("")
+            if (liveText == "" || live.activeVersion != pointer.activeVersion ||
+                status.activeKnowledgeVersion != pointer.activeVersion) {
+                throw Exception("candidate_lifecycle_active_identity_mismatch")
+            }
+            this.writeLinesAtomically("metadata/status.ckb",
+                this.metadataWithCandidateLifecycle(liveText,
+                    status.candidateKnowledgeVersion,
+                    status.failedCandidateVersion))
+        } else if (this.hasAuthoritativeActiveSnapshotPointer()) {
+            throw Exception("candidate_lifecycle_active_pointer_invalid")
+        } else {
+            this.saveMetadata(status)
+        }
+    }
+
+    private func metadataWithCandidateLifecycle(text: String, candidateVersion: String,
+        failedVersion: String): String {
+        let out = StringBuilder()
+        var candidateFound = false
+        var failedFound = false
+        for (line in text.split("\n")) {
+            if (line == "") { continue }
+            if (line.startsWith("candidate=")) {
+                out.append("candidate=${candidateVersion}\n")
+                candidateFound = true
+            } else if (line.startsWith("failed=")) {
+                out.append("failed=${failedVersion}\n")
+                failedFound = true
+            } else {
+                out.append(line)
+                out.append("\n")
+            }
+        }
+        if (!candidateFound) { out.append("candidate=${candidateVersion}\n") }
+        if (!failedFound) { out.append("failed=${failedVersion}\n") }
+        out.toString()
     }
 
     public func saveCandidateCollectionOwner(owner: CkbCandidateCollectionOwner): CkbCandidateCollectionOwner {
@@ -5352,60 +5431,144 @@ public class FileKnowledgeStore {
         this.writeLines("index/graph-edges.ckb", this.graphEdgeLines(graph.edges))
     }
 
-    public func writeActiveSnapshotTransaction(status: KnowledgeStatus, rawRecords: ArrayList<RawRecord>, normalizedRecords: ArrayList<NormalizedRecord>, activeIndex: ArrayList<NormalizedRecord>, vectorRecords: ArrayList<VectorRecord>, vectorCollection: String, graph: GraphBuildResult, persistVectorFile!: Bool = true, deadlineAtMillis!: Int64 = 0, stageSink!: CkbStagedRebuildStageSink = NoopCkbStagedRebuildStageSink(), vectorSpool!: CkbVectorSpoolDescriptor = CkbVectorSpoolDescriptor()): String {
+    public func writeActiveSnapshotTransaction(status: KnowledgeStatus, rawRecords: ArrayList<RawRecord>, normalizedRecords: ArrayList<NormalizedRecord>, activeIndex: ArrayList<NormalizedRecord>, vectorRecords: ArrayList<VectorRecord>, vectorCollection: String, graph: GraphBuildResult, persistVectorFile!: Bool = true, deadlineAtMillis!: Int64 = 0, stageSink!: CkbStagedRebuildStageSink = NoopCkbStagedRebuildStageSink(), vectorSpool!: CkbVectorSpoolDescriptor = CkbVectorSpoolDescriptor(), releaseBundle!: CkbReleaseCommitBundle = CkbReleaseCommitBundle(), companionCopy!: CkbActiveSnapshotCompanionCopy = CkbActiveSnapshotCompanionCopy(), faultInjector!: CkbActiveSnapshotFaultInjector = NoopCkbActiveSnapshotFaultInjector()): CkbActiveSnapshotTransactionResult {
+        let result = CkbActiveSnapshotTransactionResult()
+        let entryDeadline = ckbDeadlineGuard("active_snapshot_tx_begin", deadlineAtMillis)
+        if (entryDeadline.exceeded) {
+            result.failureDiagnostic = entryDeadline.diagnostic
+            result.diagnostics.add(entryDeadline.diagnostic)
+            return result
+        }
+        if (status.activeKnowledgeVersion == "" ||
+            status.storage.vectorActiveCollection == "" ||
+            vectorCollection != status.storage.vectorActiveCollection) {
+            result.failureDiagnostic = "active_snapshot_identity_invalid"
+            result.diagnostics.add("active_snapshot_identity_invalid")
+            return result
+        }
+        let companions = this.activeSnapshotCompanionPayload(releaseBundle, companionCopy,
+            status)
+        result.companionMode = companions.mode
+        result.manifestHash = companions.manifestHash
+        result.freshnessHash = companions.freshnessHash
+        result.coverageHash = companions.coverageHash
+        if (!companions.valid) {
+            result.failureDiagnostic = companions.diagnostic
+            result.diagnostics.add(companions.diagnostic)
+            return result
+        }
         this.ensureLayout()
+        this.ensure("transactions")
         let txId = this.newActiveSnapshotTxId(status.activeKnowledgeVersion)
         let txRoot = "transactions/${safeName(txId)}"
-        this.emitActiveSnapshotStage(stageSink, "active_snapshot_tx_raw_before", "running", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
-        this.ensureActiveSnapshotDeadline("active_snapshot_tx_raw_before", deadlineAtMillis)
-        this.writeRawFilesAtomically(txRoot, rawRecords, deadlineAtMillis: deadlineAtMillis, progressStage: "active_snapshot_tx_raw")
-        this.emitActiveSnapshotStage(stageSink, "active_snapshot_tx_raw_after", "ok", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
-        this.emitActiveSnapshotStage(stageSink, "active_snapshot_tx_normalized_before", "running", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
-        this.ensureActiveSnapshotDeadline("active_snapshot_tx_normalized_before", deadlineAtMillis)
-        this.writeNormalizedRecordsAtomically("${txRoot}/normalized/records.ckb", normalizedRecords, deadlineAtMillis, "active_snapshot_tx_normalized")
-        this.emitActiveSnapshotStage(stageSink, "active_snapshot_tx_normalized_after", "ok", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
-        this.emitActiveSnapshotStage(stageSink, "active_snapshot_tx_index_before", "running", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
-        this.ensureActiveSnapshotDeadline("active_snapshot_tx_index_before", deadlineAtMillis)
-        this.writeLinesAtomically("${txRoot}/index/active.version", status.activeKnowledgeVersion + "\n")
-        this.writeNormalizedRecordsAtomically("${txRoot}/index/active.ckb", activeIndex, deadlineAtMillis, "active_snapshot_tx_index")
-        this.emitActiveSnapshotStage(stageSink, "active_snapshot_tx_index_after", "ok", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
-        if (persistVectorFile) {
-            this.emitActiveSnapshotStage(stageSink, "active_snapshot_tx_vector_before", "running", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
-            this.ensureActiveSnapshotDeadline("active_snapshot_tx_vector_before", deadlineAtMillis)
-            if (vectorSpool.valid) {
-                this.streamVectorSpoolToFile("${txRoot}/index/vector-${safeName(vectorCollection)}.ckb", vectorSpool, deadlineAtMillis)
-            } else {
-                this.writeVectorRecordsAtomically("${txRoot}/index/vector-${safeName(vectorCollection)}.ckb", vectorRecords, deadlineAtMillis, "active_snapshot_tx_vector")
-            }
-            this.emitActiveSnapshotStage(stageSink, "active_snapshot_tx_vector_after", "ok", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
-        } else {
-            this.emitActiveSnapshotStage(stageSink, "active_snapshot_tx_vector_skipped", "skipped", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
+        result.txId = txId
+        result.activeVersion = status.activeKnowledgeVersion
+        result.vectorActiveCollection = status.storage.vectorActiveCollection
+        result.persistVectorFile = persistVectorFile
+        try {
+            if (this.has(txRoot)) { throw Exception("active_snapshot_tx_id_already_exists") }
+            Directory.create(this.root.join(txRoot), recursive: false)
+        } catch (e: Exception) {
+            result.failureDiagnostic = if (e.message == "") {
+                "active_snapshot_tx_reservation_failed"
+            } else { utf8SafePrefix(redactSensitive(e.message), 180) }
+            result.diagnostics.add("snapshot_transaction_reservation_failed:${result.failureDiagnostic}")
+            return result
         }
-        this.emitActiveSnapshotStage(stageSink, "active_snapshot_tx_graph_before", "running", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
-        this.ensureActiveSnapshotDeadline("active_snapshot_tx_graph_before", deadlineAtMillis)
-        this.writeGraphNodesAtomically("${txRoot}/index/graph-nodes.ckb", graph.nodes, deadlineAtMillis, "active_snapshot_tx_graph_nodes")
-        this.writeGraphEdgesAtomically("${txRoot}/index/graph-edges.ckb", graph.edges, deadlineAtMillis, "active_snapshot_tx_graph_edges")
-        this.emitActiveSnapshotStage(stageSink, "active_snapshot_tx_graph_after", "ok", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
-        this.emitActiveSnapshotStage(stageSink, "active_snapshot_tx_status_before", "running", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
-        this.ensureActiveSnapshotDeadline("active_snapshot_tx_status_before", deadlineAtMillis)
-        this.writeLinesAtomically("${txRoot}/metadata/status.ckb", this.metadataLines(status))
-        this.emitActiveSnapshotStage(stageSink, "active_snapshot_tx_status_after", "ok", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
-        this.emitActiveSnapshotStage(stageSink, "active_snapshot_tx_commit_before", "running", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
-        this.ensureActiveSnapshotDeadline("active_snapshot_tx_commit_before", deadlineAtMillis)
-        this.writeLinesAtomically("${txRoot}/COMMIT", this.activeSnapshotCommitLines(txId, status))
-        this.emitActiveSnapshotStage(stageSink, "active_snapshot_tx_commit_after", "ok", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
+        try {
+            this.emitActiveSnapshotStage(stageSink, "active_snapshot_tx_raw_before", "running", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
+            this.ensureActiveSnapshotDeadline("active_snapshot_tx_raw_before", deadlineAtMillis)
+            this.writeRawFilesAtomically(txRoot, rawRecords, deadlineAtMillis: deadlineAtMillis, progressStage: "active_snapshot_tx_raw")
+            this.emitActiveSnapshotStage(stageSink, "active_snapshot_tx_raw_after", "ok", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
+            this.emitActiveSnapshotStage(stageSink, "active_snapshot_tx_normalized_before", "running", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
+            this.ensureActiveSnapshotDeadline("active_snapshot_tx_normalized_before", deadlineAtMillis)
+            this.writeNormalizedRecordsAtomically("${txRoot}/normalized/records.ckb", normalizedRecords, deadlineAtMillis, "active_snapshot_tx_normalized")
+            this.emitActiveSnapshotStage(stageSink, "active_snapshot_tx_normalized_after", "ok", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
+            this.emitActiveSnapshotStage(stageSink, "active_snapshot_tx_index_before", "running", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
+            this.ensureActiveSnapshotDeadline("active_snapshot_tx_index_before", deadlineAtMillis)
+            this.writeLinesAtomically("${txRoot}/index/active.version", status.activeKnowledgeVersion + "\n")
+            this.writeNormalizedRecordsAtomically("${txRoot}/index/active.ckb", activeIndex, deadlineAtMillis, "active_snapshot_tx_index")
+            this.emitActiveSnapshotStage(stageSink, "active_snapshot_tx_index_after", "ok", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
+            if (persistVectorFile) {
+                this.emitActiveSnapshotStage(stageSink, "active_snapshot_tx_vector_before", "running", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
+                this.ensureActiveSnapshotDeadline("active_snapshot_tx_vector_before", deadlineAtMillis)
+                if (vectorSpool.valid) {
+                    this.streamVectorSpoolToFile("${txRoot}/index/vector-${safeName(vectorCollection)}.ckb", vectorSpool, deadlineAtMillis)
+                } else {
+                    this.writeVectorRecordsAtomically("${txRoot}/index/vector-${safeName(vectorCollection)}.ckb", vectorRecords, deadlineAtMillis, "active_snapshot_tx_vector")
+                }
+                this.emitActiveSnapshotStage(stageSink, "active_snapshot_tx_vector_after", "ok", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
+            } else {
+                this.emitActiveSnapshotStage(stageSink, "active_snapshot_tx_vector_skipped", "skipped", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
+            }
+            this.emitActiveSnapshotStage(stageSink, "active_snapshot_tx_graph_before", "running", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
+            this.ensureActiveSnapshotDeadline("active_snapshot_tx_graph_before", deadlineAtMillis)
+            this.writeGraphNodesAtomically("${txRoot}/index/graph-nodes.ckb", graph.nodes, deadlineAtMillis, "active_snapshot_tx_graph_nodes")
+            this.writeGraphEdgesAtomically("${txRoot}/index/graph-edges.ckb", graph.edges, deadlineAtMillis, "active_snapshot_tx_graph_edges")
+            this.emitActiveSnapshotStage(stageSink, "active_snapshot_tx_graph_after", "ok", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
+            this.emitActiveSnapshotStage(stageSink, "active_snapshot_tx_status_before", "running", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
+            this.ensureActiveSnapshotDeadline("active_snapshot_tx_status_before", deadlineAtMillis)
+            this.writeLinesAtomically("${txRoot}/metadata/status.ckb", this.metadataLines(status))
+            this.emitActiveSnapshotStage(stageSink, "active_snapshot_tx_status_after", "ok", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
+            result.payloadHash = this.activeSnapshotPayloadEvidenceHash(txRoot, vectorCollection, persistVectorFile)
+            if (!this.activeSnapshotPayloadMatches(txRoot, status, rawRecords.size, normalizedRecords.size,
+                activeIndex.size, vectorCollection, persistVectorFile, result.payloadHash)) {
+                throw Exception("active_snapshot_payload_readback_mismatch")
+            }
+            this.writeActiveSnapshotCompanions(txRoot, companions, faultInjector)
+            this.emitActiveSnapshotStage(stageSink, "active_snapshot_tx_commit_before", "running", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
+            this.ensureActiveSnapshotDeadline("active_snapshot_tx_commit_before", deadlineAtMillis)
+            faultInjector.checkpoint(CkbActiveSnapshotFaultPoints.COMMIT)
+            let commitText = this.activeSnapshotCommitLines(txId, status, result)
+            this.writeLinesAtomically("${txRoot}/COMMIT", commitText)
+            if (this.readLines("${txRoot}/COMMIT") != commitText) {
+                throw Exception("active_snapshot_commit_readback_mismatch")
+            }
+            this.emitActiveSnapshotStage(stageSink, "active_snapshot_tx_commit_after", "ok", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
+            this.emitActiveSnapshotStage(stageSink, "active_snapshot_manifest_before", "running", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
+            this.ensureActiveSnapshotDeadline("active_snapshot_manifest_before", deadlineAtMillis)
+            faultInjector.checkpoint(CkbActiveSnapshotFaultPoints.POINTER_BEFORE)
+            this.writeLinesAtomically("metadata/active-snapshot.manifest",
+                this.activeSnapshotManifestLines(txId, status, result))
+            this.emitActiveSnapshotStage(stageSink, "active_snapshot_manifest_after", "ok", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
+            faultInjector.checkpoint(CkbActiveSnapshotFaultPoints.POINTER_AFTER)
+        } catch (e: Exception) {
+            result.failureDiagnostic = if (e.message == "") {
+                "active_snapshot_transaction_write_failed"
+            } else { utf8SafePrefix(redactSensitive(e.message), 180) }
+            result.diagnostics.add("snapshot_transaction_write_failed:${utf8SafePrefix(redactSensitive(e.message), 180)}")
+        }
+        let committedPointer = this.loadActiveSnapshotPointer()
+        result.pointerCommitted = this.activeSnapshotPointerMatchesResult(committedPointer, result)
+        result.businessCommitted = result.pointerCommitted && this.has("${txRoot}/COMMIT")
+        if (!result.businessCommitted) {
+            result.ok = false
+            result.diagnostics.add("snapshot_transaction_not_committed:txId=${ckbReleaseEvidenceHash(txId)}|pointerCommitted=${result.pointerCommitted}")
+            return result
+        }
         let liveShadowStartedAtMillis = ckbCoreNowMillis()
-        this.emitActiveSnapshotStage(stageSink, "active_snapshot_live_shadow_before", "running", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
-        this.ensureActiveSnapshotDeadline("active_snapshot_live_shadow_before", deadlineAtMillis)
-        this.writeActiveSnapshotLiveShadow(txRoot, status, rawRecords, normalizedRecords, activeIndex, vectorRecords, vectorCollection, graph, persistVectorFile: persistVectorFile, deadlineAtMillis: deadlineAtMillis, stageSink: stageSink)
-        this.emitActiveSnapshotStage(stageSink, "active_snapshot_live_shadow_after", "ok", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile, durationMillis: ckbCoreNowMillis() - liveShadowStartedAtMillis)
-        this.emitActiveSnapshotStage(stageSink, "active_snapshot_manifest_before", "running", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
-        this.ensureActiveSnapshotDeadline("active_snapshot_manifest_before", deadlineAtMillis)
+        try {
+            faultInjector.checkpoint(CkbActiveSnapshotFaultPoints.LIVE_SHADOW)
+            this.emitActiveSnapshotStage(stageSink, "active_snapshot_live_shadow_before", "running", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
+            this.writeActiveSnapshotLiveShadow(txRoot, status, rawRecords, normalizedRecords, activeIndex, vectorRecords, vectorCollection, graph, persistVectorFile: persistVectorFile, deadlineAtMillis: deadlineAtMillis, stageSink: stageSink)
+            result.liveShadowConsistent = this.activeLiveShadowMatchesTx(txRoot,
+                companionMode: companions.mode)
+            this.emitActiveSnapshotStage(stageSink, "active_snapshot_live_shadow_after", if (result.liveShadowConsistent) { "ok" } else { "degraded" }, status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile, durationMillis: ckbCoreNowMillis() - liveShadowStartedAtMillis)
+        } catch (e: Exception) {
+            result.liveShadowConsistent = false
+            result.diagnostics.add("snapshot_live_shadow_degraded:${utf8SafePrefix(redactSensitive(e.message), 180)}")
+        }
         let manifestVectorCount = if (persistVectorFile && vectorSpool.valid) { vectorSpool.total } else if (persistVectorFile) { vectorRecords.size } else { status.storage.vectorIndexCount }
-        this.writeLinesAtomically("metadata/active-snapshot.manifest", this.activeSnapshotManifestLines(txId, status))
-        this.writeLinesAtomically("metadata/active-snapshot-commits/${safeName(txId)}.ckb", this.activeSnapshotCommitSidecarLines(txId, status, vectorCollection, activeIndex.size, manifestVectorCount, persistVectorFile))
-        this.emitActiveSnapshotStage(stageSink, "active_snapshot_manifest_after", "ok", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
-        txId
+        try {
+            this.writeLinesAtomically("metadata/active-snapshot-commits/${safeName(txId)}.ckb",
+                this.activeSnapshotCommitSidecarLines(txId, status, vectorCollection, activeIndex.size,
+                    manifestVectorCount, persistVectorFile, result))
+        } catch (e: Exception) {
+            result.diagnostics.add("snapshot_commit_sidecar_degraded:${utf8SafePrefix(redactSensitive(e.message), 180)}")
+        }
+        result.diagnostics.add("snapshot_transaction_committed:txId=${ckbReleaseEvidenceHash(txId)}|manifestHash=${result.manifestHash}|freshnessHash=${result.freshnessHash}|coverageHash=${result.coverageHash}|pointerCommitted=${result.pointerCommitted}|liveShadowConsistent=${result.liveShadowConsistent}")
+        result.ok = true
+        result
     }
 
     private func emitActiveSnapshotStage(stageSink: CkbStagedRebuildStageSink, stage: String, statusText: String, status: KnowledgeStatus, rawRecords: ArrayList<RawRecord>, normalizedRecords: ArrayList<NormalizedRecord>, activeIndex: ArrayList<NormalizedRecord>, vectorRecords: ArrayList<VectorRecord>, graph: GraphBuildResult, deadlineAtMillis: Int64, persistVectorFile: Bool, durationMillis!: Int64 = 0): Unit {
@@ -5421,50 +5584,541 @@ public class FileKnowledgeStore {
         }
     }
 
+    private func activeSnapshotCompanionPayload(releaseBundle: CkbReleaseCommitBundle,
+        companionCopy: CkbActiveSnapshotCompanionCopy,
+        status: KnowledgeStatus): CkbActiveSnapshotCompanionPayload {
+        let payload = CkbActiveSnapshotCompanionPayload()
+        let emptyHash = ckbReleaseCompanionEvidenceHash("")
+        payload.manifestHash = emptyHash
+        payload.freshnessHash = emptyHash
+        payload.coverageHash = emptyHash
+        if (releaseBundle.status != "not_prepared") {
+            payload.mode = CkbActiveSnapshotCompanionMode.RELEASE
+            payload.manifestText = ckbRenderCangjieVersionManifestArtifact(releaseBundle.manifest)
+            payload.freshnessText = ckbRenderCangjieFreshnessArtifact(releaseBundle.freshness)
+            payload.coverageText = ckbRenderReleaseCoverageArtifact(releaseBundle.coverage, releaseBundle.removed)
+            payload.manifestHash = ckbReleaseCompanionEvidenceHash(payload.manifestText)
+            payload.freshnessHash = ckbReleaseCompanionEvidenceHash(payload.freshnessText)
+            payload.coverageHash = ckbReleaseCompanionEvidenceHash(payload.coverageText)
+            payload.diagnostic = ckbValidateReleaseCommitBundleForSnapshot(releaseBundle,
+                status, payload.manifestHash, payload.freshnessHash, payload.coverageHash)
+            payload.valid = payload.diagnostic == ""
+            return payload
+        }
+        if (companionCopy.provided) {
+            if (!companionCopy.valid) {
+                payload.valid = false
+                payload.diagnostic = "active_companion_restore_source_invalid:${companionCopy.diagnostic}"
+                return payload
+            }
+            if (companionCopy.mode == CkbActiveSnapshotCompanionMode.NONE) {
+                payload.mode = CkbActiveSnapshotCompanionMode.NONE
+                payload.valid = companionCopy.manifestText == "" && companionCopy.freshnessText == "" &&
+                    companionCopy.coverageText == ""
+                if (!payload.valid) { payload.diagnostic = "active_companion_none_has_payload" }
+                return payload
+            }
+            if (companionCopy.mode != CkbActiveSnapshotCompanionMode.RELEASE &&
+                companionCopy.mode != CkbActiveSnapshotCompanionMode.COPY_FORWARD) {
+                payload.valid = false
+                payload.diagnostic = "active_companion_restore_mode_invalid"
+                return payload
+            }
+            payload.mode = CkbActiveSnapshotCompanionMode.COPY_FORWARD
+            payload.manifestText = companionCopy.manifestText
+            payload.freshnessText = companionCopy.freshnessText
+            payload.coverageText = companionCopy.coverageText
+            payload.manifestHash = ckbReleaseCompanionEvidenceHash(payload.manifestText)
+            payload.freshnessHash = ckbReleaseCompanionEvidenceHash(payload.freshnessText)
+            payload.coverageHash = ckbReleaseCompanionEvidenceHash(payload.coverageText)
+            payload.valid = payload.manifestText != "" && payload.freshnessText != "" &&
+                payload.coverageText != "" && payload.manifestHash == companionCopy.manifestHash &&
+                payload.freshnessHash == companionCopy.freshnessHash &&
+                payload.coverageHash == companionCopy.coverageHash
+            if (!payload.valid) {
+                payload.diagnostic = "active_companion_restore_hash_mismatch"
+                return payload
+            }
+            let copiedManifest = ckbParseCangjieVersionManifestArtifact(
+                payload.manifestText)
+            let copiedFreshness = ckbParseCangjieFreshnessArtifact(
+                payload.freshnessText)
+            payload.valid = copiedManifest.manifestVersion ==
+                CangjieVersionManifestVersions.V2 && copiedManifest.sources.size > 0 &&
+                copiedFreshness.sources.size == copiedManifest.sources.size &&
+                copiedFreshness.activeKnowledgeVersion == status.activeKnowledgeVersion &&
+                copiedFreshness.candidateKnowledgeVersion == status.candidateKnowledgeVersion &&
+                copiedFreshness.failedCandidateVersion == status.failedCandidateVersion &&
+                copiedManifest.defaultTargetVersion != "" &&
+                copiedFreshness.targetVersion == copiedManifest.defaultTargetVersion &&
+                ckbReleaseFreshnessManifestCommitAligned(copiedFreshness,
+                    copiedManifest, status.activeKnowledgeVersion)
+            if (!payload.valid) {
+                payload.diagnostic = "active_companion_restore_semantic_mismatch"
+            }
+            return payload
+        }
+        if (!this.has("metadata/active-snapshot.manifest")) {
+            payload.mode = CkbActiveSnapshotCompanionMode.NONE
+            return payload
+        }
+        let pointer = this.loadActiveSnapshotPointer()
+        if (!pointer.valid) {
+            payload.valid = false
+            payload.diagnostic = "active_companion_copy_forward_pointer_invalid:${pointer.diagnostic}"
+            return payload
+        }
+        if (pointer.legacy || pointer.companionMode == CkbActiveSnapshotCompanionMode.NONE) {
+            payload.mode = CkbActiveSnapshotCompanionMode.NONE
+            return payload
+        }
+        if (!this.activeSnapshotPointerCompanionsValid(pointer)) {
+            payload.valid = false
+            payload.diagnostic = "active_companion_copy_forward_invalid"
+            return payload
+        }
+        let txRoot = "transactions/${safeName(pointer.txId)}"
+        payload.mode = CkbActiveSnapshotCompanionMode.COPY_FORWARD
+        payload.manifestText = this.readLines("${txRoot}/metadata/cangjie-version-manifest.ckb")
+        payload.coverageText = this.readLines("${txRoot}/metadata/cangjie-release-coverage.ckb")
+        let manifest = this.loadCangjieVersionManifestFromRelative(
+            "${txRoot}/metadata/cangjie-version-manifest.ckb")
+        let freshness = this.loadCangjieCorpusFreshnessFromRelative(
+            "${txRoot}/metadata/cangjie-freshness.ckb")
+        if (manifest.sources.size == 0 || freshness.sources.size == 0 ||
+            freshness.sources.size != manifest.sources.size ||
+            freshness.targetVersion != manifest.defaultTargetVersion) {
+            payload.valid = false
+            payload.diagnostic = "active_companion_copy_forward_semantic_invalid"
+            return payload
+        }
+        freshness.activeKnowledgeVersion = status.activeKnowledgeVersion
+        freshness.candidateKnowledgeVersion = status.candidateKnowledgeVersion
+        freshness.failedCandidateVersion = status.failedCandidateVersion
+        for (source in freshness.sources) {
+            source.indexedAt = status.activeKnowledgeVersion
+        }
+        if (!ckbReleaseFreshnessManifestCommitAligned(freshness, manifest,
+            status.activeKnowledgeVersion)) {
+            payload.valid = false
+            payload.diagnostic = "active_companion_copy_forward_semantic_mismatch"
+            return payload
+        }
+        payload.freshnessText = ckbRenderCangjieFreshnessArtifact(freshness)
+        payload.manifestHash = ckbReleaseCompanionEvidenceHash(payload.manifestText)
+        payload.freshnessHash = ckbReleaseCompanionEvidenceHash(payload.freshnessText)
+        payload.coverageHash = ckbReleaseCompanionEvidenceHash(payload.coverageText)
+        payload.valid = payload.manifestHash == pointer.manifestHash &&
+            payload.coverageHash == pointer.coverageHash &&
+            payload.freshnessText != "" &&
+            ckbValidationEvidenceIsSha256(payload.freshnessHash)
+        if (!payload.valid) { payload.diagnostic = "active_companion_copy_forward_hash_mismatch" }
+        payload
+    }
+
+    private func writeActiveSnapshotCompanions(txRoot: String,
+        payload: CkbActiveSnapshotCompanionPayload,
+        faultInjector: CkbActiveSnapshotFaultInjector): Unit {
+        if (payload.mode == CkbActiveSnapshotCompanionMode.NONE) { return }
+        faultInjector.checkpoint(CkbActiveSnapshotFaultPoints.MANIFEST)
+        this.writeLinesAtomically("${txRoot}/metadata/cangjie-version-manifest.ckb", payload.manifestText)
+        if (this.readLines("${txRoot}/metadata/cangjie-version-manifest.ckb") != payload.manifestText ||
+            ckbReleaseCompanionEvidenceHash(payload.manifestText) != payload.manifestHash) {
+            throw Exception("transaction_manifest_readback_mismatch")
+        }
+        faultInjector.checkpoint(CkbActiveSnapshotFaultPoints.FRESHNESS)
+        this.writeLinesAtomically("${txRoot}/metadata/cangjie-freshness.ckb", payload.freshnessText)
+        if (this.readLines("${txRoot}/metadata/cangjie-freshness.ckb") != payload.freshnessText ||
+            ckbReleaseCompanionEvidenceHash(payload.freshnessText) != payload.freshnessHash) {
+            throw Exception("transaction_freshness_readback_mismatch")
+        }
+        faultInjector.checkpoint(CkbActiveSnapshotFaultPoints.COVERAGE)
+        this.writeLinesAtomically("${txRoot}/metadata/cangjie-release-coverage.ckb", payload.coverageText)
+        if (this.readLines("${txRoot}/metadata/cangjie-release-coverage.ckb") != payload.coverageText ||
+            ckbReleaseCompanionEvidenceHash(payload.coverageText) != payload.coverageHash) {
+            throw Exception("transaction_coverage_readback_mismatch")
+        }
+    }
+
+    private func activeSnapshotPayloadEvidenceHash(txRoot: String, vectorCollection: String,
+        persistVectorFile: Bool): String {
+        let fields = ArrayList<String>()
+        fields.add("raw=${this.activeSnapshotDirectoryEvidenceHash("${txRoot}/raw")}")
+        fields.add("normalized=${this.activeSnapshotFileEvidenceHash("${txRoot}/normalized/records.ckb")}")
+        fields.add("version=${this.activeSnapshotFileEvidenceHash("${txRoot}/index/active.version")}")
+        fields.add("index=${this.activeSnapshotFileEvidenceHash("${txRoot}/index/active.ckb")}")
+        fields.add("graphNodes=${this.activeSnapshotFileEvidenceHash("${txRoot}/index/graph-nodes.ckb")}")
+        fields.add("graphEdges=${this.activeSnapshotFileEvidenceHash("${txRoot}/index/graph-edges.ckb")}")
+        fields.add("status=${this.activeSnapshotFileEvidenceHash("${txRoot}/metadata/status.ckb")}")
+        if (persistVectorFile) {
+            fields.add("vector=${this.activeSnapshotFileEvidenceHash("${txRoot}/index/vector-${safeName(vectorCollection)}.ckb")}")
+        }
+        ckbReleaseCompanionEvidenceHash(joinStrings(fields, "|"))
+    }
+
+    private func activeSnapshotPayloadMatches(txRoot: String, status: KnowledgeStatus,
+        rawCount: Int64, normalizedCount: Int64, activeCount: Int64, vectorCollection: String,
+        persistVectorFile: Bool, payloadHash: String): Bool {
+        if (!ckbValidationEvidenceIsSha256(payloadHash)) { return false }
+        let metadata = this.loadMetadataStatusFromPrefix(txRoot)
+        if (this.readLinesFromPrefix(txRoot, "index/active.version").trimAscii() !=
+            status.activeKnowledgeVersion || metadata.activeVersion != status.activeKnowledgeVersion ||
+            metadata.rawCount != rawCount || metadata.normalizedCount != normalizedCount ||
+            metadata.indexCount != activeCount ||
+            this.activeSnapshotFileLineCount("${txRoot}/raw/records.ckb") != rawCount ||
+            this.activeSnapshotFileLineCount("${txRoot}/normalized/records.ckb") != normalizedCount ||
+            this.activeSnapshotFileLineCount("${txRoot}/index/active.ckb") != activeCount ||
+            metadata.vectorActiveCollection != status.storage.vectorActiveCollection ||
+            !this.has("${txRoot}/index/graph-nodes.ckb") ||
+            !this.has("${txRoot}/index/graph-edges.ckb") ||
+            !this.has("${txRoot}/metadata/status.ckb")) {
+            return false
+        }
+        if (persistVectorFile && !this.has("${txRoot}/index/vector-${safeName(vectorCollection)}.ckb")) {
+            return false
+        }
+        this.activeSnapshotPayloadEvidenceHash(txRoot, vectorCollection, persistVectorFile) == payloadHash
+    }
+
+    private func activeSnapshotFileLineCount(relative: String): Int64 {
+        let path = this.root.join(relative)
+        if (!exists(path)) { return -1 }
+        var lines: Int64 = 0
+        try (file = File(path, OpenMode.Read)) {
+            let buffer = Array<Byte>(65536, repeat: 0)
+            while (true) {
+                let read = file.read(buffer)
+                if (read <= 0) { break }
+                for (i in 0..read) {
+                    if (buffer[i] == UInt8(10)) { lines += 1 }
+                }
+            }
+        }
+        lines
+    }
+
+    private func activeSnapshotFileEvidenceHash(relative: String): String {
+        let path = this.root.join(relative)
+        this.activeSnapshotFilePathEvidenceHash(path)
+    }
+
+    private func activeSnapshotFilePathEvidenceHash(path: Path): String {
+        if (!exists(path)) { return "missing" }
+        let digest = SHA256()
+        try (file = File(path, OpenMode.Read)) {
+            let buffer = Array<Byte>(65536, repeat: 0)
+            while (true) {
+                let read = file.read(buffer)
+                if (read <= 0) { break }
+                if (read == buffer.size) { digest.write(buffer) } else { digest.write(buffer[0..read].clone()) }
+            }
+        }
+        "hsha256:${this.candidateDigestHex(digest).toAsciiLower()}"
+    }
+
+    private func activeSnapshotDirectoryEvidenceHash(relative: String): String {
+        let root = this.root.join(relative)
+        this.activeSnapshotDirectoryPathEvidenceHash(root)
+    }
+
+    private func activeSnapshotDirectoryPathEvidenceHash(root: Path): String {
+        if (!exists(root)) { return "missing" }
+        let entries = ArrayList<String>()
+        this.activeSnapshotCollectDirectoryEvidence(root, "", entries)
+        let ordered = entries.toArray()
+        sort(ordered)
+        let canonical = ArrayList<String>()
+        canonical.add(all: ordered)
+        ckbReleaseCompanionEvidenceHash(joinStrings(canonical, "|"))
+    }
+
+    private func activeSnapshotCollectDirectoryEvidence(root: Path, prefix: String,
+        out: ArrayList<String>): Unit {
+        for (entry in Directory.readFrom(root)) {
+            let relative = if (prefix == "") { entry.name } else { "${prefix}/${entry.name}" }
+            if (entry.isDirectory()) {
+                this.activeSnapshotCollectDirectoryEvidence(entry.path, relative, out)
+            } else if (entry.isRegular()) {
+                out.add("${relative}=${this.activeSnapshotFilePathEvidenceHash(entry.path)}")
+            }
+        }
+    }
+
+    public func loadActiveSnapshotPointer(): CkbActiveSnapshotPointer {
+        let pointer = CkbActiveSnapshotPointer()
+        var text = ""
+        try {
+            text = this.readLines("metadata/active-snapshot.manifest")
+        } catch (_: Exception) {
+            pointer.diagnostic = "active_pointer_invalid_response_encoding"
+            return pointer
+        }
+        if (text == "") { return pointer }
+        pointer.schema = ckbCurrentField(text, "schema")
+        pointer.txId = ckbCurrentField(text, "txId")
+        pointer.activeVersion = ckbCurrentField(text, "active")
+        pointer.vectorActiveCollection = ckbCurrentField(text, "vectorActiveCollection")
+        if (pointer.schema == "") {
+            let hasV2PointerFields = ckbCurrentField(text, "companionMode") != "" ||
+                ckbCurrentField(text, "manifestHash") != "" ||
+                ckbCurrentField(text, "freshnessHash") != "" ||
+                ckbCurrentField(text, "coverageHash") != ""
+            var commitDeclaresSchema = false
+            if (this.activeSnapshotPointerIdentitySafe(pointer)) {
+                try {
+                    let commit = this.readLines("transactions/${safeName(pointer.txId)}/COMMIT")
+                    commitDeclaresSchema = ckbCurrentField(commit, "schema") != ""
+                } catch (_: Exception) {
+                    // An undecodable commit cannot prove a legacy transaction.
+                    commitDeclaresSchema = true
+                }
+            }
+            if (hasV2PointerFields || commitDeclaresSchema) {
+                pointer.legacy = false
+                pointer.valid = false
+                pointer.diagnostic = "active_pointer_v2_schema_missing"
+                return pointer
+            }
+            if (!this.activeSnapshotPointerIdentitySafe(pointer)) {
+                pointer.legacy = false
+                pointer.valid = false
+                pointer.diagnostic = "active_pointer_malformed"
+                return pointer
+            }
+            pointer.legacy = true
+            pointer.valid = ckbCurrentField(text, "committed") == "true"
+            pointer.diagnostic = if (pointer.valid) { "legacy_active_pointer" } else { "legacy_active_pointer_malformed" }
+            return pointer
+        }
+        if (pointer.schema != "ckb-active-pointer-v2") {
+            pointer.diagnostic = "active_pointer_schema_unsupported"
+            return pointer
+        }
+        pointer.companionMode = ckbCurrentField(text, "companionMode")
+        pointer.manifestHash = ckbCurrentField(text, "manifestHash")
+        pointer.freshnessHash = ckbCurrentField(text, "freshnessHash")
+        pointer.coverageHash = ckbCurrentField(text, "coverageHash")
+        let modeValid = pointer.companionMode == CkbActiveSnapshotCompanionMode.RELEASE ||
+            pointer.companionMode == CkbActiveSnapshotCompanionMode.COPY_FORWARD ||
+            pointer.companionMode == CkbActiveSnapshotCompanionMode.NONE
+        let hashesValid = ckbValidationEvidenceIsSha256(pointer.manifestHash) &&
+            ckbValidationEvidenceIsSha256(pointer.freshnessHash) &&
+            ckbValidationEvidenceIsSha256(pointer.coverageHash)
+        pointer.valid = try {
+            modeValid && hashesValid && this.activeSnapshotPointerIdentitySafe(pointer) &&
+                this.activeSnapshotCommitMatchesPointer(pointer) &&
+                this.activeSnapshotPointerCompanionsValid(pointer) &&
+                ckbCurrentField(text, "committed") == "true"
+        } catch (_: Exception) { false }
+        pointer.diagnostic = if (pointer.valid) { "ok" } else { "active_pointer_v2_malformed_or_uncommitted" }
+        pointer
+    }
+
+    private func activeSnapshotPointerIdentitySafe(pointer: CkbActiveSnapshotPointer): Bool {
+        pointer.txId != "" && pointer.activeVersion != "" && pointer.vectorActiveCollection != "" &&
+            !pointer.txId.contains("/") && !pointer.txId.contains("\\") &&
+            !pointer.txId.contains("..") && !pointer.txId.contains("\u{0000}")
+    }
+
+    private func activeSnapshotCommitMatchesPointer(pointer: CkbActiveSnapshotPointer): Bool {
+        let txRoot = "transactions/${safeName(pointer.txId)}"
+        let text = this.readLines("${txRoot}/COMMIT")
+        let payloadHash = ckbCurrentField(text, "payloadHash")
+        let persistVectorFileText = ckbCurrentField(text, "persistVectorFile")
+        if (persistVectorFileText != "true" && persistVectorFileText != "false") {
+            return false
+        }
+        let persistVectorFile = persistVectorFileText == "true"
+        let metadata = this.loadMetadataStatusFromPrefix(txRoot)
+        text != "" &&
+            this.readLinesFromPrefix(txRoot, "index/active.version").trimAscii() == pointer.activeVersion &&
+            metadata.activeVersion == pointer.activeVersion &&
+            metadata.vectorActiveCollection == pointer.vectorActiveCollection &&
+            this.has("${txRoot}/raw/records.ckb") &&
+            this.has("${txRoot}/normalized/records.ckb") &&
+            this.has("${txRoot}/index/active.ckb") &&
+            this.has("${txRoot}/index/graph-nodes.ckb") &&
+            this.has("${txRoot}/index/graph-edges.ckb") &&
+            this.has("${txRoot}/metadata/status.ckb") &&
+            (!persistVectorFile || this.has("${txRoot}/index/vector-${safeName(pointer.vectorActiveCollection)}.ckb")) &&
+            ckbCurrentField(text, "schema") == "ckb-active-commit-v2" &&
+            ckbCurrentField(text, "txId") == pointer.txId &&
+            ckbCurrentField(text, "active") == pointer.activeVersion &&
+            ckbCurrentField(text, "vectorActiveCollection") == pointer.vectorActiveCollection &&
+            ckbCurrentField(text, "companionMode") == pointer.companionMode &&
+            ckbCurrentField(text, "manifestHash") == pointer.manifestHash &&
+            ckbCurrentField(text, "freshnessHash") == pointer.freshnessHash &&
+            ckbCurrentField(text, "coverageHash") == pointer.coverageHash &&
+            ckbValidationEvidenceIsSha256(payloadHash) &&
+            this.activeSnapshotPayloadEvidenceHash(txRoot, pointer.vectorActiveCollection,
+                persistVectorFile) == payloadHash &&
+            ckbCurrentField(text, "committed") == "true"
+    }
+
+    private func activeSnapshotPointerCompanionsValid(pointer: CkbActiveSnapshotPointer): Bool {
+        let emptyHash = ckbReleaseCompanionEvidenceHash("")
+        if (pointer.companionMode == CkbActiveSnapshotCompanionMode.NONE) {
+            return pointer.manifestHash == emptyHash && pointer.freshnessHash == emptyHash &&
+                pointer.coverageHash == emptyHash
+        }
+        let txRoot = "transactions/${safeName(pointer.txId)}"
+        let manifestHash = this.activeSnapshotFileEvidenceHash(
+            "${txRoot}/metadata/cangjie-version-manifest.ckb")
+        let freshnessHash = this.activeSnapshotFileEvidenceHash(
+            "${txRoot}/metadata/cangjie-freshness.ckb")
+        let coverageHash = this.activeSnapshotFileEvidenceHash(
+            "${txRoot}/metadata/cangjie-release-coverage.ckb")
+        manifestHash != emptyHash && freshnessHash != emptyHash && coverageHash != emptyHash &&
+            manifestHash == pointer.manifestHash && freshnessHash == pointer.freshnessHash &&
+            coverageHash == pointer.coverageHash
+    }
+
+    public func loadActiveSnapshotCompanionCopy(): CkbActiveSnapshotCompanionCopy {
+        let copy = CkbActiveSnapshotCompanionCopy()
+        copy.provided = true
+        if (!this.has("metadata/active-snapshot.manifest")) {
+            copy.mode = CkbActiveSnapshotCompanionMode.NONE
+            copy.manifestHash = ckbReleaseCompanionEvidenceHash("")
+            copy.freshnessHash = ckbReleaseCompanionEvidenceHash("")
+            copy.coverageHash = ckbReleaseCompanionEvidenceHash("")
+            return copy
+        }
+        let pointer = this.loadActiveSnapshotPointer()
+        if (!pointer.valid) {
+            copy.valid = false
+            copy.diagnostic = pointer.diagnostic
+            return copy
+        }
+        copy.mode = pointer.companionMode
+        if (pointer.legacy || pointer.companionMode == CkbActiveSnapshotCompanionMode.NONE) {
+            copy.mode = CkbActiveSnapshotCompanionMode.NONE
+            copy.manifestHash = ckbReleaseCompanionEvidenceHash("")
+            copy.freshnessHash = ckbReleaseCompanionEvidenceHash("")
+            copy.coverageHash = ckbReleaseCompanionEvidenceHash("")
+            return copy
+        }
+        let txRoot = "transactions/${safeName(pointer.txId)}"
+        try {
+            copy.manifestText = this.readLines("${txRoot}/metadata/cangjie-version-manifest.ckb")
+            copy.freshnessText = this.readLines("${txRoot}/metadata/cangjie-freshness.ckb")
+            copy.coverageText = this.readLines("${txRoot}/metadata/cangjie-release-coverage.ckb")
+        } catch (_: Exception) {
+            copy.valid = false
+            copy.diagnostic = "active_companion_copy_invalid_encoding"
+            return copy
+        }
+        copy.manifestHash = ckbReleaseCompanionEvidenceHash(copy.manifestText)
+        copy.freshnessHash = ckbReleaseCompanionEvidenceHash(copy.freshnessText)
+        copy.coverageHash = ckbReleaseCompanionEvidenceHash(copy.coverageText)
+        copy.valid = copy.manifestHash == pointer.manifestHash &&
+            copy.freshnessHash == pointer.freshnessHash && copy.coverageHash == pointer.coverageHash
+        if (!copy.valid) { copy.diagnostic = "active_companion_copy_hash_mismatch" }
+        copy
+    }
+
+    private func activeSnapshotPointerMatchesResult(pointer: CkbActiveSnapshotPointer,
+        result: CkbActiveSnapshotTransactionResult): Bool {
+        pointer.valid && !pointer.legacy && pointer.txId == result.txId &&
+            pointer.activeVersion == result.activeVersion &&
+            pointer.vectorActiveCollection == result.vectorActiveCollection &&
+            pointer.companionMode == result.companionMode &&
+            pointer.manifestHash == result.manifestHash &&
+            pointer.freshnessHash == result.freshnessHash &&
+            pointer.coverageHash == result.coverageHash
+    }
+
     public func repairActiveLiveShadowFromManifest(): ActiveSnapshotRepairResult {
         let result = ActiveSnapshotRepairResult()
-        let txId = this.loadActiveSnapshotManifestTxId()
-        result.txId = txId
-        if (txId == "") {
+        let pointer = this.loadActiveSnapshotPointer()
+        result.txId = pointer.txId
+        if (!pointer.valid) {
             result.ok = false
-            result.diagnostic = "active_snapshot_manifest_missing"
+            result.diagnostic = "active_snapshot_pointer_invalid:${pointer.diagnostic}"
             return result
         }
-        let txRoot = "transactions/${safeName(txId)}"
-        if (!this.has("${txRoot}/COMMIT")) {
-            result.ok = false
-            result.diagnostic = "active_snapshot_tx_not_committed:${txId}"
-            return result
-        }
-        let snapshot = this.loadActiveSnapshotFromPrefix(txRoot, "")
+        let txRoot = "transactions/${safeName(pointer.txId)}"
+        let snapshot = this.loadActiveSnapshotFromPrefix(txRoot, "",
+            allowLiveOverlay: pointer.legacy)
         result.activeVersion = snapshot.activeVersion
         if (!snapshot.valid) {
             result.ok = false
             result.diagnostic = "active_snapshot_tx_invalid:${snapshot.diagnostic}"
             return result
         }
-        if (this.activeLiveShadowMatchesTx(txRoot)) {
+        if (this.activeLiveShadowMatchesTx(txRoot, companionMode: pointer.companionMode)) {
             result.ok = true
             result.repairPerformed = false
-            result.diagnostic = "active_snapshot_live_shadow_consistent:${txId}"
+            result.liveShadowConsistent = true
+            result.diagnostic = "active_snapshot_live_shadow_consistent:${pointer.txId}"
             return result
         }
-        this.copySnapshotFileFromTx(txRoot, "raw/records.ckb", result)
-        this.copySnapshotFileFromTx(txRoot, "normalized/records.ckb", result)
-        this.copySnapshotFileFromTx(txRoot, "index/active.version", result)
-        this.copySnapshotFileFromTx(txRoot, "index/active.ckb", result)
-        this.copySnapshotFileFromTx(txRoot, "index/graph-nodes.ckb", result)
-        this.copySnapshotFileFromTx(txRoot, "index/graph-edges.ckb", result)
-        this.copySnapshotFileFromTx(txRoot, "metadata/status.ckb", result)
-        let metadata = this.loadMetadataStatusFromPrefix(txRoot)
-        let vectorCollection = if (metadata.vectorActiveCollection == "") { "active" } else { metadata.vectorActiveCollection }
-        let vectorRelative = "index/vector-${safeName(vectorCollection)}.ckb"
-        if (this.has("${txRoot}/${vectorRelative}")) {
-            this.copySnapshotFileFromTx(txRoot, vectorRelative, result)
+        var preserveLiveLifecycle = false
+        var liveCandidateVersion = ""
+        var liveFailedVersion = ""
+        try {
+            let live = this.loadMetadataStatusFromPrefix("")
+            if (live.activeVersion == pointer.activeVersion) {
+                preserveLiveLifecycle = true
+                liveCandidateVersion = live.candidateVersion
+                liveFailedVersion = live.failedVersion
+            }
+        } catch (_: Exception) {
+            // An unreadable or identity-mismatched live status cannot override
+            // the authoritative transaction status during repair.
+            ()
         }
-        result.ok = true
+        try {
+            this.copySnapshotDirectoryContentsFromTx(txRoot, "raw", 0,
+                "active_snapshot_repair_raw")
+            result.copiedFiles.add("raw")
+            this.copySnapshotFileFromTx(txRoot, "normalized/records.ckb", result)
+            this.copySnapshotFileFromTx(txRoot, "index/active.version", result)
+            this.copySnapshotFileFromTx(txRoot, "index/active.ckb", result)
+            this.copySnapshotFileFromTx(txRoot, "index/graph-nodes.ckb", result)
+            this.copySnapshotFileFromTx(txRoot, "index/graph-edges.ckb", result)
+            this.copySnapshotFileFromTx(txRoot, "metadata/status.ckb", result)
+            if (preserveLiveLifecycle) {
+                let lifecycle = KnowledgeStatus()
+                lifecycle.activeKnowledgeVersion = pointer.activeVersion
+                lifecycle.candidateKnowledgeVersion = liveCandidateVersion
+                lifecycle.failedCandidateVersion = liveFailedVersion
+                this.saveLiveCandidateLifecycleMetadata(lifecycle)
+            }
+            let metadata = this.loadMetadataStatusFromPrefix(txRoot)
+            let vectorCollection = if (metadata.vectorActiveCollection == "") { "active" } else { metadata.vectorActiveCollection }
+            let vectorRelative = "index/vector-${safeName(vectorCollection)}.ckb"
+            if (this.has("${txRoot}/${vectorRelative}")) {
+                this.copySnapshotFileFromTx(txRoot, vectorRelative, result)
+            }
+            if (pointer.companionMode != CkbActiveSnapshotCompanionMode.NONE) {
+                this.writeLinesAtomically("metadata/active-cangjie-version-manifest.ckb",
+                    this.readLines("${txRoot}/metadata/cangjie-version-manifest.ckb"))
+                this.writeLinesAtomically("metadata/active-cangjie-freshness.ckb",
+                    this.readLines("${txRoot}/metadata/cangjie-freshness.ckb"))
+                this.writeLinesAtomically("metadata/active-cangjie-release-coverage.ckb",
+                    this.readLines("${txRoot}/metadata/cangjie-release-coverage.ckb"))
+                result.copiedFiles.add("metadata/active-cangjie-version-manifest.ckb")
+                result.copiedFiles.add("metadata/active-cangjie-freshness.ckb")
+                result.copiedFiles.add("metadata/active-cangjie-release-coverage.ckb")
+            } else {
+                this.deleteActiveSnapshotCompanionLiveShadows()
+                result.removedFiles.add("metadata/active-cangjie-version-manifest.ckb")
+                result.removedFiles.add("metadata/active-cangjie-freshness.ckb")
+                result.removedFiles.add("metadata/active-cangjie-release-coverage.ckb")
+            }
+        } catch (e: Exception) {
+            result.ok = false
+            result.liveShadowConsistent = false
+            result.diagnostic = "active_snapshot_live_shadow_repair_failed:${utf8SafePrefix(redactSensitive(e.message), 180)}"
+            return result
+        }
+        result.liveShadowConsistent = this.activeLiveShadowMatchesTx(txRoot,
+            companionMode: pointer.companionMode)
+        result.ok = result.liveShadowConsistent
         result.repairPerformed = true
-        result.diagnostic = "active_snapshot_live_shadow_repaired:${txId}"
+        result.diagnostic = if (result.ok) {
+            "active_snapshot_live_shadow_repaired:${pointer.txId}"
+        } else { "active_snapshot_live_shadow_repair_verify_failed:${pointer.txId}" }
         result
     }
 
@@ -5584,81 +6238,36 @@ public class FileKnowledgeStore {
     }
 
     public func loadCangjieCorpusFreshness(): CangjieCorpusFreshnessReport {
+        this.loadCangjieCorpusFreshnessFromRelative("metadata/cangjie-freshness.ckb")
+    }
+
+    public func loadActiveCangjieCorpusFreshness(): CangjieCorpusFreshnessReport {
+        let pointer = this.loadActiveSnapshotPointer()
+        if (pointer.valid && !pointer.legacy &&
+            pointer.companionMode != CkbActiveSnapshotCompanionMode.NONE) {
+            return this.loadCangjieCorpusFreshnessFromRelative(
+                "transactions/${safeName(pointer.txId)}/metadata/cangjie-freshness.ckb")
+        }
+        if (pointer.legacy) { return this.loadCangjieCorpusFreshness() }
+        let report = CangjieCorpusFreshnessReport()
+        report.ok = false
+        report.degraded = true
+        report.diagnostics.add(if (pointer.valid) { "active_companion_mode_none" } else { pointer.diagnostic })
+        report
+    }
+
+    private func loadCangjieCorpusFreshnessFromRelative(relative: String): CangjieCorpusFreshnessReport {
         let report = CangjieCorpusFreshnessReport()
         var text = ""
         try {
-            text = this.readLines("metadata/cangjie-freshness.ckb")
+            text = this.readLines(relative)
         } catch (_: Exception) {
             report.ok = false
             report.degraded = true
             report.diagnostics.add("freshness_artifact_invalid_encoding")
             return report
         }
-        if (text == "") {
-            report.ok = false
-            report.degraded = true
-            report.diagnostics.add("freshness_artifact_missing")
-            return report
-        }
-        var recognizedLineCount: Int64 = 0
-        for (line in text.split("\n")) {
-            let trimmed = line.trimAscii()
-            if (trimmed == "") {
-                continue
-            }
-            if (trimmed.startsWith("ok=")) {
-                recognizedLineCount += 1
-                report.ok = parseBool(trimmed[3..trimmed.size])
-            } else if (trimmed.startsWith("degraded=")) {
-                recognizedLineCount += 1
-                report.degraded = parseBool(trimmed[9..trimmed.size])
-            } else if (trimmed.startsWith("activeKnowledgeVersion=")) {
-                recognizedLineCount += 1
-                report.activeKnowledgeVersion = unescapeField(trimmed[23..trimmed.size])
-            } else if (trimmed.startsWith("candidateKnowledgeVersion=")) {
-                recognizedLineCount += 1
-                report.candidateKnowledgeVersion = unescapeField(trimmed[26..trimmed.size])
-            } else if (trimmed.startsWith("failedCandidateVersion=")) {
-                recognizedLineCount += 1
-                report.failedCandidateVersion = unescapeField(trimmed[23..trimmed.size])
-            } else if (trimmed.startsWith("targetVersion=")) {
-                recognizedLineCount += 1
-                report.targetVersion = unescapeField(trimmed[14..trimmed.size])
-            } else if (trimmed.startsWith("diagnostic|")) {
-                recognizedLineCount += 1
-                let parts = trimmed.split("|")
-                if (parts.size >= 2) {
-                    report.diagnostics.add(unescapeField(parts[1]))
-                }
-            } else if (trimmed.startsWith("source|")) {
-                recognizedLineCount += 1
-                let parts = trimmed.split("|")
-                if (parts.size >= 11) {
-                    let source = CangjieCorpusFreshnessSource()
-                    source.sourceSet = unescapeField(parts[1])
-                    source.sourceFamily = unescapeField(parts[2])
-                    source.sourceRepo = unescapeField(parts[3])
-                    source.sourceRef = unescapeField(parts[4])
-                    source.resolvedCommit = unescapeField(parts[5])
-                    source.contentHash = unescapeField(parts[6])
-                    source.crawlAt = unescapeField(parts[7])
-                    source.indexedAt = unescapeField(parts[8])
-                    source.staleness = unescapeField(parts[9])
-                    source.status = unescapeField(parts[10])
-                    report.sources.add(source)
-                } else {
-                    report.ok = false
-                    report.degraded = true
-                    report.diagnostics.add("freshness_artifact_malformed_source_line")
-                }
-            }
-        }
-        if (text.trimAscii() != "" && report.sources.size == 0 && recognizedLineCount == 0) {
-            report.ok = false
-            report.degraded = true
-            report.diagnostics.add("freshness_artifact_malformed")
-        }
-        report
+        ckbParseCangjieFreshnessArtifact(text)
     }
 
     public func saveCangjieVersionManifest(manifest: CangjieVersionManifest): Unit {
@@ -5675,68 +6284,36 @@ public class FileKnowledgeStore {
     }
 
     public func loadCangjieVersionManifest(): CangjieVersionManifest {
+        this.loadCangjieVersionManifestFromRelative("metadata/cangjie-version-manifest.ckb")
+    }
+
+    public func loadActiveCangjieVersionManifest(): CangjieVersionManifest {
+        let pointer = this.loadActiveSnapshotPointer()
+        if (pointer.valid && !pointer.legacy &&
+            pointer.companionMode != CkbActiveSnapshotCompanionMode.NONE) {
+            return this.loadCangjieVersionManifestFromRelative(
+                "transactions/${safeName(pointer.txId)}/metadata/cangjie-version-manifest.ckb")
+        }
+        if (pointer.legacy) { return this.loadCangjieVersionManifest() }
+        let manifest = CangjieVersionManifest()
+        manifest.sources.clear()
+        manifest.degraded = true
+        manifest.diagnostics.add(if (pointer.valid) { "active_companion_mode_none" } else { pointer.diagnostic })
+        manifest
+    }
+
+    private func loadCangjieVersionManifestFromRelative(relative: String): CangjieVersionManifest {
         let manifest = CangjieVersionManifest()
         manifest.sources.clear()
         var text = ""
         try {
-            text = this.readLines("metadata/cangjie-version-manifest.ckb")
+            text = this.readLines(relative)
         } catch (_: Exception) {
             manifest.degraded = true
             manifest.diagnostics.add("version_manifest_invalid_encoding")
             return manifest
         }
-        if (text == "") {
-            return manifest
-        }
-        var recognizedLineCount: Int64 = 0
-        for (line in text.split("\n")) {
-            let trimmed = line.trimAscii()
-            if (trimmed == "") {
-                continue
-            }
-            if (trimmed.startsWith("manifestVersion=")) {
-                recognizedLineCount += 1
-                manifest.manifestVersion = unescapeField(trimmed[16..trimmed.size])
-            } else if (trimmed.startsWith("defaultTargetVersion=")) {
-                recognizedLineCount += 1
-                manifest.defaultTargetVersion = unescapeField(trimmed[21..trimmed.size])
-            } else if (trimmed.startsWith("degraded=")) {
-                recognizedLineCount += 1
-                manifest.degraded = unescapeField(trimmed[9..trimmed.size]) == "true"
-            } else if (trimmed.startsWith("diagnostic|")) {
-                recognizedLineCount += 1
-                let parts = trimmed.split("|")
-                if (parts.size >= 2) {
-                    manifest.diagnostics.add(unescapeField(parts[1]))
-                }
-            } else if (trimmed.startsWith("source|")) {
-                recognizedLineCount += 1
-                let parts = trimmed.split("|")
-                if (parts.size >= 9) {
-                    let source = CangjieVersionSource()
-                    source.targetVersion = unescapeField(parts[1])
-                    source.sourceSet = unescapeField(parts[2])
-                    source.sourceFamily = unescapeField(parts[3])
-                    source.sourceRepo = unescapeField(parts[4])
-                    source.sourceRef = unescapeField(parts[5])
-                    source.refKind = unescapeField(parts[6])
-                    source.resolvedCommit = unescapeField(parts[7])
-                    source.contentHash = unescapeField(parts[8])
-                    if (parts.size >= 10) {
-                        source.rootKind = unescapeField(parts[9])
-                    }
-                    manifest.sources.add(source)
-                } else {
-                    manifest.degraded = true
-                    manifest.diagnostics.add("version_manifest_malformed_source_line")
-                }
-            }
-        }
-        if (text.trimAscii() != "" && manifest.sources.size == 0 && recognizedLineCount == 0) {
-            manifest.degraded = true
-            manifest.diagnostics.add("version_manifest_malformed")
-        }
-        manifest
+        ckbParseCangjieVersionManifestArtifact(text)
     }
 
     public func saveCache(key: String, value: String): Unit {
@@ -5744,37 +6321,97 @@ public class FileKnowledgeStore {
     }
 
     public func loadRaw(): ArrayList<RawRecord> {
-        this.parseRaw(this.readLines("raw/records.ckb"))
+        let snapshot = this.loadActiveSnapshot()
+        if (snapshot.valid) { snapshot.rawRecords } else { ArrayList<RawRecord>() }
     }
 
     public func loadNormalized(): ArrayList<NormalizedRecord> {
-        this.parseNormalized(this.readLines("normalized/records.ckb"))
+        let snapshot = this.loadActiveSnapshot()
+        if (snapshot.valid) { snapshot.normalizedRecords } else { ArrayList<NormalizedRecord>() }
     }
 
     public func loadActiveVersion(): String {
-        this.readLines("index/active.version").trimAscii()
+        let snapshot = this.loadActiveSnapshot()
+        if (snapshot.valid) { snapshot.activeVersion } else { "" }
     }
 
     public func loadActiveIndex(): ArrayList<NormalizedRecord> {
-        this.parseNormalized(this.readLines("index/active.ckb"))
+        let snapshot = this.loadActiveSnapshot()
+        if (snapshot.valid) { snapshot.activeIndex } else { ArrayList<NormalizedRecord>() }
     }
 
     public func loadMetadataStatus(): StoreMetadataStatus {
-        let status = this.loadMetadataStatusFromPrefix("")
-        status.snapshotManifestTxId = this.loadActiveSnapshotManifestTxId()
-        status
+        if (!this.has("metadata/active-snapshot.manifest")) {
+            return this.loadMetadataStatusFromPrefix("")
+        }
+        let pointer = this.loadActiveSnapshotPointer()
+        if (pointer.valid) {
+            let prefix = "transactions/${safeName(pointer.txId)}"
+            let status = this.loadMetadataStatusFromPrefix(prefix)
+            status.snapshotManifestTxId = pointer.txId
+            status.valid = status.activeVersion == pointer.activeVersion
+            status.diagnostic = if (status.valid) { if (pointer.legacy) { "legacy_active_pointer" } else { "ok" } } else { "active_metadata_pointer_mismatch" }
+            return status
+        }
+        if (pointer.legacy) {
+            let status = this.loadMetadataStatusFromPrefix("")
+            status.snapshotManifestTxId = pointer.txId
+            status.diagnostic = pointer.diagnostic
+            return status
+        }
+        let invalid = StoreMetadataStatus()
+        invalid.valid = false
+        invalid.diagnostic = pointer.diagnostic
+        invalid.vectorActiveCollection = ""
+        invalid.vectorCandidateCollection = ""
+        invalid
     }
 
     public func loadActiveSnapshot(): ActiveSnapshot {
-        let txId = this.loadActiveSnapshotManifestTxId()
-        if (txId != "") {
-            let txRoot = "transactions/${safeName(txId)}"
-            if (this.has("${txRoot}/COMMIT")) {
-                return this.loadActiveSnapshotFromPrefix(txRoot, "")
-            }
-            return this.loadActiveSnapshotFromPrefix("", "ignored_uncommitted_snapshot_tx:${txId}")
+        if (!this.has("metadata/active-snapshot.manifest")) {
+            return this.loadActiveSnapshotFromPrefix("", "")
         }
-        this.loadActiveSnapshotFromPrefix("", "")
+        let pointer = this.loadActiveSnapshotPointer()
+        if (pointer.valid) {
+            let txRoot = "transactions/${safeName(pointer.txId)}"
+            if (pointer.legacy) {
+                if (this.has("${txRoot}/COMMIT")) {
+                    return this.loadActiveSnapshotFromPrefix(txRoot, "")
+                }
+                return this.loadActiveSnapshotFromPrefix("", "ignored_uncommitted_snapshot_tx:${pointer.txId}")
+            }
+            let snapshot = this.loadActiveSnapshotFromPrefix(txRoot, "", allowLiveOverlay: false)
+            if (snapshot.valid && snapshot.activeVersion == pointer.activeVersion &&
+                snapshot.vectorActiveCollection == pointer.vectorActiveCollection) {
+                this.applyActiveSnapshotCandidateLifecycleOverlay(snapshot, pointer)
+                return snapshot
+            }
+            snapshot.valid = false
+            snapshot.diagnostic = "active_snapshot_v2_payload_identity_mismatch"
+            return snapshot
+        }
+        if (pointer.legacy) {
+            return this.loadActiveSnapshotFromPrefix("", "ignored_uncommitted_snapshot_tx:${pointer.txId}")
+        }
+        let invalid = ActiveSnapshot()
+        invalid.valid = false
+        invalid.diagnostic = pointer.diagnostic
+        invalid
+    }
+
+    private func applyActiveSnapshotCandidateLifecycleOverlay(snapshot: ActiveSnapshot,
+        pointer: CkbActiveSnapshotPointer): Unit {
+        try {
+            let live = this.loadMetadataStatusFromPrefix("")
+            if (live.activeVersion == pointer.activeVersion) {
+                snapshot.candidateVersion = live.candidateVersion
+                snapshot.failedVersion = live.failedVersion
+            }
+        } catch (_: Exception) {
+            // Transaction payload remains authoritative when the live
+            // lifecycle overlay is unavailable or undecodable.
+            ()
+        }
     }
 
     public func backupActiveSnapshot(backupRoot: String): BackupRestoreResult {
@@ -5794,21 +6431,65 @@ public class FileKnowledgeStore {
             result.diagnostic = snapshot.diagnostic
             return result
         }
+        let companions = this.loadActiveSnapshotCompanionCopy()
+        if (!companions.valid) {
+            result.ok = false
+            result.diagnostic = companions.diagnostic
+            return result
+        }
+        let materialized = KnowledgeBase(FakeClock(0))
+        if (!materialized.restoreActiveSnapshot(snapshot)) {
+            result.ok = false
+            result.diagnostic = materialized.status().restoreDiagnostic
+            return result
+        }
+        let graph = materialized.activeGraphBuild()
+        if (!graph.ok) {
+            result.ok = false
+            result.diagnostic = graph.diagnostic
+            return result
+        }
+        let sourceMetadata = this.loadMetadataStatus()
+        if (!sourceMetadata.valid) {
+            result.ok = false
+            result.diagnostic = sourceMetadata.diagnostic
+            return result
+        }
+        let transactionStatus = this.activeSnapshotTransactionStatus(materialized.status(),
+            sourceMetadata, snapshot, graph)
         let backup = FileKnowledgeStore(backupRoot)
         backup.ensureLayout()
-        result.files += this.copyIfPresentTo(backup, "raw/records.ckb")
-        result.files += this.copyIfPresentTo(backup, "normalized/records.ckb")
-        result.files += this.copyIfPresentTo(backup, "metadata/status.ckb")
-        result.files += this.copyIfPresentTo(backup, "metadata/cangjie-version-manifest.ckb")
-        result.files += this.copyIfPresentTo(backup, "index/active.version")
-        result.files += this.copyIfPresentTo(backup, "index/active.ckb")
-        result.files += this.copyIfPresentTo(backup, "index/vector-active.ckb")
-        result.files += this.copyIfPresentTo(backup, "index/graph-nodes.ckb")
-        result.files += this.copyIfPresentTo(backup, "index/graph-edges.ckb")
-        backup.writeLines("metadata/backup.ckb", "active=${snapshot.activeVersion}\nsource=active-snapshot\n")
-        result.files += 1
-        result.ok = true
-        result.diagnostic = "ok"
+        let committed = backup.writeActiveSnapshotTransaction(transactionStatus, snapshot.rawRecords,
+            snapshot.normalizedRecords, snapshot.activeIndex, snapshot.vectorRecords,
+            snapshot.vectorActiveCollection, graph, persistVectorFile: snapshot.hasVectorArtifact,
+            companionCopy: companions)
+        if (!committed.ok) {
+            result.ok = false
+            result.diagnostic = if (committed.diagnostics.size > 0) {
+                committed.diagnostics[committed.diagnostics.size - 1]
+            } else { "backup_transaction_not_committed" }
+            return result
+        }
+        let lifecycleDiagnostic = backup.replayActiveSnapshotCandidateLifecycle(snapshot)
+        if (lifecycleDiagnostic != "") {
+            result.ok = false
+            result.diagnostic = lifecycleDiagnostic
+            return result
+        }
+        var markerDiagnostic = ""
+        try {
+            backup.writeLinesAtomically("metadata/backup.ckb",
+                "schema=ckb-active-backup-v2\nactive=${snapshot.activeVersion}\ntxId=${committed.txId}\nsource=validated-active-transaction\n")
+        } catch (e: Exception) {
+            markerDiagnostic = "backup_marker_degraded:${utf8SafePrefix(redactSensitive(if (e.message == "") { "write_failed" } else { e.message }), 160)}"
+        }
+        result.files = 9 + (if (markerDiagnostic == "") { 1 } else { 0 }) +
+            (if (snapshot.hasVectorArtifact) { 1 } else { 0 }) +
+            (if (committed.companionMode == CkbActiveSnapshotCompanionMode.NONE) { 0 } else { 3 })
+        result.ok = committed.businessCommitted
+        result.diagnostic = if (result.ok) {
+            if (markerDiagnostic == "") { "ok" } else { markerDiagnostic }
+        } else { "backup_transaction_not_committed" }
         result
     }
 
@@ -5830,19 +6511,110 @@ public class FileKnowledgeStore {
             result.diagnostic = snapshot.diagnostic
             return result
         }
+        let companions = backup.loadActiveSnapshotCompanionCopy()
+        if (!companions.valid) {
+            result.ok = false
+            result.diagnostic = companions.diagnostic
+            return result
+        }
+        let materialized = KnowledgeBase(FakeClock(0))
+        if (!materialized.restoreActiveSnapshot(snapshot)) {
+            result.ok = false
+            result.diagnostic = materialized.status().restoreDiagnostic
+            return result
+        }
+        let graph = materialized.activeGraphBuild()
+        if (!graph.ok) {
+            result.ok = false
+            result.diagnostic = graph.diagnostic
+            return result
+        }
+        let sourceMetadata = backup.loadMetadataStatus()
+        if (!sourceMetadata.valid) {
+            result.ok = false
+            result.diagnostic = sourceMetadata.diagnostic
+            return result
+        }
+        let transactionStatus = this.activeSnapshotTransactionStatus(materialized.status(),
+            sourceMetadata, snapshot, graph)
         this.ensureLayout()
-        result.files += backup.copyIfPresentTo(this, "raw/records.ckb")
-        result.files += backup.copyIfPresentTo(this, "normalized/records.ckb")
-        result.files += backup.copyIfPresentTo(this, "metadata/status.ckb")
-        result.files += backup.copyIfPresentTo(this, "metadata/cangjie-version-manifest.ckb")
-        result.files += backup.copyIfPresentTo(this, "index/active.version")
-        result.files += backup.copyIfPresentTo(this, "index/active.ckb")
-        result.files += backup.copyIfPresentTo(this, "index/vector-active.ckb")
-        result.files += backup.copyIfPresentTo(this, "index/graph-nodes.ckb")
-        result.files += backup.copyIfPresentTo(this, "index/graph-edges.ckb")
-        result.ok = true
-        result.diagnostic = "ok"
+        let committed = this.writeActiveSnapshotTransaction(transactionStatus, snapshot.rawRecords,
+            snapshot.normalizedRecords, snapshot.activeIndex, snapshot.vectorRecords,
+            snapshot.vectorActiveCollection, graph, persistVectorFile: snapshot.hasVectorArtifact,
+            companionCopy: companions)
+        let lifecycleDiagnostic = if (committed.ok && committed.businessCommitted) {
+            this.replayActiveSnapshotCandidateLifecycle(snapshot)
+        } else { "" }
+        let reloaded = this.loadActiveSnapshot()
+        let pointer = this.loadActiveSnapshotPointer()
+        result.ok = committed.ok && committed.businessCommitted && pointer.valid &&
+            pointer.txId == committed.txId && reloaded.valid &&
+            reloaded.activeVersion == snapshot.activeVersion && lifecycleDiagnostic == "" &&
+            reloaded.candidateVersion == snapshot.candidateVersion &&
+            reloaded.failedVersion == snapshot.failedVersion
+        result.files = if (result.ok) {
+            9 + (if (snapshot.hasVectorArtifact) { 1 } else { 0 }) +
+                (if (committed.companionMode == CkbActiveSnapshotCompanionMode.NONE) { 0 } else { 3 })
+        } else { 0 }
+        result.diagnostic = if (result.ok) { "ok" } else if (lifecycleDiagnostic != "") {
+            lifecycleDiagnostic
+        } else if (committed.diagnostics.size > 0) {
+            committed.diagnostics[committed.diagnostics.size - 1]
+        } else if (!pointer.valid) { pointer.diagnostic } else { reloaded.diagnostic }
         result
+    }
+
+    private func replayActiveSnapshotCandidateLifecycle(snapshot: ActiveSnapshot): String {
+        let lifecycle = KnowledgeStatus()
+        lifecycle.activeKnowledgeVersion = snapshot.activeVersion
+        lifecycle.candidateKnowledgeVersion = snapshot.candidateVersion
+        lifecycle.failedCandidateVersion = snapshot.failedVersion
+        try {
+            // Backup/restore carries only the live lifecycle overlay. Candidate
+            // immutable payloads are not part of the active backup contract.
+            this.saveLiveCandidateLifecycleMetadata(lifecycle)
+        } catch (e: Exception) {
+            return "active_candidate_lifecycle_replay_failed:${utf8SafePrefix(redactSensitive(if (e.message == "") { "write_failed" } else { e.message }), 160)}"
+        }
+        let reloaded = this.loadActiveSnapshot()
+        if (!reloaded.valid || reloaded.activeVersion != snapshot.activeVersion ||
+            reloaded.candidateVersion != snapshot.candidateVersion ||
+            reloaded.failedVersion != snapshot.failedVersion) {
+            return "active_candidate_lifecycle_replay_mismatch"
+        }
+        ""
+    }
+
+    private func activeSnapshotTransactionStatus(materialized: KnowledgeStatus,
+        source: StoreMetadataStatus, snapshot: ActiveSnapshot,
+        graph: GraphBuildResult): KnowledgeStatus {
+        materialized.activeKnowledgeVersion = snapshot.activeVersion
+        materialized.candidateKnowledgeVersion = source.candidateVersion
+        materialized.failedCandidateVersion = source.failedVersion
+        materialized.activeStateSource = source.activeStateSource
+        materialized.storage.rawCount = snapshot.rawRecords.size
+        materialized.storage.normalizedCount = snapshot.normalizedRecords.size
+        materialized.storage.indexCount = snapshot.activeIndex.size
+        materialized.storage.textIndexCount = source.textIndexCount
+        materialized.storage.vectorIndexCount = source.vectorIndexCount
+        materialized.storage.symbolIndexCount = source.symbolIndexCount
+        materialized.storage.graphIndexCount = source.graphIndexCount
+        materialized.storage.vectorBackend = source.vectorBackend
+        materialized.storage.vectorState = source.vectorState
+        materialized.storage.vectorCollection = source.vectorCollection
+        materialized.storage.vectorActiveCollection = source.vectorActiveCollection
+        materialized.storage.vectorCandidateCollection = source.vectorCandidateCollection
+        materialized.storage.vectorDimension = source.vectorDimension
+        materialized.storage.vectorDegradedReason = source.vectorDegradedReason
+        materialized.storage.graphBackend = source.graphBackend
+        materialized.storage.graphState = source.graphState
+        materialized.storage.graphNodeCount = if (source.graphNodeCount > 0) {
+            source.graphNodeCount
+        } else { graph.nodes.size }
+        materialized.storage.graphEdgeCount = if (source.graphEdgeCount > 0) {
+            source.graphEdgeCount
+        } else { graph.edges.size }
+        materialized
     }
 
     public func saveScheduler(entries: ArrayList<ScheduleEntry>): Unit {
@@ -5920,6 +6692,18 @@ public class FileKnowledgeStore {
         exists(this.root.join(relative))
     }
 
+    public func hasAuthoritativeActiveSnapshotPointer(): Bool {
+        if (!this.has("metadata/active-snapshot.manifest")) { return false }
+        try {
+            _ = this.readLines("metadata/active-snapshot.manifest")
+            let pointer = this.loadActiveSnapshotPointer()
+            return !(pointer.valid && pointer.legacy)
+        } catch (_: Exception) {
+            // An undecodable pointer cannot safely be classified as a legacy pointer.
+            return true
+        }
+    }
+
     public func readText(relative: String): String {
         this.readLines(relative)
     }
@@ -5937,10 +6721,14 @@ public class FileKnowledgeStore {
         if (!exists(path.parent)) {
             Directory.create(path.parent, recursive: true)
         }
-        let tmp = path.parent.join(".tmp-${safeName(relative)}-${stableSummaryHash(text)}")
+        let tmp = this.atomicTmpPath(path, relative)
         try {
             File.writeTo(tmp, text.toArray())
             this.replaceFileWithTmp(path, tmp)
+            let readback = this.readLines(relative)
+            if (ckbReleaseEvidenceHash(readback) != ckbReleaseEvidenceHash(text)) {
+                throw Exception("atomic_write_readback_hash_mismatch:${ckbReleaseEvidenceHash(relative)}")
+            }
         } catch (e: Exception) {
             this.deleteAtomicTmp(tmp)
             throw e
@@ -5948,7 +6736,9 @@ public class FileKnowledgeStore {
     }
 
     private func atomicTmpPath(path: Path, relative: String): Path {
-        path.parent.join(".tmp-${safeName(relative)}-${DateTime.now().toUnixTimeStamp().toMilliseconds()}")
+        this.atomicTmpSequence += 1
+        let identity = "${relative}|${DateTime.now().toUnixTimeStamp().toMilliseconds()}|${this.atomicTmpSequence}"
+        path.parent.join(".tmp-${ckbReleaseEvidenceHash(identity)}")
     }
 
     private func writeRecordsFileAtomically(relative: String, lines: ArrayList<String>): Unit {
@@ -6013,25 +6803,89 @@ public class FileKnowledgeStore {
         this.readLines("${prefix}/${relative}")
     }
 
-    private func loadActiveSnapshotManifestTxId(): String {
-        let text = this.readLines("metadata/active-snapshot.manifest")
-        for (line in text.split("\n")) {
-            let trimmed = line.trimAscii()
-            if (trimmed.startsWith("txId=")) {
-                return trimmed[5..trimmed.size]
+    private func activeLiveShadowMatchesTx(txRoot: String,
+        companionMode!: String = CkbActiveSnapshotCompanionMode.NONE): Bool {
+        try {
+            let metadata = this.loadMetadataStatusFromPrefix(txRoot)
+            let vectorRelative = "index/vector-${safeName(metadata.vectorActiveCollection)}.ckb"
+            let vectorMatches = !this.has("${txRoot}/${vectorRelative}") ||
+                this.readLines(vectorRelative) == this.readLines("${txRoot}/${vectorRelative}")
+            let companionsMatch = if (companionMode == CkbActiveSnapshotCompanionMode.NONE) {
+                !this.has("metadata/active-cangjie-version-manifest.ckb") &&
+                    !this.has("metadata/active-cangjie-freshness.ckb") &&
+                    !this.has("metadata/active-cangjie-release-coverage.ckb")
+            } else {
+                this.readLines("metadata/active-cangjie-version-manifest.ckb") == this.readLines("${txRoot}/metadata/cangjie-version-manifest.ckb") &&
+                this.readLines("metadata/active-cangjie-freshness.ckb") == this.readLines("${txRoot}/metadata/cangjie-freshness.ckb") &&
+                this.readLines("metadata/active-cangjie-release-coverage.ckb") == this.readLines("${txRoot}/metadata/cangjie-release-coverage.ckb")
             }
+            return this.activeSnapshotAuthoritativeRawEvidenceHash("raw") ==
+                    this.activeSnapshotAuthoritativeRawEvidenceHash("${txRoot}/raw") &&
+                this.readLines("normalized/records.ckb") == this.readLines("${txRoot}/normalized/records.ckb") &&
+                this.readLines("index/active.version") == this.readLines("${txRoot}/index/active.version") &&
+                this.readLines("index/active.ckb") == this.readLines("${txRoot}/index/active.ckb") &&
+                this.readLines("index/graph-nodes.ckb") == this.readLines("${txRoot}/index/graph-nodes.ckb") &&
+                this.readLines("index/graph-edges.ckb") == this.readLines("${txRoot}/index/graph-edges.ckb") &&
+                this.activeSnapshotAuthoritativeStatusText("metadata/status.ckb") ==
+                    this.activeSnapshotAuthoritativeStatusText("${txRoot}/metadata/status.ckb") &&
+                companionsMatch && vectorMatches
+        } catch (_: Exception) {
+            false
         }
-        ""
     }
 
-    private func activeLiveShadowMatchesTx(txRoot: String): Bool {
-        this.readLines("raw/records.ckb") == this.readLines("${txRoot}/raw/records.ckb") &&
-        this.readLines("normalized/records.ckb") == this.readLines("${txRoot}/normalized/records.ckb") &&
-        this.readLines("index/active.version") == this.readLines("${txRoot}/index/active.version") &&
-        this.readLines("index/active.ckb") == this.readLines("${txRoot}/index/active.ckb") &&
-        this.readLines("index/graph-nodes.ckb") == this.readLines("${txRoot}/index/graph-nodes.ckb") &&
-        this.readLines("index/graph-edges.ckb") == this.readLines("${txRoot}/index/graph-edges.ckb") &&
-        this.readLines("metadata/status.ckb") == this.readLines("${txRoot}/metadata/status.ckb")
+    private func activeSnapshotAuthoritativeRawEvidenceHash(relative: String): String {
+        this.activeSnapshotAuthoritativeRawPathEvidenceHash(this.root.join(relative))
+    }
+
+    private func activeSnapshotAuthoritativeRawPathEvidenceHash(root: Path): String {
+        if (!exists(root)) { return "missing" }
+        let entries = ArrayList<String>()
+        this.activeSnapshotCollectAuthoritativeRawEvidence(root, "", entries)
+        let ordered = entries.toArray()
+        sort(ordered)
+        let canonical = ArrayList<String>()
+        canonical.add(all: ordered)
+        ckbReleaseCompanionEvidenceHash(joinStrings(canonical, "|"))
+    }
+
+    private func activeSnapshotCollectAuthoritativeRawEvidence(root: Path,
+        prefix: String, out: ArrayList<String>): Unit {
+        for (entry in Directory.readFrom(root)) {
+            if (prefix == "" && entry.isDirectory() && entry.name == "candidate") {
+                continue
+            }
+            let relative = if (prefix == "") { entry.name } else { "${prefix}/${entry.name}" }
+            if (entry.isDirectory()) {
+                this.activeSnapshotCollectAuthoritativeRawEvidence(entry.path, relative, out)
+            } else if (entry.isRegular()) {
+                out.add("${relative}=${this.activeSnapshotFilePathEvidenceHash(entry.path)}")
+            }
+        }
+    }
+
+    private func activeSnapshotAuthoritativeStatusText(relative: String): String {
+        let out = StringBuilder()
+        for (line in this.readLines(relative).split("\n")) {
+            if (line == "" || line.startsWith("candidate=") ||
+                line.startsWith("failed=")) { continue }
+            out.append(line)
+            out.append("\n")
+        }
+        out.toString()
+    }
+
+    private func deleteActiveSnapshotCompanionLiveShadows(): Unit {
+        for (relative in ["metadata/active-cangjie-version-manifest.ckb",
+            "metadata/active-cangjie-freshness.ckb",
+            "metadata/active-cangjie-release-coverage.ckb"]) {
+            let path = this.root.join(relative)
+            if (!exists(path)) { continue }
+            let code = try { launch("/bin/rm", ["-f", path.toString()]).wait() } catch (_: Exception) { -1 }
+            if (code != 0 || exists(path)) {
+                throw Exception("active_snapshot_live_companion_remove_failed:${relative}")
+            }
+        }
     }
 
     private func copySnapshotFileFromTx(txRoot: String, relative: String, result: ActiveSnapshotRepairResult): Unit {
@@ -6071,17 +6925,91 @@ public class FileKnowledgeStore {
         }
         let source = this.root.join(sourceRelative)
         let destination = this.root.join(relative)
-        if (!exists(destination)) {
-            Directory.create(destination, recursive: true)
-        }
-        let code = launch("/bin/cp", ["-Rf", "${source.toString()}/.", destination.toString()]).wait()
-        if (code != 0) {
-            throw Exception("active_snapshot_live_copy_failed:${relative}")
+        let tmp = this.atomicTmpPath(destination, "${relative}-tree")
+        let backup = this.atomicTmpPath(destination, "${relative}-backup")
+        let candidateSource = destination.join("candidate")
+        let preserveCandidate = relative == "raw" && exists(candidateSource)
+        var oldMoved = false
+        var newMoved = false
+        var candidateMoved = false
+        var rollbackFailed = false
+        try {
+            Directory.create(tmp, recursive: true)
+            let copied = launch("/bin/cp", ["-Rf", "${source.toString()}/.", tmp.toString()]).wait()
+            if (copied != 0) {
+                throw Exception("active_snapshot_live_tree_prepare_failed:${relative}")
+            }
+            if (this.activeSnapshotAuthoritativeRawPathEvidenceHash(source) !=
+                this.activeSnapshotAuthoritativeRawPathEvidenceHash(tmp)) {
+                throw Exception("active_snapshot_live_tree_prepare_failed:${relative}")
+            }
+            this.ensureActiveSnapshotDeadline("${progressStage}_swap_before", deadlineAtMillis)
+            if (exists(destination)) {
+                if (launch("/bin/mv", ["-f", destination.toString(), backup.toString()]).wait() != 0) {
+                    throw Exception("active_snapshot_live_tree_backup_failed:${relative}")
+                }
+                oldMoved = true
+            }
+            if (launch("/bin/mv", ["-f", tmp.toString(), destination.toString()]).wait() != 0) {
+                throw Exception("active_snapshot_live_tree_replace_failed:${relative}")
+            }
+            newMoved = true
+            if (preserveCandidate) {
+                let backupCandidate = backup.join("candidate")
+                let destinationCandidate = destination.join("candidate")
+                if (!exists(backupCandidate) || exists(destinationCandidate) ||
+                    launch("/bin/mv", ["-f", backupCandidate.toString(),
+                        destinationCandidate.toString()]).wait() != 0) {
+                    throw Exception("active_snapshot_live_candidate_preserve_failed")
+                }
+                candidateMoved = true
+            }
+            if (this.activeSnapshotAuthoritativeRawPathEvidenceHash(source) !=
+                this.activeSnapshotAuthoritativeRawPathEvidenceHash(destination) ||
+                (preserveCandidate && !exists(destination.join("candidate")))) {
+                throw Exception("active_snapshot_live_tree_readback_mismatch:${relative}")
+            }
+        } catch (e: Exception) {
+            if (candidateMoved) {
+                let destinationCandidate = destination.join("candidate")
+                let backupCandidate = backup.join("candidate")
+                if (!exists(destinationCandidate) || exists(backupCandidate)) {
+                    rollbackFailed = true
+                } else {
+                    let movedBack = try { launch("/bin/mv", ["-f",
+                        destinationCandidate.toString(), backupCandidate.toString()]).wait()
+                    } catch (_: Exception) { -1 }
+                    if (movedBack != 0) {
+                        rollbackFailed = true
+                    } else {
+                        candidateMoved = false
+                    }
+                }
+            }
+            if (!rollbackFailed && newMoved && exists(destination)) {
+                let removed = try { launch("/bin/rm", ["-rf",
+                    destination.toString()]).wait() } catch (_: Exception) { -1 }
+                if (removed != 0 || exists(destination)) { rollbackFailed = true }
+            }
+            if (!rollbackFailed && oldMoved && exists(backup) && !exists(destination)) {
+                let restored = try { launch("/bin/mv", ["-f", backup.toString(),
+                    destination.toString()]).wait() } catch (_: Exception) { -1 }
+                if (restored != 0 || !exists(destination)) { rollbackFailed = true }
+            }
+            if (rollbackFailed) {
+                throw Exception("active_snapshot_live_tree_rollback_failed:${relative}")
+            }
+            throw e
+        } finally {
+            if (exists(tmp)) { try { _ = launch("/bin/rm", ["-rf", tmp.toString()]).wait() } catch (_: Exception) { () } }
+            if (!rollbackFailed && exists(backup)) { try { _ = launch("/bin/rm", ["-rf", backup.toString()]).wait() } catch (_: Exception) { () } }
         }
         this.ensureActiveSnapshotDeadline("${progressStage}_copy_after", deadlineAtMillis)
     }
 
-    private func loadActiveSnapshotFromPrefix(prefix: String, extraDiagnostic: String): ActiveSnapshot {
+    private func loadActiveSnapshotFromPrefix(prefix: String, extraDiagnostic: String,
+        allowLiveOverlay!: Bool = true): ActiveSnapshot {
+        this.activeSnapshotMaterializations += 1
         let snapshot = ActiveSnapshot()
         snapshot.activeVersion = this.readLinesFromPrefix(prefix, "index/active.version").trimAscii()
         if (snapshot.activeVersion == "") {
@@ -6089,7 +7017,9 @@ public class FileKnowledgeStore {
             snapshot.diagnostic = snapshotDiagnostic("missing_active_version", extraDiagnostic)
             return snapshot
         }
-        let metadata = this.activeSnapshotMetadataWithLiveOverlay(prefix, snapshot.activeVersion)
+        let metadata = if (allowLiveOverlay) {
+            this.activeSnapshotMetadataWithLiveOverlay(prefix, snapshot.activeVersion)
+        } else { this.loadMetadataStatusFromPrefix(prefix) }
         snapshot.candidateVersion = metadata.candidateVersion
         snapshot.failedVersion = metadata.failedVersion
         snapshot.activeStateSource = metadata.activeStateSource
@@ -6158,18 +7088,36 @@ public class FileKnowledgeStore {
                 status.normalizedCount = parseIntField(value, 0)
             } else if (key == "indexCount") {
                 status.indexCount = parseIntField(value, 0)
+            } else if (key == "textIndexCount") {
+                status.textIndexCount = parseIntField(value, 0)
             } else if (key == "vectorIndexCount") {
                 status.vectorIndexCount = parseIntField(value, 0)
+            } else if (key == "symbolIndexCount") {
+                status.symbolIndexCount = parseIntField(value, 0)
+            } else if (key == "graphIndexCount") {
+                status.graphIndexCount = parseIntField(value, 0)
             } else if (key == "vectorBackend") {
                 status.vectorBackend = value
             } else if (key == "vectorState") {
                 status.vectorState = value
+            } else if (key == "vectorCollection") {
+                status.vectorCollection = value
             } else if (key == "vectorActiveCollection") {
                 status.vectorActiveCollection = value
             } else if (key == "vectorCandidateCollection") {
                 status.vectorCandidateCollection = value
             } else if (key == "vectorDimension") {
                 status.vectorDimension = parseIntField(value, 0)
+            } else if (key == "vectorDegradedReason") {
+                status.vectorDegradedReason = unescapeField(value)
+            } else if (key == "graphBackend") {
+                status.graphBackend = value
+            } else if (key == "graphState") {
+                status.graphState = value
+            } else if (key == "graphNodeCount") {
+                status.graphNodeCount = parseIntField(value, 0)
+            } else if (key == "graphEdgeCount") {
+                status.graphEdgeCount = parseIntField(value, 0)
             }
         }
         status
@@ -6360,6 +7308,16 @@ public class FileKnowledgeStore {
         this.emitActiveSnapshotStage(stageSink, "active_snapshot_live_status_before", "running", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
         this.copySnapshotFileAtomicallyFromTx(txRoot, "metadata/status.ckb", deadlineAtMillis, "active_snapshot_live_status")
         this.emitActiveSnapshotStage(stageSink, "active_snapshot_live_status_after", "ok", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
+        if (this.has("${txRoot}/metadata/cangjie-version-manifest.ckb")) {
+            this.writeLinesAtomically("metadata/active-cangjie-version-manifest.ckb",
+                this.readLines("${txRoot}/metadata/cangjie-version-manifest.ckb"))
+            this.writeLinesAtomically("metadata/active-cangjie-freshness.ckb",
+                this.readLines("${txRoot}/metadata/cangjie-freshness.ckb"))
+            this.writeLinesAtomically("metadata/active-cangjie-release-coverage.ckb",
+                this.readLines("${txRoot}/metadata/cangjie-release-coverage.ckb"))
+        } else {
+            this.deleteActiveSnapshotCompanionLiveShadows()
+        }
     }
 
     private func normalizedLines(records: ArrayList<NormalizedRecord>): String {
@@ -6661,38 +7619,70 @@ public class FileKnowledgeStore {
     }
 
     private func newActiveSnapshotTxId(activeVersion: String): String {
-        "${safeName(activeVersion)}-${DateTime.now().toUnixTimeStamp().toMilliseconds()}-${stableSummaryHash(activeVersion)}"
+        let nowMillis = this.activeSnapshotTxClock.nowMillis()
+        while (true) {
+            this.atomicTmpSequence += 1
+            let identity = "${activeVersion}|${nowMillis}|${this.atomicTmpSequence}"
+            let txId = "${safeName(activeVersion)}-${nowMillis}-${stableSummaryHash(identity)}"
+            if (!this.has("transactions/${safeName(txId)}")) { return txId }
+        }
+        ""
     }
 
-    private func activeSnapshotCommitLines(txId: String, status: KnowledgeStatus): String {
-        var text = "txId=${txId}\n"
-        text += "active=${status.activeKnowledgeVersion}\n"
-        text += "committed=true\n"
-        text
-    }
-
-    private func activeSnapshotManifestLines(txId: String, status: KnowledgeStatus): String {
-        var text = "txId=${txId}\n"
+    private func activeSnapshotCommitLines(txId: String, status: KnowledgeStatus,
+        result: CkbActiveSnapshotTransactionResult): String {
+        var text = "schema=ckb-active-commit-v2\n"
+        text += "txId=${txId}\n"
         text += "active=${status.activeKnowledgeVersion}\n"
         text += "vectorActiveCollection=${status.storage.vectorActiveCollection}\n"
+        text += "companionMode=${result.companionMode}\n"
+        text += "persistVectorFile=${result.persistVectorFile}\n"
+        text += "payloadHash=${result.payloadHash}\n"
+        text += "manifestHash=${result.manifestHash}\n"
+        text += "freshnessHash=${result.freshnessHash}\n"
+        text += "coverageHash=${result.coverageHash}\n"
         text += "committed=true\n"
         text
     }
 
-    private func activeSnapshotCommitSidecarLines(txId: String, status: KnowledgeStatus, vectorCollection: String, activeCount: Int64, vectorCount: Int64, persistVectorFile: Bool): String {
-        var text = "txId=${escapeField(txId)}\n"
+    private func activeSnapshotManifestLines(txId: String, status: KnowledgeStatus,
+        result: CkbActiveSnapshotTransactionResult): String {
+        var text = "schema=ckb-active-pointer-v2\n"
+        text += "txId=${txId}\n"
+        text += "active=${status.activeKnowledgeVersion}\n"
+        text += "vectorActiveCollection=${status.storage.vectorActiveCollection}\n"
+        text += "companionMode=${result.companionMode}\n"
+        text += "manifestHash=${result.manifestHash}\n"
+        text += "freshnessHash=${result.freshnessHash}\n"
+        text += "coverageHash=${result.coverageHash}\n"
+        text += "committed=true\n"
+        text
+    }
+
+    private func activeSnapshotCommitSidecarLines(txId: String, status: KnowledgeStatus, vectorCollection: String, activeCount: Int64, vectorCount: Int64, persistVectorFile: Bool, result: CkbActiveSnapshotTransactionResult): String {
+        var text = "schema=ckb-active-commit-sidecar-v2\n"
+        text += "txId=${escapeField(txId)}\n"
         text += "active=${escapeField(status.activeKnowledgeVersion)}\n"
         text += "vectorActiveCollection=${escapeField(status.storage.vectorActiveCollection)}\n"
         text += "vectorCollection=${escapeField(vectorCollection)}\n"
         text += "activeCount=${activeCount}\n"
         text += "vectorCount=${vectorCount}\n"
         text += "persistVectorFile=${persistVectorFile}\n"
+        text += "companionMode=${result.companionMode}\n"
+        text += "payloadHash=${result.payloadHash}\n"
+        text += "manifestHash=${result.manifestHash}\n"
+        text += "freshnessHash=${result.freshnessHash}\n"
+        text += "coverageHash=${result.coverageHash}\n"
+        text += "pointerCommitted=${result.pointerCommitted}\n"
+        text += "liveShadowConsistent=${result.liveShadowConsistent}\n"
         text += "committed=true\n"
         text
     }
 }
 
 public class StoreMetadataStatus {
+    public var valid: Bool = true
+    public var diagnostic: String = ""
     public var activeVersion: String = ""
     public var candidateVersion: String = ""
     public var failedVersion: String = ""
@@ -6701,12 +7691,21 @@ public class StoreMetadataStatus {
     public var rawCount: Int64 = 0
     public var normalizedCount: Int64 = 0
     public var indexCount: Int64 = 0
+    public var textIndexCount: Int64 = 0
     public var vectorIndexCount: Int64 = 0
+    public var symbolIndexCount: Int64 = 0
+    public var graphIndexCount: Int64 = 0
     public var vectorBackend: String = ""
     public var vectorState: String = ""
+    public var vectorCollection: String = "active"
     public var vectorDimension: Int64 = 0
     public var vectorActiveCollection: String = "active"
     public var vectorCandidateCollection: String = "candidate"
+    public var vectorDegradedReason: String = ""
+    public var graphBackend: String = ""
+    public var graphState: String = ""
+    public var graphNodeCount: Int64 = 0
+    public var graphEdgeCount: Int64 = 0
 
     public init() {}
 }
@@ -7083,27 +8082,17 @@ public class CkbPersistedActiveCollectionAuthority {
 
 public func ckbLoadPersistedActiveCollectionAuthority(store: FileKnowledgeStore): CkbPersistedActiveCollectionAuthority {
     let authority = CkbPersistedActiveCollectionAuthority()
-    if (!store.has("metadata/status.ckb") || !store.has("metadata/active-snapshot.manifest")) {
+    if (!store.has("metadata/active-snapshot.manifest")) {
         return authority
     }
-    let metadata = try {
-        store.readText("metadata/status.ckb")
-    } catch (_: Exception) {
-        authority.status = "active_authority_invalid_response_encoding"
+    let metadata = store.loadMetadataStatus()
+    let pointer = store.loadActiveSnapshotPointer()
+    if (!metadata.valid || !pointer.valid) {
+        authority.status = "active_authority_invalid:${if (!pointer.valid) { pointer.diagnostic } else { metadata.diagnostic }}"
         return authority
     }
-    let manifest = try {
-        store.readText("metadata/active-snapshot.manifest")
-    } catch (_: Exception) {
-        authority.status = "active_authority_invalid_response_encoding"
-        return authority
-    }
-    if (metadata == "" || manifest == "") {
-        authority.status = "active_authority_empty"
-        return authority
-    }
-    authority.metadataCollection = ckbCurrentField(metadata, "vectorActiveCollection")
-    authority.manifestCollection = ckbCurrentField(manifest, "vectorActiveCollection")
+    authority.metadataCollection = metadata.vectorActiveCollection
+    authority.manifestCollection = pointer.vectorActiveCollection
     if (authority.metadataCollection == "" || authority.manifestCollection == "") {
         authority.status = "active_authority_malformed"
         return authority
@@ -7435,13 +8424,105 @@ public class ActiveSnapshot {
     public init() {}
 }
 
+public class CkbActiveSnapshotCompanionMode {
+    public static let RELEASE: String = "release"
+    public static let COPY_FORWARD: String = "copy-forward"
+    public static let NONE: String = "none"
+}
+
+public class CkbActiveSnapshotFaultPoints {
+    public static let MANIFEST: String = "transaction_manifest"
+    public static let FRESHNESS: String = "transaction_freshness"
+    public static let COVERAGE: String = "transaction_coverage"
+    public static let COMMIT: String = "transaction_commit"
+    public static let POINTER_BEFORE: String = "active_pointer_before"
+    public static let POINTER_AFTER: String = "active_pointer_after"
+    public static let LIVE_SHADOW: String = "live_shadow"
+}
+
+public interface CkbActiveSnapshotFaultInjector {
+    func checkpoint(point: String): Unit
+}
+
+public class NoopCkbActiveSnapshotFaultInjector <: CkbActiveSnapshotFaultInjector {
+    public init() {}
+    public func checkpoint(point: String): Unit { () }
+}
+
+public class CkbActiveSnapshotPointer {
+    public var valid: Bool = false
+    public var legacy: Bool = false
+    public var schema: String = ""
+    public var txId: String = ""
+    public var activeVersion: String = ""
+    public var vectorActiveCollection: String = ""
+    public var companionMode: String = CkbActiveSnapshotCompanionMode.NONE
+    public var manifestHash: String = ""
+    public var freshnessHash: String = ""
+    public var coverageHash: String = ""
+    public var diagnostic: String = "active_pointer_missing"
+
+    public init() {}
+}
+
+public class CkbActiveSnapshotCompanionCopy {
+    public var provided: Bool = false
+    public var valid: Bool = true
+    public var mode: String = CkbActiveSnapshotCompanionMode.NONE
+    public var manifestText: String = ""
+    public var freshnessText: String = ""
+    public var coverageText: String = ""
+    public var manifestHash: String = ""
+    public var freshnessHash: String = ""
+    public var coverageHash: String = ""
+    public var diagnostic: String = ""
+
+    public init() {}
+}
+
+private class CkbActiveSnapshotCompanionPayload {
+    var valid: Bool = true
+    var mode: String = CkbActiveSnapshotCompanionMode.NONE
+    var manifestText: String = ""
+    var freshnessText: String = ""
+    var coverageText: String = ""
+    var manifestHash: String = ""
+    var freshnessHash: String = ""
+    var coverageHash: String = ""
+    var diagnostic: String = ""
+
+    init() {}
+}
+
+public class CkbActiveSnapshotTransactionResult {
+    public var ok: Bool = false
+    public var txId: String = ""
+    public var activeVersion: String = ""
+    public var vectorActiveCollection: String = ""
+    public var persistVectorFile: Bool = false
+    public var companionMode: String = CkbActiveSnapshotCompanionMode.NONE
+    public var businessCommitted: Bool = false
+    public var pointerCommitted: Bool = false
+    public var liveShadowConsistent: Bool = false
+    public var payloadHash: String = ""
+    public var manifestHash: String = ""
+    public var freshnessHash: String = ""
+    public var coverageHash: String = ""
+    public var failureDiagnostic: String = ""
+    public var diagnostics: ArrayList<String> = ArrayList<String>()
+
+    public init() {}
+}
+
 public class ActiveSnapshotRepairResult {
     public var ok: Bool = false
     public var repairPerformed: Bool = false
     public var txId: String = ""
     public var activeVersion: String = ""
     public var diagnostic: String = ""
+    public var liveShadowConsistent: Bool = false
     public var copiedFiles: ArrayList<String> = ArrayList<String>()
+    public var removedFiles: ArrayList<String> = ArrayList<String>()
     public var missingFiles: ArrayList<String> = ArrayList<String>()
 
     public init() {}
@@ -9077,16 +10158,7 @@ public class CkbSchedulerTaskRunner <: SchedulerTaskRunner {
     }
 
     private func runtimeVersionManifest(): CangjieVersionManifest {
-        let stored = this.store.loadCangjieVersionManifest()
-        if (stored.sources.size > 0) {
-            return stored
-        }
-        let runtime = ckbRuntimeCangjieVersionManifest(this.config)
-        for (diagnostic in stored.diagnostics) {
-            runtime.degraded = true
-            runtime.diagnostics.add("stored_manifest_${diagnostic}")
-        }
-        runtime
+        ckbRuntimeVersionManifestForStore(this.store, this.config)
     }
 
     public func runTask(name: String, since: String, deadlineAtMillis: Int64): SchedulerTaskResult {
@@ -9474,11 +10546,7 @@ public class CkbCommandLoopService {
     }
 
     public func activeVersionManifest(): CangjieVersionManifest {
-        let stored = this.store.loadCangjieVersionManifest()
-        if (stored.sources.size > 0) {
-            return stored
-        }
-        ckbRuntimeCangjieVersionManifest(this.config)
+        ckbRuntimeVersionManifestForStore(this.store, this.config)
     }
 
     private func cangjieCapabilityService(): CangjieCapabilityService {
@@ -9546,6 +10614,21 @@ public class CkbCommandLoopService {
     }
 
     public func cangjieCorpusFreshness(): CangjieCorpusFreshnessReport {
+        let pointer = this.store.loadActiveSnapshotPointer()
+        if (pointer.valid && !pointer.legacy &&
+            pointer.companionMode != CkbActiveSnapshotCompanionMode.NONE) {
+            let active = this.store.loadActiveCangjieCorpusFreshness()
+            if (active.sources.size == 0 ||
+                active.activeKnowledgeVersion != pointer.activeVersion) {
+                active.ok = false
+                active.degraded = true
+                active.diagnostics.add("active_freshness_transaction_identity_invalid")
+            }
+            return active
+        }
+        if (this.store.hasAuthoritativeActiveSnapshotPointer() && !pointer.valid) {
+            return this.store.loadActiveCangjieCorpusFreshness()
+        }
         cangjieCorpusFreshnessReport(this.kb.status(), manifest: this.activeVersionManifest())
     }
 
@@ -10143,6 +11226,13 @@ class CkbScheduledSourceRecord {
     init() {}
 }
 
+class CkbReleaseAcquisitionConsumeResult {
+    var consumed: Int64 = 0
+    var failed: Int64 = 0
+
+    init() {}
+}
+
 private class CkbScheduledFetchReadiness {
     var canPromote: Bool = true
     var requiredFailedCount: Int64 = 0
@@ -10180,11 +11270,77 @@ private class CkbScheduledProfileIngestResult {
 private class CkbReleaseDeltaBuildResult {
     var ok: Bool = true
     var status: String = "ok"
+    var refreshedManifest: CangjieVersionManifest = CangjieVersionManifest()
     var rawRecords: ArrayList<RawRecord> = ArrayList<RawRecord>()
     var normalizedRecords: ArrayList<NormalizedRecord> = ArrayList<NormalizedRecord>()
     var diagnostics: ArrayList<String> = ArrayList<String>()
 
     init() {}
+}
+
+public class CkbReleaseSourceCoverage {
+    public var sourceIdentity: String = ""
+    public var sourceSet: String = ""
+    public var sourceFamily: String = ""
+    public var repo: String = ""
+    public var originalRef: String = ""
+    public var resolvedCommit: String = ""
+    public var status: String = "not_started"
+    public var complete: Bool = false
+    public var explicitEnd: Bool = false
+    public var pagesScanned: Int64 = 0
+    public var objectsSeen: Int64 = 0
+    public var filesSeen: Int64 = 0
+    public var contentBytes: Int64 = 0
+    public var plannedPaths: ArrayList<String> = ArrayList<String>()
+    public var completedPaths: ArrayList<String> = ArrayList<String>()
+    public var contentEntries: ArrayList<String> = ArrayList<String>()
+    public var inventoryEvidenceHash: String = ""
+
+    public init() {}
+}
+
+public class CkbReleaseCoverage {
+    public var schemaVersion: String = "ckb-release-coverage-v1"
+    public var targetVersion: String = ""
+    public var planHash: String = ""
+    public var complete: Bool = false
+    public var plannedSourceCount: Int64 = 0
+    public var completedSourceCount: Int64 = 0
+    public var plannedFileCount: Int64 = 0
+    public var completedFileCount: Int64 = 0
+    public var sources: ArrayList<CkbReleaseSourceCoverage> = ArrayList<CkbReleaseSourceCoverage>()
+    public var aggregateEvidenceHash: String = ""
+
+    public init() {}
+}
+
+public class CkbReleaseRemovedInventory {
+    public var rawSourceIds: ArrayList<String> = ArrayList<String>()
+    public var normalizedSourceIds: ArrayList<String> = ArrayList<String>()
+    public var rawEvidenceHash: String = ""
+    public var normalizedEvidenceHash: String = ""
+    public var aggregateEvidenceHash: String = ""
+
+    public init() {}
+}
+
+public class CkbReleaseCommitBundle {
+    public var valid: Bool = false
+    public var status: String = "not_prepared"
+    public var candidateVersion: String = ""
+    public var activeVersion: String = ""
+    public var manifest: CangjieVersionManifest = CangjieVersionManifest()
+    public var freshness: CangjieCorpusFreshnessReport = CangjieCorpusFreshnessReport()
+    public var coverage: CkbReleaseCoverage = CkbReleaseCoverage()
+    public var removed: CkbReleaseRemovedInventory = CkbReleaseRemovedInventory()
+    public var manifestEvidenceHash: String = ""
+    public var freshnessEvidenceHash: String = ""
+    public var coverageEvidenceHash: String = ""
+    public var evidenceHash: String = ""
+    public var diagnostics: ArrayList<String> = ArrayList<String>()
+
+    public init() {}
 }
 
 private class CkbBenchmarkGapProofCheckpoint {
@@ -12589,7 +13745,7 @@ private func ingestScheduledProfileSources(kb: KnowledgeBase, store: FileKnowled
         result.validationDiagnostics.add("profile_stage_checkpoint:profile=${profile.profile}|stage=ingest_finished|status=${result.status}|budgetMs=${ckbProfileIngestBudgetMillis(profile)}|deadlineAtMillis=${deadlineAtMillis}|remainingMs=${ckbRemainingMillis(deadlineAtMillis)}")
         return result
     }
-    if (profile.profile == "cangjie_release_full_sync" || profile.profile == "cangjie_version_branch_refresh") {
+    if (profile.profile == "cangjie_version_branch_refresh") {
         ckbPersistScheduledResolvedMetadataArtifacts(store, profile, fetch, config, manifest, result, "metadata_resolved_before_content_promotion")
         if (!result.ok) {
             return result
@@ -12644,7 +13800,23 @@ private func ckbIngestReleaseFullSync(kb: KnowledgeBase, store: FileKnowledgeSto
     if (ckbApplyScheduledIngestDeadline(result, profile, "release_delta_before", deadlineAtMillis)) {
         return result
     }
-    let delta = ckbBuildReleaseDelta(profile, fetch, config)
+    let candidateVersion = ckbScheduledCandidateVersion(profile, fetch)
+    let noRemovedRaw = ArrayList<String>()
+    let noRemovedNormalized = ArrayList<String>()
+    let refreshedManifest = ckbRefreshVersionManifestFromScheduledFetch(profile, fetch, config, manifest)
+    let releaseBundle = ckbPrepareReleaseCommitBundle(profile, fetch, refreshedManifest,
+        candidateVersion, cangjieActiveVersionForCandidate(candidateVersion), noRemovedRaw,
+        noRemovedNormalized)
+    if (!releaseBundle.valid) {
+        result.ok = false
+        result.status = releaseBundle.status
+        result.validationStatus = releaseBundle.status
+        for (diagnostic in releaseBundle.diagnostics) {
+            result.validationDiagnostics.add("release_bundle:${diagnostic}")
+        }
+        return result
+    }
+    let delta = ckbBuildReleaseDelta(profile, fetch, config, releaseBundle.manifest)
     for (diagnostic in delta.diagnostics) {
         result.validationDiagnostics.add("release_delta:${diagnostic}")
     }
@@ -12677,27 +13849,58 @@ private func ckbIngestReleaseFullSync(kb: KnowledgeBase, store: FileKnowledgeSto
         kb.replaceRawRecords(oldRaw)
         return result
     }
-    let candidateVersion = ckbScheduledCandidateVersion(profile, fetch)
+    ckbFinalizeReleaseCommitBundleRemoved(releaseBundle, removedRawIds, removedNormalizedIds)
+    if (!releaseBundle.valid) {
+        kb.replaceRawRecords(oldRaw)
+        result.ok = false
+        result.status = releaseBundle.status
+        result.validationStatus = releaseBundle.status
+        for (diagnostic in releaseBundle.diagnostics) {
+            result.validationDiagnostics.add("release_bundle:${diagnostic}")
+        }
+        return result
+    }
     let acquisitionContext = ckbReleaseCandidateAcquisitionContext(store, profile, fetch, candidateVersion, candidateRecords)
-    let promotion = cangjiePromoteCandidateRecordsAfterValidationWithVersion(kb, store, candidateVersion, candidateRecords, progressSink: progressSink, stageSink: stageSink, deadlineAtMillis: deadlineAtMillis, budgetPlan: promotionBudgetPlan, acquisitionContext: acquisitionContext)
+    let promotion = cangjiePromoteCandidateRecordsAfterValidationWithVersion(kb, store, candidateVersion,
+        candidateRecords, progressSink: progressSink, stageSink: stageSink,
+        deadlineAtMillis: deadlineAtMillis, budgetPlan: promotionBudgetPlan,
+        acquisitionContext: acquisitionContext, releaseBundle: releaseBundle)
     ckbApplyScheduledPromotionResult(result, promotion, "candidate_validated_promoted")
     if (!result.ok) {
         kb.replaceRawRecords(oldRaw)
         result.validationDiagnostics.add("release_reconciliation_rolled_back:status=${result.status}|rawRestored=${oldRaw.size}")
         return result
     }
-    // S3 persists resolved metadata only after the complete acquisition and
-    // candidate promotion succeeded. S5 will bind these companions into the
-    // active transaction; this stage must not pre-write them on failure.
-    ckbPersistScheduledResolvedMetadataArtifacts(store, profile, fetch, config, manifest, result, "metadata_resolved_after_content_promotion")
     if (result.ok) {
-        for (key in fetch.releaseAcquisitionKeys) {
-            ckbMarkReleaseAcquisitionState(store, key, "consumed", candidateVersion: result.candidateVersion, activeVersion: result.activeVersion)
-        }
-        result.validationDiagnostics.add("release_acquisitions_consumed:count=${fetch.releaseAcquisitionKeys.size}|planHash=${fetch.releasePlan.planHash}")
+        let consumed = ckbConsumeReleaseAcquisitionStatesBestEffort(store,
+            fetch.releaseAcquisitionKeys, result.candidateVersion,
+            result.activeVersion, result.validationDiagnostics)
+        result.validationDiagnostics.add("release_acquisitions_consumed:count=${consumed.consumed}|failed=${consumed.failed}|total=${fetch.releaseAcquisitionKeys.size}|planHash=${fetch.releasePlan.planHash}")
     }
-    ckbWriteScheduledProfileStageCheckpoint(store, profile, "ingest_finished", result.status, ckbProfileIngestBudgetMillis(profile), deadlineAtMillis, "activeVersion=${result.activeVersion}|candidateVersion=${result.candidateVersion}|validationStatus=${result.validationStatus}|rawCurrent=${delta.rawRecords.size}|activeCurrent=${delta.normalizedRecords.size}")
-    result.validationDiagnostics.add("profile_stage_checkpoint:profile=${profile.profile}|stage=ingest_finished|status=${result.status}|budgetMs=${ckbProfileIngestBudgetMillis(profile)}|deadlineAtMillis=${deadlineAtMillis}|remainingMs=${ckbRemainingMillis(deadlineAtMillis)}")
+    try {
+        ckbWriteScheduledProfileStageCheckpoint(store, profile, "ingest_finished", result.status, ckbProfileIngestBudgetMillis(profile), deadlineAtMillis, "activeVersion=${result.activeVersion}|candidateVersion=${result.candidateVersion}|validationStatus=${result.validationStatus}|rawCurrent=${delta.rawRecords.size}|activeCurrent=${delta.normalizedRecords.size}")
+        result.validationDiagnostics.add("profile_stage_checkpoint:profile=${profile.profile}|stage=ingest_finished|status=${result.status}|budgetMs=${ckbProfileIngestBudgetMillis(profile)}|deadlineAtMillis=${deadlineAtMillis}|remainingMs=${ckbRemainingMillis(deadlineAtMillis)}")
+    } catch (e: Exception) {
+        result.validationDiagnostics.add("release_ingest_checkpoint_degraded:${utf8SafePrefix(redactSensitive(if (e.message == "") { "write_failed" } else { e.message }), 160)}")
+    }
+    result
+}
+
+func ckbConsumeReleaseAcquisitionStatesBestEffort(store: FileKnowledgeStore,
+    keys: ArrayList<CkbScheduledFetchRunKey>, candidateVersion: String,
+    activeVersion: String, diagnostics: ArrayList<String>): CkbReleaseAcquisitionConsumeResult {
+    let result = CkbReleaseAcquisitionConsumeResult()
+    for (key in keys) {
+        try {
+            ckbMarkReleaseAcquisitionState(store, key, "consumed",
+                candidateVersion: candidateVersion, activeVersion: activeVersion)
+            result.consumed += 1
+        } catch (e: Exception) {
+            result.failed += 1
+            let failure = if (e.message == "") { "write_failed" } else { e.message }
+            diagnostics.add("release_acquisition_consume_degraded:key=${ckbReleaseEvidenceHash(key.runIdentityHash)}|diagnostic=${utf8SafePrefix(redactSensitive(failure), 160)}")
+        }
+    }
     result
 }
 
@@ -13114,7 +14317,11 @@ private func ckbBenchmarkGapLine(text: String, prefix: String): String {
 }
 
 private func ckbPersistScheduledResolvedMetadataArtifacts(store: FileKnowledgeStore, profile: CkbScheduleTaskProfile, fetch: CkbScheduledProfileFetchResult, config: CkbRuntimeConfig, manifest: CangjieVersionManifest, result: CkbScheduledProfileIngestResult, reason: String): Unit {
-    if (profile.profile == "cangjie_release_full_sync" || profile.profile == "cangjie_version_branch_refresh") {
+    if (profile.profile == "cangjie_release_full_sync") {
+        result.ok = false
+        result.status = "release_live_companion_write_forbidden"
+        result.validationDiagnostics.add("release_live_companion_write_forbidden:${reason}")
+    } else if (profile.profile == "cangjie_version_branch_refresh") {
         ckbPersistScheduledVersionManifestAfterRefresh(store, profile, fetch, config, manifest, result)
         result.validationDiagnostics.add("resolved_metadata_artifact_persisted:${profile.profile}:${reason}")
     } else if (profile.profile == "cangjie_source_event_sync") {
@@ -13154,6 +14361,12 @@ public func ckbScheduledPromotionTerminalStatus(ok: Bool, validationStatus: Stri
 }
 
 private func ckbPersistScheduledVersionManifestAfterRefresh(store: FileKnowledgeStore, profile: CkbScheduleTaskProfile, fetch: CkbScheduledProfileFetchResult, config: CkbRuntimeConfig, manifest: CangjieVersionManifest, result: CkbScheduledProfileIngestResult): Unit {
+    if (profile.profile == "cangjie_release_full_sync") {
+        result.ok = false
+        result.status = "release_live_companion_write_forbidden"
+        result.validationDiagnostics.add(result.status)
+        return
+    }
     let refreshed = ckbRefreshVersionManifestFromScheduledFetch(profile, fetch, config, manifest)
     if (refreshed.sources.size == 0) {
         result.ok = false
@@ -13252,9 +14465,11 @@ private func ckbRefreshVersionManifestFromScheduledFetch(profile: CkbScheduleTas
     let out = CangjieVersionManifest()
     out.manifestVersion = manifest.manifestVersion
     out.defaultTargetVersion = if (manifest.defaultTargetVersion.trimAscii() == "") { ckbScheduledTargetVersion(config) } else { manifest.defaultTargetVersion }
-    for (diagnostic in manifest.diagnostics) {
-        if (ckbManifestDiagnosticStillRelevantAfterRefresh(diagnostic)) {
-            out.diagnostics.add(diagnostic)
+    if (profile.profile != "cangjie_release_full_sync") {
+        for (diagnostic in manifest.diagnostics) {
+            if (ckbManifestDiagnosticStillRelevantAfterRefresh(diagnostic)) {
+                out.diagnostics.add(diagnostic)
+            }
         }
     }
     for (source in manifest.sources) {
@@ -13290,6 +14505,606 @@ private func ckbRefreshVersionManifestFromScheduledFetch(profile: CkbScheduleTas
         out.sources.add(next)
     }
     out
+}
+
+func ckbPrepareReleaseCommitBundle(profile: CkbScheduleTaskProfile,
+    fetch: CkbScheduledProfileFetchResult, refreshedManifest: CangjieVersionManifest,
+    candidateVersion: String, activeVersion: String, removedRawIds: ArrayList<String>,
+    removedNormalizedIds: ArrayList<String>): CkbReleaseCommitBundle {
+    let bundle = CkbReleaseCommitBundle()
+    bundle.candidateVersion = candidateVersion
+    bundle.activeVersion = activeVersion
+    bundle.coverage = ckbReleaseCoverageFromFetch(fetch)
+    bundle.removed = ckbReleaseRemovedInventory(removedRawIds, removedNormalizedIds)
+    bundle.manifest = ckbReleaseManifestForBundle(refreshedManifest, bundle.coverage)
+    bundle.freshness = ckbReleaseFreshnessForBundle(bundle.manifest, profile.profile,
+        candidateVersion, activeVersion)
+    bundle.manifestEvidenceHash = ckbReleaseCompanionEvidenceHash(
+        ckbRenderCangjieVersionManifestArtifact(bundle.manifest))
+    bundle.freshnessEvidenceHash = ckbReleaseCompanionEvidenceHash(
+        ckbRenderCangjieFreshnessArtifact(bundle.freshness))
+    bundle.coverageEvidenceHash = ckbReleaseCompanionEvidenceHash(
+        ckbRenderReleaseCoverageArtifact(bundle.coverage, bundle.removed))
+    bundle.evidenceHash = ckbReleaseCompanionEvidenceHash(
+        "manifest=${bundle.manifestEvidenceHash}|freshness=${bundle.freshnessEvidenceHash}|" +
+        "coverage=${bundle.coverageEvidenceHash}|removed=${bundle.removed.aggregateEvidenceHash}|" +
+        "candidate=${candidateVersion}|active=${activeVersion}")
+    let diagnostics = ArrayList<String>()
+    for (diagnostic in bundle.manifest.diagnostics) { diagnostics.add(diagnostic) }
+    if (!bundle.coverage.complete) { diagnostics.add("release_coverage_incomplete") }
+    if (bundle.manifest.sources.size != bundle.coverage.completedSourceCount) {
+        diagnostics.add("release_manifest_coverage_source_mismatch")
+    }
+    if (bundle.freshness.sources.size != bundle.manifest.sources.size) {
+        diagnostics.add("release_freshness_manifest_source_mismatch")
+    }
+    for (diagnostic in ckbReleaseCanonicalDiagnostics(diagnostics)) {
+        bundle.diagnostics.add(diagnostic)
+    }
+    bundle.valid = profile.profile == "cangjie_release_full_sync" &&
+        candidateVersion != "" && activeVersion != "" && bundle.coverage.complete &&
+        bundle.coverage.completedSourceCount == 5 && bundle.manifest.sources.size == 5 &&
+        bundle.freshness.sources.size == 5 &&
+        ckbValidationEvidenceIsSha256(bundle.manifestEvidenceHash) &&
+        ckbValidationEvidenceIsSha256(bundle.freshnessEvidenceHash) &&
+        ckbValidationEvidenceIsSha256(bundle.coverageEvidenceHash) &&
+        ckbValidationEvidenceIsSha256(bundle.evidenceHash)
+    bundle.status = if (bundle.valid) { "release_commit_bundle_prepared" } else { "release_commit_bundle_invalid" }
+    bundle
+}
+
+private func ckbFinalizeReleaseCommitBundleRemoved(bundle: CkbReleaseCommitBundle,
+    removedRawIds: ArrayList<String>, removedNormalizedIds: ArrayList<String>): Unit {
+    let manifestHashBefore = bundle.manifestEvidenceHash
+    let freshnessHashBefore = bundle.freshnessEvidenceHash
+    bundle.removed = ckbReleaseRemovedInventory(removedRawIds, removedNormalizedIds)
+    bundle.coverageEvidenceHash = ckbReleaseCompanionEvidenceHash(
+        ckbRenderReleaseCoverageArtifact(bundle.coverage, bundle.removed))
+    bundle.evidenceHash = ckbReleaseCompanionEvidenceHash(
+        "manifest=${bundle.manifestEvidenceHash}|freshness=${bundle.freshnessEvidenceHash}|" +
+        "coverage=${bundle.coverageEvidenceHash}|removed=${bundle.removed.aggregateEvidenceHash}|" +
+        "candidate=${bundle.candidateVersion}|active=${bundle.activeVersion}")
+    if (bundle.manifestEvidenceHash != manifestHashBefore ||
+        bundle.freshnessEvidenceHash != freshnessHashBefore) {
+        bundle.valid = false
+        bundle.status = "release_bundle_resolution_mutated"
+        bundle.diagnostics.add(bundle.status)
+    }
+}
+
+private func ckbReleaseCoverageFromFetch(fetch: CkbScheduledProfileFetchResult): CkbReleaseCoverage {
+    let coverage = CkbReleaseCoverage()
+    coverage.targetVersion = fetch.releasePlan.targetVersion
+    coverage.planHash = fetch.releasePlan.planHash
+    coverage.plannedSourceCount = fetch.releasePlan.sources.size
+    for (inventory in fetch.releaseInventories) {
+        let item = CkbReleaseSourceCoverage()
+        item.sourceIdentity = inventory.sourceIdentity
+        item.sourceSet = inventory.sourceSet
+        item.sourceFamily = inventory.sourceFamily
+        item.repo = inventory.repo
+        item.originalRef = inventory.originalRef
+        item.resolvedCommit = inventory.resolvedCommit
+        item.status = inventory.status
+        item.complete = inventory.complete
+        item.explicitEnd = inventory.explicitEnd
+        item.pagesScanned = inventory.pagesScanned
+        item.objectsSeen = inventory.objectsSeen
+        item.filesSeen = inventory.filesSeen
+        item.contentBytes = inventory.contentBytes
+        let planned = inventory.plannedPaths.toArray()
+        sort(planned)
+        for (path in planned) { item.plannedPaths.add(path) }
+        let completed = inventory.completedPaths.toArray()
+        sort(completed)
+        for (path in completed) { item.completedPaths.add(path) }
+        let contentEntries = ArrayList<String>()
+        for (record in fetch.contentRecords) {
+            if (record.releaseSource.canonicalIdentity != item.sourceIdentity) { continue }
+            let bodyHash = if (record.fetch.bodyHash != "") {
+                record.fetch.bodyHash
+            } else { ckbReleaseEvidenceHash(record.fetch.body) }
+            contentEntries.add("${record.request.path}|${bodyHash}")
+        }
+        let orderedContent = contentEntries.toArray()
+        sort(orderedContent)
+        for (entry in orderedContent) { item.contentEntries.add(entry) }
+        item.inventoryEvidenceHash = ckbReleaseEvidenceHash(
+            ckbReleaseSourceCoverageCanonicalText(item))
+        coverage.plannedFileCount += item.plannedPaths.size
+        coverage.completedFileCount += item.completedPaths.size
+        if (item.complete && item.explicitEnd &&
+            item.plannedPaths.size == item.completedPaths.size &&
+            item.completedPaths.size == item.contentEntries.size) {
+            coverage.completedSourceCount += 1
+        }
+        coverage.sources.add(item)
+    }
+    coverage.complete = coverage.plannedSourceCount == 5 &&
+        coverage.completedSourceCount == coverage.plannedSourceCount &&
+        coverage.plannedFileCount == coverage.completedFileCount
+    let sourceHashes = ArrayList<String>()
+    for (source in coverage.sources) {
+        sourceHashes.add("${source.sourceIdentity}|${source.inventoryEvidenceHash}")
+    }
+    let orderedHashes = sourceHashes.toArray()
+    sort(orderedHashes)
+    let aggregate = StringBuilder()
+    aggregate.append("schema=${coverage.schemaVersion}|target=${coverage.targetVersion}|plan=${coverage.planHash}|")
+    aggregate.append("plannedSources=${coverage.plannedSourceCount}|completedSources=${coverage.completedSourceCount}|")
+    aggregate.append("plannedFiles=${coverage.plannedFileCount}|completedFiles=${coverage.completedFileCount}|complete=${coverage.complete}")
+    for (entry in orderedHashes) { aggregate.append("|source=${ckbReleaseBundleCanonicalField(entry)}") }
+    coverage.aggregateEvidenceHash = ckbReleaseEvidenceHash(aggregate.toString())
+    coverage
+}
+
+private func ckbReleaseSourceCoverageCanonicalText(source: CkbReleaseSourceCoverage): String {
+    let out = StringBuilder()
+    out.append("identity=${ckbReleaseBundleCanonicalField(source.sourceIdentity)}")
+    out.append("|set=${ckbReleaseBundleCanonicalField(source.sourceSet)}")
+    out.append("|family=${ckbReleaseBundleCanonicalField(source.sourceFamily)}")
+    out.append("|repo=${ckbReleaseBundleCanonicalField(source.repo)}")
+    out.append("|ref=${ckbReleaseBundleCanonicalField(source.originalRef)}")
+    out.append("|commit=${ckbReleaseBundleCanonicalField(source.resolvedCommit)}")
+    out.append("|status=${ckbReleaseBundleCanonicalField(source.status)}|complete=${source.complete}|explicitEnd=${source.explicitEnd}")
+    out.append("|pages=${source.pagesScanned}|objects=${source.objectsSeen}|files=${source.filesSeen}|bytes=${source.contentBytes}")
+    for (path in source.plannedPaths) { out.append("|planned=${ckbReleaseBundleCanonicalField(path)}") }
+    for (path in source.completedPaths) { out.append("|completed=${ckbReleaseBundleCanonicalField(path)}") }
+    for (entry in source.contentEntries) { out.append("|content=${ckbReleaseBundleCanonicalField(entry)}") }
+    out.toString()
+}
+
+private func ckbReleaseRemovedInventory(rawIds: ArrayList<String>, normalizedIds: ArrayList<String>): CkbReleaseRemovedInventory {
+    let removed = CkbReleaseRemovedInventory()
+    let raw = rawIds.toArray()
+    sort(raw)
+    for (sourceId in raw) { removed.rawSourceIds.add(sourceId) }
+    let normalized = normalizedIds.toArray()
+    sort(normalized)
+    for (sourceId in normalized) { removed.normalizedSourceIds.add(sourceId) }
+    removed.rawEvidenceHash = ckbReleaseRemovedIdsEvidenceHash(removed.rawSourceIds)
+    removed.normalizedEvidenceHash = ckbReleaseRemovedIdsEvidenceHash(removed.normalizedSourceIds)
+    removed.aggregateEvidenceHash = ckbReleaseEvidenceHash(
+        "raw=${removed.rawEvidenceHash}|normalized=${removed.normalizedEvidenceHash}")
+    removed
+}
+
+private func ckbReleaseManifestForBundle(refreshed: CangjieVersionManifest,
+    coverage: CkbReleaseCoverage): CangjieVersionManifest {
+    let manifest = CangjieVersionManifest()
+    manifest.manifestVersion = CangjieVersionManifestVersions.V2
+    manifest.defaultTargetVersion = refreshed.defaultTargetVersion
+    manifest.degraded = refreshed.degraded || !coverage.complete
+    for (diagnostic in ckbReleaseCanonicalDiagnostics(refreshed.diagnostics)) {
+        manifest.diagnostics.add(diagnostic)
+    }
+    for (source in refreshed.sources) {
+        let copied = ckbCopyVersionSourceForService(source)
+        for (item in coverage.sources) {
+            if (item.sourceSet == copied.sourceSet) {
+                copied.resolvedCommit = item.resolvedCommit
+                copied.contentHash = item.inventoryEvidenceHash
+                copied.targetVersion = coverage.targetVersion
+                break
+            }
+        }
+        manifest.sources.add(copied)
+    }
+    manifest
+}
+
+private func ckbReleaseFreshnessForBundle(manifest: CangjieVersionManifest, profile: String,
+    candidateVersion: String, activeVersion: String): CangjieCorpusFreshnessReport {
+    let report = CangjieCorpusFreshnessReport()
+    report.ok = true
+    report.degraded = manifest.degraded
+    report.activeKnowledgeVersion = activeVersion
+    report.candidateKnowledgeVersion = candidateVersion
+    report.targetVersion = manifest.defaultTargetVersion
+    for (source in manifest.sources) {
+        let item = CangjieCorpusFreshnessSource()
+        item.sourceSet = source.sourceSet
+        item.sourceFamily = source.sourceFamily
+        item.sourceRepo = source.sourceRepo
+        item.sourceRef = source.sourceRef
+        item.refKind = source.refKind
+        item.resolvedCommit = source.resolvedCommit
+        item.contentHash = source.contentHash
+        item.targetVersion = source.targetVersion
+        item.crawlAt = "scheduled:${profile}"
+        item.indexedAt = activeVersion
+        item.staleness = "fresh"
+        item.status = "fresh"
+        if (item.resolvedCommit == "" || item.contentHash == "") {
+            item.staleness = "unknown"
+            item.status = "degraded"
+            report.ok = false
+            report.degraded = true
+        }
+        report.sources.add(item)
+    }
+    report
+}
+
+private func ckbArtifactValueAfterAsciiPrefix(value: String, prefix: String): String {
+    let out = StringBuilder()
+    var remaining = prefix.toRuneArray().size
+    for (ch in value.toRuneArray()) {
+        if (remaining > 0) {
+            remaining -= 1
+        } else {
+            out.append(ch)
+        }
+    }
+    out.toString()
+}
+
+private func ckbParseCangjieFreshnessArtifact(text: String): CangjieCorpusFreshnessReport {
+    let report = CangjieCorpusFreshnessReport()
+    if (text == "") {
+        report.ok = false
+        report.degraded = true
+        report.diagnostics.add("freshness_artifact_missing")
+        return report
+    }
+    var recognizedLineCount: Int64 = 0
+    for (line in text.split("\n")) {
+        let trimmed = line.trimAscii()
+        if (trimmed == "") { continue }
+        if (trimmed.startsWith("ok=")) {
+            recognizedLineCount += 1
+            report.ok = parseBool(ckbArtifactValueAfterAsciiPrefix(trimmed, "ok="))
+        } else if (trimmed.startsWith("degraded=")) {
+            recognizedLineCount += 1
+            report.degraded = parseBool(ckbArtifactValueAfterAsciiPrefix(trimmed,
+                "degraded="))
+        } else if (trimmed.startsWith("activeKnowledgeVersion=")) {
+            recognizedLineCount += 1
+            report.activeKnowledgeVersion = unescapeField(
+                ckbArtifactValueAfterAsciiPrefix(trimmed, "activeKnowledgeVersion="))
+        } else if (trimmed.startsWith("candidateKnowledgeVersion=")) {
+            recognizedLineCount += 1
+            report.candidateKnowledgeVersion = unescapeField(
+                ckbArtifactValueAfterAsciiPrefix(trimmed, "candidateKnowledgeVersion="))
+        } else if (trimmed.startsWith("failedCandidateVersion=")) {
+            recognizedLineCount += 1
+            report.failedCandidateVersion = unescapeField(
+                ckbArtifactValueAfterAsciiPrefix(trimmed, "failedCandidateVersion="))
+        } else if (trimmed.startsWith("targetVersion=")) {
+            recognizedLineCount += 1
+            report.targetVersion = unescapeField(
+                ckbArtifactValueAfterAsciiPrefix(trimmed, "targetVersion="))
+        } else if (trimmed.startsWith("diagnostic|")) {
+            recognizedLineCount += 1
+            let parts = trimmed.split("|")
+            if (parts.size >= 2) { report.diagnostics.add(unescapeField(parts[1])) }
+        } else if (trimmed.startsWith("source|")) {
+            recognizedLineCount += 1
+            let parts = trimmed.split("|")
+            if (parts.size >= 11) {
+                let source = CangjieCorpusFreshnessSource()
+                source.sourceSet = unescapeField(parts[1])
+                source.sourceFamily = unescapeField(parts[2])
+                source.sourceRepo = unescapeField(parts[3])
+                source.sourceRef = unescapeField(parts[4])
+                source.resolvedCommit = unescapeField(parts[5])
+                source.contentHash = unescapeField(parts[6])
+                source.crawlAt = unescapeField(parts[7])
+                source.indexedAt = unescapeField(parts[8])
+                source.staleness = unescapeField(parts[9])
+                source.status = unescapeField(parts[10])
+                if (parts.size >= 13) {
+                    source.refKind = unescapeField(parts[11])
+                    source.targetVersion = unescapeField(parts[12])
+                }
+                report.sources.add(source)
+            } else {
+                report.ok = false
+                report.degraded = true
+                report.diagnostics.add("freshness_artifact_malformed_source_line")
+            }
+        }
+    }
+    if (text.trimAscii() != "" && report.sources.size == 0 &&
+        recognizedLineCount == 0) {
+        report.ok = false
+        report.degraded = true
+        report.diagnostics.add("freshness_artifact_malformed")
+    }
+    report
+}
+
+private func ckbParseCangjieVersionManifestArtifact(text: String): CangjieVersionManifest {
+    let manifest = CangjieVersionManifest()
+    manifest.sources.clear()
+    if (text == "") { return manifest }
+    var recognizedLineCount: Int64 = 0
+    for (line in text.split("\n")) {
+        let trimmed = line.trimAscii()
+        if (trimmed == "") { continue }
+        if (trimmed.startsWith("manifestVersion=")) {
+            recognizedLineCount += 1
+            manifest.manifestVersion = unescapeField(
+                ckbArtifactValueAfterAsciiPrefix(trimmed, "manifestVersion="))
+        } else if (trimmed.startsWith("defaultTargetVersion=")) {
+            recognizedLineCount += 1
+            manifest.defaultTargetVersion = unescapeField(
+                ckbArtifactValueAfterAsciiPrefix(trimmed, "defaultTargetVersion="))
+        } else if (trimmed.startsWith("degraded=")) {
+            recognizedLineCount += 1
+            manifest.degraded = ckbArtifactValueAfterAsciiPrefix(trimmed,
+                "degraded=") == "true"
+        } else if (trimmed.startsWith("diagnostic|")) {
+            recognizedLineCount += 1
+            let parts = trimmed.split("|")
+            if (parts.size >= 2) { manifest.diagnostics.add(unescapeField(parts[1])) }
+        } else if (trimmed.startsWith("source|")) {
+            recognizedLineCount += 1
+            let parts = trimmed.split("|")
+            if (parts.size >= 9) {
+                let source = CangjieVersionSource()
+                source.targetVersion = unescapeField(parts[1])
+                source.sourceSet = unescapeField(parts[2])
+                source.sourceFamily = unescapeField(parts[3])
+                source.sourceRepo = unescapeField(parts[4])
+                source.sourceRef = unescapeField(parts[5])
+                source.refKind = unescapeField(parts[6])
+                source.resolvedCommit = unescapeField(parts[7])
+                source.contentHash = unescapeField(parts[8])
+                if (parts.size >= 10) { source.rootKind = unescapeField(parts[9]) }
+                manifest.sources.add(source)
+            } else {
+                manifest.degraded = true
+                manifest.diagnostics.add("version_manifest_malformed_source_line")
+            }
+        }
+    }
+    if (text.trimAscii() != "" && manifest.sources.size == 0 &&
+        recognizedLineCount == 0) {
+        manifest.degraded = true
+        manifest.diagnostics.add("version_manifest_malformed")
+    }
+    manifest
+}
+
+func ckbRenderCangjieVersionManifestArtifact(manifest: CangjieVersionManifest): String {
+    var text = "manifestVersion=${escapeField(manifest.manifestVersion)}\n"
+    text += "defaultTargetVersion=${escapeField(manifest.defaultTargetVersion)}\n"
+    text += "degraded=${manifest.degraded}\n"
+    let diagnostics = ckbReleaseCanonicalDiagnostics(manifest.diagnostics)
+    for (diagnostic in diagnostics) { text += "diagnostic|${escapeField(diagnostic)}\n" }
+    let sourceLines = ArrayList<String>()
+    for (source in manifest.sources) {
+        sourceLines.add("source|${escapeField(source.targetVersion)}|${escapeField(source.sourceSet)}|${escapeField(source.sourceFamily)}|${escapeField(source.sourceRepo)}|${escapeField(source.sourceRef)}|${escapeField(source.refKind)}|${escapeField(source.resolvedCommit)}|${escapeField(source.contentHash)}|${escapeField(source.rootKind)}")
+    }
+    let ordered = sourceLines.toArray()
+    sort(ordered)
+    for (line in ordered) { text += "${line}\n" }
+    text
+}
+
+func ckbRenderCangjieFreshnessArtifact(report: CangjieCorpusFreshnessReport): String {
+    var text = "ok=${report.ok}\n"
+    text += "degraded=${report.degraded}\n"
+    text += "activeKnowledgeVersion=${escapeField(report.activeKnowledgeVersion)}\n"
+    text += "candidateKnowledgeVersion=${escapeField(report.candidateKnowledgeVersion)}\n"
+    text += "failedCandidateVersion=${escapeField(report.failedCandidateVersion)}\n"
+    text += "targetVersion=${escapeField(report.targetVersion)}\n"
+    for (diagnostic in ckbReleaseCanonicalDiagnostics(report.diagnostics)) {
+        text += "diagnostic|${escapeField(diagnostic)}\n"
+    }
+    let sourceLines = ArrayList<String>()
+    for (source in report.sources) {
+        sourceLines.add("source|${escapeField(source.sourceSet)}|${escapeField(source.sourceFamily)}|${escapeField(source.sourceRepo)}|${escapeField(source.sourceRef)}|${escapeField(source.resolvedCommit)}|${escapeField(source.contentHash)}|${escapeField(source.crawlAt)}|${escapeField(source.indexedAt)}|${escapeField(source.staleness)}|${escapeField(source.status)}|${escapeField(source.refKind)}|${escapeField(source.targetVersion)}")
+    }
+    let ordered = sourceLines.toArray()
+    sort(ordered)
+    for (line in ordered) { text += "${line}\n" }
+    text
+}
+
+func ckbRenderReleaseCoverageArtifact(coverage: CkbReleaseCoverage,
+    removed: CkbReleaseRemovedInventory): String {
+    var text = "schema=${escapeField(coverage.schemaVersion)}\n"
+    text += "targetVersion=${escapeField(coverage.targetVersion)}\n"
+    text += "planHash=${escapeField(coverage.planHash)}\n"
+    text += "complete=${coverage.complete}\n"
+    text += "plannedSourceCount=${coverage.plannedSourceCount}\n"
+    text += "completedSourceCount=${coverage.completedSourceCount}\n"
+    text += "plannedFileCount=${coverage.plannedFileCount}\n"
+    text += "completedFileCount=${coverage.completedFileCount}\n"
+    text += "aggregateEvidenceHash=${coverage.aggregateEvidenceHash}\n"
+    let lines = ArrayList<String>()
+    for (source in coverage.sources) {
+        lines.add("source|${escapeField(source.sourceIdentity)}|${escapeField(source.sourceSet)}|${escapeField(source.sourceFamily)}|${escapeField(source.repo)}|${escapeField(source.originalRef)}|${escapeField(source.resolvedCommit)}|${escapeField(source.status)}|${source.complete}|${source.explicitEnd}|${source.pagesScanned}|${source.objectsSeen}|${source.filesSeen}|${source.contentBytes}|${source.inventoryEvidenceHash}")
+        for (path in source.plannedPaths) { lines.add("planned|${escapeField(source.sourceIdentity)}|${escapeField(path)}") }
+        for (path in source.completedPaths) { lines.add("completed|${escapeField(source.sourceIdentity)}|${escapeField(path)}") }
+        for (entry in source.contentEntries) { lines.add("content|${escapeField(source.sourceIdentity)}|${escapeField(entry)}") }
+    }
+    for (sourceId in removed.rawSourceIds) { lines.add("removedRaw|${escapeField(sourceId)}") }
+    for (sourceId in removed.normalizedSourceIds) { lines.add("removedNormalized|${escapeField(sourceId)}") }
+    lines.add("removedEvidence|${removed.rawEvidenceHash}|${removed.normalizedEvidenceHash}|${removed.aggregateEvidenceHash}")
+    let ordered = lines.toArray()
+    sort(ordered)
+    for (line in ordered) { text += "${line}\n" }
+    text
+}
+
+private func ckbReleaseCanonicalDiagnostics(values: ArrayList<String>): ArrayList<String> {
+    let unique = HashSet<String>()
+    for (diagnostic in values) {
+        let clean = utf8SafePrefix(redactSensitive(diagnostic.trimAscii()), 240)
+        if (clean != "") { unique.add(clean) }
+    }
+    let ordered = ArrayList<String>()
+    for (diagnostic in unique) { ordered.add(diagnostic) }
+    let array = ordered.toArray()
+    sort(array)
+    let out = ArrayList<String>()
+    for (diagnostic in array) {
+        if (out.size >= 64) { break }
+        out.add(diagnostic)
+    }
+    out
+}
+
+private func ckbReleaseBundleCanonicalField(value: String): String {
+    "${value.toArray().size}:${value}"
+}
+
+func ckbReleaseCompanionEvidenceHash(value: String): String {
+    "hsha256:${ckbReleaseEvidenceHash(value).toAsciiLower()}"
+}
+
+private func ckbValidateReleaseCommitBundleForSnapshot(bundle: CkbReleaseCommitBundle,
+    status: KnowledgeStatus, manifestHash: String, freshnessHash: String,
+    coverageHash: String): String {
+    if (!bundle.valid || bundle.status != "release_commit_bundle_prepared") {
+        return "release_commit_bundle_not_prepared"
+    }
+    if (bundle.activeVersion != status.activeKnowledgeVersion) {
+        return "release_commit_bundle_active_mismatch"
+    }
+    if (bundle.candidateVersion != status.candidateKnowledgeVersion) {
+        return "release_commit_bundle_candidate_mismatch"
+    }
+    if (bundle.manifest.manifestVersion != CangjieVersionManifestVersions.V2) {
+        return "release_commit_bundle_manifest_version_invalid"
+    }
+    if (bundle.freshness.activeKnowledgeVersion != bundle.activeVersion ||
+        bundle.freshness.candidateKnowledgeVersion != bundle.candidateVersion ||
+        bundle.freshness.failedCandidateVersion != status.failedCandidateVersion) {
+        return "release_commit_bundle_freshness_identity_mismatch"
+    }
+    if (bundle.manifest.defaultTargetVersion == "" ||
+        bundle.freshness.targetVersion != bundle.manifest.defaultTargetVersion ||
+        bundle.coverage.targetVersion != bundle.manifest.defaultTargetVersion) {
+        return "release_commit_bundle_target_mismatch"
+    }
+    if (manifestHash != bundle.manifestEvidenceHash ||
+        freshnessHash != bundle.freshnessEvidenceHash ||
+        coverageHash != bundle.coverageEvidenceHash) {
+        return "release_commit_bundle_component_hash_mismatch"
+    }
+    if (!ckbReleaseRemovedCommitEvidenceValid(bundle.removed)) {
+        return "release_commit_bundle_removed_evidence_invalid"
+    }
+    if (!ckbReleaseCoverageCommitEvidenceValid(bundle.coverage)) {
+        return "release_commit_bundle_coverage_evidence_invalid"
+    }
+    if (!ckbReleaseManifestCoverageCommitAligned(bundle.manifest, bundle.coverage)) {
+        return "release_commit_bundle_manifest_coverage_mismatch"
+    }
+    if (!ckbReleaseFreshnessManifestCommitAligned(bundle.freshness, bundle.manifest,
+        bundle.activeVersion)) {
+        return "release_commit_bundle_freshness_manifest_mismatch"
+    }
+    let expectedEvidence = ckbReleaseCompanionEvidenceHash(
+        "manifest=${bundle.manifestEvidenceHash}|freshness=${bundle.freshnessEvidenceHash}|" +
+        "coverage=${bundle.coverageEvidenceHash}|removed=${bundle.removed.aggregateEvidenceHash}|" +
+        "candidate=${bundle.candidateVersion}|active=${bundle.activeVersion}")
+    if (bundle.evidenceHash != expectedEvidence) {
+        return "release_commit_bundle_aggregate_evidence_mismatch"
+    }
+    ""
+}
+
+private func ckbReleaseRemovedCommitEvidenceValid(removed: CkbReleaseRemovedInventory): Bool {
+    let rawHash = ckbReleaseRemovedIdsEvidenceHash(removed.rawSourceIds)
+    let normalizedHash = ckbReleaseRemovedIdsEvidenceHash(removed.normalizedSourceIds)
+    removed.rawEvidenceHash == rawHash && removed.normalizedEvidenceHash == normalizedHash &&
+        removed.aggregateEvidenceHash == ckbReleaseEvidenceHash(
+            "raw=${rawHash}|normalized=${normalizedHash}")
+}
+
+private func ckbReleaseCoverageCommitEvidenceValid(coverage: CkbReleaseCoverage): Bool {
+    if (coverage.planHash == "" || !coverage.complete ||
+        coverage.plannedSourceCount != 5 || coverage.completedSourceCount != 5 ||
+        coverage.plannedSourceCount != coverage.sources.size || coverage.sources.size != 5 ||
+        coverage.plannedFileCount != coverage.completedFileCount) { return false }
+    var plannedFiles: Int64 = 0
+    var completedFiles: Int64 = 0
+    var completedSources: Int64 = 0
+    let identities = HashSet<String>()
+    let sourceSets = HashSet<String>()
+    let sourceHashes = ArrayList<String>()
+    for (source in coverage.sources) {
+        if (source.sourceIdentity == "" || source.sourceSet == "" ||
+            identities.contains(source.sourceIdentity) || sourceSets.contains(source.sourceSet)) {
+            return false
+        }
+        identities.add(source.sourceIdentity)
+        sourceSets.add(source.sourceSet)
+        if (source.inventoryEvidenceHash != ckbReleaseEvidenceHash(
+            ckbReleaseSourceCoverageCanonicalText(source))) { return false }
+        plannedFiles += source.plannedPaths.size
+        completedFiles += source.completedPaths.size
+        if (source.complete && source.explicitEnd &&
+            ckbReleaseResumeSameStringSet(source.plannedPaths, source.completedPaths) &&
+            source.completedPaths.size == source.contentEntries.size) {
+            completedSources += 1
+        }
+        sourceHashes.add("${source.sourceIdentity}|${source.inventoryEvidenceHash}")
+    }
+    if (coverage.plannedFileCount != plannedFiles ||
+        coverage.completedFileCount != completedFiles ||
+        coverage.completedSourceCount != completedSources) { return false }
+    let complete = coverage.plannedSourceCount == 5 &&
+        completedSources == coverage.plannedSourceCount && plannedFiles == completedFiles
+    if (coverage.complete != complete) { return false }
+    let orderedHashes = sourceHashes.toArray()
+    sort(orderedHashes)
+    let aggregate = StringBuilder()
+    aggregate.append("schema=${coverage.schemaVersion}|target=${coverage.targetVersion}|plan=${coverage.planHash}|")
+    aggregate.append("plannedSources=${coverage.plannedSourceCount}|completedSources=${coverage.completedSourceCount}|")
+    aggregate.append("plannedFiles=${coverage.plannedFileCount}|completedFiles=${coverage.completedFileCount}|complete=${coverage.complete}")
+    for (entry in orderedHashes) {
+        aggregate.append("|source=${ckbReleaseBundleCanonicalField(entry)}")
+    }
+    coverage.aggregateEvidenceHash == ckbReleaseEvidenceHash(aggregate.toString())
+}
+
+private func ckbReleaseManifestCoverageCommitAligned(manifest: CangjieVersionManifest,
+    coverage: CkbReleaseCoverage): Bool {
+    if (manifest.sources.size != coverage.sources.size) { return false }
+    let sourceSets = HashSet<String>()
+    for (source in manifest.sources) {
+        if (source.sourceSet == "" || sourceSets.contains(source.sourceSet) ||
+            source.targetVersion != coverage.targetVersion) { return false }
+        sourceSets.add(source.sourceSet)
+        var matches: Int64 = 0
+        for (item in coverage.sources) {
+            if (item.sourceSet == source.sourceSet) {
+                matches += 1
+                if (source.resolvedCommit != item.resolvedCommit ||
+                    source.contentHash != item.inventoryEvidenceHash) { return false }
+            }
+        }
+        if (matches != 1) { return false }
+    }
+    true
+}
+
+private func ckbReleaseFreshnessManifestCommitAligned(
+    freshness: CangjieCorpusFreshnessReport, manifest: CangjieVersionManifest,
+    activeVersion: String): Bool {
+    if (freshness.sources.size != manifest.sources.size ||
+        freshness.degraded != manifest.degraded) { return false }
+    for (source in manifest.sources) {
+        var matches: Int64 = 0
+        for (item in freshness.sources) {
+            if (item.sourceSet == source.sourceSet) {
+                matches += 1
+                if (item.sourceFamily != source.sourceFamily ||
+                    item.sourceRepo != source.sourceRepo || item.sourceRef != source.sourceRef ||
+                    item.refKind != source.refKind || item.resolvedCommit != source.resolvedCommit ||
+                    item.contentHash != source.contentHash || item.targetVersion != source.targetVersion ||
+                    item.indexedAt != activeVersion) { return false }
+            }
+        }
+        if (matches != 1) { return false }
+    }
+    true
 }
 
 private func ckbManifestDiagnosticStillRelevantAfterRefresh(diagnostic: String): Bool {
@@ -13503,8 +15318,16 @@ private func ckbScheduledReleaseDeltaRecords(profile: CkbScheduleTaskProfile, re
     ckbScheduledGenericDeltaRecords(profile, records, config, manifest, includeCangjieSymbols: true)
 }
 
-private func ckbBuildReleaseDelta(profile: CkbScheduleTaskProfile, fetch: CkbScheduledProfileFetchResult, config: CkbRuntimeConfig): CkbReleaseDeltaBuildResult {
+private func ckbBuildReleaseDelta(profile: CkbScheduleTaskProfile, fetch: CkbScheduledProfileFetchResult,
+    config: CkbRuntimeConfig, finalManifest: CangjieVersionManifest): CkbReleaseDeltaBuildResult {
     let result = CkbReleaseDeltaBuildResult()
+    result.refreshedManifest = finalManifest
+    if (result.refreshedManifest.sources.size == 0) {
+        result.ok = false
+        result.status = "version_manifest_empty_after_refresh"
+        result.diagnostics.add(result.status)
+        return result
+    }
     let allocator = CkbReleaseLogicalIdAllocator()
     let rawIds = HashSet<String>()
     let normalizedIds = HashSet<String>()
@@ -13517,7 +15340,25 @@ private func ckbBuildReleaseDelta(profile: CkbScheduleTaskProfile, fetch: CkbSch
             result.diagnostics.add("release_content_identity_missing")
             return result
         }
-        let raw = ckbReleaseRawRecord(profile, scheduled, fetch.releasePlan.targetVersion)
+        let manifestResolution = ckbScheduledVersionResolution(scheduled, config,
+            result.refreshedManifest)
+        if (!manifestResolution.ok || manifestResolution.sources.size != 1 ||
+            manifestResolution.sources[0].resolvedCommit == "") {
+            result.ok = false
+            result.status = "release_version_resolution_failed"
+            result.diagnostics.add("release_version_resolution_failed:${source.sourceSet}:${source.canonicalIdentity}")
+            return result
+        }
+        let selectedCommit = manifestResolution.sources[0].resolvedCommit
+        if (source.sourceSet != CangjieSourceSets.EVAL_SUPPORT &&
+            scheduled.fetch.commit != selectedCommit) {
+            result.ok = false
+            result.status = "release_resolved_commit_mismatch"
+            result.diagnostics.add("release_resolved_commit_mismatch:${source.sourceSet}:${source.canonicalIdentity}")
+            return result
+        }
+        let resolution = manifestResolution
+        let raw = ckbReleaseRawRecord(profile, scheduled, fetch.releasePlan.targetVersion, resolution)
         if (rawIds.contains(raw.sourceId)) {
             result.ok = false
             result.status = CkbReleaseAcquisitionStatus.DUPLICATE_LOGICAL_RECORD_ID
@@ -13536,7 +15377,8 @@ private func ckbBuildReleaseDelta(profile: CkbScheduleTaskProfile, fetch: CkbSch
                 typed.add(record)
             }
             if (ckbScheduledCangjieSourcePath(scheduled)) {
-                let symbols = extractCangjieSourceSymbolRecords(raw.metadata.path, raw.content, raw.metadata.sourceSet, ckbReleaseVersionResolution(source, scheduled.fetch.commit))
+                let symbols = extractCangjieSourceSymbolRecords(raw.metadata.path, raw.content,
+                    raw.metadata.sourceSet, resolution)
                 for (record in symbols.records) {
                     typed.add(record)
                 }
@@ -13546,7 +15388,7 @@ private func ckbBuildReleaseDelta(profile: CkbScheduleTaskProfile, fetch: CkbSch
             typed.add(ckbReleaseFallbackTypedRecord(raw, source))
         }
         for (record in typed) {
-            ckbReleaseCompleteTypedRecord(record, source, path, scheduled.fetch.commit)
+            ckbReleaseCompleteTypedRecord(record, source, path, resolution)
             let subkey = ckbReleaseTypedBaseSubkey(record)
             record.sourceId = allocator.typedId(source, path, record)
             record.contentHash = ckbReleaseEvidenceHash(record.content)
@@ -13568,7 +15410,8 @@ private func ckbBuildReleaseDelta(profile: CkbScheduleTaskProfile, fetch: CkbSch
     result
 }
 
-private func ckbReleaseRawRecord(profile: CkbScheduleTaskProfile, scheduled: CkbScheduledSourceRecord, targetVersion: String): RawRecord {
+private func ckbReleaseRawRecord(profile: CkbScheduleTaskProfile, scheduled: CkbScheduledSourceRecord,
+    targetVersion: String, resolution: CangjieVersionResolution): RawRecord {
     let source = scheduled.releaseSource
     let path = scheduled.request.path
     let raw = RawRecord()
@@ -13583,11 +15426,13 @@ private func ckbReleaseRawRecord(profile: CkbScheduleTaskProfile, scheduled: Ckb
     metadata.sourceUrl = scheduled.fetch.sourceUrl
     metadata.repo = source.normalizedRepo
     metadata.path = path
-    metadata.commit = scheduled.fetch.commit
+    metadata.commit = if (resolution.sources.size == 1) {
+        resolution.sources[0].resolvedCommit
+    } else { "" }
     metadata.docVersion = source.originalRef
     metadata.targetVersion = targetVersion
     metadata.sourceSet = source.sourceSet
-    metadata.versionResolutionId = "p5:${source.canonicalIdentity}:${scheduled.fetch.commit}"
+    metadata.versionResolutionId = resolution.versionResolutionId
     metadata.crawlAt = "scheduled:${profile.profile}"
     metadata.indexedAt = "scheduled:${profile.profile}"
     metadata.contentSize = scheduled.fetch.body.size
@@ -13598,23 +15443,6 @@ private func ckbReleaseRawRecord(profile: CkbScheduleTaskProfile, scheduled: Ckb
     metadata.derivedFrom = ["p5-logical:${ckbReleaseCanonicalRawKey(source, path)}"]
     raw.metadata = metadata
     raw
-}
-
-private func ckbReleaseVersionResolution(source: CkbReleaseSourcePlan, commit: String): CangjieVersionResolution {
-    let resolution = CangjieVersionResolution()
-    resolution.ok = true
-    resolution.targetVersion = source.targetVersion
-    resolution.versionResolutionId = "p5:${source.canonicalIdentity}:${commit}"
-    let versionSource = CangjieVersionSource()
-    versionSource.sourceSet = source.sourceSet
-    versionSource.sourceFamily = source.sourceFamily
-    versionSource.sourceRepo = source.normalizedRepo
-    versionSource.sourceRef = source.originalRef
-    versionSource.refKind = source.refKind
-    versionSource.targetVersion = source.targetVersion
-    versionSource.resolvedCommit = commit
-    resolution.sources.add(versionSource)
-    resolution
 }
 
 private func ckbReleaseFallbackTypedRecord(raw: RawRecord, source: CkbReleaseSourcePlan): CangjieTypedRecord {
@@ -13637,14 +15465,18 @@ private func ckbReleaseFallbackTypedRecord(raw: RawRecord, source: CkbReleaseSou
     record
 }
 
-private func ckbReleaseCompleteTypedRecord(record: CangjieTypedRecord, source: CkbReleaseSourcePlan, path: String, commit: String): Unit {
+private func ckbReleaseCompleteTypedRecord(record: CangjieTypedRecord, source: CkbReleaseSourcePlan,
+    path: String, resolution: CangjieVersionResolution): Unit {
     record.sourceSet = source.sourceSet
     if (record.sourceFamily == "") { record.sourceFamily = source.sourceFamily }
     if (record.path == "") { record.path = path }
     record.targetVersion = source.targetVersion
     record.sourceRef = source.originalRef
     if (record.refKind == "") { record.refKind = source.refKind }
-    record.resolvedCommit = commit
+    record.resolvedCommit = if (resolution.sources.size > 0) {
+        resolution.sources[0].resolvedCommit
+    } else { "" }
+    record.versionResolutionId = resolution.versionResolutionId
     record.trustLevel = TrustLevels.OFFICIAL
     record.reviewState = ReviewStates.TRUSTED
 }
@@ -13962,12 +15794,40 @@ private func ckbRunRepositoryChangedSourceSync(kb: KnowledgeBase, store: FileKno
             ckbFetchScheduledSource(runner, builder.gitCodeSource(repo, ref, path), profile, result, config)
         }
     }
-    let storedManifest = store.loadCangjieVersionManifest()
-    let manifest = if (storedManifest.sources.size > 0) { storedManifest } else { ckbRuntimeCangjieVersionManifest(config) }
+    let manifest = ckbRuntimeVersionManifestForStore(store, config)
     let ingest = ingestScheduledProfileSources(kb, store, profile, result, config, manifest)
     result.ok = result.ok && ingest.ok
     result.status = if (result.ok) { ingest.status } else { if (ingest.status != "") { ingest.status } else { result.status } }
     result
+}
+
+private func ckbRuntimeVersionManifestForStore(store: FileKnowledgeStore,
+    config: CkbRuntimeConfig): CangjieVersionManifest {
+    let pointer = store.loadActiveSnapshotPointer()
+    if (pointer.valid && !pointer.legacy &&
+        pointer.companionMode != CkbActiveSnapshotCompanionMode.NONE) {
+        let active = store.loadActiveCangjieVersionManifest()
+        if (active.sources.size == 0) {
+            active.degraded = true
+            active.diagnostics.add("active_version_manifest_empty")
+        }
+        return active
+    }
+    if (!pointer.valid && store.hasAuthoritativeActiveSnapshotPointer()) {
+        let invalid = CangjieVersionManifest()
+        invalid.sources.clear()
+        invalid.degraded = true
+        invalid.diagnostics.add("active_snapshot_pointer_invalid:${pointer.diagnostic}")
+        return invalid
+    }
+    let stored = store.loadCangjieVersionManifest()
+    if (stored.sources.size > 0) { return stored }
+    let runtime = ckbRuntimeCangjieVersionManifest(config)
+    for (diagnostic in stored.diagnostics) {
+        runtime.degraded = true
+        runtime.diagnostics.add("stored_manifest_${diagnostic}")
+    }
+    runtime
 }
 
 private func ckbServiceStringArrayJson(values: ArrayList<String>): String {
@@ -15073,7 +16933,6 @@ private func cangjieRuntimeVectorDimensionMismatch(embedding: EmbeddingConfig, v
 public func newKnowledgeBaseFromStoreWithRuntime(store: FileKnowledgeStore, config: CkbRuntimeConfig): KnowledgeBaseLoadResult {
     let kb = KnowledgeBase(FakeClock(0), embeddingProviderFromRuntime(config), vectorStoreFromRuntime(config), LocalGraphStore())
     kb.configureVectorCollections(config.vectorActiveCollection, config.vectorCandidateCollection)
-    kb.bootstrapOffline()
     let result = KnowledgeBaseLoadResult(kb)
     let snapshot = store.loadActiveSnapshot()
     if (kb.restoreActiveSnapshot(snapshot)) {
@@ -15082,6 +16941,14 @@ public func newKnowledgeBaseFromStoreWithRuntime(store: FileKnowledgeStore, conf
         result.diagnostic = snapshot.diagnostic
         return result
     }
+    if (store.hasAuthoritativeActiveSnapshotPointer()) {
+        kb.markPersistedSnapshotInvalid(snapshot.diagnostic)
+        kb.restoreScheduler(store.loadScheduler())
+        result.source = "persisted_invalid"
+        result.diagnostic = snapshot.diagnostic
+        return result
+    }
+    kb.bootstrapOffline()
     kb.restoreScheduler(store.loadScheduler())
     result.source = "offline_baseline"
     result.diagnostic = snapshot.diagnostic

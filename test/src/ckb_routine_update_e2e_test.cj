@@ -123,10 +123,13 @@ public class CkbRoutineUpdateE2ETest {
         let kb = p5OfflineKnowledgeBase(provider, vectorStore)
         let initial = ckbRebuildIndex(kb, store)
         let oldVersion = cangjie_knowledge_status(kb).activeKnowledgeVersion
-        let txIndexDir = Path("${root}/store/transactions/pending-tx/index")
+        let vectorActiveCollection = store.loadMetadataStatus().vectorActiveCollection
+        let pendingTxId = "pending-tx"
+        let pendingActiveVersion = "ckb-pending-active"
+        let txIndexDir = Path("${root}/store/transactions/${pendingTxId}/index")
         Directory.create(txIndexDir, recursive: true)
-        File.writeTo(txIndexDir.join("active.version"), "ckb-pending-active\n".toArray())
-        File.writeTo(Path("${root}/store/metadata/active-snapshot.manifest"), "txId=pending-tx\nactive=ckb-pending-active\ncommitted=true\n".toArray())
+        File.writeTo(txIndexDir.join("active.version"), "${pendingActiveVersion}\n".toArray())
+        File.writeTo(Path("${root}/store/metadata/active-snapshot.manifest"), "txId=${pendingTxId}\nactive=${pendingActiveVersion}\nvectorActiveCollection=${vectorActiveCollection}\ncommitted=true\n".toArray())
 
         let snapshot = store.loadActiveSnapshot()
         let reloaded = newKnowledgeBaseFromStore(store)

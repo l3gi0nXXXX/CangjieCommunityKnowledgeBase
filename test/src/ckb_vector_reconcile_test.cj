@@ -178,11 +178,12 @@ public class CkbVectorReconcileTest {
         let vectorStore = ReconcileTrackingVectorStore()
         vectorStore.reportCountMismatchAfterRebuild = true
         let kb = ckbVectorReconcileKnowledgeBase(vectorStore)
-        ckbVectorReconcileWriteDuplicateActiveSnapshot(store, kb)
+        let fixtureTransaction = ckbVectorReconcileWriteDuplicateActiveSnapshot(store, kb)
         vectorStore.deletedActiveCollection = false
 
         let result = ckbVectorReconcileWithVectorStore(kb, store, ckbVectorReconcileRuntimeConfig(), vectorStore, true)
 
+        @Expect(fixtureTransaction.businessCommitted, true)
         @Expect(result.ok, false)
         @Expect(ckbVectorReconcileContainsPrefix(result.diagnostics, "qdrant_staging_count_mismatch:"), true)
         @Expect(ckbVectorReconcileContains(result.diagnostics, "duplicate_vector_ids:1:1"), true)
@@ -536,7 +537,7 @@ private func ckbVectorReconcileWriteFile(root: String, relative: String, body: S
     File.writeTo(path, body.toArray())
 }
 
-private func ckbVectorReconcileWriteDuplicateActiveSnapshot(store: FileKnowledgeStore, kb: KnowledgeBase): Unit {
+private func ckbVectorReconcileWriteDuplicateActiveSnapshot(store: FileKnowledgeStore, kb: KnowledgeBase): CkbActiveSnapshotTransactionResult {
     let status = kb.status()
     let active = kb.activeRecordSnapshot()
     let duplicateIndex = ArrayList<NormalizedRecord>()
@@ -552,7 +553,11 @@ private func ckbVectorReconcileWriteDuplicateActiveSnapshot(store: FileKnowledge
         duplicateIndex.add(third)
         rawRecords.add(ckbVectorReconcileRawRecord(third))
     }
-    store.writeActiveSnapshotTransaction(status, rawRecords, duplicateIndex, duplicateIndex, ArrayList<VectorRecord>(), "ckb_active", GraphBuildResult(), persistVectorFile: false)
+    status.storage.rawCount = rawRecords.size
+    status.storage.normalizedCount = duplicateIndex.size
+    status.storage.indexCount = duplicateIndex.size
+    store.writeActiveSnapshotTransaction(status, rawRecords, duplicateIndex, duplicateIndex,
+        ArrayList<VectorRecord>(), "ckb_active", GraphBuildResult(), persistVectorFile: false)
 }
 
 private func ckbVectorReconcileDuplicateRecord(sourceId: String, activeVersion: String, chunk: String): NormalizedRecord {

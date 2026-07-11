@@ -3531,6 +3531,7 @@ public class KnowledgeBase {
     private var lastOverlayBuildStats: CkbOverlayBuildStats = CkbOverlayBuildStats()
     private var lastCandidateMaterialization: CkbCandidateMaterializationResult = CkbCandidateMaterializationResult()
     private var lastGraphBuildCache: CkbGraphBuildCache = CkbGraphBuildCache()
+    private var activeSnapshotReadable: Bool = true
 
     public init(clock: FakeClock) {
         this.scheduler = Scheduler(clock)
@@ -3568,11 +3569,12 @@ public class KnowledgeBase {
         this.storage.vectorActiveCollection = trimmed
     }
 
-    public func bootstrapOffline(): Unit {
+    public func bootstrapOffline(restoreDiagnostic!: String = ""): Unit {
+        this.activeSnapshotReadable = true
         this.rawRecords.clear()
         this.normalizedRecords.clear()
         this.activeStateSource = "offline_baseline"
-        this.restoreDiagnostic = ""
+        this.restoreDiagnostic = restoreDiagnostic
         this.addRecord("doc-syntax", SourceTypes.DOC, "Cangjie function syntax", "https://docs.cangjie-lang.cn/docs/1.0.0/language/functions", "", "", "", "1.0.0", TrustLevels.OFFICIAL, ReviewStates.TRUSTED, "Function definitions use func. Named parameters use an exclamation marker in the declaration and parameter names in calls. Cangjie syntax covers classes, arrays, options, and tests.")
         this.addRecord("doc-stdx-json", SourceTypes.DOC, "stdx JSON API", "https://docs.cangjie-lang.cn/docs/1.0.0/libs/stdx/json", "", "", "", "1.0.0", TrustLevels.OFFICIAL, ReviewStates.TRUSTED, "stdx contains JSON support for structured encoding and decoding.")
         this.addRecord("cangjie-syntax-option", SourceTypes.DOC, "Cangjie Option syntax", "https://docs.cangjie-lang.cn/docs/1.0.0/language/option", "", "", "Option", "1.0.0", TrustLevels.OFFICIAL, ReviewStates.TRUSTED, "Option<T> values are None<T> or Some<T>(value). Use Option when a value may be absent and avoid null-style checks.")
@@ -3590,11 +3592,41 @@ public class KnowledgeBase {
         this.publishIndex(false)
     }
 
+    public func markPersistedSnapshotInvalid(diagnostic: String): Unit {
+        this.activeSnapshotReadable = false
+        this.rawRecords.clear()
+        this.normalizedRecords.clear()
+        this.activeIndex.clear()
+        this.candidateIndex.clear()
+        this.activeKnowledgeVersion = ""
+        this.candidateKnowledgeVersion = ""
+        this.failedCandidateVersion = ""
+        this.activeStateSource = "persisted_invalid"
+        this.restoreDiagnostic = if (diagnostic == "") { "active_snapshot_invalid" } else { diagnostic }
+        this.storage.rawCount = 0
+        this.storage.normalizedCount = 0
+        this.storage.indexCount = 0
+        this.storage.textIndexCount = 0
+        this.storage.vectorIndexCount = 0
+        this.storage.symbolIndexCount = 0
+        this.storage.graphIndexCount = 0
+        this.storage.vectorState = EmbeddingProviderState.DEGRADED
+        this.storage.vectorDegradedReason = this.restoreDiagnostic
+        this.storage.graphState = EmbeddingProviderState.DEGRADED
+        this.storage.graphNodeCount = 0
+        this.storage.graphEdgeCount = 0
+        this.indexManifest = IndexManifest()
+        this.servingQueryCache = CangjieQueryCache(256)
+        this.graphStore.clear()
+        this.lastGraphBuildCache = CkbGraphBuildCache()
+    }
+
     public func restoreActiveSnapshot(snapshot: ActiveSnapshot): Bool {
         if (!snapshot.valid) {
             this.restoreDiagnostic = snapshot.diagnostic
             return false
         }
+        this.activeSnapshotReadable = true
         this.rawRecords.clear()
         this.normalizedRecords.clear()
         this.activeIndex.clear()
@@ -3805,6 +3837,7 @@ public class KnowledgeBase {
         inserted.metadata.targetVersion = cangjieDefaultTargetVersion()
         inserted.metadata.sourceSet = cangjieSourceSetForIngest(sourceType, repo, path, fetch.sourceUrl)
         inserted.metadata.versionResolutionId = cangjieIngestVersionResolutionId(inserted.metadata)
+        this.storage.rawCount = this.rawRecords.size
         true
     }
 
@@ -3968,7 +4001,9 @@ public class KnowledgeBase {
     }
 
     public func markCandidateValidationFailed(candidateVersion: String): Unit {
-        this.failedCandidateVersion = if (candidateVersion.trimAscii() == "") { this.candidateKnowledgeVersion } else { candidateVersion.trimAscii() }
+        let failedVersion = if (candidateVersion.trimAscii() == "") { this.candidateKnowledgeVersion } else { candidateVersion.trimAscii() }
+        this.candidateKnowledgeVersion = failedVersion
+        this.failedCandidateVersion = failedVersion
     }
 
     public func promoteCandidateToActive(activeVersion: String): Bool {
@@ -5192,32 +5227,55 @@ public class KnowledgeBase {
         store.saveMetadata(this.status())
     }
 
-    public func persistActiveSnapshot(store: FileKnowledgeStore, deadlineAtMillis!: Int64 = 0): Unit {
+    public func persistActiveSnapshot(store: FileKnowledgeStore, deadlineAtMillis!: Int64 = 0): CkbActiveSnapshotTransactionResult {
         store.ensureLayout()
         let graph = this.activeGraphBuildForSnapshot(deadlineAtMillis)
         if (!graph.ok) {
             throw Exception(graph.diagnostic)
         }
-        store.writeActiveSnapshotTransaction(this.status(), this.rawRecords, this.activeIndex, this.activeIndex, this.activeVectorRecords(), this.vectorCollection, graph, deadlineAtMillis: deadlineAtMillis)
+        this.requireCommittedActiveSnapshot(store.writeActiveSnapshotTransaction(this.status(), this.rawRecords, this.activeIndex,
+            this.activeIndex, this.activeVectorRecords(), this.vectorCollection, graph,
+            deadlineAtMillis: deadlineAtMillis))
     }
 
-    public func persistActiveSnapshotUsingVectorRecords(store: FileKnowledgeStore, vectorRecords: ArrayList<VectorRecord>, persistVectorFile!: Bool = true, deadlineAtMillis!: Int64 = 0, stageSink!: CkbStagedRebuildStageSink = NoopCkbStagedRebuildStageSink()): Unit {
+    public func persistActiveSnapshotUsingVectorRecords(store: FileKnowledgeStore, vectorRecords: ArrayList<VectorRecord>, persistVectorFile!: Bool = true, deadlineAtMillis!: Int64 = 0, stageSink!: CkbStagedRebuildStageSink = NoopCkbStagedRebuildStageSink()): CkbActiveSnapshotTransactionResult {
         store.ensureLayout()
         let graph = this.activeGraphBuildForSnapshot(deadlineAtMillis)
         if (!graph.ok) {
             throw Exception(graph.diagnostic)
         }
-        store.writeActiveSnapshotTransaction(this.status(), this.rawRecords, this.activeIndex, this.activeIndex, vectorRecords, this.vectorCollection, graph, persistVectorFile: persistVectorFile, deadlineAtMillis: deadlineAtMillis, stageSink: stageSink)
+        this.requireCommittedActiveSnapshot(store.writeActiveSnapshotTransaction(this.status(), this.rawRecords, this.activeIndex,
+            this.activeIndex, vectorRecords, this.vectorCollection, graph,
+            persistVectorFile: persistVectorFile, deadlineAtMillis: deadlineAtMillis,
+            stageSink: stageSink))
     }
 
-    public func persistActiveSnapshotUsingVectorBuild(store: FileKnowledgeStore, vectorBuild: VectorIndexBuildResult, persistVectorFile!: Bool = true, deadlineAtMillis!: Int64 = 0, stageSink!: CkbStagedRebuildStageSink = NoopCkbStagedRebuildStageSink()): Unit {
+    public func persistActiveSnapshotUsingVectorBuild(store: FileKnowledgeStore, vectorBuild: VectorIndexBuildResult, persistVectorFile!: Bool = true, deadlineAtMillis!: Int64 = 0, stageSink!: CkbStagedRebuildStageSink = NoopCkbStagedRebuildStageSink(), releaseBundle!: CkbReleaseCommitBundle = CkbReleaseCommitBundle(), faultInjector!: CkbActiveSnapshotFaultInjector = NoopCkbActiveSnapshotFaultInjector()): CkbActiveSnapshotTransactionResult {
         store.ensureLayout()
         let graph = this.activeGraphBuildForSnapshot(deadlineAtMillis)
         if (!graph.ok) { throw Exception(graph.diagnostic) }
-        store.writeActiveSnapshotTransaction(this.status(), this.rawRecords, this.activeIndex, this.activeIndex, vectorBuild.vectorRecords, this.vectorCollection, graph, persistVectorFile: persistVectorFile, deadlineAtMillis: deadlineAtMillis, stageSink: stageSink, vectorSpool: vectorBuild.spool)
+        this.requireCommittedActiveSnapshot(store.writeActiveSnapshotTransaction(this.status(), this.rawRecords, this.activeIndex,
+            this.activeIndex, vectorBuild.vectorRecords, this.vectorCollection, graph,
+            persistVectorFile: persistVectorFile, deadlineAtMillis: deadlineAtMillis,
+            stageSink: stageSink, vectorSpool: vectorBuild.spool, releaseBundle: releaseBundle,
+            faultInjector: faultInjector))
     }
 
-    public func persistCandidateSnapshot(store: FileKnowledgeStore, deadlineAtMillis!: Int64 = 0): Unit {
+    private func requireCommittedActiveSnapshot(
+        result: CkbActiveSnapshotTransactionResult): CkbActiveSnapshotTransactionResult {
+        if (!result.businessCommitted) {
+            let diagnostic = if (result.failureDiagnostic != "") {
+                result.failureDiagnostic
+            } else if (result.diagnostics.size > 0) {
+                result.diagnostics[0]
+            } else { "active_snapshot_transaction_not_committed" }
+            throw Exception(diagnostic)
+        }
+        result
+    }
+
+    public func persistCandidateSnapshot(store: FileKnowledgeStore,
+        deadlineAtMillis!: Int64 = 0): Unit {
         store.ensureLayout()
         let materialization = store.saveCandidateSnapshotImmutable(this.rawRecords, this.candidateIndex, this.candidateKnowledgeVersion, deadlineAtMillis: deadlineAtMillis)
         this.lastCandidateMaterialization = materialization
@@ -5341,6 +5399,11 @@ public class KnowledgeBase {
         let result = SearchResult()
         result.queryId = "query-${query.size}-${options.sourceType}"
         result.knowledgeVersion = this.activeKnowledgeVersion
+        if (!this.activeSnapshotReadable) {
+            result.degraded = true
+            result.fallbackReason = this.restoreDiagnostic
+            return result
+        }
         let needle = query.toAsciiLower()
         for (record in this.activeIndex) {
             if (!this.recordAllowed(record, options)) {
@@ -5713,7 +5776,7 @@ public class KnowledgeBaseLoadResult {
 }
 
 public func newKnowledgeBaseFromStore(store: FileKnowledgeStore): KnowledgeBaseLoadResult {
-    let kb = newOfflineKnowledgeBase()
+    let kb = KnowledgeBase(FakeClock(0))
     let result = KnowledgeBaseLoadResult(kb)
     let snapshot = store.loadActiveSnapshot()
     if (kb.restoreActiveSnapshot(snapshot)) {
@@ -5722,6 +5785,14 @@ public func newKnowledgeBaseFromStore(store: FileKnowledgeStore): KnowledgeBaseL
         result.diagnostic = snapshot.diagnostic
         return result
     }
+    if (store.hasAuthoritativeActiveSnapshotPointer()) {
+        kb.markPersistedSnapshotInvalid(snapshot.diagnostic)
+        kb.restoreScheduler(store.loadScheduler())
+        result.source = "persisted_invalid"
+        result.diagnostic = snapshot.diagnostic
+        return result
+    }
+    kb.bootstrapOffline(restoreDiagnostic: snapshot.diagnostic)
     kb.restoreScheduler(store.loadScheduler())
     result.source = "offline_baseline"
     result.diagnostic = snapshot.diagnostic

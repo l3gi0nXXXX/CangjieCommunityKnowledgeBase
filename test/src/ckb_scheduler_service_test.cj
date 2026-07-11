@@ -339,26 +339,37 @@ public class CkbSchedulerServiceF5Test {
 
     @TestCase
     public func p7Pos001ReleaseRefreshPersistsVersionManifestArtifact(): Unit {
+        let root = "target/p7-release-refresh-manifest"
+        s1s2EnsureEmptyDir(root)
         let config = CkbRuntimeConfig()
         config.networkEnabled = true
         f7ConfigureExplicitEval(config, "target/p7-release-refresh-manifest-eval")
-        let store = FileKnowledgeStore("target/p7-release-refresh-manifest")
+        let store = FileKnowledgeStore(root)
         store.saveCangjieVersionManifest(f5ScheduledManifest())
+        let planningManifestBefore = store.readText("metadata/cangjie-version-manifest.ckb")
         let service = CkbCommandLoopService(config, store, sourceRunner: F7CompleteFakeSourceFetchRunner())
         _ = service.start()
         let tasks = ArrayList<String>()
         tasks.add("cangjie_release_full_sync")
 
         let result = service.runSchedulerTasks(tasks, true)
-        let manifest = store.loadCangjieVersionManifest()
+        let manifest = store.loadActiveCangjieVersionManifest()
+        let pointer = store.loadActiveSnapshotPointer()
 
         @Expect(result.ran, 1)
         @Expect(result.succeeded, 1)
         @Expect(result.failed, 0)
-        @Expect(store.has("metadata/cangjie-version-manifest.ckb"), true)
-        @Expect(manifest.sources.size >= 4, true)
+        @Expect(store.readText("metadata/cangjie-version-manifest.ckb"), planningManifestBefore)
+        @Expect(manifest.manifestVersion, CangjieVersionManifestVersions.V2)
+        @Expect(manifest.sources.size, 5)
         @Expect(f5HasManifestRootKind(manifest, "scheduled:cangjie_release_full_sync"), true)
-        @Expect(f7SchedulerDiagnosticsContain(result, "version_manifest_saved:"), true)
+        @Expect(f7ManifestHasReleaseCommitEvidence(manifest, f7GenericResolvedCommit()), true)
+        @Expect(pointer.valid, true)
+        @Expect(pointer.legacy, false)
+        @Expect(pointer.companionMode, CkbActiveSnapshotCompanionMode.RELEASE)
+        @Expect(f7ActiveReleaseTransactionEvidenceValid(store, pointer), true)
+        @Expect(f7SchedulerDiagnosticsContain(result, "version_manifest_saved:"), false)
+        @Expect(f7SchedulerDiagnosticsContain(result, "snapshot_transaction_committed:"), true)
     }
 
     @TestCase
@@ -629,11 +640,14 @@ public class CkbSchedulerServiceF5Test {
 
     @TestCase
     public func p7Pos006SlashRefReleaseFullSyncPersistsManifest(): Unit {
+        let root = "target/p7-slash-ref-release-full-sync"
+        s1s2EnsureEmptyDir(root)
         let config = CkbRuntimeConfig()
         config.networkEnabled = true
         f7ConfigureExplicitEval(config, "target/p7-slash-ref-release-full-sync-eval")
-        let store = FileKnowledgeStore("target/p7-slash-ref-release-full-sync")
+        let store = FileKnowledgeStore(root)
         store.saveCangjieVersionManifest(f7OfficialReleaseManifestSlashRef())
+        let planningManifestBefore = store.readText("metadata/cangjie-version-manifest.ckb")
         let runner = F7SlashRefTreeOkRunner()
         let service = CkbCommandLoopService(config, store, sourceRunner: runner)
         _ = service.start()
@@ -641,12 +655,21 @@ public class CkbSchedulerServiceF5Test {
         tasks.add("cangjie_release_full_sync")
 
         let result = service.runSchedulerTasks(tasks, true)
-        let manifest = store.loadCangjieVersionManifest()
+        let manifest = store.loadActiveCangjieVersionManifest()
+        let pointer = store.loadActiveSnapshotPointer()
 
         @Expect(result.ran, 1)
         @Expect(result.succeeded, 1)
         @Expect(result.failed, 0)
-        @Expect(store.has("metadata/cangjie-version-manifest.ckb"), true)
+        @Expect(store.readText("metadata/cangjie-version-manifest.ckb"), planningManifestBefore)
+        @Expect(manifest.manifestVersion, CangjieVersionManifestVersions.V2)
+        @Expect(manifest.sources.size, 5)
+        @Expect(f5HasManifestRootKind(manifest, "scheduled:cangjie_release_full_sync"), true)
+        @Expect(f7ManifestHasReleaseCommitEvidence(manifest, f7SlashRefResolvedCommit()), true)
+        @Expect(pointer.valid, true)
+        @Expect(pointer.legacy, false)
+        @Expect(pointer.companionMode, CkbActiveSnapshotCompanionMode.RELEASE)
+        @Expect(f7ActiveReleaseTransactionEvidenceValid(store, pointer), true)
         @Expect(f7RunnerSawUrlFragment(runner, "/branches?page=1&per_page=100"), true)
         @Expect(f7RunnerSawUrlFragment(runner, "/git/trees/${f7SlashRefResolvedCommit()}?"), true)
         @Expect(f7RunnerSawUrlFragment(runner, "?ref=${f7SlashRefResolvedCommit()}"), true)
@@ -655,7 +678,8 @@ public class CkbSchedulerServiceF5Test {
         @Expect(f7RunnerSawUrlFragment(runner, "/git/trees/release/1.0?"), false)
         @Expect(f7ManifestSourceRef(manifest, CangjieSourceSets.STDX), "release/1.0")
         @Expect(f7ManifestResolvedCommit(manifest, CangjieSourceSets.STDX), f7SlashRefResolvedCommit())
-        @Expect(f7SchedulerDiagnosticsContain(result, "version_manifest_saved:"), true)
+        @Expect(f7SchedulerDiagnosticsContain(result, "version_manifest_saved:"), false)
+        @Expect(f7SchedulerDiagnosticsContain(result, "snapshot_transaction_committed:"), true)
     }
 
     @TestCase
@@ -688,11 +712,14 @@ public class CkbSchedulerServiceF5Test {
 
     @TestCase
     public func p7Pos006bLegacyReleaseRefUsesSlashReleaseAliasWhenRemoteOmitsDashBranch(): Unit {
+        let root = "target/p7-legacy-release-ref-alias"
+        s1s2EnsureEmptyDir(root)
         let config = CkbRuntimeConfig()
         config.networkEnabled = true
         f7ConfigureExplicitEval(config, "target/p7-legacy-release-ref-alias-eval")
-        let store = FileKnowledgeStore("target/p7-legacy-release-ref-alias")
+        let store = FileKnowledgeStore(root)
         store.saveCangjieVersionManifest(f7OfficialReleaseManifest())
+        let planningManifestBefore = store.readText("metadata/cangjie-version-manifest.ckb")
         let runner = F7SlashRefTreeOkRunner()
         let service = CkbCommandLoopService(config, store, sourceRunner: runner)
         _ = service.start()
@@ -700,11 +727,21 @@ public class CkbSchedulerServiceF5Test {
         tasks.add("cangjie_release_full_sync")
 
         let result = service.runSchedulerTasks(tasks, true)
-        let manifest = store.loadCangjieVersionManifest()
+        let manifest = store.loadActiveCangjieVersionManifest()
+        let pointer = store.loadActiveSnapshotPointer()
 
         @Expect(result.ran, 1)
         @Expect(result.succeeded, 1)
         @Expect(result.failed, 0)
+        @Expect(store.readText("metadata/cangjie-version-manifest.ckb"), planningManifestBefore)
+        @Expect(manifest.manifestVersion, CangjieVersionManifestVersions.V2)
+        @Expect(manifest.sources.size, 5)
+        @Expect(f5HasManifestRootKind(manifest, "scheduled:cangjie_release_full_sync"), true)
+        @Expect(f7ManifestHasReleaseCommitEvidence(manifest, f7SlashRefResolvedCommit()), true)
+        @Expect(pointer.valid, true)
+        @Expect(pointer.legacy, false)
+        @Expect(pointer.companionMode, CkbActiveSnapshotCompanionMode.RELEASE)
+        @Expect(f7ActiveReleaseTransactionEvidenceValid(store, pointer), true)
         @Expect(f7RunnerSawUrlFragment(runner, "/branches?page=1&per_page=100"), true)
         @Expect(f7SchedulerDiagnosticsContain(result, "release_ref_evidence:sourceSet=stdx|repo=Cangjie/cangjie_stdx|status=ok|commit=${f7SlashRefResolvedCommit()}"), true)
         @Expect(f7RunnerSawUrlFragment(runner, "/git/trees/${f7SlashRefResolvedCommit()}?"), true)
@@ -712,6 +749,8 @@ public class CkbSchedulerServiceF5Test {
         @Expect(f7RunnerSawUrlFragment(runner, "/git/trees/release/1.0?"), false)
         @Expect(f7ManifestSourceRef(manifest, CangjieSourceSets.STDX), "release-1.0.0")
         @Expect(f7ManifestResolvedCommit(manifest, CangjieSourceSets.STDX), f7SlashRefResolvedCommit())
+        @Expect(f7SchedulerDiagnosticsContain(result, "version_manifest_saved:"), false)
+        @Expect(f7SchedulerDiagnosticsContain(result, "snapshot_transaction_committed:"), true)
     }
 
     @TestCase
@@ -743,11 +782,14 @@ public class CkbSchedulerServiceF5Test {
 
     @TestCase
     public func p7Pos008SlashRefBranchEndpointFallbackUsesNativeSafeEncoding(): Unit {
+        let root = "target/p7-slash-ref-branch-endpoint-fallback"
+        s1s2EnsureEmptyDir(root)
         let config = CkbRuntimeConfig()
         config.networkEnabled = true
         f7ConfigureExplicitEval(config, "target/p7-slash-ref-branch-endpoint-fallback-eval")
-        let store = FileKnowledgeStore("target/p7-slash-ref-branch-endpoint-fallback")
+        let store = FileKnowledgeStore(root)
         store.saveCangjieVersionManifest(f7OfficialReleaseManifestSlashRef())
+        let planningManifestBefore = store.readText("metadata/cangjie-version-manifest.ckb")
         let runner = F7SlashRefTreeOkRunner()
         runner.branchListOmitsRelease = true
         let service = CkbCommandLoopService(config, store, sourceRunner: runner)
@@ -756,14 +798,27 @@ public class CkbSchedulerServiceF5Test {
         tasks.add("cangjie_release_full_sync")
 
         let result = service.runSchedulerTasks(tasks, true)
+        let manifest = store.loadActiveCangjieVersionManifest()
+        let pointer = store.loadActiveSnapshotPointer()
 
         @Expect(result.ran, 1)
         @Expect(result.succeeded, 1)
         @Expect(result.failed, 0)
+        @Expect(store.readText("metadata/cangjie-version-manifest.ckb"), planningManifestBefore)
+        @Expect(manifest.manifestVersion, CangjieVersionManifestVersions.V2)
+        @Expect(manifest.sources.size, 5)
+        @Expect(f5HasManifestRootKind(manifest, "scheduled:cangjie_release_full_sync"), true)
+        @Expect(f7ManifestHasReleaseCommitEvidence(manifest, f7SlashRefResolvedCommit()), true)
+        @Expect(pointer.valid, true)
+        @Expect(pointer.legacy, false)
+        @Expect(pointer.companionMode, CkbActiveSnapshotCompanionMode.RELEASE)
+        @Expect(f7ActiveReleaseTransactionEvidenceValid(store, pointer), true)
         @Expect(f7RunnerSawUrlFragment(runner, "/branches/release%252F1.0"), true)
         @Expect(f7RunnerSawUrlFragment(runner, "/branches/release%2F1.0"), false)
         @Expect(f7RunnerSawUrlFragment(runner, "/git/trees/${f7SlashRefResolvedCommit()}?"), true)
-        @Expect(f7SchedulerDiagnosticsContain(result, "version_manifest_saved:"), true)
+        @Expect(f7ManifestResolvedCommit(manifest, CangjieSourceSets.STDX), f7SlashRefResolvedCommit())
+        @Expect(f7SchedulerDiagnosticsContain(result, "version_manifest_saved:"), false)
+        @Expect(f7SchedulerDiagnosticsContain(result, "snapshot_transaction_committed:"), true)
     }
 
     @TestCase
@@ -1355,6 +1410,7 @@ public class CkbSchedulerServiceF5Test {
         config.firstInitEvalRoot = fixture.evalRoot
         let store = FileKnowledgeStore("${root}/store")
         store.saveCangjieVersionManifest(f5ScheduledManifest())
+        let planningManifestBefore = store.readText("metadata/cangjie-version-manifest.ckb")
         let runner = S1S2PaginatedGitCodeRunner()
         let service = CkbCommandLoopService(config, store, sourceRunner: runner)
         _ = service.start()
@@ -1362,13 +1418,25 @@ public class CkbSchedulerServiceF5Test {
         tasks.add("cangjie_release_full_sync")
 
         let result = service.runSchedulerTasks(tasks, true)
+        let manifest = store.loadActiveCangjieVersionManifest()
+        let pointer = store.loadActiveSnapshotPointer()
 
         @Expect(result.ran, 1)
         @Expect(result.succeeded, 1)
         @Expect(result.failed, 0)
+        @Expect(store.readText("metadata/cangjie-version-manifest.ckb"), planningManifestBefore)
+        @Expect(manifest.manifestVersion, CangjieVersionManifestVersions.V2)
+        @Expect(manifest.sources.size, 5)
+        @Expect(f5HasManifestRootKind(manifest, "scheduled:cangjie_release_full_sync"), true)
+        @Expect(f7ManifestHasReleaseCommitEvidence(manifest, f7GenericResolvedCommit()), true)
+        @Expect(pointer.valid, true)
+        @Expect(pointer.legacy, false)
+        @Expect(pointer.companionMode, CkbActiveSnapshotCompanionMode.RELEASE)
+        @Expect(f7ActiveReleaseTransactionEvidenceValid(store, pointer), true)
         @Expect(f7SchedulerDiagnosticsContain(result, "required_source_failed"), false)
         @Expect(f7SchedulerDiagnosticsContain(result, "release_inventory_complete:"), true)
-        @Expect(f7SchedulerDiagnosticsContain(result, "version_manifest_saved:"), true)
+        @Expect(f7SchedulerDiagnosticsContain(result, "version_manifest_saved:"), false)
+        @Expect(f7SchedulerDiagnosticsContain(result, "snapshot_transaction_committed:"), true)
     }
 
     @TestCase
@@ -1736,7 +1804,7 @@ public class CkbRoutinePreflightRepairHintTest {
         kb.bootstrapOffline()
         let store = FileKnowledgeStore(root)
         _ = ckbRebuildIndex(kb, store)
-        f7WriteFile(Path(root).join("metadata/active-snapshot.manifest"), "")
+        _ = launch("/bin/rm", ["-f", Path(root).join("metadata/active-snapshot.manifest").toString()]).wait()
 
         let result = ckbRoutineRuntimePreflightWithBootstrap(config, root, "4096M", "/opt/homebrew/opt/openssl@3/lib", F7StatusVectorStore(EmbeddingProviderState.READY, "", 3, count: kb.status().storage.indexCount), embedding)
 
@@ -1751,7 +1819,10 @@ public class CkbRoutinePreflightRepairHintTest {
         s1s2EnsureEmptyDir(root)
         let config = f7QdrantRoutineConfig()
         let embedding = DeterministicEmbeddingProvider(embeddingConfigFromRuntime(config))
-        f7WriteFile(Path(root).join("metadata/status.ckb"), "active=ckb-active\ncandidate=ckb-candidate\nfailed=\nactiveStateSource=test\nrawCount=10\nnormalizedCount=10\nindexCount=10\nvectorIndexCount=10\nvectorBackend=qdrant\nvectorState=ready\nvectorActiveCollection=ckb_active\nvectorCandidateCollection=ckb_candidate\nvectorDimension=3\n")
+        let store = FileKnowledgeStore(root)
+        let metadata = "active=ckb-active\ncandidate=ckb-candidate\nfailed=\nactiveStateSource=test\nrawCount=10\nnormalizedCount=10\nindexCount=10\nvectorIndexCount=10\nvectorBackend=qdrant\nvectorState=ready\nvectorActiveCollection=ckb_active\nvectorCandidateCollection=ckb_candidate\nvectorDimension=3\n"
+        f7WriteFile(Path(root).join("metadata/status.ckb"), metadata)
+        f7WriteFile(Path(root).join("transactions/tx-active/metadata/status.ckb"), metadata)
         f7WriteFile(Path(root).join("metadata/active-snapshot.manifest"), "txId=tx-active\nactive=ckb-active\nvectorActiveCollection=ckb_active\ncommitted=true\n")
         f7WriteFile(Path(root).join("transactions/tx-active/COMMIT"), "ok\n")
 
@@ -1760,6 +1831,8 @@ public class CkbRoutinePreflightRepairHintTest {
         @Expect(result.ok, true)
         @Expect(ruDiagnosticsContain(result.diagnostics, "active_snapshot_invalid"), false)
         @Expect(ruDiagnosticsContain(result.diagnostics, "qdrant_active_count_mismatch"), false)
+        @Expect(store.has("transactions/tx-active/index/active.ckb"), false)
+        @Expect(store.has("transactions/tx-active/raw/records.ckb"), false)
     }
 
     @TestCase
@@ -2964,6 +3037,50 @@ private func f5HasManifestRootKind(manifest: CangjieVersionManifest, rootKind: S
         }
     }
     false
+}
+
+private func f7ManifestHasReleaseCommitEvidence(manifest: CangjieVersionManifest,
+    expectedRemoteCommit: String): Bool {
+    var remoteSources: Int64 = 0
+    var evalSource: Bool = false
+    for (source in manifest.sources) {
+        if (source.sourceSet == CangjieSourceSets.EVAL_SUPPORT) {
+            evalSource = source.resolvedCommit != "" && source.contentHash != "" &&
+                source.rootKind == "local-eval-support"
+        } else if (source.sourceSet == CangjieSourceSets.DOCS ||
+            source.sourceSet == CangjieSourceSets.STD ||
+            source.sourceSet == CangjieSourceSets.STDX ||
+            source.sourceSet == CangjieSourceSets.TOOLS) {
+            if (source.resolvedCommit != expectedRemoteCommit || source.contentHash == "" ||
+                source.rootKind != "scheduled:cangjie_release_full_sync") {
+                return false
+            }
+            remoteSources += 1
+        }
+    }
+    remoteSources == 4 && evalSource
+}
+
+private func f7ActiveReleaseTransactionEvidenceValid(store: FileKnowledgeStore,
+    pointer: CkbActiveSnapshotPointer): Bool {
+    if (!pointer.valid || pointer.legacy || pointer.txId == "" ||
+        pointer.companionMode != CkbActiveSnapshotCompanionMode.RELEASE) {
+        return false
+    }
+    let txRoot = "transactions/${pointer.txId}"
+    let manifestText = store.readText("${txRoot}/metadata/cangjie-version-manifest.ckb")
+    let freshnessText = store.readText("${txRoot}/metadata/cangjie-freshness.ckb")
+    let coverageText = store.readText("${txRoot}/metadata/cangjie-release-coverage.ckb")
+    let commitText = store.readText("${txRoot}/COMMIT")
+    pointer.manifestHash == ckbReleaseCompanionEvidenceHash(manifestText) &&
+        pointer.freshnessHash == ckbReleaseCompanionEvidenceHash(freshnessText) &&
+        pointer.coverageHash == ckbReleaseCompanionEvidenceHash(coverageText) &&
+        commitText.contains("schema=ckb-active-commit-v2\n") &&
+        commitText.contains("txId=${pointer.txId}\n") &&
+        commitText.contains("manifestHash=${pointer.manifestHash}\n") &&
+        commitText.contains("freshnessHash=${pointer.freshnessHash}\n") &&
+        commitText.contains("coverageHash=${pointer.coverageHash}\n") &&
+        commitText.contains("committed=true\n")
 }
 
 private func f5OverlayRecord(sourceId: String, title: String, chunk: String): NormalizedRecord {
