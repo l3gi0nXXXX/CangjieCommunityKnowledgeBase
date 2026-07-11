@@ -98,7 +98,8 @@ private class P5S1ThrowingSchedulerProgressSink <: SchedulerProgressSink {
         this.fail("run_started")
     }
 
-    public func onTaskStarted(runId: String, taskName: String): Unit {
+    public func onTaskStarted(runId: String, taskName: String,
+        timeBudgetMillis: Int64, deadlineAtMillis: Int64): Unit {
         this.fail("task_started")
     }
 
@@ -194,7 +195,8 @@ public class CkbSchedulerProgressTimeoutTest {
         @Expect(json.contains("\"completedRequests\":6"), true)
         @Expect(json.contains("\"failedRequests\":0"), true)
         @Expect(json.contains("\"retryAttempts\":1"), true)
-        @Expect(progressJson.contains("\"event\":\"task_finished\""), true)
+        @Expect(progressJson.contains("\"event\":\"scheduler.task.finished\""), true)
+        @Expect(progressJson.contains("\"legacyEvent\":\"task_finished\""), true)
         @Expect(progressJson.contains("\"requestCount\":7"), true)
         @Expect(progressJson.contains("\"actualAttempts\":7"), true)
         @Expect(progressJson.contains("\"successfulAttempts\":6"), true)
@@ -475,7 +477,7 @@ public class CkbSchedulerProgressTimeoutTest {
 
         File.writeTo(Path(root).join("${resultPath}.sidecar"), [UInt8(255), UInt8(254), UInt8(253)])
         let malformed = ckbReadSchedulerWorkerResultFile(root, resultPath, "docs_probe_30d", "0", 5, 100, schedulerRunId: "run-authority", strictIdentity: true)
-        @Expect(malformed.status, "task_worker_sidecar_malformed")
+        @Expect(malformed.status, "task_worker_sidecar_invalid_response_encoding")
     }
 
     @TestCase
@@ -905,7 +907,9 @@ public class CkbSchedulerProgressTimeoutTest {
         @Expect(scheduler.entries[0].lastRunId, result.runId)
         @Expect(scheduler.entries[0].lastTerminalState, "succeeded")
         let progress = store.readText(result.progressPath)
-        @Expect(progress.contains("\"subsystem\":\"scheduler\""), true)
+        @Expect(progress.contains("\"subsystem\":\"ckb.scheduler\""), true)
+        @Expect(progress.contains("\"event\":\"scheduler.task.finished\""), true)
+        @Expect(progress.contains("\"legacyEvent\":\"task_finished\""), true)
         @Expect(progress.contains("\"stage\":\"task_finish\""), true)
         @Expect(progress.contains("\"durationMs\""), true)
         @Expect(progress.contains("\"deadlineAtMillis\""), true)
@@ -929,7 +933,8 @@ public class CkbSchedulerProgressTimeoutTest {
 
         @Expect(result.failed, 1)
         @Expect(store.has(diagnosticsPath), true)
-        @Expect(diagnostics.contains("task_diagnostic"), true)
+        @Expect(diagnostics.contains("\"event\":\"scheduler.task.stage\""), true)
+        @Expect(diagnostics.contains("\"legacyEvent\":\"task_diagnostic\""), true)
         @Expect(diagnostics.contains("failure diagnostic 中文🙂"), true)
     }
 
@@ -1136,8 +1141,9 @@ public class CkbSchedulerProgressTimeoutTest {
         let progressPath = "metadata/scheduler-runs/run-p1.jsonl"
         let scopedPath = "metadata/scheduler-runs/run-p1-weekly_full_rebuild-staged-rebuild-current.ckb"
         let progressText = store.readText(progressPath)
-        @Expect(progressText.contains("\"subsystem\":\"routine_update\""), true)
-        @Expect(progressText.contains("\"event\":\"staged_rebuild_stage\""), true)
+        @Expect(progressText.contains("\"subsystem\":\"ckb.scheduler\""), true)
+        @Expect(progressText.contains("\"event\":\"scheduler.task.stage\""), true)
+        @Expect(progressText.contains("\"legacyEvent\":\"staged_rebuild_stage\""), true)
         @Expect(progressText.contains("\"stage\":\"staged_rebuild_status_before\""), true)
         @Expect(progressText.contains("secret-value"), false)
         @Expect(store.readText("metadata/staged-rebuild-current.ckb").contains("stage=staged_rebuild_status_before"), true)
@@ -1466,7 +1472,10 @@ public class CkbSchedulerProgressTimeoutTest {
         let progress = store.readText(result.progressPath)
 
         @Expect(result.failed, 1)
-        @Expect(progress.contains("\"event\":\"task_finished\""), true)
+        @Expect(progress.contains("\"event\":\"scheduler.task.finished\""), true)
+        @Expect(progress.contains("\"legacyEvent\":\"task_finished\""), true)
+        @Expect(progress.contains("\"event\":\"scheduler.task.timeout\""), true)
+        @Expect(progress.contains("\"errorCode\":\"ckb.scheduler.task_timeout\""), true)
         @Expect(progress.contains("\"lastStage\""), true)
         @Expect(progress.contains("\"workerErrSnippet\""), true)
     }

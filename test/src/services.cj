@@ -6,7 +6,7 @@ import std.env.{getVariable, getCommand}
 import std.fs.{Directory, File, Path, OpenMode, exists}
 import std.io.*
 import std.process.*
-import std.time.DateTime
+import std.time.*
 import std.sort.*
 import stdx.crypto.digest.SHA256
 import stdx.encoding.json.*
@@ -4374,7 +4374,7 @@ private func ckbSchedulerPreRunGateTaskName(taskNames: ArrayList<String>): Strin
 public func ckbSchedulerRunTaskRecordsJson(records: ArrayList<SchedulerTaskRunRecord>): String {
     let parts = ArrayList<String>()
     for (record in records) {
-        parts.add("{\"taskName\":\"${ckbRuntimePreflightJsonEscape(record.taskName)}\",\"ok\":${record.ok},\"status\":\"${ckbRuntimePreflightJsonEscape(record.status)}\",\"schedulerRunId\":\"${ckbRuntimePreflightJsonEscape(record.schedulerRunId)}\",\"schedulerTaskName\":\"${ckbRuntimePreflightJsonEscape(record.schedulerTaskName)}\",\"startedAtMillis\":${record.startedAtMillis},\"endedAtMillis\":${record.endedAtMillis},\"deadlineAtMillis\":${record.deadlineAtMillis},\"durationMillis\":${record.durationMillis},\"bootstrapStartedAtMillis\":${record.bootstrapStartedAtMillis},\"taskBodyStartedAtMillis\":${record.taskBodyStartedAtMillis},\"taskBodyEndedAtMillis\":${record.taskBodyEndedAtMillis},\"bootstrapDurationMillis\":${record.bootstrapDurationMillis},\"resultWrittenAtMillis\":${record.resultWrittenAtMillis},\"resultFlushDurationMillis\":${record.resultFlushDurationMillis},\"stageDurations\":${ckbSchedulerStageDurationsJson(record.stageDurations)},\"timeBudgetMillis\":${record.timeBudgetMillis},\"requestCount\":${record.requestCount},\"actualAttempts\":${record.actualAttempts},\"successfulAttempts\":${record.successfulAttempts},\"retryAttempts\":${record.retryAttempts},\"plannedRequests\":${record.plannedRequests},\"completedRequests\":${record.completedRequests},\"failedRequests\":${record.failedRequests},\"lastStage\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(record.lastStage), 120))}\",\"lastProgress\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(record.lastProgress), 240))}\",\"workerPid\":${record.workerPid},\"workerOutSnippet\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(record.workerOutSnippet), 240))}\",\"workerErrSnippet\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(record.workerErrSnippet), 240))}\",\"primaryFailure\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(record.primaryFailure), 240))}\"}")
+        parts.add("{\"taskName\":\"${ckbRuntimePreflightJsonEscape(record.taskName)}\",\"ok\":${record.ok},\"status\":\"${ckbRuntimePreflightJsonEscape(record.status)}\",\"schedulerRunId\":\"${ckbRuntimePreflightJsonEscape(record.schedulerRunId)}\",\"schedulerTaskName\":\"${ckbRuntimePreflightJsonEscape(record.schedulerTaskName)}\",\"startedAtMillis\":${record.startedAtMillis},\"endedAtMillis\":${record.endedAtMillis},\"deadlineAtMillis\":${record.deadlineAtMillis},\"durationMillis\":${record.durationMillis},\"bootstrapStartedAtMillis\":${record.bootstrapStartedAtMillis},\"taskBodyStartedAtMillis\":${record.taskBodyStartedAtMillis},\"taskBodyEndedAtMillis\":${record.taskBodyEndedAtMillis},\"bootstrapDurationMillis\":${record.bootstrapDurationMillis},\"resultWrittenAtMillis\":${record.resultWrittenAtMillis},\"resultFlushDurationMillis\":${record.resultFlushDurationMillis},\"stageDurations\":${ckbSchedulerStageDurationsJson(record.stageDurations)},\"timeBudgetMillis\":${record.timeBudgetMillis},\"requestCount\":${record.requestCount},\"actualAttempts\":${record.actualAttempts},\"successfulAttempts\":${record.successfulAttempts},\"retryAttempts\":${record.retryAttempts},\"plannedRequests\":${record.plannedRequests},\"completedRequests\":${record.completedRequests},\"failedRequests\":${record.failedRequests},\"validationGates\":${ckbSchedulerStageDurationsJson(record.validationGates)},\"transactionId\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(record.transactionId), 160))}\",\"manifestEvidenceHash\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(record.manifestEvidenceHash), 96))}\",\"freshnessEvidenceHash\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(record.freshnessEvidenceHash), 96))}\",\"sourceCoverageEvidenceHash\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(record.sourceCoverageEvidenceHash), 96))}\",\"inventoryEvidenceHash\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(record.inventoryEvidenceHash), 96))}\",\"lastStage\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(record.lastStage), 120))}\",\"lastProgress\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(record.lastProgress), 240))}\",\"workerPid\":${record.workerPid},\"workerOutSnippet\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(record.workerOutSnippet), 240))}\",\"workerErrSnippet\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(record.workerErrSnippet), 240))}\",\"primaryFailure\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(record.primaryFailure), 240))}\"}")
     }
     "[${joinStrings(parts, ",")}]"
 }
@@ -4628,6 +4628,14 @@ public class SystemCkbActiveSnapshotTxClock <: CkbActiveSnapshotTxClock {
     public func nowMillis(): Int64 {
         DateTime.now().toUnixTimeStamp().toMilliseconds()
     }
+}
+
+class CkbRoutineReleaseCoverageSummary {
+    var valid: Bool = false
+    var sourceCoverageEvidenceHash: String = ""
+    var inventoryEvidenceHash: String = ""
+
+    init() {}
 }
 
 public class FileKnowledgeStore {
@@ -5475,6 +5483,12 @@ public class FileKnowledgeStore {
             result.diagnostics.add("snapshot_transaction_reservation_failed:${result.failureDiagnostic}")
             return result
         }
+        ckbEmitStagedRebuildStage(stageSink,
+            "active_snapshot_transaction_started", "running",
+            deadlineAtMillis,
+            "active=${status.activeKnowledgeVersion}|txReserved=true",
+            typedEvent: "snapshot.transaction.started", txId: txId,
+            activeKnowledgeVersion: status.activeKnowledgeVersion)
         try {
             this.emitActiveSnapshotStage(stageSink, "active_snapshot_tx_raw_before", "running", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
             this.ensureActiveSnapshotDeadline("active_snapshot_tx_raw_before", deadlineAtMillis)
@@ -5546,6 +5560,14 @@ public class FileKnowledgeStore {
             result.diagnostics.add("snapshot_transaction_not_committed:txId=${ckbReleaseEvidenceHash(txId)}|pointerCommitted=${result.pointerCommitted}")
             return result
         }
+        ckbEmitStagedRebuildStage(stageSink,
+            "active_snapshot_transaction_committed", "ok",
+            deadlineAtMillis,
+            "active=${status.activeKnowledgeVersion}|pointerCommitted=true",
+            typedEvent: "snapshot.transaction.committed", txId: txId,
+            activeKnowledgeVersion: status.activeKnowledgeVersion,
+            manifestPath: "metadata/active-snapshot.manifest",
+            commitPath: "${txRoot}/COMMIT")
         let liveShadowStartedAtMillis = ckbCoreNowMillis()
         try {
             faultInjector.checkpoint(CkbActiveSnapshotFaultPoints.LIVE_SHADOW)
@@ -6708,6 +6730,119 @@ public class FileKnowledgeStore {
         this.readLines(relative)
     }
 
+    func routineReleaseCoverageSummary(relative: String): CkbRoutineReleaseCoverageSummary {
+        let summary = CkbRoutineReleaseCoverageSummary()
+        let path = this.root.join(relative)
+        if (!exists(path)) { return summary }
+        var schema = ""
+        var targetVersion = ""
+        var planHash = ""
+        var complete = false
+        var plannedSourceCount: Int64 = -1
+        var completedSourceCount: Int64 = -1
+        var plannedFileCount: Int64 = -1
+        var completedFileCount: Int64 = -1
+        var declaredCoverageHash = ""
+        var declaredRawHash = ""
+        var declaredNormalizedHash = ""
+        var declaredInventoryHash = ""
+        var removedEvidenceCount: Int64 = 0
+        let sourceSets = HashSet<String>()
+        let sourceIdentities = HashSet<String>()
+        let sourceHashes = ArrayList<String>()
+        let rawDigest = SHA256()
+        let normalizedDigest = SHA256()
+        try {
+            try (file = File(path, OpenMode.Read)) {
+                let reader = StringReader(file)
+                while (true) {
+                    let line = if (let Some(value) <- reader.readln()) { value } else { break }
+                    if (line.toArray().size > 262144) { return summary }
+                    let trimmed = line.trimAscii()
+                    if (trimmed == "") { continue }
+                    if (trimmed.startsWith("schema=")) {
+                        schema = unescapeField(trimmed[7..trimmed.size])
+                    } else if (trimmed.startsWith("targetVersion=")) {
+                        targetVersion = unescapeField(trimmed[14..trimmed.size])
+                    } else if (trimmed.startsWith("planHash=")) {
+                        planHash = unescapeField(trimmed[9..trimmed.size])
+                    } else if (trimmed.startsWith("complete=")) {
+                        complete = trimmed[9..trimmed.size] == "true"
+                    } else if (trimmed.startsWith("plannedSourceCount=")) {
+                        plannedSourceCount = parseIntField(trimmed[19..trimmed.size], -1)
+                    } else if (trimmed.startsWith("completedSourceCount=")) {
+                        completedSourceCount = parseIntField(trimmed[21..trimmed.size], -1)
+                    } else if (trimmed.startsWith("plannedFileCount=")) {
+                        plannedFileCount = parseIntField(trimmed[17..trimmed.size], -1)
+                    } else if (trimmed.startsWith("completedFileCount=")) {
+                        completedFileCount = parseIntField(trimmed[19..trimmed.size], -1)
+                    } else if (trimmed.startsWith("aggregateEvidenceHash=")) {
+                        declaredCoverageHash = trimmed[22..trimmed.size]
+                    } else if (trimmed.startsWith("source|")) {
+                        let parts = trimmed.split("|")
+                        if (parts.size != 15 || parts[8] != "true" || parts[9] != "true") { return summary }
+                        let identity = unescapeField(parts[1])
+                        let sourceSet = unescapeField(parts[2])
+                        let inventoryHash = parts[14]
+                        if (identity == "" || sourceIdentities.contains(identity) ||
+                            sourceSets.contains(sourceSet) ||
+                            !ckbRoutineRawSha256(inventoryHash)) { return summary }
+                        sourceIdentities.add(identity)
+                        sourceSets.add(sourceSet)
+                        sourceHashes.add("${identity}|${inventoryHash}")
+                    } else if (trimmed.startsWith("removedRaw|")) {
+                        let value = unescapeField(trimmed[11..trimmed.size])
+                        rawDigest.write(value.toArray())
+                        rawDigest.write("\n".toArray())
+                    } else if (trimmed.startsWith("removedNormalized|")) {
+                        let value = unescapeField(trimmed[18..trimmed.size])
+                        normalizedDigest.write(value.toArray())
+                        normalizedDigest.write("\n".toArray())
+                    } else if (trimmed.startsWith("removedEvidence|")) {
+                        let parts = trimmed.split("|")
+                        if (parts.size != 4) { return summary }
+                        removedEvidenceCount += 1
+                        declaredRawHash = parts[1]
+                        declaredNormalizedHash = parts[2]
+                        declaredInventoryHash = parts[3]
+                    }
+                }
+            }
+        } catch (_: Exception) {
+            return summary
+        }
+        let rawHash = ckbReleaseDigestHex(rawDigest).toAsciiUpper()
+        let normalizedHash = ckbReleaseDigestHex(normalizedDigest).toAsciiUpper()
+        let inventoryHash = ckbReleaseEvidenceHash("raw=${rawHash}|normalized=${normalizedHash}")
+        let orderedHashes = sourceHashes.toArray()
+        sort(orderedHashes)
+        let aggregate = StringBuilder()
+        aggregate.append("schema=${schema}|target=${targetVersion}|plan=${planHash}|")
+        aggregate.append("plannedSources=${plannedSourceCount}|completedSources=${completedSourceCount}|")
+        aggregate.append("plannedFiles=${plannedFileCount}|completedFiles=${completedFileCount}|complete=${complete}")
+        for (entry in orderedHashes) {
+            aggregate.append("|source=${ckbReleaseBundleCanonicalField(entry)}")
+        }
+        let coverageHash = ckbReleaseEvidenceHash(aggregate.toString())
+        summary.sourceCoverageEvidenceHash = coverageHash
+        summary.inventoryEvidenceHash = inventoryHash
+        summary.valid = schema == "ckb-release-coverage-v1" && targetVersion != "" &&
+            planHash != "" && complete && plannedSourceCount == 5 &&
+            completedSourceCount == 5 && plannedFileCount >= 0 &&
+            plannedFileCount == completedFileCount && sourceHashes.size == 5 &&
+            sourceIdentities.size == 5 &&
+            sourceSets.contains(CangjieSourceSets.DOCS) &&
+            sourceSets.contains(CangjieSourceSets.STD) &&
+            sourceSets.contains(CangjieSourceSets.STDX) &&
+            sourceSets.contains(CangjieSourceSets.TOOLS) &&
+            sourceSets.contains(CangjieSourceSets.EVAL_SUPPORT) &&
+            removedEvidenceCount == 1 && declaredRawHash == rawHash &&
+            declaredNormalizedHash == normalizedHash &&
+            declaredInventoryHash == inventoryHash &&
+            declaredCoverageHash == coverageHash
+        summary
+    }
+
     private func ensure(relative: String): Unit {
         let path = this.root.join(relative)
         if (!exists(path)) {
@@ -7179,6 +7314,11 @@ public class FileKnowledgeStore {
         for (line in text.split("\n")) {
             let parts = line.split("|")
             if (parts.size >= 19) {
+                let v2Record = parts.size >= 27 && parts[25] == "p5-record-v2"
+                if (v2Record &&
+                    !ckbMetadataDerivedFromDecode(parts[24]).valid) {
+                    continue
+                }
                 let metadata = metadataFromParts(parts, 4)
                 let record = RawRecord()
                 record.sourceId = unescapeField(parts[0])
@@ -7186,7 +7326,9 @@ public class FileKnowledgeStore {
                 record.content = unescapeField(parts[2])
                 record.contentHash = unescapeField(parts[3])
                 record.metadata = metadata
-                record.requiresReview = metadata.reviewState == ReviewStates.CANDIDATE
+                record.requiresReview = if (v2Record) {
+                    parts[26] == "true"
+                } else { metadata.reviewState == ReviewStates.CANDIDATE }
                 out.add(record)
             }
         }
@@ -7210,6 +7352,16 @@ public class FileKnowledgeStore {
             }
             let parts = line.split("|")
             if (parts.size >= 20) {
+                let v2Record = parts.size >= 29 && parts[27] == "p5-record-v2"
+                if (v2Record) {
+                    let derived = ckbMetadataDerivedFromDecode(parts[26])
+                    if (!derived.valid) {
+                        if (strict) {
+                            diagnostics.add("malformed active index metadata derivedFrom line ${lineNumber}:${derived.status}")
+                        }
+                        continue
+                    }
+                }
                 let metadata = metadataFromParts(parts, 6)
                 let record = NormalizedRecord()
                 record.sourceId = unescapeField(parts[0])
@@ -7219,7 +7371,9 @@ public class FileKnowledgeStore {
                 record.citation = unescapeField(parts[4])
                 record.score = try { Float64.parse(parts[5]) } catch (_: Exception) { 0.0 }
                 record.metadata = metadata
-                record.requiresReview = metadata.reviewState == ReviewStates.CANDIDATE
+                record.requiresReview = if (v2Record) {
+                    parts[28] == "true"
+                } else { metadata.reviewState == ReviewStates.CANDIDATE }
                 out.add(record)
             } else if (strict) {
                 diagnostics.add("malformed active index line ${lineNumber}")
@@ -7237,7 +7391,7 @@ public class FileKnowledgeStore {
     }
 
     private func rawLine(record: RawRecord): String {
-        "${escapeField(record.sourceId)}|${escapeField(record.title)}|${escapeField(record.content)}|${escapeField(record.contentHash)}|${metadataLine(record.metadata)}\n"
+        "${escapeField(record.sourceId)}|${escapeField(record.title)}|${escapeField(record.content)}|${escapeField(record.contentHash)}|${metadataLine(record.metadata)}|p5-record-v2|${record.requiresReview}\n"
     }
 
     private func writeRawRecordsAtomically(relative: String, records: ArrayList<RawRecord>, deadlineAtMillis: Int64, progressStage: String): Unit {
@@ -7329,7 +7483,7 @@ public class FileKnowledgeStore {
     }
 
     private func normalizedLine(record: NormalizedRecord): String {
-        "${escapeField(record.sourceId)}|${escapeField(record.recordKind)}|${escapeField(record.title)}|${escapeField(record.chunk)}|${escapeField(record.citation)}|${record.score}|${metadataLine(record.metadata)}\n"
+        "${escapeField(record.sourceId)}|${escapeField(record.recordKind)}|${escapeField(record.title)}|${escapeField(record.chunk)}|${escapeField(record.citation)}|${record.score}|${metadataLine(record.metadata)}|p5-record-v2|${record.requiresReview}\n"
     }
 
     private func writeNormalizedRecordsAtomically(relative: String, records: ArrayList<NormalizedRecord>, deadlineAtMillis: Int64, progressStage: String): Unit {
@@ -7721,6 +7875,31 @@ public class CkbStagedRebuildStageProgress {
     public var atMillis: Int64 = 0
     public var durationMillis: Int64 = 0
     public var itemCount: Int64 = 0
+    public var typedEvent: String = ""
+    public var candidateKnowledgeVersion: String = ""
+    public var activeKnowledgeVersion: String = ""
+    public var deltaCount: Int64 = 0
+    public var requiredFailedCount: Int64 = 0
+    public var optionalFailedCount: Int64 = 0
+    public var txId: String = ""
+    public var manifestPath: String = ""
+    public var commitPath: String = ""
+    public var requestKind: String = ""
+    public var repo: String = ""
+    public var sourceSet: String = ""
+    public var httpStatus: Int64 = 0
+    public var bodyHash: String = ""
+    public var retryCount: Int64 = 0
+    public var page: Int64 = 0
+    public var objectsSeen: Int64 = 0
+    public var filesSeen: Int64 = 0
+    public var directoriesSeen: Int64 = 0
+    public var candidatesSeen: Int64 = 0
+    public var stopReason: String = ""
+    public var workerPid: Int64 = 0
+    public var workerResultPath: String = ""
+    public var signal: String = ""
+    public var lastStage: String = ""
 
     public init() {}
 }
@@ -7787,6 +7966,11 @@ public class FileCkbStagedRebuildStageSink <: CkbStagedRebuildStageSink {
         var degraded = false
         try {
             this.store.appendLinesAtomically(this.progressPath, ckbStagedRebuildStageProgressJson(progress, effectiveRunId, effectiveTaskName))
+            let typed = ckbStagedRebuildTypedEventJson(progress,
+                effectiveRunId, effectiveTaskName)
+            if (typed != "") {
+                this.store.appendLinesAtomically(this.progressPath, typed)
+            }
         } catch (_: Exception) {
             degraded = true
         }
@@ -7804,6 +7988,33 @@ public class FileCkbStagedRebuildStageSink <: CkbStagedRebuildStageSink {
             } catch (_: Exception) {
                 ()
             }
+        }
+    }
+
+    public func onTypedEvent(progress: CkbStagedRebuildStageProgress): Unit {
+        if (progress.typedEvent == "") { return }
+        let effectiveRunId = if (progress.runId.trimAscii() != "") {
+            progress.runId
+        } else { this.schedulerRunId }
+        let effectiveTaskName = if (progress.taskName.trimAscii() != "") {
+            progress.taskName
+        } else { this.schedulerTaskName }
+        if (effectiveRunId.trimAscii() == "") { return }
+        this.ensureProgressPath(effectiveRunId)
+        try {
+            let typed = ckbStagedRebuildTypedEventJson(progress,
+                effectiveRunId, effectiveTaskName)
+            if (typed != "") {
+                this.store.appendLinesAtomically(this.progressPath, typed)
+            }
+        } catch (_: Exception) {
+            try {
+                this.store.appendLinesAtomically(
+                    "metadata/scheduler-runs/${safeName(effectiveRunId)}-diagnostics.jsonl",
+                    schedulerDiagnosticJson(effectiveRunId,
+                        effectiveTaskName, "degraded",
+                        "typed_event_write_degraded:event=${progress.typedEvent}"))
+            } catch (_: Exception) { () }
         }
     }
 
@@ -7846,13 +8057,23 @@ public class FileSchedulerProgressSink <: SchedulerProgressSink {
         this.progressPath = "metadata/scheduler-runs/${safeName(result.runId)}.jsonl"
         this.diagnosticsPath = "metadata/scheduler-runs/${safeName(result.runId)}-diagnostics.jsonl"
         result.progressPath = this.progressPath
-        this.store.writeLinesAtomically(this.progressPath, schedulerProgressJson(result.runId, "run_started", "", "running", "", 0))
+        this.store.writeLinesAtomically(this.progressPath,
+            schedulerProgressJson(result.runId, "run_started", "", "running",
+                "", 0))
         this.store.writeLinesAtomically("metadata/scheduler-current.ckb", schedulerCurrentText(result.runId, "", "running", this.progressPath, ""))
     }
 
-    public func onTaskStarted(runId: String, taskName: String): Unit {
+    public func onTaskStarted(runId: String, taskName: String,
+        timeBudgetMillis: Int64, deadlineAtMillis: Int64): Unit {
         this.ensureProgressPath(runId)
-        this.store.appendLinesAtomically(this.progressPath, schedulerProgressJson(runId, "task_started", taskName, "running", "", 0))
+        this.store.appendLinesAtomically(this.progressPath,
+            schedulerProgressJson(runId, "task_started", taskName, "running",
+                "", 0, deadlineAtMillis: deadlineAtMillis,
+                timeBudgetMillis: timeBudgetMillis))
+        this.store.appendLinesAtomically(this.progressPath,
+            schedulerProgressJson(runId, "task_stage", taskName, "running",
+                "", 0, deadlineAtMillis: deadlineAtMillis,
+                timeBudgetMillis: timeBudgetMillis, stage: "task_start"))
         this.store.writeLinesAtomically("metadata/scheduler-current.ckb", schedulerCurrentText(runId, taskName, "running", this.progressPath, ""))
     }
 
@@ -7860,6 +8081,10 @@ public class FileSchedulerProgressSink <: SchedulerProgressSink {
         this.ensureProgressPath(runId)
         let status = if (task.ok) { "succeeded" } else { task.status }
         let diagnostic = schedulerTaskProgressDiagnostic(task)
+        if (schedulerTaskStatusIsTimeout(task.status)) {
+            this.store.appendLinesAtomically(this.progressPath,
+                schedulerTaskTimeoutJson(runId, taskName, task, diagnostic))
+        }
         this.store.appendLinesAtomically(this.progressPath, schedulerTaskProgressJson(runId, "task_finished", taskName, status, diagnostic, task))
         this.writeTaskDiagnostics(runId, taskName, status, task)
         this.store.writeLinesAtomically("metadata/scheduler-current.ckb", schedulerCurrentText(runId, taskName, status, this.progressPath, diagnostic))
@@ -7867,8 +8092,18 @@ public class FileSchedulerProgressSink <: SchedulerProgressSink {
 
     public func onRunFinished(result: SchedulerExecutorResult): Unit {
         this.ensureProgressPath(result.runId)
-        let status = if (result.failed == 0 && result.degraded == 0) { "succeeded" } else { "failed" }
-        this.store.appendLinesAtomically(this.progressPath, schedulerProgressJson(result.runId, "run_finished", "", status, "", result.endedAtMillis - result.startedAtMillis))
+        let status = if (result.failed > 0 || result.degraded > 0) {
+            "failed"
+        } else if (!result.finalizationOk) {
+            "finalization_failed"
+        } else { "succeeded" }
+        this.store.appendLinesAtomically(this.progressPath,
+            schedulerProgressJson(result.runId, "run_finished", "", status,
+                "", result.endedAtMillis - result.startedAtMillis,
+                ran: result.ran, succeeded: result.succeeded,
+                failed: result.failed, degraded: result.degraded,
+                businessOk: result.businessOk,
+                finalizationOk: result.finalizationOk))
         this.store.writeLinesAtomically("metadata/scheduler-current.ckb", schedulerCurrentText(result.runId, "", status, this.progressPath, ""))
     }
 
@@ -8062,7 +8297,13 @@ public func ckbRecoverStaleSchedulerRuns(store: FileKnowledgeStore): CkbSchedule
         let progressPath = ckbCurrentField(vectorCurrent, "progressPath")
         let diagnostic = "stale_vector_run_recovered:${runId}:${collection}"
         if (progressPath != "") {
-            store.appendLinesAtomically(progressPath, vectorBuildRecoveryJson(runId, collection, targetCollection, "aborted_stale_run", diagnostic))
+            store.appendLinesAtomically(progressPath, vectorBuildRecoveryJson(
+                runId, collection, targetCollection, "aborted_stale_run",
+                diagnostic,
+                expectedCount: parseIntField(
+                    ckbCurrentField(vectorCurrent, "total"), 0),
+                actualCount: parseIntField(
+                    ckbCurrentField(vectorCurrent, "completed"), 0)))
         }
         store.writeLinesAtomically("metadata/vector-reconcile-current.ckb", vectorBuildRecoveredCurrentText(vectorCurrent, "aborted_stale_run", diagnostic))
         result.recoveredVector = true
@@ -8124,20 +8365,40 @@ public func ckbRecoverStaleSchedulerRunsWithVectorStore(store: FileKnowledgeStor
             }
         }
     }
-    let activeAuthority = ckbLoadPersistedActiveCollectionAuthority(store)
+    if (ckbCleanupInactiveCandidateOwners(store,
+        { collection: String => vectorStore.deleteCollection(collection) },
+        result.diagnostics)) {
+        result.deletedKnownStaging = true
+    }
+    result
+}
+
+public func ckbCleanupInactiveCandidateOwners(store: FileKnowledgeStore,
+    deleteCollection: (String) -> VectorStoreStatus,
+    diagnostics: ArrayList<String>): Bool {
+    var activeAuthority = CkbPersistedActiveCollectionAuthority()
+    try {
+        // Cleanup must decide from freshly persisted authority. In-memory
+        // candidate state is not sufficient after an irreversible pointer commit.
+        activeAuthority = ckbLoadPersistedActiveCollectionAuthority(store)
+    } catch (e: Exception) {
+        diagnostics.add("candidate_owner_cleanup_degraded:ownerKey=authority|status=${ckbCandidateOwnerCleanupStatus(if (e.message == "") { "active_authority_read_failed" } else { e.message })}")
+        return false
+    }
+    var deletedKnownStaging = false
     for (owner in store.listCandidateCollectionOwners()) {
         let ownerKey = ckbReleaseEvidenceHash(if (owner.collection != "") { owner.collection } else { owner.relativePath })
         if (!owner.valid) {
-            result.diagnostics.add("candidate_owner_preserved_unknown:ownerKey=${ownerKey}|status=${owner.status}")
+            diagnostics.add("candidate_owner_preserved_unknown:ownerKey=${ownerKey}|status=${owner.status}")
             continue
         }
         if (!activeAuthority.valid) {
-            result.diagnostics.add("candidate_owner_preserved_active_authority_unavailable:ownerKey=${ownerKey}|status=${activeAuthority.status}")
+            diagnostics.add("candidate_owner_preserved_active_authority_unavailable:ownerKey=${ownerKey}|status=${activeAuthority.status}")
             continue
         }
         if (owner.state == "cleaned") { continue }
         if (owner.collection == activeAuthority.metadataCollection || owner.collection == activeAuthority.manifestCollection) {
-            result.diagnostics.add("candidate_owner_preserved_active:ownerKey=${ownerKey}")
+            diagnostics.add("candidate_owner_preserved_active:ownerKey=${ownerKey}")
             continue
         }
         let resumeContext = CkbCandidateAcquisitionContext()
@@ -8149,25 +8410,41 @@ public func ckbRecoverStaleSchedulerRunsWithVectorStore(store: FileKnowledgeStor
         resumeContext.recordsEvidenceHash = owner.recordsEvidenceHash
         let resumable = store.loadVectorSpoolCheckpoint(resumeContext, owner.collection)
         if ((owner.state == "planned" || owner.state == "adopted") && resumable.valid) {
-            result.diagnostics.add("candidate_owner_preserved_resumable:ownerKey=${ownerKey}|completed=${resumable.completed}|total=${resumable.total}")
+            diagnostics.add("candidate_owner_preserved_resumable:ownerKey=${ownerKey}|completed=${resumable.completed}|total=${resumable.total}")
             continue
         }
         if (!ckbS4CandidateOwnerHasStableIdentity(owner)) {
-            result.diagnostics.add("candidate_owner_preserved_mismatch:ownerKey=${ownerKey}")
+            diagnostics.add("candidate_owner_preserved_mismatch:ownerKey=${ownerKey}")
             continue
         }
-        let deleted = vectorStore.deleteCollection(owner.collection)
-        if (deleted.state == EmbeddingProviderState.READY || deleted.degradedReason == "collection_missing") {
-            owner.state = "cleaned"
-            _ = store.saveCandidateCollectionOwner(owner)
-            _ = store.deleteS4ArtifactTree("metadata/vector-builds/${owner.acquisitionId}")
-            result.deletedKnownStaging = true
-            result.diagnostics.add("candidate_owner_orphan_deleted:ownerKey=${ownerKey}")
-        } else {
-            result.diagnostics.add("candidate_owner_orphan_delete_failed:ownerKey=${ownerKey}|status=${utf8SafePrefix(redactSensitive(deleted.degradedReason), 120)}")
+        try {
+            let deleted = deleteCollection(owner.collection)
+            if (deleted.state == EmbeddingProviderState.READY || deleted.degradedReason == "collection_missing") {
+                owner.state = "cleaned"
+                _ = store.saveCandidateCollectionOwner(owner)
+                let spoolCleaned = store.deleteS4ArtifactTree("metadata/vector-builds/${owner.acquisitionId}")
+                if (!spoolCleaned) {
+                    diagnostics.add("candidate_owner_spool_cleanup_degraded:ownerKey=${ownerKey}")
+                }
+                deletedKnownStaging = true
+                diagnostics.add("candidate_owner_orphan_deleted:ownerKey=${ownerKey}")
+            } else {
+                diagnostics.add("candidate_owner_orphan_delete_failed:ownerKey=${ownerKey}|status=${ckbCandidateOwnerCleanupStatus(deleted.degradedReason)}")
+            }
+        } catch (e: Exception) {
+            diagnostics.add("candidate_owner_cleanup_degraded:ownerKey=${ownerKey}|status=${ckbCandidateOwnerCleanupStatus(if (e.message == "") { "unexpected_failure" } else { e.message })}")
         }
     }
-    result
+    deletedKnownStaging
+}
+
+private func ckbCandidateOwnerCleanupStatus(raw: String): String {
+    let redacted = redactSensitive(raw).replace("\n", " ").replace("\r", " ")
+    let lowered = redacted.toAsciiLower()
+    if (lowered.contains("authorization") || lowered.contains("bearer ")) {
+        return "sensitive_diagnostic_redacted"
+    }
+    utf8SafePrefix(redacted, 120)
 }
 
 private func ckbS4CandidateOwnerHasStableIdentity(owner: CkbCandidateCollectionOwner): Bool {
@@ -8249,6 +8526,11 @@ private func ckbSchedulerScopedRoutineStageCurrentPath(runId: String, taskName: 
 }
 
 private func schedulerTaskProgressDiagnostic(task: SchedulerTaskResult): String {
+    if (!task.ok) {
+        // A previously recorded successful contract check must never become
+        // the primary diagnostic after a later timeout or task failure.
+        return task.status
+    }
     for (diagnostic in task.validationDiagnostics) {
         if (diagnostic.contains("readiness:") || diagnostic.contains("routine_contract:") || diagnostic.contains("candidate_validation") || diagnostic.contains("vector_health_failed")) {
             return diagnostic
@@ -8266,8 +8548,32 @@ private func schedulerTaskProgressDiagnostic(task: SchedulerTaskResult): String 
 }
 
 private func vectorBuildProgressJson(progress: VectorBuildProgress, event: String, taskName!: String = ""): String {
-    let diagnostic = utf8SafePrefix(redactSensitive(if (progress.lastDiagnostic != "") { progress.lastDiagnostic } else { progress.diagnostic }), 240)
-    "{\"runId\":\"${ckbRuntimePreflightJsonEscape(progress.runId)}\",\"taskName\":\"${ckbRuntimePreflightJsonEscape(taskName)}\",\"event\":\"${ckbRuntimePreflightJsonEscape(event)}\",\"stage\":\"${ckbRuntimePreflightJsonEscape(event)}\",\"collection\":\"${ckbRuntimePreflightJsonEscape(progress.collection)}\",\"targetCollection\":\"${ckbRuntimePreflightJsonEscape(progress.targetCollection)}\",\"total\":${progress.total},\"completed\":${progress.completed},\"failed\":${progress.failed},\"reused\":${progress.reused},\"embedded\":${progress.embedded},\"currentBatch\":${progress.currentBatch},\"currentBatchStart\":${progress.currentBatchStart},\"currentBatchEnd\":${progress.currentBatchEnd},\"batchSize\":${progress.batchSize},\"lookupRequested\":${progress.lookupRequested},\"lookupFound\":${progress.lookupFound},\"lookupStatus\":\"${ckbRuntimePreflightJsonEscape(progress.lookupStatus)}\",\"lookupTimedOut\":${progress.lookupTimedOut},\"lookupDurationMillis\":${progress.lookupDurationMillis},\"inputBytes\":${progress.inputBytes},\"preparedBytes\":${progress.preparedBytes},\"state\":\"${ckbRuntimePreflightJsonEscape(progress.state)}\",\"diagnostic\":\"${ckbRuntimePreflightJsonEscape(diagnostic)}\",\"elapsedMillis\":${progress.elapsedMillis},\"atMillis\":${DateTime.now().toUnixTimeStamp().toMilliseconds()}}\n"
+    let rawDiagnostic = if (progress.lastDiagnostic != "") {
+        progress.lastDiagnostic
+    } else { progress.diagnostic }
+    let redactedDiagnostic = ckbSchedulerRedact(rawDiagnostic)
+    let diagnostic = utf8SafePrefix(redactedDiagnostic, 240)
+    let diagnosticTruncated = redactedDiagnostic.toArray().size >
+        diagnostic.toArray().size
+    let failure = progress.failed > 0 || schedulerLogFailureStatus(progress.state) ||
+        progress.lookupTimedOut
+    let stableEvent = if (event == "vector_build_started") {
+        "vector.build.started"
+    } else if (event == "batch_started") {
+        "vector.batch.started"
+    } else if (event == "batch_finished") {
+        "vector.batch.finished"
+    } else if (event == "vector_build_finished") {
+        "vector.build.finished"
+    } else { event }
+    let message = if (event == "vector_build_started") {
+        "vector build started"
+    } else if (event == "batch_started") {
+        "vector batch started"
+    } else if (event == "batch_finished") {
+        "vector batch finished"
+    } else { "vector build finished" }
+    "{\"time\":\"${ckbRuntimePreflightJsonEscape(DateTime.now().toString())}\",\"level\":\"${if (failure) { "error" } else { "info" }}\",\"subsystem\":\"ckb.vector\",\"event\":\"${stableEvent}\",\"legacyEvent\":\"${ckbRuntimePreflightJsonEscape(event)}\",\"message\":\"${message}\",\"runId\":\"${ckbRuntimePreflightJsonEscape(progress.runId)}\",\"taskName\":\"${ckbRuntimePreflightJsonEscape(taskName)}\",\"stage\":\"${ckbRuntimePreflightJsonEscape(event)}\",\"status\":\"${ckbRuntimePreflightJsonEscape(progress.state)}\",\"errorCode\":\"${if (failure) { "ckb.scheduler_run_degraded" } else { "" }}\",\"collection\":\"${ckbRuntimePreflightJsonEscape(progress.collection)}\",\"targetCollection\":\"${ckbRuntimePreflightJsonEscape(progress.targetCollection)}\",\"dimension\":${progress.dimension},\"expectedCount\":${progress.total},\"actualCount\":${progress.completed},\"total\":${progress.total},\"completed\":${progress.completed},\"failed\":${progress.failed},\"reused\":${progress.reused},\"embedded\":${progress.embedded},\"batchIndex\":${progress.currentBatch},\"currentBatch\":${progress.currentBatch},\"currentBatchStart\":${progress.currentBatchStart},\"currentBatchEnd\":${progress.currentBatchEnd},\"batchSize\":${progress.batchSize},\"lookupRequested\":${progress.lookupRequested},\"lookupFound\":${progress.lookupFound},\"lookupStatus\":\"${ckbRuntimePreflightJsonEscape(progress.lookupStatus)}\",\"lookupTimedOut\":${progress.lookupTimedOut},\"lookupDurationMillis\":${progress.lookupDurationMillis},\"inputBytes\":${progress.inputBytes},\"preparedBytes\":${progress.preparedBytes},\"diagnostic\":\"${ckbRuntimePreflightJsonEscape(diagnostic)}\",\"diagnosticTruncated\":${diagnosticTruncated},\"durationMs\":${progress.elapsedMillis},\"elapsedMillis\":${progress.elapsedMillis},\"atMillis\":${DateTime.now().toUnixTimeStamp().toMilliseconds()}}\n"
 }
 
 private func vectorBuildCurrentText(progress: VectorBuildProgress, progressPath: String, schedulerRunId!: String = "", schedulerTaskName!: String = ""): String {
@@ -8276,6 +8582,8 @@ private func vectorBuildCurrentText(progress: VectorBuildProgress, progressPath:
     text += "collection=${escapeField(progress.collection)}\n"
     text += "targetCollection=${escapeField(progress.targetCollection)}\n"
     text += "state=${escapeField(progress.state)}\n"
+    text += "total=${progress.total}\n"
+    text += "dimension=${progress.dimension}\n"
     text += "currentBatch=${progress.currentBatch}\n"
     text += "completed=${progress.completed}\n"
     text += "failed=${progress.failed}\n"
@@ -8294,16 +8602,88 @@ private func vectorBuildCurrentText(progress: VectorBuildProgress, progressPath:
     text
 }
 
-private func schedulerProgressJson(runId: String, event: String, taskName: String, status: String, diagnostic: String, durationMillis: Int64, deadlineAtMillis!: Int64 = 0): String {
+private func schedulerProgressJson(runId: String, event: String,
+    taskName: String, status: String, diagnostic: String,
+    durationMillis: Int64, deadlineAtMillis!: Int64 = 0,
+    timeBudgetMillis!: Int64 = 0, stage!: String = "",
+    ran!: Int64 = 0, succeeded!: Int64 = 0, failed!: Int64 = 0,
+    degraded!: Int64 = 0, businessOk!: Bool = true,
+    finalizationOk!: Bool = true): String {
     let now = DateTime.now().toUnixTimeStamp().toMilliseconds()
     let remainingMillis = if (deadlineAtMillis > now) { deadlineAtMillis - now } else { 0 }
-    "{\"subsystem\":\"scheduler\",\"runId\":\"${ckbRuntimePreflightJsonEscape(runId)}\",\"event\":\"${ckbRuntimePreflightJsonEscape(event)}\",\"stage\":\"${ckbRuntimePreflightJsonEscape(schedulerStageForEvent(event))}\",\"taskName\":\"${ckbRuntimePreflightJsonEscape(taskName)}\",\"status\":\"${ckbRuntimePreflightJsonEscape(status)}\",\"diagnostic\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(diagnostic), 240))}\",\"durationMillis\":${durationMillis},\"durationMs\":${durationMillis},\"deadlineAtMillis\":${deadlineAtMillis},\"remainingMillis\":${remainingMillis},\"atMillis\":${now}}\n"
+    let stableEvent = schedulerStableEvent(event)
+    let failure = schedulerLogFailureStatus(status)
+    let level = if (failure) { "error" } else { "info" }
+    let errorCode = schedulerLogErrorCode(status, failure)
+    let effectiveStage = if (stage != "") { stage } else {
+        schedulerStageForEvent(event)
+    }
+    let redactedDiagnostic = ckbSchedulerRedact(diagnostic)
+    let safeDiagnostic = utf8SafePrefix(redactedDiagnostic, 240)
+    let diagnosticTruncated = redactedDiagnostic.toArray().size >
+        safeDiagnostic.toArray().size
+    "{\"time\":\"${ckbRuntimePreflightJsonEscape(DateTime.now().toString())}\",\"level\":\"${level}\",\"subsystem\":\"ckb.scheduler\",\"event\":\"${stableEvent}\",\"legacyEvent\":\"${ckbRuntimePreflightJsonEscape(event)}\",\"message\":\"${schedulerLogMessage(event)}\",\"runId\":\"${ckbRuntimePreflightJsonEscape(runId)}\",\"taskName\":\"${ckbRuntimePreflightJsonEscape(taskName)}\",\"stage\":\"${ckbRuntimePreflightJsonEscape(effectiveStage)}\",\"status\":\"${ckbRuntimePreflightJsonEscape(status)}\",\"errorCode\":\"${errorCode}\",\"diagnostic\":\"${ckbRuntimePreflightJsonEscape(safeDiagnostic)}\",\"diagnosticTruncated\":${diagnosticTruncated},\"durationMillis\":${durationMillis},\"durationMs\":${durationMillis},\"deadlineAtMillis\":${deadlineAtMillis},\"remainingMillis\":${remainingMillis},\"remainingMs\":${remainingMillis},\"timeBudgetMillis\":${timeBudgetMillis},\"timeBudgetMs\":${timeBudgetMillis},\"ran\":${ran},\"succeeded\":${succeeded},\"failed\":${failed},\"degraded\":${degraded},\"businessOk\":${businessOk},\"finalizationOk\":${finalizationOk},\"atMillis\":${now}}\n"
 }
 
 private func schedulerTaskProgressJson(runId: String, event: String, taskName: String, status: String, diagnostic: String, task: SchedulerTaskResult): String {
     let now = DateTime.now().toUnixTimeStamp().toMilliseconds()
     let remainingMillis = if (task.deadlineAtMillis > now) { task.deadlineAtMillis - now } else { 0 }
-    "{\"subsystem\":\"scheduler\",\"runId\":\"${ckbRuntimePreflightJsonEscape(runId)}\",\"event\":\"${ckbRuntimePreflightJsonEscape(event)}\",\"stage\":\"${ckbRuntimePreflightJsonEscape(schedulerStageForEvent(event))}\",\"taskName\":\"${ckbRuntimePreflightJsonEscape(taskName)}\",\"status\":\"${ckbRuntimePreflightJsonEscape(status)}\",\"diagnostic\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(diagnostic), 240))}\",\"schedulerRunId\":\"${ckbRuntimePreflightJsonEscape(task.schedulerRunId)}\",\"schedulerTaskName\":\"${ckbRuntimePreflightJsonEscape(task.schedulerTaskName)}\",\"startedAtMillis\":${task.startedAtMillis},\"endedAtMillis\":${task.endedAtMillis},\"deadlineAtMillis\":${task.deadlineAtMillis},\"remainingMillis\":${remainingMillis},\"durationMillis\":${task.durationMillis},\"durationMs\":${task.durationMillis},\"bootstrapStartedAtMillis\":${task.bootstrapStartedAtMillis},\"taskBodyStartedAtMillis\":${task.taskBodyStartedAtMillis},\"taskBodyEndedAtMillis\":${task.taskBodyEndedAtMillis},\"bootstrapDurationMillis\":${task.bootstrapDurationMillis},\"resultWrittenAtMillis\":${task.resultWrittenAtMillis},\"resultFlushDurationMillis\":${task.resultFlushDurationMillis},\"stageDurations\":${ckbSchedulerStageDurationsJson(task.stageDurations)},\"timeBudgetMillis\":${task.timeBudgetMillis},\"requestCount\":${task.requestCount},\"actualAttempts\":${task.actualAttempts},\"successfulAttempts\":${task.successfulAttempts},\"retryAttempts\":${task.retryAttempts},\"plannedRequests\":${task.plannedRequests},\"completedRequests\":${task.completedRequests},\"failedRequests\":${task.failedRequests},\"lastStage\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(task.lastStage), 120))}\",\"lastProgress\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(task.lastProgress), 240))}\",\"workerPid\":${task.workerPid},\"workerOutSnippet\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(task.workerOutSnippet), 240))}\",\"workerErrSnippet\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(task.workerErrSnippet), 240))}\",\"atMillis\":${now}}\n"
+    let failure = !task.ok
+    let errorCode = schedulerLogErrorCode(task.status, failure)
+    let redactedDiagnostic = ckbSchedulerRedact(diagnostic)
+    let safeDiagnostic = utf8SafePrefix(redactedDiagnostic, 240)
+    let diagnosticTruncated = redactedDiagnostic.toArray().size >
+        safeDiagnostic.toArray().size
+    "{\"time\":\"${ckbRuntimePreflightJsonEscape(DateTime.now().toString())}\",\"level\":\"${if (failure) { "error" } else { "info" }}\",\"subsystem\":\"ckb.scheduler\",\"event\":\"scheduler.task.finished\",\"legacyEvent\":\"${ckbRuntimePreflightJsonEscape(event)}\",\"message\":\"scheduler task finished\",\"runId\":\"${ckbRuntimePreflightJsonEscape(runId)}\",\"stage\":\"task_finish\",\"taskName\":\"${ckbRuntimePreflightJsonEscape(taskName)}\",\"status\":\"${ckbRuntimePreflightJsonEscape(status)}\",\"errorCode\":\"${errorCode}\",\"diagnostic\":\"${ckbRuntimePreflightJsonEscape(safeDiagnostic)}\",\"diagnosticTruncated\":${diagnosticTruncated},\"schedulerRunId\":\"${ckbRuntimePreflightJsonEscape(task.schedulerRunId)}\",\"schedulerTaskName\":\"${ckbRuntimePreflightJsonEscape(task.schedulerTaskName)}\",\"startedAtMillis\":${task.startedAtMillis},\"endedAtMillis\":${task.endedAtMillis},\"deadlineAtMillis\":${task.deadlineAtMillis},\"remainingMillis\":${remainingMillis},\"remainingMs\":${remainingMillis},\"durationMillis\":${task.durationMillis},\"durationMs\":${task.durationMillis},\"bootstrapStartedAtMillis\":${task.bootstrapStartedAtMillis},\"taskBodyStartedAtMillis\":${task.taskBodyStartedAtMillis},\"taskBodyEndedAtMillis\":${task.taskBodyEndedAtMillis},\"bootstrapDurationMillis\":${task.bootstrapDurationMillis},\"resultWrittenAtMillis\":${task.resultWrittenAtMillis},\"resultFlushDurationMillis\":${task.resultFlushDurationMillis},\"stageDurations\":${ckbSchedulerStageDurationsJson(task.stageDurations)},\"timeBudgetMillis\":${task.timeBudgetMillis},\"timeBudgetMs\":${task.timeBudgetMillis},\"requestCount\":${task.requestCount},\"actualAttempts\":${task.actualAttempts},\"successfulAttempts\":${task.successfulAttempts},\"retryAttempts\":${task.retryAttempts},\"plannedRequests\":${task.plannedRequests},\"completedRequests\":${task.completedRequests},\"failedRequests\":${task.failedRequests},\"validationGates\":${ckbSchedulerStageDurationsJson(task.validationGates)},\"transactionId\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(task.transactionId), 160))}\",\"manifestEvidenceHash\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(task.manifestEvidenceHash), 96))}\",\"freshnessEvidenceHash\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(task.freshnessEvidenceHash), 96))}\",\"sourceCoverageEvidenceHash\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(task.sourceCoverageEvidenceHash), 96))}\",\"inventoryEvidenceHash\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(task.inventoryEvidenceHash), 96))}\",\"lastStage\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(task.lastStage), 120))}\",\"lastProgress\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(task.lastProgress), 240))}\",\"workerPid\":${task.workerPid},\"workerOutSnippet\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(task.workerOutSnippet), 240))}\",\"workerErrSnippet\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(task.workerErrSnippet), 240))}\",\"atMillis\":${now}}\n"
+}
+
+private func schedulerTaskTimeoutJson(runId: String, taskName: String,
+    task: SchedulerTaskResult, diagnostic: String): String {
+    let now = DateTime.now().toUnixTimeStamp().toMilliseconds()
+    let remaining = if (task.deadlineAtMillis > now) {
+        task.deadlineAtMillis - now
+    } else { 0 }
+    let redacted = ckbSchedulerRedact(diagnostic)
+    let safe = utf8SafePrefix(redacted, 240)
+    let truncated = redacted.toArray().size > safe.toArray().size
+    "{\"time\":\"${ckbRuntimePreflightJsonEscape(DateTime.now().toString())}\",\"level\":\"error\",\"subsystem\":\"ckb.scheduler\",\"event\":\"scheduler.task.timeout\",\"legacyEvent\":\"task_timeout\",\"message\":\"scheduler task timed out\",\"runId\":\"${ckbRuntimePreflightJsonEscape(runId)}\",\"taskName\":\"${ckbRuntimePreflightJsonEscape(taskName)}\",\"stage\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(task.lastStage), 120))}\",\"status\":\"${ckbRuntimePreflightJsonEscape(task.status)}\",\"errorCode\":\"ckb.scheduler.task_timeout\",\"diagnostic\":\"${ckbRuntimePreflightJsonEscape(safe)}\",\"diagnosticTruncated\":${truncated},\"deadlineAtMillis\":${task.deadlineAtMillis},\"remainingMs\":${remaining},\"timeBudgetMs\":${task.timeBudgetMillis},\"lastStage\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(task.lastStage), 120))}\",\"lastProgress\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(task.lastProgress), 240))}\",\"workerPid\":${task.workerPid},\"outSnippet\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(task.workerOutSnippet), 240))}\",\"errSnippet\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(task.workerErrSnippet), 240))}\",\"atMillis\":${now}}\n"
+}
+
+private func schedulerStableEvent(event: String): String {
+    if (event == "run_started") { return "scheduler.run.started" }
+    if (event == "run_finished") { return "scheduler.run.finished" }
+    if (event == "task_started") { return "scheduler.task.started" }
+    if (event == "task_finished") { return "scheduler.task.finished" }
+    if (event == "task_stage") { return "scheduler.task.stage" }
+    event
+}
+
+private func schedulerLogMessage(event: String): String {
+    if (event == "run_started") { return "scheduler run started" }
+    if (event == "run_finished") { return "scheduler run finished" }
+    if (event == "task_started") { return "scheduler task started" }
+    if (event == "task_finished") { return "scheduler task finished" }
+    if (event == "task_stage") { return "scheduler task stage" }
+    "scheduler event"
+}
+
+private func schedulerLogFailureStatus(status: String): Bool {
+    let value = status.toAsciiLower()
+    value == "failed" || value.contains("timeout") ||
+        value.contains("failed") || value.contains("degraded") ||
+        value.contains("exception") || value.contains("stale_or_misaligned")
+}
+
+private func schedulerLogErrorCode(status: String, failure: Bool): String {
+    if (!failure) { return "" }
+    if (status == "finalization_failed") {
+        return "ckb.scheduler_finalization_failed"
+    }
+    if (schedulerTaskStatusIsTimeout(status) ||
+        status.toAsciiLower().contains("timeout")) {
+        return "ckb.scheduler.task_timeout"
+    }
+    "ckb.scheduler_run_degraded"
 }
 
 private func schedulerStageForEvent(event: String): String {
@@ -8326,11 +8706,19 @@ private func schedulerStageForEvent(event: String): String {
 }
 
 private func schedulerDiagnosticJson(runId: String, taskName: String, status: String, diagnostic: String): String {
-    "{\"runId\":\"${ckbRuntimePreflightJsonEscape(runId)}\",\"event\":\"task_diagnostic\",\"taskName\":\"${ckbRuntimePreflightJsonEscape(taskName)}\",\"status\":\"${ckbRuntimePreflightJsonEscape(status)}\",\"diagnostic\":\"${ckbRuntimePreflightJsonEscape(redactSensitive(diagnostic))}\",\"atMillis\":${DateTime.now().toUnixTimeStamp().toMilliseconds()}}\n"
+    let failure = schedulerLogFailureStatus(status)
+    let redacted = ckbSchedulerRedact(diagnostic)
+    let safe = utf8SafePrefix(redacted, 240)
+    let truncated = redacted.toArray().size > safe.toArray().size
+    "{\"time\":\"${ckbRuntimePreflightJsonEscape(DateTime.now().toString())}\",\"level\":\"${if (failure) { "error" } else { "info" }}\",\"subsystem\":\"ckb.scheduler\",\"event\":\"scheduler.task.stage\",\"legacyEvent\":\"task_diagnostic\",\"message\":\"scheduler task diagnostic\",\"runId\":\"${ckbRuntimePreflightJsonEscape(runId)}\",\"taskName\":\"${ckbRuntimePreflightJsonEscape(taskName)}\",\"stage\":\"diagnostic\",\"status\":\"${ckbRuntimePreflightJsonEscape(status)}\",\"errorCode\":\"${schedulerLogErrorCode(status, failure)}\",\"diagnostic\":\"${ckbRuntimePreflightJsonEscape(safe)}\",\"diagnosticTruncated\":${truncated},\"remainingMillis\":0,\"remainingMs\":0,\"atMillis\":${DateTime.now().toUnixTimeStamp().toMilliseconds()}}\n"
 }
 
-private func vectorBuildRecoveryJson(runId: String, collection: String, targetCollection: String, state: String, diagnostic: String): String {
-    "{\"runId\":\"${ckbRuntimePreflightJsonEscape(runId)}\",\"event\":\"stale_recovered\",\"collection\":\"${ckbRuntimePreflightJsonEscape(collection)}\",\"targetCollection\":\"${ckbRuntimePreflightJsonEscape(targetCollection)}\",\"state\":\"${ckbRuntimePreflightJsonEscape(state)}\",\"diagnostic\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(diagnostic), 240))}\",\"atMillis\":${DateTime.now().toUnixTimeStamp().toMilliseconds()}}\n"
+private func vectorBuildRecoveryJson(runId: String, collection: String, targetCollection: String, state: String, diagnostic: String, expectedCount!: Int64 = 0, actualCount!: Int64 = 0): String {
+    let redacted = ckbSchedulerRedact(diagnostic)
+    let safe = utf8SafePrefix(redacted, 240)
+    let truncated = redacted.toArray().size > safe.toArray().size
+    let failure = schedulerLogFailureStatus(state)
+    "{\"time\":\"${ckbRuntimePreflightJsonEscape(DateTime.now().toString())}\",\"level\":\"${if (failure) { "error" } else { "info" }}\",\"subsystem\":\"ckb.vector\",\"event\":\"vector.build.finished\",\"legacyEvent\":\"stale_recovered\",\"message\":\"vector stale recovery finished\",\"runId\":\"${ckbRuntimePreflightJsonEscape(runId)}\",\"taskName\":\"\",\"stage\":\"stale_recovery\",\"status\":\"${ckbRuntimePreflightJsonEscape(state)}\",\"errorCode\":\"${if (failure) { "ckb.scheduler_run_degraded" } else { "" }}\",\"collection\":\"${ckbRuntimePreflightJsonEscape(collection)}\",\"targetCollection\":\"${ckbRuntimePreflightJsonEscape(targetCollection)}\",\"expectedCount\":${expectedCount},\"actualCount\":${actualCount},\"diagnostic\":\"${ckbRuntimePreflightJsonEscape(safe)}\",\"diagnosticTruncated\":${truncated},\"durationMs\":0,\"atMillis\":${DateTime.now().toUnixTimeStamp().toMilliseconds()}}\n"
 }
 
 private func schedulerCurrentText(runId: String, taskName: String, status: String, progressPath: String, diagnostic: String): String {
@@ -8343,8 +8731,83 @@ private func schedulerCurrentText(runId: String, taskName: String, status: Strin
 }
 
 private func ckbStagedRebuildStageProgressJson(progress: CkbStagedRebuildStageProgress, runId: String, taskName: String): String {
-    let diagnostic = utf8SafePrefix(redactSensitive(progress.diagnostic), 240)
-    "{\"subsystem\":\"routine_update\",\"runId\":\"${ckbRuntimePreflightJsonEscape(runId)}\",\"event\":\"staged_rebuild_stage\",\"stage\":\"${ckbRuntimePreflightJsonEscape(progress.stage)}\",\"taskName\":\"${ckbRuntimePreflightJsonEscape(taskName)}\",\"status\":\"${ckbRuntimePreflightJsonEscape(progress.status)}\",\"diagnostic\":\"${ckbRuntimePreflightJsonEscape(diagnostic)}\",\"deadlineAtMillis\":${progress.deadlineAtMillis},\"remainingMillis\":${progress.remainingMillis},\"durationMillis\":${progress.durationMillis},\"itemCount\":${progress.itemCount},\"atMillis\":${progress.atMillis}}\n"
+    let redactedDiagnostic = ckbSchedulerRedact(progress.diagnostic)
+    let diagnostic = utf8SafePrefix(redactedDiagnostic, 240)
+    let diagnosticTruncated = redactedDiagnostic.toArray().size >
+        diagnostic.toArray().size
+    let failure = schedulerLogFailureStatus(progress.status)
+    "{\"time\":\"${ckbRuntimePreflightJsonEscape(DateTime.now().toString())}\",\"level\":\"${if (failure) { "error" } else { "info" }}\",\"subsystem\":\"ckb.scheduler\",\"event\":\"scheduler.task.stage\",\"legacyEvent\":\"staged_rebuild_stage\",\"message\":\"scheduler task stage\",\"runId\":\"${ckbRuntimePreflightJsonEscape(runId)}\",\"taskName\":\"${ckbRuntimePreflightJsonEscape(taskName)}\",\"stage\":\"${ckbRuntimePreflightJsonEscape(progress.stage)}\",\"status\":\"${ckbRuntimePreflightJsonEscape(progress.status)}\",\"errorCode\":\"${schedulerLogErrorCode(progress.status, failure)}\",\"diagnostic\":\"${ckbRuntimePreflightJsonEscape(diagnostic)}\",\"diagnosticTruncated\":${diagnosticTruncated},\"deadlineAtMillis\":${progress.deadlineAtMillis},\"remainingMillis\":${progress.remainingMillis},\"remainingMs\":${progress.remainingMillis},\"durationMillis\":${progress.durationMillis},\"durationMs\":${progress.durationMillis},\"itemCount\":${progress.itemCount},\"atMillis\":${progress.atMillis}}\n"
+}
+
+private func ckbStagedRebuildTypedEventJson(
+    progress: CkbStagedRebuildStageProgress, runId: String,
+    taskName: String): String {
+    var event = progress.typedEvent
+    if (event == "" && progress.stage == "candidate_materialization_started") {
+        event = "routine.candidate.promotion.started"
+    } else if (event == "" &&
+        (progress.stage == "candidate_active_snapshot_finished" ||
+        (schedulerLogFailureStatus(progress.status) &&
+        (progress.stage == "candidate_materialization_finished" ||
+        progress.stage == "candidate_vector_finished" ||
+        progress.stage == "candidate_validation_finished" ||
+        progress.stage == "candidate_active_commit_finished")))) {
+        event = "routine.candidate.promotion.finished"
+    }
+    if (event == "") { return "" }
+    let now = if (progress.atMillis > 0) { progress.atMillis } else {
+        DateTime.now().toUnixTimeStamp().toMilliseconds()
+    }
+    let failure = event == "scheduler.worker.killed" ||
+        ((event == "routine.fetch.finished" ||
+        event == "routine.tree.page_scanned") &&
+        progress.status != "ok") ||
+        schedulerLogFailureStatus(progress.status)
+    let errorCode = if (event == "scheduler.worker.killed") {
+        "ckb.scheduler.task_timeout"
+    } else { schedulerLogErrorCode(progress.status, failure) }
+    let redactedDiagnostic = ckbSchedulerRedact(progress.diagnostic)
+    let diagnostic = utf8SafePrefix(redactedDiagnostic, 240)
+    let diagnosticTruncated = redactedDiagnostic.toArray().size >
+        diagnostic.toArray().size
+    let level = if (failure) { "error" } else { "info" }
+    if (event == "scheduler.worker.started") {
+        return "{\"time\":\"${ckbRuntimePreflightJsonEscape(DateTime.now().toString())}\",\"level\":\"${level}\",\"subsystem\":\"ckb.scheduler.worker\",\"event\":\"${event}\",\"message\":\"scheduler worker started\",\"runId\":\"${ckbRuntimePreflightJsonEscape(runId)}\",\"taskName\":\"${ckbRuntimePreflightJsonEscape(taskName)}\",\"stage\":\"worker_start\",\"status\":\"${ckbRuntimePreflightJsonEscape(progress.status)}\",\"errorCode\":\"${errorCode}\",\"workerPid\":${progress.workerPid},\"workerResultPath\":\"${ckbRuntimePreflightJsonEscape(progress.workerResultPath)}\",\"diagnostic\":\"${ckbRuntimePreflightJsonEscape(diagnostic)}\",\"diagnosticTruncated\":${diagnosticTruncated},\"atMillis\":${now}}\n"
+    }
+    if (event == "scheduler.worker.result_written") {
+        return "{\"time\":\"${ckbRuntimePreflightJsonEscape(DateTime.now().toString())}\",\"level\":\"${level}\",\"subsystem\":\"ckb.scheduler.worker\",\"event\":\"${event}\",\"message\":\"scheduler worker result written\",\"runId\":\"${ckbRuntimePreflightJsonEscape(runId)}\",\"taskName\":\"${ckbRuntimePreflightJsonEscape(taskName)}\",\"stage\":\"worker_result\",\"status\":\"${ckbRuntimePreflightJsonEscape(progress.status)}\",\"errorCode\":\"${errorCode}\",\"workerResultPath\":\"${ckbRuntimePreflightJsonEscape(progress.workerResultPath)}\",\"diagnostic\":\"${ckbRuntimePreflightJsonEscape(diagnostic)}\",\"diagnosticTruncated\":${diagnosticTruncated},\"atMillis\":${now}}\n"
+    }
+    if (event == "scheduler.worker.killed") {
+        return "{\"time\":\"${ckbRuntimePreflightJsonEscape(DateTime.now().toString())}\",\"level\":\"error\",\"subsystem\":\"ckb.scheduler.worker\",\"event\":\"${event}\",\"message\":\"scheduler worker killed\",\"runId\":\"${ckbRuntimePreflightJsonEscape(runId)}\",\"taskName\":\"${ckbRuntimePreflightJsonEscape(taskName)}\",\"stage\":\"worker_kill\",\"status\":\"${ckbRuntimePreflightJsonEscape(progress.status)}\",\"errorCode\":\"ckb.scheduler.task_timeout\",\"workerPid\":${progress.workerPid},\"signal\":\"${ckbRuntimePreflightJsonEscape(progress.signal)}\",\"lastStage\":\"${ckbRuntimePreflightJsonEscape(progress.lastStage)}\",\"diagnostic\":\"${ckbRuntimePreflightJsonEscape(diagnostic)}\",\"diagnosticTruncated\":${diagnosticTruncated},\"atMillis\":${now}}\n"
+    }
+    if (event == "routine.fetch.started") {
+        return "{\"time\":\"${ckbRuntimePreflightJsonEscape(DateTime.now().toString())}\",\"level\":\"info\",\"subsystem\":\"ckb.routine.fetch\",\"event\":\"${event}\",\"message\":\"routine fetch started\",\"runId\":\"${ckbRuntimePreflightJsonEscape(runId)}\",\"taskName\":\"${ckbRuntimePreflightJsonEscape(taskName)}\",\"stage\":\"routine_fetch\",\"status\":\"running\",\"errorCode\":\"\",\"requestKind\":\"${ckbRuntimePreflightJsonEscape(progress.requestKind)}\",\"repo\":\"${ckbRuntimePreflightJsonEscape(progress.repo)}\",\"sourceSet\":\"${ckbRuntimePreflightJsonEscape(progress.sourceSet)}\",\"atMillis\":${now}}\n"
+    }
+    if (event == "routine.fetch.finished") {
+        return "{\"time\":\"${ckbRuntimePreflightJsonEscape(DateTime.now().toString())}\",\"level\":\"${level}\",\"subsystem\":\"ckb.routine.fetch\",\"event\":\"${event}\",\"message\":\"routine fetch finished\",\"runId\":\"${ckbRuntimePreflightJsonEscape(runId)}\",\"taskName\":\"${ckbRuntimePreflightJsonEscape(taskName)}\",\"stage\":\"routine_fetch\",\"status\":\"${ckbRuntimePreflightJsonEscape(progress.status)}\",\"errorCode\":\"${errorCode}\",\"requestKind\":\"${ckbRuntimePreflightJsonEscape(progress.requestKind)}\",\"repo\":\"${ckbRuntimePreflightJsonEscape(progress.repo)}\",\"sourceSet\":\"${ckbRuntimePreflightJsonEscape(progress.sourceSet)}\",\"httpStatus\":${progress.httpStatus},\"bodyHash\":\"${ckbRuntimePreflightJsonEscape(progress.bodyHash)}\",\"retryCount\":${progress.retryCount},\"atMillis\":${now}}\n"
+    }
+    if (event == "routine.tree.page_scanned") {
+        return "{\"time\":\"${ckbRuntimePreflightJsonEscape(DateTime.now().toString())}\",\"level\":\"${level}\",\"subsystem\":\"ckb.routine.fetch\",\"event\":\"${event}\",\"message\":\"routine tree page scanned\",\"runId\":\"${ckbRuntimePreflightJsonEscape(runId)}\",\"taskName\":\"${ckbRuntimePreflightJsonEscape(taskName)}\",\"stage\":\"tree_page\",\"status\":\"${ckbRuntimePreflightJsonEscape(progress.status)}\",\"errorCode\":\"${errorCode}\",\"repo\":\"${ckbRuntimePreflightJsonEscape(progress.repo)}\",\"sourceSet\":\"${ckbRuntimePreflightJsonEscape(progress.sourceSet)}\",\"page\":${progress.page},\"objectsSeen\":${progress.objectsSeen},\"filesSeen\":${progress.filesSeen},\"directoriesSeen\":${progress.directoriesSeen},\"candidatesSeen\":${progress.candidatesSeen},\"stopReason\":\"${ckbRuntimePreflightJsonEscape(progress.stopReason)}\",\"atMillis\":${now}}\n"
+    }
+    if (event == "routine.ingest.delta_built") {
+        return "{\"time\":\"${ckbRuntimePreflightJsonEscape(DateTime.now().toString())}\",\"level\":\"${level}\",\"subsystem\":\"ckb.routine.ingest\",\"event\":\"${event}\",\"message\":\"routine ingest delta built\",\"runId\":\"${ckbRuntimePreflightJsonEscape(runId)}\",\"taskName\":\"${ckbRuntimePreflightJsonEscape(taskName)}\",\"stage\":\"ingest_delta_built\",\"status\":\"${ckbRuntimePreflightJsonEscape(progress.status)}\",\"errorCode\":\"${errorCode}\",\"deltaCount\":${progress.deltaCount},\"atMillis\":${now}}\n"
+    }
+    if (event == "routine.readiness.evaluated") {
+        return "{\"time\":\"${ckbRuntimePreflightJsonEscape(DateTime.now().toString())}\",\"level\":\"${level}\",\"subsystem\":\"ckb.routine.validation\",\"event\":\"${event}\",\"message\":\"routine readiness evaluated\",\"runId\":\"${ckbRuntimePreflightJsonEscape(runId)}\",\"taskName\":\"${ckbRuntimePreflightJsonEscape(taskName)}\",\"stage\":\"readiness\",\"status\":\"${ckbRuntimePreflightJsonEscape(progress.status)}\",\"errorCode\":\"${errorCode}\",\"requiredFailedCount\":${progress.requiredFailedCount},\"optionalFailedCount\":${progress.optionalFailedCount},\"atMillis\":${now}}\n"
+    }
+    if (event == "routine.candidate.promotion.started") {
+        return "{\"time\":\"${ckbRuntimePreflightJsonEscape(DateTime.now().toString())}\",\"level\":\"info\",\"subsystem\":\"ckb.routine.ingest\",\"event\":\"${event}\",\"message\":\"routine candidate promotion started\",\"runId\":\"${ckbRuntimePreflightJsonEscape(runId)}\",\"taskName\":\"${ckbRuntimePreflightJsonEscape(taskName)}\",\"stage\":\"candidate_promotion\",\"status\":\"running\",\"errorCode\":\"\",\"candidateKnowledgeVersion\":\"${ckbRuntimePreflightJsonEscape(progress.candidateKnowledgeVersion)}\",\"atMillis\":${now}}\n"
+    }
+    if (event == "routine.candidate.promotion.finished") {
+        return "{\"time\":\"${ckbRuntimePreflightJsonEscape(DateTime.now().toString())}\",\"level\":\"${level}\",\"subsystem\":\"ckb.routine.ingest\",\"event\":\"${event}\",\"message\":\"routine candidate promotion finished\",\"runId\":\"${ckbRuntimePreflightJsonEscape(runId)}\",\"taskName\":\"${ckbRuntimePreflightJsonEscape(taskName)}\",\"stage\":\"candidate_promotion\",\"status\":\"${ckbRuntimePreflightJsonEscape(progress.status)}\",\"errorCode\":\"${errorCode}\",\"activeKnowledgeVersion\":\"${ckbRuntimePreflightJsonEscape(progress.activeKnowledgeVersion)}\",\"atMillis\":${now}}\n"
+    }
+    if (event == "snapshot.transaction.started") {
+        return "{\"time\":\"${ckbRuntimePreflightJsonEscape(DateTime.now().toString())}\",\"level\":\"info\",\"subsystem\":\"ckb.store.snapshot\",\"event\":\"${event}\",\"message\":\"snapshot transaction started\",\"runId\":\"${ckbRuntimePreflightJsonEscape(runId)}\",\"taskName\":\"${ckbRuntimePreflightJsonEscape(taskName)}\",\"stage\":\"snapshot_transaction\",\"status\":\"running\",\"errorCode\":\"\",\"txId\":\"${ckbRuntimePreflightJsonEscape(progress.txId)}\",\"activeKnowledgeVersion\":\"${ckbRuntimePreflightJsonEscape(progress.activeKnowledgeVersion)}\",\"atMillis\":${now}}\n"
+    }
+    if (event == "snapshot.transaction.committed") {
+        return "{\"time\":\"${ckbRuntimePreflightJsonEscape(DateTime.now().toString())}\",\"level\":\"${level}\",\"subsystem\":\"ckb.store.snapshot\",\"event\":\"${event}\",\"message\":\"snapshot transaction committed\",\"runId\":\"${ckbRuntimePreflightJsonEscape(runId)}\",\"taskName\":\"${ckbRuntimePreflightJsonEscape(taskName)}\",\"stage\":\"snapshot_transaction\",\"status\":\"${ckbRuntimePreflightJsonEscape(progress.status)}\",\"errorCode\":\"${errorCode}\",\"txId\":\"${ckbRuntimePreflightJsonEscape(progress.txId)}\",\"manifestPath\":\"${ckbRuntimePreflightJsonEscape(progress.manifestPath)}\",\"commitPath\":\"${ckbRuntimePreflightJsonEscape(progress.commitPath)}\",\"atMillis\":${now}}\n"
+    }
+    ""
 }
 
 private func ckbStagedRebuildStageCurrentText(progress: CkbStagedRebuildStageProgress, progressPath: String, runId: String, taskName: String): String {
@@ -8369,7 +8832,7 @@ private func ckbStagedRebuildCurrentProgressSummary(text: String): String {
     "staged_rebuild:stage=${ckbCurrentField(text, "stage")},status=${ckbCurrentField(text, "status")},remainingMillis=${ckbCurrentField(text, "remainingMillis")},progressPath=${ckbCurrentField(text, "progressPath")},diagnostic=${ckbCurrentField(text, "diagnostic")}"
 }
 
-private func ckbEmitStagedRebuildStage(stageSink: CkbStagedRebuildStageSink, stage: String, status: String, deadlineAtMillis: Int64, diagnostic: String, runId!: String = "", taskName!: String = "", durationMillis!: Int64 = 0, itemCount!: Int64 = 0): Unit {
+private func ckbEmitStagedRebuildStage(stageSink: CkbStagedRebuildStageSink, stage: String, status: String, deadlineAtMillis: Int64, diagnostic: String, runId!: String = "", taskName!: String = "", durationMillis!: Int64 = 0, itemCount!: Int64 = 0, typedEvent!: String = "", deltaCount!: Int64 = 0, requiredFailedCount!: Int64 = 0, optionalFailedCount!: Int64 = 0, txId!: String = "", activeKnowledgeVersion!: String = "", manifestPath!: String = "", commitPath!: String = ""): Unit {
     let progress = CkbStagedRebuildStageProgress()
     progress.runId = runId
     progress.taskName = taskName
@@ -8381,6 +8844,14 @@ private func ckbEmitStagedRebuildStage(stageSink: CkbStagedRebuildStageSink, sta
     progress.atMillis = ckbCoreNowMillis()
     progress.durationMillis = durationMillis
     progress.itemCount = itemCount
+    progress.typedEvent = typedEvent
+    progress.deltaCount = deltaCount
+    progress.requiredFailedCount = requiredFailedCount
+    progress.optionalFailedCount = optionalFailedCount
+    progress.txId = txId
+    progress.activeKnowledgeVersion = activeKnowledgeVersion
+    progress.manifestPath = manifestPath
+    progress.commitPath = commitPath
     try {
         stageSink.onStagedRebuildStage(progress)
     } catch (_: Exception) {
@@ -8393,6 +8864,8 @@ private func vectorBuildRecoveredCurrentText(previous: String, state: String, di
     text += "collection=${escapeField(ckbCurrentField(previous, "collection"))}\n"
     text += "targetCollection=${escapeField(ckbCurrentField(previous, "targetCollection"))}\n"
     text += "state=${escapeField(state)}\n"
+    text += "total=${parseIntField(ckbCurrentField(previous, "total"), 0)}\n"
+    text += "dimension=${parseIntField(ckbCurrentField(previous, "dimension"), 0)}\n"
     text += "currentBatch=${parseIntField(ckbCurrentField(previous, "currentBatch"), 0)}\n"
     text += "completed=${parseIntField(ckbCurrentField(previous, "completed"), 0)}\n"
     text += "failed=${parseIntField(ckbCurrentField(previous, "failed"), 0)}\n"
@@ -9098,6 +9571,11 @@ public func ckbSchedulerTaskResultText(task: SchedulerTaskResult): String {
     text += "truncated=${task.truncated}\n"
     text += "timeBudgetMillis=${task.timeBudgetMillis}\n"
     text += "validationStatus=${escapeField(task.validationStatus)}\n"
+    text += "transactionId=${ckbSchedulerResultSafeField(task.transactionId, 160)}\n"
+    text += "manifestEvidenceHash=${ckbSchedulerResultSafeField(task.manifestEvidenceHash, 96)}\n"
+    text += "freshnessEvidenceHash=${ckbSchedulerResultSafeField(task.freshnessEvidenceHash, 96)}\n"
+    text += "sourceCoverageEvidenceHash=${ckbSchedulerResultSafeField(task.sourceCoverageEvidenceHash, 96)}\n"
+    text += "inventoryEvidenceHash=${ckbSchedulerResultSafeField(task.inventoryEvidenceHash, 96)}\n"
     text += "validationSummary=${ckbSchedulerResultSafeField(task.validationSummary, 480)}\n"
     text += "validationEvidenceHash=${escapeField(task.validationEvidenceHash)}\n"
     text += "lastStage=${ckbSchedulerResultSafeField(task.lastStage, 120)}\n"
@@ -9105,20 +9583,34 @@ public func ckbSchedulerTaskResultText(task: SchedulerTaskResult): String {
     text += "workerPid=${task.workerPid}\n"
     text += "workerOutSnippet=${ckbSchedulerResultSafeField(task.workerOutSnippet, 240)}\n"
     text += "workerErrSnippet=${ckbSchedulerResultSafeField(task.workerErrSnippet, 240)}\n"
+    for (gate in task.validationGates) {
+        text += "validationGate|${ckbSchedulerResultSafeField(gate, 120)}\n"
+    }
     for (kind in task.updatedDataKinds) {
         text += "updatedDataKind|${escapeField(kind)}\n"
     }
     for (duration in task.stageDurations) {
         text += "stageDuration|${ckbSchedulerResultSafeField(duration, 240)}\n"
     }
+    var diagnosticCount: Int64 = 0
     for (diagnostic in task.validationDiagnostics) {
+        if (diagnosticCount >= 64) { break }
         text += "diagnostic|${ckbSchedulerResultSafeField(diagnostic, 480)}\n"
+        diagnosticCount += 1
     }
     text
 }
 
 private func ckbSchedulerResultSafeField(value: String, maxBytes: Int64): String {
-    escapeField(utf8SafePrefix(redactSensitive(value), maxBytes))
+    escapeField(utf8SafePrefix(ckbSchedulerRedact(value), maxBytes))
+}
+
+private func ckbSchedulerRedact(value: String): String {
+    redactSensitive(value)
+        .replace("Authorization", "<redacted-header>")
+        .replace("authorization", "<redacted-header>")
+        .replace("Bearer", "<redacted-scheme>")
+        .replace("bearer", "<redacted-scheme>")
 }
 
 public func ckbSchedulerTaskResultFromText(text: String): SchedulerTaskResult {
@@ -9132,8 +9624,14 @@ public func ckbSchedulerTaskResultFromText(text: String): SchedulerTaskResult {
             task.updatedDataKinds.add(unescapeField(trimmed[16..trimmed.size]))
             continue
         }
+        if (trimmed.startsWith("validationGate|")) {
+            task.validationGates.add(utf8SafePrefix(redactSensitive(unescapeField(trimmed[15..trimmed.size])), 120))
+            continue
+        }
         if (trimmed.startsWith("diagnostic|")) {
-            task.validationDiagnostics.add(utf8SafePrefix(redactSensitive(unescapeField(trimmed[11..trimmed.size])), 480))
+            if (task.validationDiagnostics.size < 64) {
+                task.validationDiagnostics.add(utf8SafePrefix(redactSensitive(unescapeField(trimmed[11..trimmed.size])), 480))
+            }
             continue
         }
         if (trimmed.startsWith("stageDuration|")) {
@@ -9202,6 +9700,16 @@ public func ckbSchedulerTaskResultFromText(text: String): SchedulerTaskResult {
             task.timeBudgetMillis = parseIntField(value, 0)
         } else if (key == "validationStatus") {
             task.validationStatus = value
+        } else if (key == "transactionId") {
+            task.transactionId = utf8SafePrefix(redactSensitive(value), 160)
+        } else if (key == "manifestEvidenceHash") {
+            task.manifestEvidenceHash = utf8SafePrefix(redactSensitive(value), 96)
+        } else if (key == "freshnessEvidenceHash") {
+            task.freshnessEvidenceHash = utf8SafePrefix(redactSensitive(value), 96)
+        } else if (key == "sourceCoverageEvidenceHash") {
+            task.sourceCoverageEvidenceHash = utf8SafePrefix(redactSensitive(value), 96)
+        } else if (key == "inventoryEvidenceHash") {
+            task.inventoryEvidenceHash = utf8SafePrefix(redactSensitive(value), 96)
         } else if (key == "validationSummary") {
             task.validationSummary = utf8SafePrefix(redactSensitive(value), 480)
         } else if (key == "validationEvidenceHash") {
@@ -9256,7 +9764,7 @@ public func ckbWriteSchedulerTaskBootstrapFailure(store: FileKnowledgeStore, tas
     task.durationMillis = if (flushStartedAtMillis >= bootstrapStartedAtMillis) { flushStartedAtMillis - bootstrapStartedAtMillis } else { 0 }
     task.deadlineAtMillis = deadlineAtMillis
     task.lastStage = "bootstrap_failed"
-    task.validationDiagnostics.add("${taskName}:task_bootstrap_failed:${utf8SafePrefix(redactSensitive(diagnostic), 160)}")
+    task.validationDiagnostics.add("${taskName}:task_bootstrap_failed:${utf8SafePrefix(ckbSchedulerRedact(diagnostic), 160)}")
     ckbWriteSchedulerTerminalResultArtifacts(store, resultRelativePath, task, flushStartedAtMillis)
 }
 
@@ -9307,14 +9815,19 @@ private func ckbWriteSchedulerTerminalResultArtifacts(store: FileKnowledgeStore,
 }
 
 private func ckbSanitizeSchedulerTaskHumanFields(task: SchedulerTaskResult): Unit {
-    task.validationSummary = utf8SafePrefix(redactSensitive(task.validationSummary), 480)
-    task.lastStage = utf8SafePrefix(redactSensitive(task.lastStage), 120)
-    task.lastProgress = utf8SafePrefix(redactSensitive(task.lastProgress), 240)
-    task.workerOutSnippet = utf8SafePrefix(redactSensitive(task.workerOutSnippet), 240)
-    task.workerErrSnippet = utf8SafePrefix(redactSensitive(task.workerErrSnippet), 240)
+    task.transactionId = utf8SafePrefix(ckbSchedulerRedact(task.transactionId), 160)
+    task.manifestEvidenceHash = utf8SafePrefix(ckbSchedulerRedact(task.manifestEvidenceHash), 96)
+    task.freshnessEvidenceHash = utf8SafePrefix(ckbSchedulerRedact(task.freshnessEvidenceHash), 96)
+    task.sourceCoverageEvidenceHash = utf8SafePrefix(ckbSchedulerRedact(task.sourceCoverageEvidenceHash), 96)
+    task.inventoryEvidenceHash = utf8SafePrefix(ckbSchedulerRedact(task.inventoryEvidenceHash), 96)
+    task.validationSummary = utf8SafePrefix(ckbSchedulerRedact(task.validationSummary), 480)
+    task.lastStage = utf8SafePrefix(ckbSchedulerRedact(task.lastStage), 120)
+    task.lastProgress = utf8SafePrefix(ckbSchedulerRedact(task.lastProgress), 240)
+    task.workerOutSnippet = utf8SafePrefix(ckbSchedulerRedact(task.workerOutSnippet), 240)
+    task.workerErrSnippet = utf8SafePrefix(ckbSchedulerRedact(task.workerErrSnippet), 240)
     let stageDurations = ArrayList<String>()
     for (duration in task.stageDurations) {
-        stageDurations.add(utf8SafePrefix(redactSensitive(duration), 240))
+        stageDurations.add(utf8SafePrefix(ckbSchedulerRedact(duration), 240))
     }
     task.stageDurations.clear()
     for (duration in stageDurations) {
@@ -9322,26 +9835,50 @@ private func ckbSanitizeSchedulerTaskHumanFields(task: SchedulerTaskResult): Uni
     }
     let diagnostics = ArrayList<String>()
     for (diagnostic in task.validationDiagnostics) {
-        diagnostics.add(utf8SafePrefix(redactSensitive(diagnostic), 480))
+        diagnostics.add(utf8SafePrefix(ckbSchedulerRedact(diagnostic), 480))
     }
     task.validationDiagnostics.clear()
     for (diagnostic in diagnostics) {
         task.validationDiagnostics.add(diagnostic)
     }
+    let gates = ArrayList<String>()
+    for (gate in task.validationGates) {
+        gates.add(utf8SafePrefix(ckbSchedulerRedact(gate), 120))
+    }
+    task.validationGates.clear()
+    for (gate in gates) {
+        task.validationGates.add(gate)
+    }
 }
 
 public func ckbRunSchedulerTaskWorker(kb: KnowledgeBase, config: CkbRuntimeConfig, store: FileKnowledgeStore, taskName: String, since: String, deadlineAtMillis: Int64, resultRelativePath: String, schedulerRunId!: String = "", bootstrapStartedAtMillis!: Int64 = 0, taskBodyStartedAtMillis!: Int64 = 0): SchedulerTaskResult {
+    ckbRunSchedulerTaskWorkerWithRunner(kb, config, store,
+        if (config.networkEnabled) { HttpSourceFetchRunner(config) } else { DisabledNetworkFetchRunner() },
+        taskName, since, deadlineAtMillis, resultRelativePath,
+        schedulerRunId: schedulerRunId,
+        bootstrapStartedAtMillis: bootstrapStartedAtMillis,
+        taskBodyStartedAtMillis: taskBodyStartedAtMillis)
+}
+
+public func ckbRunSchedulerTaskWorkerWithRunner(kb: KnowledgeBase,
+    config: CkbRuntimeConfig, store: FileKnowledgeStore,
+    sourceRunner: SourceFetchRunner, taskName: String, since: String,
+    deadlineAtMillis: Int64, resultRelativePath: String,
+    schedulerRunId!: String = "", bootstrapStartedAtMillis!: Int64 = 0,
+    taskBodyStartedAtMillis!: Int64 = 0): SchedulerTaskResult {
     let enteredAtMillis = ckbTaskWorkerNowMillis()
     let bootstrapStarted = if (bootstrapStartedAtMillis > 0) { bootstrapStartedAtMillis } else { enteredAtMillis }
     let bodyStarted = if (taskBodyStartedAtMillis > 0) { taskBodyStartedAtMillis } else { enteredAtMillis }
-    let runner = CkbSchedulerTaskRunner(kb, config, store, sourceRunner: if (config.networkEnabled) { HttpSourceFetchRunner(config) } else { DisabledNetworkFetchRunner() })
+    let runner = CkbSchedulerTaskRunner(kb, config, store,
+        sourceRunner: sourceRunner)
     var task = SchedulerTaskResult()
     try {
         task = runner.runTask(taskName, since, deadlineAtMillis)
     } catch (e: Exception) {
         task.ok = false
         task.status = if (deadlineAtMillis > 0 && ckbTaskWorkerNowMillis() >= deadlineAtMillis) { "task_timeout:${taskName}" } else { "task_exception" }
-        task.validationDiagnostics.add("${taskName}:${task.status}:${utf8SafePrefix(e.message, 160)}")
+        task.validationDiagnostics.add("${taskName}:${task.status}:" +
+            utf8SafePrefix(ckbSchedulerRedact(e.message), 160))
     }
     let bodyEndedAtMillis = ckbTaskWorkerNowMillis()
     if (!task.ok && task.lastStage == "") {
@@ -9376,16 +9913,105 @@ private func ckbRoutineArtifactStatusForTask(store: FileKnowledgeStore, config: 
         status.evidenceHash = stableSummaryHash("artifact_status:missing_contract")
         return status
     }
+    if (contract.taskName == "cangjie_release_full_sync") {
+        let artifact = "metadata/cangjie-version-manifest.ckb"
+        if (ckbRoutineReleaseArtifactAligned(store, task)) {
+            status.presentArtifacts.add(artifact)
+        } else {
+            status.ok = false
+            status.diagnostic = "required_artifact_stale_or_misaligned"
+            status.missingArtifacts.add(artifact)
+        }
+        status.evidenceHash = stableSummaryHash("${contract.taskName}:${status.diagnostic}:${task.transactionId}:${task.activeVersion}:${task.candidateVersion}:${task.manifestEvidenceHash}:${task.freshnessEvidenceHash}:${task.sourceCoverageEvidenceHash}:${task.inventoryEvidenceHash}")
+        return status
+    }
     for (artifact in contract.requiredArtifacts) {
         if (ckbRoutineArtifactExistsForTask(store, config, artifact, task)) {
             status.presentArtifacts.add(artifact)
         } else {
             status.ok = false
+            status.diagnostic = "required_artifact_missing"
             status.missingArtifacts.add(artifact)
         }
     }
     status.evidenceHash = stableSummaryHash("${contract.taskName}:${joinStrings(status.presentArtifacts, ",")}:${joinStrings(status.missingArtifacts, ",")}:${task.candidateVersion}:${task.activeVersion}")
     status
+}
+
+public func validateSchedulerTaskResultAgainstPersistedContract(
+    store: FileKnowledgeStore, config: CkbRuntimeConfig, taskName: String,
+    task: SchedulerTaskResult, before: CkbRoutineActiveInvariant,
+    after: CkbRoutineActiveInvariant): CkbRoutineContractValidation {
+    let contract = ckbSchedulerTaskContractForName(taskName)
+    let artifactStatus = ckbRoutineArtifactStatusForTask(store, config, contract, task)
+    validateSchedulerTaskResultAgainstContractWithArtifacts(taskName, task, before,
+        after, artifactStatus)
+}
+
+private func ckbRoutineReleaseArtifactAligned(store: FileKnowledgeStore,
+    task: SchedulerTaskResult): Bool {
+    let pointer = store.loadActiveSnapshotPointer()
+    let supportedCompanionMode =
+        pointer.companionMode == CkbActiveSnapshotCompanionMode.RELEASE ||
+        pointer.companionMode == CkbActiveSnapshotCompanionMode.COPY_FORWARD
+    if (!pointer.valid || pointer.legacy ||
+        !supportedCompanionMode ||
+        task.transactionId == "" || pointer.txId != task.transactionId ||
+        pointer.activeVersion != task.activeVersion ||
+        pointer.manifestHash != task.manifestEvidenceHash ||
+        pointer.freshnessHash != task.freshnessEvidenceHash ||
+        !ckbValidationEvidenceIsSha256(task.manifestEvidenceHash) ||
+        !ckbValidationEvidenceIsSha256(task.freshnessEvidenceHash) ||
+        !ckbRoutineRawSha256(task.sourceCoverageEvidenceHash) ||
+        !ckbRoutineRawSha256(task.inventoryEvidenceHash)) {
+        return false
+    }
+    let txRoot = "transactions/${safeName(pointer.txId)}/metadata"
+    let manifest = try {
+        ckbParseCangjieVersionManifestArtifact(store.readText(
+            "${txRoot}/cangjie-version-manifest.ckb"))
+    } catch (_: Exception) { return false }
+    let freshness = try {
+        ckbParseCangjieFreshnessArtifact(store.readText(
+            "${txRoot}/cangjie-freshness.ckb"))
+    } catch (_: Exception) { return false }
+    let coverage = store.routineReleaseCoverageSummary(
+        "${txRoot}/cangjie-release-coverage.ckb")
+    if (!coverage.valid ||
+        coverage.sourceCoverageEvidenceHash != task.sourceCoverageEvidenceHash ||
+        coverage.inventoryEvidenceHash != task.inventoryEvidenceHash) {
+        return false
+    }
+    ckbRoutineReleaseManifestHasExactSources(manifest) &&
+        freshness.ok && !freshness.degraded && freshness.sources.size == 5 &&
+        freshness.activeKnowledgeVersion == task.activeVersion &&
+        freshness.candidateKnowledgeVersion == task.candidateVersion
+}
+
+private func ckbRoutineReleaseManifestHasExactSources(manifest: CangjieVersionManifest): Bool {
+    if (manifest.degraded || manifest.sources.size != 5) { return false }
+    let sources = HashSet<String>()
+    for (source in manifest.sources) {
+        if (sources.contains(source.sourceSet)) { return false }
+        sources.add(source.sourceSet)
+    }
+    sources.size == 5 && sources.contains(CangjieSourceSets.DOCS) &&
+        sources.contains(CangjieSourceSets.STD) &&
+        sources.contains(CangjieSourceSets.STDX) &&
+        sources.contains(CangjieSourceSets.TOOLS) &&
+        sources.contains(CangjieSourceSets.EVAL_SUPPORT)
+}
+
+private func ckbRoutineRawSha256(value: String): Bool {
+    let runes = value.toRuneArray()
+    if (runes.size != 64) { return false }
+    for (ch in runes) {
+        let digit = ch >= r'0' && ch <= r'9'
+        let lowerHex = ch >= r'a' && ch <= r'f'
+        let upperHex = ch >= r'A' && ch <= r'F'
+        if (!digit && !lowerHex && !upperHex) { return false }
+    }
+    true
 }
 
 private func ckbRoutineArtifactExistsForTask(store: FileKnowledgeStore, config: CkbRuntimeConfig, artifact: String, task: SchedulerTaskResult): Bool {
@@ -9491,6 +10117,40 @@ private func ckbSchedulerShouldUseProcessWorker(command: String): Bool {
     trimmed != "" && (trimmed == "main" || trimmed.endsWith("/main"))
 }
 
+private func ckbEmitSchedulerWorkerTypedEvent(store: FileKnowledgeStore,
+    runId: String, taskName: String, event: String, status: String,
+    workerResultPath: String, workerPid!: Int64 = 0,
+    signal!: String = "", lastStage!: String = "",
+    diagnostic!: String = ""): Unit {
+    if (runId == "" || taskName == "") { return }
+    let progress = CkbStagedRebuildStageProgress()
+    progress.runId = runId
+    progress.taskName = taskName
+    progress.stage = "worker"
+    progress.status = status
+    progress.typedEvent = event
+    progress.workerPid = workerPid
+    progress.workerResultPath = workerResultPath
+    progress.signal = signal
+    progress.lastStage = lastStage
+    progress.diagnostic = diagnostic
+    progress.atMillis = ckbCoreNowMillis()
+    FileCkbStagedRebuildStageSink(store, schedulerRunId: runId,
+        schedulerTaskName: taskName).onTypedEvent(progress)
+}
+
+private func ckbEmitSchedulerWorkerFailureDiagnostic(
+    store: FileKnowledgeStore, runId: String, taskName: String,
+    status: String): Unit {
+    if (runId == "" || taskName == "") { return }
+    try {
+        store.appendLinesAtomically(
+            "metadata/scheduler-runs/${safeName(runId)}-diagnostics.jsonl",
+            schedulerDiagnosticJson(runId, taskName, "failed",
+                "scheduler_worker_result_unconfirmed:status=${status}"))
+    } catch (_: Exception) { () }
+}
+
 public class ProcessIsolatedSchedulerTaskRunner <: SchedulerTaskRunner {
     private let kb: KnowledgeBase
     private let config: CkbRuntimeConfig
@@ -9560,6 +10220,9 @@ public class ProcessIsolatedSchedulerTaskRunner <: SchedulerTaskRunner {
             if (artifactClass != "") {
                 parsed.validationDiagnostics.add("${name}:worker_artifact:${artifactClass}")
             }
+            ckbEmitSchedulerWorkerTypedEvent(this.store, schedulerRunId,
+                name, "scheduler.worker.result_written", parsed.status,
+                resultRelativePath, workerPid: workerPid)
             return ckbApplySchedulerProcessWallTiming(parsed, started, ckbTaskWorkerNowMillis())
         }
         if ((code == 124 || elapsed >= timeoutMillis) && ckbSchedulerWorkerResultAllowsTimeoutCompensation(parsed.status)) {
@@ -9567,6 +10230,23 @@ public class ProcessIsolatedSchedulerTaskRunner <: SchedulerTaskRunner {
             let storeStage = ckbSchedulerWorkerLastStageFromStoreForTask(this.store, name)
             let lastStage = if (storeStage != "") { storeStage } else { ckbSchedulerWorkerLastStageFromArtifacts(outSnippet, errSnippet) }
             let compensated = ckbWriteSchedulerWorkerTimeoutCompensation(this.store, resultRelativePath, name, since, elapsed, timeoutMillis, timeoutDiagnostic, lastStage: lastStage, lastProgress: ckbSchedulerWorkerLastProgressFromStoreForTask(this.store, name), workerPid: workerPid, outSnippet: outSnippet, errSnippet: errSnippet, schedulerRunId: schedulerRunId)
+            ckbEmitSchedulerWorkerTypedEvent(this.store, schedulerRunId,
+                name, "scheduler.worker.killed", compensated.status,
+                resultRelativePath, workerPid: workerPid,
+                signal: "SIGTERM/SIGKILL", lastStage: lastStage,
+                diagnostic: timeoutDiagnostic)
+            let confirmed = ckbReadSchedulerWorkerResult(this.storePath,
+                resultRelativePath, name, since, elapsed, timeoutMillis,
+                schedulerRunId: schedulerRunId, strictIdentity: true)
+            if (!ckbSchedulerWorkerArtifactReadFailure(confirmed.status)) {
+                ckbEmitSchedulerWorkerTypedEvent(this.store, schedulerRunId,
+                    name, "scheduler.worker.result_written",
+                    confirmed.status, resultRelativePath,
+                    workerPid: workerPid)
+            } else {
+                ckbEmitSchedulerWorkerFailureDiagnostic(this.store,
+                    schedulerRunId, name, confirmed.status)
+            }
             return ckbApplySchedulerProcessWallTiming(compensated, started, ckbTaskWorkerNowMillis())
         }
         if (ckbSchedulerWorkerResultNeedsFailureHandling(parsed.status)) {
@@ -9591,6 +10271,8 @@ public class ProcessIsolatedSchedulerTaskRunner <: SchedulerTaskRunner {
             if (artifactClass != "") {
                 parsed.validationDiagnostics.add("${name}:worker_artifact:${artifactClass}")
             }
+            ckbEmitSchedulerWorkerFailureDiagnostic(this.store,
+                schedulerRunId, name, parsed.status)
             return ckbApplySchedulerProcessWallTiming(parsed, started, ckbTaskWorkerNowMillis())
         }
         ckbApplySchedulerProcessWallTiming(parsed, started, ckbTaskWorkerNowMillis())
@@ -9601,7 +10283,11 @@ public class ProcessIsolatedSchedulerTaskRunner <: SchedulerTaskRunner {
         let resultPath = Path(this.storePath).join(resultRelativePath).toString()
         let outPath = resultPath + ".out"
         let errPath = resultPath + ".err"
+        let launchGatePath = resultPath + ".launch"
         var script = ckbSchedulerWorkerShellPreludeWithHeap(ckbSchedulerWorkerDyldLibraryPath(), workerHeap)
+        script += "rm -f " + ckbLocalShellQuote(launchGatePath) + "; "
+        script += "echo supervisorPid=$$ >> " + ckbLocalShellQuote(resultPath + ".started") + "; "
+        script += "( while ! grep -qx ready " + ckbLocalShellQuote(launchGatePath) + " 2>/dev/null; do sleep 0.01; done; exec "
         script += ckbLocalShellQuote(this.command)
         if (this.configPath.trimAscii() != "") {
             script += " --config " + ckbLocalShellQuote(this.configPath)
@@ -9612,14 +10298,49 @@ public class ProcessIsolatedSchedulerTaskRunner <: SchedulerTaskRunner {
         script += " --since " + ckbLocalShellQuote(since)
         script += " --deadline " + ckbLocalShellQuote("${deadlineAtMillis}")
         script += " --result-rel " + ckbLocalShellQuote(resultRelativePath)
-        script += " > " + ckbLocalShellQuote(outPath) + " 2> " + ckbLocalShellQuote(errPath)
+        script += " ) > " + ckbLocalShellQuote(outPath) + " 2> " + ckbLocalShellQuote(errPath)
         script += " & pid=$!; "
         script += "echo workerPid=$pid >> " + ckbLocalShellQuote(resultPath + ".started") + "; "
         script += "( sleep " + ckbLocalShellQuote("${seconds}") + "; if kill -0 $pid 2>/dev/null; then echo CKB_SCHEDULER_TASK_TIMEOUT >&2; pkill -TERM -P $pid 2>/dev/null || true; kill -TERM $pid 2>/dev/null || true; sleep 2; pkill -KILL -P $pid 2>/dev/null || true; kill -KILL $pid 2>/dev/null || true; fi ) & timer=$!; "
-        script += "wait $pid; code=$?; kill $timer 2>/dev/null || true; if grep -q CKB_SCHEDULER_TASK_TIMEOUT " + ckbLocalShellQuote(errPath) + " 2>/dev/null; then exit 124; fi; exit $code"
+        script += "wait $pid; code=$?; kill $timer 2>/dev/null || true; rm -f " + ckbLocalShellQuote(launchGatePath) + "; if grep -q CKB_SCHEDULER_TASK_TIMEOUT " + ckbLocalShellQuote(errPath) + " 2>/dev/null; then exit 124; fi; exit $code"
         try {
             let process = launch("/bin/zsh", ["-lc", script], stdOut: ProcessRedirect.Pipe, stdErr: ProcessRedirect.Pipe)
-            process.wait()
+            var workerPid: Int64 = 0
+            for (_ in 0..100) {
+                workerPid = ckbSchedulerWorkerPidFromStarted(this.storePath,
+                    resultRelativePath)
+                if (workerPid > 0) { break }
+                sleep(Duration.millisecond * 10)
+            }
+            if (workerPid <= 0) {
+                let supervisorPid = ckbSchedulerWorkerSupervisorPidFromStarted(
+                    this.storePath, resultRelativePath)
+                ckbStopSchedulerLaunchProcess(supervisorPid)
+                _ = process.wait()
+                _ = launch("/bin/rm", ["-f", launchGatePath]).wait()
+                ckbEmitSchedulerWorkerFailureDiagnostic(this.store,
+                    schedulerRunId, name,
+                    "task_worker_start_pid_missing")
+                return 125
+            }
+            ckbEmitSchedulerWorkerTypedEvent(this.store, schedulerRunId,
+                name, "scheduler.worker.started", "running",
+                resultRelativePath, workerPid: workerPid)
+            try {
+                this.store.writeLinesAtomically("${resultRelativePath}.launch",
+                    "ready\n")
+            } catch (_: Exception) {
+                ckbStopSchedulerLaunchProcess(workerPid)
+                _ = process.wait()
+                _ = launch("/bin/rm", ["-f", launchGatePath]).wait()
+                ckbEmitSchedulerWorkerFailureDiagnostic(this.store,
+                    schedulerRunId, name,
+                    "task_worker_launch_gate_write_failed")
+                return 125
+            }
+            let exitCode = process.wait()
+            _ = launch("/bin/rm", ["-f", launchGatePath]).wait()
+            exitCode
         } catch (_: Exception) {
             125
         }
@@ -9698,6 +10419,23 @@ private func ckbSchedulerWorkerPidFromStarted(storePath: String, resultRelativeP
     } catch (_: Exception) {
         0
     }
+}
+
+private func ckbSchedulerWorkerSupervisorPidFromStarted(storePath: String,
+    resultRelativePath: String): Int64 {
+    let startedPath = Path(storePath).join(resultRelativePath + ".started")
+    if (!exists(startedPath)) { return 0 }
+    try {
+        parseIntField(ckbCurrentField(
+            String.fromUtf8(File.readFrom(startedPath)),
+            "supervisorPid"), 0)
+    } catch (_: Exception) { 0 }
+}
+
+private func ckbStopSchedulerLaunchProcess(pid: Int64): Unit {
+    if (pid <= 0) { return }
+    _ = launch("/bin/sh", ["-c",
+        "pkill -TERM -P ${pid} 2>/dev/null || true; kill -TERM ${pid} 2>/dev/null || true; pkill -KILL -P ${pid} 2>/dev/null || true; kill -KILL ${pid} 2>/dev/null || true"]).wait()
 }
 
 private func ckbSchedulerWorkerArtifactSnippet(storePath: String, relativePath: String): String {
@@ -10059,8 +10797,12 @@ private func ckbReadSchedulerWorkerResultArtifact(storePath: String, relativePat
     if (!exists(path)) {
         return ckbSchedulerWorkerFailureResult(name, since, durationMillis, timeoutMillis, "${prefix}_missing")
     }
+    let text = try {
+        String.fromUtf8(File.readFrom(path))
+    } catch (_: Exception) {
+        return ckbSchedulerWorkerFailureResult(name, since, durationMillis, timeoutMillis, "${prefix}_invalid_response_encoding")
+    }
     try {
-        let text = String.fromUtf8(File.readFrom(path))
         let task = ckbSchedulerTaskResultFromText(text)
         if (task.status == "worker_started") {
             return ckbSchedulerWorkerFailureResult(name, since, durationMillis, timeoutMillis, "${prefix}_incomplete")
@@ -10084,9 +10826,9 @@ private func ckbReadSchedulerWorkerResultArtifact(storePath: String, relativePat
 }
 
 private func ckbSchedulerWorkerArtifactReadFailure(status: String): Bool {
-    status == "task_worker_result_missing" || status == "task_worker_result_malformed" || status == "task_worker_result_incomplete" ||
+    status == "task_worker_result_missing" || status == "task_worker_result_malformed" || status == "task_worker_result_invalid_response_encoding" || status == "task_worker_result_incomplete" ||
         status == "task_worker_result_run_mismatch" || status == "task_worker_result_task_mismatch" ||
-        status == "task_worker_sidecar_missing" || status == "task_worker_sidecar_malformed" || status == "task_worker_sidecar_incomplete" ||
+        status == "task_worker_sidecar_missing" || status == "task_worker_sidecar_malformed" || status == "task_worker_sidecar_invalid_response_encoding" || status == "task_worker_sidecar_incomplete" ||
         status == "task_worker_sidecar_run_mismatch" || status == "task_worker_sidecar_task_mismatch" || status == "task_worker_sidecar_unconfirmed"
 }
 
@@ -10305,6 +11047,14 @@ public class CkbSchedulerTaskRunner <: SchedulerTaskRunner {
         ckbApplyScheduledFetchAccountingToTask(result, fetch)
         result.truncated = fetch.truncated
         result.validationStatus = ingest.validationStatus
+        for (gate in ingest.validationGates) {
+            result.validationGates.add(gate)
+        }
+        result.transactionId = ingest.transactionId
+        result.manifestEvidenceHash = ingest.manifestEvidenceHash
+        result.freshnessEvidenceHash = ingest.freshnessEvidenceHash
+        result.sourceCoverageEvidenceHash = ingest.sourceCoverageEvidenceHash
+        result.inventoryEvidenceHash = ingest.inventoryEvidenceHash
         result.validationSummary = ingest.validationSummary
         result.validationEvidenceHash = ingest.validationEvidenceHash
         for (diagnostic in ingest.validationDiagnostics) {
@@ -10338,19 +11088,28 @@ public class CkbSchedulerTaskRunner <: SchedulerTaskRunner {
             }
         }
         let operationallyFailedBeforeContract = !result.ok
-        let contract = ckbSchedulerTaskContractForName(name)
-        let artifactStatus = ckbRoutineArtifactStatusForTask(this.store, this.config, contract, result)
-        let validation = validateSchedulerTaskResultAgainstContractWithArtifacts(name, result, beforeInvariant, ckbRoutineActiveInvariantFromStatus(this.kb.status()), artifactStatus)
-        result.validationDiagnostics.add("routine_contract:${renderCkbRoutineContractValidationJson(validation)}")
-        if (!validation.ok) {
-            result.ok = false
-            if (operationallyFailedBeforeContract) {
-                result.validationDiagnostics.add("routine_contract_degraded:${validation.diagnostic}")
-            } else {
-                result.status = validation.diagnostic
-            }
-        }
+        let validation = validateSchedulerTaskResultAgainstPersistedContract(
+            this.store, this.config, name, result, beforeInvariant,
+            ckbRoutineActiveInvariantFromStatus(this.kb.status()))
+        ckbApplySchedulerTaskContractValidation(result, validation,
+            operationallyFailedBeforeContract)
         result
+    }
+}
+
+public func ckbApplySchedulerTaskContractValidation(result: SchedulerTaskResult,
+    validation: CkbRoutineContractValidation,
+    operationallyFailedBeforeContract: Bool): Unit {
+    result.validationDiagnostics.add(
+        "routine_contract:${renderCkbRoutineContractValidationJson(validation)}")
+    if (!validation.ok) {
+        result.ok = false
+        if (operationallyFailedBeforeContract) {
+            result.validationDiagnostics.add(
+                "routine_contract_degraded:${validation.diagnostic}")
+        } else {
+            result.status = validation.diagnostic
+        }
     }
 }
 
@@ -11260,6 +12019,12 @@ private class CkbScheduledProfileIngestResult {
     var candidateVersion: String = ""
     var activeVersion: String = ""
     var validationStatus: String = "not_run"
+    var validationGates: ArrayList<String> = ArrayList<String>()
+    var transactionId: String = ""
+    var manifestEvidenceHash: String = ""
+    var freshnessEvidenceHash: String = ""
+    var sourceCoverageEvidenceHash: String = ""
+    var inventoryEvidenceHash: String = ""
     var validationSummary: String = ""
     var validationEvidenceHash: String = ""
     var validationDiagnostics: ArrayList<String> = ArrayList<String>()
@@ -11424,12 +12189,33 @@ private func ckbFetchReleaseFullSyncPlan(runner: SourceFetchRunner, builder: Sou
     for (source in result.releasePlan.sources) {
         let inventory = ckbReleaseInventoryForSource(source)
         result.releaseInventories.add(inventory)
-        if (source.sourceSet == CangjieSourceSets.EVAL_SUPPORT) {
-            ckbFetchReleaseEvalSupportSource(source, profile, result, inventory, config, store, sourceOrdinal: sourceOrdinal)
-        } else {
-            ckbFetchReleaseRemoteSource(runner, builder, source, profile, result, inventory, config, store, deadlineAtMillis: deadlineAtMillis, sourceOrdinal: sourceOrdinal)
+        let evidenceStart = result.controlEvidence.size
+        ckbEmitReleaseSourceFetchStarted(store, source)
+        try {
+            if (source.sourceSet == CangjieSourceSets.EVAL_SUPPORT) {
+                ckbFetchReleaseEvalSupportSource(source, profile, result,
+                    inventory, config, store, sourceOrdinal: sourceOrdinal)
+            } else {
+                ckbFetchReleaseRemoteSource(runner, builder, source,
+                    profile, result, inventory, config, store,
+                    deadlineAtMillis: deadlineAtMillis,
+                    sourceOrdinal: sourceOrdinal)
+            }
+        } catch (e: Exception) {
+            inventory.complete = false
+            inventory.status = "fetch_exception"
+            ckbReleaseInventorySortPaths(inventory)
+            ckbEmitReleaseTreePageScannedEvents(store, source,
+                result.controlEvidence, evidenceStart)
+            ckbEmitReleaseSourceFetchFinished(store, source, inventory,
+                result.controlEvidence, evidenceStart)
+            throw e
         }
         ckbReleaseInventorySortPaths(inventory)
+        ckbEmitReleaseTreePageScannedEvents(store, source,
+            result.controlEvidence, evidenceStart)
+        ckbEmitReleaseSourceFetchFinished(store, source,
+            inventory, result.controlEvidence, evidenceStart)
         if (!inventory.complete) {
             if (result.ok) {
                 ckbReleaseFailFetchResult(result, inventory.status, source, "source_incomplete")
@@ -11449,6 +12235,90 @@ private func ckbFetchReleaseFullSyncPlan(runner: SourceFetchRunner, builder: Sou
     }
 }
 
+private func ckbReleaseSourceFetchProgress(store: FileKnowledgeStore,
+    source: CkbReleaseSourcePlan): CkbStagedRebuildStageProgress {
+    let progress = CkbStagedRebuildStageProgress()
+    progress.runId = ckbSchedulerCurrentRunId(store)
+    progress.taskName = ckbSchedulerCurrentTaskName(store)
+    progress.stage = "routine_fetch"
+    progress.requestKind = if (source.sourceSet ==
+        CangjieSourceSets.EVAL_SUPPORT) {
+        "eval_support_local"
+    } else { SourceKinds.GITCODE_SOURCE }
+    progress.repo = source.normalizedRepo
+    progress.sourceSet = source.sourceSet
+    progress
+}
+
+private func ckbEmitReleaseSourceFetchStarted(store: FileKnowledgeStore,
+    source: CkbReleaseSourcePlan): Unit {
+    let progress = ckbReleaseSourceFetchProgress(store, source)
+    progress.status = "running"
+    progress.typedEvent = "routine.fetch.started"
+    progress.atMillis = ckbCoreNowMillis()
+    FileCkbStagedRebuildStageSink(store,
+        schedulerRunId: progress.runId,
+        schedulerTaskName: progress.taskName).onTypedEvent(progress)
+}
+
+private func ckbEmitReleaseSourceFetchFinished(store: FileKnowledgeStore,
+    source: CkbReleaseSourcePlan,
+    inventory: CkbReleaseSourceInventory,
+    evidence: ArrayList<CkbReleaseControlEvidence>,
+    evidenceStart: Int64): Unit {
+    let progress = ckbReleaseSourceFetchProgress(store, source)
+    let hashes = StringBuilder()
+    var lastHttpStatus: Int64 = 0
+    var retryCount: Int64 = 0
+    for (index in evidenceStart..evidence.size) {
+        let item = evidence[index]
+        if (item.sourceIdentity != source.canonicalIdentity) { continue }
+        hashes.append("${item.kind}|${item.bodyHash}\n")
+        if (item.httpStatus > 0) { lastHttpStatus = item.httpStatus }
+        retryCount += item.retryCount
+    }
+    progress.status = inventory.status
+    progress.httpStatus = if (lastHttpStatus > 0) { lastHttpStatus } else if (
+        inventory.complete) { 200 } else { 0 }
+    let evidenceSeed = if (hashes.toString() != "") {
+        hashes.toString()
+    } else {
+        "${inventory.sourceIdentity}|${inventory.resolvedCommit}|${inventory.status}"
+    }
+    progress.bodyHash = ckbReleaseEvidenceHash(evidenceSeed)
+    progress.retryCount = retryCount
+    progress.typedEvent = "routine.fetch.finished"
+    progress.atMillis = ckbCoreNowMillis()
+    FileCkbStagedRebuildStageSink(store,
+        schedulerRunId: progress.runId,
+        schedulerTaskName: progress.taskName).onTypedEvent(progress)
+}
+
+private func ckbEmitReleaseTreePageScannedEvents(store: FileKnowledgeStore,
+    source: CkbReleaseSourcePlan,
+    evidence: ArrayList<CkbReleaseControlEvidence>,
+    evidenceStart: Int64): Unit {
+    let sink = FileCkbStagedRebuildStageSink(store,
+        schedulerRunId: ckbSchedulerCurrentRunId(store),
+        schedulerTaskName: ckbSchedulerCurrentTaskName(store))
+    for (index in evidenceStart..evidence.size) {
+        let item = evidence[index]
+        if (item.kind != "tree_page" ||
+            item.sourceIdentity != source.canonicalIdentity) { continue }
+        let progress = ckbReleaseSourceFetchProgress(store, source)
+        progress.status = item.status
+        progress.page = item.page
+        progress.objectsSeen = item.objectCount
+        progress.filesSeen = item.fileCount
+        progress.directoriesSeen = item.directoryCount
+        progress.candidatesSeen = item.candidateCount
+        progress.stopReason = item.stopReason
+        progress.typedEvent = "routine.tree.page_scanned"
+        progress.atMillis = ckbCoreNowMillis()
+        sink.onTypedEvent(progress)
+    }
+}
+
 func ckbReleaseInventoryForSource(source: CkbReleaseSourcePlan): CkbReleaseSourceInventory {
     let inventory = CkbReleaseSourceInventory()
     inventory.sourceIdentity = source.canonicalIdentity
@@ -11465,7 +12335,8 @@ func ckbFetchReleaseRemoteSource(runner: SourceFetchRunner, builder: SourceReque
     if (staleTempsRemoved > 0) { result.diagnostics.add("release_acquisition_stale_temps_removed:sourceSet=${source.sourceSet}|count=${staleTempsRemoved}") }
     let acquisitionState = ckbLoadReleaseAcquisitionState(store, planningKey)
     let reuseExisting = acquisitionState.status == "not_found" || (acquisitionState.valid && acquisitionState.state == "active")
-    if (!reuseExisting) {
+    let verifyConsumed = acquisitionState.valid && acquisitionState.state == "consumed"
+    if (!reuseExisting && !verifyConsumed) {
         result.diagnostics.add("release_acquisition_artifacts_rejected:sourceSet=${source.sourceSet}|status=${acquisitionState.status}")
     }
     if (reuseExisting && ckbHydrateCompletedReleaseRemoteSource(builder, source, profile, result, inventory, store, planningKey, sourceOrdinal)) {
@@ -11473,23 +12344,39 @@ func ckbFetchReleaseRemoteSource(runner: SourceFetchRunner, builder: SourceReque
     }
     var resolution = GitCodeRefResolution()
     resolution.status = "not_found"
+    var resolutionAttempted = false
     if (reuseExisting) { resolution = ckbLoadReleaseRefResolution(store, planningKey) }
-    if (!resolution.ok) {
+    if (verifyConsumed) {
+        let consumedResolution = ckbLoadReleaseRefResolution(store,
+            planningKey, allowConsumed: true)
+        resolution = ckbResolveGitCodeRefForFetch(runner, builder,
+            source.source.sourceRepo, source.originalRef, source.sourceSet,
+            source.sourceFamily, config, deadlineAtMillis: deadlineAtMillis,
+            accounting: result.accounting)
+        resolutionAttempted = true
+        if (resolution.ok && consumedResolution.ok &&
+            resolution.resolvedCommit == consumedResolution.resolvedCommit &&
+            ckbHydrateCompletedReleaseRemoteSource(builder, source, profile,
+                result, inventory, store, planningKey, sourceOrdinal,
+                verifiedResolution: resolution)) {
+            result.diagnostics.add("release_consumed_ref_verified:sourceSet=${source.sourceSet}|commit=${utf8SafePrefix(resolution.resolvedCommit, 64)}")
+            return
+        }
+        if (resolution.ok) {
+            ckbStartReleaseAcquisitionForResolution(store, planningKey,
+                resolution, sourceOrdinal)
+            result.diagnostics.add("release_consumed_acquisition_restarted:sourceSet=${source.sourceSet}|commitChanged=${!consumedResolution.ok || resolution.resolvedCommit != consumedResolution.resolvedCommit}")
+        }
+    }
+    if (!resolution.ok && !resolutionAttempted) {
         resolution = ckbResolveGitCodeRefForFetch(runner, builder, source.source.sourceRepo, source.originalRef, source.sourceSet, source.sourceFamily, config, deadlineAtMillis: deadlineAtMillis, accounting: result.accounting)
         if (resolution.ok) {
-            let resolvedKey = ckbReleaseRunKeyWithCommit(planningKey, resolution.resolvedCommit)
-            let refArtifact = ckbWriteReleaseContentArtifact(store, resolvedKey, CkbReleaseArtifactKinds.REF, ckbReleaseRefResolutionPayload(resolution))
-            ckbMarkReleaseAcquisitionState(store, resolvedKey, "active")
-            let initial = CkbReleaseResumeCheckpoint()
-            initial.phase = "ref"
-            initial.sourceOrdinal = sourceOrdinal
-            initial.refArtifactPath = refArtifact.relativePath
-            initial.artifactEvidenceHashes.add(refArtifact.evidenceHash)
-            ckbSaveReleaseResumeCheckpoint(store, resolvedKey, initial)
+            ckbStartReleaseAcquisitionForResolution(store, planningKey,
+                resolution, sourceOrdinal)
         } else if (resolution.status != "not_found") {
             result.diagnostics.add("release_ref_artifact_rejected:sourceSet=${source.sourceSet}|status=${resolution.status}")
         }
-    } else {
+    } else if (reuseExisting && resolution.ok && !resolutionAttempted) {
         result.diagnostics.add("release_ref_artifact_hydrated:sourceSet=${source.sourceSet}|commit=${utf8SafePrefix(resolution.resolvedCommit, 64)}")
     }
     ckbAppendReleaseRefEvidence(result, source, resolution)
@@ -11532,12 +12419,12 @@ func ckbFetchReleaseRemoteSource(runner: SourceFetchRunner, builder: SourceReque
         }
         inventory.pagesScanned += 1
         if (fetch.truncated) {
-            ckbAppendReleaseControlEvidence(result, source, "tree_page", request, fetch, resolution, 0, 0)
+            ckbAppendReleaseControlEvidence(result, source, "tree_page", request, fetch, resolution, 0, 0, stopReason: "tree_response_truncated")
             ckbReleaseInventoryLimitFailure(result, inventory, source, "tree_response_truncated")
             return
         }
         if (!fetch.ok) {
-            ckbAppendReleaseControlEvidence(result, source, "tree_page", request, fetch, resolution, 0, 0)
+            ckbAppendReleaseControlEvidence(result, source, "tree_page", request, fetch, resolution, 0, 0, stopReason: "tree_page_failed")
             let status = ckbReleaseAcquisitionFailureStatus(fetch.status)
             ckbReleaseInventoryFailure(inventory, status)
             ckbReleaseFailFetchResult(result, status, source, "tree_page_failed")
@@ -11547,7 +12434,10 @@ func ckbFetchReleaseRemoteSource(runner: SourceFetchRunner, builder: SourceReque
             return
         }
         let parsed = ckbReleaseParseTreePage(source.sourceSet, fetch.body)
-        ckbAppendReleaseControlEvidence(result, source, "tree_page", request, fetch, resolution, parsed.objectsSeen, parsed.filesSeen)
+        ckbAppendReleaseControlEvidence(result, source, "tree_page", request, fetch, resolution, parsed.objectsSeen, parsed.filesSeen,
+            directoryCount: parsed.directoriesSeen,
+            candidateCount: parsed.eligiblePaths.size,
+            stopReason: if (parsed.explicitEnd) { "explicit_end" } else { "continue" })
         if (!parsed.ok) {
             if (parsed.truncated || parsed.status == CkbReleaseAcquisitionStatus.INVENTORY_LIMIT_EXCEEDED) {
                 ckbReleaseInventoryLimitFailure(result, inventory, source, "tree_response_truncated")
@@ -11721,14 +12611,37 @@ private class CkbReleaseSourceCompleteDescriptor {
     init() {}
 }
 
+private func ckbStartReleaseAcquisitionForResolution(store: FileKnowledgeStore,
+    planningKey: CkbScheduledFetchRunKey, resolution: GitCodeRefResolution,
+    sourceOrdinal: Int64): Unit {
+    let resolvedKey = ckbReleaseRunKeyWithCommit(planningKey,
+        resolution.resolvedCommit)
+    let refArtifact = ckbWriteReleaseContentArtifact(store, resolvedKey,
+        CkbReleaseArtifactKinds.REF,
+        ckbReleaseRefResolutionPayload(resolution))
+    ckbMarkReleaseAcquisitionState(store, resolvedKey, "active")
+    let initial = CkbReleaseResumeCheckpoint()
+    initial.phase = "ref"
+    initial.sourceOrdinal = sourceOrdinal
+    initial.refArtifactPath = refArtifact.relativePath
+    initial.artifactEvidenceHashes.add(refArtifact.evidenceHash)
+    ckbSaveReleaseResumeCheckpoint(store, resolvedKey, initial)
+}
+
 private func ckbReleaseRefResolutionPayload(resolution: GitCodeRefResolution): String {
     "{\"status\":\"${ckbScheduledFetchJsonEscape(resolution.status)}\",\"repo\":\"${ckbScheduledFetchJsonEscape(resolution.repo)}\",\"sourceSet\":\"${ckbScheduledFetchJsonEscape(resolution.sourceSet)}\",\"sourceFamily\":\"${ckbScheduledFetchJsonEscape(resolution.sourceFamily)}\",\"originalRef\":\"${ckbScheduledFetchJsonEscape(resolution.originalRef)}\",\"effectiveRef\":\"${ckbScheduledFetchJsonEscape(resolution.effectiveRef)}\",\"resolvedCommit\":\"${ckbScheduledFetchJsonEscape(resolution.resolvedCommit)}\",\"refKind\":\"${ckbScheduledFetchJsonEscape(resolution.refKind)}\",\"evidenceBodyHash\":\"${resolution.evidenceBodyHash}\",\"evidenceAttempts\":${resolution.evidenceAttempts}}"
 }
 
-private func ckbLoadReleaseRefResolution(store: FileKnowledgeStore, planningKey: CkbScheduledFetchRunKey): GitCodeRefResolution {
+private func ckbLoadReleaseRefResolution(store: FileKnowledgeStore,
+    planningKey: CkbScheduledFetchRunKey,
+    allowConsumed!: Bool = false): GitCodeRefResolution {
     let resolution = GitCodeRefResolution()
     resolution.status = "not_found"
-    if (!ckbReleaseAcquisitionCanResume(store, planningKey)) {
+    let state = ckbLoadReleaseAcquisitionState(store, planningKey)
+    let stateAllowsRead = state.status == "not_found" ||
+        (state.valid && state.state == "active") ||
+        (allowConsumed && state.valid && state.state == "consumed")
+    if (!stateAllowsRead) {
         return resolution
     }
     let artifact = ckbLoadReleaseContentArtifact(store, planningKey, CkbReleaseArtifactKinds.REF)
@@ -11807,7 +12720,7 @@ private func ckbParseReleaseSourceComplete(payload: String): CkbReleaseSourceCom
     descriptor
 }
 
-private func ckbHydrateCompletedReleaseRemoteSource(builder: SourceRequestBuilder, source: CkbReleaseSourcePlan, profile: CkbScheduleTaskProfile, result: CkbScheduledProfileFetchResult, inventory: CkbReleaseSourceInventory, store: FileKnowledgeStore, planningKey: CkbScheduledFetchRunKey, sourceOrdinal: Int64): Bool {
+private func ckbHydrateCompletedReleaseRemoteSource(builder: SourceRequestBuilder, source: CkbReleaseSourcePlan, profile: CkbScheduleTaskProfile, result: CkbScheduledProfileFetchResult, inventory: CkbReleaseSourceInventory, store: FileKnowledgeStore, planningKey: CkbScheduledFetchRunKey, sourceOrdinal: Int64, verifiedResolution!: GitCodeRefResolution = GitCodeRefResolution()): Bool {
     let completeArtifact = ckbLoadReleaseContentArtifact(store, planningKey, CkbReleaseArtifactKinds.SOURCE_COMPLETE)
     if (!completeArtifact.valid) {
         if (completeArtifact.status != "not_found") {
@@ -11817,7 +12730,8 @@ private func ckbHydrateCompletedReleaseRemoteSource(builder: SourceRequestBuilde
     }
     let runKey = ckbReleaseRunKeyWithCommit(planningKey, completeArtifact.resolvedCommit)
     let checkpoint = ckbLoadReleaseResumeCheckpoint(store, runKey)
-    if (!checkpoint.valid || checkpoint.phase != "completed" || checkpoint.sourceOrdinal != sourceOrdinal ||
+    if (!checkpoint.valid || checkpoint.phase != "completed" ||
+        (!verifiedResolution.ok && checkpoint.sourceOrdinal != sourceOrdinal) ||
         checkpoint.sourceCompleteArtifactPath != completeArtifact.relativePath ||
         !checkpoint.artifactEvidenceHashes.contains(completeArtifact.evidenceHash)) {
         result.diagnostics.add("release_completed_checkpoint_rejected:sourceSet=${source.sourceSet}|status=${checkpoint.status}|phase=${checkpoint.phase}")
@@ -11830,7 +12744,9 @@ private func ckbHydrateCompletedReleaseRemoteSource(builder: SourceRequestBuilde
         result.diagnostics.add("release_source_complete_descriptor_rejected:sourceSet=${source.sourceSet}")
         return false
     }
-    let resolution = ckbLoadReleaseRefResolution(store, planningKey)
+    let resolution = if (verifiedResolution.ok) { verifiedResolution } else {
+        ckbLoadReleaseRefResolution(store, planningKey)
+    }
     if (!resolution.ok || resolution.resolvedCommit != runKey.resolvedCommit) {
         result.diagnostics.add("release_ref_artifact_rejected_for_completed:sourceSet=${source.sourceSet}|status=${resolution.status}")
         return false
@@ -11856,7 +12772,10 @@ private func ckbHydrateCompletedReleaseRemoteSource(builder: SourceRequestBuilde
             return false
         }
         hydratedInventory.pagesScanned += 1
-        ckbAppendReleaseControlEvidence(hydratedResult, source, "tree_page", request, fetch, resolution, parsed.objectsSeen, parsed.filesSeen)
+        ckbAppendReleaseControlEvidence(hydratedResult, source, "tree_page", request, fetch, resolution, parsed.objectsSeen, parsed.filesSeen,
+            directoryCount: parsed.directoriesSeen,
+            candidateCount: parsed.eligiblePaths.size,
+            stopReason: if (parsed.explicitEnd) { "explicit_end" } else { "continue" })
         if (parsed.explicitEnd) {
             hydratedInventory.explicitEnd = true
             if (page != descriptor.pagesScanned) { return false }
@@ -11974,13 +12893,29 @@ private func ckbFetchReleaseEvalSupportSource(source: CkbReleaseSourcePlan, prof
     if (staleTempsRemoved > 0) { result.diagnostics.add("release_acquisition_stale_temps_removed:sourceSet=${source.sourceSet}|count=${staleTempsRemoved}") }
     let acquisitionState = ckbLoadReleaseAcquisitionState(store, planningKey)
     let reuseExisting = acquisitionState.status == "not_found" || (acquisitionState.valid && acquisitionState.state == "active")
+    let verifyConsumed = acquisitionState.valid && acquisitionState.state == "consumed"
     if (reuseExisting && ckbHydrateCompletedReleaseEvalSupportSource(source, profile, result, inventory, config, store, planningKey, sourceOrdinal)) {
         return
     }
     if (reuseExisting && ckbResumePartialReleaseEvalSupportSource(source, profile, result, inventory, config, store, planningKey, sourceOrdinal)) {
         return
     }
-    if (!reuseExisting) {
+    if (verifyConsumed) {
+        let consumedResolution = ckbLoadReleaseRefResolution(store,
+            planningKey, allowConsumed: true)
+        let currentEvidence = ckbCurrentReleaseEvalSupportEvidence(source,
+            config, store)
+        if (consumedResolution.ok && consumedResolution.refKind == "local" &&
+            currentEvidence != "" &&
+            currentEvidence == consumedResolution.resolvedCommit &&
+            ckbHydrateCompletedReleaseEvalSupportSource(source, profile,
+                result, inventory, config, store, planningKey, sourceOrdinal,
+                allowConsumed: true)) {
+            result.diagnostics.add("release_eval_consumed_evidence_verified:sourceSet=${source.sourceSet}|evidence=${ckbReleaseEvidenceHash(currentEvidence)}")
+            return
+        }
+        result.diagnostics.add("release_eval_consumed_acquisition_restarted:sourceSet=${source.sourceSet}|evidenceChanged=${currentEvidence == "" || !consumedResolution.ok || currentEvidence != consumedResolution.resolvedCommit}")
+    } else if (!reuseExisting) {
         result.diagnostics.add("release_eval_artifacts_rejected:sourceSet=${source.sourceSet}|status=${acquisitionState.status}")
     }
     let contentStart = result.contentRecords.size
@@ -12099,13 +13034,42 @@ private func ckbFetchReleaseEvalSupportSource(source: CkbReleaseSourcePlan, prof
     result.releaseAcquisitionKeys.add(runKey)
 }
 
-private func ckbHydrateCompletedReleaseEvalSupportSource(source: CkbReleaseSourcePlan, profile: CkbScheduleTaskProfile, result: CkbScheduledProfileFetchResult, inventory: CkbReleaseSourceInventory, config: CkbRuntimeConfig, store: FileKnowledgeStore, planningKey: CkbScheduledFetchRunKey, sourceOrdinal: Int64): Bool {
+private func ckbCurrentReleaseEvalSupportEvidence(source: CkbReleaseSourcePlan,
+    config: CkbRuntimeConfig, store: FileKnowledgeStore): String {
+    let root = ckbScheduledEvalSupportRoot(config)
+    let extracted = if (root != "") {
+        extractAllEvalSupportRecords(root,
+            version: resolveCangjieVersion(cangjieVersionSelector(
+                targetVersion: source.targetVersion,
+                sourceSet: CangjieSourceSets.EVAL_SUPPORT),
+                ckbRuntimeCangjieVersionManifest(config)))
+    } else {
+        ckbReleaseEvalSupportFromActive(store, source)
+    }
+    if (!extracted.ok || extracted.records.size == 0 ||
+        extracted.diagnostics.size > 0) {
+        return ""
+    }
+    let records = ArrayList<CangjieTypedRecord>()
+    for (record in extracted.records) {
+        let copied = ckbReleaseCopyEvalTypedRecord(record, source)
+        if (ckbReleaseEvalLogicalPath(copied) == "" ||
+            copied.content == "") {
+            return ""
+        }
+        records.add(copied)
+    }
+    ckbReleaseEvalInventoryCommit(records)
+}
+
+private func ckbHydrateCompletedReleaseEvalSupportSource(source: CkbReleaseSourcePlan, profile: CkbScheduleTaskProfile, result: CkbScheduledProfileFetchResult, inventory: CkbReleaseSourceInventory, config: CkbRuntimeConfig, store: FileKnowledgeStore, planningKey: CkbScheduledFetchRunKey, sourceOrdinal: Int64, allowConsumed!: Bool = false): Bool {
     let completeArtifact = ckbLoadReleaseContentArtifact(store, planningKey, CkbReleaseArtifactKinds.SOURCE_COMPLETE)
     if (!completeArtifact.valid) { return false }
     let runKey = ckbReleaseRunKeyWithCommit(planningKey, completeArtifact.resolvedCommit)
     let checkpoint = ckbLoadReleaseResumeCheckpoint(store, runKey)
     let descriptor = ckbParseReleaseSourceComplete(completeArtifact.payload)
-    if (!checkpoint.valid || checkpoint.phase != "completed" || checkpoint.sourceOrdinal != sourceOrdinal ||
+    if (!checkpoint.valid || checkpoint.phase != "completed" ||
+        (!allowConsumed && checkpoint.sourceOrdinal != sourceOrdinal) ||
         checkpoint.sourceCompleteArtifactPath != completeArtifact.relativePath || !checkpoint.artifactEvidenceHashes.contains(completeArtifact.evidenceHash) ||
         !descriptor.valid || descriptor.resolvedCommit != runKey.resolvedCommit || descriptor.pagesScanned != 0 ||
         !ckbReleaseResumeSameStringSet(descriptor.plannedPaths, checkpoint.plannedPaths) ||
@@ -12113,7 +13077,8 @@ private func ckbHydrateCompletedReleaseEvalSupportSource(source: CkbReleaseSourc
         result.diagnostics.add("release_eval_completed_checkpoint_rejected:sourceSet=${source.sourceSet}|status=${checkpoint.status}")
         return false
     }
-    let resolution = ckbLoadReleaseRefResolution(store, planningKey)
+    let resolution = ckbLoadReleaseRefResolution(store, planningKey,
+        allowConsumed: allowConsumed)
     if (!resolution.ok || resolution.refKind != "local" || resolution.resolvedCommit != runKey.resolvedCommit) { return false }
     let hydrated = CkbScheduledProfileFetchResult()
     let hydratedInventory = ckbReleaseInventoryForSource(source)
@@ -12423,21 +13388,27 @@ private func ckbAppendReleaseContentRecord(profile: CkbScheduleTaskProfile, resu
 private func ckbAppendReleaseRefEvidence(result: CkbScheduledProfileFetchResult, source: CkbReleaseSourcePlan, resolution: GitCodeRefResolution): Unit {
     let evidence = CkbReleaseControlEvidence()
     evidence.kind = "ref_resolution"
+    evidence.requestKind = SourceKinds.GITCODE_BRANCH
     evidence.sourceIdentity = source.canonicalIdentity
     evidence.sourceSet = source.sourceSet
     evidence.repo = source.normalizedRepo
     evidence.originalRef = source.originalRef
     evidence.resolvedCommit = resolution.resolvedCommit
     evidence.status = ckbReleaseAcquisitionFailureStatus(resolution.status)
+    evidence.httpStatus = if (resolution.ok) { 200 } else { 0 }
     evidence.bodyHash = if (resolution.evidenceBodyHash != "") { resolution.evidenceBodyHash } else { ckbReleaseEvidenceHash(resolution.resolvedCommit) }
     evidence.attemptCount = resolution.evidenceAttempts
+    evidence.retryCount = if (resolution.evidenceAttempts > 0) {
+        resolution.evidenceAttempts - 1
+    } else { 0 }
     result.controlEvidence.add(evidence)
     result.diagnostics.add("release_ref_evidence:sourceSet=${source.sourceSet}|repo=${source.normalizedRepo}|status=${evidence.status}|commit=${utf8SafePrefix(resolution.resolvedCommit, 64)}|bodyHash=${evidence.bodyHash}|attempts=${evidence.attemptCount}")
 }
 
-private func ckbAppendReleaseControlEvidence(result: CkbScheduledProfileFetchResult, source: CkbReleaseSourcePlan, kind: String, request: SourceFetchRequest, fetch: SourceFetchResult, resolution: GitCodeRefResolution, objectCount: Int64, fileCount: Int64): Unit {
+private func ckbAppendReleaseControlEvidence(result: CkbScheduledProfileFetchResult, source: CkbReleaseSourcePlan, kind: String, request: SourceFetchRequest, fetch: SourceFetchResult, resolution: GitCodeRefResolution, objectCount: Int64, fileCount: Int64, directoryCount!: Int64 = 0, candidateCount!: Int64 = 0, stopReason!: String = ""): Unit {
     let evidence = CkbReleaseControlEvidence()
     evidence.kind = kind
+    evidence.requestKind = request.kind
     evidence.sourceIdentity = source.canonicalIdentity
     evidence.sourceSet = source.sourceSet
     evidence.repo = source.normalizedRepo
@@ -12446,10 +13417,15 @@ private func ckbAppendReleaseControlEvidence(result: CkbScheduledProfileFetchRes
     evidence.path = request.path
     evidence.page = request.page
     evidence.status = ckbReleaseAcquisitionFailureStatus(fetch.status)
+    evidence.httpStatus = fetch.statusCode
     evidence.bodyHash = fetch.bodyHash
     evidence.attemptCount = fetch.attempts
+    evidence.retryCount = if (fetch.attempts > 0) { fetch.attempts - 1 } else { 0 }
     evidence.objectCount = objectCount
     evidence.fileCount = fileCount
+    evidence.directoryCount = directoryCount
+    evidence.candidateCount = candidateCount
+    evidence.stopReason = stopReason
     result.controlEvidence.add(evidence)
     let safePath = ckbReleaseSafePathSummary(request.path)
     let safeUrl = ckbReleaseSafeUrlSummary(request.url)
@@ -13705,6 +14681,28 @@ private func ingestScheduledProfileSources(kb: KnowledgeBase, store: FileKnowled
         return ingestScheduledBenchmarkGapCuration(kb, store, profile, config, manifest, progressSink: progressSink, deadlineAtMillis: deadlineAtMillis)
     }
     if (profile.profile == "cangjie_release_full_sync") {
+        let readiness = ckbEvaluateScheduledFetchReadiness(profile, fetch,
+            manifest)
+        let releaseReady = fetch.ok && readiness.canPromote &&
+            fetch.releasePlan.ok && ckbReleaseAllInventoriesComplete(
+                fetch.releasePlan, fetch.releaseInventories)
+        var requiredFailedCount = readiness.requiredFailedCount
+        if (!releaseReady && requiredFailedCount == 0) {
+            var completeInventories: Int64 = 0
+            for (inventory in fetch.releaseInventories) {
+                if (inventory.complete) { completeInventories += 1 }
+            }
+            let missing = fetch.releasePlan.sources.size -
+                completeInventories
+            requiredFailedCount = if (missing > 0) { missing } else { 1 }
+        }
+        ckbEmitStagedRebuildStage(stageSink, "readiness_evaluated",
+            if (releaseReady) { "ready" } else { "failed" },
+            deadlineAtMillis,
+            "requiredFailedCount=${requiredFailedCount}|optionalFailedCount=${readiness.optionalFailedCount}",
+            typedEvent: "routine.readiness.evaluated",
+            requiredFailedCount: requiredFailedCount,
+            optionalFailedCount: readiness.optionalFailedCount)
         return ckbIngestReleaseFullSync(kb, store, profile, fetch, config, manifest, result, progressSink, stageSink, deadlineAtMillis, promotionBudgetPlan)
     }
     if (profile.candidateMode == "" || profile.candidateMode == "none" || profile.candidateMode == "probe_only") {
@@ -13739,6 +14737,7 @@ private func ingestScheduledProfileSources(kb: KnowledgeBase, store: FileKnowled
         result.ok = true
         result.status = if (readiness.optionalContentFailedCount > 0 || ckbVersionBranchRefreshHasContentWarnings(fetch)) { "version_manifest_refreshed_with_content_warnings" } else { "version_manifest_refreshed" }
         result.validationStatus = "version_manifest_write_verified"
+        ckbAddScheduledValidationGate(result, "version_manifest_write_verified")
         result.validationSummary = "version_manifest_refreshed sources=${fetch.fetchedCount} contentWarnings=${readiness.optionalContentFailedCount}"
         result.validationEvidenceHash = stableSummaryHash("${profile.profile}:${fetch.requestCount}:${fetch.fetchedCount}:${fetch.failedCount}:${result.status}")
         ckbWriteScheduledProfileStageCheckpoint(store, profile, "ingest_finished", result.status, ckbProfileIngestBudgetMillis(profile), deadlineAtMillis, "validationStatus=${result.validationStatus}|fetchRequests=${fetch.requestCount}|fetched=${fetch.fetchedCount}|failed=${fetch.failedCount}|contentWarnings=${readiness.optionalContentFailedCount}")
@@ -13800,23 +14799,29 @@ private func ckbIngestReleaseFullSync(kb: KnowledgeBase, store: FileKnowledgeSto
     if (ckbApplyScheduledIngestDeadline(result, profile, "release_delta_before", deadlineAtMillis)) {
         return result
     }
-    let candidateVersion = ckbScheduledCandidateVersion(profile, fetch)
+    let provisionalCandidateVersion = ckbScheduledCandidateVersion(profile, fetch)
     let noRemovedRaw = ArrayList<String>()
     let noRemovedNormalized = ArrayList<String>()
     let refreshedManifest = ckbRefreshVersionManifestFromScheduledFetch(profile, fetch, config, manifest)
-    let releaseBundle = ckbPrepareReleaseCommitBundle(profile, fetch, refreshedManifest,
-        candidateVersion, cangjieActiveVersionForCandidate(candidateVersion), noRemovedRaw,
+    let provisionalBundle = ckbPrepareReleaseCommitBundle(profile, fetch, refreshedManifest,
+        provisionalCandidateVersion, cangjieActiveVersionForCandidate(provisionalCandidateVersion), noRemovedRaw,
         noRemovedNormalized)
-    if (!releaseBundle.valid) {
+    if (!provisionalBundle.valid) {
         result.ok = false
-        result.status = releaseBundle.status
-        result.validationStatus = releaseBundle.status
-        for (diagnostic in releaseBundle.diagnostics) {
+        result.status = provisionalBundle.status
+        result.validationStatus = provisionalBundle.status
+        for (diagnostic in provisionalBundle.diagnostics) {
             result.validationDiagnostics.add("release_bundle:${diagnostic}")
         }
         return result
     }
-    let delta = ckbBuildReleaseDelta(profile, fetch, config, releaseBundle.manifest)
+    let delta = ckbBuildReleaseDelta(profile, fetch, config, provisionalBundle.manifest)
+    ckbEmitStagedRebuildStage(stageSink, "ingest_delta_built",
+        delta.status, deadlineAtMillis,
+        "rawCount=${delta.rawRecords.size}|normalizedCount=${delta.normalizedRecords.size}",
+        itemCount: delta.normalizedRecords.size,
+        typedEvent: "routine.ingest.delta_built",
+        deltaCount: delta.normalizedRecords.size)
     for (diagnostic in delta.diagnostics) {
         result.validationDiagnostics.add("release_delta:${diagnostic}")
     }
@@ -13841,17 +14846,30 @@ private func ckbIngestReleaseFullSync(kb: KnowledgeBase, store: FileKnowledgeSto
     let removedNormalizedIds = ckbReleaseRemovedNormalizedIds(activeBefore, delta.normalizedRecords, fetch.releasePlan, owner, targetVersion)
     let candidateRaw = kb.rawRecordSnapshotOverlayForOwner(owner, targetVersion, removedRawIds, delta.rawRecords)
     let candidateRecords = kb.activeRecordSnapshotOverlayForOwner(delta.normalizedRecords, owner, targetVersion, removedNormalizedIds)
-    result.validationDiagnostics.add("release_reconciliation:owner=${owner}|target=${targetVersion}|rawBefore=${oldRaw.size}|rawCurrent=${delta.rawRecords.size}|rawRemoved=${removedRawIds.size}|rawCandidate=${candidateRaw.size}|activeBefore=${activeBefore.size}|activeCurrent=${delta.normalizedRecords.size}|activeRemoved=${removedNormalizedIds.size}|activeCandidate=${candidateRecords.size}")
-    result.validationDiagnostics.add(ckbReleaseRemovedIdsDiagnostic("raw", removedRawIds))
-    result.validationDiagnostics.add(ckbReleaseRemovedIdsDiagnostic("normalized", removedNormalizedIds))
-    kb.replaceRawRecords(candidateRaw)
-    if (ckbApplyScheduledIngestDeadline(result, profile, "release_candidate_before", deadlineAtMillis)) {
-        kb.replaceRawRecords(oldRaw)
+    let candidateEvidence = ckbCandidateBusinessEvidence(candidateRaw, candidateRecords)
+    if (!candidateEvidence.valid) {
+        result.ok = false
+        result.status = candidateEvidence.status
+        result.validationStatus = candidateEvidence.status
+        result.validationDiagnostics.add("release_candidate_business_evidence_invalid:status=${candidateEvidence.status}")
         return result
     }
+    let derivedCandidateVersion = ckbReleaseCandidateVersionForBusinessEvidence(
+        profile, fetch, candidateEvidence)
+    let persistedSnapshot = store.loadActiveSnapshot()
+    let sameActiveBusiness = ckbReleaseCandidateBusinessMatchesActiveSnapshot(
+        persistedSnapshot, candidateEvidence)
+    let effectiveCandidateVersion = if (sameActiveBusiness) {
+        persistedSnapshot.candidateVersion
+    } else { derivedCandidateVersion }
+    let effectiveActiveVersion = if (sameActiveBusiness) {
+        persistedSnapshot.activeVersion
+    } else { cangjieActiveVersionForCandidate(derivedCandidateVersion) }
+    let releaseBundle = ckbPrepareReleaseCommitBundle(profile, fetch, refreshedManifest,
+        effectiveCandidateVersion, effectiveActiveVersion, noRemovedRaw,
+        noRemovedNormalized)
     ckbFinalizeReleaseCommitBundleRemoved(releaseBundle, removedRawIds, removedNormalizedIds)
     if (!releaseBundle.valid) {
-        kb.replaceRawRecords(oldRaw)
         result.ok = false
         result.status = releaseBundle.status
         result.validationStatus = releaseBundle.status
@@ -13860,16 +14878,35 @@ private func ckbIngestReleaseFullSync(kb: KnowledgeBase, store: FileKnowledgeSto
         }
         return result
     }
-    let acquisitionContext = ckbReleaseCandidateAcquisitionContext(store, profile, fetch, candidateVersion, candidateRecords)
-    let promotion = cangjiePromoteCandidateRecordsAfterValidationWithVersion(kb, store, candidateVersion,
-        candidateRecords, progressSink: progressSink, stageSink: stageSink,
-        deadlineAtMillis: deadlineAtMillis, budgetPlan: promotionBudgetPlan,
-        acquisitionContext: acquisitionContext, releaseBundle: releaseBundle)
-    ckbApplyScheduledPromotionResult(result, promotion, "candidate_validated_promoted")
-    if (!result.ok) {
-        kb.replaceRawRecords(oldRaw)
-        result.validationDiagnostics.add("release_reconciliation_rolled_back:status=${result.status}|rawRestored=${oldRaw.size}")
+    result.validationDiagnostics.add("release_reconciliation:owner=${owner}|target=${targetVersion}|rawBefore=${oldRaw.size}|rawCurrent=${delta.rawRecords.size}|rawRemoved=${removedRawIds.size}|rawCandidate=${candidateRaw.size}|activeBefore=${activeBefore.size}|activeCurrent=${delta.normalizedRecords.size}|activeRemoved=${removedNormalizedIds.size}|activeCandidate=${candidateRecords.size}")
+    result.validationDiagnostics.add(ckbReleaseRemovedIdsDiagnostic("raw", removedRawIds))
+    result.validationDiagnostics.add(ckbReleaseRemovedIdsDiagnostic("normalized", removedNormalizedIds))
+    result.validationDiagnostics.add("release_candidate_business_evidence:raw=${candidateEvidence.rawCount}|normalized=${candidateEvidence.normalizedCount}|rawEvidence=${candidateEvidence.rawEvidenceHash}|normalizedEvidence=${candidateEvidence.normalizedEvidenceHash}|evidenceHash=${candidateEvidence.aggregateEvidenceHash}")
+    if (ckbApplyScheduledIngestDeadline(result, profile, "release_candidate_before", deadlineAtMillis)) {
         return result
+    }
+    if (sameActiveBusiness) {
+        if (!ckbApplyReleaseIdempotentNoop(kb, store, persistedSnapshot,
+            candidateRaw, candidateRecords, candidateEvidence, releaseBundle,
+            result, deadlineAtMillis)) {
+            return result
+        }
+    } else {
+        kb.replaceRawRecords(candidateRaw)
+        let acquisitionContext = ckbReleaseCandidateAcquisitionContext(store, profile, fetch,
+            derivedCandidateVersion, candidateRecords)
+        let promotion = cangjiePromoteCandidateRecordsAfterValidationWithVersion(kb, store,
+            derivedCandidateVersion, candidateRecords, progressSink: progressSink,
+            stageSink: stageSink, deadlineAtMillis: deadlineAtMillis,
+            budgetPlan: promotionBudgetPlan, acquisitionContext: acquisitionContext,
+            releaseBundle: releaseBundle)
+        ckbApplyScheduledPromotionResult(result, promotion, "candidate_validated_promoted")
+        ckbApplyReleaseContractEvidence(result, promotion, releaseBundle, store)
+        if (!result.ok) {
+            kb.replaceRawRecords(oldRaw)
+            result.validationDiagnostics.add("release_reconciliation_rolled_back:status=${result.status}|rawRestored=${oldRaw.size}")
+            return result
+        }
     }
     if (result.ok) {
         let consumed = ckbConsumeReleaseAcquisitionStatesBestEffort(store,
@@ -13884,6 +14921,198 @@ private func ckbIngestReleaseFullSync(kb: KnowledgeBase, store: FileKnowledgeSto
         result.validationDiagnostics.add("release_ingest_checkpoint_degraded:${utf8SafePrefix(redactSensitive(if (e.message == "") { "write_failed" } else { e.message }), 160)}")
     }
     result
+}
+
+private func ckbReleaseCandidateVersionForBusinessEvidence(profile: CkbScheduleTaskProfile,
+    fetch: CkbScheduledProfileFetchResult,
+    evidence: CkbCandidateBusinessEvidence): String {
+    if (!evidence.valid || profile.profile != "cangjie_release_full_sync" ||
+        !fetch.releasePlan.ok || fetch.releasePlan.planHash == "") {
+        return ""
+    }
+    let identity = "p5-release-candidate-business-v1|profile=${profile.profile}|" +
+        "plan=${fetch.releasePlan.planHash}|evidence=${evidence.aggregateEvidenceHash}"
+    "ckb-scheduled-${ckbReleaseEvidenceHash(identity)}-candidate"
+}
+
+private func ckbReleaseCandidateBusinessMatchesActiveSnapshot(snapshot: ActiveSnapshot,
+    candidate: CkbCandidateBusinessEvidence): Bool {
+    if (!snapshot.valid || snapshot.activeVersion == "" ||
+        snapshot.candidateVersion == "" || snapshot.vectorActiveCollection == "" ||
+        !candidate.valid) {
+        return false
+    }
+    let normalizedEvidence = ckbCandidateBusinessEvidence(snapshot.rawRecords,
+        snapshot.normalizedRecords)
+    let activeEvidence = ckbCandidateBusinessEvidence(snapshot.rawRecords,
+        snapshot.activeIndex)
+    ckbCandidateBusinessEvidenceMatches(candidate, normalizedEvidence) &&
+        ckbCandidateBusinessEvidenceMatches(candidate, activeEvidence)
+}
+
+private func ckbApplyReleaseIdempotentNoop(kb: KnowledgeBase,
+    store: FileKnowledgeStore, snapshot: ActiveSnapshot,
+    candidateRaw: ArrayList<RawRecord>, candidateRecords: ArrayList<NormalizedRecord>,
+    candidateEvidence: CkbCandidateBusinessEvidence, bundle: CkbReleaseCommitBundle,
+    result: CkbScheduledProfileIngestResult, deadlineAtMillis: Int64): Bool {
+    if (!ckbReleaseCandidateBusinessMatchesActiveSnapshot(snapshot,
+        candidateEvidence)) {
+        return ckbReleaseIdempotentNoopFailure(result,
+            "candidate_business_evidence_mismatch")
+    }
+    let directCandidateEvidence = ckbCandidateBusinessEvidence(candidateRaw,
+        candidateRecords)
+    if (!ckbCandidateBusinessEvidenceMatches(candidateEvidence,
+        directCandidateEvidence)) {
+        return ckbReleaseIdempotentNoopFailure(result,
+            "candidate_business_evidence_changed")
+    }
+    if (!bundle.valid || bundle.status != "release_commit_bundle_prepared" ||
+        bundle.candidateVersion != snapshot.candidateVersion ||
+        bundle.activeVersion != snapshot.activeVersion) {
+        return ckbReleaseIdempotentNoopFailure(result,
+            "release_bundle_identity_mismatch")
+    }
+    let pointer = store.loadActiveSnapshotPointer()
+    let supportedMode = pointer.companionMode == CkbActiveSnapshotCompanionMode.RELEASE ||
+        pointer.companionMode == CkbActiveSnapshotCompanionMode.COPY_FORWARD
+    if (!pointer.valid || pointer.legacy || !supportedMode || pointer.txId == "" ||
+        pointer.activeVersion != snapshot.activeVersion ||
+        pointer.vectorActiveCollection != snapshot.vectorActiveCollection) {
+        return ckbReleaseIdempotentNoopFailure(result,
+            "active_pointer_invalid_or_misaligned")
+    }
+    let commit = try {
+        store.readText("transactions/${safeName(pointer.txId)}/COMMIT")
+    } catch (_: Exception) {
+        return ckbReleaseIdempotentNoopFailure(result,
+            "active_commit_unreadable")
+    }
+    let persistVectorFile = ckbCurrentField(commit, "persistVectorFile")
+    if (ckbCurrentField(commit, "schema") != "ckb-active-commit-v2" ||
+        ckbCurrentField(commit, "txId") != pointer.txId ||
+        ckbCurrentField(commit, "active") != pointer.activeVersion ||
+        ckbCurrentField(commit, "vectorActiveCollection") !=
+            pointer.vectorActiveCollection ||
+        ckbCurrentField(commit, "companionMode") != pointer.companionMode ||
+        (persistVectorFile != "true" && persistVectorFile != "false") ||
+        !ckbValidationEvidenceIsSha256(ckbCurrentField(commit, "payloadHash")) ||
+        ckbCurrentField(commit, "manifestHash") != pointer.manifestHash ||
+        ckbCurrentField(commit, "freshnessHash") != pointer.freshnessHash ||
+        ckbCurrentField(commit, "coverageHash") != pointer.coverageHash ||
+        ckbCurrentField(commit, "committed") != "true") {
+        return ckbReleaseIdempotentNoopFailure(result,
+            "active_commit_invalid_or_misaligned")
+    }
+    let companions = store.loadActiveSnapshotCompanionCopy()
+    if (!companions.provided || !companions.valid ||
+        companions.mode != pointer.companionMode ||
+        !ckbValidationEvidenceIsSha256(pointer.manifestHash) ||
+        !ckbValidationEvidenceIsSha256(pointer.freshnessHash) ||
+        !ckbValidationEvidenceIsSha256(pointer.coverageHash) ||
+        companions.manifestHash != pointer.manifestHash ||
+        companions.freshnessHash != pointer.freshnessHash ||
+        companions.coverageHash != pointer.coverageHash ||
+        companions.manifestText != ckbRenderCangjieVersionManifestArtifact(bundle.manifest) ||
+        companions.freshnessText != ckbRenderCangjieFreshnessArtifact(bundle.freshness) ||
+        companions.coverageText == "") {
+        return ckbReleaseIdempotentNoopFailure(result,
+            "active_companions_not_current_run_exact")
+    }
+    if (pointer.manifestHash != bundle.manifestEvidenceHash ||
+        pointer.freshnessHash != bundle.freshnessEvidenceHash ||
+        !ckbReleaseCoverageCommitEvidenceValid(bundle.coverage) ||
+        !ckbReleaseRemovedCommitEvidenceValid(bundle.removed)) {
+        return ckbReleaseIdempotentNoopFailure(result,
+            "release_companion_evidence_mismatch")
+    }
+    let persistedManifest = try {
+        ckbParseCangjieVersionManifestArtifact(companions.manifestText)
+    } catch (_: Exception) {
+        return ckbReleaseIdempotentNoopFailure(result,
+            "release_manifest_malformed")
+    }
+    let persistedFreshness = try {
+        ckbParseCangjieFreshnessArtifact(companions.freshnessText)
+    } catch (_: Exception) {
+        return ckbReleaseIdempotentNoopFailure(result,
+            "release_freshness_malformed")
+    }
+    if (!ckbRoutineReleaseManifestHasExactSources(persistedManifest) ||
+        !persistedFreshness.ok || persistedFreshness.degraded ||
+        persistedFreshness.sources.size != 5 ||
+        persistedFreshness.activeKnowledgeVersion != snapshot.activeVersion ||
+        persistedFreshness.candidateKnowledgeVersion != snapshot.candidateVersion ||
+        persistedFreshness.failedCandidateVersion != "" ||
+        !ckbReleaseManifestCoverageCommitAligned(persistedManifest,
+            bundle.coverage) ||
+        !ckbReleaseFreshnessManifestCommitAligned(persistedFreshness,
+            persistedManifest, snapshot.activeVersion)) {
+        return ckbReleaseIdempotentNoopFailure(result,
+            "release_manifest_freshness_semantic_mismatch")
+    }
+    let coverage = store.routineReleaseCoverageSummary(
+        "transactions/${safeName(pointer.txId)}/metadata/cangjie-release-coverage.ckb")
+    if (!coverage.valid || coverage.sourceCoverageEvidenceHash !=
+        bundle.coverage.aggregateEvidenceHash) {
+        return ckbReleaseIdempotentNoopFailure(result,
+            "release_coverage_summary_mismatch")
+    }
+    let vectorStatus = kb.vectorCollectionStatus(pointer.vectorActiveCollection)
+    if (vectorStatus.state != EmbeddingProviderState.READY ||
+        vectorStatus.count != snapshot.activeIndex.size ||
+        vectorStatus.dimension <= 0 || vectorStatus.degradedReason != "" ||
+        (vectorStatus.collection != "" &&
+            vectorStatus.collection != pointer.vectorActiveCollection)) {
+        return ckbReleaseIdempotentNoopFailure(result,
+            "active_vector_not_ready_or_misaligned")
+    }
+    let validation = validateCandidateServingIndexWithVectorStatus(
+        snapshot.activeIndex, snapshot.candidateVersion, vectorStatus,
+        deadlineAtMillis: deadlineAtMillis,
+        validationScope: "candidate_promotion")
+    if (!validation.ok || validation.status != "candidate_validation_passed" ||
+        validation.candidateVersion != snapshot.candidateVersion ||
+        validation.activeVersion != snapshot.activeVersion ||
+        validation.servingDocumentCount <= 0 ||
+        !ckbValidationEvidenceIsSha256(validation.evidenceHash)) {
+        for (diagnostic in validation.diagnostics) {
+            result.validationDiagnostics.add(diagnostic)
+        }
+        return ckbReleaseIdempotentNoopFailure(result,
+            "candidate_validation_failed")
+    }
+    result.ok = true
+    result.status = "candidate_validated_promoted"
+    result.candidateVersion = snapshot.candidateVersion
+    result.activeVersion = snapshot.activeVersion
+    result.validationStatus = validation.status
+    result.validationSummary = renderCangjieCandidateValidationSummary(validation)
+    result.validationEvidenceHash = validation.evidenceHash
+    result.transactionId = pointer.txId
+    result.manifestEvidenceHash = pointer.manifestHash
+    result.freshnessEvidenceHash = pointer.freshnessHash
+    result.sourceCoverageEvidenceHash = coverage.sourceCoverageEvidenceHash
+    result.inventoryEvidenceHash = coverage.inventoryEvidenceHash
+    for (diagnostic in validation.diagnostics) {
+        result.validationDiagnostics.add(diagnostic)
+    }
+    ckbAddScheduledValidationGate(result, "candidate_validation_passed")
+    ckbAddScheduledValidationGate(result, "active_companion_transaction_verified")
+    ckbAddScheduledValidationGate(result, "version_manifest_write_verified")
+    ckbAddScheduledValidationGate(result, "release_source_coverage_verified")
+    ckbAddScheduledValidationGate(result, "release_removed_reconciliation_verified")
+    result.validationDiagnostics.add("release_idempotent_noop_verified:tx=${ckbReleaseEvidenceHash(pointer.txId)}|candidateEvidence=${candidateEvidence.aggregateEvidenceHash}|freshRemovedEvidence=${bundle.removed.aggregateEvidenceHash}|persistedInventoryEvidence=${coverage.inventoryEvidenceHash}|sourceCoverageEvidence=${coverage.sourceCoverageEvidenceHash}|mode=${pointer.companionMode}")
+    true
+}
+
+private func ckbReleaseIdempotentNoopFailure(
+    result: CkbScheduledProfileIngestResult, reason: String): Bool {
+    result.ok = false
+    result.status = "release_idempotent_noop_verification_failed"
+    result.validationStatus = result.status
+    result.validationDiagnostics.add("release_idempotent_noop_verification_failed:reason=${reason}")
+    false
 }
 
 func ckbConsumeReleaseAcquisitionStatesBestEffort(store: FileKnowledgeStore,
@@ -14136,6 +15365,8 @@ private func ingestScheduledBenchmarkGapCuration(kb: KnowledgeBase, store: FileK
         if (!coveragePass) {
             result.ok = false
             result.status = "benchmark_gap_query_proof_failed"
+        } else {
+            ckbAddScheduledValidationGate(result, "query_proof")
         }
     }
     result
@@ -14336,11 +15567,61 @@ private func ckbApplyScheduledPromotionResult(result: CkbScheduledProfileIngestR
     result.validationStatus = promotion.validation.status
     result.validationSummary = renderCangjieCandidateValidationSummary(promotion.validation)
     result.validationEvidenceHash = promotion.validation.evidenceHash
+    result.transactionId = promotion.snapshotTxId
     for (diagnostic in promotion.validation.diagnostics) {
         result.validationDiagnostics.add(diagnostic)
     }
     result.ok = promotion.ok
     result.status = ckbScheduledPromotionTerminalStatus(promotion.ok, promotion.validation.status, successStatus)
+    if (promotion.ok && promotion.validation.status == "candidate_validation_passed") {
+        ckbAddScheduledValidationGate(result, "candidate_validation_passed")
+    }
+}
+
+private func ckbAddScheduledValidationGate(result: CkbScheduledProfileIngestResult, gate: String): Unit {
+    if (!result.validationGates.contains(gate)) {
+        result.validationGates.add(gate)
+    }
+}
+
+private func ckbApplyReleaseContractEvidence(result: CkbScheduledProfileIngestResult,
+    promotion: CangjieCandidatePromotionResult, bundle: CkbReleaseCommitBundle,
+    store: FileKnowledgeStore): Unit {
+    result.inventoryEvidenceHash = bundle.removed.aggregateEvidenceHash
+    let pointer = store.loadActiveSnapshotPointer()
+    if (!promotion.ok || !promotion.snapshotPointerCommitted || !pointer.valid || pointer.legacy ||
+        pointer.companionMode != CkbActiveSnapshotCompanionMode.RELEASE ||
+        promotion.snapshotTxId == "" || pointer.txId != promotion.snapshotTxId ||
+        pointer.activeVersion != promotion.activeVersion ||
+        promotion.candidateVersion != bundle.candidateVersion ||
+        promotion.activeVersion != bundle.activeVersion) {
+        result.validationDiagnostics.add("release_contract_transaction_misaligned:tx=${ckbReleaseEvidenceHash(promotion.snapshotTxId)}")
+        return
+    }
+    result.transactionId = pointer.txId
+    result.manifestEvidenceHash = pointer.manifestHash
+    result.freshnessEvidenceHash = pointer.freshnessHash
+    result.sourceCoverageEvidenceHash = bundle.coverage.aggregateEvidenceHash
+    if (pointer.manifestHash == bundle.manifestEvidenceHash &&
+        pointer.freshnessHash == bundle.freshnessEvidenceHash &&
+        pointer.coverageHash == bundle.coverageEvidenceHash) {
+        ckbAddScheduledValidationGate(result, "active_companion_transaction_verified")
+    }
+    if (pointer.manifestHash == bundle.manifestEvidenceHash &&
+        ckbValidationEvidenceIsSha256(pointer.manifestHash)) {
+        ckbAddScheduledValidationGate(result, "version_manifest_write_verified")
+    }
+    if (pointer.coverageHash == bundle.coverageEvidenceHash &&
+        ckbReleaseCoverageCommitEvidenceValid(bundle.coverage)) {
+        ckbAddScheduledValidationGate(result, "release_source_coverage_verified")
+    }
+    if (pointer.coverageHash == bundle.coverageEvidenceHash &&
+        ckbReleaseRemovedCommitEvidenceValid(bundle.removed)) {
+        ckbAddScheduledValidationGate(result, "release_removed_reconciliation_verified")
+    }
+    if (pointer.freshnessHash != bundle.freshnessEvidenceHash) {
+        result.validationDiagnostics.add("release_contract_freshness_evidence_misaligned")
+    }
 }
 
 public func ckbScheduledPromotionTerminalStatus(ok: Bool, validationStatus: String, successStatus: String): String {
@@ -17091,7 +18372,7 @@ private func ingestLiveFetch(kb: KnowledgeBase, request: SourceFetchRequest, fet
 }
 
 private func metadataLine(metadata: KnowledgeMetadata): String {
-    "${escapeField(metadata.sourceType)}|${escapeField(metadata.sourceUrl)}|${escapeField(metadata.repo)}|${escapeField(metadata.commit)}|${escapeField(metadata.path)}|${escapeField(metadata.symbol)}|${escapeField(metadata.docVersion)}|${escapeField(metadata.crawlAt)}|${escapeField(metadata.indexedAt)}|${escapeField(metadata.knowledgeVersion)}|${escapeField(metadata.candidateVersion)}|${metadata.contentSize}|${escapeField(metadata.trustLevel)}|${escapeField(metadata.reviewState)}|${escapeField(metadata.license)}|${escapeField(metadata.sourceId)}|${escapeField(metadata.repoVisibility)}|${escapeField(metadata.targetVersion)}|${escapeField(metadata.sourceSet)}|${escapeField(metadata.versionResolutionId)}"
+    "${escapeField(metadata.sourceType)}|${escapeField(metadata.sourceUrl)}|${escapeField(metadata.repo)}|${escapeField(metadata.commit)}|${escapeField(metadata.path)}|${escapeField(metadata.symbol)}|${escapeField(metadata.docVersion)}|${escapeField(metadata.crawlAt)}|${escapeField(metadata.indexedAt)}|${escapeField(metadata.knowledgeVersion)}|${escapeField(metadata.candidateVersion)}|${metadata.contentSize}|${escapeField(metadata.trustLevel)}|${escapeField(metadata.reviewState)}|${escapeField(metadata.license)}|${escapeField(metadata.sourceId)}|${escapeField(metadata.repoVisibility)}|${escapeField(metadata.targetVersion)}|${escapeField(metadata.sourceSet)}|${escapeField(metadata.versionResolutionId)}|${metadataDerivedFromLine(metadata.derivedFrom)}"
 }
 
 private func metadataFromParts(parts: Array<String>, start: Int64): KnowledgeMetadata {
@@ -17126,7 +18407,117 @@ private func metadataFromParts(parts: Array<String>, start: Int64): KnowledgeMet
     if (parts.size > start + 19) {
         metadata.versionResolutionId = unescapeField(parts[start + 19])
     }
+    if (parts.size > start + 20) {
+        let derivedFrom = ckbMetadataDerivedFromDecode(parts[start + 20])
+        if (derivedFrom.valid) {
+            metadata.derivedFrom = derivedFrom.values.toArray()
+        }
+    }
     metadata
+}
+
+private func metadataDerivedFromLine(values: Array<String>): String {
+    let out = StringBuilder()
+    out.append("${values.size}:")
+    for (index in 0..values.size) {
+        if (index > 0) { out.append(",") }
+        let bytes = values[index].toArray()
+        if (bytes.size == 0) {
+            out.append("-")
+        } else {
+            for (byte in bytes) {
+                out.append(metadataHexNibble(byte / UInt8(16)))
+                out.append(metadataHexNibble(byte % UInt8(16)))
+            }
+        }
+    }
+    out.toString()
+}
+
+class CkbMetadataDerivedFromDecodeResult {
+    var valid: Bool = false
+    var status: String = "metadata_derived_not_decoded"
+    var values: ArrayList<String> = ArrayList<String>()
+
+    init() {}
+}
+
+func ckbMetadataDerivedFromDecode(
+    value: String): CkbMetadataDerivedFromDecodeResult {
+    let result = CkbMetadataDerivedFromDecodeResult()
+    let separator = findText(value, ":")
+    if (separator <= 0) {
+        result.status = "metadata_derived_separator_missing"
+        return result
+    }
+    let expected = parseIntField(value[0..separator], -1)
+    if (expected < 0) {
+        result.status = "metadata_derived_count_invalid"
+        return result
+    }
+    let payload = value[separator + 1..value.size]
+    if (expected == 0) {
+        result.valid = payload == ""
+        result.status = if (result.valid) {
+            "metadata_derived_valid"
+        } else { "metadata_derived_zero_count_payload_present" }
+        return result
+    }
+    let items = payload.split(",")
+    if (items.size != expected) {
+        result.status = "metadata_derived_count_mismatch"
+        return result
+    }
+    for (item in items) {
+        if (item == "-") { result.values.add(""); continue }
+        if (item.size == 0 || item.size % 2 != 0) {
+            result.status = "metadata_derived_hex_invalid"
+            result.values.clear()
+            return result
+        }
+        let bytes = ArrayList<Byte>()
+        var index: Int64 = 0
+        while (index < item.size) {
+            let high = metadataHexValue(item[index])
+            let low = metadataHexValue(item[index + 1])
+            if (high < 0 || low < 0) {
+                result.status = "metadata_derived_hex_invalid"
+                result.values.clear()
+                return result
+            }
+            bytes.add(UInt8(high * 16 + low))
+            index += 2
+        }
+        let decoded = try {
+            String.fromUtf8(bytes.toArray())
+        } catch (_: Exception) {
+            result.status = "metadata_derived_invalid_response_encoding"
+            result.values.clear()
+            return result
+        }
+        result.values.add(decoded)
+    }
+    result.valid = true
+    result.status = "metadata_derived_valid"
+    result
+}
+
+private func metadataHexNibble(value: UInt8): String {
+    if (value < UInt8(10)) { return "${value}" }
+    if (value == UInt8(10)) { return "a" }; if (value == UInt8(11)) { return "b" }
+    if (value == UInt8(12)) { return "c" }; if (value == UInt8(13)) { return "d" }
+    if (value == UInt8(14)) { return "e" }
+    "f"
+}
+
+private func metadataHexValue(value: UInt8): Int64 {
+    if (value >= UInt8(48) && value <= UInt8(57)) {
+        return Int64(value - UInt8(48))
+    }
+    if (value >= UInt8(97) && value <= UInt8(102)) {
+        return Int64(value - UInt8(97)) + 10
+    }
+    -1
 }
 
 private func publicRecordCitation(record: RawRecord): String {

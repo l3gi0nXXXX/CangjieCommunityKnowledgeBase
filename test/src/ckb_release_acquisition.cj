@@ -88,6 +88,7 @@ class CkbReleaseSourceInventory {
 
 class CkbReleaseControlEvidence {
     var kind: String = ""
+    var requestKind: String = ""
     var sourceIdentity: String = ""
     var sourceSet: String = ""
     var repo: String = ""
@@ -96,10 +97,15 @@ class CkbReleaseControlEvidence {
     var path: String = ""
     var page: Int64 = 0
     var status: String = ""
+    var httpStatus: Int64 = 0
     var bodyHash: String = ""
     var attemptCount: Int64 = 0
+    var retryCount: Int64 = 0
     var objectCount: Int64 = 0
     var fileCount: Int64 = 0
+    var directoryCount: Int64 = 0
+    var candidateCount: Int64 = 0
+    var stopReason: String = ""
 
     init() {}
 }

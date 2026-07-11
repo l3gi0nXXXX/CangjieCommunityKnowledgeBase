@@ -82,6 +82,11 @@ public class CangjieRoutineUpdateContractsTest {
         task.activeVersion = "active-v2"
         task.candidateVersion = "candidate-v2"
         task.validationStatus = "candidate_validation_passed"
+        task.validationGates.add("candidate_validation_passed")
+        task.validationGates.add("release_source_coverage_verified")
+        task.validationGates.add("release_removed_reconciliation_verified")
+        task.validationGates.add("version_manifest_write_verified")
+        task.validationGates.add("active_companion_transaction_verified")
         task.updatedDataKinds.add("release")
         task.updatedDataKinds.add("version_manifest")
         let artifacts = CkbRoutineArtifactStatus()
@@ -105,6 +110,7 @@ public class CangjieRoutineUpdateContractsTest {
         task.ok = true
         task.status = "version_manifest_refreshed_with_content_warnings"
         task.validationStatus = "version_manifest_write_verified"
+        task.validationGates.add("version_manifest_write_verified")
         task.validationDiagnostics.add("version_manifest_write_verified:sources=5:evidence=manifest-hash")
         task.updatedDataKinds.add("version_manifest")
         let artifacts = CkbRoutineArtifactStatus()
@@ -132,7 +138,7 @@ public class CangjieRoutineUpdateContractsTest {
         let validation = validateSchedulerTaskResultAgainstContractWithArtifacts("cangjie_version_branch_refresh", task, p7Invariant("active-v1"), p7Invariant("active-v1"), artifacts)
 
         @Expect(validation.ok, false)
-        @Expect(validation.diagnostic.contains("manifest_write_gate_missing"), true)
+        @Expect(validation.diagnostic, "version_manifest_write_verified_missing")
     }
 }
 

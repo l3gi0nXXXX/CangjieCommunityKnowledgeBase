@@ -63,6 +63,7 @@ public class CkbRoutineContractValidation {
 
 public class CkbRoutineArtifactStatus {
     public var ok: Bool = true
+    public var diagnostic: String = "ok"
     public var presentArtifacts: ArrayList<String> = ArrayList<String>()
     public var missingArtifacts: ArrayList<String> = ArrayList<String>()
     public var evidenceHash: String = ""
@@ -94,7 +95,7 @@ public func cangjieSchedulerTaskContracts(): ArrayList<CkbSchedulerTaskContract>
     out.add(ckbSchedulerTaskContract("weekly_full_rebuild", "KU-08", "full_rebuild", "rebuild_candidate_then_promote", CkbRoutineUpdatePolicies.REBUILD_PROMOTE, ["index"], ["index/active.ckb"], []))
     out.add(ckbSchedulerTaskContract("cangjie_freshness_daily", "KU-06", "cangjie_freshness_probe", "probe_only", CkbRoutineUpdatePolicies.PROBE_ONLY, ["freshness", "version_manifest"], ["metadata/cangjie-freshness.ckb"], []))
     out.add(ckbSchedulerTaskContract("cangjie_docs_full_weekly", "KU-07", "cangjie_docs_full_sync", "candidate_validate_promote", CkbRoutineUpdatePolicies.CANDIDATE_PROMOTE, ["docs", "serving_feed"], ["normalized/candidate"], ["candidate_validation_passed"]))
-    out.add(ckbSchedulerTaskContract("cangjie_release_full_sync", "KU-09", "cangjie_release_full_sync", "candidate_validate_promote", CkbRoutineUpdatePolicies.CANDIDATE_PROMOTE, ["release", "version_manifest"], ["metadata/cangjie-version-manifest.ckb"], ["candidate_validation_passed"]))
+    out.add(ckbSchedulerTaskContract("cangjie_release_full_sync", "KU-09", "cangjie_release_full_sync", "candidate_validate_promote", CkbRoutineUpdatePolicies.CANDIDATE_PROMOTE, ["release", "version_manifest"], ["metadata/cangjie-version-manifest.ckb"], ["candidate_validation_passed", "release_source_coverage_verified", "release_removed_reconciliation_verified", "version_manifest_write_verified", "active_companion_transaction_verified"]))
     out.add(ckbSchedulerTaskContract("cangjie_source_event_sync", "KU-10", "cangjie_source_event_sync", "candidate_validate_promote", CkbRoutineUpdatePolicies.CANDIDATE_PROMOTE, ["repo_source", "serving_feed"], ["metadata/repository-event-latest.ckb"], ["candidate_validation_passed"]))
     out.add(ckbSchedulerTaskContract("cangjie_version_branch_refresh", "KU-13", "cangjie_version_branch_refresh", "manifest_candidate", CkbRoutineUpdatePolicies.MANIFEST_CANDIDATE, ["version_manifest"], ["metadata/cangjie-version-manifest.ckb"], ["version_manifest_write_verified"]))
     out.add(ckbSchedulerTaskContract("cangjie_benchmark_gap_curation", "KU-11/KU-12", "cangjie_benchmark_gap_curation", "curated_candidate_validate_promote", CkbRoutineUpdatePolicies.CURATED_CANDIDATE, ["benchmark_gap_curation", "negative_rules"], ["gap-curation-input.jsonl"], ["candidate_validation_passed", "query_proof"]))
@@ -140,6 +141,12 @@ public func validateSchedulerTaskResultAgainstContractWithArtifacts(taskName: St
             return validation
         }
     }
+    for (gate in contract.requiredValidationGates) {
+        if (!task.validationGates.contains(gate)) {
+            ckbRoutineValidationFail(validation, "${gate}_missing")
+            return validation
+        }
+    }
     if (ckbRoutinePolicyRequiresNoActiveMutation(contract.activeMutationPolicy) && before.activeKnowledgeVersion != after.activeKnowledgeVersion) {
         ckbRoutineValidationFail(validation, "active_mutation_forbidden:${before.activeKnowledgeVersion}->${after.activeKnowledgeVersion}")
         return validation
@@ -161,7 +168,11 @@ public func validateSchedulerTaskResultAgainstContractWithArtifacts(taskName: St
         return validation
     }
     if (contract.requiredArtifacts.size > 0 && !artifactStatus.ok) {
-        ckbRoutineValidationFail(validation, "required_artifact_missing:${ckbRoutineJoinStrings(artifactStatus.missingArtifacts, ",")}")
+        if (artifactStatus.diagnostic == "required_artifact_stale_or_misaligned") {
+            ckbRoutineValidationFail(validation, artifactStatus.diagnostic)
+        } else {
+            ckbRoutineValidationFail(validation, "required_artifact_missing:${ckbRoutineJoinStrings(artifactStatus.missingArtifacts, ",")}")
+        }
         return validation
     }
     validation.ok = true
@@ -276,7 +287,7 @@ private func ckbRoutineValidationFail(validation: CkbRoutineContractValidation, 
 }
 
 private func ckbRoutineValidationEvidence(validation: CkbRoutineContractValidation, contract: CkbSchedulerTaskContract, before: CkbRoutineActiveInvariant, after: CkbRoutineActiveInvariant, task: SchedulerTaskResult): String {
-    "${validation.taskName}:${contract.updateMechanismId}:${contract.activeMutationPolicy}:${before.evidenceHash}:${after.evidenceHash}:${task.status}:${task.validationStatus}:${ckbRoutineJoinStrings(task.updatedDataKinds, ",")}:${ckbRoutineJoinStrings(validation.missingArtifacts, ",")}:${validation.artifactEvidenceHash}"
+    "${validation.taskName}:${contract.updateMechanismId}:${contract.activeMutationPolicy}:${before.evidenceHash}:${after.evidenceHash}:${task.status}:${task.validationStatus}:${ckbRoutineJoinStrings(task.validationGates, ",")}:${task.transactionId}:${task.manifestEvidenceHash}:${task.freshnessEvidenceHash}:${task.sourceCoverageEvidenceHash}:${task.inventoryEvidenceHash}:${ckbRoutineJoinStrings(task.updatedDataKinds, ",")}:${ckbRoutineJoinStrings(validation.missingArtifacts, ",")}:${validation.artifactEvidenceHash}"
 }
 
 private func ckbRoutineFindSchedule(status: KnowledgeStatus, name: String): ScheduleEntry {

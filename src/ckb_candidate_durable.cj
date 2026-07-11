@@ -1,6 +1,7 @@
 package cangjie_community_knowledge_base
 
-import std.collection.ArrayList
+import std.collection.{ArrayList, HashSet}
+import std.sort.*
 import stdx.crypto.digest.SHA256
 
 public class CkbCandidateDurableSchema {
@@ -138,6 +139,18 @@ public class CkbValidatedServingIndexSummary {
     init() {}
 }
 
+public class CkbCandidateBusinessEvidence {
+    public var valid: Bool = false
+    public var status: String = "not_evaluated"
+    public var rawCount: Int64 = 0
+    public var normalizedCount: Int64 = 0
+    public var rawEvidenceHash: String = ""
+    public var normalizedEvidenceHash: String = ""
+    public var aggregateEvidenceHash: String = ""
+
+    public init() {}
+}
+
 public class VectorLookupResult {
     var ok: Bool = false
     var status: String = "not_started"
@@ -239,6 +252,137 @@ public func ckbCandidateRecordsEvidenceHash(records: ArrayList<NormalizedRecord>
         for (source in metadata.derivedFrom) { ckbCandidateDigestField(digest, source) }
     }
     ckbCandidateDigestHex(digest)
+}
+
+public func ckbCandidateBusinessEvidence(rawRecords: ArrayList<RawRecord>,
+    normalizedRecords: ArrayList<NormalizedRecord>): CkbCandidateBusinessEvidence {
+    let evidence = CkbCandidateBusinessEvidence()
+    evidence.rawCount = rawRecords.size
+    evidence.normalizedCount = normalizedRecords.size
+    if (rawRecords.size == 0) {
+        evidence.status = "candidate_business_raw_empty"
+        return evidence
+    }
+    if (normalizedRecords.size == 0) {
+        evidence.status = "candidate_business_normalized_empty"
+        return evidence
+    }
+    let rawIds = HashSet<String>()
+    let rawEntries = ArrayList<String>()
+    for (record in rawRecords) {
+        if (record.sourceId == "") {
+            evidence.status = "candidate_business_raw_source_id_missing"
+            return evidence
+        }
+        if (rawIds.contains(record.sourceId)) {
+            evidence.status = "candidate_business_raw_source_id_duplicate"
+            return evidence
+        }
+        rawIds.add(record.sourceId)
+        rawEntries.add("${record.sourceId}|${ckbCandidateRawBusinessRecordHash(record)}")
+    }
+    let normalizedIds = HashSet<String>()
+    let normalizedEntries = ArrayList<String>()
+    for (record in normalizedRecords) {
+        if (record.sourceId == "") {
+            evidence.status = "candidate_business_normalized_source_id_missing"
+            return evidence
+        }
+        if (normalizedIds.contains(record.sourceId)) {
+            evidence.status = "candidate_business_normalized_source_id_duplicate"
+            return evidence
+        }
+        normalizedIds.add(record.sourceId)
+        normalizedEntries.add("${record.sourceId}|${ckbCandidateNormalizedBusinessRecordHash(record)}")
+    }
+    evidence.rawEvidenceHash = ckbCandidateOrderedBusinessEntriesHash("raw", rawEntries)
+    evidence.normalizedEvidenceHash = ckbCandidateOrderedBusinessEntriesHash("normalized", normalizedEntries)
+    let aggregate = SHA256()
+    ckbCandidateDigestField(aggregate, "p5-candidate-business-evidence-v1")
+    ckbCandidateDigestField(aggregate, "${evidence.rawCount}")
+    ckbCandidateDigestField(aggregate, evidence.rawEvidenceHash)
+    ckbCandidateDigestField(aggregate, "${evidence.normalizedCount}")
+    ckbCandidateDigestField(aggregate, evidence.normalizedEvidenceHash)
+    evidence.aggregateEvidenceHash = ckbCandidateDigestHex(aggregate)
+    evidence.valid = true
+    evidence.status = "candidate_business_evidence_valid"
+    evidence
+}
+
+public func ckbCandidateBusinessEvidenceMatches(left: CkbCandidateBusinessEvidence,
+    right: CkbCandidateBusinessEvidence): Bool {
+    left.valid && right.valid && left.rawCount == right.rawCount &&
+        left.normalizedCount == right.normalizedCount &&
+        left.rawEvidenceHash == right.rawEvidenceHash &&
+        left.normalizedEvidenceHash == right.normalizedEvidenceHash &&
+        left.aggregateEvidenceHash == right.aggregateEvidenceHash
+}
+
+private func ckbCandidateOrderedBusinessEntriesHash(kind: String,
+    entries: ArrayList<String>): String {
+    let ordered = entries.toArray()
+    sort(ordered)
+    let digest = SHA256()
+    ckbCandidateDigestField(digest, "p5-candidate-business-${kind}-v1")
+    ckbCandidateDigestField(digest, "${ordered.size}")
+    for (entry in ordered) {
+        ckbCandidateDigestField(digest, entry)
+    }
+    ckbCandidateDigestHex(digest)
+}
+
+private func ckbCandidateRawBusinessRecordHash(record: RawRecord): String {
+    let digest = SHA256()
+    ckbCandidateDigestField(digest, "p5-candidate-business-raw-record-v1")
+    ckbCandidateDigestField(digest, record.sourceId)
+    ckbCandidateDigestField(digest, record.title)
+    ckbCandidateDigestField(digest, record.content)
+    ckbCandidateDigestField(digest, record.contentHash)
+    ckbCandidateDigestField(digest, "${record.requiresReview}")
+    ckbCandidateBusinessMetadataDigest(digest, record.metadata)
+    ckbCandidateDigestHex(digest)
+}
+
+private func ckbCandidateNormalizedBusinessRecordHash(record: NormalizedRecord): String {
+    let digest = SHA256()
+    ckbCandidateDigestField(digest, "p5-candidate-business-normalized-record-v1")
+    ckbCandidateDigestField(digest, record.sourceId)
+    ckbCandidateDigestField(digest, record.recordKind)
+    ckbCandidateDigestField(digest, record.title)
+    ckbCandidateDigestField(digest, record.chunk)
+    ckbCandidateDigestField(digest, record.citation)
+    ckbCandidateDigestField(digest, "${record.score}")
+    ckbCandidateDigestField(digest, "${record.requiresReview}")
+    ckbCandidateBusinessMetadataDigest(digest, record.metadata)
+    ckbCandidateDigestHex(digest)
+}
+
+private func ckbCandidateBusinessMetadataDigest(digest: SHA256,
+    metadata: KnowledgeMetadata): Unit {
+    ckbCandidateDigestField(digest, metadata.sourceId)
+    ckbCandidateDigestField(digest, metadata.sourceType)
+    ckbCandidateDigestField(digest, metadata.sourceUrl)
+    ckbCandidateDigestField(digest, metadata.repo)
+    ckbCandidateDigestField(digest, metadata.path)
+    ckbCandidateDigestField(digest, metadata.symbol)
+    ckbCandidateDigestField(digest, metadata.commit)
+    ckbCandidateDigestField(digest, metadata.docVersion)
+    ckbCandidateDigestField(digest, metadata.targetVersion)
+    ckbCandidateDigestField(digest, metadata.sourceSet)
+    ckbCandidateDigestField(digest, metadata.versionResolutionId)
+    ckbCandidateDigestField(digest, metadata.crawlAt)
+    ckbCandidateDigestField(digest, metadata.indexedAt)
+    ckbCandidateDigestField(digest, "<promotion-knowledge-version>")
+    ckbCandidateDigestField(digest, "<promotion-candidate-version>")
+    ckbCandidateDigestField(digest, "${metadata.contentSize}")
+    ckbCandidateDigestField(digest, metadata.trustLevel)
+    ckbCandidateDigestField(digest, metadata.reviewState)
+    ckbCandidateDigestField(digest, metadata.license)
+    ckbCandidateDigestField(digest, metadata.repoVisibility)
+    ckbCandidateDigestField(digest, "${metadata.derivedFrom.size}")
+    for (source in metadata.derivedFrom) {
+        ckbCandidateDigestField(digest, source)
+    }
 }
 
 private func ckbCandidateDigestField(digest: SHA256, value: String): Unit {

@@ -1458,7 +1458,10 @@ public class CkbReleaseAcquisitionTest {
 
     @TestCase
     public func p5S5E2EAFullCandidateAndCommitBoundaryMatrixKeepOneAuthoritativeTransaction(): Unit {
-        let root = "target/p5-s5-e2e-a"
+        this.runP5S5CommitBoundaryMatrix("target/p5-s5-e2e-a")
+    }
+
+    public func runP5S5CommitBoundaryMatrix(root: String): Unit {
         ckbReleaseTestEnsureEmptyDir(root)
         let evalRoot = "${root}/eval"
         ckbReleaseTestWriteEvalFixture(evalRoot)
@@ -1585,7 +1588,7 @@ public class CkbReleaseAcquisitionTest {
     }
 }
 
-private class CkbS5ReleaseFixture {
+class CkbS5ReleaseFixture {
     var config: CkbRuntimeConfig = CkbRuntimeConfig()
     var store: FileKnowledgeStore = FileKnowledgeStore("target/p5-s5-unused")
     var kb: KnowledgeBase = newOfflineKnowledgeBase()
@@ -1642,7 +1645,7 @@ private func ckbS5RootAtomicTmpCount(root: String): Int64 {
     count
 }
 
-private func ckbS5ReleaseFixture(root: String, generation: Int64): CkbS5ReleaseFixture {
+func ckbS5ReleaseFixture(root: String, generation: Int64): CkbS5ReleaseFixture {
     ckbReleaseTestEnsureEmptyDir(root)
     let fixture = CkbS5ReleaseFixture()
     let evalRoot = "${root}/eval"
@@ -1875,7 +1878,7 @@ private func ckbS5RemoveLines(text: String, prefixes: Array<String>): String {
     out.toString()
 }
 
-private class CkbReleaseFullRunner <: SourceFetchRunner {
+class CkbReleaseFullRunner <: SourceFetchRunner {
     public static let STABLE_A_PATH: String = "docs/API ?#&=:路径🙂,\"quote\" A.md"
     public static let REMOVED_B_PATH: String = "docs/removed-B.md"
     public static let ADDED_C_PATH: String = "docs/added-C.md"
@@ -2256,7 +2259,7 @@ private func ckbReleaseTestProfile(): CkbScheduleTaskProfile {
     ckbSyncProfileForScheduleTask("cangjie_release_full_sync")
 }
 
-private func ckbReleaseTestManifest(): CangjieVersionManifest {
+func ckbReleaseTestManifest(): CangjieVersionManifest {
     let manifest = CangjieVersionManifest()
     manifest.defaultTargetVersion = "1.0.0"
     ckbReleaseTestAddSource(manifest, CangjieSourceSets.DOCS, "docs", "Cangjie/cangjie_docs")
@@ -2369,7 +2372,7 @@ private func ckbReleaseTestJoin(values: ArrayList<String>): String {
     out.toString()
 }
 
-private func ckbReleaseTestWriteEvalFixture(root: String): Unit {
+func ckbReleaseTestWriteEvalFixture(root: String): Unit {
     let caseRoot = Path(root).join("CJ-HUMANEVAL-P5-S3")
     Directory.create(caseRoot.join("starter/src"), recursive: true)
     Directory.create(caseRoot.join("tests"), recursive: true)
@@ -2560,7 +2563,7 @@ private func ckbReleaseTestControlEvidenceHasRefAndTree(evidence: ArrayList<CkbR
     refSeen && treeSeen
 }
 
-private func ckbReleaseTestEnsureEmptyDir(path: String): Unit {
+func ckbReleaseTestEnsureEmptyDir(path: String): Unit {
     if (exists(Path(path))) {
         _ = launch("/bin/rm", ["-rf", path]).wait()
     }

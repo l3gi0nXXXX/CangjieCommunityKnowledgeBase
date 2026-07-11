@@ -823,10 +823,14 @@ public class CkbSchedulerServiceF5Test {
 
     @TestCase
     public func p7Neg002SlashRefRemoteTreeFailureStillBlocksPromotion(): Unit {
+        let root = "target/p7-slash-ref-remote-tree-failure"
+        let evalRoot = "target/p7-slash-ref-remote-tree-failure-eval"
+        s1s2EnsureEmptyDir(root)
+        s1s2EnsureEmptyDir(evalRoot)
         let config = CkbRuntimeConfig()
         config.networkEnabled = true
-        f7ConfigureExplicitEval(config, "target/p7-slash-ref-remote-tree-failure-eval")
-        let store = FileKnowledgeStore("target/p7-slash-ref-remote-tree-failure")
+        f7ConfigureExplicitEval(config, evalRoot)
+        let store = FileKnowledgeStore(root)
         store.saveCangjieVersionManifest(f7OfficialReleaseManifestSlashRef())
         let runner = F7SlashRefTreeOkRunner()
         runner.failEncodedTree = true
@@ -855,7 +859,8 @@ public class CkbSchedulerServiceF5Test {
         @Expect(summaries[0].primaryFailure.contains("profile_stage_budget"), false)
         @Expect(summaries[0].status, "remote_tree_unavailable")
         @Expect(summaries[0].primaryFailure, "task_not_ok:remote_tree_unavailable")
-        @Expect(summaries[0].missingArtifacts.size, 0)
+        @Expect(summaries[0].missingArtifacts.size, 1)
+        @Expect(summaries[0].missingArtifacts[0], "metadata/cangjie-version-manifest.ckb")
     }
 
     @TestCase

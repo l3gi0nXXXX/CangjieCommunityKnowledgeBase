@@ -308,6 +308,7 @@ public class VectorBuildProgress {
     public var collection: String = ""
     public var targetCollection: String = ""
     public var total: Int64 = 0
+    public var dimension: Int64 = 0
     public var completed: Int64 = 0
     public var failed: Int64 = 0
     public var currentBatch: Int64 = 0
@@ -2900,6 +2901,12 @@ public class SchedulerTaskResult {
     public var truncated: Bool = false
     public var timeBudgetMillis: Int64 = 0
     public var validationStatus: String = ""
+    public var validationGates: ArrayList<String> = ArrayList<String>()
+    public var transactionId: String = ""
+    public var manifestEvidenceHash: String = ""
+    public var freshnessEvidenceHash: String = ""
+    public var sourceCoverageEvidenceHash: String = ""
+    public var inventoryEvidenceHash: String = ""
     public var validationSummary: String = ""
     public var validationEvidenceHash: String = ""
     public var validationDiagnostics: ArrayList<String> = ArrayList<String>()
@@ -2977,6 +2984,12 @@ public class SchedulerTaskRunRecord {
     public var plannedRequests: Int64 = 0
     public var completedRequests: Int64 = 0
     public var failedRequests: Int64 = 0
+    public var validationGates: ArrayList<String> = ArrayList<String>()
+    public var transactionId: String = ""
+    public var manifestEvidenceHash: String = ""
+    public var freshnessEvidenceHash: String = ""
+    public var sourceCoverageEvidenceHash: String = ""
+    public var inventoryEvidenceHash: String = ""
     public var lastStage: String = ""
     public var lastProgress: String = ""
     public var workerPid: Int64 = 0
@@ -2993,7 +3006,8 @@ public interface SchedulerTaskRunner {
 
 public interface SchedulerProgressSink {
     func onRunStarted(result: SchedulerExecutorResult): Unit
-    func onTaskStarted(runId: String, taskName: String): Unit
+    func onTaskStarted(runId: String, taskName: String,
+        timeBudgetMillis: Int64, deadlineAtMillis: Int64): Unit
     func onTaskFinished(runId: String, taskName: String, task: SchedulerTaskResult): Unit
     func onRunFinished(result: SchedulerExecutorResult): Unit
 }
@@ -3003,7 +3017,8 @@ public class NoopSchedulerProgressSink <: SchedulerProgressSink {
 
     public func onRunStarted(result: SchedulerExecutorResult): Unit {}
 
-    public func onTaskStarted(runId: String, taskName: String): Unit {}
+    public func onTaskStarted(runId: String, taskName: String,
+        timeBudgetMillis: Int64, deadlineAtMillis: Int64): Unit {}
 
     public func onTaskFinished(runId: String, taskName: String, task: SchedulerTaskResult): Unit {}
 
@@ -3079,8 +3094,15 @@ public class SchedulerExecutor {
 
     private func runOneTask(result: SchedulerExecutorResult, name: String, force: Bool): Unit {
         let entry = this.findEntry(name)
-        this.safeNotifyTaskStarted(result, name)
-        let task = this.runTaskWithTimeout(name, entry.lastSince, this.effectiveTaskTimeoutMillis(entry))
+        let timeBudgetMillis = this.effectiveTaskTimeoutMillis(entry)
+        let taskStartedAtMillis = ckbCoreNowMillis()
+        let deadlineAtMillis = if (timeBudgetMillis > 0) {
+            taskStartedAtMillis + timeBudgetMillis
+        } else { 0 }
+        this.safeNotifyTaskStarted(result, name, timeBudgetMillis,
+            deadlineAtMillis)
+        let task = this.runTaskWithTimeout(name, entry.lastSince,
+            timeBudgetMillis, taskStartedAtMillis, deadlineAtMillis)
         result.ran += 1
         result.taskNames.add(name)
         if (schedulerTaskStatusIsTimeout(task.status)) {
@@ -3114,9 +3136,12 @@ public class SchedulerExecutor {
         }
     }
 
-    private func safeNotifyTaskStarted(result: SchedulerExecutorResult, taskName: String): Unit {
+    private func safeNotifyTaskStarted(result: SchedulerExecutorResult,
+        taskName: String, timeBudgetMillis: Int64,
+        deadlineAtMillis: Int64): Unit {
         try {
-            this.progressSink.onTaskStarted(result.runId, taskName)
+            this.progressSink.onTaskStarted(result.runId, taskName,
+                timeBudgetMillis, deadlineAtMillis)
         } catch (_: Exception) {
             this.recordProgressObserverFailure(result, "task_started:${taskName}")
         }
@@ -3143,9 +3168,9 @@ public class SchedulerExecutor {
         result.finalizationDiagnostics.add("scheduler_progress_observer_degraded:event=${event}")
     }
 
-    private func runTaskWithTimeout(name: String, since: String, timeoutMillis: Int64): SchedulerTaskResult {
-        let started = ckbCoreNowMillis()
-        let deadlineAtMillis = if (timeoutMillis > 0) { started + timeoutMillis } else { 0 }
+    private func runTaskWithTimeout(name: String, since: String,
+        timeoutMillis: Int64, started: Int64,
+        deadlineAtMillis: Int64): SchedulerTaskResult {
         if (timeoutMillis <= 0) {
             try {
                 let task = this.runner.runTask(name, since, deadlineAtMillis)
@@ -3275,6 +3300,14 @@ private func schedulerTaskRunRecord(name: String, task: SchedulerTaskResult, run
     record.plannedRequests = task.plannedRequests
     record.completedRequests = task.completedRequests
     record.failedRequests = task.failedRequests
+    for (gate in task.validationGates) {
+        record.validationGates.add(gate)
+    }
+    record.transactionId = task.transactionId
+    record.manifestEvidenceHash = task.manifestEvidenceHash
+    record.freshnessEvidenceHash = task.freshnessEvidenceHash
+    record.sourceCoverageEvidenceHash = task.sourceCoverageEvidenceHash
+    record.inventoryEvidenceHash = task.inventoryEvidenceHash
     record.lastStage = task.lastStage
     record.lastProgress = task.lastProgress
     record.workerPid = task.workerPid
@@ -4422,6 +4455,7 @@ public class KnowledgeBase {
         progress.collection = collection
         progress.targetCollection = collection
         progress.total = records.size
+        progress.dimension = this.activeEmbeddingDimensions()
         progress.batchSize = CkbCandidateDurableSchema.VECTOR_BATCH_SIZE
         progress.startedAtMillis = ckbCoreNowMillis()
         progress.updatedAtMillis = progress.startedAtMillis
@@ -4731,6 +4765,7 @@ public class KnowledgeBase {
         progress.collection = effectiveVectorCollection
         progress.targetCollection = effectiveVectorCollection
         progress.total = records.size
+        progress.dimension = this.activeEmbeddingDimensions()
         let embeddingStatus = this.embeddingProvider.status()
         progress.batchSize = if (embeddingStatus.batchSize > 0) { embeddingStatus.batchSize } else { 16 }
         progress.startedAtMillis = ckbCoreNowMillis()

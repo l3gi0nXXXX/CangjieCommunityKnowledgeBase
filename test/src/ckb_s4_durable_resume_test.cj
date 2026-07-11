@@ -234,6 +234,10 @@ public class CkbS4DurableResumeTest {
 
     @TestCase
     public func p5S4B01CursorBoundariesRedoOnlyUncommittedCandidateAndVectorUnits(): Unit {
+        this.runP5S4DurableCursorBoundaryMatrix()
+    }
+
+    public func runP5S4DurableCursorBoundaryMatrix(): Unit {
         let boundaryCounts: Array<Int64> = [0, 1, CkbCandidateDurableSchema.VECTOR_BATCH_SIZE,
             CkbCandidateDurableSchema.VECTOR_BATCH_SIZE + 1]
         for (count in boundaryCounts) {
@@ -818,10 +822,86 @@ public class CkbS4DurableResumeTest {
             acquisitionContext: alternateContext)
         @Expect(secondStable.ok, true)
         @Expect(alternateKb.status().storage.vectorActiveCollection, stableCollection)
-        let alternateRecovery = ckbRecoverStaleSchedulerRunsWithVectorStore(alternateStore, alternateBackend)
         @Expect(alternateBackend.wasDeleted(alternateCollection), true)
         @Expect(alternateStore.loadCandidateCollectionOwner(alternateCollection).state, "cleaned")
-        @Expect(s4Contains(alternateRecovery.diagnostics, "candidate_owner_orphan_deleted"), true)
+        @Expect(s4Contains(secondStable.validation.diagnostics,
+            "candidate_owner_orphan_deleted"), true)
+        let deletesAfterImmediateCleanup = alternateBackend.deleteCollectionCalls
+        let alternateRecovery = ckbRecoverStaleSchedulerRunsWithVectorStore(alternateStore, alternateBackend)
+        @Expect(alternateBackend.deleteCollectionCalls, deletesAfterImmediateCleanup)
+        @Expect(alternateStore.loadCandidateCollectionOwner(alternateCollection).state, "cleaned")
+        @Expect(s4Contains(alternateRecovery.diagnostics, "candidate_owner_orphan_deleted"), false)
+        @Expect(alternateBackend.wasDeleted(stableCollection), false)
+
+        let cleanupFailureRoot = "target/p5-s4-n01-owner-cleanup-failure"
+        s4EnsureEmptyDir(cleanupFailureRoot)
+        let cleanupFailureStore = FileKnowledgeStore(cleanupFailureRoot)
+        let cleanupFailureBackend = S4TrackingVectorStore()
+        let cleanupFailureContext = s4Context(
+            "p5-candidate-owner-cleanup-failure",
+            "candidate-owner-cleanup-failure", records: candidateFailureRecords)
+        let cleanupFailureStable = s4StableCollection(cleanupFailureContext)
+        let cleanupFailureAlternate = ckbCandidateAlternateCollection(
+            cleanupFailureContext)
+        let cleanupFailureKb = s4KnowledgeBaseWithRecords(candidateFailureRecords,
+            s4RawRecords(candidateFailureRecords), cleanupFailureBackend,
+            "active-before-cleanup-failure")
+        let cleanupFailureVectors = ArrayList<VectorRecord>()
+        for (record in candidateFailureRecords) {
+            cleanupFailureVectors.add(s4Vector(record))
+        }
+        _ = cleanupFailureBackend.recreate(cleanupFailureStable,
+            cleanupFailureVectors)
+        cleanupFailureKb.promoteVectorActiveCollection(cleanupFailureStable)
+        cleanupFailureKb.persistActiveSnapshot(cleanupFailureStore)
+        let cleanupFailureFirst = cangjiePromoteCandidateRecordsAfterValidationWithVersion(
+            cleanupFailureKb, cleanupFailureStore,
+            cleanupFailureContext.candidateVersion, candidateFailureRecords,
+            acquisitionContext: cleanupFailureContext)
+        @Expect(cleanupFailureFirst.ok, true)
+        @Expect(cleanupFailureKb.status().storage.vectorActiveCollection,
+            cleanupFailureAlternate)
+        let cleanupFailureFirstPointer = cleanupFailureStore.loadActiveSnapshotPointer()
+        cleanupFailureBackend.failDeleteCollection = cleanupFailureAlternate
+        let cleanupFailureSecond = cangjiePromoteCandidateRecordsAfterValidationWithVersion(
+            cleanupFailureKb, cleanupFailureStore,
+            cleanupFailureContext.candidateVersion, candidateFailureRecords,
+            acquisitionContext: cleanupFailureContext)
+        let cleanupFailureSecondPointer = cleanupFailureStore.loadActiveSnapshotPointer()
+        @Expect(cleanupFailureSecond.ok, true)
+        @Expect(cleanupFailureSecond.snapshotPointerCommitted, true)
+        @Expect(cleanupFailureSecondPointer.valid, true)
+        @Expect(cleanupFailureSecondPointer.txId == cleanupFailureFirstPointer.txId,
+            false)
+        @Expect(cleanupFailureSecondPointer.vectorActiveCollection,
+            cleanupFailureStable)
+        @Expect(cleanupFailureKb.status().storage.vectorActiveCollection,
+            cleanupFailureStable)
+        @Expect(cleanupFailureStore.loadCandidateCollectionOwner(
+            cleanupFailureStable).state, "committed_active")
+        @Expect(cleanupFailureStore.loadCandidateCollectionOwner(
+            cleanupFailureAlternate).state, "committed_active")
+        @Expect(cleanupFailureBackend.wasDeleted(cleanupFailureAlternate), false)
+        let cleanupFailureDiagnostics = s4Joined(
+            cleanupFailureSecond.validation.diagnostics)
+        @Expect(cleanupFailureDiagnostics.contains(
+            "candidate_owner_orphan_delete_failed"), true)
+        @Expect(cleanupFailureDiagnostics.contains("cleanup-fixture-secret"), false)
+        @Expect(cleanupFailureDiagnostics.contains("Authorization"), false)
+        @Expect(cleanupFailureDiagnostics.contains("Bearer"), false)
+        @Expect(cleanupFailureDiagnostics.contains("/Users/private"), false)
+        @Expect(cleanupFailureStore.loadActiveSnapshot().valid, true)
+        cleanupFailureBackend.failDeleteCollection = ""
+        let cleanupFailureRecovery = ckbRecoverStaleSchedulerRunsWithVectorStore(
+            cleanupFailureStore, cleanupFailureBackend)
+        @Expect(s4Contains(cleanupFailureRecovery.diagnostics,
+            "candidate_owner_orphan_deleted"), true)
+        @Expect(cleanupFailureBackend.wasDeleted(cleanupFailureAlternate), true)
+        @Expect(cleanupFailureBackend.wasDeleted(cleanupFailureStable), false)
+        @Expect(cleanupFailureStore.loadCandidateCollectionOwner(
+            cleanupFailureAlternate).state, "cleaned")
+        @Expect(cleanupFailureStore.loadCandidateCollectionOwner(
+            cleanupFailureStable).state, "committed_active")
 
         let tracking = S4TrackingVectorStore()
         let orphan = s4Context("p5-candidate-owner-orphan", "candidate-owner-orphan")
@@ -933,7 +1013,10 @@ public class CkbS4DurableResumeTest {
 
     @TestCase
     public func p5S4E2EAProcessCrashResumesPathCandidateVectorAndCleansOwner(): Unit {
-        let root = "target/p5-s4-e2e-a"
+        this.runP5S4ProcessCrashResumeMatrix("target/p5-s4-e2e-a")
+    }
+
+    public func runP5S4ProcessCrashResumeMatrix(root: String): Unit {
         s4EnsureEmptyDir(root)
         for (phase in ["page", "path", "source"]) {
             let phaseRoot = "${root}/${phase}"
@@ -1183,6 +1266,7 @@ private class S4TrackingVectorStore <: VectorStore {
     var recreateCalls: Int64 = 0
     var deleteCollectionCalls: Int64 = 0
     var failUpsertAt: Int64 = -1
+    var failDeleteCollection: String = ""
     let deleted: HashSet<String> = HashSet<String>()
 
     public func upsert(collection: String, vectors: ArrayList<VectorRecord>): VectorStoreStatus {
@@ -1208,6 +1292,12 @@ private class S4TrackingVectorStore <: VectorStore {
     public func clear(collection: String): VectorStoreStatus { this.delegate.clear(collection) }
     public func deleteCollection(collection: String): VectorStoreStatus {
         this.deleteCollectionCalls += 1
+        if (collection == this.failDeleteCollection) {
+            let status = this.delegate.status(collection)
+            status.state = EmbeddingProviderState.DEGRADED
+            status.degradedReason = "Authorization: Bearer cleanup-fixture-secret /Users/private/cleanup"
+            return status
+        }
         this.deleted.add(collection)
         this.delegate.deleteCollection(collection)
     }
@@ -2259,6 +2349,12 @@ private func s4PidAlive(pid: Int64): Bool {
 private func s4Contains(values: ArrayList<String>, needle: String): Bool {
     for (value in values) { if (value.contains(needle)) { return true } }
     false
+}
+
+private func s4Joined(values: ArrayList<String>): String {
+    let out = StringBuilder()
+    for (value in values) { out.append("${value}\n") }
+    out.toString()
 }
 
 private func s4CountTmpFiles(path: Path): Int64 {
