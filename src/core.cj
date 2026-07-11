@@ -5,6 +5,7 @@ import std.collection.HashMap
 import std.collection.HashSet
 import std.convert.Parsable
 import std.time.*
+import stdx.crypto.digest.SHA256
 
 public class SourceTypes {
     public static let REPO: String = "repo"
@@ -317,6 +318,11 @@ public class VectorBuildProgress {
     public var preparedBytes: Int64 = 0
     public var reused: Int64 = 0
     public var embedded: Int64 = 0
+    public var lookupRequested: Int64 = 0
+    public var lookupFound: Int64 = 0
+    public var lookupStatus: String = "not_started"
+    public var lookupDurationMillis: Int64 = 0
+    public var lookupTimedOut: Bool = false
     public var startedAtMillis: Int64 = 0
     public var updatedAtMillis: Int64 = 0
     public var elapsedMillis: Int64 = 0
@@ -358,6 +364,11 @@ public class VectorIndexBuildResult {
     public var diagnostic: String = ""
     public var truncatedCount: Int64 = 0
     public var elapsedMillis: Int64 = 0
+    public var reused: Int64 = 0
+    public var embedded: Int64 = 0
+    public var peakBufferedRecords: Int64 = 0
+    public var peakBufferedBytes: Int64 = 0
+    public var spool: CkbVectorSpoolDescriptor = CkbVectorSpoolDescriptor()
 
     public init() {}
 }
@@ -634,6 +645,7 @@ public interface VectorStore {
     func recreateWithDeadline(collection: String, vectors: ArrayList<VectorRecord>, deadlineAtMillis: Int64): VectorStoreStatus
     func backup(collection: String): VectorBackup
     func backupWithDeadline(collection: String, deadlineAtMillis: Int64): VectorBackup
+    func lookupBatchWithDeadline(collection: String, pointIds: ArrayList<String>, deadlineAtMillis: Int64): VectorLookupResult
     func restore(backup: VectorBackup): VectorStoreStatus
 }
 
@@ -657,6 +669,8 @@ class LocalVectorCollection {
     public var name: String = ""
     public var records: ArrayList<VectorRecord> = ArrayList<VectorRecord>()
     public var dimension: Int64 = 0
+    public var pointIndex: HashMap<String, Int64> = HashMap<String, Int64>()
+    public var reuseIndex: HashMap<String, Int64> = HashMap<String, Int64>()
 
     public init() {}
 }
@@ -678,12 +692,16 @@ public class LocalVectorStore <: VectorStore {
         }
         let stored = this.ensureCollection(collection)
         stored.records.clear()
+        stored.pointIndex.clear()
+        stored.reuseIndex.clear()
         stored.dimension = 0
         for (record in vectors) {
             if (stored.dimension == 0) {
                 stored.dimension = record.vector.size
             }
             stored.records.add(record)
+            stored.pointIndex[vectorPointIdentity(record)] = stored.records.size - 1
+            stored.reuseIndex[ckbVectorRecordStablePointId(record)] = stored.records.size - 1
         }
         this.status(collection)
     }
@@ -693,27 +711,18 @@ public class LocalVectorStore <: VectorStore {
             return this.status(collection)
         }
         let stored = this.ensureCollection(collection)
-        let merged = ArrayList<VectorRecord>()
-        for (existing in stored.records) {
-            var replaced = false
-            for (record in vectors) {
-                if (vectorPointIdentity(existing) == vectorPointIdentity(record)) {
-                    replaced = true
-                }
-            }
-            if (!replaced) {
-                merged.add(existing)
-            }
-        }
         for (record in vectors) {
             if (stored.dimension == 0) {
                 stored.dimension = record.vector.size
             }
-            merged.add(record)
-        }
-        stored.records.clear()
-        for (record in merged) {
-            stored.records.add(record)
+            let pointId = vectorPointIdentity(record)
+            if (stored.pointIndex.contains(pointId)) {
+                stored.records[stored.pointIndex[pointId]] = record
+            } else {
+                stored.records.add(record)
+                stored.pointIndex[pointId] = stored.records.size - 1
+            }
+            stored.reuseIndex[ckbVectorRecordStablePointId(record)] = stored.pointIndex[pointId]
         }
         this.status(collection)
     }
@@ -781,6 +790,8 @@ public class LocalVectorStore <: VectorStore {
         let stored = this.findCollection(collection)
         if (stored.name != "") {
             stored.records.clear()
+            stored.pointIndex.clear()
+            stored.reuseIndex.clear()
             stored.dimension = 0
         }
         this.status(collection)
@@ -859,6 +870,48 @@ public class LocalVectorStore <: VectorStore {
         this.recreate(backup.collection, backup.records)
     }
 
+    public func lookupBatchWithDeadline(collection: String, pointIds: ArrayList<String>, deadlineAtMillis: Int64): VectorLookupResult {
+        let result = VectorLookupResult()
+        result.requested = pointIds.size
+        result.peakBufferedRecords = pointIds.size
+        if (pointIds.size > CkbCandidateDurableSchema.VECTOR_LOOKUP_BATCH_SIZE) {
+            result.status = "vector_lookup_batch_limit_exceeded"
+            result.diagnostic = "vector_lookup_batch_limit_exceeded:${pointIds.size}:${CkbCandidateDurableSchema.VECTOR_LOOKUP_BATCH_SIZE}"
+            return result
+        }
+        if (ckbDeadlineExceeded(deadlineAtMillis)) {
+            result.status = "vector_store_deadline_exceeded"
+            result.diagnostic = "vector_store_deadline_exceeded:${collection}"
+            return result
+        }
+        if (!this.available) {
+            result.status = "vector_store_unavailable"
+            result.diagnostic = result.status
+            return result
+        }
+        let stored = this.findCollection(collection)
+        let found = HashSet<String>()
+        if (stored.name != "") {
+            for (pointId in pointIds) {
+                var record = VectorRecord()
+                if (stored.pointIndex.contains(pointId)) {
+                    record = stored.records[stored.pointIndex[pointId]]
+                } else if (stored.reuseIndex.contains(pointId)) {
+                    record = stored.records[stored.reuseIndex[pointId]]
+                }
+                if (record.id != "") {
+                    let stable = ckbVectorRecordStablePointId(record)
+                    if (!found.contains(stable)) { result.records.add(record); found.add(stable) }
+                }
+            }
+        }
+        result.ok = true
+        result.status = "ok"
+        result.found = result.records.size
+        if (result.records.size > result.peakBufferedRecords) { result.peakBufferedRecords = result.records.size }
+        result
+    }
+
     private func findCollection(collection: String): LocalVectorCollection {
         for (stored in this.collections) {
             if (stored.name == collection) {
@@ -895,6 +948,8 @@ public class QdrantVectorStoreConfig {
 private class QdrantCachedCollection {
     public var collection: String = ""
     public var records: ArrayList<VectorRecord> = ArrayList<VectorRecord>()
+    public var count: Int64 = 0
+    public var disabled: Bool = false
 
     public init() {}
 }
@@ -920,6 +975,14 @@ private class QdrantScrollPage {
     public var diagnostic: String = ""
     public var records: ArrayList<VectorRecord> = ArrayList<VectorRecord>()
     public var nextOffsetJson: String = ""
+
+    public init() {}
+}
+
+private class QdrantRetrievePage {
+    public var ok: Bool = false
+    public var diagnostic: String = ""
+    public var records: ArrayList<VectorRecord> = ArrayList<VectorRecord>()
 
     public init() {}
 }
@@ -977,7 +1040,7 @@ public class QdrantVectorStore <: VectorStore {
         if (vectors.size == 0) {
             let status = this.baseStatus(collection)
             status.state = EmbeddingProviderState.READY
-            status.count = this.cached(collection).records.size
+            status.count = this.cached(collection).count
             this.lastStatus = status
             return status
         }
@@ -985,7 +1048,7 @@ public class QdrantVectorStore <: VectorStore {
         let status = this.statusFromWriteResponse(collection, response, "upsert")
         if (status.state == EmbeddingProviderState.READY) {
             this.rememberBatch(collection, vectors)
-            status.count = this.cached(collection).records.size
+            status.count = this.cached(collection).count
             status.dimension = this.config.dimensions
         }
         this.lastStatus = status
@@ -996,7 +1059,7 @@ public class QdrantVectorStore <: VectorStore {
         if (ckbDeadlineExceeded(deadlineAtMillis)) {
             let status = this.baseStatus(collection)
             status.state = EmbeddingProviderState.DEGRADED
-            status.count = this.cached(collection).records.size
+            status.count = this.cached(collection).count
             status.degradedReason = "vector_store_deadline_exceeded:${collection}"
             this.lastStatus = status
             return status
@@ -1009,7 +1072,7 @@ public class QdrantVectorStore <: VectorStore {
         if (vectors.size == 0) {
             let status = this.baseStatus(collection)
             status.state = EmbeddingProviderState.READY
-            status.count = this.cached(collection).records.size
+            status.count = this.cached(collection).count
             this.lastStatus = status
             return status
         }
@@ -1017,7 +1080,7 @@ public class QdrantVectorStore <: VectorStore {
         let status = this.statusFromWriteResponse(collection, response, "upsert")
         if (status.state == EmbeddingProviderState.READY) {
             this.rememberBatch(collection, vectors)
-            status.count = this.cached(collection).records.size
+            status.count = this.cached(collection).count
             status.dimension = this.config.dimensions
         }
         this.lastStatus = status
@@ -1104,7 +1167,7 @@ public class QdrantVectorStore <: VectorStore {
         if (ckbDeadlineExceeded(deadlineAtMillis)) {
             let status = this.baseStatus(collection)
             status.state = EmbeddingProviderState.DEGRADED
-            status.count = this.cached(collection).records.size
+            status.count = this.cached(collection).count
             status.degradedReason = "vector_store_deadline_exceeded:${collection}"
             this.lastStatus = status
             return status
@@ -1197,7 +1260,7 @@ public class QdrantVectorStore <: VectorStore {
         let backup = VectorBackup()
         backup.collection = collection
         let cached = this.cached(collection)
-        if (cached.collection != "") {
+        if (cached.collection != "" && !cached.disabled) {
             for (record in cached.records) {
                 backup.records.add(record)
             }
@@ -1217,6 +1280,53 @@ public class QdrantVectorStore <: VectorStore {
             return status
         }
         this.recreate(backup.collection, backup.records)
+    }
+
+    public func lookupBatchWithDeadline(collection: String, pointIds: ArrayList<String>, deadlineAtMillis: Int64): VectorLookupResult {
+        let result = VectorLookupResult()
+        result.requested = pointIds.size
+        result.peakBufferedRecords = pointIds.size
+        if (pointIds.size > CkbCandidateDurableSchema.VECTOR_LOOKUP_BATCH_SIZE) {
+            result.status = "vector_lookup_batch_limit_exceeded"
+            result.diagnostic = "vector_lookup_batch_limit_exceeded:${pointIds.size}:${CkbCandidateDurableSchema.VECTOR_LOOKUP_BATCH_SIZE}"
+            return result
+        }
+        if (ckbDeadlineExceeded(deadlineAtMillis)) {
+            result.status = "vector_store_deadline_exceeded"
+            result.diagnostic = "vector_store_deadline_exceeded:${collection}"
+            return result
+        }
+        let cached = this.cached(collection)
+        let requested = HashSet<String>(pointIds)
+        let found = HashSet<String>()
+        if (cached.collection != "" && !cached.disabled) {
+            for (record in cached.records) {
+                let pointId = ckbVectorRecordStablePointId(record)
+                if (requested.contains(pointId) && !found.contains(pointId)) { result.records.add(record); found.add(pointId) }
+            }
+        }
+        let missing = ArrayList<String>()
+        for (pointId in pointIds) { if (!found.contains(pointId)) { missing.add(pointId) } }
+        if (missing.size > 0) {
+            let response = this.executeWithDeadline("POST", "${this.collectionUrl(collection)}/points", qdrantRetrieveBody(missing), deadlineAtMillis)
+            if (!qdrantHttpOk(response)) {
+                result.status = this.statusFromHttpResponse(collection, response, "retrieve").degradedReason
+                result.diagnostic = result.status
+                return result
+            }
+            if (!qdrantBodyLooksOk(response.body)) { result.status = "malformed_json"; result.diagnostic = "qdrant_retrieve_malformed_json"; return result }
+            let page = qdrantParseRetrievePage(response.body, HashSet<String>(missing))
+            if (!page.ok) { result.status = page.diagnostic; result.diagnostic = page.diagnostic; return result }
+            for (record in page.records) {
+                let pointId = ckbVectorRecordStablePointId(record)
+                if (!found.contains(pointId)) { result.records.add(record); found.add(pointId) }
+            }
+        }
+        result.ok = true
+        result.status = "ok"
+        result.found = result.records.size
+        if (result.records.size > result.peakBufferedRecords) { result.peakBufferedRecords = result.records.size }
+        result
     }
 
     public func lastOperationStatus(): VectorStoreStatus {
@@ -1473,8 +1583,12 @@ public class QdrantVectorStore <: VectorStore {
             this.cache.add(entry)
         }
         entry.records.clear()
-        for (record in vectors) {
-            entry.records.add(record)
+        entry.count = vectors.size
+        entry.disabled = vectors.size > CkbCandidateDurableSchema.QDRANT_CACHE_MAX_RECORDS
+        if (!entry.disabled) {
+            for (record in vectors) {
+                entry.records.add(record)
+            }
         }
     }
 
@@ -1484,6 +1598,10 @@ public class QdrantVectorStore <: VectorStore {
             entry = QdrantCachedCollection()
             entry.collection = collection
             this.cache.add(entry)
+        }
+        if (entry.disabled) {
+            entry.count += vectors.size
+            return
         }
         let merged = ArrayList<VectorRecord>()
         for (existing in entry.records) {
@@ -1501,6 +1619,11 @@ public class QdrantVectorStore <: VectorStore {
             merged.add(record)
         }
         entry.records.clear()
+        entry.count = merged.size
+        if (merged.size > CkbCandidateDurableSchema.QDRANT_CACHE_MAX_RECORDS) {
+            entry.disabled = true
+            return
+        }
         for (record in merged) {
             entry.records.add(record)
         }
@@ -1583,6 +1706,15 @@ private func qdrantScrollBody(offsetJson: String): String {
         out += ",\"offset\":${offsetJson.trimAscii()}"
     }
     out + "}"
+}
+
+private func qdrantRetrieveBody(pointIds: ArrayList<String>): String {
+    var out = "{\"ids\":["
+    for (index in 0..pointIds.size) {
+        if (index > 0) { out += "," }
+        out += qdrantStablePointId(pointIds[index])
+    }
+    out + "],\"with_payload\":true,\"with_vector\":true}"
 }
 
 public func qdrantStablePointId(raw: String): String {
@@ -1754,6 +1886,24 @@ private func qdrantParseScrollPage(body: String): QdrantScrollPage {
         page.records.add(record)
     }
     page.nextOffsetJson = qdrantNextOffsetJson(result)
+    page.ok = true
+    page.diagnostic = "ok"
+    page
+}
+
+private func qdrantParseRetrievePage(body: String, requested: HashSet<String>): QdrantRetrievePage {
+    let page = QdrantRetrievePage()
+    let result = qdrantResultPayload(body)
+    if (!result.startsWith("[")) { page.diagnostic = "qdrant_retrieve_malformed_json"; return page }
+    for (object in qdrantJsonObjectChunks(result)) {
+        let payload = qdrantJsonObjectField(object, "payload")
+        let vector = qdrantParseVectorArray(qdrantJsonArrayField(object, "vector"))
+        let record = qdrantRecordFromPayload(payload)
+        let pointId = ckbVectorRecordStablePointId(record)
+        if (pointId == "" || vector.size == 0 || !requested.contains(pointId)) { page.diagnostic = "qdrant_retrieve_record_invalid"; return page }
+        record.vector = vector
+        page.records.add(record)
+    }
     page.ok = true
     page.diagnostic = "ok"
     page
@@ -2277,8 +2427,34 @@ public class GraphBuildResult {
     public init() {}
 }
 
+private class CkbGraphBuildCache {
+    var valid: Bool = false
+    var recordsEvidenceHash: String = ""
+    var activeVersion: String = ""
+    var nodeCount: Int64 = 0
+    var edgeCount: Int64 = 0
+    var graphEvidenceHash: String = ""
+    var graph: GraphBuildResult = GraphBuildResult()
+
+    init() {}
+}
+
+public func ckbGraphSnapshotBindingMatches(cacheValid: Bool, cachedActiveVersion: String,
+    activeVersion: String, cachedRecordsEvidenceHash: String, activeRecordsEvidenceHash: String,
+    cachedNodeCount: Int64, graphNodeCount: Int64, cachedEdgeCount: Int64, graphEdgeCount: Int64,
+    cachedGraphEvidenceHash: String, graphEvidenceHash: String, graphStatus: VectorStoreStatus): Bool {
+    cacheValid && cachedActiveVersion == activeVersion &&
+        cachedRecordsEvidenceHash == activeRecordsEvidenceHash &&
+        cachedNodeCount == graphNodeCount && cachedEdgeCount == graphEdgeCount &&
+        cachedGraphEvidenceHash == graphEvidenceHash &&
+        graphStatus.state == EmbeddingProviderState.READY && graphStatus.dimension == cachedNodeCount &&
+        graphStatus.count == cachedEdgeCount
+}
+
 public interface GraphStore {
     func upsert(nodes: ArrayList<GraphNode>, edges: ArrayList<GraphEdge>): Unit
+    func replace(nodes: ArrayList<GraphNode>, edges: ArrayList<GraphEdge>): Unit
+    func clear(): Unit
     func neighbors(query: GraphQuery): GraphContext
     func status(): VectorStoreStatus
 }
@@ -2291,18 +2467,36 @@ public class LocalGraphStore <: GraphStore {
     public init() {}
 
     public func upsert(nodes: ArrayList<GraphNode>, edges: ArrayList<GraphEdge>): Unit {
-        this.nodes.clear()
-        this.edges.clear()
-        this.activeVersion = ""
+        let nextNodes = ArrayList<GraphNode>()
+        let nextEdges = ArrayList<GraphEdge>()
+        var nextActiveVersion = ""
         for (node in nodes) {
-            if (this.activeVersion == "" && node.knowledgeVersion != "") {
-                this.activeVersion = node.knowledgeVersion
+            if (nextActiveVersion == "" && node.knowledgeVersion != "") {
+                nextActiveVersion = node.knowledgeVersion
             }
-            this.nodes.add(node)
+            nextNodes.add(node)
         }
         for (edge in edges) {
-            this.edges.add(edge)
+            nextEdges.add(edge)
         }
+        this.nodes = nextNodes
+        this.edges = nextEdges
+        this.activeVersion = nextActiveVersion
+    }
+
+    public func replace(nodes: ArrayList<GraphNode>, edges: ArrayList<GraphEdge>): Unit {
+        this.nodes = nodes
+        this.edges = edges
+        this.activeVersion = ""
+        for (node in nodes) {
+            if (node.knowledgeVersion != "") { this.activeVersion = node.knowledgeVersion; break }
+        }
+    }
+
+    public func clear(): Unit {
+        this.nodes = ArrayList<GraphNode>()
+        this.edges = ArrayList<GraphEdge>()
+        this.activeVersion = ""
     }
 
     public func neighbors(query: GraphQuery): GraphContext {
@@ -3334,6 +3528,9 @@ public class KnowledgeBase {
     private var servingQueryCache: CangjieQueryCache = CangjieQueryCache(256)
     private var lastVectorBuildProgress: VectorBuildProgress = VectorBuildProgress()
     private var lastVectorIndexBuildResult: VectorIndexBuildResult = VectorIndexBuildResult()
+    private var lastOverlayBuildStats: CkbOverlayBuildStats = CkbOverlayBuildStats()
+    private var lastCandidateMaterialization: CkbCandidateMaterializationResult = CkbCandidateMaterializationResult()
+    private var lastGraphBuildCache: CkbGraphBuildCache = CkbGraphBuildCache()
 
     public init(clock: FakeClock) {
         this.scheduler = Scheduler(clock)
@@ -3797,7 +3994,10 @@ public class KnowledgeBase {
         true
     }
 
-    public func commitCandidateToActiveAfterVectorReady(activeVersion: String, vectorCollection: String, vectorStatus: VectorStoreStatus, deadlineAtMillis!: Int64 = 0): Bool {
+    public func commitCandidateToActiveAfterVectorReady(activeVersion: String, vectorCollection: String,
+        vectorStatus: VectorStoreStatus, deadlineAtMillis!: Int64 = 0,
+        validatedServingSummary!: CkbValidatedServingIndexSummary = CkbValidatedServingIndexSummary(),
+        releaseExistingGraph!: Bool = false): Bool {
         this.ensureActiveCommitDeadline("candidate_active_commit_before", deadlineAtMillis)
         if (this.candidateIndex.size == 0 || this.candidateKnowledgeVersion == "") {
             this.failedCandidateVersion = if (this.candidateKnowledgeVersion == "") { "candidate_missing" } else { this.candidateKnowledgeVersion }
@@ -3807,6 +4007,12 @@ public class KnowledgeBase {
             this.failedCandidateVersion = this.candidateKnowledgeVersion
             return false
         }
+        let effectiveActiveVersion = if (activeVersion.trimAscii() == "") {
+            this.candidateKnowledgeVersion.replace("-candidate", "-active")
+        } else { activeVersion.trimAscii() }
+        let candidateRecordsEvidenceHash = ckbCandidateRecordsEvidenceHash(this.candidateIndex)
+        let validatedServingSummaryMatches = ckbValidatedServingIndexSummaryMatches(
+            validatedServingSummary, candidateRecordsEvidenceHash, effectiveActiveVersion)
         this.activeIndex.clear()
         var copied: Int64 = 0
         for (record in this.candidateIndex) {
@@ -3816,7 +4022,7 @@ public class KnowledgeBase {
             this.activeIndex.add(record)
             copied += 1
         }
-        this.activeKnowledgeVersion = if (activeVersion.trimAscii() == "") { this.candidateKnowledgeVersion.replace("-candidate", "-active") } else { activeVersion.trimAscii() }
+        this.activeKnowledgeVersion = effectiveActiveVersion
         var updated: Int64 = 0
         for (record in this.activeIndex) {
             if (updated % 256 == 0) {
@@ -3832,11 +4038,19 @@ public class KnowledgeBase {
         this.promoteVectorActiveCollection(vectorCollection)
         this.applyVectorStatus(vectorStatus)
         this.invalidateServingCacheOnActiveVersionChange()
-        let servingDiagnostic = this.rebuildServingIndexStatus(deadlineAtMillis: deadlineAtMillis)
+        let servingDiagnostic = if (validatedServingSummaryMatches) {
+            this.storage.servingIndexCount = validatedServingSummary.documentCount
+            this.storage.servingIndexVersion = validatedServingSummary.activeVersion
+            this.storage.servingIndexDiagnostic = validatedServingSummary.servingDiagnostic
+            ""
+        } else {
+            this.rebuildServingIndexStatus(deadlineAtMillis: deadlineAtMillis)
+        }
         if (servingDiagnostic != "") {
             throw Exception(servingDiagnostic)
         }
-        let graphDiagnostic = this.rebuildGraphIndex(deadlineAtMillis: deadlineAtMillis)
+        let graphDiagnostic = this.rebuildGraphIndex(deadlineAtMillis: deadlineAtMillis,
+            releaseExisting: releaseExistingGraph)
         if (graphDiagnostic != "") {
             throw Exception(graphDiagnostic)
         }
@@ -3889,6 +4103,9 @@ public class KnowledgeBase {
 
     func rawRecordSnapshotOverlayForOwner(owner: String, targetVersion: String, removedSourceIds: ArrayList<String>, current: ArrayList<RawRecord>): ArrayList<RawRecord> {
         let out = ArrayList<RawRecord>()
+        let stats = CkbOverlayBuildStats()
+        stats.activeRecords = this.rawRecords.size
+        stats.deltaRecords = current.size
         let removedIds = HashSet<String>(removedSourceIds)
         let currentIds = HashSet<String>()
         for (record in current) {
@@ -3899,11 +4116,17 @@ public class KnowledgeBase {
         for (record in this.rawRecords) {
             if (this.recordOwnedBy(record.metadata, owner, targetVersion)) { continue }
             if (record.sourceId != "" && (removedIds.contains(record.sourceId) || currentIds.contains(record.sourceId))) { continue }
-            out.add(this.copyRawRecord(record))
+            out.add(record)
         }
         for (record in current) {
-            out.add(this.copyRawRecord(record))
+            out.add(record)
         }
+        stats.removedRecords = removedSourceIds.size
+        stats.outputRecords = out.size
+        stats.processedRecords = this.rawRecords.size + current.size
+        stats.peakAuxiliaryRecords = removedIds.size + currentIds.size
+        stats.evidenceHash = contentHash(owner, "${targetVersion}:${stats.activeRecords}:${stats.deltaRecords}:${stats.removedRecords}:${stats.outputRecords}")
+        this.lastOverlayBuildStats = stats
         out
     }
 
@@ -3928,14 +4151,24 @@ public class KnowledgeBase {
 
     public func activeRecordSnapshotOverlay(delta: ArrayList<NormalizedRecord>): ArrayList<NormalizedRecord> {
         let out = ArrayList<NormalizedRecord>()
+        let replacementKeys = HashSet<String>()
+        for (record in delta) { replacementKeys.add(this.normalizedLogicalKey(record)) }
         for (record in this.activeIndex) {
-            if (!this.normalizedRecordReplacedByDelta(record, delta)) {
-                out.add(this.copyNormalizedRecord(record))
+            if (!replacementKeys.contains(this.normalizedLogicalKey(record))) {
+                out.add(record)
             }
         }
         for (record in delta) {
-            out.add(this.copyNormalizedRecord(record))
+            out.add(record)
         }
+        let stats = CkbOverlayBuildStats()
+        stats.activeRecords = this.activeIndex.size
+        stats.deltaRecords = delta.size
+        stats.outputRecords = out.size
+        stats.processedRecords = this.activeIndex.size + delta.size
+        stats.peakAuxiliaryRecords = replacementKeys.size
+        stats.evidenceHash = contentHash("overlay", "${stats.activeRecords}:${stats.deltaRecords}:${stats.outputRecords}")
+        this.lastOverlayBuildStats = stats
         out
     }
 
@@ -3958,32 +4191,38 @@ public class KnowledgeBase {
             if (record.sourceId != "" && deltaIds.contains(record.sourceId)) {
                 continue
             }
-            out.add(this.copyNormalizedRecord(record))
+            out.add(record)
         }
         for (record in delta) {
-            out.add(this.copyNormalizedRecord(record))
+            out.add(record)
         }
+        let stats = CkbOverlayBuildStats()
+        stats.activeRecords = this.activeIndex.size
+        stats.deltaRecords = delta.size
+        stats.removedRecords = removedSourceIds.size
+        stats.outputRecords = out.size
+        stats.processedRecords = this.activeIndex.size + delta.size
+        stats.peakAuxiliaryRecords = deltaIds.size + removedIds.size
+        stats.evidenceHash = contentHash(owner, "${targetVersion}:${stats.activeRecords}:${stats.deltaRecords}:${stats.removedRecords}:${stats.outputRecords}")
+        this.lastOverlayBuildStats = stats
         out
+    }
+
+    public func overlayBuildStats(): CkbOverlayBuildStats {
+        this.lastOverlayBuildStats
+    }
+
+    public func candidateMaterializationStats(): CkbCandidateMaterializationResult {
+        this.lastCandidateMaterialization
+    }
+
+    private func normalizedLogicalKey(record: NormalizedRecord): String {
+        if (record.sourceId != "") { return "id:${record.sourceId}" }
+        "fallback:${record.recordKind}:${contentHash(record.title, record.citation)}"
     }
 
     private func recordOwnedBy(metadata: KnowledgeMetadata, owner: String, targetVersion: String): Bool {
         metadata.crawlAt == owner && (targetVersion == "" || metadata.targetVersion == targetVersion)
-    }
-
-    private func normalizedRecordReplacedByDelta(record: NormalizedRecord, delta: ArrayList<NormalizedRecord>): Bool {
-        for (candidate in delta) {
-            if (this.normalizedRecordSameIdentity(record, candidate)) {
-                return true
-            }
-        }
-        false
-    }
-
-    private func normalizedRecordSameIdentity(left: NormalizedRecord, right: NormalizedRecord): Bool {
-        if (left.sourceId != "" && right.sourceId != "") {
-            return left.sourceId == right.sourceId
-        }
-        left.recordKind == right.recordKind && left.title == right.title && left.citation == right.citation
     }
 
     private func copyNormalizedRecord(record: NormalizedRecord): NormalizedRecord {
@@ -4127,6 +4366,324 @@ public class KnowledgeBase {
         this.buildVectorIndexForRecordsInternal(records, collection, progressSink: progressSink, deadlineAtMillis: deadlineAtMillis, applyToStorage: false)
     }
 
+    public func buildVectorIndexForRecordsDurable(records: ArrayList<NormalizedRecord>, collection: String, store: FileKnowledgeStore, context: CkbCandidateAcquisitionContext, progressSink!: VectorBuildProgressSink = NoopVectorBuildProgressSink(), deadlineAtMillis!: Int64 = 0): VectorIndexBuildResult {
+        let result = VectorIndexBuildResult()
+        result.vectorRecordsMaterialized = false
+        result.persistedVectorCollection = collection
+        if (!context.valid()) {
+            result.status = "candidate_acquisition_context_invalid"
+            result.diagnostic = result.status
+            return result
+        }
+        let actualRecordsEvidenceHash = ckbCandidateRecordsEvidenceHash(records)
+        if (context.recordsEvidenceHash != actualRecordsEvidenceHash) {
+            result.status = "candidate_records_evidence_mismatch"
+            result.diagnostic = result.status
+            return result
+        }
+        _ = store.cleanupVectorBuildStaleTemps(context.acquisitionId)
+        let progress = VectorBuildProgress()
+        progress.runId = if (context.schedulerRunId != "") { context.schedulerRunId } else { context.acquisitionId }
+        progress.collection = collection
+        progress.targetCollection = collection
+        progress.total = records.size
+        progress.batchSize = CkbCandidateDurableSchema.VECTOR_BATCH_SIZE
+        progress.startedAtMillis = ckbCoreNowMillis()
+        progress.updatedAtMillis = progress.startedAtMillis
+        progress.state = "running"
+        this.lastVectorBuildProgress = progress
+        try { progressSink.onVectorBuildStarted(progress) } catch (_: Exception) { () }
+
+        var descriptor = store.loadVectorSpoolCheckpoint(context, collection)
+        var resumeValid = descriptor.valid && descriptor.total == records.size
+        if (resumeValid) {
+            let ready = this.vectorStore.ensureReadyCollection(collection)
+            resumeValid = ready.state == EmbeddingProviderState.READY && ready.count <= descriptor.total
+            let restoreCommitted = resumeValid && ready.count < descriptor.completed
+            if (restoreCommitted) {
+                let empty = ArrayList<VectorRecord>()
+                let recreated = this.vectorStore.recreateWithDeadline(collection, empty, deadlineAtMillis)
+                resumeValid = recreated.state == EmbeddingProviderState.READY
+            }
+            var committedStart: Int64 = 0
+            for (index in 0..descriptor.batchRelativePaths.size) {
+                if (!resumeValid) { break }
+                let batch = store.loadVectorSpoolBatch(descriptor.batchRelativePaths[index], descriptor.batchEvidenceHashes[index])
+                let committedCount = try { Int64.parse(descriptor.batchRecordCounts[index]) } catch (_: Exception) { -1 }
+                if (!batch.valid || batch.records.size != committedCount || committedStart + committedCount > descriptor.completed) {
+                    resumeValid = false
+                    result.diagnostic = if (!batch.valid) { batch.diagnostic } else { "vector_spool_batch_count_mismatch" }
+                    break
+                }
+                for (offset in 0..committedCount) {
+                    if (!ckbVectorRecordMatchesSource(batch.records[offset], records[committedStart + offset])) {
+                        resumeValid = false
+                        result.diagnostic = "vector_spool_record_evidence_mismatch"
+                        break
+                    }
+                }
+                if (resumeValid && restoreCommitted) {
+                    let restored = this.vectorStore.upsertBatchWithDeadline(collection, batch.records, deadlineAtMillis)
+                    if (restored.state != EmbeddingProviderState.READY) {
+                        resumeValid = false
+                        result.diagnostic = restored.degradedReason
+                    }
+                }
+                committedStart += committedCount
+            }
+            if (committedStart != descriptor.completed) { resumeValid = false; result.diagnostic = "vector_spool_committed_cursor_mismatch" }
+        }
+        if (!resumeValid) {
+            _ = store.deleteS4ArtifactTree("metadata/vector-builds/${context.acquisitionId}")
+            descriptor = CkbVectorSpoolDescriptor()
+            descriptor.acquisitionId = context.acquisitionId
+            descriptor.candidateVersion = context.candidateVersion
+            descriptor.planHash = context.planHash
+            descriptor.recordsEvidenceHash = context.recordsEvidenceHash
+            descriptor.collection = collection
+            descriptor.total = records.size
+            descriptor.batchSize = CkbCandidateDurableSchema.VECTOR_BATCH_SIZE
+            descriptor.status = "running"
+            let empty = ArrayList<VectorRecord>()
+            let recreated = this.vectorStore.recreateWithDeadline(collection, empty, deadlineAtMillis)
+            if (recreated.state != EmbeddingProviderState.READY) {
+                result.status = recreated.state
+                result.diagnostic = recreated.degradedReason
+                return result
+            }
+            store.saveVectorSpoolCheckpoint(descriptor)
+        } else {
+            descriptor.failed = 0
+            descriptor.status = "running"
+            store.saveVectorSpoolCheckpoint(descriptor)
+            progress.completed = descriptor.completed
+            progress.reused = descriptor.reused
+            progress.embedded = descriptor.embedded
+        }
+
+        let embeddingStatus = this.embeddingProvider.status()
+        let budget = ckbEmbeddingTextBudgetFromStatus(embeddingStatus)
+        let budgeter = CkbEmbeddingTextBudgeter(budget)
+        var start = descriptor.completed
+        var batchIndex = descriptor.batchRelativePaths.size
+        while (start < records.size) {
+            if (ckbDeadlineExceeded(deadlineAtMillis)) {
+                result.status = EmbeddingProviderState.DEGRADED
+                result.diagnostic = "vector_build_deadline_exceeded:${collection}:${start}:${records.size}"
+                result.spool = descriptor
+                return result
+            }
+            var end = start
+            var plannedBufferedBytes: Int64 = 0
+            while (end < records.size && end - start < descriptor.batchSize) {
+                let estimated = ckbVectorSourceBufferedBytes(records[end], this.activeEmbeddingDimensions(), ordinal: end)
+                if (estimated > CkbCandidateDurableSchema.VECTOR_MAX_BUFFER_BYTES) {
+                    descriptor.status = "vector_record_oversized"
+                    store.saveVectorSpoolCheckpoint(descriptor)
+                    result.status = EmbeddingProviderState.DEGRADED
+                    result.diagnostic = "vector_record_oversized:${ckbReleaseEvidenceHash(records[end].sourceId)}:${estimated}:${CkbCandidateDurableSchema.VECTOR_MAX_BUFFER_BYTES}"
+                    result.spool = descriptor
+                    return result
+                }
+                if (end > start && plannedBufferedBytes + estimated > CkbCandidateDurableSchema.VECTOR_MAX_BUFFER_BYTES) { break }
+                plannedBufferedBytes += estimated
+                end += 1
+            }
+            let pointIds = ArrayList<String>()
+            for (index in start..end) {
+                // Migrate both current stable IDs and the pre-S4
+                // ordinal/weak-hash IDs in one bounded request (128 * 2).
+                pointIds.add(ckbVectorPointId(records[index]))
+                pointIds.add(ckbLegacyVectorPointId(records[index], index))
+            }
+            var batchBufferedBytes = plannedBufferedBytes
+            progress.currentBatch = batchIndex
+            progress.currentBatchStart = start
+            progress.currentBatchEnd = end
+            progress.lookupRequested = pointIds.size
+            progress.lookupFound = 0
+            progress.lookupStatus = "running"
+            progress.lookupDurationMillis = 0
+            progress.lookupTimedOut = false
+            progress.updatedAtMillis = ckbCoreNowMillis()
+            try { progressSink.onVectorBatchStarted(progress) } catch (_: Exception) { () }
+            let lookupStartedAtMillis = ckbCoreNowMillis()
+            let lookup = this.vectorStore.lookupBatchWithDeadline(this.vectorCollection, pointIds, deadlineAtMillis)
+            if (lookup.peakBufferedRecords > descriptor.peakBufferedRecords) { descriptor.peakBufferedRecords = lookup.peakBufferedRecords }
+            progress.lookupFound = lookup.found
+            progress.lookupStatus = lookup.status
+            progress.lookupDurationMillis = ckbCoreNowMillis() - lookupStartedAtMillis
+            progress.lookupTimedOut = lookup.status.contains("deadline") || lookup.status.contains("timeout")
+            if (!lookup.ok) {
+                progress.state = lookup.status
+                progress.diagnostic = lookup.diagnostic
+                progress.updatedAtMillis = ckbCoreNowMillis()
+                try { progressSink.onVectorBatchFinished(progress) } catch (_: Exception) { () }
+                result.status = lookup.status
+                result.diagnostic = lookup.diagnostic
+                result.spool = descriptor
+                return result
+            }
+            let reusable = HashMap<String, ArrayList<Float64>>()
+            for (record in lookup.records) {
+                reusable[ckbVectorRecordStablePointId(record)] = record.vector
+            }
+            lookup.records.clear()
+            pointIds.clear()
+            let outputBatch = ArrayList<VectorRecord>()
+            var batchReused: Int64 = 0
+            var batchEmbedded: Int64 = 0
+            var cursor = start
+            while (cursor < end) {
+                let source = records[cursor]
+                let pointId = ckbVectorPointId(source)
+                if (reusable.contains(pointId)) {
+                    let output = this.vectorRecordFrom(source, reusable[pointId], pointId)
+                    outputBatch.add(output)
+                    batchReused += 1
+                    if (reusable.size + outputBatch.size > descriptor.peakBufferedRecords) { descriptor.peakBufferedRecords = reusable.size + outputBatch.size }
+                    cursor += 1
+                    continue
+                }
+                let texts = ArrayList<String>()
+                let sources = ArrayList<NormalizedRecord>()
+                var preparedBytes: Int64 = 0
+                var originalBytes: Int64 = 0
+                var truncated: Int64 = 0
+                while (cursor < end && texts.size < budget.maxBatchItems) {
+                    let candidate = records[cursor]
+                    let candidatePoint = ckbVectorPointId(candidate)
+                    if (reusable.contains(candidatePoint)) {
+                        if (texts.size == 0) {
+                            let output = this.vectorRecordFrom(candidate, reusable[candidatePoint], candidatePoint)
+                            outputBatch.add(output)
+                            batchReused += 1
+                            if (reusable.size + outputBatch.size > descriptor.peakBufferedRecords) { descriptor.peakBufferedRecords = reusable.size + outputBatch.size }
+                            cursor += 1
+                            continue
+                        }
+                        break
+                    }
+                    let prepared = budgeter.prepare(this.vectorText(candidate))
+                    if (texts.size > 0 && budget.maxBatchBytes > 0 && preparedBytes + prepared.preparedBytes > budget.maxBatchBytes) {
+                        break
+                    }
+                    texts.add(prepared.text)
+                    sources.add(candidate)
+                    preparedBytes += prepared.preparedBytes
+                    originalBytes += prepared.originalBytes
+                    if (prepared.truncated) { truncated += 1 }
+                    cursor += 1
+                }
+                if (texts.size == 0) { continue }
+                progress.currentBatch = batchIndex
+                progress.currentBatchStart = start
+                progress.currentBatchEnd = end
+                progress.inputBytes = originalBytes
+                progress.preparedBytes = preparedBytes
+                progress.updatedAtMillis = ckbCoreNowMillis()
+                try { progressSink.onVectorBatchStarted(progress) } catch (_: Exception) { () }
+                let embedded = this.embeddingProvider.embedWithDeadline(texts, this.activeEmbeddingModel(), this.activeEmbeddingDimensions(), deadlineAtMillis)
+                result.truncatedCount += truncated + embedded.truncatedCount
+                if (embedded.status.state != EmbeddingProviderState.READY || embedded.vectors.size != texts.size) {
+                    descriptor.failed += texts.size
+                    descriptor.status = "embedding_batch_failed"
+                    store.saveVectorSpoolCheckpoint(descriptor)
+                    result.status = EmbeddingProviderState.DEGRADED
+                    result.diagnostic = if (embedded.status.degradedReason != "") { embedded.status.degradedReason } else { "embedding_vector_count_mismatch" }
+                    result.spool = descriptor
+                    return result
+                }
+                for (index in 0..texts.size) {
+                    let item = sources[index]
+                    let output = this.vectorRecordFrom(item, embedded.vectors[index], ckbVectorPointId(item))
+                    outputBatch.add(output)
+                }
+                if (reusable.size + outputBatch.size > descriptor.peakBufferedRecords) { descriptor.peakBufferedRecords = reusable.size + outputBatch.size }
+                batchEmbedded += texts.size
+            }
+            if (outputBatch.size != end - start) {
+                descriptor.failed += end - start - outputBatch.size
+                descriptor.status = "vector_batch_cardinality_mismatch"
+                store.saveVectorSpoolCheckpoint(descriptor)
+                result.status = EmbeddingProviderState.DEGRADED
+                result.diagnostic = "vector_batch_cardinality_mismatch:${outputBatch.size}:${end - start}"
+                result.spool = descriptor
+                return result
+            }
+            if (outputBatch.size > descriptor.peakBufferedRecords) { descriptor.peakBufferedRecords = outputBatch.size }
+            let preparedPath = store.writeVectorSpoolBatch(descriptor, batchIndex, outputBatch, deadlineAtMillis: deadlineAtMillis)
+            let preparedHash = store.vectorSpoolBatchEvidenceHash(outputBatch)
+            let upserted = this.vectorStore.upsertBatchWithDeadline(collection, outputBatch, deadlineAtMillis)
+            if (upserted.state != EmbeddingProviderState.READY) {
+                _ = store.deleteS4ArtifactFile(preparedPath)
+                descriptor.status = "vector_batch_upsert_failed"
+                store.saveVectorSpoolCheckpoint(descriptor)
+                result.status = upserted.state
+                result.diagnostic = upserted.degradedReason
+                result.spool = descriptor
+                return result
+            }
+            descriptor.batchRelativePaths.add(preparedPath)
+            descriptor.batchEvidenceHashes.add(preparedHash)
+            descriptor.batchRecordCounts.add("${outputBatch.size}")
+            descriptor.reused += batchReused
+            descriptor.embedded += batchEmbedded
+            if (batchBufferedBytes > descriptor.peakBufferedBytes) { descriptor.peakBufferedBytes = batchBufferedBytes }
+            descriptor.completed = end
+            descriptor.status = "running"
+            store.saveVectorSpoolCheckpoint(descriptor)
+            progress.completed = descriptor.completed
+            progress.reused = descriptor.reused
+            progress.embedded = descriptor.embedded
+            progress.currentBatch = batchIndex
+            progress.currentBatchStart = start
+            progress.currentBatchEnd = end
+            progress.updatedAtMillis = ckbCoreNowMillis()
+            progress.elapsedMillis = progress.updatedAtMillis - progress.startedAtMillis
+            try { progressSink.onVectorBatchFinished(progress) } catch (_: Exception) { () }
+            batchIndex += 1
+            start = end
+        }
+        let verified = this.vectorStore.status(collection)
+        if (verified.state != EmbeddingProviderState.READY || verified.count != records.size) {
+            descriptor.status = "vector_count_mismatch"
+            store.saveVectorSpoolCheckpoint(descriptor)
+            result.status = verified.state
+            result.diagnostic = "vector_count_mismatch:${verified.count}:${records.size}"
+            result.spool = descriptor
+            return result
+        }
+        descriptor.valid = true
+        descriptor.status = "completed"
+        descriptor.completed = records.size
+        descriptor.failed = 0
+        if (descriptor.reused + descriptor.embedded != descriptor.total) {
+            result.status = EmbeddingProviderState.DEGRADED
+            result.diagnostic = "vector_committed_counter_mismatch:${descriptor.reused}:${descriptor.embedded}:${descriptor.total}"
+            result.spool = descriptor
+            return result
+        }
+        store.saveVectorSpoolCheckpoint(descriptor, completed: true)
+        progress.state = EmbeddingProviderState.READY
+        progress.completed = descriptor.completed
+        progress.reused = descriptor.reused
+        progress.embedded = descriptor.embedded
+        progress.updatedAtMillis = ckbCoreNowMillis()
+        progress.elapsedMillis = progress.updatedAtMillis - progress.startedAtMillis
+        try { progressSink.onVectorBuildFinished(progress) } catch (_: Exception) { () }
+        result.ok = true
+        result.status = EmbeddingProviderState.READY
+        result.vectorCount = descriptor.completed
+        result.reused = descriptor.reused
+        result.embedded = descriptor.embedded
+        result.peakBufferedRecords = descriptor.peakBufferedRecords
+        result.peakBufferedBytes = descriptor.peakBufferedBytes
+        result.elapsedMillis = progress.elapsedMillis
+        result.spool = descriptor
+        result
+    }
+
     private func buildVectorIndexForRecordsInternal(records: ArrayList<NormalizedRecord>, collection: String, progressSink!: VectorBuildProgressSink = NoopVectorBuildProgressSink(), deadlineAtMillis!: Int64 = 0, applyToStorage!: Bool = false): VectorIndexBuildResult {
         let result = VectorIndexBuildResult()
         let progress = VectorBuildProgress()
@@ -4215,7 +4772,7 @@ public class KnowledgeBase {
         let pendingOrdinals = ArrayList<Int64>()
         for (i in 0..records.size) {
             let record = records[i]
-            if (reusablePoints.contains(ckbVectorPointId(record, i))) {
+            if (reusablePoints.contains(ckbVectorPointId(record))) {
                 continue
             }
             rawTexts.add(this.vectorText(record))
@@ -4288,7 +4845,7 @@ public class KnowledgeBase {
             for (i in 0..texts.size) {
                 let source = pendingRecords[textBatch.startIndex + i]
                 let ordinal = pendingOrdinals[textBatch.startIndex + i]
-                vectorRecords.add(this.vectorRecordFrom(source, batch.vectors[i], ckbVectorPointId(source, ordinal)))
+                vectorRecords.add(this.vectorRecordFrom(source, batch.vectors[i], ckbVectorPointId(source)))
             }
             vectorStatus = this.vectorStore.upsertBatchWithDeadline(effectiveVectorCollection, vectorRecords, deadlineAtMillis)
             if (vectorStatus.state != EmbeddingProviderState.READY) {
@@ -4373,7 +4930,7 @@ public class KnowledgeBase {
                 return out
             }
             let source = records[i]
-            let pointId = ckbVectorPointId(source, i)
+            let pointId = ckbVectorPointId(source)
             let reusable = this.reusableVectorRecordForPoint(index, source, pointId)
             if (reusable.pointId != "") {
                 out.add(reusable)
@@ -4487,11 +5044,20 @@ public class KnowledgeBase {
         let servingIndex = buildCangjieServingIndex(this.activeIndex, activeKnowledgeVersion: this.activeKnowledgeVersion, deadlineAtMillis: deadlineAtMillis)
         let deadlineDiagnostic = cangjieServingIndexDeadlineDiagnostic(servingIndex)
         if (deadlineDiagnostic != "") {
+            servingIndex.records.clear()
+            servingIndex.documents.clear()
+            servingIndex.exactEntries.clear()
             return deadlineDiagnostic
         }
-        this.storage.servingIndexCount = servingIndex.documents.size
-        this.storage.servingIndexVersion = servingIndex.activeKnowledgeVersion
-        this.storage.servingIndexDiagnostic = cangjieServingIndexDiagnostics(servingIndex)
+        let servingIndexCount = servingIndex.documents.size
+        let servingIndexVersion = servingIndex.activeKnowledgeVersion
+        let servingIndexDiagnostic = cangjieServingIndexDiagnostics(servingIndex)
+        servingIndex.records.clear()
+        servingIndex.documents.clear()
+        servingIndex.exactEntries.clear()
+        this.storage.servingIndexCount = servingIndexCount
+        this.storage.servingIndexVersion = servingIndexVersion
+        this.storage.servingIndexDiagnostic = servingIndexDiagnostic
         ""
     }
 
@@ -4502,10 +5068,14 @@ public class KnowledgeBase {
         }
     }
 
-    private func rebuildGraphIndex(deadlineAtMillis!: Int64 = 0): String {
+    private func rebuildGraphIndex(deadlineAtMillis!: Int64 = 0, releaseExisting!: Bool = false): String {
         let beforeBuild = ckbDeadlineGuard("graph_build_before", deadlineAtMillis)
         if (beforeBuild.exceeded) {
             return beforeBuild.diagnostic
+        }
+        if (releaseExisting) {
+            this.graphStore.clear()
+            this.lastGraphBuildCache = CkbGraphBuildCache()
         }
         let graph = buildGraphFromRecords(this.activeIndex, this.activeKnowledgeVersion, deadlineAtMillis: deadlineAtMillis)
         if (!graph.ok) {
@@ -4515,7 +5085,7 @@ public class KnowledgeBase {
         if (beforeUpsert.exceeded) {
             return beforeUpsert.diagnostic
         }
-        this.graphStore.upsert(graph.nodes, graph.edges)
+        this.graphStore.replace(graph.nodes, graph.edges)
         let afterUpsert = ckbDeadlineGuard("graph_upsert_after", deadlineAtMillis)
         if (afterUpsert.exceeded) {
             return afterUpsert.diagnostic
@@ -4525,7 +5095,25 @@ public class KnowledgeBase {
         this.storage.graphState = graphStatus.state
         this.storage.graphNodeCount = graphStatus.dimension
         this.storage.graphEdgeCount = graphStatus.count
+        this.cacheGraphBuild(graph, graphStatus)
+        if (!this.lastGraphBuildCache.valid) {
+            return "graph_store_commit_mismatch:expected_nodes=${graph.nodes.size}:actual_nodes=${graphStatus.dimension}:expected_edges=${graph.edges.size}:actual_edges=${graphStatus.count}:state=${graphStatus.state}"
+        }
         ""
+    }
+
+    private func cacheGraphBuild(graph: GraphBuildResult, graphStatus: VectorStoreStatus): Unit {
+        let cache = CkbGraphBuildCache()
+        cache.recordsEvidenceHash = ckbCandidateRecordsEvidenceHash(this.activeIndex)
+        cache.activeVersion = this.activeKnowledgeVersion
+        cache.nodeCount = graph.nodes.size
+        cache.edgeCount = graph.edges.size
+        cache.graphEvidenceHash = ckbGraphBuildEvidenceHash(graph)
+        cache.graph = graph
+        cache.valid = graph.ok && graph.processed == graph.total && graph.total == this.activeIndex.size &&
+            graphStatus.state == EmbeddingProviderState.READY && graphStatus.dimension == cache.nodeCount &&
+            graphStatus.count == cache.edgeCount && cache.graphEvidenceHash != ""
+        this.lastGraphBuildCache = cache
     }
 
     private func applyVectorStatus(status: VectorStoreStatus): Unit {
@@ -4606,7 +5194,7 @@ public class KnowledgeBase {
 
     public func persistActiveSnapshot(store: FileKnowledgeStore, deadlineAtMillis!: Int64 = 0): Unit {
         store.ensureLayout()
-        let graph = this.activeGraphBuild(deadlineAtMillis: deadlineAtMillis)
+        let graph = this.activeGraphBuildForSnapshot(deadlineAtMillis)
         if (!graph.ok) {
             throw Exception(graph.diagnostic)
         }
@@ -4615,18 +5203,28 @@ public class KnowledgeBase {
 
     public func persistActiveSnapshotUsingVectorRecords(store: FileKnowledgeStore, vectorRecords: ArrayList<VectorRecord>, persistVectorFile!: Bool = true, deadlineAtMillis!: Int64 = 0, stageSink!: CkbStagedRebuildStageSink = NoopCkbStagedRebuildStageSink()): Unit {
         store.ensureLayout()
-        let graph = this.activeGraphBuild(deadlineAtMillis: deadlineAtMillis)
+        let graph = this.activeGraphBuildForSnapshot(deadlineAtMillis)
         if (!graph.ok) {
             throw Exception(graph.diagnostic)
         }
         store.writeActiveSnapshotTransaction(this.status(), this.rawRecords, this.activeIndex, this.activeIndex, vectorRecords, this.vectorCollection, graph, persistVectorFile: persistVectorFile, deadlineAtMillis: deadlineAtMillis, stageSink: stageSink)
     }
 
-    public func persistCandidateSnapshot(store: FileKnowledgeStore): Unit {
+    public func persistActiveSnapshotUsingVectorBuild(store: FileKnowledgeStore, vectorBuild: VectorIndexBuildResult, persistVectorFile!: Bool = true, deadlineAtMillis!: Int64 = 0, stageSink!: CkbStagedRebuildStageSink = NoopCkbStagedRebuildStageSink()): Unit {
         store.ensureLayout()
-        store.saveCandidateRaw(this.rawRecords, this.candidateKnowledgeVersion)
-        store.saveCandidateNormalized(this.candidateIndex, this.candidateKnowledgeVersion)
-        store.saveMetadata(this.status())
+        let graph = this.activeGraphBuildForSnapshot(deadlineAtMillis)
+        if (!graph.ok) { throw Exception(graph.diagnostic) }
+        store.writeActiveSnapshotTransaction(this.status(), this.rawRecords, this.activeIndex, this.activeIndex, vectorBuild.vectorRecords, this.vectorCollection, graph, persistVectorFile: persistVectorFile, deadlineAtMillis: deadlineAtMillis, stageSink: stageSink, vectorSpool: vectorBuild.spool)
+    }
+
+    public func persistCandidateSnapshot(store: FileKnowledgeStore, deadlineAtMillis!: Int64 = 0): Unit {
+        store.ensureLayout()
+        let materialization = store.saveCandidateSnapshotImmutable(this.rawRecords, this.candidateIndex, this.candidateKnowledgeVersion, deadlineAtMillis: deadlineAtMillis)
+        this.lastCandidateMaterialization = materialization
+        if (!materialization.ok) {
+            throw Exception(materialization.diagnostic)
+        }
+        store.saveCandidateLifecycleMetadata(this.status())
     }
 
     public func activeVectorRecords(): ArrayList<VectorRecord> {
@@ -4656,7 +5254,7 @@ public class KnowledgeBase {
             }
             for (i in 0..texts.size) {
                 let source = this.activeIndex[textBatch.startIndex + i]
-                result.records.add(this.vectorRecordFrom(source, batch.vectors[i], ckbVectorPointId(source, textBatch.startIndex + i)))
+                result.records.add(this.vectorRecordFrom(source, batch.vectors[i], ckbVectorPointId(source)))
             }
             result.processed += texts.size
         }
@@ -4668,6 +5266,34 @@ public class KnowledgeBase {
 
     public func activeGraphBuild(deadlineAtMillis!: Int64 = 0): GraphBuildResult {
         buildGraphFromRecords(this.activeIndex, this.activeKnowledgeVersion, deadlineAtMillis: deadlineAtMillis)
+    }
+
+    private func activeGraphBuildForSnapshot(deadlineAtMillis: Int64): GraphBuildResult {
+        let cache = this.lastGraphBuildCache
+        let graphStatus = this.graphStore.status()
+        if (ckbGraphSnapshotBindingMatches(cache.valid, cache.activeVersion, this.activeKnowledgeVersion,
+            cache.recordsEvidenceHash, ckbCandidateRecordsEvidenceHash(this.activeIndex),
+            cache.nodeCount, cache.graph.nodes.size, cache.edgeCount, cache.graph.edges.size,
+            cache.graphEvidenceHash, ckbGraphBuildEvidenceHash(cache.graph), graphStatus)) {
+            return cache.graph
+        }
+        let rebuiltDiagnostic = this.rebuildGraphIndex(deadlineAtMillis: deadlineAtMillis)
+        if (rebuiltDiagnostic != "") {
+            let failed = GraphBuildResult()
+            failed.ok = false
+            failed.diagnostic = rebuiltDiagnostic
+            failed.total = this.activeIndex.size
+            return failed
+        }
+        let rebuiltCache = this.lastGraphBuildCache
+        if (!rebuiltCache.valid) {
+            let failed = GraphBuildResult()
+            failed.ok = false
+            failed.diagnostic = "graph_cache_invalid_after_rebuild"
+            failed.total = this.activeIndex.size
+            return failed
+        }
+        rebuiltCache.graph
     }
 
     public func rawRecordCount(): Int64 {
@@ -5300,6 +5926,8 @@ private func insertVectorResult(out: ArrayList<VectorSearchResult>, record: Vect
 
 private func buildGraphFromRecords(records: ArrayList<NormalizedRecord>, knowledgeVersion: String, deadlineAtMillis!: Int64 = 0): GraphBuildResult {
     let result = GraphBuildResult()
+    let nodeIds = HashSet<String>()
+    let edgeIds = HashSet<String>()
     result.total = records.size
     for (record in records) {
         if (result.processed % 64 == 0) {
@@ -5310,76 +5938,103 @@ private func buildGraphFromRecords(records: ArrayList<NormalizedRecord>, knowled
                 return result
             }
         }
-        let citationNode = graphNode("citation:${record.sourceId}", GraphNodeTypes.CITATION, record.citation, record.sourceId, knowledgeVersion)
-        addGraphNode(result.nodes, citationNode)
+        let citationNodeId = addGraphNode(result.nodes, nodeIds, "citation:${record.sourceId}",
+            GraphNodeTypes.CITATION, record.citation, record.sourceId, knowledgeVersion)
         if (record.metadata.repo != "") {
-            let repoNode = graphNode("repo:${record.metadata.repo}", GraphNodeTypes.REPO, record.metadata.repo, record.sourceId, knowledgeVersion)
-            addGraphNode(result.nodes, repoNode)
-            addGraphEdge(result.edges, GraphEdgeTypes.CITES, repoNode.nodeId, citationNode.nodeId, record.sourceId, knowledgeVersion)
+            let repoNodeId = addGraphNode(result.nodes, nodeIds, "repo:${record.metadata.repo}",
+                GraphNodeTypes.REPO, record.metadata.repo, record.sourceId, knowledgeVersion)
+            addGraphEdge(result.edges, edgeIds, GraphEdgeTypes.CITES, repoNodeId, citationNodeId, record.sourceId, knowledgeVersion)
         }
         if (record.metadata.path != "") {
-            let pathNode = graphNode("path:${record.metadata.repo}:${record.metadata.path}", GraphNodeTypes.PATH, record.metadata.path, record.sourceId, knowledgeVersion)
-            addGraphNode(result.nodes, pathNode)
-            addGraphEdge(result.edges, GraphEdgeTypes.CONTAINS, "repo:${record.metadata.repo}", pathNode.nodeId, record.sourceId, knowledgeVersion)
-            addGraphEdge(result.edges, GraphEdgeTypes.CITES, pathNode.nodeId, citationNode.nodeId, record.sourceId, knowledgeVersion)
+            let pathNodeId = addGraphNode(result.nodes, nodeIds, "path:${record.metadata.repo}:${record.metadata.path}",
+                GraphNodeTypes.PATH, record.metadata.path, record.sourceId, knowledgeVersion)
+            addGraphEdge(result.edges, edgeIds, GraphEdgeTypes.CONTAINS, "repo:${record.metadata.repo}", pathNodeId, record.sourceId, knowledgeVersion)
+            addGraphEdge(result.edges, edgeIds, GraphEdgeTypes.CITES, pathNodeId, citationNodeId, record.sourceId, knowledgeVersion)
         }
         if (record.metadata.symbol != "") {
-            let symbolNode = graphNode("symbol:${record.metadata.repo}:${record.metadata.symbol}", GraphNodeTypes.SYMBOL, record.metadata.symbol, record.sourceId, knowledgeVersion)
-            addGraphNode(result.nodes, symbolNode)
+            let symbolNodeId = addGraphNode(result.nodes, nodeIds, "symbol:${record.metadata.repo}:${record.metadata.symbol}",
+                GraphNodeTypes.SYMBOL, record.metadata.symbol, record.sourceId, knowledgeVersion)
             let fromNode = if (record.metadata.path != "") { "path:${record.metadata.repo}:${record.metadata.path}" } else { "repo:${record.metadata.repo}" }
-            addGraphEdge(result.edges, GraphEdgeTypes.DEFINES, fromNode, symbolNode.nodeId, record.sourceId, knowledgeVersion)
-            addGraphEdge(result.edges, GraphEdgeTypes.CITES, symbolNode.nodeId, citationNode.nodeId, record.sourceId, knowledgeVersion)
+            addGraphEdge(result.edges, edgeIds, GraphEdgeTypes.DEFINES, fromNode, symbolNodeId, record.sourceId, knowledgeVersion)
+            addGraphEdge(result.edges, edgeIds, GraphEdgeTypes.CITES, symbolNodeId, citationNodeId, record.sourceId, knowledgeVersion)
         }
         if (record.metadata.sourceType == SourceTypes.DOC || record.metadata.sourceType == SourceTypes.WEBSITE) {
-            let docNode = graphNode("doc:${record.sourceId}", if (record.metadata.sourceType == SourceTypes.DOC) { GraphNodeTypes.DOC } else { GraphNodeTypes.SECTION }, record.title, record.sourceId, knowledgeVersion)
-            addGraphNode(result.nodes, docNode)
-            addGraphEdge(result.edges, GraphEdgeTypes.CITES, docNode.nodeId, citationNode.nodeId, record.sourceId, knowledgeVersion)
+            let docNodeId = addGraphNode(result.nodes, nodeIds, "doc:${record.sourceId}",
+                if (record.metadata.sourceType == SourceTypes.DOC) { GraphNodeTypes.DOC } else { GraphNodeTypes.SECTION },
+                record.title, record.sourceId, knowledgeVersion)
+            addGraphEdge(result.edges, edgeIds, GraphEdgeTypes.CITES, docNodeId, citationNodeId, record.sourceId, knowledgeVersion)
         }
         if (record.metadata.sourceType == SourceTypes.COMMUNITY) {
-            let issueNode = graphNode("issue:${record.sourceId}", GraphNodeTypes.ISSUE, record.title, record.sourceId, knowledgeVersion)
-            addGraphNode(result.nodes, issueNode)
+            let issueNodeId = addGraphNode(result.nodes, nodeIds, "issue:${record.sourceId}",
+                GraphNodeTypes.ISSUE, record.title, record.sourceId, knowledgeVersion)
             if (record.metadata.repo != "") {
-                addGraphEdge(result.edges, GraphEdgeTypes.DISCUSSES, issueNode.nodeId, "repo:${record.metadata.repo}", record.sourceId, knowledgeVersion)
+                addGraphEdge(result.edges, edgeIds, GraphEdgeTypes.DISCUSSES, issueNodeId, "repo:${record.metadata.repo}", record.sourceId, knowledgeVersion)
             }
-            addGraphEdge(result.edges, GraphEdgeTypes.CITES, issueNode.nodeId, citationNode.nodeId, record.sourceId, knowledgeVersion)
+            addGraphEdge(result.edges, edgeIds, GraphEdgeTypes.CITES, issueNodeId, citationNodeId, record.sourceId, knowledgeVersion)
         }
         result.processed += 1
     }
     result
 }
 
-private func graphNode(nodeId: String, nodeType: String, label: String, sourceId: String, knowledgeVersion: String): GraphNode {
+private func ckbGraphBuildEvidenceHash(graph: GraphBuildResult): String {
+    let digest = SHA256()
+    ckbGraphDigestField(digest, "${graph.processed}"); ckbGraphDigestField(digest, "${graph.total}")
+    for (node in graph.nodes) {
+        ckbGraphDigestField(digest, node.nodeId); ckbGraphDigestField(digest, node.nodeType)
+        ckbGraphDigestField(digest, node.label); ckbGraphDigestField(digest, node.sourceId)
+        ckbGraphDigestField(digest, node.knowledgeVersion)
+    }
+    for (edge in graph.edges) {
+        ckbGraphDigestField(digest, edge.edgeId); ckbGraphDigestField(digest, edge.edgeType)
+        ckbGraphDigestField(digest, edge.fromNodeId); ckbGraphDigestField(digest, edge.toNodeId)
+        ckbGraphDigestField(digest, edge.sourceId); ckbGraphDigestField(digest, edge.knowledgeVersion)
+    }
+    let out = StringBuilder()
+    for (byte in digest.finish()) {
+        out.append(ckbGraphHexNibble(byte / UInt8(16))); out.append(ckbGraphHexNibble(byte % UInt8(16)))
+    }
+    "sha256:${out.toString()}"
+}
+
+private func ckbGraphDigestField(digest: SHA256, value: String): Unit { digest.write("${value.size}:".toArray()); digest.write(value.toArray()) }
+private func ckbGraphHexNibble(value: UInt8): String {
+    if (value < UInt8(10)) { return "${value}" }
+    if (value == UInt8(10)) { return "a" }; if (value == UInt8(11)) { return "b" }
+    if (value == UInt8(12)) { return "c" }; if (value == UInt8(13)) { return "d" }
+    if (value == UInt8(14)) { return "e" }
+    "f"
+}
+
+private func addGraphNode(nodes: ArrayList<GraphNode>, nodeIds: HashSet<String>, rawNodeId: String,
+    nodeType: String, label: String, sourceId: String, knowledgeVersion: String): String {
+    let nodeId = safeGraphId(rawNodeId)
+    if (nodeIds.contains(nodeId)) { return nodeId }
+    nodeIds.add(nodeId)
     let node = GraphNode()
-    node.nodeId = safeGraphId(nodeId)
+    node.nodeId = nodeId
     node.nodeType = nodeType
     node.label = label
     node.sourceId = sourceId
     node.knowledgeVersion = knowledgeVersion
-    node
-}
-
-private func addGraphNode(nodes: ArrayList<GraphNode>, node: GraphNode): Unit {
-    for (existing in nodes) {
-        if (existing.nodeId == node.nodeId) {
-            return
-        }
-    }
     nodes.add(node)
+    nodeId
 }
 
-private func addGraphEdge(edges: ArrayList<GraphEdge>, edgeType: String, fromNodeId: String, toNodeId: String, sourceId: String, knowledgeVersion: String): Unit {
+private func addGraphEdge(edges: ArrayList<GraphEdge>, edgeIds: HashSet<String>, edgeType: String,
+    fromNodeId: String, toNodeId: String, sourceId: String, knowledgeVersion: String): Unit {
+    let canonicalFrom = safeGraphId(fromNodeId)
+    let canonicalTo = safeGraphId(toNodeId)
+    let edgeId = "${edgeType}:${canonicalFrom}->${canonicalTo}:${sourceId}"
+    if (edgeIds.contains(edgeId)) { return }
+    edgeIds.add(edgeId)
     let edge = GraphEdge()
     edge.edgeType = edgeType
-    edge.fromNodeId = safeGraphId(fromNodeId)
-    edge.toNodeId = safeGraphId(toNodeId)
+    edge.fromNodeId = canonicalFrom
+    edge.toNodeId = canonicalTo
     edge.sourceId = sourceId
     edge.knowledgeVersion = knowledgeVersion
-    edge.edgeId = "${edge.edgeType}:${edge.fromNodeId}->${edge.toNodeId}:${sourceId}"
-    for (existing in edges) {
-        if (existing.edgeId == edge.edgeId) {
-            return
-        }
-    }
+    edge.edgeId = edgeId
     edges.add(edge)
 }
 
@@ -5465,9 +6120,111 @@ private func contentHash(sourceId: String, content: String): String {
     "hash-${hash}-${content.size}"
 }
 
-private func ckbVectorPointId(source: NormalizedRecord, activeIndexOrdinal: Int64): String {
+func ckbVectorPointId(source: NormalizedRecord): String {
+    ckbStableVectorPointId(source.sourceId, source.title, source.chunk, source.citation,
+        source.metadata.repo, source.metadata.path, source.metadata.symbol)
+}
+
+private func ckbVectorRecordStablePointId(record: VectorRecord): String {
+    ckbStableVectorPointId(record.metadata.sourceId, record.title, record.chunk, record.citation,
+        record.metadata.repo, record.metadata.path, record.metadata.symbol)
+}
+
+private func ckbStableVectorPointId(sourceId: String, title: String, chunk: String, citation: String, repo: String, path: String, symbol: String): String {
+    let digest = SHA256()
+    ckbVectorIdentityDigestField(digest, sourceId)
+    ckbVectorIdentityDigestField(digest, title)
+    ckbVectorIdentityDigestField(digest, chunk)
+    ckbVectorIdentityDigestField(digest, citation)
+    ckbVectorIdentityDigestField(digest, repo)
+    ckbVectorIdentityDigestField(digest, path)
+    ckbVectorIdentityDigestField(digest, symbol)
+    let out = StringBuilder()
+    for (byte in digest.finish()) {
+        out.append(ckbVectorIdentityHexNibble(byte / UInt8(16)))
+        out.append(ckbVectorIdentityHexNibble(byte % UInt8(16)))
+    }
+    "${sourceId}#sha256:${out.toString()}"
+}
+
+private func ckbVectorIdentityDigestField(digest: SHA256, value: String): Unit {
+    digest.write("${value.size}:".toArray())
+    digest.write(value.toArray())
+}
+
+private func ckbVectorIdentityHexNibble(value: UInt8): String {
+    if (value < UInt8(10)) { return "${value}" }
+    if (value == UInt8(10)) { return "a" }; if (value == UInt8(11)) { return "b" }
+    if (value == UInt8(12)) { return "c" }; if (value == UInt8(13)) { return "d" }
+    if (value == UInt8(14)) { return "e" }
+    "f"
+}
+
+func ckbLegacyVectorPointId(source: NormalizedRecord, activeIndexOrdinal: Int64): String {
     let summary = contentHash(source.sourceId, "${source.title}\n${source.chunk}\n${source.citation}")
     "${source.sourceId}#${activeIndexOrdinal}#${summary}"
+}
+
+private func ckbVectorRecordMatchesSource(record: VectorRecord, source: NormalizedRecord): Bool {
+    let actual = record.metadata
+    let expected = source.metadata
+    if (vectorPointIdentity(record) != ckbVectorPointId(source) || record.id != source.sourceId ||
+        record.title != source.title || record.chunk != source.chunk || record.citation != source.citation ||
+        actual.sourceId != expected.sourceId || actual.sourceType != expected.sourceType ||
+        actual.sourceUrl != expected.sourceUrl || actual.repo != expected.repo || actual.path != expected.path ||
+        actual.symbol != expected.symbol || actual.commit != expected.commit || actual.docVersion != expected.docVersion ||
+        actual.targetVersion != expected.targetVersion || actual.sourceSet != expected.sourceSet ||
+        actual.versionResolutionId != expected.versionResolutionId || actual.crawlAt != expected.crawlAt ||
+        actual.indexedAt != expected.indexedAt || actual.knowledgeVersion != expected.knowledgeVersion ||
+        actual.candidateVersion != expected.candidateVersion || actual.contentSize != expected.contentSize ||
+        actual.trustLevel != expected.trustLevel || actual.reviewState != expected.reviewState ||
+        actual.license != expected.license || actual.repoVisibility != expected.repoVisibility ||
+        actual.derivedFrom.size != expected.derivedFrom.size) { return false }
+    for (index in 0..actual.derivedFrom.size) {
+        if (actual.derivedFrom[index] != expected.derivedFrom[index]) { return false }
+    }
+    record.vector.size > 0
+}
+
+func ckbVectorSourceBufferedBytes(record: NormalizedRecord, dimensions: Int64, ordinal!: Int64 = 0): Int64 {
+    let vectorTextBytes = if (dimensions > 0) { dimensions * 32 } else { 0 }
+    let embeddingTextBytes = record.title.size + record.chunk.size + record.metadata.repo.size + record.metadata.path.size + record.metadata.symbol.size + 4
+    let metadata = record.metadata
+    var spoolBytes = ckbVectorEscapedFieldBytes(ckbVectorPointId(record)) + ckbVectorEscapedFieldBytes(record.sourceId) +
+        ckbVectorEscapedFieldBytes(record.title) + ckbVectorEscapedFieldBytes(record.chunk) +
+        ckbVectorEscapedFieldBytes(metadata.knowledgeVersion) + ckbVectorEscapedFieldBytes(metadata.sourceId) +
+        ckbVectorEscapedFieldBytes(metadata.sourceType) + ckbVectorEscapedFieldBytes(metadata.trustLevel) +
+        ckbVectorEscapedFieldBytes(metadata.reviewState) + ckbVectorEscapedFieldBytes(record.citation) + vectorTextBytes +
+        "p5-vector-v2".size + ckbVectorEscapedFieldBytes(metadata.sourceUrl) + ckbVectorEscapedFieldBytes(metadata.repo) +
+        ckbVectorEscapedFieldBytes(metadata.path) + ckbVectorEscapedFieldBytes(metadata.symbol) +
+        ckbVectorEscapedFieldBytes(metadata.commit) + ckbVectorEscapedFieldBytes(metadata.docVersion) +
+        ckbVectorEscapedFieldBytes(metadata.targetVersion) + ckbVectorEscapedFieldBytes(metadata.sourceSet) +
+        ckbVectorEscapedFieldBytes(metadata.versionResolutionId) + ckbVectorEscapedFieldBytes(metadata.crawlAt) +
+        ckbVectorEscapedFieldBytes(metadata.indexedAt) + ckbVectorEscapedFieldBytes(metadata.candidateVersion) +
+        "${metadata.contentSize}".size + ckbVectorEscapedFieldBytes(metadata.license) +
+        ckbVectorEscapedFieldBytes(metadata.repoVisibility) + ckbVectorDerivedCodecBytes(metadata.derivedFrom) + 28
+    // The legacy alias is held alongside the serialized current point ID during lookup.
+    spoolBytes + ckbVectorEscapedFieldBytes(ckbLegacyVectorPointId(record, ordinal)) + embeddingTextBytes +
+        record.recordKind.size + "${record.score}".size + "${record.requiresReview}".size + 64
+}
+
+private func ckbVectorEscapedFieldBytes(value: String): Int64 {
+    var size: Int64 = 0
+    for (byte in value.toArray()) {
+        size += if (byte == UInt8(92) || byte == UInt8(124) || byte == UInt8(10) || byte == UInt8(13)) { 2 } else { 1 }
+    }
+    size
+}
+
+private func ckbVectorDerivedCodecBytes(values: Array<String>): Int64 {
+    var size: Int64 = "${values.size}".size + 1
+    var index: Int64 = 0
+    for (value in values) {
+        if (index > 0) { size += 1 }
+        size += if (value.size == 0) { 1 } else { value.size * 2 }
+        index += 1
+    }
+    size
 }
 
 private func ckbVectorReuseIdentity(sourceId: String, title: String, chunk: String, citation: String): String {

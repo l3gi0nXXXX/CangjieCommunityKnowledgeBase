@@ -1933,6 +1933,7 @@ private func f3FreshnessSourceHasHash(report: CangjieCorpusFreshnessReport, sour
 }
 
 private class F7StatusVectorStore <: VectorStore {
+    public func lookupBatchWithDeadline(collection: String, pointIds: ArrayList<String>, deadlineAtMillis: Int64): VectorLookupResult { let result = VectorLookupResult(); result.ok = true; result.status = "ok"; result.requested = pointIds.size; result }
     private let state: String
     private let reason: String
     private let dimension: Int64

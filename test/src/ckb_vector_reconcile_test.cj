@@ -351,6 +351,7 @@ private class ReconcileEmbeddingProvider <: EmbeddingProvider {
 }
 
 private class ReconcileTrackingVectorStore <: VectorStore {
+    public func lookupBatchWithDeadline(collection: String, pointIds: ArrayList<String>, deadlineAtMillis: Int64): VectorLookupResult { let result = VectorLookupResult(); result.ok = true; result.status = "ok"; result.requested = pointIds.size; result }
     public var recreateCalls: Int64 = 0
     public var upsertBatchCalls: Int64 = 0
     public var deleteCollectionCalls: Int64 = 0

@@ -271,6 +271,7 @@ private class P5FakeEmbeddingProvider <: EmbeddingProvider {
 }
 
 private class P5FakeQdrantStore <: VectorStore {
+    public func lookupBatchWithDeadline(collection: String, pointIds: ArrayList<String>, deadlineAtMillis: Int64): VectorLookupResult { let result = VectorLookupResult(); result.ok = true; result.status = "ok"; result.requested = pointIds.size; result }
     private let activeCollection: String
     private let candidateCollection: String
     private var activeCount: Int64 = 0

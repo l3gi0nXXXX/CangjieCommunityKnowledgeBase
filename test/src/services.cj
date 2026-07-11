@@ -8,6 +8,7 @@ import std.io.*
 import std.process.*
 import std.time.DateTime
 import std.sort.*
+import stdx.crypto.digest.SHA256
 import stdx.encoding.json.*
 
 public class SourceKinds {
@@ -4646,6 +4647,607 @@ public class FileKnowledgeStore {
         this.writeLines("normalized/candidate/${safeName(version)}.ckb", this.normalizedLines(records))
     }
 
+    public func saveCandidateSnapshotImmutable(rawRecords: ArrayList<RawRecord>, normalizedRecords: ArrayList<NormalizedRecord>, version: String, deadlineAtMillis!: Int64 = 0): CkbCandidateMaterializationResult {
+        let result = CkbCandidateMaterializationResult()
+        if (version.trimAscii() == "") {
+            result.status = "candidate_version_missing"
+            result.diagnostic = result.status
+            return result
+        }
+        this.cleanupCandidateStaleTemps(version)
+        this.ensureActiveSnapshotDeadline("candidate_materialization_before", deadlineAtMillis)
+        result.rawCount = rawRecords.size
+        result.normalizedCount = normalizedRecords.size
+        result.rawEvidenceHash = this.candidateRawEvidenceHash(rawRecords)
+        result.normalizedEvidenceHash = this.candidateNormalizedEvidenceHash(normalizedRecords)
+        let rawPath = "raw/candidate/${safeName(version)}/records.ckb"
+        let normalizedPath = "normalized/candidate/${safeName(version)}.ckb"
+        let rawFileHash = this.candidateRawFileHash(rawRecords, deadlineAtMillis)
+        let normalizedFileHash = this.candidateNormalizedFileHash(normalizedRecords, 0, normalizedRecords.size, deadlineAtMillis)
+        let batchSize: Int64 = 256
+        let batchPaths = ArrayList<String>()
+        let batchCounts = ArrayList<Int64>()
+        let batchHashes = ArrayList<String>()
+        var expectedStart: Int64 = 0
+        var expectedBatchIndex: Int64 = 0
+        while (expectedStart < normalizedRecords.size) {
+            let expectedEnd = if (expectedStart + batchSize < normalizedRecords.size) { expectedStart + batchSize } else { normalizedRecords.size }
+            batchPaths.add("candidate-artifacts/${safeName(version)}/batches/batch-${expectedBatchIndex}.ckb")
+            batchCounts.add(expectedEnd - expectedStart)
+            batchHashes.add(this.candidateNormalizedFileHash(normalizedRecords, expectedStart, expectedEnd, deadlineAtMillis))
+            expectedBatchIndex += 1
+            expectedStart = expectedEnd
+        }
+        let manifestSeed = StringBuilder()
+        manifestSeed.append("${version}|${result.rawCount}|${result.normalizedCount}|${result.rawEvidenceHash}|${result.normalizedEvidenceHash}|${rawPath}|${rawFileHash}|${normalizedPath}|${normalizedFileHash}")
+        for (index in 0..batchPaths.size) { manifestSeed.append("|${batchPaths[index]}|${batchCounts[index]}|${batchHashes[index]}") }
+        result.manifestEvidenceHash = ckbReleaseEvidenceHash(manifestSeed.toString())
+        let manifestPath = "candidate-artifacts/${safeName(version)}/manifest.ckb"
+        let existing = try { this.readText(manifestPath) } catch (_: Exception) {
+            result.status = "candidate_manifest_invalid_response_encoding"
+            result.diagnostic = result.status
+            return result
+        }
+        if (existing != "") {
+            let sameIdentity = ckbCurrentField(existing, "version") == version &&
+                parseIntField(ckbCurrentField(existing, "rawCount"), -1) == result.rawCount &&
+                parseIntField(ckbCurrentField(existing, "normalizedCount"), -1) == result.normalizedCount &&
+                ckbCurrentField(existing, "rawEvidenceHash") == result.rawEvidenceHash &&
+                ckbCurrentField(existing, "normalizedEvidenceHash") == result.normalizedEvidenceHash
+            if (!sameIdentity) {
+                result.status = "candidate_immutable_manifest_mismatch"
+                result.diagnostic = result.status
+                return result
+            }
+            var filesValid = ckbCurrentField(existing, "manifestEvidenceHash") == result.manifestEvidenceHash &&
+                ckbCurrentField(existing, "rawPath") == rawPath && ckbCurrentField(existing, "rawFileHash") == rawFileHash &&
+                ckbCurrentField(existing, "normalizedPath") == normalizedPath && ckbCurrentField(existing, "normalizedFileHash") == normalizedFileHash &&
+                parseIntField(ckbCurrentField(existing, "batchCount"), -1) == batchPaths.size &&
+                this.candidateFileHashMatches(rawPath, rawFileHash, deadlineAtMillis) && this.candidateFileHashMatches(normalizedPath, normalizedFileHash, deadlineAtMillis)
+            if (filesValid) {
+                for (index in 0..batchPaths.size) {
+                    if (ckbCurrentField(existing, "batch${index}Path") != batchPaths[index] ||
+                        parseIntField(ckbCurrentField(existing, "batch${index}Count"), -1) != batchCounts[index] ||
+                        ckbCurrentField(existing, "batch${index}Hash") != batchHashes[index] ||
+                        !this.candidateFileHashMatches(batchPaths[index], batchHashes[index], deadlineAtMillis)) {
+                        filesValid = false
+                        break
+                    }
+                }
+            }
+            if (filesValid) {
+                result.ok = true
+                result.status = "candidate_immutable_reused"
+                result.immutableReused = true
+                result.batchCount = batchPaths.size
+                result.reusedBatchCount = batchPaths.size
+                result.peakBufferedRecords = if (normalizedRecords.size < batchSize) { normalizedRecords.size } else { batchSize }
+                if (!this.trySaveCandidateMaterializationCheckpoint(version, "completed", batchPaths.size, batchPaths.size, result.manifestEvidenceHash)) { result.checkpointDegraded = true; result.diagnostic = "candidate_checkpoint_write_degraded" }
+                return result
+            }
+        }
+
+        let checkpoint = this.loadCandidateMaterializationCheckpoint(version, result.manifestEvidenceHash, batchPaths.size)
+        if (!checkpoint.valid && checkpoint.status != "not_found") { result.diagnostic = "candidate_checkpoint_rejected:${checkpoint.status}" }
+        var checkpointRank = if (checkpoint.valid) { this.candidateCheckpointPhaseRank(checkpoint.phase) } else { 0 }
+        var committedBatches = if (checkpoint.valid) { checkpoint.completedBatches } else { 0 }
+        if (!checkpoint.valid && !this.trySaveCandidateMaterializationCheckpoint(version, "before", 0, batchPaths.size, result.manifestEvidenceHash)) { result.checkpointDegraded = true }
+        if (checkpointRank < 1 || !this.candidateFileHashMatches(rawPath, rawFileHash, deadlineAtMillis)) {
+            this.writeRawRecordsAtomically(rawPath, rawRecords, deadlineAtMillis, "candidate_raw")
+            checkpointRank = 1
+            committedBatches = 0
+            if (!this.trySaveCandidateMaterializationCheckpoint(version, "raw_committed", 0, batchPaths.size, result.manifestEvidenceHash)) { result.checkpointDegraded = true }
+        }
+        if (checkpointRank < 2 || !this.candidateFileHashMatches(normalizedPath, normalizedFileHash, deadlineAtMillis)) {
+            this.writeNormalizedRecordsAtomically(normalizedPath, normalizedRecords, deadlineAtMillis, "candidate_normalized")
+            checkpointRank = 2
+            committedBatches = 0
+            if (!this.trySaveCandidateMaterializationCheckpoint(version, "normalized_committed", 0, batchPaths.size, result.manifestEvidenceHash)) { result.checkpointDegraded = true }
+        }
+        var start: Int64 = 0
+        var batchIndex: Int64 = 0
+        var rebuildRemaining = false
+        while (start < normalizedRecords.size) {
+            let end = if (start + batchSize < normalizedRecords.size) { start + batchSize } else { normalizedRecords.size }
+            let batchPath = batchPaths[batchIndex]
+            let cursorCommitted = checkpointRank >= 3 && batchIndex < committedBatches
+            this.ensureActiveSnapshotDeadline("candidate_batch_verify_before:${batchIndex}:${batchPaths.size}", deadlineAtMillis)
+            if (!rebuildRemaining && (!cursorCommitted || !this.candidateFileHashMatches(batchPath, batchHashes[batchIndex], deadlineAtMillis))) { rebuildRemaining = true }
+            this.ensureActiveSnapshotDeadline("candidate_batch_verify_after:${batchIndex}:${batchPaths.size}", deadlineAtMillis)
+            if (rebuildRemaining) {
+                let batch = ArrayList<NormalizedRecord>()
+                for (index in start..end) { batch.add(normalizedRecords[index]) }
+                this.writeNormalizedRecordsAtomically(batchPath, batch, deadlineAtMillis, "candidate_batch")
+                result.writtenBatchCount += 1
+            } else {
+                result.reusedBatchCount += 1
+            }
+            if (end - start > result.peakBufferedRecords) { result.peakBufferedRecords = end - start }
+            result.batchCount = batchIndex + 1
+            if (rebuildRemaining && !this.trySaveCandidateMaterializationCheckpoint(version, "batch_committed", result.batchCount, batchPaths.size, result.manifestEvidenceHash)) { result.checkpointDegraded = true }
+            batchIndex += 1
+            start = end
+        }
+        var manifest = "schemaVersion=${CkbCandidateDurableSchema.VERSION}\n"
+        manifest += "version=${escapeField(version)}\n"
+        manifest += "rawCount=${result.rawCount}\n"
+        manifest += "normalizedCount=${result.normalizedCount}\n"
+        manifest += "batchCount=${result.batchCount}\n"
+        manifest += "peakBufferedRecords=${result.peakBufferedRecords}\n"
+        manifest += "rawEvidenceHash=${result.rawEvidenceHash}\n"
+        manifest += "normalizedEvidenceHash=${result.normalizedEvidenceHash}\n"
+        manifest += "rawPath=${escapeField(rawPath)}\nrawFileHash=${rawFileHash}\n"
+        manifest += "normalizedPath=${escapeField(normalizedPath)}\nnormalizedFileHash=${normalizedFileHash}\n"
+        for (index in 0..batchPaths.size) {
+            manifest += "batch${index}Path=${escapeField(batchPaths[index])}\n"
+            manifest += "batch${index}Count=${batchCounts[index]}\n"
+            manifest += "batch${index}Hash=${batchHashes[index]}\n"
+        }
+        manifest += "manifestEvidenceHash=${result.manifestEvidenceHash}\n"
+        this.writeLinesAtomically(manifestPath, manifest)
+        this.ensureActiveSnapshotDeadline("candidate_materialization_after", deadlineAtMillis)
+        if (!this.trySaveCandidateMaterializationCheckpoint(version, "completed", result.batchCount, batchPaths.size, result.manifestEvidenceHash)) { result.checkpointDegraded = true }
+        result.ok = true
+        result.status = if (result.checkpointDegraded) { "candidate_immutable_written_checkpoint_degraded" } else if (existing == "") { "candidate_immutable_written" } else { "candidate_immutable_repaired" }
+        if (result.checkpointDegraded) { result.diagnostic = "candidate_checkpoint_write_degraded" }
+        result
+    }
+
+    public func saveCandidateLifecycleMetadata(status: KnowledgeStatus): Unit {
+        let version = status.candidateKnowledgeVersion
+        if (version != "") {
+            var text = "candidateVersion=${escapeField(version)}\n"
+            text += "activeVersion=${escapeField(status.activeKnowledgeVersion)}\n"
+            text += "failedVersion=${escapeField(status.failedCandidateVersion)}\n"
+            text += "state=${if (status.failedCandidateVersion == version) { "failed" } else { "staged" }}\n"
+            text += "updatedAtMillis=${ckbCoreNowMillis()}\n"
+            this.writeLinesAtomically("candidate-artifacts/${safeName(version)}/status.ckb", text)
+        }
+        this.saveMetadata(status)
+    }
+
+    public func saveCandidateCollectionOwner(owner: CkbCandidateCollectionOwner): CkbCandidateCollectionOwner {
+        owner.relativePath = this.candidateCollectionOwnerPath(owner.collection)
+        owner.evidenceHash = ckbCandidateCollectionOwnerEvidenceHash(owner)
+        var text = "schemaVersion=${CkbCandidateDurableSchema.VERSION}\n"
+        text += "collection=${escapeField(owner.collection)}\n"
+        text += "acquisitionId=${escapeField(owner.acquisitionId)}\n"
+        text += "schedulerRunId=${escapeField(owner.schedulerRunId)}\n"
+        text += "taskId=${escapeField(owner.taskId)}\n"
+        text += "candidateVersion=${escapeField(owner.candidateVersion)}\n"
+        text += "planHash=${escapeField(owner.planHash)}\n"
+        text += "recordsEvidenceHash=${escapeField(owner.recordsEvidenceHash)}\n"
+        text += "state=${escapeField(owner.state)}\n"
+        text += "evidenceHash=${owner.evidenceHash}\n"
+        this.writeLinesAtomically(owner.relativePath, text)
+        owner.valid = true
+        owner.status = "ok"
+        owner
+    }
+
+    public func loadCandidateCollectionOwner(collection: String): CkbCandidateCollectionOwner {
+        let owner = CkbCandidateCollectionOwner()
+        owner.collection = collection
+        owner.relativePath = this.candidateCollectionOwnerPath(collection)
+        let text = try { this.readText(owner.relativePath) } catch (_: Exception) {
+            owner.status = "invalid_response_encoding"
+            owner.diagnostic = "candidate_owner_invalid_response_encoding"
+            return owner
+        }
+        if (text == "") { return owner }
+        if (ckbCurrentField(text, "schemaVersion") != CkbCandidateDurableSchema.VERSION) {
+            owner.status = "owner_schema_mismatch"
+            owner.diagnostic = owner.status
+            return owner
+        }
+        owner.collection = ckbCurrentField(text, "collection")
+        owner.acquisitionId = ckbCurrentField(text, "acquisitionId")
+        owner.schedulerRunId = ckbCurrentField(text, "schedulerRunId")
+        owner.taskId = ckbCurrentField(text, "taskId")
+        owner.candidateVersion = ckbCurrentField(text, "candidateVersion")
+        owner.planHash = ckbCurrentField(text, "planHash")
+        owner.recordsEvidenceHash = ckbCurrentField(text, "recordsEvidenceHash")
+        owner.state = ckbCurrentField(text, "state")
+        owner.evidenceHash = ckbCurrentField(text, "evidenceHash")
+        let knownState = owner.state == "planned" || owner.state == "adopted" || owner.state == "committed_active" || owner.state == "cleaned" || owner.state == "cleanup_pending"
+        owner.valid = owner.collection == collection && knownState && owner.evidenceHash == ckbCandidateCollectionOwnerEvidenceHash(owner)
+        owner.status = if (owner.valid) { "ok" } else if (!knownState) { "owner_state_unknown" } else { "owner_evidence_mismatch" }
+        owner.diagnostic = if (owner.valid) { "" } else { owner.status }
+        owner
+    }
+
+    public func listCandidateCollectionOwners(): ArrayList<CkbCandidateCollectionOwner> {
+        let out = ArrayList<CkbCandidateCollectionOwner>()
+        let root = this.root.join("metadata/candidate-collection-owners")
+        if (!exists(root)) { return out }
+        try {
+            for (entry in Directory.readFrom(root)) {
+                if (!entry.isRegular() || !entry.name.endsWith(".ckb")) { continue }
+                let text = try { String.fromUtf8(File.readFrom(root.join(entry.name))) } catch (_: Exception) {
+                    let invalid = CkbCandidateCollectionOwner()
+                    invalid.status = "invalid_response_encoding"
+                    invalid.diagnostic = "candidate_owner_invalid_response_encoding:${ckbReleaseEvidenceHash(entry.name)}"
+                    invalid.relativePath = "metadata/candidate-collection-owners/${entry.name}"
+                    out.add(invalid)
+                    continue
+                }
+                let collection = ckbCurrentField(text, "collection")
+                if (collection != "") {
+                    out.add(this.loadCandidateCollectionOwner(collection))
+                } else {
+                    let invalid = CkbCandidateCollectionOwner()
+                    invalid.status = "owner_collection_missing"
+                    invalid.diagnostic = "candidate_owner_collection_missing:${ckbReleaseEvidenceHash(entry.name)}"
+                    invalid.relativePath = "metadata/candidate-collection-owners/${entry.name}"
+                    out.add(invalid)
+                }
+            }
+        } catch (_: Exception) {
+            ()
+        }
+        out
+    }
+
+    public func writeVectorSpoolBatch(descriptor: CkbVectorSpoolDescriptor, batchIndex: Int64, records: ArrayList<VectorRecord>, deadlineAtMillis!: Int64 = 0): String {
+        let relative = "metadata/vector-builds/${descriptor.acquisitionId}/batches/batch-${batchIndex}.ckb"
+        this.writeVectorRecordsAtomically(relative, records, deadlineAtMillis, "vector_spool_batch")
+        relative
+    }
+
+    public func vectorSpoolBatchEvidenceHash(records: ArrayList<VectorRecord>): String {
+        ckbReleaseEvidenceHash(this.vectorLines(records))
+    }
+
+    public func loadVectorSpoolBatch(relative: String, expectedHash: String): CkbVectorSpoolBatchLoadResult {
+        let result = CkbVectorSpoolBatchLoadResult()
+        if (!this.validVectorSpoolBatchPath(relative) || expectedHash == "") {
+            result.status = "vector_spool_path_invalid"
+            result.diagnostic = result.status
+            return result
+        }
+        let text = try { this.readText(relative) } catch (_: Exception) {
+            result.status = "invalid_response_encoding"
+            result.diagnostic = "vector_spool_invalid_response_encoding"
+            return result
+        }
+        if (text == "") { return result }
+        result.evidenceHash = ckbReleaseEvidenceHash(text)
+        if (result.evidenceHash != expectedHash) {
+            result.status = "vector_spool_hash_mismatch"
+            result.diagnostic = result.status
+            return result
+        }
+        if (!this.vectorSpoolTextSchemaValid(text)) {
+            result.status = "vector_spool_schema_mismatch"
+            result.diagnostic = result.status
+            return result
+        }
+        result.records = this.parseVector(text)
+        if (result.records.size == 0) {
+            result.status = "vector_spool_malformed"
+            result.diagnostic = result.status
+            return result
+        }
+        result.valid = true
+        result.status = "ok"
+        result
+    }
+
+    public func saveVectorSpoolCheckpoint(descriptor: CkbVectorSpoolDescriptor, completed!: Bool = false): Unit {
+        descriptor.checkpointRelativePath = "metadata/vector-builds/${descriptor.acquisitionId}/checkpoint.ckb"
+        descriptor.manifestRelativePath = "metadata/vector-builds/${descriptor.acquisitionId}/manifest.ckb"
+        descriptor.evidenceHash = this.vectorSpoolDescriptorEvidenceHash(descriptor)
+        var text = "schemaVersion=${CkbCandidateDurableSchema.VERSION}\n"
+        text += "acquisitionId=${escapeField(descriptor.acquisitionId)}\n"
+        text += "candidateVersion=${escapeField(descriptor.candidateVersion)}\n"
+        text += "planHash=${escapeField(descriptor.planHash)}\n"
+        text += "recordsEvidenceHash=${escapeField(descriptor.recordsEvidenceHash)}\n"
+        text += "collection=${escapeField(descriptor.collection)}\n"
+        text += "status=${escapeField(if (completed) { "completed" } else { descriptor.status })}\n"
+        text += "total=${descriptor.total}\ncompleted=${descriptor.completed}\nreused=${descriptor.reused}\nembedded=${descriptor.embedded}\nfailed=${descriptor.failed}\n"
+        text += "batchSize=${descriptor.batchSize}\npeakBufferedRecords=${descriptor.peakBufferedRecords}\npeakBufferedBytes=${descriptor.peakBufferedBytes}\n"
+        text += "batchPathsJson=${escapeField(ckbScheduledFetchPathsJson(descriptor.batchRelativePaths))}\n"
+        text += "batchHashesJson=${escapeField(ckbScheduledFetchPathsJson(descriptor.batchEvidenceHashes))}\n"
+        text += "batchCountsJson=${escapeField(ckbScheduledFetchPathsJson(descriptor.batchRecordCounts))}\n"
+        text += "evidenceHash=${descriptor.evidenceHash}\n"
+        this.writeLinesAtomically(descriptor.checkpointRelativePath, text)
+        if (completed) { this.writeLinesAtomically(descriptor.manifestRelativePath, text) }
+    }
+
+    public func loadVectorSpoolCheckpoint(context: CkbCandidateAcquisitionContext, collection: String): CkbVectorSpoolDescriptor {
+        let descriptor = CkbVectorSpoolDescriptor()
+        if (!this.validS4PathSegment(context.acquisitionId)) {
+            descriptor.status = "vector_checkpoint_identity_mismatch"
+            descriptor.diagnostic = descriptor.status
+            return descriptor
+        }
+        descriptor.acquisitionId = context.acquisitionId
+        descriptor.checkpointRelativePath = "metadata/vector-builds/${context.acquisitionId}/checkpoint.ckb"
+        let text = try { this.readText(descriptor.checkpointRelativePath) } catch (_: Exception) {
+            descriptor.status = "invalid_response_encoding"
+            descriptor.diagnostic = "vector_checkpoint_invalid_response_encoding"
+            return descriptor
+        }
+        if (text == "") { return descriptor }
+        if (ckbCurrentField(text, "schemaVersion") != CkbCandidateDurableSchema.VERSION) {
+            descriptor.status = "vector_checkpoint_schema_mismatch"
+            descriptor.diagnostic = descriptor.status
+            return descriptor
+        }
+        descriptor.acquisitionId = ckbCurrentField(text, "acquisitionId")
+        descriptor.candidateVersion = ckbCurrentField(text, "candidateVersion")
+        descriptor.planHash = ckbCurrentField(text, "planHash")
+        descriptor.recordsEvidenceHash = ckbCurrentField(text, "recordsEvidenceHash")
+        descriptor.collection = ckbCurrentField(text, "collection")
+        descriptor.status = ckbCurrentField(text, "status")
+        descriptor.total = parseIntField(ckbCurrentField(text, "total"), -1)
+        descriptor.completed = parseIntField(ckbCurrentField(text, "completed"), -1)
+        descriptor.reused = parseIntField(ckbCurrentField(text, "reused"), 0)
+        descriptor.embedded = parseIntField(ckbCurrentField(text, "embedded"), 0)
+        descriptor.failed = parseIntField(ckbCurrentField(text, "failed"), 0)
+        descriptor.batchSize = parseIntField(ckbCurrentField(text, "batchSize"), CkbCandidateDurableSchema.VECTOR_BATCH_SIZE)
+        descriptor.peakBufferedRecords = parseIntField(ckbCurrentField(text, "peakBufferedRecords"), 0)
+        descriptor.peakBufferedBytes = parseIntField(ckbCurrentField(text, "peakBufferedBytes"), 0)
+        let pathsOk = ckbCandidateDecodeOrderedJsonStrings(ckbCurrentField(text, "batchPathsJson"), descriptor.batchRelativePaths)
+        let hashesOk = ckbCandidateDecodeOrderedJsonStrings(ckbCurrentField(text, "batchHashesJson"), descriptor.batchEvidenceHashes)
+        let countsOk = ckbCandidateDecodeOrderedJsonStrings(ckbCurrentField(text, "batchCountsJson"), descriptor.batchRecordCounts)
+        descriptor.evidenceHash = ckbCurrentField(text, "evidenceHash")
+        let identityOk = descriptor.acquisitionId == context.acquisitionId &&
+            descriptor.candidateVersion == context.candidateVersion &&
+            descriptor.planHash == context.planHash &&
+            descriptor.recordsEvidenceHash == context.recordsEvidenceHash &&
+            descriptor.collection == collection
+        var committedPathsValid = pathsOk && hashesOk && countsOk && descriptor.batchRelativePaths.size == descriptor.batchEvidenceHashes.size && descriptor.batchRelativePaths.size == descriptor.batchRecordCounts.size
+        var committedCount: Int64 = 0
+        if (committedPathsValid) {
+            for (index in 0..descriptor.batchRelativePaths.size) {
+                let expectedPath = "metadata/vector-builds/${context.acquisitionId}/batches/batch-${index}.ckb"
+                let batchCount = parseIntField(descriptor.batchRecordCounts[index], -1)
+                if (descriptor.batchRelativePaths[index] != expectedPath || !this.validVectorSpoolBatchPath(descriptor.batchRelativePaths[index]) || descriptor.batchEvidenceHashes[index] == "" || batchCount <= 0 || batchCount > descriptor.batchSize) {
+                    committedPathsValid = false
+                    break
+                }
+                committedCount += batchCount
+            }
+        }
+        if (committedCount != descriptor.completed) { committedPathsValid = false }
+        descriptor.valid = identityOk && committedPathsValid &&
+            descriptor.total >= 0 && descriptor.completed >= 0 && descriptor.completed <= descriptor.total &&
+            descriptor.reused >= 0 && descriptor.embedded >= 0 && descriptor.reused + descriptor.embedded == descriptor.completed &&
+            descriptor.evidenceHash == this.vectorSpoolDescriptorEvidenceHash(descriptor)
+        if (!descriptor.valid) {
+            descriptor.status = if (!identityOk) { "vector_checkpoint_identity_mismatch" } else { "vector_checkpoint_hash_mismatch" }
+            descriptor.diagnostic = descriptor.status
+        }
+        descriptor
+    }
+
+    private func ckbCandidateDecodeOrderedJsonStrings(raw: String, out: ArrayList<String>): Bool {
+        try {
+            let items = JsonValue.fromStr(raw).asArray().getItems()
+            for (item in items) {
+                let value = item.asString().getValue()
+                if (value == "") { return false }
+                out.add(value)
+            }
+            true
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    public func streamVectorSpoolToFile(relative: String, descriptor: CkbVectorSpoolDescriptor, deadlineAtMillis: Int64): Unit {
+        let path = this.root.join(relative)
+        if (!exists(path.parent)) { Directory.create(path.parent, recursive: true) }
+        let tmp = this.atomicTmpPath(path, relative)
+        try {
+            var written: Int64 = 0
+            try (file = File(tmp, OpenMode.Write)) {
+                for (index in 0..descriptor.batchRelativePaths.size) {
+                    this.ensureActiveSnapshotDeadline("vector_spool_stream:${index}:${descriptor.batchRelativePaths.size}", deadlineAtMillis)
+                    let batch = this.loadVectorSpoolBatch(descriptor.batchRelativePaths[index], descriptor.batchEvidenceHashes[index])
+                    if (!batch.valid || batch.records.size != parseIntField(descriptor.batchRecordCounts[index], -1)) { throw Exception(if (!batch.valid) { batch.diagnostic } else { "vector_spool_batch_count_mismatch" }) }
+                    for (record in batch.records) { file.write(this.vectorLine(record).toArray()); written += 1 }
+                }
+            }
+            if (written != descriptor.total) { throw Exception("vector_spool_count_mismatch:${written}:${descriptor.total}") }
+            this.replaceFileWithTmp(path, tmp)
+        } catch (e: Exception) {
+            this.deleteAtomicTmp(tmp)
+            throw e
+        }
+    }
+
+    public func deleteS4ArtifactTree(relative: String): Bool {
+        if ((!relative.startsWith("metadata/vector-builds/") && !relative.startsWith("candidate-artifacts/")) ||
+            relative.contains("..") || relative.contains("\u{0000}")) {
+            return false
+        }
+        let path = this.root.join(relative)
+        if (!exists(path)) { return true }
+        try { launch("/bin/rm", ["-rf", path.toString()]).wait() == 0 && !exists(path) } catch (_: Exception) { false }
+    }
+
+    public func deleteS4ArtifactFile(relative: String): Bool {
+        if (!this.validVectorSpoolBatchPath(relative)) { return false }
+        let path = this.root.join(relative)
+        if (!exists(path)) { return true }
+        try { launch("/bin/rm", ["-f", path.toString()]).wait() == 0 && !exists(path) } catch (_: Exception) { false }
+    }
+
+    public func cleanupVectorBuildStaleTemps(acquisitionId: String): Int64 {
+        if (!this.validS4PathSegment(acquisitionId)) { return 0 }
+        this.cleanupS4TmpFiles(this.root.join("metadata/vector-builds/${acquisitionId}"), "")
+    }
+
+    public func cleanupReleaseAcquisitionStaleTemps(acquisitionId: String): Int64 {
+        if (!this.validS4PathSegment(acquisitionId) || !acquisitionId.startsWith("p5-acq-")) { return 0 }
+        this.cleanupS4TmpFiles(this.root.join("metadata/release-acquisitions/${acquisitionId}"), "")
+    }
+
+    public func cleanupCandidateOwnerStaleTemps(): Int64 {
+        this.cleanupS4TmpFiles(this.root.join("metadata/candidate-collection-owners"), "")
+    }
+
+    private func cleanupCandidateStaleTemps(version: String): Unit {
+        let safeVersion = safeName(version)
+        if (safeVersion == "" || version.contains("..") || version.contains("/") || version.contains("\\") || version.contains("\u{0000}")) { return }
+        _ = this.cleanupS4TmpFiles(this.root.join("raw/candidate/${safeVersion}"), "")
+        _ = this.cleanupS4TmpFiles(this.root.join("candidate-artifacts/${safeVersion}"), "")
+        _ = this.cleanupS4TmpFiles(this.root.join("normalized/candidate"), safeVersion)
+    }
+
+    private func cleanupS4TmpFiles(rootPath: Path, requiredToken: String): Int64 {
+        if (!exists(rootPath)) { return 0 }
+        var removed: Int64 = 0
+        try {
+            for (entry in Directory.readFrom(rootPath)) {
+                let child = rootPath.join(entry.name)
+                if (entry.isDirectory()) {
+                    removed += this.cleanupS4TmpFiles(child, requiredToken)
+                } else if (entry.isRegular() && entry.name.startsWith(".tmp-") && (requiredToken == "" || entry.name.contains(requiredToken))) {
+                    if (launch("/bin/rm", ["-f", child.toString()]).wait() == 0 && !exists(child)) { removed += 1 }
+                }
+            }
+        } catch (_: Exception) { () }
+        removed
+    }
+
+    private func trySaveCandidateMaterializationCheckpoint(version: String, phase: String, completedBatches: Int64, totalBatches: Int64, manifestEvidenceHash: String): Bool {
+        try {
+            let evidenceHash = ckbReleaseEvidenceHash("${version}|${phase}|${completedBatches}|${totalBatches}|${manifestEvidenceHash}")
+            var text = "schemaVersion=${CkbCandidateDurableSchema.VERSION}\n"
+            text += "version=${escapeField(version)}\nphase=${escapeField(phase)}\n"
+            text += "completedBatches=${completedBatches}\ntotalBatches=${totalBatches}\n"
+            text += "manifestEvidenceHash=${manifestEvidenceHash}\nupdatedAtMillis=${ckbCoreNowMillis()}\n"
+            text += "evidenceHash=${evidenceHash}\n"
+            this.writeLinesAtomically("candidate-artifacts/${safeName(version)}/checkpoint.ckb", text)
+            true
+        } catch (_: Exception) { false }
+    }
+
+    private func loadCandidateMaterializationCheckpoint(version: String, expectedManifestEvidenceHash: String, expectedTotalBatches: Int64): CkbCandidateMaterializationCheckpoint {
+        let checkpoint = CkbCandidateMaterializationCheckpoint()
+        let relative = "candidate-artifacts/${safeName(version)}/checkpoint.ckb"
+        let text = try { this.readText(relative) } catch (_: Exception) { checkpoint.status = "invalid_response_encoding"; return checkpoint }
+        if (text == "") { return checkpoint }
+        checkpoint.phase = ckbCurrentField(text, "phase")
+        checkpoint.completedBatches = parseIntField(ckbCurrentField(text, "completedBatches"), -1)
+        checkpoint.totalBatches = parseIntField(ckbCurrentField(text, "totalBatches"), -1)
+        checkpoint.manifestEvidenceHash = ckbCurrentField(text, "manifestEvidenceHash")
+        checkpoint.evidenceHash = ckbCurrentField(text, "evidenceHash")
+        let expectedEvidence = ckbReleaseEvidenceHash("${version}|${checkpoint.phase}|${checkpoint.completedBatches}|${checkpoint.totalBatches}|${checkpoint.manifestEvidenceHash}")
+        let phaseRank = this.candidateCheckpointPhaseRank(checkpoint.phase)
+        let cursorValid = if (phaseRank < 3) { checkpoint.completedBatches == 0 } else if (phaseRank == 4) { checkpoint.completedBatches == checkpoint.totalBatches } else { checkpoint.completedBatches >= 0 && checkpoint.completedBatches <= checkpoint.totalBatches }
+        checkpoint.valid = ckbCurrentField(text, "schemaVersion") == CkbCandidateDurableSchema.VERSION && ckbCurrentField(text, "version") == version && checkpoint.totalBatches == expectedTotalBatches && checkpoint.manifestEvidenceHash == expectedManifestEvidenceHash && phaseRank >= 0 && cursorValid && checkpoint.evidenceHash == expectedEvidence
+        checkpoint.status = if (checkpoint.valid) { "ok" } else { "candidate_checkpoint_invalid" }
+        checkpoint
+    }
+
+    private func candidateCheckpointPhaseRank(phase: String): Int64 {
+        if (phase == "before") { return 0 }
+        if (phase == "raw_committed") { return 1 }
+        if (phase == "normalized_committed") { return 2 }
+        if (phase == "batch_committed") { return 3 }
+        if (phase == "completed") { return 4 }
+        -1
+    }
+
+    private func validS4PathSegment(value: String): Bool {
+        let clean = value.trimAscii()
+        clean != "" && clean == value && !clean.contains("/") && !clean.contains("\\") && !clean.contains("..") && !clean.contains("\u{0000}")
+    }
+
+    private func validVectorSpoolBatchPath(relative: String): Bool {
+        relative.startsWith("metadata/vector-builds/") && relative.contains("/batches/batch-") && relative.endsWith(".ckb") &&
+            !relative.startsWith("/") && !relative.contains("..") && !relative.contains("\\") && !relative.contains("\u{0000}")
+    }
+
+    private func candidateCollectionOwnerPath(collection: String): String {
+        "metadata/candidate-collection-owners/${ckbReleaseEvidenceHash(collection)}.ckb"
+    }
+
+    private func candidateRawEvidenceHash(records: ArrayList<RawRecord>): String {
+        let digest = SHA256()
+        for (record in records) {
+            digest.write(record.sourceId.toArray())
+            digest.write(":".toArray())
+            digest.write(record.contentHash.toArray())
+            digest.write("|".toArray())
+        }
+        this.candidateDigestHex(digest)
+    }
+
+    private func candidateNormalizedEvidenceHash(records: ArrayList<NormalizedRecord>): String {
+        let digest = SHA256()
+        for (record in records) {
+            digest.write(record.sourceId.toArray())
+            digest.write(":".toArray())
+            digest.write(ckbReleaseEvidenceHash("${record.sourceId}|${record.recordKind}|${record.title}|${record.chunk}|${record.citation}").toArray())
+            digest.write("|".toArray())
+        }
+        this.candidateDigestHex(digest)
+    }
+
+    private func candidateRawFileHash(records: ArrayList<RawRecord>, deadlineAtMillis: Int64): String {
+        let digest = SHA256()
+        for (index in 0..records.size) { if (index % 256 == 0) { this.ensureActiveSnapshotDeadline("candidate_raw_hash:${index}:${records.size}", deadlineAtMillis) }; digest.write(this.rawLine(records[index]).toArray()) }
+        this.candidateDigestHex(digest)
+    }
+
+    private func candidateNormalizedFileHash(records: ArrayList<NormalizedRecord>, start: Int64, end: Int64, deadlineAtMillis: Int64): String {
+        let digest = SHA256()
+        for (index in start..end) { if ((index - start) % 256 == 0) { this.ensureActiveSnapshotDeadline("candidate_normalized_hash:${index}:${end}", deadlineAtMillis) }; digest.write(this.normalizedLine(records[index]).toArray()) }
+        this.candidateDigestHex(digest)
+    }
+
+    private func candidateFileHashMatches(relative: String, expectedHash: String, deadlineAtMillis: Int64): Bool {
+        if (expectedHash == "" || relative.startsWith("/") || relative.contains("..") || relative.contains("\u{0000}")) { return false }
+        let path = this.root.join(relative)
+        if (!exists(path)) { return false }
+        let digest = SHA256()
+        try {
+            try (file = File(path, OpenMode.Read)) {
+                let buffer = Array<Byte>(65536, repeat: 0)
+                while (true) {
+                    this.ensureActiveSnapshotDeadline("candidate_file_hash:${ckbReleaseEvidenceHash(relative)}", deadlineAtMillis)
+                    let read = file.read(buffer)
+                    if (read <= 0) { break }
+                    if (read == buffer.size) { digest.write(buffer) } else { digest.write(buffer[0..read].clone()) }
+                }
+            }
+            this.candidateDigestHex(digest) == expectedHash
+        } catch (e: Exception) {
+            if (e.message.startsWith("deadline_exceeded:")) { throw e }
+            false
+        }
+    }
+
+    private func candidateDigestHex(digest: SHA256): String {
+        let out = StringBuilder()
+        for (byte in digest.finish()) {
+            out.append(this.candidateHexNibble(byte / UInt8(16)))
+            out.append(this.candidateHexNibble(byte % UInt8(16)))
+        }
+        out.toString()
+    }
+
+    private func candidateHexNibble(value: UInt8): String {
+        if (value == UInt8(0)) { return "0" }; if (value == UInt8(1)) { return "1" }
+        if (value == UInt8(2)) { return "2" }; if (value == UInt8(3)) { return "3" }
+        if (value == UInt8(4)) { return "4" }; if (value == UInt8(5)) { return "5" }
+        if (value == UInt8(6)) { return "6" }; if (value == UInt8(7)) { return "7" }
+        if (value == UInt8(8)) { return "8" }; if (value == UInt8(9)) { return "9" }
+        if (value == UInt8(10)) { return "a" }; if (value == UInt8(11)) { return "b" }
+        if (value == UInt8(12)) { return "c" }; if (value == UInt8(13)) { return "d" }
+        if (value == UInt8(14)) { return "e" }
+        "f"
+    }
+
+    private func vectorSpoolDescriptorEvidenceHash(descriptor: CkbVectorSpoolDescriptor): String {
+        ckbReleaseEvidenceHash("${descriptor.acquisitionId}|${descriptor.candidateVersion}|${descriptor.planHash}|${descriptor.recordsEvidenceHash}|${descriptor.collection}|${descriptor.total}|${descriptor.completed}|${descriptor.reused}|${descriptor.embedded}|${descriptor.failed}|${descriptor.batchSize}|${descriptor.peakBufferedRecords}|${descriptor.peakBufferedBytes}|${ckbScheduledFetchPathsJson(descriptor.batchRelativePaths)}|${ckbScheduledFetchPathsJson(descriptor.batchEvidenceHashes)}|${ckbScheduledFetchPathsJson(descriptor.batchRecordCounts)}")
+    }
+
     public func saveMetadata(status: KnowledgeStatus): Unit {
         this.writeLines("metadata/status.ckb", this.metadataLines(status))
     }
@@ -4750,7 +5352,7 @@ public class FileKnowledgeStore {
         this.writeLines("index/graph-edges.ckb", this.graphEdgeLines(graph.edges))
     }
 
-    public func writeActiveSnapshotTransaction(status: KnowledgeStatus, rawRecords: ArrayList<RawRecord>, normalizedRecords: ArrayList<NormalizedRecord>, activeIndex: ArrayList<NormalizedRecord>, vectorRecords: ArrayList<VectorRecord>, vectorCollection: String, graph: GraphBuildResult, persistVectorFile!: Bool = true, deadlineAtMillis!: Int64 = 0, stageSink!: CkbStagedRebuildStageSink = NoopCkbStagedRebuildStageSink()): String {
+    public func writeActiveSnapshotTransaction(status: KnowledgeStatus, rawRecords: ArrayList<RawRecord>, normalizedRecords: ArrayList<NormalizedRecord>, activeIndex: ArrayList<NormalizedRecord>, vectorRecords: ArrayList<VectorRecord>, vectorCollection: String, graph: GraphBuildResult, persistVectorFile!: Bool = true, deadlineAtMillis!: Int64 = 0, stageSink!: CkbStagedRebuildStageSink = NoopCkbStagedRebuildStageSink(), vectorSpool!: CkbVectorSpoolDescriptor = CkbVectorSpoolDescriptor()): String {
         this.ensureLayout()
         let txId = this.newActiveSnapshotTxId(status.activeKnowledgeVersion)
         let txRoot = "transactions/${safeName(txId)}"
@@ -4770,7 +5372,11 @@ public class FileKnowledgeStore {
         if (persistVectorFile) {
             this.emitActiveSnapshotStage(stageSink, "active_snapshot_tx_vector_before", "running", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
             this.ensureActiveSnapshotDeadline("active_snapshot_tx_vector_before", deadlineAtMillis)
-            this.writeVectorRecordsAtomically("${txRoot}/index/vector-${safeName(vectorCollection)}.ckb", vectorRecords, deadlineAtMillis, "active_snapshot_tx_vector")
+            if (vectorSpool.valid) {
+                this.streamVectorSpoolToFile("${txRoot}/index/vector-${safeName(vectorCollection)}.ckb", vectorSpool, deadlineAtMillis)
+            } else {
+                this.writeVectorRecordsAtomically("${txRoot}/index/vector-${safeName(vectorCollection)}.ckb", vectorRecords, deadlineAtMillis, "active_snapshot_tx_vector")
+            }
             this.emitActiveSnapshotStage(stageSink, "active_snapshot_tx_vector_after", "ok", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
         } else {
             this.emitActiveSnapshotStage(stageSink, "active_snapshot_tx_vector_skipped", "skipped", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
@@ -4795,7 +5401,7 @@ public class FileKnowledgeStore {
         this.emitActiveSnapshotStage(stageSink, "active_snapshot_live_shadow_after", "ok", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile, durationMillis: ckbCoreNowMillis() - liveShadowStartedAtMillis)
         this.emitActiveSnapshotStage(stageSink, "active_snapshot_manifest_before", "running", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
         this.ensureActiveSnapshotDeadline("active_snapshot_manifest_before", deadlineAtMillis)
-        let manifestVectorCount = if (persistVectorFile) { vectorRecords.size } else { status.storage.vectorIndexCount }
+        let manifestVectorCount = if (persistVectorFile && vectorSpool.valid) { vectorSpool.total } else if (persistVectorFile) { vectorRecords.size } else { status.storage.vectorIndexCount }
         this.writeLinesAtomically("metadata/active-snapshot.manifest", this.activeSnapshotManifestLines(txId, status))
         this.writeLinesAtomically("metadata/active-snapshot-commits/${safeName(txId)}.ckb", this.activeSnapshotCommitSidecarLines(txId, status, vectorCollection, activeIndex.size, manifestVectorCount, persistVectorFile))
         this.emitActiveSnapshotStage(stageSink, "active_snapshot_manifest_after", "ok", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
@@ -4803,7 +5409,7 @@ public class FileKnowledgeStore {
     }
 
     private func emitActiveSnapshotStage(stageSink: CkbStagedRebuildStageSink, stage: String, statusText: String, status: KnowledgeStatus, rawRecords: ArrayList<RawRecord>, normalizedRecords: ArrayList<NormalizedRecord>, activeIndex: ArrayList<NormalizedRecord>, vectorRecords: ArrayList<VectorRecord>, graph: GraphBuildResult, deadlineAtMillis: Int64, persistVectorFile: Bool, durationMillis!: Int64 = 0): Unit {
-        let vectorCount = if (persistVectorFile) { vectorRecords.size } else { status.storage.vectorIndexCount }
+        let vectorCount = if (persistVectorFile && vectorRecords.size > 0) { vectorRecords.size } else { status.storage.vectorIndexCount }
         let diagnostic = "active=${status.activeKnowledgeVersion}|rawCount=${rawRecords.size}|normalizedCount=${normalizedRecords.size}|indexCount=${activeIndex.size}|vectorCount=${vectorCount}|graphNodeCount=${graph.nodes.size}|graphEdgeCount=${graph.edges.size}|persistVectorFile=${persistVectorFile}"
         ckbEmitStagedRebuildStage(stageSink, stage, statusText, deadlineAtMillis, diagnostic, durationMillis: durationMillis, itemCount: activeIndex.size)
     }
@@ -5332,8 +5938,13 @@ public class FileKnowledgeStore {
             Directory.create(path.parent, recursive: true)
         }
         let tmp = path.parent.join(".tmp-${safeName(relative)}-${stableSummaryHash(text)}")
-        File.writeTo(tmp, text.toArray())
-        this.replaceFileWithTmp(path, tmp)
+        try {
+            File.writeTo(tmp, text.toArray())
+            this.replaceFileWithTmp(path, tmp)
+        } catch (e: Exception) {
+            this.deleteAtomicTmp(tmp)
+            throw e
+        }
     }
 
     private func atomicTmpPath(path: Path, relative: String): Path {
@@ -5347,12 +5958,15 @@ public class FileKnowledgeStore {
             Directory.create(path.parent, recursive: true)
         }
         let tmp = this.atomicTmpPath(path, relative)
-        try (file = File(tmp, OpenMode.Write)) {
-            for (line in lines) {
-                file.write(line.toArray())
+        try {
+            try (file = File(tmp, OpenMode.Write)) {
+                for (line in lines) { file.write(line.toArray()) }
             }
+            this.replaceFileWithTmp(path, tmp)
+        } catch (e: Exception) {
+            this.deleteAtomicTmp(tmp)
+            throw e
         }
-        this.replaceFileWithTmp(path, tmp)
     }
 
     private func replaceFileWithTmp(path: Path, tmp: Path): Unit {
@@ -5361,9 +5975,14 @@ public class FileKnowledgeStore {
             if (code != 0) {
                 throw Exception("atomic_write_replace_failed")
             }
-        } catch (e: Exception) {
-            throw e
+        } finally {
+            this.deleteAtomicTmp(tmp)
         }
+    }
+
+    private func deleteAtomicTmp(tmp: Path): Unit {
+        if (!exists(tmp)) { return }
+        try { _ = launch("/bin/rm", ["-f", tmp.toString()]).wait() } catch (_: Exception) { () }
     }
 
     public func appendLinesAtomically(relative: String, text: String): Unit {
@@ -5680,17 +6299,22 @@ public class FileKnowledgeStore {
             Directory.create(path.parent, recursive: true)
         }
         let tmp = this.atomicTmpPath(path, relative)
-        try (file = File(tmp, OpenMode.Write)) {
-            var written: Int64 = 0
-            for (record in records) {
-                if (written % 256 == 0) {
-                    this.ensureActiveSnapshotDeadline("${progressStage}_aggregate:${written}:${records.size}", deadlineAtMillis)
+        try {
+            try (file = File(tmp, OpenMode.Write)) {
+                var written: Int64 = 0
+                for (record in records) {
+                    if (written % 256 == 0) {
+                        this.ensureActiveSnapshotDeadline("${progressStage}_aggregate:${written}:${records.size}", deadlineAtMillis)
+                    }
+                    file.write(this.rawLine(record).toArray())
+                    written += 1
                 }
-                file.write(this.rawLine(record).toArray())
-                written += 1
             }
+            this.replaceFileWithTmp(path, tmp)
+        } catch (e: Exception) {
+            this.deleteAtomicTmp(tmp)
+            throw e
         }
-        this.replaceFileWithTmp(path, tmp)
     }
 
     private func writeRawRecordAtomically(relative: String, record: RawRecord): Unit {
@@ -5757,17 +6381,22 @@ public class FileKnowledgeStore {
             Directory.create(path.parent, recursive: true)
         }
         let tmp = this.atomicTmpPath(path, relative)
-        try (file = File(tmp, OpenMode.Write)) {
-            var written: Int64 = 0
-            for (record in records) {
-                if (written % 256 == 0) {
-                    this.ensureActiveSnapshotDeadline("${progressStage}:${written}:${records.size}", deadlineAtMillis)
+        try {
+            try (file = File(tmp, OpenMode.Write)) {
+                var written: Int64 = 0
+                for (record in records) {
+                    if (written % 256 == 0) {
+                        this.ensureActiveSnapshotDeadline("${progressStage}:${written}:${records.size}", deadlineAtMillis)
+                    }
+                    file.write(this.normalizedLine(record).toArray())
+                    written += 1
                 }
-                file.write(this.normalizedLine(record).toArray())
-                written += 1
             }
+            this.replaceFileWithTmp(path, tmp)
+        } catch (e: Exception) {
+            this.deleteAtomicTmp(tmp)
+            throw e
         }
-        this.replaceFileWithTmp(path, tmp)
     }
 
     private func vectorLines(records: ArrayList<VectorRecord>): String {
@@ -5779,7 +6408,8 @@ public class FileKnowledgeStore {
     }
 
     private func vectorLine(record: VectorRecord): String {
-        "${escapeField(vectorPointIdentity(record))}|${escapeField(record.id)}|${escapeField(record.title)}|${escapeField(record.chunk)}|${escapeField(record.metadata.knowledgeVersion)}|${escapeField(record.metadata.sourceId)}|${escapeField(record.metadata.sourceType)}|${escapeField(record.metadata.trustLevel)}|${escapeField(record.metadata.reviewState)}|${escapeField(record.citation)}|${vectorToLine(record.vector)}\n"
+        let metadata = record.metadata
+        "${escapeField(vectorPointIdentity(record))}|${escapeField(record.id)}|${escapeField(record.title)}|${escapeField(record.chunk)}|${escapeField(metadata.knowledgeVersion)}|${escapeField(metadata.sourceId)}|${escapeField(metadata.sourceType)}|${escapeField(metadata.trustLevel)}|${escapeField(metadata.reviewState)}|${escapeField(record.citation)}|${vectorToLine(record.vector)}|p5-vector-v2|${escapeField(metadata.sourceUrl)}|${escapeField(metadata.repo)}|${escapeField(metadata.path)}|${escapeField(metadata.symbol)}|${escapeField(metadata.commit)}|${escapeField(metadata.docVersion)}|${escapeField(metadata.targetVersion)}|${escapeField(metadata.sourceSet)}|${escapeField(metadata.versionResolutionId)}|${escapeField(metadata.crawlAt)}|${escapeField(metadata.indexedAt)}|${escapeField(metadata.candidateVersion)}|${metadata.contentSize}|${escapeField(metadata.license)}|${escapeField(metadata.repoVisibility)}|${this.vectorDerivedLine(metadata.derivedFrom)}\n"
     }
 
     private func writeVectorRecordsAtomically(relative: String, records: ArrayList<VectorRecord>, deadlineAtMillis: Int64, progressStage: String): Unit {
@@ -5789,17 +6419,22 @@ public class FileKnowledgeStore {
             Directory.create(path.parent, recursive: true)
         }
         let tmp = this.atomicTmpPath(path, relative)
-        try (file = File(tmp, OpenMode.Write)) {
-            var written: Int64 = 0
-            for (record in records) {
-                if (written % 128 == 0) {
-                    this.ensureActiveSnapshotDeadline("${progressStage}:${written}:${records.size}", deadlineAtMillis)
+        try {
+            try (file = File(tmp, OpenMode.Write)) {
+                var written: Int64 = 0
+                for (record in records) {
+                    if (written % 128 == 0) {
+                        this.ensureActiveSnapshotDeadline("${progressStage}:${written}:${records.size}", deadlineAtMillis)
+                    }
+                    file.write(this.vectorLine(record).toArray())
+                    written += 1
                 }
-                file.write(this.vectorLine(record).toArray())
-                written += 1
             }
+            this.replaceFileWithTmp(path, tmp)
+        } catch (e: Exception) {
+            this.deleteAtomicTmp(tmp)
+            throw e
         }
-        this.replaceFileWithTmp(path, tmp)
     }
 
     private func parseVector(text: String): ArrayList<VectorRecord> {
@@ -5813,7 +6448,28 @@ public class FileKnowledgeStore {
             }
             let parts = line.split("|")
             if (parts.size >= 11) {
-                out.add(this.vectorRecordFromParts(parts, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10))
+                let record = this.vectorRecordFromParts(parts, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10)
+                if (parts.size >= 28 && parts[11] == "p5-vector-v2") {
+                    record.metadata.sourceUrl = unescapeField(parts[12])
+                    record.metadata.repo = unescapeField(parts[13])
+                    record.metadata.path = unescapeField(parts[14])
+                    record.metadata.symbol = unescapeField(parts[15])
+                    record.metadata.commit = unescapeField(parts[16])
+                    record.metadata.docVersion = unescapeField(parts[17])
+                    record.metadata.targetVersion = unescapeField(parts[18])
+                    record.metadata.sourceSet = unescapeField(parts[19])
+                    record.metadata.versionResolutionId = unescapeField(parts[20])
+                    record.metadata.crawlAt = unescapeField(parts[21])
+                    record.metadata.indexedAt = unescapeField(parts[22])
+                    record.metadata.candidateVersion = unescapeField(parts[23])
+                    record.metadata.contentSize = parseIntField(parts[24], 0)
+                    record.metadata.license = unescapeField(parts[25])
+                    record.metadata.repoVisibility = unescapeField(parts[26])
+                    let derived = ArrayList<String>()
+                    if (!this.parseVectorDerivedLine(parts[27], derived)) { continue }
+                    record.metadata.derivedFrom = derived.toArray()
+                }
+                out.add(record)
             } else if (parts.size >= 10) {
                 out.add(this.vectorRecordFromParts(parts, -1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9))
             } else if (parts.size >= 8) {
@@ -5821,6 +6477,70 @@ public class FileKnowledgeStore {
             }
         }
         out
+    }
+
+    private func vectorSpoolTextSchemaValid(text: String): Bool {
+        var count: Int64 = 0
+        for (line in text.split("\n")) {
+            if (line == "") { continue }
+            let parts = line.split("|")
+            if (parts.size < 28 || parts[11] != "p5-vector-v2") { return false }
+            let derived = ArrayList<String>()
+            if (!this.parseVectorDerivedLine(parts[27], derived)) { return false }
+            count += 1
+        }
+        count > 0
+    }
+
+    private func vectorDerivedLine(values: Array<String>): String {
+        let out = StringBuilder()
+        out.append("${values.size}:")
+        for (index in 0..values.size) {
+            if (index > 0) { out.append(",") }
+            let bytes = values[index].toArray()
+            if (bytes.size == 0) {
+                out.append("-")
+            } else {
+                for (byte in bytes) {
+                    out.append(this.candidateHexNibble(byte / UInt8(16)))
+                    out.append(this.candidateHexNibble(byte % UInt8(16)))
+                }
+            }
+        }
+        out.toString()
+    }
+
+    private func parseVectorDerivedLine(value: String, out: ArrayList<String>): Bool {
+        let separator = findText(value, ":")
+        if (separator <= 0) { return false }
+        let expected = parseIntField(value[0..separator], -1)
+        if (expected < 0) { return false }
+        let payload = value[separator + 1..value.size]
+        if (expected == 0) { return payload == "" }
+        let items = payload.split(",")
+        if (items.size != expected) { return false }
+        for (item in items) {
+            if (item == "-") { out.add(""); continue }
+            if (item.size == 0 || item.size % 2 != 0) { return false }
+            let bytes = ArrayList<Byte>()
+            var index: Int64 = 0
+            while (index < item.size) {
+                let high = this.vectorHexValue(item[index])
+                let low = this.vectorHexValue(item[index + 1])
+                if (high < 0 || low < 0) { return false }
+                bytes.add(UInt8(high * 16 + low))
+                index += 2
+            }
+            let decoded = try { String.fromUtf8(bytes.toArray()) } catch (_: Exception) { return false }
+            out.add(decoded)
+        }
+        true
+    }
+
+    private func vectorHexValue(value: UInt8): Int64 {
+        if (value >= UInt8(48) && value <= UInt8(57)) { return Int64(value - UInt8(48)) }
+        if (value >= UInt8(97) && value <= UInt8(102)) { return Int64(value - UInt8(97)) + 10 }
+        -1
     }
 
     private func vectorRecordFromParts(parts: Array<String>, pointIdIndex: Int64, idIndex: Int64, titleIndex: Int64, chunkIndex: Int64, versionIndex: Int64, sourceIdIndex: Int64, sourceTypeIndex: Int64, trustIndex: Int64, reviewIndex: Int64, citationIndex: Int64, vectorIndex: Int64): VectorRecord {
@@ -6215,9 +6935,9 @@ public class FileVectorBuildProgressSink <: VectorBuildProgressSink {
         var degraded = false
         try {
             if (replace) {
-                this.store.writeLinesAtomically(this.progressPath, vectorBuildProgressJson(progress, event))
+                this.store.writeLinesAtomically(this.progressPath, vectorBuildProgressJson(progress, event, taskName: this.schedulerTaskName))
             } else {
-                this.store.appendLinesAtomically(this.progressPath, vectorBuildProgressJson(progress, event))
+                this.store.appendLinesAtomically(this.progressPath, vectorBuildProgressJson(progress, event, taskName: this.schedulerTaskName))
             }
         } catch (_: Exception) {
             degraded = true
@@ -6352,8 +7072,55 @@ public func ckbRecoverStaleSchedulerRuns(store: FileKnowledgeStore): CkbSchedule
     result
 }
 
+public class CkbPersistedActiveCollectionAuthority {
+    public var valid: Bool = false
+    public var status: String = "active_authority_missing"
+    public var metadataCollection: String = ""
+    public var manifestCollection: String = ""
+
+    public init() {}
+}
+
+public func ckbLoadPersistedActiveCollectionAuthority(store: FileKnowledgeStore): CkbPersistedActiveCollectionAuthority {
+    let authority = CkbPersistedActiveCollectionAuthority()
+    if (!store.has("metadata/status.ckb") || !store.has("metadata/active-snapshot.manifest")) {
+        return authority
+    }
+    let metadata = try {
+        store.readText("metadata/status.ckb")
+    } catch (_: Exception) {
+        authority.status = "active_authority_invalid_response_encoding"
+        return authority
+    }
+    let manifest = try {
+        store.readText("metadata/active-snapshot.manifest")
+    } catch (_: Exception) {
+        authority.status = "active_authority_invalid_response_encoding"
+        return authority
+    }
+    if (metadata == "" || manifest == "") {
+        authority.status = "active_authority_empty"
+        return authority
+    }
+    authority.metadataCollection = ckbCurrentField(metadata, "vectorActiveCollection")
+    authority.manifestCollection = ckbCurrentField(manifest, "vectorActiveCollection")
+    if (authority.metadataCollection == "" || authority.manifestCollection == "") {
+        authority.status = "active_authority_malformed"
+        return authority
+    }
+    if (authority.metadataCollection != authority.manifestCollection) {
+        authority.status = "active_authority_mismatch"
+        return authority
+    }
+    authority.valid = true
+    authority.status = "ok"
+    authority
+}
+
 public func ckbRecoverStaleSchedulerRunsWithVectorStore(store: FileKnowledgeStore, vectorStore: VectorStore): CkbSchedulerStaleRecoveryResult {
     let result = ckbRecoverStaleSchedulerRuns(store)
+    let ownerTempsRemoved = store.cleanupCandidateOwnerStaleTemps()
+    if (ownerTempsRemoved > 0) { result.diagnostics.add("candidate_owner_stale_temps_removed:count=${ownerTempsRemoved}") }
     if (result.recoveredVector) {
         let current = ckbSchedulerReadProgressArtifact(store, "metadata/vector-reconcile-current.ckb")
         let targetCollection = ckbCurrentField(current, "targetCollection")
@@ -6368,7 +7135,55 @@ public func ckbRecoverStaleSchedulerRunsWithVectorStore(store: FileKnowledgeStor
             }
         }
     }
+    let activeAuthority = ckbLoadPersistedActiveCollectionAuthority(store)
+    for (owner in store.listCandidateCollectionOwners()) {
+        let ownerKey = ckbReleaseEvidenceHash(if (owner.collection != "") { owner.collection } else { owner.relativePath })
+        if (!owner.valid) {
+            result.diagnostics.add("candidate_owner_preserved_unknown:ownerKey=${ownerKey}|status=${owner.status}")
+            continue
+        }
+        if (!activeAuthority.valid) {
+            result.diagnostics.add("candidate_owner_preserved_active_authority_unavailable:ownerKey=${ownerKey}|status=${activeAuthority.status}")
+            continue
+        }
+        if (owner.state == "cleaned") { continue }
+        if (owner.collection == activeAuthority.metadataCollection || owner.collection == activeAuthority.manifestCollection) {
+            result.diagnostics.add("candidate_owner_preserved_active:ownerKey=${ownerKey}")
+            continue
+        }
+        let resumeContext = CkbCandidateAcquisitionContext()
+        resumeContext.acquisitionId = owner.acquisitionId
+        resumeContext.schedulerRunId = owner.schedulerRunId
+        resumeContext.taskId = owner.taskId
+        resumeContext.candidateVersion = owner.candidateVersion
+        resumeContext.planHash = owner.planHash
+        resumeContext.recordsEvidenceHash = owner.recordsEvidenceHash
+        let resumable = store.loadVectorSpoolCheckpoint(resumeContext, owner.collection)
+        if ((owner.state == "planned" || owner.state == "adopted") && resumable.valid) {
+            result.diagnostics.add("candidate_owner_preserved_resumable:ownerKey=${ownerKey}|completed=${resumable.completed}|total=${resumable.total}")
+            continue
+        }
+        if (!ckbS4CandidateOwnerHasStableIdentity(owner)) {
+            result.diagnostics.add("candidate_owner_preserved_mismatch:ownerKey=${ownerKey}")
+            continue
+        }
+        let deleted = vectorStore.deleteCollection(owner.collection)
+        if (deleted.state == EmbeddingProviderState.READY || deleted.degradedReason == "collection_missing") {
+            owner.state = "cleaned"
+            _ = store.saveCandidateCollectionOwner(owner)
+            _ = store.deleteS4ArtifactTree("metadata/vector-builds/${owner.acquisitionId}")
+            result.deletedKnownStaging = true
+            result.diagnostics.add("candidate_owner_orphan_deleted:ownerKey=${ownerKey}")
+        } else {
+            result.diagnostics.add("candidate_owner_orphan_delete_failed:ownerKey=${ownerKey}|status=${utf8SafePrefix(redactSensitive(deleted.degradedReason), 120)}")
+        }
+    }
     result
+}
+
+private func ckbS4CandidateOwnerHasStableIdentity(owner: CkbCandidateCollectionOwner): Bool {
+    if (!owner.valid || !owner.acquisitionId.startsWith("p5-candidate-") || owner.schedulerRunId == "" || owner.taskId == "" || owner.candidateVersion == "" || owner.planHash == "" || owner.recordsEvidenceHash == "") { return false }
+    ckbCandidateOwnerCollectionMatches(owner)
 }
 
 private func ckbSafeRecoveredStagingCollection(targetCollection: String, activeCollection: String): Bool {
@@ -6461,9 +7276,9 @@ private func schedulerTaskProgressDiagnostic(task: SchedulerTaskResult): String 
     task.status
 }
 
-private func vectorBuildProgressJson(progress: VectorBuildProgress, event: String): String {
+private func vectorBuildProgressJson(progress: VectorBuildProgress, event: String, taskName!: String = ""): String {
     let diagnostic = utf8SafePrefix(redactSensitive(if (progress.lastDiagnostic != "") { progress.lastDiagnostic } else { progress.diagnostic }), 240)
-    "{\"runId\":\"${ckbRuntimePreflightJsonEscape(progress.runId)}\",\"event\":\"${ckbRuntimePreflightJsonEscape(event)}\",\"collection\":\"${ckbRuntimePreflightJsonEscape(progress.collection)}\",\"targetCollection\":\"${ckbRuntimePreflightJsonEscape(progress.targetCollection)}\",\"total\":${progress.total},\"completed\":${progress.completed},\"failed\":${progress.failed},\"reused\":${progress.reused},\"embedded\":${progress.embedded},\"currentBatch\":${progress.currentBatch},\"currentBatchStart\":${progress.currentBatchStart},\"currentBatchEnd\":${progress.currentBatchEnd},\"batchSize\":${progress.batchSize},\"inputBytes\":${progress.inputBytes},\"preparedBytes\":${progress.preparedBytes},\"state\":\"${ckbRuntimePreflightJsonEscape(progress.state)}\",\"diagnostic\":\"${ckbRuntimePreflightJsonEscape(diagnostic)}\",\"elapsedMillis\":${progress.elapsedMillis},\"atMillis\":${DateTime.now().toUnixTimeStamp().toMilliseconds()}}\n"
+    "{\"runId\":\"${ckbRuntimePreflightJsonEscape(progress.runId)}\",\"taskName\":\"${ckbRuntimePreflightJsonEscape(taskName)}\",\"event\":\"${ckbRuntimePreflightJsonEscape(event)}\",\"stage\":\"${ckbRuntimePreflightJsonEscape(event)}\",\"collection\":\"${ckbRuntimePreflightJsonEscape(progress.collection)}\",\"targetCollection\":\"${ckbRuntimePreflightJsonEscape(progress.targetCollection)}\",\"total\":${progress.total},\"completed\":${progress.completed},\"failed\":${progress.failed},\"reused\":${progress.reused},\"embedded\":${progress.embedded},\"currentBatch\":${progress.currentBatch},\"currentBatchStart\":${progress.currentBatchStart},\"currentBatchEnd\":${progress.currentBatchEnd},\"batchSize\":${progress.batchSize},\"lookupRequested\":${progress.lookupRequested},\"lookupFound\":${progress.lookupFound},\"lookupStatus\":\"${ckbRuntimePreflightJsonEscape(progress.lookupStatus)}\",\"lookupTimedOut\":${progress.lookupTimedOut},\"lookupDurationMillis\":${progress.lookupDurationMillis},\"inputBytes\":${progress.inputBytes},\"preparedBytes\":${progress.preparedBytes},\"state\":\"${ckbRuntimePreflightJsonEscape(progress.state)}\",\"diagnostic\":\"${ckbRuntimePreflightJsonEscape(diagnostic)}\",\"elapsedMillis\":${progress.elapsedMillis},\"atMillis\":${DateTime.now().toUnixTimeStamp().toMilliseconds()}}\n"
 }
 
 private func vectorBuildCurrentText(progress: VectorBuildProgress, progressPath: String, schedulerRunId!: String = "", schedulerTaskName!: String = ""): String {
@@ -6477,6 +7292,7 @@ private func vectorBuildCurrentText(progress: VectorBuildProgress, progressPath:
     text += "failed=${progress.failed}\n"
     text += "reused=${progress.reused}\n"
     text += "embedded=${progress.embedded}\n"
+    text += "lookupRequested=${progress.lookupRequested}\nlookupFound=${progress.lookupFound}\nlookupStatus=${escapeField(progress.lookupStatus)}\nlookupTimedOut=${progress.lookupTimedOut}\nlookupDurationMillis=${progress.lookupDurationMillis}\n"
     text += "progressPath=${escapeField(progressPath)}\n"
     if (schedulerRunId.trimAscii() != "") {
         text += "schedulerRunId=${escapeField(schedulerRunId)}\n"
@@ -9292,6 +10108,7 @@ class CkbScheduledProfileFetchResult {
     var controlEvidence: ArrayList<CkbReleaseControlEvidence> = ArrayList<CkbReleaseControlEvidence>()
     var releaseInventories: ArrayList<CkbReleaseSourceInventory> = ArrayList<CkbReleaseSourceInventory>()
     var releasePlan: CkbReleaseFullSyncPlan = CkbReleaseFullSyncPlan()
+    var releaseAcquisitionKeys: ArrayList<CkbScheduledFetchRunKey> = ArrayList<CkbScheduledFetchRunKey>()
     var accounting: CkbScheduledRequestAccounting = CkbScheduledRequestAccounting()
 
     init() {}
@@ -9447,13 +10264,14 @@ func fetchScheduledProfileSources(profile: CkbScheduleTaskProfile, runner: Sourc
 }
 
 private func ckbFetchReleaseFullSyncPlan(runner: SourceFetchRunner, builder: SourceRequestBuilder, profile: CkbScheduleTaskProfile, result: CkbScheduledProfileFetchResult, config: CkbRuntimeConfig, store: FileKnowledgeStore, deadlineAtMillis!: Int64 = 0): Unit {
+    var sourceOrdinal: Int64 = 0
     for (source in result.releasePlan.sources) {
         let inventory = ckbReleaseInventoryForSource(source)
         result.releaseInventories.add(inventory)
         if (source.sourceSet == CangjieSourceSets.EVAL_SUPPORT) {
-            ckbFetchReleaseEvalSupportSource(source, profile, result, inventory, config, store)
+            ckbFetchReleaseEvalSupportSource(source, profile, result, inventory, config, store, sourceOrdinal: sourceOrdinal)
         } else {
-            ckbFetchReleaseRemoteSource(runner, builder, source, profile, result, inventory, config, store, deadlineAtMillis: deadlineAtMillis)
+            ckbFetchReleaseRemoteSource(runner, builder, source, profile, result, inventory, config, store, deadlineAtMillis: deadlineAtMillis, sourceOrdinal: sourceOrdinal)
         }
         ckbReleaseInventorySortPaths(inventory)
         if (!inventory.complete) {
@@ -9462,6 +10280,7 @@ private func ckbFetchReleaseFullSyncPlan(runner: SourceFetchRunner, builder: Sou
             }
             break
         }
+        sourceOrdinal += 1
     }
     ckbSyncScheduledRequestAccounting(result)
     if (result.ok && ckbReleaseAllInventoriesComplete(result.releasePlan, result.releaseInventories)) {
@@ -9484,8 +10303,39 @@ func ckbReleaseInventoryForSource(source: CkbReleaseSourcePlan): CkbReleaseSourc
     inventory
 }
 
-func ckbFetchReleaseRemoteSource(runner: SourceFetchRunner, builder: SourceRequestBuilder, source: CkbReleaseSourcePlan, profile: CkbScheduleTaskProfile, result: CkbScheduledProfileFetchResult, inventory: CkbReleaseSourceInventory, config: CkbRuntimeConfig, store: FileKnowledgeStore, deadlineAtMillis!: Int64 = 0): Unit {
-    let resolution = ckbResolveGitCodeRefForFetch(runner, builder, source.source.sourceRepo, source.originalRef, source.sourceSet, source.sourceFamily, config, deadlineAtMillis: deadlineAtMillis, accounting: result.accounting)
+func ckbFetchReleaseRemoteSource(runner: SourceFetchRunner, builder: SourceRequestBuilder, source: CkbReleaseSourcePlan, profile: CkbScheduleTaskProfile, result: CkbScheduledProfileFetchResult, inventory: CkbReleaseSourceInventory, config: CkbRuntimeConfig, store: FileKnowledgeStore, deadlineAtMillis!: Int64 = 0, sourceOrdinal!: Int64 = 0): Unit {
+    let planningKey = ckbReleaseScheduledFetchRunKey(profile, source, result.releasePlan.planHash)
+    let staleTempsRemoved = store.cleanupReleaseAcquisitionStaleTemps(planningKey.acquisitionId)
+    if (staleTempsRemoved > 0) { result.diagnostics.add("release_acquisition_stale_temps_removed:sourceSet=${source.sourceSet}|count=${staleTempsRemoved}") }
+    let acquisitionState = ckbLoadReleaseAcquisitionState(store, planningKey)
+    let reuseExisting = acquisitionState.status == "not_found" || (acquisitionState.valid && acquisitionState.state == "active")
+    if (!reuseExisting) {
+        result.diagnostics.add("release_acquisition_artifacts_rejected:sourceSet=${source.sourceSet}|status=${acquisitionState.status}")
+    }
+    if (reuseExisting && ckbHydrateCompletedReleaseRemoteSource(builder, source, profile, result, inventory, store, planningKey, sourceOrdinal)) {
+        return
+    }
+    var resolution = GitCodeRefResolution()
+    resolution.status = "not_found"
+    if (reuseExisting) { resolution = ckbLoadReleaseRefResolution(store, planningKey) }
+    if (!resolution.ok) {
+        resolution = ckbResolveGitCodeRefForFetch(runner, builder, source.source.sourceRepo, source.originalRef, source.sourceSet, source.sourceFamily, config, deadlineAtMillis: deadlineAtMillis, accounting: result.accounting)
+        if (resolution.ok) {
+            let resolvedKey = ckbReleaseRunKeyWithCommit(planningKey, resolution.resolvedCommit)
+            let refArtifact = ckbWriteReleaseContentArtifact(store, resolvedKey, CkbReleaseArtifactKinds.REF, ckbReleaseRefResolutionPayload(resolution))
+            ckbMarkReleaseAcquisitionState(store, resolvedKey, "active")
+            let initial = CkbReleaseResumeCheckpoint()
+            initial.phase = "ref"
+            initial.sourceOrdinal = sourceOrdinal
+            initial.refArtifactPath = refArtifact.relativePath
+            initial.artifactEvidenceHashes.add(refArtifact.evidenceHash)
+            ckbSaveReleaseResumeCheckpoint(store, resolvedKey, initial)
+        } else if (resolution.status != "not_found") {
+            result.diagnostics.add("release_ref_artifact_rejected:sourceSet=${source.sourceSet}|status=${resolution.status}")
+        }
+    } else {
+        result.diagnostics.add("release_ref_artifact_hydrated:sourceSet=${source.sourceSet}|commit=${utf8SafePrefix(resolution.resolvedCommit, 64)}")
+    }
     ckbAppendReleaseRefEvidence(result, source, resolution)
     if (!resolution.ok) {
         let status = ckbReleaseAcquisitionFailureStatus(resolution.status)
@@ -9493,14 +10343,36 @@ func ckbFetchReleaseRemoteSource(runner: SourceFetchRunner, builder: SourceReque
         ckbReleaseFailFetchResult(result, status, source, "ref_resolution_failed")
         return
     }
+    let runKey = ckbReleaseRunKeyWithCommit(planningKey, resolution.resolvedCommit)
+    ckbMarkReleaseAcquisitionState(store, runKey, "active")
+    result.releaseAcquisitionKeys.add(runKey)
     inventory.resolvedCommit = resolution.resolvedCommit
+    var checkpoint = if (reuseExisting) { ckbLoadReleaseResumeCheckpoint(store, runKey) } else { CkbReleaseResumeCheckpoint() }
+    if (!checkpoint.valid) {
+        checkpoint = CkbReleaseResumeCheckpoint()
+        checkpoint.phase = "ref"
+        checkpoint.sourceOrdinal = sourceOrdinal
+        checkpoint.refArtifactPath = ckbReleaseArtifactRelativePath(runKey, CkbReleaseArtifactKinds.REF)
+    }
     var page: Int64 = 1
     while (true) {
         let request = builder.gitCodeTreePageWithFetchRef(source.source.sourceRepo, source.originalRef, resolution.effectiveRef, page: page, perPage: 100)
-        let fetch = ckbFetchScheduledRequest(runner, request, config, deadlineAtMillis: deadlineAtMillis, accounting: result.accounting)
-        ckbApplyGitCodeRefResolutionToFetch(fetch, resolution)
-        if (fetch.body != "") {
-            fetch.bodyHash = ckbReleaseEvidenceHash(fetch.body)
+        var pageArtifact = if (reuseExisting) { ckbLoadReleaseContentArtifact(store, runKey, CkbReleaseArtifactKinds.TREE_PAGE, ordinal: page) } else { CkbScheduledContentArtifact() }
+        if (pageArtifact.valid && (!checkpoint.pageArtifactPaths.contains(pageArtifact.relativePath) || !checkpoint.artifactEvidenceHashes.contains(pageArtifact.evidenceHash) || checkpoint.nextPage <= page)) {
+            result.diagnostics.add("release_tree_page_artifact_uncommitted:sourceSet=${source.sourceSet}|page=${page}")
+            pageArtifact = CkbScheduledContentArtifact()
+        }
+        var fetch = SourceFetchResult()
+        if (pageArtifact.valid) {
+            fetch = ckbReleaseHydratedFetch(request, resolution, pageArtifact)
+            result.diagnostics.add("release_tree_page_artifact_hydrated:sourceSet=${source.sourceSet}|page=${page}|bodyHash=${pageArtifact.payloadHash}")
+        } else {
+            if (pageArtifact.status != "not_found") {
+                result.diagnostics.add("release_tree_page_artifact_rejected:sourceSet=${source.sourceSet}|page=${page}|status=${pageArtifact.status}")
+            }
+            fetch = ckbFetchScheduledRequest(runner, request, config, deadlineAtMillis: deadlineAtMillis, accounting: result.accounting)
+            ckbApplyGitCodeRefResolutionToFetch(fetch, resolution)
+            if (fetch.body != "") { fetch.bodyHash = ckbReleaseEvidenceHash(fetch.body) }
         }
         inventory.pagesScanned += 1
         if (fetch.truncated) {
@@ -9513,6 +10385,9 @@ func ckbFetchReleaseRemoteSource(runner: SourceFetchRunner, builder: SourceReque
             let status = ckbReleaseAcquisitionFailureStatus(fetch.status)
             ckbReleaseInventoryFailure(inventory, status)
             ckbReleaseFailFetchResult(result, status, source, "tree_page_failed")
+            checkpoint.phase = "tree_page"
+            checkpoint.nextPage = page
+            ckbSaveReleaseResumeCheckpoint(store, runKey, checkpoint)
             return
         }
         let parsed = ckbReleaseParseTreePage(source.sourceSet, fetch.body)
@@ -9526,28 +10401,31 @@ func ckbFetchReleaseRemoteSource(runner: SourceFetchRunner, builder: SourceReque
             ckbReleaseFailFetchResult(result, parsed.status, source, "tree_page_parse_failed")
             return
         }
+        let committedPage = if (pageArtifact.valid) { pageArtifact } else {
+            ckbWriteReleaseContentArtifact(store, runKey, CkbReleaseArtifactKinds.TREE_PAGE, fetch.body, ordinal: page, method: request.kind, contentType: fetch.contentType, fetch: fetch)
+        }
+        addUniqueString(checkpoint.pageArtifactPaths, committedPage.relativePath)
+        addUniqueString(checkpoint.artifactEvidenceHashes, committedPage.evidenceHash)
+        checkpoint.phase = "tree_page"
+        checkpoint.sourceOrdinal = sourceOrdinal
+        // Replaying already committed page artifacts must never move the durable
+        // cursor backwards; doing so would make the last committed page look
+        // uncommitted on the next loop iteration and trigger a network refetch.
+        if (checkpoint.nextPage < page + 1) {
+            checkpoint.nextPage = page + 1
+        }
+        ckbSaveReleaseResumeCheckpoint(store, runKey, checkpoint)
         if (parsed.explicitEnd) {
             inventory.explicitEnd = true
             break
         }
         inventory.nonEmptyPages += 1
-        if (inventory.nonEmptyPages > source.maxNonEmptyPages) {
-            ckbReleaseInventoryLimitFailure(result, inventory, source, "nonempty_pages")
-            return
-        }
+        if (inventory.nonEmptyPages > source.maxNonEmptyPages) { ckbReleaseInventoryLimitFailure(result, inventory, source, "nonempty_pages"); return }
         inventory.objectsSeen += parsed.objectsSeen
         inventory.filesSeen += parsed.filesSeen
-        if (inventory.objectsSeen > source.maxObjects) {
-            ckbReleaseInventoryLimitFailure(result, inventory, source, "objects")
-            return
-        }
-        if (inventory.filesSeen > source.maxFiles) {
-            ckbReleaseInventoryLimitFailure(result, inventory, source, "files")
-            return
-        }
-        for (path in parsed.eligiblePaths) {
-            _ = ckbReleaseInventoryPlanPath(inventory, path)
-        }
+        if (inventory.objectsSeen > source.maxObjects) { ckbReleaseInventoryLimitFailure(result, inventory, source, "objects"); return }
+        if (inventory.filesSeen > source.maxFiles) { ckbReleaseInventoryLimitFailure(result, inventory, source, "files"); return }
+        for (path in parsed.eligiblePaths) { _ = ckbReleaseInventoryPlanPath(inventory, path) }
         page += 1
     }
     ckbReleaseInventorySortPaths(inventory)
@@ -9557,25 +10435,73 @@ func ckbFetchReleaseRemoteSource(runner: SourceFetchRunner, builder: SourceReque
         ckbReleaseFailFetchResult(result, status, source, "no_eligible_content")
         return
     }
+    checkpoint.plannedPaths.clear()
+    checkpoint.plannedPaths.add(all: inventory.plannedPaths)
+    checkpoint.phase = "content"
+    ckbSaveReleaseResumeCheckpoint(store, runKey, checkpoint)
     for (path in inventory.plannedPaths) {
-        if (!ckbFetchReleaseContentPath(runner, builder, source, profile, result, inventory, config, resolution, path, deadlineAtMillis: deadlineAtMillis)) {
-            return
-        }
+        if (!ckbFetchReleaseContentPath(runner, builder, source, profile, result, inventory, config, resolution, path, store, runKey, checkpoint, allowResume: reuseExisting, deadlineAtMillis: deadlineAtMillis)) { return }
     }
-    let checkpointSource = source.source
-    ckbSaveScheduledFetchCheckpoint(store, profile, checkpointSource, resolution, "completed", inventory.pagesScanned, "", inventory.plannedPaths, inventory.completedPaths)
+    let completeArtifact = ckbWriteReleaseContentArtifact(store, runKey, CkbReleaseArtifactKinds.SOURCE_COMPLETE, ckbReleaseSourceCompletePayload(inventory))
+    checkpoint.phase = "completed"
+    checkpoint.sourceOrdinal = sourceOrdinal
+    checkpoint.nextPage = inventory.pagesScanned + 1
+    checkpoint.currentPathHash = ""
+    checkpoint.sourceCompleteArtifactPath = completeArtifact.relativePath
+    checkpoint.completedPaths.clear()
+    checkpoint.completedPaths.add(all: inventory.completedPaths)
+    addUniqueString(checkpoint.artifactEvidenceHashes, completeArtifact.evidenceHash)
+    ckbSaveReleaseResumeCheckpoint(store, runKey, checkpoint)
+    ckbSaveScheduledFetchCheckpoint(store, profile, source.source, resolution, "completed", inventory.pagesScanned, "", inventory.plannedPaths, inventory.completedPaths)
     inventory.complete = true
     inventory.status = CkbReleaseAcquisitionStatus.OK
 }
+private func ckbFetchReleaseContentPath(runner: SourceFetchRunner, builder: SourceRequestBuilder, source: CkbReleaseSourcePlan, profile: CkbScheduleTaskProfile, result: CkbScheduledProfileFetchResult, inventory: CkbReleaseSourceInventory, config: CkbRuntimeConfig, resolution: GitCodeRefResolution, path: String, store: FileKnowledgeStore, runKey: CkbScheduledFetchRunKey, checkpoint: CkbReleaseResumeCheckpoint, allowResume!: Bool = true, deadlineAtMillis!: Int64 = 0): Bool {
+    var hydratedArtifact = if (allowResume) { ckbLoadReleaseContentArtifact(store, runKey, CkbReleaseArtifactKinds.CONTENT, logicalPath: path) } else { CkbScheduledContentArtifact() }
+    if (hydratedArtifact.valid && (!checkpoint.contentArtifactPaths.contains(hydratedArtifact.relativePath) || !checkpoint.artifactEvidenceHashes.contains(hydratedArtifact.evidenceHash) || !checkpoint.completedPaths.contains(path))) {
+        result.diagnostics.add("release_content_artifact_uncommitted:sourceSet=${source.sourceSet}|pathHash=${ckbReleaseEvidenceHash(path)}")
+        hydratedArtifact = CkbScheduledContentArtifact()
+    }
+    if (hydratedArtifact.valid) {
+        if (!ckbAppendReleasePriorContentEvidence(result, source, builder, resolution, path, hydratedArtifact)) { return false }
+        let hydratedRequest = if (hydratedArtifact.method == "contents") {
+            builder.gitCodeReleaseSourceContentsWithFetchRef(source.source.sourceRepo, source.originalRef, resolution.effectiveRef, path)
+        } else {
+            builder.gitCodeReleaseSourceRawWithFetchRef(source.source.sourceRepo, source.originalRef, resolution.effectiveRef, path)
+        }
+        let hydratedFetch = ckbReleaseHydratedFetch(hydratedRequest, resolution, hydratedArtifact)
+        let nextBytes = inventory.contentBytes + hydratedFetch.body.size
+        if (nextBytes > source.maxBytes) {
+            ckbReleaseInventoryLimitFailure(result, inventory, source, "bytes")
+            return false
+        }
+        inventory.contentBytes = nextBytes
+        ckbAppendReleaseControlEvidence(result, source, "content_${hydratedArtifact.method}", hydratedRequest, hydratedFetch, resolution, 0, 1)
+        ckbAppendReleaseContentRecord(profile, result, source, hydratedRequest, hydratedFetch)
+        _ = ckbReleaseInventoryCompletePath(inventory, path)
+        addUniqueString(checkpoint.contentArtifactPaths, hydratedArtifact.relativePath)
+        addUniqueString(checkpoint.artifactEvidenceHashes, hydratedArtifact.evidenceHash)
+        addUniqueString(checkpoint.completedPaths, path)
+        checkpoint.phase = "content"
+        checkpoint.currentPathHash = ""
+        ckbSaveReleaseResumeCheckpoint(store, runKey, checkpoint)
+        result.diagnostics.add("release_content_artifact_hydrated:sourceSet=${source.sourceSet}|pathHash=${ckbReleaseEvidenceHash(path)}|bodyHash=${hydratedArtifact.payloadHash}")
+        return true
+    }
+    if (hydratedArtifact.status != "not_found") {
+        result.diagnostics.add("release_content_artifact_rejected:sourceSet=${source.sourceSet}|pathHash=${ckbReleaseEvidenceHash(path)}|status=${hydratedArtifact.status}")
+    }
 
-private func ckbFetchReleaseContentPath(runner: SourceFetchRunner, builder: SourceRequestBuilder, source: CkbReleaseSourcePlan, profile: CkbScheduleTaskProfile, result: CkbScheduledProfileFetchResult, inventory: CkbReleaseSourceInventory, config: CkbRuntimeConfig, resolution: GitCodeRefResolution, path: String, deadlineAtMillis!: Int64 = 0): Bool {
+    checkpoint.phase = "content"
+    checkpoint.currentPathHash = ckbReleaseEvidenceHash(path)
+    ckbSaveReleaseResumeCheckpoint(store, runKey, checkpoint)
     let rawRequest = builder.gitCodeReleaseSourceRawWithFetchRef(source.source.sourceRepo, source.originalRef, resolution.effectiveRef, path)
     var contentRequest = rawRequest
     var contentFetch = ckbFetchScheduledRequest(runner, rawRequest, config, deadlineAtMillis: deadlineAtMillis, accounting: result.accounting)
+    var method = "raw"
+    var priorFetchEvidencePayload = ""
     ckbApplyGitCodeRefResolutionToFetch(contentFetch, resolution)
-    if (contentFetch.body != "") {
-        contentFetch.bodyHash = ckbReleaseEvidenceHash(contentFetch.body)
-    }
+    if (contentFetch.body != "") { contentFetch.bodyHash = ckbReleaseEvidenceHash(contentFetch.body) }
     ckbAppendReleaseControlEvidence(result, source, "content_raw", rawRequest, contentFetch, resolution, 0, 1)
     if (contentFetch.truncated || contentFetch.status == "source_too_large") {
         ckbReleaseInventoryLimitFailure(result, inventory, source, "bytes")
@@ -9588,12 +10514,11 @@ private func ckbFetchReleaseContentPath(runner: SourceFetchRunner, builder: Sour
             ckbReleaseFailFetchResult(result, rawStatus, source, "content_raw_failed")
             return false
         }
+        priorFetchEvidencePayload = ckbReleaseFetchEvidencePayload(contentFetch)
         let contentsRequest = builder.gitCodeReleaseSourceContentsWithFetchRef(source.source.sourceRepo, source.originalRef, resolution.effectiveRef, path)
         let contentsFetch = ckbFetchScheduledRequest(runner, contentsRequest, config, deadlineAtMillis: deadlineAtMillis, accounting: result.accounting)
         ckbApplyGitCodeRefResolutionToFetch(contentsFetch, resolution)
-        if (contentsFetch.body != "") {
-            contentsFetch.bodyHash = ckbReleaseEvidenceHash(contentsFetch.body)
-        }
+        if (contentsFetch.body != "") { contentsFetch.bodyHash = ckbReleaseEvidenceHash(contentsFetch.body) }
         ckbAppendReleaseControlEvidence(result, source, "content_contents", contentsRequest, contentsFetch, resolution, 0, 1)
         if (contentsFetch.truncated || contentsFetch.status == "source_too_large") {
             ckbReleaseInventoryLimitFailure(result, inventory, source, "bytes")
@@ -9601,6 +10526,7 @@ private func ckbFetchReleaseContentPath(runner: SourceFetchRunner, builder: Sour
         }
         contentRequest = contentsRequest
         contentFetch = contentsFetch
+        method = "contents"
     }
     if (!contentFetch.ok) {
         let status = ckbReleaseAcquisitionFailureStatus(contentFetch.status)
@@ -9613,14 +10539,295 @@ private func ckbFetchReleaseContentPath(runner: SourceFetchRunner, builder: Sour
         ckbReleaseInventoryLimitFailure(result, inventory, source, "bytes")
         return false
     }
-    inventory.contentBytes = nextBytes
     contentFetch.bodyHash = ckbReleaseEvidenceHash(contentFetch.body)
+    let artifact = ckbWriteReleaseContentArtifact(store, runKey, CkbReleaseArtifactKinds.CONTENT, contentFetch.body, logicalPath: path, method: method, contentType: contentFetch.contentType, fetch: contentFetch, priorFetchEvidencePayload: priorFetchEvidencePayload)
+    inventory.contentBytes = nextBytes
     ckbAppendReleaseContentRecord(profile, result, source, contentRequest, contentFetch)
     _ = ckbReleaseInventoryCompletePath(inventory, path)
+    addUniqueString(checkpoint.contentArtifactPaths, artifact.relativePath)
+    addUniqueString(checkpoint.artifactEvidenceHashes, artifact.evidenceHash)
+    addUniqueString(checkpoint.completedPaths, path)
+    checkpoint.currentPathHash = ""
+    ckbSaveReleaseResumeCheckpoint(store, runKey, checkpoint)
+    true
+}
+private class CkbReleaseSourceCompleteDescriptor {
+    var valid: Bool = false
+    var resolvedCommit: String = ""
+    var pagesScanned: Int64 = 0
+    var nonEmptyPages: Int64 = 0
+    var objectsSeen: Int64 = 0
+    var filesSeen: Int64 = 0
+    var contentBytes: Int64 = 0
+    var plannedPaths: ArrayList<String> = ArrayList<String>()
+    var completedPaths: ArrayList<String> = ArrayList<String>()
+
+    init() {}
+}
+
+private func ckbReleaseRefResolutionPayload(resolution: GitCodeRefResolution): String {
+    "{\"status\":\"${ckbScheduledFetchJsonEscape(resolution.status)}\",\"repo\":\"${ckbScheduledFetchJsonEscape(resolution.repo)}\",\"sourceSet\":\"${ckbScheduledFetchJsonEscape(resolution.sourceSet)}\",\"sourceFamily\":\"${ckbScheduledFetchJsonEscape(resolution.sourceFamily)}\",\"originalRef\":\"${ckbScheduledFetchJsonEscape(resolution.originalRef)}\",\"effectiveRef\":\"${ckbScheduledFetchJsonEscape(resolution.effectiveRef)}\",\"resolvedCommit\":\"${ckbScheduledFetchJsonEscape(resolution.resolvedCommit)}\",\"refKind\":\"${ckbScheduledFetchJsonEscape(resolution.refKind)}\",\"evidenceBodyHash\":\"${resolution.evidenceBodyHash}\",\"evidenceAttempts\":${resolution.evidenceAttempts}}"
+}
+
+private func ckbLoadReleaseRefResolution(store: FileKnowledgeStore, planningKey: CkbScheduledFetchRunKey): GitCodeRefResolution {
+    let resolution = GitCodeRefResolution()
+    resolution.status = "not_found"
+    if (!ckbReleaseAcquisitionCanResume(store, planningKey)) {
+        return resolution
+    }
+    let artifact = ckbLoadReleaseContentArtifact(store, planningKey, CkbReleaseArtifactKinds.REF)
+    if (!artifact.valid) {
+        resolution.status = artifact.status
+        return resolution
+    }
+    let object = try { JsonValue.fromStr(artifact.payload).asObject() } catch (_: Exception) {
+        resolution.status = "malformed_json"
+        return resolution
+    }
+    resolution.status = ckbReleaseResumeJsonString(object, "status")
+    resolution.repo = ckbReleaseResumeJsonString(object, "repo")
+    resolution.sourceSet = ckbReleaseResumeJsonString(object, "sourceSet")
+    resolution.sourceFamily = ckbReleaseResumeJsonString(object, "sourceFamily")
+    resolution.originalRef = ckbReleaseResumeJsonString(object, "originalRef")
+    resolution.effectiveRef = ckbReleaseResumeJsonString(object, "effectiveRef")
+    resolution.resolvedCommit = ckbReleaseResumeJsonString(object, "resolvedCommit")
+    resolution.refKind = ckbReleaseResumeJsonString(object, "refKind")
+    resolution.evidenceBodyHash = ckbReleaseResumeJsonString(object, "evidenceBodyHash")
+    resolution.evidenceAttempts = ckbReleaseResumeJsonInt(object, "evidenceAttempts", 0)
+    let refIdentityValid = if (resolution.refKind == "local") {
+        resolution.resolvedCommit != "" && resolution.evidenceBodyHash == resolution.resolvedCommit
+    } else {
+        ckbGitCodeLooksLikeCommit(resolution.resolvedCommit)
+    }
+    resolution.ok = resolution.status == "ok" && resolution.resolvedCommit == artifact.resolvedCommit &&
+        refIdentityValid && resolution.originalRef == planningKey.originalRef
+    if (!resolution.ok && resolution.status == "ok") {
+        resolution.status = "artifact_identity_mismatch"
+    }
+    resolution
+}
+
+private func ckbReleaseHydratedFetch(request: SourceFetchRequest, resolution: GitCodeRefResolution, artifact: CkbScheduledContentArtifact): SourceFetchResult {
+    let fetch = SourceFetchResult()
+    if (!ckbHydrateReleaseFetchEvidence(artifact.fetchEvidencePayload, fetch)) {
+        fetch.status = "malformed_json"
+        return fetch
+    }
+    fetch.body = artifact.payload
+    fetch.bodyHash = artifact.payloadHash
+    fetch
+}
+
+private func ckbAppendReleasePriorContentEvidence(result: CkbScheduledProfileFetchResult, source: CkbReleaseSourcePlan, builder: SourceRequestBuilder, resolution: GitCodeRefResolution, path: String, artifact: CkbScheduledContentArtifact): Bool {
+    if (artifact.priorFetchEvidencePayload == "") { return true }
+    let prior = SourceFetchResult()
+    if (!ckbHydrateReleaseFetchEvidence(artifact.priorFetchEvidencePayload, prior)) { return false }
+    let request = builder.gitCodeReleaseSourceRawWithFetchRef(source.source.sourceRepo, source.originalRef, resolution.effectiveRef, path)
+    ckbAppendReleaseControlEvidence(result, source, "content_raw", request, prior, resolution, 0, 1)
     true
 }
 
-private func ckbFetchReleaseEvalSupportSource(source: CkbReleaseSourcePlan, profile: CkbScheduleTaskProfile, result: CkbScheduledProfileFetchResult, inventory: CkbReleaseSourceInventory, config: CkbRuntimeConfig, store: FileKnowledgeStore): Unit {
+private func ckbReleaseSourceCompletePayload(inventory: CkbReleaseSourceInventory): String {
+    "{\"resolvedCommit\":\"${ckbScheduledFetchJsonEscape(inventory.resolvedCommit)}\",\"pagesScanned\":${inventory.pagesScanned},\"nonEmptyPages\":${inventory.nonEmptyPages},\"objectsSeen\":${inventory.objectsSeen},\"filesSeen\":${inventory.filesSeen},\"contentBytes\":${inventory.contentBytes},\"plannedPaths\":${ckbScheduledFetchPathsJson(inventory.plannedPaths)},\"completedPaths\":${ckbScheduledFetchPathsJson(inventory.completedPaths)}}"
+}
+
+private func ckbParseReleaseSourceComplete(payload: String): CkbReleaseSourceCompleteDescriptor {
+    let descriptor = CkbReleaseSourceCompleteDescriptor()
+    let object = try { JsonValue.fromStr(payload).asObject() } catch (_: Exception) { return descriptor }
+    descriptor.resolvedCommit = ckbReleaseResumeJsonString(object, "resolvedCommit")
+    descriptor.pagesScanned = ckbReleaseResumeJsonInt(object, "pagesScanned", -1)
+    descriptor.nonEmptyPages = ckbReleaseResumeJsonInt(object, "nonEmptyPages", -1)
+    descriptor.objectsSeen = ckbReleaseResumeJsonInt(object, "objectsSeen", -1)
+    descriptor.filesSeen = ckbReleaseResumeJsonInt(object, "filesSeen", -1)
+    descriptor.contentBytes = ckbReleaseResumeJsonInt(object, "contentBytes", -1)
+    if (!ckbReleaseResumeJsonArray(object, "plannedPaths", descriptor.plannedPaths) ||
+        !ckbReleaseResumeJsonArray(object, "completedPaths", descriptor.completedPaths)) {
+        return descriptor
+    }
+    descriptor.valid = descriptor.resolvedCommit != "" && descriptor.pagesScanned >= 0 &&
+        descriptor.nonEmptyPages >= 0 && descriptor.objectsSeen >= 0 && descriptor.filesSeen >= 0 &&
+        descriptor.contentBytes >= 0 && descriptor.plannedPaths.size > 0 &&
+        ckbReleaseResumeSameStringSet(descriptor.plannedPaths, descriptor.completedPaths)
+    descriptor
+}
+
+private func ckbHydrateCompletedReleaseRemoteSource(builder: SourceRequestBuilder, source: CkbReleaseSourcePlan, profile: CkbScheduleTaskProfile, result: CkbScheduledProfileFetchResult, inventory: CkbReleaseSourceInventory, store: FileKnowledgeStore, planningKey: CkbScheduledFetchRunKey, sourceOrdinal: Int64): Bool {
+    let completeArtifact = ckbLoadReleaseContentArtifact(store, planningKey, CkbReleaseArtifactKinds.SOURCE_COMPLETE)
+    if (!completeArtifact.valid) {
+        if (completeArtifact.status != "not_found") {
+            result.diagnostics.add("release_source_complete_artifact_rejected:sourceSet=${source.sourceSet}|status=${completeArtifact.status}")
+        }
+        return false
+    }
+    let runKey = ckbReleaseRunKeyWithCommit(planningKey, completeArtifact.resolvedCommit)
+    let checkpoint = ckbLoadReleaseResumeCheckpoint(store, runKey)
+    if (!checkpoint.valid || checkpoint.phase != "completed" || checkpoint.sourceOrdinal != sourceOrdinal ||
+        checkpoint.sourceCompleteArtifactPath != completeArtifact.relativePath ||
+        !checkpoint.artifactEvidenceHashes.contains(completeArtifact.evidenceHash)) {
+        result.diagnostics.add("release_completed_checkpoint_rejected:sourceSet=${source.sourceSet}|status=${checkpoint.status}|phase=${checkpoint.phase}")
+        return false
+    }
+    let descriptor = ckbParseReleaseSourceComplete(completeArtifact.payload)
+    if (!descriptor.valid || descriptor.resolvedCommit != runKey.resolvedCommit ||
+        !ckbReleaseResumeSameStringSet(descriptor.plannedPaths, checkpoint.plannedPaths) ||
+        !ckbReleaseResumeSameStringSet(descriptor.completedPaths, checkpoint.completedPaths)) {
+        result.diagnostics.add("release_source_complete_descriptor_rejected:sourceSet=${source.sourceSet}")
+        return false
+    }
+    let resolution = ckbLoadReleaseRefResolution(store, planningKey)
+    if (!resolution.ok || resolution.resolvedCommit != runKey.resolvedCommit) {
+        result.diagnostics.add("release_ref_artifact_rejected_for_completed:sourceSet=${source.sourceSet}|status=${resolution.status}")
+        return false
+    }
+
+    let hydratedResult = CkbScheduledProfileFetchResult()
+    let hydratedInventory = ckbReleaseInventoryForSource(source)
+    hydratedInventory.resolvedCommit = resolution.resolvedCommit
+    ckbAppendReleaseRefEvidence(hydratedResult, source, resolution)
+    var page: Int64 = 1
+    while (page <= descriptor.pagesScanned) {
+        let artifact = ckbLoadReleaseContentArtifact(store, runKey, CkbReleaseArtifactKinds.TREE_PAGE, ordinal: page)
+        if (!artifact.valid || !checkpoint.pageArtifactPaths.contains(artifact.relativePath) ||
+            !checkpoint.artifactEvidenceHashes.contains(artifact.evidenceHash)) {
+            result.diagnostics.add("release_completed_page_artifact_rejected:sourceSet=${source.sourceSet}|page=${page}|status=${artifact.status}")
+            return false
+        }
+        let request = builder.gitCodeTreePageWithFetchRef(source.source.sourceRepo, source.originalRef, resolution.effectiveRef, page: page, perPage: 100)
+        let fetch = ckbReleaseHydratedFetch(request, resolution, artifact)
+        let parsed = ckbReleaseParseTreePage(source.sourceSet, fetch.body)
+        if (!parsed.ok) {
+            result.diagnostics.add("release_completed_page_parse_rejected:sourceSet=${source.sourceSet}|page=${page}|status=${parsed.status}")
+            return false
+        }
+        hydratedInventory.pagesScanned += 1
+        ckbAppendReleaseControlEvidence(hydratedResult, source, "tree_page", request, fetch, resolution, parsed.objectsSeen, parsed.filesSeen)
+        if (parsed.explicitEnd) {
+            hydratedInventory.explicitEnd = true
+            if (page != descriptor.pagesScanned) { return false }
+        } else {
+            hydratedInventory.nonEmptyPages += 1
+            hydratedInventory.objectsSeen += parsed.objectsSeen
+            hydratedInventory.filesSeen += parsed.filesSeen
+            for (path in parsed.eligiblePaths) { _ = ckbReleaseInventoryPlanPath(hydratedInventory, path) }
+        }
+        page += 1
+    }
+    ckbReleaseInventorySortPaths(hydratedInventory)
+    if (!hydratedInventory.explicitEnd || !ckbReleaseResumeSameStringSet(hydratedInventory.plannedPaths, descriptor.plannedPaths) ||
+        hydratedInventory.nonEmptyPages != descriptor.nonEmptyPages || hydratedInventory.objectsSeen != descriptor.objectsSeen ||
+        hydratedInventory.filesSeen != descriptor.filesSeen) {
+        result.diagnostics.add("release_completed_inventory_rejected:sourceSet=${source.sourceSet}")
+        return false
+    }
+    for (path in descriptor.plannedPaths) {
+        let artifact = ckbLoadReleaseContentArtifact(store, runKey, CkbReleaseArtifactKinds.CONTENT, logicalPath: path)
+        if (!artifact.valid || !checkpoint.contentArtifactPaths.contains(artifact.relativePath) ||
+            !checkpoint.artifactEvidenceHashes.contains(artifact.evidenceHash)) {
+            result.diagnostics.add("release_completed_content_artifact_rejected:sourceSet=${source.sourceSet}|pathHash=${ckbReleaseEvidenceHash(path)}|status=${artifact.status}")
+            return false
+        }
+        if (!ckbAppendReleasePriorContentEvidence(hydratedResult, source, builder, resolution, path, artifact)) {
+            result.diagnostics.add("release_completed_prior_content_evidence_rejected:sourceSet=${source.sourceSet}|pathHash=${ckbReleaseEvidenceHash(path)}")
+            return false
+        }
+        let request = if (artifact.method == "contents") {
+            builder.gitCodeReleaseSourceContentsWithFetchRef(source.source.sourceRepo, source.originalRef, resolution.effectiveRef, path)
+        } else {
+            builder.gitCodeReleaseSourceRawWithFetchRef(source.source.sourceRepo, source.originalRef, resolution.effectiveRef, path)
+        }
+        let fetch = ckbReleaseHydratedFetch(request, resolution, artifact)
+        hydratedInventory.contentBytes += fetch.body.size
+        ckbAppendReleaseControlEvidence(hydratedResult, source, "content_${artifact.method}", request, fetch, resolution, 0, 1)
+        ckbAppendReleaseContentRecord(profile, hydratedResult, source, request, fetch)
+        _ = ckbReleaseInventoryCompletePath(hydratedInventory, path)
+    }
+    ckbReleaseInventorySortPaths(hydratedInventory)
+    if (hydratedInventory.contentBytes != descriptor.contentBytes ||
+        !ckbReleaseResumeSameStringSet(hydratedInventory.completedPaths, descriptor.completedPaths)) {
+        result.diagnostics.add("release_completed_content_evidence_rejected:sourceSet=${source.sourceSet}")
+        return false
+    }
+    hydratedInventory.complete = true
+    hydratedInventory.status = CkbReleaseAcquisitionStatus.OK
+    ckbCopyReleaseInventory(inventory, hydratedInventory)
+    for (record in hydratedResult.records) { result.records.add(record) }
+    for (record in hydratedResult.contentRecords) { result.contentRecords.add(record) }
+    for (evidence in hydratedResult.controlEvidence) { result.controlEvidence.add(evidence) }
+    for (diagnostic in hydratedResult.diagnostics) { result.diagnostics.add(diagnostic) }
+    for (request in hydratedResult.successfulRequests) { result.successfulRequests.add(request) }
+    result.fetchedCount += hydratedResult.fetchedCount
+    result.releaseAcquisitionKeys.add(runKey)
+    result.diagnostics.add("release_source_completed_hydrated:sourceSet=${source.sourceSet}|records=${hydratedResult.contentRecords.size}|networkAttempts=0|planHash=${runKey.planEvidenceHash}")
+    true
+}
+
+private func ckbCopyReleaseInventory(target: CkbReleaseSourceInventory, source: CkbReleaseSourceInventory): Unit {
+    target.resolvedCommit = source.resolvedCommit
+    target.status = source.status
+    target.complete = source.complete
+    target.explicitEnd = source.explicitEnd
+    target.pagesScanned = source.pagesScanned
+    target.nonEmptyPages = source.nonEmptyPages
+    target.objectsSeen = source.objectsSeen
+    target.filesSeen = source.filesSeen
+    target.contentBytes = source.contentBytes
+    for (path in source.plannedPaths) { _ = ckbReleaseInventoryPlanPath(target, path) }
+    for (path in source.completedPaths) { _ = ckbReleaseInventoryCompletePath(target, path) }
+    ckbReleaseInventorySortPaths(target)
+}
+
+private func ckbReleaseResumeSameStringSet(left: ArrayList<String>, right: ArrayList<String>): Bool {
+    if (left.size != right.size) { return false }
+    let values = HashSet<String>()
+    for (item in left) { values.add(item) }
+    if (values.size != left.size) { return false }
+    for (item in right) { if (!values.contains(item)) { return false } }
+    true
+}
+
+private func ckbReleaseResumeJsonString(object: JsonObject, key: String): String {
+    match (object.get(key)) {
+        case Some(value) => try { value.asString().getValue() } catch (_: Exception) { "" }
+        case None => ""
+    }
+}
+
+private func ckbReleaseResumeJsonInt(object: JsonObject, key: String, fallback: Int64): Int64 {
+    match (object.get(key)) {
+        case Some(value) => try { value.asInt().getValue() } catch (_: Exception) { fallback }
+        case None => fallback
+    }
+}
+
+private func ckbReleaseResumeJsonArray(object: JsonObject, key: String, out: ArrayList<String>): Bool {
+    try {
+        let items = match (object.get(key)) {
+            case Some(value) => value.asArray().getItems()
+            case None => return false
+        }
+        for (item in items) { out.add(item.asString().getValue()) }
+        true
+    } catch (_: Exception) {
+        false
+    }
+}
+
+private func ckbFetchReleaseEvalSupportSource(source: CkbReleaseSourcePlan, profile: CkbScheduleTaskProfile, result: CkbScheduledProfileFetchResult, inventory: CkbReleaseSourceInventory, config: CkbRuntimeConfig, store: FileKnowledgeStore, sourceOrdinal!: Int64 = 0): Unit {
+    let planningKey = ckbReleaseScheduledFetchRunKey(profile, source, result.releasePlan.planHash)
+    let staleTempsRemoved = store.cleanupReleaseAcquisitionStaleTemps(planningKey.acquisitionId)
+    if (staleTempsRemoved > 0) { result.diagnostics.add("release_acquisition_stale_temps_removed:sourceSet=${source.sourceSet}|count=${staleTempsRemoved}") }
+    let acquisitionState = ckbLoadReleaseAcquisitionState(store, planningKey)
+    let reuseExisting = acquisitionState.status == "not_found" || (acquisitionState.valid && acquisitionState.state == "active")
+    if (reuseExisting && ckbHydrateCompletedReleaseEvalSupportSource(source, profile, result, inventory, config, store, planningKey, sourceOrdinal)) {
+        return
+    }
+    if (reuseExisting && ckbResumePartialReleaseEvalSupportSource(source, profile, result, inventory, config, store, planningKey, sourceOrdinal)) {
+        return
+    }
+    if (!reuseExisting) {
+        result.diagnostics.add("release_eval_artifacts_rejected:sourceSet=${source.sourceSet}|status=${acquisitionState.status}")
+    }
+    let contentStart = result.contentRecords.size
     let root = ckbScheduledEvalSupportRoot(config)
     let extracted = if (root != "") {
         extractAllEvalSupportRecords(root, version: resolveCangjieVersion(cangjieVersionSelector(targetVersion: source.targetVersion, sourceSet: CangjieSourceSets.EVAL_SUPPORT), ckbRuntimeCangjieVersionManifest(config)))
@@ -9682,6 +10889,7 @@ private func ckbFetchReleaseEvalSupportSource(source: CkbReleaseSourcePlan, prof
         fetch.bytes = typed.content.size
         fetch.bodyHash = ckbReleaseEvidenceHash(typed.content)
         fetch.commit = if (typed.resolvedCommit != "") { typed.resolvedCommit } else { fetch.bodyHash }
+        typed.resolvedCommit = fetch.commit
         let scheduled = ckbAppendReleaseContentRecord(profile, result, source, request, fetch)
         scheduled.preparedTypedRecords.add(typed)
         _ = ckbReleaseInventoryCompletePath(inventory, logicalPath)
@@ -9691,6 +10899,247 @@ private func ckbFetchReleaseEvalSupportSource(source: CkbReleaseSourcePlan, prof
     inventory.complete = true
     inventory.status = CkbReleaseAcquisitionStatus.OK
     inventory.resolvedCommit = ckbReleaseEvalInventoryCommit(extracted.records)
+    let runKey = ckbReleaseRunKeyWithCommit(planningKey, inventory.resolvedCommit)
+    let resolution = GitCodeRefResolution()
+    resolution.ok = true
+    resolution.status = "ok"
+    resolution.repo = source.normalizedRepo
+    resolution.sourceSet = source.sourceSet
+    resolution.sourceFamily = source.sourceFamily
+    resolution.originalRef = source.originalRef
+    resolution.effectiveRef = inventory.resolvedCommit
+    resolution.resolvedCommit = inventory.resolvedCommit
+    resolution.refKind = "local"
+    resolution.evidenceBodyHash = inventory.resolvedCommit
+    let refArtifact = ckbWriteReleaseContentArtifact(store, runKey, CkbReleaseArtifactKinds.REF, ckbReleaseRefResolutionPayload(resolution))
+    let checkpoint = CkbReleaseResumeCheckpoint()
+    checkpoint.phase = "content"
+    checkpoint.sourceOrdinal = sourceOrdinal
+    checkpoint.refArtifactPath = refArtifact.relativePath
+    checkpoint.artifactEvidenceHashes.add(refArtifact.evidenceHash)
+    checkpoint.plannedPaths.add(all: inventory.plannedPaths)
+    checkpoint.completedPaths.clear()
+    ckbMarkReleaseAcquisitionState(store, runKey, "active")
+    ckbSaveReleaseResumeCheckpoint(store, runKey, checkpoint)
+    for (index in contentStart..result.contentRecords.size) {
+        let record = result.contentRecords[index]
+        if (record.preparedTypedRecords.size != 1) {
+            ckbReleaseInventoryFailure(inventory, "eval_support_typed_artifact_mismatch")
+            ckbReleaseFailFetchResult(result, "eval_support_typed_artifact_mismatch", source, "eval_support_typed_artifact_mismatch")
+            return
+        }
+        let artifact = ckbWriteReleaseContentArtifact(store, runKey, CkbReleaseArtifactKinds.CONTENT, ckbReleaseEvalTypedArtifactPayload(record.preparedTypedRecords[0]), logicalPath: record.request.path, method: "local_typed", contentType: "application/json")
+        checkpoint.contentArtifactPaths.add(artifact.relativePath)
+        checkpoint.artifactEvidenceHashes.add(artifact.evidenceHash)
+        addUniqueString(checkpoint.completedPaths, record.request.path)
+        checkpoint.currentPathHash = ""
+        ckbSaveReleaseResumeCheckpoint(store, runKey, checkpoint)
+    }
+    let completeArtifact = ckbWriteReleaseContentArtifact(store, runKey, CkbReleaseArtifactKinds.SOURCE_COMPLETE, ckbReleaseSourceCompletePayload(inventory))
+    checkpoint.phase = "completed"
+    checkpoint.sourceCompleteArtifactPath = completeArtifact.relativePath
+    checkpoint.artifactEvidenceHashes.add(completeArtifact.evidenceHash)
+    ckbSaveReleaseResumeCheckpoint(store, runKey, checkpoint)
+    result.releaseAcquisitionKeys.add(runKey)
+}
+
+private func ckbHydrateCompletedReleaseEvalSupportSource(source: CkbReleaseSourcePlan, profile: CkbScheduleTaskProfile, result: CkbScheduledProfileFetchResult, inventory: CkbReleaseSourceInventory, config: CkbRuntimeConfig, store: FileKnowledgeStore, planningKey: CkbScheduledFetchRunKey, sourceOrdinal: Int64): Bool {
+    let completeArtifact = ckbLoadReleaseContentArtifact(store, planningKey, CkbReleaseArtifactKinds.SOURCE_COMPLETE)
+    if (!completeArtifact.valid) { return false }
+    let runKey = ckbReleaseRunKeyWithCommit(planningKey, completeArtifact.resolvedCommit)
+    let checkpoint = ckbLoadReleaseResumeCheckpoint(store, runKey)
+    let descriptor = ckbParseReleaseSourceComplete(completeArtifact.payload)
+    if (!checkpoint.valid || checkpoint.phase != "completed" || checkpoint.sourceOrdinal != sourceOrdinal ||
+        checkpoint.sourceCompleteArtifactPath != completeArtifact.relativePath || !checkpoint.artifactEvidenceHashes.contains(completeArtifact.evidenceHash) ||
+        !descriptor.valid || descriptor.resolvedCommit != runKey.resolvedCommit || descriptor.pagesScanned != 0 ||
+        !ckbReleaseResumeSameStringSet(descriptor.plannedPaths, checkpoint.plannedPaths) ||
+        !ckbReleaseResumeSameStringSet(descriptor.completedPaths, checkpoint.completedPaths)) {
+        result.diagnostics.add("release_eval_completed_checkpoint_rejected:sourceSet=${source.sourceSet}|status=${checkpoint.status}")
+        return false
+    }
+    let resolution = ckbLoadReleaseRefResolution(store, planningKey)
+    if (!resolution.ok || resolution.refKind != "local" || resolution.resolvedCommit != runKey.resolvedCommit) { return false }
+    let hydrated = CkbScheduledProfileFetchResult()
+    let hydratedInventory = ckbReleaseInventoryForSource(source)
+    hydratedInventory.resolvedCommit = descriptor.resolvedCommit
+    hydratedInventory.explicitEnd = true
+    hydratedInventory.pagesScanned = 0
+    hydratedInventory.nonEmptyPages = descriptor.nonEmptyPages
+    hydratedInventory.objectsSeen = descriptor.objectsSeen
+    hydratedInventory.filesSeen = descriptor.filesSeen
+    for (path in descriptor.plannedPaths) {
+        let artifact = ckbLoadReleaseContentArtifact(store, runKey, CkbReleaseArtifactKinds.CONTENT, logicalPath: path)
+        if (!artifact.valid || artifact.method != "local_typed" || !checkpoint.contentArtifactPaths.contains(artifact.relativePath) || !checkpoint.artifactEvidenceHashes.contains(artifact.evidenceHash)) {
+            result.diagnostics.add("release_eval_content_artifact_rejected:sourceSet=${source.sourceSet}|pathHash=${ckbReleaseEvidenceHash(path)}|status=${artifact.status}")
+            return false
+        }
+        let typed = ckbParseReleaseEvalTypedArtifact(artifact.payload)
+        if (typed.recordKind != CangjieTypedRecordKinds.EVAL_SUPPORT || typed.sourceSet != CangjieSourceSets.EVAL_SUPPORT ||
+            typed.targetVersion != source.targetVersion || typed.sourceRef != source.originalRef ||
+            ckbReleaseEvalLogicalPath(typed) != path || typed.contentHash != ckbReleaseEvidenceHash(typed.content)) {
+            result.diagnostics.add("release_eval_typed_artifact_rejected:sourceSet=${source.sourceSet}|pathHash=${ckbReleaseEvidenceHash(path)}")
+            return false
+        }
+        let request = ckbScheduledEvalSupportLocalRequest(source.source, config)
+        request.path = path
+        request.sourceVariant = if (ckbScheduledEvalSupportRoot(config) == "") { "active_snapshot" } else { "local" }
+        let fetch = SourceFetchResult()
+        fetch.ok = true
+        fetch.status = "artifact_hydrated"
+        fetch.statusCode = 200
+        fetch.sourceUrl = typed.citation
+        fetch.repo = "ckb-local://eval-support"
+        fetch.ref = source.originalRef
+        fetch.path = path
+        fetch.normalizedType = request.kind
+        fetch.contentType = "text/plain"
+        fetch.body = typed.content
+        fetch.bytes = typed.content.size
+        fetch.bodyHash = ckbReleaseEvidenceHash(typed.content)
+        fetch.commit = typed.resolvedCommit
+        let scheduled = ckbAppendReleaseContentRecord(profile, hydrated, source, request, fetch)
+        scheduled.preparedTypedRecords.add(typed)
+        _ = ckbReleaseInventoryPlanPath(hydratedInventory, path)
+        _ = ckbReleaseInventoryCompletePath(hydratedInventory, path)
+        hydratedInventory.contentBytes += typed.content.size
+        ckbAppendReleaseControlEvidence(hydrated, source, "eval_support_selection", request, fetch, resolution, 1, 1)
+    }
+    ckbReleaseInventorySortPaths(hydratedInventory)
+    if (hydratedInventory.contentBytes != descriptor.contentBytes || !ckbReleaseResumeSameStringSet(hydratedInventory.completedPaths, descriptor.completedPaths)) { return false }
+    hydratedInventory.complete = true
+    hydratedInventory.status = CkbReleaseAcquisitionStatus.OK
+    ckbCopyReleaseInventory(inventory, hydratedInventory)
+    for (record in hydrated.records) { result.records.add(record) }
+    for (record in hydrated.contentRecords) { result.contentRecords.add(record) }
+    for (evidence in hydrated.controlEvidence) { result.controlEvidence.add(evidence) }
+    for (request in hydrated.successfulRequests) { result.successfulRequests.add(request) }
+    result.fetchedCount += hydrated.fetchedCount
+    result.releaseAcquisitionKeys.add(runKey)
+    result.diagnostics.add("release_eval_completed_hydrated:records=${hydrated.contentRecords.size}|localReads=0|planHash=${runKey.planEvidenceHash}")
+    true
+}
+
+private func ckbResumePartialReleaseEvalSupportSource(source: CkbReleaseSourcePlan, profile: CkbScheduleTaskProfile, result: CkbScheduledProfileFetchResult, inventory: CkbReleaseSourceInventory, config: CkbRuntimeConfig, store: FileKnowledgeStore, planningKey: CkbScheduledFetchRunKey, sourceOrdinal: Int64): Bool {
+    let resolution = ckbLoadReleaseRefResolution(store, planningKey)
+    if (!resolution.ok || resolution.refKind != "local") { result.diagnostics.add("release_eval_partial_rejected:reason=ref|status=${resolution.status}"); return false }
+    let runKey = ckbReleaseRunKeyWithCommit(planningKey, resolution.resolvedCommit)
+    let checkpoint = ckbLoadReleaseResumeCheckpoint(store, runKey)
+    if (!checkpoint.valid || checkpoint.phase != "content" || checkpoint.sourceOrdinal != sourceOrdinal || checkpoint.plannedPaths.size == 0 ||
+        checkpoint.completedPaths.size > checkpoint.plannedPaths.size || checkpoint.refArtifactPath != ckbReleaseArtifactRelativePath(runKey, CkbReleaseArtifactKinds.REF)) { result.diagnostics.add("release_eval_partial_rejected:reason=checkpoint|status=${checkpoint.status}|phase=${checkpoint.phase}"); return false }
+    let root = ckbScheduledEvalSupportRoot(config)
+    let fallback = if (root == "") { ckbReleaseEvalSupportFromActive(store, source) } else { CangjieTypedRecordResult() }
+    if (root == "" && (!fallback.ok || fallback.records.size == 0)) { result.diagnostics.add("release_eval_partial_rejected:reason=fallback"); return false }
+    let version = resolveCangjieVersion(cangjieVersionSelector(targetVersion: source.targetVersion, sourceSet: CangjieSourceSets.EVAL_SUPPORT), ckbRuntimeCangjieVersionManifest(config))
+    let resumedResult = CkbScheduledProfileFetchResult()
+    let resumedInventory = ckbReleaseInventoryForSource(source)
+    resumedInventory.resolvedCommit = resolution.resolvedCommit
+    resumedInventory.explicitEnd = true
+    let allTyped = ArrayList<CangjieTypedRecord>()
+    var hydratedCount: Int64 = 0
+    var localReadCount: Int64 = 0
+    ckbAppendReleaseRefEvidence(resumedResult, source, resolution)
+    for (path in checkpoint.plannedPaths) {
+        var typed = CangjieTypedRecord()
+        let alreadyCommitted = checkpoint.completedPaths.contains(path)
+        if (alreadyCommitted) {
+            let artifact = ckbLoadReleaseContentArtifact(store, runKey, CkbReleaseArtifactKinds.CONTENT, logicalPath: path)
+            if (!artifact.valid || artifact.method != "local_typed" || !checkpoint.contentArtifactPaths.contains(artifact.relativePath) || !checkpoint.artifactEvidenceHashes.contains(artifact.evidenceHash)) { result.diagnostics.add("release_eval_partial_rejected:reason=artifact|pathHash=${ckbReleaseEvidenceHash(path)}|status=${artifact.status}"); return false }
+            typed = ckbParseReleaseEvalTypedArtifact(artifact.payload)
+            hydratedCount += 1
+        } else {
+            let extracted = if (root != "") { extractEvalSupportRecordAt(root, path, version: version) } else { fallback }
+            var found = false
+            for (record in extracted.records) {
+                let candidate = ckbReleaseCopyEvalTypedRecord(record, source)
+                if (ckbReleaseEvalLogicalPath(candidate) == path) { typed = candidate; found = true; break }
+            }
+            if (!found) { result.diagnostics.add("release_eval_partial_rejected:reason=local_read|pathHash=${ckbReleaseEvidenceHash(path)}"); return false }
+            if (typed.resolvedCommit == "") { typed.resolvedCommit = ckbReleaseEvidenceHash(typed.content) }
+            localReadCount += 1
+        }
+        if (typed.recordKind != CangjieTypedRecordKinds.EVAL_SUPPORT || typed.sourceSet != CangjieSourceSets.EVAL_SUPPORT || typed.targetVersion != source.targetVersion || typed.sourceRef != source.originalRef || ckbReleaseEvalLogicalPath(typed) != path || typed.contentHash != ckbReleaseEvidenceHash(typed.content)) { result.diagnostics.add("release_eval_partial_rejected:reason=typed_validation|pathHash=${ckbReleaseEvidenceHash(path)}"); return false }
+        _ = ckbReleaseInventoryPlanPath(resumedInventory, path)
+        resumedInventory.objectsSeen += 1
+        resumedInventory.filesSeen += 1
+        resumedInventory.contentBytes += typed.content.size
+        if (resumedInventory.objectsSeen > source.maxObjects || resumedInventory.filesSeen > source.maxFiles || resumedInventory.contentBytes > source.maxBytes) { result.diagnostics.add("release_eval_partial_rejected:reason=limits"); return false }
+        let request = ckbScheduledEvalSupportLocalRequest(source.source, config)
+        request.path = path
+        request.sourceVariant = if (root == "") { "active_snapshot" } else { "local" }
+        let fetch = SourceFetchResult()
+        fetch.ok = true
+        fetch.status = if (alreadyCommitted) { "artifact_hydrated" } else { if (root == "") { "active_existing" } else { "local_existing" } }
+        fetch.statusCode = 200
+        fetch.sourceUrl = typed.citation
+        fetch.repo = "ckb-local://eval-support"
+        fetch.ref = source.originalRef
+        fetch.path = path
+        fetch.normalizedType = request.kind
+        fetch.contentType = "text/plain"
+        fetch.body = typed.content
+        fetch.bytes = typed.content.size
+        fetch.bodyHash = ckbReleaseEvidenceHash(typed.content)
+        fetch.commit = typed.resolvedCommit
+        let scheduled = ckbAppendReleaseContentRecord(profile, resumedResult, source, request, fetch)
+        scheduled.preparedTypedRecords.add(typed)
+        _ = ckbReleaseInventoryCompletePath(resumedInventory, path)
+        ckbAppendReleaseControlEvidence(resumedResult, source, "eval_support_selection", request, fetch, resolution, 1, 1)
+        allTyped.add(typed)
+        if (!alreadyCommitted) {
+            let artifact = ckbWriteReleaseContentArtifact(store, runKey, CkbReleaseArtifactKinds.CONTENT, ckbReleaseEvalTypedArtifactPayload(typed), logicalPath: path, method: "local_typed", contentType: "application/json")
+            addUniqueString(checkpoint.contentArtifactPaths, artifact.relativePath)
+            addUniqueString(checkpoint.artifactEvidenceHashes, artifact.evidenceHash)
+            addUniqueString(checkpoint.completedPaths, path)
+            checkpoint.currentPathHash = ""
+            ckbSaveReleaseResumeCheckpoint(store, runKey, checkpoint)
+        }
+    }
+    if (ckbReleaseEvalInventoryCommit(allTyped) != resolution.resolvedCommit || !ckbReleaseResumeSameStringSet(resumedInventory.completedPaths, checkpoint.plannedPaths)) { result.diagnostics.add("release_eval_partial_rejected:reason=aggregate"); return false }
+    resumedInventory.complete = true
+    resumedInventory.status = CkbReleaseAcquisitionStatus.OK
+    let completeArtifact = ckbWriteReleaseContentArtifact(store, runKey, CkbReleaseArtifactKinds.SOURCE_COMPLETE, ckbReleaseSourceCompletePayload(resumedInventory))
+    checkpoint.phase = "completed"
+    checkpoint.sourceCompleteArtifactPath = completeArtifact.relativePath
+    addUniqueString(checkpoint.artifactEvidenceHashes, completeArtifact.evidenceHash)
+    ckbSaveReleaseResumeCheckpoint(store, runKey, checkpoint)
+    ckbCopyReleaseInventory(inventory, resumedInventory)
+    for (record in resumedResult.records) { result.records.add(record) }
+    for (record in resumedResult.contentRecords) { result.contentRecords.add(record) }
+    for (evidence in resumedResult.controlEvidence) { result.controlEvidence.add(evidence) }
+    for (request in resumedResult.successfulRequests) { result.successfulRequests.add(request) }
+    result.fetchedCount += resumedResult.fetchedCount
+    result.releaseAcquisitionKeys.add(runKey)
+    result.diagnostics.add("release_eval_partial_resumed:hydrated=${hydratedCount}|localReads=${localReadCount}|records=${resumedResult.contentRecords.size}")
+    true
+}
+
+private func ckbReleaseEvalTypedArtifactPayload(record: CangjieTypedRecord): String {
+    "{\"recordKind\":\"${ckbScheduledFetchJsonEscape(record.recordKind)}\",\"sourceId\":\"${ckbScheduledFetchJsonEscape(record.sourceId)}\",\"title\":\"${ckbScheduledFetchJsonEscape(record.title)}\",\"content\":\"${ckbScheduledFetchJsonEscape(record.content)}\",\"citation\":\"${ckbScheduledFetchJsonEscape(record.citation)}\",\"sourceSet\":\"${ckbScheduledFetchJsonEscape(record.sourceSet)}\",\"sourceFamily\":\"${ckbScheduledFetchJsonEscape(record.sourceFamily)}\",\"path\":\"${ckbScheduledFetchJsonEscape(record.path)}\",\"heading\":\"${ckbScheduledFetchJsonEscape(record.heading)}\",\"sectionId\":\"${ckbScheduledFetchJsonEscape(record.sectionId)}\",\"caseId\":\"${ckbScheduledFetchJsonEscape(record.caseId)}\",\"contentHash\":\"${record.contentHash}\",\"versionResolutionId\":\"${ckbScheduledFetchJsonEscape(record.versionResolutionId)}\",\"targetVersion\":\"${ckbScheduledFetchJsonEscape(record.targetVersion)}\",\"sourceRef\":\"${ckbScheduledFetchJsonEscape(record.sourceRef)}\",\"refKind\":\"${ckbScheduledFetchJsonEscape(record.refKind)}\",\"resolvedCommit\":\"${ckbScheduledFetchJsonEscape(record.resolvedCommit)}\",\"trustLevel\":\"${ckbScheduledFetchJsonEscape(record.trustLevel)}\",\"reviewState\":\"${ckbScheduledFetchJsonEscape(record.reviewState)}\"}"
+}
+
+private func ckbParseReleaseEvalTypedArtifact(payload: String): CangjieTypedRecord {
+    let out = CangjieTypedRecord()
+    let object = try { JsonValue.fromStr(payload).asObject() } catch (_: Exception) { return out }
+    out.recordKind = ckbReleaseResumeJsonString(object, "recordKind")
+    out.sourceId = ckbReleaseResumeJsonString(object, "sourceId")
+    out.title = ckbReleaseResumeJsonString(object, "title")
+    out.content = ckbReleaseResumeJsonString(object, "content")
+    out.citation = ckbReleaseResumeJsonString(object, "citation")
+    out.sourceSet = ckbReleaseResumeJsonString(object, "sourceSet")
+    out.sourceFamily = ckbReleaseResumeJsonString(object, "sourceFamily")
+    out.path = ckbReleaseResumeJsonString(object, "path")
+    out.heading = ckbReleaseResumeJsonString(object, "heading")
+    out.sectionId = ckbReleaseResumeJsonString(object, "sectionId")
+    out.caseId = ckbReleaseResumeJsonString(object, "caseId")
+    out.contentHash = ckbReleaseResumeJsonString(object, "contentHash")
+    out.versionResolutionId = ckbReleaseResumeJsonString(object, "versionResolutionId")
+    out.targetVersion = ckbReleaseResumeJsonString(object, "targetVersion")
+    out.sourceRef = ckbReleaseResumeJsonString(object, "sourceRef")
+    out.refKind = ckbReleaseResumeJsonString(object, "refKind")
+    out.resolvedCommit = ckbReleaseResumeJsonString(object, "resolvedCommit")
+    out.trustLevel = ckbReleaseResumeJsonString(object, "trustLevel")
+    out.reviewState = ckbReleaseResumeJsonString(object, "reviewState")
+    out
 }
 
 private func ckbReleaseEvalSupportFromActive(store: FileKnowledgeStore, source: CkbReleaseSourcePlan): CangjieTypedRecordResult {
@@ -10008,7 +11457,7 @@ private func ckbFetchScheduledManifestSource(runner: SourceFetchRunner, builder:
     ckbFetchScheduledGitCodeTreeSnapshot(runner, builder, source, profile, result, config, store, deadlineAtMillis: deadlineAtMillis)
 }
 
-private class GitCodeRefResolution {
+class GitCodeRefResolution {
     var ok: Bool = false
     var status: String = "not_started"
     var repo: String = ""
@@ -11229,7 +12678,8 @@ private func ckbIngestReleaseFullSync(kb: KnowledgeBase, store: FileKnowledgeSto
         return result
     }
     let candidateVersion = ckbScheduledCandidateVersion(profile, fetch)
-    let promotion = cangjiePromoteCandidateRecordsAfterValidationWithVersion(kb, store, candidateVersion, candidateRecords, progressSink: progressSink, stageSink: stageSink, deadlineAtMillis: deadlineAtMillis, budgetPlan: promotionBudgetPlan)
+    let acquisitionContext = ckbReleaseCandidateAcquisitionContext(store, profile, fetch, candidateVersion, candidateRecords)
+    let promotion = cangjiePromoteCandidateRecordsAfterValidationWithVersion(kb, store, candidateVersion, candidateRecords, progressSink: progressSink, stageSink: stageSink, deadlineAtMillis: deadlineAtMillis, budgetPlan: promotionBudgetPlan, acquisitionContext: acquisitionContext)
     ckbApplyScheduledPromotionResult(result, promotion, "candidate_validated_promoted")
     if (!result.ok) {
         kb.replaceRawRecords(oldRaw)
@@ -11240,9 +12690,48 @@ private func ckbIngestReleaseFullSync(kb: KnowledgeBase, store: FileKnowledgeSto
     // candidate promotion succeeded. S5 will bind these companions into the
     // active transaction; this stage must not pre-write them on failure.
     ckbPersistScheduledResolvedMetadataArtifacts(store, profile, fetch, config, manifest, result, "metadata_resolved_after_content_promotion")
+    if (result.ok) {
+        for (key in fetch.releaseAcquisitionKeys) {
+            ckbMarkReleaseAcquisitionState(store, key, "consumed", candidateVersion: result.candidateVersion, activeVersion: result.activeVersion)
+        }
+        result.validationDiagnostics.add("release_acquisitions_consumed:count=${fetch.releaseAcquisitionKeys.size}|planHash=${fetch.releasePlan.planHash}")
+    }
     ckbWriteScheduledProfileStageCheckpoint(store, profile, "ingest_finished", result.status, ckbProfileIngestBudgetMillis(profile), deadlineAtMillis, "activeVersion=${result.activeVersion}|candidateVersion=${result.candidateVersion}|validationStatus=${result.validationStatus}|rawCurrent=${delta.rawRecords.size}|activeCurrent=${delta.normalizedRecords.size}")
     result.validationDiagnostics.add("profile_stage_checkpoint:profile=${profile.profile}|stage=ingest_finished|status=${result.status}|budgetMs=${ckbProfileIngestBudgetMillis(profile)}|deadlineAtMillis=${deadlineAtMillis}|remainingMs=${ckbRemainingMillis(deadlineAtMillis)}")
     result
+}
+
+private func ckbReleaseCandidateAcquisitionContext(store: FileKnowledgeStore, profile: CkbScheduleTaskProfile, fetch: CkbScheduledProfileFetchResult, candidateVersion: String, records: ArrayList<NormalizedRecord>): CkbCandidateAcquisitionContext {
+    let context = CkbCandidateAcquisitionContext()
+    context.taskId = profile.profile
+    context.candidateVersion = candidateVersion
+    context.planHash = fetch.releasePlan.planHash
+    context.acquisitionId = "p5-candidate-${ckbReleaseEvidenceHash("${profile.profile}|${fetch.releasePlan.planHash}|${candidateVersion}")}"
+    let current = ckbSchedulerReadProgressArtifact(store, "metadata/scheduler-current.ckb")
+    context.schedulerRunId = if (ckbCurrentField(current, "taskName") == profile.profile) { ckbCurrentField(current, "runId") } else { fetch.runId }
+    context.recordsEvidenceHash = ckbCandidateRecordsEvidenceHash(records, stagedCandidateVersion: candidateVersion)
+    context
+}
+
+private func ckbReleaseDigestHex(digest: SHA256): String {
+    let out = StringBuilder()
+    for (byte in digest.finish()) {
+        out.append(ckbReleaseDigestHexNibble(byte / UInt8(16)))
+        out.append(ckbReleaseDigestHexNibble(byte % UInt8(16)))
+    }
+    out.toString()
+}
+
+private func ckbReleaseDigestHexNibble(value: UInt8): String {
+    if (value == UInt8(0)) { return "0" }; if (value == UInt8(1)) { return "1" }
+    if (value == UInt8(2)) { return "2" }; if (value == UInt8(3)) { return "3" }
+    if (value == UInt8(4)) { return "4" }; if (value == UInt8(5)) { return "5" }
+    if (value == UInt8(6)) { return "6" }; if (value == UInt8(7)) { return "7" }
+    if (value == UInt8(8)) { return "8" }; if (value == UInt8(9)) { return "9" }
+    if (value == UInt8(10)) { return "a" }; if (value == UInt8(11)) { return "b" }
+    if (value == UInt8(12)) { return "c" }; if (value == UInt8(13)) { return "d" }
+    if (value == UInt8(14)) { return "e" }
+    "f"
 }
 
 func ckbReleaseRemovedIdsEvidenceHash(sourceIds: ArrayList<String>): String {
@@ -12380,8 +13869,16 @@ private func ckbScheduledCandidateVersion(profile: CkbScheduleTaskProfile, fetch
         }
         let ordered = evidence.toArray()
         sort(ordered)
-        let seed = "${profile.profile}|${fetch.releasePlan.planHash}|${joinStrings(ArrayList<String>(ordered), "|")}"
-        return "ckb-scheduled-${ckbReleaseEvidenceHash(seed)}-candidate"
+        let digest = SHA256()
+        digest.write(profile.profile.toArray())
+        digest.write("|".toArray())
+        digest.write(fetch.releasePlan.planHash.toArray())
+        digest.write("|".toArray())
+        for (index in 0..ordered.size) {
+            if (index > 0) { digest.write("|".toArray()) }
+            digest.write(ordered[index].toArray())
+        }
+        return "ckb-scheduled-${ckbReleaseDigestHex(digest)}-candidate"
     }
     let seed = StringBuilder()
     seed.append(profile.profile)
@@ -13452,6 +14949,14 @@ public class RuntimeUnavailableVectorStore <: VectorStore {
         this.backup(collection)
     }
 
+    public func lookupBatchWithDeadline(collection: String, pointIds: ArrayList<String>, deadlineAtMillis: Int64): VectorLookupResult {
+        let result = VectorLookupResult()
+        result.requested = pointIds.size
+        result.status = this.degradedReason
+        result.diagnostic = this.degradedReason
+        result
+    }
+
     public func restore(backup: VectorBackup): VectorStoreStatus {
         this.status(backup.collection)
     }
@@ -13776,7 +15281,24 @@ private func escapeField(raw: String): String {
 }
 
 private func unescapeField(raw: String): String {
-    raw.replace("\\r", "\r").replace("\\n", "\n").replace("\\p", "|").replace("\\\\", "\\")
+    let input = raw.toArray()
+    let output = ArrayList<Byte>()
+    var index: Int64 = 0
+    while (index < input.size) {
+        if (input[index] != UInt8(92) || index + 1 >= input.size) {
+            output.add(input[index])
+            index += 1
+            continue
+        }
+        let escaped = input[index + 1]
+        if (escaped == UInt8(92)) { output.add(UInt8(92)) }
+        else if (escaped == UInt8(110)) { output.add(UInt8(10)) }
+        else if (escaped == UInt8(114)) { output.add(UInt8(13)) }
+        else if (escaped == UInt8(112)) { output.add(UInt8(124)) }
+        else { output.add(UInt8(92)); output.add(escaped) }
+        index += 2
+    }
+    try { String.fromUtf8(output.toArray()) } catch (_: Exception) { raw }
 }
 
 private func findText(raw: String, needle: String): Int64 {

@@ -91,6 +91,25 @@ public func extractAllEvalSupportRecords(datasetRoot: String, version!: CangjieV
     result
 }
 
+public func extractEvalSupportRecordAt(datasetRoot: String, logicalPath: String, version!: CangjieVersionResolution = cangjieDefaultEvalSupportResolution()): CangjieTypedRecordResult {
+    let result = CangjieTypedRecordResult()
+    let cleanRoot = datasetRoot.trimAscii()
+    let cleanPath = logicalPath.replace("\\", "/").trimAscii()
+    let parts = cleanPath.split("/")
+    if (!cangjieEvalSupportDatasetRootAllowed(cleanRoot) || parts.size < 2) { result.addDiagnostic("invalid_eval_support_logical_path"); return result }
+    let caseId = parts[0]
+    var relative = ""
+    for (allowed in [CangjieEvalSupportPaths.PROMPT, CangjieEvalSupportPaths.METADATA, CangjieEvalSupportPaths.EVAL_SUPPORT, CangjieEvalSupportPaths.VISIBLE_TESTS]) { if (cleanPath == "${caseId}/${allowed}") { relative = allowed } }
+    if (relative == "" || !caseId.startsWith("CJ-HUMANEVAL-") || caseId.contains("..") || !cangjieEvalSupportRelativePathAllowed(relative)) { result.addDiagnostic("invalid_eval_support_logical_path"); return result }
+    let resolvedRoot = cangjieEvalSupportResolveCaseRoot("${cleanRoot}/${caseId}")
+    if (resolvedRoot == "") { result.addDiagnostic("eval_support_case_root_not_found"); return result }
+    let sourceFamily = if (relative == CangjieEvalSupportPaths.PROMPT) { "prompt" } else if (relative == CangjieEvalSupportPaths.METADATA) { "metadata" } else if (relative == CangjieEvalSupportPaths.EVAL_SUPPORT) { "eval_support" } else { "visible_test_helpers" }
+    let title = if (relative == CangjieEvalSupportPaths.PROMPT) { "HumanEval prompt" } else if (relative == CangjieEvalSupportPaths.METADATA) { "HumanEval metadata" } else if (relative == CangjieEvalSupportPaths.EVAL_SUPPORT) { "EvalValue and EvalEntry fixture types" } else { "Visible test helper types" }
+    cangjieAddEvalSupportFile(result, resolvedRoot, caseId, relative, sourceFamily, title, version)
+    if (result.records.size != 1) { result.addDiagnostic("eval_support_logical_path_not_found") }
+    result
+}
+
 public func validateEvalSupportRecordSafety(records: ArrayList<CangjieTypedRecord>): CangjieTypedRecordResult {
     let result = CangjieTypedRecordResult()
     for (record in records) {

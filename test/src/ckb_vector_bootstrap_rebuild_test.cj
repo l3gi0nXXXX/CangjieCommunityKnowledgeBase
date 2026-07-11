@@ -278,6 +278,7 @@ public class CkbVectorBootstrapRebuildTest {
 }
 
 private class BootstrapFakeVectorStore <: VectorStore {
+    public func lookupBatchWithDeadline(collection: String, pointIds: ArrayList<String>, deadlineAtMillis: Int64): VectorLookupResult { let result = VectorLookupResult(); result.ok = true; result.status = "ok"; result.requested = pointIds.size; result }
     private var seenStatus: ArrayList<String> = ArrayList<String>()
     public var ensureCalls: Int64 = 0
 
@@ -361,6 +362,7 @@ private class BootstrapFakeVectorStore <: VectorStore {
 }
 
 private class BootstrapExistingVectorStore <: VectorStore {
+    public func lookupBatchWithDeadline(collection: String, pointIds: ArrayList<String>, deadlineAtMillis: Int64): VectorLookupResult { let result = VectorLookupResult(); result.ok = true; result.status = "ok"; result.requested = pointIds.size; result }
     public var ensureCalls: Int64 = 0
 
     init() {}
@@ -437,6 +439,7 @@ private class BootstrapExistingVectorStore <: VectorStore {
 }
 
 private class BootstrapEffectiveVectorStore <: VectorStore {
+    public func lookupBatchWithDeadline(collection: String, pointIds: ArrayList<String>, deadlineAtMillis: Int64): VectorLookupResult { let result = VectorLookupResult(); result.ok = true; result.status = "ok"; result.requested = pointIds.size; result }
     public var ensureCalls: Int64 = 0
     private let statusCalls: ArrayList<String> = ArrayList<String>()
 
@@ -529,6 +532,7 @@ private class BootstrapEffectiveVectorStore <: VectorStore {
 }
 
 private class RestoreTrackingVectorStore <: VectorStore {
+    public func lookupBatchWithDeadline(collection: String, pointIds: ArrayList<String>, deadlineAtMillis: Int64): VectorLookupResult { let result = VectorLookupResult(); result.ok = true; result.status = "ok"; result.requested = pointIds.size; result }
     public var recreateCalls: Int64 = 0
     public var restoreCalls: Int64 = 0
     public var upsertBatchCalls: Int64 = 0

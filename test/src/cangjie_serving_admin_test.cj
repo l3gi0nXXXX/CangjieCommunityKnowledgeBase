@@ -580,6 +580,175 @@ public class CangjieServingAdminTest {
         @Expect(validation.negativeRuleHits > 0, true)
         @Expect(cangjieF4AdminDiagnosticsContainPrefix(validation, "deadline_exceeded:"), false)
     }
+
+    @TestCase
+    public func p5S4N02ValidatedServingSummaryPoisonAlwaysFallsBackToFullBuild(): Unit {
+        for (mode in ["records", "version", "evidence", "status"]) {
+            let records = cangjieF4AdminPromotionRecords()
+            let kb = KnowledgeBase(FakeClock(0), CangjieAdminEmbeddingProvider(2),
+                CangjieAdminTrackingVectorStore(), LocalGraphStore())
+            let candidateVersion = kb.stageCandidateRecords("ckb-p5-s4-summary-${mode}-candidate", records)
+            let staged = kb.candidateRecordSnapshot()
+            let activeVersion = cangjieActiveVersionForCandidate(candidateVersion)
+            let recordsEvidence = ckbCandidateRecordsEvidenceHash(staged)
+            let vector = cangjieCandidateTestVectorStatus(staged)
+            let validation = validateCandidateServingIndexWithVectorStatus(staged, candidateVersion, vector)
+            let expectedIndex = buildCangjieServingIndex(staged, activeKnowledgeVersion: activeVersion)
+            let expectedCount = expectedIndex.documents.size
+            let expectedDiagnostic = cangjieServingIndexDiagnostics(expectedIndex)
+            expectedIndex.records.clear(); expectedIndex.documents.clear(); expectedIndex.exactEntries.clear()
+
+            @Expect(validation.ok, true)
+            @Expect(ckbValidationEvidenceIsSha256(validation.evidenceHash), true)
+            let summary = adminValidatedServingSummary(validation, staged)
+            @Expect(ckbValidatedServingIndexSummaryMatches(summary, recordsEvidence, activeVersion), true)
+            if (mode == "records") {
+                summary.recordsEvidenceHash = "hsha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+                summary.documentCount = 999999
+                summary.servingDiagnostic = "poison-records"
+                summary.evidenceHash = ckbValidatedServingIndexSummaryEvidenceHash(summary)
+            } else if (mode == "version") {
+                summary.activeVersion = "poison-active-version"
+                summary.documentCount = 999999
+                summary.servingDiagnostic = "poison-version"
+                summary.evidenceHash = ckbValidatedServingIndexSummaryEvidenceHash(summary)
+            } else if (mode == "evidence") {
+                // All identity/count fields remain valid; only the outer binding is first
+                // tampered. The poison diagnostic then proves the full rebuild path ran.
+                summary.evidenceHash = "hsha256:0000000000000000000000000000000000000000000000000000000000000000"
+                @Expect(ckbValidatedServingIndexSummaryMatches(summary, recordsEvidence, activeVersion), false)
+                summary.servingDiagnostic = "poison-evidence"
+            } else {
+                summary.valid = false
+                summary.validationStatus = "candidate_validation_failed"
+                summary.documentCount = 999999
+                summary.servingDiagnostic = "poison-status"
+                summary.evidenceHash = ckbValidatedServingIndexSummaryEvidenceHash(summary)
+            }
+            @Expect(ckbValidatedServingIndexSummaryMatches(summary, recordsEvidence, activeVersion), false)
+
+            let committed = kb.commitCandidateToActiveAfterVectorReady(activeVersion,
+                "ckb_candidate_${mode}", vector, validatedServingSummary: summary)
+            let status = kb.status()
+            let exact = cangjieExactSymbolLookup(kb, "ArrayList.add", sourceSet: CangjieSourceSets.STD,
+                targetVersion: "1.0.0", budget: 3)
+
+            @Expect(committed, true)
+            @Expect(status.storage.servingIndexCount, expectedCount)
+            @Expect(status.storage.servingIndexVersion, activeVersion)
+            @Expect(status.storage.servingIndexDiagnostic, expectedDiagnostic)
+            @Expect(status.storage.servingIndexCount == 999999, false)
+            @Expect(status.storage.servingIndexDiagnostic.contains("poison-"), false)
+            @Expect(exact.records.size > 0, true)
+            @Expect(exact.knowledgeVersion, activeVersion)
+        }
+    }
+
+    @TestCase
+    public func p5S4U02GraphSnapshotBindingRejectsRecordsVersionEvidenceCountAndStoreStatusMismatch(): Unit {
+        let ready = VectorStoreStatus()
+        ready.state = EmbeddingProviderState.READY
+        ready.dimension = 3
+        ready.count = 4
+        let matches = { cachedVersion: String, activeVersion: String, cachedRecords: String,
+            activeRecords: String, cachedNodes: Int64, graphNodes: Int64, cachedEdges: Int64,
+            graphEdges: Int64, cachedEvidence: String, graphEvidence: String, status: VectorStoreStatus =>
+            ckbGraphSnapshotBindingMatches(true, cachedVersion, activeVersion, cachedRecords,
+                activeRecords, cachedNodes, graphNodes, cachedEdges, graphEdges, cachedEvidence,
+                graphEvidence, status)
+        }
+        @Expect(matches("active", "active", "records", "records", 3, 3, 4, 4,
+            "graph", "graph", ready), true)
+        @Expect(matches("active", "active", "records-old", "records-new", 3, 3, 4, 4,
+            "graph", "graph", ready), false)
+        @Expect(matches("active-old", "active-new", "records", "records", 3, 3, 4, 4,
+            "graph", "graph", ready), false)
+        @Expect(matches("active", "active", "records", "records", 3, 3, 4, 4,
+            "graph-old", "graph-new", ready), false)
+        @Expect(matches("active", "active", "records", "records", 3, 2, 4, 4,
+            "graph", "graph", ready), false)
+        let wrongStatus = VectorStoreStatus()
+        wrongStatus.state = EmbeddingProviderState.READY
+        wrongStatus.dimension = 3
+        wrongStatus.count = 5
+        @Expect(matches("active", "active", "records", "records", 3, 3, 4, 4,
+            "graph", "graph", wrongStatus), false)
+    }
+
+    @TestCase
+    public func p5S4P02GraphSnapshotCacheMismatchForcesFullRebuildBeforePersistence(): Unit {
+        let root = "target/p5-s4-graph-cache-rebuild"
+        adminEnsureEmptyDir(root)
+        let graphStore = AdminMismatchedGraphStore()
+        let kb = KnowledgeBase(FakeClock(0), CangjieAdminEmbeddingProvider(2),
+            CangjieAdminTrackingVectorStore(), graphStore)
+        let records = cangjieF4AdminPromotionRecords()
+        let candidateVersion = kb.stageCandidateRecords("ckb-p5-s4-cache-candidate", records)
+        let staged = kb.candidateRecordSnapshot()
+        let vector = cangjieCandidateTestVectorStatus(staged)
+        @Expect(kb.commitCandidateToActiveAfterVectorReady(cangjieActiveVersionForCandidate(candidateVersion),
+            "ckb_cache_active", vector), true)
+
+        let initialReplaces = graphStore.replaceCalls
+        kb.persistActiveSnapshot(FileKnowledgeStore("${root}/baseline"))
+        @Expect(graphStore.replaceCalls, initialReplaces)
+
+        kb.activeRecordSnapshot()[0].chunk += " records-evidence-mutated"
+        kb.persistActiveSnapshot(FileKnowledgeStore("${root}/records"))
+        @Expect(graphStore.replaceCalls, initialReplaces + 1)
+
+        graphStore.poisonGraphEvidence()
+        kb.persistActiveSnapshot(FileKnowledgeStore("${root}/evidence"))
+        @Expect(graphStore.replaceCalls, initialReplaces + 2)
+
+        graphStore.poisonGraphCount()
+        kb.persistActiveSnapshot(FileKnowledgeStore("${root}/count"))
+        @Expect(graphStore.replaceCalls, initialReplaces + 3)
+
+        graphStore.reportStatusCountMismatchOnce()
+        kb.persistActiveSnapshot(FileKnowledgeStore("${root}/store-status"))
+        @Expect(graphStore.replaceCalls, initialReplaces + 4)
+        let status = kb.graphStatus()
+        @Expect(status.dimension, kb.status().storage.graphNodeCount)
+        @Expect(status.count, kb.status().storage.graphEdgeCount)
+    }
+
+    @TestCase
+    public func p5S4N03GraphStoreCommitMismatchFailsClosedAndRollsBackOldGraph(): Unit {
+        let root = "target/p5-s4-graph-store-mismatch"
+        adminEnsureEmptyDir(root)
+        let graphStore = AdminMismatchedGraphStore()
+        let vectorStore = CangjieAdminTrackingVectorStore()
+        let kb = KnowledgeBase(FakeClock(0), CangjieAdminEmbeddingProvider(2), vectorStore, graphStore)
+        kb.configureVectorCollections("ckb_active", "ckb_candidate")
+        kb.bootstrapOffline()
+        let store = FileKnowledgeStore(root)
+        kb.persistActiveSnapshot(store)
+        let before = kb.status()
+        let sourceId = kb.activeRecordSnapshot()[0].sourceId
+        let beforeGraph = adminGraphQuery(kb, sourceId, before.activeKnowledgeVersion)
+        @Expect(beforeGraph.nodes.size > 0, true)
+        @Expect(beforeGraph.edges.size > 0, true)
+
+        graphStore.failNextReplaceWithCountMismatch()
+        let promotion = cangjiePromoteCandidateRecordsAfterValidationWithVersion(kb, store,
+            "ckb-p5-s4-graph-mismatch-candidate", cangjieF4AdminPromotionRecords())
+        let after = kb.status()
+        let restoredGraph = adminGraphQuery(kb, sourceId, before.activeKnowledgeVersion)
+
+        @Expect(promotion.ok, false)
+        @Expect(promotion.activePromoted, false)
+        @Expect(promotion.validation.status, "candidate_active_commit_failed")
+        @Expect(cangjieF4AdminDiagnosticsContainPrefix(promotion.validation,
+            "graph_store_commit_mismatch:"), true)
+        @Expect(after.activeKnowledgeVersion, before.activeKnowledgeVersion)
+        @Expect(after.storage.graphNodeCount, before.storage.graphNodeCount)
+        @Expect(after.storage.graphEdgeCount, before.storage.graphEdgeCount)
+        @Expect(restoredGraph.nodes.size > 0, true)
+        @Expect(restoredGraph.edges.size > 0, true)
+        @Expect(restoredGraph.knowledgeVersion, before.activeKnowledgeVersion)
+        @Expect(graphStore.mismatchActive, false)
+    }
 }
 
 private class AdminP5S2SequenceClock <: CkbMillisClock {
@@ -631,6 +800,95 @@ private class ThrowingAdminStageSink <: CkbStagedRebuildStageSink {
     public func onStagedRebuildStage(progress: CkbStagedRebuildStageProgress): Unit {
         throw Exception("stage sink fixture failure 中文🙂")
     }
+}
+
+private class AdminMismatchedGraphStore <: GraphStore {
+    private let delegate: LocalGraphStore = LocalGraphStore()
+    private var capturedNodes: ArrayList<GraphNode> = ArrayList<GraphNode>()
+    private var capturedEdges: ArrayList<GraphEdge> = ArrayList<GraphEdge>()
+    private var mismatchNextReplace: Bool = false
+    private var mismatchStatusOnce: Bool = false
+    public var replaceCalls: Int64 = 0
+    public var mismatchActive: Bool = false
+
+    public init() {}
+
+    public func upsert(nodes: ArrayList<GraphNode>, edges: ArrayList<GraphEdge>): Unit {
+        this.delegate.upsert(nodes, edges)
+        this.capturedNodes = nodes
+        this.capturedEdges = edges
+    }
+
+    public func replace(nodes: ArrayList<GraphNode>, edges: ArrayList<GraphEdge>): Unit {
+        this.replaceCalls += 1
+        this.delegate.replace(nodes, edges)
+        this.capturedNodes = nodes
+        this.capturedEdges = edges
+        this.mismatchActive = this.mismatchNextReplace
+        this.mismatchNextReplace = false
+    }
+
+    public func clear(): Unit {
+        this.delegate.clear()
+        this.capturedNodes = ArrayList<GraphNode>()
+        this.capturedEdges = ArrayList<GraphEdge>()
+        this.mismatchActive = false
+    }
+
+    public func neighbors(query: GraphQuery): GraphContext {
+        this.delegate.neighbors(query)
+    }
+
+    public func status(): VectorStoreStatus {
+        let status = this.delegate.status()
+        if (this.mismatchActive) {
+            status.count += 1
+        } else if (this.mismatchStatusOnce) {
+            status.count += 1
+            this.mismatchStatusOnce = false
+        }
+        status
+    }
+
+    public func poisonGraphEvidence(): Unit {
+        if (this.capturedNodes.size > 0) {
+            this.capturedNodes[0].label += "-poison-evidence"
+        }
+    }
+
+    public func poisonGraphCount(): Unit {
+        this.capturedNodes.add(GraphNode())
+    }
+
+    public func reportStatusCountMismatchOnce(): Unit {
+        this.mismatchStatusOnce = true
+    }
+
+    public func failNextReplaceWithCountMismatch(): Unit {
+        this.mismatchNextReplace = true
+    }
+}
+
+private func adminValidatedServingSummary(validation: CangjieCandidateValidationResult,
+    records: ArrayList<NormalizedRecord>): CkbValidatedServingIndexSummary {
+    let summary = CkbValidatedServingIndexSummary()
+    summary.valid = validation.ok
+    summary.validationStatus = validation.status
+    summary.recordsEvidenceHash = ckbCandidateRecordsEvidenceHash(records)
+    summary.activeVersion = validation.activeVersion
+    summary.documentCount = validation.servingDocumentCount
+    summary.servingDiagnostic = validation.servingIndexDiagnostic
+    summary.validationEvidenceHash = validation.evidenceHash
+    summary.evidenceHash = ckbValidatedServingIndexSummaryEvidenceHash(summary)
+    summary
+}
+
+private func adminGraphQuery(kb: KnowledgeBase, sourceId: String, activeVersion: String): GraphContext {
+    let query = GraphQuery()
+    query.sourceId = sourceId
+    query.knowledgeVersion = activeVersion
+    query.budget = 8
+    kb.graphNeighbors(query)
 }
 
 private func adminEnsureEmptyDir(path: String): Unit {
@@ -767,6 +1025,7 @@ private class CangjieAdminEmbeddingProvider <: EmbeddingProvider {
 }
 
 private class CangjieAdminTrackingVectorStore <: VectorStore {
+    public func lookupBatchWithDeadline(collection: String, pointIds: ArrayList<String>, deadlineAtMillis: Int64): VectorLookupResult { let result = VectorLookupResult(); result.ok = true; result.status = "ok"; result.requested = pointIds.size; result }
     public var recreateCalls: Int64 = 0
     public var upsertBatchCalls: Int64 = 0
     public var activeUpsertBatchCalls: Int64 = 0
