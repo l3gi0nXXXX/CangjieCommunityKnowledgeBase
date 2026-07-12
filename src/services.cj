@@ -5439,7 +5439,7 @@ public class FileKnowledgeStore {
         this.writeLines("index/graph-edges.ckb", this.graphEdgeLines(graph.edges))
     }
 
-    public func writeActiveSnapshotTransaction(status: KnowledgeStatus, rawRecords: ArrayList<RawRecord>, normalizedRecords: ArrayList<NormalizedRecord>, activeIndex: ArrayList<NormalizedRecord>, vectorRecords: ArrayList<VectorRecord>, vectorCollection: String, graph: GraphBuildResult, persistVectorFile!: Bool = true, deadlineAtMillis!: Int64 = 0, stageSink!: CkbStagedRebuildStageSink = NoopCkbStagedRebuildStageSink(), vectorSpool!: CkbVectorSpoolDescriptor = CkbVectorSpoolDescriptor(), releaseBundle!: CkbReleaseCommitBundle = CkbReleaseCommitBundle(), companionCopy!: CkbActiveSnapshotCompanionCopy = CkbActiveSnapshotCompanionCopy(), faultInjector!: CkbActiveSnapshotFaultInjector = NoopCkbActiveSnapshotFaultInjector()): CkbActiveSnapshotTransactionResult {
+    public func writeActiveSnapshotTransaction(status: KnowledgeStatus, rawRecords: ArrayList<RawRecord>, normalizedRecords: ArrayList<NormalizedRecord>, activeIndex: ArrayList<NormalizedRecord>, vectorRecords: ArrayList<VectorRecord>, vectorCollection: String, graph: GraphBuildResult, persistVectorFile!: Bool = true, deadlineAtMillis!: Int64 = 0, stageSink!: CkbStagedRebuildStageSink = NoopCkbStagedRebuildStageSink(), vectorSpool!: CkbVectorSpoolDescriptor = CkbVectorSpoolDescriptor(), releaseBundle!: CkbReleaseCommitBundle = CkbReleaseCommitBundle(), companionCopy!: CkbActiveSnapshotCompanionCopy = CkbActiveSnapshotCompanionCopy(), repositoryEventIdentity!: String = "", faultInjector!: CkbActiveSnapshotFaultInjector = NoopCkbActiveSnapshotFaultInjector()): CkbActiveSnapshotTransactionResult {
         let result = CkbActiveSnapshotTransactionResult()
         let entryDeadline = ckbDeadlineGuard("active_snapshot_tx_begin", deadlineAtMillis)
         if (entryDeadline.exceeded) {
@@ -5530,6 +5530,15 @@ public class FileKnowledgeStore {
                 throw Exception("active_snapshot_payload_readback_mismatch")
             }
             this.writeActiveSnapshotCompanions(txRoot, companions, faultInjector)
+            if (repositoryEventIdentity != "") {
+                let pointerHash = ckbReleaseEvidenceHash("${txId}|${status.activeKnowledgeVersion}|${result.manifestHash}|${result.freshnessHash}|${result.coverageHash}")
+                let recovery = "schemaVersion=ckb-repository-event-recovery-v1\neventIdentity=${escapeField(repositoryEventIdentity)}\ntxId=${escapeField(txId)}\nactiveVersion=${escapeField(status.activeKnowledgeVersion)}\npointerHash=${pointerHash}\nstatus=committed_recovery_required\n"
+                let recoveryText = recovery + "checksum=${ckbReleaseEvidenceHash(recovery)}\n"
+                this.writeLinesAtomically("${txRoot}/metadata/repository-event-recovery.ckb", recoveryText)
+                if (this.readLines("${txRoot}/metadata/repository-event-recovery.ckb") != recoveryText) {
+                    throw Exception("repository_event_recovery_sidecar_readback_failed")
+                }
+            }
             this.emitActiveSnapshotStage(stageSink, "active_snapshot_tx_commit_before", "running", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
             this.ensureActiveSnapshotDeadline("active_snapshot_tx_commit_before", deadlineAtMillis)
             faultInjector.checkpoint(CkbActiveSnapshotFaultPoints.COMMIT)
@@ -6218,6 +6227,188 @@ public class FileKnowledgeStore {
         receipt
     }
 
+    // Content is persisted with the event identity, rather than treating a
+    // completed path as proof that a later retry still has its bytes.
+    public func saveRepositoryEventFetchContent(receipt: CkbRepositoryEventReceipt,
+        resolvedCommit: String, request: SourceFetchRequest, fetch: SourceFetchResult): Bool {
+        if (!fetch.ok || request.path == "" || resolvedCommit == "" ||
+            !ckbSafeRepoRelativePath(request.path)) { return false }
+        let contentHash = ckbReleaseEvidenceHash(fetch.body)
+        var text = "schemaVersion=ckb-repository-event-fetch-v1\n"
+        text += "eventId=${escapeField(receipt.eventId)}\nrepo=${escapeField(receipt.repo)}\n"
+        text += "resolvedCommit=${escapeField(resolvedCommit)}\npath=${escapeField(request.path)}\n"
+        text += "sourceUrl=${escapeField(fetch.sourceUrl)}\nbodyHash=${escapeField(fetch.bodyHash)}\n"
+        text += "contentSha256=${contentHash}\ncontent=${escapeField(fetch.body)}\n"
+        let checksum = ckbReleaseEvidenceHash(text)
+        text += "checksum=${checksum}\n"
+        try {
+            this.writeLinesAtomically(ckbRepositoryEventFetchCachePath(receipt.eventId,
+                receipt.repo, resolvedCommit, request.path), text)
+            true
+        } catch (_: Exception) { false }
+    }
+
+    public func loadRepositoryEventFetchContent(receipt: CkbRepositoryEventReceipt,
+        resolvedCommit: String, request: SourceFetchRequest): SourceFetchResult {
+        let miss = SourceFetchResult()
+        miss.status = "repository_event_content_cache_miss"
+        if (request.path == "" || resolvedCommit == "" || !ckbSafeRepoRelativePath(request.path)) {
+            miss.status = "repository_event_content_cache_input_invalid"
+            return miss
+        }
+        let text = try {
+            this.readText(ckbRepositoryEventFetchCachePath(receipt.eventId, receipt.repo,
+                resolvedCommit, request.path))
+        } catch (_: Exception) {
+            miss.status = "invalid_response_encoding"
+            return miss
+        }
+        if (text == "") { return miss }
+        var payload = ""
+        let prefix = text.split("\n")
+        for (index in 0..prefix.size) {
+            let line = prefix[index]
+            if (index == prefix.size - 1 && line == "") { continue }
+            if (!line.startsWith("checksum=")) { payload += line + "\n" }
+        }
+        let checksum = ckbCurrentField(text, "checksum")
+        let body = ckbCurrentField(text, "content")
+        if (ckbCurrentField(text, "schemaVersion") != "ckb-repository-event-fetch-v1" ||
+            ckbCurrentField(text, "eventId") != receipt.eventId ||
+            ckbCurrentField(text, "repo") != receipt.repo ||
+            ckbCurrentField(text, "resolvedCommit") != resolvedCommit ||
+            ckbCurrentField(text, "path") != request.path ||
+            ckbCurrentField(text, "contentSha256") != ckbReleaseEvidenceHash(body) ||
+            checksum != ckbReleaseEvidenceHash(payload)) {
+            miss.status = "repository_event_content_cache_invalid"
+            return miss
+        }
+        let hit = SourceFetchResult()
+        hit.ok = true
+        hit.status = "repository_event_content_cache_hit"
+        hit.statusCode = 200
+        hit.body = body
+        hit.bodyHash = ckbCurrentField(text, "bodyHash")
+        hit.sourceUrl = ckbCurrentField(text, "sourceUrl")
+        hit.repo = receipt.repo
+        hit.ref = request.ref
+        hit.path = request.path
+        hit.commit = resolvedCommit
+        hit.normalizedType = request.kind
+        hit
+    }
+
+    public func saveRepositoryEventRecoveryMarker(eventIdentity: String, txId: String,
+        activeVersion: String, pointerHash: String): Unit {
+        let payload = "schemaVersion=ckb-repository-event-recovery-v1\neventIdentity=${escapeField(eventIdentity)}\ntxId=${escapeField(txId)}\nactiveVersion=${escapeField(activeVersion)}\npointerHash=${escapeField(pointerHash)}\nstatus=committed_recovery_required\n"
+        this.writeLinesAtomically("metadata/repository-event-inbox/recovery.ckb",
+            payload + "checksum=${ckbReleaseEvidenceHash(payload)}\n")
+    }
+
+    public func loadRepositoryEventRecoveryMarker(): String {
+        this.repositoryEventRecoveryMarkerStatus().text
+    }
+
+    public func repositoryEventRecoveryMarkerStatus(): CkbRepositoryEventRecoveryMarkerStatus {
+        let status = CkbRepositoryEventRecoveryMarkerStatus()
+        var liveDecodeInvalid = false
+        let live = try { this.readText("metadata/repository-event-inbox/recovery.ckb") } catch (_: Exception) {
+            liveDecodeInvalid = true
+            ""
+        }
+        let pointer = this.loadActiveSnapshotPointer()
+        var sidecarDecodeInvalid = false
+        let sidecar = if (pointer.valid) {
+            try { this.readText("transactions/${safeName(pointer.txId)}/metadata/repository-event-recovery.ckb") } catch (_: Exception) {
+                sidecarDecodeInvalid = true
+                ""
+            }
+        } else { "" }
+        let text = if (live != "") { live } else { sidecar }
+        if (text == "") {
+            if (liveDecodeInvalid || sidecarDecodeInvalid) { status.status = "invalid_response_encoding" }
+            return status
+        }
+        if (live == "" && ckbCurrentField(text, "status") == "consumed") { return status }
+        let payload = ckbRepositoryEventRecoveryPayload(text)
+        if (ckbCurrentField(text, "schemaVersion") != "ckb-repository-event-recovery-v1" ||
+            ckbCurrentField(text, "status") != "committed_recovery_required" ||
+            ckbCurrentField(text, "eventIdentity") == "" ||
+            ckbCurrentField(text, "txId") == "" ||
+            ckbCurrentField(text, "activeVersion") == "" ||
+            ckbCurrentField(text, "pointerHash") == "" ||
+            ckbCurrentField(text, "checksum") != ckbReleaseEvidenceHash(payload)) {
+            status.status = "repository_event_recovery_marker_invalid"
+            return status
+        }
+        let expectedPointerHash = ckbReleaseEvidenceHash("${pointer.txId}|${pointer.activeVersion}|${pointer.manifestHash}|${pointer.freshnessHash}|${pointer.coverageHash}")
+        if (!pointer.valid || ckbCurrentField(text, "txId") != pointer.txId ||
+            ckbCurrentField(text, "activeVersion") != pointer.activeVersion ||
+            ckbCurrentField(text, "pointerHash") != expectedPointerHash) {
+            status.status = "repository_event_recovery_pointer_mismatch"
+            return status
+        }
+        status.valid = true
+        status.status = "committed_recovery_required"
+        status.text = text
+        status
+    }
+
+    public func repositoryEventRecoverySidecarStatus(): CkbRepositoryEventRecoveryMarkerStatus {
+        let status = CkbRepositoryEventRecoveryMarkerStatus()
+        let pointer = this.loadActiveSnapshotPointer()
+        if (!pointer.valid) { return status }
+        let text = try { this.readText("transactions/${safeName(pointer.txId)}/metadata/repository-event-recovery.ckb") } catch (_: Exception) {
+            status.status = "invalid_response_encoding"
+            return status
+        }
+        if (text == "" || ckbCurrentField(text, "status") == "consumed") { return status }
+        let payload = ckbRepositoryEventRecoveryPayload(text)
+        let expected = ckbReleaseEvidenceHash("${pointer.txId}|${pointer.activeVersion}|${pointer.manifestHash}|${pointer.freshnessHash}|${pointer.coverageHash}")
+        if (ckbCurrentField(text, "schemaVersion") != "ckb-repository-event-recovery-v1" ||
+            ckbCurrentField(text, "status") != "committed_recovery_required" ||
+            ckbCurrentField(text, "txId") != pointer.txId ||
+            ckbCurrentField(text, "activeVersion") != pointer.activeVersion ||
+            ckbCurrentField(text, "pointerHash") != expected ||
+            ckbCurrentField(text, "checksum") != ckbReleaseEvidenceHash(payload)) {
+            status.status = "repository_event_recovery_sidecar_invalid"
+            return status
+        }
+        status.valid = true
+        status.status = "committed_recovery_required"
+        status.text = text
+        status
+    }
+
+    public func clearRepositoryEventRecoveryMarker(): Unit {
+        this.deleteRepositoryEventInboxFile("metadata/repository-event-inbox/recovery.ckb")
+    }
+
+    public func consumeRepositoryEventRecoverySidecar(txId: String): Bool {
+        let authority = this.repositoryEventRecoverySidecarStatus()
+        if (!authority.valid || ckbCurrentField(authority.text, "txId") != txId) { return false }
+        let relative = "transactions/${safeName(txId)}/metadata/repository-event-recovery.ckb"
+        try {
+            // Re-read and compare to the validated authority so a corrupt or
+            // concurrently replaced sidecar can never be rewritten as consumed.
+            let text = this.readText(relative)
+            if (text == "" || text != authority.text) { return false }
+            var payload = ""
+            let lines = text.split("\n")
+            for (index in 0..lines.size) {
+                let line = lines[index]
+                if (index == lines.size - 1 && line == "") { continue }
+                if (line.startsWith("checksum=")) { continue }
+                if (line == "status=committed_recovery_required") {
+                    payload += "status=consumed\n"
+                } else { payload += line + "\n" }
+            }
+            let consumed = payload + "checksum=${ckbReleaseEvidenceHash(payload)}\n"
+            this.writeLinesAtomically(relative, consumed)
+            this.readText(relative) == consumed
+        } catch (_: Exception) { false }
+    }
+
     // Claims are serialized by a short-lived store-local directory lock.  The
     // receipt revision is still checked before every write, so a stale process
     // cannot complete a lease it no longer owns after crash recovery.
@@ -6296,6 +6487,40 @@ public class FileKnowledgeStore {
         }
         this.transitionRepositoryEventReceipt(dedupeKey, expectedRevision, owner, "running",
             nowMillis, nowMillis + leaseMillis, 0, "", expectedState: "running")
+    }
+
+    // Ref names are mutable. Pin the resolved commit under the same receipt
+    // CAS/lease that owns acquisition so retries cannot silently switch trees.
+    public func pinRepositoryEventResolvedCommit(receipt: CkbRepositoryEventReceipt,
+        resolvedCommit: String, nowMillis: Int64): CkbRepositoryEventReceipt {
+        if (!receipt.valid || receipt.state != "running" || receipt.leaseOwner == "" ||
+            resolvedCommit == "" || nowMillis <= 0) { return receipt }
+        let current = this.loadRepositoryEventReceipt(receipt.dedupeKey)
+        if (!current.valid || !this.acquireRepositoryEventMutationLock(receipt.dedupeKey, current, nowMillis)) { return current }
+        try {
+            let fresh = this.loadRepositoryEventReceipt(receipt.dedupeKey)
+            if (!fresh.valid || fresh.state != "running" || fresh.leaseOwner != receipt.leaseOwner ||
+                fresh.revision != receipt.revision || fresh.leaseUntilMillis <= nowMillis ||
+                (fresh.resolvedCommit != "" && fresh.resolvedCommit != resolvedCommit)) { return fresh }
+            if (fresh.resolvedCommit == resolvedCommit) { return fresh }
+            fresh.resolvedCommit = resolvedCommit
+            fresh.canonicalSha256 = ckbRepositoryEventCanonicalSha256(fresh)
+            fresh.revision += 1
+            fresh.updatedAtMillis = nowMillis
+            fresh.checksum = ckbRepositoryEventReceiptChecksum(fresh)
+            this.writeLinesAtomically(fresh.artifactPath, ckbRepositoryEventReceiptText(fresh))
+            this.writeLinesAtomically(fresh.queuePointerPath, ckbRepositoryEventQueuePointerText(fresh))
+            let readback = this.loadRepositoryEventReceipt(fresh.dedupeKey)
+            if (!readback.valid) { return current }
+            receipt.resolvedCommit = readback.resolvedCommit
+            receipt.canonicalSha256 = readback.canonicalSha256
+            receipt.checksum = readback.checksum
+            receipt.revision = readback.revision
+            receipt.updatedAtMillis = readback.updatedAtMillis
+            readback
+        } catch (_: Exception) { current } finally {
+            this.releaseRepositoryEventMutationLock(receipt.dedupeKey)
+        }
     }
 
     public func completeRepositoryEventReceipt(dedupeKey: String, owner: String,
@@ -6471,6 +6696,10 @@ public class FileKnowledgeStore {
         receipt.updatedAtMillis = parseIntField(ckbCurrentField(text, "updatedAtMillis"), -1)
         receipt.repo = ckbCurrentField(text, "repo")
         receipt.ref = ckbCurrentField(text, "ref")
+        receipt.mergeCommitSha = ckbCurrentField(text, "mergeCommitSha")
+        receipt.resolvedCommit = ckbCurrentField(text, "resolvedCommit")
+        receipt.changedFilesTruncated = ckbCurrentField(text, "changedFilesTruncated") == "true"
+        receipt.changedFilesUnavailable = ckbCurrentField(text, "changedFilesUnavailable") == "true"
         receipt.prNumber = parseIntField(ckbCurrentField(text, "prNumber"), -1)
         let pathCount = parseIntField(ckbCurrentField(text, "changedFileCount"), -1)
         let profileCount = parseIntField(ckbCurrentField(text, "scheduledProfileCount"), -1)
@@ -6487,6 +6716,7 @@ public class FileKnowledgeStore {
             receipt.createdAtMillis > 0 && receipt.updatedAtMillis >= receipt.createdAtMillis &&
             receipt.repo != "" && receipt.ref != "" && receipt.prNumber >= 0 &&
             pathCount == receipt.changedFiles.size && profileCount == receipt.scheduledProfiles.size &&
+            receipt.changedFiles.size == ckbCanonicalRepositoryEventPaths(receipt.changedFiles).size &&
             receipt.checksum == expected
         receipt.diagnostic = if (receipt.valid) { receipt.state } else { "repository_event_receipt_invalid" }
         receipt
@@ -8811,6 +9041,20 @@ private func ckbCurrentField(text: String, key: String): String {
         }
     }
     ""
+}
+
+// The durable text format ends every field with a newline.  String.split keeps
+// that terminal empty field, whereas the writer hashes only the actual fields;
+// omit precisely that synthetic final item when reconstructing the checksum.
+private func ckbRepositoryEventRecoveryPayload(text: String): String {
+    var payload = ""
+    let lines = text.split("\n")
+    for (index in 0..lines.size) {
+        let line = lines[index]
+        if (index == lines.size - 1 && line == "") { continue }
+        if (!line.startsWith("checksum=")) { payload += line + "\n" }
+    }
+    payload
 }
 
 private func ckbSchedulerRunLockText(lock: CkbSchedulerRunLock, updatedAtMillis: Int64): String {
@@ -11509,6 +11753,12 @@ private func ckbRepositoryEventQueuePointerPath(dedupeKey: String): String {
     "metadata/repository-event-inbox/queue/${safeName(ckbReleaseEvidenceHash(dedupeKey))}.ckb"
 }
 
+private func ckbRepositoryEventFetchCachePath(eventId: String, repo: String,
+    resolvedCommit: String, path: String): String {
+    let key = ckbReleaseEvidenceHash("${eventId}|${repo.toAsciiLower()}|${resolvedCommit}|${path}")
+    "metadata/repository-event-inbox/fetch/${safeName(key)}.ckb"
+}
+
 private func ckbRepositoryEventMutationLockPath(dedupeKey: String): String {
     "metadata/repository-event-inbox/locks/${safeName(ckbReleaseEvidenceHash(dedupeKey))}.lock"
 }
@@ -11542,14 +11792,33 @@ private func ckbRepositoryEventReceiptStateValid(receipt: CkbRepositoryEventRece
     false
 }
 
+// Event paths are untrusted ingress data. Keep their logical order stable
+// across redelivery without byte slicing so Chinese/emoji paths remain intact.
+private func ckbCanonicalRepositoryEventPaths(paths: ArrayList<String>): ArrayList<String> {
+    let unique = HashSet<String>()
+    for (raw in paths) {
+        let path = raw.trimAscii()
+        if (ckbSafeRepoRelativePath(path)) {
+            unique.add(path)
+        }
+    }
+    let values = ArrayList<String>()
+    for (path in unique) { values.add(path) }
+    let ordered = values.toArray()
+    sort(ordered)
+    let out = ArrayList<String>()
+    for (path in ordered) { out.add(path) }
+    out
+}
+
 private func ckbRepositoryEventCanonicalSha256(receipt: CkbRepositoryEventReceipt): String {
-    let paths = receipt.changedFiles.toArray()
-    sort(paths)
+    let paths = ckbCanonicalRepositoryEventPaths(receipt.changedFiles).toArray()
     let profiles = receipt.scheduledProfiles.toArray()
     sort(profiles)
     let out = StringBuilder()
     out.append("schema=${receipt.schemaVersion}|eventId=${receipt.eventId}|deliveryId=${receipt.deliveryId}|dedupeKey=${receipt.dedupeKey}")
-    out.append("|repo=${receipt.repo.toAsciiLower()}|ref=${receipt.ref}|prNumber=${receipt.prNumber}")
+    out.append("|repo=${receipt.repo.toAsciiLower()}|ref=${receipt.ref}|mergeCommitSha=${receipt.mergeCommitSha}|resolvedCommit=${receipt.resolvedCommit}|prNumber=${receipt.prNumber}")
+    out.append("|changedFilesTruncated=${receipt.changedFilesTruncated}|changedFilesUnavailable=${receipt.changedFilesUnavailable}")
     for (profile in profiles) { out.append("|profile=${profile}") }
     for (path in paths) { out.append("|path=${path}") }
     ckbReleaseEvidenceHash(out.toString())
@@ -11560,7 +11829,7 @@ private func ckbRepositoryEventReceiptChecksum(receipt: CkbRepositoryEventReceip
     out.append("schema=${receipt.schemaVersion}|eventId=${receipt.eventId}|deliveryId=${receipt.deliveryId}|dedupeKey=${receipt.dedupeKey}")
     out.append("|canonicalSha256=${receipt.canonicalSha256}|state=${receipt.state}|attempt=${receipt.attempt}|revision=${receipt.revision}")
     out.append("|leaseOwner=${receipt.leaseOwner}|leaseUntilMillis=${receipt.leaseUntilMillis}|nextAttemptAtMillis=${receipt.nextAttemptAtMillis}|maxAttempts=${receipt.maxAttempts}|lastErrorCode=${receipt.lastErrorCode}")
-    out.append("|createdAtMillis=${receipt.createdAtMillis}|updatedAtMillis=${receipt.updatedAtMillis}|repo=${receipt.repo}|ref=${receipt.ref}|prNumber=${receipt.prNumber}")
+    out.append("|createdAtMillis=${receipt.createdAtMillis}|updatedAtMillis=${receipt.updatedAtMillis}|repo=${receipt.repo}|ref=${receipt.ref}|mergeCommitSha=${receipt.mergeCommitSha}|resolvedCommit=${receipt.resolvedCommit}|changedFilesTruncated=${receipt.changedFilesTruncated}|changedFilesUnavailable=${receipt.changedFilesUnavailable}|prNumber=${receipt.prNumber}")
     for (profile in receipt.scheduledProfiles) { out.append("|profile=${profile}") }
     for (path in receipt.changedFiles) { out.append("|path=${path}") }
     ckbReleaseEvidenceHash(out.toString())
@@ -11576,7 +11845,7 @@ private func ckbRepositoryEventReceiptText(receipt: CkbRepositoryEventReceipt): 
     text += "revision=${receipt.revision}\nleaseOwner=${escapeField(receipt.leaseOwner)}\nleaseUntilMillis=${receipt.leaseUntilMillis}\n"
     text += "nextAttemptAtMillis=${receipt.nextAttemptAtMillis}\nmaxAttempts=${receipt.maxAttempts}\nlastErrorCode=${escapeField(receipt.lastErrorCode)}\n"
     text += "createdAtMillis=${receipt.createdAtMillis}\nupdatedAtMillis=${receipt.updatedAtMillis}\n"
-    text += "repo=${escapeField(receipt.repo)}\nref=${escapeField(receipt.ref)}\nprNumber=${receipt.prNumber}\n"
+    text += "repo=${escapeField(receipt.repo)}\nref=${escapeField(receipt.ref)}\nmergeCommitSha=${escapeField(receipt.mergeCommitSha)}\nresolvedCommit=${escapeField(receipt.resolvedCommit)}\nchangedFilesTruncated=${receipt.changedFilesTruncated}\nchangedFilesUnavailable=${receipt.changedFilesUnavailable}\nprNumber=${receipt.prNumber}\n"
     text += "changedFileCount=${receipt.changedFiles.size}\n"
     for (index in 0..receipt.changedFiles.size) { text += "changedFile${index}=${escapeField(receipt.changedFiles[index])}\n" }
     text += "scheduledProfileCount=${receipt.scheduledProfiles.size}\n"
@@ -11620,6 +11889,7 @@ public class CkbCommandLoopService {
 
     public func start(): String {
         this.started = true
+        this.recoverRepositoryEventCommitIfRequired()
         if (this.config.firstInitEnabled) {
             let result = ckbEnsureFirstInitialized(this.config, this.store)
             if (result.ok && result.persisted) {
@@ -11644,7 +11914,7 @@ public class CkbCommandLoopService {
         if (command == "health") {
             response.text = this.health()
         } else if (command == "status") {
-            response.text = renderDoctor(this.kb.status())
+            response.text = renderDoctor(this.statusSnapshot())
         } else if (command == "metrics") {
             response.text = renderMetrics(this.kb.status())
         } else if (command == "query") {
@@ -11716,7 +11986,54 @@ public class CkbCommandLoopService {
     public func statusSnapshot(): KnowledgeStatus {
         let status = this.kb.status()
         status.schedulerLoop = this.store.loadSchedulerLoopStatus()
+        let recovery = this.store.repositoryEventRecoveryMarkerStatus()
+        let sidecar = this.store.repositoryEventRecoverySidecarStatus()
+        let recoveryStatus = if (recovery.status != "repository_event_recovery_marker_missing") {
+            recovery.status
+        } else { sidecar.status }
+        if (recoveryStatus != "repository_event_recovery_marker_missing") {
+            status.activeStateSource = "persisted_degraded"
+            status.restoreDiagnostic = recoveryStatus
+            status.storage.vectorState = EmbeddingProviderState.DEGRADED
+            status.storage.vectorDegradedReason = status.restoreDiagnostic
+        }
         status
+    }
+
+    private func recoverRepositoryEventCommitIfRequired(): Unit {
+        let marker = this.store.repositoryEventRecoveryMarkerStatus()
+        let sidecar = this.store.repositoryEventRecoverySidecarStatus()
+        // A malformed live marker is a durable recovery alarm; never hide it
+        // behind an otherwise valid sidecar.
+        if (marker.status != "repository_event_recovery_marker_missing" && !marker.valid) { return }
+        let sidecarCorrupt = sidecar.status == "invalid_response_encoding" ||
+            sidecar.status == "repository_event_recovery_sidecar_invalid"
+        if (marker.valid && sidecarCorrupt) { return }
+        if (marker.valid && sidecar.valid &&
+            ckbCurrentField(marker.text, "eventIdentity") != ckbCurrentField(sidecar.text, "eventIdentity")) {
+            return
+        }
+        let authority = if (marker.valid) { marker } else { sidecar }
+        if (!authority.valid) { return }
+        let txId = ckbCurrentField(authority.text, "txId")
+        let activeVersion = ckbCurrentField(authority.text, "activeVersion")
+        let pointerHash = ckbCurrentField(authority.text, "pointerHash")
+        let pointer = this.store.loadActiveSnapshotPointer()
+        let actualHash = ckbReleaseEvidenceHash("${pointer.txId}|${pointer.activeVersion}|${pointer.manifestHash}|${pointer.freshnessHash}|${pointer.coverageHash}")
+        if (!pointer.valid || pointer.txId != txId || pointer.activeVersion != activeVersion || actualHash != pointerHash) { return }
+        let snapshot = this.store.loadActiveSnapshot()
+        if (snapshot.valid && this.kb.restoreActiveSnapshot(snapshot)) {
+            // Consume the pre-COMMIT authority before clearing the live shadow.
+            // Every post-pointer I/O failure is contained so the durable marker
+            // remains available for the next startup instead of being erased.
+            if (sidecar.valid) {
+                let consumed = try { this.store.consumeRepositoryEventRecoverySidecar(txId) } catch (_: Exception) { false }
+                if (!consumed) { return }
+            }
+            if (marker.valid) {
+                try { this.store.clearRepositoryEventRecoveryMarker() } catch (_: Exception) {}
+            }
+        }
     }
 
     public func saveSchedulerLoopMetadata(loopStatus: String, schedulerEnabled: Bool, intervalMillis: Int64, tickKind: String, limit: Int64, ran: Int64, taskNames: ArrayList<String>, diagnostic: String, readinessGate!: String = "", firstTickDeferred!: Bool = false): Unit {
@@ -11914,6 +12231,16 @@ public class CkbCommandLoopService {
 
     public func acceptGitCodeRepositoryChangedEvent(event: GitCodeRepositoryChangedEvent): GitCodeRepositoryChangedEventResult {
         let result = GitCodeRepositoryChangedEventResult()
+        if (!event.valid) {
+            result.diagnostic = "invalid_repository_event"
+            return result
+        }
+        for (path in event.changedFiles) {
+            if (!ckbSafeRepoRelativePath(path)) {
+                result.diagnostic = "invalid_changed_file"
+                return result
+            }
+        }
         result.dedupeKey = ckbRepositoryChangedDedupeKey(event)
         result.eventId = if (event.eventId != "") { event.eventId } else { "gcm-ckb-${stableSummaryHash(result.dedupeKey)}" }
         result.acceptedAt = "${this.kb.scheduler.clock.nowMinutes}"
@@ -11926,11 +12253,14 @@ public class CkbCommandLoopService {
         receipt.dedupeKey = result.dedupeKey
         receipt.repo = event.repo
         receipt.ref = event.ref
+        receipt.mergeCommitSha = event.mergeCommitSha
+        receipt.changedFilesTruncated = event.changedFilesTruncated
+        receipt.changedFilesUnavailable = event.changedFilesUnavailable
         receipt.prNumber = event.prNumber
         receipt.createdAtMillis = ckbCoreNowMillis()
         receipt.updatedAtMillis = receipt.createdAtMillis
         receipt.nextAttemptAtMillis = receipt.createdAtMillis
-        for (path in event.changedFiles) { receipt.changedFiles.add(path) }
+        for (path in ckbCanonicalRepositoryEventPaths(event.changedFiles)) { receipt.changedFiles.add(path) }
         for (profile in result.scheduledProfiles) { receipt.scheduledProfiles.add(profile) }
         receipt.canonicalSha256 = ckbRepositoryEventCanonicalSha256(receipt)
         let persisted = try {
@@ -12467,7 +12797,7 @@ public class CkbCommandLoopService {
     }
 
     private func health(): String {
-        let status = this.kb.status()
+        let status = this.statusSnapshot()
         "health ok=true protocol=ckb-stdio-v1 activeKnowledgeVersion=${status.activeKnowledgeVersion} activeStateSource=${status.activeStateSource} restoreDiagnostic=${status.restoreDiagnostic} vectorState=${status.storage.vectorState} graphState=${status.storage.graphState}\n"
     }
 
@@ -12488,7 +12818,7 @@ private func renderCangjieCorpusStatus(status: CangjieCorpusStatus): String {
 }
 
 private func ckbRepositoryChangedDedupeKey(event: GitCodeRepositoryChangedEvent): String {
-    let identity = if (event.deliveryId != "") { event.deliveryId } else if (event.eventId != "") { event.eventId } else if (event.mergeCommitSha != "") { event.mergeCommitSha } else { joinStrings(event.changedFiles, ",") }
+    let identity = if (event.deliveryId != "") { event.deliveryId } else if (event.eventId != "") { event.eventId } else if (event.mergeCommitSha != "") { event.mergeCommitSha } else { joinStrings(ckbCanonicalRepositoryEventPaths(event.changedFiles), ",") }
     "${event.contractVersion}:${event.provider}:${event.eventType}:${event.reason}:${event.repo}:${event.ref}:${event.prNumber}:${identity}"
 }
 
@@ -12527,16 +12857,30 @@ class CkbScheduledProfileFetchResult {
     var failedCount: Int64 = 0
     var truncated: Bool = false
     var runId: String = ""
+    var eventIdentity: String = ""
     var diagnostics: ArrayList<String> = ArrayList<String>()
     var failedRequests: ArrayList<String> = ArrayList<String>()
     var successfulRequests: ArrayList<String> = ArrayList<String>()
     var records: ArrayList<CkbScheduledSourceRecord> = ArrayList<CkbScheduledSourceRecord>()
+    // P6-S3 records a confirmed delete only when both GitCode content
+    // endpoints report 404; transient fetch errors must never tombstone data.
+    var removedSourceIds: ArrayList<String> = ArrayList<String>()
+    var tombstones: ArrayList<CkbRepositoryEventTombstone> = ArrayList<CkbRepositoryEventTombstone>()
     var contentRecords: ArrayList<CkbScheduledSourceRecord> = ArrayList<CkbScheduledSourceRecord>()
     var controlEvidence: ArrayList<CkbReleaseControlEvidence> = ArrayList<CkbReleaseControlEvidence>()
     var releaseInventories: ArrayList<CkbReleaseSourceInventory> = ArrayList<CkbReleaseSourceInventory>()
     var releasePlan: CkbReleaseFullSyncPlan = CkbReleaseFullSyncPlan()
     var releaseAcquisitionKeys: ArrayList<CkbScheduledFetchRunKey> = ArrayList<CkbScheduledFetchRunKey>()
     var accounting: CkbScheduledRequestAccounting = CkbScheduledRequestAccounting()
+
+    init() {}
+}
+
+class CkbRepositoryEventTombstone {
+    var repo: String = ""
+    var ref: String = ""
+    var path: String = ""
+    var sourceId: String = ""
 
     init() {}
 }
@@ -14242,6 +14586,14 @@ private class CkbScheduledFetchCheckpoint {
     init() {}
 }
 
+public class CkbRepositoryEventRecoveryMarkerStatus {
+    var valid: Bool = false
+    var status: String = "repository_event_recovery_marker_missing"
+    var text: String = ""
+
+    init() {}
+}
+
 private class GitCodeTreeScanBudget {
     var maxPages: Int64 = 10
     var maxObjects: Int64 = 1000
@@ -15086,7 +15438,10 @@ private func ckbAppendScheduledSourceRecord(profile: CkbScheduleTaskProfile, res
     record.sourceFamily = ckbScheduledSourceFamily(request, profile)
     record.sourceSet = ckbScheduledSourceSet(request, profile)
     record.title = ckbScheduledSourceTitle(request, profile)
-    record.sourceId = "scheduled-${profile.profile}-${stableSummaryHash("${request.kind}:${request.url}:${request.repo}:${request.ref}:${fetch.bodyHash}")}"
+    record.sourceId = if (profile.profile == "cangjie_source_event_sync" &&
+        request.kind == SourceKinds.GITCODE_SOURCE && ckbSafeRepoRelativePath(request.path)) {
+        ckbRepositoryEventLogicalSourceId(request.repo, request.ref, request.path)
+    } else { "scheduled-${profile.profile}-${stableSummaryHash("${request.kind}:${request.url}:${request.repo}:${request.ref}:${fetch.bodyHash}")}" }
     result.records.add(record)
     record
 }
@@ -15314,6 +15669,11 @@ private func ingestScheduledProfileSources(kb: KnowledgeBase, store: FileKnowled
         fetch.status = "fetch_degraded_recovered"
         result.validationDiagnostics.add("fetch_degraded_recovered:requiredFailed=${readiness.requiredFailedCount}:optionalFailed=${readiness.optionalFailedCount}:recovered=${readiness.recoveredCount}")
     }
+    if (profile.profile == "cangjie_source_event_sync") {
+        return ckbIngestSourceEventTransaction(kb, store, profile, fetch, config,
+            manifest, result, progressSink, stageSink, deadlineAtMillis,
+            promotionBudgetPlan)
+    }
     if (profile.profile == "cangjie_version_branch_refresh") {
         ckbPersistScheduledResolvedMetadataArtifacts(store, profile, fetch, config, manifest, result, "version_manifest_only")
         if (!result.ok) {
@@ -15350,7 +15710,8 @@ private func ingestScheduledProfileSources(kb: KnowledgeBase, store: FileKnowled
     }
     var ingestedRecords: Int64 = 0
     for (record in fetch.records) {
-        if (record.fetch.ok) {
+        if (record.fetch.ok && !(profile.profile == "cangjie_source_event_sync" &&
+            !ckbRepositoryEventContentRecord(record))) {
             _ = kb.ingestFetchResult(record.sourceId, record.sourceType, record.fetch, record.title, TrustLevels.OFFICIAL, ReviewStates.TRUSTED)
         }
         ingestedRecords += 1
@@ -15362,7 +15723,9 @@ private func ingestScheduledProfileSources(kb: KnowledgeBase, store: FileKnowled
         return result
     }
     let candidateVersion = ckbScheduledCandidateVersion(profile, fetch)
-    let candidateRecords = kb.activeRecordSnapshotOverlay(delta)
+    let candidateRecords = if (profile.profile == "cangjie_source_event_sync") {
+        ckbRepositoryEventCandidateOverlay(kb.activeRecordSnapshot(), delta, fetch.removedSourceIds)
+    } else { kb.activeRecordSnapshotOverlay(delta) }
     let promotion = cangjiePromoteCandidateRecordsAfterValidationWithVersion(kb, store, candidateVersion, candidateRecords, progressSink: progressSink, stageSink: stageSink, deadlineAtMillis: deadlineAtMillis, budgetPlan: promotionBudgetPlan)
     ckbApplyScheduledPromotionResult(result, promotion, "candidate_validated_promoted")
     if (profile.profile == "cangjie_source_event_sync") {
@@ -15371,6 +15734,182 @@ private func ingestScheduledProfileSources(kb: KnowledgeBase, store: FileKnowled
     ckbWriteScheduledProfileStageCheckpoint(store, profile, "ingest_finished", result.status, ckbProfileIngestBudgetMillis(profile), deadlineAtMillis, "activeVersion=${result.activeVersion}|candidateVersion=${result.candidateVersion}|validationStatus=${result.validationStatus}")
     result.validationDiagnostics.add("profile_stage_checkpoint:profile=${profile.profile}|stage=ingest_finished|status=${result.status}|budgetMs=${ckbProfileIngestBudgetMillis(profile)}|deadlineAtMillis=${deadlineAtMillis}|remainingMs=${ckbRemainingMillis(deadlineAtMillis)}")
     result
+}
+
+private func ckbIngestSourceEventTransaction(kb: KnowledgeBase, store: FileKnowledgeStore,
+    profile: CkbScheduleTaskProfile, fetch: CkbScheduledProfileFetchResult,
+    config: CkbRuntimeConfig, manifest: CangjieVersionManifest,
+    result: CkbScheduledProfileIngestResult, progressSink: VectorBuildProgressSink,
+    stageSink: CkbStagedRebuildStageSink, deadlineAtMillis: Int64,
+    promotionBudgetPlan: CangjieCandidatePromotionBudgetPlan): CkbScheduledProfileIngestResult {
+    let delta = ckbScheduledSourceEventDeltaRecords(profile, fetch.records, config, manifest)
+    if (delta.size == 0 && fetch.removedSourceIds.size == 0) {
+        result.ok = false
+        result.status = "scheduled_delta_empty"
+        return result
+    }
+    let currentRaw = ArrayList<RawRecord>()
+    for (record in fetch.records) {
+        if (record.fetch.ok && ckbRepositoryEventContentRecord(record)) {
+            currentRaw.add(ckbScheduledRawRecord(profile, record, config, manifest))
+        }
+    }
+    let oldRaw = kb.rawRecordSnapshot()
+    let oldNormalized = kb.activeRecordSnapshot()
+    let removedRaw = ckbRepositoryEventRemovedRawIds(oldRaw, currentRaw,
+        fetch.removedSourceIds, fetch.tombstones)
+    let removedNormalized = ckbRepositoryEventRemovedNormalizedIds(oldNormalized,
+        delta, fetch.removedSourceIds, fetch.tombstones)
+    let candidateRaw = ckbRepositoryEventRawOverlay(oldRaw, currentRaw, removedRaw)
+    let candidateNormalized = ckbRepositoryEventCandidateOverlay(oldNormalized, delta,
+        removedNormalized)
+    let candidateVersion = ckbScheduledCandidateVersion(profile, fetch)
+    let candidateKb = kb.forkIsolatedCandidate()
+    candidateKb.replaceRawRecords(candidateRaw)
+    let acquisitionContext = ckbRepositoryEventCandidateAcquisitionContext(store,
+        profile, fetch, candidateVersion, candidateNormalized)
+    let promotion = cangjiePromoteCandidateRecordsAfterValidationWithVersion(candidateKb, store,
+        candidateVersion, candidateNormalized, progressSink: progressSink,
+        stageSink: stageSink, deadlineAtMillis: deadlineAtMillis,
+        budgetPlan: promotionBudgetPlan, acquisitionContext: acquisitionContext,
+        repositoryEventIdentity: fetch.eventIdentity)
+    ckbApplyScheduledPromotionResult(result, promotion, "candidate_validated_promoted")
+    if (!result.ok) {
+        result.validationDiagnostics.add("repository_event_transaction_rolled_back")
+    } else {
+        let committed = store.loadActiveSnapshot()
+        if (!kb.restoreActiveSnapshot(committed)) {
+            // The transaction pointer is already committed. Keep business
+            // success and require roll-forward recovery; do not falsely turn
+            // it into a rollback-safe failure after the irreversible commit.
+            result.ok = true
+            result.status = "repository_event_committed_recovery_required"
+            result.validationDiagnostics.add(result.status)
+            let pointer = store.loadActiveSnapshotPointer()
+            try {
+                store.saveRepositoryEventRecoveryMarker(fetch.eventIdentity,
+                    if (result.transactionId != "") { result.transactionId } else { pointer.txId },
+                    if (pointer.activeVersion != "") { pointer.activeVersion } else { result.activeVersion },
+                    ckbReleaseEvidenceHash("${pointer.txId}|${pointer.activeVersion}|${pointer.manifestHash}|${pointer.freshnessHash}|${pointer.coverageHash}"))
+            } catch (_: Exception) {
+                result.validationDiagnostics.add("repository_event_recovery_marker_shadow_write_failed")
+            }
+        } else {
+            let txId = store.loadActiveSnapshotPointer().txId
+            let consumed = try { store.consumeRepositoryEventRecoverySidecar(txId) } catch (_: Exception) { false }
+            if (!consumed) {
+                result.validationDiagnostics.add("repository_event_recovery_sidecar_consume_degraded")
+            }
+            result.validationDiagnostics.add("repository_event_transaction_committed:rawRemoved=${removedRaw.size}|normalizedRemoved=${removedNormalized.size}")
+        }
+    }
+    ckbPersistScheduledRepositoryEventCheckpoint(store, profile, fetch, result)
+    result
+}
+
+private func ckbRepositoryEventCandidateAcquisitionContext(store: FileKnowledgeStore,
+    profile: CkbScheduleTaskProfile, fetch: CkbScheduledProfileFetchResult,
+    candidateVersion: String, records: ArrayList<NormalizedRecord>): CkbCandidateAcquisitionContext {
+    let context = CkbCandidateAcquisitionContext()
+    context.taskId = profile.profile
+    context.candidateVersion = candidateVersion
+    context.planHash = fetch.eventIdentity
+    context.acquisitionId = "p6-event-${ckbReleaseEvidenceHash("${fetch.eventIdentity}|${candidateVersion}")}"
+    let current = ckbSchedulerReadProgressArtifact(store, "metadata/scheduler-current.ckb")
+    context.schedulerRunId = if (ckbCurrentField(current, "taskName") == profile.profile) { ckbCurrentField(current, "runId") } else { if (fetch.runId != "") { fetch.runId } else { "repository-event" } }
+    context.recordsEvidenceHash = ckbCandidateRecordsEvidenceHash(records,
+        stagedCandidateVersion: candidateVersion)
+    context
+}
+
+private func ckbRepositoryEventRawOverlay(active: ArrayList<RawRecord>,
+    current: ArrayList<RawRecord>, removed: ArrayList<String>): ArrayList<RawRecord> {
+    let replacements = HashSet<String>()
+    for (record in current) { replacements.add(record.sourceId) }
+    let removedSet = HashSet<String>(removed)
+    let out = ArrayList<RawRecord>()
+    for (record in active) {
+        if (!replacements.contains(record.sourceId) && !removedSet.contains(record.sourceId)) { out.add(record) }
+    }
+    for (record in current) { out.add(record) }
+    out
+}
+
+private func ckbRepositoryEventRemovedRawIds(active: ArrayList<RawRecord>,
+    current: ArrayList<RawRecord>, removed: ArrayList<String>,
+    tombstones: ArrayList<CkbRepositoryEventTombstone>): ArrayList<String> {
+    let out = ArrayList<String>()
+    for (item in removed) { addUniqueString(out, item) }
+    for (record in active) {
+        for (next in current) {
+            if (record.metadata.docVersion != "" && next.metadata.docVersion != "" &&
+                record.metadata.repo.toAsciiLower() == next.metadata.repo.toAsciiLower() &&
+                record.metadata.path == next.metadata.path &&
+                record.metadata.docVersion == next.metadata.docVersion &&
+                record.sourceId.startsWith("scheduled-cangjie_source_event_sync-")) {
+                addUniqueString(out, record.sourceId)
+            }
+        }
+        if (ckbRepositoryEventRecordTombstoned(record.sourceId, record.metadata,
+            tombstones)) {
+            addUniqueString(out, record.sourceId)
+        }
+    }
+    out
+}
+
+private func ckbRepositoryEventRemovedNormalizedIds(active: ArrayList<NormalizedRecord>,
+    current: ArrayList<NormalizedRecord>, removed: ArrayList<String>,
+    tombstones: ArrayList<CkbRepositoryEventTombstone>): ArrayList<String> {
+    let out = ArrayList<String>()
+    for (item in removed) { addUniqueString(out, item) }
+    for (record in active) {
+        for (next in current) {
+            if (record.metadata.docVersion != "" && next.metadata.docVersion != "" &&
+                record.metadata.repo.toAsciiLower() == next.metadata.repo.toAsciiLower() &&
+                record.metadata.path == next.metadata.path &&
+                record.metadata.docVersion == next.metadata.docVersion &&
+                record.sourceId.startsWith("scheduled-cangjie_source_event_sync-")) {
+                addUniqueString(out, record.sourceId)
+            }
+        }
+        if (ckbRepositoryEventRecordTombstoned(record.sourceId, record.metadata,
+            tombstones)) {
+            addUniqueString(out, record.sourceId)
+        }
+    }
+    out
+}
+
+private func ckbRepositoryEventRecordTombstoned(sourceId: String,
+    metadata: KnowledgeMetadata,
+    tombstones: ArrayList<CkbRepositoryEventTombstone>): Bool {
+    for (tombstone in tombstones) {
+        if (sourceId == tombstone.sourceId) {
+            return true
+        }
+        if (tombstone.ref != "" && metadata.docVersion != "" &&
+            metadata.repo.toAsciiLower() == tombstone.repo.toAsciiLower() &&
+            metadata.path == tombstone.path && metadata.docVersion == tombstone.ref) {
+            return true
+        }
+    }
+    false
+}
+
+private func ckbRepositoryEventCandidateOverlay(active: ArrayList<NormalizedRecord>,
+    delta: ArrayList<NormalizedRecord>, removedSourceIds: ArrayList<String>): ArrayList<NormalizedRecord> {
+    let replacement = HashSet<String>()
+    for (record in delta) { replacement.add(record.sourceId) }
+    let removed = HashSet<String>(removedSourceIds)
+    let out = ArrayList<NormalizedRecord>()
+    for (record in active) {
+        if (!replacement.contains(record.sourceId) && !removed.contains(record.sourceId)) {
+            out.add(record)
+        }
+    }
+    for (record in delta) { out.add(record) }
+    out
 }
 
 private func ckbIngestReleaseFullSync(kb: KnowledgeBase, store: FileKnowledgeStore, profile: CkbScheduleTaskProfile, fetch: CkbScheduledProfileFetchResult, config: CkbRuntimeConfig, manifest: CangjieVersionManifest, result: CkbScheduledProfileIngestResult, progressSink: VectorBuildProgressSink, stageSink: CkbStagedRebuildStageSink, deadlineAtMillis: Int64, promotionBudgetPlan: CangjieCandidatePromotionBudgetPlan): CkbScheduledProfileIngestResult {
@@ -17395,7 +17934,31 @@ private func ckbReleaseRequiredMetadataSourceSet(sourceSet: String, plan: CkbRel
 }
 
 private func ckbScheduledSourceEventDeltaRecords(profile: CkbScheduleTaskProfile, records: ArrayList<CkbScheduledSourceRecord>, config: CkbRuntimeConfig, manifest: CangjieVersionManifest): ArrayList<NormalizedRecord> {
-    ckbScheduledGenericDeltaRecords(profile, records, config, manifest, includeCangjieSymbols: true)
+    // Branch/tree/ref records prove acquisition only. They must never become
+    // user-visible raw/vector content for a repository event.
+    let content = ArrayList<CkbScheduledSourceRecord>()
+    for (record in records) {
+        if (ckbRepositoryEventContentRecord(record)) {
+            content.add(record)
+        }
+    }
+    let generated = ckbScheduledGenericDeltaRecords(profile, content, config, manifest,
+        includeCangjieSymbols: true)
+    let out = ArrayList<NormalizedRecord>()
+    let seen = HashSet<String>()
+    for (record in generated) {
+        let identity = "${record.sourceId}|${record.recordKind}|${ckbReleaseEvidenceHash(record.chunk)}"
+        if (!seen.contains(identity)) {
+            seen.add(identity)
+            out.add(record)
+        }
+    }
+    out
+}
+
+private func ckbRepositoryEventContentRecord(record: CkbScheduledSourceRecord): Bool {
+    let path = if (record.fetch.path != "") { record.fetch.path } else { record.request.path }
+    record.request.kind == SourceKinds.GITCODE_SOURCE && ckbSafeRepoRelativePath(path)
 }
 
 private func ckbScheduledGenericDeltaRecords(profile: CkbScheduleTaskProfile, records: ArrayList<CkbScheduledSourceRecord>, config: CkbRuntimeConfig, manifest: CangjieVersionManifest, includeCangjieSymbols!: Bool): ArrayList<NormalizedRecord> {
@@ -17578,6 +18141,27 @@ private func ckbScheduledCandidateVersion(profile: CkbScheduleTaskProfile, fetch
         }
         return "ckb-scheduled-${ckbReleaseDigestHex(digest)}-candidate"
     }
+    if (profile.profile == "cangjie_source_event_sync") {
+        let evidence = ArrayList<String>()
+        evidence.add("event=${fetch.eventIdentity}")
+        for (removed in fetch.removedSourceIds) { evidence.add("removed=${removed}") }
+        for (record in fetch.records) {
+            let path = if (record.fetch.path != "") { record.fetch.path } else { record.request.path }
+            if (record.request.kind == SourceKinds.GITCODE_SOURCE &&
+                ckbSafeRepoRelativePath(path) && record.fetch.ok) {
+                evidence.add("${record.request.repo.toAsciiLower()}|${record.fetch.ref}|${record.fetch.commit}|${path}|${ckbReleaseEvidenceHash(record.fetch.body)}")
+            }
+        }
+        let ordered = evidence.toArray()
+        sort(ordered)
+        let digest = SHA256()
+        digest.write(profile.profile.toArray())
+        for (item in ordered) {
+            digest.write("|".toArray())
+            digest.write(item.toArray())
+        }
+        return "ckb-scheduled-${ckbReleaseDigestHex(digest)}-candidate"
+    }
     let seed = StringBuilder()
     seed.append(profile.profile)
     seed.append("|")
@@ -17678,6 +18262,213 @@ private func ckbRunRepositoryChangedSourceSync(kb: KnowledgeBase, store: FileKno
     result
 }
 
+// Durable inbox events use their receipt identity and never fall back to the
+// legacy repository-wide request. A missing/truncated change list is expanded
+// from a bounded tree before any content is ingested.
+private func ckbRunRepositoryEventSourceSync(kb: KnowledgeBase, store: FileKnowledgeStore,
+    runner: SourceFetchRunner, config: CkbRuntimeConfig,
+    receipt: CkbRepositoryEventReceipt): CkbScheduledProfileFetchResult {
+    let profile = ckbSyncProfileForScheduleTask("cangjie_source_event_sync")
+    let result = CkbScheduledProfileFetchResult()
+    let builder = SourceRequestBuilder(gitCodeApiRoot: config.gitCodeBaseUrl)
+    let resolution = if (receipt.resolvedCommit != "") {
+        ckbRepositoryEventPinnedResolution(receipt)
+    } else if (ckbGitCodeLooksLikeCommit(receipt.mergeCommitSha)) {
+        ckbRepositoryEventMergeCommitResolution(receipt)
+    } else {
+        ckbResolveGitCodeRefForFetch(runner, builder, receipt.repo, receipt.ref,
+            "repository_event", "repository_event", config, accounting: result.accounting)
+    }
+    for (diagnostic in resolution.diagnostics) { result.diagnostics.add(diagnostic) }
+    if (!resolution.ok) {
+        result.ok = false
+        result.status = if (resolution.status == "") { "gitcode_ref_resolution_failed" } else { resolution.status }
+        for (failed in resolution.failedRequests) { result.failedRequests.add(failed) }
+        return result
+    }
+    if (receipt.resolvedCommit == "") {
+        let pinned = store.pinRepositoryEventResolvedCommit(receipt, resolution.resolvedCommit,
+            ckbCoreNowMillis())
+        if (!pinned.valid || pinned.resolvedCommit != resolution.resolvedCommit) {
+            result.ok = false
+            result.status = "repository_event_resolved_commit_pin_failed"
+            return result
+        }
+    }
+    result.eventIdentity = receipt.canonicalSha256
+    let manifestSource = CangjieVersionSource()
+    manifestSource.sourceRepo = receipt.repo
+    manifestSource.sourceRef = receipt.ref
+    manifestSource.sourceSet = ckbRepositoryEventSourceSet(receipt.repo)
+    manifestSource.sourceFamily = if (manifestSource.sourceSet == CangjieSourceSets.STD) { "stdlib" } else if (manifestSource.sourceSet == CangjieSourceSets.STDX) { "stdx" } else { "tools" }
+    ckbAppendScheduledManifestRefRecord(profile, result, manifestSource, resolution)
+    let paths = if (receipt.changedFilesUnavailable || receipt.changedFilesTruncated ||
+        receipt.changedFiles.size == 0) {
+        ckbRepositoryEventFallbackPaths(runner, builder, profile, result, config, receipt, resolution)
+    } else { ckbCanonicalRepositoryEventPaths(receipt.changedFiles) }
+    if (!result.ok) { return result }
+    if (paths.size == 0) {
+        result.ok = false
+        result.status = "repository_event_tree_no_content"
+        result.diagnostics.add("repository_event_acquisition_no_content:event=${ckbReleaseEvidenceHash(receipt.eventId)}")
+        return result
+    }
+    for (path in paths) {
+        if (!ckbRepositoryEventFetchContent(store, runner, builder, profile, result, config,
+            receipt, resolution, path)) {
+            result.status = if (result.status == "profile_ok") { "repository_event_content_fetch_failed" } else { result.status }
+            return result
+        }
+    }
+    let manifest = ckbRuntimeVersionManifestForStore(store, config)
+    let ingest = ingestScheduledProfileSources(kb, store, profile, result, config, manifest)
+    result.ok = result.ok && ingest.ok
+    result.status = if (result.ok) { ingest.status } else {
+        if (ingest.status != "") { ingest.status } else { result.status }
+    }
+    result
+}
+
+private func ckbRepositoryEventPinnedResolution(receipt: CkbRepositoryEventReceipt): GitCodeRefResolution {
+    let resolution = GitCodeRefResolution()
+    resolution.ok = true
+    resolution.status = "resolved_commit_pinned"
+    resolution.repo = receipt.repo
+    resolution.originalRef = receipt.ref
+    resolution.effectiveRef = receipt.resolvedCommit
+    resolution.resolvedCommit = receipt.resolvedCommit
+    resolution.sourceSet = "repository_event"
+    resolution.sourceFamily = "repository_event"
+    resolution
+}
+
+private func ckbRepositoryEventMergeCommitResolution(receipt: CkbRepositoryEventReceipt): GitCodeRefResolution {
+    let resolution = ckbRepositoryEventPinnedResolution(receipt)
+    resolution.status = "merge_commit_pinned"
+    resolution.effectiveRef = receipt.mergeCommitSha
+    resolution.resolvedCommit = receipt.mergeCommitSha
+    resolution
+}
+
+private func ckbRepositoryEventFallbackPaths(runner: SourceFetchRunner,
+    builder: SourceRequestBuilder, profile: CkbScheduleTaskProfile,
+    result: CkbScheduledProfileFetchResult, config: CkbRuntimeConfig,
+    receipt: CkbRepositoryEventReceipt, resolution: GitCodeRefResolution): ArrayList<String> {
+    let selected = ArrayList<String>()
+    let source = CangjieVersionSource()
+    source.sourceRepo = receipt.repo
+    source.sourceRef = receipt.ref
+    source.sourceSet = ckbRepositoryEventSourceSet(receipt.repo)
+    source.sourceFamily = if (source.sourceSet == CangjieSourceSets.STD) { "stdlib" } else if (source.sourceSet == CangjieSourceSets.STDX) { "stdx" } else { "tools" }
+    let selector = SourceCandidateSelector()
+    var page: Int64 = 1
+    var objects: Int64 = 0
+    var terminalPage = false
+    var treeTruncated = false
+    while (page <= 20 && objects < 2000) {
+        let request = builder.gitCodeTreePageWithFetchRef(receipt.repo, receipt.ref,
+            resolution.effectiveRef, page: page, perPage: 100)
+        let fetch = ckbFetchScheduledRequest(runner, request, config, accounting: result.accounting)
+        ckbApplyGitCodeRefResolutionToFetch(fetch, resolution)
+        if (fetch.truncated) { treeTruncated = true }
+        if (!fetch.ok) {
+            _ = ckbAppendScheduledSourceRecord(profile, result, request, fetch)
+            result.status = "repository_event_tree_fallback_failed"
+            return selected
+        }
+        let stats = ckbGitCodeTreePageStats(source, profile, fetch.body)
+        objects += stats.objectsSeen
+        for (path in selector.selectFromTreeForSource(source, profile, fetch.body, maxFiles: -1)) {
+            addUniqueString(selected, path)
+        }
+        if (stats.objectsSeen == 0) {
+            terminalPage = true
+            break
+        }
+        page += 1
+    }
+    let canonical = ckbCanonicalRepositoryEventPaths(selected)
+    if (canonical.size > 256 || !terminalPage || objects >= 2000 || treeTruncated) {
+        result.ok = false
+        result.status = "repository_event_tree_fallback_bound_reached"
+        result.diagnostics.add("repository_event_tree_fallback_bound_reached:pages=${page}|objects=${objects}|selected=${canonical.size}")
+        return ArrayList<String>()
+    }
+    result.diagnostics.add("repository_event_tree_fallback_complete:pages=${page}|objects=${objects}|selected=${canonical.size}")
+    canonical
+}
+
+private func ckbRepositoryEventSourceSet(repo: String): String {
+    if (repo.contains("cangjie_runtime")) { return CangjieSourceSets.STD }
+    if (repo.contains("cangjie_stdx")) { return CangjieSourceSets.STDX }
+    CangjieSourceSets.TOOLS
+}
+
+private func ckbRepositoryEventLogicalSourceId(repo: String, ref: String, path: String): String {
+    "repository-event-${ckbReleaseEvidenceHash("${repo.toAsciiLower()}|${ref}|${path}")}"
+}
+
+private func ckbRepositoryEventFetchContent(store: FileKnowledgeStore, runner: SourceFetchRunner,
+    builder: SourceRequestBuilder, profile: CkbScheduleTaskProfile,
+    result: CkbScheduledProfileFetchResult, config: CkbRuntimeConfig,
+    receipt: CkbRepositoryEventReceipt, resolution: GitCodeRefResolution, path: String): Bool {
+    if (!ckbSafeRepoRelativePath(path)) {
+        result.ok = false
+        result.status = "repository_event_path_invalid"
+        return false
+    }
+    let request = builder.gitCodeSourceRawWithFetchRef(receipt.repo, receipt.ref,
+        resolution.effectiveRef, path)
+    let cached = store.loadRepositoryEventFetchContent(receipt, resolution.resolvedCommit, request)
+    if (cached.ok) {
+        _ = ckbAppendScheduledSourceRecord(profile, result, request, cached)
+        result.diagnostics.add("repository_event_content_hydrated:pathHash=${ckbReleaseEvidenceHash(path)}")
+        return true
+    }
+    let raw = ckbFetchScheduledRequest(runner, request, config, accounting: result.accounting)
+    ckbApplyGitCodeRefResolutionToFetch(raw, resolution)
+    if (raw.ok) {
+        _ = ckbAppendScheduledSourceRecord(profile, result, request, raw)
+        if (!store.saveRepositoryEventFetchContent(receipt, resolution.resolvedCommit, request, raw)) {
+            result.ok = false
+            result.status = "repository_event_content_cache_write_failed"
+            return false
+        }
+        return true
+    }
+    let contents = builder.gitCodeSourceContentsWithFetchRef(receipt.repo, receipt.ref,
+        resolution.effectiveRef, path)
+    let fallback = ckbFetchScheduledRequest(runner, contents, config, accounting: result.accounting)
+    ckbApplyGitCodeRefResolutionToFetch(fallback, resolution)
+    if (!fallback.ok) {
+        if (raw.statusCode == 404 && fallback.statusCode == 404) {
+            let tombstone = CkbRepositoryEventTombstone()
+            tombstone.repo = receipt.repo
+            tombstone.ref = receipt.ref
+            tombstone.path = path
+            tombstone.sourceId = ckbRepositoryEventLogicalSourceId(receipt.repo,
+                receipt.ref, path)
+            result.tombstones.add(tombstone)
+            addUniqueString(result.removedSourceIds, tombstone.sourceId)
+            result.diagnostics.add("repository_event_tombstone:pathHash=${ckbReleaseEvidenceHash(path)}")
+            return true
+        }
+        _ = ckbAppendScheduledSourceRecord(profile, result, contents, fallback)
+        // Only an explicit double-404 represents a deletion. Transient or
+        // malformed raw/contents responses must preserve the active source and
+        // flow through the worker's retryable content-failure transition.
+        result.status = "repository_event_content_fetch_failed"
+        return false
+    }
+    _ = ckbAppendScheduledSourceRecord(profile, result, contents, fallback)
+    if (!store.saveRepositoryEventFetchContent(receipt, resolution.resolvedCommit, contents, fallback)) {
+        result.ok = false
+        result.status = "repository_event_content_cache_write_failed"
+        return false
+    }
+    true
+}
+
 // S2 owns dispatch only.  It deliberately delegates the existing acquisition
 // primitive so S3 can replace that primitive without moving HTTP ingress or
 // lease ownership again.
@@ -17697,8 +18488,8 @@ private class CkbRepositoryEventSourceSyncWorker <: CkbRepositoryEventWorker {
 
     public func execute(receipt: CkbRepositoryEventReceipt): CkbRepositoryEventWorkerResult {
         let result = CkbRepositoryEventWorkerResult()
-        let fetched = ckbRunRepositoryChangedSourceSync(this.kb, this.store, this.runner,
-            this.config, receipt.repo, receipt.ref, receipt.changedFiles)
+        let fetched = ckbRunRepositoryEventSourceSync(this.kb, this.store, this.runner,
+            this.config, receipt)
         if (fetched.ok) {
             result.state = "committed"
             result.errorCode = ""
@@ -17707,6 +18498,11 @@ private class CkbRepositoryEventSourceSyncWorker <: CkbRepositoryEventWorker {
             fetched.status.contains("network") || fetched.status.contains("gitcode_ref_resolution")) {
             result.state = "retryable"
             result.errorCode = if (fetched.status == "") { "worker_retryable" } else { fetched.status }
+        } else if (fetched.status == "repository_event_content_fetch_failed" ||
+            fetched.status == "repository_event_tree_fallback_failed" ||
+            fetched.status == "repository_event_content_cache_write_failed") {
+            result.state = "retryable"
+            result.errorCode = fetched.status
         } else {
             result.state = "failed"
             result.errorCode = if (fetched.status == "") { "worker_failed" } else { fetched.status }

@@ -1564,6 +1564,7 @@ public class CkbReleaseAcquisitionTest {
             liveKb, store, liveCandidate,
             store.loadActiveSnapshot().activeIndex,
             releaseBundle: liveBundle,
+            repositoryEventIdentity: "hsha256:p6-s3-sidecar-e2e",
             snapshotFaultInjector: CkbS5FaultInjector(CkbActiveSnapshotFaultPoints.LIVE_SHADOW))
         @Expect(rolledForward.ok, true)
         @Expect(rolledForward.activePromoted, true)
@@ -1571,6 +1572,9 @@ public class CkbReleaseAcquisitionTest {
         @Expect(rolledForward.validation.status, "candidate_validation_passed")
         @Expect(rolledForward.snapshotPointerCommitted, true)
         @Expect(rolledForward.snapshotLiveShadowConsistent, false)
+        let sidecar = store.readText("transactions/${store.loadActiveSnapshotPointer().txId}/metadata/repository-event-recovery.ckb")
+        @Expect(sidecar.contains("eventIdentity=hsha256:p6-s3-sidecar-e2e"), true)
+        @Expect(sidecar.contains("status=committed_recovery_required"), true)
         @Expect(ckbReleaseTestDiagnosticsContain(rolledForward.validation.diagnostics,
             "candidate_active_live_shadow_degraded"), true)
         let liveVectorStatus = liveKb.vectorCollectionStatus(
@@ -1585,6 +1589,39 @@ public class CkbReleaseAcquisitionTest {
         @Expect(reloadedService.cangjieCorpusFreshness().activeKnowledgeVersion,
             rolledForward.activeVersion)
         @Expect(reloadedService.queryEvidencePack("new-a-token", 5).citations.size > 0, true)
+
+        // P6-S3 recovery authority is written before COMMIT. A service that
+        // sees only that durable sidecar must advertise degradation until it
+        // restores the committed snapshot and consumes the sidecar.
+        @Expect(store.repositoryEventRecoverySidecarStatus().valid, true)
+        let pendingRecoveryService = CkbCommandLoopService(config, store,
+            sourceRunner: DisabledNetworkFetchRunner())
+        let pendingHealth = pendingRecoveryService.handleLine("health").text
+        @Expect(pendingHealth.contains("activeStateSource=persisted_degraded"), true)
+        @Expect(pendingHealth.contains("restoreDiagnostic=committed_recovery_required"), true)
+        _ = pendingRecoveryService.start()
+        @Expect(store.repositoryEventRecoverySidecarStatus().status,
+            "repository_event_recovery_marker_missing")
+
+        // A valid live shadow is never cleared when the transaction sidecar is
+        // corrupt. This is deliberately fail-closed: the next operator/startup
+        // must still see the durable recovery alarm rather than a false success.
+        let committedPointer = store.loadActiveSnapshotPointer()
+        let committedHash = ckbReleaseEvidenceHash("${committedPointer.txId}|${committedPointer.activeVersion}|${committedPointer.manifestHash}|${committedPointer.freshnessHash}|${committedPointer.coverageHash}")
+        store.saveRepositoryEventRecoveryMarker("hsha256:p6-s3-sidecar-e2e",
+            committedPointer.txId, committedPointer.activeVersion, committedHash)
+        store.writeLinesAtomically(
+            "transactions/${committedPointer.txId}/metadata/repository-event-recovery.ckb",
+            "schemaVersion=corrupt\n")
+        let corruptRecoveryService = CkbCommandLoopService(config, store,
+            sourceRunner: DisabledNetworkFetchRunner())
+        _ = corruptRecoveryService.start()
+        @Expect(store.repositoryEventRecoverySidecarStatus().status,
+            "repository_event_recovery_sidecar_invalid")
+        @Expect(store.repositoryEventRecoveryMarkerStatus().valid, true)
+        let blockedHealth = corruptRecoveryService.handleLine("health").text
+        @Expect(blockedHealth.contains("activeStateSource=persisted_degraded"), true)
+        @Expect(blockedHealth.contains("restoreDiagnostic=committed_recovery_required"), true)
     }
 }
 

@@ -3895,6 +3895,29 @@ public class KnowledgeBase {
         snapshot
     }
 
+    // Candidate promotion shares embedding/vector backends for its dedicated
+    // staging collection, but copies state directly: restoreActiveSnapshot()
+    // would rebuild the shared active vector/graph before transaction commit.
+    public func forkIsolatedCandidate(): KnowledgeBase {
+        let child = KnowledgeBase(FakeClock(this.scheduler.clock.nowMinutes),
+            this.embeddingProvider, this.vectorStore, LocalGraphStore())
+        for (record in this.rawRecords) { child.rawRecords.add(child.copyRawRecord(record)) }
+        for (record in this.normalizedRecords) { child.normalizedRecords.add(child.copyNormalizedRecord(record)) }
+        for (record in this.activeIndex) { child.activeIndex.add(child.copyNormalizedRecord(record)) }
+        child.activeKnowledgeVersion = this.activeKnowledgeVersion
+        child.candidateKnowledgeVersion = this.candidateKnowledgeVersion
+        child.failedCandidateVersion = this.failedCandidateVersion
+        child.vectorCollection = this.vectorCollection
+        child.candidateVectorCollection = this.candidateVectorCollection
+        child.storage.vectorActiveCollection = this.storage.vectorActiveCollection
+        child.storage.vectorCandidateCollection = this.storage.vectorCandidateCollection
+        child.storage.rawCount = child.rawRecords.size
+        child.storage.normalizedCount = child.normalizedRecords.size
+        child.storage.indexCount = child.activeIndex.size
+        child.activeStateSource = "candidate_isolated"
+        child
+    }
+
     private func hasRawRecord(sourceId: String): Bool {
         this.rawRecordIndex(sourceId) >= 0
     }
@@ -5285,7 +5308,7 @@ public class KnowledgeBase {
             stageSink: stageSink))
     }
 
-    public func persistActiveSnapshotUsingVectorBuild(store: FileKnowledgeStore, vectorBuild: VectorIndexBuildResult, persistVectorFile!: Bool = true, deadlineAtMillis!: Int64 = 0, stageSink!: CkbStagedRebuildStageSink = NoopCkbStagedRebuildStageSink(), releaseBundle!: CkbReleaseCommitBundle = CkbReleaseCommitBundle(), faultInjector!: CkbActiveSnapshotFaultInjector = NoopCkbActiveSnapshotFaultInjector()): CkbActiveSnapshotTransactionResult {
+    public func persistActiveSnapshotUsingVectorBuild(store: FileKnowledgeStore, vectorBuild: VectorIndexBuildResult, persistVectorFile!: Bool = true, deadlineAtMillis!: Int64 = 0, stageSink!: CkbStagedRebuildStageSink = NoopCkbStagedRebuildStageSink(), releaseBundle!: CkbReleaseCommitBundle = CkbReleaseCommitBundle(), repositoryEventIdentity!: String = "", faultInjector!: CkbActiveSnapshotFaultInjector = NoopCkbActiveSnapshotFaultInjector()): CkbActiveSnapshotTransactionResult {
         store.ensureLayout()
         let graph = this.activeGraphBuildForSnapshot(deadlineAtMillis)
         if (!graph.ok) { throw Exception(graph.diagnostic) }
@@ -5293,6 +5316,7 @@ public class KnowledgeBase {
             this.activeIndex, vectorBuild.vectorRecords, this.vectorCollection, graph,
             persistVectorFile: persistVectorFile, deadlineAtMillis: deadlineAtMillis,
             stageSink: stageSink, vectorSpool: vectorBuild.spool, releaseBundle: releaseBundle,
+            repositoryEventIdentity: repositoryEventIdentity,
             faultInjector: faultInjector))
     }
 

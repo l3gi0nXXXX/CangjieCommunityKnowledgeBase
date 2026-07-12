@@ -203,6 +203,28 @@ public class CangjieServingAdminTest {
     }
 
     @TestCase
+    public func p6S3B05CandidateBuildStageKeepsParentReadStateStable(): Unit {
+        let root = "target/p6-s3-b05-parent-read"
+        adminEnsureEmptyDir(root)
+        let kb = newOfflineKnowledgeBase()
+        let store = FileKnowledgeStore(root)
+        kb.persistActiveSnapshot(store)
+        let before = kb.status().activeKnowledgeVersion
+        let beforeChunk = kb.activeRecordSnapshot()[0].chunk
+        let sink = AdminParentReadStageSink(kb)
+
+        let promotion = cangjiePromoteCandidateRecordsAfterValidationWithVersion(kb, store,
+            "ckb-p6-s3-parent-read-candidate", cangjieF4AdminPromotionRecords(),
+            stageSink: sink)
+
+        @Expect(sink.observed, true)
+        @Expect(sink.activeVersionDuringCandidateBuild, before)
+        @Expect(sink.activeChunkDuringCandidateBuild, beforeChunk)
+        @Expect(promotion.ok, true)
+        @Expect(kb.status().activeKnowledgeVersion == before, false)
+    }
+
+    @TestCase
     public func p5S1P01CandidateAndLiveShadowStagesExposeDurationAndCounts(): Unit {
         let root = "target/p5-s1-p01-stage-duration"
         adminEnsureEmptyDir(root)
@@ -842,6 +864,25 @@ private class AdminCaptureStageSink <: CkbStagedRebuildStageSink {
         this.stages.add("${progress.stage}|${progress.status}")
         if (this.delayMillis > 0 && progress.stage == this.delayStage) {
             sleep(Duration.millisecond * this.delayMillis)
+        }
+    }
+}
+
+private class AdminParentReadStageSink <: CkbStagedRebuildStageSink {
+    private let kb: KnowledgeBase
+    public var observed: Bool = false
+    public var activeVersionDuringCandidateBuild: String = ""
+    public var activeChunkDuringCandidateBuild: String = ""
+
+    public init(kb: KnowledgeBase) {
+        this.kb = kb
+    }
+
+    public func onStagedRebuildStage(progress: CkbStagedRebuildStageProgress): Unit {
+        if (!this.observed && progress.stage == "candidate_vector_started") {
+            this.observed = true
+            this.activeVersionDuringCandidateBuild = this.kb.status().activeKnowledgeVersion
+            this.activeChunkDuringCandidateBuild = this.kb.activeRecordSnapshot()[0].chunk
         }
     }
 }

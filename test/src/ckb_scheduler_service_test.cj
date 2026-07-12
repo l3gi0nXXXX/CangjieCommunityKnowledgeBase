@@ -308,6 +308,120 @@ public class CkbSchedulerServiceF5Test {
     }
 
     @TestCase
+    public func p6S3U01CanonicalReceiptPathsAreStableAcrossOrderAndDuplicates(): Unit {
+        let root = "target/p6-s3-u01-canonical"
+        s1s2EnsureEmptyDir(root)
+        let store = FileKnowledgeStore("${root}/store")
+        let service = CkbCommandLoopService(CkbRuntimeConfig(), store)
+        let event = parseGitCodeRepositoryChangedEvent(
+            p6S1RepositoryEventJson("p6-s3-u01", ["src/z.cj", "src/中文🙂.cj", "src/a.cj", "src/z.cj"]))
+        let accepted = service.acceptGitCodeRepositoryChangedEvent(event)
+        let receipt = store.loadRepositoryEventReceipt(accepted.dedupeKey)
+
+        @Expect(accepted.status, "accepted")
+        @Expect(receipt.valid, true)
+        @Expect(receipt.changedFiles.size, 3)
+        @Expect(receipt.changedFiles[0], "src/a.cj")
+        @Expect(receipt.changedFiles[1], "src/z.cj")
+        @Expect(receipt.changedFiles[2], "src/中文🙂.cj")
+        @Expect(receipt.canonicalSha256 != "", true)
+    }
+
+    @TestCase
+    public func p6S3B01UnavailableAndTruncatedFlagsPersistWithoutLoss(): Unit {
+        let root = "target/p6-s3-b01-fallback-flags"
+        s1s2EnsureEmptyDir(root)
+        let store = FileKnowledgeStore("${root}/store")
+        let service = CkbCommandLoopService(CkbRuntimeConfig(), store)
+        let body = p6S1RepositoryEventJson("p6-s3-b01", ["src/中文🙂.cj"])
+            .replace("\"changedFiles\":[\"src/中文🙂.cj\"]", "\"changedFilesTruncated\":true,\"changedFilesUnavailable\":true,\"changedFiles\":[]")
+        let accepted = service.acceptGitCodeRepositoryChangedEvent(parseGitCodeRepositoryChangedEvent(body))
+        let receipt = store.loadRepositoryEventReceipt(accepted.dedupeKey)
+
+        @Expect(accepted.status, "accepted")
+        @Expect(receipt.valid, true)
+        @Expect(receipt.changedFilesTruncated, true)
+        @Expect(receipt.changedFilesUnavailable, true)
+        @Expect(receipt.changedFiles.size, 0)
+    }
+
+    @TestCase
+    public func p6S3N01CorruptFetchArtifactFailsClosed(): Unit {
+        let root = "target/p6-s3-n01-cache-invalid"
+        s1s2EnsureEmptyDir(root)
+        let store = FileKnowledgeStore("${root}/store")
+        let service = CkbCommandLoopService(CkbRuntimeConfig(), store)
+        let accepted = service.acceptGitCodeRepositoryChangedEvent(
+            parseGitCodeRepositoryChangedEvent(p6S1RepositoryEventJson("p6-s3-n01", ["src/a.cj"])))
+        let receipt = store.loadRepositoryEventReceipt(accepted.dedupeKey)
+        let request = SourceFetchRequest(SourceKinds.GITCODE_SOURCE, "https://example.test/a", repo: receipt.repo, ref: receipt.ref, path: "src/a.cj")
+        let fetch = SourceFetchResult()
+        fetch.ok = true
+        fetch.body = "valid 中文🙂"
+        fetch.bodyHash = stableSummaryHash(fetch.body)
+        fetch.sourceUrl = request.url
+        fetch.repo = request.repo
+        fetch.ref = request.ref
+        fetch.path = request.path
+        let saved = store.saveRepositoryEventFetchContent(receipt, "0123456789abcdef", request, fetch)
+        let cachePath = "metadata/repository-event-inbox/fetch/${ckbReleaseEvidenceHash("${receipt.eventId}|${receipt.repo.toAsciiLower()}|0123456789abcdef|src/a.cj")}.ckb"
+        File.writeTo(Path("${root}/store").join(cachePath), [UInt8(255), UInt8(254), UInt8(253)])
+        let loaded = store.loadRepositoryEventFetchContent(receipt, "0123456789abcdef", request)
+
+        @Expect(saved, true)
+        @Expect(loaded.ok, false)
+        @Expect(loaded.status, "invalid_response_encoding")
+    }
+
+    @TestCase
+    public func p6S3P01FetchContentCacheHydratesUtf8BodyWithoutNetwork(): Unit {
+        let root = "target/p6-s3-p01-cache-hydrate"
+        s1s2EnsureEmptyDir(root)
+        let store = FileKnowledgeStore("${root}/store")
+        let service = CkbCommandLoopService(CkbRuntimeConfig(), store)
+        let accepted = service.acceptGitCodeRepositoryChangedEvent(
+            parseGitCodeRepositoryChangedEvent(p6S1RepositoryEventJson("p6-s3-p01", ["src/中文🙂.cj"])))
+        let receipt = store.loadRepositoryEventReceipt(accepted.dedupeKey)
+        let request = SourceFetchRequest(SourceKinds.GITCODE_SOURCE, "https://example.test/utf8", repo: receipt.repo, ref: receipt.ref, path: "src/中文🙂.cj")
+        let fetch = SourceFetchResult()
+        fetch.ok = true
+        fetch.body = "package utf8\npublic class 中文🙂 {}\n"
+        fetch.bodyHash = stableSummaryHash(fetch.body)
+        fetch.sourceUrl = request.url
+        fetch.repo = request.repo
+        fetch.ref = request.ref
+        fetch.path = request.path
+
+        @Expect(store.saveRepositoryEventFetchContent(receipt, "abcdef0123456789", request, fetch), true)
+        let hydrated = store.loadRepositoryEventFetchContent(receipt, "abcdef0123456789", request)
+        @Expect(hydrated.ok, true)
+        @Expect(hydrated.status, "repository_event_content_cache_hit")
+        @Expect(hydrated.body, fetch.body)
+        @Expect(hydrated.path, "src/中文🙂.cj")
+    }
+
+    @TestCase
+    public func p6S3B02RecoveryMarkerIsChecksummedAndClearable(): Unit {
+        let root = "target/p6-s3-b02-recovery-marker"
+        s1s2EnsureEmptyDir(root)
+        let store = FileKnowledgeStore("${root}/store")
+        @Expect(store.repositoryEventRecoveryMarkerStatus().status,
+            "repository_event_recovery_marker_missing")
+        store.saveRepositoryEventRecoveryMarker("hsha256:event", "tx-p6-s3",
+            "ckb-active-p6-s3", "hsha256:pointer")
+        let marker = store.repositoryEventRecoveryMarkerStatus()
+        store.writeLinesAtomically("metadata/repository-event-inbox/recovery.ckb", "schemaVersion=bad\n")
+        let malformed = store.repositoryEventRecoveryMarkerStatus()
+        File.writeTo(Path("${root}/store").join("metadata/repository-event-inbox/recovery.ckb"), [UInt8(255), UInt8(254)])
+        let invalidUtf8 = store.repositoryEventRecoveryMarkerStatus()
+
+        @Expect(marker.valid, false)
+        @Expect(marker.status, "repository_event_recovery_pointer_mismatch")
+        @Expect(malformed.status, "repository_event_recovery_marker_invalid")
+        @Expect(invalidUtf8.status, "invalid_response_encoding")
+    }
+
+    @TestCase
     public func p6S1B01RuneSafePathsAndChangedFileLimitAreEnforced(): Unit {
         let unicode = parseGitCodeRepositoryChangedEvent(p6S1RepositoryEventJson("p6-s1-b01-unicode", ["src/中文🙂.cj"]))
         let atLimit = parseGitCodeRepositoryChangedEvent(p6S1RepositoryEventJson("p6-s1-b01-limit", p6S1Paths(256)))
@@ -722,6 +836,11 @@ public class CkbSchedulerServiceF5Test {
         @Expect(receipt.state, "committed")
         @Expect(receipt.attempt, 1)
         @Expect(receipt.lastErrorCode, "")
+        @Expect(receipt.resolvedCommit, f7GenericResolvedCommit())
+        @Expect(store.loadActiveSnapshotPointer().valid, true)
+        @Expect(store.repositoryEventRecoverySidecarStatus().status,
+            "repository_event_recovery_marker_missing")
+        @Expect(service.queryEvidencePack("array", 5).citations.size > 0, true)
     }
 
     @TestCase
@@ -946,6 +1065,7 @@ public class CkbSchedulerServiceF5Test {
         @Expect(receipt.state, "committed")
         @Expect(receipt.attempt, 1)
         @Expect(receipt.lastErrorCode, "")
+        @Expect(receipt.resolvedCommit, f7SlashRefResolvedCommit())
         @Expect(f7RunnerSawUrlFragment(runner, "/branches?page=1&per_page=100"), true)
         @Expect(f7RunnerSawUrlFragment(runner, "/git/trees/${f7SlashRefResolvedCommit()}?"), false)
         @Expect(f7RunnerSawUrlFragment(runner, "?ref=${f7SlashRefResolvedCommit()}"), true)

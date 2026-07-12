@@ -93,6 +93,13 @@ public class CkbRepositoryEventReceipt {
     public var updatedAtMillis: Int64 = 0
     public var repo: String = ""
     public var ref: String = ""
+    // S3 binds one durable receipt to the immutable GitCode merge and the
+    // resolved commit used by acquisition. The worker fills resolvedCommit
+    // after ref resolution and the receipt checksum covers every field.
+    public var mergeCommitSha: String = ""
+    public var resolvedCommit: String = ""
+    public var changedFilesTruncated: Bool = false
+    public var changedFilesUnavailable: Bool = false
     public var prNumber: Int64 = 0
     public var changedFiles: ArrayList<String> = ArrayList<String>()
     public var scheduledProfiles: ArrayList<String> = ArrayList<String>()
