@@ -163,11 +163,13 @@ public class CangjieServingAdminTest {
 
     @TestCase
     public func s4Pos001SmallCandidateValidationPromotesActive(): Unit {
+        let root = "target/s4-pos001-candidate-promotion"
+        adminEnsureEmptyDir(root)
         let provider = CangjieAdminEmbeddingProvider(2)
         let vectorStore = CangjieAdminTrackingVectorStore(initialCount: 3)
         let kb = KnowledgeBase(FakeClock(0), provider, vectorStore, LocalGraphStore())
         kb.configureVectorCollections("ckb_active", "ckb_candidate")
-        let store = FileKnowledgeStore("target/s4-pos001-candidate-promotion")
+        let store = FileKnowledgeStore(root)
         let records = cangjieF4AdminPromotionRecords()
 
         let promotion = cangjiePromoteCandidateRecordsAfterValidationWithVersion(kb, store, "ckb-s4-pos-candidate", records)
@@ -180,11 +182,13 @@ public class CangjieServingAdminTest {
 
     @TestCase
     public func p4U6CandidatePromotionEmitsScheduledStageSinkEvents(): Unit {
+        let root = "target/p4-u6-candidate-stage-sink"
+        adminEnsureEmptyDir(root)
         let provider = CangjieAdminEmbeddingProvider(2)
         let vectorStore = CangjieAdminTrackingVectorStore(initialCount: 3)
         let kb = KnowledgeBase(FakeClock(0), provider, vectorStore, LocalGraphStore())
         kb.configureVectorCollections("ckb_active", "ckb_candidate")
-        let store = FileKnowledgeStore("target/p4-u6-candidate-stage-sink")
+        let store = FileKnowledgeStore(root)
         let records = cangjieF4AdminPromotionRecords()
         let sink = AdminCaptureStageSink()
 
@@ -429,11 +433,13 @@ public class CangjieServingAdminTest {
 
     @TestCase
     public func f9Pos001CandidatePromotionUsesStagingVectorAndSingleEmbeddingPass(): Unit {
+        let root = "target/ckb-admin-safe-candidate-promotion"
+        adminEnsureEmptyDir(root)
         let provider = CangjieAdminEmbeddingProvider(2)
         let vectorStore = CangjieAdminTrackingVectorStore(initialCount: 3)
         let kb = KnowledgeBase(FakeClock(0), provider, vectorStore, LocalGraphStore())
         kb.configureVectorCollections("ckb_active", "ckb_candidate")
-        let store = FileKnowledgeStore("target/ckb-admin-safe-candidate-promotion")
+        let store = FileKnowledgeStore(root)
         let records = cangjieF4AdminPromotionRecords()
 
         let promotion = cangjiePromoteCandidateRecordsAfterValidationWithVersion(kb, store, "ckb-admin-safe-candidate", records)
@@ -452,13 +458,15 @@ public class CangjieServingAdminTest {
 
     @TestCase
     public func f9Bnd001CandidatePromotionKeepsStagingCollectionBoundedWhenActiveNameIsLong(): Unit {
+        let root = "target/ckb-admin-bounded-candidate-collection"
+        adminEnsureEmptyDir(root)
         let kb = KnowledgeBase(FakeClock(0))
         var longActive = "active"
         for (i in 0..12) {
             longActive += "_candidate_1234567890123_h${i}"
         }
         kb.configureVectorCollections(longActive, "ckb_candidate")
-        let store = FileKnowledgeStore("target/ckb-admin-bounded-candidate-collection")
+        let store = FileKnowledgeStore(root)
         let records = cangjieF4AdminPromotionRecords()
 
         let promotion = cangjiePromoteCandidateRecordsAfterValidationWithVersion(kb, store, "ckb-admin-long-active-candidate", records)
@@ -469,6 +477,35 @@ public class CangjieServingAdminTest {
         @Expect(activeCollection.startsWith("ckb_candidate_stage_"), true)
         @Expect(activeCollection.size < 80, true)
         @Expect(store.has("metadata/active-snapshot.manifest"), true)
+    }
+
+    @TestCase
+    public func p6S4N01UnrestoredActiveSnapshotFailsClosedDuringCandidateMaterialization(): Unit {
+        let root = "target/p6-s4-n01-unrestored-active"
+        adminEnsureEmptyDir(root)
+        let records = cangjieF4AdminPromotionRecords()
+        let store = FileKnowledgeStore(root)
+        let initial = KnowledgeBase(FakeClock(0), CangjieAdminEmbeddingProvider(2),
+            CangjieAdminTrackingVectorStore(initialCount: 3), LocalGraphStore())
+        initial.configureVectorCollections("ckb_active", "ckb_candidate")
+
+        let first = cangjiePromoteCandidateRecordsAfterValidationWithVersion(initial, store,
+            "ckb-p6-s4-n01-candidate", records)
+        let committedActive = store.loadActiveSnapshotPointer().activeVersion
+        let restartedWithoutRestore = KnowledgeBase(FakeClock(0),
+            CangjieAdminEmbeddingProvider(2), CangjieAdminTrackingVectorStore(initialCount: 3),
+            LocalGraphStore())
+        restartedWithoutRestore.configureVectorCollections("ckb_active", "ckb_candidate")
+        let second = cangjiePromoteCandidateRecordsAfterValidationWithVersion(
+            restartedWithoutRestore, store, "ckb-p6-s4-n01-candidate", records)
+
+        @Expect(first.ok, true)
+        @Expect(committedActive, first.activeVersion)
+        @Expect(second.ok, false)
+        @Expect(second.validation.status, "candidate_materialization_failed")
+        @Expect(cangjieF4AdminDiagnosticsContain(second.validation,
+            "candidate_lifecycle_active_identity_mismatch"), true)
+        @Expect(store.loadActiveSnapshotPointer().activeVersion, committedActive)
     }
 
     @TestCase
