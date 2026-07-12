@@ -1,6 +1,8 @@
 package cangjie_community_knowledge_base_test
 
-import std.collection.ArrayList
+import std.collection.{ArrayList, HashSet}
+import std.convert.Parsable
+import std.sort.*
 import std.time.DateTime
 import stdx.crypto.digest.SHA256
 
@@ -33,6 +35,104 @@ public class CangjieCandidateValidationResult {
     public init() {}
 }
 
+// The workset gives validation a stable document order that is independent of
+// source overlay insertion order. It carries indexes only: P5 remains the
+// owner of candidate records and vectors.
+public class CangjieCandidateValidationWorkset {
+    public var valid: Bool = false
+    public var documentTotal: Int64 = 0
+    public var orderedDocumentIndexes: ArrayList<Int64> = ArrayList<Int64>()
+    public var orderedPartitionIds: ArrayList<String> = ArrayList<String>()
+    public var partitionIds: ArrayList<String> = ArrayList<String>()
+    public var partitionStartCursors: ArrayList<Int64> = ArrayList<Int64>()
+    public var partitionEndCursors: ArrayList<Int64> = ArrayList<Int64>()
+    public var evidenceHash: String = ""
+
+    public init() {}
+}
+
+public func cangjieCandidateValidationPartitionId(sourceId: String): String {
+    if (sourceId.trimAscii() == "") { return "global" }
+    // ckbReleaseEvidenceHash is fixed lowercase ASCII, so this short slice is
+    // UTF-8 safe and never operates on external text directly.
+    let hash = ckbReleaseEvidenceHash(sourceId)
+    "partition-${hash[0..2]}"
+}
+
+public func buildCangjieCandidateValidationWorkset(
+    index: CangjieServingIndex): CangjieCandidateValidationWorkset {
+    let workset = CangjieCandidateValidationWorkset()
+    let partitionSet = HashSet<String>()
+    for (document in index.documents) { partitionSet.add(cangjieCandidateValidationPartitionId(document.sourceId)) }
+    let orderedPartitions = partitionSet.toArray()
+    sort(orderedPartitions)
+    for (partition in orderedPartitions) {
+        let start = workset.orderedDocumentIndexes.size
+        let bucket = ArrayList<Int64>()
+        for (offset in 0..index.documents.size) {
+            if (cangjieCandidateValidationPartitionId(index.documents[offset].sourceId) != partition) { continue }
+            bucket.add(offset)
+            var insertAt = bucket.size - 1
+            while (insertAt > 0 && cangjieCandidateValidationDocumentLess(index.documents[bucket[insertAt]], index.documents[bucket[insertAt - 1]])) {
+                let previous = bucket[insertAt - 1]
+                bucket[insertAt - 1] = bucket[insertAt]
+                bucket[insertAt] = previous
+                insertAt -= 1
+            }
+        }
+        for (offset in bucket) {
+            workset.orderedDocumentIndexes.add(offset)
+            workset.orderedPartitionIds.add(partition)
+        }
+        if (bucket.size > 0) {
+            workset.partitionIds.add(partition)
+            workset.partitionStartCursors.add(start)
+            workset.partitionEndCursors.add(workset.orderedDocumentIndexes.size)
+        }
+    }
+    if (workset.partitionStartCursors.size != workset.partitionEndCursors.size ||
+        workset.orderedDocumentIndexes.size != index.documents.size) {
+        return CangjieCandidateValidationWorkset()
+    }
+    let evidence = StringBuilder()
+    evidence.append("p6-validation-workset-v1|documents=${workset.orderedDocumentIndexes.size}")
+    for (cursor in 0..workset.orderedDocumentIndexes.size) {
+        let document = index.documents[workset.orderedDocumentIndexes[cursor]]
+        evidence.append("|${workset.orderedPartitionIds[cursor]}:${document.documentId}:${document.contentHash}")
+    }
+    workset.evidenceHash = ckbReleaseEvidenceHash(evidence.toString())
+    workset.documentTotal = workset.orderedDocumentIndexes.size
+    workset.valid = true
+    workset
+}
+
+private func cangjieCandidateValidationDocumentLess(left: CangjieServingDocument,
+    right: CangjieServingDocument): Bool {
+    if (left.documentId != right.documentId) { return left.documentId < right.documentId }
+    if (left.contentHash != right.contentHash) { return left.contentHash < right.contentHash }
+    if (left.sourceId != right.sourceId) { return left.sourceId < right.sourceId }
+    left.recordKind < right.recordKind
+}
+
+public func cangjieCandidateValidationAffectedPartitions(
+    workset: CangjieCandidateValidationWorkset,
+    changedSourceIds: ArrayList<String>): ArrayList<String> {
+    let affected = HashSet<String>()
+    for (sourceId in changedSourceIds) {
+        affected.add(cangjieCandidateValidationPartitionId(sourceId))
+    }
+    // Generated negative rules are global evidence and must be rechecked with
+    // every repository-event delta, even when no source document is global.
+    for (partition in workset.partitionIds) {
+        if (partition == "global") { affected.add(partition) }
+    }
+    let ordered = affected.toArray()
+    sort(ordered)
+    let out = ArrayList<String>()
+    for (partition in ordered) { out.add(partition) }
+    out
+}
+
 public class CangjieServingPerformanceProbe {
     public var pass: Bool = false
     public var queryCount: Int64 = 0
@@ -42,6 +142,30 @@ public class CangjieServingPerformanceProbe {
     public var diagnostics: ArrayList<String> = ArrayList<String>()
 
     public init() {}
+}
+
+// The default evaluator preserves the production validation gates.  The
+// interface exists so deterministic tests can exercise terminal parity and
+// performance failures without turning either failure into a deadline.
+public interface CangjieCandidateValidationGateEvaluator {
+    func restMcpParityPass(index: CangjieServingIndex): Bool
+    func performanceProbe(index: CangjieServingIndex,
+        queries: ArrayList<String>): CangjieServingPerformanceProbe
+}
+
+public class DefaultCangjieCandidateValidationGateEvaluator <:
+    CangjieCandidateValidationGateEvaluator {
+    public init() {}
+
+    public func restMcpParityPass(index: CangjieServingIndex): Bool {
+        cangjieCandidateRestMcpParityPass(index)
+    }
+
+    public func performanceProbe(index: CangjieServingIndex,
+        queries: ArrayList<String>): CangjieServingPerformanceProbe {
+        cangjieServingPerformanceProbe(index, queries, budget: 5,
+            p95Threshold: 10000000)
+    }
 }
 
 public class CangjieCandidatePromotionResult {
@@ -66,6 +190,12 @@ public class CangjieCandidatePromotionBudgetPlan {
     public var snapshotBudgetMillis: Int64 = 0
     public var workerSoftDeadlineAtMillis: Int64 = 0
     public var deadlineClock: CkbMillisClock = SystemCkbMillisClock()
+    // Tests may isolate validation timing from bootstrap/vector timing. The
+    // production path leaves this disabled and continues to use deadlineClock.
+    public var validationDeadlineClockOverrideEnabled: Bool = false
+    public var validationDeadlineClock: CkbMillisClock = SystemCkbMillisClock()
+    public var validationGateEvaluator: CangjieCandidateValidationGateEvaluator =
+        DefaultCangjieCandidateValidationGateEvaluator()
 
     public init() {}
 }
@@ -183,6 +313,412 @@ public func validateCandidateServingIndexWithVectorStatus(records: ArrayList<Nor
     result.ok = index.documents.size > 0 && result.coveragePass && result.transportParityPass && result.vectorHealthPass && result.performancePass
     result.status = if (result.ok) { "candidate_validation_passed" } else { "candidate_validation_failed" }
     cangjieReleaseServingIndex(index)
+    result
+}
+
+// Repository-event validation does not rebuild one monolithic serving index
+// after every deadline. It validates deterministic record partitions, commits
+// the cursor after each partition, then builds the complete index once for the
+// mandatory parity/performance gate.
+public func validateCandidateServingIndexWithDurableResume(records: ArrayList<NormalizedRecord>,
+    candidateVersion: String, vectorStatus: VectorStoreStatus, store: FileKnowledgeStore,
+    checkpoint: CkbRepositoryEventValidationCheckpoint, deadlineAtMillis!: Int64 = 0,
+    validationScope!: String = "repository_event",
+    deadlineClock!: CkbMillisClock = SystemCkbMillisClock(),
+    buildObserver!: CangjieServingIndexBuildObserver = NoopCangjieServingIndexBuildObserver(),
+    gateEvaluator!: CangjieCandidateValidationGateEvaluator =
+        DefaultCangjieCandidateValidationGateEvaluator()): CangjieCandidateValidationResult {
+    let result = CangjieCandidateValidationResult()
+    result.candidateVersion = candidateVersion
+    result.activeVersion = cangjieActiveVersionForCandidate(candidateVersion)
+    if (candidateVersion.trimAscii() == "") {
+        result.status = "candidate_version_missing"
+        return result
+    }
+    if (checkpoint.valid && checkpoint.phase == "terminal_failed") {
+        result.status = "candidate_validation_failed"
+        result.diagnostics.add("validation_checkpoint_terminal_failed")
+        return result
+    }
+    if (checkpoint.valid && checkpoint.phase == "completed") {
+        if (!cangjieCandidateCompletedVectorStatusMatches(checkpoint, vectorStatus)) {
+            return cangjieCandidateValidationTerminalVectorFailure(result, store, checkpoint,
+                vectorStatus, "validation_checkpoint_live_vector_mismatch")
+        }
+        let artifact = store.loadRepositoryEventValidationIndexArtifact(checkpoint)
+        if (!artifact.valid) {
+            result.status = "candidate_validation_checkpoint_invalid"
+            result.diagnostics.add(artifact.status)
+            return result
+        }
+        let artifactEvidence = cangjieServingDocumentEvidenceHash(artifact.documents)
+        if (checkpoint.indexArtifactChecksum != artifact.checksum ||
+            checkpoint.validationEvidenceHash != ckbReleaseEvidenceHash(artifactEvidence)) {
+            result.status = "candidate_validation_checkpoint_invalid"
+            result.diagnostics.add("validation_index_artifact_evidence_mismatch")
+            return result
+        }
+        result.exactSymbolHits = checkpoint.exactSymbolHits
+        result.docSectionHits = checkpoint.docSectionHits
+        result.toolManualHits = checkpoint.toolManualHits
+        result.negativeRuleHits = checkpoint.negativeRuleHits
+        result.moduleHits = checkpoint.moduleHits
+        result.availabilityHits = checkpoint.availabilityHits
+        result.servingDocumentCount = checkpoint.documentCursor
+        result.taskPackCoveragePass = result.exactSymbolHits > 0 &&
+            result.docSectionHits > 0 && result.toolManualHits > 0 &&
+            result.negativeRuleHits > 0
+        result.coveragePass = result.exactSymbolHits > 0 &&
+            result.docSectionHits > 0 && result.negativeRuleHits > 0
+        result.transportParityPass = checkpoint.transportParityPass
+        result.performancePass = checkpoint.performancePass
+        result.vectorHealthPass = checkpoint.vectorHealthPass
+        result.performanceP95Cost = checkpoint.performanceP95Cost
+        result.vectorState = checkpoint.vectorState
+        result.vectorDimension = checkpoint.vectorDimension
+        result.vectorDegradedReason = checkpoint.vectorDegradedReason
+        result.evidenceHash = artifactEvidence
+        result.ok = artifact.documents.size > 0 && result.coveragePass &&
+            result.taskPackCoveragePass && result.transportParityPass &&
+            result.performancePass && result.vectorHealthPass
+        result.status = if (result.ok) { "candidate_validation_passed" } else {
+            "candidate_validation_failed"
+        }
+        result.diagnostics.add("validation_gate_checkpoint_reused")
+        return result
+    }
+    if (checkpoint.valid) {
+        result.exactSymbolHits = checkpoint.exactSymbolHits
+        result.docSectionHits = checkpoint.docSectionHits
+        result.toolManualHits = checkpoint.toolManualHits
+        result.negativeRuleHits = checkpoint.negativeRuleHits
+        result.moduleHits = checkpoint.moduleHits
+        result.availabilityHits = checkpoint.availabilityHits
+        result.servingDocumentCount = checkpoint.documentCursor
+    }
+    var partitions = checkpoint.partitionIds
+    if (!checkpoint.valid) {
+        let workset = buildCangjieCandidateValidationWorksetFromRecords(records,
+            result.activeVersion)
+        if (!workset.valid || workset.partitionIds.size == 0) {
+            result.status = "candidate_validation_workset_invalid"
+            return result
+        }
+        partitions = workset.partitionIds
+        checkpoint.documentTotal = workset.documentTotal
+        checkpoint.partitionCount = partitions.size
+        checkpoint.partitionIds = partitions
+        checkpoint.worksetEvidenceHash = workset.evidenceHash
+        checkpoint.phase = "validation_documents"
+        cangjieCandidateValidationCheckpointCounters(checkpoint, result, partitions)
+        if (!cangjieCandidateValidationSaveCheckpoint(store, checkpoint, result)) { return result }
+    }
+    if (checkpoint.documentCursor > checkpoint.documentTotal ||
+        checkpoint.partitionCursor > partitions.size || checkpoint.partitionCount != partitions.size ||
+        checkpoint.worksetEvidenceHash == "") {
+        result.status = "candidate_validation_checkpoint_invalid"
+        result.diagnostics.add("validation_partition_cursor_out_of_range")
+        return result
+    }
+    result.diagnostics.add("validation_resume_cursor:${checkpoint.partitionCursor}")
+    for (partitionCursor in checkpoint.partitionCursor..partitions.size) {
+        let partition = partitions[partitionCursor]
+        if (cangjieCandidateValidationDeadlineWithClock(result, validationScope, "partition_before",
+            deadlineClock,
+            deadlineAtMillis, result.servingDocumentCount, checkpoint.documentTotal)) {
+            return cangjieCandidateValidationRecoverable(result, store, checkpoint, partition,
+                partitionCursor, partitions)
+        }
+        let partitionRecords = cangjieCandidateValidationPartitionRecords(records, partition)
+        let index = buildCangjieServingIndex(partitionRecords,
+            activeKnowledgeVersion: result.activeVersion, deadlineAtMillis: deadlineAtMillis,
+            deadlineClock: deadlineClock, buildObserver: buildObserver)
+        if (cangjieServingIndexDeadlineDiagnostic(index) != "") {
+            cangjieReleaseServingIndex(index)
+            result.status = "candidate_validation_timeout"
+            return cangjieCandidateValidationRecoverable(result, store, checkpoint, partition,
+                partitionCursor, partitions)
+        }
+        let processed = cangjieCandidateAccumulatePartitionCoverage(index, result,
+            partition == "global")
+        cangjieReleaseServingIndex(index)
+        result.servingDocumentCount += processed
+        checkpoint.phase = "validation_documents"
+        checkpoint.partitionCursor = partitionCursor + 1
+        checkpoint.documentCursor = result.servingDocumentCount
+        checkpoint.currentPartition = partition
+        cangjieCandidateValidationCheckpointCounters(checkpoint, result, partitions)
+        if (!cangjieCandidateValidationSaveCheckpoint(store, checkpoint, result)) { return result }
+        if (cangjieCandidateValidationDeadlineWithClock(result, validationScope, "partition_after",
+            deadlineClock,
+            deadlineAtMillis, result.servingDocumentCount, checkpoint.documentTotal)) {
+            return cangjieCandidateValidationRecoverable(result, store, checkpoint, partition,
+                partitionCursor + 1, partitions)
+        }
+    }
+    result.taskPackCoveragePass = result.exactSymbolHits > 0 && result.docSectionHits > 0 &&
+        result.toolManualHits > 0 && result.negativeRuleHits > 0
+    result.coveragePass = result.exactSymbolHits > 0 && result.docSectionHits > 0 &&
+        result.negativeRuleHits > 0
+    if (checkpoint.phase == "not_started" || checkpoint.phase == "validation_documents") {
+        checkpoint.phase = "validation_gate"
+        checkpoint.currentPartition = "index_pending"
+        cangjieCandidateValidationCheckpointCounters(checkpoint, result, partitions)
+        if (!cangjieCandidateValidationSaveCheckpoint(store, checkpoint, result)) { return result }
+    }
+    if (cangjieCandidateValidationDeadlineWithClock(result, validationScope, "final_gate_before",
+        deadlineClock,
+        deadlineAtMillis, result.servingDocumentCount, checkpoint.documentTotal)) {
+        return cangjieCandidateValidationRecoverable(result, store, checkpoint, "final_gate",
+            checkpoint.partitionCursor, partitions)
+    }
+    var completeIndex = CangjieServingIndex()
+    if (checkpoint.currentPartition == "index_ready" ||
+        checkpoint.currentPartition == "parity_completed") {
+        let artifact = store.loadRepositoryEventValidationIndexArtifact(checkpoint)
+        if (!artifact.valid) {
+            result.status = "candidate_validation_checkpoint_invalid"
+            result.diagnostics.add(artifact.status)
+            return result
+        }
+        let artifactEvidence = cangjieServingDocumentEvidenceHash(artifact.documents)
+        if (checkpoint.indexArtifactChecksum != artifact.checksum ||
+            checkpoint.validationEvidenceHash != ckbReleaseEvidenceHash(artifactEvidence)) {
+            result.status = "candidate_validation_checkpoint_invalid"
+            result.diagnostics.add("validation_index_artifact_evidence_mismatch")
+            return result
+        }
+        completeIndex = cangjieServingIndexFromDurableDocuments(artifact.documents,
+            result.activeVersion)
+    } else {
+        completeIndex = buildCangjieServingIndex(records, activeKnowledgeVersion: result.activeVersion,
+            deadlineAtMillis: deadlineAtMillis, deadlineClock: deadlineClock,
+            buildObserver: buildObserver)
+        if (cangjieServingIndexDeadlineDiagnostic(completeIndex) != "") {
+            cangjieReleaseServingIndex(completeIndex)
+            result.status = "candidate_validation_timeout"
+            return cangjieCandidateValidationRecoverable(result, store, checkpoint, "final_gate",
+                checkpoint.partitionCursor, partitions)
+        }
+        let artifact = store.saveRepositoryEventValidationIndexArtifact(checkpoint, completeIndex)
+        if (!artifact.valid) {
+            cangjieReleaseServingIndex(completeIndex)
+            result.status = "candidate_validation_checkpoint_write_failed"
+            result.diagnostics.add(artifact.status)
+            return result
+        }
+        checkpoint.currentPartition = "index_ready"
+        checkpoint.indexArtifactChecksum = artifact.checksum
+        checkpoint.validationEvidenceHash = ckbReleaseEvidenceHash(
+            cangjieServingDocumentEvidenceHash(completeIndex.documents))
+        if (!cangjieCandidateValidationSaveCheckpoint(store, checkpoint, result)) {
+            cangjieReleaseServingIndex(completeIndex)
+            return result
+        }
+    }
+    if (cangjieCandidateValidationDeadlineWithClock(result, validationScope, "parity_before",
+        deadlineClock,
+        deadlineAtMillis, result.servingDocumentCount, checkpoint.documentTotal)) {
+        cangjieReleaseServingIndex(completeIndex)
+        return cangjieCandidateValidationRecoverable(result, store, checkpoint, "final_gate",
+            checkpoint.partitionCursor, partitions)
+    }
+    if (checkpoint.currentPartition == "parity_completed") {
+        result.transportParityPass = checkpoint.transportParityPass
+    } else {
+        result.transportParityPass = gateEvaluator.restMcpParityPass(completeIndex)
+        checkpoint.transportParityPass = result.transportParityPass
+        checkpoint.currentPartition = "parity_completed"
+        if (!cangjieCandidateValidationSaveCheckpoint(store, checkpoint, result)) {
+            cangjieReleaseServingIndex(completeIndex)
+            return result
+        }
+    }
+    if (cangjieCandidateValidationDeadlineWithClock(result, validationScope, "performance_before",
+        deadlineClock,
+        deadlineAtMillis, result.servingDocumentCount, checkpoint.documentTotal)) {
+        cangjieReleaseServingIndex(completeIndex)
+        return cangjieCandidateValidationRecoverable(result, store, checkpoint, "final_gate",
+            checkpoint.partitionCursor, partitions)
+    }
+    let performance = gateEvaluator.performanceProbe(completeIndex,
+        cangjieCandidatePerformanceQueries(completeIndex))
+    result.performancePass = performance.pass
+    result.performanceP95Cost = performance.p95Cost
+    result.vectorState = vectorStatus.state
+    result.vectorDimension = vectorStatus.dimension
+    result.vectorDegradedReason = vectorStatus.degradedReason
+    result.vectorHealthPass = cangjieCandidateVectorHealthPass(vectorStatus)
+    result.evidenceHash = cangjieServingDocumentEvidenceHash(completeIndex.documents)
+    result.servingIndexDiagnostic = cangjieServingIndexDiagnostics(completeIndex)
+    result.ok = completeIndex.documents.size > 0 && result.coveragePass &&
+        result.transportParityPass && result.vectorHealthPass && result.performancePass
+    result.status = if (result.ok) { "candidate_validation_passed" } else { "candidate_validation_failed" }
+    cangjieReleaseServingIndex(completeIndex)
+    checkpoint.phase = if (result.ok) { "completed" } else { "terminal_failed" }
+    checkpoint.currentPartition = "final_gate"
+    cangjieCandidateValidationCheckpointCounters(checkpoint, result, partitions)
+    checkpoint.validationEvidenceHash = ckbReleaseEvidenceHash(result.evidenceHash)
+    checkpoint.performancePass = result.performancePass
+    checkpoint.performanceP95Cost = result.performanceP95Cost
+    checkpoint.performanceEvidenceHash = ckbReleaseEvidenceHash(performance.evidenceHash)
+    checkpoint.vectorHealthPass = result.vectorHealthPass
+    checkpoint.vectorState = result.vectorState
+    checkpoint.vectorDimension = result.vectorDimension
+    checkpoint.vectorCount = vectorStatus.count
+    checkpoint.vectorCollection = vectorStatus.collection
+    checkpoint.vectorStatusEvidenceHash = cangjieCandidateVectorStatusEvidenceHash(vectorStatus)
+    checkpoint.vectorDegradedReason = result.vectorDegradedReason
+    _ = cangjieCandidateValidationSaveCheckpoint(store, checkpoint, result)
+    result
+}
+
+private func cangjieCandidateVectorStatusEvidenceHash(status: VectorStoreStatus): String {
+    ckbReleaseEvidenceHash("${status.state}|${status.dimension}|${status.count}|${status.collection}|${status.degradedReason}")
+}
+
+private func cangjieCandidateCompletedVectorStatusMatches(
+    checkpoint: CkbRepositoryEventValidationCheckpoint,
+    live: VectorStoreStatus): Bool {
+    checkpoint.vectorHealthPass && cangjieCandidateVectorHealthPass(live) &&
+        checkpoint.vectorState != "" && checkpoint.vectorCollection != "" &&
+        checkpoint.vectorStatusEvidenceHash != "" &&
+        checkpoint.vectorState == live.state &&
+        checkpoint.vectorDimension == live.dimension &&
+        checkpoint.vectorCount == live.count &&
+        checkpoint.vectorCollection == live.collection &&
+        checkpoint.vectorStatusEvidenceHash == cangjieCandidateVectorStatusEvidenceHash(live)
+}
+
+private func cangjieCandidateValidationTerminalVectorFailure(
+    result: CangjieCandidateValidationResult, store: FileKnowledgeStore,
+    checkpoint: CkbRepositoryEventValidationCheckpoint, live: VectorStoreStatus,
+    diagnostic: String): CangjieCandidateValidationResult {
+    result.ok = false
+    result.status = "candidate_vector_failed"
+    result.vectorHealthPass = false
+    result.vectorState = live.state
+    result.vectorDimension = live.dimension
+    result.vectorDegradedReason = cangjieCandidateVectorDiagnostic(live)
+    result.diagnostics.add("candidate_vector_failed:${diagnostic}")
+    checkpoint.phase = "terminal_failed"
+    checkpoint.currentPartition = "final_gate"
+    checkpoint.vectorHealthPass = false
+    checkpoint.vectorState = live.state
+    checkpoint.vectorDimension = live.dimension
+    checkpoint.vectorCount = live.count
+    checkpoint.vectorCollection = live.collection
+    checkpoint.vectorStatusEvidenceHash = cangjieCandidateVectorStatusEvidenceHash(live)
+    checkpoint.vectorDegradedReason = live.degradedReason
+    _ = cangjieCandidateValidationSaveCheckpoint(store, checkpoint, result)
+    result
+}
+
+private func cangjieCandidateValidationDeadlineWithClock(result: CangjieCandidateValidationResult,
+    validationScope: String, stage: String, clock: CkbMillisClock, deadlineAtMillis: Int64,
+    completed: Int64, total: Int64): Bool {
+    if (deadlineAtMillis <= 0 || clock.nowMillis() < deadlineAtMillis) { return false }
+    result.ok = false
+    result.status = "candidate_validation_timeout"
+    result.diagnostics.add("deadline_exceeded:candidate_validation_${stage}:scope=${validationScope}:completed=${completed}:total=${total}")
+    true
+}
+
+private func cangjieCandidateValidationPartitionRecords(records: ArrayList<NormalizedRecord>,
+    partition: String): ArrayList<NormalizedRecord> {
+    let out = ArrayList<NormalizedRecord>()
+    if (partition == "global") { return out }
+    for (record in records) {
+        if (cangjieCandidateValidationPartitionId(record.sourceId) == partition) { out.add(record) }
+    }
+    out
+}
+
+private func cangjieCandidateAccumulatePartitionCoverage(index: CangjieServingIndex,
+    result: CangjieCandidateValidationResult, includeGlobal: Bool): Int64 {
+    var processed: Int64 = 0
+    for (doc in index.documents) {
+        if (doc.sourceId.trimAscii() == "" && !includeGlobal) { continue }
+        if (doc.rejected) { processed += 1; continue }
+        if (doc.versionResolutionId == "") { result.legacyVersionGapCount += 1 }
+        if (doc.recordKind == CangjieServingRecordKinds.SYMBOL_CARD && doc.symbolKey.trimAscii() != "") {
+            result.exactSymbolHits += 1
+        } else if (doc.recordKind == CangjieServingRecordKinds.DOC_SECTION && cangjieCandidateDocSectionCovered(doc)) {
+            result.docSectionHits += 1
+        } else if (doc.recordKind == CangjieTypedRecordKinds.TOOL_MANUAL && cangjieCandidateToolSelector(doc).trimAscii() != "") {
+            result.toolManualHits += 1
+        } else if (doc.recordKind == CangjieServingRecordKinds.NEGATIVE_RULE && cangjieCandidateNegativeRuleCovered(doc)) {
+            result.negativeRuleHits += 1
+        }
+        if (doc.module.trimAscii() != "") { result.moduleHits += 1 }
+        if ((doc.recordKind == CangjieTypedRecordKinds.AVAILABILITY ||
+            doc.recordKind == CangjieServingRecordKinds.SYMBOL_CARD) &&
+            cangjieCandidateAvailabilitySelector(doc) != "") { result.availabilityHits += 1 }
+        processed += 1
+    }
+    processed
+}
+
+private func cangjieCandidateValidationCheckpointCounters(
+    checkpoint: CkbRepositoryEventValidationCheckpoint, result: CangjieCandidateValidationResult,
+    partitions: ArrayList<String>): Unit {
+    checkpoint.exactSymbolHits = result.exactSymbolHits
+    checkpoint.docSectionHits = result.docSectionHits
+    checkpoint.toolManualHits = result.toolManualHits
+    checkpoint.negativeRuleHits = result.negativeRuleHits
+    checkpoint.moduleHits = result.moduleHits
+    checkpoint.availabilityHits = result.availabilityHits
+    checkpoint.completedPartitionsEvidenceHash = ckbReleaseEvidenceHash(
+        "${checkpoint.recordsEvidenceHash}|${checkpoint.partitionCursor}|${ckbScheduledFetchPathsJson(partitions)}")
+    // Once the durable index artifact exists this field is its immutable
+    // document-evidence binding.  Recoverable gate checkpoints may update
+    // counters, but must not overwrite that binding before artifact resume.
+    if (checkpoint.indexArtifactChecksum == "") {
+        checkpoint.validationEvidenceHash = ckbReleaseEvidenceHash(
+            "${checkpoint.completedPartitionsEvidenceHash}|${checkpoint.documentCursor}|${checkpoint.exactSymbolHits}|${checkpoint.docSectionHits}|${checkpoint.toolManualHits}|${checkpoint.negativeRuleHits}|${checkpoint.moduleHits}|${checkpoint.availabilityHits}")
+    }
+}
+
+private func cangjieCandidateValidationSaveCheckpoint(store: FileKnowledgeStore,
+    checkpoint: CkbRepositoryEventValidationCheckpoint,
+    result: CangjieCandidateValidationResult): Bool {
+    try {
+        store.saveRepositoryEventValidationCheckpoint(checkpoint)
+        true
+    } catch (_: Exception) {
+        result.ok = false
+        result.status = "candidate_validation_checkpoint_write_failed"
+        result.diagnostics.add("candidate_validation_checkpoint_write_failed")
+        false
+    }
+}
+
+private func cangjieCandidateValidationRecoverable(result: CangjieCandidateValidationResult,
+    store: FileKnowledgeStore, checkpoint: CkbRepositoryEventValidationCheckpoint,
+    partition: String, partitionCursor: Int64,
+    partitions: ArrayList<String>): CangjieCandidateValidationResult {
+    let preserveGateSubphase = partition == "final_gate" &&
+        checkpoint.indexArtifactChecksum != ""
+    if (preserveGateSubphase && checkpoint.currentPartition != "index_ready" &&
+        checkpoint.currentPartition != "parity_completed") {
+        result.ok = false
+        result.status = "candidate_validation_checkpoint_invalid"
+        result.diagnostics.add("validation_gate_subphase_missing")
+        return result
+    }
+    checkpoint.phase = if (partition == "final_gate") { "validation_gate" } else { "validation_documents" }
+    // An artifact-bearing final gate is resumable only from one of its two
+    // durable subphases. Never overwrite it with final_gate on a deadline.
+    if (!preserveGateSubphase) {
+        checkpoint.currentPartition = partition
+    }
+    checkpoint.partitionCursor = partitionCursor
+    checkpoint.documentCursor = result.servingDocumentCount
+    cangjieCandidateValidationCheckpointCounters(checkpoint, result, partitions)
+    if (!cangjieCandidateValidationSaveCheckpoint(store, checkpoint, result)) { return result }
+    result.ok = false
+    result.status = "candidate_validation_recoverable"
+    result.diagnostics.add("candidate_validation_recoverable:partition=${partition}:cursor=${partitionCursor}")
     result
 }
 
@@ -349,6 +885,9 @@ private func cangjiePromoteStagedCandidateAfterValidation(kb: KnowledgeBase, sto
         if (cangjieCandidateHasDeadlineDiagnostic(vectorBuild.diagnostic)) {
             result.validation.status = cangjieCandidateTimeoutStatus(budgetPlan, "candidate_vector_deadline_exceeded")
         }
+        cangjieCandidatePersistTerminalVectorFailureCheckpoint(store, acquisitionContext,
+            repositoryEventIdentity, kb.status().activeKnowledgeVersion, vectorBuild,
+            vectorStatus, result.validation)
         kb.markCandidateValidationFailed(stagedCandidateVersion)
         kb.persistCandidateSnapshot(store)
         cangjieCandidateEmitStage(stageSink, "candidate_validation_finished", result.validation.status, vectorDeadlineAtMillis, "candidate=${stagedCandidateVersion}|ok=false|vectorReason=${result.validation.vectorDegradedReason}", candidateKnowledgeVersion: stagedCandidateVersion, activeKnowledgeVersion: kb.status().activeKnowledgeVersion)
@@ -358,12 +897,46 @@ private func cangjiePromoteStagedCandidateAfterValidation(kb: KnowledgeBase, sto
     let validationDeadlineAtMillis = cangjieCandidateStageDeadline(budgetPlan, budgetPlan.validationBudgetMillis, deadlineAtMillis)
     let validationStartedAtMillis = ckbCoreNowMillis()
     cangjieCandidateEmitStage(stageSink, "candidate_validation_started", "running", validationDeadlineAtMillis, "candidate=${stagedCandidateVersion}|records=${candidateRecords.size}", itemCount: candidateRecords.size, candidateKnowledgeVersion: stagedCandidateVersion, activeKnowledgeVersion: kb.status().activeKnowledgeVersion)
-    result.validation = validateCandidateServingIndexWithVectorStatus(candidateRecords, stagedCandidateVersion, vectorStatus, forceFailure: false, deadlineAtMillis: validationDeadlineAtMillis, validationScope: "candidate_promotion")
+    if (acquisitionContext.valid() && repositoryEventIdentity != "") {
+        let expectedCheckpoint = cangjieRepositoryEventValidationCheckpoint(acquisitionContext,
+            repositoryEventIdentity, kb.status().activeKnowledgeVersion, vectorBuild)
+        let loadedCheckpoint = store.loadRepositoryEventValidationCheckpoint(expectedCheckpoint)
+        if (loadedCheckpoint.status != "not_found" && !loadedCheckpoint.valid) {
+            result.validation.status = "candidate_validation_checkpoint_invalid"
+            result.validation.candidateVersion = stagedCandidateVersion
+            result.validation.diagnostics.add(loadedCheckpoint.status)
+        } else if (loadedCheckpoint.valid &&
+            loadedCheckpoint.vectorEvidenceHash != expectedCheckpoint.vectorEvidenceHash) {
+            result.validation.status = "candidate_validation_checkpoint_invalid"
+            result.validation.candidateVersion = stagedCandidateVersion
+            result.validation.diagnostics.add("validation_checkpoint_vector_evidence_mismatch")
+        } else {
+            result.validation = validateCandidateServingIndexWithDurableResume(candidateRecords,
+                stagedCandidateVersion, vectorStatus, store,
+                if (loadedCheckpoint.valid) { loadedCheckpoint } else { expectedCheckpoint },
+                deadlineAtMillis: validationDeadlineAtMillis,
+                validationScope: "repository_event_candidate_promotion",
+                deadlineClock: if (budgetPlan.validationDeadlineClockOverrideEnabled) {
+                    budgetPlan.validationDeadlineClock
+                } else { budgetPlan.deadlineClock },
+                gateEvaluator: budgetPlan.validationGateEvaluator)
+        }
+    } else {
+        result.validation = validateCandidateServingIndexWithVectorStatus(candidateRecords,
+            stagedCandidateVersion, vectorStatus, forceFailure: false,
+            deadlineAtMillis: validationDeadlineAtMillis,
+            validationScope: "candidate_promotion")
+    }
     if (result.validation.status == "candidate_validation_timeout" && budgetPlan.segmented) {
         result.validation.status = "candidate_validation_deadline_exceeded"
     }
     cangjieCandidateEmitStage(stageSink, "candidate_validation_finished", result.validation.status, validationDeadlineAtMillis, "candidate=${stagedCandidateVersion}|ok=${result.validation.ok}|documents=${result.validation.servingDocumentCount}", durationMillis: ckbCoreNowMillis() - validationStartedAtMillis, itemCount: result.validation.servingDocumentCount, candidateKnowledgeVersion: stagedCandidateVersion, activeKnowledgeVersion: kb.status().activeKnowledgeVersion)
     if (!result.validation.ok) {
+        if (result.validation.status == "candidate_validation_recoverable") {
+            cleanupRequired = false
+            result.activeVersion = kb.status().activeKnowledgeVersion
+            return result
+        }
         kb.markCandidateValidationFailed(stagedCandidateVersion)
         kb.persistCandidateSnapshot(store)
         result.activeVersion = kb.status().activeKnowledgeVersion
@@ -543,6 +1116,61 @@ private func cangjiePromoteStagedCandidateAfterValidation(kb: KnowledgeBase, sto
             try { cangjieDeleteCandidateStaging(kb, store, stagingCollection, collectionOwner, result.validation) } catch (_: Exception) { result.validation.diagnostics.add("candidate_staging_cleanup_degraded:${ckbReleaseEvidenceHash(stagingCollection)}") }
         }
     }
+}
+
+private func cangjieCandidatePersistTerminalVectorFailureCheckpoint(
+    store: FileKnowledgeStore, context: CkbCandidateAcquisitionContext,
+    repositoryEventIdentity: String, activeBaseVersion: String,
+    vectorBuild: VectorIndexBuildResult, vectorStatus: VectorStoreStatus,
+    validation: CangjieCandidateValidationResult): Unit {
+    if (!context.valid() || repositoryEventIdentity == "") { return }
+    let checkpoint = cangjieRepositoryEventValidationCheckpoint(context,
+        repositoryEventIdentity, activeBaseVersion, vectorBuild)
+    checkpoint.phase = "terminal_failed"
+    checkpoint.currentPartition = "vector_failed"
+    checkpoint.documentTotal = vectorBuild.vectorCount
+    checkpoint.partitionCount = 1
+    checkpoint.partitionIds.add("global")
+    checkpoint.worksetEvidenceHash = ckbReleaseEvidenceHash(
+        "${context.recordsEvidenceHash}|vector_failed")
+    checkpoint.completedPartitionsEvidenceHash = ckbReleaseEvidenceHash(
+        "${context.recordsEvidenceHash}|vector_failed|0")
+    checkpoint.validationEvidenceHash = ckbReleaseEvidenceHash(
+        "${checkpoint.completedPartitionsEvidenceHash}|${validation.status}")
+    checkpoint.vectorHealthPass = false
+    checkpoint.vectorState = vectorStatus.state
+    checkpoint.vectorDimension = vectorStatus.dimension
+    checkpoint.vectorCount = vectorStatus.count
+    checkpoint.vectorCollection = vectorStatus.collection
+    checkpoint.vectorStatusEvidenceHash = cangjieCandidateVectorStatusEvidenceHash(vectorStatus)
+    checkpoint.vectorDegradedReason = vectorStatus.degradedReason
+    _ = cangjieCandidateValidationSaveCheckpoint(store, checkpoint, validation)
+}
+
+private func cangjieRepositoryEventValidationCheckpoint(
+    context: CkbCandidateAcquisitionContext, repositoryEventIdentity: String,
+    activeBaseVersion: String, vectorBuild: VectorIndexBuildResult): CkbRepositoryEventValidationCheckpoint {
+    let checkpoint = CkbRepositoryEventValidationCheckpoint()
+    checkpoint.eventId = repositoryEventIdentity
+    checkpoint.runKey = context.planHash
+    checkpoint.acquisitionId = context.acquisitionId
+    checkpoint.planHash = context.planHash
+    checkpoint.recordsEvidenceHash = context.recordsEvidenceHash
+    checkpoint.candidateVersion = context.candidateVersion
+    checkpoint.activeBaseVersion = activeBaseVersion
+    checkpoint.phase = "validation_documents"
+    checkpoint.deltaEvidenceHash = context.recordsEvidenceHash
+    checkpoint.overlayEvidenceHash = context.recordsEvidenceHash
+    checkpoint.vectorEvidenceHash = if (vectorBuild.spool.evidenceHash != "") {
+        vectorBuild.spool.evidenceHash
+    } else {
+        ckbReleaseEvidenceHash("${context.acquisitionId}|${context.recordsEvidenceHash}|${vectorBuild.vectorCount}")
+    }
+    checkpoint.completedPartitionsEvidenceHash = ckbReleaseEvidenceHash(
+        "${context.recordsEvidenceHash}|partitions:pending")
+    checkpoint.validationEvidenceHash = ckbReleaseEvidenceHash(
+        "${checkpoint.completedPartitionsEvidenceHash}|coverage:pending")
+    checkpoint
 }
 
 private func cangjieRestoreCandidateRollback(kb: KnowledgeBase,

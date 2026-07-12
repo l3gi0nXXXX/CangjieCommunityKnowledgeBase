@@ -6,8 +6,448 @@ import std.io.*
 import std.process.*
 import std.unittest.*
 
+private class P6S4SourceEventDeadlineClock <: CkbMillisClock {
+    private var calls: Int64 = 0
+    private let expireAtCall: Int64
+    private let baseMillis: Int64
+
+    public init(expireAtCall: Int64) {
+        this.expireAtCall = expireAtCall
+        this.baseMillis = ckbCoreNowMillis()
+    }
+
+    public func nowMillis(): Int64 {
+        this.calls += 1
+        if (this.calls == this.expireAtCall) { return this.baseMillis + 60000 }
+        this.baseMillis
+    }
+}
+
+private class P6S4NeverExpiredClock <: CkbMillisClock {
+    public init() {}
+    public func nowMillis(): Int64 { 0 }
+}
+
+private class P6S4RepositoryEventClock <: CkbMillisClock {
+    private var offsetMillis: Int64 = 0
+
+    public init() {}
+
+    public func advance(millis: Int64): Unit {
+        this.offsetMillis += millis
+    }
+
+    public func nowMillis(): Int64 {
+        ckbCoreNowMillis() + this.offsetMillis
+    }
+}
+
+private class P6S4FailingGateEvaluator <: CangjieCandidateValidationGateEvaluator {
+    private let failedGate: String
+
+    public init(failedGate: String) {
+        this.failedGate = failedGate
+    }
+
+    public func restMcpParityPass(index: CangjieServingIndex): Bool {
+        this.failedGate != "parity"
+    }
+
+    public func performanceProbe(index: CangjieServingIndex,
+        queries: ArrayList<String>): CangjieServingPerformanceProbe {
+        let probe = CangjieServingPerformanceProbe()
+        probe.queryCount = queries.size
+        probe.p95Cost = 1
+        probe.threshold = 10000000
+        probe.pass = this.failedGate != "performance"
+        probe.evidenceHash = ckbReleaseEvidenceHash(
+            "p6-s4-gate=${this.failedGate}|documents=${index.documents.size}|queries=${queries.size}")
+        probe
+    }
+}
+
 @Test
 public class CkbP6SourceEventAcquisitionTest {
+    @TestCase
+    public func p6S4E01SourceEventValidationRecoversWithoutRefetchingArtifacts(): Unit {
+        let root = "target/p6-s4-e01-source-event-recovery"
+        p6S3EnsureEmpty(root)
+        let config = CkbRuntimeConfig()
+        config.networkEnabled = true
+        let store = FileKnowledgeStore("${root}/store")
+        let baseline = newOfflineKnowledgeBase()
+        _ = baseline.persistActiveSnapshot(store)
+        let beforePointer = store.loadActiveSnapshotPointer()
+        store.saveCangjieVersionManifest(defaultCangjieVersionManifest())
+        let runner = P6S3PathResponseRunner("content", "P6S4ResumeMarker")
+        let firstPlan = CangjieCandidatePromotionBudgetPlan()
+        firstPlan.segmented = true
+        firstPlan.validationBudgetMillis = 1
+        firstPlan.workerSoftDeadlineAtMillis = ckbCoreNowMillis() + 60000
+        firstPlan.validationDeadlineClockOverrideEnabled = true
+        firstPlan.validationDeadlineClock = P6S4SourceEventDeadlineClock(2)
+        let eventClock = P6S4RepositoryEventClock()
+        let firstService = CkbCommandLoopService(config, store, sourceRunner: runner,
+            sourceEventPromotionBudgetPlan: firstPlan,
+            repositoryEventNowClock: eventClock)
+        _ = firstService.start()
+        let accepted = firstService.acceptGitCodeRepositoryChangedEvent(
+            parseGitCodeRepositoryChangedEvent(p6S3EventJson("s4-e01", ["src/resume.cj"])))
+        let first = firstService.runSchedulerTasks(p6S3SourceEventTasks(), true)
+        let recoverable = store.loadRepositoryEventReceipt(accepted.dedupeKey)
+        let sourceCallsAfterFirst = runner.calls.size
+        let ownersBeforeResume = store.listCandidateCollectionOwners()
+        @Expect(ownersBeforeResume.size, 1)
+        let ownerBeforeResume = p6S4FirstOwner(ownersBeforeResume)
+        let vectorContext = CkbCandidateAcquisitionContext()
+        vectorContext.acquisitionId = ownerBeforeResume.acquisitionId
+        vectorContext.schedulerRunId = ownerBeforeResume.schedulerRunId
+        vectorContext.taskId = ownerBeforeResume.taskId
+        vectorContext.candidateVersion = ownerBeforeResume.candidateVersion
+        vectorContext.planHash = ownerBeforeResume.planHash
+        vectorContext.recordsEvidenceHash = ownerBeforeResume.recordsEvidenceHash
+        let spoolBeforeResume = store.loadVectorSpoolCheckpoint(vectorContext,
+            ownerBeforeResume.collection)
+
+        @Expect(accepted.status, "accepted")
+        @Expect(first.failed, 1)
+        @Expect(recoverable.state, "retryable")
+        @Expect(recoverable.lastErrorCode, "candidate_validation_recoverable")
+        @Expect(ownerBeforeResume.valid, true)
+        @Expect(spoolBeforeResume.valid, true)
+
+        eventClock.advance(2000)
+        let resumed = firstService.runSchedulerTasks(p6S3SourceEventTasks(), true)
+        let committed = store.loadRepositoryEventReceipt(accepted.dedupeKey)
+        let ownerAfterResume = store.loadCandidateCollectionOwner(ownerBeforeResume.collection)
+        let spoolAfterResume = store.loadVectorSpoolCheckpoint(vectorContext,
+            ownerBeforeResume.collection)
+        let ownersAfterResume = store.listCandidateCollectionOwners()
+        let completedValidation = store.loadRepositoryEventValidationCheckpoint(
+            p6S4CheckpointForOwner(committed, ownerAfterResume,
+                beforePointer.activeVersion))
+
+        @Expect(resumed.succeeded, 1)
+        @Expect(committed.state, "committed")
+        @Expect(runner.calls.size, sourceCallsAfterFirst)
+        @Expect(ownerAfterResume.state, "committed_active")
+        @Expect(ownersAfterResume.size, 1)
+        let onlyOwnerAfterResume = p6S4FirstOwner(ownersAfterResume)
+        @Expect(onlyOwnerAfterResume.collection, ownerBeforeResume.collection)
+        @Expect(onlyOwnerAfterResume.state, "committed_active")
+        @Expect(spoolAfterResume.valid, false)
+        @Expect(completedValidation.valid, true)
+        @Expect(completedValidation.phase, "completed")
+        @Expect(completedValidation.vectorEvidenceHash, spoolBeforeResume.evidenceHash)
+        @Expect(store.cleanupCandidateOwnerStaleTemps(), 0)
+        @Expect(store.cleanupVectorBuildStaleTemps(vectorContext.acquisitionId), 0)
+        @Expect(firstService.queryEvidencePack("P6S4ResumeMarker", 5).citations.size > 0, true)
+    }
+
+    @TestCase
+    public func p6S4N04SourceEventCoverageFailureIsTerminalAndKeepsActiveSnapshot(): Unit {
+        let root = "target/p6-s4-n04-source-event-quality-terminal"
+        p6S3EnsureEmpty(root)
+        let store = FileKnowledgeStore("${root}/store")
+        _ = p6S4WriteCoverageFailureBaseline(store)
+        let config = CkbRuntimeConfig()
+        config.networkEnabled = true
+        let beforePointer = store.loadActiveSnapshotPointer()
+        let before = store.loadActiveSnapshot()
+        let beforeGraph = newKnowledgeBaseFromStoreWithRuntime(store, config).kb.activeGraphBuild()
+        store.saveCangjieVersionManifest(defaultCangjieVersionManifest())
+        let service = CkbCommandLoopService(config, store,
+            sourceRunner: P6S3PathResponseRunner("content", "CoverageTerminalMarker"))
+        _ = service.start()
+        let accepted = service.acceptGitCodeRepositoryChangedEvent(
+            parseGitCodeRepositoryChangedEvent(p6S3EventJson("s4-n04", ["src/coverage.cj"])))
+        let scheduled = service.runSchedulerTasks(p6S3SourceEventTasks(), true)
+        let receipt = store.loadRepositoryEventReceipt(accepted.dedupeKey)
+        let afterPointer = store.loadActiveSnapshotPointer()
+        let after = store.loadActiveSnapshot()
+        let afterGraph = newKnowledgeBaseFromStoreWithRuntime(store, config).kb.activeGraphBuild()
+        let owners = store.listCandidateCollectionOwners()
+        @Expect(owners.size, 1)
+        let owner = p6S4FirstOwner(owners)
+        let checkpoint = CkbRepositoryEventValidationCheckpoint()
+        checkpoint.eventId = receipt.canonicalSha256
+        checkpoint.runKey = owner.planHash
+        checkpoint.acquisitionId = owner.acquisitionId
+        checkpoint.planHash = owner.planHash
+        checkpoint.recordsEvidenceHash = owner.recordsEvidenceHash
+        checkpoint.candidateVersion = owner.candidateVersion
+        checkpoint.activeBaseVersion = beforePointer.activeVersion
+        let terminal = store.loadRepositoryEventValidationCheckpoint(checkpoint)
+
+        @Expect(accepted.status, "accepted")
+        @Expect(scheduled.failed, 1)
+        @Expect(receipt.state, "failed")
+        @Expect(receipt.lastErrorCode, "candidate_validation_failed")
+        @Expect(terminal.valid, true)
+        @Expect(terminal.phase, "terminal_failed")
+        @Expect(owner.state, "cleaned")
+        @Expect(terminal.candidateVersion, owner.candidateVersion)
+        @Expect(afterPointer.activeVersion, beforePointer.activeVersion)
+        @Expect(after.rawRecords.size, before.rawRecords.size)
+        @Expect(after.normalizedRecords.size, before.normalizedRecords.size)
+        @Expect(after.vectorRecords.size, before.vectorRecords.size)
+        @Expect(afterGraph.nodes.size, beforeGraph.nodes.size)
+        @Expect(afterGraph.edges.size, beforeGraph.edges.size)
+        @Expect(p6S4GraphEvidence(afterGraph), p6S4GraphEvidence(beforeGraph))
+    }
+
+    @TestCase
+    public func p6S4N05SourceEventParityFailureIsTerminalWithoutDeadline(): Unit {
+        let root = "target/p6-s4-n05-source-event-parity-terminal"
+        p6S3EnsureEmpty(root)
+        let store = FileKnowledgeStore("${root}/store")
+        let baseline = newOfflineKnowledgeBase()
+        _ = baseline.persistActiveSnapshot(store)
+        let config = CkbRuntimeConfig()
+        config.networkEnabled = true
+        let beforePointer = store.loadActiveSnapshotPointer()
+        let before = store.loadActiveSnapshot()
+        let beforeGraph = newKnowledgeBaseFromStoreWithRuntime(store, config).kb.activeGraphBuild()
+        store.saveCangjieVersionManifest(defaultCangjieVersionManifest())
+        let plan = CangjieCandidatePromotionBudgetPlan()
+        plan.validationGateEvaluator = P6S4FailingGateEvaluator("parity")
+        let service = CkbCommandLoopService(config, store,
+            sourceRunner: P6S3PathResponseRunner("content", "ParityTerminalMarker"),
+            sourceEventPromotionBudgetPlan: plan)
+        _ = service.start()
+        let accepted = service.acceptGitCodeRepositoryChangedEvent(
+            parseGitCodeRepositoryChangedEvent(p6S3EventJson("s4-n05", ["src/parity.cj"])))
+        let scheduled = service.runSchedulerTasks(p6S3SourceEventTasks(), true)
+        let receipt = store.loadRepositoryEventReceipt(accepted.dedupeKey)
+        let owners = store.listCandidateCollectionOwners()
+        @Expect(owners.size, 1)
+        let owner = p6S4FirstOwner(owners)
+        let expected = p6S4CheckpointForOwner(receipt, owner, beforePointer.activeVersion)
+        let terminal = store.loadRepositoryEventValidationCheckpoint(expected)
+        let afterPointer = store.loadActiveSnapshotPointer()
+        let after = store.loadActiveSnapshot()
+        let afterGraph = newKnowledgeBaseFromStoreWithRuntime(store, config).kb.activeGraphBuild()
+
+        @Expect(scheduled.failed, 1)
+        @Expect(receipt.state, "failed")
+        @Expect(receipt.lastErrorCode, "candidate_validation_failed")
+        @Expect(terminal.valid, true)
+        @Expect(terminal.phase, "terminal_failed")
+        @Expect(terminal.transportParityPass, false)
+        @Expect(owner.state, "cleaned")
+        @Expect(afterPointer.activeVersion, beforePointer.activeVersion)
+        @Expect(after.rawRecords.size, before.rawRecords.size)
+        @Expect(after.normalizedRecords.size, before.normalizedRecords.size)
+        @Expect(after.vectorRecords.size, before.vectorRecords.size)
+        @Expect(afterGraph.nodes.size, beforeGraph.nodes.size)
+        @Expect(afterGraph.edges.size, beforeGraph.edges.size)
+        @Expect(p6S4GraphEvidence(afterGraph), p6S4GraphEvidence(beforeGraph))
+    }
+
+    @TestCase
+    public func p6S4N06SourceEventPerformanceFailureIsTerminalWithoutDeadline(): Unit {
+        let root = "target/p6-s4-n06-source-event-performance-terminal"
+        p6S3EnsureEmpty(root)
+        let store = FileKnowledgeStore("${root}/store")
+        let baseline = newOfflineKnowledgeBase()
+        _ = baseline.persistActiveSnapshot(store)
+        let config = CkbRuntimeConfig()
+        config.networkEnabled = true
+        let beforePointer = store.loadActiveSnapshotPointer()
+        let before = store.loadActiveSnapshot()
+        let beforeGraph = newKnowledgeBaseFromStoreWithRuntime(store, config).kb.activeGraphBuild()
+        store.saveCangjieVersionManifest(defaultCangjieVersionManifest())
+        let plan = CangjieCandidatePromotionBudgetPlan()
+        plan.validationGateEvaluator = P6S4FailingGateEvaluator("performance")
+        let service = CkbCommandLoopService(config, store,
+            sourceRunner: P6S3PathResponseRunner("content", "PerformanceTerminalMarker"),
+            sourceEventPromotionBudgetPlan: plan)
+        _ = service.start()
+        let accepted = service.acceptGitCodeRepositoryChangedEvent(
+            parseGitCodeRepositoryChangedEvent(p6S3EventJson("s4-n06", ["src/performance.cj"])))
+        let scheduled = service.runSchedulerTasks(p6S3SourceEventTasks(), true)
+        let receipt = store.loadRepositoryEventReceipt(accepted.dedupeKey)
+        let owners = store.listCandidateCollectionOwners()
+        @Expect(owners.size, 1)
+        let owner = p6S4FirstOwner(owners)
+        let expected = p6S4CheckpointForOwner(receipt, owner, beforePointer.activeVersion)
+        let terminal = store.loadRepositoryEventValidationCheckpoint(expected)
+        let afterPointer = store.loadActiveSnapshotPointer()
+        let after = store.loadActiveSnapshot()
+        let afterGraph = newKnowledgeBaseFromStoreWithRuntime(store, config).kb.activeGraphBuild()
+
+        @Expect(scheduled.failed, 1)
+        @Expect(receipt.state, "failed")
+        @Expect(receipt.lastErrorCode, "candidate_validation_failed")
+        @Expect(terminal.valid, true)
+        @Expect(terminal.phase, "terminal_failed")
+        @Expect(terminal.performancePass, false)
+        @Expect(owner.state, "cleaned")
+        @Expect(afterPointer.activeVersion, beforePointer.activeVersion)
+        @Expect(after.rawRecords.size, before.rawRecords.size)
+        @Expect(after.normalizedRecords.size, before.normalizedRecords.size)
+        @Expect(after.vectorRecords.size, before.vectorRecords.size)
+        @Expect(afterGraph.nodes.size, beforeGraph.nodes.size)
+        @Expect(afterGraph.edges.size, beforeGraph.edges.size)
+        @Expect(p6S4GraphEvidence(afterGraph), p6S4GraphEvidence(beforeGraph))
+    }
+
+    @TestCase
+    public func p6S4U01ValidationCheckpointCodecBindsEventCandidateBaseAndCoverage(): Unit {
+        let root = "target/p6-s4-u01-validation-checkpoint"
+        p6S3EnsureEmpty(root)
+        let store = FileKnowledgeStore("${root}/store")
+        let checkpoint = p6S4ValidationCheckpoint("p6-s4-u01")
+
+        store.saveRepositoryEventValidationCheckpoint(checkpoint)
+        let loaded = store.loadRepositoryEventValidationCheckpoint(p6S4ValidationCheckpoint("p6-s4-u01"))
+        let relative = ckbRepositoryEventValidationCheckpointRelativePath(checkpoint.acquisitionId)
+
+        @Expect(relative, "metadata/candidate-validations/p6-validation-p6-s4-u01/checkpoint.ckb")
+        @Expect(store.has(relative), true)
+        @Expect(loaded.valid, true)
+        @Expect(loaded.status, "ok")
+        @Expect(loaded.eventId, checkpoint.eventId)
+        @Expect(loaded.runKey, checkpoint.runKey)
+        @Expect(loaded.candidateVersion, checkpoint.candidateVersion)
+        @Expect(loaded.activeBaseVersion, checkpoint.activeBaseVersion)
+        @Expect(loaded.documentCursor, 7)
+        @Expect(loaded.documentTotal, 11)
+        @Expect(loaded.currentPartition, "docs/中文🙂")
+        @Expect(loaded.exactSymbolHits, 2)
+        @Expect(loaded.validationEvidenceHash, checkpoint.validationEvidenceHash)
+        @Expect(loaded.checksum, ckbRepositoryEventValidationCheckpointChecksum(loaded))
+    }
+
+    @TestCase
+    public func p6S4N01ValidationCheckpointRejectsCorruptUtf8AndIdentityMismatch(): Unit {
+        let root = "target/p6-s4-n01-validation-checkpoint"
+        p6S3EnsureEmpty(root)
+        let store = FileKnowledgeStore("${root}/store")
+        let checkpoint = p6S4ValidationCheckpoint("p6-s4-n01")
+        let expected = p6S4ValidationCheckpoint("p6-s4-n01")
+        let relative = ckbRepositoryEventValidationCheckpointRelativePath(checkpoint.acquisitionId)
+
+        store.saveRepositoryEventValidationCheckpoint(checkpoint)
+        let canonical = store.readText(relative)
+        store.writeLinesAtomically(relative, "schemaVersion=bad\n")
+        @Expect(store.loadRepositoryEventValidationCheckpoint(expected).status,
+            "validation_checkpoint_schema_mismatch")
+        store.writeLinesAtomically(relative, canonical.replace(checkpoint.checksum, "hsha256:deadbeef"))
+        @Expect(store.loadRepositoryEventValidationCheckpoint(expected).status,
+            "validation_checkpoint_checksum_mismatch")
+        store.writeLinesAtomically(relative, canonical.replace("documentTotal=11", "documentTotal=6"))
+        @Expect(store.loadRepositoryEventValidationCheckpoint(expected).status,
+            "validation_checkpoint_malformed")
+        store.writeLinesAtomically(relative, canonical.replace("documentCursor=7", "documentCursor=12"))
+        @Expect(store.loadRepositoryEventValidationCheckpoint(expected).status,
+            "validation_checkpoint_malformed")
+        store.writeLinesAtomically(relative, canonical.replace("partitionCursor=1", "partitionCursor=3"))
+        @Expect(store.loadRepositoryEventValidationCheckpoint(expected).status,
+            "validation_checkpoint_malformed")
+        store.writeLinesAtomically(relative, canonical.replace("partitionIdsJson=[\"global\",\"partition-p6\"]", "partitionIdsJson={malformed"))
+        @Expect(store.loadRepositoryEventValidationCheckpoint(expected).status,
+            "validation_checkpoint_malformed")
+        store.writeLinesAtomically(relative, canonical.replace(checkpoint.worksetEvidenceHash, "not-a-sha256"))
+        @Expect(store.loadRepositoryEventValidationCheckpoint(expected).status,
+            "validation_checkpoint_malformed")
+        File.writeTo(Path("${root}/store").join(relative), [UInt8(255), UInt8(254)])
+        @Expect(store.loadRepositoryEventValidationCheckpoint(expected).status,
+            "invalid_response_encoding")
+        store.writeLinesAtomically(relative, canonical)
+        let wrongBase = p6S4ValidationCheckpoint("p6-s4-n01")
+        wrongBase.activeBaseVersion = "ckb-active-wrong"
+        @Expect(store.loadRepositoryEventValidationCheckpoint(wrongBase).status,
+            "validation_checkpoint_identity_mismatch")
+    }
+
+    @TestCase
+    public func p6S4N02ValidationIndexArtifactRejectsChecksumIdentityAndUtf8Corruption(): Unit {
+        let root = "target/p6-s4-n02-validation-index-artifact"
+        p6S3EnsureEmpty(root)
+        let store = FileKnowledgeStore("${root}/store")
+        let checkpoint = p6S4ValidationCheckpoint("p6-s4-n02-artifact")
+        let index = CangjieServingIndex()
+        let document = CangjieServingDocument()
+        document.documentId = "p6-s4-index-doc"
+        document.recordKind = CangjieServingRecordKinds.DOC_SECTION
+        document.title = "仓颉🙂 index artifact"
+        document.text = "UTF-8 durable index body"
+        document.sourceId = "source-p6-s4-index"
+        document.contentHash = ckbReleaseEvidenceHash(document.text)
+        document.citation = "test:中文🙂"
+        document.targetVersion = "1.0.0"
+        index.documents.add(document)
+        let saved = store.saveRepositoryEventValidationIndexArtifact(checkpoint, index)
+        let relative = ckbRepositoryEventValidationIndexArtifactPath(checkpoint.acquisitionId)
+        let canonical = store.readText(relative)
+
+        @Expect(saved.valid, true)
+        @Expect(store.loadRepositoryEventValidationIndexArtifact(checkpoint).valid, true)
+        @Expect(store.loadRepositoryEventValidationIndexArtifact(checkpoint).documents[0].title,
+            "仓颉🙂 index artifact")
+        store.writeLinesAtomically(relative, canonical.replace(saved.checksum, "deadbeef"))
+        @Expect(store.loadRepositoryEventValidationIndexArtifact(checkpoint).status,
+            "validation_index_artifact_checksum_mismatch")
+        File.writeTo(Path("${root}/store").join(relative), [UInt8(255), UInt8(254)])
+        @Expect(store.loadRepositoryEventValidationIndexArtifact(checkpoint).status,
+            "invalid_response_encoding")
+        store.writeLinesAtomically(relative, canonical)
+        let wrong = p6S4ValidationCheckpoint("p6-s4-n02-artifact")
+        wrong.activeBaseVersion = "ckb-active-other"
+        @Expect(store.loadRepositoryEventValidationIndexArtifact(wrong).status,
+            "validation_index_artifact_identity_mismatch")
+    }
+
+    @TestCase
+    public func p6S4U02ValidationWorksetIsOrderIndependentAndEvidenceBound(): Unit {
+        let first = p6S4ValidationIndex("source-p6-s4-a", "source-p6-s4-b", false)
+        let reordered = p6S4ValidationIndex("source-p6-s4-a", "source-p6-s4-b", true)
+        let firstWorkset = buildCangjieCandidateValidationWorkset(first)
+        let reorderedWorkset = buildCangjieCandidateValidationWorkset(reordered)
+
+        @Expect(firstWorkset.valid, true)
+        @Expect(reorderedWorkset.valid, true)
+        @Expect(firstWorkset.evidenceHash, reorderedWorkset.evidenceHash)
+        @Expect(firstWorkset.orderedDocumentIndexes.size, 3)
+        @Expect(firstWorkset.partitionIds.size >= 2, true)
+        @Expect(firstWorkset.partitionStartCursors[0], 0)
+        @Expect(firstWorkset.partitionEndCursors[firstWorkset.partitionEndCursors.size - 1], 3)
+    }
+
+    @TestCase
+    public func p6S4B01ValidationWorksetPartitionCursorsCoverExactBoundaries(): Unit {
+        let index = p6S4ValidationIndex("source-p6-s4-boundary-a", "source-p6-s4-boundary-b", false)
+        let workset = buildCangjieCandidateValidationWorkset(index)
+        var cursor: Int64 = 0
+
+        for (partitionIndex in 0..workset.partitionIds.size) {
+            @Expect(workset.partitionStartCursors[partitionIndex], cursor)
+            @Expect(workset.partitionEndCursors[partitionIndex] > cursor, true)
+            cursor = workset.partitionEndCursors[partitionIndex]
+        }
+        @Expect(cursor, index.documents.size)
+    }
+
+    @TestCase
+    public func p6S4P01OnlyAffectedAndGlobalPartitionsAreSelected(): Unit {
+        let source = "source-p6-s4-affected"
+        var untouched = "source-p6-s4-untouched"
+        var suffix: Int64 = 0
+        while (cangjieCandidateValidationPartitionId(source) == cangjieCandidateValidationPartitionId(untouched)) {
+            suffix += 1
+            untouched = "source-p6-s4-untouched-${suffix}"
+        }
+        let workset = buildCangjieCandidateValidationWorkset(p6S4ValidationIndex(source, untouched, false))
+        let changed = ArrayList<String>()
+        changed.add(source)
+        let affected = cangjieCandidateValidationAffectedPartitions(workset, changed)
+
+        @Expect(p6S4StringListContains(affected, cangjieCandidateValidationPartitionId(source)), true)
+        @Expect(p6S4StringListContains(affected, "global"), true)
+        @Expect(p6S4StringListContains(affected, cangjieCandidateValidationPartitionId(untouched)), false)
+    }
+
     @TestCase
     public func p6S3U01CanonicalUtf8ReceiptSortsAndDeduplicates(): Unit {
         let root = "target/p6-s3-acquisition-u01"
@@ -668,6 +1108,128 @@ public class CkbP6SourceEventAcquisitionTest {
         @Expect(p6S3NormalizedControlRecordCount(snapshot.activeIndex), 0)
         @Expect(p6S3VectorControlRecordCount(snapshot.vectorRecords), 0)
     }
+}
+
+private func p6S4WriteCoverageFailureBaseline(store: FileKnowledgeStore): CkbActiveSnapshotTransactionResult {
+    let kb = KnowledgeBase(FakeClock(0))
+    let records = ArrayList<NormalizedRecord>()
+    let record = NormalizedRecord()
+    record.sourceId = "p6-s4-coverage-baseline"
+    record.recordKind = CangjieTypedRecordKinds.DOC_SECTION
+    record.title = "coverage baseline"
+    record.chunk = "A deliberately narrow baseline without tool or negative-rule coverage."
+    record.citation = "test:p6-s4-coverage-baseline"
+    record.metadata.sourceSet = CangjieSourceSets.DOCS
+    record.metadata.trustLevel = TrustLevels.OFFICIAL
+    record.metadata.reviewState = ReviewStates.TRUSTED
+    record.metadata.targetVersion = "1.0.0"
+    records.add(record)
+    let candidate = kb.stageCandidateRecords("p6-s4-coverage-base-candidate", records)
+    let vector = VectorStoreStatus()
+    vector.collection = "active"
+    vector.dimension = 16
+    vector.count = records.size
+    vector.state = EmbeddingProviderState.READY
+    _ = kb.commitCandidateToActiveAfterVectorReady("p6-s4-coverage-base-active",
+        "active", vector)
+    kb.persistActiveSnapshot(store)
+}
+
+private func p6S4ValidationCheckpoint(id: String): CkbRepositoryEventValidationCheckpoint {
+    let checkpoint = CkbRepositoryEventValidationCheckpoint()
+    checkpoint.eventId = "event-${id}"
+    checkpoint.runKey = "run-${id}"
+    checkpoint.acquisitionId = "p6-validation-${id}"
+    checkpoint.planHash = ckbReleaseEvidenceHash("plan-${id}")
+    checkpoint.recordsEvidenceHash = ckbReleaseEvidenceHash("records-${id}")
+    checkpoint.candidateVersion = "ckb-candidate-${id}"
+    checkpoint.activeBaseVersion = "ckb-active-base-${id}"
+    checkpoint.phase = "validation_documents"
+    checkpoint.documentCursor = 7
+    checkpoint.documentTotal = 11
+    checkpoint.partitionCursor = 1
+    checkpoint.partitionCount = 2
+    checkpoint.partitionIds.add("global")
+    checkpoint.partitionIds.add("partition-p6")
+    checkpoint.worksetEvidenceHash = ckbReleaseEvidenceHash("workset-${id}")
+    checkpoint.currentPartition = "docs/中文🙂"
+    checkpoint.completedPartitionsEvidenceHash = ckbReleaseEvidenceHash("partitions-${id}")
+    checkpoint.exactSymbolHits = 2
+    checkpoint.docSectionHits = 3
+    checkpoint.toolManualHits = 1
+    checkpoint.negativeRuleHits = 4
+    checkpoint.moduleHits = 5
+    checkpoint.availabilityHits = 6
+    checkpoint.deltaEvidenceHash = ckbReleaseEvidenceHash("delta-${id}")
+    checkpoint.overlayEvidenceHash = ckbReleaseEvidenceHash("overlay-${id}")
+    checkpoint.vectorEvidenceHash = ckbReleaseEvidenceHash("vector-${id}")
+    checkpoint.validationEvidenceHash = ckbReleaseEvidenceHash("validation-${id}")
+    checkpoint
+}
+
+private func p6S4CheckpointForOwner(receipt: CkbRepositoryEventReceipt,
+    owner: CkbCandidateCollectionOwner,
+    activeBaseVersion: String): CkbRepositoryEventValidationCheckpoint {
+    let checkpoint = CkbRepositoryEventValidationCheckpoint()
+    checkpoint.eventId = receipt.canonicalSha256
+    checkpoint.runKey = owner.planHash
+    checkpoint.acquisitionId = owner.acquisitionId
+    checkpoint.planHash = owner.planHash
+    checkpoint.recordsEvidenceHash = owner.recordsEvidenceHash
+    checkpoint.candidateVersion = owner.candidateVersion
+    checkpoint.activeBaseVersion = activeBaseVersion
+    checkpoint
+}
+
+private func p6S4FirstOwner(owners: ArrayList<CkbCandidateCollectionOwner>): CkbCandidateCollectionOwner {
+    if (owners.size > 0) { return owners[0] }
+    CkbCandidateCollectionOwner()
+}
+
+private func p6S4GraphEvidence(graph: GraphBuildResult): String {
+    let out = StringBuilder()
+    out.append("nodes=${graph.nodes.size}|edges=${graph.edges.size}")
+    for (node in graph.nodes) {
+        out.append("|n=${node.nodeId}:${node.nodeType}:${node.sourceId}:${node.knowledgeVersion}")
+    }
+    for (edge in graph.edges) {
+        out.append("|e=${edge.edgeId}:${edge.edgeType}:${edge.fromNodeId}:${edge.toNodeId}:${edge.sourceId}:${edge.knowledgeVersion}")
+    }
+    ckbReleaseEvidenceHash(out.toString())
+}
+
+private func p6S4ValidationIndex(firstSource: String, secondSource: String,
+    reversed: Bool): CangjieServingIndex {
+    let index = CangjieServingIndex()
+    let first = p6S4ServingDocument(firstSource, "first")
+    let second = p6S4ServingDocument(secondSource, "second")
+    let global = p6S4ServingDocument("", "global")
+    if (reversed) {
+        index.documents.add(global)
+        index.documents.add(second)
+        index.documents.add(first)
+    } else {
+        index.documents.add(first)
+        index.documents.add(second)
+        index.documents.add(global)
+    }
+    index
+}
+
+private func p6S4ServingDocument(sourceId: String, id: String): CangjieServingDocument {
+    let document = CangjieServingDocument()
+    document.sourceId = sourceId
+    document.documentId = "p6-s4-doc-${id}"
+    document.contentHash = ckbReleaseEvidenceHash("p6-s4-content-${id}")
+    document.recordKind = CangjieServingRecordKinds.DOC_SECTION
+    document
+}
+
+private func p6S4StringListContains(values: ArrayList<String>, expected: String): Bool {
+    for (value in values) {
+        if (value == expected) { return true }
+    }
+    false
 }
 
 private func p6S3EventJson(eventId: String, paths: Array<String>, unavailable!: Bool = false,

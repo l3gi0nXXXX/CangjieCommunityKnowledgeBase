@@ -10,8 +10,326 @@ import std.unittest.testmacro.*
 private let ADMIN_DEADLINE_TEST_BUDGET_MILLIS: Int64 = 200
 private let ADMIN_DEADLINE_TEST_DELAY_MILLIS: Int64 = 250
 
+private class AdminP6S4DeadlineClock <: CkbMillisClock {
+    private var calls: Int64 = 0
+    public init() {}
+    public func nowMillis(): Int64 {
+        this.calls += 1
+        if (this.calls == 1) { return 0 }
+        100
+    }
+}
+
+private class AdminP6S4AlwaysExpiredClock <: CkbMillisClock {
+    public init() {}
+    public func nowMillis(): Int64 { 2 }
+}
+
+private class AdminP6S4SequenceClock <: CkbMillisClock {
+    private let values: ArrayList<Int64>
+    private var cursor: Int64 = 0
+
+    public init(values: ArrayList<Int64>) {
+        this.values = values
+    }
+
+    public func nowMillis(): Int64 {
+        if (this.cursor >= this.values.size) { return this.values[this.values.size - 1] }
+        let value = this.values[this.cursor]
+        this.cursor += 1
+        value
+    }
+}
+
+private class AdminP6S4BuildObserver <: CangjieServingIndexBuildObserver {
+    private let fullRecordCount: Int64
+    public var fullRecordBuildCalls: Int64 = 0
+
+    public init(fullRecordCount: Int64) {
+        this.fullRecordCount = fullRecordCount
+    }
+
+    public func onServingIndexBuild(recordCount: Int64): Unit {
+        if (recordCount == this.fullRecordCount) { this.fullRecordBuildCalls += 1 }
+    }
+}
+
 @Test
 public class CangjieServingAdminTest {
+    @TestCase
+    public func p6S4B02ValidationDeadlineAtPartitionEntryPersistsRecoverableCursor(): Unit {
+        let root = "target/p6-s4-b02-validation-entry"
+        adminEnsureEmptyDir(root)
+        let records = ArrayList<NormalizedRecord>()
+        records.add(cangjieF4AdminRecord("p6-s4-b02-doc", CangjieTypedRecordKinds.DOC_SECTION,
+            "P6 deadline", "P6 deadline validation fixture", CangjieSourceSets.DOCS, "p6-s4-b02"))
+        let vector = VectorStoreStatus()
+        vector.state = EmbeddingProviderState.READY
+        vector.dimension = 3
+        vector.count = 1
+        let checkpoint = cangjieAdminP6ValidationCheckpoint("b02", records)
+        let store = FileKnowledgeStore("${root}/store")
+
+        let validation = validateCandidateServingIndexWithDurableResume(records,
+            checkpoint.candidateVersion, vector, store, checkpoint,
+            deadlineAtMillis: 1, deadlineClock: AdminP6S4AlwaysExpiredClock())
+        let loaded = store.loadRepositoryEventValidationCheckpoint(
+            cangjieAdminP6ValidationCheckpoint("b02", records))
+
+        @Expect(validation.status, "candidate_validation_recoverable")
+        @Expect(validation.ok, false)
+        @Expect(loaded.valid, true)
+        @Expect(loaded.phase, "validation_documents")
+        @Expect(loaded.partitionCursor, 0)
+        @Expect(loaded.currentPartition != "", true)
+    }
+
+    @TestCase
+    public func p6S4B03CompletedGateIsReusedWithoutRebuildingServingIndex(): Unit {
+        let records = cangjieF4AdminPromotionRecords()
+        let checkpoint = cangjieAdminP6ValidationCheckpoint("completed", records)
+        adminEnsureEmptyDir("target/p6-s4-b03")
+        let store = FileKnowledgeStore("target/p6-s4-b03/store")
+        let vector = cangjieCandidateTestVectorStatus(records)
+        let seeded = validateCandidateServingIndexWithDurableResume(records,
+            checkpoint.candidateVersion, vector, store, checkpoint)
+        let persisted = store.loadRepositoryEventValidationCheckpoint(
+            cangjieAdminP6ValidationCheckpoint("completed", records))
+
+        let validation = validateCandidateServingIndexWithDurableResume(records,
+            persisted.candidateVersion, vector, store, persisted,
+            deadlineAtMillis: ckbCoreNowMillis() - 1)
+
+        @Expect(seeded.ok, true)
+        @Expect(persisted.valid, true)
+        @Expect(persisted.phase, "completed")
+        @Expect(validation.ok, true)
+        @Expect(validation.status, "candidate_validation_passed")
+        @Expect(validation.servingDocumentCount, persisted.documentTotal)
+        @Expect(cangjieF4AdminDiagnosticsContain(validation, "validation_gate_checkpoint_reused"), true)
+    }
+
+    @TestCase
+    public func p6S4N03CompletedGateRejectsMissingOrMismatchedLiveVectorBinding(): Unit {
+        let records = cangjieF4AdminPromotionRecords()
+        let missingCheckpoint = cangjieAdminP6ValidationCheckpoint("vector-missing", records)
+        let missingStore = FileKnowledgeStore("target/p6-s4-n03-vector-missing/store")
+        let ready = cangjieCandidateTestVectorStatus(records)
+        @Expect(validateCandidateServingIndexWithDurableResume(records,
+            missingCheckpoint.candidateVersion, ready, missingStore, missingCheckpoint).ok, true)
+        let persistedMissing = missingStore.loadRepositoryEventValidationCheckpoint(
+            cangjieAdminP6ValidationCheckpoint("vector-missing", records))
+        let missingLive = cangjieCandidateTestVectorStatus(records)
+        missingLive.collection = ""
+        let missing = validateCandidateServingIndexWithDurableResume(records,
+            persistedMissing.candidateVersion, missingLive, missingStore, persistedMissing)
+        let missingTerminal = missingStore.loadRepositoryEventValidationCheckpoint(
+            cangjieAdminP6ValidationCheckpoint("vector-missing", records))
+
+        @Expect(missing.status, "candidate_vector_failed")
+        @Expect(missingTerminal.phase, "terminal_failed")
+        @Expect(missingTerminal.vectorHealthPass, false)
+
+        let mismatchCheckpoint = cangjieAdminP6ValidationCheckpoint("vector-mismatch", records)
+        let mismatchStore = FileKnowledgeStore("target/p6-s4-n03-vector-mismatch/store")
+        @Expect(validateCandidateServingIndexWithDurableResume(records,
+            mismatchCheckpoint.candidateVersion, ready, mismatchStore, mismatchCheckpoint).ok, true)
+        let persistedMismatch = mismatchStore.loadRepositoryEventValidationCheckpoint(
+            cangjieAdminP6ValidationCheckpoint("vector-mismatch", records))
+        let mismatchedLive = cangjieCandidateTestVectorStatus(records)
+        mismatchedLive.count += 1
+        let mismatch = validateCandidateServingIndexWithDurableResume(records,
+            persistedMismatch.candidateVersion, mismatchedLive, mismatchStore, persistedMismatch)
+        let mismatchTerminal = mismatchStore.loadRepositoryEventValidationCheckpoint(
+            cangjieAdminP6ValidationCheckpoint("vector-mismatch", records))
+
+        @Expect(mismatch.status, "candidate_vector_failed")
+        @Expect(mismatchTerminal.phase, "terminal_failed")
+        @Expect(mismatchTerminal.vectorCount, mismatchedLive.count)
+    }
+
+    @TestCase
+    public func p6S4N04VectorCountMismatchPersistsTerminalFailureAndPreservesActive(): Unit {
+        let root = "target/p6-s4-n04-vector-terminal"
+        adminEnsureEmptyDir(root)
+        let vectorStore = CangjieAdminTrackingVectorStore()
+        vectorStore.stagingStatusCountOffset = 1
+        let kb = KnowledgeBase(FakeClock(0), CangjieAdminEmbeddingProvider(2), vectorStore,
+            LocalGraphStore())
+        kb.configureVectorCollections("ckb_active", "ckb_candidate")
+        kb.bootstrapOffline()
+        let store = FileKnowledgeStore(root)
+        _ = kb.persistActiveSnapshot(store)
+        let beforePointer = store.loadActiveSnapshotPointer()
+        let before = store.loadActiveSnapshot()
+        let beforeGraph = kb.activeGraphBuild()
+        let records = cangjieF4AdminPromotionRecords()
+        let context = CkbCandidateAcquisitionContext()
+        context.acquisitionId = "p6-s4-n04-acquisition"
+        context.schedulerRunId = "p6-s4-n04-run"
+        context.taskId = "cangjie_source_event_sync"
+        context.candidateVersion = "p6-s4-n04-candidate"
+        context.planHash = ckbReleaseEvidenceHash("p6-s4-n04-plan")
+        context.recordsEvidenceHash = ckbCandidateRecordsEvidenceHash(records,
+            stagedCandidateVersion: context.candidateVersion)
+        let promotion = cangjiePromoteCandidateRecordsAfterValidationWithVersion(kb, store,
+            context.candidateVersion, records, acquisitionContext: context,
+            repositoryEventIdentity: "p6-s4-n04-event")
+        let owner = store.listCandidateCollectionOwners()[0]
+        let expected = CkbRepositoryEventValidationCheckpoint()
+        expected.eventId = "p6-s4-n04-event"
+        expected.runKey = owner.planHash
+        expected.acquisitionId = owner.acquisitionId
+        expected.planHash = owner.planHash
+        expected.recordsEvidenceHash = owner.recordsEvidenceHash
+        expected.candidateVersion = owner.candidateVersion
+        expected.activeBaseVersion = beforePointer.activeVersion
+        let terminal = store.loadRepositoryEventValidationCheckpoint(expected)
+        let afterPointer = store.loadActiveSnapshotPointer()
+        let after = store.loadActiveSnapshot()
+        let afterGraph = kb.activeGraphBuild()
+
+        @Expect(promotion.ok, false)
+        @Expect(promotion.validation.status, "candidate_vector_failed")
+        @Expect(kb.status().failedCandidateVersion, context.candidateVersion)
+        @Expect(terminal.valid, true)
+        @Expect(terminal.phase, "terminal_failed")
+        @Expect(terminal.currentPartition, "vector_failed")
+        @Expect(afterPointer.activeVersion, beforePointer.activeVersion)
+        @Expect(after.rawRecords.size, before.rawRecords.size)
+        @Expect(after.normalizedRecords.size, before.normalizedRecords.size)
+        @Expect(after.vectorRecords.size, before.vectorRecords.size)
+        @Expect(afterGraph.nodes.size, beforeGraph.nodes.size)
+        @Expect(afterGraph.edges.size, beforeGraph.edges.size)
+        @Expect(adminP6GraphEvidence(afterGraph), adminP6GraphEvidence(beforeGraph))
+    }
+
+    @TestCase
+    public func p6S4B05ParityBeforeDeadlineResumesFromIndexArtifact(): Unit {
+        let records = cangjieF4AdminPromotionRecords()
+        let checkpoint = cangjieAdminP6ValidationCheckpoint("parity-before", records)
+        adminEnsureEmptyDir("target/p6-s4-b05")
+        let store = FileKnowledgeStore("target/p6-s4-b05/store")
+        let vector = cangjieCandidateTestVectorStatus(records)
+        @Expect(validateCandidateServingIndexWithDurableResume(records, checkpoint.candidateVersion,
+            vector, store, checkpoint).ok, true)
+        let gate = store.loadRepositoryEventValidationCheckpoint(
+            cangjieAdminP6ValidationCheckpoint("parity-before", records))
+        gate.phase = "validation_gate"
+        gate.currentPartition = "index_ready"
+        store.saveRepositoryEventValidationCheckpoint(gate)
+        let firstTimes = ArrayList<Int64>()
+        firstTimes.add(0); firstTimes.add(2)
+        let observer = AdminP6S4BuildObserver(records.size)
+        let first = validateCandidateServingIndexWithDurableResume(records, gate.candidateVersion,
+            vector, store, gate, deadlineAtMillis: 1,
+            deadlineClock: AdminP6S4SequenceClock(firstTimes), buildObserver: observer)
+        let resumedCheckpoint = store.loadRepositoryEventValidationCheckpoint(
+            cangjieAdminP6ValidationCheckpoint("parity-before", records))
+        let resumedSubphase = resumedCheckpoint.currentPartition
+        let resumed = validateCandidateServingIndexWithDurableResume(records,
+            resumedCheckpoint.candidateVersion, vector, store, resumedCheckpoint)
+
+        @Expect(first.status, "candidate_validation_recoverable")
+        @Expect(resumedSubphase, "index_ready")
+        @Expect(observer.fullRecordBuildCalls, 0)
+        @Expect(resumed.ok, true)
+    }
+
+    @TestCase
+    public func p6S4B06PerformanceBeforeDeadlineResumesFromParityArtifact(): Unit {
+        let records = cangjieF4AdminPromotionRecords()
+        let checkpoint = cangjieAdminP6ValidationCheckpoint("performance-before", records)
+        adminEnsureEmptyDir("target/p6-s4-b06")
+        let store = FileKnowledgeStore("target/p6-s4-b06/store")
+        let vector = cangjieCandidateTestVectorStatus(records)
+        @Expect(validateCandidateServingIndexWithDurableResume(records, checkpoint.candidateVersion,
+            vector, store, checkpoint).ok, true)
+        let gate = store.loadRepositoryEventValidationCheckpoint(
+            cangjieAdminP6ValidationCheckpoint("performance-before", records))
+        gate.phase = "validation_gate"
+        gate.currentPartition = "index_ready"
+        store.saveRepositoryEventValidationCheckpoint(gate)
+        let firstTimes = ArrayList<Int64>()
+        firstTimes.add(0); firstTimes.add(0); firstTimes.add(2)
+        let observer = AdminP6S4BuildObserver(records.size)
+        let first = validateCandidateServingIndexWithDurableResume(records, gate.candidateVersion,
+            vector, store, gate, deadlineAtMillis: 1,
+            deadlineClock: AdminP6S4SequenceClock(firstTimes), buildObserver: observer)
+        let resumedCheckpoint = store.loadRepositoryEventValidationCheckpoint(
+            cangjieAdminP6ValidationCheckpoint("performance-before", records))
+        let resumedSubphase = resumedCheckpoint.currentPartition
+        let resumed = validateCandidateServingIndexWithDurableResume(records,
+            resumedCheckpoint.candidateVersion, vector, store, resumedCheckpoint)
+
+        @Expect(first.status, "candidate_validation_recoverable")
+        @Expect(resumedSubphase, "parity_completed")
+        @Expect(observer.fullRecordBuildCalls, 0)
+        @Expect(resumed.ok, true)
+    }
+
+    @TestCase
+    public func p6S4B04GateIndexPendingDeadlinePersistsValidationGate(): Unit {
+        let records = cangjieF4AdminPromotionRecords()
+        let checkpoint = cangjieAdminP6ValidationCheckpoint("gate-pending", records)
+        let worksetIndex = buildCangjieServingIndex(records,
+            activeKnowledgeVersion: cangjieActiveVersionForCandidate(checkpoint.candidateVersion))
+        let workset = buildCangjieCandidateValidationWorkset(worksetIndex)
+        checkpoint.valid = true
+        checkpoint.phase = "validation_documents"
+        checkpoint.partitionIds = workset.partitionIds
+        checkpoint.partitionCount = workset.partitionIds.size
+        checkpoint.partitionCursor = workset.partitionIds.size
+        checkpoint.documentTotal = workset.orderedDocumentIndexes.size
+        checkpoint.documentCursor = workset.orderedDocumentIndexes.size
+        checkpoint.worksetEvidenceHash = workset.evidenceHash
+        checkpoint.exactSymbolHits = 1
+        checkpoint.docSectionHits = 1
+        checkpoint.toolManualHits = 1
+        checkpoint.negativeRuleHits = 1
+        let store = FileKnowledgeStore("target/p6-s4-b04/store")
+        let result = validateCandidateServingIndexWithDurableResume(records, checkpoint.candidateVersion,
+            cangjieCandidateTestVectorStatus(records), store, checkpoint, deadlineAtMillis: 1,
+            deadlineClock: AdminP6S4AlwaysExpiredClock())
+        let persisted = store.loadRepositoryEventValidationCheckpoint(cangjieAdminP6ValidationCheckpoint("gate-pending", records))
+        @Expect(result.status, "candidate_validation_recoverable")
+        @Expect(persisted.phase, "validation_gate")
+        @Expect(persisted.currentPartition, "final_gate")
+    }
+
+    @TestCase
+    public func p6S4U01Real17141CheckpointResumesWithStableCountersAndEvidence(): Unit {
+        let records = cangjieAdminP6LargeRecords()
+        let vector = cangjieCandidateTestVectorStatus(records)
+        let baselineCheckpoint = cangjieAdminP6ValidationCheckpoint("17141-baseline", records)
+        let baseline = validateCandidateServingIndexWithDurableResume(records,
+            baselineCheckpoint.candidateVersion, vector,
+            FileKnowledgeStore("target/p6-s4-u01-baseline/store"), baselineCheckpoint)
+        let resumeStore = FileKnowledgeStore("target/p6-s4-u01-resume/store")
+        let resumedCheckpoint = cangjieAdminP6ValidationCheckpoint("17141-resume", records)
+        let first = validateCandidateServingIndexWithDurableResume(records,
+            resumedCheckpoint.candidateVersion, vector, resumeStore, resumedCheckpoint,
+            deadlineAtMillis: 50, deadlineClock: AdminP6S4DeadlineClock())
+        let persisted = resumeStore.loadRepositoryEventValidationCheckpoint(
+            cangjieAdminP6ValidationCheckpoint("17141-resume", records))
+        let resumeCursor = persisted.partitionCursor
+        let resumed = validateCandidateServingIndexWithDurableResume(records,
+            persisted.candidateVersion, vector, resumeStore, persisted)
+
+        @Expect(records.size, 17141)
+        @Expect(baseline.ok, true)
+        @Expect(first.status, "candidate_validation_recoverable")
+        @Expect(persisted.valid, true)
+        @Expect(persisted.partitionCursor > 0, true)
+        @Expect(persisted.documentCursor > 0, true)
+        @Expect(resumed.ok, true)
+        @Expect(resumed.exactSymbolHits, baseline.exactSymbolHits)
+        @Expect(resumed.docSectionHits, baseline.docSectionHits)
+        @Expect(resumed.toolManualHits, baseline.toolManualHits)
+        @Expect(resumed.negativeRuleHits, baseline.negativeRuleHits)
+        @Expect(cangjieF4AdminDiagnosticsContain(resumed, "validation_resume_cursor:${resumeCursor}"), true)
+    }
+
     @TestCase
     public func p6Pos001CandidateValidationPassesForOfflineServingFeed(): Unit {
         let kb = newOfflineKnowledgeBase()
@@ -1010,6 +1328,41 @@ private func adminCaptureContains(values: ArrayList<String>, needle: String): Bo
     false
 }
 
+private func adminP6GraphEvidence(graph: GraphBuildResult): String {
+    let out = StringBuilder()
+    out.append("nodes=${graph.nodes.size}|edges=${graph.edges.size}")
+    for (node in graph.nodes) {
+        out.append("|n=${node.nodeId}:${node.nodeType}:${node.sourceId}:${node.knowledgeVersion}")
+    }
+    for (edge in graph.edges) {
+        out.append("|e=${edge.edgeId}:${edge.edgeType}:${edge.fromNodeId}:${edge.toNodeId}:${edge.sourceId}:${edge.knowledgeVersion}")
+    }
+    ckbReleaseEvidenceHash(out.toString())
+}
+
+private func cangjieAdminP6ValidationCheckpoint(id: String,
+    records: ArrayList<NormalizedRecord>): CkbRepositoryEventValidationCheckpoint {
+    let checkpoint = CkbRepositoryEventValidationCheckpoint()
+    checkpoint.eventId = "p6-event-${id}"
+    checkpoint.runKey = "p6-run-${id}"
+    checkpoint.acquisitionId = "p6-validation-${id}"
+    checkpoint.planHash = ckbReleaseEvidenceHash("p6-plan-${id}")
+    checkpoint.recordsEvidenceHash = ckbCandidateRecordsEvidenceHash(records,
+        stagedCandidateVersion: "p6-candidate-${id}")
+    checkpoint.candidateVersion = "p6-candidate-${id}"
+    checkpoint.activeBaseVersion = "p6-active-${id}"
+    checkpoint.phase = "validation_documents"
+    checkpoint.partitionCount = 1
+    checkpoint.partitionIds.add("global")
+    checkpoint.worksetEvidenceHash = ckbReleaseEvidenceHash("p6-workset-${id}")
+    checkpoint.deltaEvidenceHash = checkpoint.recordsEvidenceHash
+    checkpoint.overlayEvidenceHash = checkpoint.recordsEvidenceHash
+    checkpoint.vectorEvidenceHash = ckbReleaseEvidenceHash("p6-vector-${id}")
+    checkpoint.completedPartitionsEvidenceHash = ckbReleaseEvidenceHash("p6-partitions-${id}")
+    checkpoint.validationEvidenceHash = ckbReleaseEvidenceHash("p6-validation-${id}")
+    checkpoint
+}
+
 private func cangjieF4AdminRecord(sourceId: String, kind: String, title: String, chunk: String, sourceSet: String, versionResolutionId: String): NormalizedRecord {
     let record = NormalizedRecord()
     record.sourceId = sourceId
@@ -1034,6 +1387,12 @@ private func cangjieAdminGeneratedRecords(count: Int64): ArrayList<NormalizedRec
     for (i in 0..count) {
         records.add(cangjieF4AdminRecord("generated-${i}", CangjieTypedRecordKinds.DOC_SECTION, "Generated ${i}", "generated reusable chunk ${i}", CangjieSourceSets.DOCS, "vr-docs-1"))
     }
+    records
+}
+
+private func cangjieAdminP6LargeRecords(): ArrayList<NormalizedRecord> {
+    let records = cangjieF4AdminPromotionRecords()
+    for (record in cangjieAdminGeneratedRecords(17138)) { records.add(record) }
     records
 }
 
@@ -1126,6 +1485,7 @@ private class CangjieAdminTrackingVectorStore <: VectorStore {
     public var stagingMaxBatchSize: Int64 = 0
     public var deleteCollectionCalls: Int64 = 0
     public var deletedActiveCollection: Bool = false
+    public var stagingStatusCountOffset: Int64 = 0
     private var activeCount: Int64 = 0
     private var stagingCollection: String = ""
     private var stagingCount: Int64 = 0
@@ -1182,7 +1542,7 @@ private class CangjieAdminTrackingVectorStore <: VectorStore {
         status.count = if (collection == "ckb_active") {
             this.activeCount
         } else if (collection == this.stagingCollection) {
-            this.stagingCount
+            this.stagingCount + this.stagingStatusCountOffset
         } else {
             0
         }

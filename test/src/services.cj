@@ -4850,6 +4850,393 @@ public class FileKnowledgeStore {
         this.saveLiveCandidateLifecycleMetadata(status)
     }
 
+    // P6 validation resumes from this small cursor only. Candidate raw/index
+    // artifacts and vector batches stay in their P5 stores and are referenced
+    // by evidence hash, so this API cannot create a competing materialization.
+    public func saveRepositoryEventValidationCheckpoint(
+        checkpoint: CkbRepositoryEventValidationCheckpoint): Unit {
+        if (!this.repositoryEventValidationCheckpointSemanticallyValid(checkpoint)) {
+            throw Exception("repository_event_validation_checkpoint_invalid")
+        }
+        checkpoint.checksum = ckbRepositoryEventValidationCheckpointChecksum(checkpoint)
+        this.writeLinesAtomically(
+            ckbRepositoryEventValidationCheckpointRelativePath(checkpoint.acquisitionId),
+            this.repositoryEventValidationCheckpointText(checkpoint))
+    }
+
+    public func loadRepositoryEventValidationCheckpoint(
+        expected: CkbRepositoryEventValidationCheckpoint): CkbRepositoryEventValidationCheckpoint {
+        let checkpoint = CkbRepositoryEventValidationCheckpoint()
+        checkpoint.eventId = expected.eventId
+        checkpoint.runKey = expected.runKey
+        checkpoint.acquisitionId = expected.acquisitionId
+        checkpoint.planHash = expected.planHash
+        checkpoint.recordsEvidenceHash = expected.recordsEvidenceHash
+        checkpoint.candidateVersion = expected.candidateVersion
+        checkpoint.activeBaseVersion = expected.activeBaseVersion
+        if (!this.repositoryEventValidationCheckpointIdentityValid(checkpoint)) {
+            checkpoint.status = "validation_checkpoint_identity_invalid"
+            checkpoint.diagnostic = checkpoint.status
+            return checkpoint
+        }
+        let relative = ckbRepositoryEventValidationCheckpointRelativePath(checkpoint.acquisitionId)
+        if (!this.has(relative)) { return checkpoint }
+        let text = try { this.readText(relative) } catch (_: Exception) {
+            checkpoint.status = "invalid_response_encoding"
+            checkpoint.diagnostic = "repository_event_validation_checkpoint_invalid_response_encoding"
+            return checkpoint
+        }
+        if (text == "") {
+            checkpoint.status = "validation_checkpoint_malformed"
+            checkpoint.diagnostic = "repository_event_validation_checkpoint_empty"
+            return checkpoint
+        }
+        if (ckbCurrentField(text, "schemaVersion") != CkbCandidateDurableSchema.VALIDATION_RESUME_VERSION) {
+            checkpoint.status = "validation_checkpoint_schema_mismatch"
+            checkpoint.diagnostic = checkpoint.status
+            return checkpoint
+        }
+        checkpoint.eventId = ckbCurrentField(text, "eventId")
+        checkpoint.runKey = ckbCurrentField(text, "runKey")
+        checkpoint.acquisitionId = ckbCurrentField(text, "acquisitionId")
+        checkpoint.planHash = ckbCurrentField(text, "planHash")
+        checkpoint.recordsEvidenceHash = ckbCurrentField(text, "recordsEvidenceHash")
+        checkpoint.candidateVersion = ckbCurrentField(text, "candidateVersion")
+        checkpoint.activeBaseVersion = ckbCurrentField(text, "activeBaseVersion")
+        if (checkpoint.eventId != expected.eventId || checkpoint.runKey != expected.runKey ||
+            checkpoint.acquisitionId != expected.acquisitionId || checkpoint.planHash != expected.planHash ||
+            checkpoint.recordsEvidenceHash != expected.recordsEvidenceHash ||
+            checkpoint.candidateVersion != expected.candidateVersion ||
+            checkpoint.activeBaseVersion != expected.activeBaseVersion) {
+            checkpoint.status = "validation_checkpoint_identity_mismatch"
+            checkpoint.diagnostic = checkpoint.status
+            return checkpoint
+        }
+        checkpoint.phase = ckbCurrentField(text, "phase")
+        checkpoint.documentCursor = parseIntField(ckbCurrentField(text, "documentCursor"), -1)
+        checkpoint.documentTotal = parseIntField(ckbCurrentField(text, "documentTotal"), -1)
+        checkpoint.partitionCursor = parseIntField(ckbCurrentField(text, "partitionCursor"), -1)
+        checkpoint.partitionCount = parseIntField(ckbCurrentField(text, "partitionCount"), -1)
+        if (!ckbScheduledFetchDecodePathsJson(ckbCurrentField(text, "partitionIdsJson"), checkpoint.partitionIds)) {
+            checkpoint.status = "validation_checkpoint_malformed"
+            checkpoint.diagnostic = "validation_checkpoint_partition_ids_malformed"
+            return checkpoint
+        }
+        checkpoint.worksetEvidenceHash = ckbCurrentField(text, "worksetEvidenceHash")
+        checkpoint.currentPartition = ckbCurrentField(text, "currentPartition")
+        checkpoint.completedPartitionsEvidenceHash = ckbCurrentField(text, "completedPartitionsEvidenceHash")
+        checkpoint.exactSymbolHits = parseIntField(ckbCurrentField(text, "exactSymbolHits"), -1)
+        checkpoint.docSectionHits = parseIntField(ckbCurrentField(text, "docSectionHits"), -1)
+        checkpoint.toolManualHits = parseIntField(ckbCurrentField(text, "toolManualHits"), -1)
+        checkpoint.negativeRuleHits = parseIntField(ckbCurrentField(text, "negativeRuleHits"), -1)
+        checkpoint.moduleHits = parseIntField(ckbCurrentField(text, "moduleHits"), -1)
+        checkpoint.availabilityHits = parseIntField(ckbCurrentField(text, "availabilityHits"), -1)
+        checkpoint.deltaEvidenceHash = ckbCurrentField(text, "deltaEvidenceHash")
+        checkpoint.overlayEvidenceHash = ckbCurrentField(text, "overlayEvidenceHash")
+        checkpoint.vectorEvidenceHash = ckbCurrentField(text, "vectorEvidenceHash")
+        checkpoint.validationEvidenceHash = ckbCurrentField(text, "validationEvidenceHash")
+        checkpoint.indexArtifactChecksum = ckbCurrentField(text, "indexArtifactChecksum")
+        checkpoint.transportParityPass = ckbCurrentField(text, "transportParityPass") == "true"
+        checkpoint.performancePass = ckbCurrentField(text, "performancePass") == "true"
+        checkpoint.vectorHealthPass = ckbCurrentField(text, "vectorHealthPass") == "true"
+        checkpoint.performanceP95Cost = parseIntField(ckbCurrentField(text, "performanceP95Cost"), -1)
+        checkpoint.performanceEvidenceHash = ckbCurrentField(text, "performanceEvidenceHash")
+        checkpoint.vectorState = ckbCurrentField(text, "vectorState")
+        checkpoint.vectorDimension = parseIntField(ckbCurrentField(text, "vectorDimension"), -1)
+        checkpoint.vectorCount = parseIntField(ckbCurrentField(text, "vectorCount"), -1)
+        checkpoint.vectorCollection = ckbCurrentField(text, "vectorCollection")
+        checkpoint.vectorStatusEvidenceHash = ckbCurrentField(text, "vectorStatusEvidenceHash")
+        checkpoint.vectorDegradedReason = ckbCurrentField(text, "vectorDegradedReason")
+        checkpoint.checksum = ckbCurrentField(text, "checksum")
+        if (!this.repositoryEventValidationCheckpointSemanticallyValid(checkpoint)) {
+            checkpoint.status = "validation_checkpoint_malformed"
+            checkpoint.diagnostic = checkpoint.status
+            return checkpoint
+        }
+        if (checkpoint.checksum != ckbRepositoryEventValidationCheckpointChecksum(checkpoint)) {
+            checkpoint.status = "validation_checkpoint_checksum_mismatch"
+            checkpoint.diagnostic = checkpoint.status
+            return checkpoint
+        }
+        if (text != this.repositoryEventValidationCheckpointText(checkpoint)) {
+            checkpoint.status = "validation_checkpoint_malformed"
+            checkpoint.diagnostic = "repository_event_validation_checkpoint_noncanonical"
+            return checkpoint
+        }
+        checkpoint.valid = true
+        checkpoint.status = "ok"
+        checkpoint
+    }
+
+    private func repositoryEventValidationCheckpointText(
+        checkpoint: CkbRepositoryEventValidationCheckpoint): String {
+        var text = "schemaVersion=${CkbCandidateDurableSchema.VALIDATION_RESUME_VERSION}\n"
+        text += "eventId=${escapeField(checkpoint.eventId)}\n"
+        text += "runKey=${escapeField(checkpoint.runKey)}\n"
+        text += "acquisitionId=${escapeField(checkpoint.acquisitionId)}\n"
+        text += "planHash=${escapeField(checkpoint.planHash)}\n"
+        text += "recordsEvidenceHash=${escapeField(checkpoint.recordsEvidenceHash)}\n"
+        text += "candidateVersion=${escapeField(checkpoint.candidateVersion)}\n"
+        text += "activeBaseVersion=${escapeField(checkpoint.activeBaseVersion)}\n"
+        text += "phase=${escapeField(checkpoint.phase)}\n"
+        text += "documentCursor=${checkpoint.documentCursor}\n"
+        text += "documentTotal=${checkpoint.documentTotal}\n"
+        text += "partitionCursor=${checkpoint.partitionCursor}\n"
+        text += "partitionCount=${checkpoint.partitionCount}\n"
+        text += "partitionIdsJson=${escapeField(ckbScheduledFetchPathsJson(checkpoint.partitionIds))}\n"
+        text += "worksetEvidenceHash=${checkpoint.worksetEvidenceHash}\n"
+        text += "currentPartition=${escapeField(checkpoint.currentPartition)}\n"
+        text += "completedPartitionsEvidenceHash=${checkpoint.completedPartitionsEvidenceHash}\n"
+        text += "exactSymbolHits=${checkpoint.exactSymbolHits}\n"
+        text += "docSectionHits=${checkpoint.docSectionHits}\n"
+        text += "toolManualHits=${checkpoint.toolManualHits}\n"
+        text += "negativeRuleHits=${checkpoint.negativeRuleHits}\n"
+        text += "moduleHits=${checkpoint.moduleHits}\n"
+        text += "availabilityHits=${checkpoint.availabilityHits}\n"
+        text += "deltaEvidenceHash=${checkpoint.deltaEvidenceHash}\n"
+        text += "overlayEvidenceHash=${checkpoint.overlayEvidenceHash}\n"
+        text += "vectorEvidenceHash=${checkpoint.vectorEvidenceHash}\n"
+        text += "validationEvidenceHash=${checkpoint.validationEvidenceHash}\n"
+        text += "indexArtifactChecksum=${checkpoint.indexArtifactChecksum}\n"
+        text += "transportParityPass=${checkpoint.transportParityPass}\n"
+        text += "performancePass=${checkpoint.performancePass}\n"
+        text += "vectorHealthPass=${checkpoint.vectorHealthPass}\n"
+        text += "performanceP95Cost=${checkpoint.performanceP95Cost}\n"
+        text += "performanceEvidenceHash=${checkpoint.performanceEvidenceHash}\n"
+        text += "vectorState=${escapeField(checkpoint.vectorState)}\n"
+        text += "vectorDimension=${checkpoint.vectorDimension}\n"
+        text += "vectorCount=${checkpoint.vectorCount}\n"
+        text += "vectorCollection=${escapeField(checkpoint.vectorCollection)}\n"
+        text += "vectorStatusEvidenceHash=${checkpoint.vectorStatusEvidenceHash}\n"
+        text += "vectorDegradedReason=${escapeField(checkpoint.vectorDegradedReason)}\n"
+        text += "checksum=${checkpoint.checksum}\n"
+        text
+    }
+
+    private func repositoryEventValidationCheckpointIdentityValid(
+        checkpoint: CkbRepositoryEventValidationCheckpoint): Bool {
+        this.validS4PathSegment(checkpoint.acquisitionId) && checkpoint.eventId.trimAscii() != "" &&
+            checkpoint.runKey.trimAscii() != "" && checkpoint.planHash.trimAscii() != "" &&
+            ckbP6ValidationEvidenceHashValid(checkpoint.recordsEvidenceHash) &&
+            checkpoint.candidateVersion.trimAscii() != "" && checkpoint.activeBaseVersion.trimAscii() != ""
+    }
+
+    private func repositoryEventValidationCheckpointSemanticallyValid(
+        checkpoint: CkbRepositoryEventValidationCheckpoint): Bool {
+        if (!this.repositoryEventValidationCheckpointIdentityValid(checkpoint) ||
+            checkpoint.documentCursor < 0 || checkpoint.documentTotal < 0 ||
+            checkpoint.documentCursor > checkpoint.documentTotal || checkpoint.partitionCursor < 0 ||
+            checkpoint.partitionCount < 0 || checkpoint.partitionCursor > checkpoint.partitionCount ||
+            checkpoint.partitionIds.size != checkpoint.partitionCount ||
+            checkpoint.exactSymbolHits < 0 ||
+            checkpoint.docSectionHits < 0 || checkpoint.toolManualHits < 0 ||
+            checkpoint.negativeRuleHits < 0 || checkpoint.moduleHits < 0 ||
+            checkpoint.availabilityHits < 0 || checkpoint.performanceP95Cost < 0 ||
+            checkpoint.vectorDimension < 0 || checkpoint.vectorCount < 0) {
+            return false
+        }
+        let deltaValid = checkpoint.deltaEvidenceHash == "" || ckbP6ValidationEvidenceHashValid(checkpoint.deltaEvidenceHash)
+        let overlayValid = checkpoint.overlayEvidenceHash == "" || ckbP6ValidationEvidenceHashValid(checkpoint.overlayEvidenceHash)
+        let vectorValid = checkpoint.vectorEvidenceHash == "" || ckbP6ValidationEvidenceHashValid(checkpoint.vectorEvidenceHash)
+        let validationValid = checkpoint.validationEvidenceHash == "" || ckbP6ValidationEvidenceHashValid(checkpoint.validationEvidenceHash)
+        let indexArtifactValid = checkpoint.indexArtifactChecksum == "" || ckbP6ValidationEvidenceHashValid(checkpoint.indexArtifactChecksum)
+        let performanceEvidenceValid = checkpoint.performanceEvidenceHash == "" || ckbP6ValidationEvidenceHashValid(checkpoint.performanceEvidenceHash)
+        let vectorStatusEvidenceValid = checkpoint.vectorStatusEvidenceHash == "" || ckbP6ValidationEvidenceHashValid(checkpoint.vectorStatusEvidenceHash)
+        let partitionsValid = checkpoint.completedPartitionsEvidenceHash == "" || ckbP6ValidationEvidenceHashValid(checkpoint.completedPartitionsEvidenceHash)
+        let worksetValid = checkpoint.worksetEvidenceHash == "" || ckbP6ValidationEvidenceHashValid(checkpoint.worksetEvidenceHash)
+        if (!deltaValid || !overlayValid || !vectorValid || !validationValid || !indexArtifactValid || !performanceEvidenceValid || !vectorStatusEvidenceValid || !partitionsValid || !worksetValid) { return false }
+        if (checkpoint.phase == "delta_materialized") { return checkpoint.deltaEvidenceHash != "" }
+        if (checkpoint.phase == "overlay_materialized") { return checkpoint.deltaEvidenceHash != "" && checkpoint.overlayEvidenceHash != "" }
+        if (checkpoint.phase == "vector_completed") { return checkpoint.deltaEvidenceHash != "" && checkpoint.overlayEvidenceHash != "" && checkpoint.vectorEvidenceHash != "" }
+        if (checkpoint.phase == "validation_documents" || checkpoint.phase == "validation_gate" ||
+            checkpoint.phase == "completed" || checkpoint.phase == "terminal_failed") {
+            let requiresIndexArtifact = checkpoint.phase == "completed" ||
+                checkpoint.currentPartition == "index_ready" ||
+                checkpoint.currentPartition == "parity_completed"
+            let completedGateValid = checkpoint.phase != "completed" ||
+                (checkpoint.transportParityPass && checkpoint.performancePass &&
+                    checkpoint.vectorHealthPass && checkpoint.performanceP95Cost > 0 &&
+                    checkpoint.performanceEvidenceHash != "" && checkpoint.vectorState != "" &&
+                    checkpoint.vectorDimension > 0 && checkpoint.vectorDegradedReason == "")
+            return checkpoint.deltaEvidenceHash != "" && checkpoint.overlayEvidenceHash != "" &&
+                checkpoint.vectorEvidenceHash != "" && checkpoint.validationEvidenceHash != "" &&
+                checkpoint.completedPartitionsEvidenceHash != "" && checkpoint.worksetEvidenceHash != "" &&
+                checkpoint.partitionCount > 0 &&
+                (!requiresIndexArtifact || checkpoint.indexArtifactChecksum != "") &&
+                completedGateValid
+        }
+        false
+    }
+
+    public func saveRepositoryEventValidationIndexArtifact(
+        checkpoint: CkbRepositoryEventValidationCheckpoint,
+        index: CangjieServingIndex): CkbRepositoryEventValidationIndexArtifact {
+        let artifact = CkbRepositoryEventValidationIndexArtifact()
+        artifact.acquisitionId = checkpoint.acquisitionId
+        artifact.recordsEvidenceHash = checkpoint.recordsEvidenceHash
+        artifact.activeBaseVersion = checkpoint.activeBaseVersion
+        artifact.documentCount = index.documents.size
+        artifact.documentEvidenceHash = ckbRepositoryEventValidationIndexDocumentsEvidenceHash(
+            index.documents)
+        if (!this.repositoryEventValidationIndexArtifactIdentityValid(artifact) ||
+            artifact.documentCount <= 0 ||
+            !ckbP6ValidationEvidenceHashValid(artifact.documentEvidenceHash)) {
+            artifact.status = "validation_index_artifact_invalid"
+            return artifact
+        }
+        artifact.checksum = ckbRepositoryEventValidationIndexArtifactChecksum(artifact)
+        try {
+            let batchSize = CkbCandidateDurableSchema.VALIDATION_INDEX_ARTIFACT_BATCH_SIZE
+            var batchIndex: Int64 = 0
+            var start: Int64 = 0
+            while (start < index.documents.size) {
+                let end = if (start + batchSize < index.documents.size) { start + batchSize } else { index.documents.size }
+                let documents = ArrayList<CangjieServingDocument>()
+                for (offset in start..end) { documents.add(index.documents[offset]) }
+                let text = this.repositoryEventValidationIndexArtifactBatchText(artifact, batchIndex, documents)
+                let path = ckbRepositoryEventValidationIndexArtifactBatchPath(artifact.acquisitionId, batchIndex)
+                this.writeLinesAtomically(path, text)
+                if (this.readText(path) != text) {
+                    artifact.status = "validation_index_artifact_readback_failed"
+                    return artifact
+                }
+                start = end
+                batchIndex += 1
+            }
+            let manifest = this.repositoryEventValidationIndexArtifactText(artifact)
+            this.writeLinesAtomically(ckbRepositoryEventValidationIndexArtifactPath(artifact.acquisitionId), manifest)
+            if (this.readText(ckbRepositoryEventValidationIndexArtifactPath(artifact.acquisitionId)) != manifest) {
+                artifact.status = "validation_index_artifact_readback_failed"
+                return artifact
+            }
+        } catch (_: Exception) {
+            artifact.status = "validation_index_artifact_write_failed"
+            return artifact
+        }
+        artifact.valid = true
+        artifact.status = "ok"
+        artifact
+    }
+
+    public func loadRepositoryEventValidationIndexArtifact(
+        checkpoint: CkbRepositoryEventValidationCheckpoint): CkbRepositoryEventValidationIndexArtifact {
+        let artifact = CkbRepositoryEventValidationIndexArtifact()
+        artifact.acquisitionId = checkpoint.acquisitionId
+        artifact.recordsEvidenceHash = checkpoint.recordsEvidenceHash
+        artifact.activeBaseVersion = checkpoint.activeBaseVersion
+        if (!this.repositoryEventValidationIndexArtifactIdentityValid(artifact)) {
+            artifact.status = "validation_index_artifact_identity_invalid"
+            return artifact
+        }
+        let relative = ckbRepositoryEventValidationIndexArtifactPath(artifact.acquisitionId)
+        if (!this.has(relative)) { return artifact }
+        let text = try { this.readText(relative) } catch (_: Exception) {
+            artifact.status = "invalid_response_encoding"
+            return artifact
+        }
+        if (text == "" || ckbCurrentField(text, "schemaVersion") != "p6-validation-index-artifact-v2") {
+            artifact.status = "validation_index_artifact_malformed"
+            return artifact
+        }
+        artifact.acquisitionId = ckbCurrentField(text, "acquisitionId")
+        artifact.recordsEvidenceHash = ckbCurrentField(text, "recordsEvidenceHash")
+        artifact.activeBaseVersion = ckbCurrentField(text, "activeBaseVersion")
+        artifact.documentEvidenceHash = ckbCurrentField(text, "documentEvidenceHash")
+        artifact.documentCount = parseIntField(ckbCurrentField(text, "documentCount"), -1)
+        artifact.checksum = ckbCurrentField(text, "checksum")
+        let batchSize = CkbCandidateDurableSchema.VALIDATION_INDEX_ARTIFACT_BATCH_SIZE
+        let batchCount = (artifact.documentCount + batchSize - 1) / batchSize
+        for (batchIndex in 0..batchCount) {
+            let batchText = try { this.readText(ckbRepositoryEventValidationIndexArtifactBatchPath(artifact.acquisitionId, batchIndex)) } catch (_: Exception) {
+                artifact.status = "invalid_response_encoding"
+                return artifact
+            }
+            if (!this.repositoryEventValidationIndexArtifactLoadBatch(artifact, batchIndex, batchText)) { return artifact }
+        }
+        if (artifact.acquisitionId != checkpoint.acquisitionId ||
+            artifact.recordsEvidenceHash != checkpoint.recordsEvidenceHash ||
+            artifact.activeBaseVersion != checkpoint.activeBaseVersion) {
+            artifact.status = "validation_index_artifact_identity_mismatch"
+            return artifact
+        }
+        if (!this.repositoryEventValidationIndexArtifactValid(artifact) ||
+            artifact.checksum != ckbRepositoryEventValidationIndexArtifactChecksum(artifact)) {
+            artifact.status = "validation_index_artifact_checksum_mismatch"
+            return artifact
+        }
+        if (text != this.repositoryEventValidationIndexArtifactText(artifact)) {
+            artifact.status = "validation_index_artifact_malformed"
+            return artifact
+        }
+        artifact.valid = true
+        artifact.status = "ok"
+        artifact
+    }
+
+    private func repositoryEventValidationIndexArtifactText(
+        artifact: CkbRepositoryEventValidationIndexArtifact): String {
+        var text = "schemaVersion=p6-validation-index-artifact-v2\n"
+        text += "acquisitionId=${escapeField(artifact.acquisitionId)}\n"
+        text += "recordsEvidenceHash=${artifact.recordsEvidenceHash}\n"
+        text += "activeBaseVersion=${escapeField(artifact.activeBaseVersion)}\n"
+        text += "documentEvidenceHash=${artifact.documentEvidenceHash}\n"
+        text += "documentCount=${artifact.documentCount}\n"
+        text += "checksum=${artifact.checksum}\n"
+        text
+    }
+
+    private func repositoryEventValidationIndexArtifactBatchText(artifact: CkbRepositoryEventValidationIndexArtifact, batchIndex: Int64, documents: ArrayList<CangjieServingDocument>): String {
+        let evidence = ckbRepositoryEventValidationIndexDocumentsEvidenceHash(documents)
+        let checksum = ckbReleaseEvidenceHash("${artifact.checksum}|${batchIndex}|${documents.size}|${evidence}")
+        var text = "schemaVersion=p6-validation-index-artifact-batch-v1\n"
+        text += "acquisitionId=${escapeField(artifact.acquisitionId)}\nbatchIndex=${batchIndex}\ndocumentCount=${documents.size}\n"
+        text += "documentEvidenceHash=${evidence}\n"
+        for (document in documents) { text += this.repositoryEventValidationIndexArtifactDocumentLine(document) }
+        text += "checksum=${checksum}\n"
+        text
+    }
+
+    private func repositoryEventValidationIndexArtifactDocumentLine(document: CangjieServingDocument): String {
+        "document=${escapeField(document.documentId)}|${escapeField(document.recordKind)}|${escapeField(document.title)}|${escapeField(document.text)}|${escapeField(document.symbolKey)}|${escapeField(document.module)}|${escapeField(document.sourceSet)}|${escapeField(document.trustLevel)}|${escapeField(document.reviewState)}|${escapeField(document.targetVersion)}|${escapeField(document.versionResolutionId)}|${escapeField(document.contentHash)}|${escapeField(document.citation)}|${escapeField(document.sourceId)}|${escapeField(document.rankProfile)}|${document.rejected}|${escapeField(document.diagnostic)}\n"
+    }
+
+    private func repositoryEventValidationIndexArtifactLoadBatch(artifact: CkbRepositoryEventValidationIndexArtifact, batchIndex: Int64, text: String): Bool {
+        if (text == "" || ckbCurrentField(text, "schemaVersion") != "p6-validation-index-artifact-batch-v1" || ckbCurrentField(text, "acquisitionId") != artifact.acquisitionId || parseIntField(ckbCurrentField(text, "batchIndex"), -1) != batchIndex) {
+            artifact.status = "validation_index_artifact_malformed"
+            return false
+        }
+        let documents = ArrayList<CangjieServingDocument>()
+        for (line in text.split("\n")) {
+            if (!line.startsWith("document=")) { continue }
+            let fields = line[9..line.size].split("|")
+            if (fields.size != 17 || (fields[15] != "true" && fields[15] != "false")) { artifact.status = "validation_index_artifact_malformed"; return false }
+            let document = CangjieServingDocument()
+            document.documentId = unescapeField(fields[0]); document.recordKind = unescapeField(fields[1]); document.title = unescapeField(fields[2]); document.text = unescapeField(fields[3]); document.symbolKey = unescapeField(fields[4]); document.module = unescapeField(fields[5]); document.sourceSet = unescapeField(fields[6]); document.trustLevel = unescapeField(fields[7]); document.reviewState = unescapeField(fields[8]); document.targetVersion = unescapeField(fields[9]); document.versionResolutionId = unescapeField(fields[10]); document.contentHash = unescapeField(fields[11]); document.citation = unescapeField(fields[12]); document.sourceId = unescapeField(fields[13]); document.rankProfile = unescapeField(fields[14]); document.rejected = fields[15] == "true"; document.diagnostic = unescapeField(fields[16])
+            documents.add(document)
+        }
+        let evidence = ckbRepositoryEventValidationIndexDocumentsEvidenceHash(documents)
+        let expected = ckbReleaseEvidenceHash("${artifact.checksum}|${batchIndex}|${documents.size}|${evidence}")
+        if (parseIntField(ckbCurrentField(text, "documentCount"), -1) != documents.size || ckbCurrentField(text, "documentEvidenceHash") != evidence || ckbCurrentField(text, "checksum") != expected || text != this.repositoryEventValidationIndexArtifactBatchText(artifact, batchIndex, documents)) { artifact.status = "validation_index_artifact_checksum_mismatch"; return false }
+        for (document in documents) { artifact.documents.add(document) }
+        true
+    }
+
+    private func repositoryEventValidationIndexArtifactIdentityValid(
+        artifact: CkbRepositoryEventValidationIndexArtifact): Bool {
+        this.validS4PathSegment(artifact.acquisitionId) &&
+            ckbP6ValidationEvidenceHashValid(artifact.recordsEvidenceHash) &&
+            artifact.activeBaseVersion.trimAscii() != ""
+    }
+
+    private func repositoryEventValidationIndexArtifactValid(
+        artifact: CkbRepositoryEventValidationIndexArtifact): Bool {
+        this.repositoryEventValidationIndexArtifactIdentityValid(artifact) &&
+            artifact.documentCount > 0 && artifact.documents.size == artifact.documentCount &&
+            artifact.documentEvidenceHash ==
+                ckbRepositoryEventValidationIndexDocumentsEvidenceHash(artifact.documents) &&
+            ckbP6ValidationEvidenceHashValid(artifact.documentEvidenceHash)
+    }
+
     private func saveLiveCandidateLifecycleMetadata(status: KnowledgeStatus): Unit {
         let pointer = this.loadActiveSnapshotPointer()
         if (pointer.valid) {
@@ -11874,16 +12261,23 @@ public class CkbCommandLoopService {
     private let config: CkbRuntimeConfig
     private let store: FileKnowledgeStore
     private let sourceRunner: SourceFetchRunner
+    private let sourceEventPromotionBudgetPlan: CangjieCandidatePromotionBudgetPlan
+    private let repositoryEventNowClock: CkbMillisClock
     private var kb: KnowledgeBase
     private let adminOperationGate: CkbAdminOperationGate = CkbAdminOperationGate()
     private var started: Bool = false
     private var acceptedEventCount: Int64 = 0
     private var rebuildCount: Int64 = 0
 
-    public init(config: CkbRuntimeConfig, store: FileKnowledgeStore, sourceRunner!: SourceFetchRunner = DisabledNetworkFetchRunner()) {
+    public init(config: CkbRuntimeConfig, store: FileKnowledgeStore,
+        sourceRunner!: SourceFetchRunner = DisabledNetworkFetchRunner(),
+        sourceEventPromotionBudgetPlan!: CangjieCandidatePromotionBudgetPlan = CangjieCandidatePromotionBudgetPlan(),
+        repositoryEventNowClock!: CkbMillisClock = SystemCkbMillisClock()) {
         this.config = config
         this.store = store
         this.sourceRunner = sourceRunner
+        this.sourceEventPromotionBudgetPlan = sourceEventPromotionBudgetPlan
+        this.repositoryEventNowClock = repositoryEventNowClock
         this.kb = newKnowledgeBaseFromStoreWithRuntime(store, config).kb
     }
 
@@ -12537,9 +12931,11 @@ public class CkbCommandLoopService {
         // The durable inbox is the event execution boundary.  A receipt is
         // claimed and executed by the scheduler, never by HTTP ingress.
         let eventWorker = CkbRepositoryEventSourceSyncWorker(this.kb, this.store,
-            this.sourceRunner, this.config)
+            this.sourceRunner, this.config,
+            promotionBudgetPlan: this.sourceEventPromotionBudgetPlan)
+        let eventNowMillis = this.repositoryEventNowClock.nowMillis()
         let eventDispatch = this.runNextRepositoryEventWorker(
-            "scheduler-${ckbCoreNowMillis()}", ckbCoreNowMillis(), eventWorker)
+            "scheduler-${eventNowMillis}", eventNowMillis, eventWorker)
         this.deferLegacySourceEventSchedule()
         ckbApplySchedulerProfileBudgets(this.kb.scheduler)
         let executor = SchedulerExecutor(this.kb.scheduler, ckbSchedulerTaskRunnerForRuntime(this.kb, this.config, this.store, "", this.store.rootPath(), this.sourceRunner), FileSchedulerProgressSink(this.store), 300000)
@@ -12601,9 +12997,11 @@ public class CkbCommandLoopService {
         for (name in taskNames) {
             if (name == "cangjie_source_event_sync") { requestedSourceEvent = true } else { executable.add(name) }
         }
+        let eventNowMillis = this.repositoryEventNowClock.nowMillis()
         let eventDispatch = if (requestedSourceEvent) {
-            this.runNextRepositoryEventWorker("scheduler-${ckbCoreNowMillis()}", ckbCoreNowMillis(),
-                CkbRepositoryEventSourceSyncWorker(this.kb, this.store, this.sourceRunner, this.config))
+            this.runNextRepositoryEventWorker("scheduler-${eventNowMillis}", eventNowMillis,
+                CkbRepositoryEventSourceSyncWorker(this.kb, this.store, this.sourceRunner,
+                    this.config, promotionBudgetPlan: this.sourceEventPromotionBudgetPlan))
         } else { CkbRepositoryEventLeaseResult() }
         this.deferLegacySourceEventSchedule()
         if (executable.size == 0) {
@@ -16752,7 +17150,8 @@ public func ckbScheduledPromotionTerminalStatus(ok: Bool, validationStatus: Stri
     if (ok) {
         return successStatus
     }
-    if (validationStatus == "candidate_validation_timeout" ||
+    if (validationStatus == "candidate_validation_recoverable" ||
+        validationStatus == "candidate_validation_timeout" ||
         validationStatus == "candidate_vector_deadline_exceeded" ||
         validationStatus == "candidate_validation_deadline_exceeded" ||
         validationStatus == "candidate_active_commit_deadline_exceeded" ||
@@ -18267,7 +18666,8 @@ private func ckbRunRepositoryChangedSourceSync(kb: KnowledgeBase, store: FileKno
 // from a bounded tree before any content is ingested.
 private func ckbRunRepositoryEventSourceSync(kb: KnowledgeBase, store: FileKnowledgeStore,
     runner: SourceFetchRunner, config: CkbRuntimeConfig,
-    receipt: CkbRepositoryEventReceipt): CkbScheduledProfileFetchResult {
+    receipt: CkbRepositoryEventReceipt,
+    promotionBudgetPlan!: CangjieCandidatePromotionBudgetPlan = CangjieCandidatePromotionBudgetPlan()): CkbScheduledProfileFetchResult {
     let profile = ckbSyncProfileForScheduleTask("cangjie_source_event_sync")
     let result = CkbScheduledProfileFetchResult()
     let builder = SourceRequestBuilder(gitCodeApiRoot: config.gitCodeBaseUrl)
@@ -18321,7 +18721,8 @@ private func ckbRunRepositoryEventSourceSync(kb: KnowledgeBase, store: FileKnowl
         }
     }
     let manifest = ckbRuntimeVersionManifestForStore(store, config)
-    let ingest = ingestScheduledProfileSources(kb, store, profile, result, config, manifest)
+    let ingest = ingestScheduledProfileSources(kb, store, profile, result, config, manifest,
+        promotionBudgetPlan: promotionBudgetPlan)
     result.ok = result.ok && ingest.ok
     result.status = if (result.ok) { ingest.status } else {
         if (ingest.status != "") { ingest.status } else { result.status }
@@ -18477,23 +18878,27 @@ private class CkbRepositoryEventSourceSyncWorker <: CkbRepositoryEventWorker {
     private let store: FileKnowledgeStore
     private let runner: SourceFetchRunner
     private let config: CkbRuntimeConfig
+    private let promotionBudgetPlan: CangjieCandidatePromotionBudgetPlan
 
     public init(kb: KnowledgeBase, store: FileKnowledgeStore, runner: SourceFetchRunner,
-        config: CkbRuntimeConfig) {
+        config: CkbRuntimeConfig,
+        promotionBudgetPlan!: CangjieCandidatePromotionBudgetPlan = CangjieCandidatePromotionBudgetPlan()) {
         this.kb = kb
         this.store = store
         this.runner = runner
         this.config = config
+        this.promotionBudgetPlan = promotionBudgetPlan
     }
 
     public func execute(receipt: CkbRepositoryEventReceipt): CkbRepositoryEventWorkerResult {
         let result = CkbRepositoryEventWorkerResult()
         let fetched = ckbRunRepositoryEventSourceSync(this.kb, this.store, this.runner,
-            this.config, receipt)
+            this.config, receipt, promotionBudgetPlan: this.promotionBudgetPlan)
         if (fetched.ok) {
             result.state = "committed"
             result.errorCode = ""
-        } else if (ckbScheduledIngestTimedOut(fetched.status) ||
+        } else if (fetched.status == "candidate_validation_recoverable" ||
+            ckbScheduledIngestTimedOut(fetched.status) ||
             fetched.status.contains("timeout") || fetched.status.contains("deadline") ||
             fetched.status.contains("network") || fetched.status.contains("gitcode_ref_resolution")) {
             result.state = "retryable"

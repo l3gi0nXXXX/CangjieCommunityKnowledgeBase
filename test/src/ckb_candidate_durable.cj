@@ -6,10 +6,136 @@ import stdx.crypto.digest.SHA256
 
 public class CkbCandidateDurableSchema {
     static let VERSION: String = "p5-candidate-durable-v2"
+    static let VALIDATION_RESUME_VERSION: String = "p6-validation-resume-v1"
     static let VECTOR_BATCH_SIZE: Int64 = 128
     static let VECTOR_LOOKUP_BATCH_SIZE: Int64 = 256
     static let QDRANT_CACHE_MAX_RECORDS: Int64 = 1024
     static let VECTOR_MAX_BUFFER_BYTES: Int64 = 8388608
+    static let VALIDATION_INDEX_ARTIFACT_BATCH_SIZE: Int64 = 64
+}
+
+// This checkpoint owns only the P6 repository-event validation cursor.  P5
+// candidate materialization and vector spool artifacts remain their existing
+// durable sources of truth; their evidence is bound here instead of copied.
+public class CkbRepositoryEventValidationCheckpoint {
+    public var valid: Bool = false
+    public var status: String = "not_found"
+    public var diagnostic: String = ""
+    public var eventId: String = ""
+    public var runKey: String = ""
+    public var acquisitionId: String = ""
+    public var planHash: String = ""
+    public var recordsEvidenceHash: String = ""
+    public var candidateVersion: String = ""
+    public var activeBaseVersion: String = ""
+    public var phase: String = "not_started"
+    public var documentCursor: Int64 = 0
+    public var documentTotal: Int64 = 0
+    public var partitionCursor: Int64 = 0
+    public var partitionCount: Int64 = 0
+    public var partitionIds: ArrayList<String> = ArrayList<String>()
+    public var worksetEvidenceHash: String = ""
+    public var currentPartition: String = ""
+    public var completedPartitionsEvidenceHash: String = ""
+    public var exactSymbolHits: Int64 = 0
+    public var docSectionHits: Int64 = 0
+    public var toolManualHits: Int64 = 0
+    public var negativeRuleHits: Int64 = 0
+    public var moduleHits: Int64 = 0
+    public var availabilityHits: Int64 = 0
+    public var deltaEvidenceHash: String = ""
+    public var overlayEvidenceHash: String = ""
+    public var vectorEvidenceHash: String = ""
+    public var validationEvidenceHash: String = ""
+    public var indexArtifactChecksum: String = ""
+    public var transportParityPass: Bool = false
+    public var performancePass: Bool = false
+    public var vectorHealthPass: Bool = false
+    public var performanceP95Cost: Int64 = 0
+    public var performanceEvidenceHash: String = ""
+    public var vectorState: String = ""
+    public var vectorDimension: Int64 = 0
+    public var vectorCount: Int64 = 0
+    public var vectorCollection: String = ""
+    public var vectorStatusEvidenceHash: String = ""
+    public var vectorDegradedReason: String = ""
+    public var checksum: String = ""
+
+    public init() {}
+}
+
+public class CkbRepositoryEventValidationIndexArtifact {
+    public var valid: Bool = false
+    public var status: String = "not_found"
+    public var acquisitionId: String = ""
+    public var recordsEvidenceHash: String = ""
+    public var activeBaseVersion: String = ""
+    public var documentEvidenceHash: String = ""
+    public var documentCount: Int64 = 0
+    public var documents: ArrayList<CangjieServingDocument> = ArrayList<CangjieServingDocument>()
+    public var checksum: String = ""
+    public init() {}
+}
+
+public func ckbRepositoryEventValidationIndexArtifactPath(acquisitionId: String): String {
+    "metadata/candidate-validations/${acquisitionId}/index-artifact.ckb"
+}
+
+public func ckbRepositoryEventValidationIndexArtifactBatchPath(acquisitionId: String,
+    batchIndex: Int64): String {
+    "metadata/candidate-validations/${acquisitionId}/index-batches/batch-${batchIndex}.ckb"
+}
+
+public func ckbRepositoryEventValidationIndexArtifactChecksum(
+    artifact: CkbRepositoryEventValidationIndexArtifact): String {
+    ckbReleaseEvidenceHash("p6-validation-index-artifact-v1|${artifact.acquisitionId}|${artifact.recordsEvidenceHash}|${artifact.activeBaseVersion}|${artifact.documentEvidenceHash}|${artifact.documentCount}")
+}
+
+public func ckbRepositoryEventValidationIndexDocumentsEvidenceHash(
+    documents: ArrayList<CangjieServingDocument>): String {
+    let digest = SHA256()
+    ckbCandidateDigestField(digest, "${documents.size}")
+    for (document in documents) {
+        ckbCandidateDigestField(digest, document.documentId)
+        ckbCandidateDigestField(digest, document.recordKind)
+        ckbCandidateDigestField(digest, document.title)
+        ckbCandidateDigestField(digest, document.text)
+        ckbCandidateDigestField(digest, document.symbolKey)
+        ckbCandidateDigestField(digest, document.module)
+        ckbCandidateDigestField(digest, document.sourceSet)
+        ckbCandidateDigestField(digest, document.trustLevel)
+        ckbCandidateDigestField(digest, document.reviewState)
+        ckbCandidateDigestField(digest, document.targetVersion)
+        ckbCandidateDigestField(digest, document.versionResolutionId)
+        ckbCandidateDigestField(digest, document.contentHash)
+        ckbCandidateDigestField(digest, document.citation)
+        ckbCandidateDigestField(digest, document.sourceId)
+        ckbCandidateDigestField(digest, document.rankProfile)
+        ckbCandidateDigestField(digest, "${document.rejected}")
+        ckbCandidateDigestField(digest, document.diagnostic)
+    }
+    ckbCandidateDigestHex(digest)
+}
+
+public func ckbRepositoryEventValidationCheckpointRelativePath(acquisitionId: String): String {
+    "metadata/candidate-validations/${acquisitionId}/checkpoint.ckb"
+}
+
+public func ckbRepositoryEventValidationCheckpointChecksum(
+    checkpoint: CkbRepositoryEventValidationCheckpoint): String {
+    ckbReleaseEvidenceHash("${CkbCandidateDurableSchema.VALIDATION_RESUME_VERSION}|${checkpoint.eventId}|${checkpoint.runKey}|${checkpoint.acquisitionId}|${checkpoint.planHash}|${checkpoint.recordsEvidenceHash}|${checkpoint.candidateVersion}|${checkpoint.activeBaseVersion}|${checkpoint.phase}|${checkpoint.documentCursor}|${checkpoint.documentTotal}|${checkpoint.partitionCursor}|${checkpoint.partitionCount}|${ckbScheduledFetchPathsJson(checkpoint.partitionIds)}|${checkpoint.worksetEvidenceHash}|${checkpoint.currentPartition}|${checkpoint.completedPartitionsEvidenceHash}|${checkpoint.exactSymbolHits}|${checkpoint.docSectionHits}|${checkpoint.toolManualHits}|${checkpoint.negativeRuleHits}|${checkpoint.moduleHits}|${checkpoint.availabilityHits}|${checkpoint.deltaEvidenceHash}|${checkpoint.overlayEvidenceHash}|${checkpoint.vectorEvidenceHash}|${checkpoint.validationEvidenceHash}|${checkpoint.indexArtifactChecksum}|${checkpoint.transportParityPass}|${checkpoint.performancePass}|${checkpoint.vectorHealthPass}|${checkpoint.performanceP95Cost}|${checkpoint.performanceEvidenceHash}|${checkpoint.vectorState}|${checkpoint.vectorDimension}|${checkpoint.vectorCount}|${checkpoint.vectorCollection}|${checkpoint.vectorStatusEvidenceHash}|${checkpoint.vectorDegradedReason}")
+}
+
+public func ckbP6ValidationEvidenceHashValid(value: String): Bool {
+    let runes = value.toRuneArray()
+    if (runes.size != 64) { return false }
+    for (ch in runes) {
+        let digit = ch >= r'0' && ch <= r'9'
+        let lowerHex = ch >= r'a' && ch <= r'f'
+        let upperHex = ch >= r'A' && ch <= r'F'
+        if (!digit && !lowerHex && !upperHex) { return false }
+    }
+    true
 }
 
 public class CkbCandidateAcquisitionContext {

@@ -1,6 +1,7 @@
 package cangjie_community_knowledge_base_test
 
-import std.collection.ArrayList
+import std.collection.{ArrayList, HashSet}
+import std.sort.*
 
 public class CangjieServingExactEntry {
     public var lookupKind: String = ""
@@ -32,15 +33,24 @@ public class CangjieServingIndex {
     public init() {}
 }
 
-public func buildCangjieServingIndex(records: ArrayList<NormalizedRecord>, activeKnowledgeVersion!: String = "", deadlineAtMillis!: Int64 = 0): CangjieServingIndex {
+public interface CangjieServingIndexBuildObserver {
+    func onServingIndexBuild(recordCount: Int64): Unit
+}
+
+public class NoopCangjieServingIndexBuildObserver <: CangjieServingIndexBuildObserver {
+    public init() {}
+    public func onServingIndexBuild(recordCount: Int64): Unit {}
+}
+
+public func buildCangjieServingIndex(records: ArrayList<NormalizedRecord>, activeKnowledgeVersion!: String = "", deadlineAtMillis!: Int64 = 0, deadlineClock!: CkbMillisClock = SystemCkbMillisClock(), buildObserver!: CangjieServingIndexBuildObserver = NoopCangjieServingIndexBuildObserver()): CangjieServingIndex {
+    buildObserver.onServingIndexBuild(records.size)
     let index = CangjieServingIndex()
     index.activeKnowledgeVersion = cangjieServingIndexActiveVersion(records, activeKnowledgeVersion)
     var processed: Int64 = 0
     for (record in records) {
         if (processed % 64 == 0) {
-            let deadline = ckbDeadlineGuard("serving_index_build_records", deadlineAtMillis)
-            if (deadline.exceeded) {
-                index.diagnostics.add("${deadline.diagnostic}:processed=${processed}:total=${records.size}")
+            if (deadlineAtMillis > 0 && deadlineClock.nowMillis() >= deadlineAtMillis) {
+                index.diagnostics.add("deadline_exceeded:serving_index_build_records:now=${deadlineClock.nowMillis()}:deadline=${deadlineAtMillis}:processed=${processed}:total=${records.size}")
                 return index
             }
         }
@@ -66,12 +76,82 @@ public func buildCangjieServingIndex(records: ArrayList<NormalizedRecord>, activ
         }
         processed += 1
     }
-    let afterDeadline = ckbDeadlineGuard("serving_index_build_after", deadlineAtMillis)
-    if (afterDeadline.exceeded) {
-        index.diagnostics.add("${afterDeadline.diagnostic}:processed=${processed}:total=${records.size}")
+    if (deadlineAtMillis > 0 && deadlineClock.nowMillis() >= deadlineAtMillis) {
+        index.diagnostics.add("deadline_exceeded:serving_index_build_after:now=${deadlineClock.nowMillis()}:deadline=${deadlineAtMillis}:processed=${processed}:total=${records.size}")
         return index
     }
     cangjieServingIndexAddNegativeRuleDocuments(index)
+    if (index.documents.size == 0) {
+        index.diagnostics.add("serving_index_empty")
+    }
+    index
+}
+
+// The durable-validation workset needs only a stable partition map, document
+// count, and identity evidence.  Building a full serving index here retained
+// every rendered document and exact-entry view before partition validation,
+// which exhausts memory on a clean 17k-record rebuild.  Keep only compact
+// document identities; partition validation still builds and releases its
+// normal serving index at each partition boundary.
+public func buildCangjieCandidateValidationWorksetFromRecords(
+    records: ArrayList<NormalizedRecord>, activeKnowledgeVersion: String): CangjieCandidateValidationWorkset {
+    let workset = CangjieCandidateValidationWorkset()
+    let partitions = HashSet<String>()
+    let identities = ArrayList<String>()
+    let allowed = ArrayList<NormalizedRecord>()
+    for (record in records) {
+        if (!cangjieServingIndexRecordAllowed(record)) { continue }
+        allowed.add(record)
+        let partition = cangjieCandidateValidationPartitionId(record.sourceId)
+        partitions.add(partition)
+        let direct = cangjieServingIndexDocumentFromRecord(record)
+        if (direct.recordKind != CangjieServingRecordKinds.SYMBOL_CARD) {
+            identities.add("${partition}:${direct.documentId}:${direct.contentHash}")
+            workset.documentTotal += 1
+        }
+        for (card in extractCangjieSymbols(record)) {
+            let symbol = cangjieServingIndexDocumentFromSymbol(card, activeKnowledgeVersion)
+            if (!symbol.rejected) {
+                let symbolPartition = cangjieCandidateValidationPartitionId(symbol.sourceId)
+                partitions.add(symbolPartition)
+                identities.add("${symbolPartition}:${symbol.documentId}:${symbol.contentHash}")
+                workset.documentTotal += 1
+            }
+        }
+    }
+    let negativeRules = buildNegativeRuleRecords(allowed)
+    for (rule in negativeRules) {
+        let sourceId = "negative-rule-${rule.ruleId}"
+        let partition = cangjieCandidateValidationPartitionId(sourceId)
+        partitions.add(partition)
+        identities.add("${partition}:negative:${rule.ruleId}:${rule.versionResolutionId}:${rule.replacement}")
+        workset.documentTotal += 1
+    }
+    if (workset.documentTotal == 0 || partitions.size == 0) { return workset }
+    let orderedPartitions = partitions.toArray()
+    sort(orderedPartitions)
+    for (partition in orderedPartitions) { workset.partitionIds.add(partition) }
+    sort(identities)
+    let evidence = StringBuilder()
+    evidence.append("p6-validation-workset-v2|documents=${workset.documentTotal}")
+    for (identity in identities) { evidence.append("|${identity}") }
+    workset.evidenceHash = ckbReleaseEvidenceHash(evidence.toString())
+    workset.valid = true
+    workset
+}
+
+// Rehydrates a previously validated durable document artifact. The artifact
+// contains the canonical serving documents; exact selectors and view counters
+// are deterministically rebuilt without revisiting candidate normalized input.
+public func cangjieServingIndexFromDurableDocuments(documents: ArrayList<CangjieServingDocument>,
+    activeKnowledgeVersion: String): CangjieServingIndex {
+    let index = CangjieServingIndex()
+    index.activeKnowledgeVersion = activeKnowledgeVersion
+    for (document in documents) {
+        index.documents.add(document)
+        cangjieServingIndexAddViewCounts(index, document)
+        cangjieServingIndexAddExactEntries(index, document)
+    }
     if (index.documents.size == 0) {
         index.diagnostics.add("serving_index_empty")
     }
