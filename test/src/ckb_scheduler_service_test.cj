@@ -1932,6 +1932,222 @@ public class CkbSchedulerServiceF5Test {
         @Expect(limited.details.contains("benchmark_gap_curation_record_limit_exceeded"), true)
         @Expect(f7SchedulerDiagnosticsContain(limited, "benchmark_gap_input_gate:accepted=201"), true)
     }
+
+    @TestCase
+    public func p6S2U01ClaimLeaseExpiryAndRecoveryUseRevision(): Unit {
+        let root = "target/p6-s2-u01-lease"
+        s1s2EnsureEmptyDir(root)
+        let store = FileKnowledgeStore(root)
+        let service = CkbCommandLoopService(CkbRuntimeConfig(), store)
+        let accepted = service.acceptGitCodeRepositoryChangedEvent(parseGitCodeRepositoryChangedEvent(p6S1RepositoryEventJson("p6-s2-u01", ["src/a.cj"])))
+        let queued = store.loadRepositoryEventReceipt(accepted.dedupeKey)
+        let first = service.claimNextRepositoryEventForScheduler("worker-a", queued.createdAtMillis + 1, leaseMillis: 10)
+        let held = store.claimRepositoryEventReceipt(accepted.dedupeKey, "worker-b", queued.createdAtMillis + 2, 10)
+        let recovered = service.claimNextRepositoryEventForScheduler("worker-b", queued.createdAtMillis + 11, leaseMillis: 10)
+
+        @Expect(first.claimed, true)
+        @Expect(first.receipt.state, "running")
+        @Expect(first.receipt.revision, 1)
+        @Expect(held.claimed, false)
+        @Expect(held.diagnostic, "repository_event_lease_held")
+        @Expect(recovered.claimed, true)
+        @Expect(recovered.receipt.leaseOwner, "worker-b")
+        @Expect(recovered.receipt.attempt, 2)
+        @Expect(recovered.receipt.revision, 2)
+    }
+
+    @TestCase
+    public func p6S2B01RetryBackoffAndMaxAttemptsBecomeTerminal(): Unit {
+        let root = "target/p6-s2-b01-retry"
+        s1s2EnsureEmptyDir(root)
+        let store = FileKnowledgeStore(root)
+        let service = CkbCommandLoopService(CkbRuntimeConfig(), store)
+        let accepted = service.acceptGitCodeRepositoryChangedEvent(parseGitCodeRepositoryChangedEvent(p6S1RepositoryEventJson("p6-s2-b01", ["src/b.cj"])))
+        let queued = store.loadRepositoryEventReceipt(accepted.dedupeKey)
+        let one = service.claimNextRepositoryEventForScheduler("worker", queued.createdAtMillis + 1)
+        let retryOne = store.retryRepositoryEventReceipt(accepted.dedupeKey, "worker", one.receipt.revision, queued.createdAtMillis + 2, 10, "network_timeout")
+        let notDue = service.claimNextRepositoryEventForScheduler("worker", queued.createdAtMillis + 11)
+        let two = service.claimNextRepositoryEventForScheduler("worker", queued.createdAtMillis + 12)
+        let retryTwo = store.retryRepositoryEventReceipt(accepted.dedupeKey, "worker", two.receipt.revision, queued.createdAtMillis + 13, 1, "network_timeout")
+        let three = service.claimNextRepositoryEventForScheduler("worker", queued.createdAtMillis + 14)
+        let failed = store.retryRepositoryEventReceipt(accepted.dedupeKey, "worker", three.receipt.revision, queued.createdAtMillis + 15, 1, "deadline_exceeded")
+
+        @Expect(retryOne.state, "retryable")
+        @Expect(notDue.claimed, false)
+        @Expect(notDue.diagnostic, "repository_event_queue_empty")
+        @Expect(retryTwo.state, "retryable")
+        @Expect(three.receipt.attempt, 3)
+        @Expect(failed.state, "failed")
+        @Expect(service.claimNextRepositoryEventForScheduler("worker", queued.createdAtMillis + 20).state, "idle")
+    }
+
+    @TestCase
+    public func p6S2P01SchedulerHandoffCommitsOnceAndIngressStaysIdle(): Unit {
+        let root = "target/p6-s2-p01-commit"
+        s1s2EnsureEmptyDir(root)
+        let store = FileKnowledgeStore(root)
+        let runner = DeadlineCountingFetchRunner()
+        let service = CkbCommandLoopService(CkbRuntimeConfig(), store, sourceRunner: runner)
+        let accepted = service.acceptGitCodeRepositoryChangedEvent(parseGitCodeRepositoryChangedEvent(p6S1RepositoryEventJson("p6-s2-p01", ["src/c.cj"])))
+        let queued = store.loadRepositoryEventReceipt(accepted.dedupeKey)
+        let worker = P6S2CommittedWorker()
+        let committed = service.runNextRepositoryEventWorker("worker", queued.createdAtMillis + 1, worker)
+        let duplicate = service.acceptGitCodeRepositoryChangedEvent(parseGitCodeRepositoryChangedEvent(p6S1RepositoryEventJson("p6-s2-p01", ["src/c.cj"])))
+
+        @Expect(committed.claimed, true)
+        @Expect(committed.state, "committed")
+        @Expect(committed.receipt.revision, 4)
+        @Expect(worker.calls, 1)
+        @Expect(duplicate.status, "duplicate")
+        @Expect(service.claimNextRepositoryEventForScheduler("worker", queued.createdAtMillis + 3).state, "idle")
+        @Expect(runner.calls, 0)
+    }
+
+    @TestCase
+    public func p6S2N01StaleOwnerCannotCompleteRecoveredLease(): Unit {
+        let root = "target/p6-s2-n01-stale-owner"
+        s1s2EnsureEmptyDir(root)
+        let store = FileKnowledgeStore(root)
+        let service = CkbCommandLoopService(CkbRuntimeConfig(), store)
+        let accepted = service.acceptGitCodeRepositoryChangedEvent(parseGitCodeRepositoryChangedEvent(p6S1RepositoryEventJson("p6-s2-n01", ["src/d.cj"])))
+        let queued = store.loadRepositoryEventReceipt(accepted.dedupeKey)
+        let first = service.claimNextRepositoryEventForScheduler("worker-a", queued.createdAtMillis + 1, leaseMillis: 5)
+        let recovered = service.claimNextRepositoryEventForScheduler("worker-b", queued.createdAtMillis + 6, leaseMillis: 5)
+        let stale = store.completeRepositoryEventReceipt(accepted.dedupeKey, "worker-a", first.receipt.revision, queued.createdAtMillis + 7)
+        let retryable = store.retryRepositoryEventReceipt(accepted.dedupeKey, "worker-b", recovered.receipt.revision, queued.createdAtMillis + 7, 1, "worker_exception")
+
+        @Expect(recovered.claimed, true)
+        @Expect(stale.state, "running")
+        @Expect(stale.leaseOwner, "worker-b")
+        @Expect(retryable.state, "retryable")
+        @Expect(retryable.lastErrorCode, "worker_exception")
+    }
+
+    @TestCase
+    public func p6S2HeartbeatRejectsZeroLeaseAndRenewsOwnedRevision(): Unit {
+        let root = "target/p6-s2-heartbeat"
+        s1s2EnsureEmptyDir(root)
+        let store = FileKnowledgeStore(root)
+        let service = CkbCommandLoopService(CkbRuntimeConfig(), store)
+        let accepted = service.acceptGitCodeRepositoryChangedEvent(parseGitCodeRepositoryChangedEvent(p6S1RepositoryEventJson("p6-s2-heartbeat", ["src/e.cj"])))
+        let queued = store.loadRepositoryEventReceipt(accepted.dedupeKey)
+        let claim = service.claimNextRepositoryEventForScheduler("worker", queued.createdAtMillis + 1, leaseMillis: 10)
+        let rejected = store.heartbeatRepositoryEventReceipt(accepted.dedupeKey, "worker", claim.receipt.revision, queued.createdAtMillis + 2, 0)
+        let renewed = store.heartbeatRepositoryEventReceipt(accepted.dedupeKey, "worker", claim.receipt.revision, queued.createdAtMillis + 2, 10)
+
+        @Expect(rejected.revision, claim.receipt.revision)
+        @Expect(renewed.revision, claim.receipt.revision + 1)
+        @Expect(renewed.leaseUntilMillis, queued.createdAtMillis + 12)
+    }
+
+    @TestCase
+    public func p6S2LockCrashBeforeLockFileRecoversOnlyAfterPendingExpiry(): Unit {
+        let root = "target/p6-s2-lock-crash"
+        s1s2EnsureEmptyDir(root)
+        let store = FileKnowledgeStore(root)
+        let service = CkbCommandLoopService(CkbRuntimeConfig(), store)
+        let accepted = service.acceptGitCodeRepositoryChangedEvent(parseGitCodeRepositoryChangedEvent(p6S1RepositoryEventJson("p6-s2-lock-crash", ["src/f.cj"])))
+        let queued = store.loadRepositoryEventReceipt(accepted.dedupeKey)
+        let hash = ckbReleaseEvidenceHash(accepted.dedupeKey)
+        let locks = Path(root).join("metadata/repository-event-inbox/locks")
+        Directory.create(locks, recursive: true)
+        Directory.create(locks.join("${hash}.lock"), recursive: false)
+        File.writeTo(locks.join("${hash}.pending.ckb"), "expiresAtMillis=${queued.createdAtMillis + 10}\n".toArray())
+        let held = store.claimRepositoryEventReceipt(accepted.dedupeKey, "worker", queued.createdAtMillis + 1, 10)
+        let recovered = store.claimRepositoryEventReceipt(accepted.dedupeKey, "worker", queued.createdAtMillis + 11, 10)
+
+        @Expect(held.claimed, false)
+        @Expect(held.diagnostic, "repository_event_claim_conflict")
+        @Expect(recovered.claimed, true)
+        @Expect(recovered.receipt.leaseOwner, "worker")
+    }
+
+    @TestCase
+    public func p6S2WorkerExceptionReleasesSchedulerAdminGate(): Unit {
+        let root = "target/p6-s2-admin-gate-finally"
+        s1s2EnsureEmptyDir(root)
+        let service = CkbCommandLoopService(CkbRuntimeConfig(), FileKnowledgeStore(root),
+            sourceRunner: P6S2ThrowingFetchRunner())
+        let accepted = service.acceptGitCodeRepositoryChangedEvent(parseGitCodeRepositoryChangedEvent(p6S1RepositoryEventJson("p6-s2-admin-gate", ["src/g.cj"])))
+        let tasks = ArrayList<String>()
+        tasks.add("cangjie_source_event_sync")
+        let failedWorker = service.runSchedulerTasks(tasks, true)
+        let second = service.runSchedulerTasks(tasks, true)
+
+        @Expect(accepted.status, "accepted")
+        @Expect(failedWorker.details.contains("admin_operation_busy"), false)
+        @Expect(second.details.contains("admin_operation_busy"), false)
+        @Expect(second.failed, 0)
+    }
+
+    @TestCase
+    public func p6E2E02SchedulerHasNoInboxDoesNotRunLegacySourceSampling(): Unit {
+        let root = "target/p6-e2e02-no-inbox"
+        s1s2EnsureEmptyDir(root)
+        let runner = DeadlineCountingFetchRunner()
+        let service = CkbCommandLoopService(CkbRuntimeConfig(), FileKnowledgeStore(root), sourceRunner: runner)
+        let tasks = ArrayList<String>()
+        tasks.add("cangjie_source_event_sync")
+
+        let result = service.runSchedulerTasks(tasks, true)
+
+        @Expect(result.failed, 0)
+        @Expect(result.details.contains("status=idle"), true)
+        @Expect(runner.calls, 0)
+    }
+
+    @TestCase
+    public func p6E2E03RedeliveryAfterReloadCommitsExactlyOnce(): Unit {
+        let root = "target/p6-e2e03-redelivery"
+        s1s2EnsureEmptyDir(root)
+        let store = FileKnowledgeStore(root)
+        let body = p6S1RepositoryEventJson("p6-e2e03", ["src/中文🙂.cj"])
+        let firstService = CkbCommandLoopService(CkbRuntimeConfig(), store)
+        let first = firstService.acceptGitCodeRepositoryChangedEvent(parseGitCodeRepositoryChangedEvent(body))
+        let reloaded = CkbCommandLoopService(CkbRuntimeConfig(), store)
+        var duplicateCount: Int64 = 0
+        // Deterministic CAS interleaving: each delivery is a fresh service
+        // instance, so this covers restart redelivery without real threads.
+        for (_ in 0..10) {
+            let duplicate = CkbCommandLoopService(CkbRuntimeConfig(), store)
+                .acceptGitCodeRepositoryChangedEvent(parseGitCodeRepositoryChangedEvent(body))
+            if (duplicate.status == "duplicate") { duplicateCount += 1 }
+        }
+        let queued = store.loadRepositoryEventReceipt(first.dedupeKey)
+        let owner = store.claimRepositoryEventReceipt(first.dedupeKey, "worker-owner",
+            queued.createdAtMillis + 1, 100)
+        var competingClaims: Int64 = 0
+        for (_ in 0..10) {
+            let competing = store.claimRepositoryEventReceipt(first.dedupeKey, "worker-contender",
+                queued.createdAtMillis + 2, 100)
+            if (!competing.claimed && competing.diagnostic == "repository_event_lease_held") {
+                competingClaims += 1
+            }
+        }
+        let worker = P6S2CommittedWorker()
+        let beforeWorker = store.heartbeatRepositoryEventReceipt(first.dedupeKey, "worker-owner",
+            owner.receipt.revision, queued.createdAtMillis + 3, 100)
+        let workerOutcome = worker.execute(beforeWorker)
+        let afterWorker = store.heartbeatRepositoryEventReceipt(first.dedupeKey, "worker-owner",
+            beforeWorker.revision, queued.createdAtMillis + 4, 100)
+        let committed = store.completeRepositoryEventReceipt(first.dedupeKey, "worker-owner",
+            afterWorker.revision, queued.createdAtMillis + 5)
+        let after = store.loadRepositoryEventReceipt(first.dedupeKey)
+
+        @Expect(first.status, "accepted")
+        @Expect(duplicateCount, 10)
+        @Expect(owner.claimed, true)
+        @Expect(competingClaims, 10)
+        @Expect(beforeWorker.revision, 2)
+        @Expect(afterWorker.revision, 3)
+        @Expect(workerOutcome.state, "committed")
+        @Expect(committed.state, "committed")
+        @Expect(worker.calls, 1)
+        @Expect(after.attempt, 1)
+        @Expect(after.revision, 4)
+        @Expect(reloaded.runNextRepositoryEventWorker("worker-2", queued.createdAtMillis + 4, worker).state, "idle")
+        @Expect(worker.calls, 1)
+    }
 }
 
 @Test
@@ -2101,6 +2317,27 @@ private func s1s2EnsureEmptyDir(path: String): Unit {
         _ = launch("/bin/rm", ["-rf", path]).wait()
     }
     Directory.create(Path(path), recursive: true)
+}
+
+private class P6S2CommittedWorker <: CkbRepositoryEventWorker {
+    public var calls: Int64 = 0
+
+    public init() {}
+
+    public func execute(receipt: CkbRepositoryEventReceipt): CkbRepositoryEventWorkerResult {
+        this.calls += 1
+        let result = CkbRepositoryEventWorkerResult()
+        result.state = "committed"
+        result
+    }
+}
+
+private class P6S2ThrowingFetchRunner <: SourceFetchRunner {
+    public init() {}
+
+    public func fetch(request: SourceFetchRequest): SourceFetchResult {
+        throw Exception("p6_s2_controlled_worker_exception")
+    }
 }
 
 private func p6S1RepositoryEventJson(eventId: String, changedFiles: Array<String>): String {

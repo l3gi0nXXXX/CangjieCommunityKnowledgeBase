@@ -81,6 +81,14 @@ public class CkbRepositoryEventReceipt {
     public var checksum: String = ""
     public var state: String = "queued"
     public var attempt: Int64 = 0
+    // S2 state is mutable only through the store's revision-checked transition.
+    // The immutable event payload above remains the S1 receipt truth.
+    public var revision: Int64 = 0
+    public var leaseOwner: String = ""
+    public var leaseUntilMillis: Int64 = 0
+    public var nextAttemptAtMillis: Int64 = 0
+    public var maxAttempts: Int64 = 3
+    public var lastErrorCode: String = ""
     public var createdAtMillis: Int64 = 0
     public var updatedAtMillis: Int64 = 0
     public var repo: String = ""
@@ -95,6 +103,31 @@ public class CkbRepositoryEventReceipt {
     public var diagnostic: String = "not_found"
 
     public init() {}
+}
+
+// Result of one durable inbox transition.  It is deliberately separate from
+// the eventual candidate/ledger result owned by later P6 stages.
+public class CkbRepositoryEventLeaseResult {
+    public var claimed: Bool = false
+    public var state: String = "not_found"
+    public var diagnostic: String = ""
+    public var receipt: CkbRepositoryEventReceipt = CkbRepositoryEventReceipt()
+
+    public init() {}
+}
+
+public class CkbRepositoryEventWorkerResult {
+    // committed, retryable, or failed.  The worker may not return ingress
+    // statuses such as accepted/duplicate.
+    public var state: String = "retryable"
+    public var errorCode: String = "worker_exception"
+    public var backoffMillis: Int64 = 1000
+
+    public init() {}
+}
+
+public interface CkbRepositoryEventWorker {
+    func execute(receipt: CkbRepositoryEventReceipt): CkbRepositoryEventWorkerResult
 }
 
 public class CkbAdminOperationResult {

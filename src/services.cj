@@ -6218,6 +6218,232 @@ public class FileKnowledgeStore {
         receipt
     }
 
+    // Claims are serialized by a short-lived store-local directory lock.  The
+    // receipt revision is still checked before every write, so a stale process
+    // cannot complete a lease it no longer owns after crash recovery.
+    public func claimRepositoryEventReceipt(dedupeKey: String, owner: String,
+        nowMillis: Int64, leaseMillis: Int64): CkbRepositoryEventLeaseResult {
+        let result = CkbRepositoryEventLeaseResult()
+        if (owner == "" || leaseMillis <= 0 || nowMillis <= 0) {
+            result.state = "invalid"
+            result.diagnostic = "repository_event_claim_input_invalid"
+            return result
+        }
+        let current = this.loadRepositoryEventReceipt(dedupeKey)
+        if (!current.valid) {
+            result.state = "invalid"
+            result.diagnostic = current.diagnostic
+            return result
+        }
+        if (current.state == "committed" || current.state == "failed") {
+            result.state = current.state
+            result.diagnostic = "repository_event_terminal"
+            result.receipt = current
+            return result
+        }
+        if (current.state == "running" && current.leaseUntilMillis > nowMillis) {
+            result.state = "running"
+            result.diagnostic = "repository_event_lease_held"
+            result.receipt = current
+            return result
+        }
+        if (current.state == "retryable" && current.nextAttemptAtMillis > nowMillis) {
+            result.state = "retryable"
+            result.diagnostic = "repository_event_retry_not_due"
+            result.receipt = current
+            return result
+        }
+        if (!this.acquireRepositoryEventMutationLock(dedupeKey, current, nowMillis)) {
+            result.state = "running"
+            result.diagnostic = "repository_event_claim_conflict"
+            result.receipt = this.loadRepositoryEventReceipt(dedupeKey)
+            return result
+        }
+        try {
+            let fresh = this.loadRepositoryEventReceipt(dedupeKey)
+            if (!fresh.valid || fresh.revision != current.revision ||
+                (fresh.state == "running" && fresh.leaseUntilMillis > nowMillis) ||
+                (fresh.state == "retryable" && fresh.nextAttemptAtMillis > nowMillis)) {
+                result.state = if (fresh.valid) { fresh.state } else { "invalid" }
+                result.diagnostic = if (fresh.valid) { "repository_event_claim_conflict" } else { fresh.diagnostic }
+                result.receipt = fresh
+                return result
+            }
+            if (fresh.attempt >= fresh.maxAttempts) {
+                let failed = this.transitionRepositoryEventReceiptUnlocked(fresh, fresh.revision,
+                    "", "failed", nowMillis, 0, 0, "max_attempts_exhausted")
+                result.state = failed.state
+                result.diagnostic = if (failed.valid) { "max_attempts_exhausted" } else { failed.diagnostic }
+                result.receipt = failed
+                return result
+            }
+            let claimed = this.transitionRepositoryEventReceiptUnlocked(fresh, fresh.revision,
+                owner, "running", nowMillis, nowMillis + leaseMillis, 0, "", claimAttempt: true)
+            result.claimed = claimed.valid && claimed.state == "running" && claimed.leaseOwner == owner
+            result.state = claimed.state
+            result.diagnostic = if (result.claimed) { "repository_event_claimed" } else { claimed.diagnostic }
+            result.receipt = claimed
+        } finally {
+            this.releaseRepositoryEventMutationLock(dedupeKey)
+        }
+        result
+    }
+
+    public func heartbeatRepositoryEventReceipt(dedupeKey: String, owner: String,
+        expectedRevision: Int64, nowMillis: Int64, leaseMillis: Int64): CkbRepositoryEventReceipt {
+        if (owner == "" || leaseMillis <= 0 || nowMillis <= 0) {
+            return this.loadRepositoryEventReceipt(dedupeKey)
+        }
+        this.transitionRepositoryEventReceipt(dedupeKey, expectedRevision, owner, "running",
+            nowMillis, nowMillis + leaseMillis, 0, "", expectedState: "running")
+    }
+
+    public func completeRepositoryEventReceipt(dedupeKey: String, owner: String,
+        expectedRevision: Int64, nowMillis: Int64): CkbRepositoryEventReceipt {
+        this.transitionRepositoryEventReceipt(dedupeKey, expectedRevision, owner, "committed",
+            nowMillis, 0, 0, "", expectedState: "running")
+    }
+
+    public func retryRepositoryEventReceipt(dedupeKey: String, owner: String,
+        expectedRevision: Int64, nowMillis: Int64, backoffMillis: Int64,
+        errorCode: String): CkbRepositoryEventReceipt {
+        let current = this.loadRepositoryEventReceipt(dedupeKey)
+        if (!current.valid || current.state != "running" || current.leaseOwner != owner) { return current }
+        let state = if (current.attempt >= current.maxAttempts) { "failed" } else { "retryable" }
+        let next = if (state == "retryable") { nowMillis + if (backoffMillis > 0) { backoffMillis } else { 1 } } else { 0 }
+        this.transitionRepositoryEventReceipt(dedupeKey, expectedRevision, owner, state,
+            nowMillis, 0, next, errorCode, expectedState: "running")
+    }
+
+    public func failRepositoryEventReceipt(dedupeKey: String, owner: String,
+        expectedRevision: Int64, nowMillis: Int64, errorCode: String): CkbRepositoryEventReceipt {
+        this.transitionRepositoryEventReceipt(dedupeKey, expectedRevision, owner, "failed",
+            nowMillis, 0, 0, if (errorCode == "") { "worker_failed" } else { errorCode },
+            expectedState: "running")
+    }
+
+    // The scheduler worker discovers only verified queue pointers.  It receives
+    // a claim, not an HTTP request, which keeps execution out of ingress.
+    public func dueRepositoryEventReceipts(nowMillis: Int64): ArrayList<CkbRepositoryEventReceipt> {
+        let due = ArrayList<CkbRepositoryEventReceipt>()
+        let queue = this.root.join("metadata/repository-event-inbox/queue")
+        if (!exists(queue) || nowMillis <= 0) { return due }
+        try {
+            for (entry in Directory.readFrom(queue)) {
+                if (entry.isDirectory() || !entry.name.endsWith(".ckb")) { continue }
+                let text = try { String.fromUtf8(File.readFrom(entry.path)) } catch (_: Exception) { continue }
+                let key = ckbCurrentField(text, "dedupeKey")
+                if (key == "") { continue }
+                let receipt = this.loadRepositoryEventReceipt(key)
+                if (!receipt.valid) { continue }
+                if ((receipt.state == "queued" && receipt.nextAttemptAtMillis <= nowMillis) ||
+                    (receipt.state == "retryable" && receipt.nextAttemptAtMillis <= nowMillis) ||
+                    (receipt.state == "running" && receipt.leaseUntilMillis <= nowMillis)) {
+                    due.add(receipt)
+                }
+            }
+        } catch (_: Exception) { return due }
+        due
+    }
+
+    private func transitionRepositoryEventReceipt(dedupeKey: String, expectedRevision: Int64,
+        owner: String, state: String, nowMillis: Int64, leaseUntilMillis: Int64,
+        nextAttemptAtMillis: Int64, errorCode: String, expectedState!: String = ""): CkbRepositoryEventReceipt {
+        let current = this.loadRepositoryEventReceipt(dedupeKey)
+        if (!current.valid || !this.acquireRepositoryEventMutationLock(dedupeKey, current, nowMillis)) { return current }
+        try {
+            let fresh = this.loadRepositoryEventReceipt(dedupeKey)
+            if (!fresh.valid || fresh.revision != expectedRevision ||
+                (expectedState != "" && fresh.state != expectedState) ||
+                (owner != "" && fresh.leaseOwner != owner) ||
+                (expectedState == "running" && fresh.leaseUntilMillis <= nowMillis)) { return fresh }
+            this.transitionRepositoryEventReceiptUnlocked(fresh, expectedRevision, owner, state,
+                nowMillis, leaseUntilMillis, nextAttemptAtMillis, errorCode)
+        } finally {
+            this.releaseRepositoryEventMutationLock(dedupeKey)
+        }
+    }
+
+    private func transitionRepositoryEventReceiptUnlocked(current: CkbRepositoryEventReceipt,
+        expectedRevision: Int64, owner: String, state: String, nowMillis: Int64,
+        leaseUntilMillis: Int64, nextAttemptAtMillis: Int64, errorCode: String,
+        claimAttempt!: Bool = false): CkbRepositoryEventReceipt {
+        let invalid = CkbRepositoryEventReceipt()
+        invalid.dedupeKey = current.dedupeKey
+        invalid.diagnostic = "repository_event_revision_conflict"
+        if (!current.valid || current.revision != expectedRevision || nowMillis <= 0) { return invalid }
+        let next = current
+        next.state = state
+        next.revision = current.revision + 1
+        next.updatedAtMillis = nowMillis
+        next.leaseOwner = if (state == "running") { owner } else { "" }
+        next.leaseUntilMillis = if (state == "running") { leaseUntilMillis } else { 0 }
+        next.nextAttemptAtMillis = nextAttemptAtMillis
+        next.lastErrorCode = errorCode
+        // A heartbeat remains in the same attempt.  Only a fresh claim (queued
+        // or retryable/expired-running to running) consumes retry budget.
+        if (claimAttempt) {
+            next.attempt = current.attempt + 1
+        }
+        next.checksum = ckbRepositoryEventReceiptChecksum(next)
+        try {
+            this.writeLinesAtomically(next.artifactPath, ckbRepositoryEventReceiptText(next))
+            this.writeLinesAtomically(next.queuePointerPath, ckbRepositoryEventQueuePointerText(next))
+            let readback = this.loadRepositoryEventReceipt(next.dedupeKey)
+            if (!readback.valid || readback.revision != next.revision ||
+                readback.checksum != next.checksum) { return invalid }
+            readback
+        } catch (_: Exception) {
+            invalid.diagnostic = "repository_event_transition_write_failed"
+            invalid
+        }
+    }
+
+    private func acquireRepositoryEventMutationLock(dedupeKey: String,
+        current: CkbRepositoryEventReceipt, nowMillis: Int64): Bool {
+        let relative = ckbRepositoryEventMutationLockPath(dedupeKey)
+        let path = this.root.join(relative)
+        let pending = this.root.join(ckbRepositoryEventMutationPendingPath(dedupeKey))
+        if (exists(path)) {
+            // The mutation lock has its own TTL.  A queued receipt has no event
+            // lease yet, therefore its zero lease must never be used to evict a
+            // live claimant between directory creation and the first state write.
+            let lockText = try { String.fromUtf8(File.readFrom(path.join("lock.ckb"))) } catch (_: Exception) {
+                try { String.fromUtf8(File.readFrom(pending)) } catch (_: Exception) { "" }
+            }
+            let expiresAtMillis = parseIntField(ckbCurrentField(lockText, "expiresAtMillis"), 0)
+            if (expiresAtMillis > 0 && expiresAtMillis <= nowMillis) {
+                try { _ = launch("/bin/rm", ["-rf", path.toString()]).wait() } catch (_: Exception) { () }
+            } else {
+                return false
+            }
+        }
+        var createdLock = false
+        try {
+            // Persist an expiry before mkdir.  If the process crashes between
+            // mkdir and lock.ckb, a later owner can reclaim only after this
+            // independent short TTL; it never infers expiry from event lease.
+            if (!exists(pending.parent)) { Directory.create(pending.parent, recursive: true) }
+            File.writeTo(pending, "expiresAtMillis=${nowMillis + 30000}\n".toArray())
+            Directory.create(path, recursive: false)
+            createdLock = true
+            File.writeTo(path.join("lock.ckb"), "expiresAtMillis=${nowMillis + 30000}\n".toArray())
+            true
+        } catch (_: Exception) {
+            if (createdLock) {
+                try { _ = launch("/bin/rm", ["-rf", path.toString()]).wait() } catch (_: Exception) { () }
+            }
+            false
+        }
+    }
+
+    private func releaseRepositoryEventMutationLock(dedupeKey: String): Unit {
+        let path = this.root.join(ckbRepositoryEventMutationLockPath(dedupeKey))
+        try { _ = launch("/bin/rm", ["-rf", path.toString()]).wait() } catch (_: Exception) { () }
+        let pending = this.root.join(ckbRepositoryEventMutationPendingPath(dedupeKey))
+        try { _ = launch("/bin/rm", ["-f", pending.toString()]).wait() } catch (_: Exception) { () }
+    }
+
     public func loadRepositoryEventReceipt(dedupeKey: String): CkbRepositoryEventReceipt {
         let receipt = CkbRepositoryEventReceipt()
         receipt.dedupeKey = dedupeKey
@@ -6235,6 +6461,12 @@ public class FileKnowledgeStore {
         receipt.canonicalSha256 = ckbCurrentField(text, "canonicalSha256")
         receipt.state = ckbCurrentField(text, "state")
         receipt.attempt = parseIntField(ckbCurrentField(text, "attempt"), -1)
+        receipt.revision = parseIntField(ckbCurrentField(text, "revision"), -1)
+        receipt.leaseOwner = ckbCurrentField(text, "leaseOwner")
+        receipt.leaseUntilMillis = parseIntField(ckbCurrentField(text, "leaseUntilMillis"), -1)
+        receipt.nextAttemptAtMillis = parseIntField(ckbCurrentField(text, "nextAttemptAtMillis"), -1)
+        receipt.maxAttempts = parseIntField(ckbCurrentField(text, "maxAttempts"), -1)
+        receipt.lastErrorCode = ckbCurrentField(text, "lastErrorCode")
         receipt.createdAtMillis = parseIntField(ckbCurrentField(text, "createdAtMillis"), -1)
         receipt.updatedAtMillis = parseIntField(ckbCurrentField(text, "updatedAtMillis"), -1)
         receipt.repo = ckbCurrentField(text, "repo")
@@ -6251,12 +6483,12 @@ public class FileKnowledgeStore {
         receipt.valid = receipt.schemaVersion == "ckb-repository-event-inbox-v1" &&
             receipt.dedupeKey == dedupeKey && receipt.eventId != "" &&
             receipt.canonicalSha256 == ckbRepositoryEventCanonicalSha256(receipt) &&
-            receipt.state == "queued" && receipt.attempt == 0 &&
+            ckbRepositoryEventReceiptStateValid(receipt) &&
             receipt.createdAtMillis > 0 && receipt.updatedAtMillis >= receipt.createdAtMillis &&
             receipt.repo != "" && receipt.ref != "" && receipt.prNumber >= 0 &&
             pathCount == receipt.changedFiles.size && profileCount == receipt.scheduledProfiles.size &&
             receipt.checksum == expected
-        receipt.diagnostic = if (receipt.valid) { "queued" } else { "repository_event_receipt_invalid" }
+        receipt.diagnostic = if (receipt.valid) { receipt.state } else { "repository_event_receipt_invalid" }
         receipt
     }
 
@@ -11277,6 +11509,39 @@ private func ckbRepositoryEventQueuePointerPath(dedupeKey: String): String {
     "metadata/repository-event-inbox/queue/${safeName(ckbReleaseEvidenceHash(dedupeKey))}.ckb"
 }
 
+private func ckbRepositoryEventMutationLockPath(dedupeKey: String): String {
+    "metadata/repository-event-inbox/locks/${safeName(ckbReleaseEvidenceHash(dedupeKey))}.lock"
+}
+
+private func ckbRepositoryEventMutationPendingPath(dedupeKey: String): String {
+    "metadata/repository-event-inbox/locks/${safeName(ckbReleaseEvidenceHash(dedupeKey))}.pending.ckb"
+}
+
+private func ckbRepositoryEventReceiptStateValid(receipt: CkbRepositoryEventReceipt): Bool {
+    if (receipt.revision < 0 || receipt.maxAttempts <= 0 || receipt.attempt < 0 ||
+        receipt.attempt > receipt.maxAttempts || receipt.nextAttemptAtMillis < 0 ||
+        receipt.leaseUntilMillis < 0) { return false }
+    if (receipt.state == "queued") {
+        return receipt.attempt == 0 && receipt.revision == 0 &&
+            receipt.leaseOwner == "" && receipt.leaseUntilMillis == 0 &&
+            receipt.nextAttemptAtMillis == receipt.createdAtMillis && receipt.lastErrorCode == ""
+    }
+    if (receipt.state == "running") {
+        return receipt.attempt > 0 && receipt.leaseOwner != "" &&
+            receipt.leaseUntilMillis > receipt.updatedAtMillis && receipt.nextAttemptAtMillis == 0
+    }
+    if (receipt.state == "retryable") {
+        return receipt.attempt > 0 && receipt.attempt < receipt.maxAttempts &&
+            receipt.leaseOwner == "" && receipt.leaseUntilMillis == 0 &&
+            receipt.nextAttemptAtMillis > receipt.updatedAtMillis && receipt.lastErrorCode != ""
+    }
+    if (receipt.state == "committed" || receipt.state == "failed") {
+        return receipt.attempt > 0 && receipt.leaseOwner == "" &&
+            receipt.leaseUntilMillis == 0 && receipt.nextAttemptAtMillis == 0
+    }
+    false
+}
+
 private func ckbRepositoryEventCanonicalSha256(receipt: CkbRepositoryEventReceipt): String {
     let paths = receipt.changedFiles.toArray()
     sort(paths)
@@ -11293,7 +11558,8 @@ private func ckbRepositoryEventCanonicalSha256(receipt: CkbRepositoryEventReceip
 private func ckbRepositoryEventReceiptChecksum(receipt: CkbRepositoryEventReceipt): String {
     let out = StringBuilder()
     out.append("schema=${receipt.schemaVersion}|eventId=${receipt.eventId}|deliveryId=${receipt.deliveryId}|dedupeKey=${receipt.dedupeKey}")
-    out.append("|canonicalSha256=${receipt.canonicalSha256}|state=${receipt.state}|attempt=${receipt.attempt}")
+    out.append("|canonicalSha256=${receipt.canonicalSha256}|state=${receipt.state}|attempt=${receipt.attempt}|revision=${receipt.revision}")
+    out.append("|leaseOwner=${receipt.leaseOwner}|leaseUntilMillis=${receipt.leaseUntilMillis}|nextAttemptAtMillis=${receipt.nextAttemptAtMillis}|maxAttempts=${receipt.maxAttempts}|lastErrorCode=${receipt.lastErrorCode}")
     out.append("|createdAtMillis=${receipt.createdAtMillis}|updatedAtMillis=${receipt.updatedAtMillis}|repo=${receipt.repo}|ref=${receipt.ref}|prNumber=${receipt.prNumber}")
     for (profile in receipt.scheduledProfiles) { out.append("|profile=${profile}") }
     for (path in receipt.changedFiles) { out.append("|path=${path}") }
@@ -11307,6 +11573,8 @@ private func ckbRepositoryEventReceiptText(receipt: CkbRepositoryEventReceipt): 
     text += "dedupeKey=${escapeField(receipt.dedupeKey)}\n"
     text += "canonicalSha256=${receipt.canonicalSha256}\n"
     text += "state=${receipt.state}\nattempt=${receipt.attempt}\n"
+    text += "revision=${receipt.revision}\nleaseOwner=${escapeField(receipt.leaseOwner)}\nleaseUntilMillis=${receipt.leaseUntilMillis}\n"
+    text += "nextAttemptAtMillis=${receipt.nextAttemptAtMillis}\nmaxAttempts=${receipt.maxAttempts}\nlastErrorCode=${escapeField(receipt.lastErrorCode)}\n"
     text += "createdAtMillis=${receipt.createdAtMillis}\nupdatedAtMillis=${receipt.updatedAtMillis}\n"
     text += "repo=${escapeField(receipt.repo)}\nref=${escapeField(receipt.ref)}\nprNumber=${receipt.prNumber}\n"
     text += "changedFileCount=${receipt.changedFiles.size}\n"
@@ -11563,9 +11831,11 @@ public class CkbCommandLoopService {
         if (busy != "") {
             return this.adminBusyResult(busy)
         }
-        let result = this.runSyncUnlocked(body: body)
-        this.leaveAdminOperation("sync")
-        result
+        try {
+            this.runSyncUnlocked(body: body)
+        } finally {
+            this.leaveAdminOperation("sync")
+        }
     }
 
     private func runSyncUnlocked(body!: String = ""): CkbAdminOperationResult {
@@ -11625,9 +11895,11 @@ public class CkbCommandLoopService {
             result.diagnostics.add(busy)
             return result
         }
-        let result = this.runFirstInitializationUnlocked(body: body)
-        this.leaveAdminOperation("first_initialization")
-        result
+        try {
+            this.runFirstInitializationUnlocked(body: body)
+        } finally {
+            this.leaveAdminOperation("first_initialization")
+        }
     }
 
     private func runFirstInitializationUnlocked(body!: String = ""): CkbFirstInitResult {
@@ -11657,6 +11929,7 @@ public class CkbCommandLoopService {
         receipt.prNumber = event.prNumber
         receipt.createdAtMillis = ckbCoreNowMillis()
         receipt.updatedAtMillis = receipt.createdAtMillis
+        receipt.nextAttemptAtMillis = receipt.createdAtMillis
         for (path in event.changedFiles) { receipt.changedFiles.add(path) }
         for (profile in result.scheduledProfiles) { receipt.scheduledProfiles.add(profile) }
         receipt.canonicalSha256 = ckbRepositoryEventCanonicalSha256(receipt)
@@ -11681,14 +11954,86 @@ public class CkbCommandLoopService {
         result
     }
 
+    // Scheduler child workers call this boundary after ingress has returned.
+    // S2 deliberately returns a durable claim only; S3 owns the precise source
+    // acquisition implementation and S6 owns the final event ledger.
+    public func claimNextRepositoryEventForScheduler(owner: String, nowMillis: Int64,
+        leaseMillis!: Int64 = 30000): CkbRepositoryEventLeaseResult {
+        let due = this.store.dueRepositoryEventReceipts(nowMillis)
+        if (due.size == 0) {
+            let empty = CkbRepositoryEventLeaseResult()
+            empty.state = "idle"
+            empty.diagnostic = "repository_event_queue_empty"
+            return empty
+        }
+        this.store.claimRepositoryEventReceipt(due[0].dedupeKey, owner, nowMillis, leaseMillis)
+    }
+
+    public func runNextRepositoryEventWorker(owner: String, nowMillis: Int64,
+        worker: CkbRepositoryEventWorker, leaseMillis!: Int64 = 300000): CkbRepositoryEventLeaseResult {
+        let claimed = this.claimNextRepositoryEventForScheduler(owner, nowMillis, leaseMillis: leaseMillis)
+        if (!claimed.claimed) { return claimed }
+        // Renew immediately before crossing into user-defined worker code.  The
+        // post-worker renewal below makes the persisted receipt own the latest
+        // revision before terminal/retry transition; S3 adds stage callbacks.
+        let beforeWorker = this.store.heartbeatRepositoryEventReceipt(
+            claimed.receipt.dedupeKey, owner, claimed.receipt.revision,
+            ckbCoreNowMillis(), leaseMillis)
+        if (!beforeWorker.valid || beforeWorker.state != "running" ||
+            beforeWorker.leaseOwner != owner) {
+            claimed.claimed = false
+            claimed.state = beforeWorker.state
+            claimed.diagnostic = "repository_event_heartbeat_rejected"
+            claimed.receipt = beforeWorker
+            return claimed
+        }
+        claimed.receipt = beforeWorker
+        let outcome = try {
+            worker.execute(claimed.receipt)
+        } catch (_: Exception) {
+            let failed = CkbRepositoryEventWorkerResult()
+            failed.state = "retryable"
+            failed.errorCode = "worker_exception"
+            failed
+        }
+        let afterWorker = this.store.heartbeatRepositoryEventReceipt(
+            claimed.receipt.dedupeKey, owner, claimed.receipt.revision,
+            ckbCoreNowMillis(), leaseMillis)
+        if (!afterWorker.valid || afterWorker.state != "running" ||
+            afterWorker.leaseOwner != owner) {
+            claimed.state = afterWorker.state
+            claimed.diagnostic = "repository_event_heartbeat_lost"
+            claimed.receipt = afterWorker
+            return claimed
+        }
+        claimed.receipt = afterWorker
+        if (outcome.state == "committed") {
+            claimed.receipt = this.store.completeRepositoryEventReceipt(claimed.receipt.dedupeKey,
+                owner, claimed.receipt.revision, nowMillis)
+        } else if (outcome.state == "failed") {
+            claimed.receipt = this.store.failRepositoryEventReceipt(claimed.receipt.dedupeKey,
+                owner, claimed.receipt.revision, nowMillis,
+                if (outcome.errorCode == "") { "worker_failed" } else { outcome.errorCode })
+        } else {
+            claimed.receipt = this.store.retryRepositoryEventReceipt(claimed.receipt.dedupeKey,
+                owner, claimed.receipt.revision, nowMillis,
+                outcome.backoffMillis, if (outcome.errorCode == "") { "worker_retryable" } else { outcome.errorCode })
+        }
+        claimed.state = claimed.receipt.state
+        claimed.diagnostic = "repository_event_worker_${claimed.receipt.state}"
+        claimed
+    }
+
     public func runRepositorySync(body!: String = ""): CkbAdminOperationResult {
         let busy = this.tryEnterAdminOperation("repository_sync")
         if (busy != "") {
             return this.adminBusyResult(busy)
         }
-        let result = this.runRepositorySyncUnlocked(body: body)
-        this.leaveAdminOperation("repository_sync")
-        result
+        try {
+            this.runRepositorySyncUnlocked(body: body)
+        } finally {
+            this.leaveAdminOperation("repository_sync")
+        }
     }
 
     private func runRepositorySyncUnlocked(body!: String = ""): CkbAdminOperationResult {
@@ -11783,9 +12128,11 @@ public class CkbCommandLoopService {
             result.failedVersion = busy
             return result
         }
-        let result = this.runRebuildUnlocked()
-        this.leaveAdminOperation("rebuild")
-        result
+        try {
+            this.runRebuildUnlocked()
+        } finally {
+            this.leaveAdminOperation("rebuild")
+        }
     }
 
     private func runRebuildUnlocked(): IndexBuildResult {
@@ -11801,9 +12148,11 @@ public class CkbCommandLoopService {
             result.diagnostics.add(busy)
             return result
         }
-        let result = ckbVectorBootstrapWithStoreAndKnowledgeStore(this.config, this.store, vectorStoreFromRuntime(this.config))
-        this.leaveAdminOperation("vector_bootstrap")
-        result
+        try {
+            ckbVectorBootstrapWithStoreAndKnowledgeStore(this.config, this.store, vectorStoreFromRuntime(this.config))
+        } finally {
+            this.leaveAdminOperation("vector_bootstrap")
+        }
     }
 
     public func runDerivedVectorCleanup(force: Bool): CkbDerivedVectorCleanupResult {
@@ -11814,9 +12163,11 @@ public class CkbCommandLoopService {
             result.diagnostics.add(busy)
             return result
         }
-        let result = ckbCleanDerivedVectorArtifacts(this.config, this.store, force)
-        this.leaveAdminOperation("vector_cleanup")
-        result
+        try {
+            ckbCleanDerivedVectorArtifacts(this.config, this.store, force)
+        } finally {
+            this.leaveAdminOperation("vector_cleanup")
+        }
     }
 
     public func runVectorReconcile(force: Bool): CkbVectorReconcileResult {
@@ -11827,9 +12178,11 @@ public class CkbCommandLoopService {
             result.diagnostics.add(busy)
             return result
         }
-        let result = ckbVectorReconcile(this.kb, this.store, this.config, force)
-        this.leaveAdminOperation("vector_reconcile")
-        result
+        try {
+            ckbVectorReconcile(this.kb, this.store, this.config, force)
+        } finally {
+            this.leaveAdminOperation("vector_reconcile")
+        }
     }
 
     public func runScheduler(limit: Int64): SchedulerExecutorResult {
@@ -11837,9 +12190,11 @@ public class CkbCommandLoopService {
         if (busy != "") {
             return this.schedulerBusyResult(busy, ArrayList<String>(), false)
         }
-        let result = this.runSchedulerUnlocked(limit)
-        this.leaveAdminOperation("scheduler")
-        result
+        try {
+            this.runSchedulerUnlocked(limit)
+        } finally {
+            this.leaveAdminOperation("scheduler")
+        }
     }
 
     private func runSchedulerUnlocked(limit: Int64): SchedulerExecutorResult {
@@ -11849,9 +12204,20 @@ public class CkbCommandLoopService {
         }
         let recovery = ckbRecoverStaleSchedulerRunsWithVectorStore(this.store, vectorStoreFromRuntime(this.config))
         this.advanceSchedulerClockForServiceTick()
+        // The durable inbox is the event execution boundary.  A receipt is
+        // claimed and executed by the scheduler, never by HTTP ingress.
+        let eventWorker = CkbRepositoryEventSourceSyncWorker(this.kb, this.store,
+            this.sourceRunner, this.config)
+        let eventDispatch = this.runNextRepositoryEventWorker(
+            "scheduler-${ckbCoreNowMillis()}", ckbCoreNowMillis(), eventWorker)
+        this.deferLegacySourceEventSchedule()
         ckbApplySchedulerProfileBudgets(this.kb.scheduler)
         let executor = SchedulerExecutor(this.kb.scheduler, ckbSchedulerTaskRunnerForRuntime(this.kb, this.config, this.store, "", this.store.rootPath(), this.sourceRunner), FileSchedulerProgressSink(this.store), 300000)
         let result = executor.runDue(limit: limit)
+        if (eventDispatch.claimed) {
+            result.validationDiagnostics.add("repository_event_dispatch:${eventDispatch.state}")
+            result.details += "repository event state=${eventDispatch.state}\n"
+        }
         ckbAppendSnapshotRepairDiagnostic(result, "pre", preRepair)
         for (diagnostic in recovery.diagnostics) {
             result.validationDiagnostics.add("recovery:${diagnostic}")
@@ -11869,9 +12235,11 @@ public class CkbCommandLoopService {
         if (busy != "") {
             return this.schedulerBusyResult(busy, taskNames, force)
         }
-        let result = this.runSchedulerTasksUnlocked(taskNames, force)
-        this.leaveAdminOperation("scheduler_tasks")
-        result
+        try {
+            this.runSchedulerTasksUnlocked(taskNames, force)
+        } finally {
+            this.leaveAdminOperation("scheduler_tasks")
+        }
     }
 
     private func runSchedulerTasksUnlocked(taskNames: ArrayList<String>, force: Bool): SchedulerExecutorResult {
@@ -11888,9 +12256,26 @@ public class CkbCommandLoopService {
         if (result.failed > 0) {
             return result
         }
-        let gate = ckbSchedulerPreRunGate(this.config, this.store, vectorStoreFromRuntime(this.config), taskNames)
+        let executable = ArrayList<String>()
+        var requestedSourceEvent = false
+        for (name in taskNames) {
+            if (name == "cangjie_source_event_sync") { requestedSourceEvent = true } else { executable.add(name) }
+        }
+        let eventDispatch = if (requestedSourceEvent) {
+            this.runNextRepositoryEventWorker("scheduler-${ckbCoreNowMillis()}", ckbCoreNowMillis(),
+                CkbRepositoryEventSourceSyncWorker(this.kb, this.store, this.sourceRunner, this.config))
+        } else { CkbRepositoryEventLeaseResult() }
+        this.deferLegacySourceEventSchedule()
+        if (executable.size == 0) {
+            if (eventDispatch.claimed && eventDispatch.state != "committed") { result.failed = 1 }
+            else { result.succeeded = 1 }
+            result.details += "task cangjie_source_event_sync ok=${eventDispatch.state == "committed" || !eventDispatch.claimed} status=${eventDispatch.state}\n"
+            this.store.saveScheduler(this.kb.scheduler.entries)
+            return result
+        }
+        let gate = ckbSchedulerPreRunGate(this.config, this.store, vectorStoreFromRuntime(this.config), executable)
         if (!gate.ok) {
-            return ckbSchedulerPreRunGateFailureResult(gate, taskNames, force)
+            return ckbSchedulerPreRunGateFailureResult(gate, executable, force)
         }
         let preRepair = this.store.repairActiveLiveShadowFromManifest()
         if (preRepair.repairPerformed) {
@@ -11900,7 +12285,7 @@ public class CkbCommandLoopService {
         this.advanceSchedulerClockForServiceTick()
         ckbApplySchedulerProfileBudgets(this.kb.scheduler)
         let executor = SchedulerExecutor(this.kb.scheduler, ckbSchedulerTaskRunnerForRuntime(this.kb, this.config, this.store, "", this.store.rootPath(), this.sourceRunner), FileSchedulerProgressSink(this.store), 300000)
-        let ran = executor.runTaskNames(taskNames, force: force)
+        let ran = executor.runTaskNames(executable, force: force)
         ckbAppendSnapshotRepairDiagnostic(ran, "pre", preRepair)
         for (diagnostic in recovery.diagnostics) {
             ran.validationDiagnostics.add("recovery:${diagnostic}")
@@ -11911,6 +12296,16 @@ public class CkbCommandLoopService {
         this.store.saveScheduler(this.kb.scheduler.entries)
         this.reloadKnowledgeBase()
         ran
+    }
+
+    private func deferLegacySourceEventSchedule(): Unit {
+        for (entry in this.kb.scheduler.entries) {
+            if (entry.name == "cangjie_source_event_sync") {
+                entry.nextRunAt = this.kb.scheduler.clock.nowMinutes + entry.intervalMinutes
+                entry.lastStatus = "event_inbox_consumer"
+                entry.degraded = false
+            }
+        }
     }
 
     public func markSchedulerTasksDueForValidation(taskNames: ArrayList<String>): Unit {
@@ -17249,6 +17644,43 @@ private func ckbRunRepositoryChangedSourceSync(kb: KnowledgeBase, store: FileKno
     result.ok = result.ok && ingest.ok
     result.status = if (result.ok) { ingest.status } else { if (ingest.status != "") { ingest.status } else { result.status } }
     result
+}
+
+// S2 owns dispatch only.  It deliberately delegates the existing acquisition
+// primitive so S3 can replace that primitive without moving HTTP ingress or
+// lease ownership again.
+private class CkbRepositoryEventSourceSyncWorker <: CkbRepositoryEventWorker {
+    private let kb: KnowledgeBase
+    private let store: FileKnowledgeStore
+    private let runner: SourceFetchRunner
+    private let config: CkbRuntimeConfig
+
+    public init(kb: KnowledgeBase, store: FileKnowledgeStore, runner: SourceFetchRunner,
+        config: CkbRuntimeConfig) {
+        this.kb = kb
+        this.store = store
+        this.runner = runner
+        this.config = config
+    }
+
+    public func execute(receipt: CkbRepositoryEventReceipt): CkbRepositoryEventWorkerResult {
+        let result = CkbRepositoryEventWorkerResult()
+        let fetched = ckbRunRepositoryChangedSourceSync(this.kb, this.store, this.runner,
+            this.config, receipt.repo, receipt.ref, receipt.changedFiles)
+        if (fetched.ok) {
+            result.state = "committed"
+            result.errorCode = ""
+        } else if (ckbScheduledIngestTimedOut(fetched.status) ||
+            fetched.status.contains("timeout") || fetched.status.contains("deadline") ||
+            fetched.status.contains("network")) {
+            result.state = "retryable"
+            result.errorCode = if (fetched.status == "") { "worker_retryable" } else { fetched.status }
+        } else {
+            result.state = "failed"
+            result.errorCode = if (fetched.status == "") { "worker_failed" } else { fetched.status }
+        }
+        result
+    }
 }
 
 private func ckbRuntimeVersionManifestForStore(store: FileKnowledgeStore,
