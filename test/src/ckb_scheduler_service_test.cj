@@ -246,14 +246,19 @@ public class CkbSchedulerServiceF5Test {
         let started = startCkbSchedulerLoop(service, config)
         let event = GitCodeRepositoryChangedEvent()
         event.contractVersion = "gcm-ckb-repository-change-v1"
+        event.eventId = "f5-pos01-event"
+        event.deliveryId = "f5-pos01-delivery"
         event.provider = "gitcode"
         event.eventType = "merge_request"
+        event.action = "merged"
+        event.state = "merged"
         event.reason = "pr_merged"
         event.repo = "cangjie/stdx"
         event.ref = "main"
         event.prNumber = 77
         event.changedFiles.add("repo_list.md")
         event.changedFiles.add("src/http/client.cj")
+        event.valid = true
         // The startup tick may independently refresh the repository list.  Capture
         // its state before HTTP ingress so this test verifies the S1 boundary:
         // accepting an event only writes the durable inbox receipt and never
