@@ -70,6 +70,33 @@ public class GitCodeRepositoryChangedEventResult {
     public init() {}
 }
 
+// Durable representation of an accepted repository-change event. S2 owns
+// claiming and state transitions; S1 only creates the initial queued receipt.
+public class CkbRepositoryEventReceipt {
+    public var schemaVersion: String = "ckb-repository-event-inbox-v1"
+    public var eventId: String = ""
+    public var deliveryId: String = ""
+    public var dedupeKey: String = ""
+    public var canonicalSha256: String = ""
+    public var checksum: String = ""
+    public var state: String = "queued"
+    public var attempt: Int64 = 0
+    public var createdAtMillis: Int64 = 0
+    public var updatedAtMillis: Int64 = 0
+    public var repo: String = ""
+    public var ref: String = ""
+    public var prNumber: Int64 = 0
+    public var changedFiles: ArrayList<String> = ArrayList<String>()
+    public var scheduledProfiles: ArrayList<String> = ArrayList<String>()
+    public var artifactPath: String = ""
+    public var queuePointerPath: String = ""
+    public var valid: Bool = false
+    public var existing: Bool = false
+    public var diagnostic: String = "not_found"
+
+    public init() {}
+}
+
 public class CkbAdminOperationResult {
     public var status: String = "not_implemented"
     public var degraded: Bool = true
@@ -207,29 +234,40 @@ public func ckbApiHandle(service: CkbCommandLoopService, method: String, path: S
 
 public func parseGitCodeRepositoryChangedEvent(body: String): GitCodeRepositoryChangedEvent {
     let event = GitCodeRepositoryChangedEvent()
+    if (!ckbRepositoryEventJsonObjectValid(body)) {
+        event.errorCode = "ckb.bad_request"
+        event.diagnostic = "malformed_json"
+        return event
+    }
     let safe = ckbApiAsciiJsonProjection(body)
-    event.contractVersion = ckbApiJsonStringField(safe, "contractVersion")
-    event.eventId = ckbApiJsonStringField(safe, "eventId")
-    event.deliveryId = ckbApiJsonStringField(safe, "deliveryId")
-    event.provider = ckbApiJsonStringField(safe, "provider")
-    event.eventType = ckbApiJsonStringField(safe, "eventType")
-    event.action = ckbApiJsonStringField(safe, "action")
-    event.state = ckbApiJsonStringField(safe, "state")
-    event.reason = ckbApiJsonStringField(safe, "reason")
-    event.repo = ckbApiJsonStringField(safe, "repo")
-    event.ref = ckbApiJsonStringField(safe, "ref")
+    event.contractVersion = ckbMcpJsonStringField(body, "contractVersion")
+    event.eventId = ckbMcpJsonStringField(body, "eventId")
+    event.deliveryId = ckbMcpJsonStringField(body, "deliveryId")
+    event.provider = ckbMcpJsonStringField(body, "provider")
+    event.eventType = ckbMcpJsonStringField(body, "eventType")
+    event.action = ckbMcpJsonStringField(body, "action")
+    event.state = ckbMcpJsonStringField(body, "state")
+    event.reason = ckbMcpJsonStringField(body, "reason")
+    event.repo = ckbMcpJsonStringField(body, "repo")
+    event.ref = ckbMcpJsonStringField(body, "ref")
     if (event.ref == "") {
-        event.ref = ckbApiJsonStringField(safe, "targetRef")
+        event.ref = ckbMcpJsonStringField(body, "targetRef")
     }
     if (event.ref == "") {
-        event.ref = ckbApiJsonStringField(safe, "targetBranch")
+        event.ref = ckbMcpJsonStringField(body, "targetBranch")
     }
     event.prNumber = ckbApiJsonIntOrStringField(safe, "prNumber", ckbApiJsonIntOrStringField(safe, "iid", 0))
-    event.mergeCommitSha = ckbApiJsonStringField(safe, "mergeCommitSha")
-    event.url = ckbApiJsonStringField(safe, "url")
+    event.mergeCommitSha = ckbMcpJsonStringField(body, "mergeCommitSha")
+    event.url = ckbMcpJsonStringField(body, "url")
     event.changedFilesTruncated = ckbApiJsonBoolField(safe, "changedFilesTruncated")
     event.changedFilesUnavailable = ckbApiJsonBoolField(safe, "changedFilesUnavailable")
-    event.changedFiles = ckbApiJsonStringArrayField(safe, "changedFiles")
+    let changedFiles = ckbRepositoryEventJsonStringArrayField(body, "changedFiles")
+    if (!changedFiles.valid) {
+        event.errorCode = "ckb.bad_request"
+        event.diagnostic = "malformed_changed_files"
+        return event
+    }
+    event.changedFiles = changedFiles.values
     if (event.contractVersion != "gcm-ckb-repository-change-v1") {
         event.errorCode = "ckb.bad_request"
         event.diagnostic = "invalid_contract_version"
@@ -253,6 +291,18 @@ public func parseGitCodeRepositoryChangedEvent(body: String): GitCodeRepositoryC
     if (event.ref == "") {
         event.ref = "main"
     }
+    if (event.changedFiles.size > 256) {
+        event.errorCode = "ckb.payload_too_large"
+        event.diagnostic = "changed_files_limit_exceeded"
+        return event
+    }
+    for (path in event.changedFiles) {
+        if (!ckbApiSafeRepoRelativePath(path)) {
+            event.errorCode = "ckb.bad_request"
+            event.diagnostic = "invalid_changed_file"
+            return event
+        }
+    }
     event.valid = true
     event
 }
@@ -261,7 +311,14 @@ public func ckbApiGitCodeRepositoryChangedEvent(service: CkbCommandLoopService, 
     if (!event.valid) {
         return ckbApiErrorEnvelope(event.errorCode, "invalid repository changed event", status: 400, diagnostics: "{\"reason\":\"${ckbApiJsonEscape(event.diagnostic)}\"}")
     }
-    ckbApiEnvelope(ckbApiRepositoryEventResultJson(service.acceptGitCodeRepositoryChangedEvent(event)))
+    let result = service.acceptGitCodeRepositoryChangedEvent(event)
+    if (result.status == "retryable") {
+        return ckbApiErrorEnvelope("ckb.event_enqueue_failed", "repository changed event was not durably accepted", status: 500, diagnostics: "{\"reason\":\"${ckbApiJsonEscape(result.diagnostic)}\"}")
+    }
+    if (result.status == "conflict") {
+        return ckbApiErrorEnvelope("ckb.event_conflict", "repository changed event conflicts with durable receipt", status: 409, diagnostics: "{\"reason\":\"${ckbApiJsonEscape(result.diagnostic)}\"}")
+    }
+    ckbApiEnvelope(ckbApiRepositoryEventResultJson(result))
 }
 
 private func ckbApiHandleAdmin(service: CkbCommandLoopService, method: String, path: String, body: String): String {
@@ -834,6 +891,168 @@ private class CkbApiJsonStringScan {
     var end: Int64 = 0
 
     init() {}
+}
+
+private class CkbRepositoryEventJsonStringScan {
+    var ok: Bool = false
+    var value: String = ""
+    var end: Int64 = 0
+
+    init() {}
+}
+
+private class CkbRepositoryEventJsonStringArray {
+    var values: ArrayList<String> = ArrayList<String>()
+    var present: Bool = false
+    var valid: Bool = true
+
+    init() {}
+}
+
+private func ckbRepositoryEventJsonObjectValid(raw: String): Bool {
+    let chars = raw.toRuneArray()
+    var start: Int64 = 0
+    while (start < chars.size && ckbRepositoryEventJsonWhitespace(chars[start])) { start += 1 }
+    if (start >= chars.size || chars[start] != r'{') { return false }
+    var depth: Int64 = 0
+    var inString = false
+    var escaped = false
+    var end: Int64 = -1
+    for (index in start..chars.size) {
+        let ch = chars[index]
+        if (inString) {
+            if (escaped) {
+                escaped = false
+            } else if (ch == r'\\') {
+                escaped = true
+            } else if (ch == r'"') {
+                inString = false
+            }
+            continue
+        }
+        if (ch == r'"') {
+            inString = true
+        } else if (ch == r'{') {
+            depth += 1
+        } else if (ch == r'}') {
+            depth -= 1
+            if (depth < 0) { return false }
+            if (depth == 0) {
+                end = index + 1
+                break
+            }
+        }
+    }
+    if (inString || depth != 0 || end < 0) { return false }
+    while (end < chars.size) {
+        if (!ckbRepositoryEventJsonWhitespace(chars[end])) { return false }
+        end += 1
+    }
+    true
+}
+
+private func ckbRepositoryEventJsonStringArrayField(raw: String, key: String): CkbRepositoryEventJsonStringArray {
+    let result = CkbRepositoryEventJsonStringArray()
+    let chars = raw.toRuneArray()
+    let start = ckbRepositoryEventJsonValueStart(chars, key)
+    if (start < 0) { return result }
+    result.present = true
+    if (start >= chars.size || chars[start] != r'[') { result.valid = false; return result }
+    var index = start + 1
+    while (index < chars.size) {
+        index = ckbRepositoryEventJsonSkipWhitespace(chars, index)
+        if (index >= chars.size) { result.valid = false; return result }
+        if (chars[index] == r']') { return result }
+        let scan = ckbRepositoryEventJsonReadString(chars, index)
+        if (!scan.ok) { result.valid = false; return result }
+        result.values.add(scan.value)
+        index = ckbRepositoryEventJsonSkipWhitespace(chars, scan.end)
+        if (index >= chars.size) { result.valid = false; return result }
+        if (chars[index] == r']') { return result }
+        if (chars[index] != r',') { result.valid = false; return result }
+        index += 1
+        index = ckbRepositoryEventJsonSkipWhitespace(chars, index)
+        if (index >= chars.size || chars[index] == r']') { result.valid = false; return result }
+    }
+    result.valid = false
+    result
+}
+
+private func ckbRepositoryEventJsonValueStart(chars: Array<Rune>, key: String): Int64 {
+    var index: Int64 = 0
+    var depth: Int64 = 0
+    var inString = false
+    var escaped = false
+    while (index < chars.size) {
+        let ch = chars[index]
+        if (inString) {
+            if (escaped) {
+                escaped = false
+            } else if (ch == r'\\') {
+                escaped = true
+            } else if (ch == r'"') {
+                inString = false
+            }
+            index += 1
+            continue
+        }
+        if (ch == r'"') {
+            let scan = ckbRepositoryEventJsonReadString(chars, index)
+            if (scan.ok && depth == 1 && scan.value == key) {
+                let colon = ckbRepositoryEventJsonSkipWhitespace(chars, scan.end)
+                if (colon < chars.size && chars[colon] == r':') {
+                    return ckbRepositoryEventJsonSkipWhitespace(chars, colon + 1)
+                }
+            }
+            index = if (scan.ok) { scan.end } else { index + 1 }
+            continue
+        }
+        if (ch == r'{' || ch == r'[') { depth += 1 }
+        else if (ch == r'}' || ch == r']') { depth -= 1 }
+        index += 1
+    }
+    -1
+}
+
+private func ckbRepositoryEventJsonReadString(chars: Array<Rune>, start: Int64): CkbRepositoryEventJsonStringScan {
+    let scan = CkbRepositoryEventJsonStringScan()
+    if (start < 0 || start >= chars.size || chars[start] != r'"') { return scan }
+    let out = StringBuilder()
+    var index = start + 1
+    var escaped = false
+    while (index < chars.size) {
+        let ch = chars[index]
+        if (escaped) {
+            if (ch == r'n') { out.append("\n") }
+            else if (ch == r'r') { out.append("\r") }
+            else if (ch == r't') { out.append("\t") }
+            else if (ch == r'"') { out.append(r'"') }
+            else if (ch == r'\\') { out.append(r'\\') }
+            else { out.append(ch) }
+            escaped = false
+        } else if (ch == r'\\') {
+            escaped = true
+        } else if (ch == r'"') {
+            scan.ok = true
+            scan.value = out.toString()
+            scan.end = index + 1
+            return scan
+        } else {
+            out.append(ch)
+        }
+        index += 1
+    }
+    scan
+}
+
+private func ckbRepositoryEventJsonSkipWhitespace(chars: Array<Rune>, start: Int64): Int64 {
+    var index = start
+    while (index < chars.size && ckbRepositoryEventJsonWhitespace(chars[index])) { index += 1 }
+    index
+}
+
+private func ckbRepositoryEventJsonWhitespace(ch: Rune): Bool {
+    ch == r' ' || ch == r'\n' || ch == r'\r' || ch == r'\t'
 }
 
 private func ckbApiAsciiJsonProjection(raw: String): String {

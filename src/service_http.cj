@@ -404,6 +404,7 @@ private func ckbHttpStatusFromApiBody(path: String, body: String): Int64 {
         if (body.contains("\"code\":\"ckb.forbidden\"")) { return 403 }
         if (body.contains("\"code\":\"ckb.not_found\"")) { return 404 }
         if (body.contains("\"code\":\"ckb.method_not_allowed\"")) { return 405 }
+        if (body.contains("\"status\":409")) { return 409 }
         if (body.contains("\"status\":413")) { return 413 }
         if (body.contains("\"status\":500")) { return 500 }
         return 400

@@ -233,7 +233,7 @@ public class CkbSchedulerServiceF5Test {
     }
 
     @TestCase
-    public func f5Pos01HttpStartupTickPersistsSchedulerAndRepositoryEventSync(): Unit {
+    public func f5Pos01HttpStartupTickPersistsSchedulerAndRepositoryEventReceipt(): Unit {
         let config = CkbRuntimeConfig()
         config.networkEnabled = true
         config.schedulerLoopIntervalMillis = 600000
@@ -270,9 +270,154 @@ public class CkbSchedulerServiceF5Test {
         @Expect(f5AnyScheduleLastSuccess(restoredStatus) > 0, true)
         @Expect(store.has("metadata/scheduler.ckb"), true)
         @Expect(accepted.status, "accepted")
-        @Expect(accepted.diagnostic.contains("queued_in_memory"), false)
-        @Expect(store.has("metadata/repo-list.ckb"), true)
-        @Expect(store.has("metadata/repository-event-latest.ckb"), true)
+        @Expect(accepted.diagnostic, "durable_receipt_queued")
+        @Expect(store.loadRepositoryEventReceipt(accepted.dedupeKey).valid, true)
+        @Expect(store.has("metadata/repository-event-inbox/queue"), true)
+        @Expect(store.has("metadata/repo-list.ckb"), false)
+        @Expect(store.has("metadata/repository-event-latest.ckb"), false)
+    }
+
+    @TestCase
+    public func p6S1U01DurableReceiptReturnsAcceptedThenDuplicate(): Unit {
+        let root = "target/p6-s1-u01-durable-receipt"
+        s1s2EnsureEmptyDir(root)
+        let store = FileKnowledgeStore("${root}/store")
+        let service = CkbCommandLoopService(CkbRuntimeConfig(), store, sourceRunner: DeadlineCountingFetchRunner())
+        let event = parseGitCodeRepositoryChangedEvent(p6S1RepositoryEventJson("p6-s1-u01", ["src/http/client.cj", "repo_list.md"]))
+
+        let first = service.acceptGitCodeRepositoryChangedEvent(event)
+        let receipt = store.loadRepositoryEventReceipt(first.dedupeKey)
+        let second = service.acceptGitCodeRepositoryChangedEvent(event)
+
+        @Expect(first.status, "accepted")
+        @Expect(receipt.valid, true)
+        @Expect(receipt.state, "queued")
+        @Expect(receipt.checksum != "", true)
+        @Expect(store.has(receipt.queuePointerPath), true)
+        @Expect(second.status, "duplicate")
+        @Expect(second.eventId, first.eventId)
+        @Expect(service.acceptedEventCountForTest(), 1)
+    }
+
+    @TestCase
+    public func p6S1B01RuneSafePathsAndChangedFileLimitAreEnforced(): Unit {
+        let unicode = parseGitCodeRepositoryChangedEvent(p6S1RepositoryEventJson("p6-s1-b01-unicode", ["src/中文🙂.cj"]))
+        let atLimit = parseGitCodeRepositoryChangedEvent(p6S1RepositoryEventJson("p6-s1-b01-limit", p6S1Paths(256)))
+        let overLimit = parseGitCodeRepositoryChangedEvent(p6S1RepositoryEventJson("p6-s1-b01-over-limit", p6S1Paths(257)))
+        let root = "target/p6-s1-b01-pointer-repair"
+        s1s2EnsureEmptyDir(root)
+        let store = FileKnowledgeStore("${root}/store")
+        let event = parseGitCodeRepositoryChangedEvent(p6S1RepositoryEventJson("p6-s1-b01-pointer", ["src/main.cj"]))
+        let accepted = CkbCommandLoopService(CkbRuntimeConfig(), store).acceptGitCodeRepositoryChangedEvent(event)
+        let receipt = store.loadRepositoryEventReceipt(accepted.dedupeKey)
+        _ = launch("/bin/rm", ["-f", Path("${root}/store").join(receipt.queuePointerPath).toString()]).wait()
+        let redelivered = CkbCommandLoopService(CkbRuntimeConfig(), store).acceptGitCodeRepositoryChangedEvent(event)
+
+        @Expect(unicode.valid, true)
+        @Expect(unicode.changedFiles[0], "src/中文🙂.cj")
+        @Expect(atLimit.valid, true)
+        @Expect(atLimit.changedFiles.size, 256)
+        @Expect(overLimit.valid, false)
+        @Expect(overLimit.errorCode, "ckb.payload_too_large")
+        @Expect(overLimit.diagnostic, "changed_files_limit_exceeded")
+        @Expect(redelivered.status, "duplicate")
+        @Expect(store.has(receipt.queuePointerPath), true)
+    }
+
+    @TestCase
+    public func p6S1P01ReloadKeepsReceiptAndDoesNotRunSourceFetch(): Unit {
+        let root = "target/p6-s1-p01-reload"
+        s1s2EnsureEmptyDir(root)
+        let runner = DeadlineCountingFetchRunner()
+        let store = FileKnowledgeStore("${root}/store")
+        let event = parseGitCodeRepositoryChangedEvent(p6S1RepositoryEventJson("p6-s1-p01", ["src/std/array.cj"]))
+        let live = CkbCommandLoopService(CkbRuntimeConfig(), store, sourceRunner: runner)
+        let accepted = live.acceptGitCodeRepositoryChangedEvent(event)
+        let reloaded = CkbCommandLoopService(CkbRuntimeConfig(), store, sourceRunner: runner)
+        let duplicate = reloaded.acceptGitCodeRepositoryChangedEvent(event)
+
+        @Expect(accepted.status, "accepted")
+        @Expect(duplicate.status, "duplicate")
+        @Expect(store.loadRepositoryEventReceipt(accepted.dedupeKey).valid, true)
+        @Expect(runner.calls, 0)
+        @Expect(store.has("metadata/repository-event-latest.ckb"), false)
+    }
+
+    @TestCase
+    public func p6S1N01MalformedAndReceiptWriteFailureAreNotAccepted(): Unit {
+        let malformed = parseGitCodeRepositoryChangedEvent("{\"contractVersion\":\"gcm-ckb-repository-change-v1\"")
+        let root = "target/p6-s1-n01-write-failure"
+        s1s2EnsureEmptyDir(root)
+        let store = FileKnowledgeStore("${root}/store")
+        store.writeLinesAtomically("metadata/repository-event-inbox/queue", "blocked\n")
+        let service = CkbCommandLoopService(CkbRuntimeConfig(), store, sourceRunner: DeadlineCountingFetchRunner())
+        let body = p6S1RepositoryEventJson("p6-s1-n01", ["src/main.cj"])
+        let event = parseGitCodeRepositoryChangedEvent(body)
+        let tokenPath = Path(root).join("event.token")
+        File.writeTo(tokenPath, "p6-s1-event-token\n".toArray())
+        let http = CkbHttpServiceConfig()
+        http.eventIngestTokenFile = tokenPath.toString()
+        let malformedFilesBody = body.replace("\"changedFiles\":[\"src/main.cj\"]", "\"changedFiles\":42")
+        let malformedFilesResponse = handleCkbHttpRequest(service, "POST", "/v1/events/gitcode/repository-changed", malformedFilesBody, ["X-CKB-Event-Token: p6-s1-event-token"], http)
+        let response = handleCkbHttpRequest(service, "POST", "/v1/events/gitcode/repository-changed", body, ["X-CKB-Event-Token: p6-s1-event-token"], http)
+        let failed = service.acceptGitCodeRepositoryChangedEvent(event)
+        let failedReceipt = store.loadRepositoryEventReceipt(failed.dedupeKey)
+
+        let binaryRoot = "target/p6-s1-n01-invalid-utf8"
+        s1s2EnsureEmptyDir(binaryRoot)
+        let binaryStore = FileKnowledgeStore("${binaryRoot}/store")
+        let binaryService = CkbCommandLoopService(CkbRuntimeConfig(), binaryStore)
+        let binaryEvent = parseGitCodeRepositoryChangedEvent(p6S1RepositoryEventJson("p6-s1-n01-invalid-utf8", ["src/中文🙂.cj"]))
+        let binaryAccepted = binaryService.acceptGitCodeRepositoryChangedEvent(binaryEvent)
+        let binaryReceipt = binaryStore.loadRepositoryEventReceipt(binaryAccepted.dedupeKey)
+        File.writeTo(Path("${binaryRoot}/store").join(binaryReceipt.artifactPath), [UInt8(255), UInt8(254), UInt8(253)])
+        let invalidEncoding = binaryStore.loadRepositoryEventReceipt(binaryAccepted.dedupeKey)
+        let rejectedRedelivery = CkbCommandLoopService(CkbRuntimeConfig(), binaryStore).acceptGitCodeRepositoryChangedEvent(binaryEvent)
+
+        @Expect(malformed.valid, false)
+        @Expect(malformed.diagnostic, "malformed_json")
+        @Expect(malformedFilesResponse.statusCode, 400)
+        @Expect(malformedFilesResponse.body.contains("malformed_changed_files"), true)
+        @Expect(response.statusCode, 500)
+        @Expect(response.body.contains("\"status\":\"accepted\""), false)
+        @Expect(response.body.contains("ckb.event_enqueue_failed"), true)
+        @Expect(failed.status, "retryable")
+        @Expect(failed.diagnostic, "repository_event_receipt_write_failed")
+        @Expect(failedReceipt.valid, false)
+        @Expect(store.has(failedReceipt.artifactPath), false)
+        @Expect(store.has(failedReceipt.queuePointerPath), false)
+        @Expect(failed.diagnostic.contains(root), false)
+        @Expect(binaryAccepted.status, "accepted")
+        @Expect(invalidEncoding.valid, false)
+        @Expect(invalidEncoding.diagnostic, "invalid_response_encoding")
+        @Expect(rejectedRedelivery.status, "retryable")
+        @Expect(rejectedRedelivery.status == "accepted", false)
+        @Expect(rejectedRedelivery.diagnostic.contains(binaryRoot), false)
+    }
+
+    @TestCase
+    public func p6E2E01IngressHttpOnlyQueuesDurableReceipt(): Unit {
+        let root = "target/p6-e2e01-ingress"
+        s1s2EnsureEmptyDir(root)
+        let tokenPath = Path(root).join("event.token")
+        File.writeTo(tokenPath, "p6-s1-event-token\n".toArray())
+        let http = CkbHttpServiceConfig()
+        http.eventIngestTokenFile = tokenPath.toString()
+        let runner = DeadlineCountingFetchRunner()
+        let store = FileKnowledgeStore("${root}/store")
+        let service = CkbCommandLoopService(CkbRuntimeConfig(), store, sourceRunner: runner)
+        let body = p6S1RepositoryEventJson("p6-e2e01", ["src/std/collection/arraylist.cj"])
+
+        let accepted = handleCkbHttpRequest(service, "POST", "/v1/events/gitcode/repository-changed", body, ["X-CKB-Event-Token: p6-s1-event-token"], http)
+        let reloaded = CkbCommandLoopService(CkbRuntimeConfig(), store, sourceRunner: runner)
+        let duplicate = reloaded.acceptGitCodeRepositoryChangedEvent(parseGitCodeRepositoryChangedEvent(body))
+
+        @Expect(accepted.statusCode, 202)
+        @Expect(accepted.body.contains("\"status\":\"accepted\""), true)
+        @Expect(store.has("metadata/repository-event-inbox/events"), true)
+        @Expect(duplicate.status, "duplicate")
+        @Expect(runner.calls, 0)
+        @Expect(store.has("metadata/repository-event-latest.ckb"), false)
     }
 
     @TestCase
@@ -1944,6 +2089,24 @@ private func s1s2EnsureEmptyDir(path: String): Unit {
         _ = launch("/bin/rm", ["-rf", path]).wait()
     }
     Directory.create(Path(path), recursive: true)
+}
+
+private func p6S1RepositoryEventJson(eventId: String, changedFiles: Array<String>): String {
+    var files = "["
+    for (index in 0..changedFiles.size) {
+        if (index > 0) { files += "," }
+        files += "\"${changedFiles[index]}\""
+    }
+    files += "]"
+    "{\"contractVersion\":\"gcm-ckb-repository-change-v1\",\"eventId\":\"${eventId}\",\"deliveryId\":\"delivery-${eventId}\",\"provider\":\"gitcode\",\"eventType\":\"merge_request\",\"action\":\"merged\",\"state\":\"merged\",\"reason\":\"pr_merged\",\"repo\":\"cangjie/stdx\",\"ref\":\"main\",\"prNumber\":77,\"changedFiles\":${files}}"
+}
+
+private func p6S1Paths(count: Int64): Array<String> {
+    let paths = ArrayList<String>()
+    for (index in 0..count) {
+        paths.add("src/p6-${index}.cj")
+    }
+    paths.toArray()
 }
 
 private func f7SummaryListContains(values: ArrayList<String>, needle: String): Bool {

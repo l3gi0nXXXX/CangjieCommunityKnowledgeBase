@@ -6174,6 +6174,109 @@ public class FileKnowledgeStore {
         this.writeLinesAtomically("metadata/repository-event-latest.ckb", text)
     }
 
+    // S1 durable inbox: event records are immutable while the queue pointer is
+    // a separate, verified discovery artifact for the S2 scheduler consumer.
+    public func saveRepositoryEventReceipt(receipt: CkbRepositoryEventReceipt): CkbRepositoryEventReceipt {
+        let existing = this.loadRepositoryEventReceipt(receipt.dedupeKey)
+        if (existing.valid) {
+            if (!this.has(existing.queuePointerPath)) {
+                this.writeLinesAtomically(existing.queuePointerPath, ckbRepositoryEventQueuePointerText(existing))
+                if (!this.repositoryEventQueuePointerMatches(existing)) {
+                    throw Exception("repository_event_queue_pointer_repair_failed")
+                }
+            } else if (!this.repositoryEventQueuePointerMatches(existing)) {
+                throw Exception("repository_event_queue_pointer_conflict")
+            }
+            existing.existing = true
+            return existing
+        }
+        if (existing.diagnostic != "not_found") {
+            throw Exception("repository_event_receipt_conflict")
+        }
+        let eventPath = ckbRepositoryEventReceiptPath(receipt.dedupeKey)
+        let pointerPath = ckbRepositoryEventQueuePointerPath(receipt.dedupeKey)
+        receipt.artifactPath = eventPath
+        receipt.queuePointerPath = pointerPath
+        receipt.checksum = ckbRepositoryEventReceiptChecksum(receipt)
+        try {
+            this.writeLinesAtomically(eventPath, ckbRepositoryEventReceiptText(receipt))
+            let readback = this.loadRepositoryEventReceipt(receipt.dedupeKey)
+            if (!readback.valid || readback.checksum != receipt.checksum) {
+                throw Exception("repository_event_receipt_readback_failed")
+            }
+            this.writeLinesAtomically(pointerPath, ckbRepositoryEventQueuePointerText(receipt))
+            if (!this.repositoryEventQueuePointerMatches(receipt)) {
+                throw Exception("repository_event_queue_pointer_readback_failed")
+            }
+        } catch (e: Exception) {
+            this.deleteRepositoryEventInboxFile(pointerPath)
+            this.deleteRepositoryEventInboxFile(eventPath)
+            throw e
+        }
+        receipt.valid = true
+        receipt.diagnostic = "queued"
+        receipt
+    }
+
+    public func loadRepositoryEventReceipt(dedupeKey: String): CkbRepositoryEventReceipt {
+        let receipt = CkbRepositoryEventReceipt()
+        receipt.dedupeKey = dedupeKey
+        receipt.artifactPath = ckbRepositoryEventReceiptPath(dedupeKey)
+        receipt.queuePointerPath = ckbRepositoryEventQueuePointerPath(dedupeKey)
+        let text = try { this.readText(receipt.artifactPath) } catch (_: Exception) {
+            receipt.diagnostic = "invalid_response_encoding"
+            return receipt
+        }
+        if (text == "") { return receipt }
+        receipt.schemaVersion = ckbCurrentField(text, "schemaVersion")
+        receipt.eventId = ckbCurrentField(text, "eventId")
+        receipt.deliveryId = ckbCurrentField(text, "deliveryId")
+        receipt.dedupeKey = ckbCurrentField(text, "dedupeKey")
+        receipt.canonicalSha256 = ckbCurrentField(text, "canonicalSha256")
+        receipt.state = ckbCurrentField(text, "state")
+        receipt.attempt = parseIntField(ckbCurrentField(text, "attempt"), -1)
+        receipt.createdAtMillis = parseIntField(ckbCurrentField(text, "createdAtMillis"), -1)
+        receipt.updatedAtMillis = parseIntField(ckbCurrentField(text, "updatedAtMillis"), -1)
+        receipt.repo = ckbCurrentField(text, "repo")
+        receipt.ref = ckbCurrentField(text, "ref")
+        receipt.prNumber = parseIntField(ckbCurrentField(text, "prNumber"), -1)
+        let pathCount = parseIntField(ckbCurrentField(text, "changedFileCount"), -1)
+        let profileCount = parseIntField(ckbCurrentField(text, "scheduledProfileCount"), -1)
+        if (pathCount >= 0 && pathCount <= 256 && profileCount >= 0 && profileCount <= 8) {
+            for (index in 0..pathCount) { receipt.changedFiles.add(ckbCurrentField(text, "changedFile${index}")) }
+            for (index in 0..profileCount) { receipt.scheduledProfiles.add(ckbCurrentField(text, "scheduledProfile${index}")) }
+        }
+        receipt.checksum = ckbCurrentField(text, "checksum")
+        let expected = ckbRepositoryEventReceiptChecksum(receipt)
+        receipt.valid = receipt.schemaVersion == "ckb-repository-event-inbox-v1" &&
+            receipt.dedupeKey == dedupeKey && receipt.eventId != "" &&
+            receipt.canonicalSha256 == ckbRepositoryEventCanonicalSha256(receipt) &&
+            receipt.state == "queued" && receipt.attempt == 0 &&
+            receipt.createdAtMillis > 0 && receipt.updatedAtMillis >= receipt.createdAtMillis &&
+            receipt.repo != "" && receipt.ref != "" && receipt.prNumber >= 0 &&
+            pathCount == receipt.changedFiles.size && profileCount == receipt.scheduledProfiles.size &&
+            receipt.checksum == expected
+        receipt.diagnostic = if (receipt.valid) { "queued" } else { "repository_event_receipt_invalid" }
+        receipt
+    }
+
+    private func repositoryEventQueuePointerMatches(receipt: CkbRepositoryEventReceipt): Bool {
+        let text = try { this.readText(receipt.queuePointerPath) } catch (_: Exception) { return false }
+        let expected = ckbReleaseEvidenceHash("${receipt.artifactPath}|${receipt.dedupeKey}|${receipt.canonicalSha256}|${receipt.checksum}")
+        ckbCurrentField(text, "schemaVersion") == "ckb-repository-event-queue-pointer-v1" &&
+            ckbCurrentField(text, "eventReceipt") == receipt.artifactPath &&
+            ckbCurrentField(text, "dedupeKey") == receipt.dedupeKey &&
+            ckbCurrentField(text, "canonicalSha256") == receipt.canonicalSha256 &&
+            ckbCurrentField(text, "checksum") == expected
+    }
+
+    private func deleteRepositoryEventInboxFile(relative: String): Unit {
+        if (!relative.startsWith("metadata/repository-event-inbox/") || relative.contains("..")) { return }
+        let path = this.root.join(relative)
+        if (!exists(path)) { return }
+        try { _ = launch("/bin/rm", ["-f", path.toString()]).wait() } catch (_: Exception) { () }
+    }
+
     public func saveSchedulerLoopMetadata(loopStatus: String, schedulerEnabled: Bool, intervalMillis: Int64, tickKind: String, limit: Int64, ran: Int64, taskNames: ArrayList<String>, diagnostic: String, readinessGate!: String = "", firstTickDeferred!: Bool = false): Unit {
         let existing = this.loadSchedulerLoopStatus()
         var failureCount = existing.loopFailureCount
@@ -11166,6 +11269,63 @@ private func ckbScheduledIngestTimedOut(status: String): Bool {
         status.startsWith("deadline_exceeded:")
 }
 
+private func ckbRepositoryEventReceiptPath(dedupeKey: String): String {
+    "metadata/repository-event-inbox/events/${safeName(ckbReleaseEvidenceHash(dedupeKey))}.ckb"
+}
+
+private func ckbRepositoryEventQueuePointerPath(dedupeKey: String): String {
+    "metadata/repository-event-inbox/queue/${safeName(ckbReleaseEvidenceHash(dedupeKey))}.ckb"
+}
+
+private func ckbRepositoryEventCanonicalSha256(receipt: CkbRepositoryEventReceipt): String {
+    let paths = receipt.changedFiles.toArray()
+    sort(paths)
+    let profiles = receipt.scheduledProfiles.toArray()
+    sort(profiles)
+    let out = StringBuilder()
+    out.append("schema=${receipt.schemaVersion}|eventId=${receipt.eventId}|deliveryId=${receipt.deliveryId}|dedupeKey=${receipt.dedupeKey}")
+    out.append("|repo=${receipt.repo.toAsciiLower()}|ref=${receipt.ref}|prNumber=${receipt.prNumber}")
+    for (profile in profiles) { out.append("|profile=${profile}") }
+    for (path in paths) { out.append("|path=${path}") }
+    ckbReleaseEvidenceHash(out.toString())
+}
+
+private func ckbRepositoryEventReceiptChecksum(receipt: CkbRepositoryEventReceipt): String {
+    let out = StringBuilder()
+    out.append("schema=${receipt.schemaVersion}|eventId=${receipt.eventId}|deliveryId=${receipt.deliveryId}|dedupeKey=${receipt.dedupeKey}")
+    out.append("|canonicalSha256=${receipt.canonicalSha256}|state=${receipt.state}|attempt=${receipt.attempt}")
+    out.append("|createdAtMillis=${receipt.createdAtMillis}|updatedAtMillis=${receipt.updatedAtMillis}|repo=${receipt.repo}|ref=${receipt.ref}|prNumber=${receipt.prNumber}")
+    for (profile in receipt.scheduledProfiles) { out.append("|profile=${profile}") }
+    for (path in receipt.changedFiles) { out.append("|path=${path}") }
+    ckbReleaseEvidenceHash(out.toString())
+}
+
+private func ckbRepositoryEventReceiptText(receipt: CkbRepositoryEventReceipt): String {
+    var text = "schemaVersion=${escapeField(receipt.schemaVersion)}\n"
+    text += "eventId=${escapeField(receipt.eventId)}\n"
+    text += "deliveryId=${escapeField(receipt.deliveryId)}\n"
+    text += "dedupeKey=${escapeField(receipt.dedupeKey)}\n"
+    text += "canonicalSha256=${receipt.canonicalSha256}\n"
+    text += "state=${receipt.state}\nattempt=${receipt.attempt}\n"
+    text += "createdAtMillis=${receipt.createdAtMillis}\nupdatedAtMillis=${receipt.updatedAtMillis}\n"
+    text += "repo=${escapeField(receipt.repo)}\nref=${escapeField(receipt.ref)}\nprNumber=${receipt.prNumber}\n"
+    text += "changedFileCount=${receipt.changedFiles.size}\n"
+    for (index in 0..receipt.changedFiles.size) { text += "changedFile${index}=${escapeField(receipt.changedFiles[index])}\n" }
+    text += "scheduledProfileCount=${receipt.scheduledProfiles.size}\n"
+    for (index in 0..receipt.scheduledProfiles.size) { text += "scheduledProfile${index}=${escapeField(receipt.scheduledProfiles[index])}\n" }
+    text += "checksum=${receipt.checksum}\n"
+    text
+}
+
+private func ckbRepositoryEventQueuePointerText(receipt: CkbRepositoryEventReceipt): String {
+    let checksum = ckbReleaseEvidenceHash("${receipt.artifactPath}|${receipt.dedupeKey}|${receipt.canonicalSha256}|${receipt.checksum}")
+    var text = "schemaVersion=ckb-repository-event-queue-pointer-v1\n"
+    text += "eventReceipt=${escapeField(receipt.artifactPath)}\n"
+    text += "dedupeKey=${escapeField(receipt.dedupeKey)}\n"
+    text += "canonicalSha256=${receipt.canonicalSha256}\nchecksum=${checksum}\n"
+    text
+}
+
 public class CkbServiceResponse {
     public var text: String = ""
     public var shouldStop: Bool = false
@@ -11180,7 +11340,6 @@ public class CkbCommandLoopService {
     private var kb: KnowledgeBase
     private let adminOperationGate: CkbAdminOperationGate = CkbAdminOperationGate()
     private var started: Bool = false
-    private var acceptedEventDedupeKeys: ArrayList<String> = ArrayList<String>()
     private var acceptedEventCount: Int64 = 0
     private var rebuildCount: Int64 = 0
 
@@ -11486,29 +11645,39 @@ public class CkbCommandLoopService {
         result.dedupeKey = ckbRepositoryChangedDedupeKey(event)
         result.eventId = if (event.eventId != "") { event.eventId } else { "gcm-ckb-${stableSummaryHash(result.dedupeKey)}" }
         result.acceptedAt = "${this.kb.scheduler.clock.nowMinutes}"
-        if (this.acceptedEventDedupeKeys.contains(result.dedupeKey)) {
-            result.status = "duplicate"
-            result.diagnostic = "dedupe_key_seen"
-            return result
-        }
         for (profile in ckbProfilesForRepositoryChangedEvent(event, this.config)) {
             result.scheduledProfiles.add(profile)
         }
-        this.acceptedEventDedupeKeys.add(result.dedupeKey)
+        let receipt = CkbRepositoryEventReceipt()
+        receipt.eventId = result.eventId
+        receipt.deliveryId = event.deliveryId
+        receipt.dedupeKey = result.dedupeKey
+        receipt.repo = event.repo
+        receipt.ref = event.ref
+        receipt.prNumber = event.prNumber
+        receipt.createdAtMillis = ckbCoreNowMillis()
+        receipt.updatedAtMillis = receipt.createdAtMillis
+        for (path in event.changedFiles) { receipt.changedFiles.add(path) }
+        for (profile in result.scheduledProfiles) { receipt.scheduledProfiles.add(profile) }
+        receipt.canonicalSha256 = ckbRepositoryEventCanonicalSha256(receipt)
+        let persisted = try {
+            this.store.saveRepositoryEventReceipt(receipt)
+        } catch (e: Exception) {
+            result.status = if (e.message == "repository_event_queue_pointer_conflict") { "conflict" } else { "retryable" }
+            result.diagnostic = if (result.status == "conflict") { "repository_event_queue_pointer_conflict" } else { "repository_event_receipt_write_failed" }
+            return result
+        }
+        if (persisted.existing) {
+            result.status = "duplicate"
+            result.eventId = persisted.eventId
+            result.acceptedAt = "${persisted.createdAtMillis}"
+            result.scheduledProfiles = persisted.scheduledProfiles
+            result.diagnostic = "durable_receipt_exists"
+            return result
+        }
         this.acceptedEventCount += 1
         result.status = "accepted"
-        let syncBody = ckbRepositoryEventSyncBody(event, result.scheduledProfiles)
-        let sync = this.runRepositorySync(body: syncBody)
-        var repoListRefreshed = false
-        if (result.scheduledProfiles.contains("repo_list_refresh")) {
-            _ = this.runRepoListRefresh(body: ckbRepositoryEventRepoListBody(event))
-            repoListRefreshed = true
-        }
-        result.diagnostic = if (sync.status == "ok" || sync.status == "candidate_promoted") {
-            if (repoListRefreshed) { "immediate_sync_and_repo_list_refresh_executed" } else { "immediate_sync_executed" }
-        } else {
-            "immediate_sync_failed:${sync.diagnostic}"
-        }
+        result.diagnostic = "durable_receipt_queued"
         result
     }
 
