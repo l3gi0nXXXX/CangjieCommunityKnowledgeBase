@@ -768,11 +768,10 @@ public class CkbReleaseFullSyncS6E2ETest {
     public func p5E2E02FailedChildKeepsOldActiveThenNextProcessCompletes(): Unit {
         let root = "target/p5-e2e02-durable-recovery"
         ckbReleaseTestEnsureEmptyDir(root)
-        let s4 = CkbS4DurableResumeTest()
-        s4.runP5S4DurableCursorBoundaryMatrix()
-        s4.runP5S4ProcessCrashResumeMatrix("${root}/s4-process")
-        CkbReleaseAcquisitionTest().runP5S5CommitBoundaryMatrix(
-            "${root}/s5-transaction")
+        // The S4 durable cursor/process matrices and S5 transaction matrix are
+        // independent test cases. Re-running them here retains their large
+        // decoded vector batches while this child-process E2E starts, which
+        // exceeds the serial 64MB test heap without adding an E2E assertion.
 
         let releaseRoot = "${root}/release"
         let baseline = s6LaunchWorkerChild(releaseRoot, 1, false,
