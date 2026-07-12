@@ -1692,8 +1692,10 @@ public class CkbSchedulerServiceF5Test {
     }
 
     @TestCase
-    public func s2Ut002SourceEventResolvedCheckpointDiffersFromIngested(): Unit {
-        // UT-S2-002: resolved source-event checkpoint is saved even when content ingestion is not complete.
+    public func s2Ut002SourceEventContentFailureIsRetryableWithoutResolvedCheckpoint(): Unit {
+        // The durable S3 worker does not publish repository-event-latest until
+        // content is ingested and committed. A transient content failure stays
+        // retryable and must leave both active state and checkpoint untouched.
         let root = "target/s2-ut002-source-event-checkpoint"
         s1s2EnsureEmptyDir(root)
         let config = CkbRuntimeConfig()
@@ -1717,12 +1719,12 @@ public class CkbSchedulerServiceF5Test {
         @Expect(result.ran, 1)
         @Expect(result.failed, 1)
         @Expect(accepted.status, "accepted")
-        @Expect(store.has("metadata/repository-event-latest.ckb"), true)
-        @Expect(receipt.state, "failed")
-        @Expect(receipt.lastErrorCode != "", true)
+        @Expect(store.has("metadata/repository-event-latest.ckb"), false)
+        @Expect(receipt.state, "retryable")
+        @Expect(receipt.lastErrorCode, "repository_event_content_fetch_failed")
         @Expect(receipt.state == "committed", false)
         @Expect(service.statusSnapshot().activeKnowledgeVersion, beforeActive)
-        @Expect(checkpoint.contains("status="), true)
+        @Expect(checkpoint, "")
     }
 
     @TestCase
