@@ -986,6 +986,72 @@ public class CkbSchedulerServiceF5Test {
     }
 
     @TestCase
+    public func p6S2LoopTickCountsClaimedWorkerSuccessInResultAndLifecycle(): Unit {
+        let root = "target/p6-s2-loop-worker-success"
+        s1s2EnsureEmptyDir(root)
+        let config = CkbRuntimeConfig()
+        config.networkEnabled = true
+        let store = FileKnowledgeStore(root)
+        let service = CkbCommandLoopService(config, store,
+            sourceRunner: S1S2PaginatedGitCodeRunner())
+        _ = service.start()
+        let accepted = service.acceptGitCodeRepositoryChangedEvent(
+            parseGitCodeRepositoryChangedEvent(
+                p6S1RepositoryEventJson("p6-s2-loop-success", ["src/stdx/http/client.cj"])))
+
+        let tick = runCkbSchedulerTickWithLifecycleMetadata(service, 1,
+            "p6_s2_worker_success", intervalMillis: 1)
+        let receipt = store.loadRepositoryEventReceipt(accepted.dedupeKey)
+        let lifecycle = store.loadSchedulerLoopStatus()
+
+        @Expect(tick.ran, 2)
+        @Expect(tick.succeeded, 2)
+        @Expect(tick.failed, 0)
+        @Expect(tick.businessOk, true)
+        @Expect(tick.taskNames.contains("cangjie_source_event_sync"), true)
+        @Expect(tick.details.contains("task cangjie_source_event_sync ok=true status=committed"), true)
+        @Expect(receipt.state, "committed")
+        @Expect(lifecycle.loopStatus, "running")
+        @Expect(lifecycle.ran, 2)
+        @Expect(lifecycle.taskNames.contains("cangjie_source_event_sync"), true)
+    }
+
+    @TestCase
+    public func p6S2LoopTickCountsClaimedWorkerFailureInResultAndLifecycle(): Unit {
+        let root = "target/p6-s2-loop-worker-failure"
+        s1s2EnsureEmptyDir(root)
+        let config = CkbRuntimeConfig()
+        config.networkEnabled = true
+        let store = FileKnowledgeStore(root)
+        let runner = S1S2PaginatedGitCodeRunner()
+        runner.failRefRepo = "Cangjie/cangjie_stdx"
+        let service = CkbCommandLoopService(config, store, sourceRunner: runner)
+        _ = service.start()
+        let activeBefore = service.statusSnapshot().activeKnowledgeVersion
+        let accepted = service.acceptGitCodeRepositoryChangedEvent(
+            parseGitCodeRepositoryChangedEvent(
+                p6S1RepositoryEventJson("p6-s2-loop-failure", ["src/stdx/http/client.cj"])
+                    .replace("\"repo\":\"cangjie/stdx\"", "\"repo\":\"Cangjie/cangjie_stdx\"")))
+
+        let tick = runCkbSchedulerTickWithLifecycleMetadata(service, 1,
+            "p6_s2_worker_failure", intervalMillis: 1)
+        let receipt = store.loadRepositoryEventReceipt(accepted.dedupeKey)
+        let lifecycle = store.loadSchedulerLoopStatus()
+
+        @Expect(tick.ran, 2)
+        @Expect(tick.succeeded, 1)
+        @Expect(tick.failed, 1)
+        @Expect(tick.businessOk, false)
+        @Expect(tick.taskNames.contains("cangjie_source_event_sync"), true)
+        @Expect(tick.details.contains("task cangjie_source_event_sync ok=false status=retryable"), true)
+        @Expect(receipt.state, "retryable")
+        @Expect(service.statusSnapshot().activeKnowledgeVersion, activeBefore)
+        @Expect(lifecycle.loopStatus, "degraded")
+        @Expect(lifecycle.ran, 2)
+        @Expect(lifecycle.taskNames.contains("cangjie_source_event_sync"), true)
+    }
+
+    @TestCase
     public func p7Pos008SlashRefBranchEndpointFallbackUsesNativeSafeEncoding(): Unit {
         let root = "target/p7-slash-ref-branch-endpoint-fallback"
         s1s2EnsureEmptyDir(root)

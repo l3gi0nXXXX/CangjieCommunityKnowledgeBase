@@ -12215,9 +12215,19 @@ public class CkbCommandLoopService {
         let executor = SchedulerExecutor(this.kb.scheduler, ckbSchedulerTaskRunnerForRuntime(this.kb, this.config, this.store, "", this.store.rootPath(), this.sourceRunner), FileSchedulerProgressSink(this.store), 300000)
         let result = executor.runDue(limit: limit)
         if (eventDispatch.claimed) {
+            result.ran += 1
+            result.taskNames.add("cangjie_source_event_sync")
+            if (eventDispatch.state == "committed") {
+                result.succeeded += 1
+            } else {
+                result.failed += 1
+            }
             result.validationDiagnostics.add("repository_event_dispatch:${eventDispatch.state}")
-            result.details += "repository event state=${eventDispatch.state}\n"
+            result.details += "task cangjie_source_event_sync ok=${eventDispatch.state == "committed"} status=${eventDispatch.state}\n"
         }
+        // The executor finalizes before the inbox worker result is merged, so
+        // recompute this derived field after the merged scheduler outcome.
+        result.businessOk = result.failed == 0 && result.degraded == 0
         ckbAppendSnapshotRepairDiagnostic(result, "pre", preRepair)
         for (diagnostic in recovery.diagnostics) {
             result.validationDiagnostics.add("recovery:${diagnostic}")

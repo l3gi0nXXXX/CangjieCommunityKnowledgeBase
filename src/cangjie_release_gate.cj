@@ -415,13 +415,17 @@ private func cangjieReleaseGateAddSchedulerLoopLifecycleStep(report: CangjieKnow
     _ = loopService.start()
     cangjieReleaseGateSeedRoutineManifest(loopStore, loopService, options)
     let taskNames = cangjieReleaseGateDefaultSchedulerTasks()
+    let queued = loopService.acceptGitCodeRepositoryChangedEvent(
+        parseGitCodeRepositoryChangedEvent(cangjieReleaseGateRepositoryEventJson(
+            "scheduler-loop-source-event", ["src/std/collection/arraylist.cj"])))
     loopService.markSchedulerTasksDueForValidation(taskNames)
     let tick = runCkbSchedulerTickWithLifecycleMetadata(loopService, taskNames.size, "release_gate_due_run", intervalMillis: ckbSchedulerLoopIntervalMillis(config))
     let loopArtifactText = "{\"loopStatus\":\"running\",\"schedulerEnabled\":${config.schedulerEnabled},\"intervalMillis\":${ckbSchedulerLoopIntervalMillis(config)},\"heartbeatFresh\":true,\"tickKind\":\"release_gate_due_run\",\"forced\":${tick.forced},\"ran\":${tick.ran},\"failed\":${tick.failed},\"degraded\":${tick.degraded},\"taskNames\":${cangjieReleaseGateJsonStringArray(tick.taskNames)}}\n"
     let artifact = "${options.runRoot}/routine-update-scheduler-loop-lifecycle.jsonl"
     cangjieReleaseGateWriteText(artifact, loopArtifactText)
-    let ok = config.schedulerEnabled && tick.ran == taskNames.size && tick.failed == 0 && tick.degraded == 0 && loopStore.has("metadata/scheduler-loop.ckb")
-    cangjieReleaseGateAddStep(report, "E2E-11-scheduler-loop-lifecycle", ok, "running=${config.schedulerEnabled},ran=${tick.ran},failed=${tick.failed},metadata=${loopStore.has("metadata/scheduler-loop.ckb")}", artifact, evidenceHash: stableSummaryHash(loopArtifactText))
+    let sourceReceipt = loopStore.loadRepositoryEventReceipt(queued.dedupeKey)
+    let ok = config.schedulerEnabled && queued.status == "accepted" && tick.ran == taskNames.size && tick.failed == 0 && tick.degraded == 0 && sourceReceipt.state == "committed" && loopStore.has("metadata/scheduler-loop.ckb")
+    cangjieReleaseGateAddStep(report, "E2E-11-scheduler-loop-lifecycle", ok, "running=${config.schedulerEnabled},queued=${queued.status},receipt=${sourceReceipt.state},ran=${tick.ran},failed=${tick.failed},metadata=${loopStore.has("metadata/scheduler-loop.ckb")}", artifact, evidenceHash: stableSummaryHash(loopArtifactText))
 }
 
 private func cangjieReleaseGateAddSourceEventE2eStep(report: CangjieKnowledgeReleaseGateReport, options: CangjieKnowledgeReleaseGateOptions, config: CkbRuntimeConfig, sourceRunner: SourceFetchRunner): Unit {
