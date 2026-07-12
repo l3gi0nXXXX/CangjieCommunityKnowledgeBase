@@ -12267,6 +12267,7 @@ public class CkbCommandLoopService {
         } else { CkbRepositoryEventLeaseResult() }
         this.deferLegacySourceEventSchedule()
         if (executable.size == 0) {
+            result.ran = 1
             if (eventDispatch.claimed && eventDispatch.state != "committed") { result.failed = 1 }
             else { result.succeeded = 1 }
             result.details += "task cangjie_source_event_sync ok=${eventDispatch.state == "committed" || !eventDispatch.claimed} status=${eventDispatch.state}\n"
@@ -12286,6 +12287,16 @@ public class CkbCommandLoopService {
         ckbApplySchedulerProfileBudgets(this.kb.scheduler)
         let executor = SchedulerExecutor(this.kb.scheduler, ckbSchedulerTaskRunnerForRuntime(this.kb, this.config, this.store, "", this.store.rootPath(), this.sourceRunner), FileSchedulerProgressSink(this.store), 300000)
         let ran = executor.runTaskNames(executable, force: force)
+        if (requestedSourceEvent) {
+            ran.ran += 1
+            if (eventDispatch.claimed && eventDispatch.state != "committed") {
+                ran.failed += 1
+            } else {
+                ran.succeeded += 1
+            }
+            ran.taskNames.add("cangjie_source_event_sync")
+            ran.details += "task cangjie_source_event_sync ok=${eventDispatch.state == "committed" || !eventDispatch.claimed} status=${eventDispatch.state}\n"
+        }
         ckbAppendSnapshotRepairDiagnostic(ran, "pre", preRepair)
         for (diagnostic in recovery.diagnostics) {
             ran.validationDiagnostics.add("recovery:${diagnostic}")
@@ -17632,11 +17643,22 @@ private func ckbRunRepositoryChangedSourceSync(kb: KnowledgeBase, store: FileKno
     let profile = ckbSyncProfileForScheduleTask("cangjie_source_event_sync")
     let result = CkbScheduledProfileFetchResult()
     let builder = SourceRequestBuilder(gitCodeApiRoot: config.gitCodeBaseUrl)
+    let resolution = ckbResolveGitCodeRefForFetch(runner, builder, repo, ref,
+        "repository_event", "repository_event", config, accounting: result.accounting)
+    for (diagnostic in resolution.diagnostics) { result.diagnostics.add(diagnostic) }
+    if (!resolution.ok) {
+        result.ok = false
+        result.status = if (resolution.status == "") { "gitcode_ref_resolution_failed" } else { resolution.status }
+        for (failed in resolution.failedRequests) { result.failedRequests.add(failed) }
+        return result
+    }
     if (changedFiles.size == 0) {
-        ckbFetchScheduledSource(runner, builder.gitCodeRepo(repo, ref: ref), profile, result, config)
+        ckbFetchScheduledSource(runner, builder.gitCodeRepo(repo, ref: resolution.effectiveRef), profile, result, config)
     } else {
         for (path in changedFiles) {
-            ckbFetchScheduledSource(runner, builder.gitCodeSource(repo, ref, path), profile, result, config)
+            ckbFetchScheduledSource(runner,
+                builder.gitCodeSourceRawWithFetchRef(repo, ref, resolution.effectiveRef, path),
+                profile, result, config)
         }
     }
     let manifest = ckbRuntimeVersionManifestForStore(store, config)
@@ -17672,7 +17694,7 @@ private class CkbRepositoryEventSourceSyncWorker <: CkbRepositoryEventWorker {
             result.errorCode = ""
         } else if (ckbScheduledIngestTimedOut(fetched.status) ||
             fetched.status.contains("timeout") || fetched.status.contains("deadline") ||
-            fetched.status.contains("network")) {
+            fetched.status.contains("network") || fetched.status.contains("gitcode_ref_resolution")) {
             result.state = "retryable"
             result.errorCode = if (fetched.status == "") { "worker_retryable" } else { fetched.status }
         } else {

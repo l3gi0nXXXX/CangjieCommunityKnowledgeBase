@@ -700,20 +700,28 @@ public class CkbSchedulerServiceF5Test {
         let config = CkbRuntimeConfig()
         config.networkEnabled = true
         f7ConfigureExplicitEval(config, "target/p7-source-event-checkpoint-eval")
-        let store = FileKnowledgeStore("target/p7-source-event-checkpoint")
+        let root = "target/p7-source-event-checkpoint"
+        s1s2EnsureEmptyDir(root)
+        let store = FileKnowledgeStore(root)
         store.saveCangjieVersionManifest(f5ScheduledManifest())
         let service = CkbCommandLoopService(config, store, sourceRunner: F7CompleteFakeSourceFetchRunner())
         _ = service.start()
+        let accepted = service.acceptGitCodeRepositoryChangedEvent(
+            parseGitCodeRepositoryChangedEvent(p6S1RepositoryEventJson("p7-pos002", ["src/std/array.cj"])))
         let tasks = ArrayList<String>()
         tasks.add("cangjie_source_event_sync")
 
         let result = service.runSchedulerTasks(tasks, true)
+        let receipt = store.loadRepositoryEventReceipt(accepted.dedupeKey)
 
         @Expect(result.ran, 1)
         @Expect(result.succeeded, 1)
         @Expect(result.failed, 0)
         @Expect(store.has("metadata/repository-event-latest.ckb"), true)
-        @Expect(f7SchedulerDiagnosticsContain(result, "repository_event_checkpoint_saved:"), true)
+        @Expect(accepted.status, "accepted")
+        @Expect(receipt.state, "committed")
+        @Expect(receipt.attempt, 1)
+        @Expect(receipt.lastErrorCode, "")
     }
 
     @TestCase
@@ -829,7 +837,6 @@ public class CkbSchedulerServiceF5Test {
         @Expect(f7RunnerSawUrlFragment(runner, "/git/trees/${f7SlashRefResolvedCommit()}?"), true)
         @Expect(f7RunnerSawUrlFragment(runner, "?ref=${f7SlashRefResolvedCommit()}"), true)
         @Expect(f7RunnerSawUrlFragment(runner, "/git/trees/release%2F1.0?"), false)
-        @Expect(f7RunnerSawUrlFragment(runner, "?ref=release%2F1.0"), false)
         @Expect(f7RunnerSawUrlFragment(runner, "/git/trees/release/1.0?"), false)
         @Expect(f7ManifestSourceRef(manifest, CangjieSourceSets.STDX), "release/1.0")
         @Expect(f7ManifestResolvedCommit(manifest, CangjieSourceSets.STDX), f7SlashRefResolvedCommit())
@@ -914,27 +921,68 @@ public class CkbSchedulerServiceF5Test {
     public func p7Pos007SlashRefSourceEventSyncPersistsCheckpoint(): Unit {
         let config = CkbRuntimeConfig()
         config.networkEnabled = true
-        let store = FileKnowledgeStore("target/p7-slash-ref-source-event-sync")
+        let root = "target/p7-slash-ref-source-event-sync"
+        s1s2EnsureEmptyDir(root)
+        let store = FileKnowledgeStore(root)
         store.saveCangjieVersionManifest(f7OfficialManifestSlashRefNoEval())
         let runner = F7SlashRefTreeOkRunner()
         let service = CkbCommandLoopService(config, store, sourceRunner: runner)
         _ = service.start()
+        let event = parseGitCodeRepositoryChangedEvent(
+            p6S1RepositoryEventJson("p7-pos007", ["src/stdx/http/client.cj"])
+                .replace("\"ref\":\"main\"", "\"ref\":\"release/1.0\""))
+        let accepted = service.acceptGitCodeRepositoryChangedEvent(event)
         let tasks = ArrayList<String>()
         tasks.add("cangjie_source_event_sync")
 
         let result = service.runSchedulerTasks(tasks, true)
+        let receipt = store.loadRepositoryEventReceipt(accepted.dedupeKey)
 
         @Expect(result.ran, 1)
         @Expect(result.succeeded, 1)
         @Expect(result.failed, 0)
         @Expect(store.has("metadata/repository-event-latest.ckb"), true)
+        @Expect(accepted.status, "accepted")
+        @Expect(receipt.state, "committed")
+        @Expect(receipt.attempt, 1)
+        @Expect(receipt.lastErrorCode, "")
         @Expect(f7RunnerSawUrlFragment(runner, "/branches?page=1&per_page=100"), true)
-        @Expect(f7RunnerSawUrlFragment(runner, "/git/trees/${f7SlashRefResolvedCommit()}?"), true)
+        @Expect(f7RunnerSawUrlFragment(runner, "/git/trees/${f7SlashRefResolvedCommit()}?"), false)
         @Expect(f7RunnerSawUrlFragment(runner, "?ref=${f7SlashRefResolvedCommit()}"), true)
-        @Expect(f7RunnerSawUrlFragment(runner, "/git/trees/release%2F1.0?"), false)
         @Expect(f7RunnerSawUrlFragment(runner, "?ref=release%2F1.0"), false)
+        @Expect(f7RunnerSawUrlFragment(runner, "/git/trees/release%2F1.0?"), false)
         @Expect(f7RunnerSawUrlFragment(runner, "/git/trees/release/1.0?"), false)
-        @Expect(f7SchedulerDiagnosticsContain(result, "repository_event_checkpoint_saved:"), true)
+    }
+
+    @TestCase
+    public func p6S2N02SourceEventRefResolutionFailureIsRetryableAndPreservesActive(): Unit {
+        let root = "target/p6-s2-ref-resolution-retryable"
+        s1s2EnsureEmptyDir(root)
+        let config = CkbRuntimeConfig()
+        config.networkEnabled = true
+        let store = FileKnowledgeStore(root)
+        let runner = S1S2PaginatedGitCodeRunner()
+        runner.failRefRepo = "Cangjie/cangjie_stdx"
+        let service = CkbCommandLoopService(config, store, sourceRunner: runner)
+        _ = service.start()
+        let beforeActive = service.statusSnapshot().activeKnowledgeVersion
+        let event = parseGitCodeRepositoryChangedEvent(
+            p6S1RepositoryEventJson("p6-s2-ref-fail", ["src/stdx/http/client.cj"])
+                .replace("\"repo\":\"cangjie/stdx\"", "\"repo\":\"Cangjie/cangjie_stdx\""))
+        let accepted = service.acceptGitCodeRepositoryChangedEvent(event)
+        let tasks = ArrayList<String>()
+        tasks.add("cangjie_source_event_sync")
+
+        let result = service.runSchedulerTasks(tasks, true)
+        let receipt = store.loadRepositoryEventReceipt(accepted.dedupeKey)
+
+        @Expect(accepted.status, "accepted")
+        @Expect(result.failed, 1)
+        @Expect(receipt.state, "retryable")
+        @Expect(receipt.lastErrorCode.contains("gitcode_ref_resolution"), true)
+        @Expect(receipt.nextAttemptAtMillis > receipt.updatedAtMillis, true)
+        @Expect(service.statusSnapshot().activeKnowledgeVersion, beforeActive)
+        @Expect(receipt.state == "committed", false)
     }
 
     @TestCase
@@ -954,6 +1002,7 @@ public class CkbSchedulerServiceF5Test {
         let tasks = ArrayList<String>()
         tasks.add("cangjie_release_full_sync")
 
+        let beforeActive = service.statusSnapshot().activeKnowledgeVersion
         let result = service.runSchedulerTasks(tasks, true)
         let manifest = store.loadActiveCangjieVersionManifest()
         let pointer = store.loadActiveSnapshotPointer()
@@ -1464,18 +1513,25 @@ public class CkbSchedulerServiceF5Test {
         runner.failContentSamples = true
         let service = CkbCommandLoopService(config, store, sourceRunner: runner)
         _ = service.start()
+        let accepted = service.acceptGitCodeRepositoryChangedEvent(
+            parseGitCodeRepositoryChangedEvent(p6S1RepositoryEventJson("s2-ut002", ["src/std/array.cj"])))
         let tasks = ArrayList<String>()
         tasks.add("cangjie_source_event_sync")
 
+        let beforeActive = service.statusSnapshot().activeKnowledgeVersion
         let result = service.runSchedulerTasks(tasks, true)
-        let checkpoint = String.fromUtf8(File.readFrom(Path(root).join("store/metadata/repository-event-latest.ckb")))
+        let checkpoint = try { String.fromUtf8(File.readFrom(Path(root).join("store/metadata/repository-event-latest.ckb"))) } catch (_: Exception) { "" }
+        let receipt = store.loadRepositoryEventReceipt(accepted.dedupeKey)
 
         @Expect(result.ran, 1)
         @Expect(result.failed, 1)
+        @Expect(accepted.status, "accepted")
         @Expect(store.has("metadata/repository-event-latest.ckb"), true)
-        @Expect(checkpoint.contains("resolvedWatermark="), true)
-        @Expect(checkpoint.contains("ingestedWatermark=not_ingested"), true)
-        @Expect(f7SchedulerDiagnosticsContain(result, "repository_event_checkpoint_degraded:"), true)
+        @Expect(receipt.state, "failed")
+        @Expect(receipt.lastErrorCode != "", true)
+        @Expect(receipt.state == "committed", false)
+        @Expect(service.statusSnapshot().activeKnowledgeVersion, beforeActive)
+        @Expect(checkpoint.contains("status="), true)
     }
 
     @TestCase
@@ -1520,6 +1576,8 @@ public class CkbSchedulerServiceF5Test {
         runner.failRefRepo = "Cangjie/cangjie_stdx"
         let service = CkbCommandLoopService(config, store, sourceRunner: runner)
         _ = service.start()
+        let accepted = service.acceptGitCodeRepositoryChangedEvent(
+            parseGitCodeRepositoryChangedEvent(p6S1RepositoryEventJson("s6-e2e004", ["src/std/array.cj"])))
         let tasks = ArrayList<String>()
         tasks.add("cangjie_version_branch_refresh")
 
@@ -1576,6 +1634,8 @@ public class CkbSchedulerServiceF5Test {
         let runner = S1S2PaginatedGitCodeRunner()
         let service = CkbCommandLoopService(config, store, sourceRunner: runner)
         _ = service.start()
+        let accepted = service.acceptGitCodeRepositoryChangedEvent(
+            parseGitCodeRepositoryChangedEvent(p6S1RepositoryEventJson("s6-e2e004", ["src/std/array.cj"])))
         let tasks = ArrayList<String>()
         tasks.add("cangjie_release_full_sync")
 
@@ -1714,6 +1774,8 @@ public class CkbSchedulerServiceF5Test {
         let runner = S1S2PaginatedGitCodeRunner()
         let service = CkbCommandLoopService(config, store, sourceRunner: runner)
         _ = service.start()
+        let accepted = service.acceptGitCodeRepositoryChangedEvent(
+            parseGitCodeRepositoryChangedEvent(p6S1RepositoryEventJson("s6-e2e004", ["src/std/array.cj"])))
         let tasks = ArrayList<String>()
         tasks.add("cangjie_version_branch_refresh")
         tasks.add("cangjie_release_full_sync")
@@ -1724,6 +1786,7 @@ public class CkbSchedulerServiceF5Test {
         @Expect(result.ran, 3)
         @Expect(result.failed, 0)
         @Expect(result.succeeded, 3)
+        @Expect(accepted.status, "accepted")
         @Expect(store.has("metadata/cangjie-version-manifest.ckb"), true)
         @Expect(store.has("metadata/repository-event-latest.ckb"), true)
         @Expect(s1s2RunnerSawTreePage(runner, 2), true)

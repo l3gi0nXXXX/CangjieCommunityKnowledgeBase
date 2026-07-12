@@ -61,6 +61,7 @@ public class CangjieReleaseGateTest {
         @Expect(sourceEventE2e.contains("\"duplicateEventDeduped\":true"), true)
         @Expect(sourceEventE2e.contains("\"repositoryInboxQueued\":true"), true)
         @Expect(sourceEventE2e.contains("\"ingressDidNotSynchronize\":true"), true)
+        @Expect(sourceEventE2e.contains("\"workerConsumed\":true"), true)
         @Expect(exists(Path("${runRoot}/routine-update-plan-closure.jsonl")), true)
         @Expect(String.fromUtf8(File.readFrom(Path("${runRoot}/routine-update-plan-closure.jsonl"))).contains("\"status\":\"not-run\""), false)
     }

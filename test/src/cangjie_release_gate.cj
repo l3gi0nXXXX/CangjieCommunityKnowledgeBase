@@ -447,12 +447,17 @@ private func cangjieReleaseGateAddSourceEventE2eStep(report: CangjieKnowledgeRel
     let repoList = handleCkbHttpRequest(eventService, "POST", "/v1/admin/repo-list/refresh", "{\"repo\":\"Cangjie/cangjie_docs\",\"ref\":\"main\",\"paths\":[\"repo_list.md\"]}", ["X-CKB-Admin-Token: source-event-admin"], httpConfig)
     let inboxQueued = eventStore.has("metadata/repository-event-inbox/events") && eventStore.has("metadata/repository-event-inbox/queue")
     let noIngressSync = !eventStore.has("metadata/repository-event-latest.ckb")
+    let sourceEventTasks = ArrayList<String>()
+    sourceEventTasks.add("cangjie_source_event_sync")
+    let consumed = eventService.runSchedulerTasks(sourceEventTasks, true)
+    let workerConsumed = consumed.failed == 0 && consumed.succeeded == 1 &&
+        eventStore.has("metadata/repository-event-latest.ckb")
     let duplicateDeduped = duplicate.statusCode == 200 && duplicate.body.contains("\"status\":\"duplicate\"")
-    let ok = sourceSetSync.statusCode == 200 && accepted.statusCode == 202 && duplicateDeduped && rejected.statusCode == 400 && repoList.statusCode == 200 && inboxQueued && noIngressSync && eventStore.has("metadata/repo-list.ckb")
-    let text = "{\"sourceSetSyncStatus\":${sourceSetSync.statusCode},\"repositoryChangedEventStatus\":${accepted.statusCode},\"duplicateEventStatus\":${duplicate.statusCode},\"duplicateEventDeduped\":${duplicateDeduped},\"rejectedEventStatus\":${rejected.statusCode},\"rejectedEventStoreMutation\":false,\"repoListPersisted\":${eventStore.has("metadata/repo-list.ckb")},\"repositoryInboxQueued\":${inboxQueued},\"ingressDidNotSynchronize\":${noIngressSync},\"activeRollbackGuard\":true}\n"
+    let ok = sourceSetSync.statusCode == 200 && accepted.statusCode == 202 && duplicateDeduped && rejected.statusCode == 400 && repoList.statusCode == 200 && inboxQueued && noIngressSync && workerConsumed && eventStore.has("metadata/repo-list.ckb")
+    let text = "{\"sourceSetSyncStatus\":${sourceSetSync.statusCode},\"repositoryChangedEventStatus\":${accepted.statusCode},\"duplicateEventStatus\":${duplicate.statusCode},\"duplicateEventDeduped\":${duplicateDeduped},\"rejectedEventStatus\":${rejected.statusCode},\"rejectedEventStoreMutation\":false,\"repoListPersisted\":${eventStore.has("metadata/repo-list.ckb")},\"repositoryInboxQueued\":${inboxQueued},\"ingressDidNotSynchronize\":${noIngressSync},\"workerConsumed\":${workerConsumed},\"workerRan\":${consumed.ran},\"workerSucceeded\":${consumed.succeeded},\"activeRollbackGuard\":true}\n"
     let artifact = "${options.runRoot}/routine-update-source-event-e2e.jsonl"
     cangjieReleaseGateWriteText(artifact, text)
-    cangjieReleaseGateAddStep(report, "E2E-13-source-event-e2e", ok, "sourceSet=${sourceSetSync.statusCode},accepted=${accepted.statusCode},duplicate=${duplicate.statusCode}/${duplicateDeduped},rejected=${rejected.statusCode},inbox=${inboxQueued},ingressNoSync=${noIngressSync},repoList=${repoList.statusCode}", artifact, evidenceHash: stableSummaryHash(text))
+    cangjieReleaseGateAddStep(report, "E2E-13-source-event-e2e", ok, "sourceSet=${sourceSetSync.statusCode},accepted=${accepted.statusCode},duplicate=${duplicate.statusCode}/${duplicateDeduped},rejected=${rejected.statusCode},inbox=${inboxQueued},ingressNoSync=${noIngressSync},worker=${workerConsumed},repoList=${repoList.statusCode}", artifact, evidenceHash: stableSummaryHash(text))
 }
 
 private func cangjieReleaseGateAddRoutineUpdateAcceptanceStep(report: CangjieKnowledgeReleaseGateReport, options: CangjieKnowledgeReleaseGateOptions): Unit {
