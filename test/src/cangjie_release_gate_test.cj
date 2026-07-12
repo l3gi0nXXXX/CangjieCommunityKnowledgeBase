@@ -1,6 +1,7 @@
 package cangjie_community_knowledge_base_test
 
 import std.fs.{Directory, File, Path, exists}
+import std.process.*
 import std.unittest.*
 import std.unittest.testmacro.*
 
@@ -11,6 +12,7 @@ public class CangjieReleaseGateTest {
         let fixture = f8WriteFirstInitFixture("target/f8-ut-fixture", true)
         let runRoot = "target/f8-ut-run"
         f8WritePass1Files(runRoot, true)
+        f8EnsureEmptyDir("target/f8-ut-store")
         let options = f8ReleaseGateOptions(runRoot, fixture)
         options.schedulerTaskNames.add("cangjie_docs_full_weekly")
         let store = FileKnowledgeStore("target/f8-ut-store")
@@ -53,6 +55,12 @@ public class CangjieReleaseGateTest {
         @Expect(exists(Path("${runRoot}/routine-update-scheduler-loop-lifecycle.jsonl")), true)
         @Expect(exists(Path("${runRoot}/routine-update-interface-e2e.jsonl")), true)
         @Expect(exists(Path("${runRoot}/routine-update-source-event-e2e.jsonl")), true)
+        let sourceEventE2e = String.fromUtf8(File.readFrom(Path("${runRoot}/routine-update-source-event-e2e.jsonl")))
+        @Expect(sourceEventE2e.contains("\"repositoryChangedEventStatus\":202"), true)
+        @Expect(sourceEventE2e.contains("\"duplicateEventStatus\":200"), true)
+        @Expect(sourceEventE2e.contains("\"duplicateEventDeduped\":true"), true)
+        @Expect(sourceEventE2e.contains("\"repositoryInboxQueued\":true"), true)
+        @Expect(sourceEventE2e.contains("\"ingressDidNotSynchronize\":true"), true)
         @Expect(exists(Path("${runRoot}/routine-update-plan-closure.jsonl")), true)
         @Expect(String.fromUtf8(File.readFrom(Path("${runRoot}/routine-update-plan-closure.jsonl"))).contains("\"status\":\"not-run\""), false)
     }
@@ -73,6 +81,7 @@ public class CangjieReleaseGateTest {
         let fixture = f8WriteFirstInitFixture("target/f8-pos-fixture", true)
         let runRoot = "target/f8-pos-run"
         f8WritePass1Files(runRoot, true)
+        f8EnsureEmptyDir("target/f8-pos-store")
         let store = FileKnowledgeStore("target/f8-pos-store")
 
         let exitCode = runCangjieKnowledgeReleaseGate(f8ReleaseGateArgs(runRoot, fixture), config: f8ReleaseGateRuntimeConfig(), store: store, sourceRunner: F9ReleaseGateFreshRunner())
@@ -88,6 +97,7 @@ public class CangjieReleaseGateTest {
         let fixture = f8WriteFirstInitFixture("target/f8-neg-fixture", true)
         let runRoot = "target/f8-neg-run"
         f8WritePass1Files(runRoot, false)
+        f8EnsureEmptyDir("target/f8-neg-store")
         let options = f8ReleaseGateOptions(runRoot, fixture)
         options.schedulerTaskNames.add("cangjie_docs_full_weekly")
 
@@ -105,6 +115,7 @@ public class CangjieReleaseGateTest {
         let fixture = f8WriteFirstInitFixture("target/p9-default-fixture", true)
         let runRoot = "target/p9-default-run"
         f8WritePass1Files(runRoot, true)
+        f8EnsureEmptyDir("target/p9-default-store")
         let options = f8ReleaseGateOptions(runRoot, fixture)
         let store = FileKnowledgeStore("target/p9-default-store")
 
@@ -137,6 +148,7 @@ public class CangjieReleaseGateTest {
         let fixture = f8WriteFirstInitFixture("target/p0-live-shape-fixture", true)
         let runRoot = "target/p0-live-shape-run"
         f8WritePass1Files(runRoot, true)
+        f8EnsureEmptyDir("target/p0-live-shape-store")
         let options = f8ReleaseGateOptions(runRoot, fixture)
         let store = FileKnowledgeStore("target/p0-live-shape-store")
 
@@ -201,7 +213,7 @@ private func f8ReleaseGateRuntimeConfig(): CkbRuntimeConfig {
 }
 
 private func f8WritePass1Files(runRoot: String, pass: Bool): Unit {
-    f8EnsureDir(runRoot)
+    f8EnsureEmptyDir(runRoot)
     f8WriteFile(Path("${runRoot}/manifest.jsonl"), f8ManifestLine("CJ-HUMANEVAL-000", "Implement ArrayList helper.", "[\"ArrayList\",\"Cangjie syntax\"]") + "\n")
     let dPass = pass
     let results = f8ResultLine("CJ-HUMANEVAL-000", CangjieHumanEvalPass1GateGroups.C, true, "none", false, "cangjie_task_knowledge_pack") + "\n" +
@@ -210,6 +222,7 @@ private func f8WritePass1Files(runRoot: String, pass: Bool): Unit {
 }
 
 private func f8WriteFirstInitFixture(root: String, includeTool: Bool): F8FirstInitFixturePaths {
+    f8EnsureEmptyDir(root)
     let fixture = F8FirstInitFixturePaths()
     fixture.docsRoot = "${root}/docs"
     fixture.stdRoot = "${root}/std"
@@ -275,6 +288,13 @@ private func f8EnsureDir(root: String): Unit {
     if (!exists(Path(root))) {
         Directory.create(Path(root), recursive: true)
     }
+}
+
+private func f8EnsureEmptyDir(root: String): Unit {
+    if (exists(Path(root))) {
+        _ = launch("/bin/rm", ["-rf", root]).wait()
+    }
+    f8EnsureDir(root)
 }
 
 private func f8WriteFile(path: Path, text: String): Unit {

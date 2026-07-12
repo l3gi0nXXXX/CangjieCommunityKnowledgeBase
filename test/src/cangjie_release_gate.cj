@@ -432,21 +432,27 @@ private func cangjieReleaseGateAddSourceEventE2eStep(report: CangjieKnowledgeRel
     let httpConfig = CkbHttpServiceConfig()
     httpConfig.adminTokenFile = adminTokenPath
     httpConfig.eventIngestTokenFile = eventTokenPath
+    let sourceSetStore = FileKnowledgeStore("${options.runRoot}/source-event-source-set-store")
+    let sourceSetService = CkbCommandLoopService(config, sourceSetStore, sourceRunner: sourceRunner)
+    _ = sourceSetService.start()
+    let sourceSetSync = handleCkbHttpRequest(sourceSetService, "POST", "/v1/admin/repositories/sync", "{\"repo\":\"Cangjie/cangjie_docs\",\"ref\":\"main\",\"profile\":\"repo_source_and_items\",\"changedFiles\":[\"docs/dev-guide/source_en/api/collections.md\"]}", ["X-CKB-Admin-Token: source-event-admin"], httpConfig)
+    // Keep the ingress store isolated from the administrative source-set probe so
+    // E2E-13 proves that an accepted event only writes its durable receipt.
     let eventStore = FileKnowledgeStore("${options.runRoot}/source-event-store")
     let eventService = CkbCommandLoopService(config, eventStore, sourceRunner: sourceRunner)
     _ = eventService.start()
-    let sourceSetSync = handleCkbHttpRequest(eventService, "POST", "/v1/admin/repositories/sync", "{\"repo\":\"Cangjie/cangjie_docs\",\"ref\":\"main\",\"profile\":\"repo_source_and_items\",\"changedFiles\":[\"docs/dev-guide/source_en/api/collections.md\"]}", ["X-CKB-Admin-Token: source-event-admin"], httpConfig)
     let accepted = handleCkbHttpRequest(eventService, "POST", "/v1/events/gitcode/repository-changed", cangjieReleaseGateRepositoryEventJson("source-event-accepted", ["src/std/collection/arraylist.cj", "repo_list.md"]), ["X-CKB-Event-Token: source-event-token"], httpConfig)
     let duplicate = handleCkbHttpRequest(eventService, "POST", "/v1/events/gitcode/repository-changed", cangjieReleaseGateRepositoryEventJson("source-event-accepted", ["src/std/collection/arraylist.cj", "repo_list.md"]), ["X-CKB-Event-Token: source-event-token"], httpConfig)
     let rejected = handleCkbHttpRequest(eventService, "POST", "/v1/events/gitcode/repository-changed", "{\"contractVersion\":\"gcm-ckb-repository-change-v1\",\"provider\":\"gitcode\",\"eventType\":\"merge_request\",\"reason\":\"pr_merged\",\"repo\":\"Private/repo\",\"ref\":\"main\"}", ["X-CKB-Event-Token: source-event-token"], httpConfig)
     let repoList = handleCkbHttpRequest(eventService, "POST", "/v1/admin/repo-list/refresh", "{\"repo\":\"Cangjie/cangjie_docs\",\"ref\":\"main\",\"paths\":[\"repo_list.md\"]}", ["X-CKB-Admin-Token: source-event-admin"], httpConfig)
     let inboxQueued = eventStore.has("metadata/repository-event-inbox/events") && eventStore.has("metadata/repository-event-inbox/queue")
     let noIngressSync = !eventStore.has("metadata/repository-event-latest.ckb")
-    let ok = sourceSetSync.statusCode == 200 && accepted.statusCode == 202 && duplicate.body.contains("\"status\":\"duplicate\"") && rejected.statusCode == 400 && repoList.statusCode == 200 && inboxQueued && noIngressSync && eventStore.has("metadata/repo-list.ckb")
-    let text = "{\"sourceSetSyncStatus\":${sourceSetSync.statusCode},\"repositoryChangedEventStatus\":${accepted.statusCode},\"duplicateEventDeduped\":${duplicate.body.contains("\"status\":\"duplicate\"")},\"rejectedEventStatus\":${rejected.statusCode},\"rejectedEventStoreMutation\":false,\"repoListPersisted\":${eventStore.has("metadata/repo-list.ckb")},\"repositoryInboxQueued\":${inboxQueued},\"ingressDidNotSynchronize\":${noIngressSync},\"activeRollbackGuard\":true}\n"
+    let duplicateDeduped = duplicate.statusCode == 200 && duplicate.body.contains("\"status\":\"duplicate\"")
+    let ok = sourceSetSync.statusCode == 200 && accepted.statusCode == 202 && duplicateDeduped && rejected.statusCode == 400 && repoList.statusCode == 200 && inboxQueued && noIngressSync && eventStore.has("metadata/repo-list.ckb")
+    let text = "{\"sourceSetSyncStatus\":${sourceSetSync.statusCode},\"repositoryChangedEventStatus\":${accepted.statusCode},\"duplicateEventStatus\":${duplicate.statusCode},\"duplicateEventDeduped\":${duplicateDeduped},\"rejectedEventStatus\":${rejected.statusCode},\"rejectedEventStoreMutation\":false,\"repoListPersisted\":${eventStore.has("metadata/repo-list.ckb")},\"repositoryInboxQueued\":${inboxQueued},\"ingressDidNotSynchronize\":${noIngressSync},\"activeRollbackGuard\":true}\n"
     let artifact = "${options.runRoot}/routine-update-source-event-e2e.jsonl"
     cangjieReleaseGateWriteText(artifact, text)
-    cangjieReleaseGateAddStep(report, "E2E-13-source-event-e2e", ok, "sourceSet=${sourceSetSync.statusCode},accepted=${accepted.statusCode},duplicate=${duplicate.body.contains("\"status\":\"duplicate\"")},rejected=${rejected.statusCode},inbox=${inboxQueued},ingressNoSync=${noIngressSync},repoList=${repoList.statusCode}", artifact, evidenceHash: stableSummaryHash(text))
+    cangjieReleaseGateAddStep(report, "E2E-13-source-event-e2e", ok, "sourceSet=${sourceSetSync.statusCode},accepted=${accepted.statusCode},duplicate=${duplicate.statusCode}/${duplicateDeduped},rejected=${rejected.statusCode},inbox=${inboxQueued},ingressNoSync=${noIngressSync},repoList=${repoList.statusCode}", artifact, evidenceHash: stableSummaryHash(text))
 }
 
 private func cangjieReleaseGateAddRoutineUpdateAcceptanceStep(report: CangjieKnowledgeReleaseGateReport, options: CangjieKnowledgeReleaseGateOptions): Unit {
@@ -813,7 +819,7 @@ private func cangjieReleaseGateRepositoryEventJson(eventId: String, changedFiles
     for (path in changedFiles) {
         files.add(path)
     }
-    "{\"contractVersion\":\"gcm-ckb-repository-change-v1\",\"eventId\":\"${cangjieReleaseGateJsonEscape(eventId)}\",\"provider\":\"gitcode\",\"eventType\":\"merge_request\",\"action\":\"merged\",\"state\":\"merged\",\"reason\":\"pr_merged\",\"repo\":\"Cangjie/cangjie_docs\",\"ref\":\"main\",\"prNumber\":520,\"changedFiles\":${cangjieReleaseGateJsonStringArray(files)}}"
+    "{\"contractVersion\":\"gcm-ckb-repository-change-v1\",\"eventId\":\"${cangjieReleaseGateJsonEscape(eventId)}\",\"provider\":\"gitcode\",\"eventType\":\"merge_request\",\"action\":\"merged\",\"state\":\"merged\",\"reason\":\"pr_merged\",\"repo\":\"Cangjie/cangjie_docs\",\"ref\":\"main\",\"prNumber\":520,\"changedFiles\":[${cangjieReleaseGateJsonStringArray(files)}]}"
 }
 
 private func cangjieReleaseGateMcpToolCallJson(toolName: String, args: String): String {

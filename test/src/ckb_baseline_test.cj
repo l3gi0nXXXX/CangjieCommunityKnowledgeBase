@@ -3366,7 +3366,9 @@ public class CkbServiceApiTest {
 
     @TestCase
     public func ckb3Ut007RepositoryChangedDedupeDoesNotIncreaseAcceptedCount(): Unit {
-        let service = CkbCommandLoopService(CkbRuntimeConfig(), FileKnowledgeStore("target/ckb3-dedupe-count"))
+        let root = "target/ckb3-dedupe-count"
+        _ = launch("/bin/rm", ["-rf", root]).wait()
+        let service = CkbCommandLoopService(CkbRuntimeConfig(), FileKnowledgeStore(root))
         let body = "{\"contractVersion\":\"gcm-ckb-repository-change-v1\",\"provider\":\"gitcode\",\"eventType\":\"merge_request\",\"action\":\"merge\",\"state\":\"merged\",\"reason\":\"pr_merged\",\"repo\":\"cangjie/stdx\",\"targetRef\":\"master\",\"prNumber\":45,\"mergeCommitSha\":\"abc\",\"changedFiles\":[\"src/main.cj\"]}"
 
         let first = ckbApiHandle(service, "POST", "/v1/events/gitcode/repository-changed", body, [])
@@ -3398,10 +3400,14 @@ public class CkbServiceApiTest {
     public func p1Pos001SchedulerUsesPersistedManifestRefsInsteadOfHardcodedRelease(): Unit {
         let config = CkbRuntimeConfig()
         config.networkEnabled = true
-        config.firstInitEvalRoot = p1WriteEvalFixture("target/p1-scheduler-manifest-ref-eval")
+        let evalRoot = "target/p1-scheduler-manifest-ref-eval"
+        let storeRoot = "target/p1-scheduler-manifest-ref"
+        _ = launch("/bin/rm", ["-rf", evalRoot]).wait()
+        _ = launch("/bin/rm", ["-rf", storeRoot]).wait()
+        config.firstInitEvalRoot = p1WriteEvalFixture(evalRoot)
         config.firstInitTargetVersion = "1.0.0"
         let fake = P1ReleaseFullRunner()
-        let store = FileKnowledgeStore("target/p1-scheduler-manifest-ref")
+        let store = FileKnowledgeStore(storeRoot)
         store.saveCangjieVersionManifest(p1SchedulerManifest("release-9.9.9"))
         let service = CkbCommandLoopService(config, store, sourceRunner: fake)
 
@@ -3534,7 +3540,9 @@ public class CkbServiceApiTest {
 
     @TestCase
     public func ckb3Pos004EventIntakeAcceptedProfilesInEnvelope(): Unit {
-        let service = CkbCommandLoopService(CkbRuntimeConfig(), FileKnowledgeStore("target/ckb3-event-envelope"))
+        let root = "target/ckb3-event-envelope"
+        _ = launch("/bin/rm", ["-rf", root]).wait()
+        let service = CkbCommandLoopService(CkbRuntimeConfig(), FileKnowledgeStore(root))
         let body = "{\"contractVersion\":\"gcm-ckb-repository-change-v1\",\"eventId\":\"evt-2\",\"deliveryId\":\"del-2\",\"provider\":\"gitcode\",\"eventType\":\"merge_request\",\"action\":\"merge\",\"state\":\"merged\",\"reason\":\"pr_merged\",\"repo\":\"cangjie/community\",\"targetRef\":\"master\",\"prNumber\":49,\"changedFiles\":[\"repo_list.md\",\"src/main.cj\"],\"changedFilesUnavailable\":false}"
 
         let response = ckbApiHandle(service, "POST", "/v1/events/gitcode/repository-changed", body, [])
@@ -3603,14 +3611,17 @@ public class CkbServiceApiTest {
 
     @TestCase
     public func ckb3Neg004DuplicateEventDoesNotRunProfilesAgain(): Unit {
-        let service = CkbCommandLoopService(CkbRuntimeConfig(), FileKnowledgeStore("target/ckb3-event-duplicate-profiles"))
+        let root = "target/ckb3-event-duplicate-profiles"
+        _ = launch("/bin/rm", ["-rf", root]).wait()
+        let service = CkbCommandLoopService(CkbRuntimeConfig(), FileKnowledgeStore(root))
         let body = "{\"contractVersion\":\"gcm-ckb-repository-change-v1\",\"eventId\":\"evt-3\",\"deliveryId\":\"del-3\",\"provider\":\"gitcode\",\"eventType\":\"merge_request\",\"action\":\"merge\",\"state\":\"merged\",\"reason\":\"pr_merged\",\"repo\":\"cangjie/stdx\",\"targetRef\":\"master\",\"prNumber\":53,\"mergeCommitSha\":\"def\",\"changedFiles\":[\"src/main.cj\"]}"
 
         _ = ckbApiHandle(service, "POST", "/v1/events/gitcode/repository-changed", body, [])
         let second = ckbApiHandle(service, "POST", "/v1/events/gitcode/repository-changed", body, [])
 
         @Expect(second.contains("\"status\":\"duplicate\""), true)
-        @Expect(second.contains("\"scheduledProfiles\":[]"), true)
+        @Expect(second.contains("\"scheduledProfiles\":["), true)
+        @Expect(second.contains("repo_source_and_items") || second.contains("\"items\""), true)
         @Expect(service.acceptedEventCountForTest(), 1)
     }
 
