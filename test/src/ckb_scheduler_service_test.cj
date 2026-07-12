@@ -237,7 +237,9 @@ public class CkbSchedulerServiceF5Test {
         let config = CkbRuntimeConfig()
         config.networkEnabled = true
         config.schedulerLoopIntervalMillis = 600000
-        let store = FileKnowledgeStore("target/f5-pos-scheduler-loop")
+        let root = "target/f5-pos-scheduler-loop"
+        s1s2EnsureEmptyDir(root)
+        let store = FileKnowledgeStore(root)
         let service = CkbCommandLoopService(config, store, sourceRunner: FakeSourceFetchRunner())
         _ = service.start()
 
@@ -252,6 +254,12 @@ public class CkbSchedulerServiceF5Test {
         event.prNumber = 77
         event.changedFiles.add("repo_list.md")
         event.changedFiles.add("src/http/client.cj")
+        // The startup tick may independently refresh the repository list.  Capture
+        // its state before HTTP ingress so this test verifies the S1 boundary:
+        // accepting an event only writes the durable inbox receipt and never
+        // performs source acquisition itself.
+        let repoListBeforeReceipt = store.has("metadata/repo-list.ckb")
+        let latestCheckpointBeforeReceipt = store.has("metadata/repository-event-latest.ckb")
         let accepted = service.acceptGitCodeRepositoryChangedEvent(event)
         let liveStatus = service.statusSnapshot()
         let reloaded = CkbCommandLoopService(config, store, sourceRunner: FakeSourceFetchRunner())
@@ -273,8 +281,8 @@ public class CkbSchedulerServiceF5Test {
         @Expect(accepted.diagnostic, "durable_receipt_queued")
         @Expect(store.loadRepositoryEventReceipt(accepted.dedupeKey).valid, true)
         @Expect(store.has("metadata/repository-event-inbox/queue"), true)
-        @Expect(store.has("metadata/repo-list.ckb"), false)
-        @Expect(store.has("metadata/repository-event-latest.ckb"), false)
+        @Expect(store.has("metadata/repo-list.ckb"), repoListBeforeReceipt)
+        @Expect(store.has("metadata/repository-event-latest.ckb"), latestCheckpointBeforeReceipt)
     }
 
     @TestCase
@@ -713,7 +721,9 @@ public class CkbSchedulerServiceF5Test {
         let config = CkbRuntimeConfig()
         config.networkEnabled = true
         f7ConfigureExplicitEval(config, "target/p7-tree-first-release-refresh-eval")
-        let store = FileKnowledgeStore("target/p7-tree-first-release-refresh")
+        let root = "target/p7-tree-first-release-refresh"
+        s1s2EnsureEmptyDir(root)
+        let store = FileKnowledgeStore(root)
         store.saveCangjieVersionManifest(f7OfficialReleaseManifest())
         let runner = F7GitCodeMetadata400TreeOkRunner()
         let service = CkbCommandLoopService(config, store, sourceRunner: runner)
@@ -833,7 +843,9 @@ public class CkbSchedulerServiceF5Test {
         let config = CkbRuntimeConfig()
         config.networkEnabled = true
         f7ConfigureExplicitEval(config, "target/t-p2-b01-slash-ref-escaped-path-eval")
-        let store = FileKnowledgeStore("target/t-p2-b01-slash-ref-escaped-path")
+        let root = "target/t-p2-b01-slash-ref-escaped-path"
+        s1s2EnsureEmptyDir(root)
+        let store = FileKnowledgeStore(root)
         store.saveCangjieVersionManifest(f7OfficialReleaseManifestSlashRef())
         let runner = F7SlashRefTreeOkRunner()
         runner.escapedSlashTreePath = true
