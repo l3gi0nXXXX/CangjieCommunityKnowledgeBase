@@ -14086,6 +14086,37 @@ public class CkbBenchmarkGapScanClaimResult {
     public init() {}
 }
 
+public class CkbBenchmarkGapPreviewResult {
+    public var ok: Bool = false
+    public var status: String = "not_started"
+    public var errorCode: String = ""
+    public var indexBuildCount: Int64 = 0
+    public var queryCount: Int64 = 0
+    public var passed: Int64 = 0
+    public var failedCaseIdHash: String = ""
+
+    public init() {}
+}
+
+public class CkbBenchmarkGapCandidateBatchResult {
+    public var ok: Bool = false
+    public var status: String = "not_started"
+    public var errorCode: String = ""
+    public var startOffset: Int64 = 0
+    public var endOffset: Int64 = 0
+    public var expected: Int64 = 0
+    public var written: Int64 = 0
+    public var evidenceHash: String = ""
+
+    public init() {}
+}
+
+private class CkbBenchmarkGapIndexBuildObserver <: CangjieServingIndexBuildObserver {
+    var count: Int64 = 0
+    init() {}
+    public func onServingIndexBuild(_recordCount: Int64): Unit { this.count += 1 }
+}
+
 private func ckbRunScheduledProfileFetches(profile: CkbScheduleTaskProfile, runner: SourceFetchRunner, config: CkbRuntimeConfig, store: FileKnowledgeStore, manifest: CangjieVersionManifest, deadlineAtMillis!: Int64 = 0): CkbScheduledProfileFetchResult {
     let result = fetchScheduledProfileSources(profile, runner, config, store, manifest, deadlineAtMillis: deadlineAtMillis)
     ckbSyncScheduledRequestAccounting(result)
@@ -17450,121 +17481,196 @@ private func ingestScheduledBenchmarkGapCuration(kb: KnowledgeBase, store: FileK
         return result
     }
     result.validationDiagnostics.add("benchmark_gap_input_gate:bytes=${curationBytes.size}:accepted=${curated.records.size}:rejected=${curated.rejected}:batchSize=${ckbBenchmarkGapCurationBatchSize()}:inputHash=${inputHash}:planHash=${scanPlan.planHash}")
-    if (curated.records.size > ckbBenchmarkGapCurationBatchSize()) {
+    if (persistedPlan.state != "complete") {
         let nowMillis = ckbCoreNowMillis()
         let claim = ckbClaimBenchmarkGapScanPlan(store, scanPlan.planHash, scanPlan.inputSha256,
             scanPlan.targetVersion, "scheduler-${profile.profile}", nowMillis, 60000)
-        result.ok = false
-        result.status = if (claim.claimed) { "benchmark_gap_scan_batch_admitted" } else { claim.errorCode }
-        result.validationStatus = result.status
         result.validationDiagnostics.add("benchmark_gap_scan_plan:planHash=${scanPlan.planHash}:total=${scanPlan.total}:batchSize=${scanPlan.batchSize}:batchStart=${claim.startOffset}:batchEnd=${claim.endOffset}:revision=${claim.plan.revision}:state=${claim.state}:errorCode=${claim.errorCode}")
-        // S3 owns isolated materialization. Do not send the first batch through
-        // the legacy live-write path and misrepresent partial active state as a
-        // completed 440-record run.
-        return result
+        if (!claim.claimed) {
+            result.ok = false
+            result.status = claim.errorCode
+            result.validationStatus = result.status
+            return result
+        }
+        let batch = ckbSaveBenchmarkGapCandidateBatch(store, scanPlan, curated.records,
+            claim.startOffset, claim.endOffset)
+        if (!batch.ok) {
+            result.ok = false
+            result.status = batch.errorCode
+            result.validationStatus = result.status
+            return result
+        }
+        persistedPlan = ckbCheckpointBenchmarkGapScanPlan(store, scanPlan.planHash,
+            scanPlan.inputSha256, scanPlan.targetVersion, claim.plan.owner, claim.plan.revision,
+            claim.startOffset, claim.endOffset, nowMillis + 1)
+        if (!persistedPlan.valid) {
+            result.ok = false
+            result.status = persistedPlan.errorCode
+            result.validationStatus = result.status
+            return result
+        }
+        result.validationDiagnostics.add("benchmark_gap_candidate_batch:planHash=${scanPlan.planHash}:start=${batch.startOffset}:end=${batch.endOffset}:count=${batch.written}:evidenceHash=${batch.evidenceHash}")
+        if (persistedPlan.state != "complete") {
+            result.ok = false
+            result.status = "benchmark_gap_scan_batch_checkpointed"
+            result.validationStatus = result.status
+            return result
+        }
     }
     ckbWriteScheduledProfileStageCheckpoint(store, profile, "input_parsed", "ok", profile.ingestBudgetMillis, deadlineAtMillis, "accepted=${curated.records.size}|rejected=${curated.rejected}|inputHash=${inputHash}|planHash=${scanPlan.planHash}")
     result.validationDiagnostics.add("profile_stage_checkpoint:profile=${profile.profile}|stage=input_parsed|status=ok|budgetMs=${profile.ingestBudgetMillis}|deadlineAtMillis=${deadlineAtMillis}|remainingMs=${ckbRemainingMillis(deadlineAtMillis)}")
-    for (record in curated.records) {
-        result.validationDiagnostics.add(ckbBenchmarkGapPreviewProof(curated.records, record))
-    }
-    for (record in curated.records) {
-        let fetch = SourceFetchResult()
-        fetch.ok = true
-        fetch.status = "ok"
-        fetch.statusCode = 200
-        fetch.body = record.chunk
-        fetch.bodyHash = stableSummaryHash(record.chunk)
-        fetch.sourceUrl = record.citation
-        fetch.path = record.metadata.path
-        fetch.ref = "visible-benchmark"
-        _ = kb.ingestFetchResult(record.sourceId, SourceTypes.DOC, fetch, record.title, TrustLevels.OFFICIAL, ReviewStates.REVIEWED)
+    let aggregate = ckbLoadBenchmarkGapCandidateBatches(store, scanPlan, curated.records)
+    if (!aggregate.ok) {
+        result.ok = false
+        result.status = aggregate.errorCode
+        result.validationStatus = result.status
+        return result
     }
     let fetch = CkbScheduledProfileFetchResult()
     fetch.requestCount = curated.accepted
     fetch.fetchedCount = curated.accepted
     let candidateVersion = ckbScheduledCandidateVersion(profile, fetch)
     let candidateRecords = kb.activeRecordSnapshotOverlay(curated.records)
-    result.validationDiagnostics.add("benchmark_gap_promotion_started:accepted=${curated.records.size}:candidateVersion=${candidateVersion}")
-    let promotionDeadlineAtMillis = ckbStageDeadline(deadlineAtMillis, profile.ingestBudgetMillis + profile.vectorBudgetMillis + profile.validationBudgetMillis + profile.snapshotBudgetMillis)
-    ckbWriteScheduledProfileStageCheckpoint(store, profile, "promotion_started", "running", profile.ingestBudgetMillis + profile.vectorBudgetMillis + profile.validationBudgetMillis + profile.snapshotBudgetMillis, promotionDeadlineAtMillis, "accepted=${curated.records.size}|candidateVersion=${candidateVersion}")
-    result.validationDiagnostics.add("profile_stage_checkpoint:profile=${profile.profile}|stage=promotion_started|status=running|budgetMs=${profile.ingestBudgetMillis + profile.vectorBudgetMillis + profile.validationBudgetMillis + profile.snapshotBudgetMillis}|deadlineAtMillis=${promotionDeadlineAtMillis}|remainingMs=${ckbRemainingMillis(promotionDeadlineAtMillis)}")
-    let promotion = cangjiePromoteCandidateRecordsAfterValidationWithVersion(kb, store, candidateVersion, candidateRecords, progressSink: progressSink, deadlineAtMillis: promotionDeadlineAtMillis)
-    ckbApplyScheduledPromotionResult(result, promotion, "benchmark_gap_candidate_promoted")
-    ckbWriteScheduledProfileStageCheckpoint(store, profile, "promotion_finished", result.status, profile.ingestBudgetMillis + profile.vectorBudgetMillis + profile.validationBudgetMillis + profile.snapshotBudgetMillis, promotionDeadlineAtMillis, "activeVersion=${result.activeVersion}|candidateVersion=${result.candidateVersion}|validationStatus=${result.validationStatus}")
-    result.validationDiagnostics.add("profile_stage_checkpoint:profile=${profile.profile}|stage=promotion_finished|status=${result.status}|budgetMs=${profile.ingestBudgetMillis + profile.vectorBudgetMillis + profile.validationBudgetMillis + profile.snapshotBudgetMillis}|deadlineAtMillis=${promotionDeadlineAtMillis}|remainingMs=${ckbRemainingMillis(promotionDeadlineAtMillis)}")
-    if (result.ok) {
-        let proofDeadlineAtMillis = ckbStageDeadline(deadlineAtMillis, profile.proofBudgetMillis)
-        let totalProofs = curated.records.size
-        let batchId = "proof-${stableSummaryHash("${inputHash}:${candidateVersion}")}"
-        let checkpoint = ckbLoadBenchmarkGapProofCheckpoint(store, inputHash, config.benchmarkGapTargetVersion)
-        checkpoint.inputHash = inputHash
-        checkpoint.targetVersion = config.benchmarkGapTargetVersion
-        checkpoint.candidateVersion = candidateVersion
-        checkpoint.total = totalProofs
-        checkpoint.status = "running"
-        var coveragePass = checkpoint.coveragePass
-        var completedProofs: Int64 = checkpoint.completed
-        var proofsThisRun: Int64 = 0
-        result.validationDiagnostics.add(ckbBenchmarkGapProofCheckpointDiagnostic("benchmark_gap_proof_checkpoint_loaded", checkpoint, batchId))
-        ckbWriteScheduledProfileStageCheckpoint(store, profile, "proof_started", "running", profile.proofBudgetMillis, proofDeadlineAtMillis, "batchId=${batchId}|completed=${completedProofs}|total=${totalProofs}")
-        result.validationDiagnostics.add("profile_stage_checkpoint:profile=${profile.profile}|stage=proof_started|status=running|budgetMs=${profile.proofBudgetMillis}|deadlineAtMillis=${proofDeadlineAtMillis}|remainingMs=${ckbRemainingMillis(proofDeadlineAtMillis)}")
-        for (record in curated.records) {
-            let caseId = ckbBenchmarkGapCaseId(record)
-            if (ckbBenchmarkGapProofCompleted(checkpoint, caseId)) {
-                result.validationDiagnostics.add(ckbBenchmarkGapCheckpointQueryProof(record, checkpoint, batchId))
-                result.validationDiagnostics.add("benchmark_gap_proof_resume_skip:${caseId}:batchId=${batchId}")
-                continue
-            }
-            result.validationDiagnostics.add("benchmark_gap_proof_progress:completed=${completedProofs}:total=${totalProofs}")
-            if (config.benchmarkGapProofBatchSize > 0 && proofsThisRun >= config.benchmarkGapProofBatchSize) {
-                checkpoint.status = "recoverable"
-                checkpoint.coveragePass = coveragePass
-                ckbSaveBenchmarkGapProofCheckpoint(store, checkpoint)
-                result.ok = false
-                result.status = "benchmark_gap_query_proof_recoverable"
-                result.validationStatus = "benchmark_gap_query_proof_recoverable"
-                result.validationDiagnostics.add(ckbBenchmarkGapProofCheckpointDiagnostic("benchmark_gap_proof_checkpoint_saved", checkpoint, batchId))
-                return result
-            }
-            let proofTimeout = ckbBenchmarkGapQueryProofDeadlineDiagnostic(proofDeadlineAtMillis, completedProofs, totalProofs, batchId: batchId)
-            if (proofTimeout != "") {
-                checkpoint.status = "recoverable"
-                checkpoint.coveragePass = coveragePass
-                ckbSaveBenchmarkGapProofCheckpoint(store, checkpoint)
-                result.ok = false
-                result.status = "benchmark_gap_query_proof_recoverable"
-                result.validationStatus = "benchmark_gap_query_proof_recoverable"
-                result.validationDiagnostics.add(proofTimeout)
-                result.validationDiagnostics.add(ckbBenchmarkGapProofCheckpointDiagnostic("benchmark_gap_proof_checkpoint_saved", checkpoint, batchId))
-                return result
-            }
-            let proof = ckbBenchmarkGapQueryProof(kb, record, manifest)
-            result.validationDiagnostics.add(proof)
-            addUniqueString(checkpoint.completedCaseIds, caseId)
-            completedProofs += 1
-            proofsThisRun += 1
-            if (!proof.contains("coveragePass=true")) {
-                coveragePass = false
-            }
-            checkpoint.coveragePass = coveragePass
-            ckbSaveBenchmarkGapProofCheckpoint(store, checkpoint)
+    let preview = ckbBenchmarkGapPreviewAll(candidateRecords, curated.records)
+    if (!preview.ok) {
+        result.ok = false
+        result.status = preview.errorCode
+        result.validationStatus = result.status
+        return result
+    }
+    let candidateRaw = ckbBenchmarkGapCandidateRawOverlay(kb.rawRecordSnapshot(), curated.records)
+    let materialized = store.saveCandidateSnapshotImmutable(candidateRaw, candidateRecords,
+        candidateVersion, deadlineAtMillis: deadlineAtMillis)
+    if (!materialized.ok) {
+        result.ok = false
+        result.status = materialized.status
+        result.validationStatus = result.status
+        return result
+    }
+    result.candidateVersion = candidateVersion
+    result.ok = false
+    result.status = "benchmark_gap_candidate_ready"
+    result.validationStatus = result.status
+    result.validationDiagnostics.add("benchmark_gap_candidate_ready:count=${curated.records.size}:candidateVersion=${candidateVersion}:manifestEvidenceHash=${materialized.manifestEvidenceHash}:indexBuildCount=${preview.indexBuildCount}:queryCount=${preview.queryCount}")
+    result
+}
+
+public func ckbSaveBenchmarkGapCandidateBatch(store: FileKnowledgeStore,
+    plan: CkbBenchmarkGapScanPlan, records: ArrayList<NormalizedRecord>, start: Int64,
+    end: Int64): CkbBenchmarkGapCandidateBatchResult {
+    let result = CkbBenchmarkGapCandidateBatchResult()
+    result.startOffset = start; result.endOffset = end; result.expected = end - start
+    if (!plan.valid || start < 0 || end <= start || end > records.size ||
+        end != ckbBenchmarkGapBatchEnd(plan.total, start, plan.batchSize)) {
+        result.errorCode = "benchmark_gap_candidate_batch_invalid"
+        return result
+    }
+    let body = StringBuilder()
+    for (index in start..end) {
+        let record = records[index]
+        body.append("record=${escapeField(record.sourceId)}|${ckbCandidateRecordsEvidenceHash(singleBenchmarkGapRecord(record))}\n")
+    }
+    result.evidenceHash = ckbReleaseEvidenceHash(body.toString())
+    let text = "schemaVersion=ckb-benchmark-gap-candidate-batch-v1\nplanHash=${plan.planHash}\ninputSha256=${plan.inputSha256}\nstart=${start}\nend=${end}\ncount=${result.expected}\nevidenceHash=${result.evidenceHash}\n${body}checksum=${ckbReleaseEvidenceHash("${plan.planHash}|${plan.inputSha256}|${start}|${end}|${result.evidenceHash}")}\n"
+    let path = ckbBenchmarkGapCandidateBatchPath(plan.planHash, start)
+    try { store.writeLinesAtomically(path, text) } catch (_: Exception) {
+        result.errorCode = "benchmark_gap_candidate_batch_write_failed"; return result
+    }
+    let readback = try { store.readText(path) } catch (_: Exception) {
+        result.errorCode = "benchmark_gap_candidate_batch_invalid_response_encoding"; return result
+    }
+    if (readback != text) { result.errorCode = "benchmark_gap_candidate_batch_readback_failed"; return result }
+    result.ok = true; result.status = "benchmark_gap_candidate_batch_saved"; result.written = result.expected
+    result
+}
+
+public func ckbLoadBenchmarkGapCandidateBatches(store: FileKnowledgeStore,
+    plan: CkbBenchmarkGapScanPlan, records: ArrayList<NormalizedRecord>): CkbBenchmarkGapCandidateBatchResult {
+    let result = CkbBenchmarkGapCandidateBatchResult()
+    var start: Int64 = 0
+    while (start < plan.total) {
+        let end = ckbBenchmarkGapBatchEnd(plan.total, start, plan.batchSize)
+        let expected = ckbSaveBenchmarkGapCandidateBatchText(plan, records, start, end)
+        let actual = try { store.readText(ckbBenchmarkGapCandidateBatchPath(plan.planHash, start)) } catch (_: Exception) {
+            result.errorCode = "benchmark_gap_candidate_batch_invalid_response_encoding"; return result
         }
-        result.validationDiagnostics.add("benchmark_gap_proof_progress:completed=${completedProofs}:total=${totalProofs}")
-        checkpoint.status = if (coveragePass) { "success" } else { "failed" }
-        checkpoint.coveragePass = coveragePass
-        ckbSaveBenchmarkGapProofCheckpoint(store, checkpoint)
-        result.validationDiagnostics.add(ckbBenchmarkGapProofCheckpointDiagnostic("benchmark_gap_proof_checkpoint_saved", checkpoint, batchId))
-        ckbWriteScheduledProfileStageCheckpoint(store, profile, "proof_finished", checkpoint.status, profile.proofBudgetMillis, proofDeadlineAtMillis, "batchId=${batchId}|completed=${completedProofs}|total=${totalProofs}|coveragePass=${coveragePass}")
-        result.validationDiagnostics.add("profile_stage_checkpoint:profile=${profile.profile}|stage=proof_finished|status=${checkpoint.status}|budgetMs=${profile.proofBudgetMillis}|deadlineAtMillis=${proofDeadlineAtMillis}|remainingMs=${ckbRemainingMillis(proofDeadlineAtMillis)}")
-        if (!coveragePass) {
-            result.ok = false
-            result.status = "benchmark_gap_query_proof_failed"
-        } else {
-            ckbAddScheduledValidationGate(result, "query_proof")
+        if (actual != expected) { result.errorCode = "benchmark_gap_candidate_batch_mismatch"; return result }
+        start = end
+    }
+    result.ok = true; result.status = "benchmark_gap_candidate_batches_complete"; result.written = plan.total
+    result
+}
+
+private func ckbSaveBenchmarkGapCandidateBatchText(plan: CkbBenchmarkGapScanPlan,
+    records: ArrayList<NormalizedRecord>, start: Int64, end: Int64): String {
+    let body = StringBuilder()
+    for (index in start..end) {
+        let record = records[index]
+        body.append("record=${escapeField(record.sourceId)}|${ckbCandidateRecordsEvidenceHash(singleBenchmarkGapRecord(record))}\n")
+    }
+    let evidence = ckbReleaseEvidenceHash(body.toString())
+    "schemaVersion=ckb-benchmark-gap-candidate-batch-v1\nplanHash=${plan.planHash}\ninputSha256=${plan.inputSha256}\nstart=${start}\nend=${end}\ncount=${end - start}\nevidenceHash=${evidence}\n${body}checksum=${ckbReleaseEvidenceHash("${plan.planHash}|${plan.inputSha256}|${start}|${end}|${evidence}")}\n"
+}
+
+private func ckbBenchmarkGapCandidateBatchPath(planHash: String, start: Int64): String {
+    "metadata/benchmark-gap-curation/candidate-batches/${safeName(planHash)}/batch-${start}.ckb"
+}
+
+private func singleBenchmarkGapRecord(record: NormalizedRecord): ArrayList<NormalizedRecord> {
+    let out = ArrayList<NormalizedRecord>(); out.add(record); out
+}
+
+public func ckbBenchmarkGapPreviewAll(candidateRecords: ArrayList<NormalizedRecord>,
+    gapRecords: ArrayList<NormalizedRecord>): CkbBenchmarkGapPreviewResult {
+    let result = CkbBenchmarkGapPreviewResult()
+    let observer = CkbBenchmarkGapIndexBuildObserver()
+    let index = buildCangjieServingIndex(candidateRecords,
+        activeKnowledgeVersion: "benchmark-gap-preview", buildObserver: observer)
+    result.indexBuildCount = observer.count
+    for (diagnostic in index.diagnostics) {
+        if (diagnostic.contains("deadline_exceeded") || diagnostic == "serving_index_empty") {
+            result.errorCode = "benchmark_gap_preview_index_invalid"; return result
         }
     }
+    for (record in gapRecords) {
+        let request = CangjieServingSearchRequest()
+        request.query = "${record.sourceId} ${ckbBenchmarkGapTaskQuery(record)}"
+        request.sourceSet = CangjieSourceSets.EVAL_SUPPORT
+        request.targetVersion = record.metadata.targetVersion
+        request.budget = 10
+        let lookup = searchHybridServingIndex(index, request)
+        result.queryCount += 1
+        var matched = false
+        for (hit in lookup.hits) {
+            if (hit.document.sourceId == record.sourceId &&
+                hit.document.sourceSet == CangjieSourceSets.EVAL_SUPPORT &&
+                hit.document.targetVersion == record.metadata.targetVersion) { matched = true }
+        }
+        if (!matched) {
+            result.errorCode = "benchmark_gap_preview_target_missed"
+            result.failedCaseIdHash = stableSummaryHash(ckbBenchmarkGapCaseId(record))
+            return result
+        }
+        result.passed += 1
+    }
+    result.ok = result.indexBuildCount == 1 && result.passed == gapRecords.size
+    result.status = if (result.ok) { "benchmark_gap_preview_passed" } else { "benchmark_gap_preview_incomplete" }
+    if (!result.ok) { result.errorCode = result.status }
     result
+}
+
+private func ckbBenchmarkGapCandidateRawOverlay(active: ArrayList<RawRecord>,
+    records: ArrayList<NormalizedRecord>): ArrayList<RawRecord> {
+    let replacements = HashSet<String>()
+    for (record in records) { replacements.add(record.sourceId) }
+    let out = ArrayList<RawRecord>()
+    for (record in active) { if (!replacements.contains(record.sourceId)) { out.add(record) } }
+    for (record in records) {
+        let raw = RawRecord(); raw.sourceId = record.sourceId; raw.title = record.title
+        raw.content = record.chunk; raw.contentHash = stableSummaryHash(record.chunk)
+        raw.metadata = record.metadata; raw.requiresReview = record.requiresReview; out.add(raw)
+    }
+    out
 }
 
 public func ckbBuildBenchmarkGapScanPlan(records: ArrayList<NormalizedRecord>, inputText: String,
