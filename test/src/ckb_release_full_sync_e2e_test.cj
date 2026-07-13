@@ -12,8 +12,148 @@ import std.unittest.testmacro.*
 import stdx.encoding.json.*
 import stdx.net.http.*
 
+private func p6S6Ledger(eventId: String, dedupeKey: String,
+    state: String): CkbRepositoryEventLedger {
+    let ledger = CkbRepositoryEventLedger()
+    ledger.eventId = eventId
+    ledger.dedupeKey = dedupeKey
+    ledger.canonicalSha256 = s6Repeat("a", 64)
+    ledger.state = state
+    ledger.resolvedCommit = s6Repeat("b", 40)
+    ledger.ingestedEvidenceHash = s6Repeat("c", 64)
+    ledger.schedulerRunId = "run-ledger"
+    ledger.transactionId = "tx-ledger"
+    ledger.candidateVersion = "candidate-ledger"
+    ledger.activeVersion = "active-ledger"
+    ledger
+}
+
 @Test
 public class CkbReleaseFullSyncS6E2ETest {
+    @TestCase
+    public func p6S6U01Ku10EnumeratesRepositoryEventRequiredGates(): Unit {
+        let gates = ckbSchedulerTaskContractForName(
+            "cangjie_source_event_sync").requiredValidationGates
+        @Expect(gates.size, 5)
+        @Expect(gates[0], "event_inbox_committed")
+        @Expect(gates[1], "event_delta_reconciled")
+        @Expect(gates[2], "candidate_validation_passed")
+        @Expect(gates[3], "active_transaction_verified")
+        @Expect(gates[4], "repository_event_checkpoint_verified")
+    }
+
+    @TestCase
+    public func p6S6U02RepositoryEventLedgerCodecIsCanonical(): Unit {
+        let store = FileKnowledgeStore("target/p6-s6-u02-ledger")
+        let first = p6S6Ledger("event-中文🙂", "dedupe-u02", "committed")
+        first.gates.add("repository_event_checkpoint_verified")
+        first.gates.add("candidate_validation_passed")
+        first.committedEvidenceHash = ckbRepositoryEventCommittedEvidenceHash(first)
+        let saved = store.saveRepositoryEventLedger(first)
+        let second = p6S6Ledger("event-中文🙂", "dedupe-u02-order", "committed")
+        second.gates.add("candidate_validation_passed")
+        second.gates.add("repository_event_checkpoint_verified")
+        let firstEvidence = ckbRepositoryEventCommittedEvidenceHash(first)
+        let secondEvidence = ckbRepositoryEventCommittedEvidenceHash(second)
+        @Expect(saved.valid, true)
+        @Expect(store.loadRepositoryEventLedger("dedupe-u02").eventId, "event-中文🙂")
+        @Expect(firstEvidence, secondEvidence)
+    }
+
+    @TestCase
+    public func p6S6B01FailedAttemptDoesNotOverwriteLastSuccess(): Unit {
+        let store = FileKnowledgeStore("target/p6-s6-b01-last-success")
+        let committed = p6S6Ledger("event-success", "dedupe-success", "committed")
+        committed.gates.add("candidate_validation_passed")
+        committed.committedEvidenceHash = ckbRepositoryEventCommittedEvidenceHash(committed)
+        _ = store.saveRepositoryEventLedger(committed)
+        let before = store.readText("metadata/repository-event-last-success.ckb")
+        let retryable = p6S6Ledger("event-failed", "dedupe-failed", "retryable")
+        _ = store.saveRepositoryEventLedger(retryable)
+        @Expect(store.readText("metadata/repository-event-last-success.ckb"), before)
+        @Expect(store.loadRepositoryEventLedger("dedupe-failed").state, "retryable")
+    }
+
+    @TestCase
+    public func p6S6N02InvalidEncodingAndMalformedLedgerFailClosed(): Unit {
+        let root = "target/p6-s6-n02-invalid-ledger"
+        let store = FileKnowledgeStore(root)
+        let ledger = p6S6Ledger("event-中文🙂", "dedupe-invalid", "retryable")
+        _ = store.saveRepositoryEventLedger(ledger)
+        let directory = Path(root).join("metadata/repository-event-ledger")
+        var artifact = Path(root)
+        for (entry in Directory.readFrom(directory)) {
+            if (!entry.isDirectory() && entry.name.endsWith(".ckb")) {
+                artifact = entry.path
+            }
+        }
+        File.writeTo(artifact, [UInt8(255), UInt8(254), UInt8(253)])
+        let invalid = store.loadRepositoryEventLedger("dedupe-invalid")
+        @Expect(invalid.valid, false)
+        @Expect(invalid.diagnostic, "invalid_response_encoding")
+
+        File.writeTo(artifact, "schemaVersion=ckb-repository-event-ledger-v1\neventId=broken\n".toArray())
+        let malformed = store.loadRepositoryEventLedger("dedupe-invalid")
+        @Expect(malformed.valid, false)
+        @Expect(malformed.diagnostic, "repository_event_ledger_checksum_mismatch")
+    }
+
+    @TestCase
+    public func p6S6P01AlignedCommittedLedgerPassesKu10(): Unit {
+        let store = FileKnowledgeStore("target/p6-s6-p01-aligned")
+        let kb = newOfflineKnowledgeBase()
+        _ = kb.persistActiveSnapshot(store)
+        let pointer = store.loadActiveSnapshotPointer()
+        let receipt = CkbRepositoryEventReceipt()
+        receipt.valid = true; receipt.state = "committed"; receipt.eventId = "event-p01"; receipt.dedupeKey = "dedupe-p01"
+        receipt.canonicalSha256 = s6Repeat("a", 64); receipt.resolvedCommit = s6Repeat("b", 40)
+        let outcome = CkbRepositoryEventWorkerResult()
+        outcome.state = "committed"; outcome.schedulerRunId = "run-p01"
+        outcome.transactionId = pointer.txId; outcome.candidateVersion = "candidate-p01"
+        outcome.activeVersion = pointer.activeVersion; outcome.validationEvidenceHash = s6Repeat("c", 64)
+        outcome.validationGates.add("candidate_validation_passed")
+        let ledger = store.materializeRepositoryEventCommittedLedger(receipt, outcome)
+        let task = SchedulerTaskResult()
+        task.ok = true; task.status = "candidate_validated_promoted"; task.since = receipt.eventId
+        task.schedulerRunId = outcome.schedulerRunId; task.transactionId = outcome.transactionId
+        task.candidateVersion = outcome.candidateVersion; task.activeVersion = outcome.activeVersion
+        task.validationStatus = "candidate_validation_passed"
+        task.validationEvidenceHash = outcome.validationEvidenceHash
+        task.updatedDataKinds.add("repo_source"); task.updatedDataKinds.add("serving_feed")
+        for (gate in ledger.gates) { task.validationGates.add(gate) }
+        let validation = validateSchedulerTaskResultAgainstPersistedContract(store,
+            CkbRuntimeConfig(), "cangjie_source_event_sync", task,
+            s6Invariant("before"), s6Invariant(task.activeVersion))
+        @Expect(ledger.valid, true)
+        @Expect(validation.ok, true)
+        @Expect(validation.diagnostic, "routine_contract_passed")
+    }
+
+    @TestCase
+    public func p6S6N01StaleOrPartialLedgerFailsKu10(): Unit {
+        let store = FileKnowledgeStore("target/p6-s6-n01-misaligned")
+        let ledger = p6S6Ledger("event-n01", "dedupe-n01", "retryable")
+        _ = store.saveRepositoryEventLedger(ledger)
+        let task = SchedulerTaskResult()
+        task.ok = true; task.status = "candidate_validated_promoted"; task.since = ledger.eventId
+        task.schedulerRunId = "wrong-run"; task.transactionId = "wrong-tx"
+        task.candidateVersion = "wrong-candidate"; task.activeVersion = "wrong-active"
+        task.validationStatus = "candidate_validation_passed"
+        task.validationEvidenceHash = s6Repeat("d", 64)
+        task.updatedDataKinds.add("repo_source"); task.updatedDataKinds.add("serving_feed")
+        task.validationGates.add("event_inbox_committed")
+        task.validationGates.add("event_delta_reconciled")
+        task.validationGates.add("candidate_validation_passed")
+        task.validationGates.add("active_transaction_verified")
+        task.validationGates.add("repository_event_checkpoint_verified")
+        let validation = validateSchedulerTaskResultAgainstPersistedContract(store,
+            CkbRuntimeConfig(), "cangjie_source_event_sync", task,
+            s6Invariant("before"), s6Invariant("wrong-active"))
+        @Expect(validation.ok, false)
+        @Expect(validation.diagnostic,
+            "required_artifact_missing:metadata/repository-event-ledger")
+    }
+
     // P5-S6-U01
     @TestCase
     public func p5S6U01ExactGatesEvidenceCodecAndJsonAreContractBound(): Unit {

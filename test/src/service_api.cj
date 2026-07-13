@@ -129,6 +129,13 @@ public class CkbRepositoryEventWorkerResult {
     public var state: String = "retryable"
     public var errorCode: String = "worker_exception"
     public var backoffMillis: Int64 = 1000
+    public var schedulerRunId: String = ""
+    public var transactionId: String = ""
+    public var candidateVersion: String = ""
+    public var activeVersion: String = ""
+    public var validationEvidenceHash: String = ""
+    public var resolvedCommit: String = ""
+    public var validationGates: ArrayList<String> = ArrayList<String>()
 
     public init() {}
 }

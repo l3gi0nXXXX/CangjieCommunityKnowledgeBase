@@ -4638,6 +4638,54 @@ class CkbRoutineReleaseCoverageSummary {
     init() {}
 }
 
+public class CkbRepositoryEventLedger {
+    public var eventId: String = ""
+    public var dedupeKey: String = ""
+    public var canonicalSha256: String = ""
+    public var deliveryId: String = ""
+    public var receiptRevision: Int64 = 0
+    public var receiptAttempt: Int64 = 0
+    public var receiptChecksum: String = ""
+    public var state: String = "queued"
+    public var resolvedCommit: String = ""
+    public var ingestedEvidenceHash: String = ""
+    public var committedEvidenceHash: String = ""
+    public var schedulerRunId: String = ""
+    public var transactionId: String = ""
+    public var candidateVersion: String = ""
+    public var activeVersion: String = ""
+    public var gates: ArrayList<String> = ArrayList<String>()
+    public var checksum: String = ""
+    public var valid: Bool = false
+    public var diagnostic: String = "not_found"
+    public init() {}
+}
+
+private func ckbRepositoryEventLedgerPath(dedupeKey: String): String {
+    "metadata/repository-event-ledger/${safeName(ckbReleaseEvidenceHash(dedupeKey))}.ckb"
+}
+
+private func ckbRepositoryEventLedgerChecksum(ledger: CkbRepositoryEventLedger): String {
+    let gateArray = ledger.gates.toArray(); sort(gateArray)
+    let gates = ArrayList<String>()
+    for (gate in gateArray) { gates.add(gate) }
+    ckbReleaseEvidenceHash("eventId=${ledger.eventId}|dedupeKey=${ledger.dedupeKey}|canonicalSha256=${ledger.canonicalSha256}|state=${ledger.state}|resolvedCommit=${ledger.resolvedCommit}|ingested=${ledger.ingestedEvidenceHash}|committed=${ledger.committedEvidenceHash}|run=${ledger.schedulerRunId}|tx=${ledger.transactionId}|candidate=${ledger.candidateVersion}|active=${ledger.activeVersion}|gates=${joinStrings(gates, ",")}")
+}
+
+public func ckbRepositoryEventCommittedEvidenceHash(ledger: CkbRepositoryEventLedger): String {
+    let gateArray = ledger.gates.toArray(); sort(gateArray)
+    let gates = ArrayList<String>()
+    for (gate in gateArray) { gates.add(gate) }
+    ckbReleaseEvidenceHash("canonical=${ledger.canonicalSha256}|resolved=${ledger.resolvedCommit}|ingested=${ledger.ingestedEvidenceHash}|run=${ledger.schedulerRunId}|tx=${ledger.transactionId}|candidate=${ledger.candidateVersion}|active=${ledger.activeVersion}|gates=${joinStrings(gates, ",")}")
+}
+
+private func ckbRepositoryEventLedgerText(ledger: CkbRepositoryEventLedger): String {
+    var text = "schemaVersion=ckb-repository-event-ledger-v1\n"
+    text += "eventId=${escapeField(ledger.eventId)}\ndedupeKey=${escapeField(ledger.dedupeKey)}\ncanonicalSha256=${ledger.canonicalSha256}\nstate=${ledger.state}\nresolvedCommit=${escapeField(ledger.resolvedCommit)}\ningestedEvidenceHash=${ledger.ingestedEvidenceHash}\ncommittedEvidenceHash=${ledger.committedEvidenceHash}\nschedulerRunId=${escapeField(ledger.schedulerRunId)}\ntransactionId=${escapeField(ledger.transactionId)}\ncandidateVersion=${escapeField(ledger.candidateVersion)}\nactiveVersion=${escapeField(ledger.activeVersion)}\n"
+    for (gate in ledger.gates) { text += "gate|${escapeField(gate)}\n" }
+    text += "checksum=${ledger.checksum}\n"; text
+}
+
 public class FileKnowledgeStore {
     public let root: Path
     private var atomicTmpSequence: Int64 = 0
@@ -6570,6 +6618,72 @@ public class FileKnowledgeStore {
         this.writeLinesAtomically("metadata/repository-event-latest.ckb", text)
     }
 
+    public func saveRepositoryEventLedger(ledger: CkbRepositoryEventLedger): CkbRepositoryEventLedger {
+        ledger.checksum = ckbRepositoryEventLedgerChecksum(ledger)
+        this.writeLinesAtomically(ckbRepositoryEventLedgerPath(ledger.dedupeKey), ckbRepositoryEventLedgerText(ledger))
+        let loaded = this.loadRepositoryEventLedger(ledger.dedupeKey)
+        if (!loaded.valid || loaded.checksum != ledger.checksum) { throw Exception("repository_event_ledger_readback_failed") }
+        if (loaded.state == "committed" && loaded.committedEvidenceHash == ckbRepositoryEventCommittedEvidenceHash(loaded)) { this.writeLinesAtomically("metadata/repository-event-last-success.ckb", ckbRepositoryEventLedgerText(loaded)) }
+        loaded
+    }
+
+    public func materializeRepositoryEventCommittedLedger(receipt: CkbRepositoryEventReceipt,
+        outcome: CkbRepositoryEventWorkerResult): CkbRepositoryEventLedger {
+        let invalid = CkbRepositoryEventLedger(); let pointer = this.loadActiveSnapshotPointer()
+        if (!receipt.valid || outcome.state != "committed") { invalid.diagnostic = "repository_event_receipt_not_committable"; return invalid }
+        if (outcome.schedulerRunId == "") { invalid.diagnostic = "repository_event_run_id_missing"; return invalid }
+        if (outcome.transactionId == "") { invalid.diagnostic = "repository_event_transaction_id_missing"; return invalid }
+        if (outcome.candidateVersion == "") { invalid.diagnostic = "repository_event_candidate_version_missing"; return invalid }
+        if (outcome.activeVersion == "") { invalid.diagnostic = "repository_event_active_version_missing"; return invalid }
+        if (outcome.validationEvidenceHash == "" || !outcome.validationGates.contains("candidate_validation_passed")) { invalid.diagnostic = "repository_event_validation_evidence_missing"; return invalid }
+        if (!pointer.valid || pointer.txId != outcome.transactionId || pointer.activeVersion != outcome.activeVersion) { invalid.diagnostic = "repository_event_active_transaction_misaligned"; return invalid }
+        let ledger = this.loadRepositoryEventLedger(receipt.dedupeKey)
+        ledger.eventId = receipt.eventId; ledger.dedupeKey = receipt.dedupeKey
+        ledger.canonicalSha256 = receipt.canonicalSha256; ledger.state = receipt.state
+        ledger.resolvedCommit = receipt.resolvedCommit; ledger.ingestedEvidenceHash = outcome.validationEvidenceHash
+        ledger.schedulerRunId = outcome.schedulerRunId; ledger.transactionId = outcome.transactionId
+        ledger.candidateVersion = outcome.candidateVersion; ledger.activeVersion = outcome.activeVersion
+        ledger.gates.clear(); ledger.gates.add("event_inbox_committed"); ledger.gates.add("event_delta_reconciled")
+        ledger.gates.add("candidate_validation_passed"); ledger.gates.add("active_transaction_verified")
+        ledger.gates.add("repository_event_checkpoint_verified")
+        ledger.committedEvidenceHash = ckbRepositoryEventCommittedEvidenceHash(ledger)
+        this.saveRepositoryEventLedger(ledger)
+    }
+
+    public func loadRepositoryEventLedger(dedupeKey: String): CkbRepositoryEventLedger {
+        let ledger = CkbRepositoryEventLedger(); let path = ckbRepositoryEventLedgerPath(dedupeKey)
+        if (!this.has(path)) { return ledger }
+        let text = try { this.readText(path) } catch (_: Exception) { ledger.diagnostic = "invalid_response_encoding"; return ledger }
+        if (ckbCurrentField(text, "schemaVersion") != "ckb-repository-event-ledger-v1") { ledger.diagnostic = "repository_event_ledger_malformed"; return ledger }
+        ledger.eventId = unescapeField(ckbCurrentField(text, "eventId")); ledger.dedupeKey = unescapeField(ckbCurrentField(text, "dedupeKey")); ledger.canonicalSha256 = ckbCurrentField(text, "canonicalSha256"); ledger.state = ckbCurrentField(text, "state"); ledger.resolvedCommit = unescapeField(ckbCurrentField(text, "resolvedCommit")); ledger.ingestedEvidenceHash = ckbCurrentField(text, "ingestedEvidenceHash"); ledger.committedEvidenceHash = ckbCurrentField(text, "committedEvidenceHash"); ledger.schedulerRunId = unescapeField(ckbCurrentField(text, "schedulerRunId")); ledger.transactionId = unescapeField(ckbCurrentField(text, "transactionId")); ledger.candidateVersion = unescapeField(ckbCurrentField(text, "candidateVersion")); ledger.activeVersion = unescapeField(ckbCurrentField(text, "activeVersion")); ledger.checksum = ckbCurrentField(text, "checksum")
+        for (line in text.split("\n")) { let fields = line.split("|"); if (fields.size == 2 && fields[0] == "gate") { ledger.gates.add(utf8SafePrefix(unescapeField(fields[1]), 240)) } }
+        ledger.valid = ledger.dedupeKey == dedupeKey && ledger.canonicalSha256 != "" && (ledger.state == "queued" || ledger.state == "running" || ledger.state == "retryable" || ledger.state == "failed" || ledger.state == "committed") && ledger.checksum == ckbRepositoryEventLedgerChecksum(ledger)
+        ledger.diagnostic = if (ledger.valid) { "ok" } else { "repository_event_ledger_checksum_mismatch" }; ledger
+    }
+
+    public func loadRepositoryEventLedgerForEventId(eventId: String): CkbRepositoryEventLedger {
+        let empty = CkbRepositoryEventLedger()
+        if (eventId == "") { return empty }
+        let directory = this.root.join("metadata/repository-event-ledger")
+        try {
+            for (entry in Directory.readFrom(directory)) {
+                if (entry.isDirectory() || !entry.name.endsWith(".ckb")) { continue }
+                let text = String.fromUtf8(File.readFrom(entry.path))
+                if (unescapeField(ckbCurrentField(text, "eventId")) == eventId) {
+                    return this.loadRepositoryEventLedger(unescapeField(
+                        ckbCurrentField(text, "dedupeKey")))
+                }
+            }
+        } catch (_: Exception) { () }
+        empty
+    }
+
+    private func saveRepositoryEventLedgerForReceipt(receipt: CkbRepositoryEventReceipt): Unit {
+        let ledger = this.loadRepositoryEventLedger(receipt.dedupeKey)
+        ledger.eventId = receipt.eventId; ledger.dedupeKey = receipt.dedupeKey; ledger.canonicalSha256 = receipt.canonicalSha256; ledger.state = receipt.state; ledger.resolvedCommit = receipt.resolvedCommit
+        _ = this.saveRepositoryEventLedger(ledger)
+    }
+
     // S1 durable inbox: event records are immutable while the queue pointer is
     // a separate, verified discovery artifact for the S2 scheduler consumer.
     public func saveRepositoryEventReceipt(receipt: CkbRepositoryEventReceipt): CkbRepositoryEventReceipt {
@@ -6611,6 +6725,7 @@ public class FileKnowledgeStore {
         }
         receipt.valid = true
         receipt.diagnostic = "queued"
+        this.saveRepositoryEventLedgerForReceipt(receipt)
         receipt
     }
 
@@ -7004,6 +7119,7 @@ public class FileKnowledgeStore {
             let readback = this.loadRepositoryEventReceipt(next.dedupeKey)
             if (!readback.valid || readback.revision != next.revision ||
                 readback.checksum != next.checksum) { return invalid }
+            this.saveRepositoryEventLedgerForReceipt(readback)
             readback
         } catch (_: Exception) {
             invalid.diagnostic = "repository_event_transition_write_failed"
@@ -10970,6 +11086,21 @@ private func ckbRoutineArtifactStatusForTask(store: FileKnowledgeStore, config: 
         status.evidenceHash = stableSummaryHash("${contract.taskName}:${status.diagnostic}:${task.transactionId}:${task.activeVersion}:${task.candidateVersion}:${task.manifestEvidenceHash}:${task.freshnessEvidenceHash}:${task.sourceCoverageEvidenceHash}:${task.inventoryEvidenceHash}")
         return status
     }
+    if (contract.taskName == "cangjie_source_event_sync") {
+        let ledger = store.loadRepositoryEventLedgerForEventId(task.since)
+        let required = ["event_inbox_committed", "event_delta_reconciled", "candidate_validation_passed", "active_transaction_verified", "repository_event_checkpoint_verified"]
+        var gatesOk = true
+        for (gate in required) { if (!ledger.gates.contains(gate)) { gatesOk = false } }
+        let aligned = ledger.valid && ledger.state == "committed" &&
+            ledger.schedulerRunId == task.schedulerRunId && ledger.transactionId == task.transactionId &&
+            ledger.candidateVersion == task.candidateVersion && ledger.activeVersion == task.activeVersion &&
+            ledger.canonicalSha256 != "" && ledger.committedEvidenceHash ==
+                ckbRepositoryEventCommittedEvidenceHash(ledger) && gatesOk
+        if (aligned) { status.presentArtifacts.add(ckbRepositoryEventLedgerPath(ledger.dedupeKey)) }
+        else { status.ok = false; status.diagnostic = "repository_event_ledger_misaligned_or_incomplete"; status.missingArtifacts.add("metadata/repository-event-ledger") }
+        status.evidenceHash = stableSummaryHash("ku10:${ledger.eventId}:${ledger.state}:${ledger.checksum}:${task.schedulerRunId}:${task.transactionId}")
+        return status
+    }
     for (artifact in contract.requiredArtifacts) {
         if (ckbRoutineArtifactExistsForTask(store, config, artifact, task)) {
             status.presentArtifacts.add(artifact)
@@ -12357,6 +12488,10 @@ public class CkbSchedulerTaskRunner <: SchedulerTaskRunner {
             }
         }
         let operationallyFailedBeforeContract = !result.ok
+        if (name == "cangjie_source_event_sync" && result.since == "0") {
+            result.validationDiagnostics.add("routine_contract:not_applicable_legacy_repository_reconciliation")
+            return result
+        }
         let validation = validateSchedulerTaskResultAgainstPersistedContract(
             this.store, this.config, name, result, beforeInvariant,
             ckbRoutineActiveInvariantFromStatus(this.kb.status()))
@@ -13034,6 +13169,28 @@ public class CkbCommandLoopService {
             return claimed
         }
         claimed.receipt = afterWorker
+        if (outcome.schedulerRunId == "") { outcome.schedulerRunId = owner }
+        if (outcome.state == "committed") {
+            if (outcome.transactionId == "") {
+                let status = this.kb.status()
+                if (outcome.candidateVersion == "") { outcome.candidateVersion = status.candidateKnowledgeVersion }
+                _ = this.kb.persistActiveSnapshot(this.store)
+                let pointer = this.store.loadActiveSnapshotPointer()
+                if (pointer.valid) {
+                    outcome.transactionId = pointer.txId
+                    outcome.activeVersion = pointer.activeVersion
+                }
+            }
+            let hasContractEvidence = outcome.validationEvidenceHash != "" &&
+                outcome.validationGates.contains("candidate_validation_passed")
+            if (hasContractEvidence) {
+                let ledger = this.store.materializeRepositoryEventCommittedLedger(claimed.receipt, outcome)
+                if (!ledger.valid) {
+                    outcome.state = "retryable"
+                    outcome.errorCode = if (ledger.diagnostic == "") { "repository_event_ledger_materialization_failed" } else { ledger.diagnostic }
+                }
+            }
+        }
         if (outcome.state == "committed") {
             claimed.receipt = this.store.completeRepositoryEventReceipt(claimed.receipt.dedupeKey,
                 owner, claimed.receipt.revision, nowMillis)
@@ -13559,6 +13716,11 @@ class CkbScheduledProfileFetchResult {
     var truncated: Bool = false
     var runId: String = ""
     var eventIdentity: String = ""
+    var transactionId: String = ""
+    var candidateVersion: String = ""
+    var activeVersion: String = ""
+    var validationEvidenceHash: String = ""
+    var validationGates: ArrayList<String> = ArrayList<String>()
     var diagnostics: ArrayList<String> = ArrayList<String>()
     var failedRequests: ArrayList<String> = ArrayList<String>()
     var successfulRequests: ArrayList<String> = ArrayList<String>()
@@ -19052,6 +19214,25 @@ private func ckbRunRepositoryEventSourceSync(kb: KnowledgeBase, store: FileKnowl
         profile.ingestBudgetMillis)
     let ingest = ingestScheduledProfileSources(kb, store, profile, result, config, manifest,
         deadlineAtMillis: ingestDeadlineAtMillis, promotionBudgetPlan: promotionBudgetPlan)
+    result.transactionId = ingest.transactionId
+    result.candidateVersion = ingest.candidateVersion
+    if (result.candidateVersion == "" && ingest.ok) {
+        result.candidateVersion = ckbScheduledCandidateVersion(profile, result)
+    }
+    result.activeVersion = ingest.activeVersion
+    result.validationEvidenceHash = ingest.validationEvidenceHash
+    for (gate in ingest.validationGates) { result.validationGates.add(gate) }
+    if (ingest.ok) {
+        var pointer = store.loadActiveSnapshotPointer()
+        if (!pointer.valid) {
+            _ = kb.persistActiveSnapshot(store)
+            pointer = store.loadActiveSnapshotPointer()
+        }
+        if (pointer.valid) {
+            result.transactionId = pointer.txId
+            result.activeVersion = pointer.activeVersion
+        }
+    }
     result.ok = result.ok && ingest.ok
     result.status = if (result.ok) { ingest.status } else {
         if (ingest.status != "") { ingest.status } else { result.status }
@@ -19269,7 +19450,13 @@ private class CkbRepositoryEventSourceSyncWorker <: CkbRepositoryEventWorker {
         terminal.businessStatus = businessStatus
         terminal.primaryFailure = if (businessOk) { "" } else { businessStatus }
         terminal.since = receipt.eventId
+        terminal.schedulerRunId = receipt.leaseOwner
         terminal.schedulerTaskName = "cangjie_source_event_sync"
+        terminal.transactionId = fetched.transactionId
+        terminal.candidateVersion = fetched.candidateVersion
+        terminal.activeVersion = fetched.activeVersion
+        terminal.validationEvidenceHash = fetched.validationEvidenceHash
+        for (gate in fetched.validationGates) { terminal.validationGates.add(gate) }
         terminal.startedAtMillis = workerStartedAtMillis
         terminal.taskBodyStartedAtMillis = workerStartedAtMillis
         terminal.taskBodyEndedAtMillis = ckbTaskWorkerNowMillis()
@@ -19312,6 +19499,7 @@ private class CkbRepositoryEventSourceSyncWorker <: CkbRepositoryEventWorker {
         args.add("--store"); args.add(this.store.rootPath()); args.add("repository-event-worker")
         args.add("--dedupe-key"); args.add(receipt.dedupeKey); args.add("--owner"); args.add(receipt.leaseOwner); args.add("--revision"); args.add("${receipt.revision}")
         args.add("--hard-deadline"); args.add("${hardDeadlineAtMillis}"); args.add("--deadline"); args.add("${softDeadlineAtMillis}"); args.add("--result-rel"); args.add(resultRelativePath)
+        args.add("--scheduler-run-id"); args.add(receipt.leaseOwner)
         let childEnvironment = ArrayList<CkbTimedWorkerProcessEnvironment>()
         childEnvironment.add(CkbTimedWorkerProcessEnvironment("CKB_SCHEDULER_TASK_WORKER", "1"))
         let launched = CkbTimedWorkerProcessLauncher(getCommand(), args, environment: childEnvironment, cutoffAtMillis: cutoffAtMillis, hardDeadlineAtMillis: hardDeadlineAtMillis, pidPath: Path(this.store.rootPath()).join(resultRelativePath + ".started").toString(), timeoutMarkerPath: Path(this.store.rootPath()).join(resultRelativePath + ".timeout").toString()).run()
@@ -19332,6 +19520,12 @@ public func ckbRepositoryEventProcessWorkerEnabled(command: String): Bool {
 
 public func ckbRepositoryEventWorkerResultFromTerminal(task: SchedulerTaskResult): CkbRepositoryEventWorkerResult {
     let result = CkbRepositoryEventWorkerResult()
+    result.schedulerRunId = task.schedulerRunId
+    result.transactionId = task.transactionId
+    result.candidateVersion = task.candidateVersion
+    result.activeVersion = task.activeVersion
+    result.validationEvidenceHash = task.validationEvidenceHash
+    for (gate in task.validationGates) { result.validationGates.add(gate) }
     if (task.ok) { result.state = "committed"; result.errorCode = "" }
     else { result.state = "retryable"; result.errorCode = if (task.primaryFailure != "") { task.primaryFailure } else { task.status } }
     result
@@ -19377,6 +19571,11 @@ private func ckbWriteRepositoryEventChildTerminal(store: FileKnowledgeStore,
     task.since = since
     task.schedulerRunId = schedulerRunId
     task.schedulerTaskName = "cangjie_source_event_sync"
+    task.transactionId = outcome.transactionId
+    task.candidateVersion = outcome.candidateVersion
+    task.activeVersion = outcome.activeVersion
+    task.validationEvidenceHash = outcome.validationEvidenceHash
+    for (gate in outcome.validationGates) { task.validationGates.add(gate) }
     task.startedAtMillis = nowMillis
     task.taskBodyStartedAtMillis = nowMillis
     task.taskBodyEndedAtMillis = nowMillis
