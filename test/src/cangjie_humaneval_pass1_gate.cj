@@ -502,6 +502,57 @@ public func emitCangjieHumanEvalGapCurationInput(result: CangjieHumanEvalPass1Ga
     out
 }
 
+// Cross-project authority output is deliberately separate from the legacy internal
+// curation feed. Only two independently observed first-attempt knowledge gaps emit.
+public func emitCangjieHumanEvalAuthoritativeGapCurationInput(result: CangjieHumanEvalPass1GateResult, datasetVersion: String, teacherRunId: String): String {
+    if (!cangjieHumanEvalAuthorityIdentityAllowed(datasetVersion) || !cangjieHumanEvalAuthorityIdentityAllowed(teacherRunId)) { return "" }
+    let emitted = ArrayList<String>()
+    let out = StringBuilder()
+    for (gap in result.remainingGaps) {
+        if (gap.status != "knowledge_gap") { continue }
+        for (gapCode in gap.gapCodes) {
+            let key = "${gap.caseId}:${gapCode}:${gap.targetVersion}"
+            if (emitted.contains(key)) { continue }
+            let cEvidence = cangjieHumanEvalAuthorityConfirmationEvidence(result, gap.caseId, gapCode, CangjieHumanEvalPass1GateGroups.C)
+            let dEvidence = cangjieHumanEvalAuthorityConfirmationEvidence(result, gap.caseId, gapCode, CangjieHumanEvalPass1GateGroups.D)
+            if (cEvidence == "" || dEvidence == "") { continue }
+            let confirmations: Int64 = 2
+            let input = CangjieBenchmarkGapInput()
+            input.schemaVersion = "ckb-benchmark-gap-v1"; input.datasetVersion = datasetVersion; input.teacherRunId = teacherRunId
+            input.candidatePath = "authority/benchmark-gap.jsonl"; input.revision = 1; input.attempt = 1
+            input.failureTaxonomy = "knowledge_gap"; input.knowledgeGapConfirmations = confirmations
+            input.caseId = gap.caseId; input.taskText = gap.taskText; input.compilerOutput = gap.status; input.missingKnowledge = gapCode
+            input.interfaceId = cangjieHumanEvalGatePrimaryInterface(gapCode); input.contentFamily = cangjieHumanEvalGateContentFamily(gapCode)
+            input.updateMechanism = "KU-11"; input.targetVersion = if (gap.targetVersion == "") { cangjieDefaultTargetVersion() } else { gap.targetVersion }
+            input.officialCitation = "https://docs.cangjie-lang.cn/docs/1.0.0/"
+            input.evidence = "case=${gap.caseId}|gap=${gapCode}|taxonomy=knowledge_gap|confirmations=2|C=${cEvidence}|D=${dEvidence}"
+            input.evidenceHash = benchmarkGapSha256(input.evidence); input.candidateHash = canonicalBenchmarkGapCandidateHash(input)
+            out.append(cangjieHumanEvalAuthorityGapJson(input)); emitted.add(key)
+        }
+    }
+    out.toString()
+}
+
+private func cangjieHumanEvalAuthorityConfirmationEvidence(result: CangjieHumanEvalPass1GateResult, caseId: String, gapCode: String, requiredGroup: String): String {
+    for (gap in result.remainingGaps) {
+        if (gap.caseId == caseId && gap.group == requiredGroup && gap.status == "knowledge_gap" && gap.gapCodes.contains(gapCode)) {
+            let canonical = "group=${gap.group}|status=${gap.status}|case=${gap.caseId}|task=${gap.taskText}|target=${gap.targetVersion}|gap=${gapCode}|allGaps=${cangjieHumanEvalGateJoin(gap.gapCodes, ",")}|tags=${cangjieHumanEvalGateJoin(gap.tags, ",")}"
+            return benchmarkGapSha256(canonical)
+        }
+    }
+    ""
+}
+
+private func cangjieHumanEvalAuthorityGapJson(input: CangjieBenchmarkGapInput): String {
+    "{\"schemaVersion\":\"${cangjieHumanEvalGateJsonEscape(input.schemaVersion)}\",\"datasetVersion\":\"${cangjieHumanEvalGateJsonEscape(input.datasetVersion)}\",\"teacherRunId\":\"${cangjieHumanEvalGateJsonEscape(input.teacherRunId)}\",\"evidence\":\"${cangjieHumanEvalGateJsonEscape(input.evidence)}\",\"evidenceHash\":\"${cangjieHumanEvalGateJsonEscape(input.evidenceHash)}\",\"candidateHash\":\"${cangjieHumanEvalGateJsonEscape(input.candidateHash)}\",\"candidatePath\":\"${cangjieHumanEvalGateJsonEscape(input.candidatePath)}\",\"revision\":${input.revision},\"attempt\":1,\"failureTaxonomy\":\"knowledge_gap\",\"knowledgeGapConfirmations\":${input.knowledgeGapConfirmations},\"caseId\":\"${cangjieHumanEvalGateJsonEscape(input.caseId)}\",\"benchmark\":\"Cangjie-HumanEval\",\"taskText\":\"${cangjieHumanEvalGateJsonEscape(input.taskText)}\",\"compilerOutput\":\"knowledge_gap\",\"missingKnowledge\":\"${cangjieHumanEvalGateJsonEscape(input.missingKnowledge)}\",\"interfaceId\":\"${cangjieHumanEvalGateJsonEscape(input.interfaceId)}\",\"contentFamily\":\"${cangjieHumanEvalGateJsonEscape(input.contentFamily)}\",\"updateMechanism\":\"KU-11\",\"targetVersion\":\"${cangjieHumanEvalGateJsonEscape(input.targetVersion)}\",\"officialCitation\":\"${cangjieHumanEvalGateJsonEscape(input.officialCitation)}\"}\n"
+}
+
+private func cangjieHumanEvalAuthorityIdentityAllowed(value: String): Bool {
+    let chars = value.toRuneArray(); if (chars.size == 0 || chars.size > 256) { return false }
+    for (ch in chars) { let ok = (ch >= r'a' && ch <= r'z') || (ch >= r'A' && ch <= r'Z') || (ch >= r'0' && ch <= r'9') || ch == r'-' || ch == r'_' || ch == r'.'; if (!ok) { return false } }
+    true
+}
+
 private func cangjieHumanEvalGateWriteCurationInput(runRoot: String, path: String, result: CangjieHumanEvalPass1GateResult): String {
     if (!path.startsWith(runRoot + "/")) {
         return "unsafe_curation_input_path:${path}"

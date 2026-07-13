@@ -1,7 +1,22 @@
 package cangjie_community_knowledge_base_test
 
 import std.collection.ArrayList
+import std.convert.Parsable
 import std.fs.{Directory, File, Path, exists}
+import stdx.encoding.json.*
+
+public class CangjieEvalSupportSnapshot {
+    public var ok: Bool = true
+    public var schemaVersion: String = "ckb-eval-support-v1"
+    public var datasetVersion: String = ""
+    public var revision: Int64 = 1
+    public var recordCount: Int64 = 0
+    public var checksum: String = ""
+    public var jsonl: String = ""
+    public var diagnostics: ArrayList<String> = ArrayList<String>()
+
+    public init() {}
+}
 
 public class CangjieEvalSupportPaths {
     public static let PROMPT: String = "prompt.md"
@@ -114,11 +129,135 @@ public func validateEvalSupportRecordSafety(records: ArrayList<CangjieTypedRecor
     let result = CangjieTypedRecordResult()
     for (record in records) {
         let value = "${record.sourceId}\n${record.path}\n${record.citation}".toAsciiLower().replace("\\", "/")
-        if (value.contains("/reference/") || value.contains("/hidden/") || value.contains("solution.cj")) {
+        let content = record.content.toAsciiLower()
+        if (record.path.startsWith("/") || record.path.contains("..") || value.contains("/reference/") || value.contains("/hidden/") || value.contains("solution.cj") || value.contains("teacher-solutions") || value.contains("ckb-data") || content.contains("canonical_solution") || content.contains("@expect(") || content.contains("assert(") || content.contains("main():")) {
             result.addDiagnostic("forbidden_reference_solution_source:${record.sourceId}")
         }
     }
     result
+}
+
+public func buildVersionedEvalSupportSnapshot(datasetRoot: String, datasetVersion: String, revision!: Int64 = 1): CangjieEvalSupportSnapshot {
+    let snapshot = CangjieEvalSupportSnapshot()
+    snapshot.datasetVersion = datasetVersion.trimAscii()
+    snapshot.revision = revision
+    if (!cangjieEvalSupportVersionPartAllowed(snapshot.datasetVersion) || revision < 1) {
+        snapshot.ok = false
+        snapshot.diagnostics.add("invalid_eval_support_snapshot_identity")
+        return snapshot
+    }
+    let extracted = extractAllEvalSupportRecords(datasetRoot)
+    if (!extracted.ok) {
+        snapshot.ok = false
+        for (diagnostic in extracted.diagnostics) { snapshot.diagnostics.add(diagnostic) }
+        return snapshot
+    }
+    let safety = validateEvalSupportRecordSafety(extracted.records)
+    if (!safety.ok) {
+        snapshot.ok = false
+        for (diagnostic in safety.diagnostics) { snapshot.diagnostics.add(diagnostic) }
+        return snapshot
+    }
+    let out = StringBuilder()
+    for (record in extracted.records) {
+        out.append("{\"schemaVersion\":\"ckb-eval-support-v1\",\"datasetVersion\":\"")
+        out.append(cangjieEvalSupportJsonEscape(snapshot.datasetVersion))
+        out.append("\",\"revision\":${revision},\"sourceId\":\"")
+        out.append(cangjieEvalSupportJsonEscape(record.sourceId))
+        out.append("\",\"caseId\":\"")
+        out.append(cangjieEvalSupportJsonEscape(record.caseId))
+        out.append("\",\"sourceFamily\":\"")
+        out.append(cangjieEvalSupportJsonEscape(record.sourceFamily))
+        out.append("\",\"path\":\"")
+        out.append(cangjieEvalSupportJsonEscape(record.path))
+        out.append("\",\"contentHash\":\"")
+        out.append(benchmarkGapSha256("${record.sourceId}\n${record.content}"))
+        out.append("\",\"title\":\"")
+        out.append(cangjieEvalSupportJsonEscape(record.title))
+        out.append("\",\"citation\":\"")
+        out.append(cangjieEvalSupportJsonEscape(record.citation))
+        out.append("\",\"content\":\"")
+        out.append(cangjieEvalSupportJsonEscape(record.content))
+        out.append("\",\"targetVersion\":\"")
+        out.append(cangjieEvalSupportJsonEscape(record.targetVersion))
+        out.append("\"}\n")
+    }
+    snapshot.recordCount = extracted.records.size
+    snapshot.jsonl = out.toString()
+    snapshot.checksum = benchmarkGapSha256("${snapshot.schemaVersion}:${snapshot.datasetVersion}:${snapshot.revision}:${snapshot.jsonl}")
+    snapshot
+}
+
+public func validateVersionedEvalSupportSnapshot(snapshot: CangjieEvalSupportSnapshot): CangjieEvalSupportSnapshot {
+    let result = CangjieEvalSupportSnapshot()
+    result.schemaVersion = snapshot.schemaVersion
+    result.datasetVersion = snapshot.datasetVersion
+    result.revision = snapshot.revision
+    result.recordCount = snapshot.recordCount
+    result.checksum = snapshot.checksum
+    result.jsonl = snapshot.jsonl
+    if (snapshot.schemaVersion != "ckb-eval-support-v1" || !cangjieEvalSupportVersionPartAllowed(snapshot.datasetVersion) || snapshot.revision < 1) {
+        result.ok = false; result.diagnostics.add("invalid_eval_support_snapshot_identity"); return result
+    }
+    if (snapshot.checksum != benchmarkGapSha256("${snapshot.schemaVersion}:${snapshot.datasetVersion}:${snapshot.revision}:${snapshot.jsonl}")) {
+        result.ok = false; result.diagnostics.add("eval_support_snapshot_checksum_mismatch"); return result
+    }
+    var count: Int64 = 0
+    for (line in snapshot.jsonl.split("\n")) {
+        let raw = line.trimAscii()
+        if (raw == "") { continue }
+        try {
+            let object = JsonValue.fromStr(raw).asObject()
+            let schema = cangjieEvalSupportJsonString(object, "schemaVersion")
+            let version = cangjieEvalSupportJsonString(object, "datasetVersion")
+            let path = cangjieEvalSupportJsonString(object, "path")
+            let sourceId = cangjieEvalSupportJsonString(object, "sourceId")
+            let contentHash = cangjieEvalSupportJsonString(object, "contentHash")
+            let content = cangjieEvalSupportJsonString(object, "content")
+            let title = cangjieEvalSupportJsonString(object, "title")
+            let citation = cangjieEvalSupportJsonString(object, "citation")
+            let caseId = cangjieEvalSupportJsonString(object, "caseId")
+            let rowRevision = cangjieEvalSupportJsonInt(object, "revision", 0)
+            let safetyText = content.toAsciiLower()
+            if (schema != snapshot.schemaVersion || version != snapshot.datasetVersion || rowRevision != snapshot.revision || sourceId == "" || title == "" || citation == "" || caseId == "" || !sourceId.contains(caseId) || !citation.startsWith(caseId + ":") || !cangjieEvalSupportRelativePathAllowed(path) || contentHash != benchmarkGapSha256("${sourceId}\n${content}") || safetyText.contains("canonical_solution") || safetyText.contains("@expect(") || safetyText.contains("assert(") || safetyText.contains("main():")) {
+                result.ok = false; result.diagnostics.add("eval_support_snapshot_record_invalid"); return result
+            }
+            count += 1
+        } catch (_: Exception) { result.ok = false; result.diagnostics.add("malformed_eval_support_snapshot"); return result }
+    }
+    if (count != snapshot.recordCount) { result.ok = false; result.diagnostics.add("eval_support_snapshot_count_mismatch") }
+    result
+}
+
+private func cangjieEvalSupportJsonString(object: JsonObject, field: String): String {
+    match (object.get(field)) { case Some(value) => value.asString().getValue(); case None => "" }
+}
+
+private func cangjieEvalSupportJsonInt(object: JsonObject, field: String, fallback: Int64): Int64 {
+    match (object.get(field)) { case Some(value) => try { Int64.parse(value.toString()) } catch (_: Exception) { fallback }; case None => fallback }
+}
+
+private func cangjieEvalSupportVersionPartAllowed(value: String): Bool {
+    let chars = value.toRuneArray()
+    if (chars.size == 0 || chars.size > 256) { return false }
+    for (ch in chars) {
+        let alphaNumeric = (ch >= r'a' && ch <= r'z') || (ch >= r'A' && ch <= r'Z') || (ch >= r'0' && ch <= r'9')
+        if (!alphaNumeric && ch != r'-' && ch != r'_' && ch != r'.') { return false }
+    }
+    true
+}
+
+private func cangjieEvalSupportJsonEscape(value: String): String {
+    let out = StringBuilder()
+    for (ch in value.toRuneArray()) {
+        if (ch == r'\\') { out.append("\\\\") }
+        else if (ch == r'\"') { out.append("\\\"") }
+        else if (ch == r'\n') { out.append("\\n") }
+        else if (ch == r'\r') { out.append("\\r") }
+        else if (ch == r'\t') { out.append("\\t") }
+        else { out.append(ch) }
+    }
+    out.toString()
 }
 
 public func runCangjieTypedIngestSmoke(args: Array<String>): Int64 {

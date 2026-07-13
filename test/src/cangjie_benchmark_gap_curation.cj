@@ -2,9 +2,23 @@ package cangjie_community_knowledge_base_test
 
 import std.collection.ArrayList
 import std.collection.HashMap
+import std.convert.Parsable
+import std.fs.{File, Path, canonicalize, exists}
+import stdx.crypto.digest.SHA256
 import stdx.encoding.json.*
 
 public class CangjieBenchmarkGapInput {
+    public var schemaVersion: String = ""
+    public var datasetVersion: String = ""
+    public var teacherRunId: String = ""
+    public var evidenceHash: String = ""
+    public var evidence: String = ""
+    public var candidateHash: String = ""
+    public var candidatePath: String = ""
+    public var revision: Int64 = 1
+    public var attempt: Int64 = 1
+    public var failureTaxonomy: String = "knowledge_gap"
+    public var knowledgeGapConfirmations: Int64 = 2
     public var caseId: String = ""
     public var benchmark: String = "Cangjie-HumanEval"
     public var taskText: String = ""
@@ -27,6 +41,8 @@ public class CangjieBenchmarkGapCurationResult {
     public var accepted: Int64 = 0
     public var rejected: Int64 = 0
     public var duplicates: Int64 = 0
+    public var replacements: Int64 = 0
+    public var replacementAudit: ArrayList<String> = ArrayList<String>()
     public var diagnostic: String = "ok"
     public var records: ArrayList<NormalizedRecord> = ArrayList<NormalizedRecord>()
     public var diagnostics: ArrayList<String> = ArrayList<String>()
@@ -45,6 +61,8 @@ public class CangjieBenchmarkGapParseResult {
 public func curateBenchmarkGapRecords(inputs: ArrayList<CangjieBenchmarkGapInput>, targetVersion!: String = cangjieDefaultTargetVersion()): CangjieBenchmarkGapCurationResult {
     let result = CangjieBenchmarkGapCurationResult()
     let identityHashes = HashMap<String, String>()
+    let identityRevisions = HashMap<String, Int64>()
+    let identityIndexes = HashMap<String, Int64>()
     var itemNumber: Int64 = 0
     for (input in inputs) {
         itemNumber += 1
@@ -55,8 +73,19 @@ public func curateBenchmarkGapRecords(inputs: ArrayList<CangjieBenchmarkGapInput
             result.diagnostics.add("item=${itemNumber}:errorCode=${diagnostic}")
             continue
         }
-        if(input.knowledgeAtomCandidate&&input.knowledgeAtomTestBundle.trimAscii()==""){result.rejected+=1;result.diagnostics.add("item=${itemNumber}:errorCode=atom_test_bundle_required");continue}
-        if (input.knowledgeAtomTestBundle.trimAscii() != "") { let atomTests=runKnowledgeAtomTestBundle(input.knowledgeAtomTestBundle);if(!atomTests.ok){result.rejected+=1;result.diagnostics.add("item=${itemNumber}:errorCode=${atomTests.diagnostic}");continue} }
+        if (input.knowledgeAtomCandidate && input.knowledgeAtomTestBundle.trimAscii() == "") {
+            result.rejected += 1
+            result.diagnostics.add("item=${itemNumber}:errorCode=atom_test_bundle_required")
+            continue
+        }
+        if (input.knowledgeAtomTestBundle.trimAscii() != "") {
+            let atomTests = runKnowledgeAtomTestBundle(input.knowledgeAtomTestBundle)
+            if (!atomTests.ok) {
+                result.rejected += 1
+                result.diagnostics.add("item=${itemNumber}:errorCode=${atomTests.diagnostic}")
+                continue
+            }
+        }
         let identity = canonicalBenchmarkGapIdentity(input)
         let canonicalHash = canonicalBenchmarkGapInputHash(input)
         match (identityHashes.get(identity)) {
@@ -65,10 +94,23 @@ public func curateBenchmarkGapRecords(inputs: ArrayList<CangjieBenchmarkGapInput
                     result.duplicates += 1
                     continue
                 }
+                let existingRevision = identityRevisions.get(identity).getOrThrow()
+                if (input.revision > existingRevision) {
+                    let index = identityIndexes.get(identity).getOrThrow()
+                    result.records[index] = benchmarkGapRecord(input, targetVersion)
+                    identityHashes[identity] = canonicalHash
+                    identityRevisions[identity] = input.revision
+                    result.replacements += 1
+                    result.replacementAudit.add("identityHash=${benchmarkGapSha256(identity)}:oldRevision=${existingRevision}:newRevision=${input.revision}:oldHash=${existingHash}:newHash=${canonicalHash}")
+                    continue
+                }
                 result.rejected += 1
                 result.diagnostics.add("item=${itemNumber}:errorCode=benchmark_gap_identity_conflict:identityHash=${stableSummaryHash(identity)}")
                 continue
-            case None => identityHashes.add(identity, canonicalHash)
+            case None =>
+                identityHashes.add(identity, canonicalHash)
+                identityRevisions.add(identity, input.revision)
+                identityIndexes.add(identity, result.records.size)
         }
         result.records.add(benchmarkGapRecord(input, targetVersion))
         result.accepted += 1
@@ -98,6 +140,18 @@ public func parseBenchmarkGapInputsJsonl(text: String): CangjieBenchmarkGapParse
             let object = JsonValue.fromStr(raw).asObject()
             try {
                 let input = CangjieBenchmarkGapInput()
+                input.schemaVersion = benchmarkGapJsonString(object, "schemaVersion")
+                input.datasetVersion = benchmarkGapJsonString(object, "datasetVersion")
+                input.teacherRunId = benchmarkGapJsonString(object, "teacherRunId")
+                input.evidenceHash = benchmarkGapJsonString(object, "evidenceHash")
+                input.evidence = benchmarkGapJsonString(object, "evidence")
+                input.candidateHash = benchmarkGapJsonString(object, "candidateHash")
+                input.candidatePath = benchmarkGapJsonString(object, "candidatePath")
+                input.revision = benchmarkGapJsonInt(object, "revision", 1)
+                input.attempt = benchmarkGapJsonInt(object, "attempt", 1)
+                input.failureTaxonomy = benchmarkGapJsonString(object, "failureTaxonomy")
+                if (input.failureTaxonomy == "") { input.failureTaxonomy = "knowledge_gap" }
+                input.knowledgeGapConfirmations = benchmarkGapJsonInt(object, "knowledgeGapConfirmations", 2)
                 input.caseId = benchmarkGapJsonString(object, "caseId")
                 input.benchmark = benchmarkGapJsonString(object, "benchmark")
                 if (input.benchmark == "") {
@@ -112,8 +166,14 @@ public func parseBenchmarkGapInputsJsonl(text: String): CangjieBenchmarkGapParse
                 input.updateMechanism = benchmarkGapJsonString(object, "updateMechanism")
                 input.targetVersion = benchmarkGapJsonString(object, "targetVersion")
                 input.officialCitation = benchmarkGapJsonString(object, "officialCitation")
-                match(object.get("knowledgeAtomTestBundle")){case Some(value)=>input.knowledgeAtomTestBundle=value.toString();case None=>()}
-                match(object.get("knowledgeAtomCandidate")){case Some(value)=>input.knowledgeAtomCandidate=value.asBool().getValue();case None=>()}
+                match (object.get("knowledgeAtomTestBundle")) {
+                    case Some(value) => input.knowledgeAtomTestBundle = value.toString()
+                    case None => ()
+                }
+                match (object.get("knowledgeAtomCandidate")) {
+                    case Some(value) => input.knowledgeAtomCandidate = value.asBool().getValue()
+                    case None => ()
+                }
                 result.inputs.add(input)
             } catch (_: Exception) {
                 result.ok = false
@@ -159,6 +219,20 @@ private func validateBenchmarkGapInput(input: CangjieBenchmarkGapInput): String 
     let visible = "${input.taskText}\n${input.visibleTestExcerpt}\n${input.compilerOutput}\n${input.officialCitation}\n${input.interfaceId}\n${input.contentFamily}\n${input.updateMechanism}".toAsciiLower()
     if (input.caseId.trimAscii() == "") {
         return "case_id_required"
+    }
+    if (input.schemaVersion != "") {
+        if (input.schemaVersion != "ckb-benchmark-gap-v1") { return "unsupported_schema_version" }
+        if (!benchmarkGapSafeIdentityPart(input.datasetVersion, 256)) { return "dataset_version_required" }
+        if (!benchmarkGapSafeIdentityPart(input.teacherRunId, 256)) { return "teacher_run_id_required" }
+        if (!benchmarkGapSha256FormatAllowed(input.evidenceHash)) { return "evidence_hash_invalid" }
+        if (input.evidenceHash != benchmarkGapSha256(input.evidence)) { return "evidence_hash_mismatch" }
+        if (!benchmarkGapSha256FormatAllowed(input.candidateHash)) { return "candidate_hash_invalid" }
+        if (input.candidateHash != canonicalBenchmarkGapCandidateHash(input)) { return "candidate_hash_mismatch" }
+        if (!benchmarkGapCandidatePathAllowed(input.candidatePath)) { return "candidate_path_forbidden" }
+        if (input.revision < 1) { return "revision_invalid" }
+        if (input.attempt != 1) { return "first_attempt_required" }
+        if (input.failureTaxonomy != "knowledge_gap") { return "knowledge_gap_taxonomy_required" }
+        if (input.knowledgeGapConfirmations < 2) { return "knowledge_gap_double_confirmation_required" }
     }
     if (!benchmarkGapSafeIdentityPart(input.caseId, 256)) {
         return "case_id_invalid"
@@ -209,16 +283,78 @@ private func validateBenchmarkGapInput(input: CangjieBenchmarkGapInput): String 
 }
 
 public func canonicalBenchmarkGapIdentity(input: CangjieBenchmarkGapInput): String {
-    "${input.benchmark.trimAscii().toAsciiLower()}:${input.caseId.trimAscii().toAsciiLower()}"
+    "${input.benchmark.trimAscii().toAsciiLower()}:${input.datasetVersion.trimAscii().toAsciiLower()}:${input.caseId.trimAscii().toAsciiLower()}:${input.missingKnowledge.trimAscii().toAsciiUpper()}:${input.targetVersion.trimAscii().toAsciiLower()}"
 }
 
-private func canonicalBenchmarkGapInputHash(input: CangjieBenchmarkGapInput): String {
-    stableSummaryHash(benchmarkGapCanonicalPart(canonicalBenchmarkGapIdentity(input)) +
+public func canonicalBenchmarkGapCandidateHash(input: CangjieBenchmarkGapInput): String {
+    benchmarkGapSha256(benchmarkGapCanonicalPart(canonicalBenchmarkGapIdentity(input)) +
         benchmarkGapCanonicalPart(input.taskText) + benchmarkGapCanonicalPart(input.visibleTestExcerpt) +
         benchmarkGapCanonicalPart(input.compilerOutput) + benchmarkGapCanonicalPart(input.missingKnowledge.trimAscii().toAsciiUpper()) +
         benchmarkGapCanonicalPart(input.interfaceId.trimAscii()) + benchmarkGapCanonicalPart(input.contentFamily.trimAscii()) +
         benchmarkGapCanonicalPart(input.updateMechanism.trimAscii()) + benchmarkGapCanonicalPart(input.targetVersion.trimAscii()) +
-        benchmarkGapCanonicalPart(input.officialCitation.trimAscii()) + benchmarkGapCanonicalPart(input.knowledgeAtomTestBundle.trimAscii()) + benchmarkGapCanonicalPart("${input.knowledgeAtomCandidate}"))
+        benchmarkGapCanonicalPart(input.officialCitation.trimAscii()) + benchmarkGapCanonicalPart(input.knowledgeAtomTestBundle.trimAscii()) +
+        benchmarkGapCanonicalPart("${input.knowledgeAtomCandidate}") + benchmarkGapCanonicalPart(input.teacherRunId) +
+        benchmarkGapCanonicalPart(input.evidenceHash) + benchmarkGapCanonicalPart(input.evidence) + benchmarkGapCanonicalPart(input.candidatePath) +
+        benchmarkGapCanonicalPart("${input.revision}") + benchmarkGapCanonicalPart("${input.attempt}") +
+        benchmarkGapCanonicalPart(input.failureTaxonomy) + benchmarkGapCanonicalPart("${input.knowledgeGapConfirmations}"))
+}
+
+private func canonicalBenchmarkGapInputHash(input: CangjieBenchmarkGapInput): String { canonicalBenchmarkGapCandidateHash(input) }
+
+public func benchmarkGapCandidatePathAllowed(path: String): Bool {
+    let clean = path.trimAscii().replace("\\", "/")
+    let lower = clean.toAsciiLower()
+    clean != "" && !clean.startsWith("/") && !clean.contains("..") && !lower.contains("teacher-solutions") &&
+        !lower.contains("ckb-data") && !lower.contains("/reference/") && !lower.contains("/hidden/")
+}
+
+private func benchmarkGapSha256FormatAllowed(value: String): Bool {
+    let chars = value.toRuneArray()
+    if (chars.size != 71 || !value.startsWith("sha256:")) { return false }
+    for (i in 7..71) {
+        let ch = chars[i]
+        if (!((ch >= r'0' && ch <= r'9') || (ch >= r'a' && ch <= r'f'))) { return false }
+    }
+    true
+}
+
+public func benchmarkGapSha256(value: String): String {
+    let digest = SHA256(); digest.write(value.toArray()); let out = StringBuilder()
+    for (byte in digest.finish()) { out.append(benchmarkGapHexNibble(byte / UInt8(16))); out.append(benchmarkGapHexNibble(byte % UInt8(16))) }
+    "sha256:${out.toString()}"
+}
+
+private func benchmarkGapHexNibble(value: UInt8): String { if(value==UInt8(0)){return "0"};if(value==UInt8(1)){return "1"};if(value==UInt8(2)){return "2"};if(value==UInt8(3)){return "3"};if(value==UInt8(4)){return "4"};if(value==UInt8(5)){return "5"};if(value==UInt8(6)){return "6"};if(value==UInt8(7)){return "7"};if(value==UInt8(8)){return "8"};if(value==UInt8(9)){return "9"};if(value==UInt8(10)){return "a"};if(value==UInt8(11)){return "b"};if(value==UInt8(12)){return "c"};if(value==UInt8(13)){return "d"};if(value==UInt8(14)){return "e"};"f" }
+
+public func importAuthoritativeBenchmarkGapJsonl(exportRoot: String, candidatePath: String, targetVersion!: String = cangjieDefaultTargetVersion()): CangjieBenchmarkGapCurationResult {
+    let failure = CangjieBenchmarkGapCurationResult()
+    failure.ok = false
+    failure.diagnostic = "authoritative_import_path_invalid"
+    try {
+        let root = canonicalize(Path(exportRoot)).toString().replace("\\", "/")
+        let requested = Path(candidatePath)
+        let joined = if (candidatePath.startsWith("/")) { requested } else { Path(root).join(candidatePath) }
+        if (!exists(joined)) { return failure }
+        let canonical = canonicalize(joined).toString().replace("\\", "/")
+        let lower = canonical.toAsciiLower()
+        if (!canonical.startsWith(root + "/") || lower.contains("/teacher-solutions/") || lower.contains("/ckb-data/") || lower.contains("/reference/") || lower.contains("/hidden/")) { return failure }
+        let relative = benchmarkGapRuneSafeRemovePrefix(canonical, root + "/")
+        let text = try { String.fromUtf8(File.readFrom(Path(canonical))) } catch (_: Exception) { failure.diagnostic = "invalid_response_encoding"; return failure }
+        let parsed = parseBenchmarkGapInputsJsonl(text)
+        if (!parsed.ok || parsed.inputs.size == 0) { failure.diagnostic = if (!parsed.ok) { benchmarkGapPrimaryDiagnostic(parsed.diagnostics) } else { "authoritative_import_empty" }; return failure }
+        for (input in parsed.inputs) {
+            if (input.schemaVersion == "") { failure.diagnostic = "schema_version_required"; return failure }
+            if (input.candidatePath.replace("\\", "/") != relative) { failure.diagnostic = "candidate_path_binding_mismatch"; return failure }
+        }
+        return curateBenchmarkGapRecords(parsed.inputs, targetVersion: targetVersion)
+    } catch (_: Exception) { failure }
+}
+
+private func benchmarkGapRuneSafeRemovePrefix(value: String, prefix: String): String {
+    if (!value.startsWith(prefix)) { return "" }
+    let chars = value.toRuneArray(); let prefixCount = prefix.toRuneArray().size; let out = StringBuilder()
+    for (i in prefixCount..chars.size) { out.append(chars[i]) }
+    out.toString()
 }
 
 private func benchmarkGapCanonicalPart(value: String): String {
@@ -229,15 +365,10 @@ private func benchmarkGapPrimaryDiagnostic(diagnostics: ArrayList<String>): Stri
     if (diagnostics.size == 0) { return "benchmark_gap_input_rejected" }
     let first = diagnostics[0]
     let marker = "errorCode="
-    match (first.indexOf(marker)) {
-        case Some(start) =>
-            let value = first[(start + marker.size)..first.size]
-            match (value.indexOf(":")) {
-                case Some(end) => value[..end]
-                case None => value
-            }
-        case None => "benchmark_gap_input_rejected"
-    }
+    let parts = first.split(marker)
+    if (parts.size < 2) { return "benchmark_gap_input_rejected" }
+    let values = parts[1].split(":")
+    if (values.size == 0) { "benchmark_gap_input_rejected" } else { values[0] }
 }
 
 private func benchmarkGapSafeIdentityPart(raw: String, maxRunes: Int64): Bool {
@@ -324,5 +455,12 @@ private func benchmarkGapJsonString(object: JsonObject, field: String): String {
     match (object.get(field)) {
         case Some(value) => value.asString().getValue()
         case None => ""
+    }
+}
+
+private func benchmarkGapJsonInt(object: JsonObject, field: String, fallback: Int64): Int64 {
+    match (object.get(field)) {
+        case Some(value) => Int64.parse(value.toString())
+        case None => fallback
     }
 }
