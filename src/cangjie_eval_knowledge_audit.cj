@@ -3,6 +3,7 @@ package cangjie_community_knowledge_base
 import std.collection.ArrayList
 import std.convert.Parsable
 import std.fs.{File, Path, exists}
+import stdx.encoding.json.*
 
 public class CkbCdGapAuditGroups {
     public static let C: String = "C-ckb-mcp-stdio"
@@ -25,6 +26,7 @@ public class CkbCdGapAuditResultRow {
     public var knowledgeVersion: String = ""
     public var developmentPass: Bool = false
     public var certificationPassAt1: Bool = false
+    public var certificationStatus: String = "legacy"
     public var closureStatus: String = ""
     public var triageStatus: String = ""
     public var failureRoute: String = ""
@@ -199,15 +201,25 @@ public func parseCkbCdGapAuditResultLine(line: String): CkbCdGapAuditResultRow {
     row.claudeExitCode = ckbCdGapJsonIntField(raw, "claudeExitCode", -1)
     row.testExitCode = ckbCdGapJsonIntField(raw, "testExitCode", -1)
     row.failureType = ckbCdGapJsonStringField(raw, "failureType").trimAscii()
-    row.runMode = ckbCdGapJsonStringField(raw, "runMode").trimAscii()
-    row.datasetVersion = ckbCdGapJsonStringField(raw, "datasetVersion").trimAscii()
-    row.candidateVersion = ckbCdGapJsonStringField(raw, "candidateVersion").trimAscii()
-    row.knowledgeVersion = ckbCdGapJsonStringField(raw, "lineageKnowledgeVersion").trimAscii()
-    row.developmentPass = ckbCdGapJsonBoolField(raw, "developmentPass")
-    row.certificationPassAt1 = ckbCdGapJsonBoolField(raw, "certificationPassAt1")
-    row.closureStatus = ckbCdGapJsonStringField(raw, "closureStatus").trimAscii()
-    row.triageStatus = ckbCdGapJsonStringField(raw, "triageStatus").trimAscii()
-    row.failureRoute = ckbCdGapJsonStringField(raw, "failureRoute").trimAscii()
+    try {
+        let object = JsonValue.fromStr(raw).asObject()
+        row.runMode = ckbCdGapStrictString(object, "runMode", false)
+        if (row.runMode != "") {
+            if (row.runMode != "development" && row.runMode != "certification") { row.diagnostic = "invalid_run_mode"; return row }
+            row.datasetVersion = ckbCdGapStrictString(object, "datasetVersion", true)
+            row.candidateVersion = ckbCdGapStrictString(object, "candidateVersion", row.runMode == "development")
+            row.knowledgeVersion = ckbCdGapStrictString(object, "lineageKnowledgeVersion", true)
+            row.developmentPass = ckbCdGapStrictBool(object, "developmentPass")
+            row.closureStatus = ckbCdGapStrictString(object, "closureStatus", true)
+            row.triageStatus = ckbCdGapStrictString(object, "triageStatus", true)
+            row.failureRoute = ckbCdGapStrictString(object, "failureRoute", true)
+            row.certificationStatus = ckbCdGapStrictNull(object, "certificationPassAt1")
+            if (row.certificationStatus != "unset") { row.diagnostic = "certification_evidence_not_owned_by_p5"; return row }
+        }
+    } catch (_: Exception) {
+        row.diagnostic = "malformed_result_row"
+        return row
+    }
     if (row.caseId == "" || row.group == "") {
         row.diagnostic = "missing_result_field"
         return row
@@ -221,8 +233,11 @@ public func parseCkbCdGapAuditResultLine(line: String): CkbCdGapAuditResultRow {
 }
 
 public func classifyPassAt1(row: CkbCdGapAuditResultRow): String {
-    if (row.runMode == "development" && row.developmentPass) { return "development_closed" }
-    if (row.runMode == "certification" && row.certificationPassAt1) { return "ok" }
+    if (row.runMode == "development") {
+        if (row.developmentPass && row.closureStatus == "development_closed" && row.triageStatus == "none") { return "development_closed" }
+        return "development_open"
+    }
+    if (row.runMode == "certification") { return "certification_not_run" }
     if (row.unitPassAt1) {
         return "ok"
     }
@@ -239,6 +254,27 @@ public func classifyPassAt1(row: CkbCdGapAuditResultRow): String {
         return row.failureType
     }
     "compile_error"
+}
+
+private func ckbCdGapStrictString(object: JsonObject, field: String, required: Bool): String {
+    match (object.get(field)) {
+        case Some(value) => value.asString().getValue().trimAscii()
+        case None => if (required) { throw IllegalArgumentException("missing_${field}") } else { "" }
+    }
+}
+
+private func ckbCdGapStrictBool(object: JsonObject, field: String): Bool {
+    match (object.get(field)) {
+        case Some(value) => value.asBool().getValue()
+        case None => throw IllegalArgumentException("missing_${field}")
+    }
+}
+
+private func ckbCdGapStrictNull(object: JsonObject, field: String): String {
+    match (object.get(field)) {
+        case Some(value) => if (value.toString() == "null") { "unset" } else { "present" }
+        case None => "missing"
+    }
 }
 
 public func summarizeCdKnowledgeGaps(

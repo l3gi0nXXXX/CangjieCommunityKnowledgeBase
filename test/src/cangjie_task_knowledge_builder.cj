@@ -116,7 +116,11 @@ public func buildCangjieTaskKnowledgePackForFixedVersion(kb: KnowledgeBase, requ
         return pack
     }
     let pack = buildCangjieTaskKnowledgePackFromEvidence(kb, request, manifest)
-    if (pack.evidenceHash == "" || pack.degraded) {
+    var atomEvidence = false
+    for (note in pack.notes) { if (note.startsWith("atom_id:")) { atomEvidence = true } }
+    let hashValid = pack.evidenceHash.startsWith("sha256:") && pack.evidenceHash.toRuneArray().size == 71 && pack.evidenceHash == cangjieTaskEvidenceHash(pack)
+    if (pack.knowledgeVersion != expectedKnowledgeVersion.trimAscii() || !hashValid || !atomEvidence || pack.degraded) {
+        pack.degraded = true
         if (!pack.diagnostics.contains("fixed_version_evidence_unavailable")) { pack.diagnostics.add("fixed_version_evidence_unavailable") }
     } else {
         pack.notes.add("fixed_knowledge_version:${expectedKnowledgeVersion.trimAscii()}")

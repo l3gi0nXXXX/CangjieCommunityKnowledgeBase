@@ -548,7 +548,7 @@ private func ckbAbcdeRunCaseGroup(options: CkbAbcdeRunnerOptions, runRoot: Strin
         ckbAbcdeWriteText("${groupRoot}/claude.stdout.log", "")
         ckbAbcdeWriteText("${groupRoot}/claude.stderr.log", "")
     } else {
-        let claude = ckbAbcdeRunClaude(group, groupRoot, workspace, options.docsRoot, options.runMode)
+        let claude = ckbAbcdeRunClaude(group, groupRoot, workspace, options.docsRoot)
         claudeExit = claude.exitCode
     }
     let usage = ckbAbcdeParseClaudeUsageFile("${groupRoot}/claude-transcript.jsonl")
@@ -583,10 +583,9 @@ private func ckbAbcdeRunCaseGroup(options: CkbAbcdeRunnerOptions, runRoot: Strin
     result
 }
 
-private func ckbAbcdeRunClaude(group: String, groupRoot: String, workspace: String, docsRoot: String, runMode: String): CkbAbcdeCommandResult {
+private func ckbAbcdeRunClaude(group: String, groupRoot: String, workspace: String, docsRoot: String): CkbAbcdeCommandResult {
     var last = CkbAbcdeCommandResult()
-    let maxAttempts: Int64 = if (runMode == "certification") { 1 } else { 2 }
-    for (attempt in 1..=maxAttempts) {
+    for (attempt in 1..=2) {
         let current = ckbAbcdeRunClaudeOnce(group, groupRoot, workspace, docsRoot, attempt)
         last = current
         ckbAbcdeAppendText("${groupRoot}/claude-attempts.jsonl", "{\"attempt\":${attempt},\"exitCode\":${current.exitCode}}\n")
@@ -1172,12 +1171,33 @@ public func ckbAbcdeRenderCaseResult(
     let firstClaudeExitCode = ckbAbcdeFirstClaudeAttemptExitCode(groupRoot)
     let claudeAttemptCount = ckbAbcdeClaudeAttemptCount(groupRoot)
     let usage = ckbAbcdeParseClaudeUsageFile("${groupRoot}/claude-transcript.jsonl")
-    let developmentPass = options.runMode == "development" && unitPass
-    let certificationPassAt1 = options.runMode == "certification" && unitPassAt1
-    let workspaceId = "${options.runId}:${caseId}:${group}:workspace"
-    let sessionId = "${options.runId}:${caseId}:${group}:session"
-    let runtimeHomeId = "${options.runId}:${caseId}:${group}:runtime"
-    "{\"runId\":\"${ckbAbcdeJsonEscape(options.runId)}\",\"benchmark\":\"Cangjie-HumanEval\",\"runMode\":\"${ckbAbcdeJsonEscape(options.runMode)}\",\"datasetVersion\":\"${ckbAbcdeJsonEscape(options.datasetVersion)}\",\"candidateVersion\":\"${ckbAbcdeJsonEscape(options.candidateVersion)}\",\"lineageKnowledgeVersion\":\"${ckbAbcdeJsonEscape(options.knowledgeVersion)}\",\"modelFingerprint\":\"${ckbAbcdeJsonEscape(options.modelFingerprint)}\",\"workspaceId\":\"${ckbAbcdeJsonEscape(workspaceId)}\",\"sessionId\":\"${ckbAbcdeJsonEscape(sessionId)}\",\"runtimeHomeId\":\"${ckbAbcdeJsonEscape(runtimeHomeId)}\",\"developmentPass\":${developmentPass},\"certificationPassAt1\":${certificationPassAt1},\"closureStatus\":\"${if (developmentPass) { "closed" } else { "open" }}\",\"triageStatus\":\"pending_independent_triage\",\"failureRoute\":\"${ckbAbcdeFailureRoute(failureType)}\",\"caseId\":\"${caseId}\",\"group\":\"${group}\",\"model\":\"GLM-5.2\",\"claudeCodeVersion\":\"${ckbAbcdeJsonEscape(ckbAbcdeClaudeVersion())}\",\"knowledgeEntry\":\"${ckbAbcdeKnowledgeEntry(group)}\",\"preflightStatus\":\"ok\",\"modelRunStatus\":\"${modelRunStatus}\",\"status\":\"${status}\",\"claudeExitCode\":${claudeExitCode},\"firstClaudeExitCode\":${firstClaudeExitCode},\"claudeAttemptCount\":${claudeAttemptCount},\"testExitCode\":${testExitCode},\"unitPass\":${unitPass},\"unitPassAt1\":${unitPassAt1},\"failureType\":\"${failureType}\",\"usageParseStatus\":\"${usage.usageParseStatus}\",\"modelInputTokens\":${usage.modelInputTokens},\"modelOutputTokens\":${usage.modelOutputTokens},\"modelCacheReadTokens\":${usage.modelCacheReadTokens},\"modelCacheCreationTokens\":${usage.modelCacheCreationTokens},\"modelTotalTokens\":${usage.modelTotalTokens},\"llmTurnCount\":${usage.llmTurnCount},\"usageSourcePath\":\"${ckbAbcdeJsonEscape(usage.usageSourcePath)}\",\"ckbUsed\":${ckbAbcdeUsesCkb(group)},\"localDocsUsed\":${group == CkbAbcdeGroups.E},\"toolTransport\":\"${ckbAbcdeToolTransport(group)}\",\"toolCallCount\":${toolCallCount},\"toolEvidence\":\"${ckbAbcdeJsonEscape(toolEvidence)}\",\"toolEvidenceHash\":\"${ckbAbcdeJsonEscape(ckbAbcdeEvidenceHash(groupRoot))}\",\"toolCoveragePass\":${ckbAbcdeCoveragePass(groupRoot)},\"transportParityPath\":\"${ckbAbcdeJsonEscape("${groupRoot}/parity.jsonl")}\",\"knowledgeVersion\":\"${ckbAbcdeJsonEscape(ckbAbcdeKnowledgeVersion(groupRoot))}\",\"citationCount\":${ckbAbcdeCitationCount(groupRoot)},\"docsPathCount\":${if (group == CkbAbcdeGroups.E) { 2 } else { 0 }},\"protocolViolation\":${protocolViolation},\"protocolViolationReason\":\"${ckbAbcdeJsonEscape(violation)}\",\"durationMs\":0,\"promptPath\":\"${ckbAbcdeJsonEscape("${groupRoot}/prompt.final.md")}\",\"transcriptPath\":\"${ckbAbcdeJsonEscape("${groupRoot}/claude-transcript.jsonl")}\",\"testLogPath\":\"${ckbAbcdeJsonEscape("${groupRoot}/test.log")}\",\"resultPath\":\"${ckbAbcdeJsonEscape("${groupRoot}/case-result.json")}\",\"notes\":\"${ckbAbcdeJsonEscape(ckbAbcdeResultNotes(status, violation, toolEvidence))}\"}"
+    let explicitDevelopment = options.explicitRunMode && options.runMode == "development"
+    let developmentPass = explicitDevelopment && status == "passed"
+    let recordedRunMode = if (options.explicitRunMode) { options.runMode } else { "" }
+    let workspaceId = "cases/${caseId}/${group}/workspace"
+    let sessionId = "cases/${caseId}/${group}/session"
+    let runtimeHomeId = "cases/${caseId}/${group}/runtime-home"
+    ckbAbcdeEnsureDir("${groupRoot}/workspace")
+    ckbAbcdeEnsureDir("${groupRoot}/session")
+    ckbAbcdeEnsureDir("${groupRoot}/runtime-home")
+    let isolationDiagnostic = ckbAbcdeIsolationDiagnostic(caseId, workspaceId, sessionId, runtimeHomeId, "", "", "", "")
+    ckbAbcdeWriteText("${groupRoot}/isolation.json", "{\"workspaceId\":\"${ckbAbcdeJsonEscape(workspaceId)}\",\"sessionId\":\"${ckbAbcdeJsonEscape(sessionId)}\",\"runtimeHomeId\":\"${ckbAbcdeJsonEscape(runtimeHomeId)}\",\"diagnostic\":\"${isolationDiagnostic}\"}\n")
+    let triageEvidence = ckbAbcdeTriageEvidence(options, caseId, failureType, unitPass, protocolViolation, claudeExitCode, testExitCode)
+    let triage = if (options.explicitRunMode) { triageEvalFailure(triageEvidence) } else { CangjieEvalFailureTriageResult() }
+    let triageStatus = if (!options.explicitRunMode) { "legacy" } else if (triage.ok) { triage.category } else { "blocked:${triage.diagnostic}" }
+    let failureRoute = if (triage.ok) { triage.route } else { ckbAbcdeFailureRoute(failureType) }
+    let closureStatus = if (!options.explicitRunMode) { "legacy" } else if (options.runMode == "certification") { "certification_not_run" } else if (developmentPass && triage.ok && triage.category == "none") { "development_closed" } else { "development_open" }
+    "{\"runId\":\"${ckbAbcdeJsonEscape(options.runId)}\",\"benchmark\":\"Cangjie-HumanEval\",\"runMode\":\"${ckbAbcdeJsonEscape(recordedRunMode)}\",\"datasetVersion\":\"${ckbAbcdeJsonEscape(options.datasetVersion)}\",\"candidateVersion\":\"${ckbAbcdeJsonEscape(options.candidateVersion)}\",\"lineageKnowledgeVersion\":\"${ckbAbcdeJsonEscape(options.knowledgeVersion)}\",\"modelFingerprint\":\"${ckbAbcdeJsonEscape(options.modelFingerprint)}\",\"workspaceId\":\"${ckbAbcdeJsonEscape(workspaceId)}\",\"sessionId\":\"${ckbAbcdeJsonEscape(sessionId)}\",\"runtimeHomeId\":\"${ckbAbcdeJsonEscape(runtimeHomeId)}\",\"developmentPass\":${developmentPass},\"certificationPassAt1\":null,\"closureStatus\":\"${closureStatus}\",\"triageStatus\":\"${ckbAbcdeJsonEscape(triageStatus)}\",\"failureRoute\":\"${failureRoute}\",\"caseId\":\"${caseId}\",\"group\":\"${group}\",\"model\":\"GLM-5.2\",\"claudeCodeVersion\":\"${ckbAbcdeJsonEscape(ckbAbcdeClaudeVersion())}\",\"knowledgeEntry\":\"${ckbAbcdeKnowledgeEntry(group)}\",\"preflightStatus\":\"ok\",\"modelRunStatus\":\"${modelRunStatus}\",\"status\":\"${status}\",\"claudeExitCode\":${claudeExitCode},\"firstClaudeExitCode\":${firstClaudeExitCode},\"claudeAttemptCount\":${claudeAttemptCount},\"testExitCode\":${testExitCode},\"unitPass\":${unitPass},\"unitPassAt1\":${unitPassAt1},\"failureType\":\"${failureType}\",\"usageParseStatus\":\"${usage.usageParseStatus}\",\"modelInputTokens\":${usage.modelInputTokens},\"modelOutputTokens\":${usage.modelOutputTokens},\"modelCacheReadTokens\":${usage.modelCacheReadTokens},\"modelCacheCreationTokens\":${usage.modelCacheCreationTokens},\"modelTotalTokens\":${usage.modelTotalTokens},\"llmTurnCount\":${usage.llmTurnCount},\"usageSourcePath\":\"${ckbAbcdeJsonEscape(usage.usageSourcePath)}\",\"ckbUsed\":${ckbAbcdeUsesCkb(group)},\"localDocsUsed\":${group == CkbAbcdeGroups.E},\"toolTransport\":\"${ckbAbcdeToolTransport(group)}\",\"toolCallCount\":${toolCallCount},\"toolEvidence\":\"${ckbAbcdeJsonEscape(toolEvidence)}\",\"toolEvidenceHash\":\"${ckbAbcdeJsonEscape(ckbAbcdeEvidenceHash(groupRoot))}\",\"toolCoveragePass\":${ckbAbcdeCoveragePass(groupRoot)},\"transportParityPath\":\"${ckbAbcdeJsonEscape("${groupRoot}/parity.jsonl")}\",\"knowledgeVersion\":\"${ckbAbcdeJsonEscape(ckbAbcdeKnowledgeVersion(groupRoot))}\",\"citationCount\":${ckbAbcdeCitationCount(groupRoot)},\"docsPathCount\":${if (group == CkbAbcdeGroups.E) { 2 } else { 0 }},\"protocolViolation\":${protocolViolation},\"protocolViolationReason\":\"${ckbAbcdeJsonEscape(violation)}\",\"durationMs\":0,\"promptPath\":\"${ckbAbcdeJsonEscape("${groupRoot}/prompt.final.md")}\",\"transcriptPath\":\"${ckbAbcdeJsonEscape("${groupRoot}/claude-transcript.jsonl")}\",\"testLogPath\":\"${ckbAbcdeJsonEscape("${groupRoot}/test.log")}\",\"resultPath\":\"${ckbAbcdeJsonEscape("${groupRoot}/case-result.json")}\",\"notes\":\"${ckbAbcdeJsonEscape(ckbAbcdeResultNotes(status, violation, toolEvidence))}\"}"
+}
+
+private func ckbAbcdeTriageEvidence(options: CkbAbcdeRunnerOptions, caseId: String, failureType: String, unitPass: Bool, protocolViolation: Bool, claudeExitCode: Int64, testExitCode: Int64): String {
+    let timedOut = claudeExitCode == 124
+    let environmentFailure = claudeExitCode != 0 && !timedOut
+    let reasoningFailure = !unitPass && claudeExitCode == 0 && testExitCode != 0
+    let observation = if (failureType == "none") { "case_passed" } else { failureType }
+    let base = "{\"caseId\":\"${ckbAbcdeJsonEscape(caseId)}\",\"runId\":\"${ckbAbcdeJsonEscape(options.runId)}\",\"datasetVersion\":\"${ckbAbcdeJsonEscape(options.datasetVersion)}\",\"attempt\":1,\"runMode\":\"${ckbAbcdeJsonEscape(options.runMode)}\",\"failureObservation\":\"${ckbAbcdeJsonEscape(observation)}\",\"protocolViolation\":${protocolViolation},\"timedOut\":${timedOut},\"environmentFailure\":${environmentFailure},\"reasoningFailure\":${reasoningFailure},\"failureType\":\"${ckbAbcdeJsonEscape(failureType)}\",\"unitPass\":${unitPass}}"
+    let hash = cangjieEvalTriageResultEvidenceHash(base)
+    base.replace("}", ",\"resultEvidenceHash\":\"${hash}\"}")
 }
 
 private func ckbAbcdeRenderCaseSummary(options: CkbAbcdeRunnerOptions, runRoot: String, caseId: String, summaries: ArrayList<String>): String {
