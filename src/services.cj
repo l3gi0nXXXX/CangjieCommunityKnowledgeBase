@@ -17363,7 +17363,14 @@ private func ingestScheduledBenchmarkGapCuration(kb: KnowledgeBase, store: FileK
         result.status = "benchmark_gap_curation_input_not_found"
         return result
     }
-    let curationBytes = File.readFrom(Path(inputPath))
+    let curationBytes = try {
+        File.readFrom(Path(inputPath))
+    } catch (_: Exception) {
+        result.ok = false
+        result.status = "input_read_failed"
+        result.validationDiagnostics.add("benchmark_gap_input_gate:errorCode=input_read_failed")
+        return result
+    }
     if (curationBytes.size > ckbBenchmarkGapCurationMaxInputBytes()) {
         result.ok = false
         result.status = "benchmark_gap_curation_input_too_large"
@@ -17374,8 +17381,8 @@ private func ingestScheduledBenchmarkGapCuration(kb: KnowledgeBase, store: FileK
         String.fromUtf8(curationBytes)
     } catch (_: Exception) {
         result.ok = false
-        result.status = "benchmark_gap_curation_input_invalid_encoding"
-        result.validationDiagnostics.add("benchmark_gap_input_gate:invalid_encoding:bytes=${curationBytes.size}")
+        result.status = "invalid_response_encoding"
+        result.validationDiagnostics.add("benchmark_gap_input_gate:errorCode=invalid_response_encoding:bytes=${curationBytes.size}")
         return result
     }
     if (curationText.trimAscii() == "") {
@@ -17387,6 +17394,9 @@ private func ingestScheduledBenchmarkGapCuration(kb: KnowledgeBase, store: FileK
     if (!curated.ok) {
         result.ok = false
         result.status = curated.diagnostic
+        for (diagnostic in curated.diagnostics) {
+            result.validationDiagnostics.add("benchmark_gap_input_rejected:${utf8SafePrefix(redactSensitive(diagnostic), 240)}")
+        }
         return result
     }
     if (curated.records.size > ckbBenchmarkGapCurationMaxRecords()) {

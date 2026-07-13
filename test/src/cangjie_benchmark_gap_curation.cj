@@ -1,6 +1,8 @@
 package cangjie_community_knowledge_base_test
 
 import std.collection.ArrayList
+import std.collection.HashMap
+import stdx.encoding.json.*
 
 public class CangjieBenchmarkGapInput {
     public var caseId: String = ""
@@ -22,6 +24,7 @@ public class CangjieBenchmarkGapCurationResult {
     public var ok: Bool = true
     public var accepted: Int64 = 0
     public var rejected: Int64 = 0
+    public var duplicates: Int64 = 0
     public var diagnostic: String = "ok"
     public var records: ArrayList<NormalizedRecord> = ArrayList<NormalizedRecord>()
     public var diagnostics: ArrayList<String> = ArrayList<String>()
@@ -29,15 +32,39 @@ public class CangjieBenchmarkGapCurationResult {
     public init() {}
 }
 
+public class CangjieBenchmarkGapParseResult {
+    public var ok: Bool = true
+    public var inputs: ArrayList<CangjieBenchmarkGapInput> = ArrayList<CangjieBenchmarkGapInput>()
+    public var diagnostics: ArrayList<String> = ArrayList<String>()
+
+    public init() {}
+}
+
 public func curateBenchmarkGapRecords(inputs: ArrayList<CangjieBenchmarkGapInput>, targetVersion!: String = cangjieDefaultTargetVersion()): CangjieBenchmarkGapCurationResult {
     let result = CangjieBenchmarkGapCurationResult()
+    let identityHashes = HashMap<String, String>()
+    var itemNumber: Int64 = 0
     for (input in inputs) {
+        itemNumber += 1
         normalizeBenchmarkGapInput(input, targetVersion)
         let diagnostic = validateBenchmarkGapInput(input)
         if (diagnostic != "") {
             result.rejected += 1
-            result.diagnostics.add("${input.caseId}:${diagnostic}")
+            result.diagnostics.add("item=${itemNumber}:errorCode=${diagnostic}")
             continue
+        }
+        let identity = canonicalBenchmarkGapIdentity(input)
+        let canonicalHash = canonicalBenchmarkGapInputHash(input)
+        match (identityHashes.get(identity)) {
+            case Some(existingHash) =>
+                if (existingHash == canonicalHash) {
+                    result.duplicates += 1
+                    continue
+                }
+                result.rejected += 1
+                result.diagnostics.add("item=${itemNumber}:errorCode=benchmark_gap_identity_conflict:identityHash=${stableSummaryHash(identity)}")
+                continue
+            case None => identityHashes.add(identity, canonicalHash)
         }
         result.records.add(benchmarkGapRecord(input, targetVersion))
         result.accepted += 1
@@ -47,40 +74,64 @@ public func curateBenchmarkGapRecords(inputs: ArrayList<CangjieBenchmarkGapInput
         result.diagnostic = "no_gap_records_accepted"
     }
     if (result.rejected > 0) {
-        result.diagnostic = if (result.accepted > 0) { "partial" } else { "no_gap_records_accepted" }
+        result.ok = false
+        result.records.clear()
+        result.diagnostic = benchmarkGapPrimaryDiagnostic(result.diagnostics)
     }
     result
 }
 
-public func parseBenchmarkGapInputsJsonl(text: String): ArrayList<CangjieBenchmarkGapInput> {
-    let inputs = ArrayList<CangjieBenchmarkGapInput>()
+public func parseBenchmarkGapInputsJsonl(text: String): CangjieBenchmarkGapParseResult {
+    let result = CangjieBenchmarkGapParseResult()
+    var lineNumber: Int64 = 0
     for (line in text.split("\n")) {
+        lineNumber += 1
         let raw = line.trimAscii()
         if (raw == "") {
             continue
         }
-        let input = CangjieBenchmarkGapInput()
-        input.caseId = cangjieBenchmarkGapJsonStringField(raw, "caseId")
-        input.benchmark = cangjieBenchmarkGapJsonStringField(raw, "benchmark")
-        if (input.benchmark == "") {
-            input.benchmark = "Cangjie-HumanEval"
+        try {
+            let object = JsonValue.fromStr(raw).asObject()
+            try {
+                let input = CangjieBenchmarkGapInput()
+                input.caseId = benchmarkGapJsonString(object, "caseId")
+                input.benchmark = benchmarkGapJsonString(object, "benchmark")
+                if (input.benchmark == "") {
+                    input.benchmark = "Cangjie-HumanEval"
+                }
+                input.taskText = benchmarkGapJsonString(object, "taskText")
+                input.visibleTestExcerpt = benchmarkGapJsonString(object, "visibleTestExcerpt")
+                input.compilerOutput = benchmarkGapJsonString(object, "compilerOutput")
+                input.missingKnowledge = benchmarkGapJsonString(object, "missingKnowledge")
+                input.interfaceId = benchmarkGapJsonString(object, "interfaceId")
+                input.contentFamily = benchmarkGapJsonString(object, "contentFamily")
+                input.updateMechanism = benchmarkGapJsonString(object, "updateMechanism")
+                input.targetVersion = benchmarkGapJsonString(object, "targetVersion")
+                input.officialCitation = benchmarkGapJsonString(object, "officialCitation")
+                result.inputs.add(input)
+            } catch (_: Exception) {
+                result.ok = false
+                result.diagnostics.add("line=${lineNumber}:errorCode=field_contract_invalid")
+            }
+        } catch (_: Exception) {
+            result.ok = false
+            result.diagnostics.add("line=${lineNumber}:errorCode=malformed_json")
         }
-        input.taskText = cangjieBenchmarkGapJsonStringField(raw, "taskText")
-        input.visibleTestExcerpt = cangjieBenchmarkGapJsonStringField(raw, "visibleTestExcerpt")
-        input.compilerOutput = cangjieBenchmarkGapJsonStringField(raw, "compilerOutput")
-        input.missingKnowledge = cangjieBenchmarkGapJsonStringField(raw, "missingKnowledge")
-        input.interfaceId = cangjieBenchmarkGapJsonStringField(raw, "interfaceId")
-        input.contentFamily = cangjieBenchmarkGapJsonStringField(raw, "contentFamily")
-        input.updateMechanism = cangjieBenchmarkGapJsonStringField(raw, "updateMechanism")
-        input.targetVersion = cangjieBenchmarkGapJsonStringField(raw, "targetVersion")
-        input.officialCitation = cangjieBenchmarkGapJsonStringField(raw, "officialCitation")
-        inputs.add(input)
     }
-    inputs
+    result
 }
 
 public func curateBenchmarkGapRecordsFromJsonl(text: String, targetVersion!: String = cangjieDefaultTargetVersion()): CangjieBenchmarkGapCurationResult {
-    curateBenchmarkGapRecords(parseBenchmarkGapInputsJsonl(text), targetVersion: targetVersion)
+    let parsed = parseBenchmarkGapInputsJsonl(text)
+    if (!parsed.ok) {
+        let result = CangjieBenchmarkGapCurationResult()
+        result.ok = false
+        result.rejected = parsed.diagnostics.size
+        result.diagnostic = benchmarkGapPrimaryDiagnostic(parsed.diagnostics)
+        for (diagnostic in parsed.diagnostics) { result.diagnostics.add(diagnostic) }
+        return result
+    }
+    curateBenchmarkGapRecords(parsed.inputs, targetVersion: targetVersion)
 }
 
 private func normalizeBenchmarkGapInput(input: CangjieBenchmarkGapInput, fallbackTargetVersion: String): Unit {
@@ -103,6 +154,21 @@ private func validateBenchmarkGapInput(input: CangjieBenchmarkGapInput): String 
     if (input.caseId.trimAscii() == "") {
         return "case_id_required"
     }
+    if (!benchmarkGapSafeIdentityPart(input.caseId, 256)) {
+        return "case_id_invalid"
+    }
+    if (!benchmarkGapSafeIdentityPart(input.benchmark, 128)) {
+        return "benchmark_invalid"
+    }
+    if (visible.contains("/reference/") || visible.contains("reference/") || visible.contains("\\reference\\") || visible.contains("/hidden/") || visible.contains("hidden/") || visible.contains("\\hidden\\")) {
+        return "hidden_or_reference_source_rejected"
+    }
+    if (input.missingKnowledge.trimAscii() == "") {
+        return "missing_knowledge_required"
+    }
+    if (benchmarkGapRuneLength(input.taskText) > 65536 || benchmarkGapRuneLength(input.visibleTestExcerpt) > 65536 || benchmarkGapRuneLength(input.compilerOutput) > 65536 || benchmarkGapRuneLength(input.missingKnowledge) > 4096) {
+        return "benchmark_gap_field_too_long"
+    }
     if (input.taskText.trimAscii() == "" && input.compilerOutput.trimAscii() == "") {
         return "visible_failure_signal_required"
     }
@@ -118,6 +184,9 @@ private func validateBenchmarkGapInput(input: CangjieBenchmarkGapInput): String 
     if (input.officialCitation.trimAscii() == "") {
         return "official_citation_required"
     }
+    if (!input.officialCitation.trimAscii().toAsciiLower().startsWith("https://docs.cangjie-lang.cn/")) {
+        return "official_citation_not_allowed"
+    }
     let expectedInterface = benchmarkGapInterfaceId(input.missingKnowledge)
     if (input.interfaceId.trimAscii() != expectedInterface) {
         return "interface_mapping_mismatch:${expectedInterface}"
@@ -130,10 +199,54 @@ private func validateBenchmarkGapInput(input: CangjieBenchmarkGapInput): String 
     if (input.updateMechanism.trimAscii() != expectedUpdate) {
         return "update_mechanism_mapping_mismatch:${expectedUpdate}"
     }
-    if (visible.contains("/reference/") || visible.contains("reference/") || visible.contains("\\reference\\") || visible.contains("/hidden/") || visible.contains("hidden/") || visible.contains("\\hidden\\")) {
-        return "hidden_or_reference_source_rejected"
-    }
     ""
+}
+
+public func canonicalBenchmarkGapIdentity(input: CangjieBenchmarkGapInput): String {
+    "${input.benchmark.trimAscii().toAsciiLower()}:${input.caseId.trimAscii().toAsciiLower()}"
+}
+
+private func canonicalBenchmarkGapInputHash(input: CangjieBenchmarkGapInput): String {
+    stableSummaryHash(benchmarkGapCanonicalPart(canonicalBenchmarkGapIdentity(input)) +
+        benchmarkGapCanonicalPart(input.taskText) + benchmarkGapCanonicalPart(input.visibleTestExcerpt) +
+        benchmarkGapCanonicalPart(input.compilerOutput) + benchmarkGapCanonicalPart(input.missingKnowledge.trimAscii().toAsciiUpper()) +
+        benchmarkGapCanonicalPart(input.interfaceId.trimAscii()) + benchmarkGapCanonicalPart(input.contentFamily.trimAscii()) +
+        benchmarkGapCanonicalPart(input.updateMechanism.trimAscii()) + benchmarkGapCanonicalPart(input.targetVersion.trimAscii()) +
+        benchmarkGapCanonicalPart(input.officialCitation.trimAscii()))
+}
+
+private func benchmarkGapCanonicalPart(value: String): String {
+    "${value.size}:${value}"
+}
+
+private func benchmarkGapPrimaryDiagnostic(diagnostics: ArrayList<String>): String {
+    if (diagnostics.size == 0) { return "benchmark_gap_input_rejected" }
+    let first = diagnostics[0]
+    let marker = "errorCode="
+    match (first.indexOf(marker)) {
+        case Some(start) =>
+            let value = first[(start + marker.size)..first.size]
+            match (value.indexOf(":")) {
+                case Some(end) => value[..end]
+                case None => value
+            }
+        case None => "benchmark_gap_input_rejected"
+    }
+}
+
+private func benchmarkGapSafeIdentityPart(raw: String, maxRunes: Int64): Bool {
+    let trimmed = raw.trimAscii()
+    let chars = trimmed.toRuneArray()
+    if (chars.size == 0 || chars.size > maxRunes) { return false }
+    for (ch in chars) {
+        let asciiAlphaNumeric = (ch >= r'a' && ch <= r'z') || (ch >= r'A' && ch <= r'Z') || (ch >= r'0' && ch <= r'9')
+        if (!asciiAlphaNumeric && ch != r'-' && ch != r'_' && ch != r'.') { return false }
+    }
+    true
+}
+
+private func benchmarkGapRuneLength(raw: String): Int64 {
+    raw.toRuneArray().size
 }
 
 private func benchmarkGapRecord(input: CangjieBenchmarkGapInput, targetVersion: String): NormalizedRecord {
@@ -201,15 +314,9 @@ private func benchmarkGapPrimaryCode(missingKnowledge: String): String {
     "G-RECIPE"
 }
 
-private func cangjieBenchmarkGapJsonStringField(text: String, field: String): String {
-    let marker = "\"${field}\":\""
-    let parts = text.split(marker)
-    if (parts.size <= 1) {
-        return ""
-    }
-    let tail = parts[1]
-    match (tail.indexOf("\"")) {
-        case Some(end) => tail[..end].replace("\\n", "\n").replace("\\\"", "\"").replace("\\\\", "\\")
+private func benchmarkGapJsonString(object: JsonObject, field: String): String {
+    match (object.get(field)) {
+        case Some(value) => value.asString().getValue()
         case None => ""
     }
 }
