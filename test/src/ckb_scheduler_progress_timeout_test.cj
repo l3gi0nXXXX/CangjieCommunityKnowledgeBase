@@ -1947,7 +1947,9 @@ private func p5S1WorkerFileNameForRun(storePath: String, schedulerRunId: String)
 }
 
 private func p5S1ProcessExited(pid: Int64): Bool {
-    pid > 0 && launch("/bin/sh", ["-c", "kill -0 ${pid} 2>/dev/null"]).wait() != 0
+    if(pid<=0){return false}
+    for(_ in 0..50){if(launch("/bin/sh",["-c","kill -0 ${pid} 2>/dev/null"]).wait()!=0){return true};sleep(Duration.millisecond*10)}
+    false
 }
 
 private func p5S1SafeReadFile(path: Path): String {
