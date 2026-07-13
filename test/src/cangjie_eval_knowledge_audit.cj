@@ -19,6 +19,15 @@ public class CkbCdGapAuditOptions {
 }
 
 public class CkbCdGapAuditResultRow {
+    public var runMode: String = ""
+    public var datasetVersion: String = ""
+    public var candidateVersion: String = ""
+    public var knowledgeVersion: String = ""
+    public var developmentPass: Bool = false
+    public var certificationPassAt1: Bool = false
+    public var closureStatus: String = ""
+    public var triageStatus: String = ""
+    public var failureRoute: String = ""
     public var ok: Bool = false
     public var diagnostic: String = ""
     public var raw: String = ""
@@ -69,6 +78,9 @@ public class CkbCdGapAuditSummary {
     public var cdDualFailure: Int64 = 0
     public var cOnlyFailure: Int64 = 0
     public var dOnlyFailure: Int64 = 0
+    public var developmentClosed: Int64 = 0
+    public var knowledgeGapCount: Int64 = 0
+    public var nonKnowledgeFailureCount: Int64 = 0
     public var diagnostics: ArrayList<String> = ArrayList<String>()
     public var cases: ArrayList<CkbCdGapAuditCaseSummary> = ArrayList<CkbCdGapAuditCaseSummary>()
     public var tagCounts: ArrayList<CkbCdGapTagCount> = ArrayList<CkbCdGapTagCount>()
@@ -187,6 +199,15 @@ public func parseCkbCdGapAuditResultLine(line: String): CkbCdGapAuditResultRow {
     row.claudeExitCode = ckbCdGapJsonIntField(raw, "claudeExitCode", -1)
     row.testExitCode = ckbCdGapJsonIntField(raw, "testExitCode", -1)
     row.failureType = ckbCdGapJsonStringField(raw, "failureType").trimAscii()
+    row.runMode = ckbCdGapJsonStringField(raw, "runMode").trimAscii()
+    row.datasetVersion = ckbCdGapJsonStringField(raw, "datasetVersion").trimAscii()
+    row.candidateVersion = ckbCdGapJsonStringField(raw, "candidateVersion").trimAscii()
+    row.knowledgeVersion = ckbCdGapJsonStringField(raw, "lineageKnowledgeVersion").trimAscii()
+    row.developmentPass = ckbCdGapJsonBoolField(raw, "developmentPass")
+    row.certificationPassAt1 = ckbCdGapJsonBoolField(raw, "certificationPassAt1")
+    row.closureStatus = ckbCdGapJsonStringField(raw, "closureStatus").trimAscii()
+    row.triageStatus = ckbCdGapJsonStringField(raw, "triageStatus").trimAscii()
+    row.failureRoute = ckbCdGapJsonStringField(raw, "failureRoute").trimAscii()
     if (row.caseId == "" || row.group == "") {
         row.diagnostic = "missing_result_field"
         return row
@@ -200,6 +221,8 @@ public func parseCkbCdGapAuditResultLine(line: String): CkbCdGapAuditResultRow {
 }
 
 public func classifyPassAt1(row: CkbCdGapAuditResultRow): String {
+    if (row.runMode == "development" && row.developmentPass) { return "development_closed" }
+    if (row.runMode == "certification" && row.certificationPassAt1) { return "ok" }
     if (row.unitPassAt1) {
         return "ok"
     }
@@ -241,6 +264,9 @@ public func summarizeCdKnowledgeGaps(
             continue
         }
         summary.parsedResultRows += 1
+        if (row.runMode == "development" && row.developmentPass) { summary.developmentClosed += 1 }
+        if (row.failureType == "knowledge_gap") { summary.knowledgeGapCount += 1 }
+        else if (row.failureType != "" && row.failureType != "none") { summary.nonKnowledgeFailureCount += 1 }
         if (ckbCdGapManifestIndex(manifest.cases, row.caseId) < 0) {
             summary.addDiagnostic("missing_manifest_case:${row.caseId}")
         }
@@ -279,7 +305,10 @@ public func summarizeCdKnowledgeGaps(
         let dFailed = caseSummary.dStatus != "ok"
         if (cFailed || dFailed) {
             summary.cdFailureUnion += 1
-            ckbCdGapAddTags(summary.tagCounts, evalCase.expectedKnowledgeTags)
+            let legacyRows = (cIndex >= 0 && rows[cIndex].runMode == "") || (dIndex >= 0 && rows[dIndex].runMode == "")
+            if (legacyRows || caseSummary.cFailureType == "knowledge_gap" || caseSummary.dFailureType == "knowledge_gap") {
+                ckbCdGapAddTags(summary.tagCounts, evalCase.expectedKnowledgeTags)
+            }
         }
         if (cFailed && dFailed) {
             summary.cdDualFailure += 1
@@ -422,19 +451,19 @@ private func ckbCdGapJsonStringField(text: String, field: String): String {
     if (colonParts.size <= 1) {
         return ""
     }
-    var tail = afterKey
-    match (afterKey.indexOf(":")) {
-        case Some(colon) => tail = afterKey[colon + 1..].trimAscii()
-        case None => return ""
-    }
+    var tail = colonParts[1].trimAscii()
     if (!tail.startsWith("\"")) {
         return ""
     }
-    let valueTail = tail[1..]
-    match (valueTail.indexOf("\"")) {
-        case Some(end) => valueTail[..end]
-        case None => ""
-    }
+    tail = ckbCdGapDropFirstRune(tail)
+    let values = tail.split("\"")
+    if (values.size > 0) { values[0] } else { "" }
+}
+
+private func ckbCdGapDropFirstRune(value: String): String {
+    let runes = value.toRuneArray(); let out = StringBuilder()
+    for (i in 1..runes.size) { out.append(runes[i]) }
+    out.toString()
 }
 
 private func ckbCdGapJsonBoolField(text: String, field: String): Bool {
@@ -461,21 +490,11 @@ private func ckbCdGapJsonScalarField(text: String, field: String): String {
         return ""
     }
     let afterKey = parts[1]
-    var tail = ""
-    match (afterKey.indexOf(":")) {
-        case Some(colon) => tail = afterKey[colon + 1..].trimAscii()
-        case None => return ""
-    }
-    var end: Int64 = tail.size
-    match (tail.indexOf(",")) {
-        case Some(idx) => end = idx
-        case None => ()
-    }
-    match (tail.indexOf("}")) {
-        case Some(idx) => if (idx < end) { end = idx }
-        case None => ()
-    }
-    tail[..end].trimAscii()
+    let colonParts = afterKey.split(":")
+    if (colonParts.size <= 1) { return "" }
+    let commaParts = colonParts[1].split(",")
+    let braceParts = commaParts[0].split("}")
+    braceParts[0].trimAscii()
 }
 
 private func ckbCdGapCompactRaw(raw: String): String {

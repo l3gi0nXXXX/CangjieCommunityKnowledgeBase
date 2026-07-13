@@ -103,6 +103,27 @@ public func buildCangjieTaskKnowledgePackFromEvidence(kb: KnowledgeBase, request
     pack
 }
 
+public func buildCangjieTaskKnowledgePackForFixedVersion(kb: KnowledgeBase, request: CangjieTaskKnowledgeRequest, manifest: CangjieVersionManifest, expectedKnowledgeVersion: String): CangjieTaskKnowledgePack {
+    let active = kb.status().activeKnowledgeVersion
+    if (expectedKnowledgeVersion.trimAscii() == "" || active != expectedKnowledgeVersion.trimAscii()) {
+        let pack = CangjieTaskKnowledgePack()
+        pack.taskId = request.taskId
+        pack.benchmark = request.benchmark
+        pack.knowledgeVersion = active
+        pack.degraded = true
+        pack.diagnostics.add("knowledge_version_lineage_mismatch")
+        pack.notes.add("fixed_knowledge_version_required")
+        return pack
+    }
+    let pack = buildCangjieTaskKnowledgePackFromEvidence(kb, request, manifest)
+    if (pack.evidenceHash == "" || pack.degraded) {
+        if (!pack.diagnostics.contains("fixed_version_evidence_unavailable")) { pack.diagnostics.add("fixed_version_evidence_unavailable") }
+    } else {
+        pack.notes.add("fixed_knowledge_version:${expectedKnowledgeVersion.trimAscii()}")
+    }
+    pack
+}
+
 private func cangjieTaskAppendVersionDiagnostics(pack: CangjieTaskKnowledgePack): Unit {
     for (diagnostic in pack.versionResolution.diagnostics) {
         if (!pack.diagnostics.contains(diagnostic)) {
@@ -228,6 +249,8 @@ private func cangjieTaskAppendHits(pack: CangjieTaskKnowledgePack, records: Arra
     for (hit in hits) {
         let doc = hit.document
         cangjieTaskAddCitation(pack, doc.sourceId, doc.citation)
+        let atomNote = "atom_id:${doc.sourceId}"
+        if (!pack.notes.contains(atomNote)) { pack.notes.add(atomNote) }
         let record = cangjieTaskFindRecord(records, doc.sourceId)
         if (record.sourceId != "") {
             cangjieTaskAppendExamples(pack, record)

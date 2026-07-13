@@ -16,6 +16,12 @@ public class CkbAbcdeGroups {
 }
 
 public class CkbAbcdeRunnerOptions {
+    public var runMode: String = "development"
+    public var explicitRunMode: Bool = false
+    public var datasetVersion: String = ""
+    public var candidateVersion: String = ""
+    public var knowledgeVersion: String = ""
+    public var modelFingerprint: String = "claude-code-glm-5.2"
     public var repoRoot: String = ckbAbcdeDefaultRepoRoot()
     public var runsRoot: String = "/Users/l3gi0n/Downloads/ckbtest"
     public var runId: String = ""
@@ -148,6 +154,11 @@ public func parseCkbAbcdeRunnerOptions(args: Array<String>): CkbAbcdeRunnerOptio
             i += 1
             continue
         }
+        if (arg == "--run-mode" && i + 1 < args.size) { options.runMode = args[i + 1].trimAscii(); options.explicitRunMode = true; i += 2; continue }
+        if (arg == "--dataset-version" && i + 1 < args.size) { options.datasetVersion = args[i + 1].trimAscii(); i += 2; continue }
+        if (arg == "--candidate-version" && i + 1 < args.size) { options.candidateVersion = args[i + 1].trimAscii(); i += 2; continue }
+        if (arg == "--knowledge-version" && i + 1 < args.size) { options.knowledgeVersion = args[i + 1].trimAscii(); i += 2; continue }
+        if (arg == "--model-fingerprint" && i + 1 < args.size) { options.modelFingerprint = args[i + 1].trimAscii(); i += 2; continue }
         if (arg == "--run-id" && i + 1 < args.size) {
             options.runId = args[i + 1].trimAscii()
             i += 2
@@ -230,6 +241,8 @@ public func runCangjieEvalAbcde(args: Array<String>): Int64 {
         print(ckbAbcdeUsage())
         return 0
     }
+    let developmentContract = ckbAbcdeDevelopmentOptionsDiagnostic(options)
+    if (developmentContract != "") { println("usage error: ${developmentContract}"); return 2 }
     if (options.runId == "") {
         options.runId = "abcde-${ckbAbcdeGeneratedRunId()}"
     }
@@ -310,9 +323,14 @@ public func runCangjieAbcdeParitySmoke(args: Array<String>): Int64 {
 }
 
 public func renderCkbAbcdePrompt(group: String, caseId: String, modelTask: String, contextText: String): String {
+    renderCkbAbcdePromptForMode(group, caseId, modelTask, contextText, "development")
+}
+
+public func renderCkbAbcdePromptForMode(group: String, caseId: String, modelTask: String, contextText: String, runMode: String): String {
     let taskContextJson = ckbAbcdePromptTaskContextJson(contextText)
     let restContextText = ckbAbcdePromptRestContext(contextText)
     var out = "# ${caseId} ${group}\n\n"
+    out += "Run mode: ${if (runMode == "certification") { "certification" } else { "development" }}. This label changes retry and accounting policy only; it does not expose tests, previous attempts, or other case artifacts.\n\n"
     out += "You are completing one Cangjie HumanEval case. Modify only `src/solution.cj` in the current workspace. Keep the public function signature unchanged. The copied workspace root is your current directory; if the task text below mentions `starter/src/solution.cj`, still edit exactly `src/solution.cj`. Do not read hidden tests, reference solutions, unrelated repositories, or files outside the allowed paths. Use at most three knowledge or documentation lookup tool calls before editing; do not perform prolonged research. If documentation is inconclusive, implement directly from the starter signature, examples, and common Cangjie syntax. After editing, reply with a short completion note.\n\n"
     if (group == CkbAbcdeGroups.A) {
         out += "Knowledge policy for this run: No CKB baseline. Do not use CKB HTTP APIs, MCP tools, local cangjie_docs, web search, or external source repositories.\n\n"
@@ -521,7 +539,7 @@ private func ckbAbcdeRunCaseGroup(options: CkbAbcdeRunnerOptions, runRoot: Strin
         ckbAbcdeWriteText("${groupRoot}/ckb-mcp-http.json", mcpConfig)
     }
 
-    let prompt = renderCkbAbcdePrompt(group, caseId, ckbAbcdeReadText("${caseSrc}/prompt.md"), contextText)
+    let prompt = renderCkbAbcdePromptForMode(group, caseId, ckbAbcdeReadText("${caseSrc}/prompt.md"), contextText, options.runMode)
     ckbAbcdeWriteText("${groupRoot}/prompt.final.md", prompt)
 
     var claudeExit: Int64 = 0
@@ -530,7 +548,7 @@ private func ckbAbcdeRunCaseGroup(options: CkbAbcdeRunnerOptions, runRoot: Strin
         ckbAbcdeWriteText("${groupRoot}/claude.stdout.log", "")
         ckbAbcdeWriteText("${groupRoot}/claude.stderr.log", "")
     } else {
-        let claude = ckbAbcdeRunClaude(group, groupRoot, workspace, options.docsRoot)
+        let claude = ckbAbcdeRunClaude(group, groupRoot, workspace, options.docsRoot, options.runMode)
         claudeExit = claude.exitCode
     }
     let usage = ckbAbcdeParseClaudeUsageFile("${groupRoot}/claude-transcript.jsonl")
@@ -550,7 +568,8 @@ private func ckbAbcdeRunCaseGroup(options: CkbAbcdeRunnerOptions, runRoot: Strin
     let unitPass = test.exitCode == 0 && !ckbAbcdeTestLogContainsFailure(testLog)
     let unitPassAt1 = ckbAbcdeUnitPassAt1(unitPass, groupRoot)
     let toolReady = ckbAbcdeRequiredKnowledgeReady(group, knowledgeReady, toolEvidence)
-    let failureType = ckbAbcdeFailureType(claudeExit, test.exitCode, unitPass, violation, testLog, toolReady)
+    let legacyFailureType = ckbAbcdeFailureType(claudeExit, test.exitCode, unitPass, violation, testLog, toolReady)
+    let failureType = if (options.explicitRunMode) { ckbAbcdeExpandedFailureType(legacyFailureType) } else { legacyFailureType }
     let protocolViolation = violation != "none"
     let status = if (copy.exitCode == 0 && inject.exitCode == 0 && claudeExit == 0 && unitPass && violation == "none" && toolReady) { "passed" } else { "failed" }
     ckbAbcdeWriteText("${groupRoot}/test-result.json", "{\"testExitCode\":${test.exitCode},\"unitPassAt1\":${unitPassAt1},\"failureType\":\"${failureType}\",\"testLogPath\":\"${ckbAbcdeJsonEscape("${groupRoot}/test.log")}\"}\n")
@@ -564,9 +583,10 @@ private func ckbAbcdeRunCaseGroup(options: CkbAbcdeRunnerOptions, runRoot: Strin
     result
 }
 
-private func ckbAbcdeRunClaude(group: String, groupRoot: String, workspace: String, docsRoot: String): CkbAbcdeCommandResult {
+private func ckbAbcdeRunClaude(group: String, groupRoot: String, workspace: String, docsRoot: String, runMode: String): CkbAbcdeCommandResult {
     var last = CkbAbcdeCommandResult()
-    for (attempt in 1..=2) {
+    let maxAttempts: Int64 = if (runMode == "certification") { 1 } else { 2 }
+    for (attempt in 1..=maxAttempts) {
         let current = ckbAbcdeRunClaudeOnce(group, groupRoot, workspace, docsRoot, attempt)
         last = current
         ckbAbcdeAppendText("${groupRoot}/claude-attempts.jsonl", "{\"attempt\":${attempt},\"exitCode\":${current.exitCode}}\n")
@@ -822,7 +842,8 @@ private func ckbAbcdeMcpHttpSessionId(headers: ArrayList<String>): String {
     for (header in headers) {
         let lower = header.toAsciiLower()
         if (lower.startsWith("mcp-session-id:")) {
-            return header["mcp-session-id:".size..header.size].trimAscii()
+            let parts = header.split(":")
+            if (parts.size > 1) { return parts[1].trimAscii() }
         }
     }
     ""
@@ -1151,7 +1172,12 @@ public func ckbAbcdeRenderCaseResult(
     let firstClaudeExitCode = ckbAbcdeFirstClaudeAttemptExitCode(groupRoot)
     let claudeAttemptCount = ckbAbcdeClaudeAttemptCount(groupRoot)
     let usage = ckbAbcdeParseClaudeUsageFile("${groupRoot}/claude-transcript.jsonl")
-    "{\"runId\":\"${ckbAbcdeJsonEscape(options.runId)}\",\"benchmark\":\"Cangjie-HumanEval\",\"caseId\":\"${caseId}\",\"group\":\"${group}\",\"model\":\"GLM-5.2\",\"claudeCodeVersion\":\"${ckbAbcdeJsonEscape(ckbAbcdeClaudeVersion())}\",\"knowledgeEntry\":\"${ckbAbcdeKnowledgeEntry(group)}\",\"preflightStatus\":\"ok\",\"modelRunStatus\":\"${modelRunStatus}\",\"status\":\"${status}\",\"claudeExitCode\":${claudeExitCode},\"firstClaudeExitCode\":${firstClaudeExitCode},\"claudeAttemptCount\":${claudeAttemptCount},\"testExitCode\":${testExitCode},\"unitPass\":${unitPass},\"unitPassAt1\":${unitPassAt1},\"failureType\":\"${failureType}\",\"usageParseStatus\":\"${usage.usageParseStatus}\",\"modelInputTokens\":${usage.modelInputTokens},\"modelOutputTokens\":${usage.modelOutputTokens},\"modelCacheReadTokens\":${usage.modelCacheReadTokens},\"modelCacheCreationTokens\":${usage.modelCacheCreationTokens},\"modelTotalTokens\":${usage.modelTotalTokens},\"llmTurnCount\":${usage.llmTurnCount},\"usageSourcePath\":\"${ckbAbcdeJsonEscape(usage.usageSourcePath)}\",\"ckbUsed\":${ckbAbcdeUsesCkb(group)},\"localDocsUsed\":${group == CkbAbcdeGroups.E},\"toolTransport\":\"${ckbAbcdeToolTransport(group)}\",\"toolCallCount\":${toolCallCount},\"toolEvidence\":\"${ckbAbcdeJsonEscape(toolEvidence)}\",\"toolEvidenceHash\":\"${ckbAbcdeJsonEscape(ckbAbcdeEvidenceHash(groupRoot))}\",\"toolCoveragePass\":${ckbAbcdeCoveragePass(groupRoot)},\"transportParityPath\":\"${ckbAbcdeJsonEscape("${groupRoot}/parity.jsonl")}\",\"knowledgeVersion\":\"${ckbAbcdeJsonEscape(ckbAbcdeKnowledgeVersion(groupRoot))}\",\"citationCount\":${ckbAbcdeCitationCount(groupRoot)},\"docsPathCount\":${if (group == CkbAbcdeGroups.E) { 2 } else { 0 }},\"protocolViolation\":${protocolViolation},\"protocolViolationReason\":\"${ckbAbcdeJsonEscape(violation)}\",\"durationMs\":0,\"promptPath\":\"${ckbAbcdeJsonEscape("${groupRoot}/prompt.final.md")}\",\"transcriptPath\":\"${ckbAbcdeJsonEscape("${groupRoot}/claude-transcript.jsonl")}\",\"testLogPath\":\"${ckbAbcdeJsonEscape("${groupRoot}/test.log")}\",\"resultPath\":\"${ckbAbcdeJsonEscape("${groupRoot}/case-result.json")}\",\"notes\":\"${ckbAbcdeJsonEscape(ckbAbcdeResultNotes(status, violation, toolEvidence))}\"}"
+    let developmentPass = options.runMode == "development" && unitPass
+    let certificationPassAt1 = options.runMode == "certification" && unitPassAt1
+    let workspaceId = "${options.runId}:${caseId}:${group}:workspace"
+    let sessionId = "${options.runId}:${caseId}:${group}:session"
+    let runtimeHomeId = "${options.runId}:${caseId}:${group}:runtime"
+    "{\"runId\":\"${ckbAbcdeJsonEscape(options.runId)}\",\"benchmark\":\"Cangjie-HumanEval\",\"runMode\":\"${ckbAbcdeJsonEscape(options.runMode)}\",\"datasetVersion\":\"${ckbAbcdeJsonEscape(options.datasetVersion)}\",\"candidateVersion\":\"${ckbAbcdeJsonEscape(options.candidateVersion)}\",\"lineageKnowledgeVersion\":\"${ckbAbcdeJsonEscape(options.knowledgeVersion)}\",\"modelFingerprint\":\"${ckbAbcdeJsonEscape(options.modelFingerprint)}\",\"workspaceId\":\"${ckbAbcdeJsonEscape(workspaceId)}\",\"sessionId\":\"${ckbAbcdeJsonEscape(sessionId)}\",\"runtimeHomeId\":\"${ckbAbcdeJsonEscape(runtimeHomeId)}\",\"developmentPass\":${developmentPass},\"certificationPassAt1\":${certificationPassAt1},\"closureStatus\":\"${if (developmentPass) { "closed" } else { "open" }}\",\"triageStatus\":\"pending_independent_triage\",\"failureRoute\":\"${ckbAbcdeFailureRoute(failureType)}\",\"caseId\":\"${caseId}\",\"group\":\"${group}\",\"model\":\"GLM-5.2\",\"claudeCodeVersion\":\"${ckbAbcdeJsonEscape(ckbAbcdeClaudeVersion())}\",\"knowledgeEntry\":\"${ckbAbcdeKnowledgeEntry(group)}\",\"preflightStatus\":\"ok\",\"modelRunStatus\":\"${modelRunStatus}\",\"status\":\"${status}\",\"claudeExitCode\":${claudeExitCode},\"firstClaudeExitCode\":${firstClaudeExitCode},\"claudeAttemptCount\":${claudeAttemptCount},\"testExitCode\":${testExitCode},\"unitPass\":${unitPass},\"unitPassAt1\":${unitPassAt1},\"failureType\":\"${failureType}\",\"usageParseStatus\":\"${usage.usageParseStatus}\",\"modelInputTokens\":${usage.modelInputTokens},\"modelOutputTokens\":${usage.modelOutputTokens},\"modelCacheReadTokens\":${usage.modelCacheReadTokens},\"modelCacheCreationTokens\":${usage.modelCacheCreationTokens},\"modelTotalTokens\":${usage.modelTotalTokens},\"llmTurnCount\":${usage.llmTurnCount},\"usageSourcePath\":\"${ckbAbcdeJsonEscape(usage.usageSourcePath)}\",\"ckbUsed\":${ckbAbcdeUsesCkb(group)},\"localDocsUsed\":${group == CkbAbcdeGroups.E},\"toolTransport\":\"${ckbAbcdeToolTransport(group)}\",\"toolCallCount\":${toolCallCount},\"toolEvidence\":\"${ckbAbcdeJsonEscape(toolEvidence)}\",\"toolEvidenceHash\":\"${ckbAbcdeJsonEscape(ckbAbcdeEvidenceHash(groupRoot))}\",\"toolCoveragePass\":${ckbAbcdeCoveragePass(groupRoot)},\"transportParityPath\":\"${ckbAbcdeJsonEscape("${groupRoot}/parity.jsonl")}\",\"knowledgeVersion\":\"${ckbAbcdeJsonEscape(ckbAbcdeKnowledgeVersion(groupRoot))}\",\"citationCount\":${ckbAbcdeCitationCount(groupRoot)},\"docsPathCount\":${if (group == CkbAbcdeGroups.E) { 2 } else { 0 }},\"protocolViolation\":${protocolViolation},\"protocolViolationReason\":\"${ckbAbcdeJsonEscape(violation)}\",\"durationMs\":0,\"promptPath\":\"${ckbAbcdeJsonEscape("${groupRoot}/prompt.final.md")}\",\"transcriptPath\":\"${ckbAbcdeJsonEscape("${groupRoot}/claude-transcript.jsonl")}\",\"testLogPath\":\"${ckbAbcdeJsonEscape("${groupRoot}/test.log")}\",\"resultPath\":\"${ckbAbcdeJsonEscape("${groupRoot}/case-result.json")}\",\"notes\":\"${ckbAbcdeJsonEscape(ckbAbcdeResultNotes(status, violation, toolEvidence))}\"}"
 }
 
 private func ckbAbcdeRenderCaseSummary(options: CkbAbcdeRunnerOptions, runRoot: String, caseId: String, summaries: ArrayList<String>): String {
@@ -1294,6 +1320,38 @@ private func ckbAbcdeFailureType(claudeExitCode: Int64, testExitCode: Int64, uni
     "unit_failure"
 }
 
+public func ckbAbcdeExpandedFailureType(legacy: String): String {
+    if (legacy == "protocol_violation") { return "policy_violation" }
+    if (legacy == "tool_unavailable") { return "tool_failure" }
+    if (legacy == "model_error") { return "environment_failure" }
+    if (legacy == "unit_failure") { return "test_failure" }
+    legacy
+}
+
+public func ckbAbcdeDevelopmentOptionsDiagnostic(options: CkbAbcdeRunnerOptions): String {
+    if (!options.explicitRunMode) { return "" }
+    if (options.runMode != "development" && options.runMode != "certification") { return "run_mode_invalid" }
+    if (options.datasetVersion.trimAscii() == "" || options.knowledgeVersion.trimAscii() == "" || options.modelFingerprint.trimAscii() == "") { return "frozen_lineage_required" }
+    if (options.runMode == "development" && options.candidateVersion.trimAscii() == "") { return "candidate_version_required" }
+    ""
+}
+
+public func ckbAbcdeFailureRoute(failureType: String): String {
+    if (failureType == "knowledge_gap") { return "knowledge_candidate_pending_independent_triage" }
+    if (failureType == "reasoning_error") { return "model_capability" }
+    if (failureType == "dataset_defect") { return "dataset_repair" }
+    if (failureType == "tool_failure" || failureType == "timeout" || failureType == "environment_failure") { return "infrastructure_repair" }
+    if (failureType == "policy_violation") { return "policy_blocked" }
+    if (failureType == "none") { return "closed" }
+    "functional_repair"
+}
+
+public func ckbAbcdeIsolationDiagnostic(caseId: String, workspaceId: String, sessionId: String, runtimeHomeId: String, previousCaseId: String, previousWorkspaceId: String, previousSessionId: String, previousRuntimeHomeId: String): String {
+    if (caseId.trimAscii() == "" || workspaceId.trimAscii() == "" || sessionId.trimAscii() == "" || runtimeHomeId.trimAscii() == "") { return "isolation_identity_required" }
+    if (previousCaseId != "" && previousCaseId != caseId && (workspaceId == previousWorkspaceId || sessionId == previousSessionId || runtimeHomeId == previousRuntimeHomeId)) { return "cross_case_isolation_reuse" }
+    ""
+}
+
 public func ckbAbcdeFailureTypeForTest(claudeExitCode: Int64, testExitCode: Int64, unitPass: Bool, violation: String, testLog: String, toolReady: Bool): String {
     ckbAbcdeFailureType(claudeExitCode, testExitCode, unitPass, violation, testLog, toolReady)
 }
@@ -1365,10 +1423,8 @@ private func ckbAbcdeJsonStringField(text: String, field: String): String {
         return ""
     }
     let tail = parts[1]
-    match (tail.indexOf("\"")) {
-        case Some(end) => tail[..end]
-        case None => ""
-    }
+    let values = tail.split("\"")
+    if (values.size > 0) { values[0] } else { "" }
 }
 
 public func ckbAbcdeJsonStringFieldForTest(text: String, field: String): String {
