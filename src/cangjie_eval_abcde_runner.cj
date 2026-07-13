@@ -113,6 +113,9 @@ public class CkbAbcdeTaskContext {
     public var benchmark: String = "Cangjie-HumanEval"
     public var taskText: String = ""
     public var signature: String = ""
+    public var datasetVersion: String = ""
+    public var promptHash: String = ""
+    public var starterHash: String = ""
     public var targetVersion: String = "1.0.0"
     public var sourceSet: String = CangjieSourceSets.ALL
     public var versionPolicy: String = CangjieVersionPolicies.DEFAULT
@@ -380,6 +383,10 @@ public func ckbAbcdeJsonEscape(value: String): String {
 }
 
 public func ckbAbcdeBuildTaskContext(caseRoot: String, caseId: String): CkbAbcdeTaskContext {
+    ckbAbcdeBuildTaskContext(caseRoot, caseId, "")
+}
+
+public func ckbAbcdeBuildTaskContext(caseRoot: String, caseId: String, manifestText: String): CkbAbcdeTaskContext {
     let context = CkbAbcdeTaskContext()
     context.taskId = caseId
     context.taskText = ckbAbcdeReadText("${caseRoot}/prompt.md")
@@ -388,11 +395,28 @@ public func ckbAbcdeBuildTaskContext(caseRoot: String, caseId: String): CkbAbcde
     for (tag in ckbAbcdeInferKnowledgeTags("${context.taskText}\n${starter}")) {
         context.expectedKnowledgeTags.add(tag)
     }
+    let authorityLine = ckbAbcdeManifestLineForCase(manifestText, caseId)
+    if (authorityLine != "") {
+        let manifestSignature = ckbAbcdeJsonStringField(authorityLine, "signature")
+        if (manifestSignature != "") { context.signature = manifestSignature }
+        let manifestTargetVersion = ckbAbcdeJsonStringField(authorityLine, "targetVersion")
+        if (manifestTargetVersion != "") { context.targetVersion = manifestTargetVersion }
+        context.datasetVersion = ckbAbcdeJsonStringField(authorityLine, "datasetVersion")
+        context.promptHash = ckbAbcdeJsonStringField(authorityLine, "promptHash")
+        context.starterHash = ckbAbcdeJsonStringField(authorityLine, "starterHash")
+    }
     context
 }
 
 public func ckbAbcdeRenderTaskContextJson(context: CkbAbcdeTaskContext): String {
-    "{\"taskId\":\"${ckbAbcdeJsonEscape(context.taskId)}\",\"benchmark\":\"${ckbAbcdeJsonEscape(context.benchmark)}\",\"taskText\":\"${ckbAbcdeJsonEscape(context.taskText)}\",\"signature\":\"${ckbAbcdeJsonEscape(context.signature)}\",\"expectedKnowledgeTags\":${ckbAbcdeStringArrayJson(context.expectedKnowledgeTags)},\"targetVersion\":\"${ckbAbcdeJsonEscape(context.targetVersion)}\",\"sourceSet\":\"${ckbAbcdeJsonEscape(context.sourceSet)}\",\"versionPolicy\":\"${ckbAbcdeJsonEscape(context.versionPolicy)}\",\"budget\":10,\"responseMode\":\"evidence\"}"
+    "{\"taskId\":\"${ckbAbcdeJsonEscape(context.taskId)}\",\"benchmark\":\"${ckbAbcdeJsonEscape(context.benchmark)}\",\"taskText\":\"${ckbAbcdeJsonEscape(context.taskText)}\",\"signature\":\"${ckbAbcdeJsonEscape(context.signature)}\",\"datasetVersion\":\"${ckbAbcdeJsonEscape(context.datasetVersion)}\",\"promptHash\":\"${ckbAbcdeJsonEscape(context.promptHash)}\",\"starterHash\":\"${ckbAbcdeJsonEscape(context.starterHash)}\",\"expectedKnowledgeTags\":${ckbAbcdeStringArrayJson(context.expectedKnowledgeTags)},\"targetVersion\":\"${ckbAbcdeJsonEscape(context.targetVersion)}\",\"sourceSet\":\"${ckbAbcdeJsonEscape(context.sourceSet)}\",\"versionPolicy\":\"${ckbAbcdeJsonEscape(context.versionPolicy)}\",\"budget\":10,\"responseMode\":\"evidence\"}"
+}
+
+private func ckbAbcdeManifestLineForCase(manifestText: String, caseId: String): String {
+    for (line in manifestText.split("\n")) {
+        if (ckbAbcdeJsonStringField(line, "caseId") == caseId || ckbAbcdeJsonStringField(line, "id") == caseId) { return line }
+    }
+    ""
 }
 
 private func ckbAbcdeExtractCangjieSignature(source: String): String {
@@ -459,7 +483,7 @@ private func ckbAbcdeRunCaseGroup(options: CkbAbcdeRunnerOptions, runRoot: Strin
     let caseSrc = "${options.datasetRoot}/${caseId}"
     let groupRoot = "${runRoot}/cases/${caseId}/${group}"
     let workspace = "${groupRoot}/workspace"
-    let taskContext = ckbAbcdeBuildTaskContext(caseSrc, caseId)
+    let taskContext = ckbAbcdeBuildTaskContext(caseSrc, caseId, ckbAbcdeReadText(options.manifestPath))
     let taskContextJson = ckbAbcdeRenderTaskContextJson(taskContext)
     ckbAbcdeEnsureDir(groupRoot)
     ckbAbcdeWriteText("${groupRoot}/canonical-task-context.json", taskContextJson + "\n")

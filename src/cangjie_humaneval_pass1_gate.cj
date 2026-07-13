@@ -231,6 +231,10 @@ public func cangjieHumanEvalPass1GateFromText(
     if (manifest.invalidLines > 0) {
         result.addDiagnostic("manifest_invalid_lines:${manifest.invalidLines}")
     }
+    if (manifest.cases.size != options.expectedTotal) {
+        result.addDiagnostic("manifest_case_count_mismatch:${manifest.cases.size}:${options.expectedTotal}")
+    }
+    cangjieHumanEvalGateValidateManifestIdentity(manifest, manifestText, options.expectedTotal, result)
     for (row in rows) {
         if (row.ok) {
             result.parsedResultRows += 1
@@ -262,6 +266,45 @@ public func cangjieHumanEvalPass1GateFromText(
         }
     }
     result
+}
+
+private func cangjieHumanEvalGateValidateManifestIdentity(
+    manifest: CangjieEvalManifestSummary,
+    manifestText: String,
+    expectedTotal: Int64,
+    result: CangjieHumanEvalPass1GateResult
+): Unit {
+    let seen = ArrayList<String>()
+    for (i in 0..manifest.cases.size) {
+        let caseId = manifest.cases[i].id
+        if (seen.contains(caseId)) { result.addDiagnostic("manifest_duplicate_case_id:${caseId}") } else { seen.add(caseId) }
+        if (caseId != cangjieHumanEvalGateExpectedCaseId(i)) {
+            result.addDiagnostic("manifest_case_id_not_contiguous:${i}:${caseId}")
+        }
+    }
+    if (!manifestText.contains("\"schemaVersion\":\"cangjie-humaneval-authority-v1\"")) { return }
+    var datasetVersion = ""
+    var authorityRows: Int64 = 0
+    for (line in manifestText.split("\n")) {
+        if (line.trimAscii() == "") { continue }
+        authorityRows += 1
+        let caseId = cangjieHumanEvalGateJsonStringField(line, "caseId")
+        let version = cangjieHumanEvalGateJsonStringField(line, "datasetVersion")
+        if (datasetVersion == "") { datasetVersion = version }
+        if (version == "" || version != datasetVersion) { result.addDiagnostic("manifest_dataset_version_mismatch:${caseId}") }
+        for (field in ["promptHash", "metadataHash", "starterHash", "testsHash", "translationHash", "caseHash"]) {
+            if (!cangjieHumanEvalGateJsonStringField(line, field).startsWith("sha256:")) {
+                result.addDiagnostic("manifest_hash_invalid:${caseId}:${field}")
+            }
+        }
+    }
+    if (authorityRows != expectedTotal) { result.addDiagnostic("authority_manifest_row_count:${authorityRows}:${expectedTotal}") }
+}
+
+private func cangjieHumanEvalGateExpectedCaseId(index: Int64): String {
+    if (index < 10) { return "CJ-HUMANEVAL-00${index}" }
+    if (index < 100) { return "CJ-HUMANEVAL-0${index}" }
+    "CJ-HUMANEVAL-${index}"
 }
 
 public func parseCangjieHumanEvalPass1Rows(text: String): ArrayList<CangjieHumanEvalPass1ResultRow> {
