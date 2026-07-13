@@ -14192,6 +14192,9 @@ public class CkbBenchmarkGapTerminalManifest {
     public var errorCode: String = "not_loaded"
     public init() {}
 }
+public interface CkbBenchmarkGapFinalizeFaultInjector { func checkpoint(point:String):Unit }
+public class NoopCkbBenchmarkGapFinalizeFaultInjector <: CkbBenchmarkGapFinalizeFaultInjector { public init(){};public func checkpoint(point:String):Unit{} }
+public class CkbBenchmarkGapCleanupResult { public var ok:Bool=false;public var intentCommitted:Bool=false;public var locksRemoved:Bool=false;public var spoolRemoved:Bool=false;public var diagnostics:ArrayList<String>=ArrayList<String>();public init(){} }
 
 public class CkbBenchmarkGapPreCommitGate <: CangjieCandidatePreCommitGate {
     private let store: FileKnowledgeStore
@@ -18331,7 +18334,7 @@ private func ckbEnsureBenchmarkGapCommitIntent(store:FileKnowledgeStore,c:CkbBen
 
 public func ckbFinalizeBenchmarkGapTerminal(store: FileKnowledgeStore,
     proof: CkbBenchmarkGapProofCheckpoint, activeVersion: String,
-    transactionId: String): CkbBenchmarkGapTerminalManifest {
+    transactionId: String, faultInjector!:CkbBenchmarkGapFinalizeFaultInjector=NoopCkbBenchmarkGapFinalizeFaultInjector()): CkbBenchmarkGapTerminalManifest {
     let terminal = CkbBenchmarkGapTerminalManifest()
     terminal.runId = proof.runId; terminal.inputSha256 = proof.inputSha256
     terminal.planHash = proof.planHash; terminal.candidateVersion = proof.candidateVersion
@@ -18346,13 +18349,18 @@ public func ckbFinalizeBenchmarkGapTerminal(store: FileKnowledgeStore,
     let text = ckbBenchmarkGapTerminalText(terminal)
     let existing = try { store.readText(path) } catch (_: Exception) { terminal.errorCode = "benchmark_gap_terminal_invalid_response_encoding"; return terminal }
     if (existing != "" && existing != text) { terminal.errorCode = "benchmark_gap_terminal_conflict"; return terminal }
+    faultInjector.checkpoint("terminal_before")
     if (existing == "") { try { store.writeLinesAtomically(path, text) } catch (_: Exception) { terminal.errorCode = "benchmark_gap_terminal_write_failed"; return terminal } }
     let loaded = ckbLoadBenchmarkGapTerminal(store, terminal.planHash, terminal.transactionId)
     if (!loaded.valid) { return loaded }
     let pointer = "schemaVersion=ckb-benchmark-gap-last-success-v1\nplanHash=${terminal.planHash}\ntransactionId=${escapeField(terminal.transactionId)}\nterminalChecksum=${terminal.checksum}\nchecksum=${ckbReleaseEvidenceHash("${terminal.planHash}|${terminal.transactionId}|${terminal.checksum}")}\n"
+    faultInjector.checkpoint("last_success_before")
     try { store.writeLinesAtomically("metadata/benchmark-gap-curation-last-success.ckb", pointer) } catch (_: Exception) { loaded.valid = false; loaded.errorCode = "benchmark_gap_last_success_write_failed"; return loaded }
+    let cleanup=ckbCleanupBenchmarkGapCurationRun(store,loaded);if(!cleanup.ok){loaded.errorCode="benchmark_gap_cleanup_degraded"}
     loaded
 }
+
+public func ckbCleanupBenchmarkGapCurationRun(store:FileKnowledgeStore,t:CkbBenchmarkGapTerminalManifest):CkbBenchmarkGapCleanupResult{let r=CkbBenchmarkGapCleanupResult();if(!t.valid){r.diagnostics.add("terminal_invalid");return r};let prefix="schemaVersion=ckb-benchmark-gap-commit-intent-v1\nrunId=${escapeField(t.runId)}\ninputSha256=${t.inputSha256}\nplanHash=${t.planHash}\ncandidateVersion=${escapeField(t.candidateVersion)}\nbaseActiveVersion=${escapeField(t.baseActiveVersion)}\nrecordsEvidenceHash=${t.recordsEvidenceHash}\nstate=committed\ntransactionId=${escapeField(t.transactionId)}\n";let text=prefix+"checksum=${ckbReleaseEvidenceHash(prefix)}\n";try{store.writeLinesAtomically("metadata/benchmark-gap-curation/runs/${safeName(t.planHash)}/commit-intent.ckb",text);r.intentCommitted=store.readText("metadata/benchmark-gap-curation/runs/${safeName(t.planHash)}/commit-intent.ckb")==text}catch(_:Exception){r.diagnostics.add("commit_intent_cleanup_failed")};let proofLock=store.root.join("metadata/benchmark-gap-curation/runs/${safeName(t.planHash)}/proof.lock");let commitLock=store.root.join("metadata/benchmark-gap-curation/runs/${safeName(t.planHash)}/commit.lock");try{if(exists(proofLock)){_=launch("/bin/rm",["-rf",proofLock.toString()]).wait()};if(exists(commitLock)){_=launch("/bin/rm",["-rf",commitLock.toString()]).wait()}}catch(_:Exception){r.diagnostics.add("lock_cleanup_failed")};r.locksRemoved=!exists(proofLock)&&!exists(commitLock);let acquisition="p7-curation-${ckbReleaseEvidenceHash("${t.runId}|${t.planHash}|${t.candidateVersion}")}";r.spoolRemoved=store.deleteS4ArtifactTree("metadata/vector-builds/${acquisition}");r.ok=r.intentCommitted&&r.locksRemoved&&r.spoolRemoved;r}
 
 public func ckbLoadBenchmarkGapTerminal(store: FileKnowledgeStore, planHash: String,
     transactionId: String): CkbBenchmarkGapTerminalManifest {

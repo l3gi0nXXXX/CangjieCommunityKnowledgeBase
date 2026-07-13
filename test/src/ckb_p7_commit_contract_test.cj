@@ -46,7 +46,24 @@ public class CkbP7CommitContractTest {
     @TestCase public func p7E2E02TerminalWriteIsIdempotent():Unit { let f=p7S6Fixture("e02",3);let a=ckbFinalizeBenchmarkGapTerminal(f[0],f[1],"active-e02","tx-e02");let b=ckbFinalizeBenchmarkGapTerminal(f[0],f[1],"active-e02","tx-e02");@Expect(a.checksum,b.checksum);@Expect(b.valid,true) }
     @TestCase public func p7E2E03TenClaimantsObserveTerminalProof():Unit { let f=p7S6Fixture("e03",10);var passed:Int64=0;for(_ in 0..10){let g=CkbBenchmarkGapPreCommitGate(f[0],f[1],f[2],0);if(g.evaluate(f[1].candidateVersion,f[1].baseActiveVersion).passed){passed+=1}};@Expect(passed,10) }
     @TestCase public func p7E2E04UnicodeIdentityDoesNotLeakIntoTerminalPointer():Unit { let f=p7S6Fixture("中文😀token=secret",2);let t=ckbFinalizeBenchmarkGapTerminal(f[0],f[1],"active-e04","tx-e04");let pointer=f[0].readText("metadata/benchmark-gap-curation-last-success.ckb");@Expect(t.valid,true);@Expect(pointer.contains("token=secret"),false) }
-    @TestCase public func p7E2E05TerminalKeepsImmutableProofEvidence():Unit { let f=p7S6Fixture("e05",4);let hash=f[1].aggregateEvidenceHash;let t=ckbFinalizeBenchmarkGapTerminal(f[0],f[1],"active-e05","tx-e05");@Expect(t.proofEvidenceHash,hash);@Expect(f[0].has("metadata/benchmark-gap-curation/runs/${f[1].planHash}/proofs"),true) }
+    @TestCase public func p7E2E05TerminalKeepsImmutableProofEvidence():Unit { let f=p7S6Fixture("e05",4);let hash=f[1].aggregateEvidenceHash;let t=ckbFinalizeBenchmarkGapTerminal(f[0],f[1],"active-e05","tx-e05");let run="metadata/benchmark-gap-curation/runs/${f[1].planHash}";Directory.create(Path(f[0].root.toString()).join("${run}/commit.lock"),recursive:true);let cleanup=ckbCleanupBenchmarkGapCurationRun(f[0],t);@Expect(t.proofEvidenceHash,hash);@Expect(f[0].has("${run}/proofs"),true);@Expect(cleanup.ok,true);@Expect(cleanup.intentCommitted,true);@Expect(cleanup.locksRemoved,true);@Expect(cleanup.spoolRemoved,true);@Expect(f[0].readText("${run}/commit-intent.ckb").contains("state=committed"),true);@Expect(exists(f[0].root.join("${run}/commit.lock")),false) }
+    @TestCase public func p7E2E06FinalizeCrashBoundariesResumeIdempotently():Unit {
+        let beforeTerminal=p7S6Fixture("e06-terminal",2)
+        try { _=ckbFinalizeBenchmarkGapTerminal(beforeTerminal[0],beforeTerminal[1],"active-e06-a","tx-e06-a",faultInjector:P7S6FinalizeFault("terminal_before")) } catch (_:Exception) {}
+        @Expect(beforeTerminal[0].has("metadata/benchmark-gap-curation/runs/${beforeTerminal[1].planHash}/terminal/tx-e06-a.ckb"),false)
+        @Expect(ckbFinalizeBenchmarkGapTerminal(beforeTerminal[0],beforeTerminal[1],"active-e06-a","tx-e06-a").valid,true)
+        let beforePointer=p7S6Fixture("e06-pointer",2)
+        try { _=ckbFinalizeBenchmarkGapTerminal(beforePointer[0],beforePointer[1],"active-e06-b","tx-e06-b",faultInjector:P7S6FinalizeFault("last_success_before")) } catch (_:Exception) {}
+        @Expect(beforePointer[0].has("metadata/benchmark-gap-curation/runs/${beforePointer[1].planHash}/terminal/tx-e06-b.ckb"),true)
+        @Expect(beforePointer[0].has("metadata/benchmark-gap-curation-last-success.ckb"),false)
+        @Expect(ckbFinalizeBenchmarkGapTerminal(beforePointer[0],beforePointer[1],"active-e06-b","tx-e06-b").valid,true)
+    }
+}
+
+private class P7S6FinalizeFault <: CkbBenchmarkGapFinalizeFaultInjector {
+    let point:String
+    init(point:String){this.point=point}
+    public func checkpoint(point:String):Unit { if(point==this.point){throw Exception("fixture_fault:${point}")} }
 }
 
 private func p7S6Fixture(name:String,total:Int64):(FileKnowledgeStore,CkbBenchmarkGapProofCheckpoint,ArrayList<NormalizedRecord>){
