@@ -41,7 +41,7 @@ public class CkbRoutineUpdateE2ETest {
         @Expect(store.has(reconcile.progressPath), true)
         @Expect(preflight.ok, true)
         @Expect(p5AllTasksAllowed(schedulerTaskNames), true)
-        @Expect(scheduler.failed, 1)
+        @Expect(scheduler.failed, 0)
         @Expect(scheduler.degraded, 0)
         @Expect(scheduler.details.contains("benchmark_gap_proof_complete"), true)
         @Expect(reloaded.source, "persisted")

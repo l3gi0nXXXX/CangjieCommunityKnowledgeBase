@@ -2005,7 +2005,8 @@ public class CkbSchedulerServiceF5Test {
         let status = service.statusSnapshot()
 
         @Expect(result.ran, 1)
-        @Expect(result.failed, 1)
+        @Expect(result.failed, 0)
+        @Expect(result.succeeded, 0)
         @Expect(result.details.contains("benchmark_gap_proof_complete"), true)
         @Expect(f7SchedulerDiagnosticsContain(result, "indexBuildCount=1"), true)
         @Expect(f7SchedulerDiagnosticsContain(result, "queryCount=1"), true)
@@ -2064,7 +2065,8 @@ public class CkbSchedulerServiceF5Test {
         let result = service.runSchedulerTasks(tasks, true)
 
         @Expect(result.ran, 1)
-        @Expect(result.failed, 1)
+        @Expect(result.failed, 0)
+        @Expect(result.succeeded, 0)
         @Expect(result.details.contains("benchmark_gap_proof_complete"), true)
         @Expect(f7SchedulerDiagnosticsContain(result, "indexBuildCount=1"), true)
     }
@@ -2183,7 +2185,8 @@ public class CkbSchedulerServiceF5Test {
 
         let limited = limitService.runSchedulerTasks(limitTasks, true)
 
-        @Expect(limited.failed, 1)
+        @Expect(limited.failed, 0)
+        @Expect(limited.succeeded, 0)
         @Expect(limited.details.contains("benchmark_gap_curation_record_limit_exceeded"), false)
         @Expect(limited.details.contains("benchmark_gap_scan_batch_checkpointed"), true)
         @Expect(f7SchedulerDiagnosticsContain(limited, "benchmark_gap_candidate_batch:"), true)

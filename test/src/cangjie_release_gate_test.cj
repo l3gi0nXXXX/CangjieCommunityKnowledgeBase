@@ -32,7 +32,7 @@ public class CangjieReleaseGateTest {
         @Expect(f8HasStep(report, "P0A-routine-runtime-readiness", true), true)
         @Expect(f8HasStep(report, "E2E-08-routine-update-due-run", false), true)
         @Expect(f8HasStep(report, "E2E-10-access-and-mcp-readonly-boundary", true), true)
-        @Expect(f8HasStep(report, "E2E-11-scheduler-loop-lifecycle", false), true)
+        @Expect(f8HasStep(report, "E2E-11-scheduler-loop-lifecycle", true), true)
         @Expect(f8HasStep(report, "E2E-12-interface-e2e", true), true)
         @Expect(f8HasStep(report, "E2E-13-source-event-e2e", true), true)
         @Expect(f8HasStep(report, "E2E-14-plan-closure", false), true)
@@ -144,8 +144,8 @@ public class CangjieReleaseGateTest {
         @Expect(exists(Path("${runRoot}/routine-update-plan-closure.jsonl")), true)
         @Expect(scheduler.contains("\"ran\":13"), true)
         @Expect(scheduler.contains("routine_contract"), true)
-        @Expect(dueRun.contains("\"failed\":1"), true)
-        @Expect(dueRun.contains("benchmark_gap_candidate_ready"), true)
+        @Expect(dueRun.contains("\"failed\":0"), true)
+        @Expect(dueRun.contains("benchmark_gap_proof_complete"), true)
         @Expect(acceptance.contains("\"status\":\"failed\""), true)
     }
 
@@ -167,8 +167,8 @@ public class CangjieReleaseGateTest {
         @Expect(scheduler.contains("\"ran\":13"), true)
         @Expect(scheduler.contains("kind=gitcode_tree"), true)
         @Expect(scheduler.contains("kind=gitcode_repo"), false)
-        @Expect(dueRun.contains("\"failed\":1"), true)
-        @Expect(dueRun.contains("benchmark_gap_candidate_ready"), true)
+        @Expect(dueRun.contains("\"failed\":0"), true)
+        @Expect(dueRun.contains("benchmark_gap_proof_complete"), true)
     }
 }
 

@@ -38,7 +38,8 @@ public class CkbRoutineF6Test {
         let tasks = f6BenchmarkTaskNames()
 
         let first = service.runSchedulerTasks(tasks, true)
-        @Expect(first.failed, 1)
+        @Expect(first.failed, 0)
+        @Expect(first.succeeded, 0)
         @Expect(first.details.contains("benchmark_gap_proof_checkpointed"), true)
         @Expect(store.has("metadata/benchmark-gap-curation-proof.ckb"), false)
 
@@ -48,7 +49,8 @@ public class CkbRoutineF6Test {
         let resumeService = CkbCommandLoopService(resumeConfig, store)
         _ = resumeService.start()
         let second = resumeService.runSchedulerTasks(tasks, true)
-        @Expect(second.failed, 1)
+        @Expect(second.failed, 0)
+        @Expect(second.succeeded, 0)
         @Expect(second.details.contains("benchmark_gap_proof_complete"), true)
         @Expect(f6SchedulerDiagnosticsContain(second, "indexBuildCount=0:queryCount=0:reused=true"), true)
         @Expect(f6SchedulerDiagnosticsContain(second, "activeCommitted=false"), true)
@@ -67,7 +69,8 @@ public class CkbRoutineF6Test {
         _ = service.start()
 
         let result = service.runSchedulerTasks(f6BenchmarkTaskNames(), true)
-        @Expect(result.failed, 1)
+        @Expect(result.failed, 0)
+        @Expect(result.succeeded, 0)
         @Expect(result.details.contains("benchmark_gap_proof_complete"), true)
         @Expect(f6SchedulerDiagnosticsContain(result, "queryCount=164"), true)
         @Expect(f6SchedulerDiagnosticsContain(result, "completed=164:total=164"), true)
@@ -117,11 +120,11 @@ public class CkbRoutineF6Test {
 
         @Expect(first.ran, 13)
         @Expect(first.succeeded, 12)
-        @Expect(first.failed, 1)
+        @Expect(first.failed, 0)
         @Expect(first.details.contains("benchmark_gap_proof_checkpointed"), true)
         @Expect(second.ran, 13)
         @Expect(second.succeeded, 12)
-        @Expect(second.failed, 1)
+        @Expect(second.failed, 0)
         @Expect(second.details.contains("benchmark_gap_proof_complete"), true)
         @Expect(f6SchedulerDiagnosticsContain(second, "indexBuildCount=0:queryCount=0:reused=true"), true)
     }
