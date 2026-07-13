@@ -1,6 +1,8 @@
 package cangjie_community_knowledge_base_test
 
 import std.collection.ArrayList
+import std.convert.Parsable
+import std.env.getVariable
 import std.fs.{Directory, File, Path, exists}
 import std.process.*
 import std.time.*
@@ -299,6 +301,44 @@ public class CangjieServingAdminTest {
 
     @TestCase
     public func p6S4U01Real17141CheckpointResumesWithStableCountersAndEvidence(): Unit {
+        if (getVariable("CKB_P6_S4_17141_CHILD") != Some("1")) {
+            let pidPath = "target/p6-s4-u01-child.pid"
+            let stdoutPath = "target/p6-s4-u01-child.stdout"
+            let stderrPath = "target/p6-s4-u01-child.stderr"
+            _ = launch("/bin/rm", ["-f", pidPath, stdoutPath, stderrPath]).wait()
+            var dyldLibraryPath = ""
+            if (let Some(value) <- getVariable("DYLD_LIBRARY_PATH")) { dyldLibraryPath = value }
+            let prelude = ckbSchedulerWorkerShellPreludeWithHeap(dyldLibraryPath, "4GB")
+            let command = "${prelude}export CKB_P6_S4_17141_CHILD=1; " +
+                "target/release/unittest_bin/cangjie_community_knowledge_base_test --filter='*CangjieServingAdminTest.p6S4U01Real17141CheckpointResumesWithStableCountersAndEvidence' --no-color --no-progress >${stdoutPath} 2>${stderrPath} & " +
+                "worker_pid=$!; echo $worker_pid > ${pidPath}; " +
+                "(sleep 300; kill -9 $worker_pid 2>/dev/null; kill -9 $$ 2>/dev/null) & watchdog_pid=$!; " +
+                "wait $worker_pid; child_code=$?; /usr/bin/pkill -TERM -P $watchdog_pid 2>/dev/null; " +
+                "kill $watchdog_pid 2>/dev/null; wait $watchdog_pid 2>/dev/null; exit $child_code"
+            let child = launch("/bin/zsh", ["-c", command], stdOut: ProcessRedirect.Pipe,
+                stdErr: ProcessRedirect.Pipe)
+            let childCode = child.wait()
+            let childPid = adminP6ReadInt(Path(pidPath))
+            let childStdout = adminP6ReadText(Path(stdoutPath))
+            let childStderr = adminP6ReadText(Path(stderrPath))
+            _ = launch("/bin/rm", ["-f", pidPath, stdoutPath, stderrPath]).wait()
+            @Expect(childCode, 0)
+            @Expect(childPid > 0, true)
+            @Expect(adminP6PidAlive(childPid), false)
+            @Expect(childStdout.contains("FAILED: 0"), true)
+            @Expect(childStdout.contains("[ FAILED ]"), false)
+            @Expect(childStdout.contains("OutOfMemory"), false)
+            @Expect(childStderr.contains("OutOfMemory"), false)
+            @Expect(childStdout.contains("Authorization"), false)
+            @Expect(childStderr.contains("Authorization"), false)
+            @Expect(childStdout.contains("/Users/"), false)
+            @Expect(childStderr.contains("/Users/"), false)
+            @Expect(exists(Path(pidPath)), false)
+            @Expect(exists(Path(stdoutPath)), false)
+            @Expect(exists(Path(stderrPath)), false)
+            return
+        }
+        @Expect(getVariable("cjHeapSize"), Some("4GB"))
         let records = cangjieAdminP6LargeRecords()
         let vector = cangjieCandidateTestVectorStatus(records)
         let baselineCheckpoint = cangjieAdminP6ValidationCheckpoint("17141-baseline", records)
@@ -1415,6 +1455,19 @@ private func cangjieCandidateTestVectorStatus(records: ArrayList<NormalizedRecor
     status.state = if (records.size > 0) { EmbeddingProviderState.READY } else { EmbeddingProviderState.DEGRADED }
     status.degradedReason = if (records.size > 0) { "" } else { "empty_candidate_vectors" }
     status
+}
+
+private func adminP6ReadInt(path: Path): Int64 {
+    try { Int64.parse(String.fromUtf8(File.readFrom(path)).trimAscii()) } catch (_: Exception) { 0 }
+}
+
+private func adminP6ReadText(path: Path): String {
+    try { String.fromUtf8(File.readFrom(path)) } catch (_: Exception) { "invalid_response_encoding" }
+}
+
+private func adminP6PidAlive(pid: Int64): Bool {
+    if (pid <= 0) { return false }
+    launch("/bin/kill", ["-0", "${pid}"]).wait() == 0
 }
 
 private class CangjieAdminEmbeddingProvider <: EmbeddingProvider {
