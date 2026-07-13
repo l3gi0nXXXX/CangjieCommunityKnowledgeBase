@@ -98,7 +98,8 @@ public class CkbRoutineF6Test {
         let result = service.runSchedulerTasks(f6BenchmarkTaskNames(), true)
 
         @Expect(result.failed, 1)
-        @Expect(result.details.contains("benchmark_gap_curation_input_invalid_encoding"), true)
+        @Expect(result.details.contains("invalid_response_encoding"), true)
+        @Expect(result.details.contains(inputPath), false)
         @Expect(store.has("metadata/benchmark-gap-curation-proof.ckb"), false)
         @Expect(store.has("index/active.ckb"), false)
     }

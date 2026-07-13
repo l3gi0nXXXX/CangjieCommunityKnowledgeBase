@@ -2092,7 +2092,7 @@ public class CkbSchedulerServiceF5Test {
 
         @Expect(result.ran, 1)
         @Expect(result.failed, 1)
-        @Expect(result.details.contains("no_gap_records_accepted"), true)
+        @Expect(result.details.contains("interface_mapping_mismatch"), true)
         @Expect(result.details.contains("benchmark_gap_candidate_promoted"), false)
         @Expect(after, before)
     }
@@ -2165,7 +2165,8 @@ public class CkbSchedulerServiceF5Test {
         let invalid = invalidService.runSchedulerTasks(invalidTasks, true)
 
         @Expect(invalid.failed, 1)
-        @Expect(invalid.details.contains("benchmark_gap_curation_input_invalid_encoding"), true)
+        @Expect(invalid.details.contains("invalid_response_encoding"), true)
+        @Expect(invalid.details.contains(invalidPath), false)
 
         let limitRoot = "target/t-p6-b01-gap-record-limit"
         s1s2EnsureEmptyDir(limitRoot)
@@ -2187,6 +2188,41 @@ public class CkbSchedulerServiceF5Test {
         @Expect(limited.failed, 1)
         @Expect(limited.details.contains("benchmark_gap_curation_record_limit_exceeded"), true)
         @Expect(f7SchedulerDiagnosticsContain(limited, "benchmark_gap_input_gate:accepted=201"), true)
+    }
+
+    @TestCase
+    public func p7S1N01ScheduledInputFailuresAreTypedAndRedacted(): Unit {
+        let readRoot = "target/p7-s1-n01-read-failure"
+        s1s2EnsureEmptyDir(readRoot)
+        let readConfig = CkbRuntimeConfig()
+        readConfig.benchmarkGapCurationInputPath = readRoot
+        let readService = CkbCommandLoopService(readConfig, FileKnowledgeStore("${readRoot}/store"))
+        _ = readService.start()
+        let tasks = ArrayList<String>()
+        tasks.add("cangjie_benchmark_gap_curation")
+
+        let readFailed = readService.runSchedulerTasks(tasks, true)
+
+        @Expect(readFailed.failed, 1)
+        @Expect(readFailed.details.contains("input_read_failed"), true)
+        @Expect(readFailed.details.contains(readRoot), false)
+
+        let malformedRoot = "target/p7-s1-n01-malformed"
+        s1s2EnsureEmptyDir(malformedRoot)
+        let malformedPath = "${malformedRoot}/gap-curation-input.jsonl"
+        File.writeTo(Path(malformedPath), "{\"caseId\":\"private-secret-token\"\n".toArray())
+        let malformedConfig = CkbRuntimeConfig()
+        malformedConfig.benchmarkGapCurationInputPath = malformedPath
+        let malformedService = CkbCommandLoopService(malformedConfig, FileKnowledgeStore("${malformedRoot}/store"))
+        _ = malformedService.start()
+
+        let malformed = malformedService.runSchedulerTasks(tasks, true)
+
+        @Expect(malformed.failed, 1)
+        @Expect(malformed.details.contains("malformed_json"), true)
+        @Expect(f7SchedulerDiagnosticsContain(malformed, "line=1:errorCode=malformed_json"), true)
+        @Expect(malformed.details.contains("private-secret-token"), false)
+        @Expect(malformed.details.contains(malformedPath), false)
     }
 
     @TestCase
