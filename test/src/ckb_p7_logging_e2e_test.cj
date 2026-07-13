@@ -12,13 +12,15 @@ public class CkbP7LoggingE2ETest {
     public func p7S7U01TypedLifecycleIsRuneSafeAndRedacted(): Unit {
         var long = "中文🙂"
         for (_ in 0..1000) { long += "日志🙂" }
-        let line = ckbRenderBenchmarkGapLifecycleEvent("run-中文🙂", "proof", "checkpointed",
+        let line = ckbRenderBenchmarkGapLifecycleEvent("run-中文🙂", "proof🙂", "checkpointed",
             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "candidate-secret",
             "Authorization: Bearer fixture-secret /Users/private/secret ${long}", completed: 200, total: 440)
         @Expect(line.contains("\"subsystem\":\"ckb.routine.benchmark_gap\""), true)
         @Expect(line.contains("\"completed\":200,\"total\":440"), true)
         @Expect(line.contains("fixture-secret"), false)
         @Expect(line.contains("candidate-secret"), false)
+        @Expect(line.contains("run-中文"), false)
+        @Expect(line.contains("\"runIdHash\":\"${ckbReleaseEvidenceHash("run-中文🙂")}\""), true)
         @Expect(line.contains("\"diagnosticTruncated\":true"), true)
         @Expect(line.contains("🙂"), true)
     }
@@ -30,8 +32,8 @@ public class CkbP7LoggingE2ETest {
         @Expect(ckbInspectLegacyBenchmarkGapProof(store).status, "absent")
         let path = Path(root).join("metadata/benchmark-gap-curation-proof.ckb")
         Directory.create(path.parent, recursive: true)
-        File.writeTo(path, "".toArray()); @Expect(ckbInspectLegacyBenchmarkGapProof(store).status, "legacy-malformed")
-        File.writeTo(path, [UInt8(255), UInt8(254)]); @Expect(ckbInspectLegacyBenchmarkGapProof(store).status, "legacy-invalid-encoding")
+        File.writeTo(path, "".toArray()); let empty = ckbInspectLegacyBenchmarkGapProof(store); @Expect(empty.status, "legacy-unverified"); @Expect(empty.diagnostic, "legacy_empty")
+        File.writeTo(path, [UInt8(255), UInt8(254)]); let invalid = ckbInspectLegacyBenchmarkGapProof(store); @Expect(invalid.status, "legacy-unverified"); @Expect(invalid.diagnostic, "invalid_response_encoding")
         File.writeTo(path, "completed=440\n".toArray()); let legacy = ckbInspectLegacyBenchmarkGapProof(store)
         @Expect(legacy.status, "legacy-unverified"); @Expect(legacy.size > 0, true); @Expect(legacy.evidenceHash.size, 64)
         @Expect(ckbLoadBenchmarkGapLastSuccessForPlan(store, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa").valid, false)
@@ -88,7 +90,7 @@ public class CkbP7LoggingE2ETest {
     }
 
     @TestCase public func p7E2E04MalformedUtf8SecretAndOversizeFailWithoutVerifiedLegacy():Unit {
-        let root="target/p7-s7-e2e04";p7S7Empty(root);let store=FileKnowledgeStore(root);let path=Path(root).join("metadata/benchmark-gap-curation-proof.ckb");Directory.create(path.parent,recursive:true);File.writeTo(path,[UInt8(255),UInt8(254),UInt8(253)]);@Expect(ckbInspectLegacyBenchmarkGapProof(store).status,"legacy-invalid-encoding")
+        let root="target/p7-s7-e2e04";p7S7Empty(root);let store=FileKnowledgeStore(root);let path=Path(root).join("metadata/benchmark-gap-curation-proof.ckb");Directory.create(path.parent,recursive:true);File.writeTo(path,[UInt8(255),UInt8(254),UInt8(253)]);let legacy=ckbInspectLegacyBenchmarkGapProof(store);@Expect(legacy.status,"legacy-unverified");@Expect(legacy.diagnostic,"invalid_response_encoding")
         let line=ckbRenderBenchmarkGapLifecycleEvent("run-token=fixture","proof_failed","failed","aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","candidate-secret","Authorization: Bearer secret-token /Users/private/secret 中文🙂",errorCode:"malformed_json");@Expect(line.contains("secret-token"),false);@Expect(line.contains("/Users/private"),false);@Expect(line.contains("malformed_json"),true);@Expect(store.has("metadata/benchmark-gap-curation-last-success.ckb"),false)
     }
 

@@ -18170,6 +18170,7 @@ private func ckbBenchmarkGapScanPlanShapeValid(text: String): Bool {
 
 public class CkbBenchmarkGapLegacyInspection {
     public var status: String = "absent"
+    public var diagnostic: String = ""
     public var evidenceHash: String = ""
     public var size: Int64 = 0
     public init() {}
@@ -18179,10 +18180,11 @@ public func ckbInspectLegacyBenchmarkGapProof(store: FileKnowledgeStore): CkbBen
     let result = CkbBenchmarkGapLegacyInspection()
     let path = store.root.join("metadata/benchmark-gap-curation-proof.ckb")
     if (!exists(path)) { return result }
-    let bytes = try { File.readFrom(path) } catch (_: Exception) { result.status = "legacy-malformed"; return result }
+    result.status = "legacy-unverified"
+    let bytes = try { File.readFrom(path) } catch (_: Exception) { result.diagnostic = "legacy_read_failed"; return result }
     result.size = bytes.size; let digest = SHA256(); digest.write(bytes); result.evidenceHash = ckbReleaseDigestHex(digest)
-    let text = try { String.fromUtf8(bytes) } catch (_: Exception) { result.status = "legacy-invalid-encoding"; return result }
-    result.status = if (text.trimAscii() == "") { "legacy-malformed" } else { "legacy-unverified" }
+    let text = try { String.fromUtf8(bytes) } catch (_: Exception) { result.diagnostic = "invalid_response_encoding"; return result }
+    result.diagnostic = if (text.trimAscii() == "") { "legacy_empty" } else { "legacy_present" }
     result
 }
 
@@ -18191,7 +18193,7 @@ public func ckbRenderBenchmarkGapLifecycleEvent(runId: String, stage: String, st
     total!: Int64 = 0, errorCode!: String = ""): String {
     let redacted = redactSensitive(diagnostic)
     let safe = utf8SafePrefix(redacted, 240)
-    "{\"time\":\"${ckbRuntimePreflightJsonEscape(DateTime.now().toString())}\",\"level\":\"${if (errorCode == "") { "info" } else { "error" }}\",\"subsystem\":\"ckb.routine.benchmark_gap\",\"event\":\"benchmark.curation.${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(stage), 80))}\",\"message\":\"benchmark gap lifecycle\",\"runId\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(runId), 96))}\",\"taskName\":\"cangjie_benchmark_gap_curation\",\"stage\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(stage), 80))}\",\"status\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(status), 80))}\",\"errorCode\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(errorCode), 120))}\",\"planHash\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(planHash, 64))}\",\"candidateVersionHash\":\"${ckbReleaseEvidenceHash(candidateVersion)}\",\"completed\":${completed},\"total\":${total},\"diagnostic\":\"${ckbRuntimePreflightJsonEscape(safe)}\",\"diagnosticTruncated\":${diagnostic.toRuneArray().size > 240}}"
+    "{\"time\":\"${ckbRuntimePreflightJsonEscape(DateTime.now().toString())}\",\"level\":\"${if (errorCode == "") { "info" } else { "error" }}\",\"subsystem\":\"ckb.routine.benchmark_gap\",\"event\":\"benchmark.curation.${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(stage), 80))}\",\"message\":\"benchmark gap lifecycle\",\"runIdHash\":\"${ckbReleaseEvidenceHash(runId)}\",\"taskName\":\"cangjie_benchmark_gap_curation\",\"stage\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(stage), 80))}\",\"status\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(status), 80))}\",\"errorCode\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(errorCode), 120))}\",\"planHash\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(planHash, 64))}\",\"candidateVersionHash\":\"${ckbReleaseEvidenceHash(candidateVersion)}\",\"completed\":${completed},\"total\":${total},\"diagnostic\":\"${ckbRuntimePreflightJsonEscape(safe)}\",\"diagnosticTruncated\":${diagnostic.toRuneArray().size > 240}}"
 }
 
 private func ckbPersistBenchmarkGapLifecycleEvent(store: FileKnowledgeStore, runId: String,
