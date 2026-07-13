@@ -19,6 +19,29 @@ public func ckbCliMain(args: Array<String>): Int64 {
     let cli = parseCli(args)
     let config = loadCkbRuntimeConfig(cli.configPath)
     let store = FileKnowledgeStore(cli.storePath)
+    if (cli.command == "repository-event-worker") {
+        let dedupeKey = ckbCliOption(args, "--dedupe-key")
+        let owner = ckbCliOption(args, "--owner")
+        let revision = ckbCliOptionInt(args, "--revision", -1)
+        let resultRelativePath = ckbCliOption(args, "--result-rel")
+        let hardDeadlineAtMillis = ckbCliOptionInt(args, "--hard-deadline", 0)
+        let softDeadlineAtMillis = ckbCliOptionInt(args, "--deadline", 0)
+        let schedulerRunId = ckbCliOption(args, "--scheduler-run-id")
+        if (dedupeKey == "" || owner == "" || revision < 0 ||
+            resultRelativePath == "") {
+            println("usage error: repository-event-worker requires --dedupe-key --owner --revision --result-rel")
+            return 2
+        }
+        let kb = loadCliKnowledgeBase(cli.command, store, config)
+        let runner: SourceFetchRunner = if (config.networkEnabled) {
+            HttpSourceFetchRunner(config)
+        } else { DisabledNetworkFetchRunner() }
+        let outcome = ckbRunRepositoryEventWorkerChild(kb, store, runner, config,
+            dedupeKey, owner, revision, hardDeadlineAtMillis: hardDeadlineAtMillis,
+            softDeadlineAtMillis: softDeadlineAtMillis,
+            resultRelativePath: resultRelativePath, schedulerRunId: schedulerRunId)
+        return if (outcome.state == "committed") { 0 } else { 1 }
+    }
     if (cli.command == "scheduler-task-worker") {
         let taskName = ckbCliOption(args, "--task")
         let resultRelativePath = ckbCliOption(args, "--result-rel")

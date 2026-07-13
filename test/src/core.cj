@@ -2889,6 +2889,12 @@ public class SchedulerTaskResult {
     public var bootstrapDurationMillis: Int64 = 0
     public var resultWrittenAtMillis: Int64 = 0
     public var resultFlushDurationMillis: Int64 = 0
+    // Business and terminal-artifact outcomes are deliberately independent:
+    // a flush degradation must not erase the primary business failure.
+    public var businessStatus: String = ""
+    public var primaryFailure: String = ""
+    public var finalizationStatus: String = "not_started"
+    public var finalizationFailure: String = ""
     public var stageDurations: ArrayList<String> = ArrayList<String>()
     public var requestCount: Int64 = 0
     public var actualAttempts: Int64 = 0
@@ -2975,6 +2981,9 @@ public class SchedulerTaskRunRecord {
     public var bootstrapDurationMillis: Int64 = 0
     public var resultWrittenAtMillis: Int64 = 0
     public var resultFlushDurationMillis: Int64 = 0
+    public var businessStatus: String = ""
+    public var finalizationStatus: String = ""
+    public var finalizationFailure: String = ""
     public var stageDurations: ArrayList<String> = ArrayList<String>()
     public var timeBudgetMillis: Int64 = 0
     public var requestCount: Int64 = 0
@@ -3289,6 +3298,9 @@ private func schedulerTaskRunRecord(name: String, task: SchedulerTaskResult, run
     record.bootstrapDurationMillis = task.bootstrapDurationMillis
     record.resultWrittenAtMillis = task.resultWrittenAtMillis
     record.resultFlushDurationMillis = task.resultFlushDurationMillis
+    record.businessStatus = task.businessStatus
+    record.finalizationStatus = task.finalizationStatus
+    record.finalizationFailure = task.finalizationFailure
     for (duration in task.stageDurations) {
         record.stageDurations.add(duration)
     }
@@ -3313,7 +3325,9 @@ private func schedulerTaskRunRecord(name: String, task: SchedulerTaskResult, run
     record.workerPid = task.workerPid
     record.workerOutSnippet = task.workerOutSnippet
     record.workerErrSnippet = task.workerErrSnippet
-    record.primaryFailure = schedulerPrimaryFailureFromTask(task)
+    record.primaryFailure = if (task.primaryFailure != "") {
+        task.primaryFailure
+    } else { schedulerPrimaryFailureFromTask(task) }
     record
 }
 

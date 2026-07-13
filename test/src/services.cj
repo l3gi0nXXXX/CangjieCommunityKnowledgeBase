@@ -4374,7 +4374,7 @@ private func ckbSchedulerPreRunGateTaskName(taskNames: ArrayList<String>): Strin
 public func ckbSchedulerRunTaskRecordsJson(records: ArrayList<SchedulerTaskRunRecord>): String {
     let parts = ArrayList<String>()
     for (record in records) {
-        parts.add("{\"taskName\":\"${ckbRuntimePreflightJsonEscape(record.taskName)}\",\"ok\":${record.ok},\"status\":\"${ckbRuntimePreflightJsonEscape(record.status)}\",\"schedulerRunId\":\"${ckbRuntimePreflightJsonEscape(record.schedulerRunId)}\",\"schedulerTaskName\":\"${ckbRuntimePreflightJsonEscape(record.schedulerTaskName)}\",\"startedAtMillis\":${record.startedAtMillis},\"endedAtMillis\":${record.endedAtMillis},\"deadlineAtMillis\":${record.deadlineAtMillis},\"durationMillis\":${record.durationMillis},\"bootstrapStartedAtMillis\":${record.bootstrapStartedAtMillis},\"taskBodyStartedAtMillis\":${record.taskBodyStartedAtMillis},\"taskBodyEndedAtMillis\":${record.taskBodyEndedAtMillis},\"bootstrapDurationMillis\":${record.bootstrapDurationMillis},\"resultWrittenAtMillis\":${record.resultWrittenAtMillis},\"resultFlushDurationMillis\":${record.resultFlushDurationMillis},\"stageDurations\":${ckbSchedulerStageDurationsJson(record.stageDurations)},\"timeBudgetMillis\":${record.timeBudgetMillis},\"requestCount\":${record.requestCount},\"actualAttempts\":${record.actualAttempts},\"successfulAttempts\":${record.successfulAttempts},\"retryAttempts\":${record.retryAttempts},\"plannedRequests\":${record.plannedRequests},\"completedRequests\":${record.completedRequests},\"failedRequests\":${record.failedRequests},\"validationGates\":${ckbSchedulerStageDurationsJson(record.validationGates)},\"transactionId\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(record.transactionId), 160))}\",\"manifestEvidenceHash\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(record.manifestEvidenceHash), 96))}\",\"freshnessEvidenceHash\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(record.freshnessEvidenceHash), 96))}\",\"sourceCoverageEvidenceHash\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(record.sourceCoverageEvidenceHash), 96))}\",\"inventoryEvidenceHash\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(record.inventoryEvidenceHash), 96))}\",\"lastStage\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(record.lastStage), 120))}\",\"lastProgress\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(record.lastProgress), 240))}\",\"workerPid\":${record.workerPid},\"workerOutSnippet\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(record.workerOutSnippet), 240))}\",\"workerErrSnippet\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(record.workerErrSnippet), 240))}\",\"primaryFailure\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(record.primaryFailure), 240))}\"}")
+        parts.add("{\"taskName\":\"${ckbRuntimePreflightJsonEscape(record.taskName)}\",\"ok\":${record.ok},\"status\":\"${ckbRuntimePreflightJsonEscape(record.status)}\",\"schedulerRunId\":\"${ckbRuntimePreflightJsonEscape(record.schedulerRunId)}\",\"schedulerTaskName\":\"${ckbRuntimePreflightJsonEscape(record.schedulerTaskName)}\",\"startedAtMillis\":${record.startedAtMillis},\"endedAtMillis\":${record.endedAtMillis},\"deadlineAtMillis\":${record.deadlineAtMillis},\"durationMillis\":${record.durationMillis},\"bootstrapStartedAtMillis\":${record.bootstrapStartedAtMillis},\"taskBodyStartedAtMillis\":${record.taskBodyStartedAtMillis},\"taskBodyEndedAtMillis\":${record.taskBodyEndedAtMillis},\"bootstrapDurationMillis\":${record.bootstrapDurationMillis},\"resultWrittenAtMillis\":${record.resultWrittenAtMillis},\"resultFlushDurationMillis\":${record.resultFlushDurationMillis},\"businessStatus\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(record.businessStatus), 160))}\",\"finalizationStatus\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(record.finalizationStatus), 160))}\",\"finalizationFailure\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(record.finalizationFailure), 240))}\",\"stageDurations\":${ckbSchedulerStageDurationsJson(record.stageDurations)},\"timeBudgetMillis\":${record.timeBudgetMillis},\"requestCount\":${record.requestCount},\"actualAttempts\":${record.actualAttempts},\"successfulAttempts\":${record.successfulAttempts},\"retryAttempts\":${record.retryAttempts},\"plannedRequests\":${record.plannedRequests},\"completedRequests\":${record.completedRequests},\"failedRequests\":${record.failedRequests},\"validationGates\":${ckbSchedulerStageDurationsJson(record.validationGates)},\"transactionId\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(record.transactionId), 160))}\",\"manifestEvidenceHash\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(record.manifestEvidenceHash), 96))}\",\"freshnessEvidenceHash\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(record.freshnessEvidenceHash), 96))}\",\"sourceCoverageEvidenceHash\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(record.sourceCoverageEvidenceHash), 96))}\",\"inventoryEvidenceHash\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(record.inventoryEvidenceHash), 96))}\",\"lastStage\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(record.lastStage), 120))}\",\"lastProgress\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(record.lastProgress), 240))}\",\"workerPid\":${record.workerPid},\"workerOutSnippet\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(record.workerOutSnippet), 240))}\",\"workerErrSnippet\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(record.workerErrSnippet), 240))}\",\"primaryFailure\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(record.primaryFailure), 240))}\"}")
     }
     "[${joinStrings(parts, ",")}]"
 }
@@ -10276,7 +10276,13 @@ private func ckbApplySchedulerProfileStageBudgets(profile: CkbScheduleTaskProfil
     } else if (profile.profile == "cangjie_docs_full_sync") {
         ckbSetSchedulerProfileStageBudgets(profile, 60000, 20000, 180000, 40000, 50000, 0)
     } else if (profile.profile == "cangjie_source_event_sync") {
-        ckbSetSchedulerProfileStageBudgets(profile, 45000, 15000, 40000, 12000, 8000, 0)
+        // P6 keeps 5s for a confirmed terminal result and 10s of safety.
+        // The remaining 105s is the only budget executable by business stages.
+        profile.bootstrapBudgetMillis = 5000
+        ckbSetSchedulerProfileStageBudgets(profile, 35000, 12000, 30000, 9000, 7000, 0)
+        profile.activeCommitBudgetMillis = 7000
+        profile.resultFlushBudgetMillis = 5000
+        profile.unallocatedSafetyMillis = 10000
     } else if (profile.profile == "cangjie_version_branch_refresh") {
         ckbSetSchedulerProfileStageBudgets(profile, 70000, 15000, 0, 0, 0, 0)
     } else if (profile.candidateMode == "probe_only" || profile.candidateMode == "none" || profile.candidateMode == "") {
@@ -10336,8 +10342,21 @@ public func ckbValidateSchedulerProfileBudgetPlan(profile: CkbScheduleTaskProfil
     let invalidRelease = isRelease && (profile.timeBudgetMillis != 440000 ||
         profile.resultFlushBudgetMillis <= 0 || result.plannedBudgetMillis != profile.timeBudgetMillis ||
         result.businessBudgetMillis != 430000 || result.workerSoftBudgetMillis != 435000)
+    let isSourceEvent = profile.profile == "cangjie_source_event_sync"
+    if (isSourceEvent) {
+        result.workerSoftBudgetMillis = profile.timeBudgetMillis -
+            profile.resultFlushBudgetMillis - profile.unallocatedSafetyMillis
+    }
+    let invalidSourceEvent = isSourceEvent && (profile.timeBudgetMillis != 120000 ||
+        profile.bootstrapBudgetMillis != 5000 || profile.fetchBudgetMillis != 35000 ||
+        profile.ingestBudgetMillis != 12000 || profile.vectorBudgetMillis != 30000 ||
+        profile.validationBudgetMillis != 9000 || profile.activeCommitBudgetMillis != 7000 ||
+        profile.snapshotBudgetMillis != 7000 || profile.proofBudgetMillis != 0 ||
+        profile.resultFlushBudgetMillis != 5000 || profile.unallocatedSafetyMillis != 10000 ||
+        result.businessBudgetMillis != 105000 || result.executionBudgetMillis != 110000 ||
+        result.plannedBudgetMillis != 120000 || result.workerSoftBudgetMillis != 105000)
     let invalidHistorical = !isRelease && result.plannedBudgetMillis > profile.timeBudgetMillis
-    if (hasNegative || profile.timeBudgetMillis <= 0 || invalidRelease || invalidHistorical) {
+    if (hasNegative || profile.timeBudgetMillis <= 0 || invalidRelease || invalidSourceEvent || invalidHistorical) {
         result.diagnostic = "invalid_profile_budget_plan:profile=${profile.profile}|businessBudgetMs=${result.businessBudgetMillis}|executionBudgetMs=${result.executionBudgetMillis}|plannedBudgetMs=${result.plannedBudgetMillis}|workerSoftBudgetMs=${result.workerSoftBudgetMillis}|timeBudgetMs=${profile.timeBudgetMillis}"
         return result
     }
@@ -10349,7 +10368,8 @@ public func ckbValidateSchedulerProfileBudgetPlan(profile: CkbScheduleTaskProfil
 
 public func ckbCandidatePromotionBudgetPlanForProfile(profile: CkbScheduleTaskProfile, workerSoftDeadlineAtMillis: Int64, clock: CkbMillisClock): CangjieCandidatePromotionBudgetPlan {
     let plan = CangjieCandidatePromotionBudgetPlan()
-    if (profile.profile != "cangjie_release_full_sync") {
+    if (profile.profile != "cangjie_release_full_sync" &&
+        profile.profile != "cangjie_source_event_sync") {
         return plan
     }
     plan.segmented = true
@@ -10359,6 +10379,33 @@ public func ckbCandidatePromotionBudgetPlanForProfile(profile: CkbScheduleTaskPr
     plan.snapshotBudgetMillis = profile.snapshotBudgetMillis
     plan.workerSoftDeadlineAtMillis = workerSoftDeadlineAtMillis
     plan.deadlineClock = clock
+    plan
+}
+
+private func ckbSourceEventPromotionBudgetPlanWithOverrides(
+    configured: CangjieCandidatePromotionBudgetPlan,
+    profile: CkbScheduleTaskProfile, workerSoftDeadlineAtMillis: Int64): CangjieCandidatePromotionBudgetPlan {
+    // P6 always executes segmented budgets.  Test/embedding callers may still
+    // provide a gate evaluator or deterministic clock without re-declaring
+    // every P6 budget, so retain those controls while supplying the missing
+    // production budget/deadline fields.
+    let plan = ckbCandidatePromotionBudgetPlanForProfile(profile,
+        workerSoftDeadlineAtMillis, SystemCkbMillisClock())
+    if (configured.vectorBudgetMillis > 0) { plan.vectorBudgetMillis = configured.vectorBudgetMillis }
+    if (configured.validationBudgetMillis > 0) { plan.validationBudgetMillis = configured.validationBudgetMillis }
+    if (configured.activeCommitBudgetMillis > 0) { plan.activeCommitBudgetMillis = configured.activeCommitBudgetMillis }
+    if (configured.snapshotBudgetMillis > 0) { plan.snapshotBudgetMillis = configured.snapshotBudgetMillis }
+    if (configured.workerSoftDeadlineAtMillis > 0 &&
+        configured.workerSoftDeadlineAtMillis < workerSoftDeadlineAtMillis) {
+        plan.workerSoftDeadlineAtMillis = configured.workerSoftDeadlineAtMillis
+    }
+    if (configured.segmented) { plan.deadlineClock = configured.deadlineClock }
+    plan.validationGateEvaluator = configured.validationGateEvaluator
+    plan.validationDeadlineClockOverrideEnabled =
+        configured.validationDeadlineClockOverrideEnabled
+    if (configured.validationDeadlineClockOverrideEnabled) {
+        plan.validationDeadlineClock = configured.validationDeadlineClock
+    }
     plan
 }
 
@@ -10379,6 +10426,9 @@ private func ckbStageDeadline(parentDeadlineAtMillis: Int64, stageBudgetMillis: 
 
 private func ckbProfileIngestBudgetMillis(profile: CkbScheduleTaskProfile): Int64 {
     if (profile.profile == "cangjie_release_full_sync") {
+        return profile.ingestBudgetMillis
+    }
+    if (profile.profile == "cangjie_source_event_sync") {
         return profile.ingestBudgetMillis
     }
     profile.ingestBudgetMillis + profile.vectorBudgetMillis + profile.validationBudgetMillis + profile.snapshotBudgetMillis + profile.proofBudgetMillis
@@ -10456,17 +10506,18 @@ public func ckbSchedulerWorkerUsesStrictFlushReservation(taskName: String): Bool
     ckbSyncProfileForScheduleTask(taskName).resultFlushBudgetMillis > 0
 }
 
-public func ckbSchedulerWorkerSoftDeadlineAtMillis(parentHardDeadlineAtMillis: Int64, resultFlushBudgetMillis: Int64, nowMillis!: Int64 = 0, strictReservation!: Bool = true): Int64 {
-    if (parentHardDeadlineAtMillis <= 0 || resultFlushBudgetMillis <= 0) {
+public func ckbSchedulerWorkerSoftDeadlineAtMillis(parentHardDeadlineAtMillis: Int64, resultFlushBudgetMillis: Int64, nowMillis!: Int64 = 0, strictReservation!: Bool = true, safetyMillis!: Int64 = 0): Int64 {
+    let reservedMillis = resultFlushBudgetMillis + safetyMillis
+    if (parentHardDeadlineAtMillis <= 0 || reservedMillis <= 0) {
         return parentHardDeadlineAtMillis
     }
-    if (!strictReservation && nowMillis > 0 && parentHardDeadlineAtMillis <= nowMillis + resultFlushBudgetMillis) {
+    if (!strictReservation && nowMillis > 0 && parentHardDeadlineAtMillis <= nowMillis + reservedMillis) {
         return parentHardDeadlineAtMillis
     }
-    if (parentHardDeadlineAtMillis <= resultFlushBudgetMillis) {
+    if (parentHardDeadlineAtMillis <= reservedMillis) {
         return if (strictReservation) { 0 } else { parentHardDeadlineAtMillis }
     }
-    parentHardDeadlineAtMillis - resultFlushBudgetMillis
+    parentHardDeadlineAtMillis - reservedMillis
 }
 
 public func ckbSchedulerBootstrapDeadlineAtMillis(taskName: String, bootstrapStartedAtMillis: Int64, workerSoftDeadlineAtMillis: Int64): Int64 {
@@ -10527,6 +10578,10 @@ public func ckbSchedulerTaskResultText(task: SchedulerTaskResult): String {
     text += "bootstrapDurationMillis=${task.bootstrapDurationMillis}\n"
     text += "resultWrittenAtMillis=${task.resultWrittenAtMillis}\n"
     text += "resultFlushDurationMillis=${task.resultFlushDurationMillis}\n"
+    text += "businessStatus=${ckbSchedulerResultSafeField(task.businessStatus, 160)}\n"
+    text += "primaryFailure=${ckbSchedulerResultSafeField(task.primaryFailure, 240)}\n"
+    text += "finalizationStatus=${ckbSchedulerResultSafeField(task.finalizationStatus, 160)}\n"
+    text += "finalizationFailure=${ckbSchedulerResultSafeField(task.finalizationFailure, 240)}\n"
     text += "requestCount=${task.requestCount}\n"
     text += "actualAttempts=${task.actualAttempts}\n"
     text += "successfulAttempts=${task.successfulAttempts}\n"
@@ -10646,6 +10701,14 @@ public func ckbSchedulerTaskResultFromText(text: String): SchedulerTaskResult {
             task.resultWrittenAtMillis = parseIntField(value, 0)
         } else if (key == "resultFlushDurationMillis") {
             task.resultFlushDurationMillis = parseIntField(value, 0)
+        } else if (key == "businessStatus") {
+            task.businessStatus = utf8SafePrefix(redactSensitive(value), 160)
+        } else if (key == "primaryFailure") {
+            task.primaryFailure = utf8SafePrefix(redactSensitive(value), 240)
+        } else if (key == "finalizationStatus") {
+            task.finalizationStatus = utf8SafePrefix(redactSensitive(value), 160)
+        } else if (key == "finalizationFailure") {
+            task.finalizationFailure = utf8SafePrefix(redactSensitive(value), 240)
         } else if (key == "requestCount") {
             task.requestCount = parseIntField(value, 0)
         } else if (key == "actualAttempts") {
@@ -10757,12 +10820,22 @@ public func ckbWriteSchedulerTaskBootstrapDeadlineFailure(store: FileKnowledgeSt
 
 private func ckbWriteSchedulerTerminalResultArtifacts(store: FileKnowledgeStore, resultRelativePath: String, task: SchedulerTaskResult, flushStartedAtMillis: Int64): SchedulerTaskResult {
     ckbSanitizeSchedulerTaskHumanFields(task)
+    if (task.businessStatus == "") {
+        task.businessStatus = task.status
+    }
+    if (!task.ok && task.primaryFailure == "") {
+        task.primaryFailure = task.status
+    }
+    task.finalizationStatus = "terminal_artifact_confirmed"
+    task.finalizationFailure = ""
     task.resultWrittenAtMillis = 0
     task.resultFlushDurationMillis = 0
     let recoveryText = ckbSchedulerTaskResultText(task)
     try {
         store.writeLinesAtomically(resultRelativePath, recoveryText)
     } catch (_: Exception) {
+        task.finalizationStatus = "terminal_artifact_primary_write_failed"
+        task.finalizationFailure = "task_result_primary_write_failed"
         task.validationDiagnostics.add("${task.schedulerTaskName}:task_result_primary_write_failed")
         return task
     }
@@ -10775,6 +10848,8 @@ private func ckbWriteSchedulerTerminalResultArtifacts(store: FileKnowledgeStore,
     try {
         store.writeLinesAtomically("${resultRelativePath}.sidecar", confirmedText)
     } catch (_: Exception) {
+        task.finalizationStatus = "terminal_artifact_confirmed_sidecar_degraded"
+        task.finalizationFailure = "task_result_sidecar_write_degraded"
         task.validationDiagnostics.add("${task.schedulerTaskName}:task_result_sidecar_write_degraded")
     }
     task
@@ -10782,6 +10857,10 @@ private func ckbWriteSchedulerTerminalResultArtifacts(store: FileKnowledgeStore,
 
 private func ckbSanitizeSchedulerTaskHumanFields(task: SchedulerTaskResult): Unit {
     task.transactionId = utf8SafePrefix(ckbSchedulerRedact(task.transactionId), 160)
+    task.businessStatus = utf8SafePrefix(ckbSchedulerRedact(task.businessStatus), 160)
+    task.primaryFailure = utf8SafePrefix(ckbSchedulerRedact(task.primaryFailure), 240)
+    task.finalizationStatus = utf8SafePrefix(ckbSchedulerRedact(task.finalizationStatus), 160)
+    task.finalizationFailure = utf8SafePrefix(ckbSchedulerRedact(task.finalizationFailure), 240)
     task.manifestEvidenceHash = utf8SafePrefix(ckbSchedulerRedact(task.manifestEvidenceHash), 96)
     task.freshnessEvidenceHash = utf8SafePrefix(ckbSchedulerRedact(task.freshnessEvidenceHash), 96)
     task.sourceCoverageEvidenceHash = utf8SafePrefix(ckbSchedulerRedact(task.sourceCoverageEvidenceHash), 96)
@@ -11117,6 +11196,238 @@ private func ckbEmitSchedulerWorkerFailureDiagnostic(
     } catch (_: Exception) { () }
 }
 
+// A small process boundary shared by scheduler workers and receipt workers.
+// The caller owns artifacts and business semantics; this launcher owns only
+// command construction, the cutoff watchdog, and child-tree termination.
+public class CkbTimedWorkerProcessEnvironment {
+    public let name: String
+    public let value: String
+
+    public init(name: String, value: String) {
+        this.name = name
+        this.value = value
+    }
+}
+
+public class CkbTimedWorkerProcessResult {
+    public var exitCode: Int64 = 125
+    public var timedOut: Bool = false
+    public var pidKilled: Bool = false
+    public var workerPid: Int64 = 0
+    public var diagnostic: String = "not_started"
+
+    public init() {}
+}
+
+public interface CkbTimedWorkerProcessStartObserver {
+    func onWorkerStarted(pid: Int64): Bool
+}
+
+private class NoopCkbTimedWorkerProcessStartObserver <: CkbTimedWorkerProcessStartObserver {
+    public init() {}
+
+    public func onWorkerStarted(pid: Int64): Bool { true }
+}
+
+public class CkbTimedWorkerProcessLauncher {
+    private let command: String
+    private let args: ArrayList<String>
+    private let environment: ArrayList<CkbTimedWorkerProcessEnvironment>
+    private let workdir: String
+    private let cutoffAtMillis: Int64
+    private let hardDeadlineAtMillis: Int64
+    private let clock: CkbMillisClock
+    private let pidPath: String
+    private let timeoutMarkerPath: String
+    private let startGatePath: String
+    private let stdoutPath: String
+    private let stderrPath: String
+    private let startObserver: CkbTimedWorkerProcessStartObserver
+
+    public init(command: String, args: ArrayList<String>,
+        environment!: ArrayList<CkbTimedWorkerProcessEnvironment> = ArrayList<CkbTimedWorkerProcessEnvironment>(),
+        workdir!: String = "", cutoffAtMillis!: Int64 = 0,
+        hardDeadlineAtMillis!: Int64 = 0,
+        clock!: CkbMillisClock = SystemCkbMillisClock(), pidPath!: String = "",
+        timeoutMarkerPath!: String = "",
+        startGatePath!: String = "",
+        stdoutPath!: String = "", stderrPath!: String = "",
+        startObserver!: CkbTimedWorkerProcessStartObserver = NoopCkbTimedWorkerProcessStartObserver()) {
+        this.command = command
+        this.args = args
+        this.environment = environment
+        this.workdir = workdir
+        this.cutoffAtMillis = cutoffAtMillis
+        this.hardDeadlineAtMillis = hardDeadlineAtMillis
+        this.clock = clock
+        this.pidPath = pidPath
+        this.timeoutMarkerPath = timeoutMarkerPath
+        this.startGatePath = startGatePath
+        this.stdoutPath = stdoutPath
+        this.stderrPath = stderrPath
+        this.startObserver = startObserver
+    }
+
+    public func run(): CkbTimedWorkerProcessResult {
+        let result = CkbTimedWorkerProcessResult()
+        if (this.command.trimAscii() == "") {
+            result.diagnostic = "worker_command_missing"
+            return result
+        }
+        let nowMillis = this.clock.nowMillis()
+        let effectiveCutoffAtMillis = if (this.cutoffAtMillis > 0) {
+            this.cutoffAtMillis
+        } else {
+            this.hardDeadlineAtMillis
+        }
+        if (effectiveCutoffAtMillis > 0 && effectiveCutoffAtMillis <= nowMillis) {
+            result.timedOut = true
+            result.diagnostic = "worker_cutoff_already_exceeded"
+            return result
+        }
+        let timeoutMillis = if (effectiveCutoffAtMillis > 0) {
+            effectiveCutoffAtMillis - nowMillis
+        } else {
+            0
+        }
+        let timeoutSeconds = if (timeoutMillis <= 0) { 0 } else {
+            (timeoutMillis + 999) / 1000
+        }
+        let markerPath = if (this.timeoutMarkerPath != "") {
+            this.timeoutMarkerPath
+        } else if (this.pidPath != "") {
+            this.pidPath + ".timeout"
+        } else {
+            ""
+        }
+        if (timeoutSeconds > 0 && markerPath == "") {
+            result.diagnostic = "worker_timeout_marker_missing"
+            return result
+        }
+        var script = ""
+        if (markerPath != "") {
+            script += "rm -f " + ckbLocalShellQuote(markerPath) + "; "
+        }
+        script += "( "
+        if (this.workdir.trimAscii() != "") {
+            // Keep launcher-owned artifact paths relative to the parent while
+            // changing directory only inside the worker subshell.
+            script += "cd " + ckbLocalShellQuote(this.workdir) + " || exit 125; "
+        }
+        if (this.startGatePath != "") {
+            script += "while ! grep -qx ready " + ckbLocalShellQuote(this.startGatePath) + " 2>/dev/null; do sleep 0.01; done; "
+        }
+        script += "exec env"
+        for (entry in this.environment) {
+            script += " " + ckbLocalShellQuote("${entry.name}=${entry.value}")
+        }
+        script += " " + ckbLocalShellQuote(this.command)
+        for (arg in this.args) {
+            script += " " + ckbLocalShellQuote(arg)
+        }
+        script += " )"
+        if (this.stdoutPath != "") {
+            script += " > " + ckbLocalShellQuote(this.stdoutPath)
+        }
+        if (this.stderrPath != "") {
+            script += " 2> " + ckbLocalShellQuote(this.stderrPath)
+        }
+        script += " & pid=$!; "
+        if (this.pidPath != "") {
+            script += "echo workerPid=$pid >> " + ckbLocalShellQuote(this.pidPath) + "; "
+        }
+        if (timeoutSeconds > 0) {
+            script += "( sleep " + ckbLocalShellQuote("${timeoutSeconds}") + "; if kill -0 $pid 2>/dev/null; then : > " + ckbLocalShellQuote(markerPath) + "; pkill -TERM -P $pid 2>/dev/null || true; kill -TERM $pid 2>/dev/null || true; sleep 2; pkill -KILL -P $pid 2>/dev/null || true; kill -KILL $pid 2>/dev/null || true; fi ) & timer=$!; "
+        }
+        script += "wait $pid; code=$?; "
+        if (timeoutSeconds > 0) {
+            script += "kill $timer 2>/dev/null || true; "
+        }
+        if (markerPath != "") {
+            script += "if test -f " + ckbLocalShellQuote(markerPath) + "; then rm -f " + ckbLocalShellQuote(markerPath) + "; exit 124; fi; "
+        }
+        script += "exit $code"
+        try {
+            let process = launch("/bin/zsh", ["-lc", script],
+                stdOut: ProcessRedirect.Pipe, stdErr: ProcessRedirect.Pipe)
+            if (this.pidPath != "") {
+                for (_ in 0..100) {
+                    result.workerPid = ckbTimedWorkerProcessPidFromPath(this.pidPath)
+                    if (result.workerPid > 0) { break }
+                    sleep(Duration.millisecond * 10)
+                }
+                if (result.workerPid <= 0) {
+                    ckbStopSchedulerLaunchProcess(process.pid)
+                    _ = process.wait()
+                    result.diagnostic = "worker_start_pid_missing"
+                    return result
+                }
+                if (!this.startObserver.onWorkerStarted(result.workerPid)) {
+                    ckbStopSchedulerLaunchProcess(result.workerPid)
+                    _ = process.wait()
+                    result.diagnostic = "worker_start_observer_rejected"
+                    return result
+                }
+            }
+            result.exitCode = process.wait()
+            result.timedOut = result.exitCode == 124 ||
+                (this.hardDeadlineAtMillis > 0 &&
+                    this.clock.nowMillis() >= this.hardDeadlineAtMillis)
+            result.pidKilled = result.exitCode == 124
+            result.diagnostic = if (result.timedOut) {
+                "worker_cutoff_exceeded"
+            } else if (result.exitCode == 0) {
+                "worker_completed"
+            } else {
+                "worker_exit_code=${result.exitCode}"
+            }
+            result
+        } catch (_: Exception) {
+            result.diagnostic = "worker_launch_failed"
+            result
+        }
+    }
+}
+
+private func ckbTimedWorkerProcessPidFromPath(pidPath: String): Int64 {
+    if (pidPath == "" || !exists(Path(pidPath))) { return 0 }
+    try {
+        parseIntField(ckbCurrentField(String.fromUtf8(File.readFrom(Path(pidPath))),
+            "workerPid"), 0)
+    } catch (_: Exception) { 0 }
+}
+
+private class CkbSchedulerWorkerStartObserver <: CkbTimedWorkerProcessStartObserver {
+    private let store: FileKnowledgeStore
+    private let runId: String
+    private let taskName: String
+    private let resultRelativePath: String
+    private let launchGatePath: String
+
+    public init(store: FileKnowledgeStore, runId: String, taskName: String,
+        resultRelativePath: String, launchGatePath: String) {
+        this.store = store
+        this.runId = runId
+        this.taskName = taskName
+        this.resultRelativePath = resultRelativePath
+        this.launchGatePath = launchGatePath
+    }
+
+    public func onWorkerStarted(pid: Int64): Bool {
+        ckbEmitSchedulerWorkerTypedEvent(this.store, this.runId, this.taskName,
+            "scheduler.worker.started", "running", this.resultRelativePath,
+            workerPid: pid)
+        try {
+            this.store.writeLinesAtomically(this.launchGatePath, "ready\n")
+            true
+        } catch (_: Exception) {
+            ckbEmitSchedulerWorkerFailureDiagnostic(this.store, this.runId,
+                this.taskName, "task_worker_launch_gate_write_failed")
+            false
+        }
+    }
+}
+
 public class ProcessIsolatedSchedulerTaskRunner <: SchedulerTaskRunner {
     private let kb: KnowledgeBase
     private let config: CkbRuntimeConfig
@@ -11148,7 +11459,8 @@ public class ProcessIsolatedSchedulerTaskRunner <: SchedulerTaskRunner {
         }
         let flushMarginMillis = ckbSchedulerWorkerResultFlushMarginMillisForTask(name)
         let strictFlushReservation = ckbSchedulerWorkerUsesStrictFlushReservation(name)
-        let workerDeadlineAtMillis = ckbSchedulerWorkerSoftDeadlineAtMillis(deadlineAtMillis, flushMarginMillis, nowMillis: started, strictReservation: strictFlushReservation)
+        let profileSafetyMillis = ckbSyncProfileForScheduleTask(name).unallocatedSafetyMillis
+        let workerDeadlineAtMillis = ckbSchedulerWorkerSoftDeadlineAtMillis(deadlineAtMillis, flushMarginMillis, nowMillis: started, strictReservation: strictFlushReservation, safetyMillis: profileSafetyMillis)
         let resultRelativePath = ckbTaskWorkerResultRelativePath(name)
         if (workerDeadlineAtMillis <= started) {
             if (name == "cangjie_release_full_sync") {
@@ -11245,71 +11557,54 @@ public class ProcessIsolatedSchedulerTaskRunner <: SchedulerTaskRunner {
     }
 
     private func launchWorker(name: String, since: String, deadlineAtMillis: Int64, resultRelativePath: String, timeoutMillis: Int64, workerHeap: String, schedulerRunId: String): Int64 {
-        let seconds = if (timeoutMillis <= 0) { 1 } else { (timeoutMillis + 999) / 1000 }
         let resultPath = Path(this.storePath).join(resultRelativePath).toString()
         let outPath = resultPath + ".out"
         let errPath = resultPath + ".err"
         let launchGatePath = resultPath + ".launch"
-        var script = ckbSchedulerWorkerShellPreludeWithHeap(ckbSchedulerWorkerDyldLibraryPath(), workerHeap)
-        script += "rm -f " + ckbLocalShellQuote(launchGatePath) + "; "
-        script += "echo supervisorPid=$$ >> " + ckbLocalShellQuote(resultPath + ".started") + "; "
-        script += "( while ! grep -qx ready " + ckbLocalShellQuote(launchGatePath) + " 2>/dev/null; do sleep 0.01; done; exec "
-        script += ckbLocalShellQuote(this.command)
+        _ = launch("/bin/rm", ["-f", launchGatePath]).wait()
+        let args = ArrayList<String>()
         if (this.configPath.trimAscii() != "") {
-            script += " --config " + ckbLocalShellQuote(this.configPath)
+            args.add("--config")
+            args.add(this.configPath)
         }
-        script += " --store " + ckbLocalShellQuote(this.storePath)
-        script += " scheduler-task-worker --task " + ckbLocalShellQuote(name)
-        script += " --scheduler-run-id " + ckbLocalShellQuote(schedulerRunId)
-        script += " --since " + ckbLocalShellQuote(since)
-        script += " --deadline " + ckbLocalShellQuote("${deadlineAtMillis}")
-        script += " --result-rel " + ckbLocalShellQuote(resultRelativePath)
-        script += " ) > " + ckbLocalShellQuote(outPath) + " 2> " + ckbLocalShellQuote(errPath)
-        script += " & pid=$!; "
-        script += "echo workerPid=$pid >> " + ckbLocalShellQuote(resultPath + ".started") + "; "
-        script += "( sleep " + ckbLocalShellQuote("${seconds}") + "; if kill -0 $pid 2>/dev/null; then echo CKB_SCHEDULER_TASK_TIMEOUT >&2; pkill -TERM -P $pid 2>/dev/null || true; kill -TERM $pid 2>/dev/null || true; sleep 2; pkill -KILL -P $pid 2>/dev/null || true; kill -KILL $pid 2>/dev/null || true; fi ) & timer=$!; "
-        script += "wait $pid; code=$?; kill $timer 2>/dev/null || true; rm -f " + ckbLocalShellQuote(launchGatePath) + "; if grep -q CKB_SCHEDULER_TASK_TIMEOUT " + ckbLocalShellQuote(errPath) + " 2>/dev/null; then exit 124; fi; exit $code"
-        try {
-            let process = launch("/bin/zsh", ["-lc", script], stdOut: ProcessRedirect.Pipe, stdErr: ProcessRedirect.Pipe)
-            var workerPid: Int64 = 0
-            for (_ in 0..100) {
-                workerPid = ckbSchedulerWorkerPidFromStarted(this.storePath,
-                    resultRelativePath)
-                if (workerPid > 0) { break }
-                sleep(Duration.millisecond * 10)
-            }
-            if (workerPid <= 0) {
-                let supervisorPid = ckbSchedulerWorkerSupervisorPidFromStarted(
-                    this.storePath, resultRelativePath)
-                ckbStopSchedulerLaunchProcess(supervisorPid)
-                _ = process.wait()
-                _ = launch("/bin/rm", ["-f", launchGatePath]).wait()
-                ckbEmitSchedulerWorkerFailureDiagnostic(this.store,
-                    schedulerRunId, name,
-                    "task_worker_start_pid_missing")
-                return 125
-            }
-            ckbEmitSchedulerWorkerTypedEvent(this.store, schedulerRunId,
-                name, "scheduler.worker.started", "running",
-                resultRelativePath, workerPid: workerPid)
-            try {
-                this.store.writeLinesAtomically("${resultRelativePath}.launch",
-                    "ready\n")
-            } catch (_: Exception) {
-                ckbStopSchedulerLaunchProcess(workerPid)
-                _ = process.wait()
-                _ = launch("/bin/rm", ["-f", launchGatePath]).wait()
-                ckbEmitSchedulerWorkerFailureDiagnostic(this.store,
-                    schedulerRunId, name,
-                    "task_worker_launch_gate_write_failed")
-                return 125
-            }
-            let exitCode = process.wait()
-            _ = launch("/bin/rm", ["-f", launchGatePath]).wait()
-            exitCode
-        } catch (_: Exception) {
-            125
+        args.add("--store")
+        args.add(this.storePath)
+        args.add("scheduler-task-worker")
+        args.add("--task")
+        args.add(name)
+        args.add("--scheduler-run-id")
+        args.add(schedulerRunId)
+        args.add("--since")
+        args.add(since)
+        args.add("--deadline")
+        args.add("${deadlineAtMillis}")
+        args.add("--result-rel")
+        args.add(resultRelativePath)
+        let environment = ArrayList<CkbTimedWorkerProcessEnvironment>()
+        environment.add(CkbTimedWorkerProcessEnvironment(
+            "CKB_SCHEDULER_TASK_WORKER", "1"))
+        let dyldLibraryPath = ckbSchedulerWorkerDyldLibraryPath()
+        if (dyldLibraryPath.trimAscii() != "") {
+            environment.add(CkbTimedWorkerProcessEnvironment("DYLD_LIBRARY_PATH",
+                dyldLibraryPath))
         }
+        if (workerHeap.trimAscii() != "") {
+            environment.add(CkbTimedWorkerProcessEnvironment("cjHeapSize", workerHeap))
+        }
+        let launcher = CkbTimedWorkerProcessLauncher(this.command, args,
+            environment: environment, cutoffAtMillis: deadlineAtMillis,
+            hardDeadlineAtMillis: deadlineAtMillis,
+            pidPath: resultPath + ".started", timeoutMarkerPath: resultPath + ".timeout",
+            startGatePath: launchGatePath, stdoutPath: outPath, stderrPath: errPath,
+            startObserver: CkbSchedulerWorkerStartObserver(this.store, schedulerRunId,
+                name, resultRelativePath, "${resultRelativePath}.launch"))
+        let launched = launcher.run()
+        _ = launch("/bin/rm", ["-f", launchGatePath]).wait()
+        if (launched.diagnostic == "worker_start_pid_missing") {
+            ckbEmitSchedulerWorkerFailureDiagnostic(this.store, schedulerRunId, name,
+                "task_worker_start_pid_missing")
+        }
+        if (launched.timedOut) { 124 } else { launched.exitCode }
     }
 }
 
@@ -11385,17 +11680,6 @@ private func ckbSchedulerWorkerPidFromStarted(storePath: String, resultRelativeP
     } catch (_: Exception) {
         0
     }
-}
-
-private func ckbSchedulerWorkerSupervisorPidFromStarted(storePath: String,
-    resultRelativePath: String): Int64 {
-    let startedPath = Path(storePath).join(resultRelativePath + ".started")
-    if (!exists(startedPath)) { return 0 }
-    try {
-        parseIntField(ckbCurrentField(
-            String.fromUtf8(File.readFrom(startedPath)),
-            "supervisorPid"), 0)
-    } catch (_: Exception) { 0 }
 }
 
 private func ckbStopSchedulerLaunchProcess(pid: Int64): Unit {
@@ -11740,21 +12024,33 @@ private func ckbReadSchedulerWorkerResult(storePath: String, resultRelativePath:
     let sidecarRelativePath = "${resultRelativePath}.sidecar"
     let sidecarPath = Path(storePath).join(sidecarRelativePath)
     if (exists(sidecarPath)) {
-        return ckbReadSchedulerWorkerResultArtifact(storePath, sidecarRelativePath, name, since, durationMillis, timeoutMillis, schedulerRunId, strictIdentity, true)
+        let sidecar = ckbReadSchedulerWorkerResultArtifact(storePath, sidecarRelativePath, name, since, durationMillis, timeoutMillis, schedulerRunId, strictIdentity, true)
+        if (!strictIdentity || !ckbSchedulerWorkerArtifactReadFailure(sidecar.status)) { return sidecar }
+        return ckbSchedulerWorkerPrimaryRecoveryResult(storePath, resultRelativePath, name, since, durationMillis, timeoutMillis, schedulerRunId, sidecar.status)
     }
     if (strictIdentity) {
+        return ckbSchedulerWorkerPrimaryRecoveryResult(storePath, resultRelativePath, name, since, durationMillis, timeoutMillis, schedulerRunId, "task_worker_sidecar_missing")
+    }
+    ckbReadSchedulerWorkerResultArtifact(storePath, resultRelativePath, name, since, durationMillis, timeoutMillis, schedulerRunId, strictIdentity, false)
+}
+
+private func ckbSchedulerWorkerPrimaryRecoveryResult(storePath: String, resultRelativePath: String, name: String, since: String, durationMillis: Int64, timeoutMillis: Int64, schedulerRunId: String, sidecarStatus: String): SchedulerTaskResult {
         let primary = ckbReadSchedulerWorkerResultArtifact(storePath, resultRelativePath, name, since, durationMillis, timeoutMillis, schedulerRunId, true, false)
-        let failure = ckbSchedulerWorkerFailureResult(name, since, durationMillis, timeoutMillis, "task_worker_sidecar_missing")
+        let failure = ckbSchedulerWorkerFailureResult(name, since, durationMillis, timeoutMillis, sidecarStatus)
         failure.schedulerRunId = schedulerRunId
         failure.validationDiagnostics.add("${name}:primary_recovery_status:${utf8SafePrefix(redactSensitive(primary.status), 80)}")
         if (!ckbSchedulerWorkerArtifactReadFailure(primary.status)) {
+            // Strict mode rejects an unconfirmed primary as a protocol result,
+            // but must retain its business truth for diagnosis and retry.
+            failure.businessStatus = primary.businessStatus
+            failure.primaryFailure = primary.primaryFailure
+            failure.finalizationStatus = "task_worker_sidecar_missing"
+            failure.finalizationFailure = "task_worker_sidecar_missing"
             failure.lastStage = utf8SafePrefix(redactSensitive(primary.lastStage), 120)
             failure.lastProgress = utf8SafePrefix(redactSensitive(primary.lastProgress), 240)
             failure.workerPid = primary.workerPid
         }
-        return failure
-    }
-    ckbReadSchedulerWorkerResultArtifact(storePath, resultRelativePath, name, since, durationMillis, timeoutMillis, schedulerRunId, strictIdentity, false)
+        failure
 }
 
 private func ckbReadSchedulerWorkerResultArtifact(storePath: String, relativePath: String, name: String, since: String, durationMillis: Int64, timeoutMillis: Int64, schedulerRunId: String, strictIdentity: Bool, sidecar: Bool): SchedulerTaskResult {
@@ -11966,7 +12262,12 @@ public class CkbSchedulerTaskRunner <: SchedulerTaskRunner {
             return this.finalizeTaskResultWithContract(name, result, beforeInvariant)
         }
         let manifest = this.runtimeVersionManifest()
-        let fetchDeadlineAtMillis = ckbStageDeadline(deadlineAtMillis, profile.fetchBudgetMillis, clock: this.deadlineClock)
+        let workerSoftDeadlineAtMillis = ckbSchedulerWorkerSoftDeadlineAtMillis(
+            deadlineAtMillis, profile.resultFlushBudgetMillis,
+            nowMillis: this.deadlineClock.nowMillis(),
+            safetyMillis: profile.unallocatedSafetyMillis)
+        let fetchDeadlineAtMillis = ckbStageDeadline(workerSoftDeadlineAtMillis,
+            profile.fetchBudgetMillis, clock: this.deadlineClock)
         let fetchStartedAtMillis = ckbTaskWorkerNowMillis()
         let fetch = ckbRunScheduledProfileFetches(profile, this.sourceRunner, this.config, this.store, manifest, deadlineAtMillis: fetchDeadlineAtMillis)
         let fetchDurationMillis = ckbTaskWorkerNowMillis() - fetchStartedAtMillis
@@ -11992,8 +12293,10 @@ public class CkbSchedulerTaskRunner <: SchedulerTaskRunner {
         let fileStageSink = FileCkbStagedRebuildStageSink(this.store, schedulerRunId: ckbSchedulerCurrentRunId(this.store), schedulerTaskName: name)
         let stageSink = RecordingCkbStagedRebuildStageSink(fileStageSink)
         let ingestBudgetMillis = if (profile.profile == "cangjie_release_full_sync") { profile.ingestBudgetMillis } else { ckbProfileIngestBudgetMillis(profile) }
-        let ingestDeadlineAtMillis = ckbStageDeadline(deadlineAtMillis, ingestBudgetMillis, clock: this.deadlineClock)
-        let promotionBudgetPlan = ckbCandidatePromotionBudgetPlanForProfile(profile, deadlineAtMillis, this.deadlineClock)
+        let ingestDeadlineAtMillis = ckbStageDeadline(workerSoftDeadlineAtMillis,
+            ingestBudgetMillis, clock: this.deadlineClock)
+        let promotionBudgetPlan = ckbCandidatePromotionBudgetPlanForProfile(profile,
+            workerSoftDeadlineAtMillis, this.deadlineClock)
         let ingestStartedAtMillis = ckbTaskWorkerNowMillis()
         let ingest = ingestScheduledProfileSources(this.kb, this.store, profile, fetch, this.config, manifest, progressSink: progressSink, stageSink: stageSink, deadlineAtMillis: ingestDeadlineAtMillis, promotionBudgetPlan: promotionBudgetPlan)
         let ingestDurationMillis = ckbTaskWorkerNowMillis() - ingestStartedAtMillis
@@ -18667,17 +18970,40 @@ private func ckbRunRepositoryChangedSourceSync(kb: KnowledgeBase, store: FileKno
 private func ckbRunRepositoryEventSourceSync(kb: KnowledgeBase, store: FileKnowledgeStore,
     runner: SourceFetchRunner, config: CkbRuntimeConfig,
     receipt: CkbRepositoryEventReceipt,
-    promotionBudgetPlan!: CangjieCandidatePromotionBudgetPlan = CangjieCandidatePromotionBudgetPlan()): CkbScheduledProfileFetchResult {
+    promotionBudgetPlan!: CangjieCandidatePromotionBudgetPlan = CangjieCandidatePromotionBudgetPlan(),
+    workerSoftDeadlineAtMillis!: Int64 = 0): CkbScheduledProfileFetchResult {
     let profile = ckbSyncProfileForScheduleTask("cangjie_source_event_sync")
     let result = CkbScheduledProfileFetchResult()
     let builder = SourceRequestBuilder(gitCodeApiRoot: config.gitCodeBaseUrl)
+    let bootstrapStartedAtMillis = ckbTaskWorkerNowMillis()
+    let bootstrapDeadlineAtMillis = ckbStageDeadline(workerSoftDeadlineAtMillis,
+        profile.bootstrapBudgetMillis)
+    ckbWriteScheduledProfileStageCheckpoint(store, profile, "bootstrap_started",
+        "running", profile.bootstrapBudgetMillis, bootstrapDeadlineAtMillis,
+        "event=${ckbReleaseEvidenceHash(receipt.eventId)}")
+    if (ckbDeadlineExceeded(bootstrapDeadlineAtMillis)) {
+        result.ok = false
+        result.status = "bootstrap_deadline_exceeded"
+        result.diagnostics.add("bootstrap_deadline_exceeded")
+        ckbWriteScheduledProfileStageCheckpoint(store, profile, "bootstrap_finished",
+            result.status, profile.bootstrapBudgetMillis, bootstrapDeadlineAtMillis,
+            "durationMillis=0")
+        return result
+    }
+    let bootstrapDurationMillis = ckbTaskWorkerNowMillis() - bootstrapStartedAtMillis
+    ckbWriteScheduledProfileStageCheckpoint(store, profile, "bootstrap_finished",
+        "ok", profile.bootstrapBudgetMillis, bootstrapDeadlineAtMillis,
+        "durationMillis=${if (bootstrapDurationMillis >= 0) { bootstrapDurationMillis } else { 0 }}")
+    let fetchDeadlineAtMillis = ckbStageDeadline(workerSoftDeadlineAtMillis,
+        profile.fetchBudgetMillis)
     let resolution = if (receipt.resolvedCommit != "") {
         ckbRepositoryEventPinnedResolution(receipt)
     } else if (ckbGitCodeLooksLikeCommit(receipt.mergeCommitSha)) {
         ckbRepositoryEventMergeCommitResolution(receipt)
     } else {
         ckbResolveGitCodeRefForFetch(runner, builder, receipt.repo, receipt.ref,
-            "repository_event", "repository_event", config, accounting: result.accounting)
+            "repository_event", "repository_event", config,
+            deadlineAtMillis: fetchDeadlineAtMillis, accounting: result.accounting)
     }
     for (diagnostic in resolution.diagnostics) { result.diagnostics.add(diagnostic) }
     if (!resolution.ok) {
@@ -18704,7 +19030,8 @@ private func ckbRunRepositoryEventSourceSync(kb: KnowledgeBase, store: FileKnowl
     ckbAppendScheduledManifestRefRecord(profile, result, manifestSource, resolution)
     let paths = if (receipt.changedFilesUnavailable || receipt.changedFilesTruncated ||
         receipt.changedFiles.size == 0) {
-        ckbRepositoryEventFallbackPaths(runner, builder, profile, result, config, receipt, resolution)
+        ckbRepositoryEventFallbackPaths(runner, builder, profile, result, config,
+            receipt, resolution, deadlineAtMillis: fetchDeadlineAtMillis)
     } else { ckbCanonicalRepositoryEventPaths(receipt.changedFiles) }
     if (!result.ok) { return result }
     if (paths.size == 0) {
@@ -18715,14 +19042,16 @@ private func ckbRunRepositoryEventSourceSync(kb: KnowledgeBase, store: FileKnowl
     }
     for (path in paths) {
         if (!ckbRepositoryEventFetchContent(store, runner, builder, profile, result, config,
-            receipt, resolution, path)) {
+            receipt, resolution, path, deadlineAtMillis: fetchDeadlineAtMillis)) {
             result.status = if (result.status == "profile_ok") { "repository_event_content_fetch_failed" } else { result.status }
             return result
         }
     }
     let manifest = ckbRuntimeVersionManifestForStore(store, config)
+    let ingestDeadlineAtMillis = ckbStageDeadline(workerSoftDeadlineAtMillis,
+        profile.ingestBudgetMillis)
     let ingest = ingestScheduledProfileSources(kb, store, profile, result, config, manifest,
-        promotionBudgetPlan: promotionBudgetPlan)
+        deadlineAtMillis: ingestDeadlineAtMillis, promotionBudgetPlan: promotionBudgetPlan)
     result.ok = result.ok && ingest.ok
     result.status = if (result.ok) { ingest.status } else {
         if (ingest.status != "") { ingest.status } else { result.status }
@@ -18754,7 +19083,8 @@ private func ckbRepositoryEventMergeCommitResolution(receipt: CkbRepositoryEvent
 private func ckbRepositoryEventFallbackPaths(runner: SourceFetchRunner,
     builder: SourceRequestBuilder, profile: CkbScheduleTaskProfile,
     result: CkbScheduledProfileFetchResult, config: CkbRuntimeConfig,
-    receipt: CkbRepositoryEventReceipt, resolution: GitCodeRefResolution): ArrayList<String> {
+    receipt: CkbRepositoryEventReceipt, resolution: GitCodeRefResolution,
+    deadlineAtMillis!: Int64 = 0): ArrayList<String> {
     let selected = ArrayList<String>()
     let source = CangjieVersionSource()
     source.sourceRepo = receipt.repo
@@ -18769,7 +19099,8 @@ private func ckbRepositoryEventFallbackPaths(runner: SourceFetchRunner,
     while (page <= 20 && objects < 2000) {
         let request = builder.gitCodeTreePageWithFetchRef(receipt.repo, receipt.ref,
             resolution.effectiveRef, page: page, perPage: 100)
-        let fetch = ckbFetchScheduledRequest(runner, request, config, accounting: result.accounting)
+        let fetch = ckbFetchScheduledRequest(runner, request, config,
+            deadlineAtMillis: deadlineAtMillis, accounting: result.accounting)
         ckbApplyGitCodeRefResolutionToFetch(fetch, resolution)
         if (fetch.truncated) { treeTruncated = true }
         if (!fetch.ok) {
@@ -18812,7 +19143,8 @@ private func ckbRepositoryEventLogicalSourceId(repo: String, ref: String, path: 
 private func ckbRepositoryEventFetchContent(store: FileKnowledgeStore, runner: SourceFetchRunner,
     builder: SourceRequestBuilder, profile: CkbScheduleTaskProfile,
     result: CkbScheduledProfileFetchResult, config: CkbRuntimeConfig,
-    receipt: CkbRepositoryEventReceipt, resolution: GitCodeRefResolution, path: String): Bool {
+    receipt: CkbRepositoryEventReceipt, resolution: GitCodeRefResolution, path: String,
+    deadlineAtMillis!: Int64 = 0): Bool {
     if (!ckbSafeRepoRelativePath(path)) {
         result.ok = false
         result.status = "repository_event_path_invalid"
@@ -18826,7 +19158,8 @@ private func ckbRepositoryEventFetchContent(store: FileKnowledgeStore, runner: S
         result.diagnostics.add("repository_event_content_hydrated:pathHash=${ckbReleaseEvidenceHash(path)}")
         return true
     }
-    let raw = ckbFetchScheduledRequest(runner, request, config, accounting: result.accounting)
+    let raw = ckbFetchScheduledRequest(runner, request, config,
+        deadlineAtMillis: deadlineAtMillis, accounting: result.accounting)
     ckbApplyGitCodeRefResolutionToFetch(raw, resolution)
     if (raw.ok) {
         _ = ckbAppendScheduledSourceRecord(profile, result, request, raw)
@@ -18839,7 +19172,8 @@ private func ckbRepositoryEventFetchContent(store: FileKnowledgeStore, runner: S
     }
     let contents = builder.gitCodeSourceContentsWithFetchRef(receipt.repo, receipt.ref,
         resolution.effectiveRef, path)
-    let fallback = ckbFetchScheduledRequest(runner, contents, config, accounting: result.accounting)
+    let fallback = ckbFetchScheduledRequest(runner, contents, config,
+        deadlineAtMillis: deadlineAtMillis, accounting: result.accounting)
     ckbApplyGitCodeRefResolutionToFetch(fallback, resolution)
     if (!fallback.ok) {
         if (raw.statusCode == 404 && fallback.statusCode == 404) {
@@ -18891,18 +19225,70 @@ private class CkbRepositoryEventSourceSyncWorker <: CkbRepositoryEventWorker {
     }
 
     public func execute(receipt: CkbRepositoryEventReceipt): CkbRepositoryEventWorkerResult {
+        if (ckbRepositoryEventProcessWorkerEnabled(getCommand())) {
+            return this.executeInChildProcess(receipt)
+        }
         let result = CkbRepositoryEventWorkerResult()
-        let fetched = ckbRunRepositoryEventSourceSync(this.kb, this.store, this.runner,
-            this.config, receipt, promotionBudgetPlan: this.promotionBudgetPlan)
-        if (fetched.ok) {
+        let profile = ckbSyncProfileForScheduleTask("cangjie_source_event_sync")
+        let workerStartedAtMillis = ckbTaskWorkerNowMillis()
+        let workerHardDeadlineAtMillis = workerStartedAtMillis + profile.timeBudgetMillis
+        let workerSoftDeadlineAtMillis = ckbSchedulerWorkerSoftDeadlineAtMillis(
+            workerHardDeadlineAtMillis, profile.resultFlushBudgetMillis,
+            nowMillis: workerStartedAtMillis, safetyMillis: profile.unallocatedSafetyMillis)
+        let resultRelativePath = "metadata/scheduler-workers/${safeName(receipt.dedupeKey)}.ckb"
+        let startedText = ckbTaskWorkerStartedText("cangjie_source_event_sync",
+            receipt.eventId, workerSoftDeadlineAtMillis, resultRelativePath,
+            workerStartedAtMillis)
+        try {
+            this.store.writeLinesAtomically(resultRelativePath, startedText)
+            this.store.writeLinesAtomically("${resultRelativePath}.started", startedText)
+        } catch (_: Exception) {
+            // The durable receipt remains authoritative; artifact degradation
+            // must not turn a business success into a false terminal result.
+        }
+        let effectivePlan = ckbSourceEventPromotionBudgetPlanWithOverrides(
+            this.promotionBudgetPlan, profile, workerSoftDeadlineAtMillis)
+        let fetched = try {
+            ckbRunRepositoryEventSourceSync(this.kb, this.store, this.runner,
+                this.config, receipt, promotionBudgetPlan: effectivePlan,
+                workerSoftDeadlineAtMillis: workerSoftDeadlineAtMillis)
+        } catch (_: Exception) {
+            let failed = CkbScheduledProfileFetchResult()
+            failed.ok = false
+            failed.status = "repository_event_worker_exception"
+            failed
+        }
+        let hardTimedOut = ckbTaskWorkerNowMillis() >= workerHardDeadlineAtMillis
+        let businessOk = fetched.ok && !hardTimedOut
+        let businessStatus = if (hardTimedOut) { "task_timeout:cangjie_source_event_sync" } else {
+            if (fetched.status == "") { if (fetched.ok) { "repository_event_committed" } else { "repository_event_worker_failed" } } else { fetched.status }
+        }
+        let terminal = SchedulerTaskResult()
+        terminal.ok = businessOk
+        terminal.status = businessStatus
+        terminal.businessStatus = businessStatus
+        terminal.primaryFailure = if (businessOk) { "" } else { businessStatus }
+        terminal.since = receipt.eventId
+        terminal.schedulerTaskName = "cangjie_source_event_sync"
+        terminal.startedAtMillis = workerStartedAtMillis
+        terminal.taskBodyStartedAtMillis = workerStartedAtMillis
+        terminal.taskBodyEndedAtMillis = ckbTaskWorkerNowMillis()
+        terminal.endedAtMillis = terminal.taskBodyEndedAtMillis
+        terminal.deadlineAtMillis = workerHardDeadlineAtMillis
+        terminal.timeBudgetMillis = profile.timeBudgetMillis
+        terminal.lastStage = if (businessOk) { "repository_event_finished" } else { businessStatus }
+        terminal.lastProgress = "softDeadlineAtMillis=${workerSoftDeadlineAtMillis}|hardDeadlineAtMillis=${workerHardDeadlineAtMillis}"
+        _ = ckbWriteSchedulerTerminalResultArtifacts(this.store,
+            resultRelativePath, terminal, terminal.taskBodyEndedAtMillis)
+        if (businessOk) {
             result.state = "committed"
             result.errorCode = ""
-        } else if (fetched.status == "candidate_validation_recoverable" ||
+        } else if (businessStatus == "candidate_validation_recoverable" ||
             ckbScheduledIngestTimedOut(fetched.status) ||
-            fetched.status.contains("timeout") || fetched.status.contains("deadline") ||
+            businessStatus.contains("timeout") || businessStatus.contains("deadline") ||
             fetched.status.contains("network") || fetched.status.contains("gitcode_ref_resolution")) {
             result.state = "retryable"
-            result.errorCode = if (fetched.status == "") { "worker_retryable" } else { fetched.status }
+            result.errorCode = businessStatus
         } else if (fetched.status == "repository_event_content_fetch_failed" ||
             fetched.status == "repository_event_tree_fallback_failed" ||
             fetched.status == "repository_event_content_cache_write_failed") {
@@ -18914,6 +19300,97 @@ private class CkbRepositoryEventSourceSyncWorker <: CkbRepositoryEventWorker {
         }
         result
     }
+
+    private func executeInChildProcess(receipt: CkbRepositoryEventReceipt): CkbRepositoryEventWorkerResult {
+        let profile = ckbSyncProfileForScheduleTask("cangjie_source_event_sync")
+        let startedAtMillis = ckbTaskWorkerNowMillis()
+        let hardDeadlineAtMillis = startedAtMillis + profile.timeBudgetMillis
+        let softDeadlineAtMillis = ckbSchedulerWorkerSoftDeadlineAtMillis(hardDeadlineAtMillis, profile.resultFlushBudgetMillis, nowMillis: startedAtMillis, safetyMillis: profile.unallocatedSafetyMillis)
+        let cutoffAtMillis = hardDeadlineAtMillis - profile.unallocatedSafetyMillis
+        let resultRelativePath = "metadata/scheduler-workers/${safeName(receipt.dedupeKey)}.ckb"
+        let args = ArrayList<String>()
+        args.add("--store"); args.add(this.store.rootPath()); args.add("repository-event-worker")
+        args.add("--dedupe-key"); args.add(receipt.dedupeKey); args.add("--owner"); args.add(receipt.leaseOwner); args.add("--revision"); args.add("${receipt.revision}")
+        args.add("--hard-deadline"); args.add("${hardDeadlineAtMillis}"); args.add("--deadline"); args.add("${softDeadlineAtMillis}"); args.add("--result-rel"); args.add(resultRelativePath)
+        let childEnvironment = ArrayList<CkbTimedWorkerProcessEnvironment>()
+        childEnvironment.add(CkbTimedWorkerProcessEnvironment("CKB_SCHEDULER_TASK_WORKER", "1"))
+        let launched = CkbTimedWorkerProcessLauncher(getCommand(), args, environment: childEnvironment, cutoffAtMillis: cutoffAtMillis, hardDeadlineAtMillis: hardDeadlineAtMillis, pidPath: Path(this.store.rootPath()).join(resultRelativePath + ".started").toString(), timeoutMarkerPath: Path(this.store.rootPath()).join(resultRelativePath + ".timeout").toString()).run()
+        let elapsed = ckbTaskWorkerNowMillis() - startedAtMillis
+        if (launched.timedOut) {
+            let task = ckbWriteSchedulerWorkerTimeoutCompensation(this.store, resultRelativePath, "cangjie_source_event_sync", receipt.eventId, elapsed, profile.timeBudgetMillis, "repository_event_worker_hard_timeout", workerPid: launched.workerPid)
+            return ckbRepositoryEventWorkerResultFromTerminal(task)
+        }
+        let task = ckbReadSchedulerWorkerResult(this.store.rootPath(), resultRelativePath, "cangjie_source_event_sync", receipt.eventId, elapsed, profile.timeBudgetMillis, strictIdentity: true)
+        ckbRepositoryEventWorkerResultFromTerminal(task)
+    }
+}
+
+public func ckbRepositoryEventProcessWorkerEnabled(command: String): Bool {
+    let trimmed = command.trimAscii()
+    trimmed != "" && (trimmed == "main" || trimmed.endsWith("/main"))
+}
+
+public func ckbRepositoryEventWorkerResultFromTerminal(task: SchedulerTaskResult): CkbRepositoryEventWorkerResult {
+    let result = CkbRepositoryEventWorkerResult()
+    if (task.ok) { result.state = "committed"; result.errorCode = "" }
+    else { result.state = "retryable"; result.errorCode = if (task.primaryFailure != "") { task.primaryFailure } else { task.status } }
+    result
+}
+
+// Child-process boundary: the parent owns claim/final receipt transitions.
+// Re-read the durable receipt so a stale child can never execute another
+// owner's lease or a superseded revision.
+public func ckbRunRepositoryEventWorkerChild(kb: KnowledgeBase,
+    store: FileKnowledgeStore, runner: SourceFetchRunner, config: CkbRuntimeConfig,
+    dedupeKey: String, owner: String, revision: Int64,
+    hardDeadlineAtMillis!: Int64 = 0, softDeadlineAtMillis!: Int64 = 0,
+    resultRelativePath!: String = "", schedulerRunId!: String = ""): CkbRepositoryEventWorkerResult {
+    let rejected = CkbRepositoryEventWorkerResult()
+    rejected.state = "retryable"
+    rejected.errorCode = "repository_event_claim_rejected"
+    let receipt = store.loadRepositoryEventReceipt(dedupeKey)
+    if (!receipt.valid || receipt.state != "running" || receipt.leaseOwner != owner ||
+        receipt.revision != revision) {
+        ckbWriteRepositoryEventChildTerminal(store, resultRelativePath, schedulerRunId,
+            dedupeKey, hardDeadlineAtMillis, softDeadlineAtMillis, rejected)
+        return rejected
+    }
+    let outcome = CkbRepositoryEventSourceSyncWorker(kb, store, runner, config).execute(receipt)
+    ckbWriteRepositoryEventChildTerminal(store, resultRelativePath, schedulerRunId,
+        receipt.eventId, hardDeadlineAtMillis, softDeadlineAtMillis, outcome)
+    outcome
+}
+
+private func ckbWriteRepositoryEventChildTerminal(store: FileKnowledgeStore,
+    resultRelativePath: String, schedulerRunId: String, since: String,
+    hardDeadlineAtMillis: Int64, softDeadlineAtMillis: Int64,
+    outcome: CkbRepositoryEventWorkerResult): Unit {
+    if (resultRelativePath == "") { return }
+    let nowMillis = ckbTaskWorkerNowMillis()
+    let task = SchedulerTaskResult()
+    task.ok = outcome.state == "committed"
+    task.status = if (task.ok) { "repository_event_committed" } else {
+        if (outcome.errorCode != "") { outcome.errorCode } else { "repository_event_worker_failed" }
+    }
+    task.businessStatus = task.status
+    task.primaryFailure = if (task.ok) { "" } else { task.status }
+    task.since = since
+    task.schedulerRunId = schedulerRunId
+    task.schedulerTaskName = "cangjie_source_event_sync"
+    task.startedAtMillis = nowMillis
+    task.taskBodyStartedAtMillis = nowMillis
+    task.taskBodyEndedAtMillis = nowMillis
+    task.endedAtMillis = nowMillis
+    task.deadlineAtMillis = if (hardDeadlineAtMillis > 0) {
+        hardDeadlineAtMillis
+    } else { nowMillis }
+    task.timeBudgetMillis = if (hardDeadlineAtMillis > nowMillis) {
+        hardDeadlineAtMillis - nowMillis
+    } else { 0 }
+    task.lastStage = if (task.ok) { "repository_event_finished" } else { task.status }
+    task.lastProgress = "softDeadlineAtMillis=${softDeadlineAtMillis}|hardDeadlineAtMillis=${hardDeadlineAtMillis}"
+    _ = ckbWriteSchedulerTerminalResultArtifacts(store, resultRelativePath, task,
+        nowMillis)
 }
 
 private func ckbRuntimeVersionManifestForStore(store: FileKnowledgeStore,

@@ -117,8 +117,294 @@ private class P5S1ThrowingSchedulerProgressSink <: SchedulerProgressSink {
     }
 }
 
+private class P6S5FixedMillisClock <: CkbMillisClock {
+    private let value: Int64
+
+    public init(value: Int64) {
+        this.value = value
+    }
+
+    public func nowMillis(): Int64 {
+        this.value
+    }
+}
+
 @Test
 public class CkbSchedulerProgressTimeoutTest {
+    @TestCase
+    public func p6S5U01SourceEventBudgetPlanIsExecutableAndSegmented(): Unit {
+        let profile = ckbSyncProfileForScheduleTask("cangjie_source_event_sync")
+        let validation = ckbValidateSchedulerProfileBudgetPlan(profile)
+        let plan = ckbCandidatePromotionBudgetPlanForProfile(profile, 105000,
+            P6S5FixedMillisClock(40000))
+        let diagnostic = ckbSchedulerProfileStageBudgetDiagnostic(profile)
+
+        @Expect(profile.timeBudgetMillis, 120000)
+        @Expect(profile.bootstrapBudgetMillis, 5000)
+        @Expect(profile.fetchBudgetMillis, 35000)
+        @Expect(profile.ingestBudgetMillis, 12000)
+        @Expect(profile.vectorBudgetMillis, 30000)
+        @Expect(profile.validationBudgetMillis, 9000)
+        @Expect(profile.activeCommitBudgetMillis, 7000)
+        @Expect(profile.snapshotBudgetMillis, 7000)
+        @Expect(profile.resultFlushBudgetMillis, 5000)
+        @Expect(profile.unallocatedSafetyMillis, 10000)
+        @Expect(validation.ok, true)
+        @Expect(validation.businessBudgetMillis, 105000)
+        @Expect(validation.executionBudgetMillis, 110000)
+        @Expect(validation.plannedBudgetMillis, 120000)
+        @Expect(validation.workerSoftBudgetMillis, 105000)
+        @Expect(plan.segmented, true)
+        @Expect(plan.vectorBudgetMillis, 30000)
+        @Expect(plan.validationBudgetMillis, 9000)
+        @Expect(plan.activeCommitBudgetMillis, 7000)
+        @Expect(plan.snapshotBudgetMillis, 7000)
+        @Expect(plan.workerSoftDeadlineAtMillis, 105000)
+        @Expect(ckbStageDeadlineAt(1000, 105000, profile.fetchBudgetMillis), 36000)
+        @Expect(ckbStageDeadlineAt(40000, 105000, profile.vectorBudgetMillis), 70000)
+        @Expect(diagnostic.contains("resultFlushBudgetMs=5000"), true)
+        @Expect(diagnostic.contains("unallocatedSafetyMs=10000"), true)
+    }
+
+    @TestCase
+    public func p6S5B01SourceEventReservationRejectsBusinessAtFlushSafetyBoundary(): Unit {
+        let profile = ckbSyncProfileForScheduleTask("cangjie_source_event_sync")
+        let invalid = ckbSyncProfileForScheduleTask("cangjie_source_event_sync")
+        invalid.resultFlushBudgetMillis = 0
+
+        @Expect(ckbSchedulerWorkerSoftDeadlineAtMillis(120000,
+            profile.resultFlushBudgetMillis, safetyMillis: profile.unallocatedSafetyMillis), 105000)
+        @Expect(ckbSchedulerWorkerSoftDeadlineAtMillis(15000,
+            profile.resultFlushBudgetMillis, safetyMillis: profile.unallocatedSafetyMillis), 0)
+        @Expect(ckbSchedulerWorkerSoftDeadlineAtMillis(15001,
+            profile.resultFlushBudgetMillis, safetyMillis: profile.unallocatedSafetyMillis), 1)
+        @Expect(ckbStageDeadlineAt(100000, 105000,
+            profile.validationBudgetMillis), 105000)
+        @Expect(ckbValidateSchedulerProfileBudgetPlan(invalid).ok, false)
+        @Expect(ckbValidateSchedulerProfileBudgetPlan(invalid).status,
+            "invalid_profile_budget_plan")
+    }
+
+    @TestCase
+    public func p6S5B02CutoffBoundaryDoesNotStartBusinessWithoutReservation(): Unit {
+        let now = ckbCoreNowMillis()
+        let profile = ckbSyncProfileForScheduleTask("cangjie_source_event_sync")
+        let reserved = profile.resultFlushBudgetMillis + profile.unallocatedSafetyMillis
+        let args = ArrayList<String>()
+        args.add("-c"); args.add("exit 0")
+        let insufficient = CkbTimedWorkerProcessLauncher("/bin/zsh", args,
+            cutoffAtMillis: now, hardDeadlineAtMillis: now).run()
+        let exactSoft = ckbSchedulerWorkerSoftDeadlineAtMillis(now + reserved,
+            profile.resultFlushBudgetMillis, nowMillis: now,
+            safetyMillis: profile.unallocatedSafetyMillis)
+        @Expect(insufficient.timedOut, true)
+        @Expect(insufficient.workerPid, 0)
+        @Expect(insufficient.diagnostic, "worker_cutoff_already_exceeded")
+        @Expect(exactSoft, now)
+        @Expect(ckbRepositoryEventProcessWorkerEnabled("main"), true)
+        @Expect(ckbRepositoryEventProcessWorkerEnabled("unittest_bin"), false)
+    }
+
+    @TestCase
+    public func p6S5P01TimeoutBusinessFailureStillWritesConfirmedTerminalArtifact(): Unit {
+        let root = "target/p6-s5-p01-timeout-terminal"
+        ensureEmptyDir(root)
+        let store = FileKnowledgeStore(root)
+        let resultPath = "metadata/scheduler-workers/p6-timeout.ckb"
+
+        let task = ckbWriteSchedulerWorkerTimeoutCompensation(store, resultPath,
+            "cangjie_source_event_sync", "0", 105001, 120000,
+            "candidate_validation_deadline_exceeded", lastStage: "candidate_validation")
+        let primary = ckbSchedulerTaskResultFromText(store.readText(resultPath))
+        let confirmed = ckbSchedulerTaskResultFromText(
+            store.readText("${resultPath}.sidecar"))
+
+        @Expect(task.ok, false)
+        @Expect(task.status, "task_timeout:cangjie_source_event_sync")
+        @Expect(task.businessStatus, "task_timeout:cangjie_source_event_sync")
+        @Expect(task.primaryFailure, "task_timeout:cangjie_source_event_sync")
+        @Expect(task.finalizationStatus, "terminal_artifact_confirmed")
+        @Expect(task.finalizationFailure, "")
+        @Expect(primary.businessStatus, "task_timeout:cangjie_source_event_sync")
+        @Expect(primary.primaryFailure, "task_timeout:cangjie_source_event_sync")
+        @Expect(confirmed.finalizationStatus, "terminal_artifact_confirmed")
+        @Expect(confirmed.resultWrittenAtMillis > 0, true)
+        @Expect(confirmed.resultFlushDurationMillis >= 0, true)
+    }
+
+    @TestCase
+    public func p6S5N01FlushFailureDoesNotOverwritePrimaryBusinessFailure(): Unit {
+        let parent = "target/p6-s5-n01-terminal-failure"
+        ensureEmptyDir(parent)
+        let storeRoot = "${parent}/store-file"
+        File.writeTo(Path(storeRoot), "not-a-directory\n".toArray())
+        let brokenStore = FileKnowledgeStore(storeRoot)
+
+        let failedWrite = ckbWriteSchedulerWorkerTimeoutCompensation(brokenStore,
+            "metadata/scheduler-workers/p6-write-failure.ckb",
+            "cangjie_source_event_sync", "0", 105001, 120000,
+            "candidate_validation_deadline_exceeded")
+        let doubleFailure = SchedulerTaskResult()
+        doubleFailure.ok = false
+        doubleFailure.status = "candidate_validation_timeout"
+        doubleFailure.businessStatus = "candidate_validation_timeout"
+        doubleFailure.primaryFailure = "candidate_validation_timeout"
+        doubleFailure.finalizationStatus = "terminal_artifact_confirmed_sidecar_degraded"
+        doubleFailure.finalizationFailure = "task_result_sidecar_write_degraded"
+        let parsed = ckbSchedulerTaskResultFromText(
+            ckbSchedulerTaskResultText(doubleFailure))
+
+        @Expect(failedWrite.ok, false)
+        @Expect(failedWrite.businessStatus, "task_timeout:cangjie_source_event_sync")
+        @Expect(failedWrite.primaryFailure, "task_timeout:cangjie_source_event_sync")
+        @Expect(failedWrite.finalizationStatus,
+            "terminal_artifact_primary_write_failed")
+        @Expect(failedWrite.finalizationFailure, "task_result_primary_write_failed")
+        @Expect(parsed.businessStatus, "candidate_validation_timeout")
+        @Expect(parsed.primaryFailure, "candidate_validation_timeout")
+        @Expect(parsed.finalizationStatus,
+            "terminal_artifact_confirmed_sidecar_degraded")
+        @Expect(parsed.finalizationFailure, "task_result_sidecar_write_degraded")
+    }
+
+    @TestCase
+    public func p6S5N02RepositoryEventChildRejectsStaleOwnerAndRevision(): Unit {
+        let root = "target/p6-s5-n02-child-claim"
+        ensureEmptyDir(root)
+        let store = FileKnowledgeStore(root)
+        let service = CkbCommandLoopService(CkbRuntimeConfig(), store)
+        let event = parseGitCodeRepositoryChangedEvent("{\"contractVersion\":\"gcm-ckb-repository-change-v1\",\"eventId\":\"p6-s5-n02\",\"deliveryId\":\"p6-s5-n02-delivery\",\"provider\":\"gitcode\",\"eventType\":\"merge_request\",\"action\":\"merged\",\"state\":\"merged\",\"reason\":\"pr_merged\",\"repo\":\"cangjie/stdx\",\"ref\":\"main\",\"prNumber\":1,\"changedFiles\":[\"src/a.cj\"]}")
+        let accepted = service.acceptGitCodeRepositoryChangedEvent(event)
+        let queued = store.loadRepositoryEventReceipt(accepted.dedupeKey)
+        let claimed = store.claimRepositoryEventReceipt(accepted.dedupeKey, "owner-a",
+            queued.createdAtMillis + 1, 1000)
+        let staleOwner = ckbRunRepositoryEventWorkerChild(newOfflineKnowledgeBase(),
+            store, DisabledNetworkFetchRunner(), CkbRuntimeConfig(),
+            accepted.dedupeKey, "owner-b", claimed.receipt.revision,
+            hardDeadlineAtMillis: ckbCoreNowMillis() + 120000,
+            softDeadlineAtMillis: ckbCoreNowMillis() + 105000,
+            resultRelativePath: "metadata/scheduler-workers/p6-s5-n02.ckb",
+            schedulerRunId: "p6-s5-n02")
+        let staleRevision = ckbRunRepositoryEventWorkerChild(newOfflineKnowledgeBase(),
+            store, DisabledNetworkFetchRunner(), CkbRuntimeConfig(),
+            accepted.dedupeKey, "owner-a", claimed.receipt.revision - 1)
+        @Expect(staleOwner.state, "retryable")
+        @Expect(staleOwner.errorCode, "repository_event_claim_rejected")
+        @Expect(staleRevision.errorCode, "repository_event_claim_rejected")
+        @Expect(store.loadRepositoryEventReceipt(accepted.dedupeKey).state, "running")
+        let terminal = ckbSchedulerTaskResultFromText(store.readText(
+            "metadata/scheduler-workers/p6-s5-n02.ckb.sidecar"))
+        @Expect(terminal.status, "repository_event_claim_rejected")
+        @Expect(terminal.primaryFailure, "repository_event_claim_rejected")
+        @Expect(terminal.finalizationStatus, "terminal_artifact_confirmed")
+    }
+
+    @TestCase
+    public func p6S5E2E02RecordJsonPreservesBusinessAndFinalizationFieldsSafely(): Unit {
+        let record = SchedulerTaskRunRecord()
+        record.taskName = "cangjie_source_event_sync"
+        record.ok = false
+        record.status = "candidate_validation_timeout"
+        record.businessStatus = "candidate_validation_timeout"
+        record.primaryFailure = "candidate_validation_timeout"
+        record.finalizationStatus = "terminal_artifact_confirmed_sidecar_degraded"
+        record.finalizationFailure = "task_result_sidecar_write_degraded 中文🙂"
+        record.workerErrSnippet = "Authorization: Bearer fixture-secret"
+        let records = ArrayList<SchedulerTaskRunRecord>()
+        records.add(record)
+        let json = ckbSchedulerRunTaskRecordsJson(records)
+
+        @Expect(json.contains("\"businessStatus\":\"candidate_validation_timeout\""), true)
+        @Expect(json.contains("\"primaryFailure\":\"candidate_validation_timeout\""), true)
+        @Expect(json.contains("\"finalizationStatus\":\"terminal_artifact_confirmed_sidecar_degraded\""), true)
+        @Expect(json.contains("fixture-secret"), false)
+        @Expect(json.contains("中文🙂"), true)
+    }
+
+    @TestCase
+    public func p6S5U02TimedWorkerLauncherPreservesEnvironmentWorkdirAndCutoff(): Unit {
+        let root = "target/p6-s5-u02-timed-worker-launcher"
+        ensureEmptyDir(root)
+        let completedOut = "${root}/completed.out"
+        let completedArgs = ArrayList<String>()
+        completedArgs.add("-c")
+        completedArgs.add("print -r -- \"$CKB_P6_S5_LAUNCHER:$PWD\"")
+        let environment = ArrayList<CkbTimedWorkerProcessEnvironment>()
+        environment.add(CkbTimedWorkerProcessEnvironment("CKB_P6_S5_LAUNCHER",
+            "environment-ok"))
+        let completed = CkbTimedWorkerProcessLauncher("/bin/zsh", completedArgs,
+            environment: environment, workdir: root,
+            cutoffAtMillis: ckbCoreNowMillis() + 10000,
+            hardDeadlineAtMillis: ckbCoreNowMillis() + 10000,
+            pidPath: "${root}/completed.pid", stdoutPath: completedOut).run()
+
+        let childPidPath = "${root}/blocked-child.pid"
+        let blockedArgs = ArrayList<String>()
+        blockedArgs.add("-c")
+        blockedArgs.add("sleep 30 & child=$!; print -r -- $child > '${childPidPath}'; wait $child")
+        let blocked = CkbTimedWorkerProcessLauncher("/bin/zsh", blockedArgs,
+            cutoffAtMillis: ckbCoreNowMillis() + 500,
+            hardDeadlineAtMillis: ckbCoreNowMillis() + 500,
+            pidPath: "${root}/blocked.pid",
+            timeoutMarkerPath: "${root}/blocked.timeout").run()
+        var childPid: Int64 = 0
+        if (exists(Path(childPidPath))) {
+            try {
+                childPid = Int64.parse(String.fromUtf8(File.readFrom(Path(childPidPath))).trimAscii())
+            } catch (_: Exception) {
+                childPid = 0
+            }
+        }
+
+        @Expect(completed.exitCode, 0)
+        @Expect(completed.timedOut, false)
+        @Expect(completed.pidKilled, false)
+        @Expect(completed.workerPid > 0, true)
+        @Expect(completed.diagnostic, "worker_completed")
+        let completedText = p5S1SafeReadFile(Path(completedOut)).trimAscii()
+        @Expect(completedText.startsWith("environment-ok:"), true)
+        @Expect(completedText.endsWith(root), true)
+        @Expect(blocked.exitCode, 124)
+        @Expect(blocked.timedOut, true)
+        @Expect(blocked.pidKilled, true)
+        @Expect(blocked.diagnostic, "worker_cutoff_exceeded")
+        @Expect(blocked.workerPid > 0, true)
+        @Expect(p5S1ProcessExited(blocked.workerPid), true)
+        @Expect(childPid > 0, true)
+        @Expect(p5S1ProcessExited(childPid), true)
+    }
+
+    @TestCase
+    public func p6S5E2EBlockingChildTimeoutMapsRetryableAndKeepsActivePointer(): Unit {
+        let root = "target/p6-s5-e2e-blocking-child"
+        ensureEmptyDir(root)
+        let store = FileKnowledgeStore(root)
+        _ = newOfflineKnowledgeBase().persistActiveSnapshot(store)
+        let before = store.loadActiveSnapshotPointer()
+        let args = ArrayList<String>()
+        args.add("-c"); args.add("sleep 30")
+        let launched = CkbTimedWorkerProcessLauncher("/bin/zsh", args,
+            cutoffAtMillis: ckbCoreNowMillis() + 500,
+            hardDeadlineAtMillis: ckbCoreNowMillis() + 500,
+            pidPath: "${root}/blocked.pid",
+            timeoutMarkerPath: "${root}/blocked.timeout").run()
+        let timeout = ckbWriteSchedulerWorkerTimeoutCompensation(store,
+            "metadata/scheduler-workers/blocking.ckb", "cangjie_source_event_sync",
+            "blocking-event", 500, 120000, "blocking_child_cutoff",
+            workerPid: launched.workerPid)
+        let mapped = ckbRepositoryEventWorkerResultFromTerminal(timeout)
+        let confirmed = ckbSchedulerTaskResultFromText(store.readText(
+            "metadata/scheduler-workers/blocking.ckb.sidecar"))
+        let after = store.loadActiveSnapshotPointer()
+        @Expect(launched.timedOut, true)
+        @Expect(launched.pidKilled, true)
+        @Expect(mapped.state, "retryable")
+        @Expect(mapped.errorCode, "task_timeout:cangjie_source_event_sync")
+        @Expect(confirmed.finalizationStatus, "terminal_artifact_confirmed")
+        @Expect(before.txId, after.txId)
+        @Expect(before.activeVersion, after.activeVersion)
+    }
+
     @TestCase
     public func p5S2U01BudgetPlanAndAttemptFactsRoundTrip(): Unit {
         let release = ckbSyncProfileForScheduleTask("cangjie_release_full_sync")
@@ -412,6 +698,8 @@ public class CkbSchedulerProgressTimeoutTest {
         let primary = SchedulerTaskResult()
         primary.ok = true
         primary.status = "primary_ok"
+        primary.businessStatus = "candidate_validation_timeout"
+        primary.primaryFailure = "candidate_validation_timeout"
         primary.schedulerRunId = "run-authority"
         primary.schedulerTaskName = "docs_probe_30d"
         primary.lastStage = "fetch"
@@ -421,10 +709,21 @@ public class CkbSchedulerProgressTimeoutTest {
 
         let strictMissing = ckbReadSchedulerWorkerResultFile(root, resultPath, "docs_probe_30d", "0", 5, 100, schedulerRunId: "run-authority", strictIdentity: true)
         let legacy = ckbReadSchedulerWorkerResultFile(root, resultPath, "docs_probe_30d", "0", 5, 100, schedulerRunId: "run-authority", strictIdentity: false)
+        File.writeTo(Path(root).join("${resultPath}.sidecar"), [UInt8(255)])
+        let strictCorrupt = ckbReadSchedulerWorkerResultFile(root, resultPath,
+            "docs_probe_30d", "0", 5, 100, schedulerRunId: "run-authority",
+            strictIdentity: true)
 
         @Expect(strictMissing.ok, false)
         @Expect(strictMissing.status, "task_worker_sidecar_missing")
         @Expect(strictMissing.lastStage, "fetch")
+        @Expect(strictMissing.businessStatus, "candidate_validation_timeout")
+        @Expect(strictMissing.primaryFailure, "candidate_validation_timeout")
+        @Expect(strictMissing.finalizationStatus, "task_worker_sidecar_missing")
+        @Expect(strictMissing.finalizationFailure, "task_worker_sidecar_missing")
+        @Expect(strictCorrupt.status, "task_worker_sidecar_invalid_response_encoding")
+        @Expect(strictCorrupt.businessStatus, "candidate_validation_timeout")
+        @Expect(strictCorrupt.primaryFailure, "candidate_validation_timeout")
         @Expect(strictMissing.lastProgress.contains("中文🙂"), true)
         @Expect(strictMissing.lastProgress.contains("secret-value"), false)
         @Expect(primaryArtifact.contains("中文🙂"), true)
