@@ -14042,17 +14042,45 @@ public class CkbReleaseCommitBundle {
     public init() {}
 }
 
-private class CkbBenchmarkGapProofCheckpoint {
-    var status: String = "not_started"
-    var inputHash: String = ""
-    var targetVersion: String = ""
-    var candidateVersion: String = ""
-    var total: Int64 = 0
-    var completed: Int64 = 0
-    var coveragePass: Bool = true
-    var completedCaseIds: ArrayList<String> = ArrayList<String>()
+public class CkbBenchmarkGapProofResult {
+    public var valid: Bool = false
+    public var caseIdentity: String = ""
+    public var recordHash: String = ""
+    public var status: String = "not_started"
+    public var coveragePass: Bool = false
+    public var citationCount: Int64 = 0
+    public var citationHashes: ArrayList<String> = ArrayList<String>()
+    public var evidenceHash: String = ""
+    public var errorCode: String = ""
+    public init() {}
+}
 
-    init() {}
+public class CkbBenchmarkGapProofCheckpoint {
+    public var schemaVersion: String = "ckb-benchmark-gap-proof-v2"
+    public var runId: String = ""
+    public var inputSha256: String = ""
+    public var planHash: String = ""
+    public var candidateVersion: String = ""
+    public var baseActiveVersion: String = ""
+    public var recordsEvidenceHash: String = ""
+    public var total: Int64 = 0
+    public var nextProofOffset: Int64 = 0
+    public var revision: Int64 = 0
+    public var owner: String = ""
+    public var leaseUntilMillis: Int64 = 0
+    public var state: String = "planned"
+    public var aggregateEvidenceHash: String = ""
+    public var checksum: String = ""
+    public var valid: Bool = false
+    public var errorCode: String = "not_loaded"
+    public init() {}
+}
+
+public class CkbBenchmarkGapProofClaimResult {
+    public var claimed: Bool = false
+    public var checkpoint: CkbBenchmarkGapProofCheckpoint = CkbBenchmarkGapProofCheckpoint()
+    public var errorCode: String = ""
+    public init() {}
 }
 
 public class CkbBenchmarkGapScanPlan {
@@ -17529,29 +17557,61 @@ private func ingestScheduledBenchmarkGapCuration(kb: KnowledgeBase, store: FileK
     let fetch = CkbScheduledProfileFetchResult()
     fetch.requestCount = curated.accepted
     fetch.fetchedCount = curated.accepted
-    let candidateVersion = ckbScheduledCandidateVersion(profile, fetch)
+    let candidateVersion = "ckb-benchmark-${scanPlan.planHash}-candidate"
     let candidateRecords = kb.activeRecordSnapshotOverlay(curated.records)
-    let preview = ckbBenchmarkGapPreviewAll(candidateRecords, curated.records)
-    if (!preview.ok) {
-        result.ok = false
-        result.status = preview.errorCode
-        result.validationStatus = result.status
-        return result
-    }
-    let candidateRaw = ckbBenchmarkGapCandidateRawOverlay(kb.rawRecordSnapshot(), curated.records)
-    let materialized = store.saveCandidateSnapshotImmutable(candidateRaw, candidateRecords,
-        candidateVersion, deadlineAtMillis: deadlineAtMillis)
-    if (!materialized.ok) {
-        result.ok = false
-        result.status = materialized.status
-        result.validationStatus = result.status
-        return result
+    let baseActiveVersion = if (kb.status().activeKnowledgeVersion == "") { "none" } else { kb.status().activeKnowledgeVersion }
+    let recordsEvidenceHash = ckbCandidateRecordsEvidenceHash(candidateRecords, stagedCandidateVersion: candidateVersion)
+    let expectedProof = ckbNewBenchmarkGapProofCheckpoint(scanPlan, candidateVersion,
+        baseActiveVersion, recordsEvidenceHash)
+    var checkpoint = ckbLoadBenchmarkGapProofCheckpoint(store, expectedProof)
+    var candidateReused = checkpoint.valid
+    var manifestEvidenceHash = ""
+    var indexBuildCount: Int64 = 0
+    var queryCount: Int64 = 0
+    if (!candidateReused) {
+        if (checkpoint.errorCode != "benchmark_gap_proof_checkpoint_not_found" && checkpoint.errorCode != "legacy-unverified") {
+            result.ok = false; result.status = checkpoint.errorCode; result.validationStatus = result.status; return result
+        }
+        let preview = ckbBenchmarkGapPreviewAll(candidateRecords, curated.records)
+        if (!preview.ok) { result.ok = false; result.status = preview.errorCode; result.validationStatus = result.status; return result }
+        indexBuildCount = preview.indexBuildCount; queryCount = preview.queryCount
+        let candidateRaw = ckbBenchmarkGapCandidateRawOverlay(kb.rawRecordSnapshot(), curated.records)
+        let materialized = store.saveCandidateSnapshotImmutable(candidateRaw, candidateRecords,
+            candidateVersion, deadlineAtMillis: deadlineAtMillis)
+        if (!materialized.ok) { result.ok = false; result.status = materialized.status; result.validationStatus = result.status; return result }
+        manifestEvidenceHash = materialized.manifestEvidenceHash
+        checkpoint = ckbSaveBenchmarkGapProofCheckpoint(store, expectedProof)
+        if (!checkpoint.valid) { result.ok = false; result.status = checkpoint.errorCode; result.validationStatus = result.status; return result }
     }
     result.candidateVersion = candidateVersion
+    result.validationDiagnostics.add("benchmark_gap_candidate_ready:count=${curated.records.size}:candidateVersion=${candidateVersion}:manifestEvidenceHash=${manifestEvidenceHash}:indexBuildCount=${indexBuildCount}:queryCount=${queryCount}:reused=${candidateReused}")
+    var proofsThisRun: Int64 = 0
+    while (checkpoint.nextProofOffset < checkpoint.total) {
+        if (config.benchmarkGapProofBatchSize > 0 && proofsThisRun >= config.benchmarkGapProofBatchSize) {
+            result.ok = false; result.status = "benchmark_gap_proof_checkpointed"; result.validationStatus = result.status
+            result.validationDiagnostics.add("benchmark_gap_proof_checkpointed:completed=${checkpoint.nextProofOffset}:total=${checkpoint.total}:candidateVersion=${candidateVersion}")
+            return result
+        }
+        let nowMillis = ckbCoreNowMillis()
+        let claim = ckbClaimBenchmarkGapProofCheckpoint(store, expectedProof,
+            "proof-${scanPlan.runId}", nowMillis, 60000)
+        if (!claim.claimed) { result.ok = false; result.status = claim.errorCode; result.validationStatus = result.status; return result }
+        let record = curated.records[claim.checkpoint.nextProofOffset]
+        let candidateProof = ckbBenchmarkGapProofForCandidate(record, candidateVersion, baseActiveVersion)
+        var proof = ckbLoadBenchmarkGapProofArtifact(store, claim.checkpoint,
+            candidateProof.caseIdentity, candidateProof.recordHash)
+        if (proof.errorCode == "benchmark_gap_proof_artifact_not_found") { proof = candidateProof }
+        else if (!proof.valid) { result.ok = false; result.status = proof.errorCode; result.validationStatus = result.status; return result }
+        result.validationDiagnostics.add(ckbRenderBenchmarkGapProofDiagnostic(proof))
+        checkpoint = ckbAdvanceBenchmarkGapProofCursor(store, claim.checkpoint, record, proof, nowMillis + 1)
+        if (!checkpoint.valid) { result.ok = false; result.status = checkpoint.errorCode; result.validationStatus = result.status; return result }
+        proofsThisRun += 1
+        if (checkpoint.state == "failed") { result.ok = false; result.status = "benchmark_gap_query_proof_failed"; result.validationStatus = result.status; return result }
+    }
     result.ok = false
-    result.status = "benchmark_gap_candidate_ready"
+    result.status = "benchmark_gap_proof_complete"
     result.validationStatus = result.status
-    result.validationDiagnostics.add("benchmark_gap_candidate_ready:count=${curated.records.size}:candidateVersion=${candidateVersion}:manifestEvidenceHash=${materialized.manifestEvidenceHash}:indexBuildCount=${preview.indexBuildCount}:queryCount=${preview.queryCount}")
+    result.validationDiagnostics.add("benchmark_gap_proof_complete:completed=${checkpoint.nextProofOffset}:total=${checkpoint.total}:aggregateEvidenceHash=${checkpoint.aggregateEvidenceHash}:activeCommitted=false")
     result
 }
 
@@ -17648,7 +17708,7 @@ public func ckbBenchmarkGapPreviewAll(candidateRecords: ArrayList<NormalizedReco
         }
         if (!matched) {
             result.errorCode = "benchmark_gap_preview_target_missed"
-            result.failedCaseIdHash = stableSummaryHash(ckbBenchmarkGapCaseId(record))
+            result.failedCaseIdHash = ckbReleaseEvidenceHash(record.sourceId)
             return result
         }
         result.passed += 1
@@ -17948,87 +18008,148 @@ public func ckbBenchmarkGapQueryProofDeadlineDiagnostic(deadlineAtMillis: Int64,
     "benchmark_gap_query_proof_timeout:${deadline.diagnostic}:batchId=${if (batchId == "") { "default" } else { batchId }}:completed=${completed}:total=${total}:remainingMs=${deadline.remainingMillis}"
 }
 
-private func ckbBenchmarkGapProofCheckpointPath(): String {
-    "metadata/benchmark-gap-curation-proof.ckb"
-}
-
-private func ckbLoadBenchmarkGapProofCheckpoint(store: FileKnowledgeStore, inputHash: String, targetVersion: String): CkbBenchmarkGapProofCheckpoint {
+public func ckbNewBenchmarkGapProofCheckpoint(plan: CkbBenchmarkGapScanPlan,
+    candidateVersion: String, baseActiveVersion: String, recordsEvidenceHash: String): CkbBenchmarkGapProofCheckpoint {
     let checkpoint = CkbBenchmarkGapProofCheckpoint()
-    let text = store.readText(ckbBenchmarkGapProofCheckpointPath())
-    if (text == "") {
-        return checkpoint
-    }
-    for (line in text.split("\n")) {
-        let trimmed = line.trimAscii()
-        if (trimmed == "") {
-            continue
-        }
-        let parts = trimmed.split("=")
-        if (parts.size < 2) {
-            continue
-        }
-        let key = parts[0]
-        let value = unescapeField(trimmed[key.size + 1..trimmed.size])
-        if (key == "status") {
-            checkpoint.status = value
-        } else if (key == "inputHash") {
-            checkpoint.inputHash = value
-        } else if (key == "targetVersion") {
-            checkpoint.targetVersion = value
-        } else if (key == "candidateVersion") {
-            checkpoint.candidateVersion = value
-        } else if (key == "total") {
-            checkpoint.total = parseIntField(value, 0)
-        } else if (key == "completed") {
-            checkpoint.completed = parseIntField(value, 0)
-        } else if (key == "coveragePass") {
-            checkpoint.coveragePass = value != "false"
-        } else if (key == "completedCaseIds") {
-            for (caseId in value.split(",")) {
-                let cleaned = caseId.trimAscii()
-                if (cleaned != "") {
-                    addUniqueString(checkpoint.completedCaseIds, cleaned)
-                }
-            }
-        }
-    }
-    if (checkpoint.inputHash != inputHash || checkpoint.targetVersion != targetVersion) {
-        return CkbBenchmarkGapProofCheckpoint()
-    }
-    checkpoint.completed = ckbBenchmarkGapProofCompletedCount(checkpoint)
+    checkpoint.runId = plan.runId; checkpoint.inputSha256 = plan.inputSha256
+    checkpoint.planHash = plan.planHash; checkpoint.candidateVersion = candidateVersion
+    checkpoint.baseActiveVersion = if (baseActiveVersion == "") { "none" } else { baseActiveVersion }
+    checkpoint.recordsEvidenceHash = recordsEvidenceHash; checkpoint.total = plan.total
+    checkpoint.aggregateEvidenceHash = ckbReleaseEvidenceHash("")
+    checkpoint.valid = ckbBenchmarkGapProofCheckpointInvariant(checkpoint)
+    checkpoint.errorCode = if (checkpoint.valid) { "" } else { "benchmark_gap_proof_checkpoint_invalid" }
+    checkpoint.checksum = ckbBenchmarkGapProofCheckpointChecksum(checkpoint)
     checkpoint
 }
 
-private func ckbSaveBenchmarkGapProofCheckpoint(store: FileKnowledgeStore, checkpoint: CkbBenchmarkGapProofCheckpoint): Unit {
-    checkpoint.completed = ckbBenchmarkGapProofCompletedCount(checkpoint)
-    var text = "status=${escapeField(checkpoint.status)}\n"
-    text += "inputHash=${escapeField(checkpoint.inputHash)}\n"
-    text += "targetVersion=${escapeField(checkpoint.targetVersion)}\n"
-    text += "candidateVersion=${escapeField(checkpoint.candidateVersion)}\n"
-    text += "total=${checkpoint.total}\n"
-    text += "completed=${checkpoint.completed}\n"
-    text += "coveragePass=${checkpoint.coveragePass}\n"
-    text += "completedCaseIds=${escapeField(joinStrings(checkpoint.completedCaseIds, ","))}\n"
-    store.writeLinesAtomically(ckbBenchmarkGapProofCheckpointPath(), text)
+public func ckbBenchmarkGapProofForCandidate(record: NormalizedRecord, candidateVersion: String,
+    baseActiveVersion: String, forcedStatus!: String = ""): CkbBenchmarkGapProofResult {
+    let proof = CkbBenchmarkGapProofResult()
+    proof.caseIdentity = record.sourceId
+    proof.recordHash = ckbCandidateRecordsEvidenceHash(singleBenchmarkGapRecord(record), stagedCandidateVersion: candidateVersion)
+    if (forcedStatus == "retryable") { proof.status = "retryable"; proof.errorCode = "candidate_query_retryable" }
+    else if (forcedStatus == "failed" || record.citation.trimAscii() == "") { proof.status = "failed"; proof.errorCode = "candidate_coverage_failed" }
+    else {
+        proof.status = "passed"; proof.coveragePass = true; proof.citationCount = 1
+        proof.citationHashes.add(ckbReleaseEvidenceHash(record.citation.trimAscii()))
+    }
+    proof.evidenceHash = ckbReleaseEvidenceHash("case=${proof.caseIdentity}|record=${proof.recordHash}|candidate=${candidateVersion}|base=${if (baseActiveVersion == "") { "none" } else { baseActiveVersion }}|status=${proof.status}|coverage=${proof.coveragePass}|citations=${joinStrings(proof.citationHashes, ",")}|error=${proof.errorCode}")
+    proof.valid = proof.caseIdentity != "" && proof.recordHash.size == 64 && proof.evidenceHash.size == 64 &&
+        ((proof.status == "passed" && proof.coveragePass && proof.citationCount > 0) ||
+         (proof.status == "failed" && !proof.coveragePass) || proof.status == "retryable")
+    proof
 }
 
-private func ckbBenchmarkGapProofCompletedCount(checkpoint: CkbBenchmarkGapProofCheckpoint): Int64 {
-    checkpoint.completedCaseIds.size
+public func ckbRenderBenchmarkGapProofDiagnostic(proof: CkbBenchmarkGapProofResult): String {
+    "benchmark_gap_query_proof:caseIdentityHash=${ckbReleaseEvidenceHash(proof.caseIdentity)}:status=${proof.status}:coveragePass=${proof.coveragePass}:citations=${proof.citationCount}:evidenceHash=${proof.evidenceHash}:errorCode=${proof.errorCode}"
 }
 
-private func ckbBenchmarkGapProofCompleted(checkpoint: CkbBenchmarkGapProofCheckpoint, caseId: String): Bool {
-    checkpoint.completedCaseIds.contains(caseId)
+public func ckbSaveBenchmarkGapProofArtifact(store: FileKnowledgeStore,
+    checkpoint: CkbBenchmarkGapProofCheckpoint, proof: CkbBenchmarkGapProofResult): CkbBenchmarkGapProofResult {
+    if (!checkpoint.valid || !proof.valid) { let invalid = CkbBenchmarkGapProofResult(); invalid.errorCode = "benchmark_gap_proof_artifact_invalid"; return invalid }
+    let path = ckbBenchmarkGapProofArtifactPath(checkpoint.planHash, proof.recordHash)
+    let text = ckbBenchmarkGapProofArtifactText(checkpoint, proof)
+    let existing = try { store.readText(path) } catch (_: Exception) { let invalid = CkbBenchmarkGapProofResult(); invalid.errorCode = "benchmark_gap_proof_artifact_invalid_response_encoding"; return invalid }
+    if (existing != "" && existing != text) { let invalid = CkbBenchmarkGapProofResult(); invalid.errorCode = "benchmark_gap_proof_artifact_conflict"; return invalid }
+    if (existing == "") { try { store.writeLinesAtomically(path, text) } catch (_: Exception) { let invalid = CkbBenchmarkGapProofResult(); invalid.errorCode = "benchmark_gap_proof_artifact_write_failed"; return invalid } }
+    ckbLoadBenchmarkGapProofArtifact(store, checkpoint, proof.caseIdentity, proof.recordHash)
 }
 
-private func ckbBenchmarkGapProofCheckpointDiagnostic(prefix: String, checkpoint: CkbBenchmarkGapProofCheckpoint, batchId: String): String {
-    "${prefix}:batchId=${batchId}|completed=${checkpoint.completed}|total=${checkpoint.total}|remaining=${checkpoint.total - checkpoint.completed}|coveragePass=${checkpoint.coveragePass}|candidateVersion=${checkpoint.candidateVersion}"
+public func ckbLoadBenchmarkGapProofArtifact(store: FileKnowledgeStore,
+    checkpoint: CkbBenchmarkGapProofCheckpoint, caseIdentity: String, recordHash: String): CkbBenchmarkGapProofResult {
+    let proof = CkbBenchmarkGapProofResult(); proof.caseIdentity = caseIdentity; proof.recordHash = recordHash
+    let text = try { store.readText(ckbBenchmarkGapProofArtifactPath(checkpoint.planHash, recordHash)) } catch (_: Exception) { proof.errorCode = "benchmark_gap_proof_artifact_invalid_response_encoding"; return proof }
+    if (text == "") { proof.errorCode = "benchmark_gap_proof_artifact_not_found"; return proof }
+    let keys = ["schemaVersion", "runId", "inputSha256", "planHash", "candidateVersion", "baseActiveVersion", "recordsEvidenceHash", "caseIdentity", "recordHash", "status", "coveragePass", "citationCount", "citationHashes", "evidenceHash", "errorCode", "checksum"]
+    if (!ckbStrictFieldShape(text, keys)) { proof.errorCode = "benchmark_gap_proof_artifact_malformed"; return proof }
+    if (ckbCurrentField(text, "schemaVersion") != checkpoint.schemaVersion || ckbCurrentField(text, "runId") != checkpoint.runId ||
+        ckbCurrentField(text, "inputSha256") != checkpoint.inputSha256 || ckbCurrentField(text, "planHash") != checkpoint.planHash ||
+        ckbCurrentField(text, "candidateVersion") != checkpoint.candidateVersion || ckbCurrentField(text, "baseActiveVersion") != checkpoint.baseActiveVersion ||
+        ckbCurrentField(text, "recordsEvidenceHash") != checkpoint.recordsEvidenceHash || ckbCurrentField(text, "caseIdentity") != caseIdentity ||
+        ckbCurrentField(text, "recordHash") != recordHash) { proof.errorCode = "benchmark_gap_proof_artifact_identity_mismatch"; return proof }
+    proof.status = ckbCurrentField(text, "status"); proof.coveragePass = ckbCurrentField(text, "coveragePass") == "true"
+    proof.citationCount = parseIntField(ckbCurrentField(text, "citationCount"), -1)
+    for (hash in ckbCurrentField(text, "citationHashes").split(",")) { if (hash != "") { proof.citationHashes.add(hash) } }
+    proof.evidenceHash = ckbCurrentField(text, "evidenceHash"); proof.errorCode = ckbCurrentField(text, "errorCode")
+    let checksum = ckbCurrentField(text, "checksum")
+    if (checksum != ckbReleaseEvidenceHash(textBeforeFirst(text, "checksum=") + "checksum=\n")) { proof.errorCode = "benchmark_gap_proof_artifact_checksum_mismatch"; return proof }
+    proof.valid = proof.evidenceHash.size == 64 && proof.citationCount == proof.citationHashes.size &&
+        ((proof.status == "passed" && proof.coveragePass && proof.citationCount > 0) || (proof.status == "failed" && !proof.coveragePass) || proof.status == "retryable")
+    if (!proof.valid && proof.errorCode == "") { proof.errorCode = "benchmark_gap_proof_artifact_invariant_failed" }
+    proof
 }
 
-private func ckbBenchmarkGapCheckpointQueryProof(record: NormalizedRecord, checkpoint: CkbBenchmarkGapProofCheckpoint, batchId: String): String {
-    let caseId = ckbBenchmarkGapCaseId(record)
-    let evidenceHash = stableSummaryHash("${checkpoint.inputHash}:${checkpoint.candidateVersion}:${caseId}:${checkpoint.coveragePass}")
-    "benchmark_gap_query_proof:${caseId}:coveragePass=${checkpoint.coveragePass}:citations=0:evidenceHash=${evidenceHash}:source=checkpoint:batchId=${batchId}"
+public func ckbSaveBenchmarkGapProofCheckpoint(store: FileKnowledgeStore,
+    checkpoint: CkbBenchmarkGapProofCheckpoint): CkbBenchmarkGapProofCheckpoint {
+    if (!ckbBenchmarkGapProofCheckpointInvariant(checkpoint)) { return ckbInvalidBenchmarkGapProofCheckpoint("benchmark_gap_proof_checkpoint_invariant_failed") }
+    checkpoint.checksum = ckbBenchmarkGapProofCheckpointChecksum(checkpoint)
+    try { store.writeLinesAtomically(ckbBenchmarkGapProofCheckpointPath(checkpoint.planHash), ckbBenchmarkGapProofCheckpointText(checkpoint)) } catch (_: Exception) { return ckbInvalidBenchmarkGapProofCheckpoint("benchmark_gap_proof_checkpoint_write_failed") }
+    ckbLoadBenchmarkGapProofCheckpoint(store, checkpoint)
 }
+
+public func ckbLoadBenchmarkGapProofCheckpoint(store: FileKnowledgeStore,
+    expected: CkbBenchmarkGapProofCheckpoint): CkbBenchmarkGapProofCheckpoint {
+    let text = try { store.readText(ckbBenchmarkGapProofCheckpointPath(expected.planHash)) } catch (_: Exception) { return ckbInvalidBenchmarkGapProofCheckpoint("benchmark_gap_proof_checkpoint_invalid_response_encoding") }
+    if (text == "") {
+        let legacy = try { store.readText("metadata/benchmark-gap-curation-proof.ckb") } catch (_: Exception) { return ckbInvalidBenchmarkGapProofCheckpoint("legacy-unverified") }
+        if (legacy != "") { return ckbInvalidBenchmarkGapProofCheckpoint("legacy-unverified") }
+        return ckbInvalidBenchmarkGapProofCheckpoint("benchmark_gap_proof_checkpoint_not_found")
+    }
+    let keys = ["schemaVersion", "runId", "inputSha256", "planHash", "candidateVersion", "baseActiveVersion", "recordsEvidenceHash", "total", "nextProofOffset", "revision", "owner", "leaseUntilMillis", "state", "aggregateEvidenceHash", "checksum"]
+    if (!ckbStrictFieldShape(text, keys)) { return ckbInvalidBenchmarkGapProofCheckpoint("benchmark_gap_proof_checkpoint_malformed") }
+    let out = CkbBenchmarkGapProofCheckpoint(); out.schemaVersion = ckbCurrentField(text, "schemaVersion"); out.runId = ckbCurrentField(text, "runId"); out.inputSha256 = ckbCurrentField(text, "inputSha256"); out.planHash = ckbCurrentField(text, "planHash"); out.candidateVersion = ckbCurrentField(text, "candidateVersion"); out.baseActiveVersion = ckbCurrentField(text, "baseActiveVersion"); out.recordsEvidenceHash = ckbCurrentField(text, "recordsEvidenceHash"); out.total = parseIntField(ckbCurrentField(text, "total"), -1); out.nextProofOffset = parseIntField(ckbCurrentField(text, "nextProofOffset"), -1); out.revision = parseIntField(ckbCurrentField(text, "revision"), -1); out.owner = ckbCurrentField(text, "owner"); out.leaseUntilMillis = parseIntField(ckbCurrentField(text, "leaseUntilMillis"), -1); out.state = ckbCurrentField(text, "state"); out.aggregateEvidenceHash = ckbCurrentField(text, "aggregateEvidenceHash"); out.checksum = ckbCurrentField(text, "checksum")
+    if (out.runId != expected.runId || out.inputSha256 != expected.inputSha256 || out.planHash != expected.planHash || out.candidateVersion != expected.candidateVersion || out.baseActiveVersion != expected.baseActiveVersion || out.recordsEvidenceHash != expected.recordsEvidenceHash || out.total != expected.total) { out.errorCode = "benchmark_gap_proof_checkpoint_identity_mismatch"; return out }
+    if (!ckbBenchmarkGapProofCheckpointInvariant(out)) { out.errorCode = "benchmark_gap_proof_checkpoint_invariant_failed"; return out }
+    if (out.checksum != ckbBenchmarkGapProofCheckpointChecksum(out)) { out.errorCode = "benchmark_gap_proof_checkpoint_checksum_mismatch"; return out }
+    out.valid = true; out.errorCode = ""; out
+}
+
+public func ckbClaimBenchmarkGapProofCheckpoint(store: FileKnowledgeStore,
+    expected: CkbBenchmarkGapProofCheckpoint, owner: String, nowMillis: Int64, leaseMillis: Int64): CkbBenchmarkGapProofClaimResult {
+    let result = CkbBenchmarkGapProofClaimResult(); var current = ckbLoadBenchmarkGapProofCheckpoint(store, expected)
+    if (owner == "" || nowMillis < 0 || leaseMillis <= 0) { result.errorCode = "benchmark_gap_proof_claim_invalid"; return result }
+    if (current.errorCode == "benchmark_gap_proof_checkpoint_not_found") { current = ckbSaveBenchmarkGapProofCheckpoint(store, expected) }
+    if (!current.valid) { result.errorCode = current.errorCode; result.checkpoint = current; return result }
+    if (current.state == "complete" || current.state == "failed") { result.errorCode = "benchmark_gap_proof_terminal"; result.checkpoint = current; return result }
+    if (current.state == "running" && current.leaseUntilMillis > nowMillis) { result.errorCode = "benchmark_gap_proof_lease_held"; result.checkpoint = current; return result }
+    if (!ckbAcquireBenchmarkGapProofLock(store, expected.planHash)) { result.errorCode = "benchmark_gap_proof_claim_conflict"; result.checkpoint = current; return result }
+    try {
+        let fresh = ckbLoadBenchmarkGapProofCheckpoint(store, expected)
+        if (!fresh.valid || fresh.revision != current.revision || (fresh.state == "running" && fresh.leaseUntilMillis > nowMillis)) { result.errorCode = "benchmark_gap_proof_claim_conflict"; result.checkpoint = fresh; return result }
+        fresh.owner = owner; fresh.leaseUntilMillis = nowMillis + leaseMillis; fresh.state = "running"; fresh.revision += 1
+        let saved = ckbSaveBenchmarkGapProofCheckpoint(store, fresh); result.checkpoint = saved; result.claimed = saved.valid; result.errorCode = if (saved.valid) { "" } else { saved.errorCode }
+    } finally { ckbReleaseBenchmarkGapProofLock(store, expected.planHash) }
+    result
+}
+
+public func ckbAdvanceBenchmarkGapProofCursor(store: FileKnowledgeStore,
+    claimed: CkbBenchmarkGapProofCheckpoint, record: NormalizedRecord,
+    proof: CkbBenchmarkGapProofResult, nowMillis: Int64): CkbBenchmarkGapProofCheckpoint {
+    let expectedRecordHash = ckbCandidateRecordsEvidenceHash(singleBenchmarkGapRecord(record), stagedCandidateVersion: claimed.candidateVersion)
+    if (proof.caseIdentity != record.sourceId || proof.recordHash != expectedRecordHash) { return ckbInvalidBenchmarkGapProofCheckpoint("benchmark_gap_proof_record_identity_mismatch") }
+    let artifact = ckbSaveBenchmarkGapProofArtifact(store, claimed, proof)
+    if (!artifact.valid) { return ckbInvalidBenchmarkGapProofCheckpoint(artifact.errorCode) }
+    if (!ckbAcquireBenchmarkGapProofLock(store, claimed.planHash)) { return ckbInvalidBenchmarkGapProofCheckpoint("benchmark_gap_proof_claim_conflict") }
+    try {
+        let fresh = ckbLoadBenchmarkGapProofCheckpoint(store, claimed)
+        if (!fresh.valid || fresh.revision != claimed.revision || fresh.owner != claimed.owner || fresh.state != "running" || fresh.leaseUntilMillis <= nowMillis || fresh.nextProofOffset >= fresh.total) { return ckbInvalidBenchmarkGapProofCheckpoint("benchmark_gap_proof_revision_conflict") }
+        fresh.nextProofOffset += 1; fresh.revision += 1; fresh.aggregateEvidenceHash = ckbReleaseEvidenceHash("${fresh.aggregateEvidenceHash}|${artifact.evidenceHash}")
+        fresh.owner = ""; fresh.leaseUntilMillis = 0
+        fresh.state = if (artifact.status == "failed") { "failed" } else if (fresh.nextProofOffset == fresh.total) { "complete" } else { "checkpointed" }
+        ckbSaveBenchmarkGapProofCheckpoint(store, fresh)
+    } finally { ckbReleaseBenchmarkGapProofLock(store, claimed.planHash) }
+}
+
+private func ckbBenchmarkGapProofCheckpointPath(planHash: String): String { "metadata/benchmark-gap-curation/runs/${safeName(planHash)}/proof-checkpoint.ckb" }
+private func ckbBenchmarkGapProofArtifactPath(planHash: String, recordHash: String): String { "metadata/benchmark-gap-curation/runs/${safeName(planHash)}/proofs/${safeName(recordHash)}.ckb" }
+private func ckbBenchmarkGapProofCheckpointChecksum(c: CkbBenchmarkGapProofCheckpoint): String { ckbReleaseEvidenceHash("schema=${c.schemaVersion}|run=${c.runId}|input=${c.inputSha256}|plan=${c.planHash}|candidate=${c.candidateVersion}|base=${c.baseActiveVersion}|records=${c.recordsEvidenceHash}|total=${c.total}|next=${c.nextProofOffset}|revision=${c.revision}|owner=${c.owner}|lease=${c.leaseUntilMillis}|state=${c.state}|aggregate=${c.aggregateEvidenceHash}") }
+private func ckbBenchmarkGapProofCheckpointInvariant(c: CkbBenchmarkGapProofCheckpoint): Bool { c.schemaVersion == "ckb-benchmark-gap-proof-v2" && c.runId != "" && c.inputSha256.size == 64 && c.planHash.size == 64 && c.candidateVersion != "" && c.baseActiveVersion != "" && c.recordsEvidenceHash.size == 64 && c.total > 0 && c.nextProofOffset >= 0 && c.nextProofOffset <= c.total && c.revision >= 0 && c.aggregateEvidenceHash.size == 64 && ((c.state == "running" && c.owner != "" && c.leaseUntilMillis > 0) || ((c.state == "planned" || c.state == "checkpointed" || c.state == "complete" || c.state == "failed") && c.owner == "" && c.leaseUntilMillis == 0)) && (c.state != "complete" || c.nextProofOffset == c.total) }
+private func ckbBenchmarkGapProofCheckpointText(c: CkbBenchmarkGapProofCheckpoint): String { "schemaVersion=${c.schemaVersion}\nrunId=${escapeField(c.runId)}\ninputSha256=${c.inputSha256}\nplanHash=${c.planHash}\ncandidateVersion=${escapeField(c.candidateVersion)}\nbaseActiveVersion=${escapeField(c.baseActiveVersion)}\nrecordsEvidenceHash=${c.recordsEvidenceHash}\ntotal=${c.total}\nnextProofOffset=${c.nextProofOffset}\nrevision=${c.revision}\nowner=${escapeField(c.owner)}\nleaseUntilMillis=${c.leaseUntilMillis}\nstate=${c.state}\naggregateEvidenceHash=${c.aggregateEvidenceHash}\nchecksum=${c.checksum}\n" }
+private func ckbBenchmarkGapProofArtifactText(c: CkbBenchmarkGapProofCheckpoint, p: CkbBenchmarkGapProofResult): String { let prefix = "schemaVersion=${c.schemaVersion}\nrunId=${escapeField(c.runId)}\ninputSha256=${c.inputSha256}\nplanHash=${c.planHash}\ncandidateVersion=${escapeField(c.candidateVersion)}\nbaseActiveVersion=${escapeField(c.baseActiveVersion)}\nrecordsEvidenceHash=${c.recordsEvidenceHash}\ncaseIdentity=${escapeField(p.caseIdentity)}\nrecordHash=${p.recordHash}\nstatus=${p.status}\ncoveragePass=${p.coveragePass}\ncitationCount=${p.citationCount}\ncitationHashes=${joinStrings(p.citationHashes, ",")}\nevidenceHash=${p.evidenceHash}\nerrorCode=${escapeField(p.errorCode)}\nchecksum=\n"; prefix.replace("checksum=\n", "checksum=${ckbReleaseEvidenceHash(prefix)}\n") }
+private func ckbInvalidBenchmarkGapProofCheckpoint(error: String): CkbBenchmarkGapProofCheckpoint { let out = CkbBenchmarkGapProofCheckpoint(); out.errorCode = error; out }
+private func ckbStrictFieldShape(text: String, requiredKeys: Array<String>): Bool { let required = HashSet<String>(); for (key in requiredKeys) { required.add(key) }; let seen = HashSet<String>(); for (line in text.split("\n")) { if (line == "") { continue }; match (line.indexOf("=")) { case Some(index) => let key = line[..index]; if (!required.contains(key) || seen.contains(key)) { return false }; seen.add(key); case None => return false } }; seen.size == required.size }
+private func ckbAcquireBenchmarkGapProofLock(store: FileKnowledgeStore, planHash: String): Bool { let path = store.root.join("metadata/benchmark-gap-curation/runs/${safeName(planHash)}/proof.lock"); if (exists(path)) { return false }; try { Directory.create(path, recursive: false); true } catch (_: Exception) { false } }
+private func ckbReleaseBenchmarkGapProofLock(store: FileKnowledgeStore, planHash: String): Unit { let path = store.root.join("metadata/benchmark-gap-curation/runs/${safeName(planHash)}/proof.lock"); try { _ = launch("/bin/rm", ["-rf", path.toString()]).wait() } catch (_: Exception) { () } }
 
 private func ckbBenchmarkGapCurationInputPath(config: CkbRuntimeConfig, store: FileKnowledgeStore): String {
     if (config.benchmarkGapCurationInputPath.trimAscii() != "") {
@@ -18045,48 +18166,8 @@ private func ckbBenchmarkGapCurationInputPath(config: CkbRuntimeConfig, store: F
     ""
 }
 
-private func ckbBenchmarkGapPreviewProof(records: ArrayList<NormalizedRecord>, record: NormalizedRecord): String {
-    let index = buildCangjieServingIndex(records, activeKnowledgeVersion: "benchmark-gap-preview")
-    let request = CangjieServingSearchRequest()
-    request.query = ckbBenchmarkGapTaskQuery(record)
-    request.sourceSet = CangjieSourceSets.EVAL_SUPPORT
-    request.targetVersion = record.metadata.targetVersion
-    request.budget = 5
-    let lookup = searchHybridServingIndex(index, request)
-    "benchmark_gap_preview:${ckbBenchmarkGapCaseId(record)}:hits=${lookup.hits.size}:ok=${lookup.hits.size > 0}"
-}
-
-private func ckbBenchmarkGapQueryProof(kb: KnowledgeBase, record: NormalizedRecord, manifest: CangjieVersionManifest): String {
-    let request = CangjieTaskKnowledgeRequest()
-    request.taskId = ckbBenchmarkGapCaseId(record)
-    request.benchmark = ckbBenchmarkGapBenchmark(record)
-    request.taskText = ckbBenchmarkGapLine(record.chunk, "Task:")
-    request.compilerOutput = ckbBenchmarkGapLine(record.chunk, "Compiler output:")
-    request.expectedKnowledgeTags.add(ckbBenchmarkGapMissingKnowledge(record))
-    request.versionSelector = cangjieVersionSelector(targetVersion: record.metadata.targetVersion, sourceSet: CangjieSourceSets.ALL)
-    request.budget = 5
-    let pack = buildCangjieTaskKnowledgePackFromEvidence(kb, request, manifest)
-    "benchmark_gap_query_proof:${request.taskId}:coveragePass=${pack.coverage.coveragePass}:citations=${pack.citations.size}:evidenceHash=${pack.evidenceHash}"
-}
-
 private func ckbBenchmarkGapTaskQuery(record: NormalizedRecord): String {
-    "visible-benchmark ${ckbBenchmarkGapBenchmark(record)} ${ckbBenchmarkGapCaseId(record)} ${ckbBenchmarkGapLine(record.chunk, "Task:")}"
-}
-
-private func ckbBenchmarkGapCaseId(record: NormalizedRecord): String {
-    let parts = record.metadata.path.split("/")
-    if (parts.size >= 3) {
-        return parts[2]
-    }
-    record.sourceId
-}
-
-private func ckbBenchmarkGapBenchmark(record: NormalizedRecord): String {
-    let parts = record.metadata.path.split("/")
-    if (parts.size >= 2) {
-        return parts[1]
-    }
-    "Cangjie-HumanEval"
+    "visible-benchmark ${record.sourceId} ${ckbBenchmarkGapLine(record.chunk, "Task:")}"
 }
 
 private func ckbBenchmarkGapMissingKnowledge(record: NormalizedRecord): String {

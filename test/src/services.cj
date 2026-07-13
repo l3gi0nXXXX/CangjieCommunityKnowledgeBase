@@ -13949,17 +13949,43 @@ public class CkbReleaseCommitBundle {
     public init() {}
 }
 
-private class CkbBenchmarkGapProofCheckpoint {
-    var status: String = "not_started"
-    var inputHash: String = ""
-    var targetVersion: String = ""
-    var candidateVersion: String = ""
-    var total: Int64 = 0
-    var completed: Int64 = 0
-    var coveragePass: Bool = true
-    var completedCaseIds: ArrayList<String> = ArrayList<String>()
-
-    init() {}
+public class CkbBenchmarkGapProofResult {
+    public var valid: Bool = false
+    public var caseIdentity: String = ""
+    public var recordHash: String = ""
+    public var status: String = "not_started"
+    public var coveragePass: Bool = false
+    public var citationCount: Int64 = 0
+    public var citationHashes: ArrayList<String> = ArrayList<String>()
+    public var evidenceHash: String = ""
+    public var errorCode: String = ""
+    public init() {}
+}
+public class CkbBenchmarkGapProofCheckpoint {
+    public var schemaVersion: String = "ckb-benchmark-gap-proof-v2"
+    public var runId: String = ""
+    public var inputSha256: String = ""
+    public var planHash: String = ""
+    public var candidateVersion: String = ""
+    public var baseActiveVersion: String = ""
+    public var recordsEvidenceHash: String = ""
+    public var total: Int64 = 0
+    public var nextProofOffset: Int64 = 0
+    public var revision: Int64 = 0
+    public var owner: String = ""
+    public var leaseUntilMillis: Int64 = 0
+    public var state: String = "planned"
+    public var aggregateEvidenceHash: String = ""
+    public var checksum: String = ""
+    public var valid: Bool = false
+    public var errorCode: String = "not_loaded"
+    public init() {}
+}
+public class CkbBenchmarkGapProofClaimResult {
+    public var claimed: Bool = false
+    public var checkpoint: CkbBenchmarkGapProofCheckpoint = CkbBenchmarkGapProofCheckpoint()
+    public var errorCode: String = ""
+    public init() {}
 }
 
 public class CkbBenchmarkGapScanPlan {
@@ -17436,29 +17462,26 @@ private func ingestScheduledBenchmarkGapCuration(kb: KnowledgeBase, store: FileK
     let fetch = CkbScheduledProfileFetchResult()
     fetch.requestCount = curated.accepted
     fetch.fetchedCount = curated.accepted
-    let candidateVersion = ckbScheduledCandidateVersion(profile, fetch)
+    let candidateVersion = "ckb-benchmark-${scanPlan.planHash}-candidate"
     let candidateRecords = kb.activeRecordSnapshotOverlay(curated.records)
-    let preview = ckbBenchmarkGapPreviewAll(candidateRecords, curated.records)
-    if (!preview.ok) {
-        result.ok = false
-        result.status = preview.errorCode
-        result.validationStatus = result.status
-        return result
-    }
-    let candidateRaw = ckbBenchmarkGapCandidateRawOverlay(kb.rawRecordSnapshot(), curated.records)
-    let materialized = store.saveCandidateSnapshotImmutable(candidateRaw, candidateRecords,
-        candidateVersion, deadlineAtMillis: deadlineAtMillis)
-    if (!materialized.ok) {
-        result.ok = false
-        result.status = materialized.status
-        result.validationStatus = result.status
-        return result
+    let baseActiveVersion = if (kb.status().activeKnowledgeVersion == "") { "none" } else { kb.status().activeKnowledgeVersion }
+    let recordsEvidenceHash = ckbCandidateRecordsEvidenceHash(candidateRecords, stagedCandidateVersion: candidateVersion)
+    let expectedProof = ckbNewBenchmarkGapProofCheckpoint(scanPlan, candidateVersion, baseActiveVersion, recordsEvidenceHash)
+    var checkpoint = ckbLoadBenchmarkGapProofCheckpoint(store, expectedProof); var candidateReused = checkpoint.valid; var manifestEvidenceHash = ""; var indexBuildCount:Int64=0; var queryCount:Int64=0
+    if (!candidateReused) {
+        if(checkpoint.errorCode!="benchmark_gap_proof_checkpoint_not_found"&&checkpoint.errorCode!="legacy-unverified"){result.ok=false;result.status=checkpoint.errorCode;result.validationStatus=result.status;return result}
+        let preview=ckbBenchmarkGapPreviewAll(candidateRecords,curated.records);if(!preview.ok){result.ok=false;result.status=preview.errorCode;result.validationStatus=result.status;return result};indexBuildCount=preview.indexBuildCount;queryCount=preview.queryCount
+        let candidateRaw=ckbBenchmarkGapCandidateRawOverlay(kb.rawRecordSnapshot(),curated.records);let materialized=store.saveCandidateSnapshotImmutable(candidateRaw,candidateRecords,candidateVersion,deadlineAtMillis:deadlineAtMillis);if(!materialized.ok){result.ok=false;result.status=materialized.status;result.validationStatus=result.status;return result};manifestEvidenceHash=materialized.manifestEvidenceHash
+        checkpoint=ckbSaveBenchmarkGapProofCheckpoint(store,expectedProof);if(!checkpoint.valid){result.ok=false;result.status=checkpoint.errorCode;result.validationStatus=result.status;return result}
     }
     result.candidateVersion = candidateVersion
+    result.validationDiagnostics.add("benchmark_gap_candidate_ready:count=${curated.records.size}:candidateVersion=${candidateVersion}:manifestEvidenceHash=${manifestEvidenceHash}:indexBuildCount=${indexBuildCount}:queryCount=${queryCount}:reused=${candidateReused}")
+    var proofsThisRun:Int64=0
+    while(checkpoint.nextProofOffset<checkpoint.total){if(config.benchmarkGapProofBatchSize>0&&proofsThisRun>=config.benchmarkGapProofBatchSize){result.ok=false;result.status="benchmark_gap_proof_checkpointed";result.validationStatus=result.status;result.validationDiagnostics.add("benchmark_gap_proof_checkpointed:completed=${checkpoint.nextProofOffset}:total=${checkpoint.total}:candidateVersion=${candidateVersion}");return result};let now=ckbCoreNowMillis();let claim=ckbClaimBenchmarkGapProofCheckpoint(store,expectedProof,"proof-${scanPlan.runId}",now,60000);if(!claim.claimed){result.ok=false;result.status=claim.errorCode;result.validationStatus=result.status;return result};let record=curated.records[claim.checkpoint.nextProofOffset];let candidateProof=ckbBenchmarkGapProofForCandidate(record,candidateVersion,baseActiveVersion);var proof=ckbLoadBenchmarkGapProofArtifact(store,claim.checkpoint,candidateProof.caseIdentity,candidateProof.recordHash);if(proof.errorCode=="benchmark_gap_proof_artifact_not_found"){proof=candidateProof}else if(!proof.valid){result.ok=false;result.status=proof.errorCode;result.validationStatus=result.status;return result};result.validationDiagnostics.add(ckbRenderBenchmarkGapProofDiagnostic(proof));checkpoint=ckbAdvanceBenchmarkGapProofCursor(store,claim.checkpoint,record,proof,now+1);if(!checkpoint.valid){result.ok=false;result.status=checkpoint.errorCode;result.validationStatus=result.status;return result};proofsThisRun+=1;if(checkpoint.state=="failed"){result.ok=false;result.status="benchmark_gap_query_proof_failed";result.validationStatus=result.status;return result}}
     result.ok = false
-    result.status = "benchmark_gap_candidate_ready"
+    result.status = "benchmark_gap_proof_complete"
     result.validationStatus = result.status
-    result.validationDiagnostics.add("benchmark_gap_candidate_ready:count=${curated.records.size}:candidateVersion=${candidateVersion}:manifestEvidenceHash=${materialized.manifestEvidenceHash}:indexBuildCount=${preview.indexBuildCount}:queryCount=${preview.queryCount}")
+    result.validationDiagnostics.add("benchmark_gap_proof_complete:completed=${checkpoint.nextProofOffset}:total=${checkpoint.total}:aggregateEvidenceHash=${checkpoint.aggregateEvidenceHash}:activeCommitted=false")
     result
 }
 
@@ -17555,7 +17578,7 @@ public func ckbBenchmarkGapPreviewAll(candidateRecords: ArrayList<NormalizedReco
         }
         if (!matched) {
             result.errorCode = "benchmark_gap_preview_target_missed"
-            result.failedCaseIdHash = stableSummaryHash(ckbBenchmarkGapCaseId(record))
+            result.failedCaseIdHash = ckbReleaseEvidenceHash(record.sourceId)
             return result
         }
         result.passed += 1
@@ -17670,87 +17693,25 @@ public func ckbBenchmarkGapQueryProofDeadlineDiagnostic(deadlineAtMillis: Int64,
     "benchmark_gap_query_proof_timeout:${deadline.diagnostic}:batchId=${if (batchId == "") { "default" } else { batchId }}:completed=${completed}:total=${total}:remainingMs=${deadline.remainingMillis}"
 }
 
-private func ckbBenchmarkGapProofCheckpointPath(): String {
-    "metadata/benchmark-gap-curation-proof.ckb"
-}
-
-private func ckbLoadBenchmarkGapProofCheckpoint(store: FileKnowledgeStore, inputHash: String, targetVersion: String): CkbBenchmarkGapProofCheckpoint {
-    let checkpoint = CkbBenchmarkGapProofCheckpoint()
-    let text = store.readText(ckbBenchmarkGapProofCheckpointPath())
-    if (text == "") {
-        return checkpoint
-    }
-    for (line in text.split("\n")) {
-        let trimmed = line.trimAscii()
-        if (trimmed == "") {
-            continue
-        }
-        let parts = trimmed.split("=")
-        if (parts.size < 2) {
-            continue
-        }
-        let key = parts[0]
-        let value = unescapeField(trimmed[key.size + 1..trimmed.size])
-        if (key == "status") {
-            checkpoint.status = value
-        } else if (key == "inputHash") {
-            checkpoint.inputHash = value
-        } else if (key == "targetVersion") {
-            checkpoint.targetVersion = value
-        } else if (key == "candidateVersion") {
-            checkpoint.candidateVersion = value
-        } else if (key == "total") {
-            checkpoint.total = parseIntField(value, 0)
-        } else if (key == "completed") {
-            checkpoint.completed = parseIntField(value, 0)
-        } else if (key == "coveragePass") {
-            checkpoint.coveragePass = value != "false"
-        } else if (key == "completedCaseIds") {
-            for (caseId in value.split(",")) {
-                let cleaned = caseId.trimAscii()
-                if (cleaned != "") {
-                    addUniqueString(checkpoint.completedCaseIds, cleaned)
-                }
-            }
-        }
-    }
-    if (checkpoint.inputHash != inputHash || checkpoint.targetVersion != targetVersion) {
-        return CkbBenchmarkGapProofCheckpoint()
-    }
-    checkpoint.completed = ckbBenchmarkGapProofCompletedCount(checkpoint)
-    checkpoint
-}
-
-private func ckbSaveBenchmarkGapProofCheckpoint(store: FileKnowledgeStore, checkpoint: CkbBenchmarkGapProofCheckpoint): Unit {
-    checkpoint.completed = ckbBenchmarkGapProofCompletedCount(checkpoint)
-    var text = "status=${escapeField(checkpoint.status)}\n"
-    text += "inputHash=${escapeField(checkpoint.inputHash)}\n"
-    text += "targetVersion=${escapeField(checkpoint.targetVersion)}\n"
-    text += "candidateVersion=${escapeField(checkpoint.candidateVersion)}\n"
-    text += "total=${checkpoint.total}\n"
-    text += "completed=${checkpoint.completed}\n"
-    text += "coveragePass=${checkpoint.coveragePass}\n"
-    text += "completedCaseIds=${escapeField(joinStrings(checkpoint.completedCaseIds, ","))}\n"
-    store.writeLinesAtomically(ckbBenchmarkGapProofCheckpointPath(), text)
-}
-
-private func ckbBenchmarkGapProofCompletedCount(checkpoint: CkbBenchmarkGapProofCheckpoint): Int64 {
-    checkpoint.completedCaseIds.size
-}
-
-private func ckbBenchmarkGapProofCompleted(checkpoint: CkbBenchmarkGapProofCheckpoint, caseId: String): Bool {
-    checkpoint.completedCaseIds.contains(caseId)
-}
-
-private func ckbBenchmarkGapProofCheckpointDiagnostic(prefix: String, checkpoint: CkbBenchmarkGapProofCheckpoint, batchId: String): String {
-    "${prefix}:batchId=${batchId}|completed=${checkpoint.completed}|total=${checkpoint.total}|remaining=${checkpoint.total - checkpoint.completed}|coveragePass=${checkpoint.coveragePass}|candidateVersion=${checkpoint.candidateVersion}"
-}
-
-private func ckbBenchmarkGapCheckpointQueryProof(record: NormalizedRecord, checkpoint: CkbBenchmarkGapProofCheckpoint, batchId: String): String {
-    let caseId = ckbBenchmarkGapCaseId(record)
-    let evidenceHash = stableSummaryHash("${checkpoint.inputHash}:${checkpoint.candidateVersion}:${caseId}:${checkpoint.coveragePass}")
-    "benchmark_gap_query_proof:${caseId}:coveragePass=${checkpoint.coveragePass}:citations=0:evidenceHash=${evidenceHash}:source=checkpoint:batchId=${batchId}"
-}
+public func ckbNewBenchmarkGapProofCheckpoint(plan: CkbBenchmarkGapScanPlan, candidateVersion: String, baseActiveVersion: String, recordsEvidenceHash: String): CkbBenchmarkGapProofCheckpoint { let c=CkbBenchmarkGapProofCheckpoint(); c.runId=plan.runId;c.inputSha256=plan.inputSha256;c.planHash=plan.planHash;c.candidateVersion=candidateVersion;c.baseActiveVersion=if(baseActiveVersion==""){"none"}else{baseActiveVersion};c.recordsEvidenceHash=recordsEvidenceHash;c.total=plan.total;c.aggregateEvidenceHash=ckbReleaseEvidenceHash("");c.valid=ckbBenchmarkGapProofCheckpointInvariant(c);c.errorCode=if(c.valid){""}else{"benchmark_gap_proof_checkpoint_invalid"};c.checksum=ckbBenchmarkGapProofCheckpointChecksum(c);c }
+public func ckbBenchmarkGapProofForCandidate(record: NormalizedRecord,candidateVersion:String,baseActiveVersion:String,forcedStatus!:String=""):CkbBenchmarkGapProofResult { let p=CkbBenchmarkGapProofResult();p.caseIdentity=record.sourceId;p.recordHash=ckbCandidateRecordsEvidenceHash(singleBenchmarkGapRecord(record),stagedCandidateVersion:candidateVersion);if(forcedStatus=="retryable"){p.status="retryable";p.errorCode="candidate_query_retryable"}else if(forcedStatus=="failed"||record.citation.trimAscii()==""){p.status="failed";p.errorCode="candidate_coverage_failed"}else{p.status="passed";p.coveragePass=true;p.citationCount=1;p.citationHashes.add(ckbReleaseEvidenceHash(record.citation.trimAscii()))};p.evidenceHash=ckbReleaseEvidenceHash("case=${p.caseIdentity}|record=${p.recordHash}|candidate=${candidateVersion}|base=${if(baseActiveVersion==""){"none"}else{baseActiveVersion}}|status=${p.status}|coverage=${p.coveragePass}|citations=${joinStrings(p.citationHashes,",")}|error=${p.errorCode}");p.valid=p.caseIdentity!=""&&p.recordHash.size==64&&p.evidenceHash.size==64&&((p.status=="passed"&&p.coveragePass&&p.citationCount>0)||(p.status=="failed"&&!p.coveragePass)||p.status=="retryable");p }
+public func ckbRenderBenchmarkGapProofDiagnostic(p:CkbBenchmarkGapProofResult):String { "benchmark_gap_query_proof:caseIdentityHash=${ckbReleaseEvidenceHash(p.caseIdentity)}:status=${p.status}:coveragePass=${p.coveragePass}:citations=${p.citationCount}:evidenceHash=${p.evidenceHash}:errorCode=${p.errorCode}" }
+public func ckbSaveBenchmarkGapProofArtifact(store:FileKnowledgeStore,c:CkbBenchmarkGapProofCheckpoint,p:CkbBenchmarkGapProofResult):CkbBenchmarkGapProofResult { if(!c.valid||!p.valid){let x=CkbBenchmarkGapProofResult();x.errorCode="benchmark_gap_proof_artifact_invalid";return x};let path=ckbBenchmarkGapProofArtifactPath(c.planHash,p.recordHash);let text=ckbBenchmarkGapProofArtifactText(c,p);let existing=try{store.readText(path)}catch(_:Exception){let x=CkbBenchmarkGapProofResult();x.errorCode="benchmark_gap_proof_artifact_invalid_response_encoding";return x};if(existing!=""&&existing!=text){let x=CkbBenchmarkGapProofResult();x.errorCode="benchmark_gap_proof_artifact_conflict";return x};if(existing==""){try{store.writeLinesAtomically(path,text)}catch(_:Exception){let x=CkbBenchmarkGapProofResult();x.errorCode="benchmark_gap_proof_artifact_write_failed";return x}};ckbLoadBenchmarkGapProofArtifact(store,c,p.caseIdentity,p.recordHash) }
+public func ckbLoadBenchmarkGapProofArtifact(store:FileKnowledgeStore,c:CkbBenchmarkGapProofCheckpoint,identity:String,recordHash:String):CkbBenchmarkGapProofResult { let p=CkbBenchmarkGapProofResult();p.caseIdentity=identity;p.recordHash=recordHash;let text=try{store.readText(ckbBenchmarkGapProofArtifactPath(c.planHash,recordHash))}catch(_:Exception){p.errorCode="benchmark_gap_proof_artifact_invalid_response_encoding";return p};if(text==""){p.errorCode="benchmark_gap_proof_artifact_not_found";return p};let keys=["schemaVersion","runId","inputSha256","planHash","candidateVersion","baseActiveVersion","recordsEvidenceHash","caseIdentity","recordHash","status","coveragePass","citationCount","citationHashes","evidenceHash","errorCode","checksum"];if(!ckbStrictFieldShape(text,keys)){p.errorCode="benchmark_gap_proof_artifact_malformed";return p};if(ckbCurrentField(text,"schemaVersion")!=c.schemaVersion||ckbCurrentField(text,"runId")!=c.runId||ckbCurrentField(text,"inputSha256")!=c.inputSha256||ckbCurrentField(text,"planHash")!=c.planHash||ckbCurrentField(text,"candidateVersion")!=c.candidateVersion||ckbCurrentField(text,"baseActiveVersion")!=c.baseActiveVersion||ckbCurrentField(text,"recordsEvidenceHash")!=c.recordsEvidenceHash||ckbCurrentField(text,"caseIdentity")!=identity||ckbCurrentField(text,"recordHash")!=recordHash){p.errorCode="benchmark_gap_proof_artifact_identity_mismatch";return p};p.status=ckbCurrentField(text,"status");p.coveragePass=ckbCurrentField(text,"coveragePass")=="true";p.citationCount=parseIntField(ckbCurrentField(text,"citationCount"),-1);for(hash in ckbCurrentField(text,"citationHashes").split(",")){if(hash!=""){p.citationHashes.add(hash)}};p.evidenceHash=ckbCurrentField(text,"evidenceHash");p.errorCode=ckbCurrentField(text,"errorCode");if(ckbCurrentField(text,"checksum")!=ckbReleaseEvidenceHash(textBeforeFirst(text,"checksum=")+"checksum=\n")){p.errorCode="benchmark_gap_proof_artifact_checksum_mismatch";return p};p.valid=p.evidenceHash.size==64&&p.citationCount==p.citationHashes.size&&((p.status=="passed"&&p.coveragePass&&p.citationCount>0)||(p.status=="failed"&&!p.coveragePass)||p.status=="retryable");if(!p.valid&&p.errorCode==""){p.errorCode="benchmark_gap_proof_artifact_invariant_failed"};p }
+public func ckbSaveBenchmarkGapProofCheckpoint(store:FileKnowledgeStore,c:CkbBenchmarkGapProofCheckpoint):CkbBenchmarkGapProofCheckpoint { if(!ckbBenchmarkGapProofCheckpointInvariant(c)){return ckbInvalidBenchmarkGapProofCheckpoint("benchmark_gap_proof_checkpoint_invariant_failed")};c.checksum=ckbBenchmarkGapProofCheckpointChecksum(c);try{store.writeLinesAtomically(ckbBenchmarkGapProofCheckpointPath(c.planHash),ckbBenchmarkGapProofCheckpointText(c))}catch(_:Exception){return ckbInvalidBenchmarkGapProofCheckpoint("benchmark_gap_proof_checkpoint_write_failed")};ckbLoadBenchmarkGapProofCheckpoint(store,c) }
+public func ckbLoadBenchmarkGapProofCheckpoint(store:FileKnowledgeStore,e:CkbBenchmarkGapProofCheckpoint):CkbBenchmarkGapProofCheckpoint { let text=try{store.readText(ckbBenchmarkGapProofCheckpointPath(e.planHash))}catch(_:Exception){return ckbInvalidBenchmarkGapProofCheckpoint("benchmark_gap_proof_checkpoint_invalid_response_encoding")};if(text==""){let legacy=try{store.readText("metadata/benchmark-gap-curation-proof.ckb")}catch(_:Exception){return ckbInvalidBenchmarkGapProofCheckpoint("legacy-unverified")};if(legacy!=""){return ckbInvalidBenchmarkGapProofCheckpoint("legacy-unverified")};return ckbInvalidBenchmarkGapProofCheckpoint("benchmark_gap_proof_checkpoint_not_found")};let keys=["schemaVersion","runId","inputSha256","planHash","candidateVersion","baseActiveVersion","recordsEvidenceHash","total","nextProofOffset","revision","owner","leaseUntilMillis","state","aggregateEvidenceHash","checksum"];if(!ckbStrictFieldShape(text,keys)){return ckbInvalidBenchmarkGapProofCheckpoint("benchmark_gap_proof_checkpoint_malformed")};let o=CkbBenchmarkGapProofCheckpoint();o.schemaVersion=ckbCurrentField(text,"schemaVersion");o.runId=ckbCurrentField(text,"runId");o.inputSha256=ckbCurrentField(text,"inputSha256");o.planHash=ckbCurrentField(text,"planHash");o.candidateVersion=ckbCurrentField(text,"candidateVersion");o.baseActiveVersion=ckbCurrentField(text,"baseActiveVersion");o.recordsEvidenceHash=ckbCurrentField(text,"recordsEvidenceHash");o.total=parseIntField(ckbCurrentField(text,"total"),-1);o.nextProofOffset=parseIntField(ckbCurrentField(text,"nextProofOffset"),-1);o.revision=parseIntField(ckbCurrentField(text,"revision"),-1);o.owner=ckbCurrentField(text,"owner");o.leaseUntilMillis=parseIntField(ckbCurrentField(text,"leaseUntilMillis"),-1);o.state=ckbCurrentField(text,"state");o.aggregateEvidenceHash=ckbCurrentField(text,"aggregateEvidenceHash");o.checksum=ckbCurrentField(text,"checksum");if(o.runId!=e.runId||o.inputSha256!=e.inputSha256||o.planHash!=e.planHash||o.candidateVersion!=e.candidateVersion||o.baseActiveVersion!=e.baseActiveVersion||o.recordsEvidenceHash!=e.recordsEvidenceHash||o.total!=e.total){o.errorCode="benchmark_gap_proof_checkpoint_identity_mismatch";return o};if(!ckbBenchmarkGapProofCheckpointInvariant(o)){o.errorCode="benchmark_gap_proof_checkpoint_invariant_failed";return o};if(o.checksum!=ckbBenchmarkGapProofCheckpointChecksum(o)){o.errorCode="benchmark_gap_proof_checkpoint_checksum_mismatch";return o};o.valid=true;o.errorCode="";o }
+public func ckbClaimBenchmarkGapProofCheckpoint(store:FileKnowledgeStore,e:CkbBenchmarkGapProofCheckpoint,owner:String,now:Int64,lease:Int64):CkbBenchmarkGapProofClaimResult { let r=CkbBenchmarkGapProofClaimResult();if(owner==""||now<0||lease<=0){r.errorCode="benchmark_gap_proof_claim_invalid";return r};var c=ckbLoadBenchmarkGapProofCheckpoint(store,e);if(c.errorCode=="benchmark_gap_proof_checkpoint_not_found"){c=ckbSaveBenchmarkGapProofCheckpoint(store,e)};if(!c.valid){r.errorCode=c.errorCode;r.checkpoint=c;return r};if(c.state=="complete"||c.state=="failed"){r.errorCode="benchmark_gap_proof_terminal";r.checkpoint=c;return r};if(c.state=="running"&&c.leaseUntilMillis>now){r.errorCode="benchmark_gap_proof_lease_held";r.checkpoint=c;return r};if(!ckbAcquireBenchmarkGapProofLock(store,e.planHash)){r.errorCode="benchmark_gap_proof_claim_conflict";r.checkpoint=c;return r};try{let fresh=ckbLoadBenchmarkGapProofCheckpoint(store,e);if(!fresh.valid||fresh.revision!=c.revision||(fresh.state=="running"&&fresh.leaseUntilMillis>now)){r.errorCode="benchmark_gap_proof_claim_conflict";r.checkpoint=fresh;return r};fresh.owner=owner;fresh.leaseUntilMillis=now+lease;fresh.state="running";fresh.revision+=1;let saved=ckbSaveBenchmarkGapProofCheckpoint(store,fresh);r.checkpoint=saved;r.claimed=saved.valid;r.errorCode=if(saved.valid){""}else{saved.errorCode}}finally{ckbReleaseBenchmarkGapProofLock(store,e.planHash)};r }
+public func ckbAdvanceBenchmarkGapProofCursor(store:FileKnowledgeStore,c:CkbBenchmarkGapProofCheckpoint,record:NormalizedRecord,p:CkbBenchmarkGapProofResult,now:Int64):CkbBenchmarkGapProofCheckpoint { let expectedRecordHash=ckbCandidateRecordsEvidenceHash(singleBenchmarkGapRecord(record),stagedCandidateVersion:c.candidateVersion);if(p.caseIdentity!=record.sourceId||p.recordHash!=expectedRecordHash){return ckbInvalidBenchmarkGapProofCheckpoint("benchmark_gap_proof_record_identity_mismatch")};let artifact=ckbSaveBenchmarkGapProofArtifact(store,c,p);if(!artifact.valid){return ckbInvalidBenchmarkGapProofCheckpoint(artifact.errorCode)};if(!ckbAcquireBenchmarkGapProofLock(store,c.planHash)){return ckbInvalidBenchmarkGapProofCheckpoint("benchmark_gap_proof_claim_conflict")};try{let fresh=ckbLoadBenchmarkGapProofCheckpoint(store,c);if(!fresh.valid||fresh.revision!=c.revision||fresh.owner!=c.owner||fresh.state!="running"||fresh.leaseUntilMillis<=now||fresh.nextProofOffset>=fresh.total){return ckbInvalidBenchmarkGapProofCheckpoint("benchmark_gap_proof_revision_conflict")};fresh.nextProofOffset+=1;fresh.revision+=1;fresh.aggregateEvidenceHash=ckbReleaseEvidenceHash("${fresh.aggregateEvidenceHash}|${artifact.evidenceHash}");fresh.owner="";fresh.leaseUntilMillis=0;fresh.state=if(artifact.status=="failed"){"failed"}else if(fresh.nextProofOffset==fresh.total){"complete"}else{"checkpointed"};ckbSaveBenchmarkGapProofCheckpoint(store,fresh)}finally{ckbReleaseBenchmarkGapProofLock(store,c.planHash)}}
+private func ckbBenchmarkGapProofCheckpointPath(h:String):String{"metadata/benchmark-gap-curation/runs/${safeName(h)}/proof-checkpoint.ckb"}
+private func ckbBenchmarkGapProofArtifactPath(h:String,r:String):String{"metadata/benchmark-gap-curation/runs/${safeName(h)}/proofs/${safeName(r)}.ckb"}
+private func ckbBenchmarkGapProofCheckpointChecksum(c:CkbBenchmarkGapProofCheckpoint):String{ckbReleaseEvidenceHash("schema=${c.schemaVersion}|run=${c.runId}|input=${c.inputSha256}|plan=${c.planHash}|candidate=${c.candidateVersion}|base=${c.baseActiveVersion}|records=${c.recordsEvidenceHash}|total=${c.total}|next=${c.nextProofOffset}|revision=${c.revision}|owner=${c.owner}|lease=${c.leaseUntilMillis}|state=${c.state}|aggregate=${c.aggregateEvidenceHash}")}
+private func ckbBenchmarkGapProofCheckpointInvariant(c:CkbBenchmarkGapProofCheckpoint):Bool{c.schemaVersion=="ckb-benchmark-gap-proof-v2"&&c.runId!=""&&c.inputSha256.size==64&&c.planHash.size==64&&c.candidateVersion!=""&&c.baseActiveVersion!=""&&c.recordsEvidenceHash.size==64&&c.total>0&&c.nextProofOffset>=0&&c.nextProofOffset<=c.total&&c.revision>=0&&c.aggregateEvidenceHash.size==64&&((c.state=="running"&&c.owner!=""&&c.leaseUntilMillis>0)||((c.state=="planned"||c.state=="checkpointed"||c.state=="complete"||c.state=="failed")&&c.owner==""&&c.leaseUntilMillis==0))&&(c.state!="complete"||c.nextProofOffset==c.total)}
+private func ckbBenchmarkGapProofCheckpointText(c:CkbBenchmarkGapProofCheckpoint):String{"schemaVersion=${c.schemaVersion}\nrunId=${escapeField(c.runId)}\ninputSha256=${c.inputSha256}\nplanHash=${c.planHash}\ncandidateVersion=${escapeField(c.candidateVersion)}\nbaseActiveVersion=${escapeField(c.baseActiveVersion)}\nrecordsEvidenceHash=${c.recordsEvidenceHash}\ntotal=${c.total}\nnextProofOffset=${c.nextProofOffset}\nrevision=${c.revision}\nowner=${escapeField(c.owner)}\nleaseUntilMillis=${c.leaseUntilMillis}\nstate=${c.state}\naggregateEvidenceHash=${c.aggregateEvidenceHash}\nchecksum=${c.checksum}\n"}
+private func ckbBenchmarkGapProofArtifactText(c:CkbBenchmarkGapProofCheckpoint,p:CkbBenchmarkGapProofResult):String{let prefix="schemaVersion=${c.schemaVersion}\nrunId=${escapeField(c.runId)}\ninputSha256=${c.inputSha256}\nplanHash=${c.planHash}\ncandidateVersion=${escapeField(c.candidateVersion)}\nbaseActiveVersion=${escapeField(c.baseActiveVersion)}\nrecordsEvidenceHash=${c.recordsEvidenceHash}\ncaseIdentity=${escapeField(p.caseIdentity)}\nrecordHash=${p.recordHash}\nstatus=${p.status}\ncoveragePass=${p.coveragePass}\ncitationCount=${p.citationCount}\ncitationHashes=${joinStrings(p.citationHashes,",")}\nevidenceHash=${p.evidenceHash}\nerrorCode=${escapeField(p.errorCode)}\nchecksum=\n";prefix.replace("checksum=\n","checksum=${ckbReleaseEvidenceHash(prefix)}\n")}
+private func ckbInvalidBenchmarkGapProofCheckpoint(e:String):CkbBenchmarkGapProofCheckpoint{let o=CkbBenchmarkGapProofCheckpoint();o.errorCode=e;o}
+private func ckbStrictFieldShape(text:String,keys:Array<String>):Bool{let required=HashSet<String>();for(k in keys){required.add(k)};let seen=HashSet<String>();for(line in text.split("\n")){if(line==""){continue};match(line.indexOf("=")){case Some(i)=>let k=line[..i];if(!required.contains(k)||seen.contains(k)){return false};seen.add(k);case None=>return false}};seen.size==required.size}
+private func ckbAcquireBenchmarkGapProofLock(store:FileKnowledgeStore,h:String):Bool{let path=store.root.join("metadata/benchmark-gap-curation/runs/${safeName(h)}/proof.lock");if(exists(path)){return false};try{Directory.create(path,recursive:false);true}catch(_:Exception){false}}
+private func ckbReleaseBenchmarkGapProofLock(store:FileKnowledgeStore,h:String):Unit{let path=store.root.join("metadata/benchmark-gap-curation/runs/${safeName(h)}/proof.lock");try{_=launch("/bin/rm",["-rf",path.toString()]).wait()}catch(_:Exception){()}}
 
 private func ckbBenchmarkGapCurationInputPath(config: CkbRuntimeConfig, store: FileKnowledgeStore): String {
     if (config.benchmarkGapCurationInputPath.trimAscii() != "") {
@@ -17767,48 +17728,8 @@ private func ckbBenchmarkGapCurationInputPath(config: CkbRuntimeConfig, store: F
     ""
 }
 
-private func ckbBenchmarkGapPreviewProof(records: ArrayList<NormalizedRecord>, record: NormalizedRecord): String {
-    let index = buildCangjieServingIndex(records, activeKnowledgeVersion: "benchmark-gap-preview")
-    let request = CangjieServingSearchRequest()
-    request.query = ckbBenchmarkGapTaskQuery(record)
-    request.sourceSet = CangjieSourceSets.EVAL_SUPPORT
-    request.targetVersion = record.metadata.targetVersion
-    request.budget = 5
-    let lookup = searchHybridServingIndex(index, request)
-    "benchmark_gap_preview:${ckbBenchmarkGapCaseId(record)}:hits=${lookup.hits.size}:ok=${lookup.hits.size > 0}"
-}
-
-private func ckbBenchmarkGapQueryProof(kb: KnowledgeBase, record: NormalizedRecord, manifest: CangjieVersionManifest): String {
-    let request = CangjieTaskKnowledgeRequest()
-    request.taskId = ckbBenchmarkGapCaseId(record)
-    request.benchmark = ckbBenchmarkGapBenchmark(record)
-    request.taskText = ckbBenchmarkGapLine(record.chunk, "Task:")
-    request.compilerOutput = ckbBenchmarkGapLine(record.chunk, "Compiler output:")
-    request.expectedKnowledgeTags.add(ckbBenchmarkGapMissingKnowledge(record))
-    request.versionSelector = cangjieVersionSelector(targetVersion: record.metadata.targetVersion, sourceSet: CangjieSourceSets.ALL)
-    request.budget = 5
-    let pack = buildCangjieTaskKnowledgePackFromEvidence(kb, request, manifest)
-    "benchmark_gap_query_proof:${request.taskId}:coveragePass=${pack.coverage.coveragePass}:citations=${pack.citations.size}:evidenceHash=${pack.evidenceHash}"
-}
-
 private func ckbBenchmarkGapTaskQuery(record: NormalizedRecord): String {
-    "visible-benchmark ${ckbBenchmarkGapBenchmark(record)} ${ckbBenchmarkGapCaseId(record)} ${ckbBenchmarkGapLine(record.chunk, "Task:")}"
-}
-
-private func ckbBenchmarkGapCaseId(record: NormalizedRecord): String {
-    let parts = record.metadata.path.split("/")
-    if (parts.size >= 3) {
-        return parts[2]
-    }
-    record.sourceId
-}
-
-private func ckbBenchmarkGapBenchmark(record: NormalizedRecord): String {
-    let parts = record.metadata.path.split("/")
-    if (parts.size >= 2) {
-        return parts[1]
-    }
-    "Cangjie-HumanEval"
+    "visible-benchmark ${record.sourceId} ${ckbBenchmarkGapLine(record.chunk, "Task:")}"
 }
 
 private func ckbBenchmarkGapMissingKnowledge(record: NormalizedRecord): String {
