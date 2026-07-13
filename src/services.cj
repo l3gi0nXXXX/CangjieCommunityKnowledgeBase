@@ -14194,7 +14194,7 @@ public class CkbBenchmarkGapTerminalManifest {
 }
 public interface CkbBenchmarkGapFinalizeFaultInjector { func checkpoint(point:String):Unit }
 public class NoopCkbBenchmarkGapFinalizeFaultInjector <: CkbBenchmarkGapFinalizeFaultInjector { public init(){};public func checkpoint(point:String):Unit{} }
-public class CkbBenchmarkGapCleanupResult { public var ok:Bool=false;public var intentCommitted:Bool=false;public var locksRemoved:Bool=false;public var spoolRemoved:Bool=false;public var diagnostics:ArrayList<String>=ArrayList<String>();public init(){} }
+public class CkbBenchmarkGapCleanupResult { public var ok:Bool=false;public var intentCommitted:Bool=false;public var locksRemoved:Bool=false;public var spoolRemoved:Bool=false;public var unreferencedTransactionsRemoved:Int64=0;public var nonActiveOwnersCleaned:Int64=0;public var diagnostics:ArrayList<String>=ArrayList<String>();public init(){} }
 
 public class CkbBenchmarkGapPreCommitGate <: CangjieCandidatePreCommitGate {
     private let store: FileKnowledgeStore
@@ -17776,6 +17776,7 @@ private func ingestScheduledBenchmarkGapCuration(kb: KnowledgeBase, store: FileK
     let promotion = cangjiePromoteCandidateRecordsAfterValidationWithVersion(candidateKb, store,
         candidateVersion, candidateRecords, progressSink: progressSink,
         deadlineAtMillis: deadlineAtMillis, acquisitionContext: acquisition, preCommitGate: gate,
+        repositoryEventIdentity: "p7:${scanPlan.planHash}",
         expectedBaseActiveVersion: baseActiveVersion)
     for (diagnostic in promotion.validation.diagnostics) { result.validationDiagnostics.add(diagnostic) }
     result.candidateVersion = promotion.candidateVersion; result.activeVersion = promotion.activeVersion
@@ -18360,7 +18361,18 @@ public func ckbFinalizeBenchmarkGapTerminal(store: FileKnowledgeStore,
     loaded
 }
 
-public func ckbCleanupBenchmarkGapCurationRun(store:FileKnowledgeStore,t:CkbBenchmarkGapTerminalManifest):CkbBenchmarkGapCleanupResult{let r=CkbBenchmarkGapCleanupResult();if(!t.valid){r.diagnostics.add("terminal_invalid");return r};let prefix="schemaVersion=ckb-benchmark-gap-commit-intent-v1\nrunId=${escapeField(t.runId)}\ninputSha256=${t.inputSha256}\nplanHash=${t.planHash}\ncandidateVersion=${escapeField(t.candidateVersion)}\nbaseActiveVersion=${escapeField(t.baseActiveVersion)}\nrecordsEvidenceHash=${t.recordsEvidenceHash}\nstate=committed\ntransactionId=${escapeField(t.transactionId)}\n";let text=prefix+"checksum=${ckbReleaseEvidenceHash(prefix)}\n";try{store.writeLinesAtomically("metadata/benchmark-gap-curation/runs/${safeName(t.planHash)}/commit-intent.ckb",text);r.intentCommitted=store.readText("metadata/benchmark-gap-curation/runs/${safeName(t.planHash)}/commit-intent.ckb")==text}catch(_:Exception){r.diagnostics.add("commit_intent_cleanup_failed")};let proofLock=store.root.join("metadata/benchmark-gap-curation/runs/${safeName(t.planHash)}/proof.lock");let commitLock=store.root.join("metadata/benchmark-gap-curation/runs/${safeName(t.planHash)}/commit.lock");try{if(exists(proofLock)){_=launch("/bin/rm",["-rf",proofLock.toString()]).wait()};if(exists(commitLock)){_=launch("/bin/rm",["-rf",commitLock.toString()]).wait()}}catch(_:Exception){r.diagnostics.add("lock_cleanup_failed")};r.locksRemoved=!exists(proofLock)&&!exists(commitLock);let acquisition="p7-curation-${ckbReleaseEvidenceHash("${t.runId}|${t.planHash}|${t.candidateVersion}")}";r.spoolRemoved=store.deleteS4ArtifactTree("metadata/vector-builds/${acquisition}");r.ok=r.intentCommitted&&r.locksRemoved&&r.spoolRemoved;r}
+public func ckbCleanupBenchmarkGapCurationRun(store:FileKnowledgeStore,t:CkbBenchmarkGapTerminalManifest):CkbBenchmarkGapCleanupResult {
+    let r=CkbBenchmarkGapCleanupResult();if(!t.valid){r.diagnostics.add("terminal_invalid");return r}
+    let prefix="schemaVersion=ckb-benchmark-gap-commit-intent-v1\nrunId=${escapeField(t.runId)}\ninputSha256=${t.inputSha256}\nplanHash=${t.planHash}\ncandidateVersion=${escapeField(t.candidateVersion)}\nbaseActiveVersion=${escapeField(t.baseActiveVersion)}\nrecordsEvidenceHash=${t.recordsEvidenceHash}\nstate=committed\ntransactionId=${escapeField(t.transactionId)}\n"
+    let text=prefix+"checksum=${ckbReleaseEvidenceHash(prefix)}\n";try{store.writeLinesAtomically("metadata/benchmark-gap-curation/runs/${safeName(t.planHash)}/commit-intent.ckb",text);r.intentCommitted=store.readText("metadata/benchmark-gap-curation/runs/${safeName(t.planHash)}/commit-intent.ckb")==text}catch(_:Exception){r.diagnostics.add("commit_intent_cleanup_failed")}
+    let proofLock=store.root.join("metadata/benchmark-gap-curation/runs/${safeName(t.planHash)}/proof.lock");let commitLock=store.root.join("metadata/benchmark-gap-curation/runs/${safeName(t.planHash)}/commit.lock")
+    try{if(exists(proofLock)){_=launch("/bin/rm",["-rf",proofLock.toString()]).wait()};if(exists(commitLock)){_=launch("/bin/rm",["-rf",commitLock.toString()]).wait()}}catch(_:Exception){r.diagnostics.add("lock_cleanup_failed")};r.locksRemoved=!exists(proofLock)&&!exists(commitLock)
+    let acquisition="p7-curation-${ckbReleaseEvidenceHash("${t.runId}|${t.planHash}|${t.candidateVersion}")}";r.spoolRemoved=store.deleteS4ArtifactTree("metadata/vector-builds/${acquisition}")
+    let pointer=store.loadActiveSnapshotPointer();let txRoot=store.root.join("transactions")
+    if(pointer.valid&&exists(txRoot)){try{for(entry in Directory.readFrom(txRoot)){if(!entry.isDirectory()||entry.name==safeName(t.transactionId)||entry.name==safeName(pointer.txId)){continue};let recovery=try{store.readText("transactions/${entry.name}/metadata/repository-event-recovery.ckb")}catch(_:Exception){""};if(ckbCurrentField(recovery,"eventIdentity")=="p7:${t.planHash}"){let path=txRoot.join(entry.name);if(launch("/bin/rm",["-rf",path.toString()]).wait()==0&&!exists(path)){r.unreferencedTransactionsRemoved+=1}}}}catch(_:Exception){r.diagnostics.add("transaction_cleanup_degraded")}}
+    for(owner in store.listCandidateCollectionOwners()){if(owner.valid&&owner.planHash==t.planHash&&owner.schedulerRunId==t.runId&&owner.candidateVersion==t.candidateVersion&&owner.acquisitionId==acquisition&&pointer.valid&&owner.collection!=pointer.vectorActiveCollection&&owner.state!="cleaned"){owner.state="cleaned";if(store.saveCandidateCollectionOwner(owner).valid){r.nonActiveOwnersCleaned+=1}else{r.diagnostics.add("candidate_owner_cleanup_degraded")}}}
+    r.ok=r.intentCommitted&&r.locksRemoved&&r.spoolRemoved;r
+}
 
 public func ckbLoadBenchmarkGapTerminal(store: FileKnowledgeStore, planHash: String,
     transactionId: String): CkbBenchmarkGapTerminalManifest {

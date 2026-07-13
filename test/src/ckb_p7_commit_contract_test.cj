@@ -46,7 +46,14 @@ public class CkbP7CommitContractTest {
     @TestCase public func p7E2E02TerminalWriteIsIdempotent():Unit { let f=p7S6Fixture("e02",3);let a=ckbFinalizeBenchmarkGapTerminal(f[0],f[1],"active-e02","tx-e02");let b=ckbFinalizeBenchmarkGapTerminal(f[0],f[1],"active-e02","tx-e02");@Expect(a.checksum,b.checksum);@Expect(b.valid,true) }
     @TestCase public func p7E2E03TenClaimantsObserveTerminalProof():Unit { let f=p7S6Fixture("e03",10);var passed:Int64=0;for(_ in 0..10){let g=CkbBenchmarkGapPreCommitGate(f[0],f[1],f[2],0);if(g.evaluate(f[1].candidateVersion,f[1].baseActiveVersion).passed){passed+=1}};@Expect(passed,10) }
     @TestCase public func p7E2E04UnicodeIdentityDoesNotLeakIntoTerminalPointer():Unit { let f=p7S6Fixture("中文😀token=secret",2);let t=ckbFinalizeBenchmarkGapTerminal(f[0],f[1],"active-e04","tx-e04");let pointer=f[0].readText("metadata/benchmark-gap-curation-last-success.ckb");@Expect(t.valid,true);@Expect(pointer.contains("token=secret"),false) }
-    @TestCase public func p7E2E05TerminalKeepsImmutableProofEvidence():Unit { let f=p7S6Fixture("e05",4);let hash=f[1].aggregateEvidenceHash;let t=ckbFinalizeBenchmarkGapTerminal(f[0],f[1],"active-e05","tx-e05");let run="metadata/benchmark-gap-curation/runs/${f[1].planHash}";Directory.create(Path(f[0].root.toString()).join("${run}/commit.lock"),recursive:true);let cleanup=ckbCleanupBenchmarkGapCurationRun(f[0],t);@Expect(t.proofEvidenceHash,hash);@Expect(f[0].has("${run}/proofs"),true);@Expect(cleanup.ok,true);@Expect(cleanup.intentCommitted,true);@Expect(cleanup.locksRemoved,true);@Expect(cleanup.spoolRemoved,true);@Expect(f[0].readText("${run}/commit-intent.ckb").contains("state=committed"),true);@Expect(exists(f[0].root.join("${run}/commit.lock")),false) }
+    @TestCase public func p7E2E05TerminalKeepsImmutableProofEvidence():Unit {
+        let f=p7S6Fixture("e05",4);let hash=f[1].aggregateEvidenceHash;let active=newOfflineKnowledgeBase().persistActiveSnapshot(f[0]);@Expect(active.ok,true)
+        let t=ckbFinalizeBenchmarkGapTerminal(f[0],f[1],active.activeVersion,active.txId);let run="metadata/benchmark-gap-curation/runs/${f[1].planHash}";Directory.create(Path(f[0].root.toString()).join("${run}/commit.lock"),recursive:true)
+        Directory.create(f[0].root.join("transactions/p7-orphan/metadata"),recursive:true);f[0].writeLinesAtomically("transactions/p7-orphan/metadata/repository-event-recovery.ckb","eventIdentity=p7:${f[1].planHash}\n")
+        Directory.create(f[0].root.join("transactions/unrelated/metadata"),recursive:true);f[0].writeLinesAtomically("transactions/unrelated/metadata/repository-event-recovery.ckb","eventIdentity=p7:unrelated\n")
+        let acquisition="p7-curation-${ckbReleaseEvidenceHash("${f[1].runId}|${f[1].planHash}|${f[1].candidateVersion}")}";let owner=CkbCandidateCollectionOwner();owner.collection="p7-non-active";owner.acquisitionId=acquisition;owner.schedulerRunId=f[1].runId;owner.taskId="fixture";owner.candidateVersion=f[1].candidateVersion;owner.planHash=f[1].planHash;owner.recordsEvidenceHash=f[1].recordsEvidenceHash;owner.state="planned";owner.valid=true;_=f[0].saveCandidateCollectionOwner(owner)
+        let cleanup=ckbCleanupBenchmarkGapCurationRun(f[0],t);@Expect(t.proofEvidenceHash,hash);@Expect(f[0].has("${run}/proofs"),true);@Expect(cleanup.ok,true);@Expect(cleanup.intentCommitted,true);@Expect(cleanup.locksRemoved,true);@Expect(cleanup.spoolRemoved,true);@Expect(cleanup.unreferencedTransactionsRemoved,1);@Expect(cleanup.nonActiveOwnersCleaned,1);@Expect(f[0].has("transactions/p7-orphan"),false);@Expect(f[0].has("transactions/unrelated"),true);@Expect(f[0].has("transactions/${active.txId}/COMMIT"),true);@Expect(f[0].loadCandidateCollectionOwner("p7-non-active").state,"cleaned");@Expect(f[0].readText("${run}/commit-intent.ckb").contains("state=committed"),true);@Expect(exists(f[0].root.join("${run}/commit.lock")),false)
+    }
     @TestCase public func p7E2E06FinalizeCrashBoundariesResumeIdempotently():Unit {
         let beforeTerminal=p7S6Fixture("e06-terminal",2)
         try { _=ckbFinalizeBenchmarkGapTerminal(beforeTerminal[0],beforeTerminal[1],"active-e06-a","tx-e06-a",faultInjector:P7S6FinalizeFault("terminal_before")) } catch (_:Exception) {}
@@ -58,12 +65,25 @@ public class CkbP7CommitContractTest {
         @Expect(beforePointer[0].has("metadata/benchmark-gap-curation-last-success.ckb"),false)
         @Expect(ckbFinalizeBenchmarkGapTerminal(beforePointer[0],beforePointer[1],"active-e06-b","tx-e06-b").valid,true)
     }
+    @TestCase public func p7E2E07ActiveTransactionCrashBoundariesPreserveAtomicity():Unit {
+        for(point in [CkbActiveSnapshotFaultPoints.COMMIT,CkbActiveSnapshotFaultPoints.POINTER_BEFORE,CkbActiveSnapshotFaultPoints.POINTER_AFTER]){
+            let f=p7S6Fixture("e07-${point}",2);_=newOfflineKnowledgeBase().persistActiveSnapshot(f[0]);let before=f[0].loadActiveSnapshotPointer();let attempted=p7S6WriteActiveWithFault(f[0],f[1].planHash,point);let after=f[0].loadActiveSnapshotPointer()
+            if(point==CkbActiveSnapshotFaultPoints.POINTER_AFTER){@Expect(attempted.businessCommitted,true);@Expect(after.txId,attempted.txId);@Expect(f[0].has("transactions/${attempted.txId}/COMMIT"),true)}else{@Expect(attempted.businessCommitted,false);@Expect(after.txId,before.txId);@Expect(f[0].has("transactions/${before.txId}/COMMIT"),true)}
+        }
+    }
 }
 
 private class P7S6FinalizeFault <: CkbBenchmarkGapFinalizeFaultInjector {
     let point:String
     init(point:String){this.point=point}
     public func checkpoint(point:String):Unit { if(point==this.point){throw Exception("fixture_fault:${point}")} }
+}
+
+private class P7S6ActiveFault <: CkbActiveSnapshotFaultInjector { let point:String;init(point:String){this.point=point};public func checkpoint(point:String):Unit{if(point==this.point){throw Exception("fixture_fault:${point}")}} }
+
+private func p7S6WriteActiveWithFault(store:FileKnowledgeStore,planHash:String,point:String):CkbActiveSnapshotTransactionResult {
+    let loaded=newKnowledgeBaseFromStore(store);let snapshot=store.loadActiveSnapshot();let graph=loaded.kb.activeGraphBuild()
+    store.writeActiveSnapshotTransaction(loaded.kb.status(),snapshot.rawRecords,snapshot.normalizedRecords,snapshot.activeIndex,snapshot.vectorRecords,snapshot.vectorActiveCollection,graph,persistVectorFile:snapshot.hasVectorArtifact,repositoryEventIdentity:"p7:${planHash}",faultInjector:P7S6ActiveFault(point))
 }
 
 private func p7S6Fixture(name:String,total:Int64):(FileKnowledgeStore,CkbBenchmarkGapProofCheckpoint,ArrayList<NormalizedRecord>){
