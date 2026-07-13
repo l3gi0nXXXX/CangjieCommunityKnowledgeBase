@@ -14236,6 +14236,12 @@ public class CkbBenchmarkGapPreCommitGate <: CangjieCandidatePreCommitGate {
             checkpoint = ckbAdvanceBenchmarkGapProofCursor(this.store, claim.checkpoint, record, proof, nowMillis + 1)
             if (!checkpoint.valid) { result.passed = false; result.status = checkpoint.errorCode; return result }
             completed += 1
+            _ = ckbPersistBenchmarkGapLifecycleEvent(this.store, this.expected.runId,
+                if (checkpoint.state == "failed") { "proof_failed" } else { "proof_passed" },
+                proof.status, this.expected.planHash, candidateVersion,
+                if (proof.errorCode == "") { "proof artifact confirmed" } else { proof.errorCode },
+                completed: checkpoint.nextProofOffset, total: checkpoint.total,
+                errorCode: proof.errorCode)
             if (checkpoint.state == "failed") { result.passed = false; result.terminal = true; result.status = "benchmark_gap_query_proof_failed"; return result }
         }
         result.evidenceHash = checkpoint.aggregateEvidenceHash
@@ -17669,7 +17675,11 @@ private func ingestScheduledBenchmarkGapCuration(kb: KnowledgeBase, store: FileK
         result.status = persistedPlan.errorCode
         return result
     }
+    _ = ckbPersistBenchmarkGapLifecycleEvent(store, scanPlan.runId, "planned", "planned",
+        scanPlan.planHash, "", "durable scan plan", completed: persistedPlan.nextOffset,
+        total: scanPlan.total)
     result.validationDiagnostics.add("benchmark_gap_input_gate:bytes=${curationBytes.size}:accepted=${curated.records.size}:rejected=${curated.rejected}:batchSize=${ckbBenchmarkGapCurationBatchSize()}:inputHash=${inputHash}:planHash=${scanPlan.planHash}")
+    _ = ckbPersistBenchmarkGapLifecycleEvent(store, scanPlan.runId, "accepted", "accepted", scanPlan.planHash, "", "accepted input", completed: curated.records.size, total: scanPlan.total)
     if (persistedPlan.state != "complete") {
         let nowMillis = ckbCoreNowMillis()
         let claim = ckbClaimBenchmarkGapScanPlan(store, scanPlan.planHash, scanPlan.inputSha256,
@@ -17681,6 +17691,9 @@ private func ingestScheduledBenchmarkGapCuration(kb: KnowledgeBase, store: FileK
             result.validationStatus = result.status
             return result
         }
+        _ = ckbPersistBenchmarkGapLifecycleEvent(store, scanPlan.runId, "claimed", "claimed",
+            scanPlan.planHash, "", "scan batch claimed", completed: claim.startOffset,
+            total: scanPlan.total)
         let batch = ckbSaveBenchmarkGapCandidateBatch(store, scanPlan, curated.records,
             claim.startOffset, claim.endOffset)
         if (!batch.ok) {
@@ -17699,6 +17712,7 @@ private func ingestScheduledBenchmarkGapCuration(kb: KnowledgeBase, store: FileK
             return result
         }
         result.validationDiagnostics.add("benchmark_gap_candidate_batch:planHash=${scanPlan.planHash}:start=${batch.startOffset}:end=${batch.endOffset}:count=${batch.written}:evidenceHash=${batch.evidenceHash}")
+        _ = ckbPersistBenchmarkGapLifecycleEvent(store, scanPlan.runId, "batch_checkpointed", "checkpointed", scanPlan.planHash, "", "candidate batch", completed: batch.endOffset, total: scanPlan.total)
         if (persistedPlan.state != "complete") {
             result.ok = false
             result.status = "benchmark_gap_scan_batch_checkpointed"
@@ -17727,6 +17741,10 @@ private func ingestScheduledBenchmarkGapCuration(kb: KnowledgeBase, store: FileK
             result.ok=true;result.status="candidate_validated_promoted";result.validationStatus="curation_checkpoint_verified";result.candidateVersion=recoveredTerminal.candidateVersion;result.activeVersion=recoveredTerminal.activeVersion;result.transactionId=recoveredTerminal.transactionId
             for(g in ["curation_input_verified","curation_plan_complete","candidate_validation_passed","query_proof_complete","active_transaction_verified","curation_checkpoint_verified"]){result.validationGates.add(g)}
             result.validationDiagnostics.add("benchmark_gap_commit_recovered:planHash=${scanPlan.planHash}:tx=${ckbReleaseEvidenceHash(pointer.txId)}")
+            _ = ckbPersistBenchmarkGapLifecycleEvent(store, scanPlan.runId, "duplicate",
+                "terminal_skip", scanPlan.planHash, recoveredTerminal.candidateVersion,
+                "terminal already committed", completed: recoveredTerminal.completed,
+                total: recoveredTerminal.total)
             return result
         }
     }
@@ -17791,6 +17809,7 @@ private func ingestScheduledBenchmarkGapCuration(kb: KnowledgeBase, store: FileK
     if (!terminal.valid) { result.ok=false;result.status=terminal.errorCode;result.validationStatus=result.status;return result }
     let committedSnapshot = store.loadActiveSnapshot()
     if (!committedSnapshot.valid || !kb.restoreActiveSnapshot(committedSnapshot)) { result.ok=false;result.status="benchmark_gap_active_reload_failed";result.validationStatus=result.status;return result }
+    _ = ckbPersistBenchmarkGapLifecycleEvent(store, scanPlan.runId, "committed", "committed", scanPlan.planHash, candidateVersion, "terminal confirmed", completed: terminal.completed, total: terminal.total)
     result.ok = true; result.status = "candidate_validated_promoted"; result.validationStatus = "curation_checkpoint_verified"
     for (gateName in ["curation_input_verified", "curation_plan_complete", "candidate_validation_passed", "query_proof_complete", "active_transaction_verified", "curation_checkpoint_verified"]) { result.validationGates.add(gateName) }
     result
@@ -18138,13 +18157,52 @@ private func ckbBenchmarkGapScanPlanShapeValid(text: String): Bool {
         if (line == "") { continue }
         match (line.indexOf("=")) {
             case Some(index) =>
-                let key = line[..index]
+                let fields = line.split("=")
+                if (fields.size < 2) { return false }
+                let key = fields[0]
                 if (!required.contains(key) || seen.contains(key)) { return false }
                 seen.add(key)
             case None => return false
         }
     }
     seen.size == required.size
+}
+
+public class CkbBenchmarkGapLegacyInspection {
+    public var status: String = "absent"
+    public var evidenceHash: String = ""
+    public var size: Int64 = 0
+    public init() {}
+}
+
+public func ckbInspectLegacyBenchmarkGapProof(store: FileKnowledgeStore): CkbBenchmarkGapLegacyInspection {
+    let result = CkbBenchmarkGapLegacyInspection()
+    let path = store.root.join("metadata/benchmark-gap-curation-proof.ckb")
+    if (!exists(path)) { return result }
+    let bytes = try { File.readFrom(path) } catch (_: Exception) { result.status = "legacy-malformed"; return result }
+    result.size = bytes.size; let digest = SHA256(); digest.write(bytes); result.evidenceHash = ckbReleaseDigestHex(digest)
+    let text = try { String.fromUtf8(bytes) } catch (_: Exception) { result.status = "legacy-invalid-encoding"; return result }
+    result.status = if (text.trimAscii() == "") { "legacy-malformed" } else { "legacy-unverified" }
+    result
+}
+
+public func ckbRenderBenchmarkGapLifecycleEvent(runId: String, stage: String, status: String,
+    planHash: String, candidateVersion: String, diagnostic: String, completed!: Int64 = 0,
+    total!: Int64 = 0, errorCode!: String = ""): String {
+    let redacted = redactSensitive(diagnostic)
+    let safe = utf8SafePrefix(redacted, 240)
+    "{\"time\":\"${ckbRuntimePreflightJsonEscape(DateTime.now().toString())}\",\"level\":\"${if (errorCode == "") { "info" } else { "error" }}\",\"subsystem\":\"ckb.routine.benchmark_gap\",\"event\":\"benchmark.curation.${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(stage), 80))}\",\"message\":\"benchmark gap lifecycle\",\"runId\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(runId), 96))}\",\"taskName\":\"cangjie_benchmark_gap_curation\",\"stage\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(stage), 80))}\",\"status\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(status), 80))}\",\"errorCode\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(errorCode), 120))}\",\"planHash\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(planHash, 64))}\",\"candidateVersionHash\":\"${ckbReleaseEvidenceHash(candidateVersion)}\",\"completed\":${completed},\"total\":${total},\"diagnostic\":\"${ckbRuntimePreflightJsonEscape(safe)}\",\"diagnosticTruncated\":${diagnostic.toRuneArray().size > 240}}"
+}
+
+private func ckbPersistBenchmarkGapLifecycleEvent(store: FileKnowledgeStore, runId: String,
+    stage: String, status: String, planHash: String, candidateVersion: String,
+    diagnostic: String, completed!: Int64 = 0, total!: Int64 = 0,
+    errorCode!: String = ""): Bool {
+    let line = ckbRenderBenchmarkGapLifecycleEvent(runId, stage, status, planHash,
+        candidateVersion, diagnostic, completed: completed, total: total,
+        errorCode: errorCode) + "\n"
+    let path = "metadata/benchmark-gap-curation/runs/${safeName(planHash)}/events/${safeName(stage)}-${completed}.jsonl"
+    try { store.writeLinesAtomically(path, line); store.readText(path) == line } catch (_: Exception) { false }
 }
 
 private func ckbBenchmarkGapInvalidScanPlan(errorCode: String): CkbBenchmarkGapScanPlan {
@@ -18345,6 +18403,9 @@ public func ckbFinalizeBenchmarkGapTerminal(store: FileKnowledgeStore,
     terminal.transactionId = transactionId
     terminal.gatesEvidenceHash = ckbReleaseEvidenceHash("curation_input_verified|curation_plan_complete|candidate_validation_passed|query_proof_complete|active_transaction_verified|curation_checkpoint_verified")
     if (!ckbBenchmarkGapTerminalInvariant(terminal) || proof.state != "complete") { terminal.errorCode = "benchmark_gap_terminal_incomplete"; return terminal }
+    _ = ckbPersistBenchmarkGapLifecycleEvent(store, proof.runId, "proof_passed", "passed",
+        proof.planHash, proof.candidateVersion, "all proof artifacts confirmed",
+        completed: proof.nextProofOffset, total: proof.total)
     terminal.checksum = ckbBenchmarkGapTerminalChecksum(terminal)
     let path = ckbBenchmarkGapTerminalPath(terminal.planHash, terminal.transactionId)
     let text = ckbBenchmarkGapTerminalText(terminal)
