@@ -2873,6 +2873,7 @@ public class Scheduler {
 public class SchedulerTaskResult {
     public var ok: Bool = false
     public var status: String = "not_started"
+    public var terminality: String = ""
     public var cursor: String = ""
     public var since: String = ""
     public var activeVersion: String = ""
@@ -3097,7 +3098,7 @@ public class SchedulerExecutor {
 
     private func finishRun(result: SchedulerExecutorResult): Unit {
         result.endedAtMillis = ckbCoreNowMillis()
-        result.businessOk = result.failed == 0 && result.degraded == 0
+        result.businessOk = result.failed == 0 && result.degraded == 0 && !result.partial
         this.safeNotifyRunFinished(result)
     }
 
@@ -3118,7 +3119,11 @@ public class SchedulerExecutor {
             result.timedOut = true
             result.partial = true
         }
-        if (task.ok) {
+        if (task.terminality == "nonterminal_checkpointed" ||
+            task.terminality == "nonterminal_retryable") {
+            result.partial = true
+            this.applyCheckpoint(name, task, result.runId)
+        } else if (task.ok && (task.terminality == "" || task.terminality == "terminal_success")) {
             this.scheduler.markSuccess(name)
             this.applyCheckpoint(name, task, result.runId)
             result.succeeded += 1

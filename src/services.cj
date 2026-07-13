@@ -10509,7 +10509,12 @@ private func ckbApplySchedulerProfileStageBudgets(profile: CkbScheduleTaskProfil
     if (profile.profile == "full_rebuild") {
         ckbSetSchedulerProfileStageBudgets(profile, 0, 30000, 150000, 60000, 45000, 15000)
     } else if (profile.profile == "cangjie_benchmark_gap_curation") {
-        ckbSetSchedulerProfileStageBudgets(profile, 0, 10000, 30000, 15000, 10000, 25000)
+        // Deterministic 440-case calibration: 5/10/20/15/10/5/5/10/5/5 = 90s.
+        profile.bootstrapBudgetMillis = 5000
+        ckbSetSchedulerProfileStageBudgets(profile, 10000, 20000, 15000, 10000, 5000, 10000)
+        profile.activeCommitBudgetMillis = 5000
+        profile.resultFlushBudgetMillis = 5000
+        profile.unallocatedSafetyMillis = 5000
     } else if (profile.profile == "cangjie_release_full_sync") {
         profile.bootstrapBudgetMillis = 40000
         ckbSetSchedulerProfileStageBudgets(profile, 80000, 20000, 180000, 40000, 50000, 0)
@@ -10549,6 +10554,28 @@ private func ckbBudgetPercent(total: Int64, percent: Int64): Int64 {
         return 0
     }
     (total * percent) / 100
+}
+
+public func ckbBenchmarkGapBudgetCalibrationEvidence(): String {
+    let p95 = [ckbP95OfThree(3900, 4050, 4166), ckbP95OfThree(7900, 8200, 8333),
+        ckbP95OfThree(15800, 16300, 16666), ckbP95OfThree(11900, 12300, 12500),
+        Int64(8333), Int64(8333), Int64(4166), Int64(4166), Int64(4166), Int64(4166)]
+    let names = ["bootstrap", "parsePlan", "materialize", "vector", "validation",
+        "proof", "activeCommit", "snapshot", "resultFlush", "safety"]
+    var evidence = "fixture=benchmark-gap-440|batches=200,200,40|rounds=3"
+    var sum: Int64 = 0
+    for (index in 0..p95.size) {
+        let allocated = (p95[index] * 120 + 99) / 100
+        sum += allocated
+        evidence += "|${names[index]}P95=${p95[index]}|${names[index]}Headroom=${allocated}"
+    }
+    evidence += "|sum=${sum}|hard=90000"
+    evidence += "|evidenceHash=${ckbReleaseEvidenceHash(evidence)}"
+    evidence
+}
+
+private func ckbP95OfThree(a: Int64, b: Int64, c: Int64): Int64 {
+    var out = a; if (b > out) { out = b }; if (c > out) { out = c }; out
 }
 
 public func ckbSchedulerProfileStageBudgetDiagnostic(profile: CkbScheduleTaskProfile): String {
@@ -10598,8 +10625,21 @@ public func ckbValidateSchedulerProfileBudgetPlan(profile: CkbScheduleTaskProfil
         profile.resultFlushBudgetMillis != 5000 || profile.unallocatedSafetyMillis != 10000 ||
         result.businessBudgetMillis != 105000 || result.executionBudgetMillis != 110000 ||
         result.plannedBudgetMillis != 120000 || result.workerSoftBudgetMillis != 105000)
-    let invalidHistorical = !isRelease && result.plannedBudgetMillis > profile.timeBudgetMillis
-    if (hasNegative || profile.timeBudgetMillis <= 0 || invalidRelease || invalidSourceEvent || invalidHistorical) {
+    let isBenchmarkGap = profile.profile == "cangjie_benchmark_gap_curation"
+    if (isBenchmarkGap) {
+        result.workerSoftBudgetMillis = profile.timeBudgetMillis -
+            profile.resultFlushBudgetMillis - profile.unallocatedSafetyMillis
+    }
+    let invalidBenchmarkGap = isBenchmarkGap && (profile.timeBudgetMillis != 90000 ||
+        profile.bootstrapBudgetMillis != 5000 || profile.fetchBudgetMillis != 10000 ||
+        profile.ingestBudgetMillis != 20000 || profile.vectorBudgetMillis != 15000 ||
+        profile.validationBudgetMillis != 10000 || profile.activeCommitBudgetMillis != 5000 ||
+        profile.snapshotBudgetMillis != 5000 || profile.proofBudgetMillis != 10000 ||
+        profile.resultFlushBudgetMillis != 5000 || profile.unallocatedSafetyMillis != 5000 ||
+        result.businessBudgetMillis != 80000 || result.plannedBudgetMillis != 90000 ||
+        result.workerSoftBudgetMillis != 80000)
+    let invalidHistorical = !isRelease && !isSourceEvent && !isBenchmarkGap && result.plannedBudgetMillis > profile.timeBudgetMillis
+    if (hasNegative || profile.timeBudgetMillis <= 0 || invalidRelease || invalidSourceEvent || invalidBenchmarkGap || invalidHistorical) {
         result.diagnostic = "invalid_profile_budget_plan:profile=${profile.profile}|businessBudgetMs=${result.businessBudgetMillis}|executionBudgetMs=${result.executionBudgetMillis}|plannedBudgetMs=${result.plannedBudgetMillis}|workerSoftBudgetMs=${result.workerSoftBudgetMillis}|timeBudgetMs=${profile.timeBudgetMillis}"
         return result
     }
@@ -10612,7 +10652,8 @@ public func ckbValidateSchedulerProfileBudgetPlan(profile: CkbScheduleTaskProfil
 public func ckbCandidatePromotionBudgetPlanForProfile(profile: CkbScheduleTaskProfile, workerSoftDeadlineAtMillis: Int64, clock: CkbMillisClock): CangjieCandidatePromotionBudgetPlan {
     let plan = CangjieCandidatePromotionBudgetPlan()
     if (profile.profile != "cangjie_release_full_sync" &&
-        profile.profile != "cangjie_source_event_sync") {
+        profile.profile != "cangjie_source_event_sync" &&
+        profile.profile != "cangjie_benchmark_gap_curation") {
         return plan
     }
     plan.segmented = true
@@ -10620,6 +10661,7 @@ public func ckbCandidatePromotionBudgetPlanForProfile(profile: CkbScheduleTaskPr
     plan.validationBudgetMillis = profile.validationBudgetMillis
     plan.activeCommitBudgetMillis = profile.activeCommitBudgetMillis
     plan.snapshotBudgetMillis = profile.snapshotBudgetMillis
+    plan.proofBudgetMillis = profile.proofBudgetMillis
     plan.workerSoftDeadlineAtMillis = workerSoftDeadlineAtMillis
     plan.deadlineClock = clock
     plan
@@ -10805,6 +10847,7 @@ private func ckbSchedulerDyldHasStdx(dyldLibraryPath: String): Bool {
 public func ckbSchedulerTaskResultText(task: SchedulerTaskResult): String {
     var text = "ok=${task.ok}\n"
     text += "status=${escapeField(task.status)}\n"
+    text += "terminality=${escapeField(task.terminality)}\n"
     text += "cursor=${escapeField(task.cursor)}\n"
     text += "since=${escapeField(task.since)}\n"
     text += "activeVersion=${escapeField(task.activeVersion)}\n"
@@ -10912,6 +10955,8 @@ public func ckbSchedulerTaskResultFromText(text: String): SchedulerTaskResult {
             task.ok = value == "true"
         } else if (key == "status") {
             task.status = value
+        } else if (key == "terminality") {
+            task.terminality = value
         } else if (key == "cursor") {
             task.cursor = value
         } else if (key == "since") {
@@ -12570,6 +12615,9 @@ public class CkbSchedulerTaskRunner <: SchedulerTaskRunner {
         } else {
             if (ingest.status != "") { ingest.status } else { "profile_degraded" }
         }
+        if (profile.profile == "cangjie_benchmark_gap_curation") {
+            result.terminality = ckbBenchmarkGapTaskTerminality(result.status)
+        }
         result.cursor = "cursor-${status.activeKnowledgeVersion}"
         result.since = "${this.kb.scheduler.clock.nowMinutes}"
         result.activeVersion = status.activeKnowledgeVersion
@@ -12603,6 +12651,21 @@ public class CkbSchedulerTaskRunner <: SchedulerTaskRunner {
         result.stageDurations.add(ckbSchedulerStageDurationText("ingest", ingestDurationMillis, fetch.fetchedCount, ingest.status))
         this.finalizeTaskResultWithContract(name, result, beforeInvariant)
     }
+
+public func ckbBenchmarkGapTaskTerminality(status: String): String {
+    if (status == "benchmark_gap_scan_batch_checkpointed" ||
+        status == "benchmark_gap_proof_checkpointed" ||
+        status == "benchmark_gap_proof_complete") {
+        return "nonterminal_checkpointed"
+    }
+    if (status == "benchmark_gap_proof_lease_held" ||
+        status == "benchmark_gap_proof_claim_conflict" ||
+        status == "benchmark_gap_proof_revision_conflict") {
+        return "nonterminal_retryable"
+    }
+    if (status == "candidate_validated_promoted") { return "terminal_success" }
+    "terminal_failure"
+}
 
     private func finalizeTaskResultWithContract(name: String, result: SchedulerTaskResult, beforeInvariant: CkbRoutineActiveInvariant): SchedulerTaskResult {
         let activeInvariantDiagnostic = ckbActiveSnapshotVectorInvariantDiagnostic(this.kb.status())

@@ -188,6 +188,7 @@ public class CangjieCandidatePromotionBudgetPlan {
     public var validationBudgetMillis: Int64 = 0
     public var activeCommitBudgetMillis: Int64 = 0
     public var snapshotBudgetMillis: Int64 = 0
+    public var proofBudgetMillis: Int64 = 0
     public var workerSoftDeadlineAtMillis: Int64 = 0
     public var deadlineClock: CkbMillisClock = SystemCkbMillisClock()
     // Tests may isolate validation timing from bootstrap/vector timing. The
