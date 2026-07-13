@@ -31,6 +31,130 @@ private func p6S6Ledger(eventId: String, dedupeKey: String,
 @Test
 public class CkbReleaseFullSyncS6E2ETest {
     @TestCase
+    public func p6S7U01RepositoryEventTypedLogsAreSafeAndComplete(): Unit {
+        let secret = "通知🙂 Authorization: Bearer token-secret /Users/private/中文" + s6Repeat("界", 300)
+        let line = ckbRepositoryEventTypedLogJson("retryable", "event-raw-secret",
+            "run-s7", 2, secret, "retryable", secret, 17, 3)
+        @Expect(line.contains("\"event\":\"repository.event.retryable\""), true)
+        @Expect(line.contains("\"eventIdHash\":"), true)
+        @Expect(line.contains("\"runId\":\"run-s7\""), true)
+        @Expect(line.contains("\"attempt\":2"), true)
+        @Expect(line.contains("\"durationMs\":17"), true)
+        @Expect(line.contains("\"requestCount\":3"), true)
+        @Expect(line.contains("event-raw-secret"), false)
+        @Expect(line.contains("token-secret"), false)
+        @Expect(line.contains("/Users/private"), false)
+        @Expect(line.contains("🙂"), true)
+        @Expect(line.size < 1400, true)
+    }
+
+    @TestCase
+    public func p6S7B01LegacyLatestIsAlwaysUnverifiedAndFailClosed(): Unit {
+        let root = "target/p6-s7-b01-legacy"
+        let store = FileKnowledgeStore(root)
+        @Expect(store.repositoryEventLegacyMigrationStatus(), "legacy-unverified")
+        store.writeLinesAtomically("metadata/repository-event-latest.ckb", "")
+        @Expect(store.repositoryEventLegacyMigrationStatus(), "legacy-unverified")
+        store.writeLinesAtomically("metadata/repository-event-latest.ckb", "status=active\nrepo=legacy\n")
+        @Expect(store.repositoryEventLegacyMigrationStatus(), "legacy-unverified")
+        File.writeTo(Path(root).join("metadata/repository-event-latest.ckb"),
+            [UInt8(255), UInt8(254)])
+        @Expect(store.repositoryEventLegacyMigrationStatus(), "legacy-unverified")
+    }
+
+    @TestCase
+    public func p6S7P01AcceptedDuplicateClaimedAndCommittedShareIdentity(): Unit {
+        let root = "target/p6-s7-p01-chain"
+        if (exists(Path(root))) { _ = launch("/bin/rm", ["-rf", root]).wait() }
+        let store = FileKnowledgeStore(root)
+        let config = CkbRuntimeConfig()
+        let service = CkbCommandLoopService(config, store)
+        let event = GitCodeRepositoryChangedEvent()
+        event.valid = true; event.eventId = "event-chain-中文🙂"; event.deliveryId = "delivery-chain"
+        event.repo = "Cangjie/example"; event.ref = "main"; event.mergeCommitSha = s6Repeat("a", 40)
+        event.changedFiles.add("src/中文🙂.cj")
+        let accepted = service.acceptGitCodeRepositoryChangedEvent(event)
+        let duplicate = service.acceptGitCodeRepositoryChangedEvent(event)
+        let claimed = service.claimNextRepositoryEventForScheduler("run-s7", ckbCoreNowMillis(), leaseMillis: 30000)
+        let committed = store.completeRepositoryEventReceipt(claimed.receipt.dedupeKey,
+            "run-s7", claimed.receipt.revision, ckbCoreNowMillis())
+        let logs = store.readText("metadata/repository-event-events.jsonl")
+        @Expect(accepted.status, "accepted")
+        @Expect(duplicate.status, "duplicate")
+        @Expect(claimed.claimed, true)
+        @Expect(committed.state, "committed")
+        @Expect(logs.contains("repository.event.accepted"), true)
+        @Expect(logs.contains("repository.event.duplicate"), true)
+        @Expect(logs.contains("repository.event.claimed"), true)
+        @Expect(logs.contains("repository.event.committed"), true)
+        @Expect(logs.contains("event-chain-中文🙂"), false)
+        @Expect(store.repositoryEventLegacyMigrationStatus(), "legacy-unverified")
+    }
+
+    @TestCase
+    public func p6S7N01TypedLogRenderingCannotChangeCommittedBusinessState(): Unit {
+        let root = "target/p6-s7-n01-isolation"
+        if (exists(Path(root))) { _ = launch("/bin/rm", ["-rf", root]).wait() }
+        let store = FileKnowledgeStore(root)
+        let receipt = CkbRepositoryEventReceipt()
+        receipt.valid = true; receipt.eventId = "event-isolated"; receipt.state = "committed"
+        receipt.createdAtMillis = 10; receipt.updatedAtMillis = 20
+        store.emitRepositoryEventTypedLog("committed", receipt,
+            runId: "run-isolated", stage: "通知🙂", status: "committed")
+        @Expect(receipt.state, "committed")
+        @Expect(store.readText("metadata/repository-event-events.jsonl").contains(
+            "repository.event.committed"), true)
+    }
+
+    @TestCase
+    public func p6E2E01TypedChainAndLedgerContractAreJointlyObservable(): Unit {
+        let log = ckbRepositoryEventTypedLogJson("committed", "event-e2e01",
+            "run-e2e01", 1, "complete", "committed", "", 20, 4)
+        let gates = ckbSchedulerTaskContractForName(
+            "cangjie_source_event_sync").requiredValidationGates
+        @Expect(log.contains("repository.event.committed"), true)
+        @Expect(log.contains("event-e2e01"), false)
+        @Expect(gates.contains("event_inbox_committed"), true)
+        @Expect(gates.contains("active_transaction_verified"), true)
+    }
+
+    @TestCase
+    public func p6E2E04InvalidEncodingAndSensitiveDiagnosticsStayClosed(): Unit {
+        let store = FileKnowledgeStore("target/p6-e2e04-security")
+        store.writeLinesAtomically("metadata/repository-event-latest.ckb", "status=legacy\n")
+        let log = ckbRepositoryEventTypedLogJson("failed", "event-secret",
+            "run-e2e04", 1, "validation", "failed",
+            "Authorization: Bearer no-leak /tmp/private🙂", 1, 0)
+        @Expect(store.repositoryEventLegacyMigrationStatus(), "legacy-unverified")
+        @Expect(log.contains("no-leak"), false)
+        @Expect(log.contains("/tmp/private"), false)
+        @Expect(log.contains("repository.event.failed"), true)
+    }
+
+    @TestCase
+    public func p6E2E05TerminalReceiptHasNoOwnedLeaseOrMutationOrphan(): Unit {
+        let root = "target/p6-e2e05-cleanup"
+        if (exists(Path(root))) { _ = launch("/bin/rm", ["-rf", root]).wait() }
+        let store = FileKnowledgeStore(root)
+        let event = GitCodeRepositoryChangedEvent()
+        event.valid = true; event.eventId = "event-cleanup"; event.deliveryId = "delivery-cleanup"
+        event.repo = "Cangjie/example"; event.ref = "main"; event.mergeCommitSha = s6Repeat("a", 40)
+        event.changedFiles.add("src/cleanup.cj")
+        let accepted = CkbCommandLoopService(CkbRuntimeConfig(), store)
+            .acceptGitCodeRepositoryChangedEvent(event)
+        let claimed = store.claimRepositoryEventReceipt(accepted.dedupeKey,
+            "run-cleanup", ckbCoreNowMillis(), 30000)
+        let committed = store.completeRepositoryEventReceipt(accepted.dedupeKey,
+            "run-cleanup", claimed.receipt.revision, ckbCoreNowMillis())
+        @Expect(committed.state, "committed")
+        @Expect(committed.leaseOwner, "")
+        @Expect(committed.leaseUntilMillis, 0)
+        @Expect(store.dueRepositoryEventReceipts(ckbCoreNowMillis() + 60000).size, 0)
+        @Expect(exists(Path(root).join("tmp")), false)
+        @Expect(exists(Path(root).join("spool")), false)
+    }
+
+    @TestCase
     public func p6S6U01Ku10EnumeratesRepositoryEventRequiredGates(): Unit {
         let gates = ckbSchedulerTaskContractForName(
             "cangjie_source_event_sync").requiredValidationGates

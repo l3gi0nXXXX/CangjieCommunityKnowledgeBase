@@ -945,6 +945,18 @@ public func redactProxyEndpoint(raw: String): String {
     text[0..authorityStart] + "[redacted]@" + text[authorityStart + atIdx + 1..text.size]
 }
 
+public func ckbRepositoryEventTypedLogJson(event: String, eventId: String,
+    runId: String, attempt: Int64, stage: String, status: String,
+    errorCode: String, durationMillis: Int64, requestCount: Int64): String {
+    let safeEvent = if (event == "accepted" || event == "duplicate" ||
+        event == "claimed" || event == "retryable" || event == "failed" ||
+        event == "committed") { event } else { "failed" }
+    let safeStage = utf8SafePrefix(redactSensitive(stage), 120)
+    let safeStatus = utf8SafePrefix(redactSensitive(status), 80)
+    let safeError = utf8SafePrefix(redactSensitive(errorCode), 160)
+    "{\"time\":\"${ckbRuntimePreflightJsonEscape(DateTime.now().toString())}\",\"level\":\"${if (safeEvent == "failed") { "error" } else if (safeEvent == "retryable") { "warn" } else { "info" }}\",\"subsystem\":\"ckb.routine.ingest\",\"event\":\"repository.event.${safeEvent}\",\"message\":\"repository event ${safeEvent}\",\"eventIdHash\":\"${stableSummaryHash(eventId)}\",\"runId\":\"${ckbRuntimePreflightJsonEscape(utf8SafePrefix(redactSensitive(runId), 120))}\",\"attempt\":${if (attempt >= 0) { attempt } else { 0 }},\"stage\":\"${ckbRuntimePreflightJsonEscape(safeStage)}\",\"status\":\"${ckbRuntimePreflightJsonEscape(safeStatus)}\",\"errorCode\":\"${ckbRuntimePreflightJsonEscape(safeError)}\",\"durationMs\":${if (durationMillis >= 0) { durationMillis } else { 0 }},\"requestCount\":${if (requestCount >= 0) { requestCount } else { 0 }}}\n"
+}
+
 private func sanitizedTransportDiagnostic(raw: String): String {
     var text = redactSensitive(raw).replace("\n", " ").replace("\r", " ").trimAscii()
     if (text.size > 160) {
@@ -6667,6 +6679,34 @@ public class FileKnowledgeStore {
         this.writeLinesAtomically("metadata/repository-event-latest.ckb", text)
     }
 
+    public func repositoryEventLegacyMigrationStatus(): String {
+        let path = "metadata/repository-event-latest.ckb"
+        if (!this.has(path)) { return "legacy-unverified" }
+        let text = try { this.readText(path) } catch (_: Exception) {
+            return "legacy-unverified"
+        }
+        if (text.trimAscii() == "" || ckbCurrentField(text, "status") == "") {
+            return "legacy-unverified"
+        }
+        "legacy-unverified"
+    }
+
+    public func emitRepositoryEventTypedLog(event: String,
+        receipt: CkbRepositoryEventReceipt, runId!: String = "",
+        stage!: String = "receipt", status!: String = "",
+        errorCode!: String = "", requestCount!: Int64 = 0): Unit {
+        try {
+            this.appendLinesAtomically("metadata/repository-event-events.jsonl",
+                ckbRepositoryEventTypedLogJson(event, receipt.eventId, runId,
+                    receipt.attempt, stage,
+                    if (status == "") { receipt.state } else { status },
+                    errorCode,
+                    if (receipt.updatedAtMillis >= receipt.createdAtMillis) {
+                        receipt.updatedAtMillis - receipt.createdAtMillis
+                    } else { 0 }, requestCount))
+        } catch (_: Exception) { () }
+    }
+
     public func saveRepositoryEventLedger(ledger: CkbRepositoryEventLedger): CkbRepositoryEventLedger {
         ledger.checksum = ckbRepositoryEventLedgerChecksum(ledger)
         this.writeLinesAtomically(ckbRepositoryEventLedgerPath(ledger.dedupeKey),
@@ -7202,6 +7242,11 @@ public class FileKnowledgeStore {
             if (!readback.valid || readback.revision != next.revision ||
                 readback.checksum != next.checksum) { return invalid }
             this.saveRepositoryEventLedgerForReceipt(readback)
+            let typedEvent = if (readback.state == "running") { "claimed" } else { readback.state }
+            this.emitRepositoryEventTypedLog(typedEvent, readback,
+                runId: if (readback.state == "running") { owner } else { "" },
+                stage: if (readback.state == "running") { "claim" } else { "complete" },
+                errorCode: readback.lastErrorCode)
             readback
         } catch (_: Exception) {
             invalid.diagnostic = "repository_event_transition_write_failed"
@@ -13196,11 +13241,15 @@ public class CkbCommandLoopService {
             result.acceptedAt = "${persisted.createdAtMillis}"
             result.scheduledProfiles = persisted.scheduledProfiles
             result.diagnostic = "durable_receipt_exists"
+            this.store.emitRepositoryEventTypedLog("duplicate", persisted,
+                stage: "ingress", status: "duplicate")
             return result
         }
         this.acceptedEventCount += 1
         result.status = "accepted"
         result.diagnostic = "durable_receipt_queued"
+        this.store.emitRepositoryEventTypedLog("accepted", persisted,
+            stage: "ingress", status: "accepted")
         result
     }
 
