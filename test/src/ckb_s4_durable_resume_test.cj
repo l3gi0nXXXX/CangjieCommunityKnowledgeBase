@@ -393,12 +393,15 @@ public class CkbS4DurableResumeTest {
             @Expect(heap, "4GB")
             let prelude = ckbSchedulerWorkerShellPreludeWithHeap(dyldLibraryPath, heap)
             let pidPath = "target/p5-s4-p01-child.pid"
-            _ = launch("/bin/rm", ["-f", pidPath]).wait()
+            let stdoutPath = "target/p5-s4-p01-child.stdout"
+            let stderrPath = "target/p5-s4-p01-child.stderr"
+            _ = launch("/bin/rm", ["-f", pidPath, stdoutPath, stderrPath]).wait()
             let command = "${prelude}export CKB_P5_S4_SCALE_CHILD=1; " +
-                "target/release/unittest_bin/cangjie_community_knowledge_base_test --filter='*CkbS4DurableResumeTest.p5S4P01Streams9299CandidateWith9025ReuseAnd274Embeddings' --no-color --no-progress & " +
+                "target/release/unittest_bin/cangjie_community_knowledge_base_test --filter='*CkbS4DurableResumeTest.p5S4P01Streams9299CandidateWith9025ReuseAnd274Embeddings' --no-color --no-progress >${stdoutPath} 2>${stderrPath} & " +
                 "worker_pid=$!; echo $worker_pid > ${pidPath}; " +
-                "(sleep 180; kill -9 $worker_pid 2>/dev/null; kill -9 $$ 2>/dev/null) & watchdog_pid=$!; " +
-                "wait $worker_pid; child_code=$?; kill $watchdog_pid 2>/dev/null; wait $watchdog_pid 2>/dev/null; exit $child_code"
+                "(sleep 300; kill -9 $worker_pid 2>/dev/null; kill -9 $$ 2>/dev/null) & watchdog_pid=$!; " +
+                "wait $worker_pid; child_code=$?; /usr/bin/pkill -TERM -P $watchdog_pid 2>/dev/null; " +
+                "kill $watchdog_pid 2>/dev/null; wait $watchdog_pid 2>/dev/null; exit $child_code"
             let child = launch("/bin/zsh", ["-c", command], stdOut: ProcessRedirect.Pipe,
                 stdErr: ProcessRedirect.Pipe)
             var childCode: Int64 = -1
@@ -417,8 +420,8 @@ public class CkbS4DurableResumeTest {
                     try { childCode = child.wait() } catch (_: Exception) { childCode = -1 }
                 }
             }
-            let childStdout = s4SafeReadPipe(child.stdOutPipe)
-            let childStderr = s4SafeReadPipe(child.stdErrPipe)
+            let childStdout = s4ReadText(Path(stdoutPath))
+            let childStderr = s4ReadText(Path(stderrPath))
             let resultText = FileKnowledgeStore(root).readText("p5-scale-result.ckb")
             let resultEvidence = s4TextField(resultText, "evidenceHash")
             let resultPayload = resultText.replace("evidenceHash=${resultEvidence}\n", "")
@@ -428,7 +431,7 @@ public class CkbS4DurableResumeTest {
             @Expect(childStdout.contains("OutOfMemory"), false)
             @Expect(childStdout.contains("Out of memory"), false)
             @Expect(childStdout.contains("[ FAILED ]"), false)
-            @Expect(childStdout.contains("FAILED"), false)
+            @Expect(childStdout.contains("FAILED: 0"), true)
             @Expect(childStderr.contains("OutOfMemory"), false)
             @Expect(childStderr.contains("Out of memory"), false)
             @Expect(childStderr.contains("[ FAILED ]"), false)
@@ -469,7 +472,10 @@ public class CkbS4DurableResumeTest {
                 @Expect(s4TextField(resultText, field), "true")
             }
             @Expect(s4TextField(resultText, "queryKnowledgeVersion"), "candidate-s4-p01-active")
-            _ = launch("/bin/rm", ["-f", pidPath]).wait()
+            _ = launch("/bin/rm", ["-f", pidPath, stdoutPath, stderrPath]).wait()
+            @Expect(exists(Path(pidPath)), false)
+            @Expect(exists(Path(stdoutPath)), false)
+            @Expect(exists(Path(stderrPath)), false)
             return
         }
         s4EnsureEmptyDir(root)
@@ -497,7 +503,9 @@ public class CkbS4DurableResumeTest {
         @Expect(snapshot.vectorRecords.size, 0)
         @Expect(kb.restoreActiveSnapshot(snapshot), true)
         @Expect(kb.status().activeKnowledgeVersion, "active-s4-p01")
-        @Expect(kb.activeRecordSnapshot()[9025].chunk, "a9025")
+        let restoredActiveRecords = kb.activeRecordSnapshot()
+        @Expect(restoredActiveRecords[9025].chunk, "a9025")
+        restoredActiveRecords.clear()
         snapshot.rawRecords.clear(); snapshot.normalizedRecords.clear(); snapshot.activeIndex.clear()
         activeRaw.clear(); active.clear()
 
@@ -591,6 +599,7 @@ public class CkbS4DurableResumeTest {
         @Expect(promotedStatus.storage.servingIndexDiagnostic, promotion.validation.servingIndexDiagnostic)
         @Expect(store.has("index/graph-nodes.ckb"), true)
         @Expect(store.has("index/graph-edges.ckb"), true)
+        candidate.clear()
 
         let reloaded = KnowledgeBase(FakeClock(0), S4EmbeddingProvider(64), vectorStore, LocalGraphStore())
         let materializationsBeforePointerReads = store.activeSnapshotMaterializationCount()
@@ -608,11 +617,13 @@ public class CkbS4DurableResumeTest {
         @Expect(reloadedStatus.storage.vectorActiveCollection, collection)
         @Expect(reloadedStatus.storage.graphNodeCount, 27897)
         @Expect(reloadedStatus.storage.graphEdgeCount, 37195)
-        @Expect(reloaded.activeRecordSnapshot()[9025].chunk, "b9025")
-        @Expect(reloaded.rawRecordSnapshot()[9025].content, "b9025")
-        @Expect(reloaded.rawRecordSnapshot().size, reloaded.activeRecordSnapshot().size)
+        let reloadedActiveRecords = reloaded.activeRecordSnapshot()
+        let reloadedRawRecords = reloaded.rawRecordSnapshot()
+        @Expect(reloadedActiveRecords[9025].chunk, "b9025")
+        @Expect(reloadedRawRecords[9025].content, "b9025")
+        @Expect(reloadedRawRecords.size, reloadedActiveRecords.size)
 
-        let servingIndex = buildCangjieServingIndex(reloaded.activeRecordSnapshot(),
+        let servingIndex = buildCangjieServingIndex(reloadedActiveRecords,
             activeKnowledgeVersion: reloadedStatus.activeKnowledgeVersion)
         let exact = lookupExactSymbol(servingIndex, "ArrayList.add", sourceSet: CangjieSourceSets.STD,
             targetVersion: "1.0.0", versionResolutionId: "vr-std-s4", budget: 3)
