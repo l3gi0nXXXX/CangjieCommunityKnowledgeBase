@@ -16,6 +16,8 @@ public class CangjieBenchmarkGapInput {
     public var updateMechanism: String = ""
     public var targetVersion: String = ""
     public var officialCitation: String = ""
+    public var knowledgeAtomTestBundle: String = ""
+    public var knowledgeAtomCandidate: Bool = false
 
     public init() {}
 }
@@ -53,6 +55,8 @@ public func curateBenchmarkGapRecords(inputs: ArrayList<CangjieBenchmarkGapInput
             result.diagnostics.add("item=${itemNumber}:errorCode=${diagnostic}")
             continue
         }
+        if(input.knowledgeAtomCandidate&&input.knowledgeAtomTestBundle.trimAscii()==""){result.rejected+=1;result.diagnostics.add("item=${itemNumber}:errorCode=atom_test_bundle_required");continue}
+        if (input.knowledgeAtomTestBundle.trimAscii() != "") { let atomTests=runKnowledgeAtomTestBundle(input.knowledgeAtomTestBundle);if(!atomTests.ok){result.rejected+=1;result.diagnostics.add("item=${itemNumber}:errorCode=${atomTests.diagnostic}");continue} }
         let identity = canonicalBenchmarkGapIdentity(input)
         let canonicalHash = canonicalBenchmarkGapInputHash(input)
         match (identityHashes.get(identity)) {
@@ -108,6 +112,8 @@ public func parseBenchmarkGapInputsJsonl(text: String): CangjieBenchmarkGapParse
                 input.updateMechanism = benchmarkGapJsonString(object, "updateMechanism")
                 input.targetVersion = benchmarkGapJsonString(object, "targetVersion")
                 input.officialCitation = benchmarkGapJsonString(object, "officialCitation")
+                match(object.get("knowledgeAtomTestBundle")){case Some(value)=>input.knowledgeAtomTestBundle=value.toString();case None=>()}
+                match(object.get("knowledgeAtomCandidate")){case Some(value)=>input.knowledgeAtomCandidate=value.asBool().getValue();case None=>()}
                 result.inputs.add(input)
             } catch (_: Exception) {
                 result.ok = false
@@ -212,7 +218,7 @@ private func canonicalBenchmarkGapInputHash(input: CangjieBenchmarkGapInput): St
         benchmarkGapCanonicalPart(input.compilerOutput) + benchmarkGapCanonicalPart(input.missingKnowledge.trimAscii().toAsciiUpper()) +
         benchmarkGapCanonicalPart(input.interfaceId.trimAscii()) + benchmarkGapCanonicalPart(input.contentFamily.trimAscii()) +
         benchmarkGapCanonicalPart(input.updateMechanism.trimAscii()) + benchmarkGapCanonicalPart(input.targetVersion.trimAscii()) +
-        benchmarkGapCanonicalPart(input.officialCitation.trimAscii()))
+        benchmarkGapCanonicalPart(input.officialCitation.trimAscii()) + benchmarkGapCanonicalPart(input.knowledgeAtomTestBundle.trimAscii()) + benchmarkGapCanonicalPart("${input.knowledgeAtomCandidate}"))
 }
 
 private func benchmarkGapCanonicalPart(value: String): String {

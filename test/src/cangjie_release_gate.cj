@@ -179,6 +179,7 @@ public func cangjieKnowledgeReleaseGate(
     cangjieReleaseGateAddRouteProbeStep(report, service, options.runRoot)
     cangjieReleaseGateAddPass1Step(report, options)
     cangjieReleaseGateEnsureRoutineCurationInput(options, config)
+    cangjieReleaseGateAddKnowledgeAtomTestStep(report, options)
     cangjieReleaseGateAddRoutineUpdateContractStep(report, options)
     cangjieReleaseGateAddRoutineRuntimeReadinessStep(report, options, config)
     cangjieReleaseGateAddRoutineUpdateDueRunStep(report, options, config, sourceRunner)
@@ -198,6 +199,8 @@ public func cangjieKnowledgeReleaseGate(
     cangjieReleaseGateWriteText("${options.runRoot}/release-gate.md", renderCangjieKnowledgeReleaseGateMarkdown(report))
     report
 }
+
+private func cangjieReleaseGateAddKnowledgeAtomTestStep(report:CangjieKnowledgeReleaseGateReport,options:CangjieKnowledgeReleaseGateOptions):Unit{let path=Path(options.runRoot).join("knowledge-atoms.jsonl");if(!exists(path)){let curationPath=Path(options.runRoot).join("gap-curation-input.jsonl");if(exists(curationPath)){try{let text=String.fromUtf8(File.readFrom(curationPath));if(text.contains("\"knowledgeAtomCandidate\":true")){cangjieReleaseGateAddStep(report,"P3-knowledge-atom-tests",false,"knowledge_atom_artifact_required",curationPath.toString());return}}catch(_:Exception){cangjieReleaseGateAddStep(report,"P3-knowledge-atom-tests",false,"invalid_response_encoding",curationPath.toString());return}};cangjieReleaseGateAddStep(report,"P3-knowledge-atom-tests",true,"no_candidate_atoms","");return};try{let text=String.fromUtf8(File.readFrom(path));var count:Int64=0;for(line in text.split("\n")){let raw=line.trimAscii();if(raw==""){continue};count+=1;let tested=runKnowledgeAtomTestBundle(raw);if(!tested.ok){cangjieReleaseGateAddStep(report,"P3-knowledge-atom-tests",false,tested.diagnostic,path.toString());return}};if(count==0){cangjieReleaseGateAddStep(report,"P3-knowledge-atom-tests",false,"atom_test_bundle_required",path.toString())}else{cangjieReleaseGateAddStep(report,"P3-knowledge-atom-tests",true,"validated=${count}",path.toString())}}catch(_:Exception){cangjieReleaseGateAddStep(report,"P3-knowledge-atom-tests",false,"invalid_response_encoding",path.toString())}}
 
 public func renderCangjieKnowledgeReleaseGateMarkdown(report: CangjieKnowledgeReleaseGateReport): String {
     let out = StringBuilder()

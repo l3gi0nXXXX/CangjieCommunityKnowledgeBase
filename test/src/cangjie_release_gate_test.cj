@@ -170,6 +170,34 @@ public class CangjieReleaseGateTest {
         @Expect(dueRun.contains("\"failed\":0"), true)
         @Expect(dueRun.contains("candidate_validated_promoted"), true)
     }
+
+    @TestCase
+    public func p3Neg01ReleaseGateRejectsInvalidAtomBundle(): Unit {
+        let fixture = f8WriteFirstInitFixture("target/p3-atom-gate-fixture", true)
+        let runRoot = "target/p3-atom-gate-run"
+        f8WritePass1Files(runRoot, true)
+        f8WriteFile(Path("${runRoot}/knowledge-atoms.jsonl"), p3ValidBundle().replace(",${p3BoundaryTest()}", "") + "\n")
+        f8EnsureEmptyDir("target/p3-atom-gate-store")
+        let report = cangjieKnowledgeReleaseGate(f8ReleaseGateOptions(runRoot, fixture), f8ReleaseGateRuntimeConfig(), FileKnowledgeStore("target/p3-atom-gate-store"), sourceRunner: F9ReleaseGateFreshRunner())
+
+        @Expect(report.ok, false)
+        @Expect(f8HasStep(report, "P3-knowledge-atom-tests", false), true)
+        @Expect(f8DiagnosticsContain(report, "missing_atom_test_category"), true)
+    }
+
+    @TestCase
+    public func p3Bnd01ReleaseGateRequiresArtifactForDeclaredCandidate(): Unit {
+        let fixture = f8WriteFirstInitFixture("target/p3-atom-missing-fixture", true)
+        let runRoot = "target/p3-atom-missing-run"
+        f8WritePass1Files(runRoot, true)
+        f8WriteFile(Path("${runRoot}/gap-curation-input.jsonl"), "{\"knowledgeAtomCandidate\":true}\n")
+        f8EnsureEmptyDir("target/p3-atom-missing-store")
+        let report = cangjieKnowledgeReleaseGate(f8ReleaseGateOptions(runRoot, fixture), f8ReleaseGateRuntimeConfig(), FileKnowledgeStore("target/p3-atom-missing-store"), sourceRunner: F9ReleaseGateFreshRunner())
+
+        @Expect(report.ok, false)
+        @Expect(f8HasStep(report, "P3-knowledge-atom-tests", false), true)
+        @Expect(f8DiagnosticsContain(report, "knowledge_atom_artifact_required"), true)
+    }
 }
 
 private class F8FirstInitFixturePaths {

@@ -1,0 +1,16 @@
+package cangjie_community_knowledge_base_test
+
+import std.collection.ArrayList
+import std.unittest.*
+import std.unittest.testmacro.*
+
+@Test
+public class CangjieKnowledgeAtomValidationTest {
+    @TestCase public func p3Ut01DuplicateExecutionIsStable():Unit{let one=runKnowledgeAtomTestBundle(p3ValidBundle());let two=runKnowledgeAtomTestBundle(p3ValidBundle());@Expect(one.ok,true);@Expect(one.total,3);@Expect(one.passed,3);@Expect(two.passed,one.passed)}
+    @TestCase public func p3Bnd01MissingCategoryAndMalformedUtf8SafeTextFailClosed():Unit{let missing=validateKnowledgeAtomTestBundle(p3ValidBundle().replace(",${p3BoundaryTest()}",""));@Expect(missing.ok,false);@Expect(missing.diagnostic,"missing_atom_test_category");let candidate=CangjieBenchmarkGapInput();candidate.caseId="PUBLIC-BND";candidate.taskText="general gap";candidate.missingKnowledge="G-ARRAYLIST";candidate.officialCitation="https://docs.cangjie-lang.cn/docs/1.0.0/";candidate.knowledgeAtomCandidate=true;let candidates=ArrayList<CangjieBenchmarkGapInput>();candidates.add(candidate);@Expect(curateBenchmarkGapRecords(candidates).diagnostic,"atom_test_bundle_required");let unicode=runKnowledgeAtomTestBundle(p3ValidBundle());@Expect(unicode.ok,true);let malformed=validateKnowledgeAtomTestBundle("{\"knowledgeText\":\"中😀\"");@Expect(malformed.diagnostic,"malformed_atom_test_bundle")}
+    @TestCase public func p3Pos01GeneralArrayListRuneAtomPassesCuration():Unit{let input=CangjieBenchmarkGapInput();input.caseId="PUBLIC-001";input.taskText="Use general ArrayList and Rune APIs.";input.compilerOutput="compile_error";input.missingKnowledge="G-ARRAYLIST";input.officialCitation="https://docs.cangjie-lang.cn/docs/1.0.0/libs/std/collection";input.knowledgeAtomTestBundle=p3ValidBundle();let inputs=ArrayList<CangjieBenchmarkGapInput>();inputs.add(input);let curated=curateBenchmarkGapRecords(inputs);@Expect(curated.ok,true);@Expect(curated.accepted,1)}
+    @TestCase public func p3Neg01ContaminationCitationAndTestFailureRejected():Unit{let contaminated=validateKnowledgeAtomTestBundle(p3ValidBundle().replace("General ArrayList and Rune usage.","CJ-HUMANEVAL-007 canonical_solution"));@Expect(contaminated.diagnostic,"atom_content_contamination");let fake=validateKnowledgeAtomTestBundle(p3ValidBundle().replace("https://docs.cangjie-lang.cn/","https://docs.cangjie-lang.cn.evil.invalid/"));@Expect(fake.diagnostic,"atom_citation_not_allowed");let failed=runKnowledgeAtomTestBundle(p3ValidBundle().replace("\"expected\":\"3\"","\"expected\":\"9\""));@Expect(failed.ok,false);@Expect(failed.diagnostic,"atom_test_failed")}
+}
+
+func p3BoundaryTest():String{"{\"category\":\"boundary\",\"operation\":\"rune_count\",\"input\":\"中文😀\",\"expected\":\"3\"}"}
+func p3ValidBundle():String{"{\"atomId\":\"G-ARRAYLIST-RUNE\",\"sourceClass\":\"official\",\"citation\":\"https://docs.cangjie-lang.cn/docs/1.0.0/libs/std/collection\",\"targetVersion\":\"1.0.0\",\"candidateHash\":\"abc123\",\"knowledgeText\":\"General ArrayList and Rune usage.\",\"purificationPassed\":true,\"tests\":[{\"category\":\"positive\",\"operation\":\"arraylist_size\",\"input\":\"[1,2,3]\",\"expected\":\"3\"},{\"category\":\"negative\",\"operation\":\"contains\",\"input\":\"ArrayList\",\"needle\":\"HashMap\",\"expected\":\"false\"},${p3BoundaryTest()}]}"}
