@@ -43,11 +43,14 @@ public class CangjieHumanEvalManifestTest {
 
         let unicodeRoot = "target/P1-清单🙂"
         p1ManifestReset(unicodeRoot)
-        p1ManifestWriteCase(unicodeRoot, "# 中文题目🙂\n", "{\"targetVersion\":\"1.0.0\",\"signature\":\"public func 中文函数🙂(): Unit\"}")
+        p1ManifestWriteCase(unicodeRoot, "# 中文 \\\"题目\\\" \\\\ 🙂\n", "{\"targetVersion\":\"1.0.0\",\"signature\":\"public func 中文函数🙂(): Unit\"}")
         let unicodeManifest = buildCangjieHumanEvalManifest(unicodeRoot, "")
         @Expect(unicodeManifest.rows.size, 1)
-        @Expect(unicodeManifest.rows[0].prompt, "# 中文题目🙂\n")
+        @Expect(unicodeManifest.rows[0].prompt, "# 中文 \\\"题目\\\" \\\\ 🙂\n")
         @Expect(unicodeManifest.rows[0].signature, "public func 中文函数🙂(): Unit")
+        let reparsedUnicode = parseCangjieHumanEvalAuthorityManifest(cangjieHumanEvalRenderAuthorityManifest(unicodeManifest))
+        @Expect(reparsedUnicode.rows[0].prompt, unicodeManifest.rows[0].prompt)
+        @Expect(reparsedUnicode.rows[0].signature, unicodeManifest.rows[0].signature)
 
         let root = "target/p1-manifest-invalid-utf8"
         p1ManifestReset(root)
@@ -111,9 +114,20 @@ public class CangjieHumanEvalManifestTest {
         @Expect(p1ManifestHasDiagnostic(tamperedValidation, "manifest_case_hash_mismatch"), true)
 
         let gateOptions = CangjieHumanEvalPass1GateOptions()
-        let tamperedAuthority = cangjieHumanEvalRenderAuthorityManifest(tampered).replace("sha256:tampered", "invalid-hash")
-        let gate = cangjieHumanEvalPass1GateFromText("", tamperedAuthority, gateOptions, "/tmp/p1-gate", "/tmp/p1-manifest")
-        @Expect(p1ManifestGateHasDiagnostic(gate, "manifest_hash_invalid:CJ-HUMANEVAL-000"), true)
+        let authority = cangjieHumanEvalRenderAuthorityManifest(buildCangjieHumanEvalManifest(datasetRoot, ""))
+        let fakeHashAuthority = authority.replace(buildCangjieHumanEvalManifest(datasetRoot, "").rows[0].promptHash, "sha256:fake")
+        let fakeHashGate = cangjieHumanEvalPass1GateFromText("", fakeHashAuthority, gateOptions, "/tmp/p1-gate", "/tmp/p1-manifest")
+        @Expect(p1ManifestGateHasDiagnostic(fakeHashGate, "authority_manifest_hash_invalid:CJ-HUMANEVAL-000"), true)
+
+        let valid = buildCangjieHumanEvalManifest(datasetRoot, "")
+        let validAuthority = cangjieHumanEvalRenderAuthorityManifest(valid)
+        let recomputeMismatch = validAuthority.replace(valid.rows[0].promptHash, "sha256:0000000000000000000000000000000000000000000000000000000000000000")
+        let recomputeGate = cangjieHumanEvalPass1GateFromText("", recomputeMismatch, gateOptions, "/tmp/p1-gate", "/tmp/p1-manifest")
+        @Expect(p1ManifestGateHasDiagnostic(recomputeGate, "authority_manifest_case_hash_invalid:CJ-HUMANEVAL-000"), true)
+
+        let versionMismatch = validAuthority.replace(valid.datasetVersion, "cangjie-humaneval-164-sha256:0000000000000000000000000000000000000000000000000000000000000000")
+        let versionGate = cangjieHumanEvalPass1GateFromText("", versionMismatch, gateOptions, "/tmp/p1-gate", "/tmp/p1-manifest")
+        @Expect(p1ManifestGateHasDiagnostic(versionGate, "authority_manifest_dataset_hash_mismatch"), true)
 
         let visible = renderModelVisibleManifest(tampered)
         @Expect(visible.contains("tests/"), false)

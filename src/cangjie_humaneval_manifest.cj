@@ -101,8 +101,8 @@ public func validateCangjieHumanEvalManifest(manifest: CangjieHumanEvalManifestR
         if (seen.contains(row.caseId)) { out.addDiagnostic("manifest_duplicate_case_id:${row.caseId}") } else { seen.add(row.caseId) }
         if (row.datasetVersion == "" || row.datasetVersion != manifest.datasetVersion) { out.addDiagnostic("manifest_dataset_version_mismatch:${row.caseId}") }
         if (row.signature == "") { out.addDiagnostic("manifest_signature_missing:${row.caseId}") }
-        if (row.promptHash == "" || row.metadataHash == "" || row.starterHash == "" || row.testsHash == "" || row.translationHash == "" || row.caseHash == "") {
-            out.addDiagnostic("manifest_hash_missing:${row.caseId}")
+        for (field in [row.promptHash, row.metadataHash, row.starterHash, row.testsHash, row.translationHash, row.caseHash]) {
+            if (!cangjieHumanEvalManifestValidHash(field)) { out.addDiagnostic("manifest_hash_invalid:${row.caseId}") }
         }
         if (row.caseHash != cangjieHumanEvalManifestRowHash(row)) { out.addDiagnostic("manifest_case_hash_invalid:${row.caseId}") }
         if (datasetRoot != "" && exists(Path(datasetRoot).join(row.caseId))) {
@@ -113,6 +113,60 @@ public func validateCangjieHumanEvalManifest(manifest: CangjieHumanEvalManifestR
     if (manifest.datasetVersion != cangjieHumanEvalDatasetVersion(manifest.rows)) { out.addDiagnostic("manifest_dataset_hash_mismatch") }
     out.rows = manifest.rows
     out
+}
+
+// Parses the authority with stdx JSON only. All string fields and tag arrays
+// fail closed on malformed JSON or a wrong JSON type; no String byte slicing is
+// used for model-controlled or Unicode-capable values.
+public func parseCangjieHumanEvalAuthorityManifest(text: String): CangjieHumanEvalManifestResult {
+    let parsed = CangjieHumanEvalManifestResult()
+    var lineNumber: Int64 = 0
+    for (line in text.split("\n")) {
+        lineNumber += 1
+        let raw = line.trimAscii()
+        if (raw == "") { continue }
+        try {
+            let object = JsonValue.fromStr(raw).asObject()
+            if (cangjieHumanEvalAuthorityString(object, "schemaVersion") != "cangjie-humaneval-authority-v1") {
+                parsed.addDiagnostic("authority_schema_invalid:${lineNumber}")
+                continue
+            }
+            let row = CangjieHumanEvalManifestRow()
+            row.caseId = cangjieHumanEvalAuthorityString(object, "caseId")
+            row.datasetVersion = cangjieHumanEvalAuthorityString(object, "datasetVersion")
+            row.targetVersion = cangjieHumanEvalAuthorityString(object, "targetVersion")
+            row.signature = cangjieHumanEvalAuthorityString(object, "signature")
+            row.prompt = cangjieHumanEvalAuthorityString(object, "prompt")
+            row.promptHash = cangjieHumanEvalAuthorityString(object, "promptHash")
+            row.metadataHash = cangjieHumanEvalAuthorityString(object, "metadataHash")
+            row.starterHash = cangjieHumanEvalAuthorityString(object, "starterHash")
+            row.testsHash = cangjieHumanEvalAuthorityString(object, "testsHash")
+            row.translationHash = cangjieHumanEvalAuthorityString(object, "translationHash")
+            row.caseHash = cangjieHumanEvalAuthorityString(object, "caseHash")
+            cangjieHumanEvalAuthorityTags(object, "requiredKnowledgeTags", row.expectedKnowledgeTags)
+            parsed.rows.add(row)
+        } catch (_: Exception) {
+            parsed.addDiagnostic("authority_json_invalid:${lineNumber}")
+        }
+    }
+    if (parsed.rows.size > 0) {
+        parsed.datasetVersion = parsed.rows[0].datasetVersion
+        let validated = validateCangjieHumanEvalManifest(parsed, "")
+        if (!validated.ok) {
+            parsed.ok = false
+            for (diagnostic in validated.diagnostics) { parsed.diagnostics.add(diagnostic) }
+        }
+    } else {
+        parsed.addDiagnostic("authority_manifest_empty")
+    }
+    parsed
+}
+
+public func cangjieHumanEvalAuthorityRowForCase(text: String, caseId: String): ?CangjieHumanEvalManifestRow {
+    let manifest = parseCangjieHumanEvalAuthorityManifest(text)
+    if (!manifest.ok) { return None }
+    for (row in manifest.rows) { if (row.caseId == caseId) { return Some(row) } }
+    None
 }
 
 // Model-visible output intentionally excludes verifier paths, test/translation
@@ -168,6 +222,32 @@ private func cangjieHumanEvalBuildManifestRow(caseRoot: Path, caseId: String): C
 
 private func cangjieHumanEvalManifestRowHash(row: CangjieHumanEvalManifestRow): String {
     cangjieHumanEvalManifestHash("${row.caseId}|${row.targetVersion}|${row.signature}|${row.promptHash}|${row.metadataHash}|${row.starterHash}|${row.testsHash}|${row.translationHash}".toArray())
+}
+
+private func cangjieHumanEvalManifestValidHash(value: String): Bool {
+    let runes = value.toRuneArray()
+    if (runes.size != 71) { return false }
+    let prefix = [r's', r'h', r'a', r'2', r'5', r'6', r':']
+    for (i in 0..prefix.size) { if (runes[i] != prefix[i]) { return false } }
+    for (i in 7..runes.size) {
+        let rune = runes[i]
+        if (!((rune >= r'0' && rune <= r'9') || (rune >= r'a' && rune <= r'f'))) { return false }
+    }
+    true
+}
+
+private func cangjieHumanEvalAuthorityString(object: JsonObject, key: String): String {
+    match (object.get(key)) {
+        case Some(value) => value.asString().getValue()
+        case None => throw Exception("missing authority field")
+    }
+}
+
+private func cangjieHumanEvalAuthorityTags(object: JsonObject, key: String, out: ArrayList<String>): Unit {
+    match (object.get(key)) {
+        case Some(value) => for (item in value.asArray().getItems()) { out.add(item.asString().getValue()) }
+        case None => throw Exception("missing authority tags")
+    }
 }
 
 private func cangjieHumanEvalManifestDirectoryHash(root: Path): String {

@@ -3,6 +3,7 @@ package cangjie_community_knowledge_base
 import std.collection.ArrayList
 import std.convert.Parsable
 import std.fs.{Directory, File, Path, exists}
+import stdx.encoding.json.*
 
 public class CangjieHumanEvalPass1GateGroups {
     public static let C: String = "C-ckb-mcp-stdio"
@@ -225,16 +226,21 @@ public func cangjieHumanEvalPass1GateFromText(
     result.manifestPath = manifestPath
     result.expectedTotal = options.expectedTotal
     result.expectedPass = options.expectedPass
-    let manifest = parseCangjieEvalManifest(manifestText)
+    let authorityMode = manifestText.contains("cangjie-humaneval-authority-v1")
+    let authority = if (authorityMode) { parseCangjieHumanEvalAuthorityManifest(manifestText) } else { CangjieHumanEvalManifestResult() }
+    let manifest = if (authorityMode) { cangjieHumanEvalGateManifestFromAuthority(authority) } else { parseCangjieEvalManifest(manifestText) }
     let rows = parseCangjieHumanEvalPass1Rows(resultsText)
     result.manifestCaseCount = manifest.cases.size
     if (manifest.invalidLines > 0) {
         result.addDiagnostic("manifest_invalid_lines:${manifest.invalidLines}")
     }
+    if (authorityMode && !authority.ok) {
+        for (diagnostic in authority.diagnostics) { result.addDiagnostic("authority_${diagnostic}") }
+    }
     if (manifest.cases.size != options.expectedTotal) {
         result.addDiagnostic("manifest_case_count_mismatch:${manifest.cases.size}:${options.expectedTotal}")
     }
-    cangjieHumanEvalGateValidateManifestIdentity(manifest, manifestText, options.expectedTotal, result)
+    cangjieHumanEvalGateValidateManifestIdentity(manifest, options.expectedTotal, result)
     for (row in rows) {
         if (row.ok) {
             result.parsedResultRows += 1
@@ -270,7 +276,6 @@ public func cangjieHumanEvalPass1GateFromText(
 
 private func cangjieHumanEvalGateValidateManifestIdentity(
     manifest: CangjieEvalManifestSummary,
-    manifestText: String,
     expectedTotal: Int64,
     result: CangjieHumanEvalPass1GateResult
 ): Unit {
@@ -282,23 +287,22 @@ private func cangjieHumanEvalGateValidateManifestIdentity(
             result.addDiagnostic("manifest_case_id_not_contiguous:${i}:${caseId}")
         }
     }
-    if (!manifestText.contains("\"schemaVersion\":\"cangjie-humaneval-authority-v1\"")) { return }
-    var datasetVersion = ""
-    var authorityRows: Int64 = 0
-    for (line in manifestText.split("\n")) {
-        if (line.trimAscii() == "") { continue }
-        authorityRows += 1
-        let caseId = cangjieHumanEvalGateJsonStringField(line, "caseId")
-        let version = cangjieHumanEvalGateJsonStringField(line, "datasetVersion")
-        if (datasetVersion == "") { datasetVersion = version }
-        if (version == "" || version != datasetVersion) { result.addDiagnostic("manifest_dataset_version_mismatch:${caseId}") }
-        for (field in ["promptHash", "metadataHash", "starterHash", "testsHash", "translationHash", "caseHash"]) {
-            if (!cangjieHumanEvalGateJsonStringField(line, field).startsWith("sha256:")) {
-                result.addDiagnostic("manifest_hash_invalid:${caseId}:${field}")
-            }
-        }
+}
+
+private func cangjieHumanEvalGateManifestFromAuthority(authority: CangjieHumanEvalManifestResult): CangjieEvalManifestSummary {
+    let manifest = CangjieEvalManifestSummary()
+    for (row in authority.rows) {
+        let evalCase = CangjieEvalCase()
+        evalCase.id = row.caseId
+        evalCase.category = CangjieEvalCategories.UNIT
+        evalCase.targetVersion = row.targetVersion
+        evalCase.prompt = row.prompt
+        evalCase.entryPoint = "${row.caseId}/starter"
+        evalCase.testCommand = "verifier-owned"
+        for (tag in row.expectedKnowledgeTags) { evalCase.expectedKnowledgeTags.add(tag) }
+        manifest.cases.add(evalCase)
     }
-    if (authorityRows != expectedTotal) { result.addDiagnostic("authority_manifest_row_count:${authorityRows}:${expectedTotal}") }
+    manifest
 }
 
 private func cangjieHumanEvalGateExpectedCaseId(index: Int64): String {
@@ -326,12 +330,18 @@ public func parseCangjieHumanEvalPass1Row(line: String): CangjieHumanEvalPass1Re
         row.diagnostic = "malformed_result_row"
         return row
     }
-    row.caseId = cangjieHumanEvalGateJsonStringField(raw, "caseId").trimAscii()
-    row.group = cangjieHumanEvalGateJsonStringField(raw, "group").trimAscii()
-    row.unitPassAt1 = cangjieHumanEvalGateJsonBoolField(raw, "unitPassAt1")
-    row.protocolViolation = cangjieHumanEvalGateJsonBoolField(raw, "protocolViolation")
-    row.failureType = cangjieHumanEvalGateJsonStringField(raw, "failureType").trimAscii()
-    row.toolEvidence = cangjieHumanEvalGateJsonStringField(raw, "toolEvidence").trimAscii()
+    try {
+        let object = JsonValue.fromStr(raw).asObject()
+        row.caseId = cangjieHumanEvalGateObjectString(object, "caseId").trimAscii()
+        row.group = cangjieHumanEvalGateObjectString(object, "group").trimAscii()
+        row.unitPassAt1 = cangjieHumanEvalGateObjectBool(object, "unitPassAt1")
+        row.protocolViolation = cangjieHumanEvalGateObjectBool(object, "protocolViolation")
+        row.failureType = cangjieHumanEvalGateObjectString(object, "failureType").trimAscii()
+        row.toolEvidence = cangjieHumanEvalGateObjectString(object, "toolEvidence").trimAscii()
+    } catch (_: Exception) {
+        row.diagnostic = "malformed_result_row"
+        return row
+    }
     if (row.caseId == "" || row.group == "") {
         row.diagnostic = "missing_result_field"
         return row
@@ -608,26 +618,18 @@ private func cangjieHumanEvalGateReadText(path: String): String {
     }
 }
 
-private func cangjieHumanEvalGateJsonStringField(text: String, field: String): String {
-    let marker = "\"${field}\":\""
-    let parts = text.split(marker)
-    if (parts.size <= 1) {
-        return ""
-    }
-    let tail = parts[1]
-    match (tail.indexOf("\"")) {
-        case Some(end) => tail[..end]
-        case None => ""
+private func cangjieHumanEvalGateObjectString(object: JsonObject, field: String): String {
+    match (object.get(field)) {
+        case Some(value) => value.asString().getValue()
+        case None => throw Exception("missing result string")
     }
 }
 
-private func cangjieHumanEvalGateJsonBoolField(text: String, field: String): Bool {
-    let marker = "\"${field}\":"
-    let parts = text.split(marker)
-    if (parts.size <= 1) {
-        return false
+private func cangjieHumanEvalGateObjectBool(object: JsonObject, field: String): Bool {
+    match (object.get(field)) {
+        case Some(value) => value.asBool().getValue()
+        case None => throw Exception("missing result bool")
     }
-    parts[1].trimAscii().startsWith("true")
 }
 
 private func cangjieHumanEvalGateJsonStringArray(values: ArrayList<String>): String {

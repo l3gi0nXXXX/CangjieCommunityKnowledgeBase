@@ -395,15 +395,16 @@ public func ckbAbcdeBuildTaskContext(caseRoot: String, caseId: String, manifestT
     for (tag in ckbAbcdeInferKnowledgeTags("${context.taskText}\n${starter}")) {
         context.expectedKnowledgeTags.add(tag)
     }
-    let authorityLine = ckbAbcdeManifestLineForCase(manifestText, caseId)
-    if (authorityLine != "") {
-        let manifestSignature = ckbAbcdeJsonStringField(authorityLine, "signature")
-        if (manifestSignature != "") { context.signature = manifestSignature }
-        let manifestTargetVersion = ckbAbcdeJsonStringField(authorityLine, "targetVersion")
-        if (manifestTargetVersion != "") { context.targetVersion = manifestTargetVersion }
-        context.datasetVersion = ckbAbcdeJsonStringField(authorityLine, "datasetVersion")
-        context.promptHash = ckbAbcdeJsonStringField(authorityLine, "promptHash")
-        context.starterHash = ckbAbcdeJsonStringField(authorityLine, "starterHash")
+    if (manifestText.contains("cangjie-humaneval-authority-v1")) {
+        match (cangjieHumanEvalAuthorityRowForCase(manifestText, caseId)) {
+            case Some(row) =>
+                context.signature = row.signature
+                context.targetVersion = row.targetVersion
+                context.datasetVersion = row.datasetVersion
+                context.promptHash = row.promptHash
+                context.starterHash = row.starterHash
+            case None => ()
+        }
     }
     context
 }
@@ -412,21 +413,13 @@ public func ckbAbcdeRenderTaskContextJson(context: CkbAbcdeTaskContext): String 
     "{\"taskId\":\"${ckbAbcdeJsonEscape(context.taskId)}\",\"benchmark\":\"${ckbAbcdeJsonEscape(context.benchmark)}\",\"taskText\":\"${ckbAbcdeJsonEscape(context.taskText)}\",\"signature\":\"${ckbAbcdeJsonEscape(context.signature)}\",\"datasetVersion\":\"${ckbAbcdeJsonEscape(context.datasetVersion)}\",\"promptHash\":\"${ckbAbcdeJsonEscape(context.promptHash)}\",\"starterHash\":\"${ckbAbcdeJsonEscape(context.starterHash)}\",\"expectedKnowledgeTags\":${ckbAbcdeStringArrayJson(context.expectedKnowledgeTags)},\"targetVersion\":\"${ckbAbcdeJsonEscape(context.targetVersion)}\",\"sourceSet\":\"${ckbAbcdeJsonEscape(context.sourceSet)}\",\"versionPolicy\":\"${ckbAbcdeJsonEscape(context.versionPolicy)}\",\"budget\":10,\"responseMode\":\"evidence\"}"
 }
 
-private func ckbAbcdeManifestLineForCase(manifestText: String, caseId: String): String {
-    for (line in manifestText.split("\n")) {
-        if (ckbAbcdeJsonStringField(line, "caseId") == caseId || ckbAbcdeJsonStringField(line, "id") == caseId) { return line }
-    }
-    ""
-}
-
 private func ckbAbcdeExtractCangjieSignature(source: String): String {
     for (line in source.split("\n")) {
         let trimmed = line.trimAscii()
         if (trimmed.startsWith("func ")) {
-            match (trimmed.indexOf("{")) {
-                case Some(idx) => return trimmed[..idx].trimAscii()
-                case None => return trimmed
-            }
+            let parts = trimmed.split("{")
+            if (parts.size > 0) { return parts[0].trimAscii() }
+            return trimmed
         }
     }
     ""
