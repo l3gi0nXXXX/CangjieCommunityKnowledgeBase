@@ -14055,6 +14055,37 @@ private class CkbBenchmarkGapProofCheckpoint {
     init() {}
 }
 
+public class CkbBenchmarkGapScanPlan {
+    public var schemaVersion: String = "ckb-benchmark-gap-scan-plan-v1"
+    public var runId: String = ""
+    public var inputSha256: String = ""
+    public var planHash: String = ""
+    public var targetVersion: String = ""
+    public var total: Int64 = 0
+    public var batchSize: Int64 = 200
+    public var nextOffset: Int64 = 0
+    public var revision: Int64 = 0
+    public var owner: String = ""
+    public var leaseUntilMillis: Int64 = 0
+    public var state: String = "planned"
+    public var checksum: String = ""
+    public var valid: Bool = false
+    public var errorCode: String = "not_loaded"
+
+    public init() {}
+}
+
+public class CkbBenchmarkGapScanClaimResult {
+    public var claimed: Bool = false
+    public var startOffset: Int64 = 0
+    public var endOffset: Int64 = 0
+    public var state: String = "invalid"
+    public var errorCode: String = "benchmark_gap_scan_plan_invalid"
+    public var plan: CkbBenchmarkGapScanPlan = CkbBenchmarkGapScanPlan()
+
+    public init() {}
+}
+
 private func ckbRunScheduledProfileFetches(profile: CkbScheduleTaskProfile, runner: SourceFetchRunner, config: CkbRuntimeConfig, store: FileKnowledgeStore, manifest: CangjieVersionManifest, deadlineAtMillis!: Int64 = 0): CkbScheduledProfileFetchResult {
     let result = fetchScheduledProfileSources(profile, runner, config, store, manifest, deadlineAtMillis: deadlineAtMillis)
     ckbSyncScheduledRequestAccounting(result)
@@ -17399,15 +17430,40 @@ private func ingestScheduledBenchmarkGapCuration(kb: KnowledgeBase, store: FileK
         }
         return result
     }
-    if (curated.records.size > ckbBenchmarkGapCurationMaxRecords()) {
+    let inputHash = ckbReleaseEvidenceHash(curationText)
+    let scanPlan = ckbBuildBenchmarkGapScanPlan(curated.records, curationText,
+        config.benchmarkGapTargetVersion, runId: "benchmark-gap-${inputHash}",
+        batchSize: ckbBenchmarkGapCurationBatchSize())
+    if (!scanPlan.valid) {
         result.ok = false
-        result.status = "benchmark_gap_curation_record_limit_exceeded"
-        result.validationDiagnostics.add("benchmark_gap_input_gate:accepted=${curated.records.size}:maxRecords=${ckbBenchmarkGapCurationMaxRecords()}:bytes=${curationBytes.size}")
+        result.status = scanPlan.errorCode
         return result
     }
-    let inputHash = stableSummaryHash(curationText)
-    result.validationDiagnostics.add("benchmark_gap_input_gate:bytes=${curationBytes.size}:accepted=${curated.records.size}:rejected=${curated.rejected}:maxRecords=${ckbBenchmarkGapCurationMaxRecords()}:inputHash=${inputHash}")
-    ckbWriteScheduledProfileStageCheckpoint(store, profile, "input_parsed", "ok", profile.ingestBudgetMillis, deadlineAtMillis, "accepted=${curated.records.size}|rejected=${curated.rejected}|inputHash=${inputHash}")
+    var persistedPlan = ckbLoadBenchmarkGapScanPlan(store, scanPlan.planHash,
+        scanPlan.inputSha256, scanPlan.targetVersion)
+    if (persistedPlan.errorCode == "benchmark_gap_scan_plan_not_found") {
+        persistedPlan = ckbSaveBenchmarkGapScanPlan(store, scanPlan)
+    }
+    if (!persistedPlan.valid) {
+        result.ok = false
+        result.status = persistedPlan.errorCode
+        return result
+    }
+    result.validationDiagnostics.add("benchmark_gap_input_gate:bytes=${curationBytes.size}:accepted=${curated.records.size}:rejected=${curated.rejected}:batchSize=${ckbBenchmarkGapCurationBatchSize()}:inputHash=${inputHash}:planHash=${scanPlan.planHash}")
+    if (curated.records.size > ckbBenchmarkGapCurationBatchSize()) {
+        let nowMillis = ckbCoreNowMillis()
+        let claim = ckbClaimBenchmarkGapScanPlan(store, scanPlan.planHash, scanPlan.inputSha256,
+            scanPlan.targetVersion, "scheduler-${profile.profile}", nowMillis, 60000)
+        result.ok = false
+        result.status = if (claim.claimed) { "benchmark_gap_scan_batch_admitted" } else { claim.errorCode }
+        result.validationStatus = result.status
+        result.validationDiagnostics.add("benchmark_gap_scan_plan:planHash=${scanPlan.planHash}:total=${scanPlan.total}:batchSize=${scanPlan.batchSize}:batchStart=${claim.startOffset}:batchEnd=${claim.endOffset}:revision=${claim.plan.revision}:state=${claim.state}:errorCode=${claim.errorCode}")
+        // S3 owns isolated materialization. Do not send the first batch through
+        // the legacy live-write path and misrepresent partial active state as a
+        // completed 440-record run.
+        return result
+    }
+    ckbWriteScheduledProfileStageCheckpoint(store, profile, "input_parsed", "ok", profile.ingestBudgetMillis, deadlineAtMillis, "accepted=${curated.records.size}|rejected=${curated.rejected}|inputHash=${inputHash}|planHash=${scanPlan.planHash}")
     result.validationDiagnostics.add("profile_stage_checkpoint:profile=${profile.profile}|stage=input_parsed|status=ok|budgetMs=${profile.ingestBudgetMillis}|deadlineAtMillis=${deadlineAtMillis}|remainingMs=${ckbRemainingMillis(deadlineAtMillis)}")
     for (record in curated.records) {
         result.validationDiagnostics.add(ckbBenchmarkGapPreviewProof(curated.records, record))
@@ -17511,13 +17567,272 @@ private func ingestScheduledBenchmarkGapCuration(kb: KnowledgeBase, store: FileK
     result
 }
 
+public func ckbBuildBenchmarkGapScanPlan(records: ArrayList<NormalizedRecord>, inputText: String,
+    targetVersion: String, runId!: String = "benchmark-gap-curation",
+    batchSize!: Int64 = 200): CkbBenchmarkGapScanPlan {
+    let plan = CkbBenchmarkGapScanPlan()
+    if (batchSize <= 0 || targetVersion.trimAscii() == "" || runId.trimAscii() == "") {
+        plan.errorCode = "benchmark_gap_scan_plan_input_invalid"
+        return plan
+    }
+    plan.runId = runId.trimAscii()
+    plan.inputSha256 = ckbReleaseEvidenceHash(inputText)
+    plan.targetVersion = targetVersion.trimAscii()
+    plan.total = records.size
+    plan.batchSize = batchSize
+    plan.state = if (records.size == 0) { "complete" } else { "planned" }
+    let identity = StringBuilder()
+    identity.append("schema=${plan.schemaVersion}|runId=${plan.runId}|inputSha256=${plan.inputSha256}")
+    identity.append("|targetVersion=${plan.targetVersion}|total=${plan.total}|batchSize=${plan.batchSize}")
+    for (record in records) {
+        // S1 derives sourceId from canonicalBenchmarkGapIdentity plus the
+        // canonical record key. Preserve that ordered identity; do not invent
+        // a second case-id parser in the scheduler layer.
+        identity.append("|record=${record.sourceId.size}:${record.sourceId}")
+    }
+    plan.planHash = ckbReleaseEvidenceHash(identity.toString())
+    plan.checksum = ckbBenchmarkGapScanPlanChecksum(plan)
+    plan.valid = true
+    plan.errorCode = ""
+    plan
+}
+
+public func ckbSaveBenchmarkGapScanPlan(store: FileKnowledgeStore,
+    plan: CkbBenchmarkGapScanPlan): CkbBenchmarkGapScanPlan {
+    if (!ckbBenchmarkGapScanPlanInvariant(plan)) {
+        return ckbBenchmarkGapInvalidScanPlan("benchmark_gap_scan_plan_invariant_failed")
+    }
+    plan.checksum = ckbBenchmarkGapScanPlanChecksum(plan)
+    try {
+        store.writeLinesAtomically(ckbBenchmarkGapScanPlanPath(plan.planHash), ckbBenchmarkGapScanPlanText(plan))
+    } catch (_: Exception) {
+        return ckbBenchmarkGapInvalidScanPlan("benchmark_gap_scan_plan_write_failed")
+    }
+    let readback = ckbLoadBenchmarkGapScanPlan(store, plan.planHash, plan.inputSha256, plan.targetVersion)
+    if (!readback.valid || readback.checksum != plan.checksum || readback.revision != plan.revision) {
+        return ckbBenchmarkGapInvalidScanPlan("benchmark_gap_scan_plan_readback_failed")
+    }
+    readback
+}
+
+public func ckbLoadBenchmarkGapScanPlan(store: FileKnowledgeStore, planHash: String,
+    inputSha256: String, targetVersion: String): CkbBenchmarkGapScanPlan {
+    if (planHash == "" || inputSha256 == "" || targetVersion == "") {
+        return ckbBenchmarkGapInvalidScanPlan("benchmark_gap_scan_plan_expected_identity_invalid")
+    }
+    let text = try { store.readText(ckbBenchmarkGapScanPlanPath(planHash)) } catch (_: Exception) {
+        return ckbBenchmarkGapInvalidScanPlan("benchmark_gap_scan_plan_invalid_response_encoding")
+    }
+    if (text == "") { return ckbBenchmarkGapInvalidScanPlan("benchmark_gap_scan_plan_not_found") }
+    if (!ckbBenchmarkGapScanPlanShapeValid(text)) {
+        return ckbBenchmarkGapInvalidScanPlan("benchmark_gap_scan_plan_malformed")
+    }
+    let plan = CkbBenchmarkGapScanPlan()
+    plan.schemaVersion = ckbCurrentField(text, "schemaVersion")
+    plan.runId = ckbCurrentField(text, "runId")
+    plan.inputSha256 = ckbCurrentField(text, "inputSha256")
+    plan.planHash = ckbCurrentField(text, "planHash")
+    plan.targetVersion = ckbCurrentField(text, "targetVersion")
+    plan.total = parseIntField(ckbCurrentField(text, "total"), -1)
+    plan.batchSize = parseIntField(ckbCurrentField(text, "batchSize"), -1)
+    plan.nextOffset = parseIntField(ckbCurrentField(text, "nextOffset"), -1)
+    plan.revision = parseIntField(ckbCurrentField(text, "revision"), -1)
+    plan.owner = ckbCurrentField(text, "owner")
+    plan.leaseUntilMillis = parseIntField(ckbCurrentField(text, "leaseUntilMillis"), -1)
+    plan.state = ckbCurrentField(text, "state")
+    plan.checksum = ckbCurrentField(text, "checksum")
+    if (plan.schemaVersion != "ckb-benchmark-gap-scan-plan-v1") {
+        plan.errorCode = "benchmark_gap_scan_plan_schema_mismatch"
+        return plan
+    }
+    if (plan.planHash != planHash || plan.inputSha256 != inputSha256 || plan.targetVersion != targetVersion) {
+        plan.errorCode = "benchmark_gap_scan_plan_identity_mismatch"
+        return plan
+    }
+    if (!ckbBenchmarkGapScanPlanInvariant(plan)) {
+        plan.errorCode = "benchmark_gap_scan_plan_invariant_failed"
+        return plan
+    }
+    if (plan.checksum != ckbBenchmarkGapScanPlanChecksum(plan)) {
+        plan.errorCode = "benchmark_gap_scan_plan_checksum_mismatch"
+        return plan
+    }
+    plan.valid = true
+    plan.errorCode = ""
+    plan
+}
+
+public func ckbClaimBenchmarkGapScanPlan(store: FileKnowledgeStore, planHash: String,
+    inputSha256: String, targetVersion: String, owner: String, nowMillis: Int64,
+    leaseMillis: Int64): CkbBenchmarkGapScanClaimResult {
+    let result = CkbBenchmarkGapScanClaimResult()
+    if (owner.trimAscii() == "" || nowMillis <= 0 || leaseMillis <= 0) {
+        result.errorCode = "benchmark_gap_scan_claim_input_invalid"
+        return result
+    }
+    let current = ckbLoadBenchmarkGapScanPlan(store, planHash, inputSha256, targetVersion)
+    result.plan = current
+    if (!current.valid) { result.errorCode = current.errorCode; return result }
+    if (current.state == "complete") {
+        result.state = "complete"
+        result.errorCode = "benchmark_gap_scan_plan_terminal"
+        return result
+    }
+    if (current.state == "running" && current.leaseUntilMillis > nowMillis) {
+        result.state = "running"
+        result.errorCode = "benchmark_gap_scan_plan_lease_held"
+        return result
+    }
+    if (!ckbAcquireBenchmarkGapScanPlanLock(store, planHash, nowMillis)) {
+        result.state = "running"
+        result.errorCode = "benchmark_gap_scan_plan_claim_conflict"
+        return result
+    }
+    try {
+        let fresh = ckbLoadBenchmarkGapScanPlan(store, planHash, inputSha256, targetVersion)
+        if (!fresh.valid || fresh.revision != current.revision ||
+            (fresh.state == "running" && fresh.leaseUntilMillis > nowMillis)) {
+            result.plan = fresh
+            result.state = if (fresh.valid) { fresh.state } else { "invalid" }
+            result.errorCode = if (fresh.valid) { "benchmark_gap_scan_plan_claim_conflict" } else { fresh.errorCode }
+            return result
+        }
+        fresh.state = "running"
+        fresh.owner = owner.trimAscii()
+        fresh.leaseUntilMillis = nowMillis + leaseMillis
+        fresh.revision += 1
+        let saved = ckbSaveBenchmarkGapScanPlan(store, fresh)
+        result.plan = saved
+        if (!saved.valid) { result.errorCode = saved.errorCode; return result }
+        result.claimed = true
+        result.startOffset = saved.nextOffset
+        result.endOffset = ckbBenchmarkGapBatchEnd(saved.total, saved.nextOffset, saved.batchSize)
+        result.state = saved.state
+        result.errorCode = ""
+    } finally {
+        ckbReleaseBenchmarkGapScanPlanLock(store, planHash)
+    }
+    result
+}
+
+public func ckbCheckpointBenchmarkGapScanPlan(store: FileKnowledgeStore, planHash: String,
+    inputSha256: String, targetVersion: String, owner: String, expectedRevision: Int64,
+    expectedStart: Int64, completedEnd: Int64, nowMillis: Int64): CkbBenchmarkGapScanPlan {
+    let current = ckbLoadBenchmarkGapScanPlan(store, planHash, inputSha256, targetVersion)
+    if (!current.valid) { return current }
+    if (current.state != "running" || current.owner != owner || current.revision != expectedRevision ||
+        current.leaseUntilMillis <= nowMillis || current.nextOffset != expectedStart ||
+        completedEnd != ckbBenchmarkGapBatchEnd(current.total, expectedStart, current.batchSize)) {
+        return ckbBenchmarkGapInvalidScanPlan("benchmark_gap_scan_plan_revision_conflict")
+    }
+    if (!ckbAcquireBenchmarkGapScanPlanLock(store, planHash, nowMillis)) {
+        return ckbBenchmarkGapInvalidScanPlan("benchmark_gap_scan_plan_claim_conflict")
+    }
+    try {
+        let fresh = ckbLoadBenchmarkGapScanPlan(store, planHash, inputSha256, targetVersion)
+        if (!fresh.valid || fresh.revision != expectedRevision || fresh.owner != owner ||
+            fresh.state != "running" || fresh.leaseUntilMillis <= nowMillis || fresh.nextOffset != expectedStart) {
+            return ckbBenchmarkGapInvalidScanPlan("benchmark_gap_scan_plan_revision_conflict")
+        }
+        fresh.nextOffset = completedEnd
+        fresh.revision += 1
+        fresh.owner = ""
+        fresh.leaseUntilMillis = 0
+        fresh.state = if (completedEnd == fresh.total) { "complete" } else { "checkpointed" }
+        ckbSaveBenchmarkGapScanPlan(store, fresh)
+    } finally {
+        ckbReleaseBenchmarkGapScanPlanLock(store, planHash)
+    }
+}
+
+public func ckbBenchmarkGapCurationBatchSize(): Int64 { 200 }
+
+public func ckbBenchmarkGapBatchEnd(total: Int64, start: Int64, batchSize: Int64): Int64 {
+    if (total <= 0 || start < 0 || start >= total || batchSize <= 0) { return if (total < 0) { 0 } else { total } }
+    let end = start + batchSize
+    if (end > total) { total } else { end }
+}
+
+private func ckbBenchmarkGapScanPlanPath(planHash: String): String {
+    "metadata/benchmark-gap-curation/plans/${safeName(planHash)}.ckb"
+}
+
+private func ckbBenchmarkGapScanPlanLockPath(planHash: String): String {
+    "metadata/benchmark-gap-curation/locks/${safeName(planHash)}.lock"
+}
+
+private func ckbBenchmarkGapScanPlanChecksum(plan: CkbBenchmarkGapScanPlan): String {
+    ckbReleaseEvidenceHash("schema=${plan.schemaVersion}|runId=${plan.runId}|inputSha256=${plan.inputSha256}|planHash=${plan.planHash}|targetVersion=${plan.targetVersion}|total=${plan.total}|batchSize=${plan.batchSize}|nextOffset=${plan.nextOffset}|revision=${plan.revision}|owner=${plan.owner}|leaseUntilMillis=${plan.leaseUntilMillis}|state=${plan.state}")
+}
+
+private func ckbBenchmarkGapScanPlanInvariant(plan: CkbBenchmarkGapScanPlan): Bool {
+    if (plan.schemaVersion != "ckb-benchmark-gap-scan-plan-v1" || plan.runId == "" ||
+        plan.inputSha256.size != 64 || plan.planHash.size != 64 || plan.targetVersion == "" ||
+        plan.total < 0 || plan.batchSize <= 0 || plan.nextOffset < 0 || plan.nextOffset > plan.total ||
+        plan.revision < 0 || plan.leaseUntilMillis < 0) { return false }
+    if (plan.state == "running") { return plan.owner != "" && plan.leaseUntilMillis > 0 && plan.nextOffset < plan.total }
+    if (plan.state == "complete") { return plan.owner == "" && plan.leaseUntilMillis == 0 && plan.nextOffset == plan.total }
+    (plan.state == "planned" || plan.state == "checkpointed") && plan.owner == "" &&
+        plan.leaseUntilMillis == 0 && plan.nextOffset < plan.total
+}
+
+private func ckbBenchmarkGapScanPlanText(plan: CkbBenchmarkGapScanPlan): String {
+    "schemaVersion=${escapeField(plan.schemaVersion)}\nrunId=${escapeField(plan.runId)}\ninputSha256=${plan.inputSha256}\nplanHash=${plan.planHash}\ntargetVersion=${escapeField(plan.targetVersion)}\ntotal=${plan.total}\nbatchSize=${plan.batchSize}\nnextOffset=${plan.nextOffset}\nrevision=${plan.revision}\nowner=${escapeField(plan.owner)}\nleaseUntilMillis=${plan.leaseUntilMillis}\nstate=${plan.state}\nchecksum=${plan.checksum}\n"
+}
+
+private func ckbBenchmarkGapScanPlanShapeValid(text: String): Bool {
+    let required = HashSet<String>()
+    for (key in ["schemaVersion", "runId", "inputSha256", "planHash", "targetVersion", "total",
+        "batchSize", "nextOffset", "revision", "owner", "leaseUntilMillis", "state", "checksum"]) {
+        required.add(key)
+    }
+    let seen = HashSet<String>()
+    for (line in text.split("\n")) {
+        if (line == "") { continue }
+        match (line.indexOf("=")) {
+            case Some(index) =>
+                let key = line[..index]
+                if (!required.contains(key) || seen.contains(key)) { return false }
+                seen.add(key)
+            case None => return false
+        }
+    }
+    seen.size == required.size
+}
+
+private func ckbBenchmarkGapInvalidScanPlan(errorCode: String): CkbBenchmarkGapScanPlan {
+    let plan = CkbBenchmarkGapScanPlan()
+    plan.errorCode = errorCode
+    plan
+}
+
+private func ckbAcquireBenchmarkGapScanPlanLock(store: FileKnowledgeStore, planHash: String,
+    nowMillis: Int64): Bool {
+    let path = store.root.join(ckbBenchmarkGapScanPlanLockPath(planHash))
+    if (exists(path)) {
+        let lockText = try { String.fromUtf8(File.readFrom(path.join("lock.ckb"))) } catch (_: Exception) { "" }
+        let expiresAtMillis = parseIntField(ckbCurrentField(lockText, "expiresAtMillis"), 0)
+        if (expiresAtMillis <= 0 || expiresAtMillis > nowMillis) { return false }
+        try { _ = launch("/bin/rm", ["-rf", path.toString()]).wait() } catch (_: Exception) { return false }
+    }
+    try {
+        if (!exists(path.parent)) { Directory.create(path.parent, recursive: true) }
+        Directory.create(path, recursive: false)
+        File.writeTo(path.join("lock.ckb"), "expiresAtMillis=${nowMillis + 30000}\n".toArray())
+        true
+    } catch (_: Exception) { false }
+}
+
+private func ckbReleaseBenchmarkGapScanPlanLock(store: FileKnowledgeStore, planHash: String): Unit {
+    let path = store.root.join(ckbBenchmarkGapScanPlanLockPath(planHash))
+    try { _ = launch("/bin/rm", ["-rf", path.toString()]).wait() } catch (_: Exception) { () }
+}
+
 public func ckbBenchmarkGapCurationMaxInputBytes(): Int64 {
     1048576
 }
 
-public func ckbBenchmarkGapCurationMaxRecords(): Int64 {
-    200
-}
+public func ckbBenchmarkGapCurationMaxRecords(): Int64 { ckbBenchmarkGapCurationBatchSize() }
 
 public func ckbBenchmarkGapQueryProofDeadlineDiagnostic(deadlineAtMillis: Int64, completed: Int64, total: Int64, batchId!: String = ""): String {
     let deadline = ckbDeadlineGuard("benchmark_gap_query_proof", deadlineAtMillis)

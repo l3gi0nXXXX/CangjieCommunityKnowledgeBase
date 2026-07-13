@@ -2150,7 +2150,7 @@ public class CkbSchedulerServiceF5Test {
     }
 
     @TestCase
-    public func tP6B01BenchmarkGapCurationRejectsInvalidEncodingAndTooManyRecords(): Unit {
+    public func tP6B01BenchmarkGapCurationRejectsInvalidEncodingAndPlans201Records(): Unit {
         let invalidRoot = "target/t-p6-b01-gap-invalid-encoding"
         s1s2EnsureEmptyDir(invalidRoot)
         let invalidPath = "${invalidRoot}/gap-curation-input.jsonl"
@@ -2186,8 +2186,12 @@ public class CkbSchedulerServiceF5Test {
         let limited = limitService.runSchedulerTasks(limitTasks, true)
 
         @Expect(limited.failed, 1)
-        @Expect(limited.details.contains("benchmark_gap_curation_record_limit_exceeded"), true)
-        @Expect(f7SchedulerDiagnosticsContain(limited, "benchmark_gap_input_gate:accepted=201"), true)
+        @Expect(limited.details.contains("benchmark_gap_curation_record_limit_exceeded"), false)
+        @Expect(limited.details.contains("benchmark_gap_scan_batch_admitted"), true)
+        @Expect(f7SchedulerDiagnosticsContain(limited, "benchmark_gap_input_gate:bytes="), true)
+        @Expect(f7SchedulerDiagnosticsContain(limited, "accepted=201:rejected=0:batchSize=200"), true)
+        @Expect(f7SchedulerDiagnosticsContain(limited, "total=201:batchSize=200:batchStart=0:batchEnd=200"), true)
+        @Expect(exists(Path("${limitRoot}/store/metadata/benchmark-gap-curation/plans")), true)
     }
 
     @TestCase
