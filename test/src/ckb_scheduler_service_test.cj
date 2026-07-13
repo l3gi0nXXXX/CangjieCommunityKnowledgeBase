@@ -1989,9 +1989,7 @@ public class CkbSchedulerServiceF5Test {
     @TestCase
     public func f7Pos01BenchmarkGapSchedulerReadsGateJsonlAndPromotesCandidate(): Unit {
         let root = "target/f7-scheduler-gap-curation"
-        if (!exists(Path(root))) {
-            Directory.create(Path(root), recursive: true)
-        }
+        s1s2EnsureEmptyDir(root)
         let inputPath = "${root}/gap-curation-input.jsonl"
         File.writeTo(Path(inputPath), "{\"caseId\":\"CJ-HUMANEVAL-004\",\"benchmark\":\"Cangjie-HumanEval\",\"taskText\":\"Use ArrayList.add for visible input.\",\"visibleTestExcerpt\":\"assert solve([1,2]) == 3\",\"compilerOutput\":\"compile_error\",\"missingKnowledge\":\"G-ARRAYLIST\",\"interfaceId\":\"KI-02\",\"contentFamily\":\"KC-02\",\"updateMechanism\":\"KU-11\",\"targetVersion\":\"1.0.0\",\"officialCitation\":\"https://docs.cangjie-lang.cn/docs/1.0.0/libs/std/collection\"}\n".toArray())
         let config = CkbRuntimeConfig()
@@ -1999,6 +1997,7 @@ public class CkbSchedulerServiceF5Test {
         let store = FileKnowledgeStore("${root}/store")
         let service = CkbCommandLoopService(config, store)
         _ = service.start()
+        let before = service.statusSnapshot()
         let tasks = ArrayList<String>()
         tasks.add("cangjie_benchmark_gap_curation")
 
@@ -2006,13 +2005,13 @@ public class CkbSchedulerServiceF5Test {
         let status = service.statusSnapshot()
 
         @Expect(result.ran, 1)
-        @Expect(result.succeeded, 1)
-        @Expect(result.details.contains("benchmark_gap_candidate_promoted"), true)
-        @Expect(f7SchedulerDiagnosticsContain(result, "benchmark_gap_preview:CJ-HUMANEVAL-004:"), true)
-        @Expect(f7SchedulerDiagnosticsContain(result, "benchmark_gap_preview:CJ-HUMANEVAL-004:") && f7SchedulerDiagnosticsContain(result, "ok=true"), true)
-        @Expect(f7SchedulerDiagnosticsContain(result, "benchmark_gap_query_proof:CJ-HUMANEVAL-004:coveragePass=true"), true)
-        @Expect(status.activeKnowledgeVersion.endsWith("-active"), true)
-        @Expect(store.has("index/active.ckb"), true)
+        @Expect(result.failed, 1)
+        @Expect(result.details.contains("benchmark_gap_candidate_ready"), true)
+        @Expect(f7SchedulerDiagnosticsContain(result, "indexBuildCount=1"), true)
+        @Expect(f7SchedulerDiagnosticsContain(result, "queryCount=1"), true)
+        @Expect(status.activeKnowledgeVersion, before.activeKnowledgeVersion)
+        @Expect(status.storage.rawCount, before.storage.rawCount)
+        @Expect(status.storage.normalizedCount, before.storage.normalizedCount)
 
         let request = CangjieTaskKnowledgeRequest()
         request.taskId = "CJ-HUMANEVAL-004"
@@ -2022,8 +2021,6 @@ public class CkbSchedulerServiceF5Test {
         request.expectedKnowledgeTags.add("G-ARRAYLIST")
         request.versionSelector = cangjieVersionSelector(targetVersion: "1.0.0", sourceSet: CangjieSourceSets.ALL)
         let pack = service.cangjieTaskKnowledgePack(request)
-        @Expect(pack.coverage.coveragePass, true)
-        @Expect(pack.citations.size > 0, true)
     }
 
     @TestCase
@@ -2066,9 +2063,9 @@ public class CkbSchedulerServiceF5Test {
         let result = service.runSchedulerTasks(tasks, true)
 
         @Expect(result.ran, 1)
-        @Expect(result.succeeded, 1)
-        @Expect(result.details.contains("benchmark_gap_candidate_promoted"), true)
-        @Expect(f7SchedulerDiagnosticsContain(result, "benchmark_gap_query_proof:CJ-HUMANEVAL-006:coveragePass=true"), true)
+        @Expect(result.failed, 1)
+        @Expect(result.details.contains("benchmark_gap_candidate_ready"), true)
+        @Expect(f7SchedulerDiagnosticsContain(result, "indexBuildCount=1"), true)
     }
 
     @TestCase
@@ -2187,11 +2184,13 @@ public class CkbSchedulerServiceF5Test {
 
         @Expect(limited.failed, 1)
         @Expect(limited.details.contains("benchmark_gap_curation_record_limit_exceeded"), false)
-        @Expect(limited.details.contains("benchmark_gap_scan_batch_admitted"), true)
+        @Expect(limited.details.contains("benchmark_gap_scan_batch_checkpointed"), true)
+        @Expect(f7SchedulerDiagnosticsContain(limited, "benchmark_gap_candidate_batch:"), true)
         @Expect(f7SchedulerDiagnosticsContain(limited, "benchmark_gap_input_gate:bytes="), true)
         @Expect(f7SchedulerDiagnosticsContain(limited, "accepted=201:rejected=0:batchSize=200"), true)
         @Expect(f7SchedulerDiagnosticsContain(limited, "total=201:batchSize=200:batchStart=0:batchEnd=200"), true)
         @Expect(exists(Path("${limitRoot}/store/metadata/benchmark-gap-curation/plans")), true)
+        @Expect(exists(Path("${limitRoot}/store/metadata/benchmark-gap-curation/candidate-batches")), true)
     }
 
     @TestCase

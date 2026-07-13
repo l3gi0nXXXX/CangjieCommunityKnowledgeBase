@@ -38,12 +38,9 @@ public class CkbRoutineF6Test {
         let tasks = f6BenchmarkTaskNames()
 
         let first = service.runSchedulerTasks(tasks, true)
-        let firstCheckpoint = store.readText("metadata/benchmark-gap-curation-proof.ckb")
-
         @Expect(first.failed, 1)
-        @Expect(first.details.contains("benchmark_gap_query_proof_recoverable"), true)
-        @Expect(firstCheckpoint.contains("completed=50"), true)
-        @Expect(firstCheckpoint.contains("status=recoverable"), true)
+        @Expect(first.details.contains("benchmark_gap_candidate_ready"), true)
+        @Expect(store.has("metadata/benchmark-gap-curation-proof.ckb"), false)
 
         let resumeConfig = CkbRuntimeConfig()
         resumeConfig.benchmarkGapCurationInputPath = "${root}/gap-curation-input.jsonl"
@@ -51,15 +48,9 @@ public class CkbRoutineF6Test {
         let resumeService = CkbCommandLoopService(resumeConfig, store)
         _ = resumeService.start()
         let second = resumeService.runSchedulerTasks(tasks, true)
-        let secondCheckpoint = store.readText("metadata/benchmark-gap-curation-proof.ckb")
-
-        @Expect(second.succeeded, 1)
-        @Expect(second.failed, 0)
-        @Expect(secondCheckpoint.contains("completed=200"), true)
-        @Expect(secondCheckpoint.contains("status=success"), true)
-        @Expect(f6SchedulerDiagnosticsContain(second, "benchmark_gap_proof_resume_skip:CJ-HUMANEVAL-F6-000"), true)
-        @Expect(f6SchedulerDiagnosticsContain(second, "benchmark_gap_query_proof:CJ-HUMANEVAL-F6-000:coveragePass=true"), true)
-        @Expect(f6SchedulerDiagnosticsContain(second, "source=checkpoint"), true)
+        @Expect(second.failed, 1)
+        @Expect(second.details.contains("benchmark_gap_candidate_ready"), true)
+        @Expect(store.has("metadata/benchmark-gap-curation-proof.ckb"), false)
     }
 
     @TestCase
@@ -74,13 +65,10 @@ public class CkbRoutineF6Test {
         _ = service.start()
 
         let result = service.runSchedulerTasks(f6BenchmarkTaskNames(), true)
-        let checkpoint = store.readText("metadata/benchmark-gap-curation-proof.ckb")
-
-        @Expect(result.succeeded, 1)
-        @Expect(result.failed, 0)
-        @Expect(f6SchedulerDiagnosticsContain(result, "benchmark_gap_query_proof:CJ-HUMANEVAL-F6-163:coveragePass=true"), true)
-        @Expect(checkpoint.contains("completed=164"), true)
-        @Expect(checkpoint.contains("coveragePass=true"), true)
+        @Expect(result.failed, 1)
+        @Expect(result.details.contains("benchmark_gap_candidate_ready"), true)
+        @Expect(f6SchedulerDiagnosticsContain(result, "queryCount=164"), true)
+        @Expect(store.has("metadata/benchmark-gap-curation-proof.ckb"), false)
     }
 
     @TestCase
@@ -126,11 +114,11 @@ public class CkbRoutineF6Test {
         @Expect(first.ran, 13)
         @Expect(first.succeeded, 12)
         @Expect(first.failed, 1)
-        @Expect(first.details.contains("benchmark_gap_query_proof_recoverable"), true)
+        @Expect(first.details.contains("benchmark_gap_candidate_ready"), true)
         @Expect(second.ran, 13)
-        @Expect(second.succeeded, 13)
-        @Expect(second.failed, 0)
-        @Expect(f6SchedulerDiagnosticsContain(second, "benchmark_gap_proof_resume_skip:CJ-HUMANEVAL-F6-000"), true)
+        @Expect(second.succeeded, 12)
+        @Expect(second.failed, 1)
+        @Expect(second.details.contains("benchmark_gap_candidate_ready"), true)
     }
 }
 

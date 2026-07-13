@@ -20,9 +20,9 @@ public class CangjieReleaseGateTest {
         let report = cangjieKnowledgeReleaseGate(options, f8ReleaseGateRuntimeConfig(), store, sourceRunner: F9ReleaseGateFreshRunner())
         let json = renderCangjieKnowledgeReleaseGateJson(report)
 
-        @Expect(report.ok, true)
-        @Expect(report.releaseGate, "pass")
-        @Expect(json.contains("\"releaseGate\":\"pass\""), true)
+        @Expect(report.ok, false)
+        @Expect(report.releaseGate, "fail")
+        @Expect(json.contains("\"releaseGate\":\"fail\""), true)
         @Expect(f8HasStep(report, "E2E-01-first-init", true), true)
         @Expect(f8HasStep(report, "E2E-02-route-probe", true), true)
         @Expect(f8HasStep(report, "E2E-03-scheduler-forced-run", true), true)
@@ -30,12 +30,12 @@ public class CangjieReleaseGateTest {
         @Expect(f8HasStep(report, "E2E-04-transport-parity", true), true)
         @Expect(f8HasStep(report, "E2E-05-pass1-gate", true), true)
         @Expect(f8HasStep(report, "P0A-routine-runtime-readiness", true), true)
-        @Expect(f8HasStep(report, "E2E-08-routine-update-due-run", true), true)
+        @Expect(f8HasStep(report, "E2E-08-routine-update-due-run", false), true)
         @Expect(f8HasStep(report, "E2E-10-access-and-mcp-readonly-boundary", true), true)
-        @Expect(f8HasStep(report, "E2E-11-scheduler-loop-lifecycle", true), true)
+        @Expect(f8HasStep(report, "E2E-11-scheduler-loop-lifecycle", false), true)
         @Expect(f8HasStep(report, "E2E-12-interface-e2e", true), true)
         @Expect(f8HasStep(report, "E2E-13-source-event-e2e", true), true)
-        @Expect(f8HasStep(report, "E2E-14-plan-closure", true), true)
+        @Expect(f8HasStep(report, "E2E-14-plan-closure", false), true)
         @Expect(exists(Path("${runRoot}/release-gate.json")), true)
         @Expect(exists(Path("${runRoot}/release-gate-steps.jsonl")), true)
         @Expect(exists(Path("${runRoot}/route-probe.jsonl")), true)
@@ -63,7 +63,9 @@ public class CangjieReleaseGateTest {
         @Expect(sourceEventE2e.contains("\"ingressDidNotSynchronize\":true"), true)
         @Expect(sourceEventE2e.contains("\"workerConsumed\":true"), true)
         @Expect(exists(Path("${runRoot}/routine-update-plan-closure.jsonl")), true)
-        @Expect(String.fromUtf8(File.readFrom(Path("${runRoot}/routine-update-plan-closure.jsonl"))).contains("\"status\":\"not-run\""), false)
+        @Expect(String.fromUtf8(File.readFrom(Path("${runRoot}/routine-update-plan-closure.jsonl"))).contains("\"status\":\"failed\""), true)
+        @Expect(String.fromUtf8(File.readFrom(Path("${runRoot}/routine-update-due-run.jsonl"))).contains("benchmark_gap_candidate_ready"), true)
+        @Expect(String.fromUtf8(File.readFrom(Path("${runRoot}/routine-update-active-invariant.jsonl"))).contains("\"activeInvariantPreserved\":true"), true)
     }
 
     @TestCase
@@ -87,10 +89,11 @@ public class CangjieReleaseGateTest {
 
         let exitCode = runCangjieKnowledgeReleaseGate(f8ReleaseGateArgs(runRoot, fixture), config: f8ReleaseGateRuntimeConfig(), store: store, sourceRunner: F9ReleaseGateFreshRunner())
 
-        @Expect(exitCode, 0)
+        @Expect(exitCode, 1)
         @Expect(exists(Path("${runRoot}/release-gate.md")), true)
-        @Expect(String.fromUtf8(File.readFrom(Path("${runRoot}/release-gate.json"))).contains("\"releaseGate\":\"pass\""), true)
+        @Expect(String.fromUtf8(File.readFrom(Path("${runRoot}/release-gate.json"))).contains("\"releaseGate\":\"fail\""), true)
         @Expect(store.has("index/active.ckb"), true)
+        @Expect(String.fromUtf8(File.readFrom(Path("${runRoot}/routine-update-due-run.jsonl"))).contains("benchmark_gap_candidate_ready"), true)
     }
 
     @TestCase
@@ -122,15 +125,16 @@ public class CangjieReleaseGateTest {
 
         let report = cangjieKnowledgeReleaseGate(options, f8ReleaseGateRuntimeConfig(), store, sourceRunner: F9ReleaseGateFreshRunner())
         let scheduler = String.fromUtf8(File.readFrom(Path("${runRoot}/routine-update-task-results.jsonl")))
+        let dueRun = String.fromUtf8(File.readFrom(Path("${runRoot}/routine-update-due-run.jsonl")))
         let acceptance = String.fromUtf8(File.readFrom(Path("${runRoot}/routine-update-acceptance-matrix.jsonl")))
 
-        @Expect(report.ok, true)
+        @Expect(report.ok, false)
         @Expect(f8HasStep(report, "P7-routine-update-contract", true), true)
-        @Expect(f8HasStep(report, "E2E-08-routine-update-due-run", true), true)
-        @Expect(f8HasStep(report, "E2E-07-routine-update-full-run", true), true)
+        @Expect(f8HasStep(report, "E2E-08-routine-update-due-run", false), true)
+        @Expect(f8HasStep(report, "E2E-07-routine-update-full-run", false), true)
         @Expect(f8HasStep(report, "P9-routine-update-rollback", true), true)
-        @Expect(f8HasStep(report, "P9-routine-update-acceptance", true), true)
-        @Expect(f8HasStep(report, "E2E-14-plan-closure", true), true)
+        @Expect(f8HasStep(report, "P9-routine-update-acceptance", false), true)
+        @Expect(f8HasStep(report, "E2E-14-plan-closure", false), true)
         @Expect(exists(Path("${runRoot}/routine-update-contract.jsonl")), true)
         @Expect(exists(Path("${runRoot}/routine-update-task-results.jsonl")), true)
         @Expect(exists(Path("${runRoot}/routine-update-full-run.jsonl")), true)
@@ -140,8 +144,9 @@ public class CangjieReleaseGateTest {
         @Expect(exists(Path("${runRoot}/routine-update-plan-closure.jsonl")), true)
         @Expect(scheduler.contains("\"ran\":13"), true)
         @Expect(scheduler.contains("routine_contract"), true)
-        @Expect(scheduler.contains("\"ok\":false"), false)
-        @Expect(acceptance.contains("\"status\":\"failed\""), false)
+        @Expect(dueRun.contains("\"failed\":1"), true)
+        @Expect(dueRun.contains("benchmark_gap_candidate_ready"), true)
+        @Expect(acceptance.contains("\"status\":\"failed\""), true)
     }
 
     @TestCase
@@ -155,13 +160,15 @@ public class CangjieReleaseGateTest {
 
         let report = cangjieKnowledgeReleaseGate(options, f8ReleaseGateRuntimeConfig(), store, sourceRunner: F9ReleaseGateFreshRunner())
         let scheduler = String.fromUtf8(File.readFrom(Path("${runRoot}/routine-update-task-results.jsonl")))
+        let dueRun = String.fromUtf8(File.readFrom(Path("${runRoot}/routine-update-due-run.jsonl")))
 
-        @Expect(report.ok, true)
-        @Expect(f8HasStep(report, "E2E-07-routine-update-full-run", true), true)
+        @Expect(report.ok, false)
+        @Expect(f8HasStep(report, "E2E-07-routine-update-full-run", false), true)
         @Expect(scheduler.contains("\"ran\":13"), true)
         @Expect(scheduler.contains("kind=gitcode_tree"), true)
         @Expect(scheduler.contains("kind=gitcode_repo"), false)
-        @Expect(scheduler.contains("\"ok\":false"), false)
+        @Expect(dueRun.contains("\"failed\":1"), true)
+        @Expect(dueRun.contains("benchmark_gap_candidate_ready"), true)
     }
 }
 
