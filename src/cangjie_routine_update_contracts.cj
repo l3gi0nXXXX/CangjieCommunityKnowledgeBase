@@ -78,8 +78,8 @@ public func cangjieRoutineUpdateContracts(): ArrayList<CkbRoutineUpdateContract>
     out.add(ckbRoutineContract("KU-08", "official docs weekly full rebuild", CkbRoutineUpdatePolicies.CANDIDATE_PROMOTE, ["index/active.ckb"], [], ["cangjie_docs_full_weekly", "weekly_full_rebuild"]))
     out.add(ckbRoutineContract("KU-09", "release full sync", CkbRoutineUpdatePolicies.CANDIDATE_PROMOTE, ["metadata/cangjie-version-manifest.ckb"], [], ["cangjie_release_full_sync"]))
     out.add(ckbRoutineContract("KU-10", "source repository event sync", CkbRoutineUpdatePolicies.CANDIDATE_PROMOTE, ["metadata/repository-event-ledger"], [], ["cangjie_source_event_sync"]))
-    out.add(ckbRoutineContract("KU-11", "benchmark gap curation", CkbRoutineUpdatePolicies.CURATED_CANDIDATE, ["gap-curation-input.jsonl"], [], ["cangjie_benchmark_gap_curation"]))
-    out.add(ckbRoutineContract("KU-12", "reviewed negative and diagnose rules", CkbRoutineUpdatePolicies.CURATED_CANDIDATE, ["gap-curation-input.jsonl"], [], ["cangjie_benchmark_gap_curation"]))
+    out.add(ckbRoutineContract("KU-11", "benchmark gap curation", CkbRoutineUpdatePolicies.CURATED_CANDIDATE, ["metadata/benchmark-gap-curation-last-success.ckb"], [], ["cangjie_benchmark_gap_curation"]))
+    out.add(ckbRoutineContract("KU-12", "reviewed negative and diagnose rules", CkbRoutineUpdatePolicies.CURATED_CANDIDATE, ["metadata/benchmark-gap-curation-last-success.ckb"], [], ["cangjie_benchmark_gap_curation"]))
     out.add(ckbRoutineContract("KU-13", "version branch mapping refresh", CkbRoutineUpdatePolicies.MANIFEST_CANDIDATE, ["metadata/cangjie-version-manifest.ckb"], [], ["cangjie_version_branch_refresh"]))
     out
 }
@@ -98,7 +98,7 @@ public func cangjieSchedulerTaskContracts(): ArrayList<CkbSchedulerTaskContract>
     out.add(ckbSchedulerTaskContract("cangjie_release_full_sync", "KU-09", "cangjie_release_full_sync", "candidate_validate_promote", CkbRoutineUpdatePolicies.CANDIDATE_PROMOTE, ["release", "version_manifest"], ["metadata/cangjie-version-manifest.ckb"], ["candidate_validation_passed", "release_source_coverage_verified", "release_removed_reconciliation_verified", "version_manifest_write_verified", "active_companion_transaction_verified"]))
     out.add(ckbSchedulerTaskContract("cangjie_source_event_sync", "KU-10", "cangjie_source_event_sync", "candidate_validate_promote", CkbRoutineUpdatePolicies.CANDIDATE_PROMOTE, ["repo_source", "serving_feed"], ["metadata/repository-event-ledger"], ["event_inbox_committed", "event_delta_reconciled", "candidate_validation_passed", "active_transaction_verified", "repository_event_checkpoint_verified"]))
     out.add(ckbSchedulerTaskContract("cangjie_version_branch_refresh", "KU-13", "cangjie_version_branch_refresh", "manifest_candidate", CkbRoutineUpdatePolicies.MANIFEST_CANDIDATE, ["version_manifest"], ["metadata/cangjie-version-manifest.ckb"], ["version_manifest_write_verified"]))
-    out.add(ckbSchedulerTaskContract("cangjie_benchmark_gap_curation", "KU-11/KU-12", "cangjie_benchmark_gap_curation", "curated_candidate_validate_promote", CkbRoutineUpdatePolicies.CURATED_CANDIDATE, ["benchmark_gap_curation", "negative_rules"], ["gap-curation-input.jsonl"], ["candidate_validation_passed", "query_proof"]))
+    out.add(ckbSchedulerTaskContract("cangjie_benchmark_gap_curation", "KU-11/KU-12", "cangjie_benchmark_gap_curation", "curated_candidate_validate_promote", CkbRoutineUpdatePolicies.CURATED_CANDIDATE, ["benchmark_gap_curation", "negative_rules"], ["metadata/benchmark-gap-curation-last-success.ckb"], ["curation_input_verified", "curation_plan_complete", "candidate_validation_passed", "query_proof_complete", "active_transaction_verified", "curation_checkpoint_verified"]))
     out
 }
 
@@ -155,7 +155,8 @@ public func validateSchedulerTaskResultAgainstContractWithArtifacts(taskName: St
         ckbRoutineValidationFail(validation, "manifest_write_gate_missing:${task.validationStatus}")
         return validation
     }
-    if (ckbRoutinePolicyRequiresCandidateValidation(contract.activeMutationPolicy) && task.validationStatus != "candidate_validation_passed") {
+    let expectedCandidateStatus = if (taskName == "cangjie_benchmark_gap_curation") { "curation_checkpoint_verified" } else { "candidate_validation_passed" }
+    if (ckbRoutinePolicyRequiresCandidateValidation(contract.activeMutationPolicy) && task.validationStatus != expectedCandidateStatus) {
         ckbRoutineValidationFail(validation, "candidate_validation_missing:${task.validationStatus}")
         return validation
     }
