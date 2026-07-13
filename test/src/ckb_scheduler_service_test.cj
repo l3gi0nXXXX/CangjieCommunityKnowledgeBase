@@ -2006,7 +2006,7 @@ public class CkbSchedulerServiceF5Test {
 
         @Expect(result.ran, 1)
         @Expect(result.failed, 1)
-        @Expect(result.details.contains("benchmark_gap_candidate_ready"), true)
+        @Expect(result.details.contains("benchmark_gap_proof_complete"), true)
         @Expect(f7SchedulerDiagnosticsContain(result, "indexBuildCount=1"), true)
         @Expect(f7SchedulerDiagnosticsContain(result, "queryCount=1"), true)
         @Expect(status.activeKnowledgeVersion, before.activeKnowledgeVersion)
@@ -2049,6 +2049,7 @@ public class CkbSchedulerServiceF5Test {
     @TestCase
     public func ruP5BenchmarkGapSchedulerReadsStoreLocalInput(): Unit {
         let root = "target/ru-p5-store-local-gap"
+        s1s2EnsureEmptyDir(root)
         let metadata = Path(root).join("store/metadata")
         if (!exists(metadata)) {
             Directory.create(metadata, recursive: true)
@@ -2064,7 +2065,7 @@ public class CkbSchedulerServiceF5Test {
 
         @Expect(result.ran, 1)
         @Expect(result.failed, 1)
-        @Expect(result.details.contains("benchmark_gap_candidate_ready"), true)
+        @Expect(result.details.contains("benchmark_gap_proof_complete"), true)
         @Expect(f7SchedulerDiagnosticsContain(result, "indexBuildCount=1"), true)
     }
 

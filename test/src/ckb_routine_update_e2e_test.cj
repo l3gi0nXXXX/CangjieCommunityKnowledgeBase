@@ -43,7 +43,7 @@ public class CkbRoutineUpdateE2ETest {
         @Expect(p5AllTasksAllowed(schedulerTaskNames), true)
         @Expect(scheduler.failed, 1)
         @Expect(scheduler.degraded, 0)
-        @Expect(scheduler.details.contains("benchmark_gap_candidate_ready"), true)
+        @Expect(scheduler.details.contains("benchmark_gap_proof_complete"), true)
         @Expect(reloaded.source, "persisted")
         @Expect(reloaded.diagnostic, "ok")
         @Expect(qdrant.count, reloadedStatus.storage.indexCount)
