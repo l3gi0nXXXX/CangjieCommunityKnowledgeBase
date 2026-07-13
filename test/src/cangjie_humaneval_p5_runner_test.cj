@@ -3,6 +3,7 @@ package cangjie_community_knowledge_base_test
 import std.unittest.*
 import std.unittest.testmacro.*
 import std.collection.*
+import std.fs.{Directory, File}
 
 @Test
 public class CangjieHumanEvalP5RunnerTest {
@@ -30,6 +31,19 @@ public class CangjieHumanEvalP5RunnerTest {
         @Expect(ckbAbcdeIsolationDiagnostic("case-b", "ws-a", "session-b", "runtime-b", "case-a", "ws-a", "session-a", "runtime-a"), "cross_case_isolation_reuse")
         @Expect(ckbAbcdeFailureRoute("reasoning_error"), "model_capability")
         @Expect(ckbAbcdeFailureRoute("tool_failure"), "infrastructure_repair")
+    }
+
+    @TestCase
+    public func p5Neg02RetrySuccessRecordsFinalAttemptWithoutForgingFirstPass(): Unit {
+        let root = "target/p5-retry-facts"
+        Directory.create(root, recursive: true)
+        File.writeTo("${root}/claude-attempts.jsonl", "{\"attempt\":1,\"exitCode\":1}\n{\"attempt\":2,\"exitCode\":0}\n".toArray())
+        let options = CkbAbcdeRunnerOptions(); options.explicitRunMode = true; options.runMode = "development"; options.runId = "run-retry"; options.datasetVersion = "dataset-v1"; options.candidateVersion = "candidate-v1"; options.knowledgeVersion = "knowledge-v1"
+        let result = ckbAbcdeRenderCaseResult(options, root, "CASE-RETRY", CkbAbcdeGroups.C, "passed", 0, 0, true, false, "none", "tool", "none", root)
+        @Expect(result.contains("\"developmentPass\":true"), true)
+        @Expect(result.contains("\"firstAttemptPass\":false"), true)
+        @Expect(result.contains("\"firstAttemptTriage\":\"environment_failure\""), true)
+        @Expect(result.contains("\"claudeAttemptCount\":2"), true)
     }
 
     @TestCase
@@ -75,5 +89,59 @@ public class CangjieHumanEvalP5RunnerTest {
         @Expect(unicode.datasetVersion.contains("中"), true)
         let wrongType = unicode.raw.replace("\"developmentPass\":false", "\"developmentPass\":\"false\"")
         @Expect(parseCkbCdGapAuditResultLine(wrongType).diagnostic, "malformed_result_row")
+        let wrongCase = unicode.raw.replace("\"caseId\":\"CJ-HUMANEVAL-003\"", "\"caseId\":3")
+        @Expect(parseCkbCdGapAuditResultLine(wrongCase).diagnostic, "malformed_result_row")
     }
+
+    @TestCase
+    public func p5E2e02FiveCaseOrchestratorEmitsOnlyDoubleConfirmedKnowledgeGap(): Unit {
+        let inputs = ArrayList<CangjieEvalDevelopmentClosureInput>()
+        inputs.add(p5ClosureInput("knowledge", "\"suspectedKnowledgeGap\":true", false, true))
+        inputs.add(p5ClosureInput("reasoning", "\"reasoningFailure\":true", false, false))
+        inputs.add(p5ClosureInput("dataset", "\"datasetFailure\":true", false, false))
+        inputs.add(p5ClosureInput("environment", "\"environmentFailure\":true", false, false))
+        inputs.add(p5ClosureInput("success", "\"unitPass\":true", true, false))
+        let initial = orchestrateDevelopmentClosure(inputs, "teacher-run-001")
+        @Expect(initial.ok, true)
+        @Expect(initial.knowledgeGapCount, 1)
+        @Expect(initial.authoritativeGapJsonl.split("\n").size >= 1, true)
+        @Expect(curateBenchmarkGapRecordsFromJsonl(initial.authoritativeGapJsonl).records.size, 1)
+        @Expect(initial.developmentClosureJson.contains("\"certificationStatus\":\"unset\""), true)
+        let pendingInput = ArrayList<CangjieEvalDevelopmentClosureInput>(); pendingInput.add(p5ClosureInput("pending", "\"suspectedKnowledgeGap\":true", false, false))
+        let pending = orchestrateDevelopmentClosure(pendingInput, "teacher-run-pending")
+        @Expect(pending.pendingClassifierCount, 1)
+        @Expect(pending.authoritativeGapJsonl, "")
+
+        let fixed = ArrayList<CangjieEvalDevelopmentClosureInput>()
+        for (name in ["knowledge", "reasoning", "dataset", "environment", "success"]) { fixed.add(p5ClosureInput(name, "\"unitPass\":true", true, false)) }
+        let closed = orchestrateDevelopmentClosure(fixed, "teacher-run-002")
+        @Expect(closed.authoritativeGapJsonl, "")
+        @Expect(closed.developmentClosureJson.contains("\"developmentClosed\":true"), true)
+        @Expect(closed.developmentClosureJson.contains("\"developmentPassed\":5"), true)
+
+        fixed[1].caseResultJson = fixed[1].caseResultJson.replace("cases/reasoning", "cases/knowledge")
+        let duplicate = orchestrateDevelopmentClosure(fixed, "teacher-run-003")
+        @Expect(duplicate.ok, false)
+        @Expect(duplicate.diagnostics[0].contains("duplicate_isolation_identity"), true)
+    }
+}
+
+private func p5ClosureInput(name: String, signal: String, developmentPass: Bool, classifiers: Bool): CangjieEvalDevelopmentClosureInput {
+    let item = CangjieEvalDevelopmentClosureInput()
+    let caseId = "CASE-${name}"
+    item.caseResultJson = "{\"caseId\":\"${caseId}\",\"runId\":\"run-e2e\",\"datasetVersion\":\"dataset-v1\",\"runMode\":\"development\",\"workspaceId\":\"cases/${name}/workspace\",\"sessionId\":\"cases/${name}/session\",\"runtimeHomeId\":\"cases/${name}/runtime-home\",\"developmentPass\":${developmentPass},\"certificationPassAt1\":null}"
+    let raw = "{\"caseId\":\"${caseId}\",\"runId\":\"run-e2e\",\"datasetVersion\":\"dataset-v1\",\"attempt\":1,\"runMode\":\"development\",\"failureObservation\":\"observed ${name}\",${signal},\"resultEvidenceHash\":\"HASH\"}"
+    item.resultEvidenceJson = raw.replace("HASH", cangjieEvalTriageResultEvidenceHash(raw))
+    item.taskText = "Reusable Rune task ${name}"
+    if (classifiers) {
+        item.firstClassifierJson = p5RunnerClassifier(caseId, "classifier-a", "artifact-a", item.resultEvidenceJson)
+        item.secondClassifierJson = p5RunnerClassifier(caseId, "classifier-b", "artifact-b", item.resultEvidenceJson)
+    }
+    item
+}
+
+private func p5RunnerClassifier(caseId: String, classifierId: String, sourceEvidenceId: String, resultEvidence: String): String {
+    let resultHash = cangjieEvalTriageResultEvidenceHash(resultEvidence)
+    let raw = "{\"classifierId\":\"${classifierId}\",\"sourceEvidenceId\":\"${sourceEvidenceId}\",\"category\":\"knowledge_gap\",\"caseId\":\"${caseId}\",\"runId\":\"run-e2e\",\"datasetVersion\":\"dataset-v1\",\"resultEvidenceHash\":\"${resultHash}\",\"failureObservation\":\"missing reusable Rune guidance\",\"attempt\":1,\"runMode\":\"development\",\"knowledgeFamily\":\"standard_library\",\"reusable\":true,\"sourceClass\":\"official\",\"citation\":\"https://docs.cangjie-lang.cn/docs/1.0.0/\",\"purificationPassed\":true,\"canonicalKnowledgeId\":\"GENERAL-RUNE\",\"targetVersion\":\"1.0.0\",\"evidenceId\":\"official-rune-doc\",\"positiveTestPassed\":true,\"negativeTestPassed\":true,\"boundaryTestPassed\":true,\"knowledgeText\":\"General reusable Rune guidance.\",\"exampleText\":\"\",\"testText\":\"\",\"publishableMetadata\":\"family=standard_library\",\"evidenceHash\":\"HASH\"}"
+    raw.replace("HASH", cangjieEvalTriageClassifierEvidenceHash(raw))
 }

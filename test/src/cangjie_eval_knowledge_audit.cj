@@ -193,19 +193,19 @@ public func parseCkbCdGapAuditResultLine(line: String): CkbCdGapAuditResultRow {
         row.diagnostic = "malformed_result_row"
         return row
     }
-    row.caseId = ckbCdGapJsonStringField(raw, "caseId").trimAscii()
-    row.group = ckbCdGapJsonStringField(raw, "group").trimAscii()
-    row.unitPassAt1 = ckbCdGapJsonBoolField(raw, "unitPassAt1")
-    row.protocolViolation = ckbCdGapJsonBoolField(raw, "protocolViolation")
-    row.firstClaudeExitCode = ckbCdGapJsonIntField(raw, "firstClaudeExitCode", -1)
-    row.claudeExitCode = ckbCdGapJsonIntField(raw, "claudeExitCode", -1)
-    row.testExitCode = ckbCdGapJsonIntField(raw, "testExitCode", -1)
-    row.failureType = ckbCdGapJsonStringField(raw, "failureType").trimAscii()
     try {
         let object = JsonValue.fromStr(raw).asObject()
         row.runMode = ckbCdGapStrictString(object, "runMode", false)
         if (row.runMode != "") {
             if (row.runMode != "development" && row.runMode != "certification") { row.diagnostic = "invalid_run_mode"; return row }
+            row.caseId = ckbCdGapStrictString(object, "caseId", true)
+            row.group = ckbCdGapStrictString(object, "group", true)
+            row.unitPassAt1 = ckbCdGapStrictBool(object, "unitPassAt1")
+            row.protocolViolation = ckbCdGapStrictBool(object, "protocolViolation")
+            row.firstClaudeExitCode = ckbCdGapStrictInt(object, "firstClaudeExitCode", -1)
+            row.claudeExitCode = ckbCdGapStrictInt(object, "claudeExitCode", -1)
+            row.testExitCode = ckbCdGapStrictInt(object, "testExitCode", -1)
+            row.failureType = ckbCdGapStrictString(object, "failureType", true)
             row.datasetVersion = ckbCdGapStrictString(object, "datasetVersion", true)
             row.candidateVersion = ckbCdGapStrictString(object, "candidateVersion", row.runMode == "development")
             row.knowledgeVersion = ckbCdGapStrictString(object, "lineageKnowledgeVersion", true)
@@ -215,6 +215,15 @@ public func parseCkbCdGapAuditResultLine(line: String): CkbCdGapAuditResultRow {
             row.failureRoute = ckbCdGapStrictString(object, "failureRoute", true)
             row.certificationStatus = ckbCdGapStrictNull(object, "certificationPassAt1")
             if (row.certificationStatus != "unset") { row.diagnostic = "certification_evidence_not_owned_by_p5"; return row }
+        } else {
+            row.caseId = ckbCdGapJsonStringField(raw, "caseId").trimAscii()
+            row.group = ckbCdGapJsonStringField(raw, "group").trimAscii()
+            row.unitPassAt1 = ckbCdGapJsonBoolField(raw, "unitPassAt1")
+            row.protocolViolation = ckbCdGapJsonBoolField(raw, "protocolViolation")
+            row.firstClaudeExitCode = ckbCdGapJsonIntField(raw, "firstClaudeExitCode", -1)
+            row.claudeExitCode = ckbCdGapJsonIntField(raw, "claudeExitCode", -1)
+            row.testExitCode = ckbCdGapJsonIntField(raw, "testExitCode", -1)
+            row.failureType = ckbCdGapJsonStringField(raw, "failureType").trimAscii()
         }
     } catch (_: Exception) {
         row.diagnostic = "malformed_result_row"
@@ -267,6 +276,13 @@ private func ckbCdGapStrictBool(object: JsonObject, field: String): Bool {
     match (object.get(field)) {
         case Some(value) => value.asBool().getValue()
         case None => throw IllegalArgumentException("missing_${field}")
+    }
+}
+
+private func ckbCdGapStrictInt(object: JsonObject, field: String, fallback: Int64): Int64 {
+    match (object.get(field)) {
+        case Some(value) => value.asInt().getValue()
+        case None => fallback
     }
 }
 

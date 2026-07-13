@@ -31,6 +31,91 @@ public class CangjieEvalDevelopmentCaseClosure {
     public init() {}
 }
 
+public class CangjieEvalDevelopmentClosureInput {
+    public var caseResultJson: String = ""
+    public var resultEvidenceJson: String = ""
+    public var firstClassifierJson: String = ""
+    public var secondClassifierJson: String = ""
+    public var taskText: String = ""
+    public var gapCode: String = "G-STRING"
+    public var interfaceId: String = "KI-02"
+    public var contentFamily: String = "KC-02"
+    public var targetVersion: String = "1.0.0"
+    public init() {}
+}
+
+public class CangjieEvalDevelopmentClosureResult {
+    public var ok: Bool = true
+    public var developmentClosureJson: String = ""
+    public var authoritativeGapJsonl: String = ""
+    public var knowledgeGapCount: Int64 = 0
+    public var pendingClassifierCount: Int64 = 0
+    public var diagnostics: ArrayList<String> = ArrayList<String>()
+    public init() {}
+}
+
+public func orchestrateDevelopmentClosure(inputs: ArrayList<CangjieEvalDevelopmentClosureInput>, teacherRunId: String): CangjieEvalDevelopmentClosureResult {
+    let output = CangjieEvalDevelopmentClosureResult()
+    let closures = ArrayList<CangjieEvalDevelopmentCaseClosure>()
+    let workspaces = HashSet<String>(); let sessions = HashSet<String>(); let runtimeHomes = HashSet<String>()
+    for (input in inputs) {
+        let closure = CangjieEvalDevelopmentCaseClosure()
+        try {
+            let row = JsonValue.fromStr(input.caseResultJson.trimAscii()).asObject()
+            closure.caseId = triageJsonString(row, "caseId")
+            let runId = triageJsonString(row, "runId")
+            let datasetVersion = triageJsonString(row, "datasetVersion")
+            let mode = triageJsonString(row, "runMode").toAsciiLower()
+            let workspace = triageJsonString(row, "workspaceId"); let session = triageJsonString(row, "sessionId"); let runtimeHome = triageJsonString(row, "runtimeHomeId")
+            let certUnset = match (row.get("certificationPassAt1")) { case Some(value) => value.toString() == "null"; case None => false }
+            if (closure.caseId == "" || runId == "" || datasetVersion == "" || mode != "development" || workspace == "" || session == "" || runtimeHome == "" || !certUnset) {
+                throw IllegalArgumentException("case_result_contract_invalid")
+            }
+            if (workspaces.contains(workspace) || sessions.contains(session) || runtimeHomes.contains(runtimeHome)) {
+                output.ok = false; output.diagnostics.add("duplicate_isolation_identity:${closure.caseId}"); closure.category = "runner_failure"; closure.route = "runner"; closures.add(closure); continue
+            }
+            workspaces.add(workspace); sessions.add(session); runtimeHomes.add(runtimeHome)
+            let triage = triageEvalFailure(input.resultEvidenceJson)
+            if (!triage.ok) { throw IllegalArgumentException("triage:${triage.diagnostic}") }
+            let evidence = JsonValue.fromStr(input.resultEvidenceJson.trimAscii()).asObject()
+            if (triageJsonString(evidence, "caseId") != closure.caseId || triageJsonString(evidence, "runId") != runId || triageJsonString(evidence, "datasetVersion") != datasetVersion) {
+                throw IllegalArgumentException("result_evidence_identity_mismatch")
+            }
+            closure.category = triage.category; closure.route = triage.route
+            closure.developmentPass = triage.category == "none" && triageJsonBool(row, "developmentPass")
+            if (triage.category == "knowledge_gap") {
+                if (input.firstClassifierJson.trimAscii() == "" || input.secondClassifierJson.trimAscii() == "") {
+                    output.pendingClassifierCount += 1
+                } else {
+                    let confirmation = confirmKnowledgeGap(input.firstClassifierJson, input.secondClassifierJson)
+                    if (confirmation.confirmed) {
+                        closure.knowledgeGapConfirmed = true; closure.confirmationEvidenceHash = confirmation.evidenceHash
+                        let gap = cangjieEvalConfirmedGapInput(input, closure.caseId, datasetVersion, teacherRunId, confirmation)
+                        output.authoritativeGapJsonl += renderAuthoritativeBenchmarkGapInput(gap) + "\n"; output.knowledgeGapCount += 1
+                    } else { output.diagnostics.add("classifier:${closure.caseId}:${confirmation.diagnostic}") }
+                }
+            }
+        } catch (error: Exception) {
+            output.ok = false; output.diagnostics.add("case:${closure.caseId}:${utf8SafePrefix(error.message, 120)}")
+        }
+        closures.add(closure)
+    }
+    output.developmentClosureJson = renderDevelopmentClosure(closures)
+    output
+}
+
+private func cangjieEvalConfirmedGapInput(source: CangjieEvalDevelopmentClosureInput, caseId: String, datasetVersion: String, teacherRunId: String, confirmation: CangjieEvalKnowledgeGapConfirmation): CangjieBenchmarkGapInput {
+    let input = CangjieBenchmarkGapInput()
+    input.schemaVersion = "ckb-benchmark-gap-v1"; input.datasetVersion = datasetVersion; input.teacherRunId = teacherRunId
+    input.candidatePath = "authority/benchmark-gap.jsonl"; input.revision = 1; input.attempt = 1; input.failureTaxonomy = "knowledge_gap"; input.knowledgeGapConfirmations = 2
+    input.caseId = caseId; input.taskText = source.taskText; input.compilerOutput = "knowledge_gap"; input.missingKnowledge = source.gapCode
+    input.interfaceId = source.interfaceId; input.contentFamily = source.contentFamily; input.updateMechanism = "KU-11"; input.targetVersion = source.targetVersion
+    input.officialCitation = "https://docs.cangjie-lang.cn/docs/1.0.0/"
+    input.evidence = "case=${caseId}|taxonomy=knowledge_gap|independentClassifierEvidence=${confirmation.evidenceHash}"
+    input.evidenceHash = benchmarkGapSha256(input.evidence); input.candidateHash = canonicalBenchmarkGapCandidateHash(input)
+    input
+}
+
 public func triageEvalFailure(inputJson: String): CangjieEvalFailureTriageResult {
     let result = CangjieEvalFailureTriageResult()
     let raw = inputJson.trimAscii()

@@ -324,6 +324,14 @@ public func benchmarkGapSha256(value: String): String {
     "sha256:${out.toString()}"
 }
 
+public func renderAuthoritativeBenchmarkGapInput(input: CangjieBenchmarkGapInput): String {
+    "{\"schemaVersion\":\"${benchmarkGapJsonEscape(input.schemaVersion)}\",\"datasetVersion\":\"${benchmarkGapJsonEscape(input.datasetVersion)}\",\"teacherRunId\":\"${benchmarkGapJsonEscape(input.teacherRunId)}\",\"evidenceHash\":\"${benchmarkGapJsonEscape(input.evidenceHash)}\",\"evidence\":\"${benchmarkGapJsonEscape(input.evidence)}\",\"candidateHash\":\"${benchmarkGapJsonEscape(input.candidateHash)}\",\"candidatePath\":\"${benchmarkGapJsonEscape(input.candidatePath)}\",\"revision\":${input.revision},\"attempt\":${input.attempt},\"failureTaxonomy\":\"${benchmarkGapJsonEscape(input.failureTaxonomy)}\",\"knowledgeGapConfirmations\":${input.knowledgeGapConfirmations},\"caseId\":\"${benchmarkGapJsonEscape(input.caseId)}\",\"benchmark\":\"${benchmarkGapJsonEscape(input.benchmark)}\",\"taskText\":\"${benchmarkGapJsonEscape(input.taskText)}\",\"visibleTestExcerpt\":\"${benchmarkGapJsonEscape(input.visibleTestExcerpt)}\",\"compilerOutput\":\"${benchmarkGapJsonEscape(input.compilerOutput)}\",\"missingKnowledge\":\"${benchmarkGapJsonEscape(input.missingKnowledge)}\",\"interfaceId\":\"${benchmarkGapJsonEscape(input.interfaceId)}\",\"contentFamily\":\"${benchmarkGapJsonEscape(input.contentFamily)}\",\"updateMechanism\":\"${benchmarkGapJsonEscape(input.updateMechanism)}\",\"targetVersion\":\"${benchmarkGapJsonEscape(input.targetVersion)}\",\"officialCitation\":\"${benchmarkGapJsonEscape(input.officialCitation)}\",\"knowledgeAtomCandidate\":false}"
+}
+
+private func benchmarkGapJsonEscape(value: String): String {
+    value.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
+}
+
 private func benchmarkGapHexNibble(value: UInt8): String { if(value==UInt8(0)){return "0"};if(value==UInt8(1)){return "1"};if(value==UInt8(2)){return "2"};if(value==UInt8(3)){return "3"};if(value==UInt8(4)){return "4"};if(value==UInt8(5)){return "5"};if(value==UInt8(6)){return "6"};if(value==UInt8(7)){return "7"};if(value==UInt8(8)){return "8"};if(value==UInt8(9)){return "9"};if(value==UInt8(10)){return "a"};if(value==UInt8(11)){return "b"};if(value==UInt8(12)){return "c"};if(value==UInt8(13)){return "d"};if(value==UInt8(14)){return "e"};"f" }
 
 public func importAuthoritativeBenchmarkGapJsonl(exportRoot: String, candidatePath: String, targetVersion!: String = cangjieDefaultTargetVersion()): CangjieBenchmarkGapCurationResult {
