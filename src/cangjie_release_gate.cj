@@ -1,8 +1,9 @@
 package cangjie_community_knowledge_base
 
-import std.collection.ArrayList
+import std.collection.{ArrayList, HashMap}
 import std.convert.Parsable
 import std.fs.{Directory, File, Path, exists}
+import stdx.encoding.json.*
 
 public class CangjieKnowledgeReleaseGateOptions {
     public var runRoot: String = ""
@@ -202,25 +203,24 @@ public func cangjieKnowledgeReleaseGate(
 
 private func cangjieReleaseGateAddKnowledgeAtomTestStep(report: CangjieKnowledgeReleaseGateReport, options: CangjieKnowledgeReleaseGateOptions): Unit {
     let path = Path(options.runRoot).join("knowledge-atoms.jsonl")
+    let curationPath = Path(options.runRoot).join("gap-curation-input.jsonl")
+    let declared = HashMap<String, Bool>()
+    let curationDiagnostic = cangjieReleaseGateLoadDeclaredAtoms(curationPath, declared)
+    if (curationDiagnostic != "ok") {
+        cangjieReleaseGateAddStep(report, "P3-knowledge-atom-tests", false, curationDiagnostic, curationPath.toString())
+        return
+    }
     if (!exists(path)) {
-        let curationPath = Path(options.runRoot).join("gap-curation-input.jsonl")
-        if (exists(curationPath)) {
-            try {
-                let curationText = String.fromUtf8(File.readFrom(curationPath))
-                if (curationText.contains("\"knowledgeAtomCandidate\":true")) {
-                    cangjieReleaseGateAddStep(report, "P3-knowledge-atom-tests", false, "knowledge_atom_artifact_required", curationPath.toString())
-                    return
-                }
-            } catch (_: Exception) {
-                cangjieReleaseGateAddStep(report, "P3-knowledge-atom-tests", false, "invalid_response_encoding", curationPath.toString())
-                return
-            }
+        if (declared.size > 0) {
+            cangjieReleaseGateAddStep(report, "P3-knowledge-atom-tests", false, "knowledge_atom_artifact_required", curationPath.toString())
+            return
         }
         cangjieReleaseGateAddStep(report, "P3-knowledge-atom-tests", true, "no_candidate_atoms", "")
         return
     }
     try {
         let text = String.fromUtf8(File.readFrom(path))
+        let actual = HashMap<String, Bool>()
         var count: Int64 = 0
         for (line in text.split("\n")) {
             let raw = line.trimAscii()
@@ -231,15 +231,57 @@ private func cangjieReleaseGateAddKnowledgeAtomTestStep(report: CangjieKnowledge
                 cangjieReleaseGateAddStep(report, "P3-knowledge-atom-tests", false, tested.diagnostic, path.toString())
                 return
             }
+            let object = JsonValue.fromStr(raw).asObject()
+            let key = cangjieReleaseGateAtomKey(object)
+            if (key == "") { cangjieReleaseGateAddStep(report, "P3-knowledge-atom-tests", false, "atom_identity_evidence_required", path.toString()); return }
+            if (actual.contains(key)) { cangjieReleaseGateAddStep(report, "P3-knowledge-atom-tests", false, "duplicate_knowledge_atom", path.toString()); return }
+            actual.add(key, true)
         }
         if (count == 0) {
             cangjieReleaseGateAddStep(report, "P3-knowledge-atom-tests", false, "atom_test_bundle_required", path.toString())
+        } else if (actual.size != declared.size) {
+            cangjieReleaseGateAddStep(report, "P3-knowledge-atom-tests", false, "knowledge_atom_set_mismatch", path.toString())
         } else {
+            for ((key, _) in declared) {
+                if (!actual.contains(key)) { cangjieReleaseGateAddStep(report, "P3-knowledge-atom-tests", false, "knowledge_atom_set_mismatch", path.toString()); return }
+            }
             cangjieReleaseGateAddStep(report, "P3-knowledge-atom-tests", true, "validated=${count}", path.toString())
         }
     } catch (_: Exception) {
         cangjieReleaseGateAddStep(report, "P3-knowledge-atom-tests", false, "invalid_response_encoding", path.toString())
     }
+}
+
+private func cangjieReleaseGateLoadDeclaredAtoms(path: Path, out: HashMap<String, Bool>): String {
+    if (!exists(path)) { return "ok" }
+    try {
+        let text = String.fromUtf8(File.readFrom(path))
+        for (line in text.split("\n")) {
+            let raw = line.trimAscii(); if (raw == "") { continue }
+            let object = JsonValue.fromStr(raw).asObject()
+            match (object.get("knowledgeAtomCandidate")) {
+                case Some(value) =>
+                    if (!value.asBool().getValue()) { continue }
+                    let bundle = object.get("knowledgeAtomTestBundle").getOrThrow().asObject()
+                    let tested = validateKnowledgeAtomTestBundle(bundle.toString())
+                    if (!tested.ok) { return tested.diagnostic }
+                    let key = cangjieReleaseGateAtomKey(bundle)
+                    if (key == "") { return "atom_identity_evidence_required" }
+                    if (out.contains(key)) { return "duplicate_declared_knowledge_atom" }
+                    out.add(key, true)
+                case None => ()
+            }
+        }
+        "ok"
+    } catch (_: Exception) { "malformed_gap_curation_input" }
+}
+
+private func cangjieReleaseGateAtomKey(object: JsonObject): String {
+    try {
+        let atomId = object.get("atomId").getOrThrow().asString().getValue().trimAscii()
+        let hash = object.get("candidateHash").getOrThrow().asString().getValue().trimAscii().toAsciiLower()
+        if (atomId == "" || hash == "") { "" } else { "${atomId}:${hash}" }
+    } catch (_: Exception) { "" }
 }
 
 public func renderCangjieKnowledgeReleaseGateMarkdown(report: CangjieKnowledgeReleaseGateReport): String {

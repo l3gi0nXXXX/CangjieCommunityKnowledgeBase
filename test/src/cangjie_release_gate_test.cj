@@ -176,7 +176,7 @@ public class CangjieReleaseGateTest {
         let fixture = f8WriteFirstInitFixture("target/p3-atom-gate-fixture", true)
         let runRoot = "target/p3-atom-gate-run"
         f8WritePass1Files(runRoot, true)
-        f8WriteFile(Path("${runRoot}/knowledge-atoms.jsonl"), p3ValidBundle().replace(",${p3BoundaryTest()}", "") + "\n")
+        f8WriteFile(Path("${runRoot}/knowledge-atoms.jsonl"), p3Rehash(p3ValidBundle().replace(",${p3BoundaryTest()}", "")) + "\n")
         f8EnsureEmptyDir("target/p3-atom-gate-store")
         let report = cangjieKnowledgeReleaseGate(f8ReleaseGateOptions(runRoot, fixture), f8ReleaseGateRuntimeConfig(), FileKnowledgeStore("target/p3-atom-gate-store"), sourceRunner: F9ReleaseGateFreshRunner())
 
@@ -190,7 +190,7 @@ public class CangjieReleaseGateTest {
         let fixture = f8WriteFirstInitFixture("target/p3-atom-missing-fixture", true)
         let runRoot = "target/p3-atom-missing-run"
         f8WritePass1Files(runRoot, true)
-        f8WriteFile(Path("${runRoot}/gap-curation-input.jsonl"), "{\"knowledgeAtomCandidate\":true}\n")
+        f8WriteFile(Path("${runRoot}/gap-curation-input.jsonl"), p3CandidateCuration(p3ValidBundle()))
         f8EnsureEmptyDir("target/p3-atom-missing-store")
         let report = cangjieKnowledgeReleaseGate(f8ReleaseGateOptions(runRoot, fixture), f8ReleaseGateRuntimeConfig(), FileKnowledgeStore("target/p3-atom-missing-store"), sourceRunner: F9ReleaseGateFreshRunner())
 
@@ -198,7 +198,38 @@ public class CangjieReleaseGateTest {
         @Expect(f8HasStep(report, "P3-knowledge-atom-tests", false), true)
         @Expect(f8DiagnosticsContain(report, "knowledge_atom_artifact_required"), true)
     }
+
+    @TestCase
+    public func p3Neg02ReleaseGateRejectsMalformedAndMismatchedCandidateSets(): Unit {
+        let one = p3ValidBundle()
+        let two = p3Rehash(one.replace("G-ARRAYLIST-RUNE", "G-ARRAYLIST-RUNE-SECOND"))
+        let malformed = p3AtomGateReport("malformed", "{\n", "")
+        let falseType = p3AtomGateReport("false-type", "{\"knowledgeAtomCandidate\":\"true\"}\n", "")
+        let duplicateDeclared = p3AtomGateReport("dup-declared", p3CandidateCuration(one) + p3CandidateCuration(one), one + "\n")
+        let missing = p3AtomGateReport("missing", p3CandidateCuration(one) + p3CandidateCuration(two), one + "\n")
+        let extra = p3AtomGateReport("extra", p3CandidateCuration(one), one + "\n" + two + "\n")
+        let mismatch = p3AtomGateReport("mismatch", p3CandidateCuration(one), two + "\n")
+        let duplicateActual = p3AtomGateReport("dup-actual", p3CandidateCuration(one), one + "\n" + one + "\n")
+
+        @Expect(f8DiagnosticsContain(malformed, "malformed_gap_curation_input"), true)
+        @Expect(f8DiagnosticsContain(falseType, "malformed_gap_curation_input"), true)
+        @Expect(f8DiagnosticsContain(duplicateDeclared, "duplicate_declared_knowledge_atom"), true)
+        @Expect(f8DiagnosticsContain(missing, "knowledge_atom_set_mismatch"), true)
+        @Expect(f8DiagnosticsContain(extra, "knowledge_atom_set_mismatch"), true)
+        @Expect(f8DiagnosticsContain(mismatch, "knowledge_atom_set_mismatch"), true)
+        @Expect(f8DiagnosticsContain(duplicateActual, "duplicate_knowledge_atom"), true)
+    }
+
+    @TestCase
+    public func p3Pos01ReleaseGateAcceptsExactDeclaredAtomSet(): Unit {
+        let atom = p3ValidBundle()
+        let report = p3AtomGateReport("exact-set", p3CandidateCuration(atom), atom + "\n")
+        @Expect(f8HasStep(report, "P3-knowledge-atom-tests", true), true)
+        @Expect(f8DiagnosticsContain(report, "knowledge_atom_set_mismatch"), false)
+    }
 }
+
+private func p3AtomGateReport(name:String,curation:String,atoms:String):CangjieKnowledgeReleaseGateReport{let fixture=f8WriteFirstInitFixture("target/p3-atom-${name}-fixture",true);let runRoot="target/p3-atom-${name}-run";f8WritePass1Files(runRoot,true);f8WriteFile(Path("${runRoot}/gap-curation-input.jsonl"),curation);if(atoms!=""){f8WriteFile(Path("${runRoot}/knowledge-atoms.jsonl"),atoms)};f8EnsureEmptyDir("target/p3-atom-${name}-store");cangjieKnowledgeReleaseGate(f8ReleaseGateOptions(runRoot,fixture),f8ReleaseGateRuntimeConfig(),FileKnowledgeStore("target/p3-atom-${name}-store"),sourceRunner:F9ReleaseGateFreshRunner())}
 
 private class F8FirstInitFixturePaths {
     var docsRoot: String = ""

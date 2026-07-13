@@ -1,6 +1,7 @@
 package cangjie_community_knowledge_base
 
 import std.collection.{ArrayList, HashSet}
+import stdx.crypto.digest.SHA256
 import stdx.encoding.json.*
 
 public class CangjieKnowledgeAtomTestBundleResult {
@@ -29,6 +30,9 @@ public func validateKnowledgeAtomTestBundle(bundleJson: String): CangjieKnowledg
         let knowledgeText = atomJsonString(object, "knowledgeText")
         if (atomId == "" || targetVersion == "" || candidateHash == "" || knowledgeText == "") {
             result.diagnostic = "atom_identity_evidence_required"; return result
+        }
+        if (candidateHash != cangjieKnowledgeAtomCandidateHash(raw)) {
+            result.diagnostic = "atom_candidate_hash_mismatch"; return result
         }
         if (sourceClass != "official" && sourceClass != "approved_trusted") {
             result.diagnostic = "atom_source_class_not_allowed"; return result
@@ -74,6 +78,23 @@ public func validateKnowledgeAtomTestBundle(bundleJson: String): CangjieKnowledg
         result
     }
 }
+
+public func cangjieKnowledgeAtomCandidateHash(bundleJson: String): String {
+    try {
+        let object = JsonValue.fromStr(bundleJson.trimAscii()).asObject()
+        let tests = match (object.get("tests")) { case Some(value) => value.toString(); case None => "" }
+        let purified = match (object.get("purificationPassed")) { case Some(value) => "${value.asBool().getValue()}"; case None => "" }
+        let canonical = atomCanonicalPart(atomJsonString(object, "atomId")) + atomCanonicalPart(atomJsonString(object, "sourceClass").toAsciiLower()) +
+            atomCanonicalPart(atomJsonString(object, "citation").toAsciiLower()) + atomCanonicalPart(atomJsonString(object, "targetVersion")) +
+            atomCanonicalPart(atomJsonString(object, "knowledgeText")) + atomCanonicalPart(purified) + atomCanonicalPart(tests)
+        let digest = SHA256(); digest.write(canonical.toArray()); let out = StringBuilder()
+        for (byte in digest.finish()) { out.append(atomHexNibble(byte / UInt8(16))); out.append(atomHexNibble(byte % UInt8(16))) }
+        "sha256:${out.toString()}"
+    } catch (_: Exception) { "" }
+}
+
+private func atomCanonicalPart(value: String): String { "${value.toArray().size}:${value}" }
+private func atomHexNibble(value: UInt8): String { if(value==UInt8(0)){return "0"};if(value==UInt8(1)){return "1"};if(value==UInt8(2)){return "2"};if(value==UInt8(3)){return "3"};if(value==UInt8(4)){return "4"};if(value==UInt8(5)){return "5"};if(value==UInt8(6)){return "6"};if(value==UInt8(7)){return "7"};if(value==UInt8(8)){return "8"};if(value==UInt8(9)){return "9"};if(value==UInt8(10)){return "a"};if(value==UInt8(11)){return "b"};if(value==UInt8(12)){return "c"};if(value==UInt8(13)){return "d"};if(value==UInt8(14)){return "e"};"f" }
 
 public func runKnowledgeAtomTestBundle(bundleJson: String): CangjieKnowledgeAtomTestBundleResult {
     let result = validateKnowledgeAtomTestBundle(bundleJson)
