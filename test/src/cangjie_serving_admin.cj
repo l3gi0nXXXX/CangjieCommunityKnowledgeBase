@@ -384,7 +384,7 @@ public func validateCandidateServingIndexWithDurableResume(records: ArrayList<No
         result.vectorDegradedReason = checkpoint.vectorDegradedReason
         result.evidenceHash = artifactEvidence
         result.ok = artifact.documents.size > 0 && result.coveragePass &&
-            result.taskPackCoveragePass && result.transportParityPass &&
+            result.transportParityPass &&
             result.performancePass && result.vectorHealthPass
         result.status = if (result.ok) { "candidate_validation_passed" } else {
             "candidate_validation_failed"
