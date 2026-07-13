@@ -50,10 +50,10 @@ public class CkbRoutineF6Test {
         _ = resumeService.start()
         let second = resumeService.runSchedulerTasks(tasks, true)
         @Expect(second.failed, 0)
-        @Expect(second.succeeded, 0)
-        @Expect(second.details.contains("benchmark_gap_proof_complete"), true)
+        @Expect(second.succeeded, 1)
+        @Expect(second.details.contains("candidate_validated_promoted"), true)
         @Expect(f6SchedulerDiagnosticsContain(second, "indexBuildCount=0:queryCount=0:reused=true"), true)
-        @Expect(f6SchedulerDiagnosticsContain(second, "activeCommitted=false"), true)
+        @Expect(store.has("metadata/benchmark-gap-curation-last-success.ckb"), true)
         @Expect(store.has("metadata/benchmark-gap-curation-proof.ckb"), false)
     }
 
@@ -70,11 +70,10 @@ public class CkbRoutineF6Test {
 
         let result = service.runSchedulerTasks(f6BenchmarkTaskNames(), true)
         @Expect(result.failed, 0)
-        @Expect(result.succeeded, 0)
-        @Expect(result.details.contains("benchmark_gap_proof_complete"), true)
+        @Expect(result.succeeded, 1)
+        @Expect(result.details.contains("candidate_validated_promoted"), true)
         @Expect(f6SchedulerDiagnosticsContain(result, "queryCount=164"), true)
-        @Expect(f6SchedulerDiagnosticsContain(result, "completed=164:total=164"), true)
-        @Expect(f6SchedulerDiagnosticsContain(result, "activeCommitted=false"), true)
+        @Expect(store.has("metadata/benchmark-gap-curation-last-success.ckb"), true)
         @Expect(store.has("metadata/benchmark-gap-curation-proof.ckb"), false)
     }
 
@@ -123,9 +122,9 @@ public class CkbRoutineF6Test {
         @Expect(first.failed, 0)
         @Expect(first.details.contains("benchmark_gap_proof_checkpointed"), true)
         @Expect(second.ran, 13)
-        @Expect(second.succeeded, 12)
+        @Expect(second.succeeded, 13)
         @Expect(second.failed, 0)
-        @Expect(second.details.contains("benchmark_gap_proof_complete"), true)
+        @Expect(second.details.contains("candidate_validated_promoted"), true)
         @Expect(f6SchedulerDiagnosticsContain(second, "indexBuildCount=0:queryCount=0:reused=true"), true)
     }
 }

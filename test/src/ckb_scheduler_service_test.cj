@@ -2006,13 +2006,11 @@ public class CkbSchedulerServiceF5Test {
 
         @Expect(result.ran, 1)
         @Expect(result.failed, 0)
-        @Expect(result.succeeded, 0)
-        @Expect(result.details.contains("benchmark_gap_proof_complete"), true)
+        @Expect(result.succeeded, 1)
+        @Expect(result.details.contains("candidate_validated_promoted"), true)
         @Expect(f7SchedulerDiagnosticsContain(result, "indexBuildCount=1"), true)
         @Expect(f7SchedulerDiagnosticsContain(result, "queryCount=1"), true)
-        @Expect(status.activeKnowledgeVersion, before.activeKnowledgeVersion)
-        @Expect(status.storage.rawCount, before.storage.rawCount)
-        @Expect(status.storage.normalizedCount, before.storage.normalizedCount)
+        @Expect(status.activeKnowledgeVersion != before.activeKnowledgeVersion, true)
 
         let request = CangjieTaskKnowledgeRequest()
         request.taskId = "CJ-HUMANEVAL-004"
@@ -2022,6 +2020,8 @@ public class CkbSchedulerServiceF5Test {
         request.expectedKnowledgeTags.add("G-ARRAYLIST")
         request.versionSelector = cangjieVersionSelector(targetVersion: "1.0.0", sourceSet: CangjieSourceSets.ALL)
         let pack = service.cangjieTaskKnowledgePack(request)
+        @Expect(pack.coverage.coveragePass, true)
+        @Expect(pack.citations.size > 0, true)
     }
 
     @TestCase
@@ -2066,8 +2066,8 @@ public class CkbSchedulerServiceF5Test {
 
         @Expect(result.ran, 1)
         @Expect(result.failed, 0)
-        @Expect(result.succeeded, 0)
-        @Expect(result.details.contains("benchmark_gap_proof_complete"), true)
+        @Expect(result.succeeded, 1)
+        @Expect(result.details.contains("candidate_validated_promoted"), true)
         @Expect(f7SchedulerDiagnosticsContain(result, "indexBuildCount=1"), true)
     }
 
