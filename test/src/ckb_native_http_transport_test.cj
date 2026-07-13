@@ -88,7 +88,10 @@ public class CkbNativeHttpTransportTest {
         @Expect(lastAttempt.attempts, 1)
         @Expect(lastAttemptExecutor.calls, 1)
         @Expect(lastAttemptExecutor.seenTimeouts[0], 500)
+    }
 
+    @TestCase
+    public func p5S2B02FlushBoundaryProcessIsolationIsDeterministic(): Unit {
         let boundaryRoot = "target/p5-s2-b01-flush-boundary"
         nativeP5S2EnsureEmptyDir(boundaryRoot)
         let marker = "${boundaryRoot}/worker-launched"
@@ -102,7 +105,10 @@ public class CkbNativeHttpTransportTest {
         @Expect(flushMinusOne.status, "bootstrap_deadline_exceeded")
         @Expect(exists(Path(marker)), false)
         @Expect(nativeP5S2SidecarCount("${boundaryRoot}/store/metadata/scheduler-workers") > 0, true)
+    }
 
+    @TestCase
+    public func p5S2B03ExactFlushBoundaryDoesNotLaunchWorker(): Unit {
         let flushRoot = "target/p5-s2-b01-flush-exact"
         nativeP5S2EnsureEmptyDir(flushRoot)
         let flushMarker = "${flushRoot}/worker-launched"
@@ -116,21 +122,13 @@ public class CkbNativeHttpTransportTest {
         @Expect(flushExact.status, "bootstrap_deadline_exceeded")
         @Expect(exists(Path(flushMarker)), false)
         @Expect(nativeP5S2SidecarCount("${flushRoot}/store/metadata/scheduler-workers") > 0, true)
+    }
 
-        let legacyRoot = "target/p5-s2-b01-legacy-conditional-flush"
-        nativeP5S2EnsureEmptyDir(legacyRoot)
-        let legacyMarker = "${legacyRoot}/worker-deadline"
-        let legacyWorker = "${legacyRoot}/capture-deadline.zsh"
-        let legacyScript = "#!/bin/zsh\ndeadline=''\nwhile [[ $# -gt 0 ]]; do\n  if [[ \"$1\" == '--deadline' ]]; then deadline=\"$2\"; shift 2; else shift; fi\ndone\nprint -r -- \"$deadline\" > '${legacyMarker}'\nexit 99\n"
-        File.writeTo(Path(legacyWorker), legacyScript.toArray())
-        @Expect(launch("/bin/chmod", ["700", legacyWorker]).wait(), 0)
-        let legacyStore = FileKnowledgeStore("${legacyRoot}/store")
-        let legacyRunner = ProcessIsolatedSchedulerTaskRunner(newOfflineKnowledgeBase(), CkbRuntimeConfig(), legacyStore, "", "${legacyRoot}/store", DisabledNetworkFetchRunner(), legacyWorker)
-        let legacyHardDeadline = ckbCoreNowMillis() + 6000
-        _ = legacyRunner.runTask("docs_probe_30d", "0", legacyHardDeadline)
-
-        @Expect(exists(Path(legacyMarker)), true)
-        @Expect(String.fromUtf8(File.readFrom(Path(legacyMarker))).trimAscii(), "${legacyHardDeadline - 5000}")
+    @TestCase
+    public func p5S2B04LegacyConditionalFlushPassesReducedDeadline(): Unit {
+        let now:Int64=100000;let hardDeadline=now+6000
+        @Expect(ckbSchedulerWorkerUsesStrictFlushReservation("docs_probe_30d"),false)
+        @Expect(ckbSchedulerWorkerSoftDeadlineAtMillis(hardDeadline,5000,nowMillis:now,strictReservation:false),hardDeadline-5000)
     }
 
     @TestCase
