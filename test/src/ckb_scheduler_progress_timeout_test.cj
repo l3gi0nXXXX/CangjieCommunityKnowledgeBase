@@ -988,7 +988,10 @@ public class CkbSchedulerProgressTimeoutTest {
         store.writeLinesAtomically("metadata/scheduler-current.ckb", "runId=hard-timeout-run\ntaskName=docs_probe_30d\nstatus=running\nprogressPath=metadata/scheduler-runs/hard-timeout-run.jsonl\ndiagnostic=\n")
         let runner = ProcessIsolatedSchedulerTaskRunner(newOfflineKnowledgeBase(), CkbRuntimeConfig(), store, "", storePath, DisabledNetworkFetchRunner(), workerPath)
 
-        let task = runner.runTask("docs_probe_30d", "0", ckbCoreNowMillis() + 500)
+        // This fixture verifies descendant cleanup, so reserve a bounded worker-start
+        // window before the absolute cutoff. A 500 ms cutoff can correctly expire
+        // before the worker script is scheduled and publishes its descendant PID.
+        let task = runner.runTask("docs_probe_30d", "0", ckbCoreNowMillis() + 2000)
         let terminalName = p5S1TerminalWorkerFileName(storePath, "hard-timeout-run")
         let resultPath = "metadata/scheduler-workers/${terminalName}"
         let primaryText = if (terminalName != "") { store.readText(resultPath) } else { "" }
@@ -1067,7 +1070,7 @@ public class CkbSchedulerProgressTimeoutTest {
         store.writeLinesAtomically("metadata/scheduler-current.ckb", "runId=protected-run\ntaskName=docs_probe_30d\nstatus=running\nprogressPath=metadata/scheduler-runs/protected-run.jsonl\ndiagnostic=\n")
         let runner = ProcessIsolatedSchedulerTaskRunner(newOfflineKnowledgeBase(), CkbRuntimeConfig(), store, "", storePath, DisabledNetworkFetchRunner(), workerPath)
 
-        let task = runner.runTask("docs_probe_30d", "0", ckbCoreNowMillis() + 500)
+        let task = runner.runTask("docs_probe_30d", "0", ckbCoreNowMillis() + 2000)
         let workerName = p5S1WorkerFileNameForRun(storePath, "protected-run")
         let sidecarText = if (workerName != "") { store.readText("metadata/scheduler-workers/${workerName}.sidecar") } else { "" }
         var childPid: Int64 = 0
@@ -1110,7 +1113,7 @@ public class CkbSchedulerProgressTimeoutTest {
         store.writeLinesAtomically("metadata/scheduler-current.ckb", "runId=unconfirmed-run\ntaskName=docs_probe_30d\nstatus=running\nprogressPath=metadata/scheduler-runs/unconfirmed-run.jsonl\ndiagnostic=\n")
         let runner = ProcessIsolatedSchedulerTaskRunner(newOfflineKnowledgeBase(), CkbRuntimeConfig(), store, "", storePath, DisabledNetworkFetchRunner(), workerPath)
 
-        let task = runner.runTask("docs_probe_30d", "0", ckbCoreNowMillis() + 500)
+        let task = runner.runTask("docs_probe_30d", "0", ckbCoreNowMillis() + 2000)
         let workerName = p5S1WorkerFileNameForRun(storePath, "unconfirmed-run")
         let sidecarText = if (workerName != "") { store.readText("metadata/scheduler-workers/${workerName}.sidecar") } else { "" }
         var childPid: Int64 = 0
