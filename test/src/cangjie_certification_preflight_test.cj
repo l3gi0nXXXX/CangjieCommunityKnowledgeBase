@@ -9,6 +9,13 @@ import std.time.*
 @Test
 public class CangjieCertificationPreflightTest {
     @TestCase
+    public func p6CliNeg01SecretArtifactsAreRejectedWithoutEchoingValues(): Unit {
+        @Expect(ckbControlContainsSecret("{\"authorization\":\"Bearer private-value\"}"), true)
+        @Expect(ckbControlContainsSecret("{\"api_key\":\"私密🙂\"}"), true)
+        @Expect(ckbControlContainsSecret("{\"provider\":\"glm\",\"model\":\"GLM-5.2\"}"), false)
+    }
+
+    @TestCase
     public func p6Ut01FrozenFingerprintIsDeterministicAndFieldBound(): Unit {
         let input = p6Fingerprint()
         let first = ckbFrozenFingerprint(input)

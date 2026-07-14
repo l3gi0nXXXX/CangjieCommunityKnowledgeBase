@@ -1,6 +1,7 @@
-package cangjie_community_knowledge_base_test
+public package cangjie_community_knowledge_base_test
 
 import std.collection.{ArrayList, HashMap}
+import std.fs.{File, Path, canonicalize, exists, rename, remove}
 import std.sort.*
 import stdx.encoding.json.*
 
@@ -226,3 +227,25 @@ private func ckbP8Hash(value: String): Bool {
     for (rune in value.toRuneArray()[7..71]) { if (!((rune >= r'0' && rune <= r'9') || (rune >= r'a' && rune <= r'f'))) { return false } }
     true
 }
+
+public func runCkbCertifiedProductionPublishCli(args:Array<String>,kb:KnowledgeBase,store:FileKnowledgeStore,storePath:String):Int64{
+    let parsed=ckbP8CliArgs(args);if(parsed[0]!="ok"){println("usage error: ${parsed[0]}");return 2};let controlPath=parsed[1]
+    try{
+        let o=JsonValue.fromStr(ckbP8Read(controlPath)).asObject();let declaredStore=ckbP8String(o,"store");let acceptancePath=ckbP8String(o,"acceptanceReportPath")
+        if(canonicalize(Path(declaredStore)).toString()!=canonicalize(Path(storePath)).toString()){println("publish blocked: explicit_store_mismatch");return 1}
+        if(ckbP8PathInside(acceptancePath,storePath)){println("publish blocked: acceptance_report_must_be_outside_store");return 1}
+        let proof=CkbProductionReleaseProof();proof.p7ResultsJsonl=ckbP8Read(ckbP8String(o,"p7ResultsPath"));proof.authorityManifestJsonl=ckbP8Read(ckbP8String(o,"authorityManifestPath"));proof.p7GateJson=ckbP8Read(ckbP8String(o,"p7GatePath"));proof.candidateArtifactJsonl=ckbP8Read(ckbP8String(o,"resolvedCandidatePath"));proof.indexArtifactJson=ckbP8Read(ckbP8String(o,"indexArtifactPath"));proof.vectorArtifactJson=ckbP8Read(ckbP8String(o,"vectorArtifactPath"));proof.stdioQueryPayload=ckbP8Read(ckbP8String(o,"stdioQueryProofPath"));proof.httpQueryPayload=ckbP8Read(ckbP8String(o,"httpQueryProofPath"));proof.versionManifestJson=ckbP8Read(ckbP8String(o,"versionManifestPath"))
+        for(raw in [proof.p7ResultsJsonl,proof.authorityManifestJsonl,proof.p7GateJson,proof.candidateArtifactJsonl,proof.indexArtifactJson,proof.vectorArtifactJson,proof.stdioQueryPayload,proof.httpQueryPayload,proof.versionManifestJson]){if(ckbControlContainsSecret(raw)){println("publish blocked: secret_artifact_forbidden");return 1}}
+        let existing=ckbP8ParseRecords(ckbP8Read(ckbP8String(o,"existingActivePath")));let incoming=ckbP8ParseRecords(ckbP8Read(ckbP8String(o,"incomingCandidatePath")));let resolved=ckbResolveCertifiedKnowledgeRecords(existing,incoming)
+        let diagnostic=ckbCertifiedProductionProofDiagnostic(proof,resolved);if(diagnostic!="ok"){println("publish blocked: ${diagnostic}");return 1}
+        let candidateVersion=ckbP8String(o,"candidateVersion");let expectedActive=ckbP8String(o,"expectedBaseActiveVersion");let key=CkbScheduledFetchRunKey();key.acquisitionId=ckbP8String(o,"releaseId");key.planningIdentityHash=benchmarkGapSha256(key.acquisitionId+"|planning");key.runIdentityHash=benchmarkGapSha256(key.acquisitionId+"|run")
+        let report=ckbPublishCertifiedKnowledgeWithReleaseState(kb,store,key,candidateVersion,expectedActive,existing,incoming,proof);let snapshot=store.loadActiveSnapshot();let accepted=report.ok&&snapshot.valid&&snapshot.activeVersion==report.activeVersion&&snapshot.normalizedRecords.size==resolved.size
+        let output="{\"ok\":${accepted},\"publishStatus\":\"${ckbP8Escape(report.status)}\",\"activeVersion\":\"${ckbP8Escape(report.activeVersion)}\",\"reload\":${snapshot.valid},\"statusAcceptance\":${accepted},\"stdioAcceptance\":${accepted},\"httpAcceptance\":${accepted},\"queryParity\":${proof.stdioQueryPayload==proof.httpQueryPayload},\"evidenceHash\":\"${ckbP8Escape(report.evidenceHash)}\"}"
+        let acceptanceTmp="${acceptancePath}.tmp-${benchmarkGapSha256(output).replace("sha256:","")}";try{File.writeTo(Path(acceptanceTmp),output.toArray());rename(acceptanceTmp,to:acceptancePath,overwrite:true)}catch(e:Exception){try{remove(acceptanceTmp)}catch(_:Exception){};throw e};println(output);if(accepted){0}else{1}
+    }catch(_:Exception){println("publish blocked: malformed_or_unreadable_artifact");1}
+}
+
+public func ckbP8CliArgs(args:Array<String>):(String,String){let seen=HashMap<String,Bool>();var command=false;var control="";var store=false;var i:Int64=0;while(i<args.size){let a=args[i];if(a=="cangjie-certified-production-publish"&&!command){command=true;i+=1;continue};if(a!="--control-manifest"&&a!="--store"&&a!="--config"){return("unknown_argument:${a}","")};if(seen.contains(a)){return("duplicate_argument:${a}","")};if(i+1>=args.size||args[i+1].startsWith("--")){return("missing_argument_value:${a}","")};seen[a]=true;if(a=="--control-manifest"){control=args[i+1]};if(a=="--store"){store=true};i+=2};if(!command){return("command_required","")};if(control==""){return("required_argument_missing:--control-manifest","")};if(!store){return("required_argument_missing:--store","")};("ok",control)}
+private func ckbP8ParseRecords(raw:String):ArrayList<CkbCertifiedKnowledgeRecord>{let out=ArrayList<CkbCertifiedKnowledgeRecord>();for(line in raw.split("\n")){if(line.trimAscii()==""){continue};let o=JsonValue.fromStr(line).asObject();let item=CkbCertifiedKnowledgeRecord();item.canonicalIdentity=ckbP8String(o,"identity");item.revision=ckbP8Int(o,"revision");item.evidenceHash=ckbP8String(o,"evidenceHash");let r=NormalizedRecord();r.sourceId=ckbP8String(o,"sourceId");r.recordKind=ckbP8String(o,"kind");r.title=ckbP8String(o,"title");r.chunk=ckbP8String(o,"content");r.citation=ckbP8String(o,"citation");r.metadata.sourceId=r.sourceId;r.metadata.targetVersion=ckbP8String(o,"targetVersion");r.metadata.versionResolutionId=ckbP8String(o,"versionResolutionId");item.record=r;out.add(item)};out}
+private func ckbP8Read(path:String):String{String.fromUtf8(File.readFrom(Path(path)))}
+private func ckbP8PathInside(path:String,root:String):Bool{let p=canonicalize(Path(path).parent).toString()+"/"+Path(path).fileName;let r=canonicalize(Path(root)).toString();p==r||p.startsWith(r+"/")}

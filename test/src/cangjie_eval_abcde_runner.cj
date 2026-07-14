@@ -1,6 +1,6 @@
-package cangjie_community_knowledge_base_test
+public package cangjie_community_knowledge_base_test
 
-import std.collection.ArrayList
+import std.collection.{ArrayList, HashSet}
 import std.convert.Parsable
 import std.env.getVariable
 import std.fs.{Directory, File, Path, exists, canonicalize}
@@ -266,6 +266,8 @@ public func parseCkbAbcdeRunnerOptions(args: Array<String>): CkbAbcdeRunnerOptio
 }
 
 public func runCangjieEvalAbcde(args: Array<String>): Int64 {
+    let usage = ckbAbcdeStrictUsageDiagnostic(args)
+    if (usage != "ok") { println("usage error: ${usage}"); return 2 }
     let options = parseCkbAbcdeRunnerOptions(args)
     if (options.help) {
         print(ckbAbcdeUsage())
@@ -340,6 +342,32 @@ public func runCangjieEvalAbcde(args: Array<String>): Int64 {
     let pass1GateOk = ckbAbcdeWritePass1GateArtifactsIfFullRun(options, runRoot)
     println("ABCDE run complete: ${runRoot}")
     if (failed > 0 || !pass1GateOk) { 1 } else { 0 }
+}
+
+// Certification is an auditable one-shot operation.  Silently ignored or
+// duplicated arguments would make the recorded lineage differ from operator
+// intent, so validate the complete argv before applying defaults.
+public func ckbAbcdeStrictUsageDiagnostic(args: Array<String>): String {
+    let flags = HashSet<String>()
+    let valued = HashSet<String>()
+    for (name in ["--run-mode","--dataset-version","--candidate-version","--knowledge-version","--model-fingerprint","--certification-preflight","--certification-run-manifest","--expected-model-version","--provider-identity-hash","--provider-identity-artifact","--run-id","--repo-root","--runs-root","--dataset-root","--manifest","--ckb-bin","--ckb-store","--ckb-http-base","--docs-root","--case-start","--case-end","--case-id","--groups","--config","--store"]) { valued.add(name) }
+    for (name in ["--help","-h","--preflight-only","--skip-claude"]) { flags.add(name) }
+    let seen = HashSet<String>(); var commandSeen = false; var i: Int64 = 0
+    while (i < args.size) {
+        let arg = args[i]
+        if (arg == "cangjie-eval-abcde" && !commandSeen) { commandSeen=true; i+=1; continue }
+        if (flags.contains(arg)) {
+            if (seen.contains(arg)) { return "duplicate_argument:${arg}" }; seen.add(arg); i+=1; continue
+        }
+        if (valued.contains(arg)) {
+            if (seen.contains(arg)) { return "duplicate_argument:${arg}" }
+            if (i+1>=args.size || args[i+1].startsWith("--")) { return "missing_argument_value:${arg}" }
+            seen.add(arg); i+=2; continue
+        }
+        return "unknown_argument:${arg}"
+    }
+    if (!commandSeen) { return "command_required" }
+    "ok"
 }
 
 public func runCangjieAbcdeParitySmoke(args: Array<String>): Int64 {
@@ -2032,5 +2060,5 @@ public func ckbAbcdeNativeTlsBootstrapScript(command: String, args: Array<String
 }
 
 private func ckbAbcdeUsage(): String {
-    "Usage: cangjie_community_knowledge_base cangjie-eval-abcde [--preflight-only] [--skip-claude] [--run-id <id>] [--case-id CJ-HUMANEVAL-000|--case-start 0 --case-end 9] [--groups A,B,C,D,E] [--runs-root /Users/l3gi0n/Downloads/ckbtest] [--ckb-http-base http://127.0.0.1:18890] [--ckb-bin <path>] [--ckb-store <path>] [--dataset-root <path>] [--manifest <path>] [--docs-root <path>]\n"
+    "Usage: cangjie_community_knowledge_base cangjie-eval-abcde --run-mode <development|certification> --run-id <id> --dataset-version <version> --knowledge-version <version> --model-fingerprint <sha256> [--candidate-version <version>] [--case-id CJ-HUMANEVAL-000|--case-start 0 --case-end 163] [--groups C|D] [--runs-root <path>] [--ckb-http-base <url>] [--ckb-bin <path>] [--ckb-store <path>] [--dataset-root <path>] [--manifest <authority.jsonl>] [--docs-root <path>] [--certification-preflight <preflight.json> --certification-run-manifest <run-manifest.json> --expected-model-version <exact> --provider-identity-hash <sha256> --provider-identity-artifact <redacted.json>]\n"
 }

@@ -8,6 +8,14 @@ import std.unittest.testmacro.*
 @Test
 public class CkbCertifiedProductionReleaseTest {
     @TestCase
+    public func p8CliBnd01ExplicitStoreUnknownDuplicateAndMissingFailClosed(): Unit {
+        @Expect(ckbP8CliArgs(["cangjie-certified-production-publish", "--control-manifest", "proof.json"])[0], "required_argument_missing:--store")
+        @Expect(ckbP8CliArgs(["cangjie-certified-production-publish", "--store", "a", "--store", "b", "--control-manifest", "proof.json"])[0], "duplicate_argument:--store")
+        @Expect(ckbP8CliArgs(["cangjie-certified-production-publish", "--store", "a", "--unknown", "b"])[0], "unknown_argument:--unknown")
+        @Expect(ckbP8CliArgs(["cangjie-certified-production-publish", "--store", "a", "--control-manifest", "proof.json"])[0], "ok")
+    }
+
+    @TestCase
     public func p8Ut01CanonicalConflictUsesOnlyNewerCertifiedRevision(): Unit {
         let old = p8Items([p8Item("语法🙂", 1, "old")])
         let newer = p8Items([p8Item("语法🙂", 2, "new")])

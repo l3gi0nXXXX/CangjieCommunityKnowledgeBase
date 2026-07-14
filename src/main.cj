@@ -92,6 +92,9 @@ public func ckbCliMain(args: Array<String>): Int64 {
         }
         return if (result.ok) { 0 } else { 1 }
     }
+    if (cli.command == "cangjie-certification-preflight") {
+        return runCkbCertificationPreflightCli(args)
+    }
     let kb = loadCliKnowledgeBase(cli.command, store, config)
     let input = cliInput(args)
     if (cli.command == "" || cli.command == "doctor") {
@@ -278,6 +281,9 @@ public func ckbCliMain(args: Array<String>): Int64 {
     }
     if (cli.command == "cangjie-humaneval-pass1-gate-smoke") {
         return runCangjieHumanEvalPass1GateSmoke(args)
+    }
+    if (cli.command == "cangjie-certified-production-publish") {
+        return runCkbCertifiedProductionPublishCli(args, kb, store, cli.storePath)
     }
     if (cli.command == "cangjie-knowledge-release-gate") {
         return runCangjieKnowledgeReleaseGate(args, config: config, store: store, sourceRunner: if (config.networkEnabled) { HttpSourceFetchRunner(config) } else { DisabledNetworkFetchRunner() })

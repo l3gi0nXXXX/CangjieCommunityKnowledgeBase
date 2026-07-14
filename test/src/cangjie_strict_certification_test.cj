@@ -8,6 +8,19 @@ import std.unittest.testmacro.*
 @Test
 public class CangjieStrictCertificationTest {
     @TestCase
+    public func p7CliBnd01UnknownDuplicateAndMissingValuesFailClosed(): Unit {
+        @Expect(ckbAbcdeStrictUsageDiagnostic(["cangjie-eval-abcde", "--unknown"]), "unknown_argument:--unknown")
+        @Expect(ckbAbcdeStrictUsageDiagnostic(["cangjie-eval-abcde", "--run-id", "one", "--run-id", "two"]), "duplicate_argument:--run-id")
+        @Expect(ckbAbcdeStrictUsageDiagnostic(["cangjie-eval-abcde", "--manifest"]), "missing_argument_value:--manifest")
+        @Expect(ckbAbcdeStrictUsageDiagnostic(["--run-id", "one"]), "command_required")
+    }
+
+    @TestCase
+    public func p7CliPos01CompleteCertificationArgumentsAreAccepted(): Unit {
+        @Expect(ckbAbcdeStrictUsageDiagnostic(["cangjie-eval-abcde", "--run-mode", "certification", "--run-id", "cert-中文🙂", "--dataset-version", "dataset-v1", "--knowledge-version", "knowledge-v1", "--model-fingerprint", "sha256:value", "--groups", "C-ckb-mcp-stdio", "--manifest", "authority.jsonl", "--certification-preflight", "preflight.json", "--certification-run-manifest", "run-manifest.json", "--expected-model-version", "GLM-5.2", "--provider-identity-hash", "sha256:value", "--provider-identity-artifact", "provider.json"]), "ok")
+    }
+
+    @TestCase
     public func p7Ut01StrictRowAndGateValidateAllBoundFields(): Unit {
         let authority=p7Authority();let rows=p7Rows(164,CkbAbcdeGroups.C)
         let gate=ckbStrictCertificationGate(rows,authority)
