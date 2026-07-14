@@ -77,6 +77,7 @@ public func ckbCertifiedKnowledgeRecordsDiagnostic(records: ArrayList<CkbCertifi
 }
 
 public func ckbCertifiedReplacementDiagnostic(existing:ArrayList<CkbCertifiedKnowledgeRecord>,incoming:ArrayList<CkbCertifiedKnowledgeRecord>):String{for(newItem in incoming){for(oldItem in existing){if(newItem.canonicalIdentity==oldItem.canonicalIdentity&&newItem.evidenceHash!=oldItem.evidenceHash&&newItem.revision<=oldItem.revision){return "certified_revision_conflict"}}};"ok"}
+private func ckbP8ExistingActiveDiagnostic(kb:KnowledgeBase,existing:ArrayList<CkbCertifiedKnowledgeRecord>):String{let active=kb.activeRecordSnapshot();if(active.size!=existing.size){return "existing_active_count_mismatch"};for(item in existing){var found=false;for(row in active){if(ckbP8SameRecord(row,item.record)){found=true;break}};if(!found){return "existing_active_content_mismatch"}};"ok"}
 
 public func ckbCertifiedProductionProofDiagnostic(proof: CkbProductionReleaseProof, records: ArrayList<CkbCertifiedKnowledgeRecord>): String {
     let certification = ckbStrictCertificationGate(proof.p7ResultsJsonl, proof.authorityManifestJsonl)
@@ -91,7 +92,7 @@ public func ckbCertifiedProductionProofDiagnostic(proof: CkbProductionReleasePro
     if (vectorDiagnostic != "ok") { return vectorDiagnostic }
     let manifestDiagnostic = ckbP8ManifestDiagnostic(proof.versionManifestJson, certification.knowledgeVersion, checksum)
     if (manifestDiagnostic != "ok") { return manifestDiagnostic }
-    if (ckbP8QueryPayloadDiagnostic(proof.stdioQueryPayload, certification.knowledgeVersion, records) != "ok" || ckbP8QueryPayloadDiagnostic(proof.httpQueryPayload, certification.knowledgeVersion, records) != "ok" || proof.stdioQueryPayload != proof.httpQueryPayload) { return "transport_query_proof_mismatch" }
+    let expectedQuery=ckbRenderCertifiedQueryPayload(certification.knowledgeVersion,records);if(ckbCanonicalizeCertifiedQueryPayload(proof.stdioQueryPayload)!=("ok",expectedQuery)||ckbCanonicalizeCertifiedQueryPayload(proof.httpQueryPayload)!=("ok",expectedQuery)){return "transport_query_proof_mismatch"}
     "ok"
 }
 
@@ -139,6 +140,7 @@ public func ckbPublishCertifiedKnowledge(kb: KnowledgeBase, store: FileKnowledge
     let certification = ckbStrictCertificationGate(proof.p7ResultsJsonl, proof.authorityManifestJsonl)
     report.certifiedKnowledgeVersion = certification.knowledgeVersion
     report.activeVersion = kb.status().activeKnowledgeVersion
+    let activeDiagnostic=ckbP8ExistingActiveDiagnostic(kb,existing);if(activeDiagnostic!="ok"){report.diagnostic=activeDiagnostic;report.status=activeDiagnostic;return report}
     let incomingDiagnostic = ckbCertifiedKnowledgeRecordsDiagnostic(incoming)
     if (incomingDiagnostic != "ok") { report.diagnostic = incomingDiagnostic; report.status = incomingDiagnostic; return report }
     let replacementDiagnostic=ckbCertifiedReplacementDiagnostic(existing,incoming);if(replacementDiagnostic!="ok"){report.diagnostic=replacementDiagnostic;report.status=replacementDiagnostic;return report}
@@ -169,8 +171,9 @@ public func ckbPublishCertifiedKnowledge(kb: KnowledgeBase, store: FileKnowledge
 func ckbPublishCertifiedKnowledgeWithReleaseState(kb: KnowledgeBase, store: FileKnowledgeStore, releaseKey: CkbScheduledFetchRunKey, candidateVersion: String, expectedBaseActiveVersion: String, existing: ArrayList<CkbCertifiedKnowledgeRecord>, incoming: ArrayList<CkbCertifiedKnowledgeRecord>, proof: CkbProductionReleaseProof, forceFailure!: Bool = false): CkbProductionReleaseReport {
     let resolved = ckbResolveCertifiedKnowledgeRecords(existing, incoming)
     let gate = cangjieCertifiedProductionReleaseGate(proof, resolved)
-    if (!gate.ok) { return ckbPublishCertifiedKnowledge(kb, store, candidateVersion, expectedBaseActiveVersion, existing, incoming, proof, forceFailure: forceFailure) }
     let certification = ckbStrictCertificationGate(proof.p7ResultsJsonl, proof.authorityManifestJsonl)
+    let activeDiagnostic=ckbP8ExistingActiveDiagnostic(kb,existing);let incomingDiagnostic=ckbCertifiedKnowledgeRecordsDiagnostic(incoming);let replacementDiagnostic=ckbCertifiedReplacementDiagnostic(existing,incoming);let versionOk=candidateVersion=="${certification.knowledgeVersion}-candidate";let baseOk=expectedBaseActiveVersion==kb.status().activeKnowledgeVersion
+    if(!gate.ok||activeDiagnostic!="ok"||incomingDiagnostic!="ok"||replacementDiagnostic!="ok"||!versionOk||!baseOk){return ckbPublishCertifiedKnowledge(kb,store,candidateVersion,expectedBaseActiveVersion,existing,incoming,proof,forceFailure:forceFailure)}
     ckbMarkReleaseAcquisitionState(store, releaseKey, "certified_staging", candidateVersion: candidateVersion, activeVersion: expectedBaseActiveVersion, certifiedVersion: certification.knowledgeVersion, certificationFingerprint: certification.modelFingerprint)
     let report = ckbPublishCertifiedKnowledge(kb, store, candidateVersion, expectedBaseActiveVersion, existing, incoming, proof, forceFailure: forceFailure)
     if (report.ok) {
@@ -209,12 +212,14 @@ public func ckbRenderCertifiedCandidateArtifact(records: ArrayList<CkbCertifiedK
 public func ckbRenderCertifiedCountArtifact(kind:String,records:ArrayList<CkbCertifiedKnowledgeRecord>):String{"{\"kind\":\"${kind}\",\"count\":${records.size},\"recordsChecksum\":\"${ckbCertifiedKnowledgeRecordsChecksum(records)}\"}"}
 public func ckbRenderCertifiedVersionManifest(version:String,records:ArrayList<CkbCertifiedKnowledgeRecord>):String{"{\"certifiedVersion\":\"${ckbP8Escape(version)}\",\"candidateVersion\":\"${ckbP8Escape(version)}-candidate\",\"candidateChecksum\":\"${ckbCertifiedKnowledgeRecordsChecksum(records)}\"}"}
 public func ckbRenderCertifiedQueryPayload(version:String,records:ArrayList<CkbCertifiedKnowledgeRecord>):String{let ids=ArrayList<String>();for(item in records){ids.add(item.canonicalIdentity)};let a=ids.toArray();sort(a);var out="";for(i in 0..a.size){if(i>0){out+=","};out+="\"${ckbP8Escape(a[i])}\""};"{\"ok\":true,\"knowledgeVersion\":\"${ckbP8Escape(version)}\",\"atomIds\":[${out}],\"contentHash\":\"${ckbCertifiedKnowledgeRecordsChecksum(records)}\",\"citation\":\"verified\"}"}
+public func ckbCanonicalizeCertifiedQueryPayload(raw:String):(String,String){try{let o=JsonValue.fromStr(raw).asObject();if(!o.get("ok").getOrThrow().asBool().getValue()){return ("business_not_ok","")};let version=ckbP8String(o,"knowledgeVersion");let hash=ckbP8String(o,"contentHash");let citation=ckbP8String(o,"citation");let ids=ArrayList<String>();for(v in o.get("atomIds").getOrThrow().asArray().getItems()){ids.add(v.asString().getValue())};let a=ids.toArray();sort(a);var joined="";for(i in 0..a.size){if(i>0){joined+=","};joined+="\"${ckbP8Escape(a[i])}\""};("ok","{\"ok\":true,\"knowledgeVersion\":\"${ckbP8Escape(version)}\",\"atomIds\":[${joined}],\"contentHash\":\"${ckbP8Escape(hash)}\",\"citation\":\"${ckbP8Escape(citation)}\"}")}catch(_:Exception){("malformed_query_payload","")}}
 private func ckbP8CountArtifactDiagnostic(raw:String,kind:String,count:Int64,checksum:String):String{try{let o=JsonValue.fromStr(raw).asObject();if(ckbP8String(o,"kind")!=kind||ckbP8Int(o,"count")!=count||ckbP8String(o,"recordsChecksum")!=checksum){"${kind}_artifact_mismatch"}else{"ok"}}catch(_:Exception){"${kind}_artifact_malformed"}}
 private func ckbP8ManifestDiagnostic(raw:String,version:String,checksum:String):String{try{let o=JsonValue.fromStr(raw).asObject();if(ckbP8String(o,"certifiedVersion")!=version||ckbP8String(o,"candidateVersion")!="${version}-candidate"||ckbP8String(o,"candidateChecksum")!=checksum){"version_manifest_mismatch"}else{"ok"}}catch(_:Exception){"version_manifest_malformed"}}
 private func ckbP8QueryPayloadDiagnostic(raw:String,version:String,records:ArrayList<CkbCertifiedKnowledgeRecord>):String{if(raw!=ckbRenderCertifiedQueryPayload(version,records)){"query_payload_mismatch"}else{"ok"}}
 private func ckbP8String(o:JsonObject,k:String):String{o.get(k).getOrThrow().asString().getValue()}
 private func ckbP8Int(o:JsonObject,k:String):Int64{o.get(k).getOrThrow().asInt().getValue()}
 private func ckbP8Escape(v:String):String{v.replace("\\","\\\\").replace("\"","\\\"").replace("\n","\\n").replace("\r","\\r").replace("\t","\\t")}
+private func ckbP8SameRecord(a:NormalizedRecord,b:NormalizedRecord):Bool{a.sourceId==b.sourceId&&a.recordKind==b.recordKind&&a.title==b.title&&a.chunk==b.chunk&&a.citation==b.citation&&a.metadata.targetVersion==b.metadata.targetVersion&&a.metadata.versionResolutionId==b.metadata.versionResolutionId}
 
 private func ckbP8Hash(value: String): Bool {
     if (!value.startsWith("sha256:") || value.toRuneArray().size != 71) { return false }
