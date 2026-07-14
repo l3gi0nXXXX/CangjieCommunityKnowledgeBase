@@ -55,6 +55,16 @@ public func cangjieCertificationReleaseGate(preflight: CkbCertificationPreflight
     step
 }
 
+public func cangjieCertifiedProductionReleaseGate(proof: CkbProductionReleaseProof, records: ArrayList<CkbCertifiedKnowledgeRecord>): CangjieKnowledgeReleaseGateStep {
+    let step = CangjieKnowledgeReleaseGateStep()
+    step.id = "P8-certified-production"
+    step.diagnostic = ckbCertifiedProductionProofDiagnostic(proof, records)
+    step.ok = step.diagnostic == "ok"
+    step.status = if (step.ok) { "passed" } else { "failed" }
+    step.evidenceHash = if (step.ok) { benchmarkGapSha256(proof.certifiedKnowledgeVersion + "|" + proof.candidateChecksum + "|" + proof.certificationFingerprint + "|" + proof.versionManifestHash) } else { "" }
+    step
+}
+
 public func parseCangjieKnowledgeReleaseGateOptions(args: Array<String>): CangjieKnowledgeReleaseGateOptions {
     let options = CangjieKnowledgeReleaseGateOptions()
     var i: Int64 = 0

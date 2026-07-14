@@ -87,6 +87,8 @@ class CkbReleaseAcquisitionState {
     var runIdentityHash: String = ""
     var candidateVersion: String = ""
     var activeVersion: String = ""
+    var certifiedVersion: String = ""
+    var certificationFingerprint: String = ""
     var evidenceHash: String = ""
 
     init() {}
@@ -315,9 +317,10 @@ func ckbReleaseAcquisitionCanResume(store: FileKnowledgeStore, key: CkbScheduled
     state.status == "not_found" || (state.valid && state.state == "active")
 }
 
-func ckbMarkReleaseAcquisitionState(store: FileKnowledgeStore, key: CkbScheduledFetchRunKey, state: String, candidateVersion!: String = "", activeVersion!: String = ""): Unit {
-    let evidence = ckbReleaseEvidenceHash("${key.planningIdentityHash}|${key.runIdentityHash}|${state}|${candidateVersion}|${activeVersion}")
-    let text = "{\"schemaVersion\":\"${CkbReleaseResumeSchema.VERSION}\",\"planningIdentityHash\":\"${key.planningIdentityHash}\",\"runIdentityHash\":\"${key.runIdentityHash}\",\"state\":\"${ckbScheduledFetchJsonEscape(state)}\",\"candidateVersion\":\"${ckbScheduledFetchJsonEscape(candidateVersion)}\",\"activeVersion\":\"${ckbScheduledFetchJsonEscape(activeVersion)}\",\"evidenceHash\":\"${evidence}\"}"
+func ckbMarkReleaseAcquisitionState(store: FileKnowledgeStore, key: CkbScheduledFetchRunKey, state: String, candidateVersion!: String = "", activeVersion!: String = "", certifiedVersion!: String = "", certificationFingerprint!: String = ""): Unit {
+    let suffix = if (certifiedVersion == "" && certificationFingerprint == "") { "" } else { "|${certifiedVersion}|${certificationFingerprint}" }
+    let evidence = ckbReleaseEvidenceHash("${key.planningIdentityHash}|${key.runIdentityHash}|${state}|${candidateVersion}|${activeVersion}${suffix}")
+    let text = "{\"schemaVersion\":\"${CkbReleaseResumeSchema.VERSION}\",\"planningIdentityHash\":\"${key.planningIdentityHash}\",\"runIdentityHash\":\"${key.runIdentityHash}\",\"state\":\"${ckbScheduledFetchJsonEscape(state)}\",\"candidateVersion\":\"${ckbScheduledFetchJsonEscape(candidateVersion)}\",\"activeVersion\":\"${ckbScheduledFetchJsonEscape(activeVersion)}\",\"certifiedVersion\":\"${ckbScheduledFetchJsonEscape(certifiedVersion)}\",\"certificationFingerprint\":\"${ckbScheduledFetchJsonEscape(certificationFingerprint)}\",\"evidenceHash\":\"${evidence}\"}"
     store.writeLinesAtomically("${ckbReleaseAcquisitionRoot(key)}/state.json", text)
 }
 
@@ -351,11 +354,14 @@ func ckbLoadReleaseAcquisitionState(store: FileKnowledgeStore, key: CkbScheduled
     state.state = ckbResumeJsonString(object, "state")
     state.candidateVersion = ckbResumeJsonString(object, "candidateVersion")
     state.activeVersion = ckbResumeJsonString(object, "activeVersion")
+    state.certifiedVersion = ckbResumeJsonString(object, "certifiedVersion")
+    state.certificationFingerprint = ckbResumeJsonString(object, "certificationFingerprint")
     state.evidenceHash = ckbResumeJsonString(object, "evidenceHash")
-    let expected = ckbReleaseEvidenceHash("${state.planningIdentityHash}|${state.runIdentityHash}|${state.state}|${state.candidateVersion}|${state.activeVersion}")
+    let suffix = if (state.certifiedVersion == "" && state.certificationFingerprint == "") { "" } else { "|${state.certifiedVersion}|${state.certificationFingerprint}" }
+    let expected = ckbReleaseEvidenceHash("${state.planningIdentityHash}|${state.runIdentityHash}|${state.state}|${state.candidateVersion}|${state.activeVersion}${suffix}")
     let identityMatches = state.planningIdentityHash == key.planningIdentityHash &&
         (key.resolvedCommit == "" || state.runIdentityHash == key.runIdentityHash)
-    let knownState = state.state == "active" || state.state == "consumed"
+    let knownState = state.state == "active" || state.state == "consumed" || state.state == "certified_staging" || state.state == "certified_active"
     state.valid = identityMatches && knownState && state.runIdentityHash != "" && state.evidenceHash == expected
     if (state.valid) {
         state.status = "ok"
