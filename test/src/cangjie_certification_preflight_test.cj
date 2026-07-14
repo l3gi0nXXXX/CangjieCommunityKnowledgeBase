@@ -2,8 +2,9 @@ package cangjie_community_knowledge_base_test
 
 import std.unittest.*
 import std.unittest.testmacro.*
-import std.fs.{Directory, Path, exists}
+import std.fs.{Directory, Path, canonicalize, exists}
 import std.collection.*
+import std.time.*
 
 @Test
 public class CangjieCertificationPreflightTest {
@@ -19,14 +20,14 @@ public class CangjieCertificationPreflightTest {
 
         let baseline = p6Arm("no-ckb", false, "ws-a", "session-a", "home-a")
         let treatment = p6Arm("frozen-ckb", true, "ws-b", "session-b", "home-b")
-        let report = runCkbContributionExperiment(baseline, treatment)
+        let report = runCkbContributionExperiment(baseline, treatment, frozenFingerprint: ckbFrozenFingerprint(p6Fingerprint()))
         @Expect(report.ok, true)
         @Expect(report.certificationPassAt1.isNone(), true)
     }
 
     @TestCase
     public func p6Bnd01ActiveVersionDriftFailsClosedBeforeCaseStart(): Unit {
-        let output = p6EmptyOutput("target/p6-bnd-empty")
+        let output = p6EmptyOutput("../target/p6-bnd-empty")
         let options = p6Preflight(output)
         options.activeVersionAtEnd = "knowledge-v2"
         let report = runCertificationPreflight(options, p6Fingerprint())
@@ -48,9 +49,10 @@ public class CangjieCertificationPreflightTest {
 
     @TestCase
     public func p6Neg01ForbiddenPathsRetryLayersAndSyntheticEvidenceAreRejected(): Unit {
-        @Expect(ckbCertificationWorkspaceDiagnostic("/tmp/case/tests/hidden"), "forbidden_workspace_path:/test")
-        @Expect(ckbCertificationWorkspaceDiagnostic("/tmp/reference/solution"), "forbidden_workspace_path:/reference")
-        @Expect(ckbCertificationWorkspaceDiagnostic("/tmp/teacher-solutions/CJ-HUMANEVAL-000"), "forbidden_workspace_path:/teacher")
+        let testsPath=p6EmptyOutput("../target/p6-path/tests/hidden"); let referencePath=p6EmptyOutput("../target/p6-path/reference/work"); let teacherPath=p6EmptyOutput("../target/p6-path/teacher-solutions/work")
+        @Expect(ckbCertificationWorkspaceDiagnostic(testsPath), "forbidden_workspace_segment:tests")
+        @Expect(ckbCertificationWorkspaceDiagnostic(referencePath), "forbidden_workspace_segment:reference")
+        @Expect(ckbCertificationWorkspaceDiagnostic(teacherPath), "forbidden_workspace_segment:teacher-solutions")
         let budget = CkbCertificationBudget()
         budget.agentAttempts = 2
         @Expect(ckbCertificationBudgetDiagnostic(budget), "agent_attempt_budget_must_equal_one")
@@ -63,14 +65,21 @@ public class CangjieCertificationPreflightTest {
         budget.maxTurns = 1; budget.knowledgeRestRetries = 3
         @Expect(ckbCertificationBudgetDiagnostic(budget), "knowledge_rest_retry_must_be_zero")
 
-        let options = p6Preflight(p6EmptyOutput("target/p6-neg-empty"))
+        let options = p6Preflight(p6EmptyOutput("../target/p6-neg-empty"))
         options.contributionExperimentSynthetic = true
         let report = runCertificationPreflight(options, p6Fingerprint())
         @Expect(report.startAllowed, false)
         @Expect(report.checks.contains("trusted_contribution_experiment_required"), true)
-        options.contributionExperimentSynthetic = false; options.filesystemIsolationEnforced = false
+        options.contributionExperimentSynthetic = false; options.filesystemProbeJson = "{\"deniedOutsideWorkspace\":false}"
         let unsafeReport = runCertificationPreflight(options, p6Fingerprint())
-        @Expect(unsafeReport.checks.contains("filesystem_isolation_not_enforced"), true)
+        @Expect(unsafeReport.checks.contains("filesystem_isolation_probe_invalid"), true)
+        options.filesystemProbeJson = "{}"; options.developmentClosureJson = "{malformed中文😀"
+        let malformed = runCertificationPreflight(options, p6Fingerprint())
+        @Expect(malformed.checks.contains("development_closure_artifact_invalid"), true)
+        options.developmentClosureJson=p6ClosureJson(); options.providerIdentityHash="sha256:fake"; options.parityHttpPayload="tampered"
+        let tampered = runCertificationPreflight(options, p6Fingerprint())
+        @Expect(tampered.checks.contains("redacted_provider_identity_required"), true)
+        @Expect(tampered.checks.contains("transport_parity_required"), true)
     }
 
     @TestCase
@@ -79,12 +88,12 @@ public class CangjieCertificationPreflightTest {
         baseline.passed = 100; baseline.knowledgeHits = 0
         let treatment = p6Arm("frozen-ckb", true, "treatment-ws", "treatment-session", "treatment-home")
         treatment.passed = 164; treatment.knowledgeHits = 164
-        let experiment = runCkbContributionExperiment(baseline, treatment)
+        let experiment = runCkbContributionExperiment(baseline, treatment, frozenFingerprint: ckbFrozenFingerprint(p6Fingerprint()))
         @Expect(experiment.ok, true)
         @Expect(experiment.passDelta, 64)
         @Expect(experiment.knowledgeHitDelta, 164)
 
-        let output = p6EmptyOutput("target/p6-e2e-empty")
+        let output = p6EmptyOutput("../target/p6-e2e-${DateTime.now().toUnixTimeStamp().toMilliseconds()}")
         let options = p6Preflight(output)
         options.contributionExperimentPassed = experiment.ok
         let report = runCertificationPreflight(options, p6Fingerprint())
@@ -97,39 +106,51 @@ public class CangjieCertificationPreflightTest {
         let gate = cangjieCertificationReleaseGate(report)
         @Expect(gate.ok, true)
         @Expect(gate.evidenceHash.startsWith("sha256:"), true)
+        @Expect(exists(Path(report.runManifestPath)), true)
+        let integrated = cangjieCertificationReleaseGateIntegrated("${output}/preflight.json", "${output}/run-manifest.json")
+        @Expect(integrated.ok, true)
     }
 }
 
 private func p6Fingerprint(): CkbFrozenFingerprintInput {
     let input = CkbFrozenFingerprintInput()
-    input.knowledgeVersion = "knowledge-v1"; input.knowledgeContentHash = "sha256:knowledge"; input.datasetVersion = "dataset-v1"
-    input.manifestHash = "sha256:manifest"; input.modelVersion = "GLM-5.2"; input.claudeCodeVersion = "claude-code-1.0"
-    input.promptHash = "sha256:prompt"; input.toolConfigHash = "sha256:tools"
-    input.providerIdentityHash = "sha256:0123456789abcdef"; input.certificationTransport = CkbAbcdeGroups.C; input.runtimeConfigHash = "sha256:runtime-config"
+    input.knowledgeVersion = "knowledge-v1"; input.knowledgeContentHash = benchmarkGapSha256("knowledge"); input.datasetVersion = "dataset-v1"
+    input.manifestHash = benchmarkGapSha256("manifest"); input.modelVersion = "GLM-5.2"; input.claudeCodeVersion = "claude-code-1.0"
+    input.promptHash = benchmarkGapSha256("prompt"); input.toolConfigHash = benchmarkGapSha256("tools")
+    input.providerIdentityHash = benchmarkGapSha256("{\"provider\":\"redacted-provider\",\"model\":\"GLM-5.2\",\"claudeCodeVersion\":\"claude-code-1.0\"}"); input.certificationTransport = CkbAbcdeGroups.C; input.runtimeConfigHash = benchmarkGapSha256("runtime-config")
     input
 }
 
 private func p6Arm(name: String, enabled: Bool, workspace: String, session: String, home: String): CkbContributionArm {
     let arm = CkbContributionArm()
     arm.name = name; arm.ckbEnabled = enabled; arm.workspaceId = workspace; arm.sessionId = session; arm.runtimeHomeId = home
-    arm.datasetVersion = "dataset-v1"; arm.manifestHash = "sha256:manifest"; arm.modelVersion = "GLM-5.2"; arm.claudeCodeVersion = "claude-code-1.0"
-    arm.promptHash = "sha256:prompt"; arm.toolConfigHash = "sha256:tools"; arm.temperature = "0"; arm.toolBudget = 3
-    arm.total = 164; arm.passed = 120; arm.knowledgeHits = if (enabled) { 120 } else { 0 }; arm.failureClassificationHash = "sha256:classified-${name}"
+    arm.datasetVersion = "dataset-v1"; arm.manifestHash = benchmarkGapSha256("manifest"); arm.modelVersion = "GLM-5.2"; arm.claudeCodeVersion = "claude-code-1.0"
+    arm.promptHash = benchmarkGapSha256("prompt"); arm.toolConfigHash = benchmarkGapSha256("tools"); arm.temperature = "0"; arm.toolBudget = 3
+    arm.total = 164; arm.passed = 120; arm.knowledgeHits = if (enabled) { 120 } else { 0 }; arm.failureClassificationHash = benchmarkGapSha256("classified-${name}")
+    arm.resultArtifactJson="{\"arm\":\"${name}\",\"passed\":120,\"total\":164}";arm.isolationSetJson="{\"workspace\":\"${workspace}\",\"session\":\"${session}\",\"runtimeHome\":\"${home}\"}";arm.resultArtifactHash=benchmarkGapSha256(arm.resultArtifactJson); arm.isolationSetHash=benchmarkGapSha256(arm.isolationSetJson)
+    if(enabled){arm.frozenKnowledgeVersion="knowledge-v1";arm.frozenKnowledgeContentHash=benchmarkGapSha256("knowledge")}
     arm
 }
 
 private func p6Preflight(output: String): CkbCertificationPreflightOptions {
     let options = CkbCertificationPreflightOptions()
-    options.runId = "p6-run"; options.outputRoot = output; options.workspaceRoot = "/tmp/ckb-certification/case-workspace"
+    options.runId = Path(output).fileName; options.outputRoot = output; options.workspaceRoot = p6EmptyOutput("../target/p6-workspace/case-workspace")
     options.frozenVersion = "knowledge-v1"; options.activeVersionAtStart = "knowledge-v1"; options.activeVersionAtEnd = "knowledge-v1"
-    options.expectedManifestHash = "sha256:manifest"; options.actualManifestHash = "sha256:manifest"
+    options.expectedManifestHash = benchmarkGapSha256("manifest"); options.actualManifestHash = benchmarkGapSha256("manifest")
     options.developmentClosed = 164; options.expectedCases = 164; options.unresolvedNonKnowledgeFailures = 0
     options.knowledgeTestsPassed = true; options.releaseGatePassed = true; options.contributionExperimentPassed = true
-    options.parityPassed = true; options.parityEvidenceHash = "sha256:parity"; options.modelVersion = "GLM-5.2"; options.claudeCodeVersion = "claude-code-1.0"
-    options.providerIdentityHash = "sha256:0123456789abcdef"; options.certificationTransport = CkbAbcdeGroups.C
-    options.runtimeHomeRoot = "/tmp/ckb-certification/runtime-home"; options.filesystemIsolationEnforced = true
+    options.modelVersion = "GLM-5.2"; options.claudeCodeVersion = "claude-code-1.0"
+    options.providerIdentityJson="{\"provider\":\"redacted-provider\",\"model\":\"GLM-5.2\",\"claudeCodeVersion\":\"claude-code-1.0\"}";options.providerIdentityHash = benchmarkGapSha256(options.providerIdentityJson); options.certificationTransport = CkbAbcdeGroups.C
+    options.runtimeHomeRoot = p6EmptyOutput("../target/p6-runtime/runtime-home"); options.filesystemIsolationEnforced = true
+    options.developmentClosureJson=p6ClosureJson(); options.knowledgeGateJson=p6Gate("knowledge-gate"); options.releaseGateJson=p6Gate("release-gate")
+    let wc=canonicalize(Path(options.workspaceRoot)).toString();let rc=canonicalize(Path(options.runtimeHomeRoot)).toString();options.filesystemProbeJson="{\"deniedOutsideWorkspace\":true,\"deniedTests\":true,\"deniedReference\":true,\"deniedTeacher\":true,\"workspaceCanonical\":\"${wc}\",\"runtimeHomeCanonical\":\"${rc}\"}"
+    options.parityRestPayload="{\"atomIds\":[\"A\"],\"contentHash\":\"${benchmarkGapSha256("atom")}\",\"citation\":\"官方中文😀\",\"knowledgeVersion\":\"knowledge-v1\"}";options.parityStdioPayload=options.parityRestPayload;options.parityHttpPayload=options.parityRestPayload;options.parityEvidenceHash=benchmarkGapSha256(options.parityRestPayload)
+    let baseline=p6Arm("no-ckb",false,"pre-w1","pre-s1","pre-h1");let treatment=p6Arm("frozen-ckb",true,"pre-w2","pre-s2","pre-h2");options.experimentReport=runCkbContributionExperiment(baseline,treatment,frozenFingerprint: ckbFrozenFingerprint(p6Fingerprint()))
     options
 }
+
+private func p6ClosureJson():String{var rows="";for(i in 0..164){if(i>0){rows+=","};rows+="{\"caseId\":\"CJ-HUMANEVAL-${i}\",\"developmentPass\":true,\"valid\":true}"};"{\"developmentClosed\":true,\"developmentPassed\":164,\"developmentTotal\":164,\"knowledgeCandidateCount\":0,\"invalidCaseCount\":0,\"certifiedPassAt1\":null,\"cases\":[${rows}]}"}
+private func p6Gate(evidence:String):String{"{\"ok\":true,\"status\":\"pass\",\"evidence\":\"${evidence}\",\"evidenceHash\":\"${benchmarkGapSha256(evidence)}\"}"}
 
 private func p6Observation(transport: String): CkbAbcdeParityObservation {
     let observation = CkbAbcdeParityObservation()
