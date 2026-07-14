@@ -67,6 +67,9 @@ public class CkbRoutineArtifactStatus {
     public var presentArtifacts: ArrayList<String> = ArrayList<String>()
     public var missingArtifacts: ArrayList<String> = ArrayList<String>()
     public var evidenceHash: String = ""
+    public var certificationInProgress: Bool = false
+    public var frozenKnowledgeVersion: String = ""
+    public var activeKnowledgeVersion: String = ""
 
     public init() {}
 }
@@ -82,6 +85,10 @@ public func cangjieRoutineUpdateContracts(): ArrayList<CkbRoutineUpdateContract>
     out.add(ckbRoutineContract("KU-12", "reviewed negative and diagnose rules", CkbRoutineUpdatePolicies.CURATED_CANDIDATE, ["metadata/benchmark-gap-curation-last-success.ckb"], [], ["cangjie_benchmark_gap_curation"]))
     out.add(ckbRoutineContract("KU-13", "version branch mapping refresh", CkbRoutineUpdatePolicies.MANIFEST_CANDIDATE, ["metadata/cangjie-version-manifest.ckb"], [], ["cangjie_version_branch_refresh"]))
     out
+}
+
+public func cangjieFrozenCertificationContract(): CkbRoutineUpdateContract {
+    ckbRoutineContract("HE-CERT-01", "frozen HumanEval certification", CkbRoutineUpdatePolicies.CHECKPOINT_ONLY, ["certification/preflight.json", "certification/run-manifest.json"], ["frozenKnowledgeVersion", "manifestHash", "modelFingerprint", "promptHash", "toolConfigHash"], [])
 }
 
 public func cangjieSchedulerTaskContracts(): ArrayList<CkbSchedulerTaskContract> {
@@ -129,6 +136,10 @@ public func validateSchedulerTaskResultAgainstContractWithArtifacts(taskName: St
     }
     if (contract.taskName == "") {
         ckbRoutineValidationFail(validation, "routine_task_contract_missing")
+        return validation
+    }
+    if (artifactStatus.certificationInProgress && (artifactStatus.frozenKnowledgeVersion == "" || artifactStatus.activeKnowledgeVersion != artifactStatus.frozenKnowledgeVersion || before.activeKnowledgeVersion != after.activeKnowledgeVersion)) {
+        ckbRoutineValidationFail(validation, "certification_frozen_version_drift")
         return validation
     }
     if (!task.ok) {

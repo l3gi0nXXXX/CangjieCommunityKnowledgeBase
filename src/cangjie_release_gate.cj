@@ -45,6 +45,16 @@ public class CangjieKnowledgeReleaseGateReport {
     public init() {}
 }
 
+public func cangjieCertificationReleaseGate(preflight: CkbCertificationPreflightReport): CangjieKnowledgeReleaseGateStep {
+    let step = CangjieKnowledgeReleaseGateStep()
+    step.id = "P6-frozen-certification-preflight"
+    step.ok = preflight.ok && preflight.startAllowed && preflight.certificationPassAt1.isNone()
+    step.status = if (step.ok) { "pass" } else { "fail" }
+    step.diagnostic = if (step.ok) { "trusted_preflight_ready" } else { "certification_preflight_not_ready:${preflight.diagnostic}" }
+    step.evidenceHash = if (preflight.fingerprint == "") { "" } else { benchmarkGapSha256(renderCertificationPreflightJson(preflight)) }
+    step
+}
+
 public func parseCangjieKnowledgeReleaseGateOptions(args: Array<String>): CangjieKnowledgeReleaseGateOptions {
     let options = CangjieKnowledgeReleaseGateOptions()
     var i: Int64 = 0

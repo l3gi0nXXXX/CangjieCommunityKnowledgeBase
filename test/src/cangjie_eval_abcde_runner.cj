@@ -37,6 +37,11 @@ public class CkbAbcdeRunnerOptions {
     public var preflightOnly: Bool = false
     public var skipClaude: Bool = false
     public var help: Bool = false
+    public var agentAttempts: Int64 = 1
+    public var providerRetries: Int64 = 0
+    public var sdkRetries: Int64 = 0
+    public var maxTurns: Int64 = 1
+    public var knowledgeRestRetries: Int64 = 0
 
     public init() {
         this.datasetRoot = "${this.repoRoot}/test/cangjie_eval/cases/Cangjie-HumanEval"
@@ -49,6 +54,20 @@ public class CkbAbcdeRunnerOptions {
         this.groups.add(CkbAbcdeGroups.D)
         this.groups.add(CkbAbcdeGroups.E)
     }
+}
+
+public func ckbAbcdeCertificationBudget(options: CkbAbcdeRunnerOptions): CkbCertificationBudget {
+    let budget = CkbCertificationBudget()
+    budget.agentAttempts = options.agentAttempts
+    budget.providerRetries = options.providerRetries
+    budget.sdkRetries = options.sdkRetries
+    budget.maxTurns = options.maxTurns
+    budget.knowledgeRestRetries = options.knowledgeRestRetries
+    budget
+}
+
+public func ckbAbcdeCertificationTransportParity(rest: CkbAbcdeParityObservation, stdio: CkbAbcdeParityObservation, http: CkbAbcdeParityObservation): Bool {
+    ckbAbcdeParityDiagnostic(rest, stdio, http) == "ok" && rest.evidenceHash != "" && rest.evidenceHash == stdio.evidenceHash && rest.evidenceHash == http.evidenceHash
 }
 
 public class CkbAbcdeCommandResult {
