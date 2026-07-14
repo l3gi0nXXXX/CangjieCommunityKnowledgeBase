@@ -174,6 +174,13 @@ public func auditCkbCdKnowledgeGapsFromText(resultsText: String, manifestText: S
     summarizeCdKnowledgeGaps(rows, manifest, runRoot, manifestPath)
 }
 
+// Certification audit consumes only sealed P7 rows and publishes aggregate
+// counts. It intentionally never renders verifier output or failed test text,
+// so a failed run cannot feed hidden knowledge back into the same run.
+public func auditCkbStrictCertificationFromText(resultsText:String,authorityManifestText:String):String{
+    renderCkbStrictCertificationGateJson(ckbStrictCertificationGate(resultsText,authorityManifestText))
+}
+
 public func parseCkbCdGapAuditResults(text: String): ArrayList<CkbCdGapAuditResultRow> {
     let rows = ArrayList<CkbCdGapAuditResultRow>()
     for (line in text.split("\n")) {

@@ -2,7 +2,7 @@ package cangjie_community_knowledge_base_test
 
 import std.unittest.*
 import std.unittest.testmacro.*
-import std.fs.{Directory, Path, canonicalize, exists}
+import std.fs.{Directory, File, Path, canonicalize, exists}
 import std.collection.*
 import std.time.*
 
@@ -80,6 +80,8 @@ public class CangjieCertificationPreflightTest {
         let tampered = runCertificationPreflight(options, p6Fingerprint())
         @Expect(tampered.checks.contains("redacted_provider_identity_required"), true)
         @Expect(tampered.checks.contains("transport_parity_required"), true)
+        let secretOptions=p6Preflight(p6EmptyOutput("../target/p6-secret-${DateTime.now().toUnixTimeStamp().toMilliseconds()}"));secretOptions.providerIdentityJson="{\"provider\":\"redacted\",\"model\":\"GLM-5.2\",\"claudeCodeVersion\":\"claude-code-1.0\",\"token\":\"must-not-land\"}";secretOptions.providerIdentityHash=benchmarkGapSha256(secretOptions.providerIdentityJson)
+        @Expect(runCertificationPreflight(secretOptions,p6Fingerprint()).checks.contains("provider_identity_contains_secret"),true)
     }
 
     @TestCase
@@ -109,6 +111,11 @@ public class CangjieCertificationPreflightTest {
         @Expect(exists(Path(report.runManifestPath)), true)
         let integrated = cangjieCertificationReleaseGateIntegrated("${output}/preflight.json", "${output}/run-manifest.json")
         @Expect(integrated.ok, true)
+        let manifestText=String.fromUtf8(File.readFrom(Path("${output}/run-manifest.json")))
+        @Expect(manifestText.contains("\"providerIdentityHash\":"),true)
+        @Expect(manifestText.contains("\"modelVersion\":\"GLM-5.2\""),true)
+        File.writeTo(Path("${output}/run-manifest.json"),manifestText.replace("\"modelVersion\":\"GLM-5.2\"","\"modelVersion\":\"tampered\"").toArray())
+        @Expect(cangjieCertificationReleaseGateIntegrated("${output}/preflight.json", "${output}/run-manifest.json").ok,false)
     }
 }
 
