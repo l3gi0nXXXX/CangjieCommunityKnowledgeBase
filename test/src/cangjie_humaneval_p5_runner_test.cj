@@ -3,7 +3,8 @@ package cangjie_community_knowledge_base_test
 import std.unittest.*
 import std.unittest.testmacro.*
 import std.collection.*
-import std.fs.{Directory, File}
+import std.fs.{Directory, File, Path, exists}
+import std.time.DateTime
 
 @Test
 public class CangjieHumanEvalP5RunnerTest {
@@ -14,7 +15,9 @@ public class CangjieHumanEvalP5RunnerTest {
         let prompt = renderCkbAbcdePromptForMode(CkbAbcdeGroups.C, "CJ-HUMANEVAL-000", "实现中文 😀", "{}", options.runMode)
         @Expect(prompt.contains("Run mode: development"), true)
         @Expect(prompt.contains("@Expect("), false)
-        let row = ckbAbcdeRenderCaseResult(options, "target/p5", "CJ-HUMANEVAL-000", CkbAbcdeGroups.C, "passed", 0, 0, true, true, "none", "cangjie_task_knowledge_pack", "none", "target/p5/missing-artifacts")
+        let groupRoot = "target/p5/observed-identity-中😀"
+        p5WriteObservedIdentity(groupRoot, "GLM-5.2")
+        let row = ckbAbcdeRenderCaseResult(options, "target/p5", "CJ-HUMANEVAL-000", CkbAbcdeGroups.C, "passed", 0, 0, true, true, "none", "cangjie_task_knowledge_pack", "none", groupRoot)
         @Expect(row.contains("\"developmentPass\":true"), true)
         @Expect(row.contains("\"datasetVersion\":\"dataset-v1\""), true)
         @Expect(row.contains("\"candidateVersion\":\"candidate-v2\""), true)
@@ -22,6 +25,10 @@ public class CangjieHumanEvalP5RunnerTest {
         @Expect(row.contains("\"workspaceId\":\"cases/CJ-HUMANEVAL-000/C-ckb-mcp-stdio/workspace\""), true)
         @Expect(row.contains("\"certificationPassAt1\":null"), true)
         @Expect(row.contains("\"triageStatus\":\"none\""), true)
+        @Expect(row.contains("\"expectedModelVersion\":\"GLM-5.2\""), true)
+        @Expect(row.contains("\"observedModelVersion\":\"GLM-5.2\""), true)
+        @Expect(row.contains("\"model\":\"GLM-5.2\""), true)
+        @Expect(row.contains("\"providerIdentityHash\":\"sha256:"), true)
     }
 
     @TestCase
@@ -35,15 +42,42 @@ public class CangjieHumanEvalP5RunnerTest {
 
     @TestCase
     public func p5Neg02RetrySuccessRecordsFinalAttemptWithoutForgingFirstPass(): Unit {
-        let root = "target/p5-retry-facts"
+        let root = "target/p5-retry-facts-${DateTime.now().toUnixTimeStamp().toMilliseconds()}"
         Directory.create(root, recursive: true)
         File.writeTo("${root}/claude-attempts.jsonl", "{\"attempt\":1,\"exitCode\":1}\n{\"attempt\":2,\"exitCode\":0}\n".toArray())
+        p5WriteObservedIdentity(root, "GLM-5.2")
         let options = CkbAbcdeRunnerOptions(); options.explicitRunMode = true; options.runMode = "development"; options.runId = "run-retry"; options.datasetVersion = "dataset-v1"; options.candidateVersion = "candidate-v1"; options.knowledgeVersion = "knowledge-v1"
         let result = ckbAbcdeRenderCaseResult(options, root, "CASE-RETRY", CkbAbcdeGroups.C, "passed", 0, 0, true, false, "none", "tool", "none", root)
         @Expect(result.contains("\"developmentPass\":true"), true)
         @Expect(result.contains("\"firstAttemptPass\":false"), true)
         @Expect(result.contains("\"firstAttemptTriage\":\"environment_failure\""), true)
         @Expect(result.contains("\"claudeAttemptCount\":2"), true)
+    }
+
+    @TestCase
+    public func p5Neg03MissingMismatchedOrTamperedObservedIdentityCannotClose(): Unit {
+        let options = CkbAbcdeRunnerOptions(); options.explicitRunMode = true; options.runMode = "development"; options.runId = "identity-negative"; options.datasetVersion = "dataset-v1"; options.candidateVersion = "candidate-v1"; options.knowledgeVersion = "knowledge-v1"
+        let suffix = DateTime.now().toUnixTimeStamp().toMilliseconds()
+        let missingRoot = "target/p5-identity-missing-${suffix}"
+        Directory.create(missingRoot, recursive: true)
+        let missing = ckbAbcdeRenderCaseResult(options, missingRoot, "CASE-MISSING", CkbAbcdeGroups.C, "passed", 0, 0, true, true, "none", "tool", "none", missingRoot)
+        @Expect(missing.contains("\"developmentPass\":false"), true)
+        @Expect(missing.contains("\"observedModelVersion\":\"\""), true)
+        @Expect(missing.contains("\"providerIdentityHash\":\"\""), true)
+
+        let mismatchRoot = "target/p5-identity-mismatch-${suffix}"
+        p5WriteObservedIdentity(mismatchRoot, "other-model")
+        let mismatch = ckbAbcdeRenderCaseResult(options, mismatchRoot, "CASE-MISMATCH", CkbAbcdeGroups.C, "passed", 0, 0, true, true, "none", "tool", "none", mismatchRoot)
+        @Expect(mismatch.contains("\"developmentPass\":false"), true)
+        @Expect(mismatch.contains("\"observedModelVersion\":\"other-model\""), true)
+
+        let tamperedRoot = "target/p5-identity-tampered-${suffix}"
+        p5WriteObservedIdentity(tamperedRoot, "GLM-5.2")
+        File.writeTo("${tamperedRoot}/provider-identity.json", "{\"provider\":\"伪造😀\",\"model\":\"GLM-5.2\"}\n".toArray())
+        let tampered = ckbAbcdeRenderCaseResult(options, tamperedRoot, "CASE-TAMPERED", CkbAbcdeGroups.C, "passed", 0, 0, true, true, "none", "tool", "none", tamperedRoot)
+        @Expect(tampered.contains("\"developmentPass\":false"), true)
+        @Expect(tampered.contains("\"closureStatus\":\"development_open\""), true)
+        @Expect(tampered.contains("伪造"), false)
     }
 
     @TestCase
@@ -124,6 +158,12 @@ public class CangjieHumanEvalP5RunnerTest {
         @Expect(duplicate.ok, false)
         @Expect(duplicate.diagnostics[0].contains("duplicate_isolation_identity"), true)
     }
+}
+
+private func p5WriteObservedIdentity(groupRoot: String, model: String): Unit {
+    if (!exists(Path(groupRoot))) { Directory.create(groupRoot, recursive: true) }
+    File.writeTo("${groupRoot}/claude-transcript.jsonl", "{\"type\":\"system\",\"subtype\":\"init\",\"model\":\"${model}\"}\n".toArray())
+    File.writeTo("${groupRoot}/provider-identity.json", ckbAbcdeProviderIdentityJson(model, ckbAbcdeClaudeVersionForTest()).toArray())
 }
 
 private func p5ClosureInput(name: String, signal: String, developmentPass: Bool, classifiers: Bool): CangjieEvalDevelopmentClosureInput {
