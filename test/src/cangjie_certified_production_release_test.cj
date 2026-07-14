@@ -1,6 +1,7 @@
 package cangjie_community_knowledge_base_test
 
 import std.collection.ArrayList
+import std.fs.{File, Path}
 import std.unittest.*
 import std.unittest.testmacro.*
 
@@ -32,7 +33,7 @@ public class CkbCertifiedProductionReleaseTest {
     public func p8Pos01CertifiedCandidatePromotesThroughActiveTransaction(): Unit {
         let records = p8CoverageItems(1)
         let proof = p8Proof(records, "ckb-p8-pos")
-        let root = "target/p8-pos-${proof.candidateChecksum}-${ckbCoreNowMillis()}".replace(":", "-")
+        let root = "target/p8-pos-${ckbCertifiedKnowledgeRecordsChecksum(records)}-${ckbCoreNowMillis()}".replace(":", "-")
         let kb = newOfflineKnowledgeBase()
         let store = FileKnowledgeStore(root); let key = p8ReleaseKey("pos")
         let report = ckbPublishCertifiedKnowledgeWithReleaseState(kb, store, key, "ckb-p8-pos-candidate", kb.status().activeKnowledgeVersion, ArrayList<CkbCertifiedKnowledgeRecord>(), records, proof)
@@ -48,22 +49,27 @@ public class CkbCertifiedProductionReleaseTest {
         let records = p8CoverageItems(1)
         let store = FileKnowledgeStore("target/p8-neg-store")
         let kb = newOfflineKnowledgeBase()
-        let noCert = p8Proof(records, "ckb-p8-neg"); noCert.certification.ok = false
+        let noCert = p8Proof(records, "ckb-p8-neg"); noCert.p7GateJson = noCert.p7GateJson.replace("\"ok\":true", "\"ok\":false")
         let denied = ckbPublishCertifiedKnowledge(kb, store, "ckb-p8-neg-candidate", "", ArrayList<CkbCertifiedKnowledgeRecord>(), records, noCert)
-        @Expect(denied.ok, false); @Expect(denied.diagnostic, "p7_strict_certification_required"); @Expect(store.loadActiveSnapshotPointer().valid, false)
-        let tampered = p8Proof(records, "ckb-p8-neg"); tampered.candidateChecksum = p8Hash("tampered")
-        @Expect(ckbCertifiedProductionProofDiagnostic(tampered, records), "candidate_checksum_mismatch")
-        let vectorMismatch = p8Proof(records, "ckb-p8-neg"); vectorMismatch.vectorCount -= 1
-        @Expect(ckbCertifiedProductionProofDiagnostic(vectorMismatch, records), "store_index_vector_count_mismatch")
+        @Expect(denied.ok, false); @Expect(denied.diagnostic, "p7_gate_artifact_mismatch"); @Expect(store.loadActiveSnapshotPointer().valid, false)
+        let tampered = p8Proof(records, "ckb-p8-neg"); tampered.candidateArtifactJsonl = tampered.candidateArtifactJsonl.replace("knowledge", "tampered")
+        @Expect(ckbCertifiedProductionProofDiagnostic(tampered, records), "candidate_artifact_mismatch")
+        let vectorMismatch = p8Proof(records, "ckb-p8-neg"); vectorMismatch.vectorArtifactJson = vectorMismatch.vectorArtifactJson.replace("\"count\":4", "\"count\":3")
+        @Expect(ckbCertifiedProductionProofDiagnostic(vectorMismatch, records), "vector_artifact_mismatch")
+        let queryTamper=p8Proof(records,"ckb-p8-neg");queryTamper.httpQueryPayload=queryTamper.httpQueryPayload.replace("\"citation\":\"verified\"","\"citation\":\"tampered\"");@Expect(ckbCertifiedProductionProofDiagnostic(queryTamper,records),"transport_query_proof_mismatch")
+        let manifestTamper=p8Proof(records,"ckb-p8-neg");manifestTamper.versionManifestJson=manifestTamper.versionManifestJson.replace("ckb-p8-neg-candidate","wrong-candidate");@Expect(ckbCertifiedProductionProofDiagnostic(manifestTamper,records),"version_manifest_mismatch")
+        let resultTamper=p8Proof(records,"ckb-p8-neg");resultTamper.p7ResultsJsonl=resultTamper.p7ResultsJsonl.replace("\"retryUsed\":false","\"retryUsed\":true");@Expect(ckbCertifiedProductionProofDiagnostic(resultTamper,records),"p7_gate_artifact_mismatch")
         let conflict = p8Items([p8Item("same", 1, "a"), p8Item("same", 2, "b")])
         @Expect(ckbCertifiedKnowledgeRecordsDiagnostic(conflict), "canonical_identity_conflict")
+        @Expect(ckbCertifiedReplacementDiagnostic(p8Items([p8Item("same",2,"old")]),p8Items([p8Item("same",2,"different")])),"certified_revision_conflict")
+        @Expect(store.loadActiveSnapshotPointer().valid,false)
     }
 
     @TestCase
     public func p8E2e01CandidateStagingActiveReloadAndQueryProofStayBound(): Unit {
         let records = p8CoverageItems(64)
         let proof = p8Proof(records, "ckb-p8-e2e")
-        let store = FileKnowledgeStore("target/p8-e2e-${proof.candidateChecksum}-${ckbCoreNowMillis()}".replace(":", "-"))
+        let store = FileKnowledgeStore("target/p8-e2e-${ckbCertifiedKnowledgeRecordsChecksum(records)}-${ckbCoreNowMillis()}".replace(":", "-"))
         let kb = newOfflineKnowledgeBase()
         let key = p8ReleaseKey("e2e")
         let report = ckbPublishCertifiedKnowledgeWithReleaseState(kb, store, key, "ckb-p8-e2e-candidate", kb.status().activeKnowledgeVersion, ArrayList<CkbCertifiedKnowledgeRecord>(), records, proof)
@@ -74,12 +80,12 @@ public class CkbCertifiedProductionReleaseTest {
         @Expect(pointer.activeVersion, "ckb-p8-e2e-active")
         @Expect(reloaded.valid, true)
         @Expect(reloaded.normalizedRecords.size, records.size)
-        @Expect(proof.stdioQueryProofHash, proof.httpQueryProofHash)
+        @Expect(proof.stdioQueryPayload, proof.httpQueryPayload)
         @Expect(report.evidenceHash.startsWith("sha256:"), true)
         @Expect(store.has("teacher-solutions"), false)
         @Expect(store.has("certification-transcript.jsonl"), false)
         let state = ckbLoadReleaseAcquisitionState(store, key)
-        @Expect(state.valid, true); @Expect(state.certifiedVersion, proof.certifiedKnowledgeVersion); @Expect(state.certificationFingerprint, proof.certificationFingerprint)
+        @Expect(state.valid, true); @Expect(state.certifiedVersion, "ckb-p8-e2e"); @Expect(state.certificationFingerprint, p8Hash("fingerprint"))
     }
 }
 
@@ -108,9 +114,11 @@ private func p8Record(id: String, kind: String, title: String, chunk: String, so
 }
 
 private func p8Proof(records: ArrayList<CkbCertifiedKnowledgeRecord>, version: String): CkbProductionReleaseProof {
-    let proof = CkbProductionReleaseProof(); proof.certification.ok = true; proof.certification.total = 164; proof.certification.unitPass = 164; proof.certification.unitPassAt1 = 164; proof.certification.group = CkbAbcdeGroups.C; proof.certification.datasetVersion = "cangjie-humaneval-164-v1"; proof.certification.knowledgeVersion = version; proof.certification.modelFingerprint = p8Hash("fingerprint"); proof.certificationFingerprint = proof.certification.modelFingerprint; proof.certifiedKnowledgeVersion = version; proof.candidateCount = records.size; proof.indexCount = records.size; proof.vectorCount = records.size; proof.candidateChecksum = ckbCertifiedKnowledgeRecordsChecksum(records); proof.versionManifestHash = p8Hash("manifest-${version}"); proof.stdioQueryProofHash = ckbCertifiedProductionQueryProofHash(version, proof.candidateChecksum, proof.versionManifestHash); proof.httpQueryProofHash = proof.stdioQueryProofHash; proof
+    let proof = CkbProductionReleaseProof(); proof.authorityManifestJsonl = p8Authority(); proof.p7ResultsJsonl = p8CertificationRows(proof.authorityManifestJsonl, version); proof.p7GateJson = renderCkbStrictCertificationGateJson(ckbStrictCertificationGate(proof.p7ResultsJsonl, proof.authorityManifestJsonl)); proof.candidateArtifactJsonl = ckbRenderCertifiedCandidateArtifact(records); proof.indexArtifactJson = ckbRenderCertifiedCountArtifact("index", records); proof.vectorArtifactJson = ckbRenderCertifiedCountArtifact("vector", records); proof.versionManifestJson = ckbRenderCertifiedVersionManifest(version, records); proof.stdioQueryPayload = ckbRenderCertifiedQueryPayload(version, records); proof.httpQueryPayload = proof.stdioQueryPayload; proof
 }
 
 private func p8Items(items: Array<CkbCertifiedKnowledgeRecord>): ArrayList<CkbCertifiedKnowledgeRecord> { let out = ArrayList<CkbCertifiedKnowledgeRecord>(); for (item in items) { out.add(item) }; out }
 private func p8Hash(value: String): String { benchmarkGapSha256(value) }
 private func p8ReleaseKey(id: String): CkbScheduledFetchRunKey { let key = CkbScheduledFetchRunKey(); key.acquisitionId = "p8-${id}"; key.planningIdentityHash = p8Hash("planning-${id}"); key.runIdentityHash = p8Hash("run-${id}"); key }
+private func p8Authority():String{cangjieHumanEvalRenderAuthorityManifest(buildCangjieHumanEvalManifest("cangjie_eval/cases/Cangjie-HumanEval",""))}
+private func p8CertificationRows(authorityText:String,version:String):String{let authority=parseCangjieHumanEvalAuthorityManifest(authorityText);var out="";for(i in 0..authority.rows.size){let row=CkbCertificationCaseEvidence();row.runId="p8-certification";row.caseId=authority.rows[i].caseId;row.group=CkbAbcdeGroups.C;row.datasetVersion=authority.datasetVersion;row.knowledgeVersion=version;row.modelFingerprint=p8Hash("fingerprint");row.expectedModelVersion="GLM-5.2";row.observedModelVersion="GLM-5.2";row.claudeCodeVersion="claude-code-p8";row.providerIdentityHash=p8Hash("provider");row.preflightHash=p8Hash("preflight");row.runManifestHash=p8Hash("run-manifest");row.authorityCaseHash=authority.rows[i].caseHash;row.authorityTestsHash=authority.rows[i].testsHash;row.workspaceId=p8Hash("workspace-${i}");row.sessionId=p8Hash("session-${i}");row.runtimeHomeId=p8Hash("home-${i}");row.isolationEvidenceHash=p8Hash("isolation-${i}");row.answerHash=p8Hash("answer-${i}");row.transcriptHash=p8Hash("transcript-${i}");row.testHash=p8Hash("test-${i}");row.configHash=p8Hash("config-${i}");row.artifactHash=p8Hash("artifact-${i}");row.llmTurnCount=1;row.sandboxDeniedOutsideWorkspace=true;row.verifierMountedAfterAnswerFreeze=true;row.certificationPassAt1=true;sealCkbCertificationEvidence(row);out+=renderCkbCertificationEvidenceJson(row)+"\n"};out}

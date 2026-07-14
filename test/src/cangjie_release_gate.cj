@@ -61,7 +61,7 @@ public func cangjieCertifiedProductionReleaseGate(proof: CkbProductionReleasePro
     step.diagnostic = ckbCertifiedProductionProofDiagnostic(proof, records)
     step.ok = step.diagnostic == "ok"
     step.status = if (step.ok) { "passed" } else { "failed" }
-    step.evidenceHash = if (step.ok) { benchmarkGapSha256(proof.certifiedKnowledgeVersion + "|" + proof.candidateChecksum + "|" + proof.certificationFingerprint + "|" + proof.versionManifestHash) } else { "" }
+    step.evidenceHash = if (step.ok) { benchmarkGapSha256(proof.p7GateJson + proof.candidateArtifactJsonl + proof.indexArtifactJson + proof.vectorArtifactJson + proof.versionManifestJson) } else { "" }
     step
 }
 
