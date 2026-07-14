@@ -62,6 +62,18 @@ public class CangjieStrictCertificationTest {
         @Expect(evidence.contains("realModelProof"),false) // offline fake validates orchestration, never model capability.
         let audit=auditCkbStrictCertificationFromText(evidence,p7Authority());@Expect(audit.contains("\"ok\":true"),true);@Expect(audit.contains("answerHash"),false);@Expect(audit.contains("testHash"),false)
     }
+
+    @TestCase
+    public func p7Pos02RealMacOsSandboxAllowsRuntimeAndEnforcesDenyRules(): Unit {
+        if (!exists(Path("/usr/bin/sandbox-exec"))) { return }
+        let root=p7EmptyRoot("p7-real-sandbox-中文🙂");let workspace="${root}/workspace";let home="${root}/runtime-home";let caseSrc="${root}/authority/CJ-HUMANEVAL-000"
+        Directory.create(Path(workspace),recursive:true);Directory.create(Path(home),recursive:true);Directory.create(Path(caseSrc).join("tests"),recursive:true);Directory.create(Path(caseSrc).join("translation"),recursive:true)
+        File.writeTo(Path(caseSrc).join("tests/hidden.txt"),"hidden".toArray());File.writeTo(Path(caseSrc).join("translation/reference.txt"),"reference".toArray())
+        let profilePath="${root}/certification.sb";let profile=ckbAbcdeCertificationSandboxProfile(workspace,home,"/usr/bin/true",root,caseSrc);File.writeTo(Path(profilePath),profile.toArray())
+        @Expect(profile.contains("(import \"system.sb\")"),true);@Expect(profile.contains("(subpath \"/System\")"),false);@Expect(profile.contains("(subpath \"/usr\")"),false)
+        let probe=ckbAbcdeCertificationSandboxProbeForTest(profilePath,workspace,home,caseSrc)
+        @Expect(probe.exitCode,0);@Expect(probe.stdout.contains("\"ok\":true"),true);@Expect(exists(Path(workspace).join(".sandbox-write-probe")),false);@Expect(exists(Path(root).join(".sandbox-outside-probe")),false)
+    }
 }
 
 private class P7FakeExecutor <: CkbCertificationExecutor {
