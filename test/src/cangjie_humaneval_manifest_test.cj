@@ -135,6 +135,16 @@ public class CangjieHumanEvalManifestTest {
         @Expect(visible.contains("canonical"), false)
         @Expect(visible.contains("solution.cj"), false)
     }
+
+    @TestCase
+    public func p1CliAtomicallyBuildsAndFailsClosed(): Unit {
+        let output = "target/p1-cli/authority-清单🙂.jsonl"
+        p1ManifestReset("target/p1-cli")
+        @Expect(runCangjieHumanEvalManifestBuild(["cangjie-humaneval-manifest-build", "--dataset-root", datasetRoot, "--output", output]), 0)
+        @Expect(parseCangjieHumanEvalAuthorityManifest(String.fromUtf8(File.readFrom(Path(output)))).rows.size, 164)
+        @Expect(runCangjieHumanEvalManifestBuild(["cangjie-humaneval-manifest-build", "--dataset-root", datasetRoot, "--output", output, "--unknown"]), 2)
+        @Expect(runCangjieHumanEvalManifestBuild(["cangjie-humaneval-manifest-build", "--dataset-root"]), 2)
+    }
 }
 
 private func p1ManifestHasDiagnostic(result: CangjieHumanEvalManifestResult, prefix: String): Bool {

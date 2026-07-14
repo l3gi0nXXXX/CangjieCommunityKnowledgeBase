@@ -1,6 +1,8 @@
 package cangjie_community_knowledge_base_test
 
 import std.collection.ArrayList
+import std.fs.{Directory, File, Path, exists}
+import std.process.launch
 import std.unittest.*
 import std.unittest.testmacro.*
 
@@ -74,6 +76,50 @@ public class CangjieEvalFailureTriageTest {
         @Expect(conflictJson.contains("case_state_conflict:conflict"), true)
         @Expect(conflictJson.contains("\"knowledgeCandidateCount\":0"), true)
     }
+
+    @TestCase
+    public func p5ProviderIdentityAndRunLevel164ClosureAreAuthorityBound(): Unit {
+        let identity = ckbAbcdeProviderIdentityJson("GLM-5.2", "claude-code-2.1.179")
+        @Expect(identity.contains("GLM-5.2"), true)
+        @Expect(identity.contains("token"), false)
+        @Expect(identity.contains("Authorization"), false)
+        @Expect(ckbAbcdeProviderIdentityJson("other-model", "claude-code-2.1.179"), "")
+
+        let root = "target/p5-run-level"
+        if (exists(Path(root))) { _ = launch("/bin/rm", ["-rf", root]).wait() }
+        let options = CkbAbcdeRunnerOptions(); options.runId = "run-001"; options.datasetVersion = "dataset-v1"
+        options.groups.clear(); options.groups.add(CkbAbcdeGroups.C)
+        for (i in 0..164) {
+            let id = p5CaseId(i); let groupRoot = Path(root).join("cases").join(id).join(CkbAbcdeGroups.C)
+            Directory.create(groupRoot, recursive: true)
+            let caseResult = "{\"caseId\":\"${id}\",\"runId\":\"run-001\",\"datasetVersion\":\"dataset-v1\",\"runMode\":\"development\",\"workspaceId\":\"w-${i}\",\"sessionId\":\"s-${i}\",\"runtimeHomeId\":\"h-${i}\",\"developmentPass\":${i != 7},\"certificationPassAt1\":null}"
+            let rawEvidence = if (i == 7) { p5Triage("\"suspectedKnowledgeGap\":true", 1) } else { "{\"caseId\":\"${id}\",\"runId\":\"run-001\",\"datasetVersion\":\"dataset-v1\",\"attempt\":1,\"runMode\":\"development\",\"failureObservation\":\"case_passed 中文😀\",\"unitPass\":true,\"resultEvidenceHash\":\"HASH\"}" }
+            let evidence = rawEvidence.replace("HASH", cangjieEvalTriageResultEvidenceHash(rawEvidence))
+            File.writeTo(groupRoot.join("case-result.json"), caseResult.toArray()); File.writeTo(groupRoot.join("result-evidence.json"), evidence.toArray())
+        }
+        let firstRoot = "${root}/classifier-a"; let secondRoot = "${root}/classifier-b"; Directory.create(Path(firstRoot), recursive: true); Directory.create(Path(secondRoot), recursive: true)
+        File.writeTo(Path(firstRoot).join("CJ-HUMANEVAL-007.json"), p5Classifier("classifier-a", "source-a", "knowledge_gap", 1, "development").toArray())
+        File.writeTo(Path(secondRoot).join("CJ-HUMANEVAL-007.json"), p5Classifier("classifier-b", "source-b", "knowledge_gap", 1, "development").toArray())
+        @Expect(runCangjieEvalDevelopmentClose(["cangjie-eval-development-close", "--run-root", root, "--run-id", "run-001", "--transport", "C", "--classifier-a-root", firstRoot, "--classifier-b-root", secondRoot]), 0)
+        let aggregate = aggregateDevelopmentRun(options, root)
+        @Expect(aggregate.ok, true)
+        @Expect(aggregate.developmentClosureJson.contains("\"developmentTotal\":164"), true)
+        @Expect(aggregate.developmentClosureJson.contains("\"developmentClosed\":false"), true)
+        @Expect(aggregate.developmentClosureJson.contains("\"certifiedPassAt1\":null"), true)
+        @Expect(aggregate.authoritativeGapJsonl.contains("\"caseId\":\"CJ-HUMANEVAL-007\""), true)
+
+        options.groups.add(CkbAbcdeGroups.D)
+        @Expect(aggregateDevelopmentRun(options, root).diagnostics[0], "single_treatment_transport_required")
+        options.groups.remove(at: 1)
+        _ = launch("/bin/rm", ["-f", "${root}/cases/CJ-HUMANEVAL-163/${CkbAbcdeGroups.C}/result-evidence.json"]).wait()
+        @Expect(aggregateDevelopmentRun(options, root).ok, false)
+    }
+}
+
+private func p5CaseId(index: Int64): String {
+    if (index < 10) { return "CJ-HUMANEVAL-00${index}" }
+    if (index < 100) { return "CJ-HUMANEVAL-0${index}" }
+    "CJ-HUMANEVAL-${index}"
 }
 
 private func p5Classifier(classifier: String, source: String, category: String, attempt: Int64, mode: String): String {

@@ -2,6 +2,7 @@ package cangjie_community_knowledge_base
 
 import std.collection.{ArrayList, HashSet}
 import std.fs.{Directory, File, Path, exists}
+import std.process.launch
 import std.sort.*
 import stdx.crypto.digest.SHA256
 import stdx.encoding.json.*
@@ -80,12 +81,54 @@ public func buildCangjieHumanEvalManifest(datasetRoot: String, outputPath: Strin
         try {
             let target = Path(outputPath)
             if (!exists(target.parent)) { Directory.create(target.parent, recursive: true) }
-            File.writeTo(target, cangjieHumanEvalRenderAuthorityManifest(result).toArray())
+            let rendered = cangjieHumanEvalRenderAuthorityManifest(result)
+            let tmpIdentity = cangjieHumanEvalManifestHash((outputPath + result.datasetVersion).toArray()).replace("sha256:", "")
+            let tmp = target.parent.join(".tmp-${tmpIdentity}")
+            File.writeTo(tmp, rendered.toArray())
+            let readback = cangjieHumanEvalManifestReadUtf8(tmp)
+            if (!readback[0] || readback[1] != rendered || !parseCangjieHumanEvalAuthorityManifest(readback[1]).ok) {
+                _ = launch("/bin/rm", ["-f", tmp.toString()]).wait()
+                result.addDiagnostic("manifest_write_verify_failed")
+                return result
+            }
+            if (launch("/bin/mv", ["-f", tmp.toString(), target.toString()]).wait() != 0) {
+                _ = launch("/bin/rm", ["-f", tmp.toString()]).wait()
+                result.addDiagnostic("manifest_atomic_replace_failed")
+                return result
+            }
         } catch (_: Exception) {
             result.addDiagnostic("manifest_write_failed")
         }
     }
     result
+}
+
+public func runCangjieHumanEvalManifestBuild(args: Array<String>): Int64 {
+    var datasetRoot = ""
+    var outputPath = ""
+    var i: Int64 = 0
+    while (i < args.size) {
+        let arg = args[i]
+        if (arg == "cangjie-humaneval-manifest-build") { i += 1; continue }
+        if ((arg == "--dataset-root" || arg == "--output") && i + 1 >= args.size) {
+            println("usage error: missing value for ${arg}"); return 2
+        }
+        if (arg == "--dataset-root") { datasetRoot = args[i + 1].trimAscii(); i += 2; continue }
+        if (arg == "--output") { outputPath = args[i + 1].trimAscii(); i += 2; continue }
+        println("usage error: unknown cangjie-humaneval-manifest-build argument")
+        return 2
+    }
+    if (datasetRoot == "" || outputPath == "") {
+        println("usage error: cangjie-humaneval-manifest-build requires --dataset-root and --output")
+        return 2
+    }
+    let result = buildCangjieHumanEvalManifest(datasetRoot, outputPath)
+    if (!result.ok) {
+        println("authority manifest build failed diagnostics=${result.diagnostics.size}")
+        return 1
+    }
+    println("authority manifest built rows=${result.rows.size} datasetVersion=${result.datasetVersion}")
+    0
 }
 
 public func validateCangjieHumanEvalManifest(manifest: CangjieHumanEvalManifestResult, datasetRoot: String): CangjieHumanEvalManifestResult {

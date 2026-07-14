@@ -1,6 +1,8 @@
 package cangjie_community_knowledge_base
 
 import std.collection.{ArrayList, HashSet}
+import std.fs.{File, Path, exists}
+import std.process.launch
 import stdx.crypto.digest.SHA256
 import stdx.encoding.json.*
 
@@ -52,6 +54,86 @@ public class CangjieEvalDevelopmentClosureResult {
     public var pendingClassifierCount: Int64 = 0
     public var diagnostics: ArrayList<String> = ArrayList<String>()
     public init() {}
+}
+
+public func ckbAbcdeProviderIdentityJson(observedModel: String, claudeCodeVersion: String): String {
+    if (observedModel != "GLM-5.2" || claudeCodeVersion.trimAscii() == "") { return "" }
+    "{\"schemaVersion\":\"ckb-provider-identity-v1\",\"provider\":\"claude-code-runtime\",\"model\":\"${triageJsonEscape(observedModel)}\",\"claudeCodeVersion\":\"${triageJsonEscape(claudeCodeVersion)}\"}\n"
+}
+
+public func aggregateDevelopmentRun(options: CkbAbcdeRunnerOptions, runRoot: String): CangjieEvalDevelopmentClosureResult {
+    let blocked = CangjieEvalDevelopmentClosureResult()
+    if (options.groups.size != 1 || (options.groups[0] != CkbAbcdeGroups.C && options.groups[0] != CkbAbcdeGroups.D)) {
+        blocked.ok = false; blocked.diagnostics.add("single_treatment_transport_required"); return blocked
+    }
+    let inputs = ArrayList<CangjieEvalDevelopmentClosureInput>()
+    let group = options.groups[0]
+    for (i in 0..164) {
+        let id = triageCaseId(i)
+        let root = Path(runRoot).join("cases").join(id).join(group)
+        let input = CangjieEvalDevelopmentClosureInput()
+        input.caseResultJson = triageReadText(root.join("case-result.json"))
+        input.resultEvidenceJson = triageReadText(root.join("result-evidence.json"))
+        input.firstClassifierJson = triageReadText(root.join("classifier-1.json"))
+        input.secondClassifierJson = triageReadText(root.join("classifier-2.json"))
+        input.taskText = "authority-bound:${id}"
+        inputs.add(input)
+    }
+    let out = orchestrateDevelopmentClosure(inputs, options.runId)
+    if (inputs.size != 164) { out.ok = false; out.diagnostics.add("development_case_count_mismatch") }
+    let closurePath = Path(runRoot).join("development-closure.json")
+    let gapPath = Path(runRoot).join("authority-gap.jsonl")
+    File.writeTo(closurePath, out.developmentClosureJson.toArray())
+    File.writeTo(gapPath, out.authoritativeGapJsonl.toArray())
+    out
+}
+
+public func runCangjieEvalDevelopmentClose(args: Array<String>): Int64 {
+    var runRoot = ""; var runId = ""; var transport = ""; var firstRoot = ""; var secondRoot = ""; var i: Int64 = 0
+    while (i < args.size) {
+        let arg = args[i]
+        if (arg == "cangjie-eval-development-close") { i += 1; continue }
+        if ((arg == "--run-root" || arg == "--run-id" || arg == "--transport" || arg == "--classifier-a-root" || arg == "--classifier-b-root") && i + 1 < args.size) {
+            let value = args[i + 1].trimAscii()
+            if (arg == "--run-root") { runRoot = value } else if (arg == "--run-id") { runId = value } else if (arg == "--transport") { transport = value } else if (arg == "--classifier-a-root") { firstRoot = value } else { secondRoot = value }
+            i += 2; continue
+        }
+        println("usage error: invalid cangjie-eval-development-close argument"); return 2
+    }
+    if (runRoot == "" || runId == "" || firstRoot == "" || secondRoot == "" || (transport != "C" && transport != "D")) {
+        println("usage error: development close requires --run-root --run-id --transport C|D --classifier-a-root --classifier-b-root"); return 2
+    }
+    let group = if (transport == "C") { CkbAbcdeGroups.C } else { CkbAbcdeGroups.D }
+    for (caseIndex in 0..164) {
+        let id = triageCaseId(caseIndex); let first = Path(firstRoot).join("${id}.json"); let second = Path(secondRoot).join("${id}.json")
+        if (!exists(first) && !exists(second)) { continue }
+        if (!exists(first) || !exists(second)) { println("development close blocked: classifier pair incomplete"); return 1 }
+        let firstText = triageReadText(first); let secondText = triageReadText(second); let confirmation = confirmKnowledgeGap(firstText, secondText)
+        if (!confirmation.confirmed) { println("development close blocked: classifier evidence invalid"); return 1 }
+        let target = Path(runRoot).join("cases").join(id).join(group)
+        if (!exists(target)) { println("development close blocked: case result missing"); return 1 }
+        if (!triageAtomicWrite(target.join("classifier-1.json"), firstText) || !triageAtomicWrite(target.join("classifier-2.json"), secondText)) { println("development close blocked: classifier injection failed"); return 1 }
+    }
+    let options = CkbAbcdeRunnerOptions(); options.runId = runId; options.groups.clear(); options.groups.add(group)
+    let aggregate = aggregateDevelopmentRun(options, runRoot)
+    if (!aggregate.ok || aggregate.pendingClassifierCount > 0) { println("development close blocked diagnostics=${aggregate.diagnostics.size} pending=${aggregate.pendingClassifierCount}"); return 1 }
+    println("development close written total=164 knowledgeGaps=${aggregate.knowledgeGapCount}"); 0
+}
+
+private func triageAtomicWrite(path: Path, text: String): Bool {
+    let tmpId = benchmarkGapSha256(path.toString() + text).replace("sha256:", "")
+    let tmp = path.parent.join(".tmp-${tmpId}")
+    try { File.writeTo(tmp, text.toArray()); if (triageReadText(tmp) != text) { _ = launch("/bin/rm", ["-f", tmp.toString()]).wait(); return false }; launch("/bin/mv", ["-f", tmp.toString(), path.toString()]).wait() == 0 } catch (_: Exception) { try { _ = launch("/bin/rm", ["-f", tmp.toString()]).wait() } catch (_: Exception) {}; false }
+}
+
+private func triageReadText(path: Path): String {
+    if (!exists(path)) { return "" }
+    try { String.fromUtf8(File.readFrom(path)) } catch (_: Exception) { "" }
+}
+private func triageCaseId(index: Int64): String {
+    if (index < 10) { return "CJ-HUMANEVAL-00${index}" }
+    if (index < 100) { return "CJ-HUMANEVAL-0${index}" }
+    "CJ-HUMANEVAL-${index}"
 }
 
 public func orchestrateDevelopmentClosure(inputs: ArrayList<CangjieEvalDevelopmentClosureInput>, teacherRunId: String): CangjieEvalDevelopmentClosureResult {
