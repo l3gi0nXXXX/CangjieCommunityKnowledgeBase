@@ -84,6 +84,13 @@ public class CkbAbcdeCommandResult {
     public init() {}
 }
 
+public class CkbAbcdeSampleAssessment {
+    public var completeResult: Bool = false
+    public var identityMatched: Bool = false
+    public var sampleAttempt: Int64 = 0
+    public init() {}
+}
+
 public class CkbAbcdeUsageStats {
     public var usageParseStatus: String = "missing_result"
     public var modelInputTokens: Int64 = 0
@@ -634,11 +641,12 @@ private func ckbAbcdeRunCaseGroup(options: CkbAbcdeRunnerOptions, runRoot: Strin
         ckbAbcdeWriteText("${groupRoot}/claude.stdout.log", "")
         ckbAbcdeWriteText("${groupRoot}/claude.stderr.log", "")
     } else {
-        let claude = if (options.runMode == "certification") { ckbAbcdeRunClaudeCertification(options, group, groupRoot, workspace, "${groupRoot}/runtime-home", caseSrc) } else { ckbAbcdeRunClaude(options, group, groupRoot, workspace, options.docsRoot) }
+        let claude = if (options.runMode == "certification") { ckbAbcdeRunClaudeCertification(options, group, groupRoot, workspace, "${groupRoot}/runtime-home", caseSrc) } else { ckbAbcdeRunClaude(options, group, groupRoot, workspace, options.docsRoot, "${caseSrc}/starter") }
         claudeExit = claude.exitCode
     }
     let usage = ckbAbcdeParseClaudeUsageFile("${groupRoot}/claude-transcript.jsonl")
     ckbAbcdeWriteText("${groupRoot}/usage.json", ckbAbcdeRenderUsageJson(usage) + "\n")
+    ckbAbcdeWriteText("${groupRoot}/attempt-evidence.json", "{\"transportAttemptCount\":${ckbAbcdeClaudeAttemptCount(groupRoot)},\"sampleAttemptCount\":${ckbAbcdeSampleAttemptCount(groupRoot)},\"workspaceRestoreEvidenceHash\":\"${ckbAbcdeJsonEscape(ckbAbcdeWorkspaceRestoreEvidenceHash(groupRoot))}\",\"attemptsPath\":\"claude-attempts.jsonl\",\"restoresPath\":\"workspace-restores.jsonl\"}\n")
 
     // The answer is immutable before verifier-owned material enters the workspace.
     let frozenAnswer=ckbAbcdeReadText("${workspace}/src/solution.cj")
@@ -663,12 +671,13 @@ private func ckbAbcdeRunCaseGroup(options: CkbAbcdeRunnerOptions, runRoot: Strin
     let failureType = if (options.explicitRunMode) { ckbAbcdeExpandedFailureType(legacyFailureType) } else { legacyFailureType }
     let protocolViolation = violation != "none"
     let observedModel = ckbAbcdeObservedModel(transcript)
-    let modelReady = !options.explicitRunMode || observedModel == options.expectedModelVersion
+    let sampleReady = !options.explicitRunMode || options.runMode != "development" || ckbAbcdeSampleAttemptCount(groupRoot) == 1
+    let modelReady = (!options.explicitRunMode || observedModel == options.expectedModelVersion) && sampleReady
     if (options.explicitRunMode) {
         ckbAbcdeWriteText("${groupRoot}/provider-identity.json", ckbAbcdeProviderIdentityJson(observedModel, ckbAbcdeClaudeVersion()))
     }
     let status = if (copy.exitCode == 0 && inject.exitCode == 0 && claudeExit == 0 && unitPass && violation == "none" && toolReady && modelReady) { "passed" } else { "failed" }
-    ckbAbcdeWriteText("${groupRoot}/test-result.json", "{\"testExitCode\":${test.exitCode},\"unitPassAt1\":${unitPassAt1},\"failureType\":\"${failureType}\",\"testLogPath\":\"${ckbAbcdeJsonEscape("${groupRoot}/test.log")}\"}\n")
+    ckbAbcdeWriteText("${groupRoot}/test-result.json", "{\"testExitCode\":${test.exitCode},\"unitPassAt1\":${unitPassAt1},\"transportAttemptCount\":${ckbAbcdeClaudeAttemptCount(groupRoot)},\"sampleAttemptCount\":${ckbAbcdeSampleAttemptCount(groupRoot)},\"workspaceRestoreEvidenceHash\":\"${ckbAbcdeJsonEscape(ckbAbcdeWorkspaceRestoreEvidenceHash(groupRoot))}\",\"failureType\":\"${failureType}\",\"testLogPath\":\"${ckbAbcdeJsonEscape("${groupRoot}/test.log")}\"}\n")
     ckbAbcdeWriteText("${groupRoot}/protocol-audit.json", "{\"protocolViolation\":${protocolViolation},\"protocolViolationReason\":\"${ckbAbcdeJsonEscape(violation)}\",\"knowledgeEntry\":\"${ckbAbcdeKnowledgeEntry(group)}\",\"toolTransport\":\"${ckbAbcdeToolTransport(group)}\",\"toolEvidence\":\"${ckbAbcdeJsonEscape(toolEvidence)}\"}\n")
     if (group == CkbAbcdeGroups.E) {
         ckbAbcdeWriteText("${groupRoot}/docs-path-audit.json", "{\"docsRoot\":\"${ckbAbcdeJsonEscape(options.docsRoot)}\",\"summaryFiles\":[\"${ckbAbcdeJsonEscape("${options.docsRoot}/dev-guide/summary_cjnative_EN.md")}\",\"${ckbAbcdeJsonEscape("${options.docsRoot}/tools/summary_cjnative_EN.md")}\"],\"allowed\":${exists(Path("${options.docsRoot}/dev-guide/summary_cjnative_EN.md")) && exists(Path("${options.docsRoot}/tools/summary_cjnative_EN.md"))}}\n")
@@ -713,18 +722,69 @@ private func ckbAbcdeStrictSandboxProbeOk(raw:String,workspace:String,runtimeHom
 private func ckbAbcdeStrictVerifierMountOk(raw:String,answerHash:String):Bool{try{let o=JsonValue.fromStr(raw).asObject();ckbAbcdeStrictJsonInt(o,"injectExitCode",-1)==0&&ckbAbcdeStrictJsonString(o,"answerHashBefore")==answerHash&&ckbAbcdeStrictJsonString(o,"answerHashAfter")==answerHash&&ckbAbcdeStrictJsonBool(o,"mountedAfterFreeze")}catch(_:Exception){false}}
 private func ckbAbcdeTranscriptHasOtherCase(raw:String,current:String):Bool{for(i in 0..164){let id=ckbAbcdeCaseId(i);if(id!=current&&raw.contains(id)){return true}};false}
 
-private func ckbAbcdeRunClaude(options: CkbAbcdeRunnerOptions, group: String, groupRoot: String, workspace: String, docsRoot: String): CkbAbcdeCommandResult {
+private func ckbAbcdeRunClaude(options: CkbAbcdeRunnerOptions, group: String, groupRoot: String, workspace: String, docsRoot: String, authoritativeWorkspace: String): CkbAbcdeCommandResult {
     var last = CkbAbcdeCommandResult()
-    for (attempt in 1..=2) {
-        let current = ckbAbcdeRunClaudeOnce(group, groupRoot, workspace, docsRoot, attempt, options.expectedModelVersion)
+    var sampleAttempt: Int64 = 0
+    for (transportAttempt in 1..=2) {
+        var restoreJson = "{\"transportAttempt\":${transportAttempt},\"restored\":false,\"diagnostic\":\"initial_authoritative_copy\"}"
+        if (transportAttempt > 1) {
+            restoreJson = ckbAbcdeRestoreWorkspaceForRetry(workspace, authoritativeWorkspace, transportAttempt)
+            ckbAbcdeAppendText("${groupRoot}/workspace-restores.jsonl", restoreJson + "\n")
+            if (!restoreJson.contains("\"restored\":true")) {
+                let blocked = CkbAbcdeCommandResult(); blocked.exitCode = 125; blocked.stderr = "workspace_restore_failed"; return blocked
+            }
+        }
+        let current = ckbAbcdeRunClaudeOnce(group, groupRoot, workspace, docsRoot, transportAttempt, options.expectedModelVersion)
         last = current
-        ckbAbcdeAppendText("${groupRoot}/claude-attempts.jsonl", "{\"attempt\":${attempt},\"exitCode\":${current.exitCode}}\n")
-        ckbAbcdePublishClaudeAttemptArtifacts(groupRoot, attempt)
-        if (current.exitCode == 0) {
+        let transcript = ckbAbcdeReadText("${groupRoot}/claude-transcript.attempt-${transportAttempt}.jsonl")
+        let assessment = ckbAbcdeAssessSample(transcript, options.expectedModelVersion)
+        if (current.exitCode == 0 && assessment.completeResult && assessment.identityMatched) { sampleAttempt += 1 }
+        let restoreHash = if (transportAttempt > 1) { benchmarkGapSha256(restoreJson) } else { "" }
+        ckbAbcdeAppendText("${groupRoot}/claude-attempts.jsonl", "{\"attempt\":${transportAttempt},\"transportAttempt\":${transportAttempt},\"sampleAttempt\":${if (current.exitCode == 0 && assessment.completeResult && assessment.identityMatched) { sampleAttempt } else { 0 }},\"exitCode\":${current.exitCode},\"completeResult\":${assessment.completeResult},\"identityMatched\":${assessment.identityMatched},\"workspaceRestored\":${transportAttempt > 1 && restoreJson.contains("\"restored\":true")},\"restoreEvidenceHash\":\"${restoreHash}\"}\n")
+        if (current.exitCode == 0 && assessment.completeResult && assessment.identityMatched) {
+            ckbAbcdePublishClaudeSampleArtifacts(groupRoot, transportAttempt)
             return current
         }
     }
+    ckbAbcdePublishClaudeAttemptArtifacts(groupRoot, 2)
     last
+}
+
+public func ckbAbcdeAssessSample(transcript: String, expectedModel: String): CkbAbcdeSampleAssessment {
+    let result = CkbAbcdeSampleAssessment()
+    var observedModel = ""
+    for (line in transcript.split("\n")) {
+        try {
+            let object = JsonValue.fromStr(line).asObject()
+            if (ckbAbcdeStrictJsonString(object, "subtype") == "init") { observedModel = ckbAbcdeStrictJsonString(object, "model") }
+            if (ckbAbcdeStrictJsonString(object, "type") == "result" && ckbAbcdeStrictJsonString(object, "subtype") == "success" && !ckbAbcdeStrictJsonBool(object, "is_error")) { result.completeResult = true }
+        } catch (_: Exception) {}
+    }
+    result.identityMatched = result.completeResult && observedModel == expectedModel
+    result.sampleAttempt = if (result.identityMatched) { 1 } else { 0 }
+    result
+}
+
+public func ckbAbcdeShouldRetryTransport(exitCode: Int64, assessment: CkbAbcdeSampleAssessment): Bool {
+    exitCode != 0 || !assessment.completeResult || !assessment.identityMatched
+}
+
+public func ckbAbcdeRestoreWorkspaceForRetry(workspace: String, authoritativeWorkspace: String, transportAttempt: Int64): String {
+    let beforeHash = benchmarkGapSha256(ckbAbcdeReadText("${workspace}/src/solution.cj"))
+    let authorityHash = benchmarkGapSha256(ckbAbcdeReadText("${authoritativeWorkspace}/src/solution.cj"))
+    let restored = ckbAbcdeRunShell("rm -rf ${ckbAbcdeShellQuote(workspace)} && cp -R ${ckbAbcdeShellQuote(authoritativeWorkspace)} ${ckbAbcdeShellQuote(workspace)}", "")
+    let afterHash = benchmarkGapSha256(ckbAbcdeReadText("${workspace}/src/solution.cj"))
+    let ok = restored.exitCode == 0 && afterHash == authorityHash
+    let base = "{\"transportAttempt\":${transportAttempt},\"restored\":${ok},\"beforeHash\":\"${beforeHash}\",\"authorityHash\":\"${authorityHash}\",\"afterHash\":\"${afterHash}\",\"diagnostic\":\"${if (ok) { "ok" } else { "workspace_restore_failed" }}\"}"
+    base.replace("}", ",\"evidenceHash\":\"${benchmarkGapSha256(base)}\"}")
+}
+
+private func ckbAbcdePublishClaudeSampleArtifacts(groupRoot: String, transportAttempt: Int64): Unit {
+    let transcript = ckbAbcdeReadText("${groupRoot}/claude-transcript.attempt-${transportAttempt}.jsonl")
+    let stderr = ckbAbcdeReadText("${groupRoot}/claude.attempt-${transportAttempt}.stderr.log")
+    ckbAbcdeWriteText("${groupRoot}/claude-transcript.jsonl", transcript)
+    ckbAbcdeWriteText("${groupRoot}/claude.stdout.log", transcript)
+    ckbAbcdeWriteText("${groupRoot}/claude.stderr.log", stderr)
 }
 
 // Certification has exactly one agent invocation. Provider/SDK retry and
@@ -1725,7 +1785,10 @@ public func ckbAbcdeCountOccurrencesForTest(text: String, needle: String): Int64
 }
 
 private func ckbAbcdeUnitPassAt1(unitPass: Bool, groupRoot: String): Bool {
-    unitPass && ckbAbcdeFirstClaudeAttemptExitCode(groupRoot) == 0
+    if (!unitPass) { return false }
+    let attempts = ckbAbcdeReadText("${groupRoot}/claude-attempts.jsonl")
+    if (attempts.contains("\"sampleAttempt\":")) { return ckbAbcdeSampleAttemptCount(groupRoot) == 1 }
+    ckbAbcdeFirstClaudeAttemptExitCodeFromText(attempts) == 0
 }
 
 private func ckbAbcdeFirstClaudeAttemptExitCode(groupRoot: String): Int64 {
@@ -1740,6 +1803,19 @@ private func ckbAbcdeClaudeAttemptCount(groupRoot: String): Int64 {
         }
     }
     count
+}
+
+private func ckbAbcdeSampleAttemptCount(groupRoot: String): Int64 {
+    var count: Int64 = 0
+    for (line in ckbAbcdeReadText("${groupRoot}/claude-attempts.jsonl").split("\n")) {
+        if (ckbAbcdeJsonIntField(line, "sampleAttempt", 0) > count) { count = ckbAbcdeJsonIntField(line, "sampleAttempt", 0) }
+    }
+    count
+}
+
+private func ckbAbcdeWorkspaceRestoreEvidenceHash(groupRoot: String): String {
+    let evidence = ckbAbcdeReadText("${groupRoot}/workspace-restores.jsonl")
+    if (evidence == "") { "" } else { benchmarkGapSha256(evidence) }
 }
 
 private func ckbAbcdeFirstClaudeAttemptExitCodeFromText(attempts: String): Int64 {
@@ -1853,7 +1929,12 @@ public func ckbAbcdeAverageTextForTest(total: Int64, count: Int64): String {
 }
 
 public func ckbAbcdeUnitPassAt1FromAttemptsForTest(unitPass: Bool, attempts: String): Bool {
-    unitPass && ckbAbcdeFirstClaudeAttemptExitCodeFromText(attempts) == 0
+    if (!unitPass) { return false }
+    for (line in attempts.split("\n")) {
+        if (ckbAbcdeJsonIntField(line, "sampleAttempt", 0) == 1) { return true }
+    }
+    // Compatibility for historical artifacts written before sampleAttempt existed.
+    ckbAbcdeFirstClaudeAttemptExitCodeFromText(attempts) == 0
 }
 
 private func ckbAbcdeTestLogContainsFailure(testLog: String): Bool {
