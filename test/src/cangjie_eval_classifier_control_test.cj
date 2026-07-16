@@ -12,11 +12,11 @@ public class CangjieEvalClassifierControlTest {
     // P5-C-UT-01
     @TestCase
     public func p5IcUt01SealedIndependentEvidenceBindsSchemaModelAndProvenance(): Unit {
-        let request=p5IcRequest("CJ-HUMANEVAL-016");let a=p5IcConfig("a","codex","GPT-5.6");let b=p5IcConfig("b","claude-code","GLM-5.2")
-        let first=sealCkbP5ClassifierResponse(request,p5IcResponse("codex","GPT-5.6"),a,"/tmp/p5-a/workspace","/tmp/p5-a/home","session-a")
+        let request=p5IcRequest("CJ-HUMANEVAL-016");let a=p5IcConfig("a","codex","GPT-5.6-Sol");let b=p5IcConfig("b","claude-code","GLM-5.2")
+        let first=sealCkbP5ClassifierResponse(request,p5IcResponse("codex","GPT-5.6-Sol"),a,"/tmp/p5-a/workspace","/tmp/p5-a/home","session-a")
         let second=sealCkbP5ClassifierResponse(request,p5IcResponse("claude-code","GLM-5.2"),b,"/tmp/p5-b/workspace","/tmp/p5-b/home","session-b")
         @Expect(first.contains("\"schemaVersion\":\"ckb-p5-classifier-v1\""),true)
-        @Expect(first.contains("\"observedModel\":\"GPT-5.6\""),true)
+        @Expect(first.contains("\"observedModel\":\"GPT-5.6-Sol\""),true)
         @Expect(first.contains("\"provenanceHash\":\"sha256:"),true)
         @Expect(first.contains("positiveTestPassed"),false)
         @Expect(first.contains("negativeTestPassed"),false)
@@ -26,7 +26,7 @@ public class CangjieEvalClassifierControlTest {
         @Expect(first==second,false)
         @Expect(confirmKnowledgeGap(first,second).confirmed,true)
         @Expect(sealCkbP5ClassifierResponseWithDiagnostic(request,"{\"schemaVersion\":\"ckb-p5-classifier-response-v1\"}",a,"/tmp/p5-a/workspace","/tmp/p5-a/home","session-a")[1],"classifier_response_incomplete")
-        let retrievalA=sealCkbP5ClassifierResponse(request,p5IcResponse("codex","GPT-5.6").replace("knowledge_gap","retrieval_failure"),a,"/tmp/p5-a2/workspace","/tmp/p5-a2/home","session-a2")
+        let retrievalA=sealCkbP5ClassifierResponse(request,p5IcResponse("codex","GPT-5.6-Sol").replace("knowledge_gap","retrieval_failure"),a,"/tmp/p5-a2/workspace","/tmp/p5-a2/home","session-a2")
         let retrievalB=sealCkbP5ClassifierResponse(request,p5IcResponse("claude-code","GLM-5.2").replace("knowledge_gap","retrieval_failure"),b,"/tmp/p5-b2/workspace","/tmp/p5-b2/home","session-b2")
         let nonKnowledge=confirmIndependentClassifierPair(retrievalA,retrievalB)
         @Expect(nonKnowledge.confirmed,true);@Expect(nonKnowledge.category,"retrieval_failure");@Expect(routeNonKnowledgeFailure(nonKnowledge.category),"retrieval")
@@ -50,8 +50,9 @@ public class CangjieEvalClassifierControlTest {
     public func p5IcPos01TwoFakeProcessesProduceAnInjectableIndependentPair(): Unit {
         let root=p5IcRoot("positive");_=p5IcSample(root,"CJ-HUMANEVAL-016","error: String member missing 中文🙂")
         let fakeA=p5IcFake(root,"fake-a.sh","ok");let fakeB=p5IcFake(root,"fake-b.sh","ok")
-        let output="${root}/classifier-output";let result=runCkbP5IndependentClassifiers(root,"run-中文🙂","C",output,p5IcExecutableConfig("a","codex","GPT-5.6",fakeA),p5IcExecutableConfig("b","claude-code","GLM-5.2",fakeB),10)
+        let output="${root}/classifier-output";let result=runCkbP5IndependentClassifiers(root,"run-中文🙂","C",output,p5IcExecutableConfig("a","codex","GPT-5.6-Sol",fakeA),p5IcExecutableConfig("b","claude-code","GLM-5.2",fakeB),10)
         @Expect(result.ok,true);@Expect(result.processed,1);@Expect(result.paired,1);@Expect(result.rejected,0)
+        let diagnostic=String.fromUtf8(File.readFrom(Path(output).join("classifier-control-diagnostics.json")));@Expect(ckbP5ClassifierDiagnosticArtifactValid(diagnostic),true);@Expect(diagnostic.contains("\"ok\":true"),true);@Expect(diagnostic.contains("\"cases\":[]"),true)
         let first=String.fromUtf8(File.readFrom(Path(output).join("pairs/a/CJ-HUMANEVAL-016.json")));let second=String.fromUtf8(File.readFrom(Path(output).join("pairs/b/CJ-HUMANEVAL-016.json")))
         @Expect(confirmKnowledgeGap(first,second).confirmed,true);@Expect(first==second,false)
     }
@@ -60,18 +61,19 @@ public class CangjieEvalClassifierControlTest {
     public func p5IcNeg01MalformedNonzeroTimeoutAndIdentityMismatchNeverProducePair(): Unit {
         for(mode in ["malformed","invalid_utf8","nonterminal","nonzero","identity"]){
             let root=p5IcRoot("negative-${mode}");_=p5IcSample(root,"CJ-HUMANEVAL-016","error: missing member")
-            let output="${root}/classifier-output";let result=runCkbP5IndependentClassifiers(root,"run-中文🙂","C",output,p5IcExecutableConfig("a","codex","GPT-5.6",p5IcFake(root,"fake-a.sh",mode)),p5IcExecutableConfig("b","claude-code","GLM-5.2",p5IcFake(root,"fake-b.sh","ok")),10)
+            let output="${root}/classifier-output";let result=runCkbP5IndependentClassifiers(root,"run-中文🙂","C",output,p5IcExecutableConfig("a","codex","GPT-5.6-Sol",p5IcFake(root,"fake-a.sh",mode)),p5IcExecutableConfig("b","claude-code","GLM-5.2",p5IcFake(root,"fake-b.sh","ok")),10)
             @Expect(result.ok,false);@Expect(result.paired,0);@Expect(result.rejected,1);@Expect(result.diagnostics.size,1);@Expect(result.diagnostics[0].contains(p5IcExpectedDiagnostic(mode)),true);@Expect(exists(Path(output).join("pairs/a/CJ-HUMANEVAL-016.json")),false)
+            let diagnostic=String.fromUtf8(File.readFrom(Path(output).join("classifier-control-diagnostics.json")));@Expect(ckbP5ClassifierDiagnosticArtifactValid(diagnostic),true);@Expect(diagnostic.contains(p5IcExpectedDiagnostic(mode)),true);@Expect(diagnostic.contains("/tmp/"),false);@Expect(diagnostic.toAsciiLower().contains("token"),false);@Expect(exists(Path(output).join("runs/CJ-HUMANEVAL-016/a/stdout.tmp")),false);@Expect(exists(Path(output).join("runs/CJ-HUMANEVAL-016/a/stderr.tmp")),false);@Expect(exists(Path(output).join("runs/CJ-HUMANEVAL-016/a/workspace/response.json")),false)
         }
         let timeoutRoot=p5IcRoot("negative-timeout");_=p5IcSample(timeoutRoot,"CJ-HUMANEVAL-016","error: timeout")
-        let timed=runCkbP5IndependentClassifiers(timeoutRoot,"run-中文🙂","C","${timeoutRoot}/classifier-output",p5IcExecutableConfig("a","codex","GPT-5.6",p5IcFake(timeoutRoot,"fake-a.sh","timeout")),p5IcExecutableConfig("b","claude-code","GLM-5.2",p5IcFake(timeoutRoot,"fake-b.sh","ok")),1)
-        @Expect(timed.ok,false);@Expect(timed.paired,0);@Expect(timed.rejected,1)
+        let timed=runCkbP5IndependentClassifiers(timeoutRoot,"run-中文🙂","C","${timeoutRoot}/classifier-output",p5IcExecutableConfig("a","codex","GPT-5.6-Sol",p5IcFake(timeoutRoot,"fake-a.sh","timeout")),p5IcExecutableConfig("b","claude-code","GLM-5.2",p5IcFake(timeoutRoot,"fake-b.sh","ok")),1)
+        @Expect(timed.ok,false);@Expect(timed.paired,0);@Expect(timed.rejected,1);let timedDiagnostic=String.fromUtf8(File.readFrom(Path(timeoutRoot).join("classifier-output/classifier-control-diagnostics.json")));@Expect(ckbP5ClassifierDiagnosticArtifactValid(timedDiagnostic),true);@Expect(timedDiagnostic.contains("classifier_process_timeout"),true)
     }
 
     @TestCase
     public func p5IcE2e01CliIsStrictAndFeedsExistingDevelopmentCloseRoots(): Unit {
         let root=p5IcRoot("e2e");_=p5IcSample(root,"CJ-HUMANEVAL-016","error: API missing")
-        let output="${root}/classifier-output";let args=["cangjie-eval-classifier-run","--run-root",root,"--run-id","run-中文🙂","--transport","C","--output-root",output,"--classifier-a-executable",p5IcFake(root,"fake-a.sh","ok"),"--classifier-a-provider","codex","--classifier-a-model","GPT-5.6","--classifier-a-id","classifier-a","--classifier-b-executable",p5IcFake(root,"fake-b.sh","ok"),"--classifier-b-provider","claude-code","--classifier-b-model","GLM-5.2","--classifier-b-id","classifier-b","--timeout-seconds","10"]
+        let output="${root}/classifier-output";let args=["cangjie-eval-classifier-run","--run-root",root,"--run-id","run-中文🙂","--transport","C","--output-root",output,"--classifier-a-executable",p5IcFake(root,"fake-a.sh","ok"),"--classifier-a-provider","codex","--classifier-a-model","GPT-5.6-Sol","--classifier-a-id","classifier-a","--classifier-b-executable",p5IcFake(root,"fake-b.sh","ok"),"--classifier-b-provider","claude-code","--classifier-b-model","GLM-5.2","--classifier-b-id","classifier-b","--timeout-seconds","10"]
         @Expect(runCangjieEvalClassifierControl(args),0)
         @Expect(exists(Path(output).join("pairs/a/CJ-HUMANEVAL-016.json")),true)
         let duplicate=ArrayList<String>();for(value in args){duplicate.add(value)};duplicate.add("--run-id");duplicate.add("duplicate")
