@@ -2,6 +2,7 @@ package cangjie_community_knowledge_base
 
 import std.collection.ArrayList
 import std.convert.Parsable
+import std.env.getVariable
 import std.fs.{Directory, File, Path, exists, canonicalize}
 import std.process.launch
 import stdx.encoding.json.*
@@ -171,7 +172,9 @@ private func ckbP5InvokeClassifier(outputRoot:String,caseId:String,request:Strin
     if(!ckbP5AtomicWrite(requestPath,request+"\n")){invocation.diagnostic="classifier_request_write_failed";return invocation}
     let session="${caseId}-${config.label}-${benchmarkGapSha256(request+config.provider+config.model)}";let args=ArrayList<String>()
     for(value in ["--request",requestPath.toString(),"--output",responsePath.toString(),"--workspace",workspace.toString(),"--runtime-home",home.toString(),"--session-id",session,"--expected-provider",config.provider,"--expected-model",config.model]){args.add(value)}
-    let marker=root.join("timeout.marker");let process=CkbTimedWorkerProcessLauncher(config.executable,args,workdir:workspace.toString(),cutoffAtMillis:ckbCoreNowMillis()+timeoutSeconds*1000,timeoutMarkerPath:marker.toString(),stdoutPath:stdoutPath.toString(),stderrPath:stderrPath.toString()).run()
+    let dyld=match(getVariable("DYLD_LIBRARY_PATH")){case Some(value)=>value;case None=>""};let requiresDyld=ckbP5ClassifierRequiresDyld();let environment=ckbP5ClassifierProcessEnvironment(dyld,requiresDyld)
+    if(ckbP5ClassifierDyldDiagnostic(dyld,requiresDyld)!="ok"){invocation.diagnostic="classifier_dyld_library_path_missing";return invocation}
+    let marker=root.join("timeout.marker");let process=CkbTimedWorkerProcessLauncher(config.executable,args,environment:environment,workdir:workspace.toString(),cutoffAtMillis:ckbCoreNowMillis()+timeoutSeconds*1000,timeoutMarkerPath:marker.toString(),stdoutPath:stdoutPath.toString(),stderrPath:stderrPath.toString()).run()
     try{_=launch("/bin/rm",["-f",stdoutPath.toString(),stderrPath.toString()]).wait()}catch(_:Exception){}
     if(process.timedOut){ckbP5RemoveClassifierResponse(responsePath);invocation.diagnostic="classifier_process_timeout";return invocation}
     if(process.exitCode!=0){ckbP5RemoveClassifierResponse(responsePath);invocation.diagnostic="classifier_process_nonzero";return invocation}
@@ -180,6 +183,9 @@ private func ckbP5InvokeClassifier(outputRoot:String,caseId:String,request:Strin
     let sealed=sealCkbP5ClassifierResponseWithDiagnostic(request,response,config,workspace.toString(),home.toString(),session)
     if(sealed[0]!=""){_=ckbP5AtomicWrite(root.join("classifier.json"),sealed[0]+"\n");invocation.artifact=sealed[0]};invocation.diagnostic=sealed[1];invocation
 }
+public func ckbP5ClassifierProcessEnvironment(dyldLibraryPath:String,requiresDyld:Bool):ArrayList<CkbTimedWorkerProcessEnvironment>{let out=ArrayList<CkbTimedWorkerProcessEnvironment>();let value=dyldLibraryPath.trimAscii();if(requiresDyld&&value==""){return out};if(value!=""){out.add(CkbTimedWorkerProcessEnvironment("DYLD_LIBRARY_PATH",value))};out}
+public func ckbP5ClassifierDyldDiagnostic(dyldLibraryPath:String,requiresDyld:Bool):String{if(requiresDyld&&dyldLibraryPath.trimAscii()==""){"classifier_dyld_library_path_missing"}else{"ok"}}
+private func ckbP5ClassifierRequiresDyld():Bool{exists(Path("/usr/bin/sw_vers"))}
 private func ckbP5RemoveClassifierResponse(path:Path):Unit{try{_=launch("/bin/rm",["-f",path.toString()]).wait()}catch(_:Exception){}}
 
 public func sealCkbP5ClassifierResponse(requestText:String,responseText:String,config:CkbP5ClassifierConfig,workspace:String,runtimeHome:String,session:String):String{

@@ -1,6 +1,7 @@
 package cangjie_community_knowledge_base_test
 
 import std.collection.ArrayList
+import std.env.getVariable
 import std.fs.{Directory, File, Path, exists}
 import std.process.launch
 import std.time.DateTime
@@ -12,6 +13,8 @@ public class CangjieEvalClassifierControlTest {
     // P5-C-UT-01
     @TestCase
     public func p5IcUt01SealedIndependentEvidenceBindsSchemaModelAndProvenance(): Unit {
+        let env=ckbP5ClassifierProcessEnvironment("/private/运行库🙂:/secret-value",true);@Expect(env.size,1);@Expect(env[0].name,"DYLD_LIBRARY_PATH");@Expect(env[0].value,"/private/运行库🙂:/secret-value")
+        @Expect(ckbP5ClassifierDyldDiagnostic("",true),"classifier_dyld_library_path_missing");@Expect(ckbP5ClassifierDyldDiagnostic("",false),"ok");@Expect(ckbP5ClassifierProcessEnvironment("",false).size,0)
         let request=p5IcRequest("CJ-HUMANEVAL-016");let a=p5IcConfig("a","codex","GPT-5.6-Sol");let b=p5IcConfig("b","claude-code","GLM-5.2")
         let first=sealCkbP5ClassifierResponse(request,p5IcResponse("codex","GPT-5.6-Sol"),a,"/tmp/p5-a/workspace","/tmp/p5-a/home","session-a")
         let second=sealCkbP5ClassifierResponse(request,p5IcResponse("claude-code","GLM-5.2"),b,"/tmp/p5-b/workspace","/tmp/p5-b/home","session-b")
@@ -52,7 +55,7 @@ public class CangjieEvalClassifierControlTest {
         let fakeA=p5IcFake(root,"fake-a.sh","ok");let fakeB=p5IcFake(root,"fake-b.sh","ok")
         let output="${root}/classifier-output";let result=runCkbP5IndependentClassifiers(root,"run-中文🙂","C",output,p5IcExecutableConfig("a","codex","GPT-5.6-Sol",fakeA),p5IcExecutableConfig("b","claude-code","GLM-5.2",fakeB),10)
         @Expect(result.ok,true);@Expect(result.processed,1);@Expect(result.paired,1);@Expect(result.rejected,0)
-        let diagnostic=String.fromUtf8(File.readFrom(Path(output).join("classifier-control-diagnostics.json")));@Expect(ckbP5ClassifierDiagnosticArtifactValid(diagnostic),true);@Expect(diagnostic.contains("\"ok\":true"),true);@Expect(diagnostic.contains("\"cases\":[]"),true)
+        let diagnostic=String.fromUtf8(File.readFrom(Path(output).join("classifier-control-diagnostics.json")));@Expect(ckbP5ClassifierDiagnosticArtifactValid(diagnostic),true);@Expect(diagnostic.contains("\"ok\":true"),true);@Expect(diagnostic.contains("\"cases\":[]"),true);if(let Some(dyld)<-getVariable("DYLD_LIBRARY_PATH")){@Expect(diagnostic.contains(dyld),false)}
         let first=String.fromUtf8(File.readFrom(Path(output).join("pairs/a/CJ-HUMANEVAL-016.json")));let second=String.fromUtf8(File.readFrom(Path(output).join("pairs/b/CJ-HUMANEVAL-016.json")))
         @Expect(confirmKnowledgeGap(first,second).confirmed,true);@Expect(first==second,false)
     }
