@@ -9,6 +9,7 @@ import std.unittest.testmacro.*
 
 @Test
 public class CangjieEvalClassifierControlTest {
+    // P5-C-UT-01
     @TestCase
     public func p5IcUt01SealedIndependentEvidenceBindsSchemaModelAndProvenance(): Unit {
         let request=p5IcRequest("CJ-HUMANEVAL-016");let a=p5IcConfig("a","codex","GPT-5.6");let b=p5IcConfig("b","claude-code","GLM-5.2")
@@ -24,6 +25,7 @@ public class CangjieEvalClassifierControlTest {
         @Expect(ckbP5ClassifierArtifactIdentityValid(second),true)
         @Expect(first==second,false)
         @Expect(confirmKnowledgeGap(first,second).confirmed,true)
+        @Expect(sealCkbP5ClassifierResponseWithDiagnostic(request,"{\"schemaVersion\":\"ckb-p5-classifier-response-v1\"}",a,"/tmp/p5-a/workspace","/tmp/p5-a/home","session-a")[1],"classifier_response_incomplete")
         let retrievalA=sealCkbP5ClassifierResponse(request,p5IcResponse("codex","GPT-5.6").replace("knowledge_gap","retrieval_failure"),a,"/tmp/p5-a2/workspace","/tmp/p5-a2/home","session-a2")
         let retrievalB=sealCkbP5ClassifierResponse(request,p5IcResponse("claude-code","GLM-5.2").replace("knowledge_gap","retrieval_failure"),b,"/tmp/p5-b2/workspace","/tmp/p5-b2/home","session-b2")
         let nonKnowledge=confirmIndependentClassifierPair(retrievalA,retrievalB)
@@ -43,6 +45,7 @@ public class CangjieEvalClassifierControlTest {
         @Expect(buildCkbP5ClassifierRequest(caseRoot,"CJ-HUMANEVAL-016","run-中文🙂"),"missing_case_evidence")
     }
 
+    // P5-C-E2E-01
     @TestCase
     public func p5IcPos01TwoFakeProcessesProduceAnInjectableIndependentPair(): Unit {
         let root=p5IcRoot("positive");_=p5IcSample(root,"CJ-HUMANEVAL-016","error: String member missing 中文🙂")
@@ -55,10 +58,10 @@ public class CangjieEvalClassifierControlTest {
 
     @TestCase
     public func p5IcNeg01MalformedNonzeroTimeoutAndIdentityMismatchNeverProducePair(): Unit {
-        for(mode in ["malformed","nonzero","identity"]){
+        for(mode in ["malformed","invalid_utf8","nonterminal","nonzero","identity"]){
             let root=p5IcRoot("negative-${mode}");_=p5IcSample(root,"CJ-HUMANEVAL-016","error: missing member")
             let output="${root}/classifier-output";let result=runCkbP5IndependentClassifiers(root,"run-中文🙂","C",output,p5IcExecutableConfig("a","codex","GPT-5.6",p5IcFake(root,"fake-a.sh",mode)),p5IcExecutableConfig("b","claude-code","GLM-5.2",p5IcFake(root,"fake-b.sh","ok")),10)
-            @Expect(result.ok,false);@Expect(result.paired,0);@Expect(result.rejected,1);@Expect(exists(Path(output).join("pairs/a/CJ-HUMANEVAL-016.json")),false)
+            @Expect(result.ok,false);@Expect(result.paired,0);@Expect(result.rejected,1);@Expect(result.diagnostics.size,1);@Expect(result.diagnostics[0].contains(p5IcExpectedDiagnostic(mode)),true);@Expect(exists(Path(output).join("pairs/a/CJ-HUMANEVAL-016.json")),false)
         }
         let timeoutRoot=p5IcRoot("negative-timeout");_=p5IcSample(timeoutRoot,"CJ-HUMANEVAL-016","error: timeout")
         let timed=runCkbP5IndependentClassifiers(timeoutRoot,"run-中文🙂","C","${timeoutRoot}/classifier-output",p5IcExecutableConfig("a","codex","GPT-5.6",p5IcFake(timeoutRoot,"fake-a.sh","timeout")),p5IcExecutableConfig("b","claude-code","GLM-5.2",p5IcFake(timeoutRoot,"fake-b.sh","ok")),1)
@@ -89,7 +92,8 @@ private func p5IcRequest(caseId:String):String{let evidence="{\"caseId\":\"${cas
 private func p5IcConfig(label:String,provider:String,model:String):CkbP5ClassifierConfig{p5IcExecutableConfig(label,provider,model,"/fake/${label}")}
 private func p5IcExecutableConfig(label:String,provider:String,model:String,executable:String):CkbP5ClassifierConfig{let c=CkbP5ClassifierConfig();c.label=label;c.classifierId="classifier-${label}";c.provider=provider;c.model=model;c.executable=executable;c}
 private func p5IcResponse(provider:String,model:String):String{"{\"schemaVersion\":\"ckb-p5-classifier-response-v1\",\"observedProvider\":\"${provider}\",\"observedModel\":\"${model}\",\"category\":\"knowledge_gap\",\"knowledgeFamily\":\"standard_library\",\"reusable\":true,\"sourceClass\":\"official\",\"citation\":\"https://docs.cangjie-lang.cn/docs/1.0.0/\",\"purificationPassed\":true,\"canonicalKnowledgeId\":\"GENERAL-STRING-API\",\"targetVersion\":\"1.0.0\",\"evidenceId\":\"official-string-api\",\"knowledgeText\":\"General reusable String API guidance 中文🙂\"}"}
+private func p5IcExpectedDiagnostic(mode:String):String{if(mode=="malformed"){"classifier_response_malformed"}else if(mode=="invalid_utf8"){"classifier_response_invalid_encoding"}else if(mode=="nonterminal"){"classifier_response_incomplete"}else if(mode=="nonzero"){"classifier_process_nonzero"}else{"classifier_response_identity_mismatch"}}
 private func p5IcFake(root:String,name:String,mode:String):String{
-    let path=Path(root).join(name);let body=if(mode=="timeout"){"#!/bin/zsh\nsleep 5\n"}else if(mode=="nonzero"){"#!/bin/zsh\nexit 7\n"}else{"#!/bin/zsh\nout=''; provider=''; model=''; while (( $# > 0 )); do case \"$1\" in --output) out=\"$2\"; shift 2;; --expected-provider) provider=\"$2\"; shift 2;; --expected-model) model=\"$2\"; shift 2;; *) shift 2;; esac; done\n"+if(mode=="malformed"){"print -r -- '{' > \"$out\"\n"}else if(mode=="identity"){"print -r -- '{\"schemaVersion\":\"ckb-p5-classifier-response-v1\",\"observedProvider\":\"wrong\",\"observedModel\":\"wrong\"}' > \"$out\"\n"}else{"print -r -- \"{\\\"schemaVersion\\\":\\\"ckb-p5-classifier-response-v1\\\",\\\"observedProvider\\\":\\\"$provider\\\",\\\"observedModel\\\":\\\"$model\\\",\\\"category\\\":\\\"knowledge_gap\\\",\\\"knowledgeFamily\\\":\\\"standard_library\\\",\\\"reusable\\\":true,\\\"sourceClass\\\":\\\"official\\\",\\\"citation\\\":\\\"https://docs.cangjie-lang.cn/docs/1.0.0/\\\",\\\"purificationPassed\\\":true,\\\"canonicalKnowledgeId\\\":\\\"GENERAL-STRING-API\\\",\\\"targetVersion\\\":\\\"1.0.0\\\",\\\"evidenceId\\\":\\\"official-string-api\\\",\\\"knowledgeText\\\":\\\"General reusable String API guidance 中文🙂\\\"}\" > \"$out\"\n"}}
+    let path=Path(root).join(name);let body=if(mode=="timeout"){"#!/bin/zsh\nsleep 5\n"}else if(mode=="nonzero"){"#!/bin/zsh\nexit 7\n"}else{"#!/bin/zsh\nout=''; provider=''; model=''; while (( $# > 0 )); do case \"$1\" in --output) out=\"$2\"; shift 2;; --expected-provider) provider=\"$2\"; shift 2;; --expected-model) model=\"$2\"; shift 2;; *) shift 2;; esac; done\n"+if(mode=="malformed"){"print -r -- '{' > \"$out\"\n"}else if(mode=="invalid_utf8"){"printf '\\xff\\xfe' > \"$out\"\n"}else if(mode=="nonterminal"){"print -r -- '{\"schemaVersion\":\"ckb-p5-classifier-response-v1\"}' > \"$out\"\n"}else if(mode=="identity"){"print -r -- '{\"schemaVersion\":\"ckb-p5-classifier-response-v1\",\"observedProvider\":\"wrong\",\"observedModel\":\"wrong\",\"category\":\"knowledge_gap\"}' > \"$out\"\n"}else{"print -r -- \"{\\\"schemaVersion\\\":\\\"ckb-p5-classifier-response-v1\\\",\\\"observedProvider\\\":\\\"$provider\\\",\\\"observedModel\\\":\\\"$model\\\",\\\"category\\\":\\\"knowledge_gap\\\",\\\"knowledgeFamily\\\":\\\"standard_library\\\",\\\"reusable\\\":true,\\\"sourceClass\\\":\\\"official\\\",\\\"citation\\\":\\\"https://docs.cangjie-lang.cn/docs/1.0.0/\\\",\\\"purificationPassed\\\":true,\\\"canonicalKnowledgeId\\\":\\\"GENERAL-STRING-API\\\",\\\"targetVersion\\\":\\\"1.0.0\\\",\\\"evidenceId\\\":\\\"official-string-api\\\",\\\"knowledgeText\\\":\\\"General reusable String API guidance 中文🙂\\\"}\" > \"$out\"\n"}}
     File.writeTo(path,body.toArray());_=launch("/bin/chmod",["700",path.toString()]).wait();path.toString()
 }

@@ -25,7 +25,14 @@ public class CkbP5ClassifierRunResult {
     public var processed: Int64 = 0
     public var paired: Int64 = 0
     public var rejected: Int64 = 0
+    public let diagnostics: ArrayList<String> = ArrayList<String>()
     public init() {}
+}
+
+private class CkbP5ClassifierInvocationResult {
+    var artifact: String = ""
+    var diagnostic: String = "not_started"
+    init() {}
 }
 
 private class CkbP5ClassifierCliOptions {
@@ -108,14 +115,14 @@ public func runCkbP5IndependentClassifiers(runRoot: String, runId: String, trans
         let request = buildCkbP5ClassifierRequest(caseRoot, caseId, runId)
         if (!request.startsWith("{")) { result.rejected+=1;continue }
         result.processed+=1
-        let firstArtifact=ckbP5InvokeClassifier(outputRoot,caseId,request,first,timeoutSeconds)
-        let secondArtifact=ckbP5InvokeClassifier(outputRoot,caseId,request,second,timeoutSeconds)
-        if (firstArtifact==""||secondArtifact=="") { result.rejected+=1;continue }
-        let confirmation=confirmIndependentClassifierPair(firstArtifact,secondArtifact)
-        if(!confirmation.confirmed){result.rejected+=1;continue}
+        let firstRun=ckbP5InvokeClassifier(outputRoot,caseId,request,first,timeoutSeconds)
+        let secondRun=ckbP5InvokeClassifier(outputRoot,caseId,request,second,timeoutSeconds)
+        if (firstRun.artifact==""||secondRun.artifact=="") { result.rejected+=1;result.diagnostics.add("${caseId}:a=${firstRun.diagnostic}:b=${secondRun.diagnostic}");continue }
+        let confirmation=confirmIndependentClassifierPair(firstRun.artifact,secondRun.artifact)
+        if(!confirmation.confirmed){result.rejected+=1;result.diagnostics.add("${caseId}:pair=${confirmation.diagnostic}");continue}
         let pairA=Path(outputRoot).join("pairs/a");let pairB=Path(outputRoot).join("pairs/b")
         try{if(!exists(pairA)){Directory.create(pairA,recursive:true)};if(!exists(pairB)){Directory.create(pairB,recursive:true)}}catch(_:Exception){result.diagnostic="classifier_pair_root_failed";return result}
-        if(!ckbP5AtomicWrite(pairA.join("${caseId}.json"),firstArtifact+"\n")||!ckbP5AtomicWrite(pairB.join("${caseId}.json"),secondArtifact+"\n")){result.diagnostic="classifier_pair_write_failed";return result}
+        if(!ckbP5AtomicWrite(pairA.join("${caseId}.json"),firstRun.artifact+"\n")||!ckbP5AtomicWrite(pairB.join("${caseId}.json"),secondRun.artifact+"\n")){result.diagnostic="classifier_pair_write_failed";return result}
         result.paired+=1
     }
     result.ok=result.rejected==0;result.diagnostic=if(result.ok){"ok"}else{"classifier_cases_rejected"};result
@@ -139,35 +146,47 @@ public func buildCkbP5ClassifierRequest(caseRoot: Path, caseId: String, runId: S
     }catch(_:Exception){"malformed_case_evidence"}
 }
 
-private func ckbP5InvokeClassifier(outputRoot:String,caseId:String,request:String,config:CkbP5ClassifierConfig,timeoutSeconds:Int64):String{
+private func ckbP5InvokeClassifier(outputRoot:String,caseId:String,request:String,config:CkbP5ClassifierConfig,timeoutSeconds:Int64):CkbP5ClassifierInvocationResult{
+    let invocation=CkbP5ClassifierInvocationResult()
     let root=Path(outputRoot).join("runs").join(caseId).join(config.label);let workspace=root.join("workspace");let home=root.join("runtime-home")
-    try{Directory.create(workspace,recursive:true);Directory.create(home,recursive:true)}catch(_:Exception){return ""}
+    try{Directory.create(workspace,recursive:true);Directory.create(home,recursive:true)}catch(_:Exception){invocation.diagnostic="classifier_isolation_create_failed";return invocation}
     let requestPath=workspace.join("request.json");let responsePath=workspace.join("response.json");let stdoutPath=root.join("stdout.tmp");let stderrPath=root.join("stderr.tmp")
-    if(!ckbP5AtomicWrite(requestPath,request+"\n")){return ""}
+    if(!ckbP5AtomicWrite(requestPath,request+"\n")){invocation.diagnostic="classifier_request_write_failed";return invocation}
     let session="${caseId}-${config.label}-${benchmarkGapSha256(request+config.provider+config.model)}";let args=ArrayList<String>()
     for(value in ["--request",requestPath.toString(),"--output",responsePath.toString(),"--workspace",workspace.toString(),"--runtime-home",home.toString(),"--session-id",session,"--expected-provider",config.provider,"--expected-model",config.model]){args.add(value)}
     let marker=root.join("timeout.marker");let process=CkbTimedWorkerProcessLauncher(config.executable,args,workdir:workspace.toString(),cutoffAtMillis:ckbCoreNowMillis()+timeoutSeconds*1000,timeoutMarkerPath:marker.toString(),stdoutPath:stdoutPath.toString(),stderrPath:stderrPath.toString()).run()
     try{_=launch("/bin/rm",["-f",stdoutPath.toString(),stderrPath.toString()]).wait()}catch(_:Exception){}
-    if(process.exitCode!=0||process.timedOut||!exists(responsePath)){return ""}
-    let responseBytes=try{File.readFrom(responsePath)}catch(_:Exception){return ""};let response=try{String.fromUtf8(responseBytes)}catch(_:Exception){return ""}
-    let artifact=sealCkbP5ClassifierResponse(request,response,config,workspace.toString(),home.toString(),session)
+    if(process.timedOut){invocation.diagnostic="classifier_process_timeout";return invocation}
+    if(process.exitCode!=0){invocation.diagnostic="classifier_process_nonzero";return invocation}
+    if(!exists(responsePath)){invocation.diagnostic="classifier_response_missing";return invocation}
+    let responseBytes=try{File.readFrom(responsePath)}catch(_:Exception){invocation.diagnostic="classifier_response_read_failed";return invocation};let response=try{String.fromUtf8(responseBytes)}catch(_:Exception){invocation.diagnostic="classifier_response_invalid_encoding";return invocation}
+    let sealed=sealCkbP5ClassifierResponseWithDiagnostic(request,response,config,workspace.toString(),home.toString(),session)
     try{_=launch("/bin/rm",["-f",responsePath.toString()]).wait()}catch(_:Exception){}
-    if(artifact!=""){_=ckbP5AtomicWrite(root.join("classifier.json"),artifact+"\n")};artifact
+    if(sealed[0]!=""){_=ckbP5AtomicWrite(root.join("classifier.json"),sealed[0]+"\n");invocation.artifact=sealed[0]};invocation.diagnostic=sealed[1];invocation
 }
 
 public func sealCkbP5ClassifierResponse(requestText:String,responseText:String,config:CkbP5ClassifierConfig,workspace:String,runtimeHome:String,session:String):String{
+    sealCkbP5ClassifierResponseWithDiagnostic(requestText,responseText,config,workspace,runtimeHome,session)[0]
+}
+
+public func sealCkbP5ClassifierResponseWithDiagnostic(requestText:String,responseText:String,config:CkbP5ClassifierConfig,workspace:String,runtimeHome:String,session:String):(String,String){
     try{
         let request=JsonValue.fromStr(requestText).asObject();let response=JsonValue.fromStr(responseText).asObject()
-        if(ckbP5String(request,"schemaVersion")!=CKB_P5_REQUEST_SCHEMA||ckbP5String(request,"caseId")==""||ckbP5String(request,"runId")==""||ckbP5String(request,"datasetVersion")==""||ckbP5Int(request,"attempt")!=1||ckbP5String(request,"runMode")!="development"||ckbP5String(response,"schemaVersion")!=CKB_P5_RESPONSE_SCHEMA||ckbP5String(response,"observedProvider")!=config.provider||ckbP5String(response,"observedModel")!=config.model||ckbP5Forbidden(responseText)){return ""}
-        let category=ckbP5String(response,"category").toAsciiLower();if(!ckbP5ClassifierCategory(category)){return ""}
+        if(ckbP5String(request,"schemaVersion")!=CKB_P5_REQUEST_SCHEMA||ckbP5String(request,"caseId")==""||ckbP5String(request,"runId")==""||
+            ckbP5String(request,"datasetVersion")==""||ckbP5Int(request,"attempt")!=1||ckbP5String(request,"runMode")!="development"){return ("","classifier_request_contract_invalid")}
+        if(ckbP5String(response,"schemaVersion")!=CKB_P5_RESPONSE_SCHEMA){return ("","classifier_response_schema_invalid")}
+        if(ckbP5String(response,"observedProvider")==""||ckbP5String(response,"observedModel")==""||ckbP5String(response,"category")==""){return ("","classifier_response_incomplete")}
+        if(ckbP5String(response,"observedProvider")!=config.provider||ckbP5String(response,"observedModel")!=config.model){return ("","classifier_response_identity_mismatch")}
+        if(ckbP5Forbidden(responseText)){return ("","classifier_response_forbidden_content")}
+        let category=ckbP5String(response,"category").toAsciiLower();if(!ckbP5ClassifierCategory(category)){return ("","classifier_response_category_invalid")}
         let providerHash=benchmarkGapSha256(ckbP5Part(config.provider)+ckbP5Part(config.model)+ckbP5Part(ckbP5String(response,"observedProvider"))+ckbP5Part(ckbP5String(response,"observedModel")))
         let workspaceId=benchmarkGapSha256(try{canonicalize(Path(workspace)).toString()}catch(_:Exception){workspace});let runtimeHomeId=benchmarkGapSha256(try{canonicalize(Path(runtimeHome)).toString()}catch(_:Exception){runtimeHome});let sessionId=benchmarkGapSha256(session)
         let sourceId=benchmarkGapSha256(config.provider+"|"+config.model+"|"+config.executable+"|"+config.classifierId)
         let shared=ckbP5SharedClassifierFields(request,response,category);let consensusHash=ckbP5ClassifierConsensusHash(JsonValue.fromStr("{${shared}}").asObject())
         let provenanceHash=benchmarkGapSha256(ckbP5Part(benchmarkGapSha256(requestText))+ckbP5Part(providerHash)+ckbP5Part(workspaceId)+ckbP5Part(runtimeHomeId)+ckbP5Part(sessionId)+ckbP5Part(sourceId))
         let base="{\"schemaVersion\":\"${CKB_P5_CLASSIFIER_SCHEMA}\",\"classifierId\":\"${ckbP5Escape(config.classifierId)}\",\"sourceEvidenceId\":\"${sourceId}\",\"provider\":\"${ckbP5Escape(config.provider)}\",\"observedProvider\":\"${ckbP5Escape(ckbP5String(response,"observedProvider"))}\",\"expectedModel\":\"${ckbP5Escape(config.model)}\",\"observedModel\":\"${ckbP5Escape(ckbP5String(response,"observedModel"))}\",\"providerIdentityHash\":\"${providerHash}\",\"provenanceHash\":\"${provenanceHash}\",\"workspaceId\":\"${workspaceId}\",\"runtimeHomeId\":\"${runtimeHomeId}\",\"sessionId\":\"${sessionId}\",${shared},\"consensusHash\":\"${consensusHash}\",\"evidenceHash\":\"\"}"
-        let hash=ckbP5ClassifierArtifactEvidenceHash(base);base.replace("\"evidenceHash\":\"\"","\"evidenceHash\":\"${hash}\"")
-    }catch(_:Exception){""}
+        let hash=ckbP5ClassifierArtifactEvidenceHash(base);(base.replace("\"evidenceHash\":\"\"","\"evidenceHash\":\"${hash}\""),"ok")
+    }catch(_:Exception){("","classifier_response_malformed")}
 }
 
 public func ckbP5ClassifierArtifactEvidenceHash(raw:String):String{try{ckbP5ClassifierArtifactHash(JsonValue.fromStr(raw).asObject())}catch(_:Exception){""}}
