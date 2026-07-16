@@ -49,6 +49,10 @@ public class CkbAbcdeRunnerOptions {
     public var providerIdentityHash: String = ""
     public var providerIdentityArtifactPath: String = ""
     public var modelTimeoutSeconds: Int64 = 180
+    public var modelEffort: String = "low"
+    public var modelMaxBudgetUsd: String = ""
+    public var modelEffortExplicit: Bool = false
+    public var modelMaxBudgetUsdExplicit: Bool = false
 
     public init() {
         this.datasetRoot = "${this.repoRoot}/test/cangjie_eval/cases/Cangjie-HumanEval"
@@ -198,6 +202,8 @@ public func parseCkbAbcdeRunnerOptions(args: Array<String>): CkbAbcdeRunnerOptio
         if (arg == "--provider-identity-hash" && i + 1 < args.size) { options.providerIdentityHash = args[i + 1].trimAscii(); i += 2; continue }
         if (arg == "--provider-identity-artifact" && i + 1 < args.size) { options.providerIdentityArtifactPath = args[i + 1].trimAscii(); i += 2; continue }
         if (arg == "--model-timeout-seconds" && i + 1 < args.size) { options.modelTimeoutSeconds = ckbAbcdeParseInt(args[i + 1], -1); i += 2; continue }
+        if (arg == "--model-effort" && i + 1 < args.size) { options.modelEffort = args[i + 1].trimAscii(); options.modelEffortExplicit = true; i += 2; continue }
+        if (arg == "--model-max-budget-usd" && i + 1 < args.size) { options.modelMaxBudgetUsd = args[i + 1].trimAscii(); options.modelMaxBudgetUsdExplicit = true; i += 2; continue }
         if (arg == "--run-id" && i + 1 < args.size) {
             options.runId = args[i + 1].trimAscii()
             i += 2
@@ -359,7 +365,7 @@ public func runCangjieEvalAbcde(args: Array<String>): Int64 {
 public func ckbAbcdeStrictUsageDiagnostic(args: Array<String>): String {
     let flags = HashSet<String>()
     let valued = HashSet<String>()
-    for (name in ["--run-mode","--dataset-version","--candidate-version","--knowledge-version","--model-fingerprint","--certification-preflight","--certification-run-manifest","--expected-model-version","--provider-identity-hash","--provider-identity-artifact","--model-timeout-seconds","--run-id","--repo-root","--runs-root","--dataset-root","--manifest","--ckb-bin","--ckb-store","--ckb-http-base","--docs-root","--case-start","--case-end","--case-id","--groups","--config","--store"]) { valued.add(name) }
+    for (name in ["--run-mode","--dataset-version","--candidate-version","--knowledge-version","--model-fingerprint","--certification-preflight","--certification-run-manifest","--expected-model-version","--provider-identity-hash","--provider-identity-artifact","--model-timeout-seconds","--model-effort","--model-max-budget-usd","--run-id","--repo-root","--runs-root","--dataset-root","--manifest","--ckb-bin","--ckb-store","--ckb-http-base","--docs-root","--case-start","--case-end","--case-id","--groups","--config","--store"]) { valued.add(name) }
     for (name in ["--help","-h","--preflight-only","--skip-claude"]) { flags.add(name) }
     let seen = HashSet<String>(); var commandSeen = false; var i: Int64 = 0
     while (i < args.size) {
@@ -372,6 +378,8 @@ public func ckbAbcdeStrictUsageDiagnostic(args: Array<String>): String {
             if (seen.contains(arg)) { return "duplicate_argument:${arg}" }
             if (i+1>=args.size || args[i+1].startsWith("--")) { return "missing_argument_value:${arg}" }
             if (arg == "--model-timeout-seconds" && ckbAbcdeModelTimeoutDiagnostic(args[i+1]) != "ok") { return ckbAbcdeModelTimeoutDiagnostic(args[i+1]) }
+            if (arg == "--model-effort" && ckbAbcdeModelEffortDiagnostic(args[i+1]) != "ok") { return ckbAbcdeModelEffortDiagnostic(args[i+1]) }
+            if (arg == "--model-max-budget-usd" && ckbAbcdeModelMaxBudgetDiagnostic(args[i+1]) != "ok") { return ckbAbcdeModelMaxBudgetDiagnostic(args[i+1]) }
             seen.add(arg); i+=2; continue
         }
         return "unknown_argument:${arg}"
@@ -381,6 +389,9 @@ public func ckbAbcdeStrictUsageDiagnostic(args: Array<String>): String {
 }
 
 public func ckbAbcdeModelTimeoutDiagnostic(value: String): String { if (value == "" || value != value.trimAscii()) { return "invalid_argument_value:--model-timeout-seconds" }; try { let parsed = Int64.parse(value); if (parsed <= 0 || parsed > 3600) { return "invalid_argument_value:--model-timeout-seconds" } } catch (_: Exception) { return "invalid_argument_value:--model-timeout-seconds" }; "ok" }
+
+public func ckbAbcdeModelEffortDiagnostic(value: String): String { if (value == "" || value != value.trimAscii() || !(["low", "medium", "high", "xhigh", "max"].contains(value))) { return "invalid_argument_value:--model-effort" }; "ok" }
+public func ckbAbcdeModelMaxBudgetDiagnostic(value: String): String { if (value == "" || value != value.trimAscii()) { return "invalid_argument_value:--model-max-budget-usd" }; let lowered = value.toAsciiLower(); if (lowered.contains("nan") || lowered.contains("inf")) { return "invalid_argument_value:--model-max-budget-usd" }; try { let parsed = Float64.parse(value); if (parsed <= 0.0 || parsed > 100.0) { return "invalid_argument_value:--model-max-budget-usd" } } catch (_: Exception) { return "invalid_argument_value:--model-max-budget-usd" }; "ok" }
 
 public func runCangjieAbcdeParitySmoke(args: Array<String>): Int64 {
     let taskContextJson = ckbAbcdeSmokeTaskContextJson()
@@ -730,10 +741,11 @@ private func ckbAbcdeRunClaude(options: CkbAbcdeRunnerOptions, group: String, gr
             ckbAbcdeAppendText("${groupRoot}/workspace-restores.jsonl", restoreJson + "\n")
             if (!restoreJson.contains("\"restored\":true")) { let blocked = CkbAbcdeCommandResult(); blocked.exitCode = 125; blocked.stderr = "workspace_restore_failed"; return blocked }
         }
-        let current = ckbAbcdeRunClaudeOnce(group, groupRoot, workspace, docsRoot, transportAttempt, options.expectedModelVersion, options.modelTimeoutSeconds)
+        let current = ckbAbcdeRunClaudeOnce(group, groupRoot, workspace, docsRoot, transportAttempt, options.expectedModelVersion, options.modelTimeoutSeconds, options.modelEffort, options.modelMaxBudgetUsd)
         last = current
         let transcript = ckbAbcdeReadText("${groupRoot}/claude-transcript.attempt-${transportAttempt}.jsonl")
         let assessment = ckbAbcdeAssessSample(transcript, options.expectedModelVersion)
+        ckbAbcdeWriteText("${groupRoot}/model-transport-diagnostic.attempt-${transportAttempt}.json", ckbAbcdeRenderModelTransportDiagnostic(transcript, current.exitCode, assessment, options.modelTimeoutSeconds, options.modelEffort, options.modelMaxBudgetUsd) + "\n")
         if (current.exitCode == 0 && assessment.completeResult && assessment.identityMatched) { sampleAttempt += 1 }
         let restoreHash = if (transportAttempt > 1) { benchmarkGapSha256(restoreJson) } else { "" }
         ckbAbcdeAppendText("${groupRoot}/claude-attempts.jsonl", "{\"attempt\":${transportAttempt},\"transportAttempt\":${transportAttempt},\"sampleAttempt\":${if (current.exitCode == 0 && assessment.completeResult && assessment.identityMatched) { sampleAttempt } else { 0 }},\"exitCode\":${current.exitCode},\"completeResult\":${assessment.completeResult},\"identityMatched\":${assessment.identityMatched},\"workspaceRestored\":${transportAttempt > 1 && restoreJson.contains("\"restored\":true")},\"restoreEvidenceHash\":\"${restoreHash}\"}\n")
@@ -750,6 +762,12 @@ public func ckbAbcdeAssessSample(transcript: String, expectedModel: String): Ckb
     let result = CkbAbcdeSampleAssessment(); var observedModel = ""
     for (line in transcript.split("\n")) { try { let object = JsonValue.fromStr(line).asObject(); if (ckbAbcdeStrictJsonString(object, "subtype") == "init") { observedModel = ckbAbcdeStrictJsonString(object, "model") }; if (ckbAbcdeStrictJsonString(object, "type") == "result" && ckbAbcdeStrictJsonString(object, "subtype") == "success" && !ckbAbcdeStrictJsonBool(object, "is_error")) { result.completeResult = true } } catch (_: Exception) {} }
     result.identityMatched = result.completeResult && observedModel == expectedModel; result.sampleAttempt = if (result.identityMatched) { 1 } else { 0 }; result
+}
+
+public func ckbAbcdeRenderModelTransportDiagnostic(transcript: String, exitCode: Int64, assessment: CkbAbcdeSampleAssessment, timeoutSeconds: Int64, effort: String, maxBudgetUsd: String): String {
+    let toolUses = ckbAbcdeCountOccurrences(transcript, "\"type\":\"tool_use\""); let toolResults = ckbAbcdeCountOccurrences(transcript, "\"type\":\"tool_result\""); let thinkingEvents = ckbAbcdeCountOccurrences(transcript, "\"subtype\":\"thinking_tokens\"")
+    let reason = if (exitCode == 124 && !assessment.completeResult) { "provider_no_terminal_result_timeout" } else if (!assessment.completeResult) { "missing_terminal_result" } else if (!assessment.identityMatched) { "model_identity_mismatch" } else { "ok" }
+    "{\"exitCode\":${exitCode},\"timeoutSeconds\":${timeoutSeconds},\"effort\":\"${ckbAbcdeJsonEscape(effort)}\",\"maxBudgetUsd\":\"${ckbAbcdeJsonEscape(maxBudgetUsd)}\",\"completeResult\":${assessment.completeResult},\"identityMatched\":${assessment.identityMatched},\"sampleEligible\":${assessment.sampleAttempt == 1},\"toolUseCount\":${toolUses},\"toolResultCount\":${toolResults},\"thinkingEventCount\":${thinkingEvents},\"terminalDiagnostic\":\"${reason}\"}"
 }
 
 public func ckbAbcdeShouldRetryTransport(exitCode: Int64, assessment: CkbAbcdeSampleAssessment): Bool { exitCode != 0 || !assessment.completeResult || !assessment.identityMatched }
@@ -805,7 +823,7 @@ private func ckbAbcdeRunClaudeOnceInCertificationSandbox(group:String,groupRoot:
 }
 public func ckbAbcdeCertificationClaudeCommand(groupRoot:String,runtimeHome:String,profilePath:String,expectedModel:String,transcript:String,stderr:String):String{"session_id=$(uuidgen | tr '[:upper:]' '[:lower:]'); printf '%s' \"$session_id\" > ${ckbAbcdeShellQuote("${groupRoot}/session-id.txt")}; HOME=${ckbAbcdeShellQuote(runtimeHome)} XDG_CONFIG_HOME=${ckbAbcdeShellQuote("${runtimeHome}/xdg-config")} XDG_CACHE_HOME=${ckbAbcdeShellQuote("${runtimeHome}/xdg-cache")} CLAUDE_CONFIG_DIR=${ckbAbcdeShellQuote("${runtimeHome}/claude-config")} ANTHROPIC_MAX_RETRIES=0 CLAUDE_CODE_MAX_RETRIES=0 sandbox-exec -f ${ckbAbcdeShellQuote(profilePath)} /opt/homebrew/bin/claude -p --verbose --no-session-persistence --session-id \"$session_id\" --model ${ckbAbcdeShellQuote(expectedModel)} --output-format stream-json --strict-mcp-config --mcp-config ${ckbAbcdeShellQuote("${runtimeHome}/mcp-config.json")} < ${ckbAbcdeShellQuote("${groupRoot}/prompt.final.md")} > ${ckbAbcdeShellQuote(transcript)} 2> ${ckbAbcdeShellQuote(stderr)}"}
 
-private func ckbAbcdeRunClaudeOnce(group: String, groupRoot: String, workspace: String, docsRoot: String, attempt: Int64, expectedModel: String, modelTimeoutSeconds: Int64): CkbAbcdeCommandResult {
+private func ckbAbcdeRunClaudeOnce(group: String, groupRoot: String, workspace: String, docsRoot: String, attempt: Int64, expectedModel: String, modelTimeoutSeconds: Int64, modelEffort: String, modelMaxBudgetUsd: String): CkbAbcdeCommandResult {
     var addDir = "--add-dir ${ckbAbcdeShellQuote(workspace)}"
     if (group == CkbAbcdeGroups.E) {
         addDir += " --add-dir ${ckbAbcdeShellQuote(docsRoot)}"
@@ -813,7 +831,9 @@ private func ckbAbcdeRunClaudeOnce(group: String, groupRoot: String, workspace: 
     let toolLimit = ckbAbcdeClaudeToolLimitForGroup(group)
     let transcript = "${groupRoot}/claude-transcript.attempt-${attempt}.jsonl"
     let stderr = "${groupRoot}/claude.attempt-${attempt}.stderr.log"
-    let command = "claude -p --verbose --no-session-persistence --model ${ckbAbcdeShellQuote(expectedModel)} --output-format stream-json --strict-mcp-config --mcp-config ${ckbAbcdeShellQuote("${groupRoot}/mcp-config.json")} ${ckbAbcdeClaudePermissionFlag()} ${toolLimit} ${addDir} < ${ckbAbcdeShellQuote("${groupRoot}/prompt.final.md")} > ${ckbAbcdeShellQuote(transcript)} 2> ${ckbAbcdeShellQuote(stderr)}"
+    let budgetFlag = if (modelMaxBudgetUsd == "") { "" } else { " --max-budget-usd ${ckbAbcdeShellQuote(modelMaxBudgetUsd)}" }
+    ckbAbcdeWriteText("${groupRoot}/model-transport-profile.json", "{\"effort\":\"${ckbAbcdeJsonEscape(modelEffort)}\",\"maxBudgetUsd\":\"${ckbAbcdeJsonEscape(modelMaxBudgetUsd)}\",\"timeoutSeconds\":${modelTimeoutSeconds},\"attempt\":${attempt}}\n")
+    let command = "claude -p --verbose --no-session-persistence --model ${ckbAbcdeShellQuote(expectedModel)} --effort ${ckbAbcdeShellQuote(modelEffort)}${budgetFlag} --output-format stream-json --strict-mcp-config --mcp-config ${ckbAbcdeShellQuote("${groupRoot}/mcp-config.json")} ${ckbAbcdeClaudePermissionFlag()} ${toolLimit} ${addDir} < ${ckbAbcdeShellQuote("${groupRoot}/prompt.final.md")} > ${ckbAbcdeShellQuote(transcript)} 2> ${ckbAbcdeShellQuote(stderr)}"
     let script = ckbAbcdeClaudeTimeoutShell(command, stderr, modelTimeoutSeconds) + "; cp ${ckbAbcdeShellQuote(transcript)} ${ckbAbcdeShellQuote("${groupRoot}/claude-transcript.jsonl")} 2>/dev/null || true; cp ${ckbAbcdeShellQuote(transcript)} ${ckbAbcdeShellQuote("${groupRoot}/claude.stdout.log")} 2>/dev/null || true; cp ${ckbAbcdeShellQuote(stderr)} ${ckbAbcdeShellQuote("${groupRoot}/claude.stderr.log")} 2>/dev/null || true; exit $code"
     ckbAbcdeRunShell(script, workspace)
 }
@@ -1621,7 +1641,9 @@ public func ckbAbcdeDevelopmentOptionsDiagnostic(options: CkbAbcdeRunnerOptions)
     if (options.datasetVersion.trimAscii() == "" || options.knowledgeVersion.trimAscii() == "" || options.modelFingerprint.trimAscii() == "") { return "frozen_lineage_required" }
     if (options.runMode == "development" && options.candidateVersion.trimAscii() == "") { return "candidate_version_required" }
     if (options.runMode == "development" && options.expectedModelVersion != "GLM-5.2") { return "development_requires_glm_5_2" }
+    if (options.runMode == "development" && ckbAbcdeModelEffortDiagnostic(options.modelEffort) != "ok") { return ckbAbcdeModelEffortDiagnostic(options.modelEffort) }
     if (options.runMode == "certification") {
+        if (options.modelEffortExplicit || options.modelMaxBudgetUsdExplicit) { return "certification_forbids_development_transport_profile" }
         if (options.caseStart != 0 || options.caseEnd != 163) { return "certification_requires_full_164" }
         if (options.groups.size != 1 || (options.groups[0] != CkbAbcdeGroups.C && options.groups[0] != CkbAbcdeGroups.D)) { return "certification_requires_single_frozen_treatment_transport" }
         if (options.skipClaude || options.preflightOnly) { return "certification_requires_real_model_execution" }
@@ -2163,5 +2185,5 @@ public func ckbAbcdeNativeTlsBootstrapScript(command: String, args: Array<String
 }
 
 private func ckbAbcdeUsage(): String {
-    "Usage: cangjie_community_knowledge_base cangjie-eval-abcde --run-mode <development|certification> --run-id <id> --dataset-version <version> --knowledge-version <version> --model-fingerprint <sha256> [--candidate-version <version>] [--model-timeout-seconds <1..3600, default 180>] [--case-id CJ-HUMANEVAL-000|--case-start 0 --case-end 163] [--groups C|D] [--runs-root <path>] [--ckb-http-base <url>] [--ckb-bin <path>] [--ckb-store <path>] [--dataset-root <path>] [--manifest <authority.jsonl>] [--docs-root <path>] [--certification-preflight <preflight.json> --certification-run-manifest <run-manifest.json> --expected-model-version <exact> --provider-identity-hash <sha256> --provider-identity-artifact <redacted.json>]\n"
+    "Usage: cangjie_community_knowledge_base cangjie-eval-abcde --run-mode <development|certification> --run-id <id> --dataset-version <version> --knowledge-version <version> --model-fingerprint <sha256> [--candidate-version <version>] [--model-timeout-seconds <1..3600, default 180>] [--model-effort <low|medium|high|xhigh|max> --model-max-budget-usd <positive>] [--case-id CJ-HUMANEVAL-000|--case-start 0 --case-end 163] [--groups C|D] [--runs-root <path>] [--ckb-http-base <url>] [--ckb-bin <path>] [--ckb-store <path>] [--dataset-root <path>] [--manifest <authority.jsonl>] [--docs-root <path>] [--certification-preflight <preflight.json> --certification-run-manifest <run-manifest.json> --expected-model-version <exact> --provider-identity-hash <sha256> --provider-identity-artifact <redacted.json>]\n"
 }
