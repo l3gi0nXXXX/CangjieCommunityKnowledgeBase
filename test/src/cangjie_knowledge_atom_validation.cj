@@ -4,7 +4,7 @@ import std.collection.{ArrayList, HashSet}
 import stdx.crypto.digest.SHA256
 import stdx.encoding.json.*
 
-public class CangjieKnowledgeAtomTestBundleResult { public var ok=false;public var diagnostic="invalid_atom_test_bundle";public var total:Int64=0;public var passed:Int64=0;public var failed:Int64=0;public init(){} }
+public class CangjieKnowledgeAtomTestBundleResult { public var ok=false;public var diagnostic="invalid_atom_test_bundle";public var total:Int64=0;public var passed:Int64=0;public var failed:Int64=0;public var atomId="";public var knowledgeText="";public var example="";public init(){} }
 
 public func validateKnowledgeAtomTestBundle(bundleJson:String):CangjieKnowledgeAtomTestBundleResult{
     let result=CangjieKnowledgeAtomTestBundleResult();let raw=bundleJson.trimAscii()
@@ -18,7 +18,7 @@ public func validateKnowledgeAtomTestBundle(bundleJson:String):CangjieKnowledgeA
         if(atomForbiddenContent(raw.toAsciiLower())){result.diagnostic="atom_content_contamination";return result}
         match(object.get("purificationPassed")){case Some(value)=>if(!value.asBool().getValue()){result.diagnostic="atom_purification_required";return result};case None=>result.diagnostic="atom_purification_required";return result}
         let categories=HashSet<String>();match(object.get("tests")){case Some(value)=>for(entry in value.asArray().getItems()){let test=entry.asObject();let category=atomJsonString(test,"category").toAsciiLower();let operation=atomJsonString(test,"operation").toAsciiLower();if(category!="positive"&&category!="negative"&&category!="boundary"){result.diagnostic="atom_test_category_invalid";return result};if(operation!="rune_count"&&operation!="contains"&&operation!="arraylist_size"){result.diagnostic="atom_test_operation_not_allowed";return result};categories.add(category);result.total+=1};case None=>result.diagnostic="atom_tests_required";return result}
-        if(!categories.contains("positive")||!categories.contains("negative")||!categories.contains("boundary")){result.diagnostic="missing_atom_test_category";return result};result.ok=true;result.diagnostic="ok";result
+        if(!categories.contains("positive")||!categories.contains("negative")||!categories.contains("boundary")){result.diagnostic="missing_atom_test_category";return result};result.atomId=atomId;result.knowledgeText=knowledgeText;result.example=atomJsonString(object,"example");result.ok=true;result.diagnostic="ok";result
     }catch(_:Exception){result.diagnostic="malformed_atom_test_bundle";result}
 }
 public func cangjieKnowledgeAtomCandidateHash(bundleJson:String):String{try{let object=JsonValue.fromStr(bundleJson.trimAscii()).asObject();let tests=match(object.get("tests")){case Some(value)=>value.toString();case None=>""};let purified=match(object.get("purificationPassed")){case Some(value)=>"${value.asBool().getValue()}";case None=>""};let canonical=atomCanonicalPart(atomJsonString(object,"atomId"))+atomCanonicalPart(atomJsonString(object,"sourceClass").toAsciiLower())+atomCanonicalPart(atomJsonString(object,"citation").toAsciiLower())+atomCanonicalPart(atomJsonString(object,"targetVersion"))+atomCanonicalPart(atomJsonString(object,"knowledgeText"))+atomCanonicalPart(purified)+atomCanonicalPart(tests);let digest=SHA256();digest.write(canonical.toArray());let out=StringBuilder();for(byte in digest.finish()){out.append(atomHexNibble(byte/UInt8(16)));out.append(atomHexNibble(byte%UInt8(16)))};"sha256:${out.toString()}"}catch(_:Exception){""}}

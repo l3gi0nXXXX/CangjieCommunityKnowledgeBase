@@ -17,6 +17,9 @@ public class CangjieEvalModelTimeoutOptionTest {
         @Expect(shell.contains("-ge 321"), true)
         @Expect(shell.contains("claude_timeout_after_321s"), true)
         @Expect(shell.contains("code=124"), true)
+        let health = ckbAbcdePreflightHttpHealthCommand("http://127.0.0.1:18891")
+        @Expect(health.contains("--max-time 15"), true)
+        @Expect(health.contains("http://127.0.0.1:18891/v1/health"), true)
     }
 
     @TestCase

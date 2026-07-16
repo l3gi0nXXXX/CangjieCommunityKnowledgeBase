@@ -1172,7 +1172,7 @@ private func ckbAbcdePreflight(options: CkbAbcdeRunnerOptions, runRoot: String):
     result.add("claude_cli", ckbAbcdeRunShell("command -v claude >/dev/null && claude --version >/dev/null", "").exitCode == 0, "claude command available")
     result.add("claude_glm52_settings", ckbAbcdeClaudeSettingsLooksGlm52(), "~/.claude/settings.json model keys")
     result.add("cjpm_cli", ckbAbcdeRunShell("command -v cjpm >/dev/null && cjpm --version >/dev/null", "").exitCode == 0, "cjpm command available")
-    result.add("ckb_http_health", ckbAbcdeRunShell("curl --max-time 5 -fsS ${ckbAbcdeShellQuote("${options.ckbHttpBase}/v1/health")} >/dev/null", "").exitCode == 0, options.ckbHttpBase)
+    result.add("ckb_http_health", ckbAbcdeRunShell(ckbAbcdePreflightHttpHealthCommand(options.ckbHttpBase), "").exitCode == 0, options.ckbHttpBase)
     result.add("ckb_http_schema", ckbAbcdeRunShell("curl --max-time 5 -fsS ${ckbAbcdeShellQuote("${options.ckbHttpBase}/v1/schema")} | grep -q cangjie_task_knowledge_pack", "").exitCode == 0, "${options.ckbHttpBase}/v1/schema")
     let stdioRoot = "${runRoot}/preflight-stdio"
     ckbAbcdeEnsureDir(stdioRoot)
@@ -1189,6 +1189,8 @@ private func ckbAbcdePreflight(options: CkbAbcdeRunnerOptions, runRoot: String):
     result.add("transport_parity", parity.ok, "${runRoot}/preflight-parity.jsonl diagnostic=${parity.diagnostic}")
     result
 }
+
+public func ckbAbcdePreflightHttpHealthCommand(baseUrl:String):String{"curl --max-time 15 -fsS ${ckbAbcdeShellQuote("${baseUrl}/v1/health")} >/dev/null"}
 
 private func ckbAbcdeRenderPreflightJson(options: CkbAbcdeRunnerOptions, runRoot: String, result: CkbAbcdePreflightResult): String {
     var checks = ""

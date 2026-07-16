@@ -3847,6 +3847,9 @@ public func ckbVectorReconcileWithVectorStore(kb: KnowledgeBase, store: FileKnow
     if (ckbVectorReconcileDeadlineExceeded(result, "before_rebuild", deadlineAtMillis)) {
         return result
     }
+    if (!ckbVectorReconcilePrepareUniqueBenchmarkGapSnapshot(kb, store, result)) {
+        return result
+    }
     let stagingCollection = ckbVectorReconcileStagingCollection(effective.effectiveActiveCollection)
     let progressSink = FileVectorBuildProgressSink(store)
     let rebuild = ckbRebuildIndex(kb, store, progressSink: progressSink, targetVectorCollection: stagingCollection, persistSnapshot: false, deadlineAtMillis: deadlineAtMillis)
@@ -3911,6 +3914,65 @@ public func ckbVectorReconcileWithVectorStore(kb: KnowledgeBase, store: FileKnow
     result.vectorState = EmbeddingProviderState.READY
     result.diagnostics.add("qdrant_logical_promote_succeeded:${stagingCollection}")
     result
+}
+
+private func ckbVectorReconcilePrepareUniqueBenchmarkGapSnapshot(kb: KnowledgeBase, store: FileKnowledgeStore,
+    result: CkbVectorReconcileResult): Bool {
+    let snapshot = store.loadActiveSnapshot()
+    if (!snapshot.valid) {
+        if (!store.has("metadata/active-snapshot.manifest")) {
+            return true
+        }
+        result.ok = false
+        result.diagnostics.add("active_snapshot_dedup_unavailable:${snapshot.diagnostic}")
+        return false
+    }
+    let empty = ArrayList<NormalizedRecord>()
+    let active = overlayBenchmarkGapRecords(snapshot.activeIndex, empty)
+    let normalized = overlayBenchmarkGapRecords(snapshot.normalizedRecords, empty)
+    if (!ckbBenchmarkGapOverlayChanged(snapshot.activeIndex, active) &&
+        !ckbBenchmarkGapOverlayChanged(snapshot.normalizedRecords, normalized)) {
+        return true
+    }
+    let raw = ckbBenchmarkGapCandidateRawOverlay(snapshot.rawRecords, empty)
+    let removed = snapshot.activeIndex.size - active.size
+    let migrated = ckbBenchmarkGapMigratedIdentityCount(snapshot.activeIndex, active)
+    snapshot.activeIndex.clear(); for (record in active) { snapshot.activeIndex.add(record) }
+    snapshot.normalizedRecords.clear(); for (record in normalized) { snapshot.normalizedRecords.add(record) }
+    snapshot.rawRecords.clear(); for (record in raw) { snapshot.rawRecords.add(record) }
+    snapshot.vectorRecords.clear(); snapshot.hasVectorArtifact = false
+    if (!kb.restoreActiveSnapshot(snapshot)) {
+        result.ok = false
+        result.diagnostics.add("active_snapshot_dedup_restore_failed")
+        return false
+    }
+    result.activeRecords = active.size
+    if (removed > 0) { result.diagnostics.add("benchmark_gap_exact_duplicates_removed:${removed}") }
+    if (migrated > 0) { result.diagnostics.add("benchmark_gap_legacy_identities_migrated:${migrated}") }
+    true
+}
+
+private func ckbBenchmarkGapOverlayChanged(before: ArrayList<NormalizedRecord>, after: ArrayList<NormalizedRecord>): Bool {
+    if (before.size != after.size) { return true }
+    for (index in 0..before.size) {
+        if (before[index].sourceId != after[index].sourceId) { return true }
+    }
+    false
+}
+
+private func ckbBenchmarkGapMigratedIdentityCount(before: ArrayList<NormalizedRecord>, after: ArrayList<NormalizedRecord>): Int64 {
+    let migrated = HashSet<String>()
+    for (record in before) {
+        if (record.sourceId.startsWith("curated-gap-h")) {
+            migrated.add(benchmarkGapLegacyPersistentSourceId(record.metadata.path, record.metadata.symbol,
+                record.metadata.targetVersion, record.metadata.docVersion, record.title, record.chunk))
+        }
+    }
+    var count: Int64 = 0
+    for (record in after) {
+        if (migrated.contains(record.sourceId)) { count += 1 }
+    }
+    count
 }
 
 private func ckbVectorReconcileDeadlineExceeded(result: CkbVectorReconcileResult, stage: String, deadlineAtMillis: Int64): Bool {
@@ -10471,7 +10533,7 @@ public func ckbSyncProfileForScheduleTask(name: String): CkbScheduleTaskProfile 
         profile.profile = "cangjie_benchmark_gap_curation"
         profile.networkGate = "offline_visible_artifacts_only"
         profile.candidateMode = "curated_candidate_validate_promote"
-        profile.timeBudgetMillis = 90000
+        profile.timeBudgetMillis = 600000
         profile.requestCount = 0
         profile.updatedDataKinds.add("benchmark_gap_curation")
         profile.updatedDataKinds.add("negative_rules")
@@ -10509,12 +10571,14 @@ private func ckbApplySchedulerProfileStageBudgets(profile: CkbScheduleTaskProfil
     if (profile.profile == "full_rebuild") {
         ckbSetSchedulerProfileStageBudgets(profile, 0, 30000, 150000, 60000, 45000, 15000)
     } else if (profile.profile == "cangjie_benchmark_gap_curation") {
-        // Deterministic 440-case calibration: 5/10/20/15/10/5/5/10/5/5 = 90s.
-        profile.bootstrapBudgetMillis = 5000
-        ckbSetSchedulerProfileStageBudgets(profile, 10000, 20000, 15000, 10000, 5000, 10000)
-        profile.activeCommitBudgetMillis = 5000
-        profile.resultFlushBudgetMillis = 5000
-        profile.unallocatedSafetyMillis = 5000
+        // The 440-row fixture did not include the real 9,089-record active
+        // snapshot bootstrap/vector/snapshot cost. Keep each durable stage
+        // bounded while allowing the production-scale candidate to finish.
+        profile.bootstrapBudgetMillis = 30000
+        ckbSetSchedulerProfileStageBudgets(profile, 10000, 60000, 240000, 60000, 120000, 20000)
+        profile.activeCommitBudgetMillis = 30000
+        profile.resultFlushBudgetMillis = 10000
+        profile.unallocatedSafetyMillis = 20000
     } else if (profile.profile == "cangjie_release_full_sync") {
         profile.bootstrapBudgetMillis = 40000
         ckbSetSchedulerProfileStageBudgets(profile, 80000, 20000, 180000, 40000, 50000, 0)
@@ -10569,7 +10633,8 @@ public func ckbBenchmarkGapBudgetCalibrationEvidence(): String {
         sum += allocated
         evidence += "|${names[index]}P95=${p95[index]}|${names[index]}Headroom=${allocated}"
     }
-    evidence += "|sum=${sum}|hard=90000"
+    evidence += "|fixtureSum=${sum}|realActiveRecords=9089|realBootstrapFailureMillis=8557"
+    evidence += "|allocatedBootstrap=30000|hard=600000"
     evidence += "|evidenceHash=${ckbReleaseEvidenceHash(evidence)}"
     evidence
 }
@@ -10630,14 +10695,14 @@ public func ckbValidateSchedulerProfileBudgetPlan(profile: CkbScheduleTaskProfil
         result.workerSoftBudgetMillis = profile.timeBudgetMillis -
             profile.resultFlushBudgetMillis - profile.unallocatedSafetyMillis
     }
-    let invalidBenchmarkGap = isBenchmarkGap && (profile.timeBudgetMillis != 90000 ||
-        profile.bootstrapBudgetMillis != 5000 || profile.fetchBudgetMillis != 10000 ||
-        profile.ingestBudgetMillis != 20000 || profile.vectorBudgetMillis != 15000 ||
-        profile.validationBudgetMillis != 10000 || profile.activeCommitBudgetMillis != 5000 ||
-        profile.snapshotBudgetMillis != 5000 || profile.proofBudgetMillis != 10000 ||
-        profile.resultFlushBudgetMillis != 5000 || profile.unallocatedSafetyMillis != 5000 ||
-        result.businessBudgetMillis != 80000 || result.plannedBudgetMillis != 90000 ||
-        result.workerSoftBudgetMillis != 80000)
+    let invalidBenchmarkGap = isBenchmarkGap && (profile.timeBudgetMillis != 600000 ||
+        profile.bootstrapBudgetMillis != 30000 || profile.fetchBudgetMillis != 10000 ||
+        profile.ingestBudgetMillis != 60000 || profile.vectorBudgetMillis != 240000 ||
+        profile.validationBudgetMillis != 60000 || profile.activeCommitBudgetMillis != 30000 ||
+        profile.snapshotBudgetMillis != 120000 || profile.proofBudgetMillis != 20000 ||
+        profile.resultFlushBudgetMillis != 10000 || profile.unallocatedSafetyMillis != 20000 ||
+        result.businessBudgetMillis != 570000 || result.plannedBudgetMillis != 600000 ||
+        result.workerSoftBudgetMillis != 570000)
     let invalidHistorical = !isRelease && !isSourceEvent && !isBenchmarkGap && result.plannedBudgetMillis > profile.timeBudgetMillis
     if (hasNegative || profile.timeBudgetMillis <= 0 || invalidRelease || invalidSourceEvent || invalidBenchmarkGap || invalidHistorical) {
         result.diagnostic = "invalid_profile_budget_plan:profile=${profile.profile}|businessBudgetMs=${result.businessBudgetMillis}|executionBudgetMs=${result.executionBudgetMillis}|plannedBudgetMs=${result.plannedBudgetMillis}|workerSoftBudgetMs=${result.workerSoftBudgetMillis}|timeBudgetMs=${profile.timeBudgetMillis}"
@@ -17748,7 +17813,7 @@ private func ingestScheduledBenchmarkGapCuration(kb: KnowledgeBase, store: FileK
             return result
         }
     }
-    let candidateRecords = kb.activeRecordSnapshotOverlay(curated.records)
+    let candidateRecords = overlayBenchmarkGapRecords(kb.activeRecordSnapshot(), curated.records)
     let baseActiveVersion = if (kb.status().activeKnowledgeVersion == "") { "none" } else { kb.status().activeKnowledgeVersion }
     let recordsEvidenceHash = ckbCandidateRecordsEvidenceHash(candidateRecords, stagedCandidateVersion: candidateVersion)
     let expectedProof = ckbNewBenchmarkGapProofCheckpoint(scanPlan, candidateVersion,
@@ -17923,13 +17988,64 @@ private func ckbBenchmarkGapCandidateRawOverlay(active: ArrayList<RawRecord>,
     records: ArrayList<NormalizedRecord>): ArrayList<RawRecord> {
     let replacements = HashSet<String>()
     for (record in records) { replacements.add(record.sourceId) }
+    let seenGapPoints = HashSet<String>()
     let out = ArrayList<RawRecord>()
-    for (record in active) { if (!replacements.contains(record.sourceId)) { out.add(record) } }
+    for (record in active) {
+        if (replacements.contains(record.sourceId) || ckbBenchmarkGapRawReplaced(record, records)) { continue }
+        let persisted = ckbBenchmarkGapMigrateLegacyRawRecord(record)
+        if (ckbBenchmarkGapRawRecord(persisted)) {
+            let pointId = ckbBenchmarkGapRawPointId(persisted)
+            if (seenGapPoints.contains(pointId)) { continue }
+            seenGapPoints.add(pointId)
+        }
+        out.add(persisted)
+    }
     for (record in records) {
         let raw = RawRecord(); raw.sourceId = record.sourceId; raw.title = record.title
         raw.content = record.chunk; raw.contentHash = stableSummaryHash(record.chunk)
         raw.metadata = record.metadata; raw.requiresReview = record.requiresReview; out.add(raw)
     }
+    out
+}
+
+private func ckbBenchmarkGapRawReplaced(record: RawRecord, replacements: ArrayList<NormalizedRecord>): Bool {
+    if (!ckbBenchmarkGapRawRecord(record)) { return false }
+    for (replacement in replacements) {
+        if (record.metadata.path == replacement.metadata.path &&
+            record.metadata.symbol == replacement.metadata.symbol &&
+            record.metadata.targetVersion == replacement.metadata.targetVersion &&
+            (record.metadata.docVersion == "" || replacement.metadata.docVersion == "" ||
+                record.metadata.docVersion == replacement.metadata.docVersion)) {
+            return true
+        }
+    }
+    false
+}
+
+private func ckbBenchmarkGapRawRecord(record: RawRecord): Bool {
+    record.sourceId.startsWith("curated-gap-") &&
+        record.metadata.sourceSet == CangjieSourceSets.EVAL_SUPPORT &&
+        record.metadata.path.startsWith("visible-benchmark/")
+}
+
+private func ckbBenchmarkGapRawPointId(record: RawRecord): String {
+    let normalized = NormalizedRecord()
+    normalized.sourceId = record.sourceId; normalized.title = record.title
+    normalized.chunk = record.content; normalized.citation = record.metadata.sourceUrl
+    normalized.metadata = record.metadata
+    ckbVectorPointId(normalized)
+}
+
+private func ckbBenchmarkGapMigrateLegacyRawRecord(record: RawRecord): RawRecord {
+    if (!ckbBenchmarkGapRawRecord(record) || !record.sourceId.startsWith("curated-gap-h")) {
+        return record
+    }
+    let out = RawRecord()
+    out.sourceId = benchmarkGapLegacyPersistentSourceId(record.metadata.path, record.metadata.symbol,
+        record.metadata.targetVersion, record.metadata.docVersion, record.title, record.content)
+    out.title = record.title; out.content = record.content; out.contentHash = record.contentHash
+    out.metadata = cangjieCopyKnowledgeMetadata(record.metadata); out.metadata.sourceId = out.sourceId
+    out.requiresReview = record.requiresReview
     out
 }
 
@@ -17955,6 +18071,7 @@ public func ckbBuildBenchmarkGapScanPlan(records: ArrayList<NormalizedRecord>, i
         // canonical record key. Preserve that ordered identity; do not invent
         // a second case-id parser in the scheduler layer.
         identity.append("|record=${record.sourceId.size}:${record.sourceId}")
+        identity.append("|evidence=${ckbCandidateRecordsEvidenceHash(singleBenchmarkGapRecord(record))}")
     }
     plan.planHash = ckbReleaseEvidenceHash(identity.toString())
     plan.checksum = ckbBenchmarkGapScanPlanChecksum(plan)
@@ -18268,8 +18385,9 @@ public func ckbBenchmarkGapProofForCandidate(record: NormalizedRecord, candidate
     let proof = CkbBenchmarkGapProofResult()
     proof.caseIdentity = record.sourceId
     proof.recordHash = ckbCandidateRecordsEvidenceHash(singleBenchmarkGapRecord(record), stagedCandidateVersion: candidateVersion)
+    let atomKnowledgeMissing = ckbBenchmarkGapAtomKnowledgeMissing(record)
     if (forcedStatus == "retryable") { proof.status = "retryable"; proof.errorCode = "candidate_query_retryable" }
-    else if (forcedStatus == "failed" || record.citation.trimAscii() == "") { proof.status = "failed"; proof.errorCode = "candidate_coverage_failed" }
+    else if (forcedStatus == "failed" || record.citation.trimAscii() == "" || atomKnowledgeMissing) { proof.status = "failed"; proof.errorCode = if (atomKnowledgeMissing) { "candidate_atom_knowledge_missing" } else { "candidate_coverage_failed" } }
     else {
         proof.status = "passed"; proof.coveragePass = true; proof.citationCount = 1
         proof.citationHashes.add(ckbReleaseEvidenceHash(record.citation.trimAscii()))
@@ -18279,6 +18397,18 @@ public func ckbBenchmarkGapProofForCandidate(record: NormalizedRecord, candidate
         ((proof.status == "passed" && proof.coveragePass && proof.citationCount > 0) ||
          (proof.status == "failed" && !proof.coveragePass) || proof.status == "retryable")
     proof
+}
+
+private func ckbBenchmarkGapAtomKnowledgeMissing(record: NormalizedRecord): Bool {
+    var atomDerived = false
+    for (source in record.metadata.derivedFrom) {
+        if (source.startsWith("knowledge-atom:")) { atomDerived = true; break }
+    }
+    if (!atomDerived) { return false }
+    for (line in record.chunk.split("\n")) {
+        if (line.startsWith("Knowledge: ") && line.replace("Knowledge: ", "").trimAscii() != "") { return false }
+    }
+    true
 }
 
 public func ckbRenderBenchmarkGapProofDiagnostic(proof: CkbBenchmarkGapProofResult): String {

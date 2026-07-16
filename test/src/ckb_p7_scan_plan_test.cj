@@ -30,6 +30,11 @@ public class CkbP7ScanPlanTest {
         records[439].sourceId = "changed-canonical-source"
         let changed = ckbBuildBenchmarkGapScanPlan(records, "canonical-中文🙂-440", "1.0.0")
         @Expect(changed.planHash == one.planHash, false)
+
+        let contentRecords = p7S2Records(440)
+        contentRecords[439].chunk += "\nKnowledge: changed transformation 中文🙂"
+        let contentChanged = ckbBuildBenchmarkGapScanPlan(contentRecords, "canonical-中文🙂-440", "1.0.0")
+        @Expect(contentChanged.planHash == one.planHash, false)
     }
 
     @TestCase

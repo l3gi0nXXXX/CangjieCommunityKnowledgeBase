@@ -198,6 +198,63 @@ public class CkbVectorReconcileTest {
     }
 
     @TestCase
+    public func vectorReconcileTransactionallyRemovesExactLegacyBenchmarkGapDuplicates(): Unit {
+        let root = "target/ckb-vector-reconcile-benchmark-gap-duplicates"
+        ckbVectorReconcileEnsureEmptyDir(root)
+        let store = FileKnowledgeStore(root)
+        let vectorStore = ReconcileTrackingVectorStore()
+        let provider = ReconcileEmbeddingProvider(batchSize: 2)
+        let kb = ckbVectorReconcileKnowledgeBaseWithProvider(vectorStore, provider)
+        let transaction = ckbVectorReconcileWriteExactBenchmarkGapDuplicates(store, kb)
+        @Expect(transaction.businessCommitted, true)
+        @Expect(kb.restoreActiveSnapshot(store.loadActiveSnapshot()), true)
+        @Expect(kb.status().storage.indexCount, 2)
+
+        let result = ckbVectorReconcileWithVectorStore(kb, store,
+            ckbVectorReconcileRuntimeConfig(), vectorStore, true)
+        let committed = store.loadActiveSnapshot()
+
+        @Expect(result.ok, true)
+        @Expect(result.activeRecords, 1)
+        @Expect(result.rebuiltVectorCount, 1)
+        @Expect(result.qdrantAfterCount, 1)
+        @Expect(ckbVectorReconcileContains(result.diagnostics,
+            "benchmark_gap_exact_duplicates_removed:1"), true)
+        @Expect(ckbVectorReconcileContains(result.diagnostics,
+            "benchmark_gap_legacy_identities_migrated:1"), true)
+        @Expect(committed.valid, true)
+        @Expect(committed.activeIndex.size, 1)
+        @Expect(committed.normalizedRecords.size, 1)
+        @Expect(committed.rawRecords.size, 1)
+        @Expect(committed.activeIndex[0].sourceId.startsWith("curated-gap-legacy-"), true)
+        @Expect(committed.activeIndex[0].sourceId, committed.rawRecords[0].sourceId)
+    }
+
+    @TestCase
+    public func vectorReconcileDoesNotCommitBenchmarkGapDedupWhenVectorBuildFails(): Unit {
+        let root = "target/ckb-vector-reconcile-benchmark-gap-rollback"
+        ckbVectorReconcileEnsureEmptyDir(root)
+        let store = FileKnowledgeStore(root)
+        let vectorStore = ReconcileTrackingVectorStore(); vectorStore.failUpsertBatch = true
+        let provider = ReconcileEmbeddingProvider(batchSize: 2)
+        let kb = ckbVectorReconcileKnowledgeBaseWithProvider(vectorStore, provider)
+        @Expect(ckbVectorReconcileWriteExactBenchmarkGapDuplicates(store, kb).businessCommitted, true)
+        @Expect(kb.restoreActiveSnapshot(store.loadActiveSnapshot()), true)
+
+        let result = ckbVectorReconcileWithVectorStore(kb, store,
+            ckbVectorReconcileRuntimeConfig(), vectorStore, true)
+        let unchanged = store.loadActiveSnapshot()
+
+        @Expect(result.ok, false)
+        @Expect(ckbVectorReconcileContains(result.diagnostics,
+            "benchmark_gap_exact_duplicates_removed:1"), true)
+        @Expect(unchanged.valid, true)
+        @Expect(unchanged.activeIndex.size, 2)
+        @Expect(unchanged.normalizedRecords.size, 2)
+        @Expect(unchanged.rawRecords.size, 2)
+    }
+
+    @TestCase
     public func vectorReconcileFailsWhenVectorStoreRejectsRebuildBatch(): Unit {
         let root = "target/ckb-vector-reconcile-upsert-failure"
         ckbVectorReconcileEnsureEmptyDir(root)
@@ -563,6 +620,38 @@ private func ckbVectorReconcileWriteDuplicateActiveSnapshot(store: FileKnowledge
     status.storage.indexCount = duplicateIndex.size
     store.writeActiveSnapshotTransaction(status, rawRecords, duplicateIndex, duplicateIndex,
         ArrayList<VectorRecord>(), "ckb_active", GraphBuildResult(), persistVectorFile: false)
+}
+
+private func ckbVectorReconcileWriteExactBenchmarkGapDuplicates(store: FileKnowledgeStore,
+    kb: KnowledgeBase): CkbActiveSnapshotTransactionResult {
+    let status = kb.status()
+    let record = ckbVectorReconcileBenchmarkGapRecord(status.activeKnowledgeVersion)
+    let active = ArrayList<NormalizedRecord>(); active.add(record); active.add(record)
+    let raw = ArrayList<RawRecord>()
+    raw.add(ckbVectorReconcileRawRecord(record)); raw.add(ckbVectorReconcileRawRecord(record))
+    status.storage.rawCount = 2; status.storage.normalizedCount = 2; status.storage.indexCount = 2
+    store.writeActiveSnapshotTransaction(status, raw, active, active,
+        ArrayList<VectorRecord>(), "ckb_active", GraphBuildResult(), persistVectorFile: false)
+}
+
+private func ckbVectorReconcileBenchmarkGapRecord(activeVersion: String): NormalizedRecord {
+    let record = NormalizedRecord()
+    record.sourceId = "curated-gap-h5633"
+    record.recordKind = CangjieTypedRecordKinds.EVAL_SUPPORT
+    record.title = "HumanEval gap CJ-HUMANEVAL-020: G-RANGE"
+    record.chunk = "Task: range 中文🙂\nMissing knowledge: G-RANGE"
+    record.citation = "https://docs.cangjie-lang.cn/docs/1.0.0/"
+    record.metadata.sourceId = record.sourceId
+    record.metadata.sourceType = SourceTypes.DERIVED
+    record.metadata.sourceSet = CangjieSourceSets.EVAL_SUPPORT
+    record.metadata.path = "visible-benchmark/Cangjie-HumanEval/CJ-HUMANEVAL-020/KI-04"
+    record.metadata.symbol = "KI-04:G-RANGE"
+    record.metadata.targetVersion = "1.0.0"
+    record.metadata.knowledgeVersion = activeVersion
+    record.metadata.trustLevel = TrustLevels.OFFICIAL
+    record.metadata.reviewState = ReviewStates.REVIEWED
+    record.metadata.contentSize = record.chunk.size
+    record
 }
 
 private func ckbVectorReconcileDuplicateRecord(sourceId: String, activeVersion: String, chunk: String): NormalizedRecord {

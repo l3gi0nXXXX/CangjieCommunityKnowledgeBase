@@ -50,7 +50,52 @@ public class CangjieBenchmarkGapCurationTest {
         @Expect(result.accepted, 1)
         @Expect(result.duplicates, 1)
         @Expect(result.records.size, 1)
-        @Expect(result.records[0].sourceId, "curated-gap-${stableSummaryHash("CJ-DUPLICATE:KI-02:KC-02:KU-11:G-ARRAYLIST")}")
+        @Expect(result.records[0].sourceId.startsWith("curated-gap-"), true)
+        @Expect(result.records[0].sourceId.size, 76)
+    }
+
+    @TestCase
+    public func p7S1P02PersistentIdentityDoesNotReuseWeakLengthHash(): Unit {
+        let left = curateBenchmarkGapRecordsFromJsonl(p7S1GapJson("CJ-HASH-AA", "task"))
+        let right = curateBenchmarkGapRecordsFromJsonl(p7S1GapJson("CJ-HASH-BB", "task"))
+
+        @Expect(stableSummaryHash("CJ-HASH-AA:KI-02:KC-02:KU-11:G-ARRAYLIST"),
+            stableSummaryHash("CJ-HASH-BB:KI-02:KC-02:KU-11:G-ARRAYLIST"))
+        @Expect(left.records[0].sourceId != right.records[0].sourceId, true)
+        @Expect(left.records[0].sourceId, benchmarkGapPersistentSourceId(parseBenchmarkGapInputsJsonl(p7S1GapJson("CJ-HASH-AA", "task")).inputs[0]))
+    }
+
+    @TestCase
+    public func p7S1P03OverlayRepairsLegacyDuplicatesWithoutCrossDatasetOverwrite(): Unit {
+        let legacyResult = curateBenchmarkGapRecordsFromJsonl(p7S1GapJson("CJ-OVERLAY", "task"))
+        let legacy = legacyResult.records[0]
+        legacy.sourceId = "curated-gap-${stableSummaryHash("CJ-OVERLAY:KI-02:KC-02:KU-11:G-ARRAYLIST")}"
+        legacy.metadata.sourceId = legacy.sourceId
+        legacy.metadata.docVersion = ""
+        let collision = curateBenchmarkGapRecordsFromJsonl(p7S1GapJson("CJ-COLLIDE", "other task")).records[0]
+        collision.sourceId = legacy.sourceId
+        collision.metadata.sourceId = collision.sourceId
+        let migratedCollisionId = benchmarkGapLegacyPersistentSourceId(collision.metadata.path,
+            collision.metadata.symbol, collision.metadata.targetVersion, collision.metadata.docVersion,
+            collision.title, collision.chunk)
+        let active = ArrayList<NormalizedRecord>()
+        active.add(legacy); active.add(legacy); active.add(collision)
+
+        let datasetOne = p7S1GapInput("CJ-OVERLAY", "task", "dataset-v1")
+        let datasetOneInputs = ArrayList<CangjieBenchmarkGapInput>(); datasetOneInputs.add(datasetOne)
+        let deltaOne = curateBenchmarkGapRecords(datasetOneInputs).records
+        let repaired = overlayBenchmarkGapRecords(active, deltaOne)
+        @Expect(repaired.size, 2)
+        @Expect(p7S1ContainsSource(repaired, migratedCollisionId, collision.chunk), true)
+        @Expect(p7S1ContainsSource(repaired, deltaOne[0].sourceId, deltaOne[0].chunk), true)
+
+        let datasetTwo = p7S1GapInput("CJ-OVERLAY", "task", "dataset-v2")
+        let datasetTwoInputs = ArrayList<CangjieBenchmarkGapInput>(); datasetTwoInputs.add(datasetTwo)
+        let deltaTwo = curateBenchmarkGapRecords(datasetTwoInputs).records
+        let versioned = overlayBenchmarkGapRecords(repaired, deltaTwo)
+        @Expect(versioned.size, 3)
+        @Expect(versioned[1].metadata.docVersion, "dataset-v1")
+        @Expect(versioned[2].metadata.docVersion, "dataset-v2")
     }
 
     @TestCase
@@ -165,4 +210,21 @@ private func p7S1Repeat(value: String, count: Int64): String {
     let out = StringBuilder()
     for (_ in 0..count) { out.append(value) }
     out.toString()
+}
+
+private func p7S1GapInput(caseId: String, taskText: String, datasetVersion: String): CangjieBenchmarkGapInput {
+    let input = CangjieBenchmarkGapInput()
+    input.caseId = caseId; input.benchmark = "Cangjie-HumanEval"; input.datasetVersion = datasetVersion
+    input.taskText = taskText; input.visibleTestExcerpt = "assert true"; input.compilerOutput = "compile_error"
+    input.missingKnowledge = "G-ARRAYLIST"; input.interfaceId = "KI-02"; input.contentFamily = "KC-02"
+    input.updateMechanism = "KU-11"; input.targetVersion = "1.0.0"
+    input.officialCitation = "https://docs.cangjie-lang.cn/docs/1.0.0/libs/std/collection"
+    input
+}
+
+private func p7S1ContainsSource(records: ArrayList<NormalizedRecord>, sourceId: String, chunk: String): Bool {
+    for (record in records) {
+        if (record.sourceId == sourceId && record.chunk == chunk) { return true }
+    }
+    false
 }

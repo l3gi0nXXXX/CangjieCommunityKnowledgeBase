@@ -14,10 +14,13 @@ public class CkbP7ProofTest {
         let passed = ckbBenchmarkGapProofForCandidate(record, "candidate-u", "active-u")
         let failed = ckbBenchmarkGapProofForCandidate(record, "candidate-u", "active-u", forcedStatus: "failed")
         let retryable = ckbBenchmarkGapProofForCandidate(record, "candidate-u", "active-u", forcedStatus: "retryable")
+        record.metadata.derivedFrom = ["knowledge-atom:G-RANGE"]
+        let missingAtom = ckbBenchmarkGapProofForCandidate(record, "candidate-u", "active-u")
         let rendered = ckbRenderBenchmarkGapProofDiagnostic(failed) + ":coveragePass=true"
         @Expect(passed.valid, true); @Expect(passed.status, "passed"); @Expect(passed.coveragePass, true); @Expect(passed.citationCount, 1); @Expect(passed.evidenceHash.size, 64)
         @Expect(failed.valid, true); @Expect(failed.status, "failed"); @Expect(failed.coveragePass, false)
         @Expect(retryable.valid, true); @Expect(retryable.status, "retryable"); @Expect(retryable.errorCode, "candidate_query_retryable")
+        @Expect(missingAtom.valid, true); @Expect(missingAtom.status, "failed"); @Expect(missingAtom.errorCode, "candidate_atom_knowledge_missing")
         @Expect(rendered.contains("coveragePass=true"), true); @Expect(failed.coveragePass, false)
     }
 

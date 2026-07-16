@@ -46,18 +46,21 @@ public class CkbP7BudgetTerminalityTest {
     public func p7S5U01BudgetIsExecutableSegmentedAndRoundTripsTerminality(): Unit {
         let profile = ckbSyncProfileForScheduleTask("cangjie_benchmark_gap_curation")
         let validation = ckbValidateSchedulerProfileBudgetPlan(profile)
-        let plan = ckbCandidatePromotionBudgetPlanForProfile(profile, 80000, P7S5FixedClock(1000))
+        let plan = ckbCandidatePromotionBudgetPlanForProfile(profile, 570000, P7S5FixedClock(1000))
         let task = SchedulerTaskResult(); task.status = "benchmark_gap_proof_checkpointed"; task.terminality = "nonterminal_retryable"
         let parsed = ckbSchedulerTaskResultFromText(ckbSchedulerTaskResultText(task))
         let calibration = ckbBenchmarkGapBudgetCalibrationEvidence()
-        @Expect(validation.ok, true); @Expect(validation.plannedBudgetMillis, 90000); @Expect(validation.workerSoftBudgetMillis, 80000)
-        @Expect(profile.bootstrapBudgetMillis > 0, true); @Expect(profile.resultFlushBudgetMillis, 5000); @Expect(profile.unallocatedSafetyMillis, 5000)
-        @Expect(plan.segmented, true); @Expect(plan.proofBudgetMillis, 10000); @Expect(plan.activeCommitBudgetMillis, 5000)
-        @Expect(ckbStageDeadlineAt(79000, 80000, profile.proofBudgetMillis), 80000)
+        @Expect(validation.ok, true); @Expect(validation.plannedBudgetMillis, 600000); @Expect(validation.workerSoftBudgetMillis, 570000)
+        @Expect(profile.bootstrapBudgetMillis, 30000); @Expect(profile.resultFlushBudgetMillis, 10000); @Expect(profile.unallocatedSafetyMillis, 20000)
+        @Expect(plan.segmented, true); @Expect(plan.proofBudgetMillis, 20000); @Expect(plan.activeCommitBudgetMillis, 30000)
+        @Expect(ckbStageDeadlineAt(560000, 570000, profile.proofBudgetMillis), 570000)
+        @Expect(ckbSchedulerBootstrapDeadlineExceededAt("cangjie_benchmark_gap_curation", 1000, 30999, 570000), false)
+        @Expect(ckbSchedulerBootstrapDeadlineExceededAt("cangjie_benchmark_gap_curation", 1000, 31000, 570000), true)
         @Expect(parsed.terminality, "nonterminal_retryable")
         @Expect(calibration.contains("fixture=benchmark-gap-440|batches=200,200,40|rounds=3"), true)
         @Expect(calibration.contains("proofP95=8333|proofHeadroom=10000"), true)
-        @Expect(calibration.contains("sum=90000|hard=90000|evidenceHash="), true)
+        @Expect(calibration.contains("fixtureSum=90000|realActiveRecords=9089|realBootstrapFailureMillis=8557"), true)
+        @Expect(calibration.contains("allocatedBootstrap=30000|hard=600000|evidenceHash="), true)
         @Expect(calibration, ckbBenchmarkGapBudgetCalibrationEvidence())
     }
 

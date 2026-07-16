@@ -10,6 +10,9 @@ public class CangjieKnowledgeAtomTestBundleResult {
     public var total: Int64 = 0
     public var passed: Int64 = 0
     public var failed: Int64 = 0
+    public var atomId: String = ""
+    public var knowledgeText: String = ""
+    public var example: String = ""
 
     public init() {}
 }
@@ -70,6 +73,9 @@ public func validateKnowledgeAtomTestBundle(bundleJson: String): CangjieKnowledg
         if (!categories.contains("positive") || !categories.contains("negative") || !categories.contains("boundary")) {
             result.diagnostic = "missing_atom_test_category"; return result
         }
+        result.atomId = atomId
+        result.knowledgeText = knowledgeText
+        result.example = atomJsonString(object, "example")
         result.ok = true
         result.diagnostic = "ok"
         result

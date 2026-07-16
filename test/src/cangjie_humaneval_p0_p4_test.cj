@@ -34,6 +34,22 @@ public class CangjieHumanEvalP0P4Test {
     }
 
     @TestCase
+    public func p0BndDatasetVersionAcceptsOneDigestSeparatorOnly(): Unit {
+        let valid = p0P4Candidate("CJ-P0-DATASET", 1)
+        valid.datasetVersion = "cangjie-humaneval-164-sha256:5d9551abd63bd6285689d34c3755373c041be2071e2b3862b1df1a4e509e868c"
+        valid.candidateHash = canonicalBenchmarkGapCandidateHash(valid)
+        @Expect(curateBenchmarkGapRecordsFromJsonl(p0P4Json(valid)).ok, true)
+
+        for (datasetVersion in [":dataset", "dataset:", "dataset:sha256:abc", "dataset/version"]) {
+            let invalid = p0P4Candidate("CJ-P0-DATASET", 1)
+            invalid.datasetVersion = datasetVersion
+            invalid.candidateHash = canonicalBenchmarkGapCandidateHash(invalid)
+            @Expect(curateBenchmarkGapRecordsFromJsonl(p0P4Json(invalid)).diagnostic,
+                "dataset_version_required")
+        }
+    }
+
+    @TestCase
     public func p0NegForbiddenCandidateBoundariesAndRetryFailClosed(): Unit {
         for (path in ["../gap.jsonl", "teacher-solutions/gap.jsonl", "prod/ckb-data/gap.jsonl", "/tmp/gap.jsonl"]) {
             let input = p0P4Candidate("CJ-P0-NEG", 1)
