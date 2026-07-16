@@ -19,6 +19,10 @@ public class CangjieEvalKnowledgeGapConfirmation {
     public var confirmed: Bool = false
     public var diagnostic: String = "knowledge_gap_not_confirmed"
     public var category: String = ""
+    public var route: String = ""
+    public var firstCategory: String = ""
+    public var secondCategory: String = ""
+    public var nonKnowledgeRouteConsensus: Bool = false
     public var evidenceHash: String = ""
     public init() {}
 }
@@ -30,6 +34,10 @@ public class CangjieEvalDevelopmentCaseClosure {
     public var route: String = "protocol"
     public var knowledgeGapConfirmed: Bool = false
     public var confirmationEvidenceHash: String = ""
+    public var classifierFirstCategory: String = ""
+    public var classifierSecondCategory: String = ""
+    public var nonKnowledgeRouteConfirmed: Bool = false
+    public var routeEvidenceHash: String = ""
     public init() {}
 }
 
@@ -216,11 +224,14 @@ public func orchestrateDevelopmentClosure(inputs: ArrayList<CangjieEvalDevelopme
                 } else {
                     let confirmation = confirmIndependentClassifierPair(input.firstClassifierJson, input.secondClassifierJson)
                     if (confirmation.confirmed) {
-                        closure.category = confirmation.category; closure.route = routeNonKnowledgeFailure(confirmation.category)
+                        closure.category = confirmation.category; closure.route = confirmation.route
+                        closure.classifierFirstCategory = confirmation.firstCategory; closure.classifierSecondCategory = confirmation.secondCategory
                         if (confirmation.category == "knowledge_gap") {
                             closure.knowledgeGapConfirmed = true; closure.confirmationEvidenceHash = confirmation.evidenceHash
                             let gap = cangjieEvalConfirmedGapInput(input, closure.caseId, datasetVersion, teacherRunId, confirmation)
                             output.authoritativeGapJsonl += renderAuthoritativeBenchmarkGapInput(gap) + "\n"; output.knowledgeGapCount += 1
+                        } else {
+                            closure.nonKnowledgeRouteConfirmed = true; closure.routeEvidenceHash = confirmation.evidenceHash
                         }
                     } else { output.diagnostics.add("classifier:${closure.caseId}:${confirmation.diagnostic}") }
                 }
@@ -317,17 +328,29 @@ public func confirmIndependentClassifierPair(firstJson: String, secondJson: Stri
         }
         let firstCategory = triageJsonString(first, "category").toAsciiLower()
         let secondCategory = triageJsonString(second, "category").toAsciiLower()
+        if (triageJsonInt(first, "attempt", -1) != 1 || triageJsonInt(second, "attempt", -1) != 1 ||
+            triageJsonString(first, "runMode").toAsciiLower() != "development" || triageJsonString(second, "runMode").toAsciiLower() != "development") {
+            result.diagnostic = "development_first_attempt_required"; return result
+        }
+        result.firstCategory = firstCategory; result.secondCategory = secondCategory
         if (secondCategory != firstCategory) {
-            result.diagnostic = "classifier_disagreement"; return result
+            let firstRoute = routeNonKnowledgeFailure(firstCategory); let secondRoute = routeNonKnowledgeFailure(secondCategory)
+            if (firstCategory == "knowledge_gap" || secondCategory == "knowledge_gap" || firstRoute != secondRoute) {
+                result.diagnostic = "classifier_disagreement"; return result
+            }
+            let firstAgreement = triageClassifierRouteAgreementHash(first, firstRoute)
+            let secondAgreement = triageClassifierRouteAgreementHash(second, secondRoute)
+            if (firstAgreement != secondAgreement) {
+                result.diagnostic = "classifier_semantic_disagreement"; return result
+            }
+            result.confirmed = true; result.diagnostic = "nonknowledge_route_consensus"; result.category = firstCategory
+            result.route = firstRoute; result.nonKnowledgeRouteConsensus = true; result.evidenceHash = firstAgreement
+            return result
         }
         let firstAgreement = triageClassifierAgreementHash(first)
         let secondAgreement = triageClassifierAgreementHash(second)
         if (firstAgreement != secondAgreement) {
             result.diagnostic = "classifier_semantic_disagreement"; return result
-        }
-        if (triageJsonInt(first, "attempt", -1) != 1 || triageJsonInt(second, "attempt", -1) != 1 ||
-            triageJsonString(first, "runMode").toAsciiLower() != "development" || triageJsonString(second, "runMode").toAsciiLower() != "development") {
-            result.diagnostic = "development_first_attempt_required"; return result
         }
         if (firstCategory == "knowledge_gap" && (!triageK4Eligible(first) || !triageK4Eligible(second))) {
             result.diagnostic = "knowledge_policy_not_satisfied"; return result
@@ -335,6 +358,8 @@ public func confirmIndependentClassifierPair(firstJson: String, secondJson: Stri
         result.confirmed = true
         result.diagnostic = "ok"
         result.category = firstCategory
+        result.route = routeNonKnowledgeFailure(firstCategory)
+        result.nonKnowledgeRouteConsensus = firstCategory != "knowledge_gap"
         result.evidenceHash = firstAgreement
     } catch (_: Exception) {
         result.diagnostic = "malformed_classifier_evidence"
@@ -360,6 +385,19 @@ private func triageClassifierAgreementHash(object: JsonObject): String {
         triageCanonicalPart("${triageJsonBool(object, "purificationPassed")}") +
         triageCanonicalPart(triageJsonString(object, "targetVersion")) +
         triageCanonicalPart(triageJsonString(object, "evidenceId"))
+    triageSha256(canonical)
+}
+
+private func triageClassifierRouteAgreementHash(object: JsonObject, route: String): String {
+    let canonical = triageCanonicalPart(route) +
+        triageCanonicalPart(triageJsonString(object, "caseId")) +
+        triageCanonicalPart(triageJsonString(object, "runId")) +
+        triageCanonicalPart(triageJsonString(object, "datasetVersion")) +
+        triageCanonicalPart("${triageJsonInt(object, "attempt", -1)}") +
+        triageCanonicalPart(triageJsonString(object, "runMode").toAsciiLower()) +
+        triageCanonicalPart(triageJsonString(object, "studentSourceHash").toAsciiLower()) +
+        triageCanonicalPart(triageJsonString(object, "resultEvidenceHash").toAsciiLower()) +
+        triageCanonicalPart(triageJsonString(object, "failureObservation"))
     triageSha256(canonical)
 }
 
@@ -394,10 +432,14 @@ public func renderDevelopmentClosure(cases: ArrayList<CangjieEvalDevelopmentCase
     for (i in 0..cases.size) {
         let item = cases[i]
         let confirmationHashValid = triageSha256Format(item.confirmationEvidenceHash)
+        let routeHashValid = triageSha256Format(item.routeEvidenceHash)
         let invalid = item.caseId.trimAscii() == "" ||
             (item.developmentPass && item.category != "none") ||
             (item.knowledgeGapConfirmed && (item.developmentPass || item.category != "knowledge_gap" || !confirmationHashValid)) ||
-            (!item.knowledgeGapConfirmed && item.confirmationEvidenceHash != "")
+            (!item.knowledgeGapConfirmed && item.confirmationEvidenceHash != "") ||
+            (item.nonKnowledgeRouteConfirmed && (item.developmentPass || item.knowledgeGapConfirmed || item.route == "knowledge_gap" || item.route == "none" ||
+                item.classifierFirstCategory == "" || item.classifierSecondCategory == "" || !routeHashValid)) ||
+            (!item.nonKnowledgeRouteConfirmed && item.routeEvidenceHash != "")
         if (invalid) {
             invalidCount += 1
             if (diagnostics != "") { diagnostics += "," }
@@ -407,7 +449,7 @@ public func renderDevelopmentClosure(cases: ArrayList<CangjieEvalDevelopmentCase
             if (item.knowledgeGapConfirmed) { knowledgeCandidates += 1 }
         }
         if (i > 0) { rows += "," }
-        rows += "{\"caseId\":\"${triageJsonEscape(item.caseId)}\",\"developmentPass\":${item.developmentPass},\"category\":\"${triageJsonEscape(item.category)}\",\"route\":\"${triageJsonEscape(item.route)}\",\"knowledgeGapConfirmed\":${item.knowledgeGapConfirmed},\"confirmationEvidenceHash\":\"${triageJsonEscape(item.confirmationEvidenceHash)}\",\"valid\":${!invalid}}"
+        rows += "{\"caseId\":\"${triageJsonEscape(item.caseId)}\",\"developmentPass\":${item.developmentPass},\"category\":\"${triageJsonEscape(item.category)}\",\"route\":\"${triageJsonEscape(item.route)}\",\"knowledgeGapConfirmed\":${item.knowledgeGapConfirmed},\"confirmationEvidenceHash\":\"${triageJsonEscape(item.confirmationEvidenceHash)}\",\"classifierFirstCategory\":\"${triageJsonEscape(item.classifierFirstCategory)}\",\"classifierSecondCategory\":\"${triageJsonEscape(item.classifierSecondCategory)}\",\"nonKnowledgeRouteConfirmed\":${item.nonKnowledgeRouteConfirmed},\"routeEvidenceHash\":\"${triageJsonEscape(item.routeEvidenceHash)}\",\"valid\":${!invalid}}"
     }
     let closed = cases.size > 0 && invalidCount == 0 && passed == cases.size
     "{\"developmentClosed\":${closed},\"developmentPassed\":${passed},\"developmentTotal\":${cases.size},\"knowledgeCandidateCount\":${knowledgeCandidates},\"invalidCaseCount\":${invalidCount},\"diagnostics\":[${diagnostics}],\"certifiedPassAt1\":null,\"certificationStatus\":\"unset\",\"cases\":[${rows}]}"

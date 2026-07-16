@@ -55,6 +55,25 @@ public class CangjieEvalAbcdeRunnerTest {
         @Expect(promptE.contains("do not rely on `cd` followed by later relative documentation queries"), true)
     }
 
+    // NK-UT-01
+    @TestCase
+    public func nkUt01AllPromptModesRequireSameCallLocalChecksWithoutVerifierLeakage(): Unit {
+        for (mode in ["development", "certification"]) {
+            for (group in [CkbAbcdeGroups.A, CkbAbcdeGroups.B, CkbAbcdeGroups.C, CkbAbcdeGroups.D, CkbAbcdeGroups.E]) {
+                let prompt = renderCkbAbcdePromptForMode(group, "CJ-HUMANEVAL-093", "实现中文🙂示例", "{}", mode)
+                @Expect(prompt.contains("within this same model call"), true)
+                @Expect(prompt.contains("at minimum run `cjpm build`"), true)
+                @Expect(prompt.contains("run public tests only when they are already present"), true)
+                @Expect(prompt.contains("fix `src/solution.cj` and rerun"), true)
+                @Expect(prompt.contains("trace every example shown in the task"), true)
+                @Expect(prompt.contains("structure closure, and operator precedence"), true)
+                @Expect(prompt.contains("Do not create, discover, or infer hidden verifier inputs"), true)
+                @Expect(prompt.contains("outputs from previous attempts"), true)
+                @Expect(prompt.contains("实现中文🙂示例"), true)
+            }
+        }
+    }
+
     @TestCase
     public func ckg12Pos002McpConfigsSeparateStdioHttpAndEmptyGroups(): Unit {
         let stdio = renderCkbAbcdeMcpConfig(CkbAbcdeGroups.C, "/tmp/ckb", "/tmp/store", "http://127.0.0.1:18890")

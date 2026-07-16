@@ -54,6 +54,68 @@ public class CangjieEvalFailureTriageTest {
         @Expect(confirmKnowledgeGap("{", "{}").diagnostic, "malformed_classifier_evidence")
     }
 
+    // NK-UT-02
+    @TestCase
+    public func nkUt02NonKnowledgeLabelsReachAuditableRouteConsensus(): Unit {
+        let reasoning = nkClassifier("CJ-HUMANEVAL-116", "a", "reasoning_failure")
+        let unit = nkClassifier("CJ-HUMANEVAL-116", "b", "unit_failure")
+        let result = confirmIndependentClassifierPair(reasoning, unit)
+        @Expect(result.confirmed, true); @Expect(result.diagnostic, "nonknowledge_route_consensus")
+        @Expect(result.route, "reasoning"); @Expect(result.firstCategory, "reasoning_failure"); @Expect(result.secondCategory, "unit_failure")
+        @Expect(result.nonKnowledgeRouteConsensus, true); @Expect(result.evidenceHash.startsWith("sha256:"), true)
+        @Expect(confirmKnowledgeGap(reasoning, unit).diagnostic, "knowledge_gap_not_confirmed")
+        let compile = confirmIndependentClassifierPair(nkClassifier("CJ-HUMANEVAL-132", "a", "compile_error"), nkClassifier("CJ-HUMANEVAL-132", "b", "unit_failure"))
+        @Expect(compile.confirmed, true); @Expect(compile.route, "reasoning")
+    }
+
+    // NK-BND-01
+    @TestCase
+    public func nkBnd01IdentityRouteUtf8AndSecretBoundariesFailClosed(): Unit {
+        let first = nkClassifier("CJ-HUMANEVAL-116", "a", "reasoning_failure")
+        let sourceMismatch = nkClassifier("CJ-HUMANEVAL-116", "b", "unit_failure", studentHash: "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+        @Expect(confirmIndependentClassifierPair(first, sourceMismatch).diagnostic, "classifier_semantic_disagreement")
+        let timeout = nkClassifier("CJ-HUMANEVAL-116", "b", "timeout")
+        @Expect(confirmIndependentClassifierPair(first, timeout).diagnostic, "classifier_disagreement")
+        @Expect(triageEvalFailureFromUtf8([UInt8(0xff), UInt8(0xfe)]).diagnostic, "invalid_response_encoding")
+        let closure = nkClosure("CJ-HUMANEVAL-116-中文🙂", confirmIndependentClassifierPair(first, nkClassifier("CJ-HUMANEVAL-116", "b", "unit_failure")))
+        let rendered = renderDevelopmentClosure(nkClosureList(closure))
+        @Expect(rendered.contains("中文🙂"), true); @Expect(rendered.toAsciiLower().contains("authorization"), false); @Expect(rendered.toAsciiLower().contains("token="), false)
+    }
+
+    // NK-POS-093
+    @TestCase
+    public func nkPos093ExactUnitFailureRoutesWithoutKnowledgeCandidate(): Unit {
+        nkExpectAuditableCase("CJ-HUMANEVAL-093", "unit_failure", "unit_failure")
+    }
+
+    // NK-POS-116
+    @TestCase
+    public func nkPos116ReasoningUnitDisagreementRoutesWithoutKnowledgeCandidate(): Unit {
+        nkExpectAuditableCase("CJ-HUMANEVAL-116", "reasoning_failure", "unit_failure")
+    }
+
+    // NK-POS-132
+    @TestCase
+    public func nkPos132ReasoningUnitDisagreementRoutesWithoutKnowledgeCandidate(): Unit {
+        nkExpectAuditableCase("CJ-HUMANEVAL-132", "reasoning_failure", "unit_failure")
+    }
+
+    // NK-POS-160
+    @TestCase
+    public func nkPos160ExactUnitFailureRoutesWithoutKnowledgeCandidate(): Unit {
+        nkExpectAuditableCase("CJ-HUMANEVAL-160", "unit_failure", "unit_failure")
+    }
+
+    // NK-NEG-01
+    @TestCase
+    public func nkNeg01KnowledgeDisagreementCannotBecomeRouteOrAuthority(): Unit {
+        let result = confirmIndependentClassifierPair(nkClassifier("CJ-HUMANEVAL-093", "a", "knowledge_gap"), nkClassifier("CJ-HUMANEVAL-093", "b", "unit_failure"))
+        @Expect(result.confirmed, false); @Expect(result.diagnostic, "classifier_disagreement")
+        let invalid = CangjieEvalDevelopmentCaseClosure(); invalid.caseId = "CJ-HUMANEVAL-093"; invalid.category = "unit_failure"; invalid.route = "reasoning"; invalid.routeEvidenceHash = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        let rendered = renderDevelopmentClosure(nkClosureList(invalid))
+        @Expect(rendered.contains("\"invalidCaseCount\":1"), true); @Expect(rendered.contains("\"knowledgeCandidateCount\":0"), true)
+    }
+
     @TestCase
     public func p5E2e01FiveCaseDevelopmentClosureNeverClaimsCertification(): Unit {
         let cases = ArrayList<CangjieEvalDevelopmentCaseClosure>()
@@ -164,4 +226,33 @@ private func p5Closure(caseId: String, passed: Bool, category: String, confirmed
     let item = CangjieEvalDevelopmentCaseClosure(); item.caseId = caseId; item.developmentPass = passed; item.category = category; item.route = routeNonKnowledgeFailure(category); item.knowledgeGapConfirmed = confirmed
     if (confirmed) { item.confirmationEvidenceHash = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" }
     item
+}
+
+private func nkClassifier(caseId: String, label: String, category: String, studentHash!: String = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"): String {
+    let provider = if (label == "a") { "codex" } else { "claude-code" }
+    let model = if (label == "a") { "GPT-5.6-Sol" } else { "GLM-5.2" }
+    let request = "{\"schemaVersion\":\"ckb-p5-classifier-request-v1\",\"caseId\":\"${caseId}\",\"runId\":\"run-nk\",\"datasetVersion\":\"dataset-v1\",\"attempt\":1,\"runMode\":\"development\",\"studentSourceHash\":\"${studentHash}\",\"resultEvidenceHash\":\"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\",\"failureObservation\":\"public verifier mismatch 中文🙂\"}"
+    let response = "{\"schemaVersion\":\"ckb-p5-classifier-response-v1\",\"observedProvider\":\"${provider}\",\"observedModel\":\"${model}\",\"category\":\"${category}\"}"
+    let config = CkbP5ClassifierConfig(); config.label = label; config.classifierId = "nk-${caseId}-${label}"; config.provider = provider; config.model = model; config.executable = "/fake/nk-${label}"
+    sealCkbP5ClassifierResponse(request, response, config, "/tmp/nk/${caseId}/${label}/workspace", "/tmp/nk/${caseId}/${label}/home", "nk-${caseId}-${label}")
+}
+
+private func nkClosure(caseId: String, confirmation: CangjieEvalKnowledgeGapConfirmation): CangjieEvalDevelopmentCaseClosure {
+    let item = CangjieEvalDevelopmentCaseClosure(); item.caseId = caseId; item.category = confirmation.category; item.route = confirmation.route
+    item.classifierFirstCategory = confirmation.firstCategory; item.classifierSecondCategory = confirmation.secondCategory
+    item.nonKnowledgeRouteConfirmed = confirmation.confirmed && confirmation.category != "knowledge_gap"; item.routeEvidenceHash = if (item.nonKnowledgeRouteConfirmed) { confirmation.evidenceHash } else { "" }
+    item
+}
+
+private func nkExpectAuditableCase(caseId: String, firstCategory: String, secondCategory: String): Unit {
+    let confirmation = confirmIndependentClassifierPair(nkClassifier(caseId, "a", firstCategory), nkClassifier(caseId, "b", secondCategory))
+    @Expect(confirmation.confirmed, true); @Expect(confirmation.route, "reasoning")
+    let rendered = renderDevelopmentClosure(nkClosureList(nkClosure(caseId, confirmation)))
+    @Expect(rendered.contains("\"caseId\":\"${caseId}\""), true); @Expect(rendered.contains("\"nonKnowledgeRouteConfirmed\":true"), true)
+    @Expect(rendered.contains("\"classifierFirstCategory\":\"${firstCategory}\""), true); @Expect(rendered.contains("\"classifierSecondCategory\":\"${secondCategory}\""), true)
+    @Expect(rendered.contains("\"valid\":true"), true); @Expect(rendered.contains("\"knowledgeCandidateCount\":0"), true)
+}
+
+private func nkClosureList(item: CangjieEvalDevelopmentCaseClosure): ArrayList<CangjieEvalDevelopmentCaseClosure> {
+    let items = ArrayList<CangjieEvalDevelopmentCaseClosure>(); items.add(item); items
 }
