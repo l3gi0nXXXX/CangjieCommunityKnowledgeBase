@@ -7659,7 +7659,8 @@ public class FileKnowledgeStore {
                 }
                 return this.loadActiveSnapshotFromPrefix("", "ignored_uncommitted_snapshot_tx:${pointer.txId}")
             }
-            let snapshot = this.loadActiveSnapshotFromPrefix(txRoot, "", allowLiveOverlay: false)
+            let snapshot = this.loadActiveSnapshotFromPrefix(txRoot, "", allowLiveOverlay: false,
+                allowCommittedEmpty: true)
             if (snapshot.valid && snapshot.activeVersion == pointer.activeVersion &&
                 snapshot.vectorActiveCollection == pointer.vectorActiveCollection) {
                 this.applyActiveSnapshotCandidateLifecycleOverlay(snapshot, pointer)
@@ -8400,7 +8401,7 @@ public class FileKnowledgeStore {
     }
 
     private func loadActiveSnapshotFromPrefix(prefix: String, extraDiagnostic: String,
-        allowLiveOverlay!: Bool = true): ActiveSnapshot {
+        allowLiveOverlay!: Bool = true, allowCommittedEmpty!: Bool = false): ActiveSnapshot {
         this.activeSnapshotMaterializations += 1
         let snapshot = ActiveSnapshot()
         snapshot.activeVersion = this.readLinesFromPrefix(prefix, "index/active.version").trimAscii()
@@ -8425,9 +8426,17 @@ public class FileKnowledgeStore {
             snapshot.diagnostic = snapshotDiagnostic("malformed_active_index", extraDiagnostic)
             return snapshot
         }
-        if (snapshot.activeIndex.size == 0) {
+        if (snapshot.activeIndex.size == 0 && !allowCommittedEmpty) {
             snapshot.valid = false
             snapshot.diagnostic = snapshotDiagnostic("missing_or_empty_active_index", extraDiagnostic)
+            return snapshot
+        }
+        if (snapshot.activeIndex.size == 0 && (metadata.rawCount != 0 ||
+            metadata.normalizedCount != 0 || metadata.indexCount != 0 ||
+            metadata.vectorIndexCount != 0 || metadata.graphNodeCount != 0 ||
+            metadata.graphEdgeCount != 0)) {
+            snapshot.valid = false
+            snapshot.diagnostic = snapshotDiagnostic("empty_active_index_count_mismatch", extraDiagnostic)
             return snapshot
         }
         for (record in snapshot.activeIndex) {
