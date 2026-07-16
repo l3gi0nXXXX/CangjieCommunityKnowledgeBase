@@ -352,6 +352,7 @@ private func triageClassifierAgreementHash(object: JsonObject): String {
         triageCanonicalPart(triageJsonString(object, "datasetVersion")) +
         triageCanonicalPart("${triageJsonInt(object, "attempt", -1)}") +
         triageCanonicalPart(triageJsonString(object, "runMode").toAsciiLower()) +
+        triageCanonicalPart(triageJsonString(object, "studentSourceHash").toAsciiLower()) +
         triageCanonicalPart(triageJsonString(object, "resultEvidenceHash").toAsciiLower()) +
         triageCanonicalPart(triageJsonString(object, "failureObservation")) +
         triageCanonicalPart("${triageJsonBool(object, "reusable")}") +
@@ -491,6 +492,7 @@ private func triageClassifierContractValid(object: JsonObject): Bool {
     triageJsonString(object,"schemaVersion")=="ckb-p5-classifier-v1" && triageKnownCategory(triageJsonString(object, "category")) && triageJsonString(object, "caseId") != "" &&
         triageJsonString(object, "runId") != "" && triageJsonString(object, "datasetVersion") != "" &&
         triageJsonInt(object, "attempt", -1) >= 1 && (mode == "development" || mode == "certification") &&
+        (triageJsonString(object,"studentSourceHash")==""||triageSha256Format(triageJsonString(object,"studentSourceHash").toAsciiLower())) &&
         triageJsonString(object, "failureObservation") != "" && triageSha256Format(triageJsonString(object, "resultEvidenceHash").toAsciiLower()) &&
         triageSha256Format(triageJsonString(object, "evidenceHash").toAsciiLower())
 }
