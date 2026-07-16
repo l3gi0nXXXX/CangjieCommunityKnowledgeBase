@@ -36,9 +36,11 @@ public class CangjieEvalClassifierControlTest {
         @Expect(ckbP5ClassifierArtifactConsensusHash(first)==ckbP5ClassifierArtifactConsensusHash(alternate),false)
         @Expect(confirmKnowledgeGap(first,alternate).confirmed,true)
         let familyMismatch=sealCkbP5ClassifierResponse(request,alternateResponse.replace("standard_library","syntax"),b,"/tmp/p5-b-family/workspace","/tmp/p5-b-family/home","session-b-family")
-        @Expect(confirmKnowledgeGap(first,familyMismatch).diagnostic,"classifier_semantic_disagreement")
+        @Expect(confirmKnowledgeGap(first,familyMismatch).confirmed,true)
         let citationMismatch=sealCkbP5ClassifierResponse(request,alternateResponse.replace("https://docs.cangjie-lang.cn/docs/1.0.0/","https://docs.cangjie-lang.cn/docs/other/"),b,"/tmp/p5-b-citation/workspace","/tmp/p5-b-citation/home","session-b-citation")
-        @Expect(confirmKnowledgeGap(first,citationMismatch).diagnostic,"classifier_semantic_disagreement")
+        @Expect(confirmKnowledgeGap(first,citationMismatch).confirmed,true)
+        let targetMismatch=sealCkbP5ClassifierResponse(request,alternateResponse.replace("\"targetVersion\":\"1.0.0\"","\"targetVersion\":\"1.0.1\""),b,"/tmp/p5-b-target/workspace","/tmp/p5-b-target/home","session-b-target")
+        @Expect(confirmKnowledgeGap(first,targetMismatch).diagnostic,"classifier_semantic_disagreement")
         @Expect(sealCkbP5ClassifierResponseWithDiagnostic(request,"{\"schemaVersion\":\"ckb-p5-classifier-response-v1\"}",a,"/tmp/p5-a/workspace","/tmp/p5-a/home","session-a")[1],"classifier_response_incomplete")
         let retrievalA=sealCkbP5ClassifierResponse(request,p5IcResponse("codex","GPT-5.6-Sol").replace("knowledge_gap","retrieval_failure"),a,"/tmp/p5-a2/workspace","/tmp/p5-a2/home","session-a2")
         let retrievalB=sealCkbP5ClassifierResponse(request,p5IcResponse("claude-code","GLM-5.2").replace("knowledge_gap","retrieval_failure"),b,"/tmp/p5-b2/workspace","/tmp/p5-b2/home","session-b2")
@@ -57,6 +59,10 @@ public class CangjieEvalClassifierControlTest {
         @Expect(request.contains("hidden_test"),false)
         File.writeTo(caseRoot.join("result-evidence.json"),[UInt8(0xff),UInt8(0xfe)])
         @Expect(buildCkbP5ClassifierRequest(caseRoot,"CJ-HUMANEVAL-016","run-中文🙂"),"missing_case_evidence")
+        let unitRoot=p5IcRoot("unit-summary");let unitCase=p5IcSample(unitRoot,"CJ-HUMANEVAL-065","Exception: failure: expected 001, actual 484849 中文🙂\n at /private/user/path token=secret",failureType:"test_failure")
+        let unitRequest=buildCkbP5ClassifierRequest(unitCase,"CJ-HUMANEVAL-065","run-中文🙂")
+        @Expect(unitRequest.contains("expected 001, actual 484849 中文🙂"),true)
+        @Expect(unitRequest.contains("/private/user/path"),false);@Expect(unitRequest.contains("token=secret"),false)
     }
 
     // P5-C-E2E-01
@@ -98,10 +104,10 @@ public class CangjieEvalClassifierControlTest {
 }
 
 private func p5IcRoot(label:String):String{let root="/tmp/ckb-p5-ic-${label}-${DateTime.now().toUnixTimeStamp().toMilliseconds()}";if(exists(Path(root))){_=launch("/bin/rm",["-rf",root]).wait()};Directory.create(Path(root),recursive:true);root}
-private func p5IcSample(root:String,caseId:String,log:String):Path{
+private func p5IcSample(root:String,caseId:String,log:String,failureType!:String="compile_error"):Path{
     let caseRoot=Path(root).join("cases").join(caseId).join(CkbAbcdeGroups.C);Directory.create(caseRoot,recursive:true)
-    let raw="{\"caseId\":\"${caseId}\",\"runId\":\"run-中文🙂\",\"datasetVersion\":\"dataset-v1\",\"attempt\":1,\"runMode\":\"development\",\"failureObservation\":\"missing reusable guidance 中文🙂\",\"suspectedKnowledgeGap\":true,\"failureType\":\"compile_error\",\"unitPass\":false,\"resultEvidenceHash\":\"HASH\"}";let evidence=raw.replace("HASH",cangjieEvalTriageResultEvidenceHash(raw))
-    let result="{\"caseId\":\"${caseId}\",\"runId\":\"run-中文🙂\",\"datasetVersion\":\"dataset-v1\",\"runMode\":\"development\",\"firstAttemptPass\":false,\"firstClaudeExitCode\":0,\"failureType\":\"compile_error\",\"toolEvidenceHash\":\"sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"toolCoveragePass\":true,\"citationCount\":2}"
+    let raw="{\"caseId\":\"${caseId}\",\"runId\":\"run-中文🙂\",\"datasetVersion\":\"dataset-v1\",\"attempt\":1,\"runMode\":\"development\",\"failureObservation\":\"missing reusable guidance 中文🙂\",\"suspectedKnowledgeGap\":true,\"failureType\":\"${failureType}\",\"unitPass\":false,\"resultEvidenceHash\":\"HASH\"}";let evidence=raw.replace("HASH",cangjieEvalTriageResultEvidenceHash(raw))
+    let result="{\"caseId\":\"${caseId}\",\"runId\":\"run-中文🙂\",\"datasetVersion\":\"dataset-v1\",\"runMode\":\"development\",\"firstAttemptPass\":false,\"firstClaudeExitCode\":0,\"failureType\":\"${failureType}\",\"toolEvidenceHash\":\"sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\",\"toolCoveragePass\":true,\"citationCount\":2}"
     File.writeTo(caseRoot.join("case-result.json"),result.toArray());File.writeTo(caseRoot.join("result-evidence.json"),evidence.toArray());File.writeTo(caseRoot.join("canonical-task-context.json"),"{\"taskText\":\"通用字符串 API 任务🙂\",\"signature\":\"public func sample(s: String): Int64\"}".toArray());File.writeTo(caseRoot.join("test.log"),log.toArray());caseRoot
 }
 private func p5IcRequest(caseId:String):String{let evidence="{\"caseId\":\"${caseId}\",\"runId\":\"run-001\",\"datasetVersion\":\"dataset-v1\",\"attempt\":1,\"runMode\":\"development\",\"failureObservation\":\"missing reusable guidance 中文🙂\",\"suspectedKnowledgeGap\":true,\"failureType\":\"compile_error\",\"unitPass\":false,\"resultEvidenceHash\":\"HASH\"}";let hash=cangjieEvalTriageResultEvidenceHash(evidence);"{\"schemaVersion\":\"ckb-p5-classifier-request-v1\",\"caseId\":\"${caseId}\",\"runId\":\"run-001\",\"datasetVersion\":\"dataset-v1\",\"attempt\":1,\"runMode\":\"development\",\"failureObservation\":\"missing reusable guidance 中文🙂\",\"resultEvidenceHash\":\"${hash}\"}"}

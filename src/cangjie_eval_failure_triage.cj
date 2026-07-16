@@ -39,6 +39,7 @@ public class CangjieEvalDevelopmentClosureInput {
     public var firstClassifierJson: String = ""
     public var secondClassifierJson: String = ""
     public var taskText: String = ""
+    public var failureSummary: String = ""
     public var gapCode: String = "G-STRING"
     public var interfaceId: String = "KI-02"
     public var contentFamily: String = "KC-02"
@@ -77,6 +78,8 @@ public func aggregateDevelopmentRun(options: CkbAbcdeRunnerOptions, runRoot: Str
         input.firstClassifierJson = triageReadText(root.join("classifier-1.json"))
         input.secondClassifierJson = triageReadText(root.join("classifier-2.json"))
         input.taskText = "authority-bound:${id}"
+        let evidenceObject=try{JsonValue.fromStr(input.resultEvidenceJson.trimAscii()).asObject()}catch(_:Exception){JsonObject()}
+        input.failureSummary=ckbP5CompilerSummary(triageReadText(root.join("test.log")),triageJsonString(evidenceObject,"failureType"))
         inputs.add(input)
     }
     let out = orchestrateDevelopmentClosure(inputs, options.runId)
@@ -143,6 +146,7 @@ public func runCangjieEvalSingleCaseClose(args: Array<String>): Int64 {
     let taskText=try{triageJsonString(JsonValue.fromStr(context).asObject(),"taskText")}catch(_:Exception){""}
     if(taskText==""){println("case close blocked diagnostic=task_context_invalid");return 1}
     let input=CangjieEvalDevelopmentClosureInput();input.caseResultJson=caseResult;input.resultEvidenceJson=evidence;input.firstClassifierJson=first;input.secondClassifierJson=second;input.taskText=taskText
+    let failureType=try{triageJsonString(JsonValue.fromStr(evidence).asObject(),"failureType")}catch(_:Exception){""};input.failureSummary=ckbP5CompilerSummary(triageReadText(Path(caseRoot).join("test.log")),failureType)
     input.gapCode=gapCode;input.interfaceId=interfaceId;input.contentFamily=contentFamily;input.targetVersion=targetVersion
     let inputs=ArrayList<CangjieEvalDevelopmentClosureInput>();inputs.add(input);let closure=orchestrateDevelopmentClosure(inputs,teacherRunId)
     if(!closure.ok||closure.knowledgeGapCount!=1||closure.pendingClassifierCount!=0||closure.diagnostics.size!=0||closure.authoritativeGapJsonl.trimAscii()==""){
@@ -234,10 +238,10 @@ private func cangjieEvalConfirmedGapInput(source: CangjieEvalDevelopmentClosureI
     let input = CangjieBenchmarkGapInput()
     input.schemaVersion = "ckb-benchmark-gap-v1"; input.datasetVersion = datasetVersion; input.teacherRunId = teacherRunId
     input.candidatePath = "authority/benchmark-gap.jsonl"; input.revision = 1; input.attempt = 1; input.failureTaxonomy = "knowledge_gap"; input.knowledgeGapConfirmations = 2
-    input.caseId = caseId; input.taskText = source.taskText; input.compilerOutput = "knowledge_gap"; input.missingKnowledge = source.gapCode
+    input.caseId = caseId; input.taskText = source.taskText; input.compilerOutput = if(source.failureSummary==""){"knowledge_gap"}else{source.failureSummary}; input.missingKnowledge = source.gapCode
     input.interfaceId = source.interfaceId; input.contentFamily = source.contentFamily; input.updateMechanism = "KU-11"; input.targetVersion = source.targetVersion
     input.officialCitation = "https://docs.cangjie-lang.cn/docs/1.0.0/"
-    input.evidence = "case=${caseId}|taxonomy=knowledge_gap|independentClassifierEvidence=${confirmation.evidenceHash}"
+    input.evidence = "case=${caseId}|taxonomy=knowledge_gap|independentClassifierEvidence=${confirmation.evidenceHash}|failureSummaryHash=${benchmarkGapSha256(input.compilerOutput)}"
     input.evidenceHash = benchmarkGapSha256(input.evidence); input.candidateHash = canonicalBenchmarkGapCandidateHash(input)
     input
 }
@@ -338,9 +342,9 @@ public func confirmIndependentClassifierPair(firstJson: String, secondJson: Stri
     result
 }
 
-// Independent classifiers are expected to phrase and identify reusable knowledge differently.
-// Agreement therefore binds stable root-cause semantics and source provenance, while each full
-// artifact still retains and verifies its own model-authored text and canonical identity hash.
+// Independent classifiers can choose different eligible K4 families and official citation pages
+// for the same root cause. Agreement binds the failure identity and publication policy facts;
+// Teacher extraction later owns the canonical family, citation and reusable knowledge text.
 private func triageClassifierAgreementHash(object: JsonObject): String {
     let canonical = triageCanonicalPart(triageJsonString(object, "category").toAsciiLower()) +
         triageCanonicalPart(triageJsonString(object, "caseId")) +
@@ -350,10 +354,8 @@ private func triageClassifierAgreementHash(object: JsonObject): String {
         triageCanonicalPart(triageJsonString(object, "runMode").toAsciiLower()) +
         triageCanonicalPart(triageJsonString(object, "resultEvidenceHash").toAsciiLower()) +
         triageCanonicalPart(triageJsonString(object, "failureObservation")) +
-        triageCanonicalPart(triageJsonString(object, "knowledgeFamily").toAsciiLower()) +
         triageCanonicalPart("${triageJsonBool(object, "reusable")}") +
         triageCanonicalPart(triageJsonString(object, "sourceClass").toAsciiLower()) +
-        triageCanonicalPart(triageJsonString(object, "citation").toAsciiLower()) +
         triageCanonicalPart("${triageJsonBool(object, "purificationPassed")}") +
         triageCanonicalPart(triageJsonString(object, "targetVersion")) +
         triageCanonicalPart(triageJsonString(object, "evidenceId"))

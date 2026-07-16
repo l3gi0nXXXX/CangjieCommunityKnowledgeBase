@@ -119,14 +119,16 @@ public class CangjieEvalFailureTriageTest {
     public func p5SingleCaseClosePublishesOnlyConfirmedAuthorityAtomically(): Unit {
         let root="/tmp/ckb-single-case-close-test";if(exists(Path(root))){_=launch("/bin/rm",["-rf",root]).wait()}
         let caseRoot=Path(root).join("case");Directory.create(caseRoot,recursive:true)
-        let evidence=p5Triage("\"suspectedKnowledgeGap\":true",1)
+        let evidence=p5Triage("\"suspectedKnowledgeGap\":true",1,failureType:"compile_error")
         let caseResult="{\"caseId\":\"CJ-HUMANEVAL-007\",\"runId\":\"run-001\",\"datasetVersion\":\"dataset-v1\",\"runMode\":\"development\",\"workspaceId\":\"w-one\",\"sessionId\":\"s-one\",\"runtimeHomeId\":\"h-one\",\"developmentPass\":false,\"certificationPassAt1\":null}"
         File.writeTo(caseRoot.join("case-result.json"),caseResult.toArray());File.writeTo(caseRoot.join("result-evidence.json"),evidence.toArray())
         File.writeTo(caseRoot.join("canonical-task-context.json"),"{\"taskText\":\"仓颉范围语法 中文😀\"}".toArray())
-        let first=Path(root).join("a.json");let second=Path(root).join("b.json");File.writeTo(first,p5Classifier("classifier-a","source-a","knowledge_gap",1,"development").toArray());File.writeTo(second,p5Classifier("classifier-b","source-b","knowledge_gap",1,"development").toArray())
+        File.writeTo(caseRoot.join("test.log"),"error: expected 范围🙂, actual 空\n at /private/user/path token=secret".toArray())
+        let first=Path(root).join("a.json");let second=Path(root).join("b.json");File.writeTo(first,p5Classifier("classifier-a","source-a","knowledge_gap",1,"development",failureType:"compile_error").toArray());File.writeTo(second,p5Classifier("classifier-b","source-b","knowledge_gap",1,"development",failureType:"compile_error").toArray())
         let output="${root}/authority";let args=["cangjie-eval-case-close","--case-root",caseRoot.toString(),"--classifier-a",first.toString(),"--classifier-b",second.toString(),"--teacher-run-id","teacher-run-中文","--output-root",output,"--gap-code","G-RANGE","--interface-id","KI-04","--content-family","KC-01","--target-version","1.0.0"]
         @Expect(runCangjieEvalSingleCaseClose(args),0);@Expect(exists(Path(output).join("development-closure.json")),true);@Expect(exists(Path(output).join("authority-gap.jsonl")),true)
         let gap=String.fromUtf8(File.readFrom(Path(output).join("authority-gap.jsonl")));@Expect(gap.contains("\"caseId\":\"CJ-HUMANEVAL-007\""),true);@Expect(gap.contains("\"missingKnowledge\":\"G-RANGE\""),true);@Expect(gap.contains("仓颉范围语法 中文😀"),true)
+        @Expect(gap.contains("expected 范围🙂, actual 空"),true);@Expect(gap.contains("/private/user/path"),false);@Expect(gap.contains("token=secret"),false);@Expect(gap.contains("failureSummaryHash=sha256:"),true)
         @Expect(runCangjieEvalSingleCaseClose(args),1)
         let bad=args.clone();bad[2]="/tmp/ckb-data/forbidden";bad[10]="${root}/bad-output";@Expect(runCangjieEvalSingleCaseClose(bad),1);@Expect(exists(Path("${root}/bad-output")),false)
         _=launch("/bin/rm",["-rf",root]).wait()
@@ -139,12 +141,12 @@ private func p5CaseId(index: Int64): String {
     "CJ-HUMANEVAL-${index}"
 }
 
-private func p5Classifier(classifier: String, source: String, category: String, attempt: Int64, mode: String): String {
-    p5ClassifierWithKnowledgeText(classifier, source, category, attempt, mode, "General reusable Rune guidance.")
+private func p5Classifier(classifier: String, source: String, category: String, attempt: Int64, mode: String, failureType!:String=""): String {
+    p5ClassifierWithKnowledgeText(classifier, source, category, attempt, mode, "General reusable Rune guidance.",failureType:failureType)
 }
 
-private func p5ClassifierWithKnowledgeText(classifier: String, source: String, category: String, attempt: Int64, mode: String, knowledgeText: String): String {
-    let resultHash = cangjieEvalTriageResultEvidenceHash(p5Triage("\"suspectedKnowledgeGap\":true", 1))
+private func p5ClassifierWithKnowledgeText(classifier: String, source: String, category: String, attempt: Int64, mode: String, knowledgeText: String, failureType!:String=""): String {
+    let resultHash = cangjieEvalTriageResultEvidenceHash(p5Triage("\"suspectedKnowledgeGap\":true", 1,failureType:failureType))
     let request = "{\"schemaVersion\":\"ckb-p5-classifier-request-v1\",\"caseId\":\"CJ-HUMANEVAL-007\",\"runId\":\"run-001\",\"datasetVersion\":\"dataset-v1\",\"attempt\":1,\"runMode\":\"development\",\"resultEvidenceHash\":\"${resultHash}\",\"failureObservation\":\"CKB returned no reusable Rune guidance 中文😀\"}"
     let config = CkbP5ClassifierConfig(); config.label=source; config.classifierId=classifier; config.provider=source; config.model="model-${classifier}"; config.executable="/fake/${source}"
     let response = "{\"schemaVersion\":\"ckb-p5-classifier-response-v1\",\"observedProvider\":\"${source}\",\"observedModel\":\"model-${classifier}\",\"category\":\"${category}\",\"knowledgeFamily\":\"standard_library\",\"reusable\":true,\"sourceClass\":\"official\",\"citation\":\"https://docs.cangjie-lang.cn/docs/1.0.0/\",\"purificationPassed\":true,\"canonicalKnowledgeId\":\"GENERAL-RUNE\",\"targetVersion\":\"1.0.0\",\"evidenceId\":\"official-rune-doc\",\"knowledgeText\":\"${knowledgeText}\"}"
@@ -152,8 +154,9 @@ private func p5ClassifierWithKnowledgeText(classifier: String, source: String, c
     if(attempt==1&&mode=="development"){artifact}else{artifact.replace("\"attempt\":1","\"attempt\":${attempt}").replace("\"runMode\":\"development\"","\"runMode\":\"${mode}\"")}
 }
 
-private func p5Triage(signal: String, attempt: Int64): String {
-    let raw = "{\"caseId\":\"CJ-HUMANEVAL-007\",\"runId\":\"run-001\",\"datasetVersion\":\"dataset-v1\",\"attempt\":${attempt},\"runMode\":\"development\",\"failureObservation\":\"observed 中文😀\",${signal},\"resultEvidenceHash\":\"HASH\"}"
+private func p5Triage(signal: String, attempt: Int64,failureType!:String=""): String {
+    let failureField=if(failureType==""){""}else{"\"failureType\":\"${failureType}\","}
+    let raw = "{\"caseId\":\"CJ-HUMANEVAL-007\",\"runId\":\"run-001\",\"datasetVersion\":\"dataset-v1\",\"attempt\":${attempt},\"runMode\":\"development\",\"failureObservation\":\"observed 中文😀\",${failureField}${signal},\"resultEvidenceHash\":\"HASH\"}"
     raw.replace("HASH", cangjieEvalTriageResultEvidenceHash(raw))
 }
 

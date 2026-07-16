@@ -226,8 +226,11 @@ private func ckbP5SharedClassifierFields(request:JsonObject,response:JsonObject,
     "\"category\":\"${ckbP5Escape(category)}\",\"caseId\":\"${ckbP5Escape(ckbP5String(request,"caseId"))}\",\"runId\":\"${ckbP5Escape(ckbP5String(request,"runId"))}\",\"datasetVersion\":\"${ckbP5Escape(ckbP5String(request,"datasetVersion"))}\",\"attempt\":1,\"runMode\":\"development\",\"resultEvidenceHash\":\"${ckbP5Escape(ckbP5String(request,"resultEvidenceHash"))}\",\"failureObservation\":\"${ckbP5Escape(ckbP5String(request,"failureObservation"))}\",\"knowledgeFamily\":\"${ckbP5Escape(family)}\",\"reusable\":${knowledge&&ckbP5Bool(response,"reusable")},\"sourceClass\":\"${ckbP5Escape(source)}\",\"citation\":\"${if(knowledge){ckbP5Escape(ckbP5String(response,"citation"))}else{""}}\",\"purificationPassed\":${knowledge&&ckbP5Bool(response,"purificationPassed")},\"canonicalKnowledgeId\":\"${if(knowledge){ckbP5Escape(ckbP5String(response,"canonicalKnowledgeId"))}else{""}}\",\"targetVersion\":\"${if(knowledge){ckbP5Escape(ckbP5String(response,"targetVersion"))}else{""}}\",\"evidenceId\":\"${if(knowledge){ckbP5Escape(ckbP5String(response,"evidenceId"))}else{""}}\",\"knowledgeText\":\"${if(knowledge){ckbP5Escape(ckbP5String(response,"knowledgeText"))}else{""}}\",\"exampleText\":\"\",\"testText\":\"\",\"publishableMetadata\":\"classifier-stage-only\""
 }
 
-private func ckbP5CompilerSummary(text:String,failureType:String):String{
-    if(failureType!="compile_error"){return if(failureType=="unit_failure"){"unit_test_failed_without_assertion_detail"}else{utf8SafePrefix(failureType,120)}}
+func ckbP5CompilerSummary(text:String,failureType:String):String{
+    if(failureType=="unit_failure"||failureType=="test_failure"){
+        var out="";for(line in text.split("\n")){let clean=ckbP5StripAnsi(line).trimAscii();let lower=clean.toAsciiLower();if(clean.contains("/")||ckbP5Forbidden(clean)){continue};if(lower.contains("exception")||lower.contains("expected")||lower.contains("assert")){if(out!=""){out+=" | "};out+=utf8SafePrefix(clean,240);if(out.toRuneArray().size>=960){break}}};return if(out==""){"unit_test_failed_without_assertion_detail"}else{utf8SafePrefix(out,1024)}
+    }
+    if(failureType!="compile_error"){return utf8SafePrefix(failureType,120)}
     var out="";for(line in text.split("\n")){let clean=ckbP5StripAnsi(line);if(clean.toAsciiLower().contains("error")&&!clean.contains("/")){if(out!=""){out+=" | "};out+=utf8SafePrefix(clean,240);if(out.toRuneArray().size>=960){break}}};utf8SafePrefix(out,1024)
 }
 private func ckbP5StripAnsi(value:String):String{var out=value;for(code in ["\u{001b}[31m","\u{001b}[0m","\u{001b}[36m","\u{001b}[32m"]){out=out.replace(code,"")};out}
