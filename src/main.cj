@@ -255,6 +255,9 @@ public func ckbCliMain(args: Array<String>): Int64 {
     if (cli.command == "cangjie-eval-development-close") {
         return runCangjieEvalDevelopmentClose(args)
     }
+    if (cli.command == "cangjie-eval-case-close") {
+        return runCangjieEvalSingleCaseClose(args)
+    }
     if (cli.command == "cangjie-eval-classifier-run") {
         return runCangjieEvalClassifierControl(args)
     }

@@ -1,7 +1,7 @@
 package cangjie_community_knowledge_base
 
 import std.collection.{ArrayList, HashSet}
-import std.fs.{File, Path, exists}
+import std.fs.{Directory, File, Path, exists}
 import std.process.launch
 import stdx.crypto.digest.SHA256
 import stdx.encoding.json.*
@@ -118,6 +118,47 @@ public func runCangjieEvalDevelopmentClose(args: Array<String>): Int64 {
     let aggregate = aggregateDevelopmentRun(options, runRoot)
     if (!aggregate.ok || aggregate.pendingClassifierCount > 0) { println("development close blocked diagnostics=${aggregate.diagnostics.size} pending=${aggregate.pendingClassifierCount}"); return 1 }
     println("development close written total=164 knowledgeGaps=${aggregate.knowledgeGapCount}"); 0
+}
+
+public func runCangjieEvalSingleCaseClose(args: Array<String>): Int64 {
+    var caseRoot="";var firstPath="";var secondPath="";var teacherRunId="";var outputRoot=""
+    var gapCode="";var interfaceId="";var contentFamily="";var targetVersion="";var i:Int64=0
+    while(i<args.size){
+        let arg=args[i];if(arg=="cangjie-eval-case-close"){i+=1;continue}
+        let known=arg=="--case-root"||arg=="--classifier-a"||arg=="--classifier-b"||arg=="--teacher-run-id"||arg=="--output-root"||arg=="--gap-code"||arg=="--interface-id"||arg=="--content-family"||arg=="--target-version"
+        if(!known||i+1>=args.size){println("usage error: invalid cangjie-eval-case-close argument");return 2}
+        let value=args[i+1].trimAscii();if(value==""){println("usage error: empty cangjie-eval-case-close value");return 2}
+        if(arg=="--case-root"){caseRoot=value}else if(arg=="--classifier-a"){firstPath=value}else if(arg=="--classifier-b"){secondPath=value}else if(arg=="--teacher-run-id"){teacherRunId=value}else if(arg=="--output-root"){outputRoot=value}else if(arg=="--gap-code"){gapCode=value}else if(arg=="--interface-id"){interfaceId=value}else if(arg=="--content-family"){contentFamily=value}else{targetVersion=value};i+=2
+    }
+    var missing=false;for(v in [caseRoot,firstPath,secondPath,teacherRunId,outputRoot,gapCode,interfaceId,contentFamily,targetVersion]){if(v==""){missing=true}}
+    if(missing){
+        println("usage error: cangjie-eval-case-close requires all authority arguments");return 2
+    }
+    if(!triageSingleCasePathAllowed(caseRoot)||!triageSingleCasePathAllowed(firstPath)||!triageSingleCasePathAllowed(secondPath)||!triageSingleCasePathAllowed(outputRoot)||exists(Path(outputRoot))){
+        println("case close blocked diagnostic=path_boundary_invalid");return 1
+    }
+    let caseResult=triageReadText(Path(caseRoot).join("case-result.json"));let evidence=triageReadText(Path(caseRoot).join("result-evidence.json"))
+    let first=triageReadText(Path(firstPath));let second=triageReadText(Path(secondPath));let context=triageReadText(Path(caseRoot).join("canonical-task-context.json"))
+    if(caseResult==""||evidence==""||first==""||second==""||context==""){println("case close blocked diagnostic=authority_input_missing_or_invalid_encoding");return 1}
+    let taskText=try{triageJsonString(JsonValue.fromStr(context).asObject(),"taskText")}catch(_:Exception){""}
+    if(taskText==""){println("case close blocked diagnostic=task_context_invalid");return 1}
+    let input=CangjieEvalDevelopmentClosureInput();input.caseResultJson=caseResult;input.resultEvidenceJson=evidence;input.firstClassifierJson=first;input.secondClassifierJson=second;input.taskText=taskText
+    input.gapCode=gapCode;input.interfaceId=interfaceId;input.contentFamily=contentFamily;input.targetVersion=targetVersion
+    let inputs=ArrayList<CangjieEvalDevelopmentClosureInput>();inputs.add(input);let closure=orchestrateDevelopmentClosure(inputs,teacherRunId)
+    if(!closure.ok||closure.knowledgeGapCount!=1||closure.pendingClassifierCount!=0||closure.diagnostics.size!=0||closure.authoritativeGapJsonl.trimAscii()==""){
+        println("case close blocked diagnostic=authority_confirmation_failed");return 1
+    }
+    let stage=outputRoot+".tmp-"+benchmarkGapSha256(closure.authoritativeGapJsonl).replace("sha256:","")
+    try{
+        if(exists(Path(stage))){_=launch("/bin/rm",["-rf",stage]).wait()};Directory.create(Path(stage),recursive:true)
+        if(!triageAtomicWrite(Path(stage).join("development-closure.json"),closure.developmentClosureJson+"\n")||!triageAtomicWrite(Path(stage).join("authority-gap.jsonl"),closure.authoritativeGapJsonl)){throw IllegalStateException("write_failed")}
+        if(launch("/bin/mv",[stage,outputRoot]).wait()!=0){throw IllegalStateException("publish_failed")}
+    }catch(_:Exception){try{_=launch("/bin/rm",["-rf",stage]).wait()}catch(_:Exception){};println("case close blocked diagnostic=atomic_publish_failed");return 1}
+    println("case close written knowledgeGaps=1");0
+}
+
+private func triageSingleCasePathAllowed(value:String):Bool{
+    let lower=value.toAsciiLower();value.startsWith("/")&&!value.contains("..")&&!lower.contains("/ckb-data")&&!lower.contains("/teacher-solutions")&&!lower.contains("/reference/")&&!lower.contains("/hidden/")
 }
 
 private func triageAtomicWrite(path: Path, text: String): Bool {
