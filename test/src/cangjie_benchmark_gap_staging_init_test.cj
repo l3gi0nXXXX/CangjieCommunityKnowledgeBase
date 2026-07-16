@@ -89,12 +89,31 @@ public class CkbBenchmarkGapStagingInitTest {
         @Expect(ckbBenchmarkGapStagingInit(config, FileKnowledgeStore(stagingInitRoot("occupied")), occupiedVectors).diagnostic,
             "active_collection_not_empty")
 
-        let cleanupVectors = StagingInitFailCandidateVectorStore(config.vectorCandidateCollection)
-        let cleanupResult = ckbBenchmarkGapStagingInit(config,
-            FileKnowledgeStore(stagingInitRoot("cleanup")), cleanupVectors)
+        let cleanupExecutor = StagingInitQdrantFailureExecutor(false)
+        let cleanupVectors = QdrantVectorStore("http://qdrant.staging.test", 16,
+            "Cosine", executor: cleanupExecutor)
+        let cleanupStore = FileKnowledgeStore(stagingInitRoot("cleanup"))
+        let cleanupResult = ckbBenchmarkGapStagingInit(config, cleanupStore, cleanupVectors)
         @Expect(cleanupResult.diagnostic, "candidate_create_collection_unavailable")
-        @Expect(cleanupVectors.status(config.vectorActiveCollection).degradedReason,
-            "collection_missing")
+        @Expect(cleanupExecutor.activeCreateCalls, 1)
+        @Expect(cleanupExecutor.candidateCreateCalls, 1)
+        @Expect(cleanupExecutor.activeDeleteCalls, 1)
+        @Expect(cleanupExecutor.originalActiveDeleted, false)
+        @Expect(cleanupStore.has("metadata/active-snapshot.manifest"), false)
+        @Expect(cleanupStore.has("transactions"), false)
+
+        let existingExecutor = StagingInitQdrantFailureExecutor(true)
+        let existingVectors = QdrantVectorStore("http://qdrant.staging.test", 16,
+            "Cosine", executor: existingExecutor)
+        let existingStore = FileKnowledgeStore(stagingInitRoot("cleanup-existing"))
+        let existingResult = ckbBenchmarkGapStagingInit(config, existingStore, existingVectors)
+        @Expect(existingResult.diagnostic, "candidate_create_collection_unavailable")
+        @Expect(existingExecutor.activeCreateCalls, 0)
+        @Expect(existingExecutor.candidateCreateCalls, 1)
+        @Expect(existingExecutor.activeDeleteCalls, 0)
+        @Expect(existingExecutor.originalActiveDeleted, false)
+        @Expect(existingStore.has("metadata/active-snapshot.manifest"), false)
+        @Expect(existingStore.has("transactions"), false)
     }
 
     @TestCase
@@ -196,27 +215,55 @@ public class CkbBenchmarkGapStagingInitTest {
     }
 }
 
-private class StagingInitFailCandidateVectorStore <: VectorStore {
-    private let base = LocalVectorStore()
-    private let failedCollection: String
-    public init(failedCollection: String) { this.failedCollection = failedCollection }
-    public func upsert(c: String, v: ArrayList<VectorRecord>): VectorStoreStatus { this.base.upsert(c, v) }
-    public func upsertBatch(c: String, v: ArrayList<VectorRecord>): VectorStoreStatus { this.base.upsertBatch(c, v) }
-    public func upsertBatchWithDeadline(c: String, v: ArrayList<VectorRecord>, d: Int64): VectorStoreStatus { this.base.upsertBatchWithDeadline(c, v, d) }
-    public func search(c: String, q: ArrayList<Float64>, f: VectorSearchFilters, k: Int64): ArrayList<VectorSearchResult> { this.base.search(c, q, f, k) }
-    public func status(c: String): VectorStoreStatus { this.base.status(c) }
-    public func ensureReadyCollection(c: String): VectorStoreStatus {
-        if (c == this.failedCollection) { let s = VectorStoreStatus(); s.collection = c; s.degradedReason = "qdrant_unavailable"; return s }
-        this.base.ensureReadyCollection(c)
+private class StagingInitQdrantFailureExecutor <: HttpRequestExecutor {
+    private let activeInitiallyExists: Bool
+    private var activeCreated: Bool = false
+    public var activeCreateCalls: Int64 = 0
+    public var candidateCreateCalls: Int64 = 0
+    public var activeDeleteCalls: Int64 = 0
+    public var originalActiveDeleted: Bool = false
+
+    public init(activeInitiallyExists: Bool) { this.activeInitiallyExists = activeInitiallyExists }
+
+    public func execute(request: HttpExecutionRequest): HttpExecutionResponse {
+        let response = HttpExecutionResponse()
+        let active = request.url.contains("/collections/ckb_humaneval_staging_active_20260717")
+        let candidate = request.url.contains("/collections/ckb_humaneval_staging_candidate_20260717")
+        if (request.method == "GET" && active) {
+            if (this.activeInitiallyExists || this.activeCreated) {
+                response.statusCode = 200; response.status = "http_200"
+                response.body = "{\"status\":\"ok\",\"result\":{\"status\":\"green\",\"points_count\":0,\"config\":{\"params\":{\"vectors\":{\"size\":16,\"distance\":\"Cosine\"}}}}}"
+            } else { response.statusCode = 404; response.status = "http_404"; response.body = "{\"status\":\"error\"}" }
+            return response
+        }
+        if (request.method == "GET" && candidate) {
+            response.statusCode = 404; response.status = "http_404"; response.body = "{\"status\":\"error\"}"
+            return response
+        }
+        if (request.method == "PUT" && active) {
+            this.activeCreateCalls += 1; this.activeCreated = true
+            response.statusCode = 200; response.status = "http_200"; response.body = "{\"status\":\"ok\",\"result\":true}"
+            return response
+        }
+        if (request.method == "PUT" && candidate) {
+            this.candidateCreateCalls += 1
+            response.statusCode = 503; response.status = "transport_error"
+            response.transportErrorClass = "connection_refused"; response.transportDiagnostic = "connection_refused"
+            response.body = "{\"status\":\"error\"}"
+            return response
+        }
+        if (request.method == "DELETE" && active) {
+            this.activeDeleteCalls += 1
+            if (this.activeInitiallyExists) { this.originalActiveDeleted = true }
+            this.activeCreated = false
+            response.statusCode = 200; response.status = "http_200"; response.body = "{\"status\":\"ok\",\"result\":true}"
+            return response
+        }
+        response.statusCode = 500; response.status = "http_500"; response.body = "{\"status\":\"error\"}"
+        response
     }
-    public func clear(c: String): VectorStoreStatus { this.base.clear(c) }
-    public func deleteCollection(c: String): VectorStoreStatus { this.base.deleteCollection(c) }
-    public func recreate(c: String, v: ArrayList<VectorRecord>): VectorStoreStatus { this.base.recreate(c, v) }
-    public func recreateWithDeadline(c: String, v: ArrayList<VectorRecord>, d: Int64): VectorStoreStatus { this.base.recreateWithDeadline(c, v, d) }
-    public func backup(c: String): VectorBackup { this.base.backup(c) }
-    public func backupWithDeadline(c: String, d: Int64): VectorBackup { this.base.backupWithDeadline(c, d) }
-    public func lookupBatchWithDeadline(c: String, p: ArrayList<String>, d: Int64): VectorLookupResult { this.base.lookupBatchWithDeadline(c, p, d) }
-    public func restore(b: VectorBackup): VectorStoreStatus { this.base.restore(b) }
+
+    public func get(request: HttpExecutionRequest): HttpExecutionResponse { this.execute(request) }
 }
 
 private func stagingInitConfig(): CkbRuntimeConfig {
