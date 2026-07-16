@@ -73,4 +73,29 @@ public class CangjieEvalModelTimeoutOptionTest {
             @Expect(next.exitCode,0)
         } finally { try { remove(Path(root),recursive:true) } catch (_:Exception) {} }
     }
+
+    @TestCase
+    public func p5TransportUtProfileArgumentsAreStrictAndDevelopmentOnly(): Unit {
+        let options = parseCkbAbcdeRunnerOptions(["cangjie-eval-abcde", "--model-effort", "low", "--model-max-budget-usd", "1.5"])
+        @Expect(options.modelEffort, "low")
+        @Expect(options.modelMaxBudgetUsd, "1.5")
+        @Expect(ckbAbcdeStrictUsageDiagnostic(["cangjie-eval-abcde", "--model-effort", "fast"]), "invalid_argument_value:--model-effort")
+        for (value in ["0", "101", "NaN", "Infinity", "中文😀"]) { @Expect(ckbAbcdeStrictUsageDiagnostic(["cangjie-eval-abcde", "--model-max-budget-usd", value]), "invalid_argument_value:--model-max-budget-usd") }
+        options.explicitRunMode = true
+        options.runMode = "certification"
+        options.datasetVersion = "dataset"; options.knowledgeVersion = "knowledge"; options.modelFingerprint = "fingerprint"
+        @Expect(ckbAbcdeDevelopmentOptionsDiagnostic(options), "certification_forbids_development_transport_profile")
+    }
+
+    @TestCase
+    public func p5TransportPosDiagnosticSeparatesTerminalAndTimeoutWithoutPayloadLeak(): Unit {
+        let success = ckbAbcdeAssessSample("{\"type\":\"system\",\"subtype\":\"init\",\"model\":\"GLM-5.2\"}\n{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false}\n", "GLM-5.2")
+        let diagnostic = ckbAbcdeRenderModelTransportDiagnostic("{\"type\":\"tool_use\"}\n{\"type\":\"tool_result\"}\n{\"type\":\"system\",\"subtype\":\"thinking_tokens\"}\n", 124, success, 600, "low", "1.5")
+        @Expect(diagnostic.contains("\"toolUseCount\":1"), true)
+        @Expect(diagnostic.contains("\"toolResultCount\":1"), true)
+        @Expect(diagnostic.contains("\"thinkingEventCount\":1"), true)
+        @Expect(diagnostic.contains("provider_no_terminal_result_timeout"), false)
+        let incomplete = ckbAbcdeAssessSample("{\"type\":\"system\",\"subtype\":\"init\",\"model\":\"GLM-5.2\"}\n", "GLM-5.2")
+        @Expect(ckbAbcdeRenderModelTransportDiagnostic("秘密😀\n", 124, incomplete, 600, "low", "").contains("provider_no_terminal_result_timeout"), true)
+    }
 }
