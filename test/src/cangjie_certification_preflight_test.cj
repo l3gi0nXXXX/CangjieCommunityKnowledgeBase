@@ -67,9 +67,11 @@ public class CangjieCertificationPreflightTest {
         @Expect(ckbCertificationBudgetDiagnostic(budget), "provider_retry_must_be_zero")
         budget.providerRetries = 0; budget.sdkRetries = 1
         @Expect(ckbCertificationBudgetDiagnostic(budget), "sdk_retry_must_be_zero")
-        budget.sdkRetries = 0; budget.maxTurns = 2
-        @Expect(ckbCertificationBudgetDiagnostic(budget), "max_turns_must_equal_one")
-        budget.maxTurns = 1; budget.knowledgeRestRetries = 3
+        budget.sdkRetries = 0; budget.maxTurns = 0
+        @Expect(ckbCertificationBudgetDiagnostic(budget), "internal_turn_budget_must_be_positive")
+        budget.maxTurns = 21
+        @Expect(ckbCertificationBudgetDiagnostic(budget), "ok")
+        budget.knowledgeRestRetries = 3
         @Expect(ckbCertificationBudgetDiagnostic(budget), "knowledge_rest_retry_must_be_zero")
 
         let options = p6Preflight(p6EmptyOutput("../target/p6-neg-empty"))

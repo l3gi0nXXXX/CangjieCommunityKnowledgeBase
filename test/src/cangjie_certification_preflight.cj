@@ -207,7 +207,7 @@ public func ckbCertificationBudgetDiagnostic(budget: CkbCertificationBudget): St
     if (budget.agentAttempts != 1) { return "agent_attempt_budget_must_equal_one" }
     if (budget.providerRetries != 0) { return "provider_retry_must_be_zero" }
     if (budget.sdkRetries != 0) { return "sdk_retry_must_be_zero" }
-    if (budget.maxTurns != 1) { return "max_turns_must_equal_one" }
+    if (budget.maxTurns <= 0) { return "internal_turn_budget_must_be_positive" }
     if (budget.knowledgeRestRetries != 0) { return "knowledge_rest_retry_must_be_zero" }
     "ok"
 }
