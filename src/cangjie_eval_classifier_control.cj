@@ -204,6 +204,7 @@ public func sealCkbP5ClassifierResponseWithDiagnostic(requestText:String,respons
         if(ckbP5String(response,"observedProvider")!=config.provider||ckbP5String(response,"observedModel")!=config.model){return ("","classifier_response_identity_mismatch")}
         if(ckbP5Forbidden(responseText)){return ("","classifier_response_forbidden_content")}
         let category=ckbP5String(response,"category").toAsciiLower();if(!ckbP5ClassifierCategory(category)){return ("","classifier_response_category_invalid")}
+        if(!ckbP5ClassifierSourceFactsValid(request,response,category)){return ("","classifier_response_source_fact_unsupported")}
         let providerHash=benchmarkGapSha256(ckbP5Part(config.provider)+ckbP5Part(config.model)+ckbP5Part(ckbP5String(response,"observedProvider"))+ckbP5Part(ckbP5String(response,"observedModel")))
         let workspaceId=benchmarkGapSha256(try{canonicalize(Path(workspace)).toString()}catch(_:Exception){workspace});let runtimeHomeId=benchmarkGapSha256(try{canonicalize(Path(runtimeHome)).toString()}catch(_:Exception){runtimeHome});let sessionId=benchmarkGapSha256(session)
         let sourceId=benchmarkGapSha256(config.provider+"|"+config.model+"|"+config.executable+"|"+config.classifierId)
@@ -212,6 +213,23 @@ public func sealCkbP5ClassifierResponseWithDiagnostic(requestText:String,respons
         let base="{\"schemaVersion\":\"${CKB_P5_CLASSIFIER_SCHEMA}\",\"classifierId\":\"${ckbP5Escape(config.classifierId)}\",\"sourceEvidenceId\":\"${sourceId}\",\"provider\":\"${ckbP5Escape(config.provider)}\",\"observedProvider\":\"${ckbP5Escape(ckbP5String(response,"observedProvider"))}\",\"expectedModel\":\"${ckbP5Escape(config.model)}\",\"observedModel\":\"${ckbP5Escape(ckbP5String(response,"observedModel"))}\",\"providerIdentityHash\":\"${providerHash}\",\"provenanceHash\":\"${provenanceHash}\",\"workspaceId\":\"${workspaceId}\",\"runtimeHomeId\":\"${runtimeHomeId}\",\"sessionId\":\"${sessionId}\",${shared},\"consensusHash\":\"${consensusHash}\",\"evidenceHash\":\"\"}"
         let hash=ckbP5ClassifierArtifactEvidenceHash(base);(base.replace("\"evidenceHash\":\"\"","\"evidenceHash\":\"${hash}\""),"ok")
     }catch(_:Exception){("","classifier_response_malformed")}
+}
+
+private func ckbP5ClassifierSourceFactsValid(request:JsonObject,response:JsonObject,category:String):Bool{
+    if(category!="knowledge_gap"){return true}
+    let source=ckbP5String(request,"studentSourceExcerpt").toAsciiLower()
+    let compiler=ckbP5String(request,"compilerTestSummary").toAsciiLower()
+    if(!source.contains(".abs(")||!compiler.contains("undeclared identifier 'abs'")){return true}
+    let knowledge=ckbP5String(response,"knowledgeText").toAsciiLower()
+    if(!knowledge.contains("std.math")){return true}
+    let deniesRequirement=knowledge.contains("std.math import is unnecessary")||knowledge.contains("std.math import is not required")||
+        knowledge.contains("does not require importing std.math")||knowledge.contains("without importing std.math")||
+        knowledge.contains("do not import std.math")||knowledge.contains("must not import std.math")
+    if(deniesRequirement){return true}
+    let assertsRequirement=knowledge.contains("must import std.math")||knowledge.contains("requires import std.math")||
+        knowledge.contains("required to import std.math")||knowledge.contains("import std.math")||
+        knowledge.contains("importing std.math")||knowledge.contains("from std.math")||knowledge.contains("std.math.* before")
+    !assertsRequirement
 }
 
 public func ckbP5ClassifierArtifactEvidenceHash(raw:String):String{try{ckbP5ClassifierArtifactHash(JsonValue.fromStr(raw).asObject())}catch(_:Exception){""}}

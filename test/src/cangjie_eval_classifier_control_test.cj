@@ -80,6 +80,40 @@ public class CangjieEvalClassifierControlTest {
         @Expect(invalidLogRequest.startsWith("{"),true);@Expect(invalidLogRequest.contains("compilerTestSummary\":\"\""),true)
     }
 
+    // P5-C-UT-02 / P5-C-BND-02 / P5-C-POS-02 / P5-C-NEG-02
+    @TestCase
+    public func p5IcSourceFactsRejectUnsupportedAbsImportPrerequisite(): Unit {
+        let config=p5IcConfig("a","codex","GPT-5.6-Sol")
+        let request=p5IcAbsRequest("CASE-GENERIC-UTF8-🙂","main(): Unit { let value: Float64 = -3.5; println(value.abs()) }",
+            "error: undeclared identifier 'abs' 中文🙂")
+        let globalAbs=p5IcResponse("codex","GPT-5.6-Sol").replace("General reusable String API guidance 中文🙂",
+            "Float64 absolute value uses the global abs(value) function, not a receiver .abs() member.")
+        let allowed=sealCkbP5ClassifierResponseWithDiagnostic(request,globalAbs,config,"/tmp/p5-fact-ok/workspace","/tmp/p5-fact-ok/home","session-fact-ok")
+        @Expect(allowed[0].isEmpty(),false);@Expect(allowed[1],"ok")
+
+        let unsupported=globalAbs.replace("Float64 absolute value uses the global abs(value) function, not a receiver .abs() member.",
+            "Float64 requires import std.math.* before calling the global abs(value) function instead of .abs().")
+        let rejected=sealCkbP5ClassifierResponseWithDiagnostic(request,unsupported,config,"/tmp/p5-fact-bad/workspace","/tmp/p5-fact-bad/home","session-fact-bad")
+        @Expect(rejected[0],"");@Expect(rejected[1],"classifier_response_source_fact_unsupported")
+        let unsupportedFromPackage=globalAbs.replace("Float64 absolute value uses the global abs(value) function, not a receiver .abs() member.",
+            "The correct approach requires using a function from std.math, for example importing std.math.* before global abs(value).")
+        @Expect(sealCkbP5ClassifierResponseWithDiagnostic(request,unsupportedFromPackage,config,"/tmp/p5-fact-package/workspace","/tmp/p5-fact-package/home","session-fact-package")[1],"classifier_response_source_fact_unsupported")
+
+        let evidencedRequest=p5IcAbsRequest("CASE-GENERIC-EVIDENCED","import std.math.*\nmain(): Unit { let value: Float64 = -3.5; println(value.abs()) }",
+            "error: undeclared identifier 'abs' after import std.math.*")
+        @Expect(sealCkbP5ClassifierResponseWithDiagnostic(evidencedRequest,unsupported,config,"/tmp/p5-fact-evidenced/workspace","/tmp/p5-fact-evidenced/home","session-fact-evidenced")[1],"classifier_response_source_fact_unsupported")
+
+        let explicitNoImport=globalAbs.replace("Float64 absolute value uses the global abs(value) function, not a receiver .abs() member.",
+            "The global abs(value) function replaces receiver .abs(); std.math import is unnecessary and not required.")
+        @Expect(sealCkbP5ClassifierResponseWithDiagnostic(request,explicitNoImport,config,"/tmp/p5-fact-no-import/workspace","/tmp/p5-fact-no-import/home","session-fact-no-import")[1],"ok")
+
+        let unrelated=p5IcAbsRequest("CASE-GENERIC-OTHER","main(): Unit { let value: Float64 = -3.5; println(value.abs()) }",
+            "error: undeclared identifier 'otherApi'")
+        @Expect(sealCkbP5ClassifierResponseWithDiagnostic(unrelated,unsupported,config,"/tmp/p5-fact-other/workspace","/tmp/p5-fact-other/home","session-fact-other")[1],"ok")
+        let nonKnowledge=unsupported.replace("\"category\":\"knowledge_gap\"","\"category\":\"compile_error\"")
+        @Expect(sealCkbP5ClassifierResponseWithDiagnostic(request,nonKnowledge,config,"/tmp/p5-fact-non/workspace","/tmp/p5-fact-non/home","session-fact-non")[1],"ok")
+    }
+
     // P5-C-E2E-01
     @TestCase
     public func p5IcPos01TwoFakeProcessesProduceAnInjectableIndependentPair(): Unit {
@@ -127,6 +161,9 @@ private func p5IcSample(root:String,caseId:String,log:String,failureType!:String
     File.writeTo(caseRoot.join("case-result.json"),result.toArray());File.writeTo(caseRoot.join("result-evidence.json"),evidence.toArray());File.writeTo(caseRoot.join("canonical-task-context.json"),"{\"taskText\":\"通用字符串 API 任务🙂\",\"signature\":\"public func sample(s: String): Int64\"}".toArray());File.writeTo(caseRoot.join("test.log"),log.toArray());caseRoot
 }
 private func p5IcRequest(caseId:String):String{let evidence="{\"caseId\":\"${caseId}\",\"runId\":\"run-001\",\"datasetVersion\":\"dataset-v1\",\"attempt\":1,\"runMode\":\"development\",\"failureObservation\":\"missing reusable guidance 中文🙂\",\"suspectedKnowledgeGap\":true,\"failureType\":\"compile_error\",\"unitPass\":false,\"resultEvidenceHash\":\"HASH\"}";let hash=cangjieEvalTriageResultEvidenceHash(evidence);"{\"schemaVersion\":\"ckb-p5-classifier-request-v1\",\"caseId\":\"${caseId}\",\"runId\":\"run-001\",\"datasetVersion\":\"dataset-v1\",\"attempt\":1,\"runMode\":\"development\",\"studentSourceExcerpt\":\"学生源码🙂\",\"studentSourceHash\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"failureObservation\":\"missing reusable guidance 中文🙂\",\"resultEvidenceHash\":\"${hash}\"}"}
+private func p5IcAbsRequest(caseId:String,source:String,compiler:String):String{
+    p5IcRequest(caseId).replace("\"studentSourceExcerpt\":\"学生源码🙂\"","\"studentSourceExcerpt\":\"${source.replace("\\","\\\\").replace("\"","\\\"").replace("\n","\\n")}\"").replace("\"resultEvidenceHash\":","\"compilerTestSummary\":\"${compiler.replace("\\","\\\\").replace("\"","\\\"")}\",\"resultEvidenceHash\":")
+}
 private func p5IcConfig(label:String,provider:String,model:String):CkbP5ClassifierConfig{p5IcExecutableConfig(label,provider,model,"/fake/${label}")}
 private func p5IcExecutableConfig(label:String,provider:String,model:String,executable:String):CkbP5ClassifierConfig{let c=CkbP5ClassifierConfig();c.label=label;c.classifierId="classifier-${label}";c.provider=provider;c.model=model;c.executable=executable;c}
 private func p5IcResponse(provider:String,model:String):String{"{\"schemaVersion\":\"ckb-p5-classifier-response-v1\",\"observedProvider\":\"${provider}\",\"observedModel\":\"${model}\",\"category\":\"knowledge_gap\",\"knowledgeFamily\":\"standard_library\",\"reusable\":true,\"sourceClass\":\"official\",\"citation\":\"https://docs.cangjie-lang.cn/docs/1.0.0/\",\"purificationPassed\":true,\"canonicalKnowledgeId\":\"GENERAL-STRING-API\",\"targetVersion\":\"1.0.0\",\"evidenceId\":\"official-string-api\",\"knowledgeText\":\"General reusable String API guidance 中文🙂\"}"}
