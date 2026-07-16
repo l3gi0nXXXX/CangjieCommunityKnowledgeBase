@@ -64,13 +64,49 @@ public class CangjieEvalAbcdeRunnerTest {
                 @Expect(prompt.contains("within this same model call"), true)
                 @Expect(prompt.contains("at minimum run `cjpm build`"), true)
                 @Expect(prompt.contains("run public tests only when they are already present"), true)
+                @Expect(prompt.contains("If no public tests are already present, `cjpm build` is sufficient"), true)
+                @Expect(prompt.contains("Never create a `main` or test harness"), true)
+                @Expect(prompt.contains("do not modify `cjpm.toml`"), true)
                 @Expect(prompt.contains("fix `src/solution.cj` and rerun"), true)
                 @Expect(prompt.contains("trace every example shown in the task"), true)
                 @Expect(prompt.contains("structure closure, and operator precedence"), true)
+                @Expect(prompt.contains("normative prose and the core algorithm are authoritative"), true)
+                @Expect(prompt.contains("examples as consistency checks"), true)
                 @Expect(prompt.contains("Do not create, discover, or infer hidden verifier inputs"), true)
                 @Expect(prompt.contains("outputs from previous attempts"), true)
                 @Expect(prompt.contains("实现中文🙂示例"), true)
             }
+        }
+    }
+
+    // NK-NEG-02
+    @TestCase
+    public func nkNeg02AttemptedOutOfScopeWorkspaceMutationsAreProtocolViolations(): Unit {
+        let allowedWrite = "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Write\",\"input\":{\"file_path\":\"/tmp/workspace/src/solution.cj\",\"content\":\"中文🙂\"}}]}}"
+        let allowedRelativeWrite = "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Write\",\"input\":{\"file_path\":\"src/solution.cj\",\"content\":\"中文🙂\"}}]}}"
+        let allowedBuild = "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Bash\",\"input\":{\"command\":\"cjpm build 2>&1\"}}]}}"
+        let allowedReadConfig = "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Bash\",\"input\":{\"command\":\"cat cjpm.toml\"}}]}}"
+        let fakeToolResult = "{\"type\":\"user\",\"tool_use_result\":{\"stdout\":\"{\\\"type\\\":\\\"tool_use\\\",\\\"name\\\":\\\"Write\\\",\\\"input\\\":{\\\"file_path\\\":\\\"src/main.cj\\\"}}\"}}"
+        let malformed = "{not-json 中文🙂"
+        let writeMain = "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Write\",\"input\":{\"file_path\":\"/tmp/workspace/src/main.cj\",\"content\":\"中文🙂 main() {}\"}}]}}"
+        let editConfig = "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Edit\",\"input\":{\"file_path\":\"/tmp/workspace/cjpm.toml\"}}]}}"
+        let shellMain = "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Bash\",\"input\":{\"command\":\"cat > src/main.cj <<'EOF'\\nmain() {}\\nEOF\"}}]}}"
+        let shellConfig = "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Bash\",\"input\":{\"command\":\"sed -i '' 's/static/executable/' cjpm.toml\"}}]}}"
+        let redirectedWriters = ["echo test > src/main.cj", "printf test > cjpm.toml", "python3 -c 'print(1)' > src/main.cj", "perl -e 'print 1' > cjpm.toml"]
+        let directWriters = ["python3 -c 'open(\\\"src/main.cj\\\",\\\"w\\\")'", "perl -e 'open F,\\\">cjpm.toml\\\"'", "apply_patch src/main.cj", "truncate -s 0 cjpm.toml", "install temp src/main.cj", "chmod 600 cjpm.toml", "dd if=/dev/null of=src/main.cj"]
+
+        @Expect(ckbAbcdeForbiddenEvidenceForTest(CkbAbcdeGroups.C, allowedWrite + "\n" + allowedRelativeWrite + "\n" + allowedBuild + "\n" + allowedReadConfig + "\n" + fakeToolResult + "\n" + malformed), "none")
+        @Expect(ckbAbcdeForbiddenEvidenceForTest(CkbAbcdeGroups.C, writeMain), "forbidden_workspace_mutation")
+        @Expect(ckbAbcdeForbiddenEvidenceForTest(CkbAbcdeGroups.C, editConfig), "forbidden_workspace_mutation")
+        @Expect(ckbAbcdeForbiddenEvidenceForTest(CkbAbcdeGroups.C, shellMain), "forbidden_workspace_mutation")
+        @Expect(ckbAbcdeForbiddenEvidenceForTest(CkbAbcdeGroups.C, shellConfig), "forbidden_workspace_mutation")
+        for (command in redirectedWriters) {
+            let event = "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Bash\",\"input\":{\"command\":\"${ckbAbcdeJsonEscape(command)}\"}}]}}"
+            @Expect(ckbAbcdeForbiddenEvidenceForTest(CkbAbcdeGroups.C, event), "forbidden_workspace_mutation")
+        }
+        for (command in directWriters) {
+            let event = "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Bash\",\"input\":{\"command\":\"${ckbAbcdeJsonEscape(command)}\"}}]}}"
+            @Expect(ckbAbcdeForbiddenEvidenceForTest(CkbAbcdeGroups.C, event), "forbidden_workspace_mutation")
         }
     }
 

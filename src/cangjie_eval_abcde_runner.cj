@@ -451,7 +451,7 @@ public func renderCkbAbcdePromptForMode(group: String, caseId: String, modelTask
     let restContextText = ckbAbcdePromptRestContext(contextText)
     var out = "# ${caseId} ${group}\n\n"
     out += "Run mode: ${if (runMode == "certification") { "certification" } else { "development" }}. This label changes retry and accounting policy only; it does not expose tests, previous attempts, or other case artifacts.\n\n"
-    out += "You are completing one Cangjie HumanEval case. Modify only `src/solution.cj` in the current workspace. Keep the public function signature unchanged. The copied workspace root is your current directory; if the task text below mentions `starter/src/solution.cj`, still edit exactly `src/solution.cj`. Do not read hidden tests, reference solutions, teacher artifacts, unrelated repositories, files outside the allowed paths, or outputs from previous attempts. Use at most three knowledge or documentation lookup tool calls before editing; do not perform prolonged research. If documentation is inconclusive, implement directly from the starter signature, examples, and common Cangjie syntax. Before replying, run the public local checks available in this workspace within this same model call; at minimum run `cjpm build`, and run public tests only when they are already present in the workspace. If a local check fails, fix `src/solution.cj` and rerun it before replying. Independently trace every example shown in the task and review task-relevant boundaries such as empty or single inputs, duplicates, signs, structure closure, and operator precedence. Do not create, discover, or infer hidden verifier inputs. After these checks pass, reply with a short completion note that names the checks performed.\n\n"
+    out += "You are completing one Cangjie HumanEval case. Modify only `src/solution.cj` in the current workspace. Keep the public function signature unchanged. The copied workspace root is your current directory; if the task text below mentions `starter/src/solution.cj`, still edit exactly `src/solution.cj`. Do not read hidden tests, reference solutions, teacher artifacts, unrelated repositories, files outside the allowed paths, or outputs from previous attempts. Use at most three knowledge or documentation lookup tool calls before editing; do not perform prolonged research. If documentation is inconclusive, implement directly from the starter signature, examples, and common Cangjie syntax. Before replying, run the public local checks available in this workspace within this same model call; at minimum run `cjpm build`, and run public tests only when they are already present in the workspace. If no public tests are already present, `cjpm build` is sufficient. Never create a `main` or test harness, never create or modify test files, and do not modify `cjpm.toml`, even temporarily; temporary out-of-scope edits that are later restored are still protocol violations. If a local check fails, fix `src/solution.cj` and rerun it before replying. Independently trace every example shown in the task and review task-relevant boundaries such as empty or single inputs, duplicates, signs, structure closure, and operator precedence. When task evidence conflicts, normative prose and the core algorithm are authoritative; use examples as consistency checks, report any inconsistency, and do not silently replace the specified algorithm with example-only behavior. Do not create, discover, or infer hidden verifier inputs. After these checks pass, reply with a short completion note that names the checks performed.\n\n"
     if (group == CkbAbcdeGroups.A) {
         out += "Knowledge policy for this run: No CKB baseline. Do not use CKB HTTP APIs, MCP tools, local cangjie_docs, web search, or external source repositories.\n\n"
     } else if (group == CkbAbcdeGroups.B) {
@@ -2008,6 +2008,8 @@ private func ckbAbcdeTestLogContainsFailure(testLog: String): Bool {
 
 private func ckbAbcdeForbiddenEvidence(group: String, transcript: String): String {
     let lowered = transcript.toAsciiLower()
+    let workspaceMutation = ckbAbcdeForbiddenWorkspaceMutationEvidence(transcript)
+    if (workspaceMutation != "none") { return workspaceMutation }
     if (group == CkbAbcdeGroups.A && (lowered.contains("cangjie_knowledge_pack") || lowered.contains("cangjie_task_knowledge_pack") || lowered.contains("/v1/cangjie") || lowered.contains("cangjie_docs-release"))) {
         return "forbidden_knowledge_entry"
     }
@@ -2025,6 +2027,40 @@ private func ckbAbcdeForbiddenEvidence(group: String, transcript: String): Strin
         if (eViolation != "none") {
             return eViolation
         }
+    }
+    "none"
+}
+
+private func ckbAbcdeForbiddenWorkspaceMutationEvidence(transcript: String): String {
+    for (line in transcript.split("\n")) {
+        try {
+            let event = JsonValue.fromStr(line).asObject()
+            if (ckbAbcdeStrictJsonString(event, "type") != "assistant") { continue }
+            let message = event.get("message").getOrThrow().asObject()
+            let content = message.get("content").getOrThrow().asArray().getItems()
+            for (entryValue in content) {
+                let entry = entryValue.asObject()
+                if (ckbAbcdeStrictJsonString(entry, "type") != "tool_use") { continue }
+                let name = ckbAbcdeStrictJsonString(entry, "name").toAsciiLower()
+                let input = entry.get("input").getOrThrow().asObject()
+                if (name == "write" || name == "edit") {
+                    let path = ckbAbcdeStrictJsonString(input, "file_path")
+                    if (!(path == "src/solution.cj" || path == "./src/solution.cj" || path.endsWith("/src/solution.cj"))) {
+                        return "forbidden_workspace_mutation"
+                    }
+                } else if (name == "bash") {
+                    let command = ckbAbcdeStrictJsonString(input, "command").toAsciiLower()
+                    let protectedPath = command.contains("src/main.cj") || command.contains("cjpm.toml") || command.contains("/test/") || command.contains("/tests/")
+                    let redirectedWriter = command.contains("cat >") ||
+                        ((command.contains("echo ") || command.contains("printf ") || command.contains("python") || command.contains("perl ")) && command.contains(">"))
+                    let directMutation = command.contains("sed -i") || command.contains("rm ") || command.contains("mv ") ||
+                        command.contains("cp ") || command.contains("touch ") || command.contains("mkdir ") || command.contains("tee ") ||
+                        command.contains("python") || command.contains("perl ") || command.contains("apply_patch") ||
+                        command.contains("truncate ") || command.contains("install ") || command.contains("chmod ") || command.contains("dd ")
+                    if (protectedPath && (redirectedWriter || directMutation)) { return "forbidden_workspace_mutation" }
+                }
+            }
+        } catch (_: Exception) {}
     }
     "none"
 }
