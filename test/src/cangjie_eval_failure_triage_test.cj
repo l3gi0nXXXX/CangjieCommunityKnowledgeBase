@@ -27,7 +27,7 @@ public class CangjieEvalFailureTriageTest {
         let second = p5Classifier("classifier-b", "transcript-b", "knowledge_gap", 1, "development")
         let confirmed = confirmKnowledgeGap(first, second)
         @Expect(confirmed.confirmed, true); @Expect(confirmed.diagnostic, "ok")
-        @Expect(confirmKnowledgeGap(first, p5Classifier("classifier-b", "transcript-b", "reasoning_failure", 1, "development")).diagnostic, "classifier_evidence_hash_mismatch")
+        @Expect(confirmKnowledgeGap(first, p5Classifier("classifier-b", "transcript-b", "reasoning_failure", 1, "development")).diagnostic, "classifier_disagreement")
         @Expect(confirmKnowledgeGap(first, p5Classifier("classifier-a", "transcript-b", "knowledge_gap", 1, "development")).diagnostic, "independent_classifier_required")
         @Expect(confirmKnowledgeGap(first, p5Classifier("classifier-b", "transcript-b", "knowledge_gap", 2, "development")).diagnostic, "classifier_field_contract_invalid")
         let contaminatedA = p5ClassifierWithKnowledgeText("classifier-a", "transcript-a", "knowledge_gap", 1, "development", "Answer for CJ-HUMANEVAL-007")

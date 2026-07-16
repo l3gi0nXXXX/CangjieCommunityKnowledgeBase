@@ -263,14 +263,22 @@ public func confirmIndependentClassifierPair(firstJson: String, secondJson: Stri
         let firstHash = triageJsonString(first, "evidenceHash")
         let secondHash = triageJsonString(second, "evidenceHash")
         let firstConsensus = triageJsonString(first,"consensusHash");let secondConsensus=triageJsonString(second,"consensusHash")
-        if (firstHash == "" || secondHash == "" || firstHash == secondHash || firstConsensus == "" || firstConsensus != secondConsensus ||
-            firstConsensus != ckbP5ClassifierArtifactConsensusHash(firstJson) || secondConsensus != ckbP5ClassifierArtifactConsensusHash(secondJson)) {
+        if (firstHash == "" || secondHash == "" || firstHash == secondHash) {
             result.diagnostic = "classifier_evidence_hash_mismatch"; return result
+        }
+        if (firstConsensus == "" || secondConsensus == "" ||
+            firstConsensus != ckbP5ClassifierArtifactConsensusHash(firstJson) || secondConsensus != ckbP5ClassifierArtifactConsensusHash(secondJson)) {
+            result.diagnostic = "classifier_consensus_hash_invalid"; return result
         }
         let firstCategory = triageJsonString(first, "category").toAsciiLower()
         let secondCategory = triageJsonString(second, "category").toAsciiLower()
         if (secondCategory != firstCategory) {
             result.diagnostic = "classifier_disagreement"; return result
+        }
+        let firstAgreement = triageClassifierAgreementHash(first)
+        let secondAgreement = triageClassifierAgreementHash(second)
+        if (firstAgreement != secondAgreement) {
+            result.diagnostic = "classifier_semantic_disagreement"; return result
         }
         if (triageJsonInt(first, "attempt", -1) != 1 || triageJsonInt(second, "attempt", -1) != 1 ||
             triageJsonString(first, "runMode").toAsciiLower() != "development" || triageJsonString(second, "runMode").toAsciiLower() != "development") {
@@ -282,11 +290,33 @@ public func confirmIndependentClassifierPair(firstJson: String, secondJson: Stri
         result.confirmed = true
         result.diagnostic = "ok"
         result.category = firstCategory
-        result.evidenceHash = firstConsensus
+        result.evidenceHash = firstAgreement
     } catch (_: Exception) {
         result.diagnostic = "malformed_classifier_evidence"
     }
     result
+}
+
+// Independent classifiers are expected to phrase and identify reusable knowledge differently.
+// Agreement therefore binds stable root-cause semantics and source provenance, while each full
+// artifact still retains and verifies its own model-authored text and canonical identity hash.
+private func triageClassifierAgreementHash(object: JsonObject): String {
+    let canonical = triageCanonicalPart(triageJsonString(object, "category").toAsciiLower()) +
+        triageCanonicalPart(triageJsonString(object, "caseId")) +
+        triageCanonicalPart(triageJsonString(object, "runId")) +
+        triageCanonicalPart(triageJsonString(object, "datasetVersion")) +
+        triageCanonicalPart("${triageJsonInt(object, "attempt", -1)}") +
+        triageCanonicalPart(triageJsonString(object, "runMode").toAsciiLower()) +
+        triageCanonicalPart(triageJsonString(object, "resultEvidenceHash").toAsciiLower()) +
+        triageCanonicalPart(triageJsonString(object, "failureObservation")) +
+        triageCanonicalPart(triageJsonString(object, "knowledgeFamily").toAsciiLower()) +
+        triageCanonicalPart("${triageJsonBool(object, "reusable")}") +
+        triageCanonicalPart(triageJsonString(object, "sourceClass").toAsciiLower()) +
+        triageCanonicalPart(triageJsonString(object, "citation").toAsciiLower()) +
+        triageCanonicalPart("${triageJsonBool(object, "purificationPassed")}") +
+        triageCanonicalPart(triageJsonString(object, "targetVersion")) +
+        triageCanonicalPart(triageJsonString(object, "evidenceId"))
+    triageSha256(canonical)
 }
 
 public func confirmKnowledgeGap(firstJson: String, secondJson: String): CangjieEvalKnowledgeGapConfirmation {
