@@ -371,6 +371,28 @@ public class CangjieEvalAbcdeRunnerTest {
         @Expect(ckbAbcdeClaudePermissionFlagForTest(), "--dangerously-skip-permissions")
     }
 
+    // NK-UT-03 / NK-BND-02 / NK-NEG-03
+    @TestCase
+    public func nkUt03DevelopmentClaudeUsesEffectiveRuntimeHomeAndFreshSession(): Unit {
+        let groupRoot="/tmp/仓颉🙂/group";let runtimeHome="${groupRoot}/runtime-home"
+        let first=ckbAbcdeDevelopmentClaudeCommand(groupRoot,runtimeHome,"GLM-5.2","max"," --max-budget-usd '10'","","--add-dir '/tmp/工作区🙂'","${groupRoot}/one.jsonl","${groupRoot}/one.err",1)
+        let second=ckbAbcdeDevelopmentClaudeCommand(groupRoot,runtimeHome,"GLM-5.2","max","","","--add-dir '/tmp/工作区🙂'","${groupRoot}/two.jsonl","${groupRoot}/two.err",2)
+        for(command in [first,second]){@Expect(command.contains("HOME="),true);@Expect(command.contains("XDG_CONFIG_HOME="),true);@Expect(command.contains("XDG_CACHE_HOME="),true);@Expect(command.contains("CLAUDE_CONFIG_DIR="),true);@Expect(command.contains(runtimeHome),true);@Expect(command.contains("${runtimeHome}/mcp-config.json"),true);@Expect(command.contains("--session-id \"$session_id\""),true);@Expect(command.contains("/.claude/"),false);@Expect(command.contains("~/.claude"),false)}
+        @Expect(first.contains("session-id.attempt-1.txt"),true);@Expect(second.contains("session-id.attempt-2.txt"),true);@Expect(first!=second,true)
+        @Expect(ckbAbcdeDevelopmentAttemptRuntimeHome(runtimeHome,1),"${runtimeHome}/attempt-1");@Expect(ckbAbcdeDevelopmentAttemptRuntimeHome(runtimeHome,2),"${runtimeHome}/attempt-2")
+    }
+
+    @TestCase
+    public func nkNeg03DefaultRuntimeHomeAccessFailsClosedWithoutPathLeakage(): Unit {
+        let bashDefault="{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Bash\",\"input\":{\"command\":\"cat /Users/private-user/.claude/projects/secret/tool-results/value\"}}]}}"
+        let readDefault="{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Read\",\"input\":{\"file_path\":\"/Users/private-user/.claude/projects/中文🙂\"}}]}}"
+        let homeDefault="{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Bash\",\"input\":{\"command\":\"cat ~/.claude/projects/secret\"}}]}}"
+        let allowedRuntime="{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Read\",\"input\":{\"file_path\":\"/tmp/运行🙂/runtime-home/claude-config/projects/tool-results/value\"}}]}}"
+        let injectedResult="{\"type\":\"user\",\"tool_use_result\":{\"stdout\":\"/Users/private-user/.claude/projects/secret\"}}"
+        for(event in [bashDefault,readDefault,homeDefault]){let diagnostic=ckbAbcdeForbiddenEvidenceForTest(CkbAbcdeGroups.C,event);@Expect(diagnostic,"default_runtime_home_access");@Expect(diagnostic.contains("private-user"),false)}
+        @Expect(ckbAbcdeForbiddenEvidenceForTest(CkbAbcdeGroups.C,allowedRuntime+"\n"+injectedResult+"\n{malformed🙂"),"none")
+    }
+
     @TestCase
     public func ckg12Pos005bRestContextCurlRetriesConnectionRefused(): Unit {
         let flags = ckbAbcdeCurlRetryFlagsForTest()

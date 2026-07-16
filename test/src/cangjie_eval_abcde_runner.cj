@@ -654,7 +654,7 @@ private func ckbAbcdeRunCaseGroup(options: CkbAbcdeRunnerOptions, runRoot: Strin
         ckbAbcdeWriteText("${groupRoot}/claude.stdout.log", "")
         ckbAbcdeWriteText("${groupRoot}/claude.stderr.log", "")
     } else {
-        let claude = if (options.runMode == "certification") { ckbAbcdeRunClaudeCertification(options, group, groupRoot, workspace, "${groupRoot}/runtime-home", caseSrc) } else { ckbAbcdeRunClaude(options, group, groupRoot, workspace, options.docsRoot, "${caseSrc}/starter") }
+        let claude = if (options.runMode == "certification") { ckbAbcdeRunClaudeCertification(options, group, groupRoot, workspace, "${groupRoot}/runtime-home", caseSrc) } else { ckbAbcdeRunClaude(options, group, groupRoot, workspace, "${groupRoot}/runtime-home", options.docsRoot, "${caseSrc}/starter") }
         claudeExit = claude.exitCode
     }
     let usage = ckbAbcdeParseClaudeUsageFile("${groupRoot}/claude-transcript.jsonl")
@@ -731,7 +731,7 @@ private func ckbAbcdeStrictSandboxProbeOk(raw:String,workspace:String,runtimeHom
 private func ckbAbcdeStrictVerifierMountOk(raw:String,answerHash:String):Bool{try{let o=JsonValue.fromStr(raw).asObject();ckbAbcdeStrictJsonInt(o,"injectExitCode",-1)==0&&ckbAbcdeStrictJsonString(o,"answerHashBefore")==answerHash&&ckbAbcdeStrictJsonString(o,"answerHashAfter")==answerHash&&ckbAbcdeStrictJsonBool(o,"mountedAfterFreeze")}catch(_:Exception){false}}
 private func ckbAbcdeTranscriptHasOtherCase(raw:String,current:String):Bool{for(i in 0..164){let id=ckbAbcdeCaseId(i);if(id!=current&&raw.contains(id)){return true}};false}
 
-private func ckbAbcdeRunClaude(options: CkbAbcdeRunnerOptions, group: String, groupRoot: String, workspace: String, docsRoot: String, authoritativeWorkspace: String): CkbAbcdeCommandResult {
+private func ckbAbcdeRunClaude(options: CkbAbcdeRunnerOptions, group: String, groupRoot: String, workspace: String, runtimeHome: String, docsRoot: String, authoritativeWorkspace: String): CkbAbcdeCommandResult {
     var last = CkbAbcdeCommandResult()
     var sampleAttempt: Int64 = 0
     for (transportAttempt in 1..=2) {
@@ -741,7 +741,7 @@ private func ckbAbcdeRunClaude(options: CkbAbcdeRunnerOptions, group: String, gr
             ckbAbcdeAppendText("${groupRoot}/workspace-restores.jsonl", restoreJson + "\n")
             if (!restoreJson.contains("\"restored\":true")) { let blocked = CkbAbcdeCommandResult(); blocked.exitCode = 125; blocked.stderr = "workspace_restore_failed"; return blocked }
         }
-        let current = ckbAbcdeRunClaudeOnce(group, groupRoot, workspace, docsRoot, transportAttempt, options.expectedModelVersion, options.modelTimeoutSeconds, options.modelEffort, options.modelMaxBudgetUsd)
+        let current = ckbAbcdeRunClaudeOnce(group, groupRoot, workspace, runtimeHome, docsRoot, transportAttempt, options.expectedModelVersion, options.modelTimeoutSeconds, options.modelEffort, options.modelMaxBudgetUsd)
         last = current
         let transcript = ckbAbcdeReadText("${groupRoot}/claude-transcript.attempt-${transportAttempt}.jsonl")
         let assessment = ckbAbcdeAssessSample(transcript, options.expectedModelVersion)
@@ -823,7 +823,7 @@ private func ckbAbcdeRunClaudeOnceInCertificationSandbox(group:String,groupRoot:
 }
 public func ckbAbcdeCertificationClaudeCommand(groupRoot:String,runtimeHome:String,profilePath:String,expectedModel:String,transcript:String,stderr:String):String{"session_id=$(uuidgen | tr '[:upper:]' '[:lower:]'); printf '%s' \"$session_id\" > ${ckbAbcdeShellQuote("${groupRoot}/session-id.txt")}; HOME=${ckbAbcdeShellQuote(runtimeHome)} XDG_CONFIG_HOME=${ckbAbcdeShellQuote("${runtimeHome}/xdg-config")} XDG_CACHE_HOME=${ckbAbcdeShellQuote("${runtimeHome}/xdg-cache")} CLAUDE_CONFIG_DIR=${ckbAbcdeShellQuote("${runtimeHome}/claude-config")} ANTHROPIC_MAX_RETRIES=0 CLAUDE_CODE_MAX_RETRIES=0 sandbox-exec -f ${ckbAbcdeShellQuote(profilePath)} /opt/homebrew/bin/claude -p --verbose --no-session-persistence --session-id \"$session_id\" --model ${ckbAbcdeShellQuote(expectedModel)} --output-format stream-json --strict-mcp-config --mcp-config ${ckbAbcdeShellQuote("${runtimeHome}/mcp-config.json")} < ${ckbAbcdeShellQuote("${groupRoot}/prompt.final.md")} > ${ckbAbcdeShellQuote(transcript)} 2> ${ckbAbcdeShellQuote(stderr)}"}
 
-private func ckbAbcdeRunClaudeOnce(group: String, groupRoot: String, workspace: String, docsRoot: String, attempt: Int64, expectedModel: String, modelTimeoutSeconds: Int64, modelEffort: String, modelMaxBudgetUsd: String): CkbAbcdeCommandResult {
+private func ckbAbcdeRunClaudeOnce(group: String, groupRoot: String, workspace: String, runtimeHome: String, docsRoot: String, attempt: Int64, expectedModel: String, modelTimeoutSeconds: Int64, modelEffort: String, modelMaxBudgetUsd: String): CkbAbcdeCommandResult {
     var addDir = "--add-dir ${ckbAbcdeShellQuote(workspace)}"
     if (group == CkbAbcdeGroups.E) {
         addDir += " --add-dir ${ckbAbcdeShellQuote(docsRoot)}"
@@ -832,10 +832,20 @@ private func ckbAbcdeRunClaudeOnce(group: String, groupRoot: String, workspace: 
     let transcript = "${groupRoot}/claude-transcript.attempt-${attempt}.jsonl"
     let stderr = "${groupRoot}/claude.attempt-${attempt}.stderr.log"
     let budgetFlag = if (modelMaxBudgetUsd == "") { "" } else { " --max-budget-usd ${ckbAbcdeShellQuote(modelMaxBudgetUsd)}" }
+    let attemptRuntimeHome=ckbAbcdeDevelopmentAttemptRuntimeHome(runtimeHome,attempt)
+    ckbAbcdeEnsureDir("${attemptRuntimeHome}/xdg-config");ckbAbcdeEnsureDir("${attemptRuntimeHome}/xdg-cache");ckbAbcdeEnsureDir("${attemptRuntimeHome}/claude-config")
+    ckbAbcdeWriteText("${attemptRuntimeHome}/mcp-config.json",ckbAbcdeReadText("${groupRoot}/mcp-config.json"))
     ckbAbcdeWriteText("${groupRoot}/model-transport-profile.json", "{\"effort\":\"${ckbAbcdeJsonEscape(modelEffort)}\",\"maxBudgetUsd\":\"${ckbAbcdeJsonEscape(modelMaxBudgetUsd)}\",\"timeoutSeconds\":${modelTimeoutSeconds},\"attempt\":${attempt}}\n")
-    let command = "claude -p --verbose --no-session-persistence --model ${ckbAbcdeShellQuote(expectedModel)} --effort ${ckbAbcdeShellQuote(modelEffort)}${budgetFlag} --output-format stream-json --strict-mcp-config --mcp-config ${ckbAbcdeShellQuote("${groupRoot}/mcp-config.json")} ${ckbAbcdeClaudePermissionFlag()} ${toolLimit} ${addDir} < ${ckbAbcdeShellQuote("${groupRoot}/prompt.final.md")} > ${ckbAbcdeShellQuote(transcript)} 2> ${ckbAbcdeShellQuote(stderr)}"
+    let command = ckbAbcdeDevelopmentClaudeCommand(groupRoot,attemptRuntimeHome,expectedModel,modelEffort,budgetFlag,toolLimit,addDir,transcript,stderr,attempt)
     let script = ckbAbcdeClaudeTimeoutShell(command, stderr, modelTimeoutSeconds) + "; cp ${ckbAbcdeShellQuote(transcript)} ${ckbAbcdeShellQuote("${groupRoot}/claude-transcript.jsonl")} 2>/dev/null || true; cp ${ckbAbcdeShellQuote(transcript)} ${ckbAbcdeShellQuote("${groupRoot}/claude.stdout.log")} 2>/dev/null || true; cp ${ckbAbcdeShellQuote(stderr)} ${ckbAbcdeShellQuote("${groupRoot}/claude.stderr.log")} 2>/dev/null || true; exit $code"
     ckbAbcdeRunShell(script, workspace)
+}
+
+public func ckbAbcdeDevelopmentAttemptRuntimeHome(runtimeHome:String,attempt:Int64):String{"${runtimeHome}/attempt-${attempt}"}
+
+public func ckbAbcdeDevelopmentClaudeCommand(groupRoot:String,runtimeHome:String,expectedModel:String,modelEffort:String,budgetFlag:String,toolLimit:String,addDir:String,transcript:String,stderr:String,attempt:Int64):String{
+    let attemptSession="${groupRoot}/session-id.attempt-${attempt}.txt";let currentSession="${groupRoot}/session-id.txt"
+    "session_id=$(uuidgen | tr '[:upper:]' '[:lower:]'); printf '%s' \"$session_id\" > ${ckbAbcdeShellQuote(attemptSession)}; cp ${ckbAbcdeShellQuote(attemptSession)} ${ckbAbcdeShellQuote(currentSession)}; HOME=${ckbAbcdeShellQuote(runtimeHome)} XDG_CONFIG_HOME=${ckbAbcdeShellQuote("${runtimeHome}/xdg-config")} XDG_CACHE_HOME=${ckbAbcdeShellQuote("${runtimeHome}/xdg-cache")} CLAUDE_CONFIG_DIR=${ckbAbcdeShellQuote("${runtimeHome}/claude-config")} claude -p --verbose --no-session-persistence --session-id \"$session_id\" --model ${ckbAbcdeShellQuote(expectedModel)} --effort ${ckbAbcdeShellQuote(modelEffort)}${budgetFlag} --output-format stream-json --strict-mcp-config --mcp-config ${ckbAbcdeShellQuote("${runtimeHome}/mcp-config.json")} ${ckbAbcdeClaudePermissionFlag()} ${toolLimit} ${addDir} < ${ckbAbcdeShellQuote("${groupRoot}/prompt.final.md")} > ${ckbAbcdeShellQuote(transcript)} 2> ${ckbAbcdeShellQuote(stderr)}"
 }
 
 private func ckbAbcdePublishClaudeAttemptArtifacts(groupRoot: String, attemptCount: Int64): Unit {
@@ -1938,6 +1948,8 @@ private func ckbAbcdeTestLogContainsFailure(testLog: String): Bool {
 
 private func ckbAbcdeForbiddenEvidence(group: String, transcript: String): String {
     let lowered = transcript.toAsciiLower()
+    let runtimeHomeAccess = ckbAbcdeDefaultRuntimeHomeAccessEvidence(transcript)
+    if (runtimeHomeAccess != "none") { return runtimeHomeAccess }
     let workspaceMutation = ckbAbcdeForbiddenWorkspaceMutationEvidence(transcript)
     if (workspaceMutation != "none") { return workspaceMutation }
     if (group == CkbAbcdeGroups.A && (lowered.contains("cangjie_knowledge_pack") || lowered.contains("cangjie_task_knowledge_pack") || lowered.contains("/v1/cangjie") || lowered.contains("cangjie_docs-release"))) {
@@ -1957,6 +1969,17 @@ private func ckbAbcdeForbiddenEvidence(group: String, transcript: String): Strin
         if (eViolation != "none") {
             return eViolation
         }
+    }
+    "none"
+}
+
+private func ckbAbcdeDefaultRuntimeHomeAccessEvidence(transcript:String):String{
+    for(line in transcript.split("\n")){
+        try{
+            let event=JsonValue.fromStr(line).asObject();if(ckbAbcdeStrictJsonString(event,"type")!="assistant"){continue}
+            let content=event.get("message").getOrThrow().asObject().get("content").getOrThrow().asArray().getItems()
+            for(value in content){let entry=value.asObject();if(ckbAbcdeStrictJsonString(entry,"type")!="tool_use"){continue};let input=entry.get("input").getOrThrow().asObject();let path=ckbAbcdeStrictJsonString(input,"file_path").toAsciiLower();let command=ckbAbcdeStrictJsonString(input,"command").toAsciiLower();if(path.contains("/.claude/")||path.endsWith("/.claude")||command.contains("/.claude/")||command.contains("~/.claude")){return "default_runtime_home_access"}}
+        }catch(_:Exception){}
     }
     "none"
 }
