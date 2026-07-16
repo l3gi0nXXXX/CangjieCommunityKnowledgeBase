@@ -2,7 +2,7 @@ package cangjie_community_knowledge_base_test
 
 import std.collection.ArrayList
 import std.env.getVariable
-import std.fs.{Directory, File, Path, exists}
+import std.fs.{Directory, File, Path, exists, remove}
 import std.process.launch
 import std.time.DateTime
 import std.unittest.*
@@ -139,6 +139,43 @@ public class CangjieEvalClassifierControlTest {
         @Expect(timed.ok,false);@Expect(timed.paired,0);@Expect(timed.rejected,1);let timedDiagnostic=String.fromUtf8(File.readFrom(Path(timeoutRoot).join("classifier-output/classifier-control-diagnostics.json")));@Expect(ckbP5ClassifierDiagnosticArtifactValid(timedDiagnostic),true);@Expect(timedDiagnostic.contains("classifier_process_timeout"),true)
     }
 
+    // P5-C-UT-03/POS-03/NEG-03/BND-03: cross-process diagnostics are enum-only and fail closed.
+    @TestCase
+    public func p5IcSafeDiagnosticSidecarMapsExactEnumAndRejectsUnsafePayloads(): Unit {
+        let root=p5IcRoot("safe-diagnostic");let path=Path(root).join("classifier-diagnostic.json")
+        File.writeTo(path,"{\"schemaVersion\":\"cangjie-teacher-classifier-diagnostic-v1\",\"diagnostic\":\"classifier_response_source_fact_unsupported\"}\n".toArray())
+        @Expect(ckbP5ReadClassifierFailureDiagnostic(path),"classifier_response_source_fact_unsupported")
+        File.writeTo(path,"{\"schemaVersion\":\"wrong\",\"diagnostic\":\"classifier_timeout\"}".toArray())
+        @Expect(ckbP5ReadClassifierFailureDiagnostic(path),"classifier_diagnostic_invalid")
+        File.writeTo(path,"{\"schemaVersion\":\"cangjie-teacher-classifier-diagnostic-v1\",\"diagnostic\":\"unknown\"}".toArray())
+        @Expect(ckbP5ReadClassifierFailureDiagnostic(path),"classifier_diagnostic_unknown")
+        File.writeTo(path,"{\"schemaVersion\":\"cangjie-teacher-classifier-diagnostic-v1\",\"diagnostic\":\"classifier_timeout\",\"path\":\"/Users/private/秘密😀 token=secret\"}".toArray())
+        @Expect(ckbP5ReadClassifierFailureDiagnostic(path),"classifier_diagnostic_invalid")
+        File.writeTo(path,[UInt8(0xff),UInt8(0xfe)])
+        @Expect(ckbP5ReadClassifierFailureDiagnostic(path),"classifier_diagnostic_invalid_encoding")
+        File.writeTo(path,Array<UInt8>(513,repeat:UInt8(65)))
+        @Expect(ckbP5ReadClassifierFailureDiagnostic(path),"classifier_diagnostic_too_large")
+        remove(path)
+        @Expect(ckbP5ReadClassifierFailureDiagnostic(path),"classifier_diagnostic_missing")
+
+        let runRoot=p5IcRoot("safe-diagnostic-process");_=p5IcSample(runRoot,"CJ-HUMANEVAL-016","error: missing member")
+        let output="${runRoot}/classifier-output";let result=runCkbP5IndependentClassifiers(runRoot,"run-中文🙂","C",output,
+            p5IcExecutableConfig("a","codex","GPT-5.6-Sol",p5IcDiagnosticFake(runRoot,"fake-a.sh","classifier_response_source_fact_unsupported")),
+            p5IcExecutableConfig("b","claude-code","GLM-5.2",p5IcFake(runRoot,"fake-b.sh","ok")),10)
+        @Expect(result.ok,false);@Expect(result.paired,0);@Expect(result.rejected,1)
+        @Expect(result.diagnostics[0].contains("a=classifier_response_source_fact_unsupported"),true)
+        @Expect(exists(Path(output).join("pairs/a/CJ-HUMANEVAL-016.json")),false)
+        @Expect(exists(Path(output).join("runs/CJ-HUMANEVAL-016/a/workspace/classifier-diagnostic.json")),false)
+
+        let staleRoot=p5IcRoot("safe-diagnostic-stale");_=p5IcSample(staleRoot,"CJ-HUMANEVAL-016","error: missing member")
+        let staleOutput="${staleRoot}/classifier-output";let stale=runCkbP5IndependentClassifiers(staleRoot,"run-中文🙂","C",staleOutput,
+            p5IcExecutableConfig("a","codex","GPT-5.6-Sol",p5IcStaleSuccessFake(staleRoot,"fake-a.sh")),
+            p5IcExecutableConfig("b","claude-code","GLM-5.2",p5IcFake(staleRoot,"fake-b.sh","ok")),10)
+        @Expect(stale.ok,false);@Expect(stale.paired,0);@Expect(stale.rejected,1)
+        @Expect(stale.diagnostics[0].contains("a=classifier_diagnostic_unexpected_on_success"),true)
+        @Expect(exists(Path(staleOutput).join("runs/CJ-HUMANEVAL-016/a/workspace/classifier-diagnostic.json")),false)
+    }
+
     @TestCase
     public func p5IcE2e01CliIsStrictAndFeedsExistingDevelopmentCloseRoots(): Unit {
         let root=p5IcRoot("e2e");_=p5IcSample(root,"CJ-HUMANEVAL-016","error: API missing")
@@ -182,7 +219,15 @@ private func p5IcAbsRequest(caseId:String,source:String,compiler:String):String{
 private func p5IcConfig(label:String,provider:String,model:String):CkbP5ClassifierConfig{p5IcExecutableConfig(label,provider,model,"/fake/${label}")}
 private func p5IcExecutableConfig(label:String,provider:String,model:String,executable:String):CkbP5ClassifierConfig{let c=CkbP5ClassifierConfig();c.label=label;c.classifierId="classifier-${label}";c.provider=provider;c.model=model;c.executable=executable;c}
 private func p5IcResponse(provider:String,model:String):String{"{\"schemaVersion\":\"ckb-p5-classifier-response-v1\",\"observedProvider\":\"${provider}\",\"observedModel\":\"${model}\",\"category\":\"knowledge_gap\",\"knowledgeFamily\":\"standard_library\",\"reusable\":true,\"sourceClass\":\"official\",\"citation\":\"https://docs.cangjie-lang.cn/docs/1.0.0/\",\"purificationPassed\":true,\"canonicalKnowledgeId\":\"GENERAL-STRING-API\",\"targetVersion\":\"1.0.0\",\"evidenceId\":\"official-string-api\",\"knowledgeText\":\"General reusable String API guidance 中文🙂\"}"}
-private func p5IcExpectedDiagnostic(mode:String):String{if(mode=="malformed"){"classifier_response_malformed"}else if(mode=="invalid_utf8"){"classifier_response_invalid_encoding"}else if(mode=="nonterminal"){"classifier_response_incomplete"}else if(mode=="nonzero"){"classifier_process_nonzero"}else{"classifier_response_identity_mismatch"}}
+private func p5IcExpectedDiagnostic(mode:String):String{if(mode=="malformed"){"classifier_response_malformed"}else if(mode=="invalid_utf8"){"classifier_response_invalid_encoding"}else if(mode=="nonterminal"){"classifier_response_incomplete"}else if(mode=="nonzero"){"classifier_diagnostic_missing"}else{"classifier_response_identity_mismatch"}}
+private func p5IcDiagnosticFake(root:String,name:String,diagnostic:String):String{
+    let path=Path(root).join(name);let body="#!/bin/zsh\nworkspace=''; while (( $# > 0 )); do case \"$1\" in --workspace) workspace=\"$2\"; shift 2;; *) shift 2;; esac; done\nprint -r -- '{\"schemaVersion\":\"cangjie-teacher-classifier-diagnostic-v1\",\"diagnostic\":\"${diagnostic}\"}' > \"$workspace/classifier-diagnostic.json\"\nexit 7\n"
+    File.writeTo(path,body.toArray());_=launch("/bin/chmod",["700",path.toString()]).wait();path.toString()
+}
+private func p5IcStaleSuccessFake(root:String,name:String):String{
+    let path=Path(root).join(name);let body="#!/bin/zsh\nworkspace=''; out=''; provider=''; model=''; while (( $# > 0 )); do case \"$1\" in --workspace) workspace=\"$2\"; shift 2;; --output) out=\"$2\"; shift 2;; --expected-provider) provider=\"$2\"; shift 2;; --expected-model) model=\"$2\"; shift 2;; *) shift 2;; esac; done\nprint -r -- '{\"schemaVersion\":\"cangjie-teacher-classifier-diagnostic-v1\",\"diagnostic\":\"classifier_timeout\"}' > \"$workspace/classifier-diagnostic.json\"\nprint -r -- \"{\\\"schemaVersion\\\":\\\"ckb-p5-classifier-response-v1\\\",\\\"observedProvider\\\":\\\"$provider\\\",\\\"observedModel\\\":\\\"$model\\\",\\\"category\\\":\\\"knowledge_gap\\\",\\\"knowledgeFamily\\\":\\\"standard_library\\\",\\\"reusable\\\":true,\\\"sourceClass\\\":\\\"official\\\",\\\"citation\\\":\\\"https://docs.cangjie-lang.cn/docs/1.0.0/\\\",\\\"purificationPassed\\\":true,\\\"canonicalKnowledgeId\\\":\\\"GENERAL-STRING-API\\\",\\\"targetVersion\\\":\\\"1.0.0\\\",\\\"evidenceId\\\":\\\"official-string-api\\\",\\\"knowledgeText\\\":\\\"General reusable String API guidance 中文🙂\\\"}\" > \"$out\"\n"
+    File.writeTo(path,body.toArray());_=launch("/bin/chmod",["700",path.toString()]).wait();path.toString()
+}
 private func p5IcFake(root:String,name:String,mode:String):String{
     let path=Path(root).join(name);let body=if(mode=="timeout"){"#!/bin/zsh\nsleep 5\n"}else if(mode=="nonzero"){"#!/bin/zsh\nexit 7\n"}else{"#!/bin/zsh\nout=''; provider=''; model=''; while (( $# > 0 )); do case \"$1\" in --output) out=\"$2\"; shift 2;; --expected-provider) provider=\"$2\"; shift 2;; --expected-model) model=\"$2\"; shift 2;; *) shift 2;; esac; done\n"+if(mode=="malformed"){"print -r -- '{' > \"$out\"\n"}else if(mode=="invalid_utf8"){"printf '\\xff\\xfe' > \"$out\"\n"}else if(mode=="nonterminal"){"print -r -- '{\"schemaVersion\":\"ckb-p5-classifier-response-v1\"}' > \"$out\"\n"}else if(mode=="identity"){"print -r -- '{\"schemaVersion\":\"ckb-p5-classifier-response-v1\",\"observedProvider\":\"wrong\",\"observedModel\":\"wrong\",\"category\":\"knowledge_gap\"}' > \"$out\"\n"}else if(mode=="reasoning"||mode=="unit"){let category=if(mode=="reasoning"){"reasoning_failure"}else{"unit_failure"};"print -r -- \"{\\\"schemaVersion\\\":\\\"ckb-p5-classifier-response-v1\\\",\\\"observedProvider\\\":\\\"$provider\\\",\\\"observedModel\\\":\\\"$model\\\",\\\"category\\\":\\\"${category}\\\"}\" > \"$out\"\n"}else{"print -r -- \"{\\\"schemaVersion\\\":\\\"ckb-p5-classifier-response-v1\\\",\\\"observedProvider\\\":\\\"$provider\\\",\\\"observedModel\\\":\\\"$model\\\",\\\"category\\\":\\\"knowledge_gap\\\",\\\"knowledgeFamily\\\":\\\"standard_library\\\",\\\"reusable\\\":true,\\\"sourceClass\\\":\\\"official\\\",\\\"citation\\\":\\\"https://docs.cangjie-lang.cn/docs/1.0.0/\\\",\\\"purificationPassed\\\":true,\\\"canonicalKnowledgeId\\\":\\\"GENERAL-STRING-API\\\",\\\"targetVersion\\\":\\\"1.0.0\\\",\\\"evidenceId\\\":\\\"official-string-api\\\",\\\"knowledgeText\\\":\\\"General reusable String API guidance 中文🙂\\\"}\" > \"$out\"\n"}}
     File.writeTo(path,body.toArray());_=launch("/bin/chmod",["700",path.toString()]).wait();path.toString()

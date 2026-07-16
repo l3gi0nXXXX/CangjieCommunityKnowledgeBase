@@ -177,8 +177,10 @@ private func ckbP5InvokeClassifier(outputRoot:String,caseId:String,request:Strin
     if(ckbP5ClassifierDyldDiagnostic(dyld,requiresDyld)!="ok"){invocation.diagnostic="classifier_dyld_library_path_missing";return invocation}
     let marker=root.join("timeout.marker");let process=CkbTimedWorkerProcessLauncher(config.executable,args,environment:environment,workdir:workspace.toString(),cutoffAtMillis:ckbCoreNowMillis()+timeoutSeconds*1000,timeoutMarkerPath:marker.toString(),stdoutPath:stdoutPath.toString(),stderrPath:stderrPath.toString()).run()
     try{_=launch("/bin/rm",["-f",stdoutPath.toString(),stderrPath.toString()]).wait()}catch(_:Exception){}
-    if(process.timedOut){ckbP5RemoveClassifierResponse(responsePath);invocation.diagnostic="classifier_process_timeout";return invocation}
-    if(process.exitCode!=0){ckbP5RemoveClassifierResponse(responsePath);invocation.diagnostic="classifier_process_nonzero";return invocation}
+    let diagnosticPath=workspace.join("classifier-diagnostic.json")
+    if(process.timedOut){ckbP5RemoveClassifierResponse(responsePath);ckbP5RemoveClassifierResponse(diagnosticPath);invocation.diagnostic="classifier_process_timeout";return invocation}
+    if(process.exitCode!=0){ckbP5RemoveClassifierResponse(responsePath);invocation.diagnostic=ckbP5ReadClassifierFailureDiagnostic(diagnosticPath);ckbP5RemoveClassifierResponse(diagnosticPath);return invocation}
+    if(exists(diagnosticPath)){ckbP5RemoveClassifierResponse(responsePath);ckbP5RemoveClassifierResponse(diagnosticPath);invocation.diagnostic="classifier_diagnostic_unexpected_on_success";return invocation}
     if(!exists(responsePath)){invocation.diagnostic="classifier_response_missing";return invocation}
     let responseBytes=try{File.readFrom(responsePath)}catch(_:Exception){ckbP5RemoveClassifierResponse(responsePath);invocation.diagnostic="classifier_response_read_failed";return invocation};ckbP5RemoveClassifierResponse(responsePath);let response=try{String.fromUtf8(responseBytes)}catch(_:Exception){invocation.diagnostic="classifier_response_invalid_encoding";return invocation}
     let sealed=sealCkbP5ClassifierResponseWithDiagnostic(request,response,config,workspace.toString(),home.toString(),session)
@@ -188,6 +190,26 @@ public func ckbP5ClassifierProcessEnvironment(dyldLibraryPath:String,requiresDyl
 public func ckbP5ClassifierDyldDiagnostic(dyldLibraryPath:String,requiresDyld:Bool):String{if(requiresDyld&&dyldLibraryPath.trimAscii()==""){"classifier_dyld_library_path_missing"}else{"ok"}}
 private func ckbP5ClassifierRequiresDyld():Bool{exists(Path("/usr/bin/sw_vers"))}
 private func ckbP5RemoveClassifierResponse(path:Path):Unit{try{_=launch("/bin/rm",["-f",path.toString()]).wait()}catch(_:Exception){}}
+public func ckbP5ReadClassifierFailureDiagnostic(path:Path):String{
+    if(!exists(path)){return "classifier_diagnostic_missing"}
+    let bytes=try{File.readFrom(path)}catch(_:Exception){return "classifier_diagnostic_invalid"}
+    if(bytes.size>512){return "classifier_diagnostic_too_large"}
+    let raw=try{String.fromUtf8(bytes)}catch(_:Exception){return "classifier_diagnostic_invalid_encoding"}
+    try{
+        let o=JsonValue.fromStr(raw).asObject();let diagnostic=ckbP5String(o,"diagnostic")
+        if(ckbP5String(o,"schemaVersion")!="cangjie-teacher-classifier-diagnostic-v1"){return "classifier_diagnostic_invalid"}
+        let canonical="{\"schemaVersion\":\"cangjie-teacher-classifier-diagnostic-v1\",\"diagnostic\":\"${diagnostic}\"}"
+        if(raw.trimAscii()!=canonical){return "classifier_diagnostic_invalid"}
+        if(!ckbP5ClassifierFailureDiagnosticAllowed(diagnostic)){return "classifier_diagnostic_unknown"};diagnostic
+    }catch(_:Exception){"classifier_diagnostic_invalid"}
+}
+private func ckbP5ClassifierFailureDiagnosticAllowed(value:String):Bool{
+    ["invalid_response_encoding","request_too_large","request_contract_invalid","classifier_timeout","classifier_process_failed",
+        "classifier_output_too_large","malformed_stream_json","duplicate_init","classifier_unsuccessful_result","missing_init",
+        "observed_model_mismatch","missing_or_duplicate_terminal_result","response_contract_invalid","response_contains_forbidden_data",
+        "malformed_structured_output","classifier_response_source_fact_unsupported","response_write_failed","diagnostic_reset_failed",
+        "classifier_failure_unknown"].contains(value)
+}
 
 public func sealCkbP5ClassifierResponse(requestText:String,responseText:String,config:CkbP5ClassifierConfig,workspace:String,runtimeHome:String,session:String):String{
     sealCkbP5ClassifierResponseWithDiagnostic(requestText,responseText,config,workspace,runtimeHome,session)[0]
