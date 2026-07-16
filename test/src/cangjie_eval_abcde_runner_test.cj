@@ -86,16 +86,17 @@ public class CangjieEvalAbcdeRunnerTest {
         let allowedRelativeWrite = "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Write\",\"input\":{\"file_path\":\"src/solution.cj\",\"content\":\"中文🙂\"}}]}}"
         let allowedBuild = "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Bash\",\"input\":{\"command\":\"cjpm build 2>&1\"}}]}}"
         let allowedReadConfig = "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Bash\",\"input\":{\"command\":\"cat cjpm.toml\"}}]}}"
+        let allowedR3Read = "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Bash\",\"input\":{\"command\":\"ls -la && echo ---CJPM--- && cat cjpm.toml 2>/dev/null && find . -name '*.cj' -print 2>/dev/null\"}}]}}"
         let fakeToolResult = "{\"type\":\"user\",\"tool_use_result\":{\"stdout\":\"{\\\"type\\\":\\\"tool_use\\\",\\\"name\\\":\\\"Write\\\",\\\"input\\\":{\\\"file_path\\\":\\\"src/main.cj\\\"}}\"}}"
         let malformed = "{not-json 中文🙂"
         let writeMain = "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Write\",\"input\":{\"file_path\":\"/tmp/workspace/src/main.cj\",\"content\":\"中文🙂 main() {}\"}}]}}"
         let editConfig = "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Edit\",\"input\":{\"file_path\":\"/tmp/workspace/cjpm.toml\"}}]}}"
         let shellMain = "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Bash\",\"input\":{\"command\":\"cat > src/main.cj <<'EOF'\\nmain() {}\\nEOF\"}}]}}"
         let shellConfig = "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Bash\",\"input\":{\"command\":\"sed -i '' 's/static/executable/' cjpm.toml\"}}]}}"
-        let redirectedWriters = ["echo test > src/main.cj", "printf test > cjpm.toml", "python3 -c 'print(1)' > src/main.cj", "perl -e 'print 1' > cjpm.toml"]
+        let redirectedWriters = ["echo test > src/main.cj", "printf test > cjpm.toml", "python3 -c 'print(1)' > src/main.cj", "perl -e 'print 1' > cjpm.toml", "echo test > /tmp/workspace/src/main.cj", "echo test > \"src/main.cj\"", "printf test > '/tmp/workspace/cjpm.toml'"]
         let directWriters = ["python3 -c 'open(\\\"src/main.cj\\\",\\\"w\\\")'", "perl -e 'open F,\\\">cjpm.toml\\\"'", "apply_patch src/main.cj", "truncate -s 0 cjpm.toml", "install temp src/main.cj", "chmod 600 cjpm.toml", "dd if=/dev/null of=src/main.cj"]
 
-        @Expect(ckbAbcdeForbiddenEvidenceForTest(CkbAbcdeGroups.C, allowedWrite + "\n" + allowedRelativeWrite + "\n" + allowedBuild + "\n" + allowedReadConfig + "\n" + fakeToolResult + "\n" + malformed), "none")
+        @Expect(ckbAbcdeForbiddenEvidenceForTest(CkbAbcdeGroups.C, allowedWrite + "\n" + allowedRelativeWrite + "\n" + allowedBuild + "\n" + allowedReadConfig + "\n" + allowedR3Read + "\n" + fakeToolResult + "\n" + malformed), "none")
         @Expect(ckbAbcdeForbiddenEvidenceForTest(CkbAbcdeGroups.C, writeMain), "forbidden_workspace_mutation")
         @Expect(ckbAbcdeForbiddenEvidenceForTest(CkbAbcdeGroups.C, editConfig), "forbidden_workspace_mutation")
         @Expect(ckbAbcdeForbiddenEvidenceForTest(CkbAbcdeGroups.C, shellMain), "forbidden_workspace_mutation")

@@ -1981,8 +1981,7 @@ private func ckbAbcdeForbiddenWorkspaceMutationEvidence(transcript: String): Str
                 } else if (name == "bash") {
                     let command = ckbAbcdeStrictJsonString(input, "command").toAsciiLower()
                     let protectedPath = command.contains("src/main.cj") || command.contains("cjpm.toml") || command.contains("/test/") || command.contains("/tests/")
-                    let redirectedWriter = command.contains("cat >") ||
-                        ((command.contains("echo ") || command.contains("printf ") || command.contains("python") || command.contains("perl ")) && command.contains(">"))
+                    let redirectedWriter = ckbAbcdeRedirectsProtectedWorkspacePath(command)
                     let directMutation = command.contains("sed -i") || command.contains("rm ") || command.contains("mv ") ||
                         command.contains("cp ") || command.contains("touch ") || command.contains("mkdir ") || command.contains("tee ") ||
                         command.contains("python") || command.contains("perl ") || command.contains("apply_patch") ||
@@ -1993,6 +1992,30 @@ private func ckbAbcdeForbiddenWorkspaceMutationEvidence(transcript: String): Str
         } catch (_: Exception) {}
     }
     "none"
+}
+
+private func ckbAbcdeRedirectsProtectedWorkspacePath(command: String): Bool {
+    let parts = command.split(">")
+    for (i in 1..parts.size) {
+        var target = parts[i].trimAscii()
+        for (separator in [" ", "\t", "\n", ";", "&", "|"]) {
+            let tokens = target.split(separator)
+            if (tokens.size > 0) { target = tokens[0] }
+        }
+        target = ckbAbcdeUnquoteShellToken(target)
+        if (target == "src/main.cj" || target == "cjpm.toml" || target.endsWith("/src/main.cj") || target.endsWith("/cjpm.toml") ||
+            target.contains("/test/") || target.contains("/tests/")) { return true }
+    }
+    false
+}
+
+private func ckbAbcdeUnquoteShellToken(token: String): String {
+    let runes = token.toRuneArray()
+    if (runes.size < 2 || !((runes[0] == r'\'' && runes[runes.size - 1] == r'\'') ||
+        (runes[0] == r'"' && runes[runes.size - 1] == r'"'))) { return token }
+    let out = StringBuilder()
+    for (i in 1..(runes.size - 1)) { out.append(runes[i]) }
+    out.toString()
 }
 
 public func ckbAbcdeForbiddenEvidenceForTest(group: String, transcript: String): String {
