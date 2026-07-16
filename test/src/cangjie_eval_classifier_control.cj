@@ -233,7 +233,19 @@ func ckbP5CompilerSummary(text:String,failureType:String):String{
         var out="";for(line in text.split("\n")){let clean=ckbP5StripAnsi(line).trimAscii();let lower=clean.toAsciiLower();if(clean.contains("/")||ckbP5Forbidden(clean)){continue};if(lower.contains("exception")||lower.contains("expected")||lower.contains("assert")){if(out!=""){out+=" | "};out+=utf8SafePrefix(clean,240);if(out.toRuneArray().size>=960){break}}};return if(out==""){"unit_test_failed_without_assertion_detail"}else{utf8SafePrefix(out,1024)}
     }
     if(failureType!="compile_error"){return utf8SafePrefix(failureType,120)}
-    var out="";for(line in text.split("\n")){let clean=ckbP5StripAnsi(line);if(clean.toAsciiLower().contains("error")&&!clean.contains("/")){if(out!=""){out+=" | "};out+=utf8SafePrefix(clean,240);if(out.toRuneArray().size>=960){break}}};utf8SafePrefix(out,1024)
+    var out="";for(line in text.split("\n")){
+        let clean=ckbP5StripAnsi(line).trimAscii();let lower=clean.toAsciiLower()
+        if(lower.contains("==>")){let location=ckbP5CompilerLocation(clean);if(location!=""){if(out!=""){out+=" | "};out+=location};continue}
+        if(ckbP5Forbidden(clean)||clean.contains("/")){continue}
+        if(lower.contains("error")||lower.contains("expected")||lower.contains("found")){if(out!=""){out+=" | "};out+=utf8SafePrefix(clean,240);if(out.toRuneArray().size>=960){break}}
+    };utf8SafePrefix(out,1024)
+}
+private func ckbP5CompilerLocation(value:String):String{
+    let runes=value.toRuneArray();var separator:Int64=-1
+    for(i in 0..runes.size){if(runes[i]==r'/'||runes[i]==r'\\'){separator=i}}
+    if(separator<0||separator+1>=runes.size){return ""}
+    let suffix=StringBuilder();for(i in (separator+1)..runes.size){suffix.append(runes[i])}
+    let safe=suffix.toString().trimAscii();if(safe==""||ckbP5Forbidden(safe)){""}else{"location ${utf8SafePrefix(safe,160)}"}
 }
 private func ckbP5StripAnsi(value:String):String{var out=value;for(code in ["\u{001b}[31m","\u{001b}[0m","\u{001b}[36m","\u{001b}[32m"]){out=out.replace(code,"")};out}
 private func ckbP5Forbidden(value:String):Bool{let v=value.toAsciiLower();v.contains("teacher-solutions")||v.contains("canonical_solution")||v.contains("hidden_test")||v.contains("hidden-test")||v.contains("/reference/")||v.contains("authorization:")||v.contains("password")||v.contains("api_key")||v.contains("token=")}

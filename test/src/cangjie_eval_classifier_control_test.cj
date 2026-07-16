@@ -67,6 +67,17 @@ public class CangjieEvalClassifierControlTest {
         let unitRequest=buildCkbP5ClassifierRequest(unitCase,"CJ-HUMANEVAL-065","run-中文🙂")
         @Expect(unitRequest.contains("expected 001, actual 484849 中文🙂"),true)
         @Expect(unitRequest.contains("/private/user/path"),false);@Expect(unitRequest.contains("token=secret"),false)
+        let compilerRoot=p5IcRoot("compiler-summary");let longDetailBuilder=StringBuilder();for(_ in 0..300){longDetailBuilder.append("边界🙂")};let longDetail=longDetailBuilder.toString()
+        let compilerLog="\u{001b}[31merror\u{001b}[0m: mismatched types\n  \u{001b}[36m==>\u{001b}[0m /Users/private/项目🙂/solution.cj:35:5:\n   | _____^ expected 'Float64', found 'Unit' 中文🙂 ${longDetail}\nAuthorization: secret\n/private/token=secret"
+        let compilerCase=p5IcSample(compilerRoot,"CJ-HUMANEVAL-032",compilerLog)
+        let compilerRequest=buildCkbP5ClassifierRequest(compilerCase,"CJ-HUMANEVAL-032","run-中文🙂")
+        @Expect(compilerRequest.contains("location solution.cj:35:5:"),true)
+        @Expect(compilerRequest.contains("expected 'Float64', found 'Unit' 中文🙂"),true)
+        @Expect(compilerRequest.contains("/Users/private"),false);@Expect(compilerRequest.toAsciiLower().contains("authorization:"),false);@Expect(compilerRequest.contains("token=secret"),false)
+        @Expect(compilerRequest.contains(longDetail),false)
+        File.writeTo(compilerCase.join("test.log"),[UInt8(0xff),UInt8(0xfe)])
+        let invalidLogRequest=buildCkbP5ClassifierRequest(compilerCase,"CJ-HUMANEVAL-032","run-中文🙂")
+        @Expect(invalidLogRequest.startsWith("{"),true);@Expect(invalidLogRequest.contains("compilerTestSummary\":\"\""),true)
     }
 
     // P5-C-E2E-01
