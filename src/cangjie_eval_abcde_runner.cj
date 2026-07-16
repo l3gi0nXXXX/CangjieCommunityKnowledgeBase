@@ -888,7 +888,10 @@ public func ckbAbcdeJoinClaudeAttemptTextForTest(first: String, second: String):
 
 private func ckbAbcdeClaudeTimeoutShell(command: String, stderrPath: String, timeoutSeconds: Int64): String {
     let quotedStderr = ckbAbcdeShellQuote(stderrPath)
-    "${command} & child=$!; elapsed=0; timed_out=0; while kill -0 \"$child\" 2>/dev/null; do if [ \"$elapsed\" -ge ${timeoutSeconds} ]; then echo claude_timeout_after_${timeoutSeconds}s >> ${quotedStderr}; pkill -TERM -P \"$child\" 2>/dev/null || true; kill -TERM \"$child\" 2>/dev/null || true; sleep 2; pkill -KILL -P \"$child\" 2>/dev/null || true; kill -KILL \"$child\" 2>/dev/null || true; timed_out=1; break; fi; sleep 1; elapsed=$((elapsed + 1)); done; if [ \"$timed_out\" -eq 1 ]; then wait \"$child\" 2>/dev/null || true; code=124; else wait \"$child\"; code=$?; fi"
+    let safeTimeout = if (timeoutSeconds < 1) { 1 } else { timeoutSeconds }
+    let perl = ckbAbcdeShellQuote("defined POSIX::setsid() or exit 125; exec @ARGV")
+    let isolatedCommand = ckbAbcdeShellQuote(command)
+    "/usr/bin/perl -MPOSIX -e ${perl} /bin/zsh -lc ${isolatedCommand} & child=$!; elapsed=0; timed_out=0; while /bin/kill -0 \"$child\" 2>/dev/null; do if [ \"$elapsed\" -ge ${safeTimeout} ]; then echo claude_timeout_after_${safeTimeout}s >> ${quotedStderr}; /bin/kill -TERM -- \"-$child\" 2>/dev/null || true; grace=0; while /bin/kill -0 -- \"-$child\" 2>/dev/null && [ \"$grace\" -lt 2 ]; do sleep 1; grace=$((grace + 1)); done; /bin/kill -KILL -- \"-$child\" 2>/dev/null || true; timed_out=1; break; fi; sleep 1; elapsed=$((elapsed + 1)); done; if [ \"$timed_out\" -eq 1 ]; then wait \"$child\" 2>/dev/null || true; code=124; else wait \"$child\"; code=$?; fi"
 }
 
 public func ckbAbcdeClaudeTimeoutShellForTest(command: String, stderrPath: String, timeoutSeconds: Int64): String {
@@ -897,6 +900,10 @@ public func ckbAbcdeClaudeTimeoutShellForTest(command: String, stderrPath: Strin
 
 public func ckbAbcdeClaudeTimeoutShellForOptionsForTest(command: String, stderrPath: String, options: CkbAbcdeRunnerOptions): String {
     ckbAbcdeClaudeTimeoutShell(command, stderrPath, options.modelTimeoutSeconds)
+}
+
+public func ckbAbcdeRunClaudeTimeoutShellForTest(command:String,stderrPath:String,timeoutSeconds:Int64,workspace:String):CkbAbcdeCommandResult {
+    ckbAbcdeRunShell(ckbAbcdeClaudeTimeoutShell(command,stderrPath,timeoutSeconds)+"; exit $code",workspace)
 }
 
 private func ckbAbcdeClaudePermissionFlag(): String {

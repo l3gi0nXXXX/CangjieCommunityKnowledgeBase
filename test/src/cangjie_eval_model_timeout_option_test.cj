@@ -2,6 +2,8 @@ package cangjie_community_knowledge_base_test
 
 import std.unittest.*
 import std.unittest.testmacro.*
+import std.fs.*
+import std.process.launch
 
 @Test
 public class CangjieEvalModelTimeoutOptionTest {
@@ -52,5 +54,23 @@ public class CangjieEvalModelTimeoutOptionTest {
         @Expect(budget.sdkRetries, 0)
         let complete = ckbAbcdeAssessSample("{\"type\":\"system\",\"subtype\":\"init\",\"model\":\"GLM-5.2\"}\n{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false}\n", "GLM-5.2")
         @Expect(ckbAbcdeShouldRetryTransport(0, complete), false)
+    }
+
+    @TestCase
+    public func p5TimeoutE2eKillsIsolatedProcessTreeAndNextRunContinues():Unit {
+        let root="target/model-timeout-中文😀"
+        if(exists(Path(root))){remove(Path(root),recursive:true)};Directory.create(Path(root),recursive:true)
+        try {
+            let absolute=canonicalize(Path(root)).toString()
+            let leader="${absolute}/leader.pid";let child="${absolute}/child.pid";let grand="${absolute}/grand.pid";let stderr="${absolute}/claude.err"
+            let nested="printf %s \"$$\" > ${child}; sleep 30 & printf %s \"$!\" > ${grand}; wait"
+            let command="printf %s \"$$\" > ${leader}; /bin/zsh -lc '${nested}' & wait"
+            let result=ckbAbcdeRunClaudeTimeoutShellForTest(command,stderr,1,absolute)
+            @Expect(result.exitCode,124)
+            @Expect(String.fromUtf8(File.readFrom(Path(stderr))).contains("claude_timeout_after_1s"),true)
+            for(path in [leader,child,grand]){let pid=String.fromUtf8(File.readFrom(Path(path))).trimAscii();@Expect(launch("/bin/kill",["-0",pid]).wait()!=0,true)}
+            let next=ckbAbcdeRunClaudeTimeoutShellForTest("/usr/bin/true",stderr,1,absolute)
+            @Expect(next.exitCode,0)
+        } finally { try { remove(Path(root),recursive:true) } catch (_:Exception) {} }
     }
 }

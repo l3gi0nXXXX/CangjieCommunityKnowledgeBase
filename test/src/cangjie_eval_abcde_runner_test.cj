@@ -302,10 +302,11 @@ public class CangjieEvalAbcdeRunnerTest {
     public func ckg12Neg005ClaudeTimeoutShellRecordsAndCleansHungCalls(): Unit {
         let shell = ckbAbcdeClaudeTimeoutShellForTest("claude -p", "/tmp/claude.err", 180)
 
-        @Expect(shell.contains("claude -p & child=$!"), true)
+        @Expect(shell.contains("/usr/bin/perl -MPOSIX"), true)
+        @Expect(shell.contains("/bin/zsh -lc"), true)
         @Expect(shell.contains("claude_timeout_after_180s"), true)
-        @Expect(shell.contains("pkill -TERM -P \"$child\""), true)
-        @Expect(shell.contains("kill -KILL \"$child\""), true)
+        @Expect(shell.contains("/bin/kill -TERM -- \"-$child\""), true)
+        @Expect(shell.contains("/bin/kill -KILL -- \"-$child\""), true)
         @Expect(shell.contains("code=124"), true)
     }
 
