@@ -29,7 +29,7 @@ public class CangjieEvalFailureTriageTest {
         @Expect(confirmed.confirmed, true); @Expect(confirmed.diagnostic, "ok")
         @Expect(confirmKnowledgeGap(first, p5Classifier("classifier-b", "transcript-b", "reasoning_failure", 1, "development")).diagnostic, "classifier_evidence_hash_mismatch")
         @Expect(confirmKnowledgeGap(first, p5Classifier("classifier-a", "transcript-b", "knowledge_gap", 1, "development")).diagnostic, "independent_classifier_required")
-        @Expect(confirmKnowledgeGap(first, p5Classifier("classifier-b", "transcript-b", "knowledge_gap", 2, "development")).diagnostic, "classifier_evidence_hash_mismatch")
+        @Expect(confirmKnowledgeGap(first, p5Classifier("classifier-b", "transcript-b", "knowledge_gap", 2, "development")).diagnostic, "classifier_field_contract_invalid")
         let contaminatedA = p5ClassifierWithKnowledgeText("classifier-a", "transcript-a", "knowledge_gap", 1, "development", "Answer for CJ-HUMANEVAL-007")
         let contaminatedB = p5ClassifierWithKnowledgeText("classifier-b", "transcript-b", "knowledge_gap", 1, "development", "Answer for CJ-HUMANEVAL-007")
         @Expect(confirmKnowledgeGap(contaminatedA, contaminatedB).diagnostic, "knowledge_policy_not_satisfied")
@@ -128,8 +128,11 @@ private func p5Classifier(classifier: String, source: String, category: String, 
 
 private func p5ClassifierWithKnowledgeText(classifier: String, source: String, category: String, attempt: Int64, mode: String, knowledgeText: String): String {
     let resultHash = cangjieEvalTriageResultEvidenceHash(p5Triage("\"suspectedKnowledgeGap\":true", 1))
-    let raw = "{\"classifierId\":\"${classifier}\",\"sourceEvidenceId\":\"${source}\",\"category\":\"${category}\",\"caseId\":\"CJ-HUMANEVAL-007\",\"runId\":\"run-001\",\"datasetVersion\":\"dataset-v1\",\"resultEvidenceHash\":\"${resultHash}\",\"failureObservation\":\"CKB returned no reusable Rune guidance 中文😀\",\"attempt\":${attempt},\"runMode\":\"${mode}\",\"knowledgeFamily\":\"standard_library\",\"reusable\":true,\"sourceClass\":\"official\",\"citation\":\"https://docs.cangjie-lang.cn/docs/1.0.0/\",\"purificationPassed\":true,\"canonicalKnowledgeId\":\"GENERAL-RUNE\",\"targetVersion\":\"1.0.0\",\"evidenceId\":\"official-rune-doc\",\"positiveTestPassed\":true,\"negativeTestPassed\":true,\"boundaryTestPassed\":true,\"knowledgeText\":\"${knowledgeText}\",\"exampleText\":\"\",\"testText\":\"\",\"publishableMetadata\":\"family=standard_library\",\"evidenceHash\":\"HASH\"}"
-    raw.replace("HASH", cangjieEvalTriageClassifierEvidenceHash(raw))
+    let request = "{\"schemaVersion\":\"ckb-p5-classifier-request-v1\",\"caseId\":\"CJ-HUMANEVAL-007\",\"runId\":\"run-001\",\"datasetVersion\":\"dataset-v1\",\"attempt\":1,\"runMode\":\"development\",\"resultEvidenceHash\":\"${resultHash}\",\"failureObservation\":\"CKB returned no reusable Rune guidance 中文😀\"}"
+    let config = CkbP5ClassifierConfig(); config.label=source; config.classifierId=classifier; config.provider=source; config.model="model-${classifier}"; config.executable="/fake/${source}"
+    let response = "{\"schemaVersion\":\"ckb-p5-classifier-response-v1\",\"observedProvider\":\"${source}\",\"observedModel\":\"model-${classifier}\",\"category\":\"${category}\",\"knowledgeFamily\":\"standard_library\",\"reusable\":true,\"sourceClass\":\"official\",\"citation\":\"https://docs.cangjie-lang.cn/docs/1.0.0/\",\"purificationPassed\":true,\"canonicalKnowledgeId\":\"GENERAL-RUNE\",\"targetVersion\":\"1.0.0\",\"evidenceId\":\"official-rune-doc\",\"knowledgeText\":\"${knowledgeText}\"}"
+    let artifact=sealCkbP5ClassifierResponse(request,response,config,"/tmp/${source}/workspace","/tmp/${source}/home","${source}-session")
+    if(attempt==1&&mode=="development"){artifact}else{artifact.replace("\"attempt\":1","\"attempt\":${attempt}").replace("\"runMode\":\"development\"","\"runMode\":\"${mode}\"")}
 }
 
 private func p5Triage(signal: String, attempt: Int64): String {

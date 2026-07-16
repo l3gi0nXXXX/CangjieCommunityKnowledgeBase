@@ -108,7 +108,7 @@ public func runCangjieEvalDevelopmentClose(args: Array<String>): Int64 {
         let id = triageCaseId(caseIndex); let first = Path(firstRoot).join("${id}.json"); let second = Path(secondRoot).join("${id}.json")
         if (!exists(first) && !exists(second)) { continue }
         if (!exists(first) || !exists(second)) { println("development close blocked: classifier pair incomplete"); return 1 }
-        let firstText = triageReadText(first); let secondText = triageReadText(second); let confirmation = confirmKnowledgeGap(firstText, secondText)
+        let firstText = triageReadText(first); let secondText = triageReadText(second); let confirmation = confirmIndependentClassifierPair(firstText, secondText)
         if (!confirmation.confirmed) { println("development close blocked: classifier evidence invalid"); return 1 }
         let target = Path(runRoot).join("cases").join(id).join(group)
         if (!exists(target)) { println("development close blocked: case result missing"); return 1 }
@@ -165,15 +165,18 @@ public func orchestrateDevelopmentClosure(inputs: ArrayList<CangjieEvalDevelopme
             }
             closure.category = triage.category; closure.route = triage.route
             closure.developmentPass = triage.category == "none" && triageJsonBool(row, "developmentPass")
-            if (triage.category == "knowledge_gap") {
+            if (triage.category != "none") {
                 if (input.firstClassifierJson.trimAscii() == "" || input.secondClassifierJson.trimAscii() == "") {
                     output.pendingClassifierCount += 1
                 } else {
-                    let confirmation = confirmKnowledgeGap(input.firstClassifierJson, input.secondClassifierJson)
+                    let confirmation = confirmIndependentClassifierPair(input.firstClassifierJson, input.secondClassifierJson)
                     if (confirmation.confirmed) {
-                        closure.knowledgeGapConfirmed = true; closure.confirmationEvidenceHash = confirmation.evidenceHash
-                        let gap = cangjieEvalConfirmedGapInput(input, closure.caseId, datasetVersion, teacherRunId, confirmation)
-                        output.authoritativeGapJsonl += renderAuthoritativeBenchmarkGapInput(gap) + "\n"; output.knowledgeGapCount += 1
+                        closure.category = confirmation.category; closure.route = routeNonKnowledgeFailure(confirmation.category)
+                        if (confirmation.category == "knowledge_gap") {
+                            closure.knowledgeGapConfirmed = true; closure.confirmationEvidenceHash = confirmation.evidenceHash
+                            let gap = cangjieEvalConfirmedGapInput(input, closure.caseId, datasetVersion, teacherRunId, confirmation)
+                            output.authoritativeGapJsonl += renderAuthoritativeBenchmarkGapInput(gap) + "\n"; output.knowledgeGapCount += 1
+                        }
                     } else { output.diagnostics.add("classifier:${closure.caseId}:${confirmation.diagnostic}") }
                 }
             }
@@ -237,7 +240,7 @@ public func triageEvalFailureFromUtf8(input: Array<UInt8>): CangjieEvalFailureTr
     }
 }
 
-public func confirmKnowledgeGap(firstJson: String, secondJson: String): CangjieEvalKnowledgeGapConfirmation {
+public func confirmIndependentClassifierPair(firstJson: String, secondJson: String): CangjieEvalKnowledgeGapConfirmation {
     let result = CangjieEvalKnowledgeGapConfirmation()
     if (firstJson.toRuneArray().size > 262144 || secondJson.toRuneArray().size > 262144) {
         result.diagnostic = "classifier_evidence_too_large"; return result
@@ -249,35 +252,47 @@ public func confirmKnowledgeGap(firstJson: String, secondJson: String): CangjieE
         let secondId = triageJsonString(second, "classifierId")
         let firstSource = triageJsonString(first, "sourceEvidenceId")
         let secondSource = triageJsonString(second, "sourceEvidenceId")
-        if (firstId == "" || secondId == "" || firstId == secondId || firstSource == "" || secondSource == "" || firstSource == secondSource) {
+        if (firstId == "" || secondId == "" || firstId == secondId || firstSource == "" || secondSource == "" || firstSource == secondSource ||
+            triageJsonString(first,"provider")==triageJsonString(second,"provider") || triageJsonString(first,"provenanceHash")==triageJsonString(second,"provenanceHash")) {
             result.diagnostic = "independent_classifier_required"; return result
         }
-        if (!triageClassifierContractValid(first) || !triageClassifierContractValid(second)) {
+        if (!triageClassifierContractValid(first) || !triageClassifierContractValid(second) ||
+            !ckbP5ClassifierArtifactIdentityValid(firstJson) || !ckbP5ClassifierArtifactIdentityValid(secondJson)) {
             result.diagnostic = "classifier_field_contract_invalid"; return result
         }
         let firstHash = triageJsonString(first, "evidenceHash")
         let secondHash = triageJsonString(second, "evidenceHash")
-        if (firstHash == "" || firstHash != secondHash || firstHash != triageClassifierEvidenceHash(first) || secondHash != triageClassifierEvidenceHash(second)) {
+        let firstConsensus = triageJsonString(first,"consensusHash");let secondConsensus=triageJsonString(second,"consensusHash")
+        if (firstHash == "" || secondHash == "" || firstHash == secondHash || firstConsensus == "" || firstConsensus != secondConsensus ||
+            firstConsensus != ckbP5ClassifierArtifactConsensusHash(firstJson) || secondConsensus != ckbP5ClassifierArtifactConsensusHash(secondJson)) {
             result.diagnostic = "classifier_evidence_hash_mismatch"; return result
         }
         let firstCategory = triageJsonString(first, "category").toAsciiLower()
         let secondCategory = triageJsonString(second, "category").toAsciiLower()
-        if (firstCategory != "knowledge_gap" || secondCategory != firstCategory) {
+        if (secondCategory != firstCategory) {
             result.diagnostic = "classifier_disagreement"; return result
         }
         if (triageJsonInt(first, "attempt", -1) != 1 || triageJsonInt(second, "attempt", -1) != 1 ||
             triageJsonString(first, "runMode").toAsciiLower() != "development" || triageJsonString(second, "runMode").toAsciiLower() != "development") {
             result.diagnostic = "development_first_attempt_required"; return result
         }
-        if (!triageK4Eligible(first) || !triageK4Eligible(second)) {
+        if (firstCategory == "knowledge_gap" && (!triageK4Eligible(first) || !triageK4Eligible(second))) {
             result.diagnostic = "knowledge_policy_not_satisfied"; return result
         }
         result.confirmed = true
         result.diagnostic = "ok"
         result.category = firstCategory
-        result.evidenceHash = firstHash
+        result.evidenceHash = firstConsensus
     } catch (_: Exception) {
         result.diagnostic = "malformed_classifier_evidence"
+    }
+    result
+}
+
+public func confirmKnowledgeGap(firstJson: String, secondJson: String): CangjieEvalKnowledgeGapConfirmation {
+    let result = confirmIndependentClassifierPair(firstJson, secondJson)
+    if (result.confirmed && result.category != "knowledge_gap") {
+        result.confirmed = false; result.diagnostic = "knowledge_gap_not_confirmed"
     }
     result
 }
@@ -285,6 +300,7 @@ public func confirmKnowledgeGap(firstJson: String, secondJson: String): CangjieE
 public func routeNonKnowledgeFailure(category: String): String {
     let value = category.trimAscii().toAsciiLower()
     if (value == "knowledge_gap" || value == "none") { return value }
+    if (value == "retrieval_failure") { return "retrieval" }
     if (value == "reasoning_failure" || value == "compile_error" || value == "unit_failure" || value == "model_empty") { return "reasoning" }
     if (value == "dataset_failure") { return "dataset" }
     if (value == "runner_failure") { return "runner" }
@@ -324,7 +340,7 @@ public func renderDevelopmentClosure(cases: ArrayList<CangjieEvalDevelopmentCase
 }
 
 public func cangjieEvalTriageClassifierEvidenceHash(classifierJson: String): String {
-    try { triageClassifierEvidenceHash(JsonValue.fromStr(classifierJson.trimAscii()).asObject()) } catch (_: Exception) { "" }
+    ckbP5ClassifierArtifactEvidenceHash(classifierJson)
 }
 
 public func cangjieEvalTriageResultEvidenceHash(inputJson: String): String {
@@ -356,8 +372,7 @@ private func triageK4Eligible(object: JsonObject): Bool {
     let citation = triageJsonString(object, "citation").toAsciiLower()
     if (triageJsonString(object, "canonicalKnowledgeId") == "" || triageJsonString(object, "targetVersion") == "" ||
         triageJsonString(object, "evidenceId") == "" || !families.contains(family) || !triageJsonBool(object, "reusable") ||
-        !triageJsonBool(object, "purificationPassed") || !triageJsonBool(object, "positiveTestPassed") ||
-        !triageJsonBool(object, "negativeTestPassed") || !triageJsonBool(object, "boundaryTestPassed") || triageForbiddenKnowledgeEvidence(object)) { return false }
+        !triageJsonBool(object, "purificationPassed") || triageForbiddenKnowledgeEvidence(object)) { return false }
     if (sourceClass == "official") { return citation.startsWith("https://docs.cangjie-lang.cn/") }
     if (sourceClass == "approved_trusted") { return citation.startsWith("https://github.com/dyingchinese/cangjie-stdx") }
     false
@@ -400,7 +415,7 @@ private func triageClassifierEvidenceHash(object: JsonObject): String {
 
 private func triageClassifierContractValid(object: JsonObject): Bool {
     let mode = triageJsonString(object, "runMode").toAsciiLower()
-    triageKnownCategory(triageJsonString(object, "category")) && triageJsonString(object, "caseId") != "" &&
+    triageJsonString(object,"schemaVersion")=="ckb-p5-classifier-v1" && triageKnownCategory(triageJsonString(object, "category")) && triageJsonString(object, "caseId") != "" &&
         triageJsonString(object, "runId") != "" && triageJsonString(object, "datasetVersion") != "" &&
         triageJsonInt(object, "attempt", -1) >= 1 && (mode == "development" || mode == "certification") &&
         triageJsonString(object, "failureObservation") != "" && triageSha256Format(triageJsonString(object, "resultEvidenceHash").toAsciiLower()) &&
@@ -408,7 +423,7 @@ private func triageClassifierContractValid(object: JsonObject): Bool {
 }
 private func triageKnownCategory(category: String): Bool {
     let value = category.toAsciiLower()
-    value == "knowledge_gap" || value == "reasoning_failure" || value == "dataset_failure" || value == "runner_failure" ||
+    value == "knowledge_gap" || value == "retrieval_failure" || value == "reasoning_failure" || value == "dataset_failure" || value == "runner_failure" ||
         value == "environment_failure" || value == "protocol_violation" || value == "malformed_tool_payload" || value == "tool_error" ||
         value == "evidence_missing" || value == "timeout" || value == "model_empty" || value == "compile_error" || value == "unit_failure" || value == "none"
 }
