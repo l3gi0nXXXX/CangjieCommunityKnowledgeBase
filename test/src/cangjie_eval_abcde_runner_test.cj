@@ -3,6 +3,7 @@ package cangjie_community_knowledge_base_test
 import std.unittest.*
 import std.unittest.testmacro.*
 import std.collection.*
+import std.env.getVariable
 import std.fs.{Directory, File, Path, exists}
 
 @Test
@@ -374,10 +375,10 @@ public class CangjieEvalAbcdeRunnerTest {
     // NK-UT-03 / NK-BND-02 / NK-NEG-03
     @TestCase
     public func nkUt03DevelopmentClaudeUsesEffectiveRuntimeHomeAndFreshSession(): Unit {
-        let groupRoot="/tmp/仓颉🙂/group";let runtimeHome="${groupRoot}/runtime-home"
-        let first=ckbAbcdeDevelopmentClaudeCommand(groupRoot,runtimeHome,"GLM-5.2","max"," --max-budget-usd '10'","","--add-dir '/tmp/工作区🙂'","${groupRoot}/one.jsonl","${groupRoot}/one.err",1)
-        let second=ckbAbcdeDevelopmentClaudeCommand(groupRoot,runtimeHome,"GLM-5.2","max","","","--add-dir '/tmp/工作区🙂'","${groupRoot}/two.jsonl","${groupRoot}/two.err",2)
-        for(command in [first,second]){@Expect(command.contains("HOME="),true);@Expect(command.contains("XDG_CONFIG_HOME="),true);@Expect(command.contains("XDG_CACHE_HOME="),true);@Expect(command.contains("CLAUDE_CONFIG_DIR="),true);@Expect(command.contains(runtimeHome),true);@Expect(command.contains("${runtimeHome}/mcp-config.json"),true);@Expect(command.contains("--session-id \"$session_id\""),true);@Expect(command.contains("/.claude/"),false);@Expect(command.contains("~/.claude"),false)}
+        let groupRoot="/tmp/仓颉🙂/group";let runtimeHome="${groupRoot}/runtime-home";let profile="${groupRoot}/开发🙂.sb"
+        let first=ckbAbcdeDevelopmentClaudeCommand(groupRoot,runtimeHome,profile,"GLM-5.2","max"," --max-budget-usd '10'","","--add-dir '/tmp/工作区🙂'","${groupRoot}/one.jsonl","${groupRoot}/one.err",1)
+        let second=ckbAbcdeDevelopmentClaudeCommand(groupRoot,runtimeHome,profile,"GLM-5.2","max","","","--add-dir '/tmp/工作区🙂'","${groupRoot}/two.jsonl","${groupRoot}/two.err",2)
+        for(command in [first,second]){@Expect(command.contains("HOME="),true);@Expect(command.contains("TMPDIR="),true);@Expect(command.contains("XDG_CONFIG_HOME="),true);@Expect(command.contains("XDG_CACHE_HOME="),true);@Expect(command.contains("CLAUDE_CONFIG_DIR="),true);@Expect(command.contains(runtimeHome),true);@Expect(command.contains("${runtimeHome}/mcp-config.json"),true);@Expect(command.contains("sandbox-exec -f"),true);@Expect(command.contains(profile),true);@Expect(command.contains("--session-id \"$session_id\""),true);@Expect(command.contains("/.claude/"),false);@Expect(command.contains("~/.claude"),false)}
         @Expect(first.contains("session-id.attempt-1.txt"),true);@Expect(second.contains("session-id.attempt-2.txt"),true);@Expect(first!=second,true)
         @Expect(ckbAbcdeDevelopmentAttemptRuntimeHome(runtimeHome,1),"${runtimeHome}/attempt-1");@Expect(ckbAbcdeDevelopmentAttemptRuntimeHome(runtimeHome,2),"${runtimeHome}/attempt-2")
     }
@@ -391,6 +392,35 @@ public class CangjieEvalAbcdeRunnerTest {
         let injectedResult="{\"type\":\"user\",\"tool_use_result\":{\"stdout\":\"/Users/private-user/.claude/projects/secret\"}}"
         for(event in [bashDefault,readDefault,homeDefault]){let diagnostic=ckbAbcdeForbiddenEvidenceForTest(CkbAbcdeGroups.C,event);@Expect(diagnostic,"default_runtime_home_access");@Expect(diagnostic.contains("private-user"),false)}
         @Expect(ckbAbcdeForbiddenEvidenceForTest(CkbAbcdeGroups.C,allowedRuntime+"\n"+injectedResult+"\n{malformed🙂"),"none")
+    }
+
+    @TestCase
+    public func nkNeg04BroadFilesystemScanFailsClosedWithoutCommandLeakage(): Unit {
+        let rootScan="{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Bash\",\"input\":{\"command\":\"find / -name secret-token-value\"}}]}}"
+        let usersScan="{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Bash\",\"input\":{\"command\":\"find /Users -name 仓颉🙂\"}}]}}"
+        let scoped="{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Bash\",\"input\":{\"command\":\"find . -type f\"}}]}}"
+        for(event in [rootScan,usersScan]){let diagnostic=ckbAbcdeForbiddenEvidenceForTest(CkbAbcdeGroups.C,event);@Expect(diagnostic,"broad_filesystem_scan");@Expect(diagnostic.contains("secret-token-value"),false);@Expect(diagnostic.contains("仓颉"),false)}
+        @Expect(ckbAbcdeForbiddenEvidenceForTest(CkbAbcdeGroups.C,scoped+"\n{malformed🙂"),"none")
+    }
+
+    @TestCase
+    public func nkUt04DevelopmentSandboxProfileIsGroupScopedAndUtf8Safe(): Unit {
+        let workspace="/tmp/工作区🙂";let home="/tmp/运行时🙂";let caseSrc="/tmp/数据集🙂/CJ-HUMANEVAL-093";let docs="/tmp/文档🙂";let sdk="/tmp/仓颉SDK🙂"
+        let c=ckbAbcdeDevelopmentSandboxProfile(CkbAbcdeGroups.C,workspace,home,"/tmp/ckb-bin","/tmp/ckb-store",caseSrc,docs,sdk,"/tmp/MacSDK🙂")
+        let e=ckbAbcdeDevelopmentSandboxProfile(CkbAbcdeGroups.E,workspace,home,"/tmp/ckb-bin","/tmp/ckb-store",caseSrc,docs,sdk,"/tmp/MacSDK🙂")
+        for(profile in [c,e]){@Expect(profile.contains("(deny default)"),true);@Expect(profile.contains(workspace),true);@Expect(profile.contains(home),true);@Expect(profile.contains(sdk),true);@Expect(profile.contains("${caseSrc}/tests"),true);@Expect(profile.contains("${caseSrc}/translation"),true);@Expect(profile.contains("CangjieTeacher"),true)}
+        @Expect(c.contains(docs),false);@Expect(e.contains(docs),true)
+    }
+
+    @TestCase
+    public func nkPos04RealDevelopmentSandboxBuildsAndDeniesPrivateSibling(): Unit {
+        if (!exists(Path("/usr/bin/sandbox-exec"))) { return }
+        let root="target/development-sandbox-仓颉🙂";let workspace="${root}/workspace";let home="${root}/runtime-home";let caseSrc="${root}/case";let docs="${root}/docs";let store="${root}/store";let bin="${root}/ckb-bin"
+        for(path in [workspace,home,"${caseSrc}/tests","${caseSrc}/translation",docs,store]){if(!exists(Path(path))){Directory.create(Path(path),recursive:true)}};File.writeTo(Path(bin),"probe".toArray())
+        let sdk=match(getVariable("CANGJIE_HOME")){case Some(value)=>value case None=>""};let macSdk=match(getVariable("SDKROOT")){case Some(value)=>value case None=>""};@Expect(sdk.isEmpty(),false);@Expect(macSdk.isEmpty(),false)
+        let profilePath="${root}/development.sb";File.writeTo(Path(profilePath),ckbAbcdeDevelopmentSandboxProfile(CkbAbcdeGroups.E,workspace,home,bin,store,caseSrc,docs,sdk,macSdk).toArray())
+        let probe=ckbAbcdeDevelopmentSandboxProbeForTest(profilePath,workspace,home,caseSrc,docs,CkbAbcdeGroups.E,sdk,macSdk)
+        @Expect(probe.exitCode,0);@Expect(probe.stderr,"");@Expect(probe.stdout.contains("\"ok\":true"),true);@Expect(probe.stdout.contains("\"minimalBuildPassed\":true"),true);@Expect(probe.stdout.contains("\"deniedBroadFilesystemScan\":true"),true);@Expect(probe.stdout.contains("private-probe-value"),false)
     }
 
     @TestCase
