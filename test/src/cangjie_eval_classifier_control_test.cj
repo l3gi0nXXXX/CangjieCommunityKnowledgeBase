@@ -114,6 +114,51 @@ public class CangjieEvalClassifierControlTest {
         @Expect(sealCkbP5ClassifierResponseWithDiagnostic(request,nonKnowledge,config,"/tmp/p5-fact-non/workspace","/tmp/p5-fact-non/home","session-fact-non")[1],"ok")
     }
 
+    // CLASSIFIER-016-FACT-UT/BND/POS/NEG: request-aware String casing facts fail closed.
+    @TestCase
+    public func p5IcStringCasingSourceFactsMatchDocumentedReceiversAndImports(): Unit {
+        let config=p5IcConfig("a","codex","GPT-5.6-Sol")
+        let request=p5IcAbsRequest("CJ-HUMANEVAL-016",
+            "public func solve(string: String): String { for (c in string.toLower()) { println(c) }; string }",
+            "error: 'toLower' is not a member of struct 'String' 中文🙂")
+        let base=p5IcResponse("codex","GPT-5.6-Sol")
+        let ascii=base.replace("General reusable String API guidance 中文🙂",
+            "String.toAsciiLower() returns an ASCII-only lowercase String; non-ASCII 中文🙂 is unchanged.")
+        let runeAscii=base.replace("General reusable String API guidance 中文🙂",
+            "Direct String iteration yields UInt8. Convert with string.runes(), then use the core Rune.toAsciiLowerCase() for ASCII-only casing.")
+        let unicode=base.replace("General reusable String API guidance 中文🙂",
+            "For Unicode casing, import std.unicode.* and convert String through runes(), then call Rune.toLowerCase().")
+        for((label,response) in [("string-ascii",ascii),("rune-ascii",runeAscii),("rune-unicode",unicode)]){
+            let result=sealCkbP5ClassifierResponseWithDiagnostic(request,response,config,"/tmp/p5-case-${label}/workspace","/tmp/p5-case-${label}/home","session-${label}")
+            @Expect(result[0].isEmpty(),false);@Expect(result[1],"ok")
+        }
+
+        let oldV1=base.replace("General reusable String API guidance 中文🙂",
+            "Iterate over the String's Runes, for (c in string) yielding Rune values, and convert each Rune using Rune.toLowerAscii().")
+        let directRune=base.replace("General reusable String API guidance 中文🙂",
+            "Direct String iteration yields Rune values; use each Rune for comparison.")
+        let nonexistentString=base.replace("General reusable String API guidance 中文🙂",
+            "String.toLower() is available and should be used for lowercase conversion.")
+        let unicodeWithoutImport=base.replace("General reusable String API guidance 中文🙂",
+            "For Unicode lowercase conversion call Rune.toLowerCase() on every Rune.")
+        let wrongReceivers=base.replace("General reusable String API guidance 中文🙂",
+            "Use String.toAsciiLowerCase() or Rune.toAsciiLower() for ASCII casing.")
+        for((label,response) in [("old-v1",oldV1),("direct-rune",directRune),("string-tolower",nonexistentString),
+            ("unicode-no-import",unicodeWithoutImport),("wrong-receivers",wrongReceivers)]){
+            let result=sealCkbP5ClassifierResponseWithDiagnostic(request,response,config,"/tmp/p5-case-bad-${label}/workspace","/tmp/p5-case-bad-${label}/home","session-bad-${label}")
+            @Expect(result[0],"");@Expect(result[1],"classifier_response_source_fact_unsupported")
+        }
+
+        let unrelated=p5IcAbsRequest("CJ-HUMANEVAL-018",
+            "public func solve(string: String): String { string }","error: unrelated member 中文🙂")
+        @Expect(sealCkbP5ClassifierResponseWithDiagnostic(unrelated,oldV1,config,"/tmp/p5-case-other/workspace","/tmp/p5-case-other/home","session-other")[1],"ok")
+        let nonKnowledge=oldV1.replace("\"category\":\"knowledge_gap\"","\"category\":\"reasoning_failure\"")
+        @Expect(sealCkbP5ClassifierResponseWithDiagnostic(request,nonKnowledge,config,"/tmp/p5-case-non/workspace","/tmp/p5-case-non/home","session-non")[1],"ok")
+        @Expect(sealCkbP5ClassifierResponseWithDiagnostic(request,"{",config,"/tmp/p5-case-malformed/workspace","/tmp/p5-case-malformed/home","session-malformed")[1],"classifier_response_malformed")
+        let leaking=ascii.replace("ASCII-only lowercase String","ASCII-only lowercase String token=secret /Users/private/秘密🙂")
+        @Expect(sealCkbP5ClassifierResponseWithDiagnostic(request,leaking,config,"/tmp/p5-case-leak/workspace","/tmp/p5-case-leak/home","session-leak")[1],"classifier_response_forbidden_content")
+    }
+
     // P5-C-E2E-01
     @TestCase
     public func p5IcPos01TwoFakeProcessesProduceAnInjectableIndependentPair(): Unit {
