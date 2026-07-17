@@ -182,13 +182,21 @@ public class CangjieEvalClassifierControlTest {
             "Using the reserved keyword match directly as a plain variable identifier is invalid. The raw identifier `match` is legal in Cangjie; alternatively, rename it to a non-keyword identifier such as matchedCount 中文🙂.")
         let equivalent=base.replace("General reusable String API guidance 中文🙂",
             "An unescaped match cannot be used directly as an ordinary identifier because it is a keyword. The escaped identifier `match` is allowed, and renaming it to a different non-keyword variable is also valid.")
-        for((label,response) in [("complete",complete),("equivalent",equivalent)]){
+        let v3Exact=base.replace("General reusable String API guidance 中文🙂",
+            "In Cangjie 1.0, `match` is invalid as a plain identifier because it is a keyword. The backtick form `match` is a legal raw identifier; alternatively, rename it to a non-keyword name.")
+        let regularEquivalent=base.replace("General reusable String API guidance 中文🙂",
+            "The reserved keyword `match` is illegal as a regular identifier. Raw identifier `match` is valid; renaming it to a non-keyword variable is valid.")
+        for((label,response) in [("complete",complete),("equivalent",equivalent),("v3-exact",v3Exact),("regular-equivalent",regularEquivalent)]){
             let result=sealCkbP5ClassifierResponseWithDiagnostic(request,response,config,"/tmp/p5-keyword-${label}/workspace","/tmp/p5-keyword-${label}/home","session-keyword-${label}")
             @Expect(result[0].isEmpty(),false);@Expect(result[1],"ok")
         }
 
         let absolute=base.replace("General reusable String API guidance 中文🙂",
             "The reserved keyword match can never be used as an identifier under any circumstances; rename it to a non-keyword identifier.")
+        let v1A=base.replace("General reusable String API guidance 中文🙂",
+            "Cangjie reserves `match` for match expressions, so it cannot be used as a local variable identifier.")
+        let v1B=base.replace("General reusable String API guidance 中文🙂",
+            "In Cangjie, `match` is a reserved keyword and cannot be used as a variable name or identifier; choose another name.")
         let missingRaw=base.replace("General reusable String API guidance 中文🙂",
             "Using the reserved keyword match directly as a plain variable identifier is invalid; rename it to a non-keyword identifier.")
         let rawWithoutLegality=base.replace("General reusable String API guidance 中文🙂",
@@ -201,7 +209,7 @@ public class CangjieEvalClassifierControlTest {
             "Using the reserved keyword match directly as a plain variable identifier is invalid; rename it to a non-keyword identifier. // The raw identifier `match` is legal.")
         let contradictory=complete.replace("Using the reserved keyword match directly as a plain variable identifier is invalid.",
             "The reserved keyword match can never be used as an identifier under any circumstances.")
-        for((label,response) in [("absolute",absolute),("missing-raw",missingRaw),("raw-no-legality",rawWithoutLegality),
+        for((label,response) in [("absolute",absolute),("v1-a",v1A),("v1-b",v1B),("missing-raw",missingRaw),("raw-no-legality",rawWithoutLegality),
             ("missing-plain",missingPlainBoundary),("word-salad",wordSalad),("comment-disguise",commentDisguise),("contradictory",contradictory)]){
             let result=sealCkbP5ClassifierResponseWithDiagnostic(request,response,config,"/tmp/p5-keyword-bad-${label}/workspace","/tmp/p5-keyword-bad-${label}/home","session-keyword-bad-${label}")
             @Expect(result[0],"");@Expect(result[1],"classifier_response_source_fact_unsupported")

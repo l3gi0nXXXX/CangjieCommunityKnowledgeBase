@@ -319,18 +319,21 @@ private func ckbP5ClassifierReservedKeywordFactsValid(source:String,compiler:Str
     if(absolute){return false}
     let plainContext=knowledge.contains("using the reserved keyword match directly")||
         knowledge.contains("using match directly")||knowledge.contains("unescaped match")||
-        knowledge.contains("match without escaping")
+        knowledge.contains("match without escaping")||
+        ((knowledge.contains("`match`")||knowledge.contains("keyword match"))&&
+        (knowledge.contains("plain identifier")||knowledge.contains("ordinary identifier")||knowledge.contains("regular identifier")))
     let plainInvalid=plainContext&&knowledge.contains("keyword")&&
         (knowledge.contains(" is invalid")||knowledge.contains("cannot be used directly")||
         knowledge.contains(" is not a valid")||knowledge.contains(" is illegal"))
     let rawSyntax=knowledge.contains("`match`")&&
         (knowledge.contains("raw identifier")||knowledge.contains("escaped identifier"))
     let rawLegal=rawSyntax&&(knowledge.contains(" is legal")||knowledge.contains(" is allowed")||
-        knowledge.contains(" is valid")||knowledge.contains(" can be used"))
+        knowledge.contains(" is valid")||knowledge.contains(" can be used")||
+        knowledge.contains("legal raw identifier")||knowledge.contains("valid raw identifier"))
     let rename=(knowledge.contains("rename")||knowledge.contains("renaming")||
         knowledge.contains("use a non-keyword")||knowledge.contains("choose a non-keyword"))&&
         (knowledge.contains("non-keyword identifier")||knowledge.contains("non-keyword variable")||
-        knowledge.contains("different non-keyword"))
+        knowledge.contains("non-keyword name")||knowledge.contains("different non-keyword"))
     plainInvalid&&rawLegal&&rename
 }
 
