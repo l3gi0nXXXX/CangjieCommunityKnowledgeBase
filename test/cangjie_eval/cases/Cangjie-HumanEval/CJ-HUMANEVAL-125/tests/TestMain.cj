@@ -19,7 +19,22 @@ func expectInt64(actual: Int64, expected: Int64, label: String): Unit { if (actu
 func expectFloat64(actual: Float64, expected: Float64, label: String): Unit { if (abs(actual - expected) > 0.000001) { cjeFail(label, "expected ${expected}, actual ${actual}") } }
 func expectString(actual: String, expected: String, label: String): Unit { if (actual != expected) { cjeFail(label, "expected ${expected}, actual ${actual}") } }
 func expectBool(actual: Bool, expected: Bool, label: String): Unit { if (actual != expected) { cjeFail(label, "expected ${expected}, actual ${actual}") } }
-func expectEvalValue(actual: EvalValue, expected: EvalValue, label: String): Unit { if (actual.kind != expected.kind) { cjeFail(label, "expected kind ${expected.kind}, actual kind ${actual.kind}") }; if (expected.kind == "int") { expectInt64(actual.intValue, expected.intValue, label) }; if (expected.kind == "float") { expectFloat64(actual.floatValue, expected.floatValue, label) }; if (expected.kind == "string") { expectString(actual.stringValue, expected.stringValue, label) }; if (expected.kind == "bool") { expectBool(actual.boolValue, expected.boolValue, label) } }
+func expectEvalValue(actual: EvalValue, expected: EvalValue, label: String): Unit {
+    if (actual.kind != expected.kind) { cjeFail(label, "expected kind ${expected.kind}, actual kind ${actual.kind}") }
+    if (expected.kind == "int") {
+        if (actual.stringValue != "" || actual.boolValue || actual.stringListValue.size != 0 || actual.floatValue != expected.floatValue) {
+            cjeFail(label, "int value carries non-canonical payload")
+        }
+        expectInt64(actual.intValue, expected.intValue, label)
+    } else if (expected.kind == "string_list") {
+        if (actual.intValue != 0 || actual.floatValue != 0.0 || actual.stringValue != "" || actual.boolValue) {
+            cjeFail(label, "string-list value carries non-canonical scalar payload")
+        }
+        expectStringList(actual.stringListValue, expected.stringListValue, label)
+    } else {
+        cjeFail(label, "unsupported EvalValue kind ${expected.kind}")
+    }
+}
 func expectInt64List(actual: ArrayList<Int64>, expected: ArrayList<Int64>, label: String): Unit { if (actual.size != expected.size) { cjeFail(label, "expected size ${expected.size}, actual size ${actual.size}") }; for (i in 0..expected.size) { expectInt64(actual[i], expected[i], "${label}[${i}]") } }
 func expectFloat64List(actual: ArrayList<Float64>, expected: ArrayList<Float64>, label: String): Unit { if (actual.size != expected.size) { cjeFail(label, "expected size ${expected.size}, actual size ${actual.size}") }; for (i in 0..expected.size) { expectFloat64(actual[i], expected[i], "${label}[${i}]") } }
 func expectStringList(actual: ArrayList<String>, expected: ArrayList<String>, label: String): Unit { if (actual.size != expected.size) { cjeFail(label, "expected size ${expected.size}, actual size ${actual.size}") }; for (i in 0..expected.size) { expectString(actual[i], expected[i], "${label}[${i}]") } }
@@ -34,10 +49,10 @@ func expectStringInt64Map(actual: HashMap<String, Int64>, expected: HashMap<Stri
 
 
 main(): Int64 {
-    expectEvalValue(split_words("Hello world!"), evalString("[\"Hello\", \"world!\"]"), "CJ-HUMANEVAL-125_l3_c001")
-    expectEvalValue(split_words("Hello,world!"), evalString("[\"Hello\", \"world!\"]"), "CJ-HUMANEVAL-125_l4_c002")
-    expectEvalValue(split_words("Hello world,!"), evalString("[\"Hello\", \"world,!\"]"), "CJ-HUMANEVAL-125_l5_c003")
-    expectEvalValue(split_words("Hello,Hello,world !"), evalString("[\"Hello,Hello,world\", \"!\"]"), "CJ-HUMANEVAL-125_l6_c004")
+    expectEvalValue(split_words("Hello world!"), evalStringList(["Hello", "world!"]), "CJ-HUMANEVAL-125_l3_c001")
+    expectEvalValue(split_words("Hello,world!"), evalStringList(["Hello", "world!"]), "CJ-HUMANEVAL-125_l4_c002")
+    expectEvalValue(split_words("Hello world,!"), evalStringList(["Hello", "world,!"]), "CJ-HUMANEVAL-125_l5_c003")
+    expectEvalValue(split_words("Hello,Hello,world !"), evalStringList(["Hello,Hello,world", "!"]), "CJ-HUMANEVAL-125_l6_c004")
     expectEvalValue(split_words("abcdef"), evalInt(3), "CJ-HUMANEVAL-125_l7_c005")
     expectEvalValue(split_words("aaabb"), evalInt(2), "CJ-HUMANEVAL-125_l8_c006")
     expectEvalValue(split_words("aaaBb"), evalInt(1), "CJ-HUMANEVAL-125_l9_c007")

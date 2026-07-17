@@ -4,7 +4,8 @@
 - Cangjie signature: `public func split_words(txt: String): EvalValue`
 - Test calls expanded from official HumanEval: `8`
 - Static-language adaptations:
-  - Python dynamic values are represented by EvalValue/EvalEntry helper types.
+  - Python `list[str] | int` is represented by `EvalValue` with exact `string_list` and `int` tagged payloads.
+  - Return a list branch with `evalStringList(Array<String>)`; serialized list text in `evalString(...)` is a different value and will not pass.
 
 ## Model-Facing Task
 

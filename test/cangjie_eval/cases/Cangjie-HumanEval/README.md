@@ -174,7 +174,7 @@ These adaptations are recorded per case in `metadata.json`.
 | `CJ-HUMANEVAL-122` | `HumanEval/122` | `add_elements` | 5 | `public func add_elements(arr: ArrayList<Int64>, k: Int64): Int64` | none |
 | `CJ-HUMANEVAL-123` | `HumanEval/123` | `get_odd_collatz` | 4 | `public func get_odd_collatz(n: Int64): ArrayList<Int64>` | none |
 | `CJ-HUMANEVAL-124` | `HumanEval/124` | `valid_date` | 16 | `public func valid_date(date: String): Bool` | none |
-| `CJ-HUMANEVAL-125` | `HumanEval/125` | `split_words` | 8 | `public func split_words(txt: String): EvalValue` | Python dynamic values are represented by EvalValue/EvalEntry helper types. |
+| `CJ-HUMANEVAL-125` | `HumanEval/125` | `split_words` | 8 | `public func split_words(txt: String): EvalValue` | Python `list[str] \| int` is preserved with exact `string_list` and `int` tagged payloads; serialized list text is rejected. |
 | `CJ-HUMANEVAL-126` | `HumanEval/126` | `is_sorted` | 13 | `public func is_sorted(lst: ArrayList<Int64>): Bool` | none |
 | `CJ-HUMANEVAL-127` | `HumanEval/127` | `intersection` | 8 | `public func intersection(interval1: (Int64, Int64), interval2: (Int64, Int64)): String` | none |
 | `CJ-HUMANEVAL-128` | `HumanEval/128` | `prod_signs` | 8 | `public func prod_signs(arr: ArrayList<Int64>): Option<Int64>` | Python None returns are represented by Option<T>. |

@@ -8,6 +8,7 @@ public class EvalValue {
     public var floatValue: Float64 = 0.0
     public var stringValue: String = ""
     public var boolValue: Bool = false
+    public var stringListValue: ArrayList<String> = ArrayList<String>()
 }
 
 public class EvalEntry {
@@ -20,6 +21,12 @@ public func evalInt(value: Int64): EvalValue { let v = EvalValue(); v.kind = "in
 public func evalFloat(value: Float64): EvalValue { let v = EvalValue(); v.kind = "float"; v.floatValue = value; v }
 public func evalString(value: String): EvalValue { let v = EvalValue(); v.kind = "string"; v.stringValue = value; v }
 public func evalBool(value: Bool): EvalValue { let v = EvalValue(); v.kind = "bool"; v.boolValue = value; v }
+public func evalStringList(values: Array<String>): EvalValue {
+    let v = EvalValue()
+    v.kind = "string_list"
+    for (value in values) { v.stringListValue.add(value) }
+    v
+}
 public func evalEmptyList(): EvalValue { let v = EvalValue(); v.kind = "list"; v }
 public func evalEmptyMap(): EvalValue { let v = EvalValue(); v.kind = "map"; v }
 public func evalEntry(key: EvalValue, value: EvalValue): EvalEntry { let e = EvalEntry(); e.key = key; e.value = value; e }
