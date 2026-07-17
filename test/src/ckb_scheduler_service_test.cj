@@ -2552,6 +2552,183 @@ public class CkbRoutinePreflightRepairHintTest {
         @Expect(ruDiagnosticsContain(gate.diagnostics, "scheduler_pre_run_gate_failed:qdrant_active_count_mismatch:1:"), true)
         @Expect(blocked.details.contains("task cangjie_docs_full_weekly ok=false status=scheduler_pre_run_gate_failed"), true)
     }
+
+    @TestCase
+    public func stagingZeroPreRunPosE2e01CommittedZeroCanEnterFirstBenchmarkGapCuration(): Unit {
+        let root = "target/staging-zero-pre-run-pos-e2e"
+        s1s2EnsureEmptyDir(root)
+        let config = f7QdrantRoutineConfig()
+        config.networkEnabled = false
+        config.vectorActiveCollection = "ckb_staging_zero_active"
+        config.vectorCandidateCollection = "ckb_staging_zero_candidate"
+        let store = FileKnowledgeStore(root)
+        let initialized = ckbBenchmarkGapStagingInit(config, store, LocalVectorStore())
+        @Expect(initialized.ok, true)
+        let tasks = ArrayList<String>()
+        tasks.add("cangjie_benchmark_gap_curation")
+
+        let gate = ckbSchedulerPreRunGate(config, store,
+            F7StatusVectorStore(EmbeddingProviderState.READY, "", 3, count: 0), tasks)
+
+        @Expect(gate.ok, true)
+        @Expect(ruDiagnosticsContain(gate.diagnostics,
+            "scheduler_pre_run_gate_failed:active_snapshot_invalid:active_count_missing"), false)
+    }
+
+    @TestCase
+    public func stagingZeroPreRunUt01HistoricalNonzeroActiveContractIsUnchanged(): Unit {
+        let root = "target/staging-zero-pre-run-historical"
+        s1s2EnsureEmptyDir(root)
+        let config = f7QdrantRoutineConfig()
+        config.vectorActiveCollection = "ckb_historical_active"
+        config.vectorCandidateCollection = "ckb_historical_candidate"
+        let kb = KnowledgeBase(FakeClock(0), DeterministicEmbeddingProvider(),
+            LocalVectorStore(), LocalGraphStore())
+        kb.configureVectorCollections(config.vectorActiveCollection,
+            config.vectorCandidateCollection)
+        kb.bootstrapOffline()
+        let store = FileKnowledgeStore(root)
+        _ = ckbRebuildIndex(kb, store)
+
+        let gate = ckbSchedulerPreRunGate(config, store,
+            F7StatusVectorStore(EmbeddingProviderState.READY, "", 3,
+                count: kb.status().storage.indexCount), stagingZeroPreRunTasks())
+
+        @Expect(gate.ok, true)
+        @Expect(kb.status().storage.indexCount > 0, true)
+    }
+
+    @TestCase
+    public func stagingZeroPreRunBnd01QdrantMustAlsoRemainExactlyZero(): Unit {
+        let root = "target/staging-zero-pre-run-qdrant-count"
+        s1s2EnsureEmptyDir(root)
+        let config = stagingZeroPreRunConfig("qdrant-count")
+        let store = FileKnowledgeStore(root)
+        @Expect(ckbBenchmarkGapStagingInit(config, store, LocalVectorStore()).ok, true)
+
+        let gate = ckbSchedulerPreRunGate(config, store,
+            F7StatusVectorStore(EmbeddingProviderState.READY, "", 3, count: 1),
+            stagingZeroPreRunTasks())
+
+        @Expect(gate.ok, false)
+        @Expect(ruDiagnosticsContain(gate.diagnostics,
+            "scheduler_pre_run_gate_failed:qdrant_active_count_mismatch:1:0:"), true)
+    }
+
+    @TestCase
+    public func stagingZeroPreRunNeg01PartialRawOrVectorCountsRemainRejected(): Unit {
+        let rawConfig = stagingZeroPreRunConfig("partial-raw")
+        let rawStore = FileKnowledgeStore("target/staging-zero-pre-run-partial-raw")
+        s1s2EnsureEmptyDir(rawStore.rootPath())
+        let rawStatus = stagingZeroPreRunStatus(rawConfig, "partial-raw-active")
+        rawStatus.storage.rawCount = 1
+        let raw = RawRecord(); raw.sourceId = "orphan-raw"; raw.title = "orphan"
+        raw.content = "raw without normalized/index/vector"; raw.metadata.sourceId = raw.sourceId
+        raw.metadata.sourceType = SourceTypes.DOC; raw.contentHash = benchmarkGapSha256(raw.content)
+        let raws = ArrayList<RawRecord>(); raws.add(raw)
+        @Expect(rawStore.writeActiveSnapshotTransaction(rawStatus, raws,
+            ArrayList<NormalizedRecord>(), ArrayList<NormalizedRecord>(),
+            ArrayList<VectorRecord>(), rawConfig.vectorActiveCollection,
+            GraphBuildResult()).ok, true)
+        let rawGate = ckbSchedulerPreRunGate(rawConfig, rawStore,
+            F7StatusVectorStore(EmbeddingProviderState.READY, "", 3, count: 1),
+            stagingZeroPreRunTasks())
+        @Expect(rawGate.ok, false)
+        @Expect(ruDiagnosticsContain(rawGate.diagnostics, "active_count_partial"), true)
+
+        let vectorConfig = stagingZeroPreRunConfig("partial-vector")
+        let vectorStore = FileKnowledgeStore("target/staging-zero-pre-run-partial-vector")
+        s1s2EnsureEmptyDir(vectorStore.rootPath())
+        let vectorStatus = stagingZeroPreRunStatus(vectorConfig, "partial-vector-active")
+        vectorStatus.storage.vectorIndexCount = 1
+        let vector = VectorRecord(); vector.id = "orphan-vector"; vector.vector.add(1.0)
+        let vectors = ArrayList<VectorRecord>(); vectors.add(vector)
+        @Expect(vectorStore.writeActiveSnapshotTransaction(vectorStatus,
+            ArrayList<RawRecord>(), ArrayList<NormalizedRecord>(),
+            ArrayList<NormalizedRecord>(), vectors, vectorConfig.vectorActiveCollection,
+            GraphBuildResult()).ok, true)
+        let vectorGate = ckbSchedulerPreRunGate(vectorConfig, vectorStore,
+            F7StatusVectorStore(EmbeddingProviderState.READY, "", 3, count: 1),
+            stagingZeroPreRunTasks())
+        @Expect(vectorGate.ok, false)
+        @Expect(ruDiagnosticsContain(vectorGate.diagnostics, "active_count_partial"), true)
+    }
+
+    @TestCase
+    public func stagingZeroPreRunNeg02UncommittedAndIdentityMismatchesRemainRejected(): Unit {
+        let uncommittedRoot = "target/staging-zero-pre-run-uncommitted"
+        s1s2EnsureEmptyDir(uncommittedRoot)
+        let uncommittedConfig = stagingZeroPreRunConfig("uncommitted")
+        let uncommittedStore = FileKnowledgeStore(uncommittedRoot)
+        uncommittedStore.writeLinesAtomically("metadata/active-snapshot.manifest",
+            "schema=ckb-active-pointer-v2\ntxId=missing\nactive=zero\nvectorActiveCollection=${uncommittedConfig.vectorActiveCollection}\ncommitted=true\n")
+        @Expect(ckbSchedulerPreRunGate(uncommittedConfig, uncommittedStore,
+            F7StatusVectorStore(EmbeddingProviderState.READY, "", 3, count: 0),
+            stagingZeroPreRunTasks()).ok, false)
+
+        let versionStore = stagingZeroInitializedStore("version-mismatch")
+        let versionConfig = stagingZeroPreRunConfig("version-mismatch")
+        versionStore.writeLinesAtomically("metadata/active-snapshot.manifest",
+            versionStore.readText("metadata/active-snapshot.manifest").replace(
+                "ckb-benchmark-gap-staging-empty-v1", "wrong-version"))
+        @Expect(ckbSchedulerPreRunGate(versionConfig, versionStore,
+            F7StatusVectorStore(EmbeddingProviderState.READY, "", 3, count: 0),
+            stagingZeroPreRunTasks()).ok, false)
+
+        let collectionStore = stagingZeroInitializedStore("collection-mismatch")
+        let collectionConfig = stagingZeroPreRunConfig("collection-mismatch")
+        collectionStore.writeLinesAtomically("metadata/active-snapshot.manifest",
+            collectionStore.readText("metadata/active-snapshot.manifest").replace(
+                collectionConfig.vectorActiveCollection, "wrong-active-collection"))
+        @Expect(ckbSchedulerPreRunGate(collectionConfig, collectionStore,
+            F7StatusVectorStore(EmbeddingProviderState.READY, "", 3, count: 0),
+            stagingZeroPreRunTasks()).ok, false)
+
+        let candidateStore = stagingZeroInitializedStore("candidate-mismatch")
+        let candidateConfig = stagingZeroPreRunConfig("candidate-mismatch")
+        candidateConfig.vectorCandidateCollection = "different_candidate_collection"
+        let candidateGate = ckbSchedulerPreRunGate(candidateConfig, candidateStore,
+            F7StatusVectorStore(EmbeddingProviderState.READY, "", 3, count: 0),
+            stagingZeroPreRunTasks())
+        @Expect(candidateGate.ok, false)
+        @Expect(ruDiagnosticsContain(candidateGate.diagnostics, "active_count_missing"), true)
+    }
+}
+
+private func stagingZeroPreRunConfig(id: String): CkbRuntimeConfig {
+    let config = f7QdrantRoutineConfig()
+    config.networkEnabled = false
+    config.vectorActiveCollection = "ckb_staging_zero_${id}_active"
+    config.vectorCandidateCollection = "ckb_staging_zero_${id}_candidate"
+    config
+}
+
+private func stagingZeroPreRunTasks(): ArrayList<String> {
+    let tasks = ArrayList<String>()
+    tasks.add("cangjie_benchmark_gap_curation")
+    tasks
+}
+
+private func stagingZeroPreRunStatus(config: CkbRuntimeConfig,
+    activeVersion: String): KnowledgeStatus {
+    let status = KnowledgeStatus()
+    status.activeKnowledgeVersion = activeVersion
+    status.storage.vectorBackend = "qdrant"
+    status.storage.vectorState = EmbeddingProviderState.READY
+    status.storage.vectorDimension = config.vectorDimensions
+    status.storage.vectorActiveCollection = config.vectorActiveCollection
+    status.storage.vectorCandidateCollection = config.vectorCandidateCollection
+    status
+}
+
+private func stagingZeroInitializedStore(id: String): FileKnowledgeStore {
+    let root = "target/staging-zero-pre-run-${id}"
+    s1s2EnsureEmptyDir(root)
+    let config = stagingZeroPreRunConfig(id)
+    let store = FileKnowledgeStore(root)
+    let initialized = ckbBenchmarkGapStagingInit(config, store, LocalVectorStore())
+    if (!initialized.ok) { throw Exception("staging_zero_fixture_failed:${initialized.diagnostic}") }
+    store
 }
 
 private func f7SchedulerDiagnosticsContain(result: SchedulerExecutorResult, needle: String): Bool {

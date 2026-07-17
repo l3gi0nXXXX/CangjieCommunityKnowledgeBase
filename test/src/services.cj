@@ -4374,8 +4374,13 @@ public func ckbSchedulerPreRunGate(config: CkbRuntimeConfig, store: FileKnowledg
         result.diagnostics.add("scheduler_pre_run_gate_failed:active_snapshot_invalid:${if (!metadata.valid) { metadata.diagnostic } else { "manifest_missing_or_uncommitted" }}")
         return result
     }
+    if (ckbSchedulerActiveCountsPartiallyEmpty(metadata)) {
+        result.ok = false
+        result.diagnostics.add("scheduler_pre_run_gate_failed:active_snapshot_invalid:active_count_partial")
+        return result
+    }
     let activeCount = ckbRoutineExpectedActiveCount(metadata)
-    if (activeCount <= 0) {
+    if (activeCount <= 0 && !ckbSchedulerCommittedZeroSnapshotValid(store, metadata, effective)) {
         result.ok = false
         result.diagnostics.add("scheduler_pre_run_gate_failed:active_snapshot_invalid:active_count_missing")
         return result
@@ -4399,6 +4404,39 @@ public func ckbSchedulerPreRunGate(config: CkbRuntimeConfig, store: FileKnowledg
         result.diagnostics.add("scheduler_pre_run_gate_failed:qdrant_active_distance_mismatch:${qdrant.distance}:${vector.distance}:${effective.effectiveActiveCollection}")
     }
     result
+}
+
+private func ckbSchedulerActiveCountsPartiallyEmpty(metadata: StoreMetadataStatus): Bool {
+    let anyPositive = metadata.rawCount > 0 || metadata.normalizedCount > 0 ||
+        metadata.indexCount > 0 || metadata.vectorIndexCount > 0
+    anyPositive && (metadata.rawCount <= 0 || metadata.normalizedCount <= 0 ||
+        metadata.indexCount <= 0 || metadata.vectorIndexCount <= 0)
+}
+
+private func ckbSchedulerCommittedZeroSnapshotValid(store: FileKnowledgeStore,
+    metadata: StoreMetadataStatus, effective: CkbEffectiveVectorCollections): Bool {
+    if (metadata.rawCount != 0 || metadata.normalizedCount != 0 ||
+        metadata.indexCount != 0 || metadata.vectorIndexCount != 0 ||
+        metadata.graphNodeCount != 0 || metadata.graphEdgeCount != 0 ||
+        metadata.activeVersion == "" || metadata.vectorActiveCollection == "" ||
+        metadata.vectorCandidateCollection == "" ||
+        metadata.vectorActiveCollection != effective.effectiveActiveCollection ||
+        metadata.vectorCandidateCollection != effective.candidateCollection) {
+        return false
+    }
+    let pointer = store.loadActiveSnapshotPointer()
+    if (!pointer.valid || pointer.legacy || pointer.txId != metadata.snapshotManifestTxId ||
+        pointer.activeVersion != metadata.activeVersion ||
+        pointer.vectorActiveCollection != metadata.vectorActiveCollection ||
+        !store.has("transactions/${safeName(pointer.txId)}/COMMIT")) {
+        return false
+    }
+    let snapshot = store.loadActiveSnapshot()
+    snapshot.valid && snapshot.activeVersion == metadata.activeVersion &&
+        snapshot.vectorActiveCollection == metadata.vectorActiveCollection &&
+        snapshot.vectorCandidateCollection == metadata.vectorCandidateCollection &&
+        snapshot.rawRecords.size == 0 && snapshot.normalizedRecords.size == 0 &&
+        snapshot.activeIndex.size == 0 && snapshot.vectorRecords.size == 0
 }
 
 public func ckbSchedulerPreRunGateFailureResult(gate: CkbSchedulerPreRunGateResult, taskNames: ArrayList<String>, force: Bool): SchedulerExecutorResult {
