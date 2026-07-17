@@ -211,6 +211,11 @@ private func ckbP5ClassifierFailureDiagnosticAllowed(value:String):Bool{
         "classifier_reserved_match_plain_missing","classifier_reserved_match_raw_missing",
         "classifier_reserved_match_rename_missing","classifier_reserved_match_contradictory",
         "classifier_reserved_match_comment_disguised",
+        "classifier_string_case_iteration_uint8_missing","classifier_string_case_string_ascii_api_missing",
+        "classifier_string_case_rune_ascii_api_missing","classifier_string_case_unicode_import_missing",
+        "classifier_string_case_unicode_rune_api_missing","classifier_string_case_unicode_return_type_missing",
+        "classifier_string_case_invalid_api_negative_missing","classifier_string_case_contradictory",
+        "classifier_string_case_comment_disguised",
         "classifier_failure_unknown"].contains(value)
 }
 
@@ -246,7 +251,8 @@ private func ckbP5ClassifierSourceFactsDiagnostic(request:JsonObject,response:Js
     let source=ckbP5String(request,"studentSourceExcerpt").toAsciiLower()
     let compiler=ckbP5String(request,"compilerTestSummary").toAsciiLower()
     let knowledge=ckbP5String(response,"knowledgeText").toAsciiLower()
-    if(!ckbP5ClassifierStringCasingFactsValid(source,compiler,knowledge)){return "classifier_response_source_fact_unsupported"}
+    let stringCasingDiagnostic=ckbP5ClassifierStringCasingFactsDiagnostic(source,compiler,knowledge)
+    if(stringCasingDiagnostic!="ok"){return stringCasingDiagnostic}
     let reservedKeywordDiagnostic=ckbP5ClassifierReservedKeywordFactsDiagnostic(source,compiler,knowledge)
     if(reservedKeywordDiagnostic!="ok"){return reservedKeywordDiagnostic}
     if(!source.contains(".abs(")||!compiler.contains("undeclared identifier 'abs'")){return "ok"}
@@ -261,21 +267,45 @@ private func ckbP5ClassifierSourceFactsDiagnostic(request:JsonObject,response:Js
     if(assertsRequirement){"classifier_response_source_fact_unsupported"}else{"ok"}
 }
 
-private func ckbP5ClassifierStringCasingFactsValid(source:String,compiler:String,knowledge:String):Bool{
-    if(!source.contains(".tolower(")||!compiler.contains("'tolower' is not a member")||!compiler.contains("string")){return true}
+private func ckbP5ClassifierStringCasingFactsDiagnostic(source:String,compiler:String,knowledge:String):String{
+    if(!source.contains(".tolower(")||!compiler.contains("'tolower' is not a member")||!compiler.contains("string")){return "ok"}
     let value=knowledge.replace("`", "")
-    if(!ckbP5ClassifierToLowerAsciiClaimValid(value)||value.contains("string.toasciilowercase")||value.contains("rune.toasciilower(")){return false}
-    if(value.contains("rune.tolowercase(")&&
-        (!ckbP5ClassifierUnicodeImportRequired(value)||!ckbP5ClassifierRuneLowerResultValid(value))){return false}
+    if(knowledge.contains("//")||knowledge.contains("/*")||knowledge.contains("*/")){return "classifier_string_case_comment_disguised"}
     let directRune=(value.contains("for (c in string)")&&(value.contains("yielding rune")||value.contains("yields rune")||
         value.contains("produces rune")||value.contains("returns rune")))||
         (value.contains("direct string iteration")&&value.contains("rune")&&!value.contains("uint8"))||
         value.contains("string iteration yields rune")||value.contains("string iteration returns rune")||value.contains("string iteration produces rune")
-    if(directRune){return false}
     let assertsStringToLower=value.contains("use string.tolower")||value.contains("call string.tolower")||
         value.contains("string.tolower() is available")||value.contains("string supports string.tolower")||
         value.contains("string provides string.tolower")
-    !assertsStringToLower
+    let assertsToLowerAscii=value.contains("use tolowerascii")||value.contains("call tolowerascii")||
+        value.contains("tolowerascii returns")||value.contains("tolowerascii is available")||
+        value.contains("rune.tolowerascii")||value.contains("string.tolowerascii")
+    if(directRune||value.contains("string.toasciilowercase")||value.contains("rune.toasciilower(")||assertsStringToLower||
+        assertsToLowerAscii){return "classifier_string_case_contradictory"}
+    let iterationUInt8=value.contains("direct string iteration yields uint8")||value.contains("string iteration yields uint8")||
+        value.contains("iterating a string yields uint8")||value.contains("string iteration produces uint8")
+    if(!iterationUInt8){return "classifier_string_case_iteration_uint8_missing"}
+    let stringAscii=ckbP5ClassifierAsciiApiFactValid(value,"string.toasciilower()","string")
+    if(!stringAscii){return "classifier_string_case_string_ascii_api_missing"}
+    let runeAscii=ckbP5ClassifierAsciiApiFactValid(value,"rune.toasciilowercase()","rune")
+    if(!runeAscii){return "classifier_string_case_rune_ascii_api_missing"}
+    if(!ckbP5ClassifierUnicodeImportRequired(value)){return "classifier_string_case_unicode_import_missing"}
+    if(!value.contains("rune.tolowercase()")){return "classifier_string_case_unicode_rune_api_missing"}
+    if(!ckbP5ClassifierRuneLowerResultValid(value)){return "classifier_string_case_unicode_return_type_missing"}
+    let stringToLowerUnavailable=value.contains("string.tolower()")&&
+        (value.contains("unavailable")||value.contains("does not provide")||value.contains("not a member")||value.contains("does not exist"))
+    if(!stringToLowerUnavailable||!ckbP5ClassifierToLowerAsciiClaimValid(value)){return "classifier_string_case_invalid_api_negative_missing"}
+    "ok"
+}
+
+private func ckbP5ClassifierAsciiApiFactValid(knowledge:String,api:String,resultType:String):Bool{
+    for(clause in knowledge.replace(";", ". ").split(". ")){
+        let value=clause.trimAscii()
+        if(value.contains(api)&&value.contains("ascii-only")&&
+            (value.contains("returns a ${resultType}")||value.contains(": ${resultType}"))){return true}
+    }
+    false
 }
 
 private func ckbP5ClassifierToLowerAsciiClaimValid(knowledge:String):Bool{

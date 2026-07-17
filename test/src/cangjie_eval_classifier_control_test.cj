@@ -132,8 +132,7 @@ public class CangjieEvalClassifierControlTest {
             "In Cangjie 1.0.0, direct String iteration yields UInt8 bytes. String.toAsciiLower() returns a String and performs ASCII-only casing. Rune.toAsciiLowerCase() returns a Rune and is also ASCII-only. Unicode casing requires importing std.unicode.*, after which Rune.toLowerCase() returns a Rune. String.toLower() is unavailable, and toLowerAscii is not a Cangjie API.")
         let v4InlineImport=base.replace("General reusable String API guidance 中文🙂",
             "In Cangjie 1.0.0, direct String iteration yields UInt8 bytes. String.toAsciiLower() returns a String and performs ASCII-only lowercasing. Rune.toAsciiLowerCase() returns a Rune and is also ASCII-only. Unicode casing requires `import std.unicode.*`; Rune.toLowerCase() returns a Rune. String.toLower() is unavailable, and toLowerAscii is not a Cangjie API.")
-        for((label,response) in [("string-ascii",ascii),("rune-ascii",runeAscii),("rune-unicode",unicode),
-            ("v3-importing",v3Importing),("v4-inline-import",v4InlineImport)]){
+        for((label,response) in [("v3-importing",v3Importing),("v4-inline-import",v4InlineImport)]){
             let result=sealCkbP5ClassifierResponseWithDiagnostic(request,response,config,"/tmp/p5-case-${label}/workspace","/tmp/p5-case-${label}/home","session-${label}")
             @Expect(result[0].isEmpty(),false);@Expect(result[1],"ok")
         }
@@ -160,12 +159,47 @@ public class CangjieEvalClassifierControlTest {
             "Unicode casing requires import std.unicode.* and Rune.toLowerCase() returns a Rune. toLowerAscii is not a Cangjie API, but use toLowerAscii for compatibility.")
         let commentDisguise=base.replace("General reusable String API guidance 中文🙂",
             "Unicode casing requires import std.unicode.*; // Rune.toLowerCase() returns a Rune. toLowerAscii is not a Cangjie API.")
-        for((label,response) in [("old-v1",oldV1),("direct-rune",directRune),("string-tolower",nonexistentString),
-            ("unicode-no-import",unicodeWithoutImport),("wrong-receivers",wrongReceivers),("import-mention",importMention),
-            ("after-import",afterImport),("inline-mention",inlineMention),("inline-after-import",inlineAfterImport),
-            ("false-negative-api",falseNegativeApi),("comment-disguise",commentDisguise)]){
+        let completeText="In Cangjie 1.0.0, direct String iteration yields UInt8 bytes. String.toAsciiLower() returns a String and performs ASCII-only casing. Rune.toAsciiLowerCase() returns a Rune and is also ASCII-only. Unicode casing requires importing std.unicode.*, after which Rune.toLowerCase() returns a Rune. String.toLower() is unavailable, and toLowerAscii is not a Cangjie API."
+        let noIteration=base.replace("General reusable String API guidance 中文🙂",completeText.replace("direct String iteration yields UInt8 bytes. ",""))
+        let noStringAscii=base.replace("General reusable String API guidance 中文🙂",completeText.replace("String.toAsciiLower() returns a String and performs ASCII-only casing. ",""))
+        let noRuneAscii=base.replace("General reusable String API guidance 中文🙂",completeText.replace("Rune.toAsciiLowerCase() returns a Rune and is also ASCII-only. ",""))
+        let crossClauseString=base.replace("General reusable String API guidance 中文🙂",completeText.replace(
+            "String.toAsciiLower() returns a String and performs ASCII-only casing.","String.toAsciiLower() performs ASCII-only casing. Another conversion returns a String."))
+        let crossClauseRune=base.replace("General reusable String API guidance 中文🙂",completeText.replace(
+            "Rune.toAsciiLowerCase() returns a Rune and is also ASCII-only.","Rune.toAsciiLowerCase() performs ASCII-only casing. Another conversion returns a Rune."))
+        let noUnicodeImport=base.replace("General reusable String API guidance 中文🙂",completeText.replace("Unicode casing requires importing std.unicode.*, after which ","For Unicode casing, "))
+        let noUnicodeRune=base.replace("General reusable String API guidance 中文🙂",completeText.replace("Rune.toLowerCase() returns a Rune. ",""))
+        let noUnicodeReturn=base.replace("General reusable String API guidance 中文🙂",completeText.replace("Rune.toLowerCase() returns a Rune.","Rune.toLowerCase() performs Unicode lowercasing."))
+        let noInvalidNegative=base.replace("General reusable String API guidance 中文🙂",completeText.replace("String.toLower() is unavailable, and toLowerAscii is not a Cangjie API.",""))
+        let completeComment=base.replace("General reusable String API guidance 中文🙂",completeText.replace("Rune.toLowerCase() returns a Rune.","// Rune.toLowerCase() returns a Rune."))
+        let wordPile=base.replace("General reusable String API guidance 中文🙂","string uint8 string.toasciilower rune.toasciilowercase unicode std.unicode rune.tolowercase string.tolower unavailable tolowerascii not api")
+        for((label,response,diagnostic) in [("ascii-partial",ascii,"classifier_string_case_iteration_uint8_missing"),
+            ("rune-ascii-partial",runeAscii,"classifier_string_case_string_ascii_api_missing"),
+            ("unicode-partial",unicode,"classifier_string_case_iteration_uint8_missing"),
+            ("no-iteration",noIteration,"classifier_string_case_iteration_uint8_missing"),
+            ("no-string-ascii",noStringAscii,"classifier_string_case_string_ascii_api_missing"),
+            ("cross-clause-string",crossClauseString,"classifier_string_case_string_ascii_api_missing"),
+            ("no-rune-ascii",noRuneAscii,"classifier_string_case_rune_ascii_api_missing"),
+            ("cross-clause-rune",crossClauseRune,"classifier_string_case_rune_ascii_api_missing"),
+            ("no-unicode-import",noUnicodeImport,"classifier_string_case_unicode_import_missing"),
+            ("no-unicode-rune",noUnicodeRune,"classifier_string_case_unicode_rune_api_missing"),
+            ("no-unicode-return",noUnicodeReturn,"classifier_string_case_unicode_return_type_missing"),
+            ("no-invalid-negative",noInvalidNegative,"classifier_string_case_invalid_api_negative_missing"),
+            ("old-v1",oldV1,"classifier_string_case_contradictory"),("direct-rune",directRune,"classifier_string_case_contradictory"),
+            ("string-tolower",nonexistentString,"classifier_string_case_contradictory"),
+            ("wrong-receivers",wrongReceivers,"classifier_string_case_contradictory"),
+            ("false-negative-api",falseNegativeApi,"classifier_string_case_contradictory"),
+            ("word-pile",wordPile,"classifier_string_case_iteration_uint8_missing"),
+            ("comment-disguise",commentDisguise,"classifier_string_case_comment_disguised"),
+            ("complete-comment",completeComment,"classifier_string_case_comment_disguised")]){
             let result=sealCkbP5ClassifierResponseWithDiagnostic(request,response,config,"/tmp/p5-case-bad-${label}/workspace","/tmp/p5-case-bad-${label}/home","session-bad-${label}")
-            @Expect(result[0],"");@Expect(result[1],"classifier_response_source_fact_unsupported")
+            @Expect(result[0],"");@Expect(result[1],diagnostic)
+        }
+
+        for((label,response) in [("legacy-unicode-no-import",unicodeWithoutImport),("legacy-import-mention",importMention),
+            ("legacy-after-import",afterImport),("legacy-inline-mention",inlineMention),("legacy-inline-after-import",inlineAfterImport)]){
+            let result=sealCkbP5ClassifierResponseWithDiagnostic(request,response,config,"/tmp/p5-case-legacy-${label}/workspace","/tmp/p5-case-legacy-${label}/home","session-legacy-${label}")
+            @Expect(result[0],"");@Expect(result[1],"classifier_string_case_iteration_uint8_missing")
         }
 
         let unrelated=p5IcAbsRequest("CJ-HUMANEVAL-018",
@@ -272,7 +306,11 @@ public class CangjieEvalClassifierControlTest {
         @Expect(ckbP5ReadClassifierFailureDiagnostic(path),"classifier_response_source_fact_unsupported")
         for(diagnostic in ["classifier_reserved_match_plain_missing","classifier_reserved_match_raw_missing",
             "classifier_reserved_match_rename_missing","classifier_reserved_match_contradictory",
-            "classifier_reserved_match_comment_disguised"]){
+            "classifier_reserved_match_comment_disguised","classifier_string_case_iteration_uint8_missing",
+            "classifier_string_case_string_ascii_api_missing","classifier_string_case_rune_ascii_api_missing",
+            "classifier_string_case_unicode_import_missing","classifier_string_case_unicode_rune_api_missing",
+            "classifier_string_case_unicode_return_type_missing","classifier_string_case_invalid_api_negative_missing",
+            "classifier_string_case_contradictory","classifier_string_case_comment_disguised"]){
             File.writeTo(path,"{\"schemaVersion\":\"cangjie-teacher-classifier-diagnostic-v1\",\"diagnostic\":\"${diagnostic}\"}\n".toArray())
             @Expect(ckbP5ReadClassifierFailureDiagnostic(path),diagnostic)
         }
@@ -305,6 +343,13 @@ public class CangjieEvalClassifierControlTest {
         @Expect(precise.ok,false);@Expect(precise.paired,0);@Expect(precise.rejected,1)
         @Expect(precise.diagnostics[0].contains("a=classifier_reserved_match_raw_missing"),true)
         @Expect(precise.diagnostics[0].contains("/Users"),false);@Expect(precise.diagnostics[0].toAsciiLower().contains("token"),false)
+
+        let stringRoot=p5IcRoot("safe-diagnostic-string");_=p5IcSample(stringRoot,"CJ-HUMANEVAL-016","error: 'toLower' is not a member of struct 'String'")
+        let stringOutput="${stringRoot}/classifier-output";let stringPrecise=runCkbP5IndependentClassifiers(stringRoot,"run-中文🙂","C",stringOutput,
+            p5IcExecutableConfig("a","codex","GPT-5.6-Sol",p5IcDiagnosticFake(stringRoot,"fake-a.sh","classifier_string_case_unicode_import_missing")),
+            p5IcExecutableConfig("b","claude-code","GLM-5.2",p5IcFake(stringRoot,"fake-b.sh","ok")),10)
+        @Expect(stringPrecise.ok,false);@Expect(stringPrecise.paired,0);@Expect(stringPrecise.rejected,1)
+        @Expect(stringPrecise.diagnostics[0].contains("a=classifier_string_case_unicode_import_missing"),true)
 
         let staleRoot=p5IcRoot("safe-diagnostic-stale");_=p5IcSample(staleRoot,"CJ-HUMANEVAL-016","error: missing member")
         let staleOutput="${staleRoot}/classifier-output";let stale=runCkbP5IndependentClassifiers(staleRoot,"run-中文🙂","C",staleOutput,
