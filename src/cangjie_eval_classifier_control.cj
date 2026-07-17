@@ -215,7 +215,7 @@ private func ckbP5ClassifierFailureDiagnosticAllowed(value:String):Bool{
         "classifier_string_case_rune_ascii_api_missing","classifier_string_case_unicode_import_missing",
         "classifier_string_case_unicode_rune_api_missing","classifier_string_case_unicode_return_type_missing",
         "classifier_string_case_invalid_api_negative_missing","classifier_string_case_contradictory",
-        "classifier_string_case_comment_disguised",
+        "classifier_string_case_comment_disguised","classifier_string_case_solution_leakage",
         "classifier_failure_unknown"].contains(value)
 }
 
@@ -250,8 +250,9 @@ private func ckbP5ClassifierSourceFactsDiagnostic(request:JsonObject,response:Js
     if(category!="knowledge_gap"){return "ok"}
     let source=ckbP5String(request,"studentSourceExcerpt").toAsciiLower()
     let compiler=ckbP5String(request,"compilerTestSummary").toAsciiLower()
+    let task=ckbP5String(request,"taskText").toAsciiLower()
     let knowledge=ckbP5String(response,"knowledgeText").toAsciiLower()
-    let stringCasingDiagnostic=ckbP5ClassifierStringCasingFactsDiagnostic(source,compiler,knowledge)
+    let stringCasingDiagnostic=ckbP5ClassifierStringCasingFactsDiagnostic(source,compiler,task,knowledge)
     if(stringCasingDiagnostic!="ok"){return stringCasingDiagnostic}
     let reservedKeywordDiagnostic=ckbP5ClassifierReservedKeywordFactsDiagnostic(source,compiler,knowledge)
     if(reservedKeywordDiagnostic!="ok"){return reservedKeywordDiagnostic}
@@ -267,10 +268,13 @@ private func ckbP5ClassifierSourceFactsDiagnostic(request:JsonObject,response:Js
     if(assertsRequirement){"classifier_response_source_fact_unsupported"}else{"ok"}
 }
 
-private func ckbP5ClassifierStringCasingFactsDiagnostic(source:String,compiler:String,knowledge:String):String{
+private func ckbP5ClassifierStringCasingFactsDiagnostic(source:String,compiler:String,task:String,knowledge:String):String{
     if(!source.contains(".tolower(")||!compiler.contains("'tolower' is not a member")||!compiler.contains("string")){return "ok"}
     let value=knowledge.replace("`", "")
     if(knowledge.contains("//")||knowledge.contains("/*")||knowledge.contains("*/")){return "classifier_string_case_comment_disguised"}
+    if(ckbP5ClassifierDistinctCaseCountGoal(task)&&ckbP5ClassifierDistinctCaseCountSolution(knowledge)){
+        return "classifier_string_case_solution_leakage"
+    }
     let directRune=(value.contains("for (c in string)")&&(value.contains("yielding rune")||value.contains("yields rune")||
         value.contains("produces rune")||value.contains("returns rune")))||
         (value.contains("direct string iteration")&&value.contains("rune")&&!value.contains("uint8"))||
@@ -297,6 +301,29 @@ private func ckbP5ClassifierStringCasingFactsDiagnostic(source:String,compiler:S
         (value.contains("unavailable")||value.contains("does not provide")||value.contains("not a member")||value.contains("does not exist"))
     if(!stringToLowerUnavailable||!ckbP5ClassifierToLowerAsciiClaimValid(value)){return "classifier_string_case_invalid_api_negative_missing"}
     "ok"
+}
+
+private func ckbP5ClassifierDistinctCaseCountGoal(value:String):Bool{
+    let count=value.contains("count")||value.contains("how many")||value.contains("number of")||
+        value.contains("统计")||value.contains("计数")
+    let distinct=value.contains("distinct")||value.contains("unique")||value.contains("不同")||
+        value.contains("唯一")||value.contains("不重复")
+    let character=value.contains("character")||value.contains("字符")
+    let insensitive=value.contains("case-insensitive")||value.contains("case insensitive")||
+        value.contains("case insensitively")||value.contains("regardless of case")||value.contains("ignore case")||
+        value.contains("ignoring case")||value.contains("不区分大小写")||value.contains("忽略大小写")
+    count&&distinct&&character&&insensitive
+}
+
+private func ckbP5ClassifierDistinctCaseCountSolution(knowledge:String):Bool{
+    if(!ckbP5ClassifierDistinctCaseCountGoal(knowledge)){return false}
+    knowledge.contains("hashset")||knowledge.contains("hash set")||knowledge.contains("collect ")||
+        knowledge.contains("collect into")||knowledge.contains("collecting")||knowledge.contains("collected")||
+        knowledge.contains("iterate over")||knowledge.contains("iterating over")||knowledge.contains("loop")||
+        knowledge.contains("for (")||knowledge.contains("torunearray")||knowledge.contains("normalize case")||
+        knowledge.contains("遍历")||knowledge.contains("循环")||knowledge.contains("收集")||
+        (knowledge.contains("先")&&knowledge.contains("再"))||
+        (knowledge.contains("first ")&&knowledge.contains(" then "))
 }
 
 private func ckbP5ClassifierAsciiApiFactValid(knowledge:String,api:String,resultType:String):Bool{

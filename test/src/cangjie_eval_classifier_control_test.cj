@@ -120,7 +120,8 @@ public class CangjieEvalClassifierControlTest {
         let config=p5IcConfig("a","codex","GPT-5.6-Sol")
         let request=p5IcAbsRequest("CJ-HUMANEVAL-016",
             "public func solve(string: String): String { for (c in string.toLower()) { println(c) }; string }",
-            "error: 'toLower' is not a member of struct 'String' 中文🙂")
+            "error: 'toLower' is not a member of struct 'String' 中文🙂").replace(
+                "\"runMode\":\"development\",","\"runMode\":\"development\",\"taskText\":\"Count distinct characters regardless of case. 统计不区分大小写的不同字符。\",")
         let base=p5IcResponse("codex","GPT-5.6-Sol")
         let ascii=base.replace("General reusable String API guidance 中文🙂",
             "String.toAsciiLower() returns an ASCII-only lowercase String; non-ASCII 中文🙂 is unchanged.")
@@ -160,6 +161,16 @@ public class CangjieEvalClassifierControlTest {
         let commentDisguise=base.replace("General reusable String API guidance 中文🙂",
             "Unicode casing requires import std.unicode.*; // Rune.toLowerCase() returns a Rune. toLowerAscii is not a Cangjie API.")
         let completeText="In Cangjie 1.0.0, direct String iteration yields UInt8 bytes. String.toAsciiLower() returns a String and performs ASCII-only casing. Rune.toAsciiLowerCase() returns a Rune and is also ASCII-only. Unicode casing requires importing std.unicode.*, after which Rune.toLowerCase() returns a Rune. String.toLower() is unavailable, and toLowerAscii is not a Cangjie API."
+        let genericHashSet=base.replace("General reusable String API guidance 中文🙂",completeText+" HashSet is a general collection type.")
+        let goalWithoutStrategy=base.replace("General reusable String API guidance 中文🙂",completeText+" Character casing is relevant when counting distinct characters regardless of case.")
+        for((label,response) in [("generic-hashset",genericHashSet),("goal-without-strategy",goalWithoutStrategy)]){
+            let result=sealCkbP5ClassifierResponseWithDiagnostic(request,response,config,"/tmp/p5-case-safe-${label}/workspace","/tmp/p5-case-safe-${label}/home","session-safe-${label}")
+            @Expect(result[0].isEmpty(),false);@Expect(result[1],"ok")
+        }
+        let solutionLeak=base.replace("General reusable String API guidance 中文🙂",completeText+" When counting distinct characters case-insensitively, iterate over the String as Runes, normalize case, and collect into a HashSet<Rune>.")
+        let solutionLeakChinese=base.replace("General reusable String API guidance 中文🙂",completeText+" 统计不区分大小写的不同字符时，遍历字符并收集到 HashSet<Rune>。中文🙂")
+        let solutionLeakWordPile=base.replace("General reusable String API guidance 中文🙂",completeText+" count distinct character case-insensitive HashSet collect loop")
+        let solutionLeakComment=base.replace("General reusable String API guidance 中文🙂",completeText+" // Count distinct characters regardless of case with a HashSet.")
         let noIteration=base.replace("General reusable String API guidance 中文🙂",completeText.replace("direct String iteration yields UInt8 bytes. ",""))
         let noStringAscii=base.replace("General reusable String API guidance 中文🙂",completeText.replace("String.toAsciiLower() returns a String and performs ASCII-only casing. ",""))
         let noRuneAscii=base.replace("General reusable String API guidance 中文🙂",completeText.replace("Rune.toAsciiLowerCase() returns a Rune and is also ASCII-only. ",""))
@@ -189,6 +200,10 @@ public class CangjieEvalClassifierControlTest {
             ("string-tolower",nonexistentString,"classifier_string_case_contradictory"),
             ("wrong-receivers",wrongReceivers,"classifier_string_case_contradictory"),
             ("false-negative-api",falseNegativeApi,"classifier_string_case_contradictory"),
+            ("solution-leak",solutionLeak,"classifier_string_case_solution_leakage"),
+            ("solution-leak-chinese",solutionLeakChinese,"classifier_string_case_solution_leakage"),
+            ("solution-leak-word-pile",solutionLeakWordPile,"classifier_string_case_solution_leakage"),
+            ("solution-leak-comment",solutionLeakComment,"classifier_string_case_comment_disguised"),
             ("word-pile",wordPile,"classifier_string_case_iteration_uint8_missing"),
             ("comment-disguise",commentDisguise,"classifier_string_case_comment_disguised"),
             ("complete-comment",completeComment,"classifier_string_case_comment_disguised")]){
@@ -205,6 +220,11 @@ public class CangjieEvalClassifierControlTest {
         let unrelated=p5IcAbsRequest("CJ-HUMANEVAL-018",
             "public func solve(string: String): String { string }","error: unrelated member 中文🙂")
         @Expect(sealCkbP5ClassifierResponseWithDiagnostic(unrelated,oldV1,config,"/tmp/p5-case-other/workspace","/tmp/p5-case-other/home","session-other")[1],"ok")
+        let nonGoal=p5IcAbsRequest("CASE-STRING-DISPLAY",
+            "public func solve(string: String): String { for (c in string.toLower()) { println(c) }; string }",
+            "error: 'toLower' is not a member of struct 'String' 中文🙂").replace(
+                "\"runMode\":\"development\",","\"runMode\":\"development\",\"taskText\":\"Convert a String to lowercase for display.\",")
+        @Expect(sealCkbP5ClassifierResponseWithDiagnostic(nonGoal,solutionLeak,config,"/tmp/p5-case-non-goal/workspace","/tmp/p5-case-non-goal/home","session-non-goal")[1],"ok")
         let nonKnowledge=oldV1.replace("\"category\":\"knowledge_gap\"","\"category\":\"reasoning_failure\"")
         @Expect(sealCkbP5ClassifierResponseWithDiagnostic(request,nonKnowledge,config,"/tmp/p5-case-non/workspace","/tmp/p5-case-non/home","session-non")[1],"ok")
         @Expect(sealCkbP5ClassifierResponseWithDiagnostic(request,"{",config,"/tmp/p5-case-malformed/workspace","/tmp/p5-case-malformed/home","session-malformed")[1],"classifier_response_malformed")
@@ -310,7 +330,8 @@ public class CangjieEvalClassifierControlTest {
             "classifier_string_case_string_ascii_api_missing","classifier_string_case_rune_ascii_api_missing",
             "classifier_string_case_unicode_import_missing","classifier_string_case_unicode_rune_api_missing",
             "classifier_string_case_unicode_return_type_missing","classifier_string_case_invalid_api_negative_missing",
-            "classifier_string_case_contradictory","classifier_string_case_comment_disguised"]){
+            "classifier_string_case_contradictory","classifier_string_case_comment_disguised",
+            "classifier_string_case_solution_leakage"]){
             File.writeTo(path,"{\"schemaVersion\":\"cangjie-teacher-classifier-diagnostic-v1\",\"diagnostic\":\"${diagnostic}\"}\n".toArray())
             @Expect(ckbP5ReadClassifierFailureDiagnostic(path),diagnostic)
         }
