@@ -1058,4 +1058,116 @@ public class CangjieEvalAbcdeRunnerTest {
         @Expect(ckbAbcdeAverageTextForTest(0, 0), "null")
         @Expect(ckbAbcdeAverageTextForTest(42, 5), "8.4")
     }
+
+    // P5-UT-01-145-CANONICAL-REQUEST-BINDING
+    @TestCase
+    public func p5Ut01145CanonicalRequestBindingIsExactAndUnique(): Unit {
+        let context = case145CanonicalContext()
+        let valid = ckbAbcdeTaskKnowledgeEvidenceForTest(CkbAbcdeGroups.C, case145Transcript(context, "call-145", "h342434"), context)
+        @Expect(valid.valid, true)
+        @Expect(valid.evidenceHash, "h342434")
+        @Expect(valid.diagnostic, "ok")
+
+        let missing = ckbAbcdeTaskKnowledgeEvidenceForTest(CkbAbcdeGroups.C, case145Transcript(context.replace("\"promptHash\":\"sha256:prompt\",", ""), "call-145", "h342434"), context)
+        @Expect(missing.valid, false)
+        @Expect(missing.diagnostic, "canonical_request_mismatch")
+        let mismatch = ckbAbcdeTaskKnowledgeEvidenceForTest(CkbAbcdeGroups.C, case145Transcript(context.replace("\"budget\":10", "\"budget\":9"), "call-145", "h342434"), context)
+        @Expect(mismatch.valid, false)
+        @Expect(mismatch.diagnostic, "canonical_request_mismatch")
+        let extra = context.replace("\"responseMode\":\"evidence\"", "\"responseMode\":\"evidence\",\"unexpected\":true")
+        @Expect(ckbAbcdeTaskKnowledgeEvidenceForTest(CkbAbcdeGroups.C, case145Transcript(extra, "call-extra", "h342434"), context).diagnostic, "canonical_request_mismatch")
+        let duplicate = case145Transcript(context, "call-145", "h342434") + "\n" + case145ToolUse(context, "call-duplicate")
+        @Expect(ckbAbcdeTaskKnowledgeEvidenceForTest(CkbAbcdeGroups.C, duplicate, context).diagnostic, "task_knowledge_tool_use_not_unique")
+    }
+
+    // P5-BND-01-145-RETRIEVAL-EVIDENCE-HASH
+    @TestCase
+    public func p5Bnd01145RetrievalEvidenceHashComesFromPairedToolResult(): Unit {
+        let context = case145CanonicalContext()
+        let paired = ckbAbcdeTaskKnowledgeEvidenceForTest(CkbAbcdeGroups.C, case145Transcript(context, "call-145", "h342434"), context)
+        @Expect(paired.valid, true); @Expect(paired.evidenceHash, "h342434")
+        let unpaired = case145ToolUse(context, "call-145") + "\n" + case145ToolResult("other-call", "h342434")
+        @Expect(ckbAbcdeTaskKnowledgeEvidenceForTest(CkbAbcdeGroups.C, unpaired, context).diagnostic, "paired_tool_result_missing")
+        let duplicate = case145Transcript(context, "call-145", "h342434") + "\n" + case145ToolResult("call-145", "h999")
+        @Expect(ckbAbcdeTaskKnowledgeEvidenceForTest(CkbAbcdeGroups.C, duplicate, context).diagnostic, "paired_tool_result_not_unique")
+    }
+
+    // NK-BND-01-145-MALFORMED-UTF8-FAIL-CLOSED
+    @TestCase
+    public func nkBnd01145MalformedUtf8UnicodeLongAndSecretsFailClosed(): Unit {
+        let context = case145CanonicalContext()
+        @Expect(ckbAbcdeTaskKnowledgeEvidenceForTest(CkbAbcdeGroups.C, "{", context).diagnostic, "malformed_transcript_json")
+        @Expect(ckbAbcdeTaskKnowledgeEvidenceFromUtf8ForTest(CkbAbcdeGroups.C, [UInt8(0xff)], context.toArray()).diagnostic, "invalid_response_encoding")
+        let unicodeContext = context.replace("Reverse String", "反转字符串🙂")
+        @Expect(ckbAbcdeTaskKnowledgeEvidenceForTest(CkbAbcdeGroups.C, case145Transcript(unicodeContext, "call-中文🙂", "h342434"), unicodeContext).valid, true)
+        let hugeBuilder = StringBuilder(); for (_ in 0..4194305) { hugeBuilder.append("界") }
+        @Expect(ckbAbcdeTaskKnowledgeEvidenceForTest(CkbAbcdeGroups.C, hugeBuilder.toString(), context).diagnostic, "transcript_too_large")
+        let secret = case145Transcript(context, "call-145", "token=secret")
+        let secretResult = ckbAbcdeTaskKnowledgeEvidenceForTest(CkbAbcdeGroups.C, secret, context)
+        @Expect(secretResult.valid, false); @Expect(secretResult.diagnostic, "evidence_hash_invalid")
+        @Expect(secretResult.diagnostic.contains("secret"), false)
+    }
+
+    // NK-UT-02-145-TRIAGE-BINDING / P5-E2E-01-145-CLASSIFIER-READY-REPLAY
+    @TestCase
+    public func p5E2e01145RenderAndTriageUseOnePairedEvidenceDecision(): Unit {
+        let root = "target/case145-evidence-replay-${ckbCoreNowMillis()}"
+        _ = launch("/bin/rm", ["-rf", root]).wait(); Directory.create(Path(root), recursive: true)
+        let context = case145CanonicalContext(); let transcript = case145Transcript(context, "call-145", "h342434")
+        File.writeTo(Path(root).join("canonical-task-context.json"), context.toArray())
+        File.writeTo(Path(root).join("claude-transcript.jsonl"), transcript.toArray())
+        File.writeTo(Path(root).join("claude-attempts.jsonl"), "{\"attempt\":1,\"exitCode\":0,\"sampleAttempt\":1}\n".toArray())
+        File.writeTo(Path(root).join("test.log"), "unit assertion failed 中文🙂".toArray())
+        let options = CkbAbcdeRunnerOptions(); options.explicitRunMode = true; options.runMode = "development"
+        options.runId = "case145-replay"; options.datasetVersion = "dataset-v1"; options.knowledgeVersion = "knowledge-v1"
+        let row = ckbAbcdeRenderCaseResult(options, root, "CJ-HUMANEVAL-145", CkbAbcdeGroups.C, "failed", 0, 0, false, false, "test_failure", "cangjie_task_knowledge_pack", "none", root)
+        @Expect(row.contains("\"toolEvidenceHash\":\"h342434\""), true)
+        @Expect(row.contains("\"toolCoveragePass\":true"), true); @Expect(row.contains("\"knowledgeVersion\":\"knowledge-v1\""), true)
+        @Expect(row.contains("\"citationCount\":1"), true); @Expect(row.contains("\"triageStatus\":\"reasoning_failure\""), true)
+        @Expect(row.contains("\"firstAttemptTriage\":\"reasoning_failure\""), true); @Expect(row.contains("\"failureRoute\":\"reasoning\""), true)
+        let evidence = ckbAbcdeTriageEvidenceForTest(options, "CJ-HUMANEVAL-145", 1, "test_failure", false, false, 0, 0, root)
+        @Expect(evidence.contains("\"retrievalEvidenceHash\":\"h342434\""), true)
+        @Expect(evidence.contains("\"reasoningFailure\":true"), true); @Expect(triageEvalFailure(evidence).category, "reasoning_failure")
+        @Expect(String.fromUtf8(File.readFrom(Path(root).join("paired-tool-evidence.json"))).contains("h342434"), true)
+        Directory.create(Path(root).join("workspace/src"), recursive: true)
+        File.writeTo(Path(root).join("workspace/src/solution.cj"), "package replay\npublic func solve(s: String): String { s }\n".toArray())
+        File.writeTo(Path(root).join("case-result.json"), row.toArray()); File.writeTo(Path(root).join("result-evidence.json"), evidence.toArray())
+        let classifierRequest = buildCkbP5ClassifierRequest(Path(root), "CJ-HUMANEVAL-145", "case145-replay")
+        @Expect(classifierRequest.startsWith("{"), true); @Expect(classifierRequest.contains("\"retrievalEvidenceHash\":\"h342434\""), true)
+        @Expect(classifierRequest.contains("\"toolEvidenceHash\":\"h342434\""), true); @Expect(classifierRequest.contains("\"studentSourceHash\":\"sha256:"), true)
+        _ = launch("/bin/rm", ["-rf", root]).wait()
+    }
+
+    // P5-E2E-01-145-CERTIFICATION-EVIDENCE-BINDING
+    @TestCase
+    public func p5E2e01145CertificationPersistsAndBindsTheSameEvidence(): Unit {
+        let root="target/case145-cert-evidence-${ckbCoreNowMillis()}";_=launch("/bin/rm",["-rf",root]).wait();Directory.create(Path(root).join("workspace"),recursive:true);Directory.create(Path(root).join("runtime-home"),recursive:true)
+        let context=case145CanonicalContext();let transcript="{\"type\":\"system\",\"subtype\":\"init\",\"model\":\"GLM-5.2\"}\n"+case145Transcript(context,"call-cert-145","h342434")+"\n{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"num_turns\":2,\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"cache_read_input_tokens\":0,\"cache_creation_input_tokens\":0}}\n"
+        File.writeTo(Path(root).join("canonical-task-context.json"),context.toArray());File.writeTo(Path(root).join("claude-attempts.jsonl"),"{\"attempt\":1,\"sampleAttempt\":1,\"exitCode\":0}\n".toArray());File.writeTo(Path(root).join("session-id.txt"),"session-cert-145".toArray())
+        let workspace=canonicalize(Path(root).join("workspace")).toString();let home=canonicalize(Path(root).join("runtime-home")).toString();File.writeTo(Path(root).join("sandbox-probe.json"),"{\"ok\":true,\"deniedOutsideWorkspace\":true,\"deniedTests\":true,\"deniedReference\":true,\"deniedTeacher\":true,\"workspaceCanonical\":\"${workspace}\",\"runtimeHomeCanonical\":\"${home}\"}".toArray())
+        let answerHash=benchmarkGapSha256("case145-answer");File.writeTo(Path(root).join("verifier-mount.json"),"{\"injectExitCode\":0,\"answerHashBefore\":\"${answerHash}\",\"answerHashAfter\":\"${answerHash}\",\"mountedAfterFreeze\":true}".toArray())
+        let options=CkbAbcdeRunnerOptions();options.runId="case145-cert";options.datasetVersion="dataset-v1";options.knowledgeVersion="knowledge-v1";options.expectedModelVersion="GLM-5.2"
+        let row=ckbAbcdeRenderStrictCertificationCaseForTest(options,"CJ-HUMANEVAL-145",CkbAbcdeGroups.C,root,answerHash,transcript,"tests passed",true,"none",true)
+        @Expect(row.contains("\"certificationPassAt1\":true"),true);let sealed=parseCkbCertificationEvidence(row);@Expect(sealed.configHash.startsWith("sha256:"),true)
+        let persisted=String.fromUtf8(File.readFrom(Path(root).join("paired-tool-evidence.json")));@Expect(persisted.contains("\"valid\":true"),true);@Expect(persisted.contains("h342434"),true)
+        options.knowledgeVersion="other-version";let blocked=ckbAbcdeRenderStrictCertificationCaseForTest(options,"CJ-HUMANEVAL-145",CkbAbcdeGroups.C,root,answerHash,transcript,"tests passed",true,"task_knowledge_version_mismatch",false)
+        @Expect(blocked.contains("\"certificationPassAt1\":false"),true);let blockedEvidence=parseCkbCertificationEvidence(blocked);@Expect(blockedEvidence.configHash==sealed.configHash,false);@Expect(blockedEvidence.resultEvidenceHash==sealed.resultEvidenceHash,false);@Expect(String.fromUtf8(File.readFrom(Path(root).join("paired-tool-evidence.json"))).contains("\"valid\":false"),true)
+        _=launch("/bin/rm",["-rf",root]).wait()
+    }
+}
+
+private func case145CanonicalContext(): String {
+    "{\"taskId\":\"CJ-HUMANEVAL-145\",\"benchmark\":\"Cangjie-HumanEval\",\"taskText\":\"Reverse String\",\"signature\":\"public func solve(s: String): String\",\"datasetVersion\":\"dataset-v1\",\"promptHash\":\"sha256:prompt\",\"starterHash\":\"sha256:starter\",\"expectedKnowledgeTags\":[\"String\",\"Rune\"],\"targetVersion\":\"1.0.0\",\"sourceSet\":\"all\",\"versionPolicy\":\"default\",\"budget\":10,\"responseMode\":\"evidence\"}"
+}
+
+private func case145ToolUse(context: String, id: String): String {
+    "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"id\":\"${id}\",\"name\":\"mcp__ckb-cangjie__cangjie_task_knowledge_pack\",\"input\":${context}}]}}"
+}
+
+private func case145ToolResult(id: String, evidenceHash: String): String {
+    "{\"type\":\"user\",\"message\":{\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"${id}\",\"content\":\"{\\\"taskId\\\":\\\"CJ-HUMANEVAL-145\\\",\\\"resultType\\\":\\\"task_knowledge_pack\\\",\\\"evidenceHash\\\":\\\"${evidenceHash}\\\",\\\"knowledgeVersion\\\":\\\"knowledge-v1\\\",\\\"coverage\\\":{\\\"coveragePass\\\":true},\\\"citations\\\":[{\\\"citation\\\":\\\"official\\\"}]}\"}]}}"
+}
+
+private func case145Transcript(context: String, id: String, evidenceHash: String): String {
+    case145ToolUse(context, id) + "\n" + case145ToolResult(id, evidenceHash)
 }

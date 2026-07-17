@@ -463,6 +463,10 @@ public func cangjieEvalTriageResultEvidenceHash(inputJson: String): String {
     try { triageResultEvidenceHash(JsonValue.fromStr(inputJson.trimAscii()).asObject()) } catch (_: Exception) { "" }
 }
 
+public func cangjieEvalAuthoritativeFailureCategory(inputJson: String): String {
+    try { triageCategory(JsonValue.fromStr(inputJson.trimAscii()).asObject()) } catch (_: Exception) { "" }
+}
+
 private func triageCategory(object: JsonObject): String {
     if (triageJsonBool(object, "protocolViolation")) { return "protocol_violation" }
     if (triageJsonBool(object, "timedOut")) { return "timeout" }
@@ -554,6 +558,7 @@ private func triageResultEvidenceHash(object: JsonObject): String {
         triageCanonicalPart("${triageJsonBool(object, "emptyModelResponse")}") + triageCanonicalPart("${triageJsonBool(object, "zeroKnowledgeHits")}") +
         triageCanonicalPart("${triageJsonBool(object, "datasetFailure")}") + triageCanonicalPart("${triageJsonBool(object, "runnerFailure")}") +
         triageCanonicalPart("${triageJsonBool(object, "environmentFailure")}") + triageCanonicalPart("${triageJsonBool(object, "suspectedKnowledgeGap")}") +
+        triageCanonicalPart(triageJsonString(object, "retrievalDiagnostic")) + triageCanonicalPart(triageJsonString(object, "retrievalEvidenceHash")) +
         triageCanonicalPart("${triageJsonBool(object, "reasoningFailure")}") + triageCanonicalPart(triageJsonString(object, "failureType").toAsciiLower()) +
         triageCanonicalPart("${triageJsonBool(object, "unitPass")}")
     triageSha256(canonical)

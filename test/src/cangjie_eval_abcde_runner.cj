@@ -8,6 +8,9 @@ import std.io.*
 import std.process.*
 import stdx.encoding.json.*
 
+// Real Case145 is about 1.51 MiB and Case078 is about 0.21 MiB; 4 MiB leaves replay headroom while bounding untrusted JSONL.
+private let CKB_ABCDE_MAX_MODEL_TRANSCRIPT_BYTES: Int64 = 4194304
+
 public class CkbAbcdeGroups {
     public static let A: String = "A-no-ckb"
     public static let B: String = "B-ckb-context"
@@ -186,6 +189,17 @@ public class CkbAbcdeTaskContext {
     public var sourceSet: String = CangjieSourceSets.ALL
     public var versionPolicy: String = CangjieVersionPolicies.DEFAULT
     public var expectedKnowledgeTags: ArrayList<String> = ArrayList<String>()
+
+    public init() {}
+}
+
+public class CkbAbcdeTaskKnowledgeEvidence {
+    public var valid: Bool = false
+    public var diagnostic: String = "task_knowledge_tool_use_missing"
+    public var evidenceHash: String = ""
+    public var knowledgeVersion: String = ""
+    public var coveragePass: Bool = false
+    public var citationCount: Int64 = 0
 
     public init() {}
 }
@@ -470,9 +484,9 @@ public func renderCkbAbcdePromptForMode(group: String, caseId: String, modelTask
         out += "Knowledge policy for this run: use only the CKB REST context embedded below. Do not use MCP tools, local cangjie_docs, web search, or external source repositories.\n\n"
         out += "## CKB REST Context\n\n```json\n${restContextText}\n```\n\n"
     } else if (group == CkbAbcdeGroups.C) {
-        out += "Knowledge policy for this run: use the configured stdio MCP server `ckb-cangjie`. Before reading or editing `src/solution.cj`, you must call `mcp__ckb-cangjie__cangjie_task_knowledge_pack` at least once with the canonical task context in this prompt. This run is invalid without that real tool call, even if the task looks trivial. Do not use CKB REST context, HTTP MCP, local cangjie_docs, web search, or external source repositories.\n\n"
+        out += "Knowledge policy for this run: use the configured stdio MCP server `ckb-cangjie`. Before reading or editing `src/solution.cj`, you must call `mcp__ckb-cangjie__cangjie_task_knowledge_pack` exactly once with the complete canonical task context JSON in this prompt. Every field must be copied exactly, including taskId, benchmark, taskText, signature, datasetVersion, promptHash, starterHash, expectedKnowledgeTags, targetVersion, sourceSet, versionPolicy, budget, and responseMode; omission, paraphrase, extra fields, mismatch, or duplicate calls invalidate the run. This run is invalid without that real tool call and its paired tool result, even if the task looks trivial. Do not use CKB REST context, HTTP MCP, local cangjie_docs, web search, or external source repositories.\n\n"
     } else if (group == CkbAbcdeGroups.D) {
-        out += "Knowledge policy for this run: use the configured Streamable HTTP MCP server `ckb-cangjie-http`. Before reading or editing `src/solution.cj`, you must call `mcp__ckb-cangjie-http__cangjie_task_knowledge_pack` at least once with the canonical task context in this prompt. This run is invalid without that real tool call, even if the task looks trivial. Do not use CKB REST context, stdio MCP, local cangjie_docs, web search, or external source repositories.\n\n"
+        out += "Knowledge policy for this run: use the configured Streamable HTTP MCP server `ckb-cangjie-http`. Before reading or editing `src/solution.cj`, you must call `mcp__ckb-cangjie-http__cangjie_task_knowledge_pack` exactly once with the complete canonical task context JSON in this prompt. Every field must be copied exactly, including taskId, benchmark, taskText, signature, datasetVersion, promptHash, starterHash, expectedKnowledgeTags, targetVersion, sourceSet, versionPolicy, budget, and responseMode; omission, paraphrase, extra fields, mismatch, or duplicate calls invalidate the run. This run is invalid without that real tool call and its paired tool result, even if the task looks trivial. Do not use CKB REST context, stdio MCP, local cangjie_docs, web search, or external source repositories.\n\n"
     } else if (group == CkbAbcdeGroups.E) {
         out += "Knowledge policy for this run: 当前这个项目是仓颉语言开发的项目。You may use local official Cangjie docs under /Users/l3gi0n/work/workspace_cangjie/cangjie_docs-release-1.0/docs when Cangjie syntax, standard library, stdx, or tool usage knowledge is needed. Start from /Users/l3gi0n/work/workspace_cangjie/cangjie_docs-release-1.0/docs/dev-guide/summary_cjnative_EN.md and /Users/l3gi0n/work/workspace_cangjie/cangjie_docs-release-1.0/docs/tools/summary_cjnative_EN.md when they are useful, and prefer targeted read-only Bash rg queries or focused Read calls over loading large documents. You may use Bash only for read-only inspection inside the current temporary workspace or read-only documentation queries under /Users/l3gi0n/work/workspace_cangjie/cangjie_docs-release-1.0/docs. For documentation Bash queries, prefer absolute paths such as `rg \"ArrayList\" /Users/l3gi0n/work/workspace_cangjie/cangjie_docs-release-1.0/docs`; do not rely on `cd` followed by later relative documentation queries. Do not use CKB REST APIs, MCP tools, web search, network commands, shell commands that write/delete/move files, or external source repositories.\n\n"
     }
@@ -711,9 +725,13 @@ private func ckbAbcdeRunCaseGroup(options: CkbAbcdeRunnerOptions, runRoot: Strin
     let testLog = test.stdout + test.stderr
     ckbAbcdeWriteText("${groupRoot}/test.log", testLog)
 
-    let transcript = ckbAbcdeReadText("${groupRoot}/claude-transcript.jsonl") + ckbAbcdeReadText("${groupRoot}/claude.stdout.log") + ckbAbcdeReadText("${groupRoot}/claude.stderr.log")
-    let toolEvidence = ckbAbcdeToolEvidence(group, transcript)
-    let violation = ckbAbcdeForbiddenEvidence(group, transcript, workspace)
+    let primaryTranscript = ckbAbcdeReadText("${groupRoot}/claude-transcript.jsonl")
+    let transcript = if (primaryTranscript != "") { primaryTranscript } else { ckbAbcdeReadText("${groupRoot}/claude.stdout.log") + ckbAbcdeReadText("${groupRoot}/claude.stderr.log") }
+    let parsedEvidence = ckbAbcdeTaskKnowledgeEvidence(group, transcript, contextText)
+    let toolEvidence = if (group == CkbAbcdeGroups.C || group == CkbAbcdeGroups.D) { if (parsedEvidence.valid && parsedEvidence.knowledgeVersion == options.knowledgeVersion) { "cangjie_task_knowledge_pack" } else { "manual_required" } } else { ckbAbcdeToolEvidence(group, transcript) }
+    let forbiddenViolation = ckbAbcdeForbiddenEvidence(group, transcript, workspace)
+    let violation = if (forbiddenViolation != "none") { forbiddenViolation } else if ((group == CkbAbcdeGroups.C || group == CkbAbcdeGroups.D) && (!parsedEvidence.valid || parsedEvidence.knowledgeVersion != options.knowledgeVersion)) { if (parsedEvidence.valid) { "task_knowledge_version_mismatch" } else { "task_knowledge_${parsedEvidence.diagnostic}" } } else { "none" }
+    ckbAbcdePersistTaskKnowledgeEvidence(groupRoot, parsedEvidence, parsedEvidence.valid && parsedEvidence.knowledgeVersion == options.knowledgeVersion)
     let unitPass = test.exitCode == 0 && !ckbAbcdeTestLogContainsFailure(testLog)
     let unitPassAt1 = ckbAbcdeUnitPassAt1(unitPass, groupRoot)
     let toolReady = ckbAbcdeRequiredKnowledgeReady(group, knowledgeReady, toolEvidence)
@@ -728,10 +746,10 @@ private func ckbAbcdeRunCaseGroup(options: CkbAbcdeRunnerOptions, runRoot: Strin
     if (group == CkbAbcdeGroups.E) {
         ckbAbcdeWriteText("${groupRoot}/docs-path-audit.json", "{\"docsRoot\":\"${ckbAbcdeJsonEscape(options.docsRoot)}\",\"summaryFiles\":[\"${ckbAbcdeJsonEscape("${options.docsRoot}/dev-guide/summary_cjnative_EN.md")}\",\"${ckbAbcdeJsonEscape("${options.docsRoot}/tools/summary_cjnative_EN.md")}\"],\"allowed\":${exists(Path("${options.docsRoot}/dev-guide/summary_cjnative_EN.md")) && exists(Path("${options.docsRoot}/tools/summary_cjnative_EN.md"))}}\n")
     }
-    var result = if(options.runMode=="certification"){ckbAbcdeRenderStrictCertificationCase(options,caseId,group,groupRoot,frozenAnswerHash,transcript,testLog,unitPassAt1,violation,toolReady)}else{ckbAbcdeRenderCaseResult(options, runRoot, caseId, group, status, claudeExit, test.exitCode, unitPass, unitPassAt1, failureType, toolEvidence, violation, groupRoot)}
+    var result = if(options.runMode=="certification"){ckbAbcdeRenderStrictCertificationCase(options,caseId,group,groupRoot,frozenAnswerHash,transcript,testLog,unitPassAt1,violation,toolReady,parsedEvidence)}else{ckbAbcdeRenderCaseResultBound(options, runRoot, caseId, group, status, claudeExit, test.exitCode, unitPass, unitPassAt1, failureType, toolEvidence, violation, groupRoot, parsedEvidence)}
     if (options.explicitRunMode && options.runMode == "development") {
         let attemptCount = ckbAbcdeClaudeAttemptCount(groupRoot)
-        let resultEvidence = ckbAbcdeTriageEvidence(options, caseId, if (attemptCount > 0) { attemptCount } else { 1 }, failureType, unitPass, protocolViolation, claudeExit, test.exitCode, groupRoot)
+        let resultEvidence = ckbAbcdeTriageEvidenceBound(options, caseId, if (attemptCount > 0) { attemptCount } else { 1 }, failureType, unitPass, protocolViolation, claudeExit, test.exitCode, groupRoot, parsedEvidence)
         ckbAbcdeWriteText("${groupRoot}/result-evidence.json", resultEvidence + "\n")
         let closureInput = CangjieEvalDevelopmentClosureInput()
         closureInput.caseResultJson = result; closureInput.resultEvidenceJson = resultEvidence; closureInput.taskText = taskContext.taskText
@@ -748,19 +766,20 @@ private func ckbAbcdeRunCaseGroup(options: CkbAbcdeRunnerOptions, runRoot: Strin
     result
 }
 
-private func ckbAbcdeRenderStrictCertificationCase(options:CkbAbcdeRunnerOptions,caseId:String,group:String,groupRoot:String,answerHash:String,transcript:String,testLog:String,unitPassAt1:Bool,violation:String,toolReady:Bool):String{
+private func ckbAbcdeRenderStrictCertificationCase(options:CkbAbcdeRunnerOptions,caseId:String,group:String,groupRoot:String,answerHash:String,transcript:String,testLog:String,unitPassAt1:Bool,violation:String,toolReady:Bool,taskKnowledge:CkbAbcdeTaskKnowledgeEvidence):String{
     let row=CkbCertificationCaseEvidence();row.runId=options.runId;row.caseId=caseId;row.group=group;row.datasetVersion=options.datasetVersion;row.knowledgeVersion=options.knowledgeVersion;row.modelFingerprint=options.modelFingerprint;row.expectedModelVersion=options.expectedModelVersion;row.observedModelVersion=ckbAbcdeObservedModel(transcript);row.claudeCodeVersion=ckbAbcdeClaudeVersion();row.providerIdentityHash=options.providerIdentityHash
+    let taskKnowledgeReady=taskKnowledge.valid&&taskKnowledge.knowledgeVersion==options.knowledgeVersion;let pairedEvidence=ckbAbcdeReadText("${groupRoot}/paired-tool-evidence.json")
     let preflight=ckbAbcdeReadText(options.certificationPreflightPath);let manifestText=ckbAbcdeReadText(options.certificationRunManifestPath);row.preflightHash=benchmarkGapSha256(preflight)
     try{let manifest=JsonValue.fromStr(manifestText).asObject();row.runManifestHash=ckbAbcdeStrictJsonString(manifest,"runManifestHash")}catch(_:Exception){}
     let authority=parseCangjieHumanEvalAuthorityManifest(ckbAbcdeReadText(options.manifestPath));for(a in authority.rows){if(a.caseId==caseId){row.authorityCaseHash=a.caseHash;row.authorityTestsHash=a.testsHash}}
     let workspace="${groupRoot}/workspace";let runtimeHome="${groupRoot}/runtime-home";row.workspaceId=benchmarkGapSha256(try{canonicalize(Path(workspace)).toString()}catch(_:Exception){workspace});row.sessionId=benchmarkGapSha256(ckbAbcdeReadText("${groupRoot}/session-id.txt"));row.runtimeHomeId=benchmarkGapSha256(try{canonicalize(Path(runtimeHome)).toString()}catch(_:Exception){runtimeHome})
-    let probe=ckbAbcdeReadText("${groupRoot}/sandbox-probe.json");row.isolationEvidenceHash=benchmarkGapSha256(probe);row.answerHash=answerHash;row.transcriptHash=benchmarkGapSha256(transcript);row.testHash=benchmarkGapSha256(testLog);row.configHash=benchmarkGapSha256(ckbAbcdeReadText("${groupRoot}/mcp-config.json")+ckbAbcdeReadText("${groupRoot}/runtime-policy.json")+ckbAbcdeReadText(options.providerIdentityArtifactPath));row.artifactHash=benchmarkGapSha256(row.answerHash+row.transcriptHash+row.testHash+row.configHash)
+    let probe=ckbAbcdeReadText("${groupRoot}/sandbox-probe.json");row.isolationEvidenceHash=benchmarkGapSha256(probe);row.answerHash=answerHash;row.transcriptHash=benchmarkGapSha256(transcript);row.testHash=benchmarkGapSha256(testLog);row.configHash=benchmarkGapSha256(ckbAbcdeReadText("${groupRoot}/mcp-config.json")+ckbAbcdeReadText("${groupRoot}/runtime-policy.json")+ckbAbcdeReadText(options.providerIdentityArtifactPath)+pairedEvidence);row.artifactHash=benchmarkGapSha256(row.answerHash+row.transcriptHash+row.testHash+row.configHash)
     let lowered=transcript.toAsciiLower();row.referenceExposure=if(violation.contains("reference")||lowered.contains("/reference")){1}else{0};row.hiddenTestExposure=if(violation.contains("test")||lowered.contains("/tests/")||lowered.contains("testmain.cj")){1}else{0};row.teacherExposure=if(violation.contains("teacher")||lowered.contains("cangjieteacher")||lowered.contains("teacher-solutions")){1}else{0};row.crossCaseExposure=if(violation.contains("cross_case")||ckbAbcdeTranscriptHasOtherCase(transcript,caseId)){1}else{0}
     let attempts=ckbAbcdeReadText("${groupRoot}/claude-attempts.jsonl");let attemptCount=ckbAbcdeClaudeAttemptCount(groupRoot);row.sampleAttemptCount=ckbAbcdeSampleAttemptCount(groupRoot);row.agentRetryCount=if(attemptCount>1){attemptCount-1}else{0};row.retryUsed=attemptCount!=1||attempts.contains("\"retryUsed\":true");row.fallbackUsed=attempts.contains("\"fallbackUsed\":true")||lowered.contains("fallback_model");row.providerRetryCount=ckbAbcdeCountOccurrences(transcript,"provider_retry");row.sdkRetryCount=ckbAbcdeCountOccurrences(transcript,"sdk_retry");row.llmTurnCount=ckbAbcdeParseClaudeUsageFromText(transcript,"transcript").llmTurnCount
-    row.sandboxDeniedOutsideWorkspace=ckbAbcdeStrictSandboxProbeOk(probe,workspace,runtimeHome);row.verifierMountedAfterAnswerFreeze=ckbAbcdeStrictVerifierMountOk(ckbAbcdeReadText("${groupRoot}/verifier-mount.json"),answerHash);row.certificationPassAt1=unitPassAt1&&toolReady&&violation=="none"&&row.observedModelVersion==row.expectedModelVersion&&row.sampleAttemptCount==1&&!row.retryUsed&&!row.fallbackUsed&&row.agentRetryCount==0&&row.providerRetryCount==0&&row.sdkRetryCount==0&&row.sandboxDeniedOutsideWorkspace&&row.verifierMountedAfterAnswerFreeze&&row.referenceExposure==0&&row.hiddenTestExposure==0&&row.teacherExposure==0&&row.crossCaseExposure==0&&row.llmTurnCount>0
+    row.sandboxDeniedOutsideWorkspace=ckbAbcdeStrictSandboxProbeOk(probe,workspace,runtimeHome);row.verifierMountedAfterAnswerFreeze=ckbAbcdeStrictVerifierMountOk(ckbAbcdeReadText("${groupRoot}/verifier-mount.json"),answerHash);row.certificationPassAt1=unitPassAt1&&toolReady&&taskKnowledgeReady&&pairedEvidence!=""&&violation=="none"&&row.observedModelVersion==row.expectedModelVersion&&row.sampleAttemptCount==1&&!row.retryUsed&&!row.fallbackUsed&&row.agentRetryCount==0&&row.providerRetryCount==0&&row.sdkRetryCount==0&&row.sandboxDeniedOutsideWorkspace&&row.verifierMountedAfterAnswerFreeze&&row.referenceExposure==0&&row.hiddenTestExposure==0&&row.teacherExposure==0&&row.crossCaseExposure==0&&row.llmTurnCount>0
     sealCkbCertificationEvidence(row);renderCkbCertificationEvidenceJson(row)
 }
-public func ckbAbcdeRenderStrictCertificationCaseForTest(options:CkbAbcdeRunnerOptions,caseId:String,group:String,groupRoot:String,answerHash:String,transcript:String,testLog:String,unitPassAt1:Bool,violation:String,toolReady:Bool):String{ckbAbcdeRenderStrictCertificationCase(options,caseId,group,groupRoot,answerHash,transcript,testLog,unitPassAt1,violation,toolReady)}
+public func ckbAbcdeRenderStrictCertificationCaseForTest(options:CkbAbcdeRunnerOptions,caseId:String,group:String,groupRoot:String,answerHash:String,transcript:String,testLog:String,unitPassAt1:Bool,violation:String,toolReady:Bool):String{let evidence=ckbAbcdeTaskKnowledgeEvidence(group,transcript,ckbAbcdeReadText("${groupRoot}/canonical-task-context.json"));ckbAbcdePersistTaskKnowledgeEvidence(groupRoot,evidence,evidence.valid&&evidence.knowledgeVersion==options.knowledgeVersion);ckbAbcdeRenderStrictCertificationCase(options,caseId,group,groupRoot,answerHash,transcript,testLog,unitPassAt1,violation,toolReady,evidence)}
 
 private func ckbAbcdeObservedModel(transcript:String):String{for(line in transcript.split("\n")){try{let o=JsonValue.fromStr(line).asObject();if(ckbAbcdeStrictJsonString(o,"subtype")=="init"){return ckbAbcdeStrictJsonString(o,"model")}}catch(_:Exception){}};""}
 
@@ -1629,6 +1648,15 @@ public func ckbAbcdeRenderCaseResult(
     violation: String,
     groupRoot: String
 ): String {
+    let evidence=ckbAbcdeTaskKnowledgeEvidence(group,ckbAbcdeReadText("${groupRoot}/claude-transcript.jsonl"),ckbAbcdeReadText("${groupRoot}/canonical-task-context.json"));ckbAbcdePersistTaskKnowledgeEvidence(groupRoot,evidence,evidence.valid&&evidence.knowledgeVersion==options.knowledgeVersion)
+    ckbAbcdeRenderCaseResultBound(options, runRoot, caseId, group, status, claudeExitCode, testExitCode, unitPass, unitPassAt1, failureType, toolEvidence, violation, groupRoot, evidence)
+}
+
+private func ckbAbcdeRenderCaseResultBound(
+    options: CkbAbcdeRunnerOptions, runRoot: String, caseId: String, group: String, status: String,
+    claudeExitCode: Int64, testExitCode: Int64, unitPass: Bool, unitPassAt1: Bool, failureType: String,
+    toolEvidence: String, violation: String, groupRoot: String, taskKnowledge: CkbAbcdeTaskKnowledgeEvidence
+): String {
     let protocolViolation = violation != "none"
     let modelRunStatus = if (claudeExitCode == 0) { "ok" } else { "failed" }
     let toolCallCount = ckbAbcdeToolCallCount(group, toolEvidence)
@@ -1642,7 +1670,7 @@ public func ckbAbcdeRenderCaseResult(
     let runtimeHomeId = "cases/${caseId}/${group}/runtime-home"
     let finalAttempt = if (claudeAttemptCount > 0) { claudeAttemptCount } else { 1 }
     let firstAttemptPass = unitPassAt1 && status == "passed"
-    let triageEvidence = ckbAbcdeTriageEvidence(options, caseId, finalAttempt, failureType, unitPass, protocolViolation, claudeExitCode, testExitCode, groupRoot)
+    let triageEvidence = ckbAbcdeTriageEvidenceBound(options, caseId, finalAttempt, failureType, unitPass, protocolViolation, claudeExitCode, testExitCode, groupRoot, taskKnowledge)
     let triage = if (options.explicitRunMode) { triageEvalFailure(triageEvidence) } else { CangjieEvalFailureTriageResult() }
     let triageStatus = if (!options.explicitRunMode) { "legacy" } else if (triage.ok) { triage.category } else { "blocked:${triage.diagnostic}" }
     let failureRoute = if (triage.ok) { triage.route } else { ckbAbcdeFailureRoute(failureType) }
@@ -1656,21 +1684,23 @@ public func ckbAbcdeRenderCaseResult(
     let identityReady = observedRuntimeModel == options.expectedModelVersion && providerIdentityText == canonicalProviderIdentity && ckbAbcdeStrictSha256(providerIdentityHash)
     let developmentPass = explicitDevelopment && status == "passed" && identityReady
     let closureStatus = if (!options.explicitRunMode) { "legacy" } else if (options.runMode == "certification") { "certification_not_run" } else if (developmentPass && triage.ok && triage.category == "none") { "development_closed" } else { "development_open" }
-    "{\"runId\":\"${ckbAbcdeJsonEscape(options.runId)}\",\"benchmark\":\"Cangjie-HumanEval\",\"runMode\":\"${ckbAbcdeJsonEscape(recordedRunMode)}\",\"datasetVersion\":\"${ckbAbcdeJsonEscape(options.datasetVersion)}\",\"candidateVersion\":\"${ckbAbcdeJsonEscape(options.candidateVersion)}\",\"lineageKnowledgeVersion\":\"${ckbAbcdeJsonEscape(options.knowledgeVersion)}\",\"modelFingerprint\":\"${ckbAbcdeJsonEscape(options.modelFingerprint)}\",\"workspaceId\":\"${ckbAbcdeJsonEscape(workspaceId)}\",\"sessionId\":\"${ckbAbcdeJsonEscape(sessionId)}\",\"runtimeHomeId\":\"${ckbAbcdeJsonEscape(runtimeHomeId)}\",\"developmentPass\":${developmentPass},\"firstAttemptPass\":${firstAttemptPass},\"firstAttemptTriage\":\"${ckbAbcdeJsonEscape(firstAttemptTriage)}\",\"knowledgeGapConfirmationStatus\":\"${confirmationStatus}\",\"certificationPassAt1\":null,\"closureStatus\":\"${closureStatus}\",\"triageStatus\":\"${ckbAbcdeJsonEscape(triageStatus)}\",\"failureRoute\":\"${failureRoute}\",\"caseId\":\"${caseId}\",\"group\":\"${group}\",\"expectedModelVersion\":\"${ckbAbcdeJsonEscape(options.expectedModelVersion)}\",\"observedModelVersion\":\"${ckbAbcdeJsonEscape(observedRuntimeModel)}\",\"model\":\"${ckbAbcdeJsonEscape(observedRuntimeModel)}\",\"claudeCodeVersion\":\"${ckbAbcdeJsonEscape(claudeCodeVersion)}\",\"providerIdentityHash\":\"${ckbAbcdeJsonEscape(providerIdentityHash)}\",\"knowledgeEntry\":\"${ckbAbcdeKnowledgeEntry(group)}\",\"preflightStatus\":\"ok\",\"modelRunStatus\":\"${modelRunStatus}\",\"status\":\"${status}\",\"claudeExitCode\":${claudeExitCode},\"firstClaudeExitCode\":${firstClaudeExitCode},\"claudeAttemptCount\":${claudeAttemptCount},\"testExitCode\":${testExitCode},\"unitPass\":${unitPass},\"unitPassAt1\":${unitPassAt1},\"failureType\":\"${failureType}\",\"usageParseStatus\":\"${usage.usageParseStatus}\",\"modelInputTokens\":${usage.modelInputTokens},\"modelOutputTokens\":${usage.modelOutputTokens},\"modelCacheReadTokens\":${usage.modelCacheReadTokens},\"modelCacheCreationTokens\":${usage.modelCacheCreationTokens},\"modelTotalTokens\":${usage.modelTotalTokens},\"llmTurnCount\":${usage.llmTurnCount},\"usageSourcePath\":\"${ckbAbcdeJsonEscape(usage.usageSourcePath)}\",\"ckbUsed\":${ckbAbcdeUsesCkb(group)},\"localDocsUsed\":${group == CkbAbcdeGroups.E},\"toolTransport\":\"${ckbAbcdeToolTransport(group)}\",\"toolCallCount\":${toolCallCount},\"toolEvidence\":\"${ckbAbcdeJsonEscape(toolEvidence)}\",\"toolEvidenceHash\":\"${ckbAbcdeJsonEscape(ckbAbcdeEvidenceHash(groupRoot))}\",\"toolCoveragePass\":${ckbAbcdeCoveragePass(groupRoot)},\"transportParityPath\":\"${ckbAbcdeJsonEscape("${groupRoot}/parity.jsonl")}\",\"knowledgeVersion\":\"${ckbAbcdeJsonEscape(ckbAbcdeKnowledgeVersion(groupRoot))}\",\"citationCount\":${ckbAbcdeCitationCount(groupRoot)},\"docsPathCount\":${if (group == CkbAbcdeGroups.E) { 2 } else { 0 }},\"protocolViolation\":${protocolViolation},\"protocolViolationReason\":\"${ckbAbcdeJsonEscape(violation)}\",\"durationMs\":0,\"promptPath\":\"${ckbAbcdeJsonEscape("${groupRoot}/prompt.final.md")}\",\"transcriptPath\":\"${ckbAbcdeJsonEscape("${groupRoot}/claude-transcript.jsonl")}\",\"testLogPath\":\"${ckbAbcdeJsonEscape("${groupRoot}/test.log")}\",\"resultPath\":\"${ckbAbcdeJsonEscape("${groupRoot}/case-result.json")}\",\"notes\":\"${ckbAbcdeJsonEscape(ckbAbcdeResultNotes(status, violation, toolEvidence))}\"}"
+    let taskKnowledgeReady = taskKnowledge.valid && taskKnowledge.knowledgeVersion == options.knowledgeVersion
+    "{\"runId\":\"${ckbAbcdeJsonEscape(options.runId)}\",\"benchmark\":\"Cangjie-HumanEval\",\"runMode\":\"${ckbAbcdeJsonEscape(recordedRunMode)}\",\"datasetVersion\":\"${ckbAbcdeJsonEscape(options.datasetVersion)}\",\"candidateVersion\":\"${ckbAbcdeJsonEscape(options.candidateVersion)}\",\"lineageKnowledgeVersion\":\"${ckbAbcdeJsonEscape(options.knowledgeVersion)}\",\"modelFingerprint\":\"${ckbAbcdeJsonEscape(options.modelFingerprint)}\",\"workspaceId\":\"${ckbAbcdeJsonEscape(workspaceId)}\",\"sessionId\":\"${ckbAbcdeJsonEscape(sessionId)}\",\"runtimeHomeId\":\"${ckbAbcdeJsonEscape(runtimeHomeId)}\",\"developmentPass\":${developmentPass},\"firstAttemptPass\":${firstAttemptPass},\"firstAttemptTriage\":\"${ckbAbcdeJsonEscape(firstAttemptTriage)}\",\"knowledgeGapConfirmationStatus\":\"${confirmationStatus}\",\"certificationPassAt1\":null,\"closureStatus\":\"${closureStatus}\",\"triageStatus\":\"${ckbAbcdeJsonEscape(triageStatus)}\",\"failureRoute\":\"${failureRoute}\",\"caseId\":\"${caseId}\",\"group\":\"${group}\",\"expectedModelVersion\":\"${ckbAbcdeJsonEscape(options.expectedModelVersion)}\",\"observedModelVersion\":\"${ckbAbcdeJsonEscape(observedRuntimeModel)}\",\"model\":\"${ckbAbcdeJsonEscape(observedRuntimeModel)}\",\"claudeCodeVersion\":\"${ckbAbcdeJsonEscape(claudeCodeVersion)}\",\"providerIdentityHash\":\"${ckbAbcdeJsonEscape(providerIdentityHash)}\",\"knowledgeEntry\":\"${ckbAbcdeKnowledgeEntry(group)}\",\"preflightStatus\":\"ok\",\"modelRunStatus\":\"${modelRunStatus}\",\"status\":\"${status}\",\"claudeExitCode\":${claudeExitCode},\"firstClaudeExitCode\":${firstClaudeExitCode},\"claudeAttemptCount\":${claudeAttemptCount},\"testExitCode\":${testExitCode},\"unitPass\":${unitPass},\"unitPassAt1\":${unitPassAt1},\"failureType\":\"${failureType}\",\"usageParseStatus\":\"${usage.usageParseStatus}\",\"modelInputTokens\":${usage.modelInputTokens},\"modelOutputTokens\":${usage.modelOutputTokens},\"modelCacheReadTokens\":${usage.modelCacheReadTokens},\"modelCacheCreationTokens\":${usage.modelCacheCreationTokens},\"modelTotalTokens\":${usage.modelTotalTokens},\"llmTurnCount\":${usage.llmTurnCount},\"usageSourcePath\":\"${ckbAbcdeJsonEscape(usage.usageSourcePath)}\",\"ckbUsed\":${ckbAbcdeUsesCkb(group)},\"localDocsUsed\":${group == CkbAbcdeGroups.E},\"toolTransport\":\"${ckbAbcdeToolTransport(group)}\",\"toolCallCount\":${toolCallCount},\"toolEvidence\":\"${ckbAbcdeJsonEscape(toolEvidence)}\",\"toolEvidenceHash\":\"${ckbAbcdeJsonEscape(if (taskKnowledgeReady) { taskKnowledge.evidenceHash } else { "" })}\",\"toolCoveragePass\":${taskKnowledgeReady && taskKnowledge.coveragePass},\"transportParityPath\":\"${ckbAbcdeJsonEscape("${groupRoot}/parity.jsonl")}\",\"knowledgeVersion\":\"${ckbAbcdeJsonEscape(if (taskKnowledgeReady) { taskKnowledge.knowledgeVersion } else { "" })}\",\"citationCount\":${if (taskKnowledgeReady) { taskKnowledge.citationCount } else { 0 }},\"docsPathCount\":${if (group == CkbAbcdeGroups.E) { 2 } else { 0 }},\"protocolViolation\":${protocolViolation},\"protocolViolationReason\":\"${ckbAbcdeJsonEscape(violation)}\",\"durationMs\":0,\"promptPath\":\"${ckbAbcdeJsonEscape("${groupRoot}/prompt.final.md")}\",\"transcriptPath\":\"${ckbAbcdeJsonEscape("${groupRoot}/claude-transcript.jsonl")}\",\"testLogPath\":\"${ckbAbcdeJsonEscape("${groupRoot}/test.log")}\",\"resultPath\":\"${ckbAbcdeJsonEscape("${groupRoot}/case-result.json")}\",\"notes\":\"${ckbAbcdeJsonEscape(ckbAbcdeResultNotes(status, violation, toolEvidence))}\"}"
 }
 
-private func ckbAbcdeTriageEvidence(options: CkbAbcdeRunnerOptions, caseId: String, attempt: Int64, failureType: String, unitPass: Bool, protocolViolation: Bool, claudeExitCode: Int64, testExitCode: Int64, groupRoot: String): String {
+private func ckbAbcdeTriageEvidenceBound(options: CkbAbcdeRunnerOptions, caseId: String, attempt: Int64, failureType: String, unitPass: Bool, protocolViolation: Bool, claudeExitCode: Int64, testExitCode: Int64, groupRoot: String, taskKnowledge: CkbAbcdeTaskKnowledgeEvidence): String {
     let timedOut = claudeExitCode == 124
     let environmentFailure = claudeExitCode != 0 && !timedOut
-    let reasoningFailure = !unitPass && claudeExitCode == 0 && testExitCode != 0
     let observation = if (failureType == "none") { "case_passed" } else { failureType }
     let firstRetrieval = ckbAbcdeReadText("${groupRoot}/claude-transcript.attempt-1.jsonl")
     let taskContext = ckbAbcdeReadText("${groupRoot}/canonical-task-context.json")
     let structuredMissing = ckbAbcdeHasBoundStructuredMissingEvidence(caseId, taskContext, firstRetrieval)
     let coverageCompilerConflict = ckbAbcdeHasBoundStructuredCoveragePass(caseId, taskContext, firstRetrieval) && ckbAbcdeReadText("${groupRoot}/test.log").toAsciiLower().contains("is not a member of")
     let suspectedKnowledgeGap = options.runMode == "development" && failureType == "compile_error" && !unitPass && !protocolViolation && claudeExitCode == 0 && testExitCode != 0 && (structuredMissing || coverageCompilerConflict)
-    let retrievalDiagnostic = if (structuredMissing && suspectedKnowledgeGap) { "structured_missing_evidence" } else if (coverageCompilerConflict && suspectedKnowledgeGap) { "coverage_compiler_member_conflict" } else { "not_applicable" }
-    let retrievalEvidenceHash = if (suspectedKnowledgeGap) { benchmarkGapSha256(taskContext + firstRetrieval) } else { "" }
+    let retrievalDiagnostic = if (taskKnowledge.valid) { "bound_tool_result" } else if (structuredMissing && suspectedKnowledgeGap) { "structured_missing_evidence" } else if (coverageCompilerConflict && suspectedKnowledgeGap) { "coverage_compiler_member_conflict" } else { "not_applicable" }
+    let retrievalEvidenceHash = if (taskKnowledge.valid) { taskKnowledge.evidenceHash } else if (suspectedKnowledgeGap) { benchmarkGapSha256(taskContext + firstRetrieval) } else { "" }
+    let provisional = "{\"attempt\":${attempt},\"runMode\":\"${ckbAbcdeJsonEscape(options.runMode)}\",\"failureType\":\"${ckbAbcdeJsonEscape(failureType)}\",\"protocolViolation\":${protocolViolation},\"timedOut\":${timedOut},\"environmentFailure\":${environmentFailure},\"suspectedKnowledgeGap\":${suspectedKnowledgeGap},\"reasoningFailure\":false,\"unitPass\":${unitPass}}"
+    let reasoningFailure = cangjieEvalAuthoritativeFailureCategory(provisional) == "reasoning_failure"
     let base = "{\"caseId\":\"${ckbAbcdeJsonEscape(caseId)}\",\"runId\":\"${ckbAbcdeJsonEscape(options.runId)}\",\"datasetVersion\":\"${ckbAbcdeJsonEscape(options.datasetVersion)}\",\"attempt\":${attempt},\"runMode\":\"${ckbAbcdeJsonEscape(options.runMode)}\",\"failureObservation\":\"${ckbAbcdeJsonEscape(observation)}\",\"protocolViolation\":${protocolViolation},\"timedOut\":${timedOut},\"environmentFailure\":${environmentFailure},\"suspectedKnowledgeGap\":${suspectedKnowledgeGap},\"retrievalDiagnostic\":\"${retrievalDiagnostic}\",\"retrievalEvidenceHash\":\"${retrievalEvidenceHash}\",\"reasoningFailure\":${reasoningFailure && !suspectedKnowledgeGap},\"failureType\":\"${ckbAbcdeJsonEscape(failureType)}\",\"unitPass\":${unitPass}}"
     let hash = cangjieEvalTriageResultEvidenceHash(base)
     base.replace("}", ",\"resultEvidenceHash\":\"${hash}\"}")
@@ -1708,7 +1738,9 @@ public func ckbAbcdeHasBoundStructuredMissingEvidenceForTest(caseId: String, tas
 }
 
 public func ckbAbcdeTriageEvidenceForTest(options: CkbAbcdeRunnerOptions, caseId: String, attempt: Int64, failureType: String, unitPass: Bool, protocolViolation: Bool, claudeExitCode: Int64, testExitCode: Int64, groupRoot: String): String {
-    ckbAbcdeTriageEvidence(options, caseId, attempt, failureType, unitPass, protocolViolation, claudeExitCode, testExitCode, groupRoot)
+    let transcript = ckbAbcdeReadText("${groupRoot}/claude-transcript.jsonl"); let context = ckbAbcdeReadText("${groupRoot}/canonical-task-context.json")
+    let c = ckbAbcdeTaskKnowledgeEvidence(CkbAbcdeGroups.C, transcript, context); let evidence = if (c.valid) { c } else { ckbAbcdeTaskKnowledgeEvidence(CkbAbcdeGroups.D, transcript, context) }
+    ckbAbcdeTriageEvidenceBound(options, caseId, attempt, failureType, unitPass, protocolViolation, claudeExitCode, testExitCode, groupRoot, evidence)
 }
 
 private func ckbAbcdeRenderCaseSummary(options: CkbAbcdeRunnerOptions, runRoot: String, caseId: String, summaries: ArrayList<String>): String {
@@ -1787,6 +1819,115 @@ private func ckbAbcdeToolEvidence(group: String, transcript: String): String {
         return "manual_required"
     }
     "none"
+}
+
+private func ckbAbcdeCanonicalStringArrayEqual(expected: JsonObject, actual: JsonObject, key: String): Bool {
+    let left = expected.get(key).getOrThrow().asArray().getItems()
+    let right = actual.get(key).getOrThrow().asArray().getItems()
+    if (left.size != right.size) { return false }
+    for (i in 0..left.size) { if (left[i].asString().getValue() != right[i].asString().getValue()) { return false } }
+    true
+}
+
+private func ckbAbcdeCanonicalTaskInputEqual(expected: JsonObject, actual: JsonObject): Bool {
+    if (expected.getFields().size != 13 || actual.getFields().size != expected.getFields().size) { return false }
+    for (key in ["taskId", "benchmark", "taskText", "signature", "datasetVersion", "promptHash", "starterHash", "targetVersion", "sourceSet", "versionPolicy", "responseMode"]) {
+        if (ckbAbcdeStrictJsonString(expected, key) == "" || ckbAbcdeStrictJsonString(actual, key) != ckbAbcdeStrictJsonString(expected, key)) { return false }
+    }
+    ckbAbcdeStrictJsonInt(expected, "budget", -1) >= 0 &&
+        ckbAbcdeStrictJsonInt(actual, "budget", -1) == ckbAbcdeStrictJsonInt(expected, "budget", -1) &&
+        ckbAbcdeCanonicalStringArrayEqual(expected, actual, "expectedKnowledgeTags")
+}
+
+private func ckbAbcdeEvidenceHashSafe(value: String): Bool {
+    let runes = value.toRuneArray()
+    if (runes.size == 0 || runes.size > 256) { return false }
+    let lowered = value.toAsciiLower()
+    if (lowered.contains("token=") || lowered.contains("authorization") || lowered.contains("api_key") || lowered.contains("password")) { return false }
+    for (ch in runes) { if (ch <= r' ') { return false } }
+    true
+}
+
+private func ckbAbcdeTaskKnowledgeToolName(group: String): String {
+    if (group == CkbAbcdeGroups.C) { return "mcp__ckb-cangjie__cangjie_task_knowledge_pack" }
+    if (group == CkbAbcdeGroups.D) { return "mcp__ckb-cangjie-http__cangjie_task_knowledge_pack" }
+    ""
+}
+
+private func ckbAbcdeTaskKnowledgeEvidence(group: String, transcript: String, contextText: String): CkbAbcdeTaskKnowledgeEvidence {
+    let result = CkbAbcdeTaskKnowledgeEvidence()
+    if (transcript.size > CKB_ABCDE_MAX_MODEL_TRANSCRIPT_BYTES) { result.diagnostic = "transcript_too_large"; return result }
+    if (contextText.size > 262144) { result.diagnostic = "task_context_too_large"; return result }
+    let toolName = ckbAbcdeTaskKnowledgeToolName(group)
+    if (toolName == "") { result.diagnostic = "task_knowledge_tool_not_applicable"; return result }
+    var context: JsonObject
+    try { context = JsonValue.fromStr(contextText).asObject() } catch (_: Exception) { result.diagnostic = "malformed_task_context_json"; return result }
+    var toolUseId = ""
+    var toolUseCount: Int64 = 0
+    for (line in transcript.split("\n")) {
+        if (line.trimAscii() == "") { continue }
+        try {
+            let event = JsonValue.fromStr(line).asObject()
+            if (ckbAbcdeStrictJsonString(event, "type") != "assistant") { continue }
+            let content = event.get("message").getOrThrow().asObject().get("content").getOrThrow().asArray().getItems()
+            for (value in content) {
+                let entry = value.asObject()
+                if (ckbAbcdeStrictJsonString(entry, "type") != "tool_use" || ckbAbcdeStrictJsonString(entry, "name") != toolName) { continue }
+                toolUseCount += 1
+                toolUseId = ckbAbcdeStrictJsonString(entry, "id")
+                if (toolUseId == "" || !ckbAbcdeCanonicalTaskInputEqual(context, entry.get("input").getOrThrow().asObject())) {
+                    result.diagnostic = "canonical_request_mismatch"; return result
+                }
+            }
+        } catch (_: Exception) { result.diagnostic = "malformed_transcript_json"; return result }
+    }
+    if (toolUseCount == 0) { result.diagnostic = "task_knowledge_tool_use_missing"; return result }
+    if (toolUseCount != 1) { result.diagnostic = "task_knowledge_tool_use_not_unique"; return result }
+    var pairedCount: Int64 = 0
+    for (line in transcript.split("\n")) {
+        if (line.trimAscii() == "") { continue }
+        try {
+            let event = JsonValue.fromStr(line).asObject()
+            if (ckbAbcdeStrictJsonString(event, "type") != "user") { continue }
+            let content = event.get("message").getOrThrow().asObject().get("content").getOrThrow().asArray().getItems()
+            for (value in content) {
+                let entry = value.asObject()
+                if (ckbAbcdeStrictJsonString(entry, "type") != "tool_result" || ckbAbcdeStrictJsonString(entry, "tool_use_id") != toolUseId) { continue }
+                pairedCount += 1
+                if (ckbAbcdeStrictJsonBool(entry, "is_error")) { result.diagnostic = "paired_tool_result_error"; return result }
+                let payload = JsonValue.fromStr(ckbAbcdeStrictJsonString(entry, "content")).asObject()
+                let evidenceHash = ckbAbcdeStrictJsonString(payload, "evidenceHash")
+                let knowledgeVersion = ckbAbcdeStrictJsonString(payload, "knowledgeVersion")
+                if (ckbAbcdeStrictJsonString(payload, "taskId") != ckbAbcdeStrictJsonString(context, "taskId") || ckbAbcdeStrictJsonString(payload, "resultType") != "task_knowledge_pack") {
+                    result.diagnostic = "paired_tool_result_mismatch"; return result
+                }
+                if (!ckbAbcdeEvidenceHashSafe(evidenceHash)) { result.diagnostic = "evidence_hash_invalid"; return result }
+                if (knowledgeVersion == "") { result.diagnostic = "knowledge_version_missing"; return result }
+                result.evidenceHash = evidenceHash
+                result.knowledgeVersion = knowledgeVersion
+                result.coveragePass = payload.get("coverage").getOrThrow().asObject().get("coveragePass").getOrThrow().asBool().getValue()
+                result.citationCount = Int64(payload.get("citations").getOrThrow().asArray().getItems().size)
+            }
+        } catch (_: Exception) { result.diagnostic = "malformed_transcript_json"; return result }
+    }
+    if (pairedCount == 0) { result.diagnostic = "paired_tool_result_missing"; result.evidenceHash = ""; result.knowledgeVersion = ""; return result }
+    if (pairedCount != 1) { result.diagnostic = "paired_tool_result_not_unique"; result.evidenceHash = ""; result.knowledgeVersion = ""; return result }
+    result.valid = true; result.diagnostic = "ok"; result
+}
+
+public func ckbAbcdeTaskKnowledgeEvidenceForTest(group: String, transcript: String, contextText: String): CkbAbcdeTaskKnowledgeEvidence {
+    ckbAbcdeTaskKnowledgeEvidence(group, transcript, contextText)
+}
+
+public func ckbAbcdeTaskKnowledgeEvidenceFromUtf8ForTest(group: String, transcript: Array<UInt8>, context: Array<UInt8>): CkbAbcdeTaskKnowledgeEvidence {
+    try { ckbAbcdeTaskKnowledgeEvidence(group, String.fromUtf8(transcript), String.fromUtf8(context)) } catch (_: Exception) {
+        let result = CkbAbcdeTaskKnowledgeEvidence(); result.diagnostic = "invalid_response_encoding"; result
+    }
+}
+
+private func ckbAbcdePersistTaskKnowledgeEvidence(groupRoot:String,evidence:CkbAbcdeTaskKnowledgeEvidence,ready:Bool):Unit{
+    let hash=if(ready){evidence.evidenceHash}else{""};let version=if(ready){evidence.knowledgeVersion}else{""}
+    ckbAbcdeWriteText("${groupRoot}/paired-tool-evidence.json","{\"valid\":${ready},\"evidenceHash\":\"${ckbAbcdeJsonEscape(hash)}\",\"knowledgeVersion\":\"${ckbAbcdeJsonEscape(version)}\",\"coveragePass\":${ready&&evidence.coveragePass},\"citationCount\":${if(ready){evidence.citationCount}else{0}}}\n")
 }
 
 public func ckbAbcdeToolEvidenceForTest(group: String, transcript: String): String {
@@ -1965,40 +2106,6 @@ private func ckbAbcdeClaudeVersion(): String {
 }
 
 public func ckbAbcdeClaudeVersionForTest(): String { ckbAbcdeClaudeVersion() }
-
-private func ckbAbcdeKnowledgeVersion(groupRoot: String): String {
-    let text = ckbAbcdeReadText("${groupRoot}/ckb-task-knowledge-pack.json") +
-        ckbAbcdeReadText("${groupRoot}/ckb-knowledge-pack.json") +
-        ckbAbcdeReadText("${groupRoot}/ckb-context-pack.json") +
-        ckbAbcdeReadText("${groupRoot}/claude-transcript.jsonl") +
-        ckbAbcdeReadText("${groupRoot}/claude.stdout.log")
-    ckbAbcdeJsonStringField(text, "knowledgeVersion")
-}
-
-private func ckbAbcdeCitationCount(groupRoot: String): Int64 {
-    ckbAbcdeCountOccurrences(ckbAbcdeReadText("${groupRoot}/ckb-task-knowledge-pack.json") +
-        ckbAbcdeReadText("${groupRoot}/ckb-knowledge-pack.json") +
-        ckbAbcdeReadText("${groupRoot}/ckb-context-pack.json") +
-        ckbAbcdeReadText("${groupRoot}/claude-transcript.jsonl"), "\"citation\"")
-}
-
-private func ckbAbcdeEvidenceHash(groupRoot: String): String {
-    ckbAbcdeJsonStringField(ckbAbcdeReadText("${groupRoot}/parity.jsonl") +
-        ckbAbcdeReadText("${groupRoot}/ckb-task-knowledge-pack.json") +
-        ckbAbcdeReadText("${groupRoot}/ckb-knowledge-pack.json") +
-        ckbAbcdeReadText("${groupRoot}/ckb-context-pack.json") +
-        ckbAbcdeReadText("${groupRoot}/claude-transcript.jsonl") +
-        ckbAbcdeReadText("${groupRoot}/claude.stdout.log"), "evidenceHash")
-}
-
-private func ckbAbcdeCoveragePass(groupRoot: String): Bool {
-    (ckbAbcdeReadText("${groupRoot}/parity.jsonl") +
-        ckbAbcdeReadText("${groupRoot}/ckb-task-knowledge-pack.json") +
-        ckbAbcdeReadText("${groupRoot}/ckb-knowledge-pack.json") +
-        ckbAbcdeReadText("${groupRoot}/ckb-context-pack.json") +
-        ckbAbcdeReadText("${groupRoot}/claude-transcript.jsonl") +
-        ckbAbcdeReadText("${groupRoot}/claude.stdout.log")).contains("\"coveragePass\":true")
-}
 
 private func ckbAbcdeCountOccurrences(text: String, needle: String): Int64 {
     if (needle == "" || text.size < needle.size) {
