@@ -1,6 +1,7 @@
 package cangjie_community_knowledge_base_test
 
 import std.fs.{Directory, File, Path, canonicalize, exists, remove}
+import std.env.getVariable
 import std.time.*
 import std.unittest.*
 import std.unittest.testmacro.*
@@ -96,6 +97,7 @@ public class CangjieStrictCertificationTest {
         if (!exists(Path("/usr/bin/sandbox-exec"))) { return }
         let root=p7EmptyRoot("p7-real-sandbox-中文🙂");let workspace="${root}/workspace";let home="${root}/runtime-home";let caseSrc="${root}/authority/CJ-HUMANEVAL-000";let config="${root}/ckb.conf"
         Directory.create(Path(workspace),recursive:true);Directory.create(Path(home),recursive:true);Directory.create(Path(caseSrc).join("tests"),recursive:true);Directory.create(Path(caseSrc).join("translation"),recursive:true)
+        let cangjieHome=match(getVariable("CANGJIE_HOME")){case Some(value)=>canonicalize(Path(value)).toString() case None=>""};@Expect(cangjieHome.isEmpty(),false);@Expect(ckbAbcdePrepareBundledArchiverForTest(canonicalize(Path(home)).toString(),cangjieHome),"ok")
         File.writeTo(Path(config),"network.enabled=false\n".toArray());File.writeTo(Path(caseSrc).join("tests/hidden.txt"),"hidden".toArray());File.writeTo(Path(caseSrc).join("translation/reference.txt"),"reference".toArray())
         let profilePath="${root}/certification.sb";let profile=ckbAbcdeCertificationSandboxProfile(workspace,home,"/usr/bin/true",config,root,caseSrc,"/usr/bin/true","/usr/bin/true");File.writeTo(Path(profilePath),profile.toArray())
         @Expect(profile.contains("(import \"system.sb\")"),true);@Expect(profile.contains("(subpath \"/System\")"),false);@Expect(profile.contains("(subpath \"/usr\")"),false)
