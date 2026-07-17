@@ -2,6 +2,8 @@
 
 The official Python `check(candidate)` was executed against the official canonical solution through a recorder. Each candidate invocation below is translated into a concrete Cangjie assertion in `tests/TestMain.cj`.
 
+The official assertions normalize `candidate(...)` with Python `tuple`, which accepts any iterable. Cangjie has no equivalent untyped iterable return contract here, so the public signature and assertions use the typed projection `ArrayList<Int64>`. This preserves every official integer and its order but does not claim arbitrary Python iterable return compatibility.
+
 ## Official Test Lines
 
 | Source line | HumanEval test line | CangjieEval assertion label(s) |

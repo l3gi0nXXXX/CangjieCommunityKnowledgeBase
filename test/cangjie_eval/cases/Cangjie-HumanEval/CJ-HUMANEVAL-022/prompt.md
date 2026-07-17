@@ -5,6 +5,7 @@
 - Test calls expanded from official HumanEval: `3`
 - Static-language adaptations:
   - Python dynamic values are represented by EvalValue/EvalEntry helper types.
+  - Python `bool` is an `int` subtype, but Cangjie `Bool` and `Int64` are distinct. This typed projection accepts only `EvalValue` values whose `kind` is `"int"`; it does not reproduce Python's bool-as-int subtype rule. The three official calls contain no Boolean value.
 
 ## Model-Facing Task
 

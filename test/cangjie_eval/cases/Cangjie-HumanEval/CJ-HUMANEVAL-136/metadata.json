@@ -13,5 +13,7 @@
   "callCount": 11,
   "sourceLicense": "MIT",
   "testStrategy": "official check(candidate) expanded through canonical recorder, then translated to Cangjie main assertions",
-  "staticLanguageAdaptations": []
+  "staticLanguageAdaptations": [
+    "Python None in each tuple position is represented by None<Int64>; an integer is represented by Some<Int64>(value)."
+  ]
 }

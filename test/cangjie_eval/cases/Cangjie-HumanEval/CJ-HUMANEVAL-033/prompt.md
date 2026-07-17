@@ -3,6 +3,8 @@
 - Source task: `HumanEval/33`
 - Cangjie signature: `public func sort_third(l: ArrayList<Int64>): ArrayList<Int64>`
 - Test calls expanded from official HumanEval: `7`
+- Static-language adaptations:
+  - The official Python verifier applies `tuple(candidate(...))`, so Python accepts any iterable yielding the expected integers. The Cangjie signature intentionally projects that dynamic return domain to `ArrayList<Int64>` and does not claim arbitrary Python iterable return compatibility. All seven official inputs and expected elements remain exact.
 
 ## Model-Facing Task
 

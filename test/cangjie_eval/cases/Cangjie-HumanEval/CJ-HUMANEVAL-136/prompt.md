@@ -3,6 +3,8 @@
 - Source task: `HumanEval/136`
 - Cangjie signature: `public func largest_smallest_integers(lst: ArrayList<Int64>): (Option<Int64>, Option<Int64>)`
 - Test calls expanded from official HumanEval: `11`
+- Static-language adaptations:
+  - Each Python tuple position is either an integer or `None`. The Cangjie return type represents that union explicitly: Python `None` becomes `None<Int64>`, and an integer becomes `Some<Int64>(value)`. Tuple position and integer value remain exact.
 
 ## Model-Facing Task
 

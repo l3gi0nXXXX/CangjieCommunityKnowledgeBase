@@ -7,6 +7,8 @@ This directory contains a full 164-case CangjieEval translation pack derived fro
 - Cases: 164
 - Candidate invocations translated to Cangjie assertions: 1534
 
+The authority preserves official calls and expected values while expressing them through explicit Cangjie types. These typed Cangjie contracts do not claim full Python duck-typing compatibility. Whenever Python subtype, iterable, `None`, or container identity semantics are narrowed or represented differently, `metadata.json`, `prompt.md`, and `translation/line_translation.md` must state that adaptation without changing the official observed values.
+
 ## Directory Contract
 
 Each case contains:
@@ -71,7 +73,7 @@ These adaptations are recorded per case in `metadata.json`.
 | `CJ-HUMANEVAL-019` | `HumanEval/19` | `sort_numbers` | 5 | `public func sort_numbers(numbers: String): String` | none |
 | `CJ-HUMANEVAL-020` | `HumanEval/20` | `find_closest_elements` | 5 | `public func find_closest_elements(numbers: ArrayList<Float64>): (Float64, Float64)` | none |
 | `CJ-HUMANEVAL-021` | `HumanEval/21` | `rescale_to_unit` | 5 | `public func rescale_to_unit(numbers: ArrayList<Float64>): ArrayList<Float64>` | none |
-| `CJ-HUMANEVAL-022` | `HumanEval/22` | `filter_integers` | 3 | `public func filter_integers(values: ArrayList<EvalValue>): ArrayList<Int64>` | Python dynamic values are represented by EvalValue/EvalEntry helper types. |
+| `CJ-HUMANEVAL-022` | `HumanEval/22` | `filter_integers` | 3 | `public func filter_integers(values: ArrayList<EvalValue>): ArrayList<Int64>` | Python dynamic values use EvalValue/EvalEntry; Cangjie Bool is not accepted as Int64, unlike Python bool-as-int. |
 | `CJ-HUMANEVAL-023` | `HumanEval/23` | `strlen` | 3 | `public func strlen(string: String): Int64` | none |
 | `CJ-HUMANEVAL-024` | `HumanEval/24` | `largest_divisor` | 5 | `public func largest_divisor(n: Int64): Int64` | none |
 | `CJ-HUMANEVAL-025` | `HumanEval/25` | `factorize` | 8 | `public func factorize(n: Int64): ArrayList<Int64>` | none |
@@ -82,11 +84,11 @@ These adaptations are recorded per case in `metadata.json`.
 | `CJ-HUMANEVAL-030` | `HumanEval/30` | `get_positive` | 4 | `public func get_positive(l: ArrayList<Int64>): ArrayList<Int64>` | none |
 | `CJ-HUMANEVAL-031` | `HumanEval/31` | `is_prime` | 13 | `public func is_prime(n: Int64): Bool` | none |
 | `CJ-HUMANEVAL-032` | `HumanEval/32` | `find_zero` | 100 | `public func find_zero(xs: ArrayList<Int64>): Float64` | none |
-| `CJ-HUMANEVAL-033` | `HumanEval/33` | `sort_third` | 7 | `public func sort_third(l: ArrayList<Int64>): ArrayList<Int64>` | none |
+| `CJ-HUMANEVAL-033` | `HumanEval/33` | `sort_third` | 7 | `public func sort_third(l: ArrayList<Int64>): ArrayList<Int64>` | Python tuple(candidate(...)) iterable acceptance is projected to ArrayList<Int64>. |
 | `CJ-HUMANEVAL-034` | `HumanEval/34` | `unique` | 1 | `public func unique(l: ArrayList<Int64>): ArrayList<Int64>` | none |
 | `CJ-HUMANEVAL-035` | `HumanEval/35` | `max_element` | 2 | `public func max_element(l: ArrayList<Int64>): Int64` | none |
 | `CJ-HUMANEVAL-036` | `HumanEval/36` | `fizz_buzz` | 8 | `public func fizz_buzz(n: Int64): Int64` | none |
-| `CJ-HUMANEVAL-037` | `HumanEval/37` | `sort_even` | 3 | `public func sort_even(l: ArrayList<Int64>): ArrayList<Int64>` | none |
+| `CJ-HUMANEVAL-037` | `HumanEval/37` | `sort_even` | 3 | `public func sort_even(l: ArrayList<Int64>): ArrayList<Int64>` | Python tuple(candidate(...)) iterable acceptance is projected to ArrayList<Int64>. |
 | `CJ-HUMANEVAL-038` | `HumanEval/38` | `decode_cyclic` | 100 | `public func decode_cyclic(s: String): String` | none |
 | `CJ-HUMANEVAL-039` | `HumanEval/39` | `prime_fib` | 10 | `public func prime_fib(n: Int64): Int64` | none |
 | `CJ-HUMANEVAL-040` | `HumanEval/40` | `triples_sum_to_zero` | 9 | `public func triples_sum_to_zero(l: ArrayList<Int64>): Bool` | none |
@@ -185,7 +187,7 @@ These adaptations are recorded per case in `metadata.json`.
 | `CJ-HUMANEVAL-133` | `HumanEval/133` | `sum_squares` | 12 | `public func sum_squares(lst: ArrayList<Float64>): Int64` | Python int/float numeric unions are represented with Float64 where needed. |
 | `CJ-HUMANEVAL-134` | `HumanEval/134` | `check_if_last_char_is_a_letter` | 10 | `public func check_if_last_char_is_a_letter(txt: String): Bool` | none |
 | `CJ-HUMANEVAL-135` | `HumanEval/135` | `can_arrange` | 5 | `public func can_arrange(arr: ArrayList<Int64>): Int64` | none |
-| `CJ-HUMANEVAL-136` | `HumanEval/136` | `largest_smallest_integers` | 11 | `public func largest_smallest_integers(lst: ArrayList<Int64>): (Option<Int64>, Option<Int64>)` | none |
+| `CJ-HUMANEVAL-136` | `HumanEval/136` | `largest_smallest_integers` | 11 | `public func largest_smallest_integers(lst: ArrayList<Int64>): (Option<Int64>, Option<Int64>)` | Python None/integer tuple positions map to None<Int64>/Some<Int64>(value). |
 | `CJ-HUMANEVAL-137` | `HumanEval/137` | `compare_one` | 8 | `public func compare_one(a: EvalValue, b: EvalValue): EvalValue` | Python dynamic values are represented by EvalValue/EvalEntry helper types. |
 | `CJ-HUMANEVAL-138` | `HumanEval/138` | `is_equal_to_sum_even` | 8 | `public func is_equal_to_sum_even(n: Int64): Bool` | none |
 | `CJ-HUMANEVAL-139` | `HumanEval/139` | `special_factorial` | 4 | `public func special_factorial(n: Int64): Int64` | none |

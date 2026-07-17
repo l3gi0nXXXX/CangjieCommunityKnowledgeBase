@@ -13,5 +13,7 @@
   "callCount": 7,
   "sourceLicense": "MIT",
   "testStrategy": "official check(candidate) expanded through canonical recorder, then translated to Cangjie main assertions",
-  "staticLanguageAdaptations": []
+  "staticLanguageAdaptations": [
+    "Python verifier accepts any return iterable through tuple(candidate(...)); this typed projection requires ArrayList<Int64>."
+  ]
 }

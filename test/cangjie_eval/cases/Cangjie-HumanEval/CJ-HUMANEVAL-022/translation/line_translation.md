@@ -2,6 +2,8 @@
 
 The official Python `check(candidate)` was executed against the official canonical solution through a recorder. Each candidate invocation below is translated into a concrete Cangjie assertion in `tests/TestMain.cj`.
 
+The Cangjie verifier represents heterogeneous values with `EvalValue`. It accepts only `kind == "int"` for this task. Python treats `bool` as an `int` subtype, whereas Cangjie keeps `Bool` and `Int64` distinct, so this typed projection does not reproduce Python's bool-as-int subtype rule. This does not alter the three official calls, which contain no Boolean value.
+
 ## Official Test Lines
 
 | Source line | HumanEval test line | CangjieEval assertion label(s) |

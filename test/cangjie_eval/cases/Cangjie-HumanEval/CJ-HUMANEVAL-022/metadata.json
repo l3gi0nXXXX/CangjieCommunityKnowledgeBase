@@ -14,6 +14,7 @@
   "sourceLicense": "MIT",
   "testStrategy": "official check(candidate) expanded through canonical recorder, then translated to Cangjie main assertions",
   "staticLanguageAdaptations": [
-    "Python dynamic values are represented by EvalValue/EvalEntry helper types."
+    "Python dynamic values are represented by EvalValue/EvalEntry helper types.",
+    "Python bool is an int subtype, but Cangjie Bool and Int64 are distinct; this typed projection accepts only EvalValue kind int."
   ]
 }
