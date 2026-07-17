@@ -79,16 +79,26 @@ public class CangjieEvalModelTimeoutOptionTest {
 
     @TestCase
     public func p5TransportUtProfileArgumentsAreStrictAndDevelopmentOnly(): Unit {
-        let options = parseCkbAbcdeRunnerOptions(["cangjie-eval-abcde", "--model-effort", "low", "--model-max-budget-usd", "1.5"])
-        @Expect(options.modelEffort, "low")
-        @Expect(options.modelMaxBudgetUsd, "1.5")
-        @Expect(ckbAbcdeStrictUsageDiagnostic(["cangjie-eval-abcde", "--model-effort", "fast"]), "invalid_argument_value:--model-effort")
-        for (value in ["0", "101", "NaN", "Infinity", "中文😀"]) { @Expect(ckbAbcdeStrictUsageDiagnostic(["cangjie-eval-abcde", "--model-max-budget-usd", value]), "invalid_argument_value:--model-max-budget-usd") }
-        options.explicitRunMode = true
-        options.runMode = "certification"
-        options.claudeBin = "/usr/bin/true"
-        options.datasetVersion = "dataset"; options.knowledgeVersion = "knowledge"; options.modelFingerprint = "fingerprint"
-        @Expect(ckbAbcdeDevelopmentOptionsDiagnostic(options), "certification_forbids_development_transport_profile")
+        let configRoot = "target/model-transport-config-${ckbCoreNowMillis()}"
+        Directory.create(Path(configRoot), recursive: true)
+        let config = canonicalize(Path(configRoot)).join("ckb.conf").toString()
+        File.writeTo(Path(config), "network.enabled=false\n".toArray())
+        try {
+            let options = parseCkbAbcdeRunnerOptions(["cangjie-eval-abcde", "--model-effort", "low", "--model-max-budget-usd", "1.5"])
+            @Expect(options.modelEffort, "low")
+            @Expect(options.modelMaxBudgetUsd, "1.5")
+            @Expect(ckbAbcdeStrictUsageDiagnostic(["cangjie-eval-abcde", "--model-effort", "fast"]), "invalid_argument_value:--model-effort")
+            for (value in ["0", "101", "NaN", "Infinity", "中文😀"]) { @Expect(ckbAbcdeStrictUsageDiagnostic(["cangjie-eval-abcde", "--model-max-budget-usd", value]), "invalid_argument_value:--model-max-budget-usd") }
+            options.explicitRunMode = true
+            options.runMode = "certification"
+            options.claudeBin = "/usr/bin/true"
+            options.ckbConfig = config
+            options.groups.clear(); options.groups.add(CkbAbcdeGroups.C)
+            options.datasetVersion = "dataset"; options.knowledgeVersion = "knowledge"; options.modelFingerprint = "fingerprint"
+            @Expect(ckbAbcdeDevelopmentOptionsDiagnostic(options), "certification_forbids_development_transport_profile")
+        } finally {
+            remove(Path(configRoot), recursive: true)
+        }
     }
 
     @TestCase

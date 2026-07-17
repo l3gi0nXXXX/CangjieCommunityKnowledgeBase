@@ -3,14 +3,18 @@ package cangjie_community_knowledge_base_test
 import std.unittest.*
 import std.unittest.testmacro.*
 import std.collection.*
-import std.fs.{Directory, File, Path, exists}
+import std.fs.{Directory, File, Path, exists, canonicalize, remove}
 import std.time.DateTime
 
 @Test
 public class CangjieHumanEvalP5RunnerTest {
     @TestCase
     public func p5Pos01DevelopmentLineagePromptAndResultAreExplicit(): Unit {
-        let options = parseCkbAbcdeRunnerOptions(["cangjie-eval-abcde", "--run-mode", "development", "--dataset-version", "dataset-v1", "--candidate-version", "candidate-v2", "--knowledge-version", "knowledge-v2", "--model-fingerprint", "glm-5.2-fixed", "--claude-bin", "/usr/bin/true", "--run-id", "run-中😀"])
+        let configRoot = "target/p5-config-中😀-${DateTime.now().toUnixTimeStamp().toMilliseconds()}"
+        Directory.create(Path(configRoot), recursive: true)
+        let config = canonicalize(Path(configRoot)).join("ckb.conf").toString()
+        File.writeTo(Path(config), "network.enabled=false\n".toArray())
+        let options = parseCkbAbcdeRunnerOptions(["cangjie-eval-abcde", "--run-mode", "development", "--dataset-version", "dataset-v1", "--candidate-version", "candidate-v2", "--knowledge-version", "knowledge-v2", "--model-fingerprint", "glm-5.2-fixed", "--claude-bin", "/usr/bin/true", "--config", config, "--run-id", "run-中😀"])
         @Expect(ckbAbcdeDevelopmentOptionsDiagnostic(options), "")
         let prompt = renderCkbAbcdePromptForMode(CkbAbcdeGroups.C, "CJ-HUMANEVAL-000", "实现中文 😀", "{}", options.runMode)
         @Expect(prompt.contains("Run mode: development"), true)
@@ -29,6 +33,7 @@ public class CangjieHumanEvalP5RunnerTest {
         @Expect(row.contains("\"observedModelVersion\":\"GLM-5.2\""), true)
         @Expect(row.contains("\"model\":\"GLM-5.2\""), true)
         @Expect(row.contains("\"providerIdentityHash\":\"sha256:"), true)
+        remove(Path(configRoot), recursive: true)
     }
 
     @TestCase
