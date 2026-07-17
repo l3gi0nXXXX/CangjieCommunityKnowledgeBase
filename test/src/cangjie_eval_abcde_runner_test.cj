@@ -608,6 +608,64 @@ public class CangjieEvalAbcdeRunnerTest {
         }
     }
 
+    // MAGIC-STDX-UT / MAGIC-STDX-BND / MAGIC-STDX-POS / MAGIC-STDX-NEG
+    @TestCase
+    public func magicStdxUtCanonicalRootResolvesOnlyPlatformLibraryDirectory(): Unit {
+        let root = "target/Magic-仓颉🙂-${ckbCoreNowMillis()}"
+        let stdx = "${root}/libs/cangjie-stdx-mac-aarch64-1.0.0.1/darwin_aarch64_llvm/dynamic/stdx"
+        Directory.create(Path(stdx), recursive: true)
+        let canonicalRoot = canonicalize(Path(root)).toString()
+        let canonicalStdx = canonicalize(Path(stdx)).toString()
+        @Expect(ckbAbcdeMagicStdxPathForTest(canonicalRoot), canonicalStdx)
+        @Expect(ckbAbcdeMagicStdxPathForTest(canonicalRoot).contains("仓颉🙂"), true)
+    }
+
+    @TestCase
+    public func magicStdxBndMissingRelativeAndMalformedRootsFailClosed(): Unit {
+        for (root in ["", "relative/Magic", " /private/tmp/Magic", "/private/tmp/Magic ", "/private/tmp/不存在-仓颉🙂"]) {
+            @Expect(ckbAbcdeMagicStdxPathForTest(root), "")
+        }
+    }
+
+    @TestCase
+    public func magicStdxNegSymlinkAndUnexpectedSuffixFailClosed(): Unit {
+        let root = "target/Magic-negative-${ckbCoreNowMillis()}"
+        let real = "${root}/real"
+        let suffix = "libs/cangjie-stdx-mac-aarch64-1.0.0.1/darwin_aarch64_llvm/dynamic/stdx"
+        Directory.create(Path("${real}/${suffix}"), recursive: true)
+        let linkedRoot = "${root}/linked-root"
+        @Expect(launch("/bin/ln", ["-s", "real", linkedRoot]).wait(), 0)
+        @Expect(ckbAbcdeMagicStdxPathForTest(canonicalize(Path(root)).join("linked-root").toString()), "")
+        let badRoot = "${root}/bad-root"
+        Directory.create(Path("${badRoot}/libs/private-sibling-token🙂"), recursive: true)
+        @Expect(ckbAbcdeMagicStdxPathForTest(canonicalize(Path(badRoot)).toString()), "")
+    }
+
+    @TestCase
+    public func magicStdxPosProfilesAllowExactStdxWithoutMagicSiblingOrWrite(): Unit {
+        let stdx = ckbAbcdeCurrentMagicStdxPathForTest()
+        @Expect(stdx.isEmpty(), false)
+        let magicRoot = match(getVariable("MAGIC_PATH")){case Some(value)=>canonicalize(Path(value)).toString() case None=>""}
+        let workspace="/tmp/工作区🙂";let home="/tmp/运行时🙂";let caseSrc="/tmp/数据集🙂/CJ-HUMANEVAL-032"
+        let development = ckbAbcdeDevelopmentSandboxProfile(CkbAbcdeGroups.C,workspace,home,"/tmp/ckb-bin","/tmp/ckb-store",caseSrc,"/tmp/文档🙂","/tmp/仓颉SDK🙂","/tmp/MacSDK🙂","/usr/bin/true","/usr/bin/true")
+        let certification = ckbAbcdeCertificationSandboxProfile(workspace,home,"/tmp/ckb-bin","/tmp/ckb-store",caseSrc,"/usr/bin/true","/usr/bin/true")
+        for (profile in [development, certification]) {
+            @Expect(profile.contains("(subpath \"${stdx}\")"), true)
+            @Expect(profile.contains("(subpath \"${magicRoot}\")"), false)
+            @Expect(profile.contains("(literal \"/dev/stdin\")"), true)
+            @Expect(profile.contains("(literal \"/dev/fd/0\")"), true)
+            @Expect(profile.contains("(subpath \"/dev/fd\")"), false)
+            @Expect(profile.contains("(literal \"/dev/fd/1\")"), false)
+            @Expect(profile.contains("(literal \"/dev/fd/2\")"), false)
+            @Expect(profile.contains("(literal \"/dev/stdout\")"), false)
+            @Expect(profile.contains("(literal \"/dev/stderr\")"), false)
+            @Expect(profile.contains("(allow file-write* (subpath \"${stdx}\")"), false)
+            @Expect(profile.contains("(allow file-write* (literal \"/dev/stdin\")"), false)
+            @Expect(profile.contains("(allow file-write* (literal \"/dev/fd/0\")"), false)
+            @Expect(profile.contains("private-sibling-token🙂"), false)
+        }
+    }
+
     @TestCase
     public func nkPos04RealDevelopmentSandboxBuildsAndDeniesPrivateSibling(): Unit {
         if (!exists(Path("/usr/bin/sandbox-exec"))) { return }
