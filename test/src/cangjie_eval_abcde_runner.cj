@@ -814,6 +814,7 @@ private func ckbAbcdePublishClaudeSampleArtifacts(groupRoot: String, transportAt
 private func ckbAbcdeRunClaudeCertification(options:CkbAbcdeRunnerOptions,group:String,groupRoot:String,workspace:String,runtimeHome:String,caseSrc:String):CkbAbcdeCommandResult{
     let claude=ckbAbcdeResolveClaudeExecutable(options.claudeBin)
     if(!claude.valid){let blocked=CkbAbcdeCommandResult();blocked.exitCode=126;blocked.stderr=claude.diagnostic;return blocked}
+    let tempDiagnostic=ckbAbcdePrepareClaudeTempMetadata();if(tempDiagnostic!="ok"){let blocked=CkbAbcdeCommandResult();blocked.exitCode=126;blocked.stderr=tempDiagnostic;return blocked}
     let profilePath="${groupRoot}/certification.sb"
     ckbAbcdeWriteText(profilePath,ckbAbcdeCertificationSandboxProfile(workspace,runtimeHome,options.ckbBin,options.ckbStore,caseSrc,claude.requested,claude.canonical))
     let probe=ckbAbcdeCertificationSandboxProbe(profilePath,workspace,runtimeHome,caseSrc)
@@ -828,7 +829,7 @@ private func ckbAbcdeRunClaudeCertification(options:CkbAbcdeRunnerOptions,group:
 
 public func ckbAbcdeCertificationSandboxProfile(workspace:String,runtimeHome:String,ckbBin:String,ckbStore:String,caseSrc:String,claudeRequested:String,claudeCanonical:String):String{
     let w=ckbAbcdeSandboxPath(workspace);let h=ckbAbcdeSandboxPath(runtimeHome);let bin=ckbAbcdeSandboxPath(ckbBin);let store=ckbAbcdeSandboxPath(ckbStore);let tests=ckbAbcdeSandboxPath("${caseSrc}/tests");let reference=ckbAbcdeSandboxPath("${caseSrc}/translation");let teacher=ckbAbcdeSandboxPath("/Users/l3gi0n/work/workspace_cangjie/CangjieTeacher")
-    let requested=ckbAbcdeSandboxLiteral(claudeRequested);let canonical=ckbAbcdeSandboxLiteral(claudeCanonical);let metadata=ckbAbcdeSandboxMetadataPaths(claudeRequested)+ckbAbcdeSandboxMetadataPaths(claudeCanonical)
+    let requested=ckbAbcdeSandboxLiteral(claudeRequested);let canonical=ckbAbcdeSandboxLiteral(claudeCanonical);let metadata=ckbAbcdeSandboxMetadataPaths(claudeRequested)+ckbAbcdeSandboxMetadataPaths(claudeCanonical)+ckbAbcdeClaudeTempMetadataRule()
     "(version 1)\n(import \"system.sb\")\n(deny default)\n(allow process*)\n(allow sysctl-read)\n(allow mach-lookup)\n(allow network*)\n(allow file-read-metadata${metadata})\n(allow file-read* (literal \"${requested}\") (literal \"${canonical}\") (subpath \"${w}\") (subpath \"${h}\") (literal \"${bin}\") (subpath \"${store}\"))\n(allow file-write* (subpath \"${w}\") (subpath \"${h}\"))\n(deny file-read* (subpath \"${tests}\") (subpath \"${reference}\") (subpath \"${teacher}\"))\n"
 }
 
@@ -850,12 +851,64 @@ public func ckbAbcdeDevelopmentSandboxProfile(group:String,workspace:String,runt
     let w=ckbAbcdeSandboxPath(workspace);let h=ckbAbcdeSandboxPath(runtimeHome);let bin=ckbAbcdeSandboxPath(ckbBin);let store=ckbAbcdeSandboxPath(ckbStore);let sdk=ckbAbcdeSandboxPath(cangjieHome);let macSdk=ckbAbcdeSandboxPath(sdkRoot);let tests=ckbAbcdeSandboxPath("${caseSrc}/tests");let reference=ckbAbcdeSandboxPath("${caseSrc}/translation");let teacher=ckbAbcdeSandboxPath("/Users/l3gi0n/work/workspace_cangjie/CangjieTeacher")
     let docs=if(group==CkbAbcdeGroups.E){" (subpath \"${ckbAbcdeSandboxPath(docsRoot)}\")"}else{""}
     let requested=ckbAbcdeSandboxLiteral(claudeRequested);let canonical=ckbAbcdeSandboxLiteral(claudeCanonical)
-    let docsMetadata=if(group==CkbAbcdeGroups.E){ckbAbcdeSandboxMetadataPaths(docsRoot)}else{""};let metadata=ckbAbcdeSandboxMetadataPaths(workspace)+ckbAbcdeSandboxMetadataPaths(runtimeHome)+ckbAbcdeSandboxMetadataPaths(ckbBin)+ckbAbcdeSandboxMetadataPaths(ckbStore)+ckbAbcdeSandboxMetadataPaths(cangjieHome)+ckbAbcdeSandboxMetadataPaths(sdkRoot)+ckbAbcdeSandboxMetadataPaths(claudeRequested)+ckbAbcdeSandboxMetadataPaths(claudeCanonical)+docsMetadata
+    let docsMetadata=if(group==CkbAbcdeGroups.E){ckbAbcdeSandboxMetadataPaths(docsRoot)}else{""};let metadata=ckbAbcdeSandboxMetadataPaths(workspace)+ckbAbcdeSandboxMetadataPaths(runtimeHome)+ckbAbcdeSandboxMetadataPaths(ckbBin)+ckbAbcdeSandboxMetadataPaths(ckbStore)+ckbAbcdeSandboxMetadataPaths(cangjieHome)+ckbAbcdeSandboxMetadataPaths(sdkRoot)+ckbAbcdeSandboxMetadataPaths(claudeRequested)+ckbAbcdeSandboxMetadataPaths(claudeCanonical)+docsMetadata+ckbAbcdeClaudeTempMetadataRule()
     "(version 1)\n(import \"system.sb\")\n(deny default)\n(allow process*)\n(allow process-info* (target self))\n(allow sysctl-read)\n(allow mach-lookup)\n(allow network*)\n(allow file-read-metadata${metadata} (literal \"/usr\") (literal \"/usr/bin\") (literal \"/usr/bin/ar\"))\n(allow file-read* (literal \"/usr\") (literal \"/usr/bin\") (literal \"/usr/bin/ar\") (literal \"${requested}\") (literal \"${canonical}\") (subpath \"/opt/homebrew/opt/openssl@3/lib\") (subpath \"/opt/homebrew/opt/openssl@3.5/lib\") (subpath \"${w}\") (subpath \"${h}\") (literal \"${bin}\") (subpath \"${store}\") (subpath \"${sdk}\") (subpath \"${macSdk}\")${docs})\n(allow file-write* (subpath \"${w}\") (subpath \"${h}\"))\n(deny file-read* (literal \"${tests}\") (subpath \"${tests}\") (literal \"${reference}\") (subpath \"${reference}\") (literal \"${teacher}\") (subpath \"${teacher}\"))\n"
 }
 
 private func ckbAbcdeSandboxMetadataAncestors(path:String):String{var current=try{canonicalize(Path(path)).parent}catch(_:Exception){Path(path).parent};var out="";while(current.toString()!="/"&&current.toString()!="."&&current.toString()!=""){out=" (literal \"${ckbAbcdeSandboxLiteral(current.toString())}\")"+out;current=current.parent};out}
 private func ckbAbcdeSandboxMetadataPaths(path:String):String{" (literal \"${ckbAbcdeSandboxPath(path)}\")"+ckbAbcdeSandboxMetadataAncestors(path)}
+
+private func ckbAbcdeClaudeTempMetadataRuleForUid(uid:String):String{
+    if(uid==""||uid!=uid.trimAscii()){return ""}
+    try{let parsed=Int64.parse(uid);if(parsed<0||parsed>4294967295||"${parsed}"!=uid){return ""}}catch(_:Exception){return ""}
+    " (literal \"/private/tmp/claude-${uid}\")"
+}
+
+private func ckbAbcdeClaudeTempMetadataDiagnostic(uid:String,expectedPath:String,canonicalPath:String,ownerUid:String,mode:String,isDirectory:Bool,isSymlink:Bool):String{
+    if(ckbAbcdeClaudeTempMetadataRuleForUid(uid)==""||expectedPath!="/private/tmp/claude-${uid}"){return "claude_temp_path_invalid"}
+    if(isSymlink){return "claude_temp_symlink_forbidden"}
+    if(canonicalPath!=expectedPath){return "claude_temp_canonical_mismatch"}
+    if(ownerUid!=uid){return "claude_temp_owner_mismatch"}
+    if(!isDirectory){return "claude_temp_directory_required"}
+    try{
+        let parsed=Int64.parse(mode)
+        if(parsed<0||parsed>7777||"${parsed}"!=mode){return "claude_temp_mode_invalid"}
+        let group=(parsed/10)%10;let other=parsed%10
+        if([Int64(2),Int64(3),Int64(6),Int64(7)].contains(group)||[Int64(2),Int64(3),Int64(6),Int64(7)].contains(other)){return "claude_temp_mode_invalid"}
+    }catch(_:Exception){return "claude_temp_mode_invalid"}
+    "ok"
+}
+
+private func ckbAbcdeCurrentUid():String{
+    let result=ckbAbcdeRunShell("/usr/bin/id -u","")
+    if(result.exitCode!=0){return ""}
+    let uid=result.stdout.trimAscii()
+    if(ckbAbcdeClaudeTempMetadataRuleForUid(uid)==""){return ""}
+    uid
+}
+
+private func ckbAbcdePrepareClaudeTempMetadata():String{
+    let uid=ckbAbcdeCurrentUid()
+    if(uid==""){return "claude_temp_uid_invalid"}
+    let path="/private/tmp/claude-${uid}"
+    try{if(launch("/bin/test",["-L",path]).wait()==0){return "claude_temp_symlink_forbidden"}}catch(_:Exception){return "claude_temp_validation_failed"}
+    if(!exists(Path(path))){try{if(launch("/bin/mkdir",["-m","700",path]).wait()!=0){return "claude_temp_create_failed"}}catch(_:Exception){return "claude_temp_create_failed"}}
+    let canonical=try{canonicalize(Path(path)).toString()}catch(_:Exception){return "claude_temp_canonicalize_failed"}
+    let isDirectory=try{launch("/bin/test",["-d",path]).wait()==0}catch(_:Exception){false}
+    let stat=ckbAbcdeRunShell("/usr/bin/stat -f '%u:%Lp' ${ckbAbcdeShellQuote(path)}","")
+    if(stat.exitCode!=0){return "claude_temp_stat_failed"};let fields=stat.stdout.trimAscii().split(":");if(fields.size!=2){return "claude_temp_stat_invalid"}
+    ckbAbcdeClaudeTempMetadataDiagnostic(uid,path,canonical,fields[0],fields[1],isDirectory,false)
+}
+
+private func ckbAbcdeClaudeTempMetadataRule():String{
+    if(ckbAbcdePrepareClaudeTempMetadata()!="ok"){return ""}
+    ckbAbcdeClaudeTempMetadataRuleForUid(ckbAbcdeCurrentUid())
+}
+
+public func ckbAbcdeClaudeTempMetadataRuleForUidForTest(uid:String):String{ckbAbcdeClaudeTempMetadataRuleForUid(uid)}
+public func ckbAbcdeClaudeTempMetadataDiagnosticForTest(uid:String,expectedPath:String,canonicalPath:String,ownerUid:String,mode:String,isDirectory:Bool,isSymlink:Bool):String{ckbAbcdeClaudeTempMetadataDiagnostic(uid,expectedPath,canonicalPath,ownerUid,mode,isDirectory,isSymlink)}
+public func ckbAbcdeCurrentUidForTest():String{ckbAbcdeCurrentUid()}
+public func ckbAbcdePrepareClaudeTempMetadataForTest():String{ckbAbcdePrepareClaudeTempMetadata()}
 
 private func ckbAbcdeDevelopmentSandboxProbe(profilePath:String,workspace:String,runtimeHome:String,caseSrc:String,docsRoot:String,group:String,cangjieHome:String,sdkRoot:String):CkbAbcdeCommandResult{
     let workspacePath=try{canonicalize(Path(workspace)).toString()}catch(_:Exception){workspace};let homePath=try{canonicalize(Path(runtimeHome)).toString()}catch(_:Exception){runtimeHome};let casePath=try{canonicalize(Path(caseSrc)).toString()}catch(_:Exception){caseSrc};let docsPath=try{canonicalize(Path(docsRoot)).toString()}catch(_:Exception){docsRoot};let sdkPath=try{canonicalize(Path(cangjieHome)).toString()}catch(_:Exception){cangjieHome};let macSdkPath=try{canonicalize(Path(sdkRoot)).toString()}catch(_:Exception){sdkRoot};let sandboxProfile=try{canonicalize(Path(profilePath)).toString()}catch(_:Exception){profilePath}
@@ -926,6 +979,7 @@ private func ckbAbcdeRunClaudeOnce(group: String, groupRoot: String, workspace: 
     if(sdkRoot==""||!exists(Path(sdkRoot))){let blocked=CkbAbcdeCommandResult();blocked.exitCode=126;blocked.stderr="development_sandbox_sdk_root_missing";return blocked}
     let claude=ckbAbcdeResolveClaudeExecutable(claudeBin)
     if(!claude.valid){let blocked=CkbAbcdeCommandResult();blocked.exitCode=126;blocked.stderr=claude.diagnostic;return blocked}
+    let tempDiagnostic=ckbAbcdePrepareClaudeTempMetadata();if(tempDiagnostic!="ok"){let blocked=CkbAbcdeCommandResult();blocked.exitCode=126;blocked.stderr=tempDiagnostic;return blocked}
     let profilePath="${groupRoot}/development.attempt-${attempt}.sb"
     ckbAbcdeWriteText(profilePath,ckbAbcdeDevelopmentSandboxProfile(group,workspace,attemptRuntimeHome,ckbBin,ckbStore,caseSrc,docsRoot,cangjieHome,sdkRoot,claude.requested,claude.canonical))
     let probe=ckbAbcdeDevelopmentSandboxProbe(profilePath,workspace,attemptRuntimeHome,caseSrc,docsRoot,group,cangjieHome,sdkRoot)

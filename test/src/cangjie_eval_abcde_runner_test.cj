@@ -556,6 +556,58 @@ public class CangjieEvalAbcdeRunnerTest {
         @Expect(c.contains(docs),false);@Expect(e.contains(docs),true)
     }
 
+    // TMP-META-UT / TMP-META-BND / TMP-META-POS / TMP-META-NEG
+    @TestCase
+    public func tmpMetaUtDynamicUidProducesOnlyExactMetadataLiteral(): Unit {
+        let rule = ckbAbcdeClaudeTempMetadataRuleForUidForTest("501")
+        @Expect(rule, " (literal \"/private/tmp/claude-501\")")
+        @Expect(rule.contains("subpath"), false)
+        @Expect(rule.contains("file-read*"), false)
+        @Expect(rule.contains("file-write"), false)
+    }
+
+    @TestCase
+    public func tmpMetaBndRejectsMalformedAndOutOfRangeUid(): Unit {
+        for (uid in ["", " 501", "501 ", "-1", "+1", "0501", "501x", "用户🙂", "4294967296"]) {
+            @Expect(ckbAbcdeClaudeTempMetadataRuleForUidForTest(uid), "")
+        }
+        @Expect(ckbAbcdeClaudeTempMetadataRuleForUidForTest("0"), " (literal \"/private/tmp/claude-0\")")
+        @Expect(ckbAbcdeClaudeTempMetadataRuleForUidForTest("4294967295"), " (literal \"/private/tmp/claude-4294967295\")")
+    }
+
+    @TestCase
+    public func tmpMetaNegValidationRejectsSymlinkOwnerModeAndSibling(): Unit {
+        let path = "/private/tmp/claude-501"
+        @Expect(ckbAbcdeClaudeTempMetadataDiagnosticForTest("501", path, path, "501", "700", true, false), "ok")
+        @Expect(ckbAbcdeClaudeTempMetadataDiagnosticForTest("501", path, path, "501", "700", true, true), "claude_temp_symlink_forbidden")
+        @Expect(ckbAbcdeClaudeTempMetadataDiagnosticForTest("501", path, "/private/tmp/private-token", "501", "700", true, false), "claude_temp_canonical_mismatch")
+        @Expect(ckbAbcdeClaudeTempMetadataDiagnosticForTest("501", path, path, "502", "700", true, false), "claude_temp_owner_mismatch")
+        for (mode in ["720", "702", "770", "707", "777", "bad🙂"]) {
+            @Expect(ckbAbcdeClaudeTempMetadataDiagnosticForTest("501", path, path, "501", mode, true, false), "claude_temp_mode_invalid")
+        }
+        @Expect(ckbAbcdeClaudeTempMetadataDiagnosticForTest("501", path, path, "501", "700", false, false), "claude_temp_directory_required")
+        @Expect(ckbAbcdeClaudeTempMetadataDiagnosticForTest("501", "/private/tmp/claude-502", "/private/tmp/claude-502", "501", "700", true, false), "claude_temp_path_invalid")
+    }
+
+    @TestCase
+    public func tmpMetaPosProfilesContainCurrentExactRuleWithoutBroaderAccess(): Unit {
+        let uid = ckbAbcdeCurrentUidForTest()
+        @Expect(uid.isEmpty(), false)
+        @Expect(ckbAbcdePrepareClaudeTempMetadataForTest(), "ok")
+        let path = "/private/tmp/claude-${uid}"
+        let workspace="/tmp/工作区🙂";let home="/tmp/运行时🙂";let caseSrc="/tmp/数据集🙂/CJ-HUMANEVAL-032"
+        let development = ckbAbcdeDevelopmentSandboxProfile(CkbAbcdeGroups.C,workspace,home,"/tmp/ckb-bin","/tmp/ckb-store",caseSrc,"/tmp/文档🙂","/tmp/仓颉SDK🙂","/tmp/MacSDK🙂","/usr/bin/true","/usr/bin/true")
+        let certification = ckbAbcdeCertificationSandboxProfile(workspace,home,"/tmp/ckb-bin","/tmp/ckb-store",caseSrc,"/usr/bin/true","/usr/bin/true")
+        for (profile in [development, certification]) {
+            @Expect(profile.contains("(allow file-read-metadata"), true)
+            @Expect(profile.contains("(literal \"${path}\")"), true)
+            @Expect(profile.contains("(subpath \"${path}\")"), false)
+            @Expect(profile.contains("(allow file-read* (literal \"${path}\")"), false)
+            @Expect(profile.contains("(allow file-write* (literal \"${path}\")"), false)
+            @Expect(profile.contains("/private/tmp/claude-用户🙂"), false)
+        }
+    }
+
     @TestCase
     public func nkPos04RealDevelopmentSandboxBuildsAndDeniesPrivateSibling(): Unit {
         if (!exists(Path("/usr/bin/sandbox-exec"))) { return }
