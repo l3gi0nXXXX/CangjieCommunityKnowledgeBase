@@ -100,6 +100,71 @@ public class CangjieEvalAbcdeRunnerTest {
         }
     }
 
+    // SANDBOX-STDIN-UT/BND/POS/E2E-01
+    @TestCase
+    public func nkUt07SandboxPromptIsAtomicallyStagedInsideRuntimeHome(): Unit {
+        let root = "target/sandbox-stdin-仓颉🙂-${ckbCoreNowMillis()}"
+        let groupRoot = "${root}/group"
+        let runtimeHome = "${root}/runtime-home/attempt-1"
+        Directory.create(Path(groupRoot), recursive: true)
+        Directory.create(Path(runtimeHome), recursive: true)
+        let prompt = "请实现仓颉函数🙂\n"
+        File.writeTo(Path(groupRoot).join("prompt.final.md"), prompt.toArray())
+
+        @Expect(ckbAbcdeSandboxPromptPath(runtimeHome), "${runtimeHome}/prompt.final.md")
+        @Expect(ckbAbcdePrepareSandboxPrompt(groupRoot, runtimeHome), "ok")
+        @Expect(String.fromUtf8(File.readFrom(Path(ckbAbcdeSandboxPromptPath(runtimeHome)))), prompt)
+
+        let transcript = ckbAbcdeSandboxTranscriptPath(runtimeHome)
+        let stderr = ckbAbcdeSandboxStderrPath(runtimeHome)
+        let development = ckbAbcdeDevelopmentClaudeCommand(groupRoot, runtimeHome, "/tmp/profile.sb",
+            "/usr/bin/true", "GLM-5.2", "max", "", "", "--add-dir '/tmp/workspace'", transcript, stderr, 1)
+        let certification = ckbAbcdeCertificationClaudeCommand(groupRoot, runtimeHome, "/tmp/profile.sb",
+            "/usr/bin/true", "GLM-5.2", transcript, stderr)
+        for (command in [development, certification]) {
+            @Expect(command.contains("< '${runtimeHome}/prompt.final.md'"), true)
+            @Expect(command.contains("< '${groupRoot}/prompt.final.md'"), false)
+        }
+    }
+
+    // SANDBOX-STDIN-BND/NEG-01
+    @TestCase
+    public func nkBnd07SandboxPromptRejectsUnsafeInputWithoutPathLeakage(): Unit {
+        let root = "target/sandbox-stdin-negative-${ckbCoreNowMillis()}"
+        let runtimeHome = "${root}/runtime-home"
+        Directory.create(Path(runtimeHome), recursive: true)
+        @Expect(ckbAbcdePrepareSandboxPrompt("${root}/missing-private-token🙂", runtimeHome), "sandbox_prompt_missing")
+
+        let invalidRoot = "${root}/invalid"
+        Directory.create(Path(invalidRoot), recursive: true)
+        File.writeTo(Path(invalidRoot).join("prompt.final.md"), [UInt8(0xff), UInt8(0xfe), UInt8(0x80)])
+        @Expect(ckbAbcdePrepareSandboxPrompt(invalidRoot, runtimeHome), "sandbox_prompt_invalid_encoding")
+
+        let oversizedRoot = "${root}/oversized"
+        Directory.create(Path(oversizedRoot), recursive: true)
+        File.writeTo(Path(oversizedRoot).join("prompt.final.md"), Array<UInt8>(1048577, repeat: UInt8(65)))
+        @Expect(ckbAbcdePrepareSandboxPrompt(oversizedRoot, runtimeHome), "sandbox_prompt_too_large")
+
+        let symlinkRoot = "${root}/symlink-source"
+        Directory.create(Path(symlinkRoot), recursive: true)
+        let privatePrompt = "${root}/private-token-prompt.md"
+        File.writeTo(Path(privatePrompt), "secret".toArray())
+        @Expect(launch("/bin/ln", ["-s", "../private-token-prompt.md", "${symlinkRoot}/prompt.final.md"]).wait(), 0)
+        let sourceDiagnostic = ckbAbcdePrepareSandboxPrompt(symlinkRoot, runtimeHome)
+        @Expect(sourceDiagnostic, "sandbox_prompt_source_symlink_forbidden")
+        @Expect(sourceDiagnostic.contains("private-token"), false)
+
+        let validRoot = "${root}/valid"
+        Directory.create(Path(validRoot), recursive: true)
+        File.writeTo(Path(validRoot).join("prompt.final.md"), "valid".toArray())
+        let outside = "${root}/private-output"
+        File.writeTo(Path(outside), "do-not-overwrite".toArray())
+        _ = launch("/bin/rm", ["-f", ckbAbcdeSandboxPromptPath(runtimeHome)]).wait()
+        @Expect(launch("/bin/ln", ["-s", "../private-output", ckbAbcdeSandboxPromptPath(runtimeHome)]).wait(), 0)
+        @Expect(ckbAbcdePrepareSandboxPrompt(validRoot, runtimeHome), "sandbox_prompt_destination_symlink_forbidden")
+        @Expect(String.fromUtf8(File.readFrom(Path(outside))), "do-not-overwrite")
+    }
+
     @TestCase
     public func ckg12Pos001PromptPoliciesAreGroupSpecific(): Unit {
         let task = "Implement `src/solution.cj`."
@@ -499,7 +564,7 @@ public class CangjieEvalAbcdeRunnerTest {
         let sdk=match(getVariable("CANGJIE_HOME")){case Some(value)=>value case None=>""};let macSdk=match(getVariable("SDKROOT")){case Some(value)=>value case None=>""};@Expect(sdk.isEmpty(),false);@Expect(macSdk.isEmpty(),false)
         let profilePath="${root}/development.sb";File.writeTo(Path(profilePath),ckbAbcdeDevelopmentSandboxProfile(CkbAbcdeGroups.E,workspace,home,bin,store,caseSrc,docs,sdk,macSdk,"/usr/bin/true","/usr/bin/true").toArray())
         let probe=ckbAbcdeDevelopmentSandboxProbeForTest(profilePath,workspace,home,caseSrc,docs,CkbAbcdeGroups.E,sdk,macSdk)
-        @Expect(probe.exitCode,0);@Expect(probe.stderr,"");@Expect(probe.stdout.contains("\"ok\":true"),true);@Expect(probe.stdout.contains("\"minimalBuildPassed\":true"),true);@Expect(probe.stdout.contains("\"deniedBroadFilesystemScan\":true"),true);@Expect(probe.stdout.contains("private-probe-value"),false)
+        @Expect(probe.exitCode,0);@Expect(probe.stderr,"");@Expect(probe.stdout.contains("\"ok\":true"),true);@Expect(probe.stdout.contains("\"stdinReadable\":true"),true);@Expect(probe.stdout.contains("\"minimalBuildPassed\":true"),true);@Expect(probe.stdout.contains("\"deniedBroadFilesystemScan\":true"),true);@Expect(probe.stdout.contains("private-probe-value"),false)
     }
 
     @TestCase

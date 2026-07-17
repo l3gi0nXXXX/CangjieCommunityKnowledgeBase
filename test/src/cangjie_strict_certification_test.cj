@@ -90,7 +90,7 @@ public class CangjieStrictCertificationTest {
         let profilePath="${root}/certification.sb";let profile=ckbAbcdeCertificationSandboxProfile(workspace,home,"/usr/bin/true",root,caseSrc,"/usr/bin/true","/usr/bin/true");File.writeTo(Path(profilePath),profile.toArray())
         @Expect(profile.contains("(import \"system.sb\")"),true);@Expect(profile.contains("(subpath \"/System\")"),false);@Expect(profile.contains("(subpath \"/usr\")"),false)
         let probe=ckbAbcdeCertificationSandboxProbeForTest(profilePath,workspace,home,caseSrc)
-        @Expect(probe.exitCode,0);@Expect(probe.stdout.contains("\"ok\":true"),true);@Expect(exists(Path(workspace).join(".sandbox-write-probe")),false);@Expect(exists(Path(root).join(".sandbox-outside-probe")),false)
+        @Expect(probe.exitCode,0);@Expect(probe.stdout.contains("\"ok\":true"),true);@Expect(probe.stdout.contains("\"stdinReadable\":true"),true);@Expect(exists(Path(workspace).join(".sandbox-write-probe")),false);@Expect(exists(Path(root).join(".sandbox-outside-probe")),false)
     }
 }
 
