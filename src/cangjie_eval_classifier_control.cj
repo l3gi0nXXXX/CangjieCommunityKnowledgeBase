@@ -258,8 +258,9 @@ private func ckbP5ClassifierSourceFactsValid(request:JsonObject,response:JsonObj
 
 private func ckbP5ClassifierStringCasingFactsValid(source:String,compiler:String,knowledge:String):Bool{
     if(!source.contains(".tolower(")||!compiler.contains("'tolower' is not a member")||!compiler.contains("string")){return true}
-    if(knowledge.contains("tolowerascii")||knowledge.contains("string.toasciilowercase")||knowledge.contains("rune.toasciilower(")){return false}
-    if(knowledge.contains("rune.tolowercase(")&&!knowledge.contains("std.unicode")){return false}
+    if(!ckbP5ClassifierToLowerAsciiClaimValid(knowledge)||knowledge.contains("string.toasciilowercase")||knowledge.contains("rune.toasciilower(")){return false}
+    if(knowledge.contains("rune.tolowercase(")&&
+        (!ckbP5ClassifierUnicodeImportRequired(knowledge)||!ckbP5ClassifierRuneLowerResultValid(knowledge))){return false}
     let directRune=(knowledge.contains("for (c in string)")&&(knowledge.contains("yielding rune")||knowledge.contains("yields rune")||
         knowledge.contains("produces rune")||knowledge.contains("returns rune")))||
         (knowledge.contains("direct string iteration")&&knowledge.contains("rune")&&!knowledge.contains("uint8"))||
@@ -269,6 +270,41 @@ private func ckbP5ClassifierStringCasingFactsValid(source:String,compiler:String
         knowledge.contains("string.tolower() is available")||knowledge.contains("string supports string.tolower")||
         knowledge.contains("string provides string.tolower")
     !assertsStringToLower
+}
+
+private func ckbP5ClassifierToLowerAsciiClaimValid(knowledge:String):Bool{
+    if(!knowledge.contains("tolowerascii")){return true}
+    if(knowledge.contains("//")||knowledge.contains("/*")||knowledge.contains("*/")){return false}
+    let denied=knowledge.contains("tolowerascii is not a cangjie api")||
+        knowledge.contains("tolowerascii is unavailable")||knowledge.contains("tolowerascii does not exist")
+    if(!denied){return false}
+    !(knowledge.contains("use tolowerascii")||knowledge.contains("call tolowerascii")||
+        knowledge.contains("tolowerascii returns")||knowledge.contains("tolowerascii is available")||
+        knowledge.contains("rune.tolowerascii")||knowledge.contains("string.tolowerascii"))
+}
+
+private func ckbP5ClassifierUnicodeImportRequired(knowledge:String):Bool{
+    for(clause in knowledge.replace(";", ". ").split(". ")){
+        let value=clause.trimAscii()
+        if(!value.contains("std.unicode")){continue}
+        if(value.contains("//")||value.contains("/*")||value.contains("*/")){return false}
+        if(value.contains("requires import std.unicode")||value.contains("requires importing std.unicode")){return true}
+    }
+    false
+}
+
+private func ckbP5ClassifierRuneLowerResultValid(knowledge:String):Bool{
+    for(clause in knowledge.replace(";", ". ").split(". ")){
+        let value=clause.trimAscii()
+        if(!value.contains("rune.tolowercase()")){continue}
+        if(value.contains("//")||value.contains("/*")||value.contains("*/")){return false}
+        if(value.contains("rune.tolowercase() returns a rune")||
+            value.contains("rune.tolowercase() produces a rune")||
+            value.contains("rune.tolowercase() result is a rune")||
+            value.contains("result of rune.tolowercase() is a rune")||
+            value.contains("rune.tolowercase(): rune")){return true}
+    }
+    false
 }
 
 private func ckbP5ClassifierReservedKeywordFactsValid(source:String,compiler:String,knowledge:String):Bool{
