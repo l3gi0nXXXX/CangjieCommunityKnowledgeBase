@@ -4,13 +4,14 @@ import std.unittest.*
 import std.unittest.testmacro.*
 import std.collection.*
 import std.env.getVariable
-import std.fs.{Directory, File, Path, exists}
+import std.fs.{Directory, File, Path, exists, canonicalize}
+import std.process.*
 
 @Test
 public class CangjieEvalAbcdeRunnerTest {
     @TestCase
     public func ckg12Ut001ParsesCaseIdGroupsAndSkipClaude(): Unit {
-        let options = parseCkbAbcdeRunnerOptions(["cangjie-eval-abcde", "--case-id", "CJ-HUMANEVAL-007", "--groups", "A,C,E", "--skip-claude"])
+        let options = parseCkbAbcdeRunnerOptions(["cangjie-eval-abcde", "--case-id", "CJ-HUMANEVAL-007", "--groups", "A,C,E", "--claude-bin", "/tmp/claude", "--skip-claude"])
 
         @Expect(options.caseStart, 7)
         @Expect(options.caseEnd, 7)
@@ -19,6 +20,61 @@ public class CangjieEvalAbcdeRunnerTest {
         @Expect(options.groups[0], CkbAbcdeGroups.A)
         @Expect(options.groups[1], CkbAbcdeGroups.C)
         @Expect(options.groups[2], CkbAbcdeGroups.E)
+        @Expect(options.claudeBin, "/tmp/claude")
+    }
+
+    // CLAUDE-BIN-UT/POS/E2E-01
+    @TestCase
+    public func nkUt05ExplicitClaudeExecutableBindsCommandAndSandbox(): Unit {
+        let root = "target/claude-bin-contract-${ckbCoreNowMillis()}"
+        _ = launch("/bin/rm", ["-rf", root]).wait()
+        Directory.create(Path("${root}/install/bin"), recursive: true)
+        Directory.create(Path("${root}/install/lib"), recursive: true)
+        let canonical = "${root}/install/lib/claude.exe"
+        File.writeTo(Path(canonical), "#!/bin/zsh\nexit 0\n".toArray())
+        @Expect(launch("/bin/chmod", ["700", canonical]).wait(), 0)
+        let requested = "${root}/install/bin/claude"
+        @Expect(launch("/bin/ln", ["-s", "../lib/claude.exe", requested]).wait(), 0)
+        let requestedAbsolute = canonicalize(Path(root)).join("install/bin/claude").toString()
+        let executable = ckbAbcdeResolveClaudeExecutable(requestedAbsolute)
+        @Expect(executable.valid, true)
+        @Expect(executable.diagnostic, "ok")
+        @Expect(executable.canonical, canonicalize(Path(canonical)).toString())
+        let command = ckbAbcdeDevelopmentClaudeCommand("/tmp/group", "/tmp/home", "/tmp/profile.sb",
+            executable.canonical, "GLM-5.2", "max", "", "", "--add-dir '/tmp/workspace'",
+            "/tmp/transcript", "/tmp/stderr", 1)
+        @Expect(command.contains(executable.canonical), true)
+        @Expect(command.contains("/opt/homebrew/bin/claude"), false)
+        let profile = ckbAbcdeDevelopmentSandboxProfile(CkbAbcdeGroups.C, "/tmp/workspace", "/tmp/home",
+            "/usr/bin/true", "/tmp/store", "/tmp/case", "/tmp/docs", "/tmp/sdk", "/tmp/mac-sdk",
+            requestedAbsolute, executable.canonical)
+        @Expect(profile.contains(executable.canonical), true)
+        @Expect(profile.contains(requestedAbsolute), true)
+        @Expect(profile.contains("/opt/homebrew/bin/claude"), false)
+    }
+
+    // CLAUDE-BIN-BND/NEG-01
+    @TestCase
+    public func nkBnd05ClaudeExecutableRejectsUnsafeInputsWithoutLeakage(): Unit {
+        let root = "target/claude-bin-negative-${ckbCoreNowMillis()}"
+        _ = launch("/bin/rm", ["-rf", root]).wait()
+        Directory.create(Path("${root}/install/bin"), recursive: true)
+        Directory.create(Path("${root}/outside"), recursive: true)
+        let nonexec = "${root}/install/bin/仓颉🙂-claude"
+        File.writeTo(Path(nonexec), "not executable\n".toArray())
+        @Expect(ckbAbcdeResolveClaudeExecutable("").diagnostic, "claude_executable_missing")
+        @Expect(ckbAbcdeResolveClaudeExecutable("relative/claude").diagnostic, "claude_executable_must_be_absolute")
+        @Expect(ckbAbcdeResolveClaudeExecutable("/private/secret-token/不存在🙂").diagnostic, "claude_executable_not_found")
+        @Expect(ckbAbcdeResolveClaudeExecutable(canonicalize(Path(nonexec)).toString()).diagnostic, "claude_executable_not_executable")
+        let outside = "${root}/outside/claude.exe"
+        File.writeTo(Path(outside), "#!/bin/zsh\nexit 0\n".toArray())
+        @Expect(launch("/bin/chmod", ["700", outside]).wait(), 0)
+        let escaped = "${root}/install/bin/claude"
+        @Expect(launch("/bin/ln", ["-s", "../../outside/claude.exe", escaped]).wait(), 0)
+        let escapedResult = ckbAbcdeResolveClaudeExecutable(canonicalize(Path(root)).join("install/bin/claude").toString())
+        @Expect(escapedResult.diagnostic, "claude_executable_symlink_escape")
+        @Expect(escapedResult.diagnostic.contains("secret-token"), false)
+        @Expect(escapedResult.canonical, "")
     }
 
     @TestCase
@@ -376,8 +432,8 @@ public class CangjieEvalAbcdeRunnerTest {
     @TestCase
     public func nkUt03DevelopmentClaudeUsesEffectiveRuntimeHomeAndFreshSession(): Unit {
         let groupRoot="/tmp/仓颉🙂/group";let runtimeHome="${groupRoot}/runtime-home";let profile="${groupRoot}/开发🙂.sb"
-        let first=ckbAbcdeDevelopmentClaudeCommand(groupRoot,runtimeHome,profile,"GLM-5.2","max"," --max-budget-usd '10'","","--add-dir '/tmp/工作区🙂'","${groupRoot}/one.jsonl","${groupRoot}/one.err",1)
-        let second=ckbAbcdeDevelopmentClaudeCommand(groupRoot,runtimeHome,profile,"GLM-5.2","max","","","--add-dir '/tmp/工作区🙂'","${groupRoot}/two.jsonl","${groupRoot}/two.err",2)
+        let first=ckbAbcdeDevelopmentClaudeCommand(groupRoot,runtimeHome,profile,"/usr/bin/true","GLM-5.2","max"," --max-budget-usd '10'","","--add-dir '/tmp/工作区🙂'","${groupRoot}/one.jsonl","${groupRoot}/one.err",1)
+        let second=ckbAbcdeDevelopmentClaudeCommand(groupRoot,runtimeHome,profile,"/usr/bin/true","GLM-5.2","max","","","--add-dir '/tmp/工作区🙂'","${groupRoot}/two.jsonl","${groupRoot}/two.err",2)
         for(command in [first,second]){@Expect(command.contains("HOME="),true);@Expect(command.contains("TMPDIR="),true);@Expect(command.contains("XDG_CONFIG_HOME="),true);@Expect(command.contains("XDG_CACHE_HOME="),true);@Expect(command.contains("CLAUDE_CONFIG_DIR="),true);@Expect(command.contains(runtimeHome),true);@Expect(command.contains("${runtimeHome}/mcp-config.json"),true);@Expect(command.contains("sandbox-exec -f"),true);@Expect(command.contains(profile),true);@Expect(command.contains("--session-id \"$session_id\""),true);@Expect(command.contains("/.claude/"),false);@Expect(command.contains("~/.claude"),false)}
         @Expect(first.contains("session-id.attempt-1.txt"),true);@Expect(second.contains("session-id.attempt-2.txt"),true);@Expect(first!=second,true)
         @Expect(ckbAbcdeDevelopmentAttemptRuntimeHome(runtimeHome,1),"${runtimeHome}/attempt-1");@Expect(ckbAbcdeDevelopmentAttemptRuntimeHome(runtimeHome,2),"${runtimeHome}/attempt-2")
@@ -406,8 +462,8 @@ public class CangjieEvalAbcdeRunnerTest {
     @TestCase
     public func nkUt04DevelopmentSandboxProfileIsGroupScopedAndUtf8Safe(): Unit {
         let workspace="/tmp/工作区🙂";let home="/tmp/运行时🙂";let caseSrc="/tmp/数据集🙂/CJ-HUMANEVAL-093";let docs="/tmp/文档🙂";let sdk="/tmp/仓颉SDK🙂"
-        let c=ckbAbcdeDevelopmentSandboxProfile(CkbAbcdeGroups.C,workspace,home,"/tmp/ckb-bin","/tmp/ckb-store",caseSrc,docs,sdk,"/tmp/MacSDK🙂")
-        let e=ckbAbcdeDevelopmentSandboxProfile(CkbAbcdeGroups.E,workspace,home,"/tmp/ckb-bin","/tmp/ckb-store",caseSrc,docs,sdk,"/tmp/MacSDK🙂")
+        let c=ckbAbcdeDevelopmentSandboxProfile(CkbAbcdeGroups.C,workspace,home,"/tmp/ckb-bin","/tmp/ckb-store",caseSrc,docs,sdk,"/tmp/MacSDK🙂","/usr/bin/true","/usr/bin/true")
+        let e=ckbAbcdeDevelopmentSandboxProfile(CkbAbcdeGroups.E,workspace,home,"/tmp/ckb-bin","/tmp/ckb-store",caseSrc,docs,sdk,"/tmp/MacSDK🙂","/usr/bin/true","/usr/bin/true")
         for(profile in [c,e]){@Expect(profile.contains("(deny default)"),true);@Expect(profile.contains(workspace),true);@Expect(profile.contains(home),true);@Expect(profile.contains(sdk),true);@Expect(profile.contains("${caseSrc}/tests"),true);@Expect(profile.contains("${caseSrc}/translation"),true);@Expect(profile.contains("CangjieTeacher"),true)}
         @Expect(c.contains(docs),false);@Expect(e.contains(docs),true)
     }
@@ -418,7 +474,7 @@ public class CangjieEvalAbcdeRunnerTest {
         let root="target/development-sandbox-仓颉🙂";let workspace="${root}/workspace";let home="${root}/runtime-home";let caseSrc="${root}/case";let docs="${root}/docs";let store="${root}/store";let bin="${root}/ckb-bin"
         for(path in [workspace,home,"${caseSrc}/tests","${caseSrc}/translation",docs,store]){if(!exists(Path(path))){Directory.create(Path(path),recursive:true)}};File.writeTo(Path(bin),"probe".toArray())
         let sdk=match(getVariable("CANGJIE_HOME")){case Some(value)=>value case None=>""};let macSdk=match(getVariable("SDKROOT")){case Some(value)=>value case None=>""};@Expect(sdk.isEmpty(),false);@Expect(macSdk.isEmpty(),false)
-        let profilePath="${root}/development.sb";File.writeTo(Path(profilePath),ckbAbcdeDevelopmentSandboxProfile(CkbAbcdeGroups.E,workspace,home,bin,store,caseSrc,docs,sdk,macSdk).toArray())
+        let profilePath="${root}/development.sb";File.writeTo(Path(profilePath),ckbAbcdeDevelopmentSandboxProfile(CkbAbcdeGroups.E,workspace,home,bin,store,caseSrc,docs,sdk,macSdk,"/usr/bin/true","/usr/bin/true").toArray())
         let probe=ckbAbcdeDevelopmentSandboxProbeForTest(profilePath,workspace,home,caseSrc,docs,CkbAbcdeGroups.E,sdk,macSdk)
         @Expect(probe.exitCode,0);@Expect(probe.stderr,"");@Expect(probe.stdout.contains("\"ok\":true"),true);@Expect(probe.stdout.contains("\"minimalBuildPassed\":true"),true);@Expect(probe.stdout.contains("\"deniedBroadFilesystemScan\":true"),true);@Expect(probe.stdout.contains("private-probe-value"),false)
     }

@@ -10,7 +10,7 @@ import std.time.DateTime
 public class CangjieHumanEvalP5RunnerTest {
     @TestCase
     public func p5Pos01DevelopmentLineagePromptAndResultAreExplicit(): Unit {
-        let options = parseCkbAbcdeRunnerOptions(["cangjie-eval-abcde", "--run-mode", "development", "--dataset-version", "dataset-v1", "--candidate-version", "candidate-v2", "--knowledge-version", "knowledge-v2", "--model-fingerprint", "glm-5.2-fixed", "--run-id", "run-中😀"])
+        let options = parseCkbAbcdeRunnerOptions(["cangjie-eval-abcde", "--run-mode", "development", "--dataset-version", "dataset-v1", "--candidate-version", "candidate-v2", "--knowledge-version", "knowledge-v2", "--model-fingerprint", "glm-5.2-fixed", "--claude-bin", "/usr/bin/true", "--run-id", "run-中😀"])
         @Expect(ckbAbcdeDevelopmentOptionsDiagnostic(options), "")
         let prompt = renderCkbAbcdePromptForMode(CkbAbcdeGroups.C, "CJ-HUMANEVAL-000", "实现中文 😀", "{}", options.runMode)
         @Expect(prompt.contains("Run mode: development"), true)

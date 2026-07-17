@@ -31,6 +31,7 @@ public class CkbAbcdeRunnerOptions {
     public var ckbBin: String = ""
     public var ckbStore: String = ""
     public var ckbHttpBase: String = "http://127.0.0.1:18890"
+    public var claudeBin: String = ""
     public var docsRoot: String = "/Users/l3gi0n/work/workspace_cangjie/cangjie_docs-release-1.0/docs"
     public var caseStart: Int64 = 0
     public var caseEnd: Int64 = 163
@@ -87,6 +88,27 @@ public class CkbAbcdeCommandResult {
     public var stderr: String = ""
 
     public init() {}
+}
+
+public class CkbAbcdeClaudeExecutable {
+    public var valid: Bool = false
+    public var requested: String = ""
+    public var canonical: String = ""
+    public var diagnostic: String = "claude_executable_missing"
+    public init() {}
+}
+
+public func ckbAbcdeResolveClaudeExecutable(requested: String): CkbAbcdeClaudeExecutable {
+    let result = CkbAbcdeClaudeExecutable()
+    result.requested = requested.trimAscii()
+    if (result.requested == "") { return result }
+    if (!result.requested.startsWith("/")) { result.diagnostic = "claude_executable_must_be_absolute"; return result }
+    if (!exists(Path(result.requested))) { result.diagnostic = "claude_executable_not_found"; return result }
+    result.canonical = try { canonicalize(Path(result.requested)).toString() } catch (_: Exception) { result.diagnostic = "claude_executable_canonicalize_failed"; return result }
+    let installRoot = try { canonicalize(Path(result.requested).parent.parent).toString() } catch (_: Exception) { result.diagnostic = "claude_executable_install_root_invalid"; return result }
+    if (result.canonical != result.requested && result.canonical != installRoot && !result.canonical.startsWith("${installRoot}/")) { result.diagnostic = "claude_executable_symlink_escape"; result.canonical = ""; return result }
+    if (ckbAbcdeRunShell("/bin/test -x ${ckbAbcdeShellQuote(result.canonical)}", "").exitCode != 0) { result.diagnostic = "claude_executable_not_executable"; result.canonical = ""; return result }
+    result.valid = true; result.diagnostic = "ok"; result
 }
 
 public class CkbAbcdeSampleAssessment {
@@ -248,6 +270,11 @@ public func parseCkbAbcdeRunnerOptions(args: Array<String>): CkbAbcdeRunnerOptio
             i += 2
             continue
         }
+        if (arg == "--claude-bin" && i + 1 < args.size) {
+            options.claudeBin = args[i + 1].trimAscii()
+            i += 2
+            continue
+        }
         if (arg == "--docs-root" && i + 1 < args.size) {
             options.docsRoot = args[i + 1].trimAscii()
             i += 2
@@ -365,7 +392,7 @@ public func runCangjieEvalAbcde(args: Array<String>): Int64 {
 public func ckbAbcdeStrictUsageDiagnostic(args: Array<String>): String {
     let flags = HashSet<String>()
     let valued = HashSet<String>()
-    for (name in ["--run-mode","--dataset-version","--candidate-version","--knowledge-version","--model-fingerprint","--certification-preflight","--certification-run-manifest","--expected-model-version","--provider-identity-hash","--provider-identity-artifact","--model-timeout-seconds","--model-effort","--model-max-budget-usd","--run-id","--repo-root","--runs-root","--dataset-root","--manifest","--ckb-bin","--ckb-store","--ckb-http-base","--docs-root","--case-start","--case-end","--case-id","--groups","--config","--store"]) { valued.add(name) }
+    for (name in ["--run-mode","--dataset-version","--candidate-version","--knowledge-version","--model-fingerprint","--certification-preflight","--certification-run-manifest","--expected-model-version","--provider-identity-hash","--provider-identity-artifact","--model-timeout-seconds","--model-effort","--model-max-budget-usd","--run-id","--repo-root","--runs-root","--dataset-root","--manifest","--ckb-bin","--ckb-store","--ckb-http-base","--claude-bin","--docs-root","--case-start","--case-end","--case-id","--groups","--config","--store"]) { valued.add(name) }
     for (name in ["--help","-h","--preflight-only","--skip-claude"]) { flags.add(name) }
     let seen = HashSet<String>(); var commandSeen = false; var i: Int64 = 0
     while (i < args.size) {
@@ -741,7 +768,7 @@ private func ckbAbcdeRunClaude(options: CkbAbcdeRunnerOptions, group: String, gr
             ckbAbcdeAppendText("${groupRoot}/workspace-restores.jsonl", restoreJson + "\n")
             if (!restoreJson.contains("\"restored\":true")) { let blocked = CkbAbcdeCommandResult(); blocked.exitCode = 125; blocked.stderr = "workspace_restore_failed"; return blocked }
         }
-        let current = ckbAbcdeRunClaudeOnce(group, groupRoot, workspace, runtimeHome, docsRoot, caseSrc, options.ckbBin, options.ckbStore, transportAttempt, options.expectedModelVersion, options.modelTimeoutSeconds, options.modelEffort, options.modelMaxBudgetUsd)
+        let current = ckbAbcdeRunClaudeOnce(group, groupRoot, workspace, runtimeHome, docsRoot, caseSrc, options.ckbBin, options.ckbStore, options.claudeBin, transportAttempt, options.expectedModelVersion, options.modelTimeoutSeconds, options.modelEffort, options.modelMaxBudgetUsd)
         last = current
         let transcript = ckbAbcdeReadText("${groupRoot}/claude-transcript.attempt-${transportAttempt}.jsonl")
         let assessment = ckbAbcdeAssessSample(transcript, options.expectedModelVersion)
@@ -785,21 +812,24 @@ private func ckbAbcdePublishClaudeSampleArtifacts(groupRoot: String, transportAt
 // Certification has exactly one agent invocation. Provider/SDK retry and
 // fallback are separately prohibited by the trusted P6 manifest and P7 gate.
 private func ckbAbcdeRunClaudeCertification(options:CkbAbcdeRunnerOptions,group:String,groupRoot:String,workspace:String,runtimeHome:String,caseSrc:String):CkbAbcdeCommandResult{
+    let claude=ckbAbcdeResolveClaudeExecutable(options.claudeBin)
+    if(!claude.valid){let blocked=CkbAbcdeCommandResult();blocked.exitCode=126;blocked.stderr=claude.diagnostic;return blocked}
     let profilePath="${groupRoot}/certification.sb"
-    ckbAbcdeWriteText(profilePath,ckbAbcdeCertificationSandboxProfile(workspace,runtimeHome,options.ckbBin,options.ckbStore,caseSrc))
+    ckbAbcdeWriteText(profilePath,ckbAbcdeCertificationSandboxProfile(workspace,runtimeHome,options.ckbBin,options.ckbStore,caseSrc,claude.requested,claude.canonical))
     let probe=ckbAbcdeCertificationSandboxProbe(profilePath,workspace,runtimeHome,caseSrc)
     ckbAbcdeWriteText("${groupRoot}/sandbox-probe.json",probe.stdout)
     if(probe.exitCode!=0){let blocked=CkbAbcdeCommandResult();blocked.exitCode=126;blocked.stderr="certification_sandbox_probe_failed";ckbAbcdeWriteText("${groupRoot}/claude-transcript.jsonl","");ckbAbcdeWriteText("${groupRoot}/claude.stdout.log","");ckbAbcdeWriteText("${groupRoot}/claude.stderr.log",blocked.stderr);return blocked}
     ckbAbcdeWriteText("${groupRoot}/runtime-policy.json","{\"model\":\"${ckbAbcdeJsonEscape(options.expectedModelVersion)}\",\"sampleAttempts\":1,\"internalTurns\":\"audited_not_gated\",\"agentAttempts\":1,\"providerRetries\":0,\"sdkRetries\":0,\"fallbackEnabled\":false}\n")
-    let current=ckbAbcdeRunClaudeOnceInCertificationSandbox(group,groupRoot,workspace,runtimeHome,profilePath,options.expectedModelVersion,options.modelTimeoutSeconds)
+    let current=ckbAbcdeRunClaudeOnceInCertificationSandbox(group,groupRoot,workspace,runtimeHome,profilePath,claude.canonical,options.expectedModelVersion,options.modelTimeoutSeconds)
     ckbAbcdeAppendText("${groupRoot}/claude-attempts.jsonl","{\"attempt\":1,\"exitCode\":${current.exitCode},\"retryUsed\":false,\"fallbackUsed\":false}\n")
     ckbAbcdePublishClaudeAttemptArtifacts(groupRoot,1)
     current
 }
 
-public func ckbAbcdeCertificationSandboxProfile(workspace:String,runtimeHome:String,ckbBin:String,ckbStore:String,caseSrc:String):String{
+public func ckbAbcdeCertificationSandboxProfile(workspace:String,runtimeHome:String,ckbBin:String,ckbStore:String,caseSrc:String,claudeRequested:String,claudeCanonical:String):String{
     let w=ckbAbcdeSandboxPath(workspace);let h=ckbAbcdeSandboxPath(runtimeHome);let bin=ckbAbcdeSandboxPath(ckbBin);let store=ckbAbcdeSandboxPath(ckbStore);let tests=ckbAbcdeSandboxPath("${caseSrc}/tests");let reference=ckbAbcdeSandboxPath("${caseSrc}/translation");let teacher=ckbAbcdeSandboxPath("/Users/l3gi0n/work/workspace_cangjie/CangjieTeacher")
-    "(version 1)\n(import \"system.sb\")\n(deny default)\n(allow process*)\n(allow sysctl-read)\n(allow mach-lookup)\n(allow network*)\n(allow file-read* (literal \"/opt/homebrew/bin/claude\") (subpath \"/opt/homebrew/lib/node_modules\") (subpath \"${w}\") (subpath \"${h}\") (literal \"${bin}\") (subpath \"${store}\"))\n(allow file-write* (subpath \"${w}\") (subpath \"${h}\"))\n(deny file-read* (subpath \"${tests}\") (subpath \"${reference}\") (subpath \"${teacher}\"))\n"
+    let requested=ckbAbcdeSandboxLiteral(claudeRequested);let canonical=ckbAbcdeSandboxLiteral(claudeCanonical);let metadata=ckbAbcdeSandboxMetadataPaths(claudeRequested)+ckbAbcdeSandboxMetadataPaths(claudeCanonical)
+    "(version 1)\n(import \"system.sb\")\n(deny default)\n(allow process*)\n(allow sysctl-read)\n(allow mach-lookup)\n(allow network*)\n(allow file-read-metadata${metadata})\n(allow file-read* (literal \"${requested}\") (literal \"${canonical}\") (subpath \"${w}\") (subpath \"${h}\") (literal \"${bin}\") (subpath \"${store}\"))\n(allow file-write* (subpath \"${w}\") (subpath \"${h}\"))\n(deny file-read* (subpath \"${tests}\") (subpath \"${reference}\") (subpath \"${teacher}\"))\n"
 }
 
 private func ckbAbcdeSandboxLiteral(value:String):String{value.replace("\\","\\\\").replace("\"","\\\"")}
@@ -815,11 +845,12 @@ private func ckbAbcdeCertificationSandboxProbe(profilePath:String,workspace:Stri
 }
 public func ckbAbcdeCertificationSandboxProbeForTest(profilePath:String,workspace:String,runtimeHome:String,caseSrc:String):CkbAbcdeCommandResult{ckbAbcdeCertificationSandboxProbe(profilePath,workspace,runtimeHome,caseSrc)}
 
-public func ckbAbcdeDevelopmentSandboxProfile(group:String,workspace:String,runtimeHome:String,ckbBin:String,ckbStore:String,caseSrc:String,docsRoot:String,cangjieHome:String,sdkRoot:String):String{
+public func ckbAbcdeDevelopmentSandboxProfile(group:String,workspace:String,runtimeHome:String,ckbBin:String,ckbStore:String,caseSrc:String,docsRoot:String,cangjieHome:String,sdkRoot:String,claudeRequested:String,claudeCanonical:String):String{
     let w=ckbAbcdeSandboxPath(workspace);let h=ckbAbcdeSandboxPath(runtimeHome);let bin=ckbAbcdeSandboxPath(ckbBin);let store=ckbAbcdeSandboxPath(ckbStore);let sdk=ckbAbcdeSandboxPath(cangjieHome);let macSdk=ckbAbcdeSandboxPath(sdkRoot);let tests=ckbAbcdeSandboxPath("${caseSrc}/tests");let reference=ckbAbcdeSandboxPath("${caseSrc}/translation");let teacher=ckbAbcdeSandboxPath("/Users/l3gi0n/work/workspace_cangjie/CangjieTeacher")
     let docs=if(group==CkbAbcdeGroups.E){" (subpath \"${ckbAbcdeSandboxPath(docsRoot)}\")"}else{""}
-    let docsMetadata=if(group==CkbAbcdeGroups.E){ckbAbcdeSandboxMetadataPaths(docsRoot)}else{""};let metadata=ckbAbcdeSandboxMetadataPaths(workspace)+ckbAbcdeSandboxMetadataPaths(runtimeHome)+ckbAbcdeSandboxMetadataPaths(ckbBin)+ckbAbcdeSandboxMetadataPaths(ckbStore)+ckbAbcdeSandboxMetadataPaths(cangjieHome)+ckbAbcdeSandboxMetadataPaths(sdkRoot)+docsMetadata
-    "(version 1)\n(import \"system.sb\")\n(deny default)\n(allow process*)\n(allow process-info* (target self))\n(allow sysctl-read)\n(allow mach-lookup)\n(allow network*)\n(allow file-read-metadata${metadata} (literal \"/usr\") (literal \"/usr/bin\") (literal \"/usr/bin/ar\"))\n(allow file-read* (literal \"/usr\") (literal \"/usr/bin\") (literal \"/usr/bin/ar\") (literal \"/opt/homebrew/bin/claude\") (subpath \"/opt/homebrew/lib/node_modules\") (subpath \"/opt/homebrew/opt/openssl@3/lib\") (subpath \"/opt/homebrew/opt/openssl@3.5/lib\") (subpath \"${w}\") (subpath \"${h}\") (literal \"${bin}\") (subpath \"${store}\") (subpath \"${sdk}\") (subpath \"${macSdk}\")${docs})\n(allow file-write* (subpath \"${w}\") (subpath \"${h}\"))\n(deny file-read* (literal \"${tests}\") (subpath \"${tests}\") (literal \"${reference}\") (subpath \"${reference}\") (literal \"${teacher}\") (subpath \"${teacher}\"))\n"
+    let requested=ckbAbcdeSandboxLiteral(claudeRequested);let canonical=ckbAbcdeSandboxLiteral(claudeCanonical)
+    let docsMetadata=if(group==CkbAbcdeGroups.E){ckbAbcdeSandboxMetadataPaths(docsRoot)}else{""};let metadata=ckbAbcdeSandboxMetadataPaths(workspace)+ckbAbcdeSandboxMetadataPaths(runtimeHome)+ckbAbcdeSandboxMetadataPaths(ckbBin)+ckbAbcdeSandboxMetadataPaths(ckbStore)+ckbAbcdeSandboxMetadataPaths(cangjieHome)+ckbAbcdeSandboxMetadataPaths(sdkRoot)+ckbAbcdeSandboxMetadataPaths(claudeRequested)+ckbAbcdeSandboxMetadataPaths(claudeCanonical)+docsMetadata
+    "(version 1)\n(import \"system.sb\")\n(deny default)\n(allow process*)\n(allow process-info* (target self))\n(allow sysctl-read)\n(allow mach-lookup)\n(allow network*)\n(allow file-read-metadata${metadata} (literal \"/usr\") (literal \"/usr/bin\") (literal \"/usr/bin/ar\"))\n(allow file-read* (literal \"/usr\") (literal \"/usr/bin\") (literal \"/usr/bin/ar\") (literal \"${requested}\") (literal \"${canonical}\") (subpath \"/opt/homebrew/opt/openssl@3/lib\") (subpath \"/opt/homebrew/opt/openssl@3.5/lib\") (subpath \"${w}\") (subpath \"${h}\") (literal \"${bin}\") (subpath \"${store}\") (subpath \"${sdk}\") (subpath \"${macSdk}\")${docs})\n(allow file-write* (subpath \"${w}\") (subpath \"${h}\"))\n(deny file-read* (literal \"${tests}\") (subpath \"${tests}\") (literal \"${reference}\") (subpath \"${reference}\") (literal \"${teacher}\") (subpath \"${teacher}\"))\n"
 }
 
 private func ckbAbcdeSandboxMetadataAncestors(path:String):String{var current=try{canonicalize(Path(path)).parent}catch(_:Exception){Path(path).parent};var out="";while(current.toString()!="/"&&current.toString()!="."&&current.toString()!=""){out=" (literal \"${ckbAbcdeSandboxLiteral(current.toString())}\")"+out;current=current.parent};out}
@@ -837,15 +868,15 @@ private func ckbAbcdeDevelopmentSandboxProbe(profilePath:String,workspace:String
 }
 public func ckbAbcdeDevelopmentSandboxProbeForTest(profilePath:String,workspace:String,runtimeHome:String,caseSrc:String,docsRoot:String,group:String,cangjieHome:String,sdkRoot:String):CkbAbcdeCommandResult{ckbAbcdeDevelopmentSandboxProbe(profilePath,workspace,runtimeHome,caseSrc,docsRoot,group,cangjieHome,sdkRoot)}
 
-private func ckbAbcdeRunClaudeOnceInCertificationSandbox(group:String,groupRoot:String,workspace:String,runtimeHome:String,profilePath:String,expectedModel:String,modelTimeoutSeconds:Int64):CkbAbcdeCommandResult{
+private func ckbAbcdeRunClaudeOnceInCertificationSandbox(group:String,groupRoot:String,workspace:String,runtimeHome:String,profilePath:String,claudeExecutable:String,expectedModel:String,modelTimeoutSeconds:Int64):CkbAbcdeCommandResult{
     let transcript="${groupRoot}/claude-transcript.attempt-1.jsonl";let stderr="${groupRoot}/claude.attempt-1.stderr.log"
     ckbAbcdeWriteText("${runtimeHome}/mcp-config.json",ckbAbcdeReadText("${groupRoot}/mcp-config.json"))
-    let command=ckbAbcdeCertificationClaudeCommand(groupRoot,runtimeHome,profilePath,expectedModel,transcript,stderr)
+    let command=ckbAbcdeCertificationClaudeCommand(groupRoot,runtimeHome,profilePath,claudeExecutable,expectedModel,transcript,stderr)
     let script=ckbAbcdeClaudeTimeoutShell(command,stderr,modelTimeoutSeconds)+"; exit $code";ckbAbcdeRunShell(script,workspace)
 }
-public func ckbAbcdeCertificationClaudeCommand(groupRoot:String,runtimeHome:String,profilePath:String,expectedModel:String,transcript:String,stderr:String):String{"session_id=$(uuidgen | tr '[:upper:]' '[:lower:]'); printf '%s' \"$session_id\" > ${ckbAbcdeShellQuote("${groupRoot}/session-id.txt")}; HOME=${ckbAbcdeShellQuote(runtimeHome)} XDG_CONFIG_HOME=${ckbAbcdeShellQuote("${runtimeHome}/xdg-config")} XDG_CACHE_HOME=${ckbAbcdeShellQuote("${runtimeHome}/xdg-cache")} CLAUDE_CONFIG_DIR=${ckbAbcdeShellQuote("${runtimeHome}/claude-config")} ANTHROPIC_MAX_RETRIES=0 CLAUDE_CODE_MAX_RETRIES=0 sandbox-exec -f ${ckbAbcdeShellQuote(profilePath)} /opt/homebrew/bin/claude -p --verbose --no-session-persistence --session-id \"$session_id\" --model ${ckbAbcdeShellQuote(expectedModel)} --output-format stream-json --strict-mcp-config --mcp-config ${ckbAbcdeShellQuote("${runtimeHome}/mcp-config.json")} < ${ckbAbcdeShellQuote("${groupRoot}/prompt.final.md")} > ${ckbAbcdeShellQuote(transcript)} 2> ${ckbAbcdeShellQuote(stderr)}"}
+public func ckbAbcdeCertificationClaudeCommand(groupRoot:String,runtimeHome:String,profilePath:String,claudeExecutable:String,expectedModel:String,transcript:String,stderr:String):String{"session_id=$(uuidgen | tr '[:upper:]' '[:lower:]'); printf '%s' \"$session_id\" > ${ckbAbcdeShellQuote("${groupRoot}/session-id.txt")}; HOME=${ckbAbcdeShellQuote(runtimeHome)} XDG_CONFIG_HOME=${ckbAbcdeShellQuote("${runtimeHome}/xdg-config")} XDG_CACHE_HOME=${ckbAbcdeShellQuote("${runtimeHome}/xdg-cache")} CLAUDE_CONFIG_DIR=${ckbAbcdeShellQuote("${runtimeHome}/claude-config")} ANTHROPIC_MAX_RETRIES=0 CLAUDE_CODE_MAX_RETRIES=0 sandbox-exec -f ${ckbAbcdeShellQuote(profilePath)} ${ckbAbcdeShellQuote(claudeExecutable)} -p --verbose --no-session-persistence --session-id \"$session_id\" --model ${ckbAbcdeShellQuote(expectedModel)} --output-format stream-json --strict-mcp-config --mcp-config ${ckbAbcdeShellQuote("${runtimeHome}/mcp-config.json")} < ${ckbAbcdeShellQuote("${groupRoot}/prompt.final.md")} > ${ckbAbcdeShellQuote(transcript)} 2> ${ckbAbcdeShellQuote(stderr)}"}
 
-private func ckbAbcdeRunClaudeOnce(group: String, groupRoot: String, workspace: String, runtimeHome: String, docsRoot: String, caseSrc: String, ckbBin: String, ckbStore: String, attempt: Int64, expectedModel: String, modelTimeoutSeconds: Int64, modelEffort: String, modelMaxBudgetUsd: String): CkbAbcdeCommandResult {
+private func ckbAbcdeRunClaudeOnce(group: String, groupRoot: String, workspace: String, runtimeHome: String, docsRoot: String, caseSrc: String, ckbBin: String, ckbStore: String, claudeBin: String, attempt: Int64, expectedModel: String, modelTimeoutSeconds: Int64, modelEffort: String, modelMaxBudgetUsd: String): CkbAbcdeCommandResult {
     var addDir = "--add-dir ${ckbAbcdeShellQuote(workspace)}"
     if (group == CkbAbcdeGroups.E) {
         addDir += " --add-dir ${ckbAbcdeShellQuote(docsRoot)}"
@@ -861,22 +892,24 @@ private func ckbAbcdeRunClaudeOnce(group: String, groupRoot: String, workspace: 
     if(cangjieHome==""||!exists(Path(cangjieHome))){let blocked=CkbAbcdeCommandResult();blocked.exitCode=126;blocked.stderr="development_sandbox_cangjie_home_missing";return blocked}
     let sdkRoot=match(getVariable("SDKROOT")){case Some(value)=>value case None=>""}
     if(sdkRoot==""||!exists(Path(sdkRoot))){let blocked=CkbAbcdeCommandResult();blocked.exitCode=126;blocked.stderr="development_sandbox_sdk_root_missing";return blocked}
+    let claude=ckbAbcdeResolveClaudeExecutable(claudeBin)
+    if(!claude.valid){let blocked=CkbAbcdeCommandResult();blocked.exitCode=126;blocked.stderr=claude.diagnostic;return blocked}
     let profilePath="${groupRoot}/development.attempt-${attempt}.sb"
-    ckbAbcdeWriteText(profilePath,ckbAbcdeDevelopmentSandboxProfile(group,workspace,attemptRuntimeHome,ckbBin,ckbStore,caseSrc,docsRoot,cangjieHome,sdkRoot))
+    ckbAbcdeWriteText(profilePath,ckbAbcdeDevelopmentSandboxProfile(group,workspace,attemptRuntimeHome,ckbBin,ckbStore,caseSrc,docsRoot,cangjieHome,sdkRoot,claude.requested,claude.canonical))
     let probe=ckbAbcdeDevelopmentSandboxProbe(profilePath,workspace,attemptRuntimeHome,caseSrc,docsRoot,group,cangjieHome,sdkRoot)
     ckbAbcdeWriteText("${groupRoot}/sandbox-probe.attempt-${attempt}.json",probe.stdout);ckbAbcdeWriteText("${groupRoot}/sandbox-probe.json",probe.stdout)
     if(probe.exitCode!=0){let blocked=CkbAbcdeCommandResult();blocked.exitCode=126;blocked.stderr="development_sandbox_probe_failed";return blocked}
     ckbAbcdeWriteText("${groupRoot}/model-transport-profile.json", "{\"effort\":\"${ckbAbcdeJsonEscape(modelEffort)}\",\"maxBudgetUsd\":\"${ckbAbcdeJsonEscape(modelMaxBudgetUsd)}\",\"timeoutSeconds\":${modelTimeoutSeconds},\"attempt\":${attempt}}\n")
-    let command = ckbAbcdeDevelopmentClaudeCommand(groupRoot,attemptRuntimeHome,profilePath,expectedModel,modelEffort,budgetFlag,toolLimit,addDir,transcript,stderr,attempt)
+    let command = ckbAbcdeDevelopmentClaudeCommand(groupRoot,attemptRuntimeHome,profilePath,claude.canonical,expectedModel,modelEffort,budgetFlag,toolLimit,addDir,transcript,stderr,attempt)
     let script = ckbAbcdeClaudeTimeoutShell(command, stderr, modelTimeoutSeconds) + "; cp ${ckbAbcdeShellQuote(transcript)} ${ckbAbcdeShellQuote("${groupRoot}/claude-transcript.jsonl")} 2>/dev/null || true; cp ${ckbAbcdeShellQuote(transcript)} ${ckbAbcdeShellQuote("${groupRoot}/claude.stdout.log")} 2>/dev/null || true; cp ${ckbAbcdeShellQuote(stderr)} ${ckbAbcdeShellQuote("${groupRoot}/claude.stderr.log")} 2>/dev/null || true; exit $code"
     ckbAbcdeRunShell(script, workspace)
 }
 
 public func ckbAbcdeDevelopmentAttemptRuntimeHome(runtimeHome:String,attempt:Int64):String{"${runtimeHome}/attempt-${attempt}"}
 
-public func ckbAbcdeDevelopmentClaudeCommand(groupRoot:String,runtimeHome:String,profilePath:String,expectedModel:String,modelEffort:String,budgetFlag:String,toolLimit:String,addDir:String,transcript:String,stderr:String,attempt:Int64):String{
+public func ckbAbcdeDevelopmentClaudeCommand(groupRoot:String,runtimeHome:String,profilePath:String,claudeExecutable:String,expectedModel:String,modelEffort:String,budgetFlag:String,toolLimit:String,addDir:String,transcript:String,stderr:String,attempt:Int64):String{
     let attemptSession="${groupRoot}/session-id.attempt-${attempt}.txt";let currentSession="${groupRoot}/session-id.txt"
-    "session_id=$(uuidgen | tr '[:upper:]' '[:lower:]'); printf '%s' \"$session_id\" > ${ckbAbcdeShellQuote(attemptSession)}; cp ${ckbAbcdeShellQuote(attemptSession)} ${ckbAbcdeShellQuote(currentSession)}; HOME=${ckbAbcdeShellQuote(runtimeHome)} TMPDIR=${ckbAbcdeShellQuote("${runtimeHome}/tmp")} XDG_CONFIG_HOME=${ckbAbcdeShellQuote("${runtimeHome}/xdg-config")} XDG_CACHE_HOME=${ckbAbcdeShellQuote("${runtimeHome}/xdg-cache")} CLAUDE_CONFIG_DIR=${ckbAbcdeShellQuote("${runtimeHome}/claude-config")} sandbox-exec -f ${ckbAbcdeShellQuote(profilePath)} /opt/homebrew/bin/claude -p --verbose --no-session-persistence --session-id \"$session_id\" --model ${ckbAbcdeShellQuote(expectedModel)} --effort ${ckbAbcdeShellQuote(modelEffort)}${budgetFlag} --output-format stream-json --strict-mcp-config --mcp-config ${ckbAbcdeShellQuote("${runtimeHome}/mcp-config.json")} ${ckbAbcdeClaudePermissionFlag()} ${toolLimit} ${addDir} < ${ckbAbcdeShellQuote("${groupRoot}/prompt.final.md")} > ${ckbAbcdeShellQuote(transcript)} 2> ${ckbAbcdeShellQuote(stderr)}"
+    "session_id=$(uuidgen | tr '[:upper:]' '[:lower:]'); printf '%s' \"$session_id\" > ${ckbAbcdeShellQuote(attemptSession)}; cp ${ckbAbcdeShellQuote(attemptSession)} ${ckbAbcdeShellQuote(currentSession)}; HOME=${ckbAbcdeShellQuote(runtimeHome)} TMPDIR=${ckbAbcdeShellQuote("${runtimeHome}/tmp")} XDG_CONFIG_HOME=${ckbAbcdeShellQuote("${runtimeHome}/xdg-config")} XDG_CACHE_HOME=${ckbAbcdeShellQuote("${runtimeHome}/xdg-cache")} CLAUDE_CONFIG_DIR=${ckbAbcdeShellQuote("${runtimeHome}/claude-config")} sandbox-exec -f ${ckbAbcdeShellQuote(profilePath)} ${ckbAbcdeShellQuote(claudeExecutable)} -p --verbose --no-session-persistence --session-id \"$session_id\" --model ${ckbAbcdeShellQuote(expectedModel)} --effort ${ckbAbcdeShellQuote(modelEffort)}${budgetFlag} --output-format stream-json --strict-mcp-config --mcp-config ${ckbAbcdeShellQuote("${runtimeHome}/mcp-config.json")} ${ckbAbcdeClaudePermissionFlag()} ${toolLimit} ${addDir} < ${ckbAbcdeShellQuote("${groupRoot}/prompt.final.md")} > ${ckbAbcdeShellQuote(transcript)} 2> ${ckbAbcdeShellQuote(stderr)}"
 }
 
 private func ckbAbcdePublishClaudeAttemptArtifacts(groupRoot: String, attemptCount: Int64): Unit {
@@ -1210,7 +1243,8 @@ private func ckbAbcdePreflight(options: CkbAbcdeRunnerOptions, runRoot: String):
     result.add("manifest", exists(Path(options.manifestPath)) && ckbAbcdeManifestLineCount(options.manifestPath) == 164, "lines=${ckbAbcdeManifestLineCount(options.manifestPath)}")
     result.add("humaneval_cases", ckbAbcdeCaseLayoutOk(options.datasetRoot), "CJ-HUMANEVAL-000..163 required files")
     result.add("docs_root", exists(Path(options.docsRoot)) && exists(Path("${options.docsRoot}/dev-guide/summary_cjnative_EN.md")) && exists(Path("${options.docsRoot}/tools/summary_cjnative_EN.md")), options.docsRoot)
-    result.add("claude_cli", ckbAbcdeRunShell("command -v claude >/dev/null && claude --version >/dev/null", "").exitCode == 0, "claude command available")
+    let claudeExecutable = ckbAbcdeResolveClaudeExecutable(options.claudeBin)
+    result.add("claude_cli", claudeExecutable.valid && ckbAbcdeRunShell("${ckbAbcdeShellQuote(claudeExecutable.canonical)} --version >/dev/null", "").exitCode == 0, claudeExecutable.diagnostic)
     result.add("claude_glm52_settings", ckbAbcdeClaudeSettingsLooksGlm52(), "~/.claude/settings.json model keys")
     result.add("cjpm_cli", ckbAbcdeRunShell("command -v cjpm >/dev/null && cjpm --version >/dev/null", "").exitCode == 0, "cjpm command available")
     result.add("ckb_http_health", ckbAbcdeRunShell(ckbAbcdePreflightHttpHealthCommand(options.ckbHttpBase), "").exitCode == 0, options.ckbHttpBase)
@@ -1682,6 +1716,8 @@ public func ckbAbcdeDevelopmentOptionsDiagnostic(options: CkbAbcdeRunnerOptions)
     if (!options.explicitRunMode) { return "" }
     if (options.runMode != "development" && options.runMode != "certification") { return "run_mode_invalid" }
     if (options.datasetVersion.trimAscii() == "" || options.knowledgeVersion.trimAscii() == "" || options.modelFingerprint.trimAscii() == "") { return "frozen_lineage_required" }
+    if (options.claudeBin.trimAscii() == "") { return "claude_bin_required" }
+    if (!options.claudeBin.startsWith("/")) { return "claude_bin_must_be_absolute" }
     if (options.runMode == "development" && options.candidateVersion.trimAscii() == "") { return "candidate_version_required" }
     if (options.runMode == "development" && options.expectedModelVersion != "GLM-5.2") { return "development_requires_glm_5_2" }
     if (options.runMode == "development" && ckbAbcdeModelEffortDiagnostic(options.modelEffort) != "ok") { return ckbAbcdeModelEffortDiagnostic(options.modelEffort) }
@@ -2313,5 +2349,5 @@ public func ckbAbcdeNativeTlsBootstrapScript(command: String, args: Array<String
 }
 
 private func ckbAbcdeUsage(): String {
-    "Usage: cangjie_community_knowledge_base cangjie-eval-abcde --run-mode <development|certification> --run-id <id> --dataset-version <version> --knowledge-version <version> --model-fingerprint <sha256> [--candidate-version <version>] [--model-timeout-seconds <1..3600, default 180>] [--model-effort <low|medium|high|xhigh|max> --model-max-budget-usd <positive>] [--case-id CJ-HUMANEVAL-000|--case-start 0 --case-end 163] [--groups C|D] [--runs-root <path>] [--ckb-http-base <url>] [--ckb-bin <path>] [--ckb-store <path>] [--dataset-root <path>] [--manifest <authority.jsonl>] [--docs-root <path>] [--certification-preflight <preflight.json> --certification-run-manifest <run-manifest.json> --expected-model-version <exact> --provider-identity-hash <sha256> --provider-identity-artifact <redacted.json>]\n"
+    "Usage: cangjie_community_knowledge_base cangjie-eval-abcde --run-mode <development|certification> --run-id <id> --dataset-version <version> --knowledge-version <version> --model-fingerprint <sha256> --claude-bin <absolute-executable> [--candidate-version <version>] [--model-timeout-seconds <1..3600, default 180>] [--model-effort <low|medium|high|xhigh|max> --model-max-budget-usd <positive>] [--case-id CJ-HUMANEVAL-000|--case-start 0 --case-end 163] [--groups C|D] [--runs-root <path>] [--ckb-http-base <url>] [--ckb-bin <path>] [--ckb-store <path>] [--dataset-root <path>] [--manifest <authority.jsonl>] [--docs-root <path>] [--certification-preflight <preflight.json> --certification-run-manifest <run-manifest.json> --expected-model-version <exact> --provider-identity-hash <sha256> --provider-identity-artifact <redacted.json>]\n"
 }
