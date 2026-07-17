@@ -5,7 +5,7 @@ import std.math.*
 
 
 func listOfInt64(values: Array<Int64>): ArrayList<Int64> { let out = ArrayList<Int64>(); for (v in values) { out.add(v) }; out }
-func listOfFloat64(values: Array<Float64>): ArrayList<Float64> { let out = ArrayList<Float64>(); for (v in values) { out.add(v) }; out }
+func listOfEvalInt(values: Array<Int64>): ArrayList<EvalValue> { let out = ArrayList<EvalValue>(); for (v in values) { out.add(evalInt(v)) }; out }
 func listOfString(values: Array<String>): ArrayList<String> { let out = ArrayList<String>(); for (v in values) { out.add(v) }; out }
 func listOfBool(values: Array<Bool>): ArrayList<Bool> { let out = ArrayList<Bool>(); for (v in values) { out.add(v) }; out }
 func listOfEvalValue(values: Array<EvalValue>): ArrayList<EvalValue> { let out = ArrayList<EvalValue>(); for (v in values) { out.add(v) }; out }
@@ -34,13 +34,15 @@ func expectStringInt64Map(actual: HashMap<String, Int64>, expected: HashMap<Stri
 
 
 main(): Int64 {
-    expectInt64(double_the_difference(listOfFloat64([])), 0, "CJ-HUMANEVAL-151_l4_c001")
-    expectInt64(double_the_difference(listOfFloat64([5.0, 4.0])), 25, "CJ-HUMANEVAL-151_l5_c002")
-    expectInt64(double_the_difference(listOfFloat64([0.1, 0.2, 0.3])), 0, "CJ-HUMANEVAL-151_l6_c003")
-    expectInt64(double_the_difference(listOfFloat64([-10.0, -20.0, -30.0])), 0, "CJ-HUMANEVAL-151_l7_c004")
-    expectInt64(double_the_difference(listOfFloat64([-1.0, -2.0, 8.0])), 0, "CJ-HUMANEVAL-151_l11_c005")
-    expectInt64(double_the_difference(listOfFloat64([0.2, 3.0, 5.0])), 34, "CJ-HUMANEVAL-151_l12_c006")
-    expectInt64(double_the_difference(listOfFloat64([-99.0, -97.0, -95.0, -93.0, -91.0, -89.0, -87.0, -85.0, -83.0, -81.0, -79.0, -77.0, -75.0, -73.0, -71.0, -69.0, -67.0, -65.0, -63.0, -61.0, -59.0, -57.0, -55.0, -53.0, -51.0, -49.0, -47.0, -45.0, -43.0, -41.0, -39.0, -37.0, -35.0, -33.0, -31.0, -29.0, -27.0, -25.0, -23.0, -21.0, -19.0, -17.0, -15.0, -13.0, -11.0, -9.0, -7.0, -5.0, -3.0, -1.0, 1.0, 3.0, 5.0, 7.0, 9.0, 11.0, 13.0, 15.0, 17.0, 19.0, 21.0, 23.0, 25.0, 27.0, 29.0, 31.0, 33.0, 35.0, 37.0, 39.0, 41.0, 43.0, 45.0, 47.0, 49.0, 51.0, 53.0, 55.0, 57.0, 59.0, 61.0, 63.0, 65.0, 67.0, 69.0, 71.0, 73.0, 75.0, 77.0, 79.0, 81.0, 83.0, 85.0, 87.0, 89.0, 91.0, 93.0, 95.0, 97.0, 99.0])), 166650, "CJ-HUMANEVAL-151_l15_c007")
+    expectInt64(double_the_difference(listOfEvalValue([])), 0, "CJ-HUMANEVAL-151_l4_c001")
+    expectInt64(double_the_difference(listOfEvalInt([5, 4])), 25, "CJ-HUMANEVAL-151_l5_c002")
+    expectInt64(double_the_difference(listOfEvalValue([evalFloat(0.1), evalFloat(0.2), evalFloat(0.3)])), 0, "CJ-HUMANEVAL-151_l6_c003")
+    expectInt64(double_the_difference(listOfEvalInt([-10, -20, -30])), 0, "CJ-HUMANEVAL-151_l7_c004")
+    expectInt64(double_the_difference(listOfEvalInt([-1, -2, 8])), 0, "CJ-HUMANEVAL-151_l11_c005")
+    expectInt64(double_the_difference(listOfEvalValue([evalFloat(0.2), evalInt(3), evalInt(5)])), 34, "CJ-HUMANEVAL-151_l12_c006")
+    expectInt64(double_the_difference(listOfEvalInt([-99, -97, -95, -93, -91, -89, -87, -85, -83, -81, -79, -77, -75, -73, -71, -69, -67, -65, -63, -61, -59, -57, -55, -53, -51, -49, -47, -45, -43, -41, -39, -37, -35, -33, -31, -29, -27, -25, -23, -21, -19, -17, -15, -13, -11, -9, -7, -5, -3, -1, 1, 3, 5, 7, 9, 11, 13, 15, 17, 19, 21, 23, 25, 27, 29, 31, 33, 35, 37, 39, 41, 43, 45, 47, 49, 51, 53, 55, 57, 59, 61, 63, 65, 67, 69, 71, 73, 75, 77, 79, 81, 83, 85, 87, 89, 91, 93, 95, 97, 99])), 166650, "CJ-HUMANEVAL-151_l15_c007")
+    expectInt64(double_the_difference(listOfEvalValue([evalInt(3)])), 9, "CJ-HUMANEVAL-151_type_int_c008")
+    expectInt64(double_the_difference(listOfEvalValue([evalFloat(3.0)])), 0, "CJ-HUMANEVAL-151_type_float_c009")
     println("CJ-HUMANEVAL-151 ok")
     return 0
 }

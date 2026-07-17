@@ -2,6 +2,8 @@
 
 The official Python `check(candidate)` was executed against the official canonical solution through a recorder. Each candidate invocation below is translated into a concrete Cangjie assertion in `tests/TestMain.cj`.
 
+Type-identity preservation: official integer literals and the integer range are translated with `evalInt`; official float literals are translated with `evalFloat`. The additional adaptation pair `evalInt(3)` / `evalFloat(3.0)` proves that equal numeric payloads retain the Python `int`/`float` distinction required by the canonical integer-type filter.
+
 ## Official Test Lines
 
 | Source line | HumanEval test line | CangjieEval assertion label(s) |
@@ -22,3 +24,10 @@ The official Python `check(candidate)` was executed against the official canonic
 | 14 | `    odd_sum = sum([i**2 for i in lst if i%2!=0 and i > 0])` | `` |
 | 15 | `    assert candidate(lst) == odd_sum , "This prints if this assert fails 7 (good for debugging!)"` | `CJ-HUMANEVAL-151_l15_c007` |
 | 16 | `` | `` |
+
+## Static-Adaptation Boundary Assertions
+
+| Purpose | CangjieEval assertion | Expected |
+|---|---|---:|
+| Python integer identity | `double_the_difference([evalInt(3)])` | `9` |
+| Python float identity with the same numeric payload | `double_the_difference([evalFloat(3.0)])` | `0` |

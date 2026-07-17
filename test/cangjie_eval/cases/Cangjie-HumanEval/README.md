@@ -200,7 +200,7 @@ These adaptations are recorded per case in `metadata.json`.
 | `CJ-HUMANEVAL-148` | `HumanEval/148` | `bf` | 7 | `public func bf(planet1: String, planet2: String): ArrayList<String>` | Python variable-length tuple return is represented by ArrayList<String>. |
 | `CJ-HUMANEVAL-149` | `HumanEval/149` | `sorted_list_sum` | 7 | `public func sorted_list_sum(lst: ArrayList<String>): ArrayList<String>` | none |
 | `CJ-HUMANEVAL-150` | `HumanEval/150` | `x_or_y` | 10 | `public func x_or_y(n: Int64, x: Int64, y: Int64): Int64` | none |
-| `CJ-HUMANEVAL-151` | `HumanEval/151` | `double_the_difference` | 7 | `public func double_the_difference(lst: ArrayList<Float64>): Int64` | Python int/float numeric unions are represented with Float64 where needed. |
+| `CJ-HUMANEVAL-151` | `HumanEval/151` | `double_the_difference` | 9 | `public func double_the_difference(lst: ArrayList<EvalValue>): Int64` | Python int and float identities are preserved with EvalValue tags. |
 | `CJ-HUMANEVAL-152` | `HumanEval/152` | `compare` | 4 | `public func compare(game: ArrayList<Int64>, guess: ArrayList<Int64>): ArrayList<Int64>` | none |
 | `CJ-HUMANEVAL-153` | `HumanEval/153` | `Strongest_Extension` | 9 | `public func Strongest_Extension(class_name: String, extensions: ArrayList<String>): String` | none |
 | `CJ-HUMANEVAL-154` | `HumanEval/154` | `cycpattern_check` | 6 | `public func cycpattern_check(a: String, b: String): Bool` | none |

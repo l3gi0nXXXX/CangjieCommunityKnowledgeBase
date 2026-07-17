@@ -16,6 +16,8 @@ public class EvalEntry {
 }
 
 public func evalNone(): EvalValue { let v = EvalValue(); v.kind = "none"; v }
+// Keep Python numeric type identity explicit: evalInt(3) and evalFloat(3.0)
+// have equal numeric payloads but different kinds.
 public func evalInt(value: Int64): EvalValue { let v = EvalValue(); v.kind = "int"; v.intValue = value; v.floatValue = Float64(value); v }
 public func evalFloat(value: Float64): EvalValue { let v = EvalValue(); v.kind = "float"; v.floatValue = value; v }
 public func evalString(value: String): EvalValue { let v = EvalValue(); v.kind = "string"; v.stringValue = value; v }
