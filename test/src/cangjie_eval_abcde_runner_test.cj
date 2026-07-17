@@ -649,9 +649,53 @@ public class CangjieEvalAbcdeRunnerTest {
     public func nkNeg04BroadFilesystemScanFailsClosedWithoutCommandLeakage(): Unit {
         let rootScan="{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Bash\",\"input\":{\"command\":\"find / -name secret-token-value\"}}]}}"
         let usersScan="{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Bash\",\"input\":{\"command\":\"find /Users -name 仓颉🙂\"}}]}}"
+        let dataUsersScan="{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Bash\",\"input\":{\"command\":\"/usr/bin/find /System/Volumes/Data/Users -type f\"}}]}}"
         let scoped="{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Bash\",\"input\":{\"command\":\"find . -type f\"}}]}}"
-        for(event in [rootScan,usersScan]){let diagnostic=ckbAbcdeForbiddenEvidenceForTest(CkbAbcdeGroups.C,event);@Expect(diagnostic,"broad_filesystem_scan");@Expect(diagnostic.contains("secret-token-value"),false);@Expect(diagnostic.contains("仓颉"),false)}
+        for(event in [rootScan,usersScan,dataUsersScan]){let diagnostic=ckbAbcdeForbiddenEvidenceForTest(CkbAbcdeGroups.C,event);@Expect(diagnostic,"broad_filesystem_scan");@Expect(diagnostic.contains("secret-token-value"),false);@Expect(diagnostic.contains("仓颉"),false)}
         @Expect(ckbAbcdeForbiddenEvidenceForTest(CkbAbcdeGroups.C,scoped+"\n{malformed🙂"),"none")
+    }
+
+    // NK-POS-05-SCOPED-WORKSPACE-FIND
+    @TestCase
+    public func nkPos05ExactWorkspaceAbsoluteFindAndDotFindAreAllowed(): Unit {
+        let workspace = "/tmp/评测🙂/cases/CJ-HUMANEVAL-078/C-ckb-mcp-stdio/workspace"
+        let absolute = "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Bash\",\"input\":{\"command\":\"find ${workspace} -type f -name '*.cj' -o -name '*.toml' | head -50\"}}]}}"
+        let child = "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Bash\",\"input\":{\"command\":\"find '${workspace}/src' -type f\"}}]}}"
+        let dot = "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Bash\",\"input\":{\"command\":\"find . -type f\"}}]}}"
+        for (event in [absolute, child, dot]) {
+            @Expect(ckbAbcdeForbiddenEvidenceForWorkspaceForTest(CkbAbcdeGroups.C, event, workspace), "none")
+        }
+    }
+
+    // NK-BND-08-WORKSPACE-PREFIX-ESCAPE
+    @TestCase
+    public func nkBnd08WorkspacePrefixTraversalMultipleTargetsAndSubstitutionFailClosed(): Unit {
+        let workspace = "/tmp/eval/case/workspace"
+        let commands = [
+            "find /tmp/eval/case/workspace-sibling -type f",
+            "find /tmp/eval/case/workspace/../tests -type f",
+            "find . /tmp/eval/case/workspace -type f",
+            "find $(pwd) -type f",
+            "find \"$PWD\" -type f",
+            "find `pwd` -type f",
+            "find /Users -type f"
+        ]
+        for (command in commands) {
+            let event = "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Bash\",\"input\":{\"command\":\"${ckbAbcdeJsonEscape(command)}\"}}]}}"
+            @Expect(ckbAbcdeForbiddenEvidenceForWorkspaceForTest(CkbAbcdeGroups.C, event, workspace), "broad_filesystem_scan")
+        }
+    }
+
+    // NK-E2E-02-CASE078-PROTOCOL-REPLAY
+    @TestCase
+    public func nkE2e02Case078RecordedScopedFindReplaysWithoutProtocolViolation(): Unit {
+        let transcriptSha256 = "eb9197452df02cda39f84c0534c95ec79727f815fdbf613723ce348b669fb6bf"
+        let resultEvidenceHash = "sha256:20ed705ef07872a335cd94f9c3c5c2ceccb17375c8632ebb588ac3be6e756d7a"
+        let workspace = "/Users/eval-runner/isolated/CJ-HUMANEVAL-078/C-ckb-mcp-stdio/workspace"
+        let recordedEvent = "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Bash\",\"input\":{\"command\":\"find ${workspace} -type f -name \\\"*.cj\\\" -o -name \\\"*.toml\\\" | head -50\"}}]}}"
+        @Expect(transcriptSha256, "eb9197452df02cda39f84c0534c95ec79727f815fdbf613723ce348b669fb6bf")
+        @Expect(resultEvidenceHash, "sha256:20ed705ef07872a335cd94f9c3c5c2ceccb17375c8632ebb588ac3be6e756d7a")
+        @Expect(ckbAbcdeForbiddenEvidenceForWorkspaceForTest(CkbAbcdeGroups.C, recordedEvent, workspace), "none")
     }
 
     @TestCase

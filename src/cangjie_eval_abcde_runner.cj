@@ -768,7 +768,7 @@ private func ckbAbcdeRunCaseGroup(options: CkbAbcdeRunnerOptions, runRoot: Strin
 
     let transcript = ckbAbcdeReadText("${groupRoot}/claude-transcript.jsonl") + ckbAbcdeReadText("${groupRoot}/claude.stdout.log") + ckbAbcdeReadText("${groupRoot}/claude.stderr.log")
     let toolEvidence = ckbAbcdeToolEvidence(group, transcript)
-    let violation = ckbAbcdeForbiddenEvidence(group, transcript)
+    let violation = ckbAbcdeForbiddenEvidence(group, transcript, workspace)
     let unitPass = test.exitCode == 0 && !ckbAbcdeTestLogContainsFailure(testLog)
     let unitPassAt1 = ckbAbcdeUnitPassAt1(unitPass, groupRoot)
     let toolReady = ckbAbcdeRequiredKnowledgeReady(group, knowledgeReady, toolEvidence)
@@ -2273,11 +2273,11 @@ private func ckbAbcdeTestLogContainsFailure(testLog: String): Bool {
         testLog.contains("Error: cjpm run failed")
 }
 
-private func ckbAbcdeForbiddenEvidence(group: String, transcript: String): String {
+private func ckbAbcdeForbiddenEvidence(group: String, transcript: String, workspaceRoot: String): String {
     let lowered = transcript.toAsciiLower()
     let runtimeHomeAccess = ckbAbcdeDefaultRuntimeHomeAccessEvidence(transcript)
     if (runtimeHomeAccess != "none") { return runtimeHomeAccess }
-    let broadScan = ckbAbcdeBroadFilesystemScanEvidence(group,transcript)
+    let broadScan = ckbAbcdeBroadFilesystemScanEvidence(group, transcript, workspaceRoot)
     if (broadScan != "none") { return broadScan }
     let workspaceMutation = ckbAbcdeForbiddenWorkspaceMutationEvidence(transcript)
     if (workspaceMutation != "none") { return workspaceMutation }
@@ -2302,15 +2302,98 @@ private func ckbAbcdeForbiddenEvidence(group: String, transcript: String): Strin
     "none"
 }
 
-private func ckbAbcdeBroadFilesystemScanEvidence(group:String,transcript:String):String{
-    for(line in transcript.split("\n")){
-        try{
-            let event=JsonValue.fromStr(line).asObject();if(ckbAbcdeStrictJsonString(event,"type")!="assistant"){continue}
-            let content=event.get("message").getOrThrow().asObject().get("content").getOrThrow().asArray().getItems()
-            for(value in content){let entry=value.asObject();if(ckbAbcdeStrictJsonString(entry,"type")!="tool_use"||ckbAbcdeStrictJsonString(entry,"name")!="Bash"){continue};let command=ckbAbcdeStrictJsonString(entry.get("input").getOrThrow().asObject(),"command").toAsciiLower();let scopedDocs=group==CkbAbcdeGroups.E&&command.contains("cangjie_docs-release-1.0/docs");if(!scopedDocs&&(command=="find /"||command.contains("find / ")||command.contains("find /users")||command.contains("find /system/volumes/data/users"))){return "broad_filesystem_scan"}}
-        }catch(_:Exception){}
+private func ckbAbcdeBroadFilesystemScanEvidence(group: String, transcript: String, workspaceRoot: String): String {
+    for (line in transcript.split("\n")) {
+        try {
+            let event = JsonValue.fromStr(line).asObject()
+            if (ckbAbcdeStrictJsonString(event, "type") != "assistant") { continue }
+            let content = event.get("message").getOrThrow().asObject().get("content").getOrThrow().asArray().getItems()
+            for (value in content) {
+                let entry = value.asObject()
+                if (ckbAbcdeStrictJsonString(entry, "type") != "tool_use" || ckbAbcdeStrictJsonString(entry, "name") != "Bash") { continue }
+                let command = ckbAbcdeStrictJsonString(entry.get("input").getOrThrow().asObject(), "command")
+                if (ckbAbcdeFindCommandEscapesWorkspace(group, command, workspaceRoot)) { return "broad_filesystem_scan" }
+            }
+        } catch (_: Exception) {}
     }
     "none"
+}
+
+private func ckbAbcdeFindCommandEscapesWorkspace(group: String, command: String, workspaceRoot: String): Bool {
+    let tokens = ckbAbcdeShellAuditTokens(command)
+    for (i in 0..tokens.size) {
+        let executable = tokens[i].toAsciiLower()
+        if (!(executable == "find" || executable.endsWith("/find"))) { continue }
+        if (command.contains("$") || command.contains("`")) { return true }
+        var targetCount: Int64 = 0
+        var target = ""
+        for (j in (i + 1)..tokens.size) {
+            let token = tokens[j]
+            if (ckbAbcdeShellAuditBoundary(token) || token.startsWith("-")) { break }
+            targetCount += 1
+            target = token
+        }
+        if (targetCount != 1 || !ckbAbcdeFindTargetInsideWorkspace(group, target, workspaceRoot)) { return true }
+    }
+    false
+}
+
+private func ckbAbcdeFindTargetInsideWorkspace(group: String, target: String, workspaceRoot: String): Bool {
+    let normalizedTarget = ckbAbcdeTrimTrailingPathSeparators(target.trimAscii())
+    if (normalizedTarget == "" || ckbAbcdePathHasParentSegment(normalizedTarget)) { return false }
+    if (normalizedTarget == "." || normalizedTarget.startsWith("./")) { return true }
+    if (!normalizedTarget.startsWith("/")) { return false }
+    let canonicalWorkspace = try { canonicalize(Path(workspaceRoot)).toString() } catch (_: Exception) { workspaceRoot }
+    let normalizedWorkspace = ckbAbcdeTrimTrailingPathSeparators(canonicalWorkspace)
+    if (normalizedWorkspace != "" && (normalizedTarget == normalizedWorkspace || normalizedTarget.startsWith("${normalizedWorkspace}/"))) { return true }
+    group == CkbAbcdeGroups.E && (normalizedTarget.endsWith("/cangjie_docs-release-1.0/docs") || normalizedTarget.contains("/cangjie_docs-release-1.0/docs/"))
+}
+
+private func ckbAbcdePathHasParentSegment(path: String): Bool {
+    for (segment in path.split("/")) { if (segment == "..") { return true } }
+    false
+}
+
+private func ckbAbcdeTrimTrailingPathSeparators(path: String): String {
+    let runes = path.toRuneArray()
+    var end = runes.size
+    while (end > 1 && runes[end - 1] == r'/') { end -= 1 }
+    let out = StringBuilder()
+    for (i in 0..end) { out.append(runes[i]) }
+    out.toString()
+}
+
+private func ckbAbcdeShellAuditBoundary(token: String): Bool {
+    token == ";" || token == "|" || token == "&" || token == "<" || token == ">"
+}
+
+private func ckbAbcdeShellAuditTokens(command: String): ArrayList<String> {
+    let tokens = ArrayList<String>()
+    var current = StringBuilder()
+    var quoteMarker: Rune = r'\u{0}'
+    var escaped = false
+    for (rune in command.toRuneArray()) {
+        if (escaped) { current.append(rune); escaped = false; continue }
+        if (rune == r'\\') { escaped = true; continue }
+        if (quoteMarker != r'\u{0}') {
+            if (rune == quoteMarker) { quoteMarker = r'\u{0}' } else { current.append(rune) }
+            continue
+        }
+        if (rune == r'\'' || rune == r'"') { quoteMarker = rune; continue }
+        if (rune == r' ' || rune == r'\t' || rune == r'\n' || rune == r'\r') {
+            if (current.toString() != "") { tokens.add(current.toString()); current = StringBuilder() }
+            continue
+        }
+        if (rune == r';' || rune == r'|' || rune == r'&' || rune == r'<' || rune == r'>') {
+            if (current.toString() != "") { tokens.add(current.toString()); current = StringBuilder() }
+            tokens.add(rune.toString())
+            continue
+        }
+        current.append(rune)
+    }
+    if (escaped || quoteMarker != r'\u{0}') { tokens.add("$") }
+    if (current.toString() != "") { tokens.add(current.toString()) }
+    tokens
 }
 
 private func ckbAbcdeDefaultRuntimeHomeAccessEvidence(transcript:String):String{
@@ -2382,7 +2465,11 @@ private func ckbAbcdeUnquoteShellToken(token: String): String {
 }
 
 public func ckbAbcdeForbiddenEvidenceForTest(group: String, transcript: String): String {
-    ckbAbcdeForbiddenEvidence(group, transcript)
+    ckbAbcdeForbiddenEvidence(group, transcript, "")
+}
+
+public func ckbAbcdeForbiddenEvidenceForWorkspaceForTest(group: String, transcript: String, workspaceRoot: String): String {
+    ckbAbcdeForbiddenEvidence(group, transcript, workspaceRoot)
 }
 
 private func ckbAbcdeForbiddenLocalDocsEvidence(transcript: String): String {
