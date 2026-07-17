@@ -1965,7 +1965,10 @@ public func ckbAbcdeDevelopmentOptionsDiagnostic(options: CkbAbcdeRunnerOptions)
         if (options.groups.size != 1 || (options.groups[0] != CkbAbcdeGroups.C && options.groups[0] != CkbAbcdeGroups.D)) { return "certification_requires_single_frozen_treatment_transport" }
         if (options.skipClaude || options.preflightOnly) { return "certification_requires_real_model_execution" }
         if (ckbCertificationBudgetDiagnostic(ckbAbcdeCertificationBudget(options)) != "ok") { return ckbCertificationBudgetDiagnostic(ckbAbcdeCertificationBudget(options)) }
-        if (!parseCangjieHumanEvalAuthorityManifest(ckbAbcdeReadText(options.manifestPath)).ok) { return "certification_requires_authority_manifest" }
+        let authority = parseCangjieHumanEvalAuthorityManifest(ckbAbcdeReadText(options.manifestPath))
+        let authorityDatasetDiagnostic = cangjieHumanEvalAuthorityDatasetDiagnostic(authority, options.datasetVersion)
+        if (authorityDatasetDiagnostic == "authority_manifest_invalid") { return "certification_requires_authority_manifest" }
+        if (authorityDatasetDiagnostic != "ok") { return authorityDatasetDiagnostic }
         if (options.certificationPreflightPath == "" || options.certificationRunManifestPath == "") { return "certification_requires_p6_artifacts" }
         if (options.expectedModelVersion == "") { return "certification_requires_exact_model_version" }
         if (!ckbAbcdeStrictSha256(options.providerIdentityHash)) { return "certification_requires_provider_identity_hash" }
@@ -1978,7 +1981,10 @@ public func ckbAbcdeDevelopmentOptionsDiagnostic(options: CkbAbcdeRunnerOptions)
 // trusted P6 artifacts are immutable inputs, while this run root must be fresh.
 public func ckbAbcdeCertificationEntryDiagnostic(options: CkbAbcdeRunnerOptions, runRoot: String): String {
     if (options.runMode != "certification") { return "ok" }
-    if (!exists(Path(options.certificationPreflightPath)) || !exists(Path(options.certificationRunManifestPath))) { return "p6_artifact_missing" }
+    let authority = parseCangjieHumanEvalAuthorityManifest(ckbAbcdeReadText(options.manifestPath))
+    if (!authority.ok || authority.rows.size != 164) { return "authority_manifest_invalid" }
+    if (cangjieHumanEvalAuthorityDatasetDiagnostic(authority, options.datasetVersion) != "ok") { return "authority_dataset_version_mismatch" }
+    if (options.certificationPreflightPath == "" || options.certificationRunManifestPath == "" || !exists(Path(options.certificationPreflightPath)) || !exists(Path(options.certificationRunManifestPath))) { return "p6_artifact_missing" }
     if(!exists(Path(options.providerIdentityArtifactPath))||benchmarkGapSha256(ckbAbcdeReadText(options.providerIdentityArtifactPath))!=options.providerIdentityHash){return "provider_identity_artifact_invalid"}
     let p6 = cangjieCertificationReleaseGateIntegrated(options.certificationPreflightPath, options.certificationRunManifestPath)
     if (!p6.ok) { return "p6_artifact_verification_failed" }
@@ -1992,8 +1998,6 @@ public func ckbAbcdeCertificationEntryDiagnostic(options: CkbAbcdeRunnerOptions,
         if (ckbAbcdeStrictJsonString(manifest,"claudeCodeVersion")!=ckbAbcdeClaudeVersion()) { return "p6_claude_version_drift" }
         let provider=JsonValue.fromStr(ckbAbcdeReadText(options.providerIdentityArtifactPath)).asObject();if(ckbAbcdeStrictJsonString(provider,"model")!=options.expectedModelVersion||ckbAbcdeStrictJsonString(provider,"claudeCodeVersion")!=ckbAbcdeClaudeVersion()||ckbAbcdeStrictJsonString(provider,"provider")==""){return "provider_runtime_identity_mismatch"}
     } catch (_: Exception) { return "p6_manifest_malformed" }
-    let authority = parseCangjieHumanEvalAuthorityManifest(ckbAbcdeReadText(options.manifestPath))
-    if (!authority.ok || authority.rows.size != 164) { return "authority_manifest_invalid" }
     if (exists(Path(runRoot))) {
         try { for (_ in Directory.readFrom(Path(runRoot))) { return "certification_run_root_not_empty" } }
         catch (_: Exception) { return "certification_run_root_unreadable" }

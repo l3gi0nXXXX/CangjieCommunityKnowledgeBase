@@ -7,6 +7,16 @@ import std.unittest.testmacro.*
 
 @Test
 public class CangjieHumanEvalManifestTest {
+    @TestCase
+    public func authorityDatasetVersionBindingRejectsStaleAndUnicodeLabels(): Unit {
+        let manifest = buildCangjieHumanEvalManifest("cangjie_eval/cases/Cangjie-HumanEval", "")
+        @Expect(cangjieHumanEvalAuthorityDatasetDiagnostic(manifest, manifest.datasetVersion), "ok")
+        @Expect(cangjieHumanEvalAuthorityDatasetDiagnostic(manifest, "stale-dataset"), "authority_dataset_version_mismatch")
+        @Expect(cangjieHumanEvalAuthorityDatasetDiagnostic(manifest, "旧版本🙂"), "authority_dataset_version_mismatch")
+        let invalid = CangjieHumanEvalManifestResult()
+        @Expect(cangjieHumanEvalAuthorityDatasetDiagnostic(invalid, "旧版本🙂"), "authority_manifest_invalid")
+    }
+
     let datasetRoot = "cangjie_eval/cases/Cangjie-HumanEval"
 
     // P1-UT-01: the same read-only dataset produces byte-identical authority

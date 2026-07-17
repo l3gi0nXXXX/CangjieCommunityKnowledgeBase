@@ -158,6 +158,16 @@ public func validateCangjieHumanEvalManifest(manifest: CangjieHumanEvalManifestR
     out
 }
 
+public func cangjieHumanEvalAuthorityDatasetDiagnostic(manifest: CangjieHumanEvalManifestResult, declaredDatasetVersion: String): String {
+    if (!manifest.ok || manifest.rows.size != 164 || manifest.datasetVersion == "") {
+        return "authority_manifest_invalid"
+    }
+    if (declaredDatasetVersion != manifest.datasetVersion) {
+        return "authority_dataset_version_mismatch"
+    }
+    "ok"
+}
+
 // Parses the authority with stdx JSON only. All string fields and tag arrays
 // fail closed on malformed JSON or a wrong JSON type; no String byte slicing is
 // used for model-controlled or Unicode-capable values.

@@ -142,6 +142,7 @@ public func ckbStrictCertificationGate(resultsText: String, authorityManifestTex
         let row = parseCkbCertificationEvidence(line)
         if (!row.valid) { gate.invalid += 1; gate.fail("invalid_row:${row.caseId}:${row.diagnostic}"); continue }
         if (!expected.contains(row.caseId)) { gate.fail("unexpected_case:${row.caseId}") }
+        if (cangjieHumanEvalAuthorityDatasetDiagnostic(authority, row.datasetVersion) != "ok") { gate.fail("authority_dataset_version_mismatch:${row.caseId}") }
         var authorityBound=false;for(ar in authority.rows){if(ar.caseId==row.caseId){authorityBound=row.authorityCaseHash==ar.caseHash&&row.authorityTestsHash==ar.testsHash}}
         if(!authorityBound){gate.fail("authority_hash_binding_mismatch:${row.caseId}")}
         if (seenCases.contains(row.caseId)) { gate.fail("duplicate_case:${row.caseId}") } else { seenCases.add(row.caseId) }
