@@ -243,6 +243,7 @@ private func ckbP5ClassifierSourceFactsValid(request:JsonObject,response:JsonObj
     let compiler=ckbP5String(request,"compilerTestSummary").toAsciiLower()
     let knowledge=ckbP5String(response,"knowledgeText").toAsciiLower()
     if(!ckbP5ClassifierStringCasingFactsValid(source,compiler,knowledge)){return false}
+    if(!ckbP5ClassifierReservedKeywordFactsValid(source,compiler,knowledge)){return false}
     if(!source.contains(".abs(")||!compiler.contains("undeclared identifier 'abs'")){return true}
     if(!knowledge.contains("std.math")){return true}
     let deniesRequirement=knowledge.contains("std.math import is unnecessary")||knowledge.contains("std.math import is not required")||
@@ -268,6 +269,33 @@ private func ckbP5ClassifierStringCasingFactsValid(source:String,compiler:String
         knowledge.contains("string.tolower() is available")||knowledge.contains("string supports string.tolower")||
         knowledge.contains("string provides string.tolower")
     !assertsStringToLower
+}
+
+private func ckbP5ClassifierReservedKeywordFactsValid(source:String,compiler:String,knowledge:String):Bool{
+    let target=source.contains("var match")&&compiler.contains("expected identifier or pattern after 'var'")&&
+        compiler.contains("found keyword 'match'")
+    if(!target){return true}
+    if(knowledge.contains("//")||knowledge.contains("/*")||knowledge.contains("*/")){return false}
+    let absolute=knowledge.contains("can never be used as an identifier")||
+        knowledge.contains("cannot ever be used as an identifier")||
+        knowledge.contains("cannot be used as an identifier under any circumstances")||
+        knowledge.contains("always forbidden as an identifier")
+    if(absolute){return false}
+    let plainContext=knowledge.contains("using the reserved keyword match directly")||
+        knowledge.contains("using match directly")||knowledge.contains("unescaped match")||
+        knowledge.contains("match without escaping")
+    let plainInvalid=plainContext&&knowledge.contains("keyword")&&
+        (knowledge.contains(" is invalid")||knowledge.contains("cannot be used directly")||
+        knowledge.contains(" is not a valid")||knowledge.contains(" is illegal"))
+    let rawSyntax=knowledge.contains("`match`")&&
+        (knowledge.contains("raw identifier")||knowledge.contains("escaped identifier"))
+    let rawLegal=rawSyntax&&(knowledge.contains(" is legal")||knowledge.contains(" is allowed")||
+        knowledge.contains(" is valid")||knowledge.contains(" can be used"))
+    let rename=(knowledge.contains("rename")||knowledge.contains("renaming")||
+        knowledge.contains("use a non-keyword")||knowledge.contains("choose a non-keyword"))&&
+        (knowledge.contains("non-keyword identifier")||knowledge.contains("non-keyword variable")||
+        knowledge.contains("different non-keyword"))
+    plainInvalid&&rawLegal&&rename
 }
 
 public func ckbP5ClassifierArtifactEvidenceHash(raw:String):String{try{ckbP5ClassifierArtifactHash(JsonValue.fromStr(raw).asObject())}catch(_:Exception){""}}

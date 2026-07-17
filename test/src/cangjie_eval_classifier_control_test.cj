@@ -159,6 +159,53 @@ public class CangjieEvalClassifierControlTest {
         @Expect(sealCkbP5ClassifierResponseWithDiagnostic(request,leaking,config,"/tmp/p5-case-leak/workspace","/tmp/p5-case-leak/home","session-leak")[1],"classifier_response_forbidden_content")
     }
 
+    // CLASSIFIER-018-FACT-UT/BND/POS/NEG: plain keywords and raw identifiers have distinct legality.
+    @TestCase
+    public func p5IcReservedKeywordFactsRequireRawIdentifierBoundary(): Unit {
+        let config=p5IcConfig("a","codex","GPT-5.6-Sol")
+        let request=p5IcAbsRequest("CJ-HUMANEVAL-018",
+            "public func solve(values: Array<Int64>): Int64 { var match = 0; match }",
+            "error: expected identifier or pattern after 'var', found keyword 'match'\nhelp: escape the keyword `match` to use it as an identifier 中文🙂")
+        let base=p5IcResponse("codex","GPT-5.6-Sol")
+        let complete=base.replace("General reusable String API guidance 中文🙂",
+            "Using the reserved keyword match directly as a plain variable identifier is invalid. The raw identifier `match` is legal in Cangjie; alternatively, rename it to a non-keyword identifier such as matchedCount 中文🙂.")
+        let equivalent=base.replace("General reusable String API guidance 中文🙂",
+            "An unescaped match cannot be used directly as an ordinary identifier because it is a keyword. The escaped identifier `match` is allowed, and renaming it to a different non-keyword variable is also valid.")
+        for((label,response) in [("complete",complete),("equivalent",equivalent)]){
+            let result=sealCkbP5ClassifierResponseWithDiagnostic(request,response,config,"/tmp/p5-keyword-${label}/workspace","/tmp/p5-keyword-${label}/home","session-keyword-${label}")
+            @Expect(result[0].isEmpty(),false);@Expect(result[1],"ok")
+        }
+
+        let absolute=base.replace("General reusable String API guidance 中文🙂",
+            "The reserved keyword match can never be used as an identifier under any circumstances; rename it to a non-keyword identifier.")
+        let missingRaw=base.replace("General reusable String API guidance 中文🙂",
+            "Using the reserved keyword match directly as a plain variable identifier is invalid; rename it to a non-keyword identifier.")
+        let rawWithoutLegality=base.replace("General reusable String API guidance 中文🙂",
+            "Using match directly as a plain identifier is invalid. Raw identifier syntax is `match`; rename to a non-keyword variable.")
+        let missingPlainBoundary=base.replace("General reusable String API guidance 中文🙂",
+            "The raw identifier `match` is legal, and renaming it to a non-keyword variable is valid.")
+        let wordSalad=base.replace("General reusable String API guidance 中文🙂",
+            "plain match keyword invalid raw identifier `match` legal rename non-keyword valid 中文🙂")
+        let commentDisguise=base.replace("General reusable String API guidance 中文🙂",
+            "Using the reserved keyword match directly as a plain variable identifier is invalid; rename it to a non-keyword identifier. // The raw identifier `match` is legal.")
+        let contradictory=complete.replace("Using the reserved keyword match directly as a plain variable identifier is invalid.",
+            "The reserved keyword match can never be used as an identifier under any circumstances.")
+        for((label,response) in [("absolute",absolute),("missing-raw",missingRaw),("raw-no-legality",rawWithoutLegality),
+            ("missing-plain",missingPlainBoundary),("word-salad",wordSalad),("comment-disguise",commentDisguise),("contradictory",contradictory)]){
+            let result=sealCkbP5ClassifierResponseWithDiagnostic(request,response,config,"/tmp/p5-keyword-bad-${label}/workspace","/tmp/p5-keyword-bad-${label}/home","session-keyword-bad-${label}")
+            @Expect(result[0],"");@Expect(result[1],"classifier_response_source_fact_unsupported")
+        }
+
+        let unrelated=p5IcAbsRequest("CJ-HUMANEVAL-018","public func solve(): Int64 { var found = 0; found }",
+            "error: expected expression after '=' 中文🙂")
+        @Expect(sealCkbP5ClassifierResponseWithDiagnostic(unrelated,missingRaw,config,"/tmp/p5-keyword-other/workspace","/tmp/p5-keyword-other/home","session-keyword-other")[1],"ok")
+        let nonKnowledge=missingRaw.replace("\"category\":\"knowledge_gap\"","\"category\":\"reasoning_failure\"")
+        @Expect(sealCkbP5ClassifierResponseWithDiagnostic(request,nonKnowledge,config,"/tmp/p5-keyword-non/workspace","/tmp/p5-keyword-non/home","session-keyword-non")[1],"ok")
+        @Expect(sealCkbP5ClassifierResponseWithDiagnostic(request,"{",config,"/tmp/p5-keyword-malformed/workspace","/tmp/p5-keyword-malformed/home","session-keyword-malformed")[1],"classifier_response_malformed")
+        let leaking=complete.replace("non-keyword identifier","non-keyword identifier token=secret /Users/private/秘密🙂")
+        @Expect(sealCkbP5ClassifierResponseWithDiagnostic(request,leaking,config,"/tmp/p5-keyword-leak/workspace","/tmp/p5-keyword-leak/home","session-keyword-leak")[1],"classifier_response_forbidden_content")
+    }
+
     // P5-C-E2E-01
     @TestCase
     public func p5IcPos01TwoFakeProcessesProduceAnInjectableIndependentPair(): Unit {
