@@ -43,77 +43,6 @@ public class CangjieEvalAbcdeRunnerTest {
         @Expect(ckbAbcdeDevelopmentOptionsDiagnostic(missing), "ckb_config_must_be_absolute")
     }
 
-    // CLAUDE-TMP-CHILD-UT/BND/POS/NEG: permit only the exact cwd-derived
-    // Claude cache child, never its parent or a sibling.
-    @TestCase
-    public func claudeTempWorkspaceRuleIsExactUtf8SafeAndRejectsEscape(): Unit {
-        let workspace = "/Users/test/工作 区🙂/workspace"
-        let child = ckbAbcdeClaudeTempWorkspaceChildForTest("501", workspace)
-        @Expect(child, "/private/tmp/claude-501/-Users-test-工作 区🙂-workspace")
-        let rule = ckbAbcdeClaudeTempWorkspaceRuleForTest("501", workspace)
-        @Expect(rule.contains("(subpath \"${child}\")"), true)
-        @Expect(rule.contains("(subpath \"/private/tmp/claude-501\")"), false)
-        @Expect(rule.contains("private-sibling-token"), false)
-        @Expect(ckbAbcdeClaudeTempWorkspaceDiagnosticForTest("501", workspace, child, child, "501", "700", true, false), "ok")
-        @Expect(ckbAbcdeClaudeTempWorkspaceDiagnosticForTest("501", workspace, child, child, "501", "700", true, true), "claude_temp_workspace_symlink_forbidden")
-        @Expect(ckbAbcdeClaudeTempWorkspaceDiagnosticForTest("501", workspace, child, "${child}-escape", "501", "700", true, false), "claude_temp_workspace_canonical_mismatch")
-        @Expect(ckbAbcdeClaudeTempWorkspaceDiagnosticForTest("501", workspace, child, child, "502", "700", true, false), "claude_temp_workspace_owner_mismatch")
-        @Expect(ckbAbcdeClaudeTempWorkspaceDiagnosticForTest("501", workspace, child, child, "501", "755", true, false), "claude_temp_workspace_mode_invalid")
-        @Expect(ckbAbcdeClaudeTempWorkspaceDiagnosticForTest("501", workspace, child, child, "501", "700", false, false), "claude_temp_workspace_directory_required")
-        @Expect(ckbAbcdeClaudeTempWorkspaceDiagnosticForTest("501", workspace, "${child}-sibling", "${child}-sibling", "501", "700", true, false), "claude_temp_workspace_path_invalid")
-        for (invalid in ["", "relative/workspace", "/Users/test/../escape", "/Users/test/line\nbreak", "/Users/test/quote\"break"]) {
-            @Expect(ckbAbcdeClaudeTempWorkspaceChildForTest("501", invalid), "")
-        }
-        @Expect(ckbAbcdeClaudeTempWorkspaceChildForTest("用户🙂", workspace), "")
-    }
-
-    @TestCase
-    public func claudeTempWorkspaceRealSandboxAllowsExactChildAndDeniesSibling(): Unit {
-        if (!exists(Path("/usr/bin/sandbox-exec"))) { return }
-        let rootRelative = "target/claude-temp-child-real-仓颉🙂-${ckbCoreNowMillis()}"
-        Directory.create(Path(rootRelative), recursive: true)
-        let root = canonicalize(Path(rootRelative)).toString()
-        let workspace = "${root}/workspace"
-        let home = "${root}/runtime-home"
-        let store = "${root}/store"
-        let caseSrc = "${root}/case"
-        let config = "${root}/formal config 仓颉🙂.conf"
-        let bin = "${root}/ckb-bin"
-        for (path in [workspace, home, store, "${caseSrc}/tests", "${caseSrc}/translation"]) {
-            Directory.create(Path(path), recursive: true)
-        }
-        File.writeTo(Path(config), "network.enabled=false\n".toArray())
-        File.writeTo(Path(bin), "probe\n".toArray())
-        let uid = ckbAbcdeCurrentUidForTest()
-        let child = ckbAbcdeClaudeTempWorkspaceChildForTest(uid, workspace)
-        let sibling = "/private/tmp/claude-${uid}/private-sibling-token-${ckbCoreNowMillis()}🙂"
-        @Expect(exists(Path(sibling)), false)
-        let sdk = match(getVariable("CANGJIE_HOME")){case Some(value)=>value case None=>""}
-        let macSdk = match(getVariable("SDKROOT")){case Some(value)=>value case None=>""}
-        @Expect(sdk.isEmpty(), false)
-        @Expect(macSdk.isEmpty(), false)
-        try {
-            @Expect(ckbAbcdePrepareClaudeTempWorkspaceForTest(workspace), "ok")
-            let developmentProfile = "${root}/development.sb"
-            File.writeTo(Path(developmentProfile), ckbAbcdeDevelopmentSandboxProfile(CkbAbcdeGroups.C,
-                workspace, home, bin, config, store, caseSrc, root, sdk, macSdk, "/usr/bin/true", "/usr/bin/true").toArray())
-            let developmentScript = "printf '仓颉🙂' > '${child}/development-probe.txt' && /bin/cat '${child}/development-probe.txt' >/dev/null && ! /usr/bin/touch '${sibling}' >/dev/null 2>&1"
-            @Expect(launch("/usr/bin/sandbox-exec", ["-f", developmentProfile, "/bin/zsh", "-lc", developmentScript]).wait(), 0)
-            @Expect(exists(Path("${child}/development-probe.txt")), true)
-
-            let certificationProfile = "${root}/certification.sb"
-            File.writeTo(Path(certificationProfile), ckbAbcdeCertificationSandboxProfile(workspace, home,
-                bin, config, store, caseSrc, "/usr/bin/true", "/usr/bin/true").toArray())
-            let certificationScript = "printf '认证🙂' > '${child}/certification-probe.txt' && /bin/cat '${child}/certification-probe.txt' >/dev/null && ! /usr/bin/touch '${sibling}' >/dev/null 2>&1"
-            @Expect(launch("/usr/bin/sandbox-exec", ["-f", certificationProfile, "/bin/zsh", "-lc", certificationScript]).wait(), 0)
-            @Expect(exists(Path("${child}/certification-probe.txt")), true)
-            @Expect(exists(Path(sibling)), false)
-        } finally {
-            _ = launch("/bin/rm", ["-rf", child]).wait()
-            _ = launch("/bin/rm", ["-rf", rootRelative]).wait()
-        }
-    }
-
     @TestCase
     public func ckg12Ut001ParsesCaseIdGroupsAndSkipClaude(): Unit {
         let options = parseCkbAbcdeRunnerOptions(["cangjie-eval-abcde", "--case-id", "CJ-HUMANEVAL-007", "--groups", "A,C,E", "--claude-bin", "/tmp/claude", "--skip-claude"])
@@ -629,7 +558,80 @@ public class CangjieEvalAbcdeRunnerTest {
         let second=ckbAbcdeDevelopmentClaudeCommand(groupRoot,runtimeHome,profile,"/usr/bin/true","GLM-5.2","max","","","--add-dir '/tmp/工作区🙂'",ckbAbcdeSandboxTranscriptPath(runtimeHome),ckbAbcdeSandboxStderrPath(runtimeHome),2)
         for(command in [first,second]){@Expect(command.contains("HOME="),true);@Expect(command.contains("TMPDIR="),true);@Expect(command.contains("XDG_CONFIG_HOME="),true);@Expect(command.contains("XDG_CACHE_HOME="),true);@Expect(command.contains("CLAUDE_CONFIG_DIR="),true);@Expect(command.contains(runtimeHome),true);@Expect(command.contains("${runtimeHome}/mcp-config.json"),true);@Expect(command.contains("sandbox-exec -f"),true);@Expect(command.contains(profile),true);@Expect(command.contains("--session-id \"$session_id\""),true);@Expect(command.contains("/.claude/"),false);@Expect(command.contains("~/.claude"),false)}
         @Expect(first.contains("session-id.attempt-1.txt"),true);@Expect(second.contains("session-id.attempt-2.txt"),true);@Expect(first!=second,true)
+        for(command in [first,second]) {
+            let controlled = "'${runtimeHome}/tmp'"
+            @Expect(command.contains("CLAUDE_CODE_TMPDIR=${controlled}"), true)
+            @Expect(command.contains("CLAUDE_TMPDIR=${controlled}"), true)
+            @Expect(command.contains("CLAUDE_CODE_TMPDIR=/tmp"), false)
+            @Expect(command.contains("CLAUDE_TMPDIR=/tmp"), false)
+        }
         @Expect(ckbAbcdeDevelopmentAttemptRuntimeHome(runtimeHome,1),"${runtimeHome}/attempt-1");@Expect(ckbAbcdeDevelopmentAttemptRuntimeHome(runtimeHome,2),"${runtimeHome}/attempt-2")
+    }
+
+    // OPENSSL-CANONICAL-UT/BND/POS/NEG + CLAUDE-TMPDIR-UT/NEG
+    @TestCase
+    public func opensslCanonicalUtProfilesAllowOnlyCanonicalRegularDylibs(): Unit {
+        let aliasRoot=ckbAbcdeCurrentOpenSslAliasRootForTest();if(aliasRoot==""){return}
+        let cryptoRequested = "${aliasRoot}/lib/libcrypto.3.dylib"
+        let sslRequested = "${aliasRoot}/lib/libssl.3.dylib"
+        let crypto = ckbAbcdeOpenSslCanonicalFileForTest(cryptoRequested, "libcrypto.3.dylib")
+        let ssl = ckbAbcdeOpenSslCanonicalFileForTest(sslRequested, "libssl.3.dylib")
+        @Expect(crypto.isEmpty(), false)
+        @Expect(ssl.isEmpty(), false)
+        @Expect(crypto, canonicalize(Path(cryptoRequested)).toString())
+        @Expect(ssl, canonicalize(Path(sslRequested)).toString())
+        let profile = ckbAbcdeDevelopmentSandboxProfile(CkbAbcdeGroups.C, "/tmp/workspace", "/tmp/runtime-home",
+            "/tmp/ckb-bin", "/tmp/config", "/tmp/store", "/tmp/case", "/tmp/docs", "/tmp/sdk",
+            "/tmp/macos-sdk", "/usr/bin/true", "/usr/bin/true")
+        for (path in [crypto, ssl]) {
+            @Expect(profile.contains("(literal \"${path}\")"), true)
+            @Expect(profile.contains("(subpath \"${path}\")"), false)
+        }
+        @Expect(profile.contains("(subpath \"/opt/homebrew/Cellar"), false)
+        @Expect(profile.contains("(subpath \"/opt/homebrew\")"), false)
+        @Expect(profile.contains("(subpath \"/opt/homebrew/opt/openssl@3/lib\")"), false)
+        @Expect(profile.contains("(subpath \"/opt/homebrew/opt/openssl@3.5/lib\")"), false)
+        @Expect(profile.contains("(literal \"${aliasRoot}\")"), true)
+        @Expect(profile.contains("/private/tmp/claude-"), false)
+        @Expect(ckbAbcdeOpenSslCanonicalPairReadyForTest(), true)
+    }
+
+    @TestCase
+    public func opensslCanonicalBndMissingRelativeWrongNameAndIncompletePairFailClosed(): Unit {
+        for (path in ["", "relative/libcrypto.3.dylib", " /opt/homebrew/opt/openssl@3/lib/libcrypto.3.dylib",
+            "/opt/homebrew/opt/openssl@3/lib/libcrypto.3.dylib ", "/tmp/私密🙂/libcrypto.3.dylib"]) {
+            @Expect(ckbAbcdeOpenSslCanonicalFileForTest(path, "libcrypto.3.dylib"), "")
+        }
+        @Expect(ckbAbcdeOpenSslCanonicalFileForTest(
+            "/opt/homebrew/opt/openssl@3/lib/libcrypto.3.dylib", "libssl.3.dylib"), "")
+        @Expect(ckbAbcdeOpenSslCanonicalFileForTest(
+            "/opt/homebrew/opt/openssl@3/lib/libcrypto.dylib", "libcrypto.3.dylib"), "")
+        @Expect(ckbAbcdeOpenSslPairReadyForTest("/canonical/libcrypto.3.dylib", "/canonical/libssl.3.dylib"), true)
+        @Expect(ckbAbcdeOpenSslPairReadyForTest("", "/canonical/libssl.3.dylib"), false)
+        @Expect(ckbAbcdeOpenSslPairReadyForTest("/canonical/libcrypto.3.dylib", ""), false)
+        @Expect(ckbAbcdeOpenSslPairReadyForTest("/same", "/same"), false)
+        @Expect(ckbAbcdeSandboxDependencyDiagnosticForTest(false, false), "sandbox_openssl_canonical_pair_missing")
+        @Expect(ckbAbcdeSandboxDependencyDiagnosticForTest(false, true), "sandbox_openssl_canonical_pair_missing")
+        @Expect(ckbAbcdeSandboxDependencyDiagnosticForTest(true, false), "sandbox_magic_stdx_missing")
+        @Expect(ckbAbcdeSandboxDependencyDiagnosticForTest(true, true), "ok")
+    }
+
+    @TestCase
+    public func claudeTmpdirNegCertificationAndDevelopmentUseAttemptControlledDirectory(): Unit {
+        let groupRoot = "/tmp/分组🙂"
+        let runtimeHome = "${groupRoot}/runtime home"
+        let certification = ckbAbcdeCertificationClaudeCommand(groupRoot, runtimeHome, "/tmp/cert.sb", "/usr/bin/true",
+            "GLM-5.2", "${runtimeHome}/stdout", "${runtimeHome}/stderr")
+        let development = ckbAbcdeDevelopmentClaudeCommand(groupRoot, runtimeHome, "/tmp/dev.sb", "/usr/bin/true",
+            "GLM-5.2", "max", "", "", "", "${runtimeHome}/stdout", "${runtimeHome}/stderr", 1)
+        for (command in [certification, development]) {
+            let controlled = "'${runtimeHome}/tmp'"
+            @Expect(command.contains("TMPDIR=${controlled}"), true)
+            @Expect(command.contains("CLAUDE_CODE_TMPDIR=${controlled}"), true)
+            @Expect(command.contains("CLAUDE_TMPDIR=${controlled}"), true)
+            @Expect(command.contains("/tmp/claude-321e-cwd"), false)
+            @Expect(command.contains("/private/tmp/claude-"), false)
+        }
     }
 
     @TestCase
@@ -659,58 +661,6 @@ public class CangjieEvalAbcdeRunnerTest {
         let e=ckbAbcdeDevelopmentSandboxProfile(CkbAbcdeGroups.E,workspace,home,"/tmp/ckb-bin","/tmp/config","/tmp/ckb-store",caseSrc,docs,sdk,"/tmp/MacSDK🙂","/usr/bin/true","/usr/bin/true")
         for(profile in [c,e]){@Expect(profile.contains("(deny default)"),true);@Expect(profile.contains(workspace),true);@Expect(profile.contains(home),true);@Expect(profile.contains(sdk),true);@Expect(profile.contains("${caseSrc}/tests"),true);@Expect(profile.contains("${caseSrc}/translation"),true);@Expect(profile.contains("CangjieTeacher"),true)}
         @Expect(c.contains(docs),false);@Expect(e.contains(docs),true)
-    }
-
-    // TMP-META-UT / TMP-META-BND / TMP-META-POS / TMP-META-NEG
-    @TestCase
-    public func tmpMetaUtDynamicUidProducesOnlyExactMetadataLiteral(): Unit {
-        let rule = ckbAbcdeClaudeTempMetadataRuleForUidForTest("501")
-        @Expect(rule, " (literal \"/private/tmp/claude-501\")")
-        @Expect(rule.contains("subpath"), false)
-        @Expect(rule.contains("file-read*"), false)
-        @Expect(rule.contains("file-write"), false)
-    }
-
-    @TestCase
-    public func tmpMetaBndRejectsMalformedAndOutOfRangeUid(): Unit {
-        for (uid in ["", " 501", "501 ", "-1", "+1", "0501", "501x", "用户🙂", "4294967296"]) {
-            @Expect(ckbAbcdeClaudeTempMetadataRuleForUidForTest(uid), "")
-        }
-        @Expect(ckbAbcdeClaudeTempMetadataRuleForUidForTest("0"), " (literal \"/private/tmp/claude-0\")")
-        @Expect(ckbAbcdeClaudeTempMetadataRuleForUidForTest("4294967295"), " (literal \"/private/tmp/claude-4294967295\")")
-    }
-
-    @TestCase
-    public func tmpMetaNegValidationRejectsSymlinkOwnerModeAndSibling(): Unit {
-        let path = "/private/tmp/claude-501"
-        @Expect(ckbAbcdeClaudeTempMetadataDiagnosticForTest("501", path, path, "501", "700", true, false), "ok")
-        @Expect(ckbAbcdeClaudeTempMetadataDiagnosticForTest("501", path, path, "501", "700", true, true), "claude_temp_symlink_forbidden")
-        @Expect(ckbAbcdeClaudeTempMetadataDiagnosticForTest("501", path, "/private/tmp/private-token", "501", "700", true, false), "claude_temp_canonical_mismatch")
-        @Expect(ckbAbcdeClaudeTempMetadataDiagnosticForTest("501", path, path, "502", "700", true, false), "claude_temp_owner_mismatch")
-        for (mode in ["720", "702", "770", "707", "777", "bad🙂"]) {
-            @Expect(ckbAbcdeClaudeTempMetadataDiagnosticForTest("501", path, path, "501", mode, true, false), "claude_temp_mode_invalid")
-        }
-        @Expect(ckbAbcdeClaudeTempMetadataDiagnosticForTest("501", path, path, "501", "700", false, false), "claude_temp_directory_required")
-        @Expect(ckbAbcdeClaudeTempMetadataDiagnosticForTest("501", "/private/tmp/claude-502", "/private/tmp/claude-502", "501", "700", true, false), "claude_temp_path_invalid")
-    }
-
-    @TestCase
-    public func tmpMetaPosProfilesContainCurrentExactRuleWithoutBroaderAccess(): Unit {
-        let uid = ckbAbcdeCurrentUidForTest()
-        @Expect(uid.isEmpty(), false)
-        @Expect(ckbAbcdePrepareClaudeTempMetadataForTest(), "ok")
-        let path = "/private/tmp/claude-${uid}"
-        let workspace="/tmp/工作区🙂";let home="/tmp/运行时🙂";let caseSrc="/tmp/数据集🙂/CJ-HUMANEVAL-032"
-        let development = ckbAbcdeDevelopmentSandboxProfile(CkbAbcdeGroups.C,workspace,home,"/tmp/ckb-bin","/tmp/config","/tmp/ckb-store",caseSrc,"/tmp/文档🙂","/tmp/仓颉SDK🙂","/tmp/MacSDK🙂","/usr/bin/true","/usr/bin/true")
-        let certification = ckbAbcdeCertificationSandboxProfile(workspace,home,"/tmp/ckb-bin","/tmp/config","/tmp/ckb-store",caseSrc,"/usr/bin/true","/usr/bin/true")
-        for (profile in [development, certification]) {
-            @Expect(profile.contains("(allow file-read-metadata"), true)
-            @Expect(profile.contains("(literal \"${path}\")"), true)
-            @Expect(profile.contains("(subpath \"${path}\")"), false)
-            @Expect(profile.contains("(allow file-read* (literal \"${path}\")"), false)
-            @Expect(profile.contains("(allow file-write* (literal \"${path}\")"), false)
-            @Expect(profile.contains("/private/tmp/claude-用户🙂"), false)
-        }
     }
 
     // MAGIC-STDX-UT / MAGIC-STDX-BND / MAGIC-STDX-POS / MAGIC-STDX-NEG
@@ -774,12 +724,59 @@ public class CangjieEvalAbcdeRunnerTest {
     @TestCase
     public func nkPos04RealDevelopmentSandboxBuildsAndDeniesPrivateSibling(): Unit {
         if (!exists(Path("/usr/bin/sandbox-exec"))) { return }
-        let root="target/development-sandbox-仓颉🙂";let workspace="${root}/workspace";let home="${root}/runtime-home";let caseSrc="${root}/case";let docs="${root}/docs";let store="${root}/store";let bin="${root}/ckb-bin"
+        let root="target/development-sandbox-仓颉🙂-${ckbCoreNowMillis()}";let workspace="${root}/workspace";let home="${root}/runtime-home/attempt-1";let caseSrc="${root}/case";let docs="${root}/docs";let store="${root}/store";let bin="${root}/ckb-bin"
         for(path in [workspace,home,"${caseSrc}/tests","${caseSrc}/translation",docs,store]){if(!exists(Path(path))){Directory.create(Path(path),recursive:true)}};File.writeTo(Path(bin),"probe".toArray())
         let sdk=match(getVariable("CANGJIE_HOME")){case Some(value)=>value case None=>""};let macSdk=match(getVariable("SDKROOT")){case Some(value)=>value case None=>""};@Expect(sdk.isEmpty(),false);@Expect(macSdk.isEmpty(),false)
-        let profilePath="${root}/development.sb";File.writeTo(Path(profilePath),ckbAbcdeDevelopmentSandboxProfile(CkbAbcdeGroups.E,workspace,home,bin,"/tmp/config",store,caseSrc,docs,sdk,macSdk,"/usr/bin/true","/usr/bin/true").toArray())
-        let probe=ckbAbcdeDevelopmentSandboxProbeForTest(profilePath,workspace,home,caseSrc,docs,CkbAbcdeGroups.E,sdk,macSdk)
-        @Expect(probe.exitCode,0);@Expect(probe.stderr,"");@Expect(probe.stdout.contains("\"ok\":true"),true);@Expect(probe.stdout.contains("\"stdinReadable\":true"),true);@Expect(probe.stdout.contains("\"minimalBuildPassed\":true"),true);@Expect(probe.stdout.contains("\"deniedBroadFilesystemScan\":true"),true);@Expect(probe.stdout.contains("private-probe-value"),false)
+        try {
+            let profilePath="${root}/development.sb";File.writeTo(Path(profilePath),ckbAbcdeDevelopmentSandboxProfile(CkbAbcdeGroups.E,workspace,home,bin,"/tmp/config",store,caseSrc,docs,sdk,macSdk,"/usr/bin/true","/usr/bin/true").toArray())
+            let probe=ckbAbcdeDevelopmentSandboxProbeForTest(profilePath,workspace,home,caseSrc,docs,CkbAbcdeGroups.E,sdk,macSdk)
+            @Expect(probe.exitCode,0);@Expect(probe.stderr,"");@Expect(probe.stdout.contains("\"ok\":true"),true);@Expect(probe.stdout.contains("\"stdinReadable\":true"),true);@Expect(probe.stdout.contains("\"runtimeTempMarkersPassed\":true"),true);@Expect(probe.stdout.contains("\"runtimeTempMarkersCleaned\":true"),true);@Expect(probe.stdout.contains("\"deniedExternalTemp\":true"),true);@Expect(probe.stdout.contains("\"deniedTempSibling\":true"),true);@Expect(probe.stdout.contains("\"minimalBuildPassed\":true"),true);@Expect(probe.stdout.contains("\"deniedBroadFilesystemScan\":true"),true);@Expect(probe.stdout.contains("private-probe-value"),false)
+        } finally { _=launch("/bin/rm",["-rf",root]).wait() }
+    }
+
+    @TestCase
+    public func claudeTmpdirPosRealCertificationSandboxWritesCleansAndDeniesOutside(): Unit {
+        if (!exists(Path("/usr/bin/sandbox-exec"))) { return }
+        let root="target/certification-sandbox-仓颉🙂-${ckbCoreNowMillis()}";let workspace="${root}/workspace";let home="${root}/runtime-home";let caseSrc="${root}/case";let store="${root}/store";let bin="${root}/ckb-bin";let config="${root}/formal.conf"
+        for(path in [workspace,home,"${caseSrc}/tests","${caseSrc}/translation",store]){Directory.create(Path(path),recursive:true)};File.writeTo(Path(bin),"probe".toArray());File.writeTo(Path(config),"network.enabled=false\n".toArray())
+        try {
+            @Expect(exists(Path("${home}/tmp")),false);@Expect(ckbAbcdePrepareClaudeRuntimeHomeForTest(canonicalize(Path(home)).toString()),"ok");@Expect(exists(Path("${home}/tmp")),true)
+            let profilePath="${root}/certification.sb";File.writeTo(Path(profilePath),ckbAbcdeCertificationSandboxProfile(workspace,home,bin,config,store,caseSrc,"/usr/bin/true","/usr/bin/true").toArray())
+            let profile=String.fromUtf8(File.readFrom(Path(profilePath)));@Expect(profile.contains("/private/tmp/claude-"),false)
+            let probe=ckbAbcdeCertificationSandboxProbeForTest(profilePath,workspace,home,caseSrc)
+            @Expect(probe.exitCode,0);@Expect(probe.stdout.contains("\"runtimeTempMarkersPassed\":true"),true);@Expect(probe.stdout.contains("\"runtimeTempMarkersCleaned\":true"),true);@Expect(probe.stdout.contains("\"deniedExternalTemp\":true"),true);@Expect(probe.stdout.contains("\"deniedTempSibling\":true"),true)
+        } finally { _=launch("/bin/rm",["-rf",root]).wait() }
+    }
+
+    @TestCase
+    public func claudeRuntimeHomeUtCreatesAllControlledDirectoriesWithUtf8Path(): Unit {
+        let relative="target/runtime-home-仓颉🙂-${ckbCoreNowMillis()}";Directory.create(Path(relative),recursive:true);let home=canonicalize(Path(relative)).toString()
+        try { @Expect(ckbAbcdePrepareClaudeRuntimeHomeForTest(home),"ok");for(path in ["tmp","xdg-config","xdg-cache","claude-config"]){@Expect(exists(Path("${home}/${path}")),true)} } finally { _=launch("/bin/rm",["-rf",relative]).wait() }
+    }
+
+    @TestCase
+    public func claudeRuntimeHomeBndRejectsEmptyRelativeAndUtf8RelativePaths(): Unit {
+        for(path in ["","relative/runtime-home","相对/运行时🙂"]){@Expect(ckbAbcdePrepareClaudeRuntimeHomeForTest(path),"sandbox_runtime_home_invalid")}
+    }
+
+    @TestCase
+    public func claudeTmpdirNegCertificationProfileHasNoLegacyPrivateTmpPermission(): Unit {
+        let profile=ckbAbcdeCertificationSandboxProfile("/tmp/workspace","/tmp/runtime-home","/tmp/ckb","/tmp/config","/tmp/store","/tmp/case","/usr/bin/true","/usr/bin/true")
+        @Expect(profile.contains("/private/tmp/claude-"),false);@Expect(profile.contains("(subpath \"/tmp/runtime-home\")"),true)
+    }
+
+    @TestCase
+    public func claudeTmpdirNegDevelopmentProfileCannotGrantAttemptSibling(): Unit {
+        let profile=ckbAbcdeDevelopmentSandboxProfile(CkbAbcdeGroups.C,"/tmp/workspace","/tmp/runtime-home/attempt-1","/tmp/ckb","/tmp/config","/tmp/store","/tmp/case","/tmp/docs","/tmp/sdk","/tmp/mac-sdk","/usr/bin/true","/usr/bin/true")
+        @Expect(profile.contains("/private/tmp/claude-"),false);@Expect(profile.contains("(subpath \"/tmp/runtime-home/attempt-1\")"),true);@Expect(profile.contains("(subpath \"/tmp/runtime-home/attempt-2\")"),false)
+    }
+
+    @TestCase
+    public func opensslCanonicalPosProfileSelectsOnlyFirstReadyAlias(): Unit {
+        let selected=ckbAbcdeCurrentOpenSslAliasRootForTest();if(selected==""){return}
+        let profile=ckbAbcdeCertificationSandboxProfile("/tmp/workspace","/tmp/runtime-home","/tmp/ckb","/tmp/config","/tmp/store","/tmp/case","/usr/bin/true","/usr/bin/true")
+        @Expect(profile.contains("(literal \"${selected}\")"),true)
+        for(root in ["/opt/homebrew/opt/openssl@3","/opt/homebrew/opt/openssl@3.5","/usr/local/opt/openssl@3"]){if(root!=selected){@Expect(profile.contains("(literal \"${root}\")"),false)}}
     }
 
     @TestCase
