@@ -2,6 +2,8 @@
 
 The official Python `check(candidate)` was executed against the official canonical solution through a recorder. Each candidate invocation below is translated into a concrete Cangjie assertion in `tests/TestMain.cj`.
 
+Oracle preservation: line 10 keeps exact `Float64` equality. Lines 11–12 compare against the official constants `0.33` and `0.456` with strict `abs(actual - expected) < 1e-6`; the negated strict predicate makes NaN fail closed.
+
 ## Official Test Lines
 
 | Source line | HumanEval test line | CangjieEval assertion label(s) |

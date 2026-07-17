@@ -13,6 +13,6 @@
   "returnType": "Float64",
   "callCount": 3,
   "sourceLicense": "MIT",
-  "testStrategy": "official check(candidate) expanded through canonical recorder, then translated to Cangjie main assertions",
+  "testStrategy": "official check(candidate) preserved with exact Float64 equality; NaN fails closed",
   "staticLanguageAdaptations": []
 }

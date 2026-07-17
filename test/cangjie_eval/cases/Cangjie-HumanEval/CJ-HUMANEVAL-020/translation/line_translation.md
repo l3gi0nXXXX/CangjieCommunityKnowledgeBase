@@ -2,6 +2,8 @@
 
 The official Python `check(candidate)` was executed against the official canonical solution through a recorder. Each candidate invocation below is translated into a concrete Cangjie assertion in `tests/TestMain.cj`.
 
+Oracle preservation: Python tuple equality is translated to exact element-wise `Float64` equality. No epsilon is introduced, and NaN is rejected.
+
 ## Official Test Lines
 
 | Source line | HumanEval test line | CangjieEval assertion label(s) |

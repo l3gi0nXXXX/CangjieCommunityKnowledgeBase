@@ -2,6 +2,8 @@
 
 The official Python `check(candidate)` was executed against the official canonical solution through a recorder. Each candidate invocation below is translated into a concrete Cangjie assertion in `tests/TestMain.cj`.
 
+Oracle preservation: dynamic Python equality is translated to exact `EvalValue` kind and payload equality. Float payloads use exact equality; no epsilon is introduced, and NaN is rejected.
+
 ## Official Test Lines
 
 | Source line | HumanEval test line | CangjieEval assertion label(s) |

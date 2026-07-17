@@ -12,6 +12,6 @@
   "returnType": "Float64",
   "callCount": 3,
   "sourceLicense": "MIT",
-  "testStrategy": "official check(candidate) expanded through canonical recorder, then translated to Cangjie main assertions",
+  "testStrategy": "official check(candidate) preserved: line 10 uses exact Float64 equality; lines 11-12 use strict abs(actual - official expected) < 1e-6; NaN fails closed",
   "staticLanguageAdaptations": []
 }

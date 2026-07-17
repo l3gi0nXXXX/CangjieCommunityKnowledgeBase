@@ -16,7 +16,8 @@ func mapOfStringInt64(values: Array<(String, Int64)>): HashMap<String, Int64> { 
 func mapOfStringString(values: Array<(String, String)>): HashMap<String, String> { let out = HashMap<String, String>(); for (v in values) { out[v[0]] = v[1] }; out }
 func cjeFail(label: String, detail: String): Unit { throw Exception("CangjieEval failure: ${label}: ${detail}") }
 func expectInt64(actual: Int64, expected: Int64, label: String): Unit { if (actual != expected) { cjeFail(label, "expected ${expected}, actual ${actual}") } }
-func expectFloat64(actual: Float64, expected: Float64, label: String): Unit { if (abs(actual - expected) > 0.000001) { cjeFail(label, "expected ${expected}, actual ${actual}") } }
+func expectFloat64(actual: Float64, expected: Float64, label: String): Unit { if (actual != expected) { cjeFail(label, "expected exactly ${expected}, actual ${actual}") } }
+func expectFloat64StrictEpsilon(actual: Float64, expected: Float64, label: String): Unit { if (!(abs(actual - expected) < 0.000001)) { cjeFail(label, "expected within strict 1e-6 of ${expected}, actual ${actual}") } }
 func expectString(actual: String, expected: String, label: String): Unit { if (actual != expected) { cjeFail(label, "expected ${expected}, actual ${actual}") } }
 func expectBool(actual: Bool, expected: Bool, label: String): Unit { if (actual != expected) { cjeFail(label, "expected ${expected}, actual ${actual}") } }
 func expectEvalValue(actual: EvalValue, expected: EvalValue, label: String): Unit { if (actual.kind != expected.kind) { cjeFail(label, "expected kind ${expected.kind}, actual kind ${actual.kind}") }; if (expected.kind == "int") { expectInt64(actual.intValue, expected.intValue, label) }; if (expected.kind == "float") { expectFloat64(actual.floatValue, expected.floatValue, label) }; if (expected.kind == "string") { expectString(actual.stringValue, expected.stringValue, label) }; if (expected.kind == "bool") { expectBool(actual.boolValue, expected.boolValue, label) } }
@@ -35,8 +36,8 @@ func expectStringInt64Map(actual: HashMap<String, Int64>, expected: HashMap<Stri
 
 main(): Int64 {
     expectFloat64(truncate_number(3.5), 0.5, "CJ-HUMANEVAL-002_l10_c001")
-    expectFloat64(truncate_number(1.33), 0.33000000000000007, "CJ-HUMANEVAL-002_l11_c002")
-    expectFloat64(truncate_number(123.456), 0.45600000000000307, "CJ-HUMANEVAL-002_l12_c003")
+    expectFloat64StrictEpsilon(truncate_number(1.33), 0.33, "CJ-HUMANEVAL-002_l11_c002")
+    expectFloat64StrictEpsilon(truncate_number(123.456), 0.456, "CJ-HUMANEVAL-002_l12_c003")
     println("CJ-HUMANEVAL-002 ok")
     return 0
 }
