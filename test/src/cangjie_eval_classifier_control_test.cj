@@ -211,16 +211,22 @@ public class CangjieEvalClassifierControlTest {
             "Using match directly as a plain identifier is invalid. Raw identifier syntax is `match`; rename to a non-keyword variable.")
         let missingPlainBoundary=base.replace("General reusable String API guidance 中文🙂",
             "The raw identifier `match` is legal, and renaming it to a non-keyword variable is valid.")
+        let missingRename=base.replace("General reusable String API guidance 中文🙂",
+            "Using the reserved keyword match directly as a plain variable identifier is invalid. The raw identifier `match` is legal in Cangjie.")
         let wordSalad=base.replace("General reusable String API guidance 中文🙂",
             "plain match keyword invalid raw identifier `match` legal rename non-keyword valid 中文🙂")
         let commentDisguise=base.replace("General reusable String API guidance 中文🙂",
             "Using the reserved keyword match directly as a plain variable identifier is invalid; rename it to a non-keyword identifier. // The raw identifier `match` is legal.")
         let contradictory=complete.replace("Using the reserved keyword match directly as a plain variable identifier is invalid.",
             "The reserved keyword match can never be used as an identifier under any circumstances.")
-        for((label,response) in [("absolute",absolute),("v1-a",v1A),("v1-b",v1B),("missing-raw",missingRaw),("raw-no-legality",rawWithoutLegality),
-            ("missing-plain",missingPlainBoundary),("word-salad",wordSalad),("comment-disguise",commentDisguise),("contradictory",contradictory)]){
+        for((label,response,diagnostic) in [("absolute",absolute,"classifier_reserved_match_contradictory"),
+            ("v1-a",v1A,"classifier_reserved_match_contradictory"),("v1-b",v1B,"classifier_reserved_match_contradictory"),
+            ("missing-raw",missingRaw,"classifier_reserved_match_raw_missing"),("raw-no-legality",rawWithoutLegality,"classifier_reserved_match_raw_missing"),
+            ("missing-plain",missingPlainBoundary,"classifier_reserved_match_plain_missing"),("missing-rename",missingRename,"classifier_reserved_match_rename_missing"),
+            ("word-salad",wordSalad,"classifier_reserved_match_plain_missing"),("comment-disguise",commentDisguise,"classifier_reserved_match_comment_disguised"),
+            ("contradictory",contradictory,"classifier_reserved_match_contradictory")]){
             let result=sealCkbP5ClassifierResponseWithDiagnostic(request,response,config,"/tmp/p5-keyword-bad-${label}/workspace","/tmp/p5-keyword-bad-${label}/home","session-keyword-bad-${label}")
-            @Expect(result[0],"");@Expect(result[1],"classifier_response_source_fact_unsupported")
+            @Expect(result[0],"");@Expect(result[1],diagnostic)
         }
 
         let unrelated=p5IcAbsRequest("CJ-HUMANEVAL-018","public func solve(): Int64 { var found = 0; found }",
@@ -264,6 +270,12 @@ public class CangjieEvalClassifierControlTest {
         let root=p5IcRoot("safe-diagnostic");let path=Path(root).join("classifier-diagnostic.json")
         File.writeTo(path,"{\"schemaVersion\":\"cangjie-teacher-classifier-diagnostic-v1\",\"diagnostic\":\"classifier_response_source_fact_unsupported\"}\n".toArray())
         @Expect(ckbP5ReadClassifierFailureDiagnostic(path),"classifier_response_source_fact_unsupported")
+        for(diagnostic in ["classifier_reserved_match_plain_missing","classifier_reserved_match_raw_missing",
+            "classifier_reserved_match_rename_missing","classifier_reserved_match_contradictory",
+            "classifier_reserved_match_comment_disguised"]){
+            File.writeTo(path,"{\"schemaVersion\":\"cangjie-teacher-classifier-diagnostic-v1\",\"diagnostic\":\"${diagnostic}\"}\n".toArray())
+            @Expect(ckbP5ReadClassifierFailureDiagnostic(path),diagnostic)
+        }
         File.writeTo(path,"{\"schemaVersion\":\"wrong\",\"diagnostic\":\"classifier_timeout\"}".toArray())
         @Expect(ckbP5ReadClassifierFailureDiagnostic(path),"classifier_diagnostic_invalid")
         File.writeTo(path,"{\"schemaVersion\":\"cangjie-teacher-classifier-diagnostic-v1\",\"diagnostic\":\"unknown\"}".toArray())
@@ -285,6 +297,14 @@ public class CangjieEvalClassifierControlTest {
         @Expect(result.diagnostics[0].contains("a=classifier_response_source_fact_unsupported"),true)
         @Expect(exists(Path(output).join("pairs/a/CJ-HUMANEVAL-016.json")),false)
         @Expect(exists(Path(output).join("runs/CJ-HUMANEVAL-016/a/workspace/classifier-diagnostic.json")),false)
+
+        let preciseRoot=p5IcRoot("safe-diagnostic-precise");_=p5IcSample(preciseRoot,"CJ-HUMANEVAL-018","error: found keyword 'match'")
+        let preciseOutput="${preciseRoot}/classifier-output";let precise=runCkbP5IndependentClassifiers(preciseRoot,"run-中文🙂","C",preciseOutput,
+            p5IcExecutableConfig("a","codex","GPT-5.6-Sol",p5IcDiagnosticFake(preciseRoot,"fake-a.sh","classifier_reserved_match_raw_missing")),
+            p5IcExecutableConfig("b","claude-code","GLM-5.2",p5IcFake(preciseRoot,"fake-b.sh","ok")),10)
+        @Expect(precise.ok,false);@Expect(precise.paired,0);@Expect(precise.rejected,1)
+        @Expect(precise.diagnostics[0].contains("a=classifier_reserved_match_raw_missing"),true)
+        @Expect(precise.diagnostics[0].contains("/Users"),false);@Expect(precise.diagnostics[0].toAsciiLower().contains("token"),false)
 
         let staleRoot=p5IcRoot("safe-diagnostic-stale");_=p5IcSample(staleRoot,"CJ-HUMANEVAL-016","error: missing member")
         let staleOutput="${staleRoot}/classifier-output";let stale=runCkbP5IndependentClassifiers(staleRoot,"run-中文🙂","C",staleOutput,

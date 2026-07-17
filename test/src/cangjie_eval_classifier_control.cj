@@ -208,6 +208,9 @@ private func ckbP5ClassifierFailureDiagnosticAllowed(value:String):Bool{
         "classifier_output_too_large","malformed_stream_json","duplicate_init","classifier_unsuccessful_result","missing_init",
         "observed_model_mismatch","missing_or_duplicate_terminal_result","response_contract_invalid","response_contains_forbidden_data",
         "malformed_structured_output","classifier_response_source_fact_unsupported","response_write_failed","diagnostic_reset_failed",
+        "classifier_reserved_match_plain_missing","classifier_reserved_match_raw_missing",
+        "classifier_reserved_match_rename_missing","classifier_reserved_match_contradictory",
+        "classifier_reserved_match_comment_disguised",
         "classifier_failure_unknown"].contains(value)
 }
 
@@ -226,7 +229,8 @@ public func sealCkbP5ClassifierResponseWithDiagnostic(requestText:String,respons
         if(ckbP5String(response,"observedProvider")!=config.provider||ckbP5String(response,"observedModel")!=config.model){return ("","classifier_response_identity_mismatch")}
         if(ckbP5Forbidden(responseText)){return ("","classifier_response_forbidden_content")}
         let category=ckbP5String(response,"category").toAsciiLower();if(!ckbP5ClassifierCategory(category)){return ("","classifier_response_category_invalid")}
-        if(!ckbP5ClassifierSourceFactsValid(request,response,category)){return ("","classifier_response_source_fact_unsupported")}
+        let sourceFactDiagnostic=ckbP5ClassifierSourceFactsDiagnostic(request,response,category)
+        if(sourceFactDiagnostic!="ok"){return ("",sourceFactDiagnostic)}
         let providerHash=benchmarkGapSha256(ckbP5Part(config.provider)+ckbP5Part(config.model)+ckbP5Part(ckbP5String(response,"observedProvider"))+ckbP5Part(ckbP5String(response,"observedModel")))
         let workspaceId=benchmarkGapSha256(try{canonicalize(Path(workspace)).toString()}catch(_:Exception){workspace});let runtimeHomeId=benchmarkGapSha256(try{canonicalize(Path(runtimeHome)).toString()}catch(_:Exception){runtimeHome});let sessionId=benchmarkGapSha256(session)
         let sourceId=benchmarkGapSha256(config.provider+"|"+config.model+"|"+config.executable+"|"+config.classifierId)
@@ -237,23 +241,24 @@ public func sealCkbP5ClassifierResponseWithDiagnostic(requestText:String,respons
     }catch(_:Exception){("","classifier_response_malformed")}
 }
 
-private func ckbP5ClassifierSourceFactsValid(request:JsonObject,response:JsonObject,category:String):Bool{
-    if(category!="knowledge_gap"){return true}
+private func ckbP5ClassifierSourceFactsDiagnostic(request:JsonObject,response:JsonObject,category:String):String{
+    if(category!="knowledge_gap"){return "ok"}
     let source=ckbP5String(request,"studentSourceExcerpt").toAsciiLower()
     let compiler=ckbP5String(request,"compilerTestSummary").toAsciiLower()
     let knowledge=ckbP5String(response,"knowledgeText").toAsciiLower()
-    if(!ckbP5ClassifierStringCasingFactsValid(source,compiler,knowledge)){return false}
-    if(!ckbP5ClassifierReservedKeywordFactsValid(source,compiler,knowledge)){return false}
-    if(!source.contains(".abs(")||!compiler.contains("undeclared identifier 'abs'")){return true}
-    if(!knowledge.contains("std.math")){return true}
+    if(!ckbP5ClassifierStringCasingFactsValid(source,compiler,knowledge)){return "classifier_response_source_fact_unsupported"}
+    let reservedKeywordDiagnostic=ckbP5ClassifierReservedKeywordFactsDiagnostic(source,compiler,knowledge)
+    if(reservedKeywordDiagnostic!="ok"){return reservedKeywordDiagnostic}
+    if(!source.contains(".abs(")||!compiler.contains("undeclared identifier 'abs'")){return "ok"}
+    if(!knowledge.contains("std.math")){return "ok"}
     let deniesRequirement=knowledge.contains("std.math import is unnecessary")||knowledge.contains("std.math import is not required")||
         knowledge.contains("does not require importing std.math")||knowledge.contains("without importing std.math")||
         knowledge.contains("do not import std.math")||knowledge.contains("must not import std.math")
-    if(deniesRequirement){return true}
+    if(deniesRequirement){return "ok"}
     let assertsRequirement=knowledge.contains("must import std.math")||knowledge.contains("requires import std.math")||
         knowledge.contains("required to import std.math")||knowledge.contains("import std.math")||
         knowledge.contains("importing std.math")||knowledge.contains("from std.math")||knowledge.contains("std.math.* before")
-    !assertsRequirement
+    if(assertsRequirement){"classifier_response_source_fact_unsupported"}else{"ok"}
 }
 
 private func ckbP5ClassifierStringCasingFactsValid(source:String,compiler:String,knowledge:String):Bool{
@@ -308,16 +313,19 @@ private func ckbP5ClassifierRuneLowerResultValid(knowledge:String):Bool{
     false
 }
 
-private func ckbP5ClassifierReservedKeywordFactsValid(source:String,compiler:String,knowledge:String):Bool{
+private func ckbP5ClassifierReservedKeywordFactsDiagnostic(source:String,compiler:String,knowledge:String):String{
     let target=source.contains("var match")&&compiler.contains("expected identifier or pattern after 'var'")&&
         compiler.contains("found keyword 'match'")
-    if(!target){return true}
-    if(knowledge.contains("//")||knowledge.contains("/*")||knowledge.contains("*/")){return false}
+    if(!target){return "ok"}
+    if(knowledge.contains("//")||knowledge.contains("/*")||knowledge.contains("*/")){return "classifier_reserved_match_comment_disguised"}
     let absolute=knowledge.contains("can never be used as an identifier")||
         knowledge.contains("cannot ever be used as an identifier")||
         knowledge.contains("cannot be used as an identifier under any circumstances")||
+        knowledge.contains("cannot be used as a local variable identifier")||
+        knowledge.contains("cannot be used as a variable name or identifier")||
+        knowledge.contains("cannot be used as an identifier")||
         knowledge.contains("always forbidden as an identifier")
-    if(absolute){return false}
+    if(absolute){return "classifier_reserved_match_contradictory"}
     let plainContext=knowledge.contains("using the reserved keyword match directly")||
         knowledge.contains("using match directly")||knowledge.contains("unescaped match")||
         knowledge.contains("match without escaping")||
@@ -326,16 +334,19 @@ private func ckbP5ClassifierReservedKeywordFactsValid(source:String,compiler:Str
     let plainInvalid=plainContext&&knowledge.contains("keyword")&&
         (knowledge.contains(" is invalid")||knowledge.contains("cannot be used directly")||
         knowledge.contains(" is not a valid")||knowledge.contains(" is illegal"))
+    if(!plainInvalid){return "classifier_reserved_match_plain_missing"}
     let rawSyntax=knowledge.contains("`match`")&&
         (knowledge.contains("raw identifier")||knowledge.contains("escaped identifier"))
     let rawLegal=rawSyntax&&(knowledge.contains(" is legal")||knowledge.contains(" is allowed")||
         knowledge.contains(" is valid")||knowledge.contains(" can be used")||
         knowledge.contains("legal raw identifier")||knowledge.contains("valid raw identifier"))
+    if(!rawLegal){return "classifier_reserved_match_raw_missing"}
     let rename=(knowledge.contains("rename")||knowledge.contains("renaming")||
         knowledge.contains("use a non-keyword")||knowledge.contains("choose a non-keyword"))&&
         (knowledge.contains("non-keyword identifier")||knowledge.contains("non-keyword variable")||
         knowledge.contains("non-keyword name")||knowledge.contains("different non-keyword"))
-    plainInvalid&&rawLegal&&rename
+    if(!rename){return "classifier_reserved_match_rename_missing"}
+    "ok"
 }
 
 public func ckbP5ClassifierArtifactEvidenceHash(raw:String):String{try{ckbP5ClassifierArtifactHash(JsonValue.fromStr(raw).asObject())}catch(_:Exception){""}}
