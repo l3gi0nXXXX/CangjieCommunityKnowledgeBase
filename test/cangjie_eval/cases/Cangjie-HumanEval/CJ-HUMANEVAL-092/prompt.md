@@ -1,10 +1,12 @@
 # CJ-HUMANEVAL-092: any_int
 
 - Source task: `HumanEval/92`
-- Cangjie signature: `public func any_int(x: Float64, y: Float64, z: Float64): Bool`
+- Cangjie signature: `public func any_int(x: EvalValue, y: EvalValue, z: EvalValue): Bool`
 - Test calls expanded from official HumanEval: `10`
 - Static-language adaptations:
-  - Python int/float numeric unions are represented with Float64 where needed.
+  - Python numeric type identity is explicit: `evalInt` preserves a Python `int`; `evalFloat` preserves a Python `float`, even when both carry the same numeric value.
+  - Read an integer argument from `intValue` only when its `kind` is `"int"`. A `kind` of `"float"` is not an integer, including values such as `3.0`.
+  - Python integer payloads are represented by `Int64`; all official HumanEval/92 calls are within that range.
 
 ## Model-Facing Task
 
@@ -15,7 +17,7 @@ Implement the function in `starter/src/solution.cj` according to the source task
 | Source line | HumanEval Python prompt | CangjieEval translation |
 |---:|---|---|
 | 1 | `` | `` |
-| 2 | `def any_int(x, y, z):` | `public func any_int(x: Float64, y: Float64, z: Float64): Bool {` |
+| 2 | `def any_int(x, y, z):` | `public func any_int(x: EvalValue, y: EvalValue, z: EvalValue): Bool {` |
 | 3 | `    '''` | `// '''` |
 | 4 | `    Create a function that takes 3 numbers.` | `// Create a function that takes 3 numbers.` |
 | 5 | `    Returns true if one of the numbers is equal to the sum of the other two, and all numbers are integers.` | `// Returns true if one of the numbers is equal to the sum of the other two, and all numbers are integers.` |

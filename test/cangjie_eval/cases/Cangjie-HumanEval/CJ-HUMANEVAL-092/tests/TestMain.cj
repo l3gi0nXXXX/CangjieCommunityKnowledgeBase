@@ -34,16 +34,16 @@ func expectStringInt64Map(actual: HashMap<String, Int64>, expected: HashMap<Stri
 
 
 main(): Int64 {
-    expectBool(any_int(2.0, 3.0, 1.0), true, "CJ-HUMANEVAL-092_l4_c001")
-    expectBool(any_int(2.5, 2.0, 3.0), false, "CJ-HUMANEVAL-092_l5_c002")
-    expectBool(any_int(1.5, 5.0, 3.5), false, "CJ-HUMANEVAL-092_l6_c003")
-    expectBool(any_int(2.0, 6.0, 2.0), false, "CJ-HUMANEVAL-092_l7_c004")
-    expectBool(any_int(4.0, 2.0, 2.0), true, "CJ-HUMANEVAL-092_l8_c005")
-    expectBool(any_int(2.2, 2.2, 2.2), false, "CJ-HUMANEVAL-092_l9_c006")
-    expectBool(any_int(-4.0, 6.0, 2.0), true, "CJ-HUMANEVAL-092_l10_c007")
-    expectBool(any_int(2.0, 1.0, 1.0), true, "CJ-HUMANEVAL-092_l13_c008")
-    expectBool(any_int(3.0, 4.0, 7.0), true, "CJ-HUMANEVAL-092_l14_c009")
-    expectBool(any_int(3.0, 4.0, 7.0), false, "CJ-HUMANEVAL-092_l15_c010")
+    expectBool(any_int(evalInt(2), evalInt(3), evalInt(1)), true, "CJ-HUMANEVAL-092_l4_c001")
+    expectBool(any_int(evalFloat(2.5), evalInt(2), evalInt(3)), false, "CJ-HUMANEVAL-092_l5_c002")
+    expectBool(any_int(evalFloat(1.5), evalInt(5), evalFloat(3.5)), false, "CJ-HUMANEVAL-092_l6_c003")
+    expectBool(any_int(evalInt(2), evalInt(6), evalInt(2)), false, "CJ-HUMANEVAL-092_l7_c004")
+    expectBool(any_int(evalInt(4), evalInt(2), evalInt(2)), true, "CJ-HUMANEVAL-092_l8_c005")
+    expectBool(any_int(evalFloat(2.2), evalFloat(2.2), evalFloat(2.2)), false, "CJ-HUMANEVAL-092_l9_c006")
+    expectBool(any_int(evalInt(-4), evalInt(6), evalInt(2)), true, "CJ-HUMANEVAL-092_l10_c007")
+    expectBool(any_int(evalInt(2), evalInt(1), evalInt(1)), true, "CJ-HUMANEVAL-092_l13_c008")
+    expectBool(any_int(evalInt(3), evalInt(4), evalInt(7)), true, "CJ-HUMANEVAL-092_l14_c009")
+    expectBool(any_int(evalFloat(3.0), evalInt(4), evalInt(7)), false, "CJ-HUMANEVAL-092_l15_c010")
     println("CJ-HUMANEVAL-092 ok")
     return 0
 }

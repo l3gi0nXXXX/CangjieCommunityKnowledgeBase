@@ -141,7 +141,7 @@ These adaptations are recorded per case in `metadata.json`.
 | `CJ-HUMANEVAL-089` | `HumanEval/89` | `encrypt` | 8 | `public func encrypt(s: String): String` | none |
 | `CJ-HUMANEVAL-090` | `HumanEval/90` | `next_smallest` | 7 | `public func next_smallest(lst: ArrayList<Int64>): Option<Int64>` | Python None returns are represented by Option<T>. |
 | `CJ-HUMANEVAL-091` | `HumanEval/91` | `is_bored` | 6 | `public func is_bored(S: String): Int64` | none |
-| `CJ-HUMANEVAL-092` | `HumanEval/92` | `any_int` | 10 | `public func any_int(x: Float64, y: Float64, z: Float64): Bool` | Python int/float numeric unions are represented with Float64 where needed. |
+| `CJ-HUMANEVAL-092` | `HumanEval/92` | `any_int` | 10 | `public func any_int(x: EvalValue, y: EvalValue, z: EvalValue): Bool` | `evalInt`/`evalFloat` preserve Python numeric type identity; integer payloads use Int64. |
 | `CJ-HUMANEVAL-093` | `HumanEval/93` | `encode` | 5 | `public func encode(message: String): String` | none |
 | `CJ-HUMANEVAL-094` | `HumanEval/94` | `skjkasdkd` | 9 | `public func skjkasdkd(lst: ArrayList<Int64>): Int64` | none |
 | `CJ-HUMANEVAL-095` | `HumanEval/95` | `check_dict_case` | 7 | `public func check_dict_case(dictValue: ArrayList<EvalEntry>): Bool` | Python dynamic values are represented by EvalValue/EvalEntry helper types. |

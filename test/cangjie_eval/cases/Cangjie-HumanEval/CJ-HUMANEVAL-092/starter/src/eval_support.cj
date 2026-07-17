@@ -2,6 +2,9 @@ package cangjie_humaneval_092
 
 import std.collection.*
 
+// Tagged adapter for source-language values whose static type identity is part
+// of the task semantics. Use evalInt/evalFloat instead of inferring the source
+// type from a numerically equal Float64 payload.
 public class EvalValue {
     public var kind: String = "none"
     public var intValue: Int64 = 0
