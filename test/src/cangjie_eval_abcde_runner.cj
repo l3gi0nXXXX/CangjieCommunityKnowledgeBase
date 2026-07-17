@@ -557,7 +557,7 @@ public func ckbAbcdeBuildTaskContext(caseRoot: String, caseId: String): CkbAbcde
 public func ckbAbcdeBuildTaskContext(caseRoot: String, caseId: String, manifestText: String): CkbAbcdeTaskContext {
     let context = CkbAbcdeTaskContext()
     context.taskId = caseId
-    context.taskText = ckbAbcdeReadText("${caseRoot}/prompt.md")
+    context.taskText = ckbAbcdeCanonicalTaskTextFromFile(ckbAbcdeReadText("${caseRoot}/prompt.md"))
     let starter = ckbAbcdeReadText("${caseRoot}/starter/src/solution.cj")
     context.signature = ckbAbcdeExtractCangjieSignature(starter)
     for (tag in ckbAbcdeInferKnowledgeTags("${context.taskText}\n${starter}")) {
@@ -575,6 +575,20 @@ public func ckbAbcdeBuildTaskContext(caseRoot: String, caseId: String, manifestT
         }
     }
     context
+}
+
+// prompt.md is a line-oriented file. Its single terminal LF/CRLF is a file
+// delimiter, not benchmark task content; all other whitespace stays exact.
+private func ckbAbcdeCanonicalTaskTextFromFile(value: String): String {
+    let runes = value.toRuneArray()
+    var end = runes.size
+    if (end > 0 && runes[end - 1] == r'\n') {
+        end -= 1
+        if (end > 0 && runes[end - 1] == r'\r') { end -= 1 }
+    }
+    let out = StringBuilder()
+    for (i in 0..end) { out.append(runes[i]) }
+    out.toString()
 }
 
 public func ckbAbcdeRenderTaskContextJson(context: CkbAbcdeTaskContext): String {

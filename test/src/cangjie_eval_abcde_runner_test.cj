@@ -1154,6 +1154,63 @@ public class CangjieEvalAbcdeRunnerTest {
         @Expect(blocked.contains("\"certificationPassAt1\":false"),true);let blockedEvidence=parseCkbCertificationEvidence(blocked);@Expect(blockedEvidence.configHash==sealed.configHash,false);@Expect(blockedEvidence.resultEvidenceHash==sealed.resultEvidenceHash,false);@Expect(String.fromUtf8(File.readFrom(Path(root).join("paired-tool-evidence.json"))).contains("\"valid\":false"),true)
         _=launch("/bin/rm",["-rf",root]).wait()
     }
+
+    // P5-UT-02-CANONICAL-TASKTEXT-EOL
+    @TestCase
+    public func p5Ut02CanonicalTaskTextRemovesOneFileTerminalLf(): Unit {
+        let context = case145EolFixtureContext("Case145 中文🙂 task\n", "ut-lf")
+        @Expect(context.taskText, "Case145 中文🙂 task")
+        @Expect(context.signature, "func solve(s: String): String")
+    }
+
+    // P5-BND-02-CRLF-LF-NO-EOL
+    @TestCase
+    public func p5Bnd02CrLfLfAndNoEolAreCanonicalizedExactly(): Unit {
+        @Expect(case145EolFixtureContext("line\r\n", "bnd-crlf").taskText, "line")
+        @Expect(case145EolFixtureContext("line\n", "bnd-lf").taskText, "line")
+        @Expect(case145EolFixtureContext("line", "bnd-none").taskText, "line")
+    }
+
+    // P5-NEG-02-INTERNAL-TRAILING-WHITESPACE-PRESERVED
+    @TestCase
+    public func p5Neg02InternalAndTrailingWhitespaceAreNotTrimmed(): Unit {
+        @Expect(case145EolFixtureContext("first\nsecond  \n\n", "neg-blank").taskText, "first\nsecond  \n")
+        @Expect(case145EolFixtureContext("trailing spaces  \n", "neg-spaces").taskText, "trailing spaces  ")
+        @Expect(case145EolFixtureContext("no eol  ", "neg-no-eol").taskText, "no eol  ")
+    }
+
+    // P5-E2E-02-CASE145-RECORDED-REQUEST-REPLAY
+    @TestCase
+    public func p5E2e02Case145RecordedRequestReplayBindsNormalizedTaskText(): Unit {
+        let root = "target/case145-v2-eol-replay-${ckbCoreNowMillis()}"
+        _ = launch("/bin/rm", ["-rf", root]).wait()
+        let caseRoot = Path(root).join("CJ-HUMANEVAL-145")
+        Directory.create(caseRoot.join("starter/src"), recursive: true); Directory.create(caseRoot.join("tests"), recursive: true); Directory.create(caseRoot.join("translation"), recursive: true)
+        let rawPrompt = "Case145 v2 recorded task 中文🙂\n"
+        File.writeTo(caseRoot.join("prompt.md"), rawPrompt.toArray())
+        File.writeTo(caseRoot.join("metadata.json"), "{\"targetVersion\":\"1.0.0\",\"signature\":\"func solve(s: String): String\"}".toArray())
+        File.writeTo(caseRoot.join("starter/src/solution.cj"), "package fixture\nfunc solve(s: String): String { s }\n".toArray())
+        File.writeTo(caseRoot.join("tests/TestMain.cj"), "main() {}\n".toArray()); File.writeTo(caseRoot.join("translation/line_translation.md"), "translation\n".toArray())
+        let authority = buildCangjieHumanEvalManifest("cangjie_eval/cases/Cangjie-HumanEval", "")
+        @Expect(authority.ok, true); @Expect(authority.rows.size, 164); @Expect(authority.rows[145].caseId, "CJ-HUMANEVAL-145")
+        let context = ckbAbcdeBuildTaskContext(caseRoot.toString(), "CJ-HUMANEVAL-145", cangjieHumanEvalRenderAuthorityManifest(authority))
+        let rendered = ckbAbcdeRenderTaskContextJson(context)
+        @Expect(rawPrompt, context.taskText + "\n"); @Expect(context.promptHash, authority.rows[145].promptHash); @Expect(context.signature, authority.rows[145].signature)
+        let replay = ckbAbcdeTaskKnowledgeEvidenceForTest(CkbAbcdeGroups.C, case145Transcript(rendered, "call-145-v2", "h342434"), rendered)
+        @Expect(replay.valid, true); @Expect(replay.diagnostic, "ok"); @Expect(replay.evidenceHash, "h342434")
+        _ = launch("/bin/rm", ["-rf", root]).wait()
+    }
+}
+
+private func case145EolFixtureContext(prompt: String, suffix: String): CkbAbcdeTaskContext {
+    let root = "target/case145-eol-${suffix}-${ckbCoreNowMillis()}"
+    let caseRoot = Path(root).join("CJ-HUMANEVAL-145")
+    _ = launch("/bin/rm", ["-rf", root]).wait(); Directory.create(caseRoot.join("starter/src"), recursive: true)
+    File.writeTo(caseRoot.join("prompt.md"), prompt.toArray())
+    File.writeTo(caseRoot.join("starter/src/solution.cj"), "package fixture\nfunc solve(s: String): String { s }\n".toArray())
+    let context = ckbAbcdeBuildTaskContext(caseRoot.toString(), "CJ-HUMANEVAL-145")
+    _ = launch("/bin/rm", ["-rf", root]).wait()
+    context
 }
 
 private func case145CanonicalContext(): String {
