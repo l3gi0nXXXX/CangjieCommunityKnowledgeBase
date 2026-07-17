@@ -42,7 +42,7 @@ public class CangjieEvalAbcdeRunnerTest {
         @Expect(executable.canonical, canonicalize(Path(canonical)).toString())
         let command = ckbAbcdeDevelopmentClaudeCommand("/tmp/group", "/tmp/home", "/tmp/profile.sb",
             executable.canonical, "GLM-5.2", "max", "", "", "--add-dir '/tmp/workspace'",
-            "/tmp/transcript", "/tmp/stderr", 1)
+            ckbAbcdeSandboxTranscriptPath("/tmp/home"), ckbAbcdeSandboxStderrPath("/tmp/home"), 1)
         @Expect(command.contains(executable.canonical), true)
         @Expect(command.contains("/opt/homebrew/bin/claude"), false)
         let profile = ckbAbcdeDevelopmentSandboxProfile(CkbAbcdeGroups.C, "/tmp/workspace", "/tmp/home",
@@ -75,6 +75,29 @@ public class CangjieEvalAbcdeRunnerTest {
         @Expect(escapedResult.diagnostic, "claude_executable_symlink_escape")
         @Expect(escapedResult.diagnostic.contains("secret-token"), false)
         @Expect(escapedResult.canonical, "")
+    }
+
+    // SANDBOX-FD-UT/BND/POS/NEG/E2E-01
+    @TestCase
+    public func nkUt06SandboxStdioStaysInsideAttemptRuntimeHome(): Unit {
+        let groupRoot = "/tmp/private-sibling-token/group🙂"
+        let runtimeHome = "/tmp/运行时🙂/attempt-1"
+        let transcript = ckbAbcdeSandboxTranscriptPath(runtimeHome)
+        let stderr = ckbAbcdeSandboxStderrPath(runtimeHome)
+        @Expect(transcript, "${runtimeHome}/claude-transcript.jsonl")
+        @Expect(stderr, "${runtimeHome}/claude.stderr.log")
+
+        let development = ckbAbcdeDevelopmentClaudeCommand(groupRoot, runtimeHome, "/tmp/profile.sb",
+            "/usr/bin/true", "GLM-5.2", "max", "", "", "--add-dir '/tmp/workspace'", transcript, stderr, 1)
+        let certification = ckbAbcdeCertificationClaudeCommand(groupRoot, runtimeHome, "/tmp/profile.sb",
+            "/usr/bin/true", "GLM-5.2", transcript, stderr)
+        for (command in [development, certification]) {
+            @Expect(command.contains("> '${transcript}'"), true)
+            @Expect(command.contains("2> '${stderr}'"), true)
+            @Expect(command.contains("> '${groupRoot}/claude-transcript"), false)
+            @Expect(command.contains("2> '${groupRoot}/claude"), false)
+            @Expect(command.contains("private-sibling-token"), true)
+        }
     }
 
     @TestCase
@@ -432,8 +455,8 @@ public class CangjieEvalAbcdeRunnerTest {
     @TestCase
     public func nkUt03DevelopmentClaudeUsesEffectiveRuntimeHomeAndFreshSession(): Unit {
         let groupRoot="/tmp/仓颉🙂/group";let runtimeHome="${groupRoot}/runtime-home";let profile="${groupRoot}/开发🙂.sb"
-        let first=ckbAbcdeDevelopmentClaudeCommand(groupRoot,runtimeHome,profile,"/usr/bin/true","GLM-5.2","max"," --max-budget-usd '10'","","--add-dir '/tmp/工作区🙂'","${groupRoot}/one.jsonl","${groupRoot}/one.err",1)
-        let second=ckbAbcdeDevelopmentClaudeCommand(groupRoot,runtimeHome,profile,"/usr/bin/true","GLM-5.2","max","","","--add-dir '/tmp/工作区🙂'","${groupRoot}/two.jsonl","${groupRoot}/two.err",2)
+        let first=ckbAbcdeDevelopmentClaudeCommand(groupRoot,runtimeHome,profile,"/usr/bin/true","GLM-5.2","max"," --max-budget-usd '10'","","--add-dir '/tmp/工作区🙂'",ckbAbcdeSandboxTranscriptPath(runtimeHome),ckbAbcdeSandboxStderrPath(runtimeHome),1)
+        let second=ckbAbcdeDevelopmentClaudeCommand(groupRoot,runtimeHome,profile,"/usr/bin/true","GLM-5.2","max","","","--add-dir '/tmp/工作区🙂'",ckbAbcdeSandboxTranscriptPath(runtimeHome),ckbAbcdeSandboxStderrPath(runtimeHome),2)
         for(command in [first,second]){@Expect(command.contains("HOME="),true);@Expect(command.contains("TMPDIR="),true);@Expect(command.contains("XDG_CONFIG_HOME="),true);@Expect(command.contains("XDG_CACHE_HOME="),true);@Expect(command.contains("CLAUDE_CONFIG_DIR="),true);@Expect(command.contains(runtimeHome),true);@Expect(command.contains("${runtimeHome}/mcp-config.json"),true);@Expect(command.contains("sandbox-exec -f"),true);@Expect(command.contains(profile),true);@Expect(command.contains("--session-id \"$session_id\""),true);@Expect(command.contains("/.claude/"),false);@Expect(command.contains("~/.claude"),false)}
         @Expect(first.contains("session-id.attempt-1.txt"),true);@Expect(second.contains("session-id.attempt-2.txt"),true);@Expect(first!=second,true)
         @Expect(ckbAbcdeDevelopmentAttemptRuntimeHome(runtimeHome,1),"${runtimeHome}/attempt-1");@Expect(ckbAbcdeDevelopmentAttemptRuntimeHome(runtimeHome,2),"${runtimeHome}/attempt-2")

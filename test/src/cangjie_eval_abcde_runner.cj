@@ -868,11 +868,15 @@ private func ckbAbcdeDevelopmentSandboxProbe(profilePath:String,workspace:String
 }
 public func ckbAbcdeDevelopmentSandboxProbeForTest(profilePath:String,workspace:String,runtimeHome:String,caseSrc:String,docsRoot:String,group:String,cangjieHome:String,sdkRoot:String):CkbAbcdeCommandResult{ckbAbcdeDevelopmentSandboxProbe(profilePath,workspace,runtimeHome,caseSrc,docsRoot,group,cangjieHome,sdkRoot)}
 
+public func ckbAbcdeSandboxTranscriptPath(runtimeHome:String):String{"${runtimeHome}/claude-transcript.jsonl"}
+public func ckbAbcdeSandboxStderrPath(runtimeHome:String):String{"${runtimeHome}/claude.stderr.log"}
+
 private func ckbAbcdeRunClaudeOnceInCertificationSandbox(group:String,groupRoot:String,workspace:String,runtimeHome:String,profilePath:String,claudeExecutable:String,expectedModel:String,modelTimeoutSeconds:Int64):CkbAbcdeCommandResult{
-    let transcript="${groupRoot}/claude-transcript.attempt-1.jsonl";let stderr="${groupRoot}/claude.attempt-1.stderr.log"
+    let transcript=ckbAbcdeSandboxTranscriptPath(runtimeHome);let stderr=ckbAbcdeSandboxStderrPath(runtimeHome)
+    let evidenceTranscript="${groupRoot}/claude-transcript.attempt-1.jsonl";let evidenceStderr="${groupRoot}/claude.attempt-1.stderr.log"
     ckbAbcdeWriteText("${runtimeHome}/mcp-config.json",ckbAbcdeReadText("${groupRoot}/mcp-config.json"))
     let command=ckbAbcdeCertificationClaudeCommand(groupRoot,runtimeHome,profilePath,claudeExecutable,expectedModel,transcript,stderr)
-    let script=ckbAbcdeClaudeTimeoutShell(command,stderr,modelTimeoutSeconds)+"; exit $code";ckbAbcdeRunShell(script,workspace)
+    let script=ckbAbcdeClaudeTimeoutShell(command,stderr,modelTimeoutSeconds)+"; cp ${ckbAbcdeShellQuote(transcript)} ${ckbAbcdeShellQuote(evidenceTranscript)} 2>/dev/null || true; cp ${ckbAbcdeShellQuote(stderr)} ${ckbAbcdeShellQuote(evidenceStderr)} 2>/dev/null || true; exit $code";ckbAbcdeRunShell(script,workspace)
 }
 public func ckbAbcdeCertificationClaudeCommand(groupRoot:String,runtimeHome:String,profilePath:String,claudeExecutable:String,expectedModel:String,transcript:String,stderr:String):String{"session_id=$(uuidgen | tr '[:upper:]' '[:lower:]'); printf '%s' \"$session_id\" > ${ckbAbcdeShellQuote("${groupRoot}/session-id.txt")}; HOME=${ckbAbcdeShellQuote(runtimeHome)} XDG_CONFIG_HOME=${ckbAbcdeShellQuote("${runtimeHome}/xdg-config")} XDG_CACHE_HOME=${ckbAbcdeShellQuote("${runtimeHome}/xdg-cache")} CLAUDE_CONFIG_DIR=${ckbAbcdeShellQuote("${runtimeHome}/claude-config")} ANTHROPIC_MAX_RETRIES=0 CLAUDE_CODE_MAX_RETRIES=0 sandbox-exec -f ${ckbAbcdeShellQuote(profilePath)} ${ckbAbcdeShellQuote(claudeExecutable)} -p --verbose --no-session-persistence --session-id \"$session_id\" --model ${ckbAbcdeShellQuote(expectedModel)} --output-format stream-json --strict-mcp-config --mcp-config ${ckbAbcdeShellQuote("${runtimeHome}/mcp-config.json")} < ${ckbAbcdeShellQuote("${groupRoot}/prompt.final.md")} > ${ckbAbcdeShellQuote(transcript)} 2> ${ckbAbcdeShellQuote(stderr)}"}
 
@@ -882,10 +886,10 @@ private func ckbAbcdeRunClaudeOnce(group: String, groupRoot: String, workspace: 
         addDir += " --add-dir ${ckbAbcdeShellQuote(docsRoot)}"
     }
     let toolLimit = ckbAbcdeClaudeToolLimitForGroup(group)
-    let transcript = "${groupRoot}/claude-transcript.attempt-${attempt}.jsonl"
-    let stderr = "${groupRoot}/claude.attempt-${attempt}.stderr.log"
     let budgetFlag = if (modelMaxBudgetUsd == "") { "" } else { " --max-budget-usd ${ckbAbcdeShellQuote(modelMaxBudgetUsd)}" }
     let attemptRuntimeHome=ckbAbcdeDevelopmentAttemptRuntimeHome(runtimeHome,attempt)
+    let transcript=ckbAbcdeSandboxTranscriptPath(attemptRuntimeHome);let stderr=ckbAbcdeSandboxStderrPath(attemptRuntimeHome)
+    let evidenceTranscript="${groupRoot}/claude-transcript.attempt-${attempt}.jsonl";let evidenceStderr="${groupRoot}/claude.attempt-${attempt}.stderr.log"
     ckbAbcdeEnsureDir("${attemptRuntimeHome}/xdg-config");ckbAbcdeEnsureDir("${attemptRuntimeHome}/xdg-cache");ckbAbcdeEnsureDir("${attemptRuntimeHome}/claude-config");ckbAbcdeEnsureDir("${attemptRuntimeHome}/tmp")
     ckbAbcdeWriteText("${attemptRuntimeHome}/mcp-config.json",ckbAbcdeReadText("${groupRoot}/mcp-config.json"))
     let cangjieHome=match(getVariable("CANGJIE_HOME")){case Some(value)=>value case None=>""}
@@ -901,7 +905,7 @@ private func ckbAbcdeRunClaudeOnce(group: String, groupRoot: String, workspace: 
     if(probe.exitCode!=0){let blocked=CkbAbcdeCommandResult();blocked.exitCode=126;blocked.stderr="development_sandbox_probe_failed";return blocked}
     ckbAbcdeWriteText("${groupRoot}/model-transport-profile.json", "{\"effort\":\"${ckbAbcdeJsonEscape(modelEffort)}\",\"maxBudgetUsd\":\"${ckbAbcdeJsonEscape(modelMaxBudgetUsd)}\",\"timeoutSeconds\":${modelTimeoutSeconds},\"attempt\":${attempt}}\n")
     let command = ckbAbcdeDevelopmentClaudeCommand(groupRoot,attemptRuntimeHome,profilePath,claude.canonical,expectedModel,modelEffort,budgetFlag,toolLimit,addDir,transcript,stderr,attempt)
-    let script = ckbAbcdeClaudeTimeoutShell(command, stderr, modelTimeoutSeconds) + "; cp ${ckbAbcdeShellQuote(transcript)} ${ckbAbcdeShellQuote("${groupRoot}/claude-transcript.jsonl")} 2>/dev/null || true; cp ${ckbAbcdeShellQuote(transcript)} ${ckbAbcdeShellQuote("${groupRoot}/claude.stdout.log")} 2>/dev/null || true; cp ${ckbAbcdeShellQuote(stderr)} ${ckbAbcdeShellQuote("${groupRoot}/claude.stderr.log")} 2>/dev/null || true; exit $code"
+    let script = ckbAbcdeClaudeTimeoutShell(command, stderr, modelTimeoutSeconds) + "; cp ${ckbAbcdeShellQuote(transcript)} ${ckbAbcdeShellQuote(evidenceTranscript)} 2>/dev/null || true; cp ${ckbAbcdeShellQuote(stderr)} ${ckbAbcdeShellQuote(evidenceStderr)} 2>/dev/null || true; cp ${ckbAbcdeShellQuote(transcript)} ${ckbAbcdeShellQuote("${groupRoot}/claude-transcript.jsonl")} 2>/dev/null || true; cp ${ckbAbcdeShellQuote(transcript)} ${ckbAbcdeShellQuote("${groupRoot}/claude.stdout.log")} 2>/dev/null || true; cp ${ckbAbcdeShellQuote(stderr)} ${ckbAbcdeShellQuote("${groupRoot}/claude.stderr.log")} 2>/dev/null || true; exit $code"
     ckbAbcdeRunShell(script, workspace)
 }
 
