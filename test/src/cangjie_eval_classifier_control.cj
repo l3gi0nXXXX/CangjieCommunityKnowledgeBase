@@ -241,8 +241,9 @@ private func ckbP5ClassifierSourceFactsValid(request:JsonObject,response:JsonObj
     if(category!="knowledge_gap"){return true}
     let source=ckbP5String(request,"studentSourceExcerpt").toAsciiLower()
     let compiler=ckbP5String(request,"compilerTestSummary").toAsciiLower()
-    if(!source.contains(".abs(")||!compiler.contains("undeclared identifier 'abs'")){return true}
     let knowledge=ckbP5String(response,"knowledgeText").toAsciiLower()
+    if(!ckbP5ClassifierStringCasingFactsValid(source,compiler,knowledge)){return false}
+    if(!source.contains(".abs(")||!compiler.contains("undeclared identifier 'abs'")){return true}
     if(!knowledge.contains("std.math")){return true}
     let deniesRequirement=knowledge.contains("std.math import is unnecessary")||knowledge.contains("std.math import is not required")||
         knowledge.contains("does not require importing std.math")||knowledge.contains("without importing std.math")||
@@ -252,6 +253,21 @@ private func ckbP5ClassifierSourceFactsValid(request:JsonObject,response:JsonObj
         knowledge.contains("required to import std.math")||knowledge.contains("import std.math")||
         knowledge.contains("importing std.math")||knowledge.contains("from std.math")||knowledge.contains("std.math.* before")
     !assertsRequirement
+}
+
+private func ckbP5ClassifierStringCasingFactsValid(source:String,compiler:String,knowledge:String):Bool{
+    if(!source.contains(".tolower(")||!compiler.contains("'tolower' is not a member")||!compiler.contains("string")){return true}
+    if(knowledge.contains("tolowerascii")||knowledge.contains("string.toasciilowercase")||knowledge.contains("rune.toasciilower(")){return false}
+    if(knowledge.contains("rune.tolowercase(")&&!knowledge.contains("std.unicode")){return false}
+    let directRune=(knowledge.contains("for (c in string)")&&(knowledge.contains("yielding rune")||knowledge.contains("yields rune")||
+        knowledge.contains("produces rune")||knowledge.contains("returns rune")))||
+        (knowledge.contains("direct string iteration")&&knowledge.contains("rune")&&!knowledge.contains("uint8"))||
+        knowledge.contains("string iteration yields rune")||knowledge.contains("string iteration returns rune")||knowledge.contains("string iteration produces rune")
+    if(directRune){return false}
+    let assertsStringToLower=knowledge.contains("use string.tolower")||knowledge.contains("call string.tolower")||
+        knowledge.contains("string.tolower() is available")||knowledge.contains("string supports string.tolower")||
+        knowledge.contains("string provides string.tolower")
+    !assertsStringToLower
 }
 
 public func ckbP5ClassifierArtifactEvidenceHash(raw:String):String{try{ckbP5ClassifierArtifactHash(JsonValue.fromStr(raw).asObject())}catch(_:Exception){""}}
