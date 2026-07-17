@@ -127,7 +127,7 @@ These adaptations are recorded per case in `metadata.json`.
 | `CJ-HUMANEVAL-075` | `HumanEval/75` | `is_multiply_prime` | 10 | `public func is_multiply_prime(a: Int64): Bool` | none |
 | `CJ-HUMANEVAL-076` | `HumanEval/76` | `is_simple_power` | 10 | `public func is_simple_power(x: Int64, n: Int64): Bool` | none |
 | `CJ-HUMANEVAL-077` | `HumanEval/77` | `iscube` | 8 | `public func iscube(a: Int64): Bool` | none |
-| `CJ-HUMANEVAL-078` | `HumanEval/78` | `hex_key` | 7 | `public func hex_key(num: String): Int64` | The official empty-list edge input is translated to the empty string because the task parameter is a hexadecimal string. |
+| `CJ-HUMANEVAL-078` | `HumanEval/78` | `hex_key` | 7 | `public func hex_key(num: EvalValue): Int64` | Official strings use `evalString`; the official empty-list input uses `evalEmptyList`, preserving distinct runtime type identities. |
 | `CJ-HUMANEVAL-079` | `HumanEval/79` | `decimal_to_binary` | 4 | `public func decimal_to_binary(decimal: Int64): String` | none |
 | `CJ-HUMANEVAL-080` | `HumanEval/80` | `is_happy` | 8 | `public func is_happy(s: String): Bool` | none |
 | `CJ-HUMANEVAL-081` | `HumanEval/81` | `numerical_letter_grade` | 6 | `public func numerical_letter_grade(grades: ArrayList<Float64>): ArrayList<String>` | Python int/float numeric unions are represented with Float64 where needed. |
@@ -197,7 +197,7 @@ These adaptations are recorded per case in `metadata.json`.
 | `CJ-HUMANEVAL-145` | `HumanEval/145` | `order_by_points` | 6 | `public func order_by_points(nums: ArrayList<Int64>): ArrayList<Int64>` | none |
 | `CJ-HUMANEVAL-146` | `HumanEval/146` | `specialFilter` | 7 | `public func specialFilter(nums: ArrayList<Int64>): Int64` | none |
 | `CJ-HUMANEVAL-147` | `HumanEval/147` | `get_max_triples` | 4 | `public func get_max_triples(n: Int64): Int64` | none |
-| `CJ-HUMANEVAL-148` | `HumanEval/148` | `bf` | 7 | `public func bf(planet1: String, planet2: String): ArrayList<String>` | Python variable-length tuple return is represented by ArrayList<String>. |
+| `CJ-HUMANEVAL-148` | `HumanEval/148` | `bf` | 7 | `public func bf(planet1: String, planet2: String): EvalValue` | Python variable-length tuple return uses tuple-tagged `EvalValue` with exact ordered string payload; list tags are rejected. |
 | `CJ-HUMANEVAL-149` | `HumanEval/149` | `sorted_list_sum` | 7 | `public func sorted_list_sum(lst: ArrayList<String>): ArrayList<String>` | none |
 | `CJ-HUMANEVAL-150` | `HumanEval/150` | `x_or_y` | 10 | `public func x_or_y(n: Int64, x: Int64, y: Int64): Int64` | none |
 | `CJ-HUMANEVAL-151` | `HumanEval/151` | `double_the_difference` | 9 | `public func double_the_difference(lst: ArrayList<EvalValue>): Int64` | Python int and float identities are preserved with EvalValue tags. |

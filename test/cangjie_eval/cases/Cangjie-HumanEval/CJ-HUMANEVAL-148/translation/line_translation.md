@@ -1,6 +1,6 @@
 # Line Translation: CJ-HUMANEVAL-148
 
-The official Python `check(candidate)` was executed against the official canonical solution through a recorder. Each candidate invocation below is translated into a concrete Cangjie assertion in `tests/TestMain.cj`.
+The official Python `check(candidate)` was executed against the official canonical solution through a recorder. Each candidate invocation below is translated into a concrete Cangjie assertion in `tests/TestMain.cj`. Every expected Python tuple is checked as `EvalValue.kind == "tuple"` plus exact ordered `stringValues`; a list tag cannot pass.
 
 ## Official Test Lines
 

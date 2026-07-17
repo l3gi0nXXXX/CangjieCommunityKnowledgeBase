@@ -1,10 +1,11 @@
 # CJ-HUMANEVAL-078: hex_key
 
 - Source task: `HumanEval/78`
-- Cangjie signature: `public func hex_key(num: String): Int64`
+- Cangjie signature: `public func hex_key(num: EvalValue): Int64`
 - Test calls expanded from official HumanEval: `7`
 - Static-language adaptations:
-  - The official empty-list edge input is translated to the empty string because the task parameter is a hexadecimal string.
+  - Official Python strings are represented by `evalString` (`kind == "string"`, value in `stringValue`).
+  - The official empty-list input is represented by `evalEmptyList()` (`kind == "list"`), preserving that it is not an empty string. No other input kind is valid.
 
 ## Model-Facing Task
 
@@ -15,7 +16,7 @@ Implement the function in `starter/src/solution.cj` according to the source task
 | Source line | HumanEval Python prompt | CangjieEval translation |
 |---:|---|---|
 | 1 | `` | `` |
-| 2 | `def hex_key(num):` | `public func hex_key(num: String): Int64 {` |
+| 2 | `def hex_key(num):` | `public func hex_key(num: EvalValue): Int64 {` |
 | 3 | `    """You have been tasked to write a function that receives ` | `// You have been tasked to write a function that receives` |
 | 4 | `    a hexadecimal number as a string and counts the number of hexadecimal ` | `// a hexadecimal number as a string and counts the number of hexadecimal` |
 | 5 | `    digits that are primes (prime number, or a prime, is a natural number ` | `// digits that are primes (prime number, or a prime, is a natural number` |

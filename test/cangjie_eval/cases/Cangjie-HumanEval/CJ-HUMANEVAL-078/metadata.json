@@ -5,15 +5,15 @@
   "entryPoint": "hex_key",
   "package": "cangjie_humaneval_078",
   "targetVersion": "1.0.0",
-  "signature": "public func hex_key(num: String): Int64",
+  "signature": "public func hex_key(num: EvalValue): Int64",
   "argTypes": [
-    "String"
+    "EvalValue"
   ],
   "returnType": "Int64",
   "callCount": 7,
   "sourceLicense": "MIT",
   "testStrategy": "official check(candidate) expanded through canonical recorder, then translated to Cangjie main assertions",
   "staticLanguageAdaptations": [
-    "The official empty-list edge input is translated to the empty string because the task parameter is a hexadecimal string."
+    "Official string inputs use evalString; the official empty-list edge input uses evalEmptyList, preserving their distinct runtime type identities."
   ]
 }

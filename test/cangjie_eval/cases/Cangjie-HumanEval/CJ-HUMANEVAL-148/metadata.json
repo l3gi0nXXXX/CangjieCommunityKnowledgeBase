@@ -5,16 +5,16 @@
   "entryPoint": "bf",
   "package": "cangjie_humaneval_148",
   "targetVersion": "1.0.0",
-  "signature": "public func bf(planet1: String, planet2: String): ArrayList<String>",
+  "signature": "public func bf(planet1: String, planet2: String): EvalValue",
   "argTypes": [
     "String",
     "String"
   ],
-  "returnType": "ArrayList<String>",
+  "returnType": "EvalValue",
   "callCount": 7,
   "sourceLicense": "MIT",
   "testStrategy": "official check(candidate) expanded through canonical recorder, then translated to Cangjie main assertions",
   "staticLanguageAdaptations": [
-    "Python variable-length tuple return is represented by ArrayList<String>."
+    "Python variable-length tuple return is represented by EvalValue kind tuple with ordered String elements in stringValues; list and tuple remain distinct."
   ]
 }

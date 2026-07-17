@@ -34,13 +34,13 @@ func expectStringInt64Map(actual: HashMap<String, Int64>, expected: HashMap<Stri
 
 
 main(): Int64 {
-    expectInt64(hex_key("AB"), 1, "CJ-HUMANEVAL-078_l4_c001")
-    expectInt64(hex_key("1077E"), 2, "CJ-HUMANEVAL-078_l5_c002")
-    expectInt64(hex_key("ABED1A33"), 4, "CJ-HUMANEVAL-078_l6_c003")
-    expectInt64(hex_key("2020"), 2, "CJ-HUMANEVAL-078_l7_c004")
-    expectInt64(hex_key("123456789ABCDEF0"), 6, "CJ-HUMANEVAL-078_l8_c005")
-    expectInt64(hex_key("112233445566778899AABBCCDDEEFF00"), 12, "CJ-HUMANEVAL-078_l9_c006")
-    expectInt64(hex_key(""), 0, "CJ-HUMANEVAL-078_l13_c007")
+    expectInt64(hex_key(evalString("AB")), 1, "CJ-HUMANEVAL-078_l4_c001")
+    expectInt64(hex_key(evalString("1077E")), 2, "CJ-HUMANEVAL-078_l5_c002")
+    expectInt64(hex_key(evalString("ABED1A33")), 4, "CJ-HUMANEVAL-078_l6_c003")
+    expectInt64(hex_key(evalString("2020")), 2, "CJ-HUMANEVAL-078_l7_c004")
+    expectInt64(hex_key(evalString("123456789ABCDEF0")), 6, "CJ-HUMANEVAL-078_l8_c005")
+    expectInt64(hex_key(evalString("112233445566778899AABBCCDDEEFF00")), 12, "CJ-HUMANEVAL-078_l9_c006")
+    expectInt64(hex_key(evalEmptyList()), 0, "CJ-HUMANEVAL-078_l13_c007")
     println("CJ-HUMANEVAL-078 ok")
     return 0
 }

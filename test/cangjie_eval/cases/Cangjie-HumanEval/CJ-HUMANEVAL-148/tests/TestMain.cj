@@ -23,6 +23,7 @@ func expectEvalValue(actual: EvalValue, expected: EvalValue, label: String): Uni
 func expectInt64List(actual: ArrayList<Int64>, expected: ArrayList<Int64>, label: String): Unit { if (actual.size != expected.size) { cjeFail(label, "expected size ${expected.size}, actual size ${actual.size}") }; for (i in 0..expected.size) { expectInt64(actual[i], expected[i], "${label}[${i}]") } }
 func expectFloat64List(actual: ArrayList<Float64>, expected: ArrayList<Float64>, label: String): Unit { if (actual.size != expected.size) { cjeFail(label, "expected size ${expected.size}, actual size ${actual.size}") }; for (i in 0..expected.size) { expectFloat64(actual[i], expected[i], "${label}[${i}]") } }
 func expectStringList(actual: ArrayList<String>, expected: ArrayList<String>, label: String): Unit { if (actual.size != expected.size) { cjeFail(label, "expected size ${expected.size}, actual size ${actual.size}") }; for (i in 0..expected.size) { expectString(actual[i], expected[i], "${label}[${i}]") } }
+func expectStringTuple(actual: EvalValue, expected: Array<String>, label: String): Unit { if (actual.kind != "tuple") { cjeFail(label, "expected kind tuple, actual kind ${actual.kind}") }; if (actual.intValue != 0 || actual.floatValue != 0.0 || actual.stringValue != "" || actual.boolValue) { cjeFail(label, "unexpected scalar payload for string tuple") }; if (actual.stringValues.size != expected.size) { cjeFail(label, "expected size ${expected.size}, actual size ${actual.stringValues.size}") }; for (i in 0..expected.size) { expectString(actual.stringValues[i], expected[i], "${label}[${i}]") } }
 func expectInt64PairList(actual: ArrayList<(Int64, Int64)>, expected: ArrayList<(Int64, Int64)>, label: String): Unit { if (actual.size != expected.size) { cjeFail(label, "expected size ${expected.size}, actual size ${actual.size}") }; for (i in 0..expected.size) { expectInt64(actual[i][0], expected[i][0], "${label}[${i}].0"); expectInt64(actual[i][1], expected[i][1], "${label}[${i}].1") } }
 func expectOptionInt64(actual: Option<Int64>, expected: Option<Int64>, label: String): Unit { match (expected) { case Some(e) => match (actual) { case Some(a) => expectInt64(a, e, label); case None => cjeFail(label, "expected Some, actual None") }; case None => match (actual) { case Some(_) => cjeFail(label, "expected None, actual Some"); case None => () } } }
 func expectOptionString(actual: Option<String>, expected: Option<String>, label: String): Unit { match (expected) { case Some(e) => match (actual) { case Some(a) => expectString(a, e, label); case None => cjeFail(label, "expected Some, actual None") }; case None => match (actual) { case Some(_) => cjeFail(label, "expected None, actual Some"); case None => () } } }
@@ -34,13 +35,13 @@ func expectStringInt64Map(actual: HashMap<String, Int64>, expected: HashMap<Stri
 
 
 main(): Int64 {
-    expectStringList(bf("Jupiter", "Neptune"), listOfString(["Saturn", "Uranus"]), "CJ-HUMANEVAL-148_l4_c001")
-    expectStringList(bf("Earth", "Mercury"), listOfString(["Venus"]), "CJ-HUMANEVAL-148_l5_c002")
-    expectStringList(bf("Mercury", "Uranus"), listOfString(["Venus", "Earth", "Mars", "Jupiter", "Saturn"]), "CJ-HUMANEVAL-148_l6_c003")
-    expectStringList(bf("Neptune", "Venus"), listOfString(["Earth", "Mars", "Jupiter", "Saturn", "Uranus"]), "CJ-HUMANEVAL-148_l7_c004")
-    expectStringList(bf("Earth", "Earth"), listOfString([]), "CJ-HUMANEVAL-148_l11_c005")
-    expectStringList(bf("Mars", "Earth"), listOfString([]), "CJ-HUMANEVAL-148_l12_c006")
-    expectStringList(bf("Jupiter", "Makemake"), listOfString([]), "CJ-HUMANEVAL-148_l13_c007")
+    expectStringTuple(bf("Jupiter", "Neptune"), ["Saturn", "Uranus"], "CJ-HUMANEVAL-148_l4_c001")
+    expectStringTuple(bf("Earth", "Mercury"), ["Venus"], "CJ-HUMANEVAL-148_l5_c002")
+    expectStringTuple(bf("Mercury", "Uranus"), ["Venus", "Earth", "Mars", "Jupiter", "Saturn"], "CJ-HUMANEVAL-148_l6_c003")
+    expectStringTuple(bf("Neptune", "Venus"), ["Earth", "Mars", "Jupiter", "Saturn", "Uranus"], "CJ-HUMANEVAL-148_l7_c004")
+    expectStringTuple(bf("Earth", "Earth"), [], "CJ-HUMANEVAL-148_l11_c005")
+    expectStringTuple(bf("Mars", "Earth"), [], "CJ-HUMANEVAL-148_l12_c006")
+    expectStringTuple(bf("Jupiter", "Makemake"), [], "CJ-HUMANEVAL-148_l13_c007")
     println("CJ-HUMANEVAL-148 ok")
     return 0
 }

@@ -1,10 +1,12 @@
 # CJ-HUMANEVAL-148: bf
 
 - Source task: `HumanEval/148`
-- Cangjie signature: `public func bf(planet1: String, planet2: String): ArrayList<String>`
+- Cangjie signature: `public func bf(planet1: String, planet2: String): EvalValue`
 - Test calls expanded from official HumanEval: `7`
 - Static-language adaptations:
-  - Python variable-length tuple return is represented by ArrayList<String>.
+  - Python variable-length tuple return is represented by `evalStringTuple([...])`: an `EvalValue` with `kind == "tuple"` and ordered elements in `stringValues: ArrayList<String>`.
+  - A list-tagged or string value is not a tuple and does not satisfy the contract, even when its elements or display text match.
+  - Tuple values must not carry unrelated scalar payload; those fields must remain at their default values.
 
 ## Model-Facing Task
 
@@ -15,7 +17,7 @@ Implement the function in `starter/src/solution.cj` according to the source task
 | Source line | HumanEval Python prompt | CangjieEval translation |
 |---:|---|---|
 | 1 | `` | `` |
-| 2 | `def bf(planet1, planet2):` | `public func bf(planet1: String, planet2: String): ArrayList<String> {` |
+| 2 | `def bf(planet1, planet2):` | `public func bf(planet1: String, planet2: String): EvalValue {` |
 | 3 | `    '''` | `// '''` |
 | 4 | `    There are eight planets in our solar system: the closerst to the Sun ` | `// There are eight planets in our solar system: the closerst to the Sun` |
 | 5 | `    is Mercury, the next one is Venus, then Earth, Mars, Jupiter, Saturn, ` | `// is Mercury, the next one is Venus, then Earth, Mars, Jupiter, Saturn,` |
