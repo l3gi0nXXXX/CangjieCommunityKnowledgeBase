@@ -728,9 +728,10 @@ public class CangjieEvalAbcdeRunnerTest {
         for(path in [workspace,home,"${caseSrc}/tests","${caseSrc}/translation",docs,store]){if(!exists(Path(path))){Directory.create(Path(path),recursive:true)}};File.writeTo(Path(bin),"probe".toArray())
         let sdk=match(getVariable("CANGJIE_HOME")){case Some(value)=>value case None=>""};let macSdk=match(getVariable("SDKROOT")){case Some(value)=>value case None=>""};@Expect(sdk.isEmpty(),false);@Expect(macSdk.isEmpty(),false)
         try {
+            @Expect(ckbAbcdePrepareBundledArchiverForTest(canonicalize(Path(home)).toString(),canonicalize(Path(sdk)).toString()),"ok")
             let profilePath="${root}/development.sb";File.writeTo(Path(profilePath),ckbAbcdeDevelopmentSandboxProfile(CkbAbcdeGroups.E,workspace,home,bin,"/tmp/config",store,caseSrc,docs,sdk,macSdk,"/usr/bin/true","/usr/bin/true").toArray())
             let probe=ckbAbcdeDevelopmentSandboxProbeForTest(profilePath,workspace,home,caseSrc,docs,CkbAbcdeGroups.E,sdk,macSdk)
-            @Expect(probe.exitCode,0);@Expect(probe.stderr,"");@Expect(probe.stdout.contains("\"ok\":true"),true);@Expect(probe.stdout.contains("\"stdinReadable\":true"),true);@Expect(probe.stdout.contains("\"runtimeTempMarkersPassed\":true"),true);@Expect(probe.stdout.contains("\"runtimeTempMarkersCleaned\":true"),true);@Expect(probe.stdout.contains("\"deniedExternalTemp\":true"),true);@Expect(probe.stdout.contains("\"deniedTempSibling\":true"),true);@Expect(probe.stdout.contains("\"minimalBuildPassed\":true"),true);@Expect(probe.stdout.contains("\"deniedBroadFilesystemScan\":true"),true);@Expect(probe.stdout.contains("private-probe-value"),false)
+            @Expect(probe.exitCode,0);@Expect(probe.stderr,"");@Expect(probe.stdout.contains("\"ok\":true"),true);@Expect(probe.stdout.contains("\"stdinReadable\":true"),true);@Expect(probe.stdout.contains("\"runtimeTempMarkersPassed\":true"),true);@Expect(probe.stdout.contains("\"runtimeTempMarkersCleaned\":true"),true);@Expect(probe.stdout.contains("\"deniedExternalTemp\":true"),true);@Expect(probe.stdout.contains("\"deniedTempSibling\":true"),true);@Expect(probe.stdout.contains("\"archiverReady\":true"),true);@Expect(probe.stdout.contains("\"minimalBuildPassed\":true"),true);@Expect(probe.stdout.contains("\"deniedBroadFilesystemScan\":true"),true);@Expect(probe.stdout.contains("private-probe-value"),false)
         } finally { _=launch("/bin/rm",["-rf",root]).wait() }
     }
 
@@ -741,10 +742,11 @@ public class CangjieEvalAbcdeRunnerTest {
         for(path in [workspace,home,"${caseSrc}/tests","${caseSrc}/translation",store]){Directory.create(Path(path),recursive:true)};File.writeTo(Path(bin),"probe".toArray());File.writeTo(Path(config),"network.enabled=false\n".toArray())
         try {
             @Expect(exists(Path("${home}/tmp")),false);@Expect(ckbAbcdePrepareClaudeRuntimeHomeForTest(canonicalize(Path(home)).toString()),"ok");@Expect(exists(Path("${home}/tmp")),true)
+            let sdk=match(getVariable("CANGJIE_HOME")){case Some(value)=>canonicalize(Path(value)).toString() case None=>""};@Expect(sdk.isEmpty(),false);@Expect(ckbAbcdePrepareBundledArchiverForTest(canonicalize(Path(home)).toString(),sdk),"ok")
             let profilePath="${root}/certification.sb";File.writeTo(Path(profilePath),ckbAbcdeCertificationSandboxProfile(workspace,home,bin,config,store,caseSrc,"/usr/bin/true","/usr/bin/true").toArray())
             let profile=String.fromUtf8(File.readFrom(Path(profilePath)));@Expect(profile.contains("/private/tmp/claude-"),false)
             let probe=ckbAbcdeCertificationSandboxProbeForTest(profilePath,workspace,home,caseSrc)
-            @Expect(probe.exitCode,0);@Expect(probe.stdout.contains("\"runtimeTempMarkersPassed\":true"),true);@Expect(probe.stdout.contains("\"runtimeTempMarkersCleaned\":true"),true);@Expect(probe.stdout.contains("\"deniedExternalTemp\":true"),true);@Expect(probe.stdout.contains("\"deniedTempSibling\":true"),true)
+            @Expect(probe.exitCode,0);@Expect(probe.stdout.contains("\"runtimeTempMarkersPassed\":true"),true);@Expect(probe.stdout.contains("\"runtimeTempMarkersCleaned\":true"),true);@Expect(probe.stdout.contains("\"archiverReady\":true"),true);@Expect(probe.stdout.contains("\"minimalBuildPassed\":true"),true);@Expect(probe.stdout.contains("\"deniedExternalTemp\":true"),true);@Expect(probe.stdout.contains("\"deniedTempSibling\":true"),true)
         } finally { _=launch("/bin/rm",["-rf",root]).wait() }
     }
 
@@ -757,6 +759,88 @@ public class CangjieEvalAbcdeRunnerTest {
     @TestCase
     public func claudeRuntimeHomeBndRejectsEmptyRelativeAndUtf8RelativePaths(): Unit {
         for(path in ["","relative/runtime-home","相对/运行时🙂"]){@Expect(ckbAbcdePrepareClaudeRuntimeHomeForTest(path),"sandbox_runtime_home_invalid")}
+    }
+
+    // BUNDLED-AR-UT/POS-01
+    @TestCase
+    public func bundledArchiverUtCreatesAttemptLocalExecutableShimAndPrependsPath(): Unit {
+        let root = "target/bundled-ar-仓颉🙂-${ckbCoreNowMillis()}"
+        let sdk = "${root}/SDK 仓颉🙂"
+        let bundled = "${sdk}/third_party/llvm/bin/llvm-ar"
+        let home = "${root}/runtime home🙂/attempt-1"
+        Directory.create(Path(bundled).parent, recursive: true)
+        Directory.create(Path(home), recursive: true)
+        File.writeTo(Path(bundled), "#!/bin/zsh\nexit 0\n".toArray())
+        @Expect(launch("/bin/chmod", ["700", bundled]).wait(), 0)
+        let canonicalSdk = canonicalize(Path(sdk)).toString()
+        let canonicalHome = canonicalize(Path(home)).toString()
+        let canonicalBundled = canonicalize(Path(bundled)).toString()
+        try {
+            @Expect(ckbAbcdeBundledArchiverForTest(canonicalSdk), canonicalBundled)
+            @Expect(ckbAbcdePrepareBundledArchiverForTest(canonicalHome, canonicalSdk), "ok")
+            let shim = "${canonicalHome}/bin/ar"
+            @Expect(exists(Path(shim)), true)
+            @Expect(launch("/bin/test", ["-x", shim]).wait(), 0)
+            @Expect(launch("/bin/test", ["-L", shim]).wait() == 0, false)
+            @Expect(String.fromUtf8(File.readFrom(Path(shim))).contains(canonicalBundled), true)
+            for (command in [
+                ckbAbcdeDevelopmentClaudeCommand("/tmp/group", canonicalHome, "/tmp/dev.sb", "/usr/bin/true",
+                    "GLM-5.2", "max", "", "", "", "${canonicalHome}/out", "${canonicalHome}/err", 1),
+                ckbAbcdeCertificationClaudeCommand("/tmp/group", canonicalHome, "/tmp/cert.sb", "/usr/bin/true",
+                    "GLM-5.2", "${canonicalHome}/out", "${canonicalHome}/err")
+            ]) {
+                @Expect(command.contains("PATH='${canonicalHome}/bin':\"$PATH\""), true)
+                @Expect(command.contains("PATH=/tmp"), false)
+            }
+        } finally { _ = launch("/bin/rm", ["-rf", root]).wait() }
+    }
+
+    // BUNDLED-AR-BND/NEG-01
+    @TestCase
+    public func bundledArchiverBndRejectsMissingNonExecutableAndSymlinkEscape(): Unit {
+        let root = "target/bundled-ar-negative-${ckbCoreNowMillis()}"
+        let sdk = "${root}/sdk"
+        let target = "${sdk}/third_party/llvm/bin/llvm-ar"
+        Directory.create(Path(target).parent, recursive: true)
+        File.writeTo(Path(target), "not executable\n".toArray())
+        let canonicalSdk = canonicalize(Path(sdk)).toString()
+        try {
+            for (value in ["", "relative/sdk", "相对/SDK🙂", "/private/tmp/不存在-sdk-仓颉🙂"]) {
+                @Expect(ckbAbcdeBundledArchiverForTest(value), "")
+            }
+            @Expect(ckbAbcdePrepareBundledArchiverForTest(canonicalize(Path(root)).toString(), "/private/tmp/不存在-sdk-仓颉🙂"), "sandbox_bundled_archiver_missing")
+            @Expect(ckbAbcdeBundledArchiverForTest(canonicalSdk), "")
+            @Expect(launch("/bin/chmod", ["700", target]).wait(), 0)
+            let outside = "${root}/outside-ar"
+            File.writeTo(Path(outside), "#!/bin/zsh\nexit 0\n".toArray())
+            @Expect(launch("/bin/chmod", ["700", outside]).wait(), 0)
+            @Expect(launch("/bin/rm", ["-f", target]).wait(), 0)
+            @Expect(launch("/bin/ln", ["-s", "../../../../outside-ar", target]).wait(), 0)
+            @Expect(ckbAbcdeBundledArchiverForTest(canonicalSdk), "")
+            let linkedSdk = "${root}/linked-sdk"
+            @Expect(launch("/bin/ln", ["-s", "sdk", linkedSdk]).wait(), 0)
+            @Expect(ckbAbcdeBundledArchiverForTest(canonicalize(Path(root)).join("linked-sdk").toString()), "")
+        } finally { _ = launch("/bin/rm", ["-rf", root]).wait() }
+    }
+
+    // BUNDLED-AR-NEG-02
+    @TestCase
+    public func bundledArchiverNegRejectsRuntimeBinSymlinkWithoutWritingOutside(): Unit {
+        let root = "target/bundled-ar-runtime-negative-${ckbCoreNowMillis()}"
+        let sdk = "${root}/sdk"
+        let target = "${sdk}/third_party/llvm/bin/llvm-ar"
+        let home = "${root}/runtime-home"
+        let outside = "${root}/outside-bin"
+        Directory.create(Path(target).parent, recursive: true)
+        Directory.create(Path(home), recursive: true)
+        Directory.create(Path(outside), recursive: true)
+        File.writeTo(Path(target), "#!/bin/zsh\nexit 0\n".toArray())
+        @Expect(launch("/bin/chmod", ["700", target]).wait(), 0)
+        @Expect(launch("/bin/ln", ["-s", "../outside-bin", "${home}/bin"]).wait(), 0)
+        try {
+            @Expect(ckbAbcdePrepareBundledArchiverForTest(canonicalize(Path(home)).toString(), canonicalize(Path(sdk)).toString()), "sandbox_bundled_archiver_bin_symlink_forbidden")
+            @Expect(exists(Path("${outside}/ar")), false)
+        } finally { _ = launch("/bin/rm", ["-rf", root]).wait() }
     }
 
     @TestCase
