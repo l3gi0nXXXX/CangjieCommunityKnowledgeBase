@@ -130,7 +130,10 @@ public class CangjieEvalClassifierControlTest {
             "Unicode casing requires import std.unicode.* and conversion through runes(), then Rune.toLowerCase() returns a Rune.")
         let v3Importing=base.replace("General reusable String API guidance 中文🙂",
             "In Cangjie 1.0.0, direct String iteration yields UInt8 bytes. String.toAsciiLower() returns a String and performs ASCII-only casing. Rune.toAsciiLowerCase() returns a Rune and is also ASCII-only. Unicode casing requires importing std.unicode.*, after which Rune.toLowerCase() returns a Rune. String.toLower() is unavailable, and toLowerAscii is not a Cangjie API.")
-        for((label,response) in [("string-ascii",ascii),("rune-ascii",runeAscii),("rune-unicode",unicode),("v3-importing",v3Importing)]){
+        let v4InlineImport=base.replace("General reusable String API guidance 中文🙂",
+            "In Cangjie 1.0.0, direct String iteration yields UInt8 bytes. String.toAsciiLower() returns a String and performs ASCII-only lowercasing. Rune.toAsciiLowerCase() returns a Rune and is also ASCII-only. Unicode casing requires `import std.unicode.*`; Rune.toLowerCase() returns a Rune. String.toLower() is unavailable, and toLowerAscii is not a Cangjie API.")
+        for((label,response) in [("string-ascii",ascii),("rune-ascii",runeAscii),("rune-unicode",unicode),
+            ("v3-importing",v3Importing),("v4-inline-import",v4InlineImport)]){
             let result=sealCkbP5ClassifierResponseWithDiagnostic(request,response,config,"/tmp/p5-case-${label}/workspace","/tmp/p5-case-${label}/home","session-${label}")
             @Expect(result[0].isEmpty(),false);@Expect(result[1],"ok")
         }
@@ -149,13 +152,18 @@ public class CangjieEvalClassifierControlTest {
             "Unicode casing mentions std.unicode.* and Rune.toLowerCase() returns a Rune; String.toLower() is unavailable.")
         let afterImport=base.replace("General reusable String API guidance 中文🙂",
             "After import std.unicode.*, Rune.toLowerCase() returns a Rune; String.toLower() is unavailable.")
+        let inlineMention=base.replace("General reusable String API guidance 中文🙂",
+            "Unicode casing mentions `std.unicode.*`; Rune.toLowerCase() returns a Rune; String.toLower() is unavailable.")
+        let inlineAfterImport=base.replace("General reusable String API guidance 中文🙂",
+            "After `import std.unicode.*`, Rune.toLowerCase() returns a Rune; String.toLower() is unavailable.")
         let falseNegativeApi=base.replace("General reusable String API guidance 中文🙂",
             "Unicode casing requires import std.unicode.* and Rune.toLowerCase() returns a Rune. toLowerAscii is not a Cangjie API, but use toLowerAscii for compatibility.")
         let commentDisguise=base.replace("General reusable String API guidance 中文🙂",
             "Unicode casing requires import std.unicode.*; // Rune.toLowerCase() returns a Rune. toLowerAscii is not a Cangjie API.")
         for((label,response) in [("old-v1",oldV1),("direct-rune",directRune),("string-tolower",nonexistentString),
             ("unicode-no-import",unicodeWithoutImport),("wrong-receivers",wrongReceivers),("import-mention",importMention),
-            ("after-import",afterImport),("false-negative-api",falseNegativeApi),("comment-disguise",commentDisguise)]){
+            ("after-import",afterImport),("inline-mention",inlineMention),("inline-after-import",inlineAfterImport),
+            ("false-negative-api",falseNegativeApi),("comment-disguise",commentDisguise)]){
             let result=sealCkbP5ClassifierResponseWithDiagnostic(request,response,config,"/tmp/p5-case-bad-${label}/workspace","/tmp/p5-case-bad-${label}/home","session-bad-${label}")
             @Expect(result[0],"");@Expect(result[1],"classifier_response_source_fact_unsupported")
         }

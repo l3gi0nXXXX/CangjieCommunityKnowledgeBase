@@ -258,17 +258,18 @@ private func ckbP5ClassifierSourceFactsValid(request:JsonObject,response:JsonObj
 
 private func ckbP5ClassifierStringCasingFactsValid(source:String,compiler:String,knowledge:String):Bool{
     if(!source.contains(".tolower(")||!compiler.contains("'tolower' is not a member")||!compiler.contains("string")){return true}
-    if(!ckbP5ClassifierToLowerAsciiClaimValid(knowledge)||knowledge.contains("string.toasciilowercase")||knowledge.contains("rune.toasciilower(")){return false}
-    if(knowledge.contains("rune.tolowercase(")&&
-        (!ckbP5ClassifierUnicodeImportRequired(knowledge)||!ckbP5ClassifierRuneLowerResultValid(knowledge))){return false}
-    let directRune=(knowledge.contains("for (c in string)")&&(knowledge.contains("yielding rune")||knowledge.contains("yields rune")||
-        knowledge.contains("produces rune")||knowledge.contains("returns rune")))||
-        (knowledge.contains("direct string iteration")&&knowledge.contains("rune")&&!knowledge.contains("uint8"))||
-        knowledge.contains("string iteration yields rune")||knowledge.contains("string iteration returns rune")||knowledge.contains("string iteration produces rune")
+    let value=knowledge.replace("`", "")
+    if(!ckbP5ClassifierToLowerAsciiClaimValid(value)||value.contains("string.toasciilowercase")||value.contains("rune.toasciilower(")){return false}
+    if(value.contains("rune.tolowercase(")&&
+        (!ckbP5ClassifierUnicodeImportRequired(value)||!ckbP5ClassifierRuneLowerResultValid(value))){return false}
+    let directRune=(value.contains("for (c in string)")&&(value.contains("yielding rune")||value.contains("yields rune")||
+        value.contains("produces rune")||value.contains("returns rune")))||
+        (value.contains("direct string iteration")&&value.contains("rune")&&!value.contains("uint8"))||
+        value.contains("string iteration yields rune")||value.contains("string iteration returns rune")||value.contains("string iteration produces rune")
     if(directRune){return false}
-    let assertsStringToLower=knowledge.contains("use string.tolower")||knowledge.contains("call string.tolower")||
-        knowledge.contains("string.tolower() is available")||knowledge.contains("string supports string.tolower")||
-        knowledge.contains("string provides string.tolower")
+    let assertsStringToLower=value.contains("use string.tolower")||value.contains("call string.tolower")||
+        value.contains("string.tolower() is available")||value.contains("string supports string.tolower")||
+        value.contains("string provides string.tolower")
     !assertsStringToLower
 }
 
