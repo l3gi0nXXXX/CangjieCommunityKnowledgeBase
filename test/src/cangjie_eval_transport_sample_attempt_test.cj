@@ -31,6 +31,8 @@ public class CangjieEvalTransportSampleAttemptTest {
         let attempts = "{\"attempt\":1,\"transportAttempt\":1,\"sampleAttempt\":0,\"exitCode\":124,\"completeResult\":false}\n{\"attempt\":2,\"transportAttempt\":2,\"sampleAttempt\":1,\"exitCode\":0,\"completeResult\":true,\"identityMatched\":true}\n"
         @Expect(ckbAbcdeUnitPassAt1FromAttemptsForTest(true, attempts), true)
         @Expect(ckbAbcdeUnitPassAt1FromAttemptsForTest(false, attempts), false)
+        @Expect(ckbAbcdeAgentRetryCountFromAttemptsForTest(attempts), 0)
+        @Expect(ckbAbcdeBusinessRetryUsedFromAttemptsForTest(attempts), false)
     }
 
     @TestCase
@@ -38,6 +40,9 @@ public class CangjieEvalTransportSampleAttemptTest {
         let sample = ckbAbcdeAssessSample(p5AttemptTranscript("GLM-5.2", true), "GLM-5.2")
         @Expect(ckbAbcdeShouldRetryTransport(0, sample), false)
         @Expect(ckbAbcdeUnitPassAt1FromAttemptsForTest(false, "{\"attempt\":1,\"transportAttempt\":1,\"sampleAttempt\":1,\"exitCode\":0}\n"), false)
+        let retriedSample = "{\"attempt\":1,\"transportAttempt\":1,\"sampleAttempt\":1,\"exitCode\":0}\n{\"attempt\":2,\"transportAttempt\":2,\"sampleAttempt\":2,\"exitCode\":0}\n"
+        @Expect(ckbAbcdeAgentRetryCountFromAttemptsForTest(retriedSample), 1)
+        @Expect(ckbAbcdeBusinessRetryUsedFromAttemptsForTest(retriedSample), true)
         let incomplete = ckbAbcdeAssessSample("", "GLM-5.2")
         @Expect(ckbAbcdeShouldRetryTransport(124, incomplete), true)
     }

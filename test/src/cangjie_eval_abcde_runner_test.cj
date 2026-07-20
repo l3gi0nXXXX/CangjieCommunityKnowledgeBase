@@ -1128,7 +1128,14 @@ public class CangjieEvalAbcdeRunnerTest {
         let context = case145CanonicalContext(); let transcript = case145Transcript(context, "call-145", "h342434")
         File.writeTo(Path(root).join("canonical-task-context.json"), context.toArray())
         File.writeTo(Path(root).join("claude-transcript.jsonl"), transcript.toArray())
-        File.writeTo(Path(root).join("claude-attempts.jsonl"), "{\"attempt\":1,\"exitCode\":0,\"sampleAttempt\":1}\n".toArray())
+        File.writeTo(Path(root).join("claude-transcript.attempt-2.jsonl"), transcript.toArray())
+        let restores = "{\"transportAttempt\":2,\"restored\":true,\"evidenceHash\":\"sha256:87add9cd09364be8c23d789965b3019bea6a20dc45e6bc970641fa0ab1dd5293\"}\n"
+        let restoreHash = benchmarkGapSha256(restores)
+        File.writeTo(Path(root).join("workspace-restores.jsonl"), restores.toArray())
+        File.writeTo(Path(root).join("claude-attempts.jsonl"), ("{\"attempt\":1,\"transportAttempt\":1,\"exitCode\":1,\"sampleAttempt\":0,\"completeResult\":false,\"identityMatched\":false,\"workspaceRestored\":false,\"restoreEvidenceHash\":\"\"}\n"+
+            "{\"attempt\":2,\"transportAttempt\":2,\"exitCode\":0,\"sampleAttempt\":1,\"completeResult\":true,\"identityMatched\":true,\"workspaceRestored\":true,\"restoreEvidenceHash\":\"sha256:87add9cd09364be8c23d789965b3019bea6a20dc45e6bc970641fa0ab1dd5293\"}\n").toArray())
+        File.writeTo(Path(root).join("attempt-evidence.json"), "{\"transportAttemptCount\":2,\"sampleAttemptCount\":1,\"workspaceRestoreEvidenceHash\":\"${restoreHash}\"}\n".toArray())
+        File.writeTo(Path(root).join("test-result.json"), "{\"transportAttemptCount\":2,\"sampleAttemptCount\":1,\"workspaceRestoreEvidenceHash\":\"${restoreHash}\"}\n".toArray())
         File.writeTo(Path(root).join("test.log"), "unit assertion failed 中文🙂".toArray())
         let options = CkbAbcdeRunnerOptions(); options.explicitRunMode = true; options.runMode = "development"
         options.runId = "case145-replay"; options.datasetVersion = "dataset-v1"; options.knowledgeVersion = "knowledge-v1"
@@ -1137,8 +1144,11 @@ public class CangjieEvalAbcdeRunnerTest {
         @Expect(row.contains("\"toolCoveragePass\":true"), true); @Expect(row.contains("\"knowledgeVersion\":\"knowledge-v1\""), true)
         @Expect(row.contains("\"citationCount\":1"), true); @Expect(row.contains("\"triageStatus\":\"reasoning_failure\""), true)
         @Expect(row.contains("\"firstAttemptTriage\":\"reasoning_failure\""), true); @Expect(row.contains("\"failureRoute\":\"reasoning\""), true)
-        let evidence = ckbAbcdeTriageEvidenceForTest(options, "CJ-HUMANEVAL-145", 1, "test_failure", false, false, 0, 0, root)
+        @Expect(row.contains("\"transportAttemptCount\":2"), true); @Expect(row.contains("\"sampleAttemptCount\":1"), true)
+        @Expect(row.contains("\"selectedTransportAttempt\":2"), true)
+        let evidence = ckbAbcdeTriageEvidenceForTest(options, "CJ-HUMANEVAL-145", 2, "test_failure", false, false, 0, 0, root)
         @Expect(evidence.contains("\"retrievalEvidenceHash\":\"h342434\""), true)
+        @Expect(evidence.contains("\"transportAttempt\":2"), true); @Expect(evidence.contains("\"sampleAttempt\":1"), true)
         @Expect(evidence.contains("\"reasoningFailure\":true"), true); @Expect(triageEvalFailure(evidence).category, "reasoning_failure")
         @Expect(String.fromUtf8(File.readFrom(Path(root).join("paired-tool-evidence.json"))).contains("h342434"), true)
         Directory.create(Path(root).join("workspace/src"), recursive: true)
@@ -1147,6 +1157,7 @@ public class CangjieEvalAbcdeRunnerTest {
         let classifierRequest = buildCkbP5ClassifierRequest(Path(root), "CJ-HUMANEVAL-145", "case145-replay")
         @Expect(classifierRequest.startsWith("{"), true); @Expect(classifierRequest.contains("\"retrievalEvidenceHash\":\"h342434\""), true)
         @Expect(classifierRequest.contains("\"toolEvidenceHash\":\"h342434\""), true); @Expect(classifierRequest.contains("\"studentSourceHash\":\"sha256:"), true)
+        @Expect(classifierRequest.contains("\"attempt\":1"), true); @Expect(classifierRequest.contains("\"sourceTransportAttempt\":2"), true)
         _ = launch("/bin/rm", ["-rf", root]).wait()
     }
 

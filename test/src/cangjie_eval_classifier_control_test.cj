@@ -84,6 +84,47 @@ public class CangjieEvalClassifierControlTest {
         @Expect(invalidLogRequest.startsWith("{"),true);@Expect(invalidLogRequest.contains("compilerTestSummary\":\"\""),true)
     }
 
+    // FCS-UT-01 / FCS-BND-01 / FCS-POS-01 / FCS-NEG-01 / FCS-E2E-01
+    @TestCase
+    public func classifierUsesFirstCompleteSampleAfterTransportFailures(): Unit {
+        let root=p5IcRoot("first-complete-sample")
+        let attempts="{\"attempt\":1,\"transportAttempt\":1,\"sampleAttempt\":0,\"exitCode\":1,\"completeResult\":false,\"identityMatched\":false,\"workspaceRestored\":false,\"restoreEvidenceHash\":\"\"}\n"+
+            "{\"attempt\":2,\"transportAttempt\":2,\"sampleAttempt\":1,\"exitCode\":0,\"completeResult\":true,\"identityMatched\":true,\"workspaceRestored\":true,\"restoreEvidenceHash\":\"sha256:87add9cd09364be8c23d789965b3019bea6a20dc45e6bc970641fa0ab1dd5293\"}\n"
+        let caseRoot=p5IcTransportRetrySample(root,"CJ-HUMANEVAL-145",2,1,attempts)
+        let request=buildCkbP5ClassifierRequest(caseRoot,"CJ-HUMANEVAL-145","run-中文🙂")
+        @Expect(request.startsWith("{"),true)
+        @Expect(request.contains("\"attempt\":1"),true)
+        @Expect(request.contains("\"sourceTransportAttempt\":2"),true)
+        @Expect(request.contains("expected -1, actual 1 中文🙂"),true)
+
+        let output="${root}/classifier-output"
+        let run=runCkbP5IndependentClassifiers(root,"run-中文🙂","C",output,
+            p5IcExecutableConfig("a","codex","GPT-5.6-Sol",p5IcFake(root,"fake-fcs-a.sh","reasoning")),
+            p5IcExecutableConfig("b","claude-code","GLM-5.2",p5IcFake(root,"fake-fcs-b.sh","unit")),10)
+        @Expect(run.ok,true);@Expect(run.processed,1);@Expect(run.paired,1);@Expect(run.rejected,0)
+
+        let boundaryRoot=p5IcRoot("first-complete-boundary")
+        let boundaryAttempts="{\"attempt\":1,\"transportAttempt\":1,\"sampleAttempt\":0,\"exitCode\":124,\"completeResult\":false,\"identityMatched\":false,\"workspaceRestored\":false,\"restoreEvidenceHash\":\"\"}\n"+
+            "{\"attempt\":2,\"transportAttempt\":2,\"sampleAttempt\":0,\"exitCode\":1,\"completeResult\":false,\"identityMatched\":false,\"workspaceRestored\":true,\"restoreEvidenceHash\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}\n"+
+            "{\"attempt\":3,\"transportAttempt\":3,\"sampleAttempt\":1,\"exitCode\":0,\"completeResult\":true,\"identityMatched\":true,\"workspaceRestored\":true,\"restoreEvidenceHash\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"}\n"
+        let boundaryCase=p5IcTransportRetrySample(boundaryRoot,"CJ-HUMANEVAL-145",3,1,boundaryAttempts)
+        @Expect(buildCkbP5ClassifierRequest(boundaryCase,"CJ-HUMANEVAL-145","run-中文🙂").startsWith("{"),true)
+
+        let twoSamplesRoot=p5IcRoot("two-complete-samples")
+        let twoSamples=attempts+"{\"attempt\":3,\"transportAttempt\":3,\"sampleAttempt\":2,\"exitCode\":0,\"completeResult\":true,\"identityMatched\":true,\"workspaceRestored\":true,\"restoreEvidenceHash\":\"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\"}\n"
+        let twoSamplesCase=p5IcTransportRetrySample(twoSamplesRoot,"CJ-HUMANEVAL-145",3,2,twoSamples)
+        @Expect(buildCkbP5ClassifierRequest(twoSamplesCase,"CJ-HUMANEVAL-145","run-中文🙂"),"first_complete_development_sample_required")
+
+        let mismatchRoot=p5IcRoot("transport-count-mismatch")
+        let mismatchCase=p5IcTransportRetrySample(mismatchRoot,"CJ-HUMANEVAL-145",3,1,attempts)
+        @Expect(buildCkbP5ClassifierRequest(mismatchCase,"CJ-HUMANEVAL-145","run-中文🙂"),"first_complete_development_sample_required")
+
+        let missingRoot=p5IcRoot("transport-attempts-missing")
+        let missingCase=p5IcTransportRetrySample(missingRoot,"CJ-HUMANEVAL-145",2,1,attempts)
+        _=remove(missingCase.join("claude-attempts.jsonl"))
+        @Expect(buildCkbP5ClassifierRequest(missingCase,"CJ-HUMANEVAL-145","run-中文🙂"),"first_complete_development_sample_required")
+    }
+
     // P5-C-UT-02 / P5-C-BND-02 / P5-C-POS-02 / P5-C-NEG-02
     @TestCase
     public func p5IcSourceFactsRejectUnsupportedAbsImportPrerequisite(): Unit {
@@ -420,6 +461,19 @@ private func p5IcSample(root:String,caseId:String,log:String,failureType!:String
     let raw="{\"caseId\":\"${caseId}\",\"runId\":\"run-中文🙂\",\"datasetVersion\":\"dataset-v1\",\"attempt\":1,\"runMode\":\"development\",\"failureObservation\":\"missing reusable guidance 中文🙂\",\"suspectedKnowledgeGap\":true,\"retrievalDiagnostic\":\"bound_tool_result\",\"retrievalEvidenceHash\":\"h342434\",\"failureType\":\"${failureType}\",\"unitPass\":false,\"resultEvidenceHash\":\"HASH\"}";let evidence=raw.replace("HASH",cangjieEvalTriageResultEvidenceHash(raw))
     let result="{\"caseId\":\"${caseId}\",\"runId\":\"run-中文🙂\",\"datasetVersion\":\"dataset-v1\",\"runMode\":\"development\",\"firstAttemptPass\":false,\"firstClaudeExitCode\":0,\"failureType\":\"${failureType}\",\"toolEvidenceHash\":\"h342434\",\"toolCoveragePass\":true,\"citationCount\":2}"
     File.writeTo(caseRoot.join("case-result.json"),result.toArray());File.writeTo(caseRoot.join("result-evidence.json"),evidence.toArray());File.writeTo(caseRoot.join("canonical-task-context.json"),"{\"taskId\":\"${caseId}\",\"datasetVersion\":\"dataset-v1\",\"taskText\":\"通用字符串 API 任务🙂\",\"signature\":\"public func sample(s: String): Int64\"}".toArray());File.writeTo(caseRoot.join("test.log"),log.toArray());caseRoot
+}
+private func p5IcTransportRetrySample(root:String,caseId:String,transportAttempts:Int64,sampleAttempts:Int64,attempts:String):Path{
+    let caseRoot=p5IcSample(root,caseId,"Exception: expected -1, actual 1 中文🙂",failureType:"test_failure")
+    let row="{\"caseId\":\"${caseId}\",\"runId\":\"run-中文🙂\",\"datasetVersion\":\"dataset-v1\",\"runMode\":\"development\",\"firstAttemptPass\":false,\"firstClaudeExitCode\":1,\"claudeExitCode\":0,\"claudeAttemptCount\":${transportAttempts},\"failureType\":\"test_failure\",\"toolEvidenceHash\":\"h342434\",\"toolCoveragePass\":true,\"citationCount\":2}"
+    let raw="{\"caseId\":\"${caseId}\",\"runId\":\"run-中文🙂\",\"datasetVersion\":\"dataset-v1\",\"attempt\":${transportAttempts},\"runMode\":\"development\",\"failureObservation\":\"test_failure\",\"protocolViolation\":false,\"timedOut\":false,\"environmentFailure\":false,\"suspectedKnowledgeGap\":false,\"retrievalDiagnostic\":\"bound_tool_result\",\"retrievalEvidenceHash\":\"h342434\",\"reasoningFailure\":true,\"failureType\":\"test_failure\",\"unitPass\":false,\"resultEvidenceHash\":\"HASH\"}"
+    let evidence=raw.replace("HASH",cangjieEvalTriageResultEvidenceHash(raw))
+    let restores="{\"transportAttempt\":2,\"restored\":true,\"sourceAttempt\":1,\"sourceHash\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"restoredHash\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"}\n";let restoreHash=benchmarkGapSha256(restores)
+    File.writeTo(caseRoot.join("case-result.json"),row.toArray());File.writeTo(caseRoot.join("result-evidence.json"),evidence.toArray())
+    File.writeTo(caseRoot.join("attempt-evidence.json"),"{\"transportAttemptCount\":${transportAttempts},\"sampleAttemptCount\":${sampleAttempts},\"workspaceRestoreEvidenceHash\":\"${restoreHash}\",\"attemptsPath\":\"claude-attempts.jsonl\",\"restoresPath\":\"workspace-restores.jsonl\"}\n".toArray())
+    File.writeTo(caseRoot.join("test-result.json"),"{\"testExitCode\":0,\"unitPassAt1\":false,\"transportAttemptCount\":${transportAttempts},\"sampleAttemptCount\":${sampleAttempts},\"workspaceRestoreEvidenceHash\":\"${restoreHash}\",\"failureType\":\"test_failure\",\"testLogPath\":\"redacted\"}\n".toArray())
+    let transcript="{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"model\":\"GLM-5.2\",\"中文\":\"🙂\"}\n"
+    File.writeTo(caseRoot.join("workspace-restores.jsonl"),restores.toArray());File.writeTo(caseRoot.join("claude-attempts.jsonl"),attempts.toArray())
+    File.writeTo(caseRoot.join("claude-transcript.attempt-${transportAttempts}.jsonl"),transcript.toArray());File.writeTo(caseRoot.join("claude-transcript.jsonl"),transcript.toArray());caseRoot
 }
 private func p5IcRequest(caseId:String):String{let evidence="{\"caseId\":\"${caseId}\",\"runId\":\"run-001\",\"datasetVersion\":\"dataset-v1\",\"attempt\":1,\"runMode\":\"development\",\"failureObservation\":\"missing reusable guidance 中文🙂\",\"suspectedKnowledgeGap\":true,\"failureType\":\"compile_error\",\"unitPass\":false,\"resultEvidenceHash\":\"HASH\"}";let hash=cangjieEvalTriageResultEvidenceHash(evidence);"{\"schemaVersion\":\"ckb-p5-classifier-request-v1\",\"caseId\":\"${caseId}\",\"runId\":\"run-001\",\"datasetVersion\":\"dataset-v1\",\"attempt\":1,\"runMode\":\"development\",\"studentSourceExcerpt\":\"学生源码🙂\",\"studentSourceHash\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"failureObservation\":\"missing reusable guidance 中文🙂\",\"resultEvidenceHash\":\"${hash}\"}"}
 private func p5IcAbsRequest(caseId:String,source:String,compiler:String):String{

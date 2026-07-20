@@ -770,7 +770,8 @@ private func ckbAbcdeRunCaseGroup(options: CkbAbcdeRunnerOptions, runRoot: Strin
     var result = if(options.runMode=="certification"){ckbAbcdeRenderStrictCertificationCase(options,caseId,group,groupRoot,frozenAnswerHash,transcript,testLog,unitPassAt1,violation,toolReady,parsedEvidence)}else{ckbAbcdeRenderCaseResultBound(options, runRoot, caseId, group, status, claudeExit, test.exitCode, unitPass, unitPassAt1, failureType, toolEvidence, violation, groupRoot, parsedEvidence)}
     if (options.explicitRunMode && options.runMode == "development") {
         let attemptCount = ckbAbcdeClaudeAttemptCount(groupRoot)
-        let resultEvidence = ckbAbcdeTriageEvidenceBound(options, caseId, if (attemptCount > 0) { attemptCount } else { 1 }, failureType, unitPass, protocolViolation, claudeExit, test.exitCode, groupRoot, parsedEvidence)
+        let selectedTransportAttempt=ckbAbcdeSelectedSampleTransportAttempt(groupRoot)
+        let resultEvidence = ckbAbcdeTriageEvidenceBound(options, caseId, if(selectedTransportAttempt>0){selectedTransportAttempt}else if(attemptCount>0){attemptCount}else{1}, failureType, unitPass, protocolViolation, claudeExit, test.exitCode, groupRoot, parsedEvidence)
         ckbAbcdeWriteText("${groupRoot}/result-evidence.json", resultEvidence + "\n")
         let closureInput = CangjieEvalDevelopmentClosureInput()
         closureInput.caseResultJson = result; closureInput.resultEvidenceJson = resultEvidence; closureInput.taskText = taskContext.taskText
@@ -796,7 +797,7 @@ private func ckbAbcdeRenderStrictCertificationCase(options:CkbAbcdeRunnerOptions
     let workspace="${groupRoot}/workspace";let runtimeHome="${groupRoot}/runtime-home";row.workspaceId=benchmarkGapSha256(try{canonicalize(Path(workspace)).toString()}catch(_:Exception){workspace});row.sessionId=benchmarkGapSha256(ckbAbcdeReadText("${groupRoot}/session-id.txt"));row.runtimeHomeId=benchmarkGapSha256(try{canonicalize(Path(runtimeHome)).toString()}catch(_:Exception){runtimeHome})
     let probe=ckbAbcdeReadText("${groupRoot}/sandbox-probe.json");row.isolationEvidenceHash=benchmarkGapSha256(probe);row.answerHash=answerHash;row.transcriptHash=benchmarkGapSha256(transcript);row.testHash=benchmarkGapSha256(testLog);row.configHash=benchmarkGapSha256(ckbAbcdeReadText("${groupRoot}/mcp-config.json")+ckbAbcdeReadText("${groupRoot}/runtime-policy.json")+ckbAbcdeReadText(options.providerIdentityArtifactPath)+pairedEvidence);row.artifactHash=benchmarkGapSha256(row.answerHash+row.transcriptHash+row.testHash+row.configHash)
     let lowered=transcript.toAsciiLower();row.referenceExposure=if(violation.contains("reference")||lowered.contains("/reference")){1}else{0};row.hiddenTestExposure=if(violation.contains("test")||lowered.contains("/tests/")||lowered.contains("testmain.cj")){1}else{0};row.teacherExposure=if(violation.contains("teacher")||lowered.contains("cangjieteacher")||lowered.contains("teacher-solutions")){1}else{0};row.crossCaseExposure=if(violation.contains("cross_case")||ckbAbcdeTranscriptHasOtherCase(transcript,caseId)){1}else{0}
-    let attempts=ckbAbcdeReadText("${groupRoot}/claude-attempts.jsonl");let attemptCount=ckbAbcdeClaudeAttemptCount(groupRoot);row.sampleAttemptCount=ckbAbcdeSampleAttemptCount(groupRoot);row.agentRetryCount=if(attemptCount>1){attemptCount-1}else{0};row.retryUsed=attemptCount!=1||attempts.contains("\"retryUsed\":true");row.fallbackUsed=attempts.contains("\"fallbackUsed\":true")||lowered.contains("fallback_model");row.providerRetryCount=ckbAbcdeCountOccurrences(transcript,"provider_retry");row.sdkRetryCount=ckbAbcdeCountOccurrences(transcript,"sdk_retry");row.llmTurnCount=ckbAbcdeParseClaudeUsageFromText(transcript,"transcript").llmTurnCount
+    let attempts=ckbAbcdeReadText("${groupRoot}/claude-attempts.jsonl");let attemptCount=ckbAbcdeClaudeAttemptCount(groupRoot);row.sampleAttemptCount=ckbAbcdeSampleAttemptCount(groupRoot);row.agentRetryCount=ckbAbcdeAgentRetryCount(attempts,attemptCount,row.sampleAttemptCount);row.retryUsed=ckbAbcdeBusinessRetryUsed(attempts,attemptCount,row.sampleAttemptCount);row.fallbackUsed=attempts.contains("\"fallbackUsed\":true")||lowered.contains("fallback_model");row.providerRetryCount=ckbAbcdeCountOccurrences(transcript,"provider_retry");row.sdkRetryCount=ckbAbcdeCountOccurrences(transcript,"sdk_retry");row.llmTurnCount=ckbAbcdeParseClaudeUsageFromText(transcript,"transcript").llmTurnCount
     row.sandboxDeniedOutsideWorkspace=ckbAbcdeStrictSandboxProbeOk(probe,workspace,runtimeHome);row.verifierMountedAfterAnswerFreeze=ckbAbcdeStrictVerifierMountOk(ckbAbcdeReadText("${groupRoot}/verifier-mount.json"),answerHash);row.certificationPassAt1=unitPassAt1&&toolReady&&taskKnowledgeReady&&pairedEvidence!=""&&violation=="none"&&row.observedModelVersion==row.expectedModelVersion&&row.sampleAttemptCount==1&&!row.retryUsed&&!row.fallbackUsed&&row.agentRetryCount==0&&row.providerRetryCount==0&&row.sdkRetryCount==0&&row.sandboxDeniedOutsideWorkspace&&row.verifierMountedAfterAnswerFreeze&&row.referenceExposure==0&&row.hiddenTestExposure==0&&row.teacherExposure==0&&row.crossCaseExposure==0&&row.llmTurnCount>0
     sealCkbCertificationEvidence(row);renderCkbCertificationEvidenceJson(row)
 }
@@ -1684,19 +1685,21 @@ private func ckbAbcdeRenderCaseResultBound(
     let toolCallCount = ckbAbcdeToolCallCount(group, toolEvidence)
     let firstClaudeExitCode = ckbAbcdeFirstClaudeAttemptExitCode(groupRoot)
     let claudeAttemptCount = ckbAbcdeClaudeAttemptCount(groupRoot)
+    let sampleAttemptCount = ckbAbcdeSampleAttemptCount(groupRoot)
+    let selectedTransportAttempt = ckbAbcdeSelectedSampleTransportAttempt(groupRoot)
     let usage = ckbAbcdeParseClaudeUsageFile("${groupRoot}/claude-transcript.jsonl")
     let explicitDevelopment = options.explicitRunMode && options.runMode == "development"
     let recordedRunMode = if (options.explicitRunMode) { options.runMode } else { "" }
     let workspaceId = "cases/${caseId}/${group}/workspace"
     let sessionId = "cases/${caseId}/${group}/session"
     let runtimeHomeId = "cases/${caseId}/${group}/runtime-home"
-    let finalAttempt = if (claudeAttemptCount > 0) { claudeAttemptCount } else { 1 }
+    let finalAttempt = if (selectedTransportAttempt > 0) { selectedTransportAttempt } else if (claudeAttemptCount > 0) { claudeAttemptCount } else { 1 }
     let firstAttemptPass = unitPassAt1 && status == "passed"
     let triageEvidence = ckbAbcdeTriageEvidenceBound(options, caseId, finalAttempt, failureType, unitPass, protocolViolation, claudeExitCode, testExitCode, groupRoot, taskKnowledge)
     let triage = if (options.explicitRunMode) { triageEvalFailure(triageEvidence) } else { CangjieEvalFailureTriageResult() }
     let triageStatus = if (!options.explicitRunMode) { "legacy" } else if (triage.ok) { triage.category } else { "blocked:${triage.diagnostic}" }
     let failureRoute = if (triage.ok) { triage.route } else { ckbAbcdeFailureRoute(failureType) }
-    let firstAttemptTriage = if (firstAttemptPass) { "none" } else if (firstClaudeExitCode != 0) { "environment_failure" } else { triageStatus }
+    let firstAttemptTriage = if (firstAttemptPass) { "none" } else if (sampleAttemptCount == 0) { "environment_failure" } else { triageStatus }
     let confirmationStatus = if (triage.ok && triage.category == "knowledge_gap") { "pending_classifier_artifacts" } else { "not_applicable" }
     let observedRuntimeModel = ckbAbcdeObservedModel(ckbAbcdeReadText("${groupRoot}/claude-transcript.jsonl"))
     let claudeCodeVersion = ckbAbcdeClaudeVersion()
@@ -1707,14 +1710,14 @@ private func ckbAbcdeRenderCaseResultBound(
     let developmentPass = explicitDevelopment && status == "passed" && identityReady
     let closureStatus = if (!options.explicitRunMode) { "legacy" } else if (options.runMode == "certification") { "certification_not_run" } else if (developmentPass && triage.ok && triage.category == "none") { "development_closed" } else { "development_open" }
     let taskKnowledgeReady = taskKnowledge.valid && taskKnowledge.knowledgeVersion == options.knowledgeVersion
-    "{\"runId\":\"${ckbAbcdeJsonEscape(options.runId)}\",\"benchmark\":\"Cangjie-HumanEval\",\"runMode\":\"${ckbAbcdeJsonEscape(recordedRunMode)}\",\"datasetVersion\":\"${ckbAbcdeJsonEscape(options.datasetVersion)}\",\"candidateVersion\":\"${ckbAbcdeJsonEscape(options.candidateVersion)}\",\"lineageKnowledgeVersion\":\"${ckbAbcdeJsonEscape(options.knowledgeVersion)}\",\"modelFingerprint\":\"${ckbAbcdeJsonEscape(options.modelFingerprint)}\",\"workspaceId\":\"${ckbAbcdeJsonEscape(workspaceId)}\",\"sessionId\":\"${ckbAbcdeJsonEscape(sessionId)}\",\"runtimeHomeId\":\"${ckbAbcdeJsonEscape(runtimeHomeId)}\",\"developmentPass\":${developmentPass},\"firstAttemptPass\":${firstAttemptPass},\"firstAttemptTriage\":\"${ckbAbcdeJsonEscape(firstAttemptTriage)}\",\"knowledgeGapConfirmationStatus\":\"${confirmationStatus}\",\"certificationPassAt1\":null,\"closureStatus\":\"${closureStatus}\",\"triageStatus\":\"${ckbAbcdeJsonEscape(triageStatus)}\",\"failureRoute\":\"${failureRoute}\",\"caseId\":\"${caseId}\",\"group\":\"${group}\",\"expectedModelVersion\":\"${ckbAbcdeJsonEscape(options.expectedModelVersion)}\",\"observedModelVersion\":\"${ckbAbcdeJsonEscape(observedRuntimeModel)}\",\"model\":\"${ckbAbcdeJsonEscape(observedRuntimeModel)}\",\"claudeCodeVersion\":\"${ckbAbcdeJsonEscape(claudeCodeVersion)}\",\"providerIdentityHash\":\"${ckbAbcdeJsonEscape(providerIdentityHash)}\",\"knowledgeEntry\":\"${ckbAbcdeKnowledgeEntry(group)}\",\"preflightStatus\":\"ok\",\"modelRunStatus\":\"${modelRunStatus}\",\"status\":\"${status}\",\"claudeExitCode\":${claudeExitCode},\"firstClaudeExitCode\":${firstClaudeExitCode},\"claudeAttemptCount\":${claudeAttemptCount},\"testExitCode\":${testExitCode},\"unitPass\":${unitPass},\"unitPassAt1\":${unitPassAt1},\"failureType\":\"${failureType}\",\"usageParseStatus\":\"${usage.usageParseStatus}\",\"modelInputTokens\":${usage.modelInputTokens},\"modelOutputTokens\":${usage.modelOutputTokens},\"modelCacheReadTokens\":${usage.modelCacheReadTokens},\"modelCacheCreationTokens\":${usage.modelCacheCreationTokens},\"modelTotalTokens\":${usage.modelTotalTokens},\"llmTurnCount\":${usage.llmTurnCount},\"usageSourcePath\":\"${ckbAbcdeJsonEscape(usage.usageSourcePath)}\",\"ckbUsed\":${ckbAbcdeUsesCkb(group)},\"localDocsUsed\":${group == CkbAbcdeGroups.E},\"toolTransport\":\"${ckbAbcdeToolTransport(group)}\",\"toolCallCount\":${toolCallCount},\"toolEvidence\":\"${ckbAbcdeJsonEscape(toolEvidence)}\",\"toolEvidenceHash\":\"${ckbAbcdeJsonEscape(if (taskKnowledgeReady) { taskKnowledge.evidenceHash } else { "" })}\",\"toolCoveragePass\":${taskKnowledgeReady && taskKnowledge.coveragePass},\"transportParityPath\":\"${ckbAbcdeJsonEscape("${groupRoot}/parity.jsonl")}\",\"knowledgeVersion\":\"${ckbAbcdeJsonEscape(if (taskKnowledgeReady) { taskKnowledge.knowledgeVersion } else { "" })}\",\"citationCount\":${if (taskKnowledgeReady) { taskKnowledge.citationCount } else { 0 }},\"docsPathCount\":${if (group == CkbAbcdeGroups.E) { 2 } else { 0 }},\"protocolViolation\":${protocolViolation},\"protocolViolationReason\":\"${ckbAbcdeJsonEscape(violation)}\",\"durationMs\":0,\"promptPath\":\"${ckbAbcdeJsonEscape("${groupRoot}/prompt.final.md")}\",\"transcriptPath\":\"${ckbAbcdeJsonEscape("${groupRoot}/claude-transcript.jsonl")}\",\"testLogPath\":\"${ckbAbcdeJsonEscape("${groupRoot}/test.log")}\",\"resultPath\":\"${ckbAbcdeJsonEscape("${groupRoot}/case-result.json")}\",\"notes\":\"${ckbAbcdeJsonEscape(ckbAbcdeResultNotes(status, violation, toolEvidence))}\"}"
+    "{\"runId\":\"${ckbAbcdeJsonEscape(options.runId)}\",\"benchmark\":\"Cangjie-HumanEval\",\"runMode\":\"${ckbAbcdeJsonEscape(recordedRunMode)}\",\"datasetVersion\":\"${ckbAbcdeJsonEscape(options.datasetVersion)}\",\"candidateVersion\":\"${ckbAbcdeJsonEscape(options.candidateVersion)}\",\"lineageKnowledgeVersion\":\"${ckbAbcdeJsonEscape(options.knowledgeVersion)}\",\"modelFingerprint\":\"${ckbAbcdeJsonEscape(options.modelFingerprint)}\",\"workspaceId\":\"${ckbAbcdeJsonEscape(workspaceId)}\",\"sessionId\":\"${ckbAbcdeJsonEscape(sessionId)}\",\"runtimeHomeId\":\"${ckbAbcdeJsonEscape(runtimeHomeId)}\",\"developmentPass\":${developmentPass},\"firstAttemptPass\":${firstAttemptPass},\"firstAttemptTriage\":\"${ckbAbcdeJsonEscape(firstAttemptTriage)}\",\"knowledgeGapConfirmationStatus\":\"${confirmationStatus}\",\"certificationPassAt1\":null,\"closureStatus\":\"${closureStatus}\",\"triageStatus\":\"${ckbAbcdeJsonEscape(triageStatus)}\",\"failureRoute\":\"${failureRoute}\",\"caseId\":\"${caseId}\",\"group\":\"${group}\",\"expectedModelVersion\":\"${ckbAbcdeJsonEscape(options.expectedModelVersion)}\",\"observedModelVersion\":\"${ckbAbcdeJsonEscape(observedRuntimeModel)}\",\"model\":\"${ckbAbcdeJsonEscape(observedRuntimeModel)}\",\"claudeCodeVersion\":\"${ckbAbcdeJsonEscape(claudeCodeVersion)}\",\"providerIdentityHash\":\"${ckbAbcdeJsonEscape(providerIdentityHash)}\",\"knowledgeEntry\":\"${ckbAbcdeKnowledgeEntry(group)}\",\"preflightStatus\":\"ok\",\"modelRunStatus\":\"${modelRunStatus}\",\"status\":\"${status}\",\"claudeExitCode\":${claudeExitCode},\"firstClaudeExitCode\":${firstClaudeExitCode},\"claudeAttemptCount\":${claudeAttemptCount},\"transportAttemptCount\":${claudeAttemptCount},\"sampleAttemptCount\":${sampleAttemptCount},\"selectedTransportAttempt\":${selectedTransportAttempt},\"testExitCode\":${testExitCode},\"unitPass\":${unitPass},\"unitPassAt1\":${unitPassAt1},\"failureType\":\"${failureType}\",\"usageParseStatus\":\"${usage.usageParseStatus}\",\"modelInputTokens\":${usage.modelInputTokens},\"modelOutputTokens\":${usage.modelOutputTokens},\"modelCacheReadTokens\":${usage.modelCacheReadTokens},\"modelCacheCreationTokens\":${usage.modelCacheCreationTokens},\"modelTotalTokens\":${usage.modelTotalTokens},\"llmTurnCount\":${usage.llmTurnCount},\"usageSourcePath\":\"${ckbAbcdeJsonEscape(usage.usageSourcePath)}\",\"ckbUsed\":${ckbAbcdeUsesCkb(group)},\"localDocsUsed\":${group == CkbAbcdeGroups.E},\"toolTransport\":\"${ckbAbcdeToolTransport(group)}\",\"toolCallCount\":${toolCallCount},\"toolEvidence\":\"${ckbAbcdeJsonEscape(toolEvidence)}\",\"toolEvidenceHash\":\"${ckbAbcdeJsonEscape(if (taskKnowledgeReady) { taskKnowledge.evidenceHash } else { "" })}\",\"toolCoveragePass\":${taskKnowledgeReady && taskKnowledge.coveragePass},\"transportParityPath\":\"${ckbAbcdeJsonEscape("${groupRoot}/parity.jsonl")}\",\"knowledgeVersion\":\"${ckbAbcdeJsonEscape(if (taskKnowledgeReady) { taskKnowledge.knowledgeVersion } else { "" })}\",\"citationCount\":${if (taskKnowledgeReady) { taskKnowledge.citationCount } else { 0 }},\"docsPathCount\":${if (group == CkbAbcdeGroups.E) { 2 } else { 0 }},\"protocolViolation\":${protocolViolation},\"protocolViolationReason\":\"${ckbAbcdeJsonEscape(violation)}\",\"durationMs\":0,\"promptPath\":\"${ckbAbcdeJsonEscape("${groupRoot}/prompt.final.md")}\",\"transcriptPath\":\"${ckbAbcdeJsonEscape("${groupRoot}/claude-transcript.jsonl")}\",\"testLogPath\":\"${ckbAbcdeJsonEscape("${groupRoot}/test.log")}\",\"resultPath\":\"${ckbAbcdeJsonEscape("${groupRoot}/case-result.json")}\",\"notes\":\"${ckbAbcdeJsonEscape(ckbAbcdeResultNotes(status, violation, toolEvidence))}\"}"
 }
 
 private func ckbAbcdeTriageEvidenceBound(options: CkbAbcdeRunnerOptions, caseId: String, attempt: Int64, failureType: String, unitPass: Bool, protocolViolation: Bool, claudeExitCode: Int64, testExitCode: Int64, groupRoot: String, taskKnowledge: CkbAbcdeTaskKnowledgeEvidence): String {
     let timedOut = claudeExitCode == 124
     let environmentFailure = claudeExitCode != 0 && !timedOut
     let observation = if (failureType == "none") { "case_passed" } else { failureType }
-    let firstRetrieval = ckbAbcdeReadText("${groupRoot}/claude-transcript.attempt-1.jsonl")
+    let firstRetrieval = ckbAbcdeFirstSampleTranscript(groupRoot)
     let taskContext = ckbAbcdeReadText("${groupRoot}/canonical-task-context.json")
     let structuredMissing = ckbAbcdeHasBoundStructuredMissingEvidence(caseId, taskContext, firstRetrieval)
     let coverageCompilerConflict = ckbAbcdeHasBoundStructuredCoveragePass(caseId, taskContext, firstRetrieval) && ckbAbcdeReadText("${groupRoot}/test.log").toAsciiLower().contains("is not a member of")
@@ -1723,9 +1726,20 @@ private func ckbAbcdeTriageEvidenceBound(options: CkbAbcdeRunnerOptions, caseId:
     let retrievalEvidenceHash = if (taskKnowledge.valid) { taskKnowledge.evidenceHash } else if (suspectedKnowledgeGap) { benchmarkGapSha256(taskContext + firstRetrieval) } else { "" }
     let provisional = "{\"attempt\":${attempt},\"runMode\":\"${ckbAbcdeJsonEscape(options.runMode)}\",\"failureType\":\"${ckbAbcdeJsonEscape(failureType)}\",\"protocolViolation\":${protocolViolation},\"timedOut\":${timedOut},\"environmentFailure\":${environmentFailure},\"suspectedKnowledgeGap\":${suspectedKnowledgeGap},\"reasoningFailure\":false,\"unitPass\":${unitPass}}"
     let reasoningFailure = cangjieEvalAuthoritativeFailureCategory(provisional) == "reasoning_failure"
-    let base = "{\"caseId\":\"${ckbAbcdeJsonEscape(caseId)}\",\"runId\":\"${ckbAbcdeJsonEscape(options.runId)}\",\"datasetVersion\":\"${ckbAbcdeJsonEscape(options.datasetVersion)}\",\"attempt\":${attempt},\"runMode\":\"${ckbAbcdeJsonEscape(options.runMode)}\",\"failureObservation\":\"${ckbAbcdeJsonEscape(observation)}\",\"protocolViolation\":${protocolViolation},\"timedOut\":${timedOut},\"environmentFailure\":${environmentFailure},\"suspectedKnowledgeGap\":${suspectedKnowledgeGap},\"retrievalDiagnostic\":\"${retrievalDiagnostic}\",\"retrievalEvidenceHash\":\"${retrievalEvidenceHash}\",\"reasoningFailure\":${reasoningFailure && !suspectedKnowledgeGap},\"failureType\":\"${ckbAbcdeJsonEscape(failureType)}\",\"unitPass\":${unitPass}}"
+    let base = "{\"caseId\":\"${ckbAbcdeJsonEscape(caseId)}\",\"runId\":\"${ckbAbcdeJsonEscape(options.runId)}\",\"datasetVersion\":\"${ckbAbcdeJsonEscape(options.datasetVersion)}\",\"attempt\":${attempt},\"transportAttempt\":${attempt},\"sampleAttempt\":${if(ckbAbcdeSelectedSampleTransportAttempt(groupRoot)==attempt){1}else{0}},\"runMode\":\"${ckbAbcdeJsonEscape(options.runMode)}\",\"failureObservation\":\"${ckbAbcdeJsonEscape(observation)}\",\"protocolViolation\":${protocolViolation},\"timedOut\":${timedOut},\"environmentFailure\":${environmentFailure},\"suspectedKnowledgeGap\":${suspectedKnowledgeGap},\"retrievalDiagnostic\":\"${retrievalDiagnostic}\",\"retrievalEvidenceHash\":\"${retrievalEvidenceHash}\",\"reasoningFailure\":${reasoningFailure && !suspectedKnowledgeGap},\"failureType\":\"${ckbAbcdeJsonEscape(failureType)}\",\"unitPass\":${unitPass}}"
     let hash = cangjieEvalTriageResultEvidenceHash(base)
     base.replace("}", ",\"resultEvidenceHash\":\"${hash}\"}")
+}
+
+private func ckbAbcdeFirstSampleTranscript(groupRoot:String):String{
+    let selected=ckbAbcdeSelectedSampleTransportAttempt(groupRoot)
+    if(selected>0){
+        let selectedTranscript=ckbAbcdeReadText("${groupRoot}/claude-transcript.attempt-${selected}.jsonl")
+        if(selectedTranscript!=""){return selectedTranscript}
+        return ckbAbcdeReadText("${groupRoot}/claude-transcript.jsonl")
+    }
+    let legacy=ckbAbcdeReadText("${groupRoot}/claude-transcript.attempt-1.jsonl")
+    if(legacy!=""){legacy}else{ckbAbcdeReadText("${groupRoot}/claude-transcript.jsonl")}
 }
 
 private func ckbAbcdeHasBoundStructuredCoveragePass(caseId: String, taskContext: String, transcript: String): Bool {
@@ -2179,6 +2193,32 @@ private func ckbAbcdeClaudeAttemptCount(groupRoot: String): Int64 {
 }
 
 private func ckbAbcdeSampleAttemptCount(groupRoot: String): Int64 { var count: Int64 = 0; for (line in ckbAbcdeReadText("${groupRoot}/claude-attempts.jsonl").split("\n")) { if (ckbAbcdeJsonIntField(line, "sampleAttempt", 0) > count) { count = ckbAbcdeJsonIntField(line, "sampleAttempt", 0) } }; count }
+
+private func ckbAbcdeSelectedSampleTransportAttempt(groupRoot:String):Int64{
+    for(line in ckbAbcdeReadText("${groupRoot}/claude-attempts.jsonl").split("\n")){
+        if(ckbAbcdeJsonIntField(line,"sampleAttempt",0)==1){return ckbAbcdeJsonIntField(line,"transportAttempt",ckbAbcdeJsonIntField(line,"attempt",0))}
+    }
+    0
+}
+
+private func ckbAbcdeAgentRetryCount(attempts:String,transportAttemptCount:Int64,sampleAttemptCount:Int64):Int64{
+    if(attempts.contains("\"sampleAttempt\":")){if(sampleAttemptCount>1){sampleAttemptCount-1}else{0}}
+    else if(transportAttemptCount>1){transportAttemptCount-1}else{0}
+}
+
+private func ckbAbcdeBusinessRetryUsed(attempts:String,transportAttemptCount:Int64,sampleAttemptCount:Int64):Bool{
+    attempts.contains("\"retryUsed\":true")||if(attempts.contains("\"sampleAttempt\":")){sampleAttemptCount>1}else{transportAttemptCount!=1}
+}
+
+public func ckbAbcdeAgentRetryCountFromAttemptsForTest(attempts:String):Int64{
+    var transport:Int64=0;var samples:Int64=0;for(line in attempts.split("\n")){if(line.contains("\"attempt\":")){transport+=1};let sample=ckbAbcdeJsonIntField(line,"sampleAttempt",0);if(sample>samples){samples=sample}}
+    ckbAbcdeAgentRetryCount(attempts,transport,samples)
+}
+
+public func ckbAbcdeBusinessRetryUsedFromAttemptsForTest(attempts:String):Bool{
+    var transport:Int64=0;var samples:Int64=0;for(line in attempts.split("\n")){if(line.contains("\"attempt\":")){transport+=1};let sample=ckbAbcdeJsonIntField(line,"sampleAttempt",0);if(sample>samples){samples=sample}}
+    ckbAbcdeBusinessRetryUsed(attempts,transport,samples)
+}
 private func ckbAbcdeWorkspaceRestoreEvidenceHash(groupRoot: String): String { let evidence = ckbAbcdeReadText("${groupRoot}/workspace-restores.jsonl"); if (evidence == "") { "" } else { benchmarkGapSha256(evidence) } }
 
 private func ckbAbcdeFirstClaudeAttemptExitCodeFromText(attempts: String): Int64 {
