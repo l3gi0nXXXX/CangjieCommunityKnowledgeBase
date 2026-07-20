@@ -1108,8 +1108,12 @@ public class CangjieEvalAbcdeRunnerTest {
         @Expect(ckbAbcdeTaskKnowledgeEvidenceFromUtf8ForTest(CkbAbcdeGroups.C, [UInt8(0xff)], context.toArray()).diagnostic, "invalid_response_encoding")
         let unicodeContext = context.replace("Reverse String", "反转字符串🙂")
         @Expect(ckbAbcdeTaskKnowledgeEvidenceForTest(CkbAbcdeGroups.C, case145Transcript(unicodeContext, "call-中文🙂", "h342434"), unicodeContext).valid, true)
-        let hugeBuilder = StringBuilder(); for (_ in 0..4194305) { hugeBuilder.append("界") }
-        @Expect(ckbAbcdeTaskKnowledgeEvidenceForTest(CkbAbcdeGroups.C, hugeBuilder.toString(), context).diagnostic, "transcript_too_large")
+        // One CJK rune is three UTF-8 bytes. This is the smallest whole-rune payload above 4 MiB,
+        // so the boundary stays Unicode-realistic without making the 64 MiB test heap build 12 MiB.
+        let hugeBuilder = StringBuilder(); for (_ in 0..1398102) { hugeBuilder.append("界") }
+        let hugeTranscript = hugeBuilder.toString()
+        @Expect(hugeTranscript.size > 4194304, true)
+        @Expect(ckbAbcdeTaskKnowledgeEvidenceForTest(CkbAbcdeGroups.C, hugeTranscript, context).diagnostic, "transcript_too_large")
         let secret = case145Transcript(context, "call-145", "token=secret")
         let secretResult = ckbAbcdeTaskKnowledgeEvidenceForTest(CkbAbcdeGroups.C, secret, context)
         @Expect(secretResult.valid, false); @Expect(secretResult.diagnostic, "evidence_hash_invalid")
