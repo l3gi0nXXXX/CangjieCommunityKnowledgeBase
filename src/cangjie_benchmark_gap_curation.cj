@@ -449,7 +449,7 @@ private func benchmarkGapRecord(input: CangjieBenchmarkGapInput, targetVersion: 
     if (input.knowledgeText != "") {
         record.metadata.derivedFrom = ["knowledge-atom:${input.knowledgeAtomId}"]
     }
-    record.citation = input.officialCitation
+    record.citation = benchmarkGapRecordCitation(input)
     record.requiresReview = false
     record.metadata.sourceId = record.sourceId
     record.metadata.sourceType = SourceTypes.DERIVED
@@ -463,6 +463,13 @@ private func benchmarkGapRecord(input: CangjieBenchmarkGapInput, targetVersion: 
     record.metadata.symbol = "${input.interfaceId}:${input.missingKnowledge}"
     record.metadata.contentSize = record.chunk.size
     record
+}
+
+private func benchmarkGapRecordCitation(input: CangjieBenchmarkGapInput): String {
+    if (input.sourceClass == "teacher_empirical" && benchmarkGapSha256FormatAllowed(input.candidateHash)) {
+        return "teacher-empirical://candidate/${input.candidateHash.replace("sha256:", "")}"
+    }
+    input.officialCitation
 }
 
 public func benchmarkGapPersistentSourceId(input: CangjieBenchmarkGapInput): String {
