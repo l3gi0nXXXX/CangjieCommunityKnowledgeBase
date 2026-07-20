@@ -2,6 +2,57 @@ package cangjie_community_knowledge_base_test
 
 import std.collection.ArrayList
 import std.convert.Parsable
+import stdx.encoding.base64.*
+import stdx.encoding.json.*
+
+public let CKB_MCP_BOUND_CONTEXT_SCHEMA: String = "ckb-runner-bound-mcp-v1"
+private let CKB_MCP_BOUND_CONTEXT_MAX_BYTES: Int64 = 8192
+
+public class CkbMcpBoundTaskContext {
+    public var configured: Bool = false
+    public var valid: Bool = false
+    public var diagnostic: String = "not_configured"
+    public var canonicalJson: String = ""
+    public var requestHash: String = ""
+
+    public init() {}
+}
+
+public func ckbMcpBoundTaskContextFromBase64(encoded: String, expectedHash!: String = ""): CkbMcpBoundTaskContext {
+    let result = CkbMcpBoundTaskContext()
+    if (encoded == "" && expectedHash == "") { return result }
+    result.configured = true
+    if (encoded == "" || expectedHash == "") { result.diagnostic = "bound_task_context_binding_incomplete"; return result }
+    if (encoded.size > 12288) { result.diagnostic = "bound_task_context_too_large"; return result }
+    let bytes = if (let Some(value) <- fromBase64String(encoded)) { value } else { result.diagnostic = "malformed_bound_task_context_base64"; return result }
+    if (toBase64String(bytes) != encoded) { result.diagnostic = "noncanonical_bound_task_context_base64"; return result }
+    if (bytes.size > CKB_MCP_BOUND_CONTEXT_MAX_BYTES) { result.diagnostic = "bound_task_context_too_large"; return result }
+    let raw = try { String.fromUtf8(bytes) } catch (_: Exception) { result.diagnostic = "invalid_response_encoding"; return result }
+    var object: JsonObject
+    try { object = JsonValue.fromStr(raw).asObject() } catch (_: Exception) { result.diagnostic = "malformed_bound_task_context_json"; return result }
+    if (!ckbMcpCanonicalTaskContextShapeValid(object)) { result.diagnostic = "bound_task_context_contract_invalid"; return result }
+    let actualHash = benchmarkGapSha256(raw)
+    if (expectedHash != actualHash) { result.diagnostic = "bound_task_context_hash_mismatch"; return result }
+    result.valid = true
+    result.diagnostic = "ok"
+    result.canonicalJson = raw
+    result.requestHash = actualHash
+    result
+}
+
+private func ckbMcpCanonicalTaskContextShapeValid(object: JsonObject): Bool {
+    if (object.getFields().size != 13) { return false }
+    for (key in ["taskId", "benchmark", "taskText", "signature", "datasetVersion", "promptHash", "starterHash", "targetVersion", "sourceSet", "versionPolicy", "responseMode"]) {
+        try { if (object.get(key).getOrThrow().asString().getValue() == "") { return false } } catch (_: Exception) { return false }
+    }
+    try {
+        let budget = object.get("budget").getOrThrow().asInt().getValue()
+        if (budget <= 0 || budget > 20) { return false }
+        let tags = object.get("expectedKnowledgeTags").getOrThrow().asArray().getItems()
+        for (tag in tags) { if (tag.asString().getValue() == "") { return false } }
+    } catch (_: Exception) { return false }
+    true
+}
 
 public class CkbMcpDispatchResult {
     public var shouldWrite: Bool = true
@@ -26,11 +77,13 @@ public func ckbMcpDispatchNoOutput(): CkbMcpDispatchResult {
 
 public class CkbMcpStdioServer {
     private let service: CkbCommandLoopService
+    private let boundTaskContext: CkbMcpBoundTaskContext
     private let maxRequestChars: Int64 = 65536
     private let maxTextChars: Int64 = CangjieCapabilityLimits.MAX_TEXT_CHARS
 
-    public init(service: CkbCommandLoopService) {
+    public init(service: CkbCommandLoopService, boundTaskContextBase64!: String = "", boundTaskContextHash!: String = "") {
         this.service = service
+        this.boundTaskContext = ckbMcpBoundTaskContextFromBase64(boundTaskContextBase64, expectedHash: boundTaskContextHash)
     }
 
     public func handleLine(line: String): CkbMcpDispatchResult {
@@ -53,6 +106,9 @@ public class CkbMcpStdioServer {
         }
         if (method == "initialize") {
             return ckbMcpDispatchResponse(this.resultResponse(id, this.initializeResult(protocolVersion, serverName)))
+        }
+        if (this.boundTaskContext.configured && !this.boundTaskContext.valid) {
+            return ckbMcpDispatchResponse(this.errorResponse(id, -32602, this.boundTaskContext.diagnostic, "{}"))
         }
         if (method == "ping") {
             return ckbMcpDispatchResponse(this.resultResponse(id, "{}"))
@@ -103,10 +159,17 @@ public class CkbMcpStdioServer {
             return this.toolResult(id, cangjieVersionResolutionJson(this.service.cangjieResolveVersion(this.versionSelectorFromArgs(args))))
         }
         if (name == "cangjie_task_knowledge_pack") {
-            let request = this.taskKnowledgeRequestFromArgs(args)
+            if (this.boundTaskContext.configured && !this.boundTaskContext.valid) { return this.errorResponse(id, -32602, this.boundTaskContext.diagnostic, "{}") }
+            if (this.boundTaskContext.configured && !ckbMcpJsonObjectIsEmpty(args)) { return this.errorResponse(id, -32602, "bound_tool_arguments_must_be_empty", "{}") }
+            let effectiveArgs = if (this.boundTaskContext.configured) { this.boundTaskContext.canonicalJson } else { args }
+            let request = this.taskKnowledgeRequestFromArgs(effectiveArgs)
             let validation = validateCangjieTaskKnowledgeRequest(request)
             if (validation != "") { return this.errorResponse(id, -32602, validation, "{}") }
-            return this.toolResult(id, cangjieTaskKnowledgePackJson(this.service.cangjieTaskKnowledgePack(request)))
+            let payload = cangjieTaskKnowledgePackJson(this.service.cangjieTaskKnowledgePack(request))
+            if (!this.boundTaskContext.configured) { return this.toolResult(id, payload) }
+            let boundPayload = ckbMcpAppendRequestBinding(ckbMcpSanitizeBoundPayload(payload, this.boundTaskContext), this.boundTaskContext)
+            if (boundPayload == "") { return this.errorResponse(id, -32603, "bound_receipt_render_failed", "{}") }
+            return this.toolResult(id, boundPayload)
         }
         if (name == "cangjie_knowledge_coverage") {
             let request = this.taskKnowledgeRequestFromArgs(args)
@@ -279,7 +342,7 @@ public class CkbMcpStdioServer {
         for (i in 0..tools.size) {
             if (i > 0) { out += "," }
             let name = tools[i]
-            out += "{\"name\":\"${name}\",\"description\":\"${ckbMcpJsonEscape(ckbMcpToolDescription(name))}\",\"inputSchema\":${ckbMcpToolSchema(name)}}"
+            out += "{\"name\":\"${name}\",\"description\":\"${ckbMcpJsonEscape(ckbMcpToolDescription(name))}\",\"inputSchema\":${ckbMcpToolSchema(name, boundTaskKnowledge: this.boundTaskContext.configured)}}"
         }
         out += "]"
         out
@@ -439,11 +502,45 @@ private func ckbMcpToolDescription(name: String): String {
     "Return read-only Cangjie corpus status."
 }
 
-private func ckbMcpToolSchema(name: String): String {
-    if (name == "cangjie_corpus_status") {
+private func ckbMcpToolSchema(name: String, boundTaskKnowledge!: Bool = false): String {
+    if (name == "cangjie_corpus_status" || (name == "cangjie_task_knowledge_pack" && boundTaskKnowledge)) {
         return "{\"type\":\"object\",\"properties\":{},\"additionalProperties\":false}"
     }
     "{\"type\":\"object\",\"properties\":{\"q\":{\"type\":\"string\"},\"query\":{\"type\":\"string\"},\"task\":{\"type\":\"string\"},\"taskText\":{\"type\":\"string\"},\"taskId\":{\"type\":\"string\"},\"benchmark\":{\"type\":\"string\"},\"signature\":{\"type\":\"string\"},\"imports\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"argTypes\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"expectedKnowledgeTags\":{\"type\":\"array\",\"items\":{\"type\":\"string\"}},\"starterCodeExcerpt\":{\"type\":\"string\"},\"code\":{\"type\":\"string\"},\"compilerOutput\":{\"type\":\"string\"},\"context\":{\"type\":\"string\"},\"sectionId\":{\"type\":\"string\"},\"path\":{\"type\":\"string\"},\"heading\":{\"type\":\"string\"},\"tool\":{\"type\":\"string\"},\"command\":{\"type\":\"string\"},\"module\":{\"type\":\"string\"},\"symbol\":{\"type\":\"string\"},\"sourceSet\":{\"type\":\"string\"},\"sourceFamily\":{\"type\":\"string\"},\"sourceRepo\":{\"type\":\"string\"},\"sourceRef\":{\"type\":\"string\"},\"refKind\":{\"type\":\"string\"},\"versionPolicy\":{\"type\":\"string\"},\"targetVersion\":{\"type\":\"string\"},\"budget\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":20},\"maxExamples\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":20}},\"additionalProperties\":true}"
+}
+
+private func ckbMcpJsonObjectIsEmpty(raw: String): Bool {
+    try { JsonValue.fromStr(raw).asObject().getFields().size == 0 } catch (_: Exception) { false }
+}
+
+private func ckbMcpSanitizeBoundPayload(payload: String, context: CkbMcpBoundTaskContext): String {
+    var sanitized = payload
+    for (key in ["taskText", "signature"]) {
+        let value = ckbMcpJsonStringField(context.canonicalJson, key)
+        if (value != "") {
+            sanitized = sanitized.replace(ckbMcpJsonEscape(value), if (key == "taskText") { "[runner-bound-task]" } else { "[runner-bound-signature]" })
+        }
+    }
+    sanitized
+}
+
+private func ckbMcpAppendRequestBinding(payload: String, context: CkbMcpBoundTaskContext): String {
+    let chars = payload.toRuneArray()
+    if (chars.size == 0 || chars[chars.size - 1] != r'}') { return "" }
+    let out = StringBuilder()
+    for (i in 0..(chars.size - 1)) { out.append(chars[i]) }
+    out.append(",\"requestBinding\":{\"schemaVersion\":\"")
+    out.append(CKB_MCP_BOUND_CONTEXT_SCHEMA)
+    out.append("\",\"bindingMode\":\"runner_immutable\",\"requestHash\":\"")
+    out.append(context.requestHash)
+    out.append("\",\"effectiveRequestHash\":\"")
+    out.append(context.requestHash)
+    out.append("\",\"modelArgumentsHash\":\"")
+    out.append(benchmarkGapSha256("{}"))
+    out.append("\",\"taskId\":\"")
+    out.append(ckbMcpJsonStringField(context.canonicalJson, "taskId"))
+    out.append("\"}}")
+    out.toString()
 }
 
 private func ckbMcpPromptNames(): ArrayList<String> {

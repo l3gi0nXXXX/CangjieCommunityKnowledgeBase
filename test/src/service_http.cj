@@ -452,6 +452,19 @@ private func ckbHttpRequestHeaders(ctx: HttpContext): Array<String> {
     ckbHttpAppendHeader(headers, "MCP-Protocol-Version", ctx.request.headers.getFirst("MCP-Protocol-Version") ?? ctx.request.headers.getFirst("mcp-protocol-version") ?? "")
     ckbHttpAppendHeader(headers, "Mcp-Session-Id", ctx.request.headers.getFirst("Mcp-Session-Id") ?? ctx.request.headers.getFirst("mcp-session-id") ?? "")
     ckbHttpAppendHeader(headers, "Last-Event-ID", ctx.request.headers.getFirst("Last-Event-ID") ?? ctx.request.headers.getFirst("last-event-id") ?? "")
+    ckbHttpAppendAllHeaderValues(headers, ctx.request.headers, "X-CKB-Runner-Context")
+    ckbHttpAppendAllHeaderValues(headers, ctx.request.headers, "X-CKB-Runner-Context-SHA256")
+    headers.toArray()
+}
+
+private func ckbHttpAppendAllHeaderValues(headers: ArrayList<String>, requestHeaders: HttpHeaders, name: String): Unit {
+    for (value in requestHeaders.get(name)) { ckbHttpAppendHeader(headers, name, value) }
+}
+
+public func ckbHttpRunnerBindingHeadersForTest(requestHeaders: HttpHeaders): Array<String> {
+    let headers = ArrayList<String>()
+    ckbHttpAppendAllHeaderValues(headers, requestHeaders, "X-CKB-Runner-Context")
+    ckbHttpAppendAllHeaderValues(headers, requestHeaders, "X-CKB-Runner-Context-SHA256")
     headers.toArray()
 }
 

@@ -3,8 +3,8 @@ package cangjie_community_knowledge_base_test
 public class CkbMcpProtocolServer {
     private let delegate: CkbMcpStdioServer
 
-    public init(service: CkbCommandLoopService) {
-        this.delegate = CkbMcpStdioServer(service)
+    public init(service: CkbCommandLoopService, boundTaskContextBase64!: String = "", boundTaskContextHash!: String = "") {
+        this.delegate = CkbMcpStdioServer(service, boundTaskContextBase64: boundTaskContextBase64, boundTaskContextHash: boundTaskContextHash)
     }
 
     public func handleMessage(message: String, protocolVersion: String, serverName: String): CkbMcpDispatchResult {

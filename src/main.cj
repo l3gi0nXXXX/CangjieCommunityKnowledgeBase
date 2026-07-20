@@ -122,7 +122,7 @@ public func ckbCliMain(args: Array<String>): Int64 {
         return runCkbHttpService(config, store)
     }
     if (cli.command == "mcp-stdio") {
-        return runCkbMcpStdioLoop(config, store)
+        return runCkbMcpStdioLoop(config, store, ckbCliOption(args, "--bound-task-context-base64"), ckbCliOption(args, "--bound-task-context-sha256"))
     }
     if (cli.command == "cangjie-initialize") {
         let options = parseCkbFirstInitOptions(args)
@@ -778,9 +778,9 @@ private func renderCangjieEvalManifestFileSummary(path: String): (String, Int64)
     }
 }
 
-private func runCkbMcpStdioLoop(config: CkbRuntimeConfig, store: FileKnowledgeStore): Int64 {
+private func runCkbMcpStdioLoop(config: CkbRuntimeConfig, store: FileKnowledgeStore, boundTaskContextBase64: String, boundTaskContextHash: String): Int64 {
     let service = CkbCommandLoopService(config, store, sourceRunner: if (config.networkEnabled) { HttpSourceFetchRunner(config) } else { DisabledNetworkFetchRunner() })
-    let server = CkbMcpStdioServer(service)
+    let server = CkbMcpStdioServer(service, boundTaskContextBase64: boundTaskContextBase64, boundTaskContextHash: boundTaskContextHash)
     let stdout = getStdOut()
     try (stdinFile = File("/dev/stdin", OpenMode.Read)) {
         let reader = StringReader(stdinFile)

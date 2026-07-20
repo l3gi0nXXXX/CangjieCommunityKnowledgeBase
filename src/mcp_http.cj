@@ -33,6 +33,8 @@ public class CkbMcpHttpSession {
     public var clientName: String = ""
     public var lastEventId: String = ""
     public var sseConnected: Bool = false
+    public var boundTaskContextBase64: String = ""
+    public var boundTaskContextHash: String = ""
 
     public init() {}
 }
@@ -43,13 +45,15 @@ public class CkbMcpHttpSessionStore {
 
     public init() {}
 
-    public func create(protocolVersion: String, clientName: String): CkbMcpHttpSession {
+    public func create(protocolVersion: String, clientName: String, boundTaskContextBase64!: String = "", boundTaskContextHash!: String = ""): CkbMcpHttpSession {
         let now = ckbMcpHttpNowMillis()
         let session = CkbMcpHttpSession()
         session.sessionId = "ckb-mcp-${now}-${this.nextSequence}"
         this.nextSequence += 1
         session.protocolVersion = protocolVersion
         session.clientName = clientName
+        session.boundTaskContextBase64 = boundTaskContextBase64
+        session.boundTaskContextHash = boundTaskContextHash
         session.createdAtMillis = now
         session.lastSeenMillis = now
         this.sessions.add(session)
@@ -187,8 +191,14 @@ private func ckbMcpHttpHandlePost(
             return ckbMcpHttpError(400, id, -32602, "protocol_version_required", "{}", authKind)
         }
         let clientInfo = ckbMcpJsonObjectField(params, "clientInfo")
-        let session = sessionStore.create(protocolVersion, ckbMcpJsonStringField(clientInfo, "name"))
-        let protocol = CkbMcpProtocolServer(service)
+        let boundDiagnostic = ckbMcpHttpBoundHeaderDiagnostic(headers)
+        if (boundDiagnostic != "ok") { return ckbMcpHttpError(400, id, -32602, boundDiagnostic, "{}", authKind) }
+        let boundBase64 = ckbMcpHttpHeaderValue(headers, "X-CKB-Runner-Context")
+        let boundHash = ckbMcpHttpHeaderValue(headers, "X-CKB-Runner-Context-SHA256")
+        let binding = ckbMcpBoundTaskContextFromBase64(boundBase64, expectedHash: boundHash)
+        if (binding.configured && !binding.valid) { return ckbMcpHttpError(400, id, -32602, binding.diagnostic, "{}", authKind) }
+        let session = sessionStore.create(protocolVersion, ckbMcpJsonStringField(clientInfo, "name"), boundTaskContextBase64: boundBase64, boundTaskContextHash: boundHash)
+        let protocol = CkbMcpProtocolServer(service, boundTaskContextBase64: boundBase64, boundTaskContextHash: boundHash)
         let dispatch = protocol.handleMessage(trimmed, protocolVersion, "ckb-cangjie-mcp-http")
         let response = ckbMcpHttpJsonResponse(200, if (dispatch.shouldWrite) { dispatch.payload } else { "{}" }, authKind)
         response.headers.add("Mcp-Session-Id: ${session.sessionId}")
@@ -207,7 +217,7 @@ private func ckbMcpHttpHandlePost(
         return ckbMcpHttpAccepted(authKind)
     }
 
-    let protocol = CkbMcpProtocolServer(service)
+    let protocol = CkbMcpProtocolServer(service, boundTaskContextBase64: sessionResult.session.boundTaskContextBase64, boundTaskContextHash: sessionResult.session.boundTaskContextHash)
     let dispatch = protocol.handleMessage(trimmed, sessionResult.session.protocolVersion, "ckb-cangjie-mcp-http")
     if (!dispatch.shouldWrite) {
         return ckbMcpHttpAccepted(authKind)
@@ -319,9 +329,37 @@ private func ckbMcpHttpRequireSession(
         result.response = ckbMcpHttpError(400, id, -32602, "unsupported_protocol_version", "{\"supported\":\"${ckbMcpJsonEscape(session.protocolVersion)}\"}", authKind)
         return result
     }
+    let boundDiagnostic = ckbMcpHttpBoundHeaderDiagnostic(headers)
+    if (boundDiagnostic != "ok") {
+        result.response = ckbMcpHttpError(400, id, -32602, boundDiagnostic, "{}", authKind)
+        return result
+    }
+    if (ckbMcpHttpHeaderValue(headers, "X-CKB-Runner-Context") != session.boundTaskContextBase64 ||
+        ckbMcpHttpHeaderValue(headers, "X-CKB-Runner-Context-SHA256") != session.boundTaskContextHash) {
+        result.response = ckbMcpHttpError(400, id, -32602, "bound_task_context_session_drift", "{}", authKind)
+        return result
+    }
     result.ok = true
     result.session = session
     result
+}
+
+private func ckbMcpHttpBoundHeaderDiagnostic(headers: Array<String>): String {
+    let contextCount = ckbMcpHttpHeaderCount(headers, "X-CKB-Runner-Context")
+    let hashCount = ckbMcpHttpHeaderCount(headers, "X-CKB-Runner-Context-SHA256")
+    if (contextCount > 1 || hashCount > 1) { return "duplicate_bound_task_context_header" }
+    if ((contextCount == 0) != (hashCount == 0)) { return "bound_task_context_binding_incomplete" }
+    let encoded = ckbMcpHttpHeaderValue(headers, "X-CKB-Runner-Context")
+    let hash = ckbMcpHttpHeaderValue(headers, "X-CKB-Runner-Context-SHA256")
+    if (encoded.contains(",") || encoded.contains("\r") || encoded.contains("\n") || hash.contains(",") || hash.contains("\r") || hash.contains("\n")) { return "bound_task_context_header_smuggling" }
+    "ok"
+}
+
+private func ckbMcpHttpHeaderCount(headers: Array<String>, name: String): Int64 {
+    let prefix = "${name.toAsciiLower()}:"
+    var count: Int64 = 0
+    for (header in headers) { if (header.toAsciiLower().startsWith(prefix)) { count += 1 } }
+    count
 }
 
 private func ckbMcpHttpJsonResponse(statusCode: Int64, body: String, authKind: String): CkbMcpHttpResponse {

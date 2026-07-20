@@ -24,9 +24,11 @@ public class CangjieEvalAbcdeRunnerTest {
         let options = parseCkbAbcdeRunnerOptions(args)
         @Expect(options.ckbConfig, config)
         @Expect(ckbAbcdeDevelopmentOptionsDiagnostic(options), "")
+        let taskContext = ckbAbcdeSmokeTaskContextJsonForTest()
         let rendered = renderCkbAbcdeMcpConfig(CkbAbcdeGroups.C, "/tmp/ckb", config,
-            "/tmp/store with space 仓颉🙂", "http://127.0.0.1:18890")
+            "/tmp/store with space 仓颉🙂", "http://127.0.0.1:18890", taskContextJson: taskContext)
         @Expect(rendered.contains("'--config' '${config}' '--store' '/tmp/store with space 仓颉🙂' 'mcp-stdio'"), true)
+        @Expect(rendered.contains("--bound-task-context-base64"), true)
         let stdioArgs = ckbAbcdeMcpStdioArgumentsForTest(options)
         @Expect(stdioArgs.size, 5)
         @Expect(stdioArgs[0], "--config")
@@ -292,16 +294,22 @@ public class CangjieEvalAbcdeRunnerTest {
 
     @TestCase
     public func ckg12Pos002McpConfigsSeparateStdioHttpAndEmptyGroups(): Unit {
-        let stdio = renderCkbAbcdeMcpConfig(CkbAbcdeGroups.C, "/tmp/ckb", "/tmp/config", "/tmp/store", "http://127.0.0.1:18890")
-        let http = renderCkbAbcdeMcpConfig(CkbAbcdeGroups.D, "/tmp/ckb", "/tmp/config", "/tmp/store", "http://127.0.0.1:18890")
+        let context = ckbAbcdeSmokeTaskContextJsonForTest()
+        let stdio = renderCkbAbcdeMcpConfig(CkbAbcdeGroups.C, "/tmp/ckb", "/tmp/config", "/tmp/store", "http://127.0.0.1:18890", taskContextJson: context)
+        let http = renderCkbAbcdeMcpConfig(CkbAbcdeGroups.D, "/tmp/ckb", "/tmp/config", "/tmp/store", "http://127.0.0.1:18890", taskContextJson: context)
         let empty = renderCkbAbcdeMcpConfig(CkbAbcdeGroups.A, "/tmp/ckb", "/tmp/config", "/tmp/store", "http://127.0.0.1:18890")
+        let missingStdio = renderCkbAbcdeMcpConfig(CkbAbcdeGroups.C, "/tmp/ckb", "/tmp/config", "/tmp/store", "http://127.0.0.1:18890")
+        let missingHttp = renderCkbAbcdeMcpConfig(CkbAbcdeGroups.D, "/tmp/ckb", "/tmp/config", "/tmp/store", "http://127.0.0.1:18890")
 
         @Expect(stdio.contains("\"command\": \"/bin/zsh\""), true)
         @Expect(stdio.contains("mcp-stdio"), true)
         @Expect(stdio.contains("\"type\": \"stdio\""), false)
         @Expect(http.contains("\"type\": \"http\""), true)
         @Expect(http.contains("http://127.0.0.1:18890/mcp"), true)
+        @Expect(http.contains("X-CKB-Runner-Context"), true)
         @Expect(empty.contains("\"mcpServers\": {}"), true)
+        @Expect(missingStdio.contains("\"mcpServers\": {}"), true)
+        @Expect(missingHttp.contains("\"mcpServers\": {}"), true)
     }
 
     @TestCase
@@ -1070,12 +1078,12 @@ public class CangjieEvalAbcdeRunnerTest {
 
         let missing = ckbAbcdeTaskKnowledgeEvidenceForTest(CkbAbcdeGroups.C, case145Transcript(context.replace("\"promptHash\":\"sha256:prompt\",", ""), "call-145", "h342434"), context)
         @Expect(missing.valid, false)
-        @Expect(missing.diagnostic, "canonical_request_mismatch")
+        @Expect(missing.diagnostic, "request_binding_hash_mismatch")
         let mismatch = ckbAbcdeTaskKnowledgeEvidenceForTest(CkbAbcdeGroups.C, case145Transcript(context.replace("\"budget\":10", "\"budget\":9"), "call-145", "h342434"), context)
         @Expect(mismatch.valid, false)
-        @Expect(mismatch.diagnostic, "canonical_request_mismatch")
+        @Expect(mismatch.diagnostic, "request_binding_hash_mismatch")
         let extra = context.replace("\"responseMode\":\"evidence\"", "\"responseMode\":\"evidence\",\"unexpected\":true")
-        @Expect(ckbAbcdeTaskKnowledgeEvidenceForTest(CkbAbcdeGroups.C, case145Transcript(extra, "call-extra", "h342434"), context).diagnostic, "canonical_request_mismatch")
+        @Expect(ckbAbcdeTaskKnowledgeEvidenceForTest(CkbAbcdeGroups.C, case145Transcript(extra, "call-extra", "h342434"), context).diagnostic, "request_binding_hash_mismatch")
         let duplicate = case145Transcript(context, "call-145", "h342434") + "\n" + case145ToolUse(context, "call-duplicate")
         @Expect(ckbAbcdeTaskKnowledgeEvidenceForTest(CkbAbcdeGroups.C, duplicate, context).diagnostic, "task_knowledge_tool_use_not_unique")
     }
@@ -1086,9 +1094,9 @@ public class CangjieEvalAbcdeRunnerTest {
         let context = case145CanonicalContext()
         let paired = ckbAbcdeTaskKnowledgeEvidenceForTest(CkbAbcdeGroups.C, case145Transcript(context, "call-145", "h342434"), context)
         @Expect(paired.valid, true); @Expect(paired.evidenceHash, "h342434")
-        let unpaired = case145ToolUse(context, "call-145") + "\n" + case145ToolResult("other-call", "h342434")
+        let unpaired = case145ToolUse(context, "call-145") + "\n" + case145ToolResult(context, "other-call", "h342434")
         @Expect(ckbAbcdeTaskKnowledgeEvidenceForTest(CkbAbcdeGroups.C, unpaired, context).diagnostic, "paired_tool_result_missing")
-        let duplicate = case145Transcript(context, "call-145", "h342434") + "\n" + case145ToolResult("call-145", "h999")
+        let duplicate = case145Transcript(context, "call-145", "h342434") + "\n" + case145ToolResult(context, "call-145", "h999")
         @Expect(ckbAbcdeTaskKnowledgeEvidenceForTest(CkbAbcdeGroups.C, duplicate, context).diagnostic, "paired_tool_result_not_unique")
     }
 
@@ -1200,6 +1208,47 @@ public class CangjieEvalAbcdeRunnerTest {
         @Expect(replay.valid, true); @Expect(replay.diagnostic, "ok"); @Expect(replay.evidenceHash, "h342434")
         _ = launch("/bin/rm", ["-rf", root]).wait()
     }
+
+    // RBMCP-UT-01
+    @TestCase
+    public func rbmcpUt01PromptRequiresOnlyEmptyBoundToolInput(): Unit {
+        let context = rbmcpCanonicalContext("Use 中文🙂 strings, preserve punctuation.", "[\"String\",\"Rune\"]")
+        let prompt = renderCkbAbcdePromptForMode(CkbAbcdeGroups.C, "CJ-HUMANEVAL-145", "task", context, "certification")
+        @Expect(prompt.contains("call `mcp__ckb-cangjie__cangjie_task_knowledge_pack` exactly once with `{}`"), true)
+        @Expect(prompt.contains("Every field must be copied exactly"), false)
+    }
+
+    // RBMCP-E2E-01
+    @TestCase
+    public func rbmcpE2e01V3PunctuationAndListDriftNeedNoModelRewrite(): Unit {
+        let dataset = "cangjie_eval/cases/Cangjie-HumanEval"
+        let authority = buildCangjieHumanEvalManifest(dataset, ""); @Expect(authority.ok, true); @Expect(authority.rows.size, 164)
+        let task = ckbAbcdeBuildTaskContext("${dataset}/CJ-HUMANEVAL-145", "CJ-HUMANEVAL-145", cangjieHumanEvalRenderAuthorityManifest(authority))
+        let context = ckbAbcdeRenderTaskContextJson(task)
+        @Expect(context.contains("similar sum of their digits,"), true); @Expect(context.contains("[-1, -11, 1, -12, 11]"), true)
+        let drifted = context.replace("similar sum of their digits,", "similar sum of their digits.").replace("[-1, -11, 1, -12, 11]", "[-11, -1, 1, -12, 11]")
+        @Expect(context != drifted, true); @Expect(drifted.contains("similar sum of their digits."), true); @Expect(drifted.contains("[-11, -1, 1, -12, 11]"), true)
+        let receipt = rbmcpReceipt(context, "h342434", "knowledge-v1")
+        let evidence = ckbAbcdeTaskKnowledgeEvidenceForTest(CkbAbcdeGroups.C, rbmcpTranscript("{}", receipt, "call-v3"), context)
+        @Expect(evidence.valid, true); @Expect(evidence.diagnostic, "ok"); @Expect(evidence.evidenceHash, "h342434")
+    }
+}
+
+private func rbmcpRepeatedText(part: String, count: Int64): String {
+    let out = StringBuilder(); for (_ in 0..count) { out.append(part) }; out.toString()
+}
+
+private func rbmcpCanonicalContext(taskText: String, tagsJson: String): String {
+    "{\"taskId\":\"CJ-HUMANEVAL-145\",\"benchmark\":\"Cangjie-HumanEval\",\"taskText\":\"${ckbAbcdeJsonEscape(taskText)}\",\"signature\":\"func solve(s: String): String\",\"datasetVersion\":\"dataset-v1\",\"promptHash\":\"sha256:prompt\",\"starterHash\":\"sha256:starter\",\"expectedKnowledgeTags\":${tagsJson},\"targetVersion\":\"1.0.0\",\"sourceSet\":\"all\",\"versionPolicy\":\"default\",\"budget\":10,\"responseMode\":\"evidence\"}"
+}
+
+private func rbmcpReceipt(context: String, evidenceHash: String, knowledgeVersion: String): String {
+    "{\"taskId\":\"CJ-HUMANEVAL-145\",\"resultType\":\"task_knowledge_pack\",\"evidenceHash\":\"${evidenceHash}\",\"knowledgeVersion\":\"${knowledgeVersion}\",\"coverage\":{\"coveragePass\":true},\"citations\":[{\"citation\":\"official\"}],\"requestBinding\":{\"schemaVersion\":\"ckb-runner-bound-mcp-v1\",\"bindingMode\":\"runner_immutable\",\"requestHash\":\"${benchmarkGapSha256(context)}\",\"effectiveRequestHash\":\"${benchmarkGapSha256(context)}\",\"modelArgumentsHash\":\"${benchmarkGapSha256("{}")}\",\"taskId\":\"CJ-HUMANEVAL-145\"}}"
+}
+
+private func rbmcpTranscript(input: String, receipt: String, id: String): String {
+    "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"id\":\"${id}\",\"name\":\"mcp__ckb-cangjie__cangjie_task_knowledge_pack\",\"input\":${input}}]}}\n" +
+        "{\"type\":\"user\",\"message\":{\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"${id}\",\"content\":\"${ckbAbcdeJsonEscape(receipt)}\"}]}}"
 }
 
 private func case145EolFixtureContext(prompt: String, suffix: String): CkbAbcdeTaskContext {
@@ -1218,13 +1267,14 @@ private func case145CanonicalContext(): String {
 }
 
 private func case145ToolUse(context: String, id: String): String {
-    "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"id\":\"${id}\",\"name\":\"mcp__ckb-cangjie__cangjie_task_knowledge_pack\",\"input\":${context}}]}}"
+    "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"id\":\"${id}\",\"name\":\"mcp__ckb-cangjie__cangjie_task_knowledge_pack\",\"input\":{}}]}}"
 }
 
-private func case145ToolResult(id: String, evidenceHash: String): String {
-    "{\"type\":\"user\",\"message\":{\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"${id}\",\"content\":\"{\\\"taskId\\\":\\\"CJ-HUMANEVAL-145\\\",\\\"resultType\\\":\\\"task_knowledge_pack\\\",\\\"evidenceHash\\\":\\\"${evidenceHash}\\\",\\\"knowledgeVersion\\\":\\\"knowledge-v1\\\",\\\"coverage\\\":{\\\"coveragePass\\\":true},\\\"citations\\\":[{\\\"citation\\\":\\\"official\\\"}]}\"}]}}"
+private func case145ToolResult(context: String, id: String, evidenceHash: String): String {
+    let receipt = rbmcpReceipt(context, evidenceHash, "knowledge-v1")
+    "{\"type\":\"user\",\"message\":{\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"${id}\",\"content\":\"${ckbAbcdeJsonEscape(receipt)}\"}]}}"
 }
 
 private func case145Transcript(context: String, id: String, evidenceHash: String): String {
-    case145ToolUse(context, id) + "\n" + case145ToolResult(id, evidenceHash)
+    case145ToolUse(context, id) + "\n" + case145ToolResult(context, id, evidenceHash)
 }

@@ -6,6 +6,7 @@ import std.env.getVariable
 import std.fs.{Directory, File, Path, exists, canonicalize}
 import std.io.*
 import std.process.*
+import stdx.encoding.base64.*
 import stdx.encoding.json.*
 
 // Real Case145 is about 1.51 MiB and Case078 is about 0.21 MiB; 4 MiB leaves replay headroom while bounding untrusted JSONL.
@@ -227,6 +228,7 @@ public class CkbAbcdeTaskKnowledgeEvidence {
     public var knowledgeVersion: String = ""
     public var coveragePass: Bool = false
     public var citationCount: Int64 = 0
+    public var requestBindingHash: String = ""
 
     public init() {}
 }
@@ -532,15 +534,15 @@ public func renderCkbAbcdePromptForMode(group: String, caseId: String, modelTask
         out += "Knowledge policy for this run: use only the CKB REST context embedded below. Do not use MCP tools, local cangjie_docs, web search, or external source repositories.\n\n"
         out += "## CKB REST Context\n\n```json\n${restContextText}\n```\n\n"
     } else if (group == CkbAbcdeGroups.C) {
-        out += "Knowledge policy for this run: use the configured stdio MCP server `ckb-cangjie`. Before reading or editing `src/solution.cj`, you must call `mcp__ckb-cangjie__cangjie_task_knowledge_pack` exactly once with the complete canonical task context JSON in this prompt. Every field must be copied exactly, including taskId, benchmark, taskText, signature, datasetVersion, promptHash, starterHash, expectedKnowledgeTags, targetVersion, sourceSet, versionPolicy, budget, and responseMode; omission, paraphrase, extra fields, mismatch, or duplicate calls invalidate the run. This run is invalid without that real tool call and its paired tool result, even if the task looks trivial. Do not use CKB REST context, HTTP MCP, local cangjie_docs, web search, or external source repositories.\n\n"
+        out += "Knowledge policy for this run: use the configured stdio MCP server `ckb-cangjie`. The runner has already bound the immutable canonical task context to this MCP process. Before reading or editing `src/solution.cj`, you must call `mcp__ckb-cangjie__cangjie_task_knowledge_pack` exactly once with `{}`. Do not copy, paraphrase, reorder, or add task fields to the tool input; any non-empty input or duplicate call invalidates the run. This run is invalid without that real tool call and its paired tool result, even if the task looks trivial. Do not use CKB REST context, HTTP MCP, local cangjie_docs, web search, or external source repositories.\n\n"
     } else if (group == CkbAbcdeGroups.D) {
-        out += "Knowledge policy for this run: use the configured Streamable HTTP MCP server `ckb-cangjie-http`. Before reading or editing `src/solution.cj`, you must call `mcp__ckb-cangjie-http__cangjie_task_knowledge_pack` exactly once with the complete canonical task context JSON in this prompt. Every field must be copied exactly, including taskId, benchmark, taskText, signature, datasetVersion, promptHash, starterHash, expectedKnowledgeTags, targetVersion, sourceSet, versionPolicy, budget, and responseMode; omission, paraphrase, extra fields, mismatch, or duplicate calls invalidate the run. This run is invalid without that real tool call and its paired tool result, even if the task looks trivial. Do not use CKB REST context, stdio MCP, local cangjie_docs, web search, or external source repositories.\n\n"
+        out += "Knowledge policy for this run: use the configured Streamable HTTP MCP server `ckb-cangjie-http`. The runner has already bound the immutable canonical task context to this MCP session. Before reading or editing `src/solution.cj`, you must call `mcp__ckb-cangjie-http__cangjie_task_knowledge_pack` exactly once with `{}`. Do not copy, paraphrase, reorder, or add task fields to the tool input; any non-empty input or duplicate call invalidates the run. This run is invalid without that real tool call and its paired tool result, even if the task looks trivial. Do not use CKB REST context, stdio MCP, local cangjie_docs, web search, or external source repositories.\n\n"
     } else if (group == CkbAbcdeGroups.E) {
         out += "Knowledge policy for this run: 当前这个项目是仓颉语言开发的项目。You may use local official Cangjie docs under /Users/l3gi0n/work/workspace_cangjie/cangjie_docs-release-1.0/docs when Cangjie syntax, standard library, stdx, or tool usage knowledge is needed. Start from /Users/l3gi0n/work/workspace_cangjie/cangjie_docs-release-1.0/docs/dev-guide/summary_cjnative_EN.md and /Users/l3gi0n/work/workspace_cangjie/cangjie_docs-release-1.0/docs/tools/summary_cjnative_EN.md when they are useful, and prefer targeted read-only Bash rg queries or focused Read calls over loading large documents. You may use Bash only for read-only inspection inside the current temporary workspace or read-only documentation queries under /Users/l3gi0n/work/workspace_cangjie/cangjie_docs-release-1.0/docs. For documentation Bash queries, prefer absolute paths such as `rg \"ArrayList\" /Users/l3gi0n/work/workspace_cangjie/cangjie_docs-release-1.0/docs`; do not rely on `cd` followed by later relative documentation queries. Do not use CKB REST APIs, MCP tools, web search, network commands, shell commands that write/delete/move files, or external source repositories.\n\n"
     }
     if (group == CkbAbcdeGroups.B || group == CkbAbcdeGroups.C || group == CkbAbcdeGroups.D) {
         out += "## Canonical CKB Task Context\n\n"
-        out += "Use this exact JSON as the task context for CKB REST or MCP `cangjie_task_knowledge_pack`.\n\n"
+        out += if (group == CkbAbcdeGroups.B) { "Use this exact JSON as the task context for the embedded CKB REST request.\n\n" } else { "Audit record only: the runner has already bound this exact JSON to MCP. Do not copy any field into a tool call; the only valid `cangjie_task_knowledge_pack` arguments are `{}`.\n\n" }
         out += "```json\n${taskContextJson}\n```\n\n"
     }
     out += "## Task\n\n"
@@ -563,24 +565,31 @@ private func ckbAbcdePromptRestContext(contextText: String): String {
     if (parts.size > 1) { parts[1] } else { contextText }
 }
 
-private func ckbAbcdeMcpStdioArguments(options: CkbAbcdeRunnerOptions): Array<String> {
-    ["--config", options.ckbConfig, "--store", options.ckbStore, "mcp-stdio"]
+private func ckbAbcdeMcpStdioArguments(options: CkbAbcdeRunnerOptions, taskContextJson!: String = ""): Array<String> {
+    let args = ArrayList<String>(); args.add("--config"); args.add(options.ckbConfig); args.add("--store"); args.add(options.ckbStore); args.add("mcp-stdio")
+    if (taskContextJson != "") { args.add("--bound-task-context-base64"); args.add(toBase64String(taskContextJson.toArray())); args.add("--bound-task-context-sha256"); args.add(benchmarkGapSha256(taskContextJson)) }
+    args.toArray()
 }
 
-public func ckbAbcdeMcpStdioArgumentsForTest(options: CkbAbcdeRunnerOptions): Array<String> {
-    ckbAbcdeMcpStdioArguments(options)
+public func ckbAbcdeMcpStdioArgumentsForTest(options: CkbAbcdeRunnerOptions, taskContextJson!: String = ""): Array<String> {
+    ckbAbcdeMcpStdioArguments(options, taskContextJson: taskContextJson)
 }
 
-public func renderCkbAbcdeMcpConfig(group: String, ckbBin: String, ckbConfig: String, ckbStore: String, ckbHttpBase: String): String {
+public func renderCkbAbcdeMcpConfig(group: String, ckbBin: String, ckbConfig: String, ckbStore: String, ckbHttpBase: String, taskContextJson!: String = ""): String {
+    if ((group == CkbAbcdeGroups.C || group == CkbAbcdeGroups.D) && taskContextJson == "") {
+        return "{\n  \"mcpServers\": {}\n}\n"
+    }
     if (group == CkbAbcdeGroups.C) {
         let options = CkbAbcdeRunnerOptions()
         options.ckbConfig = ckbConfig
         options.ckbStore = ckbStore
-        let stdioScript = ckbAbcdeNativeTlsBootstrapScript(ckbBin, ckbAbcdeMcpStdioArguments(options))
+        let stdioScript = ckbAbcdeNativeTlsBootstrapScript(ckbBin, ckbAbcdeMcpStdioArguments(options, taskContextJson: taskContextJson))
         return "{\n  \"mcpServers\": {\n    \"ckb-cangjie\": {\n      \"command\": \"/bin/zsh\",\n      \"args\": [\"-lc\", \"${ckbAbcdeJsonEscape(stdioScript)}\"]\n    }\n  }\n}\n"
     }
     if (group == CkbAbcdeGroups.D) {
-        return "{\n  \"mcpServers\": {\n    \"ckb-cangjie-http\": {\n      \"type\": \"http\",\n      \"url\": \"${ckbAbcdeJsonEscape(ckbHttpBase)}/mcp\"\n    }\n  }\n}\n"
+        let encoded = toBase64String(taskContextJson.toArray())
+        let hash = benchmarkGapSha256(taskContextJson)
+        return "{\n  \"mcpServers\": {\n    \"ckb-cangjie-http\": {\n      \"type\": \"http\",\n      \"url\": \"${ckbAbcdeJsonEscape(ckbHttpBase)}/mcp\",\n      \"headers\": {\"X-CKB-Runner-Context\":\"${ckbAbcdeJsonEscape(encoded)}\",\"X-CKB-Runner-Context-SHA256\":\"${hash}\"}\n    }\n  }\n}\n"
     }
     "{\n  \"mcpServers\": {}\n}\n"
 }
@@ -700,6 +709,9 @@ private func ckbAbcdeSmokeTaskContextJson(): String {
     context.taskId = "CJ-HUMANEVAL-000"
     context.taskText = "Implement a Cangjie ArrayList helper."
     context.signature = "func solution(values: Array<Int64>): Int64"
+    context.datasetVersion = "smoke-dataset-v1"
+    context.promptHash = benchmarkGapSha256(context.taskText)
+    context.starterHash = benchmarkGapSha256(context.signature)
     context.expectedKnowledgeTags.add("ArrayList")
     context.expectedKnowledgeTags.add("Cangjie syntax")
     ckbAbcdeRenderTaskContextJson(context)
@@ -755,7 +767,7 @@ private func ckbAbcdeRunCaseGroup(options: CkbAbcdeRunnerOptions, runRoot: Strin
         ckbAbcdeRunMcpHttpSmoke(options, groupRoot, taskContextJson: taskContextJson)
     }
 
-    let mcpConfig = renderCkbAbcdeMcpConfig(group, options.ckbBin, options.ckbConfig, options.ckbStore, options.ckbHttpBase)
+    let mcpConfig = renderCkbAbcdeMcpConfig(group, options.ckbBin, options.ckbConfig, options.ckbStore, options.ckbHttpBase, taskContextJson: taskContextJson)
     ckbAbcdeWriteText("${groupRoot}/mcp-config.json", mcpConfig)
     if (group != CkbAbcdeGroups.C && group != CkbAbcdeGroups.D) {
         ckbAbcdeWriteText("${groupRoot}/empty-mcp.json", mcpConfig)
@@ -1251,10 +1263,10 @@ private func ckbAbcdeRunMcpStdioSmoke(options: CkbAbcdeRunnerOptions, groupRoot:
     let requests = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-06-18\",\"capabilities\":{},\"clientInfo\":{\"name\":\"ckb-abcde-runner\",\"version\":\"1.0\"}}}\n" +
         "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\",\"params\":{}}\n" +
         "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\",\"params\":{}}\n" +
-        "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"cangjie_task_knowledge_pack\",\"arguments\":${taskContextJson}}}\n"
+        "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"cangjie_task_knowledge_pack\",\"arguments\":{}}}\n"
     ckbAbcdeWriteText("${groupRoot}/mcp-stdio-smoke-requests.jsonl", requests)
     let script = "cat ${ckbAbcdeShellQuote("${groupRoot}/mcp-stdio-smoke-requests.jsonl")} | ( " +
-        ckbAbcdeNativeTlsBootstrapScript(options.ckbBin, ckbAbcdeMcpStdioArguments(options)) +
+        ckbAbcdeNativeTlsBootstrapScript(options.ckbBin, ckbAbcdeMcpStdioArguments(options, taskContextJson: taskContextJson)) +
         " ) > ${ckbAbcdeShellQuote("${groupRoot}/mcp-stdio-smoke.stdout.jsonl")} 2> ${ckbAbcdeShellQuote("${groupRoot}/mcp-stdio-smoke.stderr.log")}"
     let result = ckbAbcdeRunShell(script, "")
     let stdout = ckbAbcdeReadText("${groupRoot}/mcp-stdio-smoke.stdout.jsonl")
@@ -1267,17 +1279,19 @@ private func ckbAbcdeRunMcpStdioSmoke(options: CkbAbcdeRunnerOptions, groupRoot:
 private func ckbAbcdeRunMcpHttpSmoke(options: CkbAbcdeRunnerOptions, groupRoot: String, taskContextJson!: String = ckbAbcdeSmokeTaskContextJson()): Unit {
     let initBody = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-06-18\",\"capabilities\":{},\"clientInfo\":{\"name\":\"ckb-abcde-runner\",\"version\":\"1.0\"}}}"
     let initializedBody = "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\",\"params\":{}}"
-    let callBody = "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"cangjie_task_knowledge_pack\",\"arguments\":${taskContextJson}}}"
+    let callBody = "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"tools/call\",\"params\":{\"name\":\"cangjie_task_knowledge_pack\",\"arguments\":{}}}"
+    let boundHeader = "X-CKB-Runner-Context: ${toBase64String(taskContextJson.toArray())}"
+    let boundHashHeader = "X-CKB-Runner-Context-SHA256: ${benchmarkGapSha256(taskContextJson)}"
     ckbAbcdeWriteText("${groupRoot}/mcp-http-initialize-request.json", initBody)
     ckbAbcdeWriteText("${groupRoot}/mcp-http-initialized-request.json", initializedBody)
     ckbAbcdeWriteText("${groupRoot}/mcp-http-tool-call-request.json", callBody)
-    let script = "curl --max-time 5 -i -sS -X POST -H 'Accept: application/json, text/event-stream' -H 'Content-Type: application/json' --data-binary @${ckbAbcdeShellQuote("${groupRoot}/mcp-http-initialize-request.json")} ${ckbAbcdeShellQuote("${options.ckbHttpBase}/mcp")} > ${ckbAbcdeShellQuote("${groupRoot}/mcp-http-initialize-response.txt")} 2> ${ckbAbcdeShellQuote("${groupRoot}/mcp-http-initialize.stderr.log")}; " +
+    let script = "curl --max-time 5 -i -sS -X POST -H 'Accept: application/json, text/event-stream' -H 'Content-Type: application/json' -H ${ckbAbcdeShellQuote(boundHeader)} -H ${ckbAbcdeShellQuote(boundHashHeader)} --data-binary @${ckbAbcdeShellQuote("${groupRoot}/mcp-http-initialize-request.json")} ${ckbAbcdeShellQuote("${options.ckbHttpBase}/mcp")} > ${ckbAbcdeShellQuote("${groupRoot}/mcp-http-initialize-response.txt")} 2> ${ckbAbcdeShellQuote("${groupRoot}/mcp-http-initialize.stderr.log")}; " +
         "sid=$(grep -i '^mcp-session-id:' ${ckbAbcdeShellQuote("${groupRoot}/mcp-http-initialize-response.txt")} | head -n1 | cut -d' ' -f2 | tr -d '\\r'); " +
         "printf '%s\\n' \"$sid\" > ${ckbAbcdeShellQuote("${groupRoot}/mcp-http-session-id.txt")}; " +
         "if [ -z \"$sid\" ]; then exit 4; fi; " +
-        "curl --max-time 5 -fsS -X POST -H 'Accept: application/json, text/event-stream' -H 'Content-Type: application/json' -H \"Mcp-Session-Id: $sid\" -H 'MCP-Protocol-Version: 2025-06-18' --data-binary @${ckbAbcdeShellQuote("${groupRoot}/mcp-http-initialized-request.json")} ${ckbAbcdeShellQuote("${options.ckbHttpBase}/mcp")} > ${ckbAbcdeShellQuote("${groupRoot}/mcp-http-initialized-response.txt")} 2> ${ckbAbcdeShellQuote("${groupRoot}/mcp-http-initialized.stderr.log")}; " +
-        "curl --max-time 10 -fsS -X POST -H 'Accept: application/json, text/event-stream' -H 'Content-Type: application/json' -H \"Mcp-Session-Id: $sid\" -H 'MCP-Protocol-Version: 2025-06-18' --data-binary @${ckbAbcdeShellQuote("${groupRoot}/mcp-http-tool-call-request.json")} ${ckbAbcdeShellQuote("${options.ckbHttpBase}/mcp")} > ${ckbAbcdeShellQuote("${groupRoot}/mcp-http-tool-call-response.json")} 2> ${ckbAbcdeShellQuote("${groupRoot}/mcp-http-tool-call.stderr.log")}; " +
-        "curl --max-time 5 -fsS -N -H 'Accept: text/event-stream' -H \"Mcp-Session-Id: $sid\" -H 'MCP-Protocol-Version: 2025-06-18' ${ckbAbcdeShellQuote("${options.ckbHttpBase}/mcp")}"
+        "curl --max-time 5 -fsS -X POST -H 'Accept: application/json, text/event-stream' -H 'Content-Type: application/json' -H ${ckbAbcdeShellQuote(boundHeader)} -H ${ckbAbcdeShellQuote(boundHashHeader)} -H \"Mcp-Session-Id: $sid\" -H 'MCP-Protocol-Version: 2025-06-18' --data-binary @${ckbAbcdeShellQuote("${groupRoot}/mcp-http-initialized-request.json")} ${ckbAbcdeShellQuote("${options.ckbHttpBase}/mcp")} > ${ckbAbcdeShellQuote("${groupRoot}/mcp-http-initialized-response.txt")} 2> ${ckbAbcdeShellQuote("${groupRoot}/mcp-http-initialized.stderr.log")}; " +
+        "curl --max-time 10 -fsS -X POST -H 'Accept: application/json, text/event-stream' -H 'Content-Type: application/json' -H ${ckbAbcdeShellQuote(boundHeader)} -H ${ckbAbcdeShellQuote(boundHashHeader)} -H \"Mcp-Session-Id: $sid\" -H 'MCP-Protocol-Version: 2025-06-18' --data-binary @${ckbAbcdeShellQuote("${groupRoot}/mcp-http-tool-call-request.json")} ${ckbAbcdeShellQuote("${options.ckbHttpBase}/mcp")} > ${ckbAbcdeShellQuote("${groupRoot}/mcp-http-tool-call-response.json")} 2> ${ckbAbcdeShellQuote("${groupRoot}/mcp-http-tool-call.stderr.log")}; " +
+        "curl --max-time 5 -fsS -N -H 'Accept: text/event-stream' -H ${ckbAbcdeShellQuote(boundHeader)} -H ${ckbAbcdeShellQuote(boundHashHeader)} -H \"Mcp-Session-Id: $sid\" -H 'MCP-Protocol-Version: 2025-06-18' ${ckbAbcdeShellQuote("${options.ckbHttpBase}/mcp")}"
     let get = ckbAbcdeRunShell(script, "")
     ckbAbcdeWriteText("${groupRoot}/mcp-http-smoke.stdout.log", get.stdout)
     ckbAbcdeWriteText("${groupRoot}/mcp-http-smoke.stderr.log", get.stderr)
@@ -1332,10 +1346,10 @@ public func ckbAbcdeProbeRealTransportParity(options: CkbAbcdeRunnerOptions, run
     let stdioPath = "${runRoot}/transport-parity-stdio.json"
     let stdioRequests = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-06-18\",\"capabilities\":{},\"clientInfo\":{\"name\":\"ckb-transport-parity\",\"version\":\"1.0\"}}}\n" +
         "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\",\"params\":{}}\n" +
-        ckbAbcdeMcpTaskKnowledgePackRequest(taskContextJson) + "\n"
+        ckbAbcdeMcpTaskKnowledgePackRequest("{}") + "\n"
     ckbAbcdeWriteText(stdioRequestPath, stdioRequests)
     let stdioScript = "cat ${ckbAbcdeShellQuote(stdioRequestPath)} | ( " +
-        ckbAbcdeNativeTlsBootstrapScript(options.ckbBin, ckbAbcdeMcpStdioArguments(options)) +
+        ckbAbcdeNativeTlsBootstrapScript(options.ckbBin, ckbAbcdeMcpStdioArguments(options, taskContextJson: taskContextJson)) +
         " ) > ${ckbAbcdeShellQuote(stdioFullPath)} 2> ${ckbAbcdeShellQuote("${runRoot}/transport-parity-stdio.stderr.log")}"
     let stdio = ckbAbcdeRunShell(stdioScript, "")
     let stdioFull = ckbAbcdeReadText(stdioFullPath)
@@ -1344,7 +1358,9 @@ public func ckbAbcdeProbeRealTransportParity(options: CkbAbcdeRunnerOptions, run
 
     let initBody = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-06-18\",\"capabilities\":{},\"clientInfo\":{\"name\":\"ckb-transport-parity\",\"version\":\"1.0\"}}}"
     let initializedBody = "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\",\"params\":{}}"
-    let callBody = ckbAbcdeMcpTaskKnowledgePackRequest(taskContextJson)
+    let callBody = ckbAbcdeMcpTaskKnowledgePackRequest("{}")
+    let boundHeader = "X-CKB-Runner-Context: ${toBase64String(taskContextJson.toArray())}"
+    let boundHashHeader = "X-CKB-Runner-Context-SHA256: ${benchmarkGapSha256(taskContextJson)}"
     let httpInitPath = "${runRoot}/transport-parity-http-initialize-request.json"
     let httpInitializedPath = "${runRoot}/transport-parity-http-initialized-request.json"
     let httpRequestPath = "${runRoot}/transport-parity-http-request.json"
@@ -1352,12 +1368,12 @@ public func ckbAbcdeProbeRealTransportParity(options: CkbAbcdeRunnerOptions, run
     ckbAbcdeWriteText(httpInitPath, initBody)
     ckbAbcdeWriteText(httpInitializedPath, initializedBody)
     ckbAbcdeWriteText(httpRequestPath, callBody)
-    let httpScript = "curl --max-time 5 -i -sS -X POST -H 'Accept: application/json, text/event-stream' -H 'Content-Type: application/json' --data-binary @${ckbAbcdeShellQuote(httpInitPath)} ${ckbAbcdeShellQuote("${options.ckbHttpBase}/mcp")} > ${ckbAbcdeShellQuote("${runRoot}/transport-parity-http-initialize-response.txt")} 2> ${ckbAbcdeShellQuote("${runRoot}/transport-parity-http-initialize.stderr.log")}; " +
+    let httpScript = "curl --max-time 5 -i -sS -X POST -H 'Accept: application/json, text/event-stream' -H 'Content-Type: application/json' -H ${ckbAbcdeShellQuote(boundHeader)} -H ${ckbAbcdeShellQuote(boundHashHeader)} --data-binary @${ckbAbcdeShellQuote(httpInitPath)} ${ckbAbcdeShellQuote("${options.ckbHttpBase}/mcp")} > ${ckbAbcdeShellQuote("${runRoot}/transport-parity-http-initialize-response.txt")} 2> ${ckbAbcdeShellQuote("${runRoot}/transport-parity-http-initialize.stderr.log")}; " +
         "sid=$(grep -i '^mcp-session-id:' ${ckbAbcdeShellQuote("${runRoot}/transport-parity-http-initialize-response.txt")} | head -n1 | cut -d' ' -f2 | tr -d '\\r'); " +
         "printf '%s\\n' \"$sid\" > ${ckbAbcdeShellQuote("${runRoot}/transport-parity-http-session-id.txt")}; " +
         "if [ -z \"$sid\" ]; then exit 4; fi; " +
-        "curl --max-time 5 -fsS -X POST -H 'Accept: application/json, text/event-stream' -H 'Content-Type: application/json' -H \"Mcp-Session-Id: $sid\" -H 'MCP-Protocol-Version: 2025-06-18' --data-binary @${ckbAbcdeShellQuote(httpInitializedPath)} ${ckbAbcdeShellQuote("${options.ckbHttpBase}/mcp")} > ${ckbAbcdeShellQuote("${runRoot}/transport-parity-http-initialized-response.txt")} 2> ${ckbAbcdeShellQuote("${runRoot}/transport-parity-http-initialized.stderr.log")}; " +
-        "curl --max-time 10 -fsS -X POST -H 'Accept: application/json, text/event-stream' -H 'Content-Type: application/json' -H \"Mcp-Session-Id: $sid\" -H 'MCP-Protocol-Version: 2025-06-18' --data-binary @${ckbAbcdeShellQuote(httpRequestPath)} ${ckbAbcdeShellQuote("${options.ckbHttpBase}/mcp")} > ${ckbAbcdeShellQuote(httpPath)} 2> ${ckbAbcdeShellQuote("${runRoot}/transport-parity-http.stderr.log")}"
+        "curl --max-time 5 -fsS -X POST -H 'Accept: application/json, text/event-stream' -H 'Content-Type: application/json' -H ${ckbAbcdeShellQuote(boundHeader)} -H ${ckbAbcdeShellQuote(boundHashHeader)} -H \"Mcp-Session-Id: $sid\" -H 'MCP-Protocol-Version: 2025-06-18' --data-binary @${ckbAbcdeShellQuote(httpInitializedPath)} ${ckbAbcdeShellQuote("${options.ckbHttpBase}/mcp")} > ${ckbAbcdeShellQuote("${runRoot}/transport-parity-http-initialized-response.txt")} 2> ${ckbAbcdeShellQuote("${runRoot}/transport-parity-http-initialized.stderr.log")}; " +
+        "curl --max-time 10 -fsS -X POST -H 'Accept: application/json, text/event-stream' -H 'Content-Type: application/json' -H ${ckbAbcdeShellQuote(boundHeader)} -H ${ckbAbcdeShellQuote(boundHashHeader)} -H \"Mcp-Session-Id: $sid\" -H 'MCP-Protocol-Version: 2025-06-18' --data-binary @${ckbAbcdeShellQuote(httpRequestPath)} ${ckbAbcdeShellQuote("${options.ckbHttpBase}/mcp")} > ${ckbAbcdeShellQuote(httpPath)} 2> ${ckbAbcdeShellQuote("${runRoot}/transport-parity-http.stderr.log")}"
     let http = ckbAbcdeRunShell(httpScript, "")
     let httpPayload = ckbAbcdeReadText(httpPath)
 
@@ -1975,9 +1991,7 @@ private func ckbAbcdeTaskKnowledgeEvidence(group: String, transcript: String, co
                 if (ckbAbcdeStrictJsonString(entry, "type") != "tool_use" || ckbAbcdeStrictJsonString(entry, "name") != toolName) { continue }
                 toolUseCount += 1
                 toolUseId = ckbAbcdeStrictJsonString(entry, "id")
-                if (toolUseId == "" || !ckbAbcdeCanonicalTaskInputEqual(context, entry.get("input").getOrThrow().asObject())) {
-                    result.diagnostic = "canonical_request_mismatch"; return result
-                }
+                if (toolUseId == "" || entry.get("input").getOrThrow().asObject().getFields().size != 0) { result.diagnostic = "bound_tool_arguments_not_empty"; return result }
             }
         } catch (_: Exception) { result.diagnostic = "malformed_transcript_json"; return result }
     }
@@ -2003,7 +2017,17 @@ private func ckbAbcdeTaskKnowledgeEvidence(group: String, transcript: String, co
                 }
                 if (!ckbAbcdeEvidenceHashSafe(evidenceHash)) { result.diagnostic = "evidence_hash_invalid"; return result }
                 if (knowledgeVersion == "") { result.diagnostic = "knowledge_version_missing"; return result }
+                var binding: JsonObject
+                try { binding = payload.get("requestBinding").getOrThrow().asObject() } catch (_: Exception) { result.diagnostic = "request_binding_missing"; return result }
+                if (binding.getFields().size != 6 || ckbAbcdeStrictJsonString(binding, "schemaVersion") != CKB_MCP_BOUND_CONTEXT_SCHEMA ||
+                    ckbAbcdeStrictJsonString(binding, "bindingMode") != "runner_immutable" ||
+                    ckbAbcdeStrictJsonString(binding, "taskId") != ckbAbcdeStrictJsonString(context, "taskId")) { result.diagnostic = "request_binding_invalid"; return result }
+                let expectedRequestHash = benchmarkGapSha256(contextText.trimAscii())
+                if (ckbAbcdeStrictJsonString(binding, "requestHash") != expectedRequestHash ||
+                    ckbAbcdeStrictJsonString(binding, "effectiveRequestHash") != expectedRequestHash ||
+                    ckbAbcdeStrictJsonString(binding, "modelArgumentsHash") != benchmarkGapSha256("{}")) { result.diagnostic = "request_binding_hash_mismatch"; return result }
                 result.evidenceHash = evidenceHash
+                result.requestBindingHash = expectedRequestHash
                 result.knowledgeVersion = knowledgeVersion
                 result.coveragePass = payload.get("coverage").getOrThrow().asObject().get("coveragePass").getOrThrow().asBool().getValue()
                 result.citationCount = Int64(payload.get("citations").getOrThrow().asArray().getItems().size)
@@ -2027,7 +2051,7 @@ public func ckbAbcdeTaskKnowledgeEvidenceFromUtf8ForTest(group: String, transcri
 
 private func ckbAbcdePersistTaskKnowledgeEvidence(groupRoot:String,evidence:CkbAbcdeTaskKnowledgeEvidence,ready:Bool):Unit{
     let hash=if(ready){evidence.evidenceHash}else{""};let version=if(ready){evidence.knowledgeVersion}else{""}
-    ckbAbcdeWriteText("${groupRoot}/paired-tool-evidence.json","{\"valid\":${ready},\"evidenceHash\":\"${ckbAbcdeJsonEscape(hash)}\",\"knowledgeVersion\":\"${ckbAbcdeJsonEscape(version)}\",\"coveragePass\":${ready&&evidence.coveragePass},\"citationCount\":${if(ready){evidence.citationCount}else{0}}}\n")
+    ckbAbcdeWriteText("${groupRoot}/paired-tool-evidence.json","{\"valid\":${ready},\"evidenceHash\":\"${ckbAbcdeJsonEscape(hash)}\",\"knowledgeVersion\":\"${ckbAbcdeJsonEscape(version)}\",\"requestBindingHash\":\"${if(ready){ckbAbcdeJsonEscape(evidence.requestBindingHash)}else{""}}\",\"coveragePass\":${ready&&evidence.coveragePass},\"citationCount\":${if(ready){evidence.citationCount}else{0}}}\n")
 }
 
 public func ckbAbcdeToolEvidenceForTest(group: String, transcript: String): String {
