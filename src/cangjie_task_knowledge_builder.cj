@@ -1,6 +1,7 @@
 package cangjie_community_knowledge_base
 
 import std.collection.ArrayList
+import std.sort.*
 
 public func buildCangjieTaskKnowledgePackFromEvidence(kb: KnowledgeBase, request: CangjieTaskKnowledgeRequest, manifest: CangjieVersionManifest): CangjieTaskKnowledgePack {
     let originalStarterSize = request.starterCodeExcerpt.size
@@ -56,7 +57,7 @@ public func buildCangjieTaskKnowledgePackFromEvidence(kb: KnowledgeBase, request
     var evidenceHit = false
     for (item in pack.queryPlan) {
         let query = cangjieTaskEvidenceQuery(sanitized, item)
-        let result = cangjieTaskServingLookup(index, item, query, pack.targetVersion, sanitized.budget)
+        let result = cangjieTaskServingLookup(index, item, query, pack.targetVersion, sanitized.budget, sanitized.benchmark, sanitized.taskId)
         if (result.hits.size > 0) {
             evidenceHit = true
             cangjieTaskAppendHits(pack, records, result.hits)
@@ -178,10 +179,10 @@ private func cangjieTaskCompilerEvidenceQuery(compilerOutput: String): String {
     query
 }
 
-private func cangjieTaskServingLookup(index: CangjieServingIndex, item: CangjieQueryPlanItem, query: String, targetVersion: String, budget: Int64): CangjieServingSearchResult {
+private func cangjieTaskServingLookup(index: CangjieServingIndex, item: CangjieQueryPlanItem, query: String, targetVersion: String, budget: Int64, benchmark: String, taskId: String): CangjieServingSearchResult {
     let sourceSet = if (item.sourceSet == "") { CangjieSourceSets.ALL } else { item.sourceSet }
     if (item.queryKind == "benchmark_gap_lookup") {
-        return cangjieTaskBenchmarkGapLookup(index, query, sourceSet, targetVersion, budget)
+        return cangjieTaskBenchmarkGapLookup(index, query, sourceSet, targetVersion, budget, benchmark, taskId)
     }
     if ((item.queryKind == "symbol_signature_lookup" || item.queryKind == "import_api_lookup") && item.symbol.trimAscii() != "" && !item.symbol.contains("func ")) {
         let exact = lookupExactSymbol(index, item.symbol, sourceSet: sourceSet, targetVersion: targetVersion, budget: budget)
@@ -200,16 +201,14 @@ private func cangjieTaskServingLookup(index: CangjieServingIndex, item: CangjieQ
     request.sourceSet = sourceSet
     request.targetVersion = targetVersion
     request.budget = budget
-    searchHybridServingIndex(index, request)
+    cangjieTaskWithoutBenchmarkGapHits(searchHybridServingIndex(index, request))
 }
 
-private func cangjieTaskBenchmarkGapLookup(index: CangjieServingIndex, query: String, sourceSet: String, targetVersion: String, budget: Int64): CangjieServingSearchResult {
+private func cangjieTaskBenchmarkGapLookup(index: CangjieServingIndex, query: String, sourceSet: String, targetVersion: String, budget: Int64, benchmark: String, taskId: String): CangjieServingSearchResult {
     let result = CangjieServingSearchResult()
     let limit = if (budget < 1) { CangjieCapabilityLimits.DEFAULT_BUDGET } else { budget }
+    let candidates = ArrayList<CangjieRankedServingHit>()
     for (doc in index.documents) {
-        if (result.hits.size >= limit) {
-            break
-        }
         if (doc.recordKind != CangjieServingRecordKinds.DOC_SECTION || doc.sourceSet != CangjieSourceSets.EVAL_SUPPORT || !doc.sourceId.startsWith("curated-gap-")) {
             continue
         }
@@ -219,17 +218,25 @@ private func cangjieTaskBenchmarkGapLookup(index: CangjieServingIndex, query: St
         if (targetVersion != "" && doc.targetVersion != "" && doc.targetVersion != targetVersion) {
             continue
         }
+        if (!cangjieTaskExactBenchmarkGap(index, doc, benchmark, taskId)) { continue }
         let contributions = rankServingHitStages(query, doc)
         let score = cangjieTaskRankScore(contributions)
-        if (score <= 0.0) {
-            continue
-        }
         let hit = CangjieRankedServingHit()
         hit.document = doc
-        hit.score = score
+        hit.score = if (score > 0.0) { score } else { 1.0 }
         hit.rankReason = "benchmark_gap"
         hit.contributions = contributions
-        result.hits.add(hit)
+        candidates.add(hit)
+    }
+    let orderedIds = ArrayList<String>()
+    for (hit in candidates) { orderedIds.add(hit.document.sourceId) }
+    let sortedIds = orderedIds.toArray()
+    sort(sortedIds)
+    for (sourceId in sortedIds) {
+        if (result.hits.size >= limit) { break }
+        for (hit in candidates) {
+            if (hit.document.sourceId == sourceId) { result.hits.add(hit); break }
+        }
     }
     if (result.hits.size == 0) {
         result.ok = false
@@ -238,6 +245,31 @@ private func cangjieTaskBenchmarkGapLookup(index: CangjieServingIndex, query: St
         return result
     }
     result.evidenceHash = servingEvidenceHash(result.hits)
+    result
+}
+
+private func cangjieTaskExactBenchmarkGap(index: CangjieServingIndex, doc: CangjieServingDocument, benchmark: String, taskId: String): Bool {
+    if (doc.reviewState != ReviewStates.REVIEWED && doc.reviewState != ReviewStates.TRUSTED) { return false }
+    if (doc.trustLevel == TrustLevels.WEB_CANDIDATE) { return false }
+    let identity = "visible-benchmark/${benchmark.trimAscii()}/${taskId.trimAscii()}".toAsciiLower()
+    let record = doc.sourceId
+    if (!record.startsWith("curated-gap-")) { return false }
+    let path = cangjieTaskGapPath(index, doc.sourceId)
+    path == identity || path.startsWith(identity + "/")
+}
+
+private func cangjieTaskGapPath(index: CangjieServingIndex, sourceId: String): String {
+    for (record in index.records) { if (record.sourceId == sourceId) { return record.metadata.path.toAsciiLower() } }
+    ""
+}
+
+private func cangjieTaskWithoutBenchmarkGapHits(source: CangjieServingSearchResult): CangjieServingSearchResult {
+    let result = CangjieServingSearchResult()
+    for (hit in source.hits) {
+        if (hit.document.sourceId.startsWith("curated-gap-") && hit.document.sourceSet == CangjieSourceSets.EVAL_SUPPORT) { continue }
+        result.hits.add(hit)
+    }
+    if (result.hits.size == 0) { result.ok = false; result.degraded = true; result.diagnostic = "evidence_not_found" } else { result.evidenceHash = servingEvidenceHash(result.hits) }
     result
 }
 
@@ -257,12 +289,47 @@ private func cangjieTaskAppendHits(pack: CangjieTaskKnowledgePack, records: Arra
         if (!pack.notes.contains(atomNote)) { pack.notes.add(atomNote) }
         let record = cangjieTaskFindRecord(records, doc.sourceId)
         if (record.sourceId != "") {
-            cangjieTaskAppendExamples(pack, record)
+            if (doc.sourceSet == CangjieSourceSets.EVAL_SUPPORT && doc.sourceId.startsWith("curated-gap-")) {
+                cangjieTaskAppendMatchedEvidence(pack, doc)
+            } else {
+                cangjieTaskAppendExamples(pack, record)
+            }
             cangjieTaskAppendNegativeRules(pack, buildNegativeRuleRecords(cangjieTaskSingleRecordList(record)))
         } else if (doc.recordKind == CangjieServingRecordKinds.NEGATIVE_RULE) {
             cangjieTaskAppendNegativeRule(pack, cangjieTaskNegativeRuleFromDocument(doc))
         }
     }
+}
+
+private func cangjieTaskAppendMatchedEvidence(pack: CangjieTaskKnowledgePack, doc: CangjieServingDocument): Unit {
+    for (existing in pack.matchedEvidence) { if (existing.sourceId == doc.sourceId) { return } }
+    let knowledge = cangjieTaskGapSection(doc.text, "Knowledge:", ["Example:", "Task:"])
+    let example = cangjieTaskGapSection(doc.text, "Example:", ["Task:"])
+    let evidence = CangjieMatchedEvidence()
+    evidence.sourceId = doc.sourceId
+    evidence.title = utf8SafePrefix(redactSensitive(doc.title), 512)
+    evidence.citation = doc.citation
+    evidence.provenance = cangjieDocumentProvenance(doc)
+    evidence.contentHash = doc.contentHash
+    evidence.knowledge = knowledge
+    evidence.example = example
+    pack.matchedEvidence.add(evidence)
+}
+
+private func cangjieTaskGapSection(text: String, prefix: String, stops: Array<String>): String {
+    let out = StringBuilder()
+    var collecting = false
+    for (line in text.split("\n")) {
+        let clean = line.trimAscii()
+        if (!collecting && clean.startsWith(prefix)) { collecting = true; out.append(clean.replace(prefix, "").trimAscii()); continue }
+        if (!collecting) { continue }
+        var stop = false
+        for (marker in stops) { if (clean.startsWith(marker)) { stop = true } }
+        if (stop) { break }
+        if (out.size > 0) { out.append("\n") }
+        out.append(clean)
+    }
+    utf8SafePrefix(redactSensitive(out.toString().trimAscii()), 2048)
 }
 
 private func cangjieTaskAppendExamples(pack: CangjieTaskKnowledgePack, record: NormalizedRecord): Unit {
@@ -410,5 +477,11 @@ private func cangjieTaskEvidenceHash(pack: CangjieTaskKnowledgePack): String {
         seed.append(citation.knowledgeVersion)
         seed.append("|")
     }
-    stableSummaryHash(seed.toString())
+    for (evidence in pack.matchedEvidence) {
+        seed.append(evidence.sourceId); seed.append("|")
+        seed.append(evidence.contentHash); seed.append("|")
+        seed.append(evidence.knowledge); seed.append("|")
+        seed.append(evidence.example); seed.append("|")
+    }
+    if (pack.matchedEvidence.size > 0) { benchmarkGapSha256(seed.toString()) } else { stableSummaryHash(seed.toString()) }
 }

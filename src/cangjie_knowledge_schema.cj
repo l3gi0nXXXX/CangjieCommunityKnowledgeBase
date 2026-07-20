@@ -51,6 +51,18 @@ public class CangjieKnowledgeCoverage {
     public init() {}
 }
 
+public class CangjieMatchedEvidence {
+    public var sourceId: String = ""
+    public var title: String = ""
+    public var citation: String = ""
+    public var provenance: String = ""
+    public var contentHash: String = ""
+    public var knowledge: String = ""
+    public var example: String = ""
+
+    public init() {}
+}
+
 public class CangjieTaskKnowledgePack {
     public var queryId: String = ""
     public var taskId: String = ""
@@ -61,6 +73,7 @@ public class CangjieTaskKnowledgePack {
     public var versionResolution: CangjieVersionResolution = CangjieVersionResolution()
     public var queryPlan: ArrayList<CangjieQueryPlanItem> = ArrayList<CangjieQueryPlanItem>()
     public var requiredKnowledge: ArrayList<CangjieRequiredKnowledge> = ArrayList<CangjieRequiredKnowledge>()
+    public var matchedEvidence: ArrayList<CangjieMatchedEvidence> = ArrayList<CangjieMatchedEvidence>()
     public var examples: ArrayList<CangjieExampleRecord> = ArrayList<CangjieExampleRecord>()
     public var negativeRules: ArrayList<CangjieNegativeRuleRecord> = ArrayList<CangjieNegativeRuleRecord>()
     public var citations: ArrayList<SourceReference> = ArrayList<SourceReference>()
@@ -261,7 +274,7 @@ public func cangjieTaskKnowledgePackJson(pack: CangjieTaskKnowledgePack): String
         if (i > 0) { out += "," }
         out += cangjieQueryPlanItemJson(pack.queryPlan[i])
     }
-    out += "],\"requiredKnowledge\":${cangjieRequiredKnowledgeArrayJson(pack.requiredKnowledge)},\"examples\":${cangjieTaskExamplesJson(pack.examples)},\"negativeRules\":${cangjieNegativeRulesJson(pack.negativeRules)},\"citations\":${cangjieTaskCitationsJson(pack.citations)},\"coverage\":${cangjieKnowledgeCoverageJson(pack.coverage)},\"diagnostics\":${cangjieKnowledgeStringArrayJson(pack.diagnostics)},\"notes\":${cangjieKnowledgeStringArrayJson(pack.notes)}}"
+    out += "],\"requiredKnowledge\":${cangjieRequiredKnowledgeArrayJson(pack.requiredKnowledge)},\"matchedEvidence\":${cangjieMatchedEvidenceJson(pack.matchedEvidence)},\"examples\":${cangjieTaskExamplesJson(pack.examples)},\"negativeRules\":${cangjieNegativeRulesJson(pack.negativeRules)},\"citations\":${cangjieTaskCitationsJson(pack.citations)},\"coverage\":${cangjieKnowledgeCoverageJson(pack.coverage)},\"diagnostics\":${cangjieKnowledgeStringArrayJson(pack.diagnostics)},\"notes\":${cangjieKnowledgeStringArrayJson(pack.notes)}}"
     out
 }
 
@@ -343,6 +356,17 @@ private func cangjieTaskExamplesJson(items: ArrayList<CangjieExampleRecord>): St
         if (i > 0) { out += "," }
         let item = items[i]
         out += "{\"exampleId\":\"${cangjieKnowledgeJsonEscape(item.exampleId)}\",\"title\":\"${cangjieKnowledgeJsonEscape(item.title)}\",\"code\":\"${cangjieKnowledgeJsonEscape(item.code)}\",\"explanation\":\"${cangjieKnowledgeJsonEscape(item.explanation)}\",\"module\":\"${cangjieKnowledgeJsonEscape(item.module)}\",\"symbol\":\"${cangjieKnowledgeJsonEscape(item.symbol)}\",\"citation\":\"${cangjieKnowledgeJsonEscape(item.citation)}\",\"sourceId\":\"${cangjieKnowledgeJsonEscape(item.sourceId)}\",\"versionResolutionId\":\"${cangjieKnowledgeJsonEscape(item.versionResolutionId)}\",\"trustLevel\":\"${cangjieKnowledgeJsonEscape(item.trustLevel)}\",\"reviewState\":\"${cangjieKnowledgeJsonEscape(item.reviewState)}\",\"compileStatus\":\"${cangjieKnowledgeJsonEscape(item.compileStatus)}\",\"provenance\":\"${cangjieKnowledgeJsonEscape(item.provenance)}\"}"
+    }
+    out += "]"
+    out
+}
+
+private func cangjieMatchedEvidenceJson(items: ArrayList<CangjieMatchedEvidence>): String {
+    var out = "["
+    for (i in 0..items.size) {
+        if (i > 0) { out += "," }
+        let item = items[i]
+        out += "{\"sourceId\":\"${cangjieKnowledgeJsonEscape(item.sourceId)}\",\"title\":\"${cangjieKnowledgeJsonEscape(item.title)}\",\"citation\":\"${cangjieKnowledgeJsonEscape(item.citation)}\",\"provenance\":\"${cangjieKnowledgeJsonEscape(item.provenance)}\",\"contentHash\":\"${cangjieKnowledgeJsonEscape(item.contentHash)}\",\"knowledge\":\"${cangjieKnowledgeJsonEscape(item.knowledge)}\",\"example\":\"${cangjieKnowledgeJsonEscape(item.example)}\"}"
     }
     out += "]"
     out
