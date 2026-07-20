@@ -13,6 +13,7 @@ public class CangjieKnowledgeAtomTestBundleResult {
     public var atomId: String = ""
     public var knowledgeText: String = ""
     public var example: String = ""
+    public var sourceClass: String = ""
 
     public init() {}
 }
@@ -37,7 +38,7 @@ public func validateKnowledgeAtomTestBundle(bundleJson: String): CangjieKnowledg
         if (candidateHash != cangjieKnowledgeAtomCandidateHash(raw)) {
             result.diagnostic = "atom_candidate_hash_mismatch"; return result
         }
-        if (sourceClass != "official" && sourceClass != "approved_trusted") {
+        if (sourceClass != "official" && sourceClass != "approved_trusted" && sourceClass != "teacher_empirical") {
             result.diagnostic = "atom_source_class_not_allowed"; return result
         }
         if (sourceClass == "official" && !citation.startsWith("https://docs.cangjie-lang.cn/")) {
@@ -45,6 +46,9 @@ public func validateKnowledgeAtomTestBundle(bundleJson: String): CangjieKnowledg
         }
         if (sourceClass == "approved_trusted" && !citation.startsWith("https://github.com/dyingchinese/cangjie-stdx")) {
             result.diagnostic = "atom_citation_not_allowed"; return result
+        }
+        if(sourceClass=="teacher_empirical"&&(citation!=""||!atomTeacherEmpiricalProvenanceValid(object))){
+            result.diagnostic="unverified_teacher_empirical";return result
         }
         let visible = raw.toAsciiLower()
         if (atomForbiddenContent(visible)) { result.diagnostic = "atom_content_contamination"; return result }
@@ -76,6 +80,7 @@ public func validateKnowledgeAtomTestBundle(bundleJson: String): CangjieKnowledg
         result.atomId = atomId
         result.knowledgeText = knowledgeText
         result.example = atomJsonString(object, "example")
+        result.sourceClass = sourceClass
         result.ok = true
         result.diagnostic = "ok"
         result
@@ -136,6 +141,26 @@ private func atomForbiddenContent(raw: String): Bool {
     raw.contains("teacher-solutions") || raw.contains("/reference/") || raw.contains("reference/") ||
         raw.contains("/hidden/") || raw.contains("hidden_test") || raw.contains("hidden assertion") ||
         raw.contains("cj-humaneval-") || raw.contains("canonical_solution") || raw.contains("solution n-gram")
+}
+
+private func atomTeacherEmpiricalProvenanceValid(object:JsonObject):Bool{
+    try{
+        let p=object.get("teacherEmpiricalProvenance").getOrThrow().asObject()
+        for(field in ["originalFailureEvidenceHash","completedRunManifestHash","solutionBindingHash"]){if(!atomSha256Format(atomJsonString(p,field))){return false}}
+        let execution=object.get("execution").getOrThrow().asObject();let evidence=atomJsonString(execution,"commandEvidence")
+        execution.get("total").getOrThrow().asInt().getValue()==3&&execution.get("passed").getOrThrow().asInt().getValue()==3&&execution.get("failed").getOrThrow().asInt().getValue()==0&&
+            atomJsonString(execution,"status")=="passed"&&evidence!=""&&atomJsonString(execution,"commandEvidenceHash")==atomSha256(evidence)
+    }catch(_:Exception){false}
+}
+
+private func atomSha256Format(value:String):Bool{
+    let chars=value.toRuneArray();if(chars.size!=71||!value.startsWith("sha256:")){return false}
+    for(i in 7..71){let ch=chars[i];if(!((ch>=r'0'&&ch<=r'9')||(ch>=r'a'&&ch<=r'f'))){return false}};true
+}
+
+private func atomSha256(value:String):String{
+    let digest=SHA256();digest.write(value.toArray());let out=StringBuilder()
+    for(byte in digest.finish()){out.append(atomHexNibble(byte/UInt8(16)));out.append(atomHexNibble(byte%UInt8(16)))};"sha256:${out.toString()}"
 }
 
 private func atomJsonString(object: JsonObject, field: String): String {

@@ -19,6 +19,7 @@ public class CangjieBenchmarkGapInput {
     public var attempt: Int64 = 1
     public var failureTaxonomy: String = "knowledge_gap"
     public var knowledgeGapConfirmations: Int64 = 2
+    public var sourceClass: String = ""
     public var caseId: String = ""
     public var benchmark: String = "Cangjie-HumanEval"
     public var taskText: String = ""
@@ -87,6 +88,9 @@ public func curateBenchmarkGapRecords(inputs: ArrayList<CangjieBenchmarkGapInput
                 result.rejected += 1
                 result.diagnostics.add("item=${itemNumber}:errorCode=${atomTests.diagnostic}")
                 continue
+            }
+            if((input.sourceClass=="teacher_empirical")!=(atomTests.sourceClass=="teacher_empirical")){
+                result.rejected+=1;result.diagnostics.add("item=${itemNumber}:errorCode=atom_source_class_mismatch");continue
             }
             input.knowledgeAtomId = atomTests.atomId
             input.knowledgeText = atomTests.knowledgeText
@@ -158,6 +162,7 @@ public func parseBenchmarkGapInputsJsonl(text: String): CangjieBenchmarkGapParse
                 input.failureTaxonomy = benchmarkGapJsonString(object, "failureTaxonomy")
                 if (input.failureTaxonomy == "") { input.failureTaxonomy = "knowledge_gap" }
                 input.knowledgeGapConfirmations = benchmarkGapJsonInt(object, "knowledgeGapConfirmations", 2)
+                input.sourceClass = benchmarkGapJsonString(object, "sourceClass").toAsciiLower()
                 input.caseId = benchmarkGapJsonString(object, "caseId")
                 input.benchmark = benchmarkGapJsonString(object, "benchmark")
                 if (input.benchmark == "") {
@@ -207,6 +212,7 @@ public func curateBenchmarkGapRecordsFromJsonl(text: String, targetVersion!: Str
 }
 
 private func normalizeBenchmarkGapInput(input: CangjieBenchmarkGapInput, fallbackTargetVersion: String): Unit {
+    input.sourceClass=input.sourceClass.trimAscii().toAsciiLower()
     if (input.targetVersion.trimAscii() == "") {
         input.targetVersion = fallbackTargetVersion
     }
@@ -237,8 +243,13 @@ private func validateBenchmarkGapInput(input: CangjieBenchmarkGapInput): String 
         if (!benchmarkGapCandidatePathAllowed(input.candidatePath)) { return "candidate_path_forbidden" }
         if (input.revision < 1) { return "revision_invalid" }
         if (input.attempt != 1) { return "first_attempt_required" }
-        if (input.failureTaxonomy != "knowledge_gap") { return "knowledge_gap_taxonomy_required" }
-        if (input.knowledgeGapConfirmations < 2) { return "knowledge_gap_double_confirmation_required" }
+        if(input.sourceClass=="teacher_empirical"){
+            if(!input.knowledgeAtomCandidate||!benchmarkGapTeacherEmpiricalTaxonomy(input.failureTaxonomy)){return "unverified_teacher_empirical"}
+        }else{
+            if(input.sourceClass!=""){return "source_class_not_allowed"}
+            if (input.failureTaxonomy != "knowledge_gap") { return "knowledge_gap_taxonomy_required" }
+            if (input.knowledgeGapConfirmations < 2) { return "knowledge_gap_double_confirmation_required" }
+        }
     }
     if (!benchmarkGapSafeIdentityPart(input.caseId, 256)) {
         return "case_id_invalid"
@@ -267,11 +278,11 @@ private func validateBenchmarkGapInput(input: CangjieBenchmarkGapInput): String 
     if (input.updateMechanism.trimAscii() == "") {
         return "update_mechanism_required"
     }
-    if (input.officialCitation.trimAscii() == "") {
-        return "official_citation_required"
-    }
-    if (!input.officialCitation.trimAscii().toAsciiLower().startsWith("https://docs.cangjie-lang.cn/")) {
-        return "official_citation_not_allowed"
+    if(input.sourceClass=="teacher_empirical"){
+        if(input.officialCitation.trimAscii()!=""){return "unverified_teacher_empirical"}
+    }else{
+        if(input.officialCitation.trimAscii()==""){return "official_citation_required"}
+        if(!input.officialCitation.trimAscii().toAsciiLower().startsWith("https://docs.cangjie-lang.cn/")){return "official_citation_not_allowed"}
     }
     let expectedInterface = benchmarkGapInterfaceId(input.missingKnowledge)
     if (input.interfaceId.trimAscii() != expectedInterface) {
@@ -302,7 +313,12 @@ public func canonicalBenchmarkGapCandidateHash(input: CangjieBenchmarkGapInput):
         benchmarkGapCanonicalPart("${input.knowledgeAtomCandidate}") + benchmarkGapCanonicalPart(input.teacherRunId) +
         benchmarkGapCanonicalPart(input.evidenceHash) + benchmarkGapCanonicalPart(input.evidence) + benchmarkGapCanonicalPart(input.candidatePath) +
         benchmarkGapCanonicalPart("${input.revision}") + benchmarkGapCanonicalPart("${input.attempt}") +
-        benchmarkGapCanonicalPart(input.failureTaxonomy) + benchmarkGapCanonicalPart("${input.knowledgeGapConfirmations}"))
+        benchmarkGapCanonicalPart(input.failureTaxonomy) + benchmarkGapCanonicalPart("${input.knowledgeGapConfirmations}")+
+        (if(input.sourceClass==""){""}else{benchmarkGapCanonicalPart(input.sourceClass)}))
+}
+
+private func benchmarkGapTeacherEmpiricalTaxonomy(value:String):Bool{
+    ["knowledge_gap","reasoning_error","reasoning_failure","unit_failure","test_failure"].contains(value)
 }
 
 private func canonicalBenchmarkGapInputHash(input: CangjieBenchmarkGapInput): String { canonicalBenchmarkGapCandidateHash(input) }
@@ -331,7 +347,8 @@ public func benchmarkGapSha256(value: String): String {
 }
 
 public func renderAuthoritativeBenchmarkGapInput(input: CangjieBenchmarkGapInput): String {
-    "{\"schemaVersion\":\"${benchmarkGapJsonEscape(input.schemaVersion)}\",\"datasetVersion\":\"${benchmarkGapJsonEscape(input.datasetVersion)}\",\"teacherRunId\":\"${benchmarkGapJsonEscape(input.teacherRunId)}\",\"evidenceHash\":\"${benchmarkGapJsonEscape(input.evidenceHash)}\",\"evidence\":\"${benchmarkGapJsonEscape(input.evidence)}\",\"candidateHash\":\"${benchmarkGapJsonEscape(input.candidateHash)}\",\"candidatePath\":\"${benchmarkGapJsonEscape(input.candidatePath)}\",\"revision\":${input.revision},\"attempt\":${input.attempt},\"failureTaxonomy\":\"${benchmarkGapJsonEscape(input.failureTaxonomy)}\",\"knowledgeGapConfirmations\":${input.knowledgeGapConfirmations},\"caseId\":\"${benchmarkGapJsonEscape(input.caseId)}\",\"benchmark\":\"${benchmarkGapJsonEscape(input.benchmark)}\",\"taskText\":\"${benchmarkGapJsonEscape(input.taskText)}\",\"visibleTestExcerpt\":\"${benchmarkGapJsonEscape(input.visibleTestExcerpt)}\",\"compilerOutput\":\"${benchmarkGapJsonEscape(input.compilerOutput)}\",\"missingKnowledge\":\"${benchmarkGapJsonEscape(input.missingKnowledge)}\",\"interfaceId\":\"${benchmarkGapJsonEscape(input.interfaceId)}\",\"contentFamily\":\"${benchmarkGapJsonEscape(input.contentFamily)}\",\"updateMechanism\":\"${benchmarkGapJsonEscape(input.updateMechanism)}\",\"targetVersion\":\"${benchmarkGapJsonEscape(input.targetVersion)}\",\"officialCitation\":\"${benchmarkGapJsonEscape(input.officialCitation)}\",\"knowledgeAtomCandidate\":false}"
+    let source=if(input.sourceClass==""){""}else{",\"sourceClass\":\"${benchmarkGapJsonEscape(input.sourceClass)}\""}
+    "{\"schemaVersion\":\"${benchmarkGapJsonEscape(input.schemaVersion)}\",\"datasetVersion\":\"${benchmarkGapJsonEscape(input.datasetVersion)}\",\"teacherRunId\":\"${benchmarkGapJsonEscape(input.teacherRunId)}\",\"evidenceHash\":\"${benchmarkGapJsonEscape(input.evidenceHash)}\",\"evidence\":\"${benchmarkGapJsonEscape(input.evidence)}\",\"candidateHash\":\"${benchmarkGapJsonEscape(input.candidateHash)}\",\"candidatePath\":\"${benchmarkGapJsonEscape(input.candidatePath)}\",\"revision\":${input.revision},\"attempt\":${input.attempt},\"failureTaxonomy\":\"${benchmarkGapJsonEscape(input.failureTaxonomy)}\",\"knowledgeGapConfirmations\":${input.knowledgeGapConfirmations}${source},\"caseId\":\"${benchmarkGapJsonEscape(input.caseId)}\",\"benchmark\":\"${benchmarkGapJsonEscape(input.benchmark)}\",\"taskText\":\"${benchmarkGapJsonEscape(input.taskText)}\",\"visibleTestExcerpt\":\"${benchmarkGapJsonEscape(input.visibleTestExcerpt)}\",\"compilerOutput\":\"${benchmarkGapJsonEscape(input.compilerOutput)}\",\"missingKnowledge\":\"${benchmarkGapJsonEscape(input.missingKnowledge)}\",\"interfaceId\":\"${benchmarkGapJsonEscape(input.interfaceId)}\",\"contentFamily\":\"${benchmarkGapJsonEscape(input.contentFamily)}\",\"updateMechanism\":\"${benchmarkGapJsonEscape(input.updateMechanism)}\",\"targetVersion\":\"${benchmarkGapJsonEscape(input.targetVersion)}\",\"officialCitation\":\"${benchmarkGapJsonEscape(input.officialCitation)}\",\"knowledgeAtomCandidate\":false}"
 }
 
 private func benchmarkGapJsonEscape(value: String): String {
