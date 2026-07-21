@@ -155,6 +155,49 @@ public class CangjieEvalSupportIngestTest {
         cangjieEvalSupportRehashSnapshot(missing)
         @Expect(validateVersionedEvalSupportSnapshot(missing).diagnostics.contains("eval_support_snapshot_family_missing:CJ-HUMANEVAL-998:metadata"), true)
     }
+
+    @TestCase
+    public func tR4PosAuthorityLoaderRoundTripsSeparateSnapshot(): Unit {
+        let datasetRoot = "target/t-r4-authority-loader-dataset"
+        let storeRoot = "target/t-r4-authority-loader-store"
+        cangjieEvalSupportRemoveTestRoot(datasetRoot); cangjieEvalSupportRemoveTestRoot(storeRoot)
+        cangjieEvalSupportWriteFourFileFixture(datasetRoot, "CJ-HUMANEVAL-997", "# 任务\n中文 emoji 🙂。\n")
+        let snapshot = buildVersionedEvalSupportSnapshot(datasetRoot, "r4-authority-v1")
+        let store = FileKnowledgeStore(storeRoot)
+
+        @Expect(persistVersionedEvalSupportSnapshot(store, snapshot), true)
+        let loaded = loadVersionedEvalSupportAuthority(store)
+
+        @Expect(loaded.ok, true)
+        @Expect(loaded.snapshot.recordCount, snapshot.recordCount)
+        @Expect(loaded.snapshot.authorityHash, snapshot.authorityHash)
+        @Expect(loaded.records.size, 4)
+        @Expect(loaded.snapshot.authorityHash, snapshot.authorityHash)
+        @Expect(loaded.records[0].sourceSet, CangjieSourceSets.EVAL_SUPPORT)
+
+        let authority = ckbLoadBenchmarkLeakageAuthority(store)
+        @Expect(authority.ok, true)
+        @Expect(authority.authorityRecordCount, snapshot.recordCount)
+        @Expect(authority.authorityHash, snapshot.authorityHash)
+    }
+
+    @TestCase
+    public func tR4NegAuthorityLoaderRejectsInvalidUtf8(): Unit {
+        let root = "target/t-r4-authority-invalid-utf8"
+        cangjieEvalSupportRemoveTestRoot(root)
+        let store = FileKnowledgeStore(root)
+        let snapshotPath = Path(root).join(cangjieEvalSupportAuthoritySnapshotPath())
+        let manifestPath = Path(root).join(cangjieEvalSupportAuthorityManifestPath())
+        if (!exists(snapshotPath.parent)) { Directory.create(snapshotPath.parent, recursive: true) }
+        File.writeTo(snapshotPath, [UInt8(0xf0), UInt8(0x28), UInt8(0x8c), UInt8(0x28)])
+        File.writeTo(manifestPath, "schemaVersion=ckb-eval-support-v1\n".toArray())
+
+        let loaded = loadVersionedEvalSupportAuthority(store)
+
+        @Expect(loaded.ok, false)
+        @Expect(loaded.diagnostic, "eval_support_authority_invalid_response_encoding")
+        @Expect(store.has("metadata/active-snapshot.manifest"), false)
+    }
 }
 
 private func cangjieEvalSupportEveryCaseHasFourFamilies(result: CangjieTypedRecordResult): Bool {

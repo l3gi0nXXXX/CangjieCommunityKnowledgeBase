@@ -474,7 +474,10 @@ private func p5SingleRecordKnowledgeBase(provider: P5FakeEmbeddingProvider, vect
 }
 
 private func p5WriteBenchmarkGapInput(root: String): Unit {
-    p5WriteFile("${root}/gap-curation-input.jsonl", "{\"caseId\":\"CJ-HUMANEVAL-P5\",\"benchmark\":\"Cangjie-HumanEval\",\"taskText\":\"Use ArrayList.add for visible input.\",\"visibleTestExcerpt\":\"assert solve([1,2]) == 3\",\"compilerOutput\":\"compile_error\",\"missingKnowledge\":\"G-ARRAYLIST\",\"interfaceId\":\"KI-02\",\"contentFamily\":\"KC-02\",\"updateMechanism\":\"KU-11\",\"targetVersion\":\"1.0.0\",\"officialCitation\":\"https://docs.cangjie-lang.cn/docs/1.0.0/libs/std/collection\"}\n")
+    let rawBundle = "{\"atomId\":\"G-ARRAYLIST\",\"sourceClass\":\"official\",\"citation\":\"https://docs.cangjie-lang.cn/docs/1.0.0/libs/std/collection\",\"targetVersion\":\"1.0.0\",\"candidateHash\":\"sha256:0000000000000000000000000000000000000000000000000000000000000000\",\"knowledgeText\":\"ArrayList stores a mutable sequence and add appends one element.\",\"example\":\"Use values.add(item) to append an item.\",\"purificationPassed\":true,\"tests\":[{\"category\":\"positive\",\"operation\":\"arraylist_size\",\"input\":\"[1,2,3]\",\"expected\":\"3\"},{\"category\":\"negative\",\"operation\":\"contains\",\"input\":\"ArrayList\",\"needle\":\"HashMap\",\"expected\":\"false\"},{\"category\":\"boundary\",\"operation\":\"rune_count\",\"input\":\"中文😀\",\"expected\":\"3\"}]}"
+    let marker = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+    let bundle = rawBundle.replace(marker, cangjieKnowledgeAtomCandidateHash(rawBundle))
+    p5WriteFile("${root}/gap-curation-input.jsonl", "{\"caseId\":\"PUBLIC-P5-R4\",\"benchmark\":\"public-cangjie-regression\",\"taskText\":\"Use general ArrayList append operations.\",\"compilerOutput\":\"unknown member add\",\"missingKnowledge\":\"G-ARRAYLIST\",\"interfaceId\":\"KI-02\",\"contentFamily\":\"KC-02\",\"updateMechanism\":\"KU-11\",\"targetVersion\":\"1.0.0\",\"officialCitation\":\"https://docs.cangjie-lang.cn/docs/1.0.0/libs/std/collection\",\"knowledgeAtomCandidate\":true,\"knowledgeAtomTestBundle\":${bundle}}\n")
 }
 
 private func p5WriteRoutineAcceptanceArtifacts(root: String, reconcile: CkbVectorReconcileResult, scheduler: SchedulerExecutorResult, source: String, diagnostic: String, qdrantCount: Int64, indexCount: Int64): Unit {

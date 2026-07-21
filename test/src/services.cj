@@ -3927,16 +3927,26 @@ private func ckbVectorReconcilePrepareUniqueBenchmarkGapSnapshot(kb: KnowledgeBa
         result.diagnostics.add("active_snapshot_dedup_unavailable:${snapshot.diagnostic}")
         return false
     }
-    let empty = ArrayList<NormalizedRecord>()
-    let active = overlayBenchmarkGapRecords(snapshot.activeIndex, empty)
-    let normalized = overlayBenchmarkGapRecords(snapshot.normalizedRecords, empty)
+    let authority = ckbLoadBenchmarkLeakageAuthority(store)
+    if (!authority.ok) {
+        result.ok = false
+        result.diagnostics.add("student_authority_unavailable:${authority.diagnostic}")
+        return false
+    }
+    let activeProjection = ckbCleanHistoricalStudentRecords(snapshot.activeIndex,
+        authority: authority.authority)
+    let normalizedProjection = ckbCleanHistoricalStudentRecords(snapshot.normalizedRecords,
+        authority: authority.authority)
+    let active = activeProjection.records
+    let normalized = normalizedProjection.records
     if (!ckbBenchmarkGapOverlayChanged(snapshot.activeIndex, active) &&
         !ckbBenchmarkGapOverlayChanged(snapshot.normalizedRecords, normalized)) {
         return true
     }
-    let raw = ckbBenchmarkGapCandidateRawOverlay(snapshot.rawRecords, empty)
+    let rawProjection = ckbCleanHistoricalStudentRawRecords(snapshot.rawRecords,
+        authority: authority.authority)
+    let raw = rawProjection.records
     let removed = snapshot.activeIndex.size - active.size
-    let migrated = ckbBenchmarkGapMigratedIdentityCount(snapshot.activeIndex, active)
     snapshot.activeIndex.clear(); for (record in active) { snapshot.activeIndex.add(record) }
     snapshot.normalizedRecords.clear(); for (record in normalized) { snapshot.normalizedRecords.add(record) }
     snapshot.rawRecords.clear(); for (record in raw) { snapshot.rawRecords.add(record) }
@@ -3948,7 +3958,10 @@ private func ckbVectorReconcilePrepareUniqueBenchmarkGapSnapshot(kb: KnowledgeBa
     }
     result.activeRecords = active.size
     if (removed > 0) { result.diagnostics.add("benchmark_gap_exact_duplicates_removed:${removed}") }
-    if (migrated > 0) { result.diagnostics.add("benchmark_gap_legacy_identities_migrated:${migrated}") }
+    if (removed > 0) {
+        result.diagnostics.add(ckbStudentCleanRemovalDiagnostic("vector_reconcile", removed,
+            activeProjection.evidenceHash))
+    }
     true
 }
 
@@ -15000,7 +15013,7 @@ private func ckbFetchReleaseEvalSupportSource(source: CkbReleaseSourcePlan, prof
     let extracted = if (root != "") {
         extractAllEvalSupportRecords(root, version: resolveCangjieVersion(cangjieVersionSelector(targetVersion: source.targetVersion, sourceSet: CangjieSourceSets.EVAL_SUPPORT), ckbRuntimeCangjieVersionManifest(config)))
     } else {
-        ckbReleaseEvalSupportFromActive(store, source)
+        ckbReleaseEvalSupportFromAuthority(store, source)
     }
     if (ckbReleaseDiagnosticsContain(extracted.diagnostics, "invalid_eval_support_encoding") || ckbReleaseDiagnosticsContain(extracted.diagnostics, "eval_support_artifact_invalid_encoding")) {
         let status = "eval_support_artifact_invalid_encoding"
@@ -15121,7 +15134,7 @@ private func ckbCurrentReleaseEvalSupportEvidence(source: CkbReleaseSourcePlan,
                 sourceSet: CangjieSourceSets.EVAL_SUPPORT),
                 ckbRuntimeCangjieVersionManifest(config)))
     } else {
-        ckbReleaseEvalSupportFromActive(store, source)
+        ckbReleaseEvalSupportFromAuthority(store, source)
     }
     if (!extracted.ok || extracted.records.size == 0 ||
         extracted.diagnostics.size > 0) {
@@ -15225,7 +15238,7 @@ private func ckbResumePartialReleaseEvalSupportSource(source: CkbReleaseSourcePl
     if (!checkpoint.valid || checkpoint.phase != "content" || checkpoint.sourceOrdinal != sourceOrdinal || checkpoint.plannedPaths.size == 0 ||
         checkpoint.completedPaths.size > checkpoint.plannedPaths.size || checkpoint.refArtifactPath != ckbReleaseArtifactRelativePath(runKey, CkbReleaseArtifactKinds.REF)) { result.diagnostics.add("release_eval_partial_rejected:reason=checkpoint|status=${checkpoint.status}|phase=${checkpoint.phase}"); return false }
     let root = ckbScheduledEvalSupportRoot(config)
-    let fallback = if (root == "") { ckbReleaseEvalSupportFromActive(store, source) } else { CangjieTypedRecordResult() }
+    let fallback = if (root == "") { ckbReleaseEvalSupportFromAuthority(store, source) } else { CangjieTypedRecordResult() }
     if (root == "" && (!fallback.ok || fallback.records.size == 0)) { result.diagnostics.add("release_eval_partial_rejected:reason=fallback"); return false }
     let version = resolveCangjieVersion(cangjieVersionSelector(targetVersion: source.targetVersion, sourceSet: CangjieSourceSets.EVAL_SUPPORT), ckbRuntimeCangjieVersionManifest(config))
     let resumedResult = CkbScheduledProfileFetchResult()
@@ -15340,55 +15353,15 @@ private func ckbParseReleaseEvalTypedArtifact(payload: String): CangjieTypedReco
     out
 }
 
-private func ckbReleaseEvalSupportFromActive(store: FileKnowledgeStore, source: CkbReleaseSourcePlan): CangjieTypedRecordResult {
+private func ckbReleaseEvalSupportFromAuthority(store: FileKnowledgeStore, source: CkbReleaseSourcePlan): CangjieTypedRecordResult {
     let result = CangjieTypedRecordResult()
-    let snapshot = try {
-        store.loadActiveSnapshot()
-    } catch (_: Exception) {
-        result.addDiagnostic("eval_support_artifact_invalid_encoding")
-        return result
-    }
-    if (!snapshot.valid) {
-        result.addDiagnostic("eval_support_active_snapshot_unavailable")
-        return result
-    }
-    for (record in snapshot.activeIndex) {
-        // Only first-initialization artifacts are a valid fallback input.
-        // Prior P5 canonical records and benchmark-curated eval records are
-        // outputs/other scopes and must never feed the next acquisition run.
-        if (record.recordKind != CangjieTypedRecordKinds.EVAL_SUPPORT ||
-            record.metadata.targetVersion != source.targetVersion ||
-            !record.sourceId.startsWith("eval-support-CJ-HUMANEVAL-") ||
-            record.sourceId.startsWith("p5typed|") ||
-            record.metadata.sourceSet != CangjieSourceSets.EVAL_SUPPORT) {
-            continue
-        }
-        let typed = CangjieTypedRecord()
-        typed.recordKind = CangjieTypedRecordKinds.EVAL_SUPPORT
-        typed.sourceId = record.sourceId
-        typed.title = record.title
-        typed.content = record.chunk
-        typed.citation = record.citation
-        typed.sourceSet = CangjieSourceSets.EVAL_SUPPORT
-        typed.path = record.metadata.path
-        typed.sourceFamily = ckbReleaseEvalSourceFamily(typed.path)
-        typed.caseId = ckbReleaseEvalCaseId(record.citation)
-        typed.contentHash = ckbReleaseEvidenceHash(record.chunk)
-        typed.versionResolutionId = record.metadata.versionResolutionId
-        typed.targetVersion = record.metadata.targetVersion
-        typed.sourceRef = record.metadata.docVersion
-        typed.refKind = "local"
-        typed.resolvedCommit = record.metadata.commit
-        typed.trustLevel = record.metadata.trustLevel
-        typed.reviewState = record.metadata.reviewState
-        if (typed.path == "" || typed.sourceFamily == "" || typed.caseId == "" || typed.content == "") {
-            result.addDiagnostic("eval_support_active_record_malformed")
-            return result
-        }
-        result.records.add(typed)
+    let loaded = loadVersionedEvalSupportAuthority(store)
+    if (!loaded.ok) { result.addDiagnostic(loaded.diagnostic); return result }
+    for (record in loaded.records) {
+        if (record.targetVersion == source.targetVersion) { result.records.add(record) }
     }
     if (result.records.size == 0) {
-        result.addDiagnostic("eval_support_active_target_missing")
+        result.addDiagnostic("eval_support_authority_target_missing")
     }
     result
 }
@@ -16589,7 +16562,7 @@ private func ckbAppendScheduledSourceRecord(profile: CkbScheduleTaskProfile, res
     record.sourceId = if (profile.profile == "cangjie_source_event_sync" &&
         request.kind == SourceKinds.GITCODE_SOURCE && ckbSafeRepoRelativePath(request.path)) {
         ckbRepositoryEventLogicalSourceId(request.repo, request.ref, request.path)
-    } else { "scheduled-${profile.profile}-${stableSummaryHash("${request.kind}:${request.url}:${request.repo}:${request.ref}:${fetch.bodyHash}")}" }
+    } else { "scheduled-${profile.profile}-${ckbReleaseEvidenceHash("${request.kind}:${request.url}:${request.repo}:${request.ref}:${fetch.bodyHash}")}" }
     result.records.add(record)
     record
 }
@@ -16843,7 +16816,18 @@ private func ingestScheduledProfileSources(kb: KnowledgeBase, store: FileKnowled
             return result
         }
     }
-    let delta = ckbScheduledTypedDeltaRecords(profile, fetch.records, config, manifest)
+    let authority = ckbLoadBenchmarkLeakageAuthority(store)
+    if (!authority.ok) {
+        result.ok = false; result.status = authority.diagnostic
+        result.validationStatus = authority.diagnostic
+        return result
+    }
+    let fetchedDelta = ckbScheduledTypedDeltaRecords(profile, fetch.records, config, manifest)
+    let delta = ArrayList<NormalizedRecord>()
+    for (record in fetchedDelta) {
+        if (record.recordKind != CangjieTypedRecordKinds.EVAL_SUPPORT &&
+            record.metadata.sourceSet != CangjieSourceSets.EVAL_SUPPORT) { delta.add(record) }
+    }
     if (ckbApplyScheduledIngestDeadline(result, profile, "ingest_delta_built", deadlineAtMillis)) {
         return result
     }
@@ -16856,11 +16840,19 @@ private func ingestScheduledProfileSources(kb: KnowledgeBase, store: FileKnowled
         }
         return result
     }
+    let validatedDelta = ckbValidateIncomingStudentRecords(delta, authority: authority.authority)
+    if (!validatedDelta.ok) {
+        result.ok = false; result.status = validatedDelta.errorCode
+        result.validationStatus = validatedDelta.errorCode
+        return result
+    }
+    let candidateKb = kb.forkIsolatedCandidate()
     var ingestedRecords: Int64 = 0
     for (record in fetch.records) {
-        if (record.fetch.ok && !(profile.profile == "cangjie_source_event_sync" &&
+        if (record.fetch.ok && record.sourceSet != CangjieSourceSets.EVAL_SUPPORT &&
+            !(profile.profile == "cangjie_source_event_sync" &&
             !ckbRepositoryEventContentRecord(record))) {
-            _ = kb.ingestFetchResult(record.sourceId, record.sourceType, record.fetch, record.title, TrustLevels.OFFICIAL, ReviewStates.TRUSTED)
+            _ = candidateKb.ingestFetchResult(record.sourceId, record.sourceType, record.fetch, record.title, TrustLevels.OFFICIAL, ReviewStates.TRUSTED)
         }
         ingestedRecords += 1
         if (ingestedRecords % 64 == 0 && ckbApplyScheduledIngestDeadline(result, profile, "ingest_records", deadlineAtMillis)) {
@@ -16871,11 +16863,26 @@ private func ingestScheduledProfileSources(kb: KnowledgeBase, store: FileKnowled
         return result
     }
     let candidateVersion = ckbScheduledCandidateVersion(profile, fetch)
-    let candidateRecords = if (profile.profile == "cangjie_source_event_sync") {
-        ckbRepositoryEventCandidateOverlay(kb.activeRecordSnapshot(), delta, fetch.removedSourceIds)
-    } else { kb.activeRecordSnapshotOverlay(delta) }
-    let promotion = cangjiePromoteCandidateRecordsAfterValidationWithVersion(kb, store, candidateVersion, candidateRecords, progressSink: progressSink, stageSink: stageSink, deadlineAtMillis: deadlineAtMillis, budgetPlan: promotionBudgetPlan)
+    let candidateProjection = ckbOverlayCleanStudentRecords(kb.activeRecordSnapshot(),
+        validatedDelta.records, authority: authority.authority)
+    if (!candidateProjection.ok) {
+        result.ok = false; result.status = candidateProjection.errorCode
+        result.validationStatus = candidateProjection.errorCode
+        return result
+    }
+    let candidateRaw = ckbCleanHistoricalStudentRawRecords(candidateKb.rawRecordSnapshot(),
+        authority: authority.authority)
+    candidateKb.replaceRawRecords(candidateRaw.records)
+    let candidateRecords = candidateProjection.records
+    let promotion = cangjiePromoteCandidateRecordsAfterValidationWithVersion(candidateKb, store, candidateVersion, candidateRecords, progressSink: progressSink, stageSink: stageSink, deadlineAtMillis: deadlineAtMillis, budgetPlan: promotionBudgetPlan)
     ckbApplyScheduledPromotionResult(result, promotion, "candidate_validated_promoted")
+    if (result.ok) {
+        let committed = store.loadActiveSnapshot()
+        if (!committed.valid || !kb.restoreActiveSnapshot(committed)) {
+            result.ok = false; result.status = "scheduled_active_reload_failed"
+            result.validationStatus = result.status
+        }
+    }
     if (profile.profile == "cangjie_source_event_sync") {
         ckbPersistScheduledRepositoryEventCheckpoint(store, profile, fetch, result)
     }
@@ -16890,7 +16897,17 @@ private func ckbIngestSourceEventTransaction(kb: KnowledgeBase, store: FileKnowl
     result: CkbScheduledProfileIngestResult, progressSink: VectorBuildProgressSink,
     stageSink: CkbStagedRebuildStageSink, deadlineAtMillis: Int64,
     promotionBudgetPlan: CangjieCandidatePromotionBudgetPlan): CkbScheduledProfileIngestResult {
-    let delta = ckbScheduledSourceEventDeltaRecords(profile, fetch.records, config, manifest)
+    let authority = ckbLoadBenchmarkLeakageAuthority(store)
+    if (!authority.ok) {
+        result.ok = false; result.status = authority.diagnostic
+        result.validationStatus = authority.diagnostic; return result
+    }
+    let fetchedDelta = ckbScheduledSourceEventDeltaRecords(profile, fetch.records, config, manifest)
+    let delta = ArrayList<NormalizedRecord>()
+    for (record in fetchedDelta) {
+        if (record.recordKind != CangjieTypedRecordKinds.EVAL_SUPPORT &&
+            record.metadata.sourceSet != CangjieSourceSets.EVAL_SUPPORT) { delta.add(record) }
+    }
     if (delta.size == 0 && fetch.removedSourceIds.size == 0) {
         result.ok = false
         result.status = "scheduled_delta_empty"
@@ -16898,7 +16915,8 @@ private func ckbIngestSourceEventTransaction(kb: KnowledgeBase, store: FileKnowl
     }
     let currentRaw = ArrayList<RawRecord>()
     for (record in fetch.records) {
-        if (record.fetch.ok && ckbRepositoryEventContentRecord(record)) {
+        if (record.fetch.ok && ckbRepositoryEventContentRecord(record) &&
+            record.sourceSet != CangjieSourceSets.EVAL_SUPPORT) {
             currentRaw.add(ckbScheduledRawRecord(profile, record, config, manifest))
         }
     }
@@ -16908,9 +16926,18 @@ private func ckbIngestSourceEventTransaction(kb: KnowledgeBase, store: FileKnowl
         fetch.removedSourceIds, fetch.tombstones)
     let removedNormalized = ckbRepositoryEventRemovedNormalizedIds(oldNormalized,
         delta, fetch.removedSourceIds, fetch.tombstones)
-    let candidateRaw = ckbRepositoryEventRawOverlay(oldRaw, currentRaw, removedRaw)
-    let candidateNormalized = ckbRepositoryEventCandidateOverlay(oldNormalized, delta,
-        removedNormalized)
+    let candidateRawProjection = ckbOverlayCleanStudentRawRecords(oldRaw, currentRaw,
+        removedSourceIds: removedRaw, authority: authority.authority)
+    let candidateProjection = ckbOverlayCleanStudentRecordsForOwner(oldNormalized, delta,
+        "", "", removedNormalized, authority: authority.authority)
+    if (!candidateRawProjection.ok || !candidateProjection.ok) {
+        result.ok = false; result.status = if (!candidateProjection.ok) {
+            candidateProjection.errorCode
+        } else { candidateRawProjection.errorCode }
+        result.validationStatus = result.status; return result
+    }
+    let candidateRaw = candidateRawProjection.records
+    let candidateNormalized = candidateProjection.records
     let candidateVersion = ckbScheduledCandidateVersion(profile, fetch)
     let candidateKb = kb.forkIsolatedCandidate()
     candidateKb.replaceRawRecords(candidateRaw)
@@ -17112,12 +17139,29 @@ private func ckbIngestReleaseFullSync(kb: KnowledgeBase, store: FileKnowledgeSto
     }
     let targetVersion = fetch.releasePlan.targetVersion
     let owner = "scheduled:${profile.profile}"
+    let authority = ckbLoadBenchmarkLeakageAuthority(store)
+    if (!authority.ok) {
+        result.ok = false; result.status = authority.diagnostic
+        result.validationStatus = authority.diagnostic; return result
+    }
     let oldRaw = kb.rawRecordSnapshot()
     let removedRawIds = ckbReleaseRemovedRawIds(oldRaw, delta.rawRecords, fetch.releasePlan, owner, targetVersion)
     let activeBefore = kb.activeRecordSnapshot()
     let removedNormalizedIds = ckbReleaseRemovedNormalizedIds(activeBefore, delta.normalizedRecords, fetch.releasePlan, owner, targetVersion)
-    let candidateRaw = kb.rawRecordSnapshotOverlayForOwner(owner, targetVersion, removedRawIds, delta.rawRecords)
-    let candidateRecords = kb.activeRecordSnapshotOverlayForOwner(delta.normalizedRecords, owner, targetVersion, removedNormalizedIds)
+    let candidateRawProjection = ckbOverlayCleanStudentRawRecords(oldRaw, delta.rawRecords,
+        owner: owner, targetVersion: targetVersion, removedSourceIds: removedRawIds,
+        authority: authority.authority)
+    let candidateProjection = ckbOverlayCleanStudentRecordsForOwner(activeBefore,
+        delta.normalizedRecords, owner, targetVersion, removedNormalizedIds,
+        authority: authority.authority)
+    if (!candidateRawProjection.ok || !candidateProjection.ok) {
+        result.ok = false; result.status = if (!candidateProjection.ok) {
+            candidateProjection.errorCode
+        } else { candidateRawProjection.errorCode }
+        result.validationStatus = result.status; return result
+    }
+    let candidateRaw = candidateRawProjection.records
+    let candidateRecords = candidateProjection.records
     let candidateEvidence = ckbCandidateBusinessEvidence(candidateRaw, candidateRecords)
     if (!candidateEvidence.valid) {
         result.ok = false
@@ -17617,7 +17661,7 @@ private func ingestScheduledBenchmarkGapCuration(kb: KnowledgeBase, store: FileK
     let candidateVersion = "ckb-benchmark-${scanPlan.planHash}-candidate"
     let recoveredTerminal=ckbLoadBenchmarkGapLastSuccessForPlan(store,scanPlan.planHash)
     if(recoveredTerminal.valid){let pointer=store.loadActiveSnapshotPointer();if(pointer.valid&&pointer.txId==recoveredTerminal.transactionId&&pointer.activeVersion==recoveredTerminal.activeVersion){let snapshot=store.loadActiveSnapshot();if(snapshot.valid){_=kb.restoreActiveSnapshot(snapshot)};result.ok=true;result.status="candidate_validated_promoted";result.validationStatus="curation_checkpoint_verified";result.candidateVersion=recoveredTerminal.candidateVersion;result.activeVersion=recoveredTerminal.activeVersion;result.transactionId=recoveredTerminal.transactionId;for(g in ["curation_input_verified","curation_plan_complete","candidate_validation_passed","query_proof_complete","active_transaction_verified","curation_checkpoint_verified"]){result.validationGates.add(g)};result.validationDiagnostics.add("benchmark_gap_commit_recovered:planHash=${scanPlan.planHash}:tx=${ckbReleaseEvidenceHash(pointer.txId)}");_=ckbPersistBenchmarkGapLifecycleEvent(store,scanPlan.runId,"duplicate","terminal_skip",scanPlan.planHash,recoveredTerminal.candidateVersion,"terminal already committed",completed:recoveredTerminal.completed,total:recoveredTerminal.total);return result}}
-    let candidateRecords = overlayBenchmarkGapRecords(kb.activeRecordSnapshot(), curated.records)
+    let authority=ckbLoadBenchmarkLeakageAuthority(store);if(!authority.ok){result.ok=false;result.status=authority.diagnostic;result.validationStatus=authority.diagnostic;return result};let candidateProjection=ckbOverlayCleanStudentRecords(kb.activeRecordSnapshot(),curated.records,authority:authority.authority);if(!candidateProjection.ok){result.ok=false;result.status=candidateProjection.errorCode;result.validationStatus=candidateProjection.errorCode;return result};let candidateRecords=candidateProjection.records
     let baseActiveVersion = if (kb.status().activeKnowledgeVersion == "") { "none" } else { kb.status().activeKnowledgeVersion }
     let recordsEvidenceHash = ckbCandidateRecordsEvidenceHash(candidateRecords, stagedCandidateVersion: candidateVersion)
     let expectedProof = ckbNewBenchmarkGapProofCheckpoint(scanPlan, candidateVersion, baseActiveVersion, recordsEvidenceHash)
@@ -17625,12 +17669,12 @@ private func ingestScheduledBenchmarkGapCuration(kb: KnowledgeBase, store: FileK
     if (!candidateReused) {
         if(checkpoint.errorCode!="benchmark_gap_proof_checkpoint_not_found"&&checkpoint.errorCode!="legacy-unverified"){result.ok=false;result.status=checkpoint.errorCode;result.validationStatus=result.status;return result}
         let preview=ckbBenchmarkGapPreviewAll(candidateRecords,curated.records);if(!preview.ok){result.ok=false;result.status=preview.errorCode;result.validationStatus=result.status;return result};indexBuildCount=preview.indexBuildCount;queryCount=preview.queryCount
-        let candidateRaw=ckbBenchmarkGapCandidateRawOverlay(kb.rawRecordSnapshot(),curated.records);let materialized=store.saveCandidateSnapshotImmutable(candidateRaw,candidateRecords,candidateVersion,deadlineAtMillis:deadlineAtMillis);if(!materialized.ok){result.ok=false;result.status=materialized.status;result.validationStatus=result.status;return result};manifestEvidenceHash=materialized.manifestEvidenceHash
+        let candidateRawProjection=ckbOverlayCleanStudentRawRecords(kb.rawRecordSnapshot(),ckbBenchmarkGapCandidateRawOverlay(ArrayList<RawRecord>(),curated.records),authority:authority.authority);if(!candidateRawProjection.ok){result.ok=false;result.status=candidateRawProjection.errorCode;result.validationStatus=result.status;return result};let candidateRaw=candidateRawProjection.records;let materialized=store.saveCandidateSnapshotImmutable(candidateRaw,candidateRecords,candidateVersion,deadlineAtMillis:deadlineAtMillis);if(!materialized.ok){result.ok=false;result.status=materialized.status;result.validationStatus=result.status;return result};manifestEvidenceHash=materialized.manifestEvidenceHash
         checkpoint=ckbSaveBenchmarkGapProofCheckpoint(store,expectedProof);if(!checkpoint.valid){result.ok=false;result.status=checkpoint.errorCode;result.validationStatus=result.status;return result}
     }
     result.candidateVersion = candidateVersion
     result.validationDiagnostics.add("benchmark_gap_candidate_ready:count=${curated.records.size}:candidateVersion=${candidateVersion}:manifestEvidenceHash=${manifestEvidenceHash}:indexBuildCount=${indexBuildCount}:queryCount=${queryCount}:reused=${candidateReused}")
-    let candidateRaw=ckbBenchmarkGapCandidateRawOverlay(kb.rawRecordSnapshot(),curated.records);let candidateKb=kb.forkIsolatedCandidate();candidateKb.replaceRawRecords(candidateRaw);let acquisition=CkbCandidateAcquisitionContext();acquisition.taskId=profile.profile;acquisition.schedulerRunId=scanPlan.runId;acquisition.planHash=scanPlan.planHash;acquisition.candidateVersion=candidateVersion;acquisition.recordsEvidenceHash=recordsEvidenceHash;acquisition.acquisitionId="p7-curation-${ckbReleaseEvidenceHash("${scanPlan.runId}|${scanPlan.planHash}|${candidateVersion}")}";let gate=CkbBenchmarkGapPreCommitGate(store,expectedProof,curated.records,config.benchmarkGapProofBatchSize);let promotion=cangjiePromoteCandidateRecordsAfterValidationWithVersion(candidateKb,store,candidateVersion,candidateRecords,progressSink:progressSink,deadlineAtMillis:deadlineAtMillis,acquisitionContext:acquisition,preCommitGate:gate,repositoryEventIdentity:"p7:${scanPlan.planHash}",expectedBaseActiveVersion:baseActiveVersion);for(d in promotion.validation.diagnostics){result.validationDiagnostics.add(d)};result.candidateVersion=promotion.candidateVersion;result.activeVersion=promotion.activeVersion;result.transactionId=promotion.snapshotTxId;result.validationEvidenceHash=promotion.validation.evidenceHash;if(!promotion.ok){result.ok=false;result.status=promotion.validation.status;result.validationStatus=result.status;return result};checkpoint=ckbLoadBenchmarkGapProofCheckpoint(store,expectedProof);let terminal=ckbFinalizeBenchmarkGapTerminal(store,checkpoint,promotion.activeVersion,promotion.snapshotTxId);if(!terminal.valid){result.ok=false;result.status=terminal.errorCode;result.validationStatus=result.status;return result};let committedSnapshot=store.loadActiveSnapshot();if(!committedSnapshot.valid||!kb.restoreActiveSnapshot(committedSnapshot)){result.ok=false;result.status="benchmark_gap_active_reload_failed";result.validationStatus=result.status;return result};_=ckbPersistBenchmarkGapLifecycleEvent(store,scanPlan.runId,"committed","committed",scanPlan.planHash,candidateVersion,"terminal confirmed",completed:terminal.completed,total:terminal.total);result.ok=true;result.status="candidate_validated_promoted";result.validationStatus="curation_checkpoint_verified";for(g in ["curation_input_verified","curation_plan_complete","candidate_validation_passed","query_proof_complete","active_transaction_verified","curation_checkpoint_verified"]){result.validationGates.add(g)}
+    let candidateRawProjection=ckbOverlayCleanStudentRawRecords(kb.rawRecordSnapshot(),ckbBenchmarkGapCandidateRawOverlay(ArrayList<RawRecord>(),curated.records),authority:authority.authority);if(!candidateRawProjection.ok){result.ok=false;result.status=candidateRawProjection.errorCode;result.validationStatus=result.status;return result};let candidateRaw=candidateRawProjection.records;let candidateKb=kb.forkIsolatedCandidate();candidateKb.replaceRawRecords(candidateRaw);let acquisition=CkbCandidateAcquisitionContext();acquisition.taskId=profile.profile;acquisition.schedulerRunId=scanPlan.runId;acquisition.planHash=scanPlan.planHash;acquisition.candidateVersion=candidateVersion;acquisition.recordsEvidenceHash=recordsEvidenceHash;acquisition.acquisitionId="p7-curation-${ckbReleaseEvidenceHash("${scanPlan.runId}|${scanPlan.planHash}|${candidateVersion}")}";let gate=CkbBenchmarkGapPreCommitGate(store,expectedProof,curated.records,config.benchmarkGapProofBatchSize);let promotion=cangjiePromoteCandidateRecordsAfterValidationWithVersion(candidateKb,store,candidateVersion,candidateRecords,progressSink:progressSink,deadlineAtMillis:deadlineAtMillis,acquisitionContext:acquisition,preCommitGate:gate,repositoryEventIdentity:"p7:${scanPlan.planHash}",expectedBaseActiveVersion:baseActiveVersion);for(d in promotion.validation.diagnostics){result.validationDiagnostics.add(d)};result.candidateVersion=promotion.candidateVersion;result.activeVersion=promotion.activeVersion;result.transactionId=promotion.snapshotTxId;result.validationEvidenceHash=promotion.validation.evidenceHash;if(!promotion.ok){result.ok=false;result.status=promotion.validation.status;result.validationStatus=result.status;return result};checkpoint=ckbLoadBenchmarkGapProofCheckpoint(store,expectedProof);let terminal=ckbFinalizeBenchmarkGapTerminal(store,checkpoint,promotion.activeVersion,promotion.snapshotTxId);if(!terminal.valid){result.ok=false;result.status=terminal.errorCode;result.validationStatus=result.status;return result};let committedSnapshot=store.loadActiveSnapshot();if(!committedSnapshot.valid||!kb.restoreActiveSnapshot(committedSnapshot)){result.ok=false;result.status="benchmark_gap_active_reload_failed";result.validationStatus=result.status;return result};_=ckbPersistBenchmarkGapLifecycleEvent(store,scanPlan.runId,"committed","committed",scanPlan.planHash,candidateVersion,"terminal confirmed",completed:terminal.completed,total:terminal.total);result.ok=true;result.status="candidate_validated_promoted";result.validationStatus="curation_checkpoint_verified";for(g in ["curation_input_verified","curation_plan_complete","candidate_validation_passed","query_proof_complete","active_transaction_verified","curation_checkpoint_verified"]){result.validationGates.add(g)}
     result
 }
 
@@ -17702,6 +17746,11 @@ private func singleBenchmarkGapRecord(record: NormalizedRecord): ArrayList<Norma
 public func ckbBenchmarkGapPreviewAll(candidateRecords: ArrayList<NormalizedRecord>,
     gapRecords: ArrayList<NormalizedRecord>): CkbBenchmarkGapPreviewResult {
     let result = CkbBenchmarkGapPreviewResult()
+    let candidateValidation = validateCangjieStudentKnowledgeRecords(candidateRecords)
+    if (!candidateValidation.ok) {
+        result.errorCode = candidateValidation.code
+        return result
+    }
     let observer = CkbBenchmarkGapIndexBuildObserver()
     let index = buildCangjieServingIndex(candidateRecords,
         activeKnowledgeVersion: "benchmark-gap-preview", buildObserver: observer)
@@ -17712,17 +17761,24 @@ public func ckbBenchmarkGapPreviewAll(candidateRecords: ArrayList<NormalizedReco
         }
     }
     for (record in gapRecords) {
+        let atomValidation = cangjieStudentRecordDiagnostic(record)
+        if (!atomValidation.ok || record.recordKind != CangjieTypedRecordKinds.KNOWLEDGE_ATOM ||
+            record.metadata.sourceSet != CangjieSourceSets.KNOWLEDGE_ATOMS) {
+            result.errorCode = if (!atomValidation.ok) { atomValidation.code } else { "benchmark_gap_preview_atom_required" }
+            result.failedCaseIdHash = ckbReleaseEvidenceHash(record.sourceId)
+            return result
+        }
         let request = CangjieServingSearchRequest()
-        request.query = "${record.sourceId} ${ckbBenchmarkGapTaskQuery(record)}"
-        request.sourceSet = CangjieSourceSets.EVAL_SUPPORT
+        request.query = ckbBenchmarkGapAnonymousQuery(record)
+        request.sourceSet = CangjieSourceSets.KNOWLEDGE_ATOMS
         request.targetVersion = record.metadata.targetVersion
-        request.budget = 10
+        request.budget = candidateRecords.size
         let lookup = searchHybridServingIndex(index, request)
         result.queryCount += 1
         var matched = false
         for (hit in lookup.hits) {
             if (hit.document.sourceId == record.sourceId &&
-                hit.document.sourceSet == CangjieSourceSets.EVAL_SUPPORT &&
+                hit.document.sourceSet == CangjieSourceSets.KNOWLEDGE_ATOMS &&
                 hit.document.targetVersion == record.metadata.targetVersion) { matched = true }
         }
         if (!matched) {
@@ -17736,6 +17792,21 @@ public func ckbBenchmarkGapPreviewAll(candidateRecords: ArrayList<NormalizedReco
     result.status = if (result.ok) { "benchmark_gap_preview_passed" } else { "benchmark_gap_preview_incomplete" }
     if (!result.ok) { result.errorCode = result.status }
     result
+}
+
+public func ckbBenchmarkGapAnonymousQuery(record: NormalizedRecord): String {
+    var interfaceId = ""
+    let symbolParts = record.metadata.symbol.split(":")
+    if (symbolParts.size > 0) { interfaceId = symbolParts[0].trimAscii() }
+    var contentFamily = ""
+    let pathParts = record.metadata.path.split("/")
+    if (pathParts.size >= 2 && pathParts[0] == "knowledge-atom") { contentFamily = pathParts[1].trimAscii() }
+    var knowledge = ""
+    for (line in record.chunk.split("\n")) {
+        let clean = line.trimAscii()
+        if (clean.startsWith("Knowledge:")) { knowledge = clean.replace("Knowledge:", "").trimAscii(); break }
+    }
+    "Cangjie ${interfaceId} ${contentFamily} ${knowledge}".trimAscii()
 }
 
 private func ckbBenchmarkGapCandidateRawOverlay(active: ArrayList<RawRecord>,
@@ -19035,6 +19106,9 @@ private func ckbBuildReleaseDelta(profile: CkbScheduleTaskProfile, fetch: CkbSch
     for (scheduled in fetch.contentRecords) {
         let source = scheduled.releaseSource
         let path = scheduled.request.path
+        // Evaluation authority is persisted on its dedicated plane and must
+        // never be copied into Student raw/normalized release deltas.
+        if (source.sourceSet == CangjieSourceSets.EVAL_SUPPORT) { continue }
         if (source.canonicalIdentity == "" || path == "") {
             result.ok = false
             result.status = CkbReleaseAcquisitionStatus.DUPLICATE_LOGICAL_RECORD_ID
@@ -20449,6 +20523,33 @@ public func ckbRebuildIndex(kb: KnowledgeBase, store: FileKnowledgeStore, fail!:
     let before = ckbIndexDeadlineFailure("rebuild_start", deadlineAtMillis)
     if (!before.ok) {
         return before
+    }
+    let authority = ckbLoadBenchmarkLeakageAuthority(store)
+    if (!authority.ok) {
+        let blocked = IndexBuildResult(); blocked.ok = false
+        blocked.failedVersion = authority.diagnostic
+        return blocked
+    }
+    // Weekly and direct rebuilds rebuild only the clean Student projection.
+    // The persisted active pointer is not changed until the rebuilt snapshot
+    // has passed the existing vector/status validation path.
+    let persisted = store.loadActiveSnapshot()
+    if (persisted.valid) {
+        let active = ckbCleanHistoricalStudentRecords(persisted.activeIndex,
+            authority: authority.authority)
+        let normalized = ckbCleanHistoricalStudentRecords(persisted.normalizedRecords,
+            authority: authority.authority)
+        let raw = ckbCleanHistoricalStudentRawRecords(persisted.rawRecords,
+            authority: authority.authority)
+        persisted.activeIndex.clear(); for (record in active.records) { persisted.activeIndex.add(record) }
+        persisted.normalizedRecords.clear(); for (record in normalized.records) { persisted.normalizedRecords.add(record) }
+        persisted.rawRecords.clear(); for (record in raw.records) { persisted.rawRecords.add(record) }
+        persisted.vectorRecords.clear(); persisted.hasVectorArtifact = false
+        if (!kb.restoreActiveSnapshot(persisted)) {
+            let blocked = IndexBuildResult(); blocked.ok = false
+            blocked.failedVersion = "clean_rebuild_projection_restore_failed"
+            return blocked
+        }
     }
     let result = kb.rebuildIndex(fail, progressSink: progressSink, targetVectorCollection: targetVectorCollection, deadlineAtMillis: deadlineAtMillis)
     if (result.ok) {

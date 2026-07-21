@@ -8,6 +8,18 @@ import std.unittest.testmacro.*
 @Test
 public class CangjieReleaseGateTest {
     @TestCase
+    public func tR4NegRoutineAcceptanceRejectsMissingOrNonZeroTrustProof(): Unit {
+        let cleanLeakage = "{\"ok\":true,\"leakageCount\":0}\n"
+        let cleanQueries = "{\"ok\":true,\"indexBuildCount\":1,\"failed\":0}\n"
+        @Expect(cangjieRoutineTrustProofDiagnostic(cleanLeakage, cleanQueries), "ok")
+        @Expect(cangjieRoutineTrustProofDiagnostic("{\"ok\":false,\"leakageCount\":1}", cleanQueries),
+            "candidate_leakage_proof_required")
+        @Expect(cangjieRoutineTrustProofDiagnostic(cleanLeakage,
+            "{\"ok\":false,\"indexBuildCount\":1,\"failed\":1}"), "anonymous_query_proof_required")
+        @Expect(cangjieRoutineTrustProofDiagnostic(cleanLeakage, ""), "anonymous_query_proof_required")
+    }
+
+    @TestCase
     public func f8Ut001ReleaseGateFakeAllPass(): Unit {
         let fixture = f8WriteFirstInitFixture("target/f8-ut-fixture", true)
         let runRoot = "target/f8-ut-run"

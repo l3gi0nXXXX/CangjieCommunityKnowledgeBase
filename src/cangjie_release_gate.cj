@@ -65,6 +65,15 @@ public func cangjieCertifiedProductionReleaseGate(proof: CkbProductionReleasePro
     step
 }
 
+public func cangjieRoutineTrustProofDiagnostic(leakageText: String, queryText: String): String {
+    if (!leakageText.contains("\"ok\":true") || !leakageText.contains("\"leakageCount\":0")) {
+        return "candidate_leakage_proof_required"
+    }
+    if (!queryText.contains("\"ok\":true") || !queryText.contains("\"indexBuildCount\":1") ||
+        !queryText.contains("\"failed\":0")) { return "anonymous_query_proof_required" }
+    "ok"
+}
+
 public func parseCangjieKnowledgeReleaseGateOptions(args: Array<String>): CangjieKnowledgeReleaseGateOptions {
     let options = CangjieKnowledgeReleaseGateOptions()
     var i: Int64 = 0
@@ -211,7 +220,7 @@ public func cangjieKnowledgeReleaseGate(
     cangjieReleaseGateAddSourceEventE2eStep(report, options, config, sourceRunner)
     cangjieReleaseGateAddTransportParityStep(report, service, options.runRoot)
     cangjieReleaseGateAddInterfaceE2eStep(report, service, options)
-    cangjieReleaseGateAddRoutineUpdateAcceptanceStep(report, options)
+    cangjieReleaseGateAddRoutineUpdateAcceptanceStep(report, options, store)
     cangjieReleaseGateAddPlanClosureStep(report, options)
     cangjieReleaseGateAddLandingStatusStep(report, service, "F8-landing-status-final")
     report.activeKnowledgeVersion = service.statusSnapshot().activeKnowledgeVersion
@@ -265,7 +274,16 @@ private func cangjieReleaseGateAddKnowledgeAtomTestStep(report: CangjieKnowledge
             for ((key, _) in declared) {
                 if (!actual.contains(key)) { cangjieReleaseGateAddStep(report, "P3-knowledge-atom-tests", false, "knowledge_atom_set_mismatch", path.toString()); return }
             }
-            cangjieReleaseGateAddStep(report, "P3-knowledge-atom-tests", true, "validated=${count}", path.toString())
+            let queryProofPath = Path(options.runRoot).join("anonymous-atom-query-report.jsonl")
+            let queryProof = if (exists(queryProofPath)) {
+                try { String.fromUtf8(File.readFrom(queryProofPath)) } catch (_: Exception) { "" }
+            } else { "" }
+            let queryProofOk = queryProof.contains("\"ok\":true") &&
+                queryProof.contains("\"indexBuildCount\":1") &&
+                queryProof.contains("\"failed\":0")
+            cangjieReleaseGateAddStep(report, "P3-knowledge-atom-tests", queryProofOk,
+                if (queryProofOk) { "validated=${count},anonymousQueryProof=passed" } else { "anonymous_query_proof_required" },
+                queryProofPath.toString(), evidenceHash: if (queryProofOk) { stableSummaryHash(queryProof) } else { "" })
         }
     } catch (_: Exception) {
         cangjieReleaseGateAddStep(report, "P3-knowledge-atom-tests", false, "invalid_response_encoding", path.toString())
@@ -359,11 +377,36 @@ private func cangjieReleaseGateAddFirstInitStep(report: CangjieKnowledgeReleaseG
     let dry = runCkbFirstInitialization(dryOptions, store)
     let applied = runCkbFirstInitializationWithActiveGuard(applyOptions, store)
     let artifact = "${options.runRoot}/first-init.txt"
-    let artifactText = renderCkbFirstInitResult(dry) + "\n--- apply ---\n" + renderCkbFirstInitResult(applied)
+    let authority = ckbLoadBenchmarkLeakageAuthority(store)
+    let snapshot = store.loadActiveSnapshot()
+    let active = if (snapshot.valid) { snapshot.activeIndex } else { ArrayList<NormalizedRecord>() }
+    var activeEvalCount: Int64 = 0
+    let atoms = ArrayList<NormalizedRecord>()
+    for (record in active) {
+        if (record.recordKind == CangjieTypedRecordKinds.EVAL_SUPPORT ||
+            record.metadata.sourceSet == CangjieSourceSets.EVAL_SUPPORT) { activeEvalCount += 1 }
+        if (record.recordKind == CangjieTypedRecordKinds.KNOWLEDGE_ATOM &&
+            record.metadata.sourceSet == CangjieSourceSets.KNOWLEDGE_ATOMS) { atoms.add(record) }
+    }
+    let leakage = ckbBuildStudentLeakageReport(active,
+        authority: authority.authority)
+    let queries = ckbBuildAnonymousAtomQueryReport(active, atoms)
+    let leakagePath = "${options.runRoot}/student-leakage-report.jsonl"
+    let queryPath = "${options.runRoot}/anonymous-atom-query-report.jsonl"
+    cangjieReleaseGateWriteText(leakagePath, leakage.json)
+    cangjieReleaseGateWriteText(queryPath, queries.jsonl)
+    let reportsPersisted = exists(Path(leakagePath)) && exists(Path(queryPath))
+    let authorityHash = authority.authorityHash
+    let artifactText = renderCkbFirstInitResult(dry) + "\n--- apply ---\n" + renderCkbFirstInitResult(applied) +
+        "\nauthorityCount=${authority.authorityRecordCount}|authorityHash=${authorityHash}|studentActiveCount=${active.size}|activeEvalCount=${activeEvalCount}|candidateLeakageCount=${leakage.leakageCount}|queryProofPassed=${queries.passed}|queryProofFailed=${queries.failed}|reportsPersisted=${reportsPersisted}"
     cangjieReleaseGateWriteText(artifact, artifactText)
     let alreadyInitialized = applied.diagnostics.contains("already_initialized")
-    let ok = dry.ok && applied.ok && (applied.persisted || alreadyInitialized)
-    cangjieReleaseGateAddStep(report, "E2E-01-first-init", ok, "dryRun=${dry.ok},apply=${applied.ok},persisted=${applied.persisted},alreadyInitialized=${alreadyInitialized}", artifact, evidenceHash: stableSummaryHash(artifactText))
+    let ok = dry.ok && applied.ok && (applied.persisted || alreadyInitialized) &&
+        authority.ok && authority.authorityRecordCount > 0 && authorityHash != "" && activeEvalCount == 0 &&
+        leakage.ok && queries.ok && reportsPersisted
+    cangjieReleaseGateAddStep(report, "E2E-01-first-init", ok,
+        "dryRun=${dry.ok},apply=${applied.ok},persisted=${applied.persisted},alreadyInitialized=${alreadyInitialized},authorityCount=${authority.authorityRecordCount},authorityHash=${authorityHash},studentActive=${active.size},activeEval=${activeEvalCount},leakage=${leakage.leakageCount},queryPassed=${queries.passed},queryFailed=${queries.failed}",
+        artifact, evidenceHash: stableSummaryHash(artifactText))
 }
 
 private func cangjieReleaseGateAddRouteProbeStep(report: CangjieKnowledgeReleaseGateReport, service: CkbCommandLoopService, runRoot: String): Unit {
@@ -569,10 +612,28 @@ private func cangjieReleaseGateAddSourceEventE2eStep(report: CangjieKnowledgeRel
     cangjieReleaseGateAddStep(report, "E2E-13-source-event-e2e", ok, "sourceSet=${sourceSetSync.statusCode},accepted=${accepted.statusCode},duplicate=${duplicate.statusCode}/${duplicateDeduped},rejected=${rejected.statusCode},inbox=${inboxQueued},ingressNoSync=${noIngressSync},worker=${workerConsumed},repoList=${repoList.statusCode}", artifact, evidenceHash: stableSummaryHash(text))
 }
 
-private func cangjieReleaseGateAddRoutineUpdateAcceptanceStep(report: CangjieKnowledgeReleaseGateReport, options: CangjieKnowledgeReleaseGateOptions): Unit {
+private func cangjieReleaseGateAddRoutineUpdateAcceptanceStep(report: CangjieKnowledgeReleaseGateReport, options: CangjieKnowledgeReleaseGateOptions, store: FileKnowledgeStore): Unit {
     let artifact = "${options.runRoot}/routine-update-acceptance-matrix.jsonl"
     var text = ""
-    var ok = true
+    let snapshot = store.loadActiveSnapshot()
+    let authority = ckbLoadBenchmarkLeakageAuthority(store)
+    let active = if (snapshot.valid) { snapshot.activeIndex } else { ArrayList<NormalizedRecord>() }
+    let atoms = ArrayList<NormalizedRecord>()
+    for (record in active) {
+        if (record.recordKind == CangjieTypedRecordKinds.KNOWLEDGE_ATOM &&
+            record.metadata.sourceSet == CangjieSourceSets.KNOWLEDGE_ATOMS) { atoms.add(record) }
+    }
+    let finalLeakage = ckbBuildStudentLeakageReport(active, authority: authority.authority)
+    let finalQueries = ckbBuildAnonymousAtomQueryReport(active, atoms)
+    cangjieReleaseGateWriteText("${options.runRoot}/student-leakage-report.jsonl", finalLeakage.json)
+    cangjieReleaseGateWriteText("${options.runRoot}/anonymous-atom-query-report.jsonl", finalQueries.jsonl)
+    let leakagePath = Path(options.runRoot).join("student-leakage-report.jsonl")
+    let queryPath = Path(options.runRoot).join("anonymous-atom-query-report.jsonl")
+    let leakageText = if (exists(leakagePath)) { try { String.fromUtf8(File.readFrom(leakagePath)) } catch (_: Exception) { "" } } else { "" }
+    let queryText = if (exists(queryPath)) { try { String.fromUtf8(File.readFrom(queryPath)) } catch (_: Exception) { "" } } else { "" }
+    let trustProofOk = cangjieRoutineTrustProofDiagnostic(leakageText, queryText) == "ok"
+    var ok = trustProofOk
+    text += "{\"phase\":\"R4\",\"testId\":\"student-trust-proof\",\"status\":\"${if (trustProofOk) { "passed" } else { "failed" }}\",\"authorityCount\":${authority.authorityRecordCount},\"authorityHash\":\"${authority.authorityHash}\",\"studentActiveCount\":${active.size},\"candidateLeakageCount\":${finalLeakage.leakageCount},\"atomCount\":${atoms.size},\"queryPassed\":${finalQueries.passed},\"queryFailed\":${finalQueries.failed},\"leakageEvidenceHash\":\"${stableSummaryHash(leakageText)}\",\"queryEvidenceHash\":\"${stableSummaryHash(queryText)}\"}\n"
     for (step in report.steps) {
         if (!step.ok) {
             ok = false
@@ -581,7 +642,7 @@ private func cangjieReleaseGateAddRoutineUpdateAcceptanceStep(report: CangjieKno
         text += "{\"phase\":\"${phase}\",\"testId\":\"${cangjieReleaseGateJsonEscape(step.id)}\",\"status\":\"${if (step.ok) { "passed" } else { "failed" }}\",\"artifactPath\":\"${cangjieReleaseGateJsonEscape(step.artifactPath)}\",\"evidenceHash\":\"${cangjieReleaseGateJsonEscape(step.evidenceHash)}\"}\n"
     }
     cangjieReleaseGateWriteText(artifact, text)
-    cangjieReleaseGateAddStep(report, "P9-routine-update-acceptance", ok, "steps=${report.steps.size},failed=${if (ok) { 0 } else { 1 }}", artifact, evidenceHash: stableSummaryHash(text))
+    cangjieReleaseGateAddStep(report, "P9-routine-update-acceptance", ok, "steps=${report.steps.size},trustProof=${trustProofOk},failed=${if (ok) { 0 } else { 1 }}", artifact, evidenceHash: stableSummaryHash(text))
 }
 
 private func cangjieReleaseGateAddTransportParityStep(report: CangjieKnowledgeReleaseGateReport, service: CkbCommandLoopService, runRoot: String): Unit {
@@ -821,7 +882,10 @@ private func cangjieReleaseGateEnsureRoutineCurationInput(options: CangjieKnowle
         return
     }
     let path = "${options.runRoot}/routine-update-gap-curation-input.jsonl"
-    let line = "{\"caseId\":\"CKB-ROUTINE-001\",\"benchmark\":\"Cangjie-HumanEval\",\"taskText\":\"Use ArrayList.add for visible input.\",\"visibleTestExcerpt\":\"assert solve([1,2]) == 3\",\"compilerOutput\":\"compile_error\",\"missingKnowledge\":\"G-ARRAYLIST\",\"interfaceId\":\"KI-02\",\"contentFamily\":\"KC-02\",\"updateMechanism\":\"KU-11\",\"targetVersion\":\"${cangjieReleaseGateJsonEscape(options.targetVersion)}\",\"officialCitation\":\"https://docs.cangjie-lang.cn/docs/1.0.0/libs/std/collection\"}\n"
+    let rawBundle = "{\"atomId\":\"G-ARRAYLIST\",\"sourceClass\":\"official\",\"citation\":\"https://docs.cangjie-lang.cn/docs/1.0.0/libs/std/collection\",\"targetVersion\":\"${cangjieReleaseGateJsonEscape(options.targetVersion)}\",\"candidateHash\":\"sha256:0000000000000000000000000000000000000000000000000000000000000000\",\"knowledgeText\":\"ArrayList stores a mutable sequence and add appends one element.\",\"example\":\"Use values.add(item) to append an item.\",\"purificationPassed\":true,\"tests\":[{\"category\":\"positive\",\"operation\":\"arraylist_size\",\"input\":\"[1,2,3]\",\"expected\":\"3\"},{\"category\":\"negative\",\"operation\":\"contains\",\"input\":\"ArrayList\",\"needle\":\"HashMap\",\"expected\":\"false\"},{\"category\":\"boundary\",\"operation\":\"rune_count\",\"input\":\"中文😀\",\"expected\":\"3\"}]}"
+    let marker = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+    let bundle = rawBundle.replace(marker, cangjieKnowledgeAtomCandidateHash(rawBundle))
+    let line = "{\"caseId\":\"PUBLIC-CKB-ROUTINE-001\",\"benchmark\":\"public-cangjie-regression\",\"taskText\":\"Use general ArrayList append operations.\",\"compilerOutput\":\"unknown member add\",\"missingKnowledge\":\"G-ARRAYLIST\",\"interfaceId\":\"KI-02\",\"contentFamily\":\"KC-02\",\"updateMechanism\":\"KU-11\",\"targetVersion\":\"${cangjieReleaseGateJsonEscape(options.targetVersion)}\",\"officialCitation\":\"https://docs.cangjie-lang.cn/docs/1.0.0/libs/std/collection\",\"knowledgeAtomCandidate\":true,\"knowledgeAtomTestBundle\":${bundle}}\n"
     cangjieReleaseGateWriteText(path, line)
     config.benchmarkGapCurationInputPath = path
     config.benchmarkGapTargetVersion = options.targetVersion

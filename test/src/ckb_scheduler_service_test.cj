@@ -1991,7 +1991,7 @@ public class CkbSchedulerServiceF5Test {
         let root = "target/f7-scheduler-gap-curation"
         s1s2EnsureEmptyDir(root)
         let inputPath = "${root}/gap-curation-input.jsonl"
-        File.writeTo(Path(inputPath), "{\"caseId\":\"CJ-HUMANEVAL-004\",\"benchmark\":\"Cangjie-HumanEval\",\"taskText\":\"Use ArrayList.add for visible input.\",\"visibleTestExcerpt\":\"assert solve([1,2]) == 3\",\"compilerOutput\":\"compile_error\",\"missingKnowledge\":\"G-ARRAYLIST\",\"interfaceId\":\"KI-02\",\"contentFamily\":\"KC-02\",\"updateMechanism\":\"KU-11\",\"targetVersion\":\"1.0.0\",\"officialCitation\":\"https://docs.cangjie-lang.cn/docs/1.0.0/libs/std/collection\"}\n".toArray())
+        File.writeTo(Path(inputPath), r4SchedulerAtomCurationInput("PUBLIC-R4-004").toArray())
         let config = CkbRuntimeConfig()
         config.benchmarkGapCurationInputPath = inputPath
         let store = FileKnowledgeStore("${root}/store")
@@ -2023,7 +2023,8 @@ public class CkbSchedulerServiceF5Test {
         @Expect(pack.coverage.coveragePass, true)
         @Expect(pack.citations.size > 0, true)
         @Expect(f7StudentPackHasAuthorityCitation(pack), false)
-        @Expect(pack.matchedEvidence.size, 0)
+        @Expect(pack.matchedEvidence.size, 1)
+        @Expect(pack.matchedEvidence[0].sourceId.startsWith("knowledge-atom-"), true)
     }
 
     @TestCase
@@ -2057,7 +2058,7 @@ public class CkbSchedulerServiceF5Test {
         if (!exists(metadata)) {
             Directory.create(metadata, recursive: true)
         }
-        File.writeTo(metadata.join("gap-curation-input.jsonl"), "{\"caseId\":\"CJ-HUMANEVAL-006\",\"benchmark\":\"Cangjie-HumanEval\",\"taskText\":\"Use ArrayList.add for visible input.\",\"visibleTestExcerpt\":\"assert solve([1,2]) == 3\",\"compilerOutput\":\"compile_error\",\"missingKnowledge\":\"G-ARRAYLIST\",\"interfaceId\":\"KI-02\",\"contentFamily\":\"KC-02\",\"updateMechanism\":\"KU-11\",\"targetVersion\":\"1.0.0\",\"officialCitation\":\"https://docs.cangjie-lang.cn/docs/1.0.0/libs/std/collection\"}\n".toArray())
+        File.writeTo(metadata.join("gap-curation-input.jsonl"), r4SchedulerAtomCurationInput("PUBLIC-R4-006").toArray())
         let store = FileKnowledgeStore("${root}/store")
         let service = CkbCommandLoopService(CkbRuntimeConfig(), store)
         _ = service.start()
@@ -2449,6 +2450,13 @@ public class CkbSchedulerServiceF5Test {
         @Expect(reloaded.runNextRepositoryEventWorker("worker-2", queued.createdAtMillis + 4, worker).state, "idle")
         @Expect(worker.calls, 1)
     }
+}
+
+private func r4SchedulerAtomCurationInput(caseId: String): String {
+    let rawBundle = "{\"atomId\":\"G-ARRAYLIST\",\"sourceClass\":\"official\",\"citation\":\"https://docs.cangjie-lang.cn/docs/1.0.0/libs/std/collection\",\"targetVersion\":\"1.0.0\",\"candidateHash\":\"sha256:0000000000000000000000000000000000000000000000000000000000000000\",\"knowledgeText\":\"ArrayList stores a mutable sequence and add appends one element.\",\"example\":\"Use values.add(item) to append an item.\",\"purificationPassed\":true,\"tests\":[{\"category\":\"positive\",\"operation\":\"arraylist_size\",\"input\":\"[1,2,3]\",\"expected\":\"3\"},{\"category\":\"negative\",\"operation\":\"contains\",\"input\":\"ArrayList\",\"needle\":\"HashMap\",\"expected\":\"false\"},{\"category\":\"boundary\",\"operation\":\"rune_count\",\"input\":\"中文😀\",\"expected\":\"3\"}]}"
+    let marker = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+    let bundle = rawBundle.replace(marker, cangjieKnowledgeAtomCandidateHash(rawBundle))
+    "{\"caseId\":\"${caseId}\",\"benchmark\":\"public-cangjie-regression\",\"taskText\":\"Use general ArrayList append operations.\",\"compilerOutput\":\"unknown member add\",\"missingKnowledge\":\"G-ARRAYLIST\",\"interfaceId\":\"KI-02\",\"contentFamily\":\"KC-02\",\"updateMechanism\":\"KU-11\",\"targetVersion\":\"1.0.0\",\"officialCitation\":\"https://docs.cangjie-lang.cn/docs/1.0.0/libs/std/collection\",\"knowledgeAtomCandidate\":true,\"knowledgeAtomTestBundle\":${bundle}}\n"
 }
 
 private func f7StudentPackHasAuthorityCitation(pack: CangjieTaskKnowledgePack): Bool {
