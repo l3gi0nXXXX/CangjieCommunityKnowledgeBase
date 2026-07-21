@@ -98,6 +98,45 @@ public class CkbP7CandidateTest {
     }
 
     @TestCase
+    public func tR4BndEqualLengthTrustInputsUseDistinctSha256Evidence(): Unit {
+        let baseRootA = "target/t-r4-sha-base-aa"
+        let baseRootB = "target/t-r4-sha-base-bb"
+        p7S3Empty(baseRootA); p7S3Empty(baseRootB)
+        let baseA = ckbCleanCandidateBaseDiagnostic(FileKnowledgeStore(baseRootA))
+        let baseB = ckbCleanCandidateBaseDiagnostic(FileKnowledgeStore(baseRootB))
+        @Expect(baseRootA.size, baseRootB.size)
+        @Expect(baseA.evidenceHash.startsWith("sha256:"), true)
+        @Expect(baseB.evidenceHash.startsWith("sha256:"), true)
+        @Expect(baseA.evidenceHash == baseB.evidenceHash, false)
+
+        let pollutedA = r4OfficialRecord(); pollutedA.title = "CJ-HUMANEVAL-101 answer"
+        let pollutedB = r4OfficialRecord(); pollutedB.title = "CJ-HUMANEVAL-102 answer"
+        let recordsA = ArrayList<NormalizedRecord>(); recordsA.add(pollutedA)
+        let recordsB = ArrayList<NormalizedRecord>(); recordsB.add(pollutedB)
+        let reportA = ckbBuildStudentLeakageReport(recordsA)
+        let reportB = ckbBuildStudentLeakageReport(recordsB)
+        @Expect(pollutedA.title.size, pollutedB.title.size)
+        @Expect(reportA.evidenceHash.startsWith("sha256:"), true)
+        @Expect(reportB.evidenceHash.startsWith("sha256:"), true)
+        @Expect(reportA.evidenceHash == reportB.evidenceHash, false)
+        @Expect(reportA.json.contains("\"findingsEvidenceHash\":\"sha256:"), true)
+
+        let atomA = r4KnowledgeAtom("knowledge-atom-sha-a", "General Rune counting uses toRuneArray size A.")
+        let atomB = r4KnowledgeAtom("knowledge-atom-sha-b", "General Rune counting uses toRuneArray size B.")
+        let atomsA = ArrayList<NormalizedRecord>(); atomsA.add(atomA)
+        let atomsB = ArrayList<NormalizedRecord>(); atomsB.add(atomB)
+        let queryA = ckbBuildAnonymousAtomQueryReport(atomsA, atomsA)
+        let queryB = ckbBuildAnonymousAtomQueryReport(atomsB, atomsB)
+        @Expect(atomA.sourceId.size, atomB.sourceId.size)
+        @Expect(atomA.chunk.size, atomB.chunk.size)
+        @Expect(queryA.evidenceHash.startsWith("sha256:"), true)
+        @Expect(queryB.evidenceHash.startsWith("sha256:"), true)
+        @Expect(queryA.evidenceHash == queryB.evidenceHash, false)
+        @Expect(queryA.jsonl.contains("\"atomHash\":\"sha256:"), true)
+        @Expect(queryA.jsonl.contains("\"queryHash\":\"sha256:"), true)
+    }
+
+    @TestCase
     public func tR4NegIncomingIdentityConflictFailsClosedButExactDuplicateDedupes(): Unit {
         let first = r4OfficialRecord()
         let exact = r4OfficialRecord()

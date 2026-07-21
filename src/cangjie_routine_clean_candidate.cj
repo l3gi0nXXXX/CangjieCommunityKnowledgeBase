@@ -77,25 +77,25 @@ private class CkbCleanQueryBuildObserver <: CangjieServingIndexBuildObserver {
 // merge base.
 public func ckbCleanCandidateBaseDiagnostic(store: FileKnowledgeStore): CkbCleanCandidateBaseDiagnostic {
     let result = CkbCleanCandidateBaseDiagnostic()
-    let pathHash = stableSummaryHash(store.root.toString())
+    let pathHash = benchmarkGapSha256(store.root.toString())
     let lower = store.root.toString().toAsciiLower()
     if (lower.contains("ckb-data") || lower.contains("production") || lower.contains("final11")) {
-        result.evidenceHash = stableSummaryHash("protected:${pathHash}")
+        result.evidenceHash = benchmarkGapSha256("protected:${pathHash}")
         return result
     }
     if (exists(store.root)) {
         try {
             for (_ in Directory.readFrom(store.root)) {
-                result.evidenceHash = stableSummaryHash("nonempty:${pathHash}")
+                result.evidenceHash = benchmarkGapSha256("nonempty:${pathHash}")
                 return result
             }
         } catch (_: Exception) {
-            result.evidenceHash = stableSummaryHash("unreadable:${pathHash}")
+            result.evidenceHash = benchmarkGapSha256("unreadable:${pathHash}")
             return result
         }
     }
     result.ok = true; result.code = "clean_candidate_base_allowed"
-    result.evidenceHash = stableSummaryHash("empty:${pathHash}")
+    result.evidenceHash = benchmarkGapSha256("empty:${pathHash}")
     result
 }
 
@@ -150,7 +150,7 @@ public func ckbBuildAnonymousAtomQueryReport(candidateRecords: ArrayList<Normali
     if (!validation.ok) {
         report.failed = atoms.size
         report.jsonl = "{\"status\":\"candidate_leakage_blocked\",\"code\":\"${ckbCleanJsonEscape(validation.code)}\"}\n"
-        report.evidenceHash = stableSummaryHash(report.jsonl); return report
+        report.evidenceHash = benchmarkGapSha256(report.jsonl); return report
     }
     let observer = CkbCleanQueryBuildObserver()
     let index = buildCangjieServingIndex(candidateRecords,
@@ -168,13 +168,13 @@ public func ckbBuildAnonymousAtomQueryReport(candidateRecords: ArrayList<Normali
         for (hit in lookup.hits) { if (hit.document.sourceId == atom.sourceId) { matched = true } }
         let passed = cleanQuery && matched
         if (passed) { report.passed += 1 } else { report.failed += 1 }
-        body.append("{\"atomHash\":\""); body.append(stableSummaryHash(atom.sourceId))
-        body.append("\",\"queryHash\":\""); body.append(stableSummaryHash(query))
+        body.append("{\"atomHash\":\""); body.append(benchmarkGapSha256(atom.sourceId))
+        body.append("\",\"queryHash\":\""); body.append(benchmarkGapSha256(query))
         body.append("\",\"hitCount\":${lookup.hits.size},\"passed\":${passed}}\n")
     }
     report.ok = report.indexBuildCount == 1 && report.failed == 0 && report.passed == atoms.size
     report.jsonl = "{\"ok\":${report.ok},\"indexBuildCount\":${report.indexBuildCount},\"atomCount\":${report.atomCount},\"passed\":${report.passed},\"failed\":${report.failed}}\n" + body.toString()
-    report.evidenceHash = stableSummaryHash(report.jsonl)
+    report.evidenceHash = benchmarkGapSha256(report.jsonl)
     report
 }
 
@@ -200,7 +200,7 @@ public func ckbCleanHistoricalStudentRecords(records: ArrayList<NormalizedRecord
         let identity = ckbCleanNormalizedIdentity(record)
         if (!diagnostic.ok || seen.contains(identity)) {
             result.removedCount += 1
-            removed.add(stableSummaryHash("${identity}|${diagnostic.code}|${diagnostic.matchedField}"))
+            removed.add(benchmarkGapSha256("${identity}|${diagnostic.code}|${diagnostic.matchedField}"))
             continue
         }
         seen.add(identity)
@@ -219,7 +219,7 @@ public func ckbValidateIncomingStudentRecords(records: ArrayList<NormalizedRecor
         if (!diagnostic.ok) {
             result.ok = false
             result.errorCode = diagnostic.code
-            result.evidenceHash = stableSummaryHash("${diagnostic.code}|${diagnostic.matchedField}")
+            result.evidenceHash = benchmarkGapSha256("${diagnostic.code}|${diagnostic.matchedField}")
             return result
         }
         let identity = ckbCleanNormalizedIdentity(record)
@@ -234,7 +234,7 @@ public func ckbValidateIncomingStudentRecords(records: ArrayList<NormalizedRecor
         }
         result.records.add(record)
     }
-    result.evidenceHash = stableSummaryHash("incoming:${result.records.size}")
+    result.evidenceHash = benchmarkGapSha256("incoming:${result.records.size}")
     result
 }
 
@@ -268,7 +268,7 @@ public func ckbOverlayCleanStudentRecordsForOwner(historical: ArrayList<Normaliz
         }
     }
     for (record in delta.records) { result.records.add(record) }
-    result.evidenceHash = stableSummaryHash("clean:${base.evidenceHash}|incoming:${delta.evidenceHash}|out:${result.records.size}")
+    result.evidenceHash = benchmarkGapSha256("clean:${base.evidenceHash}|incoming:${delta.evidenceHash}|out:${result.records.size}")
     result
 }
 
@@ -279,10 +279,10 @@ public func ckbCleanHistoricalStudentRawRecords(records: ArrayList<RawRecord>,
     let removed = ArrayList<String>()
     for (record in records) {
         let diagnostic = cangjieStudentRecordDiagnostic(ckbStudentRawAsNormalized(record), authority: authority)
-        let identity = if (record.sourceId != "") { record.sourceId } else { stableSummaryHash("${record.title}|${record.contentHash}") }
+        let identity = if (record.sourceId != "") { record.sourceId } else { benchmarkGapSha256("${record.title}|${record.contentHash}") }
         if (!diagnostic.ok || seen.contains(identity)) {
             result.removedCount += 1
-            removed.add(stableSummaryHash("${identity}|${diagnostic.code}|${diagnostic.matchedField}"))
+            removed.add(benchmarkGapSha256("${identity}|${diagnostic.code}|${diagnostic.matchedField}"))
             continue
         }
         seen.add(identity)
@@ -316,7 +316,7 @@ public func ckbOverlayCleanStudentRawRecords(historical: ArrayList<RawRecord>,
     }
     for (record in cleanIncoming.records) { result.records.add(record) }
     result.removedCount = base.removedCount
-    result.evidenceHash = stableSummaryHash("clean-raw:${base.evidenceHash}|out:${result.records.size}")
+    result.evidenceHash = benchmarkGapSha256("clean-raw:${base.evidenceHash}|out:${result.records.size}")
     result
 }
 
@@ -326,7 +326,7 @@ public func ckbStudentCleanRemovalDiagnostic(kind: String, count: Int64, evidenc
 
 private func ckbCleanNormalizedIdentity(record: NormalizedRecord): String {
     if (record.sourceId != "") { return record.sourceId }
-    stableSummaryHash("${record.recordKind}|${record.title}|${record.citation}")
+    benchmarkGapSha256("${record.recordKind}|${record.title}|${record.citation}")
 }
 
 private func ckbCleanNormalizedEvidence(record: NormalizedRecord): String {
@@ -347,7 +347,7 @@ private func ckbCleanNormalizedEvidence(record: NormalizedRecord): String {
 private func ckbCleanEvidenceHash(values: ArrayList<String>): String {
     let out = StringBuilder()
     for (value in values) { out.append(value); out.append("|") }
-    stableSummaryHash(out.toString())
+    benchmarkGapSha256(out.toString())
 }
 
 private func ckbCollectLeakageFinding(report: CkbStudentLeakageReport, recordHash: String,
