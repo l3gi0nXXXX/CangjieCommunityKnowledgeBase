@@ -556,6 +556,9 @@ public class CangjieEvalAbcdeRunnerTest {
     @TestCase
     public func ckg12Pos005ClaudeUsesDangerouslySkipPermissions(): Unit {
         @Expect(ckbAbcdeClaudePermissionFlagForTest(), "--dangerously-skip-permissions")
+        let command=ckbAbcdeCertificationClaudeCommand("/tmp/group","/tmp/runtime","/tmp/cert.sb","/usr/bin/true","GLM-5.2","/tmp/runtime/out","/tmp/runtime/err")
+        @Expect(command.contains("--dangerously-skip-permissions"),true)
+        @Expect(command.split("--dangerously-skip-permissions").size,2)
     }
 
     // NK-UT-03 / NK-BND-02 / NK-NEG-03
