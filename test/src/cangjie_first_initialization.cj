@@ -42,7 +42,9 @@ public class CkbFirstInitResult {
     public var candidateVersion: String = ""
     public var activeVersion: String = ""
     public var persisted: Bool = false
+    public var evalSupportAuthorityPersisted: Bool = false
     public var dryRun: Bool = false
+    public var evalSupportAuthority: CangjieEvalSupportSnapshot = CangjieEvalSupportSnapshot()
     public var validation: CkbFirstInitValidationResult = CkbFirstInitValidationResult()
     public var sources: ArrayList<CkbFirstInitSourceSummary> = ArrayList<CkbFirstInitSourceSummary>()
     public var diagnostics: ArrayList<String> = ArrayList<String>()
@@ -54,6 +56,7 @@ public class CkbFirstInitAssembly {
     public var ok: Bool = true
     public var manifest: CangjieVersionManifest = CangjieVersionManifest()
     public var records: ArrayList<CangjieTypedRecord> = ArrayList<CangjieTypedRecord>()
+    public var evalSupportAuthority: CangjieEvalSupportSnapshot = CangjieEvalSupportSnapshot()
     public var sources: ArrayList<CkbFirstInitSourceSummary> = ArrayList<CkbFirstInitSourceSummary>()
     public var diagnostics: ArrayList<String> = ArrayList<String>()
 
@@ -125,6 +128,7 @@ public func renderCkbFirstInitResult(result: CkbFirstInitResult): String {
     out.append("validation ok=${result.validation.ok}\n")
     out.append("activeKnowledgeVersion=${if (result.activeVersion == "") { "<empty>" } else { result.activeVersion }}\n")
     out.append("persisted=${result.persisted}\n")
+    out.append("evalSupportAuthority version=${if (result.evalSupportAuthority.datasetVersion == "") { "<empty>" } else { result.evalSupportAuthority.datasetVersion }} records=${result.evalSupportAuthority.recordCount} hash=${if (result.evalSupportAuthority.authorityHash == "") { "<empty>" } else { result.evalSupportAuthority.authorityHash }} persisted=${result.evalSupportAuthorityPersisted}\n")
     for (source in result.sources) {
         out.append("source ${source.name} ok=${source.ok} files=${source.fileCount} records=${source.recordCount}\n")
     }
@@ -185,7 +189,8 @@ public func dedupeCkbFirstInitializationRecords(records: ArrayList<CangjieTypedR
     out
 }
 
-public func validateCkbFirstInitializationRecords(records: ArrayList<CangjieTypedRecord>): CkbFirstInitValidationResult {
+public func validateCkbFirstInitializationRecords(records: ArrayList<CangjieTypedRecord>,
+    evalSupportAuthority: CangjieEvalSupportSnapshot): CkbFirstInitValidationResult {
     let validation = CkbFirstInitValidationResult()
     ckbFirstInitRequireKind(validation, records, CangjieTypedRecordKinds.DOC_SECTION, "missing_doc_section")
     ckbFirstInitRequireKind(validation, records, CangjieTypedRecordKinds.TOOL_MANUAL, "missing_tool_manual")
@@ -194,8 +199,11 @@ public func validateCkbFirstInitializationRecords(records: ArrayList<CangjieType
     ckbFirstInitRequireSymbol(validation, records, "String.contains")
     ckbFirstInitRequireSymbol(validation, records, "HashMap")
     ckbFirstInitRequireSymbol(validation, records, "Option")
-    ckbFirstInitRequireContent(validation, records, CangjieTypedRecordKinds.EVAL_SUPPORT, "EvalValue", "missing_eval_EvalValue")
-    ckbFirstInitRequireContent(validation, records, CangjieTypedRecordKinds.EVAL_SUPPORT, "EvalEntry", "missing_eval_EvalEntry")
+    let evalValidation = validateVersionedEvalSupportSnapshot(evalSupportAuthority)
+    validation.queryChecks.add("evalAuthority:version=${evalSupportAuthority.datasetVersion}:records=${evalSupportAuthority.recordCount}:hash=${evalSupportAuthority.authorityHash}")
+    if (!evalSupportAuthority.ok || !evalValidation.ok || evalSupportAuthority.recordCount == 0) {
+        validation.failedGates.add("eval_support_authority_snapshot_invalid")
+    }
     validation.ok = validation.failedGates.size == 0
     validation
 }
@@ -226,7 +234,8 @@ public func runCkbFirstInitialization(options: CkbFirstInitOptions, store: FileK
     for (diagnostic in assembly.diagnostics) {
         result.diagnostics.add(diagnostic)
     }
-    result.validation = validateCkbFirstInitializationRecords(assembly.records)
+    result.evalSupportAuthority = assembly.evalSupportAuthority
+    result.validation = validateCkbFirstInitializationRecords(assembly.records, assembly.evalSupportAuthority)
     if (!assembly.ok) {
         if (options.apply && assembly.records.size > 0) {
             let loaded = newKnowledgeBaseFromStore(store)
@@ -251,6 +260,11 @@ public func runCkbFirstInitialization(options: CkbFirstInitOptions, store: FileK
     }
     if (!options.apply || options.dryRun) {
         result.ok = true
+        return result
+    }
+    result.evalSupportAuthorityPersisted = persistVersionedEvalSupportSnapshot(store, assembly.evalSupportAuthority)
+    if (!result.evalSupportAuthorityPersisted) {
+        result.diagnostics.add("eval_support_authority_persist_failed")
         return result
     }
     let loaded = newKnowledgeBaseFromStore(store)
@@ -372,20 +386,19 @@ private func ckbFirstInitCollectEval(assembly: CkbFirstInitAssembly, root: Strin
         return
     }
     let roots = discoverCangjieHumanEvalCaseRoots(clean)
-    let records = extractAllEvalSupportRecords(clean, version: version)
+    let snapshot = buildVersionedEvalSupportSnapshot(clean,
+        "cangjie-${version.targetVersion}-eval-support", version: version)
+    assembly.evalSupportAuthority = snapshot
     summary.fileCount = roots.size
-    summary.recordCount = records.records.size
-    summary.ok = records.ok && records.records.size > 0
-    for (diagnostic in records.diagnostics) {
+    summary.recordCount = snapshot.recordCount
+    summary.ok = snapshot.ok && snapshot.recordCount > 0
+    for (diagnostic in snapshot.diagnostics) {
         summary.diagnostics.add(diagnostic)
     }
     if (!version.ok) {
         for (diagnostic in version.diagnostics) {
             summary.diagnostics.add(diagnostic)
         }
-    }
-    for (record in records.records) {
-        assembly.records.add(record)
     }
     if (!summary.ok) {
         assembly.diagnostics.add("eval_support_scan_failed")

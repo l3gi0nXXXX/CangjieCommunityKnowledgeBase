@@ -11,6 +11,7 @@ public class CangjieEvalSupportSnapshot {
     public var datasetVersion: String = ""
     public var revision: Int64 = 1
     public var recordCount: Int64 = 0
+    public var authorityHash: String = ""
     public var checksum: String = ""
     public var jsonl: String = ""
     public var diagnostics: ArrayList<String> = ArrayList<String>()
@@ -137,7 +138,9 @@ public func validateEvalSupportRecordSafety(records: ArrayList<CangjieTypedRecor
     result
 }
 
-public func buildVersionedEvalSupportSnapshot(datasetRoot: String, datasetVersion: String, revision!: Int64 = 1): CangjieEvalSupportSnapshot {
+public func buildVersionedEvalSupportSnapshot(datasetRoot: String, datasetVersion: String,
+    revision!: Int64 = 1,
+    version!: CangjieVersionResolution = cangjieDefaultEvalSupportResolution()): CangjieEvalSupportSnapshot {
     let snapshot = CangjieEvalSupportSnapshot()
     snapshot.datasetVersion = datasetVersion.trimAscii()
     snapshot.revision = revision
@@ -146,7 +149,7 @@ public func buildVersionedEvalSupportSnapshot(datasetRoot: String, datasetVersio
         snapshot.diagnostics.add("invalid_eval_support_snapshot_identity")
         return snapshot
     }
-    let extracted = extractAllEvalSupportRecords(datasetRoot)
+    let extracted = extractAllEvalSupportRecords(datasetRoot, version: version)
     if (!extracted.ok) {
         snapshot.ok = false
         for (diagnostic in extracted.diagnostics) { snapshot.diagnostics.add(diagnostic) }
@@ -185,6 +188,7 @@ public func buildVersionedEvalSupportSnapshot(datasetRoot: String, datasetVersio
     snapshot.recordCount = extracted.records.size
     snapshot.jsonl = out.toString()
     snapshot.checksum = benchmarkGapSha256("${snapshot.schemaVersion}:${snapshot.datasetVersion}:${snapshot.revision}:${snapshot.jsonl}")
+    snapshot.authorityHash = snapshot.checksum
     snapshot
 }
 
@@ -194,15 +198,19 @@ public func validateVersionedEvalSupportSnapshot(snapshot: CangjieEvalSupportSna
     result.datasetVersion = snapshot.datasetVersion
     result.revision = snapshot.revision
     result.recordCount = snapshot.recordCount
+    result.authorityHash = snapshot.authorityHash
     result.checksum = snapshot.checksum
     result.jsonl = snapshot.jsonl
     if (snapshot.schemaVersion != "ckb-eval-support-v1" || !cangjieEvalSupportVersionPartAllowed(snapshot.datasetVersion) || snapshot.revision < 1) {
         result.ok = false; result.diagnostics.add("invalid_eval_support_snapshot_identity"); return result
     }
-    if (snapshot.checksum != benchmarkGapSha256("${snapshot.schemaVersion}:${snapshot.datasetVersion}:${snapshot.revision}:${snapshot.jsonl}")) {
+    if (!snapshot.authorityHash.startsWith("sha256:") || snapshot.authorityHash != snapshot.checksum ||
+        snapshot.checksum != benchmarkGapSha256("${snapshot.schemaVersion}:${snapshot.datasetVersion}:${snapshot.revision}:${snapshot.jsonl}")) {
         result.ok = false; result.diagnostics.add("eval_support_snapshot_checksum_mismatch"); return result
     }
     var count: Int64 = 0
+    let caseIds = ArrayList<String>()
+    let familyKeys = ArrayList<String>()
     for (line in snapshot.jsonl.split("\n")) {
         let raw = line.trimAscii()
         if (raw == "") { continue }
@@ -217,16 +225,70 @@ public func validateVersionedEvalSupportSnapshot(snapshot: CangjieEvalSupportSna
             let title = cangjieEvalSupportJsonString(object, "title")
             let citation = cangjieEvalSupportJsonString(object, "citation")
             let caseId = cangjieEvalSupportJsonString(object, "caseId")
+            let sourceFamily = cangjieEvalSupportJsonString(object, "sourceFamily")
             let rowRevision = cangjieEvalSupportJsonInt(object, "revision", 0)
             let safetyText = content.toAsciiLower()
             if (schema != snapshot.schemaVersion || version != snapshot.datasetVersion || rowRevision != snapshot.revision || sourceId == "" || title == "" || citation == "" || caseId == "" || !sourceId.contains(caseId) || !citation.startsWith(caseId + ":") || !cangjieEvalSupportRelativePathAllowed(path) || contentHash != benchmarkGapSha256("${sourceId}\n${content}") || safetyText.contains("canonical_solution") || safetyText.contains("@expect(") || safetyText.contains("assert(") || safetyText.contains("main():")) {
                 result.ok = false; result.diagnostics.add("eval_support_snapshot_record_invalid"); return result
             }
+            if (!cangjieEvalSupportKnownFamily(sourceFamily)) {
+                result.ok = false; result.diagnostics.add("eval_support_snapshot_family_unknown"); return result
+            }
+            let familyKey = "${caseId}:${sourceFamily}"
+            if (familyKeys.contains(familyKey)) {
+                result.ok = false; result.diagnostics.add("eval_support_snapshot_family_duplicate"); return result
+            }
+            familyKeys.add(familyKey)
+            if (!caseIds.contains(caseId)) { caseIds.add(caseId) }
             count += 1
         } catch (_: Exception) { result.ok = false; result.diagnostics.add("malformed_eval_support_snapshot"); return result }
     }
-    if (count != snapshot.recordCount) { result.ok = false; result.diagnostics.add("eval_support_snapshot_count_mismatch") }
+    if (count != snapshot.recordCount) { result.ok = false; result.diagnostics.add("eval_support_snapshot_count_mismatch"); return result }
+    if (caseIds.size == 0) { result.ok = false; result.diagnostics.add("eval_support_snapshot_no_cases"); return result }
+    for (caseId in caseIds) {
+        for (family in ["prompt", "metadata", "eval_support", "visible_test_helpers"]) {
+            if (!familyKeys.contains("${caseId}:${family}")) {
+                result.ok = false; result.diagnostics.add("eval_support_snapshot_family_missing:${caseId}:${family}"); return result
+            }
+        }
+    }
     result
+}
+
+private func cangjieEvalSupportKnownFamily(sourceFamily: String): Bool {
+    sourceFamily == "prompt" || sourceFamily == "metadata" || sourceFamily == "eval_support" ||
+        sourceFamily == "visible_test_helpers"
+}
+
+public func cangjieEvalSupportAuthoritySnapshotPath(): String {
+    "metadata/eval-authority/first-init/snapshot.jsonl"
+}
+
+public func cangjieEvalSupportAuthorityManifestPath(): String {
+    "metadata/eval-authority/first-init/manifest.ckb"
+}
+
+public func persistVersionedEvalSupportSnapshot(store: FileKnowledgeStore,
+    snapshot: CangjieEvalSupportSnapshot): Bool {
+    let validated = validateVersionedEvalSupportSnapshot(snapshot)
+    if (!snapshot.ok || !validated.ok) {
+        return false
+    }
+    let manifest = StringBuilder()
+    manifest.append("schemaVersion=${snapshot.schemaVersion}\n")
+    manifest.append("datasetVersion=${snapshot.datasetVersion}\n")
+    manifest.append("revision=${snapshot.revision}\n")
+    manifest.append("recordCount=${snapshot.recordCount}\n")
+    manifest.append("authorityHash=${snapshot.authorityHash}\n")
+    manifest.append("checksum=${snapshot.checksum}\n")
+    try {
+        store.writeLinesAtomically(cangjieEvalSupportAuthoritySnapshotPath(), snapshot.jsonl)
+        store.writeLinesAtomically(cangjieEvalSupportAuthorityManifestPath(), manifest.toString())
+        return store.readText(cangjieEvalSupportAuthoritySnapshotPath()) == snapshot.jsonl &&
+            store.readText(cangjieEvalSupportAuthorityManifestPath()) == manifest.toString()
+    } catch (_: Exception) {
+        return false
+    }
 }
 
 private func cangjieEvalSupportJsonString(object: JsonObject, field: String): String {
@@ -303,6 +365,7 @@ private func cangjieAddEvalSupportFile(result: CangjieTypedRecordResult, caseRoo
     }
     let read = cangjieReadEvalSupportText(Path(caseRoot).join(relative))
     if (!read.ok) {
+        result.ok = false
         result.diagnostics.add("${read.status}:${relative}")
         return
     }
@@ -311,6 +374,7 @@ private func cangjieAddEvalSupportFile(result: CangjieTypedRecordResult, caseRoo
         content = cangjieEvalVisibleTestHelpersOnly(read.text)
     }
     if (content.trimAscii() == "") {
+        result.ok = false
         result.diagnostics.add("empty_eval_support_source:${relative}")
         return
     }
@@ -439,7 +503,12 @@ private func cangjieReadEvalSupportText(path: Path): CangjieEvalSupportReadResul
         return result
     }
     try {
-        result.text = String.fromUtf8(File.readFrom(path))
+        let bytes = File.readFrom(path)
+        if (!cangjieEvalSupportUtf8Valid(bytes)) {
+            result.status = "invalid_eval_support_encoding"
+            return result
+        }
+        result.text = String.fromUtf8(bytes)
         result.ok = true
         result.status = "ok"
     } catch (_: Exception) {
@@ -447,6 +516,45 @@ private func cangjieReadEvalSupportText(path: Path): CangjieEvalSupportReadResul
         result.text = ""
     }
     result
+}
+
+private func cangjieEvalSupportUtf8Valid(bytes: Array<UInt8>): Bool {
+    var i: Int64 = 0
+    while (i < bytes.size) {
+        let first = bytes[i]
+        if (first <= 0x7f) {
+            i += 1
+            continue
+        }
+        var continuationCount: Int64 = 0
+        if (first >= 0xc2 && first <= 0xdf) {
+            continuationCount = 1
+        } else if (first >= 0xe0 && first <= 0xef) {
+            continuationCount = 2
+        } else if (first >= 0xf0 && first <= 0xf4) {
+            continuationCount = 3
+        } else {
+            return false
+        }
+        if (i + continuationCount >= bytes.size) {
+            return false
+        }
+        var offset: Int64 = 1
+        while (offset <= continuationCount) {
+            let next = bytes[i + offset]
+            if (next < 0x80 || next > 0xbf) {
+                return false
+            }
+            offset += 1
+        }
+        let second = bytes[i + 1]
+        if ((first == 0xe0 && second < 0xa0) || (first == 0xed && second > 0x9f) ||
+            (first == 0xf0 && second < 0x90) || (first == 0xf4 && second > 0x8f)) {
+            return false
+        }
+        i += continuationCount + 1
+    }
+    true
 }
 
 private func cangjieCaseIdFromRoot(root: String): String {

@@ -1,7 +1,7 @@
 package cangjie_community_knowledge_base_test
 
 import std.collection.*
-import std.fs.{Directory, File, Path, exists}
+import std.fs.{Directory, File, Path, exists, remove}
 import std.unittest.*
 import std.unittest.testmacro.*
 
@@ -80,6 +80,80 @@ public class CangjieFirstInitializationTest {
         @Expect(kb.rawRecordCount(), assembly.records.size)
         @Expect(kb.normalizedRecordCount(), assembly.records.size)
         @Expect(kb.candidateRecordSnapshot().size, assembly.records.size)
+    }
+
+    @TestCase
+    public func utEvalIsolate001BuildsAuthoritySnapshotWithoutAddingServingRecords(): Unit {
+        ckbFirstInitRemoveFixture("target/ut-eval-isolate-001")
+        let fixture = ckbFirstInitWriteFullFixture("target/ut-eval-isolate-001", true)
+        let assembly = assembleCkbFirstInitializationRecords(ckbFirstInitOptionsForFixture(fixture, false))
+
+        @Expect(assembly.ok, true)
+        @Expect(assembly.evalSupportAuthority.ok, true)
+        @Expect(assembly.evalSupportAuthority.recordCount, 4)
+        @Expect(assembly.evalSupportAuthority.datasetVersion, "cangjie-1.0.0-eval-support")
+        @Expect(assembly.evalSupportAuthority.authorityHash, assembly.evalSupportAuthority.checksum)
+        @Expect(ckbFirstInitEvalAuthorityRecordCount(assembly.records), 0)
+    }
+
+    @TestCase
+    public func bndEvalIsolate001KeepsAll164CasesInIsolatedAuthoritySnapshot(): Unit {
+        let snapshot = buildVersionedEvalSupportSnapshot("test/cangjie_eval/cases/Cangjie-HumanEval",
+            "humaneval-cangjie-164-v1")
+
+        @Expect(snapshot.ok, true)
+        @Expect(snapshot.recordCount, 656)
+        @Expect(snapshot.authorityHash.startsWith("sha256:"), true)
+        @Expect(validateVersionedEvalSupportSnapshot(snapshot).ok, true)
+    }
+
+    @TestCase
+    public func negEvalIsolate001InvalidUtf8FailsBeforeActivePersistence(): Unit {
+        ckbFirstInitRemoveFixture("target/neg-eval-isolate-001")
+        ckbFirstInitRemoveFixture("target/neg-eval-isolate-001-store")
+        let fixture = ckbFirstInitWriteFullFixture("target/neg-eval-isolate-001", true)
+        File.writeTo(Path(fixture.evalRoot).join("CJ-HUMANEVAL-000/prompt.md"), [UInt8(255), UInt8(254)])
+        let extracted = extractEvalSupportRecords(Path(fixture.evalRoot).join("CJ-HUMANEVAL-000").toString())
+        let options = ckbFirstInitOptionsForFixture(fixture, true)
+        let store = FileKnowledgeStore("target/neg-eval-isolate-001-store")
+
+        let result = runCkbFirstInitialization(options, store)
+
+        @Expect(extracted.ok, false)
+        @Expect(extracted.diagnostics.contains("invalid_eval_support_encoding:prompt.md"), true)
+        @Expect(result.ok, false)
+        @Expect(result.evalSupportAuthority.ok, false)
+        @Expect(result.diagnostics.contains("eval_support_scan_failed"), true)
+        @Expect(store.has("index/active.ckb"), false)
+        @Expect(store.has(cangjieEvalSupportAuthoritySnapshotPath()), false)
+    }
+
+    @TestCase
+    public func intFirstInitIsolate001PersistsAuthorityAuditButKeepsActiveClean(): Unit {
+        ckbFirstInitRemoveFixture("target/int-first-init-isolate-001")
+        ckbFirstInitRemoveFixture("target/int-first-init-isolate-001-store")
+        let fixture = ckbFirstInitWriteFullFixture("target/int-first-init-isolate-001", true)
+        let options = ckbFirstInitOptionsForFixture(fixture, true)
+        let store = FileKnowledgeStore("target/int-first-init-isolate-001-store")
+
+        let result = runCkbFirstInitialization(options, store)
+        let loaded = newKnowledgeBaseFromStore(store)
+        let activeSnapshot = store.loadActiveSnapshot()
+        let manifest = store.readText(cangjieEvalSupportAuthorityManifestPath())
+        let snapshot = store.readText(cangjieEvalSupportAuthoritySnapshotPath())
+
+        @Expect(result.ok, true)
+        @Expect(result.evalSupportAuthorityPersisted, true)
+        @Expect(result.evalSupportAuthority.recordCount, 4)
+        @Expect(ckbFirstInitEvalAuthorityRecordCount(loaded.kb.activeRecordSnapshot()), 0)
+        @Expect(ckbFirstInitEvalAuthorityRecordCount(loaded.kb.candidateRecordSnapshot()), 0)
+        @Expect(ckbFirstInitRawEvalAuthorityRecordCount(activeSnapshot.rawRecords), 0)
+        @Expect(ckbFirstInitEvalAuthorityRecordCount(activeSnapshot.normalizedRecords), 0)
+        @Expect(ckbFirstInitEvalAuthorityRecordCount(activeSnapshot.activeIndex), 0)
+        @Expect(ckbFirstInitVectorEvalAuthorityRecordCount(activeSnapshot.vectorRecords), 0)
+        @Expect(manifest.contains("recordCount=4"), true)
+        @Expect(manifest.contains("authorityHash=${result.evalSupportAuthority.authorityHash}"), true)
+        @Expect(snapshot, result.evalSupportAuthority.jsonl)
     }
 
     @TestCase
@@ -348,6 +422,13 @@ extend String {
     fixture
 }
 
+private func ckbFirstInitRemoveFixture(root: String): Unit {
+    let path = Path(root)
+    if (exists(path)) {
+        remove(path, recursive: true)
+    }
+}
+
 private func ckbFirstInitOptionsForFixture(fixture: CkbFirstInitFixturePaths, apply: Bool): CkbFirstInitOptions {
     let options = CkbFirstInitOptions()
     options.docsRoot = fixture.docsRoot
@@ -390,6 +471,50 @@ private func ckbFirstInitCandidateHasNoOfflineBaseline(kb: KnowledgeBase): Bool 
         }
     }
     true
+}
+
+private func ckbFirstInitEvalAuthorityRecordCount(records: ArrayList<NormalizedRecord>): Int64 {
+    var count: Int64 = 0
+    for (record in records) {
+        if (record.metadata.sourceSet == CangjieSourceSets.EVAL_SUPPORT ||
+            record.sourceId.startsWith("eval-support-CJ-HUMANEVAL-")) {
+            count += 1
+        }
+    }
+    count
+}
+
+private func ckbFirstInitEvalAuthorityRecordCount(records: ArrayList<CangjieTypedRecord>): Int64 {
+    var count: Int64 = 0
+    for (record in records) {
+        if (record.sourceSet == CangjieSourceSets.EVAL_SUPPORT ||
+            record.sourceId.startsWith("eval-support-CJ-HUMANEVAL-")) {
+            count += 1
+        }
+    }
+    count
+}
+
+private func ckbFirstInitRawEvalAuthorityRecordCount(records: ArrayList<RawRecord>): Int64 {
+    var count: Int64 = 0
+    for (record in records) {
+        if (record.metadata.sourceSet == CangjieSourceSets.EVAL_SUPPORT ||
+            record.sourceId.startsWith("eval-support-CJ-HUMANEVAL-")) {
+            count += 1
+        }
+    }
+    count
+}
+
+private func ckbFirstInitVectorEvalAuthorityRecordCount(records: ArrayList<VectorRecord>): Int64 {
+    var count: Int64 = 0
+    for (record in records) {
+        if (record.metadata.sourceSet == CangjieSourceSets.EVAL_SUPPORT ||
+            record.id.startsWith("eval-support-CJ-HUMANEVAL-")) {
+            count += 1
+        }
+    }
+    count
 }
 
 private func p7McpToolCall(name: String, arguments: String): String {
