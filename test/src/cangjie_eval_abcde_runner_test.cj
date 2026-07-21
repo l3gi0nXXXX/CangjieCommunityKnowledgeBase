@@ -797,6 +797,9 @@ public class CangjieEvalAbcdeRunnerTest {
             let sdk=match(getVariable("CANGJIE_HOME")){case Some(value)=>canonicalize(Path(value)).toString() case None=>""};@Expect(sdk.isEmpty(),false);@Expect(ckbAbcdePrepareBundledArchiverForTest(canonicalize(Path(home)).toString(),sdk),"ok")
             let profilePath="${root}/certification.sb";File.writeTo(Path(profilePath),ckbAbcdeCertificationSandboxProfile(workspace,home,bin,config,store,caseSrc,"/usr/bin/true","/usr/bin/true").toArray())
             let profile=String.fromUtf8(File.readFrom(Path(profilePath)));@Expect(profile.contains("/private/tmp/claude-"),false)
+            let metadataLine=profile.split("\n")[7]
+            for(path in [workspace,home,bin,config,store]){@Expect(metadataLine.contains("(literal \"${canonicalize(Path(path)).toString()}\")"),true)}
+            @Expect(metadataLine.contains("(subpath \"${canonicalize(Path(workspace)).parent.toString()}\")"),false)
             let probe=ckbAbcdeCertificationSandboxProbeForTest(profilePath,workspace,home,caseSrc)
             @Expect(probe.exitCode,0);@Expect(probe.stdout.contains("\"runtimeTempMarkersPassed\":true"),true);@Expect(probe.stdout.contains("\"runtimeTempMarkersCleaned\":true"),true);@Expect(probe.stdout.contains("\"archiverReady\":true"),true);@Expect(probe.stdout.contains("\"minimalBuildPassed\":true"),true);@Expect(probe.stdout.contains("\"deniedExternalTemp\":true"),true);@Expect(probe.stdout.contains("\"deniedTempSibling\":true"),true)
         } finally { _=launch("/bin/rm",["-rf",root]).wait() }
