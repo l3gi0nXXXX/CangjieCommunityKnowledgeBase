@@ -124,10 +124,14 @@ public class CangjieVersionManifestTest {
     @TestCase
     public func stB001UnsupportedSourceSetReturnsDiagnostic(): Unit {
         let resolution = resolveCangjieVersion(cangjieVersionSelector(targetVersion: "1.0.0", sourceSet: "private-src", versionPolicy: "exact"), defaultCangjieVersionManifest())
+        let derived = resolveCangjieVersion(cangjieVersionSelector(targetVersion: "1.0.0", sourceSet: CangjieSourceSets.KNOWLEDGE_ATOMS, versionPolicy: "exact"), defaultCangjieVersionManifest())
 
         @Expect(resolution.ok, false)
         @Expect(resolution.diagnostic, "unsupported_source_set")
         @Expect(resolution.diagnostics.contains("unsupported_source_set:private-src"), true)
+        @Expect(derived.ok, false)
+        @Expect(derived.diagnostic, "unsupported_source_set")
+        @Expect(derived.diagnostics.contains("unsupported_source_set:knowledge-atoms"), true)
     }
 }
 

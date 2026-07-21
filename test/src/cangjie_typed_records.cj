@@ -6,6 +6,7 @@ public class CangjieTypedRecordKinds {
     public static let DOC_SECTION: String = "doc_section"
     public static let TOOL_MANUAL: String = "tool_manual"
     public static let EVAL_SUPPORT: String = "eval_support"
+    public static let KNOWLEDGE_ATOM: String = "knowledge_atom"
     public static let SYMBOL_CARD: String = "symbol_card"
     public static let MODULE_TREE: String = "module_tree"
     public static let AVAILABILITY: String = "availability"
@@ -102,7 +103,8 @@ private func cangjieTypedMetadataSymbol(record: CangjieTypedRecord, base: Knowle
 }
 
 private func cangjieTypedRecordSourceType(record: CangjieTypedRecord): String {
-    if (record.recordKind == CangjieTypedRecordKinds.EVAL_SUPPORT) {
+    if (record.recordKind == CangjieTypedRecordKinds.EVAL_SUPPORT ||
+        record.recordKind == CangjieTypedRecordKinds.KNOWLEDGE_ATOM) {
         return SourceTypes.DERIVED
     }
     if (record.recordKind == CangjieTypedRecordKinds.SYMBOL_CARD ||

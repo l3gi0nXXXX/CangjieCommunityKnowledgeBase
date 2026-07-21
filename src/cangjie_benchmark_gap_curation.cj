@@ -96,8 +96,16 @@ public func curateBenchmarkGapRecords(inputs: ArrayList<CangjieBenchmarkGapInput
             input.knowledgeText = atomTests.knowledgeText
             input.knowledgeExample = atomTests.example
         }
-        let identity = canonicalBenchmarkGapIdentity(input)
-        let canonicalHash = canonicalBenchmarkGapInputHash(input)
+        if (benchmarkGapIsKnowledgeAtom(input)) {
+            let servingDiagnostic = validateKnowledgeAtomServingProjection(benchmarkGapServingKnowledge(input), input.knowledgeExample)
+            if (servingDiagnostic != "") {
+                result.rejected += 1
+                result.diagnostics.add("item=${itemNumber}:errorCode=${servingDiagnostic}")
+                continue
+            }
+        }
+        let identity = if (benchmarkGapIsKnowledgeAtom(input)) { canonicalBenchmarkGapServingIdentity(input) } else { canonicalBenchmarkGapIdentity(input) }
+        let canonicalHash = if (benchmarkGapIsKnowledgeAtom(input)) { canonicalBenchmarkGapServingHash(input) } else { canonicalBenchmarkGapInputHash(input) }
         match (identityHashes.get(identity)) {
             case Some(existingHash) =>
                 if (existingHash == canonicalHash) {
@@ -303,6 +311,18 @@ public func canonicalBenchmarkGapIdentity(input: CangjieBenchmarkGapInput): Stri
     "${input.benchmark.trimAscii().toAsciiLower()}:${input.datasetVersion.trimAscii().toAsciiLower()}:${input.caseId.trimAscii().toAsciiLower()}:${input.missingKnowledge.trimAscii().toAsciiUpper()}:${input.targetVersion.trimAscii().toAsciiLower()}"
 }
 
+private func canonicalBenchmarkGapServingIdentity(input: CangjieBenchmarkGapInput): String {
+    let atomId = if (input.knowledgeAtomId.trimAscii() == "") { input.missingKnowledge.trimAscii().toAsciiUpper() } else { input.knowledgeAtomId.trimAscii().toAsciiUpper() }
+    "${atomId}:${input.targetVersion.trimAscii().toAsciiLower()}"
+}
+
+private func canonicalBenchmarkGapServingHash(input: CangjieBenchmarkGapInput): String {
+    benchmarkGapSha256(benchmarkGapCanonicalPart(canonicalBenchmarkGapServingIdentity(input)) +
+        benchmarkGapCanonicalPart(benchmarkGapServingKnowledge(input)) + benchmarkGapCanonicalPart(input.knowledgeExample.trimAscii()) +
+        benchmarkGapCanonicalPart(input.interfaceId.trimAscii()) + benchmarkGapCanonicalPart(input.contentFamily.trimAscii()) +
+        benchmarkGapCanonicalPart(benchmarkGapRecordCitation(input)))
+}
+
 public func canonicalBenchmarkGapCandidateHash(input: CangjieBenchmarkGapInput): String {
     benchmarkGapSha256(benchmarkGapCanonicalPart(canonicalBenchmarkGapIdentity(input)) +
         benchmarkGapCanonicalPart(input.taskText) + benchmarkGapCanonicalPart(input.visibleTestExcerpt) +
@@ -438,29 +458,30 @@ private func benchmarkGapRuneLength(raw: String): Int64 {
 private func benchmarkGapRecord(input: CangjieBenchmarkGapInput, targetVersion: String): NormalizedRecord {
     let record = NormalizedRecord()
     let resolvedTargetVersion = if (input.targetVersion.trimAscii() == "") { targetVersion } else { input.targetVersion.trimAscii() }
+    let atomId = if (input.knowledgeAtomId.trimAscii() == "") { input.missingKnowledge.trimAscii().toAsciiUpper() } else { input.knowledgeAtomId.trimAscii() }
+    let knowledge = benchmarkGapServingKnowledge(input)
+    let isAtom = benchmarkGapIsKnowledgeAtom(input)
     record.sourceId = benchmarkGapPersistentSourceId(input)
-    record.recordKind = CangjieTypedRecordKinds.EVAL_SUPPORT
-    record.title = "HumanEval gap ${input.caseId}: ${input.missingKnowledge}"
-    let knowledgePrefix = if (input.knowledgeText == "") { "" } else {
-        "Knowledge: ${input.knowledgeText}" +
-            if (input.knowledgeExample == "") { "\n" } else { "\nExample: ${input.knowledgeExample}\n" }
-    }
-    record.chunk = knowledgePrefix + "Task: ${input.taskText}\nVisible tests: ${input.visibleTestExcerpt}\nCompiler output: ${input.compilerOutput}\nMissing knowledge: ${input.missingKnowledge}\nInterface ID: ${input.interfaceId}\nContent family: ${input.contentFamily}\nUpdate mechanism: ${input.updateMechanism}"
-    if (input.knowledgeText != "") {
+    record.recordKind = if (isAtom) { CangjieTypedRecordKinds.KNOWLEDGE_ATOM } else { CangjieTypedRecordKinds.EVAL_SUPPORT }
+    record.title = if (isAtom) { "Knowledge atom ${atomId}" } else { "HumanEval gap ${input.caseId}: ${input.missingKnowledge}" }
+    if (isAtom) {
+        record.chunk = "Knowledge: ${knowledge}" + if (input.knowledgeExample.trimAscii() == "") { "" } else { "\nExample: ${input.knowledgeExample.trimAscii()}" }
         record.metadata.derivedFrom = ["knowledge-atom:${input.knowledgeAtomId}"]
+    } else {
+        record.chunk = "Task: ${input.taskText}\nVisible tests: ${input.visibleTestExcerpt}\nCompiler output: ${input.compilerOutput}\nMissing knowledge: ${input.missingKnowledge}\nInterface ID: ${input.interfaceId}\nContent family: ${input.contentFamily}\nUpdate mechanism: ${input.updateMechanism}"
     }
     record.citation = benchmarkGapRecordCitation(input)
     record.requiresReview = false
     record.metadata.sourceId = record.sourceId
     record.metadata.sourceType = SourceTypes.DERIVED
-    record.metadata.sourceSet = CangjieSourceSets.EVAL_SUPPORT
+    record.metadata.sourceSet = if (isAtom) { CangjieSourceSets.KNOWLEDGE_ATOMS } else { CangjieSourceSets.EVAL_SUPPORT }
     record.metadata.docVersion = input.datasetVersion.trimAscii()
     record.metadata.targetVersion = resolvedTargetVersion
-    record.metadata.versionResolutionId = "cangjie-${resolvedTargetVersion}-eval-support-curated"
+    record.metadata.versionResolutionId = if (isAtom) { "cangjie-${resolvedTargetVersion}-knowledge-atoms-curated" } else { "cangjie-${resolvedTargetVersion}-eval-support-curated" }
     record.metadata.trustLevel = TrustLevels.OFFICIAL
     record.metadata.reviewState = ReviewStates.REVIEWED
-    record.metadata.path = "visible-benchmark/${input.benchmark}/${input.caseId}/${input.interfaceId}"
-    record.metadata.symbol = "${input.interfaceId}:${input.missingKnowledge}"
+    record.metadata.path = if (isAtom) { "knowledge-atom/${input.contentFamily}/${benchmarkGapSha256(atomId).replace("sha256:", "")}" } else { "visible-benchmark/${input.benchmark}/${input.caseId}/${input.interfaceId}" }
+    record.metadata.symbol = if (isAtom) { "${input.interfaceId}:${atomId}" } else { "${input.interfaceId}:${input.missingKnowledge}" }
     record.metadata.contentSize = record.chunk.size
     record
 }
@@ -473,7 +494,17 @@ private func benchmarkGapRecordCitation(input: CangjieBenchmarkGapInput): String
 }
 
 public func benchmarkGapPersistentSourceId(input: CangjieBenchmarkGapInput): String {
-    "curated-gap-${benchmarkGapSha256(canonicalBenchmarkGapIdentity(input)).replace("sha256:", "")}"
+    let identity = if (benchmarkGapIsKnowledgeAtom(input)) { canonicalBenchmarkGapServingIdentity(input) } else { canonicalBenchmarkGapIdentity(input) }
+    let prefix = if (benchmarkGapIsKnowledgeAtom(input)) { "knowledge-atom-" } else { "curated-gap-" }
+    "${prefix}${benchmarkGapSha256(identity).replace("sha256:", "")}"
+}
+
+private func benchmarkGapIsKnowledgeAtom(input: CangjieBenchmarkGapInput): Bool {
+    input.knowledgeAtomId.trimAscii() != ""
+}
+
+private func benchmarkGapServingKnowledge(input: CangjieBenchmarkGapInput): String {
+    if (input.knowledgeText.trimAscii() == "") { input.missingKnowledge.trimAscii().toAsciiUpper() } else { input.knowledgeText.trimAscii() }
 }
 
 public func overlayBenchmarkGapRecords(active: ArrayList<NormalizedRecord>, delta: ArrayList<NormalizedRecord>): ArrayList<NormalizedRecord> {
@@ -522,10 +553,14 @@ private func benchmarkGapRecordReplacedByDelta(record: NormalizedRecord, delta: 
 }
 
 private func benchmarkGapPersistedRecord(record: NormalizedRecord): Bool {
-    record.sourceId.startsWith("curated-gap-") &&
-        record.recordKind == CangjieTypedRecordKinds.EVAL_SUPPORT &&
-        record.metadata.sourceSet == CangjieSourceSets.EVAL_SUPPORT &&
-        record.metadata.path.startsWith("visible-benchmark/")
+    (record.sourceId.startsWith("knowledge-atom-") &&
+        record.recordKind == CangjieTypedRecordKinds.KNOWLEDGE_ATOM &&
+        record.metadata.sourceSet == CangjieSourceSets.KNOWLEDGE_ATOMS &&
+        record.metadata.path.startsWith("knowledge-atom/")) ||
+        (record.sourceId.startsWith("curated-gap-") &&
+            record.recordKind == CangjieTypedRecordKinds.EVAL_SUPPORT &&
+            record.metadata.sourceSet == CangjieSourceSets.EVAL_SUPPORT &&
+            record.metadata.path.startsWith("visible-benchmark/"))
 }
 
 public func benchmarkGapLegacyPersistentSourceId(path: String, symbol: String, targetVersion: String,
