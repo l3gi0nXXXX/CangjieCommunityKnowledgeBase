@@ -203,8 +203,10 @@ public class CangjieCapabilityContractTest {
     }
 
     @TestCase
-    public func f7E2e001TaskKnowledgePackPrioritizesCuratedBenchmarkGap(): Unit {
-        let service = CangjieCapabilityService(f7CuratedGapKnowledgeBase())
+    public func f7E2e001TaskKnowledgePackUsesAnonymousKnowledgeAtom(): Unit {
+        let atom = r3AtomRecord("knowledge-atom-arraylist", "Knowledge: ArrayList.add appends one value.\nExample: values.add(1)")
+        atom.metadata.symbol = "KI-02:G-ARRAYLIST"
+        let service = CangjieCapabilityService(c145pKnowledgeBase([atom]))
         let request = CangjieTaskKnowledgeRequest()
         request.taskId = "CJ-HUMANEVAL-777"
         request.benchmark = "Cangjie-HumanEval"
@@ -215,27 +217,27 @@ public class CangjieCapabilityContractTest {
 
         let pack = service.taskKnowledgePack(request)
 
-        @Expect(f7HasQueryKind(pack, "benchmark_gap_lookup"), true)
+        @Expect(f7HasQueryKind(pack, "benchmark_gap_lookup"), false)
         @Expect(pack.coverage.coveragePass, true)
         @Expect(pack.requiredKnowledge[0].status, "covered")
-        @Expect(pack.requiredKnowledge[0].reason, "benchmark_gap_evidence_hit")
+        @Expect(pack.requiredKnowledge[0].reason, "evidence_hit")
         @Expect(pack.citations.size > 0, true)
-        @Expect(pack.notes.contains("benchmark_gap_evidence_hit"), true)
+        @Expect(pack.notes.contains("benchmark_gap_evidence_hit"), false)
+        @Expect(pack.matchedEvidence.size, 1)
+        @Expect(pack.matchedEvidence[0].sourceId.startsWith("knowledge-atom-"), true)
     }
 
-    // C145P-RED/GREEN: exact benchmark + task identity is selected before budget truncation.
+    // R3: anonymous atoms are selected by semantic evidence, not benchmark identity.
     @TestCase
-    public func c145pExactGapIsStableFirstAndModelReadable(): Unit {
-        let formula = "Knowledge: 累加每个数的十进制各位绝对值🙂；负号不参与求和。"
-        let unrelated = c145pGapRecord("Cangjie-HumanEval", "CJ-HUMANEVAL-014", "z-unrelated", "Knowledge: unrelated")
-        let exactZ = c145pGapRecord("Cangjie-HumanEval", "CJ-HUMANEVAL-145", "z-exact", formula)
-        let exactA = c145pGapRecord("Cangjie-HumanEval", "CJ-HUMANEVAL-145", "a-exact", formula + " Example: 输入 -12，结果为 3。")
-        let first = c145pGapPack([unrelated, exactZ, exactA], "Cangjie-HumanEval", "CJ-HUMANEVAL-145", 1)
-        let reversed = c145pGapPack([exactZ, unrelated, exactA], "Cangjie-HumanEval", "CJ-HUMANEVAL-145", 1)
+    public func c145pAnonymousAtomIsStableFirstAndModelReadable(): Unit {
+        let atom = r3AtomRecord("knowledge-atom-digit-rune", "Knowledge: 累加每个数的十进制各位绝对值🙂；负号不参与求和。\nExample: 输入 -12，结果为 3。")
+        atom.metadata.symbol = "KI-02:G-DIGIT-RUNE"
+        let first = c145pGapPack([atom], "Cangjie-HumanEval", "CJ-HUMANEVAL-145", 1, taskText: "十进制各位绝对值")
+        let reversed = c145pGapPack([atom], "Other-Benchmark", "CJ-HUMANEVAL-014", 1, taskText: "十进制各位绝对值")
 
         @Expect(first.coverage.coveragePass, true)
         @Expect(first.citations.size, 1)
-        @Expect(first.citations[0].sourceId, "curated-gap-a-exact")
+        @Expect(first.citations[0].sourceId, "knowledge-atom-digit-rune")
         @Expect(reversed.citations[0].sourceId, first.citations[0].sourceId)
         let json = cangjieTaskKnowledgePackJson(first)
         let matched = JsonValue.fromStr(json).asObject().get("matchedEvidence").getOrThrow().asArray().getItems()
@@ -245,31 +247,31 @@ public class CangjieCapabilityContractTest {
     }
 
     @TestCase
-    public func c145pWrongIdentityDoesNotBlanketCoverAndBodyBindsHash(): Unit {
-        let exact = c145pGapRecord("Cangjie-HumanEval", "CJ-HUMANEVAL-145", "same", "Knowledge: body-v1")
-        let changed = c145pGapRecord("Cangjie-HumanEval", "CJ-HUMANEVAL-145", "same", "Knowledge: body-v2")
-        let exactPack = c145pGapPack([exact], "Cangjie-HumanEval", "CJ-HUMANEVAL-145", 1)
-        let changedPack = c145pGapPack([changed], "Cangjie-HumanEval", "CJ-HUMANEVAL-145", 1)
-        let case14 = c145pGapPack([exact], "Cangjie-HumanEval", "CJ-HUMANEVAL-014", 1)
-        let wrongBenchmark = c145pGapPack([exact], "Other-Benchmark", "CJ-HUMANEVAL-145", 1)
+    public func c145pTaskIdentityDoesNotSelectEvidenceAndBodyBindsHash(): Unit {
+        let firstAtom = r3AtomRecord("knowledge-atom-body", "Knowledge: body-v1 general rune guidance")
+        let changedAtom = r3AtomRecord("knowledge-atom-body", "Knowledge: body-v2 general rune guidance")
+        let exactPack = c145pGapPack([firstAtom], "Cangjie-HumanEval", "CJ-HUMANEVAL-145", 1, taskText: "general rune guidance")
+        let changedPack = c145pGapPack([changedAtom], "Cangjie-HumanEval", "CJ-HUMANEVAL-145", 1, taskText: "general rune guidance")
+        let case14 = c145pGapPack([firstAtom], "Cangjie-HumanEval", "CJ-HUMANEVAL-014", 1, taskText: "general rune guidance")
+        let wrongBenchmark = c145pGapPack([firstAtom], "Other-Benchmark", "CJ-HUMANEVAL-145", 1, taskText: "general rune guidance")
 
         @Expect(exactPack.evidenceHash != changedPack.evidenceHash, true)
-        @Expect(case14.coverage.coveragePass, false)
-        @Expect(case14.citations.size, 0)
-        @Expect(wrongBenchmark.coverage.coveragePass, false)
-        @Expect(wrongBenchmark.citations.size, 0)
+        @Expect(case14.evidenceHash, exactPack.evidenceHash)
+        @Expect(wrongBenchmark.evidenceHash, exactPack.evidenceHash)
+        @Expect(case14.citations[0].sourceId, exactPack.citations[0].sourceId)
+        @Expect(wrongBenchmark.citations[0].sourceId, exactPack.citations[0].sourceId)
     }
 
     @TestCase
-    public func c145pOfficialExactAndUtf8BoundedJsonPreserveLegacyExamples(): Unit {
-        let longText = c145pRepeat("中文🙂", 5000)
-        let official = c145pGapRecord("Cangjie-HumanEval", "CJ-HUMANEVAL-145", "official", "Knowledge: ${longText}", citation: "https://docs.cangjie-lang.cn/docs/1.0.0/")
-        let pack = c145pGapPack([official], "Cangjie-HumanEval", "CJ-HUMANEVAL-145", 1)
+    public func c145pAnonymousAtomUtf8BoundedJsonPreservesLegacyExamples(): Unit {
+        let longText = c145pRepeat("中文🙂", 1000)
+        let atom = r3AtomRecord("knowledge-atom-long-rune", "Knowledge: ${longText}")
+        let pack = c145pGapPack([atom], "Cangjie-HumanEval", "CJ-HUMANEVAL-145", 1, taskText: "中文 Rune")
         let json = cangjieTaskKnowledgePackJson(pack)
         let matched = JsonValue.fromStr(json).asObject().get("matchedEvidence").getOrThrow().asArray().getItems()[0].asObject()
         let knowledge = matched.get("knowledge").getOrThrow().asString().getValue()
         @Expect(pack.coverage.coveragePass, true)
-        @Expect(pack.citations[0].citation.startsWith("https://docs.cangjie-lang.cn/"), true)
+        @Expect(pack.citations[0].citation.startsWith("teacher-empirical://candidate/"), true)
         @Expect(knowledge.toRuneArray().size < longText.toRuneArray().size, true)
         @Expect(knowledge.contains("中文🙂"), true)
 
@@ -288,6 +290,19 @@ public class CangjieCapabilityContractTest {
         @Expect(pack.examples[0].compileStatus, "unknown")
         @Expect(pack.examples[0].provenance != "", true)
         @Expect(pack.degraded, true)
+    }
+
+    @TestCase
+    public func r3Neg004CapabilityRenderingCannotReturnAuthorityRecord(): Unit {
+        let leaked = c145pGapRecord("Cangjie-HumanEval", "CJ-HUMANEVAL-145", "authority", "Task: private benchmark fragment\nVisible tests: sample")
+        let service = CangjieCapabilityService(c145pKnowledgeBase([leaked]))
+
+        let pack = service.syntaxQuery("private benchmark fragment", targetVersion: "1.0.0", budget: 3)
+
+        @Expect(pack.items.size, 0)
+        @Expect(pack.apiItems.size, 0)
+        @Expect(pack.examples.size, 0)
+        @Expect(pack.citations.size, 0)
     }
 }
 
@@ -398,11 +413,7 @@ public func p6PersistExactLookupStore(name: String): FileKnowledgeStore {
 }
 
 public func f7CuratedGapKnowledgeBase(): KnowledgeBase {
-    let kb = newOfflineKnowledgeBase()
-    let curated = curateBenchmarkGapRecordsFromJsonl("{\"caseId\":\"CJ-HUMANEVAL-777\",\"benchmark\":\"Cangjie-HumanEval\",\"taskText\":\"Implement ArrayList helper.\",\"visibleTestExcerpt\":\"assert solve([1,2]) == 3\",\"compilerOutput\":\"compile_error\",\"missingKnowledge\":\"G-ARRAYLIST\",\"interfaceId\":\"KI-02\",\"contentFamily\":\"KC-02\",\"updateMechanism\":\"KU-11\",\"targetVersion\":\"1.0.0\",\"officialCitation\":\"https://docs.cangjie-lang.cn/docs/1.0.0/libs/std/collection\"}\n")
-    kb.stageCandidateRecords("f7-curated-gap-candidate", curated.records)
-    _ = kb.promoteCandidateToActive("f7-curated-gap-active")
-    kb
+    c145pKnowledgeBase([r3AtomRecord("knowledge-atom-arraylist", "Knowledge: ArrayList.add appends one value.")])
 }
 
 private func f7HasQueryKind(pack: CangjieTaskKnowledgePack, kind: String): Bool {
@@ -433,17 +444,21 @@ private func c145pGapRecord(benchmark: String, taskId: String, suffix: String, c
     record
 }
 
-private func c145pGapPack(records: Array<NormalizedRecord>, benchmark: String, taskId: String, budget: Int64): CangjieTaskKnowledgePack {
+private func c145pKnowledgeBase(records: Array<NormalizedRecord>): KnowledgeBase {
     let kb = newOfflineKnowledgeBase()
     let staged = ArrayList<NormalizedRecord>()
     for (record in records) { staged.add(record) }
     kb.stageCandidateRecords("c145p-candidate", staged)
     _ = kb.promoteCandidateToActive("c145p-active")
+    kb
+}
+
+private func c145pGapPack(records: Array<NormalizedRecord>, benchmark: String, taskId: String, budget: Int64, taskText!: String = "fixture task"): CangjieTaskKnowledgePack {
+    let kb = c145pKnowledgeBase(records)
     let request = CangjieTaskKnowledgeRequest()
     request.taskId = taskId
     request.benchmark = benchmark
-    request.taskText = "fixture task"
-    request.expectedKnowledgeTags.add("G-CASE")
+    request.taskText = taskText
     request.budget = budget
     request.versionSelector = cangjieVersionSelector(targetVersion: "1.0.0", sourceSet: CangjieSourceSets.ALL)
     CangjieCapabilityService(kb).taskKnowledgePack(request)

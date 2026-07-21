@@ -165,7 +165,11 @@ public class CkbMcpStdioServer {
             let request = this.taskKnowledgeRequestFromArgs(effectiveArgs)
             let validation = validateCangjieTaskKnowledgeRequest(request)
             if (validation != "") { return this.errorResponse(id, -32602, validation, "{}") }
-            let payload = cangjieTaskKnowledgePackJson(this.service.cangjieTaskKnowledgePack(request))
+            let pack = this.service.cangjieTaskKnowledgePack(request)
+            if (ckbMcpTaskKnowledgeEvidenceDiagnostic(pack) != "ok") {
+                return this.errorResponse(id, -32603, "student_knowledge_leakage_blocked", "{}")
+            }
+            let payload = cangjieTaskKnowledgePackJson(pack)
             if (!this.boundTaskContext.configured) { return this.toolResult(id, payload) }
             let boundPayload = ckbMcpAppendRequestBinding(ckbMcpSanitizeBoundPayload(payload, this.boundTaskContext), this.boundTaskContext)
             if (boundPayload == "") { return this.errorResponse(id, -32603, "bound_receipt_render_failed", "{}") }
@@ -444,6 +448,14 @@ public class CkbMcpStdioServer {
         }
         markdown
     }
+}
+
+public func ckbMcpTaskKnowledgeEvidenceDiagnostic(pack: CangjieTaskKnowledgePack): String {
+    let diagnostic = validateCangjieTaskKnowledgeEvidence(pack)
+    if (!diagnostic.ok || pack.diagnostics.contains("student_knowledge_leakage_blocked")) {
+        return "student_knowledge_leakage_blocked"
+    }
+    "ok"
 }
 
 public func ckbMcpProtocolVersionFromInitialize(request: String, fallback: String): String {

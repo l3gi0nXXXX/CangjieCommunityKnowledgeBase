@@ -87,6 +87,24 @@ public func buildCangjieServingIndex(records: ArrayList<NormalizedRecord>, activ
     index
 }
 
+// Student-facing retrieval must fail closed without changing the internal
+// authority/candidate index used by curation and validation workflows.
+public func buildCangjieStudentServingIndex(records: ArrayList<NormalizedRecord>, activeKnowledgeVersion!: String = ""): CangjieServingIndex {
+    let accepted = ArrayList<NormalizedRecord>()
+    let rejectedDiagnostics = ArrayList<String>()
+    for (record in records) {
+        let diagnostic = cangjieStudentRecordDiagnostic(record)
+        if (diagnostic.ok) {
+            accepted.add(record)
+        } else {
+            rejectedDiagnostics.add("serving_index_record_rejected:${diagnostic.code}:${diagnostic.matchedField}")
+        }
+    }
+    let index = buildCangjieServingIndex(accepted, activeKnowledgeVersion: activeKnowledgeVersion)
+    for (diagnostic in rejectedDiagnostics) { index.diagnostics.add(diagnostic) }
+    index
+}
+
 // The durable-validation workset needs only a stable partition map, document
 // count, and identity evidence.  Building a full serving index here retained
 // every rendered document and exact-entry view before partition validation,

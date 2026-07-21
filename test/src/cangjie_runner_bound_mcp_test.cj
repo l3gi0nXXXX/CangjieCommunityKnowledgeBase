@@ -112,6 +112,21 @@ public class CangjieRunnerBoundMcpTest {
         let api = server.handleRequest(rbmcpTestCall("cangjie_api_search", "{\"q\":\"ArrayList\",\"targetVersion\":\"1.0.0\"}"))
         @Expect(api.contains("\"structuredContent\""), true); @Expect(api.contains("bound_tool_arguments_must_be_empty"), false)
     }
+
+    @TestCase
+    public func r3Arch002BoundTaskPackBlocksPollutionAndKeepsReceiptOutsideEvidence(): Unit {
+        let context = rbmcpTestContext("private benchmark fragment", "[\"String\"]")
+        let server = CkbMcpStdioServer(r3PollutedMcpService("r3-bound"),
+            boundTaskContextBase64: toBase64String(context.toArray()),
+            boundTaskContextHash: benchmarkGapSha256(context))
+
+        let response = server.handleRequest(rbmcpTestCall("cangjie_task_knowledge_pack", "{}"))
+
+        @Expect(response.contains("student_knowledge_leakage_blocked"), true)
+        @Expect(response.contains("private benchmark fragment"), false)
+        @Expect(response.contains("CJ-HUMANEVAL-145"), false)
+        @Expect(response.contains("\"structuredContent\""), false)
+    }
 }
 
 private func rbmcpTestService(name: String): CkbCommandLoopService {
