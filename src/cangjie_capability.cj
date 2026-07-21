@@ -426,7 +426,7 @@ public class CangjieCapabilityService {
             pack.notes.add("empty_query")
             return pack
         }
-        let index = buildCangjieServingIndex(this.kb.activeRecordSnapshot(), activeKnowledgeVersion: pack.knowledgeVersion)
+        let index = buildCangjieStudentServingIndex(this.kb.activeRecordSnapshot(), activeKnowledgeVersion: pack.knowledgeVersion)
         let result = lookupNegativeRules(index, clean, targetVersion: pack.targetVersion, budget: this.effectiveBudget(pack, budget))
         for (hit in result.hits) {
             let doc = hit.document
@@ -753,7 +753,7 @@ private func cangjieSafeText(raw: String): String {
 }
 
 private func cangjieRecordTrusted(record: NormalizedRecord): Bool {
-    record.metadata.reviewState != ReviewStates.CANDIDATE && record.metadata.trustLevel != TrustLevels.WEB_CANDIDATE
+    cangjieStudentRecordAllowed(record)
 }
 
 public func cangjieDocumentProvenance(doc: CangjieServingDocument): String {

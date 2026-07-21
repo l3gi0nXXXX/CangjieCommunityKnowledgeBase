@@ -2022,6 +2022,8 @@ public class CkbSchedulerServiceF5Test {
         let pack = service.cangjieTaskKnowledgePack(request)
         @Expect(pack.coverage.coveragePass, true)
         @Expect(pack.citations.size > 0, true)
+        @Expect(f7StudentPackHasAuthorityCitation(pack), false)
+        @Expect(pack.matchedEvidence.size, 0)
     }
 
     @TestCase
@@ -2447,6 +2449,14 @@ public class CkbSchedulerServiceF5Test {
         @Expect(reloaded.runNextRepositoryEventWorker("worker-2", queued.createdAtMillis + 4, worker).state, "idle")
         @Expect(worker.calls, 1)
     }
+}
+
+private func f7StudentPackHasAuthorityCitation(pack: CangjieTaskKnowledgePack): Bool {
+    for (citation in pack.citations) {
+        let identity = "${citation.sourceId}|${citation.citation}".toAsciiLower()
+        if (identity.contains("curated-gap") || identity.contains("eval-support") || identity.contains("humaneval")) { return true }
+    }
+    false
 }
 
 @Test

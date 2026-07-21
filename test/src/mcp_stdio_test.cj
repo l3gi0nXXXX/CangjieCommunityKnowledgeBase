@@ -2,6 +2,7 @@ package cangjie_community_knowledge_base_test
 
 import std.unittest.*
 import std.unittest.testmacro.*
+import std.collection.*
 
 @Test
 public class CkbMcpStdioTest {
@@ -203,6 +204,29 @@ public class CkbMcpStdioTest {
     }
 
     @TestCase
+    public func r3Neg003UnboundTaskPackBlocksPollutionWithoutEcho(): Unit {
+        let response = r3PollutedMcpServer("r3-unbound").handleRequest(this.toolCall("cangjie_task_knowledge_pack", "{\"taskId\":\"PUBLIC-1\",\"benchmark\":\"public\",\"taskText\":\"private benchmark fragment\",\"compilerOutput\":\"compile_error\",\"targetVersion\":\"1.0.0\"}"))
+
+        @Expect(response.contains("\"error\""), true)
+        @Expect(response.contains("student_knowledge_leakage_blocked"), true)
+        @Expect(response.contains("CJ-HUMANEVAL"), false)
+        @Expect(response.contains("private benchmark fragment"), false)
+    }
+
+    @TestCase
+    public func r3Ut004McpFinalGateRejectsCompositeEvidenceWithoutCaseId(): Unit {
+        let pack = CangjieTaskKnowledgePack()
+        let evidence = CangjieMatchedEvidence()
+        evidence.title = "Task: calculate values"
+        evidence.knowledge = "Visible tests: sample values"
+        evidence.example = "Compiler output: success"
+        pack.matchedEvidence.add(evidence)
+
+        @Expect(ckbMcpTaskKnowledgeEvidenceDiagnostic(pack), "student_knowledge_leakage_blocked")
+        @Expect(cangjieTaskKnowledgePackJson(pack).contains("CJ-HUMANEVAL"), false)
+    }
+
+    @TestCase
     public func ckg5Pos002LlmsTxtResourceReturnsMarkdownWithVersionAndDocsUrl(): Unit {
         let request = "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"resources/read\",\"params\":{\"uri\":\"ckb://cangjie/llms.txt\"}}"
         let response = this.server("ckg5-pos-002").handleRequest(request)
@@ -236,4 +260,33 @@ public class CkbMcpStdioTest {
         @Expect(response.contains("not_enabled"), true)
         @Expect(service.rebuildCountForTest(), 0)
     }
+}
+
+private func r3PollutedMcpServer(name: String): CkbMcpStdioServer {
+    CkbMcpStdioServer(r3PollutedMcpService(name))
+}
+
+public func r3PollutedMcpService(name: String): CkbCommandLoopService {
+    let store = FileKnowledgeStore("target/${name}")
+    let kb = newOfflineKnowledgeBase()
+    let records = ArrayList<NormalizedRecord>()
+    let record = NormalizedRecord()
+    record.sourceId = "eval-support-CJ-HUMANEVAL-145-prompt"
+    record.recordKind = CangjieTypedRecordKinds.EVAL_SUPPORT
+    record.title = "HumanEval prompt"
+    record.chunk = "private benchmark fragment"
+    record.citation = "CJ-HUMANEVAL-145:prompt.md"
+    record.metadata.sourceId = record.sourceId
+    record.metadata.sourceType = SourceTypes.DERIVED
+    record.metadata.sourceSet = CangjieSourceSets.EVAL_SUPPORT
+    record.metadata.path = "visible-benchmark/Cangjie-HumanEval/CJ-HUMANEVAL-145/prompt"
+    record.metadata.targetVersion = "1.0.0"
+    record.metadata.versionResolutionId = "cangjie-1.0.0-eval-support-authority"
+    record.metadata.trustLevel = TrustLevels.OFFICIAL
+    record.metadata.reviewState = ReviewStates.TRUSTED
+    records.add(record)
+    kb.stageCandidateRecords("${name}-candidate", records)
+    _ = kb.promoteCandidateToActive("${name}-active")
+    _ = kb.persistActiveSnapshot(store)
+    CkbCommandLoopService(CkbRuntimeConfig(), store)
 }

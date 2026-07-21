@@ -6,8 +6,9 @@ public func buildServingDocuments(records: ArrayList<NormalizedRecord>): Cangjie
     let feed = CangjieServingFeed()
     let acceptedRecords = ArrayList<NormalizedRecord>()
     for (record in records) {
-        if (!cangjieServingRecordAllowed(record)) {
-            feed.diagnostics.add("serving_record_rejected:${record.sourceId}")
+        let studentDiagnostic = cangjieStudentRecordDiagnostic(record)
+        if (!studentDiagnostic.ok) {
+            feed.diagnostics.add("serving_record_rejected:${studentDiagnostic.code}:${studentDiagnostic.matchedField}")
             continue
         }
         acceptedRecords.add(record)
@@ -44,7 +45,7 @@ public func runCangjieServingFeedSmoke(args: Array<String>): Int64 {
 }
 
 private func cangjieServingRecordAllowed(record: NormalizedRecord): Bool {
-    record.metadata.reviewState != ReviewStates.CANDIDATE && record.metadata.trustLevel != TrustLevels.WEB_CANDIDATE
+    cangjieStudentRecordAllowed(record)
 }
 
 private func cangjieServingDocumentFromRecord(record: NormalizedRecord): CangjieServingDocument {

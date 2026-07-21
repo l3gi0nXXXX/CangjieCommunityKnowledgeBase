@@ -140,6 +140,31 @@ public class CangjieServingQueryTest {
         @Expect(result.evidenceHash.startsWith("h"), true)
         @Expect(durationMs < 120000, true)
     }
+
+    @TestCase
+    public func r3Neg002LegacyFallbackCannotRestoreRejectedAuthorityRecord(): Unit {
+        let kb = newOfflineKnowledgeBase()
+        let records = ArrayList<NormalizedRecord>()
+        records.add(r3QueryLeakRecord())
+        kb.stageCandidateRecords("r3-legacy-candidate", records)
+        _ = kb.promoteCandidateToActive("r3-legacy-active")
+
+        let result = cangjieServingSearch(kb, "private benchmark fragment", 3, targetVersion: "1.0.0")
+
+        @Expect(result.records.size, 0)
+        @Expect(result.degraded, true)
+        @Expect(result.fallbackReason.contains("legacy_search_degraded"), true)
+        @Expect(result.fallbackReason.contains("student_knowledge_leakage_blocked"), true)
+        @Expect(result.fallbackReason.contains("CJ-HUMANEVAL"), false)
+    }
+}
+
+private func r3QueryLeakRecord(): NormalizedRecord {
+    let record = cangjieP4QueryRecord("eval-support-CJ-HUMANEVAL-145-prompt", "HumanEval prompt", "private benchmark fragment")
+    record.recordKind = CangjieTypedRecordKinds.EVAL_SUPPORT
+    record.metadata.sourceSet = CangjieSourceSets.EVAL_SUPPORT
+    record.metadata.path = "visible-benchmark/Cangjie-HumanEval/CJ-HUMANEVAL-145/prompt"
+    record
 }
 
 private func cangjieP4QueryRecord(sourceId: String, title: String, chunk: String): NormalizedRecord {

@@ -4,7 +4,7 @@ import std.collection.ArrayList
 
 public func cangjieServingSearch(kb: KnowledgeBase, query: String, budget: Int64, sourceSet!: String = "", targetVersion!: String = "", symbol!: String = ""): SearchResult {
     let status = kb.status()
-    let index = buildCangjieServingIndex(kb.activeRecordSnapshot(), activeKnowledgeVersion: status.activeKnowledgeVersion)
+    let index = buildCangjieStudentServingIndex(kb.activeRecordSnapshot(), activeKnowledgeVersion: status.activeKnowledgeVersion)
     let request = CangjieServingSearchRequest()
     request.query = query
     request.symbol = symbol
@@ -54,7 +54,7 @@ public func cangjieExactSymbolLookup(kb: KnowledgeBase, symbol: String, module!:
     }
     let target = cangjieNormalizeTargetVersion(targetVersion)
     let limit = cangjieCapabilityClampBudget(budget, CangjieCapabilityLimits.DEFAULT_BUDGET, CangjieCapabilityLimits.MAX_BUDGET)
-    let index = buildCangjieServingIndex(kb.activeRecordSnapshot(), activeKnowledgeVersion: result.knowledgeVersion)
+    let index = buildCangjieStudentServingIndex(kb.activeRecordSnapshot(), activeKnowledgeVersion: result.knowledgeVersion)
     let serving = lookupExactSymbol(index, query, module: module, sourceSet: sourceSet, targetVersion: target, budget: limit)
     let out = cangjieServingToSearchResult(index, serving, limit)
     out.queryId = result.queryId
@@ -75,7 +75,7 @@ public func cangjieExactDocSectionLookup(kb: KnowledgeBase, sectionId: String, p
     }
     let target = cangjieNormalizeTargetVersion(targetVersion)
     let limit = cangjieCapabilityClampBudget(budget, CangjieCapabilityLimits.DEFAULT_BUDGET, CangjieCapabilityLimits.MAX_BUDGET)
-    let index = buildCangjieServingIndex(kb.activeRecordSnapshot(), activeKnowledgeVersion: result.knowledgeVersion)
+    let index = buildCangjieStudentServingIndex(kb.activeRecordSnapshot(), activeKnowledgeVersion: result.knowledgeVersion)
     let serving = lookupDocSection(index, cleanSection, path: cleanPath, heading: cleanHeading, targetVersion: target, budget: limit)
     let out = cangjieServingToSearchResult(index, serving, limit)
     out.queryId = result.queryId
@@ -95,7 +95,7 @@ public func cangjieExactToolManualLookup(kb: KnowledgeBase, tool: String, comman
     }
     let target = cangjieNormalizeTargetVersion(targetVersion)
     let limit = cangjieCapabilityClampBudget(budget, CangjieCapabilityLimits.DEFAULT_BUDGET, CangjieCapabilityLimits.MAX_BUDGET)
-    let index = buildCangjieServingIndex(kb.activeRecordSnapshot(), activeKnowledgeVersion: result.knowledgeVersion)
+    let index = buildCangjieStudentServingIndex(kb.activeRecordSnapshot(), activeKnowledgeVersion: result.knowledgeVersion)
     let serving = lookupToolManual(index, cleanTool, command: cleanCommand, targetVersion: target, budget: limit)
     let out = cangjieServingToSearchResult(index, serving, limit)
     out.queryId = result.queryId
@@ -213,15 +213,22 @@ private func cangjieServingAppendLegacyFallback(kb: KnowledgeBase, result: Searc
     let legacy = kb.search(query, options)
     result.degraded = true
     result.fallbackReason = if (servingDiagnostic == "") { "legacy_search_degraded" } else { "${servingDiagnostic};legacy_search_degraded" }
+    var leakageBlocked = false
     for (record in legacy.records) {
         if (result.records.size >= budget) {
             result.truncated = true
             break
         }
+        let studentDiagnostic = cangjieStudentRecordDiagnostic(record)
+        if (!studentDiagnostic.ok) {
+            if (studentDiagnostic.code == "student_knowledge_leakage_blocked" || studentDiagnostic.code == "eval_support_not_student_visible" || studentDiagnostic.code == "atom_projection_invalid") { leakageBlocked = true }
+            continue
+        }
         if (!cangjieServingSearchResultContains(result, record.sourceId)) {
             result.records.add(record)
         }
     }
+    if (leakageBlocked) { result.fallbackReason += ";student_knowledge_leakage_blocked" }
     result.truncated = result.truncated || legacy.truncated
 }
 

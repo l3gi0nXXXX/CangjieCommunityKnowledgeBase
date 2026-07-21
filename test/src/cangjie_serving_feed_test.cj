@@ -31,7 +31,7 @@ public class CangjieServingFeedTest {
         let feed = buildServingDocuments(records)
 
         @Expect(feed.ok, false)
-        @Expect(feed.diagnostics.contains("serving_record_rejected:r1"), true)
+        @Expect(feed.diagnostics.contains("serving_record_rejected:student_record_not_approved:approval"), true)
         @Expect(feed.documents.size, 0)
     }
 }
