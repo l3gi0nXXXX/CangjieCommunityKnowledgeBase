@@ -15,6 +15,7 @@ public class CangjieSourceSets {
     public static let STDX: String = "stdx"
     public static let TOOLS: String = "tools"
     public static let EVAL_SUPPORT: String = "eval-support"
+    public static let KNOWLEDGE_ATOMS: String = "knowledge-atoms"
 }
 
 public class CangjieVersionManifestVersions {

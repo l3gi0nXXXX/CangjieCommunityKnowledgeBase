@@ -32,9 +32,12 @@ public func validateKnowledgeAtomTestBundle(bundleJson: String): CangjieKnowledg
         let targetVersion = atomJsonString(object, "targetVersion")
         let candidateHash = atomJsonString(object, "candidateHash")
         let knowledgeText = atomJsonString(object, "knowledgeText")
+        let example = atomJsonString(object, "example")
         if (atomId == "" || targetVersion == "" || candidateHash == "" || knowledgeText == "") {
             result.diagnostic = "atom_identity_evidence_required"; return result
         }
+        let servingDiagnostic = validateKnowledgeAtomServingProjection(knowledgeText, example)
+        if (servingDiagnostic != "") { result.diagnostic = servingDiagnostic; return result }
         if (candidateHash != cangjieKnowledgeAtomCandidateHash(raw)) {
             result.diagnostic = "atom_candidate_hash_mismatch"; return result
         }
@@ -79,7 +82,7 @@ public func validateKnowledgeAtomTestBundle(bundleJson: String): CangjieKnowledg
         }
         result.atomId = atomId
         result.knowledgeText = knowledgeText
-        result.example = atomJsonString(object, "example")
+        result.example = example
         result.sourceClass = sourceClass
         result.ok = true
         result.diagnostic = "ok"
@@ -93,11 +96,15 @@ public func validateKnowledgeAtomTestBundle(bundleJson: String): CangjieKnowledg
 public func cangjieKnowledgeAtomCandidateHash(bundleJson: String): String {
     try {
         let object = JsonValue.fromStr(bundleJson.trimAscii()).asObject()
-        let tests = match (object.get("tests")) { case Some(value) => value.toString(); case None => "" }
+        let tests = atomJsonCanonicalField(object, "tests")
         let purified = match (object.get("purificationPassed")) { case Some(value) => "${value.asBool().getValue()}"; case None => "" }
         let canonical = atomCanonicalPart(atomJsonString(object, "atomId")) + atomCanonicalPart(atomJsonString(object, "sourceClass").toAsciiLower()) +
             atomCanonicalPart(atomJsonString(object, "citation").toAsciiLower()) + atomCanonicalPart(atomJsonString(object, "targetVersion")) +
-            atomCanonicalPart(atomJsonString(object, "knowledgeText")) + atomCanonicalPart(purified) + atomCanonicalPart(tests)
+            atomCanonicalPart(atomJsonString(object, "knowledgeFamily")) + atomCanonicalPart(atomJsonString(object, "knowledgeText")) +
+            atomCanonicalPart(atomJsonString(object, "example")) + atomCanonicalPart(atomJsonCanonicalField(object, "extractor")) +
+            atomCanonicalPart(purified) + atomCanonicalPart(tests) +
+            atomCanonicalPart(atomJsonCanonicalField(object, "teacherEmpiricalProvenance")) +
+            atomCanonicalPart(atomJsonCanonicalField(object, "execution"))
         let digest = SHA256(); digest.write(canonical.toArray()); let out = StringBuilder()
         for (byte in digest.finish()) { out.append(atomHexNibble(byte / UInt8(16))); out.append(atomHexNibble(byte % UInt8(16))) }
         "sha256:${out.toString()}"
@@ -143,6 +150,23 @@ private func atomForbiddenContent(raw: String): Bool {
         raw.contains("cj-humaneval-") || raw.contains("canonical_solution") || raw.contains("solution n-gram")
 }
 
+public func validateKnowledgeAtomServingProjection(knowledge: String, example: String): String {
+    if (knowledge.trimAscii() == "") { return "atom_identity_evidence_required" }
+    if (knowledge.toRuneArray().size > 4096 || example.toRuneArray().size > 4096) { return "atom_serving_field_too_long" }
+    let raw = "${knowledge}\n${example}".toAsciiLower()
+    if (atomForbiddenServingContent(raw)) { "atom_content_contamination" } else { "" }
+}
+
+private func atomForbiddenServingContent(raw: String): Bool {
+    raw.contains("cj-humaneval-") || raw.contains("task:") || raw.contains("visible tests:") ||
+        raw.contains("compiler output:") || raw.contains("missing knowledge:") ||
+        raw.contains("canonical_solution") || raw.contains("canonical solution") ||
+        raw.contains("teacher-solutions") || raw.contains("teacher solution") ||
+        raw.contains("hidden_test") || raw.contains("hidden test") || raw.contains("hidden assertion") ||
+        raw.contains("/hidden/") || raw.contains("/reference/") || raw.contains("reference solution") ||
+        raw.contains("solution.cj")
+}
+
 private func atomTeacherEmpiricalProvenanceValid(object:JsonObject):Bool{
     try{
         let p=object.get("teacherEmpiricalProvenance").getOrThrow().asObject()
@@ -166,6 +190,13 @@ private func atomSha256(value:String):String{
 private func atomJsonString(object: JsonObject, field: String): String {
     match (object.get(field)) {
         case Some(value) => value.asString().getValue().trimAscii()
+        case None => ""
+    }
+}
+
+private func atomJsonCanonicalField(object: JsonObject, field: String): String {
+    match (object.get(field)) {
+        case Some(value) => value.toString()
         case None => ""
     }
 }
