@@ -799,6 +799,8 @@ public class CangjieEvalAbcdeRunnerTest {
             let profile=String.fromUtf8(File.readFrom(Path(profilePath)));@Expect(profile.contains("/private/tmp/claude-"),false)
             let metadataLine=profile.split("\n")[7]
             for(path in [workspace,home,bin,config,store]){@Expect(metadataLine.contains("(literal \"${canonicalize(Path(path)).toString()}\")"),true)}
+            @Expect(metadataLine.contains("(literal \"/usr/bin/dsymutil\")"),true)
+            @Expect(profile.split("\n")[8].contains("(literal \"/usr/bin/dsymutil\")"),true)
             @Expect(metadataLine.contains("(subpath \"${canonicalize(Path(workspace)).parent.toString()}\")"),false)
             let probe=ckbAbcdeCertificationSandboxProbeForTest(profilePath,workspace,home,caseSrc)
             @Expect(probe.exitCode,0);@Expect(probe.stdout.contains("\"runtimeTempMarkersPassed\":true"),true);@Expect(probe.stdout.contains("\"runtimeTempMarkersCleaned\":true"),true);@Expect(probe.stdout.contains("\"archiverReady\":true"),true);@Expect(probe.stdout.contains("\"minimalBuildPassed\":true"),true);@Expect(probe.stdout.contains("\"deniedExternalTemp\":true"),true);@Expect(probe.stdout.contains("\"deniedTempSibling\":true"),true)
