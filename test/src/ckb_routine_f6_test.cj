@@ -170,7 +170,8 @@ private func f6BenchmarkTaskNames(): ArrayList<String> {
 private func f6WriteBenchmarkGapInput(root: String, count: Int64): Unit {
     var text = ""
     for (i in 0..count) {
-        text += "{\"caseId\":\"CJ-HUMANEVAL-F6-${f6Pad3(i)}\",\"benchmark\":\"Cangjie-HumanEval\",\"taskText\":\"Use ArrayList.add for visible input ${i}.\",\"visibleTestExcerpt\":\"assert solve([1,2]) == 3\",\"compilerOutput\":\"compile_error\",\"missingKnowledge\":\"G-ARRAYLIST\",\"interfaceId\":\"KI-02\",\"contentFamily\":\"KC-02\",\"updateMechanism\":\"KU-11\",\"targetVersion\":\"1.0.0\",\"officialCitation\":\"https://docs.cangjie-lang.cn/docs/1.0.0/libs/std/collection\"}\n"
+        text += ckbR4AtomicCurationInput("PUBLIC-F6-${f6Pad3(i)}", "G-ARRAYLIST-F6-${f6Pad3(i)}",
+            "ArrayList.add appends one element for public variant ${i}.")
     }
     File.writeTo(Path(root).join("gap-curation-input.jsonl"), text.toArray())
 }

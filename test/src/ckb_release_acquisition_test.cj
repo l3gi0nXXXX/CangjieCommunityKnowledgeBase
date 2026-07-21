@@ -557,6 +557,8 @@ public class CkbReleaseAcquisitionTest {
         @Expect(snapshot.normalizedRecords.size, snapshot.activeIndex.size)
         @Expect(snapshot.vectorRecords.size, snapshot.activeIndex.size)
         @Expect(ckbReleaseTestHasAllP5SourceSets(snapshot.activeIndex), true)
+        @Expect(ckbReleaseTestSourceSetCount(snapshot.activeIndex,
+            CangjieSourceSets.EVAL_SUPPORT), 0)
         @Expect(ckbReleaseTestSnapshotContains(snapshot, "new-a-token"), true)
         @Expect(ckbReleaseTestSnapshotContains(snapshot, "new-c-token"), true)
         @Expect(ckbReleaseTestSnapshotContains(snapshot, "\"type\":\"blob\""), false)
@@ -2544,7 +2546,13 @@ private func ckbReleaseTestHasAllP5SourceSets(records: ArrayList<NormalizedRecor
         sets.contains(CangjieSourceSets.STD) &&
         sets.contains(CangjieSourceSets.STDX) &&
         sets.contains(CangjieSourceSets.TOOLS) &&
-        sets.contains(CangjieSourceSets.EVAL_SUPPORT)
+        !sets.contains(CangjieSourceSets.EVAL_SUPPORT)
+}
+
+private func ckbReleaseTestSourceSetCount(records: ArrayList<NormalizedRecord>, sourceSet: String): Int64 {
+    var count: Int64 = 0
+    for (record in records) { if (record.metadata.sourceSet == sourceSet) { count += 1 } }
+    count
 }
 
 private func ckbReleaseTestStoreStateEvidence(store: FileKnowledgeStore): String {

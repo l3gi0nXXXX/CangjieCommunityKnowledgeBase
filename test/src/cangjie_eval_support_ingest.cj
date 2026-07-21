@@ -19,6 +19,15 @@ public class CangjieEvalSupportSnapshot {
     public init() {}
 }
 
+public class CangjieEvalSupportAuthorityLoadResult {
+    public var ok: Bool = false
+    public var diagnostic: String = "eval_support_authority_not_loaded"
+    public var snapshot: CangjieEvalSupportSnapshot = CangjieEvalSupportSnapshot()
+    public var records: ArrayList<CangjieTypedRecord> = ArrayList<CangjieTypedRecord>()
+
+    public init() {}
+}
+
 public class CangjieEvalSupportPaths {
     public static let PROMPT: String = "prompt.md"
     public static let METADATA: String = "metadata.json"
@@ -289,6 +298,87 @@ public func persistVersionedEvalSupportSnapshot(store: FileKnowledgeStore,
     } catch (_: Exception) {
         return false
     }
+}
+
+public func loadVersionedEvalSupportAuthority(store: FileKnowledgeStore): CangjieEvalSupportAuthorityLoadResult {
+    let result = CangjieEvalSupportAuthorityLoadResult()
+    let snapshotPath = store.root.join(cangjieEvalSupportAuthoritySnapshotPath())
+    let manifestPath = store.root.join(cangjieEvalSupportAuthorityManifestPath())
+    if (!exists(snapshotPath) || !exists(manifestPath)) {
+        result.diagnostic = "eval_support_authority_not_found"
+        return result
+    }
+    let snapshotText = try {
+        String.fromUtf8(File.readFrom(snapshotPath))
+    } catch (_: Exception) {
+        result.diagnostic = "eval_support_authority_invalid_response_encoding"
+        return result
+    }
+    let manifestText = try {
+        String.fromUtf8(File.readFrom(manifestPath))
+    } catch (_: Exception) {
+        result.diagnostic = "eval_support_authority_manifest_invalid_response_encoding"
+        return result
+    }
+    let snapshot = CangjieEvalSupportSnapshot()
+    snapshot.schemaVersion = cangjieEvalSupportManifestField(manifestText, "schemaVersion")
+    snapshot.datasetVersion = cangjieEvalSupportManifestField(manifestText, "datasetVersion")
+    snapshot.revision = cangjieEvalSupportManifestInt(manifestText, "revision", 0)
+    snapshot.recordCount = cangjieEvalSupportManifestInt(manifestText, "recordCount", -1)
+    snapshot.authorityHash = cangjieEvalSupportManifestField(manifestText, "authorityHash")
+    snapshot.checksum = cangjieEvalSupportManifestField(manifestText, "checksum")
+    snapshot.jsonl = snapshotText
+    let validated = validateVersionedEvalSupportSnapshot(snapshot)
+    if (!validated.ok) {
+        result.diagnostic = if (validated.diagnostics.size > 0) { validated.diagnostics[0] } else { "eval_support_authority_invalid" }
+        return result
+    }
+    for (line in snapshotText.split("\n")) {
+        let raw = line.trimAscii(); if (raw == "") { continue }
+        try {
+            let object = JsonValue.fromStr(raw).asObject()
+            let record = CangjieTypedRecord()
+            record.recordKind = CangjieTypedRecordKinds.EVAL_SUPPORT
+            record.sourceId = cangjieEvalSupportJsonString(object, "sourceId")
+            record.caseId = cangjieEvalSupportJsonString(object, "caseId")
+            record.sourceFamily = cangjieEvalSupportJsonString(object, "sourceFamily")
+            record.path = cangjieEvalSupportJsonString(object, "path")
+            record.contentHash = cangjieEvalSupportJsonString(object, "contentHash")
+            record.title = cangjieEvalSupportJsonString(object, "title")
+            record.citation = cangjieEvalSupportJsonString(object, "citation")
+            record.content = cangjieEvalSupportJsonString(object, "content")
+            record.targetVersion = cangjieEvalSupportJsonString(object, "targetVersion")
+            record.sourceSet = CangjieSourceSets.EVAL_SUPPORT
+            record.sourceRef = snapshot.datasetVersion
+            record.refKind = "local"
+            record.trustLevel = TrustLevels.OFFICIAL
+            record.reviewState = ReviewStates.TRUSTED
+            result.records.add(record)
+        } catch (_: Exception) {
+            result.records.clear(); result.diagnostic = "malformed_eval_support_snapshot"
+            return result
+        }
+    }
+    result.ok = result.records.size == snapshot.recordCount
+    result.diagnostic = if (result.ok) { "ok" } else { "eval_support_snapshot_count_mismatch" }
+    result.snapshot = snapshot
+    result
+}
+
+private func cangjieEvalSupportManifestField(text: String, key: String): String {
+    let prefix = "${key}="
+    var found = ""
+    for (line in text.split("\n")) {
+        if (line.startsWith(prefix)) {
+            if (found != "") { return "" }
+            found = line.replace(prefix, "").trimAscii()
+        }
+    }
+    found
+}
+
+private func cangjieEvalSupportManifestInt(text: String, key: String, fallback: Int64): Int64 {
+    try { Int64.parse(cangjieEvalSupportManifestField(text, key)) } catch (_: Exception) { fallback }
 }
 
 private func cangjieEvalSupportJsonString(object: JsonObject, field: String): String {

@@ -208,7 +208,7 @@ public class CkbVectorReconcileTest {
         let transaction = ckbVectorReconcileWriteExactBenchmarkGapDuplicates(store, kb)
         @Expect(transaction.businessCommitted, true)
         @Expect(kb.restoreActiveSnapshot(store.loadActiveSnapshot()), true)
-        @Expect(kb.status().storage.indexCount, 2)
+        @Expect(kb.status().storage.indexCount, 3)
 
         let result = ckbVectorReconcileWithVectorStore(kb, store,
             ckbVectorReconcileRuntimeConfig(), vectorStore, true)
@@ -219,14 +219,12 @@ public class CkbVectorReconcileTest {
         @Expect(result.rebuiltVectorCount, 1)
         @Expect(result.qdrantAfterCount, 1)
         @Expect(ckbVectorReconcileContains(result.diagnostics,
-            "benchmark_gap_exact_duplicates_removed:1"), true)
-        @Expect(ckbVectorReconcileContains(result.diagnostics,
-            "benchmark_gap_legacy_identities_migrated:1"), true)
+            "student_clean_vector_reconcile:removed=2"), true)
         @Expect(committed.valid, true)
         @Expect(committed.activeIndex.size, 1)
         @Expect(committed.normalizedRecords.size, 1)
         @Expect(committed.rawRecords.size, 1)
-        @Expect(committed.activeIndex[0].sourceId.startsWith("curated-gap-legacy-"), true)
+        @Expect(committed.activeIndex[0].sourceId, "official-range-doc")
         @Expect(committed.activeIndex[0].sourceId, committed.rawRecords[0].sourceId)
     }
 
@@ -247,11 +245,11 @@ public class CkbVectorReconcileTest {
 
         @Expect(result.ok, false)
         @Expect(ckbVectorReconcileContains(result.diagnostics,
-            "benchmark_gap_exact_duplicates_removed:1"), true)
+            "student_clean_vector_reconcile:removed=2"), true)
         @Expect(unchanged.valid, true)
-        @Expect(unchanged.activeIndex.size, 2)
-        @Expect(unchanged.normalizedRecords.size, 2)
-        @Expect(unchanged.rawRecords.size, 2)
+        @Expect(unchanged.activeIndex.size, 3)
+        @Expect(unchanged.normalizedRecords.size, 3)
+        @Expect(unchanged.rawRecords.size, 3)
     }
 
     @TestCase
@@ -626,10 +624,13 @@ private func ckbVectorReconcileWriteExactBenchmarkGapDuplicates(store: FileKnowl
     kb: KnowledgeBase): CkbActiveSnapshotTransactionResult {
     let status = kb.status()
     let record = ckbVectorReconcileBenchmarkGapRecord(status.activeKnowledgeVersion)
-    let active = ArrayList<NormalizedRecord>(); active.add(record); active.add(record)
+    let official = ckbVectorReconcileDuplicateRecord("official-range-doc",
+        status.activeKnowledgeVersion, "Cangjie range syntax is left-closed and right-open.")
+    official.metadata.sourceSet = CangjieSourceSets.DOCS
+    let active = ArrayList<NormalizedRecord>(); active.add(official); active.add(record); active.add(record)
     let raw = ArrayList<RawRecord>()
-    raw.add(ckbVectorReconcileRawRecord(record)); raw.add(ckbVectorReconcileRawRecord(record))
-    status.storage.rawCount = 2; status.storage.normalizedCount = 2; status.storage.indexCount = 2
+    raw.add(ckbVectorReconcileRawRecord(official)); raw.add(ckbVectorReconcileRawRecord(record)); raw.add(ckbVectorReconcileRawRecord(record))
+    status.storage.rawCount = 3; status.storage.normalizedCount = 3; status.storage.indexCount = 3
     store.writeActiveSnapshotTransaction(status, raw, active, active,
         ArrayList<VectorRecord>(), "ckb_active", GraphBuildResult(), persistVectorFile: false)
 }
