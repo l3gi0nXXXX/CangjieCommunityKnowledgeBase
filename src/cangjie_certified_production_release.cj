@@ -16,6 +16,8 @@ public class CkbCertifiedKnowledgeRecord {
 }
 
 public class CkbProductionReleaseProof {
+    public var p6PreflightJson: String = ""
+    public var p6RunManifestJson: String = ""
     public var p7ResultsJsonl: String = ""
     public var authorityManifestJsonl: String = ""
     public var p7GateJson: String = ""
@@ -25,6 +27,13 @@ public class CkbProductionReleaseProof {
     public var stdioQueryPayload: String = ""
     public var httpQueryPayload: String = ""
     public var versionManifestJson: String = ""
+    public var studentLeakageArtifactJson: String = ""
+    public var anonymousQueryArtifactJson: String = ""
+    public var authorityIsolationArtifactJson: String = ""
+    public var atomTestArtifactJson: String = ""
+    public var studentLeakageProofJson: String = ""
+    public var frozenCandidateManifestJson: String = ""
+    public var frozenCandidateManifestHash: String = ""
     public init() {}
 }
 
@@ -37,6 +46,7 @@ public class CkbProductionReleaseReport {
     public var candidateCount: Int64 = 0
     public var replacedCount: Int64 = 0
     public var unchangedCount: Int64 = 0
+    public var removedCount: Int64 = 0
     public var evidenceHash: String = ""
     public var promotion: CangjieCandidatePromotionResult = CangjieCandidatePromotionResult()
     public init() {}
@@ -78,14 +88,31 @@ public func ckbCertifiedKnowledgeRecordsDiagnostic(records: ArrayList<CkbCertifi
 }
 
 public func ckbCertifiedReplacementDiagnostic(existing:ArrayList<CkbCertifiedKnowledgeRecord>,incoming:ArrayList<CkbCertifiedKnowledgeRecord>):String{for(newItem in incoming){for(oldItem in existing){if(newItem.canonicalIdentity==oldItem.canonicalIdentity&&newItem.evidenceHash!=oldItem.evidenceHash&&newItem.revision<=oldItem.revision){return "certified_revision_conflict"}}};"ok"}
-private func ckbP8ExistingActiveDiagnostic(kb:KnowledgeBase,existing:ArrayList<CkbCertifiedKnowledgeRecord>):String{let active=kb.activeRecordSnapshot();if(active.size!=existing.size){return "existing_active_count_mismatch"};for(item in existing){var found=false;for(row in active){if(ckbP8SameRecord(row,item.record)){found=true;break}};if(!found){return "existing_active_content_mismatch"}};"ok"}
+private func ckbP8ExistingActiveDiagnostic(kb: KnowledgeBase, existing: ArrayList<CkbCertifiedKnowledgeRecord>): String {
+    let active = kb.activeRecordSnapshot()
+    if (active.size != existing.size) { return "existing_active_count_mismatch" }
+    let declared = ArrayList<NormalizedRecord>(); for (item in existing) { declared.add(item.record) }
+    if (ckbCertifiedNormalizedRecordsChecksum(active) != ckbCertifiedNormalizedRecordsChecksum(declared)) {
+        return "existing_active_content_mismatch"
+    }
+    "ok"
+}
 
 public func ckbCertifiedProductionProofDiagnostic(proof: CkbProductionReleaseProof, records: ArrayList<CkbCertifiedKnowledgeRecord>): String {
+    let p6Diagnostic = ckbCertificationPreflightSealDiagnostic(proof.p6PreflightJson, proof.p6RunManifestJson)
+    if (p6Diagnostic != "ok") { return "p6_seal_artifact_mismatch" }
     let certification = ckbStrictCertificationGate(proof.p7ResultsJsonl, proof.authorityManifestJsonl)
     if (!certification.ok || proof.p7GateJson != renderCkbStrictCertificationGateJson(certification)) { return "p7_gate_artifact_mismatch" }
     let recordDiagnostic = ckbCertifiedKnowledgeRecordsDiagnostic(records)
     if (recordDiagnostic != "ok") { return recordDiagnostic }
     let checksum = ckbCertifiedKnowledgeRecordsChecksum(records)
+    if (proof.studentLeakageProofJson.trimAscii() == "") { return "student_leakage_proof_required" }
+    let p6Binding = ckbP8P6BindingDiagnostic(proof, checksum)
+    if (p6Binding != "ok") { return p6Binding }
+    if(proof.frozenCandidateManifestJson.trimAscii()==""||proof.frozenCandidateManifestHash!=benchmarkGapSha256(proof.frozenCandidateManifestJson)){return "frozen_candidate_manifest_required"}
+    if(ckbFrozenCandidateManifestIntegrityDiagnostic(proof.frozenCandidateManifestJson,expectedCandidateChecksum:checksum,expectedLeakageProofHash:benchmarkGapSha256(proof.studentLeakageProofJson),expectedKnowledgeVersion:certification.knowledgeVersion)!="ok"){return "frozen_candidate_manifest_invalid"}
+    let leakageDiagnostic = ckbP8StudentLeakageProofDiagnostic(proof, records, checksum)
+    if (leakageDiagnostic != "ok") { return leakageDiagnostic }
     if (proof.candidateArtifactJsonl != ckbRenderCertifiedCandidateArtifact(records)) { return "candidate_artifact_mismatch" }
     let indexDiagnostic = ckbP8CountArtifactDiagnostic(proof.indexArtifactJson, "index", records.size, checksum)
     if (indexDiagnostic != "ok") { return indexDiagnostic }
@@ -98,14 +125,56 @@ public func ckbCertifiedProductionProofDiagnostic(proof: CkbProductionReleasePro
 }
 
 public func ckbCertifiedKnowledgeRecordsChecksum(records: ArrayList<CkbCertifiedKnowledgeRecord>): String {
+    let normalized = ArrayList<NormalizedRecord>(); for (item in records) { normalized.add(item.record) }
+    ckbCertifiedNormalizedRecordsChecksum(normalized)
+}
+
+public func ckbCertifiedNormalizedRecordsChecksum(records: ArrayList<NormalizedRecord>): String {
     let identities = ArrayList<String>()
-    for (item in records) { identities.add("${item.canonicalIdentity}|${item.revision}|${item.evidenceHash}|${item.record.sourceId}|${item.record.recordKind}|${item.record.title}|${item.record.chunk}|${item.record.citation}|${item.record.metadata.targetVersion}|${item.record.metadata.versionResolutionId}") }
-    // stableSummaryHash is order-sensitive; normalize without relying on map order.
+    for (record in records) { identities.add(ckbP8NormalizedRecordSeed(record)) }
     let sorted = identities.toArray()
     sort(sorted)
     let seed = StringBuilder()
-    for (identity in sorted) { seed.append("${identity.toArray().size}:${identity}") }
+    for (identity in sorted) { seed.append(ckbP8Part(identity)) }
     benchmarkGapSha256(seed.toString())
+}
+
+private func ckbP8P6BindingDiagnostic(proof: CkbProductionReleaseProof,
+    candidateChecksum: String): String {
+    try {
+        let manifest = JsonValue.fromStr(proof.p6RunManifestJson).asObject()
+        let preflightHash = ckbP8String(manifest, "preflightHash")
+        let runManifestHash = ckbP8String(manifest, "runManifestHash")
+        if (ckbP8String(manifest, "candidateChecksum") != candidateChecksum ||
+            ckbP8String(manifest, "studentLeakageProofHash") != benchmarkGapSha256(proof.studentLeakageProofJson) ||
+            ckbP8String(manifest,"frozenCandidateManifestHash")!=proof.frozenCandidateManifestHash) {
+            return "p6_candidate_binding_mismatch"
+        }
+        var sawEvidence = false
+        for (line in proof.p7ResultsJsonl.split("\n")) {
+            if (line.trimAscii() == "") { continue }
+            let row = parseCkbCertificationEvidence(line)
+            sawEvidence = true
+            if (row.preflightHash != preflightHash || row.runManifestHash != runManifestHash) {
+                return "p6_p7_lineage_mismatch"
+            }
+        }
+        if (!sawEvidence) { return "p6_p7_lineage_mismatch" }
+        "ok"
+    } catch (_: Exception) { "p6_candidate_binding_mismatch" }
+}
+
+private func ckbP8StudentLeakageProofDiagnostic(proof: CkbProductionReleaseProof,
+    records: ArrayList<CkbCertifiedKnowledgeRecord>, candidateChecksum: String): String {
+    let normalized = ArrayList<NormalizedRecord>()
+    for (item in records) { normalized.add(item.record) }
+    if (ckbCertifiedNormalizedRecordsChecksum(normalized) != candidateChecksum ||
+        !ckbBuildStudentLeakageReport(normalized).ok) { return "student_knowledge_leakage_blocked" }
+    let diagnostic = ckbCandidateTrustSealDiagnostic(proof.studentLeakageProofJson, normalized,
+        proof.studentLeakageArtifactJson, proof.anonymousQueryArtifactJson,
+        proof.authorityIsolationArtifactJson, proof.atomTestArtifactJson)
+    if (diagnostic != "ok") { return "student_leakage_proof_mismatch" }
+    "ok"
 }
 
 public class CkbCertifiedProductionPreCommitGate <: CangjieCandidatePreCommitGate {
@@ -136,7 +205,7 @@ public class CkbCertifiedProductionPreCommitGate <: CangjieCandidatePreCommitGat
     }
 }
 
-public func ckbPublishCertifiedKnowledge(kb: KnowledgeBase, store: FileKnowledgeStore, candidateVersion: String, expectedBaseActiveVersion: String, existing: ArrayList<CkbCertifiedKnowledgeRecord>, incoming: ArrayList<CkbCertifiedKnowledgeRecord>, proof: CkbProductionReleaseProof, forceFailure!: Bool = false): CkbProductionReleaseReport {
+public func ckbPublishCertifiedKnowledge(kb: KnowledgeBase, store: FileKnowledgeStore, candidateVersion: String, expectedBaseActiveVersion: String, existing: ArrayList<CkbCertifiedKnowledgeRecord>, incoming: ArrayList<CkbCertifiedKnowledgeRecord>, proof: CkbProductionReleaseProof, forceFailure!: Bool = false, snapshotFaultInjector!: CkbActiveSnapshotFaultInjector = NoopCkbActiveSnapshotFaultInjector()): CkbProductionReleaseReport {
     let report = CkbProductionReleaseReport()
     let certification = ckbStrictCertificationGate(proof.p7ResultsJsonl, proof.authorityManifestJsonl)
     report.certifiedKnowledgeVersion = certification.knowledgeVersion
@@ -144,44 +213,49 @@ public func ckbPublishCertifiedKnowledge(kb: KnowledgeBase, store: FileKnowledge
     let activeDiagnostic=ckbP8ExistingActiveDiagnostic(kb,existing);if(activeDiagnostic!="ok"){report.diagnostic=activeDiagnostic;report.status=activeDiagnostic;return report}
     let incomingDiagnostic = ckbCertifiedKnowledgeRecordsDiagnostic(incoming)
     if (incomingDiagnostic != "ok") { report.diagnostic = incomingDiagnostic; report.status = incomingDiagnostic; return report }
-    let replacementDiagnostic=ckbCertifiedReplacementDiagnostic(existing,incoming);if(replacementDiagnostic!="ok"){report.diagnostic=replacementDiagnostic;report.status=replacementDiagnostic;return report}
-    let resolved = ckbResolveCertifiedKnowledgeRecords(existing, incoming)
-    report.candidateCount = resolved.size
+    report.candidateCount = incoming.size
     for (newItem in incoming) {
         var found = false
         for (oldItem in existing) {
-            if (oldItem.canonicalIdentity == newItem.canonicalIdentity) { found = true; if (oldItem.evidenceHash == newItem.evidenceHash) { report.unchangedCount += 1 } else if (newItem.revision > oldItem.revision) { report.replacedCount += 1 }; break }
+            if (oldItem.canonicalIdentity == newItem.canonicalIdentity) { found = true; if (oldItem.evidenceHash == newItem.evidenceHash) { report.unchangedCount += 1 } else { report.replacedCount += 1 }; break }
         }
         if (!found) { () }
     }
-    let releaseGate = cangjieCertifiedProductionReleaseGate(proof, resolved)
+    for (oldItem in existing) {
+        var retained = false
+        for (newItem in incoming) {
+            if (oldItem.canonicalIdentity == newItem.canonicalIdentity) { retained = true; break }
+        }
+        if (!retained) { report.removedCount += 1 }
+    }
+    let releaseGate = cangjieCertifiedProductionReleaseGate(proof, incoming)
     let diagnostic = releaseGate.diagnostic
     if (diagnostic != "ok") { report.diagnostic = diagnostic; report.status = diagnostic; return report }
     if (candidateVersion != "${certification.knowledgeVersion}-candidate") { report.diagnostic = "candidate_certified_version_mismatch"; report.status = report.diagnostic; return report }
-    let normalized = ArrayList<NormalizedRecord>(); for (item in resolved) { normalized.add(item.record) }
-    let gate = CkbCertifiedProductionPreCommitGate(kb,candidateVersion, expectedBaseActiveVersion, proof, resolved)
-    report.promotion = cangjiePromoteCandidateRecordsAfterValidationWithVersion(kb, store, candidateVersion, normalized, forceFailure: forceFailure, preCommitGate: gate, expectedBaseActiveVersion: expectedBaseActiveVersion)
+    let normalized = ArrayList<NormalizedRecord>(); for (item in incoming) { normalized.add(item.record) }
+    let gate = CkbCertifiedProductionPreCommitGate(kb,candidateVersion, expectedBaseActiveVersion, proof, incoming)
+    let expectedPointerHash = ckbActiveSnapshotPointerIdentityHash(store.loadActiveSnapshotPointer())
+    report.promotion = cangjiePromoteCandidateRecordsAfterValidationWithVersion(kb, store, candidateVersion, normalized, forceFailure: forceFailure, preCommitGate: gate, expectedBaseActiveVersion: expectedBaseActiveVersion, expectedBaseActivePointerHash: expectedPointerHash, snapshotFaultInjector: snapshotFaultInjector)
     report.ok = report.promotion.ok && report.promotion.activePromoted && report.promotion.snapshotPointerCommitted && report.promotion.activeVersion == cangjieActiveVersionForCandidate(candidateVersion)
     report.status = if (report.ok) { "certified_production_published" } else { report.promotion.validation.status }
     report.diagnostic = if (report.ok) { "ok" } else { report.status }
     report.activeVersion = report.promotion.activeVersion
-    report.evidenceHash = if (report.ok) { benchmarkGapSha256(ckbP8ProofEvidence(proof) + "|" + report.activeVersion + "|" + ckbCertifiedKnowledgeRecordsChecksum(resolved)) } else { "" }
+    report.evidenceHash = if (report.ok) { benchmarkGapSha256(ckbP8Part(ckbP8ProofEvidence(proof)) + ckbP8Part(report.activeVersion) + ckbP8Part(ckbCertifiedKnowledgeRecordsChecksum(incoming))) } else { "" }
     report
 }
 
-func ckbPublishCertifiedKnowledgeWithReleaseState(kb: KnowledgeBase, store: FileKnowledgeStore, releaseKey: CkbScheduledFetchRunKey, candidateVersion: String, expectedBaseActiveVersion: String, existing: ArrayList<CkbCertifiedKnowledgeRecord>, incoming: ArrayList<CkbCertifiedKnowledgeRecord>, proof: CkbProductionReleaseProof, forceFailure!: Bool = false): CkbProductionReleaseReport {
-    let resolved = ckbResolveCertifiedKnowledgeRecords(existing, incoming)
-    let gate = cangjieCertifiedProductionReleaseGate(proof, resolved)
+func ckbPublishCertifiedKnowledgeWithReleaseState(kb: KnowledgeBase, store: FileKnowledgeStore, releaseKey: CkbScheduledFetchRunKey, candidateVersion: String, expectedBaseActiveVersion: String, existing: ArrayList<CkbCertifiedKnowledgeRecord>, incoming: ArrayList<CkbCertifiedKnowledgeRecord>, proof: CkbProductionReleaseProof, forceFailure!: Bool = false, forcePostCommitArtifactFailure!: Bool = false, snapshotFaultInjector!: CkbActiveSnapshotFaultInjector = NoopCkbActiveSnapshotFaultInjector()): CkbProductionReleaseReport {
+    let gate = cangjieCertifiedProductionReleaseGate(proof, incoming)
     let certification = ckbStrictCertificationGate(proof.p7ResultsJsonl, proof.authorityManifestJsonl)
-    let activeDiagnostic=ckbP8ExistingActiveDiagnostic(kb,existing);let incomingDiagnostic=ckbCertifiedKnowledgeRecordsDiagnostic(incoming);let replacementDiagnostic=ckbCertifiedReplacementDiagnostic(existing,incoming);let versionOk=candidateVersion=="${certification.knowledgeVersion}-candidate";let baseOk=expectedBaseActiveVersion==kb.status().activeKnowledgeVersion
-    if(!gate.ok||activeDiagnostic!="ok"||incomingDiagnostic!="ok"||replacementDiagnostic!="ok"||!versionOk||!baseOk){return ckbPublishCertifiedKnowledge(kb,store,candidateVersion,expectedBaseActiveVersion,existing,incoming,proof,forceFailure:forceFailure)}
+    let activeDiagnostic=ckbP8ExistingActiveDiagnostic(kb,existing);let incomingDiagnostic=ckbCertifiedKnowledgeRecordsDiagnostic(incoming);let versionOk=candidateVersion=="${certification.knowledgeVersion}-candidate";let baseOk=expectedBaseActiveVersion==kb.status().activeKnowledgeVersion
+    if(!gate.ok||activeDiagnostic!="ok"||incomingDiagnostic!="ok"||!versionOk||!baseOk){return ckbPublishCertifiedKnowledge(kb,store,candidateVersion,expectedBaseActiveVersion,existing,incoming,proof,forceFailure:forceFailure,snapshotFaultInjector:snapshotFaultInjector)}
     ckbMarkReleaseAcquisitionState(store, releaseKey, "certified_staging", candidateVersion: candidateVersion, activeVersion: expectedBaseActiveVersion, certifiedVersion: certification.knowledgeVersion, certificationFingerprint: certification.modelFingerprint)
-    let report = ckbPublishCertifiedKnowledge(kb, store, candidateVersion, expectedBaseActiveVersion, existing, incoming, proof, forceFailure: forceFailure)
+    let report = ckbPublishCertifiedKnowledge(kb, store, candidateVersion, expectedBaseActiveVersion, existing, incoming, proof, forceFailure: forceFailure, snapshotFaultInjector: snapshotFaultInjector)
     if (report.ok) {
-        ckbMarkReleaseAcquisitionState(store, releaseKey, "certified_active", candidateVersion: candidateVersion, activeVersion: report.activeVersion, certifiedVersion: certification.knowledgeVersion, certificationFingerprint: certification.modelFingerprint)
+        if (!forcePostCommitArtifactFailure) { ckbMarkReleaseAcquisitionState(store, releaseKey, "certified_active", candidateVersion: candidateVersion, activeVersion: report.activeVersion, certifiedVersion: certification.knowledgeVersion, certificationFingerprint: certification.modelFingerprint) }
         let loaded = ckbLoadReleaseAcquisitionState(store, releaseKey)
-        if (!loaded.valid || loaded.state != "certified_active" || loaded.certifiedVersion != certification.knowledgeVersion || loaded.certificationFingerprint != certification.modelFingerprint || loaded.activeVersion != report.activeVersion) {
-            report.status = "active_committed_state_degraded"; report.diagnostic = report.status
+        if (forcePostCommitArtifactFailure || !loaded.valid || loaded.state != "certified_active" || loaded.certifiedVersion != certification.knowledgeVersion || loaded.certificationFingerprint != certification.modelFingerprint || loaded.activeVersion != report.activeVersion) {
+            report.status = "published_degraded"; report.diagnostic = "post_commit_artifact_failed"
         }
     }
     report
@@ -196,8 +270,8 @@ private func ckbP8RecordDiagnostic(item: CkbCertifiedKnowledgeRecord): String {
 }
 
 public func ckbCertifiedKnowledgeRecordEvidenceHash(item: CkbCertifiedKnowledgeRecord): String {
-    let record = item.record
-    benchmarkGapSha256("${item.canonicalIdentity.toArray().size}:${item.canonicalIdentity}|${item.revision}|${record.sourceId.toArray().size}:${record.sourceId}|${record.recordKind.toArray().size}:${record.recordKind}|${record.title.toArray().size}:${record.title}|${record.chunk.toArray().size}:${record.chunk}|${record.citation.toArray().size}:${record.citation}|${record.metadata.targetVersion}|${record.metadata.versionResolutionId}")
+    benchmarkGapSha256(ckbP8Part(item.canonicalIdentity) + ckbP8Part("${item.revision}") +
+        ckbP8Part(ckbP8NormalizedRecordSeed(item.record)))
 }
 
 public func ckbCertifiedProductionQueryProofHash(version: String, candidateChecksum: String, versionManifestHash: String): String {
@@ -205,11 +279,34 @@ public func ckbCertifiedProductionQueryProofHash(version: String, candidateCheck
 }
 
 private func ckbP8ProofEvidence(proof: CkbProductionReleaseProof): String {
-    benchmarkGapSha256(proof.p7GateJson + proof.candidateArtifactJsonl + proof.indexArtifactJson + proof.vectorArtifactJson + proof.stdioQueryPayload + proof.httpQueryPayload + proof.versionManifestJson)
+    let seed = StringBuilder()
+    for (value in [proof.p6PreflightJson, proof.p6RunManifestJson, proof.p7ResultsJsonl,
+        proof.authorityManifestJsonl, proof.p7GateJson, proof.candidateArtifactJsonl,
+        proof.indexArtifactJson, proof.vectorArtifactJson, proof.stdioQueryPayload,
+        proof.httpQueryPayload, proof.versionManifestJson, proof.studentLeakageArtifactJson,
+        proof.anonymousQueryArtifactJson, proof.authorityIsolationArtifactJson,
+        proof.atomTestArtifactJson, proof.studentLeakageProofJson]) { seed.append(ckbP8Part(value)) }
+    seed.append(ckbP8Part(proof.frozenCandidateManifestJson));seed.append(ckbP8Part(proof.frozenCandidateManifestHash))
+    benchmarkGapSha256(seed.toString())
 }
-private func ckbP8LiveStagingDiagnostic(kb:KnowledgeBase,records:ArrayList<CkbCertifiedKnowledgeRecord>):String{let actual=kb.candidateRecordSnapshot();if(actual.size!=records.size){return "candidate_staging_count_mismatch"};for(item in records){var found=false;for(row in actual){if(row.sourceId==item.record.sourceId&&row.recordKind==item.record.recordKind&&row.title==item.record.title&&row.chunk==item.record.chunk&&row.citation==item.record.citation){found=true;break}};if(!found){return "candidate_staging_content_mismatch"}};"ok"}
+private func ckbP8LiveStagingDiagnostic(kb: KnowledgeBase, records: ArrayList<CkbCertifiedKnowledgeRecord>): String {
+    let actual = kb.candidateRecordSnapshot(); if (actual.size != records.size) { return "candidate_staging_count_mismatch" }
+    let expected = ArrayList<NormalizedRecord>(); for (item in records) { expected.add(item.record) }
+    if (ckbP8StagingRecordsChecksum(actual) != ckbP8StagingRecordsChecksum(expected)) { return "candidate_staging_content_mismatch" }
+    "ok"
+}
 
-public func ckbRenderCertifiedCandidateArtifact(records: ArrayList<CkbCertifiedKnowledgeRecord>): String { let rows=ArrayList<String>();for(item in records){rows.add("{\"identity\":\"${ckbP8Escape(item.canonicalIdentity)}\",\"revision\":${item.revision},\"evidenceHash\":\"${item.evidenceHash}\",\"sourceId\":\"${ckbP8Escape(item.record.sourceId)}\",\"kind\":\"${ckbP8Escape(item.record.recordKind)}\",\"title\":\"${ckbP8Escape(item.record.title)}\",\"content\":\"${ckbP8Escape(item.record.chunk)}\",\"citation\":\"${ckbP8Escape(item.record.citation)}\",\"targetVersion\":\"${ckbP8Escape(item.record.metadata.targetVersion)}\",\"versionResolutionId\":\"${ckbP8Escape(item.record.metadata.versionResolutionId)}\"}")};let sorted=rows.toArray();sort(sorted);var out="";for(row in sorted){out+=row+"\n"};out }
+private func ckbP8StagingRecordsChecksum(records:ArrayList<NormalizedRecord>):String{let rows=ArrayList<String>();for(record in records){let m=record.metadata;let original=m.candidateVersion;m.candidateVersion="";rows.add(ckbP8NormalizedRecordSeed(record));m.candidateVersion=original};let sorted=rows.toArray();sort(sorted);let seed=StringBuilder();for(row in sorted){seed.append(ckbP8Part(row))};benchmarkGapSha256(seed.toString())}
+
+public func ckbRenderCertifiedCandidateArtifact(records: ArrayList<CkbCertifiedKnowledgeRecord>): String {
+    let rows=ArrayList<String>()
+    for(item in records){
+        let r=item.record;let m=r.metadata;var derived=""
+        for(i in 0..m.derivedFrom.size){if(i>0){derived+=","};derived+="\"${ckbP8Escape(m.derivedFrom[i])}\""}
+        rows.add("{\"identity\":\"${ckbP8Escape(item.canonicalIdentity)}\",\"revision\":${item.revision},\"evidenceHash\":\"${item.evidenceHash}\",\"sourceId\":\"${ckbP8Escape(r.sourceId)}\",\"kind\":\"${ckbP8Escape(r.recordKind)}\",\"title\":\"${ckbP8Escape(r.title)}\",\"content\":\"${ckbP8Escape(r.chunk)}\",\"citation\":\"${ckbP8Escape(r.citation)}\",\"requiresReview\":${r.requiresReview},\"metadata\":{\"sourceId\":\"${ckbP8Escape(m.sourceId)}\",\"sourceType\":\"${ckbP8Escape(m.sourceType)}\",\"sourceUrl\":\"${ckbP8Escape(m.sourceUrl)}\",\"repo\":\"${ckbP8Escape(m.repo)}\",\"path\":\"${ckbP8Escape(m.path)}\",\"symbol\":\"${ckbP8Escape(m.symbol)}\",\"commit\":\"${ckbP8Escape(m.commit)}\",\"docVersion\":\"${ckbP8Escape(m.docVersion)}\",\"targetVersion\":\"${ckbP8Escape(m.targetVersion)}\",\"sourceSet\":\"${ckbP8Escape(m.sourceSet)}\",\"versionResolutionId\":\"${ckbP8Escape(m.versionResolutionId)}\",\"crawlAt\":\"${ckbP8Escape(m.crawlAt)}\",\"indexedAt\":\"${ckbP8Escape(m.indexedAt)}\",\"knowledgeVersion\":\"${ckbP8Escape(m.knowledgeVersion)}\",\"candidateVersion\":\"${ckbP8Escape(m.candidateVersion)}\",\"contentSize\":${m.contentSize},\"trustLevel\":\"${ckbP8Escape(m.trustLevel)}\",\"reviewState\":\"${ckbP8Escape(m.reviewState)}\",\"license\":\"${ckbP8Escape(m.license)}\",\"repoVisibility\":\"${ckbP8Escape(m.repoVisibility)}\",\"derivedFrom\":[${derived}]}}")
+    }
+    let sorted=rows.toArray();sort(sorted);var out="";for(row in sorted){out+=row+"\n"};out
+}
 public func ckbRenderCertifiedCountArtifact(kind:String,records:ArrayList<CkbCertifiedKnowledgeRecord>):String{"{\"kind\":\"${kind}\",\"count\":${records.size},\"recordsChecksum\":\"${ckbCertifiedKnowledgeRecordsChecksum(records)}\"}"}
 public func ckbRenderCertifiedVersionManifest(version:String,records:ArrayList<CkbCertifiedKnowledgeRecord>):String{"{\"certifiedVersion\":\"${ckbP8Escape(version)}\",\"candidateVersion\":\"${ckbP8Escape(version)}-candidate\",\"candidateChecksum\":\"${ckbCertifiedKnowledgeRecordsChecksum(records)}\"}"}
 public func ckbRenderCertifiedQueryPayload(version:String,records:ArrayList<CkbCertifiedKnowledgeRecord>):String{let ids=ArrayList<String>();for(item in records){ids.add(item.canonicalIdentity)};let a=ids.toArray();sort(a);var out="";for(i in 0..a.size){if(i>0){out+=","};out+="\"${ckbP8Escape(a[i])}\""};"{\"ok\":true,\"knowledgeVersion\":\"${ckbP8Escape(version)}\",\"atomIds\":[${out}],\"contentHash\":\"${ckbCertifiedKnowledgeRecordsChecksum(records)}\",\"citation\":\"verified\"}"}
@@ -219,8 +316,23 @@ private func ckbP8ManifestDiagnostic(raw:String,version:String,checksum:String):
 private func ckbP8QueryPayloadDiagnostic(raw:String,version:String,records:ArrayList<CkbCertifiedKnowledgeRecord>):String{if(raw!=ckbRenderCertifiedQueryPayload(version,records)){"query_payload_mismatch"}else{"ok"}}
 private func ckbP8String(o:JsonObject,k:String):String{o.get(k).getOrThrow().asString().getValue()}
 private func ckbP8Int(o:JsonObject,k:String):Int64{o.get(k).getOrThrow().asInt().getValue()}
+private func ckbP8Bool(o:JsonObject,k:String):Bool{o.get(k).getOrThrow().asBool().getValue()}
 private func ckbP8Escape(v:String):String{v.replace("\\","\\\\").replace("\"","\\\"").replace("\n","\\n").replace("\r","\\r").replace("\t","\\t")}
-private func ckbP8SameRecord(a:NormalizedRecord,b:NormalizedRecord):Bool{a.sourceId==b.sourceId&&a.recordKind==b.recordKind&&a.title==b.title&&a.chunk==b.chunk&&a.citation==b.citation&&a.metadata.targetVersion==b.metadata.targetVersion&&a.metadata.versionResolutionId==b.metadata.versionResolutionId}
+private func ckbP8SameRecord(a: NormalizedRecord, b: NormalizedRecord): Bool { ckbP8NormalizedRecordSeed(a) == ckbP8NormalizedRecordSeed(b) }
+
+private func ckbP8NormalizedRecordSeed(record: NormalizedRecord): String {
+    let m = record.metadata; let seed = StringBuilder()
+    for (value in [record.sourceId, record.recordKind, record.title, record.chunk, record.citation,
+        "${record.score}", "${record.requiresReview}", m.sourceId, m.sourceType, m.sourceUrl, m.repo, m.path, m.symbol,
+        m.commit, m.docVersion, m.targetVersion, m.sourceSet, m.versionResolutionId, m.crawlAt,
+        m.indexedAt, m.knowledgeVersion, m.candidateVersion, "${m.contentSize}", m.trustLevel,
+        m.reviewState, m.license, m.repoVisibility]) { seed.append(ckbP8Part(value)) }
+    seed.append(ckbP8Part("${m.derivedFrom.size}"))
+    for (value in m.derivedFrom) { seed.append(ckbP8Part(value)) }
+    seed.toString()
+}
+
+private func ckbP8Part(value: String): String { "${value.toArray().size}:${value}" }
 
 private func ckbP8Hash(value: String): Bool {
     if (!value.startsWith("sha256:") || value.toRuneArray().size != 71) { return false }
@@ -231,23 +343,31 @@ private func ckbP8Hash(value: String): Bool {
 public func runCkbCertifiedProductionPublishCli(args:Array<String>,kb:KnowledgeBase,store:FileKnowledgeStore,storePath:String):Int64{
     let parsed=ckbP8CliArgs(args);if(parsed[0]!="ok"){println("usage error: ${parsed[0]}");return 2};let controlPath=parsed[1]
     try{
-        let o=JsonValue.fromStr(ckbP8Read(controlPath)).asObject();let declaredStore=ckbP8String(o,"store");let acceptancePath=ckbP8String(o,"acceptanceReportPath")
+        let o=JsonValue.fromStr(ckbP8ReadOrThrow(controlPath)).asObject();let declaredStore=ckbP8String(o,"store");let acceptancePath=ckbP8String(o,"acceptanceReportPath")
         if(canonicalize(Path(declaredStore)).toString()!=canonicalize(Path(storePath)).toString()){println("publish blocked: explicit_store_mismatch");return 1}
         if(ckbP8PathInside(acceptancePath,storePath)){println("publish blocked: acceptance_report_must_be_outside_store");return 1}
-        let proof=CkbProductionReleaseProof();proof.p7ResultsJsonl=ckbP8Read(ckbP8String(o,"p7ResultsPath"));proof.authorityManifestJsonl=ckbP8Read(ckbP8String(o,"authorityManifestPath"));proof.p7GateJson=ckbP8Read(ckbP8String(o,"p7GatePath"));proof.candidateArtifactJsonl=ckbP8Read(ckbP8String(o,"resolvedCandidatePath"));proof.indexArtifactJson=ckbP8Read(ckbP8String(o,"indexArtifactPath"));proof.vectorArtifactJson=ckbP8Read(ckbP8String(o,"vectorArtifactPath"));proof.stdioQueryPayload=ckbP8Read(ckbP8String(o,"stdioQueryProofPath"));proof.httpQueryPayload=ckbP8Read(ckbP8String(o,"httpQueryProofPath"));proof.versionManifestJson=ckbP8Read(ckbP8String(o,"versionManifestPath"))
-        for(raw in [proof.p7ResultsJsonl,proof.authorityManifestJsonl,proof.p7GateJson,proof.candidateArtifactJsonl,proof.indexArtifactJson,proof.vectorArtifactJson,proof.stdioQueryPayload,proof.httpQueryPayload,proof.versionManifestJson]){if(ckbControlContainsSecret(raw)){println("publish blocked: secret_artifact_forbidden");return 1}}
-        let existing=ckbP8ParseRecords(ckbP8Read(ckbP8String(o,"existingActivePath")));let incoming=ckbP8ParseRecords(ckbP8Read(ckbP8String(o,"incomingCandidatePath")));let resolved=ckbResolveCertifiedKnowledgeRecords(existing,incoming)
-        let diagnostic=ckbCertifiedProductionProofDiagnostic(proof,resolved);if(diagnostic!="ok"){println("publish blocked: ${diagnostic}");return 1}
+        let proof=CkbProductionReleaseProof()
+        proof.p6PreflightJson=ckbP8ReadOrThrow(ckbP8String(o,"p6PreflightPath"));proof.p6RunManifestJson=ckbP8ReadOrThrow(ckbP8String(o,"p6RunManifestPath"));proof.p7ResultsJsonl=ckbP8ReadOrThrow(ckbP8String(o,"p7ResultsPath"));proof.authorityManifestJsonl=ckbP8ReadOrThrow(ckbP8String(o,"authorityManifestPath"));proof.p7GateJson=ckbP8ReadOrThrow(ckbP8String(o,"p7GatePath"));proof.candidateArtifactJsonl=ckbP8ReadOrThrow(ckbP8String(o,"resolvedCandidatePath"));proof.indexArtifactJson=ckbP8ReadOrThrow(ckbP8String(o,"indexArtifactPath"));proof.vectorArtifactJson=ckbP8ReadOrThrow(ckbP8String(o,"vectorArtifactPath"));proof.stdioQueryPayload=ckbP8ReadOrThrow(ckbP8String(o,"stdioQueryProofPath"));proof.httpQueryPayload=ckbP8ReadOrThrow(ckbP8String(o,"httpQueryProofPath"));proof.versionManifestJson=ckbP8ReadOrThrow(ckbP8String(o,"versionManifestPath"));proof.studentLeakageArtifactJson=ckbP8ReadOrThrow(ckbP8String(o,"studentLeakageArtifactPath"));proof.anonymousQueryArtifactJson=ckbP8ReadOrThrow(ckbP8String(o,"anonymousQueryArtifactPath"));proof.authorityIsolationArtifactJson=ckbP8ReadOrThrow(ckbP8String(o,"authorityIsolationArtifactPath"));proof.atomTestArtifactJson=ckbP8ReadOrThrow(ckbP8String(o,"atomTestArtifactPath"));proof.studentLeakageProofJson=ckbP8ReadOrThrow(ckbP8String(o,"studentLeakageProofPath"))
+        proof.frozenCandidateManifestJson=ckbP8ReadOrThrow(ckbP8String(o,"frozenCandidateManifestPath"));proof.frozenCandidateManifestHash=benchmarkGapSha256(proof.frozenCandidateManifestJson)
+        for(raw in [proof.p6PreflightJson,proof.p6RunManifestJson,proof.p7ResultsJsonl,proof.authorityManifestJsonl,proof.p7GateJson,proof.candidateArtifactJsonl,proof.indexArtifactJson,proof.vectorArtifactJson,proof.stdioQueryPayload,proof.httpQueryPayload,proof.versionManifestJson,proof.studentLeakageArtifactJson,proof.anonymousQueryArtifactJson,proof.authorityIsolationArtifactJson,proof.atomTestArtifactJson,proof.studentLeakageProofJson,proof.frozenCandidateManifestJson]){if(ckbControlContainsSecret(raw)){println("publish blocked: secret_artifact_forbidden");return 1}}
+        let frozenDiagnostic=ckbP8FrozenSourceDiagnostic(ckbP8String(o,"frozenCandidateStore"),storePath,proof.frozenCandidateManifestJson);if(frozenDiagnostic!="ok"){println("publish blocked: ${frozenDiagnostic}");return 1}
+        let existing=ckbP8ParseRecords(ckbP8ReadOrThrow(ckbP8String(o,"existingActivePath")));let incoming=ckbP8ParseRecords(ckbP8ReadOrThrow(ckbP8String(o,"incomingCandidatePath")))
+        let diagnostic=ckbCertifiedProductionProofDiagnostic(proof,incoming);if(diagnostic!="ok"){println("publish blocked: ${diagnostic}");return 1}
         let candidateVersion=ckbP8String(o,"candidateVersion");let expectedActive=ckbP8String(o,"expectedBaseActiveVersion");let key=CkbScheduledFetchRunKey();key.acquisitionId=ckbP8String(o,"releaseId");key.planningIdentityHash=benchmarkGapSha256(key.acquisitionId+"|planning");key.runIdentityHash=benchmarkGapSha256(key.acquisitionId+"|run")
-        let report=ckbPublishCertifiedKnowledgeWithReleaseState(kb,store,key,candidateVersion,expectedActive,existing,incoming,proof);let snapshot=store.loadActiveSnapshot();let reloadAccepted=report.ok&&snapshot.valid&&snapshot.activeVersion==report.activeVersion&&snapshot.normalizedRecords.size==resolved.size
+        let report=ckbPublishCertifiedKnowledgeWithReleaseState(kb,store,key,candidateVersion,expectedActive,existing,incoming,proof);let snapshot=store.loadActiveSnapshot();let reloadAccepted=report.ok&&snapshot.valid&&snapshot.activeVersion==report.activeVersion&&snapshot.normalizedRecords.size==incoming.size
         let service=CkbCommandLoopService(CkbRuntimeConfig(),store);_=service.start();let status=service.handleLine("status").text;let query="{\"taskId\":\"P8-ACCEPTANCE\",\"benchmark\":\"Cangjie-HumanEval\",\"taskText\":\"Validate Cangjie knowledge 中文🙂\",\"signature\":\"func acceptance(): Unit\",\"targetVersion\":\"1.0.0\",\"sourceSet\":\"all\",\"versionPolicy\":\"default\"}";let http=ckbApiHandle(service,"POST","/v1/cangjie/task-knowledge-pack",query,[]);let stdio=CkbMcpStdioServer(service).handleRequest("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"cangjie_task_knowledge_pack\",\"arguments\":${query}}}")
         let statusAccepted=status.contains(report.activeVersion);let httpAccepted=http.contains("\"ok\":true")&&http.contains(report.activeVersion);let stdioAccepted=stdio.contains("\"result\"")&&stdio.contains(report.activeVersion);let accepted=reloadAccepted&&statusAccepted&&httpAccepted&&stdioAccepted
-        let output="{\"ok\":${accepted},\"publishStatus\":\"${ckbP8Escape(report.status)}\",\"activeVersion\":\"${ckbP8Escape(report.activeVersion)}\",\"reload\":${reloadAccepted},\"statusAcceptance\":${statusAccepted},\"stdioAcceptance\":${stdioAccepted},\"httpAcceptance\":${httpAccepted},\"queryParity\":${stdioAccepted&&httpAccepted},\"evidenceHash\":\"${ckbP8Escape(report.evidenceHash)}\"}"
-        let acceptanceTmp="${acceptancePath}.tmp-${benchmarkGapSha256(output).replace("sha256:","")}";try{File.writeTo(Path(acceptanceTmp),output.toArray());rename(acceptanceTmp,to:acceptancePath,overwrite:true)}catch(e:Exception){try{remove(acceptanceTmp)}catch(_:Exception){};throw e};println(output);if(accepted){0}else{1}
-    }catch(_:Exception){println("publish blocked: malformed_or_unreadable_artifact");1}
+        let finalAccepted=accepted||report.ok;let publishStatus=if(report.ok&&!accepted){"published_degraded"}else{report.status}
+        let output="{\"ok\":${finalAccepted},\"publishStatus\":\"${ckbP8Escape(publishStatus)}\",\"activeVersion\":\"${ckbP8Escape(report.activeVersion)}\",\"reload\":${reloadAccepted},\"statusAcceptance\":${statusAccepted},\"stdioAcceptance\":${stdioAccepted},\"httpAcceptance\":${httpAccepted},\"queryParity\":${stdioAccepted&&httpAccepted},\"evidenceHash\":\"${ckbP8Escape(report.evidenceHash)}\"}"
+        let acceptanceTmp="${acceptancePath}.tmp-${benchmarkGapSha256(output).replace("sha256:","")}";try{File.writeTo(Path(acceptanceTmp),output.toArray());rename(acceptanceTmp,to:acceptancePath,overwrite:true)}catch(_:Exception){try{remove(acceptanceTmp)}catch(_:Exception){};if(report.ok){println("{\"ok\":true,\"publishStatus\":\"published_degraded\",\"activeVersion\":\"${ckbP8Escape(report.activeVersion)}\",\"diagnostic\":\"post_commit_artifact_failed\"}");return 0};throw Exception("acceptance_report_write_failed")};println(output);if(finalAccepted){0}else{1}
+    }catch(e:Exception){let diagnostic=if(e.message=="invalid_response_encoding"){"invalid_response_encoding"}else if(e.message=="artifact_read_failed"){"artifact_read_failed"}else{"malformed_json"};println("publish blocked: ${diagnostic}");1}
 }
 
 public func ckbP8CliArgs(args:Array<String>):(String,String){let seen=HashMap<String,Bool>();var command=false;var control="";var store=false;var i:Int64=0;while(i<args.size){let a=args[i];if(a=="cangjie-certified-production-publish"&&!command){command=true;i+=1;continue};if(a!="--control-manifest"&&a!="--store"&&a!="--config"){return("unknown_argument:${a}","")};if(seen.contains(a)){return("duplicate_argument:${a}","")};if(i+1>=args.size||args[i+1].startsWith("--")){return("missing_argument_value:${a}","")};seen[a]=true;if(a=="--control-manifest"){control=args[i+1]};if(a=="--store"){store=true};i+=2};if(!command){return("command_required","")};if(control==""){return("required_argument_missing:--control-manifest","")};if(!store){return("required_argument_missing:--store","")};("ok",control)}
-private func ckbP8ParseRecords(raw:String):ArrayList<CkbCertifiedKnowledgeRecord>{let out=ArrayList<CkbCertifiedKnowledgeRecord>();for(line in raw.split("\n")){if(line.trimAscii()==""){continue};let o=JsonValue.fromStr(line).asObject();let item=CkbCertifiedKnowledgeRecord();item.canonicalIdentity=ckbP8String(o,"identity");item.revision=ckbP8Int(o,"revision");item.evidenceHash=ckbP8String(o,"evidenceHash");let r=NormalizedRecord();r.sourceId=ckbP8String(o,"sourceId");r.recordKind=ckbP8String(o,"kind");r.title=ckbP8String(o,"title");r.chunk=ckbP8String(o,"content");r.citation=ckbP8String(o,"citation");r.metadata.sourceId=r.sourceId;r.metadata.targetVersion=ckbP8String(o,"targetVersion");r.metadata.versionResolutionId=ckbP8String(o,"versionResolutionId");item.record=r;out.add(item)};out}
-private func ckbP8Read(path:String):String{String.fromUtf8(File.readFrom(Path(path)))}
+private func ckbP8ParseRecords(raw:String):ArrayList<CkbCertifiedKnowledgeRecord>{let out=ArrayList<CkbCertifiedKnowledgeRecord>();for(line in raw.split("\n")){if(line.trimAscii()==""){continue};let o=JsonValue.fromStr(line).asObject();let item=CkbCertifiedKnowledgeRecord();item.canonicalIdentity=ckbP8String(o,"identity");item.revision=ckbP8Int(o,"revision");item.evidenceHash=ckbP8String(o,"evidenceHash");let r=NormalizedRecord();r.sourceId=ckbP8String(o,"sourceId");r.recordKind=ckbP8String(o,"kind");r.title=ckbP8String(o,"title");r.chunk=ckbP8String(o,"content");r.citation=ckbP8String(o,"citation");r.requiresReview=ckbP8Bool(o,"requiresReview");let m=o.get("metadata").getOrThrow().asObject();r.metadata.sourceId=ckbP8String(m,"sourceId");r.metadata.sourceType=ckbP8String(m,"sourceType");r.metadata.sourceUrl=ckbP8String(m,"sourceUrl");r.metadata.repo=ckbP8String(m,"repo");r.metadata.path=ckbP8String(m,"path");r.metadata.symbol=ckbP8String(m,"symbol");r.metadata.commit=ckbP8String(m,"commit");r.metadata.docVersion=ckbP8String(m,"docVersion");r.metadata.targetVersion=ckbP8String(m,"targetVersion");r.metadata.sourceSet=ckbP8String(m,"sourceSet");r.metadata.versionResolutionId=ckbP8String(m,"versionResolutionId");r.metadata.crawlAt=ckbP8String(m,"crawlAt");r.metadata.indexedAt=ckbP8String(m,"indexedAt");r.metadata.knowledgeVersion=ckbP8String(m,"knowledgeVersion");r.metadata.candidateVersion=ckbP8String(m,"candidateVersion");r.metadata.contentSize=ckbP8Int(m,"contentSize");r.metadata.trustLevel=ckbP8String(m,"trustLevel");r.metadata.reviewState=ckbP8String(m,"reviewState");r.metadata.license=ckbP8String(m,"license");r.metadata.repoVisibility=ckbP8String(m,"repoVisibility");let derived=ArrayList<String>();for(v in m.get("derivedFrom").getOrThrow().asArray().getItems()){derived.add(v.asString().getValue())};r.metadata.derivedFrom=derived.toArray();item.record=r;out.add(item)};out}
+public class CkbP8ArtifactReadResult { public var ok:Bool=false;public var text:String="";public var diagnostic:String="";public init(){} }
+public func ckbP8FrozenSourceDiagnostic(sourcePath:String,targetPath:String,manifestJson:String):String{if(ckbControlContainsSecret(manifestJson)){return "secret_artifact_forbidden"};try{let source=ckbP8CanonicalStorePath(sourcePath);let target=ckbP8CanonicalStorePath(targetPath);if(source==target){return "frozen_candidate_source_must_differ_from_target"};ckbFrozenCandidateManifestDiagnostic(FileKnowledgeStore(source),manifestJson)}catch(_:Exception){"frozen_candidate_store_invalid"}}
+private func ckbP8CanonicalStorePath(path:String):String{canonicalize(Path(path).parent).toString()+"/"+Path(path).fileName}
+public func ckbP8ReadArtifact(path:String):CkbP8ArtifactReadResult{let result=CkbP8ArtifactReadResult();try{let bytes=File.readFrom(Path(path));try{result.text=String.fromUtf8(bytes);result.ok=true}catch(_:Exception){result.diagnostic="invalid_response_encoding"}}catch(_:Exception){result.diagnostic="artifact_read_failed"};result}
+private func ckbP8ReadOrThrow(path:String):String{let result=ckbP8ReadArtifact(path);if(!result.ok){throw Exception(result.diagnostic)};result.text}
 private func ckbP8PathInside(path:String,root:String):Bool{let p=canonicalize(Path(path).parent).toString()+"/"+Path(path).fileName;let r=canonicalize(Path(root)).toString();p==r||p.startsWith(r+"/")}

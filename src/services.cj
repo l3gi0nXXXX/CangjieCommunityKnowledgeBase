@@ -3,7 +3,7 @@ package cangjie_community_knowledge_base
 import std.collection.{ArrayList, HashSet}
 import std.convert.Parsable
 import std.env.{getVariable, getCommand}
-import std.fs.{Directory, File, Path, OpenMode, exists}
+import std.fs.{Directory, File, Path, OpenMode, exists, remove}
 import std.io.*
 import std.process.*
 import std.time.*
@@ -6048,7 +6048,7 @@ public class FileKnowledgeStore {
         this.writeLines("index/graph-edges.ckb", this.graphEdgeLines(graph.edges))
     }
 
-    public func writeActiveSnapshotTransaction(status: KnowledgeStatus, rawRecords: ArrayList<RawRecord>, normalizedRecords: ArrayList<NormalizedRecord>, activeIndex: ArrayList<NormalizedRecord>, vectorRecords: ArrayList<VectorRecord>, vectorCollection: String, graph: GraphBuildResult, persistVectorFile!: Bool = true, deadlineAtMillis!: Int64 = 0, stageSink!: CkbStagedRebuildStageSink = NoopCkbStagedRebuildStageSink(), vectorSpool!: CkbVectorSpoolDescriptor = CkbVectorSpoolDescriptor(), releaseBundle!: CkbReleaseCommitBundle = CkbReleaseCommitBundle(), companionCopy!: CkbActiveSnapshotCompanionCopy = CkbActiveSnapshotCompanionCopy(), repositoryEventIdentity!: String = "", faultInjector!: CkbActiveSnapshotFaultInjector = NoopCkbActiveSnapshotFaultInjector()): CkbActiveSnapshotTransactionResult {
+    public func writeActiveSnapshotTransaction(status: KnowledgeStatus, rawRecords: ArrayList<RawRecord>, normalizedRecords: ArrayList<NormalizedRecord>, activeIndex: ArrayList<NormalizedRecord>, vectorRecords: ArrayList<VectorRecord>, vectorCollection: String, graph: GraphBuildResult, persistVectorFile!: Bool = true, deadlineAtMillis!: Int64 = 0, stageSink!: CkbStagedRebuildStageSink = NoopCkbStagedRebuildStageSink(), vectorSpool!: CkbVectorSpoolDescriptor = CkbVectorSpoolDescriptor(), releaseBundle!: CkbReleaseCommitBundle = CkbReleaseCommitBundle(), companionCopy!: CkbActiveSnapshotCompanionCopy = CkbActiveSnapshotCompanionCopy(), repositoryEventIdentity!: String = "", faultInjector!: CkbActiveSnapshotFaultInjector = NoopCkbActiveSnapshotFaultInjector(), expectedBaseActivePointerHash!: String = ""): CkbActiveSnapshotTransactionResult {
         let result = CkbActiveSnapshotTransactionResult()
         let entryDeadline = ckbDeadlineGuard("active_snapshot_tx_begin", deadlineAtMillis)
         if (entryDeadline.exceeded) {
@@ -6160,8 +6160,20 @@ public class FileKnowledgeStore {
             this.emitActiveSnapshotStage(stageSink, "active_snapshot_manifest_before", "running", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
             this.ensureActiveSnapshotDeadline("active_snapshot_manifest_before", deadlineAtMillis)
             faultInjector.checkpoint(CkbActiveSnapshotFaultPoints.POINTER_BEFORE)
-            this.writeLinesAtomically("metadata/active-snapshot.manifest",
-                this.activeSnapshotManifestLines(txId, status, result))
+            let commitLock = this.root.join("metadata/active-snapshot-commit.lock")
+            try {
+                Directory.create(commitLock, recursive: false)
+            } catch (_: Exception) { throw Exception("active_snapshot_commit_lock_busy") }
+            try {
+                if (expectedBaseActivePointerHash != "" &&
+                    ckbActiveSnapshotPointerIdentityHash(this.loadActiveSnapshotPointer()) != expectedBaseActivePointerHash) {
+                    throw Exception("active_snapshot_pointer_cas_conflict")
+                }
+                this.writeLinesAtomically("metadata/active-snapshot.manifest",
+                    this.activeSnapshotManifestLines(txId, status, result))
+            } finally {
+                try { remove(commitLock, recursive: true) } catch (_: Exception) { () }
+            }
             this.emitActiveSnapshotStage(stageSink, "active_snapshot_manifest_after", "ok", status, rawRecords, normalizedRecords, activeIndex, vectorRecords, graph, deadlineAtMillis, persistVectorFile)
             faultInjector.checkpoint(CkbActiveSnapshotFaultPoints.POINTER_AFTER)
         } catch (e: Exception) {
@@ -10267,6 +10279,20 @@ public class CkbActiveSnapshotPointer {
     public var diagnostic: String = "active_pointer_missing"
 
     public init() {}
+}
+
+public func ckbActiveSnapshotPointerIdentityHash(pointer: CkbActiveSnapshotPointer): String {
+    if (!pointer.valid) {
+        return benchmarkGapSha256(if (pointer.diagnostic == "active_pointer_missing") {
+            "missing"
+        } else { "invalid:${pointer.diagnostic}" })
+    }
+    benchmarkGapSha256("${pointer.txId.toArray().size}:${pointer.txId}" +
+        "${pointer.activeVersion.toArray().size}:${pointer.activeVersion}" +
+        "${pointer.vectorActiveCollection.toArray().size}:${pointer.vectorActiveCollection}" +
+        "${pointer.manifestHash.toArray().size}:${pointer.manifestHash}" +
+        "${pointer.freshnessHash.toArray().size}:${pointer.freshnessHash}" +
+        "${pointer.coverageHash.toArray().size}:${pointer.coverageHash}")
 }
 
 public class CkbActiveSnapshotCompanionCopy {

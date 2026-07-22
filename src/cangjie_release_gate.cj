@@ -66,13 +66,84 @@ public func cangjieCertifiedProductionReleaseGate(proof: CkbProductionReleasePro
 }
 
 public func cangjieRoutineTrustProofDiagnostic(leakageText: String, queryText: String): String {
-    if (!leakageText.contains("\"ok\":true") || !leakageText.contains("\"leakageCount\":0")) {
-        return "candidate_leakage_proof_required"
-    }
-    if (!queryText.contains("\"ok\":true") || !queryText.contains("\"indexBuildCount\":1") ||
-        !queryText.contains("\"failed\":0")) { return "anonymous_query_proof_required" }
+    if (!ckbTrustSummaryValid(leakageText, "leakage")) { return "candidate_leakage_proof_required" }
+    if (!ckbTrustSummaryValid(queryText, "query")) { return "anonymous_query_proof_required" }
     "ok"
 }
+
+public func ckbRenderCandidateTrustSeal(records: ArrayList<NormalizedRecord>, leakageText: String,
+    queryText: String, authorityText: String, atomTestText: String): String {
+    let candidateChecksum = ckbCertifiedNormalizedRecordsChecksum(records)
+    let diagnostic = ckbCandidateTrustInputsDiagnostic(records, leakageText, queryText,
+        authorityText, atomTestText)
+    let body = "{\"schemaVersion\":\"ckb-student-leakage-seal-v1\",\"ok\":${diagnostic == "ok"},\"status\":\"${if (diagnostic == "ok") { "pass" } else { "fail" }}\",\"candidateChecksum\":\"${candidateChecksum}\",\"leakageArtifactHash\":\"${benchmarkGapSha256(leakageText)}\",\"anonymousQueryArtifactHash\":\"${benchmarkGapSha256(queryText)}\",\"authorityIsolationArtifactHash\":\"${benchmarkGapSha256(authorityText)}\",\"atomTestArtifactHash\":\"${benchmarkGapSha256(atomTestText)}\",\"diagnostic\":\"${cangjieReleaseGateJsonEscape(diagnostic)}\""
+    body + ",\"evidenceHash\":\"${benchmarkGapSha256(body + "}")}\"}"
+}
+
+public func ckbCandidateTrustSealDiagnostic(seal: String, records: ArrayList<NormalizedRecord>,
+    leakageText: String, queryText: String, authorityText: String, atomTestText: String): String {
+    let inputDiagnostic = ckbCandidateTrustInputsDiagnostic(records, leakageText, queryText,
+        authorityText, atomTestText)
+    if (inputDiagnostic != "ok") { return inputDiagnostic }
+    try {
+        let object = JsonValue.fromStr(seal).asObject()
+        let candidateChecksum = ckbCertifiedNormalizedRecordsChecksum(records)
+        let body = "{\"schemaVersion\":\"ckb-student-leakage-seal-v1\",\"ok\":true,\"status\":\"pass\",\"candidateChecksum\":\"${candidateChecksum}\",\"leakageArtifactHash\":\"${benchmarkGapSha256(leakageText)}\",\"anonymousQueryArtifactHash\":\"${benchmarkGapSha256(queryText)}\",\"authorityIsolationArtifactHash\":\"${benchmarkGapSha256(authorityText)}\",\"atomTestArtifactHash\":\"${benchmarkGapSha256(atomTestText)}\",\"diagnostic\":\"ok\""
+        if (!object.get("ok").getOrThrow().asBool().getValue() ||
+            object.get("status").getOrThrow().asString().getValue() != "pass" ||
+            object.get("candidateChecksum").getOrThrow().asString().getValue() != candidateChecksum ||
+            object.get("leakageArtifactHash").getOrThrow().asString().getValue() != benchmarkGapSha256(leakageText) ||
+            object.get("anonymousQueryArtifactHash").getOrThrow().asString().getValue() != benchmarkGapSha256(queryText) ||
+            object.get("authorityIsolationArtifactHash").getOrThrow().asString().getValue() != benchmarkGapSha256(authorityText) ||
+            object.get("atomTestArtifactHash").getOrThrow().asString().getValue() != benchmarkGapSha256(atomTestText) ||
+            object.get("evidenceHash").getOrThrow().asString().getValue() != benchmarkGapSha256(body + "}")) {
+            return "student_leakage_proof_mismatch"
+        }
+        "ok"
+    } catch (_: Exception) { "student_leakage_proof_mismatch" }
+}
+
+public func cangjieCandidateOnlyPreCertificationGate(records: ArrayList<NormalizedRecord>,
+    leakageText: String, queryText: String, authorityText: String,
+    atomTestText: String): CangjieKnowledgeReleaseGateStep {
+    let step = CangjieKnowledgeReleaseGateStep(); step.id = "P6-student-leakage-seal"
+    step.diagnostic = ckbCandidateTrustInputsDiagnostic(records, leakageText, queryText,
+        authorityText, atomTestText)
+    step.ok = step.diagnostic == "ok"; step.status = if (step.ok) { "pass" } else { "fail" }
+    if (step.ok) { step.evidenceHash = benchmarkGapSha256(ckbRenderCandidateTrustSeal(records,
+        leakageText, queryText, authorityText, atomTestText)) }
+    step
+}
+
+private func ckbCandidateTrustInputsDiagnostic(records: ArrayList<NormalizedRecord>, leakageText: String,
+    queryText: String, authorityText: String, atomTestText: String): String {
+    let validation = validateCangjieStudentKnowledgeRecords(records)
+    if (!validation.ok) { return "student_knowledge_leakage_blocked" }
+    let trust = cangjieRoutineTrustProofDiagnostic(leakageText, queryText)
+    if (trust != "ok") { return trust }
+    if (!ckbTrustSummaryValid(authorityText, "authority")) {
+        return "authority_isolation_proof_required"
+    }
+    if (!ckbTrustSummaryValid(atomTestText, "atom")) {
+        return "atom_test_proof_required"
+    }
+    "ok"
+}
+
+private func ckbTrustSummaryValid(raw: String, kind: String): Bool {
+    let lines = raw.trimAscii().split("\n"); if (lines.size == 0) { return false }; let first = lines[0]
+    try {
+        let object = JsonValue.fromStr(first).asObject()
+        if (!ckbTrustUniqueField(first, "ok") || !object.get("ok").getOrThrow().asBool().getValue()) { return false }
+        if (kind == "leakage") { return ckbTrustUniqueField(first, "leakageCount") && object.get("leakageCount").getOrThrow().asInt().getValue() == 0 }
+        if (kind == "query") { return ckbTrustUniqueField(first, "indexBuildCount") && ckbTrustUniqueField(first, "failed") && object.get("indexBuildCount").getOrThrow().asInt().getValue() == 1 && object.get("failed").getOrThrow().asInt().getValue() == 0 }
+        if (kind == "authority") { let hash = object.get("authorityHash").getOrThrow().asString().getValue(); return ckbTrustUniqueField(first, "authorityCount") && ckbTrustUniqueField(first, "authorityHash") && ckbTrustUniqueField(first, "activeEvalCount") && object.get("authorityCount").getOrThrow().asInt().getValue() > 0 && object.get("activeEvalCount").getOrThrow().asInt().getValue() == 0 && ckbTrustHash(hash) }
+        kind == "atom"
+    } catch (_: Exception) { false }
+}
+
+private func ckbTrustUniqueField(raw: String, field: String): Bool { raw.split("\"${field}\"").size == 2 }
+private func ckbTrustHash(value:String):Bool{if(!value.startsWith("sha256:")||value.toRuneArray().size!=71){return false};for(r in value.toRuneArray()[7..71]){if(!((r>=r'0'&&r<=r'9')||(r>=r'a'&&r<=r'f'))){return false}};true}
 
 public func parseCangjieKnowledgeReleaseGateOptions(args: Array<String>): CangjieKnowledgeReleaseGateOptions {
     let options = CangjieKnowledgeReleaseGateOptions()
@@ -220,6 +291,7 @@ public func cangjieKnowledgeReleaseGate(
     cangjieReleaseGateAddSourceEventE2eStep(report, options, config, sourceRunner)
     cangjieReleaseGateAddTransportParityStep(report, service, options.runRoot)
     cangjieReleaseGateAddInterfaceE2eStep(report, service, options)
+    cangjieReleaseGateAddStudentLeakageStep(report, options, store)
     cangjieReleaseGateAddRoutineUpdateAcceptanceStep(report, options, store)
     cangjieReleaseGateAddPlanClosureStep(report, options)
     cangjieReleaseGateAddLandingStatusStep(report, service, "F8-landing-status-final")
@@ -244,7 +316,11 @@ private func cangjieReleaseGateAddKnowledgeAtomTestStep(report: CangjieKnowledge
             cangjieReleaseGateAddStep(report, "P3-knowledge-atom-tests", false, "knowledge_atom_artifact_required", curationPath.toString())
             return
         }
-        cangjieReleaseGateAddStep(report, "P3-knowledge-atom-tests", true, "no_candidate_atoms", "")
+        let reportPath = Path(options.runRoot).join("knowledge-atom-test-report.json")
+        let reportText = "{\"ok\":true,\"diagnostic\":\"no_candidate_atoms\",\"declaredCount\":0,\"testedCount\":0}"
+        cangjieReleaseGateWriteText(reportPath.toString(), reportText + "\n")
+        cangjieReleaseGateAddStep(report, "P3-knowledge-atom-tests", true, "no_candidate_atoms",
+            reportPath.toString(), evidenceHash: benchmarkGapSha256(reportText))
         return
     }
     try {
@@ -645,6 +721,36 @@ private func cangjieReleaseGateAddRoutineUpdateAcceptanceStep(report: CangjieKno
     cangjieReleaseGateAddStep(report, "P9-routine-update-acceptance", ok, "steps=${report.steps.size},trustProof=${trustProofOk},failed=${if (ok) { 0 } else { 1 }}", artifact, evidenceHash: benchmarkGapSha256(text))
 }
 
+private func cangjieReleaseGateAddStudentLeakageStep(report: CangjieKnowledgeReleaseGateReport,
+    options: CangjieKnowledgeReleaseGateOptions, store: FileKnowledgeStore): Unit {
+    let snapshot = store.loadActiveSnapshot()
+    let records = if (snapshot.valid) { snapshot.activeIndex } else { ArrayList<NormalizedRecord>() }
+    let authority = ckbLoadBenchmarkLeakageAuthority(store)
+    var activeEvalCount: Int64 = 0
+    for (record in records) {
+        if (record.recordKind == CangjieTypedRecordKinds.EVAL_SUPPORT ||
+            record.metadata.sourceSet == CangjieSourceSets.EVAL_SUPPORT) { activeEvalCount += 1 }
+    }
+    let leakagePath = Path(options.runRoot).join("student-leakage-report.jsonl")
+    let queryPath = Path(options.runRoot).join("anonymous-atom-query-report.jsonl")
+    let leakageText = if (exists(leakagePath)) {
+        try { String.fromUtf8(File.readFrom(leakagePath)) } catch (_: Exception) { "" }
+    } else { "" }
+    let queryText = if (exists(queryPath)) {
+        try { String.fromUtf8(File.readFrom(queryPath)) } catch (_: Exception) { "" }
+    } else { "" }
+    let atomStep = cangjieReleaseGateFindStep(report, "P3-knowledge-atom-tests")
+    let authorityText = "{\"ok\":${authority.ok},\"authorityCount\":${authority.authorityRecordCount},\"authorityHash\":\"${cangjieReleaseGateJsonEscape(authority.authorityHash)}\",\"activeEvalCount\":${activeEvalCount}}"
+    let atomText = "{\"ok\":${atomStep.ok},\"diagnostic\":\"${cangjieReleaseGateJsonEscape(atomStep.diagnostic)}\",\"evidenceHash\":\"${cangjieReleaseGateJsonEscape(atomStep.evidenceHash)}\"}"
+    let gate = cangjieCandidateOnlyPreCertificationGate(records, leakageText, queryText,
+        authorityText, atomText)
+    let artifact = "${options.runRoot}/candidate-trust-seal.json"
+    let seal = ckbRenderCandidateTrustSeal(records, leakageText, queryText, authorityText, atomText)
+    cangjieReleaseGateWriteText(artifact, seal + "\n")
+    cangjieReleaseGateAddStep(report, gate.id, gate.ok, gate.diagnostic, artifact,
+        evidenceHash: if (gate.ok) { benchmarkGapSha256(seal) } else { "" })
+}
+
 private func cangjieReleaseGateAddTransportParityStep(report: CangjieKnowledgeReleaseGateReport, service: CkbCommandLoopService, runRoot: String): Unit {
     let parity = ckbAbcdeProbeInProcessTransportParityArtifacts(service, runRoot, "release-gate", cangjieReleaseGateTaskContextJson())
     let artifact = "${runRoot}/transport-parity.jsonl"
@@ -676,6 +782,8 @@ private func cangjieReleaseGateAddPlanClosureStep(report: CangjieKnowledgeReleas
         "E2E-01-first-init",
         "E2E-02-route-probe",
         "E2E-05-pass1-gate",
+        "P3-knowledge-atom-tests",
+        "P6-student-leakage-seal",
         "P7-routine-update-contract",
         "P0A-routine-runtime-readiness",
         "E2E-08-routine-update-due-run",

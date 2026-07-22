@@ -42,6 +42,10 @@ public class CangjieCertificationPreflightTest {
         @Expect(report.startAllowed, false)
         @Expect(report.checks.contains("knowledge_version_drift"), true)
         @Expect(report.certificationPassAt1.isNone(), true)
+        options.frozenCandidateManifestJson = "{}"
+        options.frozenCandidateManifestHash = benchmarkGapSha256(options.frozenCandidateManifestJson)
+        let invalidFrozen = runCertificationPreflight(options, p6Fingerprint())
+        @Expect(invalidFrozen.checks.contains("frozen_candidate_manifest_invalid"), true)
     }
 
     @TestCase
@@ -134,6 +138,7 @@ private func p6Fingerprint(): CkbFrozenFingerprintInput {
     input.manifestHash = benchmarkGapSha256("manifest"); input.modelVersion = "GLM-5.2"; input.claudeCodeVersion = "claude-code-1.0"
     input.promptHash = benchmarkGapSha256("prompt"); input.toolConfigHash = benchmarkGapSha256("tools")
     input.providerIdentityHash = benchmarkGapSha256("{\"provider\":\"redacted-provider\",\"model\":\"GLM-5.2\",\"claudeCodeVersion\":\"claude-code-1.0\"}"); input.certificationTransport = CkbAbcdeGroups.C; input.runtimeConfigHash = benchmarkGapSha256("runtime-config")
+    input.candidateChecksum=input.knowledgeContentHash;input.studentLeakageProofHash=benchmarkGapSha256("{\"ok\":true,\"status\":\"pass\"}");input.frozenCandidateManifestHash=benchmarkGapSha256(p6FrozenManifest(input.candidateChecksum,input.studentLeakageProofHash))
     input
 }
 
@@ -161,11 +166,13 @@ private func p6Preflight(output: String): CkbCertificationPreflightOptions {
     options.developmentClosureJson=p6ClosureJson(); options.knowledgeGateJson=p6Gate("knowledge-gate"); options.releaseGateJson=p6Gate("release-gate")
     let wc=canonicalize(Path(options.workspaceRoot)).toString();let rc=canonicalize(Path(options.runtimeHomeRoot)).toString();options.filesystemProbeJson="{\"deniedOutsideWorkspace\":true,\"deniedTests\":true,\"deniedReference\":true,\"deniedTeacher\":true,\"workspaceCanonical\":\"${wc}\",\"runtimeHomeCanonical\":\"${rc}\"}"
     options.parityRestPayload="{\"atomIds\":[\"A\"],\"contentHash\":\"${benchmarkGapSha256("atom")}\",\"citation\":\"官方中文😀\",\"knowledgeVersion\":\"knowledge-v1\"}";options.parityStdioPayload=options.parityRestPayload;options.parityHttpPayload=options.parityRestPayload;options.parityEvidenceHash=benchmarkGapSha256(options.parityRestPayload)
+    options.candidateChecksum=benchmarkGapSha256("knowledge");options.studentLeakageProofJson="{\"ok\":true,\"status\":\"pass\"}";options.studentLeakageProofHash=benchmarkGapSha256(options.studentLeakageProofJson);options.frozenCandidateManifestJson=p6FrozenManifest(options.candidateChecksum,options.studentLeakageProofHash);options.frozenCandidateManifestHash=benchmarkGapSha256(options.frozenCandidateManifestJson)
     let baseline=p6Arm("no-ckb",false,"pre-w1","pre-s1","pre-h1");let treatment=p6Arm("frozen-ckb",true,"pre-w2","pre-s2","pre-h2");options.experimentReport=runCkbContributionExperiment(baseline,treatment,frozenFingerprint: ckbFrozenFingerprint(p6Fingerprint()))
     options
 }
 
 private func p6ClosureJson():String{var rows="";for(i in 0..164){if(i>0){rows+=","};rows+="{\"caseId\":\"CJ-HUMANEVAL-${i}\",\"developmentPass\":true,\"valid\":true}"};"{\"developmentClosed\":true,\"developmentPassed\":164,\"developmentTotal\":164,\"knowledgeCandidateCount\":0,\"invalidCaseCount\":0,\"certifiedPassAt1\":null,\"cases\":[${rows}]}"}
+private func p6FrozenManifest(candidate:String,leakage:String):String{let h={v:String=>benchmarkGapSha256(v)};let body="{\"schemaVersion\":\"ckb-frozen-candidate-v1\",\"knowledgeVersion\":\"knowledge-v1\",\"txIdHash\":\"${h("tx")}\",\"activePointerHash\":\"${h("pointer")}\",\"transactionHash\":\"${h("transaction")}\",\"candidateChecksum\":\"${candidate}\",\"inputHash\":\"${h("input")}\",\"configHash\":\"${h("config")}\",\"modelHash\":\"${h("model")}\",\"studentLeakageProofHash\":\"${leakage}\",\"authorityIsolationArtifactHash\":\"${h("authority")}\",\"anonymousQueryArtifactHash\":\"${h("query")}\",\"atomTestArtifactHash\":\"${h("atom")}\"";body+",\"evidenceHash\":\"${h(body+"}")}\"}"}
 private func p6Gate(evidence:String):String{"{\"ok\":true,\"status\":\"pass\",\"evidence\":\"${evidence}\",\"evidenceHash\":\"${benchmarkGapSha256(evidence)}\"}"}
 
 private func p6Observation(transport: String): CkbAbcdeParityObservation {
