@@ -1,6 +1,7 @@
 package cangjie_community_knowledge_base_test
 
 import std.fs.{Directory, File, Path, exists}
+import std.collection.ArrayList
 import std.process.*
 import std.unittest.*
 import std.unittest.testmacro.*
@@ -17,6 +18,26 @@ public class CangjieReleaseGateTest {
         @Expect(cangjieRoutineTrustProofDiagnostic(cleanLeakage,
             "{\"ok\":false,\"indexBuildCount\":1,\"failed\":1}"), "anonymous_query_proof_required")
         @Expect(cangjieRoutineTrustProofDiagnostic(cleanLeakage, ""), "anonymous_query_proof_required")
+        let forgedLeakage = "{\"ok\":false,\"leakageCount\":1,\"message\":\"\\\"ok\\\":true \\\"leakageCount\\\":0\"}"
+        let forgedQuery = "{\"ok\":false,\"indexBuildCount\":0,\"failed\":1,\"message\":\"\\\"ok\\\":true \\\"indexBuildCount\\\":1 \\\"failed\\\":0\"}"
+        @Expect(cangjieRoutineTrustProofDiagnostic(forgedLeakage, cleanQueries),
+            "candidate_leakage_proof_required")
+        @Expect(cangjieRoutineTrustProofDiagnostic(cleanLeakage, forgedQuery),
+            "anonymous_query_proof_required")
+        let duplicateLeakage = "{\"ok\":false,\"ok\":true,\"leakageCount\":1,\"leakageCount\":0}"
+        let duplicateQuery = "{\"ok\":false,\"ok\":true,\"indexBuildCount\":0,\"indexBuildCount\":1,\"failed\":1,\"failed\":0}"
+        @Expect(cangjieRoutineTrustProofDiagnostic(duplicateLeakage, cleanQueries),
+            "candidate_leakage_proof_required")
+        @Expect(cangjieRoutineTrustProofDiagnostic(cleanLeakage, duplicateQuery),
+            "anonymous_query_proof_required")
+        let duplicateAuthority = "{\"ok\":false,\"ok\":true,\"authorityCount\":0,\"authorityCount\":164,\"authorityHash\":\"${benchmarkGapSha256("authority")}\",\"activeEvalCount\":1,\"activeEvalCount\":0}"
+        let duplicateAtom = "{\"ok\":false,\"ok\":true,\"diagnostic\":\"failed\"}"
+        let cleanAuthority = "{\"ok\":true,\"authorityCount\":164,\"authorityHash\":\"${benchmarkGapSha256("authority")}\",\"activeEvalCount\":0}"
+        let cleanAtom = "{\"ok\":true,\"diagnostic\":\"validated\"}"
+        @Expect(cangjieCandidateOnlyPreCertificationGate(ArrayList<NormalizedRecord>(), cleanLeakage,
+            cleanQueries, duplicateAuthority, cleanAtom).diagnostic, "authority_isolation_proof_required")
+        @Expect(cangjieCandidateOnlyPreCertificationGate(ArrayList<NormalizedRecord>(), cleanLeakage,
+            cleanQueries, cleanAuthority, duplicateAtom).diagnostic, "atom_test_proof_required")
     }
 
     @TestCase

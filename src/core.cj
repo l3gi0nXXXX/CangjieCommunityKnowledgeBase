@@ -5304,7 +5304,8 @@ public class KnowledgeBase {
         store.saveMetadata(this.status())
     }
 
-    public func persistActiveSnapshot(store: FileKnowledgeStore, deadlineAtMillis!: Int64 = 0): CkbActiveSnapshotTransactionResult {
+    public func persistActiveSnapshot(store: FileKnowledgeStore, deadlineAtMillis!: Int64 = 0,
+        expectedBaseActivePointerHash!: String = ""): CkbActiveSnapshotTransactionResult {
         store.ensureLayout()
         let graph = this.activeGraphBuildForSnapshot(deadlineAtMillis)
         if (!graph.ok) {
@@ -5312,10 +5313,11 @@ public class KnowledgeBase {
         }
         this.requireCommittedActiveSnapshot(store.writeActiveSnapshotTransaction(this.status(), this.rawRecords, this.activeIndex,
             this.activeIndex, this.activeVectorRecords(), this.vectorCollection, graph,
-            deadlineAtMillis: deadlineAtMillis))
+            deadlineAtMillis: deadlineAtMillis,
+            expectedBaseActivePointerHash: expectedBaseActivePointerHash))
     }
 
-    public func persistActiveSnapshotUsingVectorRecords(store: FileKnowledgeStore, vectorRecords: ArrayList<VectorRecord>, persistVectorFile!: Bool = true, deadlineAtMillis!: Int64 = 0, stageSink!: CkbStagedRebuildStageSink = NoopCkbStagedRebuildStageSink()): CkbActiveSnapshotTransactionResult {
+    public func persistActiveSnapshotUsingVectorRecords(store: FileKnowledgeStore, vectorRecords: ArrayList<VectorRecord>, persistVectorFile!: Bool = true, deadlineAtMillis!: Int64 = 0, stageSink!: CkbStagedRebuildStageSink = NoopCkbStagedRebuildStageSink(), expectedBaseActivePointerHash!: String = ""): CkbActiveSnapshotTransactionResult {
         store.ensureLayout()
         let graph = this.activeGraphBuildForSnapshot(deadlineAtMillis)
         if (!graph.ok) {
@@ -5324,10 +5326,10 @@ public class KnowledgeBase {
         this.requireCommittedActiveSnapshot(store.writeActiveSnapshotTransaction(this.status(), this.rawRecords, this.activeIndex,
             this.activeIndex, vectorRecords, this.vectorCollection, graph,
             persistVectorFile: persistVectorFile, deadlineAtMillis: deadlineAtMillis,
-            stageSink: stageSink))
+            stageSink: stageSink, expectedBaseActivePointerHash: expectedBaseActivePointerHash))
     }
 
-    public func persistActiveSnapshotUsingVectorBuild(store: FileKnowledgeStore, vectorBuild: VectorIndexBuildResult, persistVectorFile!: Bool = true, deadlineAtMillis!: Int64 = 0, stageSink!: CkbStagedRebuildStageSink = NoopCkbStagedRebuildStageSink(), releaseBundle!: CkbReleaseCommitBundle = CkbReleaseCommitBundle(), repositoryEventIdentity!: String = "", faultInjector!: CkbActiveSnapshotFaultInjector = NoopCkbActiveSnapshotFaultInjector()): CkbActiveSnapshotTransactionResult {
+    public func persistActiveSnapshotUsingVectorBuild(store: FileKnowledgeStore, vectorBuild: VectorIndexBuildResult, persistVectorFile!: Bool = true, deadlineAtMillis!: Int64 = 0, stageSink!: CkbStagedRebuildStageSink = NoopCkbStagedRebuildStageSink(), releaseBundle!: CkbReleaseCommitBundle = CkbReleaseCommitBundle(), repositoryEventIdentity!: String = "", faultInjector!: CkbActiveSnapshotFaultInjector = NoopCkbActiveSnapshotFaultInjector(), expectedBaseActivePointerHash!: String = ""): CkbActiveSnapshotTransactionResult {
         store.ensureLayout()
         let graph = this.activeGraphBuildForSnapshot(deadlineAtMillis)
         if (!graph.ok) { throw Exception(graph.diagnostic) }
@@ -5336,7 +5338,8 @@ public class KnowledgeBase {
             persistVectorFile: persistVectorFile, deadlineAtMillis: deadlineAtMillis,
             stageSink: stageSink, vectorSpool: vectorBuild.spool, releaseBundle: releaseBundle,
             repositoryEventIdentity: repositoryEventIdentity,
-            faultInjector: faultInjector))
+            faultInjector: faultInjector,
+            expectedBaseActivePointerHash: expectedBaseActivePointerHash))
     }
 
     private func requireCommittedActiveSnapshot(
