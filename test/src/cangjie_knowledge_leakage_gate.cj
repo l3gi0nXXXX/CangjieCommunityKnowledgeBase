@@ -1,9 +1,10 @@
 package cangjie_community_knowledge_base_test
 
-import std.collection.ArrayList
+import std.collection.{ArrayList, HashSet}
 
 public class CangjieBenchmarkLeakageAuthority {
     public var fingerprints: ArrayList<String> = ArrayList<String>()
+    public var fingerprintSet: HashSet<String> = HashSet<String>()
 
     public init() {}
 }
@@ -147,7 +148,9 @@ private func cangjieLeakageAddFingerprintWindows(authority: CangjieBenchmarkLeak
         let out = StringBuilder()
         for (i in start..(start + 24)) { out.append(runes[i]) }
         let fingerprint = out.toString()
-        if (!authority.fingerprints.contains(fingerprint)) { authority.fingerprints.add(fingerprint) }
+        if (!authority.fingerprintSet.contains(fingerprint)) {
+            authority.fingerprints.add(fingerprint); authority.fingerprintSet.add(fingerprint)
+        }
         start += 12
     }
 }
@@ -159,10 +162,15 @@ private func cangjieLeakageTextDiagnostic(field: String, raw: String,
         clean.contains("visible-benchmark/") || clean.contains("curated-gap-") || clean.contains("eval-support-")) {
         return cangjieLeakageRejected(field, "student_knowledge_leakage_blocked")
     }
-    for (fingerprint in authority.fingerprints) {
-        if (clean != "" && (clean == fingerprint || clean.contains(fingerprint))) {
+    let runes = clean.toRuneArray()
+    var start: Int64 = 0
+    while (start + 24 <= runes.size) {
+        let window = StringBuilder()
+        for (i in start..(start + 24)) { window.append(runes[i]) }
+        if (authority.fingerprintSet.contains(window.toString())) {
             return cangjieLeakageRejected(field, "student_knowledge_leakage_blocked")
         }
+        start += 1
     }
     CangjieStudentKnowledgeDiagnostic()
 }
