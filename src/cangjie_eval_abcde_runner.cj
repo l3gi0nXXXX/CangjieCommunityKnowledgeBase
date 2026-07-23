@@ -503,7 +503,10 @@ private func ckbAbcdeWaitForCertificationIdentity(options: CkbAbcdeRunnerOptions
     let checksum = ckbAbcdeStrictJsonString(frozen, "candidateChecksum")
     let deadline = ckbCoreNowMillis() + ckbAbcdeCertificationReadinessDeadlineMillis()
     while (ckbCoreNowMillis() < deadline) {
-        let response = ckbAbcdeRunShell("curl --connect-timeout 1 --max-time 30 -fsS ${ckbAbcdeShellQuote(options.ckbHttpBase+"/v1/certification/identity")}", "")
+        let maxTimeSeconds = ckbAbcdeCertificationProbeMaxTimeSeconds(
+            deadline - ckbCoreNowMillis())
+        if (maxTimeSeconds <= 0) { break }
+        let response = ckbAbcdeRunShell("curl --connect-timeout 1 --max-time ${maxTimeSeconds} -fsS ${ckbAbcdeShellQuote(options.ckbHttpBase+"/v1/certification/identity")}", "")
         if (response.exitCode == 0) {
             let diagnostic = ckbAbcdeCertificationIdentityResponseDiagnostic(
                 response.stdout, version, pointer, checksum)
@@ -519,6 +522,11 @@ private func ckbAbcdeWaitForCertificationIdentity(options: CkbAbcdeRunnerOptions
 
 public func ckbAbcdeCertificationReadinessDeadlineMillis(): Int64 { 60000 }
 public func ckbAbcdeDevelopmentToolProbeTimeoutSeconds(): Int64 { 30 }
+public func ckbAbcdeCertificationProbeMaxTimeSeconds(remainingMillis: Int64): Int64 {
+    if (remainingMillis < 1000) { return 0 }
+    let remainingSeconds = remainingMillis / 1000
+    if (remainingSeconds > 30) { 30 } else { remainingSeconds }
+}
 
 public func ckbAbcdeCertificationIdentityResponseDiagnostic(raw: String, version: String,
     pointer: String, checksum: String): String {

@@ -3,7 +3,7 @@ package cangjie_community_knowledge_base_test
 import std.collection.{ArrayList, HashSet}
 import std.convert.Parsable
 import std.env.{getVariable, getCommand}
-import std.fs.{Directory, File, Path, OpenMode, exists, remove}
+import std.fs.{Directory, File, Path, OpenMode, canonicalize, exists, remove}
 import std.io.*
 import std.process.*
 import std.time.*
@@ -13128,6 +13128,12 @@ public class CkbCommandLoopService {
         let pointer = this.store.loadActiveSnapshotPointer()
         if (!pointer.valid) { return "" }
         ckbActiveSnapshotPointerIdentityHash(pointer)
+    }
+
+    public func certificationStoreRootIdentityHash(): String {
+        try {
+            benchmarkGapSha256(canonicalize(this.store.root).toString())
+        } catch (_: Exception) { "" }
     }
 
     private func cangjieCapabilityService(): CangjieCapabilityService {

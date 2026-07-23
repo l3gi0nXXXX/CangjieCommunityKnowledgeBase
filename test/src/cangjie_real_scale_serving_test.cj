@@ -2,6 +2,7 @@ package cangjie_community_knowledge_base_test
 
 import std.collection.ArrayList
 import std.fs.File
+import std.process.*
 import std.time.DateTime
 import std.unittest.*
 import std.unittest.testmacro.*
@@ -63,6 +64,16 @@ public class CangjieRealScaleServingTest {
     }
 
     @TestCase
+    public func emptyStudentProjectionPreservesEmptyDiagnostic(): Unit {
+        let observer = RealScaleServingBuildObserver()
+        let projection = KnowledgeBase(FakeClock(0)).prepareStudentServingProjection(
+            buildObserver: observer)
+        @Expect(projection.valid, false)
+        @Expect(projection.diagnostic, "student_serving_projection_empty")
+        @Expect(observer.count, 1)
+    }
+
+    @TestCase
     public func realScaleProjectionBuilds7373StudentRecordsExactlyOnce(): Unit {
         let records = ArrayList<NormalizedRecord>()
         for (i in 0..7373) {
@@ -95,6 +106,21 @@ public class CangjieRealScaleServingTest {
         }
         @Expect(store.activeSnapshotMaterializationCount(), afterPrepare)
 
+        let cloneRoot = this.root("real-scale-identity-clone")
+        @Expect(launch("/bin/cp", ["-R", store.root.toString(), cloneRoot]).wait(), 0)
+        let clone = FileKnowledgeStore(cloneRoot)
+        @Expect(ckbActiveSnapshotPointerIdentityHash(clone.loadActiveSnapshotPointer()),
+            identity.pointerIdentityHash)
+        let cloneIdentity = prepareCkbCertificationHttpIdentity(service, clone)
+        @Expect(cloneIdentity.diagnostic, "certification_identity_service_store_mismatch")
+        @Expect(cloneIdentity.responseBody.contains(store.root.toString()), false)
+        @Expect(cloneIdentity.responseBody.contains(clone.root.toString()), false)
+
+        _ = service.handleLine("restart")
+        let afterReload = prepareCkbCertificationHttpIdentity(service, store)
+        @Expect(afterReload.valid, true)
+        @Expect(afterReload.pointerIdentityHash, identity.pointerIdentityHash)
+
         let unrelated = CkbCommandLoopService(CkbRuntimeConfig(),
             FileKnowledgeStore(this.root("real-scale-identity-unrelated")))
         @Expect(prepareCkbCertificationHttpIdentity(unrelated, store).diagnostic,
@@ -120,6 +146,12 @@ public class CangjieRealScaleServingTest {
     public func readinessAndFrozenPointerGuardsAreBoundedAndFailClosed(): Unit {
         @Expect(ckbAbcdeCertificationReadinessDeadlineMillis() >= 60000, true)
         @Expect(ckbAbcdeDevelopmentToolProbeTimeoutSeconds(), 30)
+        @Expect(ckbAbcdeCertificationProbeMaxTimeSeconds(0), 0)
+        @Expect(ckbAbcdeCertificationProbeMaxTimeSeconds(999), 0)
+        @Expect(ckbAbcdeCertificationProbeMaxTimeSeconds(1000), 1)
+        @Expect(ckbAbcdeCertificationProbeMaxTimeSeconds(29999), 29)
+        @Expect(ckbAbcdeCertificationProbeMaxTimeSeconds(30000), 30)
+        @Expect(ckbAbcdeCertificationProbeMaxTimeSeconds(60000), 30)
         @Expect(ckbAbcdeCertificationIdentityResponseDiagnostic(
             "{\"ok\":true,\"data\":{\"activeVersion\":\"知识🙂\",\"pointerIdentityHash\":\"sha256:pointer\",\"candidateChecksum\":\"sha256:checksum\"}}",
             "知识🙂", "sha256:pointer", "sha256:checksum"), "ok")

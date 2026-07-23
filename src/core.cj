@@ -4215,10 +4215,13 @@ public class KnowledgeBase {
                 this.activeRecordSnapshot(), this.activeKnowledgeVersion,
                 buildObserver: buildObserver)
         }
-        if (cangjieStudentServingProjectionDiagnostic(this.studentServingProjection,
-            this.activeKnowledgeVersion) != "ok") {
+        let diagnostic = cangjieStudentServingProjectionDiagnostic(
+            this.studentServingProjection, this.activeKnowledgeVersion)
+        if (diagnostic != "ok") {
             this.studentServingProjection.valid = false
-            this.studentServingProjection.diagnostic = "student_serving_projection_version_drift"
+            if (diagnostic == "student_serving_projection_version_drift") {
+                this.studentServingProjection.diagnostic = diagnostic
+            }
         }
         this.studentServingProjection
     }

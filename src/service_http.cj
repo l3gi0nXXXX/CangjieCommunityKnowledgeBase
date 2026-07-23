@@ -2,7 +2,7 @@ package cangjie_community_knowledge_base
 
 import std.collection.ArrayList
 import std.convert.Parsable
-import std.fs.{File, Path, exists}
+import std.fs.{File, Path, canonicalize, exists}
 import std.time.*
 import stdx.net.http.*
 
@@ -149,6 +149,14 @@ public func prepareCkbCertificationHttpIdentity(service: CkbCommandLoopService,
     let identity = CkbCertificationHttpIdentity()
     let first = store.loadActiveSnapshotPointer()
     if (!first.valid) { return identity }
+    let requestedStoreRootHash = try {
+        benchmarkGapSha256(canonicalize(store.root).toString())
+    } catch (_: Exception) { "" }
+    if (requestedStoreRootHash == "" ||
+        requestedStoreRootHash != service.certificationStoreRootIdentityHash()) {
+        identity.diagnostic = "certification_identity_service_store_mismatch"
+        return identity
+    }
     let projection = service.prepareStudentServingProjection()
     if (!projection.valid) {
         identity.diagnostic = projection.diagnostic
