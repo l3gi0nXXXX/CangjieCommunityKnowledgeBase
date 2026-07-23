@@ -1047,7 +1047,7 @@ public func ckbAbcdeRenderModelTransportDiagnostic(transcript: String, exitCode:
     let toolUses = ckbAbcdeCountOccurrences(transcript, "\"type\":\"tool_use\"")
     let toolResults = ckbAbcdeCountOccurrences(transcript, "\"type\":\"tool_result\"")
     let thinkingEvents = ckbAbcdeCountOccurrences(transcript, "\"subtype\":\"thinking_tokens\"")
-    let reason = if (exitCode == 124) { "provider_timeout" } else if (exitCode != 0) { "process_exit_failure" } else if (!assessment.completeResult) { "missing_terminal_result" } else if (!assessment.identityMatched) { "model_identity_mismatch" } else { "ok" }
+    let reason = if (exitCode == 124 && assessment.terminalResultCount == 0) { "provider_no_terminal_result_timeout" } else if (exitCode == 124) { "provider_timeout" } else if (exitCode != 0) { "process_exit_failure" } else if (!assessment.completeResult) { "missing_terminal_result" } else if (!assessment.identityMatched) { "model_identity_mismatch" } else { "ok" }
     "{\"exitCode\":${exitCode},\"timeoutSeconds\":${timeoutSeconds},\"effort\":\"${ckbAbcdeJsonEscape(effort)}\",\"maxBudgetUsd\":\"${ckbAbcdeJsonEscape(maxBudgetUsd)}\",\"completeResult\":${assessment.completeResult},\"identityMatched\":${assessment.identityMatched},\"sampleEligible\":${exitCode == 0 && assessment.sampleAttempt == 1},\"toolUseCount\":${toolUses},\"toolResultCount\":${toolResults},\"thinkingEventCount\":${thinkingEvents},\"terminalDiagnostic\":\"${reason}\"}"
 }
 

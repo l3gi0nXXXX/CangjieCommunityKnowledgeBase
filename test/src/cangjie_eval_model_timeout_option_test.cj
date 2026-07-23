@@ -108,8 +108,17 @@ public class CangjieEvalModelTimeoutOptionTest {
         @Expect(diagnostic.contains("\"toolUseCount\":1"), true)
         @Expect(diagnostic.contains("\"toolResultCount\":1"), true)
         @Expect(diagnostic.contains("\"thinkingEventCount\":1"), true)
+        @Expect(diagnostic.contains("\"terminalDiagnostic\":\"provider_timeout\""), true)
         @Expect(diagnostic.contains("provider_no_terminal_result_timeout"), false)
         let incomplete = ckbAbcdeAssessSample("{\"type\":\"system\",\"subtype\":\"init\",\"model\":\"GLM-5.2\"}\n", "GLM-5.2")
-        @Expect(ckbAbcdeRenderModelTransportDiagnostic("秘密😀\n", 124, incomplete, 600, "low", "").contains("provider_no_terminal_result_timeout"), true)
+        let noTerminal = ckbAbcdeRenderModelTransportDiagnostic("秘密😀\n", 124, incomplete, 600, "low", "")
+        @Expect(noTerminal.contains("provider_no_terminal_result_timeout"), true)
+        @Expect(noTerminal.contains("秘密"), false)
+        @Expect(noTerminal.contains("😀"), false)
+        let terminalError = ckbAbcdeAssessSample("{\"type\":\"system\",\"subtype\":\"init\",\"model\":\"GLM-5.2\"}\n{\"type\":\"result\",\"subtype\":\"error\",\"is_error\":true}\n", "GLM-5.2")
+        let terminalErrorDiagnostic = ckbAbcdeRenderModelTransportDiagnostic("{\"type\":\"result\",\"subtype\":\"error\",\"is_error\":true}\n", 124, terminalError, 600, "low", "")
+        @Expect(terminalErrorDiagnostic.contains("\"terminalDiagnostic\":\"provider_timeout\""), true)
+        @Expect(terminalErrorDiagnostic.contains("provider_no_terminal_result_timeout"), false)
+        @Expect(ckbAbcdeRenderModelTransportDiagnostic("", 7, incomplete, 600, "low", "").contains("process_exit_failure"), true)
     }
 }
