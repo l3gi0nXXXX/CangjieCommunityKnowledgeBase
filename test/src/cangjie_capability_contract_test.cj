@@ -338,6 +338,68 @@ public class CangjieCapabilityContractTest {
         @Expect(pack.matchedEvidence.size, 0)
     }
 
+    // T-R7-PACK-UT/BND/POS: budget applies to the aggregated task pack, atom
+    // notes identify atoms only, and a model-facing response stays inline-sized.
+    @TestCase
+    public func r7TaskPackGlobalBudgetPreservesAtomAndRequiredEvidence(): Unit {
+        let records = ArrayList<NormalizedRecord>()
+        let longExample = "```cangjie\n" + c145pRepeat("let 文本🙂 = \"value\"\n", 80) + "```"
+        for (i in 0..10) {
+            records.add(r7CrowdingDocRecord("r7-budget-doc-${i}",
+                "String Option digest documentation ${longExample}"))
+        }
+        records.add(r3AtomRecord("knowledge-atom-r7-budget",
+            "Knowledge: String.toArray returns UTF-8 bytes for digest input.\nExample: let bytes = text.toArray()"))
+        let request = CangjieTaskKnowledgeRequest()
+        request.taskId = "TASK-BUDGET"
+        request.benchmark = "Synthetic-Digest"
+        request.taskText = "Compute a String digest and return an Option."
+        request.expectedKnowledgeTags.add("String")
+        request.expectedKnowledgeTags.add("Option")
+        request.budget = 10
+        request.responseMode = "evidence"
+        request.versionSelector = cangjieVersionSelector(targetVersion: "1.0.0",
+            sourceSet: CangjieSourceSets.ALL)
+
+        let pack = CangjieCapabilityService(c145pKnowledgeBase(records.toArray())).taskKnowledgePack(request)
+        let json = cangjieTaskKnowledgePackJson(pack)
+        var atomNotes: Int64 = 0
+        for (note in pack.notes) {
+            if (note.startsWith("atom_id:")) { atomNotes += 1 }
+        }
+
+        @Expect(pack.coverage.coveragePass, true)
+        @Expect(pack.citations.size <= request.budget, true)
+        @Expect(pack.examples.size <= CangjieCapabilityLimits.DEFAULT_EXAMPLE_LIMIT, true)
+        @Expect(pack.matchedEvidence.size > 0, true)
+        @Expect(atomNotes, pack.matchedEvidence.size)
+        @Expect(json.size < 30000, true)
+    }
+
+    // T-R7-PACK-NEG: an exhausted aggregate budget must not claim that
+    // undelivered required evidence was covered.
+    @TestCase
+    public func r7TaskPackBudgetExhaustionFailsCoverageClosed(): Unit {
+        let records = ArrayList<NormalizedRecord>()
+        records.add(r7CrowdingDocRecord("r7-budget-one", "String documentation"))
+        records.add(r7CrowdingDocRecord("r7-budget-two", "Option documentation"))
+        let request = CangjieTaskKnowledgeRequest()
+        request.taskId = "TASK-BUDGET-NEG"
+        request.taskText = "Use String and Option."
+        request.expectedKnowledgeTags.add("String")
+        request.expectedKnowledgeTags.add("Option")
+        request.budget = 1
+        request.versionSelector = cangjieVersionSelector(targetVersion: "1.0.0",
+            sourceSet: CangjieSourceSets.ALL)
+
+        let pack = CangjieCapabilityService(c145pKnowledgeBase(records.toArray())).taskKnowledgePack(request)
+
+        @Expect(pack.citations.size, 1)
+        @Expect(pack.coverage.coveragePass, false)
+        @Expect(pack.coverage.missingCount > 0, true)
+        @Expect(pack.degraded, true)
+    }
+
     @TestCase
     public func f3Ut002ExamplesExposeUnknownCompileStatusAndProvenance(): Unit {
         let service = CangjieCapabilityService(f3EvidenceKnowledgeBase())

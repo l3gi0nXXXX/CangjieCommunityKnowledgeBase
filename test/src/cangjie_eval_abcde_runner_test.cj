@@ -1246,6 +1246,29 @@ public class CangjieEvalAbcdeRunnerTest {
         @Expect(ckbAbcdeTaskKnowledgeEvidenceForTest(CkbAbcdeGroups.C, duplicate, context).diagnostic, "paired_tool_result_not_unique")
     }
 
+    // T-R7-TRANSCRIPT-UT/BND/POS/NEG: Claude Code may emit null for the
+    // optional success indicator, but explicit errors and invalid types stay closed.
+    @TestCase
+    public func r7TranscriptOptionalNullIsErrorPreservesStrictEvidenceBoundary(): Unit {
+        let context = case145CanonicalContext()
+        let use = case145ToolUse(context, "call-null-error")
+        let result = case145ToolResult(context, "call-null-error", "h342434")
+        let nullResult = result.replace("\"content\":", "\"is_error\":null,\"content\":")
+        let falseResult = result.replace("\"content\":", "\"is_error\":false,\"content\":")
+        let trueResult = result.replace("\"content\":", "\"is_error\":true,\"content\":")
+        let invalidResult = result.replace("\"content\":", "\"is_error\":\"false\",\"content\":")
+
+        let omitted = ckbAbcdeTaskKnowledgeEvidenceForTest(CkbAbcdeGroups.C, use + "\n" + result, context)
+        let explicitNull = ckbAbcdeTaskKnowledgeEvidenceForTest(CkbAbcdeGroups.C, use + "\n" + nullResult, context)
+        let explicitFalse = ckbAbcdeTaskKnowledgeEvidenceForTest(CkbAbcdeGroups.C, use + "\n" + falseResult, context)
+        @Expect(omitted.valid, true)
+        @Expect(explicitNull.valid, true)
+        @Expect(explicitNull.evidenceHash, "h342434")
+        @Expect(explicitFalse.valid, true)
+        @Expect(ckbAbcdeTaskKnowledgeEvidenceForTest(CkbAbcdeGroups.C, use + "\n" + trueResult, context).diagnostic, "paired_tool_result_error")
+        @Expect(ckbAbcdeTaskKnowledgeEvidenceForTest(CkbAbcdeGroups.C, use + "\n" + invalidResult, context).diagnostic, "malformed_transcript_json")
+    }
+
     // NK-BND-01-145-MALFORMED-UTF8-FAIL-CLOSED
     @TestCase
     public func nkBnd01145MalformedUtf8UnicodeLongAndSecretsFailClosed(): Unit {

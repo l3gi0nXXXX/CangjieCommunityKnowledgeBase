@@ -70,12 +70,56 @@ public func buildCangjieTaskKnowledgePackFromEvidence(kb: KnowledgeBase, request
         return pack
     }
     var evidenceHit = false
+    var atomBudget = sanitized.budget / 2
+    let requiredReserve = pack.coverage.requiredCount
+    let maxAtomBudget = if (sanitized.budget > requiredReserve) {
+        sanitized.budget - requiredReserve
+    } else {
+        0
+    }
+    if (atomBudget > maxAtomBudget) { atomBudget = maxAtomBudget }
+
+    // Reserve an explicit share for anonymous atoms before generic documents can
+    // crowd them out, while leaving one response slot per required knowledge tag.
+    if (atomBudget > 0) {
+        for (item in pack.queryPlan) {
+            if (item.queryKind != "knowledge_atom_lookup") { continue }
+            let query = cangjieTaskEvidenceQuery(sanitized, item)
+            let result = cangjieTaskServingLookup(index, item, query, pack.targetVersion, atomBudget)
+            if (cangjieTaskAppendHits(pack, records, result.hits, sanitized.budget, atomBudget) > 0) {
+                evidenceHit = true
+            }
+        }
+    }
+
+    // Required tags are selected before optional task/signature expansion. A
+    // tag is covered only when its evidence is present in the returned pack.
     for (item in pack.queryPlan) {
+        if (item.queryKind != "required_knowledge_lookup") { continue }
         let query = cangjieTaskEvidenceQuery(sanitized, item)
         let result = cangjieTaskServingLookup(index, item, query, pack.targetVersion, sanitized.budget)
-        if (result.hits.size > 0) {
+        if (cangjieTaskAppendHits(pack, records, result.hits, sanitized.budget, 1) > 0) {
             evidenceHit = true
-            cangjieTaskAppendHits(pack, records, result.hits)
+            if (item.requiredTag != "") {
+                cangjieTaskMarkCoverage(pack.coverage, item.requiredTag, "covered", "evidence_hit")
+            }
+        } else if (item.requiredTag != "") {
+            cangjieTaskMarkCoverage(pack.coverage, item.requiredTag, "missing", "evidence_missing")
+        }
+    }
+
+    // Fill the remaining aggregate budget with optional query-plan evidence.
+    for (item in pack.queryPlan) {
+        if (item.queryKind == "knowledge_atom_lookup" ||
+            item.queryKind == "required_knowledge_lookup") {
+            continue
+        }
+        let remaining = sanitized.budget - pack.citations.size
+        if (remaining <= 0) { break }
+        let query = cangjieTaskEvidenceQuery(sanitized, item)
+        let result = cangjieTaskServingLookup(index, item, query, pack.targetVersion, remaining)
+        if (cangjieTaskAppendHits(pack, records, result.hits, sanitized.budget, remaining) > 0) {
+            evidenceHit = true
             if (item.requiredTag != "") {
                 cangjieTaskMarkCoverage(pack.coverage, item.requiredTag, "covered", "evidence_hit")
             }
@@ -83,10 +127,11 @@ public func buildCangjieTaskKnowledgePackFromEvidence(kb: KnowledgeBase, request
             cangjieTaskMarkCoverage(pack.coverage, item.requiredTag, "missing", "evidence_missing")
         }
         if (item.queryKind == "compiler_diagnostic_lookup") {
+            let negativeRemaining = sanitized.budget - pack.citations.size
+            if (negativeRemaining <= 0) { continue }
             let negative = lookupNegativeRules(index, cangjieTaskCompilerEvidenceQuery(sanitized.compilerOutput), targetVersion: pack.targetVersion, budget: sanitized.budget)
-            if (negative.hits.size > 0) {
+            if (cangjieTaskAppendHits(pack, records, negative.hits, sanitized.budget, negativeRemaining) > 0) {
                 evidenceHit = true
-                cangjieTaskAppendHits(pack, records, negative.hits)
                 cangjieTaskMarkCoverage(pack.coverage, "negative rule", "covered", "compiler_negative_evidence_hit")
             }
         }
@@ -259,15 +304,21 @@ private func cangjieTaskKnowledgeAtomLookup(index: CangjieServingIndex, query: S
     result
 }
 
-private func cangjieTaskAppendHits(pack: CangjieTaskKnowledgePack, records: ArrayList<NormalizedRecord>, hits: ArrayList<CangjieRankedServingHit>): Unit {
+private func cangjieTaskAppendHits(pack: CangjieTaskKnowledgePack, records: ArrayList<NormalizedRecord>,
+    hits: ArrayList<CangjieRankedServingHit>, citationBudget: Int64, hitLimit: Int64): Int64 {
+    var selected: Int64 = 0
     for (hit in hits) {
+        if (selected >= hitLimit) { break }
         let doc = hit.document
-        cangjieTaskAddCitation(pack, doc.sourceId, doc.citation)
-        let atomNote = "atom_id:${doc.sourceId}"
-        if (!pack.notes.contains(atomNote)) { pack.notes.add(atomNote) }
+        if (!cangjieTaskAddCitation(pack, doc.sourceId, doc.citation, citationBudget)) {
+            continue
+        }
+        selected += 1
         let record = cangjieTaskFindRecord(records, doc.sourceId)
         if (record.sourceId != "") {
             if (record.recordKind == CangjieTypedRecordKinds.KNOWLEDGE_ATOM) {
+                let atomNote = "atom_id:${doc.sourceId}"
+                if (!pack.notes.contains(atomNote)) { pack.notes.add(atomNote) }
                 cangjieTaskAppendMatchedEvidence(pack, doc, record)
             } else {
                 cangjieTaskAppendExamples(pack, record)
@@ -277,6 +328,7 @@ private func cangjieTaskAppendHits(pack: CangjieTaskKnowledgePack, records: Arra
             cangjieTaskAppendNegativeRule(pack, cangjieTaskNegativeRuleFromDocument(doc))
         }
     }
+    selected
 }
 
 private func cangjieTaskAppendMatchedEvidence(pack: CangjieTaskKnowledgePack, doc: CangjieServingDocument, record: NormalizedRecord): Unit {
@@ -306,6 +358,7 @@ private func cangjieTaskAtomField(text: String, prefix: String): String {
 
 private func cangjieTaskAppendExamples(pack: CangjieTaskKnowledgePack, record: NormalizedRecord): Unit {
     for (example in buildExampleRecords(record)) {
+        if (pack.examples.size >= CangjieCapabilityLimits.DEFAULT_EXAMPLE_LIMIT) { return }
         if (!cangjieTaskHasExample(pack, example.exampleId)) {
             pack.examples.add(example)
         }
@@ -367,16 +420,19 @@ private func cangjieTaskFindRecord(records: ArrayList<NormalizedRecord>, sourceI
     NormalizedRecord()
 }
 
-private func cangjieTaskAddCitation(pack: CangjieTaskKnowledgePack, sourceId: String, citation: String): Unit {
+private func cangjieTaskAddCitation(pack: CangjieTaskKnowledgePack, sourceId: String,
+    citation: String, budget: Int64): Bool {
     if (sourceId == "" || citation == "") {
-        return
+        return false
     }
     for (existing in pack.citations) {
         if (existing.sourceId == sourceId) {
-            return
+            return true
         }
     }
+    if (pack.citations.size >= budget) { return false }
     pack.citations.add(SourceReference(sourceId, citation, pack.knowledgeVersion))
+    true
 }
 
 private func cangjieTaskHasExample(pack: CangjieTaskKnowledgePack, exampleId: String): Bool {
