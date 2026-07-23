@@ -42,6 +42,10 @@ public func cangjieStudentRecordDiagnostic(record: NormalizedRecord,
     if (record.recordKind == CangjieTypedRecordKinds.EVAL_SUPPORT || record.metadata.sourceSet == CangjieSourceSets.EVAL_SUPPORT) {
         return cangjieLeakageRejected(if (record.recordKind == CangjieTypedRecordKinds.EVAL_SUPPORT) { "recordKind" } else { "sourceSet" }, "eval_support_not_student_visible")
     }
+    if (record.metadata.sourceSet == CangjieSourceSets.KNOWLEDGE_ATOMS &&
+        record.recordKind != CangjieTypedRecordKinds.KNOWLEDGE_ATOM) {
+        return cangjieLeakageRejected("knowledgeAtom", "atom_projection_invalid")
+    }
     let fields = [
         ("title", record.title),
         ("chunk", record.chunk),

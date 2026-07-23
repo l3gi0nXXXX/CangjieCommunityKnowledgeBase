@@ -109,6 +109,55 @@ public class CangjieKnowledgeLeakageGateTest {
     }
 
     @TestCase
+    public func r7Pos001AllSourceTaskPlanAddsInternalKnowledgeAtomLane(): Unit {
+        let request = CangjieTaskKnowledgeRequest()
+        request.taskText = "Compute a UTF-8 md5 digest 中文😀."
+        request.versionSelector = cangjieVersionSelector(targetVersion: "1.0.0",
+            sourceSet: CangjieSourceSets.ALL)
+        let resolution = resolveCangjieVersion(request.versionSelector,
+            defaultCangjieVersionManifest())
+
+        let plan = buildCangjieTaskQueryPlan(request, resolution)
+
+        @Expect(r3QueryPlanHasLane(plan, "knowledge_atom_lookup",
+            CangjieSourceSets.KNOWLEDGE_ATOMS), true)
+    }
+
+    @TestCase
+    public func r7Neg002RestrictedSourceTaskPlanDoesNotCrossIntoKnowledgeAtoms(): Unit {
+        let request = CangjieTaskKnowledgeRequest()
+        request.taskText = "Compute a UTF-8 md5 digest."
+        request.versionSelector = cangjieVersionSelector(targetVersion: "1.0.0",
+            sourceSet: CangjieSourceSets.DOCS)
+        let resolution = resolveCangjieVersion(request.versionSelector,
+            defaultCangjieVersionManifest())
+
+        let plan = buildCangjieTaskQueryPlan(request, resolution)
+
+        @Expect(r3QueryPlanHasLane(plan, "knowledge_atom_lookup",
+            CangjieSourceSets.KNOWLEDGE_ATOMS), false)
+    }
+
+    @TestCase
+    public func r7Neg005KnowledgeAtomSourceSetRequiresKnowledgeAtomRecordKind(): Unit {
+        let malformed = r3LeakRecord("knowledge-atom-malformed", "Malformed atom",
+            "Knowledge: generic digest guidance.")
+        malformed.metadata.sourceSet = CangjieSourceSets.KNOWLEDGE_ATOMS
+        let records = ArrayList<NormalizedRecord>()
+        records.add(malformed)
+
+        let diagnostic = cangjieStudentRecordDiagnostic(malformed)
+        let projection = buildCangjieStudentServingProjection(records, "r7-malformed")
+
+        @Expect(diagnostic.ok, false)
+        @Expect(diagnostic.code, "atom_projection_invalid")
+        @Expect(diagnostic.matchedField, "knowledgeAtom")
+        @Expect(projection.valid, false)
+        @Expect(projection.records.size, 0)
+        @Expect(projection.diagnostic, "student_knowledge_leakage_blocked")
+    }
+
+    @TestCase
     public func r3Arch001StudentGateSeparatesAuthorityCurationAndServingPlanes(): Unit {
         let authorityRecords = ArrayList<NormalizedRecord>()
         authorityRecords.add(r3LeakRecord("eval-support-CJ-HUMANEVAL-145-prompt", "HumanEval prompt", "Task: private benchmark prompt"))
@@ -171,6 +220,14 @@ private func r3QueryPlanSeed(plan: ArrayList<CangjieQueryPlanItem>): String {
         out.append("${item.queryKind}|${item.query}|${item.sourceSet}|${item.symbol}|${item.requiredTag}\n")
     }
     out.toString()
+}
+
+private func r3QueryPlanHasLane(plan: ArrayList<CangjieQueryPlanItem>, queryKind: String,
+    sourceSet: String): Bool {
+    for (item in plan) {
+        if (item.queryKind == queryKind && item.sourceSet == sourceSet) { return true }
+    }
+    false
 }
 
 private func r3HitsContainSource(result: CangjieServingSearchResult, sourceId: String): Bool {
