@@ -1,0 +1,11 @@
+[package]
+  cjc-version = "1.0.0"
+  name = "ckb_certification_fake_claude"
+  version = "0.1.0"
+  output-type = "executable"
+  src-dir = "src"
+  compile-option = "-Woff unused"
+  link-option = "-rpath ${MAGIC_PATH}/libs/cangjie-stdx-mac-aarch64-1.0.0.1/darwin_aarch64_llvm/dynamic/stdx -rpath ${CANGJIE_HOME}/runtime/lib/darwin_aarch64_llvm"
+
+[target.aarch64-apple-darwin.bin-dependencies]
+  path-option = ["${MAGIC_PATH}/libs/cangjie-stdx-mac-aarch64-1.0.0.1/darwin_aarch64_llvm/dynamic/stdx"]

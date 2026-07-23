@@ -29,6 +29,7 @@ public func ckbCommandNeedsNativeTlsBootstrap(command: String): Bool {
         command == "start" ||
         command == "service-http" ||
         command == "http-service" ||
+        command == "certification-http" ||
         command == "service-once" ||
         command == "scheduler-run" ||
         command == "scheduler-task-worker" ||

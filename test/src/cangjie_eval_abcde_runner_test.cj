@@ -9,6 +9,126 @@ import std.process.*
 
 @Test
 public class CangjieEvalAbcdeRunnerTest {
+    @TestCase
+    public func r7Ut00OwnedCertificationHttpRejectsUnsafeBaseAndLeavesNoProcess():Unit{
+        @Expect(ckbAbcdeCertificationPortDiagnostic("https://example.com"),"certification_http_loopback_required")
+        let root="target/r7-owned-http-${ckbCoreNowMillis()}";Directory.create(Path(root),recursive:true);let fake=Path(root).join("fake-http");File.writeTo(fake,"#!/bin/zsh\ntrap '' TERM\ni=0; while [ $i -lt 20000 ]; do print 'burst-中文🙂'; print -u2 'stderr-burst'; i=$((i+1)); done\nwhile true; do sleep 1; done\n".toArray());@Expect(launch("/bin/chmod",["700",fake.toString()]).wait(),0)
+        let script=ckbAbcdeCertificationHttpLaunchScript(fake.toString(),"config","store",root);let child=launch("/bin/zsh",["-lc",script],stdOut:ProcessRedirect.Pipe,stdErr:ProcessRedirect.Pipe);_=launch("/bin/sleep",["1"]).wait();@Expect(child.pid>0,true);@Expect(ckbAbcdeStopOwnedCertificationHttpWithEscalation(child.pid),"kill");_=child.wait();@Expect(launch("/bin/kill",["-0","${child.pid}"]).wait()!=0,true);@Expect(File.readFrom(Path(root).join("certification-http.stdout.log")).size>65536,true);@Expect(File.readFrom(Path(root).join("certification-http.stderr.log")).size>65536,true)
+    }
+    // T-R7-UT: transport retry classification is independent from business samples.
+    @TestCase
+    public func r7Ut01OnlyExplicitTransportFailuresAreRetryable(): Unit {
+        let incomplete = CkbAbcdeSampleAssessment()
+        @Expect(ckbAbcdeShouldRetryTransport(124, incomplete, diagnostic: "model timeout"), true)
+        let emptyTranscript = ckbAbcdeAssessSample("", "GLM-5.2")
+        @Expect(emptyTranscript.transcriptDiagnostic, "empty_transcript")
+        @Expect(ckbAbcdeTransportClassification(124, emptyTranscript, ""), "timeout")
+        @Expect(ckbAbcdeShouldRetryTransport(124, emptyTranscript), true)
+        let invalidEncoding = CkbAbcdeSampleAssessment(); invalidEncoding.transcriptDiagnostic = "invalid_response_encoding"
+        @Expect(ckbAbcdeTransportClassification(124, invalidEncoding, ""), "non_retryable_transport_error")
+        @Expect(ckbAbcdeShouldRetryTransport(124, invalidEncoding), false)
+        let malformed = ckbAbcdeAssessSample("{malformed", "GLM-5.2")
+        @Expect(malformed.transcriptDiagnostic, "malformed_json")
+        @Expect(ckbAbcdeShouldRetryTransport(124, malformed), false)
+        let oversized = CkbAbcdeSampleAssessment(); oversized.transcriptDiagnostic = "transcript_too_large"
+        @Expect(ckbAbcdeShouldRetryTransport(124, oversized), false)
+        let protocol = CkbAbcdeSampleAssessment(); protocol.transcriptDiagnostic = "protocol_violation"
+        @Expect(ckbAbcdeShouldRetryTransport(124, protocol), false)
+        @Expect(ckbAbcdeShouldRetryTransport(1, incomplete, diagnostic: "connection reset by peer"), true)
+        @Expect(ckbAbcdeShouldRetryTransport(1, incomplete, diagnostic: "HTTP 503 service unavailable"), true)
+        @Expect(ckbAbcdeShouldRetryTransport(1, incomplete, diagnostic: "unknown process failure"), false)
+        @Expect(ckbAbcdeShouldRetryTransport(1, incomplete, diagnostic: "invalid_response_encoding"), false)
+        @Expect(ckbAbcdeShouldRetryTransport(1, incomplete, diagnostic: "protocol violation: malformed JSON"), false)
+        let identityDrift = CkbAbcdeSampleAssessment(); identityDrift.completeResult = true; identityDrift.identityMatched = false
+        @Expect(ckbAbcdeShouldRetryTransport(0, identityDrift, diagnostic: "service unavailable text in answer"), false)
+        let business = CkbAbcdeSampleAssessment(); business.completeResult = true; business.identityMatched = true; business.sampleAttempt = 1
+        @Expect(ckbAbcdeShouldRetryTransport(0, business, diagnostic: "tests failed"), false)
+        @Expect(ckbAbcdeTransportClassification(124,business,"timeout"),"timeout")
+        @Expect(ckbAbcdeRenderModelTransportDiagnostic("",124,business,180,"certification","").contains("\"sampleEligible\":false"),true)
+        let successfulTool=ckbAbcdeAssessSample("{\"type\":\"system\",\"subtype\":\"init\",\"model\":\"GLM-5.2\"}\n{\"type\":\"tool_result\",\"is_error\":false}\n","GLM-5.2")
+        @Expect(ckbAbcdeTransportClassification(1,successfulTool,"HTTP 503 service unavailable"),"service_unavailable")
+        @Expect(ckbAbcdeShouldRetryTransport(1,successfulTool,diagnostic:"HTTP 503 service unavailable"),true)
+        let failedTool=ckbAbcdeAssessSample("{\"type\":\"system\",\"subtype\":\"init\",\"model\":\"GLM-5.2\"}\n{\"type\":\"tool_result\",\"is_error\":true}\n","GLM-5.2")
+        @Expect(ckbAbcdeTransportClassification(1,failedTool,"HTTP 503 service unavailable"),"knowledge_transport_failure")
+        @Expect(ckbAbcdeShouldRetryTransport(1,failedTool,diagnostic:"HTTP 503 service unavailable"),false)
+        @Expect(ckbAbcdeTransportClassification(124,failedTool,""),"knowledge_transport_failure")
+        @Expect(ckbAbcdeShouldRetryTransport(124,failedTool),false)
+        @Expect(ckbAbcdeTransportClassification(124,emptyTranscript,"mcp_error"),"knowledge_transport_failure")
+        @Expect(ckbAbcdeShouldRetryTransport(124,emptyTranscript,diagnostic:"knowledge_transport_failure"),false)
+    }
+
+    @TestCase
+    public func r7Ut02NoRetryInitializesReadableEmptyRestoreEvidence(): Unit {
+        let root = "target/r7-no-retry-restores-${ckbCoreNowMillis()}"
+        Directory.create(Path(root), recursive: true)
+        let restores = Path(root).join("workspace-restores.jsonl")
+        File.writeTo(restores, "stale-restore\n".toArray())
+        ckbAbcdeInitializeWorkspaceRestoreEvidenceForTest(root)
+        @Expect(exists(restores), true)
+        @Expect(String.fromUtf8(File.readFrom(restores)), "")
+    }
+
+    @TestCase
+    public func r7Neg02UnsafeStderrBytesAreDestroyedAndNeverPublished():Unit{
+        let root="target/r7-stderr-${ckbCoreNowMillis()}";Directory.create(Path(root),recursive:true);let evidence="${root}/attempt.stderr";let runtime="${root}/runtime.stderr"
+        File.writeTo(Path(evidence),[0xff,0xfe,0x80]);File.writeTo(Path(runtime),[0xff,0xfe,0x80]);let invalid=ckbAbcdeSanitizeStderrArtifact(evidence,runtime);@Expect(invalid.ok,false);@Expect(invalid.diagnostic,"invalid_response_encoding");@Expect(String.fromUtf8(File.readFrom(Path(evidence))),"invalid_response_encoding");@Expect(exists(Path(runtime)),false)
+        let oversized=StringBuilder();for(_ in 0..70000){oversized.append("x")};File.writeTo(Path(evidence),oversized.toString().toArray());let large=ckbAbcdeSanitizeStderrArtifact(evidence,"");@Expect(large.ok,false);@Expect(large.diagnostic,"diagnostic_too_large");@Expect(String.fromUtf8(File.readFrom(Path(evidence))),"diagnostic_too_large")
+        let auth="${root}/auth.stderr";File.writeTo(Path(auth),"Authorization: Bearer top-secret-token\n中文🙂".toArray());let redacted=ckbAbcdeSanitizeStderrArtifact(auth,"");@Expect(redacted.ok,true);let persisted=String.fromUtf8(File.readFrom(Path(auth)));@Expect(persisted.contains("top-secret-token"),false);@Expect(persisted.contains("Authorization"),false);@Expect(persisted.contains("中文🙂"),true)
+    }
+    @TestCase
+    public func r7Neg04UnsafeTranscriptDestroysEvidenceAndRuntimeOriginals():Unit{
+        let root="target/r7-transcript-${ckbCoreNowMillis()}";Directory.create(Path(root),recursive:true);let evidence="${root}/attempt.jsonl";let runtime="${root}/runtime.jsonl"
+        File.writeTo(Path(evidence),[0xff,0xfe,0x80]);File.writeTo(Path(runtime),[0xff,0xfe,0x80]);let invalid=ckbAbcdeSanitizeTranscriptArtifact(evidence,runtime);@Expect(invalid.ok,false);@Expect(invalid.diagnostic,"invalid_response_encoding");@Expect(String.fromUtf8(File.readFrom(Path(evidence))),"");@Expect(exists(Path(runtime)),false)
+        let large=StringBuilder();for(_ in 0..4200000){large.append("x")};File.writeTo(Path(evidence),large.toString().toArray());File.writeTo(Path(runtime),large.toString().toArray());let oversized=ckbAbcdeSanitizeTranscriptArtifact(evidence,runtime);@Expect(oversized.ok,false);@Expect(oversized.diagnostic,"transcript_too_large");@Expect(File.readFrom(Path(evidence)).size,0);@Expect(exists(Path(runtime)),false)
+    }
+    @TestCase
+    public func r7Neg05Exit124TerminalCannotBecomeBusinessSampleOrPassRecompute():Unit{
+        let success="{\"type\":\"system\",\"subtype\":\"init\",\"model\":\"GLM-5.2\"}\n{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false}\n";let assessment=ckbAbcdeAssessSample(success,"GLM-5.2");@Expect(assessment.sampleAttempt,1);@Expect(ckbAbcdeTransportClassification(124,assessment,"timeout"),"timeout");@Expect(ckbAbcdeShouldRetryTransport(124,assessment,diagnostic:"timeout"),true)
+        let root="target/r7-exit124-terminal-${ckbCoreNowMillis()}";Directory.create(Path(root).join("runtime-home/attempt-1"),recursive:true);r7WriteAttemptArtifacts(root,success,"{\"ok\":true}","session");let attempts=String.fromUtf8(File.readFrom(Path(root).join("claude-attempts.jsonl"))).replace("\"exitCode\":0","\"exitCode\":124");File.writeTo(Path(root).join("claude-attempts.jsonl"),attempts.toArray());@Expect(ckbAbcdeAttemptArtifactsDiagnostic(root),"transport_attempt_recompute_mismatch")
+    }
+    @TestCase
+    public func r7Neg03AttemptTimeoutMustEqualFrozenRuntimePolicy():Unit{
+        let root="target/r7-timeout-policy-${ckbCoreNowMillis()}";Directory.create(Path(root).join("runtime-home/attempt-1"),recursive:true);let probe="{\"ok\":true}";let transcript="{\"type\":\"system\",\"subtype\":\"init\",\"model\":\"GLM-5.2\"}\n{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false}\n";r7WriteAttemptArtifacts(root,transcript,probe,"session");@Expect(ckbAbcdeAttemptArtifactsDiagnostic(root),"ok");_=launch("/bin/rm",["-f","${root}/runtime-policy.json"]).wait();File.writeTo(Path(root).join("runtime-policy.json"),"{\"model\":\"GLM-5.2\",\"modelTimeoutSeconds\":321}".toArray());@Expect(ckbAbcdeAttemptArtifactsDiagnostic(root),"transport_timeout_policy_mismatch")
+    }
+
+    // T-R7-BND/POS/NEG: a recovered transport lineage has one business sample and a bound restore.
+    @TestCase
+    public func r7Bnd01TransportLineageRequiresContiguousAttemptsAndRestoreEvidence(): Unit {
+        let before=benchmarkGapSha256("mutated");let authority=benchmarkGapSha256("original");let restoreBase="{\"transportAttempt\":2,\"restored\":true,\"beforeHash\":\"${before}\",\"authorityHash\":\"${authority}\",\"afterHash\":\"${authority}\",\"diagnostic\":\"ok\"}";let restore=restoreBase.replace("}",",\"evidenceHash\":\"${benchmarkGapSha256(restoreBase)}\"}")
+        let restoreHash = benchmarkGapSha256(restore)
+        let attempts = "{\"transportAttempt\":1,\"sampleAttempt\":0,\"classification\":\"timeout\",\"workspaceRestored\":false,\"restoreEvidenceHash\":\"\",\"sessionIdHash\":\"${benchmarkGapSha256("session-1")}\",\"runtimeHomeId\":\"${benchmarkGapSha256("home-1")}\",\"sandboxProbeHash\":\"${benchmarkGapSha256("probe-1")}\",\"transcriptHash\":\"${benchmarkGapSha256("transcript-1")}\",\"stderrHash\":\"${benchmarkGapSha256("stderr-1")}\",\"diagnosticHash\":\"${benchmarkGapSha256("diagnostic-1")}\"}\n" +
+            "{\"transportAttempt\":2,\"sampleAttempt\":1,\"classification\":\"business_sample\",\"workspaceRestored\":true,\"restoreEvidenceHash\":\"${restoreHash}\",\"sessionIdHash\":\"${benchmarkGapSha256("session-2")}\",\"runtimeHomeId\":\"${benchmarkGapSha256("home-2")}\",\"sandboxProbeHash\":\"${benchmarkGapSha256("probe-2")}\",\"transcriptHash\":\"${benchmarkGapSha256("transcript-2")}\",\"stderrHash\":\"${benchmarkGapSha256("stderr-2")}\",\"diagnosticHash\":\"${benchmarkGapSha256("diagnostic-2")}\"}\n"
+        @Expect(ckbAbcdeAttemptLineageDiagnostic(attempts, restore + "\n", 2, 1), "ok")
+        @Expect(ckbAbcdeAttemptLineageHash(attempts, restore + "\n").startsWith("sha256:"), true)
+        @Expect(ckbAbcdeAttemptLineageDiagnostic(attempts.replace("\"workspaceRestored\":true", "\"workspaceRestored\":false"), restore + "\n", 2, 1), "transport_restore_binding_invalid")
+        @Expect(ckbAbcdeAttemptLineageDiagnostic(attempts.replace("\"transportAttempt\":2", "\"transportAttempt\":3"), restore + "\n", 2, 1), "transport_attempt_sequence_invalid")
+        @Expect(ckbAbcdeAttemptLineageDiagnostic(attempts.replace("\"sampleAttempt\":0", "\"sampleAttempt\":1"), restore + "\n", 2, 2), "business_sample_count_invalid")
+    }
+
+    // E2E-TRUST-02: fake transport exercises the certification retry state machine without a model call.
+    @TestCase
+    public func r7E2e01FakeTransportRecoversWithoutCreatingExtraBusinessSamples(): Unit {
+        let base="target/r7-fake-transport-${ckbCoreNowMillis()}";let workspace="${base}/workspace";let authority="${base}/authority";let pointer="${base}/active-version"
+        Directory.create(Path("${workspace}/src"),recursive:true);Directory.create(Path("${authority}/src"),recursive:true);File.writeTo(Path("${workspace}/src/solution.cj"),"original".toArray());File.writeTo(Path("${authority}/src/solution.cj"),"original".toArray());File.writeTo(Path(pointer),"knowledge-v1\n".toArray())
+        let incomplete="{\"type\":\"system\",\"subtype\":\"init\",\"model\":\"GLM-5.2\"}\n";let success=incomplete+"{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false}\n"
+        let recovered=ckbAbcdeRunFakeTransportRetryForTest("${base}/recovered",workspace,authority,pointer,[124,1,1,0],["model timeout","connection reset by peer","HTTP 503 service unavailable",""],[incomplete,incomplete,incomplete,success],"GLM-5.2",3)
+        @Expect(recovered.contains("\"transportAttemptCount\":4"),true);@Expect(recovered.contains("\"sampleAttemptCount\":1"),true);@Expect(recovered.contains("\"retryCount\":3"),true);@Expect(recovered.contains("\"lineageDiagnostic\":\"ok\""),true);@Expect(recovered.contains("\"frozenPointerUnchanged\":true"),true)
+        let attempts=String.fromUtf8(File.readFrom(Path("${base}/recovered/fake-attempts.jsonl")));@Expect(attempts.contains("\"classification\":\"timeout\""),true);@Expect(attempts.contains("\"classification\":\"connection_interrupted\""),true);@Expect(attempts.contains("\"classification\":\"service_unavailable\""),true);@Expect(attempts.contains("\"classification\":\"business_sample\""),true)
+        @Expect(exists(Path("${base}/recovered/runtime-home/attempt-1")),true);@Expect(exists(Path("${base}/recovered/runtime-home/attempt-4")),true);@Expect(String.fromUtf8(File.readFrom(Path(pointer))),"knowledge-v1\n")
+        let wrongModel="{\"type\":\"system\",\"subtype\":\"init\",\"model\":\"other\"}\n{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false}\n"
+        let identity=ckbAbcdeRunFakeTransportRetryForTest("${base}/identity",workspace,authority,pointer,[0,0],["",""],[wrongModel,success],"GLM-5.2",1);@Expect(identity.contains("\"transportAttemptCount\":1"),true);@Expect(identity.contains("\"sampleAttemptCount\":0"),true)
+        let protocol=ckbAbcdeRunFakeTransportRetryForTest("${base}/protocol",workspace,authority,pointer,[1,0],["protocol violation: malformed JSON",""],[incomplete,success],"GLM-5.2",1);@Expect(protocol.contains("\"transportAttemptCount\":1"),true);@Expect(protocol.contains("\"sampleAttemptCount\":0"),true)
+        let business=ckbAbcdeRunFakeTransportRetryForTest("${base}/business",workspace,authority,pointer,[0,0],["tests failed",""],[success,success],"GLM-5.2",1);@Expect(business.contains("\"transportAttemptCount\":1"),true);@Expect(business.contains("\"sampleAttemptCount\":1"),true)
+    }
+    @TestCase
+    public func r7E2e02ExhaustedTransportUsesLastAuditedAttemptAndRendersValidUnresolved():Unit{
+        let root="target/r7-exhausted-renderer-${ckbCoreNowMillis()}";let workspace="${root}/workspace";let home="${root}/runtime-home/attempt-1";Directory.create(Path("${workspace}/src"),recursive:true);Directory.create(Path(home),recursive:true);File.writeTo(Path("${workspace}/src/solution.cj"),"answer".toArray());let answerHash=benchmarkGapSha256("answer")
+        let authority=cangjieHumanEvalRenderAuthorityManifest(buildCangjieHumanEvalManifest("cangjie_eval/cases/Cangjie-HumanEval",""));let options=CkbAbcdeRunnerOptions();options.runId="r7-exhausted";options.runMode="certification";options.datasetVersion=parseCangjieHumanEvalAuthorityManifest(authority).datasetVersion;options.knowledgeVersion="knowledge-v1";options.modelFingerprint="fingerprint";options.expectedModelVersion="GLM-5.2";options.providerIdentityHash=benchmarkGapSha256("provider");options.manifestPath="${root}/authority.jsonl";options.certificationPreflightPath="${root}/preflight.json";options.certificationRunManifestPath="${root}/run-manifest.json";options.providerIdentityArtifactPath="${root}/provider.json"
+        File.writeTo(Path(options.manifestPath),authority.toArray());File.writeTo(Path(options.certificationPreflightPath),"preflight".toArray());File.writeTo(Path(options.certificationRunManifestPath),"{\"runManifestHash\":\"${benchmarkGapSha256("manifest")}\"}".toArray());File.writeTo(Path(options.providerIdentityArtifactPath),"provider".toArray());File.writeTo(Path("${root}/mcp-config.json"),"{}".toArray());File.writeTo(Path("${root}/runtime-policy.json"),"{\"model\":\"GLM-5.2\",\"modelTimeoutSeconds\":180}".toArray());File.writeTo(Path("${root}/paired-tool-evidence.json"),"{}".toArray());File.writeTo(Path("${root}/canonical-task-context.json"),"{}".toArray())
+        let transcript="{\"type\":\"system\",\"subtype\":\"init\",\"model\":\"GLM-5.2\"}\n";let probe="{\"ok\":true,\"deniedOutsideWorkspace\":true,\"deniedTests\":true,\"deniedReference\":true,\"deniedTeacher\":true,\"deniedStore\":true,\"workspaceCanonical\":\"${canonicalize(Path(workspace)).toString()}\",\"runtimeHomeCanonical\":\"${canonicalize(Path(home)).toString()}\"}";let diagnosticJson=ckbAbcdeRenderModelTransportDiagnostic(transcript,124,ckbAbcdeAssessSample(transcript,"GLM-5.2"),180,"certification","")+"\n";let session="last-audited-session"
+        File.writeTo(Path("${root}/claude-transcript.attempt-1.jsonl"),transcript.toArray());File.writeTo(Path("${root}/claude.attempt-1.stderr.log"),"timeout".toArray());File.writeTo(Path("${root}/sandbox-probe.attempt-1.json"),probe.toArray());File.writeTo(Path("${root}/session-id.attempt-1.txt"),session.toArray());File.writeTo(Path("${root}/model-transport-diagnostic.attempt-1.json"),diagnosticJson.toArray());File.writeTo(Path("${root}/workspace-restores.jsonl"),"".toArray());let attempt="{\"attempt\":1,\"transportAttempt\":1,\"modelTimeoutSeconds\":180,\"sampleAttempt\":0,\"exitCode\":124,\"classification\":\"timeout\",\"completeResult\":false,\"identityMatched\":true,\"workspaceRestored\":false,\"restoreEvidenceHash\":\"\",\"sessionIdHash\":\"${benchmarkGapSha256(session)}\",\"runtimeHomeId\":\"${benchmarkGapSha256(canonicalize(Path(home)).toString())}\",\"sandboxProbeHash\":\"${benchmarkGapSha256(probe)}\",\"transcriptHash\":\"${benchmarkGapSha256(transcript)}\",\"stderrHash\":\"${benchmarkGapSha256("timeout")}\",\"diagnosticHash\":\"${benchmarkGapSha256(diagnosticJson)}\"}\n";File.writeTo(Path("${root}/claude-attempts.jsonl"),attempt.toArray());let summary="{\"transportAttemptCount\":1,\"sampleAttemptCount\":0,\"lastAuditedTransportAttempt\":1,\"selectedBusinessSample\":0,\"selectedTransportAttempt\":0,\"retryCount\":0,\"unresolvedTransport\":1,\"attemptLineageHash\":\"${ckbAbcdeAttemptLineageHash(attempt,"")}\",\"workspaceRestoreEvidenceHash\":\"${benchmarkGapSha256("")}\"}";File.writeTo(Path("${root}/attempt-evidence.json"),summary.toArray());File.writeTo(Path("${root}/test-result.json"),summary.toArray());File.writeTo(Path("${root}/verifier-mount.json"),"{\"injectExitCode\":0,\"answerHashBefore\":\"${answerHash}\",\"answerHashAfter\":\"${answerHash}\",\"mountedAfterFreeze\":true}".toArray());ckbAbcdePublishLastAuditedCertificationArtifactsForTest(root,1)
+        let rendered=ckbAbcdeRenderStrictCertificationCaseForTest(options,"CJ-HUMANEVAL-145",CkbAbcdeGroups.D,root,answerHash,transcript,"tests failed",false,"none",false);let row=parseCkbCertificationEvidence(rendered);@Expect(row.valid,true);@Expect(row.sampleAttemptCount,0);@Expect(row.lastAuditedTransportAttempt,1);@Expect(row.selectedBusinessSample,0);@Expect(row.unresolvedTransport,1);@Expect(row.certificationPassAt1,false);@Expect(row.runtimeHomeId,benchmarkGapSha256(canonicalize(Path(home)).toString()));@Expect(exists(Path("${root}/runtime-home/attempt-0")),false);@Expect(String.fromUtf8(File.readFrom(Path("${root}/session-id.txt"))),session);@Expect(String.fromUtf8(File.readFrom(Path("${root}/sandbox-probe.json"))),probe)
+    }
     // ABCDE-CONFIG-UT/BND/POS/NEG: the frozen runtime config is an explicit
     // runner input and every stdio path receives the same safely quoted path.
     @TestCase
@@ -330,8 +450,8 @@ public class CangjieEvalAbcdeRunnerTest {
         @Expect(script.contains("CKB_NATIVE_TLS_BOOTSTRAPPED=1"), true)
         @Expect(script.contains("MAGIC_ROOT"), true)
         @Expect(script.contains("cangjie-stdx-mac-aarch64"), true)
-        @Expect(script.contains("/Users/l3gi0n/work/workspace_cangjie/Metis/ffi"), true)
-        @Expect(script.contains("/Users/l3gi0n/cangjie100/runtime/lib/darwin_aarch64_llvm"), true)
+        @Expect(script.contains("/Users/l3gi0n/work/workspace_cangjie/Metis/ffi"), false)
+        @Expect(script.contains("CANGJIE_ROOT}/runtime/lib/darwin_aarch64_llvm"), true)
         @Expect(script.contains("DYLD_LIBRARY_PATH"), true)
         @Expect(script.contains("exec '/tmp/ckb bin' '--store' '/tmp/store path' 'mcp-stdio'"), true)
     }
@@ -376,8 +496,24 @@ public class CangjieEvalAbcdeRunnerTest {
         @Expect(ckbAbcdeOptionsSafetyDiagnostic(options), "unsafe_run_id")
 
         options.runId = "safe-run"
-        options.runsRoot = "/tmp/ckbtest"
-        @Expect(ckbAbcdeOptionsSafetyDiagnostic(options), "runs_root_must_be_/Users/l3gi0n/Downloads/ckbtest")
+        options.runsRoot = "/tmp"
+        @Expect(ckbAbcdeOptionsSafetyDiagnostic(options), "runs_root_outside_allowed_root")
+
+        options.repoRoot = canonicalize(Path("..")).toString()
+        let suffix = ckbCoreNowMillis().toString()
+        let allowed = Path(options.repoRoot).join("target/certification-safety-${suffix}")
+        Directory.create(allowed, recursive: true)
+        options.runsRoot = canonicalize(allowed).toString()
+        @Expect(ckbAbcdeOptionsSafetyDiagnostic(options), "ok")
+        let broad = Path(options.repoRoot).join("target/arbitrary-safety-${suffix}")
+        Directory.create(broad, recursive: true)
+        options.runsRoot = canonicalize(broad).toString()
+        @Expect(ckbAbcdeOptionsSafetyDiagnostic(options), "runs_root_outside_allowed_root")
+        let escaped = Path(options.repoRoot).join("target/certification-symlink-${suffix}")
+        _ = launch("/bin/ln", ["-s", "/tmp", escaped.toString()]).wait()
+        options.runsRoot = escaped.toString()
+        @Expect(ckbAbcdeOptionsSafetyDiagnostic(options), "runs_root_outside_allowed_root")
+        _ = launch("/bin/rm", ["-rf", allowed.toString(), broad.toString(), escaped.toString()]).wait()
 
         options.runsRoot = "/Users/l3gi0n/Downloads/ckbtest"
         options.caseEnd = 164
@@ -794,18 +930,20 @@ public class CangjieEvalAbcdeRunnerTest {
     public func claudeTmpdirPosRealCertificationSandboxWritesCleansAndDeniesOutside(): Unit {
         if (!exists(Path("/usr/bin/sandbox-exec"))) { return }
         let root="target/certification-sandbox-仓颉🙂-${ckbCoreNowMillis()}";let workspace="${root}/workspace";let home="${root}/runtime-home";let caseSrc="${root}/case";let store="${root}/store";let bin="${root}/ckb-bin";let config="${root}/formal.conf"
-        for(path in [workspace,home,"${caseSrc}/tests","${caseSrc}/translation",store]){Directory.create(Path(path),recursive:true)};File.writeTo(Path(bin),"probe".toArray());File.writeTo(Path(config),"network.enabled=false\n".toArray())
+        for(path in [workspace,home,"${caseSrc}/tests","${caseSrc}/translation","${store}/metadata"]){Directory.create(Path(path),recursive:true)};File.writeTo(Path(store).join("metadata/active-snapshot.manifest"),"frozen-pointer".toArray());File.writeTo(Path(bin),"probe".toArray());File.writeTo(Path(config),"network.enabled=false\n".toArray())
         try {
             @Expect(exists(Path("${home}/tmp")),false);@Expect(ckbAbcdePrepareClaudeRuntimeHomeForTest(canonicalize(Path(home)).toString()),"ok");@Expect(exists(Path("${home}/tmp")),true)
             let sdk=match(getVariable("CANGJIE_HOME")){case Some(value)=>canonicalize(Path(value)).toString() case None=>""};@Expect(sdk.isEmpty(),false);@Expect(ckbAbcdePrepareBundledArchiverForTest(canonicalize(Path(home)).toString(),sdk),"ok")
             let profilePath="${root}/certification.sb";File.writeTo(Path(profilePath),ckbAbcdeCertificationSandboxProfile(workspace,home,bin,config,store,caseSrc,"/usr/bin/true","/usr/bin/true").toArray())
             let profile=String.fromUtf8(File.readFrom(Path(profilePath)));@Expect(profile.contains("/private/tmp/claude-"),false)
             let metadataLine=profile.split("\n")[7]
-            for(path in [workspace,home,bin,config,store]){@Expect(metadataLine.contains("(literal \"${canonicalize(Path(path)).toString()}\")"),true)}
+            for(path in [workspace,home,bin,config]){@Expect(metadataLine.contains("(literal \"${canonicalize(Path(path)).toString()}\")"),true)}
+            @Expect(metadataLine.contains(canonicalize(Path(store)).toString()),false)
+            @Expect(profile.contains("(deny file-read*"),true);@Expect(profile.contains("(subpath \"${canonicalize(Path(store)).toString()}\")"),true)
             @Expect(metadataLine.contains("(literal \"/usr/bin/dsymutil\")"),true)
             @Expect(profile.split("\n")[8].contains("(literal \"/usr/bin/dsymutil\")"),true)
             @Expect(metadataLine.contains("(subpath \"${canonicalize(Path(workspace)).parent.toString()}\")"),false)
-            let probe=ckbAbcdeCertificationSandboxProbeForTest(profilePath,workspace,home,caseSrc)
+            let probe=ckbAbcdeCertificationSandboxProbeForTest(profilePath,workspace,home,caseSrc,ckbStore:store)
             @Expect(probe.exitCode,0);@Expect(probe.stdout.contains("\"runtimeTempMarkersPassed\":true"),true);@Expect(probe.stdout.contains("\"runtimeTempMarkersCleaned\":true"),true);@Expect(probe.stdout.contains("\"archiverReady\":true"),true);@Expect(probe.stdout.contains("\"minimalBuildPassed\":true"),true);@Expect(probe.stdout.contains("\"deniedExternalTemp\":true"),true);@Expect(probe.stdout.contains("\"deniedTempSibling\":true"),true)
         } finally { _=launch("/bin/rm",["-rf",root]).wait() }
     }
@@ -1174,8 +1312,8 @@ public class CangjieEvalAbcdeRunnerTest {
     public func p5E2e01145CertificationPersistsAndBindsTheSameEvidence(): Unit {
         let root="target/case145-cert-evidence-${ckbCoreNowMillis()}";_=launch("/bin/rm",["-rf",root]).wait();Directory.create(Path(root).join("workspace"),recursive:true);Directory.create(Path(root).join("runtime-home"),recursive:true)
         let context=case145CanonicalContext();let transcript="{\"type\":\"system\",\"subtype\":\"init\",\"model\":\"GLM-5.2\"}\n"+case145Transcript(context,"call-cert-145","h342434")+"\n{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"num_turns\":2,\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"cache_read_input_tokens\":0,\"cache_creation_input_tokens\":0}}\n"
-        File.writeTo(Path(root).join("canonical-task-context.json"),context.toArray());File.writeTo(Path(root).join("claude-attempts.jsonl"),"{\"attempt\":1,\"sampleAttempt\":1,\"exitCode\":0}\n".toArray());File.writeTo(Path(root).join("session-id.txt"),"session-cert-145".toArray())
-        let workspace=canonicalize(Path(root).join("workspace")).toString();let home=canonicalize(Path(root).join("runtime-home")).toString();File.writeTo(Path(root).join("sandbox-probe.json"),"{\"ok\":true,\"deniedOutsideWorkspace\":true,\"deniedTests\":true,\"deniedReference\":true,\"deniedTeacher\":true,\"workspaceCanonical\":\"${workspace}\",\"runtimeHomeCanonical\":\"${home}\"}".toArray())
+        File.writeTo(Path(root).join("canonical-task-context.json"),context.toArray())
+        let workspace=canonicalize(Path(root).join("workspace")).toString();let attemptHome=Path(root).join("runtime-home/attempt-1");Directory.create(attemptHome,recursive:true);let home=canonicalize(attemptHome).toString();let probe="{\"ok\":true,\"deniedOutsideWorkspace\":true,\"deniedTests\":true,\"deniedReference\":true,\"deniedTeacher\":true,\"deniedStore\":true,\"workspaceCanonical\":\"${workspace}\",\"runtimeHomeCanonical\":\"${home}\"}";r7WriteAttemptArtifacts(root,transcript,probe,"session-cert-145")
         let answerHash=benchmarkGapSha256("case145-answer");File.writeTo(Path(root).join("verifier-mount.json"),"{\"injectExitCode\":0,\"answerHashBefore\":\"${answerHash}\",\"answerHashAfter\":\"${answerHash}\",\"mountedAfterFreeze\":true}".toArray())
         let options=CkbAbcdeRunnerOptions();options.runId="case145-cert";options.datasetVersion="dataset-v1";options.knowledgeVersion="knowledge-v1";options.expectedModelVersion="GLM-5.2"
         let row=ckbAbcdeRenderStrictCertificationCaseForTest(options,"CJ-HUMANEVAL-145",CkbAbcdeGroups.C,root,answerHash,transcript,"tests passed",true,"none",true)
@@ -1300,4 +1438,10 @@ private func case145ToolResult(context: String, id: String, evidenceHash: String
 
 private func case145Transcript(context: String, id: String, evidenceHash: String): String {
     case145ToolUse(context, id) + "\n" + case145ToolResult(context, id, evidenceHash)
+}
+
+private func r7WriteAttemptArtifacts(root:String,transcript:String,probe:String,session:String):Unit{
+    File.writeTo(Path(root).join("runtime-policy.json"),"{\"model\":\"GLM-5.2\",\"modelTimeoutSeconds\":180}".toArray())
+    let home=canonicalize(Path(root).join("runtime-home/attempt-1")).toString();let diagnostic="{}\n";File.writeTo(Path(root).join("session-id.attempt-1.txt"),session.toArray());File.writeTo(Path(root).join("session-id.txt"),session.toArray());File.writeTo(Path(root).join("sandbox-probe.attempt-1.json"),probe.toArray());File.writeTo(Path(root).join("sandbox-probe.json"),probe.toArray());File.writeTo(Path(root).join("claude-transcript.attempt-1.jsonl"),transcript.toArray());File.writeTo(Path(root).join("claude-transcript.jsonl"),transcript.toArray());File.writeTo(Path(root).join("claude.attempt-1.stderr.log"),"".toArray());File.writeTo(Path(root).join("model-transport-diagnostic.attempt-1.json"),diagnostic.toArray());File.writeTo(Path(root).join("workspace-restores.jsonl"),"".toArray())
+    let attempt="{\"attempt\":1,\"transportAttempt\":1,\"modelTimeoutSeconds\":180,\"sampleAttempt\":1,\"exitCode\":0,\"classification\":\"business_sample\",\"completeResult\":true,\"identityMatched\":true,\"workspaceRestored\":false,\"restoreEvidenceHash\":\"\",\"sessionIdHash\":\"${benchmarkGapSha256(session)}\",\"runtimeHomeId\":\"${benchmarkGapSha256(home)}\",\"sandboxProbeHash\":\"${benchmarkGapSha256(probe)}\",\"transcriptHash\":\"${benchmarkGapSha256(transcript)}\",\"stderrHash\":\"${benchmarkGapSha256("")}\",\"diagnosticHash\":\"${benchmarkGapSha256(diagnostic)}\"}\n";File.writeTo(Path(root).join("claude-attempts.jsonl"),attempt.toArray());let summary="{\"transportAttemptCount\":1,\"sampleAttemptCount\":1,\"lastAuditedTransportAttempt\":1,\"selectedBusinessSample\":1,\"selectedTransportAttempt\":1,\"retryCount\":0,\"unresolvedTransport\":0,\"attemptLineageHash\":\"${ckbAbcdeAttemptLineageHash(attempt,"")}\",\"workspaceRestoreEvidenceHash\":\"${benchmarkGapSha256("")}\"}";File.writeTo(Path(root).join("attempt-evidence.json"),summary.toArray());File.writeTo(Path(root).join("test-result.json"),summary.toArray())
 }

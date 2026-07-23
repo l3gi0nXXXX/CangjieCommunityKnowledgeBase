@@ -107,6 +107,9 @@ public func ckbCliMain(args: Array<String>): Int64 {
     if (cli.command == "cangjie-frozen-candidate-seal") {
         return runCkbFrozenCandidateSealCli(args, store)
     }
+    if (cli.command == "certification-http") {
+        return runCkbCertificationHttpService(config, store)
+    }
     let kb = loadCliKnowledgeBase(cli.command, store, config)
     let input = cliInput(args)
     if (cli.command == "" || cli.command == "doctor") {

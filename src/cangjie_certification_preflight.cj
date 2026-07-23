@@ -36,7 +36,7 @@ public func ckbFrozenFingerprintDiagnostic(input: CkbFrozenFingerprintInput): St
         input.candidateChecksum, input.studentLeakageProofHash, input.frozenCandidateManifestHash]) {
         if (!ckbP6HashFormat(hash)) { return "fingerprint_canonical_hash_required" }
     }
-    if (input.certificationTransport != CkbAbcdeGroups.C && input.certificationTransport != CkbAbcdeGroups.D) { return "fingerprint_transport_invalid" }
+    if (input.certificationTransport != CkbAbcdeGroups.D) { return "fingerprint_transport_invalid" }
     "ok"
 }
 
@@ -117,6 +117,7 @@ public class CkbCertificationBudget {
     public var sdkRetries: Int64 = 0
     public var maxTurns: Int64 = 1
     public var knowledgeRestRetries: Int64 = 0
+    public var transportRetries: Int64 = 2
     public init() {}
 }
 
@@ -159,6 +160,12 @@ public class CkbCertificationPreflightOptions {
     public var frozenCandidateManifestJson: String = ""
     public var frozenCandidateManifestHash: String = ""
     public var budget: CkbCertificationBudget = CkbCertificationBudget()
+    public var modelTimeoutSeconds: Int64 = 180
+    public var certificationBinaryPath: String = ""
+    public var certificationConfigPath: String = ""
+    public var certificationStorePath: String = ""
+    public var certificationRunRoot: String = ""
+    public var certificationHttpBase: String = ""
     public init() {}
 }
 
@@ -168,6 +175,9 @@ public class CkbCertificationPreflightReport {
     public var diagnostic: String = ""
     public var fingerprint: String = ""
     public var checks: ArrayList<String> = ArrayList<String>()
+    public var certificationBinaryHash: String = ""
+    public var certificationHttpLaunchSpecHash: String = ""
+    public var certificationHttpCommandHash: String = ""
     public var certificationPassAt1: ?Bool = None<Bool>
     public var preflightHash: String = ""
     public var runManifestHash: String = ""
@@ -179,16 +189,30 @@ public class CkbCertificationPreflightReport {
     public var candidateChecksum: String = ""
     public var studentLeakageProofHash: String = ""
     public var frozenCandidateManifestHash: String = ""
+    public var transportRetryBudget: Int64 = 0
+    public var modelTimeoutSeconds: Int64 = 0
     public init() {}
 }
 
 public func runCertificationPreflight(options: CkbCertificationPreflightOptions, fingerprintInput: CkbFrozenFingerprintInput): CkbCertificationPreflightReport {
     let report = CkbCertificationPreflightReport()
+    report.transportRetryBudget = options.budget.transportRetries
+    report.modelTimeoutSeconds = options.modelTimeoutSeconds
     report.fingerprint = ckbFrozenFingerprint(fingerprintInput)
     report.providerIdentityHash=options.providerIdentityHash;report.modelVersion=options.modelVersion;report.claudeCodeVersion=options.claudeCodeVersion;report.certificationTransport=options.certificationTransport
     report.candidateChecksum = options.candidateChecksum
     report.studentLeakageProofHash = options.studentLeakageProofHash
     report.frozenCandidateManifestHash = options.frozenCandidateManifestHash
+    report.certificationBinaryHash = ckbAbcdeBinaryHash(options.certificationBinaryPath)
+    report.certificationHttpLaunchSpecHash = ckbAbcdeCertificationHttpLaunchSpecHash(
+        report.certificationBinaryHash, options.certificationConfigPath,
+        options.certificationStorePath, options.certificationRunRoot, options.certificationHttpBase)
+    report.certificationHttpCommandHash = benchmarkGapSha256(ckbAbcdeCertificationHttpLaunchScript(
+        options.certificationBinaryPath, options.certificationConfigPath,
+        options.certificationStorePath, options.certificationRunRoot))
+    ckbP6Check(report, ckbP6HashFormat(report.certificationBinaryHash), "certification_binary_hash_required")
+    ckbP6Check(report, ckbP6HashFormat(report.certificationHttpLaunchSpecHash), "certification_http_launch_spec_invalid")
+    ckbP6Check(report, ckbP6HashFormat(report.certificationHttpCommandHash), "certification_http_command_hash_invalid")
     ckbP6Check(report, ckbFrozenFingerprintDiagnostic(fingerprintInput) == "ok", ckbFrozenFingerprintDiagnostic(fingerprintInput))
     ckbP6Check(report, options.runId != "", "run_identity_required")
     ckbP6Check(report, options.frozenVersion != "" && options.activeVersionAtStart == options.frozenVersion, "frozen_active_version_mismatch")
@@ -217,10 +241,11 @@ public func runCertificationPreflight(options: CkbCertificationPreflightOptions,
             expectedKnowledgeVersion: options.frozenVersion) == "ok",
         "frozen_candidate_manifest_invalid")
     ckbP6Check(report, ckbP6ProviderIdentityDiagnostic(options.providerIdentityJson, options.providerIdentityHash, options.modelVersion, options.claudeCodeVersion) == "ok", ckbP6ProviderIdentityDiagnostic(options.providerIdentityJson, options.providerIdentityHash, options.modelVersion, options.claudeCodeVersion))
-    ckbP6Check(report, options.certificationTransport == CkbAbcdeGroups.C || options.certificationTransport == CkbAbcdeGroups.D, "single_certification_transport_required")
+    ckbP6Check(report, options.certificationTransport == CkbAbcdeGroups.D, "isolated_http_certification_transport_required")
     ckbP6Check(report, options.runtimeHomeRoot != "" && options.runtimeHomeRoot != options.workspaceRoot && ckbCertificationWorkspaceDiagnostic(options.runtimeHomeRoot) == "ok", "isolated_runtime_home_required")
     ckbP6Check(report, ckbP6FilesystemProbeDiagnostic(options.filesystemProbeJson, options.workspaceRoot, options.runtimeHomeRoot) == "ok", ckbP6FilesystemProbeDiagnostic(options.filesystemProbeJson, options.workspaceRoot, options.runtimeHomeRoot))
     ckbP6Check(report, ckbCertificationBudgetDiagnostic(options.budget) == "ok", ckbCertificationBudgetDiagnostic(options.budget))
+    ckbP6Check(report, options.modelTimeoutSeconds > 0 && options.modelTimeoutSeconds <= 3600, "model_timeout_budget_invalid")
     ckbP6Check(report, ckbCertificationWorkspaceDiagnostic(options.workspaceRoot) == "ok", ckbCertificationWorkspaceDiagnostic(options.workspaceRoot))
     ckbP6Check(report, ckbCertificationOutputDiagnostic(options.outputRoot) == "ok", ckbCertificationOutputDiagnostic(options.outputRoot))
     ckbP6Check(report, ckbP6CanonicalPath(options.outputRoot).endsWith("/${options.runId}"), "output_root_run_identity_mismatch")
@@ -238,6 +263,7 @@ public func ckbCertificationBudgetDiagnostic(budget: CkbCertificationBudget): St
     if (budget.providerRetries != 0) { return "provider_retry_must_be_zero" }
     if (budget.sdkRetries != 0) { return "sdk_retry_must_be_zero" }
     if (budget.maxTurns <= 0) { return "internal_turn_budget_must_be_positive" }
+    if (budget.transportRetries < 0 || budget.transportRetries > 10) { return "transport_retry_budget_must_be_0_to_10" }
     if (budget.knowledgeRestRetries != 0) { return "knowledge_rest_retry_must_be_zero" }
     "ok"
 }
@@ -266,7 +292,7 @@ public func ckbCertificationOutputDiagnostic(path: String): String {
 public func renderCertificationPreflightJson(report: CkbCertificationPreflightReport): String {
     var checks = ""
     for (i in 0..report.checks.size) { if (i > 0) { checks += "," }; checks += "\"${ckbP6JsonEscape(report.checks[i])}\"" }
-    "{\"ok\":${report.ok},\"startAllowed\":${report.startAllowed},\"diagnostic\":\"${ckbP6JsonEscape(report.diagnostic)}\",\"fingerprint\":\"${ckbP6JsonEscape(report.fingerprint)}\",\"candidateChecksum\":\"${report.candidateChecksum}\",\"studentLeakageProofHash\":\"${report.studentLeakageProofHash}\",\"frozenCandidateManifestHash\":\"${report.frozenCandidateManifestHash}\",\"certificationPassAt1\":null,\"violations\":[${checks}]}"
+    "{\"ok\":${report.ok},\"startAllowed\":${report.startAllowed},\"diagnostic\":\"${ckbP6JsonEscape(report.diagnostic)}\",\"fingerprint\":\"${ckbP6JsonEscape(report.fingerprint)}\",\"candidateChecksum\":\"${report.candidateChecksum}\",\"studentLeakageProofHash\":\"${report.studentLeakageProofHash}\",\"frozenCandidateManifestHash\":\"${report.frozenCandidateManifestHash}\",\"certificationBinaryHash\":\"${report.certificationBinaryHash}\",\"certificationHttpLaunchSpecHash\":\"${report.certificationHttpLaunchSpecHash}\",\"certificationHttpCommandHash\":\"${report.certificationHttpCommandHash}\",\"transportRetryBudget\":${report.transportRetryBudget},\"modelTimeoutSeconds\":${report.modelTimeoutSeconds},\"certificationPassAt1\":null,\"violations\":[${checks}]}"
 }
 
 public func ckbCertificationPreflightSealDiagnostic(preflight: String, manifest: String): String {
@@ -277,8 +303,11 @@ public func ckbCertificationPreflightSealDiagnostic(preflight: String, manifest:
             ckbP6Part(declared) + ckbP6Part(ckbP6String(m, "fingerprint")) +
             ckbP6Part(ckbP6String(m, "providerIdentityHash")) + ckbP6Part(ckbP6String(m, "modelVersion")) +
             ckbP6Part(ckbP6String(m, "claudeCodeVersion")) + ckbP6Part(ckbP6String(m, "certificationTransport")) +
+            ckbP6Part("${ckbP6Int(m, "transportRetryBudget")}") +
+            ckbP6Part("${ckbP6Int(m, "modelTimeoutSeconds")}") +
             ckbP6Part(ckbP6String(m, "candidateChecksum")) + ckbP6Part(ckbP6String(m, "studentLeakageProofHash")) +
-            ckbP6Part(ckbP6String(m, "frozenCandidateManifestHash")))
+            ckbP6Part(ckbP6String(m, "frozenCandidateManifestHash")) + ckbP6Part(ckbP6String(m, "certificationBinaryHash")) +
+            ckbP6Part(ckbP6String(m, "certificationHttpLaunchSpecHash")) + ckbP6Part(ckbP6String(m, "certificationHttpCommandHash")))
         if (declared != benchmarkGapSha256(preflight) || ckbP6String(m, "runManifestHash") != expectedManifest ||
             !ckbP6Bool(m, "startAllowed") || !ckbP6Null(m, "certificationPassAt1") ||
             !ckbP6Bool(p, "ok") || !ckbP6Bool(p, "startAllowed") ||
@@ -286,9 +315,17 @@ public func ckbCertificationPreflightSealDiagnostic(preflight: String, manifest:
             ckbP6String(p, "candidateChecksum") != ckbP6String(m, "candidateChecksum") ||
             ckbP6String(p, "studentLeakageProofHash") != ckbP6String(m, "studentLeakageProofHash") ||
             ckbP6String(p, "frozenCandidateManifestHash") != ckbP6String(m, "frozenCandidateManifestHash") ||
+            ckbP6String(p, "certificationBinaryHash") != ckbP6String(m, "certificationBinaryHash") ||
+            ckbP6String(p, "certificationHttpLaunchSpecHash") != ckbP6String(m, "certificationHttpLaunchSpecHash") ||
+            ckbP6String(p, "certificationHttpCommandHash") != ckbP6String(m, "certificationHttpCommandHash") ||
+            ckbP6Int(p, "transportRetryBudget") != ckbP6Int(m, "transportRetryBudget") || ckbP6Int(m, "transportRetryBudget") < 0 || ckbP6Int(m, "transportRetryBudget") > 10 ||
+            ckbP6Int(p, "modelTimeoutSeconds") != ckbP6Int(m, "modelTimeoutSeconds") || ckbP6Int(m, "modelTimeoutSeconds") <= 0 || ckbP6Int(m, "modelTimeoutSeconds") > 3600 ||
             !ckbP6HashFormat(ckbP6String(m, "candidateChecksum")) ||
             !ckbP6HashFormat(ckbP6String(m, "studentLeakageProofHash")) ||
-            !ckbP6HashFormat(ckbP6String(m, "frozenCandidateManifestHash"))) { return "preflight_manifest_seal_mismatch" }
+            !ckbP6HashFormat(ckbP6String(m, "frozenCandidateManifestHash")) ||
+            !ckbP6HashFormat(ckbP6String(m, "certificationBinaryHash")) ||
+            !ckbP6HashFormat(ckbP6String(m, "certificationHttpLaunchSpecHash")) ||
+            !ckbP6HashFormat(ckbP6String(m, "certificationHttpCommandHash"))) { return "preflight_manifest_seal_mismatch" }
         "ok"
     } catch (_: Exception) { "preflight_manifest_seal_mismatch" }
 }
@@ -306,14 +343,14 @@ public func cangjieCertificationReleaseGateIntegrated(preflightPath: String, man
 private func ckbP6PersistManifest(options: CkbCertificationPreflightOptions, report: CkbCertificationPreflightReport): Unit {
     let preflightPath = Path(options.outputRoot).join("preflight.json"); let manifestPath = Path(options.outputRoot).join("run-manifest.json")
     let preflight = renderCertificationPreflightJson(report); File.writeTo(preflightPath, preflight.toArray()); report.preflightHash = benchmarkGapSha256(preflight)
-    report.runManifestHash = benchmarkGapSha256(ckbP6Part(options.runId) + ckbP6Part(report.preflightHash) + ckbP6Part(report.fingerprint) + ckbP6Part(options.providerIdentityHash) + ckbP6Part(options.modelVersion) + ckbP6Part(options.claudeCodeVersion) + ckbP6Part(options.certificationTransport) + ckbP6Part(options.candidateChecksum) + ckbP6Part(options.studentLeakageProofHash) + ckbP6Part(options.frozenCandidateManifestHash))
-    let manifest = "{\"runId\":\"${ckbP6JsonEscape(options.runId)}\",\"startAllowed\":true,\"fingerprint\":\"${report.fingerprint}\",\"providerIdentityHash\":\"${options.providerIdentityHash}\",\"modelVersion\":\"${ckbP6JsonEscape(options.modelVersion)}\",\"claudeCodeVersion\":\"${ckbP6JsonEscape(options.claudeCodeVersion)}\",\"certificationTransport\":\"${ckbP6JsonEscape(options.certificationTransport)}\",\"candidateChecksum\":\"${options.candidateChecksum}\",\"studentLeakageProofHash\":\"${options.studentLeakageProofHash}\",\"frozenCandidateManifestHash\":\"${options.frozenCandidateManifestHash}\",\"preflightHash\":\"${report.preflightHash}\",\"runManifestHash\":\"${report.runManifestHash}\",\"certificationPassAt1\":null}"
+    report.runManifestHash = benchmarkGapSha256(ckbP6Part(options.runId) + ckbP6Part(report.preflightHash) + ckbP6Part(report.fingerprint) + ckbP6Part(options.providerIdentityHash) + ckbP6Part(options.modelVersion) + ckbP6Part(options.claudeCodeVersion) + ckbP6Part(options.certificationTransport) + ckbP6Part("${report.transportRetryBudget}") + ckbP6Part("${report.modelTimeoutSeconds}") + ckbP6Part(options.candidateChecksum) + ckbP6Part(options.studentLeakageProofHash) + ckbP6Part(options.frozenCandidateManifestHash) + ckbP6Part(report.certificationBinaryHash) + ckbP6Part(report.certificationHttpLaunchSpecHash) + ckbP6Part(report.certificationHttpCommandHash))
+    let manifest = "{\"runId\":\"${ckbP6JsonEscape(options.runId)}\",\"startAllowed\":true,\"fingerprint\":\"${report.fingerprint}\",\"providerIdentityHash\":\"${options.providerIdentityHash}\",\"modelVersion\":\"${ckbP6JsonEscape(options.modelVersion)}\",\"claudeCodeVersion\":\"${ckbP6JsonEscape(options.claudeCodeVersion)}\",\"certificationTransport\":\"${ckbP6JsonEscape(options.certificationTransport)}\",\"transportRetryBudget\":${report.transportRetryBudget},\"modelTimeoutSeconds\":${report.modelTimeoutSeconds},\"candidateChecksum\":\"${options.candidateChecksum}\",\"studentLeakageProofHash\":\"${options.studentLeakageProofHash}\",\"frozenCandidateManifestHash\":\"${options.frozenCandidateManifestHash}\",\"certificationBinaryHash\":\"${report.certificationBinaryHash}\",\"certificationHttpLaunchSpecHash\":\"${report.certificationHttpLaunchSpecHash}\",\"certificationHttpCommandHash\":\"${report.certificationHttpCommandHash}\",\"preflightHash\":\"${report.preflightHash}\",\"runManifestHash\":\"${report.runManifestHash}\",\"certificationPassAt1\":null}"
     File.writeTo(manifestPath, manifest.toArray()); report.runManifestPath = manifestPath.toString()
 }
 
 private func ckbP6DevelopmentClosureDiagnostic(raw: String): String { try { let o=JsonValue.fromStr(raw).asObject(); let cases=o.get("cases").getOrThrow().asArray().getItems(); if(!ckbP6Bool(o,"developmentClosed")||ckbP6Int(o,"developmentTotal")!=164||ckbP6Int(o,"developmentPassed")!=164||ckbP6Int(o,"invalidCaseCount")!=0||ckbP6Int(o,"knowledgeCandidateCount")!=0||cases.size!=164){return "development_closure_incomplete"};let ids=HashSet<String>();for(v in cases){let row=v.asObject();let id=ckbP6String(row,"caseId");if(id==""||ids.contains(id)||!ckbP6Bool(row,"developmentPass")||!ckbP6Bool(row,"valid")){return "development_closure_case_invalid"};ids.add(id)};"ok" } catch(_:Exception){"development_closure_artifact_invalid"} }
 private func ckbP6GateArtifactDiagnostic(raw:String,kind:String):String{try{let o=JsonValue.fromStr(raw).asObject();let evidence=ckbP6String(o,"evidence");if(!ckbP6Bool(o,"ok")||ckbP6String(o,"status")!="pass"||evidence==""||ckbP6String(o,"evidenceHash")!=benchmarkGapSha256(evidence)){"${kind}_gate_artifact_invalid"}else{"ok"}}catch(_:Exception){"${kind}_gate_artifact_invalid"}}
-private func ckbP6FilesystemProbeDiagnostic(raw:String,workspace:String,runtimeHome:String):String{try{let o=JsonValue.fromStr(raw).asObject();if(!ckbP6Bool(o,"deniedOutsideWorkspace")||!ckbP6Bool(o,"deniedTests")||!ckbP6Bool(o,"deniedReference")||!ckbP6Bool(o,"deniedTeacher")||ckbP6String(o,"workspaceCanonical")!=canonicalize(Path(workspace)).toString()||ckbP6String(o,"runtimeHomeCanonical")!=canonicalize(Path(runtimeHome)).toString()){"filesystem_isolation_probe_invalid"}else{"ok"}}catch(_:Exception){"filesystem_isolation_probe_invalid"}}
+private func ckbP6FilesystemProbeDiagnostic(raw:String,workspace:String,runtimeHome:String):String{try{let o=JsonValue.fromStr(raw).asObject();if(!ckbP6Bool(o,"deniedOutsideWorkspace")||!ckbP6Bool(o,"deniedTests")||!ckbP6Bool(o,"deniedReference")||!ckbP6Bool(o,"deniedTeacher")||!ckbP6Bool(o,"deniedStore")||ckbP6String(o,"workspaceCanonical")!=canonicalize(Path(workspace)).toString()||ckbP6String(o,"runtimeHomeCanonical")!=canonicalize(Path(runtimeHome)).toString()){"filesystem_isolation_probe_invalid"}else{"ok"}}catch(_:Exception){"filesystem_isolation_probe_invalid"}}
 private func ckbP6ParityHash(rest:String,stdio:String,http:String,frozen:String):String{if(rest==""||rest!=stdio||rest!=http){return ""};try{let o=JsonValue.fromStr(rest).asObject();if(!ckbP6HashFormat(ckbP6String(o,"contentHash"))||ckbP6String(o,"citation")==""||ckbP6String(o,"knowledgeVersion")!=frozen){return ""};benchmarkGapSha256(rest)}catch(_:Exception){""}}
 private func ckbP6ProviderIdentityDiagnostic(raw:String,hash:String,model:String,claude:String):String{let lowered=raw.toAsciiLower();for(key in ["\"token\"","\"apikey\"","\"authorization\"","\"password\"","\"secret\""]){if(lowered.contains(key)){return "provider_identity_contains_secret"}};try{let o=JsonValue.fromStr(raw).asObject();if(ckbP6String(o,"provider")==""||ckbP6String(o,"model")!=model||ckbP6String(o,"claudeCodeVersion")!=claude||benchmarkGapSha256(raw)!=hash){"provider_identity_artifact_invalid"}else{"ok"}}catch(_:Exception){"provider_identity_artifact_invalid"}}
 private func ckbP6CanonicalPath(path:String):String{try{canonicalize(Path(path)).toString().replace("\\","/")}catch(_:Exception){""}}

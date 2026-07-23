@@ -75,6 +75,10 @@ public class CangjieCertificationPreflightTest {
         @Expect(ckbCertificationBudgetDiagnostic(budget), "internal_turn_budget_must_be_positive")
         budget.maxTurns = 21
         @Expect(ckbCertificationBudgetDiagnostic(budget), "ok")
+        budget.transportRetries = -1
+        @Expect(ckbCertificationBudgetDiagnostic(budget), "transport_retry_budget_must_be_0_to_10")
+        budget.transportRetries = 2
+        @Expect(ckbCertificationBudgetDiagnostic(budget), "ok")
         budget.knowledgeRestRetries = 3
         @Expect(ckbCertificationBudgetDiagnostic(budget), "knowledge_rest_retry_must_be_zero")
 
@@ -130,6 +134,22 @@ public class CangjieCertificationPreflightTest {
         File.writeTo(Path("${output}/run-manifest.json"),manifestText.replace("\"modelVersion\":\"GLM-5.2\"","\"modelVersion\":\"tampered\"").toArray())
         @Expect(cangjieCertificationReleaseGateIntegrated("${output}/preflight.json", "${output}/run-manifest.json").ok,false)
     }
+
+    @TestCase
+    public func r7Ut10PreflightSealsComputedCertificationHttpProvenance(): Unit {
+        let output=p6EmptyOutput("../target/p6-r7-provenance-${DateTime.now().toUnixTimeStamp().toMilliseconds()}")
+        let options=p6Preflight(output);let fingerprint=p6Fingerprint()
+        let report=runCertificationPreflight(options,fingerprint)
+        @Expect(report.ok,true);@Expect(report.certificationBinaryHash,ckbAbcdeBinaryHash(options.certificationBinaryPath))
+        @Expect(report.certificationHttpLaunchSpecHash,ckbAbcdeCertificationHttpLaunchSpecHash(report.certificationBinaryHash,options.certificationConfigPath,options.certificationStorePath,options.certificationRunRoot,options.certificationHttpBase))
+        @Expect(report.certificationHttpCommandHash,benchmarkGapSha256(ckbAbcdeCertificationHttpLaunchScript(options.certificationBinaryPath,options.certificationConfigPath,options.certificationStorePath,options.certificationRunRoot)))
+        let preflight=String.fromUtf8(File.readFrom(Path(output).join("preflight.json")));let manifestPath=Path(output).join("run-manifest.json");let manifest=String.fromUtf8(File.readFrom(manifestPath))
+        @Expect(ckbCertificationPreflightSealDiagnostic(preflight,manifest),"ok")
+        File.writeTo(Path(options.certificationConfigPath),(String.fromUtf8(File.readFrom(Path(options.certificationConfigPath)))+"# drift\n").toArray())
+        @Expect(ckbAbcdeCertificationHttpLaunchSpecHash(report.certificationBinaryHash,options.certificationConfigPath,options.certificationStorePath,options.certificationRunRoot,options.certificationHttpBase)==report.certificationHttpLaunchSpecHash,false)
+        @Expect(ckbCertificationPreflightSealDiagnostic(preflight,manifest.replace("certificationBinaryHash","tamperedCertificationBinaryHash")),"preflight_manifest_seal_mismatch")
+        @Expect(ckbCertificationPreflightSealDiagnostic(preflight,manifest.replace(report.certificationHttpCommandHash,benchmarkGapSha256("wrong-command"))),"preflight_manifest_seal_mismatch")
+    }
 }
 
 private func p6Fingerprint(): CkbFrozenFingerprintInput {
@@ -137,7 +157,7 @@ private func p6Fingerprint(): CkbFrozenFingerprintInput {
     input.knowledgeVersion = "knowledge-v1"; input.knowledgeContentHash = benchmarkGapSha256("knowledge"); input.datasetVersion = "dataset-v1"
     input.manifestHash = benchmarkGapSha256("manifest"); input.modelVersion = "GLM-5.2"; input.claudeCodeVersion = "claude-code-1.0"
     input.promptHash = benchmarkGapSha256("prompt"); input.toolConfigHash = benchmarkGapSha256("tools")
-    input.providerIdentityHash = benchmarkGapSha256("{\"provider\":\"redacted-provider\",\"model\":\"GLM-5.2\",\"claudeCodeVersion\":\"claude-code-1.0\"}"); input.certificationTransport = CkbAbcdeGroups.C; input.runtimeConfigHash = benchmarkGapSha256("runtime-config")
+    input.providerIdentityHash = benchmarkGapSha256("{\"provider\":\"redacted-provider\",\"model\":\"GLM-5.2\",\"claudeCodeVersion\":\"claude-code-1.0\"}"); input.certificationTransport = CkbAbcdeGroups.D; input.runtimeConfigHash = benchmarkGapSha256("runtime-config")
     input.candidateChecksum=input.knowledgeContentHash;input.studentLeakageProofHash=benchmarkGapSha256("{\"ok\":true,\"status\":\"pass\"}");input.frozenCandidateManifestHash=benchmarkGapSha256(p6FrozenManifest(input.candidateChecksum,input.studentLeakageProofHash))
     input
 }
@@ -156,15 +176,16 @@ private func p6Arm(name: String, enabled: Bool, workspace: String, session: Stri
 private func p6Preflight(output: String): CkbCertificationPreflightOptions {
     let options = CkbCertificationPreflightOptions()
     options.runId = Path(output).fileName; options.outputRoot = output; options.workspaceRoot = p6EmptyOutput("../target/p6-workspace/case-workspace")
+    let certificationRoot=p6EmptyOutput("../target/p6-http-provenance/${options.runId}");let config=Path(certificationRoot).join("runtime.conf");File.writeTo(config,"service.bind=127.0.0.1\nservice.port=19873\n".toArray());options.certificationBinaryPath=canonicalize(Path("../target/release/bin/main")).toString();options.certificationConfigPath=canonicalize(config).toString();options.certificationStorePath=canonicalize(Path(p6EmptyOutput("${certificationRoot}/store"))).toString();options.certificationRunRoot=canonicalize(Path(p6EmptyOutput("${certificationRoot}/run"))).toString();options.certificationHttpBase="http://127.0.0.1:19873"
     options.frozenVersion = "knowledge-v1"; options.activeVersionAtStart = "knowledge-v1"; options.activeVersionAtEnd = "knowledge-v1"
     options.expectedManifestHash = benchmarkGapSha256("manifest"); options.actualManifestHash = benchmarkGapSha256("manifest")
     options.developmentClosed = 164; options.expectedCases = 164; options.unresolvedNonKnowledgeFailures = 0
     options.knowledgeTestsPassed = true; options.releaseGatePassed = true; options.contributionExperimentPassed = true
     options.modelVersion = "GLM-5.2"; options.claudeCodeVersion = "claude-code-1.0"
-    options.providerIdentityJson="{\"provider\":\"redacted-provider\",\"model\":\"GLM-5.2\",\"claudeCodeVersion\":\"claude-code-1.0\"}";options.providerIdentityHash = benchmarkGapSha256(options.providerIdentityJson); options.certificationTransport = CkbAbcdeGroups.C
+    options.providerIdentityJson="{\"provider\":\"redacted-provider\",\"model\":\"GLM-5.2\",\"claudeCodeVersion\":\"claude-code-1.0\"}";options.providerIdentityHash = benchmarkGapSha256(options.providerIdentityJson); options.certificationTransport = CkbAbcdeGroups.D
     options.runtimeHomeRoot = p6EmptyOutput("../target/p6-runtime/runtime-home"); options.filesystemIsolationEnforced = true
     options.developmentClosureJson=p6ClosureJson(); options.knowledgeGateJson=p6Gate("knowledge-gate"); options.releaseGateJson=p6Gate("release-gate")
-    let wc=canonicalize(Path(options.workspaceRoot)).toString();let rc=canonicalize(Path(options.runtimeHomeRoot)).toString();options.filesystemProbeJson="{\"deniedOutsideWorkspace\":true,\"deniedTests\":true,\"deniedReference\":true,\"deniedTeacher\":true,\"workspaceCanonical\":\"${wc}\",\"runtimeHomeCanonical\":\"${rc}\"}"
+    let wc=canonicalize(Path(options.workspaceRoot)).toString();let rc=canonicalize(Path(options.runtimeHomeRoot)).toString();options.filesystemProbeJson="{\"deniedOutsideWorkspace\":true,\"deniedTests\":true,\"deniedReference\":true,\"deniedTeacher\":true,\"deniedStore\":true,\"workspaceCanonical\":\"${wc}\",\"runtimeHomeCanonical\":\"${rc}\"}"
     options.parityRestPayload="{\"atomIds\":[\"A\"],\"contentHash\":\"${benchmarkGapSha256("atom")}\",\"citation\":\"官方中文😀\",\"knowledgeVersion\":\"knowledge-v1\"}";options.parityStdioPayload=options.parityRestPayload;options.parityHttpPayload=options.parityRestPayload;options.parityEvidenceHash=benchmarkGapSha256(options.parityRestPayload)
     options.candidateChecksum=benchmarkGapSha256("knowledge");options.studentLeakageProofJson="{\"ok\":true,\"status\":\"pass\"}";options.studentLeakageProofHash=benchmarkGapSha256(options.studentLeakageProofJson);options.frozenCandidateManifestJson=p6FrozenManifest(options.candidateChecksum,options.studentLeakageProofHash);options.frozenCandidateManifestHash=benchmarkGapSha256(options.frozenCandidateManifestJson)
     let baseline=p6Arm("no-ckb",false,"pre-w1","pre-s1","pre-h1");let treatment=p6Arm("frozen-ckb",true,"pre-w2","pre-s2","pre-h2");options.experimentReport=runCkbContributionExperiment(baseline,treatment,frozenFingerprint: ckbFrozenFingerprint(p6Fingerprint()))

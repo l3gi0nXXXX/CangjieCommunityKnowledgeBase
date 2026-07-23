@@ -14,13 +14,13 @@ public class CangjieHumanEvalP5RunnerTest {
         Directory.create(Path(configRoot), recursive: true)
         let config = canonicalize(Path(configRoot)).join("ckb.conf").toString()
         File.writeTo(Path(config), "network.enabled=false\n".toArray())
-        let options = parseCkbAbcdeRunnerOptions(["cangjie-eval-abcde", "--run-mode", "development", "--dataset-version", "dataset-v1", "--candidate-version", "candidate-v2", "--knowledge-version", "knowledge-v2", "--model-fingerprint", "glm-5.2-fixed", "--claude-bin", "/usr/bin/true", "--config", config, "--run-id", "run-中😀"])
+        let options = parseCkbAbcdeRunnerOptions(["cangjie-eval-abcde", "--run-mode", "development", "--dataset-version", "dataset-v1", "--candidate-version", "candidate-v2", "--knowledge-version", "knowledge-v2", "--model-fingerprint", "glm-5.2-fixed", "--claude-bin", "/bin/echo", "--config", config, "--run-id", "run-中😀"])
         @Expect(ckbAbcdeDevelopmentOptionsDiagnostic(options), "")
         let prompt = renderCkbAbcdePromptForMode(CkbAbcdeGroups.C, "CJ-HUMANEVAL-000", "实现中文 😀", "{}", options.runMode)
         @Expect(prompt.contains("Run mode: development"), true)
         @Expect(prompt.contains("@Expect("), false)
         let groupRoot = "target/p5/observed-identity-中😀"
-        p5WriteObservedIdentity(groupRoot, "GLM-5.2")
+        p5WriteObservedIdentity(groupRoot, "GLM-5.2", executable: "/bin/echo")
         let row = ckbAbcdeRenderCaseResult(options, "target/p5", "CJ-HUMANEVAL-000", CkbAbcdeGroups.C, "passed", 0, 0, true, true, "none", "cangjie_task_knowledge_pack", "none", groupRoot)
         @Expect(row.contains("\"developmentPass\":true"), true)
         @Expect(row.contains("\"datasetVersion\":\"dataset-v1\""), true)
@@ -165,10 +165,10 @@ public class CangjieHumanEvalP5RunnerTest {
     }
 }
 
-private func p5WriteObservedIdentity(groupRoot: String, model: String): Unit {
+private func p5WriteObservedIdentity(groupRoot: String, model: String, executable!: String = "claude"): Unit {
     if (!exists(Path(groupRoot))) { Directory.create(groupRoot, recursive: true) }
     File.writeTo("${groupRoot}/claude-transcript.jsonl", "{\"type\":\"system\",\"subtype\":\"init\",\"model\":\"${model}\"}\n".toArray())
-    File.writeTo("${groupRoot}/provider-identity.json", ckbAbcdeProviderIdentityJson(model, ckbAbcdeClaudeVersionForTest()).toArray())
+    File.writeTo("${groupRoot}/provider-identity.json", ckbAbcdeProviderIdentityJson(model, ckbAbcdeClaudeVersionForTest(executable: executable)).toArray())
 }
 
 private func p5ClosureInput(name: String, signal: String, developmentPass: Bool, classifiers: Bool): CangjieEvalDevelopmentClosureInput {
