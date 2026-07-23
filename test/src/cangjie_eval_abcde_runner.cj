@@ -2264,7 +2264,15 @@ private func ckbAbcdeTaskKnowledgeEvidence(group: String, transcript: String, co
                 let entry = value.asObject()
                 if (ckbAbcdeStrictJsonString(entry, "type") != "tool_result" || ckbAbcdeStrictJsonString(entry, "tool_use_id") != toolUseId) { continue }
                 pairedCount += 1
-                if (ckbAbcdeStrictJsonBool(entry, "is_error")) { result.diagnostic = "paired_tool_result_error"; return result }
+                match (entry.get("is_error")) {
+                    case Some(value) =>
+                        if (value.toString() != "null") {
+                            try {
+                                if (value.asBool().getValue()) { result.diagnostic = "paired_tool_result_error"; return result }
+                            } catch (_: Exception) { result.diagnostic = "malformed_transcript_json"; return result }
+                        }
+                    case None => ()
+                }
                 let payload = JsonValue.fromStr(ckbAbcdeStrictJsonString(entry, "content")).asObject()
                 let evidenceHash = ckbAbcdeStrictJsonString(payload, "evidenceHash")
                 let knowledgeVersion = ckbAbcdeStrictJsonString(payload, "knowledgeVersion")
