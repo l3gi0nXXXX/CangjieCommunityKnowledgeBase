@@ -116,7 +116,10 @@ public class CangjieRunnerBoundMcpTest {
     @TestCase
     public func r3Arch002BoundTaskPackBlocksPollutionAndKeepsReceiptOutsideEvidence(): Unit {
         let context = rbmcpTestContext("private benchmark fragment", "[\"String\"]")
-        let server = CkbMcpStdioServer(r3PollutedMcpService("r3-bound"),
+        let service = r3PollutedMcpService("r3-bound")
+        @Expect(service.prepareStudentServingProjection().diagnostic,
+            "student_knowledge_leakage_blocked")
+        let server = CkbMcpStdioServer(service,
             boundTaskContextBase64: toBase64String(context.toArray()),
             boundTaskContextHash: benchmarkGapSha256(context))
 

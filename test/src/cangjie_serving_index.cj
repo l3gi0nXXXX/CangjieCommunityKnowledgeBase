@@ -146,6 +146,13 @@ public func cangjieStudentServingProjectionDiagnostic(projection: CangjieStudent
         return "student_serving_projection_version_drift"
     }
     if (projection.index.records.size == 0 || projection.index.documents.size == 0) {
+        for (diagnostic in projection.index.diagnostics) {
+            if (diagnostic.contains("student_knowledge_leakage_blocked") ||
+                diagnostic.contains("eval_support_not_student_visible") ||
+                diagnostic.contains("atom_projection_invalid")) {
+                return "student_knowledge_leakage_blocked"
+            }
+        }
         return "student_serving_projection_empty"
     }
     "ok"

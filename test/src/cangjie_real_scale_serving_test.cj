@@ -61,6 +61,12 @@ public class CangjieRealScaleServingTest {
         @Expect(projection.index.records.size, 1)
         @Expect(cangjieStudentServingProjectionDiagnostic(projection, "knowledge-v2"),
             "student_serving_projection_version_drift")
+
+        let allPolluted = ArrayList<NormalizedRecord>()
+        allPolluted.add(polluted)
+        let rejected = buildCangjieStudentServingProjection(allPolluted, "knowledge-v1")
+        @Expect(rejected.valid, false)
+        @Expect(rejected.diagnostic, "student_knowledge_leakage_blocked")
     }
 
     @TestCase
