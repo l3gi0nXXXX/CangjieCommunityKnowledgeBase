@@ -35,6 +35,24 @@ public class CangjieCertificationControlCliTest {
             "\"datasetVersion\":\"旧版本🙂\"}"
         File.writeTo(controlPath, control.toArray())
         @Expect(runCkbCertificationPreflightCli([
-            "cangjie-certification-preflight", "--control-manifest", controlPath.toString()]), 1)
+            "--store", root.join("frozen-store").toString(),
+            "cangjie-certification-preflight", "--control-manifest", controlPath.toString()],
+            store: FileKnowledgeStore(root.join("frozen-store").toString())), 1)
+    }
+
+    @TestCase
+    public func preflightRejectsDuplicateAndUnknownGlobalStoreArguments(): Unit {
+        let store = FileKnowledgeStore("../target/control-store-args")
+        @Expect(runCkbCertificationPreflightCli([
+            "--store", "first", "--store", "second",
+            "cangjie-certification-preflight", "--control-manifest", "control.json"],
+            store: store), 2)
+        @Expect(runCkbCertificationPreflightCli([
+            "--store", "first", "--unexpected", "value",
+            "cangjie-certification-preflight", "--control-manifest", "control.json"],
+            store: store), 2)
+        @Expect(runCkbCertificationPreflightCli([
+            "--store", "--control-manifest", "control.json",
+            "cangjie-certification-preflight"], store: store), 2)
     }
 }
