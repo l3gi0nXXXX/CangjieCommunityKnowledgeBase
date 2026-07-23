@@ -7,7 +7,7 @@ import stdx.encoding.json.*
 // File-only control plane for the P6 seal.  The manifest contains paths and
 // public hashes only; credentials are neither accepted nor persisted.
 public func runCkbCertificationPreflightCli(args:Array<String>,store!:FileKnowledgeStore=FileKnowledgeStore("target/ckb-preflight-default")):Int64 {
-    let usage=ckbControlArgs(args,"cangjie-certification-preflight",["--control-manifest"])
+    let usage=ckbCertificationPreflightCliArgs(args)
     if(usage[0]!="ok"){println("usage error: ${usage[0]}");return 2}
     let path=usage[1];if(!exists(Path(path))){println("preflight blocked: control_manifest_missing");return 1}
     try {
@@ -27,6 +27,10 @@ public func runCkbCertificationPreflightCli(args:Array<String>,store!:FileKnowle
         let fingerprint=ckbFrozenFingerprint(fp);let baseline=ckbControlArm(baselineRaw);let treatment=ckbControlArm(treatmentRaw);options.experimentReport=runCkbContributionExperiment(baseline,treatment,frozenFingerprint:fingerprint)
         let report=runCertificationPreflight(options,fp);println(renderCertificationPreflightJson(report));return if(report.ok){0}else{1}
     } catch(_:Exception){println("preflight blocked: malformed_or_unreadable_artifact");1}
+}
+
+public func ckbCertificationPreflightCliArgs(args:Array<String>):(String,String){
+    ckbControlArgs(args,"cangjie-certification-preflight",["--control-manifest"])
 }
 
 private func ckbControlArm(raw:String):CkbContributionArm{
