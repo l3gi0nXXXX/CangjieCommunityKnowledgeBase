@@ -105,9 +105,15 @@ public func runCkbCertificationHttpService(runtime: CkbRuntimeConfig, store: Fil
         return 2
     }
     let service = CkbCommandLoopService(runtime, store, sourceRunner: DisabledNetworkFetchRunner())
+    let identity = prepareCkbCertificationHttpIdentity(service, store)
+    if (!identity.valid) {
+        println(ckbApiErrorEnvelope("ckb.certification_identity_unavailable",
+            "certification identity unavailable", status: 409))
+        return 2
+    }
     try {
         let server = ServerBuilder().addr(config.bind).port(UInt16(config.port)).build()
-        registerCkbCertificationHttpRoutes(server, service, store, config)
+        registerCkbCertificationHttpRoutes(server, service, store, config, identity: identity)
         println("certification-http protocol=ckb-certification-http-v1 bind=${redactSensitive(config.bind)} port=${config.port}")
         server.serve()
         return 0
@@ -120,14 +126,64 @@ public func ckbCertificationHttpBindDiagnostic(bind:String):String{let value=bin
 
 public func registerCkbCertificationHttpRoutes(server: Server, service: CkbCommandLoopService,
     store: FileKnowledgeStore, config: CkbHttpServiceConfig,
-    mcpSessionStore!: CkbMcpHttpSessionStore = CkbMcpHttpSessionStore()): Unit {
+    mcpSessionStore!: CkbMcpHttpSessionStore = CkbMcpHttpSessionStore(),
+    identity!: CkbCertificationHttpIdentity = prepareCkbCertificationHttpIdentity(service, store)): Unit {
     server.distributor.register("/v1/certification/identity", { ctx =>
-        ckbCertificationHttpServeIdentity(ctx, service, store, config)
+        ckbCertificationHttpServeIdentity(ctx, identity, store, config)
     })
     ckbMcpHttpRegisterRoute(server, service, config, mcpSessionStore, "/mcp")
 }
 
+public class CkbCertificationHttpIdentity {
+    public var valid: Bool = false
+    public var diagnostic: String = "certification_identity_unavailable"
+    public var activeVersion: String = ""
+    public var pointerIdentityHash: String = ""
+    public var candidateChecksum: String = ""
+    public var responseBody: String = ""
+    public init() {}
+}
+
+public func prepareCkbCertificationHttpIdentity(service: CkbCommandLoopService,
+    store: FileKnowledgeStore): CkbCertificationHttpIdentity {
+    let identity = CkbCertificationHttpIdentity()
+    let first = store.loadActiveSnapshotPointer()
+    if (!first.valid) { return identity }
+    let projection = service.prepareStudentServingProjection()
+    if (!projection.valid) {
+        identity.diagnostic = projection.diagnostic
+        return identity
+    }
+    let version = service.certificationActiveKnowledgeVersion()
+    let checksum = service.certificationActiveRecordsChecksum()
+    let servicePointerHash = service.certificationStorePointerIdentityHash()
+    let second = store.loadActiveSnapshotPointer()
+    let pointerHash = ckbActiveSnapshotPointerIdentityHash(first)
+    if (!second.valid || ckbActiveSnapshotPointerIdentityHash(second) != pointerHash ||
+        servicePointerHash != pointerHash || version != first.activeVersion ||
+        projection.activeKnowledgeVersion != version) {
+        identity.diagnostic = "certification_identity_service_store_mismatch"
+        return identity
+    }
+    identity.activeVersion = version
+    identity.pointerIdentityHash = pointerHash
+    identity.candidateChecksum = checksum
+    identity.responseBody = ckbApiEnvelope(
+        "{\"schemaVersion\":\"ckb-certification-identity-v1\",\"activeVersion\":\"${ckbHttpJsonEscape(version)}\",\"pointerIdentityHash\":\"${pointerHash}\",\"candidateChecksum\":\"${checksum}\"}")
+    identity.valid = true
+    identity.diagnostic = "ok"
+    identity
+}
+
 public func handleCkbCertificationHttpRequest(service: CkbCommandLoopService,
+    store: FileKnowledgeStore, method: String, path: String, body: String,
+    headers: Array<String>, config: CkbHttpServiceConfig): CkbHttpHandlerResponse {
+    handlePreparedCkbCertificationHttpRequest(
+        prepareCkbCertificationHttpIdentity(service, store), store,
+        method, path, body, headers, config)
+}
+
+public func handlePreparedCkbCertificationHttpRequest(identity: CkbCertificationHttpIdentity,
     store: FileKnowledgeStore, method: String, path: String, body: String,
     headers: Array<String>, config: CkbHttpServiceConfig): CkbHttpHandlerResponse {
     let response = CkbHttpHandlerResponse()
@@ -156,23 +212,19 @@ public func handleCkbCertificationHttpRequest(service: CkbCommandLoopService,
         return response
     }
     response.authKind = auth.authKind
-    let first = store.loadActiveSnapshotPointer()
-    if (!first.valid) {
+    if (!identity.valid) {
         response.statusCode = 409
         response.body = ckbApiErrorEnvelope("ckb.certification_identity_unavailable", "certification identity unavailable", status: 409)
         return response
     }
-    let snapshot = store.loadActiveSnapshot()
-    let second = store.loadActiveSnapshotPointer()
-    let firstHash = ckbActiveSnapshotPointerIdentityHash(first)
-    if (!snapshot.valid || snapshot.activeVersion != first.activeVersion || !second.valid ||
-        ckbActiveSnapshotPointerIdentityHash(second) != firstHash) {
+    let pointer = store.loadActiveSnapshotPointer()
+    if (!pointer.valid ||
+        ckbActiveSnapshotPointerIdentityHash(pointer) != identity.pointerIdentityHash) {
         response.statusCode = 409
         response.body = ckbApiErrorEnvelope("ckb.certification_identity_drift", "certification identity drift", status: 409)
         return response
     }
-    let checksum = ckbCertifiedNormalizedRecordsChecksum(snapshot.normalizedRecords)
-    response.body = ckbApiEnvelope("{\"schemaVersion\":\"ckb-certification-identity-v1\",\"activeVersion\":\"${ckbHttpJsonEscape(first.activeVersion)}\",\"pointerIdentityHash\":\"${firstHash}\",\"candidateChecksum\":\"${checksum}\"}")
+    response.body = identity.responseBody
     response.statusCode = 200
     response
 }
@@ -385,7 +437,7 @@ private func ckbMcpHttpRegisterRoute(server: Server, service: CkbCommandLoopServ
     })
 }
 
-private func ckbCertificationHttpServeIdentity(ctx: HttpContext, service: CkbCommandLoopService,
+private func ckbCertificationHttpServeIdentity(ctx: HttpContext, identity: CkbCertificationHttpIdentity,
     store: FileKnowledgeStore, config: CkbHttpServiceConfig): Unit {
     let startMs = ckbHttpNowMillis()
     let rb = ctx.responseBuilder
@@ -396,7 +448,7 @@ private func ckbCertificationHttpServeIdentity(ctx: HttpContext, service: CkbCom
         rb.body(ckbApiErrorEnvelope(bodyRead.code, "invalid request body", status: bodyRead.statusCode))
         return
     }
-    let response = handleCkbCertificationHttpRequest(service, store, ctx.request.method,
+    let response = handlePreparedCkbCertificationHttpRequest(identity, store, ctx.request.method,
         "/v1/certification/identity", bodyRead.body, ckbHttpRequestHeaders(ctx), config)
     rb.status(UInt16(response.statusCode))
     rb.body(response.body)

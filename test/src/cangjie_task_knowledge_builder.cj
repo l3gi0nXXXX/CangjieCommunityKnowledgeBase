@@ -34,7 +34,15 @@ public func buildCangjieTaskKnowledgePackFromEvidence(kb: KnowledgeBase, request
         return pack
     }
 
-    let records = kb.activeRecordSnapshot()
+    let projection = kb.prepareStudentServingProjection()
+    if (!projection.valid) {
+        pack.degraded = true
+        pack.diagnostics.add(projection.diagnostic)
+        cangjieTaskMarkAllCoverage(pack.coverage, "degraded", projection.diagnostic)
+        pack.requiredKnowledge = cangjieCopyRequiredKnowledge(pack.coverage.required)
+        return pack
+    }
+    let records = projection.records
     if (records.size == 0) {
         pack.degraded = true
         pack.diagnostics.add("active_store_empty")
@@ -52,7 +60,7 @@ public func buildCangjieTaskKnowledgePackFromEvidence(kb: KnowledgeBase, request
         return pack
     }
 
-    let index = buildCangjieStudentServingIndex(records, activeKnowledgeVersion: pack.knowledgeVersion)
+    let index = projection.index
     let leakageBlocked = cangjieTaskIndexLeakageBlocked(index)
     if (leakageBlocked && index.records.size == 0) {
         pack.degraded = true

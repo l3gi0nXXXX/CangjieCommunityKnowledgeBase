@@ -3578,6 +3578,7 @@ public class KnowledgeBase {
     private let embeddingModel: String = "deterministic-token-v1"
     private let embeddingDimensions: Int64 = 16
     private var servingQueryCache: CangjieQueryCache = CangjieQueryCache(256)
+    private var studentServingProjection: CangjieStudentServingProjection = CangjieStudentServingProjection()
     private var lastVectorBuildProgress: VectorBuildProgress = VectorBuildProgress()
     private var lastVectorIndexBuildResult: VectorIndexBuildResult = VectorIndexBuildResult()
     private var lastOverlayBuildStats: CkbOverlayBuildStats = CkbOverlayBuildStats()
@@ -3669,6 +3670,7 @@ public class KnowledgeBase {
         this.storage.graphEdgeCount = 0
         this.indexManifest = IndexManifest()
         this.servingQueryCache = CangjieQueryCache(256)
+        this.invalidateStudentServingProjection()
         this.graphStore.clear()
         this.lastGraphBuildCache = CkbGraphBuildCache()
     }
@@ -3682,6 +3684,7 @@ public class KnowledgeBase {
         this.rawRecords.clear()
         this.normalizedRecords.clear()
         this.activeIndex.clear()
+        this.invalidateStudentServingProjection()
         this.candidateIndex.clear()
         for (record in snapshot.rawRecords) {
             this.rawRecords.add(this.copyRawRecord(record))
@@ -4087,6 +4090,7 @@ public class KnowledgeBase {
             return false
         }
         this.activeIndex.clear()
+        this.invalidateStudentServingProjection()
         for (record in this.candidateIndex) {
             this.activeIndex.add(record)
         }
@@ -4124,6 +4128,7 @@ public class KnowledgeBase {
         let validatedServingSummaryMatches = ckbValidatedServingIndexSummaryMatches(
             validatedServingSummary, candidateRecordsEvidenceHash, effectiveActiveVersion)
         this.activeIndex.clear()
+        this.invalidateStudentServingProjection()
         var copied: Int64 = 0
         for (record in this.candidateIndex) {
             if (copied % 256 == 0) {
@@ -4201,6 +4206,25 @@ public class KnowledgeBase {
             out.add(record)
         }
         out
+    }
+
+    public func prepareStudentServingProjection(
+        buildObserver!: CangjieServingIndexBuildObserver = NoopCangjieServingIndexBuildObserver()): CangjieStudentServingProjection {
+        if (this.studentServingProjection.diagnostic == "student_serving_projection_unprepared") {
+            this.studentServingProjection = buildCangjieStudentServingProjection(
+                this.activeRecordSnapshot(), this.activeKnowledgeVersion,
+                buildObserver: buildObserver)
+        }
+        if (cangjieStudentServingProjectionDiagnostic(this.studentServingProjection,
+            this.activeKnowledgeVersion) != "ok") {
+            this.studentServingProjection.valid = false
+            this.studentServingProjection.diagnostic = "student_serving_projection_version_drift"
+        }
+        this.studentServingProjection
+    }
+
+    private func invalidateStudentServingProjection(): Unit {
+        this.studentServingProjection = CangjieStudentServingProjection()
     }
 
     func rawRecordSnapshot(): ArrayList<RawRecord> {
@@ -4373,6 +4397,7 @@ public class KnowledgeBase {
             return result
         }
         this.activeIndex.clear()
+        this.invalidateStudentServingProjection()
         for (record in this.candidateIndex) {
             record.metadata.knowledgeVersion = result.activeVersion
             record.metadata.candidateVersion = result.candidateVersion

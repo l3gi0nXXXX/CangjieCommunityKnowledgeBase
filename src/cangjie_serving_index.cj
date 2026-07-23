@@ -33,6 +33,15 @@ public class CangjieServingIndex {
     public init() {}
 }
 
+public class CangjieStudentServingProjection {
+    public var activeKnowledgeVersion: String = ""
+    public var records: ArrayList<NormalizedRecord> = ArrayList<NormalizedRecord>()
+    public var index: CangjieServingIndex = CangjieServingIndex()
+    public var valid: Bool = false
+    public var diagnostic: String = "student_serving_projection_unprepared"
+    public init() {}
+}
+
 public interface CangjieServingIndexBuildObserver {
     func onServingIndexBuild(recordCount: Int64): Unit
 }
@@ -89,7 +98,8 @@ public func buildCangjieServingIndex(records: ArrayList<NormalizedRecord>, activ
 
 // Student-facing retrieval must fail closed without changing the internal
 // authority/candidate index used by curation and validation workflows.
-public func buildCangjieStudentServingIndex(records: ArrayList<NormalizedRecord>, activeKnowledgeVersion!: String = ""): CangjieServingIndex {
+public func buildCangjieStudentServingIndex(records: ArrayList<NormalizedRecord>, activeKnowledgeVersion!: String = "",
+    buildObserver!: CangjieServingIndexBuildObserver = NoopCangjieServingIndexBuildObserver()): CangjieServingIndex {
     let accepted = ArrayList<NormalizedRecord>()
     let rejectedDiagnostics = ArrayList<String>()
     for (record in records) {
@@ -100,9 +110,45 @@ public func buildCangjieStudentServingIndex(records: ArrayList<NormalizedRecord>
             rejectedDiagnostics.add("serving_index_record_rejected:${diagnostic.code}:${diagnostic.matchedField}")
         }
     }
-    let index = buildCangjieServingIndex(accepted, activeKnowledgeVersion: activeKnowledgeVersion)
+    let index = buildCangjieServingIndex(accepted, activeKnowledgeVersion: activeKnowledgeVersion,
+        buildObserver: buildObserver)
     for (diagnostic in rejectedDiagnostics) { index.diagnostics.add(diagnostic) }
     index
+}
+
+public func buildCangjieStudentServingProjection(records: ArrayList<NormalizedRecord>,
+    activeKnowledgeVersion: String,
+    buildObserver!: CangjieServingIndexBuildObserver = NoopCangjieServingIndexBuildObserver()): CangjieStudentServingProjection {
+    let projection = CangjieStudentServingProjection()
+    projection.activeKnowledgeVersion = activeKnowledgeVersion
+    let rejectedDiagnostics = ArrayList<String>()
+    for (record in records) {
+        let diagnostic = cangjieStudentRecordDiagnostic(record)
+        if (diagnostic.ok) {
+            projection.records.add(record)
+        } else {
+            rejectedDiagnostics.add("serving_index_record_rejected:${diagnostic.code}:${diagnostic.matchedField}")
+        }
+    }
+    projection.index = buildCangjieServingIndex(projection.records,
+        activeKnowledgeVersion: activeKnowledgeVersion, buildObserver: buildObserver)
+    for (diagnostic in rejectedDiagnostics) { projection.index.diagnostics.add(diagnostic) }
+    projection.diagnostic = cangjieStudentServingProjectionDiagnostic(projection,
+        activeKnowledgeVersion)
+    projection.valid = projection.diagnostic == "ok"
+    projection
+}
+
+public func cangjieStudentServingProjectionDiagnostic(projection: CangjieStudentServingProjection,
+    expectedActiveKnowledgeVersion: String): String {
+    if (projection.activeKnowledgeVersion != expectedActiveKnowledgeVersion ||
+        projection.index.activeKnowledgeVersion != expectedActiveKnowledgeVersion) {
+        return "student_serving_projection_version_drift"
+    }
+    if (projection.index.records.size == 0 || projection.index.documents.size == 0) {
+        return "student_serving_projection_empty"
+    }
+    "ok"
 }
 
 // The durable-validation workset needs only a stable partition map, document

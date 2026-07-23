@@ -37,12 +37,12 @@ public class CkbCertificationHttpTest {
     }
 
     @TestCase
-    public func r7UtIdentityIsRecomputedFromBoundStore(): Unit {
-        let unrelated = FileKnowledgeStore(this.root("r7-cert-http-unrelated"))
+    public func r7UtIdentityIsBoundToServiceMemoryAndStore(): Unit {
         let store = this.activeStore("r7-cert-http-ut")
+        let service = this.service(store)
         let pointer = store.loadActiveSnapshotPointer()
         let snapshot = store.loadActiveSnapshot()
-        let response = handleCkbCertificationHttpRequest(this.service(unrelated), store, "GET",
+        let response = handleCkbCertificationHttpRequest(service, store, "GET",
             "/v1/certification/identity", "", [], CkbHttpServiceConfig())
 
         @Expect(response.statusCode, 200)
@@ -53,6 +53,9 @@ public class CkbCertificationHttpTest {
         @Expect(response.body.contains(store.root.toString()), false)
         @Expect(response.body.contains("token"), false)
         @Expect(response.body.contains("secret"), false)
+        let unrelated = this.service(FileKnowledgeStore(this.root("r7-cert-http-unrelated")))
+        @Expect(handleCkbCertificationHttpRequest(unrelated, store, "GET",
+            "/v1/certification/identity", "", [], CkbHttpServiceConfig()).statusCode, 409)
     }
 
     @TestCase

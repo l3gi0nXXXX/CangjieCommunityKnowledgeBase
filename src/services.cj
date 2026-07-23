@@ -13074,6 +13074,7 @@ public class CkbCommandLoopService {
     private let sourceRunner: SourceFetchRunner
     private let sourceEventPromotionBudgetPlan: CangjieCandidatePromotionBudgetPlan
     private let repositoryEventNowClock: CkbMillisClock
+    private let studentServingBuildObserver: CangjieServingIndexBuildObserver
     private var kb: KnowledgeBase
     private let adminOperationGate: CkbAdminOperationGate = CkbAdminOperationGate()
     private var started: Bool = false
@@ -13083,12 +13084,14 @@ public class CkbCommandLoopService {
     public init(config: CkbRuntimeConfig, store: FileKnowledgeStore,
         sourceRunner!: SourceFetchRunner = DisabledNetworkFetchRunner(),
         sourceEventPromotionBudgetPlan!: CangjieCandidatePromotionBudgetPlan = CangjieCandidatePromotionBudgetPlan(),
-        repositoryEventNowClock!: CkbMillisClock = SystemCkbMillisClock()) {
+        repositoryEventNowClock!: CkbMillisClock = SystemCkbMillisClock(),
+        studentServingBuildObserver!: CangjieServingIndexBuildObserver = NoopCangjieServingIndexBuildObserver()) {
         this.config = config
         this.store = store
         this.sourceRunner = sourceRunner
         this.sourceEventPromotionBudgetPlan = sourceEventPromotionBudgetPlan
         this.repositoryEventNowClock = repositoryEventNowClock
+        this.studentServingBuildObserver = studentServingBuildObserver
         this.kb = newKnowledgeBaseFromStoreWithRuntime(store, config).kb
     }
 
@@ -13101,6 +13104,8 @@ public class CkbCommandLoopService {
                 this.reloadKnowledgeBase()
             }
         }
+        _ = this.kb.prepareStudentServingProjection(
+            buildObserver: this.studentServingBuildObserver)
         this.logLine("info", "service_started")
     }
 
@@ -13255,6 +13260,24 @@ public class CkbCommandLoopService {
 
     public func activeVersionManifest(): CangjieVersionManifest {
         ckbRuntimeVersionManifestForStore(this.store, this.config)
+    }
+
+    public func prepareStudentServingProjection(): CangjieStudentServingProjection {
+        this.kb.prepareStudentServingProjection(buildObserver: this.studentServingBuildObserver)
+    }
+
+    public func certificationActiveKnowledgeVersion(): String {
+        this.kb.status().activeKnowledgeVersion
+    }
+
+    public func certificationActiveRecordsChecksum(): String {
+        ckbCertifiedNormalizedRecordsChecksum(this.kb.activeRecordSnapshot())
+    }
+
+    public func certificationStorePointerIdentityHash(): String {
+        let pointer = this.store.loadActiveSnapshotPointer()
+        if (!pointer.valid) { return "" }
+        ckbActiveSnapshotPointerIdentityHash(pointer)
     }
 
     private func cangjieCapabilityService(): CangjieCapabilityService {
@@ -14018,6 +14041,8 @@ public class CkbCommandLoopService {
 
     private func reloadKnowledgeBase(): Unit {
         this.kb = newKnowledgeBaseFromStoreWithRuntime(this.store, this.config).kb
+        _ = this.kb.prepareStudentServingProjection(
+            buildObserver: this.studentServingBuildObserver)
     }
 
     private func advanceSchedulerClockForServiceTick(): Unit {

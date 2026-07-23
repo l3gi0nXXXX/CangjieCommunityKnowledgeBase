@@ -2,6 +2,7 @@ package cangjie_community_knowledge_base_test
 
 import std.collection.ArrayList
 import std.convert.Parsable
+import stdx.encoding.json.*
 
 public class CkbApiResponse {
     public var ok: Bool = true
@@ -932,14 +933,6 @@ private func ckbApiJsonEscape(raw: String): String {
     out.toString()
 }
 
-private class CkbApiJsonStringScan {
-    var ok: Bool = false
-    var value: String = ""
-    var end: Int64 = 0
-
-    init() {}
-}
-
 private class CkbRepositoryEventJsonStringScan {
     var ok: Bool = false
     var value: String = ""
@@ -1115,178 +1108,60 @@ private func ckbApiAsciiJsonProjection(raw: String): String {
 }
 
 private func ckbApiJsonStringField(raw: String, key: String): String {
-    let start = ckbApiJsonTopLevelValueStart(raw, key)
-    if (start < 0 || start >= raw.size || raw[start..start + 1] != "\"") {
-        return ""
-    }
-    let scan = ckbApiReadJsonStringAt(raw, start)
-    if (scan.ok) {
-        return scan.value
-    }
-    ""
+    try {
+        match (JsonValue.fromStr(raw).asObject().get(key)) {
+            case Some(value) => value.asString().getValue()
+            case None => ""
+        }
+    } catch (_: Exception) { "" }
 }
 
 private func ckbApiJsonBoolField(raw: String, key: String): Bool {
-    let start = ckbApiJsonTopLevelValueStart(raw, key)
-    start >= 0 && raw[start..raw.size].startsWith("true")
+    try {
+        match (JsonValue.fromStr(raw).asObject().get(key)) {
+            case Some(value) => value.asBool().getValue()
+            case None => false
+        }
+    } catch (_: Exception) { false }
 }
 
 private func ckbApiJsonBoolFieldDefault(raw: String, key: String, fallback: Bool): Bool {
-    let start = ckbApiJsonTopLevelValueStart(raw, key)
-    if (start < 0) {
-        return fallback
-    }
-    raw[start..raw.size].startsWith("true")
+    try {
+        match (JsonValue.fromStr(raw).asObject().get(key)) {
+            case Some(value) => value.asBool().getValue()
+            case None => fallback
+        }
+    } catch (_: Exception) { fallback }
 }
 
 private func ckbApiJsonIntField(raw: String, key: String, fallback: Int64): Int64 {
-    let start = ckbApiJsonTopLevelValueStart(raw, key)
-    if (start < 0 || start >= raw.size) {
-        return fallback
-    }
-    var end = start
-    while (end < raw.size) {
-        let ch = raw[end..end + 1]
-        if (ch == "," || ch == "}" || ch == "]" || ch == " " || ch == "\n" || ch == "\r" || ch == "\t") {
-            break
+    try {
+        match (JsonValue.fromStr(raw).asObject().get(key)) {
+            case Some(value) => value.asInt().getValue()
+            case None => fallback
         }
-        end += 1
-    }
-    try { Int64.parse(raw[start..end].trimAscii()) } catch (_: Exception) { fallback }
+    } catch (_: Exception) { fallback }
 }
 
 private func ckbApiJsonIntOrStringField(raw: String, key: String, fallback: Int64): Int64 {
-    let start = ckbApiJsonTopLevelValueStart(raw, key)
-    if (start < 0 || start >= raw.size) {
-        return fallback
-    }
-    if (raw[start..start + 1] == "\"") {
-        let value = ckbApiJsonStringField(raw, key).trimAscii()
-        return try { Int64.parse(value) } catch (_: Exception) { fallback }
-    }
-    ckbApiJsonIntField(raw, key, fallback)
+    try {
+        let value = JsonValue.fromStr(raw).asObject().get(key).getOrThrow()
+        try {
+            value.asInt().getValue()
+        } catch (_: Exception) {
+            Int64.parse(value.asString().getValue().trimAscii())
+        }
+    } catch (_: Exception) { fallback }
 }
 
 private func ckbApiJsonStringArrayField(raw: String, key: String): ArrayList<String> {
     let values = ArrayList<String>()
-    let start = ckbApiJsonTopLevelValueStart(raw, key)
-    if (start < 0 || start >= raw.size || raw[start..start + 1] != "[") {
-        return values
-    }
-    var i = start + 1
-    while (i < raw.size) {
-        i = ckbApiSkipJsonWhitespace(raw, i)
-        if (i >= raw.size || raw[i..i + 1] == "]") {
-            break
+    try {
+        for (value in JsonValue.fromStr(raw).asObject().get(key).getOrThrow().asArray().getItems()) {
+            values.add(value.asString().getValue())
         }
-        if (raw[i..i + 1] == "\"") {
-            let scan = ckbApiReadJsonStringAt(raw, i)
-            if (scan.ok) {
-                values.add(scan.value)
-                i = scan.end
-            } else {
-                break
-            }
-        } else {
-            i += 1
-        }
-        i = ckbApiSkipJsonWhitespace(raw, i)
-        if (i < raw.size && raw[i..i + 1] == ",") {
-            i += 1
-        }
-    }
+    } catch (_: Exception) {}
     values
-}
-
-private func ckbApiJsonTopLevelValueStart(raw: String, key: String): Int64 {
-    var i: Int64 = 0
-    var depth: Int64 = 0
-    var inString = false
-    var escaped = false
-    while (i < raw.size) {
-        let ch = raw[i..i + 1]
-        if (inString) {
-            if (escaped) {
-                escaped = false
-            } else if (ch == "\\") {
-                escaped = true
-            } else if (ch == "\"") {
-                inString = false
-            }
-            i += 1
-            continue
-        }
-        if (ch == "\"") {
-            if (depth == 1) {
-                let scan = ckbApiReadJsonStringAt(raw, i)
-                if (scan.ok && scan.value == key) {
-                    var colon = ckbApiSkipJsonWhitespace(raw, scan.end)
-                    if (colon < raw.size && raw[colon..colon + 1] == ":") {
-                        return ckbApiSkipJsonWhitespace(raw, colon + 1)
-                    }
-                }
-                i = if (scan.ok) { scan.end } else { i + 1 }
-                continue
-            }
-            inString = true
-        } else if (ch == "{" || ch == "[") {
-            depth += 1
-        } else if (ch == "}" || ch == "]") {
-            depth -= 1
-        }
-        i += 1
-    }
-    -1
-}
-
-private func ckbApiReadJsonStringAt(raw: String, start: Int64): CkbApiJsonStringScan {
-    let scan = CkbApiJsonStringScan()
-    if (start < 0 || start >= raw.size || raw[start..start + 1] != "\"") {
-        return scan
-    }
-    var i = start + 1
-    var escaped = false
-    var value = ""
-    while (i < raw.size) {
-        let ch = raw[i..i + 1]
-        if (escaped) {
-            value += ckbApiJsonUnescapeChar(ch)
-            escaped = false
-        } else if (ch == "\\") {
-            escaped = true
-        } else if (ch == "\"") {
-            scan.ok = true
-            scan.value = value
-            scan.end = i + 1
-            return scan
-        } else {
-            value += ch
-        }
-        i += 1
-    }
-    scan
-}
-
-private func ckbApiJsonUnescapeChar(ch: String): String {
-    if (ch == "\"") { return "\"" }
-    if (ch == "\\") { return "\\" }
-    if (ch == "/") { return "/" }
-    if (ch == "n") { return "\n" }
-    if (ch == "r") { return "\r" }
-    if (ch == "t") { return "\t" }
-    ch
-}
-
-private func ckbApiSkipJsonWhitespace(raw: String, start: Int64): Int64 {
-    var i = start
-    while (i < raw.size) {
-        let ch = raw[i..i + 1]
-        if (ch != " " && ch != "\n" && ch != "\r" && ch != "\t") {
-            break
-        }
-        i += 1
-    }
-    i
 }
 
 private func ckbApiSafeRepo(raw: String): Bool {

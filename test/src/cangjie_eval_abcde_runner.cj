@@ -459,7 +459,7 @@ private func ckbAbcdeRunCases(options: CkbAbcdeRunnerOptions, runRoot: String): 
     var failed: Int64 = 0
     var caseIndex = options.caseStart
     while (caseIndex <= options.caseEnd) {
-        if(options.runMode=="certification"&&ckbFrozenCandidateManifestDiagnostic(FileKnowledgeStore(options.ckbStore),ckbAbcdeReadText(options.frozenCandidateManifestPath))!="ok"){println("ABCDE certification blocked: frozen_candidate_store_drift_before_case");return 1}
+        if(options.runMode=="certification"&&ckbAbcdeFrozenPointerDiagnostic(FileKnowledgeStore(options.ckbStore),ckbAbcdeReadText(options.frozenCandidateManifestPath))!="ok"){println("ABCDE certification blocked: frozen_candidate_store_drift_before_case");return 1}
         let caseId = ckbAbcdeCaseId(caseIndex)
         let caseRoot = "${runRoot}/cases/${caseId}"
         ckbAbcdeEnsureDir(caseRoot)
@@ -476,7 +476,7 @@ private func ckbAbcdeRunCases(options: CkbAbcdeRunnerOptions, runRoot: String): 
         }
         ckbAbcdeWriteText("${caseRoot}/case-summary.json", ckbAbcdeRenderCaseSummary(options, runRoot, caseId, summaries))
         ckbAbcdeAppendText("${runRoot}/case-usage-summary.csv", ckbAbcdeRenderCaseUsageSummaryCsvRow(caseId, summaries) + "\n")
-        if(options.runMode=="certification"&&ckbFrozenCandidateManifestDiagnostic(FileKnowledgeStore(options.ckbStore),ckbAbcdeReadText(options.frozenCandidateManifestPath))!="ok"){println("ABCDE certification blocked: frozen_candidate_store_drift_after_case");return 1}
+        if(options.runMode=="certification"&&ckbAbcdeFrozenPointerDiagnostic(FileKnowledgeStore(options.ckbStore),ckbAbcdeReadText(options.frozenCandidateManifestPath))!="ok"){println("ABCDE certification blocked: frozen_candidate_store_drift_after_case");return 1}
         caseIndex += 1
     }
     if (options.explicitRunMode && options.runMode == "development" && options.caseStart == 0 && options.caseEnd == 163) {
@@ -501,15 +501,59 @@ private func ckbAbcdeWaitForCertificationIdentity(options: CkbAbcdeRunnerOptions
     let version = ckbAbcdeStrictJsonString(frozen, "knowledgeVersion")
     let pointer = ckbAbcdeStrictJsonString(frozen, "activePointerHash")
     let checksum = ckbAbcdeStrictJsonString(frozen, "candidateChecksum")
-    for (_ in 0..100) {
-        let response = ckbAbcdeRunShell("curl --max-time 1 -fsS ${ckbAbcdeShellQuote(options.ckbHttpBase+"/v1/certification/identity")}", "")
+    let deadline = ckbCoreNowMillis() + ckbAbcdeCertificationReadinessDeadlineMillis()
+    while (ckbCoreNowMillis() < deadline) {
+        let response = ckbAbcdeRunShell("curl --connect-timeout 1 --max-time 30 -fsS ${ckbAbcdeShellQuote(options.ckbHttpBase+"/v1/certification/identity")}", "")
         if (response.exitCode == 0) {
-            if (response.stdout.contains("\"activeVersion\":\"${version}\"") && response.stdout.contains("\"pointerIdentityHash\":\"${pointer}\"") && response.stdout.contains("\"candidateChecksum\":\"${checksum}\"")) { ckbAbcdeWriteText("${runRoot}/certification-http-identity.json",response.stdout);return "ok" }
-            return "certification_http_identity_mismatch"
+            let diagnostic = ckbAbcdeCertificationIdentityResponseDiagnostic(
+                response.stdout, version, pointer, checksum)
+            if (diagnostic == "ok") {
+                ckbAbcdeWriteText("${runRoot}/certification-http-identity.json",response.stdout)
+            }
+            return diagnostic
         }
-        _ = ckbAbcdeRunShell("sleep 0.05", "")
+        _ = ckbAbcdeRunShell("sleep 0.10", "")
     }
     "certification_http_not_ready"
+}
+
+public func ckbAbcdeCertificationReadinessDeadlineMillis(): Int64 { 60000 }
+public func ckbAbcdeDevelopmentToolProbeTimeoutSeconds(): Int64 { 30 }
+
+public func ckbAbcdeCertificationIdentityResponseDiagnostic(raw: String, version: String,
+    pointer: String, checksum: String): String {
+    try {
+        let root = JsonValue.fromStr(raw).asObject()
+        if (!ckbAbcdeStrictJsonBool(root, "ok")) {
+            return "certification_http_identity_mismatch"
+        }
+        let data = root.get("data").getOrThrow().asObject()
+        if (ckbAbcdeStrictJsonString(data, "activeVersion") != version ||
+            ckbAbcdeStrictJsonString(data, "pointerIdentityHash") != pointer ||
+            ckbAbcdeStrictJsonString(data, "candidateChecksum") != checksum) {
+            return "certification_http_identity_mismatch"
+        }
+        "ok"
+    } catch (_: Exception) { "certification_http_identity_malformed" }
+}
+
+public func ckbAbcdeFrozenPointerDiagnostic(store: FileKnowledgeStore,
+    manifestJson: String): String {
+    if (ckbFrozenCandidateManifestIntegrityDiagnostic(manifestJson) != "ok") {
+        return "frozen_candidate_store_drift"
+    }
+    try {
+        let manifest = JsonValue.fromStr(manifestJson).asObject()
+        let pointer = store.loadActiveSnapshotPointer()
+        if (!pointer.valid ||
+            ckbAbcdeStrictJsonString(manifest, "knowledgeVersion") != pointer.activeVersion ||
+            ckbAbcdeStrictJsonString(manifest, "txIdHash") != benchmarkGapSha256(pointer.txId) ||
+            ckbAbcdeStrictJsonString(manifest, "activePointerHash") !=
+                ckbActiveSnapshotPointerIdentityHash(pointer)) {
+            return "frozen_candidate_store_drift"
+        }
+        "ok"
+    } catch (_: Exception) { "frozen_candidate_store_drift" }
 }
 
 public func ckbAbcdeBinaryHash(path: String): String {
@@ -1481,7 +1525,7 @@ private func ckbAbcdeRunMcpHttpSmoke(options: CkbAbcdeRunnerOptions, groupRoot: 
         "printf '%s\\n' \"$sid\" > ${ckbAbcdeShellQuote("${groupRoot}/mcp-http-session-id.txt")}; " +
         "if [ -z \"$sid\" ]; then exit 4; fi; " +
         "curl --max-time 5 -fsS -X POST -H 'Accept: application/json, text/event-stream' -H 'Content-Type: application/json' -H ${ckbAbcdeShellQuote(boundHeader)} -H ${ckbAbcdeShellQuote(boundHashHeader)} -H \"Mcp-Session-Id: $sid\" -H 'MCP-Protocol-Version: 2025-06-18' --data-binary @${ckbAbcdeShellQuote("${groupRoot}/mcp-http-initialized-request.json")} ${ckbAbcdeShellQuote("${options.ckbHttpBase}/mcp")} > ${ckbAbcdeShellQuote("${groupRoot}/mcp-http-initialized-response.txt")} 2> ${ckbAbcdeShellQuote("${groupRoot}/mcp-http-initialized.stderr.log")}; " +
-        "curl --max-time 10 -fsS -X POST -H 'Accept: application/json, text/event-stream' -H 'Content-Type: application/json' -H ${ckbAbcdeShellQuote(boundHeader)} -H ${ckbAbcdeShellQuote(boundHashHeader)} -H \"Mcp-Session-Id: $sid\" -H 'MCP-Protocol-Version: 2025-06-18' --data-binary @${ckbAbcdeShellQuote("${groupRoot}/mcp-http-tool-call-request.json")} ${ckbAbcdeShellQuote("${options.ckbHttpBase}/mcp")} > ${ckbAbcdeShellQuote("${groupRoot}/mcp-http-tool-call-response.json")} 2> ${ckbAbcdeShellQuote("${groupRoot}/mcp-http-tool-call.stderr.log")}; " +
+        "curl --max-time ${ckbAbcdeDevelopmentToolProbeTimeoutSeconds()} -fsS -X POST -H 'Accept: application/json, text/event-stream' -H 'Content-Type: application/json' -H ${ckbAbcdeShellQuote(boundHeader)} -H ${ckbAbcdeShellQuote(boundHashHeader)} -H \"Mcp-Session-Id: $sid\" -H 'MCP-Protocol-Version: 2025-06-18' --data-binary @${ckbAbcdeShellQuote("${groupRoot}/mcp-http-tool-call-request.json")} ${ckbAbcdeShellQuote("${options.ckbHttpBase}/mcp")} > ${ckbAbcdeShellQuote("${groupRoot}/mcp-http-tool-call-response.json")} 2> ${ckbAbcdeShellQuote("${groupRoot}/mcp-http-tool-call.stderr.log")}; " +
         "curl --max-time 5 -fsS -N -H 'Accept: text/event-stream' -H ${ckbAbcdeShellQuote(boundHeader)} -H ${ckbAbcdeShellQuote(boundHashHeader)} -H \"Mcp-Session-Id: $sid\" -H 'MCP-Protocol-Version: 2025-06-18' ${ckbAbcdeShellQuote("${options.ckbHttpBase}/mcp")}"
     let get = ckbAbcdeRunShell(script, "")
     ckbAbcdeWriteText("${groupRoot}/mcp-http-smoke.stdout.log", get.stdout)
@@ -1528,7 +1572,7 @@ public func ckbAbcdeProbeRealTransportParity(options: CkbAbcdeRunnerOptions, run
     let restRequestPath = "${runRoot}/transport-parity-rest-request.json"
     let restPath = "${runRoot}/transport-parity-rest.json"
     ckbAbcdeWriteText(restRequestPath, taskContextJson)
-    let rest = ckbAbcdeRunShell("curl ${ckbAbcdeCurlRetryFlags()} --max-time 10 -fsS -X POST -H 'Content-Type: application/json' --data-binary @${ckbAbcdeShellQuote(restRequestPath)} ${ckbAbcdeShellQuote("${options.ckbHttpBase}/v1/cangjie/task-knowledge-pack")}", "")
+    let rest = ckbAbcdeRunShell("curl ${ckbAbcdeCurlRetryFlags()} --max-time ${ckbAbcdeDevelopmentToolProbeTimeoutSeconds()} -fsS -X POST -H 'Content-Type: application/json' --data-binary @${ckbAbcdeShellQuote(restRequestPath)} ${ckbAbcdeShellQuote("${options.ckbHttpBase}/v1/cangjie/task-knowledge-pack")}", "")
     ckbAbcdeWriteText(restPath, rest.stdout)
     ckbAbcdeWriteText("${runRoot}/transport-parity-rest.stderr.log", rest.stderr)
 
@@ -1564,7 +1608,7 @@ public func ckbAbcdeProbeRealTransportParity(options: CkbAbcdeRunnerOptions, run
         "printf '%s\\n' \"$sid\" > ${ckbAbcdeShellQuote("${runRoot}/transport-parity-http-session-id.txt")}; " +
         "if [ -z \"$sid\" ]; then exit 4; fi; " +
         "curl --max-time 5 -fsS -X POST -H 'Accept: application/json, text/event-stream' -H 'Content-Type: application/json' -H ${ckbAbcdeShellQuote(boundHeader)} -H ${ckbAbcdeShellQuote(boundHashHeader)} -H \"Mcp-Session-Id: $sid\" -H 'MCP-Protocol-Version: 2025-06-18' --data-binary @${ckbAbcdeShellQuote(httpInitializedPath)} ${ckbAbcdeShellQuote("${options.ckbHttpBase}/mcp")} > ${ckbAbcdeShellQuote("${runRoot}/transport-parity-http-initialized-response.txt")} 2> ${ckbAbcdeShellQuote("${runRoot}/transport-parity-http-initialized.stderr.log")}; " +
-        "curl --max-time 10 -fsS -X POST -H 'Accept: application/json, text/event-stream' -H 'Content-Type: application/json' -H ${ckbAbcdeShellQuote(boundHeader)} -H ${ckbAbcdeShellQuote(boundHashHeader)} -H \"Mcp-Session-Id: $sid\" -H 'MCP-Protocol-Version: 2025-06-18' --data-binary @${ckbAbcdeShellQuote(httpRequestPath)} ${ckbAbcdeShellQuote("${options.ckbHttpBase}/mcp")} > ${ckbAbcdeShellQuote(httpPath)} 2> ${ckbAbcdeShellQuote("${runRoot}/transport-parity-http.stderr.log")}"
+        "curl --max-time ${ckbAbcdeDevelopmentToolProbeTimeoutSeconds()} -fsS -X POST -H 'Accept: application/json, text/event-stream' -H 'Content-Type: application/json' -H ${ckbAbcdeShellQuote(boundHeader)} -H ${ckbAbcdeShellQuote(boundHashHeader)} -H \"Mcp-Session-Id: $sid\" -H 'MCP-Protocol-Version: 2025-06-18' --data-binary @${ckbAbcdeShellQuote(httpRequestPath)} ${ckbAbcdeShellQuote("${options.ckbHttpBase}/mcp")} > ${ckbAbcdeShellQuote(httpPath)} 2> ${ckbAbcdeShellQuote("${runRoot}/transport-parity-http.stderr.log")}"
     let http = ckbAbcdeRunShell(httpScript, "")
     let httpPayload = ckbAbcdeReadText(httpPath)
 
