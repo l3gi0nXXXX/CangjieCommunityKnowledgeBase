@@ -208,6 +208,9 @@ private func cangjieTaskCompilerEvidenceQuery(compilerOutput: String): String {
 
 private func cangjieTaskServingLookup(index: CangjieServingIndex, item: CangjieQueryPlanItem, query: String, targetVersion: String, budget: Int64): CangjieServingSearchResult {
     let sourceSet = if (item.sourceSet == "") { CangjieSourceSets.ALL } else { item.sourceSet }
+    if (item.queryKind == "knowledge_atom_lookup") {
+        return cangjieTaskKnowledgeAtomLookup(index, query, targetVersion, budget)
+    }
     if ((item.queryKind == "symbol_signature_lookup" || item.queryKind == "import_api_lookup") && item.symbol.trimAscii() != "" && !item.symbol.contains("func ")) {
         let exact = lookupExactSymbol(index, item.symbol, sourceSet: sourceSet, targetVersion: targetVersion, budget: budget)
         if (exact.hits.size > 0) {
@@ -226,6 +229,34 @@ private func cangjieTaskServingLookup(index: CangjieServingIndex, item: CangjieQ
     request.targetVersion = targetVersion
     request.budget = budget
     searchHybridServingIndex(index, request)
+}
+
+private func cangjieTaskKnowledgeAtomLookup(index: CangjieServingIndex, query: String,
+    targetVersion: String, budget: Int64): CangjieServingSearchResult {
+    let documents = ArrayList<CangjieServingDocument>()
+    let cleanTarget = cangjieNormalizeTargetVersion(targetVersion)
+    for (document in index.documents) {
+        if (document.sourceSet != CangjieSourceSets.KNOWLEDGE_ATOMS ||
+            document.recordKind != CangjieServingRecordKinds.DOC_SECTION ||
+            document.rejected) {
+            continue
+        }
+        if (cleanTarget != "" && document.targetVersion != "" &&
+            document.targetVersion != cleanTarget) {
+            continue
+        }
+        documents.add(document)
+    }
+    let result = CangjieServingSearchResult()
+    result.hits = rankKnowledgeAtomHits(query, documents, budget)
+    if (result.hits.size == 0) {
+        result.ok = false
+        result.degraded = true
+        result.diagnostic = "knowledge_atom_no_hits"
+        return result
+    }
+    result.evidenceHash = servingEvidenceHash(result.hits)
+    result
 }
 
 private func cangjieTaskAppendHits(pack: CangjieTaskKnowledgePack, records: ArrayList<NormalizedRecord>, hits: ArrayList<CangjieRankedServingHit>): Unit {

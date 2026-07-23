@@ -281,6 +281,64 @@ public class CangjieCapabilityContractTest {
     }
 
     @TestCase
+    public func r7Pos002TaskPackRetrievesRelevantAtomAfterTenGenericDocuments(): Unit {
+        let records = ArrayList<NormalizedRecord>()
+        for (i in 0..10) {
+            records.add(r7CrowdingDocRecord("r7-generic-${i}",
+                "md5 string option helper documentation"))
+        }
+        let atom = r3AtomRecord("knowledge-atom-md5-uint32",
+            "Knowledge: md5 UInt32 wrap and rotate use modulo 4294967296.\nExample: rotate the wrapped UInt32 value.")
+        records.add(atom)
+
+        let pack = c145pGapPack(records.toArray(), "Synthetic-Digest", "TASK-001", 10,
+            taskText: "Compute an md5 string digest and return an Option.")
+
+        @Expect(pack.matchedEvidence.size, 1)
+        if (pack.matchedEvidence.size > 0) {
+            @Expect(pack.matchedEvidence[0].sourceId, atom.sourceId)
+            @Expect(pack.matchedEvidence[0].knowledge.contains("UInt32 wrap"), true)
+        }
+    }
+
+    @TestCase
+    public func r7Neg003RestrictedDocsRequestDoesNotReadKnowledgeAtomLane(): Unit {
+        let records = ArrayList<NormalizedRecord>()
+        records.add(r7CrowdingDocRecord("r7-doc-only", "md5 string option documentation"))
+        records.add(r3AtomRecord("knowledge-atom-md5-private-lane",
+            "Knowledge: md5 UInt32 wrap and rotate."))
+        let kb = c145pKnowledgeBase(records.toArray())
+        let request = CangjieTaskKnowledgeRequest()
+        request.taskId = "TASK-002"
+        request.benchmark = "Synthetic-Digest"
+        request.taskText = "Compute an md5 string digest."
+        request.budget = 10
+        request.versionSelector = cangjieVersionSelector(targetVersion: "1.0.0",
+            sourceSet: CangjieSourceSets.DOCS)
+
+        let pack = CangjieCapabilityService(kb).taskKnowledgePack(request)
+
+        @Expect(pack.citations.size > 0, true)
+        @Expect(pack.matchedEvidence.size, 0)
+    }
+
+    @TestCase
+    public func r7Bnd002KnowledgeAtomLaneDoesNotCrossTargetVersion(): Unit {
+        let records = ArrayList<NormalizedRecord>()
+        records.add(r7CrowdingDocRecord("r7-target-doc", "md5 digest documentation"))
+        let otherVersion = r3AtomRecord("knowledge-atom-md5-v2",
+            "Knowledge: md5 digest UInt32 rotate.")
+        otherVersion.metadata.targetVersion = "2.0.0"
+        records.add(otherVersion)
+
+        let pack = c145pGapPack(records.toArray(), "Synthetic-Digest", "TASK-003", 10,
+            taskText: "Compute an md5 digest.")
+
+        @Expect(pack.citations.size > 0, true)
+        @Expect(pack.matchedEvidence.size, 0)
+    }
+
+    @TestCase
     public func f3Ut002ExamplesExposeUnknownCompileStatusAndProvenance(): Unit {
         let service = CangjieCapabilityService(f3EvidenceKnowledgeBase())
 
@@ -468,6 +526,24 @@ private func c145pRepeat(value: String, count: Int64): String {
     let out = StringBuilder()
     for (_ in 0..count) { out.append(value) }
     out.toString()
+}
+
+private func r7CrowdingDocRecord(sourceId: String, chunk: String): NormalizedRecord {
+    let record = NormalizedRecord()
+    record.sourceId = sourceId
+    record.recordKind = CangjieTypedRecordKinds.DOC_SECTION
+    record.title = "Generic digest documentation"
+    record.chunk = chunk
+    record.citation = "https://docs.cangjie-lang.cn/docs/1.0.0/${sourceId}"
+    record.metadata.sourceId = sourceId
+    record.metadata.sourceType = SourceTypes.DOC
+    record.metadata.sourceSet = CangjieSourceSets.DOCS
+    record.metadata.path = "docs/${sourceId}.md"
+    record.metadata.targetVersion = "1.0.0"
+    record.metadata.versionResolutionId = "cangjie-1.0.0-docs-r7"
+    record.metadata.trustLevel = TrustLevels.OFFICIAL
+    record.metadata.reviewState = ReviewStates.TRUSTED
+    record
 }
 
 private func p6ExactSymbolRecord(symbol: String, module: String, sourceSet: String, targetVersion: String): CangjieTypedRecord {

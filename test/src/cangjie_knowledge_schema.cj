@@ -176,6 +176,10 @@ public func buildCangjieTaskQueryPlan(request: CangjieTaskKnowledgeRequest, reso
     let resolvedSourceSet = if (sourceSet == "") { CangjieSourceSets.ALL } else { sourceSet }
     if (request.taskText.trimAscii() != "") {
         plan.add(cangjieQueryPlanItem("KI-02", "task_semantic_search", request.taskText, resolvedSourceSet, "", "task", resolution.versionResolutionId))
+        if (resolvedSourceSet == CangjieSourceSets.ALL) {
+            plan.add(cangjieQueryPlanItem("KI-02", "knowledge_atom_lookup", request.taskText,
+                CangjieSourceSets.KNOWLEDGE_ATOMS, "", "", resolution.versionResolutionId))
+        }
     }
     if (request.signature.trimAscii() != "") {
         plan.add(cangjieQueryPlanItem("KI-04", "symbol_signature_lookup", request.signature, resolvedSourceSet, request.signature, "signature", resolution.versionResolutionId))
