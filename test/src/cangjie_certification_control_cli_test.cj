@@ -164,12 +164,11 @@ private func ckbPreflightStoreRouteFixture(): CkbPreflightStoreRouteFixture {
     _ = kb.persistActiveSnapshot(frozenStore)
     let snapshot = frozenStore.loadActiveSnapshot()
     if (!snapshot.valid) { return fixture }
-    let leakage = ckbBuildStudentLeakageReport(snapshot.normalizedRecords).json
-    let query = "{\"ok\":true,\"indexBuildCount\":1,\"failed\":0}"
-    let authorityIsolation = "{\"ok\":true,\"authorityCount\":164,\"authorityHash\":\"${benchmarkGapSha256("authority-isolation")}\",\"activeEvalCount\":0}"
-    let atom = "{\"ok\":true,\"diagnostic\":\"validated\"}"
+    let artifacts = ckbS2ReleaseV2ArtifactsForTest(snapshot.normalizedRecords)
     let trustSeal = ckbRenderCandidateTrustSeal(
-        snapshot.normalizedRecords, leakage, query, authorityIsolation, atom)
+        snapshot.normalizedRecords, artifacts[0], artifacts[1], artifacts[2],
+        artifacts[3], restText: artifacts[4], mcpStdioText: artifacts[5],
+        mcpHttpText: artifacts[6], anonymousQueryText: artifacts[7])
     let frozenOptions = CkbFrozenCandidateSealOptions()
     let checksum = ckbCertifiedNormalizedRecordsChecksum(snapshot.normalizedRecords)
     frozenOptions.expectedKnowledgeVersion = snapshot.activeVersion
@@ -178,10 +177,14 @@ private func ckbPreflightStoreRouteFixture(): CkbPreflightStoreRouteFixture {
     frozenOptions.configHash = benchmarkGapSha256("store-route-config")
     frozenOptions.modelHash = benchmarkGapSha256("store-route-model")
     frozenOptions.studentLeakageProofJson = trustSeal
-    frozenOptions.studentLeakageArtifactJson = leakage
-    frozenOptions.anonymousQueryArtifactJson = query
-    frozenOptions.authorityIsolationArtifactJson = authorityIsolation
-    frozenOptions.atomTestArtifactJson = atom
+    frozenOptions.studentLeakageArtifactJson = artifacts[0]
+    frozenOptions.anonymousQueryArtifactJson = artifacts[1]
+    frozenOptions.authorityIsolationArtifactJson = artifacts[2]
+    frozenOptions.atomTestArtifactJson = artifacts[3]
+    frozenOptions.restLeakageArtifactJson = artifacts[4]
+    frozenOptions.mcpStdioLeakageArtifactJson = artifacts[5]
+    frozenOptions.mcpHttpLeakageArtifactJson = artifacts[6]
+    frozenOptions.anonymousAtomQueryArtifactJson = artifacts[7]
     let frozen = ckbBuildFrozenCandidateSeal(frozenStore, frozenOptions)
     if (!frozen.ok) { return fixture }
 

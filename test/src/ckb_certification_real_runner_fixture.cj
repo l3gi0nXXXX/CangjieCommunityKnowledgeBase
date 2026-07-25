@@ -49,12 +49,15 @@ public func r7BuildRealRunnerProof(records: ArrayList<CkbCertifiedKnowledgeRecor
     let frozenStore = FileKnowledgeStore(root.join("frozen-store").toString())
     _ = frozenKb.persistActiveSnapshot(frozenStore)
     let snapshot = frozenStore.loadActiveSnapshot()
-    let leakage = ckbBuildStudentLeakageReport(snapshot.normalizedRecords).json
-    let query = "{\"ok\":true,\"indexBuildCount\":1,\"failed\":0}\n"
-    let isolation = "{\"ok\":true,\"authorityCount\":164,\"authorityHash\":\"${benchmarkGapSha256(authorityText)}\",\"activeEvalCount\":0}\n"
-    let atom = "{\"ok\":true,\"diagnostic\":\"validated\"}\n"
-    let trustSeal = ckbRenderCandidateTrustSeal(snapshot.normalizedRecords, leakage, query, isolation, atom)
-    let trustDiagnostic=ckbCandidateTrustSealDiagnostic(trustSeal, snapshot.normalizedRecords, leakage, query, isolation, atom)
+    let artifacts = r7TrustV2Artifacts(snapshot.normalizedRecords)
+    let trustSeal = ckbRenderCandidateTrustSeal(snapshot.normalizedRecords,
+        artifacts[0], artifacts[1], artifacts[2], artifacts[3],
+        restText: artifacts[4], mcpStdioText: artifacts[5],
+        mcpHttpText: artifacts[6], anonymousQueryText: artifacts[7])
+    let trustDiagnostic=ckbCandidateTrustSealDiagnostic(trustSeal,
+        snapshot.normalizedRecords, artifacts[0], artifacts[1], artifacts[2],
+        artifacts[3], restText: artifacts[4], mcpStdioText: artifacts[5],
+        mcpHttpText: artifacts[6], anonymousQueryText: artifacts[7])
     if (trustDiagnostic != "ok") {
         result.diagnostic = "candidate_trust_seal_failed:${trustDiagnostic}"; return result
     }
@@ -65,10 +68,14 @@ public func r7BuildRealRunnerProof(records: ArrayList<CkbCertifiedKnowledgeRecor
     frozenOptions.configHash = benchmarkGapSha256("r7-config")
     frozenOptions.modelHash = benchmarkGapSha256("r7-model")
     frozenOptions.studentLeakageProofJson = trustSeal
-    frozenOptions.studentLeakageArtifactJson = leakage
-    frozenOptions.anonymousQueryArtifactJson = query
-    frozenOptions.authorityIsolationArtifactJson = isolation
-    frozenOptions.atomTestArtifactJson = atom
+    frozenOptions.studentLeakageArtifactJson = artifacts[0]
+    frozenOptions.anonymousQueryArtifactJson = artifacts[1]
+    frozenOptions.authorityIsolationArtifactJson = artifacts[2]
+    frozenOptions.atomTestArtifactJson = artifacts[3]
+    frozenOptions.restLeakageArtifactJson = artifacts[4]
+    frozenOptions.mcpStdioLeakageArtifactJson = artifacts[5]
+    frozenOptions.mcpHttpLeakageArtifactJson = artifacts[6]
+    frozenOptions.anonymousAtomQueryArtifactJson = artifacts[7]
     let frozen = ckbBuildFrozenCandidateSeal(frozenStore, frozenOptions)
     if (!frozen.ok) { result.diagnostic = "frozen_seal_failed:${frozen.diagnostic}"; return result }
     let frozenPath = root.join("frozen-candidate-manifest.json"); File.writeTo(frozenPath, frozen.manifestJson.toArray())
@@ -149,8 +156,11 @@ public func r7BuildRealRunnerProof(records: ArrayList<CkbCertifiedKnowledgeRecor
     proof.p7ArtifactManifestHash = gate.artifactManifestHash; proof.p7GateJson = renderCkbStrictCertificationGateJson(gate)
     proof.authorityManifestJsonl = authorityText; proof.frozenCandidateManifestJson = frozen.manifestJson
     proof.frozenCandidateManifestHash = benchmarkGapSha256(frozen.manifestJson)
-    proof.studentLeakageArtifactJson = leakage; proof.anonymousQueryArtifactJson = query
-    proof.authorityIsolationArtifactJson = isolation; proof.atomTestArtifactJson = atom; proof.studentLeakageProofJson = trustSeal
+    proof.studentLeakageArtifactJson = artifacts[0]; proof.anonymousQueryArtifactJson = artifacts[1]
+    proof.authorityIsolationArtifactJson = artifacts[2]; proof.atomTestArtifactJson = artifacts[3]
+    proof.restLeakageArtifactJson = artifacts[4]; proof.mcpStdioLeakageArtifactJson = artifacts[5]
+    proof.mcpHttpLeakageArtifactJson = artifacts[6]; proof.anonymousAtomQueryArtifactJson = artifacts[7]
+    proof.studentLeakageProofJson = trustSeal
     proof.candidateArtifactJsonl = ckbRenderCertifiedCandidateArtifact(records)
     proof.indexArtifactJson = ckbRenderCertifiedCountArtifact("index", records)
     proof.vectorArtifactJson = ckbRenderCertifiedCountArtifact("vector", records)
@@ -158,6 +168,70 @@ public func r7BuildRealRunnerProof(records: ArrayList<CkbCertifiedKnowledgeRecor
     proof.stdioQueryPayload = ckbRenderCertifiedQueryPayload(snapshot.activeVersion, records)
     proof.httpQueryPayload = proof.stdioQueryPayload
     result.proof = proof; result.modelFingerprint=preflight.fingerprint; result.ok = true; result.diagnostic = "ok"; result
+}
+
+private func r7TrustV2Artifacts(records: ArrayList<NormalizedRecord>): Array<String> {
+    let authorityHash = benchmarkGapSha256("r7-trust-v2-authority")
+    let input = CkbStudentLeakageScanInput()
+    input.authorityHash = authorityHash
+    input.candidateChecksum = ckbCertifiedNormalizedRecordsChecksum(records)
+    input.normalizedRecords = records
+    for (record in records) {
+        let raw = RawRecord()
+        raw.sourceId = record.sourceId; raw.title = record.title
+        raw.content = record.chunk; raw.contentHash = benchmarkGapSha256(record.chunk)
+        raw.metadata = record.metadata; input.rawRecords.add(raw)
+    }
+    let feed = buildServingDocuments(records)
+    let index = buildCangjieStudentServingIndex(records,
+        activeKnowledgeVersion: "r7-trust-v2")
+    input.servingDocuments = feed.documents
+    input.indexRecords = index.records
+    input.indexDocuments = index.documents
+    input.exactEntries = index.exactEntries
+    let pack = CangjieTaskKnowledgePack()
+    pack.queryId = "safe-query"; pack.taskId = "safe-task"
+    pack.knowledgeVersion = "r7-trust-v2"; pack.targetVersion = "1.0.0"
+    input.taskPacks.add(pack)
+    let leakage = ckbBuildStudentLeakageReportFromLayers(input).json
+    let anonymous = ckbBuildAnonymousAtomQueryReport(records,
+        ArrayList<NormalizedRecord>()).jsonl
+    let serving = r7TrustV2ServingArtifacts(records, benchmarkGapSha256(anonymous))
+    let materializationHash = benchmarkGapSha256("r7-materialization")
+        .replace("sha256:", "").toAsciiUpper()
+    let authority = "{\"ok\":true,\"authorityCount\":164,\"authorityHash\":\"${authorityHash}\",\"activeEvalCount\":0,\"normalizedEvalCount\":0,\"immutableManifestHash\":\"${benchmarkGapSha256("r7-immutable")}\",\"cleanManifestHash\":\"${benchmarkGapSha256("r7-clean")}\",\"materializationManifestEvidenceHash\":\"${materializationHash}\"}\n"
+    let atomBody = "{\"ok\":true,\"diagnostic\":\"validated\",\"bundleCount\":1,\"testCount\":1,\"passed\":1,\"failed\":0,\"selectedAtomsHash\":\"${benchmarkGapSha256("r7-selected")}\",\"bundleEvidenceHash\":\"${benchmarkGapSha256("r7-bundle")}\""
+    let atom = atomBody + ",\"evidenceHash\":\"${benchmarkGapSha256(atomBody + "}")}\"}\n"
+    [leakage, serving.summaryJson, authority, atom, serving.restJson,
+        serving.mcpStdioJson, serving.mcpHttpJson, anonymous]
+}
+
+private func r7TrustV2ServingArtifacts(records: ArrayList<NormalizedRecord>,
+    anonymousHash: String): CkbStudentServingLeakageReport {
+    let root = Path("target/r7-trust-serving-${ckbCoreNowMillis()}")
+    let kb = newOfflineKnowledgeBase()
+    kb.stageCandidateRecords("r7-trust-v2", records)
+    _ = kb.promoteCandidateToActive("r7-trust-v2")
+    let store = FileKnowledgeStore(root.toString())
+    _ = kb.persistActiveSnapshot(store)
+    let probes = ArrayList<CkbStudentServingProbe>()
+    probes.add(r7TrustV2Probe("case", "CJ-HUMANEVAL-000", true))
+    probes.add(r7TrustV2Probe("path",
+        "cangjie\\u002dhumaneval/中文😀/visible-benchmark/prompt.md", true))
+    probes.add(r7TrustV2Probe("case-variant",
+        "visible-benchmark/CJ-HUMANEVAL-001/prompt.md", true))
+    let report = ckbBuildStudentServingLeakageReport(
+        CkbCommandLoopService(CkbRuntimeConfig(), store), probes,
+        anonymousQueryArtifactHash: anonymousHash)
+    if (exists(root)) { remove(root, recursive: true) }
+    report
+}
+
+private func r7TrustV2Probe(id: String, query: String,
+    blocked: Bool): CkbStudentServingProbe {
+    let probe = CkbStudentServingProbe()
+    probe.probeId = id; probe.query = query; probe.expectedBlocked = blocked
+    probe
 }
 
 private func r7WriteSyntheticAuthority(root: Path): Unit {
