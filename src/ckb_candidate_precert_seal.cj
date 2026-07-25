@@ -347,16 +347,26 @@ private func ckbCandidatePrecertTransportReport(
     }
     try {
         Directory.create(runtimeRoot, recursive: true)
-        let runtimeStore = FileKnowledgeStore(runtimeRoot.toString())
+        let runtimeStore = FileKnowledgeStore(runtimeRoot.join("clean").toString())
         let kb = newOfflineKnowledgeBase()
         kb.stageCandidateRecords(candidate.version, candidate.activeIndex)
+        let blockedStore = FileKnowledgeStore(runtimeRoot.join("blocked").toString())
+        let blockedKb = newOfflineKnowledgeBase()
+        blockedKb.stageCandidateRecords(candidate.version,
+            ckbCandidatePrecertPoisonedRecords(candidate.activeIndex))
         if (!kb.promoteCandidateToActive(candidate.version)) {
             report.diagnostic = "candidate_precert_transport_stage_failed"
         } else if (!kb.persistActiveSnapshot(runtimeStore).ok) {
             report.diagnostic = "candidate_precert_transport_persist_failed"
+        } else if (!blockedKb.promoteCandidateToActive(candidate.version)) {
+            report.diagnostic = "candidate_precert_blocked_transport_stage_failed"
+        } else if (!blockedKb.persistActiveSnapshot(blockedStore).ok) {
+            report.diagnostic = "candidate_precert_blocked_transport_persist_failed"
         } else {
             let service = CkbCommandLoopService(CkbRuntimeConfig(), runtimeStore)
-            report = ckbBuildStudentServingLeakageReport(service,
+            let blockedService = CkbCommandLoopService(CkbRuntimeConfig(), blockedStore)
+            report = ckbBuildStudentServingLeakageReportWithBlockedService(
+                service, blockedService,
                 ckbCandidatePrecertTransportProbes(atoms),
                 anonymousQueryArtifactHash: anonymousQueryArtifactHash,
                 authority: authority)
@@ -378,9 +388,11 @@ private func ckbCandidatePrecertTransportProbes(
     atoms: ArrayList<NormalizedRecord>): ArrayList<CkbStudentServingProbe> {
     let probes = ArrayList<CkbStudentServingProbe>()
     probes.add(ckbCandidatePrecertTransportProbe("case-identity",
-        "CJ-HUMANEVAL-000", true))
+        "CJ-HUMANEVAL-000 Cangjie function and collection syntax", false))
     probes.add(ckbCandidatePrecertTransportProbe("unicode-path-variant",
-        "cangjie\\u002dhumaneval/中文😀/visible\\u002dbenchmark/prompt.md", true))
+        "cangjie\\u002dhumaneval/中文😀/visible\\u002dbenchmark/prompt.md Cangjie function and collection syntax", false))
+    probes.add(ckbCandidatePrecertTransportProbe("stored-evidence-contamination",
+        "ArrayList collection syntax", true))
     if (atoms.size == 0) {
         probes.add(ckbCandidatePrecertTransportProbe("anonymous-generic",
             "Cangjie function and collection syntax", false))
@@ -400,6 +412,43 @@ private func ckbCandidatePrecertTransportProbe(id: String, query: String,
     probe.query = query
     probe.expectedBlocked = expectedBlocked
     probe
+}
+
+private func ckbCandidatePrecertPoisonedRecords(
+    active: ArrayList<NormalizedRecord>): ArrayList<NormalizedRecord> {
+    let records = ArrayList<NormalizedRecord>()
+    for (record in active) { records.add(record) }
+    let base = active[0]
+    let poisoned = NormalizedRecord()
+    poisoned.sourceId = "precert-synthetic-contamination"
+    poisoned.recordKind = base.recordKind
+    poisoned.title = "Synthetic transport rejection fixture"
+    poisoned.chunk = "Synthetic benchmark reference solution marker CJ-HUMANEVAL-000"
+    poisoned.citation = base.citation
+    poisoned.requiresReview = base.requiresReview
+    poisoned.metadata.sourceId = poisoned.sourceId
+    poisoned.metadata.sourceType = base.metadata.sourceType
+    poisoned.metadata.sourceUrl = base.metadata.sourceUrl
+    poisoned.metadata.repo = base.metadata.repo
+    poisoned.metadata.path = base.metadata.path
+    poisoned.metadata.symbol = base.metadata.symbol
+    poisoned.metadata.commit = base.metadata.commit
+    poisoned.metadata.docVersion = base.metadata.docVersion
+    poisoned.metadata.targetVersion = base.metadata.targetVersion
+    poisoned.metadata.sourceSet = base.metadata.sourceSet
+    poisoned.metadata.versionResolutionId = base.metadata.versionResolutionId
+    poisoned.metadata.crawlAt = base.metadata.crawlAt
+    poisoned.metadata.indexedAt = base.metadata.indexedAt
+    poisoned.metadata.knowledgeVersion = base.metadata.knowledgeVersion
+    poisoned.metadata.candidateVersion = base.metadata.candidateVersion
+    poisoned.metadata.contentSize = poisoned.chunk.toRuneArray().size
+    poisoned.metadata.trustLevel = base.metadata.trustLevel
+    poisoned.metadata.reviewState = base.metadata.reviewState
+    poisoned.metadata.license = base.metadata.license
+    poisoned.metadata.repoVisibility = base.metadata.repoVisibility
+    poisoned.metadata.derivedFrom = base.metadata.derivedFrom
+    records.add(poisoned)
+    records
 }
 
 private func ckbCandidatePrecertEscape(value: String): String {

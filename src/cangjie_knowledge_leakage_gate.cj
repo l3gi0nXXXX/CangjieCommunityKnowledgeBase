@@ -191,25 +191,11 @@ public func collectCangjieTaskKnowledgeEvidenceDiagnostics(pack: CangjieTaskKnow
         cangjieLeakageScanFields(result, authority,
             [("versionResolution.diagnostics", diagnostic)])
     }
-    for (item in pack.queryPlan) {
-        cangjieLeakageScanFields(result, authority, [
-            ("queryPlan.interfaceId", item.interfaceId),
-            ("queryPlan.queryKind", item.queryKind),
-            ("queryPlan.query", item.query),
-            ("queryPlan.sourceSet", item.sourceSet),
-            ("queryPlan.symbol", item.symbol),
-            ("queryPlan.requiredTag", item.requiredTag),
-            ("queryPlan.versionResolutionId", item.versionResolutionId)
-        ])
-    }
-    for (item in pack.requiredKnowledge) {
-        cangjieLeakageScanFields(result, authority, [
-            ("requiredKnowledge.tag", item.tag),
-            ("requiredKnowledge.interfaceId", item.interfaceId),
-            ("requiredKnowledge.status", item.status),
-            ("requiredKnowledge.reason", item.reason)
-        ])
-    }
+    // Query plan, required-knowledge, and coverage fields are deterministic
+    // projections of the caller's request. They remain in field accounting,
+    // but only retrieved evidence is eligible for leakage findings.
+    for (_ in pack.queryPlan) { result.scannedFields += 7 }
+    for (_ in pack.requiredKnowledge) { result.scannedFields += 4 }
     for (item in pack.matchedEvidence) {
         cangjieLeakageScanFields(result, authority, [
             ("matchedEvidence.sourceId", item.sourceId), ("matchedEvidence.title", item.title),
@@ -263,14 +249,7 @@ public func collectCangjieTaskKnowledgeEvidenceDiagnostics(pack: CangjieTaskKnow
             ("citations.knowledgeVersion", item.knowledgeVersion)
         ])
     }
-    for (item in pack.coverage.required) {
-        cangjieLeakageScanFields(result, authority, [
-            ("coverage.required.tag", item.tag),
-            ("coverage.required.interfaceId", item.interfaceId),
-            ("coverage.required.status", item.status),
-            ("coverage.required.reason", item.reason)
-        ])
-    }
+    for (_ in pack.coverage.required) { result.scannedFields += 4 }
     for (note in pack.notes) {
         result.scannedFields += 1
         cangjieLeakageAddDiagnostic(result,

@@ -78,10 +78,12 @@ public class CkbCandidatePrecertSealTest {
         }
         @Expect(officialSnapshot.activeIndex.size > 0, true); @Expect(officialAtomCount, 0)
         let zero = r6PrecertRun(officialStore, "", "${root}/zero")
-        @Expect(zero.ok, true); @Expect(zero.selectedCount, 0); @Expect(zero.atomTestCount, 0)
+        @Expect(zero.diagnostic, "ok"); @Expect(zero.ok, true)
+        @Expect(zero.selectedCount, 0); @Expect(zero.atomTestCount, 0)
         @Expect(zero.candidateChecksum,
             ckbCertifiedNormalizedRecordsChecksum(officialSnapshot.normalizedRecords))
-        @Expect(r6PrecertRun(store, one, "${root}/one").ok, true)
+        let oneResult = r6PrecertRun(store, one, "${root}/one")
+        @Expect(oneResult.diagnostic, "ok"); @Expect(oneResult.ok, true)
         @Expect(r6PrecertRun(store, one + one, "${root}/duplicate").diagnostic,
             "duplicate_selected_atom")
         let invalid = "${root}/invalid.jsonl"; File.writeTo(Path(invalid), [UInt8(0xff), UInt8(0xfe)])
@@ -94,7 +96,8 @@ public class CkbCandidatePrecertSealTest {
         let ten = r6PrecertCandidates(10)
         let tenStore = r6PrecertStore("${root}/ten-store", ten)
         let tenResult = r6PrecertRun(tenStore, ten, "${root}/ten-out")
-        @Expect(tenResult.ok, true); @Expect(tenResult.selectedCount, 10); @Expect(tenResult.atomTestCount, 30)
+        @Expect(tenResult.diagnostic, "ok"); @Expect(tenResult.ok, true)
+        @Expect(tenResult.selectedCount, 10); @Expect(tenResult.atomTestCount, 30)
     }
 
     @TestCase
@@ -116,7 +119,7 @@ public class CkbCandidatePrecertSealTest {
             "student-serving-mcp-stdio-report.json",
             "student-serving-mcp-http-report.json"]) {
             let transport = r6PrecertRead("${root}/precert/${name}")
-            @Expect(transport.contains("\"probeCount\":3"), true)
+            @Expect(transport.contains("\"probeCount\":4"), true)
             @Expect(transport.contains("\"responseHash\":\"sha256:"), true)
             @Expect(transport.contains("\"expectedBlocked\":true"), true)
             @Expect(transport.contains("\"expectedBlocked\":false"), true)

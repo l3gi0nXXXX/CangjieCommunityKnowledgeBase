@@ -386,6 +386,18 @@ public func ckbBuildStudentServingLeakageReport(
     anonymousQueryArtifactHash!: String = "",
     authority!: CangjieBenchmarkLeakageAuthority =
         CangjieBenchmarkLeakageAuthority()): CkbStudentServingLeakageReport {
+    ckbBuildStudentServingLeakageReportWithBlockedService(service, service, probes,
+        anonymousQueryArtifactHash: anonymousQueryArtifactHash,
+        authority: authority)
+}
+
+public func ckbBuildStudentServingLeakageReportWithBlockedService(
+    service: CkbCommandLoopService,
+    blockedService: CkbCommandLoopService,
+    probes: ArrayList<CkbStudentServingProbe>,
+    anonymousQueryArtifactHash!: String = "",
+    authority!: CangjieBenchmarkLeakageAuthority =
+        CangjieBenchmarkLeakageAuthority()): CkbStudentServingLeakageReport {
     let report = CkbStudentServingLeakageReport()
     report.probeCount = probes.size
     let restEvidence = StringBuilder()
@@ -394,28 +406,34 @@ public func ckbBuildStudentServingLeakageReport(
     var parity = true
     for (i in 0..probes.size) {
         let probe = probes[i]
+        let probeService = if (probe.expectedBlocked) { blockedService } else { service }
         let body = ckbStudentTransportTaskBody(probe, i)
         let call = ckbStudentTransportToolCall(body, i)
-        let pack = service.cangjieTaskKnowledgePack(
+        let pack = probeService.cangjieTaskKnowledgePack(
             ckbStudentTransportTaskRequest(probe, i))
         let expectedHash = pack.evidenceHash
-        let rest = ckbApiHandle(service, "POST",
+        let evidenceOk = validateCangjieTaskKnowledgeEvidence(pack,
+            authority: authority).ok
+        let rest = ckbApiHandle(probeService, "POST",
             "/v1/cangjie/task-knowledge-pack", body, [])
-        let stdio = CkbMcpStdioServer(service).handleRequest(call)
-        let http = ckbStudentTransportMcpHttp(service, call)
+        let stdio = CkbMcpStdioServer(probeService).handleRequest(call)
+        let http = ckbStudentTransportMcpHttp(probeService, call)
         let restOk = ckbStudentTransportResponseOk(rest, probe.expectedBlocked,
-            expectedHash, authority)
+            expectedHash, evidenceOk)
         let stdioOk = ckbStudentTransportResponseOk(stdio, probe.expectedBlocked,
-            expectedHash, authority)
+            expectedHash, evidenceOk)
         let httpOk = ckbStudentTransportResponseOk(http, probe.expectedBlocked,
-            expectedHash, authority)
+            expectedHash, evidenceOk)
         let canonical = if (probe.expectedBlocked) {
             benchmarkGapSha256("student_knowledge_leakage_blocked")
-        } else { expectedHash }
+        } else { benchmarkGapSha256(expectedHash) }
         let canonicalParity = canonical != "" &&
-            ckbStudentTransportCanonicalPresent(rest, probe.expectedBlocked, canonical) &&
-            ckbStudentTransportCanonicalPresent(stdio, probe.expectedBlocked, canonical) &&
-            ckbStudentTransportCanonicalPresent(http, probe.expectedBlocked, canonical)
+            ckbStudentTransportCanonicalPresent(rest, probe.expectedBlocked,
+                expectedHash, canonical) &&
+            ckbStudentTransportCanonicalPresent(stdio, probe.expectedBlocked,
+                expectedHash, canonical) &&
+            ckbStudentTransportCanonicalPresent(http, probe.expectedBlocked,
+                expectedHash, canonical)
         if (!restOk || !stdioOk || !httpOk || !canonicalParity) {
             report.failed += 1
         }
@@ -1116,23 +1134,22 @@ private func ckbStudentTransportToolCall(arguments: String, index: Int64): Strin
 }
 
 private func ckbStudentTransportResponseOk(raw: String, expectedBlocked: Bool,
-    expectedHash: String, authority: CangjieBenchmarkLeakageAuthority): Bool {
-    if (!cangjieStudentVisibleTextDiagnostic("transport.response", raw,
-        authority: authority).ok) { return false }
+    expectedHash: String, evidenceOk: Bool): Bool {
     if (expectedBlocked) {
         return raw.contains("student_knowledge_leakage_blocked")
     }
-    expectedHash.startsWith("sha256:") && raw.contains(expectedHash) &&
+    evidenceOk && expectedHash != "" && raw.contains(expectedHash) &&
         !raw.contains("student_knowledge_leakage_blocked")
 }
 
 private func ckbStudentTransportCanonicalPresent(raw: String,
-    expectedBlocked: Bool, canonical: String): Bool {
+    expectedBlocked: Bool, expectedHash: String, canonical: String): Bool {
     if (expectedBlocked) {
         return canonical == benchmarkGapSha256("student_knowledge_leakage_blocked") &&
             raw.contains("student_knowledge_leakage_blocked")
     }
-    raw.contains(canonical)
+    expectedHash != "" && raw.contains(expectedHash) &&
+        canonical == benchmarkGapSha256(expectedHash)
 }
 
 private func ckbStudentTransportAppendObservation(out: StringBuilder,

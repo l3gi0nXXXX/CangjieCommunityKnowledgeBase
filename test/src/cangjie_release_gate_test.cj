@@ -122,6 +122,17 @@ public class CangjieReleaseGateTest {
             restText: artifacts[4], mcpStdioText: artifacts[5],
             mcpHttpText: artifacts[6], anonymousQueryText: artifacts[7]),
             "student_leakage_proof_mismatch")
+        for (mode in ["allowed", "blocked"]) {
+            let oneSided = s2ReleaseServingArtifacts(records,
+                benchmarkGapSha256(artifacts[7]), probeMode: mode)
+            @Expect(cangjieCandidateOnlyPreCertificationGate(records,
+                artifacts[0], oneSided.summaryJson, artifacts[2], artifacts[3],
+                restText: oneSided.restJson,
+                mcpStdioText: oneSided.mcpStdioJson,
+                mcpHttpText: oneSided.mcpHttpJson,
+                anonymousQueryText: artifacts[7]).diagnostic,
+                "anonymous_query_proof_required")
+        }
     }
 
     @TestCase
@@ -410,21 +421,48 @@ public func ckbS2ReleaseV2ArtifactsForTest(
 }
 
 private func s2ReleaseServingArtifacts(records: ArrayList<NormalizedRecord>,
-    anonymousQueryArtifactHash: String): CkbStudentServingLeakageReport {
+    anonymousQueryArtifactHash: String,
+    probeMode!: String = "mixed"): CkbStudentServingLeakageReport {
     let root = "target/s2-release-serving-${ckbCoreNowMillis()}"
     let kb = newOfflineKnowledgeBase()
     kb.stageCandidateRecords("s2-release-v2", records)
     @Expect(kb.promoteCandidateToActive("s2-release-v2"), true)
-    let store = FileKnowledgeStore(root)
+    let store = FileKnowledgeStore("${root}/clean")
     @Expect(kb.persistActiveSnapshot(store).ok, true)
+    let blockedRecords = ArrayList<NormalizedRecord>()
+    for (record in records) { blockedRecords.add(record) }
+    let poisoned = s2ReleaseRecord()
+    poisoned.sourceId = "precert-synthetic-contamination"
+    poisoned.metadata.sourceId = poisoned.sourceId
+    poisoned.title = "Synthetic transport rejection fixture"
+    poisoned.chunk = "Synthetic benchmark reference solution marker CJ-HUMANEVAL-000"
+    blockedRecords.add(poisoned)
+    let blockedKb = newOfflineKnowledgeBase()
+    blockedKb.stageCandidateRecords("s2-release-v2", blockedRecords)
+    @Expect(blockedKb.promoteCandidateToActive("s2-release-v2"), true)
+    let blockedStore = FileKnowledgeStore("${root}/blocked")
+    @Expect(blockedKb.persistActiveSnapshot(blockedStore).ok, true)
     let probes = ArrayList<CkbStudentServingProbe>()
-    probes.add(s2ReleaseProbe("case", "CJ-HUMANEVAL-000", true))
-    probes.add(s2ReleaseProbe("path",
-        "cangjie\\u002dhumaneval/中文😀/visible-benchmark/prompt.md", true))
-    probes.add(s2ReleaseProbe("case-variant",
-        "visible-benchmark/CJ-HUMANEVAL-001/prompt.md", true))
-    let report = ckbBuildStudentServingLeakageReport(
-        CkbCommandLoopService(CkbRuntimeConfig(), store), probes,
+    if (probeMode == "blocked") {
+        for (i in 0..3) {
+            probes.add(s2ReleaseProbe("stored-evidence-contamination-${i}",
+                "Cangjie function and collection syntax", true))
+        }
+    } else {
+        probes.add(s2ReleaseProbe("case",
+            "CJ-HUMANEVAL-000 Cangjie function and collection syntax", false))
+        probes.add(s2ReleaseProbe("path",
+            "cangjie\\u002dhumaneval/中文😀/visible-benchmark/prompt.md Cangjie function and collection syntax",
+            false))
+        probes.add(s2ReleaseProbe(if (probeMode == "allowed") {
+                "anonymous-generic"
+            } else { "stored-evidence-contamination" },
+            "Cangjie function and collection syntax",
+            probeMode != "allowed"))
+    }
+    let report = ckbBuildStudentServingLeakageReportWithBlockedService(
+        CkbCommandLoopService(CkbRuntimeConfig(), store),
+        CkbCommandLoopService(CkbRuntimeConfig(), blockedStore), probes,
         anonymousQueryArtifactHash: anonymousQueryArtifactHash)
     if (exists(Path(root))) { remove(Path(root), recursive: true) }
     report

@@ -302,6 +302,8 @@ private func ckbTrustV2TransportObservations(raw: String, transport: String,
     try {
         let object = JsonValue.fromStr(first).asObject()
         let observations = StringBuilder()
+        var blockedCount: Int64 = 0
+        var allowedCount: Int64 = 0
         for (i in 0..probeCount) {
             let line = lines[i + 1]
             let item = JsonValue.fromStr(line).asObject()
@@ -318,8 +320,10 @@ private func ckbTrustV2TransportObservations(raw: String, transport: String,
                     "probeId", "requestHash", "expectedBlocked", "passed",
                     "canonicalEvidenceHash", "responseHash"
                 ]) || line != canonical) { return "" }
+            if (expectedBlocked) { blockedCount += 1 } else { allowedCount += 1 }
             observations.append(line); observations.append("\n")
         }
+        if (blockedCount == 0 || allowedCount == 0) { return "" }
         let observationText = observations.toString()
         let actualBody = "{\"schemaVersion\":\"ckb-student-transport-leakage-v1\",\"transport\":\"${transport}\",\"ok\":true,\"probeCount\":${probeCount},\"failed\":0,\"observationsHash\":\"${benchmarkGapSha256(observationText)}\""
         let expected = actualBody +

@@ -303,6 +303,17 @@ public class CangjieKnowledgeLeakageGateTest {
         @Expect(r3CollectedContainsField(collected, "pack.taskId"), false)
         @Expect(r3CollectedContainsField(collected, "pack.benchmark"), false)
         for (field in [
+            "queryPlan.interfaceId", "queryPlan.queryKind", "queryPlan.query",
+            "queryPlan.sourceSet", "queryPlan.symbol", "queryPlan.requiredTag",
+            "queryPlan.versionResolutionId", "requiredKnowledge.tag",
+            "requiredKnowledge.interfaceId", "requiredKnowledge.status",
+            "requiredKnowledge.reason", "coverage.required.tag",
+            "coverage.required.interfaceId", "coverage.required.status",
+            "coverage.required.reason"
+        ]) {
+            @Expect(r3CollectedContainsField(collected, field), false)
+        }
+        for (field in [
             "pack.knowledgeVersion", "pack.targetVersion", "pack.evidenceHash",
             "versionResolution.diagnostic", "versionResolution.targetVersion",
             "versionResolution.versionPolicy",
@@ -315,12 +326,7 @@ public class CangjieKnowledgeLeakageGateTest {
             "versionResolution.sources.refKind",
             "versionResolution.sources.resolvedCommit",
             "versionResolution.sources.contentHash",
-            "versionResolution.diagnostics", "queryPlan.interfaceId",
-            "queryPlan.queryKind", "queryPlan.query", "queryPlan.sourceSet",
-            "queryPlan.symbol", "queryPlan.requiredTag",
-            "queryPlan.versionResolutionId", "requiredKnowledge.tag",
-            "requiredKnowledge.interfaceId", "requiredKnowledge.status",
-            "requiredKnowledge.reason", "matchedEvidence.sourceId",
+            "versionResolution.diagnostics", "matchedEvidence.sourceId",
             "matchedEvidence.title", "matchedEvidence.citation",
             "matchedEvidence.provenance", "matchedEvidence.contentHash",
             "matchedEvidence.knowledge", "matchedEvidence.example",
@@ -334,9 +340,7 @@ public class CangjieKnowledgeLeakageGateTest {
             "negativeRules.replacement", "negativeRules.citation",
             "negativeRules.versionResolutionId", "negativeRules.provenance",
             "citations.sourceId", "citations.citation",
-            "citations.knowledgeVersion", "coverage.required.tag",
-            "coverage.required.interfaceId", "coverage.required.status",
-            "coverage.required.reason", "notes", "diagnostics"
+            "citations.knowledgeVersion", "notes", "diagnostics"
         ]) {
             @Expect(r3CollectedContainsField(collected, field), true)
         }
