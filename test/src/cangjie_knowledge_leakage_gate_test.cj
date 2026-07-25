@@ -37,7 +37,7 @@ public class CangjieKnowledgeLeakageGateTest {
             if (field == "title") { record.title = token }
             if (field == "chunk") { record.chunk = token }
             if (field == "citation") { record.citation = token }
-            if (field == "sourceId") { record.sourceId = token; record.metadata.sourceId = token }
+            if (field == "sourceId") { record.sourceId = token }
             if (field == "path") { record.metadata.path = token }
             if (field == "symbol") { record.metadata.symbol = token }
             if (field == "derivedFrom") { record.metadata.derivedFrom = [token] }
