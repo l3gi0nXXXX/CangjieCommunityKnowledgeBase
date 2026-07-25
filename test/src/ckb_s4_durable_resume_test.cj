@@ -234,7 +234,112 @@ public class CkbS4DurableResumeTest {
 
     @TestCase
     public func p5S4B01CursorBoundariesRedoOnlyUncommittedCandidateAndVectorUnits(): Unit {
-        this.runP5S4DurableCursorBoundaryMatrix()
+        let isolationRoot = "target/p5-s4-b01-isolation"
+        let resultPath = "p5-boundary-result.ckb"
+        if (getVariable("CKB_P5_S4_BOUNDARY_CHILD") == Some("1")) {
+            this.runP5S4DurableCursorBoundaryMatrix()
+            var actualHeap = ""
+            if (let Some(value) <- getVariable("cjHeapSize")) { actualHeap = value }
+            let resultPayload = "schemaVersion=p5-s4-boundary-v1\nrunId=p5-s4-b01-child\nactualHeap=${actualHeap}\nstatus=passed\n"
+            FileKnowledgeStore(isolationRoot).writeLinesAtomically(resultPath,
+                "${resultPayload}evidenceHash=${ckbReleaseEvidenceHash(resultPayload)}\n")
+            return
+        }
+
+        s4EnsureEmptyDir(isolationRoot)
+        var dyldLibraryPath = ""
+        if (let Some(value) <- getVariable("DYLD_LIBRARY_PATH")) { dyldLibraryPath = value }
+        let heap = ckbSchedulerDefaultCjHeapSizeForTask("cangjie_release_full_sync", "")
+        @Expect(heap, "4GB")
+        let prelude = ckbSchedulerWorkerShellPreludeWithHeap(dyldLibraryPath, heap)
+        let pidPath = "target/p5-s4-b01-child.pid"
+        let watchdogPidPath = "target/p5-s4-b01-watchdog.pid"
+        let stdoutPath = "target/p5-s4-b01-child.stdout"
+        let stderrPath = "target/p5-s4-b01-child.stderr"
+        _ = launch("/bin/rm", ["-f", pidPath, watchdogPidPath, stdoutPath, stderrPath]).wait()
+        let command = "${prelude}export CKB_P5_S4_BOUNDARY_CHILD=1; " +
+            "target/release/unittest_bin/cangjie_community_knowledge_base_test --filter='*CkbS4DurableResumeTest.p5S4B01CursorBoundariesRedoOnlyUncommittedCandidateAndVectorUnits' --no-color --no-progress >${stdoutPath} 2>${stderrPath} & " +
+            "worker_pid=$!; echo $worker_pid > ${pidPath}; " +
+            "(sleep 120; kill -9 $worker_pid 2>/dev/null; kill -9 $$ 2>/dev/null) & watchdog_pid=$!; " +
+            "echo $watchdog_pid > ${watchdogPidPath}; " +
+            "wait $worker_pid; child_code=$?; /usr/bin/pkill -TERM -P $watchdog_pid 2>/dev/null; " +
+            "kill $watchdog_pid 2>/dev/null; wait $watchdog_pid 2>/dev/null; exit $child_code"
+        var childCode: Int64 = -1
+        var childPid: Int64 = 0
+        var watchdogPid: Int64 = 0
+        try {
+            let child = launch("/bin/zsh", ["-c", command], stdOut: ProcessRedirect.Pipe,
+                stdErr: ProcessRedirect.Pipe)
+            var waited = false
+            try {
+                childCode = child.wait()
+                waited = true
+                childPid = s4ReadInt(Path(pidPath))
+                watchdogPid = s4ReadInt(Path(watchdogPidPath))
+            } finally {
+                if (childPid == 0) { childPid = s4ReadInt(Path(pidPath)) }
+                if (watchdogPid == 0) { watchdogPid = s4ReadInt(Path(watchdogPidPath)) }
+                if (watchdogPid > 0) {
+                    _ = launch("/usr/bin/pkill", ["-TERM", "-P", "${watchdogPid}"]).wait()
+                }
+                if (childPid > 0 && s4PidAlive(childPid)) {
+                    _ = launch("/bin/kill", ["-9", "${childPid}"]).wait()
+                }
+                if (watchdogPid > 0 && s4PidAlive(watchdogPid)) {
+                    _ = launch("/bin/kill", ["-9", "${watchdogPid}"]).wait()
+                }
+                if (!waited) {
+                    try { childCode = child.wait() } catch (_: Exception) { childCode = -1 }
+                }
+            }
+            let childStdout = s4ReadText(Path(stdoutPath))
+            let childStderr = s4ReadText(Path(stderrPath))
+            let lowerOutput = "${childStdout}\n${childStderr}".toAsciiLower()
+            let resultText = FileKnowledgeStore(isolationRoot).readText(resultPath)
+            let resultEvidence = s4TextField(resultText, "evidenceHash")
+            let resultPayload = resultText.replace("evidenceHash=${resultEvidence}\n", "")
+            @Expect(childCode, 0)
+            @Expect(childPid > 0, true)
+            @Expect(watchdogPid > 0, true)
+            @Expect(s4PidAlive(childPid), false)
+            @Expect(s4PidAlive(watchdogPid), false)
+            @Expect(lowerOutput.contains("outofmemory"), false)
+            @Expect(lowerOutput.contains("out of memory"), false)
+            @Expect(lowerOutput.contains("[ failed ]"), false)
+            @Expect(childStdout.contains("FAILED: 0"), true)
+            @Expect(lowerOutput.contains("authorization"), false)
+            @Expect(lowerOutput.contains("bearer "), false)
+            @Expect(lowerOutput.contains("token="), false)
+            @Expect(lowerOutput.contains("password="), false)
+            @Expect(lowerOutput.contains("proxy_password"), false)
+            @Expect(lowerOutput.contains("/users/"), false)
+            @Expect(s4TextField(resultText, "schemaVersion"), "p5-s4-boundary-v1")
+            @Expect(s4TextField(resultText, "runId"), "p5-s4-b01-child")
+            @Expect(s4TextField(resultText, "actualHeap"), "4GB")
+            @Expect(s4TextField(resultText, "status"), "passed")
+            @Expect(resultEvidence, ckbReleaseEvidenceHash(resultPayload))
+        } finally {
+            if (childPid == 0) { childPid = s4ReadInt(Path(pidPath)) }
+            if (watchdogPid == 0) { watchdogPid = s4ReadInt(Path(watchdogPidPath)) }
+            if (watchdogPid > 0) {
+                _ = launch("/usr/bin/pkill", ["-TERM", "-P", "${watchdogPid}"]).wait()
+            }
+            if (childPid > 0 && s4PidAlive(childPid)) {
+                _ = launch("/bin/kill", ["-9", "${childPid}"]).wait()
+            }
+            if (watchdogPid > 0 && s4PidAlive(watchdogPid)) {
+                _ = launch("/bin/kill", ["-9", "${watchdogPid}"]).wait()
+            }
+            _ = launch("/bin/rm", ["-f", pidPath, watchdogPidPath, stdoutPath, stderrPath]).wait()
+            _ = launch("/bin/rm", ["-rf", isolationRoot]).wait()
+        }
+        @Expect(s4PidAlive(childPid), false)
+        @Expect(s4PidAlive(watchdogPid), false)
+        @Expect(exists(Path(pidPath)), false)
+        @Expect(exists(Path(watchdogPidPath)), false)
+        @Expect(exists(Path(stdoutPath)), false)
+        @Expect(exists(Path(stderrPath)), false)
+        @Expect(exists(Path(isolationRoot)), false)
     }
 
     public func runP5S4DurableCursorBoundaryMatrix(): Unit {
