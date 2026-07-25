@@ -3937,6 +3937,16 @@ private func ckbVectorReconcilePrepareUniqueBenchmarkGapSnapshot(kb: KnowledgeBa
         authority: authority.authority)
     let normalizedProjection = ckbCleanHistoricalStudentRecords(snapshot.normalizedRecords,
         authority: authority.authority)
+    if (!activeProjection.ok) {
+        result.ok = false
+        result.diagnostics.add("student_active_clean_failed:${activeProjection.errorCode}")
+        return false
+    }
+    if (!normalizedProjection.ok) {
+        result.ok = false
+        result.diagnostics.add("student_normalized_clean_failed:${normalizedProjection.errorCode}")
+        return false
+    }
     let active = activeProjection.records
     let normalized = normalizedProjection.records
     if (!ckbBenchmarkGapOverlayChanged(snapshot.activeIndex, active) &&
@@ -3945,6 +3955,11 @@ private func ckbVectorReconcilePrepareUniqueBenchmarkGapSnapshot(kb: KnowledgeBa
     }
     let rawProjection = ckbCleanHistoricalStudentRawRecords(snapshot.rawRecords,
         authority: authority.authority)
+    if (!rawProjection.ok) {
+        result.ok = false
+        result.diagnostics.add("student_raw_clean_failed:${rawProjection.errorCode}")
+        return false
+    }
     let raw = rawProjection.records
     let removed = snapshot.activeIndex.size - active.size
     snapshot.activeIndex.clear(); for (record in active) { snapshot.activeIndex.add(record) }
@@ -14063,7 +14078,7 @@ private class CkbFreshnessManifestReadiness {
     init() {}
 }
 
-private class CkbScheduledProfileIngestResult {
+class CkbScheduledProfileIngestResult {
     var ok: Bool = true
     var status: String = "profile_ok"
     var candidateVersion: String = ""
@@ -16925,7 +16940,8 @@ private func ingestScheduledProfileSources(kb: KnowledgeBase, store: FileKnowled
     }
     let candidateRaw = ckbCleanHistoricalStudentRawRecords(candidateKb.rawRecordSnapshot(),
         authority: authority.authority)
-    candidateKb.replaceRawRecords(candidateRaw.records)
+    if (!ckbApplyScheduledCandidateRawGate(
+        result, candidateKb, candidateRaw)) { return result }
     let candidateRecords = candidateProjection.records
     let promotion = cangjiePromoteCandidateRecordsAfterValidationWithVersion(candidateKb, store, candidateVersion, candidateRecords, progressSink: progressSink, stageSink: stageSink, deadlineAtMillis: deadlineAtMillis, budgetPlan: promotionBudgetPlan)
     ckbApplyScheduledPromotionResult(result, promotion, "candidate_validated_promoted")
@@ -16942,6 +16958,20 @@ private func ingestScheduledProfileSources(kb: KnowledgeBase, store: FileKnowled
     ckbWriteScheduledProfileStageCheckpoint(store, profile, "ingest_finished", result.status, ckbProfileIngestBudgetMillis(profile), deadlineAtMillis, "activeVersion=${result.activeVersion}|candidateVersion=${result.candidateVersion}|validationStatus=${result.validationStatus}")
     result.validationDiagnostics.add("profile_stage_checkpoint:profile=${profile.profile}|stage=ingest_finished|status=${result.status}|budgetMs=${ckbProfileIngestBudgetMillis(profile)}|deadlineAtMillis=${deadlineAtMillis}|remainingMs=${ckbRemainingMillis(deadlineAtMillis)}")
     result
+}
+
+func ckbApplyScheduledCandidateRawGate(result: CkbScheduledProfileIngestResult,
+    candidateKb: KnowledgeBase, projection: CkbStudentCleanRawProjection): Bool {
+    if (!projection.ok) {
+        result.ok = false
+        result.status = "scheduled_candidate_raw_clean_failed"
+        result.validationStatus = projection.errorCode
+        result.validationDiagnostics.add(
+            "scheduled_candidate_raw_clean_failed:${projection.errorCode}")
+        return false
+    }
+    candidateKb.replaceRawRecords(projection.records)
+    true
 }
 
 private func ckbIngestSourceEventTransaction(kb: KnowledgeBase, store: FileKnowledgeStore,
@@ -20594,6 +20624,24 @@ public func ckbRebuildIndex(kb: KnowledgeBase, store: FileKnowledgeStore, fail!:
             authority: authority.authority)
         let raw = ckbCleanHistoricalStudentRawRecords(persisted.rawRecords,
             authority: authority.authority)
+        if (!active.ok) {
+            let blocked = IndexBuildResult(); blocked.ok = false
+            blocked.failedVersion =
+                "clean_rebuild_active_projection_failed:${active.errorCode}"
+            return blocked
+        }
+        if (!normalized.ok) {
+            let blocked = IndexBuildResult(); blocked.ok = false
+            blocked.failedVersion =
+                "clean_rebuild_normalized_projection_failed:${normalized.errorCode}"
+            return blocked
+        }
+        if (!raw.ok) {
+            let blocked = IndexBuildResult(); blocked.ok = false
+            blocked.failedVersion =
+                "clean_rebuild_raw_projection_failed:${raw.errorCode}"
+            return blocked
+        }
         persisted.activeIndex.clear(); for (record in active.records) { persisted.activeIndex.add(record) }
         persisted.normalizedRecords.clear(); for (record in normalized.records) { persisted.normalizedRecords.add(record) }
         persisted.rawRecords.clear(); for (record in raw.records) { persisted.rawRecords.add(record) }

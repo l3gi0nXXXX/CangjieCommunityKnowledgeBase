@@ -703,6 +703,56 @@ public class CkbSchedulerServiceF5Test {
     }
 
     @TestCase
+    public func p5S2N02InvalidScheduledRawHashDoesNotReplaceActiveSnapshot(): Unit {
+        let root = "target/p5-s2-n02-invalid-raw-hash"
+        s1s2EnsureEmptyDir(root)
+        let store = FileKnowledgeStore(root)
+        let seededKb = newOfflineKnowledgeBase()
+        @Expect(ckbRebuildIndex(seededKb, store).ok, true)
+        store.saveCangjieVersionManifest(f5ScheduledManifest())
+        let before = store.loadActiveSnapshot()
+        let pointerBefore = ckbActiveSnapshotPointerIdentityHash(
+            store.loadActiveSnapshotPointer())
+        let evidenceBefore = ckbCandidateBusinessEvidence(
+            before.rawRecords, before.normalizedRecords)
+        @Expect(evidenceBefore.valid, true)
+        let candidateKb = seededKb.forkIsolatedCandidate()
+        let invalid = seededKb.rawRecordSnapshot()
+        invalid[0].contentHash = "invalid-content-hash"
+        candidateKb.replaceRawRecords(invalid)
+        let invalidProjection = ckbCleanHistoricalStudentRawRecords(
+            candidateKb.rawRecordSnapshot())
+        let ingest = CkbScheduledProfileIngestResult()
+        let accepted = ckbApplyScheduledCandidateRawGate(
+            ingest, candidateKb, invalidProjection)
+        let after = store.loadActiveSnapshot()
+
+        @Expect(accepted, false)
+        @Expect(ingest.status, "scheduled_candidate_raw_clean_failed")
+        @Expect(ingest.validationStatus, "student_raw_content_hash_mismatch")
+        @Expect(ruDiagnosticsContain(ingest.validationDiagnostics,
+            "scheduled_candidate_raw_clean_failed:student_raw_content_hash_mismatch"), true)
+        @Expect(ckbActiveSnapshotPointerIdentityHash(
+            store.loadActiveSnapshotPointer()), pointerBefore)
+        let evidenceAfter = ckbCandidateBusinessEvidence(
+            after.rawRecords, after.normalizedRecords)
+        @Expect(evidenceAfter.rawEvidenceHash, evidenceBefore.rawEvidenceHash)
+        @Expect(evidenceAfter.normalizedEvidenceHash,
+            evidenceBefore.normalizedEvidenceHash)
+        @Expect(after.vectorRecords.size, before.vectorRecords.size)
+
+        let validCandidateKb = seededKb.forkIsolatedCandidate()
+        validCandidateKb.replaceRawRecords(seededKb.rawRecordSnapshot())
+        let validProjection = ckbCleanHistoricalStudentRawRecords(
+            validCandidateKb.rawRecordSnapshot())
+        let validIngest = CkbScheduledProfileIngestResult()
+        @Expect(validProjection.ok, true)
+        @Expect(ckbApplyScheduledCandidateRawGate(
+            validIngest, validCandidateKb, validProjection), true)
+        @Expect(validCandidateKb.rawRecordCount(), validProjection.records.size)
+    }
+
+    @TestCase
     public func p5S2N01ABootstrapFetchAndIngestDeadlinesStayPrecise(): Unit {
         let base = ckbCoreNowMillis()
         @Expect(ckbSchedulerBootstrapDeadlineAtMillis("cangjie_release_full_sync", base, base + 435000), base + 40000)

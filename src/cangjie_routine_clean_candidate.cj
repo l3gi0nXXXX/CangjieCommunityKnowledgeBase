@@ -63,6 +63,9 @@ public class CkbCompleteCleanStudentCandidate {
     public var historicalActiveRemoved: Int64 = 0
     public var historicalRawRemoved: Int64 = 0
     public var candidateChecksum: String = ""
+    public var authorityHash: String = ""
+    public var auditJson: String = ""
+    public var auditEvidenceHash: String = ""
     public var evidenceHash: String = ""
     public var manifestJson: String = ""
     public init() {}
@@ -88,7 +91,12 @@ public class CkbCleanCandidateBuildResult {
     public var activeCount: Int64 = 0
     public var removedCount: Int64 = 0
     public var candidateChecksum: String = ""
+    public var candidateEvidenceHash: String = ""
     public var manifestEvidenceHash: String = ""
+    public var immutableManifestHash: String = ""
+    public var authorityHash: String = ""
+    public var auditEvidenceHash: String = ""
+    public var cleanManifestHash: String = ""
     public var summaryJson: String = ""
     public init() {}
 }
@@ -144,12 +152,20 @@ public func ckbCleanCandidateBaseDiagnostic(store: FileKnowledgeStore,
     let pathHash = benchmarkGapSha256(store.root.toString())
     let lower = store.root.toString().toAsciiLower()
     if (lower.contains("ckb-data") || lower.contains("production") || lower.contains("final11")) {
+        result.code = "contaminated_base_forbidden"
         result.evidenceHash = benchmarkGapSha256("protected:${pathHash}")
         return result
     }
     let stagingPath = ckbCleanCanonicalOutputPath(store.root)
     if (stagingPath[0] != "ok") {
         result.code = stagingPath[0]
+        result.evidenceHash = benchmarkGapSha256("${result.code}:${pathHash}")
+        return result
+    }
+    let canonicalLower = stagingPath[1].toAsciiLower()
+    if (canonicalLower.contains("ckb-data") || canonicalLower.contains("production") ||
+        canonicalLower.contains("final11")) {
+        result.code = "contaminated_base_forbidden"
         result.evidenceHash = benchmarkGapSha256("${result.code}:${pathHash}")
         return result
     }
@@ -162,7 +178,7 @@ public func ckbCleanCandidateBaseDiagnostic(store: FileKnowledgeStore,
         }
         if (stagingPath[1] == protectedPath[1] ||
             stagingPath[1].startsWith(protectedPath[1] + "/")) {
-            result.code = "clean_candidate_base_forbidden"
+            result.code = "contaminated_base_forbidden"
             result.evidenceHash = benchmarkGapSha256("${result.code}:${pathHash}")
             return result
         }
@@ -282,6 +298,14 @@ public func ckbCleanHistoricalStudentRecords(records: ArrayList<NormalizedRecord
     let seen = HashMap<String, String>()
     let removed = ArrayList<String>()
     for (record in records) {
+        if (ckbCleanTextBlank(record.chunk)) {
+            result.removedCount += 1
+            ckbCleanIncrementRejection(result.rejectionCounts,
+                "student_normalized_content_required")
+            removed.add(benchmarkGapSha256(
+                "${ckbCleanNormalizedIdentity(record)}|student_normalized_content_required"))
+            continue
+        }
         let diagnostic = cangjieStudentRecordDiagnostic(record, authority: authority)
         let identity = ckbCleanNormalizedIdentity(record)
         let evidence = ckbCleanNormalizedEvidence(record)
@@ -320,6 +344,12 @@ public func ckbValidateIncomingStudentRecords(records: ArrayList<NormalizedRecor
     let result = CkbStudentCleanRecordProjection()
     let seen = HashMap<String, String>()
     for (record in records) {
+        if (ckbCleanTextBlank(record.chunk)) {
+            result.ok = false
+            result.errorCode = "student_normalized_content_required"
+            result.evidenceHash = benchmarkGapSha256(result.errorCode)
+            return result
+        }
         let diagnostic = cangjieStudentRecordDiagnostic(record, authority: authority)
         if (!diagnostic.ok) {
             result.ok = false
@@ -331,7 +361,11 @@ public func ckbValidateIncomingStudentRecords(records: ArrayList<NormalizedRecor
         let evidence = ckbCleanNormalizedEvidence(record)
         match (seen.get(identity)) {
             case Some(existing) =>
-                if (existing == evidence) { continue }
+                if (existing == evidence) {
+                    ckbCleanIncrementRejection(result.rejectionCounts,
+                        "student_record_identity_duplicate")
+                    continue
+                }
                 result.ok = false; result.errorCode = "student_record_identity_conflict"
                 result.evidenceHash = benchmarkGapSha256("${identity}|${existing}|${evidence}")
                 return result
@@ -391,8 +425,29 @@ public func ckbCleanHistoricalStudentRawRecords(records: ArrayList<RawRecord>,
     let seen = HashMap<String, String>()
     let removed = ArrayList<String>()
     for (record in records) {
+        if (ckbCleanTextBlank(record.content)) {
+            result.ok = false
+            result.errorCode = "student_raw_content_required"
+            result.evidenceHash = benchmarkGapSha256(
+                "${ckbCleanRawIdentity(record)}|student_raw_content_required")
+            return result
+        }
+        if (ckbCleanTextBlank(record.contentHash)) {
+            result.ok = false
+            result.errorCode = "student_raw_content_hash_required"
+            result.evidenceHash = benchmarkGapSha256(
+                "${ckbCleanRawIdentity(record)}|student_raw_content_hash_required")
+            return result
+        }
+        if (!ckbCleanRawContentHashValid(record)) {
+            result.ok = false
+            result.errorCode = "student_raw_content_hash_mismatch"
+            result.evidenceHash = benchmarkGapSha256(
+                "${ckbCleanRawIdentity(record)}|student_raw_content_hash_mismatch")
+            return result
+        }
         let diagnostic = cangjieStudentRecordDiagnostic(ckbStudentRawAsNormalized(record), authority: authority)
-        let identity = if (record.sourceId != "") { record.sourceId } else { benchmarkGapSha256("${record.title}|${record.contentHash}") }
+        let identity = ckbCleanRawIdentity(record)
         let evidence = ckbCleanRawEvidence(record)
         if (!diagnostic.ok) {
             result.removedCount += 1
@@ -461,9 +516,11 @@ public func ckbBuildCompleteCleanStudentCandidate(historicalRaw: ArrayList<RawRe
     selectedNormalized: ArrayList<NormalizedRecord>,
     selectedActive: ArrayList<NormalizedRecord>,
     version: String,
+    authorityHash!: String = "",
     authority!: CangjieBenchmarkLeakageAuthority = CangjieBenchmarkLeakageAuthority()
 ): CkbCompleteCleanStudentCandidate {
-    let result = CkbCompleteCleanStudentCandidate(); result.version = version
+    let result = CkbCompleteCleanStudentCandidate()
+    result.version = version; result.authorityHash = authorityHash
     if (!ckbCleanCandidateVersionAllowed(version)) {
         result.diagnostic = "clean_candidate_version_invalid"; return result
     }
@@ -513,9 +570,8 @@ public func ckbBuildCompleteCleanStudentCandidate(historicalRaw: ArrayList<RawRe
     let rawInput = ArrayList<RawRecord>()
     rawInput.add(all: historicalRawClean.records); rawInput.add(all: selectedRawClean.records)
     let rawCombined = ckbCleanHistoricalStudentRawRecords(rawInput, authority: authority)
-    if (!rawCombined.ok || rawCombined.removedCount != 0) {
-        result.diagnostic = if (!rawCombined.ok) { rawCombined.errorCode }
-            else { "clean_candidate_raw_identity_duplicate" }
+    if (!rawCombined.ok) {
+        result.diagnostic = rawCombined.errorCode
         return result
     }
 
@@ -530,6 +586,13 @@ public func ckbBuildCompleteCleanStudentCandidate(historicalRaw: ArrayList<RawRe
     result.rawRecords = ckbCleanSortRawRecords(result.rawRecords)
     result.normalizedRecords = ckbCleanSortNormalizedRecords(result.normalizedRecords)
     result.activeRecords = ckbCleanSortNormalizedRecords(result.activeRecords)
+    let postClone = ckbCleanCandidatePostCloneDiagnostic(result.rawRecords,
+        result.normalizedRecords, result.activeRecords, authority)
+    if (postClone != "ok") {
+        result.diagnostic = postClone
+        result.evidenceHash = benchmarkGapSha256(postClone)
+        return result
+    }
     let consistency = ckbCleanCandidateConsistencyDiagnostic(result.rawRecords,
         result.normalizedRecords, result.activeRecords, version)
     if (!consistency.ok) {
@@ -538,12 +601,19 @@ public func ckbBuildCompleteCleanStudentCandidate(historicalRaw: ArrayList<RawRe
         return result
     }
     result.candidateChecksum = consistency.candidateChecksum
+    result.auditJson = ckbCleanCandidateAuditJson(
+        historicalRawClean, historicalNormalizedClean, historicalActiveClean,
+        selectedRawClean, selectedNormalizedClean, selectedActiveClean,
+        rawCombined, normalizedCombined)
+    result.auditEvidenceHash = benchmarkGapSha256(result.auditJson)
     let removed = result.historicalNormalizedRemoved + result.historicalActiveRemoved +
         result.historicalRawRemoved
     let body = "{\"schemaVersion\":\"ckb-clean-candidate-v1\",\"ok\":true," +
         "\"versionHash\":\"${benchmarkGapSha256(version)}\",\"rawCount\":${result.rawRecords.size}," +
         "\"normalizedCount\":${result.normalizedRecords.size},\"activeCount\":${result.activeRecords.size}," +
-        "\"historicalRemoved\":${removed},\"candidateChecksum\":\"${result.candidateChecksum}\""
+        "\"historicalRemoved\":${removed},\"candidateChecksum\":\"${result.candidateChecksum}\"," +
+        "\"authorityHash\":\"${ckbCleanJsonEscape(authorityHash)}\"," +
+        "\"auditEvidenceHash\":\"${result.auditEvidenceHash}\""
     result.evidenceHash = benchmarkGapSha256(body + "}")
     result.manifestJson = body + ",\"evidenceHash\":\"${result.evidenceHash}\"}\n"
     result.ok = true; result.diagnostic = "ok"; result
@@ -565,6 +635,10 @@ public func ckbCleanCandidateConsistencyDiagnostic(raw: ArrayList<RawRecord>,
         return result
     }
     for (record in normalized) {
+        if (ckbCleanTextBlank(record.chunk)) {
+            result.code = "clean_candidate_normalized_content_required"
+            return result
+        }
         if (record.metadata.knowledgeVersion != version ||
             record.metadata.candidateVersion != version) {
             result.code = "clean_candidate_normalized_version_mismatch"
@@ -581,6 +655,12 @@ public func ckbCleanCandidateConsistencyDiagnostic(raw: ArrayList<RawRecord>,
         }
     }
     for (record in raw) {
+        if (ckbCleanTextBlank(record.content)) {
+            result.code = "clean_candidate_raw_content_required"; return result
+        }
+        if (ckbCleanTextBlank(record.contentHash)) {
+            result.code = "clean_candidate_raw_content_hash_required"; return result
+        }
         if (record.metadata.knowledgeVersion != version ||
             record.metadata.candidateVersion != version) {
             result.code = "clean_candidate_raw_version_mismatch"
@@ -588,8 +668,9 @@ public func ckbCleanCandidateConsistencyDiagnostic(raw: ArrayList<RawRecord>,
             return result
         }
     }
-    if (!ckbCleanSourceIdentitySetsEqual(raw, normalized)) {
-        result.code = "clean_candidate_raw_normalized_identity_mismatch"
+    let layerDiagnostic = ckbCleanRawNormalizedLayerDiagnostic(raw, normalized)
+    if (layerDiagnostic != "ok") {
+        result.code = layerDiagnostic
         result.evidenceHash = benchmarkGapSha256(
             "${ckbCleanRawSourceSetHash(raw)}|${ckbCleanNormalizedSourceSetHash(normalized)}")
         return result
@@ -680,14 +761,16 @@ public func ckbRunCleanCandidateBuild(options: CkbCleanCandidateBuildOptions): C
         let candidate = ckbBuildCompleteCleanStudentCandidate(
             sourceSnapshot.rawRecords, sourceSnapshot.normalizedRecords, sourceSnapshot.activeIndex,
             atomsSnapshot.rawRecords, atomsSnapshot.normalizedRecords, atomsSnapshot.activeIndex,
-            options.version, authority: authority.authority)
+            options.version, authorityHash: authority.authorityHash, authority: authority.authority)
         result.rawCount = candidate.rawRecords.size
         result.normalizedCount = candidate.normalizedRecords.size
         result.activeCount = candidate.activeRecords.size
         result.removedCount = candidate.historicalRawRemoved +
             candidate.historicalNormalizedRemoved + candidate.historicalActiveRemoved
         result.candidateChecksum = candidate.candidateChecksum
-        result.manifestEvidenceHash = candidate.evidenceHash
+        result.candidateEvidenceHash = candidate.evidenceHash
+        result.authorityHash = candidate.authorityHash
+        result.auditEvidenceHash = candidate.auditEvidenceHash
         if (!candidate.ok) {
             result.diagnostic = candidate.diagnostic
             return ckbFinalizeCleanCandidateBuildResult(result)
@@ -699,15 +782,43 @@ public func ckbRunCleanCandidateBuild(options: CkbCleanCandidateBuildOptions): C
                 result.diagnostic = materialized.status
                 return ckbFinalizeCleanCandidateBuildResult(result)
             }
+            let immutablePath = "candidate-artifacts/${options.version}/manifest.ckb"
+            let immutableManifest = staging.readText(immutablePath)
+            if (ckbCleanImmutableManifestDiagnostic(
+                immutableManifest, materialized, options.version) != "ok") {
+                result.diagnostic = "clean_candidate_immutable_manifest_readback_mismatch"
+                return ckbFinalizeCleanCandidateBuildResult(result)
+            }
+            let immutableReadback = staging.saveCandidateSnapshotImmutable(candidate.rawRecords,
+                candidate.normalizedRecords, options.version)
+            if (!immutableReadback.ok || !immutableReadback.immutableReused ||
+                immutableReadback.manifestEvidenceHash != materialized.manifestEvidenceHash ||
+                immutableReadback.rawEvidenceHash != materialized.rawEvidenceHash ||
+                immutableReadback.normalizedEvidenceHash != materialized.normalizedEvidenceHash ||
+                immutableReadback.batchCount != materialized.batchCount) {
+                result.diagnostic = "clean_candidate_immutable_files_readback_mismatch"
+                return ckbFinalizeCleanCandidateBuildResult(result)
+            }
+            result.manifestEvidenceHash = materialized.manifestEvidenceHash
+            result.immutableManifestHash = benchmarkGapSha256(immutableManifest)
+            candidate.manifestJson = ckbCleanBoundManifestJson(candidate, materialized,
+                result.immutableManifestHash)
+            staging.writeLinesAtomically(
+                "candidate-artifacts/${options.version}/clean-candidate-audit.json",
+                candidate.auditJson + "\n")
             staging.writeLinesAtomically(
                 "candidate-artifacts/${options.version}/clean-candidate-manifest.json",
                 candidate.manifestJson)
             if (staging.readText(
+                "candidate-artifacts/${options.version}/clean-candidate-audit.json") !=
+                candidate.auditJson + "\n" ||
+                staging.readText(
                 "candidate-artifacts/${options.version}/clean-candidate-manifest.json") !=
                 candidate.manifestJson) {
                 result.diagnostic = "clean_candidate_manifest_readback_mismatch"
                 return ckbFinalizeCleanCandidateBuildResult(result)
             }
+            result.cleanManifestHash = benchmarkGapSha256(candidate.manifestJson)
             result.applied = true
         }
         result.ok = true; result.diagnostic = "ok"
@@ -723,21 +834,26 @@ public func ckbStudentCleanRemovalDiagnostic(kind: String, count: Int64, evidenc
 }
 
 private func ckbCleanNormalizedIdentity(record: NormalizedRecord): String {
-    if (record.sourceId != "") {
-        return benchmarkGapSha256("${record.sourceId}|${record.recordKind}|${record.title}|" +
-            "${record.citation}|${record.metadata.path}|${record.metadata.symbol}")
+    let body = StringBuilder()
+    for (value in [record.sourceId, record.recordKind, record.chunk]) {
+        body.append("${value.toArray().size}:${value}|")
     }
-    benchmarkGapSha256("${record.recordKind}|${record.title}|${record.citation}")
+    benchmarkGapSha256(body.toString())
 }
 
 private func ckbCleanNormalizedEvidence(record: NormalizedRecord): String {
     let body = StringBuilder()
     for (value in [record.recordKind, record.sourceId, record.title, record.chunk, record.citation,
+        "${record.score}", "${record.requiresReview}",
         record.metadata.sourceId, record.metadata.sourceType, record.metadata.sourceSet,
         record.metadata.sourceUrl, record.metadata.repo, record.metadata.path,
         record.metadata.symbol, record.metadata.commit, record.metadata.docVersion,
         record.metadata.targetVersion, record.metadata.versionResolutionId,
-        record.metadata.trustLevel, record.metadata.reviewState]) {
+        record.metadata.crawlAt, record.metadata.indexedAt,
+        record.metadata.knowledgeVersion, record.metadata.candidateVersion,
+        "${record.metadata.contentSize}", record.metadata.trustLevel,
+        record.metadata.reviewState, record.metadata.license,
+        record.metadata.repoVisibility]) {
         body.append("${value.toArray().size}:${value}|")
     }
     body.append("derivedFrom=${record.metadata.derivedFrom.size}|")
@@ -871,7 +987,12 @@ private func ckbFinalizeCleanCandidateBuildResult(
         "\"rawCount\":${result.rawCount},\"normalizedCount\":${result.normalizedCount}," +
         "\"activeCount\":${result.activeCount},\"removedCount\":${result.removedCount}," +
         "\"candidateChecksum\":\"${ckbCleanJsonEscape(result.candidateChecksum)}\"," +
+        "\"candidateEvidenceHash\":\"${ckbCleanJsonEscape(result.candidateEvidenceHash)}\"," +
         "\"manifestEvidenceHash\":\"${ckbCleanJsonEscape(result.manifestEvidenceHash)}\"," +
+        "\"immutableManifestHash\":\"${ckbCleanJsonEscape(result.immutableManifestHash)}\"," +
+        "\"authorityHash\":\"${ckbCleanJsonEscape(result.authorityHash)}\"," +
+        "\"auditEvidenceHash\":\"${ckbCleanJsonEscape(result.auditEvidenceHash)}\"," +
+        "\"cleanManifestHash\":\"${ckbCleanJsonEscape(result.cleanManifestHash)}\"," +
         "\"diagnostic\":\"${ckbCleanJsonEscape(result.diagnostic)}\"}"
     result
 }
@@ -988,12 +1109,34 @@ private func ckbCleanNormalizedRecordsChecksum(records: ArrayList<NormalizedReco
 }
 
 private func ckbCleanRawIdentity(record: RawRecord): String {
-    if (record.sourceId != "") { return record.sourceId }
-    benchmarkGapSha256("${record.title}|${record.contentHash}")
+    let body = StringBuilder()
+    for (value in [record.sourceId, record.content]) {
+        body.append("${value.toArray().size}:${value}|")
+    }
+    benchmarkGapSha256(body.toString())
 }
 
 private func ckbCleanRawEvidence(record: RawRecord): String {
-    ckbCleanNormalizedEvidence(ckbStudentRawAsNormalized(record))
+    benchmarkGapSha256("${record.contentHash.toArray().size}:${record.contentHash}|" +
+        ckbCleanNormalizedEvidence(ckbStudentRawAsNormalized(record)))
+}
+
+private func ckbCleanRawContentHashValid(record: RawRecord): Bool {
+    !ckbCleanTextBlank(record.content) && !ckbCleanTextBlank(record.contentHash) &&
+        (record.contentHash == benchmarkGapSha256(record.content) ||
+        record.contentHash == stableSummaryHash(record.content) ||
+        record.contentHash == ckbReleaseEvidenceHash(record.content) ||
+        record.contentHash == cangjieTypedRecordContentHash(record.sourceId, record.content) ||
+        record.contentHash == ckbCleanLegacyContentHash(record.sourceId, record.content))
+}
+
+private func ckbCleanLegacyContentHash(sourceId: String, content: String): String {
+    var hash: Int64 = 5381
+    let modulus: Int64 = 1000000007
+    for (byte in "${sourceId}:${content}".toArray()) {
+        hash = ((hash * 33) % modulus + (Int64(byte) % modulus)) % modulus
+    }
+    "hash-${hash}-${content.size}"
 }
 
 private func ckbCleanRawRecordsChecksum(records: ArrayList<RawRecord>): String {
@@ -1013,9 +1156,108 @@ private func ckbCleanNormalizedCollectionsEqual(first: ArrayList<NormalizedRecor
         ckbCleanNormalizedRecordsChecksum(first) == ckbCleanNormalizedRecordsChecksum(second)
 }
 
-private func ckbCleanSourceIdentitySetsEqual(raw: ArrayList<RawRecord>,
-    normalized: ArrayList<NormalizedRecord>): Bool {
-    ckbCleanRawSourceSetHash(raw) == ckbCleanNormalizedSourceSetHash(normalized)
+private func ckbCleanRawNormalizedLayerDiagnostic(raw: ArrayList<RawRecord>,
+    normalized: ArrayList<NormalizedRecord>): String {
+    let bySource = HashMap<String, ArrayList<String>>()
+    for (record in raw) {
+        match (bySource.get(record.sourceId)) {
+            case Some(contents) => contents.add(record.content)
+            case None =>
+                let contents = ArrayList<String>()
+                contents.add(record.content)
+                bySource.add(record.sourceId, contents)
+        }
+    }
+    for (record in normalized) {
+        match (bySource.get(record.sourceId)) {
+            case Some(contents) =>
+                if (ckbCleanTextBlank(record.chunk)) {
+                    return "clean_candidate_normalized_content_required"
+                }
+                var matched = false
+                for (content in contents) {
+                    if (record.chunk == content || content.contains(record.chunk)) {
+                        matched = true
+                        break
+                    }
+                }
+                if (matched) { continue }
+                return "clean_candidate_raw_normalized_content_mismatch"
+            case None =>
+                if (!ckbCleanNormalizedOnlyAllowed(record)) {
+                    return "clean_candidate_normalized_only_provenance_invalid"
+                }
+        }
+    }
+    "ok"
+}
+
+private func ckbCleanNormalizedOnlyAllowed(record: NormalizedRecord): Bool {
+    let roleAllowed = (record.recordKind == CangjieTypedRecordKinds.DOC_SECTION &&
+        record.metadata.sourceSet == CangjieSourceSets.DOCS) ||
+        (record.recordKind == CangjieTypedRecordKinds.TOOL_MANUAL &&
+        record.metadata.sourceSet == CangjieSourceSets.TOOLS)
+    roleAllowed && !ckbCleanTextBlank(record.sourceId) &&
+        !ckbCleanTextBlank(record.recordKind) &&
+        record.metadata.sourceId == record.sourceId &&
+        !ckbCleanTextBlank(record.metadata.sourceId) &&
+        record.metadata.sourceType == SourceTypes.DOC &&
+        !ckbCleanTextBlank(record.metadata.sourceType) &&
+        !ckbCleanTextBlank(record.metadata.sourceSet) &&
+        !ckbCleanTextBlank(record.chunk) && !ckbCleanTextBlank(record.citation) &&
+        record.metadata.sourceUrl == record.citation &&
+        !ckbCleanTextBlank(record.metadata.sourceUrl) &&
+        !ckbCleanTextBlank(record.metadata.path) &&
+        !ckbCleanTextBlank(record.metadata.targetVersion) &&
+        !ckbCleanTextBlank(record.metadata.versionResolutionId) &&
+        record.metadata.trustLevel == TrustLevels.OFFICIAL &&
+        record.metadata.reviewState == ReviewStates.TRUSTED &&
+        cangjieStudentRecordDiagnostic(record).ok
+}
+
+private func ckbCleanCandidatePostCloneDiagnostic(raw: ArrayList<RawRecord>,
+    normalized: ArrayList<NormalizedRecord>, active: ArrayList<NormalizedRecord>,
+    authority: CangjieBenchmarkLeakageAuthority): String {
+    for (record in raw) {
+        if (ckbCleanTextBlank(record.content)) { return "student_raw_content_required" }
+        if (ckbCleanTextBlank(record.contentHash)) {
+            return "student_raw_content_hash_required"
+        }
+        if (!ckbCleanRawContentHashValid(record)) {
+            return "student_raw_content_hash_mismatch"
+        }
+        let diagnostic = cangjieStudentRecordDiagnostic(
+            ckbStudentRawAsNormalized(record), authority: authority)
+        if (!diagnostic.ok) { return diagnostic.code }
+    }
+    for (record in normalized) {
+        if (ckbCleanTextBlank(record.chunk)) {
+            return "student_normalized_content_required"
+        }
+        let diagnostic = cangjieStudentRecordDiagnostic(record, authority: authority)
+        if (!diagnostic.ok) { return diagnostic.code }
+    }
+    for (record in active) {
+        if (ckbCleanTextBlank(record.chunk)) {
+            return "student_normalized_content_required"
+        }
+        let diagnostic = cangjieStudentRecordDiagnostic(record, authority: authority)
+        if (!diagnostic.ok) { return diagnostic.code }
+    }
+    "ok"
+}
+
+private func ckbCleanTextBlank(value: String): Bool {
+    if (value == "") { return true }
+    for (rune in value.toRuneArray()) {
+        if (!(rune == r' ' || rune == r'\t' || rune == r'\r' || rune == r'\n' ||
+            rune == r'\u{00a0}' || (rune >= r'\u{2000}' && rune <= r'\u{200a}') ||
+            rune == r'\u{2028}' || rune == r'\u{2029}' || rune == r'\u{202f}' ||
+            rune == r'\u{205f}' || rune == r'\u{3000}' || rune == r'\u{feff}')) {
+            return false
+        }
+    }
+    true
 }
 
 private func ckbCleanRawSourceSetHash(records: ArrayList<RawRecord>): String {
@@ -1043,6 +1285,124 @@ private func ckbCleanSortedValueHash(values: ArrayList<String>): String {
     benchmarkGapSha256(seed.toString())
 }
 
+private func ckbCleanCandidateAuditJson(historicalRaw: CkbStudentCleanRawProjection,
+    historicalNormalized: CkbStudentCleanRecordProjection,
+    historicalActive: CkbStudentCleanRecordProjection,
+    selectedRaw: CkbStudentCleanRawProjection,
+    selectedNormalized: CkbStudentCleanRecordProjection,
+    selectedActive: CkbStudentCleanRecordProjection,
+    combinedRaw: CkbStudentCleanRawProjection,
+    combinedNormalized: CkbStudentCleanRecordProjection): String {
+    let layerRoles = ckbCleanLayerRoleAuditJson(
+        combinedRaw.records, combinedNormalized.records)
+    "{\"historicalRaw\":${ckbCleanRawProjectionAuditJson(historicalRaw)}," +
+        "\"historicalNormalized\":${ckbCleanNormalizedProjectionAuditJson(historicalNormalized)}," +
+        "\"historicalActive\":${ckbCleanNormalizedProjectionAuditJson(historicalActive)}," +
+        "\"selectedRaw\":${ckbCleanRawProjectionAuditJson(selectedRaw)}," +
+        "\"selectedNormalized\":${ckbCleanNormalizedProjectionAuditJson(selectedNormalized)}," +
+        "\"selectedActive\":${ckbCleanNormalizedProjectionAuditJson(selectedActive)}," +
+        "\"combinedRaw\":${ckbCleanRawProjectionAuditJson(combinedRaw)}," +
+        "\"combinedNormalized\":${ckbCleanNormalizedProjectionAuditJson(combinedNormalized)}," +
+        "\"layerRoles\":${layerRoles}}"
+}
+
+private func ckbCleanLayerRoleAuditJson(raw: ArrayList<RawRecord>,
+    normalized: ArrayList<NormalizedRecord>): String {
+    let rawIds = HashSet<String>(); let normalizedIds = HashSet<String>()
+    for (record in raw) { rawIds.add(record.sourceId) }
+    for (record in normalized) { normalizedIds.add(record.sourceId) }
+    var rawOnly: Int64 = 0; var normalizedOnly: Int64 = 0
+    for (identity in rawIds) { if (!normalizedIds.contains(identity)) { rawOnly += 1 } }
+    for (identity in normalizedIds) { if (!rawIds.contains(identity)) { normalizedOnly += 1 } }
+    "{\"rawOnly\":${rawOnly},\"normalizedOnly\":${normalizedOnly}," +
+        "\"rawIdentityHash\":\"${ckbCleanRawSourceSetHash(raw)}\"," +
+        "\"normalizedIdentityHash\":\"${ckbCleanNormalizedSourceSetHash(normalized)}\"}"
+}
+
+private func ckbCleanRawProjectionAuditJson(result: CkbStudentCleanRawProjection): String {
+    "{\"input\":${result.inputCount},\"kept\":${result.keptCount}," +
+        "\"removed\":${result.removedCount},\"inputChecksum\":\"${result.inputChecksum}\"," +
+        "\"outputChecksum\":\"${result.outputChecksum}\"," +
+        "\"evidenceHash\":\"${result.evidenceHash}\"," +
+        "\"rejections\":${ckbCleanRejectionCountsJson(result.rejectionCounts)}}"
+}
+
+private func ckbCleanNormalizedProjectionAuditJson(
+    result: CkbStudentCleanRecordProjection): String {
+    "{\"input\":${result.inputCount},\"kept\":${result.keptCount}," +
+        "\"removed\":${result.removedCount},\"inputChecksum\":\"${result.inputChecksum}\"," +
+        "\"outputChecksum\":\"${result.outputChecksum}\"," +
+        "\"evidenceHash\":\"${result.evidenceHash}\"," +
+        "\"rejections\":${ckbCleanRejectionCountsJson(result.rejectionCounts)}}"
+}
+
+private func ckbCleanRejectionCountsJson(counts: HashMap<String, Int64>): String {
+    let entries = ArrayList<String>()
+    for ((key, value) in counts) {
+        entries.add("\"${ckbCleanJsonEscape(key)}\":${value}")
+    }
+    let ordered = entries.toArray(); sort(ordered)
+    let out = StringBuilder(); out.append("{")
+    for (index in 0..ordered.size) {
+        if (index > 0) { out.append(",") }
+        out.append(ordered[index])
+    }
+    out.append("}"); out.toString()
+}
+
+private func ckbCleanImmutableManifestDiagnostic(text: String,
+    materialized: CkbCandidateMaterializationResult, version: String): String {
+    if (ckbCleanManifestField(text, "schemaVersion") != "p5-candidate-durable-v2" ||
+        ckbCleanManifestField(text, "version") != version ||
+        ckbCleanManifestField(text, "rawCount") != "${materialized.rawCount}" ||
+        ckbCleanManifestField(text, "normalizedCount") != "${materialized.normalizedCount}" ||
+        ckbCleanManifestField(text, "batchCount") != "${materialized.batchCount}" ||
+        ckbCleanManifestField(text, "rawEvidenceHash") != materialized.rawEvidenceHash ||
+        ckbCleanManifestField(text, "normalizedEvidenceHash") != materialized.normalizedEvidenceHash ||
+        ckbCleanManifestField(text, "manifestEvidenceHash") != materialized.manifestEvidenceHash) {
+        return "clean_candidate_immutable_manifest_mismatch"
+    }
+    for (index in 0..materialized.batchCount) {
+        if (ckbCleanManifestField(text, "batch${index}Path") == "" ||
+            ckbCleanManifestField(text, "batch${index}Count") == "" ||
+            ckbCleanManifestField(text, "batch${index}Hash") == "") {
+            return "clean_candidate_immutable_batch_manifest_mismatch"
+        }
+    }
+    "ok"
+}
+
+private func ckbCleanManifestField(text: String, key: String): String {
+    let prefix = "${key}="
+    for (line in text.split("\n")) {
+        if (line.startsWith(prefix)) {
+            return line[prefix.size..line.size]
+        }
+    }
+    ""
+}
+
+private func ckbCleanBoundManifestJson(candidate: CkbCompleteCleanStudentCandidate,
+    materialized: CkbCandidateMaterializationResult, immutableManifestHash: String): String {
+    let removed = candidate.historicalNormalizedRemoved +
+        candidate.historicalActiveRemoved + candidate.historicalRawRemoved
+    let body = "{\"schemaVersion\":\"ckb-clean-candidate-v1\",\"ok\":true," +
+        "\"versionHash\":\"${benchmarkGapSha256(candidate.version)}\"," +
+        "\"rawCount\":${candidate.rawRecords.size}," +
+        "\"normalizedCount\":${candidate.normalizedRecords.size}," +
+        "\"activeCount\":${candidate.activeRecords.size}," +
+        "\"historicalRemoved\":${removed}," +
+        "\"candidateChecksum\":\"${candidate.candidateChecksum}\"," +
+        "\"authorityHash\":\"${ckbCleanJsonEscape(candidate.authorityHash)}\"," +
+        "\"auditEvidenceHash\":\"${candidate.auditEvidenceHash}\"," +
+        "\"materializationManifestEvidenceHash\":\"${materialized.manifestEvidenceHash}\"," +
+        "\"immutableManifestHash\":\"${immutableManifestHash}\"," +
+        "\"rawEvidenceHash\":\"${materialized.rawEvidenceHash}\"," +
+        "\"normalizedEvidenceHash\":\"${materialized.normalizedEvidenceHash}\"," +
+        "\"batchCount\":${materialized.batchCount}"
+    body + ",\"evidenceHash\":\"${benchmarkGapSha256(body + "}")}\"}\n"
+}
+
 private func ckbCleanCloneMetadataForVersion(
     metadata: KnowledgeMetadata, version: String): KnowledgeMetadata {
     let clone = KnowledgeMetadata()
@@ -1051,6 +1411,7 @@ private func ckbCleanCloneMetadataForVersion(
     clone.path = metadata.path; clone.symbol = metadata.symbol
     clone.commit = metadata.commit; clone.docVersion = metadata.docVersion
     clone.targetVersion = metadata.targetVersion
+    clone.sourceSet = metadata.sourceSet
     clone.versionResolutionId = metadata.versionResolutionId
     clone.crawlAt = metadata.crawlAt; clone.indexedAt = metadata.indexedAt
     clone.knowledgeVersion = version; clone.candidateVersion = version

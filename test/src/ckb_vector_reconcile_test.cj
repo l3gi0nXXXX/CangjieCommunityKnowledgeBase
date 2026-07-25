@@ -253,6 +253,80 @@ public class CkbVectorReconcileTest {
     }
 
     @TestCase
+    public func vectorReconcileInvalidRawHashFailsWithoutReplacingSnapshot(): Unit {
+        let root = "target/ckb-vector-reconcile-invalid-raw-hash"
+        ckbVectorReconcileEnsureEmptyDir(root)
+        let store = FileKnowledgeStore(root)
+        let vectorStore = ReconcileTrackingVectorStore()
+        let provider = ReconcileEmbeddingProvider(batchSize: 2)
+        let kb = ckbVectorReconcileKnowledgeBaseWithProvider(vectorStore, provider)
+        @Expect(ckbVectorReconcileWriteExactBenchmarkGapDuplicates(store, kb).businessCommitted, true)
+        let invalid = store.loadActiveSnapshot()
+        invalid.rawRecords[0].contentHash = "invalid-content-hash"
+        let rewritten = store.writeActiveSnapshotTransaction(kb.status(), invalid.rawRecords,
+            invalid.normalizedRecords, invalid.activeIndex, invalid.vectorRecords,
+            invalid.vectorActiveCollection, GraphBuildResult(), persistVectorFile: false)
+        @Expect(rewritten.businessCommitted, true)
+        @Expect(kb.restoreActiveSnapshot(store.loadActiveSnapshot()), true)
+        let pointerBefore = ckbActiveSnapshotPointerIdentityHash(
+            store.loadActiveSnapshotPointer())
+
+        let result = ckbVectorReconcileWithVectorStore(kb, store,
+            ckbVectorReconcileRuntimeConfig(), vectorStore, true)
+        let unchanged = store.loadActiveSnapshot()
+
+        @Expect(result.ok, false)
+        @Expect(ckbVectorReconcileContains(result.diagnostics,
+            "student_raw_clean_failed:student_raw_content_hash_mismatch"), true)
+        @Expect(ckbActiveSnapshotPointerIdentityHash(
+            store.loadActiveSnapshotPointer()), pointerBefore)
+        @Expect(unchanged.activeIndex.size, 3)
+        @Expect(unchanged.normalizedRecords.size, 3)
+        @Expect(unchanged.rawRecords.size, 3)
+        @Expect(unchanged.rawRecords[0].contentHash, "invalid-content-hash")
+    }
+
+    @TestCase
+    public func directRebuildInvalidRawHashFailsWithoutReplacingSnapshot(): Unit {
+        let root = "target/ckb-direct-rebuild-invalid-raw-hash"
+        ckbVectorReconcileEnsureEmptyDir(root)
+        let store = FileKnowledgeStore(root)
+        let vectorStore = ReconcileTrackingVectorStore()
+        let provider = ReconcileEmbeddingProvider(batchSize: 2)
+        let kb = ckbVectorReconcileKnowledgeBaseWithProvider(vectorStore, provider)
+        @Expect(ckbVectorReconcileWriteExactBenchmarkGapDuplicates(store, kb).businessCommitted, true)
+        let invalid = store.loadActiveSnapshot()
+        invalid.rawRecords[0].contentHash = "invalid-content-hash"
+        let rewritten = store.writeActiveSnapshotTransaction(kb.status(), invalid.rawRecords,
+            invalid.normalizedRecords, invalid.activeIndex, invalid.vectorRecords,
+            invalid.vectorActiveCollection, GraphBuildResult(), persistVectorFile: false)
+        @Expect(rewritten.businessCommitted, true)
+        @Expect(kb.restoreActiveSnapshot(store.loadActiveSnapshot()), true)
+        let pointerBefore = ckbActiveSnapshotPointerIdentityHash(
+            store.loadActiveSnapshotPointer())
+        let rawBefore = kb.rawRecordCount()
+        let normalizedBefore = kb.normalizedRecordCount()
+        let indexBefore = kb.status().storage.indexCount
+
+        let result = ckbRebuildIndex(kb, store)
+        let unchanged = store.loadActiveSnapshot()
+
+        @Expect(result.ok, false)
+        @Expect(result.failedVersion,
+            "clean_rebuild_raw_projection_failed:student_raw_content_hash_mismatch")
+        @Expect(ckbActiveSnapshotPointerIdentityHash(
+            store.loadActiveSnapshotPointer()), pointerBefore)
+        @Expect(kb.rawRecordCount(), rawBefore)
+        @Expect(kb.normalizedRecordCount(), normalizedBefore)
+        @Expect(kb.status().storage.indexCount, indexBefore)
+        @Expect(unchanged.activeIndex.size, 3)
+        @Expect(unchanged.normalizedRecords.size, 3)
+        @Expect(unchanged.rawRecords.size, 3)
+        @Expect(unchanged.vectorRecords.size, 0)
+        @Expect(unchanged.rawRecords[0].contentHash, "invalid-content-hash")
+    }
+
+    @TestCase
     public func vectorReconcileFailsWhenVectorStoreRejectsRebuildBatch(): Unit {
         let root = "target/ckb-vector-reconcile-upsert-failure"
         ckbVectorReconcileEnsureEmptyDir(root)
@@ -682,7 +756,7 @@ private func ckbVectorReconcileRawRecord(record: NormalizedRecord): RawRecord {
     raw.title = record.title
     raw.content = record.chunk
     raw.metadata = record.metadata
-    raw.contentHash = "hash-${record.sourceId}-${record.chunk.size}"
+    raw.contentHash = stableSummaryHash(record.chunk)
     raw
 }
 

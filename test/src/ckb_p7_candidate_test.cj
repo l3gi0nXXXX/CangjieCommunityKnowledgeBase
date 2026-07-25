@@ -145,12 +145,13 @@ public class CkbP7CandidateTest {
         @Expect(exactResult.ok, true)
         @Expect(exactResult.records.size, 1)
 
-        let conflicting = r4OfficialRecord(); conflicting.chunk = "Different official content."
+        let conflicting = r4OfficialRecord()
+        conflicting.metadata.targetVersion = "9.9.9"
         let conflictInput = ArrayList<NormalizedRecord>(); conflictInput.add(first); conflictInput.add(conflicting)
         let conflict = ckbValidateIncomingStudentRecords(conflictInput)
         @Expect(conflict.ok, false)
         @Expect(conflict.errorCode, "student_record_identity_conflict")
-        @Expect(conflict.evidenceHash.contains("Different official content"), false)
+        @Expect(conflict.evidenceHash.contains("9.9.9"), false)
     }
 
     @TestCase
