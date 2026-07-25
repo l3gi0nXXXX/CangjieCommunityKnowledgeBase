@@ -12,17 +12,20 @@ public func buildServingDocuments(records: ArrayList<NormalizedRecord>): Cangjie
             continue
         }
         acceptedRecords.add(record)
-        feed.documents.add(cangjieServingDocumentFromRecord(record))
+        cangjieServingFeedAddClean(feed, cangjieServingDocumentFromRecord(record))
         for (card in extractCangjieSymbols(record)) {
-            feed.documents.add(cangjieServingDocumentFromSymbol(card))
+            cangjieServingFeedAddClean(feed,
+                cangjieServingDocumentFromSymbol(card))
         }
         for (example in buildExampleRecords(record)) {
-            feed.documents.add(cangjieServingDocumentFromExample(example))
+            cangjieServingFeedAddClean(feed,
+                cangjieServingDocumentFromExample(example))
         }
     }
     let negativeRules = buildNegativeRuleRecords(acceptedRecords)
     for (rule in negativeRules) {
-        feed.documents.add(cangjieServingDocumentFromNegativeRule(rule))
+        cangjieServingFeedAddClean(feed,
+            cangjieServingDocumentFromNegativeRule(rule))
     }
     if (feed.documents.size == 0) {
         feed.ok = false
@@ -31,6 +34,17 @@ public func buildServingDocuments(records: ArrayList<NormalizedRecord>): Cangjie
         }
     }
     feed
+}
+
+private func cangjieServingFeedAddClean(feed: CangjieServingFeed,
+    document: CangjieServingDocument): Unit {
+    let diagnostic = cangjieStudentServingDocumentDiagnostic(document)
+    if (!diagnostic.ok) {
+        feed.diagnostics.add(
+            "serving_projection_rejected:${diagnostic.code}:${diagnostic.matchedField}")
+        return
+    }
+    feed.documents.add(document)
 }
 
 public func runCangjieServingFeedSmoke(args: Array<String>): Int64 {

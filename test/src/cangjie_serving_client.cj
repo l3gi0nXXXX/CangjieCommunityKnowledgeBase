@@ -103,7 +103,7 @@ private func cangjieLocalServingSymbolMatches(doc: CangjieServingDocument, symbo
 }
 
 private func cangjieServingDocAllowed(doc: CangjieServingDocument, request: CangjieServingSearchRequest): Bool {
-    if (doc.rejected) {
+    if (doc.rejected || !cangjieStudentServingDocumentDiagnostic(doc).ok) {
         return false
     }
     if (request.sourceSet != "" && doc.sourceSet != "" && doc.sourceSet != request.sourceSet) {

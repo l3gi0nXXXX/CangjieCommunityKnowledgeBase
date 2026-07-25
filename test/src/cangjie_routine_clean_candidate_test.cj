@@ -566,6 +566,165 @@ public class CangjieRoutineCleanCandidateTest {
         @Expect(s1DirectoryHash(source.root), sourceBefore)
         @Expect(s1DirectoryHash(production), productionBefore)
     }
+
+    @TestCase
+    public func s2Ut01LoadsOnlyFullyBoundImmutableCandidate(): Unit {
+        let root = s1Root("s2-immutable-positive")
+        let source = s1PersistSource("${root}/source")
+        s1PersistAuthority(source, "${root}/authority-data")
+        let sourceBefore = s1DirectoryHash(source.root)
+        let options = s1Options(source.root.toString(), "${root}/candidate",
+            source.root.toString(), "s2-immutable-v1", true)
+        let built = ckbRunCleanCandidateBuild(options)
+        @Expect(built.ok, true)
+        let store = FileKnowledgeStore(options.stagingStore)
+        let loaded = store.loadCandidateSnapshotImmutable("s2-immutable-v1")
+        @Expect(loaded.valid, true)
+        @Expect(loaded.diagnostic, "ok")
+        @Expect(loaded.rawCount, built.rawCount)
+        @Expect(loaded.normalizedCount, built.normalizedCount)
+        @Expect(loaded.activeIndex.size, built.activeCount)
+        @Expect(loaded.candidateChecksum, built.candidateChecksum)
+        @Expect(loaded.manifestEvidenceHash, built.manifestEvidenceHash)
+        @Expect(loaded.immutableManifestHash, built.immutableManifestHash)
+        @Expect(loaded.cleanManifestHash, built.cleanManifestHash)
+        @Expect(loaded.auditEvidenceHash, built.auditEvidenceHash)
+        @Expect(loaded.authorityHash, built.authorityHash)
+        @Expect(store.loadActiveSnapshotPointer().valid, false)
+        @Expect(s1DirectoryHash(source.root), sourceBefore)
+    }
+
+    @TestCase
+    public func s2Neg01ImmutableLoaderRejectsEveryArtifactDriftAndInvalidUtf8(): Unit {
+        let root = s1Root("s2-immutable-negative")
+        let source = s1PersistSource("${root}/source")
+        s1PersistAuthority(source, "${root}/authority-data")
+        let sourceBefore = s1DirectoryHash(source.root)
+        let artifacts = [
+            "raw/candidate/s2-tamper-v1/records.ckb",
+            "normalized/candidate/s2-tamper-v1.ckb",
+            "candidate-artifacts/s2-tamper-v1/batches/batch-0.ckb",
+            "candidate-artifacts/s2-tamper-v1/manifest.ckb",
+            "candidate-artifacts/s2-tamper-v1/clean-candidate-audit.json",
+            "candidate-artifacts/s2-tamper-v1/clean-candidate-manifest.json"
+        ]
+        for (index in 0..artifacts.size) {
+            let staging = "${root}/candidate-${index}"
+            let options = s1Options(source.root.toString(), staging,
+                source.root.toString(), "s2-tamper-v1", true)
+            @Expect(ckbRunCleanCandidateBuild(options).ok, true)
+            let store = FileKnowledgeStore(staging)
+            let path = store.root.join(artifacts[index])
+            let original = File.readFrom(path)
+            let tampered = ArrayList<UInt8>()
+            for (byte in original) { tampered.add(byte) }
+            tampered.add(if (index == 5) { UInt8(0xff) } else { UInt8(0x20) })
+            File.writeTo(path, tampered.toArray())
+            let loaded = store.loadCandidateSnapshotImmutable("s2-tamper-v1")
+            @Expect(loaded.valid, false)
+            @Expect(loaded.diagnostic != "ok", true)
+            @Expect(store.loadActiveSnapshotPointer().valid, false)
+        }
+        @Expect(s1DirectoryHash(source.root), sourceBefore)
+    }
+
+    @TestCase
+    public func s2Bnd01ImmutableVersionManifestSymlinkAndPointerIsolation(): Unit {
+        let invalidVersions = ["../alias", "a/b", "a\\b", "a:b", "a\u{0000}b",
+            ".hidden", "trailing.", "中文", s2LongVersion()]
+        for (version in invalidVersions) {
+            let store = FileKnowledgeStore(
+                "${s1Root("s2-version-${benchmarkGapSha256(version)}")}/candidate")
+            let written = store.saveCandidateSnapshotImmutable(
+                ArrayList<RawRecord>(), ArrayList<NormalizedRecord>(), version)
+            @Expect(written.ok, false)
+            @Expect(written.status, "candidate_version_invalid")
+            @Expect(store.loadCandidateSnapshotImmutable(version).valid, false)
+        }
+
+        let root = s1Root("s2-manifest-fields")
+        let source = s1PersistSource("${root}/source")
+        s1PersistAuthority(source, "${root}/authority-data")
+        let replacements = [
+            ("\"historicalRemoved\":0", "\"historicalRemoved\":1"),
+            ("\"authorityHash\":\"sha256:", "\"authorityHash\":\"sha256:f"),
+            ("\"evidenceHash\":\"sha256:", "\"evidenceHash\":\"sha256:f")
+        ]
+        for (index in 0..replacements.size) {
+            let staging = "${root}/candidate-${index}"
+            @Expect(ckbRunCleanCandidateBuild(s1Options(source.root.toString(),
+                staging, source.root.toString(), "s2-bound-v1", true)).ok, true)
+            let manifest = Path(staging).join(
+                "candidate-artifacts/s2-bound-v1/clean-candidate-manifest.json")
+            let text = String.fromUtf8(File.readFrom(manifest))
+            File.writeTo(manifest,
+                text.replace(replacements[index][0], replacements[index][1]).toArray())
+            @Expect(FileKnowledgeStore(staging)
+                .loadCandidateSnapshotImmutable("s2-bound-v1").valid, false)
+        }
+        let embeddedPrefixStore = "${root}/candidate-embedded-prefix"
+        @Expect(ckbRunCleanCandidateBuild(s1Options(source.root.toString(),
+            embeddedPrefixStore, source.root.toString(), "s2-prefix-v1", true)).ok,
+            true)
+        let embeddedStore = FileKnowledgeStore(embeddedPrefixStore)
+        let embeddedBaseline = embeddedStore.loadCandidateSnapshotImmutable(
+            "s2-prefix-v1")
+        @Expect(embeddedBaseline.valid, true)
+        let embeddedManifest = embeddedStore.root.join(
+            "candidate-artifacts/s2-prefix-v1/clean-candidate-manifest.json")
+        let embeddedText = String.fromUtf8(File.readFrom(embeddedManifest))
+        let maliciousHash = "sha256:" + s2Repeat("0", 32) +
+            "sha256:" + s2Repeat("1", 32)
+        File.writeTo(embeddedManifest, embeddedText.replace(
+            embeddedBaseline.authorityHash, maliciousHash).toArray())
+        @Expect(embeddedStore.loadCandidateSnapshotImmutable(
+            "s2-prefix-v1").valid, false)
+
+        let isolated = "${root}/candidate-isolated"
+        @Expect(ckbRunCleanCandidateBuild(s1Options(source.root.toString(),
+            isolated, source.root.toString(), "s2-isolated-v1", true)).ok, true)
+        let isolatedStore = FileKnowledgeStore(isolated)
+        isolatedStore.writeLinesAtomically("metadata/active-snapshot.manifest",
+            "malformed-active-pointer-that-must-not-be-read\n")
+        @Expect(isolatedStore.loadCandidateSnapshotImmutable(
+            "s2-isolated-v1").valid, true)
+
+        let symlinkRoot = "${root}/candidate-symlink"
+        @Expect(ckbRunCleanCandidateBuild(s1Options(source.root.toString(),
+            symlinkRoot, source.root.toString(), "s2-symlink-v1", true)).ok, true)
+        let manifestPath = Path(symlinkRoot).join(
+            "candidate-artifacts/s2-symlink-v1/manifest.ckb")
+        let outside = Path(root).join("outside-manifest.ckb")
+        File.writeTo(outside, File.readFrom(manifestPath))
+        @Expect(launch("/bin/rm", ["-f", manifestPath.toString()]).wait(), 0)
+        @Expect(launch("/bin/ln", ["-s", outside.toString(),
+            manifestPath.toString()]).wait(), 0)
+        let symlinkLoaded = FileKnowledgeStore(symlinkRoot)
+            .loadCandidateSnapshotImmutable("s2-symlink-v1")
+        @Expect(symlinkLoaded.valid, false)
+        @Expect(symlinkLoaded.diagnostic, "candidate_immutable_manifest_required")
+
+        for (ancestor in ["raw", "normalized", "candidate-artifacts"]) {
+            let escapeRoot = Path(root).join("writer-${ancestor}")
+            let outsideRoot = Path(root).join("outside-${ancestor}")
+            Directory.create(escapeRoot, recursive: true)
+            Directory.create(outsideRoot, recursive: true)
+            File.writeTo(outsideRoot.join("sentinel"), "unchanged".toArray())
+            let outsideBefore = s1DirectoryHash(outsideRoot)
+            @Expect(launch("/bin/ln", ["-s", outsideRoot.toString(),
+                escapeRoot.join(ancestor).toString()]).wait(), 0)
+            let raw = s1Raw("writer-safe", "safe")
+            let normalized = s1Normalized("writer-safe", "safe")
+            let write = FileKnowledgeStore(escapeRoot.toString())
+                .saveCandidateSnapshotImmutable(s1RawList(raw),
+                    s1NormalizedList(normalized), "s2-writer-v1")
+            @Expect(write.ok, false)
+            @Expect(write.status, "candidate_immutable_path_unsafe")
+            @Expect(s1DirectoryHash(outsideRoot), outsideBefore)
+            @Expect(exists(outsideRoot.join("candidate")), false)
+            @Expect(exists(outsideRoot.join("s2-writer-v1.ckb")), false)
+        }
+    }
 }
 
 private func s1Normalized(id: String, content: String): NormalizedRecord {
@@ -782,4 +941,16 @@ private func s1HexNibble(value: UInt8): String {
     if (value == UInt8(13)) { return "d" }
     if (value == UInt8(14)) { return "e" }
     "f"
+}
+
+private func s2LongVersion(): String {
+    let out = StringBuilder()
+    for (_ in 0..129) { out.append("a") }
+    out.toString()
+}
+
+private func s2Repeat(value: String, count: Int64): String {
+    let out = StringBuilder()
+    for (_ in 0..count) { out.append(value) }
+    out.toString()
 }

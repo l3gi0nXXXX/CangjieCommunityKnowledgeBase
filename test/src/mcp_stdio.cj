@@ -98,6 +98,12 @@ public class CkbMcpStdioServer {
         if (request.size > this.maxRequestChars) {
             return ckbMcpDispatchResponse(this.errorResponse("null", -32600, "request_too_large", "{\"limit\":${this.maxRequestChars}}"))
         }
+        try {
+            _ = JsonValue.fromStr(request).asObject()
+        } catch (_: Exception) {
+            return ckbMcpDispatchResponse(
+                this.errorResponse("null", -32700, "malformed_json", "{}"))
+        }
         let id = ckbMcpJsonId(request)
         let hasId = ckbMcpJsonHasId(request)
         let method = ckbMcpJsonStringField(request, "method")

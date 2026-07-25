@@ -31,6 +31,10 @@ public class CkbProductionReleaseProof {
     public var versionManifestJson: String = ""
     public var studentLeakageArtifactJson: String = ""
     public var anonymousQueryArtifactJson: String = ""
+    public var anonymousAtomQueryArtifactJson: String = ""
+    public var restLeakageArtifactJson: String = ""
+    public var mcpStdioLeakageArtifactJson: String = ""
+    public var mcpHttpLeakageArtifactJson: String = ""
     public var authorityIsolationArtifactJson: String = ""
     public var atomTestArtifactJson: String = ""
     public var studentLeakageProofJson: String = ""
@@ -114,7 +118,12 @@ public func ckbCertifiedProductionProofDiagnostic(proof: CkbProductionReleasePro
     let p6Binding = ckbP8P6BindingDiagnostic(proof, checksum)
     if (p6Binding != "ok") { return p6Binding }
     if(proof.frozenCandidateManifestJson.trimAscii()==""||proof.frozenCandidateManifestHash!=benchmarkGapSha256(proof.frozenCandidateManifestJson)){return "frozen_candidate_manifest_required"}
+    if(!proof.frozenCandidateManifestJson.contains("\"schemaVersion\":\"ckb-frozen-candidate-v2\"")||
+        !proof.studentLeakageProofJson.contains("\"schemaVersion\":\"ckb-student-leakage-seal-v2\"")){
+        return "student_leakage_proof_v2_required"
+    }
     if(ckbFrozenCandidateManifestIntegrityDiagnostic(proof.frozenCandidateManifestJson,expectedCandidateChecksum:checksum,expectedLeakageProofHash:benchmarkGapSha256(proof.studentLeakageProofJson),expectedKnowledgeVersion:certification.knowledgeVersion)!="ok"){return "frozen_candidate_manifest_invalid"}
+    if(ckbP8FrozenV2ArtifactsDiagnostic(proof)!="ok"){return "frozen_candidate_manifest_invalid"}
     let leakageDiagnostic = ckbP8StudentLeakageProofDiagnostic(proof, records, checksum)
     if (leakageDiagnostic != "ok") { return leakageDiagnostic }
     if (proof.candidateArtifactJsonl != ckbRenderCertifiedCandidateArtifact(records)) { return "candidate_artifact_mismatch" }
@@ -176,9 +185,30 @@ private func ckbP8StudentLeakageProofDiagnostic(proof: CkbProductionReleaseProof
         !ckbBuildStudentLeakageReport(normalized).ok) { return "student_knowledge_leakage_blocked" }
     let diagnostic = ckbCandidateTrustSealDiagnostic(proof.studentLeakageProofJson, normalized,
         proof.studentLeakageArtifactJson, proof.anonymousQueryArtifactJson,
-        proof.authorityIsolationArtifactJson, proof.atomTestArtifactJson)
+        proof.authorityIsolationArtifactJson, proof.atomTestArtifactJson,
+        restText: proof.restLeakageArtifactJson,
+        mcpStdioText: proof.mcpStdioLeakageArtifactJson,
+        mcpHttpText: proof.mcpHttpLeakageArtifactJson,
+        anonymousQueryText: proof.anonymousAtomQueryArtifactJson)
     if (diagnostic != "ok") { return "student_leakage_proof_mismatch" }
     "ok"
+}
+
+private func ckbP8FrozenV2ArtifactsDiagnostic(proof:CkbProductionReleaseProof):String{
+    try{
+        let manifest=JsonValue.fromStr(proof.frozenCandidateManifestJson).asObject()
+        if(ckbP8String(manifest,"schemaVersion")!="ckb-frozen-candidate-v2"||
+            ckbP8String(manifest,"anonymousQueryArtifactHash")!=benchmarkGapSha256(proof.anonymousQueryArtifactJson)||
+            ckbP8String(manifest,"anonymousAtomQueryArtifactHash")!=benchmarkGapSha256(proof.anonymousAtomQueryArtifactJson)||
+            ckbP8String(manifest,"restLeakageArtifactHash")!=benchmarkGapSha256(proof.restLeakageArtifactJson)||
+            ckbP8String(manifest,"mcpStdioLeakageArtifactHash")!=benchmarkGapSha256(proof.mcpStdioLeakageArtifactJson)||
+            ckbP8String(manifest,"mcpHttpLeakageArtifactHash")!=benchmarkGapSha256(proof.mcpHttpLeakageArtifactJson)||
+            ckbP8String(manifest,"authorityIsolationArtifactHash")!=benchmarkGapSha256(proof.authorityIsolationArtifactJson)||
+            ckbP8String(manifest,"atomTestArtifactHash")!=benchmarkGapSha256(proof.atomTestArtifactJson)){
+            return "frozen_candidate_v2_artifact_mismatch"
+        }
+        "ok"
+    }catch(_:Exception){"frozen_candidate_v2_artifact_mismatch"}
 }
 
 public class CkbCertifiedProductionPreCommitGate <: CangjieCandidatePreCommitGate {
@@ -288,7 +318,9 @@ private func ckbP8ProofEvidence(proof: CkbProductionReleaseProof): String {
         proof.authorityManifestJsonl, proof.p7GateJson, proof.candidateArtifactJsonl,
         proof.indexArtifactJson, proof.vectorArtifactJson, proof.stdioQueryPayload,
         proof.httpQueryPayload, proof.versionManifestJson, proof.studentLeakageArtifactJson,
-        proof.anonymousQueryArtifactJson, proof.authorityIsolationArtifactJson,
+        proof.anonymousQueryArtifactJson, proof.anonymousAtomQueryArtifactJson,
+        proof.restLeakageArtifactJson, proof.mcpStdioLeakageArtifactJson,
+        proof.mcpHttpLeakageArtifactJson, proof.authorityIsolationArtifactJson,
         proof.atomTestArtifactJson, proof.studentLeakageProofJson]) { seed.append(ckbP8Part(value)) }
     seed.append(ckbP8Part(proof.frozenCandidateManifestJson));seed.append(ckbP8Part(proof.frozenCandidateManifestHash))
     benchmarkGapSha256(seed.toString())
@@ -351,9 +383,9 @@ public func runCkbCertifiedProductionPublishCli(args:Array<String>,kb:KnowledgeB
         if(canonicalize(Path(declaredStore)).toString()!=canonicalize(Path(storePath)).toString()){println("publish blocked: explicit_store_mismatch");return 1}
         if(ckbP8PathInside(acceptancePath,storePath)){println("publish blocked: acceptance_report_must_be_outside_store");return 1}
         let proof=CkbProductionReleaseProof()
-        proof.p6PreflightJson=ckbP8ReadOrThrow(ckbP8String(o,"p6PreflightPath"));proof.p6RunManifestJson=ckbP8ReadOrThrow(ckbP8String(o,"p6RunManifestPath"));proof.p7ResultsJsonl=ckbP8ReadOrThrow(ckbP8String(o,"p7ResultsPath"));proof.p7RunRoot=ckbP8String(o,"p7RunRoot");proof.p7ArtifactManifestHash=ckbP8String(o,"p7ArtifactManifestHash");proof.authorityManifestJsonl=ckbP8ReadOrThrow(ckbP8String(o,"authorityManifestPath"));proof.p7GateJson=ckbP8ReadOrThrow(ckbP8String(o,"p7GatePath"));proof.candidateArtifactJsonl=ckbP8ReadOrThrow(ckbP8String(o,"resolvedCandidatePath"));proof.indexArtifactJson=ckbP8ReadOrThrow(ckbP8String(o,"indexArtifactPath"));proof.vectorArtifactJson=ckbP8ReadOrThrow(ckbP8String(o,"vectorArtifactPath"));proof.stdioQueryPayload=ckbP8ReadOrThrow(ckbP8String(o,"stdioQueryProofPath"));proof.httpQueryPayload=ckbP8ReadOrThrow(ckbP8String(o,"httpQueryProofPath"));proof.versionManifestJson=ckbP8ReadOrThrow(ckbP8String(o,"versionManifestPath"));proof.studentLeakageArtifactJson=ckbP8ReadOrThrow(ckbP8String(o,"studentLeakageArtifactPath"));proof.anonymousQueryArtifactJson=ckbP8ReadOrThrow(ckbP8String(o,"anonymousQueryArtifactPath"));proof.authorityIsolationArtifactJson=ckbP8ReadOrThrow(ckbP8String(o,"authorityIsolationArtifactPath"));proof.atomTestArtifactJson=ckbP8ReadOrThrow(ckbP8String(o,"atomTestArtifactPath"));proof.studentLeakageProofJson=ckbP8ReadOrThrow(ckbP8String(o,"studentLeakageProofPath"))
+        proof.p6PreflightJson=ckbP8ReadOrThrow(ckbP8String(o,"p6PreflightPath"));proof.p6RunManifestJson=ckbP8ReadOrThrow(ckbP8String(o,"p6RunManifestPath"));proof.p7ResultsJsonl=ckbP8ReadOrThrow(ckbP8String(o,"p7ResultsPath"));proof.p7RunRoot=ckbP8String(o,"p7RunRoot");proof.p7ArtifactManifestHash=ckbP8String(o,"p7ArtifactManifestHash");proof.authorityManifestJsonl=ckbP8ReadOrThrow(ckbP8String(o,"authorityManifestPath"));proof.p7GateJson=ckbP8ReadOrThrow(ckbP8String(o,"p7GatePath"));proof.candidateArtifactJsonl=ckbP8ReadOrThrow(ckbP8String(o,"resolvedCandidatePath"));proof.indexArtifactJson=ckbP8ReadOrThrow(ckbP8String(o,"indexArtifactPath"));proof.vectorArtifactJson=ckbP8ReadOrThrow(ckbP8String(o,"vectorArtifactPath"));proof.stdioQueryPayload=ckbP8ReadOrThrow(ckbP8String(o,"stdioQueryProofPath"));proof.httpQueryPayload=ckbP8ReadOrThrow(ckbP8String(o,"httpQueryProofPath"));proof.versionManifestJson=ckbP8ReadOrThrow(ckbP8String(o,"versionManifestPath"));proof.studentLeakageArtifactJson=ckbP8ReadOrThrow(ckbP8String(o,"studentLeakageArtifactPath"));proof.anonymousQueryArtifactJson=ckbP8ReadOrThrow(ckbP8String(o,"anonymousQueryArtifactPath"));proof.anonymousAtomQueryArtifactJson=ckbP8ReadOrThrow(ckbP8String(o,"anonymousAtomQueryArtifactPath"));proof.restLeakageArtifactJson=ckbP8ReadOrThrow(ckbP8String(o,"restLeakageArtifactPath"));proof.mcpStdioLeakageArtifactJson=ckbP8ReadOrThrow(ckbP8String(o,"mcpStdioLeakageArtifactPath"));proof.mcpHttpLeakageArtifactJson=ckbP8ReadOrThrow(ckbP8String(o,"mcpHttpLeakageArtifactPath"));proof.authorityIsolationArtifactJson=ckbP8ReadOrThrow(ckbP8String(o,"authorityIsolationArtifactPath"));proof.atomTestArtifactJson=ckbP8ReadOrThrow(ckbP8String(o,"atomTestArtifactPath"));proof.studentLeakageProofJson=ckbP8ReadOrThrow(ckbP8String(o,"studentLeakageProofPath"))
         proof.frozenCandidateManifestJson=ckbP8ReadOrThrow(ckbP8String(o,"frozenCandidateManifestPath"));proof.frozenCandidateManifestHash=benchmarkGapSha256(proof.frozenCandidateManifestJson)
-        for(raw in [proof.p6PreflightJson,proof.p6RunManifestJson,proof.p7ResultsJsonl,proof.authorityManifestJsonl,proof.p7GateJson,proof.candidateArtifactJsonl,proof.indexArtifactJson,proof.vectorArtifactJson,proof.stdioQueryPayload,proof.httpQueryPayload,proof.versionManifestJson,proof.studentLeakageArtifactJson,proof.anonymousQueryArtifactJson,proof.authorityIsolationArtifactJson,proof.atomTestArtifactJson,proof.studentLeakageProofJson,proof.frozenCandidateManifestJson]){if(ckbControlContainsSecret(raw)){println("publish blocked: secret_artifact_forbidden");return 1}}
+        for(raw in [proof.p6PreflightJson,proof.p6RunManifestJson,proof.p7ResultsJsonl,proof.authorityManifestJsonl,proof.p7GateJson,proof.candidateArtifactJsonl,proof.indexArtifactJson,proof.vectorArtifactJson,proof.stdioQueryPayload,proof.httpQueryPayload,proof.versionManifestJson,proof.studentLeakageArtifactJson,proof.anonymousQueryArtifactJson,proof.anonymousAtomQueryArtifactJson,proof.restLeakageArtifactJson,proof.mcpStdioLeakageArtifactJson,proof.mcpHttpLeakageArtifactJson,proof.authorityIsolationArtifactJson,proof.atomTestArtifactJson,proof.studentLeakageProofJson,proof.frozenCandidateManifestJson]){if(ckbControlContainsSecret(raw)){println("publish blocked: secret_artifact_forbidden");return 1}}
         let frozenDiagnostic=ckbP8FrozenSourceDiagnostic(ckbP8String(o,"frozenCandidateStore"),storePath,proof.frozenCandidateManifestJson);if(frozenDiagnostic!="ok"){println("publish blocked: ${frozenDiagnostic}");return 1}
         let existing=ckbP8ParseRecords(ckbP8ReadOrThrow(ckbP8String(o,"existingActivePath")));let incoming=ckbP8ParseRecords(ckbP8ReadOrThrow(ckbP8String(o,"incomingCandidatePath")))
         let diagnostic=ckbCertifiedProductionProofDiagnostic(proof,incoming);if(diagnostic!="ok"){println("publish blocked: ${diagnostic}");return 1}

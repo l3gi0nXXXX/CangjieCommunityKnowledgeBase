@@ -1,7 +1,7 @@
 package cangjie_community_knowledge_base_test
 
 import std.collection.ArrayList
-import std.fs.{Directory, File, Path}
+import std.fs.{Directory, File, Path, exists, remove}
 import std.unittest.*
 import std.unittest.testmacro.*
 
@@ -68,7 +68,79 @@ public class CkbCertifiedProductionReleaseTest {
     public func r5Neg03UntrustedProofStopsBeforePointerCas():Unit{let kb=newOfflineKnowledgeBase();let existing=p8Existing(kb);let incoming=p8CoverageItems(1);let proof=p8UntrustedProof(incoming,"ckb-r5-cas");let store=FileKnowledgeStore("target/r5-cas-${ckbCoreNowMillis()}");let injector=R5CompetingPointerInjector(store);let report=ckbPublishCertifiedKnowledge(kb,store,"ckb-r5-cas-candidate",kb.status().activeKnowledgeVersion,existing,incoming,proof,snapshotFaultInjector:injector);let pointer=store.loadActiveSnapshotPointer();@Expect(report.ok,false);@Expect(report.status,"p7_artifact_run_required");@Expect(pointer.valid,false);@Expect(injector.injected,false)}
 
     @TestCase
-    public func r5Pos03FrozenManifestBindsCommittedTransactionAndTrustInputs():Unit{let kb=r7CleanKnowledgeBase();let store=FileKnowledgeStore("target/r5-freeze-${ckbCoreNowMillis()}");_=kb.persistActiveSnapshot(store);let snapshot=store.loadActiveSnapshot();let leakage=ckbBuildStudentLeakageReport(snapshot.normalizedRecords).json;let query="{\"ok\":true,\"indexBuildCount\":1,\"failed\":0}";let authority="{\"ok\":true,\"authorityCount\":164,\"authorityHash\":\"${p8Hash("freeze-authority")}\",\"activeEvalCount\":0}";let atoms="{\"ok\":true,\"diagnostic\":\"validated\"}";let seal=ckbRenderCandidateTrustSeal(snapshot.normalizedRecords,leakage,query,authority,atoms);let options=CkbFrozenCandidateSealOptions();options.expectedKnowledgeVersion=snapshot.activeVersion;options.expectedCandidateChecksum=ckbCertifiedNormalizedRecordsChecksum(snapshot.normalizedRecords);options.inputHash=p8Hash("input");options.configHash=p8Hash("config");options.modelHash=p8Hash("model");options.studentLeakageProofJson=seal;options.studentLeakageArtifactJson=leakage;options.anonymousQueryArtifactJson=query;options.authorityIsolationArtifactJson=authority;options.atomTestArtifactJson=atoms;let first=ckbBuildFrozenCandidateSeal(store,options);@Expect(first.ok,true);@Expect(ckbFrozenCandidateManifestDiagnostic(store,first.manifestJson),"ok");let target=FileKnowledgeStore("target/r5-production-target-${ckbCoreNowMillis()}");let targetBefore=ckbActiveSnapshotPointerIdentityHash(target.loadActiveSnapshotPointer());@Expect(ckbP8FrozenSourceDiagnostic(store.root.toString(),target.root.toString(),first.manifestJson),"ok");@Expect(ckbP8FrozenSourceDiagnostic(target.root.toString(),target.root.toString(),first.manifestJson),"frozen_candidate_source_must_differ_from_target");@Expect(ckbActiveSnapshotPointerIdentityHash(target.loadActiveSnapshotPointer()),targetBefore);let secret=first.manifestJson.replace("{","{\"token\":\"must-not-land\",");@Expect(ckbP8FrozenSourceDiagnostic(store.root.toString(),target.root.toString(),secret),"secret_artifact_forbidden");let pointer=store.loadActiveSnapshotPointer();File.writeTo(store.root.join("transactions").join(pointer.txId).join("metadata/frozen-tamper.bin"),[0xff,0x00]);@Expect(ckbFrozenCandidateManifestDiagnostic(store,first.manifestJson),"frozen_candidate_manifest_drift");@Expect(ckbP8FrozenSourceDiagnostic(store.root.toString(),target.root.toString(),first.manifestJson),"frozen_candidate_manifest_drift");@Expect(ckbActiveSnapshotPointerIdentityHash(target.loadActiveSnapshotPointer()),targetBefore);let second=ckbBuildFrozenCandidateSeal(store,options);@Expect(second.ok,true);@Expect(second.evidenceHash==first.evidenceHash,false);let driftStore=FileKnowledgeStore("target/r5-freeze-drift-${ckbCoreNowMillis()}");_=kb.persistActiveSnapshot(driftStore);let drift=ckbBuildFrozenCandidateSeal(driftStore,options,faultInjector:R5FrozenPointerDriftInjector(driftStore));@Expect(drift.ok,false);@Expect(drift.diagnostic,"frozen_active_pointer_drift");options.studentLeakageProofJson="";@Expect(ckbBuildFrozenCandidateSeal(store,options).diagnostic,"student_leakage_proof_mismatch")}
+    public func r5Neg03LegacyTrustSealIsReadOnlyAndCannotFreeze(): Unit {
+        let kb = r7CleanKnowledgeBase()
+        let store = FileKnowledgeStore("target/r5-freeze-${ckbCoreNowMillis()}")
+        _ = kb.persistActiveSnapshot(store)
+        let snapshot = store.loadActiveSnapshot()
+        let leakage = ckbBuildStudentLeakageReport(snapshot.normalizedRecords).json
+        let query = "{\"ok\":true,\"indexBuildCount\":1,\"failed\":0}"
+        let authority = "{\"ok\":true,\"authorityCount\":164,\"authorityHash\":\"${p8Hash("freeze-authority")}\",\"activeEvalCount\":0}"
+        let atoms = "{\"ok\":true,\"diagnostic\":\"validated\"}"
+        let seal = ckbRenderCandidateTrustSeal(snapshot.normalizedRecords,
+            leakage, query, authority, atoms)
+        @Expect(seal.contains(
+            "\"schemaVersion\":\"ckb-student-leakage-seal-v1\""), true)
+        @Expect(ckbCandidateTrustSealDiagnostic(seal,
+            snapshot.normalizedRecords, leakage, query, authority, atoms), "ok")
+        let options = CkbFrozenCandidateSealOptions()
+        options.expectedKnowledgeVersion = snapshot.activeVersion
+        options.expectedCandidateChecksum =
+            ckbCertifiedNormalizedRecordsChecksum(snapshot.normalizedRecords)
+        options.inputHash = p8Hash("input")
+        options.configHash = p8Hash("config")
+        options.modelHash = p8Hash("model")
+        options.studentLeakageProofJson = seal
+        options.studentLeakageArtifactJson = leakage
+        options.anonymousQueryArtifactJson = query
+        options.authorityIsolationArtifactJson = authority
+        options.atomTestArtifactJson = atoms
+        let frozen = ckbBuildFrozenCandidateSeal(store, options)
+        @Expect(frozen.ok, false)
+        @Expect(frozen.diagnostic, "student_leakage_proof_v2_required")
+        @Expect(frozen.manifestJson, "")
+    }
+
+    @TestCase
+    public func s2Pos01FrozenConsumerAcceptsV2TrustSealAndRejectsDrift(): Unit {
+        let kb = r7CleanKnowledgeBase()
+        let store = FileKnowledgeStore("target/s2-freeze-v2-${ckbCoreNowMillis()}")
+        _ = kb.persistActiveSnapshot(store)
+        let snapshot = store.loadActiveSnapshot()
+        let artifacts = p8S2TrustArtifacts(snapshot.normalizedRecords)
+        let options = CkbFrozenCandidateSealOptions()
+        options.expectedKnowledgeVersion = snapshot.activeVersion
+        options.expectedCandidateChecksum =
+            ckbCertifiedNormalizedRecordsChecksum(snapshot.normalizedRecords)
+        options.inputHash = p8Hash("s2-input")
+        options.configHash = p8Hash("s2-config")
+        options.modelHash = p8Hash("s2-model")
+        options.studentLeakageProofJson = ckbRenderCandidateTrustSeal(
+            snapshot.normalizedRecords, "{\"ok\":true,\"leakageCount\":0}\n",
+            "{\"ok\":true,\"indexBuildCount\":1,\"failed\":0}\n",
+            "{\"ok\":true,\"authorityCount\":1,\"authorityHash\":\"${p8Hash("legacy")}\",\"activeEvalCount\":0}",
+            "{\"ok\":true}")
+        @Expect(ckbBuildFrozenCandidateSeal(store, options).diagnostic,
+            "student_leakage_proof_v2_required")
+        options.studentLeakageArtifactJson = artifacts[0]
+        options.anonymousQueryArtifactJson = artifacts[1]
+        options.authorityIsolationArtifactJson = artifacts[2]
+        options.atomTestArtifactJson = artifacts[3]
+        options.restLeakageArtifactJson = artifacts[4]
+        options.mcpStdioLeakageArtifactJson = artifacts[5]
+        options.mcpHttpLeakageArtifactJson = artifacts[6]
+        options.anonymousAtomQueryArtifactJson = artifacts[7]
+        options.studentLeakageProofJson = ckbRenderCandidateTrustSeal(
+            snapshot.normalizedRecords, artifacts[0], artifacts[1],
+            artifacts[2], artifacts[3], restText: artifacts[4],
+            mcpStdioText: artifacts[5], mcpHttpText: artifacts[6],
+            anonymousQueryText: artifacts[7])
+        @Expect(ckbBuildFrozenCandidateSeal(store, options).ok, true)
+        options.anonymousQueryArtifactJson = artifacts[1].replace(
+            "\"transportParity\":true", "\"transportParity\":false")
+        @Expect(ckbBuildFrozenCandidateSeal(store, options).diagnostic,
+            "student_leakage_proof_mismatch")
+    }
 
     @TestCase
     public func r5Neg04FrozenManifestAndPublishFailuresPreservePointer():Unit{let kb=newOfflineKnowledgeBase();let existing=p8Existing(kb);let incoming=p8CoverageItems(1);let store=FileKnowledgeStore("target/r5-neg-pointer-${ckbCoreNowMillis()}");let before=store.loadActiveSnapshotPointer();let proof=p8UntrustedProof(incoming,"ckb-r5-neg-pointer");proof.frozenCandidateManifestJson="{}";proof.frozenCandidateManifestHash=p8Hash(proof.frozenCandidateManifestJson);@Expect(ckbFrozenCandidateManifestIntegrityDiagnostic(proof.frozenCandidateManifestJson),"frozen_candidate_manifest_invalid");@Expect(ckbCertifiedProductionProofDiagnostic(proof,incoming),"p7_artifact_run_required");proof.studentLeakageProofJson="";let missing=ckbPublishCertifiedKnowledge(kb,store,"ckb-r5-neg-pointer-candidate",kb.status().activeKnowledgeVersion,existing,incoming,proof);let afterMissing=store.loadActiveSnapshotPointer();@Expect(missing.ok,false);@Expect(ckbActiveSnapshotPointerIdentityHash(afterMissing),ckbActiveSnapshotPointerIdentityHash(before));let polluted=p8CoverageItems(1);polluted[0].record.chunk="CJ-HUMANEVAL-001 canonical_solution";polluted[0].evidenceHash=ckbCertifiedKnowledgeRecordEvidenceHash(polluted[0]);let pollutedReport=ckbPublishCertifiedKnowledge(kb,store,"ckb-r5-neg-pointer-candidate",kb.status().activeKnowledgeVersion,existing,polluted,p8UntrustedProof(polluted,"ckb-r5-neg-pointer"));let afterPolluted=store.loadActiveSnapshotPointer();@Expect(pollutedReport.ok,false);@Expect(ckbActiveSnapshotPointerIdentityHash(afterPolluted),ckbActiveSnapshotPointerIdentityHash(before))}
@@ -244,17 +316,87 @@ private func p8Record(id: String, kind: String, title: String, chunk: String, so
 // validation, but it must never become a synthetic positive certification.
 private func p8UntrustedProof(records: ArrayList<CkbCertifiedKnowledgeRecord>, version: String): CkbProductionReleaseProof {
     let proof=CkbProductionReleaseProof();let normalized=ArrayList<NormalizedRecord>();for(item in records){normalized.add(item.record)}
-    proof.studentLeakageArtifactJson=ckbBuildStudentLeakageReport(normalized).json
-    proof.anonymousQueryArtifactJson="{\"ok\":true,\"indexBuildCount\":1,\"failed\":0}"
-    proof.authorityIsolationArtifactJson="{\"ok\":true,\"authorityCount\":164,\"authorityHash\":\"${p8Hash("authority")}\",\"activeEvalCount\":0}"
-    proof.atomTestArtifactJson="{\"ok\":true,\"diagnostic\":\"validated\"}"
-    proof.studentLeakageProofJson=ckbRenderCandidateTrustSeal(normalized,proof.studentLeakageArtifactJson,proof.anonymousQueryArtifactJson,proof.authorityIsolationArtifactJson,proof.atomTestArtifactJson)
-    let checksum=ckbCertifiedKnowledgeRecordsChecksum(records);let leakageHash=p8Hash(proof.studentLeakageProofJson);let fingerprint=p8Hash("fingerprint");proof.frozenCandidateManifestJson=p8FrozenManifest(version,checksum,leakageHash);proof.frozenCandidateManifestHash=p8Hash(proof.frozenCandidateManifestJson)
+    let trust = p8S2TrustArtifacts(normalized)
+    proof.studentLeakageArtifactJson=trust[0]
+    proof.anonymousQueryArtifactJson=trust[1]
+    proof.authorityIsolationArtifactJson=trust[2]
+    proof.atomTestArtifactJson=trust[3]
+    proof.restLeakageArtifactJson=trust[4]
+    proof.mcpStdioLeakageArtifactJson=trust[5]
+    proof.mcpHttpLeakageArtifactJson=trust[6]
+    proof.anonymousAtomQueryArtifactJson=trust[7]
+    proof.studentLeakageProofJson=ckbRenderCandidateTrustSeal(normalized,proof.studentLeakageArtifactJson,proof.anonymousQueryArtifactJson,proof.authorityIsolationArtifactJson,proof.atomTestArtifactJson,restText:proof.restLeakageArtifactJson,mcpStdioText:proof.mcpStdioLeakageArtifactJson,mcpHttpText:proof.mcpHttpLeakageArtifactJson,anonymousQueryText:proof.anonymousAtomQueryArtifactJson)
+    let checksum=ckbCertifiedKnowledgeRecordsChecksum(records);let leakageHash=p8Hash(proof.studentLeakageProofJson);let fingerprint=p8Hash("fingerprint");proof.frozenCandidateManifestJson=p8FrozenManifest(version,checksum,proof);proof.frozenCandidateManifestHash=p8Hash(proof.frozenCandidateManifestJson)
     let binaryHash=p8Hash("untrusted-certification-binary");let launchSpecHash=p8Hash("untrusted-certification-launch-spec");let commandHash=p8Hash("untrusted-certification-command")
     proof.p6PreflightJson="{\"ok\":true,\"startAllowed\":true,\"diagnostic\":\"ok\",\"fingerprint\":\"${fingerprint}\",\"candidateChecksum\":\"${checksum}\",\"studentLeakageProofHash\":\"${leakageHash}\",\"frozenCandidateManifestHash\":\"${proof.frozenCandidateManifestHash}\",\"certificationBinaryHash\":\"${binaryHash}\",\"certificationHttpLaunchSpecHash\":\"${launchSpecHash}\",\"certificationHttpCommandHash\":\"${commandHash}\",\"transportRetryBudget\":2,\"modelTimeoutSeconds\":180,\"certificationPassAt1\":null,\"violations\":[]}"
     let preflightHash=p8Hash(proof.p6PreflightJson);let runManifestHash=p8Hash(p8Part("p8-certification")+p8Part(preflightHash)+p8Part(fingerprint)+p8Part(p8Hash("provider"))+p8Part("GLM-5.2")+p8Part("claude-code-p8")+p8Part(CkbAbcdeGroups.D)+p8Part("2")+p8Part("180")+p8Part(checksum)+p8Part(leakageHash)+p8Part(proof.frozenCandidateManifestHash)+p8Part(binaryHash)+p8Part(launchSpecHash)+p8Part(commandHash))
     proof.p6RunManifestJson="{\"runId\":\"p8-certification\",\"startAllowed\":true,\"fingerprint\":\"${fingerprint}\",\"providerIdentityHash\":\"${p8Hash("provider")}\",\"modelVersion\":\"GLM-5.2\",\"claudeCodeVersion\":\"claude-code-p8\",\"certificationTransport\":\"${CkbAbcdeGroups.D}\",\"transportRetryBudget\":2,\"modelTimeoutSeconds\":180,\"candidateChecksum\":\"${checksum}\",\"studentLeakageProofHash\":\"${leakageHash}\",\"frozenCandidateManifestHash\":\"${proof.frozenCandidateManifestHash}\",\"certificationBinaryHash\":\"${binaryHash}\",\"certificationHttpLaunchSpecHash\":\"${launchSpecHash}\",\"certificationHttpCommandHash\":\"${commandHash}\",\"preflightHash\":\"${preflightHash}\",\"runManifestHash\":\"${runManifestHash}\",\"certificationPassAt1\":null}"
     proof.authorityManifestJsonl=p8Authority();proof.candidateArtifactJsonl=ckbRenderCertifiedCandidateArtifact(records);proof.indexArtifactJson=ckbRenderCertifiedCountArtifact("index",records);proof.vectorArtifactJson=ckbRenderCertifiedCountArtifact("vector",records);proof.versionManifestJson=ckbRenderCertifiedVersionManifest(version,records);proof.stdioQueryPayload=ckbRenderCertifiedQueryPayload(version,records);proof.httpQueryPayload=proof.stdioQueryPayload;proof
+}
+
+private func p8S2TrustArtifacts(
+    records: ArrayList<NormalizedRecord>): Array<String> {
+    let authorityHash = p8Hash("authority")
+    let input = CkbStudentLeakageScanInput()
+    input.normalizedRecords = records
+    input.authorityHash = authorityHash
+    input.candidateChecksum = ckbCertifiedNormalizedRecordsChecksum(records)
+    for (record in records) {
+        let raw = RawRecord()
+        raw.sourceId = record.sourceId; raw.title = record.title
+        raw.content = record.chunk; raw.contentHash = benchmarkGapSha256(record.chunk)
+        raw.metadata = record.metadata; input.rawRecords.add(raw)
+    }
+    let feed = buildServingDocuments(records)
+    let index = buildCangjieStudentServingIndex(records,
+        activeKnowledgeVersion: "p8-s2-v2")
+    input.servingDocuments = feed.documents
+    input.indexRecords = index.records
+    input.indexDocuments = index.documents
+    input.exactEntries = index.exactEntries
+    let pack = CangjieTaskKnowledgePack()
+    pack.queryId = "safe-query"; pack.taskId = "safe-task"
+    pack.knowledgeVersion = "p8-s2-v2"; pack.targetVersion = "1.0.0"
+    input.taskPacks.add(pack)
+    let leakage = ckbBuildStudentLeakageReportFromLayers(input).json
+    let anonymous=ckbBuildAnonymousAtomQueryReport(records,
+        ArrayList<NormalizedRecord>()).jsonl
+    let serving = p8S2ServingArtifacts(records, p8Hash(anonymous))
+    let materialization = p8Hash("materialization")
+        .replace("sha256:", "").toAsciiUpper()
+    let authority = "{\"ok\":true,\"authorityCount\":164,\"authorityHash\":\"${authorityHash}\",\"activeEvalCount\":0,\"normalizedEvalCount\":0,\"immutableManifestHash\":\"${p8Hash("immutable")}\",\"cleanManifestHash\":\"${p8Hash("clean")}\",\"materializationManifestEvidenceHash\":\"${materialization}\"}\n"
+    let atomBody = "{\"ok\":true,\"diagnostic\":\"validated\",\"bundleCount\":1,\"testCount\":1,\"passed\":1,\"failed\":0,\"selectedAtomsHash\":\"${p8Hash("selected")}\",\"bundleEvidenceHash\":\"${p8Hash("bundle")}\""
+    let atom = atomBody + ",\"evidenceHash\":\"${p8Hash(atomBody + "}")}\"}\n"
+    [leakage, serving.summaryJson, authority, atom, serving.restJson,
+        serving.mcpStdioJson, serving.mcpHttpJson, anonymous]
+}
+
+private func p8S2ServingArtifacts(records: ArrayList<NormalizedRecord>,
+    anonymousQueryArtifactHash: String): CkbStudentServingLeakageReport {
+    let root = "target/p8-s2-serving-${ckbCoreNowMillis()}"
+    let kb = newOfflineKnowledgeBase()
+    kb.stageCandidateRecords("p8-s2-v2", records)
+    @Expect(kb.promoteCandidateToActive("p8-s2-v2"), true)
+    let store = FileKnowledgeStore(root)
+    @Expect(kb.persistActiveSnapshot(store).ok, true)
+    let probes = ArrayList<CkbStudentServingProbe>()
+    probes.add(p8S2Probe("case", "CJ-HUMANEVAL-000", true))
+    probes.add(p8S2Probe("path",
+        "cangjie\\u002dhumaneval/中文😀/visible-benchmark/prompt.md", true))
+    probes.add(p8S2Probe("case-variant",
+        "visible-benchmark/CJ-HUMANEVAL-001/prompt.md", true))
+    let report = ckbBuildStudentServingLeakageReport(
+        CkbCommandLoopService(CkbRuntimeConfig(), store), probes,
+        anonymousQueryArtifactHash: anonymousQueryArtifactHash)
+    if (exists(Path(root))) { remove(Path(root), recursive: true) }
+    report
+}
+
+private func p8S2Probe(id: String, query: String,
+    blocked: Bool): CkbStudentServingProbe {
+    let probe = CkbStudentServingProbe()
+    probe.probeId = id; probe.query = query; probe.expectedBlocked = blocked
+    probe
 }
 
 private func p8TrustedFakeTransportProof(records:ArrayList<CkbCertifiedKnowledgeRecord>,version:String):CkbProductionReleaseProof{
@@ -302,7 +444,7 @@ private func p8RejectReplace(proof:CkbProductionReleaseProof,root:Path,name:Stri
 private func p8Items(items: Array<CkbCertifiedKnowledgeRecord>): ArrayList<CkbCertifiedKnowledgeRecord> { let out = ArrayList<CkbCertifiedKnowledgeRecord>(); for (item in items) { out.add(item) }; out }
 private func p8Hash(value: String): String { benchmarkGapSha256(value) }
 private func p8Part(value:String):String{"${value.toArray().size}:${value}"}
-private func p8FrozenManifest(version:String,candidate:String,leakage:String):String{let body="{\"schemaVersion\":\"ckb-frozen-candidate-v1\",\"knowledgeVersion\":\"${version}\",\"txIdHash\":\"${p8Hash("tx")}\",\"activePointerHash\":\"${p8Hash("pointer")}\",\"transactionHash\":\"${p8Hash("transaction")}\",\"candidateChecksum\":\"${candidate}\",\"inputHash\":\"${p8Hash("input")}\",\"configHash\":\"${p8Hash("config")}\",\"modelHash\":\"${p8Hash("model")}\",\"studentLeakageProofHash\":\"${leakage}\",\"authorityIsolationArtifactHash\":\"${p8Hash("authority")}\",\"anonymousQueryArtifactHash\":\"${p8Hash("query")}\",\"atomTestArtifactHash\":\"${p8Hash("atom")}\"";body+",\"evidenceHash\":\"${p8Hash(body+"}")}\"}"}
+private func p8FrozenManifest(version:String,candidate:String,proof:CkbProductionReleaseProof):String{let body="{\"schemaVersion\":\"ckb-frozen-candidate-v2\",\"knowledgeVersion\":\"${version}\",\"txIdHash\":\"${p8Hash("tx")}\",\"activePointerHash\":\"${p8Hash("pointer")}\",\"transactionHash\":\"${p8Hash("transaction")}\",\"candidateChecksum\":\"${candidate}\",\"inputHash\":\"${p8Hash("input")}\",\"configHash\":\"${p8Hash("config")}\",\"modelHash\":\"${p8Hash("model")}\",\"studentLeakageProofHash\":\"${p8Hash(proof.studentLeakageProofJson)}\",\"authorityIsolationArtifactHash\":\"${p8Hash(proof.authorityIsolationArtifactJson)}\",\"anonymousQueryArtifactHash\":\"${p8Hash(proof.anonymousQueryArtifactJson)}\",\"anonymousAtomQueryArtifactHash\":\"${p8Hash(proof.anonymousAtomQueryArtifactJson)}\",\"restLeakageArtifactHash\":\"${p8Hash(proof.restLeakageArtifactJson)}\",\"mcpStdioLeakageArtifactHash\":\"${p8Hash(proof.mcpStdioLeakageArtifactJson)}\",\"mcpHttpLeakageArtifactHash\":\"${p8Hash(proof.mcpHttpLeakageArtifactJson)}\",\"atomTestArtifactHash\":\"${p8Hash(proof.atomTestArtifactJson)}\"";body+",\"evidenceHash\":\"${p8Hash(body+"}")}\"}"}
 private func p8ReleaseKey(id: String): CkbScheduledFetchRunKey { let key = CkbScheduledFetchRunKey(); key.acquisitionId = "p8-${id}"; key.planningIdentityHash = p8Hash("planning-${id}"); key.runIdentityHash = p8Hash("run-${id}"); key }
 private func p8Existing(kb:KnowledgeBase):ArrayList<CkbCertifiedKnowledgeRecord>{let out=ArrayList<CkbCertifiedKnowledgeRecord>();for(row in kb.activeRecordSnapshot()){let item=CkbCertifiedKnowledgeRecord();item.canonicalIdentity="active:${row.sourceId}";item.revision=1;item.record=row;item.evidenceHash=ckbCertifiedKnowledgeRecordEvidenceHash(item);out.add(item)};out}
 private func p8Authority():String{cangjieHumanEvalRenderAuthorityManifest(buildCangjieHumanEvalManifest("cangjie_eval/cases/Cangjie-HumanEval",""))}

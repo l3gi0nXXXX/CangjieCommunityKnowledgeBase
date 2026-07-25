@@ -72,24 +72,47 @@ public func cangjieRoutineTrustProofDiagnostic(leakageText: String, queryText: S
 }
 
 public func ckbRenderCandidateTrustSeal(records: ArrayList<NormalizedRecord>, leakageText: String,
-    queryText: String, authorityText: String, atomTestText: String): String {
+    queryText: String, authorityText: String, atomTestText: String,
+    restText!: String = "", mcpStdioText!: String = "", mcpHttpText!: String = "",
+    anonymousQueryText!: String = ""): String {
     let candidateChecksum = ckbCertifiedNormalizedRecordsChecksum(records)
     let diagnostic = ckbCandidateTrustInputsDiagnostic(records, leakageText, queryText,
-        authorityText, atomTestText)
-    let body = "{\"schemaVersion\":\"ckb-student-leakage-seal-v1\",\"ok\":${diagnostic == "ok"},\"status\":\"${if (diagnostic == "ok") { "pass" } else { "fail" }}\",\"candidateChecksum\":\"${candidateChecksum}\",\"leakageArtifactHash\":\"${benchmarkGapSha256(leakageText)}\",\"anonymousQueryArtifactHash\":\"${benchmarkGapSha256(queryText)}\",\"authorityIsolationArtifactHash\":\"${benchmarkGapSha256(authorityText)}\",\"atomTestArtifactHash\":\"${benchmarkGapSha256(atomTestText)}\",\"diagnostic\":\"${cangjieReleaseGateJsonEscape(diagnostic)}\""
+        authorityText, atomTestText, restText: restText, mcpStdioText: mcpStdioText,
+        mcpHttpText: mcpHttpText, anonymousQueryText: anonymousQueryText)
+    let schema = if (ckbTrustArtifactSchema(queryText) ==
+        "ckb-student-serving-leakage-v2") {
+        "ckb-student-leakage-seal-v2"
+    } else { "ckb-student-leakage-seal-v1" }
+    let children = if (schema == "ckb-student-leakage-seal-v2") {
+        ",\"restLeakageArtifactHash\":\"${benchmarkGapSha256(restText)}\",\"mcpStdioLeakageArtifactHash\":\"${benchmarkGapSha256(mcpStdioText)}\",\"mcpHttpLeakageArtifactHash\":\"${benchmarkGapSha256(mcpHttpText)}\",\"anonymousAtomQueryArtifactHash\":\"${benchmarkGapSha256(anonymousQueryText)}\""
+    } else { "" }
+    let body = "{\"schemaVersion\":\"${schema}\",\"ok\":${diagnostic == "ok"},\"status\":\"${if (diagnostic == "ok") { "pass" } else { "fail" }}\",\"candidateChecksum\":\"${candidateChecksum}\",\"leakageArtifactHash\":\"${benchmarkGapSha256(leakageText)}\",\"anonymousQueryArtifactHash\":\"${benchmarkGapSha256(queryText)}\",\"authorityIsolationArtifactHash\":\"${benchmarkGapSha256(authorityText)}\",\"atomTestArtifactHash\":\"${benchmarkGapSha256(atomTestText)}\"${children},\"diagnostic\":\"${cangjieReleaseGateJsonEscape(diagnostic)}\""
     body + ",\"evidenceHash\":\"${benchmarkGapSha256(body + "}")}\"}"
 }
 
 public func ckbCandidateTrustSealDiagnostic(seal: String, records: ArrayList<NormalizedRecord>,
-    leakageText: String, queryText: String, authorityText: String, atomTestText: String): String {
+    leakageText: String, queryText: String, authorityText: String, atomTestText: String,
+    restText!: String = "", mcpStdioText!: String = "", mcpHttpText!: String = "",
+    anonymousQueryText!: String = ""): String {
     let inputDiagnostic = ckbCandidateTrustInputsDiagnostic(records, leakageText, queryText,
-        authorityText, atomTestText)
+        authorityText, atomTestText, restText: restText, mcpStdioText: mcpStdioText,
+        mcpHttpText: mcpHttpText, anonymousQueryText: anonymousQueryText)
     if (inputDiagnostic != "ok") { return inputDiagnostic }
     try {
         let object = JsonValue.fromStr(seal).asObject()
         let candidateChecksum = ckbCertifiedNormalizedRecordsChecksum(records)
-        let body = "{\"schemaVersion\":\"ckb-student-leakage-seal-v1\",\"ok\":true,\"status\":\"pass\",\"candidateChecksum\":\"${candidateChecksum}\",\"leakageArtifactHash\":\"${benchmarkGapSha256(leakageText)}\",\"anonymousQueryArtifactHash\":\"${benchmarkGapSha256(queryText)}\",\"authorityIsolationArtifactHash\":\"${benchmarkGapSha256(authorityText)}\",\"atomTestArtifactHash\":\"${benchmarkGapSha256(atomTestText)}\",\"diagnostic\":\"ok\""
-        if (!object.get("ok").getOrThrow().asBool().getValue() ||
+        let schema = if (ckbTrustArtifactSchema(queryText) ==
+            "ckb-student-serving-leakage-v2") {
+            "ckb-student-leakage-seal-v2"
+        } else { "ckb-student-leakage-seal-v1" }
+        let children = if (schema == "ckb-student-leakage-seal-v2") {
+            ",\"restLeakageArtifactHash\":\"${benchmarkGapSha256(restText)}\",\"mcpStdioLeakageArtifactHash\":\"${benchmarkGapSha256(mcpStdioText)}\",\"mcpHttpLeakageArtifactHash\":\"${benchmarkGapSha256(mcpHttpText)}\",\"anonymousAtomQueryArtifactHash\":\"${benchmarkGapSha256(anonymousQueryText)}\""
+        } else { "" }
+        let body = "{\"schemaVersion\":\"${schema}\",\"ok\":true,\"status\":\"pass\",\"candidateChecksum\":\"${candidateChecksum}\",\"leakageArtifactHash\":\"${benchmarkGapSha256(leakageText)}\",\"anonymousQueryArtifactHash\":\"${benchmarkGapSha256(queryText)}\",\"authorityIsolationArtifactHash\":\"${benchmarkGapSha256(authorityText)}\",\"atomTestArtifactHash\":\"${benchmarkGapSha256(atomTestText)}\"${children},\"diagnostic\":\"ok\""
+        let expected = body + ",\"evidenceHash\":\"${benchmarkGapSha256(body + "}")}\"}"
+        if (!ckbTrustUniqueField(seal, "schemaVersion") ||
+            object.get("schemaVersion").getOrThrow().asString().getValue() != schema ||
+            !object.get("ok").getOrThrow().asBool().getValue() ||
             object.get("status").getOrThrow().asString().getValue() != "pass" ||
             object.get("candidateChecksum").getOrThrow().asString().getValue() != candidateChecksum ||
             object.get("leakageArtifactHash").getOrThrow().asString().getValue() != benchmarkGapSha256(leakageText) ||
@@ -99,26 +122,41 @@ public func ckbCandidateTrustSealDiagnostic(seal: String, records: ArrayList<Nor
             object.get("evidenceHash").getOrThrow().asString().getValue() != benchmarkGapSha256(body + "}")) {
             return "student_leakage_proof_mismatch"
         }
+        if (schema == "ckb-student-leakage-seal-v2" &&
+            seal != expected && seal != expected + "\n") {
+            return "student_leakage_proof_mismatch"
+        }
         "ok"
     } catch (_: Exception) { "student_leakage_proof_mismatch" }
 }
 
 public func cangjieCandidateOnlyPreCertificationGate(records: ArrayList<NormalizedRecord>,
     leakageText: String, queryText: String, authorityText: String,
-    atomTestText: String): CangjieKnowledgeReleaseGateStep {
+    atomTestText: String, restText!: String = "", mcpStdioText!: String = "",
+    mcpHttpText!: String = "", anonymousQueryText!: String = ""): CangjieKnowledgeReleaseGateStep {
     let step = CangjieKnowledgeReleaseGateStep(); step.id = "P6-student-leakage-seal"
     step.diagnostic = ckbCandidateTrustInputsDiagnostic(records, leakageText, queryText,
-        authorityText, atomTestText)
+        authorityText, atomTestText, restText: restText, mcpStdioText: mcpStdioText,
+        mcpHttpText: mcpHttpText, anonymousQueryText: anonymousQueryText)
     step.ok = step.diagnostic == "ok"; step.status = if (step.ok) { "pass" } else { "fail" }
     if (step.ok) { step.evidenceHash = benchmarkGapSha256(ckbRenderCandidateTrustSeal(records,
-        leakageText, queryText, authorityText, atomTestText)) }
+        leakageText, queryText, authorityText, atomTestText, restText: restText,
+        mcpStdioText: mcpStdioText, mcpHttpText: mcpHttpText,
+        anonymousQueryText: anonymousQueryText)) }
     step
 }
 
 private func ckbCandidateTrustInputsDiagnostic(records: ArrayList<NormalizedRecord>, leakageText: String,
-    queryText: String, authorityText: String, atomTestText: String): String {
+    queryText: String, authorityText: String, atomTestText: String,
+    restText!: String = "", mcpStdioText!: String = "", mcpHttpText!: String = "",
+    anonymousQueryText!: String = ""): String {
     let validation = validateCangjieStudentKnowledgeRecords(records)
     if (!validation.ok) { return "student_knowledge_leakage_blocked" }
+    if (ckbTrustArtifactSchema(queryText) == "ckb-student-serving-leakage-v2") {
+        return ckbCandidateTrustV2InputsDiagnostic(records, leakageText, queryText,
+            authorityText, atomTestText, restText, mcpStdioText, mcpHttpText,
+            anonymousQueryText)
+    }
     let trust = cangjieRoutineTrustProofDiagnostic(leakageText, queryText)
     if (trust != "ok") { return trust }
     if (!ckbTrustSummaryValid(authorityText, "authority")) {
@@ -128,6 +166,277 @@ private func ckbCandidateTrustInputsDiagnostic(records: ArrayList<NormalizedReco
         return "atom_test_proof_required"
     }
     "ok"
+}
+
+private func ckbCandidateTrustV2InputsDiagnostic(records: ArrayList<NormalizedRecord>,
+    leakageText: String, queryText: String, authorityText: String,
+    atomTestText: String, restText: String, mcpStdioText: String,
+    mcpHttpText: String, anonymousQueryText: String): String {
+    let authorityHash = ckbTrustV2AuthorityHash(authorityText)
+    if (authorityHash == "") { return "authority_isolation_proof_required" }
+    if (!ckbTrustV2LeakageValid(leakageText,
+        ckbCertifiedNormalizedRecordsChecksum(records), authorityHash,
+        records.size)) {
+        return "candidate_leakage_proof_required"
+    }
+    if (!ckbTrustV2ServingValid(queryText, restText, mcpStdioText,
+        mcpHttpText, anonymousQueryText)) {
+        return "anonymous_query_proof_required"
+    }
+    if (!ckbTrustV2AtomValid(atomTestText)) {
+        return "atom_test_proof_required"
+    }
+    "ok"
+}
+
+private func ckbTrustArtifactSchema(raw: String): String {
+    let lines = raw.trimAscii().split("\n")
+    if (lines.size == 0) { return "" }
+    try {
+        let object = JsonValue.fromStr(lines[0]).asObject()
+        object.get("schemaVersion").getOrThrow().asString().getValue()
+    } catch (_: Exception) { "" }
+}
+
+private func ckbTrustV2LeakageValid(raw: String, candidateChecksum: String,
+    authorityHash: String, expectedNormalizedCount: Int64): Bool {
+    if (!raw.endsWith("\n")) { return false }
+    let lines = raw.split("\n")
+    if (lines.size != 2 || lines[1] != "") { return false }
+    let first = lines[0]
+    try {
+        let object = JsonValue.fromStr(first).asObject()
+        let rawCount = object.get("rawRecordCount").getOrThrow().asInt().getValue()
+        let normalizedCount = object.get("normalizedRecordCount").getOrThrow().asInt().getValue()
+        let servingCount = object.get("servingDocumentCount").getOrThrow().asInt().getValue()
+        let indexCount = object.get("indexRecordCount").getOrThrow().asInt().getValue()
+        let indexDocumentCount = object.get("indexDocumentCount").getOrThrow().asInt().getValue()
+        let exactEntryCount = object.get("exactEntryCount").getOrThrow().asInt().getValue()
+        let taskCount = object.get("taskPackCount").getOrThrow().asInt().getValue()
+        let scannedRecords = rawCount + normalizedCount + servingCount + indexCount +
+            indexDocumentCount + exactEntryCount + taskCount
+        let scannedFields = object.get("scannedFields").getOrThrow().asInt().getValue()
+        let body = "{\"schemaVersion\":\"ckb-student-leakage-report-v2\",\"ok\":true,\"recordCount\":${normalizedCount},\"scannedRecords\":${scannedRecords},\"scannedFields\":${scannedFields},\"rawRecordCount\":${rawCount},\"normalizedRecordCount\":${normalizedCount},\"servingDocumentCount\":${servingCount},\"indexRecordCount\":${indexCount},\"indexDocumentCount\":${indexDocumentCount},\"exactEntryCount\":${exactEntryCount},\"taskPackCount\":${taskCount},\"leakageCount\":0,\"authorityHash\":\"${authorityHash}\",\"candidateChecksum\":\"${candidateChecksum}\",\"findingsEvidenceHash\":\"${benchmarkGapSha256("")}\"}\n"
+        object.get("schemaVersion").getOrThrow().asString().getValue() ==
+            "ckb-student-leakage-report-v2" &&
+            object.get("ok").getOrThrow().asBool().getValue() &&
+            normalizedCount == expectedNormalizedCount &&
+            rawCount > 0 && normalizedCount > 0 && servingCount > 0 &&
+            indexCount > 0 && indexDocumentCount > 0 && exactEntryCount > 0 &&
+            taskCount > 0 &&
+            scannedFields >= 27 * (rawCount + normalizedCount + indexCount) +
+                15 * (servingCount + indexDocumentCount) +
+                5 * exactEntryCount + 10 * taskCount &&
+            object.get("recordCount").getOrThrow().asInt().getValue() == normalizedCount &&
+            object.get("scannedRecords").getOrThrow().asInt().getValue() == scannedRecords &&
+            object.get("leakageCount").getOrThrow().asInt().getValue() == 0 &&
+            object.get("authorityHash").getOrThrow().asString().getValue() == authorityHash &&
+            object.get("candidateChecksum").getOrThrow().asString().getValue() == candidateChecksum &&
+            object.get("findingsEvidenceHash").getOrThrow().asString().getValue() ==
+                benchmarkGapSha256("") &&
+            ckbTrustV2UniqueFields(first, [
+                "schemaVersion", "ok", "recordCount", "scannedRecords",
+                "scannedFields", "rawRecordCount", "normalizedRecordCount",
+                "servingDocumentCount", "indexRecordCount", "indexDocumentCount",
+                "exactEntryCount", "taskPackCount",
+                "leakageCount", "authorityHash", "candidateChecksum",
+                "findingsEvidenceHash"
+            ]) && raw == body
+    } catch (_: Exception) { false }
+}
+
+private func ckbTrustV2ServingValid(raw: String, restText: String,
+    mcpStdioText: String, mcpHttpText: String,
+    anonymousQueryText: String): Bool {
+    if (!raw.endsWith("\n")) { return false }
+    let first = raw.trimAscii()
+    try {
+        let object = JsonValue.fromStr(first).asObject()
+        let probeCount = object.get("probeCount").getOrThrow().asInt().getValue()
+        let failed = object.get("failed").getOrThrow().asInt().getValue()
+        let restHash = object.get("restArtifactHash").getOrThrow().asString().getValue()
+        let stdioHash = object.get("mcpStdioArtifactHash").getOrThrow().asString().getValue()
+        let httpHash = object.get("mcpHttpArtifactHash").getOrThrow().asString().getValue()
+        let queryHash = object.get("anonymousQueryArtifactHash").getOrThrow().asString().getValue()
+        let knowledgeHash = object.get("knowledgeEvidenceHash").getOrThrow().asString().getValue()
+        let body = "{\"schemaVersion\":\"ckb-student-serving-leakage-v2\",\"ok\":true,\"probeCount\":${probeCount},\"failed\":0,\"transportCount\":3,\"restArtifactHash\":\"${restHash}\",\"mcpStdioArtifactHash\":\"${stdioHash}\",\"mcpHttpArtifactHash\":\"${httpHash}\",\"anonymousQueryArtifactHash\":\"${queryHash}\",\"knowledgeEvidenceHash\":\"${knowledgeHash}\",\"transportParity\":true"
+        let evidenceHash = benchmarkGapSha256(body + "}")
+        let expected = body + ",\"evidenceHash\":\"${evidenceHash}\"}\n"
+        let restObservations = ckbTrustV2TransportObservations(
+            restText, "rest", probeCount)
+        let stdioObservations = ckbTrustV2TransportObservations(
+            mcpStdioText, "mcp-stdio", probeCount)
+        let httpObservations = ckbTrustV2TransportObservations(
+            mcpHttpText, "mcp-http", probeCount)
+        object.get("schemaVersion").getOrThrow().asString().getValue() ==
+            "ckb-student-serving-leakage-v2" &&
+            object.get("ok").getOrThrow().asBool().getValue() &&
+            probeCount >= 3 && failed == 0 &&
+            object.get("transportCount").getOrThrow().asInt().getValue() == 3 &&
+            object.get("transportParity").getOrThrow().asBool().getValue() &&
+            restHash == benchmarkGapSha256(restText) &&
+            stdioHash == benchmarkGapSha256(mcpStdioText) &&
+            httpHash == benchmarkGapSha256(mcpHttpText) &&
+            queryHash == benchmarkGapSha256(anonymousQueryText) &&
+            restObservations != "" && stdioObservations != "" &&
+            httpObservations != "" &&
+            knowledgeHash == benchmarkGapSha256(restObservations +
+                stdioObservations + httpObservations) &&
+            ckbTrustV2AnonymousQueryValid(anonymousQueryText) &&
+            object.get("evidenceHash").getOrThrow().asString().getValue() == evidenceHash &&
+            ckbTrustV2UniqueFields(first, [
+                "schemaVersion", "ok", "probeCount", "failed", "transportCount",
+                "restArtifactHash", "mcpStdioArtifactHash", "mcpHttpArtifactHash",
+                "anonymousQueryArtifactHash", "knowledgeEvidenceHash",
+                "transportParity", "evidenceHash"
+            ]) && raw == expected
+    } catch (_: Exception) { false }
+}
+
+private func ckbTrustV2TransportObservations(raw: String, transport: String,
+    probeCount: Int64): String {
+    if (!raw.endsWith("\n") || probeCount < 3) { return "" }
+    let lines = raw.split("\n")
+    if (lines.size != probeCount + 2 || lines[lines.size - 1] != "") { return "" }
+    let first = lines[0]
+    try {
+        let object = JsonValue.fromStr(first).asObject()
+        let observations = StringBuilder()
+        for (i in 0..probeCount) {
+            let line = lines[i + 1]
+            let item = JsonValue.fromStr(line).asObject()
+            let probeId = item.get("probeId").getOrThrow().asString().getValue()
+            let requestHash = item.get("requestHash").getOrThrow().asString().getValue()
+            let expectedBlocked = item.get("expectedBlocked").getOrThrow().asBool().getValue()
+            let canonicalHash = item.get("canonicalEvidenceHash").getOrThrow().asString().getValue()
+            let responseHash = item.get("responseHash").getOrThrow().asString().getValue()
+            let canonical = "{\"probeId\":\"${cangjieReleaseGateJsonEscape(probeId)}\",\"requestHash\":\"${requestHash}\",\"expectedBlocked\":${expectedBlocked},\"passed\":true,\"canonicalEvidenceHash\":\"${canonicalHash}\",\"responseHash\":\"${responseHash}\"}"
+            if (probeId == "" || !ckbTrustHash(requestHash) ||
+                !item.get("passed").getOrThrow().asBool().getValue() ||
+                !ckbTrustHash(canonicalHash) || !ckbTrustHash(responseHash) ||
+                !ckbTrustV2UniqueFields(line, [
+                    "probeId", "requestHash", "expectedBlocked", "passed",
+                    "canonicalEvidenceHash", "responseHash"
+                ]) || line != canonical) { return "" }
+            observations.append(line); observations.append("\n")
+        }
+        let observationText = observations.toString()
+        let actualBody = "{\"schemaVersion\":\"ckb-student-transport-leakage-v1\",\"transport\":\"${transport}\",\"ok\":true,\"probeCount\":${probeCount},\"failed\":0,\"observationsHash\":\"${benchmarkGapSha256(observationText)}\""
+        let expected = actualBody +
+            ",\"evidenceHash\":\"${benchmarkGapSha256(actualBody + "}")}\"}\n" +
+            observationText
+        if (object.get("schemaVersion").getOrThrow().asString().getValue() !=
+            "ckb-student-transport-leakage-v1" ||
+            object.get("transport").getOrThrow().asString().getValue() != transport) {
+            return ""
+        }
+        if (!object.get("ok").getOrThrow().asBool().getValue() ||
+            object.get("probeCount").getOrThrow().asInt().getValue() != probeCount ||
+            object.get("failed").getOrThrow().asInt().getValue() != 0 ||
+            object.get("observationsHash").getOrThrow().asString().getValue() !=
+                benchmarkGapSha256(observationText) ||
+            !ckbTrustV2UniqueFields(first, [
+                "schemaVersion", "transport", "ok", "probeCount", "failed",
+                "observationsHash", "evidenceHash"
+            ]) || raw != expected) { return "" }
+        observationText
+    } catch (_: Exception) { "" }
+}
+
+private func ckbTrustV2AnonymousQueryValid(raw: String): Bool {
+    if (!raw.endsWith("\n")) { return false }
+    let lines = raw.split("\n")
+    if (lines.size < 2 || lines[lines.size - 1] != "") { return false }
+    try {
+        let summary = JsonValue.fromStr(lines[0]).asObject()
+        let atomCount = summary.get("atomCount").getOrThrow().asInt().getValue()
+        let passed = summary.get("passed").getOrThrow().asInt().getValue()
+        let failed = summary.get("failed").getOrThrow().asInt().getValue()
+        if (!summary.get("ok").getOrThrow().asBool().getValue() ||
+            summary.get("indexBuildCount").getOrThrow().asInt().getValue() != 1 ||
+            atomCount < 0 || passed != atomCount || failed != 0 ||
+            lines.size != atomCount + 2 ||
+            !ckbTrustV2UniqueFields(lines[0], [
+                "ok", "indexBuildCount", "atomCount", "passed", "failed"
+            ]) ||
+            lines[0] != "{\"ok\":true,\"indexBuildCount\":1,\"atomCount\":${atomCount},\"passed\":${passed},\"failed\":0}") {
+            return false
+        }
+        for (i in 0..atomCount) {
+            let line = lines[i + 1]
+            let item = JsonValue.fromStr(line).asObject()
+            let atomHash = item.get("atomHash").getOrThrow().asString().getValue()
+            let queryHash = item.get("queryHash").getOrThrow().asString().getValue()
+            let hitCount = item.get("hitCount").getOrThrow().asInt().getValue()
+            if (!ckbTrustHash(atomHash) || !ckbTrustHash(queryHash) || hitCount < 1 ||
+                !item.get("passed").getOrThrow().asBool().getValue() ||
+                !ckbTrustV2UniqueFields(line,
+                    ["atomHash", "queryHash", "hitCount", "passed"]) ||
+                line != "{\"atomHash\":\"${atomHash}\",\"queryHash\":\"${queryHash}\",\"hitCount\":${hitCount},\"passed\":true}") {
+                return false
+            }
+        }
+        true
+    } catch (_: Exception) { false }
+}
+
+private func ckbTrustV2AuthorityHash(raw: String): String {
+    if (!raw.endsWith("\n")) { return "" }
+    let first = raw.trimAscii()
+    try {
+        let object = JsonValue.fromStr(first).asObject()
+        let count = object.get("authorityCount").getOrThrow().asInt().getValue()
+        let authorityHash = object.get("authorityHash").getOrThrow().asString().getValue()
+        let immutableHash = object.get("immutableManifestHash").getOrThrow().asString().getValue()
+        let cleanHash = object.get("cleanManifestHash").getOrThrow().asString().getValue()
+        let materializationHash = object.get("materializationManifestEvidenceHash").getOrThrow().asString().getValue()
+        let expected = "{\"ok\":true,\"authorityCount\":${count},\"authorityHash\":\"${authorityHash}\",\"activeEvalCount\":0,\"normalizedEvalCount\":0,\"immutableManifestHash\":\"${immutableHash}\",\"cleanManifestHash\":\"${cleanHash}\",\"materializationManifestEvidenceHash\":\"${materializationHash}\"}\n"
+        if (count <= 0 || !ckbTrustHash(authorityHash) ||
+            !ckbTrustHash(immutableHash) || !ckbTrustHash(cleanHash) ||
+            !ckbTrustBareEvidenceHash(materializationHash) ||
+            object.get("ok").getOrThrow().asBool().getValue() != true ||
+            object.get("activeEvalCount").getOrThrow().asInt().getValue() != 0 ||
+            object.get("normalizedEvalCount").getOrThrow().asInt().getValue() != 0 ||
+            !ckbTrustV2UniqueFields(first, [
+                "ok", "authorityCount", "authorityHash", "activeEvalCount",
+                "normalizedEvalCount", "immutableManifestHash", "cleanManifestHash",
+                "materializationManifestEvidenceHash"
+            ]) || raw != expected) { return "" }
+        authorityHash
+    } catch (_: Exception) { "" }
+}
+
+private func ckbTrustV2AtomValid(raw: String): Bool {
+    if (!raw.endsWith("\n")) { return false }
+    let first = raw.trimAscii()
+    try {
+        let object = JsonValue.fromStr(first).asObject()
+        let bundleCount = object.get("bundleCount").getOrThrow().asInt().getValue()
+        let testCount = object.get("testCount").getOrThrow().asInt().getValue()
+        let passed = object.get("passed").getOrThrow().asInt().getValue()
+        let failed = object.get("failed").getOrThrow().asInt().getValue()
+        let selectedHash = object.get("selectedAtomsHash").getOrThrow().asString().getValue()
+        let bundleHash = object.get("bundleEvidenceHash").getOrThrow().asString().getValue()
+        let body = "{\"ok\":true,\"diagnostic\":\"validated\",\"bundleCount\":${bundleCount},\"testCount\":${testCount},\"passed\":${passed},\"failed\":0,\"selectedAtomsHash\":\"${selectedHash}\",\"bundleEvidenceHash\":\"${bundleHash}\""
+        let evidenceHash = benchmarkGapSha256(body + "}")
+        let expected = body + ",\"evidenceHash\":\"${evidenceHash}\"}\n"
+        bundleCount >= 0 && testCount >= 0 && passed == testCount && failed == 0 &&
+            object.get("ok").getOrThrow().asBool().getValue() &&
+            object.get("diagnostic").getOrThrow().asString().getValue() == "validated" &&
+            ckbTrustHash(selectedHash) && ckbTrustHash(bundleHash) &&
+            object.get("evidenceHash").getOrThrow().asString().getValue() == evidenceHash &&
+            ckbTrustV2UniqueFields(first, [
+                "ok", "diagnostic", "bundleCount", "testCount", "passed",
+                "failed", "selectedAtomsHash", "bundleEvidenceHash", "evidenceHash"
+            ]) && raw == expected
+    } catch (_: Exception) { false }
+}
+
+private func ckbTrustV2UniqueFields(raw: String, fields: Array<String>): Bool {
+    for (field in fields) {
+        if (!ckbTrustUniqueField(raw, field)) { return false }
+    }
+    true
 }
 
 private func ckbTrustSummaryValid(raw: String, kind: String): Bool {
@@ -144,6 +453,14 @@ private func ckbTrustSummaryValid(raw: String, kind: String): Bool {
 
 private func ckbTrustUniqueField(raw: String, field: String): Bool { raw.split("\"${field}\"").size == 2 }
 private func ckbTrustHash(value:String):Bool{if(!value.startsWith("sha256:")||value.toRuneArray().size!=71){return false};for(r in value.toRuneArray()[7..71]){if(!((r>=r'0'&&r<=r'9')||(r>=r'a'&&r<=r'f'))){return false}};true}
+private func ckbTrustBareEvidenceHash(value: String): Bool {
+    if (value.toRuneArray().size != 64) { return false }
+    for (rune in value.toRuneArray()) {
+        if (!((rune >= r'0' && rune <= r'9') ||
+            (rune >= r'A' && rune <= r'F'))) { return false }
+    }
+    true
+}
 
 public func parseCangjieKnowledgeReleaseGateOptions(args: Array<String>): CangjieKnowledgeReleaseGateOptions {
     let options = CangjieKnowledgeReleaseGateOptions()

@@ -31,6 +31,10 @@ public class CkbProductionReleaseProof {
     public var versionManifestJson: String = ""
     public var studentLeakageArtifactJson: String = ""
     public var anonymousQueryArtifactJson: String = ""
+    public var anonymousAtomQueryArtifactJson: String = ""
+    public var restLeakageArtifactJson: String = ""
+    public var mcpStdioLeakageArtifactJson: String = ""
+    public var mcpHttpLeakageArtifactJson: String = ""
     public var authorityIsolationArtifactJson: String = ""
     public var atomTestArtifactJson: String = ""
     public var studentLeakageProofJson: String = ""
@@ -106,7 +110,9 @@ public func ckbCertifiedProductionProofDiagnostic(proof: CkbProductionReleasePro
     if(proof.studentLeakageProofJson.trimAscii()==""){return "student_leakage_proof_required"}
     let p6Binding=ckbP8P6BindingDiagnostic(proof,checksum);if(p6Binding!="ok"){return p6Binding}
     if(proof.frozenCandidateManifestJson.trimAscii()==""||proof.frozenCandidateManifestHash!=benchmarkGapSha256(proof.frozenCandidateManifestJson)){return "frozen_candidate_manifest_required"}
+    if(!proof.frozenCandidateManifestJson.contains("\"schemaVersion\":\"ckb-frozen-candidate-v2\"")||!proof.studentLeakageProofJson.contains("\"schemaVersion\":\"ckb-student-leakage-seal-v2\"")){return "student_leakage_proof_v2_required"}
     if(ckbFrozenCandidateManifestIntegrityDiagnostic(proof.frozenCandidateManifestJson,expectedCandidateChecksum:checksum,expectedLeakageProofHash:benchmarkGapSha256(proof.studentLeakageProofJson),expectedKnowledgeVersion:certification.knowledgeVersion)!="ok"){return "frozen_candidate_manifest_invalid"}
+    if(ckbP8FrozenV2ArtifactsDiagnostic(proof)!="ok"){return "frozen_candidate_manifest_invalid"}
     let leakage=ckbP8StudentLeakageProofDiagnostic(proof,records,checksum);if(leakage!="ok"){return leakage}
     if (proof.candidateArtifactJsonl != ckbRenderCertifiedCandidateArtifact(records)) { return "candidate_artifact_mismatch" }
     let indexDiagnostic = ckbP8CountArtifactDiagnostic(proof.indexArtifactJson, "index", records.size, checksum)
@@ -125,7 +131,8 @@ public func ckbCertifiedKnowledgeRecordsChecksum(records: ArrayList<CkbCertified
 
 public func ckbCertifiedNormalizedRecordsChecksum(records:ArrayList<NormalizedRecord>):String{let seeds=ArrayList<String>();for(record in records){seeds.add(ckbP8NormalizedRecordSeed(record))};let sorted=seeds.toArray();sort(sorted);let seed=StringBuilder();for(value in sorted){seed.append(ckbP8Part(value))};benchmarkGapSha256(seed.toString())}
 private func ckbP8P6BindingDiagnostic(proof:CkbProductionReleaseProof,checksum:String):String{try{let m=JsonValue.fromStr(proof.p6RunManifestJson).asObject();let ph=ckbP8String(m,"preflightHash");let rh=ckbP8String(m,"runManifestHash");if(ckbP8String(m,"candidateChecksum")!=checksum||ckbP8String(m,"studentLeakageProofHash")!=benchmarkGapSha256(proof.studentLeakageProofJson)||ckbP8String(m,"frozenCandidateManifestHash")!=proof.frozenCandidateManifestHash){return "p6_candidate_binding_mismatch"};var saw=false;for(line in proof.p7ResultsJsonl.split("\n")){if(line.trimAscii()==""){continue};let row=parseCkbCertificationEvidence(line);saw=true;if(row.preflightHash!=ph||row.runManifestHash!=rh){return "p6_p7_lineage_mismatch"}};if(!saw){return "p6_p7_lineage_mismatch"};"ok"}catch(_:Exception){"p6_candidate_binding_mismatch"}}
-private func ckbP8StudentLeakageProofDiagnostic(proof:CkbProductionReleaseProof,records:ArrayList<CkbCertifiedKnowledgeRecord>,checksum:String):String{let normalized=ArrayList<NormalizedRecord>();for(item in records){normalized.add(item.record)};if(ckbCertifiedNormalizedRecordsChecksum(normalized)!=checksum||!ckbBuildStudentLeakageReport(normalized).ok){return "student_knowledge_leakage_blocked"};if(ckbCandidateTrustSealDiagnostic(proof.studentLeakageProofJson,normalized,proof.studentLeakageArtifactJson,proof.anonymousQueryArtifactJson,proof.authorityIsolationArtifactJson,proof.atomTestArtifactJson)!="ok"){return "student_leakage_proof_mismatch"};"ok"}
+private func ckbP8StudentLeakageProofDiagnostic(proof:CkbProductionReleaseProof,records:ArrayList<CkbCertifiedKnowledgeRecord>,checksum:String):String{let normalized=ArrayList<NormalizedRecord>();for(item in records){normalized.add(item.record)};if(ckbCertifiedNormalizedRecordsChecksum(normalized)!=checksum||!ckbBuildStudentLeakageReport(normalized).ok){return "student_knowledge_leakage_blocked"};if(ckbCandidateTrustSealDiagnostic(proof.studentLeakageProofJson,normalized,proof.studentLeakageArtifactJson,proof.anonymousQueryArtifactJson,proof.authorityIsolationArtifactJson,proof.atomTestArtifactJson,restText:proof.restLeakageArtifactJson,mcpStdioText:proof.mcpStdioLeakageArtifactJson,mcpHttpText:proof.mcpHttpLeakageArtifactJson,anonymousQueryText:proof.anonymousAtomQueryArtifactJson)!="ok"){return "student_leakage_proof_mismatch"};"ok"}
+private func ckbP8FrozenV2ArtifactsDiagnostic(proof:CkbProductionReleaseProof):String{try{let m=JsonValue.fromStr(proof.frozenCandidateManifestJson).asObject();if(ckbP8String(m,"schemaVersion")!="ckb-frozen-candidate-v2"||ckbP8String(m,"anonymousQueryArtifactHash")!=benchmarkGapSha256(proof.anonymousQueryArtifactJson)||ckbP8String(m,"anonymousAtomQueryArtifactHash")!=benchmarkGapSha256(proof.anonymousAtomQueryArtifactJson)||ckbP8String(m,"restLeakageArtifactHash")!=benchmarkGapSha256(proof.restLeakageArtifactJson)||ckbP8String(m,"mcpStdioLeakageArtifactHash")!=benchmarkGapSha256(proof.mcpStdioLeakageArtifactJson)||ckbP8String(m,"mcpHttpLeakageArtifactHash")!=benchmarkGapSha256(proof.mcpHttpLeakageArtifactJson)||ckbP8String(m,"authorityIsolationArtifactHash")!=benchmarkGapSha256(proof.authorityIsolationArtifactJson)||ckbP8String(m,"atomTestArtifactHash")!=benchmarkGapSha256(proof.atomTestArtifactJson)){return "frozen_candidate_v2_artifact_mismatch"};"ok"}catch(_:Exception){"frozen_candidate_v2_artifact_mismatch"}}
 
 public class CkbCertifiedProductionPreCommitGate <: CangjieCandidatePreCommitGate {
     private let kb: KnowledgeBase

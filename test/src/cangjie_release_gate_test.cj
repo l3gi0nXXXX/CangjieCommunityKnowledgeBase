@@ -1,6 +1,6 @@
 package cangjie_community_knowledge_base_test
 
-import std.fs.{Directory, File, Path, exists}
+import std.fs.{Directory, File, Path, exists, remove}
 import std.collection.ArrayList
 import std.process.*
 import std.unittest.*
@@ -38,6 +38,90 @@ public class CangjieReleaseGateTest {
             cleanQueries, duplicateAuthority, cleanAtom).diagnostic, "authority_isolation_proof_required")
         @Expect(cangjieCandidateOnlyPreCertificationGate(ArrayList<NormalizedRecord>(), cleanLeakage,
             cleanQueries, cleanAuthority, duplicateAtom).diagnostic, "atom_test_proof_required")
+    }
+
+    @TestCase
+    public func s2Ut01TrustSealV2BindsActualArtifactsAndV1IsReadOnly(): Unit {
+        let records = ArrayList<NormalizedRecord>()
+        records.add(s2ReleaseRecord())
+        let legacyLeakage = "{\"ok\":true,\"leakageCount\":0}\n"
+        let legacyQuery = "{\"ok\":true,\"indexBuildCount\":1,\"failed\":0}\n"
+        let legacyAuthority = "{\"ok\":true,\"authorityCount\":1,\"authorityHash\":\"${s2ReleaseHash("legacy-authority")}\",\"activeEvalCount\":0}"
+        let legacyAtom = "{\"ok\":true,\"diagnostic\":\"validated\"}"
+        let legacySeal = ckbRenderCandidateTrustSeal(records, legacyLeakage,
+            legacyQuery, legacyAuthority, legacyAtom)
+        @Expect(legacySeal.contains("\"schemaVersion\":\"ckb-student-leakage-seal-v1\""), true)
+        @Expect(ckbCandidateTrustSealDiagnostic(legacySeal, records, legacyLeakage,
+            legacyQuery, legacyAuthority, legacyAtom), "ok")
+
+    let artifacts = s2ReleaseV2Artifacts(records)
+        let seal = ckbRenderCandidateTrustSeal(records, artifacts[0], artifacts[1],
+            artifacts[2], artifacts[3], restText: artifacts[4],
+            mcpStdioText: artifacts[5], mcpHttpText: artifacts[6],
+            anonymousQueryText: artifacts[7])
+        @Expect(seal.contains("\"schemaVersion\":\"ckb-student-leakage-seal-v2\""), true)
+        @Expect(ckbCandidateTrustSealDiagnostic(seal + "\n", records, artifacts[0],
+            artifacts[1], artifacts[2], artifacts[3], restText: artifacts[4],
+            mcpStdioText: artifacts[5], mcpHttpText: artifacts[6],
+            anonymousQueryText: artifacts[7]), "ok")
+        @Expect(cangjieCandidateOnlyPreCertificationGate(records, artifacts[0],
+            artifacts[1], artifacts[2], artifacts[3], restText: artifacts[4],
+            mcpStdioText: artifacts[5], mcpHttpText: artifacts[6],
+            anonymousQueryText: artifacts[7]).ok, true)
+    }
+
+    @TestCase
+    public func s2Neg01TrustSealV2RejectsEveryArtifactAndSealDrift(): Unit {
+        let records = ArrayList<NormalizedRecord>()
+        records.add(s2ReleaseRecord())
+        let artifacts = s2ReleaseV2Artifacts(records)
+        let seal = ckbRenderCandidateTrustSeal(records, artifacts[0], artifacts[1],
+            artifacts[2], artifacts[3], restText: artifacts[4],
+            mcpStdioText: artifacts[5], mcpHttpText: artifacts[6],
+            anonymousQueryText: artifacts[7])
+        let wrongHash = s2ReleaseHash("wrong")
+        @Expect(ckbCandidateTrustSealDiagnostic(seal, records,
+            artifacts[0].replace(ckbCertifiedNormalizedRecordsChecksum(records), wrongHash),
+            artifacts[1], artifacts[2], artifacts[3], restText: artifacts[4],
+            mcpStdioText: artifacts[5], mcpHttpText: artifacts[6],
+            anonymousQueryText: artifacts[7]),
+            "candidate_leakage_proof_required")
+        @Expect(ckbCandidateTrustSealDiagnostic(seal, records, artifacts[0],
+            artifacts[1].replace("\"transportParity\":true", "\"transportParity\":false"),
+            artifacts[2], artifacts[3], restText: artifacts[4],
+            mcpStdioText: artifacts[5], mcpHttpText: artifacts[6],
+            anonymousQueryText: artifacts[7]), "anonymous_query_proof_required")
+        @Expect(ckbCandidateTrustSealDiagnostic(seal, records, artifacts[0], artifacts[1],
+            artifacts[2].replace(s2ReleaseHash("authority"), wrongHash), artifacts[3],
+            restText: artifacts[4], mcpStdioText: artifacts[5],
+            mcpHttpText: artifacts[6], anonymousQueryText: artifacts[7]),
+            "candidate_leakage_proof_required")
+        @Expect(ckbCandidateTrustSealDiagnostic(seal, records, artifacts[0], artifacts[1],
+            artifacts[2], artifacts[3].replace("\"passed\":1", "\"passed\":0"),
+            restText: artifacts[4], mcpStdioText: artifacts[5],
+            mcpHttpText: artifacts[6], anonymousQueryText: artifacts[7]),
+            "atom_test_proof_required")
+        for (i in 4..8) {
+            var rest = artifacts[4]; var stdio = artifacts[5]
+            var http = artifacts[6]; var query = artifacts[7]
+            if (i == 4) { rest += " " } else if (i == 5) { stdio += " " }
+            else if (i == 6) { http += " " } else { query += " " }
+            @Expect(ckbCandidateTrustSealDiagnostic(seal, records, artifacts[0],
+                artifacts[1], artifacts[2], artifacts[3], restText: rest,
+                mcpStdioText: stdio, mcpHttpText: http,
+                anonymousQueryText: query), "anonymous_query_proof_required")
+        }
+        @Expect(ckbCandidateTrustSealDiagnostic(seal + " ", records, artifacts[0],
+            artifacts[1], artifacts[2], artifacts[3], restText: artifacts[4],
+            mcpStdioText: artifacts[5], mcpHttpText: artifacts[6],
+            anonymousQueryText: artifacts[7]), "student_leakage_proof_mismatch")
+        @Expect(ckbCandidateTrustSealDiagnostic(
+            seal.replace("ckb-student-leakage-seal-v2",
+                "ckb-student-leakage-seal-v1"),
+            records, artifacts[0], artifacts[1], artifacts[2], artifacts[3],
+            restText: artifacts[4], mcpStdioText: artifacts[5],
+            mcpHttpText: artifacts[6], anonymousQueryText: artifacts[7]),
+            "student_leakage_proof_mismatch")
     }
 
     @TestCase
@@ -260,6 +344,97 @@ public class CangjieReleaseGateTest {
         @Expect(f8HasStep(report, "P3-knowledge-atom-tests", true), true)
         @Expect(f8DiagnosticsContain(report, "knowledge_atom_set_mismatch"), false)
     }
+}
+
+private func s2ReleaseHash(value: String): String {
+    benchmarkGapSha256(value)
+}
+
+private func s2ReleaseRecord(): NormalizedRecord {
+    let record = NormalizedRecord()
+    record.sourceId = "official-arraylist"
+    record.recordKind = CangjieTypedRecordKinds.DOC_SECTION
+    record.title = "ArrayList add"
+    record.chunk = "public func append(values: ArrayList<Int64>): Unit { values.add(1) }"
+    record.citation = "https://docs.cangjie-lang.cn/docs/1.0.0/"
+    record.metadata.sourceId = record.sourceId
+    record.metadata.sourceType = SourceTypes.DOC
+    record.metadata.sourceSet = CangjieSourceSets.DOCS
+    record.metadata.path = "docs/arraylist.md"
+    record.metadata.targetVersion = "1.0.0"
+    record.metadata.trustLevel = TrustLevels.OFFICIAL
+    record.metadata.reviewState = ReviewStates.TRUSTED
+    record
+}
+
+private func s2ReleaseV2Artifacts(records: ArrayList<NormalizedRecord>): Array<String> {
+    let authorityHash = s2ReleaseHash("authority")
+    let input = CkbStudentLeakageScanInput()
+    input.authorityHash = authorityHash
+    input.candidateChecksum = ckbCertifiedNormalizedRecordsChecksum(records)
+    input.normalizedRecords = records
+    for (record in records) {
+        let raw = RawRecord()
+        raw.sourceId = record.sourceId; raw.title = record.title
+        raw.content = record.chunk; raw.contentHash = benchmarkGapSha256(record.chunk)
+        raw.metadata = record.metadata; input.rawRecords.add(raw)
+    }
+    let feed = buildServingDocuments(records)
+    let index = buildCangjieStudentServingIndex(records,
+        activeKnowledgeVersion: "s2-release-v2")
+    input.servingDocuments = feed.documents
+    input.indexRecords = index.records
+    input.indexDocuments = index.documents
+    input.exactEntries = index.exactEntries
+    let pack = CangjieTaskKnowledgePack()
+    pack.queryId = "safe-query"; pack.taskId = "safe-task"
+    pack.knowledgeVersion = "s2-release-v2"; pack.targetVersion = "1.0.0"
+    input.taskPacks.add(pack)
+    let leakage = ckbBuildStudentLeakageReportFromLayers(input).json
+    let anonymous = ckbBuildAnonymousAtomQueryReport(records,
+        ArrayList<NormalizedRecord>()).jsonl
+    let servingReport = s2ReleaseServingArtifacts(records,
+        benchmarkGapSha256(anonymous))
+    let materializationHash = s2ReleaseHash("materialization")
+        .replace("sha256:", "").toAsciiUpper()
+    let authority = "{\"ok\":true,\"authorityCount\":164,\"authorityHash\":\"${authorityHash}\",\"activeEvalCount\":0,\"normalizedEvalCount\":0,\"immutableManifestHash\":\"${s2ReleaseHash("immutable")}\",\"cleanManifestHash\":\"${s2ReleaseHash("clean")}\",\"materializationManifestEvidenceHash\":\"${materializationHash}\"}\n"
+    let atomBody = "{\"ok\":true,\"diagnostic\":\"validated\",\"bundleCount\":1,\"testCount\":1,\"passed\":1,\"failed\":0,\"selectedAtomsHash\":\"${s2ReleaseHash("selected")}\",\"bundleEvidenceHash\":\"${s2ReleaseHash("bundle")}\""
+    let atom = atomBody + ",\"evidenceHash\":\"${s2ReleaseHash(atomBody + "}")}\"}\n"
+    [leakage, servingReport.summaryJson, authority, atom, servingReport.restJson,
+        servingReport.mcpStdioJson, servingReport.mcpHttpJson, anonymous]
+}
+
+public func ckbS2ReleaseV2ArtifactsForTest(
+    records: ArrayList<NormalizedRecord>): Array<String> {
+    s2ReleaseV2Artifacts(records)
+}
+
+private func s2ReleaseServingArtifacts(records: ArrayList<NormalizedRecord>,
+    anonymousQueryArtifactHash: String): CkbStudentServingLeakageReport {
+    let root = "target/s2-release-serving-${ckbCoreNowMillis()}"
+    let kb = newOfflineKnowledgeBase()
+    kb.stageCandidateRecords("s2-release-v2", records)
+    @Expect(kb.promoteCandidateToActive("s2-release-v2"), true)
+    let store = FileKnowledgeStore(root)
+    @Expect(kb.persistActiveSnapshot(store).ok, true)
+    let probes = ArrayList<CkbStudentServingProbe>()
+    probes.add(s2ReleaseProbe("case", "CJ-HUMANEVAL-000", true))
+    probes.add(s2ReleaseProbe("path",
+        "cangjie\\u002dhumaneval/中文😀/visible-benchmark/prompt.md", true))
+    probes.add(s2ReleaseProbe("case-variant",
+        "visible-benchmark/CJ-HUMANEVAL-001/prompt.md", true))
+    let report = ckbBuildStudentServingLeakageReport(
+        CkbCommandLoopService(CkbRuntimeConfig(), store), probes,
+        anonymousQueryArtifactHash: anonymousQueryArtifactHash)
+    if (exists(Path(root))) { remove(Path(root), recursive: true) }
+    report
+}
+
+private func s2ReleaseProbe(id: String, query: String,
+    blocked: Bool): CkbStudentServingProbe {
+    let probe = CkbStudentServingProbe()
+    probe.probeId = id; probe.query = query; probe.expectedBlocked = blocked
+    probe
 }
 
 private func p3AtomGateReport(name:String,curation:String,atoms:String):CangjieKnowledgeReleaseGateReport{let fixture=f8WriteFirstInitFixture("target/p3-atom-${name}-fixture",true);let runRoot="target/p3-atom-${name}-run";f8WritePass1Files(runRoot,true);f8WriteFile(Path("${runRoot}/gap-curation-input.jsonl"),curation);if(atoms!=""){f8WriteFile(Path("${runRoot}/knowledge-atoms.jsonl"),atoms)};f8EnsureEmptyDir("target/p3-atom-${name}-store");cangjieKnowledgeReleaseGate(f8ReleaseGateOptions(runRoot,fixture),f8ReleaseGateRuntimeConfig(),FileKnowledgeStore("target/p3-atom-${name}-store"),sourceRunner:F9ReleaseGateFreshRunner())}

@@ -10,6 +10,12 @@ public class CkbMcpStdioTest {
         CkbMcpStdioServer(CkbCommandLoopService(CkbRuntimeConfig(), FileKnowledgeStore("target/${name}")))
     }
 
+    private func activeServer(name: String): CkbMcpStdioServer {
+        let store = FileKnowledgeStore("target/${name}")
+        @Expect(r7CleanKnowledgeBase().persistActiveSnapshot(store).ok, true)
+        CkbMcpStdioServer(CkbCommandLoopService(CkbRuntimeConfig(), store))
+    }
+
     private func toolCall(name: String, arguments: String): String {
         "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/call\",\"params\":{\"name\":\"${name}\",\"arguments\":${arguments}}}"
     }
@@ -180,8 +186,9 @@ public class CkbMcpStdioTest {
 
     @TestCase
     public func p1Pos001TaskKnowledgePackDoesNotPretendCoverageWithoutEvidence(): Unit {
-        let args = "{\"taskId\":\"CJ-HUMANEVAL-000\",\"benchmark\":\"Cangjie-HumanEval\",\"taskText\":\"Implement ArrayList helper\",\"signature\":\"func solve(xs: ArrayList<Int64>): Int64\",\"expectedKnowledgeTags\":[\"ArrayList\",\"symbol\"],\"targetVersion\":\"1.0.0\",\"sourceSet\":\"stdx\",\"sourceRef\":\"release-1.0.0\",\"versionPolicy\":\"exact\"}"
-        let response = this.server("p1-pos-mcp-001").handleRequest(this.toolCall("cangjie_task_knowledge_pack", args))
+        let args = "{\"taskId\":\"PUBLIC-ARRAYLIST-000\",\"benchmark\":\"public\",\"taskText\":\"Implement ArrayList helper\",\"signature\":\"func solve(xs: ArrayList<Int64>): Int64\",\"expectedKnowledgeTags\":[\"ArrayList\",\"symbol\"],\"targetVersion\":\"1.0.0\",\"sourceSet\":\"stdx\",\"sourceRef\":\"release-1.0.0\",\"versionPolicy\":\"exact\"}"
+        let response = this.activeServer("p1-pos-mcp-001").handleRequest(
+            this.toolCall("cangjie_task_knowledge_pack", args))
 
         @Expect(response.contains("\"structuredContent\""), true)
         @Expect(response.contains("\"versionResolution\""), true)

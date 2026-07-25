@@ -42,17 +42,25 @@ public class CkbCandidatePrecertSealTest {
         let store = r6PrecertStore(root, selected)
         let first = r6PrecertRun(store, selected, "${root}/out-a")
         let second = r6PrecertRun(store, selected, "${root}/out-b")
+        @Expect(first.diagnostic, "ok"); @Expect(second.diagnostic, "ok")
         @Expect(first.ok, true); @Expect(second.ok, true)
         @Expect(first.candidateChecksum, second.candidateChecksum)
         @Expect(first.trustSealHash, second.trustSealHash)
         @Expect(first.summaryHash, second.summaryHash)
         let leakage = r6PrecertRead("${root}/out-a/student-leakage-report.jsonl")
-        let query = r6PrecertRead("${root}/out-a/anonymous-atom-query-report.jsonl")
+        let serving = r6PrecertRead("${root}/out-a/student-serving-leakage-report.json")
         let authority = r6PrecertRead("${root}/out-a/authority-isolation.json")
         let atom = r6PrecertRead("${root}/out-a/atom-test-summary.json")
         let seal = r6PrecertRead("${root}/out-a/candidate-trust-seal.json")
-        @Expect(ckbCandidateTrustSealDiagnostic(seal, store.loadActiveSnapshot().normalizedRecords,
-            leakage, query, authority, atom), "ok")
+        let rest = r6PrecertRead("${root}/out-a/student-serving-rest-report.json")
+        let stdio = r6PrecertRead("${root}/out-a/student-serving-mcp-stdio-report.json")
+        let http = r6PrecertRead("${root}/out-a/student-serving-mcp-http-report.json")
+        let anonymous = r6PrecertRead("${root}/out-a/anonymous-atom-query-report.jsonl")
+        let candidate = store.loadCandidateSnapshotImmutable("r6-precert-v1")
+        @Expect(ckbCandidateTrustSealDiagnostic(seal, candidate.normalizedRecords,
+            leakage, serving, authority, atom, restText: rest,
+            mcpStdioText: stdio, mcpHttpText: http,
+            anonymousQueryText: anonymous), "ok")
         @Expect(atom.contains("\"selectedAtomsHash\""), true)
         @Expect(atom.contains("\"bundleEvidenceHash\""), true)
     }
@@ -63,7 +71,7 @@ public class CkbCandidatePrecertSealTest {
         let one = r6PrecertCandidates(1, knowledgeSuffix: "${r6PrecertRepeat("界", 1024)}😀")
         let store = r6PrecertStore(root, one)
         let officialStore = r6PrecertOfficialStore("${root}/official")
-        let officialSnapshot = officialStore.loadActiveSnapshot()
+        let officialSnapshot = officialStore.loadCandidateSnapshotImmutable("r6-precert-v1")
         var officialAtomCount: Int64 = 0
         for (record in officialSnapshot.activeIndex) {
             if (record.recordKind == CangjieTypedRecordKinds.KNOWLEDGE_ATOM) { officialAtomCount += 1 }
@@ -79,6 +87,8 @@ public class CkbCandidatePrecertSealTest {
         let invalid = "${root}/invalid.jsonl"; File.writeTo(Path(invalid), [UInt8(0xff), UInt8(0xfe)])
         let invalidOptions = CkbCandidatePrecertOptions(); invalidOptions.selectedAtomsPath = invalid
         invalidOptions.outputRoot = "${root}/invalid-out"
+        invalidOptions.candidateVersion = "r6-precert-v1"
+        invalidOptions.authorityStore = store.root.parent.join("authority-store").toString()
         @Expect(ckbBuildCandidatePrecertSeal(store, invalidOptions).diagnostic,
             "invalid_response_encoding")
         let ten = r6PrecertCandidates(10)
@@ -88,31 +98,41 @@ public class CkbCandidatePrecertSealTest {
     }
 
     @TestCase
-    public func tR6PosCommittedStoreProducesSixStandardArtifacts(): Unit {
+    public func s2Pos01ImmutableCandidateProducesAllBoundArtifacts(): Unit {
         let root = r6PrecertRoot("pos")
         let selected = r6PrecertCandidates(1)
         let store = r6PrecertStore(root, selected)
-        let before = ckbActiveSnapshotPointerIdentityHash(store.loadActiveSnapshotPointer())
+        let before = store.loadCandidateSnapshotImmutable("r6-precert-v1").immutableManifestHash
         let result = r6PrecertRun(store, selected, "${root}/precert")
         @Expect(result.ok, true); @Expect(result.selectedCount, 1); @Expect(result.atomTestCount, 3)
         for (name in ["student-leakage-report.jsonl", "anonymous-atom-query-report.jsonl",
+            "student-serving-leakage-report.json", "student-serving-rest-report.json",
+            "student-serving-mcp-stdio-report.json", "student-serving-mcp-http-report.json",
             "authority-isolation.json", "atom-test-summary.json", "candidate-trust-seal.json",
             "candidate-precert-summary.json"]) { @Expect(exists(Path("${root}/precert/${name}")), true) }
         @Expect(r6PrecertRead("${root}/precert/candidate-precert-summary.json").contains(
             "\"candidateChecksum\":\"${result.candidateChecksum}\""), true)
-        @Expect(ckbActiveSnapshotPointerIdentityHash(store.loadActiveSnapshotPointer()), before)
+        for (name in ["student-serving-rest-report.json",
+            "student-serving-mcp-stdio-report.json",
+            "student-serving-mcp-http-report.json"]) {
+            let transport = r6PrecertRead("${root}/precert/${name}")
+            @Expect(transport.contains("\"probeCount\":3"), true)
+            @Expect(transport.contains("\"responseHash\":\"sha256:"), true)
+            @Expect(transport.contains("\"expectedBlocked\":true"), true)
+            @Expect(transport.contains("\"expectedBlocked\":false"), true)
+            @Expect(transport.contains("\"passed\":true"), true)
+        }
+        @Expect(store.loadCandidateSnapshotImmutable("r6-precert-v1").immutableManifestHash, before)
+        @Expect(store.loadActiveSnapshotPointer().valid, false)
     }
 
     @TestCase
-    public func tR6NegTamperMissingAuthorityPollutionFailureAndDriftFailClosed(): Unit {
+    public func s2Neg01TamperMissingAuthorityAndCandidateDriftFailClosed(): Unit {
         let root = r6PrecertRoot("neg")
         let selected = r6PrecertCandidates(1)
         let noAuthority = r6PrecertStore("${root}/no-authority", selected, authority: false)
         @Expect(r6PrecertRun(noAuthority, selected, "${root}/no-authority-out").diagnostic,
             "authority_isolation_proof_required")
-        let polluted = r6PrecertStore("${root}/polluted", selected, activeEval: true)
-        @Expect(r6PrecertRun(polluted, selected, "${root}/polluted-out").diagnostic,
-            "active_eval_support_forbidden")
         let store = r6PrecertStore("${root}/store", selected)
         let tampered = selected.replace("General atomic knowledge", "Drifted atomic knowledge")
         @Expect(r6PrecertRun(store, tampered, "${root}/tampered-out").diagnostic,
@@ -121,6 +141,25 @@ public class CkbCandidatePrecertSealTest {
         @Expect(r6PrecertRun(store, broken, "${root}/broken-out").ok, false)
         let inside = r6PrecertRun(store, selected, "${store.root.toString()}/proof")
         @Expect(inside.diagnostic, "candidate_precert_output_inside_store")
+        let nestedStore = r6PrecertStore("${root}/nested", selected)
+        let nestedSelected = "${root}/nested-selected.jsonl"
+        File.writeTo(Path(nestedSelected), selected.toArray())
+        let authorityParent = CkbCandidatePrecertOptions()
+        authorityParent.selectedAtomsPath = nestedSelected
+        authorityParent.outputRoot = "${root}/authority-parent-out"
+        authorityParent.candidateVersion = "r6-precert-v1"
+        authorityParent.authorityStore = nestedStore.root.parent.toString()
+        @Expect(ckbBuildCandidatePrecertSeal(nestedStore,
+            authorityParent).diagnostic, "authority_store_must_be_separate")
+        let authorityChild = CkbCandidatePrecertOptions()
+        authorityChild.selectedAtomsPath = nestedSelected
+        authorityChild.outputRoot = "${root}/authority-child-out"
+        authorityChild.candidateVersion = "r6-precert-v1"
+        authorityChild.authorityStore =
+            nestedStore.root.join("authority-child").toString()
+        Directory.create(Path(authorityChild.authorityStore), recursive: true)
+        @Expect(ckbBuildCandidatePrecertSeal(nestedStore,
+            authorityChild).diagnostic, "authority_store_must_be_separate")
         Directory.create(Path("${root}/exists"), recursive: true)
         @Expect(r6PrecertRun(store, selected, "${root}/exists").diagnostic,
             "candidate_precert_output_exists")
@@ -130,9 +169,67 @@ public class CkbCandidatePrecertSealTest {
         @Expect(exists(Path("${root}/write-fail")), false)
         let driftStore = r6PrecertStore("${root}/drift", selected)
         let drift = r6PrecertRun(driftStore, selected, "${root}/drift-out",
-            faultInjector: R6PrecertPointerDriftInjector(driftStore))
-        @Expect(drift.diagnostic, "candidate_precert_active_pointer_drift")
+            faultInjector: R6PrecertCandidateDriftInjector(driftStore))
+        @Expect(drift.diagnostic, "candidate_precert_candidate_drift")
         @Expect(exists(Path("${root}/drift-out")), false)
+    }
+
+    @TestCase
+    public func s2E2E01RestStdioAndMcpHttpEnforceSameStudentEvidenceBoundary(): Unit {
+        let root = r6PrecertRoot("s2-transport")
+        let selected = r6PrecertCandidates(1)
+        _ = r6PrecertStore(root, selected)
+        let service = CkbCommandLoopService(CkbRuntimeConfig(),
+            FileKnowledgeStore("${root}/atoms-store"))
+        let generic = "{\"taskId\":\"anonymous-probe\",\"taskText\":\"General atomic knowledge\",\"targetVersion\":\"1.0.0\"}"
+        let caseProbe = "{\"taskId\":\"CJ-HUMANEVAL-125\",\"taskText\":\"CJ-HUMANEVAL-125\",\"targetVersion\":\"1.0.0\"}"
+        let promptProbe = "{\"taskId\":\"prompt-probe\",\"taskText\":\"public enum EvalValue Number Int64\",\"targetVersion\":\"1.0.0\"}"
+        for (probe in [caseProbe, promptProbe]) {
+            let outputs = r6PrecertTransportOutputs(service, probe)
+            for (output in outputs) {
+                @Expect(output.contains("General atomic knowledge"), false)
+            }
+        }
+        let outputs = r6PrecertTransportOutputs(service, generic)
+        for (output in outputs) {
+            @Expect(output.contains("General atomic knowledge"), true)
+            @Expect(output.contains("cangjie-humaneval"), false)
+            @Expect(output.contains("visible-benchmark"), false)
+            @Expect(output.contains("curated-gap-"), false)
+        }
+        let versionArgs =
+            "{\"targetVersion\":\"1.0.0\",\"sourceSet\":\"all\"}"
+        let versionCall =
+            "{\"jsonrpc\":\"2.0\",\"id\":9,\"method\":\"tools/call\",\"params\":{\"name\":\"cangjie_version_resolve\",\"arguments\":${versionArgs}}}"
+        let versions = [
+            ckbApiHandle(service, "POST", "/v1/cangjie/version/resolve",
+                versionArgs, []),
+            CkbMcpStdioServer(service).handleRequest(versionCall),
+            r6PrecertMcpHttp(service, versionCall)
+        ]
+        for (output in versions) {
+            let lower = output.toAsciiLower()
+            @Expect(lower.contains("eval-support"), false)
+            @Expect(lower.contains("humaneval"), false)
+            @Expect(lower.contains("1.0.0"), true)
+        }
+    }
+
+    @TestCase
+    public func s2Bnd01MalformedTransportPayloadsFailClosedWithoutPanic(): Unit {
+        let root = r6PrecertRoot("s2-malformed")
+        let service = CkbCommandLoopService(CkbRuntimeConfig(),
+            FileKnowledgeStore("${root}/empty-store"))
+        let rest = ckbApiHandle(service, "POST",
+            "/v1/cangjie/task-knowledge-pack", "{bad", [])
+        let stdio = CkbMcpStdioServer(service).handleRequest("{bad")
+        let http = r6PrecertMcpHttp(service, "{bad")
+        @Expect(rest.contains("\"ok\":false"), true)
+        @Expect(stdio.contains("\"error\""), true)
+        @Expect(http.contains("\"error\""), true)
+        @Expect(rest.contains("General atomic knowledge"), false)
+        @Expect(stdio.contains("General atomic knowledge"), false)
+        @Expect(http.contains("General atomic knowledge"), false)
     }
 }
 
@@ -140,12 +237,14 @@ private class R6PrecertThrowInjector <: CkbCandidatePrecertFaultInjector {
     public func checkpoint(point: String): Unit { if (point == "before_publish") { throw Exception("write") } }
 }
 
-private class R6PrecertPointerDriftInjector <: CkbCandidatePrecertFaultInjector {
+private class R6PrecertCandidateDriftInjector <: CkbCandidatePrecertFaultInjector {
     let store: FileKnowledgeStore
     init(store: FileKnowledgeStore) { this.store = store }
     public func checkpoint(point: String): Unit {
-        if (point == "before_pointer_check") {
-            File.writeTo(this.store.root.join("metadata/active-snapshot.manifest"), "invalid\n".toArray())
+        if (point == "before_candidate_check") {
+            let path = this.store.root.join(
+                "candidate-artifacts/r6-precert-v1/manifest.ckb")
+            File.writeTo(path, "invalid\n".toArray())
         }
     }
 }
@@ -155,6 +254,8 @@ private func r6PrecertRun(store: FileKnowledgeStore, selected: String, output: S
 ): CkbCandidatePrecertResult {
     let path = "${output}-selected.jsonl"; File.writeTo(Path(path), selected.toArray())
     let options = CkbCandidatePrecertOptions(); options.selectedAtomsPath = path; options.outputRoot = output
+    options.candidateVersion = "r6-precert-v1"
+    options.authorityStore = store.root.parent.join("authority-store").toString()
     ckbBuildCandidatePrecertSeal(store, options, faultInjector: faultInjector)
 }
 
@@ -168,21 +269,90 @@ private func r6PrecertStore(root: String, selected: String, authority!: Bool = t
         eval.title = "Visible eval"; eval.chunk = "public"; eval.metadata.sourceSet = CangjieSourceSets.EVAL_SUPPORT
         records.add(eval)
     }
-    let kb = newOfflineKnowledgeBase(); kb.stageCandidateRecords("r6-precert-candidate", records)
-    @Expect(kb.promoteCandidateToActive("r6-precert-active"), true)
-    let store = FileKnowledgeStore("${root}/store"); _ = kb.persistActiveSnapshot(store)
-    if (authority) { r6PrecertPersistAuthority(store, "${root}/authority") }
-    store
+    let source = r6PrecertOfficialSource("${root}/source")
+    let atomsStore = r6PrecertAtomsStore("${root}/atoms-store", records)
+    let authorityStore = FileKnowledgeStore("${root}/authority-store")
+    r6PrecertPersistAuthority(authorityStore, "${root}/authority")
+    let options = CkbCleanCandidateBuildOptions()
+    options.sourceStore = source.root.toString()
+    options.stagingStore = "${root}/store"
+    options.authorityStore = authorityStore.root.toString()
+    options.atomsStore = atomsStore.root.toString()
+    options.version = "r6-precert-v1"
+    options.apply = true
+    let built = ckbRunCleanCandidateBuild(options)
+    @Expect(built.diagnostic, "ok")
+    @Expect(built.ok, true)
+    if (!authority) {
+        remove(authorityStore.root, recursive: true)
+        Directory.create(authorityStore.root, recursive: true)
+    }
+    FileKnowledgeStore(options.stagingStore)
 }
 
 private func r6PrecertOfficialStore(root: String): FileKnowledgeStore {
     if (!exists(Path(root))) { Directory.create(Path(root), recursive: true) }
-    let records = ArrayList<NormalizedRecord>()
-    records.add(r6PrecertTrustedRecord("official-arraylist", "ArrayList add appends one value."))
-    let kb = newOfflineKnowledgeBase(); kb.stageCandidateRecords("r6-official-candidate", records)
-    @Expect(kb.promoteCandidateToActive("r6-official-active"), true)
-    let store = FileKnowledgeStore("${root}/store"); _ = kb.persistActiveSnapshot(store)
-    r6PrecertPersistAuthority(store, "${root}/authority"); store
+    let source = r6PrecertOfficialSource("${root}/source")
+    let authorityStore = FileKnowledgeStore("${root}/authority-store")
+    r6PrecertPersistAuthority(authorityStore, "${root}/authority")
+    let options = CkbCleanCandidateBuildOptions()
+    options.sourceStore = source.root.toString()
+    options.stagingStore = "${root}/store"
+    options.authorityStore = authorityStore.root.toString()
+    options.version = "r6-precert-v1"
+    options.apply = true
+    let built = ckbRunCleanCandidateBuild(options)
+    @Expect(built.diagnostic, "ok")
+    @Expect(built.ok, true)
+    FileKnowledgeStore(options.stagingStore)
+}
+
+private func r6PrecertOfficialSource(root: String): FileKnowledgeStore {
+    let typed = CangjieTypedRecord()
+    typed.recordKind = CangjieTypedRecordKinds.DOC_SECTION
+    typed.sourceId = "official-arraylist"
+    typed.title = "ArrayList append"
+    typed.content = "ArrayList add appends one value."
+    typed.citation = "https://docs.cangjie-lang.cn/docs/1.0.0/"
+    typed.sourceSet = CangjieSourceSets.DOCS
+    typed.path = "docs/collection/arraylist.md"
+    typed.targetVersion = "1.0.0"
+    typed.sourceRef = "release-1.0.0"
+    typed.versionResolutionId = "cangjie-1.0.0-docs-release-1.0.0"
+    let records = ArrayList<CangjieTypedRecord>(); records.add(typed)
+    let kb = KnowledgeBase(FakeClock(0))
+    kb.loadFirstInitializationTypedRecords(records, "r6-source-candidate")
+    @Expect(kb.promoteFirstInitializationCandidate("r6-source-active"), true)
+    let store = FileKnowledgeStore(root)
+    @Expect(kb.persistActiveSnapshot(store).ok, true)
+    store
+}
+
+private func r6PrecertAtomsStore(root: String,
+    records: ArrayList<NormalizedRecord>): FileKnowledgeStore {
+    let snapshot = ActiveSnapshot()
+    snapshot.valid = true
+    snapshot.diagnostic = "ok"
+    snapshot.activeVersion = "r6-atoms-active"
+    snapshot.candidateVersion = "r6-atoms-candidate"
+    snapshot.activeStateSource = "test_fixture"
+    for (record in records) {
+        let raw = RawRecord()
+        raw.sourceId = record.sourceId
+        raw.title = record.title
+        raw.content = record.chunk
+        raw.contentHash = benchmarkGapSha256(record.chunk)
+        raw.metadata = record.metadata
+        raw.requiresReview = record.requiresReview
+        snapshot.rawRecords.add(raw)
+        snapshot.normalizedRecords.add(record)
+        snapshot.activeIndex.add(record)
+    }
+    let kb = KnowledgeBase(FakeClock(0))
+    @Expect(kb.restoreActiveSnapshot(snapshot), true)
+    let store = FileKnowledgeStore(root)
+    @Expect(kb.persistActiveSnapshot(store).ok, true)
+    store
 }
 
 private func r6PrecertPersistAuthority(store: FileKnowledgeStore, dataset: String): Unit {
@@ -194,6 +364,50 @@ private func r6PrecertPersistAuthority(store: FileKnowledgeStore, dataset: Strin
         File.writeTo(caseRoot.join("tests/TestMain.cj"), "public func visibleHelper(): Int64 { 1 }\n".toArray())
         let snapshot = buildVersionedEvalSupportSnapshot(dataset, "r6-precert-authority-v1")
         @Expect(snapshot.ok, true); @Expect(persistVersionedEvalSupportSnapshot(store, snapshot), true)
+}
+
+private func r6PrecertTransportOutputs(service: CkbCommandLoopService,
+    arguments: String): Array<String> {
+    let call = "{\"jsonrpc\":\"2.0\",\"id\":7,\"method\":\"tools/call\",\"params\":{\"name\":\"cangjie_task_knowledge_pack\",\"arguments\":${arguments}}}"
+    [
+        ckbApiHandle(service, "POST", "/v1/cangjie/task-knowledge-pack",
+            arguments, []),
+        CkbMcpStdioServer(service).handleRequest(call),
+        r6PrecertMcpHttp(service, call)
+    ]
+}
+
+private func r6PrecertMcpHttp(service: CkbCommandLoopService,
+    toolCall: String): String {
+    let sessions = CkbMcpHttpSessionStore()
+    let initHeaders = [
+        "Content-Type: application/json",
+        "Accept: application/json, text/event-stream"
+    ]
+    let initialize = handleCkbMcpHttpRequest(service, "POST", "/mcp",
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-06-18\",\"capabilities\":{},\"clientInfo\":{\"name\":\"s2-precert\",\"version\":\"1\"}}}",
+        initHeaders, CkbHttpServiceConfig(), CkbMcpHttpServiceConfig(), sessions)
+    let sessionId = r6PrecertMcpSessionId(initialize)
+    let headers = [
+        "Content-Type: application/json",
+        "Accept: application/json, text/event-stream",
+        "MCP-Protocol-Version: 2025-06-18",
+        "Mcp-Session-Id: ${sessionId}"
+    ]
+    _ = handleCkbMcpHttpRequest(service, "POST", "/mcp",
+        "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\",\"params\":{}}",
+        headers, CkbHttpServiceConfig(), CkbMcpHttpServiceConfig(), sessions)
+    handleCkbMcpHttpRequest(service, "POST", "/mcp", toolCall, headers,
+        CkbHttpServiceConfig(), CkbMcpHttpServiceConfig(), sessions).body
+}
+
+private func r6PrecertMcpSessionId(response: CkbMcpHttpResponse): String {
+    for (header in response.headers) {
+        if (header.toAsciiLower().startsWith("mcp-session-id:")) {
+            return header["mcp-session-id:".size..header.size].trimAscii()
+        }
+    }
+    ""
 }
 
 private func r6PrecertCandidates(count: Int64, knowledgeSuffix!: String = ""): String {

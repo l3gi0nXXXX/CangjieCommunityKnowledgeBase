@@ -535,7 +535,12 @@ private func ckbApiHandleCangjieTaskKnowledgePack(service: CkbCommandLoopService
     if (validation != "") {
         return ckbApiErrorEnvelope("ckb.bad_request", validation, status: 400)
     }
-    ckbApiEnvelope(cangjieTaskKnowledgePackJson(service.cangjieTaskKnowledgePack(request)))
+    let pack = service.cangjieTaskKnowledgePack(request)
+    if (!validateCangjieTaskKnowledgeEvidence(pack).ok) {
+        return ckbApiErrorEnvelope("ckb.student_knowledge_leakage_blocked",
+            "student knowledge leakage blocked", status: 500)
+    }
+    ckbApiEnvelope(cangjieTaskKnowledgePackJson(pack))
 }
 
 private func ckbApiHandleCangjieKnowledgeCoverage(service: CkbCommandLoopService, body: String): String {

@@ -103,15 +103,46 @@ public class CkbCleanCandidateBuildResult {
 
 public class CkbStudentLeakageFinding {
     public var recordHash: String = ""
+    public var layer: String = ""
     public var code: String = ""
     public var field: String = ""
+    public init() {}
+}
+
+public class CkbStudentLeakageScanInput {
+    public var rawRecords: ArrayList<RawRecord> = ArrayList<RawRecord>()
+    public var normalizedRecords: ArrayList<NormalizedRecord> =
+        ArrayList<NormalizedRecord>()
+    public var servingDocuments: ArrayList<CangjieServingDocument> =
+        ArrayList<CangjieServingDocument>()
+    public var indexRecords: ArrayList<NormalizedRecord> =
+        ArrayList<NormalizedRecord>()
+    public var indexDocuments: ArrayList<CangjieServingDocument> =
+        ArrayList<CangjieServingDocument>()
+    public var exactEntries: ArrayList<CangjieServingExactEntry> =
+        ArrayList<CangjieServingExactEntry>()
+    public var taskPacks: ArrayList<CangjieTaskKnowledgePack> =
+        ArrayList<CangjieTaskKnowledgePack>()
+    public var authorityHash: String = ""
+    public var candidateChecksum: String = ""
     public init() {}
 }
 
 public class CkbStudentLeakageReport {
     public var ok: Bool = true
     public var recordCount: Int64 = 0
+    public var scannedRecords: Int64 = 0
+    public var scannedFields: Int64 = 0
+    public var rawRecordCount: Int64 = 0
+    public var normalizedRecordCount: Int64 = 0
+    public var servingDocumentCount: Int64 = 0
+    public var indexRecordCount: Int64 = 0
+    public var indexDocumentCount: Int64 = 0
+    public var exactEntryCount: Int64 = 0
+    public var taskPackCount: Int64 = 0
     public var leakageCount: Int64 = 0
+    public var authorityHash: String = ""
+    public var candidateChecksum: String = ""
     public var findings: ArrayList<CkbStudentLeakageFinding> = ArrayList<CkbStudentLeakageFinding>()
     public var json: String = ""
     public var evidenceHash: String = ""
@@ -126,6 +157,26 @@ public class CkbAnonymousAtomQueryReport {
     public var failed: Int64 = 0
     public var jsonl: String = ""
     public var evidenceHash: String = ""
+    public init() {}
+}
+
+public class CkbStudentServingLeakageReport {
+    public var ok: Bool = false
+    public var diagnostic: String = "student_serving_leakage_not_run"
+    public var probeCount: Int64 = 0
+    public var failed: Int64 = 0
+    public var restJson: String = ""
+    public var mcpStdioJson: String = ""
+    public var mcpHttpJson: String = ""
+    public var summaryJson: String = ""
+    public var evidenceHash: String = ""
+    public init() {}
+}
+
+public class CkbStudentServingProbe {
+    public var probeId: String = ""
+    public var query: String = ""
+    public var expectedBlocked: Bool = false
     public init() {}
 }
 
@@ -216,29 +267,80 @@ public func ckbLoadBenchmarkLeakageAuthority(store: FileKnowledgeStore): CkbBenc
 
 public func ckbBuildStudentLeakageReport(records: ArrayList<NormalizedRecord>,
     authority!: CangjieBenchmarkLeakageAuthority = CangjieBenchmarkLeakageAuthority()): CkbStudentLeakageReport {
-    let report = CkbStudentLeakageReport(); report.recordCount = records.size
-    for (record in records) {
+    let input = CkbStudentLeakageScanInput()
+    input.normalizedRecords = records
+    input.candidateChecksum = ckbCertifiedNormalizedRecordsChecksum(records)
+    ckbBuildStudentLeakageReportFromLayers(input, authority: authority)
+}
+
+public func ckbBuildStudentLeakageReportFromLayers(input: CkbStudentLeakageScanInput,
+    authority!: CangjieBenchmarkLeakageAuthority =
+        CangjieBenchmarkLeakageAuthority()): CkbStudentLeakageReport {
+    let report = CkbStudentLeakageReport()
+    report.rawRecordCount = input.rawRecords.size
+    report.normalizedRecordCount = input.normalizedRecords.size
+    report.servingDocumentCount = input.servingDocuments.size
+    report.indexRecordCount = input.indexRecords.size
+    report.indexDocumentCount = input.indexDocuments.size
+    report.exactEntryCount = input.exactEntries.size
+    report.taskPackCount = input.taskPacks.size
+    report.recordCount = input.normalizedRecords.size
+    report.scannedRecords = report.rawRecordCount + report.normalizedRecordCount +
+        report.servingDocumentCount + report.indexRecordCount +
+        report.indexDocumentCount + report.exactEntryCount + report.taskPackCount
+    report.authorityHash = input.authorityHash
+    report.candidateChecksum = if (input.candidateChecksum == "") {
+        ckbCertifiedNormalizedRecordsChecksum(input.normalizedRecords)
+    } else { input.candidateChecksum }
+    for (record in input.rawRecords) {
+        ckbCollectLeakageDiagnostics(report, "raw",
+            ckbCleanRawEvidence(record),
+            collectCangjieStudentRecordDiagnostics(
+                ckbStudentRawAsNormalized(record), authority: authority))
+    }
+    for (record in input.normalizedRecords) {
         let recordHash = ckbCleanNormalizedEvidence(record)
-        ckbCollectLeakageFinding(report, recordHash, cangjieStudentRecordDiagnostic(record, authority: authority))
-        let fields = [("title", record.title), ("chunk", record.chunk), ("citation", record.citation),
-            ("sourceId", record.sourceId), ("path", record.metadata.path), ("symbol", record.metadata.symbol)]
-        for (field in fields) {
-            ckbCollectLeakageFinding(report, recordHash,
-                cangjieStudentRecordDiagnostic(ckbLeakageFieldProbe(field[0], field[1]), authority: authority))
-        }
-        for (value in record.metadata.derivedFrom) {
-            ckbCollectLeakageFinding(report, recordHash,
-                cangjieStudentRecordDiagnostic(ckbLeakageFieldProbe("derivedFrom", value), authority: authority))
-        }
+        ckbCollectLeakageDiagnostics(report, "normalized", recordHash,
+            collectCangjieStudentRecordDiagnostics(record, authority: authority))
+    }
+    for (document in input.servingDocuments) {
+        ckbCollectLeakageDiagnostics(report, "serving",
+            benchmarkGapSha256("${document.documentId}|${document.contentHash}"),
+            collectCangjieStudentServingDocumentDiagnostics(document,
+                authority: authority))
+    }
+    for (record in input.indexRecords) {
+        ckbCollectLeakageDiagnostics(report, "index",
+            ckbCleanNormalizedEvidence(record),
+            collectCangjieStudentRecordDiagnostics(record, authority: authority))
+    }
+    for (document in input.indexDocuments) {
+        ckbCollectLeakageDiagnostics(report, "index-document",
+            benchmarkGapSha256("${document.documentId}|${document.contentHash}"),
+            collectCangjieStudentServingDocumentDiagnostics(document,
+                authority: authority))
+    }
+    for (entry in input.exactEntries) {
+        ckbCollectLeakageDiagnostics(report, "exact-entry",
+            benchmarkGapSha256("${entry.lookupKind}|${entry.key}|${entry.selector}|${entry.sourceId}|${entry.documentId}"),
+            collectCangjieStudentServingExactEntryDiagnostics(entry,
+                authority: authority))
+    }
+    for (pack in input.taskPacks) {
+        ckbCollectLeakageDiagnostics(report, "task",
+            benchmarkGapSha256(cangjieTaskKnowledgePackJson(pack)),
+            collectCangjieTaskKnowledgeEvidenceDiagnostics(pack,
+                authority: authority))
     }
     report.ok = report.leakageCount == 0
     let body = StringBuilder()
     for (finding in report.findings) {
         body.append("{\"recordHash\":\""); body.append(finding.recordHash)
+        body.append("\",\"layer\":\""); body.append(ckbCleanJsonEscape(finding.layer))
         body.append("\",\"code\":\""); body.append(ckbCleanJsonEscape(finding.code))
         body.append("\",\"field\":\""); body.append(ckbCleanJsonEscape(finding.field)); body.append("\"}\n")
     }
-    report.json = "{\"ok\":${report.ok},\"recordCount\":${report.recordCount},\"leakageCount\":${report.leakageCount},\"findingsEvidenceHash\":\"${benchmarkGapSha256(body.toString())}\"}\n" + body.toString()
+    report.json = "{\"schemaVersion\":\"ckb-student-leakage-report-v2\",\"ok\":${report.ok},\"recordCount\":${report.recordCount},\"scannedRecords\":${report.scannedRecords},\"scannedFields\":${report.scannedFields},\"rawRecordCount\":${report.rawRecordCount},\"normalizedRecordCount\":${report.normalizedRecordCount},\"servingDocumentCount\":${report.servingDocumentCount},\"indexRecordCount\":${report.indexRecordCount},\"indexDocumentCount\":${report.indexDocumentCount},\"exactEntryCount\":${report.exactEntryCount},\"taskPackCount\":${report.taskPackCount},\"leakageCount\":${report.leakageCount},\"authorityHash\":\"${ckbCleanJsonEscape(report.authorityHash)}\",\"candidateChecksum\":\"${ckbCleanJsonEscape(report.candidateChecksum)}\",\"findingsEvidenceHash\":\"${benchmarkGapSha256(body.toString())}\"}\n" + body.toString()
     report.evidenceHash = benchmarkGapSha256(report.json)
     report
 }
@@ -275,6 +377,81 @@ public func ckbBuildAnonymousAtomQueryReport(candidateRecords: ArrayList<Normali
     report.ok = report.indexBuildCount == 1 && report.failed == 0 && report.passed == atoms.size
     report.jsonl = "{\"ok\":${report.ok},\"indexBuildCount\":${report.indexBuildCount},\"atomCount\":${report.atomCount},\"passed\":${report.passed},\"failed\":${report.failed}}\n" + body.toString()
     report.evidenceHash = benchmarkGapSha256(report.jsonl)
+    report
+}
+
+public func ckbBuildStudentServingLeakageReport(
+    service: CkbCommandLoopService,
+    probes: ArrayList<CkbStudentServingProbe>,
+    anonymousQueryArtifactHash!: String = "",
+    authority!: CangjieBenchmarkLeakageAuthority =
+        CangjieBenchmarkLeakageAuthority()): CkbStudentServingLeakageReport {
+    let report = CkbStudentServingLeakageReport()
+    report.probeCount = probes.size
+    let restEvidence = StringBuilder()
+    let stdioEvidence = StringBuilder()
+    let httpEvidence = StringBuilder()
+    var parity = true
+    for (i in 0..probes.size) {
+        let probe = probes[i]
+        let body = ckbStudentTransportTaskBody(probe, i)
+        let call = ckbStudentTransportToolCall(body, i)
+        let pack = service.cangjieTaskKnowledgePack(
+            ckbStudentTransportTaskRequest(probe, i))
+        let expectedHash = pack.evidenceHash
+        let rest = ckbApiHandle(service, "POST",
+            "/v1/cangjie/task-knowledge-pack", body, [])
+        let stdio = CkbMcpStdioServer(service).handleRequest(call)
+        let http = ckbStudentTransportMcpHttp(service, call)
+        let restOk = ckbStudentTransportResponseOk(rest, probe.expectedBlocked,
+            expectedHash, authority)
+        let stdioOk = ckbStudentTransportResponseOk(stdio, probe.expectedBlocked,
+            expectedHash, authority)
+        let httpOk = ckbStudentTransportResponseOk(http, probe.expectedBlocked,
+            expectedHash, authority)
+        let canonical = if (probe.expectedBlocked) {
+            benchmarkGapSha256("student_knowledge_leakage_blocked")
+        } else { expectedHash }
+        let canonicalParity = canonical != "" &&
+            ckbStudentTransportCanonicalPresent(rest, probe.expectedBlocked, canonical) &&
+            ckbStudentTransportCanonicalPresent(stdio, probe.expectedBlocked, canonical) &&
+            ckbStudentTransportCanonicalPresent(http, probe.expectedBlocked, canonical)
+        if (!restOk || !stdioOk || !httpOk || !canonicalParity) {
+            report.failed += 1
+        }
+        parity = parity && canonicalParity
+        ckbStudentTransportAppendObservation(restEvidence, probe, rest,
+            restOk && canonicalParity, canonical)
+        ckbStudentTransportAppendObservation(stdioEvidence, probe, stdio,
+            stdioOk && canonicalParity, canonical)
+        ckbStudentTransportAppendObservation(httpEvidence, probe, http,
+            httpOk && canonicalParity, canonical)
+    }
+    report.restJson = ckbStudentTransportLeakageJson(
+        "rest", probes.size, report.failed, restEvidence.toString())
+    report.mcpStdioJson = ckbStudentTransportLeakageJson(
+        "mcp-stdio", probes.size, report.failed, stdioEvidence.toString())
+    report.mcpHttpJson = ckbStudentTransportLeakageJson(
+        "mcp-http", probes.size, report.failed, httpEvidence.toString())
+    let knowledgeEvidenceHash = benchmarkGapSha256(
+        restEvidence.toString() + stdioEvidence.toString() +
+        httpEvidence.toString())
+    let body = "{\"schemaVersion\":\"ckb-student-serving-leakage-v2\"," +
+        "\"ok\":${report.failed == 0 && parity},\"probeCount\":${probes.size}," +
+        "\"failed\":${report.failed},\"transportCount\":3," +
+        "\"restArtifactHash\":\"${benchmarkGapSha256(report.restJson)}\"," +
+        "\"mcpStdioArtifactHash\":\"${benchmarkGapSha256(report.mcpStdioJson)}\"," +
+        "\"mcpHttpArtifactHash\":\"${benchmarkGapSha256(report.mcpHttpJson)}\"," +
+        "\"anonymousQueryArtifactHash\":\"${anonymousQueryArtifactHash}\"," +
+        "\"knowledgeEvidenceHash\":\"${knowledgeEvidenceHash}\"," +
+        "\"transportParity\":${parity}"
+    report.evidenceHash = benchmarkGapSha256(body + "}")
+    report.summaryJson = body +
+        ",\"evidenceHash\":\"${report.evidenceHash}\"}\n"
+    report.ok = report.failed == 0 && parity && probes.size >= 3
+    report.diagnostic = if (report.ok) { "ok" } else {
+        "student_serving_transport_probe_failed"
+    }
     report
 }
 
@@ -868,29 +1045,25 @@ private func ckbCleanEvidenceHash(values: ArrayList<String>): String {
 }
 
 private func ckbCollectLeakageFinding(report: CkbStudentLeakageReport, recordHash: String,
-    diagnostic: CangjieStudentKnowledgeDiagnostic): Unit {
+    diagnostic: CangjieStudentKnowledgeDiagnostic, layer!: String = "normalized"): Unit {
     if (diagnostic.ok) { return }
     for (existing in report.findings) {
         if (existing.recordHash == recordHash && existing.code == diagnostic.code &&
-            existing.field == diagnostic.matchedField) { return }
+            existing.field == diagnostic.matchedField && existing.layer == layer) { return }
     }
     let finding = CkbStudentLeakageFinding(); finding.recordHash = recordHash
+    finding.layer = layer
     finding.code = diagnostic.code; finding.field = diagnostic.matchedField
     report.findings.add(finding); report.leakageCount += 1
 }
 
-private func ckbLeakageFieldProbe(field: String, value: String): NormalizedRecord {
-    let record = NormalizedRecord(); record.recordKind = CangjieTypedRecordKinds.DOC_SECTION
-    record.metadata.sourceSet = CangjieSourceSets.DOCS
-    record.metadata.trustLevel = TrustLevels.OFFICIAL; record.metadata.reviewState = ReviewStates.TRUSTED
-    if (field == "title") { record.title = value }
-    if (field == "chunk") { record.chunk = value }
-    if (field == "citation") { record.citation = value }
-    if (field == "sourceId") { record.sourceId = value }
-    if (field == "path") { record.metadata.path = value }
-    if (field == "symbol") { record.metadata.symbol = value }
-    if (field == "derivedFrom") { record.metadata.derivedFrom = [value] }
-    record
+private func ckbCollectLeakageDiagnostics(report: CkbStudentLeakageReport,
+    layer: String, recordHash: String,
+    collected: CangjieStudentKnowledgeDiagnostics): Unit {
+    report.scannedFields += collected.scannedFields
+    for (diagnostic in collected.diagnostics) {
+        ckbCollectLeakageFinding(report, recordHash, diagnostic, layer: layer)
+    }
 }
 
 private func ckbCleanQueryContainsSelector(query: String, atom: NormalizedRecord): Bool {
@@ -898,6 +1071,114 @@ private func ckbCleanQueryContainsSelector(query: String, atom: NormalizedRecord
     clean.contains(atom.sourceId.toAsciiLower()) || clean.contains(atom.metadata.path.toAsciiLower()) ||
         clean.contains("humaneval") || clean.contains("visible-benchmark") ||
         clean.contains("curated-gap") || clean.contains("eval-support")
+}
+
+private func ckbStudentTaskEvidenceProjection(pack: CangjieTaskKnowledgePack): String {
+    cangjieTaskKnowledgePackJson(pack)
+}
+
+private func ckbStudentTransportLeakageJson(transport: String, probeCount: Int64,
+    failed: Int64, observations: String): String {
+    let body = "{\"schemaVersion\":\"ckb-student-transport-leakage-v1\"," +
+        "\"transport\":\"${transport}\",\"ok\":${failed == 0}," +
+        "\"probeCount\":${probeCount},\"failed\":${failed}," +
+        "\"observationsHash\":\"${benchmarkGapSha256(observations)}\""
+    body + ",\"evidenceHash\":\"${benchmarkGapSha256(body + "}")}\"}\n" +
+        observations
+}
+
+private func ckbStudentTransportTaskRequest(probe: CkbStudentServingProbe,
+    index: Int64): CangjieTaskKnowledgeRequest {
+    let request = CangjieTaskKnowledgeRequest()
+    request.taskId = "student-precert-probe-${index}"
+    request.taskText = probe.query
+    request.versionSelector.targetVersion = cangjieDefaultTargetVersion()
+    request.versionSelector.sourceSet = CangjieSourceSets.ALL
+    request.budget = CangjieCapabilityLimits.DEFAULT_BUDGET
+    request
+}
+
+private func ckbStudentTransportTaskBody(probe: CkbStudentServingProbe,
+    index: Int64): String {
+    "{\"taskId\":\"student-precert-probe-${index}\",\"benchmark\":\"\"," +
+        "\"taskText\":\"${ckbCleanJsonEscape(probe.query)}\",\"signature\":\"\"," +
+        "\"imports\":[],\"argTypes\":[],\"returnType\":\"\"," +
+        "\"expectedKnowledgeTags\":[],\"starterCodeExcerpt\":\"\"," +
+        "\"compilerOutput\":\"\",\"targetVersion\":\"${cangjieDefaultTargetVersion()}\"," +
+        "\"sourceSet\":\"all\",\"sourceRef\":\"\",\"versionPolicy\":\"default\"," +
+        "\"budget\":${CangjieCapabilityLimits.DEFAULT_BUDGET}}"
+}
+
+private func ckbStudentTransportToolCall(arguments: String, index: Int64): String {
+    "{\"jsonrpc\":\"2.0\",\"id\":${index + 1},\"method\":\"tools/call\"," +
+        "\"params\":{\"name\":\"cangjie_task_knowledge_pack\"," +
+        "\"arguments\":${arguments}}}"
+}
+
+private func ckbStudentTransportResponseOk(raw: String, expectedBlocked: Bool,
+    expectedHash: String, authority: CangjieBenchmarkLeakageAuthority): Bool {
+    if (!cangjieStudentVisibleTextDiagnostic("transport.response", raw,
+        authority: authority).ok) { return false }
+    if (expectedBlocked) {
+        return raw.contains("student_knowledge_leakage_blocked")
+    }
+    expectedHash.startsWith("sha256:") && raw.contains(expectedHash) &&
+        !raw.contains("student_knowledge_leakage_blocked")
+}
+
+private func ckbStudentTransportCanonicalPresent(raw: String,
+    expectedBlocked: Bool, canonical: String): Bool {
+    if (expectedBlocked) {
+        return canonical == benchmarkGapSha256("student_knowledge_leakage_blocked") &&
+            raw.contains("student_knowledge_leakage_blocked")
+    }
+    raw.contains(canonical)
+}
+
+private func ckbStudentTransportAppendObservation(out: StringBuilder,
+    probe: CkbStudentServingProbe, response: String, passed: Bool,
+    canonical: String): Unit {
+    out.append("{\"probeId\":\"${ckbCleanJsonEscape(probe.probeId)}\",")
+    out.append("\"requestHash\":\"${benchmarkGapSha256(probe.query)}\",")
+    out.append("\"expectedBlocked\":${probe.expectedBlocked},\"passed\":${passed},")
+    out.append("\"canonicalEvidenceHash\":\"${ckbCleanJsonEscape(canonical)}\",")
+    out.append("\"responseHash\":\"${benchmarkGapSha256(response)}\"}\n")
+}
+
+private func ckbStudentTransportMcpHttp(service: CkbCommandLoopService,
+    toolCall: String): String {
+    let sessions = CkbMcpHttpSessionStore()
+    let http = CkbHttpServiceConfig()
+    let mcp = CkbMcpHttpServiceConfig()
+    let initHeaders = [
+        "Content-Type: application/json",
+        "Accept: application/json, text/event-stream"
+    ]
+    let initialized = handleCkbMcpHttpRequest(service, "POST", "/mcp",
+        "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":\"2025-06-18\",\"capabilities\":{},\"clientInfo\":{\"name\":\"candidate-precert\",\"version\":\"1\"}}}",
+        initHeaders, http, mcp, sessions)
+    let sessionId = ckbStudentTransportSessionId(initialized.headers)
+    if (sessionId == "") { return initialized.body }
+    let headers = [
+        "Content-Type: application/json",
+        "Accept: application/json, text/event-stream",
+        "MCP-Protocol-Version: 2025-06-18",
+        "Mcp-Session-Id: ${sessionId}"
+    ]
+    _ = handleCkbMcpHttpRequest(service, "POST", "/mcp",
+        "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\",\"params\":{}}",
+        headers, http, mcp, sessions)
+    handleCkbMcpHttpRequest(service, "POST", "/mcp", toolCall, headers,
+        http, mcp, sessions).body
+}
+
+private func ckbStudentTransportSessionId(headers: ArrayList<String>): String {
+    for (header in headers) {
+        if (header.toAsciiLower().startsWith("mcp-session-id:")) {
+            return header["mcp-session-id:".size..header.size].trimAscii()
+        }
+    }
+    ""
 }
 
 private func ckbCleanJsonEscape(value: String): String {

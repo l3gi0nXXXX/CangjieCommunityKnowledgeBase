@@ -160,6 +160,35 @@ public func resolveCangjieVersion(selector: CangjieVersionSelector, manifest: Ca
     resolution
 }
 
+// Student responses may describe public documentation sources, but benchmark
+// authority and eval-support lineage remain private even when the caller uses
+// the aggregate "all" selector.
+public func cangjieStudentVersionResolution(
+    source: CangjieVersionResolution): CangjieVersionResolution {
+    let out = CangjieVersionResolution()
+    out.ok = source.ok
+    out.diagnostic = source.diagnostic
+    out.targetVersion = source.targetVersion
+    out.versionPolicy = source.versionPolicy
+    out.versionResolutionId = source.versionResolutionId
+    out.defaulted = source.defaulted
+    for (item in source.sources) {
+        if (item.sourceSet == CangjieSourceSets.EVAL_SUPPORT ||
+            item.sourceFamily.toAsciiLower().contains("eval-support") ||
+            item.sourceRepo.toAsciiLower().contains("humaneval")) {
+            continue
+        }
+        out.sources.add(item)
+    }
+    for (diagnostic in source.diagnostics) { out.diagnostics.add(diagnostic) }
+    if (source.ok && source.sources.size > 0 && out.sources.size == 0) {
+        out.ok = false
+        out.diagnostic = "student_source_not_visible"
+        out.diagnostics.add("student_source_not_visible")
+    }
+    out
+}
+
 public func cangjieVersionSelector(targetVersion!: String = "", sourceSet!: String = "", sourceFamily!: String = "", sourceRepo!: String = "", sourceRef!: String = "", refKind!: String = "", versionPolicy!: String = "", includePrerelease!: Bool = false): CangjieVersionSelector {
     let selector = CangjieVersionSelector()
     selector.targetVersion = targetVersion

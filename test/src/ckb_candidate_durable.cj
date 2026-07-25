@@ -228,6 +228,28 @@ public class CkbCandidateMaterializationResult {
     init() {}
 }
 
+public class CkbImmutableCandidateSnapshot {
+    public var valid: Bool = false
+    public var diagnostic: String = "candidate_immutable_not_loaded"
+    public var version: String = ""
+    public var rawRecords: ArrayList<RawRecord> = ArrayList<RawRecord>()
+    public var normalizedRecords: ArrayList<NormalizedRecord> = ArrayList<NormalizedRecord>()
+    public var activeIndex: ArrayList<NormalizedRecord> = ArrayList<NormalizedRecord>()
+    public var rawCount: Int64 = 0
+    public var normalizedCount: Int64 = 0
+    public var batchCount: Int64 = 0
+    public var rawEvidenceHash: String = ""
+    public var normalizedEvidenceHash: String = ""
+    public var manifestEvidenceHash: String = ""
+    public var immutableManifestHash: String = ""
+    public var cleanManifestHash: String = ""
+    public var auditEvidenceHash: String = ""
+    public var authorityHash: String = ""
+    public var candidateChecksum: String = ""
+
+    public init() {}
+}
+
 public class CkbCandidateMaterializationCheckpoint {
     var valid: Bool = false
     var status: String = "not_found"

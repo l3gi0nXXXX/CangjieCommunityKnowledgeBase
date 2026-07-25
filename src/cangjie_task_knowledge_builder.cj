@@ -12,7 +12,8 @@ public func buildCangjieTaskKnowledgePackFromEvidence(kb: KnowledgeBase, request
     pack.benchmark = sanitized.benchmark
     pack.knowledgeVersion = if (status.activeKnowledgeVersion == "") { "offline" } else { status.activeKnowledgeVersion }
     pack.queryId = "cangjie-task-${stableSummaryHash("${sanitized.taskId}:${sanitized.benchmark}:${sanitized.taskText}:${sanitized.signature}")}"
-    pack.versionResolution = resolveCangjieVersion(sanitized.versionSelector, manifest)
+    pack.versionResolution = cangjieStudentVersionResolution(
+        resolveCangjieVersion(sanitized.versionSelector, manifest))
     pack.targetVersion = pack.versionResolution.targetVersion
     pack.queryPlan = buildCangjieTaskQueryPlan(sanitized, pack.versionResolution)
     pack.coverage = buildCangjieKnowledgeCoverage(sanitized, pack.versionResolution, pack.queryPlan)
@@ -62,7 +63,7 @@ public func buildCangjieTaskKnowledgePackFromEvidence(kb: KnowledgeBase, request
 
     let index = projection.index
     let leakageBlocked = cangjieTaskIndexLeakageBlocked(index)
-    if (leakageBlocked && index.records.size == 0) {
+    if (leakageBlocked) {
         pack.degraded = true
         pack.diagnostics.add("student_knowledge_leakage_blocked")
         cangjieTaskMarkAllCoverage(pack.coverage, "degraded", "student_knowledge_leakage_blocked")

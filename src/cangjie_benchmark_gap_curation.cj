@@ -475,7 +475,11 @@ private func benchmarkGapRecord(input: CangjieBenchmarkGapInput, targetVersion: 
     record.metadata.sourceId = record.sourceId
     record.metadata.sourceType = SourceTypes.DERIVED
     record.metadata.sourceSet = if (isAtom) { CangjieSourceSets.KNOWLEDGE_ATOMS } else { CangjieSourceSets.EVAL_SUPPORT }
-    record.metadata.docVersion = input.datasetVersion.trimAscii()
+    // Student-visible atoms must not carry benchmark dataset lineage. Teacher
+    // lineage remains in the private selection/audit artifacts.
+    record.metadata.docVersion = if (isAtom) {
+        resolvedTargetVersion
+    } else { input.datasetVersion.trimAscii() }
     record.metadata.targetVersion = resolvedTargetVersion
     record.metadata.versionResolutionId = if (isAtom) { "cangjie-${resolvedTargetVersion}-knowledge-atoms-curated" } else { "cangjie-${resolvedTargetVersion}-eval-support-curated" }
     record.metadata.trustLevel = TrustLevels.OFFICIAL

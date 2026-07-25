@@ -51,7 +51,7 @@ public class NoopCangjieServingIndexBuildObserver <: CangjieServingIndexBuildObs
     public func onServingIndexBuild(recordCount: Int64): Unit {}
 }
 
-public func buildCangjieServingIndex(records: ArrayList<NormalizedRecord>, activeKnowledgeVersion!: String = "", deadlineAtMillis!: Int64 = 0, deadlineClock!: CkbMillisClock = SystemCkbMillisClock(), buildObserver!: CangjieServingIndexBuildObserver = NoopCangjieServingIndexBuildObserver()): CangjieServingIndex {
+public func buildCangjieServingIndex(records: ArrayList<NormalizedRecord>, activeKnowledgeVersion!: String = "", deadlineAtMillis!: Int64 = 0, deadlineClock!: CkbMillisClock = SystemCkbMillisClock(), buildObserver!: CangjieServingIndexBuildObserver = NoopCangjieServingIndexBuildObserver(), studentProjection!: Bool = false): CangjieServingIndex {
     buildObserver.onServingIndexBuild(records.size)
     let index = CangjieServingIndex()
     index.activeKnowledgeVersion = cangjieServingIndexActiveVersion(records, activeKnowledgeVersion)
@@ -71,16 +71,12 @@ public func buildCangjieServingIndex(records: ArrayList<NormalizedRecord>, activ
         index.records.add(record)
         let direct = cangjieServingIndexDocumentFromRecord(record)
         if (direct.recordKind != CangjieServingRecordKinds.SYMBOL_CARD) {
-            index.documents.add(direct)
-            cangjieServingIndexAddViewCounts(index, direct)
-            cangjieServingIndexAddExactEntries(index, direct)
+            cangjieServingIndexAddDocument(index, direct, studentProjection)
         }
         for (card in extractCangjieSymbols(record)) {
             let symbolDoc = cangjieServingIndexDocumentFromSymbol(card, index.activeKnowledgeVersion)
             if (!symbolDoc.rejected) {
-                index.documents.add(symbolDoc)
-                cangjieServingIndexAddViewCounts(index, symbolDoc)
-                cangjieServingIndexAddExactEntries(index, symbolDoc)
+                cangjieServingIndexAddDocument(index, symbolDoc, studentProjection)
             }
         }
         processed += 1
@@ -89,7 +85,7 @@ public func buildCangjieServingIndex(records: ArrayList<NormalizedRecord>, activ
         index.diagnostics.add("deadline_exceeded:serving_index_build_after:now=${deadlineClock.nowMillis()}:deadline=${deadlineAtMillis}:processed=${processed}:total=${records.size}")
         return index
     }
-    cangjieServingIndexAddNegativeRuleDocuments(index)
+    cangjieServingIndexAddNegativeRuleDocuments(index, studentProjection)
     if (index.documents.size == 0) {
         index.diagnostics.add("serving_index_empty")
     }
@@ -111,7 +107,7 @@ public func buildCangjieStudentServingIndex(records: ArrayList<NormalizedRecord>
         }
     }
     let index = buildCangjieServingIndex(accepted, activeKnowledgeVersion: activeKnowledgeVersion,
-        buildObserver: buildObserver)
+        buildObserver: buildObserver, studentProjection: true)
     for (diagnostic in rejectedDiagnostics) { index.diagnostics.add(diagnostic) }
     index
 }
@@ -131,7 +127,8 @@ public func buildCangjieStudentServingProjection(records: ArrayList<NormalizedRe
         }
     }
     projection.index = buildCangjieServingIndex(projection.records,
-        activeKnowledgeVersion: activeKnowledgeVersion, buildObserver: buildObserver)
+        activeKnowledgeVersion: activeKnowledgeVersion, buildObserver: buildObserver,
+        studentProjection: true)
     for (diagnostic in rejectedDiagnostics) { projection.index.diagnostics.add(diagnostic) }
     projection.diagnostic = cangjieStudentServingProjectionDiagnostic(projection,
         activeKnowledgeVersion)
@@ -144,6 +141,12 @@ public func cangjieStudentServingProjectionDiagnostic(projection: CangjieStudent
     if (projection.activeKnowledgeVersion != expectedActiveKnowledgeVersion ||
         projection.index.activeKnowledgeVersion != expectedActiveKnowledgeVersion) {
         return "student_serving_projection_version_drift"
+    }
+    for (diagnostic in projection.index.diagnostics) {
+        if (diagnostic.startsWith("serving_index_record_rejected:") ||
+            diagnostic.startsWith("serving_projection_rejected:")) {
+            return "student_knowledge_leakage_blocked"
+        }
     }
     if (projection.index.records.size == 0 || projection.index.documents.size == 0) {
         for (diagnostic in projection.index.diagnostics) {
@@ -545,7 +548,8 @@ private func cangjieServingIndexRecordModule(record: NormalizedRecord): String {
     ""
 }
 
-private func cangjieServingIndexAddNegativeRuleDocuments(index: CangjieServingIndex): Unit {
+private func cangjieServingIndexAddNegativeRuleDocuments(index: CangjieServingIndex,
+    studentProjection: Bool): Unit {
     let rules = buildNegativeRuleRecords(index.records)
     for (rule in rules) {
         let doc = CangjieServingDocument()
@@ -555,15 +559,29 @@ private func cangjieServingIndexAddNegativeRuleDocuments(index: CangjieServingIn
         doc.text = "Bad: ${rule.badPattern}\nUse: ${rule.replacement}"
         doc.versionResolutionId = rule.versionResolutionId
         doc.targetVersion = cangjieServingIndexRuleTargetVersion(index, rule.versionResolutionId)
-        doc.sourceSet = CangjieSourceSets.EVAL_SUPPORT
+        doc.sourceSet = cangjieServingIndexRuleSourceSet(index,
+            rule.versionResolutionId)
         doc.contentHash = stableSummaryHash("${rule.ruleId}:${rule.replacement}")
         doc.citation = rule.citation
         doc.sourceId = "negative-rule-${rule.ruleId}"
         doc.rankProfile = "negative-rule"
-        index.documents.add(doc)
-        cangjieServingIndexAddViewCounts(index, doc)
-        cangjieServingIndexAddExactEntries(index, doc)
+        cangjieServingIndexAddDocument(index, doc, studentProjection)
     }
+}
+
+private func cangjieServingIndexAddDocument(index: CangjieServingIndex,
+    document: CangjieServingDocument, studentProjection: Bool): Unit {
+    if (studentProjection) {
+        let diagnostic = cangjieStudentServingDocumentDiagnostic(document)
+        if (!diagnostic.ok) {
+            index.diagnostics.add(
+                "serving_projection_rejected:${diagnostic.code}:${diagnostic.matchedField}")
+            return
+        }
+    }
+    index.documents.add(document)
+    cangjieServingIndexAddViewCounts(index, document)
+    cangjieServingIndexAddExactEntries(index, document)
 }
 
 private func cangjieServingIndexAddViewCounts(index: CangjieServingIndex, doc: CangjieServingDocument): Unit {
@@ -597,6 +615,17 @@ private func cangjieServingIndexRuleTargetVersion(index: CangjieServingIndex, ve
         }
     }
     cangjieDefaultTargetVersion()
+}
+
+private func cangjieServingIndexRuleSourceSet(index: CangjieServingIndex,
+    versionResolutionId: String): String {
+    for (record in index.records) {
+        if (record.metadata.versionResolutionId == versionResolutionId &&
+            record.metadata.sourceSet != "") {
+            return record.metadata.sourceSet
+        }
+    }
+    CangjieSourceSets.EVAL_SUPPORT
 }
 
 private func cangjieServingIndexAddExactEntries(index: CangjieServingIndex, doc: CangjieServingDocument): Unit {

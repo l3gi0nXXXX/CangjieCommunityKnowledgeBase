@@ -143,12 +143,14 @@ public func buildCangjieTaskKnowledgePack(status: KnowledgeStatus, request: Cang
     if (validation != "") {
         pack.diagnostics.add(validation)
         pack.notes.add("invalid_task_knowledge_request")
-        pack.versionResolution = resolveCangjieVersion(sanitized.versionSelector, manifest)
+        pack.versionResolution = cangjieStudentVersionResolution(
+            resolveCangjieVersion(sanitized.versionSelector, manifest))
         pack.targetVersion = pack.versionResolution.targetVersion
         pack.coverage = buildCangjieKnowledgeCoverage(sanitized, pack.versionResolution, pack.queryPlan)
         return pack
     }
-    pack.versionResolution = resolveCangjieVersion(sanitized.versionSelector, manifest)
+    pack.versionResolution = cangjieStudentVersionResolution(
+        resolveCangjieVersion(sanitized.versionSelector, manifest))
     pack.targetVersion = pack.versionResolution.targetVersion
     pack.queryPlan = buildCangjieTaskQueryPlan(sanitized, pack.versionResolution)
     pack.coverage = buildCangjieKnowledgeCoverage(sanitized, pack.versionResolution, pack.queryPlan)

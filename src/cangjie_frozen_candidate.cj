@@ -16,6 +16,10 @@ public class CkbFrozenCandidateSealOptions {
     public var studentLeakageProofJson: String = ""
     public var studentLeakageArtifactJson: String = ""
     public var anonymousQueryArtifactJson: String = ""
+    public var anonymousAtomQueryArtifactJson: String = ""
+    public var restLeakageArtifactJson: String = ""
+    public var mcpStdioLeakageArtifactJson: String = ""
+    public var mcpHttpLeakageArtifactJson: String = ""
     public var authorityIsolationArtifactJson: String = ""
     public var atomTestArtifactJson: String = ""
     public init() {}
@@ -51,10 +55,17 @@ public func ckbBuildFrozenCandidateSeal(store: FileKnowledgeStore,
     if (candidateChecksum != options.expectedCandidateChecksum) {
         report.diagnostic = "frozen_candidate_checksum_mismatch"; return report
     }
+    if (!options.studentLeakageProofJson.contains(
+        "\"schemaVersion\":\"ckb-student-leakage-seal-v2\"")) {
+        report.diagnostic = "student_leakage_proof_v2_required"; return report
+    }
     let trustDiagnostic = ckbCandidateTrustSealDiagnostic(options.studentLeakageProofJson,
         snapshot.normalizedRecords, options.studentLeakageArtifactJson,
         options.anonymousQueryArtifactJson, options.authorityIsolationArtifactJson,
-        options.atomTestArtifactJson)
+        options.atomTestArtifactJson, restText: options.restLeakageArtifactJson,
+        mcpStdioText: options.mcpStdioLeakageArtifactJson,
+        mcpHttpText: options.mcpHttpLeakageArtifactJson,
+        anonymousQueryText: options.anonymousAtomQueryArtifactJson)
     if (trustDiagnostic != "ok") { report.diagnostic = "student_leakage_proof_mismatch"; return report }
     faultInjector.checkpoint()
     let verifiedPointer = store.loadActiveSnapshotPointer()
@@ -67,7 +78,7 @@ public func ckbBuildFrozenCandidateSeal(store: FileKnowledgeStore,
     }
     let transactionHash = ckbFrozenCandidateDirectoryHash(txRoot)
     let pointerHash = ckbActiveSnapshotPointerIdentityHash(pointer)
-    let body = "{\"schemaVersion\":\"ckb-frozen-candidate-v1\",\"knowledgeVersion\":\"${ckbFrozenCandidateEscape(pointer.activeVersion)}\",\"txIdHash\":\"${benchmarkGapSha256(pointer.txId)}\",\"activePointerHash\":\"${pointerHash}\",\"transactionHash\":\"${transactionHash}\",\"candidateChecksum\":\"${candidateChecksum}\",\"inputHash\":\"${options.inputHash}\",\"configHash\":\"${options.configHash}\",\"modelHash\":\"${options.modelHash}\",\"studentLeakageProofHash\":\"${benchmarkGapSha256(options.studentLeakageProofJson)}\",\"authorityIsolationArtifactHash\":\"${benchmarkGapSha256(options.authorityIsolationArtifactJson)}\",\"anonymousQueryArtifactHash\":\"${benchmarkGapSha256(options.anonymousQueryArtifactJson)}\",\"atomTestArtifactHash\":\"${benchmarkGapSha256(options.atomTestArtifactJson)}\""
+    let body = "{\"schemaVersion\":\"ckb-frozen-candidate-v2\",\"knowledgeVersion\":\"${ckbFrozenCandidateEscape(pointer.activeVersion)}\",\"txIdHash\":\"${benchmarkGapSha256(pointer.txId)}\",\"activePointerHash\":\"${pointerHash}\",\"transactionHash\":\"${transactionHash}\",\"candidateChecksum\":\"${candidateChecksum}\",\"inputHash\":\"${options.inputHash}\",\"configHash\":\"${options.configHash}\",\"modelHash\":\"${options.modelHash}\",\"studentLeakageProofHash\":\"${benchmarkGapSha256(options.studentLeakageProofJson)}\",\"authorityIsolationArtifactHash\":\"${benchmarkGapSha256(options.authorityIsolationArtifactJson)}\",\"anonymousQueryArtifactHash\":\"${benchmarkGapSha256(options.anonymousQueryArtifactJson)}\",\"anonymousAtomQueryArtifactHash\":\"${benchmarkGapSha256(options.anonymousAtomQueryArtifactJson)}\",\"restLeakageArtifactHash\":\"${benchmarkGapSha256(options.restLeakageArtifactJson)}\",\"mcpStdioLeakageArtifactHash\":\"${benchmarkGapSha256(options.mcpStdioLeakageArtifactJson)}\",\"mcpHttpLeakageArtifactHash\":\"${benchmarkGapSha256(options.mcpHttpLeakageArtifactJson)}\",\"atomTestArtifactHash\":\"${benchmarkGapSha256(options.atomTestArtifactJson)}\""
     report.evidenceHash = benchmarkGapSha256(body + "}")
     report.manifestJson = body + ",\"evidenceHash\":\"${report.evidenceHash}\"}"
     report.ok = true; report.diagnostic = "ok"; report
@@ -78,10 +89,16 @@ public func ckbFrozenCandidateManifestIntegrityDiagnostic(manifestJson:String,
     expectedKnowledgeVersion!:String=""):String {
     try {
         let object=JsonValue.fromStr(manifestJson).asObject()
-        if(ckbFrozenCandidateString(object,"schemaVersion")!="ckb-frozen-candidate-v1"){return "frozen_candidate_manifest_invalid"}
+        let schema=ckbFrozenCandidateString(object,"schemaVersion")
+        if(schema!="ckb-frozen-candidate-v1"&&schema!="ckb-frozen-candidate-v2"){return "frozen_candidate_manifest_invalid"}
         let body=ckbFrozenCandidateManifestBody(object)
         if(ckbFrozenCandidateString(object,"evidenceHash")!=benchmarkGapSha256(body+"}")){return "frozen_candidate_manifest_invalid"}
+        if(schema=="ckb-frozen-candidate-v2"&&
+            manifestJson!=body+",\"evidenceHash\":\"${benchmarkGapSha256(body+"}")}\"}"){
+            return "frozen_candidate_manifest_invalid"
+        }
         for(key in ["txIdHash","activePointerHash","transactionHash","candidateChecksum","inputHash","configHash","modelHash","studentLeakageProofHash","authorityIsolationArtifactHash","anonymousQueryArtifactHash","atomTestArtifactHash"]){if(!ckbFrozenCandidateHash(ckbFrozenCandidateString(object,key))){return "frozen_candidate_manifest_invalid"}}
+        if(schema=="ckb-frozen-candidate-v2"){for(key in ["anonymousAtomQueryArtifactHash","restLeakageArtifactHash","mcpStdioLeakageArtifactHash","mcpHttpLeakageArtifactHash"]){if(!ckbFrozenCandidateHash(ckbFrozenCandidateString(object,key))){return "frozen_candidate_manifest_invalid"}}}
         if(expectedCandidateChecksum!=""&&ckbFrozenCandidateString(object,"candidateChecksum")!=expectedCandidateChecksum){return "frozen_candidate_checksum_mismatch"}
         if(expectedLeakageProofHash!=""&&ckbFrozenCandidateString(object,"studentLeakageProofHash")!=expectedLeakageProofHash){return "student_leakage_proof_mismatch"}
         if(expectedKnowledgeVersion!=""&&ckbFrozenCandidateString(object,"knowledgeVersion")!=expectedKnowledgeVersion){return "frozen_knowledge_version_mismatch"}
@@ -95,7 +112,10 @@ public func ckbFrozenCandidateManifestDiagnostic(store:FileKnowledgeStore,manife
 }
 
 private func ckbFrozenCandidateManifestBody(object:JsonObject):String {
-    "{\"schemaVersion\":\"ckb-frozen-candidate-v1\",\"knowledgeVersion\":\"${ckbFrozenCandidateEscape(ckbFrozenCandidateString(object, "knowledgeVersion"))}\",\"txIdHash\":\"${ckbFrozenCandidateString(object, "txIdHash")}\",\"activePointerHash\":\"${ckbFrozenCandidateString(object, "activePointerHash")}\",\"transactionHash\":\"${ckbFrozenCandidateString(object, "transactionHash")}\",\"candidateChecksum\":\"${ckbFrozenCandidateString(object, "candidateChecksum")}\",\"inputHash\":\"${ckbFrozenCandidateString(object, "inputHash")}\",\"configHash\":\"${ckbFrozenCandidateString(object, "configHash")}\",\"modelHash\":\"${ckbFrozenCandidateString(object, "modelHash")}\",\"studentLeakageProofHash\":\"${ckbFrozenCandidateString(object, "studentLeakageProofHash")}\",\"authorityIsolationArtifactHash\":\"${ckbFrozenCandidateString(object, "authorityIsolationArtifactHash")}\",\"anonymousQueryArtifactHash\":\"${ckbFrozenCandidateString(object, "anonymousQueryArtifactHash")}\",\"atomTestArtifactHash\":\"${ckbFrozenCandidateString(object, "atomTestArtifactHash") }\""
+    let schema=ckbFrozenCandidateString(object,"schemaVersion")
+    let prefix="{\"schemaVersion\":\"${schema}\",\"knowledgeVersion\":\"${ckbFrozenCandidateEscape(ckbFrozenCandidateString(object, "knowledgeVersion"))}\",\"txIdHash\":\"${ckbFrozenCandidateString(object, "txIdHash")}\",\"activePointerHash\":\"${ckbFrozenCandidateString(object, "activePointerHash")}\",\"transactionHash\":\"${ckbFrozenCandidateString(object, "transactionHash")}\",\"candidateChecksum\":\"${ckbFrozenCandidateString(object, "candidateChecksum")}\",\"inputHash\":\"${ckbFrozenCandidateString(object, "inputHash")}\",\"configHash\":\"${ckbFrozenCandidateString(object, "configHash")}\",\"modelHash\":\"${ckbFrozenCandidateString(object, "modelHash")}\",\"studentLeakageProofHash\":\"${ckbFrozenCandidateString(object, "studentLeakageProofHash")}\",\"authorityIsolationArtifactHash\":\"${ckbFrozenCandidateString(object, "authorityIsolationArtifactHash")}\",\"anonymousQueryArtifactHash\":\"${ckbFrozenCandidateString(object, "anonymousQueryArtifactHash")}\""
+    if(schema=="ckb-frozen-candidate-v1"){return prefix+",\"atomTestArtifactHash\":\"${ckbFrozenCandidateString(object,"atomTestArtifactHash")}\""}
+    prefix+",\"anonymousAtomQueryArtifactHash\":\"${ckbFrozenCandidateString(object,"anonymousAtomQueryArtifactHash")}\",\"restLeakageArtifactHash\":\"${ckbFrozenCandidateString(object,"restLeakageArtifactHash")}\",\"mcpStdioLeakageArtifactHash\":\"${ckbFrozenCandidateString(object,"mcpStdioLeakageArtifactHash")}\",\"mcpHttpLeakageArtifactHash\":\"${ckbFrozenCandidateString(object,"mcpHttpLeakageArtifactHash")}\",\"atomTestArtifactHash\":\"${ckbFrozenCandidateString(object,"atomTestArtifactHash")}\""
 }
 
 public func runCkbFrozenCandidateSealCli(args: Array<String>, store: FileKnowledgeStore): Int64 {
@@ -113,6 +133,10 @@ public func runCkbFrozenCandidateSealCli(args: Array<String>, store: FileKnowled
         options.studentLeakageProofJson = ckbFrozenCandidateRead(ckbFrozenCandidateString(control, "studentLeakageProofPath"))
         options.studentLeakageArtifactJson = ckbFrozenCandidateRead(ckbFrozenCandidateString(control, "studentLeakageArtifactPath"))
         options.anonymousQueryArtifactJson = ckbFrozenCandidateRead(ckbFrozenCandidateString(control, "anonymousQueryArtifactPath"))
+        options.anonymousAtomQueryArtifactJson = ckbFrozenCandidateRead(ckbFrozenCandidateString(control, "anonymousAtomQueryArtifactPath"))
+        options.restLeakageArtifactJson = ckbFrozenCandidateRead(ckbFrozenCandidateString(control, "restLeakageArtifactPath"))
+        options.mcpStdioLeakageArtifactJson = ckbFrozenCandidateRead(ckbFrozenCandidateString(control, "mcpStdioLeakageArtifactPath"))
+        options.mcpHttpLeakageArtifactJson = ckbFrozenCandidateRead(ckbFrozenCandidateString(control, "mcpHttpLeakageArtifactPath"))
         options.authorityIsolationArtifactJson = ckbFrozenCandidateRead(ckbFrozenCandidateString(control, "authorityIsolationArtifactPath"))
         options.atomTestArtifactJson = ckbFrozenCandidateRead(ckbFrozenCandidateString(control, "atomTestArtifactPath"))
         let report = ckbBuildFrozenCandidateSeal(store, options)

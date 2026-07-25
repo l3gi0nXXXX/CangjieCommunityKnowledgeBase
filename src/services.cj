@@ -4888,6 +4888,17 @@ public class FileKnowledgeStore {
             result.diagnostic = result.status
             return result
         }
+        if (!this.candidateImmutableVersionValid(version)) {
+            result.status = "candidate_version_invalid"
+            result.diagnostic = result.status
+            return result
+        }
+        let expectedBatchCount = (normalizedRecords.size + 255) / 256
+        if (!this.candidateImmutableWriteLayoutSafe(version, expectedBatchCount)) {
+            result.status = "candidate_immutable_path_unsafe"
+            result.diagnostic = result.status
+            return result
+        }
         this.cleanupCandidateStaleTemps(version)
         this.ensureActiveSnapshotDeadline("candidate_materialization_before", deadlineAtMillis)
         result.rawCount = rawRecords.size
@@ -5025,6 +5036,339 @@ public class FileKnowledgeStore {
         result.status = if (result.checkpointDegraded) { "candidate_immutable_written_checkpoint_degraded" } else if (existing == "") { "candidate_immutable_written" } else { "candidate_immutable_repaired" }
         if (result.checkpointDegraded) { result.diagnostic = "candidate_checkpoint_write_degraded" }
         result
+    }
+
+    public func loadCandidateSnapshotImmutable(version: String,
+        deadlineAtMillis!: Int64 = 0): CkbImmutableCandidateSnapshot {
+        let snapshot = CkbImmutableCandidateSnapshot()
+        snapshot.version = version
+        if (version.trimAscii() == "" || version != version.trimAscii()) {
+            snapshot.diagnostic = "candidate_version_missing"
+            return snapshot
+        }
+        if (!this.candidateImmutableVersionValid(version)) {
+            snapshot.diagnostic = "candidate_version_invalid"
+            return snapshot
+        }
+        let base = "candidate-artifacts/${safeName(version)}"
+        let manifestPath = "${base}/manifest.ckb"
+        let cleanManifestPath = "${base}/clean-candidate-manifest.json"
+        let auditPath = "${base}/clean-candidate-audit.json"
+        try {
+            if (!this.candidateImmutableRegularFile(manifestPath)) {
+                snapshot.diagnostic = "candidate_immutable_manifest_required"
+                return snapshot
+            }
+            let manifest = this.readText(manifestPath)
+            if (manifest == "") {
+                snapshot.diagnostic = "candidate_immutable_manifest_required"
+                return snapshot
+            }
+            if (ckbCurrentField(manifest, "schemaVersion") != CkbCandidateDurableSchema.VERSION ||
+                ckbCurrentField(manifest, "version") != version) {
+                snapshot.diagnostic = "candidate_immutable_manifest_mismatch"
+                return snapshot
+            }
+            snapshot.rawCount = parseIntField(ckbCurrentField(manifest, "rawCount"), -1)
+            snapshot.normalizedCount = parseIntField(
+                ckbCurrentField(manifest, "normalizedCount"), -1)
+            snapshot.batchCount = parseIntField(ckbCurrentField(manifest, "batchCount"), -1)
+            if (snapshot.rawCount < 0 || snapshot.normalizedCount < 0 ||
+                snapshot.batchCount < 0 ||
+                snapshot.batchCount != (snapshot.normalizedCount + 255) / 256) {
+                snapshot.diagnostic = "candidate_immutable_manifest_mismatch"
+                return snapshot
+            }
+            let rawPath = "raw/candidate/${safeName(version)}/records.ckb"
+            let normalizedPath = "normalized/candidate/${safeName(version)}.ckb"
+            if (ckbCurrentField(manifest, "rawPath") != rawPath ||
+                ckbCurrentField(manifest, "normalizedPath") != normalizedPath) {
+                snapshot.diagnostic = "candidate_immutable_path_mismatch"
+                return snapshot
+            }
+            if (!this.candidateImmutableRegularFile(rawPath) ||
+                !this.candidateImmutableRegularFile(normalizedPath)) {
+                snapshot.diagnostic = "candidate_immutable_path_mismatch"
+                return snapshot
+            }
+            let rawText = this.readText(rawPath)
+            let normalizedText = this.readText(normalizedPath)
+            snapshot.rawRecords = this.parseRaw(rawText)
+            let normalizedDiagnostics = ArrayList<String>()
+            snapshot.normalizedRecords = this.parseNormalizedStrict(
+                normalizedText, normalizedDiagnostics)
+            if (normalizedDiagnostics.size != 0 ||
+                snapshot.rawRecords.size != snapshot.rawCount ||
+                snapshot.normalizedRecords.size != snapshot.normalizedCount) {
+                snapshot.diagnostic = "candidate_immutable_record_count_mismatch"
+                return snapshot
+            }
+            let rawFileHash = this.candidateRawFileHash(snapshot.rawRecords,
+                deadlineAtMillis)
+            let normalizedFileHash = this.candidateNormalizedFileHash(
+                snapshot.normalizedRecords, 0, snapshot.normalizedRecords.size,
+                deadlineAtMillis)
+            if (ckbCurrentField(manifest, "rawFileHash") != rawFileHash ||
+                ckbCurrentField(manifest, "normalizedFileHash") != normalizedFileHash ||
+                !this.candidateFileHashMatches(rawPath, rawFileHash, deadlineAtMillis) ||
+                !this.candidateFileHashMatches(normalizedPath, normalizedFileHash,
+                    deadlineAtMillis)) {
+                snapshot.diagnostic = "candidate_immutable_file_hash_mismatch"
+                return snapshot
+            }
+            snapshot.rawEvidenceHash = this.candidateRawEvidenceHash(snapshot.rawRecords)
+            snapshot.normalizedEvidenceHash =
+                this.candidateNormalizedEvidenceHash(snapshot.normalizedRecords)
+            if (ckbCurrentField(manifest, "rawEvidenceHash") != snapshot.rawEvidenceHash ||
+                ckbCurrentField(manifest, "normalizedEvidenceHash") !=
+                    snapshot.normalizedEvidenceHash) {
+                snapshot.diagnostic = "candidate_immutable_evidence_hash_mismatch"
+                return snapshot
+            }
+            let manifestSeed = StringBuilder()
+            manifestSeed.append("${version}|${snapshot.rawCount}|${snapshot.normalizedCount}|${snapshot.rawEvidenceHash}|${snapshot.normalizedEvidenceHash}|${rawPath}|${rawFileHash}|${normalizedPath}|${normalizedFileHash}")
+            var start: Int64 = 0
+            for (index in 0..snapshot.batchCount) {
+                let end = if (start + 256 < snapshot.normalizedRecords.size) {
+                    start + 256
+                } else { snapshot.normalizedRecords.size }
+                let batchPath = "${base}/batches/batch-${index}.ckb"
+                let batchCount = end - start
+                let batchHash = this.candidateNormalizedFileHash(
+                    snapshot.normalizedRecords, start, end, deadlineAtMillis)
+                if (!this.candidateImmutableRegularFile(batchPath) ||
+                    ckbCurrentField(manifest, "batch${index}Path") != batchPath ||
+                    parseIntField(ckbCurrentField(manifest, "batch${index}Count"), -1) !=
+                        batchCount ||
+                    ckbCurrentField(manifest, "batch${index}Hash") != batchHash ||
+                    !this.candidateFileHashMatches(batchPath, batchHash,
+                        deadlineAtMillis)) {
+                    snapshot.diagnostic = "candidate_immutable_batch_hash_mismatch"
+                    return snapshot
+                }
+                manifestSeed.append("|${batchPath}|${batchCount}|${batchHash}")
+                start = end
+            }
+            snapshot.manifestEvidenceHash =
+                ckbReleaseEvidenceHash(manifestSeed.toString())
+            if (ckbCurrentField(manifest, "manifestEvidenceHash") !=
+                snapshot.manifestEvidenceHash) {
+                snapshot.diagnostic = "candidate_immutable_manifest_evidence_mismatch"
+                return snapshot
+            }
+            if (!this.candidateImmutableRegularFile(cleanManifestPath) ||
+                !this.candidateImmutableRegularFile(auditPath)) {
+                snapshot.diagnostic = "clean_candidate_manifest_required"
+                return snapshot
+            }
+            let cleanManifest = this.readText(cleanManifestPath)
+            let audit = this.readText(auditPath)
+            if (cleanManifest == "" || audit == "") {
+                snapshot.diagnostic = "clean_candidate_manifest_required"
+                return snapshot
+            }
+            snapshot.immutableManifestHash = benchmarkGapSha256(manifest)
+            snapshot.cleanManifestHash = benchmarkGapSha256(cleanManifest)
+            let auditRunes = audit.toRuneArray()
+            if (auditRunes.size == 0 || auditRunes[auditRunes.size - 1] != r'\n') {
+                snapshot.diagnostic = "clean_candidate_audit_mismatch"
+                return snapshot
+            }
+            let auditBody = StringBuilder()
+            for (index in 0..(auditRunes.size - 1)) { auditBody.append(auditRunes[index]) }
+            snapshot.auditEvidenceHash = benchmarkGapSha256(auditBody.toString())
+            let clean = JsonValue.fromStr(cleanManifest).asObject()
+            let cleanSchema = clean.get("schemaVersion").getOrThrow().asString().getValue()
+            let cleanOk = clean.get("ok").getOrThrow().asBool().getValue()
+            let cleanVersionHash = clean.get("versionHash").getOrThrow().asString().getValue()
+            let cleanRawCount = clean.get("rawCount").getOrThrow().asInt().getValue()
+            let cleanNormalizedCount =
+                clean.get("normalizedCount").getOrThrow().asInt().getValue()
+            let cleanActiveCount = clean.get("activeCount").getOrThrow().asInt().getValue()
+            let cleanBatchCount = clean.get("batchCount").getOrThrow().asInt().getValue()
+            let cleanHistoricalRemoved =
+                clean.get("historicalRemoved").getOrThrow().asInt().getValue()
+            snapshot.candidateChecksum =
+                clean.get("candidateChecksum").getOrThrow().asString().getValue()
+            snapshot.authorityHash =
+                clean.get("authorityHash").getOrThrow().asString().getValue()
+            let cleanEvidenceHash =
+                clean.get("evidenceHash").getOrThrow().asString().getValue()
+            let cleanBody = "{\"schemaVersion\":\"ckb-clean-candidate-v1\",\"ok\":true," +
+                "\"versionHash\":\"${cleanVersionHash}\"," +
+                "\"rawCount\":${cleanRawCount}," +
+                "\"normalizedCount\":${cleanNormalizedCount}," +
+                "\"activeCount\":${cleanActiveCount}," +
+                "\"historicalRemoved\":${cleanHistoricalRemoved}," +
+                "\"candidateChecksum\":\"${snapshot.candidateChecksum}\"," +
+                "\"authorityHash\":\"${snapshot.authorityHash}\"," +
+                "\"auditEvidenceHash\":\"${snapshot.auditEvidenceHash}\"," +
+                "\"materializationManifestEvidenceHash\":\"${snapshot.manifestEvidenceHash}\"," +
+                "\"immutableManifestHash\":\"${snapshot.immutableManifestHash}\"," +
+                "\"rawEvidenceHash\":\"${snapshot.rawEvidenceHash}\"," +
+                "\"normalizedEvidenceHash\":\"${snapshot.normalizedEvidenceHash}\"," +
+                "\"batchCount\":${cleanBatchCount}"
+            let canonicalCleanManifest = cleanBody +
+                ",\"evidenceHash\":\"${benchmarkGapSha256(cleanBody + "}")}\"}\n"
+            if (cleanSchema != "ckb-clean-candidate-v1" || !cleanOk ||
+                cleanVersionHash != benchmarkGapSha256(version) ||
+                cleanRawCount != snapshot.rawCount ||
+                cleanNormalizedCount != snapshot.normalizedCount ||
+                cleanActiveCount != snapshot.normalizedCount ||
+                cleanBatchCount != snapshot.batchCount ||
+                clean.get("auditEvidenceHash").getOrThrow().asString().getValue() !=
+                    snapshot.auditEvidenceHash ||
+                clean.get("materializationManifestEvidenceHash").getOrThrow()
+                    .asString().getValue() != snapshot.manifestEvidenceHash ||
+                clean.get("immutableManifestHash").getOrThrow().asString().getValue() !=
+                    snapshot.immutableManifestHash ||
+                clean.get("rawEvidenceHash").getOrThrow().asString().getValue() !=
+                    snapshot.rawEvidenceHash ||
+                clean.get("normalizedEvidenceHash").getOrThrow().asString().getValue() !=
+                    snapshot.normalizedEvidenceHash ||
+                snapshot.candidateChecksum !=
+                    ckbCertifiedNormalizedRecordsChecksum(snapshot.normalizedRecords) ||
+                !this.candidatePrefixedSha256(snapshot.authorityHash) ||
+                !this.candidatePrefixedSha256(snapshot.candidateChecksum) ||
+                !this.candidatePrefixedSha256(snapshot.auditEvidenceHash) ||
+                !this.candidatePrefixedSha256(snapshot.immutableManifestHash) ||
+                !this.candidateBareSha256(snapshot.manifestEvidenceHash) ||
+                !this.candidateBareSha256(snapshot.rawEvidenceHash) ||
+                !this.candidateBareSha256(snapshot.normalizedEvidenceHash) ||
+                cleanEvidenceHash != benchmarkGapSha256(cleanBody + "}") ||
+                cleanManifest != canonicalCleanManifest) {
+                snapshot.diagnostic = "clean_candidate_manifest_mismatch"
+                return snapshot
+            }
+            for (record in snapshot.rawRecords) {
+                if (record.metadata.knowledgeVersion != version ||
+                    record.metadata.candidateVersion != version) {
+                    snapshot.diagnostic = "candidate_immutable_record_version_mismatch"
+                    return snapshot
+                }
+            }
+            for (record in snapshot.normalizedRecords) {
+                if (record.metadata.knowledgeVersion != version ||
+                    record.metadata.candidateVersion != version) {
+                    snapshot.diagnostic = "candidate_immutable_record_version_mismatch"
+                    return snapshot
+                }
+                snapshot.activeIndex.add(record)
+            }
+            snapshot.valid = true
+            snapshot.diagnostic = "ok"
+            snapshot
+        } catch (_: Exception) {
+            snapshot.valid = false
+            snapshot.diagnostic = "candidate_immutable_invalid_response_encoding"
+            snapshot
+        }
+    }
+
+    private func candidateImmutableVersionValid(version: String): Bool {
+        let runes = version.toRuneArray()
+        if (runes.size == 0 || runes.size > 128 || version != version.trimAscii() ||
+            version != safeName(version) || version.contains("..") ||
+            version.startsWith(".") || version.endsWith(".")) {
+            return false
+        }
+        for (rune in runes) {
+            if (!((rune >= r'a' && rune <= r'z') ||
+                (rune >= r'A' && rune <= r'Z') ||
+                (rune >= r'0' && rune <= r'9') ||
+                rune == r'-' || rune == r'_' || rune == r'.')) {
+                return false
+            }
+        }
+        true
+    }
+
+    private func candidateImmutableRegularFile(relative: String): Bool {
+        if (relative == "" || relative.startsWith("/") || relative.contains("..") ||
+            relative.contains("\\") || relative.contains("\u{0000}")) {
+            return false
+        }
+        let path = this.root.join(relative)
+        if (!exists(path)) { return false }
+        try {
+            let canonicalRoot = canonicalize(this.root).toString()
+            let expected = Path(canonicalRoot).join(relative).toString()
+            canonicalize(path).toString() == expected
+        } catch (_: Exception) { false }
+    }
+
+    private func candidatePrefixedSha256(value: String): Bool {
+        let runes = value.toRuneArray()
+        if (runes.size != 71 || !value.startsWith("sha256:")) { return false }
+        for (index in 7..71) {
+            let rune = runes[index]
+            if (!((rune >= r'0' && rune <= r'9') ||
+                (rune >= r'a' && rune <= r'f'))) { return false }
+        }
+        true
+    }
+
+    private func candidateBareSha256(value: String): Bool {
+        if (value.toRuneArray().size != 64) { return false }
+        for (rune in value.toRuneArray()) {
+            if (!((rune >= r'0' && rune <= r'9') ||
+                (rune >= r'a' && rune <= r'f') ||
+                (rune >= r'A' && rune <= r'F'))) { return false }
+        }
+        true
+    }
+
+    private func candidateLowerHex(value: String): Bool {
+        if (value.toRuneArray().size != 64) { return false }
+        for (rune in value.toRuneArray()) {
+            if (!((rune >= r'0' && rune <= r'9') ||
+                (rune >= r'a' && rune <= r'f'))) { return false }
+        }
+        true
+    }
+
+    private func candidateImmutableWriteLayoutSafe(version: String,
+        batchCount: Int64): Bool {
+        try {
+            if (!exists(this.root)) { Directory.create(this.root, recursive: true) }
+        } catch (_: Exception) { return false }
+        let paths = ArrayList<String>()
+        paths.add("raw/candidate/${version}/records.ckb")
+        paths.add("normalized/candidate/${version}.ckb")
+        paths.add("candidate-artifacts/${version}/manifest.ckb")
+        paths.add("candidate-artifacts/${version}/checkpoint.ckb")
+        for (index in 0..batchCount) {
+            paths.add("candidate-artifacts/${version}/batches/batch-${index}.ckb")
+        }
+        for (relative in paths) {
+            if (!this.candidateImmutableOutputPathSafe(relative)) { return false }
+        }
+        true
+    }
+
+    private func candidateImmutableOutputPathSafe(relative: String): Bool {
+        if (relative == "" || relative.startsWith("/") || relative.contains("..") ||
+            relative.contains("\\") || relative.contains("\u{0000}")) {
+            return false
+        }
+        try {
+            let canonicalRoot = canonicalize(this.root).toString()
+            var current = Path(canonicalRoot)
+            var relativePrefix = ""
+            for (part in relative.split("/")) {
+                if (part == "") { return false }
+                current = current.join(part)
+                relativePrefix = if (relativePrefix == "") {
+                    part
+                } else { "${relativePrefix}/${part}" }
+                if (exists(current) &&
+                    canonicalize(current).toString() !=
+                        Path(canonicalRoot).join(relativePrefix).toString()) {
+                    return false
+                }
+            }
+            true
+        } catch (_: Exception) { false }
     }
 
     public func saveCandidateLifecycleMetadata(status: KnowledgeStatus): Unit {
@@ -13310,7 +13654,8 @@ public class CkbCommandLoopService {
     }
 
     public func cangjieResolveVersion(selector: CangjieVersionSelector): CangjieVersionResolution {
-        this.cangjieCapabilityService().resolveVersion(selector)
+        cangjieStudentVersionResolution(
+            this.cangjieCapabilityService().resolveVersion(selector))
     }
 
     public func cangjieTaskKnowledgePack(request: CangjieTaskKnowledgeRequest): CangjieTaskKnowledgePack {

@@ -57,7 +57,9 @@ public class CangjieRealScaleServingTest {
         records.add(polluted)
         let projection = buildCangjieStudentServingProjection(records, "knowledge-v1")
 
-        @Expect(cangjieStudentServingProjectionDiagnostic(projection, "knowledge-v1"), "ok")
+        @Expect(cangjieStudentServingProjectionDiagnostic(projection, "knowledge-v1"),
+            "student_knowledge_leakage_blocked")
+        @Expect(projection.valid, false)
         @Expect(projection.index.records.size, 1)
         @Expect(cangjieStudentServingProjectionDiagnostic(projection, "knowledge-v2"),
             "student_serving_projection_version_drift")
@@ -67,6 +69,23 @@ public class CangjieRealScaleServingTest {
         let rejected = buildCangjieStudentServingProjection(allPolluted, "knowledge-v1")
         @Expect(rejected.valid, false)
         @Expect(rejected.diagnostic, "student_knowledge_leakage_blocked")
+
+        let kb = newOfflineKnowledgeBase()
+        kb.stageCandidateRecords("knowledge-v1", records)
+        @Expect(kb.promoteCandidateToActive("knowledge-v1"), true)
+        let store = FileKnowledgeStore(this.root("mixed-polluted-runtime"))
+        @Expect(kb.persistActiveSnapshot(store).ok, true)
+        let before = ckbActiveSnapshotPointerIdentityHash(
+            store.loadActiveSnapshotPointer())
+        let request = CangjieTaskKnowledgeRequest()
+        request.taskId = "mixed-projection"
+        request.taskText = "ArrayList add"
+        request.versionSelector.targetVersion = "1.0.0"
+        let pack = CkbCommandLoopService(CkbRuntimeConfig(), store)
+            .cangjieTaskKnowledgePack(request)
+        @Expect(pack.diagnostics.contains("student_knowledge_leakage_blocked"), true)
+        @Expect(ckbActiveSnapshotPointerIdentityHash(
+            store.loadActiveSnapshotPointer()), before)
     }
 
     @TestCase
@@ -77,6 +96,39 @@ public class CangjieRealScaleServingTest {
         @Expect(projection.valid, false)
         @Expect(projection.diagnostic, "student_serving_projection_empty")
         @Expect(observer.count, 1)
+    }
+
+    @TestCase
+    public func derivedServingDocumentRejectionFailsWholeRuntimeWithoutPointerMutation(): Unit {
+        let record = ckbRealScaleRecord("derived-negative",
+            "ArrayList generic documentation", "knowledge-v1")
+        record.metadata.sourceSet = ""
+        @Expect(cangjieStudentRecordDiagnostic(record).ok, true)
+        let records = ArrayList<NormalizedRecord>(); records.add(record)
+        let projection = buildCangjieStudentServingProjection(records,
+            "knowledge-v1")
+        @Expect(projection.valid, false)
+        @Expect(projection.diagnostic, "student_knowledge_leakage_blocked")
+        @Expect(projection.index.records.size, 1)
+        @Expect(ckbRealScaleHasDiagnostic(projection.index.diagnostics,
+            "serving_projection_rejected:"), true)
+
+        let kb = newOfflineKnowledgeBase()
+        kb.stageCandidateRecords("knowledge-v1", records)
+        @Expect(kb.promoteCandidateToActive("knowledge-v1"), true)
+        let store = FileKnowledgeStore(this.root("derived-rejection-runtime"))
+        @Expect(kb.persistActiveSnapshot(store).ok, true)
+        let before = ckbActiveSnapshotPointerIdentityHash(
+            store.loadActiveSnapshotPointer())
+        let request = CangjieTaskKnowledgeRequest()
+        request.taskId = "derived-rejection"
+        request.taskText = "ArrayList"
+        request.versionSelector.targetVersion = "1.0.0"
+        let pack = CkbCommandLoopService(CkbRuntimeConfig(), store)
+            .cangjieTaskKnowledgePack(request)
+        @Expect(pack.diagnostics.contains("student_knowledge_leakage_blocked"), true)
+        @Expect(ckbActiveSnapshotPointerIdentityHash(
+            store.loadActiveSnapshotPointer()), before)
     }
 
     @TestCase
@@ -172,7 +224,7 @@ public class CangjieRealScaleServingTest {
 
         let store = this.activeStore("real-scale-pointer")
         let manifest = ckbBuildFrozenCandidateSeal(store, ckbRealScaleFrozenControl(store))
-        @Expect(manifest.ok, true)
+        @Expect(manifest.diagnostic, "ok")
         let materializations = store.activeSnapshotMaterializationCount()
         @Expect(ckbAbcdeFrozenPointerDiagnostic(store, manifest.manifestJson), "ok")
         @Expect(store.activeSnapshotMaterializationCount(), materializations)
@@ -238,13 +290,22 @@ private func ckbRealScaleRecord(id: String, content: String, version: String): N
     record
 }
 
+private func ckbRealScaleHasDiagnostic(values: ArrayList<String>, prefix: String): Bool {
+    for (value in values) {
+        if (value.startsWith(prefix)) {
+            return true
+        }
+    }
+    false
+}
+
 private func ckbRealScaleFrozenControl(store: FileKnowledgeStore): CkbFrozenCandidateSealOptions {
     let snapshot = store.loadActiveSnapshot()
-    let leakage = ckbBuildStudentLeakageReport(snapshot.normalizedRecords).json
-    let query = "{\"ok\":true,\"indexBuildCount\":1,\"failed\":0}"
-    let authority = "{\"ok\":true,\"authorityCount\":164,\"authorityHash\":\"${benchmarkGapSha256("authority")}\",\"activeEvalCount\":0}"
-    let atoms = "{\"ok\":true,\"diagnostic\":\"validated\"}"
-    let seal = ckbRenderCandidateTrustSeal(snapshot.normalizedRecords, leakage, query, authority, atoms)
+    let artifacts = ckbS2ReleaseV2ArtifactsForTest(snapshot.normalizedRecords)
+    let seal = ckbRenderCandidateTrustSeal(snapshot.normalizedRecords,
+        artifacts[0], artifacts[1], artifacts[2], artifacts[3],
+        restText: artifacts[4], mcpStdioText: artifacts[5],
+        mcpHttpText: artifacts[6], anonymousQueryText: artifacts[7])
     let control = CkbFrozenCandidateSealOptions()
     control.expectedKnowledgeVersion = snapshot.activeVersion
     control.expectedCandidateChecksum = ckbCertifiedNormalizedRecordsChecksum(snapshot.normalizedRecords)
@@ -252,9 +313,13 @@ private func ckbRealScaleFrozenControl(store: FileKnowledgeStore): CkbFrozenCand
     control.configHash = benchmarkGapSha256("config")
     control.modelHash = benchmarkGapSha256("model")
     control.studentLeakageProofJson = seal
-    control.studentLeakageArtifactJson = leakage
-    control.authorityIsolationArtifactJson = authority
-    control.anonymousQueryArtifactJson = query
-    control.atomTestArtifactJson = atoms
+    control.studentLeakageArtifactJson = artifacts[0]
+    control.anonymousQueryArtifactJson = artifacts[1]
+    control.authorityIsolationArtifactJson = artifacts[2]
+    control.atomTestArtifactJson = artifacts[3]
+    control.restLeakageArtifactJson = artifacts[4]
+    control.mcpStdioLeakageArtifactJson = artifacts[5]
+    control.mcpHttpLeakageArtifactJson = artifacts[6]
+    control.anonymousAtomQueryArtifactJson = artifacts[7]
     control
 }
