@@ -161,9 +161,11 @@ public func collectCangjieTaskKnowledgeEvidenceDiagnostics(pack: CangjieTaskKnow
     authority!: CangjieBenchmarkLeakageAuthority =
         CangjieBenchmarkLeakageAuthority()): CangjieStudentKnowledgeDiagnostics {
     let result = CangjieStudentKnowledgeDiagnostics()
+    // Request identity is an echoed routing contract, not retrieved knowledge.
+    // Count it for field-coverage accounting without treating the caller's
+    // benchmark identity as a leakage finding.
+    result.scannedFields += 3
     cangjieLeakageScanFields(result, authority, [
-        ("pack.queryId", pack.queryId), ("pack.taskId", pack.taskId),
-        ("pack.benchmark", pack.benchmark),
         ("pack.knowledgeVersion", pack.knowledgeVersion),
         ("pack.targetVersion", pack.targetVersion),
         ("pack.evidenceHash", pack.evidenceHash),

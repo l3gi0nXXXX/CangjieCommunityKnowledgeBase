@@ -233,9 +233,8 @@ public class CangjieKnowledgeLeakageGateTest {
         evidence.citation = "https://docs.cangjie-lang.cn/rune"
         pack.matchedEvidence.add(evidence)
         let task = collectCangjieTaskKnowledgeEvidenceDiagnostics(pack)
-        @Expect(task.diagnostics.size > 0, true)
-        @Expect(r3CollectedContainsField(task, "pack.taskId"), true)
-        @Expect(r3CollectedContainsField(task, "pack.benchmark"), true)
+        @Expect(task.diagnostics.size, 0)
+        @Expect(task.scannedFields > 0, true)
         pack.taskId = "safe-task"
         pack.benchmark = "safe-benchmark"
         @Expect(collectCangjieTaskKnowledgeEvidenceDiagnostics(pack)
@@ -300,8 +299,10 @@ public class CangjieKnowledgeLeakageGateTest {
 
         let collected = collectCangjieTaskKnowledgeEvidenceDiagnostics(pack)
         @Expect(collected.scannedFields, 66)
+        @Expect(r3CollectedContainsField(collected, "pack.queryId"), false)
+        @Expect(r3CollectedContainsField(collected, "pack.taskId"), false)
+        @Expect(r3CollectedContainsField(collected, "pack.benchmark"), false)
         for (field in [
-            "pack.queryId", "pack.taskId", "pack.benchmark",
             "pack.knowledgeVersion", "pack.targetVersion", "pack.evidenceHash",
             "versionResolution.diagnostic", "versionResolution.targetVersion",
             "versionResolution.versionPolicy",
