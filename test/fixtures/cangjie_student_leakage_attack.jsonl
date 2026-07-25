@@ -1,0 +1,8 @@
+{"id":"synthetic-case-identity","targetGate":"record","payload":"CJ-HUMANEVAL-900 synthetic identity","expectedCode":"student_knowledge_leakage_blocked"}
+{"id":"synthetic-benchmark-name","targetGate":"record","payload":"Cangjie-HumanEval synthetic benchmark note","expectedCode":"student_knowledge_leakage_blocked"}
+{"id":"synthetic-composite-envelope","targetGate":"record","payload":"Task: synthetic sorting prompt\nVisible tests: synthetic example\nCompiler output: synthetic failure","expectedCode":"student_knowledge_leakage_blocked"}
+{"id":"synthetic-reference-marker","targetGate":"atom","payload":"General note copied from a reference solution","expectedCode":"atom_content_contamination"}
+{"id":"synthetic-teacher-marker","targetGate":"atom","payload":"General note copied from a teacher solution","expectedCode":"atom_content_contamination"}
+{"id":"synthetic-hidden-marker","targetGate":"atom","payload":"General note mentions hidden_test output","expectedCode":"atom_content_contamination"}
+{"id":"synthetic-zero-width-identity","targetGate":"atom","payload":"CJ-HUMAN​EVAL-900 synthetic identity","expectedCode":"atom_content_contamination"}
+{"id":"synthetic-unicode-escaped-identity","targetGate":"record","payload":"CJ-HUMANEVAL-901 synthetic identity 中文😀","expectedCode":"student_knowledge_leakage_blocked"}

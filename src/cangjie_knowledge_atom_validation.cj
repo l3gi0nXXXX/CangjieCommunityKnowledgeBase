@@ -153,8 +153,12 @@ private func atomForbiddenContent(raw: String): Bool {
 public func validateKnowledgeAtomServingProjection(knowledge: String, example: String): String {
     if (knowledge.trimAscii() == "") { return "atom_identity_evidence_required" }
     if (knowledge.toRuneArray().size > 4096 || example.toRuneArray().size > 4096) { return "atom_serving_field_too_long" }
-    let raw = "${knowledge}\n${example}".toAsciiLower()
+    let raw = atomNormalizeServingSafetyText("${knowledge}\n${example}")
     if (atomForbiddenServingContent(raw)) { "atom_content_contamination" } else { "" }
+}
+
+private func atomNormalizeServingSafetyText(raw: String): String {
+    raw.toAsciiLower().replace("\u{200b}", "").replace("\u{200c}", "").replace("\u{200d}", "").replace("\u{feff}", "")
 }
 
 private func atomForbiddenServingContent(raw: String): Bool {

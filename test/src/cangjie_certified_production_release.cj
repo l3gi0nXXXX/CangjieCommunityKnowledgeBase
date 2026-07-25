@@ -95,6 +95,8 @@ public func ckbCertifiedKnowledgeRecordsDiagnostic(records: ArrayList<CkbCertifi
     "ok"
 }
 
+public func ckbCertifiedStudentRecordGateDiagnostic(records:ArrayList<CkbCertifiedKnowledgeRecord>):String{for(item in records){let diagnostic=cangjieStudentRecordDiagnostic(item.record);if(!diagnostic.ok){return diagnostic.code}};"ok"}
+
 public func ckbCertifiedReplacementDiagnostic(existing:ArrayList<CkbCertifiedKnowledgeRecord>,incoming:ArrayList<CkbCertifiedKnowledgeRecord>):String{for(newItem in incoming){for(oldItem in existing){if(newItem.canonicalIdentity==oldItem.canonicalIdentity&&newItem.evidenceHash!=oldItem.evidenceHash&&newItem.revision<=oldItem.revision){return "certified_revision_conflict"}}};"ok"}
 private func ckbP8ExistingActiveDiagnostic(kb:KnowledgeBase,existing:ArrayList<CkbCertifiedKnowledgeRecord>):String{let active=kb.activeRecordSnapshot();if(active.size!=existing.size){return "existing_active_count_mismatch"};let declared=ArrayList<NormalizedRecord>();for(item in existing){declared.add(item.record)};if(ckbCertifiedNormalizedRecordsChecksum(active)!=ckbCertifiedNormalizedRecordsChecksum(declared)){return "existing_active_content_mismatch"};"ok"}
 
@@ -149,7 +151,8 @@ public class CkbCertifiedProductionPreCommitGate <: CangjieCandidatePreCommitGat
     }
     public func evaluate(candidateVersion: String, activeVersion: String): CangjieCandidatePreCommitGateResult {
         let result = CangjieCandidatePreCommitGateResult()
-        var diagnostic = ckbCertifiedProductionProofDiagnostic(this.proof, this.records)
+        var diagnostic=ckbCertifiedStudentRecordGateDiagnostic(this.records)
+        if(diagnostic=="ok"){diagnostic=ckbCertifiedProductionProofDiagnostic(this.proof,this.records)}
         if(diagnostic=="ok"){diagnostic=ckbP8LiveStagingDiagnostic(this.kb,this.records)}
         if (diagnostic == "ok" && candidateVersion != this.expectedCandidateVersion) { diagnostic = "candidate_version_binding_mismatch" }
         if (diagnostic == "ok" && activeVersion != this.expectedBaseActiveVersion) { diagnostic = "active_version_changed_before_commit" }
@@ -217,6 +220,8 @@ private func ckbP8RecordDiagnostic(item: CkbCertifiedKnowledgeRecord): String {
     if (item.revision < 1) { return "revision_invalid" }
     if (item.record.sourceId.trimAscii() == "" || item.record.chunk.trimAscii() == "") { return "knowledge_record_incomplete" }
     if (!ckbP8Hash(item.evidenceHash) || item.evidenceHash != ckbCertifiedKnowledgeRecordEvidenceHash(item)) { return "record_evidence_hash_invalid" }
+    let studentDiagnostic=cangjieStudentRecordDiagnostic(item.record)
+    if(!studentDiagnostic.ok){return studentDiagnostic.code}
     "ok"
 }
 
