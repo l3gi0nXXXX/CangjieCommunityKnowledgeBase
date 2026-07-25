@@ -42,7 +42,14 @@ public class CkbCertificationHttpTest {
         let service = this.service(store)
         let pointer = store.loadActiveSnapshotPointer()
         let snapshot = store.loadActiveSnapshot()
-        let response = handleCkbCertificationHttpRequest(service, store, "GET",
+        let projection = service.prepareStudentServingProjection()
+        @Expect(projection.index.diagnostics.size, 0)
+        if (projection.index.diagnostics.size > 0) {
+            @Expect(projection.index.diagnostics[0], "")
+        }
+        let identity = prepareCkbCertificationHttpIdentity(service, store)
+        @Expect(identity.diagnostic, "ok")
+        let response = handlePreparedCkbCertificationHttpRequest(identity, store, "GET",
             "/v1/certification/identity", "", [], CkbHttpServiceConfig())
 
         @Expect(response.statusCode, 200)

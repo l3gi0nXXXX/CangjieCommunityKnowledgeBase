@@ -103,6 +103,7 @@ public class CangjieRealScaleServingTest {
         let record = ckbRealScaleRecord("derived-negative",
             "ArrayList generic documentation", "knowledge-v1")
         record.metadata.sourceSet = ""
+        record.metadata.sourceType = SourceTypes.DERIVED
         @Expect(cangjieStudentRecordDiagnostic(record).ok, true)
         let records = ArrayList<NormalizedRecord>(); records.add(record)
         let projection = buildCangjieStudentServingProjection(records,

@@ -560,7 +560,7 @@ private func cangjieServingIndexAddNegativeRuleDocuments(index: CangjieServingIn
         doc.versionResolutionId = rule.versionResolutionId
         doc.targetVersion = cangjieServingIndexRuleTargetVersion(index, rule.versionResolutionId)
         doc.sourceSet = cangjieServingIndexRuleSourceSet(index,
-            rule.versionResolutionId)
+            rule.versionResolutionId, rule.citation)
         doc.contentHash = stableSummaryHash("${rule.ruleId}:${rule.replacement}")
         doc.citation = rule.citation
         doc.sourceId = "negative-rule-${rule.ruleId}"
@@ -618,11 +618,23 @@ private func cangjieServingIndexRuleTargetVersion(index: CangjieServingIndex, ve
 }
 
 private func cangjieServingIndexRuleSourceSet(index: CangjieServingIndex,
-    versionResolutionId: String): String {
+    versionResolutionId: String, citation: String): String {
     for (record in index.records) {
         if (record.metadata.versionResolutionId == versionResolutionId &&
-            record.metadata.sourceSet != "") {
-            return record.metadata.sourceSet
+            record.citation == citation) {
+            if (record.metadata.sourceSet != "") { return record.metadata.sourceSet }
+            if (record.metadata.sourceType == SourceTypes.DOC ||
+                record.metadata.sourceType == SourceTypes.WEBSITE) {
+                return CangjieSourceSets.DOCS
+            }
+            if (record.metadata.sourceType == SourceTypes.REPO) {
+                return if (record.metadata.repo.toAsciiLower().contains("stdx")) {
+                    CangjieSourceSets.STDX
+                } else { CangjieSourceSets.STD }
+            }
+            if (record.metadata.sourceType == SourceTypes.COMMUNITY) {
+                return CangjieSourceSets.ALL
+            }
         }
     }
     CangjieSourceSets.EVAL_SUPPORT
