@@ -82,6 +82,32 @@ public class CangjieFirstInitializationTest {
         @Expect(kb.candidateRecordSnapshot().size, assembly.records.size)
     }
 
+    // S6F-REG-01
+    @TestCase
+    public func s6fReg001SingleOuterRepoSupportsAllFirstInitContentRoots(): Unit {
+        let root = "target/s6f-first-init-outer-repo"
+        ckbFirstInitRemoveFixture(root)
+        let fixture = ckbFirstInitWriteFullFixture(root, true, includeGit: false,
+            inheritOuterGit: true)
+        ckbFirstInitWriteGitMetadata(root, "s6f-outer-repo-commit")
+
+        let assembly = assembleCkbFirstInitializationRecords(
+            ckbFirstInitOptionsForFixture(fixture, false))
+        let validation = validateCkbFirstInitializationRecords(assembly.records,
+            assembly.evalSupportAuthority)
+
+        @Expect(assembly.ok, true)
+        @Expect(assembly.manifest.degraded, false)
+        @Expect(assembly.manifest.sources.size, 5)
+        @Expect(assembly.diagnostics.contains("docs_git_metadata_missing"), false)
+        @Expect(assembly.diagnostics.contains("std_git_metadata_missing"), false)
+        @Expect(assembly.diagnostics.contains("stdx_git_metadata_missing"), false)
+        @Expect(assembly.diagnostics.contains("eval-support_git_metadata_missing"), false)
+        @Expect(assembly.evalSupportAuthority.ok, true)
+        @Expect(assembly.evalSupportAuthority.recordCount, 4)
+        @Expect(validation.ok, true)
+    }
+
     @TestCase
     public func utEvalIsolate001BuildsAuthoritySnapshotWithoutAddingServingRecords(): Unit {
         ckbFirstInitRemoveFixture("target/ut-eval-isolate-001")
@@ -384,7 +410,8 @@ private class CkbFirstInitFixturePaths {
     init() {}
 }
 
-private func ckbFirstInitWriteFullFixture(root: String, includeTool: Bool, includeGit!: Bool = true): CkbFirstInitFixturePaths {
+private func ckbFirstInitWriteFullFixture(root: String, includeTool: Bool, includeGit!: Bool = true,
+    inheritOuterGit!: Bool = false): CkbFirstInitFixturePaths {
     let fixture = CkbFirstInitFixturePaths()
     fixture.docsRoot = "${root}/docs"
     fixture.stdRoot = "${root}/std"
@@ -418,6 +445,9 @@ extend String {
         ckbFirstInitWriteGitMetadata(fixture.stdRoot, "ckb-firstinit-std-commit")
         ckbFirstInitWriteGitMetadata(fixture.stdxRoot, "ckb-firstinit-stdx-commit")
         ckbFirstInitWriteGitMetadata(fixture.evalRoot, "ckb-firstinit-eval-commit")
+    } else if (!inheritOuterGit) {
+        // Prevent this non-Git fixture from inheriting the enclosing test worktree metadata.
+        ckbFirstInitWriteFile(Path(root).join(".git"), "not-a-git-marker\n")
     }
     fixture
 }

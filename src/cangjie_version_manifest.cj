@@ -1,7 +1,7 @@
 package cangjie_community_knowledge_base
 
 import std.collection.ArrayList
-import std.fs.{Directory, File, Path, exists}
+import std.fs.{Directory, File, Path, canonicalize, exists}
 
 public class CangjieVersionPolicies {
     public static let DEFAULT: String = "default"
@@ -305,6 +305,15 @@ private class CangjieManifestGitInfo {
     init() {}
 }
 
+private class CangjieManifestGitLocation {
+    var ok: Bool = false
+    var gitDir: String = ""
+    var commonDir: String = ""
+    var rootKind: String = ""
+
+    init() {}
+}
+
 private class CangjieManifestHashState {
     var hash: Int64 = 5381
     var bytes: Int64 = 0
@@ -315,13 +324,13 @@ private class CangjieManifestHashState {
 
 private func cangjieManifestGitInfo(root: String, targetVersion: String, contentHash: String): CangjieManifestGitInfo {
     let info = CangjieManifestGitInfo()
-    let gitDir = cangjieManifestGitDir(root)
-    if (gitDir == "") {
+    let location = cangjieManifestGitLocation(root)
+    if (!location.ok) {
         info.diagnostic = "git_metadata_missing"
         return info
     }
-    info.rootKind = if (gitDir == "${root}/.git") { "git-root" } else { "git-worktree" }
-    let head = cangjieManifestReadText("${gitDir}/HEAD")
+    info.rootKind = location.rootKind
+    let head = cangjieManifestReadText("${location.gitDir}/HEAD")
     if (head == "") {
         info.diagnostic = "git_head_missing"
         return info
@@ -330,7 +339,7 @@ private func cangjieManifestGitInfo(root: String, targetVersion: String, content
         let ref = head[5..head.size].trimAscii()
         info.sourceRef = cangjieManifestSourceRefFromGitRef(ref)
         info.refKind = "branch"
-        let commit = cangjieManifestReadText("${gitDir}/${ref}")
+        let commit = cangjieManifestGitRefCommit(location, ref)
         if (commit != "") {
             info.resolvedCommit = commit
             info.ok = true
@@ -349,26 +358,150 @@ private func cangjieManifestGitInfo(root: String, targetVersion: String, content
     info
 }
 
-private func cangjieManifestGitDir(root: String): String {
-    let dotGit = "${root}/.git"
-    if (exists(Path("${dotGit}/HEAD"))) {
-        return dotGit
+private func cangjieManifestGitLocation(root: String): CangjieManifestGitLocation {
+    let location = CangjieManifestGitLocation()
+    var current = try {
+        canonicalize(Path(root))
+    } catch (_: Exception) {
+        return location
     }
-    if (!exists(Path(dotGit))) {
-        return ""
+    while (true) {
+        let marker = current.join(".git")
+        if (exists(marker.join("HEAD"))) {
+            let gitDir = try {
+                canonicalize(marker).toString()
+            } catch (_: Exception) {
+                return location
+            }
+            if (gitDir != marker.toString()) {
+                return location
+            }
+            location.ok = true
+            location.gitDir = gitDir
+            location.commonDir = gitDir
+            location.rootKind = "git-root"
+            return location
+        }
+        if (exists(marker)) {
+            return cangjieManifestWorktreeGitLocation(current, marker)
+        }
+        let parent = current.parent
+        if (parent.toString() == current.toString()) {
+            return location
+        }
+        current = parent
     }
-    let text = cangjieManifestReadText(dotGit)
+    location
+}
+
+private func cangjieManifestWorktreeGitLocation(worktreeRoot: Path, marker: Path): CangjieManifestGitLocation {
+    let location = CangjieManifestGitLocation()
+    let text = cangjieManifestReadText(marker.toString())
     if (!text.startsWith("gitdir:")) {
-        return ""
+        return location
     }
     let value = text[7..text.size].trimAscii()
     if (value == "" || value.contains("\u{0}")) {
+        return location
+    }
+    let candidate = if (value.startsWith("/")) { Path(value) } else { worktreeRoot.join(value) }
+    let gitDir = try {
+        canonicalize(candidate).toString()
+    } catch (_: Exception) {
+        return location
+    }
+    if (!exists(Path(gitDir).join("HEAD")) || !cangjieManifestWorktreeBindingValid(gitDir, marker)) {
+        return location
+    }
+    let commonDir = cangjieManifestWorktreeCommonGitDir(gitDir)
+    if (commonDir == "") {
+        return location
+    }
+    location.ok = true
+    location.gitDir = gitDir
+    location.commonDir = commonDir
+    location.rootKind = "git-worktree"
+    location
+}
+
+private func cangjieManifestWorktreeBindingValid(gitDir: String, marker: Path): Bool {
+    let binding = cangjieManifestReadText("${gitDir}/gitdir")
+    if (binding == "" || binding.contains("\u{0}")) {
+        return false
+    }
+    let boundMarker = if (binding.startsWith("/")) { Path(binding) } else { Path(gitDir).join(binding) }
+    try {
+        canonicalize(boundMarker).toString() == canonicalize(marker).toString()
+    } catch (_: Exception) {
+        false
+    }
+}
+
+private func cangjieManifestWorktreeCommonGitDir(gitDir: String): String {
+    let marker = Path(gitDir).join("commondir")
+    let value = cangjieManifestReadText("${gitDir}/commondir")
+    if (!exists(marker) || value == "" || value.contains("\u{0}") || value.startsWith("/")) {
         return ""
     }
-    if (value.startsWith("/")) {
-        return value
+    let commonDir = try {
+        canonicalize(Path(gitDir).join(value)).toString()
+    } catch (_: Exception) {
+        return ""
     }
-    "${root}/${value}"
+    let worktrees = Path(gitDir).parent
+    if (worktrees.fileName != "worktrees" || worktrees.parent.toString() != commonDir) {
+        return ""
+    }
+    commonDir
+}
+
+private func cangjieManifestGitRefCommit(location: CangjieManifestGitLocation, ref: String): String {
+    if (!cangjieManifestGitRefValid(ref)) {
+        return ""
+    }
+    let local = cangjieManifestReadContainedGitRef(location.gitDir, ref)
+    if (local != "") {
+        return local
+    }
+    cangjieManifestReadContainedGitRef(location.commonDir, ref)
+}
+
+private func cangjieManifestGitRefValid(ref: String): Bool {
+    if (!ref.startsWith("refs/") || ref == "refs/" || ref.contains("\u{0}") ||
+        ref.contains("\t") || ref.contains("\n") || ref.contains("\r") || ref.contains("\u{7f}") ||
+        ref.endsWith("/") || ref.contains("//") || ref.contains("\\") || ref.contains("..") ||
+        ref.contains("~") || ref.contains("^") || ref.contains(":") || ref.contains("?") ||
+        ref.contains("*") || ref.contains("[") || ref.contains("@{")) {
+        return false
+    }
+    for (part in ref.split("/")) {
+        if (part == "" || part.startsWith(".") || part.endsWith(".") || part.endsWith(".lock")) {
+            return false
+        }
+        for (ch in part.toRuneArray()) {
+            if (ch <= r' ') {
+                return false
+            }
+        }
+    }
+    true
+}
+
+private func cangjieManifestReadContainedGitRef(root: String, ref: String): String {
+    let canonicalRoot = try {
+        canonicalize(Path(root)).toString()
+    } catch (_: Exception) {
+        return ""
+    }
+    let target = try {
+        canonicalize(Path(root).join(ref)).toString()
+    } catch (_: Exception) {
+        return ""
+    }
+    if (!target.startsWith("${canonicalRoot}/")) {
+        return ""
+    }
+    cangjieManifestReadText(target)
 }
 
 private func cangjieManifestSourceRefFromGitRef(ref: String): String {

@@ -4,6 +4,7 @@ import std.unittest.*
 import std.unittest.testmacro.*
 import std.collection.*
 import std.fs.{Directory, File, Path, exists}
+import std.process.launch
 
 @Test
 public class CangjieVersionManifestTest {
@@ -85,12 +86,169 @@ public class CangjieVersionManifestTest {
     public func p1Bnd003ExplicitNonGitRootReturnsDegradedManifest(): Unit {
         let root = "target/p1-version-manifest-non-git"
         cangjieP1WriteFile(Path(root).join("docs/dev-guide/summary.md"), "# docs\n")
+        cangjieP1WriteFile(Path(root).join(".git"), "not-a-git-marker\n")
 
         let manifest = buildCangjieVersionManifestFromRoots(targetVersion: "1.0.0", docsRoot: "${root}/docs")
 
         @Expect(manifest.degraded, true)
         @Expect(manifest.sources.size, 0)
         @Expect(manifest.diagnostics.contains("docs_git_metadata_missing"), true)
+    }
+
+    // S6F-UT-01 + S6F-POS-01
+    @TestCase
+    public func s6fUt001RepoSubdirectoryUsesAncestorGitAndHashesOnlyContentRoot(): Unit {
+        let root = "target/s6f-version-manifest-repo"
+        let docs = "${root}/content/docs/dev-guide"
+        cangjieP1WriteGitMetadata(root, "s6f-repo-commit")
+        cangjieP1WriteFile(Path(docs).join("summary.md"), "# docs\n")
+        cangjieP1WriteFile(Path(root).join("outside.txt"), "outside-v1\n")
+
+        let first = buildCangjieVersionManifestFromRoots(targetVersion: "1.0.0", docsRoot: docs)
+        cangjieP1WriteFile(Path(root).join("outside.txt"), "outside-v2\n")
+        let siblingChanged = buildCangjieVersionManifestFromRoots(targetVersion: "1.0.0", docsRoot: docs)
+        cangjieP1WriteFile(Path(docs).join("summary.md"), "# docs changed\n")
+        let contentChanged = buildCangjieVersionManifestFromRoots(targetVersion: "1.0.0", docsRoot: docs)
+
+        @Expect(first.degraded, false)
+        @Expect(first.sources.size, 2)
+        @Expect(first.sources[0].resolvedCommit, "s6f-repo-commit")
+        @Expect(first.sources[0].rootKind, "git-root")
+        @Expect(siblingChanged.sources[0].contentHash, first.sources[0].contentHash)
+        @Expect(contentChanged.sources[0].contentHash != first.sources[0].contentHash, true)
+    }
+
+    // S6F-BND-01
+    @TestCase
+    public func s6fBnd001MultiLevelWorktreeSubdirectoryUsesCommonGitMetadata(): Unit {
+        let root = "target/s6f-version-manifest-worktree"
+        let worktree = "${root}/worktree"
+        let commonDir = "${root}/repo/.git"
+        let gitDir = "${commonDir}/worktrees/worktree-entry"
+        let docs = "${worktree}/nested/content/docs"
+        cangjieP1WriteFile(Path(worktree).join(".git"), "gitdir: ../repo/.git/worktrees/worktree-entry\n")
+        cangjieP1WriteFile(Path(gitDir).join("gitdir"), "../../../../worktree/.git\n")
+        cangjieP1WriteFile(Path(gitDir).join("commondir"), "../..\n")
+        cangjieP1WriteFile(Path(gitDir).join("HEAD"), "ref: refs/heads/release-1.0.0\n")
+        cangjieP1WriteFile(Path(commonDir).join("refs/heads/release-1.0.0"), "s6f-worktree-commit\n")
+        cangjieP1WriteFile(Path(docs).join("summary.md"), "# worktree docs\n")
+
+        let manifest = buildCangjieVersionManifestFromRoots(targetVersion: "1.0.0", docsRoot: docs)
+
+        @Expect(manifest.degraded, false)
+        @Expect(manifest.sources.size, 2)
+        @Expect(manifest.sources[0].resolvedCommit, "s6f-worktree-commit")
+        @Expect(manifest.sources[0].rootKind, "git-worktree")
+    }
+
+    // S6F-NEG-01
+    @TestCase
+    public func s6fNeg001DamagedOrUnboundGitdirFailsClosedAtNearestMarker(): Unit {
+        let root = "target/s6f-version-manifest-invalid"
+        let damagedDocs = "${root}/damaged/docs"
+        cangjieP1WriteGitMetadata(root, "must-not-be-used")
+        cangjieP1WriteFile(Path(root).join("damaged/.git"), "gitdir: ../missing-git-dir\n")
+        cangjieP1WriteFile(Path(damagedDocs).join("summary.md"), "# damaged\n")
+        let damaged = buildCangjieVersionManifestFromRoots(targetVersion: "1.0.0", docsRoot: damagedDocs)
+
+        let unboundRoot = "${root}/unbound"
+        let unboundDocs = "${unboundRoot}/docs"
+        let externalGit = "${root}/external-git"
+        cangjieP1WriteFile(Path(unboundRoot).join(".git"), "gitdir: ../external-git\n")
+        cangjieP1WriteFile(Path(externalGit).join("HEAD"), "s6f-unbound-commit\n")
+        cangjieP1WriteFile(Path(unboundDocs).join("summary.md"), "# unbound\n")
+        let unbound = buildCangjieVersionManifestFromRoots(targetVersion: "1.0.0", docsRoot: unboundDocs)
+
+        let externalCommonRoot = "${root}/external-common"
+        let externalCommonDocs = "${externalCommonRoot}/docs"
+        let externalCommonGit = "${root}/external-common-git"
+        let externalCommon = "${root}/external-common-dir"
+        cangjieP1WriteFile(Path(externalCommonRoot).join(".git"), "gitdir: ../external-common-git\n")
+        cangjieP1WriteFile(Path(externalCommonGit).join("gitdir"), "../external-common/.git\n")
+        cangjieP1WriteFile(Path(externalCommonGit).join("HEAD"), "s6f-external-common-commit\n")
+        cangjieP1WriteFile(Path(externalCommonGit).join("commondir"), "../external-common-dir\n")
+        cangjieP1WriteFile(Path(externalCommon).join("HEAD"), "s6f-external-common-head\n")
+        cangjieP1WriteFile(Path(externalCommonDocs).join("summary.md"), "# external common\n")
+        let externalCommonManifest = buildCangjieVersionManifestFromRoots(targetVersion: "1.0.0",
+            docsRoot: externalCommonDocs)
+
+        let emptyCommonRoot = "${root}/empty-common"
+        let emptyCommonDocs = "${emptyCommonRoot}/docs"
+        let emptyCommonGit = "${root}/empty-common-git"
+        cangjieP1WriteFile(Path(emptyCommonRoot).join(".git"), "gitdir: ../empty-common-git\n")
+        cangjieP1WriteFile(Path(emptyCommonGit).join("gitdir"), "../empty-common/.git\n")
+        cangjieP1WriteFile(Path(emptyCommonGit).join("HEAD"), "s6f-empty-common-commit\n")
+        cangjieP1WriteFile(Path(emptyCommonGit).join("commondir"), "\n")
+        cangjieP1WriteFile(Path(emptyCommonDocs).join("summary.md"), "# empty common\n")
+        let emptyCommon = buildCangjieVersionManifestFromRoots(targetVersion: "1.0.0",
+            docsRoot: emptyCommonDocs)
+
+        let traversalRoot = "${root}/ref-traversal"
+        let traversalDocs = "${traversalRoot}/docs"
+        cangjieP1WriteFile(Path(traversalRoot).join(".git/HEAD"), "ref: refs/heads/../../../outside-ref\n")
+        cangjieP1WriteFile(Path(traversalRoot).join("outside-ref"), "s6f-traversal-commit\n")
+        cangjieP1WriteFile(Path(traversalDocs).join("summary.md"), "# traversal\n")
+        let traversal = buildCangjieVersionManifestFromRoots(targetVersion: "1.0.0",
+            docsRoot: traversalDocs)
+
+        let configRoot = "${root}/config-ref"
+        let configDocs = "${configRoot}/docs"
+        let configSentinel = "s6f-config-must-not-be-resolved"
+        cangjieP1WriteFile(Path(configRoot).join(".git/HEAD"), "ref: config\n")
+        cangjieP1WriteFile(Path(configRoot).join(".git/config"), configSentinel)
+        cangjieP1WriteFile(Path(configDocs).join("summary.md"), "# config ref\n")
+        let configRef = buildCangjieVersionManifestFromRoots(targetVersion: "1.0.0",
+            docsRoot: configDocs)
+
+        let looseSymlinkRoot = "${root}/loose-ref-symlink"
+        let looseSymlinkDocs = "${looseSymlinkRoot}/docs"
+        let looseSentinel = "s6f-loose-ref-must-not-be-resolved"
+        cangjieP1WriteFile(Path(looseSymlinkRoot).join(".git/HEAD"), "ref: refs/heads/escape\n")
+        cangjieP1WriteFile(Path(looseSymlinkRoot).join("outside-ref"), looseSentinel)
+        cangjieP1WriteFile(Path(looseSymlinkDocs).join("summary.md"), "# loose ref symlink\n")
+        Directory.create(Path(looseSymlinkRoot).join(".git/refs/heads"), recursive: true)
+        @Expect(launch("/bin/rm", ["-f", "${looseSymlinkRoot}/.git/refs/heads/escape"]).wait(), 0)
+        @Expect(launch("/bin/ln", ["-s", "../../../outside-ref",
+            "${looseSymlinkRoot}/.git/refs/heads/escape"]).wait(), 0)
+        let looseSymlink = buildCangjieVersionManifestFromRoots(targetVersion: "1.0.0",
+            docsRoot: looseSymlinkDocs)
+
+        let symlinkRoot = "${root}/git-symlink"
+        let symlinkDocs = "${symlinkRoot}/docs"
+        let symlinkGit = "${root}/git-symlink-external"
+        cangjieP1WriteFile(Path(symlinkDocs).join("summary.md"), "# symlink\n")
+        cangjieP1WriteFile(Path(symlinkGit).join("HEAD"), "s6f-symlink-commit\n")
+        @Expect(launch("/bin/rm", ["-f", "${symlinkRoot}/.git"]).wait(), 0)
+        @Expect(launch("/bin/ln", ["-s", "../git-symlink-external", "${symlinkRoot}/.git"]).wait(), 0)
+        let symlink = buildCangjieVersionManifestFromRoots(targetVersion: "1.0.0",
+            docsRoot: symlinkDocs)
+
+        @Expect(damaged.degraded, true)
+        @Expect(damaged.sources.size, 0)
+        @Expect(damaged.diagnostics.contains("docs_git_metadata_missing"), true)
+        @Expect(unbound.degraded, true)
+        @Expect(unbound.sources.size, 0)
+        @Expect(unbound.diagnostics.contains("docs_git_metadata_missing"), true)
+        @Expect(externalCommonManifest.degraded, true)
+        @Expect(externalCommonManifest.sources.size, 0)
+        @Expect(externalCommonManifest.diagnostics.contains("docs_git_metadata_missing"), true)
+        @Expect(emptyCommon.degraded, true)
+        @Expect(emptyCommon.sources.size, 0)
+        @Expect(emptyCommon.diagnostics.contains("docs_git_metadata_missing"), true)
+        @Expect(traversal.degraded, true)
+        @Expect(traversal.sources.size, 0)
+        @Expect(traversal.diagnostics.contains("docs_git_ref_commit_missing"), true)
+        @Expect(configRef.degraded, true)
+        @Expect(configRef.sources.size, 0)
+        @Expect(configRef.diagnostics.contains("docs_git_ref_commit_missing"), true)
+        @Expect(configRef.diagnostics.toString().contains(configSentinel), false)
+        @Expect(looseSymlink.degraded, true)
+        @Expect(looseSymlink.sources.size, 0)
+        @Expect(looseSymlink.diagnostics.contains("docs_git_ref_commit_missing"), true)
+        @Expect(looseSymlink.diagnostics.toString().contains(looseSentinel), false)
+        @Expect(symlink.degraded, true)
+        @Expect(symlink.sources.size, 0)
+        @Expect(symlink.diagnostics.contains("docs_git_metadata_missing"), true)
     }
 
     @TestCase
