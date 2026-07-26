@@ -1,7 +1,8 @@
 package cangjie_community_knowledge_base_test
 
 import std.collection.ArrayList
-import std.fs.{Directory, File, Path, exists, remove}
+import std.fs.{Directory, File, Path, canonicalize, exists, remove}
+import std.process.*
 import std.unittest.*
 import std.unittest.testmacro.*
 
@@ -233,6 +234,325 @@ public class CkbCandidatePrecertSealTest {
         @Expect(rest.contains("General atomic knowledge"), false)
         @Expect(stdio.contains("General atomic knowledge"), false)
         @Expect(http.contains("General atomic knowledge"), false)
+    }
+
+    @TestCase
+    public func s6mUt01MaterializesBoundActiveSnapshot(): Unit {
+        let root = r6PrecertRoot("s6m-ut")
+        let source = r6PrecertStore(root, r6PrecertCandidates(1,
+            knowledgeSuffix: "中文😀"))
+        let candidate = source.loadCandidateSnapshotImmutable("r6-precert-v1")
+        let options = CkbCandidateRuntimeMaterializeOptions()
+        options.sourceStore = canonicalize(source.root).toString()
+        options.outputStore = s6mOutput(root, "runtime")
+        options.candidateVersion = "r6-precert-v1"
+        let result = ckbMaterializeCandidateRuntime(options)
+        let runtime = FileKnowledgeStore(options.outputStore)
+        let active = runtime.loadActiveSnapshot()
+        @Expect(result.ok, true); @Expect(result.diagnostic, "ok")
+        @Expect(result.activeVersion, candidate.version)
+        @Expect(result.candidateChecksum, candidate.candidateChecksum)
+        @Expect(result.rawCount, candidate.rawCount)
+        @Expect(result.normalizedCount, candidate.normalizedCount)
+        @Expect(result.activeCount, candidate.activeIndex.size)
+        @Expect(active.valid, true); @Expect(active.activeVersion, candidate.version)
+        @Expect(active.candidateVersion, candidate.version)
+        @Expect(ckbCertifiedNormalizedRecordsChecksum(active.normalizedRecords),
+            candidate.candidateChecksum)
+        @Expect(result.pointerIdentityHash,
+            ckbActiveSnapshotPointerIdentityHash(runtime.loadActiveSnapshotPointer()))
+        @Expect(result.immutableManifestHash.startsWith("sha256:"), true)
+        @Expect(result.cleanManifestHash.startsWith("sha256:"), true)
+        @Expect(result.manifestEvidenceHash.toRuneArray().size, 64)
+        @Expect(result.authorityHash.startsWith("sha256:"), true)
+        @Expect(result.sourceEvidenceHash.startsWith("sha256:"), true)
+        @Expect(result.txIdHash.startsWith("sha256:"), true)
+        @Expect(result.transactionPayloadHash.startsWith("hsha256:"), true)
+        @Expect(result.transactionPayloadHash.toRuneArray().size, 72)
+        let pointer = runtime.loadActiveSnapshotPointer()
+        @Expect(runtime.readText("transactions/${pointer.txId}/COMMIT")
+            .contains("payloadHash=${result.transactionPayloadHash}\n"), true)
+        for (record in active.rawRecords) {
+            @Expect(record.sourceId == "doc-syntax", false)
+        }
+    }
+
+    @TestCase
+    public func s6mBnd01Utf8AndPathBoundariesFailClosed(): Unit {
+        let root = r6PrecertRoot("s6m-bnd")
+        let source = r6PrecertStore(root, r6PrecertCandidates(1,
+            knowledgeSuffix: "${r6PrecertRepeat("中", 2048)}😀"))
+        let valid = CkbCandidateRuntimeMaterializeOptions()
+        valid.sourceStore = canonicalize(source.root).toString()
+        valid.outputStore = s6mOutput(root, "runtime-unicode")
+        valid.candidateVersion = "r6-precert-v1"
+        @Expect(ckbMaterializeCandidateRuntime(valid).ok, true)
+
+        let invalidRoot = r6PrecertRoot("s6m-invalid-utf8")
+        let invalidSource = r6PrecertStore(invalidRoot, r6PrecertCandidates(1))
+        File.writeTo(invalidSource.root.join(
+            "raw/candidate/r6-precert-v1/records.ckb"), [UInt8(0xff), UInt8(0xfe)])
+        let invalid = CkbCandidateRuntimeMaterializeOptions()
+        invalid.sourceStore = canonicalize(invalidSource.root).toString()
+        invalid.outputStore = s6mOutput(invalidRoot, "runtime")
+        invalid.candidateVersion = "r6-precert-v1"
+        @Expect(ckbMaterializeCandidateRuntime(invalid).diagnostic,
+            "candidate_immutable_invalid_response_encoding")
+        @Expect(exists(Path(invalid.outputStore)), false)
+
+        for ((output, diagnostic) in [
+            (canonicalize(source.root).toString(),
+                "candidate_runtime_output_exists"),
+            (canonicalize(source.root).join("nested").toString(),
+                "candidate_runtime_store_overlap"),
+            (canonicalize(source.root.parent).toString(),
+                "candidate_runtime_output_exists")
+        ]) {
+            let blocked = CkbCandidateRuntimeMaterializeOptions()
+            blocked.sourceStore = canonicalize(source.root).toString()
+            blocked.outputStore = output
+            blocked.candidateVersion = "r6-precert-v1"
+            @Expect(ckbMaterializeCandidateRuntime(blocked).diagnostic, diagnostic)
+        }
+        let sourceLink = s6mOutput(root, "source-link")
+        @Expect(launch("/bin/ln",
+            ["-s", canonicalize(source.root).toString(), sourceLink]).wait(), 0)
+        let linkedSource = CkbCandidateRuntimeMaterializeOptions()
+        linkedSource.sourceStore = sourceLink
+        linkedSource.outputStore = s6mOutput(root, "linked-source-runtime")
+        linkedSource.candidateVersion = "r6-precert-v1"
+        @Expect(ckbMaterializeCandidateRuntime(linkedSource).diagnostic,
+            "candidate_runtime_source_path_invalid")
+        let realParent = s6mOutput(root, "real-parent")
+        Directory.create(Path(realParent), recursive: true)
+        let linkedParent = s6mOutput(root, "linked-parent")
+        @Expect(launch("/bin/ln", ["-s", realParent, linkedParent]).wait(), 0)
+        let parentLink = CkbCandidateRuntimeMaterializeOptions()
+        parentLink.sourceStore = canonicalize(source.root).toString()
+        parentLink.outputStore = Path(linkedParent).join("runtime").toString()
+        parentLink.candidateVersion = "r6-precert-v1"
+        @Expect(ckbMaterializeCandidateRuntime(parentLink).diagnostic,
+            "candidate_runtime_output_path_invalid")
+    }
+
+    @TestCase
+    public func s6mBnd02InvalidUtf8InEveryManifestLayerFailsClosed(): Unit {
+        for ((kind, relative) in [
+            ("manifest", "candidate-artifacts/r6-precert-v1/manifest.ckb"),
+            ("clean", "candidate-artifacts/r6-precert-v1/clean-candidate-manifest.json"),
+            ("audit", "candidate-artifacts/r6-precert-v1/clean-candidate-audit.json")
+        ]) {
+            let root = r6PrecertRoot("s6m-utf8-${kind}")
+            let source = r6PrecertStore(root, r6PrecertCandidates(1))
+            File.writeTo(source.root.join(relative), [UInt8(0xff), UInt8(0xfe)])
+            let options = CkbCandidateRuntimeMaterializeOptions()
+            options.sourceStore = canonicalize(source.root).toString()
+            options.outputStore = s6mOutput(root, "runtime")
+            options.candidateVersion = "r6-precert-v1"
+            @Expect(ckbMaterializeCandidateRuntime(options).diagnostic,
+                "candidate_immutable_invalid_response_encoding")
+            @Expect(exists(Path(options.outputStore)), false)
+        }
+    }
+
+    @TestCase
+    public func s6mPos01RuntimeSupportsFrozenSealAndCertificationIdentity(): Unit {
+        let root = r6PrecertRoot("s6m-pos")
+        let selected = r6PrecertCandidates(1)
+        let source = r6PrecertStore(root, selected)
+        let precert = r6PrecertRun(source, selected, "${root}/precert")
+        @Expect(precert.ok, true)
+        let options = CkbCandidateRuntimeMaterializeOptions()
+        options.sourceStore = canonicalize(source.root).toString()
+        options.outputStore = s6mOutput(root, "runtime")
+        options.candidateVersion = "r6-precert-v1"
+        @Expect(ckbMaterializeCandidateRuntime(options).ok, true)
+        let runtime = FileKnowledgeStore(options.outputStore)
+        let frozenOptions = CkbFrozenCandidateSealOptions()
+        frozenOptions.expectedKnowledgeVersion = "r6-precert-v1"
+        frozenOptions.expectedCandidateChecksum = precert.candidateChecksum
+        frozenOptions.inputHash = benchmarkGapSha256("s6m-input")
+        frozenOptions.configHash = benchmarkGapSha256("s6m-config")
+        frozenOptions.modelHash = benchmarkGapSha256("s6m-model")
+        frozenOptions.studentLeakageProofJson =
+            r6PrecertRead("${root}/precert/candidate-trust-seal.json")
+        frozenOptions.studentLeakageArtifactJson =
+            r6PrecertRead("${root}/precert/student-leakage-report.jsonl")
+        frozenOptions.anonymousQueryArtifactJson =
+            r6PrecertRead("${root}/precert/student-serving-leakage-report.json")
+        frozenOptions.authorityIsolationArtifactJson =
+            r6PrecertRead("${root}/precert/authority-isolation.json")
+        frozenOptions.atomTestArtifactJson =
+            r6PrecertRead("${root}/precert/atom-test-summary.json")
+        frozenOptions.restLeakageArtifactJson =
+            r6PrecertRead("${root}/precert/student-serving-rest-report.json")
+        frozenOptions.mcpStdioLeakageArtifactJson =
+            r6PrecertRead("${root}/precert/student-serving-mcp-stdio-report.json")
+        frozenOptions.mcpHttpLeakageArtifactJson =
+            r6PrecertRead("${root}/precert/student-serving-mcp-http-report.json")
+        frozenOptions.anonymousAtomQueryArtifactJson =
+            r6PrecertRead("${root}/precert/anonymous-atom-query-report.jsonl")
+        let frozen = ckbBuildFrozenCandidateSeal(runtime, frozenOptions)
+        @Expect(frozen.ok, true); @Expect(frozen.diagnostic, "ok")
+        @Expect(ckbFrozenCandidateManifestDiagnostic(runtime, frozen.manifestJson), "ok")
+        let identity = prepareCkbCertificationHttpIdentity(
+            CkbCommandLoopService(CkbRuntimeConfig(), runtime), runtime)
+        @Expect(identity.valid, true); @Expect(identity.diagnostic, "ok")
+        @Expect(identity.activeVersion, "r6-precert-v1")
+        @Expect(identity.candidateChecksum, precert.candidateChecksum)
+    }
+
+    @TestCase
+    public func s6mNeg01TamperNonemptyOverlapAndDuplicateArgsAreBlocked(): Unit {
+        let root = r6PrecertRoot("s6m-neg")
+        let source = r6PrecertStore(root, r6PrecertCandidates(1))
+        let before = source.loadCandidateSnapshotImmutable(
+            "r6-precert-v1").immutableManifestHash
+        Directory.create(Path("${root}/nonempty"), recursive: true)
+        File.writeTo(Path("${root}/nonempty/sentinel"), "unchanged".toArray())
+        let nonempty = CkbCandidateRuntimeMaterializeOptions()
+        nonempty.sourceStore = canonicalize(source.root).toString()
+        nonempty.outputStore = s6mOutput(root, "nonempty")
+        nonempty.candidateVersion = "r6-precert-v1"
+        @Expect(ckbMaterializeCandidateRuntime(nonempty).diagnostic,
+            "candidate_runtime_output_exists")
+        @Expect(String.fromUtf8(File.readFrom(Path("${root}/nonempty/sentinel"))),
+            "unchanged")
+        let manifest = source.root.join(
+            "candidate-artifacts/r6-precert-v1/clean-candidate-manifest.json")
+        File.writeTo(manifest,
+            r6PrecertRead(manifest.toString()).replace("\"ok\":true",
+                "\"ok\":false").toArray())
+        let tampered = CkbCandidateRuntimeMaterializeOptions()
+        tampered.sourceStore = canonicalize(source.root).toString()
+        tampered.outputStore = s6mOutput(root, "tampered-runtime")
+        tampered.candidateVersion = "r6-precert-v1"
+        @Expect(ckbMaterializeCandidateRuntime(tampered).ok, false)
+        @Expect(exists(Path(tampered.outputStore)), false)
+        @Expect(runCkbCandidateRuntimeMaterializeCli([
+            "cangjie-candidate-runtime-materialize",
+            "--source-store", canonicalize(source.root).toString(),
+            "--source-store", canonicalize(source.root).toString(),
+            "--output-store", s6mOutput(root, "duplicate-runtime"),
+            "--candidate-version", "r6-precert-v1"
+        ]), 2)
+        @Expect(exists(Path("${root}/duplicate-runtime")), false)
+        @Expect(runCkbCandidateRuntimeMaterializeCli([
+            "cangjie-candidate-runtime-materialize", "--unknown", "x"
+        ]), 2)
+        @Expect(runCkbCandidateRuntimeMaterializeCli([
+            "cangjie-candidate-runtime-materialize",
+            "--source-store", canonicalize(source.root).toString()
+        ]), 2)
+        @Expect(before != "", true)
+    }
+
+    @TestCase
+    public func s6mNeg02PostCommitTamperHasNoValidRuntimePointer(): Unit {
+        for (kind in ["commit", "pointer", "payload"]) {
+            let root = r6PrecertRoot("s6m-tamper-${kind}")
+            let source = r6PrecertStore(root, r6PrecertCandidates(1))
+            let manifestPath = source.root.join(
+                "candidate-artifacts/r6-precert-v1/manifest.ckb")
+            let cleanPath = source.root.join(
+                "candidate-artifacts/r6-precert-v1/clean-candidate-manifest.json")
+            let sourceBefore = String.fromUtf8(File.readFrom(manifestPath)) +
+                String.fromUtf8(File.readFrom(cleanPath))
+            let options = CkbCandidateRuntimeMaterializeOptions()
+            options.sourceStore = canonicalize(source.root).toString()
+            options.outputStore = s6mOutput(root, "runtime")
+            options.candidateVersion = "r6-precert-v1"
+            let result = ckbMaterializeCandidateRuntime(options,
+                faultInjector: S6mTamperInjector(kind))
+            @Expect(result.ok, false)
+            @Expect(FileKnowledgeStore(options.outputStore)
+                .loadActiveSnapshotPointer().valid, false)
+            @Expect(String.fromUtf8(File.readFrom(manifestPath)) +
+                String.fromUtf8(File.readFrom(cleanPath)), sourceBefore)
+        }
+    }
+
+    @TestCase
+    public func s6mNeg03OutputSymlinkSwapDoesNotDeleteOrMutateSource(): Unit {
+        let root = r6PrecertRoot("s6m-symlink-swap")
+        let source = r6PrecertStore(root, r6PrecertCandidates(1))
+        let sourcePath = canonicalize(source.root).toString()
+        let before = source.loadCandidateSnapshotImmutable("r6-precert-v1")
+        let options = CkbCandidateRuntimeMaterializeOptions()
+        options.sourceStore = sourcePath
+        options.outputStore = s6mOutput(root, "runtime")
+        options.candidateVersion = "r6-precert-v1"
+        let result = ckbMaterializeCandidateRuntime(options,
+            faultInjector: S6mOutputSymlinkSwapInjector(sourcePath))
+        @Expect(result.ok, false)
+        @Expect(result.diagnostic, "candidate_runtime_output_path_drift")
+        let after = source.loadCandidateSnapshotImmutable("r6-precert-v1")
+        @Expect(after.valid, true)
+        @Expect(after.immutableManifestHash, before.immutableManifestHash)
+        @Expect(after.cleanManifestHash, before.cleanManifestHash)
+        @Expect(after.candidateChecksum, before.candidateChecksum)
+    }
+
+    @TestCase
+    public func s6mNeg04SourceDriftAfterCommitRemovesRuntime(): Unit {
+        let root = r6PrecertRoot("s6m-source-drift")
+        let source = r6PrecertStore(root, r6PrecertCandidates(1))
+        let options = CkbCandidateRuntimeMaterializeOptions()
+        options.sourceStore = canonicalize(source.root).toString()
+        options.outputStore = s6mOutput(root, "runtime")
+        options.candidateVersion = "r6-precert-v1"
+        let result = ckbMaterializeCandidateRuntime(options,
+            faultInjector: S6mSourceDriftInjector(source))
+        @Expect(result.ok, false)
+        @Expect(result.diagnostic, "candidate_runtime_source_drift")
+        @Expect(exists(Path(options.outputStore)), false)
+    }
+}
+
+private func s6mOutput(root: String, name: String): String {
+    canonicalize(Path(root)).join(name).toString()
+}
+
+private class S6mTamperInjector <: CkbCandidateRuntimeMaterializeFaultInjector {
+    let kind: String
+    init(kind: String) { this.kind = kind }
+    public func checkpoint(point: String, output: FileKnowledgeStore): Unit {
+        if (point != "after_active_commit") { return }
+        let pointer = output.loadActiveSnapshotPointer()
+        if (this.kind == "commit") {
+            remove(output.root.join("transactions").join(pointer.txId).join("COMMIT"))
+        } else if (this.kind == "pointer") {
+            File.writeTo(output.root.join("metadata/active-snapshot.manifest"),
+                "invalid\n".toArray())
+        } else {
+            File.writeTo(output.root.join("transactions").join(pointer.txId)
+                .join("normalized/records.ckb"), "tampered\n".toArray())
+        }
+    }
+}
+
+private class S6mOutputSymlinkSwapInjector <:
+    CkbCandidateRuntimeMaterializeFaultInjector {
+    let source: String
+    init(source: String) { this.source = source }
+    public func checkpoint(point: String, output: FileKnowledgeStore): Unit {
+        if (point != "after_active_commit") { return }
+        remove(output.root, recursive: true)
+        if (launch("/bin/ln", ["-s", this.source, output.root.toString()]).wait() != 0) {
+            throw Exception("candidate_runtime_test_symlink_failed")
+        }
+    }
+}
+
+private class S6mSourceDriftInjector <:
+    CkbCandidateRuntimeMaterializeFaultInjector {
+    let source: FileKnowledgeStore
+    init(source: FileKnowledgeStore) { this.source = source }
+    public func checkpoint(point: String, _output: FileKnowledgeStore): Unit {
+        if (point != "before_source_recheck") { return }
+        File.writeTo(this.source.root.join(
+            "candidate-artifacts/r6-precert-v1/clean-candidate-manifest.json"),
+            "drift\n".toArray())
     }
 }
 
