@@ -212,16 +212,43 @@ private func r7TrustV2ServingArtifacts(records: ArrayList<NormalizedRecord>,
     let kb = newOfflineKnowledgeBase()
     kb.stageCandidateRecords("r7-trust-v2", records)
     _ = kb.promoteCandidateToActive("r7-trust-v2")
-    let store = FileKnowledgeStore(root.toString())
+    let store = FileKnowledgeStore(root.join("clean").toString())
     _ = kb.persistActiveSnapshot(store)
+    let blockedRecords = ArrayList<NormalizedRecord>()
+    for (record in records) { blockedRecords.add(record) }
+    let poisoned = NormalizedRecord()
+    poisoned.sourceId = "precert-synthetic-contamination"
+    poisoned.recordKind = records[0].recordKind
+    poisoned.title = "Synthetic transport rejection fixture"
+    poisoned.chunk = "Synthetic benchmark reference solution marker CJ-HUMANEVAL-000"
+    poisoned.citation = records[0].citation
+    poisoned.metadata.sourceId = poisoned.sourceId
+    poisoned.metadata.sourceType = records[0].metadata.sourceType
+    poisoned.metadata.sourceUrl = records[0].metadata.sourceUrl
+    poisoned.metadata.repo = records[0].metadata.repo
+    poisoned.metadata.path = records[0].metadata.path
+    poisoned.metadata.targetVersion = records[0].metadata.targetVersion
+    poisoned.metadata.sourceSet = records[0].metadata.sourceSet
+    poisoned.metadata.versionResolutionId = records[0].metadata.versionResolutionId
+    poisoned.metadata.trustLevel = records[0].metadata.trustLevel
+    poisoned.metadata.reviewState = records[0].metadata.reviewState
+    blockedRecords.add(poisoned)
+    let blockedKb = newOfflineKnowledgeBase()
+    blockedKb.stageCandidateRecords("r7-trust-v2", blockedRecords)
+    _ = blockedKb.promoteCandidateToActive("r7-trust-v2")
+    let blockedStore = FileKnowledgeStore(root.join("blocked").toString())
+    _ = blockedKb.persistActiveSnapshot(blockedStore)
     let probes = ArrayList<CkbStudentServingProbe>()
-    probes.add(r7TrustV2Probe("case", "CJ-HUMANEVAL-000", true))
+    probes.add(r7TrustV2Probe("case",
+        "CJ-HUMANEVAL-000 Cangjie function and collection syntax", false))
     probes.add(r7TrustV2Probe("path",
-        "cangjie\\u002dhumaneval/中文😀/visible-benchmark/prompt.md", true))
-    probes.add(r7TrustV2Probe("case-variant",
-        "visible-benchmark/CJ-HUMANEVAL-001/prompt.md", true))
-    let report = ckbBuildStudentServingLeakageReport(
-        CkbCommandLoopService(CkbRuntimeConfig(), store), probes,
+        "cangjie\\u002dhumaneval/中文😀/visible-benchmark/prompt.md Cangjie function and collection syntax",
+        false))
+    probes.add(r7TrustV2Probe("stored-evidence-contamination",
+        "Cangjie function and collection syntax", true))
+    let report = ckbBuildStudentServingLeakageReportWithBlockedService(
+        CkbCommandLoopService(CkbRuntimeConfig(), store),
+        CkbCommandLoopService(CkbRuntimeConfig(), blockedStore), probes,
         anonymousQueryArtifactHash: anonymousHash)
     if (exists(root)) { remove(root, recursive: true) }
     report

@@ -377,19 +377,51 @@ private func p8S2ServingArtifacts(records: ArrayList<NormalizedRecord>,
     let kb = newOfflineKnowledgeBase()
     kb.stageCandidateRecords("p8-s2-v2", records)
     @Expect(kb.promoteCandidateToActive("p8-s2-v2"), true)
-    let store = FileKnowledgeStore(root)
+    let store = FileKnowledgeStore("${root}/clean")
     @Expect(kb.persistActiveSnapshot(store).ok, true)
+    let blockedRecords = ArrayList<NormalizedRecord>()
+    for (record in records) { blockedRecords.add(record) }
+    let poisoned = p8S2PoisonedRecord(records[0])
+    blockedRecords.add(poisoned)
+    let blockedKb = newOfflineKnowledgeBase()
+    blockedKb.stageCandidateRecords("p8-s2-v2", blockedRecords)
+    @Expect(blockedKb.promoteCandidateToActive("p8-s2-v2"), true)
+    let blockedStore = FileKnowledgeStore("${root}/blocked")
+    @Expect(blockedKb.persistActiveSnapshot(blockedStore).ok, true)
     let probes = ArrayList<CkbStudentServingProbe>()
-    probes.add(p8S2Probe("case", "CJ-HUMANEVAL-000", true))
+    probes.add(p8S2Probe("case",
+        "CJ-HUMANEVAL-000 Cangjie function and collection syntax", false))
     probes.add(p8S2Probe("path",
-        "cangjie\\u002dhumaneval/中文😀/visible-benchmark/prompt.md", true))
-    probes.add(p8S2Probe("case-variant",
-        "visible-benchmark/CJ-HUMANEVAL-001/prompt.md", true))
-    let report = ckbBuildStudentServingLeakageReport(
-        CkbCommandLoopService(CkbRuntimeConfig(), store), probes,
+        "cangjie\\u002dhumaneval/中文😀/visible-benchmark/prompt.md Cangjie function and collection syntax",
+        false))
+    probes.add(p8S2Probe("stored-evidence-contamination",
+        "Cangjie function and collection syntax", true))
+    let report = ckbBuildStudentServingLeakageReportWithBlockedService(
+        CkbCommandLoopService(CkbRuntimeConfig(), store),
+        CkbCommandLoopService(CkbRuntimeConfig(), blockedStore), probes,
         anonymousQueryArtifactHash: anonymousQueryArtifactHash)
     if (exists(Path(root))) { remove(Path(root), recursive: true) }
     report
+}
+
+private func p8S2PoisonedRecord(base: NormalizedRecord): NormalizedRecord {
+    let record = NormalizedRecord()
+    record.sourceId = "precert-synthetic-contamination"
+    record.recordKind = base.recordKind
+    record.title = "Synthetic transport rejection fixture"
+    record.chunk = "Synthetic benchmark reference solution marker CJ-HUMANEVAL-000"
+    record.citation = base.citation
+    record.metadata.sourceId = record.sourceId
+    record.metadata.sourceType = base.metadata.sourceType
+    record.metadata.sourceUrl = base.metadata.sourceUrl
+    record.metadata.repo = base.metadata.repo
+    record.metadata.path = base.metadata.path
+    record.metadata.targetVersion = base.metadata.targetVersion
+    record.metadata.sourceSet = base.metadata.sourceSet
+    record.metadata.versionResolutionId = base.metadata.versionResolutionId
+    record.metadata.trustLevel = base.metadata.trustLevel
+    record.metadata.reviewState = base.metadata.reviewState
+    record
 }
 
 private func p8S2Probe(id: String, query: String,
