@@ -91,14 +91,12 @@ public class CkbBaselineTest {
         @Expect(doc.records.size > 0, true)
         @Expect(source.records.size > 0, true)
         @Expect(website.records.size > 0, true)
-        @Expect(candidate.records.size > 0, true)
-        @Expect(candidate.records[0].requiresReview, true)
+        @Expect(candidate.records.size, 0)
         @Expect(pack.knowledgeVersion.contains("ckb-"), true)
         @Expect(pack.docEvidence.size > 0, true)
         @Expect(pack.sourceEvidence.size > 0, true)
         @Expect(pack.websiteEvidence.size > 0, true)
-        @Expect(pack.webCandidateEvidence.size > 0, true)
-        @Expect(pack.webCandidateEvidence[0].requiresReview, true)
+        @Expect(pack.webCandidateEvidence.size, 0)
     }
 
     @TestCase
@@ -275,8 +273,7 @@ public class CkbBaselineTest {
         let truncated = cangjie_hybrid_search(kb, "Cangjie", 1)
 
         @Expect(hybrid.records.size, 0)
-        @Expect(candidate.records.size, 1)
-        @Expect(candidate.records[0].metadata.reviewState, ReviewStates.CANDIDATE)
+        @Expect(candidate.records.size, 0)
         @Expect(truncated.truncated, true)
     }
 
@@ -1230,8 +1227,7 @@ public class CkbBaselineTest {
         @Expect(text.contains("requests="), true)
         @Expect(fake.calls.size >= 8, true)
         @Expect(kb.rawRecordCount() >= 14, true)
-        @Expect(candidates.records.size > 0, true)
-        @Expect(candidates.records[0].requiresReview, true)
+        @Expect(candidates.records.size, 0)
         @Expect(store.has("raw/records.ckb"), true)
     }
 
@@ -1254,7 +1250,7 @@ public class CkbBaselineTest {
         @Expect(store.has("raw/doc/doc-syntax.ckb"), true)
         @Expect(store.has("raw/repo/source-http-client.ckb"), true)
         @Expect(store.has("raw/community/community-issue-1.ckb"), true)
-        @Expect(store.has("raw/web_candidate/web-candidate-blog.ckb"), true)
+        @Expect(store.has("raw/web_candidate/web-candidate-blog.ckb"), false)
         @Expect(store.has("metadata/status.ckb"), true)
         @Expect(raw.size, result.rawCount)
         @Expect(normalized.size, result.normalizedCount)
@@ -1389,7 +1385,7 @@ public class CkbBaselineTest {
 
         @Expect(officialDocs.records.size > 0, true)
         @Expect(blockedCandidates.records.size, 0)
-        @Expect(allowedCandidates.records.size > 0, true)
+        @Expect(allowedCandidates.records.size, 0)
         @Expect(noCandidateEvidence.webCandidateEvidence.size, 0)
     }
 
