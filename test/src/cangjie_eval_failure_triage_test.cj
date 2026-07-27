@@ -195,6 +195,71 @@ public class CangjieEvalFailureTriageTest {
         let bad=args.clone();bad[2]="/tmp/ckb-data/forbidden";bad[10]="${root}/bad-output";@Expect(runCangjieEvalSingleCaseClose(bad),1);@Expect(exists(Path("${root}/bad-output")),false)
         _=launch("/bin/rm",["-rf",root]).wait()
     }
+
+    // S5-UT-02
+    @TestCase
+    public func s5Ut02ProtocolClosureIsDeterministicWithoutClassifiers(): Unit {
+        let input=s5ClosureInput("CJ-HUMANEVAL-016","\"protocolViolation\":true")
+        let inputs=ArrayList<CangjieEvalDevelopmentClosureInput>();inputs.add(input)
+        let result=orchestrateDevelopmentClosure(inputs,"teacher-s5")
+        @Expect(result.ok,true);@Expect(result.pendingClassifierCount,0)
+        @Expect(result.knowledgeGapCount,0);@Expect(result.authoritativeGapJsonl,"")
+        @Expect(result.developmentClosureJson.contains("\"category\":\"protocol_violation\""),true)
+        @Expect(result.developmentClosureJson.contains("\"route\":\"protocol\""),true)
+        @Expect(result.developmentClosureJson.contains("\"nonKnowledgeRouteConfirmed\":true"),true)
+        @Expect(result.developmentClosureJson.contains("\"routeEvidenceHash\":\"sha256:"),true)
+    }
+
+    // S5-BND-02
+    @TestCase
+    public func s5Bnd02OperationalClosuresAreFinalNonKnowledgeRoutes(): Unit {
+        for((signal,category,route) in [
+            ("\"environmentFailure\":true","environment_failure","environment"),
+            ("\"runnerFailure\":true","runner_failure","runner"),
+            ("\"datasetFailure\":true","dataset_failure","dataset"),
+            ("\"timedOut\":true","timeout","timeout"),
+            ("\"malformedToolPayload\":true","malformed_tool_payload","protocol"),
+            ("\"toolFailure\":true","tool_error","tool"),
+            ("\"emptyModelResponse\":true","model_empty","reasoning"),
+            ("\"zeroKnowledgeHits\":true","evidence_missing","retrieval")
+        ]){
+            let inputs=ArrayList<CangjieEvalDevelopmentClosureInput>();inputs.add(s5ClosureInput("CJ-HUMANEVAL-016",signal))
+            let result=orchestrateDevelopmentClosure(inputs,"teacher-s5")
+            @Expect(result.ok,true);@Expect(result.pendingClassifierCount,0);@Expect(result.knowledgeGapCount,0)
+            @Expect(result.developmentClosureJson.contains("\"category\":\"${category}\""),true)
+            @Expect(result.developmentClosureJson.contains("\"route\":\"${route}\""),true)
+        }
+    }
+
+    // S5-POS-04
+    @TestCase
+    public func s5Pos04BusinessKnowledgeGapStillNeedsAndAcceptsTwoClassifiers(): Unit {
+        let input=s5ClosureInput("CJ-HUMANEVAL-007","\"suspectedKnowledgeGap\":true",failureType:"compile_error")
+        input.firstClassifierJson=p5Classifier("classifier-a","source-a","knowledge_gap",1,"development",failureType:"compile_error")
+        input.secondClassifierJson=p5Classifier("classifier-b","source-b","knowledge_gap",1,"development",failureType:"compile_error")
+        let inputs=ArrayList<CangjieEvalDevelopmentClosureInput>();inputs.add(input)
+        let result=orchestrateDevelopmentClosure(inputs,"teacher-s5")
+        @Expect(result.ok,true);@Expect(result.pendingClassifierCount,0);@Expect(result.knowledgeGapCount,1)
+        @Expect(result.authoritativeGapJsonl.contains("\"failureTaxonomy\":\"knowledge_gap\""),true)
+    }
+
+    // S5-NEG-03
+    @TestCase
+    public func s5Neg03ForgedCaseCategoryAndTamperedSealCannotBypass(): Unit {
+        let business=s5ClosureInput("CJ-HUMANEVAL-016","\"reasoningFailure\":true")
+        business.caseResultJson=business.caseResultJson.replace("}",",\"category\":\"protocol_violation\"}")
+        let businessInputs=ArrayList<CangjieEvalDevelopmentClosureInput>();businessInputs.add(business)
+        let pending=orchestrateDevelopmentClosure(businessInputs,"teacher-s5")
+        @Expect(pending.ok,true);@Expect(pending.pendingClassifierCount,1)
+        @Expect(pending.developmentClosureJson.contains("\"category\":\"reasoning_failure\""),true)
+
+        let tampered=s5ClosureInput("CJ-HUMANEVAL-016","\"protocolViolation\":true")
+        tampered.resultEvidenceJson=tampered.resultEvidenceJson.replace("\"protocolViolation\":true","\"protocolViolation\":false,\"environmentFailure\":true")
+        let tamperedInputs=ArrayList<CangjieEvalDevelopmentClosureInput>();tamperedInputs.add(tampered)
+        let blocked=orchestrateDevelopmentClosure(tamperedInputs,"teacher-s5")
+        @Expect(blocked.ok,false);@Expect(blocked.knowledgeGapCount,0)
+        @Expect(blocked.authoritativeGapJsonl,"")
+    }
 }
 
 private func p5CaseId(index: Int64): String {
@@ -220,6 +285,15 @@ private func p5Triage(signal: String, attempt: Int64,failureType!:String=""): St
     let failureField=if(failureType==""){""}else{"\"failureType\":\"${failureType}\","}
     let raw = "{\"caseId\":\"CJ-HUMANEVAL-007\",\"runId\":\"run-001\",\"datasetVersion\":\"dataset-v1\",\"attempt\":${attempt},\"runMode\":\"development\",\"failureObservation\":\"observed 中文😀\",${failureField}${signal},\"resultEvidenceHash\":\"HASH\"}"
     raw.replace("HASH", cangjieEvalTriageResultEvidenceHash(raw))
+}
+
+private func s5ClosureInput(caseId:String,signal:String,failureType!:String=""):CangjieEvalDevelopmentClosureInput{
+    let input=CangjieEvalDevelopmentClosureInput()
+    input.caseResultJson="{\"caseId\":\"${caseId}\",\"runId\":\"run-s5\",\"datasetVersion\":\"dataset-v1\",\"runMode\":\"development\",\"workspaceId\":\"w-${caseId}\",\"sessionId\":\"s-${caseId}\",\"runtimeHomeId\":\"h-${caseId}\",\"developmentPass\":false,\"certificationPassAt1\":null}"
+    let failureField=if(failureType==""){""}else{"\"failureType\":\"${failureType}\","}
+    let raw="{\"caseId\":\"${caseId}\",\"runId\":\"run-s5\",\"datasetVersion\":\"dataset-v1\",\"attempt\":1,\"runMode\":\"development\",\"failureObservation\":\"sealed failure 中文🙂\",${failureField}${signal},\"resultEvidenceHash\":\"HASH\"}"
+    input.resultEvidenceJson=raw.replace("HASH",cangjieEvalTriageResultEvidenceHash(raw))
+    input.taskText="通用仓颉知识🙂";input.failureSummary="public failure";input
 }
 
 private func p5Closure(caseId: String, passed: Bool, category: String, confirmed: Bool): CangjieEvalDevelopmentCaseClosure {

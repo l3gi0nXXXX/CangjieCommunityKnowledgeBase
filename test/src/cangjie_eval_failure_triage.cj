@@ -219,7 +219,18 @@ public func orchestrateDevelopmentClosure(inputs: ArrayList<CangjieEvalDevelopme
             closure.category = triage.category; closure.route = triage.route
             closure.developmentPass = triage.category == "none" && triageJsonBool(row, "developmentPass")
             if (triage.category != "none") {
-                if (input.firstClassifierJson.trimAscii() == "" || input.secondClassifierJson.trimAscii() == "") {
+                if (!cangjieEvalBusinessClassificationRequired(triage.category)) {
+                    let confirmation = cangjieEvalSealedNonBusinessRoute(input.resultEvidenceJson)
+                    if (confirmation.confirmed) {
+                        closure.category = confirmation.category; closure.route = confirmation.route
+                        closure.classifierFirstCategory = confirmation.firstCategory
+                        closure.classifierSecondCategory = confirmation.secondCategory
+                        closure.nonKnowledgeRouteConfirmed = true
+                        closure.routeEvidenceHash = confirmation.evidenceHash
+                    } else {
+                        output.diagnostics.add("sealed_route:${closure.caseId}:${confirmation.diagnostic}")
+                    }
+                } else if (input.firstClassifierJson.trimAscii() == "" || input.secondClassifierJson.trimAscii() == "") {
                     output.pendingClassifierCount += 1
                 } else {
                     let confirmation = confirmIndependentClassifierPair(input.firstClassifierJson, input.secondClassifierJson)
@@ -418,9 +429,44 @@ public func routeNonKnowledgeFailure(category: String): String {
     if (value == "runner_failure") { return "runner" }
     if (value == "environment_failure") { return "environment" }
     if (value == "protocol_violation" || value == "malformed_tool_payload") { return "protocol" }
-    if (value == "tool_error" || value == "evidence_missing") { return "tool" }
+    if (value == "tool_error") { return "tool" }
+    if (value == "evidence_missing") { return "retrieval" }
     if (value == "timeout") { return "timeout" }
     "protocol"
+}
+
+public func cangjieEvalBusinessClassificationRequired(category: String): Bool {
+    let value = category.trimAscii().toAsciiLower()
+    value == "knowledge_gap" || value == "reasoning_failure" ||
+        value == "compile_error" || value == "unit_failure"
+}
+
+public func cangjieEvalSealedNonBusinessRoute(
+    resultEvidenceJson: String): CangjieEvalKnowledgeGapConfirmation {
+    let confirmation = CangjieEvalKnowledgeGapConfirmation()
+    let triage = triageEvalFailure(resultEvidenceJson)
+    if (!triage.ok) {
+        confirmation.diagnostic = "sealed_result_evidence_invalid"
+        return confirmation
+    }
+    if (triage.category == "none" ||
+        cangjieEvalBusinessClassificationRequired(triage.category)) {
+        confirmation.diagnostic = "business_classification_required"
+        return confirmation
+    }
+    confirmation.confirmed = true
+    confirmation.diagnostic = "sealed_nonbusiness_route"
+    confirmation.category = triage.category
+    confirmation.route = triage.route
+    confirmation.firstCategory = "not_run"
+    confirmation.secondCategory = "not_run"
+    confirmation.nonKnowledgeRouteConsensus = true
+    confirmation.evidenceHash = benchmarkGapSha256(
+        triageCanonicalPart("ckb-p5-sealed-nonbusiness-route-v1") +
+        triageCanonicalPart(triage.category) +
+        triageCanonicalPart(triage.route) +
+        triageCanonicalPart(triage.evidenceHash))
+    confirmation
 }
 
 public func renderDevelopmentClosure(cases: ArrayList<CangjieEvalDevelopmentCaseClosure>): String {

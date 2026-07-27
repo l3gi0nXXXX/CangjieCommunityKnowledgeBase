@@ -116,6 +116,10 @@ public func runCkbP5IndependentClassifiers(runRoot: String, runId: String, trans
         let caseResult=ckbP5ReadUtf8(caseRoot.join("case-result.json"))
         try { if (ckbP5Bool(JsonValue.fromStr(caseResult).asObject(),"firstAttemptPass")) { continue } } catch (_: Exception) { result.rejected+=1;ckbP5AddControllerDiagnostic(result,caseId,"case_result_malformed","not_run","not_run");continue }
         let request = buildCkbP5ClassifierRequest(caseRoot, caseId, runId)
+        if (request.startsWith("sealed_nonbusiness_route:")) {
+            ckbP5AddControllerDiagnostic(result,caseId,"not_run","not_run",request)
+            continue
+        }
         if (!request.startsWith("{")) { result.rejected+=1;ckbP5AddControllerDiagnostic(result,caseId,request,"not_run","not_run");continue }
         result.processed+=1
         let firstRun=ckbP5InvokeClassifier(outputRoot,caseId,request,first,timeoutSeconds)
@@ -154,7 +158,13 @@ public func buildCkbP5ClassifierRequest(caseRoot: Path, caseId: String, runId: S
         let triage=triageEvalFailure(evidenceText)
         if(!triage.ok||ckbP5String(row,"caseId")!=caseId||ckbP5String(row,"runId")!=runId||ckbP5String(row,"runMode")!="development"||
             ckbP5String(evidence,"caseId")!=caseId||ckbP5String(evidence,"runId")!=runId||
+            ckbP5String(evidence,"datasetVersion")!=ckbP5String(row,"datasetVersion")||
             ckbP5Bool(row,"firstAttemptPass")){return "first_complete_development_sample_required"}
+        if(!cangjieEvalBusinessClassificationRequired(triage.category)){
+            let route=cangjieEvalSealedNonBusinessRoute(evidenceText)
+            if(!route.confirmed){return "sealed_nonbusiness_route_invalid"}
+            return "sealed_nonbusiness_route:${route.category}:${route.route}"
+        }
         let sample=ckbP5FirstCompleteDevelopmentSample(caseRoot,row,evidence)
         if(sample[0]!="ok"){return "first_complete_development_sample_required"}
         let contextText=ckbP5ReadUtf8(caseRoot.join("canonical-task-context.json"));if(contextText==""){return "task_context_missing"}

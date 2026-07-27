@@ -452,6 +452,78 @@ public class CangjieEvalClassifierControlTest {
         let diagnostic=String.fromUtf8(File.readFrom(Path(output).join("classifier-control-diagnostics.json")))
         @Expect(ckbP5ClassifierDiagnosticArtifactValid(diagnostic),true);@Expect(diagnostic.contains("/tmp/"),false);@Expect(diagnostic.toAsciiLower().contains("token"),false)
     }
+
+    // S5-UT-02
+    @TestCase
+    public func s5Ut02ProtocolEvidenceSkipsBothClassifiers(): Unit {
+        let root=p5IcRoot("s5-protocol");_=p5IcNonBusinessSample(root,"CJ-HUMANEVAL-016","\"protocolViolation\":true")
+        let output="${root}/classifier-output"
+        let result=runCkbP5IndependentClassifiers(root,"run-中文🙂","C",output,
+            p5IcExecutableConfig("a","codex","GPT-5.6-Sol",p5IcFake(root,"fake-a.sh","ok")),
+            p5IcExecutableConfig("b","claude-code","GLM-5.2",p5IcFake(root,"fake-b.sh","ok")),10)
+        @Expect(result.ok,true);@Expect(result.processed,0);@Expect(result.paired,0);@Expect(result.rejected,0)
+        @Expect(exists(Path(output).join("runs/CJ-HUMANEVAL-016")),false)
+        @Expect(exists(Path(output).join("pairs/a/CJ-HUMANEVAL-016.json")),false)
+        let diagnostic=String.fromUtf8(File.readFrom(Path(output).join("classifier-control-diagnostics.json")))
+        @Expect(ckbP5ClassifierDiagnosticArtifactValid(diagnostic),true)
+        @Expect(diagnostic.contains("sealed_nonbusiness_route:protocol_violation:protocol"),true)
+    }
+
+    // S5-BND-02
+    @TestCase
+    public func s5Bnd02OperationalCategoriesNeverBuildClassifierRequests(): Unit {
+        for((label,signal,category,route) in [
+            ("environment","\"environmentFailure\":true","environment_failure","environment"),
+            ("runner","\"runnerFailure\":true","runner_failure","runner"),
+            ("dataset","\"datasetFailure\":true","dataset_failure","dataset"),
+            ("timeout","\"timedOut\":true","timeout","timeout"),
+            ("malformed-tool","\"malformedToolPayload\":true","malformed_tool_payload","protocol"),
+            ("tool","\"toolFailure\":true","tool_error","tool"),
+            ("model-empty","\"emptyModelResponse\":true","model_empty","reasoning"),
+            ("retrieval","\"zeroKnowledgeHits\":true","evidence_missing","retrieval")
+        ]){
+            let root=p5IcRoot("s5-${label}");let caseRoot=p5IcNonBusinessSample(root,"CJ-HUMANEVAL-016",signal)
+            @Expect(buildCkbP5ClassifierRequest(caseRoot,"CJ-HUMANEVAL-016","run-中文🙂"),
+                "sealed_nonbusiness_route:${category}:${route}")
+        }
+    }
+
+    // S5-POS-04
+    @TestCase
+    public func s5Pos04BusinessFailureStillRequiresIndependentPair(): Unit {
+        let root=p5IcRoot("s5-business");_=p5IcSample(root,"CJ-HUMANEVAL-016","error: String API missing 中文🙂")
+        let output="${root}/classifier-output"
+        let result=runCkbP5IndependentClassifiers(root,"run-中文🙂","C",output,
+            p5IcExecutableConfig("a","codex","GPT-5.6-Sol",p5IcFake(root,"fake-a.sh","ok")),
+            p5IcExecutableConfig("b","claude-code","GLM-5.2",p5IcFake(root,"fake-b.sh","ok")),10)
+        @Expect(result.ok,true);@Expect(result.processed,1);@Expect(result.paired,1);@Expect(result.rejected,0)
+        let first=String.fromUtf8(File.readFrom(Path(output).join("pairs/a/CJ-HUMANEVAL-016.json")))
+        let second=String.fromUtf8(File.readFrom(Path(output).join("pairs/b/CJ-HUMANEVAL-016.json")))
+        @Expect(confirmKnowledgeGap(first,second).confirmed,true)
+    }
+
+    // S5-NEG-03
+    @TestCase
+    public func s5Neg03ForgedCategoryOrUnsealedEvidenceCannotSkipClassifiers(): Unit {
+        let root=p5IcRoot("s5-forged-category");let caseRoot=p5IcSample(root,"CJ-HUMANEVAL-016","error: missing API")
+        let row=String.fromUtf8(File.readFrom(caseRoot.join("case-result.json")))
+        File.writeTo(caseRoot.join("case-result.json"),row.replace("}",",\"category\":\"protocol_violation\"}").toArray())
+        let output="${root}/classifier-output"
+        let result=runCkbP5IndependentClassifiers(root,"run-中文🙂","C",output,
+            p5IcExecutableConfig("a","codex","GPT-5.6-Sol",p5IcFake(root,"fake-a.sh","ok")),
+            p5IcExecutableConfig("b","claude-code","GLM-5.2",p5IcFake(root,"fake-b.sh","ok")),10)
+        @Expect(result.ok,true);@Expect(result.processed,1);@Expect(result.paired,1)
+
+        let tamperedRoot=p5IcRoot("s5-forged-evidence");let tamperedCase=p5IcNonBusinessSample(tamperedRoot,"CJ-HUMANEVAL-016","\"protocolViolation\":true")
+        let evidence=String.fromUtf8(File.readFrom(tamperedCase.join("result-evidence.json")))
+        File.writeTo(tamperedCase.join("result-evidence.json"),evidence.replace("\"protocolViolation\":true","\"protocolViolation\":false,\"environmentFailure\":true").toArray())
+        let tamperedOutput="${tamperedRoot}/classifier-output"
+        let blocked=runCkbP5IndependentClassifiers(tamperedRoot,"run-中文🙂","C",tamperedOutput,
+            p5IcExecutableConfig("a","codex","GPT-5.6-Sol",p5IcFake(tamperedRoot,"fake-a.sh","ok")),
+            p5IcExecutableConfig("b","claude-code","GLM-5.2",p5IcFake(tamperedRoot,"fake-b.sh","ok")),10)
+        @Expect(blocked.ok,false);@Expect(blocked.rejected,1);@Expect(blocked.processed,0)
+        @Expect(exists(Path(tamperedOutput).join("runs/CJ-HUMANEVAL-016")),false)
+    }
 }
 
 private func p5IcRoot(label:String):String{let root="/tmp/ckb-p5-ic-${label}-${DateTime.now().toUnixTimeStamp().toMilliseconds()}";if(exists(Path(root))){_=launch("/bin/rm",["-rf",root]).wait()};Directory.create(Path(root),recursive:true);root}
@@ -461,6 +533,12 @@ private func p5IcSample(root:String,caseId:String,log:String,failureType!:String
     let raw="{\"caseId\":\"${caseId}\",\"runId\":\"run-中文🙂\",\"datasetVersion\":\"dataset-v1\",\"attempt\":1,\"runMode\":\"development\",\"failureObservation\":\"missing reusable guidance 中文🙂\",\"suspectedKnowledgeGap\":true,\"retrievalDiagnostic\":\"bound_tool_result\",\"retrievalEvidenceHash\":\"h342434\",\"failureType\":\"${failureType}\",\"unitPass\":false,\"resultEvidenceHash\":\"HASH\"}";let evidence=raw.replace("HASH",cangjieEvalTriageResultEvidenceHash(raw))
     let result="{\"caseId\":\"${caseId}\",\"runId\":\"run-中文🙂\",\"datasetVersion\":\"dataset-v1\",\"runMode\":\"development\",\"firstAttemptPass\":false,\"firstClaudeExitCode\":0,\"failureType\":\"${failureType}\",\"toolEvidenceHash\":\"h342434\",\"toolCoveragePass\":true,\"citationCount\":2}"
     File.writeTo(caseRoot.join("case-result.json"),result.toArray());File.writeTo(caseRoot.join("result-evidence.json"),evidence.toArray());File.writeTo(caseRoot.join("canonical-task-context.json"),"{\"taskId\":\"${caseId}\",\"datasetVersion\":\"dataset-v1\",\"taskText\":\"通用字符串 API 任务🙂\",\"signature\":\"public func sample(s: String): Int64\"}".toArray());File.writeTo(caseRoot.join("test.log"),log.toArray());caseRoot
+}
+private func p5IcNonBusinessSample(root:String,caseId:String,signal:String):Path{
+    let caseRoot=p5IcSample(root,caseId,"operational failure 中文🙂")
+    let raw="{\"caseId\":\"${caseId}\",\"runId\":\"run-中文🙂\",\"datasetVersion\":\"dataset-v1\",\"attempt\":1,\"runMode\":\"development\",\"failureObservation\":\"operational failure 中文🙂\",${signal},\"resultEvidenceHash\":\"HASH\"}"
+    File.writeTo(caseRoot.join("result-evidence.json"),raw.replace("HASH",cangjieEvalTriageResultEvidenceHash(raw)).toArray())
+    caseRoot
 }
 private func p5IcTransportRetrySample(root:String,caseId:String,transportAttempts:Int64,sampleAttempts:Int64,attempts:String):Path{
     let caseRoot=p5IcSample(root,caseId,"Exception: expected -1, actual 1 中文🙂",failureType:"test_failure")
