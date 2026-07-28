@@ -18,8 +18,39 @@ public class CangjieEvalModelTimeoutOptionTest {
         @Expect(shell.contains("claude_timeout_after_321s"), true)
         @Expect(shell.contains("code=124"), true)
         let health = ckbAbcdePreflightHttpHealthCommand("http://127.0.0.1:18891")
-        @Expect(health.contains("--max-time 15"), true)
+        @Expect(health.contains("--max-time 60"), true)
+        @Expect(health.contains("--max-time 15"), false)
         @Expect(health.contains("http://127.0.0.1:18891/v1/health"), true)
+        @Expect(health.endsWith(" >/dev/null"), true)
+    }
+
+    @TestCase
+    public func s7hUt01HealthPreflightUsesFormalScaleBudget(): Unit {
+        let health = ckbAbcdePreflightHttpHealthCommand("http://127.0.0.1:18933")
+        @Expect(health.contains("curl --max-time 60 -fsS"), true)
+        @Expect(health.contains("--max-time 15"), false)
+    }
+
+    @TestCase
+    public func s7hBnd01HealthPreflightPreservesUtf8AndQuotesUrl(): Unit {
+        let health = ckbAbcdePreflightHttpHealthCommand("http://127.0.0.1:18933/仓颉😀")
+        @Expect(health.contains("'http://127.0.0.1:18933/仓颉😀/v1/health'"), true)
+    }
+
+    @TestCase
+    public func s7hPos01HealthPreflightStillRequiresCurlSuccess(): Unit {
+        let health = ckbAbcdePreflightHttpHealthCommand("http://127.0.0.1:18933")
+        @Expect(health.startsWith("curl "), true)
+        @Expect(health.contains("-fsS"), true)
+        @Expect(health.endsWith(" >/dev/null"), true)
+    }
+
+    @TestCase
+    public func s7hNeg01HealthPreflightKeepsTimeoutFailClosedWithoutRetry(): Unit {
+        let health = ckbAbcdePreflightHttpHealthCommand("http://127.0.0.1:1")
+        @Expect(health.contains("--max-time 60"), true)
+        @Expect(health.contains("--retry"), false)
+        @Expect(health.contains("|| true"), false)
     }
 
     @TestCase

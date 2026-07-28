@@ -1755,7 +1755,7 @@ private func ckbAbcdePreflight(options: CkbAbcdeRunnerOptions, runRoot: String):
 }
 
 public func ckbAbcdePreflightHttpHealthCommand(baseUrl: String): String {
-    "curl --max-time 15 -fsS ${ckbAbcdeShellQuote("${baseUrl}/v1/health")} >/dev/null"
+    "curl --max-time 60 -fsS ${ckbAbcdeShellQuote("${baseUrl}/v1/health")} >/dev/null"
 }
 
 private func ckbAbcdeRenderPreflightJson(options: CkbAbcdeRunnerOptions, runRoot: String, result: CkbAbcdePreflightResult): String {
