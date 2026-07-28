@@ -83,7 +83,13 @@ public func ckbMaterializeCandidateRuntime(
             result.diagnostic = "candidate_runtime_restore_failed"
             return result
         }
-        let committed = kb.persistActiveSnapshot(output)
+        kb.storage.vectorBackend = ""
+        kb.storage.vectorState = EmbeddingProviderState.DEGRADED
+        kb.storage.vectorIndexCount = 0
+        kb.storage.vectorDimension = 0
+        kb.storage.vectorDegradedReason = "vector_snapshot_missing"
+        let committed = kb.persistActiveSnapshotUsingVectorRecords(output,
+            ArrayList<VectorRecord>(), persistVectorFile: false)
         faultInjector.checkpoint("after_active_commit", output)
         if (!committed.ok || !committed.businessCommitted ||
             !committed.pointerCommitted || committed.txId == "") {
@@ -106,8 +112,14 @@ public func ckbMaterializeCandidateRuntime(
             throw Exception("candidate_runtime_commit_marker_invalid")
         }
         let loaded = output.loadActiveSnapshot()
+        let metadata = output.loadMetadataStatus()
         if (!loaded.valid || loaded.activeVersion != before.version ||
             loaded.candidateVersion != before.version ||
+            loaded.hasVectorArtifact ||
+            !metadata.valid || metadata.activeVersion != before.version ||
+            metadata.vectorState != EmbeddingProviderState.DEGRADED ||
+            metadata.vectorIndexCount != 0 || metadata.vectorDimension != 0 ||
+            metadata.vectorDegradedReason != "vector_snapshot_missing" ||
             loaded.rawRecords.size != before.rawCount ||
             loaded.normalizedRecords.size != before.normalizedCount ||
             loaded.activeIndex.size != before.activeIndex.size ||

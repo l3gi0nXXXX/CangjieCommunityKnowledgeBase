@@ -3852,7 +3852,8 @@ public func ckbVectorReconcileWithVectorStore(kb: KnowledgeBase, store: FileKnow
     }
     let stagingCollection = ckbVectorReconcileStagingCollection(effective.effectiveActiveCollection)
     let progressSink = FileVectorBuildProgressSink(store)
-    let rebuild = ckbRebuildIndex(kb, store, progressSink: progressSink, targetVectorCollection: stagingCollection, persistSnapshot: false, deadlineAtMillis: deadlineAtMillis)
+    let rebuild = kb.reconcileProductionVectorIndex(progressSink: progressSink,
+        targetVectorCollection: stagingCollection, deadlineAtMillis: deadlineAtMillis)
     result.progressPath = progressSink.currentProgressPath()
     result.rebuiltVectorCount = rebuild.count
     result.activeKnowledgeVersion = rebuild.activeVersion

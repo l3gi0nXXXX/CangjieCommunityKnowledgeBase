@@ -175,6 +175,47 @@ public class CkbVectorReconcileTest {
     }
 
     @TestCase
+    public func vectorReconcilePreservesMaterializedActiveVersionAndStatusIdentity(): Unit {
+        let root = "target/ckb-vector-reconcile-version-preserved"
+        ckbVectorReconcileEnsureEmptyDir(root)
+        let store = FileKnowledgeStore(root)
+        let vectorStore = ReconcileTrackingVectorStore()
+        let provider = ReconcileEmbeddingProvider(batchSize: 2)
+        let kb = ckbVectorReconcileKnowledgeBaseWithProvider(vectorStore, provider)
+        let expectedVersion = "ckb-clean-recert-20260727-r2-atoms-v1"
+        let materialized = kb.activeSnapshotForRollback()
+        materialized.activeVersion = expectedVersion
+        materialized.candidateVersion = expectedVersion
+        materialized.vectorRecords.clear()
+        materialized.hasVectorArtifact = false
+        @Expect(kb.restoreActiveSnapshot(materialized), true)
+        let initial = kb.persistActiveSnapshotUsingVectorRecords(store,
+            ArrayList<VectorRecord>(), persistVectorFile: false)
+        @Expect(initial.businessCommitted, true)
+
+        let result = ckbVectorReconcileWithVectorStore(kb, store,
+            ckbVectorReconcileRuntimeConfig(), vectorStore, true)
+        let pointer = store.loadActiveSnapshotPointer()
+        let snapshot = store.loadActiveSnapshot()
+        let metadata = store.loadMetadataStatus()
+
+        @Expect(result.ok, true)
+        @Expect(result.activeKnowledgeVersion, expectedVersion)
+        @Expect(pointer.valid, true)
+        @Expect(pointer.activeVersion, expectedVersion)
+        @Expect(snapshot.valid, true)
+        @Expect(snapshot.activeVersion, expectedVersion)
+        @Expect(metadata.valid, true)
+        @Expect(metadata.activeVersion, expectedVersion)
+        @Expect(metadata.vectorState, EmbeddingProviderState.READY)
+        @Expect(metadata.vectorDimension, 3)
+        @Expect(metadata.vectorIndexCount, snapshot.activeIndex.size)
+        for (record in snapshot.activeIndex) {
+            @Expect(record.metadata.knowledgeVersion, expectedVersion)
+        }
+    }
+
+    @TestCase
     public func vectorReconcileFailsWhenQdrantCountDoesNotMatchRebuiltRecords(): Unit {
         let root = "target/ckb-vector-reconcile-count-mismatch"
         ckbVectorReconcileEnsureEmptyDir(root)

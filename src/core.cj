@@ -4414,6 +4414,30 @@ public class KnowledgeBase {
         result
     }
 
+    public func reconcileProductionVectorIndex(progressSink!: VectorBuildProgressSink =
+        NoopVectorBuildProgressSink(), targetVectorCollection!: String = "",
+        deadlineAtMillis!: Int64 = 0): IndexBuildResult {
+        let result = IndexBuildResult()
+        result.activeVersion = this.activeKnowledgeVersion
+        result.candidateVersion = this.candidateKnowledgeVersion
+        result.count = this.activeIndex.size
+        if (this.activeKnowledgeVersion == "" || this.activeIndex.size == 0) {
+            result.failedVersion = "active_snapshot_empty"
+            return result
+        }
+        this.lastVectorIndexBuildResult = this.rebuildProductionVectorIndexWithResult(
+            progressSink: progressSink, targetVectorCollection: targetVectorCollection,
+            deadlineAtMillis: deadlineAtMillis)
+        result.ok = this.lastVectorIndexBuildResult.ok
+        if (!result.ok) {
+            result.failedVersion = if (this.lastVectorIndexBuildResult.diagnostic != "") {
+                this.lastVectorIndexBuildResult.diagnostic
+            } else { "vector_rebuild_failed" }
+        }
+        this.rebuildIndexManifest()
+        result
+    }
+
     private func rebuildProductionIndexes(): Unit {
         this.lastVectorIndexBuildResult = this.rebuildProductionIndexesWithResult("", progressSink: NoopVectorBuildProgressSink())
     }

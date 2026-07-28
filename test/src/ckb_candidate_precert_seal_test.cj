@@ -249,6 +249,7 @@ public class CkbCandidatePrecertSealTest {
         let result = ckbMaterializeCandidateRuntime(options)
         let runtime = FileKnowledgeStore(options.outputStore)
         let active = runtime.loadActiveSnapshot()
+        let metadata = runtime.loadMetadataStatus()
         @Expect(result.ok, true); @Expect(result.diagnostic, "ok")
         @Expect(result.activeVersion, candidate.version)
         @Expect(result.candidateChecksum, candidate.candidateChecksum)
@@ -257,6 +258,13 @@ public class CkbCandidatePrecertSealTest {
         @Expect(result.activeCount, candidate.activeIndex.size)
         @Expect(active.valid, true); @Expect(active.activeVersion, candidate.version)
         @Expect(active.candidateVersion, candidate.version)
+        @Expect(active.hasVectorArtifact, false)
+        @Expect(metadata.valid, true)
+        @Expect(metadata.activeVersion, candidate.version)
+        @Expect(metadata.vectorState, EmbeddingProviderState.DEGRADED)
+        @Expect(metadata.vectorIndexCount, 0)
+        @Expect(metadata.vectorDimension, 0)
+        @Expect(metadata.vectorDegradedReason, "vector_snapshot_missing")
         @Expect(ckbCertifiedNormalizedRecordsChecksum(active.normalizedRecords),
             candidate.candidateChecksum)
         @Expect(result.pointerIdentityHash,
