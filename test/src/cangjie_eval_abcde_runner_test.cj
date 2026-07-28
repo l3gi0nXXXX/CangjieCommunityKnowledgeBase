@@ -9,6 +9,60 @@ import std.process.*
 
 @Test
 public class CangjieEvalAbcdeRunnerTest {
+    // S7R-UT-01: N configured transport retries permit at most N+1 attempts.
+    @TestCase
+    public func s7rUt01DevelopmentRetryBudgetMapsToTotalAttempts(): Unit {
+        @Expect(ckbAbcdeDevelopmentTransportAttemptLimitForTest(3), 4)
+        @Expect(ckbAbcdeDevelopmentTransportAttemptLimitForTest(7), 8)
+    }
+
+    // S7R-BND-01: the accepted CLI boundaries have no off-by-one error.
+    @TestCase
+    public func s7rBnd01DevelopmentRetryBudgetBoundaries(): Unit {
+        @Expect(ckbAbcdeDevelopmentTransportAttemptLimitForTest(0), 1)
+        @Expect(ckbAbcdeDevelopmentTransportAttemptLimitForTest(10), 11)
+        let base="target/s7r-boundary-${ckbCoreNowMillis()}";let workspace="${base}/workspace";let authority="${base}/authority";let pointer="${base}/active-version"
+        Directory.create(Path("${workspace}/src"),recursive:true);Directory.create(Path("${authority}/src"),recursive:true);File.writeTo(Path("${workspace}/src/solution.cj"),"original".toArray());File.writeTo(Path("${authority}/src/solution.cj"),"original".toArray());File.writeTo(Path(pointer),"knowledge-v1\n".toArray())
+        let incomplete="{\"type\":\"system\",\"subtype\":\"init\",\"model\":\"GLM-5.2\"}\n"
+        let zero=ckbAbcdeRunFakeTransportRetryForTest("${base}/zero",workspace,authority,pointer,[124],["timeout"],[incomplete],"GLM-5.2",0);@Expect(zero.contains("\"transportAttemptCount\":1"),true)
+        let upper=ckbAbcdeRunFakeTransportRetryForTest("${base}/upper",workspace,authority,pointer,[124,124,124,124,124,124,124,124,124,124,124],["timeout","timeout","timeout","timeout","timeout","timeout","timeout","timeout","timeout","timeout","timeout"],[incomplete,incomplete,incomplete,incomplete,incomplete,incomplete,incomplete,incomplete,incomplete,incomplete,incomplete],"GLM-5.2",10);@Expect(upper.contains("\"transportAttemptCount\":11"),true)
+    }
+
+    // S7R-POS-01: each retryable transport failure restores the authoritative workspace.
+    @TestCase
+    public func s7rPos01DevelopmentTransientFailuresRecoverWithinBudget(): Unit {
+        let base="target/s7r-transient-${ckbCoreNowMillis()}";let workspace="${base}/workspace";let authority="${base}/authority";let pointer="${base}/active-version"
+        Directory.create(Path("${workspace}/src"),recursive:true);Directory.create(Path("${authority}/src"),recursive:true);File.writeTo(Path("${workspace}/src/solution.cj"),"mutated".toArray());File.writeTo(Path("${authority}/src/solution.cj"),"authoritative".toArray());File.writeTo(Path(pointer),"knowledge-v1\n".toArray())
+        let incomplete="{\"type\":\"system\",\"subtype\":\"init\",\"model\":\"GLM-5.2\"}\n";let success=incomplete+"{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false}\n"
+        let result=ckbAbcdeRunFakeTransportRetryForTest("${base}/run",workspace,authority,pointer,[124,1,1,0],["model timeout","connection reset by peer","HTTP 503 service unavailable",""],[incomplete,incomplete,incomplete,success],"GLM-5.2",3)
+        @Expect(result.contains("\"transportAttemptCount\":4"),true);@Expect(result.contains("\"sampleAttemptCount\":1"),true);@Expect(result.contains("\"lineageDiagnostic\":\"ok\""),true)
+        @Expect(String.fromUtf8(File.readFrom(Path("${workspace}/src/solution.cj"))),"authoritative")
+        let restores=String.fromUtf8(File.readFrom(Path("${base}/run/fake-restores.jsonl")));@Expect(restores.split("\n").size,4);@Expect(restores.contains("\"transportAttempt\":4"),true)
+    }
+
+    // S7R-NEG-01: business samples and non-retryable failures stop immediately.
+    @TestCase
+    public func s7rNeg01DevelopmentStopsAfterBusinessOrNonRetryableResult(): Unit {
+        let base="target/s7r-stop-${ckbCoreNowMillis()}";let workspace="${base}/workspace";let authority="${base}/authority";let pointer="${base}/active-version"
+        Directory.create(Path("${workspace}/src"),recursive:true);Directory.create(Path("${authority}/src"),recursive:true);File.writeTo(Path("${workspace}/src/solution.cj"),"original".toArray());File.writeTo(Path("${authority}/src/solution.cj"),"original".toArray());File.writeTo(Path(pointer),"knowledge-v1\n".toArray())
+        let incomplete="{\"type\":\"system\",\"subtype\":\"init\",\"model\":\"GLM-5.2\"}\n";let success=incomplete+"{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false}\n";let wrongModel="{\"type\":\"system\",\"subtype\":\"init\",\"model\":\"other\"}\n{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false}\n"
+        let business=ckbAbcdeRunFakeTransportRetryForTest("${base}/business",workspace,authority,pointer,[0,0],["",""],[success,success],"GLM-5.2",10);@Expect(business.contains("\"transportAttemptCount\":1"),true);@Expect(business.contains("\"sampleAttemptCount\":1"),true)
+        let identity=ckbAbcdeRunFakeTransportRetryForTest("${base}/identity",workspace,authority,pointer,[0,0],["identity mismatch",""],[wrongModel,success],"GLM-5.2",10);@Expect(identity.contains("\"transportAttemptCount\":1"),true);@Expect(identity.contains("\"sampleAttemptCount\":0"),true)
+        let auth=ckbAbcdeRunFakeTransportRetryForTest("${base}/auth",workspace,authority,pointer,[1,0],["authentication failed",""],[incomplete,success],"GLM-5.2",10);@Expect(auth.contains("\"transportAttemptCount\":1"),true);@Expect(auth.contains("\"sampleAttemptCount\":0"),true)
+    }
+
+    // S7R-REG-01: retry changes neither sandbox isolation nor pass@1 sample semantics.
+    @TestCase
+    public func s7rReg01DevelopmentRetryPreservesIsolationAndSingleSample(): Unit {
+        let root="target/s7r-isolation-${ckbCoreNowMillis()}";let workspace="${root}/workspace";let home="${root}/runtime-home";let store="${root}/store";let caseSrc="${root}/case";let docs="${root}/docs";let sdk="${root}/sdk";let macSdk="${root}/mac-sdk"
+        for(path in [workspace,home,store,"${caseSrc}/tests","${caseSrc}/translation",docs,sdk,macSdk]){Directory.create(Path(path),recursive:true)}
+        let profile=ckbAbcdeDevelopmentSandboxProfile(CkbAbcdeGroups.D,workspace,home,"/bin/true","config",store,caseSrc,docs,sdk,macSdk,"/bin/true","/bin/true")
+        @Expect(profile.contains("(deny file-read*"),true);@Expect(profile.contains("${caseSrc}/tests"),true);@Expect(profile.contains("${caseSrc}/translation"),true);@Expect(profile.contains("CangjieTeacher"),true)
+        let pointer="${root}/active-version";File.writeTo(Path(pointer),"knowledge-v1\n".toArray());Directory.create(Path("${workspace}/src"),recursive:true);let authority="${root}/authority";Directory.create(Path("${authority}/src"),recursive:true);File.writeTo(Path("${workspace}/src/solution.cj"),"original".toArray());File.writeTo(Path("${authority}/src/solution.cj"),"original".toArray())
+        let incomplete="{\"type\":\"system\",\"subtype\":\"init\",\"model\":\"GLM-5.2\"}\n";let success=incomplete+"{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false}\n";let result=ckbAbcdeRunFakeTransportRetryForTest("${root}/run",workspace,authority,pointer,[124,0],["timeout",""],[incomplete,success],"GLM-5.2",10)
+        @Expect(result.contains("\"sampleAttemptCount\":1"),true);@Expect(result.contains("\"transportAttemptCount\":2"),true);@Expect(result.contains("\"frozenPointerUnchanged\":true"),true)
+    }
+
     @TestCase
     public func r7Ut00OwnedCertificationHttpRejectsUnsafeBaseAndLeavesNoProcess():Unit{
         @Expect(ckbAbcdeCertificationPortDiagnostic("https://example.com"),"certification_http_loopback_required")

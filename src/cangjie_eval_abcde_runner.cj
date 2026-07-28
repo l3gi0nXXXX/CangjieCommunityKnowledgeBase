@@ -1035,8 +1035,8 @@ private func ckbAbcdeTranscriptHasOtherCase(raw:String,current:String):Bool{for(
 
 private func ckbAbcdeRunClaude(options: CkbAbcdeRunnerOptions, group: String, groupRoot: String, workspace: String, runtimeHome: String, docsRoot: String, caseSrc: String, authoritativeWorkspace: String): CkbAbcdeCommandResult {
     var last = CkbAbcdeCommandResult()
-    var sampleAttempt: Int64 = 0
-    for (transportAttempt in 1..=2) {
+    let attemptLimit = ckbAbcdeDevelopmentTransportAttemptLimit(options.transportRetries)
+    for (transportAttempt in 1..=attemptLimit) {
         var restoreJson = "{\"transportAttempt\":${transportAttempt},\"restored\":false,\"diagnostic\":\"initial_authoritative_copy\"}"
         if (transportAttempt > 1) {
             restoreJson = ckbAbcdeRestoreWorkspaceForRetry(workspace, authoritativeWorkspace, transportAttempt)
@@ -1049,17 +1049,26 @@ private func ckbAbcdeRunClaude(options: CkbAbcdeRunnerOptions, group: String, gr
         last = current
         let transcript = ckbAbcdeReadText("${groupRoot}/claude-transcript.attempt-${transportAttempt}.jsonl")
         let assessment = ckbAbcdeAssessSample(transcript, options.expectedModelVersion)
+        let diagnostic = ckbAbcdeReadTransportDiagnostic("${groupRoot}/claude.attempt-${transportAttempt}.stderr.log")
+        let classification = ckbAbcdeTransportClassification(current.exitCode, assessment, diagnostic)
         ckbAbcdeWriteText("${groupRoot}/model-transport-diagnostic.attempt-${transportAttempt}.json", ckbAbcdeRenderModelTransportDiagnostic(transcript, current.exitCode, assessment, options.modelTimeoutSeconds, options.modelEffort, options.modelMaxBudgetUsd) + "\n")
-        if (current.exitCode == 0 && assessment.completeResult && assessment.identityMatched) { sampleAttempt += 1 }
         let restoreHash = if (transportAttempt > 1) { benchmarkGapSha256(restoreJson) } else { "" }
-        ckbAbcdeAppendText("${groupRoot}/claude-attempts.jsonl", "{\"attempt\":${transportAttempt},\"transportAttempt\":${transportAttempt},\"sampleAttempt\":${if (current.exitCode == 0 && assessment.completeResult && assessment.identityMatched) { sampleAttempt } else { 0 }},\"exitCode\":${current.exitCode},\"completeResult\":${assessment.completeResult},\"identityMatched\":${assessment.identityMatched},\"workspaceRestored\":${transportAttempt > 1 && restoreJson.contains("\"restored\":true")},\"restoreEvidenceHash\":\"${restoreHash}\"}\n")
+        ckbAbcdeAppendText("${groupRoot}/claude-attempts.jsonl", "{\"attempt\":${transportAttempt},\"transportAttempt\":${transportAttempt},\"sampleAttempt\":${if (current.exitCode == 0 && assessment.completeResult && assessment.identityMatched) { 1 } else { 0 }},\"exitCode\":${current.exitCode},\"classification\":\"${classification}\",\"completeResult\":${assessment.completeResult},\"identityMatched\":${assessment.identityMatched},\"workspaceRestored\":${transportAttempt > 1 && restoreJson.contains("\"restored\":true")},\"restoreEvidenceHash\":\"${restoreHash}\"}\n")
         if (current.exitCode == 0 && assessment.completeResult && assessment.identityMatched) {
             ckbAbcdePublishClaudeSampleArtifacts(groupRoot, transportAttempt)
             return current
         }
+        if (!ckbAbcdeShouldRetryTransport(current.exitCode, assessment, diagnostic: diagnostic)) {
+            ckbAbcdePublishClaudeAttemptArtifacts(groupRoot, transportAttempt)
+            return current
+        }
     }
-    ckbAbcdePublishClaudeAttemptArtifacts(groupRoot, 2)
+    ckbAbcdePublishClaudeAttemptArtifacts(groupRoot, attemptLimit)
     last
+}
+
+private func ckbAbcdeDevelopmentTransportAttemptLimit(transportRetries: Int64): Int64 {
+    transportRetries + 1
 }
 
 public func ckbAbcdeAssessSample(transcript: String, expectedModel: String): CkbAbcdeSampleAssessment {

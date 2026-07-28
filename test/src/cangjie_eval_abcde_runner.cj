@@ -1048,8 +1048,8 @@ private func ckbAbcdeTranscriptHasOtherCase(raw:String,current:String):Bool{for(
 
 private func ckbAbcdeRunClaude(options: CkbAbcdeRunnerOptions, group: String, groupRoot: String, workspace: String, runtimeHome: String, docsRoot: String, caseSrc: String, authoritativeWorkspace: String): CkbAbcdeCommandResult {
     var last = CkbAbcdeCommandResult()
-    var sampleAttempt: Int64 = 0
-    for (transportAttempt in 1..=2) {
+    let attemptLimit = ckbAbcdeDevelopmentTransportAttemptLimit(options.transportRetries)
+    for (transportAttempt in 1..=attemptLimit) {
         var restoreJson = "{\"transportAttempt\":${transportAttempt},\"restored\":false,\"diagnostic\":\"initial_authoritative_copy\"}"
         if (transportAttempt > 1) {
             restoreJson = ckbAbcdeRestoreWorkspaceForRetry(workspace, authoritativeWorkspace, transportAttempt)
@@ -1062,17 +1062,30 @@ private func ckbAbcdeRunClaude(options: CkbAbcdeRunnerOptions, group: String, gr
         last = current
         let transcript = ckbAbcdeReadText("${groupRoot}/claude-transcript.attempt-${transportAttempt}.jsonl")
         let assessment = ckbAbcdeAssessSample(transcript, options.expectedModelVersion)
+        let diagnostic = ckbAbcdeReadTransportDiagnostic("${groupRoot}/claude.attempt-${transportAttempt}.stderr.log")
+        let classification = ckbAbcdeTransportClassification(current.exitCode, assessment, diagnostic)
         ckbAbcdeWriteText("${groupRoot}/model-transport-diagnostic.attempt-${transportAttempt}.json", ckbAbcdeRenderModelTransportDiagnostic(transcript, current.exitCode, assessment, options.modelTimeoutSeconds, options.modelEffort, options.modelMaxBudgetUsd) + "\n")
-        if (current.exitCode == 0 && assessment.completeResult && assessment.identityMatched) { sampleAttempt += 1 }
         let restoreHash = if (transportAttempt > 1) { benchmarkGapSha256(restoreJson) } else { "" }
-        ckbAbcdeAppendText("${groupRoot}/claude-attempts.jsonl", "{\"attempt\":${transportAttempt},\"transportAttempt\":${transportAttempt},\"sampleAttempt\":${if (current.exitCode == 0 && assessment.completeResult && assessment.identityMatched) { sampleAttempt } else { 0 }},\"exitCode\":${current.exitCode},\"completeResult\":${assessment.completeResult},\"identityMatched\":${assessment.identityMatched},\"workspaceRestored\":${transportAttempt > 1 && restoreJson.contains("\"restored\":true")},\"restoreEvidenceHash\":\"${restoreHash}\"}\n")
+        ckbAbcdeAppendText("${groupRoot}/claude-attempts.jsonl", "{\"attempt\":${transportAttempt},\"transportAttempt\":${transportAttempt},\"sampleAttempt\":${if (current.exitCode == 0 && assessment.completeResult && assessment.identityMatched) { 1 } else { 0 }},\"exitCode\":${current.exitCode},\"classification\":\"${classification}\",\"completeResult\":${assessment.completeResult},\"identityMatched\":${assessment.identityMatched},\"workspaceRestored\":${transportAttempt > 1 && restoreJson.contains("\"restored\":true")},\"restoreEvidenceHash\":\"${restoreHash}\"}\n")
         if (current.exitCode == 0 && assessment.completeResult && assessment.identityMatched) {
             ckbAbcdePublishClaudeSampleArtifacts(groupRoot, transportAttempt)
             return current
         }
+        if (!ckbAbcdeShouldRetryTransport(current.exitCode, assessment, diagnostic: diagnostic)) {
+            ckbAbcdePublishClaudeAttemptArtifacts(groupRoot, transportAttempt)
+            return current
+        }
     }
-    ckbAbcdePublishClaudeAttemptArtifacts(groupRoot, 2)
+    ckbAbcdePublishClaudeAttemptArtifacts(groupRoot, attemptLimit)
     last
+}
+
+private func ckbAbcdeDevelopmentTransportAttemptLimit(transportRetries: Int64): Int64 {
+    transportRetries + 1
+}
+
+public func ckbAbcdeDevelopmentTransportAttemptLimitForTest(transportRetries: Int64): Int64 {
+    ckbAbcdeDevelopmentTransportAttemptLimit(transportRetries)
 }
 
 public func ckbAbcdeAssessSample(transcript: String, expectedModel: String): CkbAbcdeSampleAssessment {
@@ -1139,7 +1152,8 @@ private func ckbAbcdeRestoreLineageDiagnostic(restores:String,transportAttemptCo
 public func ckbAbcdeRunFakeTransportRetryForTest(root:String,workspace:String,authoritativeWorkspace:String,frozenPointerPath:String,exitCodes:Array<Int64>,diagnostics:Array<String>,transcripts:Array<String>,expectedModel:String,retryBudget:Int64):String{
     if(exitCodes.size!=diagnostics.size||exitCodes.size!=transcripts.size||retryBudget<0){return "{\"diagnostic\":\"fake_transport_input_invalid\"}"}
     ckbAbcdeEnsureDir(root);let pointerBefore=benchmarkGapSha256(ckbAbcdeReadText(frozenPointerPath));var attempts="";var restores="";var attemptCount:Int64=0;var sampleCount:Int64=0
-    let limit=if(exitCodes.size<Int64(retryBudget+1)){exitCodes.size}else{Int64(retryBudget+1)}
+    let attemptLimit=ckbAbcdeDevelopmentTransportAttemptLimit(retryBudget)
+    let limit=if(exitCodes.size<attemptLimit){exitCodes.size}else{attemptLimit}
     for(i in 0..limit){let attempt=Int64(i)+1;attemptCount=attempt;var restore="";if(attempt>1){restore=ckbAbcdeRestoreWorkspaceForRetry(workspace,authoritativeWorkspace,attempt);restores+=restore+"\n";if(!restore.contains("\"restored\":true")){break}}
         let home="${root}/runtime-home/attempt-${attempt}";ckbAbcdeEnsureDir(home);let session="fake-session-${attempt}";let probe="{\"ok\":true,\"attempt\":${attempt}}";let assessment=ckbAbcdeAssessSample(transcripts[i],expectedModel);let classification=ckbAbcdeTransportClassification(exitCodes[i],assessment,diagnostics[i]);let sample=if(exitCodes[i]==0&&assessment.completeResult&&assessment.identityMatched){1}else{0};sampleCount+=sample
         attempts+="{\"transportAttempt\":${attempt},\"sampleAttempt\":${sample},\"classification\":\"${classification}\",\"workspaceRestored\":${attempt>1},\"restoreEvidenceHash\":\"${if(attempt>1){benchmarkGapSha256(restore)}else{""}}\",\"sessionIdHash\":\"${benchmarkGapSha256(session)}\",\"runtimeHomeId\":\"${benchmarkGapSha256(home)}\",\"sandboxProbeHash\":\"${benchmarkGapSha256(probe)}\",\"transcriptHash\":\"${benchmarkGapSha256(transcripts[i])}\",\"stderrHash\":\"${benchmarkGapSha256(diagnostics[i])}\",\"diagnosticHash\":\"${benchmarkGapSha256(classification+diagnostics[i])}\"}\n"
