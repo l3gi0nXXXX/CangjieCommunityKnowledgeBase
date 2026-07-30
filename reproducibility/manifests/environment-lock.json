@@ -9,7 +9,7 @@
   "serviceHeap": "4GB",
   "qdrantImageDigest": "",
   "runCandidateCommit": "d9f76c3350be8961c6cac049d8e35005e34f8262",
-  "runCriticalFilesManifestHash": "sha256:6f46e1678e1b78f880429a4b5df338494f5f0b30af6066806b7b657615a3eac2",
+  "runCriticalFilesManifestHash": "sha256:d14d88bcf0d6b37ec52ed69453d92fefbe3c42d5d66b06cbfd9cfbe7bc18bb14",
   "runCriticalTreeHash": "",
   "claudeCodeVersion": "",
   "glmProvider": "openai-compatible",

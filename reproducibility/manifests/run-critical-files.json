@@ -30,7 +30,7 @@
     {"path":"src/mcp_stdio.cj","status":"present","sha256":"sha256:ce72ddafce8911149550638cf57754aaf1842ad7098e7bddbb7d8a2ddc3e1052"},
     {"path":"src/mcp_http.cj","status":"present","sha256":"sha256:3e2c558698028d3bc94da6325333eb0544347c5a8cf5e738fd4fdaeb0514df57"},
     {"path":"src/ckb_repro_manifest.cj","status":"present","sha256":"sha256:28d40ce8f967eed0dfb9cdf00eae37620787772a29dbab67abde01450afec145"},
-    {"path":"src/ckb_repro_release.cj","status":"planned","sha256":""},
+    {"path":"src/ckb_repro_release.cj","status":"present","sha256":"sha256:c0faa8be0c6fda157c0cb72c410e50815488d5766eaaa99dcaea892c6eb6eaf0"},
     {"path":"src/ckb_qdrant_snapshot.cj","status":"planned","sha256":""},
     {"path":"src/ckb_retrieval_parity.cj","status":"planned","sha256":""},
     {"path":"src/ckb_portable_vector_build.cj","status":"planned","sha256":""},
