@@ -1,0 +1,213 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/l3gi0nXXXX/CangjieCommunityKnowledgeBase/blob/main/reproducibility/RELEASE-MANIFEST.schema.json",
+  "title": "CKB reproducible release manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "portableKnowledgeVersion",
+    "logicalSnapshot",
+    "vectorSnapshot",
+    "evidence",
+    "environment",
+    "licenses"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "ckb-release-manifest-v1"
+    },
+    "portableKnowledgeVersion": {
+      "type": "string",
+      "minLength": 1
+    },
+    "logicalSnapshot": {
+      "$ref": "#/$defs/logicalSnapshot"
+    },
+    "vectorSnapshot": {
+      "$ref": "#/$defs/vectorSnapshot"
+    },
+    "evidence": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/hashedAsset"
+      }
+    },
+    "environment": {
+      "$ref": "#/$defs/hashedAsset"
+    },
+    "licenses": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/hashedAsset"
+      }
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "relativePath": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?!/)(?!~)(?!.*:)(?!.*(?:^|/)\\.\\.?/)(?!.*\\\\)(?!.*//)[^\\u0000-\\u001f]+$"
+    },
+    "hashedAsset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "relativePath",
+        "size",
+        "sha256"
+      ],
+      "properties": {
+        "relativePath": {
+          "$ref": "#/$defs/relativePath"
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "logicalSnapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "manifest",
+        "manifestHash",
+        "p4PortableProofHash",
+        "p3VectorProofHash",
+        "activePointerHash",
+        "contaminationProofHash",
+        "rawCount",
+        "normalizedCount",
+        "normalizedChecksum",
+        "indexCount",
+        "graphNodeCount",
+        "graphEdgeCount"
+      ],
+      "properties": {
+        "schemaVersion": {
+          "const": "ckb-logical-snapshot-v1"
+        },
+        "manifest": {
+          "$ref": "#/$defs/hashedAsset"
+        },
+        "manifestHash": {
+          "$ref": "#/$defs/sha256"
+        },
+        "p4PortableProofHash": {
+          "$ref": "#/$defs/sha256"
+        },
+        "p3VectorProofHash": {
+          "$ref": "#/$defs/sha256"
+        },
+        "activePointerHash": {
+          "$ref": "#/$defs/sha256"
+        },
+        "contaminationProofHash": {
+          "$ref": "#/$defs/sha256"
+        },
+        "rawCount": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "normalizedCount": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "normalizedChecksum": {
+          "$ref": "#/$defs/sha256"
+        },
+        "indexCount": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "graphNodeCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "graphEdgeCount": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "vectorSnapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "schemaVersion"
+      ],
+      "properties": {
+        "status": {
+          "enum": [
+            "planned",
+            "present"
+          ]
+        },
+        "schemaVersion": {
+          "enum": [
+            "ckb-qdrant-snapshot-v1",
+            "planned"
+          ]
+        },
+        "snapshot": {
+          "$ref": "#/$defs/hashedAsset"
+        },
+        "manifestHash": {
+          "$ref": "#/$defs/sha256"
+        },
+        "logicalManifestHash": {
+          "$ref": "#/$defs/sha256"
+        },
+        "collection": {
+          "type": "string",
+          "minLength": 1
+        },
+        "points": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "dimension": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "distance": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "present"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "snapshot",
+              "manifestHash",
+              "logicalManifestHash",
+              "collection",
+              "points",
+              "dimension",
+              "distance"
+            ]
+          }
+        }
+      ]
+    }
+  }
+}
