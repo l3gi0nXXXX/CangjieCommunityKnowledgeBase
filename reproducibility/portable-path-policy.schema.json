@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/l3gi0nXXXX/CangjieCommunityKnowledgeBase/reproducibility/portable-path-policy.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion", "baselineState", "unmappedAction", "sourceRootRuleId",
+    "allowlist", "placeholders", "fieldCoverage", "categories"
+  ],
+  "properties": {
+    "schemaVersion": {"const": "ckb-portable-path-policy-v1"},
+    "baselineState": {"const": "historicalPrePortableBaseline"},
+    "unmappedAction": {"const": "fail"},
+    "sourceRootRuleId": {"type": "string", "minLength": 1},
+    "allowlist": {
+      "type": "array",
+      "items": {"enum": ["/usr/bin/env", "/dev/null"]},
+      "uniqueItems": true
+    },
+    "placeholders": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+    "fieldCoverage": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+    "categories": {
+      "type": "array",
+      "minItems": 8,
+      "maxItems": 8,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "action"],
+        "properties": {"id": {"type": "string"}, "action": {"type": "string"}}
+      }
+    }
+  }
+}
