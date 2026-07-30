@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CKB historical reference evidence",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion", "referenceCommit", "modelProfileRole", "modelProfileCount",
+    "modelEffort", "maxBudgetUsdState", "modelBudgetDerivation", "timeoutSeconds",
+    "promptRole", "promptCount", "promptAggregation", "promptHash", "vectorRole",
+    "vectorProofHash", "vectorState", "vectorTotal", "vectorDimension", "vectorFailed",
+    "runCriticalRole", "runCriticalCount", "runCriticalAggregation",
+    "runCriticalTreeHash", "runCriticalFiles"
+  ],
+  "properties": {
+    "schemaVersion": {"const": "ckb-historical-reference-evidence-v1"},
+    "referenceCommit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "modelProfileRole": {"type": "string"},
+    "modelProfileCount": {"const": 164},
+    "modelEffort": {"const": "max"},
+    "maxBudgetUsdState": {"const": "empty_all_164"},
+    "modelBudgetDerivation": {"const": "empty_maxBudgetUsd_means_runner_amount_limit_unset"},
+    "timeoutSeconds": {"const": 3600},
+    "promptRole": {"type": "string"},
+    "promptCount": {"const": 164},
+    "promptAggregation": {"const": "relative_path_tab_sha256_newline_c_sort"},
+    "promptHash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "vectorRole": {"type": "string"},
+    "vectorProofHash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "vectorState": {"const": "ready"},
+    "vectorTotal": {"const": 7978},
+    "vectorDimension": {"const": 1024},
+    "vectorFailed": {"const": 0},
+    "runCriticalRole": {"type": "string"},
+    "runCriticalCount": {"const": 27},
+    "runCriticalAggregation": {"const": "relative_path_tab_sha256_newline_c_sort"},
+    "runCriticalTreeHash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "runCriticalFiles": {
+      "type": "array", "minItems": 27, "maxItems": 27,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["path", "sha256"],
+        "properties": {
+          "path": {"type": "string", "pattern": "^src/[^*?]+\\.cj$"},
+          "sha256": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+        }
+      }
+    }
+  }
+}

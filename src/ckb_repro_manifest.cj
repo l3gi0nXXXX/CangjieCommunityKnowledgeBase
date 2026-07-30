@@ -87,6 +87,39 @@ public class CkbRunCriticalFilesManifest {
     public init() {}
 }
 
+public class CkbHistoricalEvidenceFile {
+    public var path: String = ""
+    public var sha256: String = ""
+    public init() {}
+}
+
+public class CkbHistoricalReferenceEvidence {
+    public var schemaVersion: String = ""
+    public var referenceCommit: String = ""
+    public var modelProfileRole: String = ""
+    public var modelProfileCount: Int64 = 0
+    public var modelEffort: String = ""
+    public var maxBudgetUsdState: String = ""
+    public var modelBudgetDerivation: String = ""
+    public var timeoutSeconds: Int64 = 0
+    public var promptRole: String = ""
+    public var promptCount: Int64 = 0
+    public var promptAggregation: String = ""
+    public var promptHash: String = ""
+    public var vectorRole: String = ""
+    public var vectorProofHash: String = ""
+    public var vectorState: String = ""
+    public var vectorTotal: Int64 = 0
+    public var vectorDimension: Int64 = 0
+    public var vectorFailed: Int64 = 0
+    public var runCriticalRole: String = ""
+    public var runCriticalCount: Int64 = 0
+    public var runCriticalAggregation: String = ""
+    public var runCriticalTreeHash: String = ""
+    public var runCriticalFiles: ArrayList<CkbHistoricalEvidenceFile> = ArrayList<CkbHistoricalEvidenceFile>()
+    public init() {}
+}
+
 public func parseCkbReproReferenceManifest(bytes: Array<UInt8>): (CkbReproContractResult, CkbReproReferenceManifest) {
     let manifest = CkbReproReferenceManifest()
     let decoded = ckbReproDecode(bytes)
@@ -224,6 +257,108 @@ public func runCkbReproManifestVerify(bytes: Array<UInt8>, mode!: String = "exec
     let parsed = parseCkbReproReferenceManifest(bytes)
     if (!parsed[0].ok) { return parsed[0] }
     validateCkbReproReferenceManifest(parsed[1], mode: mode)
+}
+
+public func parseCkbHistoricalReferenceEvidence(bytes: Array<UInt8>):
+    (CkbReproContractResult, CkbHistoricalReferenceEvidence) {
+    let evidence = CkbHistoricalReferenceEvidence()
+    let decoded = ckbReproDecode(bytes)
+    if (decoded[0] != "ok") { return (ckbReproFailure(decoded[0]), evidence) }
+    try {
+        let object = JsonValue.fromStr(decoded[1]).asObject()
+        if (object.size() != 23) {
+            return (ckbReproFailure("historical_evidence_field_contract_invalid"), evidence)
+        }
+        evidence.schemaVersion = ckbReproString(object, "schemaVersion")
+        evidence.referenceCommit = ckbReproString(object, "referenceCommit")
+        evidence.modelProfileRole = ckbReproString(object, "modelProfileRole")
+        evidence.modelProfileCount = ckbReproInt(object, "modelProfileCount")
+        evidence.modelEffort = ckbReproString(object, "modelEffort")
+        evidence.maxBudgetUsdState = ckbReproString(object, "maxBudgetUsdState")
+        evidence.modelBudgetDerivation = ckbReproString(object, "modelBudgetDerivation")
+        evidence.timeoutSeconds = ckbReproInt(object, "timeoutSeconds")
+        evidence.promptRole = ckbReproString(object, "promptRole")
+        evidence.promptCount = ckbReproInt(object, "promptCount")
+        evidence.promptAggregation = ckbReproString(object, "promptAggregation")
+        evidence.promptHash = ckbReproString(object, "promptHash")
+        evidence.vectorRole = ckbReproString(object, "vectorRole")
+        evidence.vectorProofHash = ckbReproString(object, "vectorProofHash")
+        evidence.vectorState = ckbReproString(object, "vectorState")
+        evidence.vectorTotal = ckbReproInt(object, "vectorTotal")
+        evidence.vectorDimension = ckbReproInt(object, "vectorDimension")
+        evidence.vectorFailed = ckbReproInt(object, "vectorFailed")
+        evidence.runCriticalRole = ckbReproString(object, "runCriticalRole")
+        evidence.runCriticalCount = ckbReproInt(object, "runCriticalCount")
+        evidence.runCriticalAggregation = ckbReproString(object, "runCriticalAggregation")
+        evidence.runCriticalTreeHash = ckbReproString(object, "runCriticalTreeHash")
+        for (value in object.get("runCriticalFiles").getOrThrow().asArray().getItems()) {
+            let row = value.asObject()
+            if (row.size() != 2) {
+                return (ckbReproFailure("historical_evidence_field_contract_invalid"),
+                    CkbHistoricalReferenceEvidence())
+            }
+            let file = CkbHistoricalEvidenceFile()
+            file.path = ckbReproString(row, "path")
+            file.sha256 = ckbReproString(row, "sha256")
+            evidence.runCriticalFiles.add(file)
+        }
+    } catch (_: Exception) {
+        return (ckbReproFailure("historical_evidence_field_contract_invalid"),
+            CkbHistoricalReferenceEvidence())
+    }
+    (ckbReproSuccess(), evidence)
+}
+
+public func validateCkbHistoricalReferenceEvidence(evidence: CkbHistoricalReferenceEvidence,
+    reference: CkbReproReferenceManifest): CkbReproContractResult {
+    if (evidence.schemaVersion != "ckb-historical-reference-evidence-v1" ||
+        evidence.referenceCommit != reference.runnerCommit ||
+        evidence.modelProfileRole != "student_model_transport_profile" ||
+        evidence.modelProfileCount != 164 || evidence.modelEffort != "max" ||
+        evidence.maxBudgetUsdState != "empty_all_164" ||
+        evidence.modelBudgetDerivation != "empty_maxBudgetUsd_means_runner_amount_limit_unset" ||
+        evidence.timeoutSeconds != 3600 ||
+        evidence.promptRole != "student_final_prompt" || evidence.promptCount != 164 ||
+        evidence.promptAggregation != "relative_path_tab_sha256_newline_c_sort" ||
+        evidence.vectorRole != "frozen_runtime_vector_reconcile_current" ||
+        evidence.vectorState != "ready" || evidence.vectorTotal != 7978 ||
+        evidence.vectorDimension != 1024 || evidence.vectorFailed != 0 ||
+        evidence.runCriticalRole != "reference_commit_run_critical_sources" ||
+        evidence.runCriticalCount != 27 ||
+        evidence.runCriticalAggregation != "relative_path_tab_sha256_newline_c_sort") {
+        return ckbReproFailure("historical_evidence_identity_mismatch")
+    }
+    if (evidence.promptHash != "sha256:ead9caab8e06210cf513b2785b4ddd1273ad93d1a790968033309399e779bdba" ||
+        evidence.vectorProofHash != "sha256:f22e6110f8d6b8a5562b45ed1cde138e38169455a3cc8b4eb50d4ac02a165808" ||
+        evidence.runCriticalTreeHash != computeCkbHistoricalEvidenceTreeHash(evidence) ||
+        evidence.runCriticalTreeHash != "sha256:be5aab72f3e477a1d23aa1f3f53c79f701dfaad5dfc361c44ae7b4ba24458fc2") {
+        return ckbReproFailure("historical_evidence_hash_mismatch")
+    }
+    if (reference.evidenceStatus != "complete" || reference.missingEvidence.size != 0 ||
+        reference.modelEffort != evidence.modelEffort || reference.modelBudget != "unbounded" ||
+        reference.timeoutSeconds != evidence.timeoutSeconds ||
+        reference.promptHash != evidence.promptHash ||
+        reference.vectorProofHash != evidence.vectorProofHash ||
+        reference.runCriticalTreeHash != evidence.runCriticalTreeHash) {
+        return ckbReproFailure("historical_evidence_reference_mismatch")
+    }
+    ckbReproSuccess()
+}
+
+public func computeCkbHistoricalEvidenceTreeHash(evidence: CkbHistoricalReferenceEvidence): String {
+    if (evidence.runCriticalFiles.size != 27) { return "" }
+    let rows = ArrayList<String>()
+    let seen = HashSet<String>()
+    for (file in evidence.runCriticalFiles) {
+        if (!ckbReproSafeRelativeSourcePath(file.path) || !ckbReproHashValid(file.sha256) ||
+            seen.contains(file.path)) { return "" }
+        seen.add(file.path)
+        rows.add("${file.path}\t${file.sha256}\n")
+    }
+    let ordered = rows.toArray(); sort(ordered)
+    let seed = StringBuilder()
+    for (row in ordered) { seed.append(row) }
+    ckbReproSha256(seed.toString().toArray())
 }
 
 public func normalizeCkbReproRepositoryRemote(remote: String): String {

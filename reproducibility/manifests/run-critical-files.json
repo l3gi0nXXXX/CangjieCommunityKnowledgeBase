@@ -29,7 +29,7 @@
     {"path":"src/mcp_protocol.cj","status":"present","sha256":"sha256:a3999ae81aa7902acc73aa85fd8bc05afeb1eee8f9fe9c58f27af8f9ac18b5e3"},
     {"path":"src/mcp_stdio.cj","status":"present","sha256":"sha256:ce72ddafce8911149550638cf57754aaf1842ad7098e7bddbb7d8a2ddc3e1052"},
     {"path":"src/mcp_http.cj","status":"present","sha256":"sha256:3e2c558698028d3bc94da6325333eb0544347c5a8cf5e738fd4fdaeb0514df57"},
-    {"path":"src/ckb_repro_manifest.cj","status":"present","sha256":"sha256:7ea7442d4b88611636ce85cf35753908be81a6a933fbf125df4b7cbb33c3bbb3"},
+    {"path":"src/ckb_repro_manifest.cj","status":"present","sha256":"sha256:28d40ce8f967eed0dfb9cdf00eae37620787772a29dbab67abde01450afec145"},
     {"path":"src/ckb_repro_release.cj","status":"planned","sha256":""},
     {"path":"src/ckb_qdrant_snapshot.cj","status":"planned","sha256":""},
     {"path":"src/ckb_retrieval_parity.cj","status":"planned","sha256":""},

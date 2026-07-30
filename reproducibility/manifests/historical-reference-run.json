@@ -1,14 +1,14 @@
 {
   "schemaVersion": "ckb-repro-reference-v1",
   "baselineKind": "historical_pre_portable",
-  "evidenceStatus": "incomplete",
+  "evidenceStatus": "complete",
   "releaseRepository": "l3gi0nXXXX/CangjieCommunityKnowledgeBase",
   "releaseRepositoryUrl": "https://github.com/l3gi0nXXXX/CangjieCommunityKnowledgeBase",
   "releaseBranch": "main",
   "observedRemote": "git@github.com:l3gi0nXXXX/CangjieCommunityKnowledgeBase.git",
   "runId": "humaneval-clean-atoms-v4-student-164-20260728-r2",
   "knowledgeVersion": "ckb-clean-recert-20260727-r2-atoms-v1",
-  "vectorProofHash": "",
+  "vectorProofHash": "sha256:f22e6110f8d6b8a5562b45ed1cde138e38169455a3cc8b4eb50d4ac02a165808",
   "datasetVersion": "cangjie-humaneval-164-sha256:3a12d5a5283daa492dd489c1a97ebc457b71e72d90669fbc965e165566386b33",
   "runnerCommit": "7b525374936a53dba5f1a19e0709a91cfe5b02ac",
   "claudeCodeVersion": "2.1.179 (Claude Code)",
@@ -19,13 +19,13 @@
   "mcpTransport": "mcp_http",
   "ckbRequired": true,
   "localDocsPolicy": "disabled",
-  "modelEffort": "",
-  "modelBudget": "",
+  "modelEffort": "max",
+  "modelBudget": "unbounded",
   "timeoutSeconds": 3600,
   "transportRetryBudget": 10,
-  "promptHash": "",
+  "promptHash": "sha256:ead9caab8e06210cf513b2785b4ddd1273ad93d1a790968033309399e779bdba",
   "resultsHash": "sha256:90cef93cd5338aaebb1db126f755ea65b60fcbac7441550aa475a85d2c61289d",
-  "runCriticalTreeHash": "",
+  "runCriticalTreeHash": "sha256:be5aab72f3e477a1d23aa1f3f53c79f701dfaad5dfc361c44ae7b4ba24458fc2",
   "totalCases": 164,
   "rawPassed": 158,
   "strictPassed": 151,
@@ -33,11 +33,5 @@
   "businessFailed": 3,
   "protocolInvalid": 10,
   "transportUnresolved": 0,
-  "missingEvidence": [
-    "modelEffort",
-    "modelBudget",
-    "promptHash",
-    "vectorProofHash",
-    "runCriticalTreeHash"
-  ]
+  "missingEvidence": []
 }

@@ -20,6 +20,10 @@ public class CkbReproManifestTest {
         @Expect(renderCkbReproReferenceManifest(referenceAgain[1]),
             referenceValidation.canonicalJson)
         @Expect(referenceValidation.manifestHash.startsWith("sha256:"), true)
+        let evidence = parseCkbHistoricalReferenceEvidence(
+            p0Read("../reproducibility/manifests/historical-reference-evidence.json"))
+        @Expect(evidence[0].ok, true)
+        @Expect(validateCkbHistoricalReferenceEvidence(evidence[1], reference[1]).ok, true)
 
         let policy = parseCkbPortablePathPolicy(
             p0Read("../reproducibility/manifests/portable-path-policy.json"))
@@ -103,7 +107,7 @@ public class CkbReproManifestTest {
     }
 
     @TestCase
-    public func p0Pos01HistoricalFactsAreFixedButExecutionEvidenceIsNotInvented(): Unit {
+    public func p0Pos01HistoricalFactsAndExecutionEvidenceAreComplete(): Unit {
         let bytes = p0Read("../reproducibility/manifests/historical-reference-run.json")
         let parsed = parseCkbReproReferenceManifest(bytes)
         @Expect(parsed[0].ok, true)
@@ -115,8 +119,16 @@ public class CkbReproManifestTest {
         @Expect(parsed[1].protocolInvalid, 10)
         @Expect(parsed[1].transportUnresolved, 0)
         @Expect(runCkbReproManifestVerify(bytes, mode: "contract").ok, true)
-        @Expect(runCkbReproManifestVerify(bytes, mode: "execution").diagnostic,
-            "identity_evidence_incomplete")
+        @Expect(runCkbReproManifestVerify(bytes, mode: "execution").ok, true)
+        let evidence = parseCkbHistoricalReferenceEvidence(
+            p0Read("../reproducibility/manifests/historical-reference-evidence.json"))
+        @Expect(evidence[0].ok, true)
+        @Expect(evidence[1].modelProfileCount, 164)
+        @Expect(evidence[1].modelBudgetDerivation,
+            "empty_maxBudgetUsd_means_runner_amount_limit_unset")
+        @Expect(computeCkbHistoricalEvidenceTreeHash(evidence[1]),
+            parsed[1].runCriticalTreeHash)
+        @Expect(validateCkbHistoricalReferenceEvidence(evidence[1], parsed[1]).ok, true)
         @Expect(exists(Path("../reproducibility/manifests/reference-run.json")), false)
     }
 
@@ -144,6 +156,29 @@ public class CkbReproManifestTest {
         let hash = p0CompleteReference()
         hash.resultsHash = "sha256:tampered"
         @Expect(validateCkbReproReferenceManifest(hash).diagnostic, "hash_mismatch")
+        let historicalReference = parseCkbReproReferenceManifest(
+            p0Read("../reproducibility/manifests/historical-reference-run.json"))[1]
+        let historicalEvidence = parseCkbHistoricalReferenceEvidence(
+            p0Read("../reproducibility/manifests/historical-reference-evidence.json"))[1]
+        historicalEvidence.promptHash =
+            "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+        @Expect(validateCkbHistoricalReferenceEvidence(
+            historicalEvidence, historicalReference).diagnostic,
+            "historical_evidence_hash_mismatch")
+        let vectorEvidence = parseCkbHistoricalReferenceEvidence(
+            p0Read("../reproducibility/manifests/historical-reference-evidence.json"))[1]
+        vectorEvidence.vectorProofHash =
+            "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+        @Expect(validateCkbHistoricalReferenceEvidence(
+            vectorEvidence, historicalReference).diagnostic,
+            "historical_evidence_hash_mismatch")
+        let sourceEvidence = parseCkbHistoricalReferenceEvidence(
+            p0Read("../reproducibility/manifests/historical-reference-evidence.json"))[1]
+        sourceEvidence.runCriticalFiles[0].sha256 =
+            "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+        @Expect(validateCkbHistoricalReferenceEvidence(
+            sourceEvidence, historicalReference).diagnostic,
+            "historical_evidence_hash_mismatch")
 
         let critical = parseCkbRunCriticalFilesManifest(
             p0Read("../reproducibility/manifests/run-critical-files.json"))[1]
