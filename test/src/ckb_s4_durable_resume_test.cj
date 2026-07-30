@@ -11,6 +11,7 @@ import std.unittest.*
 import std.unittest.testmacro.*
 
 private let S4_COMMIT: String = "0123456789abcdef0123456789abcdef01234567"
+private let S4_SCALE_WATCHDOG_SECONDS: Int64 = 900
 
 @Test
 public class CkbS4DurableResumeTest {
@@ -504,10 +505,10 @@ public class CkbS4DurableResumeTest {
             let command = "${prelude}export CKB_P5_S4_SCALE_CHILD=1; " +
                 "target/release/unittest_bin/cangjie_community_knowledge_base_test --filter='*CkbS4DurableResumeTest.p5S4P01Streams9299CandidateWith9025ReuseAnd274Embeddings' --no-color --no-progress >${stdoutPath} 2>${stderrPath} & " +
                 "worker_pid=$!; echo $worker_pid > ${pidPath}; " +
-                // The 9299-record scale run can exceed five minutes on a clean,
-                // serial full-suite build. Keep the guard bounded while allowing
-                // the completed result and process-cleanup assertions to finish.
-                "(sleep 600; kill -9 $worker_pid 2>/dev/null; kill -9 $$ 2>/dev/null) & watchdog_pid=$!; " +
+                // The 9299-record scale run can approach ten minutes when other
+                // serial Cangjie suites share the host. Keep the guard bounded
+                // while allowing result sealing and process cleanup to finish.
+                "(sleep ${S4_SCALE_WATCHDOG_SECONDS}; kill -9 $worker_pid 2>/dev/null; kill -9 $$ 2>/dev/null) & watchdog_pid=$!; " +
                 "wait $worker_pid; child_code=$?; /usr/bin/pkill -TERM -P $watchdog_pid 2>/dev/null; " +
                 "kill $watchdog_pid 2>/dev/null; wait $watchdog_pid 2>/dev/null; exit $child_code"
             let child = launch("/bin/zsh", ["-c", command], stdOut: ProcessRedirect.Pipe,
