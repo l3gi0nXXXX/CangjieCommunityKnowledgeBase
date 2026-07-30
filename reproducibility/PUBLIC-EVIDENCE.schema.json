@@ -1,0 +1,126 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/l3gi0nXXXX/CangjieCommunityKnowledgeBase/reproducibility/PUBLIC-EVIDENCE.schema.json",
+  "title": "CKB HumanEval Public Evidence Row",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "caseId",
+    "runId",
+    "datasetVersion",
+    "knowledgeVersion",
+    "modelFingerprint",
+    "providerIdentityHash",
+    "runManifestHash",
+    "certificationPassAt1",
+    "unitFirstSamplePassed",
+    "classification",
+    "sampleAttemptCount",
+    "selectedBusinessSample",
+    "transportAttemptCount",
+    "transportRetryCount",
+    "unresolvedTransport",
+    "retryUsed",
+    "fallbackUsed",
+    "referenceExposure",
+    "hiddenTestExposure",
+    "teacherExposure",
+    "crossCaseExposure"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "ckb-humaneval-public-evidence-v1"
+    },
+    "caseId": {
+      "type": "string",
+      "pattern": "^CJ-HUMANEVAL-(00[0-9]|0[1-9][0-9]|1[0-5][0-9]|16[0-3])$"
+    },
+    "runId": {
+      "type": "string",
+      "minLength": 1
+    },
+    "datasetVersion": {
+      "type": "string",
+      "minLength": 1
+    },
+    "knowledgeVersion": {
+      "type": "string",
+      "minLength": 1
+    },
+    "modelFingerprint": {
+      "type": "string",
+      "minLength": 1
+    },
+    "providerIdentityHash": {
+      "$ref": "#/$defs/sha256"
+    },
+    "runManifestHash": {
+      "$ref": "#/$defs/sha256"
+    },
+    "certificationPassAt1": {
+      "type": "boolean"
+    },
+    "unitFirstSamplePassed": {
+      "type": "boolean"
+    },
+    "classification": {
+      "enum": [
+        "none",
+        "business_failure",
+        "protocol_invalid",
+        "transport_unresolved"
+      ]
+    },
+    "sampleAttemptCount": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "selectedBusinessSample": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "transportAttemptCount": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "transportRetryCount": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "unresolvedTransport": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "retryUsed": {
+      "type": "boolean"
+    },
+    "fallbackUsed": {
+      "type": "boolean"
+    },
+    "referenceExposure": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "hiddenTestExposure": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "teacherExposure": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "crossCaseExposure": {
+      "type": "integer",
+      "minimum": 0
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    }
+  }
+}
