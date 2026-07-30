@@ -159,63 +159,6 @@ public class CangjieStudentContaminationGateAccuracyTest {
         s3Remove(firstInitRoot)
     }
 
-    @TestCase
-    public func s3E2e01PollutedCandidateCannotChangeActiveVersion(): Unit {
-        let root = s3TempRoot("production-901")
-        let kb = r7CleanKnowledgeBase()
-        let store = FileKnowledgeStore(Path(root).join("store").toString())
-        @Expect(kb.persistActiveSnapshot(store).ok, true)
-        let cleanRecords = s3CertifiedRecords(kb.activeRecordSnapshot())
-        let fixture = r7BuildRealRunnerProof(cleanRecords)
-        @Expect(fixture.ok, true)
-        if (!fixture.ok) {
-            s3Remove(root)
-            return
-        }
-        let activeBefore = kb.status().activeKnowledgeVersion
-        let snapshotBefore = store.loadActiveSnapshot()
-        let checksumBefore = ckbCertifiedNormalizedRecordsChecksum(
-            snapshotBefore.normalizedRecords)
-        let pointerBefore = ckbActiveSnapshotPointerIdentityHash(
-            store.loadActiveSnapshotPointer())
-
-        let authority = parseCangjieHumanEvalAuthorityManifest(
-            fixture.proof.authorityManifestJsonl)
-        @Expect(authority.ok, true)
-        let authorityOnlyFragment = authority.rows[0].signature
-        let polluted = s3Record("polluted-candidate-901",
-            authorityOnlyFragment)
-        @Expect(cangjieStudentRecordDiagnostic(polluted).ok, true)
-        let pollutedRecords = ArrayList<NormalizedRecord>()
-        for (record in kb.activeRecordSnapshot()) {
-            pollutedRecords.add(record)
-        }
-        pollutedRecords.add(polluted)
-        let ordinaryValidation = validateCandidateServingIndex(pollutedRecords,
-            "s3-authority-aware-901-candidate")
-        @Expect(ordinaryValidation.ok, true)
-        let pollutedCertified = s3CertifiedRecords(pollutedRecords)
-        let candidateVersion = "s3-authority-aware-901-candidate"
-        let gate = CkbCertifiedProductionPreCommitGate(kb, candidateVersion,
-            activeBefore, fixture.proof, pollutedCertified)
-        let promotion = cangjiePromoteCandidateRecordsAfterValidationWithVersion(
-            kb, store, candidateVersion, pollutedRecords,
-            preCommitGate: gate, expectedBaseActiveVersion: activeBefore,
-            expectedBaseActivePointerHash: pointerBefore)
-        @Expect(promotion.ok, false)
-        @Expect(promotion.validation.status,
-            "student_knowledge_leakage_blocked")
-        @Expect(s3Contains(promotion.validation.diagnostics,
-            authorityOnlyFragment), false)
-        @Expect(kb.status().activeKnowledgeVersion, activeBefore)
-        let snapshotAfter = store.loadActiveSnapshot()
-        @Expect(snapshotAfter.activeVersion, snapshotBefore.activeVersion)
-        @Expect(ckbCertifiedNormalizedRecordsChecksum(
-            snapshotAfter.normalizedRecords), checksumBefore)
-        @Expect(ckbActiveSnapshotPointerIdentityHash(
-            store.loadActiveSnapshotPointer()), pointerBefore)
-        s3Remove(root)
-    }
 }
 
 private class S3CorpusRow {
@@ -315,44 +258,6 @@ private func s3Gap(row: S3CorpusRow, bundle: String): CangjieBenchmarkGapInput {
     input
 }
 
-private func s3Record(sourceId: String, chunk: String): NormalizedRecord {
-    let record = NormalizedRecord()
-    record.sourceId = sourceId
-    record.recordKind = CangjieTypedRecordKinds.DOC_SECTION
-    record.title = "Synthetic general knowledge"
-    record.chunk = chunk
-    record.citation = "https://docs.cangjie-lang.cn/docs/1.0.0/synthetic"
-    record.metadata.sourceId = sourceId
-    record.metadata.sourceType = SourceTypes.DOC
-    record.metadata.sourceSet = CangjieSourceSets.DOCS
-    record.metadata.path = "docs/synthetic.md"
-    record.metadata.symbol = "Synthetic.general"
-    record.metadata.targetVersion = "1.0.0"
-    record.metadata.versionResolutionId = "s3-v1"
-    record.metadata.trustLevel = TrustLevels.OFFICIAL
-    record.metadata.reviewState = ReviewStates.TRUSTED
-    record
-}
-
-private func s3CertifiedRecords(
-    records: ArrayList<NormalizedRecord>): ArrayList<CkbCertifiedKnowledgeRecord> {
-    let out = ArrayList<CkbCertifiedKnowledgeRecord>()
-    for (record in records) {
-        let item = CkbCertifiedKnowledgeRecord()
-        item.canonicalIdentity = "s3:${record.sourceId}"
-        item.revision = 1
-        item.record = record
-        item.evidenceHash = ckbCertifiedKnowledgeRecordEvidenceHash(item)
-        out.add(item)
-    }
-    out
-}
-
-private func s3Contains(values: ArrayList<String>, fragment: String): Bool {
-    for (value in values) { if (value.contains(fragment)) { return true } }
-    false
-}
-
 private func s3WriteFile(path: Path, text: String): Unit {
     if (!exists(path.parent)) { Directory.create(path.parent, recursive: true) }
     File.writeTo(path, text.toArray())
@@ -383,15 +288,4 @@ private func s3Repeat(value: String, count: Int64): String {
     let out = StringBuilder()
     for (_ in 0..count) { out.append(value) }
     out.toString()
-}
-
-private func s3TempRoot(name: String): String {
-    let root = "target/s3-contamination-${name}"
-    s3Remove(root)
-    Directory.create(Path(root), recursive: true)
-    root
-}
-
-private func s3Remove(root: String): Unit {
-    if (exists(Path(root))) { remove(Path(root), recursive: true) }
 }

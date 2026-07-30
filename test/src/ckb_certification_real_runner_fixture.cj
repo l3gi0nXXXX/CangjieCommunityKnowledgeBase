@@ -22,6 +22,21 @@ public func r7CleanKnowledgeBase():KnowledgeBase{
     let kb=KnowledgeBase(FakeClock(0));_=kb.loadFirstInitializationTypedRecords(records,"r7-clean-candidate");_=kb.promoteFirstInitializationCandidate("r7-clean-active");kb
 }
 
+public func r7CertifiedKnowledgeRecords(
+    records: ArrayList<NormalizedRecord>
+): ArrayList<CkbCertifiedKnowledgeRecord> {
+    let out = ArrayList<CkbCertifiedKnowledgeRecord>()
+    for (record in records) {
+        let item = CkbCertifiedKnowledgeRecord()
+        item.canonicalIdentity = "active:${record.sourceId}"
+        item.revision = 1
+        item.record = record
+        item.evidenceHash = ckbCertifiedKnowledgeRecordEvidenceHash(item)
+        out.add(item)
+    }
+    out
+}
+
 private func r7OfficialTypedRecord(sourceId:String,kind:String,title:String,content:String,sourceSet:String,path:String):CangjieTypedRecord{
     let record=CangjieTypedRecord();record.recordKind=kind;record.sourceId=sourceId;record.title=title;record.content=content;record.citation="https://docs.cangjie-lang.cn/docs/1.0.0/${path}";record.sourceSet=sourceSet;record.path=path;record.targetVersion="1.0.0";record.versionResolutionId="r7-official-1.0.0-${sourceId}";record
 }
@@ -80,7 +95,8 @@ public func r7BuildRealRunnerProof(records: ArrayList<CkbCertifiedKnowledgeRecor
     if (!frozen.ok) { result.diagnostic = "frozen_seal_failed:${frozen.diagnostic}"; return result }
     let frozenPath = root.join("frozen-candidate-manifest.json"); File.writeTo(frozenPath, frozen.manifestJson.toArray())
 
-    let fixtureRoot = canonicalize(Path("fixtures/certification_fake_claude")).toString()
+    let fixtureRoot = canonicalize(
+        Path(repoRoot).join("test/fixtures/certification_fake_claude")).toString()
     let fixtureBuild = launch("/bin/zsh", ["-lc", "cjpm build -i"],
         workingDirectory: Some<Path>(Path(fixtureRoot))).wait()
     if (fixtureBuild != 0) { result.diagnostic = "fake_claude_build_failed"; return result }
@@ -96,7 +112,8 @@ public func r7BuildRealRunnerProof(records: ArrayList<CkbCertifiedKnowledgeRecor
     File.writeTo(configPath, "service.bind=127.0.0.1\nservice.port=${port}\n".toArray())
     let runsRoot = Path(repoRoot).join("target/certification-r7-${stamp}"); Directory.create(runsRoot, recursive: true)
     let certificationRunRoot = runsRoot.join(runId); Directory.create(certificationRunRoot, recursive: true)
-    let ckbBin = canonicalize(Path("../target/release/bin/main")).toString()
+    let ckbBin = canonicalize(
+        Path(repoRoot).join("target/release/bin/main")).toString()
     let p6Root = root.join("p6").join(runId); Directory.create(p6Root, recursive: true)
     let p6Workspace = root.join("p6-workspace"); let p6Runtime = root.join("p6-runtime")
     Directory.create(p6Workspace, recursive: true); Directory.create(p6Runtime, recursive: true)

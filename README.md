@@ -11,6 +11,7 @@ offline curation lifecycle tests.
 
 - `src/`: Cangjie implementation and CLI entrypoint.
 - `test/`: Cangjie unittest coverage for the Phase 10 baseline.
+- `integration-test/`: explicit long-running full 164-case certification tests.
 - `docs/`: architecture and operating notes.
 - `data/`: required knowledge storage layers.
 - `LICENSE`: project license.
@@ -22,8 +23,29 @@ export CANGJIE_HOME=/path/to/cangjie
 source "${CANGJIE_HOME}/envsetup.sh"
 cjpm clean
 cjpm build -i
-cjpm test
+
+cd test
+cjpm clean
+cjpm build -i
+cjpm test -j 1
 ```
+
+The default `test` package contains unit, boundary, positive, negative, and
+regression tests. It deliberately does not generate the complete 164-case
+certification run.
+
+Run the long full-164 integration gate explicitly:
+
+```bash
+cd integration-test
+cjpm clean
+cjpm build -i
+cjpm test -j 1
+```
+
+The integration test constructs the 164-case runner proof once and reuses it
+for both certified publication/tamper rejection and polluted-candidate
+rejection.
 
 ## CLI
 

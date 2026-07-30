@@ -213,36 +213,6 @@ public class CkbCertifiedProductionReleaseTest {
     }
 
     @TestCase
-    public func p8E2e01RunnerGeneratedArtifactsPublishAndTamperFailsClosed(): Unit {
-        let kb=r7CleanKnowledgeBase();let existing=p8Existing(kb);let incoming=p8Existing(kb);let records=incoming
-        let certifiedVersion = kb.status().activeKnowledgeVersion
-        let candidateVersion = "${certifiedVersion}-candidate"
-        let fixture=r7BuildRealRunnerProof(records);@Expect(fixture.diagnostic,"ok");@Expect(fixture.ok,true);if(!fixture.ok){return};@Expect(fixture.runnerExitCode,0);let proof=fixture.proof
-        let store = FileKnowledgeStore("target/p8-e2e-${ckbCertifiedKnowledgeRecordsChecksum(records)}-${ckbCoreNowMillis()}".replace(":", "-"))
-        let key = p8ReleaseKey("e2e")
-        let report = ckbPublishCertifiedKnowledgeWithReleaseState(kb, store, key, candidateVersion, certifiedVersion, existing, incoming, proof)
-        let pointer = store.loadActiveSnapshotPointer()
-        let reloaded=store.loadActiveSnapshot()
-        @Expect(report.ok, true)
-        @Expect(report.diagnostic, "ok")
-        @Expect(pointer.valid, true)
-        @Expect(pointer.activeVersion, kb.status().activeKnowledgeVersion)
-        @Expect(reloaded.valid, true)
-        @Expect(reloaded.normalizedRecords.size,records.size)
-        @Expect(report.promotion.candidateVersion,candidateVersion)
-        @Expect(proof.stdioQueryPayload, proof.httpQueryPayload)
-        @Expect(report.evidenceHash.startsWith("sha256:"), true)
-        @Expect(store.has("teacher-solutions"), false)
-        @Expect(store.has("certification-transcript.jsonl"), false)
-        let state = ckbLoadReleaseAcquisitionState(store, key)
-        @Expect(state.valid, true); @Expect(state.state, "certified_active"); @Expect(state.candidateVersion, candidateVersion)
-        @Expect(state.certifiedVersion, certifiedVersion); @Expect(state.activeVersion, report.activeVersion)
-        @Expect(state.certificationFingerprint, fixture.modelFingerprint)
-        @Expect(p8RealRootMutationMatrixRejectsAll(proof),true)
-        let tampered=Path(proof.p7RunRoot).join("cases/CJ-HUMANEVAL-145/D-ckb-mcp-http/claude-transcript.jsonl");File.writeTo(tampered,"tampered".toArray());@Expect(ckbCertifiedProductionProofDiagnostic(proof,records),"p7_gate_artifact_mismatch")
-    }
-
-    @TestCase
     public func r7Ut08E2eCandidateInputMatchesFrozenBinding(): Unit {
         let kb = r7CleanKnowledgeBase()
         let incoming = p8Existing(kb)
@@ -437,46 +407,7 @@ private func p8TrustedFakeTransportProof(records:ArrayList<CkbCertifiedKnowledge
     let root="target/p8-runner-artifact-run-${ckbCoreNowMillis()}";Directory.create(Path(root),recursive:true);File.writeTo(Path(root).join("authority.jsonl"),proof.authorityManifestJsonl.toArray());File.writeTo(Path(root).join("preflight.json"),proof.p6PreflightJson.toArray());File.writeTo(Path(root).join("run-manifest.json"),proof.p6RunManifestJson.toArray());File.writeTo(Path(root).join("frozen-candidate-manifest.json"),proof.frozenCandidateManifestJson.toArray());File.writeTo(Path(root).join("provider-identity.json"),provider.toArray());File.writeTo(Path(root).join("certification-http-owner.json"),"{\"schemaVersion\":\"ckb-certification-http-owner-v1\",\"pid\":4242,\"binaryHash\":\"${p8Hash("binary")}\",\"commandHash\":\"${p8Hash("command")}\"}".toArray());File.writeTo(Path(root).join("certification-http-stopped.json"),"{\"schemaVersion\":\"ckb-certification-http-stop-v1\",\"pid\":4242,\"stopMethod\":\"term\",\"aliveAfterStop\":false}".toArray());File.writeTo(Path(root).join("certification-http-identity.json"),"{\"ok\":true,\"apiVersion\":\"v1\",\"data\":{\"schemaVersion\":\"ckb-certification-identity-v1\",\"activeVersion\":\"${version}\",\"pointerIdentityHash\":\"${p8Hash("pointer")}\",\"candidateChecksum\":\"${checksum}\"},\"diagnostics\":{}}".toArray())
     let authority=parseCangjieHumanEvalAuthorityManifest(proof.authorityManifestJsonl);let options=CkbAbcdeRunnerOptions();options.runId="p8-certification";options.runMode="certification";options.datasetVersion=authority.datasetVersion;options.knowledgeVersion=version;options.modelFingerprint=fingerprint;options.expectedModelVersion="GLM-5.2";options.providerIdentityHash=providerHash;options.modelTimeoutSeconds=180;options.manifestPath="${root}/authority.jsonl";options.certificationPreflightPath="${root}/preflight.json";options.certificationRunManifestPath="${root}/run-manifest.json";options.providerIdentityArtifactPath="${root}/provider-identity.json";var results="";for(row in authority.rows){let groupRoot="${root}/cases/${row.caseId}/${CkbAbcdeGroups.D}";results+=ckbAbcdeWriteSuccessfulFakeTransportCaseForTest(options,row.caseId,groupRoot)+"\n"};File.writeTo(Path(root).join("results.jsonl"),results.toArray());proof.p7ResultsJsonl=results;proof.p7RunRoot=root;let gate=ckbStrictCertificationGateFromRunRoot(root,proof.authorityManifestJsonl);proof.p7ArtifactManifestHash=gate.artifactManifestHash;proof.p7GateJson=renderCkbStrictCertificationGateJson(gate);proof
 }
-private func p8GateRejectsMutation(proof:CkbProductionReleaseProof,path:Path,mutated:String):Bool{let original=File.readFrom(path);if(mutated==String.fromUtf8(original)){return false};File.writeTo(path,mutated.toArray());let rejected=!ckbStrictCertificationGateFromRunRoot(proof.p7RunRoot,proof.authorityManifestJsonl).ok;File.writeTo(path,original);rejected}
-private func p8JsonStringValue(raw:String,key:String):String{let parts=raw.split("\"${key}\":\"");if(parts.size<2){return ""};let values=parts[1].split("\"");if(values.size<1){return ""};values[0]}
-private func p8MutateHash(raw:String,key:String,label:String):String{let value=p8JsonStringValue(raw,key);raw.replace("\"${key}\":\"${value}\"","\"${key}\":\"${p8Hash(label)}\"")}
-private func p8RealRootMutationMatrixRejectsAll(proof:CkbProductionReleaseProof):Bool{
-    let root=Path(proof.p7RunRoot);var all=true
-    let identity=root.join("certification-http-identity.json");let identityRaw=String.fromUtf8(File.readFrom(identity))
-    all=p8GateRejectsMutation(proof,identity,identityRaw.replace("ckb-certification-identity-v1","ckb-certification-identity-v2"))&&all
-    all=p8GateRejectsMutation(proof,identity,p8MutateHash(identityRaw,"pointerIdentityHash","wrong-pointer"))&&all
-    all=p8GateRejectsMutation(proof,identity,identityRaw.replace("\"activeVersion\":","\"activeVersion\":\"duplicate\",\"activeVersion\":"))&&all
-    let owner=root.join("certification-http-owner.json");let ownerRaw=String.fromUtf8(File.readFrom(owner))
-    for(pair in [("binaryHash","wrong-owner-binary"),("launchSpecHash","wrong-owner-launch"),("commandHash","wrong-owner-command")]){all=p8GateRejectsMutation(proof,owner,p8MutateHash(ownerRaw,pair[0],pair[1]))&&all}
-    let stopped=root.join("certification-http-stopped.json");let stoppedRaw=String.fromUtf8(File.readFrom(stopped))
-    let stopMethod=p8JsonStringValue(stoppedRaw,"stopMethod")
-    all=p8GateRejectsMutation(proof,stopped,stoppedRaw.replace("\"stopMethod\":\"${stopMethod}\"","\"stopMethod\":\"invalid\""))&&all
-    all=p8GateRejectsMutation(proof,stopped,stoppedRaw.replace("\"aliveAfterStop\":false","\"aliveAfterStop\":true"))&&all
-    let provenance=root.join("runner-provenance.json");let provenanceRaw=String.fromUtf8(File.readFrom(provenance))
-    for(pair in [("runnerBinaryHash","wrong-provenance-binary"),("launchSpecHash","wrong-provenance-launch"),("commandHash","wrong-provenance-command")]){all=p8GateRejectsMutation(proof,provenance,p8MutateHash(provenanceRaw,pair[0],pair[1]))&&all}
-    let group=root.join("cases/CJ-HUMANEVAL-145/D-ckb-mcp-http")
-    all=p8GateRejectsMutation(proof,group.join("workspace/src/solution.cj"),String.fromUtf8(File.readFrom(group.join("workspace/src/solution.cj")))+"\n// valid source tamper\n")&&all
-    all=p8RejectReplace(proof,group,"canonical-task-context.json","\"taskId\":\"CJ-HUMANEVAL-145\"","\"taskId\":\"CJ-HUMANEVAL-144\"")&&all
-    all=p8RejectReplace(proof,group,"claude-transcript.jsonl","\"model\":\"GLM-5.2\"","\"model\":\"GLM-5.2-tampered\"")&&all
-    let testLog=group.join("test.log");all=p8GateRejectsMutation(proof,testLog,String.fromUtf8(File.readFrom(testLog))+"\nvalid text tamper\n")&&all
-    all=p8RejectReplace(proof,group,"sandbox-probe.json","\"deniedOutsideWorkspace\":true","\"deniedOutsideWorkspace\":false")&&all
-    all=p8RejectReplace(proof,group,"mcp-config.json","ckb-cangjie-http","ckb-cangjie-http-tampered")&&all
-    all=p8RejectReplace(proof,group,"runtime-policy.json","\"modelTimeoutSeconds\":30","\"modelTimeoutSeconds\":31")&&all
-    all=p8RejectReplace(proof,group,"paired-tool-evidence.json","\"coveragePass\":true","\"coveragePass\":false")&&all
-    all=p8RejectReplace(proof,group,"verifier-mount.json","\"injectExitCode\":0","\"injectExitCode\":1")&&all
-    all=p8RejectReplace(proof,group,"test-result.json","\"unitPassAt1\":true","\"unitPassAt1\":false")&&all
-    all=p8RejectReplace(proof,group,"attempt-evidence.json","\"retryCount\":0","\"retryCount\":1")&&all
-    all=p8RejectReplace(proof,group,"claude-attempts.jsonl","\"sampleAttempt\":1","\"sampleAttempt\":0")&&all
-    let retryGroup=root.join("cases/CJ-HUMANEVAL-000/D-ckb-mcp-http")
-    all=p8RejectReplace(proof,retryGroup,"workspace-restores.jsonl","\"restored\":true","\"restored\":false")&&all
-    all
-}
-private func p8RejectReplace(proof:CkbProductionReleaseProof,root:Path,name:String,from:String,to:String):Bool{let path=root.join(name);let raw=String.fromUtf8(File.readFrom(path));p8GateRejectsMutation(proof,path,raw.replace(from,to))}
-
 private func p8Items(items: Array<CkbCertifiedKnowledgeRecord>): ArrayList<CkbCertifiedKnowledgeRecord> { let out = ArrayList<CkbCertifiedKnowledgeRecord>(); for (item in items) { out.add(item) }; out }
-private func p8Hash(value: String): String { benchmarkGapSha256(value) }
 private func p8Part(value:String):String{"${value.toArray().size}:${value}"}
 private func p8FrozenManifest(version:String,candidate:String,proof:CkbProductionReleaseProof):String{let body="{\"schemaVersion\":\"ckb-frozen-candidate-v2\",\"knowledgeVersion\":\"${version}\",\"txIdHash\":\"${p8Hash("tx")}\",\"activePointerHash\":\"${p8Hash("pointer")}\",\"transactionHash\":\"${p8Hash("transaction")}\",\"candidateChecksum\":\"${candidate}\",\"inputHash\":\"${p8Hash("input")}\",\"configHash\":\"${p8Hash("config")}\",\"modelHash\":\"${p8Hash("model")}\",\"studentLeakageProofHash\":\"${p8Hash(proof.studentLeakageProofJson)}\",\"authorityIsolationArtifactHash\":\"${p8Hash(proof.authorityIsolationArtifactJson)}\",\"anonymousQueryArtifactHash\":\"${p8Hash(proof.anonymousQueryArtifactJson)}\",\"anonymousAtomQueryArtifactHash\":\"${p8Hash(proof.anonymousAtomQueryArtifactJson)}\",\"restLeakageArtifactHash\":\"${p8Hash(proof.restLeakageArtifactJson)}\",\"mcpStdioLeakageArtifactHash\":\"${p8Hash(proof.mcpStdioLeakageArtifactJson)}\",\"mcpHttpLeakageArtifactHash\":\"${p8Hash(proof.mcpHttpLeakageArtifactJson)}\",\"atomTestArtifactHash\":\"${p8Hash(proof.atomTestArtifactJson)}\"";body+",\"evidenceHash\":\"${p8Hash(body+"}")}\"}"}
-private func p8ReleaseKey(id: String): CkbScheduledFetchRunKey { let key = CkbScheduledFetchRunKey(); key.acquisitionId = "p8-${id}"; key.planningIdentityHash = p8Hash("planning-${id}"); key.runIdentityHash = p8Hash("run-${id}"); key }
-private func p8Existing(kb:KnowledgeBase):ArrayList<CkbCertifiedKnowledgeRecord>{let out=ArrayList<CkbCertifiedKnowledgeRecord>();for(row in kb.activeRecordSnapshot()){let item=CkbCertifiedKnowledgeRecord();item.canonicalIdentity="active:${row.sourceId}";item.revision=1;item.record=row;item.evidenceHash=ckbCertifiedKnowledgeRecordEvidenceHash(item);out.add(item)};out}
 private func p8Authority():String{cangjieHumanEvalRenderAuthorityManifest(buildCangjieHumanEvalManifest("cangjie_eval/cases/Cangjie-HumanEval",""))}
