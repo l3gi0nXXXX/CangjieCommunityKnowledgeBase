@@ -66,8 +66,18 @@ line.
 `service-http` exposes MCP Streamable HTTP on `/mcp`:
 
 ```bash
+source <CANGJIE_SDK_ROOT>/envsetup.sh
+export DYLD_LIBRARY_PATH="/opt/homebrew/opt/openssl@3/lib:$DYLD_LIBRARY_PATH"
+export cjHeapSize=4GB
 cjpm run --skip-build --run-args "--store $(pwd)/ckb-data service-http"
 ```
+
+The 4GB heap is the production service safety gate for production-scale
+snapshots, not a measured minimum for every knowledge base. Service-style
+commands fail before loading the snapshot when `cjHeapSize` is missing,
+invalid, or below 4096MiB. See
+[Service HTTP operations](docs/service-http-operations.md) for health checks,
+error codes, port diagnostics, and binary launch examples.
 
 The first-stage Streamable HTTP contract is:
 

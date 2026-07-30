@@ -114,7 +114,9 @@ public func buildCangjieStudentServingIndex(records: ArrayList<NormalizedRecord>
 
 public func buildCangjieStudentServingProjection(records: ArrayList<NormalizedRecord>,
     activeKnowledgeVersion: String,
-    buildObserver!: CangjieServingIndexBuildObserver = NoopCangjieServingIndexBuildObserver()): CangjieStudentServingProjection {
+    buildObserver!: CangjieServingIndexBuildObserver = NoopCangjieServingIndexBuildObserver(),
+    deadlineAtMillis!: Int64 = 0,
+    deadlineClock!: CkbMillisClock = SystemCkbMillisClock()): CangjieStudentServingProjection {
     let projection = CangjieStudentServingProjection()
     projection.activeKnowledgeVersion = activeKnowledgeVersion
     let rejectedDiagnostics = ArrayList<String>()
@@ -128,7 +130,8 @@ public func buildCangjieStudentServingProjection(records: ArrayList<NormalizedRe
     }
     projection.index = buildCangjieServingIndex(projection.records,
         activeKnowledgeVersion: activeKnowledgeVersion, buildObserver: buildObserver,
-        studentProjection: true)
+        studentProjection: true, deadlineAtMillis: deadlineAtMillis,
+        deadlineClock: deadlineClock)
     for (diagnostic in rejectedDiagnostics) { projection.index.diagnostics.add(diagnostic) }
     projection.diagnostic = cangjieStudentServingProjectionDiagnostic(projection,
         activeKnowledgeVersion)

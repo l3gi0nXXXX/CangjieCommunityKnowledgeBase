@@ -3126,7 +3126,8 @@ private func ckbAbcdeShellQuote(value: String): String {
 }
 
 public func ckbAbcdeNativeTlsBootstrapScript(command: String, args: Array<String>): String {
-    var script = "export CKB_NATIVE_TLS_BOOTSTRAPPED=1; " +
+    var script = "export cjHeapSize=4GB; " +
+        "export CKB_NATIVE_TLS_BOOTSTRAPPED=1; " +
         "MAGIC_ROOT=\"" + "$" + "{MAGIC_PATH:-}\"; " +
         "if [ -z \"" + "$" + "{MAGIC_ROOT}\" ]; then MAGIC_ROOT=\"" + "$" + "{CKB_MAGIC_ROOT:-}\"; fi; " +
         "CANGJIE_ROOT=\"" + "$" + "{CANGJIE_HOME:-}\"; " +

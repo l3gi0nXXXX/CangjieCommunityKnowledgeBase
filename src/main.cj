@@ -31,6 +31,13 @@ public func ckbCliMain(args: Array<String>): Int64 {
     }
     let config = loadCkbRuntimeConfig(cli.configPath)
     let store = FileKnowledgeStore(cli.storePath)
+    if (ckbCliCommandUsesCommandLoopService(cli.command)) {
+        let heapPreflight = ckbServiceHeapPreflightFromEnv()
+        if (!heapPreflight.ok) {
+            print(renderCkbServiceHeapPreflightText(heapPreflight))
+            return 2
+        }
+    }
     if (cli.command == "cangjie-candidate-precert-seal") {
         return runCkbCandidatePrecertCli(args, store)
     }
@@ -134,13 +141,16 @@ public func ckbCliMain(args: Array<String>): Int64 {
         return 0
     }
     if (cli.command == "service" || cli.command == "start") {
-        return runCkbServiceLoop(config, store)
+        return runCkbServiceLoop(config, store, kb)
     }
     if (cli.command == "service-http" || cli.command == "http-service") {
-        return runCkbHttpService(config, store)
+        return runCkbHttpService(config, store,
+            loadedKnowledgeBase: Some<KnowledgeBase>(kb))
     }
     if (cli.command == "mcp-stdio") {
-        return runCkbMcpStdioLoop(config, store, ckbCliOption(args, "--bound-task-context-base64"), ckbCliOption(args, "--bound-task-context-sha256"))
+        return runCkbMcpStdioLoop(config, store,
+            ckbCliOption(args, "--bound-task-context-base64"),
+            ckbCliOption(args, "--bound-task-context-sha256"), kb)
     }
     if (cli.command == "cangjie-initialize") {
         let options = parseCkbFirstInitOptions(args)
@@ -154,7 +164,8 @@ public func ckbCliMain(args: Array<String>): Int64 {
         return if (result.ok) { 0 } else { 1 }
     }
     if (cli.command == "cangjie-landing-status") {
-        let service = CkbCommandLoopService(config, store)
+        let service = CkbCommandLoopService(config, store,
+            loadedKnowledgeBase: Some<KnowledgeBase>(kb))
         service.start()
         let report = collectCkbLandingStatus(service)
         if (ckbCliWantsJson(args)) {
@@ -165,7 +176,9 @@ public func ckbCliMain(args: Array<String>): Int64 {
         return 0
     }
     if (cli.command == "service-once") {
-        let service = CkbCommandLoopService(config, store, sourceRunner: if (config.networkEnabled) { HttpSourceFetchRunner(config) } else { DisabledNetworkFetchRunner() })
+        let service = CkbCommandLoopService(config, store,
+            sourceRunner: if (config.networkEnabled) { HttpSourceFetchRunner(config) } else { DisabledNetworkFetchRunner() },
+            loadedKnowledgeBase: Some<KnowledgeBase>(kb))
         print(service.start())
         let response = service.handleLine(cliTail(input, "service-once", "health"))
         print(response.text)
@@ -176,7 +189,9 @@ public func ckbCliMain(args: Array<String>): Int64 {
         return 0
     }
     if (cli.command == "restart") {
-        let service = CkbCommandLoopService(config, store, sourceRunner: if (config.networkEnabled) { HttpSourceFetchRunner(config) } else { DisabledNetworkFetchRunner() })
+        let service = CkbCommandLoopService(config, store,
+            sourceRunner: if (config.networkEnabled) { HttpSourceFetchRunner(config) } else { DisabledNetworkFetchRunner() },
+            loadedKnowledgeBase: Some<KnowledgeBase>(kb))
         print(service.handleLine("restart").text)
         return 0
     }
@@ -214,48 +229,56 @@ public func ckbCliMain(args: Array<String>): Int64 {
         return 0
     }
     if (cli.command == "cangjie-corpus-status") {
-        let service = CkbCommandLoopService(config, store)
+        let service = CkbCommandLoopService(config, store,
+            loadedKnowledgeBase: Some<KnowledgeBase>(kb))
         print(service.handleLine("cangjie_corpus_status").text)
         return 0
     }
     if (cli.command == "cangjie-knowledge-pack") {
-        let service = CkbCommandLoopService(config, store)
+        let service = CkbCommandLoopService(config, store,
+            loadedKnowledgeBase: Some<KnowledgeBase>(kb))
         let tail = cliTail(input, cli.command, "Cangjie language context")
         print(service.handleLine("cangjie_knowledge_pack ${tail}").text)
         return 0
     }
     if (cli.command == "cangjie-api-search") {
-        let service = CkbCommandLoopService(config, store)
+        let service = CkbCommandLoopService(config, store,
+            loadedKnowledgeBase: Some<KnowledgeBase>(kb))
         let tail = cliTail(input, cli.command, "stdx JSON")
         print(service.handleLine("cangjie_api_search ${tail}").text)
         return 0
     }
     if (cli.command == "cangjie-syntax-query") {
-        let service = CkbCommandLoopService(config, store)
+        let service = CkbCommandLoopService(config, store,
+            loadedKnowledgeBase: Some<KnowledgeBase>(kb))
         let tail = cliTail(input, cli.command, "function syntax")
         print(service.handleLine("cangjie_syntax_query ${tail}").text)
         return 0
     }
     if (cli.command == "cangjie-cookbook") {
-        let service = CkbCommandLoopService(config, store)
+        let service = CkbCommandLoopService(config, store,
+            loadedKnowledgeBase: Some<KnowledgeBase>(kb))
         let tail = cliTail(input, cli.command, "Cangjie task")
         print(service.handleLine("cangjie_cookbook ${tail}").text)
         return 0
     }
     if (cli.command == "cangjie-diagnose") {
-        let service = CkbCommandLoopService(config, store)
+        let service = CkbCommandLoopService(config, store,
+            loadedKnowledgeBase: Some<KnowledgeBase>(kb))
         let tail = cliTail(input, cli.command, "Cangjie compiler diagnostic")
         print(service.handleLine("cangjie_diagnose ${tail}").text)
         return 0
     }
     if (cli.command == "cangjie-llms") {
-        let service = CkbCommandLoopService(config, store)
+        let service = CkbCommandLoopService(config, store,
+            loadedKnowledgeBase: Some<KnowledgeBase>(kb))
         let task = cliTail(input, cli.command, "Cangjie language quick context")
         print(renderCangjieLlmsTxt(service.statusSnapshot(), service.cangjieKnowledgePack(task, budget: 5)))
         return 0
     }
     if (cli.command == "cangjie-context-pack") {
-        let service = CkbCommandLoopService(config, store)
+        let service = CkbCommandLoopService(config, store,
+            loadedKnowledgeBase: Some<KnowledgeBase>(kb))
         let task = cliTail(input, cli.command, "Cangjie task")
         print(renderCangjieContextPack(service.cangjieCookbook(task, budget: 5)))
         return 0
@@ -797,8 +820,12 @@ private func renderCangjieEvalManifestFileSummary(path: String): (String, Int64)
     }
 }
 
-private func runCkbMcpStdioLoop(config: CkbRuntimeConfig, store: FileKnowledgeStore, boundTaskContextBase64: String, boundTaskContextHash: String): Int64 {
-    let service = CkbCommandLoopService(config, store, sourceRunner: if (config.networkEnabled) { HttpSourceFetchRunner(config) } else { DisabledNetworkFetchRunner() })
+private func runCkbMcpStdioLoop(config: CkbRuntimeConfig, store: FileKnowledgeStore,
+    boundTaskContextBase64: String, boundTaskContextHash: String,
+    loadedKnowledgeBase: KnowledgeBase): Int64 {
+    let service = CkbCommandLoopService(config, store,
+        sourceRunner: if (config.networkEnabled) { HttpSourceFetchRunner(config) } else { DisabledNetworkFetchRunner() },
+        loadedKnowledgeBase: Some<KnowledgeBase>(loadedKnowledgeBase))
     let server = CkbMcpStdioServer(service, boundTaskContextBase64: boundTaskContextBase64, boundTaskContextHash: boundTaskContextHash)
     let stdout = getStdOut()
     try (stdinFile = File("/dev/stdin", OpenMode.Read)) {
@@ -824,9 +851,11 @@ private func runCkbMcpStdioLoop(config: CkbRuntimeConfig, store: FileKnowledgeSt
     0
 }
 
-private func runCkbServiceLoop(config: CkbRuntimeConfig, store: FileKnowledgeStore): Int64 {
+private func runCkbServiceLoop(config: CkbRuntimeConfig, store: FileKnowledgeStore,
+    loadedKnowledgeBase: KnowledgeBase): Int64 {
     let runner: SourceFetchRunner = if (config.networkEnabled) { HttpSourceFetchRunner(config) } else { DisabledNetworkFetchRunner() }
-    let service = CkbCommandLoopService(config, store, sourceRunner: runner)
+    let service = CkbCommandLoopService(config, store, sourceRunner: runner,
+        loadedKnowledgeBase: Some<KnowledgeBase>(loadedKnowledgeBase))
     print(service.start())
     try (stdinFile = File("/dev/stdin", OpenMode.Read)) {
         let reader = StringReader(stdinFile)

@@ -3675,6 +3675,20 @@ public class KnowledgeBase {
     }
 
     public func restoreActiveSnapshot(snapshot: ActiveSnapshot): Bool {
+        this.restoreActiveSnapshotWithOwnership(snapshot, false,
+            NoopCangjieServingIndexBuildObserver())
+    }
+
+    // A snapshot loaded solely to initialize a new KnowledgeBase has no
+    // caller-visible lifetime. Transfer its record containers to avoid
+    // retaining a second object graph during service startup.
+    public func restoreLoadedActiveSnapshot(snapshot: ActiveSnapshot,
+        buildObserver!: CangjieServingIndexBuildObserver = NoopCangjieServingIndexBuildObserver()): Bool {
+        this.restoreActiveSnapshotWithOwnership(snapshot, true, buildObserver)
+    }
+
+    private func restoreActiveSnapshotWithOwnership(snapshot: ActiveSnapshot,
+        takeOwnership: Bool, buildObserver: CangjieServingIndexBuildObserver): Bool {
         if (!snapshot.valid) {
             this.restoreDiagnostic = snapshot.diagnostic
             return false
@@ -3685,21 +3699,35 @@ public class KnowledgeBase {
         this.activeIndex.clear()
         this.invalidateStudentServingProjection()
         this.candidateIndex.clear()
-        for (record in snapshot.rawRecords) {
-            this.rawRecords.add(this.copyRawRecord(record))
-        }
-        for (record in snapshot.normalizedRecords) {
-            this.normalizedRecords.add(this.copyNormalizedRecord(record))
+        if (takeOwnership) {
+            this.rawRecords = snapshot.rawRecords
+            this.normalizedRecords = snapshot.normalizedRecords
+            this.activeIndex = snapshot.activeIndex
+            snapshot.rawRecords = ArrayList<RawRecord>()
+            snapshot.normalizedRecords = ArrayList<NormalizedRecord>()
+            snapshot.activeIndex = ArrayList<NormalizedRecord>()
+        } else {
+            for (record in snapshot.rawRecords) {
+                this.rawRecords.add(this.copyRawRecord(record))
+            }
+            for (record in snapshot.normalizedRecords) {
+                this.normalizedRecords.add(this.copyNormalizedRecord(record))
+            }
+            for (record in snapshot.activeIndex) {
+                let active = this.copyNormalizedRecord(record)
+                active.metadata.knowledgeVersion = snapshot.activeVersion
+                this.activeIndex.add(active)
+            }
         }
         if (this.normalizedRecords.size == 0) {
-            for (record in snapshot.activeIndex) {
+            for (record in this.activeIndex) {
                 this.normalizedRecords.add(this.copyNormalizedRecord(record))
             }
         }
-        for (record in snapshot.activeIndex) {
-            let active = this.copyNormalizedRecord(record)
-            active.metadata.knowledgeVersion = snapshot.activeVersion
-            this.activeIndex.add(active)
+        if (takeOwnership) {
+            for (record in this.activeIndex) {
+                record.metadata.knowledgeVersion = snapshot.activeVersion
+            }
         }
         this.activeKnowledgeVersion = snapshot.activeVersion
         this.candidateKnowledgeVersion = snapshot.candidateVersion
@@ -3716,7 +3744,7 @@ public class KnowledgeBase {
         this.storage.rawCount = this.rawRecords.size
         this.storage.normalizedCount = this.normalizedRecords.size
         this.storage.indexCount = this.activeIndex.size
-        let vectorResult = this.restoreOrRebuildActiveVectorIndex(snapshot)
+        let vectorResult = this.restoreOrRebuildActiveVectorIndex(snapshot, buildObserver)
         if (!vectorResult.ok && vectorResult.diagnostic != "") {
             this.restoreDiagnostic = "${this.restoreDiagnostic};${vectorResult.diagnostic}"
         }
@@ -3730,13 +3758,14 @@ public class KnowledgeBase {
         return true
     }
 
-    private func restoreOrRebuildActiveVectorIndex(snapshot: ActiveSnapshot): VectorIndexBuildResult {
+    private func restoreOrRebuildActiveVectorIndex(snapshot: ActiveSnapshot,
+        buildObserver: CangjieServingIndexBuildObserver): VectorIndexBuildResult {
         if (snapshot.vectorRecords.size == 0) {
             let existing = this.vectorStore.status(this.vectorCollection)
             if (existing.state == EmbeddingProviderState.READY && existing.count == this.activeIndex.size) {
                 this.applyVectorStatus(existing)
                 this.rebuildGraphIndex()
-                this.rebuildServingIndexStatus()
+                this.rebuildServingIndexStatus(buildObserver: buildObserver)
                 let ready = VectorIndexBuildResult()
                 ready.ok = true
                 ready.status = existing.state
@@ -3746,12 +3775,14 @@ public class KnowledgeBase {
                 ready.diagnostic = "vector_snapshot_missing_but_active_collection_consistent"
                 return ready
             }
-            return this.markVectorRebuildRequired("vector_snapshot_missing")
+            return this.markVectorRebuildRequired("vector_snapshot_missing", buildObserver)
         }
         let backupDimension = vectorBackupDimension(snapshot.vectorRecords)
         let expectedDimension = this.activeEmbeddingDimensions()
         if (backupDimension <= 0 || (expectedDimension > 0 && backupDimension != expectedDimension)) {
-            return this.markVectorRebuildRequired("vector_rebuild_required:dimension_mismatch:${backupDimension}:${expectedDimension}")
+            return this.markVectorRebuildRequired(
+                "vector_rebuild_required:dimension_mismatch:${backupDimension}:${expectedDimension}",
+                buildObserver)
         }
         let result = VectorIndexBuildResult()
         let backup = VectorBackup()
@@ -3764,7 +3795,7 @@ public class KnowledgeBase {
         let vectorStatus = this.vectorStore.restore(backup)
         this.applyVectorStatus(vectorStatus)
         this.rebuildGraphIndex()
-        this.rebuildServingIndexStatus()
+        this.rebuildServingIndexStatus(buildObserver: buildObserver)
         result.ok = vectorStatus.state == EmbeddingProviderState.READY
         result.status = vectorStatus.state
         result.vectorCount = vectorStatus.count
@@ -3774,13 +3805,14 @@ public class KnowledgeBase {
         result
     }
 
-    private func markVectorRebuildRequired(reason: String): VectorIndexBuildResult {
+    private func markVectorRebuildRequired(reason: String,
+        buildObserver: CangjieServingIndexBuildObserver): VectorIndexBuildResult {
         let result = VectorIndexBuildResult()
         result.ok = false
         result.status = EmbeddingProviderState.DEGRADED
         result.vectorCount = 0
         result.diagnostic = reason
-        this.rebuildServingIndexStatus()
+        this.rebuildServingIndexStatus(buildObserver: buildObserver)
         this.rebuildGraphIndex()
         let status = this.vectorStore.status(this.vectorCollection)
         status.state = EmbeddingProviderState.DEGRADED
@@ -5203,21 +5235,20 @@ public class KnowledgeBase {
         dimension
     }
 
-    private func rebuildServingIndexStatus(deadlineAtMillis!: Int64 = 0): String {
-        let servingIndex = buildCangjieServingIndex(this.activeIndex, activeKnowledgeVersion: this.activeKnowledgeVersion, deadlineAtMillis: deadlineAtMillis)
+    private func rebuildServingIndexStatus(deadlineAtMillis!: Int64 = 0,
+        buildObserver!: CangjieServingIndexBuildObserver = NoopCangjieServingIndexBuildObserver()): String {
+        this.studentServingProjection = buildCangjieStudentServingProjection(
+            this.activeIndex, this.activeKnowledgeVersion,
+            buildObserver: buildObserver, deadlineAtMillis: deadlineAtMillis)
+        let servingIndex = this.studentServingProjection.index
         let deadlineDiagnostic = cangjieServingIndexDeadlineDiagnostic(servingIndex)
         if (deadlineDiagnostic != "") {
-            servingIndex.records.clear()
-            servingIndex.documents.clear()
-            servingIndex.exactEntries.clear()
+            this.invalidateStudentServingProjection()
             return deadlineDiagnostic
         }
         let servingIndexCount = servingIndex.documents.size
         let servingIndexVersion = servingIndex.activeKnowledgeVersion
         let servingIndexDiagnostic = cangjieServingIndexDiagnostics(servingIndex)
-        servingIndex.records.clear()
-        servingIndex.documents.clear()
-        servingIndex.exactEntries.clear()
         this.storage.servingIndexCount = servingIndexCount
         this.storage.servingIndexVersion = servingIndexVersion
         this.storage.servingIndexDiagnostic = servingIndexDiagnostic

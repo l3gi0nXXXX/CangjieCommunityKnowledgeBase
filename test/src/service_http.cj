@@ -67,14 +67,17 @@ public func ckbHttpServiceConfigFromRuntime(runtime: CkbRuntimeConfig): CkbHttpS
     config
 }
 
-public func runCkbHttpService(runtime: CkbRuntimeConfig, store: FileKnowledgeStore): Int64 {
+public func runCkbHttpService(runtime: CkbRuntimeConfig, store: FileKnowledgeStore,
+    loadedKnowledgeBase!: ?KnowledgeBase = None): Int64 {
     let config = ckbHttpServiceConfigFromRuntime(runtime)
     let validation = ckbHttpValidateConfig(config)
     if (!validation.ok) {
         println(ckbApiErrorEnvelope(validation.code, "invalid http service configuration", status: 400, diagnostics: "{\"reason\":\"${validation.diagnostic}\"}"))
         return 2
     }
-    let service = CkbCommandLoopService(runtime, store, sourceRunner: if (runtime.networkEnabled) { HttpSourceFetchRunner(runtime) } else { DisabledNetworkFetchRunner() })
+    let service = CkbCommandLoopService(runtime, store,
+        sourceRunner: if (runtime.networkEnabled) { HttpSourceFetchRunner(runtime) } else { DisabledNetworkFetchRunner() },
+        loadedKnowledgeBase: loadedKnowledgeBase)
     print(service.start())
     try {
         let server = ServerBuilder()

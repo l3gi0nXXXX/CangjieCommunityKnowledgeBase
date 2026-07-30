@@ -3324,6 +3324,63 @@ public class CkbVectorReconcileResult {
     public init() {}
 }
 
+public class CkbServiceHeapPreflightResult {
+    public var ok: Bool = false
+    public var errorCode: String = ""
+    public var requiredHeapMiB: Int64 = 4096
+    public var actualHeapMiB: Int64 = 0
+    public var diagnostic: String = ""
+
+    public init() {}
+}
+
+public func ckbCliCommandUsesCommandLoopService(command: String): Bool {
+    command == "service" || command == "start" ||
+        command == "service-http" || command == "http-service" ||
+        command == "certification-http" || command == "mcp-stdio" ||
+        command == "cangjie-landing-status" || command == "service-once" ||
+        command == "restart" || command == "cangjie-corpus-status" ||
+        command == "cangjie-knowledge-pack" || command == "cangjie-api-search" ||
+        command == "cangjie-syntax-query" || command == "cangjie-cookbook" ||
+        command == "cangjie-diagnose" || command == "cangjie-llms" ||
+        command == "cangjie-context-pack"
+}
+
+public func ckbServiceHeapPreflight(raw: String): CkbServiceHeapPreflightResult {
+    let result = CkbServiceHeapPreflightResult()
+    let value = raw.trimAscii()
+    if (value == "") {
+        result.errorCode = "ckb.service_heap_not_configured"
+        result.diagnostic = "cjHeapSize is not configured; export cjHeapSize=4GB before starting CKB service commands"
+        return result
+    }
+    result.actualHeapMiB = ckbParseHeapMiB(value)
+    if (result.actualHeapMiB <= 0 && value != "0") {
+        result.errorCode = "ckb.service_heap_invalid"
+        result.diagnostic = "cjHeapSize is invalid; export cjHeapSize=4GB before starting CKB service commands"
+        return result
+    }
+    if (result.actualHeapMiB < result.requiredHeapMiB) {
+        result.errorCode = "ckb.service_heap_too_small"
+        result.diagnostic = "cjHeapSize is below the production service minimum; export cjHeapSize=4GB"
+        return result
+    }
+    result.ok = true
+    result.diagnostic = "ok"
+    result
+}
+
+public func ckbServiceHeapPreflightFromEnv(): CkbServiceHeapPreflightResult {
+    ckbServiceHeapPreflight(if (let Some(value) <- getVariable("cjHeapSize")) { value } else { "" })
+}
+
+public func renderCkbServiceHeapPreflightText(result: CkbServiceHeapPreflightResult): String {
+    if (result.ok) {
+        return "service heap preflight ok=true requiredHeapMiB=${result.requiredHeapMiB} actualHeapMiB=${result.actualHeapMiB}\n"
+    }
+    "service heap preflight ok=false errorCode=${result.errorCode} requiredHeapMiB=${result.requiredHeapMiB} actualHeapMiB=${result.actualHeapMiB} diagnostic=${result.diagnostic}\n"
+}
+
 public class CkbRoutineRepairResult {
     public var ok: Bool = false
     public var force: Bool = false
@@ -8843,7 +8900,14 @@ public class FileKnowledgeStore {
         snapshot.vectorCandidateCollection = metadata.vectorCandidateCollection
         let mismatch = metadata.activeVersion != "" && metadata.activeVersion != snapshot.activeVersion
         let diagnostics = ArrayList<String>()
-        snapshot.activeIndex = this.parseNormalizedStrict(this.readLinesFromPrefix(prefix, "index/active.ckb"), diagnostics)
+        let activeIndexReadDiagnostic = this.readNormalizedRecordsFromPrefix(
+            prefix, "index/active.ckb", "active_index", true,
+            snapshot.activeIndex, diagnostics)
+        if (activeIndexReadDiagnostic != "") {
+            snapshot.valid = false
+            snapshot.diagnostic = activeIndexReadDiagnostic
+            return snapshot
+        }
         if (diagnostics.size > 0) {
             snapshot.valid = false
             snapshot.diagnostic = snapshotDiagnostic("malformed_active_index", extraDiagnostic)
@@ -8869,8 +8933,22 @@ public class FileKnowledgeStore {
                 return snapshot
             }
         }
-        snapshot.rawRecords = this.parseRaw(this.readLinesFromPrefix(prefix, "raw/records.ckb"))
-        snapshot.normalizedRecords = this.parseNormalized(this.readLinesFromPrefix(prefix, "normalized/records.ckb"))
+        let rawReadDiagnostic = this.readRawRecordsFromPrefix(
+            prefix, "raw/records.ckb", "raw_records", snapshot.rawRecords)
+        if (rawReadDiagnostic != "") {
+            snapshot.valid = false
+            snapshot.diagnostic = rawReadDiagnostic
+            return snapshot
+        }
+        let normalizedDiagnostics = ArrayList<String>()
+        let normalizedReadDiagnostic = this.readNormalizedRecordsFromPrefix(
+            prefix, "normalized/records.ckb", "normalized_records", false,
+            snapshot.normalizedRecords, normalizedDiagnostics)
+        if (normalizedReadDiagnostic != "") {
+            snapshot.valid = false
+            snapshot.diagnostic = normalizedReadDiagnostic
+            return snapshot
+        }
         snapshot.valid = true
         snapshot.degraded = mismatch
         snapshot.diagnostic = snapshotDiagnostic(if (mismatch) { "metadata_active_mismatch" } else { "ok" }, extraDiagnostic)
@@ -8990,6 +9068,56 @@ public class FileKnowledgeStore {
         }
     }
 
+    private func snapshotFilePath(prefix: String, relative: String): Path {
+        if (prefix == "") {
+            return this.root.join(relative)
+        }
+        this.root.join(prefix).join(relative)
+    }
+
+    private func readRawRecordsFromPrefix(prefix: String, relative: String,
+        role: String, out: ArrayList<RawRecord>): String {
+        let path = this.snapshotFilePath(prefix, relative)
+        if (!exists(path)) {
+            return ""
+        }
+        try {
+            try (file = File(path, OpenMode.Read)) {
+                let reader = StringReader(file)
+                while (true) {
+                    let line = if (let Some(value) <- reader.readln()) { value } else { break }
+                    this.appendRawRecordLine(line, out)
+                }
+            }
+            ""
+        } catch (_: Exception) {
+            "invalid_snapshot_encoding:${role}"
+        }
+    }
+
+    private func readNormalizedRecordsFromPrefix(prefix: String, relative: String,
+        role: String, strict: Bool, out: ArrayList<NormalizedRecord>,
+        diagnostics: ArrayList<String>): String {
+        let path = this.snapshotFilePath(prefix, relative)
+        if (!exists(path)) {
+            return ""
+        }
+        var lineNumber: Int64 = 0
+        try {
+            try (file = File(path, OpenMode.Read)) {
+                let reader = StringReader(file)
+                while (true) {
+                    let line = if (let Some(value) <- reader.readln()) { value } else { break }
+                    lineNumber += 1
+                    this.appendNormalizedRecordLine(line, strict, lineNumber, out, diagnostics)
+                }
+            }
+            ""
+        } catch (_: Exception) {
+            "invalid_snapshot_encoding:${role}"
+        }
+    }
+
     private func parseNormalized(text: String): ArrayList<NormalizedRecord> {
         let diagnostics = ArrayList<String>()
         this.parseNormalizedInternal(text, false, diagnostics)
@@ -9001,27 +9129,31 @@ public class FileKnowledgeStore {
             return out
         }
         for (line in text.split("\n")) {
-            let parts = line.split("|")
-            if (parts.size >= 19) {
-                let v2Record = parts.size >= 27 && parts[25] == "p5-record-v2"
-                if (v2Record &&
-                    !ckbMetadataDerivedFromDecode(parts[24]).valid) {
-                    continue
-                }
-                let metadata = metadataFromParts(parts, 4)
-                let record = RawRecord()
-                record.sourceId = unescapeField(parts[0])
-                record.title = unescapeField(parts[1])
-                record.content = unescapeField(parts[2])
-                record.contentHash = unescapeField(parts[3])
-                record.metadata = metadata
-                record.requiresReview = if (v2Record) {
-                    parts[26] == "true"
-                } else { metadata.reviewState == ReviewStates.CANDIDATE }
-                out.add(record)
-            }
+            this.appendRawRecordLine(line, out)
         }
         out
+    }
+
+    private func appendRawRecordLine(line: String, out: ArrayList<RawRecord>): Unit {
+        let parts = line.split("|")
+        if (parts.size < 19) {
+            return
+        }
+        let v2Record = parts.size >= 27 && parts[25] == "p5-record-v2"
+        if (v2Record && !ckbMetadataDerivedFromDecode(parts[24]).valid) {
+            return
+        }
+        let metadata = metadataFromParts(parts, 4)
+        let record = RawRecord()
+        record.sourceId = unescapeField(parts[0])
+        record.title = unescapeField(parts[1])
+        record.content = unescapeField(parts[2])
+        record.contentHash = unescapeField(parts[3])
+        record.metadata = metadata
+        record.requiresReview = if (v2Record) {
+            parts[26] == "true"
+        } else { metadata.reviewState == ReviewStates.CANDIDATE }
+        out.add(record)
     }
 
     private func parseNormalizedStrict(text: String, diagnostics: ArrayList<String>): ArrayList<NormalizedRecord> {
@@ -9036,39 +9168,47 @@ public class FileKnowledgeStore {
         var lineNumber: Int64 = 0
         for (line in text.split("\n")) {
             lineNumber += 1
-            if (line == "") {
-                continue
-            }
-            let parts = line.split("|")
-            if (parts.size >= 20) {
-                let v2Record = parts.size >= 29 && parts[27] == "p5-record-v2"
-                if (v2Record) {
-                    let derived = ckbMetadataDerivedFromDecode(parts[26])
-                    if (!derived.valid) {
-                        if (strict) {
-                            diagnostics.add("malformed active index metadata derivedFrom line ${lineNumber}:${derived.status}")
-                        }
-                        continue
-                    }
-                }
-                let metadata = metadataFromParts(parts, 6)
-                let record = NormalizedRecord()
-                record.sourceId = unescapeField(parts[0])
-                record.recordKind = unescapeField(parts[1])
-                record.title = unescapeField(parts[2])
-                record.chunk = unescapeField(parts[3])
-                record.citation = unescapeField(parts[4])
-                record.score = try { Float64.parse(parts[5]) } catch (_: Exception) { 0.0 }
-                record.metadata = metadata
-                record.requiresReview = if (v2Record) {
-                    parts[28] == "true"
-                } else { metadata.reviewState == ReviewStates.CANDIDATE }
-                out.add(record)
-            } else if (strict) {
-                diagnostics.add("malformed active index line ${lineNumber}")
-            }
+            this.appendNormalizedRecordLine(line, strict, lineNumber, out, diagnostics)
         }
         out
+    }
+
+    private func appendNormalizedRecordLine(line: String, strict: Bool,
+        lineNumber: Int64, out: ArrayList<NormalizedRecord>,
+        diagnostics: ArrayList<String>): Unit {
+        if (line == "") {
+            return
+        }
+        let parts = line.split("|")
+        if (parts.size < 20) {
+            if (strict) {
+                diagnostics.add("malformed active index line ${lineNumber}")
+            }
+            return
+        }
+        let v2Record = parts.size >= 29 && parts[27] == "p5-record-v2"
+        if (v2Record) {
+            let derived = ckbMetadataDerivedFromDecode(parts[26])
+            if (!derived.valid) {
+                if (strict) {
+                    diagnostics.add("malformed active index metadata derivedFrom line ${lineNumber}:${derived.status}")
+                }
+                return
+            }
+        }
+        let metadata = metadataFromParts(parts, 6)
+        let record = NormalizedRecord()
+        record.sourceId = unescapeField(parts[0])
+        record.recordKind = unescapeField(parts[1])
+        record.title = unescapeField(parts[2])
+        record.chunk = unescapeField(parts[3])
+        record.citation = unescapeField(parts[4])
+        record.score = try { Float64.parse(parts[5]) } catch (_: Exception) { 0.0 }
+        record.metadata = metadata
+        record.requiresReview = if (v2Record) {
+            parts[28] == "true"
+        } else { metadata.reviewState == ReviewStates.CANDIDATE }
+        out.add(record)
     }
 
     private func rawLines(records: ArrayList<RawRecord>): String {
@@ -13445,14 +13585,20 @@ public class CkbCommandLoopService {
         sourceRunner!: SourceFetchRunner = DisabledNetworkFetchRunner(),
         sourceEventPromotionBudgetPlan!: CangjieCandidatePromotionBudgetPlan = CangjieCandidatePromotionBudgetPlan(),
         repositoryEventNowClock!: CkbMillisClock = SystemCkbMillisClock(),
-        studentServingBuildObserver!: CangjieServingIndexBuildObserver = NoopCangjieServingIndexBuildObserver()) {
+        studentServingBuildObserver!: CangjieServingIndexBuildObserver = NoopCangjieServingIndexBuildObserver(),
+        loadedKnowledgeBase!: ?KnowledgeBase = None) {
         this.config = config
         this.store = store
         this.sourceRunner = sourceRunner
         this.sourceEventPromotionBudgetPlan = sourceEventPromotionBudgetPlan
         this.repositoryEventNowClock = repositoryEventNowClock
         this.studentServingBuildObserver = studentServingBuildObserver
-        this.kb = newKnowledgeBaseFromStoreWithRuntime(store, config).kb
+        this.kb = if (let Some(loaded) <- loadedKnowledgeBase) {
+            loaded
+        } else {
+            newKnowledgeBaseFromStoreWithRuntime(store, config,
+                studentServingBuildObserver: studentServingBuildObserver).kb
+        }
     }
 
     public func start(): String {
@@ -14407,7 +14553,8 @@ public class CkbCommandLoopService {
     }
 
     private func reloadKnowledgeBase(): Unit {
-        this.kb = newKnowledgeBaseFromStoreWithRuntime(this.store, this.config).kb
+        this.kb = newKnowledgeBaseFromStoreWithRuntime(this.store, this.config,
+            studentServingBuildObserver: this.studentServingBuildObserver).kb
         _ = this.kb.prepareStudentServingProjection(
             buildObserver: this.studentServingBuildObserver)
     }
@@ -22455,12 +22602,16 @@ private func cangjieRuntimeVectorDimensionMismatch(embedding: EmbeddingConfig, v
     embedding.dimensions > 0 && vector.dimensions > 0 && embedding.dimensions != vector.dimensions
 }
 
-public func newKnowledgeBaseFromStoreWithRuntime(store: FileKnowledgeStore, config: CkbRuntimeConfig): KnowledgeBaseLoadResult {
+public func newKnowledgeBaseFromStoreWithRuntime(store: FileKnowledgeStore,
+    config: CkbRuntimeConfig,
+    studentServingBuildObserver!: CangjieServingIndexBuildObserver =
+        NoopCangjieServingIndexBuildObserver()): KnowledgeBaseLoadResult {
     let kb = KnowledgeBase(FakeClock(0), embeddingProviderFromRuntime(config), vectorStoreFromRuntime(config), LocalGraphStore())
     kb.configureVectorCollections(config.vectorActiveCollection, config.vectorCandidateCollection)
     let result = KnowledgeBaseLoadResult(kb)
     let snapshot = store.loadActiveSnapshot()
-    if (kb.restoreActiveSnapshot(snapshot)) {
+    if (kb.restoreLoadedActiveSnapshot(snapshot,
+        buildObserver: studentServingBuildObserver)) {
         kb.restoreScheduler(store.loadScheduler())
         result.source = "persisted"
         result.diagnostic = snapshot.diagnostic
