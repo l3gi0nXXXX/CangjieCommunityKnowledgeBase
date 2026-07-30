@@ -1,0 +1,19 @@
+{
+  "schemaVersion": "ckb-authority-delivery-v1",
+  "mode": "blocked",
+  "licenseId": "unknown",
+  "licenseEvidenceHash": "",
+  "redistributionAllowed": false,
+  "anonymousPublicAccess": false,
+  "repository": "",
+  "commit": "",
+  "tree": "",
+  "path": "",
+  "fileHashes": [],
+  "builderHash": "",
+  "sourceMaterialsHash": "",
+  "bundleHash": "",
+  "authorityHash": "",
+  "datasetVersion": "",
+  "diagnostic": "authority_license_evidence_not_frozen"
+}

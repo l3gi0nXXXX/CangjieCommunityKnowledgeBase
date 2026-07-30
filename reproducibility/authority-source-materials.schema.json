@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/l3gi0nXXXX/CangjieCommunityKnowledgeBase/reproducibility/authority-source-materials.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "status", "repository", "commit", "tree", "path", "fileHashes", "builderHash", "authorityHash", "diagnostic"],
+  "properties": {
+    "schemaVersion": {"const": "ckb-authority-source-materials-v1"},
+    "status": {"enum": ["frozen", "blocked"]},
+    "repository": {"type": "string"},
+    "commit": {"type": "string"},
+    "tree": {"type": "string"},
+    "path": {"type": "string"},
+    "fileHashes": {"type": "array", "items": {"type": "string"}},
+    "builderHash": {"type": "string"},
+    "authorityHash": {"type": "string"},
+    "diagnostic": {"type": "string"}
+  }
+}

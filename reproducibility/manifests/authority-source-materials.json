@@ -1,0 +1,12 @@
+{
+  "schemaVersion": "ckb-authority-source-materials-v1",
+  "status": "blocked",
+  "repository": "",
+  "commit": "",
+  "tree": "",
+  "path": "",
+  "fileHashes": [],
+  "builderHash": "",
+  "authorityHash": "",
+  "diagnostic": "authority_public_source_not_frozen"
+}

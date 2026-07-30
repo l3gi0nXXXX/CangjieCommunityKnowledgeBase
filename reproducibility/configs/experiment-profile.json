@@ -1,0 +1,16 @@
+{
+  "schemaVersion": "ckb-repro-experiment-profile-v1",
+  "identityStatus": "planned",
+  "experimentGroup": "D-ckb-mcp-http",
+  "ckbRequired": true,
+  "localDocsPolicy": "disabled",
+  "modelEffort": "max",
+  "modelBudget": "unbounded",
+  "timeoutSeconds": 3600,
+  "transportRetryBudget": 10,
+  "caseStart": 0,
+  "caseEnd": 163,
+  "knowledgeVersion": "",
+  "knowledgeContentHash": "",
+  "vectorProofHash": ""
+}
