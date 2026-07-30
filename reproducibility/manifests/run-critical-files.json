@@ -36,7 +36,7 @@
     {"path":"src/ckb_portable_vector_build.cj","status":"planned","sha256":""},
     {"path":"src/ckb_repro_build.cj","status":"planned","sha256":""},
     {"path":"src/ckb_portable_path_normalizer.cj","status":"present","sha256":"sha256:5668a9dfabd8c7af872a781c273e1c5600f2953714cfcc80bd4b079d2a3d720e"},
-    {"path":"src/ckb_repro_environment.cj","status":"planned","sha256":""},
+    {"path":"src/ckb_repro_environment.cj","status":"present","sha256":"sha256:54fff44d167ae0e4ff2a33bbad22e1a351f0cf035306f56f2d8b9badffca1a08"},
     {"path":"src/ckb_repro_verify.cj","status":"planned","sha256":""}
   ]
 }

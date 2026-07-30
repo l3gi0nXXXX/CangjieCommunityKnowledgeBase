@@ -271,7 +271,7 @@ public class CkbReproEnvironmentTest {
             p6Read("../reproducibility/manifests/run-critical-files.json"))
         @Expect(critical[0].ok, true)
         @Expect(validateCkbRunCriticalFilesManifest(critical[1], "..",
-            mode: "contract").diagnostic, "run_critical_planned_file_exists")
+            mode: "contract").ok, true)
         for (path in [
             "../reproducibility/manifests/environment-lock.json",
             "../reproducibility/manifests/authority-delivery.json",
