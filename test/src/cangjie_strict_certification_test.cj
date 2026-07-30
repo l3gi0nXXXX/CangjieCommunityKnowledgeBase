@@ -123,6 +123,84 @@ public class CangjieStrictCertificationTest {
         let probe=ckbAbcdeCertificationSandboxProbeForTest(profilePath,workspace,home,caseSrc,ckbStore:store)
         @Expect(probe.exitCode,0);@Expect(probe.stdout.contains("\"ok\":true"),true);@Expect(probe.stdout.contains("\"stdinReadable\":true"),true);@Expect(probe.stdout.contains("\"deniedStore\":true"),true);@Expect(exists(Path(workspace).join(".sandbox-write-probe")),false);@Expect(exists(Path(root).join(".sandbox-outside-probe")),false)
     }
+
+    @TestCase
+    public func p1Ut00ThresholdOnlyTextGateRemainsFailedScore(): Unit {
+        let gate = ckbStrictCertificationGate(p1M00Rows(151), p1M00Authority())
+        @Expect(gate.ok, false)
+        @Expect(gate.total, 164)
+        @Expect(gate.unitPass, 151)
+        @Expect(gate.unitPassAt1, 151)
+        @Expect(gate.failed, 13)
+        @Expect(gate.invalid, 0)
+        @Expect(gate.retryUsed, 0)
+        @Expect(gate.fallbackUsed, 0)
+        @Expect(gate.unresolvedTransport, 0)
+        @Expect(gate.diagnostics.size, 1)
+        @Expect(gate.diagnostics[0], "strict_pass_at_1_requirements_not_met")
+        @Expect(gate.artifactManifestHash, "")
+    }
+
+    @TestCase
+    public func p1Pos00ThresholdOnlyPrivateRunCompletesArtifactAudit(): Unit {
+        let fixture = p1M00PrivateRun(151, "pos")
+        let first = ckbStrictCertificationGateFromRunRoot(fixture.root, fixture.authority)
+        let second = ckbStrictCertificationGateFromRunRoot(fixture.root, fixture.authority)
+        @Expect(first.ok, false)
+        @Expect(first.total, 164)
+        @Expect(first.unitPassAt1, 151)
+        @Expect(first.failed, 13)
+        @Expect(first.invalid, 0)
+        @Expect(first.diagnostics.size, 1)
+        @Expect(first.diagnostics[0], "strict_pass_at_1_requirements_not_met")
+        @Expect(p1M00Hash(first.artifactManifestHash), true)
+        @Expect(second.artifactManifestHash, first.artifactManifestHash)
+    }
+
+    @TestCase
+    public func p1Neg00ThresholdExceptionNeverBypassesArtifactMismatch(): Unit {
+        let fixture = p1M00PrivateRun(151, "neg-tamper")
+        let firstCase = Path(fixture.root).join("cases").join("CJ-HUMANEVAL-000").join(CkbAbcdeGroups.D)
+        File.writeTo(firstCase.join("test.log"), "tampered".toArray())
+        let tampered = ckbStrictCertificationGateFromRunRoot(fixture.root, fixture.authority)
+        @Expect(tampered.ok, false)
+        @Expect(tampered.artifactManifestHash, "")
+        @Expect(tampered.diagnostics.size, 1)
+        @Expect(tampered.diagnostics[0], "case_semantic_artifact_mismatch:CJ-HUMANEVAL-000")
+
+        let structural = p1M00PrivateRun(151, "neg-structural")
+        let resultsPath = Path(structural.root).join("results.jsonl")
+        let lines = String.fromUtf8(File.readFrom(resultsPath)).split("\n")
+        let shortened = StringBuilder()
+        for (i in 0..163) { shortened.append(lines[i]); shortened.append("\n") }
+        File.writeTo(resultsPath, shortened.toString().toArray())
+        let invalid = ckbStrictCertificationGateFromRunRoot(structural.root, structural.authority)
+        @Expect(invalid.ok, false)
+        @Expect(invalid.artifactManifestHash, "")
+        @Expect(p7Diagnostics(invalid).contains("result_count_mismatch:163:164"), true)
+        @Expect(p7Diagnostics(invalid).contains("missing_case:CJ-HUMANEVAL-163"), true)
+        @Expect(p7Diagnostics(invalid).contains("strict_pass_at_1_requirements_not_met"), true)
+    }
+
+    @TestCase
+    public func p1Reg00Full164PrivateCertificationAndReleaseGateRemainStrict(): Unit {
+        let complete = p1M00PrivateRun(164, "reg-full")
+        let first = ckbStrictCertificationGateFromRunRoot(complete.root, complete.authority)
+        let second = ckbStrictCertificationGateFromRunRoot(complete.root, complete.authority)
+        @Expect(first.ok, true)
+        @Expect(first.total, 164)
+        @Expect(first.unitPassAt1, 164)
+        @Expect(first.failed, 0)
+        @Expect(first.invalid, 0)
+        @Expect(first.diagnostics.size, 0)
+        @Expect(p1M00Hash(first.artifactManifestHash), true)
+        @Expect(second.artifactManifestHash, first.artifactManifestHash)
+
+        let belowThreshold = p1M00PrivateRun(151, "reg-below")
+        let score = ckbStrictCertificationGateFromRunRoot(belowThreshold.root, belowThreshold.authority)
+        @Expect(score.ok, false)
+        @Expect(score.unitPassAt1, 151)
+    }
 }
 
 private class P7FakeExecutor <: CkbCertificationExecutor {
@@ -168,4 +246,125 @@ private func p7DuplicateRowsD():String {
     let authority=parseCangjieHumanEvalAuthorityManifest(p7Authority());var out=""
     for(i in 0..163){let row=p7Row(i,CkbAbcdeGroups.D);row.authorityCaseHash=authority.rows[i].caseHash;row.authorityTestsHash=authority.rows[i].testsHash;sealCkbCertificationEvidence(row);out+=renderCkbCertificationEvidenceJson(row)+"\n"}
     let duplicate=p7Row(162,CkbAbcdeGroups.D);duplicate.authorityCaseHash=authority.rows[162].caseHash;duplicate.authorityTestsHash=authority.rows[162].testsHash;sealCkbCertificationEvidence(duplicate);out+=renderCkbCertificationEvidenceJson(duplicate)+"\n";out
+}
+
+private class P1M00PrivateRunFixture {
+    public let root: String
+    public let authority: String
+    public init(root: String, authority: String) {
+        this.root = root
+        this.authority = authority
+    }
+}
+
+private func p1M00Rows(strictPassed: Int64): String {
+    let authority = parseCangjieHumanEvalAuthorityManifest(p1M00Authority())
+    let out = StringBuilder()
+    for (i in 0..164) {
+        let row = p7Row(i, CkbAbcdeGroups.D)
+        row.authorityCaseHash = authority.rows[i].caseHash
+        row.authorityTestsHash = authority.rows[i].testsHash
+        row.certificationPassAt1 = i < strictPassed
+        sealCkbCertificationEvidence(row)
+        out.append(renderCkbCertificationEvidenceJson(row))
+        out.append("\n")
+    }
+    out.toString()
+}
+
+private func p1M00PrivateRun(strictPassed: Int64, label: String): P1M00PrivateRunFixture {
+    let root = p7EmptyRoot("p1-m00-${label}-${strictPassed}")
+    let authorityText = p1M00Authority()
+    let authority = parseCangjieHumanEvalAuthorityManifest(authorityText)
+    let runId = "p1-m00-private-run"
+    let knowledgeVersion = "knowledge-v1"
+    let fingerprint = "frozen-fingerprint"
+    let model = "GLM-5.2"
+    let claudeBin = "/bin/echo"
+    let claudeVersion = ckbAbcdeClaudeVersionForTest(executable: claudeBin)
+    let preflight = "p1-m00-preflight"
+    let pointerHash = benchmarkGapSha256("p1-m00-pointer")
+    let candidateChecksum = benchmarkGapSha256("p1-m00-candidate")
+    let frozen = "{\"knowledgeVersion\":\"${knowledgeVersion}\",\"activePointerHash\":\"${pointerHash}\",\"candidateChecksum\":\"${candidateChecksum}\"}"
+    let provider = "{\"provider\":\"fake-transport\",\"model\":\"${model}\",\"claudeCodeVersion\":\"${claudeVersion}\"}"
+    let providerHash = benchmarkGapSha256(provider)
+    let runManifestHash = benchmarkGapSha256("p1-m00-run-manifest")
+    let binaryHash = benchmarkGapSha256("p1-m00-binary")
+    let launchHash = benchmarkGapSha256("p1-m00-launch")
+    let commandHash = benchmarkGapSha256("p1-m00-command")
+    let runManifest = "{\"frozenCandidateManifestHash\":\"${benchmarkGapSha256(frozen)}\",\"providerIdentityHash\":\"${providerHash}\",\"modelVersion\":\"${model}\",\"fingerprint\":\"${fingerprint}\",\"preflightHash\":\"${benchmarkGapSha256(preflight)}\",\"runManifestHash\":\"${runManifestHash}\",\"modelTimeoutSeconds\":180,\"claudeCodeVersion\":\"${claudeVersion}\",\"runId\":\"${runId}\",\"certificationBinaryHash\":\"${binaryHash}\",\"certificationHttpLaunchSpecHash\":\"${launchHash}\",\"certificationHttpCommandHash\":\"${commandHash}\"}"
+    let owner = "{\"schemaVersion\":\"ckb-certification-http-owner-v1\",\"pid\":4242,\"binaryHash\":\"${binaryHash}\",\"launchSpecHash\":\"${launchHash}\",\"commandHash\":\"${commandHash}\"}"
+    let stopped = "{\"schemaVersion\":\"ckb-certification-http-stop-v1\",\"pid\":4242,\"stopMethod\":\"term\",\"aliveAfterStop\":false}"
+    let identity = "{\"ok\":true,\"apiVersion\":\"v1\",\"data\":{\"schemaVersion\":\"ckb-certification-identity-v1\",\"activeVersion\":\"${knowledgeVersion}\",\"pointerIdentityHash\":\"${pointerHash}\",\"candidateChecksum\":\"${candidateChecksum}\"},\"diagnostics\":{}}"
+    let rootPath = Path(root)
+    File.writeTo(rootPath.join("authority.jsonl"), authorityText.toArray())
+    File.writeTo(rootPath.join("preflight.json"), preflight.toArray())
+    File.writeTo(rootPath.join("run-manifest.json"), runManifest.toArray())
+    File.writeTo(rootPath.join("frozen-candidate-manifest.json"), frozen.toArray())
+    File.writeTo(rootPath.join("provider-identity.json"), provider.toArray())
+    File.writeTo(rootPath.join("certification-http-owner.json"), owner.toArray())
+    File.writeTo(rootPath.join("certification-http-stopped.json"), stopped.toArray())
+    File.writeTo(rootPath.join("certification-http-identity.json"), identity.toArray())
+
+    let options = CkbAbcdeRunnerOptions()
+    options.runId = runId
+    options.explicitRunMode = true
+    options.runMode = "certification"
+    options.datasetVersion = authority.datasetVersion
+    options.knowledgeVersion = knowledgeVersion
+    options.modelFingerprint = fingerprint
+    options.expectedModelVersion = model
+    options.claudeBin = claudeBin
+    options.providerIdentityHash = providerHash
+    options.modelTimeoutSeconds = 180
+    options.manifestPath = rootPath.join("authority.jsonl").toString()
+    options.certificationPreflightPath = rootPath.join("preflight.json").toString()
+    options.certificationRunManifestPath = rootPath.join("run-manifest.json").toString()
+    options.providerIdentityArtifactPath = rootPath.join("provider-identity.json").toString()
+    options.frozenCandidateManifestPath = rootPath.join("frozen-candidate-manifest.json").toString()
+
+    let results = StringBuilder()
+    for (i in 0..164) {
+        let authorityRow = authority.rows[i]
+        let groupRoot = rootPath.join("cases").join(authorityRow.caseId).join(CkbAbcdeGroups.D)
+        var rendered = ckbAbcdeWriteSuccessfulFakeTransportCaseForTest(
+            options, authorityRow.caseId, groupRoot.toString())
+        if (i >= strictPassed) {
+            let row = parseCkbCertificationEvidence(rendered)
+            row.certificationPassAt1 = false
+            sealCkbCertificationEvidence(row)
+            rendered = renderCkbCertificationEvidenceJson(row)
+            let testResultPath = groupRoot.join("test-result.json")
+            let testResult = String.fromUtf8(File.readFrom(testResultPath))
+                .replace("\"testExitCode\":0", "\"testExitCode\":1")
+                .replace("\"unitPassAt1\":true", "\"unitPassAt1\":false")
+                .replace("\"failureType\":\"none\"", "\"failureType\":\"unit_failure\"")
+            File.writeTo(testResultPath, testResult.toArray())
+            File.writeTo(groupRoot.join("result-evidence.json"), rendered.toArray())
+        }
+        results.append(rendered)
+        results.append("\n")
+    }
+    let resultsText = results.toString()
+    File.writeTo(rootPath.join("results.jsonl"), resultsText.toArray())
+    let provenance = "{\"schemaVersion\":\"ckb-certification-runner-provenance-v1\",\"runId\":\"${runId}\",\"canonicalRunRootHash\":\"${benchmarkGapSha256(canonicalize(rootPath).toString())}\",\"runManifestHash\":\"${runManifestHash}\",\"runnerBinaryHash\":\"${binaryHash}\",\"launchSpecHash\":\"${launchHash}\",\"commandHash\":\"${commandHash}\",\"authorityHash\":\"${benchmarkGapSha256(authorityText)}\",\"caseCount\":164,\"resultManifestHash\":\"${benchmarkGapSha256(resultsText)}\"}"
+    File.writeTo(rootPath.join("runner-provenance.json"), provenance.toArray())
+    P1M00PrivateRunFixture(root, authorityText)
+}
+
+private func p1M00Authority(): String {
+    cangjieHumanEvalRenderAuthorityManifest(
+        buildCangjieHumanEvalManifest("cangjie_eval/cases/Cangjie-HumanEval", ""))
+}
+
+private func p1M00Hash(value: String): Bool {
+    let runes = value.toRuneArray()
+    if (runes.size != 71 || !value.startsWith("sha256:")) { return false }
+    for (i in 7..71) {
+        let rune = runes[i]
+        if (!((rune >= r'0' && rune <= r'9') || (rune >= r'a' && rune <= r'f'))) {
+            return false
+        }
+    }
+    true
 }

@@ -183,7 +183,9 @@ public func ckbStrictCertificationGateFromRunRoot(runRoot: String, authorityMani
     let gate=CkbStrictCertificationGateResult();if(runRoot.trimAscii()==""){gate.fail("run_root_required");return gate};let root=Path(runRoot);let resultsPath=root.join("results.jsonl")
     let results=try{String.fromUtf8(File.readFrom(resultsPath))}catch(_:Exception){gate.fail("run_results_unreadable");return gate}
     let parsed=ckbStrictCertificationGate(results,authorityManifestText)
-    if(!parsed.ok){return parsed}
+    let scoreThresholdOnly=!parsed.ok&&parsed.diagnostics.size==1&&
+        parsed.diagnostics[0]=="strict_pass_at_1_requirements_not_met"
+    if(!parsed.ok&&!scoreThresholdOnly){return parsed}
     let authority=parseCangjieHumanEvalAuthorityManifest(authorityManifestText)
     let frozen=try{String.fromUtf8(File.readFrom(root.join("frozen-candidate-manifest.json")))}catch(_:Exception){gate.fail("frozen_candidate_manifest_unreadable");return gate}
     let provider=try{String.fromUtf8(File.readFrom(root.join("provider-identity.json")))}catch(_:Exception){gate.fail("provider_identity_unreadable");return gate}

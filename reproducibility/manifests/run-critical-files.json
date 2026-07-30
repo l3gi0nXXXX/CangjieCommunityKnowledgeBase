@@ -3,7 +3,7 @@
   "files": [
     {"path":"src/main.cj","status":"present","sha256":"sha256:4084687ace5eb0f0aec7160b2a5988c6030be90fa6ae40ad7ffd60f838ac5deb"},
     {"path":"src/cangjie_eval_abcde_runner.cj","status":"present","sha256":"sha256:5cdc331056da3482da097256e015576ea9ad4d742d6d5190ecf7c81b0c6c9fb3"},
-    {"path":"src/cangjie_strict_certification.cj","status":"present","sha256":"sha256:631a0ffc1d472d72867bb4635046632ce79b72a5dc5e470339c942359f0ef8bf"},
+    {"path":"src/cangjie_strict_certification.cj","status":"present","sha256":"sha256:781ee706c1441f4111c97a4573ff0df20191e5e0a1af03ff6e35d0f0c5ea816d"},
     {"path":"src/cangjie_eval_knowledge_audit.cj","status":"present","sha256":"sha256:de1ed91483fdda2eade6939208098d6e89f28af4d0eac0527812748f3ad20e73"},
     {"path":"src/cangjie_certification_preflight.cj","status":"present","sha256":"sha256:a2245e1de94166b6230efe14ea8d1c3895738a316c5e692447435a7e945668d9"},
     {"path":"src/cangjie_humaneval_manifest.cj","status":"present","sha256":"sha256:3a35dc7bb3ec0522ea48fd8daf71bda56ccd2fd8f9660b4097f6a8c111c71148"},
