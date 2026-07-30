@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/l3gi0nXXXX/CangjieCommunityKnowledgeBase/reproducibility/authority-delivery.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "mode", "licenseId", "licenseEvidenceHash", "redistributionAllowed", "anonymousPublicAccess", "repository", "commit", "tree", "path", "fileHashes", "builderHash", "sourceMaterialsHash", "bundleHash", "authorityHash", "datasetVersion", "diagnostic"],
+  "properties": {
+    "schemaVersion": {"const": "ckb-authority-delivery-v1"},
+    "mode": {"enum": ["bundled", "public_rebuild", "blocked"]},
+    "licenseId": {"type": "string"},
+    "licenseEvidenceHash": {"type": "string"},
+    "redistributionAllowed": {"type": "boolean"},
+    "anonymousPublicAccess": {"type": "boolean"},
+    "repository": {"type": "string"},
+    "commit": {"type": "string"},
+    "tree": {"type": "string"},
+    "path": {"type": "string"},
+    "fileHashes": {"type": "array", "items": {"type": "string"}},
+    "builderHash": {"type": "string"},
+    "sourceMaterialsHash": {"type": "string"},
+    "bundleHash": {"type": "string"},
+    "authorityHash": {"type": "string"},
+    "datasetVersion": {"type": "string"},
+    "diagnostic": {"type": "string"}
+  }
+}
