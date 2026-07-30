@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ckb-knowledge-selection.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["identity", "recordKind", "decision", "reason"],
+  "properties": {
+    "identity": {"type": "string", "minLength": 1},
+    "recordKind": {"type": "string", "minLength": 1},
+    "decision": {"enum": ["selected", "excluded"]},
+    "reason": {"enum": ["knowledge_plane", "evaluation_plane"]}
+  }
+}

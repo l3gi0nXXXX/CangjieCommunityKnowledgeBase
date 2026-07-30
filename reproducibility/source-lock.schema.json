@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ckb-source-lock.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "sources"],
+  "properties": {
+    "schemaVersion": {"const": "ckb-source-lock-v1"},
+    "sources": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["sourceId", "sourceType", "license"],
+        "properties": {
+          "sourceId": {"type": "string", "minLength": 1},
+          "sourceType": {"enum": ["external_git", "generated"]},
+          "repository": {"type": "string"},
+          "commit": {"type": "string"},
+          "tree": {"type": "string"},
+          "path": {"type": "string"},
+          "fileHash": {"type": "string"},
+          "license": {"type": "string", "minLength": 1},
+          "authMode": {"type": "string"},
+          "generatorId": {"type": "string"},
+          "generatorVersion": {"type": "string"},
+          "generatorSourceHash": {"type": "string"},
+          "inputHashes": {"type": "array", "items": {"type": "string"}},
+          "outputHash": {"type": "string"}
+        },
+        "allOf": [
+          {
+            "if": {"properties": {"sourceType": {"const": "external_git"}}},
+            "then": {
+              "required": ["repository", "commit", "tree", "path", "fileHash", "authMode"],
+              "properties": {"authMode": {"const": "anonymous"}}
+            }
+          },
+          {
+            "if": {"properties": {"sourceType": {"const": "generated"}}},
+            "then": {
+              "required": ["generatorId", "generatorVersion", "generatorSourceHash", "inputHashes", "outputHash"]
+            }
+          }
+        ]
+      }
+    }
+  }
+}
