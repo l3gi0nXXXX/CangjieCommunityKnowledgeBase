@@ -40,24 +40,45 @@ private class P9FakeBundleBackend <: CkbReproBundleBackend {
 
 private class P9FakeBundleReadBackend <: CkbReproBundleReadBackend {
     public let roots = HashMap<String, HashMap<String, Array<UInt8>>>()
-    public let listings = HashMap<String, ArrayList<String>>()
+    public let listings =
+        HashMap<String, ArrayList<CkbReproBundleReadEntry>>()
+    public let secondListings =
+        HashMap<String, ArrayList<CkbReproBundleReadEntry>>()
     public var rootExistsCalls: Int64 = 0
     public var listCalls: Int64 = 0
     public var readCalls: Int64 = 0
     public var failList: Bool = false
+    public var failReadPath: String = ""
+    public var secondManifestBytes: Array<UInt8> = Array<UInt8>()
+    public var manifestReadCalls: Int64 = 0
     public init() {}
     public func rootExists(root: String): Bool {
         this.rootExistsCalls += 1
         this.roots.contains(root)
     }
-    public func list(root: String): ArrayList<String> {
+    public func list(root: String): ArrayList<CkbReproBundleReadEntry> {
         this.listCalls += 1
         if (this.failList) { throw Exception("fake list failure") }
-        if (!this.listings.contains(root)) { return ArrayList<String>() }
+        if (this.listCalls > 1 && this.secondListings.contains(root)) {
+            return this.secondListings[root]
+        }
+        if (!this.listings.contains(root)) {
+            return ArrayList<CkbReproBundleReadEntry>()
+        }
         this.listings[root]
     }
     public func read(root: String, relativePath: String): Array<UInt8> {
         this.readCalls += 1
+        if (relativePath == this.failReadPath) {
+            throw Exception("fake read failure")
+        }
+        if (relativePath == "RELEASE-MANIFEST.json") {
+            this.manifestReadCalls += 1
+            if (this.manifestReadCalls > 1 &&
+                this.secondManifestBytes.size > 0) {
+                return this.secondManifestBytes
+            }
+        }
         if (!this.roots.contains(root) ||
             !this.roots[root].contains(relativePath)) {
             return Array<UInt8>()
@@ -174,11 +195,7 @@ public class CkbReproBundleTest {
         unicodeAssets.add(p9Asset("资料/结果🙂.json", "仓颉🙂"))
         let seeded = p9ReadableBundle("/tmp/ckb-p9/read-unicode",
             unicodeAssets, false)
-        let parsed = parseCkbReproBundleManifest(
-            seeded[0].read(seeded[1], "RELEASE-MANIFEST.json"))
-        @Expect(parsed[0].ok, true)
-        @Expect(validateCkbReproBundleManifest(
-            seeded[1], parsed[1], seeded[0]).ok, true)
+        @Expect(p9Load(seeded).contract.ok, true)
 
         let emptyAssets = ArrayList<CkbReproBundleAsset>()
         emptyAssets.add(p9Asset("assets/empty.txt", ""))
@@ -197,34 +214,48 @@ public class CkbReproBundleTest {
                 "\"inputSetHash\":")
         @Expect(parseCkbReproBundleManifest(reordered.toArray())[0].diagnostic,
             "bundle_manifest_field_contract_invalid")
+
+        let quoted = ArrayList<CkbReproBundleAsset>()
+        quoted.add(p9Asset("资料/\"结果🙂.json", "仓颉🙂"))
+        let quotedManifest = writeCkbReproReleaseManifest(quoted)
+        let quotedParsed =
+            parseCkbReproBundleManifest(quotedManifest.toArray())
+        @Expect(quotedParsed[0].ok, true)
+        @Expect(renderCkbReproBundleManifest(quotedParsed[1]),
+            quotedManifest)
+        @Expect(p9Load(p9ReadableBundle(
+            "/tmp/ckb-p9/read-quote", quoted, false)).contract.ok, true)
+        @Expect(validateCkbReproBundleRelativePath(
+            "资料/\t结果.json").diagnostic, "bundle_path_invalid")
     }
 
     @TestCase
     public func p9Pos01AndP8Pos04BundleReadContract(): Unit {
         let seeded = p9ReadableBundle("/tmp/ckb-p9/read-positive",
             p9Assets(false), true)
-        let manifestBytes = seeded[0].read(
-            seeded[1], "RELEASE-MANIFEST.json")
-        let parsed = parseCkbReproBundleManifest(manifestBytes)
-        @Expect(parsed[0].ok, true)
-        let validated = validateCkbReproBundleManifest(
-            seeded[1], parsed[1], seeded[0])
-        @Expect(validated.ok, true)
-        @Expect(validated.canonicalJson,
+        let loaded = p9Load(seeded)
+        @Expect(loaded.contract.ok, true)
+        @Expect(loaded.contract.canonicalJson,
             writeCkbReproReleaseManifest(p9Assets(false)))
-        @Expect(validated.manifestHash, ckbReproBundleHash(manifestBytes))
+        @Expect(loaded.manifest.assets.size, 2)
+        @Expect(loaded.assetProofs.size, 2)
+        @Expect(loaded.manifest.assets[0].bytes.size, 0)
+        @Expect(loaded.assetProofs[0].sha256,
+            loaded.manifest.assets[0].sha256)
+        @Expect(loaded.proofSetHash.startsWith("sha256:"), true)
         @Expect(seeded[0].rootExistsCalls, 1)
-        @Expect(seeded[0].listCalls, 1)
+        @Expect(seeded[0].listCalls, 2)
         @Expect(seeded[0].readCalls, 4)
+        seeded[0].roots[seeded[1]]["assets/a.txt"] = "ALPHA".toArray()
+        @Expect(loaded.assetProofs[0].sha256,
+            loaded.manifest.assets[0].sha256)
     }
 
     @TestCase
     public func p9Neg01BundleReadContract(): Unit {
         let missingRoot = P9FakeBundleReadBackend()
-        let validManifest = parseCkbReproBundleManifest(
-            writeCkbReproReleaseManifest(p9Assets(false)).toArray())[1]
-        @Expect(validateCkbReproBundleManifest(
-            "/tmp/ckb-p9/missing", validManifest, missingRoot).diagnostic,
+        @Expect(loadAndValidateCkbReproBundle(
+            "/tmp/ckb-p9/missing", missingRoot).contract.diagnostic,
             "bundle_root_missing")
 
         let extra = p9ReadableBundle("/tmp/ckb-p9/read-extra",
@@ -236,27 +267,29 @@ public class CkbReproBundleTest {
         let missing = p9ReadableBundle("/tmp/ckb-p9/read-missing",
             p9Assets(false), false)
         missing[0].roots[missing[1]].remove("assets/a.txt")
-        missing[0].listings[missing[1]] = ArrayList<String>()
-        missing[0].listings[missing[1]].add("RELEASE-MANIFEST.json")
-        missing[0].listings[missing[1]].add("assets/b.txt")
+        missing[0].listings[missing[1]] =
+            ArrayList<CkbReproBundleReadEntry>()
+        missing[0].listings[missing[1]].add(p9ReadEntry(
+            missing[1], "RELEASE-MANIFEST.json",
+            missing[0].roots[missing[1]]["RELEASE-MANIFEST.json"]))
+        missing[0].listings[missing[1]].add(p9ReadEntry(
+            missing[1], "assets/b.txt",
+            missing[0].roots[missing[1]]["assets/b.txt"]))
         @Expect(p9ParseAndValidate(missing).diagnostic,
             "bundle_root_missing_asset")
 
         let duplicateListing = p9ReadableBundle(
             "/tmp/ckb-p9/read-duplicate", p9Assets(false), false)
-        duplicateListing[0].listings[duplicateListing[1]].add("assets/a.txt")
+        duplicateListing[0].listings[duplicateListing[1]].add(
+            p9ReadEntry(duplicateListing[1], "assets/a.txt",
+                "alpha".toArray()))
         @Expect(p9ParseAndValidate(duplicateListing).diagnostic,
             "bundle_root_asset_duplicate")
 
         let changedManifest = p9ReadableBundle(
             "/tmp/ckb-p9/read-manifest-change", p9Assets(false), false)
-        let parsedBeforeChange = parseCkbReproBundleManifest(
-            changedManifest[0].read(changedManifest[1],
-                "RELEASE-MANIFEST.json"))[1]
-        changedManifest[0].roots[changedManifest[1]][
-            "RELEASE-MANIFEST.json"] = "{}".toArray()
-        @Expect(validateCkbReproBundleManifest(changedManifest[1],
-            parsedBeforeChange, changedManifest[0]).diagnostic,
+        changedManifest[0].secondManifestBytes = "{}".toArray()
+        @Expect(p9ParseAndValidate(changedManifest).diagnostic,
             "bundle_manifest_bytes_changed")
 
         let tampered = p9ReadableBundle("/tmp/ckb-p9/read-tampered",
@@ -311,6 +344,56 @@ public class CkbReproBundleTest {
         backendFailure[0].failList = true
         @Expect(p9ParseAndValidate(backendFailure).diagnostic,
             "bundle_read_failed")
+
+        let manifestReadFailure = p9ReadableBundle(
+            "/tmp/ckb-p9/read-manifest-failure", p9Assets(false), false)
+        manifestReadFailure[0].failReadPath = "RELEASE-MANIFEST.json"
+        @Expect(p9ParseAndValidate(manifestReadFailure).diagnostic,
+            "bundle_read_failed")
+
+        let assetReadFailure = p9ReadableBundle(
+            "/tmp/ckb-p9/read-asset-failure", p9Assets(false), false)
+        assetReadFailure[0].failReadPath = "assets/a.txt"
+        @Expect(p9ParseAndValidate(assetReadFailure).diagnostic,
+            "bundle_read_failed")
+
+        for (kind in ["symlink", "directory", "special"]) {
+            let unsafeEntry = p9ReadableBundle(
+                "/tmp/ckb-p9/read-${kind}", p9Assets(false), false)
+            unsafeEntry[0].listings[unsafeEntry[1]][1].kind = kind
+            @Expect(p9ParseAndValidate(unsafeEntry).diagnostic,
+                "bundle_root_entry_type_invalid")
+        }
+        let outside = p9ReadableBundle(
+            "/tmp/ckb-p9/read-outside", p9Assets(false), false)
+        outside[0].listings[outside[1]][1].withinRoot = false
+        outside[0].listings[outside[1]][1].canonicalPath =
+            "/tmp/outside/a.txt"
+        @Expect(p9ParseAndValidate(outside).diagnostic,
+            "bundle_root_entry_outside")
+
+        let extraAfterList = p9ReadableBundle(
+            "/tmp/ckb-p9/read-drift-extra", p9Assets(false), false)
+        p9SetStableSecondListing(extraAfterList)
+        extraAfterList[0].secondListings[extraAfterList[1]].add(
+            p9ReadEntry(extraAfterList[1], "extra.txt", "extra".toArray()))
+        @Expect(p9ParseAndValidate(extraAfterList).diagnostic,
+            "bundle_root_listing_changed")
+
+        let identityDrift = p9ReadableBundle(
+            "/tmp/ckb-p9/read-drift-identity", p9Assets(false), false)
+        p9SetStableSecondListing(identityDrift)
+        identityDrift[0].secondListings[identityDrift[1]][1].identity =
+            "replaced-identity"
+        @Expect(p9ParseAndValidate(identityDrift).diagnostic,
+            "bundle_root_listing_changed")
+
+        let sizeDrift = p9ReadableBundle(
+            "/tmp/ckb-p9/read-drift-size", p9Assets(false), false)
+        p9SetStableSecondListing(sizeDrift)
+        sizeDrift[0].secondListings[sizeDrift[1]][1].size += 1
+        @Expect(p9ParseAndValidate(sizeDrift).diagnostic,
+            "bundle_root_listing_changed")
     }
 
     @TestCase
@@ -319,8 +402,8 @@ public class CkbReproBundleTest {
             p9Assets(false), false)
         let reverse = p9ReadableBundle("/tmp/ckb-p9/read-reverse",
             p9Assets(false), true)
-        let forwardResult = p9ParseAndValidate(forward)
-        let reverseResult = p9ParseAndValidate(reverse)
+        let forwardResult = p9Load(forward).contract
+        let reverseResult = p9Load(reverse).contract
         @Expect(forwardResult.ok, true)
         @Expect(reverseResult.ok, true)
         @Expect(forwardResult.canonicalJson, reverseResult.canonicalJson)
@@ -361,7 +444,7 @@ private func p9ReadableBundle(root: String,
     (P9FakeBundleReadBackend, String) {
     let backend = P9FakeBundleReadBackend()
     backend.roots[root] = HashMap<String, Array<UInt8>>()
-    backend.listings[root] = ArrayList<String>()
+    backend.listings[root] = ArrayList<CkbReproBundleReadEntry>()
     p9ReadPut(backend, root, "RELEASE-MANIFEST.json",
         writeCkbReproReleaseManifest(assets).toArray())
     if (reverseListing) {
@@ -380,13 +463,43 @@ private func p9ReadableBundle(root: String,
 private func p9ReadPut(backend: P9FakeBundleReadBackend, root: String,
     relativePath: String, bytes: Array<UInt8>): Unit {
     backend.roots[root][relativePath] = bytes
-    backend.listings[root].add(relativePath)
+    backend.listings[root].add(p9ReadEntry(root, relativePath, bytes))
 }
 
 private func p9ParseAndValidate(
     seeded: (P9FakeBundleReadBackend, String)): CkbReproContractResult {
-    let parsed = parseCkbReproBundleManifest(
-        seeded[0].read(seeded[1], "RELEASE-MANIFEST.json"))
-    if (!parsed[0].ok) { return parsed[0] }
-    validateCkbReproBundleManifest(seeded[1], parsed[1], seeded[0])
+    p9Load(seeded).contract
+}
+
+private func p9Load(seeded: (P9FakeBundleReadBackend, String)):
+    CkbReproBundleLoadResult {
+    loadAndValidateCkbReproBundle(seeded[1], seeded[0])
+}
+
+private func p9ReadEntry(root: String, relativePath: String,
+    bytes: Array<UInt8>): CkbReproBundleReadEntry {
+    let entry = CkbReproBundleReadEntry()
+    entry.relativePath = relativePath
+    entry.kind = "regular"
+    entry.canonicalPath = "${root}/${relativePath}"
+    entry.withinRoot = true
+    entry.identity = "fake:${ckbReproBundleHash(bytes)}"
+    entry.size = bytes.size
+    entry
+}
+
+private func p9SetStableSecondListing(
+    seeded: (P9FakeBundleReadBackend, String)): Unit {
+    seeded[0].secondListings[seeded[1]] =
+        ArrayList<CkbReproBundleReadEntry>()
+    for (entry in seeded[0].listings[seeded[1]]) {
+        let copy = CkbReproBundleReadEntry()
+        copy.relativePath = entry.relativePath
+        copy.kind = entry.kind
+        copy.canonicalPath = entry.canonicalPath
+        copy.withinRoot = entry.withinRoot
+        copy.identity = entry.identity
+        copy.size = entry.size
+        seeded[0].secondListings[seeded[1]].add(copy)
+    }
 }
