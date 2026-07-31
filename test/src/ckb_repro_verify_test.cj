@@ -529,7 +529,10 @@ public class CkbReproVerifyTest {
             let loaded = validateCkbReproBundleManifest(bundle[0],
                 CkbReproFilesystemBundleReadBackend())
             @Expect(loaded.contract.ok, true)
-            let contract = p8AuthorityContract(loaded)
+            let contract = p8AuthorityContract("p0", reference)
+            @Expect(buildCkbReproReleaseAuthorityContract(
+                p8AuthorityInputs("p0", reference),
+                "public_rebuild")[0].ok, true)
             let preflight = p8AuthorityPreflight(loaded)
             let authority = CkbReproCanonicalReleaseAssetAuthority(contract)
             let releaseCommit =
@@ -547,15 +550,38 @@ public class CkbReproVerifyTest {
                 multipartBundle[0], CkbReproFilesystemBundleReadBackend())
             @Expect(multipartLoaded.contract.ok, true)
             @Expect(CkbReproCanonicalReleaseAssetAuthority(
-                p8AuthorityContract(multipartLoaded)).validate(
+                p8AuthorityContract("p0", reference)).validate(
                 multipartLoaded, reference, releaseCommit,
                 p8AuthorityPreflight(multipartLoaded)).ok, true)
 
-            let missing = p8AuthorityContract(loaded,
+            let multiRoleBundle = p8CreateBundle(
+                "${root}/multi-role-bundle", "assets/unused.txt", "p0",
+                reference: reference)
+            let multiRoleLoaded = validateCkbReproBundleManifest(
+                multiRoleBundle[0], CkbReproFilesystemBundleReadBackend())
+            @Expect(multiRoleLoaded.contract.ok, true)
+            let multiRoleContract = p8AuthorityContract("p0", reference)
+            @Expect(CkbReproCanonicalReleaseAssetAuthority(
+                multiRoleContract).validate(multiRoleLoaded, reference,
+                releaseCommit, p8AuthorityPreflight(multiRoleLoaded)).ok,
+                true)
+            let duplicateEvidence = CkbReproReleaseAuthorityEvidence()
+            duplicateEvidence.role = multiRoleContract.expected[0].role
+            duplicateEvidence.logicalAsset =
+                multiRoleContract.expected[0].logicalAsset
+            duplicateEvidence.size = multiRoleContract.expected[0].size
+            duplicateEvidence.sha256 = multiRoleContract.expected[0].sha256
+            multiRoleContract.expected.add(duplicateEvidence)
+            @Expect(CkbReproCanonicalReleaseAssetAuthority(
+                multiRoleContract).validate(multiRoleLoaded, reference,
+                releaseCommit, p8AuthorityPreflight(multiRoleLoaded)).diagnostic,
+                "release_authority_contract_mismatch")
+
+            let missing = p8AuthorityContract("p0", reference,
                 omittedRole: "p5_public_evidence")
             @Expect(CkbReproCanonicalReleaseAssetAuthority(missing).validate(
                 loaded, reference, releaseCommit, preflight).diagnostic,
-                "release_authority_role_missing")
+                "release_authority_layout_incomplete")
 
             preflight.inputHashes[0] = p8Hash("mismatch")
             @Expect(authority.validate(
@@ -688,12 +714,16 @@ public class CkbReproVerifyTest {
 
             let backend = CkbReproFilesystemBundleReadBackend()
             let listing = backend.list(bundle[0])
-            let asset = p8FindEntry(listing, "contracts/p0.json")
-            File.writeTo(Path(bundle[0]).join("contracts/replacement.txt"),
+            let asset = p8FindEntry(listing,
+                "reproducibility/RELEASE-MANIFEST.schema.json")
+            File.writeTo(Path(bundle[0]).join(
+                "reproducibility/replacement.txt"),
                 "second".toArray())
             _ = launch("/bin/mv", [
-                Path(bundle[0]).join("contracts/replacement.txt").toString(),
-                Path(bundle[0]).join("contracts/p0.json").toString()
+                Path(bundle[0]).join(
+                    "reproducibility/replacement.txt").toString(),
+                Path(bundle[0]).join(
+                    "reproducibility/RELEASE-MANIFEST.schema.json").toString()
             ]).wait()
             let swapped = backend.open(bundle[0], asset)
             try {
@@ -763,7 +793,7 @@ public class CkbReproVerifyTest {
             let loaded = validateCkbReproBundleManifest(
                 nested[0], CkbReproFilesystemBundleReadBackend())
             @Expect(loaded.contract.ok, true)
-            @Expect(loaded.manifest.assets.size, 14)
+            @Expect(loaded.manifest.assets.size, 41)
 
             let executor = P8RunExecutor()
             executor.failAt = "restore"
@@ -955,33 +985,14 @@ private func p8CreateBundle(root: String, relativePath: String,
         p8ReferenceTemplate(), multipartP2!: Bool = false): (String, String) {
     let canonicalRoot = p8ResetRoot(root)
     let assets = ArrayList<CkbReproBundleAsset>()
-    let rows = [
-        ("contracts/p0.json", content, "p0_manifest"),
-        ("contracts/p1.json", "p1", "p1_score_contract"),
-        ("snapshots/p2.tar", "p2", "p2_logical_snapshot"),
-        ("snapshots/p3.snapshot", "p3", "p3_qdrant_snapshot"),
-        ("proofs/p4.json", "p4", "p4_build_proof"),
-        ("evidence/p5.json", "p5", "p5_public_evidence"),
-        ("locks/p6.json", "p6", "p6_environment_lock"),
-        ("docs/reproduce.md", "p7", "p7_documentation"),
-        ("reference/reference-run.json",
-            renderCkbReproReferenceManifest(reference), "p8_reference"),
-        ("locks/source.json", "source", "source_lock"),
-        ("locks/authority-delivery.json", "authority",
-            "authority_delivery"),
-        ("reports/portable.json", "portable", "portable_report"),
-        ("LICENSE", "license", "license"),
-        ("release/release-commit.txt",
-            "89abcdef0123456789abcdef0123456789abcdef",
-            "release_commit")
-    ]
+    let rows = p8AuthorityRows(content, reference)
     for (row in rows) {
         if (multipartP2 && row[2] == "p2_logical_snapshot") {
             let logicalBytes = row[1].toArray()
             for (index in 0..2) {
                 let bytes = [logicalBytes[index]]
                 let asset = CkbReproBundleAsset()
-                asset.relativePath = "${row[0]}.part-000${index}"
+                asset.relativePath = "${row[0]}.part-000${index + 1}"
                 asset.bytes = bytes
                 asset.size = bytes.size
                 asset.sha256 = p8HashBytes(bytes)
@@ -1026,23 +1037,79 @@ private func p8CreateBundle(root: String, relativePath: String,
     (canonicalRoot, computeCkbReproBundleInputSetHash(assets))
 }
 
-private func p8AuthorityContract(loaded: CkbReproBundleLoadResult,
+private func p8AuthorityRows(content: String,
+    reference: CkbReproReferenceManifest):
+    Array<(String, String, String)> {
+    [
+        ("README.md", "readme", "p7_documentation"),
+        ("docs/reproducibility/README.md", "docs", "p7_documentation"),
+        ("docs/reproducibility/quick-start.md", "quick", "p7_documentation"),
+        ("docs/reproducibility/restore-knowledge-base.md", "restore", "p7_documentation"),
+        ("docs/reproducibility/rebuild-from-source.md", "rebuild", "p7_documentation"),
+        ("docs/reproducibility/configure-claude-glm.md", "glm", "p7_documentation"),
+        ("docs/reproducibility/run-humaneval-164.md", "run", "p7_documentation"),
+        ("docs/reproducibility/verify-strict-pass-at-1.md", "verify", "p7_documentation"),
+        ("docs/reproducibility/result-interpretation.md", "result", "p7_documentation"),
+        ("docs/reproducibility/troubleshooting.md", "trouble", "p7_documentation"),
+        ("docs/reproducibility/release-maintainer-runbook.md", "maintain", "p7_documentation"),
+        ("reproducibility/RELEASE-MANIFEST.schema.json", content, "p0_manifest"),
+        ("reproducibility/source-lock.schema.json", "source-schema", "source_lock"),
+        ("reproducibility/source-inventory.schema.json", "inventory-schema", "source_lock"),
+        ("reproducibility/knowledge-selection.schema.json", "selection-schema", "p0_manifest"),
+        ("reproducibility/authority-delivery.schema.json", "authority-schema", "authority_delivery"),
+        ("reproducibility/portable-path-policy.schema.json", "path-schema", "portable_report"),
+        ("reproducibility/run-critical-files.schema.json", "critical-schema", "p4_build_proof"),
+        ("reproducibility/RELEASE-SIGNING-KEY.asc", "public-key", "p0_manifest"),
+        ("reproducibility/configs/provider.example.env", "provider", "p6_environment_lock"),
+        ("reproducibility/configs/ckb.example.conf", "config", "p6_environment_lock"),
+        ("reproducibility/configs/experiment-profile.json", "experiment", "p1_score_contract"),
+        ("reproducibility/manifests/source-lock.json", "source-lock", "source_lock"),
+        ("reproducibility/manifests/source-inventory.jsonl", "inventory", "source_lock"),
+        ("reproducibility/manifests/portable-path-policy.json", "path-policy", "portable_report"),
+        ("reproducibility/manifests/run-critical-files.json", "critical", "p4_build_proof"),
+        ("reproducibility/manifests/knowledge-selection.jsonl", "selection", "p0_manifest"),
+        ("reproducibility/manifests/environment-lock.json", "environment", "p6_environment_lock"),
+        ("reproducibility/manifests/authority-delivery.json", "authority", "authority_delivery"),
+        ("reproducibility/manifests/historical-reference-run.json", "historical", "p0_manifest"),
+        ("reproducibility/manifests/reference-run.json",
+            renderCkbReproReferenceManifest(reference), "p8_reference"),
+        ("reproducibility/licenses/THIRD_PARTY_NOTICES.md", "licenses", "license"),
+        ("ckb-logical-snapshot.tar.zst", "p2", "p2_logical_snapshot"),
+        ("qdrant-collection.snapshot", "p3", "p3_qdrant_snapshot"),
+        ("source-materials-manifest.json", "sources", "source_lock"),
+        ("authority-source-materials.json", "authority-source", "authority_delivery"),
+        ("ckb-public-reference-evidence.tar.zst", "evidence", "p5_public_evidence"),
+        ("leakage-report.json", "leakage", "portable_report"),
+        ("portable-path-report.json", "paths", "portable_report"),
+        ("retrieval-parity.json", "parity", "portable_report"),
+        ("release/release-commit.txt",
+            "89abcdef0123456789abcdef0123456789abcdef", "release_commit")
+    ]
+}
+
+private func p8AuthorityContract(content: String,
+    reference: CkbReproReferenceManifest,
     omittedRole!: String = ""): CkbReproReleaseAuthorityContract {
-    let contract = CkbReproReleaseAuthorityContract()
-    let seen = HashSet<String>()
-    for (asset in loaded.manifest.assets) {
-        if (asset.role == omittedRole) { continue }
-        let key = asset.role + "\t" + asset.logicalAsset
-        if (seen.contains(key)) { continue }
-        seen.add(key)
+    buildCkbReproReleaseAuthorityContract(
+        p8AuthorityInputs(content, reference, omittedRole: omittedRole),
+        "public_rebuild")[1]
+}
+
+private func p8AuthorityInputs(content: String,
+    reference: CkbReproReferenceManifest,
+    omittedRole!: String = ""):
+    ArrayList<CkbReproReleaseAuthorityEvidence> {
+    let inputs = ArrayList<CkbReproReleaseAuthorityEvidence>()
+    for (row in p8AuthorityRows(content, reference)) {
+        if (row[2] == omittedRole) { continue }
         let evidence = CkbReproReleaseAuthorityEvidence()
-        evidence.role = asset.role
-        evidence.logicalAsset = asset.logicalAsset
-        evidence.size = asset.logicalSize
-        evidence.sha256 = asset.logicalSha256
-        contract.expected.add(evidence)
+        evidence.role = row[2]
+        evidence.logicalAsset = row[0]
+        evidence.size = row[1].toArray().size
+        evidence.sha256 = p8Hash(row[1])
+        inputs.add(evidence)
     }
-    contract
+    inputs
 }
 
 private func p8AuthorityPreflight(loaded: CkbReproBundleLoadResult):

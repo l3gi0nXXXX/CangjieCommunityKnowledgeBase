@@ -53,6 +53,9 @@ private class P9FakeBundleReadBackend <: CkbReproBundleReadBackend {
     public var secondManifestBytes: Array<UInt8> = Array<UInt8>()
     public var manifestReadCalls: Int64 = 0
     public var closeCalls: Int64 = 0
+    public var negativeReadPath: String = ""
+    public var oversizedReadPath: String = ""
+    public var throwingClosePath: String = ""
     public var maxBufferSize: Int64 = 0
     public let observedOverrides =
         HashMap<String, CkbReproBundleReadEntry>()
@@ -97,25 +100,32 @@ private class P9FakeBundleReadBackend <: CkbReproBundleReadBackend {
             expected.relativePath)) {
             p9CopyReadEntry(this.observedOverrides[expected.relativePath])
         } else { p9CopyReadEntry(expected) }
-        P9FakeBundleReadHandle(this, bytes, observed,
+        P9FakeBundleReadHandle(this, expected.relativePath, bytes, observed,
             expected.relativePath != this.noFollowFalsePath)
     }
 }
 
 private class P9FakeBundleReadHandle <: CkbReproBundleReadHandle {
     private let backend: P9FakeBundleReadBackend
+    private let relativePath: String
     private let bytes: Array<UInt8>
     private let observed: CkbReproBundleReadEntry
     private let followsSafely: Bool
     private var offset: Int64 = 0
-    public init(backend: P9FakeBundleReadBackend, bytes: Array<UInt8>,
+    public init(backend: P9FakeBundleReadBackend, relativePath: String,
+        bytes: Array<UInt8>,
         observed: CkbReproBundleReadEntry, followsSafely: Bool) {
         this.backend = backend
+        this.relativePath = relativePath
         this.bytes = bytes
         this.observed = observed
         this.followsSafely = followsSafely
     }
     public func read(buffer: Array<UInt8>): Int64 {
+        if (this.relativePath == this.backend.negativeReadPath) { return -1 }
+        if (this.relativePath == this.backend.oversizedReadPath) {
+            return buffer.size + 1
+        }
         if (buffer.size > this.backend.maxBufferSize) {
             this.backend.maxBufferSize = buffer.size
         }
@@ -131,7 +141,12 @@ private class P9FakeBundleReadHandle <: CkbReproBundleReadHandle {
         p9CopyReadEntry(this.observed)
     }
     public func noFollow(): Bool { this.followsSafely }
-    public func close(): Unit { this.backend.closeCalls += 1 }
+    public func close(): Unit {
+        this.backend.closeCalls += 1
+        if (this.relativePath == this.backend.throwingClosePath) {
+            throw Exception("fake close failure")
+        }
+    }
 }
 
 @Test
@@ -201,6 +216,24 @@ public class CkbReproBundleTest {
             2 * 1024 * 1024 * 1024 - 1).size, 1)
         @Expect(planCkbReproAssetParts("asset.bin",
             2 * 1024 * 1024 * 1024).size, 2)
+        let planned = planCkbReproAssetParts("asset.bin",
+            2 * 1024 * 1024 * 1024)
+        @Expect(planned[0].relativePath, "asset.bin.part-0001")
+        @Expect(planned[1].relativePath, "asset.bin.part-0002")
+        let wrongPartA = p9Asset("assets/data.part-0000", "x")
+        let wrongPartB = p9Asset("assets/data.part-0002", "y")
+        for (part in [wrongPartA, wrongPartB]) {
+            part.logicalAsset = "assets/data"
+            part.partCount = 2
+            part.logicalSize = 2
+            part.logicalSha256 = ckbReproBundleHash("xy".toArray())
+        }
+        wrongPartB.partIndex = 1
+        let wrongParts = ArrayList<CkbReproBundleAsset>()
+        wrongParts.add(wrongPartA)
+        wrongParts.add(wrongPartB)
+        @Expect(validateCkbReproBundleAssets(wrongParts).diagnostic,
+            "bundle_asset_parts_incomplete")
         let tooMany = ArrayList<CkbReproBundleAsset>()
         for (i in 0..1001) { tooMany.add(p9Asset("assets/${i}.txt", "${i}")) }
         @Expect(validateCkbReproBundleAssets(tooMany).diagnostic,
@@ -275,6 +308,13 @@ public class CkbReproBundleTest {
 
     @TestCase
     public func p9Bnd01BundleReadContract(): Unit {
+        let unpartitionedHuge = p9Asset("assets/huge.bin", "x")
+        unpartitionedHuge.size = 2 * 1024 * 1024 * 1024
+        unpartitionedHuge.logicalSize = unpartitionedHuge.size
+        let huge = p9ReadableBundle("/tmp/ckb-p9/unpartitioned-huge",
+            p9AssetList(unpartitionedHuge), false)
+        @Expect(p9ParseAndValidate(huge).diagnostic,
+            "bundle_asset_parts_incomplete")
         let unicodeAssets = ArrayList<CkbReproBundleAsset>()
         unicodeAssets.add(p9Asset("资料/结果🙂.json", "仓颉🙂"))
         let seeded = p9ReadableBundle("/tmp/ckb-p9/read-unicode",
@@ -370,6 +410,37 @@ public class CkbReproBundleTest {
 
     @TestCase
     public func p9Neg01BundleReadContract(): Unit {
+        let negativeRead = p9ReadableBundle(
+            "/tmp/ckb-p9/read-negative-count", p9Assets(false), false)
+        negativeRead[0].negativeReadPath = "assets/a.txt"
+        @Expect(p9ParseAndValidate(negativeRead).diagnostic,
+            "bundle_read_failed")
+        @Expect(negativeRead[0].closeCalls > 0, true)
+
+        let oversizedRead = p9ReadableBundle(
+            "/tmp/ckb-p9/read-oversized-count", p9Assets(false), false)
+        oversizedRead[0].oversizedReadPath = "assets/a.txt"
+        @Expect(p9ParseAndValidate(oversizedRead).diagnostic,
+            "bundle_read_failed")
+        @Expect(oversizedRead[0].closeCalls > 0, true)
+
+        let closeAfterIdentity = p9ReadableBundle(
+            "/tmp/ckb-p9/close-after-identity", p9Assets(false), false)
+        let changed = p9CopyReadEntry(
+            closeAfterIdentity[0].listings[closeAfterIdentity[1]][1])
+        changed.identity = "changed-before-close"
+        closeAfterIdentity[0].observedOverrides["assets/a.txt"] = changed
+        closeAfterIdentity[0].throwingClosePath = "assets/a.txt"
+        @Expect(p9ParseAndValidate(closeAfterIdentity).diagnostic,
+            "bundle_read_entry_changed")
+
+        let closeAfterSuccess = p9ReadableBundle(
+            "/tmp/ckb-p9/close-after-success", p9Assets(false), false)
+        closeAfterSuccess[0].throwingClosePath =
+            "RELEASE-MANIFEST.json"
+        @Expect(p9ParseAndValidate(closeAfterSuccess).diagnostic,
+            "bundle_read_close_failed")
+
         let missingRoot = P9FakeBundleReadBackend()
         @Expect(validateCkbReproBundleManifest(
             "/tmp/ckb-p9/missing", missingRoot).contract.diagnostic,

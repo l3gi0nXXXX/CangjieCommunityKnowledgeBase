@@ -412,7 +412,8 @@ public func planCkbReproAssetParts(relativePath: String,
         let part = CkbReproAssetPart()
         part.offset = offset
         part.size = if (size - offset > limit) { limit } else { size - offset }
-        part.relativePath = "${relativePath}.part-${p9BundlePartIndex(index)}"
+        part.relativePath =
+            "${relativePath}.part-${p9BundlePartIndex(index + 1)}"
         out.add(part)
         offset += part.size
         index += 1
@@ -594,10 +595,27 @@ private func p9ValidateBundleAssetMetadata(
         if (asset.partCount == 1) {
             if (asset.logicalAsset != asset.relativePath ||
                 asset.logicalSize != asset.size ||
-                asset.logicalSha256 != asset.sha256) {
+                asset.logicalSha256 != asset.sha256 ||
+                asset.logicalSize >= 2 * 1024 * 1024 * 1024) {
                 return p9BundleFailure("bundle_asset_parts_incomplete")
             }
-        } else if (verifyBytes) {
+        } else {
+            for (part in assets) {
+                if (part.role != asset.role ||
+                    part.logicalAsset != asset.logicalAsset) { continue }
+                let expectedPath = "${part.logicalAsset}.part-" +
+                    p9BundlePartIndex(part.partIndex + 1)
+                let limit: Int64 = 1024 * 1024 * 1024
+                if (part.relativePath != expectedPath || part.size <= 0 ||
+                    part.size > limit ||
+                    (asset.logicalSize >= 2 * limit &&
+                    part.partIndex < part.partCount - 1 &&
+                    part.size != limit)) {
+                    return p9BundleFailure("bundle_asset_parts_incomplete")
+                }
+            }
+        }
+        if (asset.partCount > 1 && verifyBytes) {
             let digest = SHA256()
             for (index in 0..asset.partCount) {
                 for (part in assets) {
@@ -815,7 +833,12 @@ private func p9ConsumeBundleEntry(root: String,
             out.contract = p9BundleFailure("bundle_read_failed")
             out
         } finally {
-            try { handle.close() } catch (_: Exception) {}
+            try { handle.close() } catch (_: Exception) {
+                if (out.contract.ok) {
+                    out.contract = p9BundleFailure(
+                        "bundle_read_close_failed")
+                }
+            }
         }
     } catch (_: Exception) {
         out.contract = p9BundleFailure("bundle_read_failed")
@@ -871,42 +894,63 @@ private func p9DigestBundleEntry(root: String,
     expected: CkbReproBundleReadEntry,
     backend: CkbReproBundleReadBackend, digest: SHA256):
     CkbReproContractResult {
+    let out = CkbReproContractResult()
+    out.diagnostic = "bundle_read_failed"
     try {
         let handle = backend.open(root, expected)
         try {
             if (!handle.noFollow()) {
-                return p9BundleFailure("bundle_read_no_follow_required")
+                out.diagnostic = "bundle_read_no_follow_required"
+                return out
             }
             let buffer = Array<UInt8>(65536, repeat: UInt8(0))
             var total: Int64 = 0
             while (true) {
                 let count = handle.read(buffer)
                 if (count < 0 || count > buffer.size) {
-                    return p9BundleFailure("bundle_read_failed")
+                    return out
                 }
                 if (count == 0) { break }
-                let chunk = Array<UInt8>(count, repeat: UInt8(0))
-                for (i in 0..count) { chunk[i] = buffer[i] }
-                digest.write(chunk)
+                digest.write(p9BundleBufferPrefix(buffer, count))
                 total += count
                 if (total > expected.size) {
-                    return p9BundleFailure("bundle_asset_size_mismatch")
+                    out.diagnostic = "bundle_asset_size_mismatch"
+                    return out
                 }
             }
             if (total != expected.size ||
                 !p9BundleReadEntriesEqual(expected,
                     handle.observedEntry())) {
-                return p9BundleFailure("bundle_read_entry_changed")
+                out.diagnostic = "bundle_read_entry_changed"
+                return out
             }
-            p9BundleSuccess()
+            out.ok = true
+            out.diagnostic = "ok"
+            out
         } catch (_: Exception) {
-            p9BundleFailure("bundle_read_failed")
+            out.ok = false
+            out.diagnostic = "bundle_read_failed"
+            out
         } finally {
-            try { handle.close() } catch (_: Exception) {}
+            try { handle.close() } catch (_: Exception) {
+                if (out.ok) {
+                    out.ok = false
+                    out.diagnostic = "bundle_read_close_failed"
+                }
+            }
         }
     } catch (_: Exception) {
-        p9BundleFailure("bundle_read_failed")
+        out.ok = false
+        out.diagnostic = "bundle_read_failed"
+        out
     }
+}
+
+private func p9BundleBufferPrefix(buffer: Array<UInt8>, count: Int64):
+    Array<UInt8> {
+    let prefix = Array<UInt8>(count, repeat: UInt8(0))
+    for (i in 0..count) { prefix[i] = buffer[i] }
+    prefix
 }
 
 private func p9BundleReadEntriesEqual(left: CkbReproBundleReadEntry,

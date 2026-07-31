@@ -237,7 +237,28 @@ public class CkbReproReleaseAuthorityEvidence {
 
 public class CkbReproReleaseAuthorityContract {
     public let expected = ArrayList<CkbReproReleaseAuthorityEvidence>()
+    public var authorityDeliveryMode: String = ""
+    public var layoutHash: String = ""
     public init() {}
+}
+
+public func buildCkbReproReleaseAuthorityContract(
+    inputs: ArrayList<CkbReproReleaseAuthorityEvidence>,
+    authorityDeliveryMode: String):
+    (CkbReproContractResult, CkbReproReleaseAuthorityContract) {
+    let contract = CkbReproReleaseAuthorityContract()
+    contract.authorityDeliveryMode = authorityDeliveryMode
+    for (source in inputs) {
+        let evidence = CkbReproReleaseAuthorityEvidence()
+        evidence.role = source.role
+        evidence.logicalAsset = source.logicalAsset
+        evidence.size = source.size
+        evidence.sha256 = source.sha256
+        contract.expected.add(evidence)
+    }
+    contract.layoutHash = p8AuthorityLayoutHash(contract)
+    let validation = p8ValidateAuthorityLayout(contract)
+    (validation, contract)
 }
 
 public class CkbReproCanonicalReleaseAssetAuthority <:
@@ -1147,6 +1168,10 @@ private func p8ValidateReleaseAuthority(
     reference: CkbReproReferenceManifest, releaseCommit: String,
     preflight: CkbReproVerifyEnvironmentResult):
     CkbReproVerifiedReleaseAuthority {
+    let layout = p8ValidateAuthorityLayout(contract)
+    if (!layout.ok) {
+        return p8AuthorityFailure(layout.diagnostic)
+    }
     if (!loaded.contract.ok || !p8HashValid(loaded.proofSetHash) ||
         !p8HashValid(loaded.manifest.inputSetHash)) {
         return p8AuthorityFailure("release_authority_bundle_invalid")
@@ -1161,9 +1186,9 @@ private func p8ValidateReleaseAuthority(
         for (expected in contract.expected) {
             if (expected.role == role) { count += 1 }
         }
-        let multipleAllowed = role == "p7_documentation" ||
-            role == "portable_report" || role == "license"
-        if (count == 0 || (!multipleAllowed && count != 1)) {
+        let exactlyOne = role == "p8_reference" ||
+            role == "release_commit"
+        if (count == 0 || (exactlyOne && count != 1)) {
             return p8AuthorityFailure("release_authority_role_missing")
         }
     }
@@ -1267,6 +1292,103 @@ private func p8ValidateReleaseAuthority(
     out.rolesComplete = true
     out.derivedAssetCount = 0
     out
+}
+
+private func p8AuthorityRequiredLayout(mode: String):
+    ArrayList<(String, String)> {
+    let out = ArrayList<(String, String)>()
+    for (row in [
+        ("README.md", "p7_documentation"),
+        ("docs/reproducibility/README.md", "p7_documentation"),
+        ("docs/reproducibility/quick-start.md", "p7_documentation"),
+        ("docs/reproducibility/restore-knowledge-base.md", "p7_documentation"),
+        ("docs/reproducibility/rebuild-from-source.md", "p7_documentation"),
+        ("docs/reproducibility/configure-claude-glm.md", "p7_documentation"),
+        ("docs/reproducibility/run-humaneval-164.md", "p7_documentation"),
+        ("docs/reproducibility/verify-strict-pass-at-1.md", "p7_documentation"),
+        ("docs/reproducibility/result-interpretation.md", "p7_documentation"),
+        ("docs/reproducibility/troubleshooting.md", "p7_documentation"),
+        ("docs/reproducibility/release-maintainer-runbook.md", "p7_documentation"),
+        ("reproducibility/RELEASE-MANIFEST.schema.json", "p0_manifest"),
+        ("reproducibility/source-lock.schema.json", "source_lock"),
+        ("reproducibility/source-inventory.schema.json", "source_lock"),
+        ("reproducibility/knowledge-selection.schema.json", "p0_manifest"),
+        ("reproducibility/authority-delivery.schema.json", "authority_delivery"),
+        ("reproducibility/portable-path-policy.schema.json", "portable_report"),
+        ("reproducibility/run-critical-files.schema.json", "p4_build_proof"),
+        ("reproducibility/RELEASE-SIGNING-KEY.asc", "p0_manifest"),
+        ("reproducibility/configs/provider.example.env", "p6_environment_lock"),
+        ("reproducibility/configs/ckb.example.conf", "p6_environment_lock"),
+        ("reproducibility/configs/experiment-profile.json", "p1_score_contract"),
+        ("reproducibility/manifests/source-lock.json", "source_lock"),
+        ("reproducibility/manifests/source-inventory.jsonl", "source_lock"),
+        ("reproducibility/manifests/portable-path-policy.json", "portable_report"),
+        ("reproducibility/manifests/run-critical-files.json", "p4_build_proof"),
+        ("reproducibility/manifests/knowledge-selection.jsonl", "p0_manifest"),
+        ("reproducibility/manifests/environment-lock.json", "p6_environment_lock"),
+        ("reproducibility/manifests/authority-delivery.json", "authority_delivery"),
+        ("reproducibility/manifests/historical-reference-run.json", "p0_manifest"),
+        ("reproducibility/manifests/reference-run.json", "p8_reference"),
+        ("reproducibility/licenses/THIRD_PARTY_NOTICES.md", "license"),
+        ("ckb-logical-snapshot.tar.zst", "p2_logical_snapshot"),
+        ("qdrant-collection.snapshot", "p3_qdrant_snapshot"),
+        ("source-materials-manifest.json", "source_lock"),
+        ("ckb-public-reference-evidence.tar.zst", "p5_public_evidence"),
+        ("leakage-report.json", "portable_report"),
+        ("portable-path-report.json", "portable_report"),
+        ("retrieval-parity.json", "portable_report"),
+        ("release/release-commit.txt", "release_commit")]) { out.add(row) }
+    if (mode == "bundled") {
+        out.add(("cangjie-humaneval-authority.tar.zst",
+            "authority_delivery"))
+    } else if (mode == "public_rebuild") {
+        out.add(("authority-source-materials.json", "authority_delivery"))
+    }
+    out
+}
+
+private func p8AuthorityLayoutHash(
+    contract: CkbReproReleaseAuthorityContract): String {
+    let rows = ArrayList<String>()
+    for (evidence in contract.expected) {
+        rows.add("${evidence.role}\t${evidence.logicalAsset}\t" +
+            "${evidence.size}\t${evidence.sha256}")
+    }
+    let ordered = rows.toArray()
+    sort(ordered)
+    p8HashParts("ckb-repro-release-authority-layout-v1",
+        [contract.authorityDeliveryMode,
+        p8HashParts("ckb-repro-release-authority-layout-rows-v1", ordered)])
+}
+
+private func p8ValidateAuthorityLayout(
+    contract: CkbReproReleaseAuthorityContract): CkbReproContractResult {
+    if (contract.authorityDeliveryMode != "bundled" &&
+        contract.authorityDeliveryMode != "public_rebuild") {
+        return p8Failure("release_authority_delivery_mode_invalid")
+    }
+    if (contract.layoutHash == "" ||
+        contract.layoutHash != p8AuthorityLayoutHash(contract)) {
+        return p8Failure("release_authority_contract_mismatch")
+    }
+    let required = p8AuthorityRequiredLayout(contract.authorityDeliveryMode)
+    if (contract.expected.size != required.size) {
+        return p8Failure("release_authority_layout_incomplete")
+    }
+    let seen = HashSet<String>()
+    for (expected in contract.expected) {
+        if (seen.contains(expected.logicalAsset)) {
+            return p8Failure("release_authority_contract_mismatch")
+        }
+        seen.add(expected.logicalAsset)
+        var matched = false
+        for (row in required) {
+            if (row[0] == expected.logicalAsset &&
+                row[1] == expected.role) { matched = true }
+        }
+        if (!matched) { return p8Failure("release_authority_layout_invalid") }
+    }
+    p8Success()
 }
 
 private func p8HashParts(prefix: String, values: Array<String>): String {
