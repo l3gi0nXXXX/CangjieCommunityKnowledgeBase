@@ -94,17 +94,10 @@ public func scanCkbReproDocumentationPathsAndSecrets(
     text: String): CkbReproDocumentationScan {
     let out = CkbReproDocumentationScan()
     let lower = text.toAsciiLower()
-    for (forbidden in [
-        "/users/", "/home/", "c:\\users\\", "/var/folders/",
-        "git add -f", "canonical_solution", "solution.cj",
-        "teacher-solutions", "sk-live-", "bearer ey",
-        "private-token:", "authorization: bearer", "x-api-key:"
-    ]) {
-        if (lower.contains(forbidden)) { out.findingCount += 1 }
-    }
-    if (lower.contains("humaneval/") &&
-        (lower.contains("hidden_test") || lower.contains("hidden test") ||
-            lower.contains("reference solution"))) {
+    if (p7DocumentationContainsPrivatePath(lower)) { out.findingCount += 1 }
+    if (p7DocumentationContainsCredential(lower)) { out.findingCount += 1 }
+    if (p7DocumentationContainsBypass(lower)) { out.findingCount += 1 }
+    if (p7DocumentationContainsBenchmarkPayload(lower)) {
         out.findingCount += 1
     }
     if (out.findingCount > 0) {
@@ -157,7 +150,6 @@ public func validateCkbReproDocumentation(
     }
 
     let listed = reader.list(root)
-    evidence.discoveredDocumentCount = listed.size
     let expected = HashSet<String>()
     for (path in required) { expected.add(path) }
     let seen = HashSet<String>()
@@ -166,6 +158,8 @@ public func validateCkbReproDocumentation(
             evidence.diagnostic = "documentation_entry_path_invalid"
             return evidence
         }
+        if (!p7DocumentationReleaseSurface(path)) { continue }
+        evidence.discoveredDocumentCount += 1
         if (seen.contains(path)) {
             evidence.diagnostic = "documentation_entry_duplicate"
             return evidence
@@ -196,13 +190,23 @@ public func validateCkbReproDocumentation(
             return evidence
         }
         if (path != "README.md" &&
-            (!decoded[1].contains("目的") ||
-                !decoded[1].contains("通过标准") ||
-                !decoded[1].contains("失败处理"))) {
+            !p7DocumentationRequiredSectionsPresent(decoded[1])) {
             evidence.diagnostic = "documentation_required_section_missing"
             return evidence
         }
         texts.add(decoded[1])
+    }
+
+    if (mode == CKB_REPRO_DOCUMENTATION_MODE_DRAFT) {
+        for (entryIndex in [Int64(0), Int64(2)]) {
+            if (!texts[entryIndex].contains("UNPUBLISHED_W3_DRAFT") ||
+                !texts[entryIndex].contains(
+                    "PENDING_W4_CLI_REGISTRATION")) {
+                evidence.diagnostic =
+                    "documentation_entrypoint_placeholder_missing"
+                return evidence
+            }
+        }
     }
 
     let corpus = p7DocumentationJoin(texts)
@@ -264,6 +268,83 @@ private func p7DocumentationRelativePathValid(path: String): Bool {
     true
 }
 
+private func p7DocumentationReleaseSurface(path: String): Bool {
+    path == "README.md" ||
+        (path.startsWith("docs/reproducibility/") && path.endsWith(".md"))
+}
+
+private func p7DocumentationRequiredSectionsPresent(text: String): Bool {
+    for (section in [
+        "目的", "工作目录", "命令", "预期输出", "通过标准", "失败处理"
+    ]) {
+        var found = false
+        for (line in text.split("\n")) {
+            let trimmed = line.trimAscii()
+            if (trimmed.startsWith("${section}：") ||
+                trimmed.startsWith("${section}:")) {
+                found = true
+                break
+            }
+        }
+        if (!found) { return false }
+    }
+    true
+}
+
+private func p7DocumentationContainsPrivatePath(lower: String): Bool {
+    lower.contains("/users/") || lower.contains("/home/") ||
+        lower.contains("/root/") || lower.contains("/var/folders/") ||
+        lower.contains(":\\users\\") || lower.contains(":/users/")
+}
+
+private func p7DocumentationContainsCredential(lower: String): Bool {
+    lower.contains("sk-live-") || lower.contains("sk-proj-") ||
+        lower.contains("ghp_") || lower.contains("bearer ey") ||
+        lower.contains("private-token:") ||
+        lower.contains("authorization: bearer") ||
+        lower.contains("authorization: basic") ||
+        lower.contains("x-api-key:")
+}
+
+private func p7DocumentationContainsBypass(lower: String): Bool {
+    lower.contains("git add -f")
+}
+
+private func p7DocumentationContainsBenchmarkPayload(lower: String): Bool {
+    lower.contains("canonical_solution") || lower.contains("solution.cj") ||
+        lower.contains("teacher-solutions") ||
+        lower.contains("humaneval_") ||
+        (lower.contains("humaneval/") &&
+            (p7DocumentationContainsAsciiDigitAfter(lower, "humaneval/") ||
+                lower.contains("hidden_test") ||
+                lower.contains("hidden test") ||
+                lower.contains("reference solution")))
+}
+
+private func p7DocumentationContainsAsciiDigitAfter(
+    value: String, prefix: String): Bool {
+    let valueRunes = value.toRuneArray()
+    let prefixRunes = prefix.toRuneArray()
+    if (prefixRunes.size == 0 || valueRunes.size < prefixRunes.size) {
+        return false
+    }
+    for (start in 0..=(valueRunes.size - prefixRunes.size)) {
+        var matches = true
+        for (offset in 0..prefixRunes.size) {
+            if (valueRunes[start + offset] != prefixRunes[offset]) {
+                matches = false
+                break
+            }
+        }
+        let next = start + prefixRunes.size
+        if (matches && next < valueRunes.size &&
+            valueRunes[next] >= r'0' && valueRunes[next] <= r'9') {
+            return true
+        }
+    }
+    false
+}
+
 private func p7DocumentationJoin(values: ArrayList<String>): String {
     let out = StringBuilder()
     for (value in values) {
@@ -285,15 +366,38 @@ private func p7DocumentationCommandTokens(text: String): ArrayList<String> {
             token.append(rune)
         } else {
             let value = token.toString()
-            let followedByDot = !atEnd && rune == r'.'
-            if (!followedByDot && p7DocumentationCommandName(value)) {
-                out.add(value)
+            let suffix = if (!atEnd && rune == r'.') {
+                p7DocumentationDotSuffix(runes, index)
+            } else {
+                ""
+            }
+            if (!p7DocumentationAssetSuffix(suffix) &&
+                p7DocumentationCommandName(value)) {
+                out.add(value + suffix)
             }
             token = StringBuilder()
         }
         index += 1
     }
     out
+}
+
+private func p7DocumentationDotSuffix(
+    runes: Array<Rune>, dotIndex: Int64): String {
+    let suffix = StringBuilder()
+    var index = dotIndex
+    while (index < runes.size &&
+        (p7DocumentationCommandRune(runes[index]) || runes[index] == r'.')) {
+        suffix.append(runes[index])
+        index += 1
+    }
+    suffix.toString()
+}
+
+private func p7DocumentationAssetSuffix(suffix: String): Bool {
+    let value = suffix.toAsciiLower()
+    value == ".json" || value == ".txt" || value == ".tar" ||
+        value == ".tar.zst" || value == ".sig" || value == ".md"
 }
 
 private func p7DocumentationCommandRune(rune: Rune): Bool {
@@ -338,12 +442,46 @@ private func p7ValidateDocumentationLinks(
             out.diagnostic = "documentation_link_malformed"
             return out
         }
-        if (!p7DocumentationExternalOrAnchorLink(target)) {
-            let resolved = p7DocumentationResolveLink(sourcePath, target)
-            if (resolved == "" || !reader.read(root, resolved).found) {
+        if (!p7DocumentationExternalLink(target)) {
+            let targetParts = p7DocumentationLinkParts(target)
+            let resolved = if (targetParts[0] == "") {
+                sourcePath
+            } else {
+                p7DocumentationResolveLink(sourcePath, targetParts[0])
+            }
+            let linked = if (resolved == sourcePath) {
+                CkbReproDocumentationRead()
+            } else {
+                reader.read(root, resolved)
+            }
+            if (resolved == "" ||
+                (resolved != sourcePath && !linked.found)) {
                 out.findingCount = 1
                 out.diagnostic = "documentation_link_broken"
                 return out
+            }
+            if (targetParts[2] == "fragment") {
+                if (targetParts[1] == "") {
+                    out.findingCount = 1
+                    out.diagnostic = "documentation_link_malformed"
+                    return out
+                }
+                let linkedText = if (resolved == sourcePath) {
+                    ("ok", text)
+                } else {
+                    p7DocumentationDecode(linked.bytes)
+                }
+                if (linkedText[0] != "ok") {
+                    out.findingCount = 1
+                    out.diagnostic = linkedText[0]
+                    return out
+                }
+                if (!p7DocumentationAnchorExists(
+                    linkedText[1], targetParts[1])) {
+                    out.findingCount = 1
+                    out.diagnostic = "documentation_link_anchor_missing"
+                    return out
+                }
             }
         }
         index = end + 1
@@ -353,23 +491,21 @@ private func p7ValidateDocumentationLinks(
     out
 }
 
-private func p7DocumentationExternalOrAnchorLink(target: String): Bool {
-    target.startsWith("#") || target.startsWith("https://") ||
-        target.startsWith("http://") || target.startsWith("mailto:")
+private func p7DocumentationExternalLink(target: String): Bool {
+    target.startsWith("https://") || target.startsWith("http://") ||
+        target.startsWith("mailto:")
 }
 
 private func p7DocumentationResolveLink(
     sourcePath: String, target: String): String {
-    let withoutFragment = p7DocumentationBeforeFragment(target)
-    if (withoutFragment == "" || withoutFragment.startsWith("/") ||
-        withoutFragment.contains("\\") ||
-        withoutFragment.contains("?")) {
+    if (target == "" || target.startsWith("/") ||
+        target.contains("\\") || target.contains("?")) {
         return ""
     }
     let parts = ArrayList<String>()
     let sourceParts = sourcePath.split("/")
     for (i in 0..(sourceParts.size - 1)) { parts.add(sourceParts[i]) }
-    for (part in withoutFragment.split("/")) {
+    for (part in target.split("/")) {
         if (part == "" || part == ".") { continue }
         if (part == "..") {
             if (parts.size == 0) { return "" }
@@ -387,11 +523,77 @@ private func p7DocumentationResolveLink(
     out.toString()
 }
 
-private func p7DocumentationBeforeFragment(value: String): String {
-    let out = StringBuilder()
+private func p7DocumentationLinkParts(value: String):
+    (String, String, String) {
+    let path = StringBuilder()
+    let anchor = StringBuilder()
+    var fragment = false
     for (rune in value.runes()) {
-        if (rune == r'#') { break }
-        out.append(rune)
+        if (!fragment && rune == r'#') {
+            fragment = true
+            continue
+        }
+        if (fragment) { anchor.append(rune) } else { path.append(rune) }
     }
+    (path.toString(), anchor.toString(),
+        if (fragment) { "fragment" } else { "none" })
+}
+
+private func p7DocumentationAnchorExists(
+    text: String, expected: String): Bool {
+    let canonicalExpected = p7DocumentationCanonicalAnchor(expected)
+    if (canonicalExpected == "") { return false }
+    for (line in text.split("\n")) {
+        let heading = p7DocumentationHeadingText(line)
+        if (heading != "" &&
+            p7DocumentationCanonicalAnchor(heading) == canonicalExpected) {
+            return true
+        }
+    }
+    false
+}
+
+private func p7DocumentationHeadingText(line: String): String {
+    let runes = line.trimAscii().toRuneArray()
+    if (runes.size < 2 || runes[0] != r'#') { return "" }
+    var index: Int64 = 0
+    while (index < runes.size && runes[index] == r'#') { index += 1 }
+    if (index >= runes.size || runes[index] != r' ') { return "" }
+    while (index < runes.size && runes[index] == r' ') { index += 1 }
+    let out = StringBuilder()
+    while (index < runes.size) {
+        out.append(runes[index])
+        index += 1
+    }
+    out.toString()
+}
+
+// Anchors are ASCII-case-insensitive. ASCII letters/digits and '-' are kept,
+// ASCII whitespace collapses to '-', ASCII punctuation is removed, and
+// non-ASCII runes are preserved.
+private func p7DocumentationCanonicalAnchor(value: String): String {
+    let normalized = ArrayList<Rune>()
+    var pendingDash = false
+    for (rune in value.toAsciiLower().runes()) {
+        if ((rune >= r'a' && rune <= r'z') ||
+            (rune >= r'0' && rune <= r'9') || rune > r'\u{007f}') {
+            if (pendingDash && normalized.size > 0 &&
+                normalized[normalized.size - 1] != r'-') {
+                normalized.add(r'-')
+            }
+            pendingDash = false
+            normalized.add(rune)
+        } else if (rune == r'-') {
+            pendingDash = false
+            if (normalized.size > 0 &&
+                normalized[normalized.size - 1] != r'-') {
+                normalized.add(rune)
+            }
+        } else if (rune == r' ' || rune == r'\t') {
+            pendingDash = true
+        }
+    }
+    let out = StringBuilder()
+    for (rune in normalized) { out.append(rune) }
     out.toString()
 }

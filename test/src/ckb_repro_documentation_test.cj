@@ -234,6 +234,132 @@ public class CkbReproDocumentationTest {
             Array<String>())
         @Expect(malformedResult.diagnostic, "documentation_link_malformed")
     }
+
+    @TestCase
+    public func productionValidatorRejectsDisguisedUnknownCommands(): Unit {
+        for (unknown in [
+            "ckb-repro-unknown.sh", "ckb-repro-unknown.",
+            "ckb-repro-build.sh"
+        ]) {
+            let reader = p7FakeDocumentation(false)
+            reader.put("docs/reproducibility/quick-start.md",
+                p7ValidDocument(false) + "\n`${unknown}`\n")
+            let result = validateCkbReproDocumentation(
+                reader, "/tmp/repro", CKB_REPRO_DOCUMENTATION_MODE_RELEASE,
+                ["ckb-repro-build", "cangjie-humaneval-strict-score"])
+            @Expect(result.diagnostic, "documentation_command_unknown")
+        }
+        let asset = p7FakeDocumentation(false)
+        asset.put("docs/reproducibility/quick-start.md",
+            p7ValidDocument(false) + "\n`ckb-repro-placeholders.txt`\n")
+        @Expect(validateCkbReproDocumentation(
+            asset, "/tmp/repro", CKB_REPRO_DOCUMENTATION_MODE_RELEASE,
+            ["ckb-repro-build", "cangjie-humaneval-strict-score"]).ok, true)
+    }
+
+    @TestCase
+    public func productionValidatorRejectsPathSecretAndBenchmarkCategories(): Unit {
+        for (forbidden in [
+            "/root/.ssh/id_ed25519",
+            "D:\\Users\\alice\\.ssh\\id_ed25519",
+            "E:/Users/alice/.ssh/id_ed25519",
+            "ghp_exampleCredentialPayload0123456789",
+            "sk-proj-exampleCredentialPayload0123456789",
+            "Authorization: Basic Zm9vOmJhcg==",
+            "HumanEval_42",
+            "problem_id=HumanEval/042"
+        ]) {
+            let reader = p7FakeDocumentation(true)
+            reader.put("docs/reproducibility/quick-start.md",
+                p7ValidDocument(true) + "\n${forbidden}\n")
+            let result = validateCkbReproDocumentation(
+                reader, "/tmp/repro", CKB_REPRO_DOCUMENTATION_MODE_DRAFT,
+                Array<String>())
+            @Expect(result.diagnostic, "documentation_path_or_secret_forbidden")
+            @Expect(result.diagnostic.contains(forbidden), false)
+        }
+    }
+
+    @TestCase
+    public func productionValidatorRequiresAllSixRunbookSections(): Unit {
+        for (section in [
+            "目的", "工作目录", "命令", "预期输出", "通过标准", "失败处理"
+        ]) {
+            let reader = p7FakeDocumentation(true)
+            reader.put("docs/reproducibility/quick-start.md",
+                p7ValidDocument(true).replace(section, "已删除段落"))
+            let result = validateCkbReproDocumentation(
+                reader, "/tmp/repro", CKB_REPRO_DOCUMENTATION_MODE_DRAFT,
+                Array<String>())
+            @Expect(result.diagnostic, "documentation_required_section_missing")
+        }
+    }
+
+    @TestCase
+    public func productionValidatorValidatesUnicodeAndCrossFileAnchors(): Unit {
+        let valid = p7FakeDocumentation(true)
+        valid.put("docs/reproducibility/quick-start.md",
+            p7ValidDocument(true) +
+                "\n## 中文 锚点🙂\n[本页](#中文-锚点🙂)\n" +
+                "[跨页](troubleshooting.md#故障-处理)\n")
+        valid.put("docs/reproducibility/troubleshooting.md",
+            p7ValidDocument(true) + "\n## 故障 处理\n")
+        @Expect(validateCkbReproDocumentation(
+            valid, "/tmp/repro", CKB_REPRO_DOCUMENTATION_MODE_DRAFT,
+            Array<String>()).ok, true)
+
+        let localMissing = p7FakeDocumentation(true)
+        localMissing.put("docs/reproducibility/quick-start.md",
+            p7ValidDocument(true) + "\n[本页](#不存在)\n")
+        @Expect(validateCkbReproDocumentation(
+            localMissing, "/tmp/repro", CKB_REPRO_DOCUMENTATION_MODE_DRAFT,
+            Array<String>()).diagnostic, "documentation_link_anchor_missing")
+
+        let crossMissing = p7FakeDocumentation(true)
+        crossMissing.put("docs/reproducibility/quick-start.md",
+            p7ValidDocument(true) +
+                "\n[跨页](troubleshooting.md#不存在)\n")
+        @Expect(validateCkbReproDocumentation(
+            crossMissing, "/tmp/repro", CKB_REPRO_DOCUMENTATION_MODE_DRAFT,
+            Array<String>()).diagnostic, "documentation_link_anchor_missing")
+    }
+
+    @TestCase
+    public func productionValidatorEnumeratesRealReaderSurface(): Unit {
+        let reader = p7FakeDocumentation(true)
+        reader.put("docs/service-http-operations.md", "# Service\n")
+        reader.put("src/main.cj", "package fake\n")
+        @Expect(validateCkbReproDocumentation(
+            reader, "/tmp/repro", CKB_REPRO_DOCUMENTATION_MODE_DRAFT,
+            Array<String>()).ok, true)
+
+        reader.put("docs/reproducibility/undeclared.md",
+            p7ValidDocument(true))
+        @Expect(validateCkbReproDocumentation(
+            reader, "/tmp/repro", CKB_REPRO_DOCUMENTATION_MODE_DRAFT,
+            Array<String>()).diagnostic, "documentation_extra_release_entry")
+    }
+
+    @TestCase
+    public func productionValidatorRequiresDraftMarkersAtPublicEntrypoints(): Unit {
+        for (path in [
+            "README.md", "docs/reproducibility/quick-start.md"
+        ]) {
+            let reader = p7FakeDocumentation(true)
+            let original = if (path == "README.md") {
+                p7ValidRootDocument(true)
+            } else {
+                p7ValidDocument(true)
+            }
+            reader.put(path, original.replace(
+                "UNPUBLISHED_W3_DRAFT", "REMOVED_DRAFT_MARKER"))
+            let result = validateCkbReproDocumentation(
+                reader, "/tmp/repro", CKB_REPRO_DOCUMENTATION_MODE_DRAFT,
+                Array<String>())
+            @Expect(result.diagnostic,
+                "documentation_entrypoint_placeholder_missing")
+        }
+    }
 }
 
 private class P7RepositoryDocumentationReader <: CkbReproDocumentationReader {
@@ -328,8 +454,10 @@ private func p7ValidRootDocument(draft: Bool): String {
 }
 
 private func p7ValidDocument(draft: Bool): String {
-    "# 手册\n\n目的：验证可复现流程。\n\n通过标准：退出码为 0。\n\n" +
-        "失败处理：立即停止，不绕过门禁。\n\n" + p7ModeMarkers(draft) +
+    "# 手册\n\n目的：验证可复现流程。\n\n工作目录：`\${CKB_ROOT}`。\n\n" +
+        "命令：执行只读检查。\n\n预期输出：诊断为 valid。\n\n" +
+        "通过标准：退出码为 0。\n\n失败处理：立即停止，不绕过门禁。\n\n" +
+        p7ModeMarkers(draft) +
         "\n`\${CKB_ROOT}` `\${REPRO_ROOT}` 中文🙂\n"
 }
 
