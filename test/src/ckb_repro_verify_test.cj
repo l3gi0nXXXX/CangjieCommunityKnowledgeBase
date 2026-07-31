@@ -6,70 +6,16 @@ import std.process.*
 import std.unittest.*
 import std.unittest.testmacro.*
 
-// Test-only adapter. W3.5-streaming supplies the shared P9 production
-// authority/read implementation; these tests exercise only its P8 contracts.
-private class P8TemporaryBundleReadBackend <: CkbReproBundleReadBackend {
+private class P8InterruptedReadOperation <: CkbReproNativeReadOperation {
+    public var calls: Int64 = 0
     public init() {}
-    public func rootExists(root: String): Bool { exists(Path(root)) }
-    public func list(root: String): ArrayList<CkbReproBundleReadEntry> {
-        let out = ArrayList<CkbReproBundleReadEntry>()
-        p8TemporaryList(root, root, out)
-        out
+    public func read(fd: Int32, buffer: Array<UInt8>): Int64 {
+        this.calls += 1
+        if (this.calls == 1) { return -1 }
+        buffer[0] = UInt8(42)
+        1
     }
-    public func read(root: String, expected: CkbReproBundleReadEntry):
-        CkbReproBundleReadResult {
-        let out = CkbReproBundleReadResult()
-        let path = Path(root).join(expected.relativePath)
-        try {
-            let info = FileInfo(path)
-            if (!info.isRegular() || info.isSymbolicLink()) { return out }
-            out.bytes = File.readFrom(path)
-            out.observedEntry = p8TemporaryEntry(
-                root, expected.relativePath, info, out.bytes)
-            out.noFollow = true
-        } catch (_: Exception) {}
-        out
-    }
-}
-
-private func p8TemporaryList(root: String, directory: String,
-    out: ArrayList<CkbReproBundleReadEntry>): Unit {
-    try {
-        for (info in Directory.readFrom(Path(directory))) {
-            let relative = p8TestRelative(root, info.path.toString())
-            if (info.isDirectory() && !info.isSymbolicLink()) {
-                p8TemporaryList(root, info.path.toString(), out)
-            } else {
-                let bytes = if (info.isRegular() &&
-                    !info.isSymbolicLink()) {
-                    File.readFrom(info.path)
-                } else { Array<UInt8>() }
-                out.add(p8TemporaryEntry(root, relative, info, bytes))
-            }
-        }
-    } catch (_: Exception) {}
-}
-
-private func p8TemporaryEntry(root: String, relative: String,
-    info: FileInfo, bytes: Array<UInt8>): CkbReproBundleReadEntry {
-    let entry = CkbReproBundleReadEntry()
-    entry.relativePath = relative
-    entry.kind = if (info.isSymbolicLink()) { "symlink" }
-        else if (info.isRegular()) { "regular" } else { "special" }
-    entry.canonicalPath = try { canonicalize(info.path).toString() }
-        catch (_: Exception) { "" }
-    entry.withinRoot = entry.canonicalPath.startsWith(root + "/")
-    entry.size = bytes.size
-    entry.identity = "${relative}:${bytes.size}:${p8HashBytes(bytes)}"
-    entry
-}
-
-private func p8TestRelative(root: String, path: String): String {
-    let prefix = (root + "/").toRuneArray()
-    let runes = path.toRuneArray()
-    let out = StringBuilder()
-    for (i in prefix.size..runes.size) { out.append(runes[i]) }
-    out.toString()
+    public func errorNumber(): Int32 { 4 }
 }
 
 private class P8EnvironmentProbe <: CkbReproVerifyEnvironmentProbe {
@@ -393,10 +339,25 @@ public class CkbReproVerifyTest {
                 "RELEASE-MANIFEST.json"), [0xff, 0xfe])
             let invalid = validateCkbReproBundleManifest(
                 canonicalize(Path(invalidManifestRoot)).toString(),
-                P8TemporaryBundleReadBackend())
+                CkbReproFilesystemBundleReadBackend())
             @Expect(invalid.contract.ok, false)
             @Expect(invalid.contract.diagnostic,
                 "invalid_response_encoding")
+
+            let interrupted = P8InterruptedReadOperation()
+            let interruptBuffer = Array<UInt8>(65536, repeat: 0)
+            @Expect(ckbReproReadRetryingInterrupt(
+                7, interruptBuffer, interrupted), 1)
+            @Expect(interrupted.calls, 2)
+            @Expect(interruptBuffer[0], UInt8(42))
+
+            let directoryRoot = p8ResetRoot("${root}/directory-entry")
+            Directory.create(Path(directoryRoot).join("empty/nested"),
+                recursive: true)
+            let directoryResult = validateCkbReproBundleManifest(
+                directoryRoot, CkbReproFilesystemBundleReadBackend())
+            @Expect(directoryResult.contract.diagnostic,
+                "bundle_root_entry_type_invalid")
         } finally { p8Remove(root) }
     }
 
@@ -542,7 +503,7 @@ public class CkbReproVerifyTest {
                 P8ReleaseAuthority(),
                 p8Preflight(options),
                 P8EnvironmentProbe(),
-                P8TemporaryBundleReadBackend(), executor)
+                CkbReproFilesystemBundleReadBackend(), executor)
             @Expect(result.ok, true)
             @Expect(result.diagnostic, "verified")
             @Expect(result.runnerCalls, 0)
@@ -555,6 +516,50 @@ public class CkbReproVerifyTest {
             let report = renderCkbReproVerificationReport(result)
             @Expect(report.contains("中文🙂\\t\\u0001"), true)
             @Expect(report.contains("\"restoreOk\":true"), true)
+        } finally { p8Remove(root) }
+    }
+
+    @TestCase
+    public func p8Pos04AndNeg01ProductionReleaseAuthority(): Unit {
+        let root = p8ResetRoot("target/p8-authority")
+        try {
+            let reference = p8ReferenceTemplate()
+            let bundle = p8CreateBundle("${root}/bundle",
+                "assets/unused.txt", "p0", reference: reference)
+            let loaded = validateCkbReproBundleManifest(bundle[0],
+                CkbReproFilesystemBundleReadBackend())
+            @Expect(loaded.contract.ok, true)
+            let contract = p8AuthorityContract(loaded)
+            let preflight = p8AuthorityPreflight(loaded)
+            let authority = CkbReproCanonicalReleaseAssetAuthority(contract)
+            let releaseCommit =
+                "89abcdef0123456789abcdef0123456789abcdef"
+            let accepted = authority.validate(
+                loaded, reference, releaseCommit, preflight)
+            @Expect(accepted.ok, true)
+            @Expect(accepted.rolesComplete, true)
+            @Expect(accepted.derivedAssetCount, 0)
+
+            let missing = p8AuthorityContract(loaded,
+                omittedRole: "p5_public_evidence")
+            @Expect(CkbReproCanonicalReleaseAssetAuthority(missing).validate(
+                loaded, reference, releaseCommit, preflight).diagnostic,
+                "release_authority_role_missing")
+
+            preflight.inputHashes[0] = p8Hash("mismatch")
+            @Expect(authority.validate(
+                loaded, reference, releaseCommit, preflight).diagnostic,
+                "release_authority_preflight_mismatch")
+            let stablePreflight = p8AuthorityPreflight(loaded)
+            let wrongReference = p8ReferenceTemplate()
+            wrongReference.resultsHash = p8Hash("different-reference")
+            @Expect(authority.validate(loaded, wrongReference,
+                releaseCommit, stablePreflight).diagnostic,
+                "release_authority_reference_mismatch")
+            @Expect(authority.validate(loaded, reference,
+                "0123456789abcdef0123456789abcdef01234567",
+                stablePreflight).diagnostic,
+                "release_authority_commit_mismatch")
         } finally { p8Remove(root) }
     }
 
@@ -581,7 +586,7 @@ public class CkbReproVerifyTest {
                 P8ReleaseAuthority(),
                 p8Preflight(options),
                 P8EnvironmentProbe(),
-                P8TemporaryBundleReadBackend(), executor)
+                CkbReproFilesystemBundleReadBackend(), executor)
             @Expect(changedInput.diagnostic,
                 "verified_release_input_changed")
             @Expect(executor.calls.size, 0)
@@ -594,7 +599,7 @@ public class CkbReproVerifyTest {
                 reference.releaseRepository, critical,
                 rejectedAuthority, p8Preflight(options),
                 P8EnvironmentProbe(),
-                P8TemporaryBundleReadBackend(), executor)
+                CkbReproFilesystemBundleReadBackend(), executor)
             @Expect(rejected.diagnostic,
                 "release_asset_authority_invalid")
             @Expect(rejectedAuthority.calls, 1)
@@ -608,7 +613,7 @@ public class CkbReproVerifyTest {
                 reference.releaseRepository, critical,
                 throwingAuthority, p8Preflight(options),
                 P8EnvironmentProbe(),
-                P8TemporaryBundleReadBackend(), executor)
+                CkbReproFilesystemBundleReadBackend(), executor)
             @Expect(authorityException.diagnostic,
                 "release_asset_authority_failed")
             @Expect(executor.calls.size, 0)
@@ -623,7 +628,7 @@ public class CkbReproVerifyTest {
                 reference.certifiedRunInputHash,
                 reference.releaseRepository, critical,
                 P8ReleaseAuthority(), bPreflight, bProbe,
-                P8TemporaryBundleReadBackend(), executor)
+                CkbReproFilesystemBundleReadBackend(), executor)
             @Expect(bDrift.diagnostic, "verify_input_identity_drift")
             @Expect(executor.calls.size, 0)
 
@@ -640,7 +645,7 @@ public class CkbReproVerifyTest {
                 P8ReleaseAuthority(),
                 p8Preflight(options),
                 P8EnvironmentProbe(),
-                P8TemporaryBundleReadBackend(), executor)
+                CkbReproFilesystemBundleReadBackend(), executor)
             @Expect(oldRun.diagnostic, "portable_reference_invalid")
             @Expect(executor.calls.size, 0)
 
@@ -653,12 +658,12 @@ public class CkbReproVerifyTest {
                 P8ReleaseAuthority(),
                 p8Preflight(options),
                 P8EnvironmentProbe(),
-                P8TemporaryBundleReadBackend(), executor)
+                CkbReproFilesystemBundleReadBackend(), executor)
             @Expect(changedCritical.diagnostic,
                 "run_critical_changed_rerun_a")
             @Expect(executor.calls.size, 0)
 
-            let backend = P8TemporaryBundleReadBackend()
+            let backend = CkbReproFilesystemBundleReadBackend()
             let listing = backend.list(bundle[0])
             let asset = p8FindEntry(listing, "contracts/p0.json")
             File.writeTo(Path(bundle[0]).join("contracts/replacement.txt"),
@@ -667,10 +672,14 @@ public class CkbReproVerifyTest {
                 Path(bundle[0]).join("contracts/replacement.txt").toString(),
                 Path(bundle[0]).join("contracts/p0.json").toString()
             ]).wait()
-            let swapped = backend.read(bundle[0], asset)
-            @Expect(swapped.noFollow, true)
-            @Expect(swapped.observedEntry.identity == asset.identity,
-                false)
+            let swapped = backend.open(bundle[0], asset)
+            try {
+                let buffer = Array<UInt8>(65536, repeat: 0)
+                while (swapped.read(buffer) > 0) {}
+                @Expect(swapped.noFollow(), true)
+                @Expect(swapped.observedEntry().identity == asset.identity,
+                    false)
+            } finally { swapped.close() }
 
             let outside = Path(root).join("outside.txt")
             File.writeTo(outside, "outside".toArray())
@@ -729,9 +738,9 @@ public class CkbReproVerifyTest {
             let nested = p8CreateBundle("${root}/nested bundle",
                 "one/two/three/知识🙂.txt", "nested")
             let loaded = validateCkbReproBundleManifest(
-                nested[0], P8TemporaryBundleReadBackend())
+                nested[0], CkbReproFilesystemBundleReadBackend())
             @Expect(loaded.contract.ok, true)
-            @Expect(loaded.manifest.assets.size, 12)
+            @Expect(loaded.manifest.assets.size, 14)
 
             let executor = P8RunExecutor()
             executor.failAt = "restore"
@@ -924,20 +933,24 @@ private func p8CreateBundle(root: String, relativePath: String,
     let canonicalRoot = p8ResetRoot(root)
     let assets = ArrayList<CkbReproBundleAsset>()
     let rows = [
-        ("contracts/p0.json", content),
-        ("contracts/p1.json", "p1"),
-        ("snapshots/p2.tar", "p2"),
-        ("snapshots/p3.snapshot", "p3"),
-        ("proofs/p4.json", "p4"),
-        ("evidence/p5.json", "p5"),
-        ("locks/p6.json", "p6"),
-        ("docs/reproduce.md", "p7"),
+        ("contracts/p0.json", content, "p0_manifest"),
+        ("contracts/p1.json", "p1", "p1_score_contract"),
+        ("snapshots/p2.tar", "p2", "p2_logical_snapshot"),
+        ("snapshots/p3.snapshot", "p3", "p3_qdrant_snapshot"),
+        ("proofs/p4.json", "p4", "p4_build_proof"),
+        ("evidence/p5.json", "p5", "p5_public_evidence"),
+        ("locks/p6.json", "p6", "p6_environment_lock"),
+        ("docs/reproduce.md", "p7", "p7_documentation"),
         ("reference/reference-run.json",
-            renderCkbReproReferenceManifest(reference)),
-        ("locks/source.json", "source"),
-        ("LICENSE", "license"),
+            renderCkbReproReferenceManifest(reference), "p8_reference"),
+        ("locks/source.json", "source", "source_lock"),
+        ("locks/authority-delivery.json", "authority",
+            "authority_delivery"),
+        ("reports/portable.json", "portable", "portable_report"),
+        ("LICENSE", "license", "license"),
         ("release/release-commit.txt",
-            "89abcdef0123456789abcdef0123456789abcdef")
+            "89abcdef0123456789abcdef0123456789abcdef",
+            "release_commit")
     ]
     for (row in rows) {
         let bytes = row[1].toArray()
@@ -947,6 +960,12 @@ private func p8CreateBundle(root: String, relativePath: String,
         asset.size = bytes.size
         asset.sha256 = p8HashBytes(bytes)
         asset.inputKind = "verified_input"
+        asset.role = row[2]
+        asset.logicalAsset = row[0]
+        asset.partIndex = 0
+        asset.partCount = 1
+        asset.logicalSize = asset.size
+        asset.logicalSha256 = asset.sha256
         assets.add(asset)
         let target = Path(canonicalRoot).join(row[0])
         if (!exists(target.parent)) {
@@ -957,6 +976,38 @@ private func p8CreateBundle(root: String, relativePath: String,
     File.writeTo(Path(canonicalRoot).join("RELEASE-MANIFEST.json"),
         writeCkbReproReleaseManifest(assets).toArray())
     (canonicalRoot, computeCkbReproBundleInputSetHash(assets))
+}
+
+private func p8AuthorityContract(loaded: CkbReproBundleLoadResult,
+    omittedRole!: String = ""): CkbReproReleaseAuthorityContract {
+    let contract = CkbReproReleaseAuthorityContract()
+    for (asset in loaded.manifest.assets) {
+        if (asset.role == omittedRole) { continue }
+        let evidence = CkbReproReleaseAuthorityEvidence()
+        evidence.role = asset.role
+        evidence.logicalAsset = asset.logicalAsset
+        evidence.size = asset.logicalSize
+        evidence.sha256 = asset.logicalSha256
+        contract.expected.add(evidence)
+    }
+    contract
+}
+
+private func p8AuthorityPreflight(loaded: CkbReproBundleLoadResult):
+    CkbReproVerifyEnvironmentResult {
+    let out = CkbReproVerifyEnvironmentResult()
+    for (role in ["p0_manifest", "p1_score_contract",
+        "p2_logical_snapshot", "p3_qdrant_snapshot", "p4_build_proof",
+        "p6_environment_lock", "p8_reference"]) {
+        for (asset in loaded.manifest.assets) {
+            if (asset.role == role) {
+                out.inputRoles.add(role)
+                out.inputHashes.add(asset.logicalSha256)
+                out.inputSizes.add(asset.logicalSize)
+            }
+        }
+    }
+    out
 }
 
 private func p8FindEntry(entries: ArrayList<CkbReproBundleReadEntry>,

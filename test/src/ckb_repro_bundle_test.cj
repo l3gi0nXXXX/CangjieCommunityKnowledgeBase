@@ -52,6 +52,8 @@ private class P9FakeBundleReadBackend <: CkbReproBundleReadBackend {
     public var noFollowFalsePath: String = ""
     public var secondManifestBytes: Array<UInt8> = Array<UInt8>()
     public var manifestReadCalls: Int64 = 0
+    public var closeCalls: Int64 = 0
+    public var maxBufferSize: Int64 = 0
     public let observedOverrides =
         HashMap<String, CkbReproBundleReadEntry>()
     public init() {}
@@ -70,34 +72,66 @@ private class P9FakeBundleReadBackend <: CkbReproBundleReadBackend {
         }
         this.listings[root]
     }
-    public func read(root: String, expected: CkbReproBundleReadEntry):
-        CkbReproBundleReadResult {
+    public func open(root: String, expected: CkbReproBundleReadEntry):
+        CkbReproBundleReadHandle {
         this.readCalls += 1
         if (expected.relativePath == this.failReadPath) {
             throw Exception("fake read failure")
         }
-        let result = CkbReproBundleReadResult()
-        result.observedEntry = p9CopyReadEntry(expected)
-        result.noFollow = expected.relativePath != this.noFollowFalsePath
+        var bytes = Array<UInt8>()
         if (this.observedOverrides.contains(expected.relativePath)) {
-            result.observedEntry =
-                p9CopyReadEntry(this.observedOverrides[expected.relativePath])
+            // The handle applies this observed identity after streaming.
         }
         if (expected.relativePath == "RELEASE-MANIFEST.json") {
             this.manifestReadCalls += 1
             if (this.manifestReadCalls > 1 &&
                 this.secondManifestBytes.size > 0) {
-                result.bytes = this.secondManifestBytes
-                return result
+                bytes = this.secondManifestBytes
             }
         }
-        if (!this.roots.contains(root) ||
-            !this.roots[root].contains(expected.relativePath)) {
-            return result
+        if (bytes.size == 0 && this.roots.contains(root) &&
+            this.roots[root].contains(expected.relativePath)) {
+            bytes = this.roots[root][expected.relativePath]
         }
-        result.bytes = this.roots[root][expected.relativePath]
-        result
+        let observed = if (this.observedOverrides.contains(
+            expected.relativePath)) {
+            p9CopyReadEntry(this.observedOverrides[expected.relativePath])
+        } else { p9CopyReadEntry(expected) }
+        P9FakeBundleReadHandle(this, bytes, observed,
+            expected.relativePath != this.noFollowFalsePath)
     }
+}
+
+private class P9FakeBundleReadHandle <: CkbReproBundleReadHandle {
+    private let backend: P9FakeBundleReadBackend
+    private let bytes: Array<UInt8>
+    private let observed: CkbReproBundleReadEntry
+    private let followsSafely: Bool
+    private var offset: Int64 = 0
+    public init(backend: P9FakeBundleReadBackend, bytes: Array<UInt8>,
+        observed: CkbReproBundleReadEntry, followsSafely: Bool) {
+        this.backend = backend
+        this.bytes = bytes
+        this.observed = observed
+        this.followsSafely = followsSafely
+    }
+    public func read(buffer: Array<UInt8>): Int64 {
+        if (buffer.size > this.backend.maxBufferSize) {
+            this.backend.maxBufferSize = buffer.size
+        }
+        if (this.offset >= this.bytes.size) { return 0 }
+        let remaining = this.bytes.size - this.offset
+        let count = if (remaining < buffer.size) { remaining }
+            else { buffer.size }
+        for (i in 0..count) { buffer[i] = this.bytes[this.offset + i] }
+        this.offset += count
+        count
+    }
+    public func observedEntry(): CkbReproBundleReadEntry {
+        p9CopyReadEntry(this.observed)
+    }
+    public func noFollow(): Bool { this.followsSafely }
+    public func close(): Unit { this.backend.closeCalls += 1 }
 }
 
 @Test
@@ -112,6 +146,8 @@ public class CkbReproBundleTest {
         let sums = writeCkbReproSha256Sums(first)
         @Expect(manifest.contains("RELEASE-MANIFEST.json"), false)
         @Expect(manifest.contains("SHA256SUMS"), false)
+        @Expect(manifest.contains("\"role\":\"portable_report\""), true)
+        @Expect(manifest.contains("\"partIndex\":0"), true)
         @Expect(sums.contains("SHA256SUMS"), false)
         @Expect(sums.contains("SHA256SUMS.sig"), false)
     }
@@ -125,6 +161,30 @@ public class CkbReproBundleTest {
         @Expect(validateCkbReproBundleRelativePath("资料/结果🙂.json").ok, true)
         @Expect(validateCkbReproBundleRelativePathBytes([0xff, 0xfe]).diagnostic,
             "invalid_response_encoding")
+        let missingRole = p9Asset("assets/missing-role.txt", "x")
+        missingRole.role = ""
+        @Expect(validateCkbReproBundleAssets(
+            p9AssetList(missingRole)).diagnostic,
+            "bundle_asset_role_invalid")
+        let fakeRole = p9Asset("assets/fake-role.txt", "x")
+        fakeRole.role = "humaneval_answer"
+        @Expect(validateCkbReproBundleAssets(
+            p9AssetList(fakeRole)).diagnostic,
+            "bundle_asset_role_invalid")
+        let derived = p9Asset("reports/verification.json", "x")
+        derived.role = "p8_verification_report"
+        @Expect(validateCkbReproBundleAssets(
+            p9AssetList(derived)).diagnostic,
+            "bundle_derived_asset_forbidden")
+        let discontinuous = p9Asset("assets/data.part-0001", "x")
+        discontinuous.logicalAsset = "assets/data"
+        discontinuous.partIndex = 1
+        discontinuous.partCount = 2
+        discontinuous.logicalSize = 2
+        discontinuous.logicalSha256 = ckbReproBundleHash("xy".toArray())
+        @Expect(validateCkbReproBundleAssets(
+            p9AssetList(discontinuous)).diagnostic,
+            "bundle_asset_parts_incomplete")
         @Expect(planCkbReproAssetParts("asset.bin", 0).size, 1)
         @Expect(planCkbReproAssetParts("asset.bin",
             2 * 1024 * 1024 * 1024 - 1).size, 1)
@@ -283,9 +343,18 @@ public class CkbReproBundleTest {
         @Expect(seeded[0].rootExistsCalls, 1)
         @Expect(seeded[0].listCalls, 2)
         @Expect(seeded[0].readCalls, 4)
+        @Expect(seeded[0].closeCalls, 4)
+        @Expect(seeded[0].maxBufferSize <= 65536, true)
         seeded[0].roots[seeded[1]]["assets/a.txt"] = "ALPHA".toArray()
         @Expect(loaded.assetProofs[0].sha256,
             loaded.manifest.assets[0].sha256)
+
+        let largeBytes = Array<UInt8>(200000, repeat: UInt8(7))
+        let large = p9ReadableBundle("/tmp/ckb-p9/read-streaming",
+            p9AssetList(p9AssetBytes("assets/large.bin", largeBytes)), false)
+        @Expect(p9Load(large).contract.ok, true)
+        @Expect(large[0].maxBufferSize, 65536)
+        @Expect(large[0].closeCalls, 3)
     }
 
     @TestCase
@@ -344,6 +413,7 @@ public class CkbReproBundleTest {
             "ALPHA".toArray()
         @Expect(p9ParseAndValidate(sameSizeTampered).diagnostic,
             "bundle_asset_hash_mismatch")
+        @Expect(sameSizeTampered[0].closeCalls >= 2, true)
 
         let malformedAsset = writeCkbReproReleaseManifest(p9Assets(false))
             .replace("\"inputKind\":\"verified_input\"",
@@ -351,6 +421,13 @@ public class CkbReproBundleTest {
         @Expect(parseCkbReproBundleManifest(
             malformedAsset.toArray())[0].diagnostic,
             "bundle_manifest_asset_contract_invalid")
+
+        let oversizedManifest = p9ReadableBundle(
+            "/tmp/ckb-p9/read-manifest-limit", p9Assets(false), false)
+        oversizedManifest[0].listings[oversizedManifest[1]][0].size =
+            16 * 1024 * 1024 + 1
+        @Expect(p9ParseAndValidate(oversizedManifest).diagnostic,
+            "bundle_manifest_size_exceeded")
 
         let nonCanonical = writeCkbReproReleaseManifest(p9Assets(false))
             .replace("},{", "}, {")
@@ -493,12 +570,23 @@ public class CkbReproBundleTest {
 }
 
 private func p9Asset(path: String, value: String): CkbReproBundleAsset {
+    p9AssetBytes(path, value.toArray())
+}
+
+private func p9AssetBytes(path: String,
+    bytes: Array<UInt8>): CkbReproBundleAsset {
     let asset = CkbReproBundleAsset()
     asset.relativePath = path
-    asset.bytes = value.toArray()
+    asset.bytes = bytes
     asset.size = asset.bytes.size
     asset.sha256 = ckbReproBundleHash(asset.bytes)
     asset.inputKind = "verified_input"
+    asset.role = "portable_report"
+    asset.logicalAsset = path
+    asset.partIndex = 0
+    asset.partCount = 1
+    asset.logicalSize = asset.size
+    asset.logicalSha256 = asset.sha256
     asset
 }
 
@@ -507,6 +595,13 @@ private func p9Assets(reverse: Bool): ArrayList<CkbReproBundleAsset> {
     let a = p9Asset("assets/a.txt", "alpha")
     let b = p9Asset("assets/b.txt", "仓颉🙂")
     if (reverse) { out.add(b); out.add(a) } else { out.add(a); out.add(b) }
+    out
+}
+
+private func p9AssetList(asset: CkbReproBundleAsset):
+    ArrayList<CkbReproBundleAsset> {
+    let out = ArrayList<CkbReproBundleAsset>()
+    out.add(asset)
     out
 }
 
