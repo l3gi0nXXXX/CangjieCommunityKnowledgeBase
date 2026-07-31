@@ -331,7 +331,8 @@ private func p7DocumentationContainsForbiddenPosixPath(value: String): Bool {
             end += 1
         }
         let path = token.toString()
-        if (!p7DocumentationPublicPosixPath(path) &&
+        if (path != "/" &&
+            !p7DocumentationPublicPosixPath(path) &&
             !p7DocumentationPublicApiRoute(path)) {
             return true
         }
@@ -382,12 +383,7 @@ private func p7DocumentationPosixPathDelimiter(rune: Rune): Bool {
 }
 
 private func p7DocumentationPublicPosixPath(path: String): Bool {
-    path == "/" ||
-        path == "/tmp" || path.startsWith("/tmp/") ||
-        path == "/dev/null" ||
-        path == "/opt/homebrew/opt/openssl@3/lib" ||
-        path == "/etc/ssl/cert.pem" ||
-        path == "/path/to/cangjie"
+    path == "/usr/bin/env" || path == "/dev/null"
 }
 
 private func p7DocumentationPublicApiRoute(path: String): Bool {
@@ -757,13 +753,48 @@ private func p7DocumentationHeadingText(line: String): String {
 private func p7DocumentationExplicitAnchorExists(
     text: String, expected: String): Bool {
     var fenced = false
+    var fenceMarker: Rune = r' '
+    var fenceLength: Int64 = 0
     for (line in text.split("\n")) {
-        let trimmed = line.trimAscii()
-        if (trimmed.startsWith("```")) {
-            fenced = !fenced
+        let lineRunes = line.toRuneArray()
+        var indent: Int64 = 0
+        while (indent < lineRunes.size && indent < 4 &&
+            lineRunes[indent] == r' ') {
+            indent += 1
+        }
+        let tabIndented = indent < lineRunes.size &&
+            lineRunes[indent] == r'\t'
+        var marker: Rune = r' '
+        var markerLength: Int64 = 0
+        if (indent <= 3 && indent < lineRunes.size &&
+            (lineRunes[indent] == r'`' ||
+                lineRunes[indent] == r'~')) {
+            marker = lineRunes[indent]
+            var markerIndex = indent
+            while (markerIndex < lineRunes.size &&
+                lineRunes[markerIndex] == marker) {
+                markerLength += 1
+                markerIndex += 1
+            }
+        }
+        if (fenced) {
+            if (marker == fenceMarker &&
+                markerLength >= fenceLength &&
+                p7DocumentationOnlyAsciiWhitespaceAfter(
+                    lineRunes, indent + markerLength)) {
+                fenced = false
+                fenceMarker = r' '
+                fenceLength = 0
+            }
             continue
         }
-        if (fenced) { continue }
+        if (indent >= 4 || tabIndented) { continue }
+        if (markerLength >= 3) {
+            fenced = true
+            fenceMarker = marker
+            fenceLength = markerLength
+            continue
+        }
         let visible = p7DocumentationOutsideInlineCode(line)
         let runes = visible.toRuneArray()
         var index: Int64 = 0
@@ -792,6 +823,17 @@ private func p7DocumentationExplicitAnchorExists(
         }
     }
     false
+}
+
+private func p7DocumentationOnlyAsciiWhitespaceAfter(
+    runes: Array<Rune>, start: Int64): Bool {
+    for (index in start..runes.size) {
+        if (runes[index] != r' ' && runes[index] != r'\t' &&
+            runes[index] != r'\r') {
+            return false
+        }
+    }
+    true
 }
 
 private func p7DocumentationHtmlAttribute(

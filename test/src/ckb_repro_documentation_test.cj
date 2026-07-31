@@ -91,7 +91,9 @@ public class CkbReproDocumentationTest {
         for (forbidden in [
             "/Users/", "/home/", "C:\\Users\\", "git add -f",
             "canonical_solution", "solution.cj", "teacher-solutions",
-            "sk-live-", "Bearer ey", "PRIVATE-TOKEN:"
+            "sk-live-", "Bearer ey", "PRIVATE-TOKEN:",
+            "/path/to/cangjie", "/opt/homebrew/opt/openssl@3",
+            "/etc/ssl/cert.pem"
         ]) {
             @Expect(docs.contains(forbidden), false)
         }
@@ -100,6 +102,11 @@ public class CkbReproDocumentationTest {
         @Expect(docs.contains("\${TMPDIR:-/tmp}"), true)
         @Expect(docs.contains("路径可包含空格"), true)
         @Expect(docs.contains("export cjHeapSize=4GB"), true)
+        @Expect(docs.contains(
+            "OPENSSL_ROOT=\"\${OPENSSL_ROOT:-$(brew --prefix openssl@3)}\""),
+            true)
+        @Expect(docs.contains(
+            "DYLD_LIBRARY_PATH=\"\${OPENSSL_ROOT}/lib:"), true)
         @Expect(docs.contains("export DYLD_LIBRARY_PATH="), true)
         @Expect(docs.contains("docs/service-http-operations.md"), true)
     }
@@ -398,6 +405,10 @@ public class CkbReproDocumentationTest {
     public func productionValidatorRejectsAnchorTextThatIsNotHtml(): Unit {
         for (example in [
             "```html\n<a name=\"fake-anchor\"></a>\n```",
+            "   ````html\n<a name=\"fake-anchor\"></a>\n````",
+            "~~~~~html\n<a name=\"fake-anchor\"></a>\n~~~~~~",
+            "    <a name=\"fake-anchor\"></a>",
+            "\t<a name=\"fake-anchor\"></a>",
             "`<a name=\"fake-anchor\"></a>`",
             "&lt;a name=\"fake-anchor\"&gt;",
             "<div data-name=\"fake-anchor\"></div>"
@@ -491,7 +502,7 @@ public class CkbReproDocumentationTest {
                 P7RepositoryDocumentationReader(), nestedRoot,
                 CKB_REPRO_DOCUMENTATION_MODE_DRAFT,
                 Array<String>()).diagnostic,
-                "documentation_extra_release_entry")
+                "documentation_entry_type_forbidden")
         } finally {
             if (exists(Path(nestedRoot))) {
                 remove(Path(nestedRoot), recursive: true)
@@ -512,6 +523,44 @@ public class CkbReproDocumentationTest {
         } finally {
             if (exists(Path(directoryRoot))) {
                 remove(Path(directoryRoot), recursive: true)
+            }
+        }
+
+        let emptyDirectoryRoot =
+            "target/p7-documentation-reader-empty-directory"
+        p7ResetDocumentationSurface(emptyDirectoryRoot)
+        try {
+            Directory.create(Path(
+                "${emptyDirectoryRoot}/docs/reproducibility/empty"),
+                recursive: true)
+            @Expect(validateCkbReproDocumentation(
+                P7RepositoryDocumentationReader(), emptyDirectoryRoot,
+                CKB_REPRO_DOCUMENTATION_MODE_DRAFT,
+                Array<String>()).diagnostic,
+                "documentation_entry_type_forbidden")
+        } finally {
+            if (exists(Path(emptyDirectoryRoot))) {
+                remove(Path(emptyDirectoryRoot), recursive: true)
+            }
+        }
+
+        let nestedEmptyDirectoryRoot =
+            "target/p7-documentation-reader-nested-empty-directory"
+        p7ResetDocumentationSurface(nestedEmptyDirectoryRoot)
+        try {
+            Directory.create(Path(
+                "${nestedEmptyDirectoryRoot}/docs/reproducibility/" +
+                    "outer/inner"),
+                recursive: true)
+            @Expect(validateCkbReproDocumentation(
+                P7RepositoryDocumentationReader(),
+                nestedEmptyDirectoryRoot,
+                CKB_REPRO_DOCUMENTATION_MODE_DRAFT,
+                Array<String>()).diagnostic,
+                "documentation_entry_type_forbidden")
+        } finally {
+            if (exists(Path(nestedEmptyDirectoryRoot))) {
+                remove(Path(nestedEmptyDirectoryRoot), recursive: true)
             }
         }
 
@@ -544,11 +593,26 @@ public class CkbReproDocumentationTest {
         allowed.put("docs/reproducibility/quick-start.md",
             p7ValidDocument(true) +
                 "\nhttps://example.invalid/private/company\n" +
-                "GET /api/v1/status\n/dev/null\n" +
-                "/opt/homebrew/opt/openssl@3/lib\n")
+                "GET /api/v1/status\n/usr/bin/env\n/dev/null\n")
         @Expect(validateCkbReproDocumentation(
             allowed, "/tmp/repro", CKB_REPRO_DOCUMENTATION_MODE_DRAFT,
             Array<String>()).ok, true)
+
+        for (forbiddenPath in [
+            "/tmp/private",
+            "/opt/homebrew/opt/openssl@3/lib",
+            "/etc/ssl/cert.pem",
+            "/path/to/cangjie"
+        ]) {
+            let forbidden = p7FakeDocumentation(true)
+            forbidden.put("docs/reproducibility/quick-start.md",
+                p7ValidDocument(true) + "\n${forbiddenPath}\n")
+            @Expect(validateCkbReproDocumentation(
+                forbidden, "/tmp/repro",
+                CKB_REPRO_DOCUMENTATION_MODE_DRAFT,
+                Array<String>()).diagnostic,
+                "documentation_path_or_secret_forbidden")
+        }
     }
 }
 
@@ -680,12 +744,11 @@ private func p7CollectFilesystemDocumentation(
         let relative = "docs/reproducibility/${nested}"
         let classified = p7FilesystemDocumentationEntry(
             root, entry.path, relative)
-        if (classified.kind == CKB_REPRO_DOCUMENTATION_ENTRY_DIRECTORY &&
-            !entry.name.endsWith(".md")) {
+        out.add(classified)
+        if (classified.kind ==
+            CKB_REPRO_DOCUMENTATION_ENTRY_DIRECTORY) {
             p7CollectFilesystemDocumentation(
                 root, entry.path, nested, out)
-        } else {
-            out.add(classified)
         }
     }
 }

@@ -93,7 +93,8 @@ exit=0
 cd "${CKB_ROOT}"
 test -n "${GLM_API_KEY:-}" || { echo 'provider_credential_missing'; exit 1; }
 source "${CANGJIE_SDK_ROOT:?set CANGJIE_SDK_ROOT}/envsetup.sh"
-export DYLD_LIBRARY_PATH="/opt/homebrew/opt/openssl@3/lib:${DYLD_LIBRARY_PATH:-}"
+export OPENSSL_ROOT="${OPENSSL_ROOT:-$(brew --prefix openssl@3)}"
+export DYLD_LIBRARY_PATH="${OPENSSL_ROOT}/lib:${DYLD_LIBRARY_PATH:-}"
 export cjHeapSize=4GB
 echo 'credential_present=yes'
 ```

@@ -67,7 +67,8 @@ placeholder_scan_exit=0
 ```bash
 cd "${CKB_ROOT}/test"
 source "${CANGJIE_SDK_ROOT:?set CANGJIE_SDK_ROOT}/envsetup.sh"
-export DYLD_LIBRARY_PATH="/opt/homebrew/opt/openssl@3/lib:${DYLD_LIBRARY_PATH:-}"
+export OPENSSL_ROOT="${OPENSSL_ROOT:-$(brew --prefix openssl@3)}"
+export DYLD_LIBRARY_PATH="${OPENSSL_ROOT}/lib:${DYLD_LIBRARY_PATH:-}"
 cjpm test -j 1 --filter CkbReproDocumentationTest
 rc=$?
 echo "exit=${rc}"
