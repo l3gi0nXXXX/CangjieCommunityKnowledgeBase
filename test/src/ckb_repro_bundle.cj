@@ -56,6 +56,14 @@ public class CkbReproBundleReadEntry {
     public init() {}
 }
 
+public class CkbReproBundleReadResult {
+    public var bytes: Array<UInt8> = Array<UInt8>()
+    public var observedEntry: CkbReproBundleReadEntry =
+        CkbReproBundleReadEntry()
+    public var noFollow: Bool = false
+    public init() {}
+}
+
 public class CkbReproBundleAssetProof {
     public var relativePath: String = ""
     public var size: Int64 = 0
@@ -85,7 +93,8 @@ public interface CkbReproBundleBackend {
 public interface CkbReproBundleReadBackend {
     func rootExists(root: String): Bool
     func list(root: String): ArrayList<CkbReproBundleReadEntry>
-    func read(root: String, relativePath: String): Array<UInt8>
+    func read(root: String, expected: CkbReproBundleReadEntry):
+        CkbReproBundleReadResult
 }
 
 public func ckbReproBundleHash(bytes: Array<UInt8>): String {
@@ -103,8 +112,7 @@ public func validateCkbReproBundleRelativePath(path: String):
     CkbReproContractResult {
     if (path == "" || path.startsWith("/") || path.endsWith("/") ||
         path.contains("\\") || path.contains("\n") || path.contains("\r") ||
-        path.contains("\t") || path.contains("\u{0000}") ||
-        path.contains("//") ||
+        p9BundlePathHasControl(path) || path.contains("//") ||
         path == "." || path == ".." || path.startsWith("./") ||
         path.startsWith("../") || path.contains("/./") ||
         path.contains("/../") || path.endsWith("/.") || path.endsWith("/..")) {
@@ -218,6 +226,10 @@ public func parseCkbReproBundleManifest(bytes: Array<UInt8>):
             }
             let asset = CkbReproBundleAsset()
             asset.relativePath = p9BundleString(row, "path")
+            let path = validateCkbReproBundleRelativePath(asset.relativePath)
+            if (!path.ok) {
+                return (path, CkbReproBundleManifest())
+            }
             asset.size = p9BundleInt(row, "size")
             asset.sha256 = p9BundleString(row, "sha256")
             asset.inputKind = p9BundleString(row, "inputKind")
@@ -236,47 +248,6 @@ public func parseCkbReproBundleManifest(bytes: Array<UInt8>):
 }
 
 public func validateCkbReproBundleManifest(root: String,
-    manifest: CkbReproBundleManifest,
-    backend: CkbReproBundleReadBackend): CkbReproContractResult {
-    let structure = p9ValidateBundleManifestStructure(manifest)
-    if (!structure.ok) { return structure }
-    try {
-        if (!backend.rootExists(root)) {
-            return p9BundleFailure("bundle_root_missing")
-        }
-        let listed = backend.list(root)
-        let safe = p9ValidateBundleReadListing(root, listed)
-        if (!safe.ok) { return safe }
-        let coverage = p9ValidateBundleReadCoverage(manifest, listed)
-        if (!coverage.ok) { return coverage }
-        let canonical = renderCkbReproBundleManifest(manifest)
-        let manifestBytes = backend.read(root, "RELEASE-MANIFEST.json")
-        if (manifestBytes != canonical.toArray()) {
-            return p9BundleFailure("bundle_manifest_bytes_changed")
-        }
-        for (asset in manifest.assets) {
-            let found = p9FindBundleReadEntry(listed, asset.relativePath)
-            if (!found[0] || found[1].size != asset.size) {
-                return p9BundleFailure("bundle_asset_size_mismatch")
-            }
-            let bytes = backend.read(root, asset.relativePath)
-            if (bytes.size != asset.size) {
-                return p9BundleFailure("bundle_asset_size_mismatch")
-            }
-            if (ckbReproBundleHash(bytes) != asset.sha256) {
-                return p9BundleFailure("bundle_asset_hash_mismatch")
-            }
-        }
-        let result = p9BundleSuccess()
-        result.canonicalJson = canonical
-        result.manifestHash = ckbReproBundleHash(manifestBytes)
-        result
-    } catch (_: Exception) {
-        p9BundleFailure("bundle_read_failed")
-    }
-}
-
-public func loadAndValidateCkbReproBundle(root: String,
     backend: CkbReproBundleReadBackend): CkbReproBundleLoadResult {
     let out = CkbReproBundleLoadResult()
     if (!p9AbsoluteRoot(root)) {
@@ -297,11 +268,13 @@ public func loadAndValidateCkbReproBundle(root: String,
             out.contract = p9BundleFailure("bundle_manifest_missing")
             return out
         }
-        let manifestBytes = backend.read(root, "RELEASE-MANIFEST.json")
-        if (manifestBytes.size != manifestEntry[1].size) {
-            out.contract = p9BundleFailure("bundle_manifest_size_mismatch")
+        let manifestRead =
+            p9ReadBundleEntry(root, manifestEntry[1], backend)
+        if (!manifestRead[0].ok) {
+            out.contract = manifestRead[0]
             return out
         }
+        let manifestBytes = manifestRead[1]
         let parsed = parseCkbReproBundleManifest(manifestBytes)
         if (!parsed[0].ok) { out.contract = parsed[0]; return out }
         let structure = p9ValidateBundleManifestStructure(parsed[1])
@@ -315,11 +288,12 @@ public func loadAndValidateCkbReproBundle(root: String,
                 out.contract = p9BundleFailure("bundle_asset_size_mismatch")
                 return out
             }
-            let bytes = backend.read(root, asset.relativePath)
-            if (bytes.size != asset.size) {
-                out.contract = p9BundleFailure("bundle_asset_size_mismatch")
+            let assetRead = p9ReadBundleEntry(root, entry[1], backend)
+            if (!assetRead[0].ok) {
+                out.contract = assetRead[0]
                 return out
             }
+            let bytes = assetRead[1]
             let actualHash = ckbReproBundleHash(bytes)
             if (actualHash != asset.sha256) {
                 out.contract = p9BundleFailure("bundle_asset_hash_mismatch")
@@ -333,8 +307,13 @@ public func loadAndValidateCkbReproBundle(root: String,
             proof.proofHash = p9BundleAssetProofHash(proof)
             out.assetProofs.add(proof)
         }
-        let manifestBytesAfterAssets =
-            backend.read(root, "RELEASE-MANIFEST.json")
+        let manifestReadAfterAssets =
+            p9ReadBundleEntry(root, manifestEntry[1], backend)
+        if (!manifestReadAfterAssets[0].ok) {
+            out.contract = manifestReadAfterAssets[0]
+            return out
+        }
+        let manifestBytesAfterAssets = manifestReadAfterAssets[1]
         if (manifestBytesAfterAssets != manifestBytes) {
             out.contract = p9BundleFailure("bundle_manifest_bytes_changed")
             return out
@@ -609,6 +588,42 @@ private func p9FindBundleReadEntry(
     (false, CkbReproBundleReadEntry())
 }
 
+private func p9ReadBundleEntry(root: String,
+    expected: CkbReproBundleReadEntry,
+    backend: CkbReproBundleReadBackend):
+    (CkbReproContractResult, Array<UInt8>) {
+    let read = backend.read(root, expected)
+    if (!read.noFollow) {
+        return (p9BundleFailure("bundle_read_no_follow_required"),
+            Array<UInt8>())
+    }
+    let observed = read.observedEntry
+    if (observed.kind != "regular" || !observed.withinRoot ||
+        observed.canonicalPath != "${root}/${observed.relativePath}") {
+        return (p9BundleFailure("bundle_read_observed_entry_unsafe"),
+            Array<UInt8>())
+    }
+    if (!p9BundleReadEntriesEqual(expected, observed)) {
+        return (p9BundleFailure("bundle_read_entry_changed"),
+            Array<UInt8>())
+    }
+    if (read.bytes.size != observed.size) {
+        return (p9BundleFailure("bundle_asset_size_mismatch"),
+            Array<UInt8>())
+    }
+    (p9BundleSuccess(), read.bytes)
+}
+
+private func p9BundleReadEntriesEqual(left: CkbReproBundleReadEntry,
+    right: CkbReproBundleReadEntry): Bool {
+    left.relativePath == right.relativePath &&
+        left.kind == right.kind &&
+        left.canonicalPath == right.canonicalPath &&
+        left.withinRoot == right.withinRoot &&
+        left.identity == right.identity &&
+        left.size == right.size
+}
+
 private func p9BundleReadSnapshotHash(
     listing: ArrayList<CkbReproBundleReadEntry>): String {
     let rows = ArrayList<String>()
@@ -665,6 +680,13 @@ private func p9BundleHashValid(value: String): Bool {
     true
 }
 
+private func p9BundlePathHasControl(value: String): Bool {
+    for (rune in value.toRuneArray()) {
+        if (rune <= r'\u{001f}' || rune == r'\u{007f}') { return true }
+    }
+    false
+}
+
 private func p9BundleNibble(value: UInt8): String {
     if (value == UInt8(0)) { return "0" }
     if (value == UInt8(1)) { return "1" }
@@ -686,7 +708,23 @@ private func p9BundleNibble(value: UInt8): String {
 
 private func p9BundleJson(value: String): String {
     value.replace("\\", "\\\\").replace("\"", "\\\"")
-        .replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
+        .replace("\u{0000}", "\\u0000").replace("\u{0001}", "\\u0001")
+        .replace("\u{0002}", "\\u0002").replace("\u{0003}", "\\u0003")
+        .replace("\u{0004}", "\\u0004").replace("\u{0005}", "\\u0005")
+        .replace("\u{0006}", "\\u0006").replace("\u{0007}", "\\u0007")
+        .replace("\u{0008}", "\\b").replace("\t", "\\t")
+        .replace("\n", "\\n").replace("\u{000b}", "\\u000b")
+        .replace("\u{000c}", "\\f").replace("\r", "\\r")
+        .replace("\u{000e}", "\\u000e").replace("\u{000f}", "\\u000f")
+        .replace("\u{0010}", "\\u0010").replace("\u{0011}", "\\u0011")
+        .replace("\u{0012}", "\\u0012").replace("\u{0013}", "\\u0013")
+        .replace("\u{0014}", "\\u0014").replace("\u{0015}", "\\u0015")
+        .replace("\u{0016}", "\\u0016").replace("\u{0017}", "\\u0017")
+        .replace("\u{0018}", "\\u0018").replace("\u{0019}", "\\u0019")
+        .replace("\u{001a}", "\\u001a").replace("\u{001b}", "\\u001b")
+        .replace("\u{001c}", "\\u001c").replace("\u{001d}", "\\u001d")
+        .replace("\u{001e}", "\\u001e").replace("\u{001f}", "\\u001f")
+        .replace("\u{007f}", "\\u007f")
 }
 
 private func p9BundleSuccess(): CkbReproContractResult {
