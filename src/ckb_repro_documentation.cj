@@ -95,7 +95,7 @@ public func scanCkbReproDocumentationPathsAndSecrets(
     let out = CkbReproDocumentationScan()
     let lower = text.toAsciiLower()
     if (p7DocumentationContainsPrivatePath(lower)) { out.findingCount += 1 }
-    if (p7DocumentationContainsCredential(lower)) { out.findingCount += 1 }
+    if (p7DocumentationContainsCredential(text)) { out.findingCount += 1 }
     if (p7DocumentationContainsBypass(lower)) { out.findingCount += 1 }
     if (p7DocumentationContainsBenchmarkPayload(lower)) {
         out.findingCount += 1
@@ -294,15 +294,27 @@ private func p7DocumentationRequiredSectionsPresent(text: String): Bool {
 private func p7DocumentationContainsPrivatePath(lower: String): Bool {
     lower.contains("/users/") || lower.contains("/home/") ||
         lower.contains("/root/") || lower.contains("/var/folders/") ||
-        lower.contains(":\\users\\") || lower.contains(":/users/")
+        lower.contains("/volumes/") ||
+        lower.contains(":\\users\\") || lower.contains(":/users/") ||
+        p7DocumentationContainsDriveAbsolutePath(lower) ||
+        p7DocumentationContainsUncAbsolutePath(lower)
 }
 
-private func p7DocumentationContainsCredential(lower: String): Bool {
+private func p7DocumentationContainsCredential(value: String): Bool {
+    let lower = value.toAsciiLower()
     lower.contains("sk-live-") || lower.contains("sk-proj-") ||
         lower.contains("ghp_") || lower.contains("bearer ey") ||
+        p7DocumentationContainsUpperCredentialPrefix(value, "AKIA", 12) ||
+        p7DocumentationContainsUpperCredentialPrefix(value, "ASIA", 12) ||
+        p7DocumentationContainsMixedCredentialPrefix(value, "AIza", 10) ||
+        lower.contains("github_pat_") ||
+        lower.contains("glpat-") || lower.contains("xoxb-") ||
+        lower.contains("xoxp-") || lower.contains("xoxa-") ||
+        lower.contains("xoxr-") || lower.contains("xoxs-") ||
+        lower.contains("ya29.") ||
+        lower.contains("-----begin private key-----") ||
         lower.contains("private-token:") ||
-        lower.contains("authorization: bearer") ||
-        lower.contains("authorization: basic") ||
+        lower.contains("authorization:") ||
         lower.contains("x-api-key:")
 }
 
@@ -311,17 +323,89 @@ private func p7DocumentationContainsBypass(lower: String): Bool {
 }
 
 private func p7DocumentationContainsBenchmarkPayload(lower: String): Bool {
+    // This gate detects observable benchmark identifiers and answer/test
+    // markers. It cannot prove that unmarked prose is semantically unrelated.
     lower.contains("canonical_solution") || lower.contains("solution.cj") ||
         lower.contains("teacher-solutions") ||
-        lower.contains("humaneval_") ||
-        (lower.contains("humaneval/") &&
-            (p7DocumentationContainsAsciiDigitAfter(lower, "humaneval/") ||
-                lower.contains("hidden_test") ||
-                lower.contains("hidden test") ||
-                lower.contains("reference solution")))
+        lower.contains("reference_solution") ||
+        lower.contains("reference solution") ||
+        lower.contains("teacher solution") ||
+        lower.contains("hidden_test") ||
+        lower.contains("hidden tests payload") ||
+        p7DocumentationContainsHumanEvalCaseAfter(lower, "humaneval_") ||
+        p7DocumentationContainsHumanEvalCaseAfter(lower, "humaneval/") ||
+        p7DocumentationContainsHumanEvalCaseAfter(lower, "humaneval-") ||
+        p7DocumentationContainsHumanEvalCaseAfter(lower, "humaneval.case.")
 }
 
-private func p7DocumentationContainsAsciiDigitAfter(
+private func p7DocumentationContainsDriveAbsolutePath(value: String): Bool {
+    let runes = value.toRuneArray()
+    if (runes.size < 3) { return false }
+    for (index in 0..=(runes.size - 3)) {
+        let boundary = index == 0 ||
+            !((runes[index - 1] >= r'a' && runes[index - 1] <= r'z') ||
+                (runes[index - 1] >= r'A' && runes[index - 1] <= r'Z'))
+        if (boundary &&
+            ((runes[index] >= r'a' && runes[index] <= r'z') ||
+            (runes[index] >= r'A' && runes[index] <= r'Z')) &&
+            runes[index + 1] == r':' &&
+            (runes[index + 2] == r'\\' || runes[index + 2] == r'/')) {
+            return true
+        }
+    }
+    false
+}
+
+private func p7DocumentationContainsUncAbsolutePath(value: String): Bool {
+    value.contains("\\\\")
+}
+
+private func p7DocumentationContainsUpperCredentialPrefix(
+    value: String, prefix: String, minimumFollowing: Int64): Bool {
+    let runes = value.toRuneArray()
+    let prefixRunes = prefix.toRuneArray()
+    if (runes.size < prefixRunes.size + minimumFollowing) { return false }
+    for (start in 0..=(runes.size - prefixRunes.size - minimumFollowing)) {
+        var matches = true
+        for (offset in 0..prefixRunes.size) {
+            if (runes[start + offset] != prefixRunes[offset]) {
+                matches = false
+                break
+            }
+        }
+        if (!matches) { continue }
+        for (offset in 0..minimumFollowing) {
+            let rune = runes[start + prefixRunes.size + offset]
+            if (!((rune >= r'A' && rune <= r'Z') ||
+                (rune >= r'0' && rune <= r'9'))) {
+                matches = false
+                break
+            }
+        }
+        if (matches) { return true }
+    }
+    false
+}
+
+private func p7DocumentationContainsMixedCredentialPrefix(
+    value: String, prefix: String, minimumFollowing: Int64): Bool {
+    let runes = value.toRuneArray()
+    let prefixRunes = prefix.toRuneArray()
+    if (runes.size < prefixRunes.size + minimumFollowing) { return false }
+    for (start in 0..=(runes.size - prefixRunes.size - minimumFollowing)) {
+        var matches = true
+        for (offset in 0..prefixRunes.size) {
+            if (runes[start + offset] != prefixRunes[offset]) {
+                matches = false
+                break
+            }
+        }
+        if (matches) { return true }
+    }
+    false
+}
+
+private func p7DocumentationContainsHumanEvalCaseAfter(
     value: String, prefix: String): Bool {
     let valueRunes = value.toRuneArray()
     let prefixRunes = prefix.toRuneArray()
@@ -336,9 +420,21 @@ private func p7DocumentationContainsAsciiDigitAfter(
                 break
             }
         }
-        let next = start + prefixRunes.size
-        if (matches && next < valueRunes.size &&
+        if (!matches) { continue }
+        var next = start + prefixRunes.size
+        var caseId: Int64 = 0
+        var digitCount: Int64 = 0
+        while (next < valueRunes.size &&
             valueRunes[next] >= r'0' && valueRunes[next] <= r'9') {
+            if (digitCount < 3) {
+                caseId = caseId * 10 +
+                    Int64(UInt32(valueRunes[next])) -
+                    Int64(UInt32(r'0'))
+            }
+            digitCount += 1
+            next += 1
+        }
+        if (digitCount > 0 && digitCount <= 3 && caseId <= 163) {
             return true
         }
     }
@@ -366,14 +462,9 @@ private func p7DocumentationCommandTokens(text: String): ArrayList<String> {
             token.append(rune)
         } else {
             let value = token.toString()
-            let suffix = if (!atEnd && rune == r'.') {
-                p7DocumentationDotSuffix(runes, index)
-            } else {
-                ""
-            }
-            if (!p7DocumentationAssetSuffix(suffix) &&
-                p7DocumentationCommandName(value)) {
-                out.add(value + suffix)
+            if (p7DocumentationCommandName(value) &&
+                !p7DocumentationKnownArtifactName(value)) {
+                out.add(value)
             }
             token = StringBuilder()
         }
@@ -382,28 +473,15 @@ private func p7DocumentationCommandTokens(text: String): ArrayList<String> {
     out
 }
 
-private func p7DocumentationDotSuffix(
-    runes: Array<Rune>, dotIndex: Int64): String {
-    let suffix = StringBuilder()
-    var index = dotIndex
-    while (index < runes.size &&
-        (p7DocumentationCommandRune(runes[index]) || runes[index] == r'.')) {
-        suffix.append(runes[index])
-        index += 1
-    }
-    suffix.toString()
-}
-
-private func p7DocumentationAssetSuffix(suffix: String): Bool {
-    let value = suffix.toAsciiLower()
-    value == ".json" || value == ".txt" || value == ".tar" ||
-        value == ".tar.zst" || value == ".sig" || value == ".md"
+private func p7DocumentationKnownArtifactName(value: String): Bool {
+    value == "ckb-repro-placeholders.txt"
 }
 
 private func p7DocumentationCommandRune(rune: Rune): Bool {
     (rune >= r'a' && rune <= r'z') ||
         (rune >= r'A' && rune <= r'Z') ||
-        (rune >= r'0' && rune <= r'9') || rune == r'-'
+        (rune >= r'0' && rune <= r'9') ||
+        rune == r'-' || rune == r'.'
 }
 
 private func p7DocumentationCommandName(value: String): Bool {
@@ -543,10 +621,24 @@ private func p7DocumentationAnchorExists(
     text: String, expected: String): Bool {
     let canonicalExpected = p7DocumentationCanonicalAnchor(expected)
     if (canonicalExpected == "") { return false }
+    if (p7DocumentationExplicitAnchorExists(text, expected)) { return true }
+    let seen = ArrayList<String>()
     for (line in text.split("\n")) {
         let heading = p7DocumentationHeadingText(line)
-        if (heading != "" &&
-            p7DocumentationCanonicalAnchor(heading) == canonicalExpected) {
+        if (heading == "") { continue }
+        let base = p7DocumentationCanonicalAnchor(heading)
+        if (base == "") { continue }
+        var duplicate: Int64 = 0
+        for (previous in seen) {
+            if (previous == base) { duplicate += 1 }
+        }
+        seen.add(base)
+        let candidate = if (duplicate == 0) {
+            base
+        } else {
+            "${base}-${duplicate}"
+        }
+        if (candidate == canonicalExpected) {
             return true
         }
     }
@@ -568,15 +660,28 @@ private func p7DocumentationHeadingText(line: String): String {
     out.toString()
 }
 
-// Anchors are ASCII-case-insensitive. ASCII letters/digits and '-' are kept,
-// ASCII whitespace collapses to '-', ASCII punctuation is removed, and
-// non-ASCII runes are preserved.
+private func p7DocumentationExplicitAnchorExists(
+    text: String, expected: String): Bool {
+    text.contains("name=\"${expected}\"") ||
+        text.contains("name='${expected}'") ||
+        text.contains("id=\"${expected}\"") ||
+        text.contains("id='${expected}'")
+}
+
+// This is the GitHub-style subset required by the public runbooks: link labels
+// and inline-code text remain visible, Markdown destinations and code markers
+// are removed, ASCII/CJK punctuation is removed, Unicode whitespace becomes
+// '-', and duplicate headings are suffixed by AnchorExists with -1, -2, ...
 private func p7DocumentationCanonicalAnchor(value: String): String {
+    let visible = p7DocumentationHeadingVisibleText(value)
     let normalized = ArrayList<Rune>()
     var pendingDash = false
-    for (rune in value.toAsciiLower().runes()) {
+    for (rune in visible.toAsciiLower().runes()) {
         if ((rune >= r'a' && rune <= r'z') ||
-            (rune >= r'0' && rune <= r'9') || rune > r'\u{007f}') {
+            (rune >= r'0' && rune <= r'9') ||
+            (rune > r'\u{007f}' &&
+                !p7DocumentationUnicodeWhitespace(rune) &&
+                !p7DocumentationUnicodePunctuation(rune))) {
             if (pendingDash && normalized.size > 0 &&
                 normalized[normalized.size - 1] != r'-') {
                 normalized.add(r'-')
@@ -589,11 +694,65 @@ private func p7DocumentationCanonicalAnchor(value: String): String {
                 normalized[normalized.size - 1] != r'-') {
                 normalized.add(rune)
             }
-        } else if (rune == r' ' || rune == r'\t') {
+        } else if (rune == r' ' || rune == r'\t' ||
+            p7DocumentationUnicodeWhitespace(rune)) {
             pendingDash = true
         }
     }
     let out = StringBuilder()
     for (rune in normalized) { out.append(rune) }
     out.toString()
+}
+
+private func p7DocumentationHeadingVisibleText(value: String): String {
+    let runes = value.toRuneArray()
+    let out = StringBuilder()
+    var index: Int64 = 0
+    while (index < runes.size) {
+        if (runes[index] == r'`') {
+            index += 1
+            continue
+        }
+        if (runes[index] == r'[') {
+            var labelEnd = index + 1
+            while (labelEnd < runes.size && runes[labelEnd] != r']') {
+                out.append(runes[labelEnd])
+                labelEnd += 1
+            }
+            if (labelEnd < runes.size && labelEnd + 1 < runes.size &&
+                runes[labelEnd + 1] == r'(') {
+                var destinationEnd = labelEnd + 2
+                while (destinationEnd < runes.size &&
+                    runes[destinationEnd] != r')') {
+                    destinationEnd += 1
+                }
+                index = if (destinationEnd < runes.size) {
+                    destinationEnd + 1
+                } else {
+                    labelEnd + 1
+                }
+                continue
+            }
+            index = labelEnd + 1
+            continue
+        }
+        out.append(runes[index])
+        index += 1
+    }
+    out.toString()
+}
+
+private func p7DocumentationUnicodeWhitespace(rune: Rune): Bool {
+    (rune >= r'\u{2000}' && rune <= r'\u{200a}') ||
+        rune == r'\u{202f}' || rune == r'\u{205f}' ||
+        rune == r'\u{3000}'
+}
+
+private func p7DocumentationUnicodePunctuation(rune: Rune): Bool {
+    (rune >= r'\u{2010}' && rune <= r'\u{206f}') ||
+        (rune >= r'\u{3001}' && rune <= r'\u{303f}') ||
+        (rune >= r'\u{ff01}' && rune <= r'\u{ff0f}') ||
+        (rune >= r'\u{ff1a}' && rune <= r'\u{ff20}') ||
+        (rune >= r'\u{ff3b}' && rune <= r'\u{ff40}') ||
+        (rune >= r'\u{ff5b}' && rune <= r'\u{ff65}')
 }

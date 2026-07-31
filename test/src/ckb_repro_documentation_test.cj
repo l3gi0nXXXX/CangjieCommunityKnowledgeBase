@@ -1,7 +1,7 @@
 package cangjie_community_knowledge_base_test
 
 import std.collection.ArrayList
-import std.fs.{File, Path, exists}
+import std.fs.{Directory, File, Path, exists, remove}
 import std.unittest.*
 import std.unittest.testmacro.*
 
@@ -239,7 +239,8 @@ public class CkbReproDocumentationTest {
     public func productionValidatorRejectsDisguisedUnknownCommands(): Unit {
         for (unknown in [
             "ckb-repro-unknown.sh", "ckb-repro-unknown.",
-            "ckb-repro-build.sh"
+            "ckb-repro-build.sh", "ckb-repro-unknown.json",
+            "ckb-repro-unknown.txt"
         ]) {
             let reader = p7FakeDocumentation(false)
             reader.put("docs/reproducibility/quick-start.md",
@@ -266,8 +267,24 @@ public class CkbReproDocumentationTest {
             "ghp_exampleCredentialPayload0123456789",
             "sk-proj-exampleCredentialPayload0123456789",
             "Authorization: Basic Zm9vOmJhcg==",
+            "/Volumes/PrivateDisk/ckb-data",
+            "\\\\server\\private\\ckb-data",
+            "Z:\\private\\ckb-data",
+            "AKIAIOSFODNN7EXAMPLE",
+            "ASIAIOSFODNN7EXAMPLE",
+            "AIzaSyExampleCredentialPayload",
+            "github_pat_exampleCredentialPayload",
+            "glpat-exampleCredentialPayload",
+            "xoxb-exampleCredentialPayload",
+            "ya29.exampleCredentialPayload",
+            "-----BEGIN PRIVATE KEY-----",
+            "Authorization: Digest credential-payload",
             "HumanEval_42",
-            "problem_id=HumanEval/042"
+            "HumanEval-42",
+            "problem_id=HumanEval/042",
+            "reference_solution: func solve()",
+            "teacher solution payload",
+            "hidden tests payload"
         ]) {
             let reader = p7FakeDocumentation(true)
             reader.put("docs/reproducibility/quick-start.md",
@@ -325,6 +342,34 @@ public class CkbReproDocumentationTest {
     }
 
     @TestCase
+    public func productionValidatorCanonicalizesGithubStyleAnchors(): Unit {
+        let valid = p7FakeDocumentation(true)
+        valid.put("docs/reproducibility/quick-start.md",
+            p7ValidDocument(true) +
+                "\n## 中文，标题！\n[中文](#中文标题)\n" +
+                "## [链接 标题](https://example.invalid) 与 `代码`\n" +
+                "[链接标题](#链接-标题-与-代码)\n" +
+                "## 重复 标题\n## 重复 标题\n" +
+                "[重复一](#重复-标题)\n[重复二](#重复-标题-1)\n" +
+                "<a name=\"custom-anchor\"></a>\n" +
+                "<section id='custom-id'></section>\n" +
+                "[自定义一](#custom-anchor)\n[自定义二](#custom-id)\n")
+        @Expect(validateCkbReproDocumentation(
+            valid, "/tmp/repro", CKB_REPRO_DOCUMENTATION_MODE_DRAFT,
+            Array<String>()).ok, true)
+
+        let missingDuplicate = p7FakeDocumentation(true)
+        missingDuplicate.put("docs/reproducibility/quick-start.md",
+            p7ValidDocument(true) +
+                "\n## 重复 标题\n## 重复 标题\n" +
+                "[不存在的第三个](#重复-标题-2)\n")
+        @Expect(validateCkbReproDocumentation(
+            missingDuplicate, "/tmp/repro",
+            CKB_REPRO_DOCUMENTATION_MODE_DRAFT,
+            Array<String>()).diagnostic, "documentation_link_anchor_missing")
+    }
+
+    @TestCase
     public func productionValidatorEnumeratesRealReaderSurface(): Unit {
         let reader = p7FakeDocumentation(true)
         reader.put("docs/service-http-operations.md", "# Service\n")
@@ -360,13 +405,45 @@ public class CkbReproDocumentationTest {
                 "documentation_entrypoint_placeholder_missing")
         }
     }
+
+    @TestCase
+    public func productionRepositoryReaderEnumeratesFilesystemSurface(): Unit {
+        @Expect(validateCkbReproDocumentation(
+            P7RepositoryDocumentationReader(), "..",
+            CKB_REPRO_DOCUMENTATION_MODE_DRAFT, Array<String>()).ok, true)
+
+        let root = "target/p7-documentation-reader-surface"
+        if (exists(Path(root))) { remove(Path(root), recursive: true) }
+        try {
+            p7CopyDocumentationSurface("..", root)
+            let before = validateCkbReproDocumentation(
+                P7RepositoryDocumentationReader(), root,
+                CKB_REPRO_DOCUMENTATION_MODE_DRAFT, Array<String>())
+            @Expect(before.ok, true)
+            File.writeTo(
+                Path("${root}/docs/reproducibility/undeclared.md"),
+                p7ValidDocument(true).toArray())
+            let after = validateCkbReproDocumentation(
+                P7RepositoryDocumentationReader(), root,
+                CKB_REPRO_DOCUMENTATION_MODE_DRAFT, Array<String>())
+            @Expect(after.diagnostic, "documentation_extra_release_entry")
+        } finally {
+            if (exists(Path(root))) { remove(Path(root), recursive: true) }
+        }
+    }
 }
 
 private class P7RepositoryDocumentationReader <: CkbReproDocumentationReader {
     public func list(root: String): ArrayList<String> {
         let out = ArrayList<String>()
-        for (relative in requiredCkbReproDocumentationFiles()) {
-            if (exists(Path("${root}/${relative}"))) { out.add(relative) }
+        if (exists(Path("${root}/README.md"))) { out.add("README.md") }
+        let documentationRoot =
+            Path("${root}/docs/reproducibility")
+        if (!exists(documentationRoot)) { return out }
+        for (entry in Directory.readFrom(documentationRoot)) {
+            if (entry.isRegular() && entry.name.endsWith(".md")) {
+                out.add("docs/reproducibility/${entry.name}")
+            }
         }
         out
     }
@@ -468,6 +545,23 @@ private func p7ModeMarkers(draft: Bool): String {
     } else {
         "PUBLISHED"
     }
+}
+
+private func p7CopyDocumentationSurface(
+    sourceRoot: String, targetRoot: String): Unit {
+    Directory.create(Path("${targetRoot}/docs/reproducibility"),
+        recursive: true)
+    for (relative in requiredCkbReproDocumentationFiles()) {
+        let target = Path("${targetRoot}/${relative}")
+        if (!exists(target.parent)) {
+            Directory.create(target.parent, recursive: true)
+        }
+        File.writeTo(target,
+            File.readFrom(Path("${sourceRoot}/${relative}")))
+    }
+    File.writeTo(Path("${targetRoot}/docs/service-http-operations.md"),
+        File.readFrom(Path(
+            "${sourceRoot}/docs/service-http-operations.md")))
 }
 
 private func p7RequiredDocuments(): Array<String> {
