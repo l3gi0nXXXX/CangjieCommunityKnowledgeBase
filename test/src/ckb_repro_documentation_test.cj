@@ -102,6 +102,244 @@ public class CkbReproDocumentationTest {
         @Expect(docs.contains("export DYLD_LIBRARY_PATH="), true)
         @Expect(docs.contains("docs/service-http-operations.md"), true)
     }
+
+    @TestCase
+    public func productionValidatorAcceptsCurrentDraft(): Unit {
+        let evidence = validateCkbReproDocumentation(
+            P7RepositoryDocumentationReader(), "..",
+            CKB_REPRO_DOCUMENTATION_MODE_DRAFT, Array<String>())
+        @Expect(evidence.ok, true)
+        @Expect(evidence.diagnostic, "documentation_valid")
+        @Expect(evidence.requiredDocumentCount, 11)
+        @Expect(evidence.discoveredDocumentCount, 11)
+        @Expect(evidence.placeholderFindingCount, 0)
+        @Expect(evidence.pathSecretFindingCount, 0)
+        @Expect(evidence.commandFindingCount, 0)
+        @Expect(evidence.brokenLinkCount, 0)
+    }
+
+    @TestCase
+    public func productionValidatorSeparatesDraftAndReleasePlaceholderModes(): Unit {
+        let draft = p7FakeDocumentation(true)
+        let draftResult = validateCkbReproDocumentation(
+            draft, "/tmp/CKB 复现🙂", CKB_REPRO_DOCUMENTATION_MODE_DRAFT,
+            Array<String>())
+        @Expect(draftResult.ok, true)
+
+        let prematureRelease = validateCkbReproDocumentation(
+            draft, "/tmp/CKB 复现🙂", CKB_REPRO_DOCUMENTATION_MODE_RELEASE,
+            ["ckb-repro-build", "cangjie-humaneval-strict-score"])
+        @Expect(prematureRelease.ok, false)
+        @Expect(prematureRelease.diagnostic, "documentation_placeholder_forbidden")
+
+        let release = p7FakeDocumentation(false)
+        let releaseResult = validateCkbReproDocumentation(
+            release, "/tmp/CKB 复现🙂", CKB_REPRO_DOCUMENTATION_MODE_RELEASE,
+            ["ckb-repro-build", "cangjie-humaneval-strict-score"])
+        @Expect(releaseResult.ok, true)
+    }
+
+    @TestCase
+    public func productionValidatorRejectsMissingExtraAndBrokenLink(): Unit {
+        let missing = p7FakeDocumentation(true)
+        missing.remove("docs/reproducibility/troubleshooting.md")
+        let missingResult = validateCkbReproDocumentation(
+            missing, "/tmp/repro", CKB_REPRO_DOCUMENTATION_MODE_DRAFT,
+            Array<String>())
+        @Expect(missingResult.diagnostic, "documentation_required_file_missing")
+
+        let extra = p7FakeDocumentation(true)
+        extra.put("docs/reproducibility/extra-release-entry.md",
+            p7ValidDocument(true))
+        let extraResult = validateCkbReproDocumentation(
+            extra, "/tmp/repro", CKB_REPRO_DOCUMENTATION_MODE_DRAFT,
+            Array<String>())
+        @Expect(extraResult.diagnostic, "documentation_extra_release_entry")
+
+        let broken = p7FakeDocumentation(true)
+        broken.put("docs/reproducibility/quick-start.md",
+            p7ValidDocument(true) + "\n[断链](missing.md)\n")
+        let brokenResult = validateCkbReproDocumentation(
+            broken, "/tmp/repro", CKB_REPRO_DOCUMENTATION_MODE_DRAFT,
+            Array<String>())
+        @Expect(brokenResult.diagnostic, "documentation_link_broken")
+        @Expect(brokenResult.brokenLinkCount, 1)
+    }
+
+    @TestCase
+    public func productionValidatorRejectsUnknownCommandAndBypassInstruction(): Unit {
+        let unknown = p7FakeDocumentation(false)
+        unknown.put("docs/reproducibility/quick-start.md",
+            p7ValidDocument(false) + "\n`ckb-repro-unknown`\n")
+        let unknownResult = validateCkbReproDocumentation(
+            unknown, "/tmp/repro", CKB_REPRO_DOCUMENTATION_MODE_RELEASE,
+            ["ckb-repro-build", "cangjie-humaneval-strict-score"])
+        @Expect(unknownResult.diagnostic, "documentation_command_unknown")
+
+        let bypass = p7FakeDocumentation(true)
+        bypass.put("docs/reproducibility/quick-start.md",
+            p7ValidDocument(true) + "\ngit add -f ignored-secret\n")
+        let bypassResult = validateCkbReproDocumentation(
+            bypass, "/tmp/repro", CKB_REPRO_DOCUMENTATION_MODE_DRAFT,
+            Array<String>())
+        @Expect(bypassResult.diagnostic, "documentation_path_or_secret_forbidden")
+    }
+
+    @TestCase
+    public func productionValidatorRejectsPrivatePathsSecretsAndSolutionPayloads(): Unit {
+        for (forbidden in [
+            "/Users/alice/private/ckb-data",
+            "/home/alice/private/ckb-data",
+            "C:\\Users\\alice\\private\\ckb-data",
+            "sk-live-real-looking-secret-value",
+            "Bearer eyJhbGciOiJIUzI1NiJ9.payload",
+            "canonical_solution: func solve()",
+            "HumanEval/042 hidden_test_payload"
+        ]) {
+            let reader = p7FakeDocumentation(true)
+            reader.put("docs/reproducibility/quick-start.md",
+                p7ValidDocument(true) + "\n${forbidden}\n")
+            let result = validateCkbReproDocumentation(
+                reader, "/tmp/repro", CKB_REPRO_DOCUMENTATION_MODE_DRAFT,
+                Array<String>())
+            @Expect(result.ok, false)
+            @Expect(result.diagnostic, "documentation_path_or_secret_forbidden")
+            @Expect(result.diagnostic.contains(forbidden), false)
+        }
+    }
+
+    @TestCase
+    public func productionValidatorHandlesUtf8AndMalformedInputSafely(): Unit {
+        let unicode = p7FakeDocumentation(true)
+        unicode.put("docs/reproducibility/quick-start.md",
+            p7ValidDocument(true) + "\n中文步骤与 emoji 🙂🚀 保持完整。\n")
+        @Expect(validateCkbReproDocumentation(
+            unicode, "/tmp/CKB 复现🙂", CKB_REPRO_DOCUMENTATION_MODE_DRAFT,
+            Array<String>()).ok, true)
+
+        let invalid = p7FakeDocumentation(true)
+        invalid.putBytes("docs/reproducibility/quick-start.md",
+            [UInt8(0xff), UInt8(0xfe), UInt8(0xfd)])
+        let invalidResult = validateCkbReproDocumentation(
+            invalid, "/tmp/repro", CKB_REPRO_DOCUMENTATION_MODE_DRAFT,
+            Array<String>())
+        @Expect(invalidResult.diagnostic, "invalid_response_encoding")
+        @Expect(invalidResult.diagnostic.contains("ff"), false)
+
+        let malformed = p7FakeDocumentation(true)
+        malformed.put("docs/reproducibility/quick-start.md",
+            p7ValidDocument(true) + "\n[损坏链接](missing.md\n")
+        let malformedResult = validateCkbReproDocumentation(
+            malformed, "/tmp/repro", CKB_REPRO_DOCUMENTATION_MODE_DRAFT,
+            Array<String>())
+        @Expect(malformedResult.diagnostic, "documentation_link_malformed")
+    }
+}
+
+private class P7RepositoryDocumentationReader <: CkbReproDocumentationReader {
+    public func list(root: String): ArrayList<String> {
+        let out = ArrayList<String>()
+        for (relative in requiredCkbReproDocumentationFiles()) {
+            if (exists(Path("${root}/${relative}"))) { out.add(relative) }
+        }
+        out
+    }
+
+    public func read(root: String, relativePath: String):
+        CkbReproDocumentationRead {
+        let out = CkbReproDocumentationRead()
+        let path = Path("${root}/${relativePath}")
+        if (!exists(path)) { return out }
+        out.found = true
+        try {
+            out.bytes = File.readFrom(path)
+        } catch (_: Exception) {
+            out.found = false
+        }
+        out
+    }
+}
+
+private class P7FakeDocumentationReader <: CkbReproDocumentationReader {
+    private let paths = ArrayList<String>()
+    private let values = ArrayList<Array<UInt8>>()
+
+    public func put(path: String, text: String): Unit {
+        putBytes(path, text.toArray())
+    }
+
+    public func putBytes(path: String, bytes: Array<UInt8>): Unit {
+        let index = indexOf(path)
+        if (index >= 0) {
+            values[index] = bytes
+            return
+        }
+        paths.add(path)
+        values.add(bytes)
+    }
+
+    public func remove(path: String): Unit {
+        let index = indexOf(path)
+        if (index >= 0) {
+            paths.remove(at: index)
+            values.remove(at: index)
+        }
+    }
+
+    public func list(root: String): ArrayList<String> {
+        let out = ArrayList<String>()
+        for (path in paths) { out.add(path) }
+        out
+    }
+
+    public func read(root: String, relativePath: String):
+        CkbReproDocumentationRead {
+        let out = CkbReproDocumentationRead()
+        let index = indexOf(relativePath)
+        if (index < 0) { return out }
+        out.found = true
+        out.bytes = values[index]
+        out
+    }
+
+    private func indexOf(path: String): Int64 {
+        for (index in 0..paths.size) {
+            if (paths[index] == path) { return index }
+        }
+        -1
+    }
+}
+
+private func p7FakeDocumentation(draft: Bool): P7FakeDocumentationReader {
+    let reader = P7FakeDocumentationReader()
+    for (relative in requiredCkbReproDocumentationFiles()) {
+        reader.put(relative, if (relative == "README.md") {
+            p7ValidRootDocument(draft)
+        } else {
+            p7ValidDocument(draft)
+        })
+    }
+    reader
+}
+
+private func p7ValidRootDocument(draft: Bool): String {
+    "# CKB\n" + p7ModeMarkers(draft) +
+        "\n[复现导航](docs/reproducibility/README.md)\n"
+}
+
+private func p7ValidDocument(draft: Bool): String {
+    "# 手册\n\n目的：验证可复现流程。\n\n通过标准：退出码为 0。\n\n" +
+        "失败处理：立即停止，不绕过门禁。\n\n" + p7ModeMarkers(draft) +
+        "\n`\${CKB_ROOT}` `\${REPRO_ROOT}` 中文🙂\n"
+}
+
+private func p7ModeMarkers(draft: Bool): String {
+    if (draft) {
+        "UNPUBLISHED_W3_DRAFT PENDING_W4_CLI_REGISTRATION " +
+            "UNPUBLISHED_P8_A_REFERENCE UNAVAILABLE_UNTIL_W7"
+    } else {
+        "PUBLISHED"
+    }
 }
 
 private func p7RequiredDocuments(): Array<String> {
