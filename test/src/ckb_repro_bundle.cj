@@ -3,6 +3,7 @@ package cangjie_community_knowledge_base_test
 import std.collection.{ArrayList, HashSet}
 import std.sort.*
 import stdx.crypto.digest.SHA256
+import stdx.encoding.json.*
 
 public class CkbReproBundleAsset {
     public var relativePath: String = ""
@@ -38,6 +39,48 @@ public class CkbReproBundleResult {
     public init() {}
 }
 
+public class CkbReproBundleManifest {
+    public var schemaVersion: String = ""
+    public var inputSetHash: String = ""
+    public let assets = ArrayList<CkbReproBundleAsset>()
+    public init() {}
+}
+
+public class CkbReproBundleReadEntry {
+    public var relativePath: String = ""
+    public var kind: String = ""
+    public var canonicalPath: String = ""
+    public var withinRoot: Bool = false
+    public var identity: String = ""
+    public var size: Int64 = 0
+    public init() {}
+}
+
+public class CkbReproBundleReadResult {
+    public var bytes: Array<UInt8> = Array<UInt8>()
+    public var observedEntry: CkbReproBundleReadEntry =
+        CkbReproBundleReadEntry()
+    public var noFollow: Bool = false
+    public init() {}
+}
+
+public class CkbReproBundleAssetProof {
+    public var relativePath: String = ""
+    public var size: Int64 = 0
+    public var sha256: String = ""
+    public var identity: String = ""
+    public var proofHash: String = ""
+    public init() {}
+}
+
+public class CkbReproBundleLoadResult {
+    public var contract: CkbReproContractResult = CkbReproContractResult()
+    public var manifest: CkbReproBundleManifest = CkbReproBundleManifest()
+    public let assetProofs = ArrayList<CkbReproBundleAssetProof>()
+    public var proofSetHash: String = ""
+    public init() {}
+}
+
 public interface CkbReproBundleBackend {
     func rootExists(root: String): Bool
     func rootIsEmpty(root: String): Bool
@@ -45,6 +88,13 @@ public interface CkbReproBundleBackend {
     func read(root: String, relativePath: String): Array<UInt8>
     func write(root: String, relativePath: String, bytes: Array<UInt8>): Bool
     func removeRoot(root: String): Bool
+}
+
+public interface CkbReproBundleReadBackend {
+    func rootExists(root: String): Bool
+    func list(root: String): ArrayList<CkbReproBundleReadEntry>
+    func read(root: String, expected: CkbReproBundleReadEntry):
+        CkbReproBundleReadResult
 }
 
 public func ckbReproBundleHash(bytes: Array<UInt8>): String {
@@ -62,7 +112,7 @@ public func validateCkbReproBundleRelativePath(path: String):
     CkbReproContractResult {
     if (path == "" || path.startsWith("/") || path.endsWith("/") ||
         path.contains("\\") || path.contains("\n") || path.contains("\r") ||
-        path.contains("\u{0000}") || path.contains("//") ||
+        p9BundlePathHasControl(path) || path.contains("//") ||
         path == "." || path == ".." || path.startsWith("./") ||
         path.startsWith("../") || path.contains("/./") ||
         path.contains("/../") || path.endsWith("/.") || path.endsWith("/..")) {
@@ -130,17 +180,165 @@ public func computeCkbReproBundleInputSetHash(
 
 public func writeCkbReproReleaseManifest(
     assets: ArrayList<CkbReproBundleAsset>): String {
+    let manifest = CkbReproBundleManifest()
+    manifest.schemaVersion = "ckb-repro-release-component-v1"
+    manifest.inputSetHash = computeCkbReproBundleInputSetHash(assets)
+    for (asset in assets) { manifest.assets.add(asset) }
+    renderCkbReproBundleManifest(manifest)
+}
+
+public func renderCkbReproBundleManifest(
+    manifest: CkbReproBundleManifest): String {
     let rows = ArrayList<String>()
-    for (asset in assets) {
-        rows.add("{\"path\":\"${p9BundleJson(asset.relativePath)}\"," +
-            "\"size\":${asset.size},\"sha256\":\"${asset.sha256}\"," +
-            "\"inputKind\":\"${p9BundleJson(asset.inputKind)}\"}")
+    for (asset in manifest.assets) {
+        rows.add(p9BundleCanonicalAssetRow(asset))
     }
     let ordered = rows.toArray()
     sort(ordered)
-    "{\"schemaVersion\":\"ckb-repro-release-component-v1\"," +
-        "\"inputSetHash\":\"${computeCkbReproBundleInputSetHash(assets)}\"," +
+    "{\"schemaVersion\":\"${p9BundleJson(manifest.schemaVersion)}\"," +
+        "\"inputSetHash\":\"${p9BundleJson(manifest.inputSetHash)}\"," +
         "\"assets\":[${p9BundleJoin(ordered, ",")}]}"
+}
+
+public func parseCkbReproBundleManifest(bytes: Array<UInt8>):
+    (CkbReproContractResult, CkbReproBundleManifest) {
+    let manifest = CkbReproBundleManifest()
+    let text = try { String.fromUtf8(bytes) } catch (_: Exception) {
+        return (p9BundleFailure("invalid_response_encoding"), manifest)
+    }
+    let value = try { JsonValue.fromStr(text) } catch (_: Exception) {
+        return (p9BundleFailure("malformed_json"), manifest)
+    }
+    try {
+        let object = value.asObject()
+        if (object.size() != 3) {
+            return (p9BundleFailure(
+                "bundle_manifest_field_contract_invalid"), manifest)
+        }
+        manifest.schemaVersion = p9BundleString(object, "schemaVersion")
+        manifest.inputSetHash = p9BundleString(object, "inputSetHash")
+        for (value in object.get("assets").getOrThrow().asArray().getItems()) {
+            let row = value.asObject()
+            if (row.size() != 4) {
+                return (p9BundleFailure(
+                    "bundle_manifest_asset_contract_invalid"),
+                    CkbReproBundleManifest())
+            }
+            let asset = CkbReproBundleAsset()
+            asset.relativePath = p9BundleString(row, "path")
+            let path = validateCkbReproBundleRelativePath(asset.relativePath)
+            if (!path.ok) {
+                return (path, CkbReproBundleManifest())
+            }
+            asset.size = p9BundleInt(row, "size")
+            asset.sha256 = p9BundleString(row, "sha256")
+            asset.inputKind = p9BundleString(row, "inputKind")
+            manifest.assets.add(asset)
+        }
+    } catch (_: Exception) {
+        return (p9BundleFailure(
+            "bundle_manifest_field_contract_invalid"),
+            CkbReproBundleManifest())
+    }
+    if (renderCkbReproBundleManifest(manifest) != text) {
+        return (p9BundleFailure("bundle_manifest_non_canonical"),
+            CkbReproBundleManifest())
+    }
+    (p9BundleSuccess(), manifest)
+}
+
+public func validateCkbReproBundleManifest(root: String,
+    backend: CkbReproBundleReadBackend): CkbReproBundleLoadResult {
+    let out = CkbReproBundleLoadResult()
+    if (!p9AbsoluteRoot(root)) {
+        out.contract = p9BundleFailure("bundle_root_invalid")
+        return out
+    }
+    try {
+        if (!backend.rootExists(root)) {
+            out.contract = p9BundleFailure("bundle_root_missing")
+            return out
+        }
+        let firstListing = backend.list(root)
+        let firstSafe = p9ValidateBundleReadListing(root, firstListing)
+        if (!firstSafe.ok) { out.contract = firstSafe; return out }
+        let manifestEntry = p9FindBundleReadEntry(
+            firstListing, "RELEASE-MANIFEST.json")
+        if (!manifestEntry[0]) {
+            out.contract = p9BundleFailure("bundle_manifest_missing")
+            return out
+        }
+        let manifestRead =
+            p9ReadBundleEntry(root, manifestEntry[1], backend)
+        if (!manifestRead[0].ok) {
+            out.contract = manifestRead[0]
+            return out
+        }
+        let manifestBytes = manifestRead[1]
+        let parsed = parseCkbReproBundleManifest(manifestBytes)
+        if (!parsed[0].ok) { out.contract = parsed[0]; return out }
+        let structure = p9ValidateBundleManifestStructure(parsed[1])
+        if (!structure.ok) { out.contract = structure; return out }
+        let coverage = p9ValidateBundleReadCoverage(parsed[1], firstListing)
+        if (!coverage.ok) { out.contract = coverage; return out }
+        for (asset in parsed[1].assets) {
+            let entry = p9FindBundleReadEntry(
+                firstListing, asset.relativePath)
+            if (!entry[0] || entry[1].size != asset.size) {
+                out.contract = p9BundleFailure("bundle_asset_size_mismatch")
+                return out
+            }
+            let assetRead = p9ReadBundleEntry(root, entry[1], backend)
+            if (!assetRead[0].ok) {
+                out.contract = assetRead[0]
+                return out
+            }
+            let bytes = assetRead[1]
+            let actualHash = ckbReproBundleHash(bytes)
+            if (actualHash != asset.sha256) {
+                out.contract = p9BundleFailure("bundle_asset_hash_mismatch")
+                return out
+            }
+            let proof = CkbReproBundleAssetProof()
+            proof.relativePath = asset.relativePath
+            proof.size = asset.size
+            proof.sha256 = actualHash
+            proof.identity = entry[1].identity
+            proof.proofHash = p9BundleAssetProofHash(proof)
+            out.assetProofs.add(proof)
+        }
+        let manifestReadAfterAssets =
+            p9ReadBundleEntry(root, manifestEntry[1], backend)
+        if (!manifestReadAfterAssets[0].ok) {
+            out.contract = manifestReadAfterAssets[0]
+            return out
+        }
+        let manifestBytesAfterAssets = manifestReadAfterAssets[1]
+        if (manifestBytesAfterAssets != manifestBytes) {
+            out.contract = p9BundleFailure("bundle_manifest_bytes_changed")
+            return out
+        }
+        let secondListing = backend.list(root)
+        let secondSafe = p9ValidateBundleReadListing(root, secondListing)
+        if (!secondSafe.ok) { out.contract = secondSafe; return out }
+        if (p9BundleReadSnapshotHash(firstListing) !=
+            p9BundleReadSnapshotHash(secondListing)) {
+            out.contract = p9BundleFailure("bundle_root_listing_changed")
+            return out
+        }
+        out.manifest = parsed[1]
+        // Proofs bind this two-list snapshot only. A later consumer must
+        // re-list and re-read each asset before using its bytes.
+        out.proofSetHash = p9BundleProofSetHash(out.assetProofs)
+        out.contract = p9BundleSuccess()
+        out.contract.canonicalJson =
+            renderCkbReproBundleManifest(parsed[1])
+        out.contract.manifestHash = ckbReproBundleHash(manifestBytes)
+        out
+    } catch (_: Exception) {
+        out.contract = p9BundleFailure("bundle_read_failed")
+        out
+    }
 }
 
 public func writeCkbReproSha256Sums(
@@ -251,7 +449,8 @@ private func p9AbsoluteRoot(value: String): Bool {
         !value.contains("//") && !value.contains("/./") &&
         !value.contains("/../") && !value.endsWith("/.") &&
         !value.endsWith("/..") && !value.contains("\\") &&
-        !value.contains("\n") && !value.contains("\r")
+        !value.contains("\n") && !value.contains("\r") &&
+        !value.contains("\t")
 }
 
 private func p9RootsOverlap(left: String, right: String): Bool {
@@ -278,6 +477,216 @@ private func p9BundlePartIndex(index: Int64): String {
     index.toString()
 }
 
+private func p9BundleCanonicalAssetRow(
+    asset: CkbReproBundleAsset): String {
+    "{\"path\":\"${p9BundleJson(asset.relativePath)}\"," +
+        "\"size\":${asset.size},\"sha256\":\"${asset.sha256}\"," +
+        "\"inputKind\":\"${p9BundleJson(asset.inputKind)}\"}"
+}
+
+private func p9ValidateBundleManifestStructure(
+    manifest: CkbReproBundleManifest): CkbReproContractResult {
+    if (manifest.schemaVersion != "ckb-repro-release-component-v1") {
+        return p9BundleFailure("bundle_manifest_schema_invalid")
+    }
+    if (manifest.assets.size > 1000) {
+        return p9BundleFailure("bundle_asset_count_exceeded")
+    }
+    let declared = HashSet<String>()
+    var previousKey = ""
+    for (asset in manifest.assets) {
+        let path = validateCkbReproBundleRelativePath(asset.relativePath)
+        if (!path.ok) { return path }
+        if (asset.relativePath == "RELEASE-MANIFEST.json" ||
+            asset.relativePath == "SHA256SUMS" ||
+            asset.relativePath == "SHA256SUMS.sig" ||
+            asset.relativePath.endsWith(".sig")) {
+            return p9BundleFailure("bundle_derived_asset_forbidden")
+        }
+        if (declared.contains(asset.relativePath)) {
+            return p9BundleFailure("bundle_asset_duplicate")
+        }
+        let key = p9BundleCanonicalAssetRow(asset)
+        if (previousKey != "" && previousKey > key) {
+            return p9BundleFailure("bundle_manifest_asset_order_invalid")
+        }
+        if (asset.size < 0 || !p9BundleHashValid(asset.sha256)) {
+            return p9BundleFailure("bundle_manifest_asset_contract_invalid")
+        }
+        if (asset.inputKind != "verified_input") {
+            return p9BundleFailure("bundle_input_kind_invalid")
+        }
+        declared.add(asset.relativePath)
+        previousKey = key
+    }
+    if (computeCkbReproBundleInputSetHash(manifest.assets) !=
+        manifest.inputSetHash) {
+        return p9BundleFailure("bundle_input_set_hash_mismatch")
+    }
+    p9BundleSuccess()
+}
+
+private func p9ValidateBundleReadListing(root: String,
+    listing: ArrayList<CkbReproBundleReadEntry>): CkbReproContractResult {
+    let seen = HashSet<String>()
+    for (entry in listing) {
+        if (entry.kind != "regular") {
+            return p9BundleFailure("bundle_root_entry_type_invalid")
+        }
+        let path = validateCkbReproBundleRelativePath(entry.relativePath)
+        if (!path.ok) { return path }
+        if (!entry.withinRoot ||
+            entry.canonicalPath != "${root}/${entry.relativePath}") {
+            return p9BundleFailure("bundle_root_entry_outside")
+        }
+        if (entry.identity == "" || entry.size < 0) {
+            return p9BundleFailure("bundle_root_entry_identity_invalid")
+        }
+        if (seen.contains(entry.relativePath)) {
+            return p9BundleFailure("bundle_root_asset_duplicate")
+        }
+        seen.add(entry.relativePath)
+    }
+    p9BundleSuccess()
+}
+
+private func p9ValidateBundleReadCoverage(
+    manifest: CkbReproBundleManifest,
+    listing: ArrayList<CkbReproBundleReadEntry>): CkbReproContractResult {
+    let declared = HashSet<String>()
+    for (asset in manifest.assets) { declared.add(asset.relativePath) }
+    let listed = HashSet<String>()
+    var hasManifest = false
+    for (entry in listing) {
+        listed.add(entry.relativePath)
+        if (entry.relativePath == "RELEASE-MANIFEST.json") {
+            hasManifest = true
+        } else if (!declared.contains(entry.relativePath)) {
+            return p9BundleFailure("bundle_root_extra_asset")
+        }
+    }
+    if (!hasManifest) {
+        return p9BundleFailure("bundle_manifest_missing")
+    }
+    for (asset in manifest.assets) {
+        if (!listed.contains(asset.relativePath)) {
+            return p9BundleFailure("bundle_root_missing_asset")
+        }
+    }
+    if (listing.size != manifest.assets.size + 1) {
+        return p9BundleFailure("bundle_root_extra_asset")
+    }
+    p9BundleSuccess()
+}
+
+private func p9FindBundleReadEntry(
+    listing: ArrayList<CkbReproBundleReadEntry>, relativePath: String):
+    (Bool, CkbReproBundleReadEntry) {
+    for (entry in listing) {
+        if (entry.relativePath == relativePath) { return (true, entry) }
+    }
+    (false, CkbReproBundleReadEntry())
+}
+
+private func p9ReadBundleEntry(root: String,
+    expected: CkbReproBundleReadEntry,
+    backend: CkbReproBundleReadBackend):
+    (CkbReproContractResult, Array<UInt8>) {
+    let read = backend.read(root, expected)
+    if (!read.noFollow) {
+        return (p9BundleFailure("bundle_read_no_follow_required"),
+            Array<UInt8>())
+    }
+    let observed = read.observedEntry
+    if (observed.kind != "regular" || !observed.withinRoot ||
+        observed.canonicalPath != "${root}/${observed.relativePath}") {
+        return (p9BundleFailure("bundle_read_observed_entry_unsafe"),
+            Array<UInt8>())
+    }
+    if (!p9BundleReadEntriesEqual(expected, observed)) {
+        return (p9BundleFailure("bundle_read_entry_changed"),
+            Array<UInt8>())
+    }
+    if (read.bytes.size != observed.size) {
+        return (p9BundleFailure("bundle_asset_size_mismatch"),
+            Array<UInt8>())
+    }
+    (p9BundleSuccess(), read.bytes)
+}
+
+private func p9BundleReadEntriesEqual(left: CkbReproBundleReadEntry,
+    right: CkbReproBundleReadEntry): Bool {
+    left.relativePath == right.relativePath &&
+        left.kind == right.kind &&
+        left.canonicalPath == right.canonicalPath &&
+        left.withinRoot == right.withinRoot &&
+        left.identity == right.identity &&
+        left.size == right.size
+}
+
+private func p9BundleReadSnapshotHash(
+    listing: ArrayList<CkbReproBundleReadEntry>): String {
+    let rows = ArrayList<String>()
+    for (entry in listing) {
+        rows.add(p9BundlePart(entry.relativePath) +
+            p9BundlePart(entry.kind) + p9BundlePart(entry.identity) +
+            p9BundlePart(entry.size.toString()))
+    }
+    let ordered = rows.toArray()
+    sort(ordered)
+    ckbReproBundleHash(
+        ("ckb-repro-bundle-read-snapshot-v1" +
+            p9BundleJoin(ordered, "")).toArray())
+}
+
+private func p9BundleAssetProofHash(
+    proof: CkbReproBundleAssetProof): String {
+    ckbReproBundleHash(("ckb-repro-bundle-asset-proof-v1" +
+        p9BundlePart(proof.relativePath) +
+        p9BundlePart(proof.size.toString()) +
+        p9BundlePart(proof.sha256) +
+        p9BundlePart(proof.identity)).toArray())
+}
+
+private func p9BundleProofSetHash(
+    proofs: ArrayList<CkbReproBundleAssetProof>): String {
+    let rows = ArrayList<String>()
+    for (proof in proofs) { rows.add(proof.proofHash) }
+    let ordered = rows.toArray()
+    sort(ordered)
+    ckbReproBundleHash(
+        ("ckb-repro-bundle-proof-set-v1" +
+            p9BundleJoin(ordered, "")).toArray())
+}
+
+private func p9BundleString(object: JsonObject, key: String): String {
+    object.get(key).getOrThrow().asString().getValue()
+}
+
+private func p9BundleInt(object: JsonObject, key: String): Int64 {
+    object.get(key).getOrThrow().asInt().getValue()
+}
+
+private func p9BundleHashValid(value: String): Bool {
+    let runes = value.toRuneArray()
+    if (runes.size != 71 || !value.startsWith("sha256:")) { return false }
+    for (i in 7..71) {
+        let rune = runes[i]
+        if (!((rune >= r'0' && rune <= r'9') ||
+            (rune >= r'a' && rune <= r'f'))) {
+            return false
+        }
+    }
+    true
+}
+
+private func p9BundlePathHasControl(value: String): Bool {
+    for (rune in value.toRuneArray()) {
+        if (rune <= r'\u{001f}' || rune == r'\u{007f}') { return true }
+    }
+    false
+}
+
 private func p9BundleNibble(value: UInt8): String {
     if (value == UInt8(0)) { return "0" }
     if (value == UInt8(1)) { return "1" }
@@ -299,7 +708,23 @@ private func p9BundleNibble(value: UInt8): String {
 
 private func p9BundleJson(value: String): String {
     value.replace("\\", "\\\\").replace("\"", "\\\"")
-        .replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
+        .replace("\u{0000}", "\\u0000").replace("\u{0001}", "\\u0001")
+        .replace("\u{0002}", "\\u0002").replace("\u{0003}", "\\u0003")
+        .replace("\u{0004}", "\\u0004").replace("\u{0005}", "\\u0005")
+        .replace("\u{0006}", "\\u0006").replace("\u{0007}", "\\u0007")
+        .replace("\u{0008}", "\\b").replace("\t", "\\t")
+        .replace("\n", "\\n").replace("\u{000b}", "\\u000b")
+        .replace("\u{000c}", "\\f").replace("\r", "\\r")
+        .replace("\u{000e}", "\\u000e").replace("\u{000f}", "\\u000f")
+        .replace("\u{0010}", "\\u0010").replace("\u{0011}", "\\u0011")
+        .replace("\u{0012}", "\\u0012").replace("\u{0013}", "\\u0013")
+        .replace("\u{0014}", "\\u0014").replace("\u{0015}", "\\u0015")
+        .replace("\u{0016}", "\\u0016").replace("\u{0017}", "\\u0017")
+        .replace("\u{0018}", "\\u0018").replace("\u{0019}", "\\u0019")
+        .replace("\u{001a}", "\\u001a").replace("\u{001b}", "\\u001b")
+        .replace("\u{001c}", "\\u001c").replace("\u{001d}", "\\u001d")
+        .replace("\u{001e}", "\\u001e").replace("\u{001f}", "\\u001f")
+        .replace("\u{007f}", "\\u007f")
 }
 
 private func p9BundleSuccess(): CkbReproContractResult {
