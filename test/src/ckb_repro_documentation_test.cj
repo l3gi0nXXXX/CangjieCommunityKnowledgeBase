@@ -1,7 +1,8 @@
 package cangjie_community_knowledge_base_test
 
 import std.collection.ArrayList
-import std.fs.{Directory, File, Path, exists, remove}
+import std.fs.{Directory, File, Path, canonicalize, exists, remove}
+import std.process.launch
 import std.unittest.*
 import std.unittest.testmacro.*
 
@@ -268,6 +269,9 @@ public class CkbReproDocumentationTest {
             "sk-proj-exampleCredentialPayload0123456789",
             "Authorization: Basic Zm9vOmJhcg==",
             "/Volumes/PrivateDisk/ckb-data",
+            "/private/company/ckb-data",
+            "/srv/private/ckb-data",
+            "/opt/internal/ckb-data",
             "\\\\server\\private\\ckb-data",
             "Z:\\private\\ckb-data",
             "AKIAIOSFODNN7EXAMPLE",
@@ -370,6 +374,46 @@ public class CkbReproDocumentationTest {
     }
 
     @TestCase
+    public func productionValidatorUsesGlobalGithubSlugOccupancy(): Unit {
+        let valid = p7FakeDocumentation(true)
+        valid.put("docs/reproducibility/quick-start.md",
+            p7ValidDocument(true) +
+                "\n## Foo\n## Foo-1\n## Foo\n" +
+                "[first](#foo)\n[occupied](#foo-1)\n[third](#foo-2)\n")
+        @Expect(validateCkbReproDocumentation(
+            valid, "/tmp/repro", CKB_REPRO_DOCUMENTATION_MODE_DRAFT,
+            Array<String>()).ok, true)
+
+        let missing = p7FakeDocumentation(true)
+        missing.put("docs/reproducibility/quick-start.md",
+            p7ValidDocument(true) +
+                "\n## Foo\n## Foo-1\n## Foo\n" +
+                "[wrong duplicate](#foo-3)\n")
+        @Expect(validateCkbReproDocumentation(
+            missing, "/tmp/repro", CKB_REPRO_DOCUMENTATION_MODE_DRAFT,
+            Array<String>()).diagnostic, "documentation_link_anchor_missing")
+    }
+
+    @TestCase
+    public func productionValidatorRejectsAnchorTextThatIsNotHtml(): Unit {
+        for (example in [
+            "```html\n<a name=\"fake-anchor\"></a>\n```",
+            "`<a name=\"fake-anchor\"></a>`",
+            "&lt;a name=\"fake-anchor\"&gt;",
+            "<div data-name=\"fake-anchor\"></div>"
+        ]) {
+            let reader = p7FakeDocumentation(true)
+            reader.put("docs/reproducibility/quick-start.md",
+                p7ValidDocument(true) + "\n${example}\n" +
+                    "[must not resolve](#fake-anchor)\n")
+            @Expect(validateCkbReproDocumentation(
+                reader, "/tmp/repro", CKB_REPRO_DOCUMENTATION_MODE_DRAFT,
+                Array<String>()).diagnostic,
+                "documentation_link_anchor_missing")
+        }
+    }
+
+    @TestCase
     public func productionValidatorEnumeratesRealReaderSurface(): Unit {
         let reader = p7FakeDocumentation(true)
         reader.put("docs/service-http-operations.md", "# Service\n")
@@ -431,19 +475,126 @@ public class CkbReproDocumentationTest {
             if (exists(Path(root))) { remove(Path(root), recursive: true) }
         }
     }
+
+    @TestCase
+    public func productionRepositoryReaderRecursesAndRejectsNonRegularEntries(): Unit {
+        let nestedRoot = "target/p7-documentation-reader-nested"
+        p7ResetDocumentationSurface(nestedRoot)
+        try {
+            Directory.create(
+                Path("${nestedRoot}/docs/reproducibility/audit"),
+                recursive: true)
+            File.writeTo(Path(
+                "${nestedRoot}/docs/reproducibility/audit/notes.txt"),
+                "safe nested file".toArray())
+            @Expect(validateCkbReproDocumentation(
+                P7RepositoryDocumentationReader(), nestedRoot,
+                CKB_REPRO_DOCUMENTATION_MODE_DRAFT,
+                Array<String>()).diagnostic,
+                "documentation_extra_release_entry")
+        } finally {
+            if (exists(Path(nestedRoot))) {
+                remove(Path(nestedRoot), recursive: true)
+            }
+        }
+
+        let directoryRoot = "target/p7-documentation-reader-directory"
+        p7ResetDocumentationSurface(directoryRoot)
+        try {
+            Directory.create(Path(
+                "${directoryRoot}/docs/reproducibility/directory.md"),
+                recursive: true)
+            @Expect(validateCkbReproDocumentation(
+                P7RepositoryDocumentationReader(), directoryRoot,
+                CKB_REPRO_DOCUMENTATION_MODE_DRAFT,
+                Array<String>()).diagnostic,
+                "documentation_entry_type_forbidden")
+        } finally {
+            if (exists(Path(directoryRoot))) {
+                remove(Path(directoryRoot), recursive: true)
+            }
+        }
+
+        let symlinkRoot = "target/p7-documentation-reader-symlink"
+        let outside = Path("target/p7-documentation-outside.md")
+        p7ResetDocumentationSurface(symlinkRoot)
+        File.writeTo(outside, "outside".toArray())
+        try {
+            let target = canonicalize(outside).toString()
+            let link = Path(
+                "${symlinkRoot}/docs/reproducibility/linked.md")
+            @Expect(launch("/bin/ln", ["-s", target, link.toString()])
+                .wait(), 0)
+            @Expect(validateCkbReproDocumentation(
+                P7RepositoryDocumentationReader(), symlinkRoot,
+                CKB_REPRO_DOCUMENTATION_MODE_DRAFT,
+                Array<String>()).diagnostic,
+                "documentation_entry_type_forbidden")
+        } finally {
+            if (exists(Path(symlinkRoot))) {
+                remove(Path(symlinkRoot), recursive: true)
+            }
+            if (exists(outside)) { remove(outside) }
+        }
+    }
+
+    @TestCase
+    public func productionValidatorUsesMinimalPublicPosixPathAllowlist(): Unit {
+        let allowed = p7FakeDocumentation(true)
+        allowed.put("docs/reproducibility/quick-start.md",
+            p7ValidDocument(true) +
+                "\nhttps://example.invalid/private/company\n" +
+                "GET /api/v1/status\n/dev/null\n" +
+                "/opt/homebrew/opt/openssl@3/lib\n")
+        @Expect(validateCkbReproDocumentation(
+            allowed, "/tmp/repro", CKB_REPRO_DOCUMENTATION_MODE_DRAFT,
+            Array<String>()).ok, true)
+    }
 }
 
 private class P7RepositoryDocumentationReader <: CkbReproDocumentationReader {
-    public func list(root: String): ArrayList<String> {
-        let out = ArrayList<String>()
-        if (exists(Path("${root}/README.md"))) { out.add("README.md") }
-        let documentationRoot =
-            Path("${root}/docs/reproducibility")
-        if (!exists(documentationRoot)) { return out }
-        for (entry in Directory.readFrom(documentationRoot)) {
-            if (entry.isRegular() && entry.name.endsWith(".md")) {
-                out.add("docs/reproducibility/${entry.name}")
+    public func list(root: String):
+        ArrayList<CkbReproDocumentationEntry> {
+        let out = ArrayList<CkbReproDocumentationEntry>()
+        let canonicalRoot = try {
+            canonicalize(Path(root))
+        } catch (_: Exception) {
+            return out
+        }
+        for (entry in Directory.readFrom(canonicalRoot)) {
+            if (entry.name == "README.md") {
+                out.add(p7FilesystemDocumentationEntry(
+                    canonicalRoot, entry.path, "README.md"))
             }
+        }
+        let documentationRoot =
+            canonicalRoot.join("docs/reproducibility")
+        if (!exists(documentationRoot)) { return out }
+        let canonicalDocumentationRoot = try {
+            canonicalize(documentationRoot)
+        } catch (_: Exception) {
+            out.add(p7DocumentationEntry(
+                "docs/reproducibility", CKB_REPRO_DOCUMENTATION_ENTRY_SYMLINK))
+            return out
+        }
+        if (canonicalDocumentationRoot.toString() !=
+            documentationRoot.toString()) {
+            let kind = if (p7FilesystemWithin(
+                canonicalRoot, canonicalDocumentationRoot)) {
+                CKB_REPRO_DOCUMENTATION_ENTRY_SYMLINK
+            } else {
+                CKB_REPRO_DOCUMENTATION_ENTRY_OUTSIDE
+            }
+            out.add(p7DocumentationEntry("docs/reproducibility", kind))
+            return out
+        }
+        try {
+            p7CollectFilesystemDocumentation(
+                canonicalRoot, canonicalDocumentationRoot, "", out)
+        } catch (_: Exception) {
+            out.add(p7DocumentationEntry(
+                "docs/reproducibility",
+                CKB_REPRO_DOCUMENTATION_ENTRY_DIRECTORY))
         }
         out
     }
@@ -489,9 +640,13 @@ private class P7FakeDocumentationReader <: CkbReproDocumentationReader {
         }
     }
 
-    public func list(root: String): ArrayList<String> {
-        let out = ArrayList<String>()
-        for (path in paths) { out.add(path) }
+    public func list(root: String):
+        ArrayList<CkbReproDocumentationEntry> {
+        let out = ArrayList<CkbReproDocumentationEntry>()
+        for (path in paths) {
+            out.add(p7DocumentationEntry(
+                path, CKB_REPRO_DOCUMENTATION_ENTRY_REGULAR))
+        }
         out
     }
 
@@ -511,6 +666,80 @@ private class P7FakeDocumentationReader <: CkbReproDocumentationReader {
         }
         -1
     }
+}
+
+private func p7CollectFilesystemDocumentation(
+    root: Path, current: Path, prefix: String,
+    out: ArrayList<CkbReproDocumentationEntry>): Unit {
+    for (entry in Directory.readFrom(current)) {
+        let nested = if (prefix == "") {
+            entry.name
+        } else {
+            "${prefix}/${entry.name}"
+        }
+        let relative = "docs/reproducibility/${nested}"
+        let classified = p7FilesystemDocumentationEntry(
+            root, entry.path, relative)
+        if (classified.kind == CKB_REPRO_DOCUMENTATION_ENTRY_DIRECTORY &&
+            !entry.name.endsWith(".md")) {
+            p7CollectFilesystemDocumentation(
+                root, entry.path, nested, out)
+        } else {
+            out.add(classified)
+        }
+    }
+}
+
+private func p7FilesystemDocumentationEntry(
+    root: Path, path: Path, relative: String):
+    CkbReproDocumentationEntry {
+    let canonical = try {
+        canonicalize(path)
+    } catch (_: Exception) {
+        return p7DocumentationEntry(
+            relative, CKB_REPRO_DOCUMENTATION_ENTRY_SYMLINK)
+    }
+    if (!p7FilesystemWithin(root, canonical)) {
+        return p7DocumentationEntry(
+            relative, CKB_REPRO_DOCUMENTATION_ENTRY_OUTSIDE)
+    }
+    if (canonical.toString() != path.toString()) {
+        return p7DocumentationEntry(
+            relative, CKB_REPRO_DOCUMENTATION_ENTRY_SYMLINK)
+    }
+    var directory = false
+    var regular = false
+    for (entry in Directory.readFrom(path.parent)) {
+        if (entry.name == path.fileName) {
+            directory = entry.isDirectory()
+            regular = entry.isRegular()
+            break
+        }
+    }
+    if (regular) {
+        p7DocumentationEntry(
+            relative, CKB_REPRO_DOCUMENTATION_ENTRY_REGULAR)
+    } else if (directory) {
+        p7DocumentationEntry(
+            relative, CKB_REPRO_DOCUMENTATION_ENTRY_DIRECTORY)
+    } else {
+        p7DocumentationEntry(
+            relative, CKB_REPRO_DOCUMENTATION_ENTRY_SYMLINK)
+    }
+}
+
+private func p7FilesystemWithin(root: Path, candidate: Path): Bool {
+    let base = root.toString()
+    let value = candidate.toString()
+    value == base || value.startsWith("${base}/")
+}
+
+private func p7DocumentationEntry(
+    relativePath: String, kind: String): CkbReproDocumentationEntry {
+    let out = CkbReproDocumentationEntry()
+    out.relativePath = relativePath
+    out.kind = kind
+    out
 }
 
 private func p7FakeDocumentation(draft: Bool): P7FakeDocumentationReader {
@@ -562,6 +791,11 @@ private func p7CopyDocumentationSurface(
     File.writeTo(Path("${targetRoot}/docs/service-http-operations.md"),
         File.readFrom(Path(
             "${sourceRoot}/docs/service-http-operations.md")))
+}
+
+private func p7ResetDocumentationSurface(root: String): Unit {
+    if (exists(Path(root))) { remove(Path(root), recursive: true) }
+    p7CopyDocumentationSurface("..", root)
 }
 
 private func p7RequiredDocuments(): Array<String> {

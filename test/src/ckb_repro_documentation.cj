@@ -11,6 +11,17 @@ public class CkbReproDocumentationRead {
     public init() {}
 }
 
+public let CKB_REPRO_DOCUMENTATION_ENTRY_REGULAR: String = "regular"
+public let CKB_REPRO_DOCUMENTATION_ENTRY_DIRECTORY: String = "directory"
+public let CKB_REPRO_DOCUMENTATION_ENTRY_SYMLINK: String = "symlink"
+public let CKB_REPRO_DOCUMENTATION_ENTRY_OUTSIDE: String = "outside"
+
+public class CkbReproDocumentationEntry {
+    public var relativePath: String = ""
+    public var kind: String = ""
+    public init() {}
+}
+
 public class CkbReproDocumentationScan {
     public var ok: Bool = false
     public var diagnostic: String = "documentation_not_scanned"
@@ -34,7 +45,7 @@ public class CkbReproDocumentationEvidence {
 // The caller defines the documentation surface returned by list. The reader is
 // deliberately read-only so release verification cannot mutate its candidate.
 public interface CkbReproDocumentationReader {
-    func list(root: String): ArrayList<String>
+    func list(root: String): ArrayList<CkbReproDocumentationEntry>
     func read(root: String, relativePath: String): CkbReproDocumentationRead
 }
 
@@ -153,9 +164,14 @@ public func validateCkbReproDocumentation(
     let expected = HashSet<String>()
     for (path in required) { expected.add(path) }
     let seen = HashSet<String>()
-    for (path in listed) {
+    for (entry in listed) {
+        let path = entry.relativePath
         if (!p7DocumentationRelativePathValid(path)) {
             evidence.diagnostic = "documentation_entry_path_invalid"
+            return evidence
+        }
+        if (entry.kind != CKB_REPRO_DOCUMENTATION_ENTRY_REGULAR) {
+            evidence.diagnostic = "documentation_entry_type_forbidden"
             return evidence
         }
         if (!p7DocumentationReleaseSurface(path)) { continue }
@@ -270,7 +286,7 @@ private func p7DocumentationRelativePathValid(path: String): Bool {
 
 private func p7DocumentationReleaseSurface(path: String): Bool {
     path == "README.md" ||
-        (path.startsWith("docs/reproducibility/") && path.endsWith(".md"))
+        path.startsWith("docs/reproducibility/")
 }
 
 private func p7DocumentationRequiredSectionsPresent(text: String): Bool {
@@ -292,12 +308,93 @@ private func p7DocumentationRequiredSectionsPresent(text: String): Bool {
 }
 
 private func p7DocumentationContainsPrivatePath(lower: String): Bool {
-    lower.contains("/users/") || lower.contains("/home/") ||
-        lower.contains("/root/") || lower.contains("/var/folders/") ||
-        lower.contains("/volumes/") ||
+    p7DocumentationContainsForbiddenPosixPath(lower) ||
         lower.contains(":\\users\\") || lower.contains(":/users/") ||
         p7DocumentationContainsDriveAbsolutePath(lower) ||
         p7DocumentationContainsUncAbsolutePath(lower)
+}
+
+private func p7DocumentationContainsForbiddenPosixPath(value: String): Bool {
+    let runes = value.toRuneArray()
+    var index: Int64 = 0
+    while (index < runes.size) {
+        if (runes[index] != r'/' ||
+            !p7DocumentationPosixPathBoundary(runes, index)) {
+            index += 1
+            continue
+        }
+        let token = StringBuilder()
+        var end = index
+        while (end < runes.size &&
+            !p7DocumentationPosixPathDelimiter(runes[end])) {
+            token.append(runes[end])
+            end += 1
+        }
+        let path = token.toString()
+        if (!p7DocumentationPublicPosixPath(path) &&
+            !p7DocumentationPublicApiRoute(path)) {
+            return true
+        }
+        index = if (end > index) { end } else { index + 1 }
+    }
+    false
+}
+
+private func p7DocumentationPosixPathBoundary(
+    runes: Array<Rune>, index: Int64): Bool {
+    if (index == 0) { return true }
+    let previous = runes[index - 1]
+    if (previous == r'>') {
+        return !p7DocumentationPlaceholderSuffix(runes, index)
+    }
+    previous == r' ' || previous == r'\t' ||
+        previous == r'\n' || previous == r'\r' ||
+        previous == r'"' || previous == r'\'' ||
+        previous == r'`' || previous == r'(' ||
+        previous == r'[' || previous == r'{' ||
+        previous == r'=' ||
+        previous == r'|'
+}
+
+private func p7DocumentationPlaceholderSuffix(
+    runes: Array<Rune>, slashIndex: Int64): Bool {
+    if (slashIndex < 2 || runes[slashIndex - 1] != r'>') { return false }
+    var index = slashIndex - 2
+    while (index >= 0) {
+        let rune = runes[index]
+        if (rune == r'<') { return true }
+        if (rune == r' ' || rune == r'\t' || rune == r'\n' ||
+            rune == r'\r' || rune == r'"' || rune == r'\'' ||
+            rune == r'`' || rune == r'=') {
+            return false
+        }
+        index -= 1
+    }
+    false
+}
+
+private func p7DocumentationPosixPathDelimiter(rune: Rune): Bool {
+    rune == r' ' || rune == r'\t' || rune == r'\n' || rune == r'\r' ||
+        rune == r'"' || rune == r'\'' || rune == r'`' ||
+        rune == r')' || rune == r']' || rune == r'}' ||
+        rune == r'|' || rune == r',' || rune == r';' ||
+        rune == r':'
+}
+
+private func p7DocumentationPublicPosixPath(path: String): Bool {
+    path == "/" ||
+        path == "/tmp" || path.startsWith("/tmp/") ||
+        path == "/dev/null" ||
+        path == "/opt/homebrew/opt/openssl@3/lib" ||
+        path == "/etc/ssl/cert.pem" ||
+        path == "/path/to/cangjie"
+}
+
+private func p7DocumentationPublicApiRoute(path: String): Bool {
+    path.startsWith("/api/") || path.startsWith("/repos/") ||
+        path == "/mcp" || path.startsWith("/mcp/") ||
+        path == "/health" || path == "/status" ||
+        path == "/metrics"
 }
 
 private func p7DocumentationContainsCredential(value: String): Bool {
@@ -622,22 +719,19 @@ private func p7DocumentationAnchorExists(
     let canonicalExpected = p7DocumentationCanonicalAnchor(expected)
     if (canonicalExpected == "") { return false }
     if (p7DocumentationExplicitAnchorExists(text, expected)) { return true }
-    let seen = ArrayList<String>()
+    let occupied = HashSet<String>()
     for (line in text.split("\n")) {
         let heading = p7DocumentationHeadingText(line)
         if (heading == "") { continue }
         let base = p7DocumentationCanonicalAnchor(heading)
         if (base == "") { continue }
-        var duplicate: Int64 = 0
-        for (previous in seen) {
-            if (previous == base) { duplicate += 1 }
+        var candidate = base
+        var suffix: Int64 = 0
+        while (occupied.contains(candidate)) {
+            suffix += 1
+            candidate = "${base}-${suffix}"
         }
-        seen.add(base)
-        let candidate = if (duplicate == 0) {
-            base
-        } else {
-            "${base}-${duplicate}"
-        }
+        occupied.add(candidate)
         if (candidate == canonicalExpected) {
             return true
         }
@@ -662,10 +756,61 @@ private func p7DocumentationHeadingText(line: String): String {
 
 private func p7DocumentationExplicitAnchorExists(
     text: String, expected: String): Bool {
-    text.contains("name=\"${expected}\"") ||
-        text.contains("name='${expected}'") ||
-        text.contains("id=\"${expected}\"") ||
-        text.contains("id='${expected}'")
+    var fenced = false
+    for (line in text.split("\n")) {
+        let trimmed = line.trimAscii()
+        if (trimmed.startsWith("```")) {
+            fenced = !fenced
+            continue
+        }
+        if (fenced) { continue }
+        let visible = p7DocumentationOutsideInlineCode(line)
+        let runes = visible.toRuneArray()
+        var index: Int64 = 0
+        while (index < runes.size) {
+            if (runes[index] != r'<') {
+                index += 1
+                continue
+            }
+            var end = index + 1
+            while (end < runes.size && runes[end] != r'>') { end += 1 }
+            if (end >= runes.size) { break }
+            let tagBuilder = StringBuilder()
+            for (i in index..=end) { tagBuilder.append(runes[i]) }
+            let tag = tagBuilder.toString().replace("\t", " ")
+            let lower = tag.toAsciiLower()
+            let opening = lower.size > 2 && lower.startsWith("<") &&
+                !lower.startsWith("</") && !lower.startsWith("<!")
+            if (opening &&
+                (p7DocumentationHtmlAttribute(tag, "id", expected) ||
+                    (lower.startsWith("<a ") &&
+                        p7DocumentationHtmlAttribute(
+                            tag, "name", expected)))) {
+                return true
+            }
+            index = end + 1
+        }
+    }
+    false
+}
+
+private func p7DocumentationHtmlAttribute(
+    tag: String, attribute: String, expected: String): Bool {
+    tag.contains(" ${attribute}=\"${expected}\"") ||
+        tag.contains(" ${attribute}='${expected}'")
+}
+
+private func p7DocumentationOutsideInlineCode(line: String): String {
+    let out = StringBuilder()
+    var code = false
+    for (rune in line.runes()) {
+        if (rune == r'`') {
+            code = !code
+        } else if (!code) {
+            out.append(rune)
+        }
+    }
+    out.toString()
 }
 
 // This is the GitHub-style subset required by the public runbooks: link labels
