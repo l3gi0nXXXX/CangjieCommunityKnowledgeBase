@@ -169,6 +169,105 @@ public class CkbLogicalSnapshotResult {
     public init() {}
 }
 
+// Release-level binding is created only after both the logical manifest and
+// Qdrant snapshot manifest are final. It prevents either artifact from being
+// substituted independently.
+public class CkbReleaseManifest {
+    public var schemaVersion: String = "ckb-release-manifest-v1"
+    public var portableKnowledgeVersion: String = ""
+    public var logicalManifestHash: String = ""
+    public var qdrantSnapshotManifestHash: String = ""
+    public var qdrantSnapshotHash: String = ""
+    public var vectorProofHash: String = ""
+    public var collection: String = ""
+    public var points: Int64 = 0
+    public var dimension: Int64 = 0
+    public var distance: String = ""
+    public var bindingHash: String = ""
+    public init() {}
+}
+
+public class CkbReleaseManifestContract {
+    public var ok: Bool = false
+    public var ready: Bool = false
+    public var diagnostic: String = "release_manifest_not_validated"
+    public var canonicalJson: String = ""
+    public var manifest: CkbReleaseManifest = CkbReleaseManifest()
+    public init() {}
+}
+
+public func buildCkbReleaseManifest(logical: CkbLogicalSnapshotManifest,
+    vector: CkbQdrantSnapshotManifest): CkbReleaseManifestContract {
+    let result = CkbReleaseManifestContract()
+    let logicalValidation = validateCkbLogicalSnapshotManifest(logical)
+    if (!logicalValidation.ok) {
+        result.diagnostic = logicalValidation.diagnostic
+        return result
+    }
+    let vectorValidation = validateCkbQdrantSnapshotManifest(vector)
+    if (!vectorValidation.ok) {
+        result.diagnostic = vectorValidation.diagnostic
+        return result
+    }
+    let binding = CkbReleaseManifest()
+    binding.portableKnowledgeVersion = logical.portableKnowledgeVersion
+    binding.logicalManifestHash = logical.manifestHash
+    binding.qdrantSnapshotManifestHash = vector.manifestHash
+    binding.qdrantSnapshotHash = vector.snapshotSha256
+    binding.vectorProofHash = vector.vectorProofHash
+    binding.collection = vector.collection
+    binding.points = vector.points
+    binding.dimension = vector.dimension
+    binding.distance = vector.distance
+    let identity = ckbReleaseManifestIdentityDiagnostic(
+        binding, logical, vector)
+    if (identity != "ok") { result.diagnostic = identity; return result }
+    binding.bindingHash = ckbLogicalSnapshotBytesHash(
+        ckbReleaseManifestBody(binding).toArray())
+    result.ok = true
+    result.ready = true
+    result.diagnostic = "ok"
+    result.manifest = binding
+    result.canonicalJson = renderCkbReleaseManifest(binding)
+    result
+}
+
+public func validateCkbReleaseManifest(binding: CkbReleaseManifest,
+    logical: CkbLogicalSnapshotManifest,
+    vector: CkbQdrantSnapshotManifest): CkbReleaseManifestContract {
+    let result = CkbReleaseManifestContract()
+    let logicalValidation = validateCkbLogicalSnapshotManifest(logical)
+    if (!logicalValidation.ok) {
+        result.diagnostic = logicalValidation.diagnostic
+        return result
+    }
+    let vectorValidation = validateCkbQdrantSnapshotManifest(vector)
+    if (!vectorValidation.ok) {
+        result.diagnostic = vectorValidation.diagnostic
+        return result
+    }
+    let identity = ckbReleaseManifestIdentityDiagnostic(
+        binding, logical, vector)
+    if (identity != "ok") { result.diagnostic = identity; return result }
+    let expected = ckbLogicalSnapshotBytesHash(
+        ckbReleaseManifestBody(binding).toArray())
+    if (binding.bindingHash != expected) {
+        result.diagnostic = "release_manifest_binding_hash_mismatch"
+        return result
+    }
+    result.ok = true
+    result.ready = true
+    result.diagnostic = "ok"
+    result.manifest = binding
+    result.canonicalJson = renderCkbReleaseManifest(binding)
+    result
+}
+
+public func renderCkbReleaseManifest(binding: CkbReleaseManifest): String {
+    ckbReleaseManifestBody(binding) +
+        ",\"bindingHash\":\"${binding.bindingHash}\"}"
+}
+
 public func parseCkbLogicalSnapshotManifest(bytes: Array<UInt8>):
     (CkbLogicalSnapshotContract, CkbLogicalSnapshotManifest) {
     let manifest = CkbLogicalSnapshotManifest()
@@ -661,6 +760,44 @@ public func ckbLogicalSnapshotBytesHash(bytes: Array<UInt8>): String {
         out.append(ckbLogicalSnapshotNibble(byte % UInt8(16)))
     }
     "sha256:${out.toString()}"
+}
+
+private func ckbReleaseManifestIdentityDiagnostic(
+    binding: CkbReleaseManifest,
+    logical: CkbLogicalSnapshotManifest,
+    vector: CkbQdrantSnapshotManifest): String {
+    if (binding.schemaVersion != "ckb-release-manifest-v1" ||
+        binding.portableKnowledgeVersion == "") {
+        return "release_manifest_identity_invalid"
+    }
+    if (logical.manifestHash != binding.logicalManifestHash ||
+        vector.logicalManifestHash != logical.manifestHash ||
+        vector.manifestHash != binding.qdrantSnapshotManifestHash ||
+        vector.snapshotSha256 != binding.qdrantSnapshotHash ||
+        logical.p3VectorProofHash != vector.vectorProofHash ||
+        binding.vectorProofHash != vector.vectorProofHash ||
+        logical.vectorCollection != vector.collection ||
+        binding.collection != vector.collection ||
+        logical.vectorCount != vector.points ||
+        binding.points != vector.points ||
+        logical.vectorDimension != vector.dimension ||
+        binding.dimension != vector.dimension ||
+        binding.distance.toAsciiLower() != vector.distance.toAsciiLower()) {
+        return "release_manifest_vector_binding_mismatch"
+    }
+    "ok"
+}
+
+private func ckbReleaseManifestBody(binding: CkbReleaseManifest): String {
+    "{\"schemaVersion\":\"${ckbLogicalSnapshotJson(binding.schemaVersion)}\"," +
+        "\"portableKnowledgeVersion\":\"${ckbLogicalSnapshotJson(binding.portableKnowledgeVersion)}\"," +
+        "\"logicalManifestHash\":\"${binding.logicalManifestHash}\"," +
+        "\"qdrantSnapshotManifestHash\":\"${binding.qdrantSnapshotManifestHash}\"," +
+        "\"qdrantSnapshotHash\":\"${binding.qdrantSnapshotHash}\"," +
+        "\"vectorProofHash\":\"${binding.vectorProofHash}\"," +
+        "\"collection\":\"${ckbLogicalSnapshotJson(binding.collection)}\"," +
+        "\"points\":${binding.points},\"dimension\":${binding.dimension}," +
+        "\"distance\":\"${ckbLogicalSnapshotJson(binding.distance)}\""
 }
 
 private func ckbLogicalSnapshotValidateStructure(
