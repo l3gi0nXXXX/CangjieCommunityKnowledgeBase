@@ -15,6 +15,18 @@
     "rawPassed", "strictPassed", "strictFailed", "businessFailed",
     "protocolInvalid", "transportUnresolved", "missingEvidence"
   ],
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "baselineKind": {"const": "portable_release"},
+          "evidenceStatus": {"const": "complete"}
+        },
+        "required": ["baselineKind", "evidenceStatus"]
+      },
+      "then": {"required": ["certifiedRunInputHash"]}
+    }
+  ],
   "properties": {
     "schemaVersion": {"const": "ckb-repro-reference-v1"},
     "baselineKind": {"enum": ["historical_pre_portable", "portable_release"]},
@@ -43,6 +55,7 @@
     "promptHash": {"type": "string"},
     "resultsHash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
     "runCriticalTreeHash": {"type": "string"},
+    "certifiedRunInputHash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
     "totalCases": {"const": 164},
     "rawPassed": {"type": "integer", "minimum": 0, "maximum": 164},
     "strictPassed": {"type": "integer", "minimum": 0, "maximum": 164},

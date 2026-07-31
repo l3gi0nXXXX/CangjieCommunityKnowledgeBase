@@ -225,6 +225,85 @@ public class CkbReproManifestTest {
             mode: "execution").diagnostic, "hash_mismatch")
         remove(Path(root), recursive: true)
     }
+
+    @TestCase
+    public func p8Ut01PortableReferenceRoundTripsCertifiedRunInputHash(): Unit {
+        let manifest = p0CompleteReference()
+        manifest.certifiedRunInputHash = p0HashB()
+        let validation = validateCkbReproReferenceManifest(manifest)
+        @Expect(validation.ok, true)
+        @Expect(validation.canonicalJson.contains(
+            "\"certifiedRunInputHash\":\"${p0HashB()}\""), true)
+        let parsed = parseCkbReproReferenceManifest(validation.canonicalJson.toArray())
+        @Expect(parsed[0].ok, true)
+        @Expect(parsed[1].certifiedRunInputHash, p0HashB())
+        @Expect(renderCkbReproReferenceManifest(parsed[1]), validation.canonicalJson)
+    }
+
+    @TestCase
+    public func p8Bnd01HistoricalReferenceKeepsCanonicalBytesAndHash(): Unit {
+        let parsed = parseCkbReproReferenceManifest(
+            p0Read("../reproducibility/manifests/historical-reference-run.json"))
+        @Expect(parsed[0].ok, true)
+        @Expect(parsed[1].certifiedRunInputHash, "")
+        let validation = validateCkbReproReferenceManifest(parsed[1], mode: "execution")
+        @Expect(validation.ok, true)
+        @Expect(validation.canonicalJson.contains("\"certifiedRunInputHash\""), false)
+        @Expect(validation.manifestHash,
+            "sha256:757ba63f140bc586531fe7036a5343e680fe0eff8a4ae81ed4730408954a50f3")
+        let historicalWithOptional = validation.canonicalJson.replace(
+            "\"runCriticalTreeHash\":\"${parsed[1].runCriticalTreeHash}\"",
+            "\"runCriticalTreeHash\":\"${parsed[1].runCriticalTreeHash}\"," +
+            "\"certifiedRunInputHash\":\"${p0HashB()}\"")
+        let optionalParsed = parseCkbReproReferenceManifest(historicalWithOptional.toArray())
+        @Expect(optionalParsed[0].ok, true)
+        @Expect(validateCkbReproReferenceManifest(
+            optionalParsed[1], mode: "execution").ok, true)
+        @Expect(parseCkbReproReferenceManifest([0xff, 0xfe])[0].diagnostic,
+            "invalid_response_encoding")
+    }
+
+    @TestCase
+    public func p8Neg01PortableCompleteRequiresValidCertifiedRunInputHash(): Unit {
+        let missing = p0CompleteReference()
+        missing.certifiedRunInputHash = ""
+        @Expect(validateCkbReproReferenceManifest(missing).diagnostic,
+            "certified_run_input_hash_required")
+
+        let malformed = p0CompleteReference()
+        malformed.certifiedRunInputHash = "sha256:bad"
+        @Expect(validateCkbReproReferenceManifest(malformed).diagnostic, "hash_mismatch")
+
+        let historical = validateCkbReproReferenceManifest(
+            parseCkbReproReferenceManifest(
+                p0Read("../reproducibility/manifests/historical-reference-run.json"))[1],
+            mode: "execution")
+        let unknownField = historical.canonicalJson.replace(
+            "\"missingEvidence\":[]}", "\"missingEvidence\":[],\"unexpected\":true}")
+        @Expect(parseCkbReproReferenceManifest(
+            unknownField.toArray())[0].diagnostic, "reference_field_contract_invalid")
+        @Expect(parseCkbReproReferenceManifest("{".toArray())[0].diagnostic,
+            "reference_field_contract_invalid")
+    }
+
+    @TestCase
+    public func p8Reg01ReferenceV1HistoricalAndPortableContractsCoexist(): Unit {
+        let historical = parseCkbReproReferenceManifest(
+            p0Read("../reproducibility/manifests/historical-reference-run.json"))
+        @Expect(historical[0].ok, true)
+        @Expect(renderCkbReproReferenceManifest(historical[1]).contains(
+            "\"certifiedRunInputHash\""), false)
+
+        let portable = p0CompleteReference()
+        portable.certifiedRunInputHash = p0HashB()
+        let rendered = renderCkbReproReferenceManifest(portable)
+        @Expect(parseCkbReproReferenceManifest(rendered.toArray())[0].ok, true)
+        @Expect(rendered.contains("\"schemaVersion\":\"ckb-repro-reference-v1\""), true)
+        let schema = String.fromUtf8(
+            p0Read("../reproducibility/reference-run.schema.json"))
+        @Expect(schema.contains(
+            "\"then\": {\"required\": [\"certifiedRunInputHash\"]}"), true)
+    }
 }
 
 private func p0CompleteReference(): CkbReproReferenceManifest {
@@ -256,6 +335,7 @@ private func p0CompleteReference(): CkbReproReferenceManifest {
     manifest.promptHash = p0HashA()
     manifest.resultsHash = p0HashA()
     manifest.runCriticalTreeHash = p0HashA()
+    manifest.certifiedRunInputHash = p0HashB()
     manifest.totalCases = 164
     manifest.rawPassed = 158
     manifest.strictPassed = 151
@@ -324,4 +404,8 @@ private func p0Read(path: String): Array<UInt8> {
 
 private func p0HashA(): String {
     "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+}
+
+private func p0HashB(): String {
+    "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 }

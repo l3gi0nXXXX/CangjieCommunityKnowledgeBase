@@ -45,6 +45,7 @@ public class CkbReproReferenceManifest {
     public var promptHash: String = ""
     public var resultsHash: String = ""
     public var runCriticalTreeHash: String = ""
+    public var certifiedRunInputHash: String = ""
     public var totalCases: Int64 = 0
     public var rawPassed: Int64 = 0
     public var strictPassed: Int64 = 0
@@ -126,7 +127,9 @@ public func parseCkbReproReferenceManifest(bytes: Array<UInt8>): (CkbReproContra
     if (decoded[0] != "ok") { return (ckbReproFailure(decoded[0]), manifest) }
     try {
         let object = JsonValue.fromStr(decoded[1]).asObject()
-        if (object.size() != 35) { return (ckbReproFailure("reference_field_contract_invalid"), manifest) }
+        if (object.size() != 35 && object.size() != 36) {
+            return (ckbReproFailure("reference_field_contract_invalid"), manifest)
+        }
         manifest.schemaVersion = ckbReproString(object, "schemaVersion")
         manifest.baselineKind = ckbReproString(object, "baselineKind")
         manifest.evidenceStatus = ckbReproString(object, "evidenceStatus")
@@ -154,6 +157,9 @@ public func parseCkbReproReferenceManifest(bytes: Array<UInt8>): (CkbReproContra
         manifest.promptHash = ckbReproString(object, "promptHash")
         manifest.resultsHash = ckbReproString(object, "resultsHash")
         manifest.runCriticalTreeHash = ckbReproString(object, "runCriticalTreeHash")
+        if (object.size() == 36) {
+            manifest.certifiedRunInputHash = ckbReproString(object, "certifiedRunInputHash")
+        }
         manifest.totalCases = ckbReproInt(object, "totalCases")
         manifest.rawPassed = ckbReproInt(object, "rawPassed")
         manifest.strictPassed = ckbReproInt(object, "strictPassed")
@@ -198,6 +204,15 @@ public func validateCkbReproReferenceManifest(manifest: CkbReproReferenceManifes
     for (hash in [manifest.providerFingerprint, manifest.resultsHash]) {
         if (!ckbReproHashValid(hash)) { return ckbReproFailure("hash_mismatch") }
     }
+    if (manifest.certifiedRunInputHash != "" &&
+        !ckbReproHashValid(manifest.certifiedRunInputHash)) {
+        return ckbReproFailure("hash_mismatch")
+    }
+    if (manifest.baselineKind == "portable_release" &&
+        manifest.evidenceStatus == "complete" &&
+        manifest.certifiedRunInputHash == "") {
+        return ckbReproFailure("certified_run_input_hash_required")
+    }
     if (manifest.evidenceStatus == "complete") {
         if (manifest.missingEvidence.size != 0 || !ckbReproHashValid(manifest.vectorProofHash) ||
             !ckbReproHashValid(manifest.promptHash) || !ckbReproHashValid(manifest.runCriticalTreeHash) ||
@@ -219,6 +234,11 @@ public func validateCkbReproReferenceManifest(manifest: CkbReproReferenceManifes
 }
 
 public func renderCkbReproReferenceManifest(manifest: CkbReproReferenceManifest): String {
+    let certified = if (manifest.certifiedRunInputHash == "") {
+        ""
+    } else {
+        ",\"certifiedRunInputHash\":\"${ckbReproEscape(manifest.certifiedRunInputHash)}\""
+    }
     "{\"schemaVersion\":\"${ckbReproEscape(manifest.schemaVersion)}\"," +
     "\"baselineKind\":\"${ckbReproEscape(manifest.baselineKind)}\"," +
     "\"evidenceStatus\":\"${ckbReproEscape(manifest.evidenceStatus)}\"," +
@@ -245,7 +265,8 @@ public func renderCkbReproReferenceManifest(manifest: CkbReproReferenceManifest)
     "\"transportRetryBudget\":${manifest.transportRetryBudget}," +
     "\"promptHash\":\"${ckbReproEscape(manifest.promptHash)}\"," +
     "\"resultsHash\":\"${ckbReproEscape(manifest.resultsHash)}\"," +
-    "\"runCriticalTreeHash\":\"${ckbReproEscape(manifest.runCriticalTreeHash)}\"," +
+    "\"runCriticalTreeHash\":\"${ckbReproEscape(manifest.runCriticalTreeHash)}\"" +
+    certified + "," +
     "\"totalCases\":${manifest.totalCases},\"rawPassed\":${manifest.rawPassed}," +
     "\"strictPassed\":${manifest.strictPassed},\"strictFailed\":${manifest.strictFailed}," +
     "\"businessFailed\":${manifest.businessFailed},\"protocolInvalid\":${manifest.protocolInvalid}," +
