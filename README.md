@@ -19,8 +19,8 @@ offline curation lifecycle tests.
 ## Build and Test
 
 ```bash
-export CANGJIE_HOME=/path/to/cangjie
-source "${CANGJIE_HOME}/envsetup.sh"
+: "${CANGJIE_SDK_ROOT:?set CANGJIE_SDK_ROOT to the extracted SDK root}"
+source "${CANGJIE_SDK_ROOT}/envsetup.sh"
 cjpm clean
 cjpm build -i
 
@@ -134,8 +134,9 @@ line.
 `service-http` exposes MCP Streamable HTTP on `/mcp`:
 
 ```bash
-source <CANGJIE_SDK_ROOT>/envsetup.sh
-export DYLD_LIBRARY_PATH="/opt/homebrew/opt/openssl@3/lib:$DYLD_LIBRARY_PATH"
+source "${CANGJIE_SDK_ROOT:?set CANGJIE_SDK_ROOT}/envsetup.sh"
+export OPENSSL_ROOT="${OPENSSL_ROOT:-$(brew --prefix openssl@3)}"
+export DYLD_LIBRARY_PATH="${OPENSSL_ROOT}/lib:$DYLD_LIBRARY_PATH"
 export cjHeapSize=4GB
 cjpm run --skip-build --run-args "--store $(pwd)/ckb-data service-http"
 ```
@@ -234,7 +235,7 @@ network.proxy=
 network.envProxyEnabled=false
 network.noProxy=
 network.insecureSkipTlsVerify=false
-network.caFile=/etc/ssl/cert.pem
+network.caFile=
 ```
 
 `tokenFile` must contain exactly one GitCode PAT line. Do not include `token=`,
@@ -251,9 +252,10 @@ lists comma-separated hosts or suffixes that must bypass proxy routing.
 `network.insecureSkipTlsVerify` defaults to `false` and should stay disabled for
 production acceptance unless a controlled diagnostic explicitly requires it.
 `network.caFile` is optional and maps a user-provided CA bundle to
-`SSL_CERT_FILE` for the native TLS child process; on macOS `/etc/ssl/cert.pem`
-matches the CA file reported by `curl -v`. Human-facing doctor and dry-run
-output redacts tokens, cookies, proxy passwords, and local absolute paths.
+`SSL_CERT_FILE` for the native TLS child process. Leave it empty to use the
+platform default, or set it explicitly to the CA bundle selected for the
+deployment. Human-facing doctor and dry-run output redacts tokens, cookies,
+proxy passwords, and local absolute paths.
 GitCode source file fetches use the official source API in priority order:
 raw file (`/repos/:owner/:repo/raw/:path?ref=:ref`) first, then
 contents/base64 (`/repos/:owner/:repo/contents/:path?ref=:ref`) as the
