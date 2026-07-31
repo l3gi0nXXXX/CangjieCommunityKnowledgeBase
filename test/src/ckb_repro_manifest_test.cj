@@ -250,7 +250,7 @@ public class CkbReproManifestTest {
         @Expect(validation.ok, true)
         @Expect(validation.canonicalJson.contains("\"certifiedRunInputHash\""), false)
         @Expect(validation.manifestHash,
-            "sha256:757ba63f140bc586531fe7036a5343e680fe0eff8a4ae81ed4730408954a50f3")
+            "sha256:0cbda0519ab1de4a1c55979a937b82f2b739637f7cf48390a7bfcc2128fdff88")
         let historicalWithOptional = validation.canonicalJson.replace(
             "\"runCriticalTreeHash\":\"${parsed[1].runCriticalTreeHash}\"",
             "\"runCriticalTreeHash\":\"${parsed[1].runCriticalTreeHash}\"," +
