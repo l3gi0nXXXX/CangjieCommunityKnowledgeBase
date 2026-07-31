@@ -3,6 +3,7 @@ package cangjie_community_knowledge_base_test
 import std.collection.{ArrayList, HashSet}
 import std.sort.*
 import stdx.crypto.digest.SHA256
+import stdx.encoding.json.*
 
 public class CkbReproBundleAsset {
     public var relativePath: String = ""
@@ -38,6 +39,13 @@ public class CkbReproBundleResult {
     public init() {}
 }
 
+public class CkbReproBundleManifest {
+    public var schemaVersion: String = ""
+    public var inputSetHash: String = ""
+    public let assets = ArrayList<CkbReproBundleAsset>()
+    public init() {}
+}
+
 public interface CkbReproBundleBackend {
     func rootExists(root: String): Bool
     func rootIsEmpty(root: String): Bool
@@ -45,6 +53,12 @@ public interface CkbReproBundleBackend {
     func read(root: String, relativePath: String): Array<UInt8>
     func write(root: String, relativePath: String, bytes: Array<UInt8>): Bool
     func removeRoot(root: String): Bool
+}
+
+public interface CkbReproBundleReadBackend {
+    func rootExists(root: String): Bool
+    func list(root: String): ArrayList<String>
+    func read(root: String, relativePath: String): Array<UInt8>
 }
 
 public func ckbReproBundleHash(bytes: Array<UInt8>): String {
@@ -130,17 +144,164 @@ public func computeCkbReproBundleInputSetHash(
 
 public func writeCkbReproReleaseManifest(
     assets: ArrayList<CkbReproBundleAsset>): String {
+    let manifest = CkbReproBundleManifest()
+    manifest.schemaVersion = "ckb-repro-release-component-v1"
+    manifest.inputSetHash = computeCkbReproBundleInputSetHash(assets)
+    for (asset in assets) { manifest.assets.add(asset) }
+    renderCkbReproBundleManifest(manifest)
+}
+
+public func renderCkbReproBundleManifest(
+    manifest: CkbReproBundleManifest): String {
     let rows = ArrayList<String>()
-    for (asset in assets) {
+    for (asset in manifest.assets) {
         rows.add("{\"path\":\"${p9BundleJson(asset.relativePath)}\"," +
             "\"size\":${asset.size},\"sha256\":\"${asset.sha256}\"," +
             "\"inputKind\":\"${p9BundleJson(asset.inputKind)}\"}")
     }
     let ordered = rows.toArray()
     sort(ordered)
-    "{\"schemaVersion\":\"ckb-repro-release-component-v1\"," +
-        "\"inputSetHash\":\"${computeCkbReproBundleInputSetHash(assets)}\"," +
+    "{\"schemaVersion\":\"${p9BundleJson(manifest.schemaVersion)}\"," +
+        "\"inputSetHash\":\"${p9BundleJson(manifest.inputSetHash)}\"," +
         "\"assets\":[${p9BundleJoin(ordered, ",")}]}"
+}
+
+public func parseCkbReproBundleManifest(bytes: Array<UInt8>):
+    (CkbReproContractResult, CkbReproBundleManifest) {
+    let manifest = CkbReproBundleManifest()
+    let text = try { String.fromUtf8(bytes) } catch (_: Exception) {
+        return (p9BundleFailure("invalid_response_encoding"), manifest)
+    }
+    let value = try { JsonValue.fromStr(text) } catch (_: Exception) {
+        return (p9BundleFailure("malformed_json"), manifest)
+    }
+    try {
+        let object = value.asObject()
+        if (object.size() != 3) {
+            return (p9BundleFailure(
+                "bundle_manifest_field_contract_invalid"), manifest)
+        }
+        manifest.schemaVersion = p9BundleString(object, "schemaVersion")
+        manifest.inputSetHash = p9BundleString(object, "inputSetHash")
+        for (value in object.get("assets").getOrThrow().asArray().getItems()) {
+            let row = value.asObject()
+            if (row.size() != 4) {
+                return (p9BundleFailure(
+                    "bundle_manifest_asset_contract_invalid"),
+                    CkbReproBundleManifest())
+            }
+            let asset = CkbReproBundleAsset()
+            asset.relativePath = p9BundleString(row, "path")
+            asset.size = p9BundleInt(row, "size")
+            asset.sha256 = p9BundleString(row, "sha256")
+            asset.inputKind = p9BundleString(row, "inputKind")
+            manifest.assets.add(asset)
+        }
+    } catch (_: Exception) {
+        return (p9BundleFailure(
+            "bundle_manifest_field_contract_invalid"),
+            CkbReproBundleManifest())
+    }
+    if (renderCkbReproBundleManifest(manifest) != text) {
+        return (p9BundleFailure("bundle_manifest_non_canonical"),
+            CkbReproBundleManifest())
+    }
+    (p9BundleSuccess(), manifest)
+}
+
+public func validateCkbReproBundleManifest(root: String,
+    manifest: CkbReproBundleManifest,
+    backend: CkbReproBundleReadBackend): CkbReproContractResult {
+    if (manifest.schemaVersion != "ckb-repro-release-component-v1") {
+        return p9BundleFailure("bundle_manifest_schema_invalid")
+    }
+    if (manifest.assets.size > 1000) {
+        return p9BundleFailure("bundle_asset_count_exceeded")
+    }
+    let declared = HashSet<String>()
+    var previousPath = ""
+    for (asset in manifest.assets) {
+        let path = validateCkbReproBundleRelativePath(asset.relativePath)
+        if (!path.ok) { return path }
+        if (asset.relativePath == "RELEASE-MANIFEST.json" ||
+            asset.relativePath == "SHA256SUMS" ||
+            asset.relativePath == "SHA256SUMS.sig" ||
+            asset.relativePath.endsWith(".sig")) {
+            return p9BundleFailure("bundle_derived_asset_forbidden")
+        }
+        if (declared.contains(asset.relativePath)) {
+            return p9BundleFailure("bundle_asset_duplicate")
+        }
+        if (previousPath != "" && previousPath > asset.relativePath) {
+            return p9BundleFailure("bundle_manifest_asset_order_invalid")
+        }
+        if (asset.size < 0 || !p9BundleHashValid(asset.sha256)) {
+            return p9BundleFailure("bundle_manifest_asset_contract_invalid")
+        }
+        if (asset.inputKind != "verified_input") {
+            return p9BundleFailure("bundle_input_kind_invalid")
+        }
+        declared.add(asset.relativePath)
+        previousPath = asset.relativePath
+    }
+    if (computeCkbReproBundleInputSetHash(manifest.assets) !=
+        manifest.inputSetHash) {
+        return p9BundleFailure("bundle_input_set_hash_mismatch")
+    }
+    try {
+        if (!backend.rootExists(root)) {
+            return p9BundleFailure("bundle_root_missing")
+        }
+        let listed = backend.list(root)
+        let seen = HashSet<String>()
+        var hasManifest = false
+        for (path in listed) {
+            if (seen.contains(path)) {
+                return p9BundleFailure("bundle_root_asset_duplicate")
+            }
+            seen.add(path)
+            if (path == "RELEASE-MANIFEST.json") {
+                hasManifest = true
+            } else {
+                let validPath = validateCkbReproBundleRelativePath(path)
+                if (!validPath.ok) { return validPath }
+                if (!declared.contains(path)) {
+                    return p9BundleFailure("bundle_root_extra_asset")
+                }
+            }
+        }
+        if (!hasManifest) {
+            return p9BundleFailure("bundle_manifest_missing")
+        }
+        for (asset in manifest.assets) {
+            if (!seen.contains(asset.relativePath)) {
+                return p9BundleFailure("bundle_root_missing_asset")
+            }
+        }
+        if (listed.size != manifest.assets.size + 1) {
+            return p9BundleFailure("bundle_root_extra_asset")
+        }
+        let canonical = renderCkbReproBundleManifest(manifest)
+        let manifestBytes = backend.read(root, "RELEASE-MANIFEST.json")
+        if (manifestBytes != canonical.toArray()) {
+            return p9BundleFailure("bundle_manifest_bytes_changed")
+        }
+        for (asset in manifest.assets) {
+            let bytes = backend.read(root, asset.relativePath)
+            if (bytes.size != asset.size) {
+                return p9BundleFailure("bundle_asset_size_mismatch")
+            }
+            if (ckbReproBundleHash(bytes) != asset.sha256) {
+                return p9BundleFailure("bundle_asset_hash_mismatch")
+            }
+        }
+        let result = p9BundleSuccess()
+        result.canonicalJson = canonical
+        result.manifestHash = ckbReproBundleHash(manifestBytes)
+        result
+    } catch (_: Exception) {
+        p9BundleFailure("bundle_read_failed")
+    }
 }
 
 public func writeCkbReproSha256Sums(
@@ -276,6 +437,27 @@ private func p9BundlePartIndex(index: Int64): String {
     if (index < 100) { return "00${index}" }
     if (index < 1000) { return "0${index}" }
     index.toString()
+}
+
+private func p9BundleString(object: JsonObject, key: String): String {
+    object.get(key).getOrThrow().asString().getValue()
+}
+
+private func p9BundleInt(object: JsonObject, key: String): Int64 {
+    object.get(key).getOrThrow().asInt().getValue()
+}
+
+private func p9BundleHashValid(value: String): Bool {
+    let runes = value.toRuneArray()
+    if (runes.size != 71 || !value.startsWith("sha256:")) { return false }
+    for (i in 7..71) {
+        let rune = runes[i]
+        if (!((rune >= r'0' && rune <= r'9') ||
+            (rune >= r'a' && rune <= r'f'))) {
+            return false
+        }
+    }
+    true
 }
 
 private func p9BundleNibble(value: UInt8): String {
