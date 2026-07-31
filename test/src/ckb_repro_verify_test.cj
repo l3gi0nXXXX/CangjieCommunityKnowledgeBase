@@ -540,6 +540,17 @@ public class CkbReproVerifyTest {
             @Expect(accepted.rolesComplete, true)
             @Expect(accepted.derivedAssetCount, 0)
 
+            let multipartBundle = p8CreateBundle("${root}/multipart-bundle",
+                "assets/unused.txt", "p0", reference: reference,
+                multipartP2: true)
+            let multipartLoaded = validateCkbReproBundleManifest(
+                multipartBundle[0], CkbReproFilesystemBundleReadBackend())
+            @Expect(multipartLoaded.contract.ok, true)
+            @Expect(CkbReproCanonicalReleaseAssetAuthority(
+                p8AuthorityContract(multipartLoaded)).validate(
+                multipartLoaded, reference, releaseCommit,
+                p8AuthorityPreflight(multipartLoaded)).ok, true)
+
             let missing = p8AuthorityContract(loaded,
                 omittedRole: "p5_public_evidence")
             @Expect(CkbReproCanonicalReleaseAssetAuthority(missing).validate(
@@ -551,6 +562,18 @@ public class CkbReproVerifyTest {
                 loaded, reference, releaseCommit, preflight).diagnostic,
                 "release_authority_preflight_mismatch")
             let stablePreflight = p8AuthorityPreflight(loaded)
+            let duplicatePreflight = p8AuthorityPreflight(loaded)
+            duplicatePreflight.inputRoles[6] = "p0_manifest"
+            @Expect(authority.validate(loaded, reference, releaseCommit,
+                duplicatePreflight).diagnostic,
+                "release_authority_preflight_mismatch")
+            let missingPreflight = p8AuthorityPreflight(loaded)
+            missingPreflight.inputRoles.remove(at: 6)
+            missingPreflight.inputHashes.remove(at: 6)
+            missingPreflight.inputSizes.remove(at: 6)
+            @Expect(authority.validate(loaded, reference, releaseCommit,
+                missingPreflight).diagnostic,
+                "release_authority_preflight_mismatch")
             let wrongReference = p8ReferenceTemplate()
             wrongReference.resultsHash = p8Hash("different-reference")
             @Expect(authority.validate(loaded, wrongReference,
@@ -929,7 +952,7 @@ private func p8ReferenceTemplate(): CkbReproReferenceManifest {
 
 private func p8CreateBundle(root: String, relativePath: String,
     content: String, reference!: CkbReproReferenceManifest =
-        p8ReferenceTemplate()): (String, String) {
+        p8ReferenceTemplate(), multipartP2!: Bool = false): (String, String) {
     let canonicalRoot = p8ResetRoot(root)
     let assets = ArrayList<CkbReproBundleAsset>()
     let rows = [
@@ -953,6 +976,31 @@ private func p8CreateBundle(root: String, relativePath: String,
             "release_commit")
     ]
     for (row in rows) {
+        if (multipartP2 && row[2] == "p2_logical_snapshot") {
+            let logicalBytes = row[1].toArray()
+            for (index in 0..2) {
+                let bytes = [logicalBytes[index]]
+                let asset = CkbReproBundleAsset()
+                asset.relativePath = "${row[0]}.part-000${index}"
+                asset.bytes = bytes
+                asset.size = bytes.size
+                asset.sha256 = p8HashBytes(bytes)
+                asset.inputKind = "verified_input"
+                asset.role = row[2]
+                asset.logicalAsset = row[0]
+                asset.partIndex = index
+                asset.partCount = 2
+                asset.logicalSize = logicalBytes.size
+                asset.logicalSha256 = p8HashBytes(logicalBytes)
+                assets.add(asset)
+                let target = Path(canonicalRoot).join(asset.relativePath)
+                if (!exists(target.parent)) {
+                    Directory.create(target.parent, recursive: true)
+                }
+                File.writeTo(target, bytes)
+            }
+            continue
+        }
         let bytes = row[1].toArray()
         let asset = CkbReproBundleAsset()
         asset.relativePath = row[0]
@@ -981,8 +1029,12 @@ private func p8CreateBundle(root: String, relativePath: String,
 private func p8AuthorityContract(loaded: CkbReproBundleLoadResult,
     omittedRole!: String = ""): CkbReproReleaseAuthorityContract {
     let contract = CkbReproReleaseAuthorityContract()
+    let seen = HashSet<String>()
     for (asset in loaded.manifest.assets) {
         if (asset.role == omittedRole) { continue }
+        let key = asset.role + "\t" + asset.logicalAsset
+        if (seen.contains(key)) { continue }
+        seen.add(key)
         let evidence = CkbReproReleaseAuthorityEvidence()
         evidence.role = asset.role
         evidence.logicalAsset = asset.logicalAsset
@@ -996,11 +1048,13 @@ private func p8AuthorityContract(loaded: CkbReproBundleLoadResult,
 private func p8AuthorityPreflight(loaded: CkbReproBundleLoadResult):
     CkbReproVerifyEnvironmentResult {
     let out = CkbReproVerifyEnvironmentResult()
+    let seen = HashSet<String>()
     for (role in ["p0_manifest", "p1_score_contract",
         "p2_logical_snapshot", "p3_qdrant_snapshot", "p4_build_proof",
         "p6_environment_lock", "p8_reference"]) {
         for (asset in loaded.manifest.assets) {
-            if (asset.role == role) {
+            if (asset.role == role && !seen.contains(role)) {
+                seen.add(role)
                 out.inputRoles.add(role)
                 out.inputHashes.add(asset.logicalSha256)
                 out.inputSizes.add(asset.logicalSize)

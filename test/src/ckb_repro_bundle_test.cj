@@ -1,6 +1,6 @@
 package cangjie_community_knowledge_base_test
 
-import std.collection.{ArrayList, HashMap}
+import std.collection.{ArrayList, HashMap, HashSet}
 import std.unittest.*
 import std.unittest.testmacro.*
 
@@ -175,6 +175,17 @@ public class CkbReproBundleTest {
         derived.role = "p8_verification_report"
         @Expect(validateCkbReproBundleAssets(
             p9AssetList(derived)).diagnostic,
+            "bundle_derived_asset_forbidden")
+        let forgedAttestation = p9Asset("build-attestation.json", "x")
+        forgedAttestation.role = "portable_report"
+        @Expect(validateCkbReproBundleAssets(
+            p9AssetList(forgedAttestation)).diagnostic,
+            "bundle_derived_asset_forbidden")
+        let forgedVerification = p9Asset(
+            "reports/verification-report.json", "x")
+        forgedVerification.role = "portable_report"
+        @Expect(validateCkbReproBundleAssets(
+            p9AssetList(forgedVerification)).diagnostic,
             "bundle_derived_asset_forbidden")
         let discontinuous = p9Asset("assets/data.part-0001", "x")
         discontinuous.logicalAsset = "assets/data"
@@ -632,6 +643,25 @@ private func p9ReadableBundle(root: String,
         for (asset in assets) {
             p9ReadPut(backend, root, asset.relativePath, asset.bytes)
         }
+    }
+    let directories = HashSet<String>()
+    for (asset in assets) {
+        let parts = asset.relativePath.split("/")
+        let parent = StringBuilder()
+        for (i in 0..parts.size - 1) {
+            if (i > 0) { parent.append("/") }
+            parent.append(parts[i])
+            directories.add(parent.toString())
+        }
+    }
+    for (directory in directories) {
+        let entry = CkbReproBundleReadEntry()
+        entry.relativePath = directory
+        entry.kind = "directory"
+        entry.canonicalPath = "${root}/${directory}"
+        entry.withinRoot = true
+        entry.identity = "fake-directory:${directory}"
+        backend.listings[root].add(entry)
     }
     (backend, root)
 }
