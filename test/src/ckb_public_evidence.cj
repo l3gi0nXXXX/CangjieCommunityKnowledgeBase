@@ -1,7 +1,10 @@
 package cangjie_community_knowledge_base_test
 
 import std.collection.ArrayList
+import std.fs.{Directory, File, OpenMode, Path, canonicalize, exists, remove, rename}
 import std.sort.*
+import std.time.DateTime
+import stdx.encoding.json.*
 
 public class CkbPublicEvidenceProjectionResult {
     public var ok: Bool = false
@@ -30,6 +33,297 @@ public class CkbPublicEvidenceScoreComparison {
     public var ok: Bool = false
     public var diagnostic: String = ""
     public init() {}
+}
+
+public class CkbPublicEvidenceExportManifest {
+    public var schemaVersion: String = ""
+    public var referenceManifestHash: String = ""
+    public var privateResultsHash: String = ""
+    public var publicEvidenceHash: String = ""
+    public var runId: String = ""
+    public var knowledgeVersion: String = ""
+    public var providerFingerprint: String = ""
+    public var modelFingerprint: String = ""
+    public var runManifestHash: String = ""
+    public var vectorProofHash: String = ""
+    public var certifiedRunInputHash: String = ""
+    public init() {}
+}
+
+public func parseCkbPublicEvidenceExportManifest(bytes: Array<UInt8>):
+    (CkbPublicEvidenceScoreComparison, CkbPublicEvidenceExportManifest) {
+    let manifest = CkbPublicEvidenceExportManifest()
+    let text = try { String.fromUtf8(bytes) } catch (_: Exception) {
+        return (p5ExportManifestResult(false, "invalid_response_encoding"), manifest)
+    }
+    try {
+        let object = JsonValue.fromStr(text).asObject()
+        if (object.size() != 11) {
+            return (p5ExportManifestResult(false,
+                "public_evidence_export_manifest_invalid"), manifest)
+        }
+        manifest.schemaVersion = object.get("schemaVersion").getOrThrow()
+            .asString().getValue()
+        manifest.referenceManifestHash = object.get("referenceManifestHash")
+            .getOrThrow().asString().getValue()
+        manifest.privateResultsHash = object.get("privateResultsHash")
+            .getOrThrow().asString().getValue()
+        manifest.publicEvidenceHash = object.get("publicEvidenceHash")
+            .getOrThrow().asString().getValue()
+        manifest.runId = object.get("runId").getOrThrow()
+            .asString().getValue()
+        manifest.knowledgeVersion = object.get("knowledgeVersion").getOrThrow()
+            .asString().getValue()
+        manifest.providerFingerprint = object.get("providerFingerprint")
+            .getOrThrow().asString().getValue()
+        manifest.modelFingerprint = object.get("modelFingerprint")
+            .getOrThrow().asString().getValue()
+        manifest.runManifestHash = object.get("runManifestHash").getOrThrow()
+            .asString().getValue()
+        manifest.vectorProofHash = object.get("vectorProofHash").getOrThrow()
+            .asString().getValue()
+        manifest.certifiedRunInputHash = object.get("certifiedRunInputHash")
+            .getOrThrow().asString().getValue()
+    } catch (_: Exception) {
+        return (p5ExportManifestResult(false,
+            "public_evidence_export_manifest_invalid"),
+            CkbPublicEvidenceExportManifest())
+    }
+    (p5ExportManifestResult(true, "ok"), manifest)
+}
+
+public func validateCkbPublicEvidenceExportManifest(
+    manifest: CkbPublicEvidenceExportManifest): CkbPublicEvidenceScoreComparison {
+    if (manifest.schemaVersion != "ckb-public-evidence-export-v1") {
+        return p5ExportManifestResult(false,
+            "public_evidence_export_manifest_identity_invalid")
+    }
+    if (manifest.runId == "" || manifest.knowledgeVersion == "" ||
+        manifest.modelFingerprint == "") {
+        return p5ExportManifestResult(false,
+            "public_evidence_export_manifest_identity_invalid")
+    }
+    for (hash in [manifest.referenceManifestHash, manifest.privateResultsHash,
+        manifest.publicEvidenceHash, manifest.providerFingerprint,
+        manifest.runManifestHash, manifest.vectorProofHash,
+        manifest.certifiedRunInputHash]) {
+        if (!p5ExportManifestHashValid(hash)) {
+            return p5ExportManifestResult(false,
+                "public_evidence_export_manifest_hash_invalid")
+        }
+    }
+    p5ExportManifestResult(true, "ok")
+}
+
+public func renderCkbPublicEvidenceExportManifest(
+    manifest: CkbPublicEvidenceExportManifest): String {
+    "{\"schemaVersion\":\"${p5CliJson(manifest.schemaVersion)}\"," +
+        "\"referenceManifestHash\":\"${manifest.referenceManifestHash}\"," +
+        "\"privateResultsHash\":\"${manifest.privateResultsHash}\"," +
+        "\"publicEvidenceHash\":\"${manifest.publicEvidenceHash}\"," +
+        "\"runId\":\"${p5CliJson(manifest.runId)}\"," +
+        "\"knowledgeVersion\":\"${p5CliJson(manifest.knowledgeVersion)}\"," +
+        "\"providerFingerprint\":\"${manifest.providerFingerprint}\"," +
+        "\"modelFingerprint\":\"${p5CliJson(manifest.modelFingerprint)}\"," +
+        "\"runManifestHash\":\"${manifest.runManifestHash}\"," +
+        "\"vectorProofHash\":\"${manifest.vectorProofHash}\"," +
+        "\"certifiedRunInputHash\":\"${manifest.certifiedRunInputHash}\"}"
+}
+
+private func p5ExportManifestResult(ok: Bool, diagnostic: String):
+    CkbPublicEvidenceScoreComparison {
+    let out = CkbPublicEvidenceScoreComparison()
+    out.ok = ok; out.diagnostic = diagnostic; out
+}
+
+private func p5ExportManifestHashValid(value: String): Bool {
+    if (!value.startsWith("sha256:") || value.toRuneArray().size != 71) {
+        return false
+    }
+    var index: Int64 = 0
+    for (rune in value.runes()) {
+        if (index >= 7 && !((rune >= r'0' && rune <= r'9') ||
+            (rune >= r'a' && rune <= r'f'))) { return false }
+        index += 1
+    }
+    true
+}
+
+public class CkbPublicEvidenceCliOptions {
+    public var runRoot: String = ""
+    public var referenceManifest: String = ""
+    public var outputRoot: String = ""
+    public var json: Bool = false
+    public var valid: Bool = false
+    public var diagnostic: String = "usage_error"
+    public init() {}
+}
+
+public class CkbPublicEvidenceCliPathContext {
+    public var worktreeRoot: String = ""
+    public var productionRoot: String = ""
+    public var userConfigRoot: String = ""
+    public var unsignedRoot: String = ""
+    public var finalRoot: String = ""
+    public init() {}
+}
+
+public interface CkbPublicEvidenceCliExecutor {
+    func exists(path: String): Bool
+    func outputParentExists(path: String): Bool
+    func exportEvidence(options: CkbPublicEvidenceCliOptions):
+        CkbPublicEvidenceRenderResult
+    func cleanupOutput(path: String): Bool
+}
+
+public class CkbPublicEvidenceFilesystemCliExecutor <:
+    CkbPublicEvidenceCliExecutor {
+    public init() {}
+    public func exists(path: String): Bool { exists(Path(path)) }
+    public func outputParentExists(path: String): Bool {
+        exists(Path(path).parent)
+    }
+    public func exportEvidence(options: CkbPublicEvidenceCliOptions):
+        CkbPublicEvidenceRenderResult {
+        if (!p5CliExistingCanonical(options.runRoot) ||
+            !p5CliExistingCanonical(options.referenceManifest) ||
+            !p5CliNewOutputCanonical(options.outputRoot)) {
+            return p5CliRenderFailure("public_evidence_path_not_canonical")
+        }
+        runCkbPublicEvidenceExportFromFiles(options)
+    }
+    public func cleanupOutput(path: String): Bool {
+        // The filesystem exporter only removes the unique temporary path it
+        // created. It never owns an output path that appeared after validation.
+        true
+    }
+}
+
+public func parseCkbPublicEvidenceCliArgs(args: Array<String>):
+    CkbPublicEvidenceCliOptions {
+    let out = CkbPublicEvidenceCliOptions()
+    var i: Int64 = 0
+    while (i < args.size) {
+        let arg = args[i]
+        if (arg == "ckb-public-evidence-export") { i += 1; continue }
+        if (arg == "--json") {
+            if (out.json) { out.diagnostic = "duplicate_argument:--json"; return out }
+            out.json = true; i += 1; continue
+        }
+        if (arg == "--run-root" || arg == "--reference-manifest" ||
+            arg == "--output") {
+            if (i + 1 >= args.size) { out.diagnostic = "missing_value:${arg}"; return out }
+            let value = args[i + 1]
+            if (value.toRuneArray().size > 4096) {
+                out.diagnostic = "cli_argument_too_long"; return out
+            }
+            if (arg == "--run-root") {
+                if (out.runRoot != "") { out.diagnostic = "duplicate_argument:${arg}"; return out }
+                out.runRoot = value
+            } else if (arg == "--reference-manifest") {
+                if (out.referenceManifest != "") { out.diagnostic = "duplicate_argument:${arg}"; return out }
+                out.referenceManifest = value
+            } else {
+                if (out.outputRoot != "") { out.diagnostic = "duplicate_argument:${arg}"; return out }
+                out.outputRoot = value
+            }
+            i += 2; continue
+        }
+        out.diagnostic = "unknown_argument:${arg}"; return out
+    }
+    if (out.runRoot == "" || out.referenceManifest == "" ||
+        out.outputRoot == "") {
+        out.diagnostic = "required_argument_missing"; return out
+    }
+    out.valid = true; out.diagnostic = "ok"; out
+}
+
+public func validateCkbPublicEvidenceCliOptions(
+    options: CkbPublicEvidenceCliOptions,
+    context: CkbPublicEvidenceCliPathContext,
+    executor: CkbPublicEvidenceCliExecutor): CkbReproContractResult {
+    if (!options.valid) { return p5CliFailure(options.diagnostic) }
+    for (path in [options.runRoot, options.referenceManifest,
+        options.outputRoot, context.worktreeRoot, context.productionRoot,
+        context.userConfigRoot, context.unsignedRoot, context.finalRoot]) {
+        if (!p5CliAbsolutePath(path)) {
+            return p5CliFailure("public_evidence_path_invalid")
+        }
+    }
+    if (!executor.exists(options.runRoot)) {
+        return p5CliFailure("public_evidence_run_root_missing")
+    }
+    if (!executor.exists(options.referenceManifest)) {
+        return p5CliFailure("public_evidence_reference_missing")
+    }
+    if (executor.exists(options.outputRoot)) {
+        return p5CliFailure("public_evidence_output_exists")
+    }
+    if (!executor.outputParentExists(options.outputRoot)) {
+        return p5CliFailure("public_evidence_output_parent_missing")
+    }
+    for (protected in [options.runRoot, context.worktreeRoot,
+        context.productionRoot, context.userConfigRoot, context.unsignedRoot,
+        context.finalRoot]) {
+        if (p5CliRootsOverlap(options.outputRoot, protected)) {
+            return p5CliFailure("public_evidence_output_forbidden")
+        }
+    }
+    p5CliSuccess()
+}
+
+public func executeCkbPublicEvidenceCliAdapter(
+    options: CkbPublicEvidenceCliOptions,
+    context: CkbPublicEvidenceCliPathContext,
+    executor: CkbPublicEvidenceCliExecutor): CkbPublicEvidenceRenderResult {
+    let checked = validateCkbPublicEvidenceCliOptions(options, context, executor)
+    if (!checked.ok) { return p5CliRenderFailure(checked.diagnostic) }
+    let out = try { executor.exportEvidence(options) } catch (_: Exception) {
+        p5CliRenderFailure("public_evidence_export_failed")
+    }
+    if (!out.ok) { _ = executor.cleanupOutput(options.outputRoot) }
+    out
+}
+
+public func runCkbPublicEvidenceCliAdapter(options: CkbPublicEvidenceCliOptions,
+    context: CkbPublicEvidenceCliPathContext): CkbPublicEvidenceRenderResult {
+    let output = try {
+        Path(canonicalize(Path(options.outputRoot).parent).toString())
+            .join(Path(options.outputRoot).fileName).toString()
+    } catch (_: Exception) {
+        return p5CliRenderFailure("public_evidence_path_not_canonical")
+    }
+    if (output != options.outputRoot) {
+        return p5CliRenderFailure("public_evidence_path_not_canonical")
+    }
+    for (protected in [context.worktreeRoot, context.productionRoot,
+        context.userConfigRoot, context.unsignedRoot, context.finalRoot]) {
+        let resolved = try { canonicalize(Path(protected)).toString() }
+            catch (_: Exception) {
+                return p5CliRenderFailure("public_evidence_path_not_canonical")
+            }
+        if (p5CliRootsOverlap(output, resolved)) {
+            return p5CliRenderFailure("public_evidence_output_forbidden")
+        }
+    }
+    executeCkbPublicEvidenceCliAdapter(options, context,
+        CkbPublicEvidenceFilesystemCliExecutor())
+}
+
+public func renderCkbPublicEvidenceCliHuman(
+    result: CkbPublicEvidenceRenderResult): String {
+    "public evidence: ${if (result.ok) { "exported" } else { "blocked" }}\n" +
+        "diagnostic: ${p5CliSafeDiagnostic(result.diagnostic)}\n" +
+        "cases: ${result.score.total}\n" +
+        "strict passed: ${result.score.strictPassed}\n" +
+        "evidence hash: ${result.evidenceHash}\n"
+}
+
+public func renderCkbPublicEvidenceCliJson(
+    result: CkbPublicEvidenceRenderResult): String {
+    "{\"ok\":${result.ok},\"diagnostic\":\"${p5CliJson(p5CliSafeDiagnostic(result.diagnostic))}\"," +
+        "\"total\":${result.score.total},\"strictPassed\":${result.score.strictPassed}," +
+        "\"evidenceHash\":\"${p5CliJson(result.evidenceHash)}\"}"
 }
 
 public func projectCkbPublicEvidenceRow(
@@ -132,11 +426,16 @@ public func scanCkbPublicEvidenceLeakage(
         "authorization_header")
     ckbPublicEvidenceFinding(report,
         lower.contains("api_key") || lower.contains("apikey") ||
-            lower.contains("x-api-key") || lower.contains("bearer "),
+            lower.contains("x-api-key") || lower.contains("bearer ") ||
+            lower.contains("access_token") || lower.contains("token=") ||
+            lower.contains("\"token\""),
         "credential")
     ckbPublicEvidenceFinding(report,
         text.contains("/Users/") || text.contains("/home/") ||
-            text.contains("\\\\Users\\\\"),
+            text.contains("/private/") || text.contains("/tmp/") ||
+            text.contains("/var/folders/") || text.contains("\\\\") ||
+            p5CliPosixAbsolutePath(text) ||
+            p5CliWindowsAbsolutePath(text),
         "absolute_path")
     ckbPublicEvidenceFinding(report,
         lower.contains("\"prompt\"") || lower.contains("\"prompttext\""),
@@ -309,4 +608,366 @@ private func ckbPublicEvidenceIdentityEqual(
         left.modelFingerprint == right.modelFingerprint &&
         left.providerIdentityHash == right.providerIdentityHash &&
         left.runManifestHash == right.runManifestHash
+}
+
+public func runCkbPublicEvidenceExportFromFiles(
+    options: CkbPublicEvidenceCliOptions): CkbPublicEvidenceRenderResult {
+    let referenceRead = p5CliReadBounded(options.referenceManifest, 16 * 1024 * 1024)
+    if (referenceRead[0] != "ok") {
+        return p5CliRenderFailure("public_evidence_reference_read_failed")
+    }
+    let referenceBytes = referenceRead[1]
+    let parsedReference = parseCkbReproReferenceManifest(referenceBytes)
+    if (!parsedReference[0].ok ||
+        !validateCkbReproReferenceManifest(parsedReference[1]).ok ||
+        parsedReference[1].baselineKind != "portable_release" ||
+        parsedReference[1].evidenceStatus != "complete") {
+        return p5CliRenderFailure("public_evidence_portable_reference_required")
+    }
+    if (parsedReference[1].strictPassed != 151 ||
+        parsedReference[1].transportUnresolved != 0) {
+        return p5CliRenderFailure("public_evidence_target_score_required")
+    }
+    let resultsRead = p5CliReadBounded(
+        Path(options.runRoot).join("results.jsonl").toString(), 64 * 1024 * 1024)
+    if (resultsRead[0] != "ok") {
+        return p5CliRenderFailure("public_evidence_results_missing")
+    }
+    let resultsBytes = resultsRead[1]
+    let resultsText = try { String.fromUtf8(resultsBytes) } catch (_: Exception) {
+        return p5CliRenderFailure("invalid_response_encoding")
+    }
+    if (benchmarkGapSha256(resultsText) != parsedReference[1].resultsHash) {
+        return p5CliRenderFailure("public_evidence_results_hash_mismatch")
+    }
+    let runManifestRead = p5CliReadBounded(
+        Path(options.runRoot).join("run-manifest.json").toString(),
+        16 * 1024 * 1024)
+    if (runManifestRead[0] != "ok") {
+        return p5CliRenderFailure("public_evidence_run_manifest_missing")
+    }
+    let declaredRunManifestHash = try {
+        JsonValue.fromStr(String.fromUtf8(runManifestRead[1])).asObject()
+            .get("runManifestHash").getOrThrow().asString().getValue()
+    } catch (_: Exception) {
+        return p5CliRenderFailure("public_evidence_run_manifest_invalid")
+    }
+    if (!p5ExportManifestHashValid(declaredRunManifestHash)) {
+        return p5CliRenderFailure("public_evidence_run_manifest_invalid")
+    }
+    let rows = ArrayList<CkbStrictScoreEvidenceRow>()
+    for (line in resultsText.split("\n")) {
+        if (line.trimAscii() == "") { continue }
+        let certification = parseCkbCertificationEvidence(line.trimAscii())
+        if (!certification.valid) {
+            return p5CliRenderFailure("public_evidence_certification_invalid")
+        }
+        if (certification.runId != parsedReference[1].runId ||
+            certification.knowledgeVersion !=
+                parsedReference[1].knowledgeVersion ||
+            certification.providerIdentityHash !=
+                parsedReference[1].providerFingerprint ||
+            certification.modelFingerprint !=
+                parsedReference[1].modelFingerprint ||
+            certification.runManifestHash != declaredRunManifestHash) {
+            return p5CliRenderFailure(
+                "public_evidence_reference_identity_mismatch")
+        }
+        if (!validateCkbPublicEvidenceArtifactIdentity(
+                certification.caseId, certification.group).ok) {
+            return p5CliRenderFailure("public_evidence_case_identity_invalid")
+        }
+        let caseRoot = Path(options.runRoot).join(
+            "cases/${certification.caseId}/${certification.group}")
+        let testPath = caseRoot.join("test-result.json").toString()
+        let auditPath = caseRoot.join("audit.json").toString()
+        if (!p5CliCanonicalArtifactPath(options.runRoot, testPath) ||
+            !p5CliCanonicalArtifactPath(options.runRoot, auditPath)) {
+            return p5CliRenderFailure("public_evidence_artifact_path_invalid")
+        }
+        let testRead = p5CliReadBounded(testPath, 16 * 1024 * 1024)
+        if (testRead[0] != "ok") {
+            return p5CliRenderFailure("public_evidence_test_result_missing")
+        }
+        let auditRead = p5CliReadBounded(auditPath, 16 * 1024 * 1024)
+        if (auditRead[0] != "ok") {
+            return p5CliRenderFailure("public_evidence_audit_missing")
+        }
+        let testBytes = testRead[1]
+        let auditBytes = auditRead[1]
+        let audit = projectCkbPublicAuditFromPrivateArtifacts(
+            certification, testBytes, auditBytes)
+        if (audit[0] != "ok") { return p5CliRenderFailure(audit[0]) }
+        let projected = projectCkbPublicEvidenceRow(
+            line.trimAscii().toArray(), audit[1].toArray())
+        if (!projected.ok) { return p5CliRenderFailure(projected.diagnostic) }
+        rows.add(projected.row)
+    }
+    let rendered = renderCkbPublicEvidence(rows)
+    if (!rendered.ok || rendered.score.strictPassed !=
+            parsedReference[1].strictPassed ||
+        rendered.score.unitFirstSamplePassed != parsedReference[1].rawPassed ||
+        rendered.score.businessFailed != parsedReference[1].businessFailed ||
+        rendered.score.protocolInvalid != parsedReference[1].protocolInvalid) {
+        return p5CliRenderFailure("public_evidence_reference_score_mismatch")
+    }
+    let temporary = planCkbPublicEvidenceTemporaryPath(options.outputRoot,
+        DateTime.now().toUnixTimeStamp().toMilliseconds())
+    var temporaryOwned = false
+    try {
+        if (exists(Path(temporary))) {
+            return p5CliRenderFailure("public_evidence_temporary_conflict")
+        }
+        Directory.create(Path(temporary), recursive: false)
+        temporaryOwned = true
+        let score = renderCkbHumanEvalStrictScoreJson(rendered.score)
+        let exportManifest = CkbPublicEvidenceExportManifest()
+        exportManifest.schemaVersion = "ckb-public-evidence-export-v1"
+        exportManifest.referenceManifestHash =
+            validateCkbReproReferenceManifest(parsedReference[1]).manifestHash
+        exportManifest.privateResultsHash = parsedReference[1].resultsHash
+        exportManifest.publicEvidenceHash = rendered.evidenceHash
+        exportManifest.runId = parsedReference[1].runId
+        exportManifest.knowledgeVersion = parsedReference[1].knowledgeVersion
+        exportManifest.providerFingerprint =
+            parsedReference[1].providerFingerprint
+        exportManifest.modelFingerprint = parsedReference[1].modelFingerprint
+        exportManifest.runManifestHash = declaredRunManifestHash
+        exportManifest.vectorProofHash = parsedReference[1].vectorProofHash
+        exportManifest.certifiedRunInputHash =
+            parsedReference[1].certifiedRunInputHash
+        let manifest = renderCkbPublicEvidenceExportManifest(exportManifest)
+        for (payload in [rendered.text, score, manifest]) {
+            if (!scanCkbPublicEvidenceLeakage(payload.toArray()).ok) {
+                throw Exception("public evidence leakage")
+            }
+        }
+        File.writeTo(Path(temporary).join("public-evidence.jsonl"),
+            rendered.text.toArray())
+        File.writeTo(Path(temporary).join("score.json"), score.toArray())
+        File.writeTo(Path(temporary).join("manifest.json"), manifest.toArray())
+        rename(temporary, to: options.outputRoot, overwrite: false)
+        rendered
+    } catch (_: Exception) {
+        try {
+            if (temporaryOwned && exists(Path(temporary))) {
+                remove(Path(temporary), recursive: true)
+            }
+        }
+        catch (_: Exception) {}
+        p5CliRenderFailure("public_evidence_export_failed")
+    }
+}
+
+public func projectCkbPublicAuditFromPrivateArtifacts(
+    certification: CkbCertificationCaseEvidence,
+    testBytes: Array<UInt8>, auditBytes: Array<UInt8>): (String, String) {
+    try {
+        let test = JsonValue.fromStr(String.fromUtf8(testBytes)).asObject()
+        let audit = JsonValue.fromStr(String.fromUtf8(auditBytes)).asObject()
+        let unit = test.get("unitPassAt1").getOrThrow().asBool().getValue()
+        let testExit = test.get("testExitCode").getOrThrow().asInt().getValue()
+        let failure = test.get("failureType").getOrThrow().asString().getValue()
+        let firstClaudeExit = test.get("firstClaudeExitCode").getOrThrow()
+            .asInt().getValue()
+        let claudeExit = test.get("claudeExitCode").getOrThrow()
+            .asInt().getValue()
+        let violation = audit.get("violation").getOrThrow().asString().getValue()
+        let development = audit.get("developmentPass").getOrThrow()
+            .asBool().getValue()
+        let closure = audit.get("closureStatus").getOrThrow()
+            .asString().getValue()
+        let triage = audit.get("triageStatus").getOrThrow()
+            .asString().getValue()
+        let recordedRoute = audit.get("failureRoute").getOrThrow()
+            .asString().getValue()
+        let certificationValue = audit.get("certificationPassAt1")
+            .getOrThrow().toString()
+        if (certificationValue != "null") {
+            return ("public_evidence_private_artifact_invalid", "")
+        }
+        let protocol = violation != "none" ||
+            (unit && !certification.certificationPassAt1)
+        let route = if (protocol) { "protocol_failure" } else if (unit) {
+            "none"
+        } else { "business_failure" }
+        if (recordedRoute != route) {
+            return ("public_evidence_private_artifact_mismatch", "")
+        }
+        ("ok", "{\"runMode\":\"certification\",\"caseId\":\"${p5CliJson(certification.caseId)}\"," +
+            "\"group\":\"${p5CliJson(certification.group)}\",\"unitPassAt1\":${unit}," +
+            "\"protocolViolation\":${protocol},\"firstClaudeExitCode\":${firstClaudeExit}," +
+            "\"claudeExitCode\":${claudeExit},\"testExitCode\":${testExit}," +
+            "\"failureType\":\"${p5CliJson(failure)}\",\"datasetVersion\":\"${p5CliJson(certification.datasetVersion)}\"," +
+            "\"lineageKnowledgeVersion\":\"${p5CliJson(certification.knowledgeVersion)}\"," +
+            "\"developmentPass\":${development},\"closureStatus\":\"${p5CliJson(closure)}\"," +
+            "\"triageStatus\":\"${p5CliJson(triage)}\",\"failureRoute\":\"${route}\"," +
+            "\"certificationPassAt1\":${certificationValue}}")
+    } catch (_: Exception) { ("public_evidence_private_artifact_invalid", "") }
+}
+
+public func planCkbPublicEvidenceTemporaryPath(output: String,
+    nonce: Int64): String {
+    "${output}.tmp-${nonce}"
+}
+
+public func validateCkbPublicEvidenceArtifactIdentity(
+    caseId: String, group: String): CkbReproContractResult {
+    if (group != CkbAbcdeGroups.D) {
+        return p5CliFailure("public_evidence_group_invalid")
+    }
+    for (index in 0..164) {
+        if (caseId == p5CliCaseId(index)) { return p5CliSuccess() }
+    }
+    p5CliFailure("public_evidence_case_id_invalid")
+}
+
+public func validateCkbPublicEvidenceArtifactPath(
+    runRoot: String, candidate: String): CkbReproContractResult {
+    if (!p5CliAbsolutePath(runRoot) || !p5CliAbsolutePath(candidate) ||
+        !candidate.startsWith(runRoot + "/")) {
+        return p5CliFailure("public_evidence_artifact_path_invalid")
+    }
+    p5CliSuccess()
+}
+
+private func p5CliCaseId(index: Int64): String {
+    if (index < 10) { return "CJ-HUMANEVAL-00${index}" }
+    if (index < 100) { return "CJ-HUMANEVAL-0${index}" }
+    "CJ-HUMANEVAL-${index}"
+}
+
+private func p5CliCanonicalArtifactPath(runRoot: String,
+    candidate: String): Bool {
+    if (!validateCkbPublicEvidenceArtifactPath(runRoot, candidate).ok) {
+        return false
+    }
+    try {
+        let root = canonicalize(Path(runRoot)).toString()
+        let artifact = canonicalize(Path(candidate)).toString()
+        artifact.startsWith(root + "/")
+    } catch (_: Exception) { false }
+}
+
+private func p5CliReadBounded(path: String, limit: Int64):
+    (String, Array<UInt8>) {
+    let bytes = ArrayList<UInt8>()
+    try {
+        try (file = File(Path(path), OpenMode.Read)) {
+            let buffer = Array<UInt8>(65536, repeat: UInt8(0))
+            while (true) {
+                let count = file.read(buffer)
+                if (count < 0 || count > buffer.size) {
+                    return ("read_failed", Array<UInt8>())
+                }
+                if (count == 0) { break }
+                if (bytes.size + count > limit) {
+                    return ("size_invalid", Array<UInt8>())
+                }
+                for (i in 0..count) { bytes.add(buffer[i]) }
+            }
+        }
+        ("ok", bytes.toArray())
+    } catch (_: Exception) { ("read_failed", Array<UInt8>()) }
+}
+
+private func p5CliAbsolutePath(value: String): Bool {
+    value.startsWith("/") && value != "/" && !value.endsWith("/") &&
+        !value.contains("//") && !value.contains("/./") &&
+        !value.contains("/../") && !value.endsWith("/.") &&
+        !value.endsWith("/..") && !value.contains("\\") &&
+        !value.contains("\n") && !value.contains("\r") && !value.contains("\t")
+}
+
+private func p5CliRootsOverlap(left: String, right: String): Bool {
+    left == right || left.startsWith(right + "/") || right.startsWith(left + "/")
+}
+
+private func p5CliExistingCanonical(value: String): Bool {
+    try { canonicalize(Path(value)).toString() == value }
+    catch (_: Exception) { false }
+}
+
+private func p5CliNewOutputCanonical(value: String): Bool {
+    let path = Path(value)
+    try {
+        Path(canonicalize(path.parent).toString()).join(path.fileName).toString() == value
+    } catch (_: Exception) { false }
+}
+
+private func p5CliSuccess(): CkbReproContractResult {
+    let out = CkbReproContractResult(); out.ok = true; out.diagnostic = "ok"; out
+}
+
+private func p5CliFailure(code: String): CkbReproContractResult {
+    let out = CkbReproContractResult(); out.diagnostic = code; out
+}
+
+private func p5CliRenderFailure(code: String): CkbPublicEvidenceRenderResult {
+    let out = CkbPublicEvidenceRenderResult(); out.diagnostic = code; out
+}
+
+private func p5CliSafeDiagnostic(value: String): String {
+    if (value == "" || value.toRuneArray().size > 128 || value.contains(":") ||
+        value.contains("/") || value.contains("\\") || value.contains(" ")) {
+        return "redacted_diagnostic"
+    }
+    value
+}
+
+private func p5CliJson(value: String): String {
+    value.replace("\\", "\\\\").replace("\"", "\\\"")
+        .replace("\u{0000}", "\\u0000").replace("\u{0001}", "\\u0001")
+        .replace("\u{0002}", "\\u0002").replace("\u{0003}", "\\u0003")
+        .replace("\u{0004}", "\\u0004").replace("\u{0005}", "\\u0005")
+        .replace("\u{0006}", "\\u0006").replace("\u{0007}", "\\u0007")
+        .replace("\u{0008}", "\\b").replace("\t", "\\t")
+        .replace("\n", "\\n").replace("\u{000b}", "\\u000b")
+        .replace("\u{000c}", "\\f").replace("\r", "\\r")
+        .replace("\u{000e}", "\\u000e").replace("\u{000f}", "\\u000f")
+        .replace("\u{0010}", "\\u0010").replace("\u{0011}", "\\u0011")
+        .replace("\u{0012}", "\\u0012").replace("\u{0013}", "\\u0013")
+        .replace("\u{0014}", "\\u0014").replace("\u{0015}", "\\u0015")
+        .replace("\u{0016}", "\\u0016").replace("\u{0017}", "\\u0017")
+        .replace("\u{0018}", "\\u0018").replace("\u{0019}", "\\u0019")
+        .replace("\u{001a}", "\\u001a").replace("\u{001b}", "\\u001b")
+        .replace("\u{001c}", "\\u001c").replace("\u{001d}", "\\u001d")
+        .replace("\u{001e}", "\\u001e").replace("\u{001f}", "\\u001f")
+}
+
+private func p5CliWindowsAbsolutePath(value: String): Bool {
+    let runes = value.toRuneArray()
+    if (runes.size < 3) { return false }
+    for (i in 0..(runes.size - 2)) {
+        let boundary = i == 0 || runes[i - 1] == r' ' ||
+            runes[i - 1] == r'\t' || runes[i - 1] == r'\n' ||
+            runes[i - 1] == r'\r' || runes[i - 1] == r'"' ||
+            runes[i - 1] == r'\''
+        if (boundary && ((runes[i] >= r'a' && runes[i] <= r'z') ||
+            (runes[i] >= r'A' && runes[i] <= r'Z')) &&
+            runes[i + 1] == r':' &&
+            (runes[i + 2] == r'/' || runes[i + 2] == r'\\')) {
+            return true
+        }
+    }
+    false
+}
+
+private func p5CliPosixAbsolutePath(value: String): Bool {
+    let normalized = value.replace("\n", " ").replace("\r", " ")
+        .replace("\t", " ").replace("\"", " ").replace("'", " ")
+        .replace(",", " ").replace(";", " ").replace("{", " ")
+        .replace("}", " ").replace("[", " ").replace("]", " ")
+        .replace("(", " ").replace(")", " ")
+    for (token in normalized.split(" ")) {
+        if (!token.startsWith("/") || token.contains("://")) { continue }
+        let parts = token.split("/")
+        if (parts.size < 2 || parts[1] == "") { continue }
+        let root = parts[1].toAsciiLower()
+        if (root != "v1" && root != "v2" && root != "api" &&
+            root != "knowledge" && root != "guide" && root != "docs") {
+            return true
+        }
+    }
+    false
 }

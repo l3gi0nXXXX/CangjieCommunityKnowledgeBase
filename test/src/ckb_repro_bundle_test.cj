@@ -1,6 +1,7 @@
 package cangjie_community_knowledge_base_test
 
 import std.collection.{ArrayList, HashMap, HashSet}
+import std.fs.{Directory, File, Path, canonicalize, exists, remove}
 import std.unittest.*
 import std.unittest.testmacro.*
 
@@ -34,6 +35,42 @@ private class P9FakeBundleBackend <: CkbReproBundleBackend {
     public func removeRoot(root: String): Bool {
         if (this.roots.contains(root)) { this.roots.remove(root) }
         this.removeCalls += 1
+        true
+    }
+}
+
+private class P9FakeBundleCliExecutor <: CkbReproBundleCliExecutor {
+    public var outputExists: Bool = false
+    public var parentExists: Bool = true
+    public var unsignedExists: Bool = true
+    public var reportExists: Bool = true
+    public var fail: Bool = false
+    public var unsignedCalls: Int64 = 0
+    public var finalizeCalls: Int64 = 0
+    public var cleanupCalls: Int64 = 0
+    public init() {}
+    public func exists(path: String): Bool {
+        if (path.endsWith("/out")) { return this.outputExists }
+        if (path.endsWith("/unsigned")) { return this.unsignedExists }
+        if (path.endsWith("/p8-b.json")) { return this.reportExists }
+        false
+    }
+    public func outputParentExists(path: String): Bool { this.parentExists }
+    public func assembleUnsigned(options: CkbReproBundleCliOptions):
+        CkbReproBundleResult {
+        this.unsignedCalls += 1
+        this.outputExists = true
+        p9CliBundleResult(!this.fail)
+    }
+    public func finalizeBundle(options: CkbReproBundleCliOptions):
+        CkbReproBundleResult {
+        this.finalizeCalls += 1
+        this.outputExists = true
+        p9CliBundleResult(!this.fail)
+    }
+    public func cleanupOutput(path: String): Bool {
+        this.cleanupCalls += 1
+        this.outputExists = false
         true
     }
 }
@@ -152,6 +189,70 @@ private class P9FakeBundleReadHandle <: CkbReproBundleReadHandle {
             throw Exception("fake close failure")
         }
     }
+}
+
+private class P9SparseBundleReadBackend <: CkbReproBundleReadBackend {
+    private let root: String
+    private let manifestBytes: Array<UInt8>
+    private let listing: ArrayList<CkbReproBundleReadEntry>
+    public var generatedBytes: Int64 = 0
+    public var maxBufferSize: Int64 = 0
+    public init(root: String, manifestBytes: Array<UInt8>,
+        assets: ArrayList<CkbReproBundleAsset>) {
+        this.root = root; this.manifestBytes = manifestBytes
+        this.listing = ArrayList<CkbReproBundleReadEntry>()
+        this.listing.add(p9SparseEntry(root, "RELEASE-MANIFEST.json",
+            manifestBytes.size))
+        let directory = p9SparseEntry(root, "assets", 0)
+        directory.kind = "directory"; this.listing.add(directory)
+        for (asset in assets) {
+            this.listing.add(p9SparseEntry(root, asset.relativePath, asset.size))
+        }
+    }
+    public func rootExists(root: String): Bool { root == this.root }
+    public func rootIdentity(root: String): String { "sparse-root-v1" }
+    public func list(root: String): ArrayList<CkbReproBundleReadEntry> {
+        this.listing
+    }
+    public func open(root: String, expected: CkbReproBundleReadEntry):
+        CkbReproBundleReadHandle {
+        P9SparseBundleReadHandle(this, expected,
+            if (expected.relativePath == "RELEASE-MANIFEST.json") {
+                this.manifestBytes
+            } else { Array<UInt8>() })
+    }
+}
+
+private class P9SparseBundleReadHandle <: CkbReproBundleReadHandle {
+    private let backend: P9SparseBundleReadBackend
+    private let entry: CkbReproBundleReadEntry
+    private let concrete: Array<UInt8>
+    private var offset: Int64 = 0
+    public init(backend: P9SparseBundleReadBackend,
+        entry: CkbReproBundleReadEntry, concrete: Array<UInt8>) {
+        this.backend = backend; this.entry = p9CopyReadEntry(entry)
+        this.concrete = concrete
+    }
+    public func read(buffer: Array<UInt8>): Int64 {
+        if (buffer.size > this.backend.maxBufferSize) {
+            this.backend.maxBufferSize = buffer.size
+        }
+        if (this.offset >= this.entry.size) { return 0 }
+        let remaining = this.entry.size - this.offset
+        let count = if (remaining < buffer.size) { remaining } else { buffer.size }
+        if (this.concrete.size > 0) {
+            for (i in 0..count) { buffer[i] = this.concrete[this.offset + i] }
+        } else {
+            for (i in 0..count) { buffer[i] = UInt8(0) }
+            this.backend.generatedBytes += count
+        }
+        this.offset += count; count
+    }
+    public func observedEntry(): CkbReproBundleReadEntry {
+        p9CopyReadEntry(this.entry)
+    }
+    public func noFollow(): Bool { true }
+    public func close(): Unit {}
 }
 
 @Test
@@ -282,6 +383,63 @@ public class CkbReproBundleTest {
         @Expect(assembleCkbUnsignedReleaseCandidate(
             p9BundleOptions("/tmp/ckb-p9/existing"), p9Assets(false),
             existingBackend).diagnostic, "bundle_output_exists")
+
+        let context = p9CliContext()
+        let fake = P9FakeBundleCliExecutor()
+        let unsigned = parseCkbReproBundleCliArgs([
+            "ckb-repro-bundle", "--mode", "unsigned", "--output",
+            "/tmp/发布 资料/out"
+        ])
+        @Expect(unsigned.valid, true)
+        @Expect(validateCkbReproBundleCliOptions(unsigned, context, fake).ok,
+            true)
+        let finalize = parseCkbReproBundleCliArgs([
+            "ckb-repro-bundle", "--mode", "finalize", "--unsigned-root",
+            "/tmp/已验证🙂/unsigned", "--verification-report",
+            "/tmp/证据/p8-b.json", "--output", "/tmp/发布 资料/out"
+        ])
+        @Expect(finalize.valid, true)
+        @Expect(validateCkbReproBundleCliOptions(finalize, context, fake).ok,
+            true)
+        for (output in ["relative/out", "/tmp/../escape/out",
+            "/tmp/metis-worktree/out", "/tmp/ckb-data/out",
+            "/tmp/p8-runs/out", "/tmp/settings/out"]) {
+            let options = parseCkbReproBundleCliArgs([
+                "ckb-repro-bundle", "--mode", "unsigned", "--output", output])
+            @Expect(validateCkbReproBundleCliOptions(options, context, fake).ok,
+                false)
+        }
+        let overlap = parseCkbReproBundleCliArgs([
+            "ckb-repro-bundle", "--mode", "finalize", "--unsigned-root",
+            "/tmp/发布 资料", "--verification-report", "/tmp/证据/p8-b.json",
+            "--output", "/tmp/发布 资料/out"
+        ])
+        @Expect(validateCkbReproBundleCliOptions(overlap, context, fake).diagnostic,
+            "bundle_unsigned_final_overlap")
+        @Expect(parseCkbReproBundleCliArgs([
+            "ckb-repro-bundle", "--mode", "unsigned", "--unsigned-root",
+            "/tmp/已验证🙂/unsigned", "--output", "/tmp/发布 资料/out"
+        ]).diagnostic, "bundle_unsigned_arguments_conflict")
+
+        let temporary = Path("target/ckb-repro-cli-adapter")
+        if (exists(temporary)) { remove(temporary, recursive: true) }
+        Directory.create(temporary, recursive: true)
+        let temporaryRoot = canonicalize(temporary).toString()
+        let realOptions = parseCkbReproBundleCliArgs([
+            "ckb-repro-bundle", "--mode", "unsigned", "--output",
+            "${temporaryRoot}/out"
+        ])
+        let realContext = CkbReproBundleCliPathContext()
+        realContext.worktreeRoot = "/tmp/protected-worktree"
+        realContext.productionRoot = "/tmp/protected-production"
+        realContext.privateRunRoot = "/tmp/protected-runs"
+        realContext.userConfigRoot = "/tmp/protected-settings"
+        let real = runCkbReproBundleCliAdapter(realOptions, realContext,
+            p9Assets(false), "")
+        @Expect(real.ok, true)
+        @Expect(File.readFrom(Path(realOptions.outputRoot).join("assets/b.txt")),
+            "仓颉🙂".toArray())
+        remove(temporary, recursive: true)
     }
 
     @TestCase
@@ -308,6 +466,21 @@ public class CkbReproBundleTest {
             ckbReproBundleHash("wrong-input-set".toArray()), backend)
         @Expect(finalizeResult.diagnostic, "bundle_verified_input_changed")
         @Expect(backend.rootExists("/tmp/ckb-p9/final"), false)
+
+        let fake = P9FakeBundleCliExecutor()
+        fake.fail = true
+        let cliOptions = parseCkbReproBundleCliArgs([
+            "ckb-repro-bundle", "--mode", "finalize", "--unsigned-root",
+            "/tmp/已验证🙂/unsigned", "--verification-report",
+            "/tmp/证据/p8-b.json", "--output", "/tmp/发布 资料/out"
+        ])
+        let failed = executeCkbReproBundleCliAdapter(cliOptions, p9CliContext(), fake)
+        @Expect(failed.ok, false)
+        @Expect(fake.finalizeCalls, 1)
+        @Expect(fake.cleanupCalls, 1)
+        @Expect(fake.outputExists, false)
+        @Expect(renderCkbReproBundleCliHuman(failed).contains("{\""), false)
+        @Expect(renderCkbReproBundleCliJson(failed).startsWith("{"), true)
     }
 
     @TestCase
@@ -351,6 +524,19 @@ public class CkbReproBundleTest {
             p9AssetList(unpartitionedHuge), false)
         @Expect(p9ParseAndValidate(huge).diagnostic,
             "bundle_asset_parts_incomplete")
+        let twoGiB = p9ReadableBundle("/tmp/ckb-p9/two-gib-streaming",
+            p9TwoGiBMetadataAssets(false), false)
+        @Expect(p9Load(twoGiB).contract.ok, false)
+        @Expect(twoGiB[0].maxBufferSize <= 65536, true)
+        let sparseAssets = p9TwoGiBSparseAssets()
+        let sparseManifest = writeCkbReproReleaseManifest(sparseAssets).toArray()
+        let sparse = P9SparseBundleReadBackend(
+            "/tmp/ckb-p9/two-gib-sparse", sparseManifest, sparseAssets)
+        let sparseLoaded = validateCkbReproBundleManifest(
+            "/tmp/ckb-p9/two-gib-sparse", sparse)
+        @Expect(sparseLoaded.contract.ok, true)
+        @Expect(sparse.maxBufferSize <= 65536, true)
+        @Expect(sparse.generatedBytes, 4 * 1024 * 1024 * 1024)
         let unicodeAssets = ArrayList<CkbReproBundleAsset>()
         unicodeAssets.add(p9Asset("资料/结果🙂.json", "仓颉🙂"))
         let seeded = p9ReadableBundle("/tmp/ckb-p9/read-unicode",
@@ -442,6 +628,106 @@ public class CkbReproBundleTest {
         @Expect(p9Load(large).contract.ok, true)
         @Expect(large[0].maxBufferSize, 65536)
         @Expect(large[0].closeCalls, 3)
+
+        let finalizeSeed = p9ReadableBundle(
+            "/tmp/ckb-p9/finalize-loader", p9Assets(false), false)
+        let firstLoad = p9Load(finalizeSeed)
+        let report = CkbReproReleaseVerificationResult()
+        report.ok = true
+        report.diagnostic = "verified"
+        report.verifiedReleaseInputSetHash = firstLoad.manifest.inputSetHash
+        report.bundleProofSetHash = firstLoad.proofSetHash
+        report.releaseCommit = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        report.certifiedRunInputHash = ckbReproBundleHash("input".toArray())
+        report.runCriticalTreeHash = ckbReproBundleHash("tree".toArray())
+        report.referenceManifestHash = ckbReproBundleHash("reference".toArray())
+        report.authorityHash = ckbReproBundleHash("authority".toArray())
+        report.restored.ok = true; report.restored.diagnostic = "ok"
+        report.rebuilt.ok = true; report.rebuilt.diagnostic = "ok"
+        report.publicEvidence.ok = true; report.publicEvidence.diagnostic = "ok"
+        report.documentation.ok = true; report.documentation.diagnostic = "ok"
+        let loadedFinalize = loadCkbReproFinalizeInputs(finalizeSeed[1],
+            renderCkbReproVerificationReport(report).toArray(), finalizeSeed[0])
+        @Expect(loadedFinalize.ok, true)
+        @Expect(loadedFinalize.manifest.inputSetHash,
+            firstLoad.manifest.inputSetHash)
+        @Expect(finalizeSeed[0].maxBufferSize <= 65536, true)
+        let forged = renderCkbReproVerificationReport(report).replace(
+            report.bundleProofSetHash, ckbReproBundleHash("forged".toArray()))
+        @Expect(loadCkbReproFinalizeInputs(finalizeSeed[1], forged.toArray(),
+            finalizeSeed[0]).diagnostic, "bundle_verification_report_mismatch")
+    }
+
+    @TestCase
+    public func p9Pos01ProductionFinalizeOwnsAndEmitsCompleteArtifacts(): Unit {
+        let collected = p9ProductionFinalizeFixture(suffix: "-collect")
+        let collectOptions = parseCkbReproBundleCliArgs([
+            "ckb-repro-bundle", "--mode", "unsigned", "--input-root",
+            collected[0], "--output",
+            Path(collected[3]).join("collected").toString()
+        ])
+        @Expect(collectOptions.valid, true)
+        @Expect(runCkbReproBundleCliAdapter(
+            collectOptions, p9CliContext()).ok, true)
+        @Expect(File.readFrom(Path(collectOptions.outputRoot).join(
+            "assets/a.txt")), "alpha".toArray())
+        remove(Path(collected[3]), recursive: true)
+
+        let fixture = p9ProductionFinalizeFixture()
+        let options = parseCkbReproBundleCliArgs([
+            "ckb-repro-bundle", "--mode", "finalize", "--unsigned-root",
+            fixture[0], "--verification-report", fixture[1], "--output",
+            fixture[2]
+        ])
+        let executor = CkbReproProductionBundleCliExecutor()
+        let finalized = executor.finalizeBundle(options)
+        @Expect(finalized.ok, true)
+        @Expect(exists(Path(fixture[2]).join("RELEASE-MANIFEST.json")), true)
+        @Expect(exists(Path(fixture[2]).join("verification-report.json")), true)
+        @Expect(exists(Path(fixture[2]).join("build-attestation.json")), true)
+        @Expect(exists(Path(fixture[2]).join("SHA256SUMS")), true)
+        if (exists(Path(fixture[2]).join("build-attestation.json"))) {
+            @Expect(validateCkbReproBuildAttestation(
+                File.readFrom(Path(fixture[2]).join("build-attestation.json")),
+                File.readFrom(Path(fixture[2]).join("verification-report.json")),
+                File.readFrom(Path(fixture[2]).join("RELEASE-MANIFEST.json"))).ok,
+                true)
+        }
+        let legacyBooleanAttestation =
+            "{\"schemaVersion\":\"ckb-repro-build-attestation-v1\"," +
+            "\"runCriticalTreeMatches\":true,\"strictPassed\":151," +
+            "\"transportUnresolved\":0,\"leakageFindingCount\":0," +
+            "\"fullTestsPassed\":true,\"licenseComplete\":true," +
+            "\"externalProofsVerified\":true}"
+        @Expect(validateCkbReproBuildAttestation(
+            legacyBooleanAttestation.toArray(),
+            File.readFrom(Path(fixture[1])),
+            File.readFrom(Path(fixture[0]).join("RELEASE-MANIFEST.json"))).ok,
+            false)
+        if (exists(Path(fixture[2]).join("SHA256SUMS"))) {
+            let sums = String.fromUtf8(File.readFrom(
+                Path(fixture[2]).join("SHA256SUMS")))
+            for (name in ["assets/a.txt", "assets/b.txt",
+                "RELEASE-MANIFEST.json", "verification-report.json",
+                "build-attestation.json"]) {
+                @Expect(sums.contains("  ${name}\n"), true)
+            }
+            @Expect(sums.contains("  SHA256SUMS\n"), false)
+        }
+
+        let raced = p9ProductionFinalizeFixture(suffix: "-race")
+        Directory.create(Path(raced[2]), recursive: false)
+        File.writeTo(Path(raced[2]).join("external-sentinel"), "keep".toArray())
+        let racedOptions = parseCkbReproBundleCliArgs([
+            "ckb-repro-bundle", "--mode", "finalize", "--unsigned-root",
+            raced[0], "--verification-report", raced[1], "--output", raced[2]
+        ])
+        let racedExecutor = CkbReproProductionBundleCliExecutor()
+        @Expect(racedExecutor.finalizeBundle(racedOptions).ok, false)
+        @Expect(racedExecutor.cleanupOutput(raced[2]), true)
+        @Expect(exists(Path(raced[2]).join("external-sentinel")), true)
+        remove(Path(fixture[3]), recursive: true)
+        remove(Path(raced[3]), recursive: true)
     }
 
     @TestCase
@@ -680,6 +966,45 @@ public class CkbReproBundleTest {
     }
 
     @TestCase
+    public func p9Neg02FilesystemBundleScansActualAssetContent(): Unit {
+        var index: Int64 = 0
+        for (attack in ["/Users/private/run", "/home/private/run",
+            "/mnt/private/run", "/Volumes/private/run",
+            "Authorization: Bearer secret", "token=secret",
+            "api_key=secret"]) {
+            @Expect(p9ValidateFilesystemBundleContent(
+                attack.toArray(), "portable_report", index).diagnostic,
+                "bundle_sensitive_content_detected")
+            index += 1
+        }
+        @Expect(p9ValidateFilesystemBundleContent(
+            [UInt8(0xff), UInt8(0xfe)], "portable_report", index).diagnostic,
+            "bundle_text_encoding_invalid")
+        index += 1
+        let large = ("safe-仓颉🙂\n" * 100000) + "token=tail-secret"
+        @Expect(p9ValidateFilesystemBundleContent(
+            large.toArray(), "portable_report", index).diagnostic,
+            "bundle_sensitive_content_detected")
+        index += 1
+        @Expect(p9ValidateFilesystemBundleContent(
+            [UInt8(0xff), UInt8(0x00), UInt8(0xfe)],
+            "p3_qdrant_snapshot", index).ok, true)
+        index += 1
+        for (attack in ["Authorization: Bearer secret",
+            "/Users/private/run", "token=boundary-secret"]) {
+            let binary = ArrayList<UInt8>()
+            binary.add(UInt8(0xff))
+            for (_ in 0..65532) { binary.add(UInt8(0x00)) }
+            binary.add(all: attack.toArray())
+            binary.add(UInt8(0xfe))
+            @Expect(p9ValidateFilesystemBundleContent(binary.toArray(),
+                "p3_qdrant_snapshot", index).diagnostic,
+                "bundle_sensitive_content_detected")
+            index += 1
+        }
+    }
+
+    @TestCase
     public func p9Reg01BundleReadContract(): Unit {
         let forward = p9ReadableBundle("/tmp/ckb-p9/read-forward",
             p9Assets(false), false)
@@ -692,6 +1017,27 @@ public class CkbReproBundleTest {
         @Expect(forwardResult.canonicalJson, reverseResult.canonicalJson)
         @Expect(forwardResult.manifestHash, reverseResult.manifestHash)
     }
+}
+
+private func p9CliBundleResult(ok: Bool): CkbReproBundleResult {
+    let result = CkbReproBundleResult()
+    result.ok = ok
+    result.diagnostic = if (ok) { "component_ready" } else {
+        "bundle_verified_input_changed"
+    }
+    result.inputSetHash = if (ok) { ckbReproBundleHash("input".toArray()) } else { "" }
+    result.treeHash = if (ok) { ckbReproBundleHash("tree".toArray()) } else { "" }
+    result.assetCount = if (ok) { 2 } else { 0 }
+    result
+}
+
+private func p9CliContext(): CkbReproBundleCliPathContext {
+    let context = CkbReproBundleCliPathContext()
+    context.worktreeRoot = "/tmp/metis-worktree"
+    context.productionRoot = "/tmp/ckb-data"
+    context.privateRunRoot = "/tmp/p8-runs"
+    context.userConfigRoot = "/tmp/settings"
+    context
 }
 
 private func p9Asset(path: String, value: String): CkbReproBundleAsset {
@@ -758,6 +1104,31 @@ private func p9TwoGiBMetadataAssets(wrongNonLast: Bool):
     out
 }
 
+private func p9TwoGiBSparseAssets(): ArrayList<CkbReproBundleAsset> {
+    let out = ArrayList<CkbReproBundleAsset>()
+    for (index in 0..2) {
+        let asset = CkbReproBundleAsset()
+        asset.relativePath = "assets/two-gib.bin.part-000${index + 1}"
+        asset.size = 1024 * 1024 * 1024
+        asset.sha256 = "sha256:49bc20df15e412a64472421e13fe86ff1c5165e18b2afccf160d4dc19fe68a14"
+        asset.inputKind = "verified_input"; asset.role = "portable_report"
+        asset.logicalAsset = "assets/two-gib.bin"; asset.partIndex = index
+        asset.partCount = 2; asset.logicalSize = 2 * 1024 * 1024 * 1024
+        asset.logicalSha256 = "sha256:a7c744c13cc101ed66c29f672f92455547889cc586ce6d44fe76ae824958ea51"
+        out.add(asset)
+    }
+    out
+}
+
+private func p9SparseEntry(root: String, path: String,
+    size: Int64): CkbReproBundleReadEntry {
+    let entry = CkbReproBundleReadEntry()
+    entry.relativePath = path; entry.kind = "regular"
+    entry.canonicalPath = "${root}/${path}"; entry.withinRoot = true
+    entry.identity = "sparse:${path}:${size}"; entry.size = size
+    entry
+}
+
 private func p9BundleOptions(output: String): CkbReproBundleOptions {
     let options = CkbReproBundleOptions()
     options.outputRoot = output
@@ -766,6 +1137,58 @@ private func p9BundleOptions(output: String): CkbReproBundleOptions {
     options.privateRunRoot = "/tmp/ckb-p9/private-runs"
     options.userConfigRoot = "/tmp/ckb-p9/config"
     options
+}
+
+private func p9ProductionFinalizeFixture(suffix!: String = ""):
+    (String, String, String, String) {
+    let base = Path("target/ckb-repro-production-finalize${suffix}")
+    if (exists(base)) { remove(base, recursive: true) }
+    Directory.create(base.join("unsigned/assets"), recursive: true)
+    let canonicalBase = canonicalize(base).toString()
+    let unsigned = Path(canonicalBase).join("unsigned")
+    let assets = p9Assets(false)
+    for (asset in assets) {
+        File.writeTo(unsigned.join(asset.relativePath), asset.bytes)
+    }
+    File.writeTo(unsigned.join("RELEASE-MANIFEST.json"),
+        writeCkbReproReleaseManifest(assets).toArray())
+    let loaded = validateCkbReproBundleManifest(unsigned.toString(),
+        CkbReproFilesystemBundleReadBackend())
+    let report = CkbReproReleaseVerificationResult()
+    report.ok = true; report.diagnostic = "verified"
+    report.verifiedReleaseInputSetHash = loaded.manifest.inputSetHash
+    report.bundleProofSetHash = loaded.proofSetHash
+    report.releaseCommit = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    report.certifiedRunInputHash = ckbReproBundleHash("input".toArray())
+    report.runCriticalTreeHash = ckbReproBundleHash("tree".toArray())
+    report.referenceManifestHash = ckbReproBundleHash("reference".toArray())
+    report.authorityHash = ckbReproBundleHash("authority".toArray())
+    report.restored.ok = true; report.restored.diagnostic = "ok"
+    report.rebuilt.ok = true; report.rebuilt.diagnostic = "ok"
+    report.publicEvidence.ok = true; report.publicEvidence.diagnostic = "ok"
+    report.documentation.ok = true; report.documentation.diagnostic = "ok"
+    let reportPath = Path(canonicalBase).join("verification-input.json")
+    File.writeTo(reportPath, renderCkbReproVerificationReport(report).toArray())
+    (unsigned.toString(), reportPath.toString(),
+        Path(canonicalBase).join("final").toString(), canonicalBase)
+}
+
+private func p9ValidateFilesystemBundleContent(bytes: Array<UInt8>,
+    role: String, index: Int64): CkbReproContractResult {
+    let root = Path("target/p9-content-scan-${index}")
+    if (exists(root)) { remove(root, recursive: true) }
+    Directory.create(root.join("assets"), recursive: true)
+    let canonicalRoot = canonicalize(root).toString()
+    let asset = p9AssetBytes("assets/content.bin", bytes)
+    asset.role = role
+    let assets = p9AssetList(asset)
+    File.writeTo(Path(canonicalRoot).join(asset.relativePath), bytes)
+    File.writeTo(Path(canonicalRoot).join("RELEASE-MANIFEST.json"),
+        writeCkbReproReleaseManifest(assets).toArray())
+    let result = validateCkbReproBundleManifest(canonicalRoot,
+        CkbReproFilesystemBundleReadBackend()).contract
+    remove(Path(canonicalRoot), recursive: true)
+    result
 }
 
 private func p9ReadableBundle(root: String,

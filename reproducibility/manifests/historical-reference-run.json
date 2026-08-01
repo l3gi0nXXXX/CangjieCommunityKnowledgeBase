@@ -13,6 +13,7 @@
   "runnerCommit": "7b525374936a53dba5f1a19e0709a91cfe5b02ac",
   "claudeCodeVersion": "2.1.179 (Claude Code)",
   "model": "GLM-5.2",
+  "modelFingerprint": "claude-code-glm-5.2",
   "providerFingerprint": "sha256:2bd7ce189357eb83f04af34aef8378aba577816060068d08141a9305d417f150",
   "experimentGroup": "D-ckb-mcp-http",
   "toolTransport": "streamable_http",

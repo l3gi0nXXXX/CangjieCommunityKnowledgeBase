@@ -1107,6 +1107,7 @@ private func p8ReferenceTemplate(): CkbReproReferenceManifest {
         "0123456789abcdef0123456789abcdef01234567"
     out.claudeCodeVersion = "1.0"
     out.model = "GLM-5.2"
+    out.modelFingerprint = "claude-code-glm-5.2"
     out.providerFingerprint = p8Hash("provider")
     out.experimentGroup = CkbAbcdeGroups.D
     out.toolTransport = "claude-code"

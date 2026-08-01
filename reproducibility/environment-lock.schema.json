@@ -3,7 +3,7 @@
   "$id": "https://github.com/l3gi0nXXXX/CangjieCommunityKnowledgeBase/reproducibility/environment-lock.schema.json",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schemaVersion", "identityStatus", "certifiedPlatform", "cpuArchitecture", "cangjieSdkVersion", "cangjieSdkHash", "opensslVersion", "serviceHeap", "qdrantImageDigest", "runCandidateCommit", "runCriticalFilesManifestHash", "runCriticalTreeHash", "claudeCodeVersion", "glmProvider", "glmBaseUrl", "glmModel", "glmCredentialEnv", "embeddingProvider", "embeddingModel", "embeddingDimension", "embeddingCredentialEnv", "archiveTool", "archiveToolVersion", "experimentGroup", "ckbRequired", "localDocsPolicy", "modelEffort", "modelBudget", "timeoutSeconds", "transportRetryBudget", "promptHash", "mcpCommand", "mcpTransport", "sandboxCapability", "datasetVersion", "authorityDeliveryHash"],
+  "required": ["schemaVersion", "identityStatus", "certifiedPlatform", "cpuArchitecture", "cangjieSdkVersion", "cangjieSdkHash", "opensslVersion", "serviceHeap", "qdrantImageDigest", "runCandidateCommit", "runCriticalFilesManifestHash", "runCriticalTreeHash", "claudeCodeVersion", "glmProvider", "glmBaseUrl", "glmModel", "modelFingerprint", "glmCredentialEnv", "embeddingProvider", "embeddingModel", "embeddingDimension", "embeddingCredentialEnv", "archiveTool", "archiveToolVersion", "experimentGroup", "ckbRequired", "localDocsPolicy", "modelEffort", "modelBudget", "timeoutSeconds", "transportRetryBudget", "promptHash", "mcpCommand", "mcpTransport", "sandboxCapability", "datasetVersion", "authorityDeliveryHash"],
   "properties": {
     "schemaVersion": {"const": "ckb-repro-environment-v1"},
     "identityStatus": {"enum": ["planned", "frozen"]},
@@ -21,6 +21,7 @@
     "glmProvider": {"type": "string"},
     "glmBaseUrl": {"type": "string"},
     "glmModel": {"const": "GLM-5.2"},
+    "modelFingerprint": {"const": "claude-code-glm-5.2"},
     "glmCredentialEnv": {"type": "string"},
     "embeddingProvider": {"type": "string"},
     "embeddingModel": {"type": "string"},
