@@ -478,13 +478,13 @@ public class CkbReproPublishGateTest {
             input, manifest, verifiedAsset, topology, runner, source,
             ckbReproBundleHash("cjpm clean".toArray()), cleanLog,
             ckbReproBundleHash("cjpm build -i".toArray()), buildLog,
-            ckbReproBundleHash("cjpm test".toArray()), testLog, 1266)
+            ckbReproBundleHash("cjpm test -j 1".toArray()), testLog, 1266)
         let changedBuildHash = ckbReproBundleHash("cjpm build".toArray())
         let recomputedOuterHash = computeCkbReproFullTestProofHash(commit,
             tree, input, manifest, verifiedAsset, topology, runner, source,
             ckbReproBundleHash("cjpm clean".toArray()), cleanLog,
             changedBuildHash, buildLog,
-            ckbReproBundleHash("cjpm test".toArray()), testLog, 1266)
+            ckbReproBundleHash("cjpm test -j 1".toArray()), testLog, 1266)
         let recomputedTamper = proof.replace("cjpm build -i", "cjpm build")
             .replace(ckbReproBundleHash("cjpm build -i".toArray()),
                 changedBuildHash).replace(originalProofHash, recomputedOuterHash)
@@ -547,20 +547,32 @@ private func p9PublishLocalFixture(): String {
         assets.add(p9PublishAsset("fixture/${role}.txt",
             "fixture-${role}".toArray(), role))
     }
-    var sourceLockHash = ""; var runnerHash = ""
+    for (entry in [
+        ("full-test/clean.log", "clean completed\n", "full_test_clean_log"),
+        ("full-test/build.log", "build completed\n", "full_test_build_log"),
+        ("full-test/test.log", "1267 tests passed\n", "full_test_test_log"),
+        ("full-test/topology.json", "{\"packages\":1}\n", "full_test_topology"),
+        ("full-test/runner.txt", "cjpm test -j 1\n", "full_test_runner"),
+        ("full-test/source.txt", "signed release source\n", "full_test_source")]) {
+        assets.add(p9PublishAsset(entry[0], entry[1].toArray(), entry[2]))
+    }
+    var cleanLogHash = ""; var buildLogHash = ""; var testLogHash = ""
+    var topologyHash = ""; var runnerHash = ""; var sourceHash = ""
     for (item in assets) {
-        if (item.role == "source_lock") { sourceLockHash = item.logicalSha256 }
-        if (item.role == "p4_build_proof") { runnerHash = item.logicalSha256 }
+        if (item.role == "full_test_clean_log") { cleanLogHash = item.logicalSha256 }
+        if (item.role == "full_test_build_log") { buildLogHash = item.logicalSha256 }
+        if (item.role == "full_test_test_log") { testLogHash = item.logicalSha256 }
+        if (item.role == "full_test_topology") { topologyHash = item.logicalSha256 }
+        if (item.role == "full_test_runner") { runnerHash = item.logicalSha256 }
+        if (item.role == "full_test_source") { sourceHash = item.logicalSha256 }
     }
     let fullTestAsset = p9PublishAsset("full-test-report.json",
         renderCkbReproFullTestProof(
             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             reference.runCriticalTreeHash, reference.certifiedRunInputHash,
             ckbReproBundleHash(referenceBytes), reference.resultsHash,
-            sourceLockHash, runnerHash, sourceLockHash,
-            ckbReproBundleHash("clean-log".toArray()),
-            ckbReproBundleHash("build-log".toArray()),
-            ckbReproBundleHash("test-log".toArray()), 1267).toArray(),
+            topologyHash, runnerHash, sourceHash, cleanLogHash,
+            buildLogHash, testLogHash, 1267).toArray(),
         "portable_report")
     assets.add(fullTestAsset)
     let manifest = writeCkbReproReleaseManifest(assets)

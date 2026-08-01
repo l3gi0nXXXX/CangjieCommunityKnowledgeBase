@@ -1142,6 +1142,9 @@ private func p9BundleRoleAllowed(role: String): Bool {
         "p2_logical_snapshot", "p3_qdrant_snapshot", "p4_build_proof",
         "p5_public_evidence", "p6_environment_lock", "p7_documentation",
         "p8_reference", "source_lock", "authority_delivery",
+        "full_test_clean_log", "full_test_build_log",
+        "full_test_test_log", "full_test_topology", "full_test_runner",
+        "full_test_source",
         "portable_report", "license", "release_commit"]) {
         if (role == allowed) { return true }
     }
