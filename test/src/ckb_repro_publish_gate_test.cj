@@ -151,6 +151,59 @@ public class CkbReproPublishGateTest {
             "publish_bundle_evidence_hash_mismatch")
         remove(Path(fixture), recursive: true)
     }
+
+    @TestCase
+    public func p9Neg01RemoteTagSnapshotMustBeIndependentAndFresh(): Unit {
+        let preMissing = p9GitEvidence(false)
+        preMissing.remoteTagSnapshotAvailable = false
+        preMissing.remoteTagSnapshotFresh = false
+        @Expect(validateCkbTagReleaseBindingEvidence(p9GateOptions("pre-tag"),
+            preMissing, p9SignatureEvidence(false)).diagnostic,
+            "publish_remote_tag_evidence_unavailable")
+
+        let preAbsent = p9GitEvidence(false)
+        preAbsent.remoteTagSnapshotAvailable = true
+        preAbsent.remoteTagSnapshotFresh = true
+        preAbsent.remoteTagState = "absent"
+        @Expect(validateCkbTagReleaseBindingEvidence(p9GateOptions("pre-tag"),
+            preAbsent, p9SignatureEvidence(false)).componentReady, true)
+
+        let localOnly = p9GitEvidence(true)
+        localOnly.remoteTagSnapshotAvailable = true
+        localOnly.remoteTagSnapshotFresh = true
+        localOnly.remoteTagState = "absent"
+        localOnly.tagExistsRemote = false
+        localOnly.remoteTagCommit = ""
+        @Expect(validateCkbTagReleaseBindingEvidence(p9GateOptions("post-tag"),
+            localOnly, p9SignatureEvidence(true)).diagnostic,
+            "publish_tag_binding_mismatch")
+
+        let remoteOnly = p9GitEvidence(false)
+        remoteOnly.remoteTagSnapshotAvailable = true
+        remoteOnly.remoteTagSnapshotFresh = true
+        remoteOnly.remoteTagState = "present"
+        remoteOnly.tagExistsRemote = true
+        remoteOnly.remoteTagCommit = remoteOnly.headCommit
+        @Expect(validateCkbTagReleaseBindingEvidence(p9GateOptions("post-tag"),
+            remoteOnly, p9SignatureEvidence(true)).diagnostic,
+            "publish_tag_binding_mismatch")
+
+        let both = p9GitEvidence(true)
+        both.remoteTagSnapshotAvailable = true
+        both.remoteTagSnapshotFresh = true
+        both.remoteTagState = "present"
+        both.remoteTagCommit = both.headCommit
+        @Expect(validateCkbTagReleaseBindingEvidence(p9GateOptions("post-tag"),
+            both, p9SignatureEvidence(true)).componentReady, true)
+
+        let stale = p9GitEvidence(false)
+        stale.remoteTagSnapshotAvailable = true
+        stale.remoteTagSnapshotFresh = false
+        stale.remoteTagState = "absent"
+        @Expect(validateCkbTagReleaseBindingEvidence(p9GateOptions("pre-tag"),
+            stale, p9SignatureEvidence(false)).diagnostic,
+            "publish_remote_tag_evidence_stale")
+    }
 }
 
 private func p9PublishLocalFixture(): String {
