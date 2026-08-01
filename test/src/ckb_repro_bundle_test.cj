@@ -989,6 +989,19 @@ public class CkbReproBundleTest {
         @Expect(p9ValidateFilesystemBundleContent(
             [UInt8(0xff), UInt8(0x00), UInt8(0xfe)],
             "p3_qdrant_snapshot", index).ok, true)
+        index += 1
+        for (attack in ["Authorization: Bearer secret",
+            "/Users/private/run", "token=boundary-secret"]) {
+            let binary = ArrayList<UInt8>()
+            binary.add(UInt8(0xff))
+            for (_ in 0..65532) { binary.add(UInt8(0x00)) }
+            binary.add(all: attack.toArray())
+            binary.add(UInt8(0xfe))
+            @Expect(p9ValidateFilesystemBundleContent(binary.toArray(),
+                "p3_qdrant_snapshot", index).diagnostic,
+                "bundle_sensitive_content_detected")
+            index += 1
+        }
     }
 
     @TestCase
