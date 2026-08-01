@@ -1,6 +1,8 @@
 package cangjie_community_knowledge_base
 
 import std.collection.ArrayList
+import std.env.getVariable
+import std.fs.{File, Path, canonicalize, exists}
 import stdx.crypto.digest.SHA256
 import stdx.encoding.json.*
 
@@ -80,6 +82,154 @@ public class CkbReproRunnerInputs {
 
 public interface CkbReproRunnerInvoker {
     func run(args: Array<String>): Int64
+}
+
+public class CkbReproPreflightCliOptions {
+    public var environmentLockPath: String = ""
+    public var observedEnvironmentPath: String = ""
+    public var certificationPreflightPath: String = ""
+    public var certificationRunManifestPath: String = ""
+    public var json: Bool = false
+    public var valid: Bool = false
+    public var diagnostic: String = "usage_error"
+    public init() {}
+}
+
+public class CkbReproPreflightCliInputs {
+    public var expected: CkbReproEnvironmentLock = CkbReproEnvironmentLock()
+    public var observed: CkbReproEnvironmentLock = CkbReproEnvironmentLock()
+    public var heap: CkbServiceHeapPreflightResult = CkbServiceHeapPreflightResult()
+    public var certificationPreflightJson: String = ""
+    public var certificationRunManifestJson: String = ""
+    public init() {}
+}
+
+public func parseCkbReproPreflightCliArgs(args: Array<String>):
+    CkbReproPreflightCliOptions {
+    let out = CkbReproPreflightCliOptions()
+    var i: Int64 = 0
+    while (i < args.size) {
+        let arg = args[i]
+        if (arg == "ckb-repro-preflight") { i += 1; continue }
+        if (arg == "--json") {
+            if (out.json) { out.diagnostic = "duplicate_argument:--json"; return out }
+            out.json = true; i += 1; continue
+        }
+        if (arg == "--environment-lock" || arg == "--observed-environment" ||
+            arg == "--certification-preflight" ||
+            arg == "--certification-run-manifest") {
+            if (i + 1 >= args.size) { out.diagnostic = "missing_value:${arg}"; return out }
+            let value = args[i + 1]
+            if (!p6CliAbsolutePath(value)) { out.diagnostic = "preflight_path_invalid"; return out }
+            if (arg == "--environment-lock") {
+                if (out.environmentLockPath != "") { out.diagnostic = "duplicate_argument:${arg}"; return out }
+                out.environmentLockPath = value
+            } else if (arg == "--observed-environment") {
+                if (out.observedEnvironmentPath != "") { out.diagnostic = "duplicate_argument:${arg}"; return out }
+                out.observedEnvironmentPath = value
+            } else if (arg == "--certification-preflight") {
+                if (out.certificationPreflightPath != "") { out.diagnostic = "duplicate_argument:${arg}"; return out }
+                out.certificationPreflightPath = value
+            } else {
+                if (out.certificationRunManifestPath != "") { out.diagnostic = "duplicate_argument:${arg}"; return out }
+                out.certificationRunManifestPath = value
+            }
+            i += 2; continue
+        }
+        out.diagnostic = "unknown_argument:${arg}"; return out
+    }
+    if (out.environmentLockPath == "" || out.observedEnvironmentPath == "" ||
+        out.certificationPreflightPath == "" ||
+        out.certificationRunManifestPath == "") {
+        out.diagnostic = "required_argument_missing"; return out
+    }
+    out.valid = true; out.diagnostic = "ok"; out
+}
+
+public func validateCkbReproPreflightCliOptions(
+    options: CkbReproPreflightCliOptions): CkbReproContractResult {
+    if (!options.valid) { return p6Failure(options.diagnostic) }
+    for (path in [options.environmentLockPath, options.observedEnvironmentPath,
+        options.certificationPreflightPath,
+        options.certificationRunManifestPath]) {
+        if (!p6CliAbsolutePath(path)) { return p6Failure("preflight_path_invalid") }
+    }
+    p6Success()
+}
+
+public func executeCkbReproPreflightCliAdapter(
+    options: CkbReproPreflightCliOptions,
+    inputs: CkbReproPreflightCliInputs): CkbReproEnvironmentPreflightResult {
+    let checked = validateCkbReproPreflightCliOptions(options)
+    if (!checked.ok) { return p6CliPreflightFailure(checked.diagnostic) }
+    runCkbReproEnvironmentPreflight(inputs.expected, inputs.observed, inputs.heap,
+        inputs.certificationPreflightJson, inputs.certificationRunManifestJson)
+}
+
+public func runCkbReproPreflightCliAdapter(
+    options: CkbReproPreflightCliOptions): CkbReproEnvironmentPreflightResult {
+    let checked = validateCkbReproPreflightCliOptions(options)
+    if (!checked.ok) { return p6CliPreflightFailure(checked.diagnostic) }
+    for (item in [
+        (options.environmentLockPath, "environment_lock_missing"),
+        (options.observedEnvironmentPath, "observed_environment_missing"),
+        (options.certificationPreflightPath, "certification_preflight_missing"),
+        (options.certificationRunManifestPath, "certification_run_manifest_missing")
+    ]) {
+        if (!exists(Path(item[0]))) { return p6CliPreflightFailure(item[1]) }
+        if (try { canonicalize(Path(item[0])).toString() != item[0] }
+            catch (_: Exception) { true }) {
+            return p6CliPreflightFailure("preflight_path_not_canonical")
+        }
+    }
+    let expected = p6CliReadEnvironment(options.environmentLockPath)
+    if (!expected[0].ok) { return p6CliPreflightFailure(expected[0].diagnostic) }
+    let observed = p6CliReadEnvironment(options.observedEnvironmentPath)
+    if (!observed[0].ok) { return p6CliPreflightFailure(observed[0].diagnostic) }
+    let preflight = p6CliReadUtf8(options.certificationPreflightPath)
+    if (preflight[0] != "ok") { return p6CliPreflightFailure(preflight[0]) }
+    let manifest = p6CliReadUtf8(options.certificationRunManifestPath)
+    if (manifest[0] != "ok") { return p6CliPreflightFailure(manifest[0]) }
+    let heapRaw = match (getVariable("cjHeapSize")) {
+        case Some(value) => value
+        case None => ""
+    }
+    let inputs = CkbReproPreflightCliInputs()
+    inputs.expected = expected[1]
+    inputs.observed = observed[1]
+    inputs.heap = ckbServiceHeapPreflight(heapRaw)
+    inputs.certificationPreflightJson = preflight[1]
+    inputs.certificationRunManifestJson = manifest[1]
+    executeCkbReproPreflightCliAdapter(options, inputs)
+}
+
+public func renderCkbReproPreflightCliHuman(
+    result: CkbReproEnvironmentPreflightResult,
+    lock: CkbReproEnvironmentLock): String {
+    "preflight: ${if (result.ok) { "passed" } else { "blocked" }}\n" +
+        "diagnostic: ${p6CliSafeDiagnostic(result.diagnostic)}\n" +
+        "platform: ${p6CliPublic(lock.certifiedPlatform)} ${p6CliPublic(lock.cpuArchitecture)}\n" +
+        "model: ${p6CliPublic(lock.glmProvider)}/${p6CliPublic(lock.glmModel)}\n" +
+        "embedding: ${p6CliPublic(lock.embeddingProvider)}/${p6CliPublic(lock.embeddingModel)}\n" +
+        "mcp transport: ${p6CliPublic(lock.mcpTransport)}\n" +
+        "environment hash: ${result.environmentManifestHash}\n" +
+        "certified input hash: ${result.certifiedRunInputHash}\n"
+}
+
+public func renderCkbReproPreflightCliJson(
+    result: CkbReproEnvironmentPreflightResult,
+    lock: CkbReproEnvironmentLock): String {
+    "{\"ok\":${result.ok},\"startAllowed\":${result.startAllowed}," +
+        "\"diagnostic\":\"${p6Escape(p6CliSafeDiagnostic(result.diagnostic))}\"," +
+        "\"platform\":\"${p6Escape(p6CliPublic(lock.certifiedPlatform))}\"," +
+        "\"architecture\":\"${p6Escape(p6CliPublic(lock.cpuArchitecture))}\"," +
+        "\"provider\":\"${p6Escape(p6CliPublic(lock.glmProvider))}\"," +
+        "\"model\":\"${p6Escape(p6CliPublic(lock.glmModel))}\"," +
+        "\"embeddingProvider\":\"${p6Escape(p6CliPublic(lock.embeddingProvider))}\"," +
+        "\"embeddingModel\":\"${p6Escape(p6CliPublic(lock.embeddingModel))}\"," +
+        "\"mcpTransport\":\"${p6Escape(p6CliPublic(lock.mcpTransport))}\"," +
+        "\"environmentManifestHash\":\"${p6Escape(result.environmentManifestHash)}\"," +
+        "\"certifiedRunInputHash\":\"${p6Escape(result.certifiedRunInputHash)}\"}"
 }
 
 public func parseCkbReproEnvironmentLock(bytes: Array<UInt8>):
@@ -462,4 +612,49 @@ private func p6Hex(value: UInt8): String {
     if (value == UInt8(13)) { return "d" }
     if (value == UInt8(14)) { return "e" }
     "f"
+}
+
+private func p6CliAbsolutePath(value: String): Bool {
+    value.startsWith("/") && value != "/" && !value.endsWith("/") &&
+        !value.contains("//") && !value.contains("/./") &&
+        !value.contains("/../") && !value.endsWith("/.") &&
+        !value.endsWith("/..") && !value.contains("\\") &&
+        !value.contains("\n") && !value.contains("\r") && !value.contains("\t") &&
+        value.toRuneArray().size <= 4096
+}
+
+private func p6CliPreflightFailure(code: String): CkbReproEnvironmentPreflightResult {
+    let out = CkbReproEnvironmentPreflightResult(); out.diagnostic = code; out
+}
+
+private func p6CliReadEnvironment(path: String):
+    (CkbReproContractResult, CkbReproEnvironmentLock) {
+    let bytes = try { File.readFrom(Path(path)) } catch (_: Exception) {
+        return (p6Failure("environment_lock_read_failed"), CkbReproEnvironmentLock())
+    }
+    parseCkbReproEnvironmentLock(bytes)
+}
+
+private func p6CliReadUtf8(path: String): (String, String) {
+    let bytes = try { File.readFrom(Path(path)) } catch (_: Exception) {
+        return ("preflight_artifact_read_failed", "")
+    }
+    try { ("ok", String.fromUtf8(bytes)) }
+    catch (_: Exception) { ("invalid_response_encoding", "") }
+}
+
+private func p6CliSafeDiagnostic(value: String): String {
+    if (value == "" || value.toRuneArray().size > 128 || value.contains(":") ||
+        value.contains("/") || value.contains("\\") || value.contains(" ")) {
+        return "redacted_diagnostic"
+    }
+    value
+}
+
+private func p6CliPublic(value: String): String {
+    if (value.toRuneArray().size > 128 || p6ContainsSecretOrLocalPath(value) ||
+        value.contains("/") || value.contains("\\") || value.contains("\n")) {
+        return "redacted"
+    }
+    value
 }

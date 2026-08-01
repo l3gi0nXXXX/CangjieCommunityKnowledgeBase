@@ -1,6 +1,7 @@
 package cangjie_community_knowledge_base_test
 
 import std.collection.{ArrayList, HashMap, HashSet}
+import std.fs.{Directory, File, Path, canonicalize, exists, remove}
 import std.unittest.*
 import std.unittest.testmacro.*
 
@@ -355,6 +356,26 @@ public class CkbReproBundleTest {
             "ckb-repro-bundle", "--mode", "unsigned", "--unsigned-root",
             "/tmp/已验证🙂/unsigned", "--output", "/tmp/发布 资料/out"
         ]).diagnostic, "bundle_unsigned_arguments_conflict")
+
+        let temporary = Path("target/ckb-repro-cli-adapter")
+        if (exists(temporary)) { remove(temporary, recursive: true) }
+        Directory.create(temporary, recursive: true)
+        let temporaryRoot = canonicalize(temporary).toString()
+        let realOptions = parseCkbReproBundleCliArgs([
+            "ckb-repro-bundle", "--mode", "unsigned", "--output",
+            "${temporaryRoot}/out"
+        ])
+        let realContext = CkbReproBundleCliPathContext()
+        realContext.worktreeRoot = "/tmp/protected-worktree"
+        realContext.productionRoot = "/tmp/protected-production"
+        realContext.privateRunRoot = "/tmp/protected-runs"
+        realContext.userConfigRoot = "/tmp/protected-settings"
+        let real = runCkbReproBundleCliAdapter(realOptions, realContext,
+            p9Assets(false), "")
+        @Expect(real.ok, true)
+        @Expect(File.readFrom(Path(realOptions.outputRoot).join("assets/b.txt")),
+            "仓颉🙂".toArray())
+        remove(temporary, recursive: true)
     }
 
     @TestCase

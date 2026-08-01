@@ -1,5 +1,7 @@
 package cangjie_community_knowledge_base_test
 
+import std.collection.ArrayList
+import std.fs.{Directory, File, Path, canonicalize, exists, remove}
 import std.unittest.*
 import std.unittest.testmacro.*
 
@@ -116,7 +118,99 @@ public class CkbReproPublishGateTest {
                 "/tmp/final"]), missingExecutor)
         @Expect(missing.diagnostic, "publish_bundle_root_missing")
         @Expect(missingExecutor.calls, 0)
+
+        let local = CkbReproPublishLocalEvidence()
+        local.gateOptions = p9GateOptions("pre-tag")
+        local.evidence = p9PublishEvidence()
+        let hash = ckbReproBundleHash("evidence".toArray())
+        let renderedLocal = renderCkbReproPublishLocalEvidence(
+            local, hash, hash)
+        @Expect(parseCkbReproPublishLocalEvidence(
+            renderedLocal.toArray()).valid, true)
+        @Expect(parseCkbReproPublishLocalEvidence([0xff, 0xfe]).diagnostic,
+            "invalid_response_encoding")
+        @Expect(parseCkbReproPublishLocalEvidence("{bad".toArray()).diagnostic,
+            "malformed_json")
+        @Expect(parseCkbReproPublishLocalEvidence(renderedLocal.replace(
+            "}", ",\"unknown\":true}").toArray()).diagnostic,
+            "publish_local_evidence_field_contract_invalid")
+        @Expect(parseCkbReproPublishLocalEvidence(renderedLocal.replace(
+            "\"strictPassed\":151", "\"strictPassed\":150").toArray()).diagnostic,
+            "publish_local_evidence_hash_mismatch")
+        @Expect(runCkbReproPublishGateCliAdapter(
+            parseCkbReproPublishGateCliArgs([
+                "ckb-repro-publish-gate", "--mode", "pre-tag", "--bundle",
+                "/tmp/not-ready-final-bundle"])).diagnostic,
+            "publish_bundle_root_missing")
+
+        let fixture = p9PublishLocalFixture()
+        @Expect(loadCkbReproPublishLocalEvidence(fixture).valid, true)
+        File.writeTo(Path(fixture).join("verification-report.json"),
+            "{\"tampered\":true}".toArray())
+        @Expect(loadCkbReproPublishLocalEvidence(fixture).diagnostic,
+            "publish_bundle_evidence_hash_mismatch")
+        remove(Path(fixture), recursive: true)
     }
+}
+
+private func p9PublishLocalFixture(): String {
+    let root = Path("target/ckb-repro-publish-local")
+    if (exists(root)) { remove(root, recursive: true) }
+    Directory.create(root.join("assets"), recursive: true)
+    let canonicalRoot = canonicalize(root).toString()
+    let asset = CkbReproBundleAsset()
+    asset.relativePath = "assets/input.txt"
+    asset.bytes = "仓颉🙂".toArray()
+    asset.size = asset.bytes.size
+    asset.sha256 = ckbReproBundleHash(asset.bytes)
+    asset.inputKind = "verified_input"
+    asset.role = "portable_report"
+    asset.logicalAsset = asset.relativePath
+    asset.logicalSize = asset.size
+    asset.logicalSha256 = asset.sha256
+    let assets = ArrayList<CkbReproBundleAsset>()
+    assets.add(asset)
+    let manifest = writeCkbReproReleaseManifest(assets)
+    let verification = "{\"schemaVersion\":\"ckb-repro-verification-report-v1\"," +
+        "\"ok\":true,\"diagnostic\":\"verified\"," +
+        "\"verifiedReleaseInputSetHash\":\"${computeCkbReproBundleInputSetHash(assets)}\"," +
+        "\"bundleProofSetHash\":\"${ckbReproBundleHash("proof".toArray())}\"," +
+        "\"releaseCommit\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"," +
+        "\"certifiedRunInputHash\":\"${ckbReproBundleHash("input".toArray())}\"," +
+        "\"runCriticalTreeHash\":\"${ckbReproBundleHash("tree".toArray())}\"," +
+        "\"referenceManifestHash\":\"${ckbReproBundleHash("reference".toArray())}\"," +
+        "\"authorityHash\":\"${ckbReproBundleHash("authority".toArray())}\"," +
+        "\"restoreOk\":true,\"restoreDiagnostic\":\"ok\"," +
+        "\"rebuildOk\":true,\"rebuildDiagnostic\":\"ok\"," +
+        "\"publicEvidenceOk\":true,\"publicEvidenceDiagnostic\":\"ok\"," +
+        "\"documentationOk\":true,\"documentationDiagnostic\":\"ok\"," +
+        "\"runnerCalls\":0}"
+    let attestation = "{\"schemaVersion\":\"ckb-repro-build-attestation-v1\"," +
+        "\"runCriticalTreeMatches\":true,\"strictPassed\":151," +
+        "\"transportUnresolved\":0,\"leakageFindingCount\":0," +
+        "\"fullTestsPassed\":true,\"licenseComplete\":true," +
+        "\"externalProofsVerified\":true}"
+    let local = CkbReproPublishLocalEvidence()
+    local.gateOptions = p9GateOptions("pre-tag")
+    local.evidence = p9PublishEvidence()
+    let localText = renderCkbReproPublishLocalEvidence(local,
+        ckbReproBundleHash(verification.toArray()),
+        ckbReproBundleHash(attestation.toArray()))
+    let files = [
+        (asset.relativePath, asset.bytes),
+        ("RELEASE-MANIFEST.json", manifest.toArray()),
+        ("verification-report.json", verification.toArray()),
+        ("build-attestation.json", attestation.toArray()),
+        ("PUBLISH-EVIDENCE.json", localText.toArray())
+    ]
+    var sums = ""
+    for (item in files) {
+        File.writeTo(Path(canonicalRoot).join(item[0]), item[1])
+        sums += "${ckbReproBundleHash(item[1]).replace("sha256:", "")}  ${item[0]}\n"
+    }
+    File.writeTo(Path(canonicalRoot).join("SHA256SUMS"), sums.toArray())
+    File.writeTo(Path(canonicalRoot).join("SHA256SUMS.sig"), "fake-signature".toArray())
+    canonicalRoot
 }
 
 private func p9GateOptions(mode: String): CkbReproPublishGateOptions {

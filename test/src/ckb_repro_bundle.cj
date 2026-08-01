@@ -1,6 +1,7 @@
 package cangjie_community_knowledge_base_test
 
 import std.collection.{ArrayList, HashSet}
+import std.fs.{Directory, File, Path, canonicalize, exists, remove}
 import std.sort.*
 import stdx.crypto.digest.SHA256
 import stdx.encoding.json.*
@@ -43,6 +44,97 @@ public class CkbReproBundleResult {
     public var treeHash: String = ""
     public var assetCount: Int64 = 0
     public init() {}
+}
+
+public class CkbReproBundleCliOptions {
+    public var mode: String = ""
+    public var outputRoot: String = ""
+    public var unsignedRoot: String = ""
+    public var verificationReport: String = ""
+    public var json: Bool = false
+    public var valid: Bool = false
+    public var diagnostic: String = "usage_error"
+    public init() {}
+}
+
+public class CkbReproBundleCliPathContext {
+    public var worktreeRoot: String = ""
+    public var productionRoot: String = ""
+    public var privateRunRoot: String = ""
+    public var userConfigRoot: String = ""
+    public init() {}
+}
+
+public interface CkbReproBundleCliExecutor {
+    func exists(path: String): Bool
+    func outputParentExists(path: String): Bool
+    func assembleUnsigned(options: CkbReproBundleCliOptions): CkbReproBundleResult
+    func finalizeBundle(options: CkbReproBundleCliOptions): CkbReproBundleResult
+    func cleanupOutput(path: String): Bool
+}
+
+public class CkbReproFilesystemBundleBackend <: CkbReproBundleBackend {
+    public init() {}
+    public func rootExists(root: String): Bool { exists(Path(root)) }
+    public func rootIsEmpty(root: String): Bool {
+        try { Directory.readFrom(Path(root)).size == 0 } catch (_: Exception) { false }
+    }
+    public func createRoot(root: String): Bool {
+        try { Directory.create(Path(root), recursive: false); true }
+        catch (_: Exception) { false }
+    }
+    public func read(root: String, relativePath: String): Array<UInt8> {
+        try { File.readFrom(Path(root).join(relativePath)) }
+        catch (_: Exception) { Array<UInt8>() }
+    }
+    public func write(root: String, relativePath: String,
+        bytes: Array<UInt8>): Bool {
+        try {
+            let target = Path(root).join(relativePath)
+            if (!exists(target.parent)) { Directory.create(target.parent, recursive: true) }
+            File.writeTo(target, bytes); true
+        } catch (_: Exception) { false }
+    }
+    public func removeRoot(root: String): Bool {
+        try { if (exists(Path(root))) { remove(Path(root), recursive: true) }; true }
+        catch (_: Exception) { false }
+    }
+}
+
+public class CkbReproFilesystemBundleCliExecutor <: CkbReproBundleCliExecutor {
+    private let assets: ArrayList<CkbReproBundleAsset>
+    private let expectedInputSetHash: String
+    private let backend: CkbReproFilesystemBundleBackend
+    public init(values: ArrayList<CkbReproBundleAsset>, expected: String) {
+        this.assets = values
+        this.expectedInputSetHash = expected
+        this.backend = CkbReproFilesystemBundleBackend()
+    }
+    public func exists(path: String): Bool { exists(Path(path)) }
+    public func outputParentExists(path: String): Bool { exists(Path(path).parent) }
+    public func assembleUnsigned(options: CkbReproBundleCliOptions):
+        CkbReproBundleResult {
+        if (!p9BundleCliNewOutputCanonical(options.outputRoot)) {
+            return p9BundleCliFailure("bundle_output_not_canonical")
+        }
+        if (this.assets.size == 0) { return p9BundleCliFailure("bundle_inputs_not_ready") }
+        assembleCkbUnsignedReleaseCandidate(
+            p9BundleCliCoreOptions(options), this.assets, this.backend)
+    }
+    public func finalizeBundle(options: CkbReproBundleCliOptions):
+        CkbReproBundleResult {
+        if (!p9BundleCliNewOutputCanonical(options.outputRoot) ||
+            !p9BundleCliExistingCanonical(options.unsignedRoot) ||
+            !p9BundleCliExistingCanonical(options.verificationReport)) {
+            return p9BundleCliFailure("bundle_path_not_canonical")
+        }
+        if (this.assets.size == 0 || this.expectedInputSetHash == "") {
+            return p9BundleCliFailure("bundle_verified_inputs_not_ready")
+        }
+        finalizeCkbReproReleaseBundle(p9BundleCliCoreOptions(options),
+            this.assets, this.expectedInputSetHash, this.backend)
+    }
+    public func cleanupOutput(path: String): Bool { this.backend.removeRoot(path) }
 }
 
 public class CkbReproBundleManifest {
@@ -111,6 +203,130 @@ public interface CkbReproBundleReadHandle {
     func observedEntry(): CkbReproBundleReadEntry
     func noFollow(): Bool
     func close(): Unit
+}
+
+public func parseCkbReproBundleCliArgs(args: Array<String>):
+    CkbReproBundleCliOptions {
+    let out = CkbReproBundleCliOptions()
+    var i: Int64 = 0
+    while (i < args.size) {
+        let arg = args[i]
+        if (arg == "ckb-repro-bundle") { i += 1; continue }
+        if (arg == "--json") {
+            if (out.json) { out.diagnostic = "duplicate_argument:--json"; return out }
+            out.json = true; i += 1; continue
+        }
+        if (arg == "--mode" || arg == "--output" ||
+            arg == "--unsigned-root" || arg == "--verification-report") {
+            if (i + 1 >= args.size) { out.diagnostic = "missing_value:${arg}"; return out }
+            let value = args[i + 1]
+            if (value.toRuneArray().size > 4096) {
+                out.diagnostic = "cli_argument_too_long"; return out
+            }
+            if (arg == "--mode") {
+                if (out.mode != "") { out.diagnostic = "duplicate_argument:${arg}"; return out }
+                out.mode = value
+            } else if (arg == "--output") {
+                if (out.outputRoot != "") { out.diagnostic = "duplicate_argument:${arg}"; return out }
+                out.outputRoot = value
+            } else if (arg == "--unsigned-root") {
+                if (out.unsignedRoot != "") { out.diagnostic = "duplicate_argument:${arg}"; return out }
+                out.unsignedRoot = value
+            } else {
+                if (out.verificationReport != "") { out.diagnostic = "duplicate_argument:${arg}"; return out }
+                out.verificationReport = value
+            }
+            i += 2; continue
+        }
+        out.diagnostic = "unknown_argument:${arg}"; return out
+    }
+    if (out.mode != "unsigned" && out.mode != "finalize") {
+        out.diagnostic = "bundle_mode_invalid"; return out
+    }
+    if (out.outputRoot == "") { out.diagnostic = "required_argument_missing"; return out }
+    if (out.mode == "unsigned" &&
+        (out.unsignedRoot != "" || out.verificationReport != "")) {
+        out.diagnostic = "bundle_unsigned_arguments_conflict"; return out
+    }
+    if (out.mode == "finalize" &&
+        (out.unsignedRoot == "" || out.verificationReport == "")) {
+        out.diagnostic = "bundle_finalize_arguments_missing"; return out
+    }
+    out.valid = true; out.diagnostic = "ok"; out
+}
+
+public func validateCkbReproBundleCliOptions(options: CkbReproBundleCliOptions,
+    context: CkbReproBundleCliPathContext,
+    executor: CkbReproBundleCliExecutor): CkbReproContractResult {
+    if (!options.valid) { return p9BundleFailure(options.diagnostic) }
+    for (path in [options.outputRoot, context.worktreeRoot,
+        context.productionRoot, context.privateRunRoot, context.userConfigRoot]) {
+        if (!p9AbsoluteRoot(path)) { return p9BundleFailure("bundle_output_invalid") }
+    }
+    for (protected in [context.worktreeRoot, context.productionRoot,
+        context.privateRunRoot, context.userConfigRoot]) {
+        if (p9RootsOverlap(options.outputRoot, protected)) {
+            return p9BundleFailure("bundle_output_forbidden")
+        }
+    }
+    if (executor.exists(options.outputRoot)) {
+        return p9BundleFailure("bundle_output_exists")
+    }
+    if (!executor.outputParentExists(options.outputRoot)) {
+        return p9BundleFailure("bundle_output_parent_missing")
+    }
+    if (options.mode == "finalize") {
+        if (!p9AbsoluteRoot(options.unsignedRoot) ||
+            !p9AbsoluteRoot(options.verificationReport)) {
+            return p9BundleFailure("bundle_finalize_input_invalid")
+        }
+        if (p9RootsOverlap(options.outputRoot, options.unsignedRoot)) {
+            return p9BundleFailure("bundle_unsigned_final_overlap")
+        }
+        if (!executor.exists(options.unsignedRoot)) {
+            return p9BundleFailure("bundle_unsigned_root_missing")
+        }
+        if (!executor.exists(options.verificationReport)) {
+            return p9BundleFailure("bundle_verification_report_missing")
+        }
+    }
+    p9BundleSuccess()
+}
+
+public func executeCkbReproBundleCliAdapter(options: CkbReproBundleCliOptions,
+    context: CkbReproBundleCliPathContext,
+    executor: CkbReproBundleCliExecutor): CkbReproBundleResult {
+    let checked = validateCkbReproBundleCliOptions(options, context, executor)
+    if (!checked.ok) { return p9BundleCliFailure(checked.diagnostic) }
+    let out = try {
+        if (options.mode == "unsigned") {
+            executor.assembleUnsigned(options)
+        } else { executor.finalizeBundle(options) }
+    } catch (_: Exception) { p9BundleCliFailure("bundle_execution_failed") }
+    if (!out.ok) { _ = executor.cleanupOutput(options.outputRoot) }
+    out
+}
+
+public func runCkbReproBundleCliAdapter(options: CkbReproBundleCliOptions,
+    context: CkbReproBundleCliPathContext,
+    assets: ArrayList<CkbReproBundleAsset>, expectedInputSetHash: String):
+    CkbReproBundleResult {
+    executeCkbReproBundleCliAdapter(options, context,
+        CkbReproFilesystemBundleCliExecutor(assets, expectedInputSetHash))
+}
+
+public func renderCkbReproBundleCliHuman(result: CkbReproBundleResult): String {
+    "bundle: ${if (result.ok) { "ready" } else { "blocked" }}\n" +
+        "diagnostic: ${p9BundleCliSafe(result.diagnostic)}\n" +
+        "assets: ${result.assetCount}\n" +
+        "input set hash: ${result.inputSetHash}\n" +
+        "tree hash: ${result.treeHash}\n"
+}
+
+public func renderCkbReproBundleCliJson(result: CkbReproBundleResult): String {
+    "{\"ok\":${result.ok},\"diagnostic\":\"${p9BundleJson(p9BundleCliSafe(result.diagnostic))}\"," +
+        "\"assetCount\":${result.assetCount},\"inputSetHash\":\"${p9BundleJson(result.inputSetHash)}\"," +
+        "\"treeHash\":\"${p9BundleJson(result.treeHash)}\"}"
 }
 
 public func ckbReproBundleHash(bytes: Array<UInt8>): String {
@@ -1067,6 +1283,42 @@ private func p9BundleNibble(value: UInt8): String {
     if (value == UInt8(13)) { return "d" }
     if (value == UInt8(14)) { return "e" }
     "f"
+}
+
+private func p9BundleCliCoreOptions(
+    cli: CkbReproBundleCliOptions): CkbReproBundleOptions {
+    let out = CkbReproBundleOptions()
+    out.outputRoot = cli.outputRoot
+    // CLI validation owns protected roots before the core writer is called.
+    out.worktreeRoot = "/__validated_worktree__"
+    out.productionRoot = "/__validated_production__"
+    out.privateRunRoot = "/__validated_private_run__"
+    out.userConfigRoot = "/__validated_user_config__"
+    out
+}
+
+private func p9BundleCliFailure(code: String): CkbReproBundleResult {
+    let out = CkbReproBundleResult(); out.diagnostic = code; out
+}
+
+private func p9BundleCliSafe(value: String): String {
+    if (value == "" || value.toRuneArray().size > 128 || value.contains(":") ||
+        value.contains("/") || value.contains("\\") || value.contains(" ")) {
+        return "redacted_diagnostic"
+    }
+    value
+}
+
+private func p9BundleCliExistingCanonical(value: String): Bool {
+    try { canonicalize(Path(value)).toString() == value }
+    catch (_: Exception) { false }
+}
+
+private func p9BundleCliNewOutputCanonical(value: String): Bool {
+    let path = Path(value)
+    try {
+        Path(canonicalize(path.parent).toString()).join(path.fileName).toString() == value
+    } catch (_: Exception) { false }
 }
 
 private func p9BundleJson(value: String): String {
