@@ -430,9 +430,15 @@ public class CkbReproEnvironmentTest {
 
         let concurrent = ckbReproBoundedProbeCommand("/bin/sh", ["-c",
             "i=0; while [ $i -lt 12000 ]; do printf x; printf y >&2; i=$((i+1)); done"],
-            32768)
+            8192)
         @Expect(concurrent[0], Int64(0))
         @Expect(concurrent[1], "environment_probe_output_too_large")
+
+        let production = CkbReproFilesystemEnvironmentProbe().inspect(
+            expected, p6Hash(renderCkbReproEnvironmentLock(expected)))
+        @Expect(production.ok, false)
+        @Expect(production.diagnostic, "environment_probe_unavailable")
+        @Expect(production.observed.glmProvider, "")
     }
 
     @TestCase
