@@ -15,6 +15,17 @@ private class P6FakeRunner <: CkbReproRunnerInvoker {
     }
 }
 
+private class P6FakeEnvironmentProbe <: CkbReproEnvironmentProbe {
+    public var result: CkbReproEnvironmentProbeResult
+    public var calls: Int64 = 0
+    public init(value: CkbReproEnvironmentProbeResult) { this.result = value }
+    public func inspect(attested: CkbReproEnvironmentLock):
+        CkbReproEnvironmentProbeResult {
+        this.calls += 1
+        this.result
+    }
+}
+
 @Test
 public class CkbReproEnvironmentTest {
     @TestCase
@@ -309,6 +320,46 @@ public class CkbReproEnvironmentTest {
         @Expect(validateCkbReproAuthorityDelivery(datasetDrift, authorityBytes,
             datasetDrift.datasetVersion, "/tmp/ckb-p6/public",
             "/tmp/ckb-store", "/tmp/ckb-student").ok, false)
+    }
+
+    @TestCase
+    public func p6Neg01CopiedObservedCannotOverrideActualProbe(): Unit {
+        let expected = p6FrozenEnvironment()
+        let inputs = CkbReproPreflightCliInputs()
+        inputs.expected = expected
+        inputs.observed = expected
+        inputs.heap = ckbServiceHeapPreflight("4GB")
+        let seal = p6CertificationSeal()
+        inputs.certificationPreflightJson = seal[0]
+        inputs.certificationRunManifestJson = seal[1]
+        let options = parseCkbReproPreflightCliArgs([
+            "ckb-repro-preflight", "--environment-lock", "/tmp/expected.json",
+            "--observed-environment", "/tmp/observed.json",
+            "--certification-preflight", "/tmp/preflight.json",
+            "--certification-run-manifest", "/tmp/run-manifest.json"])
+
+        let drifted = CkbReproEnvironmentProbeResult()
+        drifted.ok = true
+        drifted.observed = p6FrozenEnvironment()
+        drifted.observed.cpuArchitecture = "forged-other-architecture"
+        let driftProbe = P6FakeEnvironmentProbe(drifted)
+        let blocked = executeCkbReproPreflightCliAdapterWithProbe(
+            options, inputs, driftProbe)
+        @Expect(blocked.ok, false)
+        @Expect(blocked.diagnostic, "environment_identity_drift")
+        @Expect(driftProbe.calls, 1)
+
+        let unavailable = CkbReproEnvironmentProbeResult()
+        unavailable.diagnostic = "environment_probe_unavailable"
+        @Expect(executeCkbReproPreflightCliAdapterWithProbe(options, inputs,
+            P6FakeEnvironmentProbe(unavailable)).diagnostic,
+            "environment_probe_unavailable")
+
+        let matched = CkbReproEnvironmentProbeResult()
+        matched.ok = true
+        matched.observed = p6FrozenEnvironment()
+        @Expect(executeCkbReproPreflightCliAdapterWithProbe(options, inputs,
+            P6FakeEnvironmentProbe(matched)).ok, true)
     }
 
     @TestCase
