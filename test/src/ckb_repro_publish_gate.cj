@@ -707,16 +707,19 @@ private func p9PublishReadGitEvidence(options: CkbReproPublishGateOptions,
     out.remoteTagSnapshotFresh = true
     out.remoteTagState = snapshot[1]
     out.remoteTagCommit = snapshot[2]
-    let remoteRef = p9PublishCommand("git", ["rev-parse",
-        "refs/remotes/origin/tags/${options.tagName}"])
-    out.tagExistsRemote = remoteRef[0] == 0
+    let remoteQuery = p9PublishCommandRaw("git", ["ls-remote", "--tags", "origin",
+        "refs/tags/${options.tagName}"])
+    if (remoteQuery[0] != 0) {
+        return ("publish_remote_tag_evidence_unavailable", out)
+    }
+    let remote = parseCkbRemoteTagLsRemote(remoteQuery[1], options.tagName)
+    if (remote[0] != "ok") { return (remote[0], out) }
+    out.tagExistsRemote = remote[1]
     if (out.remoteTagState == "present") {
         if (!out.tagExistsRemote) {
             return ("publish_remote_tag_evidence_unavailable", out)
         }
-        let remoteCommit = p9PublishCommand("git", ["rev-list", "-n", "1",
-            "refs/remotes/origin/tags/${options.tagName}"])
-        if (remoteCommit[0] != 0 || remoteCommit[1] != out.remoteTagCommit) {
+        if (remote[2] != out.remoteTagCommit) {
             return ("publish_tag_binding_mismatch", out)
         }
     } else if (out.tagExistsRemote) {
@@ -824,6 +827,44 @@ private func p9PublishCommand(command: String, args: Array<String>):
     let result = ckbReproBoundedProbeCommand(command, args, 1024 * 1024)
     if (result[1] != "ok") { return (127, "") }
     (result[0], p9PublishTrimLine(result[2]))
+}
+
+private func p9PublishCommandRaw(command: String, args: Array<String>):
+    (Int64, String) {
+    let result = ckbReproBoundedProbeCommand(command, args, 1024 * 1024)
+    if (result[1] != "ok") { return (127, "") }
+    (result[0], result[2])
+}
+
+public func parseCkbRemoteTagLsRemote(value: String,
+    tagName: String): (String, Bool, String) {
+    if (!p9PublishTagName(tagName)) {
+        return ("publish_remote_tag_query_invalid", false, "")
+    }
+    let exact = "refs/tags/${tagName}"
+    let peeledRef = "${exact}^{}"
+    var direct = ""
+    var peeled = ""
+    for (raw in value.split("\n")) {
+        let line = raw.trimAscii()
+        if (line == "") { continue }
+        let fields = line.split("\t")
+        if (fields.size != 2 || !p9PublishCommit(fields[0])) {
+            return ("publish_remote_tag_query_invalid", false, "")
+        }
+        if (fields[1] == exact && direct == "") {
+            direct = fields[0]
+        } else if (fields[1] == peeledRef && peeled == "") {
+            peeled = fields[0]
+        } else {
+            return ("publish_remote_tag_query_invalid", false, "")
+        }
+    }
+    if (direct == "" && peeled != "") {
+        return ("publish_remote_tag_query_invalid", false, "")
+    }
+    if (direct == "") { return ("ok", false, "") }
+    ("ok", true, if (peeled == "") { direct } else { peeled })
 }
 
 private func p9PublishTrimLine(value: String): String {
