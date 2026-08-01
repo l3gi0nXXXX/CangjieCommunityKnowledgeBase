@@ -60,6 +60,10 @@ public class CkbReproBuildInputsRuntimeTest {
 
     @TestCase
     public func publicManifestExcludesPrivateAndDerivedInputs(): Unit {
+        @Expect(ckbReproPublicBuildInputRoles(),
+            ["build_contract", "source_lock", "source_materials",
+             "knowledge_inventory", "knowledge_selection",
+             "portable_policy", "api_routes"])
         let manifest = p4RuntimeBuildInputManifest()
         @Expect(validateCkbReproBuildInputManifest(manifest).ok, true)
         for (forbidden in ["local_root_map", "eval_support_authority",
@@ -69,6 +73,35 @@ public class CkbReproBuildInputsRuntimeTest {
             @Expect(validateCkbReproBuildInputManifest(invalid).diagnostic,
                 "build_inputs_role_contract_invalid")
         }
+    }
+
+    @TestCase
+    public func strictControlParsersRejectUnknownDuplicateAndNonCanonicalRows(): Unit {
+        let contract =
+            "{\"schemaVersion\":\"ckb-repro-build-contract-v1\",\"candidateVersion\":" +
+            "\"portable-v1\",\"targetVersion\":\"1.0.0\",\"expectedRawCount\":1," +
+            "\"sourceLockHash\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}"
+        @Expect(parseCkbReproBuildContract(
+            contract.replace("}", ",\"unknown\":true}").toArray())[0].diagnostic,
+            "build_contract_field_contract_invalid")
+        @Expect(parseCkbReproBuildContract(
+            contract.replace("\"candidateVersion\":\"portable-v1\"",
+                "\"candidateVersion\":\"portable-v1\",\"candidateVersion\":\"other\"").toArray())[0].ok,
+            false)
+
+        let inventory =
+            "{\"identity\":\"sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"," +
+            "\"sourceId\":\"docs\",\"recordKind\":\"DOC_SECTION\"," +
+            "\"portableLocator\":\"ckb-source://docs/a.md\",\"sourceType\":\"external_git\"," +
+            "\"license\":\"Apache-2.0\",\"sourceLockEntryHash\":" +
+            "\"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\"}\n"
+        @Expect(parseCkbReproKnowledgeInventory(inventory.toArray())[0].ok,
+            true)
+        @Expect(parseCkbReproKnowledgeInventory(
+            (" " + inventory).toArray())[0].diagnostic,
+            "knowledge_inventory_noncanonical")
+        @Expect(parseCkbReproKnowledgeInventory([0xff, 0xfe])[0].diagnostic,
+            "invalid_response_encoding")
     }
 
     @TestCase
