@@ -125,6 +125,8 @@ public class CkbPublicEvidenceTest {
             "\"publicEvidenceHash\":\"${hash}\"," +
             "\"runId\":\"public-run\",\"knowledgeVersion\":\"knowledge-v1\"," +
             "\"providerFingerprint\":\"${hash}\"," +
+            "\"modelFingerprint\":\"glm-5.2\"," +
+            "\"runManifestHash\":\"${hash}\"," +
             "\"vectorProofHash\":\"${hash}\"," +
             "\"certifiedRunInputHash\":\"${hash}\"}").toArray()
         let parsed = parseCkbPublicEvidenceExportManifest(bytes)
@@ -136,6 +138,8 @@ public class CkbPublicEvidenceTest {
         @Expect(roundTrip[1].runId, "public-run")
         @Expect(roundTrip[1].knowledgeVersion, "knowledge-v1")
         @Expect(roundTrip[1].providerFingerprint, hash)
+        @Expect(roundTrip[1].modelFingerprint, "glm-5.2")
+        @Expect(roundTrip[1].runManifestHash, hash)
         @Expect(roundTrip[1].vectorProofHash, hash)
         @Expect(roundTrip[1].certifiedRunInputHash, hash)
         @Expect(parseCkbPublicEvidenceExportManifest([0xff, 0xfe])[0].diagnostic,
@@ -188,7 +192,7 @@ public class CkbPublicEvidenceTest {
 
     @TestCase
     public func p5Neg03ProductionExportBindsEveryReferenceIdentity(): Unit {
-        for (field in ["run", "knowledge", "provider", "model"]) {
+        for (field in ["run", "knowledge", "provider", "model", "proof"]) {
             @Expect(p5RunProductionExportFixture(151,
                 drift: field).diagnostic,
                 "public_evidence_reference_identity_mismatch")
@@ -461,7 +465,10 @@ private func p5RunProductionExportFixture(
             } else { "glm-5.2" },
             providerIdentityHash: if (drift == "provider") {
                 p5Hash("other-provider")
-            } else { p5Hash("provider") })
+            } else { p5Hash("provider") },
+            runManifestHash: if (drift == "proof") {
+                p5Hash("other-manifest")
+            } else { p5Hash("manifest") })
         results += certification + "\n"
         let caseRoot = root.join(
             "run/cases/${p5EvidenceCaseId(i)}/${CkbAbcdeGroups.D}")
@@ -534,6 +541,8 @@ private func p5CanonicalExportManifest(
         "\"runId\":\"${manifest.runId}\"," +
         "\"knowledgeVersion\":\"${manifest.knowledgeVersion}\"," +
         "\"providerFingerprint\":\"${manifest.providerFingerprint}\"," +
+        "\"modelFingerprint\":\"${manifest.modelFingerprint}\"," +
+        "\"runManifestHash\":\"${manifest.runManifestHash}\"," +
         "\"vectorProofHash\":\"${manifest.vectorProofHash}\"," +
         "\"certifiedRunInputHash\":\"${manifest.certifiedRunInputHash}\"}"
 }
