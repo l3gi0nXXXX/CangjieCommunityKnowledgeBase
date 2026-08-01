@@ -173,6 +173,18 @@ private class P2FakeArchiveBackend <: CkbReleaseArchiveBackend {
 @Test
 public class CkbReproReleaseTest {
     @TestCase
+    public func p2ProofJsonEscapesEveryControlRune(): Unit {
+        let manifest = CkbLogicalSnapshotManifest()
+        var controls = ""
+        for (value in 0..32) { controls += Rune(UInt32(value)).toString() }
+        manifest.portableKnowledgeVersion = controls
+        let json = renderCkbLogicalSnapshotManifest(manifest)
+        for (value in 0..32) {
+            @Expect(json.contains(Rune(UInt32(value)).toString()), false)
+        }
+    }
+
+    @TestCase
     public func p2Ut01ManifestCanonicalRoundTripAndSchemaFailClosed(): Unit {
         let manifest = p2Manifest()
         let second = CkbLogicalSnapshotAsset()
