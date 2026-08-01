@@ -1339,7 +1339,6 @@ private func p8ValidateReleaseAuthority(
         return p8AuthorityFailure("release_authority_contract_mismatch")
     }
     let contractKeys = HashSet<String>()
-    let authorityRows = ArrayList<String>()
     for (expected in contract.expected) {
         let key = expected.role + "\t" + expected.logicalAsset
         if (contractKeys.contains(key) || expected.size < 0 ||
@@ -1357,7 +1356,6 @@ private func p8ValidateReleaseAuthority(
         if (!matched) {
             return p8AuthorityFailure("release_authority_contract_mismatch")
         }
-        authorityRows.add(key + "\t${expected.size}\t${expected.sha256}")
     }
     let requiredPreflight = HashSet<String>()
     for (role in ["p0_manifest", "p1_score_contract",
@@ -1415,8 +1413,6 @@ private func p8ValidateReleaseAuthority(
     if (!p8CommitValid(releaseCommit) || !commitMatched) {
         return p8AuthorityFailure("release_authority_commit_mismatch")
     }
-    let ordered = authorityRows.toArray()
-    sort(ordered)
     let out = CkbReproVerifiedReleaseAuthority()
     out.ok = true
     out.diagnostic = "ok"
@@ -1424,13 +1420,69 @@ private func p8ValidateReleaseAuthority(
     out.proofSetHash = loaded.proofSetHash
     out.referenceManifestHash = referenceValidation.manifestHash
     out.releaseCommitHash = ckbReproBundleHash(releaseCommit.toArray())
-    out.authorityHash = p8HashParts("ckb-repro-release-authority-v1",
-        [out.verifiedInputSetHash, out.proofSetHash,
-        out.referenceManifestHash, out.releaseCommitHash,
-        p8HashParts("ckb-repro-release-authority-contract-v1", ordered)])
+    out.authorityHash = computeCkbReproReleaseAuthorityHash(
+        loaded, out.referenceManifestHash,
+        referenceValidation.canonicalJson.toArray().size, releaseCommit)
     out.rolesComplete = true
     out.derivedAssetCount = 0
     out
+}
+
+public func computeCkbReproReleaseAuthorityHash(
+    loaded: CkbReproBundleLoadResult, referenceManifestHash: String,
+    referenceManifestSize: Int64, releaseCommit: String): String {
+    if (!loaded.contract.ok || !p8HashValid(loaded.manifest.inputSetHash) ||
+        !p8HashValid(loaded.proofSetHash) ||
+        !p8HashValid(referenceManifestHash) || !p8CommitValid(releaseCommit)) {
+        return ""
+    }
+    let inputs = ArrayList<CkbReproReleaseAuthorityEvidence>()
+    let seen = HashSet<String>()
+    var bundled = false; var publicRebuild = false
+    for (asset in loaded.manifest.assets) {
+        let key = asset.role + "\t" + asset.logicalAsset
+        if (!seen.contains(key)) {
+            seen.add(key)
+            let evidence = CkbReproReleaseAuthorityEvidence()
+            evidence.role = asset.role; evidence.logicalAsset = asset.logicalAsset
+            evidence.size = asset.logicalSize; evidence.sha256 = asset.logicalSha256
+            inputs.add(evidence)
+        } else {
+            var consistent = false
+            for (evidence in inputs) {
+                if (evidence.role == asset.role && evidence.logicalAsset == asset.logicalAsset &&
+                    evidence.size == asset.logicalSize && evidence.sha256 == asset.logicalSha256) {
+                    consistent = true
+                }
+            }
+            if (!consistent) { return "" }
+        }
+        if (asset.logicalAsset == "cangjie-humaneval-authority.tar.zst") { bundled = true }
+        if (asset.logicalAsset == "authority-source-materials.json") { publicRebuild = true }
+    }
+    if (bundled == publicRebuild) { return "" }
+    let built = buildCkbReproReleaseAuthorityContract(inputs,
+        if (bundled) { "bundled" } else { "public_rebuild" })
+    if (!built[0].ok) { return "" }
+    var referenceMatched = false; var commitMatched = false
+    for (evidence in built[1].expected) {
+        if (evidence.role == "p8_reference" && evidence.sha256 == referenceManifestHash &&
+            evidence.size == referenceManifestSize) { referenceMatched = true }
+        if (evidence.role == "release_commit" &&
+            evidence.sha256 == ckbReproBundleHash(releaseCommit.toArray()) &&
+            evidence.size == releaseCommit.toArray().size) { commitMatched = true }
+    }
+    if (!referenceMatched || !commitMatched) { return "" }
+    let rows = ArrayList<String>()
+    for (evidence in built[1].expected) {
+        rows.add(evidence.role + "\t" + evidence.logicalAsset + "\t" +
+            "${evidence.size}\t${evidence.sha256}")
+    }
+    let ordered = rows.toArray(); sort(ordered)
+    p8HashParts("ckb-repro-release-authority-v1", [
+        loaded.manifest.inputSetHash, loaded.proofSetHash,
+        referenceManifestHash, ckbReproBundleHash(releaseCommit.toArray()),
+        p8HashParts("ckb-repro-release-authority-contract-v1", ordered)])
 }
 
 private func p8AuthorityPreflightRole(logicalAsset: String): String {
@@ -1450,7 +1502,7 @@ private func p8AuthorityPreflightRole(logicalAsset: String): String {
     }
 }
 
-private func p8AuthorityRequiredLayout(mode: String):
+public func ckbReproReleaseAuthorityRequiredLayout(mode: String):
     ArrayList<(String, String)> {
     let out = ArrayList<(String, String)>()
     for (row in [
@@ -1498,6 +1550,9 @@ private func p8AuthorityRequiredLayout(mode: String):
         ("ckb-logical-snapshot.tar.zst", "p2_logical_snapshot"),
         ("qdrant-collection.snapshot", "p3_qdrant_snapshot"),
         ("portable-logical-proof.json", "p4_build_proof"),
+        ("promotion-candidate.json", "p4_build_proof"),
+        ("portable-vector-proof.json", "p4_build_proof"),
+        ("public-evidence-export.json", "p5_public_evidence"),
         ("source-materials-manifest.json", "source_lock"),
         ("ckb-public-reference-evidence.tar.zst", "p5_public_evidence"),
         ("leakage-report.json", "portable_report"),
@@ -1537,7 +1592,7 @@ private func p8ValidateAuthorityLayout(
         contract.layoutHash != p8AuthorityLayoutHash(contract)) {
         return p8Failure("release_authority_contract_mismatch")
     }
-    let required = p8AuthorityRequiredLayout(contract.authorityDeliveryMode)
+    let required = ckbReproReleaseAuthorityRequiredLayout(contract.authorityDeliveryMode)
     if (contract.expected.size != required.size) {
         return p8Failure("release_authority_layout_incomplete")
     }

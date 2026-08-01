@@ -44,6 +44,7 @@ public class CkbP4CliOptions {
     public var productionStore: String = ""
     public var qdrantEndpoint: String = ""
     public var expectedActiveVersion: String = ""
+    public var unsignedRoot: String = ""
     public var candidateManifest: String = ""
     public var p8BReport: String = ""
     public var apply: Bool = false
@@ -98,6 +99,7 @@ public func parseCkbP4CliOptions(args: Array<String>): CkbP4CliOptions {
         else if (arg == "--production-store") { out.productionStore = value }
         else if (arg == "--qdrant-endpoint") { out.qdrantEndpoint = value }
         else if (arg == "--expected-active-version") { out.expectedActiveVersion = value }
+        else if (arg == "--unsigned-root") { out.unsignedRoot = value }
         else if (arg == "--candidate-manifest") { out.candidateManifest = value }
         else if (arg == "--p8-b-report") { out.p8BReport = value }
         i += 2
@@ -111,6 +113,7 @@ public func validateCkbP4CliOptions(out: CkbP4CliOptions): String {
     } else { [("--production-store", out.productionStore),
         ("--qdrant-endpoint", out.qdrantEndpoint),
         ("--expected-active-version", out.expectedActiveVersion),
+        ("--unsigned-root", out.unsignedRoot),
         ("--candidate-manifest", out.candidateManifest),
         ("--p8-b-report", out.p8BReport)] }) {
         if (pair[1] == "") { return "required_argument_missing:${pair[0]}" }
@@ -165,8 +168,9 @@ public class CkbP4ProductionAdapter <: CkbP4CliAdapter {
     }
     private func promote(options: CkbP4CliOptions): CkbP4CliOperationResult {
         let out = CkbP4CliOperationResult()
-        let loaded = loadCkbPortablePromotionCliInputs(options.candidateManifest,
-            options.p8BReport)
+        let loaded = loadCkbPortablePromotionCliInputs(options.unsignedRoot,
+            options.candidateManifest, options.p8BReport,
+            CkbReproFilesystemBundleReadBackend())
         if (!loaded[0].ok) { out.diagnostic = loaded[0].diagnostic; return out }
         let promotion = loaded[1]; promotion.productionStore = options.productionStore
         promotion.qdrantEndpoint = options.qdrantEndpoint
@@ -203,12 +207,30 @@ public func newCkbP4BusinessProductionAdapter(
             snapshotExecutor, pathContext))
 }
 
-public func loadCkbPortablePromotionCliInputs(candidatePath: String,
-    p8BPath: String): (CkbReproContractResult, CkbPortablePromotionOptions) {
+public func loadCkbPortablePromotionCliInputs(unsignedRoot: String,
+    candidatePath: String, p8BPath: String,
+    backend: CkbReproBundleReadBackend):
+    (CkbReproContractResult, CkbPortablePromotionOptions) {
     let options = CkbPortablePromotionOptions()
-    let candidateRead = p4BuildReadBoundedUtf8(candidatePath, "promotion_candidate")
-    if (candidateRead[0] != "ok") {
-        return (p4BuildFailure(candidateRead[0]), options)
+    let snapshot = captureCkbReproPromotionAssets(unsignedRoot, backend)
+    if (!snapshot.contract.ok) {
+        return (p4BuildFailure("promotion_bundle_invalid"), options)
+    }
+    let loaded = snapshot.loaded
+    let root = try { canonicalize(Path(unsignedRoot)).toString() }
+        catch (_: Exception) { return (p4BuildFailure("promotion_bundle_invalid"), options) }
+    let candidate = try { canonicalize(Path(candidatePath)).toString() }
+        catch (_: Exception) { return (p4BuildFailure("promotion_candidate_path_invalid"), options) }
+    if (!candidate.startsWith(root + "/") ||
+        candidate != Path(root).join("promotion-candidate.json").toString() ||
+        !p4BuildManifestAsset(loaded.manifest, "promotion-candidate.json",
+            "p4_build_proof")) {
+        return (p4BuildFailure("promotion_candidate_path_invalid"), options)
+    }
+    let candidateBytes = p4BuildBundleAssetBytes(snapshot,
+        "promotion-candidate.json", "p4_build_proof")
+    if (!candidateBytes[0]) {
+        return (p4BuildFailure("promotion_candidate_path_invalid"), options)
     }
     let p8BRead = p4BuildReadBoundedUtf8(p8BPath, "promotion_p8_b")
     if (p8BRead[0] != "ok") { return (p4BuildFailure(p8BRead[0]), options) }
@@ -217,7 +239,11 @@ public func loadCkbPortablePromotionCliInputs(candidatePath: String,
         return (p4BuildFailure("promotion_p8_b_report_invalid"), options)
     }
     try {
-        let candidate = JsonValue.fromStr(candidateRead[1]).asObject()
+        let candidateText = String.fromUtf8(candidateBytes[1])
+        let candidate = JsonValue.fromStr(candidateText).asObject()
+        if (candidate.size() != 12) {
+            return (p4BuildFailure("promotion_candidate_field_contract_invalid"), options)
+        }
         options.candidateVersion = p4BuildRequiredString(candidate, "candidateVersion")
         options.candidateManifestHash =
             p4BuildRequiredString(candidate, "candidateManifestHash")
@@ -233,39 +259,48 @@ public func loadCkbPortablePromotionCliInputs(candidatePath: String,
             p4BuildRequiredString(candidate, "p5ProofPath"),
             p4BuildRequiredString(candidate, "p8AProofPath")
         ]
+        let expectedPaths = ["portable-logical-proof.json",
+            "portable-vector-proof.json", "public-evidence-export.json",
+            "reproducibility/manifests/reference-run.json"]
+        let expectedRoles = ["p4_build_proof", "p4_build_proof",
+            "p5_public_evidence", "p8_reference"]
         let declaredHashes = [options.p2ProofHash, options.p3ProofHash,
             options.p5ProofHash, options.p8AProofHash]
-        let resolvedArtifacts = ArrayList<String>()
         let artifactTexts = ArrayList<String>()
         for (i in 0..artifactPaths.size) {
-            let resolved = p4BuildPromotionArtifactPath(candidatePath, artifactPaths[i])
-            if (resolved[0] != "ok") { return (p4BuildFailure(resolved[0]), options) }
-            resolvedArtifacts.add(resolved[1])
-            let artifact = p4BuildReadBoundedUtf8(resolved[1], "promotion_artifact")
-            if (artifact[0] != "ok") { return (p4BuildFailure(artifact[0]), options) }
-            if (benchmarkGapSha256(artifact[1]) != declaredHashes[i]) {
+            if (artifactPaths[i] != expectedPaths[i] ||
+                !p4BuildManifestAsset(loaded.manifest, expectedPaths[i],
+                    expectedRoles[i])) {
+                return (p4BuildFailure("promotion_artifact_path_invalid"), options)
+            }
+            let artifact = p4BuildBundleAssetBytes(snapshot,
+                expectedPaths[i], expectedRoles[i])
+            if (!artifact[0]) {
+                return (p4BuildFailure("promotion_artifact_path_invalid"), options)
+            }
+            let artifactText = String.fromUtf8(artifact[1])
+            if (benchmarkGapSha256(artifactText) != declaredHashes[i]) {
                 return (p4BuildFailure("promotion_artifact_hash_mismatch"), options)
             }
-            artifactTexts.add(artifact[1])
+            artifactTexts.add(artifactText)
         }
-        let logical = loadCkbLogicalSnapshotCliProofs(
-            resolvedArtifacts[0], resolvedArtifacts[1])
-        let vector = parseCkbPortableVectorProofFile(resolvedArtifacts[1])
+        let logical = JsonValue.fromStr(artifactTexts[0]).asObject()
+        let vector = JsonValue.fromStr(artifactTexts[1]).asObject()
         let publicEvidence = parseCkbPublicEvidenceExportManifest(
             artifactTexts[2].toArray())
         let reference = parseCkbReproReferenceManifest(
             artifactTexts[3].toArray())
         let referenceValidation = validateCkbReproReferenceManifest(reference[1])
-        if (!logical[0].ok || !vector[0].ok || !publicEvidence[0].ok ||
+        if (!publicEvidence[0].ok ||
             !validateCkbPublicEvidenceExportManifest(publicEvidence[1]).ok ||
             !reference[0].ok || !referenceValidation.ok ||
             reference[1].baselineKind != "portable_release" ||
             reference[1].evidenceStatus != "complete" ||
-            logical[1].portableKnowledgeVersion != options.candidateVersion ||
-            vector[1].candidateVersion != options.candidateVersion ||
+            p4BuildRequiredString(logical, "portableKnowledgeVersion") != options.candidateVersion ||
+            p4BuildRequiredString(vector, "candidateVersion") != options.candidateVersion ||
             reference[1].knowledgeVersion != options.candidateVersion ||
             publicEvidence[1].knowledgeVersion != options.candidateVersion ||
-            logical[1].contaminationProofHash != publicEvidence[1].publicEvidenceHash ||
+            p4BuildRequiredString(logical, "contaminationProofHash") != publicEvidence[1].publicEvidenceHash ||
             publicEvidence[1].publicEvidenceHash != options.identity ||
             reference[1].strictPassed != options.p8StrictPassed ||
             reference[1].strictPassed != 151 ||
@@ -275,7 +310,7 @@ public func loadCkbPortablePromotionCliInputs(candidatePath: String,
             publicEvidence[1].providerFingerprint != reference[1].providerFingerprint ||
             publicEvidence[1].modelFingerprint != reference[1].modelFingerprint ||
             publicEvidence[1].vectorProofHash != reference[1].vectorProofHash ||
-            vector[1].vectorProofHash != reference[1].vectorProofHash ||
+            p4BuildRequiredString(vector, "vectorProofHash") != reference[1].vectorProofHash ||
             publicEvidence[1].certifiedRunInputHash != reference[1].certifiedRunInputHash) {
             return (p4BuildFailure("promotion_typed_artifact_invalid"), options)
         }
@@ -285,8 +320,29 @@ public func loadCkbPortablePromotionCliInputs(candidatePath: String,
         }
         if (report[1].referenceManifestHash != referenceValidation.manifestHash ||
             report[1].certifiedRunInputHash != reference[1].certifiedRunInputHash ||
-            report[1].runCriticalTreeHash != reference[1].runCriticalTreeHash) {
+            report[1].runCriticalTreeHash != reference[1].runCriticalTreeHash ||
+            report[1].verifiedReleaseInputSetHash != loaded.manifest.inputSetHash ||
+            report[1].bundleProofSetHash != loaded.proofSetHash) {
             return (p4BuildFailure("promotion_p8_b_report_invalid"), options)
+        }
+        let commitAsset = p4BuildUniqueRoleBytes(snapshot, "release_commit")
+        if (!commitAsset[0]) {
+            return (p4BuildFailure("promotion_p8_b_report_invalid"), options)
+        }
+        let commitText = String.fromUtf8(commitAsset[1])
+        if (commitText != report[1].releaseCommit ||
+            computeCkbReproReleaseAuthorityHash(loaded,
+                referenceValidation.manifestHash,
+                referenceValidation.canonicalJson.toArray().size,
+                report[1].releaseCommit) !=
+                report[1].authorityHash) {
+            return (p4BuildFailure("promotion_p8_b_report_invalid"), options)
+        }
+        let after = validateCkbReproBundleManifest(unsignedRoot, backend)
+        if (!after.contract.ok || after.manifest.inputSetHash != loaded.manifest.inputSetHash ||
+            after.proofSetHash != loaded.proofSetHash ||
+            after.rootIdentity != loaded.rootIdentity) {
+            return (p4BuildFailure("promotion_bundle_changed"), options)
         }
     } catch (_: Exception) {
         return (p4BuildFailure("promotion_artifact_malformed_json"), options)
@@ -300,6 +356,64 @@ public func loadCkbPortablePromotionCliInputs(candidatePath: String,
         return (p4BuildFailure("promotion_identity_invalid"), options)
     }
     (p4BuildSuccess(), options)
+}
+
+private func p4BuildManifestAsset(manifest: CkbReproBundleManifest,
+    relativePath: String, role: String): Bool {
+    var count: Int64 = 0
+    for (asset in manifest.assets) {
+        if (asset.relativePath == relativePath && asset.role == role) { count += 1 }
+    }
+    count == 1
+}
+
+private func p4BuildBundleAssetBytes(snapshot: CkbReproPromotionAssetSnapshot,
+    relativePath: String, role: String): (Bool, Array<UInt8>) {
+    let loaded = snapshot.loaded
+    var index: Int64 = -1; var count: Int64 = 0
+    for (i in 0..loaded.manifest.assets.size) {
+        let asset = loaded.manifest.assets[i]
+        if (asset.relativePath == relativePath) {
+            count += 1; index = i
+            if (asset.role != role || asset.logicalAsset != relativePath ||
+                asset.partIndex != 0 || asset.partCount != 1 ||
+                asset.logicalSize != asset.size || asset.logicalSha256 != asset.sha256) {
+                return (false, Array<UInt8>())
+            }
+        }
+    }
+    let paths = ["promotion-candidate.json", "portable-logical-proof.json",
+        "portable-vector-proof.json", "public-evidence-export.json",
+        "reproducibility/manifests/reference-run.json",
+        "release/release-commit.txt"]
+    var captured: Int64 = -1
+    for (i in 0..paths.size) { if (paths[i] == relativePath) { captured = i } }
+    if (count != 1 || index < 0 || captured < 0 || captured >= snapshot.bytes.size) {
+        return (false, Array<UInt8>())
+    }
+    (true, snapshot.bytes[captured])
+}
+
+private func p4BuildUniqueRoleBytes(snapshot: CkbReproPromotionAssetSnapshot,
+    role: String): (Bool, Array<UInt8>) {
+    let loaded = snapshot.loaded
+    var index: Int64 = -1; var count: Int64 = 0
+    for (i in 0..loaded.manifest.assets.size) {
+        if (loaded.manifest.assets[i].role == role) { count += 1; index = i }
+    }
+    if (count != 1 || index < 0 || snapshot.bytes.size != 6) {
+        return (false, Array<UInt8>())
+    }
+    (true, snapshot.bytes[5])
+}
+
+private func p4BuildUniqueManifestRole(manifest: CkbReproBundleManifest,
+    role: String): String {
+    var value = ""; var count: Int64 = 0
+    for (asset in manifest.assets) {
+        if (asset.role == role) { value = asset.relativePath; count += 1 }
+    }
+    if (count == 1) { value } else { "" }
 }
 
 public func ckbPortableCandidateManifestHash(
@@ -362,7 +476,7 @@ public func renderCkbP4CliJson(result: CkbP4CliOperationResult): String {
 private func ckbP4CliAllowed(command: String, arg: String): Bool {
     if (command == "ckb-repro-build") { return ["--output-root", "--temporary-root"].contains(arg) }
     ["--production-store", "--qdrant-endpoint", "--expected-active-version",
-     "--candidate-manifest", "--p8-b-report"].contains(arg)
+     "--unsigned-root", "--candidate-manifest", "--p8-b-report"].contains(arg)
 }
 private func ckbP4CliFailure(diagnostic: String, json: Bool): CkbP4CliExecution {
     let result = CkbP4CliOperationResult(); result.diagnostic = diagnostic

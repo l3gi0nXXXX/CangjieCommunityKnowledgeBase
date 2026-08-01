@@ -299,6 +299,59 @@ public class CkbReproBundleLoadResult {
     public init() {}
 }
 
+public class CkbReproPromotionAssetSnapshot {
+    public var contract: CkbReproContractResult = CkbReproContractResult()
+    public var loaded: CkbReproBundleLoadResult = CkbReproBundleLoadResult()
+    public let bytes = ArrayList<Array<UInt8>>()
+    public init() {}
+}
+
+// Captures only the bounded promotion control assets. Large bundle payloads
+// remain streaming-only and are never retained by bundle validation.
+public func captureCkbReproPromotionAssets(root: String,
+    backend: CkbReproBundleReadBackend): CkbReproPromotionAssetSnapshot {
+    let out = CkbReproPromotionAssetSnapshot()
+    let before = validateCkbReproBundleManifest(root, backend)
+    if (!before.contract.ok) { out.contract = before.contract; return out }
+    let paths = ["promotion-candidate.json", "portable-logical-proof.json",
+        "portable-vector-proof.json", "public-evidence-export.json",
+        "reproducibility/manifests/reference-run.json",
+        "release/release-commit.txt"]
+    try {
+        let listing = backend.list(root)
+        for (path in paths) {
+            let entry = p9FindBundleReadEntry(listing, path)
+            if (!entry[0] || entry[1].size > 64 * 1024) {
+                out.contract = p9BundleFailure("promotion_asset_invalid")
+                return out
+            }
+            let read = p9ConsumeBundleEntry(root, entry[1], backend,
+                64 * 1024, scanText: true)
+            if (!read.contract.ok) { out.contract = read.contract; return out }
+            var matched: Int64 = 0
+            for (asset in before.manifest.assets) {
+                if (asset.relativePath == path && asset.size == read.size &&
+                    asset.sha256 == read.sha256) { matched += 1 }
+            }
+            if (matched != 1) {
+                out.contract = p9BundleFailure("promotion_asset_invalid")
+                return out
+            }
+            out.bytes.add(read.bytes)
+        }
+        let after = validateCkbReproBundleManifest(root, backend)
+        if (!after.contract.ok || after.rootIdentity != before.rootIdentity ||
+            after.manifest.inputSetHash != before.manifest.inputSetHash ||
+            after.proofSetHash != before.proofSetHash) {
+            out.contract = p9BundleFailure("promotion_bundle_changed")
+            return out
+        }
+        out.loaded = before; out.contract = p9BundleSuccess(); out
+    } catch (_: Exception) {
+        out.contract = p9BundleFailure("promotion_asset_read_failed"); out
+    }
+}
+
 public class CkbReproFinalizeInputs {
     public var ok: Bool = false
     public var diagnostic: String = "bundle_finalize_inputs_not_loaded"

@@ -58,6 +58,23 @@ private class P234SnapshotDependency <: CkbQdrantSnapshotExecutor {
         out
     }
 }
+
+private class P234DriftingBundleBackend <: CkbReproBundleReadBackend {
+    private let delegate = CkbReproFilesystemBundleReadBackend()
+    private var identityCalls: Int64 = 0
+    public init() {}
+    public func rootExists(root: String): Bool { this.delegate.rootExists(root) }
+    public func rootIdentity(root: String): String {
+        this.identityCalls += 1
+        let value = this.delegate.rootIdentity(root)
+        if (this.identityCalls >= 3) { value + ":drift" } else { value }
+    }
+    public func list(root: String): ArrayList<CkbReproBundleReadEntry> {
+        this.delegate.list(root)
+    }
+    public func open(root: String, expected: CkbReproBundleReadEntry):
+        CkbReproBundleReadHandle { this.delegate.open(root, expected) }
+}
 private class P234ParityDependency <: CkbRetrievalParityBackend {
     public func query(transport: String, query: String): CkbRetrievalParityResponse {
         CkbRetrievalParityResponse()
@@ -334,6 +351,16 @@ public class CkbReproCliAdaptersTest {
         ], fake).diagnostic, "required_argument_missing:--qdrant-endpoint")
         @Expect(parseCkbP4CliOptions(["ckb-repro-build"]).diagnostic,
             "required_argument_missing:--output-root")
+        let missingRoot = ArrayList<String>()
+        for (value in p234PromotionArgs(true)) { missingRoot.add(value) }
+        _ = missingRoot.remove(at: 7); _ = missingRoot.remove(at: 7)
+        @Expect(parseCkbP4CliOptions(missingRoot.toArray()).diagnostic,
+            "required_argument_missing:--unsigned-root")
+        let duplicateRoot = ArrayList<String>()
+        for (value in p234PromotionArgs(true)) { duplicateRoot.add(value) }
+        duplicateRoot.add("--unsigned-root"); duplicateRoot.add("/tmp/other")
+        @Expect(parseCkbP4CliOptions(duplicateRoot.toArray()).diagnostic,
+            "duplicate_argument:--unsigned-root")
         @Expect(fake.calls, 0)
     }
 
@@ -398,10 +425,12 @@ public class CkbReproCliAdaptersTest {
         p5.certifiedRunInputHash = reference.certifiedRunInputHash
         @Expect(validateCkbPublicEvidenceExportManifest(p5).ok, true)
         let p5Text = renderCkbPublicEvidenceExportManifest(p5)
-        File.writeTo(root.join("p2.json"), p2Text.toArray())
-        File.writeTo(root.join("p3.json"), p3Text.toArray())
-        File.writeTo(root.join("p5.json"), p5Text.toArray())
-        File.writeTo(root.join("p8a.json"), p8aText.toArray())
+        Directory.create(root.join("reproducibility/manifests"), recursive: true)
+        File.writeTo(root.join("portable-logical-proof.json"), p2Text.toArray())
+        File.writeTo(root.join("portable-vector-proof.json"), p3Text.toArray())
+        File.writeTo(root.join("public-evidence-export.json"), p5Text.toArray())
+        File.writeTo(root.join("reproducibility/manifests/reference-run.json"),
+            p8aText.toArray())
         promotion.p2ProofHash = benchmarkGapSha256(p2Text)
         promotion.p3ProofHash = benchmarkGapSha256(p3Text)
         promotion.p5ProofHash = benchmarkGapSha256(p5Text)
@@ -413,7 +442,8 @@ public class CkbReproCliAdaptersTest {
         let verificationText = renderCkbReproVerificationReport(verification)
         p234WritePromotionManifests(root, promotion,
             reportText: verificationText)
-        let productionRoot = root.join("production")
+        let productionRoot = root.parent.join(root.fileName + "-production")
+        if (exists(productionRoot)) { remove(productionRoot, recursive: true) }
         Directory.create(productionRoot, recursive: true)
         let dependency = P234PromotionDependency()
         let production = newCkbP4ProductionAdapter(CkbReproBuildRequest(),
@@ -422,13 +452,75 @@ public class CkbReproCliAdaptersTest {
             canonicalize(productionRoot).toString(), "--qdrant-endpoint",
             "http://127.0.0.1:6333", "--expected-active-version", "old",
             "--unsigned-root", canonicalize(root).toString(),
-            "--candidate-manifest", root.join("candidate.json").toString(),
-            "--p8-b-report", root.join("p8b.json").toString(), "--apply"], production)
+            "--candidate-manifest", root.join("promotion-candidate.json").toString(),
+            "--p8-b-report", p234ReportPath(root).toString(), "--apply"], production)
         @Expect(actual.ok, true); @Expect(dependency.commits, 1)
+        let goodReport = File.readFrom(p234ReportPath(root))
+        let originalP5Hash = promotion.p5ProofHash
+        File.writeTo(root.join("public-evidence-export.json"),
+            (p5Text + "\n").toArray())
+        promotion.p5ProofHash = benchmarkGapSha256(p5Text + "\n")
+        promotion.candidateManifestHash = ckbPortableCandidateManifestHash(promotion)
+        p234WritePromotionManifests(root, promotion,
+            reportText: verificationText)
+        File.writeTo(p234ReportPath(root), goodReport)
+        let crossDependency = P234PromotionDependency()
+        let cross = runCkbP4Cli(["ckb-repro-promote", "--production-store",
+            canonicalize(productionRoot).toString(), "--qdrant-endpoint",
+            "http://127.0.0.1:6333", "--expected-active-version", "old",
+            "--unsigned-root", canonicalize(root).toString(),
+            "--candidate-manifest", root.join("promotion-candidate.json").toString(),
+            "--p8-b-report", p234ReportPath(root).toString(), "--apply"],
+            newCkbP4ProductionAdapter(CkbReproBuildRequest(),
+                P234BuildDependency(), crossDependency))
+        @Expect(cross.ok, false); @Expect(crossDependency.commits, 0)
+        File.writeTo(root.join("public-evidence-export.json"), p5Text.toArray())
+        promotion.p5ProofHash = originalP5Hash
+        promotion.candidateManifestHash = ckbPortableCandidateManifestHash(promotion)
+        p234WritePromotionManifests(root, promotion,
+            reportText: verificationText)
+
+        p234RewritePromotionManifest(root,
+            wrongPath: "promotion-candidate.json", wrongRole: "p5_public_evidence")
+        let roleDependency = P234PromotionDependency()
+        let roleResult = runCkbP4Cli(["ckb-repro-promote", "--production-store",
+            canonicalize(productionRoot).toString(), "--qdrant-endpoint",
+            "http://127.0.0.1:6333", "--expected-active-version", "old",
+            "--unsigned-root", canonicalize(root).toString(),
+            "--candidate-manifest", root.join("promotion-candidate.json").toString(),
+            "--p8-b-report", p234ReportPath(root).toString(), "--apply"],
+            newCkbP4ProductionAdapter(CkbReproBuildRequest(),
+                P234BuildDependency(), roleDependency))
+        @Expect(roleResult.ok, false); @Expect(roleDependency.commits, 0)
+        p234WritePromotionManifests(root, promotion,
+            reportText: verificationText)
+
+        let candidateWithUnknown = String.fromUtf8(
+            File.readFrom(root.join("promotion-candidate.json"))).replace(
+                "}", ",\"unknown\":true}")
+        File.writeTo(root.join("promotion-candidate.json"),
+            candidateWithUnknown.toArray())
+        p234RewritePromotionManifest(root)
+        let unknownDependency = P234PromotionDependency()
+        let unknown = runCkbP4Cli(["ckb-repro-promote", "--production-store",
+            canonicalize(productionRoot).toString(), "--qdrant-endpoint",
+            "http://127.0.0.1:6333", "--expected-active-version", "old",
+            "--unsigned-root", canonicalize(root).toString(),
+            "--candidate-manifest", root.join("promotion-candidate.json").toString(),
+            "--p8-b-report", p234ReportPath(root).toString(), "--apply"],
+            newCkbP4ProductionAdapter(CkbReproBuildRequest(),
+                P234BuildDependency(), unknownDependency))
+        @Expect(unknown.ok, false); @Expect(unknownDependency.commits, 0)
+        p234WritePromotionManifests(root, promotion,
+            reportText: verificationText)
+        @Expect(loadCkbPortablePromotionCliInputs(canonicalize(root).toString(),
+            root.join("promotion-candidate.json").toString(),
+            p234ReportPath(root).toString(), P234DriftingBundleBackend())[0].ok,
+            false)
         p234WritePromotionManifests(root, promotion)
         @Expect(loadCkbPortablePromotionCliInputs(
-            root.join("candidate.json").toString(),
-            root.join("p8b.json").toString())[0].diagnostic,
+            root.join("promotion-candidate.json").toString(),
+            p234ReportPath(root).toString())[0].diagnostic,
             "promotion_p8_b_report_invalid")
         p234WritePromotionManifests(root, promotion,
             reportText: verificationText)
@@ -446,14 +538,14 @@ public class CkbReproCliAdaptersTest {
             ("\"publicEvidenceOk\":true", "\"publicEvidenceOk\":false"),
             ("\"documentationOk\":true", "\"documentationOk\":false")
         ]) {
-            File.writeTo(root.join("p8b.json"),
+            File.writeTo(p234ReportPath(root),
                 verificationText.replace(drift[0], drift[1]).toArray())
             @Expect(loadCkbPortablePromotionCliInputs(
-                root.join("candidate.json").toString(),
-                root.join("p8b.json").toString())[0].diagnostic,
+                root.join("promotion-candidate.json").toString(),
+                p234ReportPath(root).toString())[0].diagnostic,
                 "promotion_p8_b_report_invalid")
         }
-        File.writeTo(root.join("p8b.json"), verificationText.toArray())
+        File.writeTo(p234ReportPath(root), verificationText.toArray())
         let authorityVersion = promotion.candidateVersion
         let authorityIdentity = promotion.identity
         for (drift in ["version", "identity", "score"]) {
@@ -469,8 +561,8 @@ public class CkbReproCliAdaptersTest {
             p234WritePromotionManifests(root, promotion,
                 reportText: verificationText)
             @Expect(loadCkbPortablePromotionCliInputs(
-                root.join("candidate.json").toString(),
-                root.join("p8b.json").toString())[0].diagnostic,
+                root.join("promotion-candidate.json").toString(),
+                p234ReportPath(root).toString())[0].diagnostic,
                 "promotion_typed_artifact_invalid")
             promotion.candidateVersion = authorityVersion
             promotion.identity = authorityIdentity
@@ -480,15 +572,17 @@ public class CkbReproCliAdaptersTest {
             ckbPortableCandidateManifestHash(promotion)
         p234WritePromotionManifests(root, promotion,
             reportText: verificationText)
-        File.writeTo(root.join("p3.json"), "p3-tampered".toArray())
+        File.writeTo(root.join("portable-vector-proof.json"), "p3-tampered".toArray())
         @Expect(loadCkbPortablePromotionCliInputs(
-            root.join("candidate.json").toString(),
-            root.join("p8b.json").toString())[0].diagnostic,
-            "promotion_artifact_hash_mismatch")
-        File.writeTo(root.join("p8b-invalid.json"), [UInt8(0xff), UInt8(0xfe)])
+            root.join("promotion-candidate.json").toString(),
+            p234ReportPath(root).toString())[0].diagnostic,
+            "promotion_bundle_invalid")
+        p234WritePromotionManifests(root, promotion,
+            reportText: verificationText)
+        File.writeTo(p234InvalidReportPath(root), [UInt8(0xff), UInt8(0xfe)])
         @Expect(loadCkbPortablePromotionCliInputs(
-            root.join("candidate.json").toString(),
-            root.join("p8b-invalid.json").toString())[0].diagnostic,
+            root.join("promotion-candidate.json").toString(),
+            p234InvalidReportPath(root).toString())[0].diagnostic,
             "invalid_response_encoding")
         let legacyP5Hash = benchmarkGapSha256("ckb-contamination-proof-v1|" +
             p234LegacyFields([promotion.candidateVersion, promotion.identity,
@@ -506,18 +600,19 @@ public class CkbReproCliAdaptersTest {
             "\"identity\":\"${promotion.identity}\",\"totalCases\":164," +
             "\"strictPassed\":151,\"transportUnresolved\":0," +
             "\"proofHash\":\"${legacyP8AHash}\"}"
-        File.writeTo(root.join("p2.json"), legacyP2.toArray())
-        File.writeTo(root.join("p3.json"), p3Text.toArray())
-        File.writeTo(root.join("p5.json"), legacyP5Text.toArray())
-        File.writeTo(root.join("p8a.json"), legacyP8AText.toArray())
+        File.writeTo(root.join("portable-logical-proof.json"), legacyP2.toArray())
+        File.writeTo(root.join("portable-vector-proof.json"), p3Text.toArray())
+        File.writeTo(root.join("public-evidence-export.json"), legacyP5Text.toArray())
+        File.writeTo(root.join("reproducibility/manifests/reference-run.json"),
+            legacyP8AText.toArray())
         promotion.p2ProofHash = benchmarkGapSha256(legacyP2)
         promotion.p5ProofHash = benchmarkGapSha256(legacyP5Text)
         promotion.p8AProofHash = benchmarkGapSha256(legacyP8AText)
         promotion.candidateManifestHash = ckbPortableCandidateManifestHash(promotion)
         p234WritePromotionManifests(root, promotion)
         @Expect(loadCkbPortablePromotionCliInputs(
-            root.join("candidate.json").toString(),
-            root.join("p8b.json").toString())[0].diagnostic,
+            root.join("promotion-candidate.json").toString(),
+            p234ReportPath(root).toString())[0].diagnostic,
             "promotion_p8_b_report_invalid")
 
         let transport = P234SnapshotDependency()
@@ -617,8 +712,10 @@ private func p234WritePromotionManifests(root: Path,
         "\"p3ProofHash\":\"${promotion.p3ProofHash}\"," +
         "\"p5ProofHash\":\"${promotion.p5ProofHash}\"," +
         "\"p8AProofHash\":\"${promotion.p8AProofHash}\"," +
-        "\"p2ProofPath\":\"p2.json\",\"p3ProofPath\":\"p3.json\"," +
-        "\"p5ProofPath\":\"p5.json\",\"p8AProofPath\":\"p8a.json\"," +
+        "\"p2ProofPath\":\"portable-logical-proof.json\"," +
+        "\"p3ProofPath\":\"portable-vector-proof.json\"," +
+        "\"p5ProofPath\":\"public-evidence-export.json\"," +
+        "\"p8AProofPath\":\"reproducibility/manifests/reference-run.json\"," +
         "\"identity\":\"${promotion.identity}\",\"p8StrictPassed\":" +
         "${promotion.p8StrictPassed}}"
     let p8b = "{\"ready\":true," +
@@ -630,9 +727,75 @@ private func p234WritePromotionManifests(root: Path,
         "\"p5ProofHash\":\"${promotion.p5ProofHash}\"," +
         "\"p8AProofHash\":\"${promotion.p8AProofHash}\"," +
         "\"p8BProofHash\":\"${p234Hash("legacy-p8b")}\"}"
-    File.writeTo(root.join("candidate.json"), candidate.toArray())
-    File.writeTo(root.join("p8b.json"),
-        if (reportText == "") { p8b.toArray() } else { reportText.toArray() })
+    File.writeTo(root.join("promotion-candidate.json"), candidate.toArray())
+    if (!exists(root.join("release"))) {
+        Directory.create(root.join("release"), recursive: true)
+    }
+    let releaseCommit = "0123456789012345678901234567890123456789"
+    File.writeTo(root.join("release/release-commit.txt"),
+        releaseCommit.toArray())
+    p234RewritePromotionManifest(root)
+    var finalReport = reportText
+    if (reportText != "") {
+        let parsed = parseCkbReproVerificationReport(reportText.toArray())
+        let loaded = validateCkbReproBundleManifest(canonicalize(root).toString(),
+            CkbReproFilesystemBundleReadBackend())
+        parsed[1].verifiedReleaseInputSetHash = loaded.manifest.inputSetHash
+        parsed[1].bundleProofSetHash = loaded.proofSetHash
+        parsed[1].authorityHash = computeCkbReproReleaseAuthorityHash(loaded,
+            parsed[1].referenceManifestHash,
+            File.readFrom(root.join("reproducibility/manifests/reference-run.json")).size,
+            releaseCommit)
+        finalReport = renderCkbReproVerificationReport(parsed[1])
+    }
+    File.writeTo(p234ReportPath(root),
+        if (finalReport == "") { p8b.toArray() } else { finalReport.toArray() })
+}
+
+private func p234RewritePromotionManifest(root: Path,
+    wrongPath!: String = "", wrongRole!: String = ""): Unit {
+    let required = ckbReproReleaseAuthorityRequiredLayout("public_rebuild")
+    for (entry in required) {
+        let path = root.join(entry[0])
+        if (!exists(path)) {
+            if (!exists(path.parent)) { Directory.create(path.parent, recursive: true) }
+            File.writeTo(path, "fixture:${entry[0]}".toArray())
+        }
+    }
+    let assets = ArrayList<CkbReproBundleAsset>()
+    for (entry in required) {
+        assets.add(p234BundleAsset(entry[0],
+            if (entry[0] == wrongPath) { wrongRole } else { entry[1] },
+            File.readFrom(root.join(entry[0]))))
+    }
+    File.writeTo(root.join("RELEASE-MANIFEST.json"),
+        writeCkbReproReleaseManifest(assets).toArray())
+}
+
+private func loadCkbPortablePromotionCliInputs(candidatePath: String,
+    reportPath: String): (CkbReproContractResult, CkbPortablePromotionOptions) {
+    let root = canonicalize(Path(candidatePath).parent).toString()
+    loadCkbPortablePromotionCliInputs(root, candidatePath, reportPath,
+        CkbReproFilesystemBundleReadBackend())
+}
+
+private func p234BundleAsset(path: String, role: String,
+    bytes: Array<UInt8>): CkbReproBundleAsset {
+    let asset = CkbReproBundleAsset()
+    asset.relativePath = path; asset.bytes = bytes; asset.size = bytes.size
+    asset.sha256 = ckbReproBundleHash(bytes); asset.inputKind = "verified_input"
+    asset.role = role; asset.logicalAsset = path; asset.partIndex = 0
+    asset.partCount = 1; asset.logicalSize = asset.size
+    asset.logicalSha256 = asset.sha256
+    asset
+}
+
+private func p234ReportPath(root: Path): Path {
+    Path(root.toString() + "-p8b.json")
+}
+
+private func p234InvalidReportPath(root: Path): Path {
+    Path(root.toString() + "-p8b-invalid.json")
 }
 
 private func p234VerificationReport(referenceManifestHash: String,

@@ -964,12 +964,12 @@ public class CkbReproAuthorityLayoutBaselineTest {
     public func authorityModesMatchIndependentFixture(): Unit {
         let reference = p8ReferenceTemplate()
         let rows = p8AuthorityRows("manifest", reference)
-        @Expect(rows.size, 51)
+        @Expect(rows.size, 54)
         let built = buildCkbReproReleaseAuthorityContract(
             p8AuthorityInputs("manifest", reference), "public_rebuild")
         @Expect(built[0].ok, true)
         let contract = built[1]
-        @Expect(contract.expected.size, 51)
+        @Expect(contract.expected.size, 54)
         for (row in rows) {
             var matches = 0
             for (evidence in contract.expected) {
@@ -999,7 +999,7 @@ public class CkbReproAuthorityLayoutBaselineTest {
         let bundled = buildCkbReproReleaseAuthorityContract(
             bundledInputs, "bundled")
         @Expect(bundled[0].ok, true)
-        @Expect(bundled[1].expected.size, 51)
+        @Expect(bundled[1].expected.size, 54)
         var bundledAssetMatches = 0
         var rebuildAssetMatches = 0
         for (evidence in bundled[1].expected) {
@@ -1286,6 +1286,9 @@ private func p8AuthorityRows(content: String,
         ("ckb-logical-snapshot.tar.zst", "p2", "p2_logical_snapshot"),
         ("qdrant-collection.snapshot", "p3", "p3_qdrant_snapshot"),
         ("portable-logical-proof.json", "proof", "p4_build_proof"),
+        ("promotion-candidate.json", "candidate", "p4_build_proof"),
+        ("portable-vector-proof.json", "vector-proof", "p4_build_proof"),
+        ("public-evidence-export.json", "public-export", "p5_public_evidence"),
         ("source-materials-manifest.json", "sources", "source_lock"),
         ("authority-source-materials.json", "authority-source", "authority_delivery"),
         ("ckb-public-reference-evidence.tar.zst", "evidence", "p5_public_evidence"),
