@@ -27,6 +27,19 @@ public class CkbReproEnvironmentTest {
         @Expect(environment[1].identityStatus, "planned")
         @Expect(validateCkbReproEnvironmentLock(environment[1],
             mode: "execution").diagnostic, "environment_identity_not_frozen")
+        let critical = parseCkbRunCriticalFilesManifest(
+            p6Read("../reproducibility/manifests/run-critical-files.json"))
+        @Expect(critical[0].ok, true)
+        let criticalContract = validateCkbRunCriticalFilesManifest(
+            critical[1], "..", mode: "contract")
+        let criticalExecution = validateCkbRunCriticalFilesManifest(
+            critical[1], "..", mode: "execution")
+        @Expect(criticalContract.ok, true)
+        @Expect(criticalExecution.ok, true)
+        @Expect(environment[1].runCriticalFilesManifestHash,
+            criticalContract.manifestHash)
+        @Expect(environment[1].runCriticalTreeHash,
+            criticalExecution.treeHash)
         let environmentAgain = parseCkbReproEnvironmentLock(
             environmentValidation.canonicalJson.toArray())
         @Expect(environmentAgain[0].ok, true)

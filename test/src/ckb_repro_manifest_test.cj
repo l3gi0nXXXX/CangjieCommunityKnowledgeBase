@@ -40,13 +40,16 @@ public class CkbReproManifestTest {
         let contract = validateCkbRunCriticalFilesManifest(critical[1], "..", mode: "contract")
         @Expect(contract.ok, true)
         @Expect(contract.presentCount > 0, true)
-        @Expect(contract.plannedCount > 0, true)
+        @Expect(contract.plannedCount, 0)
         @Expect(contract.treeHash, "")
         let criticalAgain = parseCkbRunCriticalFilesManifest(contract.canonicalJson.toArray())
         @Expect(criticalAgain[0].ok, true)
         @Expect(renderCkbRunCriticalFilesManifest(criticalAgain[1]), contract.canonicalJson)
-        @Expect(validateCkbRunCriticalFilesManifest(critical[1], "..",
-            mode: "execution").diagnostic, "run_critical_manifest_not_frozen")
+        let execution = validateCkbRunCriticalFilesManifest(critical[1], "..",
+            mode: "execution")
+        @Expect(execution.ok, true)
+        @Expect(execution.treeHash,
+            "sha256:4d9cc4d4fb7ee221a62733499ac62f234601fe80ddc78a0742e06415544b5f86")
     }
 
     @TestCase
