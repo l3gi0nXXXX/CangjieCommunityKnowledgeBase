@@ -953,6 +953,7 @@ public interface CkbPortablePromotionBackend {
     func commitPointer(options: CkbPortablePromotionOptions): Bool
     func readBack(options: CkbPortablePromotionOptions): Bool
     func cleanupOld(): Bool
+    func rollback(state: CkbPortablePromotionState): Bool
     func cleanupStaging(): Unit
 }
 
@@ -968,6 +969,7 @@ public class CkbPortableProductionPromotionBackend <:
     private let pathContext: CkbPortablePathContext
     private var before: CkbPortablePromotionState =
         CkbPortablePromotionState("", "", "")
+    private var beforeSnapshot: ActiveSnapshot = ActiveSnapshot()
     private var pointerCommitted: Bool = false
 
     public init(candidateStore: FileKnowledgeStore,
@@ -993,6 +995,7 @@ public class CkbPortableProductionPromotionBackend <:
                 pointer.vectorActiveCollection)
         } else { CkbPortablePromotionState("", "", "") }
         this.before = state
+        this.beforeSnapshot = this.productionStore.loadActiveSnapshot()
         state
     }
 
@@ -1051,6 +1054,27 @@ public class CkbPortableProductionPromotionBackend <:
             response.statusCode == 404
     }
 
+    public func rollback(state: CkbPortablePromotionState): Bool {
+        if (!this.pointerCommitted || !this.beforeSnapshot.valid ||
+            state.activeVersion != this.before.activeVersion ||
+            state.pointerHash != this.before.pointerHash ||
+            state.vectorCollection != this.before.vectorCollection) { return false }
+        let current = this.productionStore.loadActiveSnapshotPointer()
+        if (!current.valid) { return false }
+        let kb = KnowledgeBase(FakeClock(0))
+        if (!kb.restoreActiveSnapshot(this.beforeSnapshot)) { return false }
+        kb.promoteVectorActiveCollection(state.vectorCollection)
+        let committed = kb.persistActiveSnapshotUsingVectorRecords(
+            this.productionStore, ArrayList<VectorRecord>(),
+            persistVectorFile: false,
+            expectedBaseActivePointerHash:
+                ckbActiveSnapshotPointerIdentityHash(current))
+        let rolledBack = committed.ok && committed.businessCommitted &&
+            committed.pointerCommitted
+        if (rolledBack) { this.pointerCommitted = false }
+        rolledBack
+    }
+
     public func cleanupStaging(): Unit {
         if (this.pointerCommitted) { return }
         let request = CkbQdrantSnapshotRequest(); request.method = "DELETE"
@@ -1091,9 +1115,17 @@ public func promoteCkbPortableCandidate(options: CkbPortablePromotionOptions,
     }
     result.pointerCommitted = true
     if (!backend.readBack(options)) {
+        if (!backend.rollback(before)) {
+            result.diagnostic = "promotion_rollback_failed"; return result
+        }
+        result.pointerCommitted = false; backend.cleanupStaging()
         result.diagnostic = "promotion_read_back_failed"; return result
     }
     if (!backend.cleanupOld()) {
+        if (!backend.rollback(before)) {
+            result.diagnostic = "promotion_rollback_failed"; return result
+        }
+        result.pointerCommitted = false; backend.cleanupStaging()
         result.diagnostic = "promotion_cleanup_old_failed"; return result
     }
     result.ready = true; result.diagnostic = "ok"

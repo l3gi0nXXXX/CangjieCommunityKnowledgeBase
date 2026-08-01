@@ -106,6 +106,7 @@ private class P234PromotionDependency <: CkbPortablePromotionBackend {
     }
     public func readBack(options: CkbPortablePromotionOptions): Bool { true }
     public func cleanupOld(): Bool { true }
+    public func rollback(state: CkbPortablePromotionState): Bool { true }
     public func cleanupStaging(): Unit {}
 }
 
