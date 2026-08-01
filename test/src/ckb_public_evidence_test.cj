@@ -157,13 +157,39 @@ public class CkbPublicEvidenceTest {
             "/tmp/private-run/output.json",
             "C:\\secret\\result.json",
             "D:/private/result.json",
-            "\\\\server\\share\\result.json"
+            "\\\\server\\share\\result.json",
+            "/etc/metis/secret.conf",
+            "/opt/private/tool",
+            "/srv/ckb/private.json",
+            "/usr/local/bin/private-tool"
         ]
         for (attack in attacks) {
             let report = scanCkbPublicEvidenceLeakage(attack.toArray())
             @Expect(report.ok, false)
             @Expect(report.findingCodes.size > 0, true)
         }
+        for (safe in ["https://provider.example/v1/chat/completions",
+            "API route /v1/embeddings", "semantic path /knowledge/search"]) {
+            @Expect(scanCkbPublicEvidenceLeakage(safe.toArray()).ok, true)
+        }
+        for (identity in [
+            ("../escape", CkbAbcdeGroups.D),
+            ("CJ-HUMANEVAL-000/../../escape", CkbAbcdeGroups.D),
+            ("CJ-HUMANEVAL-000\u{0000}", CkbAbcdeGroups.D),
+            ("CJ-HUMANEVAL-164", CkbAbcdeGroups.D),
+            ("CJ-HUMANEVAL-000", "../D"),
+            ("CJ-HUMANEVAL-000", "D/escape")
+        ]) {
+            @Expect(validateCkbPublicEvidenceArtifactIdentity(
+                identity[0], identity[1]).ok, false)
+        }
+        @Expect(validateCkbPublicEvidenceArtifactIdentity(
+            "CJ-HUMANEVAL-000", CkbAbcdeGroups.D).ok, true)
+        @Expect(validateCkbPublicEvidenceArtifactPath(
+            "/tmp/run", "/tmp/run/cases/CJ-HUMANEVAL-000/D/audit.json").ok,
+            true)
+        @Expect(validateCkbPublicEvidenceArtifactPath(
+            "/tmp/run", "/tmp/escape/audit.json").ok, false)
         @Expect(scanCkbPublicEvidenceLeakage([0xff, 0xfe]).diagnostic,
             "invalid_response_encoding")
 
