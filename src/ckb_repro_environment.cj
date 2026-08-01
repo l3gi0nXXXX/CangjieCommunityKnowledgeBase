@@ -3,6 +3,8 @@ package cangjie_community_knowledge_base
 import std.collection.ArrayList
 import std.env.getVariable
 import std.fs.{File, Path, canonicalize, exists}
+import std.io.{InputStream, StringReader}
+import std.process.{ProcessRedirect, launch}
 import stdx.crypto.digest.SHA256
 import stdx.encoding.json.*
 
@@ -104,6 +106,62 @@ public class CkbReproPreflightCliInputs {
     public init() {}
 }
 
+public class CkbReproEnvironmentProbeResult {
+    public var ok: Bool = false
+    public var diagnostic: String = "environment_probe_unavailable"
+    public var observed: CkbReproEnvironmentLock = CkbReproEnvironmentLock()
+    public init() {}
+}
+
+public interface CkbReproEnvironmentProbe {
+    func inspect(attested: CkbReproEnvironmentLock):
+        CkbReproEnvironmentProbeResult
+}
+
+public class CkbReproFilesystemEnvironmentProbe <: CkbReproEnvironmentProbe {
+    public init() {}
+    public func inspect(attested: CkbReproEnvironmentLock):
+        CkbReproEnvironmentProbeResult {
+        let out = CkbReproEnvironmentProbeResult()
+        let copied = parseCkbReproEnvironmentLock(
+            renderCkbReproEnvironmentLock(attested).toArray())
+        if (!copied[0].ok) { return out }
+        let platform = p6ProbeCommand("uname", ["-s"])
+        let architecture = p6ProbeCommand("uname", ["-m"])
+        let sdk = p6ProbeCommand("cjc", ["--version"])
+        let sdkPath = p6ProbeCommand("which", ["cjc"])
+        let openssl = p6ProbeCommand("openssl", ["version"])
+        let commit = p6ProbeCommand("git", ["rev-parse", "HEAD"])
+        let claude = p6ProbeCommand("claude", ["--version"])
+        let tar = p6ProbeCommand("tar", ["--version"])
+        let zstd = p6ProbeCommand("zstd", ["--version"])
+        let qdrant = p6ProbeCommand("docker", ["image", "inspect",
+            "--format={{.Id}}", attested.qdrantImageDigest])
+        for (probe in [platform, architecture, sdk, sdkPath, openssl, commit,
+            claude, tar, zstd, qdrant]) {
+            if (probe[0] != 0 || probe[1] == "") { return out }
+        }
+        let sdkBytes = try { File.readFrom(Path(sdkPath[1])) }
+            catch (_: Exception) { return out }
+        let observed = copied[1]
+        observed.certifiedPlatform = if (platform[1] == "Darwin") {
+            "macOS"
+        } else { platform[1] }
+        observed.cpuArchitecture = architecture[1]
+        observed.cangjieSdkVersion = sdk[1]
+        observed.cangjieSdkHash = p6Hash(sdkBytes)
+        observed.opensslVersion = openssl[1]
+        observed.runCandidateCommit = commit[1]
+        observed.claudeCodeVersion = claude[1]
+        observed.archiveToolVersion = "${tar[1]}|${zstd[1]}"
+        observed.qdrantImageDigest = qdrant[1]
+        out.ok = true
+        out.diagnostic = "ok"
+        out.observed = observed
+        out
+    }
+}
+
 public func parseCkbReproPreflightCliArgs(args: Array<String>):
     CkbReproPreflightCliOptions {
     let out = CkbReproPreflightCliOptions()
@@ -166,6 +224,21 @@ public func executeCkbReproPreflightCliAdapter(
         inputs.certificationPreflightJson, inputs.certificationRunManifestJson)
 }
 
+public func executeCkbReproPreflightCliAdapterWithProbe(
+    options: CkbReproPreflightCliOptions,
+    inputs: CkbReproPreflightCliInputs,
+    probe: CkbReproEnvironmentProbe): CkbReproEnvironmentPreflightResult {
+    let checked = validateCkbReproPreflightCliOptions(options)
+    if (!checked.ok) { return p6CliPreflightFailure(checked.diagnostic) }
+    let actual = try { probe.inspect(inputs.observed) }
+        catch (_: Exception) { return p6CliPreflightFailure(
+            "environment_probe_unavailable") }
+    if (!actual.ok) { return p6CliPreflightFailure(actual.diagnostic) }
+    runCkbReproEnvironmentPreflight(inputs.expected, actual.observed,
+        inputs.heap, inputs.certificationPreflightJson,
+        inputs.certificationRunManifestJson)
+}
+
 public func runCkbReproPreflightCliAdapter(
     options: CkbReproPreflightCliOptions): CkbReproEnvironmentPreflightResult {
     let checked = validateCkbReproPreflightCliOptions(options)
@@ -186,6 +259,9 @@ public func runCkbReproPreflightCliAdapter(
     if (!expected[0].ok) { return p6CliPreflightFailure(expected[0].diagnostic) }
     let observed = p6CliReadEnvironment(options.observedEnvironmentPath)
     if (!observed[0].ok) { return p6CliPreflightFailure(observed[0].diagnostic) }
+    let attestation = p6VerifyObservedEnvironmentAttestation(
+        options.observedEnvironmentPath)
+    if (attestation != "ok") { return p6CliPreflightFailure(attestation) }
     let preflight = p6CliReadUtf8(options.certificationPreflightPath)
     if (preflight[0] != "ok") { return p6CliPreflightFailure(preflight[0]) }
     let manifest = p6CliReadUtf8(options.certificationRunManifestPath)
@@ -200,7 +276,8 @@ public func runCkbReproPreflightCliAdapter(
     inputs.heap = ckbServiceHeapPreflight(heapRaw)
     inputs.certificationPreflightJson = preflight[1]
     inputs.certificationRunManifestJson = manifest[1]
-    executeCkbReproPreflightCliAdapter(options, inputs)
+    executeCkbReproPreflightCliAdapterWithProbe(options, inputs,
+        CkbReproFilesystemEnvironmentProbe())
 }
 
 public func renderCkbReproPreflightCliHuman(
@@ -591,6 +668,57 @@ private func p6ContainsSecretOrLocalPath(value: String): Bool {
 private func p6Escape(value: String): String {
     value.replace("\\", "\\\\").replace("\"", "\\\"")
         .replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
+}
+
+private func p6VerifyObservedEnvironmentAttestation(path: String): String {
+    let signature = path + ".sig"
+    if (!exists(Path(signature)) ||
+        (try { canonicalize(Path(signature)).toString() != signature }
+            catch (_: Exception) { true })) {
+        return "environment_attestation_missing"
+    }
+    let fingerprint = match (getVariable(
+        "CKB_REPRO_ATTESTATION_FINGERPRINT")) {
+        case Some(value) => value
+        case None => ""
+    }
+    if (!p6ProbeFingerprint(fingerprint)) {
+        return "environment_attestation_authority_unavailable"
+    }
+    let verified = p6ProbeCommand("gpg", ["--batch", "--status-fd", "1",
+        "--verify", signature, path])
+    if (verified[0] != 0 ||
+        !verified[1].contains("VALIDSIG ${fingerprint} ")) {
+        return "environment_attestation_signature_invalid"
+    }
+    "ok"
+}
+
+private func p6ProbeFingerprint(value: String): Bool {
+    if (value.toRuneArray().size != 40) { return false }
+    for (rune in value.runes()) {
+        if (!((rune >= r'0' && rune <= r'9') ||
+            (rune >= r'A' && rune <= r'F'))) { return false }
+    }
+    true
+}
+
+private func p6ProbeCommand(command: String, args: Array<String>):
+    (Int64, String) {
+    try {
+        let process = launch(command, args, stdOut: ProcessRedirect.Pipe,
+            stdErr: ProcessRedirect.Pipe)
+        let stdout = p6ProbeReadPipe(process.stdOutPipe)
+        let stderr = p6ProbeReadPipe(process.stdErrPipe)
+        let code = process.wait()
+        (code, (stdout + if (stdout == "") { stderr } else { "" })
+            .trimAscii().replace("\n", " ").replace("\r", " "))
+    } catch (_: Exception) { (127, "") }
+}
+
+private func p6ProbeReadPipe(pipe: InputStream): String {
+    try { StringReader<InputStream>(pipe).readToEnd() }
+    catch (_: Exception) { "" }
 }
 
 private func p6Hash(bytes: Array<UInt8>): String {

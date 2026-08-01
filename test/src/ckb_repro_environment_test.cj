@@ -341,7 +341,7 @@ public class CkbReproEnvironmentTest {
         let drifted = CkbReproEnvironmentProbeResult()
         drifted.ok = true
         drifted.observed = p6FrozenEnvironment()
-        drifted.observed.cpuArchitecture = "forged-other-architecture"
+        drifted.observed.timeoutSeconds = 3599
         let driftProbe = P6FakeEnvironmentProbe(drifted)
         let blocked = executeCkbReproPreflightCliAdapterWithProbe(
             options, inputs, driftProbe)
