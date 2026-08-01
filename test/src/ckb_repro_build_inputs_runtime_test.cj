@@ -50,12 +50,35 @@ public class CkbReproBuildInputsRuntimeTest {
         let expected = benchmarkGapSha256(
             "ckb-public-record-identity-v1|typed|" +
             canonicalCkbPortableTypedRecord(typed))
-        @Expect(ckbReproPublicTypedRecordIdentity(typed), expected)
+        let validated = ckbReproValidatedPublicTypedRecordIdentity(
+            typed, CkbPortablePathContext())
+        @Expect(validated.ok, true)
+        @Expect(validated.identity, expected)
         let typedRows = ArrayList<CangjieTypedRecord>(); typedRows.add(typed)
         let inventory = inventoryCkbPublicKnowledgeSources(
             typedRows, ArrayList<RawRecord>())
         @Expect(inventory.size, 1)
         @Expect(inventory[0].identity, expected)
+    }
+
+    @TestCase
+    public func publicIdentityRejectsPreNormalizedAndDriftedRecords(): Unit {
+        let record = CangjieTypedRecord()
+        record.recordKind = CangjieTypedRecordKinds.DOC_SECTION
+        record.sourceId = "docs/a"; record.content = "portable"
+        record.contentHash = cangjieTypedRecordContentHash(
+            record.sourceId, record.content)
+        let context = CkbPortablePathContext()
+        record.path = "/private/tmp/a.md"
+        @Expect(ckbReproValidatedPublicTypedRecordIdentity(
+            record, context).diagnostic, "unmapped_absolute_path")
+        record.path = "{{CKB_PATH:docs}}/a.md"
+        @Expect(ckbReproValidatedPublicTypedRecordIdentity(
+            record, context).ok, false)
+        record.path = "docs/a.md"; record.contentHash = "sha256:drift"
+        @Expect(ckbReproValidatedPublicTypedRecordIdentity(
+            record, context).diagnostic,
+            "portable_typed_content_hash_mismatch")
     }
 
     @TestCase
