@@ -204,6 +204,8 @@ public class CkbReproPublishGateTest {
         @Expect(rebuiltSums.contains("  SHA256SUMS.sig\n"), false)
         @Expect(rebuiltSums.contains(
             "  REMOTE-TAG-EVIDENCE.json.sig\n"), false)
+        File.writeTo(Path(fixture).join("SHA256SUMS.sig"),
+            "fake-signature".toArray())
         File.writeTo(Path(fixture).join("verification-report.json"),
             "{\"tampered\":true}".toArray())
         @Expect(loadCkbReproPublishLocalEvidence(fixture).diagnostic,
@@ -284,21 +286,42 @@ private func p9PublishLocalFixture(): String {
     let licenseAsset = p9PublishAsset(
         "reproducibility/licenses/THIRD_PARTY_NOTICES.md",
         "fixture license evidence".toArray(), "license")
+    let fullTestAsset = p9PublishAsset("full-test-report.json",
+        ("{\"schemaVersion\":\"ckb-repro-full-test-proof-v1\"," +
+        "\"ok\":true,\"commandHash\":\"${ckbReproBundleHash("command".toArray())}\"," +
+        "\"resultHash\":\"${ckbReproBundleHash("result".toArray())}\"}").toArray(),
+        "portable_report")
+    let releaseCommitAsset = p9PublishAsset("release/release-commit.txt",
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".toArray(),
+        "release_commit")
     let assets = ArrayList<CkbReproBundleAsset>()
     assets.add(asset)
     assets.add(referenceAsset)
     assets.add(leakageAsset)
     assets.add(licenseAsset)
+    assets.add(fullTestAsset); assets.add(releaseCommitAsset)
+    for (role in ["p0_manifest", "p1_score_contract",
+        "p2_logical_snapshot", "p3_qdrant_snapshot", "p4_build_proof",
+        "p5_public_evidence", "p6_environment_lock", "p7_documentation",
+        "source_lock", "authority_delivery"]) {
+        assets.add(p9PublishAsset("fixture/${role}.txt",
+            "fixture-${role}".toArray(), role))
+    }
     let manifest = writeCkbReproReleaseManifest(assets)
+    let parsedManifest = parseCkbReproBundleManifest(manifest.toArray())[1]
+    let proofSetHash = computeCkbReproBundleProofSetHash(parsedManifest)
+    let authorityHash = computeCkbReproPublishAuthorityHash(parsedManifest,
+        proofSetHash, ckbReproBundleHash(referenceBytes),
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
     let verification = "{\"schemaVersion\":\"ckb-repro-verification-report-v1\"," +
         "\"ok\":true,\"diagnostic\":\"verified\"," +
         "\"verifiedReleaseInputSetHash\":\"${computeCkbReproBundleInputSetHash(assets)}\"," +
-        "\"bundleProofSetHash\":\"${ckbReproBundleHash("proof".toArray())}\"," +
+        "\"bundleProofSetHash\":\"${proofSetHash}\"," +
         "\"releaseCommit\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"," +
         "\"certifiedRunInputHash\":\"${ckbReproBundleHash("input".toArray())}\"," +
         "\"runCriticalTreeHash\":\"${reference.runCriticalTreeHash}\"," +
         "\"referenceManifestHash\":\"${ckbReproBundleHash(referenceBytes)}\"," +
-        "\"authorityHash\":\"${ckbReproBundleHash("authority".toArray())}\"," +
+        "\"authorityHash\":\"${authorityHash}\"," +
         "\"restoreOk\":true,\"restoreDiagnostic\":\"ok\"," +
         "\"rebuildOk\":true,\"rebuildDiagnostic\":\"ok\"," +
         "\"publicEvidenceOk\":true,\"publicEvidenceDiagnostic\":\"ok\"," +
@@ -327,17 +350,14 @@ private func p9PublishLocalFixture(): String {
         "\"queryKind\":\"git-ls-remote-tags-refs\"," +
         "\"querySucceeded\":true," +
         "\"evidenceHash\":\"${ckbReproBundleHash(remoteSeed.toArray())}\"}"
-    let files = [
-        (asset.relativePath, asset.bytes),
-        (referenceAsset.relativePath, referenceAsset.bytes),
-        (leakageAsset.relativePath, leakageAsset.bytes),
-        (licenseAsset.relativePath, licenseAsset.bytes),
+    let files = ArrayList<(String, Array<UInt8>)>()
+    for (entry in assets) { files.add((entry.relativePath, entry.bytes)) }
+    for (entry in [
         ("RELEASE-MANIFEST.json", manifest.toArray()),
         ("verification-report.json", verification.toArray()),
         ("build-attestation.json", attestation.toArray()),
         ("PUBLISH-EVIDENCE.json", localText.toArray()),
-        ("REMOTE-TAG-EVIDENCE.json", remote.toArray())
-    ]
+        ("REMOTE-TAG-EVIDENCE.json", remote.toArray())]) { files.add(entry) }
     var sums = ""
     for (item in files) {
         let target = Path(canonicalRoot).join(item[0])

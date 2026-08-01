@@ -2,6 +2,7 @@ package cangjie_community_knowledge_base
 
 import std.collection.{ArrayList, HashSet}
 import std.fs.{File, OpenMode, Path, canonicalize, exists}
+import std.sort.*
 import std.time.DateTime
 import stdx.encoding.json.*
 
@@ -119,6 +120,12 @@ public class CkbReproPublishLocalEvidence {
     public var evidence: CkbReproPublishEvidence = CkbReproPublishEvidence()
     public var valid: Bool = false
     public var diagnostic: String = "not_parsed"
+    public init() {}
+}
+
+private class CkbReproPublishBindingResult {
+    public var contract: CkbReproContractResult = CkbReproContractResult()
+    public var evidence: CkbReproPublishEvidence = CkbReproPublishEvidence()
     public init() {}
 }
 
@@ -805,6 +812,15 @@ private func p9PublishDeriveEvidence(root: String,
     let streamed = validateCkbReproBundleAssetsStreaming(root, manifest,
         CkbReproFilesystemBundleReadBackend())
     if (!streamed.ok) { return streamed.diagnostic }
+    let manifestBytes = renderCkbReproBundleManifest(manifest).toArray()
+    let reportForBinding = p9PublishReadBounded(Path(root).join(
+        "verification-report.json").toString(), 16 * 1024 * 1024)
+    if (reportForBinding[0] != "ok") {
+        return "publish_p8_report_invalid"
+    }
+    let binding = p9PublishBindings(
+        root, manifestBytes, reportForBinding[1])
+    if (!binding.contract.ok) { return binding.contract.diagnostic }
     let sumsRead = p9PublishReadBounded(
         Path(root).join("SHA256SUMS").toString(), 16 * 1024 * 1024)
     if (sumsRead[0] != "ok") { return "publish_sha_coverage_invalid" }
@@ -932,19 +948,251 @@ private func p9PublishDeriveEvidence(root: String,
     local.evidence.noSelfReference = true
     local.evidence.p8BindingMatches = true
     local.evidence.runCriticalTreeMatches =
-        reference[1].runCriticalTreeHash ==
-            p9PublishLocalString(report, "runCriticalTreeHash")
-    local.evidence.strictPassed = reference[1].strictPassed
-    local.evidence.transportUnresolved = reference[1].transportUnresolved
+        binding.evidence.runCriticalTreeMatches
+    local.evidence.strictPassed = binding.evidence.strictPassed
+    local.evidence.transportUnresolved =
+        binding.evidence.transportUnresolved
     local.evidence.leakageFindingCount =
-        p9PublishLocalInt(leakage[1], "findingCount") +
-        p9PublishLocalInt(leakage[1], "pathFindingCount")
-    local.evidence.fullTestsPassed = true
-    local.evidence.licenseComplete = licenseCount == 1
+        binding.evidence.leakageFindingCount
+    local.evidence.fullTestsPassed = binding.evidence.fullTestsPassed
+    local.evidence.licenseComplete = binding.evidence.licenseComplete
     // External signatures and the remote tag snapshot are verified by the
     // authentication providers after local evidence derivation.
     local.evidence.externalProofsVerified = false
     "ok"
+}
+
+public func validateCkbReproPublishBindings(root: String,
+    manifestBytes: Array<UInt8>, reportBytes: Array<UInt8>):
+    CkbReproContractResult {
+    p9PublishBindings(root, manifestBytes, reportBytes).contract
+}
+
+private func p9PublishBindings(root: String, manifestBytes: Array<UInt8>,
+    reportBytes: Array<UInt8>): CkbReproPublishBindingResult {
+    let out = CkbReproPublishBindingResult()
+    let parsed = parseCkbReproBundleManifest(manifestBytes)
+    if (!parsed[0].ok || renderCkbReproBundleManifest(parsed[1]).toArray() !=
+        manifestBytes) {
+        out.contract = p9PublishFailure("publish_release_manifest_invalid")
+        return out
+    }
+    let streamed = validateCkbReproBundleAssetsStreaming(root, parsed[1],
+        CkbReproFilesystemBundleReadBackend())
+    if (!streamed.ok) { out.contract = streamed; return out }
+    let reportText = try { String.fromUtf8(reportBytes) }
+        catch (_: Exception) {
+            out.contract = p9PublishFailure("invalid_response_encoding")
+            return out
+        }
+    let report = try { JsonValue.fromStr(reportText).asObject() }
+        catch (_: Exception) {
+            out.contract = p9PublishFailure("publish_p8_report_invalid")
+            return out
+        }
+    if (report.size() != 19 ||
+        p9PublishLocalString(report, "schemaVersion") !=
+            "ckb-repro-verification-report-v1" ||
+        !p9PublishLocalBool(report, "ok") ||
+        p9PublishLocalString(report, "diagnostic") != "verified" ||
+        p9PublishLocalInt(report, "runnerCalls") != 0 ||
+        !p9PublishLocalBool(report, "restoreOk") ||
+        !p9PublishLocalBool(report, "rebuildOk") ||
+        !p9PublishLocalBool(report, "publicEvidenceOk") ||
+        !p9PublishLocalBool(report, "documentationOk") ||
+        p9PublishLocalString(report, "verifiedReleaseInputSetHash") !=
+            parsed[1].inputSetHash ||
+        p9PublishLocalString(report, "bundleProofSetHash") !=
+            computeCkbReproBundleProofSetHash(parsed[1])) {
+        out.contract = p9PublishFailure("publish_p8_binding_invalid")
+        return out
+    }
+    let attestation = p9PublishReadBounded(Path(root).join(
+        "build-attestation.json").toString(), 16 * 1024 * 1024)
+    if (attestation[0] != "ok" ||
+        !validateCkbReproBuildAttestation(attestation[1], reportBytes,
+            manifestBytes).ok) {
+        out.contract = p9PublishFailure("publish_build_attestation_invalid")
+        return out
+    }
+    let referencePath = "reproducibility/manifests/reference-run.json"
+    let referenceRead = p9PublishReadBounded(
+        Path(root).join(referencePath).toString(), 16 * 1024 * 1024)
+    let reference = if (referenceRead[0] == "ok") {
+        parseCkbReproReferenceManifest(referenceRead[1])
+    } else {
+        (p9PublishFailure("publish_reference_evidence_invalid"),
+            CkbReproReferenceManifest())
+    }
+    if (!reference[0].ok ||
+        !validateCkbReproReferenceManifest(reference[1]).ok ||
+        reference[1].baselineKind != "portable_release" ||
+        reference[1].evidenceStatus != "complete" ||
+        p9PublishLocalString(report, "referenceManifestHash") !=
+            ckbReproBundleHash(referenceRead[1]) ||
+        p9PublishLocalString(report, "certifiedRunInputHash") !=
+            reference[1].certifiedRunInputHash ||
+        p9PublishLocalString(report, "runCriticalTreeHash") !=
+            reference[1].runCriticalTreeHash) {
+        out.contract = p9PublishFailure("publish_reference_binding_invalid")
+        return out
+    }
+    let releaseCommit = p9PublishLocalString(report, "releaseCommit")
+    let commitRead = p9PublishReadBounded(Path(root).join(
+        "release/release-commit.txt").toString(), 1024)
+    if (commitRead[0] != "ok" ||
+        try { String.fromUtf8(commitRead[1]).trimAscii() != releaseCommit }
+            catch (_: Exception) { true }) {
+        out.contract = p9PublishFailure("publish_release_commit_invalid")
+        return out
+    }
+    let authority = computeCkbReproPublishAuthorityHash(parsed[1],
+        computeCkbReproBundleProofSetHash(parsed[1]),
+        ckbReproBundleHash(referenceRead[1]), releaseCommit)
+    if (authority == "" || authority !=
+        p9PublishLocalString(report, "authorityHash")) {
+        out.contract = p9PublishFailure("publish_authority_binding_invalid")
+        return out
+    }
+    let fullTests = p9PublishObject(root, "full-test-report.json", 4)
+    if (fullTests[0] != "ok" ||
+        p9PublishLocalString(fullTests[1], "schemaVersion") !=
+            "ckb-repro-full-test-proof-v1" ||
+        !p9PublishLocalBool(fullTests[1], "ok") ||
+        !p9PublishHash(p9PublishLocalString(fullTests[1], "commandHash")) ||
+        !p9PublishHash(p9PublishLocalString(fullTests[1], "resultHash"))) {
+        out.contract = p9PublishFailure("publish_full_test_proof_invalid")
+        return out
+    }
+    let leakage = p9PublishObject(root, "leakage-report.json", 3)
+    if (leakage[0] != "ok") {
+        out.contract = p9PublishFailure("publish_leakage_evidence_invalid")
+        return out
+    }
+    var licenseCount: Int64 = 0
+    for (asset in parsed[1].assets) {
+        if (asset.role == "license" && asset.size > 0) { licenseCount += 1 }
+    }
+    out.evidence.inputSetHashMatches = true
+    out.evidence.manifestCoverageComplete = true
+    out.evidence.shaCoverageComplete = true
+    out.evidence.noSelfReference = true
+    out.evidence.p8BindingMatches = true
+    out.evidence.runCriticalTreeMatches = true
+    out.evidence.strictPassed = reference[1].strictPassed
+    out.evidence.transportUnresolved = reference[1].transportUnresolved
+    out.evidence.leakageFindingCount =
+        p9PublishLocalInt(leakage[1], "findingCount") +
+        p9PublishLocalInt(leakage[1], "pathFindingCount")
+    out.evidence.fullTestsPassed = true
+    out.evidence.licenseComplete = licenseCount == 1
+    out.evidence.externalProofsVerified = false
+    out.contract = p9PublishSuccess()
+    out
+}
+
+public func computeCkbReproPublishAuthorityHash(
+    manifest: CkbReproBundleManifest, proofSetHash: String,
+    referenceManifestHash: String, releaseCommit: String): String {
+    let mandatory = ["p0_manifest", "p1_score_contract",
+        "p2_logical_snapshot", "p3_qdrant_snapshot", "p4_build_proof",
+        "p5_public_evidence", "p6_environment_lock", "p7_documentation",
+        "p8_reference", "source_lock", "authority_delivery",
+        "portable_report", "license", "release_commit"]
+    for (role in mandatory) {
+        var count: Int64 = 0
+        for (asset in manifest.assets) { if (asset.role == role) { count += 1 } }
+        if (count == 0 || ((role == "p8_reference" ||
+            role == "release_commit") && count != 1)) { return "" }
+    }
+    let seen = HashSet<String>(); let rows = ArrayList<String>()
+    for (asset in manifest.assets) {
+        let key = asset.role + "\t" + asset.logicalAsset
+        if (!seen.contains(key)) {
+            seen.add(key)
+            rows.add(key + "\t${asset.logicalSize}\t${asset.logicalSha256}")
+        }
+    }
+    let ordered = rows.toArray(); sort(ordered)
+    p9PublishHashParts("ckb-repro-release-authority-v1",
+        [manifest.inputSetHash, proofSetHash, referenceManifestHash,
+        ckbReproBundleHash(releaseCommit.toArray()),
+        p9PublishHashParts("ckb-repro-release-authority-contract-v1",
+            ordered)])
+}
+
+public func prepareCkbReproPreSignatureArtifacts(root: String,
+    options: CkbReproPublishGateOptions, remoteEvidence: Array<UInt8>,
+    remoteSignature: Array<UInt8>): CkbReproContractResult {
+    let manifest = p9PublishReadBounded(Path(root).join(
+        "RELEASE-MANIFEST.json").toString(), 16 * 1024 * 1024)
+    let report = p9PublishReadBounded(Path(root).join(
+        "verification-report.json").toString(), 16 * 1024 * 1024)
+    let attestation = p9PublishReadBounded(Path(root).join(
+        "build-attestation.json").toString(), 16 * 1024 * 1024)
+    if (manifest[0] != "ok" || report[0] != "ok" ||
+        attestation[0] != "ok" || remoteSignature.size == 0) {
+        return p9PublishFailure("publish_pre_signature_inputs_invalid")
+    }
+    let binding = p9PublishBindings(root, manifest[1], report[1])
+    if (!binding.contract.ok) { return binding.contract }
+    try { _ = JsonValue.fromStr(String.fromUtf8(remoteEvidence)).asObject() }
+    catch (_: Exception) {
+        return p9PublishFailure("publish_remote_tag_evidence_invalid")
+    }
+    let local = CkbReproPublishLocalEvidence()
+    local.gateOptions = options; local.evidence = binding.evidence
+    let localText = renderCkbReproPublishLocalEvidence(local,
+        ckbReproBundleHash(report[1]), ckbReproBundleHash(attestation[1]))
+    try {
+        File.writeTo(Path(root).join("PUBLISH-EVIDENCE.json"),
+            localText.toArray())
+        File.writeTo(Path(root).join("REMOTE-TAG-EVIDENCE.json"),
+            remoteEvidence)
+        File.writeTo(Path(root).join("REMOTE-TAG-EVIDENCE.json.sig"),
+            remoteSignature)
+        let parsed = parseCkbReproBundleManifest(manifest[1])
+        let rows = ArrayList<String>()
+        for (asset in parsed[1].assets) {
+            rows.add("${asset.sha256.replace("sha256:", "")}  ${asset.relativePath}")
+        }
+        for (item in [("RELEASE-MANIFEST.json", manifest[1]),
+            ("verification-report.json", report[1]),
+            ("build-attestation.json", attestation[1]),
+            ("PUBLISH-EVIDENCE.json", localText.toArray()),
+            ("REMOTE-TAG-EVIDENCE.json", remoteEvidence)]) {
+            rows.add("${ckbReproBundleHash(item[1]).replace("sha256:", "")}  ${item[0]}")
+        }
+        let ordered = rows.toArray(); sort(ordered)
+        File.writeTo(Path(root).join("SHA256SUMS"),
+            (p9PublishJoinLines(ordered) + "\n").toArray())
+        p9PublishSuccess()
+    } catch (_: Exception) {
+        p9PublishFailure("publish_pre_signature_write_failed")
+    }
+}
+
+private func p9PublishHashParts(prefix: String, values: Array<String>): String {
+    let builder = StringBuilder(prefix)
+    for (value in values) { builder.append("${value.toArray().size}:${value}") }
+    ckbReproBundleHash(builder.toString().toArray())
+}
+
+private func p9PublishJoinLines(values: Array<String>): String {
+    let builder = StringBuilder()
+    for (i in 0..values.size) {
+        if (i > 0) { builder.append("\n") }; builder.append(values[i])
+    }
+    builder.toString()
+}
+
+private func p9PublishSuccess(): CkbReproContractResult {
+    let out = CkbReproContractResult(); out.ok = true
+    out.diagnostic = "ok"; out
+}
+
+private func p9PublishFailure(code: String): CkbReproContractResult {
+    let out = CkbReproContractResult(); out.diagnostic = code; out
 }
 
 private func p9PublishObject(root: String, name: String, fields: Int64):

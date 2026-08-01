@@ -1510,8 +1510,7 @@ private func p9BundleAssetProofHash(
     ckbReproBundleHash(("ckb-repro-bundle-asset-proof-v1" +
         p9BundlePart(proof.relativePath) +
         p9BundlePart(proof.size.toString()) +
-        p9BundlePart(proof.sha256) +
-        p9BundlePart(proof.identity)).toArray())
+        p9BundlePart(proof.sha256)).toArray())
 }
 
 private func p9BundleProofSetHash(
@@ -1523,6 +1522,19 @@ private func p9BundleProofSetHash(
     ckbReproBundleHash(
         ("ckb-repro-bundle-proof-set-v1" +
             p9BundleJoin(ordered, "")).toArray())
+}
+
+public func computeCkbReproBundleProofSetHash(
+    manifest: CkbReproBundleManifest): String {
+    let proofs = ArrayList<CkbReproBundleAssetProof>()
+    for (asset in manifest.assets) {
+        let proof = CkbReproBundleAssetProof()
+        proof.relativePath = asset.relativePath
+        proof.size = asset.size; proof.sha256 = asset.sha256
+        proof.proofHash = p9BundleAssetProofHash(proof)
+        proofs.add(proof)
+    }
+    p9BundleProofSetHash(proofs)
 }
 
 private func p9BundleString(object: JsonObject, key: String): String {
