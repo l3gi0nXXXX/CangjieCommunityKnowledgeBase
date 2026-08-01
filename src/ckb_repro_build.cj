@@ -20,6 +20,8 @@ public class CkbReproSourceLockEntry {
     public var generatorSourceHash: String = ""
     public var inputHashes: ArrayList<String> = ArrayList<String>()
     public var outputHash: String = ""
+    public var assemblyRole: String = ""
+    public var outputKind: String = ""
     public init() {}
 }
 
@@ -536,6 +538,9 @@ public func parseCkbReproSourceLock(bytes: Array<UInt8>):
     }
     try {
         let root = JsonValue.fromStr(text).asObject()
+        if (root.size() != 2) {
+            return (p4BuildFailure("source_lock_field_contract_invalid"), lock)
+        }
         lock.schemaVersion = root.get("schemaVersion").getOrThrow().asString().getValue()
         for (value in root.get("sources").getOrThrow().asArray().getItems()) {
             let object = value.asObject()
@@ -553,12 +558,21 @@ public func parseCkbReproSourceLock(bytes: Array<UInt8>):
             entry.generatorVersion = p4BuildOptionalString(object, "generatorVersion")
             entry.generatorSourceHash = p4BuildOptionalString(object, "generatorSourceHash")
             entry.outputHash = p4BuildOptionalString(object, "outputHash")
+            entry.assemblyRole = p4BuildOptionalString(object, "assemblyRole")
+            entry.outputKind = p4BuildOptionalString(object, "outputKind")
             match (object.get("inputHashes")) {
                 case Some(items) =>
                     for (item in items.asArray().getItems()) {
                         entry.inputHashes.add(item.asString().getValue())
                     }
                 case None => ()
+            }
+            let expectedFields: Int64 = if (entry.sourceType == "external_git") {
+                11
+            } else if (entry.sourceType == "generated") { 10 } else { -1 }
+            if (object.size() != expectedFields) {
+                return (p4BuildFailure("source_lock_field_contract_invalid"),
+                    CkbReproSourceLock())
             }
             lock.entries.add(entry)
         }
@@ -574,7 +588,9 @@ public func validateCkbReproBuildLocks(lock: CkbReproSourceLock): CkbReproContra
     }
     let ids = HashSet<String>()
     for (entry in lock.entries) {
-        if (entry.sourceId == "" || ids.contains(entry.sourceId) || entry.license == "") {
+        if (entry.sourceId == "" || ids.contains(entry.sourceId) ||
+            entry.license == "" || entry.assemblyRole == "" ||
+            entry.outputKind == "" || p4BuildEvaluationKind(entry.outputKind)) {
             return p4BuildFailure("source_lock_identity_invalid")
         }
         ids.add(entry.sourceId)
@@ -619,7 +635,8 @@ public func canonicalCkbReproSourceLockHash(lock: CkbReproSourceLock): String {
             entry.sourceId, entry.sourceType, entry.repository, entry.commit, entry.tree,
             entry.path, entry.fileHash, entry.license, entry.authMode, entry.generatorId,
             entry.generatorVersion, entry.generatorSourceHash,
-            p4BuildJoin(inputs, ","), entry.outputHash
+            p4BuildJoin(inputs, ","), entry.outputHash, entry.assemblyRole,
+            entry.outputKind
         ]))
     }
     let ordered = rows.toArray(); sort(ordered)
@@ -633,6 +650,7 @@ public class CkbReproKnowledgeInventoryRow {
     public var portableLocator: String = ""
     public var sourceType: String = ""
     public var license: String = ""
+    public var sourceLockEntryHash: String = ""
     public init() {}
 }
 
