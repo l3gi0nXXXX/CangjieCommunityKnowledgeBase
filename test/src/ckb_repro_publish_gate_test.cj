@@ -237,6 +237,16 @@ public class CkbReproPublishGateTest {
             "verification-report.json"))
         @Expect(validateCkbReproPublishBindings(
             fixture, manifestBytes, reportBytes).ok, true)
+        let parsedFixtureManifest = parseCkbReproBundleManifest(manifestBytes)[1]
+        for (role in ["full_test_clean_log", "full_test_build_log",
+            "full_test_test_log", "full_test_topology", "full_test_runner",
+            "full_test_source"]) {
+            var count: Int64 = 0
+            for (asset in parsedFixtureManifest.assets) {
+                if (asset.role == role) { count += 1 }
+            }
+            @Expect(count, Int64(1))
+        }
         for (field in ["bundleProofSetHash", "certifiedRunInputHash",
             "authorityHash", "referenceManifestHash",
             "runCriticalTreeHash"]) {
@@ -249,6 +259,12 @@ public class CkbReproPublishGateTest {
             @Expect(validateCkbReproPublishBindings(
                 fixture, manifestBytes, forged.toArray()).ok, false)
         }
+        let testLogPath = Path(fixture).join("full-test/test.log")
+        let originalTestLog = File.readFrom(testLogPath)
+        File.writeTo(testLogPath, "forged-test-log".toArray())
+        @Expect(validateCkbReproPublishBindings(
+            fixture, manifestBytes, reportBytes).ok, false)
+        File.writeTo(testLogPath, originalTestLog)
 
         let remote = File.readFrom(Path(fixture).join(
             "REMOTE-TAG-EVIDENCE.json"))
@@ -457,6 +473,7 @@ public class CkbReproPublishGateTest {
         let proof = renderCkbReproFullTestProof(commit, tree, input,
             manifest, verifiedAsset, topology, runner, source,
             cleanLog, buildLog, testLog, 1266)
+        @Expect(proof.contains("\"testCommand\":\"cjpm test -j 1\""), true)
         let originalProofHash = computeCkbReproFullTestProofHash(commit, tree,
             input, manifest, verifiedAsset, topology, runner, source,
             ckbReproBundleHash("cjpm clean".toArray()), cleanLog,
