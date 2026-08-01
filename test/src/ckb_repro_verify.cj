@@ -1386,6 +1386,7 @@ private func p8AuthorityRequiredLayout(mode: String):
         ("docs/reproducibility/result-interpretation.md", "p7_documentation"),
         ("docs/reproducibility/troubleshooting.md", "p7_documentation"),
         ("docs/reproducibility/release-maintainer-runbook.md", "p7_documentation"),
+        ("docs/service-http-operations.md", "p7_documentation"),
         ("reproducibility/PUBLIC-EVIDENCE.schema.json", "p1_score_contract"),
         ("reproducibility/RELEASE-MANIFEST.schema.json", "p0_manifest"),
         ("reproducibility/authority-source-materials.schema.json", "authority_delivery"),

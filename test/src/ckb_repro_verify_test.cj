@@ -823,8 +823,13 @@ public class CkbReproVerifyTest {
             let hardlinkBundle = p8CreateBundle(
                 "${root}/hardlink-bundle", "assets/unused.txt", "first",
                 reference: reference)
-            _ = launch("/bin/ln", [canonicalize(outside).toString(),
-                "${hardlinkBundle[0]}/outside-hardlink.txt"]).wait()
+            let outsideReadme = Path(root).join("outside-readme.md")
+            File.writeTo(outsideReadme,
+                File.readFrom(Path(hardlinkBundle[0]).join("README.md")))
+            _ = launch("/bin/rm",
+                ["${hardlinkBundle[0]}/README.md"]).wait()
+            _ = launch("/bin/ln", [canonicalize(outsideReadme).toString(),
+                "${hardlinkBundle[0]}/README.md"]).wait()
             let hardlinked = validateCkbReproBundleManifest(
                 hardlinkBundle[0], backend)
             @Expect(hardlinked.contract.diagnostic,
@@ -914,6 +919,37 @@ public class CkbReproVerifyTest {
                 "package cangjie_community_knowledge_base_test"),
                 String.fromUtf8(mirror))
         } finally { p8Remove(root) }
+    }
+}
+
+@Test
+public class CkbReproAuthorityLayoutBaselineTest {
+    @TestCase
+    public func publicRebuildLayoutMatchesIndependentFixture(): Unit {
+        let reference = p8ReferenceTemplate()
+        let rows = p8AuthorityRows("manifest", reference)
+        @Expect(rows.size, 51)
+        let built = buildCkbReproReleaseAuthorityContract(
+            p8AuthorityInputs("manifest", reference), "public_rebuild")
+        @Expect(built[0].ok, true)
+        let contract = built[1]
+        @Expect(contract.expected.size, 51)
+        for (row in rows) {
+            var matches = 0
+            for (evidence in contract.expected) {
+                if (evidence.logicalAsset == row[0] &&
+                    evidence.role == row[2]) { matches++ }
+            }
+            @Expect(matches, 1)
+        }
+        for (evidence in contract.expected) {
+            var matches = 0
+            for (row in rows) {
+                if (evidence.logicalAsset == row[0] &&
+                    evidence.role == row[2]) { matches++ }
+            }
+            @Expect(matches, 1)
+        }
     }
 }
 
@@ -1134,6 +1170,7 @@ private func p8AuthorityRows(content: String,
         ("docs/reproducibility/result-interpretation.md", "result", "p7_documentation"),
         ("docs/reproducibility/troubleshooting.md", "trouble", "p7_documentation"),
         ("docs/reproducibility/release-maintainer-runbook.md", "maintain", "p7_documentation"),
+        ("docs/service-http-operations.md", "service-http", "p7_documentation"),
         ("reproducibility/PUBLIC-EVIDENCE.schema.json", "public-evidence-schema", "p1_score_contract"),
         ("reproducibility/RELEASE-MANIFEST.schema.json", content, "p0_manifest"),
         ("reproducibility/authority-source-materials.schema.json", "authority-source-schema", "authority_delivery"),
