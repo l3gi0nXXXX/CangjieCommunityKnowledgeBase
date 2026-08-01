@@ -118,6 +118,12 @@ public interface CkbReproEnvironmentProbe {
         CkbReproEnvironmentProbeResult
 }
 
+public class CkbReproAttestationAuthority {
+    public var signingFingerprint: String = ""
+    public var frozen: Bool = false
+    public init() {}
+}
+
 public class CkbReproFilesystemEnvironmentProbe <: CkbReproEnvironmentProbe {
     public init() {}
     public func inspect(attested: CkbReproEnvironmentLock):
@@ -243,6 +249,20 @@ public func runCkbReproPreflightCliAdapter(
     options: CkbReproPreflightCliOptions): CkbReproEnvironmentPreflightResult {
     let checked = validateCkbReproPreflightCliOptions(options)
     if (!checked.ok) { return p6CliPreflightFailure(checked.diagnostic) }
+    p6CliPreflightFailure("environment_attestation_authority_unavailable")
+}
+
+public func runCkbReproPreflightCliAdapter(
+    options: CkbReproPreflightCliOptions,
+    authority: CkbReproAttestationAuthority):
+    CkbReproEnvironmentPreflightResult {
+    let checked = validateCkbReproPreflightCliOptions(options)
+    if (!checked.ok) { return p6CliPreflightFailure(checked.diagnostic) }
+    if (!authority.frozen ||
+        !p6ProbeFingerprint(authority.signingFingerprint)) {
+        return p6CliPreflightFailure(
+            "environment_attestation_authority_unavailable")
+    }
     for (item in [
         (options.environmentLockPath, "environment_lock_missing"),
         (options.observedEnvironmentPath, "observed_environment_missing"),
@@ -260,7 +280,7 @@ public func runCkbReproPreflightCliAdapter(
     let observed = p6CliReadEnvironment(options.observedEnvironmentPath)
     if (!observed[0].ok) { return p6CliPreflightFailure(observed[0].diagnostic) }
     let attestation = p6VerifyObservedEnvironmentAttestation(
-        options.observedEnvironmentPath)
+        options.observedEnvironmentPath, authority.signingFingerprint)
     if (attestation != "ok") { return p6CliPreflightFailure(attestation) }
     let preflight = p6CliReadUtf8(options.certificationPreflightPath)
     if (preflight[0] != "ok") { return p6CliPreflightFailure(preflight[0]) }
@@ -670,17 +690,13 @@ private func p6Escape(value: String): String {
         .replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
 }
 
-private func p6VerifyObservedEnvironmentAttestation(path: String): String {
+private func p6VerifyObservedEnvironmentAttestation(path: String,
+    fingerprint: String): String {
     let signature = path + ".sig"
     if (!exists(Path(signature)) ||
         (try { canonicalize(Path(signature)).toString() != signature }
             catch (_: Exception) { true })) {
         return "environment_attestation_missing"
-    }
-    let fingerprint = match (getVariable(
-        "CKB_REPRO_ATTESTATION_FINGERPRINT")) {
-        case Some(value) => value
-        case None => ""
     }
     if (!p6ProbeFingerprint(fingerprint)) {
         return "environment_attestation_authority_unavailable"
