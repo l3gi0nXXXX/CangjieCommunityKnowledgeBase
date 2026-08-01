@@ -44,4 +44,21 @@ public class CkbReproMainCliTest {
         @Expect(result.output, "")
         @Expect(adapter.calls.size, 0)
     }
+
+    @TestCase
+    public func defaultOutputIsHumanAndJsonRequiresExplicitFlag(): Unit {
+        for (command in ["ckb-release-export", "ckb-repro-publish-gate"]) {
+            let human = runCkbReproMainCli(command, [command])
+            @Expect(human.handled, true)
+            @Expect(human.exitCode, 2)
+            @Expect(human.output.startsWith("{"), false)
+            @Expect(human.output.contains("diagnostic"), true)
+
+            let json = runCkbReproMainCli(command, [command, "--json"])
+            @Expect(json.handled, true)
+            @Expect(json.exitCode, 2)
+            @Expect(json.output.startsWith("{"), true)
+            @Expect(json.output.contains("\"ok\""), true)
+        }
+    }
 }
