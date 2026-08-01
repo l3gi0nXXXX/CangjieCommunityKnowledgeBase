@@ -1,7 +1,7 @@
 package cangjie_community_knowledge_base_test
 
 import std.collection.{ArrayList, HashSet}
-import std.fs.{Path, canonicalize, exists}
+import std.fs.{File, Path, canonicalize, exists}
 import std.sort.*
 import stdx.encoding.json.*
 
@@ -71,9 +71,10 @@ public interface CkbP4CliAdapter {
     func execute(options: CkbP4CliOptions): CkbP4CliOperationResult
 }
 
-private class CkbUnavailableP4CliAdapter <: CkbP4CliAdapter {
+private class CkbMissingP4ProductionInputs <: CkbP4CliAdapter {
     public func execute(options: CkbP4CliOptions): CkbP4CliOperationResult {
-        let out = CkbP4CliOperationResult(); out.diagnostic = "p4_production_context_required"; out
+        let out = CkbP4CliOperationResult(); out.diagnostic =
+            "p4_build_and_promotion_factory_required"; out
     }
 }
 
@@ -144,7 +145,95 @@ public func executeCkbP4CliAdapter(args: Array<String>, adapter: CkbP4CliAdapter
     out
 }
 public func runCkbP4Cli(args: Array<String>): CkbP4CliExecution {
-    executeCkbP4CliAdapter(args, CkbUnavailableP4CliAdapter())
+    executeCkbP4CliAdapter(args, CkbMissingP4ProductionInputs())
+}
+
+public class CkbP4ProductionAdapter <: CkbP4CliAdapter {
+    private let buildRequest: CkbReproBuildRequest
+    private let buildBackend: CkbReproBuildBackend
+    private let promotionBackend: CkbPortablePromotionBackend
+    public init(buildRequest: CkbReproBuildRequest,
+        buildBackend: CkbReproBuildBackend,
+        promotionBackend: CkbPortablePromotionBackend) {
+        this.buildRequest = buildRequest; this.buildBackend = buildBackend
+        this.promotionBackend = promotionBackend
+    }
+    public func execute(options: CkbP4CliOptions): CkbP4CliOperationResult {
+        if (options.command == "ckb-repro-build") { return this.build(options) }
+        this.promote(options)
+    }
+    private func build(options: CkbP4CliOptions): CkbP4CliOperationResult {
+        let out = CkbP4CliOperationResult()
+        let roots = ckbP4ValidateBuildRoots(options.outputRoot, options.temporaryRoot)
+        if (roots != "ok") { out.diagnostic = roots; return out }
+        this.buildRequest.options.outputRoot = options.outputRoot
+        this.buildRequest.options.temporaryRoot = options.temporaryRoot
+        let result = runCkbReproBuild(this.buildRequest, this.buildBackend)
+        out.ok = result.ready; out.diagnostic = result.diagnostic
+        out.summary = "logicalReady=${result.proof.logicalReady} raw=${result.proof.rawCount} " +
+            "selected=${result.proof.selectedCount} vectorState=${result.proof.vectorState}"
+        out
+    }
+    private func promote(options: CkbP4CliOptions): CkbP4CliOperationResult {
+        let out = CkbP4CliOperationResult()
+        let loaded = loadCkbPortablePromotionCliInputs(options.candidateManifest,
+            options.p8BReport)
+        if (!loaded[0].ok) { out.diagnostic = loaded[0].diagnostic; return out }
+        let promotion = loaded[1]; promotion.productionStore = options.productionStore
+        promotion.qdrantEndpoint = options.qdrantEndpoint
+        promotion.expectedActiveVersion = options.expectedActiveVersion
+        promotion.apply = options.apply
+        let current = this.promotionBackend.readCurrent()
+        promotion.expectedPointerHash = current.pointerHash
+        let result = promoteCkbPortableCandidate(promotion, this.promotionBackend)
+        out.ok = result.ready; out.diagnostic = result.diagnostic
+        out.summary = "activeVersion=${result.activeVersion} pointerCommitted=" +
+            "${result.pointerCommitted}"; out
+    }
+}
+
+public func newCkbP4ProductionAdapter(buildRequest: CkbReproBuildRequest,
+    buildBackend: CkbReproBuildBackend,
+    promotionBackend: CkbPortablePromotionBackend): CkbP4CliAdapter {
+    CkbP4ProductionAdapter(buildRequest, buildBackend, promotionBackend)
+}
+
+public func loadCkbPortablePromotionCliInputs(candidatePath: String,
+    p8BPath: String): (CkbReproContractResult, CkbPortablePromotionOptions) {
+    let options = CkbPortablePromotionOptions()
+    try {
+        let candidate = JsonValue.fromStr(String.fromUtf8(
+            File.readFrom(Path(candidatePath)))).asObject()
+        let p8b = JsonValue.fromStr(String.fromUtf8(
+            File.readFrom(Path(p8BPath)))).asObject()
+        options.candidateVersion = p4BuildRequiredString(candidate, "candidateVersion")
+        options.candidateManifestHash =
+            p4BuildRequiredString(candidate, "candidateManifestHash")
+        options.p2ProofHash = p4BuildRequiredString(candidate, "p2ProofHash")
+        options.p3ProofHash = p4BuildRequiredString(candidate, "p3ProofHash")
+        options.p5ProofHash = p4BuildRequiredString(candidate, "p5ProofHash")
+        options.p8AProofHash = p4BuildRequiredString(candidate, "p8AProofHash")
+        options.identity = p4BuildRequiredString(candidate, "identity")
+        options.p8StrictPassed = p4BuildRequiredInt(candidate, "p8StrictPassed")
+        options.p8BProofHash = p4BuildRequiredString(p8b, "p8BProofHash")
+        if (!p4BuildRequiredBool(p8b, "ready") ||
+            p4BuildRequiredString(p8b, "candidateVersion") != options.candidateVersion ||
+            p4BuildRequiredString(p8b, "identity") != options.identity) {
+            return (p4BuildFailure("promotion_p8_b_report_invalid"), options)
+        }
+    } catch (_: Exception) {
+        return (p4BuildFailure("promotion_artifact_malformed_json"), options)
+    }
+    for (hash in [options.candidateManifestHash, options.p2ProofHash,
+        options.p3ProofHash, options.p5ProofHash, options.p8AProofHash,
+        options.p8BProofHash]) {
+        if (!p4BuildHash(hash)) { return (p4BuildFailure("promotion_proof_missing"), options) }
+    }
+    if (options.candidateVersion == "" || options.identity == "" ||
+        options.p8StrictPassed != 151) {
+        return (p4BuildFailure("promotion_identity_invalid"), options)
+    }
+    (p4BuildSuccess(), options)
 }
 public func runCkbP4Cli(args: Array<String>, context: CkbP4CliAdapter): CkbP4CliExecution {
     executeCkbP4CliAdapter(args, context)
@@ -804,4 +893,32 @@ private func p4BuildOptionalString(object: JsonObject, key: String): String {
         case Some(value) => value.asString().getValue()
         case None => ""
     }
+}
+
+private func ckbP4ValidateBuildRoots(outputRoot: String,
+    temporaryRoot: String): String {
+    if (outputRoot == temporaryRoot) { return "build_roots_invalid" }
+    for (value in [outputRoot, temporaryRoot]) {
+        if (value == "" || value != value.trimAscii() || !value.startsWith("/") ||
+            value.contains("//") || value.contains("/../") || value.contains("/./") ||
+            exists(Path(value)) || !exists(Path(value).parent)) {
+            return "build_root_path_invalid"
+        }
+        let parent = try { canonicalize(Path(value).parent).toString() }
+            catch (_: Exception) { return "build_root_path_invalid" }
+        if (Path(parent).join(Path(value).fileName).toString() != value) {
+            return "build_root_path_invalid"
+        }
+    }
+    "ok"
+}
+
+private func p4BuildRequiredString(object: JsonObject, key: String): String {
+    object.get(key).getOrThrow().asString().getValue()
+}
+private func p4BuildRequiredInt(object: JsonObject, key: String): Int64 {
+    object.get(key).getOrThrow().asInt().getValue()
+}
+private func p4BuildRequiredBool(object: JsonObject, key: String): Bool {
+    object.get(key).getOrThrow().asBool().getValue()
 }

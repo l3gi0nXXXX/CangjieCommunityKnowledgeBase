@@ -1,7 +1,7 @@
 package cangjie_community_knowledge_base_test
 
 import std.collection.ArrayList
-import std.fs.{Directory, File, Path, exists, remove}
+import std.fs.{Directory, File, Path, canonicalize, exists, remove}
 import std.unittest.*
 import std.unittest.testmacro.*
 
@@ -87,6 +87,25 @@ private class P234P4CliFake <: CkbP4CliAdapter {
         if (this.fail) { this.cleaned = true }
         out
     }
+}
+private class P234BuildDependency <: CkbReproBuildBackend {
+    public func run(stage: String): CkbReproBackendResult {
+        CkbReproBackendResult(true, "ok")
+    }
+}
+private class P234PromotionDependency <: CkbPortablePromotionBackend {
+    public var commits: Int64 = 0
+    public func readCurrent(): CkbPortablePromotionState {
+        CkbPortablePromotionState("old", p234Hash("pointer"), "old-vector")
+    }
+    public func restoreVector(options: CkbPortablePromotionOptions): Bool { true }
+    public func validateVector(options: CkbPortablePromotionOptions): Bool { true }
+    public func commitPointer(options: CkbPortablePromotionOptions): Bool {
+        this.commits += 1; true
+    }
+    public func readBack(options: CkbPortablePromotionOptions): Bool { true }
+    public func cleanupOld(): Bool { true }
+    public func cleanupStaging(): Unit {}
 }
 
 @Test
@@ -304,6 +323,31 @@ public class CkbReproCliAdaptersTest {
         let result = executeCkbP4CliAdapter(p234PromotionArgs(true), fake)
         @Expect(result.ok, true)
         @Expect(fake.calls, 1)
+
+        let root = Path("target/p234-p4-production")
+        if (exists(root)) { remove(root, recursive: true) }
+        Directory.create(root, recursive: true)
+        let candidate = "{\"candidateVersion\":\"portable-v1\"," +
+            "\"candidateManifestHash\":\"${p234Hash("candidate")}\"," +
+            "\"p2ProofHash\":\"${p234Hash("p2")}\",\"p3ProofHash\":\"${p234Hash("p3")}\"," +
+            "\"p5ProofHash\":\"${p234Hash("p5")}\",\"p8AProofHash\":\"${p234Hash("p8a")}\"," +
+            "\"identity\":\"portable-identity\",\"p8StrictPassed\":151}"
+        let p8b = "{\"ready\":true,\"candidateVersion\":\"portable-v1\"," +
+            "\"identity\":\"portable-identity\",\"p8BProofHash\":\"${p234Hash("p8b")}\"}"
+        File.writeTo(root.join("candidate.json"), candidate.toArray())
+        File.writeTo(root.join("p8b.json"), p8b.toArray())
+        let productionRoot = root.join("production")
+        Directory.create(productionRoot, recursive: true)
+        let dependency = P234PromotionDependency()
+        let production = newCkbP4ProductionAdapter(CkbReproBuildRequest(),
+            P234BuildDependency(), dependency)
+        let actual = runCkbP4Cli(["ckb-repro-promote", "--production-store",
+            canonicalize(productionRoot).toString(), "--qdrant-endpoint",
+            "http://127.0.0.1:6333", "--expected-active-version", "old",
+            "--candidate-manifest", root.join("candidate.json").toString(),
+            "--p8-b-report", root.join("p8b.json").toString(), "--apply"], production)
+        @Expect(actual.ok, true); @Expect(dependency.commits, 1)
+        remove(root, recursive: true)
     }
 
     @TestCase
