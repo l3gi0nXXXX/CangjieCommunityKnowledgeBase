@@ -133,8 +133,11 @@ public func validateCkbP4CliOptions(out: CkbP4CliOptions): String {
 
 public func executeCkbP4CliAdapter(args: Array<String>, adapter: CkbP4CliAdapter): CkbP4CliExecution {
     let options = parseCkbP4CliOptions(args)
-    if (options.diagnostic != "ok") { return ckbP4CliFailure(options.diagnostic) }
-    let result = adapter.execute(options); let out = CkbP4CliExecution()
+    if (options.diagnostic != "ok") { return ckbP4CliFailure(options.diagnostic, args.contains("--json")) }
+    let result = try { adapter.execute(options) } catch (_: Exception) {
+        return ckbP4CliFailure("p4_adapter_execution_failed", options.json)
+    }
+    let out = CkbP4CliExecution()
     out.ok = result.ok; out.exitCode = if (result.ok) { 0 } else { 1 }
     out.diagnostic = result.diagnostic
     out.output = if (options.json) { renderCkbP4CliJson(result) } else { renderCkbP4CliHuman(result) }
@@ -159,12 +162,13 @@ private func ckbP4CliAllowed(command: String, arg: String): Bool {
     ["--production-store", "--qdrant-endpoint", "--expected-active-version",
      "--candidate-manifest", "--p8-b-report"].contains(arg)
 }
-private func ckbP4CliFailure(diagnostic: String): CkbP4CliExecution {
+private func ckbP4CliFailure(diagnostic: String, json: Bool): CkbP4CliExecution {
     let result = CkbP4CliOperationResult(); result.diagnostic = diagnostic
-    let out = CkbP4CliExecution(); out.diagnostic = diagnostic; out.output = renderCkbP4CliHuman(result); out
+    let out = CkbP4CliExecution(); out.diagnostic = diagnostic
+    out.output = if (json) { renderCkbP4CliJson(result) } else { renderCkbP4CliHuman(result) }; out
 }
-private func ckbP4CliSafe(value: String): String { let runes = value.toRuneArray(); let n = if (runes.size < 160) { runes.size } else { 160 }; let out = StringBuilder(); for (i in 0..n) { out.append(runes[i]) }; out.toString() }
-private func ckbP4CliJson(value: String): String { ckbP4CliSafe(value).replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n").replace("\r", "\\r") }
+private func ckbP4CliSafe(value: String): String { let runes = redactSensitive(value).toRuneArray(); let n = if (runes.size < 160) { runes.size } else { 160 }; let out = StringBuilder(); for (i in 0..n) { out.append(runes[i]) }; out.toString() }
+private func ckbP4CliJson(value: String): String { let out = StringBuilder(); let hex = "0123456789abcdef".toRuneArray(); for (rune in ckbP4CliSafe(value).runes()) { if (rune == r'"') { out.append("\\\"") } else if (rune == r'\\') { out.append("\\\\") } else if (rune == r'\n') { out.append("\\n") } else if (rune == r'\r') { out.append("\\r") } else if (rune == r'\t') { out.append("\\t") } else if (UInt32(rune) < 0x20u32) { let code = UInt32(rune); out.append("\\u00"); out.append(hex[Int64(code / 16u32)]); out.append(hex[Int64(code % 16u32)]) } else { out.append(rune) } }; out.toString() }
 
 public func parseCkbReproBuildOptions(args: Array<String>): CkbReproBuildOptions {
     let options = CkbReproBuildOptions()

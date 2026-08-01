@@ -248,7 +248,7 @@ public class CkbReproCliAdaptersTest {
 }
 
 private func p234LongControlSummary(): String {
-    var out = "Authorization=secret\t仓颉🙂"
+    var out = "仓颉🙂\tAuthorization=secret"
     for (_ in 0..300) { out += "界" }
     out
 }

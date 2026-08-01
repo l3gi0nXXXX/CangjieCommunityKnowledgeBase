@@ -259,8 +259,12 @@ public func validateCkbReleaseCliOptions(out: CkbReleaseCliOptions): String {
 public func executeCkbReleaseCliAdapter(args: Array<String>,
     adapter: CkbReleaseCliAdapter): CkbReleaseCliExecution {
     let options = parseCkbReleaseCliOptions(args)
-    if (options.diagnostic != "ok") { return ckbReleaseCliFailure(options.diagnostic, false) }
-    let result = adapter.execute(options)
+    if (options.diagnostic != "ok") {
+        return ckbReleaseCliFailure(options.diagnostic, false, args.contains("--json"))
+    }
+    let result = try { adapter.execute(options) } catch (_: Exception) {
+        return ckbReleaseCliFailure("release_adapter_execution_failed", true, options.json)
+    }
     let out = CkbReleaseCliExecution()
     out.ok = result.ok; out.exitCode = if (result.ok) { 0 } else { 1 }
     out.diagnostic = result.diagnostic
@@ -279,7 +283,7 @@ public func runCkbReleaseCli(args: Array<String>,
 }
 
 public func renderCkbReleaseCliHuman(result: CkbReleaseCliOperationResult): String {
-    if (result.ok) { "CKB release operation completed. ${result.summary}\n" }
+    if (result.ok) { "CKB release operation completed. ${ckbReleaseCliSafe(result.summary)}\n" }
     else { "CKB release operation failed: ${ckbReleaseCliSafe(result.diagnostic)}\n" }
 }
 
@@ -294,20 +298,37 @@ private func ckbReleaseCliAllowed(mode: String, arg: String): Bool {
     ["--archive", "--target-root"].contains(arg)
 }
 
-private func ckbReleaseCliFailure(diagnostic: String, runtime: Bool): CkbReleaseCliExecution {
+private func ckbReleaseCliFailure(diagnostic: String, runtime: Bool, json: Bool): CkbReleaseCliExecution {
     let result = CkbReleaseCliOperationResult(); result.diagnostic = diagnostic
     let out = CkbReleaseCliExecution(); out.exitCode = if (runtime) { 1 } else { 2 }
-    out.diagnostic = diagnostic; out.output = renderCkbReleaseCliHuman(result); out
+    out.diagnostic = diagnostic; out.output = if (json) { renderCkbReleaseCliJson(result) }
+        else { renderCkbReleaseCliHuman(result) }; out
 }
 
 private func ckbReleaseCliSafe(value: String): String {
-    let runes = value.toRuneArray(); let limit: Int64 = if (runes.size < 160) { runes.size } else { 160 }
+    let runes = redactSensitive(value).toRuneArray()
+    let limit: Int64 = if (runes.size < 160) { runes.size } else { 160 }
     let out = StringBuilder(); for (i in 0..limit) { out.append(runes[i]) }; out.toString()
 }
 
 private func ckbReleaseCliJson(value: String): String {
-    ckbReleaseCliSafe(value).replace("\\", "\\\\").replace("\"", "\\\"")
-        .replace("\n", "\\n").replace("\r", "\\r")
+    ckbReleaseCliJsonEscape(ckbReleaseCliSafe(value))
+}
+
+private func ckbReleaseCliJsonEscape(value: String): String {
+    let out = StringBuilder(); let hex = "0123456789abcdef".toRuneArray()
+    for (rune in value.runes()) {
+        if (rune == r'"') { out.append("\\\"") }
+        else if (rune == r'\\') { out.append("\\\\") }
+        else if (rune == r'\n') { out.append("\\n") }
+        else if (rune == r'\r') { out.append("\\r") }
+        else if (rune == r'\t') { out.append("\\t") }
+        else if (UInt32(rune) < 0x20u32) {
+            let code = UInt32(rune); out.append("\\u00")
+            out.append(hex[Int64(code / 16u32)]); out.append(hex[Int64(code % 16u32)])
+        } else { out.append(rune) }
+    }
+    out.toString()
 }
 
 // Release-level binding is created only after both the logical manifest and

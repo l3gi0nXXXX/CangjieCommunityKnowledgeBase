@@ -203,8 +203,11 @@ public func validateCkbP3CliOptions(out: CkbP3CliOptions): String {
 
 public func executeCkbP3CliAdapter(args: Array<String>, adapter: CkbP3CliAdapter): CkbP3CliExecution {
     let options = parseCkbP3CliOptions(args)
-    if (options.diagnostic != "ok") { return ckbP3CliFailure(options.diagnostic) }
-    let result = adapter.execute(options); let out = CkbP3CliExecution()
+    if (options.diagnostic != "ok") { return ckbP3CliFailure(options.diagnostic, args.contains("--json")) }
+    let result = try { adapter.execute(options) } catch (_: Exception) {
+        return ckbP3CliFailure("p3_adapter_execution_failed", options.json)
+    }
+    let out = CkbP3CliExecution()
     out.ok = result.ok; out.exitCode = if (result.ok) { 0 } else { 1 }
     out.diagnostic = result.diagnostic
     out.output = if (options.json) { renderCkbP3CliJson(result) } else { renderCkbP3CliHuman(result) }
@@ -244,12 +247,13 @@ private func ckbP3CliRequired(out: CkbP3CliOptions): Array<(String, String)> {
     if (out.mode == "verify") { return [("--endpoint", out.endpoint), ("--collection", out.collection), ("--manifest", out.manifest), ("--logical-manifest", out.logicalManifest)] }
     [("--mode", if (out.mode == "parity") { "verify" } else { "" }), ("--manifest", out.manifest), ("--rest-endpoint", out.restEndpoint), ("--mcp-stdio-command", out.mcpStdioCommand), ("--mcp-http-endpoint", out.mcpHttpEndpoint)]
 }
-private func ckbP3CliFailure(diagnostic: String): CkbP3CliExecution {
+private func ckbP3CliFailure(diagnostic: String, json: Bool): CkbP3CliExecution {
     let result = CkbP3CliOperationResult(); result.diagnostic = diagnostic
-    let out = CkbP3CliExecution(); out.diagnostic = diagnostic; out.output = renderCkbP3CliHuman(result); out
+    let out = CkbP3CliExecution(); out.diagnostic = diagnostic
+    out.output = if (json) { renderCkbP3CliJson(result) } else { renderCkbP3CliHuman(result) }; out
 }
-private func ckbP3CliSafe(value: String): String { let runes = value.toRuneArray(); let n = if (runes.size < 160) { runes.size } else { 160 }; let out = StringBuilder(); for (i in 0..n) { out.append(runes[i]) }; out.toString() }
-private func ckbP3CliJson(value: String): String { ckbP3CliSafe(value).replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n").replace("\r", "\\r") }
+private func ckbP3CliSafe(value: String): String { let runes = redactSensitive(value).toRuneArray(); let n = if (runes.size < 160) { runes.size } else { 160 }; let out = StringBuilder(); for (i in 0..n) { out.append(runes[i]) }; out.toString() }
+private func ckbP3CliJson(value: String): String { let out = StringBuilder(); let hex = "0123456789abcdef".toRuneArray(); for (rune in ckbP3CliSafe(value).runes()) { if (rune == r'"') { out.append("\\\"") } else if (rune == r'\\') { out.append("\\\\") } else if (rune == r'\n') { out.append("\\n") } else if (rune == r'\r') { out.append("\\r") } else if (rune == r'\t') { out.append("\\t") } else if (UInt32(rune) < 0x20u32) { let code = UInt32(rune); out.append("\\u00"); out.append(hex[Int64(code / 16u32)]); out.append(hex[Int64(code % 16u32)]) } else { out.append(rune) } }; out.toString() }
 
 public func parseCkbQdrantRestoredStatus(bytes: Array<UInt8>,
     collection: String, payloadCanonicalHash: String):
