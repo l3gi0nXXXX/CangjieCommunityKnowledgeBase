@@ -1,7 +1,7 @@
 package cangjie_community_knowledge_base_test
 
 import std.collection.ArrayList
-import std.fs.{Directory, File, Path, canonicalize, exists, remove, rename}
+import std.fs.{Directory, File, OpenMode, Path, canonicalize, exists, remove, rename}
 import std.sort.*
 import std.time.DateTime
 import stdx.encoding.json.*
@@ -318,6 +318,7 @@ public func scanCkbPublicEvidenceLeakage(
         text.contains("/Users/") || text.contains("/home/") ||
             text.contains("/private/") || text.contains("/tmp/") ||
             text.contains("/var/folders/") || text.contains("\\\\") ||
+            p5CliSensitivePosixAbsolutePath(text) ||
             p5CliWindowsAbsolutePath(text),
         "absolute_path")
     ckbPublicEvidenceFinding(report,
@@ -495,8 +496,11 @@ private func ckbPublicEvidenceIdentityEqual(
 
 public func runCkbPublicEvidenceExportFromFiles(
     options: CkbPublicEvidenceCliOptions): CkbPublicEvidenceRenderResult {
-    let referenceBytes = try { File.readFrom(Path(options.referenceManifest)) }
-        catch (_: Exception) { return p5CliRenderFailure("public_evidence_reference_read_failed") }
+    let referenceRead = p5CliReadBounded(options.referenceManifest, 16 * 1024 * 1024)
+    if (referenceRead[0] != "ok") {
+        return p5CliRenderFailure("public_evidence_reference_read_failed")
+    }
+    let referenceBytes = referenceRead[1]
     let parsedReference = parseCkbReproReferenceManifest(referenceBytes)
     if (!parsedReference[0].ok ||
         !validateCkbReproReferenceManifest(parsedReference[1]).ok ||
@@ -504,8 +508,12 @@ public func runCkbPublicEvidenceExportFromFiles(
         parsedReference[1].evidenceStatus != "complete") {
         return p5CliRenderFailure("public_evidence_portable_reference_required")
     }
-    let resultsBytes = try { File.readFrom(Path(options.runRoot).join("results.jsonl")) }
-        catch (_: Exception) { return p5CliRenderFailure("public_evidence_results_missing") }
+    let resultsRead = p5CliReadBounded(
+        Path(options.runRoot).join("results.jsonl").toString(), 64 * 1024 * 1024)
+    if (resultsRead[0] != "ok") {
+        return p5CliRenderFailure("public_evidence_results_missing")
+    }
+    let resultsBytes = resultsRead[1]
     let resultsText = try { String.fromUtf8(resultsBytes) } catch (_: Exception) {
         return p5CliRenderFailure("invalid_response_encoding")
     }
@@ -519,12 +527,28 @@ public func runCkbPublicEvidenceExportFromFiles(
         if (!certification.valid) {
             return p5CliRenderFailure("public_evidence_certification_invalid")
         }
-        let testBytes = try { File.readFrom(Path(options.runRoot).join(
-            "cases/${certification.caseId}/${certification.group}/test-result.json")) }
-            catch (_: Exception) { return p5CliRenderFailure("public_evidence_test_result_missing") }
-        let auditBytes = try { File.readFrom(Path(options.runRoot).join(
-            "cases/${certification.caseId}/${certification.group}/audit.json")) }
-            catch (_: Exception) { return p5CliRenderFailure("public_evidence_audit_missing") }
+        if (!validateCkbPublicEvidenceArtifactIdentity(
+                certification.caseId, certification.group).ok) {
+            return p5CliRenderFailure("public_evidence_case_identity_invalid")
+        }
+        let caseRoot = Path(options.runRoot).join(
+            "cases/${certification.caseId}/${certification.group}")
+        let testPath = caseRoot.join("test-result.json").toString()
+        let auditPath = caseRoot.join("audit.json").toString()
+        if (!p5CliCanonicalArtifactPath(options.runRoot, testPath) ||
+            !p5CliCanonicalArtifactPath(options.runRoot, auditPath)) {
+            return p5CliRenderFailure("public_evidence_artifact_path_invalid")
+        }
+        let testRead = p5CliReadBounded(testPath, 16 * 1024 * 1024)
+        if (testRead[0] != "ok") {
+            return p5CliRenderFailure("public_evidence_test_result_missing")
+        }
+        let auditRead = p5CliReadBounded(auditPath, 16 * 1024 * 1024)
+        if (auditRead[0] != "ok") {
+            return p5CliRenderFailure("public_evidence_audit_missing")
+        }
+        let testBytes = testRead[1]
+        let auditBytes = auditRead[1]
         let audit = projectCkbPublicAuditFromPrivateArtifacts(
             certification, testBytes, auditBytes)
         if (audit[0] != "ok") { return p5CliRenderFailure(audit[0]) }
@@ -629,6 +653,66 @@ public func planCkbPublicEvidenceTemporaryPath(output: String,
     "${output}.tmp-${nonce}"
 }
 
+public func validateCkbPublicEvidenceArtifactIdentity(
+    caseId: String, group: String): CkbReproContractResult {
+    if (group != CkbAbcdeGroups.D) {
+        return p5CliFailure("public_evidence_group_invalid")
+    }
+    for (index in 0..164) {
+        if (caseId == p5CliCaseId(index)) { return p5CliSuccess() }
+    }
+    p5CliFailure("public_evidence_case_id_invalid")
+}
+
+public func validateCkbPublicEvidenceArtifactPath(
+    runRoot: String, candidate: String): CkbReproContractResult {
+    if (!p5CliAbsolutePath(runRoot) || !p5CliAbsolutePath(candidate) ||
+        !candidate.startsWith(runRoot + "/")) {
+        return p5CliFailure("public_evidence_artifact_path_invalid")
+    }
+    p5CliSuccess()
+}
+
+private func p5CliCaseId(index: Int64): String {
+    if (index < 10) { return "CJ-HUMANEVAL-00${index}" }
+    if (index < 100) { return "CJ-HUMANEVAL-0${index}" }
+    "CJ-HUMANEVAL-${index}"
+}
+
+private func p5CliCanonicalArtifactPath(runRoot: String,
+    candidate: String): Bool {
+    if (!validateCkbPublicEvidenceArtifactPath(runRoot, candidate).ok) {
+        return false
+    }
+    try {
+        let root = canonicalize(Path(runRoot)).toString()
+        let artifact = canonicalize(Path(candidate)).toString()
+        artifact.startsWith(root + "/")
+    } catch (_: Exception) { false }
+}
+
+private func p5CliReadBounded(path: String, limit: Int64):
+    (String, Array<UInt8>) {
+    let bytes = ArrayList<UInt8>()
+    try {
+        try (file = File(Path(path), OpenMode.Read)) {
+            let buffer = Array<UInt8>(65536, repeat: UInt8(0))
+            while (true) {
+                let count = file.read(buffer)
+                if (count < 0 || count > buffer.size) {
+                    return ("read_failed", Array<UInt8>())
+                }
+                if (count == 0) { break }
+                if (bytes.size + count > limit) {
+                    return ("size_invalid", Array<UInt8>())
+                }
+                for (i in 0..count) { bytes.add(buffer[i]) }
+            }
+        }
+        ("ok", bytes.toArray())
+    } catch (_: Exception) { ("read_failed", Array<UInt8>()) }
+}
+
 private func p5CliAbsolutePath(value: String): Bool {
     value.startsWith("/") && value != "/" && !value.endsWith("/") &&
         !value.contains("//") && !value.contains("/./") &&
@@ -703,6 +787,14 @@ private func p5CliWindowsAbsolutePath(value: String): Bool {
             (runes[i + 2] == r'/' || runes[i + 2] == r'\\')) {
             return true
         }
+    }
+    false
+}
+
+private func p5CliSensitivePosixAbsolutePath(value: String): Bool {
+    for (prefix in ["/etc/", "/opt/", "/srv/", "/usr/", "/root/",
+        "/var/", "/Library/", "/Applications/"]) {
+        if (value.contains(prefix)) { return true }
     }
     false
 }
