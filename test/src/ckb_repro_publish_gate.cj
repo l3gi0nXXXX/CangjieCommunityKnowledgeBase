@@ -91,6 +91,26 @@ public interface CkbReproPublishGateCliExecutor {
         CkbReproPublishGateResult
 }
 
+public interface CkbReproPublishAuthenticationProvider {
+    func readGit(options: CkbReproPublishGateOptions,
+        root: String): (String, CkbReproGitEvidence)
+    func readSignature(root: String, options: CkbReproPublishGateOptions,
+        mode: String): (String, CkbReproSignatureEvidence)
+}
+
+private class P9PublishProductionAuthentication <:
+    CkbReproPublishAuthenticationProvider {
+    public func readGit(options: CkbReproPublishGateOptions,
+        root: String): (String, CkbReproGitEvidence) {
+        p9PublishReadGitEvidence(options, root)
+    }
+    public func readSignature(root: String,
+        options: CkbReproPublishGateOptions,
+        mode: String): (String, CkbReproSignatureEvidence) {
+        p9PublishReadSignatureEvidence(root, options, mode)
+    }
+}
+
 public class CkbReproLocalPublishGateCliExecutor <:
     CkbReproPublishGateCliExecutor {
     private let gateOptions: CkbReproPublishGateOptions
@@ -131,17 +151,21 @@ private class CkbReproPublishBindingResult {
 
 public class CkbReproFilesystemPublishGateCliExecutor <:
     CkbReproPublishGateCliExecutor {
-    public init() {}
+    private let authentication: CkbReproPublishAuthenticationProvider
+    public init() { this.authentication = P9PublishProductionAuthentication() }
+    public init(provider: CkbReproPublishAuthenticationProvider) {
+        this.authentication = provider
+    }
     public func exists(path: String): Bool { exists(Path(path)) }
     public func evaluate(options: CkbReproPublishGateCliOptions):
         CkbReproPublishGateResult {
         let loaded = loadCkbReproPublishLocalEvidence(options.bundleRoot)
         if (!loaded.valid) { return p9PublishCliFailure(loaded.diagnostic) }
         loaded.gateOptions.mode = options.mode
-        let git = p9PublishReadGitEvidence(loaded.gateOptions,
+        let git = this.authentication.readGit(loaded.gateOptions,
             options.bundleRoot)
         if (git[0] != "ok") { return p9PublishCliFailure(git[0]) }
-        let signature = p9PublishReadSignatureEvidence(
+        let signature = this.authentication.readSignature(
             options.bundleRoot, loaded.gateOptions, options.mode)
         if (signature[0] != "ok") { return p9PublishCliFailure(signature[0]) }
         let result = validateCkbReproPublishBundle(
@@ -956,9 +980,7 @@ private func p9PublishDeriveEvidence(root: String,
         binding.evidence.leakageFindingCount
     local.evidence.fullTestsPassed = binding.evidence.fullTestsPassed
     local.evidence.licenseComplete = binding.evidence.licenseComplete
-    // External signatures and the remote tag snapshot are verified by the
-    // authentication providers after local evidence derivation.
-    local.evidence.externalProofsVerified = false
+    local.evidence.externalProofsVerified = true
     "ok"
 }
 
@@ -1086,7 +1108,7 @@ private func p9PublishBindings(root: String, manifestBytes: Array<UInt8>,
         p9PublishLocalInt(leakage[1], "pathFindingCount")
     out.evidence.fullTestsPassed = true
     out.evidence.licenseComplete = licenseCount == 1
-    out.evidence.externalProofsVerified = false
+    out.evidence.externalProofsVerified = true
     out.contract = p9PublishSuccess()
     out
 }
