@@ -966,6 +966,32 @@ public class CkbReproBundleTest {
     }
 
     @TestCase
+    public func p9Neg02FilesystemBundleScansActualAssetContent(): Unit {
+        var index: Int64 = 0
+        for (attack in ["/Users/private/run", "/home/private/run",
+            "/mnt/private/run", "/Volumes/private/run",
+            "Authorization: Bearer secret", "token=secret",
+            "api_key=secret"]) {
+            @Expect(p9ValidateFilesystemBundleContent(
+                attack.toArray(), "portable_report", index).diagnostic,
+                "bundle_sensitive_content_detected")
+            index += 1
+        }
+        @Expect(p9ValidateFilesystemBundleContent(
+            [UInt8(0xff), UInt8(0xfe)], "portable_report", index).diagnostic,
+            "bundle_text_encoding_invalid")
+        index += 1
+        let large = ("safe-仓颉🙂\n" * 100000) + "token=tail-secret"
+        @Expect(p9ValidateFilesystemBundleContent(
+            large.toArray(), "portable_report", index).diagnostic,
+            "bundle_sensitive_content_detected")
+        index += 1
+        @Expect(p9ValidateFilesystemBundleContent(
+            [UInt8(0xff), UInt8(0x00), UInt8(0xfe)],
+            "p3_qdrant_snapshot", index).ok, true)
+    }
+
+    @TestCase
     public func p9Reg01BundleReadContract(): Unit {
         let forward = p9ReadableBundle("/tmp/ckb-p9/read-forward",
             p9Assets(false), false)
@@ -1132,6 +1158,24 @@ private func p9ProductionFinalizeFixture(suffix!: String = ""):
     File.writeTo(reportPath, renderCkbReproVerificationReport(report).toArray())
     (unsigned.toString(), reportPath.toString(),
         Path(canonicalBase).join("final").toString(), canonicalBase)
+}
+
+private func p9ValidateFilesystemBundleContent(bytes: Array<UInt8>,
+    role: String, index: Int64): CkbReproContractResult {
+    let root = Path("target/p9-content-scan-${index}")
+    if (exists(root)) { remove(root, recursive: true) }
+    Directory.create(root.join("assets"), recursive: true)
+    let canonicalRoot = canonicalize(root).toString()
+    let asset = p9AssetBytes("assets/content.bin", bytes)
+    asset.role = role
+    let assets = p9AssetList(asset)
+    File.writeTo(Path(canonicalRoot).join(asset.relativePath), bytes)
+    File.writeTo(Path(canonicalRoot).join("RELEASE-MANIFEST.json"),
+        writeCkbReproReleaseManifest(assets).toArray())
+    let result = validateCkbReproBundleManifest(canonicalRoot,
+        CkbReproFilesystemBundleReadBackend()).contract
+    remove(Path(canonicalRoot), recursive: true)
+    result
 }
 
 private func p9ReadableBundle(root: String,
