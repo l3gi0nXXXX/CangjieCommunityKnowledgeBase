@@ -40,10 +40,12 @@ public class CkbPortableVectorProductionBackend <: CkbPortableVectorBuildBackend
     private let pathContext: CkbPortablePathContext
     private let deadlineAtMillis: Int64
 
-    public init(kb: KnowledgeBase, store: FileKnowledgeStore,
+    public init(embeddingProvider: EmbeddingProvider, store: FileKnowledgeStore,
         vectorStore: VectorStore, pathContext: CkbPortablePathContext,
         deadlineAtMillis!: Int64 = 0) {
-        this.kb = kb; this.store = store; this.vectorStore = vectorStore
+        this.kb = KnowledgeBase(FakeClock(0), embeddingProvider, vectorStore,
+            LocalGraphStore())
+        this.store = store; this.vectorStore = vectorStore
         this.pathContext = pathContext; this.deadlineAtMillis = deadlineAtMillis
     }
 
@@ -147,6 +149,17 @@ public class CkbPortableVectorProof {
     public var payloadCanonicalHash: String = ""
     public var vectorProofHash: String = ""
     public init() {}
+}
+
+public func ckbPortableVectorProofHash(proof: CkbPortableVectorProof): String {
+    benchmarkGapSha256("ckb-portable-vector-proof-v1|" +
+        ckbPortableVectorCanonicalFields([
+            proof.collection, proof.candidateVersion,
+            proof.p4PortableProofHash, proof.qdrantImageDigest,
+            proof.embeddingProvider, proof.embeddingModel,
+            proof.count.toString(), proof.dimension.toString(),
+            proof.distance, proof.payloadCanonicalHash
+        ]))
 }
 
 public class CkbPortableVectorBuildResult {
@@ -273,12 +286,7 @@ public func buildCkbPortableReferenceVectors(
     result.proof.dimension = evidence.dimension
     result.proof.distance = evidence.distance
     result.proof.payloadCanonicalHash = evidence.payloadCanonicalHash
-    result.proof.vectorProofHash = benchmarkGapSha256(
-        "${collection}|${options.candidateVersion}|" +
-        "${options.p4PortableProofHash}|${environment.qdrantImageDigest}|" +
-        "${environment.embeddingProvider}|${environment.embeddingModel}|" +
-        "${evidence.count}|${evidence.dimension}|${evidence.distance}|" +
-        evidence.payloadCanonicalHash)
+    result.proof.vectorProofHash = ckbPortableVectorProofHash(result.proof)
     result.ready = true
     result.diagnostic = "ok"
     result

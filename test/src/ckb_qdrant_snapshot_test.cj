@@ -1,7 +1,7 @@
 package cangjie_community_knowledge_base_test
 
 import std.collection.ArrayList
-import std.fs.{Directory, File, Path, exists, remove}
+import std.fs.{Directory, File, Path, canonicalize, exists, remove}
 import std.unittest.*
 import std.unittest.testmacro.*
 
@@ -167,12 +167,7 @@ public class CkbQdrantSnapshotTest {
         proof.dimension = 1024
         proof.distance = "Cosine"
         proof.payloadCanonicalHash = p3Hash("payload")
-        proof.vectorProofHash = benchmarkGapSha256(
-            "${proof.collection}|${proof.candidateVersion}|" +
-            "${proof.p4PortableProofHash}|${proof.qdrantImageDigest}|" +
-            "${proof.embeddingProvider}|${proof.embeddingModel}|" +
-            "${proof.count}|${proof.dimension}|${proof.distance}|" +
-            proof.payloadCanonicalHash)
+        proof.vectorProofHash = ckbPortableVectorProofHash(proof)
         let validPath = root.join("valid.json")
         File.writeTo(validPath, renderCkbPortableVectorProof(proof).toArray())
         @Expect(parseCkbPortableVectorProofFile(validPath.toString())[0].ok, true)
@@ -200,6 +195,32 @@ public class CkbQdrantSnapshotTest {
         for (value in 0..32) {
             @Expect(json.contains(Rune(UInt32(value)).toString()), false)
         }
+    }
+
+    @TestCase
+    public func p3OutputCommitPreservesPreexistingLegacyTemporaryObjects(): Unit {
+        let root = Path("target/p3-owned-temporary")
+        if (exists(root)) { remove(root, recursive: true) }
+        Directory.create(root, recursive: true)
+        let absolute = canonicalize(root)
+        let proofOutput = absolute.join("proof.json").toString()
+        let legacyProof = Path("${proofOutput}.tmp-proof")
+        File.writeTo(legacyProof, "keep-proof".toArray())
+        @Expect(ckbP3WriteNewFile(proofOutput, "{}", CkbReleasePathPolicy()), "ok")
+        @Expect(String.fromUtf8(File.readFrom(legacyProof)), "keep-proof")
+
+        let snapshotOutput = absolute.join("snapshot-output").toString()
+        let legacySnapshot = Path("${snapshotOutput}.tmp-snapshot")
+        Directory.create(legacySnapshot, recursive: false)
+        File.writeTo(legacySnapshot.join("sentinel"), "keep-snapshot".toArray())
+        let bytes: Array<UInt8> = [0xff, 0x00, 0xfe, 0x41]
+        let manifest = p3Manifest(ckbQdrantSnapshotBytesHash(bytes))
+        let built = buildCkbQdrantSnapshotManifest(manifest)
+        @Expect(ckbP3WriteSnapshotDirectory(snapshotOutput, bytes,
+            built.canonicalJson, CkbReleasePathPolicy()), "ok")
+        @Expect(String.fromUtf8(File.readFrom(
+            legacySnapshot.join("sentinel"))), "keep-snapshot")
+        remove(root, recursive: true)
     }
 
     @TestCase
