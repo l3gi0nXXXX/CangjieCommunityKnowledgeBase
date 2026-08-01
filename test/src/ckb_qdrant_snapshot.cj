@@ -214,6 +214,30 @@ public interface CkbP3VerificationInputProvider {
     func pathContext(collection: String): CkbPortablePathContext
 }
 
+public class CkbStoreVerificationInputProvider <:
+    CkbP3VerificationInputProvider {
+    private let store: FileKnowledgeStore
+    private let context: CkbPortablePathContext
+    public init(store: FileKnowledgeStore, context: CkbPortablePathContext) {
+        this.store = store; this.context = context
+    }
+    public func visibleInput(collection: String): CkbStudentVisiblePathInput {
+        let out = CkbStudentVisiblePathInput()
+        let snapshot = this.store.loadActiveSnapshot()
+        if (!snapshot.valid || snapshot.vectorActiveCollection != collection) {
+            return out
+        }
+        for (record in snapshot.rawRecords) { out.rawRecords.add(record) }
+        for (record in snapshot.normalizedRecords) { out.normalizedRecords.add(record) }
+        for (record in snapshot.activeIndex) { out.activeRecords.add(record) }
+        for (record in snapshot.vectorRecords) { out.vectorRecords.add(record) }
+        out
+    }
+    public func pathContext(collection: String): CkbPortablePathContext {
+        this.context
+    }
+}
+
 public class CkbP3ProductionAdapter <: CkbP3CliAdapter {
     private let vectorBackend: CkbPortableVectorBuildBackend
     private let snapshotExecutor: CkbQdrantSnapshotExecutor
@@ -340,6 +364,23 @@ public class CkbP3ProductionAdapter <: CkbP3CliAdapter {
         out.ok = result.ok; out.diagnostic = result.diagnostic
         out.summary = "knowledgeVersion=${manifest[1].knowledgeVersion} transports=3"; out
     }
+}
+
+// Binary Qdrant HTTP and REST/MCP parity remain explicit transport seams.
+// Vector rebuilding and verification input loading are production-owned here.
+public func newCkbP3BusinessProductionAdapter(kb: KnowledgeBase,
+    candidateStore: FileKnowledgeStore, vectorStore: VectorStore,
+    pathContext: CkbPortablePathContext,
+    snapshotExecutor: CkbQdrantSnapshotExecutor,
+    parityBackend: CkbRetrievalParityBackend,
+    pathPolicy: CkbReleasePathPolicy,
+    deadlineAtMillis!: Int64 = 0): CkbP3CliAdapter {
+    CkbP3ProductionAdapter(
+        CkbPortableVectorProductionBackend(kb, candidateStore, vectorStore,
+            pathContext, deadlineAtMillis: deadlineAtMillis),
+        snapshotExecutor, parityBackend,
+        CkbStoreVerificationInputProvider(candidateStore, pathContext),
+        pathPolicy)
 }
 
 public func newCkbP3ProductionAdapter(vectorBackend: CkbPortableVectorBuildBackend,
