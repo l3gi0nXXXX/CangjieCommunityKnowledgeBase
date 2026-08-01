@@ -460,6 +460,10 @@ public class CkbReproBundleTest {
             p9AssetList(unpartitionedHuge), false)
         @Expect(p9ParseAndValidate(huge).diagnostic,
             "bundle_asset_parts_incomplete")
+        let twoGiB = p9ReadableBundle("/tmp/ckb-p9/two-gib-streaming",
+            p9TwoGiBMetadataAssets(false), false)
+        @Expect(p9Load(twoGiB).contract.ok, false)
+        @Expect(twoGiB[0].maxBufferSize <= 65536, true)
         let unicodeAssets = ArrayList<CkbReproBundleAsset>()
         unicodeAssets.add(p9Asset("资料/结果🙂.json", "仓颉🙂"))
         let seeded = p9ReadableBundle("/tmp/ckb-p9/read-unicode",
@@ -551,6 +555,34 @@ public class CkbReproBundleTest {
         @Expect(p9Load(large).contract.ok, true)
         @Expect(large[0].maxBufferSize, 65536)
         @Expect(large[0].closeCalls, 3)
+
+        let finalizeSeed = p9ReadableBundle(
+            "/tmp/ckb-p9/finalize-loader", p9Assets(false), false)
+        let firstLoad = p9Load(finalizeSeed)
+        let report = CkbReproReleaseVerificationResult()
+        report.ok = true
+        report.diagnostic = "verified"
+        report.verifiedReleaseInputSetHash = firstLoad.manifest.inputSetHash
+        report.bundleProofSetHash = firstLoad.proofSetHash
+        report.releaseCommit = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        report.certifiedRunInputHash = ckbReproBundleHash("input".toArray())
+        report.runCriticalTreeHash = ckbReproBundleHash("tree".toArray())
+        report.referenceManifestHash = ckbReproBundleHash("reference".toArray())
+        report.authorityHash = ckbReproBundleHash("authority".toArray())
+        report.restored.ok = true; report.restored.diagnostic = "ok"
+        report.rebuilt.ok = true; report.rebuilt.diagnostic = "ok"
+        report.publicEvidence.ok = true; report.publicEvidence.diagnostic = "ok"
+        report.documentation.ok = true; report.documentation.diagnostic = "ok"
+        let loadedFinalize = loadCkbReproFinalizeInputs(finalizeSeed[1],
+            renderCkbReproVerificationReport(report).toArray(), finalizeSeed[0])
+        @Expect(loadedFinalize.ok, true)
+        @Expect(loadedFinalize.manifest.inputSetHash,
+            firstLoad.manifest.inputSetHash)
+        @Expect(finalizeSeed[0].maxBufferSize <= 65536, true)
+        let forged = renderCkbReproVerificationReport(report).replace(
+            report.bundleProofSetHash, ckbReproBundleHash("forged".toArray()))
+        @Expect(loadCkbReproFinalizeInputs(finalizeSeed[1], forged.toArray(),
+            finalizeSeed[0]).diagnostic, "bundle_verification_report_mismatch")
     }
 
     @TestCase
