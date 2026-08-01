@@ -27,7 +27,7 @@ public class CkbReproBuildTest {
         routed.outputKind = CangjieTypedRecordKinds.DOC_SECTION
         let routedLock = CkbReproSourceLock(); routedLock.entries.add(routed)
         let original = canonicalCkbReproSourceLockHash(routedLock)
-        routed.outputKind = CangjieTypedRecordKinds.GUIDE
+        routed.outputKind = CangjieTypedRecordKinds.TOOL_MANUAL
         @Expect(canonicalCkbReproSourceLockHash(routedLock) == original, false)
     }
 
@@ -299,7 +299,7 @@ private func p4GeneratedLock(id: String): CkbReproSourceLockEntry {
         "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
     entry.license = "Apache-2.0"
     entry.assemblyRole = "generated_guidance"
-    entry.outputKind = CangjieTypedRecordKinds.GUIDE
+    entry.outputKind = CangjieTypedRecordKinds.TOOL_MANUAL
     entry
 }
 
