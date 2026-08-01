@@ -318,7 +318,7 @@ public func scanCkbPublicEvidenceLeakage(
         text.contains("/Users/") || text.contains("/home/") ||
             text.contains("/private/") || text.contains("/tmp/") ||
             text.contains("/var/folders/") || text.contains("\\\\") ||
-            p5CliSensitivePosixAbsolutePath(text) ||
+            p5CliPosixAbsolutePath(text) ||
             p5CliWindowsAbsolutePath(text),
         "absolute_path")
     ckbPublicEvidenceFinding(report,
@@ -795,10 +795,21 @@ private func p5CliWindowsAbsolutePath(value: String): Bool {
     false
 }
 
-private func p5CliSensitivePosixAbsolutePath(value: String): Bool {
-    for (prefix in ["/etc/", "/opt/", "/srv/", "/usr/", "/root/",
-        "/var/", "/Library/", "/Applications/"]) {
-        if (value.contains(prefix)) { return true }
+private func p5CliPosixAbsolutePath(value: String): Bool {
+    let normalized = value.replace("\n", " ").replace("\r", " ")
+        .replace("\t", " ").replace("\"", " ").replace("'", " ")
+        .replace(",", " ").replace(";", " ").replace("{", " ")
+        .replace("}", " ").replace("[", " ").replace("]", " ")
+        .replace("(", " ").replace(")", " ")
+    for (token in normalized.split(" ")) {
+        if (!token.startsWith("/") || token.contains("://")) { continue }
+        let parts = token.split("/")
+        if (parts.size < 2 || parts[1] == "") { continue }
+        let root = parts[1].toAsciiLower()
+        if (root != "v1" && root != "v2" && root != "api" &&
+            root != "knowledge" && root != "guide" && root != "docs") {
+            return true
+        }
     }
     false
 }
