@@ -488,6 +488,8 @@ private func p5RunProductionExportFixture(
                 "\"certificationPassAt1\":null}").toArray())
     }
     File.writeTo(root.join("run/results.jsonl"), results.toArray())
+    File.writeTo(root.join("run/run-manifest.json"),
+        ("{\"runManifestHash\":\"${p5Hash("manifest")}\"}").toArray())
     let reference = CkbReproReferenceManifest()
     reference.schemaVersion = "ckb-repro-reference-v1"
     reference.baselineKind = "portable_release"
@@ -534,17 +536,7 @@ private func p5RunProductionExportFixture(
 
 private func p5CanonicalExportManifest(
     manifest: CkbPublicEvidenceExportManifest): String {
-    "{\"schemaVersion\":\"${manifest.schemaVersion}\"," +
-        "\"referenceManifestHash\":\"${manifest.referenceManifestHash}\"," +
-        "\"privateResultsHash\":\"${manifest.privateResultsHash}\"," +
-        "\"publicEvidenceHash\":\"${manifest.publicEvidenceHash}\"," +
-        "\"runId\":\"${manifest.runId}\"," +
-        "\"knowledgeVersion\":\"${manifest.knowledgeVersion}\"," +
-        "\"providerFingerprint\":\"${manifest.providerFingerprint}\"," +
-        "\"modelFingerprint\":\"${manifest.modelFingerprint}\"," +
-        "\"runManifestHash\":\"${manifest.runManifestHash}\"," +
-        "\"vectorProofHash\":\"${manifest.vectorProofHash}\"," +
-        "\"certifiedRunInputHash\":\"${manifest.certifiedRunInputHash}\"}"
+    renderCkbPublicEvidenceExportManifest(manifest)
 }
 
 private func p5CopyIdentity(source: CkbStrictScoreEvidenceRow): CkbStrictScoreEvidenceRow {

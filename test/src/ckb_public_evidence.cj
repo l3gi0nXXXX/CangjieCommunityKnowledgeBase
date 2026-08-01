@@ -40,6 +40,13 @@ public class CkbPublicEvidenceExportManifest {
     public var referenceManifestHash: String = ""
     public var privateResultsHash: String = ""
     public var publicEvidenceHash: String = ""
+    public var runId: String = ""
+    public var knowledgeVersion: String = ""
+    public var providerFingerprint: String = ""
+    public var modelFingerprint: String = ""
+    public var runManifestHash: String = ""
+    public var vectorProofHash: String = ""
+    public var certifiedRunInputHash: String = ""
     public init() {}
 }
 
@@ -51,7 +58,7 @@ public func parseCkbPublicEvidenceExportManifest(bytes: Array<UInt8>):
     }
     try {
         let object = JsonValue.fromStr(text).asObject()
-        if (object.size() != 4) {
+        if (object.size() != 11) {
             return (p5ExportManifestResult(false,
                 "public_evidence_export_manifest_invalid"), manifest)
         }
@@ -62,6 +69,20 @@ public func parseCkbPublicEvidenceExportManifest(bytes: Array<UInt8>):
         manifest.privateResultsHash = object.get("privateResultsHash")
             .getOrThrow().asString().getValue()
         manifest.publicEvidenceHash = object.get("publicEvidenceHash")
+            .getOrThrow().asString().getValue()
+        manifest.runId = object.get("runId").getOrThrow()
+            .asString().getValue()
+        manifest.knowledgeVersion = object.get("knowledgeVersion").getOrThrow()
+            .asString().getValue()
+        manifest.providerFingerprint = object.get("providerFingerprint")
+            .getOrThrow().asString().getValue()
+        manifest.modelFingerprint = object.get("modelFingerprint")
+            .getOrThrow().asString().getValue()
+        manifest.runManifestHash = object.get("runManifestHash").getOrThrow()
+            .asString().getValue()
+        manifest.vectorProofHash = object.get("vectorProofHash").getOrThrow()
+            .asString().getValue()
+        manifest.certifiedRunInputHash = object.get("certifiedRunInputHash")
             .getOrThrow().asString().getValue()
     } catch (_: Exception) {
         return (p5ExportManifestResult(false,
@@ -77,14 +98,36 @@ public func validateCkbPublicEvidenceExportManifest(
         return p5ExportManifestResult(false,
             "public_evidence_export_manifest_identity_invalid")
     }
+    if (manifest.runId == "" || manifest.knowledgeVersion == "" ||
+        manifest.modelFingerprint == "") {
+        return p5ExportManifestResult(false,
+            "public_evidence_export_manifest_identity_invalid")
+    }
     for (hash in [manifest.referenceManifestHash, manifest.privateResultsHash,
-        manifest.publicEvidenceHash]) {
+        manifest.publicEvidenceHash, manifest.providerFingerprint,
+        manifest.runManifestHash, manifest.vectorProofHash,
+        manifest.certifiedRunInputHash]) {
         if (!p5ExportManifestHashValid(hash)) {
             return p5ExportManifestResult(false,
                 "public_evidence_export_manifest_hash_invalid")
         }
     }
     p5ExportManifestResult(true, "ok")
+}
+
+public func renderCkbPublicEvidenceExportManifest(
+    manifest: CkbPublicEvidenceExportManifest): String {
+    "{\"schemaVersion\":\"${p5CliJson(manifest.schemaVersion)}\"," +
+        "\"referenceManifestHash\":\"${manifest.referenceManifestHash}\"," +
+        "\"privateResultsHash\":\"${manifest.privateResultsHash}\"," +
+        "\"publicEvidenceHash\":\"${manifest.publicEvidenceHash}\"," +
+        "\"runId\":\"${p5CliJson(manifest.runId)}\"," +
+        "\"knowledgeVersion\":\"${p5CliJson(manifest.knowledgeVersion)}\"," +
+        "\"providerFingerprint\":\"${manifest.providerFingerprint}\"," +
+        "\"modelFingerprint\":\"${p5CliJson(manifest.modelFingerprint)}\"," +
+        "\"runManifestHash\":\"${manifest.runManifestHash}\"," +
+        "\"vectorProofHash\":\"${manifest.vectorProofHash}\"," +
+        "\"certifiedRunInputHash\":\"${manifest.certifiedRunInputHash}\"}"
 }
 
 private func p5ExportManifestResult(ok: Bool, diagnostic: String):
@@ -595,12 +638,37 @@ public func runCkbPublicEvidenceExportFromFiles(
     if (benchmarkGapSha256(resultsText) != parsedReference[1].resultsHash) {
         return p5CliRenderFailure("public_evidence_results_hash_mismatch")
     }
+    let runManifestRead = p5CliReadBounded(
+        Path(options.runRoot).join("run-manifest.json").toString(),
+        16 * 1024 * 1024)
+    if (runManifestRead[0] != "ok") {
+        return p5CliRenderFailure("public_evidence_run_manifest_missing")
+    }
+    let declaredRunManifestHash = try {
+        JsonValue.fromStr(String.fromUtf8(runManifestRead[1])).asObject()
+            .get("runManifestHash").getOrThrow().asString().getValue()
+    } catch (_: Exception) {
+        return p5CliRenderFailure("public_evidence_run_manifest_invalid")
+    }
+    if (!p5ExportManifestHashValid(declaredRunManifestHash)) {
+        return p5CliRenderFailure("public_evidence_run_manifest_invalid")
+    }
     let rows = ArrayList<CkbStrictScoreEvidenceRow>()
     for (line in resultsText.split("\n")) {
         if (line.trimAscii() == "") { continue }
         let certification = parseCkbCertificationEvidence(line.trimAscii())
         if (!certification.valid) {
             return p5CliRenderFailure("public_evidence_certification_invalid")
+        }
+        if (certification.runId != parsedReference[1].runId ||
+            certification.knowledgeVersion !=
+                parsedReference[1].knowledgeVersion ||
+            certification.providerIdentityHash !=
+                parsedReference[1].providerFingerprint ||
+            certification.modelFingerprint != parsedReference[1].model ||
+            certification.runManifestHash != declaredRunManifestHash) {
+            return p5CliRenderFailure(
+                "public_evidence_reference_identity_mismatch")
         }
         if (!validateCkbPublicEvidenceArtifactIdentity(
                 certification.caseId, certification.group).ok) {
@@ -650,10 +718,22 @@ public func runCkbPublicEvidenceExportFromFiles(
         Directory.create(Path(temporary), recursive: false)
         temporaryOwned = true
         let score = renderCkbHumanEvalStrictScoreJson(rendered.score)
-        let manifest = "{\"schemaVersion\":\"ckb-public-evidence-export-v1\"," +
-            "\"referenceManifestHash\":\"${benchmarkGapSha256(String.fromUtf8(referenceBytes))}\"," +
-            "\"privateResultsHash\":\"${parsedReference[1].resultsHash}\"," +
-            "\"publicEvidenceHash\":\"${rendered.evidenceHash}\"}"
+        let exportManifest = CkbPublicEvidenceExportManifest()
+        exportManifest.schemaVersion = "ckb-public-evidence-export-v1"
+        exportManifest.referenceManifestHash =
+            validateCkbReproReferenceManifest(parsedReference[1]).manifestHash
+        exportManifest.privateResultsHash = parsedReference[1].resultsHash
+        exportManifest.publicEvidenceHash = rendered.evidenceHash
+        exportManifest.runId = parsedReference[1].runId
+        exportManifest.knowledgeVersion = parsedReference[1].knowledgeVersion
+        exportManifest.providerFingerprint =
+            parsedReference[1].providerFingerprint
+        exportManifest.modelFingerprint = parsedReference[1].model
+        exportManifest.runManifestHash = declaredRunManifestHash
+        exportManifest.vectorProofHash = parsedReference[1].vectorProofHash
+        exportManifest.certifiedRunInputHash =
+            parsedReference[1].certifiedRunInputHash
+        let manifest = renderCkbPublicEvidenceExportManifest(exportManifest)
         for (payload in [rendered.text, score, manifest]) {
             if (!scanCkbPublicEvidenceLeakage(payload.toArray()).ok) {
                 throw Exception("public evidence leakage")
