@@ -437,6 +437,43 @@ public class CkbReproPublishGateTest {
             "ckb-repro-v1")[0], "publish_tag_encoding_invalid")
         remove(base, recursive: true)
     }
+
+    @TestCase
+    public func p9Neg04FullTestProofBindsActualTrustedRun(): Unit {
+        let commit = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        let tree = ckbReproBundleHash("tree".toArray())
+        let input = ckbReproBundleHash("input".toArray())
+        let manifest = ckbReproBundleHash("release-manifest".toArray())
+        let verifiedAsset = ckbReproBundleHash("verified-input-asset".toArray())
+        let topology = ckbReproBundleHash("tracked-test-topology".toArray())
+        let runner = ckbReproBundleHash("tracked-test-runner".toArray())
+        let source = ckbReproBundleHash("build-attestation".toArray())
+        let cleanLog = ckbReproBundleHash("clean-log".toArray())
+        let buildLog = ckbReproBundleHash("build-log".toArray())
+        let testLog = ckbReproBundleHash("test-log".toArray())
+        let proof = renderCkbReproFullTestProof(commit, tree, input,
+            manifest, verifiedAsset, topology, runner, source,
+            cleanLog, buildLog, testLog, 1266)
+        @Expect(validateCkbReproFullTestProof(proof.toArray(), commit, tree,
+            input, manifest, verifiedAsset, topology, runner, source), "ok")
+        for (tampered in [
+            proof.replace("cjpm build -i", "cjpm build"),
+            proof.replace("\"testExitCode\":0", "\"testExitCode\":1"),
+            proof.replace("\"testPassedCount\":1266",
+                "\"testPassedCount\":1265"),
+            proof.replace(source, ckbReproBundleHash("other-source".toArray())),
+            proof.replace(testLog, ckbReproBundleHash("claimed-log".toArray())),
+            proof.replace("\"proofHash\":\"sha256:",
+                "\"proofHash\":\"sha256:0")
+        ]) {
+            @Expect(validateCkbReproFullTestProof(tampered.toArray(), commit,
+                tree, input, manifest, verifiedAsset, topology, runner, source),
+                "publish_full_test_proof_invalid")
+        }
+        @Expect(validateCkbReproFullTestProof([UInt8(0xff), UInt8(0xfe)],
+            commit, tree, input, manifest, verifiedAsset, topology, runner,
+            source), "invalid_response_encoding")
+    }
 }
 
 private func p9PublishLocalFixture(): String {
