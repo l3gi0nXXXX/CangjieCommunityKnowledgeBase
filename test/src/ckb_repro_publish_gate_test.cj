@@ -397,6 +397,66 @@ public class CkbReproPublishGateTest {
     }
 
     @TestCase
+    public func p9Neg05GitEvidenceUsesCanonicalAuthorityRoot(): Unit {
+        let created = p9TestCommand("mktemp",
+            ["-d", "/tmp/ckb-p9-git-root-XXXXXX"])
+        if (created[0] != 0 || created[1] != "ok" ||
+            created[2].trimAscii() == "") {
+            throw Exception("test temporary directory unavailable")
+        }
+        let base = Path(created[2].trimAscii())
+        let origin = base.join("origin.git")
+        let authority = base.join("authority")
+        try {
+            p9TestCommandOk("git", ["init", "--bare", origin.toString()])
+            p9TestCommandOk("git", ["init", authority.toString()])
+            p9TestCommandOk("git", ["-C", authority.toString(), "config",
+                "user.name", "Metis Repro Test"])
+            p9TestCommandOk("git", ["-C", authority.toString(), "config",
+                "user.email", "repro@example.invalid"])
+            File.writeTo(authority.join("authority.txt"),
+                "authority repository\n".toArray())
+            p9TestCommandOk("git", ["-C", authority.toString(), "add",
+                "authority.txt"])
+            p9TestCommandOk("git", ["-C", authority.toString(), "commit",
+                "-m", "authority commit"])
+            p9TestCommandOk("git", ["-C", authority.toString(), "branch",
+                "-M", "main"])
+            p9TestCommandOk("git", ["-C", authority.toString(), "remote",
+                "add", "origin", origin.toString()])
+            p9TestCommandOk("git", ["-C", authority.toString(), "push",
+                "-u", "origin", "main"])
+            p9TestCommandOk("git", ["-C", authority.toString(), "tag",
+                "-a", "ckb-repro-v1", "-m", "release tag"])
+            p9TestCommandOk("git", ["-C", authority.toString(), "push",
+                "origin", "refs/tags/ckb-repro-v1"])
+            let authorityRoot = canonicalize(authority).toString()
+            @Expect(authorityRoot == canonicalize(Path(".")).toString(), false)
+            let cwdHead = p9TestCommand("git", ["rev-parse", "HEAD"])[2]
+                .trimAscii()
+            let expectedHead = p9TestCommand("git", ["-C", authorityRoot,
+                "rev-parse", "HEAD"])[2].trimAscii()
+            @Expect(expectedHead == cwdHead, false)
+            let observed = readCkbReproRepositoryGitEvidence(authorityRoot,
+                "ckb-repro-v1")
+            @Expect(observed[0], "ok")
+            @Expect(observed[1].originRepository, origin.toString())
+            @Expect(observed[1].headCommit, expectedHead)
+            @Expect(observed[1].originMainCommit, expectedHead)
+            @Expect(observed[1].tagExistsLocal, true)
+            @Expect(observed[1].tagCommit, expectedHead)
+            @Expect(observed[1].tagExistsRemote, true)
+            @Expect(observed[1].remoteTagCommit, expectedHead)
+            @Expect(observed[1].headCommit == cwdHead, false)
+            @Expect(readCkbReproRepositoryGitEvidence(
+                canonicalize(Path(".")).toString(), "ckb-repro-v1")[0],
+                "publish_git_evidence_unavailable")
+        } finally {
+            if (exists(base)) { remove(base, recursive: true) }
+        }
+    }
+
+    @TestCase
     public func p9Neg03ReleaseKeyAndTagVerificationAreIsolated(): Unit {
         let base = Path("target/p9-signing-root")
         if (exists(base)) { remove(base, recursive: true) }
