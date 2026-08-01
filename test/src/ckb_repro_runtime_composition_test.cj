@@ -84,6 +84,14 @@ private class P3RuntimeProcessExecutor <: CkbRetrievalParityProcessExecutor {
     }
 }
 
+private class P3RuntimeParityBackend <: CkbRetrievalParityBackend {
+    public var calls: Int64 = 0
+    public func query(transport: String, query: String):
+        CkbRetrievalParityResponse {
+        this.calls += 1; CkbRetrievalParityResponse()
+    }
+}
+
 private class P3RuntimeSnapshotControl <: CkbQdrantSnapshotExecutor {
     public var calls: Int64 = 0
     public func execute(request: CkbQdrantSnapshotRequest):
@@ -421,6 +429,24 @@ public class CkbReproRuntimeCompositionTest {
                 "qdrant_snapshot_upload_identity_mismatch")
             @Expect(state.calls, before)
 
+            let directory = root.join("directory")
+            Directory.create(directory)
+            @Expect(executor.upload(request, directory.toString(), 0,
+                benchmarkGapSha256("")).diagnostic,
+                "qdrant_snapshot_upload_identity_mismatch")
+            let link = root.join("snapshot-link")
+            @Expect(launch("/bin/ln", ["-s", source.toString(),
+                link.toString()]).wait(), 0)
+            @Expect(executor.upload(request, link.toString(), identity.size,
+                identity.sha256).diagnostic,
+                "qdrant_snapshot_upload_identity_mismatch")
+            let fifo = root.join("snapshot.fifo")
+            @Expect(launch("/usr/bin/mkfifo", [fifo.toString()]).wait(), 0)
+            @Expect(executor.upload(request, fifo.toString(), 0,
+                benchmarkGapSha256("")).diagnostic,
+                "qdrant_snapshot_upload_identity_mismatch")
+            @Expect(state.calls, before)
+
             let http = NativeHttpRequestExecutor(config)
             let bounded = HttpExecutionRequest()
             bounded.url = "http://127.0.0.1:${server.port}/generic-large"
@@ -500,6 +526,23 @@ public class CkbReproRuntimeCompositionTest {
         @Expect(result.diagnostic, "retrieval_parity_query_forbidden")
         @Expect(http.requests.size, 0)
         @Expect(process.calls, 0)
+    }
+
+    @TestCase
+    public func p3RuntimeParityManifestRequiresExactReferenceQuery(): Unit {
+        let backend = P3RuntimeParityBackend()
+        let manifest = CkbRetrievalParityManifest()
+        manifest.knowledgeVersion = "v1"
+        manifest.logicalManifestHash = benchmarkGapSha256("logical")
+        manifest.query = "如何遍历仓颉字符串中的字符？"
+        manifest.canonicalResultHash = benchmarkGapSha256("result")
+        for (transport in ["rest", "mcp_stdio", "mcp_http"]) {
+            manifest.transports.add(transport)
+        }
+        @Expect(verifyCkbRetrievalParityManifest(
+            manifest, backend).diagnostic,
+            "retrieval_parity_manifest_invalid")
+        @Expect(backend.calls, 0)
     }
 
     @TestCase
