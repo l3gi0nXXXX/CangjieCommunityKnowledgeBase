@@ -1,6 +1,7 @@
 package cangjie_community_knowledge_base
 
 import std.collection.{ArrayList, HashMap, HashSet}
+import std.env.getVariable
 import std.fs.{Directory, File, OpenMode, Path, canonicalize, exists, remove, rename}
 import std.sort.*
 import stdx.crypto.digest.SHA256
@@ -291,11 +292,49 @@ public func runCkbReleaseCli(args: Array<String>): CkbReleaseCliExecution {
         return executeCkbReleaseCliAdapter(args,
             CkbReleaseProductionAdapter(CkbReleasePathPolicy()))
     }
-    let policy = CkbReleasePathPolicy()
-    policy.worktreeRoot = try { canonicalize(Path(".")).toString() }
-        catch (_: Exception) { "" }
-    if (options.mode == "export") { policy.productionStoreRoot = options.storeRoot }
+    let policy = ckbDefaultReleasePathPolicy(options)
     executeCkbReleaseCliAdapter(args, CkbReleaseProductionAdapter(policy))
+}
+
+public func ckbDefaultReleasePathPolicy(
+    options: CkbReleaseCliOptions): CkbReleasePathPolicy {
+    let policy = CkbReleasePathPolicy()
+    policy.worktreeRoot = ckbReleaseGitWorktreeRoot()
+    let production = if (options.mode == "export") { options.storeRoot }
+        else if (policy.worktreeRoot == "") { "" }
+        else { Path(policy.worktreeRoot).join("target/ckb-data").toString() }
+    policy.productionStoreRoot = ckbReleaseCanonicalPolicyPath(production)
+    let home = match (getVariable("HOME")) {
+        case Some(value) => value.trimAscii()
+        case None => ""
+    }
+    if (home != "") {
+        policy.userConfigRoot = ckbReleaseCanonicalPolicyPath(
+            Path(home).join(".config/cangjie-community-knowledge-base").toString())
+    }
+    policy
+}
+
+private func ckbReleaseGitWorktreeRoot(): String {
+    var current = try { canonicalize(Path(".")) }
+        catch (_: Exception) { return "" }
+    while (true) {
+        if (exists(current.join(".git"))) { return current.toString() }
+        let parent = current.parent
+        if (parent.toString() == current.toString()) { return "" }
+        current = parent
+    }
+    ""
+}
+
+private func ckbReleaseCanonicalPolicyPath(value: String): String {
+    if (value == "" || !value.startsWith("/")) { return "" }
+    let path = Path(value)
+    if (exists(path)) {
+        return try { canonicalize(path).toString() } catch (_: Exception) { "" }
+    }
+    let parent = try { canonicalize(path.parent) } catch (_: Exception) { return "" }
+    parent.join(path.fileName).toString()
 }
 
 // Production archive codec. It is deliberately binary and length-prefixed:

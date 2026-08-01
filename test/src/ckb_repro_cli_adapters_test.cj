@@ -124,6 +124,15 @@ public class CkbReproCliAdaptersTest {
         ], fake).diagnostic, "missing_argument_value:--target-root")
         @Expect(runCkbReleaseCli(["ckb-release-import"]).diagnostic,
             "required_argument_missing:--archive")
+        let defaults = CkbReleaseCliOptions()
+        defaults.mode = "import"
+        let policy = ckbDefaultReleasePathPolicy(defaults)
+        @Expect(exists(Path(policy.worktreeRoot).join(".git")), true)
+        @Expect(policy.worktreeRoot == canonicalize(Path(".")).toString(), false)
+        @Expect(policy.productionStoreRoot,
+            "${policy.worktreeRoot}/target/ckb-data")
+        @Expect(policy.userConfigRoot.contains(
+            "/.config/cangjie-community-knowledge-base"), true)
         let jsonError = executeCkbReleaseCliAdapter([
             "ckb-release-import", "--archive", "a", "--json"
         ], fake)
