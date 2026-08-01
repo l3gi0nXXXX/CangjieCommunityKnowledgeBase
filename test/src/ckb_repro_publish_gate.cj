@@ -701,24 +701,14 @@ private func p9PublishSafeBundleFile(root: String, name: String): Bool {
 private func p9PublishReadGitEvidence(options: CkbReproPublishGateOptions,
     root: String):
     (String, CkbReproGitEvidence) {
-    let out = CkbReproGitEvidence()
-    let origin = p9PublishCommand("git", ["config", "--get", "remote.origin.url"])
-    let head = p9PublishCommand("git", ["rev-parse", "HEAD"])
-    let remoteMain = p9PublishCommand("git", ["rev-parse", "refs/remotes/origin/main"])
-    if (origin[0] != 0 || head[0] != 0 || remoteMain[0] != 0) {
-        return ("publish_git_evidence_unavailable", out)
+    let repositoryRoot = p9PublishRepositoryRoot()
+    if (repositoryRoot == "") {
+        return ("publish_git_evidence_unavailable", CkbReproGitEvidence())
     }
-    out.originRepository = origin[1]
-    out.headCommit = head[1]
-    out.originMainCommit = remoteMain[1]
-    let tag = p9PublishCommand("git", ["rev-parse", "refs/tags/${options.tagName}"])
-    out.tagExistsLocal = tag[0] == 0
-    out.tagObjectHash = if (out.tagExistsLocal) { tag[1] } else { "" }
-    out.tagCommit = if (out.tagExistsLocal) {
-        let commit = p9PublishCommand("git", ["rev-list", "-n", "1",
-            "refs/tags/${options.tagName}"])
-        if (commit[0] == 0) { commit[1] } else { "" }
-    } else { "" }
+    let observed = readCkbReproRepositoryGitEvidence(repositoryRoot,
+        options.tagName)
+    if (observed[0] != "ok") { return observed }
+    let out = observed[1]
     let snapshot = p9PublishReadRemoteTagSnapshot(root, options,
         out.originRepository, out.originMainCommit)
     if (snapshot[0] != "ok") { return (snapshot[0], out) }
@@ -726,26 +716,62 @@ private func p9PublishReadGitEvidence(options: CkbReproPublishGateOptions,
     out.remoteTagSnapshotFresh = true
     out.remoteTagState = snapshot[1]
     out.remoteTagCommit = snapshot[2]
-    let remoteQuery = p9PublishCommandRaw("git", ["ls-remote", "--tags", "origin",
-        "refs/tags/${options.tagName}", "refs/tags/${options.tagName}^{}"])
-    if (remoteQuery[0] != 0) {
-        return ("publish_remote_tag_evidence_unavailable", out)
-    }
-    let remote = parseCkbRemoteTagLsRemote(remoteQuery[1], options.tagName)
-    if (remote[0] != "ok") { return (remote[0], out) }
-    out.tagExistsRemote = remote[1]
-    out.remoteTagObjectHash = remote[2]
     if (out.remoteTagState == "present") {
         if (!out.tagExistsRemote) {
             return ("publish_remote_tag_evidence_unavailable", out)
         }
-        if (remote[3] != out.remoteTagCommit ||
-            remote[2] != out.tagObjectHash) {
+        if (out.remoteTagCommit != snapshot[2] ||
+            out.remoteTagObjectHash != out.tagObjectHash) {
             return ("publish_tag_binding_mismatch", out)
         }
     } else if (out.tagExistsRemote) {
         return ("publish_tag_already_exists", out)
     }
+    ("ok", out)
+}
+
+public func readCkbReproRepositoryGitEvidence(repositoryRoot: String,
+    tagName: String): (String, CkbReproGitEvidence) {
+    let out = CkbReproGitEvidence()
+    if (!p9PublishCanonicalRoot(repositoryRoot) ||
+        !p9PublishTagName(tagName)) {
+        return ("publish_git_evidence_unavailable", out)
+    }
+    let origin = p9PublishCommand("git", ["-C", repositoryRoot,
+        "config", "--get", "remote.origin.url"])
+    let head = p9PublishCommand("git", ["-C", repositoryRoot,
+        "rev-parse", "HEAD"])
+    let remoteMain = p9PublishCommand("git", ["-C", repositoryRoot,
+        "rev-parse", "refs/remotes/origin/main"])
+    if (origin[0] != 0 || head[0] != 0 || remoteMain[0] != 0) {
+        return ("publish_git_evidence_unavailable", out)
+    }
+    out.originRepository = origin[1]
+    out.headCommit = head[1]
+    out.originMainCommit = remoteMain[1]
+    let tag = p9PublishCommand("git", ["-C", repositoryRoot,
+        "rev-parse", "refs/tags/${tagName}"])
+    out.tagExistsLocal = tag[0] == 0
+    out.tagObjectHash = if (out.tagExistsLocal) { tag[1] } else { "" }
+    if (out.tagExistsLocal) {
+        let commit = p9PublishCommand("git", ["-C", repositoryRoot,
+            "rev-list", "-n", "1", "refs/tags/${tagName}"])
+        if (commit[0] != 0) {
+            return ("publish_git_evidence_unavailable", out)
+        }
+        out.tagCommit = commit[1]
+    }
+    let remoteQuery = p9PublishCommandRaw("git", ["-C", repositoryRoot,
+        "ls-remote", "--tags", "origin", "refs/tags/${tagName}",
+        "refs/tags/${tagName}^{}"])
+    if (remoteQuery[0] != 0) {
+        return ("publish_remote_tag_evidence_unavailable", out)
+    }
+    let remote = parseCkbRemoteTagLsRemote(remoteQuery[1], tagName)
+    if (remote[0] != "ok") { return (remote[0], out) }
+    out.tagExistsRemote = remote[1]
+    out.remoteTagObjectHash = remote[2]
+    out.remoteTagCommit = remote[3]
     ("ok", out)
 }
 

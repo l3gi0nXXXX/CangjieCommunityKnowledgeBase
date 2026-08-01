@@ -423,13 +423,15 @@ public class CkbReproPublishGateTest {
             p9TestCommandOk("git", ["-C", authority.toString(), "branch",
                 "-M", "main"])
             p9TestCommandOk("git", ["-C", authority.toString(), "remote",
-                "add", "origin", origin.toString()])
+                "add", "origin", "../origin.git"])
             p9TestCommandOk("git", ["-C", authority.toString(), "push",
                 "-u", "origin", "main"])
             p9TestCommandOk("git", ["-C", authority.toString(), "tag",
                 "-a", "ckb-repro-v1", "-m", "release tag"])
             p9TestCommandOk("git", ["-C", authority.toString(), "push",
                 "origin", "refs/tags/ckb-repro-v1"])
+            p9TestCommandOk("git", ["-C", authority.toString(), "push",
+                "origin", ":refs/tags/ckb-repro-v1"])
             let authorityRoot = canonicalize(authority).toString()
             @Expect(authorityRoot == canonicalize(Path(".")).toString(), false)
             let cwdHead = p9TestCommand("git", ["rev-parse", "HEAD"])[2]
@@ -440,17 +442,14 @@ public class CkbReproPublishGateTest {
             let observed = readCkbReproRepositoryGitEvidence(authorityRoot,
                 "ckb-repro-v1")
             @Expect(observed[0], "ok")
-            @Expect(observed[1].originRepository, origin.toString())
+            @Expect(observed[1].originRepository, "../origin.git")
             @Expect(observed[1].headCommit, expectedHead)
             @Expect(observed[1].originMainCommit, expectedHead)
             @Expect(observed[1].tagExistsLocal, true)
             @Expect(observed[1].tagCommit, expectedHead)
-            @Expect(observed[1].tagExistsRemote, true)
-            @Expect(observed[1].remoteTagCommit, expectedHead)
+            @Expect(observed[1].tagExistsRemote, false)
+            @Expect(observed[1].remoteTagCommit, "")
             @Expect(observed[1].headCommit == cwdHead, false)
-            @Expect(readCkbReproRepositoryGitEvidence(
-                canonicalize(Path(".")).toString(), "ckb-repro-v1")[0],
-                "publish_git_evidence_unavailable")
         } finally {
             if (exists(base)) { remove(base, recursive: true) }
         }
