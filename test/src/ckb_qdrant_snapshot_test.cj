@@ -1,7 +1,7 @@
 package cangjie_community_knowledge_base_test
 
 import std.collection.ArrayList
-import std.fs.{File, Path}
+import std.fs.{Directory, File, Path, exists, remove}
 import std.unittest.*
 import std.unittest.testmacro.*
 
@@ -152,6 +152,54 @@ public class CkbQdrantSnapshotTest {
         @Expect(parseCkbQdrantSnapshotManifest(
             "{\"schemaVersion\":".toArray())[0].diagnostic,
             "qdrant_snapshot_field_contract_invalid")
+
+        let root = Path("target/p3-typed-proof-tamper")
+        if (exists(root)) { remove(root, recursive: true) }
+        Directory.create(root, recursive: true)
+        let proof = CkbPortableVectorProof()
+        proof.collection = "ckb-portable-candidate-a"
+        proof.candidateVersion = "candidate-a"
+        proof.p4PortableProofHash = p3Hash("p4")
+        proof.qdrantImageDigest = p3Hash("qdrant")
+        proof.embeddingProvider = "deterministic"
+        proof.embeddingModel = "ckb-repro-v1"
+        proof.count = 7978
+        proof.dimension = 1024
+        proof.distance = "Cosine"
+        proof.payloadCanonicalHash = p3Hash("payload")
+        proof.vectorProofHash = benchmarkGapSha256(
+            "${proof.collection}|${proof.candidateVersion}|" +
+            "${proof.p4PortableProofHash}|${proof.qdrantImageDigest}|" +
+            "${proof.embeddingProvider}|${proof.embeddingModel}|" +
+            "${proof.count}|${proof.dimension}|${proof.distance}|" +
+            proof.payloadCanonicalHash)
+        let validPath = root.join("valid.json")
+        File.writeTo(validPath, renderCkbPortableVectorProof(proof).toArray())
+        @Expect(parseCkbPortableVectorProofFile(validPath.toString())[0].ok, true)
+        let tampered = renderCkbPortableVectorProof(proof).replace(
+            "\"count\":7978", "\"count\":7977")
+        let tamperedPath = root.join("tampered.json")
+        File.writeTo(tamperedPath, tampered.toArray())
+        @Expect(parseCkbPortableVectorProofFile(
+            tamperedPath.toString())[0].diagnostic,
+            "portable_vector_proof_hash_mismatch")
+        File.writeTo(root.join("invalid.json"), [UInt8(0xff), UInt8(0xfe)])
+        @Expect(parseCkbPortableVectorProofFile(
+            root.join("invalid.json").toString())[0].diagnostic,
+            "invalid_response_encoding")
+        remove(root, recursive: true)
+    }
+
+    @TestCase
+    public func p3ProofJsonEscapesEveryControlRune(): Unit {
+        let proof = CkbPortableVectorProof()
+        var controls = ""
+        for (value in 0..32) { controls += Rune(UInt32(value)).toString() }
+        proof.collection = controls
+        let json = renderCkbPortableVectorProof(proof)
+        for (value in 0..32) {
+            @Expect(json.contains(Rune(UInt32(value)).toString()), false)
+        }
     }
 
     @TestCase

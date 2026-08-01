@@ -277,7 +277,8 @@ public class CkbReproCliAdaptersTest {
         @Expect(provider.pathContext("portable").apiRoutes[0], "/v1/query")
 
         let adapter = newCkbP3BusinessProductionAdapter(
-            KnowledgeBase(FakeClock(0)), store, LocalVectorStore(), pathContext,
+            DeterministicEmbeddingProvider(EmbeddingConfig()), store,
+            LocalVectorStore(), pathContext,
             P234SnapshotDependency(), P234ParityDependency(),
             CkbReleasePathPolicy())
         @Expect(adapter is CkbP3CliAdapter, true)
