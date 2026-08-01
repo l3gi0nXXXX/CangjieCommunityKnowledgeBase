@@ -23,6 +23,19 @@ private class P9FakeSignatureVerifier <: CkbReproSignatureVerifier {
     }
 }
 
+private class P9FakePublishCliExecutor <: CkbReproPublishGateCliExecutor {
+    public var bundleExists: Bool = true
+    public var calls: Int64 = 0
+    public var result: CkbReproPublishGateResult
+    public init(value: CkbReproPublishGateResult) { this.result = value }
+    public func exists(path: String): Bool { this.bundleExists }
+    public func evaluate(options: CkbReproPublishGateCliOptions):
+        CkbReproPublishGateResult {
+        this.calls += 1
+        this.result
+    }
+}
+
 @Test
 public class CkbReproPublishGateTest {
     @TestCase
@@ -45,6 +58,18 @@ public class CkbReproPublishGateTest {
             P9FakeSignatureVerifier(p9SignatureEvidence(true)))
         @Expect(postResult.componentReady, true)
         @Expect(postResult.publishable, false)
+
+        let cliOptions = parseCkbReproPublishGateCliArgs([
+            "ckb-repro-publish-gate", "--mode", "pre-tag", "--bundle",
+            "/tmp/发布 资料/final"
+        ])
+        @Expect(cliOptions.valid, true)
+        let cliExecutor = P9FakePublishCliExecutor(result)
+        let cli = executeCkbReproPublishGateCliAdapter(cliOptions, cliExecutor)
+        @Expect(cli.componentReady, true)
+        @Expect(cliExecutor.calls, 1)
+        @Expect(renderCkbReproPublishGateCliHuman(cli).contains("{\""), false)
+        @Expect(renderCkbReproPublishGateCliJson(cli).startsWith("{"), true)
     }
 
     @TestCase
@@ -76,6 +101,21 @@ public class CkbReproPublishGateTest {
             P9FakeSignatureVerifier(p9SignatureEvidence(false)))
         @Expect(blocked.componentReady, true)
         @Expect(blocked.publishable, false)
+
+        @Expect(parseCkbReproPublishGateCliArgs([
+            "ckb-repro-publish-gate", "--mode", "invalid", "--bundle",
+            "/tmp/final"]).diagnostic, "publish_mode_invalid")
+        @Expect(parseCkbReproPublishGateCliArgs([
+            "ckb-repro-publish-gate", "--mode", "pre-tag", "--bundle",
+            "relative/final"]).diagnostic, "publish_bundle_root_invalid")
+        let missingExecutor = P9FakePublishCliExecutor(result)
+        missingExecutor.bundleExists = false
+        let missing = executeCkbReproPublishGateCliAdapter(
+            parseCkbReproPublishGateCliArgs([
+                "ckb-repro-publish-gate", "--mode", "pre-tag", "--bundle",
+                "/tmp/final"]), missingExecutor)
+        @Expect(missing.diagnostic, "publish_bundle_root_missing")
+        @Expect(missingExecutor.calls, 0)
     }
 }
 

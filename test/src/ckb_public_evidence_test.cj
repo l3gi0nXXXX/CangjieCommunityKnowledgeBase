@@ -4,6 +4,39 @@ import std.collection.ArrayList
 import std.unittest.*
 import std.unittest.testmacro.*
 
+private class P5FakeCliExecutor <: CkbPublicEvidenceCliExecutor {
+    public var outputExists: Bool = false
+    public var parentExists: Bool = true
+    public var inputExists: Bool = true
+    public var failExport: Bool = false
+    public var executeCalls: Int64 = 0
+    public var cleanupCalls: Int64 = 0
+    public init() {}
+    public func exists(path: String): Bool {
+        if (path.endsWith("/out")) { return this.outputExists }
+        this.inputExists
+    }
+    public func outputParentExists(path: String): Bool { this.parentExists }
+    public func exportEvidence(options: CkbPublicEvidenceCliOptions):
+        CkbPublicEvidenceRenderResult {
+        this.executeCalls += 1
+        this.outputExists = true
+        let out = CkbPublicEvidenceRenderResult()
+        out.ok = !this.failExport
+        out.diagnostic = if (out.ok) { "ok" } else { "sensitive_content_detected" }
+        out.evidenceHash = if (out.ok) { p5Hash("public-evidence") } else { "" }
+        out.score.valid = out.ok
+        out.score.total = if (out.ok) { 164 } else { 0 }
+        out.score.strictPassed = if (out.ok) { 151 } else { 0 }
+        out
+    }
+    public func cleanupOutput(path: String): Bool {
+        this.cleanupCalls += 1
+        this.outputExists = false
+        true
+    }
+}
+
 @Test
 public class CkbPublicEvidenceTest {
     @TestCase
@@ -45,6 +78,40 @@ public class CkbPublicEvidenceTest {
         @Expect(projectCkbPublicEvidenceRow(
             p5CertificationJson(0, true).toArray(), "{bad".toArray()).diagnostic,
             "audit_malformed_result_row")
+
+        let parsed = parseCkbPublicEvidenceCliArgs([
+            "ckb-public-evidence-export", "--run-root", "/tmp/私有🙂",
+            "--reference-manifest", "/tmp/私有🙂/reference.json",
+            "--output", "/tmp/发布 资料/out"
+        ])
+        @Expect(parsed.valid, true)
+        @Expect(parsed.runRoot, "/tmp/私有🙂")
+        let context = p5CliContext()
+        let fake = P5FakeCliExecutor()
+        @Expect(validateCkbPublicEvidenceCliOptions(parsed, context, fake).ok, true)
+        let veryLong = "界" * 4097
+        @Expect(parseCkbPublicEvidenceCliArgs([
+            "ckb-public-evidence-export", "--run-root", "/tmp/${veryLong}",
+            "--reference-manifest", "/tmp/reference.json", "--output",
+            "/tmp/发布 资料/out"
+        ]).diagnostic, "cli_argument_too_long")
+        for (output in ["relative/out", "/tmp/../escape/out",
+            "/tmp/metis-worktree/out", "/tmp/ckb-data/out",
+            "/tmp/私有🙂/out", "/tmp/settings/out",
+            "/tmp/repro-unsigned/out", "/tmp/repro-final/out"]) {
+            let options = p5CliOptions(output)
+            @Expect(validateCkbPublicEvidenceCliOptions(options, context, fake).ok,
+                false)
+        }
+        fake.parentExists = false
+        @Expect(validateCkbPublicEvidenceCliOptions(
+            p5CliOptions("/tmp/发布 资料/out"), context, fake).diagnostic,
+            "public_evidence_output_parent_missing")
+        fake.parentExists = true
+        fake.outputExists = true
+        @Expect(validateCkbPublicEvidenceCliOptions(
+            p5CliOptions("/tmp/发布 资料/out"), context, fake).diagnostic,
+            "public_evidence_output_exists")
     }
 
     @TestCase
@@ -105,6 +172,22 @@ public class CkbPublicEvidenceTest {
             p5AuditJson(0, false, false, false).toArray())
         @Expect(inconsistent.ok, false)
         @Expect(inconsistent.diagnostic, "certification_audit_outcome_mismatch")
+
+        let fake = P5FakeCliExecutor()
+        fake.failExport = true
+        let failed = executeCkbPublicEvidenceCliAdapter(
+            p5CliOptions("/tmp/发布 资料/out"), p5CliContext(), fake)
+        @Expect(failed.ok, false)
+        @Expect(failed.diagnostic, "sensitive_content_detected")
+        @Expect(fake.executeCalls, 1)
+        @Expect(fake.cleanupCalls, 1)
+        @Expect(fake.outputExists, false)
+        let human = renderCkbPublicEvidenceCliHuman(failed)
+        @Expect(human.contains("{\""), false)
+        @Expect(human.contains("Authorization"), false)
+        @Expect(human.contains("/Users/"), false)
+        let explicitJson = renderCkbPublicEvidenceCliJson(failed)
+        @Expect(explicitJson.startsWith("{"), true)
     }
 
     @TestCase
@@ -136,6 +219,24 @@ public class CkbPublicEvidenceTest {
             privateScore, publicScore, rows[0], otherIdentity).diagnostic,
             "identity_mismatch")
     }
+}
+
+private func p5CliOptions(output: String): CkbPublicEvidenceCliOptions {
+    parseCkbPublicEvidenceCliArgs([
+        "ckb-public-evidence-export", "--run-root", "/tmp/私有🙂",
+        "--reference-manifest", "/tmp/私有🙂/reference.json",
+        "--output", output
+    ])
+}
+
+private func p5CliContext(): CkbPublicEvidenceCliPathContext {
+    let context = CkbPublicEvidenceCliPathContext()
+    context.worktreeRoot = "/tmp/metis-worktree"
+    context.productionRoot = "/tmp/ckb-data"
+    context.userConfigRoot = "/tmp/settings"
+    context.unsignedRoot = "/tmp/repro-unsigned"
+    context.finalRoot = "/tmp/repro-final"
+    context
 }
 
 private func p5CertificationJson(caseIndex: Int64, passed: Bool): String {

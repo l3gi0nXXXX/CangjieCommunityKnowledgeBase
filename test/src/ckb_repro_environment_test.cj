@@ -149,6 +149,23 @@ public class CkbReproEnvironmentTest {
         @Expect(validateCkbReproEnvironmentLock(osDrift,
             mode: "execution").diagnostic,
             "environment_platform_unsupported")
+
+        @Expect(parseCkbReproPreflightCliArgs([
+            "ckb-repro-preflight", "--environment-lock", "/tmp/expected.json",
+            "--observed-environment", "/tmp/observed.json",
+            "--certification-preflight", "/tmp/preflight.json",
+            "--certification-run-manifest", "/tmp/run-manifest.json",
+            "--json"]).valid, true)
+        @Expect(parseCkbReproPreflightCliArgs([
+            "ckb-repro-preflight", "--environment-lock", "/tmp/expected.json",
+            "--observed-environment", "/tmp/observed.json",
+            "--certification-preflight", "/tmp/preflight.json",
+            "--certification-run-manifest", "/tmp/run-manifest.json",
+            "--json", "--json"]).diagnostic,
+            "duplicate_argument:--json")
+        @Expect(parseCkbReproPreflightCliArgs([
+            "ckb-repro-preflight", "--token", "secret"]).diagnostic,
+            "unknown_argument:--token")
     }
 
     @TestCase
@@ -188,6 +205,30 @@ public class CkbReproEnvironmentTest {
         @Expect(rendered.contains("CKB_EMBEDDING_TOKEN"), true)
         @Expect(rendered.contains("Authorization"), false)
         @Expect(rendered.contains("Bearer "), false)
+
+        let cliInputs = CkbReproPreflightCliInputs()
+        cliInputs.expected = lock
+        cliInputs.observed = lock
+        cliInputs.heap = ckbServiceHeapPreflight("4GB")
+        cliInputs.certificationPreflightJson = seal[0]
+        cliInputs.certificationRunManifestJson = seal[1]
+        let cli = executeCkbReproPreflightCliAdapter(
+            parseCkbReproPreflightCliArgs([
+                "ckb-repro-preflight", "--environment-lock", "/tmp/expected.json",
+                "--observed-environment", "/tmp/observed.json",
+                "--certification-preflight", "/tmp/preflight.json",
+                "--certification-run-manifest", "/tmp/run-manifest.json"]),
+            cliInputs)
+        @Expect(cli.ok, true)
+        let human = renderCkbReproPreflightCliHuman(cli, lock)
+        @Expect(human.contains("preflight: passed"), true)
+        @Expect(human.contains("{\""), false)
+        @Expect(human.contains(lock.glmBaseUrl), false)
+        @Expect(human.contains(lock.glmCredentialEnv), false)
+        let json = renderCkbReproPreflightCliJson(cli, lock)
+        @Expect(json.startsWith("{"), true)
+        @Expect(json.contains(lock.glmBaseUrl), false)
+        @Expect(json.contains(lock.glmCredentialEnv), false)
     }
 
     @TestCase

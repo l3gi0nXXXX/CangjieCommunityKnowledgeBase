@@ -38,6 +38,42 @@ private class P9FakeBundleBackend <: CkbReproBundleBackend {
     }
 }
 
+private class P9FakeBundleCliExecutor <: CkbReproBundleCliExecutor {
+    public var outputExists: Bool = false
+    public var parentExists: Bool = true
+    public var unsignedExists: Bool = true
+    public var reportExists: Bool = true
+    public var fail: Bool = false
+    public var unsignedCalls: Int64 = 0
+    public var finalizeCalls: Int64 = 0
+    public var cleanupCalls: Int64 = 0
+    public init() {}
+    public func exists(path: String): Bool {
+        if (path.endsWith("/out")) { return this.outputExists }
+        if (path.endsWith("/unsigned")) { return this.unsignedExists }
+        if (path.endsWith("/p8-b.json")) { return this.reportExists }
+        false
+    }
+    public func outputParentExists(path: String): Bool { this.parentExists }
+    public func assembleUnsigned(options: CkbReproBundleCliOptions):
+        CkbReproBundleResult {
+        this.unsignedCalls += 1
+        this.outputExists = true
+        p9CliBundleResult(!this.fail)
+    }
+    public func finalizeBundle(options: CkbReproBundleCliOptions):
+        CkbReproBundleResult {
+        this.finalizeCalls += 1
+        this.outputExists = true
+        p9CliBundleResult(!this.fail)
+    }
+    public func cleanupOutput(path: String): Bool {
+        this.cleanupCalls += 1
+        this.outputExists = false
+        true
+    }
+}
+
 private class P9FakeBundleReadBackend <: CkbReproBundleReadBackend {
     public let roots = HashMap<String, HashMap<String, Array<UInt8>>>()
     public let listings =
@@ -282,6 +318,43 @@ public class CkbReproBundleTest {
         @Expect(assembleCkbUnsignedReleaseCandidate(
             p9BundleOptions("/tmp/ckb-p9/existing"), p9Assets(false),
             existingBackend).diagnostic, "bundle_output_exists")
+
+        let context = p9CliContext()
+        let fake = P9FakeBundleCliExecutor()
+        let unsigned = parseCkbReproBundleCliArgs([
+            "ckb-repro-bundle", "--mode", "unsigned", "--output",
+            "/tmp/发布 资料/out"
+        ])
+        @Expect(unsigned.valid, true)
+        @Expect(validateCkbReproBundleCliOptions(unsigned, context, fake).ok,
+            true)
+        let finalize = parseCkbReproBundleCliArgs([
+            "ckb-repro-bundle", "--mode", "finalize", "--unsigned-root",
+            "/tmp/已验证🙂/unsigned", "--verification-report",
+            "/tmp/证据/p8-b.json", "--output", "/tmp/发布 资料/out"
+        ])
+        @Expect(finalize.valid, true)
+        @Expect(validateCkbReproBundleCliOptions(finalize, context, fake).ok,
+            true)
+        for (output in ["relative/out", "/tmp/../escape/out",
+            "/tmp/metis-worktree/out", "/tmp/ckb-data/out",
+            "/tmp/p8-runs/out", "/tmp/settings/out"]) {
+            let options = parseCkbReproBundleCliArgs([
+                "ckb-repro-bundle", "--mode", "unsigned", "--output", output])
+            @Expect(validateCkbReproBundleCliOptions(options, context, fake).ok,
+                false)
+        }
+        let overlap = parseCkbReproBundleCliArgs([
+            "ckb-repro-bundle", "--mode", "finalize", "--unsigned-root",
+            "/tmp/发布 资料", "--verification-report", "/tmp/证据/p8-b.json",
+            "--output", "/tmp/发布 资料/out"
+        ])
+        @Expect(validateCkbReproBundleCliOptions(overlap, context, fake).diagnostic,
+            "bundle_unsigned_final_overlap")
+        @Expect(parseCkbReproBundleCliArgs([
+            "ckb-repro-bundle", "--mode", "unsigned", "--unsigned-root",
+            "/tmp/已验证🙂/unsigned", "--output", "/tmp/发布 资料/out"
+        ]).diagnostic, "bundle_unsigned_arguments_conflict")
     }
 
     @TestCase
@@ -308,6 +381,21 @@ public class CkbReproBundleTest {
             ckbReproBundleHash("wrong-input-set".toArray()), backend)
         @Expect(finalizeResult.diagnostic, "bundle_verified_input_changed")
         @Expect(backend.rootExists("/tmp/ckb-p9/final"), false)
+
+        let fake = P9FakeBundleCliExecutor()
+        fake.fail = true
+        let cliOptions = parseCkbReproBundleCliArgs([
+            "ckb-repro-bundle", "--mode", "finalize", "--unsigned-root",
+            "/tmp/已验证🙂/unsigned", "--verification-report",
+            "/tmp/证据/p8-b.json", "--output", "/tmp/发布 资料/out"
+        ])
+        let failed = executeCkbReproBundleCliAdapter(cliOptions, p9CliContext(), fake)
+        @Expect(failed.ok, false)
+        @Expect(fake.finalizeCalls, 1)
+        @Expect(fake.cleanupCalls, 1)
+        @Expect(fake.outputExists, false)
+        @Expect(renderCkbReproBundleCliHuman(failed).contains("{\""), false)
+        @Expect(renderCkbReproBundleCliJson(failed).startsWith("{"), true)
     }
 
     @TestCase
@@ -692,6 +780,27 @@ public class CkbReproBundleTest {
         @Expect(forwardResult.canonicalJson, reverseResult.canonicalJson)
         @Expect(forwardResult.manifestHash, reverseResult.manifestHash)
     }
+}
+
+private func p9CliBundleResult(ok: Bool): CkbReproBundleResult {
+    let result = CkbReproBundleResult()
+    result.ok = ok
+    result.diagnostic = if (ok) { "component_ready" } else {
+        "bundle_verified_input_changed"
+    }
+    result.inputSetHash = if (ok) { ckbReproBundleHash("input".toArray()) } else { "" }
+    result.treeHash = if (ok) { ckbReproBundleHash("tree".toArray()) } else { "" }
+    result.assetCount = if (ok) { 2 } else { 0 }
+    result
+}
+
+private func p9CliContext(): CkbReproBundleCliPathContext {
+    let context = CkbReproBundleCliPathContext()
+    context.worktreeRoot = "/tmp/metis-worktree"
+    context.productionRoot = "/tmp/ckb-data"
+    context.privateRunRoot = "/tmp/p8-runs"
+    context.userConfigRoot = "/tmp/settings"
+    context
 }
 
 private func p9Asset(path: String, value: String): CkbReproBundleAsset {
