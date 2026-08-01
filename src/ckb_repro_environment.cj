@@ -3,7 +3,7 @@ package cangjie_community_knowledge_base
 import std.collection.ArrayList
 import std.convert.Parsable
 import std.env.getVariable
-import std.fs.{File, OpenMode, Path, canonicalize, exists}
+import std.fs.{Directory, File, OpenMode, Path, canonicalize, exists}
 import std.io.InputStream
 import std.process.{ProcessRedirect, launch}
 import stdx.crypto.digest.SHA256
@@ -121,6 +121,16 @@ public interface CkbReproEnvironmentProbe {
         CkbReproEnvironmentProbeResult
 }
 
+public interface CkbReproGitProbeRunner {
+    func run(command: String, args: Array<String>): (Int64, String)
+}
+
+private class P6FilesystemGitProbeRunner <: CkbReproGitProbeRunner {
+    public func run(command: String, args: Array<String>): (Int64, String) {
+        p6ProbeCommand(command, args)
+    }
+}
+
 public class CkbReproAttestationAuthority {
     public var signingFingerprint: String = ""
     public var observedEnvironmentHash: String = ""
@@ -129,7 +139,11 @@ public class CkbReproAttestationAuthority {
 }
 
 public class CkbReproFilesystemEnvironmentProbe <: CkbReproEnvironmentProbe {
-    public init() {}
+    private let gitRunner: CkbReproGitProbeRunner
+    public init(gitRunner!: CkbReproGitProbeRunner =
+        P6FilesystemGitProbeRunner()) {
+        this.gitRunner = gitRunner
+    }
     public func inspect(attested: CkbReproEnvironmentLock,
         attestedInputHash: String):
         CkbReproEnvironmentProbeResult {
@@ -143,7 +157,10 @@ public class CkbReproFilesystemEnvironmentProbe <: CkbReproEnvironmentProbe {
         if (sdkPath == "") { return out }
         let sdk = p6ProbeCommand(sdkPath, ["--version"])
         let openssl = p6ProbeCommand("openssl", ["version"])
-        let commit = p6ProbeCommand("git", ["rev-parse", "HEAD"])
+        let repositoryRoot = p6ProbeCanonicalInputPath(
+            "CKB_REPRO_REPOSITORY_ROOT", "")
+        if (repositoryRoot == "") { return out }
+        let commit = ckbReproProbeGitCommit(repositoryRoot, this.gitRunner)
         let claude = p6ProbeCommand("claude", ["--version"])
         let tar = p6ProbeCommand("tar", ["--version"])
         let zstd = p6ProbeCommand("zstd", ["--version"])
@@ -163,7 +180,9 @@ public class CkbReproFilesystemEnvironmentProbe <: CkbReproEnvironmentProbe {
         observed.schemaVersion = "ckb-repro-environment-v1"
         observed.identityStatus = "frozen"
         p6CopyUnobservableAuthorityFields(attested, observed)
-        if (p6ProbeActualConfiguration(observed) != "ok") { return out }
+        if (p6ProbeActualConfiguration(observed, repositoryRoot) != "ok") {
+            return out
+        }
         observed.certifiedPlatform = if (platform[1] == "Darwin") {
             "macOS"
         } else { platform[1] }
@@ -182,6 +201,20 @@ public class CkbReproFilesystemEnvironmentProbe <: CkbReproEnvironmentProbe {
         out.attestedInputHash = attestedInputHash
         out
     }
+}
+
+public func ckbReproProbeGitCommit(repositoryRoot: String,
+    runner: CkbReproGitProbeRunner): (Int64, String) {
+    if (!p6CliAbsolutePath(repositoryRoot) || !exists(Path(repositoryRoot))) {
+        return (127, "")
+    }
+    let canonical = try { canonicalize(Path(repositoryRoot)).toString() }
+        catch (_: Exception) { return (127, "") }
+    if (canonical != repositoryRoot) { return (127, "") }
+    try {
+        for (_ in Directory.readFrom(Path(repositoryRoot))) { break }
+    } catch (_: Exception) { return (127, "") }
+    runner.run("git", ["-C", repositoryRoot, "rev-parse", "HEAD"])
 }
 
 public func parseCkbReproPreflightCliArgs(args: Array<String>):
@@ -872,7 +905,8 @@ private func p6CopyUnobservableAuthorityFields(source: CkbReproEnvironmentLock,
     target.transportRetryBudget = source.transportRetryBudget
 }
 
-private func p6ProbeActualConfiguration(target: CkbReproEnvironmentLock): String {
+private func p6ProbeActualConfiguration(target: CkbReproEnvironmentLock,
+    expectedRepositoryRoot: String): String {
     let heap = p6ProbeRequiredEnv("cjHeapSize")
     let provider = p6ProbeRequiredEnv("GLM_PROVIDER")
     let baseUrl = p6ProbeRequiredEnv("GLM_BASE_URL")
@@ -897,6 +931,9 @@ private func p6ProbeActualConfiguration(target: CkbReproEnvironmentLock): String
         catch (_: Exception) { return "environment_probe_configuration_invalid" }
     let repositoryRoot = p6ProbeCanonicalInputPath(
         "CKB_REPRO_REPOSITORY_ROOT", "")
+    if (repositoryRoot != expectedRepositoryRoot) {
+        return "environment_probe_input_changed"
+    }
     let criticalPath = p6ProbeCanonicalInputPath(
         "CKB_REPRO_RUN_CRITICAL_MANIFEST", repositoryRoot)
     let promptPath = p6ProbeCanonicalInputPath(
