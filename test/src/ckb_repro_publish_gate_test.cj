@@ -456,6 +456,18 @@ public class CkbReproPublishGateTest {
     }
 
     @TestCase
+    public func p9Neg06LiveRemoteTagMustMatchSignedSnapshot(): Unit {
+        let live = p9GitEvidence(true)
+        live.remoteTagCommit =
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        let signedSnapshotCommit =
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        @Expect(p9PublishBindRemoteTagSnapshot(live, "present",
+            signedSnapshotCommit, signedSnapshotCommit),
+            "publish_tag_binding_mismatch")
+    }
+
+    @TestCase
     public func p9Neg03ReleaseKeyAndTagVerificationAreIsolated(): Unit {
         let base = Path("target/p9-signing-root")
         if (exists(base)) { remove(base, recursive: true) }

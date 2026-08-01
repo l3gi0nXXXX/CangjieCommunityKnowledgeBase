@@ -712,22 +712,32 @@ private func p9PublishReadGitEvidence(options: CkbReproPublishGateOptions,
     let snapshot = p9PublishReadRemoteTagSnapshot(root, options,
         out.originRepository, out.originMainCommit)
     if (snapshot[0] != "ok") { return (snapshot[0], out) }
+    let binding = p9PublishBindRemoteTagSnapshot(out, snapshot[1], snapshot[2],
+        options.releaseCommit)
+    if (binding != "ok") { return (binding, out) }
+    ("ok", out)
+}
+
+func p9PublishBindRemoteTagSnapshot(out: CkbReproGitEvidence,
+    snapshotState: String, snapshotCommit: String,
+    releaseCommit: String): String {
     out.remoteTagSnapshotAvailable = true
     out.remoteTagSnapshotFresh = true
-    out.remoteTagState = snapshot[1]
-    out.remoteTagCommit = snapshot[2]
+    out.remoteTagState = snapshotState
+    out.remoteTagCommit = snapshotCommit
     if (out.remoteTagState == "present") {
         if (!out.tagExistsRemote) {
-            return ("publish_remote_tag_evidence_unavailable", out)
+            return "publish_remote_tag_evidence_unavailable"
         }
-        if (out.remoteTagCommit != snapshot[2] ||
+        if (out.remoteTagCommit != snapshotCommit ||
+            snapshotCommit != releaseCommit ||
             out.remoteTagObjectHash != out.tagObjectHash) {
-            return ("publish_tag_binding_mismatch", out)
+            return "publish_tag_binding_mismatch"
         }
     } else if (out.tagExistsRemote) {
-        return ("publish_tag_already_exists", out)
+        return "publish_tag_already_exists"
     }
-    ("ok", out)
+    "ok"
 }
 
 public func readCkbReproRepositoryGitEvidence(repositoryRoot: String,
