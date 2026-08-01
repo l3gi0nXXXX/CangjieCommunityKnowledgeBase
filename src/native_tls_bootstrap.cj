@@ -43,7 +43,13 @@ public func ckbCommandNeedsNativeTlsBootstrap(command: String): Bool {
         command == "doctor" ||
         command == "metrics" ||
         command == "cangjie-landing-status" ||
-        command == "cangjie-corpus-status"
+        command == "cangjie-corpus-status" ||
+        command == "ckb-portable-vector-build" ||
+        command == "ckb-qdrant-snapshot" ||
+        command == "ckb-retrieval-parity" ||
+        command == "ckb-repro-build" ||
+        command == "ckb-repro-promote" ||
+        command == "ckb-repro-verify"
 }
 
 private func ckbNativeTlsShellQuote(value: String): String {
