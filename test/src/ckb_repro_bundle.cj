@@ -328,9 +328,10 @@ private class P9BundleContentScanner {
     private var recent = ArrayList<UInt8>()
     public init(scanText: Bool) { this.textRequired = scanText }
     public func feed(bytes: Array<UInt8>): Unit {
-        if (!this.textRequired || this.invalidEncoding) { return }
         for (byte in bytes) {
-            this.validateUtf8Byte(byte)
+            if (this.textRequired && !this.invalidEncoding) {
+                this.validateUtf8Byte(byte)
+            }
             if (this.recent.size >= 1024) {
                 this.scanRecent()
                 let tail = ArrayList<UInt8>()
@@ -350,8 +351,8 @@ private class P9BundleContentScanner {
         }
     }
     public func finish(): String {
-        if (!this.textRequired) { return "ok" }
-        if (this.invalidEncoding || this.utf8Remaining != 0) {
+        if (this.textRequired &&
+            (this.invalidEncoding || this.utf8Remaining != 0)) {
             return "bundle_text_encoding_invalid"
         }
         if (this.sensitive) { return "bundle_sensitive_content_detected" }
