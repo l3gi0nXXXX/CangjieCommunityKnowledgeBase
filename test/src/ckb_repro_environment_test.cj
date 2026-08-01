@@ -1,8 +1,10 @@
 package cangjie_community_knowledge_base_test
 
-import std.fs.{Directory, File, Path, exists, remove}
+import std.collection.ArrayList
+import std.fs.{Directory, File, Path, canonicalize, exists, remove}
 import std.unittest.*
 import std.unittest.testmacro.*
+import stdx.encoding.json.JsonValue
 
 private class P6FakeRunner <: CkbReproRunnerInvoker {
     public var count: Int64 = 0
@@ -12,6 +14,28 @@ private class P6FakeRunner <: CkbReproRunnerInvoker {
         this.count += 1
         this.args = value
         0
+    }
+}
+
+private class P6FakeEnvironmentProbe <: CkbReproEnvironmentProbe {
+    public var result: CkbReproEnvironmentProbeResult
+    public var calls: Int64 = 0
+    public init(value: CkbReproEnvironmentProbeResult) { this.result = value }
+    public func inspect(attested: CkbReproEnvironmentLock,
+        attestedInputHash: String):
+        CkbReproEnvironmentProbeResult {
+        this.calls += 1
+        this.result
+    }
+}
+
+private class P6FakeGitProbeRunner <: CkbReproGitProbeRunner {
+    public var command: String = ""
+    public var args: Array<String> = Array<String>()
+    public func run(value: String, arguments: Array<String>): (Int64, String) {
+        this.command = value
+        this.args = arguments
+        (0, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
     }
 }
 
@@ -149,6 +173,23 @@ public class CkbReproEnvironmentTest {
         @Expect(validateCkbReproEnvironmentLock(osDrift,
             mode: "execution").diagnostic,
             "environment_platform_unsupported")
+
+        @Expect(parseCkbReproPreflightCliArgs([
+            "ckb-repro-preflight", "--environment-lock", "/tmp/expected.json",
+            "--observed-environment", "/tmp/observed.json",
+            "--certification-preflight", "/tmp/preflight.json",
+            "--certification-run-manifest", "/tmp/run-manifest.json",
+            "--json"]).valid, true)
+        @Expect(parseCkbReproPreflightCliArgs([
+            "ckb-repro-preflight", "--environment-lock", "/tmp/expected.json",
+            "--observed-environment", "/tmp/observed.json",
+            "--certification-preflight", "/tmp/preflight.json",
+            "--certification-run-manifest", "/tmp/run-manifest.json",
+            "--json", "--json"]).diagnostic,
+            "duplicate_argument:--json")
+        @Expect(parseCkbReproPreflightCliArgs([
+            "ckb-repro-preflight", "--token", "secret"]).diagnostic,
+            "unknown_argument:--token")
     }
 
     @TestCase
@@ -188,6 +229,35 @@ public class CkbReproEnvironmentTest {
         @Expect(rendered.contains("CKB_EMBEDDING_TOKEN"), true)
         @Expect(rendered.contains("Authorization"), false)
         @Expect(rendered.contains("Bearer "), false)
+
+        let cliInputs = CkbReproPreflightCliInputs()
+        cliInputs.expected = lock
+        cliInputs.observed = lock
+        cliInputs.heap = ckbServiceHeapPreflight("4GB")
+        cliInputs.certificationPreflightJson = seal[0]
+        cliInputs.certificationRunManifestJson = seal[1]
+        let cli = executeCkbReproPreflightCliAdapter(
+            parseCkbReproPreflightCliArgs([
+                "ckb-repro-preflight", "--environment-lock", "/tmp/expected.json",
+                "--observed-environment", "/tmp/observed.json",
+                "--certification-preflight", "/tmp/preflight.json",
+                "--certification-run-manifest", "/tmp/run-manifest.json"]),
+            cliInputs)
+        @Expect(cli.ok, true)
+        let human = renderCkbReproPreflightCliHuman(cli, lock)
+        @Expect(human.contains("preflight: passed"), true)
+        @Expect(human.contains("{\""), false)
+        @Expect(human.contains(lock.glmBaseUrl), false)
+        @Expect(human.contains(lock.glmCredentialEnv), false)
+        let json = renderCkbReproPreflightCliJson(cli, lock)
+        @Expect(json.startsWith("{"), true)
+        @Expect(json.contains(lock.glmBaseUrl), false)
+        @Expect(json.contains(lock.glmCredentialEnv), false)
+        let controlLock = p6FrozenEnvironment()
+        controlLock.certifiedPlatform = "macOS\u{0001}"
+        @Expect(try { JsonValue.fromStr(
+            renderCkbReproPreflightCliJson(cli, controlLock)); true }
+            catch (_: Exception) { false }, true)
     }
 
     @TestCase
@@ -271,6 +341,126 @@ public class CkbReproEnvironmentTest {
     }
 
     @TestCase
+    public func p6Neg01CopiedObservedCannotOverrideActualProbe(): Unit {
+        let expected = p6FrozenEnvironment()
+        let inputs = CkbReproPreflightCliInputs()
+        inputs.expected = expected
+        inputs.observed = expected
+        inputs.heap = ckbServiceHeapPreflight("4GB")
+        let seal = p6CertificationSeal()
+        inputs.certificationPreflightJson = seal[0]
+        inputs.certificationRunManifestJson = seal[1]
+        let options = parseCkbReproPreflightCliArgs([
+            "ckb-repro-preflight", "--environment-lock", "/tmp/expected.json",
+            "--observed-environment", "/tmp/observed.json",
+            "--certification-preflight", "/tmp/preflight.json",
+            "--certification-run-manifest", "/tmp/run-manifest.json"])
+
+        let drifted = CkbReproEnvironmentProbeResult()
+        drifted.ok = true
+        drifted.observed = p6FrozenEnvironment()
+        drifted.attestedInputHash = p6Hash(
+            renderCkbReproEnvironmentLock(inputs.observed))
+        drifted.observed.timeoutSeconds = 3599
+        let driftProbe = P6FakeEnvironmentProbe(drifted)
+        let blocked = executeCkbReproPreflightCliAdapterWithProbe(
+            options, inputs, driftProbe)
+        @Expect(blocked.ok, false)
+        @Expect(blocked.diagnostic, "environment_identity_drift")
+        @Expect(driftProbe.calls, 1)
+
+        let unavailable = CkbReproEnvironmentProbeResult()
+        unavailable.diagnostic = "environment_probe_unavailable"
+        @Expect(executeCkbReproPreflightCliAdapterWithProbe(options, inputs,
+            P6FakeEnvironmentProbe(unavailable)).diagnostic,
+            "environment_probe_unavailable")
+
+        let matched = CkbReproEnvironmentProbeResult()
+        matched.ok = true
+        matched.observed = p6FrozenEnvironment()
+        matched.attestedInputHash = p6Hash(
+            renderCkbReproEnvironmentLock(inputs.observed))
+        @Expect(executeCkbReproPreflightCliAdapterWithProbe(options, inputs,
+            P6FakeEnvironmentProbe(matched)).ok, true)
+
+        @Expect(runCkbReproPreflightCliAdapter(options).diagnostic,
+            "environment_attestation_authority_unavailable")
+        let untrusted = CkbReproAttestationAuthority()
+        untrusted.signingFingerprint =
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        untrusted.frozen = false
+        @Expect(runCkbReproPreflightCliAdapter(options, untrusted).diagnostic,
+            "environment_attestation_authority_unavailable")
+    }
+
+    @TestCase
+    public func p6Bnd01ActualProbeIsHashBoundBoundedAndUtf8Safe(): Unit {
+        let expected = p6FrozenEnvironment()
+        let inputs = CkbReproPreflightCliInputs()
+        inputs.expected = expected
+        inputs.observed = expected
+        inputs.heap = ckbServiceHeapPreflight("4GB")
+        let seal = p6CertificationSeal()
+        inputs.certificationPreflightJson = seal[0]
+        inputs.certificationRunManifestJson = seal[1]
+        let options = parseCkbReproPreflightCliArgs([
+            "ckb-repro-preflight", "--environment-lock", "/tmp/expected.json",
+            "--observed-environment", "/tmp/observed.json",
+            "--certification-preflight", "/tmp/preflight.json",
+            "--certification-run-manifest", "/tmp/run-manifest.json"])
+
+        let unbound = CkbReproEnvironmentProbeResult()
+        unbound.ok = true
+        unbound.observed = p6FrozenEnvironment()
+        unbound.attestedInputHash = p6Hash("different-attestation")
+        @Expect(executeCkbReproPreflightCliAdapterWithProbe(options, inputs,
+            P6FakeEnvironmentProbe(unbound)).diagnostic,
+            "environment_attestation_input_mismatch")
+
+        @Expect(ckbReproSdkExecutableHash("sdk-binary".toArray()),
+            p6Hash("sdk-binary"))
+        @Expect(ckbReproSdkExecutableHash("sdk-binary-2".toArray()) ==
+            ckbReproSdkExecutableHash("sdk-binary".toArray()), false)
+
+        let unicode = ckbReproNormalizeProbeOutput(
+            "仓颉🙂\nversion".toArray(), 64)
+        @Expect(unicode[0], "ok")
+        @Expect(unicode[1], "仓颉🙂 version")
+        @Expect(ckbReproNormalizeProbeOutput([0xff, 0xfe], 64)[0],
+            "environment_probe_invalid_encoding")
+        @Expect(ckbReproNormalizeProbeOutput("ok\u{0001}bad".toArray(), 64)[0],
+            "environment_probe_control_character")
+        @Expect(ckbReproNormalizeProbeOutput(
+            "/Users/private/repository".toArray(), 64)[0],
+            "environment_probe_path_leak")
+        for (path in ["/mnt", "/Volumes/private", "/data/release", "/etc"]) {
+            @Expect(ckbReproNormalizeProbeOutput(path.toArray(), 64)[0],
+                "environment_probe_path_leak")
+        }
+        for (safe in ["https://provider.example/v1/models", "/v2/models",
+            "/knowledge/search", "/guide/install"]) {
+            @Expect(ckbReproNormalizeProbeOutput(safe.toArray(), 128)[0],
+                "ok")
+        }
+        let long = ArrayList<UInt8>()
+        for (_ in 0..4096) { long.add(all: "🙂".toArray()) }
+        @Expect(ckbReproNormalizeProbeOutput(long.toArray(), 256)[0],
+            "environment_probe_output_too_large")
+
+        let concurrent = ckbReproBoundedProbeCommand("/bin/sh", ["-c",
+            "i=0; while [ $i -lt 12000 ]; do printf x; printf y >&2; i=$((i+1)); done"],
+            8192)
+        @Expect(concurrent[0], Int64(0))
+        @Expect(concurrent[1], "environment_probe_output_too_large")
+
+        let production = CkbReproFilesystemEnvironmentProbe().inspect(
+            expected, p6Hash(renderCkbReproEnvironmentLock(expected)))
+        @Expect(production.ok, false)
+        @Expect(production.diagnostic, "environment_probe_unavailable")
+        @Expect(production.observed.glmProvider, "")
+    }
+
+    @TestCase
     public func p6Reg01MirrorsConfigsManifestAndCriticalContractStayStable(): Unit {
         @Expect(p6MirrorEquivalent("../src/ckb_repro_environment.cj",
             "src/ckb_repro_environment.cj"), true)
@@ -301,9 +491,30 @@ public class CkbReproEnvironmentTest {
             @Expect(text.contains("password="), false)
         }
     }
+
+    @TestCase
+    public func p6Reg02GitCommitProbeIsBoundToCanonicalRepositoryRoot(): Unit {
+        let root = Path("target/p6-git-probe/repository")
+        if (exists(root.parent)) { remove(root.parent, recursive: true) }
+        Directory.create(root, recursive: true)
+        let canonicalRoot = canonicalize(root).toString()
+        let runner = P6FakeGitProbeRunner()
+        let result = ckbReproProbeGitCommit(canonicalRoot, runner)
+        @Expect(result[0], Int64(0))
+        @Expect(result[1], "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        @Expect(runner.command, "git")
+        @Expect(runner.args,
+            ["-C", canonicalRoot, "rev-parse", "HEAD"])
+        for (invalid in ["", root.toString(), canonicalRoot + "/missing"]) {
+            let blocked = P6FakeGitProbeRunner()
+            @Expect(ckbReproProbeGitCommit(invalid, blocked)[0], Int64(127))
+            @Expect(blocked.command, "")
+        }
+        remove(root.parent, recursive: true)
+    }
 }
 
-private func p6FrozenEnvironment(): CkbReproEnvironmentLock {
+public func p6FrozenEnvironment(): CkbReproEnvironmentLock {
     let lock = CkbReproEnvironmentLock()
     lock.schemaVersion = "ckb-repro-environment-v1"
     lock.identityStatus = "frozen"
@@ -321,6 +532,7 @@ private func p6FrozenEnvironment(): CkbReproEnvironmentLock {
     lock.glmProvider = "openai-compatible"
     lock.glmBaseUrl = "https://provider.example/v1"
     lock.glmModel = "GLM-5.2"
+    lock.modelFingerprint = "claude-code-glm-5.2"
     lock.glmCredentialEnv = "GLM_API_KEY"
     lock.embeddingProvider = "ollama"
     lock.embeddingModel = "bge-m3:latest"
@@ -380,7 +592,7 @@ private func p6PublicDelivery(authority: Array<UInt8>,
     manifest
 }
 
-private func p6RunnerInputs(): CkbReproRunnerInputs {
+public func p6RunnerInputs(): CkbReproRunnerInputs {
     let inputs = CkbReproRunnerInputs()
     inputs.runId = "p6-fixture"
     inputs.repoRoot = "target/repository"

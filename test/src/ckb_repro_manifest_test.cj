@@ -49,7 +49,7 @@ public class CkbReproManifestTest {
             mode: "execution")
         @Expect(execution.ok, true)
         @Expect(execution.treeHash,
-            "sha256:4d9cc4d4fb7ee221a62733499ac62f234601fe80ddc78a0742e06415544b5f86")
+            "sha256:518f714dccdd03547fea8f279b1e32892639aa129ca1e03aae5e85cfbe53f4e4")
     }
 
     @TestCase
@@ -253,7 +253,7 @@ public class CkbReproManifestTest {
         @Expect(validation.ok, true)
         @Expect(validation.canonicalJson.contains("\"certifiedRunInputHash\""), false)
         @Expect(validation.manifestHash,
-            "sha256:0cbda0519ab1de4a1c55979a937b82f2b739637f7cf48390a7bfcc2128fdff88")
+            "sha256:0642644d26edeb6cdd9a0a2b0283247c0d2277b1646eac72165a2b3c03fb9a79")
         let historicalWithOptional = validation.canonicalJson.replace(
             "\"runCriticalTreeHash\":\"${parsed[1].runCriticalTreeHash}\"",
             "\"runCriticalTreeHash\":\"${parsed[1].runCriticalTreeHash}\"," +
@@ -325,6 +325,7 @@ private func p0CompleteReference(): CkbReproReferenceManifest {
     manifest.runnerCommit = "0123456789012345678901234567890123456789"
     manifest.claudeCodeVersion = "2.1.179"
     manifest.model = "GLM-5.2"
+    manifest.modelFingerprint = "claude-code-glm-5.2"
     manifest.providerFingerprint = p0HashA()
     manifest.experimentGroup = "D-ckb-mcp-http"
     manifest.toolTransport = "streamable_http"
