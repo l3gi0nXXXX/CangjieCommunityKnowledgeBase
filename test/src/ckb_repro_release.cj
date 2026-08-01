@@ -1,7 +1,7 @@
 package cangjie_community_knowledge_base_test
 
 import std.collection.{ArrayList, HashSet}
-import std.fs.{Directory, File, Path, canonicalize, exists, remove, rename}
+import std.fs.{Directory, File, OpenMode, Path, canonicalize, exists, remove, rename}
 import std.sort.*
 import stdx.crypto.digest.SHA256
 import stdx.encoding.json.*
@@ -281,20 +281,32 @@ public func runCkbReleaseCli(args: Array<String>): CkbReleaseCliExecution {
 // Production archive codec. It is deliberately binary and length-prefixed:
 // snapshot payloads are never decoded as UTF-8, while entry paths are.
 public class CkbPortableReleaseArchiveBackend <: CkbReleaseArchiveBackend {
+    public var maxBufferBytes: Int64 = 0
     public func create(archivePath: String,
         values: ArrayList<CkbReleaseArchivePayload>): CkbReleaseArchiveOperation {
         let result = CkbReleaseArchiveOperation()
         try {
-            let bytes = ArrayList<UInt8>()
-            bytes.add(all: "CKBREL01".toArray())
-            ckbReleaseArchiveAppendInt(bytes, values.size)
+            if (values.size > 128) { throw Exception("archive_count") }
+            var total: Int64 = 16
             for (value in values) {
-                let pathBytes = value.path.toArray()
-                ckbReleaseArchiveAppendInt(bytes, pathBytes.size)
-                ckbReleaseArchiveAppendInt(bytes, value.bytes.size)
-                bytes.add(all: pathBytes); bytes.add(all: value.bytes)
+                let pathSize = value.path.toArray().size
+                if (pathSize <= 0 || pathSize > 4096 || value.bytes.size > 67108864 ||
+                    total > 536870912 - 16 - pathSize - value.bytes.size) {
+                    throw Exception("archive_bounds")
+                }
+                total += 16 + pathSize + value.bytes.size
             }
-            File.writeTo(Path(archivePath), bytes.toArray())
+            try (file = File(Path(archivePath), OpenMode.Write)) {
+                file.write("CKBREL01".toArray())
+                file.write(ckbReleaseArchiveIntBytes(values.size))
+                for (value in values) {
+                    let pathBytes = value.path.toArray()
+                    file.write(ckbReleaseArchiveIntBytes(pathBytes.size))
+                    file.write(ckbReleaseArchiveIntBytes(value.bytes.size))
+                    file.write(pathBytes)
+                    ckbReleaseArchiveWriteChunks(file, value.bytes, this)
+                }
+            }
             result.ok = true; result.diagnostic = "ok"
         } catch (_: Exception) { result.diagnostic = "archive_operation_failed" }
         result
@@ -302,26 +314,66 @@ public class CkbPortableReleaseArchiveBackend <: CkbReleaseArchiveBackend {
 
     public func enumerate(archivePath: String): CkbReleaseArchiveListing {
         let result = CkbReleaseArchiveListing()
-        let parsed = ckbReleaseArchiveParse(archivePath)
-        if (!parsed[0].ok) { result.diagnostic = parsed[0].diagnostic; return result }
-        for (payload in parsed[1]) {
-            let entry = CkbReleaseArchiveEntry(); entry.path = payload.path
-            entry.kind = CkbReleaseArchiveEntryKinds.REGULAR
-            entry.size = payload.bytes.size; result.entries.add(entry)
+        try {
+            try (file = File(Path(archivePath), OpenMode.Read)) {
+                let header = ckbReleaseArchiveReadHeader(file, this)
+                var total: Int64 = 16
+                for (_ in 0..header) {
+                    let pathSize = ckbReleaseArchiveReadInt(file, this)
+                    let bodySize = ckbReleaseArchiveReadInt(file, this)
+                    ckbReleaseArchiveValidateLengths(pathSize, bodySize)
+                    if (total > 536870912 - 16 - pathSize - bodySize) {
+                        throw Exception("archive_total_size")
+                    }
+                    total += 16 + pathSize + bodySize
+                    let path = ckbReleaseArchiveReadPath(file, pathSize, this)
+                    ckbReleaseArchiveSkip(file, bodySize, this)
+                    let entry = CkbReleaseArchiveEntry(); entry.path = path
+                    entry.kind = CkbReleaseArchiveEntryKinds.REGULAR
+                    entry.size = bodySize; result.entries.add(entry)
+                }
+                ckbReleaseArchiveRequireEof(file, this)
+            }
+            result.ok = true; result.diagnostic = "ok"
+        } catch (e: Exception) {
+            result.diagnostic = if (e.message == "invalid_response_encoding") {
+                "invalid_response_encoding"
+            } else { "archive_listing_failed" }
+            result.entries.clear()
         }
-        result.ok = true; result.diagnostic = "ok"; result
+        result
     }
 
     public func readRegular(archivePath: String,
         relativePath: String): CkbReleaseArchiveRead {
         let result = CkbReleaseArchiveRead()
-        let parsed = ckbReleaseArchiveParse(archivePath)
-        if (!parsed[0].ok) { result.diagnostic = parsed[0].diagnostic; return result }
-        for (payload in parsed[1]) {
-            if (payload.path == relativePath) {
-                result.ok = true; result.diagnostic = "ok"
-                result.bytes = payload.bytes.clone(); return result
+        try {
+            try (file = File(Path(archivePath), OpenMode.Read)) {
+                let count = ckbReleaseArchiveReadHeader(file, this)
+                var found: Bool = false; var total: Int64 = 16
+                for (_ in 0..count) {
+                    let pathSize = ckbReleaseArchiveReadInt(file, this)
+                    let bodySize = ckbReleaseArchiveReadInt(file, this)
+                    ckbReleaseArchiveValidateLengths(pathSize, bodySize)
+                    if (total > 536870912 - 16 - pathSize - bodySize) {
+                        throw Exception("archive_total_size")
+                    }
+                    total += 16 + pathSize + bodySize
+                    let path = ckbReleaseArchiveReadPath(file, pathSize, this)
+                    if (path == relativePath) {
+                        if (found) { throw Exception("archive_duplicate") }
+                        result.bytes = ckbReleaseArchiveReadBody(file, bodySize, this)
+                        found = true
+                    } else { ckbReleaseArchiveSkip(file, bodySize, this) }
+                }
+                ckbReleaseArchiveRequireEof(file, this)
+                if (found) { result.ok = true; result.diagnostic = "ok"; return result }
             }
+        } catch (e: Exception) {
+            result.diagnostic = if (e.message == "invalid_response_encoding") {
+                "invalid_response_encoding"
+            } else { "archive_entry_read_failed" }
+            return result
         }
         result.diagnostic = "archive_entry_missing"; result
     }
@@ -449,58 +501,115 @@ private func ckbReleaseCliJsonEscape(value: String): String {
     out.toString()
 }
 
-private func ckbReleaseArchiveAppendInt(out: ArrayList<UInt8>, value: Int64): Unit {
+private func ckbReleaseArchiveIntBytes(value: Int64): Array<UInt8> {
+    let out = ArrayList<UInt8>()
     for (shift in [56, 48, 40, 32, 24, 16, 8, 0]) {
         var divisor: Int64 = 1
         for (_ in 0..(shift / 8)) { divisor *= 256 }
         out.add(UInt8((value / divisor) % 256))
     }
+    out.toArray()
 }
 
-private func ckbReleaseArchiveReadInt(bytes: Array<UInt8>, offset: Int64): Int64 {
-    if (offset < 0 || offset + 8 > bytes.size) { throw Exception("archive_truncated") }
-    var value: Int64 = 0
-    for (i in 0..8) { value = value * 256 + Int64(bytes[offset + i]) }
+private func ckbReleaseArchiveTrackBuffer(backend: CkbPortableReleaseArchiveBackend,
+    size: Int64): Unit {
+    if (size > backend.maxBufferBytes) { backend.maxBufferBytes = size }
+}
+
+private func ckbReleaseArchiveReadExact(file: File, size: Int64,
+    backend: CkbPortableReleaseArchiveBackend): Array<UInt8> {
+    if (size < 0 || size > 65536) { throw Exception("archive_bounds") }
+    let out = Array<UInt8>(size, repeat: UInt8(0)); var offset: Int64 = 0
+    ckbReleaseArchiveTrackBuffer(backend, size)
+    while (offset < size) {
+        let chunk = Array<UInt8>(size - offset, repeat: UInt8(0))
+        ckbReleaseArchiveTrackBuffer(backend, chunk.size)
+        let count = file.read(chunk)
+        if (count <= 0 || count > chunk.size) { throw Exception("archive_truncated") }
+        for (i in 0..count) { out[offset + i] = chunk[i] }
+        offset += count
+    }
+    out
+}
+
+private func ckbReleaseArchiveReadInt(file: File,
+    backend: CkbPortableReleaseArchiveBackend): Int64 {
+    let bytes = ckbReleaseArchiveReadExact(file, 8, backend); var value: Int64 = 0
+    for (byte in bytes) {
+        if (value > 36028797018963967) { throw Exception("archive_overflow") }
+        value = value * 256 + Int64(byte)
+    }
     value
 }
 
-private func ckbReleaseArchiveParse(path: String):
-    (CkbReleaseArchiveOperation, ArrayList<CkbReleaseArchivePayload>) {
-    let result = CkbReleaseArchiveOperation()
-    let payloads = ArrayList<CkbReleaseArchivePayload>()
-    try {
-        let bytes = File.readFrom(Path(path)); let magic = "CKBREL01".toArray()
-        if (bytes.size < 16) { throw Exception("archive_truncated") }
-        for (i in 0..magic.size) { if (bytes[i] != magic[i]) { throw Exception("archive_magic") } }
-        let count = ckbReleaseArchiveReadInt(bytes, 8)
-        if (count < 0 || count > 128) { throw Exception("archive_count") }
-        var offset: Int64 = 16
-        for (_ in 0..count) {
-            let pathSize = ckbReleaseArchiveReadInt(bytes, offset); offset += 8
-            let bodySize = ckbReleaseArchiveReadInt(bytes, offset); offset += 8
-            if (pathSize <= 0 || pathSize > 4096 || bodySize < 0 ||
-                bodySize > 67108864 || offset + pathSize + bodySize > bytes.size) {
-                throw Exception("archive_bounds")
-            }
-            let pathBytes = ArrayList<UInt8>()
-            for (i in 0..pathSize) { pathBytes.add(bytes[offset + i]) }
-            offset += pathSize
-            let relative = try { String.fromUtf8(pathBytes.toArray()) }
-                catch (_: Exception) { throw Exception("invalid_response_encoding") }
-            let payload = CkbReleaseArchivePayload(); payload.path = relative
-            let body = ArrayList<UInt8>()
-            for (i in 0..bodySize) { body.add(bytes[offset + i]) }
-            offset += bodySize; payload.bytes = body.toArray(); payloads.add(payload)
-        }
-        if (offset != bytes.size) { throw Exception("archive_trailing_bytes") }
-        result.ok = true; result.diagnostic = "ok"
-    } catch (e: Exception) {
-        result.diagnostic = if (e.message == "invalid_response_encoding") {
-            "invalid_response_encoding"
-        } else { "archive_listing_failed" }
-        payloads.clear()
+private func ckbReleaseArchiveReadHeader(file: File,
+    backend: CkbPortableReleaseArchiveBackend): Int64 {
+    if (ckbReleaseArchiveReadExact(file, 8, backend) != "CKBREL01".toArray()) {
+        throw Exception("archive_magic")
     }
-    (result, payloads)
+    let count = ckbReleaseArchiveReadInt(file, backend)
+    if (count < 0 || count > 128) { throw Exception("archive_count") }
+    count
+}
+
+private func ckbReleaseArchiveValidateLengths(pathSize: Int64, bodySize: Int64): Unit {
+    if (pathSize <= 0 || pathSize > 4096 || bodySize < 0 || bodySize > 67108864) {
+        throw Exception("archive_bounds")
+    }
+}
+
+private func ckbReleaseArchiveReadPath(file: File, size: Int64,
+    backend: CkbPortableReleaseArchiveBackend): String {
+    try { String.fromUtf8(ckbReleaseArchiveReadExact(file, size, backend)) }
+    catch (_: Exception) { throw Exception("invalid_response_encoding") }
+}
+
+private func ckbReleaseArchiveSkip(file: File, size: Int64,
+    backend: CkbPortableReleaseArchiveBackend): Unit {
+    let buffer = Array<UInt8>(65536, repeat: UInt8(0))
+    ckbReleaseArchiveTrackBuffer(backend, buffer.size); var remaining = size
+    while (remaining > 0) {
+        let wanted = if (remaining < buffer.size) { remaining } else { buffer.size }
+        let chunk = if (wanted == buffer.size) { buffer }
+            else { Array<UInt8>(wanted, repeat: UInt8(0)) }
+        ckbReleaseArchiveTrackBuffer(backend, chunk.size)
+        let count = file.read(chunk)
+        if (count <= 0 || count > wanted) { throw Exception("archive_truncated") }
+        remaining -= count
+    }
+}
+
+private func ckbReleaseArchiveReadBody(file: File, size: Int64,
+    backend: CkbPortableReleaseArchiveBackend): Array<UInt8> {
+    let out = ArrayList<UInt8>(); let buffer = Array<UInt8>(65536, repeat: UInt8(0))
+    ckbReleaseArchiveTrackBuffer(backend, buffer.size); var remaining = size
+    while (remaining > 0) {
+        let wanted = if (remaining < buffer.size) { remaining } else { buffer.size }
+        let chunk = if (wanted == buffer.size) { buffer }
+            else { Array<UInt8>(wanted, repeat: UInt8(0)) }
+        ckbReleaseArchiveTrackBuffer(backend, chunk.size)
+        let count = file.read(chunk)
+        if (count <= 0 || count > wanted) { throw Exception("archive_truncated") }
+        for (i in 0..count) { out.add(chunk[i]) }; remaining -= count
+    }
+    out.toArray()
+}
+
+private func ckbReleaseArchiveRequireEof(file: File,
+    backend: CkbPortableReleaseArchiveBackend): Unit {
+    let one = Array<UInt8>(1, repeat: UInt8(0)); ckbReleaseArchiveTrackBuffer(backend, 1)
+    if (file.read(one) != 0) { throw Exception("archive_trailing_bytes") }
+}
+
+private func ckbReleaseArchiveWriteChunks(file: File, bytes: Array<UInt8>,
+    backend: CkbPortableReleaseArchiveBackend): Unit {
+    var offset: Int64 = 0
+    while (offset < bytes.size) {
+        let count = if (bytes.size - offset < 65536) { bytes.size - offset } else { 65536 }
+        let chunk = Array<UInt8>(count, repeat: UInt8(0))
+        for (i in 0..count) { chunk[i] = bytes[offset + i] }
+        ckbReleaseArchiveTrackBuffer(backend, chunk.size); file.write(chunk); offset += count
+    }
 }
 
 private func ckbReleaseRequiredString(object: JsonObject, key: String): String {
