@@ -721,15 +721,15 @@ private func p9PublishReadGitEvidence(options: CkbReproPublishGateOptions,
 func p9PublishBindRemoteTagSnapshot(out: CkbReproGitEvidence,
     snapshotState: String, snapshotCommit: String,
     releaseCommit: String): String {
+    let liveRemoteTagCommit = out.remoteTagCommit
     out.remoteTagSnapshotAvailable = true
     out.remoteTagSnapshotFresh = true
     out.remoteTagState = snapshotState
-    out.remoteTagCommit = snapshotCommit
     if (out.remoteTagState == "present") {
         if (!out.tagExistsRemote) {
             return "publish_remote_tag_evidence_unavailable"
         }
-        if (out.remoteTagCommit != snapshotCommit ||
+        if (liveRemoteTagCommit != snapshotCommit ||
             snapshotCommit != releaseCommit ||
             out.remoteTagObjectHash != out.tagObjectHash) {
             return "publish_tag_binding_mismatch"

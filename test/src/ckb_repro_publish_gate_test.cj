@@ -465,6 +465,8 @@ public class CkbReproPublishGateTest {
         @Expect(p9PublishBindRemoteTagSnapshot(live, "present",
             signedSnapshotCommit, signedSnapshotCommit),
             "publish_tag_binding_mismatch")
+        @Expect(live.remoteTagCommit,
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
     }
 
     @TestCase
