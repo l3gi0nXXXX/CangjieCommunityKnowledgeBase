@@ -107,6 +107,8 @@ public class CkbReproBuildTest {
         @Expect(backend.stages.toArray(),
             ["assemble", "validate_authority", "load_first_init", "validate_serving",
              "clean", "leakage", "materialize", "logical_scan"])
+        @Expect(backend.selectedTypedCount > 0, true)
+        @Expect(backend.portableRawCount, fixture.request.rawInput.size)
         p4RemoveBuildFixture(fixture)
     }
 
@@ -325,8 +327,13 @@ private class P4FakeMaterialBackend <: CkbReproSourceMaterialBackend {
 private class P4FakeBuildBackend <: CkbReproBuildBackend {
     public var stages: ArrayList<String> = ArrayList<String>()
     public var failStage: String = ""
-    public func run(stage: String): CkbReproBackendResult {
+    public var selectedTypedCount: Int64 = 0
+    public var portableRawCount: Int64 = 0
+    public func run(stage: String,
+        input: CkbReproPipelineInput): CkbReproBackendResult {
         stages.add(stage)
+        selectedTypedCount = input.selectedTyped.size
+        portableRawCount = input.portableRaw.size
         CkbReproBackendResult(stage != failStage, "")
     }
 }

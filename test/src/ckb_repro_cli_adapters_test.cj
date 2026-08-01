@@ -89,7 +89,8 @@ private class P234P4CliFake <: CkbP4CliAdapter {
     }
 }
 private class P234BuildDependency <: CkbReproBuildBackend {
-    public func run(stage: String): CkbReproBackendResult {
+    public func run(stage: String,
+        input: CkbReproPipelineInput): CkbReproBackendResult {
         CkbReproBackendResult(true, "ok")
     }
 }
