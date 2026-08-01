@@ -426,7 +426,9 @@ public func scanCkbPublicEvidenceLeakage(
         "authorization_header")
     ckbPublicEvidenceFinding(report,
         lower.contains("api_key") || lower.contains("apikey") ||
-            lower.contains("x-api-key") || lower.contains("bearer "),
+            lower.contains("x-api-key") || lower.contains("bearer ") ||
+            lower.contains("access_token") || lower.contains("token=") ||
+            lower.contains("\"token\""),
         "credential")
     ckbPublicEvidenceFinding(report,
         text.contains("/Users/") || text.contains("/home/") ||

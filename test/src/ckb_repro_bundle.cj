@@ -317,6 +317,87 @@ private class P9BundleStreamResult {
     public init() {}
 }
 
+private class P9BundleContentScanner {
+    private let textRequired: Bool
+    private var utf8Remaining: Int64 = 0
+    private var nextMinimum: UInt8 = 0x80
+    private var nextMaximum: UInt8 = 0xbf
+    private var firstContinuation: Bool = false
+    private var invalidEncoding: Bool = false
+    private var sensitive: Bool = false
+    private var recent = ArrayList<UInt8>()
+    public init(scanText: Bool) { this.textRequired = scanText }
+    public func feed(bytes: Array<UInt8>): Unit {
+        if (!this.textRequired || this.invalidEncoding) { return }
+        for (byte in bytes) {
+            this.validateUtf8Byte(byte)
+            if (this.recent.size >= 1024) {
+                this.scanRecent()
+                let tail = ArrayList<UInt8>()
+                for (i in this.recent.size - 256..this.recent.size) {
+                    tail.add(this.recent[i])
+                }
+                this.recent = tail
+            }
+            this.recent.add(if (byte < 0x80) { byte } else { UInt8(0x20) })
+        }
+        this.scanRecent()
+    }
+    private func scanRecent(): Unit {
+        if (!this.sensitive &&
+            !scanCkbPublicEvidenceLeakage(this.recent.toArray()).ok) {
+            this.sensitive = true
+        }
+    }
+    public func finish(): String {
+        if (!this.textRequired) { return "ok" }
+        if (this.invalidEncoding || this.utf8Remaining != 0) {
+            return "bundle_text_encoding_invalid"
+        }
+        if (this.sensitive) { return "bundle_sensitive_content_detected" }
+        "ok"
+    }
+    private func validateUtf8Byte(byte: UInt8): Unit {
+        if (this.utf8Remaining == 0) {
+            if (byte < 0x80) { return }
+            this.firstContinuation = true
+            if (byte >= 0xc2 && byte <= 0xdf) {
+                this.utf8Remaining = 1
+                this.nextMinimum = 0x80; this.nextMaximum = 0xbf
+            } else if (byte == 0xe0) {
+                this.utf8Remaining = 2
+                this.nextMinimum = 0xa0; this.nextMaximum = 0xbf
+            } else if ((byte >= 0xe1 && byte <= 0xec) ||
+                (byte >= 0xee && byte <= 0xef)) {
+                this.utf8Remaining = 2
+                this.nextMinimum = 0x80; this.nextMaximum = 0xbf
+            } else if (byte == 0xed) {
+                this.utf8Remaining = 2
+                this.nextMinimum = 0x80; this.nextMaximum = 0x9f
+            } else if (byte == 0xf0) {
+                this.utf8Remaining = 3
+                this.nextMinimum = 0x90; this.nextMaximum = 0xbf
+            } else if (byte >= 0xf1 && byte <= 0xf3) {
+                this.utf8Remaining = 3
+                this.nextMinimum = 0x80; this.nextMaximum = 0xbf
+            } else if (byte == 0xf4) {
+                this.utf8Remaining = 3
+                this.nextMinimum = 0x80; this.nextMaximum = 0x8f
+            } else { this.invalidEncoding = true }
+            return
+        }
+        if (byte < this.nextMinimum || byte > this.nextMaximum) {
+            this.invalidEncoding = true
+            return
+        }
+        this.utf8Remaining -= 1
+        if (this.firstContinuation) {
+            this.firstContinuation = false
+            this.nextMinimum = 0x80; this.nextMaximum = 0xbf
+        }
+    }
+}
+
 public interface CkbReproBundleBackend {
     func rootExists(root: String): Bool
     func rootIsEmpty(root: String): Bool
@@ -539,6 +620,10 @@ public func validateCkbReproBundleAssets(assets: ArrayList<CkbReproBundleAsset>)
             asset.sha256 != ckbReproBundleHash(asset.bytes)) {
             return p9BundleFailure("bundle_asset_hash_mismatch")
         }
+        let scanner = P9BundleContentScanner(!p9BundleBinaryAllowed(asset))
+        scanner.feed(asset.bytes)
+        let content = scanner.finish()
+        if (content != "ok") { return p9BundleFailure(content) }
         if (asset.inputKind != "verified_input") {
             return p9BundleFailure("bundle_input_kind_invalid")
         }
@@ -698,7 +783,8 @@ public func validateCkbReproBundleManifest(root: String,
                 out.contract = p9BundleFailure("bundle_asset_size_mismatch")
                 return out
             }
-            let assetRead = p9ConsumeBundleEntry(root, entry[1], backend, 0)
+            let assetRead = p9ConsumeBundleEntry(root, entry[1], backend, 0,
+                scanText: !p9BundleBinaryAllowed(asset))
             if (!assetRead.contract.ok) {
                 out.contract = assetRead.contract
                 return out
@@ -774,7 +860,8 @@ public func validateCkbReproBundleAssetsStreaming(root: String,
             entry[1].size != asset.size) {
             return p9BundleFailure("bundle_asset_size_mismatch")
         }
-        let streamed = p9ConsumeBundleEntry(root, entry[1], backend, 0)
+        let streamed = p9ConsumeBundleEntry(root, entry[1], backend, 0,
+            scanText: !p9BundleBinaryAllowed(asset))
         if (!streamed.contract.ok) { return streamed.contract }
         if (streamed.sha256 != asset.sha256) {
             return p9BundleFailure("bundle_asset_hash_mismatch")
@@ -1061,6 +1148,16 @@ private func p9BundleRoleAllowed(role: String): Bool {
     false
 }
 
+private func p9BundleBinaryAllowed(asset: CkbReproBundleAsset): Bool {
+    if (asset.role != "p3_qdrant_snapshot" &&
+        asset.role != "authority_delivery") { return false }
+    let path = asset.logicalAsset.toAsciiLower()
+    path.endsWith(".bin") || path.endsWith(".snapshot") ||
+        path.endsWith(".tar") || path.endsWith(".tar.gz") ||
+        path.endsWith(".gz") || path.endsWith(".zst") ||
+        path.endsWith(".zip") || path.endsWith(".ckb-release")
+}
+
 private func p9BundleDerivedPathForbidden(path: String): Bool {
     path == "RELEASE-MANIFEST.json" ||
         path.endsWith("/RELEASE-MANIFEST.json") ||
@@ -1298,7 +1395,8 @@ private func p9FindBundleReadEntry(
 
 private func p9ConsumeBundleEntry(root: String,
     expected: CkbReproBundleReadEntry,
-    backend: CkbReproBundleReadBackend, captureLimit: Int64):
+    backend: CkbReproBundleReadBackend, captureLimit: Int64,
+    scanText!: Bool = false):
     P9BundleStreamResult {
     let out = P9BundleStreamResult()
     if (captureLimit > 0 && expected.size > captureLimit) {
@@ -1314,6 +1412,7 @@ private func p9ConsumeBundleEntry(root: String,
             }
             let digest = SHA256()
             let captured = ArrayList<UInt8>()
+            let scanner = P9BundleContentScanner(scanText)
             let buffer = Array<UInt8>(65536, repeat: UInt8(0))
             while (true) {
                 let count = handle.read(buffer)
@@ -1334,6 +1433,12 @@ private func p9ConsumeBundleEntry(root: String,
                     return out
                 }
                 digest.write(chunk)
+                scanner.feed(chunk)
+            }
+            let content = scanner.finish()
+            if (content != "ok") {
+                out.contract = p9BundleFailure(content)
+                return out
             }
             out.observed = handle.observedEntry()
             if (out.observed.kind != "regular" ||
