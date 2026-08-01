@@ -925,7 +925,7 @@ public class CkbReproVerifyTest {
 @Test
 public class CkbReproAuthorityLayoutBaselineTest {
     @TestCase
-    public func publicRebuildLayoutMatchesIndependentFixture(): Unit {
+    public func authorityModesMatchIndependentFixture(): Unit {
         let reference = p8ReferenceTemplate()
         let rows = p8AuthorityRows("manifest", reference)
         @Expect(rows.size, 51)
@@ -950,6 +950,33 @@ public class CkbReproAuthorityLayoutBaselineTest {
             }
             @Expect(matches, 1)
         }
+
+        let bundledInputs = p8AuthorityInputs("manifest", reference)
+        for (evidence in bundledInputs) {
+            if (evidence.logicalAsset == "authority-source-materials.json") {
+                evidence.logicalAsset =
+                    "cangjie-humaneval-authority.tar.zst"
+                evidence.size = Int64("authority-bundle".toArray().size)
+                evidence.sha256 = p8Hash("authority-bundle")
+            }
+        }
+        let bundled = buildCkbReproReleaseAuthorityContract(
+            bundledInputs, "bundled")
+        @Expect(bundled[0].ok, true)
+        @Expect(bundled[1].expected.size, 51)
+        var bundledAssetMatches = 0
+        var rebuildAssetMatches = 0
+        for (evidence in bundled[1].expected) {
+            if (evidence.logicalAsset ==
+                "cangjie-humaneval-authority.tar.zst") {
+                bundledAssetMatches++
+            }
+            if (evidence.logicalAsset == "authority-source-materials.json") {
+                rebuildAssetMatches++
+            }
+        }
+        @Expect(bundledAssetMatches, 1)
+        @Expect(rebuildAssetMatches, 0)
     }
 }
 
