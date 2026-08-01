@@ -62,6 +62,20 @@ public class CkbReproPublishGateTest {
         @Expect(postResult.componentReady, true)
         @Expect(postResult.publishable, false)
 
+        let authentication = CkbReproFilesystemPublishAuthentication()
+        authentication.bundleSignatureVerified = true
+        authentication.remoteAttestationVerified = true
+        authentication.gitSnapshotBound = true
+        let authenticatedEvidence = p9PublishEvidence()
+        authenticatedEvidence.externalProofsVerified = true
+        let promoted = finalizeCkbReproFilesystemPublishResult(postResult,
+            authenticatedEvidence, authentication)
+        @Expect(promoted.publishable, true)
+        @Expect(promoted.diagnostic, "ok")
+        authentication.gitSnapshotBound = false
+        @Expect(finalizeCkbReproFilesystemPublishResult(postResult,
+            authenticatedEvidence, authentication).publishable, false)
+
         let cliOptions = parseCkbReproPublishGateCliArgs([
             "ckb-repro-publish-gate", "--mode", "pre-tag", "--bundle",
             "/tmp/发布 资料/final"
@@ -145,7 +159,9 @@ public class CkbReproPublishGateTest {
             "publish_bundle_root_missing")
 
         let fixture = p9PublishLocalFixture()
-        @Expect(loadCkbReproPublishLocalEvidence(fixture).valid, true)
+        let loadedFixture = loadCkbReproPublishLocalEvidence(fixture)
+        @Expect(loadedFixture.diagnostic, "ok")
+        @Expect(loadedFixture.valid, true)
         File.writeTo(Path(fixture).join("verification-report.json"),
             "{\"tampered\":true}".toArray())
         @Expect(loadCkbReproPublishLocalEvidence(fixture).diagnostic,
@@ -220,6 +236,8 @@ private func p9PublishLocalFixture(): String {
     asset.inputKind = "verified_input"
     asset.role = "portable_report"
     asset.logicalAsset = asset.relativePath
+    asset.partIndex = 0
+    asset.partCount = 1
     asset.logicalSize = asset.size
     asset.logicalSha256 = asset.sha256
     let assets = ArrayList<CkbReproBundleAsset>()
