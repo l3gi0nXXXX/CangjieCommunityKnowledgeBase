@@ -7,12 +7,17 @@ import std.unittest.testmacro.*
 private class P234ReleaseCliFake <: CkbReleaseCliAdapter {
     public var calls: Int64 = 0
     public var fail: Bool = false
+    public var explode: Bool = false
+    public var customSummary: String = ""
     public func execute(options: CkbReleaseCliOptions): CkbReleaseCliOperationResult {
+        if (this.explode) { throw Exception("Authorization=secret 中文🙂") }
         this.calls += 1
         let out = CkbReleaseCliOperationResult()
         out.ok = !this.fail
         out.diagnostic = if (this.fail) { "invalid_response_encoding" } else { "ok" }
-        out.summary = "版本=portable-仓颉🙂 图=ready"
+        out.summary = if (this.customSummary == "") {
+            "版本=portable-仓颉🙂 图=ready"
+        } else { this.customSummary }
         out
     }
 }
@@ -21,7 +26,9 @@ private class P234P3CliFake <: CkbP3CliAdapter {
     public var calls: Int64 = 0
     public var fail: Bool = false
     public var cleaned: Bool = false
+    public var explode: Bool = false
     public func execute(options: CkbP3CliOptions): CkbP3CliOperationResult {
+        if (this.explode) { throw Exception("token=secret") }
         this.calls += 1
         let out = CkbP3CliOperationResult()
         out.ok = !this.fail
@@ -36,7 +43,9 @@ private class P234P4CliFake <: CkbP4CliAdapter {
     public var calls: Int64 = 0
     public var fail: Bool = false
     public var cleaned: Bool = false
+    public var explode: Bool = false
     public func execute(options: CkbP4CliOptions): CkbP4CliOperationResult {
+        if (this.explode) { throw Exception("Bearer secret") }
         this.calls += 1
         let out = CkbP4CliOperationResult()
         out.ok = !this.fail
@@ -62,6 +71,11 @@ public class CkbReproCliAdaptersTest {
         ], fake).diagnostic, "missing_argument_value:--target-root")
         @Expect(runCkbReleaseCli(["ckb-release-import"]).diagnostic,
             "required_argument_missing:--archive")
+        let jsonError = executeCkbReleaseCliAdapter([
+            "ckb-release-import", "--archive", "a", "--json"
+        ], fake)
+        @Expect(jsonError.output.startsWith("{"), true)
+        @Expect(jsonError.output.contains("\"ok\":false"), true)
         @Expect(fake.calls, 0)
     }
 
@@ -91,6 +105,22 @@ public class CkbReproCliAdaptersTest {
         @Expect(result.exitCode, 1)
         @Expect(result.output.contains("invalid_response_encoding"), true)
         @Expect(result.output.contains("\"result\""), false)
+        fake.fail = false; fake.explode = true
+        let isolated = executeCkbReleaseCliAdapter([
+            "ckb-release-import", "--archive", "/tmp/a",
+            "--target-root", "/tmp/b"
+        ], fake)
+        @Expect(isolated.diagnostic, "release_adapter_execution_failed")
+        @Expect(isolated.output.contains("secret"), false)
+        fake.explode = false
+        fake.customSummary = p234LongControlSummary()
+        let rendered = runCkbReleaseCli([
+            "ckb-release-import", "--archive", "/tmp/a",
+            "--target-root", "/tmp/b", "--json"
+        ], fake)
+        @Expect(rendered.output.contains("\t"), false)
+        @Expect(rendered.output.contains("\\t"), true)
+        @Expect(rendered.output.size < 800, true)
     }
 
     @TestCase
@@ -148,6 +178,11 @@ public class CkbReproCliAdaptersTest {
         ], fake)
         @Expect(result.diagnostic, "invalid_response_encoding")
         @Expect(result.output.contains("\"result\""), false)
+        fake.fail = false; fake.explode = true
+        @Expect(executeCkbP3CliAdapter([
+            "ckb-qdrant-snapshot", "verify", "--endpoint", "http://127.0.0.1:1",
+            "--collection", "c", "--manifest", "m", "--logical-manifest", "l"
+        ], fake).diagnostic, "p3_adapter_execution_failed")
     }
 
     @TestCase
@@ -206,7 +241,16 @@ public class CkbReproCliAdaptersTest {
         let failed = executeCkbP4CliAdapter(p234PromotionArgs(true), fake)
         @Expect(failed.ok, false)
         @Expect(fake.cleaned, true)
+        fake.fail = false; fake.explode = true
+        @Expect(executeCkbP4CliAdapter(p234PromotionArgs(true), fake).diagnostic,
+            "p4_adapter_execution_failed")
     }
+}
+
+private func p234LongControlSummary(): String {
+    var out = "Authorization=secret\t仓颉🙂"
+    for (_ in 0..300) { out += "界" }
+    out
 }
 
 private func p234PromotionArgs(apply: Bool): Array<String> {
