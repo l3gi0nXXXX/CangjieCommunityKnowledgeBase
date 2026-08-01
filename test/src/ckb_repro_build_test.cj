@@ -297,6 +297,7 @@ private func p4GeneratedLock(id: String): CkbReproSourceLockEntry {
         "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd")
     entry.outputHash =
         "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+    entry.outputPath = "generated/${id}.md"
     entry.license = "Apache-2.0"
     entry.assemblyRole = "generated_guidance"
     entry.outputKind = CangjieTypedRecordKinds.TOOL_MANUAL
