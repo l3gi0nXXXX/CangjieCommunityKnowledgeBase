@@ -373,6 +373,20 @@ public class CkbNativeHttpTransportTest {
     }
 
     @TestCase
+    public func reproducibilityCommandsOnlyBootstrapNativeTlsWhenTheyUseNetwork(): Unit {
+        for (command in ["ckb-portable-vector-build", "ckb-qdrant-snapshot",
+            "ckb-retrieval-parity", "ckb-repro-build", "ckb-repro-promote",
+            "ckb-repro-verify"]) {
+            @Expect(ckbCommandNeedsNativeTlsBootstrap(command), true)
+        }
+        for (command in ["ckb-release-export", "ckb-release-import",
+            "ckb-public-evidence-export", "ckb-repro-preflight",
+            "ckb-repro-bundle", "ckb-repro-publish-gate"]) {
+            @Expect(ckbCommandNeedsNativeTlsBootstrap(command), false)
+        }
+    }
+
+    @TestCase
     public func syncLiveWithFakeRunnerKeepsPrivateInternalUnknownReposExcluded(): Unit {
         let kb = newOfflineKnowledgeBase()
         let config = CkbRuntimeConfig()
