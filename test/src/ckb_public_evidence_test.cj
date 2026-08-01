@@ -151,7 +151,12 @@ public class CkbPublicEvidenceTest {
             "{\"transcript\":\"full\"}",
             "{\"hiddenTest\":\"assert\"}",
             "{\"sessionId\":\"real\"}",
-            "{\"prompt\":\"question\"}"
+            "{\"prompt\":\"question\"}",
+            "/private/var/folders/secret/run",
+            "/tmp/private-run/output.json",
+            "C:\\secret\\result.json",
+            "D:/private/result.json",
+            "\\\\server\\share\\result.json"
         ]
         for (attack in attacks) {
             let report = scanCkbPublicEvidenceLeakage(attack.toArray())
@@ -188,6 +193,29 @@ public class CkbPublicEvidenceTest {
         @Expect(human.contains("/Users/"), false)
         let explicitJson = renderCkbPublicEvidenceCliJson(failed)
         @Expect(explicitJson.startsWith("{"), true)
+        failed.evidenceHash = "sha256:\u{0001}🙂"
+        @Expect(try { JsonValue.fromStr(
+            renderCkbPublicEvidenceCliJson(failed)); true }
+            catch (_: Exception) { false }, true)
+
+        let projectedAudit = projectCkbPublicAuditFromPrivateArtifacts(
+            parseCkbCertificationEvidence(p5CertificationJson(0, false)),
+            ("{\"unitPassAt1\":false,\"testExitCode\":7," +
+                "\"failureType\":\"test_failure\"," +
+                "\"firstClaudeExitCode\":3,\"claudeExitCode\":4}").toArray(),
+            ("{\"violation\":\"none\",\"developmentPass\":true," +
+                "\"closureStatus\":\"closed_after_review\"," +
+                "\"triageStatus\":\"triaged\"," +
+                "\"failureRoute\":\"business_failure\"," +
+                "\"certificationPassAt1\":null}").toArray())
+        @Expect(projectedAudit[0], "ok")
+        @Expect(projectedAudit[1].contains("\"firstClaudeExitCode\":3"), true)
+        @Expect(projectedAudit[1].contains("\"claudeExitCode\":4"), true)
+        @Expect(projectedAudit[1].contains(
+            "\"closureStatus\":\"closed_after_review\""), true)
+        @Expect(projectedAudit[1].contains("\"triageStatus\":\"triaged\""), true)
+        @Expect(planCkbPublicEvidenceTemporaryPath("/tmp/out", 42),
+            "/tmp/out.tmp-42")
     }
 
     @TestCase
