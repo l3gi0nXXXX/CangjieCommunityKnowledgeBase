@@ -41,6 +41,24 @@ private class P4RuntimeMaterialBackend <: CkbReproSourceMaterialBackend {
 @Test
 public class CkbReproBuildInputsRuntimeTest {
     @TestCase
+    public func publicInventoryIdentityIsThirdPartyRecomputableSha256(): Unit {
+        let typed = CangjieTypedRecord()
+        typed.recordKind = CangjieTypedRecordKinds.DOC_SECTION
+        typed.sourceId = "docs/a"; typed.content = "仓颉🙂"
+        typed.contentHash = cangjieTypedRecordContentHash(
+            typed.sourceId, typed.content)
+        let expected = benchmarkGapSha256(
+            "ckb-public-record-identity-v1|typed|" +
+            canonicalCkbPortableTypedRecord(typed))
+        @Expect(ckbReproPublicTypedRecordIdentity(typed), expected)
+        let typedRows = ArrayList<CangjieTypedRecord>(); typedRows.add(typed)
+        let inventory = inventoryCkbPublicKnowledgeSources(
+            typedRows, ArrayList<RawRecord>())
+        @Expect(inventory.size, 1)
+        @Expect(inventory[0].identity, expected)
+    }
+
+    @TestCase
     public func publicManifestExcludesPrivateAndDerivedInputs(): Unit {
         let manifest = p4RuntimeBuildInputManifest()
         @Expect(validateCkbReproBuildInputManifest(manifest).ok, true)
