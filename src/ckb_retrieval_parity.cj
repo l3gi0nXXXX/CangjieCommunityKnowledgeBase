@@ -389,6 +389,10 @@ public class CkbRetrievalParityResult {
     public init() {}
 }
 
+public func ckbRetrievalParityReferenceQuery(): String {
+    "仓颉语言中如何按 Rune 安全遍历 UTF-8 字符串？"
+}
+
 public func validateCkbRetrievalParityQuery(
     query: String): CkbReproContractResult {
     let lowered = query.toAsciiLower()
@@ -412,7 +416,7 @@ public func buildCkbRetrievalParityManifest(knowledgeVersion: String,
     logicalManifestHash: String, backend: CkbRetrievalParityBackend):
     CkbRetrievalParityResult {
     let result = CkbRetrievalParityResult()
-    let query = "仓颉语言中如何按 Rune 安全遍历 UTF-8 字符串？"
+    let query = ckbRetrievalParityReferenceQuery()
     if (!validateCkbRetrievalParityQuery(query).ok ||
         knowledgeVersion == "" ||
         !ckbRetrievalParityHashValid(logicalManifestHash)) {
@@ -458,8 +462,11 @@ public func verifyCkbRetrievalParityManifest(
         manifest.knowledgeVersion == "" ||
         !ckbRetrievalParityHashValid(manifest.logicalManifestHash) ||
         !ckbRetrievalParityHashValid(manifest.canonicalResultHash) ||
-        !validateCkbRetrievalParityQuery(manifest.query).ok ||
-        manifest.transports.size != 3) {
+        manifest.query != ckbRetrievalParityReferenceQuery() ||
+        manifest.transports.size != 3 ||
+        manifest.transports[0] != "rest" ||
+        manifest.transports[1] != "mcp_stdio" ||
+        manifest.transports[2] != "mcp_http") {
         result.diagnostic = "retrieval_parity_manifest_invalid"
         return result
     }

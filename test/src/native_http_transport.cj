@@ -313,10 +313,11 @@ private func ckbNativeQdrantRequestDiagnostic(endpoint: String,
 
 private class CkbNativeOwnedFdInputStream <: InputStream {
     private var fd: Int32
-    private let initialStat: Array<UInt8>
+    private let initialIdentity: String
     public var bytesRead: Int64 = 0
     public init(fd: Int32, initialStat: Array<UInt8>) {
-        this.fd = fd; this.initialStat = initialStat
+        this.fd = fd
+        this.initialIdentity = ckbNativeQdrantStatIdentity(initialStat)
     }
     public func read(buffer: Array<UInt8>): Int64 {
         if (this.fd < 0) { return 0 }
@@ -337,7 +338,8 @@ private class CkbNativeOwnedFdInputStream <: InputStream {
             let pointer = acquireArrayRawData(current)
             let status = fstat(this.fd, pointer.pointer)
             releaseArrayRawData(pointer)
-            status == 0 && current == this.initialStat
+            status == 0 && this.initialIdentity != "" &&
+                ckbNativeQdrantStatIdentity(current) == this.initialIdentity
         }
     }
     public func close(): Unit {
@@ -352,7 +354,9 @@ private func ckbNativeQdrantOpenVerifiedFile(path: String,
     let statBytes = Array<UInt8>(256, repeat: UInt8(0))
     try {
         let cpath = unsafe { LibC.mallocCString(path) }
-        fd = unsafe { open(cpath, 0x100) }
+        // O_NOFOLLOW prevents symlink substitution. O_NONBLOCK ensures a FIFO
+        // or device cannot block before fstat rejects the non-regular file.
+        fd = unsafe { open(cpath, 0x104) }
         unsafe { LibC.free(cpath) }
         if (fd < 0) { throw Exception("open failed") }
         let statOk = unsafe {
@@ -360,7 +364,9 @@ private func ckbNativeQdrantOpenVerifiedFile(path: String,
             let status = fstat(fd, pointer.pointer)
             releaseArrayRawData(pointer); status == 0
         }
-        if (!statOk) { throw Exception("fstat failed") }
+        if (!statOk || !ckbNativeQdrantRegularStat(statBytes)) {
+            throw Exception("snapshot is not a regular file")
+        }
         let digest = SHA256()
         var size: Int64 = 0
         let buffer = Array<UInt8>(65536, repeat: UInt8(0))
@@ -388,6 +394,38 @@ private func ckbNativeQdrantOpenVerifiedFile(path: String,
         if (fd >= 0) { _ = unsafe { close(fd) } }
         (false, CkbNativeOwnedFdInputStream(-1, statBytes))
     }
+}
+
+private func ckbNativeQdrantRegularStat(stat: Array<UInt8>): Bool {
+    stat.size >= 104 &&
+        (ckbNativeQdrantLittleEndian(stat, 4, 2) & UInt64(0xf000)) ==
+            UInt64(0x8000) &&
+        ckbNativeQdrantLittleEndian(stat, 6, 2) == UInt64(1)
+}
+
+private func ckbNativeQdrantStatIdentity(stat: Array<UInt8>): String {
+    if (!ckbNativeQdrantRegularStat(stat)) { return "" }
+    "dev=${ckbNativeQdrantLittleEndian(stat, 0, 4)};" +
+        "ino=${ckbNativeQdrantLittleEndian(stat, 8, 8)};" +
+        "mode=${ckbNativeQdrantLittleEndian(stat, 4, 2)};" +
+        "size=${ckbNativeQdrantLittleEndian(stat, 96, 8)};" +
+        "mtime=${ckbNativeQdrantLittleEndian(stat, 48, 8)}:" +
+        "${ckbNativeQdrantLittleEndian(stat, 56, 8)};" +
+        "ctime=${ckbNativeQdrantLittleEndian(stat, 64, 8)}:" +
+        "${ckbNativeQdrantLittleEndian(stat, 72, 8)}"
+}
+
+private func ckbNativeQdrantLittleEndian(bytes: Array<UInt8>,
+    offset: Int64, count: Int64): UInt64 {
+    if (offset < 0 || count < 0 || offset + count > bytes.size) {
+        return UInt64(0)
+    }
+    var out = UInt64(0); var multiplier = UInt64(1)
+    for (i in 0..count) {
+        out += UInt64(bytes[offset + i]) * multiplier
+        multiplier *= UInt64(256)
+    }
+    out
 }
 
 private func ckbNativeQdrantDigestHash(digest: SHA256): String {
