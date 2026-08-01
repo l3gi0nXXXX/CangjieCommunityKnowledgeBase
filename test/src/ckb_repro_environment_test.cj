@@ -39,6 +39,20 @@ private class P6FakeGitProbeRunner <: CkbReproGitProbeRunner {
     }
 }
 
+private class P6FakeSignatureVerifier <:
+    CkbReproAttestationSignatureVerifier {
+    public var result: CkbReproAttestationSignatureResult
+    public var calls: Int64 = 0
+    public init(fingerprint: String) {
+        this.result = CkbReproAttestationSignatureResult()
+        this.result.ok = true; this.result.diagnostic = "ok"
+        this.result.signingFingerprint = fingerprint
+    }
+    public func verify(path: String): CkbReproAttestationSignatureResult {
+        this.calls += 1; this.result
+    }
+}
+
 @Test
 public class CkbReproEnvironmentTest {
     @TestCase
@@ -174,22 +188,33 @@ public class CkbReproEnvironmentTest {
             mode: "execution").diagnostic,
             "environment_platform_unsupported")
 
-        @Expect(parseCkbReproPreflightCliArgs([
-            "ckb-repro-preflight", "--environment-lock", "/tmp/expected.json",
-            "--observed-environment", "/tmp/observed.json",
-            "--certification-preflight", "/tmp/preflight.json",
-            "--certification-run-manifest", "/tmp/run-manifest.json",
-            "--json"]).valid, true)
-        @Expect(parseCkbReproPreflightCliArgs([
-            "ckb-repro-preflight", "--environment-lock", "/tmp/expected.json",
-            "--observed-environment", "/tmp/observed.json",
-            "--certification-preflight", "/tmp/preflight.json",
-            "--certification-run-manifest", "/tmp/run-manifest.json",
-            "--json", "--json"]).diagnostic,
+        let explicit = p6ExplicitCliArgs()
+        let withJson = ArrayList<String>()
+        withJson.add(all: explicit); withJson.add("--json")
+        @Expect(parseCkbReproPreflightCliArgs(withJson.toArray()).valid, true)
+        @Expect(parseCkbReproPreflightCliArgs(explicit).signingFingerprint,
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
+        withJson.add("--json")
+        @Expect(parseCkbReproPreflightCliArgs(withJson.toArray()).diagnostic,
             "duplicate_argument:--json")
+        @Expect(parseCkbReproPreflightCliArgs([
+            "ckb-repro-preflight", "--environment-lock", "/tmp/expected.json",
+            "--observed-environment", "/tmp/observed.json",
+            "--certification-preflight", "/tmp/preflight.json",
+            "--certification-run-manifest", "/tmp/run-manifest.json"
+        ]).diagnostic, "required_argument_missing")
         @Expect(parseCkbReproPreflightCliArgs([
             "ckb-repro-preflight", "--token", "secret"]).diagnostic,
             "unknown_argument:--token")
+        let invalidAuthority = parseCkbReproPreflightCliArgs(p6ExplicitCliArgs())
+        invalidAuthority.signingFingerprint = "not-a-fingerprint"
+        @Expect(validateCkbReproPreflightCliOptions(invalidAuthority).diagnostic,
+            "environment_attestation_authority_invalid")
+        invalidAuthority.signingFingerprint =
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        invalidAuthority.observedEnvironmentHash = "sha256:invalid"
+        @Expect(validateCkbReproPreflightCliOptions(invalidAuthority).diagnostic,
+            "environment_attestation_authority_invalid")
     }
 
     @TestCase
@@ -237,11 +262,7 @@ public class CkbReproEnvironmentTest {
         cliInputs.certificationPreflightJson = seal[0]
         cliInputs.certificationRunManifestJson = seal[1]
         let cli = executeCkbReproPreflightCliAdapter(
-            parseCkbReproPreflightCliArgs([
-                "ckb-repro-preflight", "--environment-lock", "/tmp/expected.json",
-                "--observed-environment", "/tmp/observed.json",
-                "--certification-preflight", "/tmp/preflight.json",
-                "--certification-run-manifest", "/tmp/run-manifest.json"]),
+            parseCkbReproPreflightCliArgs(p6ExplicitCliArgs()),
             cliInputs)
         @Expect(cli.ok, true)
         let human = renderCkbReproPreflightCliHuman(cli, lock)
@@ -350,11 +371,7 @@ public class CkbReproEnvironmentTest {
         let seal = p6CertificationSeal()
         inputs.certificationPreflightJson = seal[0]
         inputs.certificationRunManifestJson = seal[1]
-        let options = parseCkbReproPreflightCliArgs([
-            "ckb-repro-preflight", "--environment-lock", "/tmp/expected.json",
-            "--observed-environment", "/tmp/observed.json",
-            "--certification-preflight", "/tmp/preflight.json",
-            "--certification-run-manifest", "/tmp/run-manifest.json"])
+        let options = parseCkbReproPreflightCliArgs(p6ExplicitCliArgs())
 
         let drifted = CkbReproEnvironmentProbeResult()
         drifted.ok = true
@@ -394,6 +411,83 @@ public class CkbReproEnvironmentTest {
     }
 
     @TestCase
+    public func p6Neg02AttestationAuthorityRequiresIndependentAnchor(): Unit {
+        let first = p6AuthorityManifest(
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "sha256:${"a" * 64}")
+        let second = p6AuthorityManifest(
+            "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+            "sha256:${"b" * 64}")
+        let firstLoaded = loadCkbReproVerifiedAttestationAuthority(
+            first.toArray(), p6Hash(first))
+        let secondLoaded = loadCkbReproVerifiedAttestationAuthority(
+            second.toArray(), p6Hash(second))
+        @Expect(firstLoaded[0].ok, true)
+        @Expect(secondLoaded[0].ok, true)
+        let options = parseCkbReproPreflightCliArgs(p6ExplicitCliArgs())
+        @Expect(runCkbReproPreflightCliAdapter(
+            options, secondLoaded[1]).diagnostic,
+            "environment_attestation_authority_mismatch")
+
+        @Expect(loadCkbReproVerifiedAttestationAuthority(
+            first.toArray(), p6Hash(second))[0].diagnostic,
+            "environment_attestation_authority_anchor_mismatch")
+        @Expect(loadCkbReproVerifiedAttestationAuthority(
+            first.replace("\"status\":\"frozen\"",
+                "\"status\":\"planned\"").toArray(), p6Hash(first))[0].ok,
+            false)
+        @Expect(loadCkbReproVerifiedAttestationAuthority(
+            first.replace("}", ",\"extra\":true}").toArray(),
+            p6Hash(first))[0].ok, false)
+        @Expect(loadCkbReproVerifiedAttestationAuthority(
+            [0xff, 0xfe], p6Hash(first))[0].diagnostic,
+            "invalid_response_encoding")
+        @Expect(loadCkbReproVerifiedAttestationAuthority(
+            "{bad".toArray(), p6Hash(first))[0].diagnostic,
+            "environment_attestation_authority_malformed")
+
+        let root = Path("target/p6-independent-authority")
+        if (exists(root)) { remove(root, recursive: true) }
+        Directory.create(root, recursive: true)
+        let canonical = canonicalize(root).toString()
+        let observed = p6FrozenEnvironment()
+        let observedText = renderCkbReproEnvironmentLock(observed)
+        let observedHash = p6Hash(observedText)
+        let anchoredText = p6AuthorityManifest(
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", observedHash)
+        let anchored = loadCkbReproVerifiedAttestationAuthority(
+            anchoredText.toArray(), p6Hash(anchoredText))
+        @Expect(anchored[0].ok, true)
+        File.writeTo(Path(canonical).join("expected.json"),
+            observedText.toArray())
+        File.writeTo(Path(canonical).join("observed.json"),
+            observedText.toArray())
+        let seal = p6CertificationSeal()
+        File.writeTo(Path(canonical).join("preflight.json"), seal[0].toArray())
+        File.writeTo(Path(canonical).join("run-manifest.json"),
+            seal[1].toArray())
+        let bounded = parseCkbReproPreflightCliArgs([
+            "ckb-repro-preflight", "--environment-lock",
+            "${canonical}/expected.json", "--observed-environment",
+            "${canonical}/observed.json", "--certification-preflight",
+            "${canonical}/preflight.json", "--certification-run-manifest",
+            "${canonical}/run-manifest.json", "--signing-fingerprint",
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "--observed-environment-hash", observedHash])
+        let wrongKey = P6FakeSignatureVerifier(
+            "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB")
+        let probeResult = CkbReproEnvironmentProbeResult()
+        probeResult.diagnostic = "must_not_run"
+        let probe = P6FakeEnvironmentProbe(probeResult)
+        @Expect(runCkbReproPreflightCliAdapterWithAuthorityDependencies(
+            bounded, anchored[1], wrongKey, probe).diagnostic,
+            "environment_attestation_signature_invalid")
+        @Expect(wrongKey.calls, 1)
+        @Expect(probe.calls, 0)
+        remove(root, recursive: true)
+    }
+
+    @TestCase
     public func p6Bnd01ActualProbeIsHashBoundBoundedAndUtf8Safe(): Unit {
         let expected = p6FrozenEnvironment()
         let inputs = CkbReproPreflightCliInputs()
@@ -403,11 +497,7 @@ public class CkbReproEnvironmentTest {
         let seal = p6CertificationSeal()
         inputs.certificationPreflightJson = seal[0]
         inputs.certificationRunManifestJson = seal[1]
-        let options = parseCkbReproPreflightCliArgs([
-            "ckb-repro-preflight", "--environment-lock", "/tmp/expected.json",
-            "--observed-environment", "/tmp/observed.json",
-            "--certification-preflight", "/tmp/preflight.json",
-            "--certification-run-manifest", "/tmp/run-manifest.json"])
+        let options = parseCkbReproPreflightCliArgs(p6ExplicitCliArgs())
 
         let unbound = CkbReproEnvironmentProbeResult()
         unbound.ok = true
@@ -670,6 +760,25 @@ private func p6CertificationSeal(): (String, String) {
 
 private func p6SealPart(value: String): String {
     "${value.toArray().size}:${value}"
+}
+
+private func p6ExplicitCliArgs(): Array<String> {
+    ["ckb-repro-preflight", "--environment-lock", "/tmp/expected.json",
+        "--observed-environment", "/tmp/observed.json",
+        "--certification-preflight", "/tmp/preflight.json",
+        "--certification-run-manifest", "/tmp/run-manifest.json",
+        "--signing-fingerprint", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "--observed-environment-hash", "sha256:${"a" * 64}"]
+}
+
+private func p6AuthorityManifest(fingerprint: String,
+    observedHash: String): String {
+    let source = "release://ckb/environment-attestation-authority-v1"
+    "{\"schemaVersion\":\"ckb-repro-environment-attestation-authority-v1\"," +
+        "\"status\":\"frozen\",\"signingFingerprint\":\"${fingerprint}\"," +
+        "\"observedEnvironmentHash\":\"${observedHash}\"," +
+        "\"authoritySource\":\"${source}\"," +
+        "\"authoritySourceHash\":\"${p6Hash(source)}\"}"
 }
 
 private func p6Hash(value: String): String {

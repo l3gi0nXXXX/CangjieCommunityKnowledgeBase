@@ -153,6 +153,11 @@ public class CkbPublicEvidenceCliOptions {
     public var runRoot: String = ""
     public var referenceManifest: String = ""
     public var outputRoot: String = ""
+    public var worktreeRoot: String = ""
+    public var productionRoot: String = ""
+    public var userConfigRoot: String = ""
+    public var unsignedRoot: String = ""
+    public var finalRoot: String = ""
     public var json: Bool = false
     public var valid: Bool = false
     public var diagnostic: String = "usage_error"
@@ -211,7 +216,9 @@ public func parseCkbPublicEvidenceCliArgs(args: Array<String>):
             out.json = true; i += 1; continue
         }
         if (arg == "--run-root" || arg == "--reference-manifest" ||
-            arg == "--output") {
+            arg == "--output" || arg == "--worktree-root" ||
+            arg == "--production-root" || arg == "--user-config-root" ||
+            arg == "--unsigned-root" || arg == "--final-root") {
             if (i + 1 >= args.size) { out.diagnostic = "missing_value:${arg}"; return out }
             let value = args[i + 1]
             if (value.toRuneArray().size > 4096) {
@@ -223,16 +230,33 @@ public func parseCkbPublicEvidenceCliArgs(args: Array<String>):
             } else if (arg == "--reference-manifest") {
                 if (out.referenceManifest != "") { out.diagnostic = "duplicate_argument:${arg}"; return out }
                 out.referenceManifest = value
-            } else {
+            } else if (arg == "--output") {
                 if (out.outputRoot != "") { out.diagnostic = "duplicate_argument:${arg}"; return out }
                 out.outputRoot = value
+            } else if (arg == "--worktree-root") {
+                if (out.worktreeRoot != "") { out.diagnostic = "duplicate_argument:${arg}"; return out }
+                out.worktreeRoot = value
+            } else if (arg == "--production-root") {
+                if (out.productionRoot != "") { out.diagnostic = "duplicate_argument:${arg}"; return out }
+                out.productionRoot = value
+            } else if (arg == "--user-config-root") {
+                if (out.userConfigRoot != "") { out.diagnostic = "duplicate_argument:${arg}"; return out }
+                out.userConfigRoot = value
+            } else if (arg == "--unsigned-root") {
+                if (out.unsignedRoot != "") { out.diagnostic = "duplicate_argument:${arg}"; return out }
+                out.unsignedRoot = value
+            } else {
+                if (out.finalRoot != "") { out.diagnostic = "duplicate_argument:${arg}"; return out }
+                out.finalRoot = value
             }
             i += 2; continue
         }
         out.diagnostic = "unknown_argument:${arg}"; return out
     }
     if (out.runRoot == "" || out.referenceManifest == "" ||
-        out.outputRoot == "") {
+        out.outputRoot == "" || out.worktreeRoot == "" ||
+        out.productionRoot == "" || out.userConfigRoot == "" ||
+        out.unsignedRoot == "" || out.finalRoot == "") {
         out.diagnostic = "required_argument_missing"; return out
     }
     out.valid = true; out.diagnostic = "ok"; out
@@ -243,6 +267,13 @@ public func validateCkbPublicEvidenceCliOptions(
     context: CkbPublicEvidenceCliPathContext,
     executor: CkbPublicEvidenceCliExecutor): CkbReproContractResult {
     if (!options.valid) { return p5CliFailure(options.diagnostic) }
+    if (options.worktreeRoot != context.worktreeRoot ||
+        options.productionRoot != context.productionRoot ||
+        options.userConfigRoot != context.userConfigRoot ||
+        options.unsignedRoot != context.unsignedRoot ||
+        options.finalRoot != context.finalRoot) {
+        return p5CliFailure("public_evidence_context_mismatch")
+    }
     for (path in [options.runRoot, options.referenceManifest,
         options.outputRoot, context.worktreeRoot, context.productionRoot,
         context.userConfigRoot, context.unsignedRoot, context.finalRoot]) {
@@ -256,6 +287,20 @@ public func validateCkbPublicEvidenceCliOptions(
     if (!executor.exists(options.referenceManifest)) {
         return p5CliFailure("public_evidence_reference_missing")
     }
+    for (protected in [context.worktreeRoot, context.productionRoot,
+        context.userConfigRoot]) {
+        if (!executor.exists(protected)) {
+            return p5CliFailure("public_evidence_protected_root_missing")
+        }
+    }
+    for (future in [context.unsignedRoot, context.finalRoot]) {
+        if (!executor.exists(future) && !executor.outputParentExists(future)) {
+            return p5CliFailure("public_evidence_future_root_parent_missing")
+        }
+    }
+    if (!options.referenceManifest.startsWith(options.runRoot + "/")) {
+        return p5CliFailure("public_evidence_reference_outside_run")
+    }
     if (executor.exists(options.outputRoot)) {
         return p5CliFailure("public_evidence_output_exists")
     }
@@ -267,6 +312,15 @@ public func validateCkbPublicEvidenceCliOptions(
         context.finalRoot]) {
         if (p5CliRootsOverlap(options.outputRoot, protected)) {
             return p5CliFailure("public_evidence_output_forbidden")
+        }
+    }
+    let protected = [context.worktreeRoot, context.productionRoot,
+        context.userConfigRoot, context.unsignedRoot, context.finalRoot]
+    for (i in 0..protected.size) {
+        for (j in (i + 1)..protected.size) {
+            if (p5CliRootsOverlap(protected[i], protected[j])) {
+                return p5CliFailure("public_evidence_protected_roots_overlap")
+            }
         }
     }
     p5CliSuccess()
@@ -298,16 +352,36 @@ public func runCkbPublicEvidenceCliAdapter(options: CkbPublicEvidenceCliOptions,
     }
     for (protected in [context.worktreeRoot, context.productionRoot,
         context.userConfigRoot, context.unsignedRoot, context.finalRoot]) {
-        let resolved = try { canonicalize(Path(protected)).toString() }
-            catch (_: Exception) {
-                return p5CliRenderFailure("public_evidence_path_not_canonical")
+        let path = Path(protected)
+        let resolved = try {
+            if (exists(path)) { canonicalize(path).toString() }
+            else {
+                Path(canonicalize(path.parent).toString())
+                    .join(path.fileName).toString()
             }
+        } catch (_: Exception) {
+            return p5CliRenderFailure("public_evidence_path_not_canonical")
+        }
+        if (resolved != protected) {
+            return p5CliRenderFailure("public_evidence_path_not_canonical")
+        }
         if (p5CliRootsOverlap(output, resolved)) {
             return p5CliRenderFailure("public_evidence_output_forbidden")
         }
     }
     executeCkbPublicEvidenceCliAdapter(options, context,
         CkbPublicEvidenceFilesystemCliExecutor())
+}
+
+public func runCkbPublicEvidenceCliAdapter(options: CkbPublicEvidenceCliOptions):
+    CkbPublicEvidenceRenderResult {
+    let context = CkbPublicEvidenceCliPathContext()
+    context.worktreeRoot = options.worktreeRoot
+    context.productionRoot = options.productionRoot
+    context.userConfigRoot = options.userConfigRoot
+    context.unsignedRoot = options.unsignedRoot
+    context.finalRoot = options.finalRoot
+    runCkbPublicEvidenceCliAdapter(options, context)
 }
 
 public func renderCkbPublicEvidenceCliHuman(
