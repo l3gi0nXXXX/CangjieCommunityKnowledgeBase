@@ -733,7 +733,7 @@ private func p9PublishReadRemoteTagSnapshot(root: String,
             p9PublishLocalString(object, "schemaVersion") !=
                 "ckb-repro-remote-tag-evidence-v1" ||
             p9PublishLocalString(object, "queryKind") !=
-                "git-ls-remote-tags-refs" ||
+                "signed-remote-tag-attestation" ||
             !p9PublishLocalBool(object, "querySucceeded")) {
             return ("publish_remote_tag_evidence_invalid", "", "")
         }
@@ -747,7 +747,7 @@ private func p9PublishReadRemoteTagSnapshot(root: String,
         let evidenceHash = p9PublishLocalString(object, "evidenceHash")
         let seed = "ckb-repro-remote-tag-evidence-v1|${repository}|" +
             "${mainCommit}|${tagName}|${state}|${tagCommit}|${observed}|" +
-            "${expires}|git-ls-remote-tags-refs|true"
+            "${expires}|signed-remote-tag-attestation|true"
         if (evidenceHash != ckbReproBundleHash(seed.toArray()) ||
             normalizeCkbReproRepositoryRemote(repository) !=
                 options.releaseRepository ||

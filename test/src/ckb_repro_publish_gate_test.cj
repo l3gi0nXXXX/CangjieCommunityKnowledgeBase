@@ -69,6 +69,10 @@ public class CkbReproPublishGateTest {
             "public class CkbReproFilesystemPublishAuthentication"), false)
         @Expect(productionSource.contains(
             "public func finalizeCkbReproFilesystemPublishResult"), false)
+        @Expect(productionSource.split("p9PublishCommand(\"gpgv\"").size - 1, 2)
+        @Expect(productionSource.contains("p9PublishCommand(\"gpg\""), false)
+        @Expect(productionSource.split("--keyring").size - 1, 2)
+        @Expect(productionSource.contains("signed-remote-tag-attestation"), true)
 
         let cliOptions = parseCkbReproPublishGateCliArgs([
             "ckb-repro-publish-gate", "--mode", "pre-tag", "--bundle",
@@ -340,14 +344,14 @@ private func p9PublishLocalFixture(): String {
     let remoteSeed = "ckb-repro-remote-tag-evidence-v1|" +
         "git@github.com:l3gi0nXXXX/CangjieCommunityKnowledgeBase.git|" +
         "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|ckb-repro-v1|absent||" +
-        "${observed}|${expires}|git-ls-remote-tags-refs|true"
+        "${observed}|${expires}|signed-remote-tag-attestation|true"
     let remote = "{\"schemaVersion\":\"ckb-repro-remote-tag-evidence-v1\"," +
         "\"originRepository\":\"git@github.com:l3gi0nXXXX/CangjieCommunityKnowledgeBase.git\"," +
         "\"originMainCommit\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"," +
         "\"tagName\":\"ckb-repro-v1\",\"state\":\"absent\"," +
         "\"tagCommit\":\"\",\"observedAtMillis\":${observed}," +
         "\"expiresAtMillis\":${expires}," +
-        "\"queryKind\":\"git-ls-remote-tags-refs\"," +
+        "\"queryKind\":\"signed-remote-tag-attestation\"," +
         "\"querySucceeded\":true," +
         "\"evidenceHash\":\"${ckbReproBundleHash(remoteSeed.toArray())}\"}"
     let files = ArrayList<(String, Array<UInt8>)>()
