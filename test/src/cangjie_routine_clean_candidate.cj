@@ -971,52 +971,81 @@ public func ckbRunCleanCandidateBuild(options: CkbCleanCandidateBuildOptions): C
             return ckbFinalizeCleanCandidateBuildResult(result)
         }
         if (options.apply) {
-            let materialized = staging.saveCandidateSnapshotImmutable(candidate.rawRecords,
-                candidate.normalizedRecords, options.version)
-            if (!materialized.ok) {
-                result.diagnostic = materialized.status
+            let persisted = ckbPersistCompleteCleanStudentCandidate(staging, candidate)
+            if (!persisted.ok) {
+                result.diagnostic = persisted.diagnostic
                 return ckbFinalizeCleanCandidateBuildResult(result)
             }
-            let immutablePath = "candidate-artifacts/${options.version}/manifest.ckb"
-            let immutableManifest = staging.readText(immutablePath)
-            if (ckbCleanImmutableManifestDiagnostic(
-                immutableManifest, materialized, options.version) != "ok") {
-                result.diagnostic = "clean_candidate_immutable_manifest_readback_mismatch"
-                return ckbFinalizeCleanCandidateBuildResult(result)
-            }
-            let immutableReadback = staging.saveCandidateSnapshotImmutable(candidate.rawRecords,
-                candidate.normalizedRecords, options.version)
-            if (!immutableReadback.ok || !immutableReadback.immutableReused ||
-                immutableReadback.manifestEvidenceHash != materialized.manifestEvidenceHash ||
-                immutableReadback.rawEvidenceHash != materialized.rawEvidenceHash ||
-                immutableReadback.normalizedEvidenceHash != materialized.normalizedEvidenceHash ||
-                immutableReadback.batchCount != materialized.batchCount) {
-                result.diagnostic = "clean_candidate_immutable_files_readback_mismatch"
-                return ckbFinalizeCleanCandidateBuildResult(result)
-            }
-            result.manifestEvidenceHash = materialized.manifestEvidenceHash
-            result.immutableManifestHash = benchmarkGapSha256(immutableManifest)
-            candidate.manifestJson = ckbCleanBoundManifestJson(candidate, materialized,
-                result.immutableManifestHash)
-            staging.writeLinesAtomically(
-                "candidate-artifacts/${options.version}/clean-candidate-audit.json",
-                candidate.auditJson + "\n")
-            staging.writeLinesAtomically(
-                "candidate-artifacts/${options.version}/clean-candidate-manifest.json",
-                candidate.manifestJson)
-            if (staging.readText(
-                "candidate-artifacts/${options.version}/clean-candidate-audit.json") !=
-                candidate.auditJson + "\n" ||
-                staging.readText(
-                "candidate-artifacts/${options.version}/clean-candidate-manifest.json") !=
-                candidate.manifestJson) {
-                result.diagnostic = "clean_candidate_manifest_readback_mismatch"
-                return ckbFinalizeCleanCandidateBuildResult(result)
-            }
-            result.cleanManifestHash = benchmarkGapSha256(candidate.manifestJson)
-            result.applied = true
+            result.manifestEvidenceHash = persisted.manifestEvidenceHash
+            result.immutableManifestHash = persisted.immutableManifestHash
+            result.cleanManifestHash = persisted.cleanManifestHash
+            result.applied = persisted.applied
         }
         result.ok = true; result.diagnostic = "ok"
+        ckbFinalizeCleanCandidateBuildResult(result)
+    } catch (_: Exception) {
+        result.diagnostic = "clean_candidate_build_failed"
+        ckbFinalizeCleanCandidateBuildResult(result)
+    }
+}
+
+public func ckbPersistCompleteCleanStudentCandidate(staging: FileKnowledgeStore,
+    candidate: CkbCompleteCleanStudentCandidate): CkbCleanCandidateBuildResult {
+    let result = CkbCleanCandidateBuildResult()
+    result.rawCount = candidate.rawRecords.size
+    result.normalizedCount = candidate.normalizedRecords.size
+    result.activeCount = candidate.activeRecords.size
+    result.candidateChecksum = candidate.candidateChecksum
+    result.candidateEvidenceHash = candidate.evidenceHash
+    result.authorityHash = candidate.authorityHash
+    result.auditEvidenceHash = candidate.auditEvidenceHash
+    if (!candidate.ok || candidate.version == "") {
+        result.diagnostic = if (candidate.diagnostic == "") {
+            "clean_candidate_not_built"
+        } else { candidate.diagnostic }
+        return ckbFinalizeCleanCandidateBuildResult(result)
+    }
+    try {
+        let materialized = staging.saveCandidateSnapshotImmutable(
+            candidate.rawRecords, candidate.normalizedRecords, candidate.version)
+        if (!materialized.ok) {
+            result.diagnostic = materialized.status
+            return ckbFinalizeCleanCandidateBuildResult(result)
+        }
+        let base = "candidate-artifacts/${candidate.version}"
+        let immutableManifest = staging.readText("${base}/manifest.ckb")
+        if (ckbCleanImmutableManifestDiagnostic(immutableManifest,
+            materialized, candidate.version) != "ok") {
+            result.diagnostic = "clean_candidate_immutable_manifest_readback_mismatch"
+            return ckbFinalizeCleanCandidateBuildResult(result)
+        }
+        let immutableReadback = staging.saveCandidateSnapshotImmutable(
+            candidate.rawRecords, candidate.normalizedRecords, candidate.version)
+        if (!immutableReadback.ok || !immutableReadback.immutableReused ||
+            immutableReadback.manifestEvidenceHash != materialized.manifestEvidenceHash ||
+            immutableReadback.rawEvidenceHash != materialized.rawEvidenceHash ||
+            immutableReadback.normalizedEvidenceHash != materialized.normalizedEvidenceHash ||
+            immutableReadback.batchCount != materialized.batchCount) {
+            result.diagnostic = "clean_candidate_immutable_files_readback_mismatch"
+            return ckbFinalizeCleanCandidateBuildResult(result)
+        }
+        result.manifestEvidenceHash = materialized.manifestEvidenceHash
+        result.immutableManifestHash = benchmarkGapSha256(immutableManifest)
+        candidate.manifestJson = ckbCleanBoundManifestJson(candidate, materialized,
+            result.immutableManifestHash)
+        staging.writeLinesAtomically("${base}/clean-candidate-audit.json",
+            candidate.auditJson + "\n")
+        staging.writeLinesAtomically("${base}/clean-candidate-manifest.json",
+            candidate.manifestJson)
+        if (staging.readText("${base}/clean-candidate-audit.json") !=
+            candidate.auditJson + "\n" ||
+            staging.readText("${base}/clean-candidate-manifest.json") !=
+            candidate.manifestJson) {
+            result.diagnostic = "clean_candidate_manifest_readback_mismatch"
+            return ckbFinalizeCleanCandidateBuildResult(result)
+        }
+        result.cleanManifestHash = benchmarkGapSha256(candidate.manifestJson)
+        result.applied = true; result.ok = true; result.diagnostic = "ok"
         ckbFinalizeCleanCandidateBuildResult(result)
     } catch (_: Exception) {
         result.diagnostic = "clean_candidate_build_failed"

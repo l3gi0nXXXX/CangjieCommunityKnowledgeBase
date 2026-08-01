@@ -1,5 +1,8 @@
 package cangjie_community_knowledge_base_test
 
+import std.collection.ArrayList
+import std.sort.*
+
 public class CkbPortableVectorBuildOptions {
     public var candidateVersion: String = ""
     public var p4PortableProofHash: String = ""
@@ -30,6 +33,109 @@ public interface CkbPortableVectorBuildBackend {
     func deleteCollection(collection: String): Unit
 }
 
+public class CkbPortableVectorProductionBackend <: CkbPortableVectorBuildBackend {
+    private let kb: KnowledgeBase
+    private let store: FileKnowledgeStore
+    private let vectorStore: VectorStore
+    private let pathContext: CkbPortablePathContext
+    private let deadlineAtMillis: Int64
+
+    public init(embeddingProvider: EmbeddingProvider, store: FileKnowledgeStore,
+        vectorStore: VectorStore, pathContext: CkbPortablePathContext,
+        deadlineAtMillis!: Int64 = 0) {
+        this.kb = KnowledgeBase(FakeClock(0), embeddingProvider, vectorStore,
+            LocalGraphStore())
+        this.store = store; this.vectorStore = vectorStore
+        this.pathContext = pathContext; this.deadlineAtMillis = deadlineAtMillis
+    }
+
+    public func collectionExists(collection: String): Bool {
+        // Only Qdrant's explicit missing status authorizes a create attempt.
+        this.vectorStore.status(collection).degradedReason != "collection_missing"
+    }
+
+    public func createEmpty(collection: String, dimension: Int64,
+        distance: String): CkbReproContractResult {
+        let status = this.vectorStore.ensureReadyCollection(collection)
+        if (status.state != EmbeddingProviderState.READY || status.count != 0 ||
+            (status.dimension != 0 && status.dimension != dimension) ||
+            (status.distance != "" &&
+             status.distance.toAsciiLower() != distance.toAsciiLower())) {
+            return ckbPortableVectorFailure("portable_vector_collection_create_failed")
+        }
+        ckbPortableVectorSuccess()
+    }
+
+    public func stagedRebuild(collection: String): CkbPortableVectorBuildEvidence {
+        let evidence = CkbPortableVectorBuildEvidence()
+        let built = ckbRebuildIndex(this.kb, this.store,
+            progressSink: NoopVectorBuildProgressSink(),
+            targetVectorCollection: collection, persistSnapshot: false,
+            deadlineAtMillis: this.deadlineAtMillis)
+        if (!built.ok) {
+            evidence.diagnostic = if (built.failedVersion == "") {
+                "portable_vector_staged_rebuild_failed"
+            } else { built.failedVersion }
+            return evidence
+        }
+        let status = this.vectorStore.status(collection)
+        if (status.state != EmbeddingProviderState.READY) {
+            evidence.diagnostic = "portable_vector_collection_not_ready"
+            return evidence
+        }
+        let vectorBuild = this.kb.lastVectorIndexBuild()
+        if (!vectorBuild.vectorRecordsMaterialized ||
+            vectorBuild.vectorRecords.size != status.count) {
+            evidence.diagnostic = "portable_vector_payload_evidence_unavailable"
+            return evidence
+        }
+        let visible = CkbStudentVisiblePathInput()
+        for (record in vectorBuild.vectorRecords) { visible.vectorRecords.add(record) }
+        let scan = scanCkbStudentVisiblePaths(visible, this.pathContext)
+        if (!scan.ready) {
+            evidence.diagnostic = scan.diagnostic
+            evidence.machinePathCount = scan.machinePathCount + scan.unmappedCount
+            return evidence
+        }
+        evidence.collection = collection; evidence.count = status.count
+        evidence.dimension = status.dimension; evidence.distance = status.distance
+        evidence.machinePathCount = 0
+        evidence.payloadCanonicalHash =
+            ckbPortableVectorPayloadCanonicalHash(vectorBuild.vectorRecords)
+        evidence.ready = true; evidence.diagnostic = "ok"
+        evidence
+    }
+
+    public func deleteCollection(collection: String): Unit {
+        _ = this.vectorStore.deleteCollection(collection)
+    }
+}
+
+public func ckbPortableVectorPayloadCanonicalHash(
+    records: ArrayList<VectorRecord>): String {
+    let rows = ArrayList<String>()
+    for (record in records) {
+        let derived = record.metadata.derivedFrom.toArray(); sort(derived)
+        var derivedText = ""
+        for (value in derived) { derivedText += "${value.toArray().size}:${value}" }
+        rows.add(ckbPortableVectorCanonicalFields([
+            record.id, record.pointId, record.title, record.chunk,
+            record.citation, record.metadata.path, record.metadata.sourceType,
+            record.metadata.license, derivedText
+        ]))
+    }
+    let ordered = rows.toArray(); sort(ordered)
+    var body = "ckb-portable-vector-payload-v1|"
+    for (row in ordered) { body += "${row.toArray().size}:${row}" }
+    benchmarkGapSha256(body)
+}
+
+private func ckbPortableVectorCanonicalFields(values: Array<String>): String {
+    var out = ""
+    for (value in values) { out += "${value.toArray().size}:${value}" }
+    out
+}
+
 public class CkbPortableVectorProof {
     public var collection: String = ""
     public var candidateVersion: String = ""
@@ -43,6 +149,17 @@ public class CkbPortableVectorProof {
     public var payloadCanonicalHash: String = ""
     public var vectorProofHash: String = ""
     public init() {}
+}
+
+public func ckbPortableVectorProofHash(proof: CkbPortableVectorProof): String {
+    benchmarkGapSha256("ckb-portable-vector-proof-v1|" +
+        ckbPortableVectorCanonicalFields([
+            proof.collection, proof.candidateVersion,
+            proof.p4PortableProofHash, proof.qdrantImageDigest,
+            proof.embeddingProvider, proof.embeddingModel,
+            proof.count.toString(), proof.dimension.toString(),
+            proof.distance, proof.payloadCanonicalHash
+        ]))
 }
 
 public class CkbPortableVectorBuildResult {
@@ -65,7 +182,8 @@ public func validateCkbPortableVectorBuildInputs(
             "portable_vector_runtime_state_invalid")
     }
     if (!ckbPortableVectorHashValid(options.p4PortableProofHash) ||
-        p4Proof.preservationHash != options.p4PortableProofHash) {
+        p4Proof.preservationHash != options.p4PortableProofHash ||
+        p4Proof.candidateVersion != options.candidateVersion) {
         return ckbPortableVectorFailure(
             "portable_vector_p4_proof_mismatch")
     }
@@ -169,12 +287,7 @@ public func buildCkbPortableReferenceVectors(
     result.proof.dimension = evidence.dimension
     result.proof.distance = evidence.distance
     result.proof.payloadCanonicalHash = evidence.payloadCanonicalHash
-    result.proof.vectorProofHash = benchmarkGapSha256(
-        "${collection}|${options.candidateVersion}|" +
-        "${options.p4PortableProofHash}|${environment.qdrantImageDigest}|" +
-        "${environment.embeddingProvider}|${environment.embeddingModel}|" +
-        "${evidence.count}|${evidence.dimension}|${evidence.distance}|" +
-        evidence.payloadCanonicalHash)
+    result.proof.vectorProofHash = ckbPortableVectorProofHash(result.proof)
     result.ready = true
     result.diagnostic = "ok"
     result

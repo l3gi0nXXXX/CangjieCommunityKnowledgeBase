@@ -299,6 +299,59 @@ public class CkbReproBundleLoadResult {
     public init() {}
 }
 
+public class CkbReproPromotionAssetSnapshot {
+    public var contract: CkbReproContractResult = CkbReproContractResult()
+    public var loaded: CkbReproBundleLoadResult = CkbReproBundleLoadResult()
+    public let bytes = ArrayList<Array<UInt8>>()
+    public init() {}
+}
+
+// Captures only the bounded promotion control assets. Large bundle payloads
+// remain streaming-only and are never retained by bundle validation.
+public func captureCkbReproPromotionAssets(root: String,
+    backend: CkbReproBundleReadBackend): CkbReproPromotionAssetSnapshot {
+    let out = CkbReproPromotionAssetSnapshot()
+    let before = validateCkbReproBundleManifest(root, backend)
+    if (!before.contract.ok) { out.contract = before.contract; return out }
+    let paths = ["promotion-candidate.json", "portable-logical-proof.json",
+        "portable-vector-proof.json", "public-evidence-export.json",
+        "reproducibility/manifests/reference-run.json",
+        "release/release-commit.txt"]
+    try {
+        let listing = backend.list(root)
+        for (path in paths) {
+            let entry = p9FindBundleReadEntry(listing, path)
+            if (!entry[0] || entry[1].size > 64 * 1024) {
+                out.contract = p9BundleFailure("promotion_asset_invalid")
+                return out
+            }
+            let read = p9ConsumeBundleEntry(root, entry[1], backend,
+                64 * 1024, scanText: true)
+            if (!read.contract.ok) { out.contract = read.contract; return out }
+            var matched: Int64 = 0
+            for (asset in before.manifest.assets) {
+                if (asset.relativePath == path && asset.size == read.size &&
+                    asset.sha256 == read.sha256) { matched += 1 }
+            }
+            if (matched != 1) {
+                out.contract = p9BundleFailure("promotion_asset_invalid")
+                return out
+            }
+            out.bytes.add(read.bytes)
+        }
+        let after = validateCkbReproBundleManifest(root, backend)
+        if (!after.contract.ok || after.rootIdentity != before.rootIdentity ||
+            after.manifest.inputSetHash != before.manifest.inputSetHash ||
+            after.proofSetHash != before.proofSetHash) {
+            out.contract = p9BundleFailure("promotion_bundle_changed")
+            return out
+        }
+        out.loaded = before; out.contract = p9BundleSuccess(); out
+    } catch (_: Exception) {
+        out.contract = p9BundleFailure("promotion_asset_read_failed"); out
+    }
+}
+
 public class CkbReproFinalizeInputs {
     public var ok: Bool = false
     public var diagnostic: String = "bundle_finalize_inputs_not_loaded"
@@ -932,41 +985,27 @@ public func writeCkbReproSha256Sums(
 public func buildCkbReproBuildAttestation(reportBytes: Array<UInt8>,
     manifestBytes: Array<UInt8>): (CkbReproContractResult, String) {
     let failed = p9BundleFailure("bundle_build_attestation_invalid")
-    let reportText = try { String.fromUtf8(reportBytes) }
-        catch (_: Exception) { return (failed, "") }
+    let parsedReport = parseCkbReproVerificationReport(reportBytes)
+    if (!parsedReport[0].ok ||
+        !validateCkbReproVerificationReport(parsedReport[1]).ok) {
+        return (failed, "")
+    }
+    let report = parsedReport[1]
     let parsedManifest = parseCkbReproBundleManifest(manifestBytes)
     if (!parsedManifest[0].ok) { return (failed, "") }
-    try {
-        let report = JsonValue.fromStr(reportText).asObject()
-        if (report.size() != 19 ||
-            p9BundleString(report, "schemaVersion") !=
-                "ckb-repro-verification-report-v1" ||
-            !p9BundleBool(report, "ok") ||
-            p9BundleString(report, "diagnostic") != "verified" ||
-            !p9BundleBool(report, "restoreOk") ||
-            !p9BundleBool(report, "rebuildOk") ||
-            !p9BundleBool(report, "publicEvidenceOk") ||
-            !p9BundleBool(report, "documentationOk") ||
-            p9BundleInt(report, "runnerCalls") != 0 ||
-            p9BundleString(report, "verifiedReleaseInputSetHash") !=
-                parsedManifest[1].inputSetHash ||
-            !p9BundleHashValid(p9BundleString(report, "bundleProofSetHash")) ||
-            !p9BundleHashValid(p9BundleString(report, "runCriticalTreeHash")) ||
-            !p9BundleHashValid(p9BundleString(report, "referenceManifestHash")) ||
-            !p9BundleCommit(p9BundleString(report, "releaseCommit"))) {
-            return (failed, "")
-        }
-        let text = "{\"schemaVersion\":\"ckb-repro-build-attestation-v2\"," +
-            "\"verificationReportHash\":\"${ckbReproBundleHash(reportBytes)}\"," +
-            "\"releaseManifestHash\":\"${ckbReproBundleHash(manifestBytes)}\"," +
-            "\"verifiedReleaseInputSetHash\":\"${p9BundleJson(p9BundleString(report, "verifiedReleaseInputSetHash"))}\"," +
-            "\"bundleProofSetHash\":\"${p9BundleJson(p9BundleString(report, "bundleProofSetHash"))}\"," +
-            "\"releaseCommit\":\"${p9BundleJson(p9BundleString(report, "releaseCommit"))}\"," +
-            "\"runCriticalTreeHash\":\"${p9BundleJson(p9BundleString(report, "runCriticalTreeHash"))}\"," +
-            "\"referenceManifestHash\":\"${p9BundleJson(p9BundleString(report, "referenceManifestHash"))}\"}"
-        let ok = p9BundleSuccess(); ok.canonicalJson = text
-        (ok, text)
-    } catch (_: Exception) { (failed, "") }
+    if (report.verifiedReleaseInputSetHash != parsedManifest[1].inputSetHash) {
+        return (failed, "")
+    }
+    let text = "{\"schemaVersion\":\"ckb-repro-build-attestation-v2\"," +
+        "\"verificationReportHash\":\"${ckbReproBundleHash(reportBytes)}\"," +
+        "\"releaseManifestHash\":\"${ckbReproBundleHash(manifestBytes)}\"," +
+        "\"verifiedReleaseInputSetHash\":\"${p9BundleJson(report.verifiedReleaseInputSetHash)}\"," +
+        "\"bundleProofSetHash\":\"${p9BundleJson(report.bundleProofSetHash)}\"," +
+        "\"releaseCommit\":\"${p9BundleJson(report.releaseCommit)}\"," +
+        "\"runCriticalTreeHash\":\"${p9BundleJson(report.runCriticalTreeHash)}\"," +
+        "\"referenceManifestHash\":\"${p9BundleJson(report.referenceManifestHash)}\"}"
+    let ok = p9BundleSuccess(); ok.canonicalJson = text
+    (ok, text)
 }
 
 public func validateCkbReproBuildAttestation(

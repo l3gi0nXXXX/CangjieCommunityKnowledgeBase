@@ -107,6 +107,18 @@ public class CkbReproBuildTest {
         @Expect(backend.stages.toArray(),
             ["assemble", "validate_authority", "load_first_init", "validate_serving",
              "clean", "leakage", "materialize", "logical_scan"])
+        @Expect(backend.selectedTypedCount > 0, true)
+        @Expect(backend.portableRawCount, fixture.request.rawInput.size)
+        let productionInput = CkbReproPipelineInput()
+        productionInput.request = fixture.request
+        productionInput.request.candidateVersion = "portable-production-candidate"
+        productionInput.selectedTyped.add(fixture.request.typedInput[0])
+        productionInput.portableTyped.add(fixture.request.typedInput[0])
+        @Expect(CkbReproProductionBuildBackend().run(
+            "assemble", productionInput).ok, true)
+        productionInput.selectedTyped.add(fixture.request.typedInput[0])
+        @Expect(CkbReproProductionBuildBackend().run(
+            "assemble", productionInput).ok, false)
         p4RemoveBuildFixture(fixture)
     }
 
@@ -142,6 +154,19 @@ public class CkbReproBuildTest {
         @Expect(second.ready, true)
         @Expect(renderCkbReproBuildProof(first.proof),
             renderCkbReproBuildProof(second.proof))
+        @Expect(first.proof.candidateVersion, fixture.request.candidateVersion)
+        @Expect(first.proof.preservationHash,
+            ckbReproBuildPreservationHash(first.proof))
+        let original = first.proof.preservationHash
+        first.proof.candidateVersion = "substituted-candidate"
+        @Expect(ckbReproBuildPreservationHash(first.proof) == original, false)
+        var controls = ""
+        for (value in 0..32) { controls += Rune(UInt32(value)).toString() }
+        first.proof.candidateVersion = controls
+        let json = renderCkbReproBuildProof(first.proof)
+        for (value in 0..32) {
+            @Expect(json.contains(Rune(UInt32(value)).toString()), false)
+        }
         p4RemoveBuildFixture(fixture)
     }
 
@@ -174,6 +199,26 @@ public class CkbReproBuildTest {
         @Expect(failed.ready, false)
         @Expect(backend.currentVersion, fixture.options.expectedActiveVersion)
         @Expect(backend.cleanupStagingCalls, 1)
+
+        let readBack = p4PromotionFixture("rollback-readback")
+        let readBackBackend = P4FakePromotionBackend()
+        readBackBackend.readBackOk = false
+        @Expect(promoteCkbPortableCandidate(
+            readBack.options, readBackBackend).diagnostic,
+            "promotion_read_back_failed")
+        @Expect(readBackBackend.currentVersion, "old")
+        @Expect(readBackBackend.rollbackCalls, 1)
+        p4RemovePromotionFixture(readBack)
+
+        let cleanup = p4PromotionFixture("rollback-cleanup")
+        let cleanupBackend = P4FakePromotionBackend()
+        cleanupBackend.cleanupOldOk = false
+        @Expect(promoteCkbPortableCandidate(
+            cleanup.options, cleanupBackend).diagnostic,
+            "promotion_cleanup_old_failed")
+        @Expect(cleanupBackend.currentVersion, "old")
+        @Expect(cleanupBackend.rollbackCalls, 1)
+        p4RemovePromotionFixture(cleanup)
         p4RemovePromotionFixture(fixture)
     }
 }
@@ -325,8 +370,13 @@ private class P4FakeMaterialBackend <: CkbReproSourceMaterialBackend {
 private class P4FakeBuildBackend <: CkbReproBuildBackend {
     public var stages: ArrayList<String> = ArrayList<String>()
     public var failStage: String = ""
-    public func run(stage: String): CkbReproBackendResult {
+    public var selectedTypedCount: Int64 = 0
+    public var portableRawCount: Int64 = 0
+    public func run(stage: String,
+        input: CkbReproPipelineInput): CkbReproBackendResult {
         stages.add(stage)
+        selectedTypedCount = input.selectedTyped.size
+        portableRawCount = input.portableRaw.size
         CkbReproBackendResult(stage != failStage, "")
     }
 }
@@ -359,8 +409,6 @@ private func p4PromotionFixture(id: String): P4PromotionFixture {
         "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
     fixture.options.p8AProofHash =
         "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
-    fixture.options.p8BProofHash =
-        "sha256:1111111111111111111111111111111111111111111111111111111111111111"
     fixture.options.identity = "portable-identity"
     fixture.options.p8StrictPassed = 151
     fixture.options.apply = true
@@ -380,6 +428,9 @@ private class P4FakePromotionBackend <: CkbPortablePromotionBackend {
     public var commitOk: Bool = true
     public var commitCalls: Int64 = 0
     public var cleanupStagingCalls: Int64 = 0
+    public var rollbackCalls: Int64 = 0
+    public var readBackOk: Bool = true
+    public var cleanupOldOk: Bool = true
     public var stages: ArrayList<String> = ArrayList<String>()
     public func readCurrent(): CkbPortablePromotionState {
         CkbPortablePromotionState(currentVersion, pointerHash, "")
@@ -396,8 +447,12 @@ private class P4FakePromotionBackend <: CkbPortablePromotionBackend {
         commitOk
     }
     public func readBack(options: CkbPortablePromotionOptions): Bool {
-        stages.add("read_back"); currentVersion == options.candidateVersion
+        stages.add("read_back"); readBackOk && currentVersion == options.candidateVersion
     }
-    public func cleanupOld(): Bool { stages.add("cleanup_old"); true }
+    public func cleanupOld(): Bool { stages.add("cleanup_old"); cleanupOldOk }
+    public func rollback(state: CkbPortablePromotionState): Bool {
+        rollbackCalls += 1; currentVersion = state.activeVersion
+        pointerHash = state.pointerHash; true
+    }
     public func cleanupStaging(): Unit { cleanupStagingCalls += 1 }
 }
