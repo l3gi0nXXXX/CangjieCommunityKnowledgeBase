@@ -1,6 +1,7 @@
 package cangjie_community_knowledge_base_test
 
 import std.collection.ArrayList
+import std.fs.{Directory, File, Path, exists, remove}
 import std.unittest.*
 import std.unittest.testmacro.*
 
@@ -92,6 +93,19 @@ public class CkbReproCliAdaptersTest {
             ["ckb-release-import", "--archive", "/tmp/a",
              "--target-root", "/tmp/c", "--json"], fake)
         @Expect(json.output.contains("\"ok\":true"), true)
+
+        let root = Path("target/p234-release-production")
+        if (exists(root)) { remove(root, recursive: true) }
+        Directory.create(root, recursive: true)
+        let payload = CkbReleaseArchivePayload(); payload.path = "仓颉🙂/binary.bin"
+        payload.bytes = [0xff, 0x00, 0xfe]
+        let values = ArrayList<CkbReleaseArchivePayload>(); values.add(payload)
+        let backend = CkbPortableReleaseArchiveBackend()
+        let archive = root.join("snapshot.ckb-release").toString()
+        @Expect(backend.create(archive, values).ok, true)
+        @Expect(backend.enumerate(archive).entries[0].path, payload.path)
+        @Expect(backend.readRegular(archive, payload.path).bytes, payload.bytes)
+        remove(root, recursive: true)
     }
 
     @TestCase

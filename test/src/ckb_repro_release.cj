@@ -203,14 +203,6 @@ public interface CkbReleaseCliAdapter {
     func execute(options: CkbReleaseCliOptions): CkbReleaseCliOperationResult
 }
 
-private class CkbUnavailableReleaseCliAdapter <: CkbReleaseCliAdapter {
-    public func execute(options: CkbReleaseCliOptions): CkbReleaseCliOperationResult {
-        let out = CkbReleaseCliOperationResult()
-        out.diagnostic = "release_production_context_required"
-        out
-    }
-}
-
 public func parseCkbReleaseCliOptions(args: Array<String>): CkbReleaseCliOptions {
     let out = CkbReleaseCliOptions()
     if (args.size == 0 || (args[0] != "ckb-release-export" &&
@@ -274,7 +266,133 @@ public func executeCkbReleaseCliAdapter(args: Array<String>,
 }
 
 public func runCkbReleaseCli(args: Array<String>): CkbReleaseCliExecution {
-    executeCkbReleaseCliAdapter(args, CkbUnavailableReleaseCliAdapter())
+    let options = parseCkbReleaseCliOptions(args)
+    if (options.diagnostic != "ok") {
+        return executeCkbReleaseCliAdapter(args,
+            CkbReleaseProductionAdapter(CkbReleasePathPolicy()))
+    }
+    let policy = CkbReleasePathPolicy()
+    policy.worktreeRoot = try { canonicalize(Path(".")).toString() }
+        catch (_: Exception) { "" }
+    if (options.mode == "export") { policy.productionStoreRoot = options.storeRoot }
+    executeCkbReleaseCliAdapter(args, CkbReleaseProductionAdapter(policy))
+}
+
+// Production archive codec. It is deliberately binary and length-prefixed:
+// snapshot payloads are never decoded as UTF-8, while entry paths are.
+public class CkbPortableReleaseArchiveBackend <: CkbReleaseArchiveBackend {
+    public func create(archivePath: String,
+        values: ArrayList<CkbReleaseArchivePayload>): CkbReleaseArchiveOperation {
+        let result = CkbReleaseArchiveOperation()
+        try {
+            let bytes = ArrayList<UInt8>()
+            bytes.add(all: "CKBREL01".toArray())
+            ckbReleaseArchiveAppendInt(bytes, values.size)
+            for (value in values) {
+                let pathBytes = value.path.toArray()
+                ckbReleaseArchiveAppendInt(bytes, pathBytes.size)
+                ckbReleaseArchiveAppendInt(bytes, value.bytes.size)
+                bytes.add(all: pathBytes); bytes.add(all: value.bytes)
+            }
+            File.writeTo(Path(archivePath), bytes.toArray())
+            result.ok = true; result.diagnostic = "ok"
+        } catch (_: Exception) { result.diagnostic = "archive_operation_failed" }
+        result
+    }
+
+    public func enumerate(archivePath: String): CkbReleaseArchiveListing {
+        let result = CkbReleaseArchiveListing()
+        let parsed = ckbReleaseArchiveParse(archivePath)
+        if (!parsed[0].ok) { result.diagnostic = parsed[0].diagnostic; return result }
+        for (payload in parsed[1]) {
+            let entry = CkbReleaseArchiveEntry(); entry.path = payload.path
+            entry.kind = CkbReleaseArchiveEntryKinds.REGULAR
+            entry.size = payload.bytes.size; result.entries.add(entry)
+        }
+        result.ok = true; result.diagnostic = "ok"; result
+    }
+
+    public func readRegular(archivePath: String,
+        relativePath: String): CkbReleaseArchiveRead {
+        let result = CkbReleaseArchiveRead()
+        let parsed = ckbReleaseArchiveParse(archivePath)
+        if (!parsed[0].ok) { result.diagnostic = parsed[0].diagnostic; return result }
+        for (payload in parsed[1]) {
+            if (payload.path == relativePath) {
+                result.ok = true; result.diagnostic = "ok"
+                result.bytes = payload.bytes.clone(); return result
+            }
+        }
+        result.diagnostic = "archive_entry_missing"; result
+    }
+}
+
+public class CkbReleaseProductionAdapter <: CkbReleaseCliAdapter {
+    private let policy: CkbReleasePathPolicy
+    private let backend: CkbReleaseArchiveBackend
+    public init(policy: CkbReleasePathPolicy,
+        backend!: CkbReleaseArchiveBackend = CkbPortableReleaseArchiveBackend()) {
+        this.policy = policy; this.backend = backend
+    }
+    public func execute(options: CkbReleaseCliOptions): CkbReleaseCliOperationResult {
+        let out = CkbReleaseCliOperationResult()
+        let result = if (options.mode == "export") {
+            let loaded = loadCkbLogicalSnapshotCliProofs(
+                options.logicalProof, options.vectorProof)
+            if (!loaded[0].ok) { out.diagnostic = loaded[0].diagnostic; return out }
+            exportCkbLogicalSnapshot(FileKnowledgeStore(options.storeRoot), loaded[1],
+                options.output, this.backend, pathPolicy: this.policy)
+        } else {
+            importCkbLogicalSnapshot(options.archive, options.targetRoot,
+                this.backend, pathPolicy: this.policy)
+        }
+        out.ok = result.ok; out.diagnostic = result.diagnostic
+        out.summary = "version=${result.activeVersion} raw=${result.rawCount} " +
+            "normalized=${result.normalizedCount} vector=${result.vectorCount}"
+        out
+    }
+}
+
+public func newCkbReleaseProductionAdapter(policy: CkbReleasePathPolicy,
+    backend!: CkbReleaseArchiveBackend = CkbPortableReleaseArchiveBackend()):
+    CkbReleaseCliAdapter { CkbReleaseProductionAdapter(policy, backend: backend) }
+
+public func loadCkbLogicalSnapshotCliProofs(logicalPath: String,
+    vectorPath: String): (CkbReproContractResult, CkbLogicalSnapshotExportProofs) {
+    let proofs = CkbLogicalSnapshotExportProofs()
+    try {
+        let logicalText = String.fromUtf8(File.readFrom(Path(logicalPath)))
+        let vectorText = String.fromUtf8(File.readFrom(Path(vectorPath)))
+        let logical = JsonValue.fromStr(logicalText).asObject()
+        let vector = JsonValue.fromStr(vectorText).asObject()
+        proofs.sourceState = ckbReleaseRequiredString(logical, "sourceState")
+        proofs.portableKnowledgeVersion =
+            ckbReleaseRequiredString(logical, "portableKnowledgeVersion")
+        proofs.p4PortableProofHash =
+            ckbReleaseRequiredString(logical, "p4PortableProofHash")
+        proofs.pathMachineFindingCount =
+            ckbReleaseRequiredInt(logical, "pathMachineFindingCount")
+        proofs.pathUnmappedFindingCount =
+            ckbReleaseRequiredInt(logical, "pathUnmappedFindingCount")
+        proofs.contaminationProofHash =
+            ckbReleaseRequiredString(logical, "contaminationProofHash")
+        proofs.expectedStartPointerHash =
+            ckbReleaseRequiredString(logical, "activePointerHash")
+        proofs.expectedEndPointerHash = proofs.expectedStartPointerHash
+        proofs.p3VectorProofHash =
+            ckbReleaseRequiredString(vector, "vectorProofHash")
+        proofs.p3ProofReal = ckbReleaseRequiredBool(vector, "proofReal")
+        proofs.vectorState = ckbReleaseRequiredString(vector, "vectorState")
+        proofs.vectorCollection = ckbReleaseRequiredString(vector, "collection")
+        proofs.vectorCount = ckbReleaseRequiredInt(vector, "count")
+        proofs.vectorDimension = ckbReleaseRequiredInt(vector, "dimension")
+    } catch (_: Exception) {
+        return (ckbReleaseCliContractFailure("release_proof_malformed_json"), proofs)
+    }
+    let diagnostic = ckbLogicalSnapshotProofDiagnosticForCli(proofs)
+    if (diagnostic != "ok") { return (ckbReleaseCliContractFailure(diagnostic), proofs) }
+    let contract = CkbReproContractResult(); contract.ok = true; contract.diagnostic = "ok"
+    (contract, proofs)
 }
 
 public func runCkbReleaseCli(args: Array<String>,
@@ -329,6 +447,94 @@ private func ckbReleaseCliJsonEscape(value: String): String {
         } else { out.append(rune) }
     }
     out.toString()
+}
+
+private func ckbReleaseArchiveAppendInt(out: ArrayList<UInt8>, value: Int64): Unit {
+    for (shift in [56, 48, 40, 32, 24, 16, 8, 0]) {
+        var divisor: Int64 = 1
+        for (_ in 0..(shift / 8)) { divisor *= 256 }
+        out.add(UInt8((value / divisor) % 256))
+    }
+}
+
+private func ckbReleaseArchiveReadInt(bytes: Array<UInt8>, offset: Int64): Int64 {
+    if (offset < 0 || offset + 8 > bytes.size) { throw Exception("archive_truncated") }
+    var value: Int64 = 0
+    for (i in 0..8) { value = value * 256 + Int64(bytes[offset + i]) }
+    value
+}
+
+private func ckbReleaseArchiveParse(path: String):
+    (CkbReleaseArchiveOperation, ArrayList<CkbReleaseArchivePayload>) {
+    let result = CkbReleaseArchiveOperation()
+    let payloads = ArrayList<CkbReleaseArchivePayload>()
+    try {
+        let bytes = File.readFrom(Path(path)); let magic = "CKBREL01".toArray()
+        if (bytes.size < 16) { throw Exception("archive_truncated") }
+        for (i in 0..magic.size) { if (bytes[i] != magic[i]) { throw Exception("archive_magic") } }
+        let count = ckbReleaseArchiveReadInt(bytes, 8)
+        if (count < 0 || count > 128) { throw Exception("archive_count") }
+        var offset: Int64 = 16
+        for (_ in 0..count) {
+            let pathSize = ckbReleaseArchiveReadInt(bytes, offset); offset += 8
+            let bodySize = ckbReleaseArchiveReadInt(bytes, offset); offset += 8
+            if (pathSize <= 0 || pathSize > 4096 || bodySize < 0 ||
+                bodySize > 67108864 || offset + pathSize + bodySize > bytes.size) {
+                throw Exception("archive_bounds")
+            }
+            let pathBytes = ArrayList<UInt8>()
+            for (i in 0..pathSize) { pathBytes.add(bytes[offset + i]) }
+            offset += pathSize
+            let relative = try { String.fromUtf8(pathBytes.toArray()) }
+                catch (_: Exception) { throw Exception("invalid_response_encoding") }
+            let payload = CkbReleaseArchivePayload(); payload.path = relative
+            let body = ArrayList<UInt8>()
+            for (i in 0..bodySize) { body.add(bytes[offset + i]) }
+            offset += bodySize; payload.bytes = body.toArray(); payloads.add(payload)
+        }
+        if (offset != bytes.size) { throw Exception("archive_trailing_bytes") }
+        result.ok = true; result.diagnostic = "ok"
+    } catch (e: Exception) {
+        result.diagnostic = if (e.message == "invalid_response_encoding") {
+            "invalid_response_encoding"
+        } else { "archive_listing_failed" }
+        payloads.clear()
+    }
+    (result, payloads)
+}
+
+private func ckbReleaseRequiredString(object: JsonObject, key: String): String {
+    object.get(key).getOrThrow().asString().getValue()
+}
+private func ckbReleaseRequiredInt(object: JsonObject, key: String): Int64 {
+    object.get(key).getOrThrow().asInt().getValue()
+}
+private func ckbReleaseRequiredBool(object: JsonObject, key: String): Bool {
+    object.get(key).getOrThrow().asBool().getValue()
+}
+private func ckbLogicalSnapshotProofDiagnosticForCli(
+    proofs: CkbLogicalSnapshotExportProofs): String {
+    if (proofs.sourceState != CkbLogicalSnapshotSourceStates.PORTABLE_VECTOR_CANDIDATE &&
+        proofs.sourceState != CkbLogicalSnapshotSourceStates.PROMOTED_PORTABLE_PRODUCTION) {
+        return "logical_snapshot_source_state_invalid"
+    }
+    if (proofs.portableKnowledgeVersion == "" || !proofs.p3ProofReal ||
+        proofs.vectorState != EmbeddingProviderState.READY || proofs.vectorCount <= 0 ||
+        proofs.vectorDimension != 1024 || proofs.pathMachineFindingCount != 0 ||
+        proofs.pathUnmappedFindingCount != 0) {
+        return "logical_snapshot_proof_invalid"
+    }
+    for (hash in [proofs.p4PortableProofHash, proofs.p3VectorProofHash,
+        proofs.contaminationProofHash, proofs.expectedStartPointerHash]) {
+        if (!hash.startsWith("sha256:") || hash.toRuneArray().size != 71) {
+            return "logical_snapshot_proof_invalid"
+        }
+    }
+    "ok"
+}
+
+private func ckbReleaseCliContractFailure(diagnostic: String): CkbReproContractResult {
+    let result = CkbReproContractResult(); result.diagnostic = diagnostic; result
 }
 
 // Release-level binding is created only after both the logical manifest and
