@@ -354,6 +354,13 @@ public class CkbNativeHttpTransportTest {
         @Expect(script.contains("security find-certificate"), false)
         @Expect(script.contains("ckb-system-roots"), false)
         @Expect(script.contains("SystemRootCertificates"), false)
+
+        let commandScript = ckbNativeTlsBootstrapScript(
+            "/tmp/ckb executable", ["service-http", "a'b"])
+        @Expect(commandScript.contains("/Users/"), false)
+        @Expect(commandScript.contains("Metis/ffi"), false)
+        @Expect(commandScript.contains("exec '/tmp/ckb executable'"), true)
+        @Expect(commandScript.contains("'a'\\''b'"), true)
     }
 
     @TestCase
