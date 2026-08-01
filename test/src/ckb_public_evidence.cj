@@ -781,7 +781,11 @@ private func p5CliWindowsAbsolutePath(value: String): Bool {
     let runes = value.toRuneArray()
     if (runes.size < 3) { return false }
     for (i in 0..(runes.size - 2)) {
-        if (((runes[i] >= r'a' && runes[i] <= r'z') ||
+        let boundary = i == 0 || runes[i - 1] == r' ' ||
+            runes[i - 1] == r'\t' || runes[i - 1] == r'\n' ||
+            runes[i - 1] == r'\r' || runes[i - 1] == r'"' ||
+            runes[i - 1] == r'\''
+        if (boundary && ((runes[i] >= r'a' && runes[i] <= r'z') ||
             (runes[i] >= r'A' && runes[i] <= r'Z')) &&
             runes[i + 1] == r':' &&
             (runes[i + 2] == r'/' || runes[i + 2] == r'\\')) {
