@@ -135,13 +135,6 @@ public interface CkbP3CliAdapter {
     func execute(options: CkbP3CliOptions): CkbP3CliOperationResult
 }
 
-private class CkbMissingP3ProductionDependencies <: CkbP3CliAdapter {
-    public func execute(options: CkbP3CliOptions): CkbP3CliOperationResult {
-        let out = CkbP3CliOperationResult(); out.diagnostic =
-            "p3_binary_executor_and_backend_factory_required"; out
-    }
-}
-
 public func parseCkbP3CliOptions(args: Array<String>): CkbP3CliOptions {
     let out = CkbP3CliOptions()
     if (args.size == 0) { out.diagnostic = "p3_command_required"; return out }
@@ -214,10 +207,6 @@ public func executeCkbP3CliAdapter(args: Array<String>, adapter: CkbP3CliAdapter
     out.diagnostic = result.diagnostic
     out.output = if (options.json) { renderCkbP3CliJson(result) } else { renderCkbP3CliHuman(result) }
     out
-}
-
-public func runCkbP3Cli(args: Array<String>): CkbP3CliExecution {
-    executeCkbP3CliAdapter(args, CkbMissingP3ProductionDependencies())
 }
 
 public interface CkbP3VerificationInputProvider {

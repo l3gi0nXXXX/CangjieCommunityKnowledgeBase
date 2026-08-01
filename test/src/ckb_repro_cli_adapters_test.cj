@@ -202,7 +202,7 @@ public class CkbReproCliAdaptersTest {
             "ckb-portable-vector-build", "--candidate-root", "c",
             "--environment-lock", "e", "--output-proof"
         ], fake).diagnostic, "missing_argument_value:--output-proof")
-        @Expect(runCkbP3Cli(["ckb-qdrant-snapshot", "create"]).diagnostic,
+        @Expect(parseCkbP3CliOptions(["ckb-qdrant-snapshot", "create"]).diagnostic,
             "required_argument_missing:--endpoint")
         @Expect(fake.calls, 0)
     }
@@ -300,7 +300,7 @@ public class CkbReproCliAdaptersTest {
         @Expect(executeCkbP4CliAdapter([
             "ckb-repro-promote", "--production-store", "p"
         ], fake).diagnostic, "required_argument_missing:--qdrant-endpoint")
-        @Expect(runCkbP4Cli(["ckb-repro-build"]).diagnostic,
+        @Expect(parseCkbP4CliOptions(["ckb-repro-build"]).diagnostic,
             "required_argument_missing:--output-root")
         @Expect(fake.calls, 0)
     }

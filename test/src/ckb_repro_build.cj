@@ -71,13 +71,6 @@ public interface CkbP4CliAdapter {
     func execute(options: CkbP4CliOptions): CkbP4CliOperationResult
 }
 
-private class CkbMissingP4ProductionInputs <: CkbP4CliAdapter {
-    public func execute(options: CkbP4CliOptions): CkbP4CliOperationResult {
-        let out = CkbP4CliOperationResult(); out.diagnostic =
-            "p4_build_and_promotion_factory_required"; out
-    }
-}
-
 public func parseCkbP4CliOptions(args: Array<String>): CkbP4CliOptions {
     let out = CkbP4CliOptions()
     if (args.size == 0 || (args[0] != "ckb-repro-build" && args[0] != "ckb-repro-promote")) {
@@ -144,10 +137,6 @@ public func executeCkbP4CliAdapter(args: Array<String>, adapter: CkbP4CliAdapter
     out.output = if (options.json) { renderCkbP4CliJson(result) } else { renderCkbP4CliHuman(result) }
     out
 }
-public func runCkbP4Cli(args: Array<String>): CkbP4CliExecution {
-    executeCkbP4CliAdapter(args, CkbMissingP4ProductionInputs())
-}
-
 public class CkbP4ProductionAdapter <: CkbP4CliAdapter {
     private let buildRequest: CkbReproBuildRequest
     private let buildBackend: CkbReproBuildBackend
