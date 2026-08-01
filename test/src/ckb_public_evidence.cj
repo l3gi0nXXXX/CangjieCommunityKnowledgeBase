@@ -35,6 +35,77 @@ public class CkbPublicEvidenceScoreComparison {
     public init() {}
 }
 
+public class CkbPublicEvidenceExportManifest {
+    public var schemaVersion: String = ""
+    public var referenceManifestHash: String = ""
+    public var privateResultsHash: String = ""
+    public var publicEvidenceHash: String = ""
+    public init() {}
+}
+
+public func parseCkbPublicEvidenceExportManifest(bytes: Array<UInt8>):
+    (CkbPublicEvidenceScoreComparison, CkbPublicEvidenceExportManifest) {
+    let manifest = CkbPublicEvidenceExportManifest()
+    let text = try { String.fromUtf8(bytes) } catch (_: Exception) {
+        return (p5ExportManifestResult(false, "invalid_response_encoding"), manifest)
+    }
+    try {
+        let object = JsonValue.fromStr(text).asObject()
+        if (object.size() != 4) {
+            return (p5ExportManifestResult(false,
+                "public_evidence_export_manifest_invalid"), manifest)
+        }
+        manifest.schemaVersion = object.get("schemaVersion").getOrThrow()
+            .asString().getValue()
+        manifest.referenceManifestHash = object.get("referenceManifestHash")
+            .getOrThrow().asString().getValue()
+        manifest.privateResultsHash = object.get("privateResultsHash")
+            .getOrThrow().asString().getValue()
+        manifest.publicEvidenceHash = object.get("publicEvidenceHash")
+            .getOrThrow().asString().getValue()
+    } catch (_: Exception) {
+        return (p5ExportManifestResult(false,
+            "public_evidence_export_manifest_invalid"),
+            CkbPublicEvidenceExportManifest())
+    }
+    (p5ExportManifestResult(true, "ok"), manifest)
+}
+
+public func validateCkbPublicEvidenceExportManifest(
+    manifest: CkbPublicEvidenceExportManifest): CkbPublicEvidenceScoreComparison {
+    if (manifest.schemaVersion != "ckb-public-evidence-export-v1") {
+        return p5ExportManifestResult(false,
+            "public_evidence_export_manifest_identity_invalid")
+    }
+    for (hash in [manifest.referenceManifestHash, manifest.privateResultsHash,
+        manifest.publicEvidenceHash]) {
+        if (!p5ExportManifestHashValid(hash)) {
+            return p5ExportManifestResult(false,
+                "public_evidence_export_manifest_hash_invalid")
+        }
+    }
+    p5ExportManifestResult(true, "ok")
+}
+
+private func p5ExportManifestResult(ok: Bool, diagnostic: String):
+    CkbPublicEvidenceScoreComparison {
+    let out = CkbPublicEvidenceScoreComparison()
+    out.ok = ok; out.diagnostic = diagnostic; out
+}
+
+private func p5ExportManifestHashValid(value: String): Bool {
+    if (!value.startsWith("sha256:") || value.toRuneArray().size != 71) {
+        return false
+    }
+    var index: Int64 = 0
+    for (rune in value.runes()) {
+        if (index >= 7 && !((rune >= r'0' && rune <= r'9') ||
+            (rune >= r'a' && rune <= r'f'))) { return false }
+        index += 1
+    }
+    true
+}
+
 public class CkbPublicEvidenceCliOptions {
     public var runRoot: String = ""
     public var referenceManifest: String = ""

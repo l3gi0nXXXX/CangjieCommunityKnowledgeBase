@@ -116,6 +116,28 @@ public class CkbPublicEvidenceTest {
     }
 
     @TestCase
+    public func p5Bnd02ExportManifestParserIsStrictAndUtf8Safe(): Unit {
+        let hash = "sha256:${"a" * 64}"
+        let bytes = ("{\"schemaVersion\":\"ckb-public-evidence-export-v1\"," +
+            "\"referenceManifestHash\":\"${hash}\"," +
+            "\"privateResultsHash\":\"${hash}\"," +
+            "\"publicEvidenceHash\":\"${hash}\"}").toArray()
+        let parsed = parseCkbPublicEvidenceExportManifest(bytes)
+        @Expect(parsed[0].ok, true)
+        @Expect(validateCkbPublicEvidenceExportManifest(parsed[1]).ok, true)
+        @Expect(parseCkbPublicEvidenceExportManifest([0xff, 0xfe])[0].diagnostic,
+            "invalid_response_encoding")
+        @Expect(parseCkbPublicEvidenceExportManifest("{bad".toArray())[0].diagnostic,
+            "public_evidence_export_manifest_invalid")
+        @Expect(parseCkbPublicEvidenceExportManifest(
+            String.fromUtf8(bytes).replace("}", ",\"extra\":true}").toArray()
+            )[0].ok, false)
+        parsed[1].publicEvidenceHash = "sha256:${"g" * 64}"
+        @Expect(validateCkbPublicEvidenceExportManifest(parsed[1]).diagnostic,
+            "public_evidence_export_manifest_hash_invalid")
+    }
+
+    @TestCase
     public func p5Pos01Fake164CanonicalProjectionRecomputes151(): Unit {
         let rows = ArrayList<CkbStrictScoreEvidenceRow>()
         for (i in 0..164) {
