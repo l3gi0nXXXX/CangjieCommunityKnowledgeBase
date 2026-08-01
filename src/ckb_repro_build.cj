@@ -233,12 +233,33 @@ public func loadCkbPortablePromotionCliInputs(candidatePath: String,
         ]
         let declaredHashes = [options.p2ProofHash, options.p3ProofHash,
             options.p5ProofHash, options.p8AProofHash]
+        let resolvedArtifacts = ArrayList<String>()
         for (i in 0..artifactPaths.size) {
-            let artifact = p4BuildReadPromotionArtifact(candidatePath, artifactPaths[i])
+            let resolved = p4BuildPromotionArtifactPath(candidatePath, artifactPaths[i])
+            if (resolved[0] != "ok") { return (p4BuildFailure(resolved[0]), options) }
+            resolvedArtifacts.add(resolved[1])
+            let artifact = p4BuildReadBoundedUtf8(resolved[1], "promotion_artifact")
             if (artifact[0] != "ok") { return (p4BuildFailure(artifact[0]), options) }
             if (benchmarkGapSha256(artifact[1]) != declaredHashes[i]) {
                 return (p4BuildFailure("promotion_artifact_hash_mismatch"), options)
             }
+        }
+        let logical = loadCkbLogicalSnapshotCliProofs(
+            resolvedArtifacts[0], resolvedArtifacts[1])
+        let vector = parseCkbPortableVectorProofFile(resolvedArtifacts[1])
+        let contamination = parseCkbPortableContaminationProofFile(
+            resolvedArtifacts[2])
+        let strict = parseCkbPortableP8AProofFile(resolvedArtifacts[3])
+        if (!logical[0].ok || !vector[0].ok || !contamination[0].ok ||
+            !strict[0].ok ||
+            logical[1].portableKnowledgeVersion != options.candidateVersion ||
+            vector[1].candidateVersion != options.candidateVersion ||
+            contamination[1].candidateVersion != options.candidateVersion ||
+            strict[1].candidateVersion != options.candidateVersion ||
+            logical[1].contaminationProofHash != contamination[1].proofHash ||
+            contamination[1].identity != options.identity ||
+            strict[1].identity != options.identity || strict[1].strictPassed != 151) {
+            return (p4BuildFailure("promotion_typed_artifact_invalid"), options)
         }
         if (options.candidateManifestHash !=
             ckbPortableCandidateManifestHash(options)) {
@@ -288,7 +309,116 @@ public func ckbPortableP8BProofHash(options: CkbPortablePromotionOptions): Strin
     ]))
 }
 
-private func p4BuildReadPromotionArtifact(candidatePath: String,
+public class CkbPortableContaminationProof {
+    public var schemaVersion: String = "ckb-contamination-proof-v1"
+    public var candidateVersion: String = ""
+    public var identity: String = ""
+    public var clean: Bool = false
+    public var findingCount: Int64 = -1
+    public var proofHash: String = ""
+    public init() {}
+}
+
+public func ckbPortableContaminationProofHash(
+    proof: CkbPortableContaminationProof): String {
+    benchmarkGapSha256("ckb-contamination-proof-v1|" + p4BuildFields([
+        proof.candidateVersion, proof.identity, proof.clean.toString(),
+        proof.findingCount.toString()
+    ]))
+}
+
+public func renderCkbPortableContaminationProof(
+    proof: CkbPortableContaminationProof): String {
+    "{\"schemaVersion\":\"${proof.schemaVersion}\",\"candidateVersion\":" +
+        "\"${p4BuildEscape(proof.candidateVersion)}\",\"identity\":" +
+        "\"${p4BuildEscape(proof.identity)}\",\"clean\":${proof.clean}," +
+        "\"findingCount\":${proof.findingCount},\"proofHash\":\"${proof.proofHash}\"}"
+}
+
+public func parseCkbPortableContaminationProofFile(path: String):
+    (CkbReproContractResult, CkbPortableContaminationProof) {
+    let proof = CkbPortableContaminationProof()
+    let read = p4BuildReadBoundedUtf8(path, "promotion_p5_proof")
+    if (read[0] != "ok") { return (p4BuildFailure(read[0]), proof) }
+    try {
+        let object = JsonValue.fromStr(read[1]).asObject()
+        if (object.size() != 6) {
+            return (p4BuildFailure("promotion_p5_proof_invalid"), proof)
+        }
+        proof.schemaVersion = p4BuildRequiredString(object, "schemaVersion")
+        proof.candidateVersion = p4BuildRequiredString(object, "candidateVersion")
+        proof.identity = p4BuildRequiredString(object, "identity")
+        proof.clean = p4BuildRequiredBool(object, "clean")
+        proof.findingCount = p4BuildRequiredInt(object, "findingCount")
+        proof.proofHash = p4BuildRequiredString(object, "proofHash")
+    } catch (_: Exception) {
+        return (p4BuildFailure("promotion_p5_proof_invalid"), proof)
+    }
+    if (proof.schemaVersion != "ckb-contamination-proof-v1" || !proof.clean ||
+        proof.findingCount != 0 || proof.candidateVersion == "" ||
+        proof.identity == "" ||
+        proof.proofHash != ckbPortableContaminationProofHash(proof)) {
+        return (p4BuildFailure("promotion_p5_proof_invalid"), proof)
+    }
+    (p4BuildSuccess(), proof)
+}
+
+public class CkbPortableP8AProof {
+    public var schemaVersion: String = "ckb-p8-a-proof-v1"
+    public var candidateVersion: String = ""
+    public var identity: String = ""
+    public var totalCases: Int64 = 0
+    public var strictPassed: Int64 = 0
+    public var transportUnresolved: Int64 = -1
+    public var proofHash: String = ""
+    public init() {}
+}
+
+public func ckbPortableP8AProofHash(proof: CkbPortableP8AProof): String {
+    benchmarkGapSha256("ckb-p8-a-proof-v1|" + p4BuildFields([
+        proof.candidateVersion, proof.identity, proof.totalCases.toString(),
+        proof.strictPassed.toString(), proof.transportUnresolved.toString()
+    ]))
+}
+
+public func renderCkbPortableP8AProof(proof: CkbPortableP8AProof): String {
+    "{\"schemaVersion\":\"${proof.schemaVersion}\",\"candidateVersion\":" +
+        "\"${p4BuildEscape(proof.candidateVersion)}\",\"identity\":" +
+        "\"${p4BuildEscape(proof.identity)}\",\"totalCases\":${proof.totalCases}," +
+        "\"strictPassed\":${proof.strictPassed},\"transportUnresolved\":" +
+        "${proof.transportUnresolved},\"proofHash\":\"${proof.proofHash}\"}"
+}
+
+public func parseCkbPortableP8AProofFile(path: String):
+    (CkbReproContractResult, CkbPortableP8AProof) {
+    let proof = CkbPortableP8AProof()
+    let read = p4BuildReadBoundedUtf8(path, "promotion_p8_a_proof")
+    if (read[0] != "ok") { return (p4BuildFailure(read[0]), proof) }
+    try {
+        let object = JsonValue.fromStr(read[1]).asObject()
+        if (object.size() != 7) {
+            return (p4BuildFailure("promotion_p8_a_proof_invalid"), proof)
+        }
+        proof.schemaVersion = p4BuildRequiredString(object, "schemaVersion")
+        proof.candidateVersion = p4BuildRequiredString(object, "candidateVersion")
+        proof.identity = p4BuildRequiredString(object, "identity")
+        proof.totalCases = p4BuildRequiredInt(object, "totalCases")
+        proof.strictPassed = p4BuildRequiredInt(object, "strictPassed")
+        proof.transportUnresolved = p4BuildRequiredInt(object, "transportUnresolved")
+        proof.proofHash = p4BuildRequiredString(object, "proofHash")
+    } catch (_: Exception) {
+        return (p4BuildFailure("promotion_p8_a_proof_invalid"), proof)
+    }
+    if (proof.schemaVersion != "ckb-p8-a-proof-v1" || proof.totalCases != 164 ||
+        proof.strictPassed != 151 || proof.transportUnresolved != 0 ||
+        proof.candidateVersion == "" || proof.identity == "" ||
+        proof.proofHash != ckbPortableP8AProofHash(proof)) {
+        return (p4BuildFailure("promotion_p8_a_proof_invalid"), proof)
+    }
+    (p4BuildSuccess(), proof)
+}
+
+private func p4BuildPromotionArtifactPath(candidatePath: String,
     relative: String): (String, String) {
     if (!p4BuildSafeRelative(relative)) {
         return ("promotion_artifact_path_invalid", "")
@@ -301,7 +431,7 @@ private func p4BuildReadPromotionArtifact(candidatePath: String,
     if (!canonical.toString().startsWith("${parent.toString()}/")) {
         return ("promotion_artifact_path_invalid", "")
     }
-    p4BuildReadBoundedUtf8(canonical.toString(), "promotion_artifact")
+    ("ok", canonical.toString())
 }
 
 private func p4BuildReadBoundedUtf8(path: String, kind: String): (String, String) {

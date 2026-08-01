@@ -182,7 +182,8 @@ public func validateCkbPortableVectorBuildInputs(
             "portable_vector_runtime_state_invalid")
     }
     if (!ckbPortableVectorHashValid(options.p4PortableProofHash) ||
-        p4Proof.preservationHash != options.p4PortableProofHash) {
+        p4Proof.preservationHash != options.p4PortableProofHash ||
+        p4Proof.candidateVersion != options.candidateVersion) {
         return ckbPortableVectorFailure(
             "portable_vector_p4_proof_mismatch")
     }

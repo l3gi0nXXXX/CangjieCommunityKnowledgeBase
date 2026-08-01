@@ -628,6 +628,7 @@ public class CkbReproReleaseTest {
         let p4Proof = CkbReproBuildProof()
         p4Proof.logicalReady = true; p4Proof.diagnostic = "ok"
         p4Proof.vectorState = "DEGRADED"; p4Proof.vectorCount = 0
+        p4Proof.candidateVersion = version
         p4Proof.preservationHash = p4Hash
         let environment = CkbReproEnvironmentLock()
         environment.identityStatus = "frozen"

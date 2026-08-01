@@ -132,6 +132,11 @@ public class CkbPortableVectorBuildTest {
         @Expect(buildCkbPortableReferenceVectors(
             p3VectorOptions(), wrongProof, p3Environment(),
             backend).diagnostic, "portable_vector_p4_proof_mismatch")
+        let wrongCandidate = p3BuildProof()
+        wrongCandidate.candidateVersion = "portable-candidate-a"
+        @Expect(buildCkbPortableReferenceVectors(
+            p3VectorOptions(), wrongCandidate, p3Environment(),
+            backend).diagnostic, "portable_vector_p4_proof_mismatch")
 
         backend.count = 7977
         @Expect(buildCkbPortableReferenceVectors(
@@ -201,6 +206,7 @@ private func p3BuildProof(): CkbReproBuildProof {
     value.diagnostic = "ok"
     value.vectorState = "DEGRADED"
     value.vectorCount = 0
+    value.candidateVersion = "portable-v1"
     value.preservationHash = p3VectorHash("p4")
     value
 }

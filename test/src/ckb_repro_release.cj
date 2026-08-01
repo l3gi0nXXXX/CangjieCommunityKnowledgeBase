@@ -309,8 +309,11 @@ public func ckbDefaultReleasePathPolicy(
         case None => ""
     }
     if (home != "") {
-        policy.userConfigRoot = ckbReleaseCanonicalPolicyPath(
-            Path(home).join(".config/cangjie-community-knowledge-base").toString())
+        let canonicalHome = ckbReleaseCanonicalPolicyPath(home)
+        if (canonicalHome != "") {
+            policy.userConfigRoot =
+                Path(canonicalHome).join(".metis/ckb").toString()
+        }
     }
     policy
 }
@@ -660,25 +663,30 @@ public func loadCkbLogicalSnapshotCliProofs(logicalPath: String,
         proofs.vectorCollection = ckbReleaseRequiredString(vector, "collection")
         proofs.vectorCount = ckbReleaseRequiredInt(vector, "count")
         proofs.vectorDimension = ckbReleaseRequiredInt(vector, "dimension")
-        let candidateVersion = ckbReleaseRequiredString(vector, "candidateVersion")
-        let vectorP4Hash = ckbReleaseRequiredString(vector, "p4PortableProofHash")
-        let qdrantImageDigest = ckbReleaseRequiredString(vector, "qdrantImageDigest")
-        let embeddingProvider = ckbReleaseRequiredString(vector, "embeddingProvider")
-        let embeddingModel = ckbReleaseRequiredString(vector, "embeddingModel")
-        let distance = ckbReleaseRequiredString(vector, "distance")
-        let payloadCanonicalHash =
+        let typedVector = CkbPortableVectorProof()
+        typedVector.collection = proofs.vectorCollection
+        typedVector.candidateVersion =
+            ckbReleaseRequiredString(vector, "candidateVersion")
+        typedVector.p4PortableProofHash =
+            ckbReleaseRequiredString(vector, "p4PortableProofHash")
+        typedVector.qdrantImageDigest =
+            ckbReleaseRequiredString(vector, "qdrantImageDigest")
+        typedVector.embeddingProvider =
+            ckbReleaseRequiredString(vector, "embeddingProvider")
+        typedVector.embeddingModel =
+            ckbReleaseRequiredString(vector, "embeddingModel")
+        typedVector.count = proofs.vectorCount
+        typedVector.dimension = proofs.vectorDimension
+        typedVector.distance = ckbReleaseRequiredString(vector, "distance")
+        typedVector.payloadCanonicalHash =
             ckbReleaseRequiredString(vector, "payloadCanonicalHash")
-        let expectedVectorHash = benchmarkGapSha256(
-            "${proofs.vectorCollection}|${candidateVersion}|${vectorP4Hash}|" +
-            "${qdrantImageDigest}|${embeddingProvider}|${embeddingModel}|" +
-            "${proofs.vectorCount}|${proofs.vectorDimension}|${distance}|" +
-            payloadCanonicalHash)
-        if (candidateVersion != proofs.portableKnowledgeVersion ||
-            vectorP4Hash != proofs.p4PortableProofHash ||
-            proofs.p3VectorProofHash != expectedVectorHash ||
-            distance.toAsciiLower() != "cosine" ||
-            !ckbLogicalSnapshotHashValid(qdrantImageDigest) ||
-            !ckbLogicalSnapshotHashValid(payloadCanonicalHash)) {
+        typedVector.vectorProofHash = proofs.p3VectorProofHash
+        if (typedVector.candidateVersion != proofs.portableKnowledgeVersion ||
+            typedVector.p4PortableProofHash != proofs.p4PortableProofHash ||
+            typedVector.vectorProofHash != ckbPortableVectorProofHash(typedVector) ||
+            typedVector.distance.toAsciiLower() != "cosine" ||
+            !ckbLogicalSnapshotHashValid(typedVector.qdrantImageDigest) ||
+            !ckbLogicalSnapshotHashValid(typedVector.payloadCanonicalHash)) {
             return (ckbReleaseCliContractFailure(
                 "release_proof_cross_binding_mismatch"), proofs)
         }
