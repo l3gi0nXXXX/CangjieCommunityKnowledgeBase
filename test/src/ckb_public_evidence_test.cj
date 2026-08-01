@@ -1,6 +1,7 @@
 package cangjie_community_knowledge_base_test
 
 import std.collection.ArrayList
+import std.fs.{Directory, File, Path, canonicalize, exists, remove}
 import std.unittest.*
 import std.unittest.testmacro.*
 import stdx.encoding.json.JsonValue
@@ -162,6 +163,15 @@ public class CkbPublicEvidenceTest {
         @Expect(rendered.score.transportUnresolved, 0)
         @Expect(rendered.text.split("\n").size, 165)
         @Expect(rendered.evidenceHash.startsWith("sha256:"), true)
+    }
+
+    @TestCase
+    public func p5Neg02ProductionExportRequiresExactPortableTarget(): Unit {
+        @Expect(p5RunProductionExportFixture(151).ok, true)
+        @Expect(p5RunProductionExportFixture(150).diagnostic,
+            "public_evidence_target_score_required")
+        @Expect(p5RunProductionExportFixture(152).diagnostic,
+            "public_evidence_target_score_required")
     }
 
     @TestCase
@@ -399,6 +409,80 @@ private func p5EvidenceCaseId(index: Int64): String {
 
 private func p5Hash(seed: String): String {
     benchmarkGapSha256(seed)
+}
+
+private func p5RunProductionExportFixture(
+    strictPassed: Int64): CkbPublicEvidenceRenderResult {
+    let root = Path("target/p5-production-export-${strictPassed}")
+    if (exists(root)) { remove(root, recursive: true) }
+    Directory.create(root.join("run/cases"), recursive: true)
+    var results = ""
+    for (i in 0..164) {
+        let strict = i < strictPassed
+        let raw = i < 158
+        let protocol = (!strict && raw) || i >= 161
+        let certification = p5CertificationJson(i, strict)
+        results += certification + "\n"
+        let caseRoot = root.join(
+            "run/cases/${p5EvidenceCaseId(i)}/${CkbAbcdeGroups.D}")
+        Directory.create(caseRoot, recursive: true)
+        File.writeTo(caseRoot.join("test-result.json"),
+            ("{\"unitPassAt1\":${raw},\"testExitCode\":" +
+                "${if (raw) { 0 } else { 1 }}," +
+                "\"failureType\":\"${if (raw) { "none" } else { "test_failure" }}\"," +
+                "\"firstClaudeExitCode\":0,\"claudeExitCode\":0}").toArray())
+        let route = if (protocol) { "protocol_failure" } else if (raw) {
+            "none"
+        } else { "business_failure" }
+        File.writeTo(caseRoot.join("audit.json"),
+            ("{\"violation\":\"${if (protocol) { "protocol" } else { "none" }}\"," +
+                "\"developmentPass\":false,\"closureStatus\":\"closed\"," +
+                "\"triageStatus\":\"complete\",\"failureRoute\":\"${route}\"," +
+                "\"certificationPassAt1\":null}").toArray())
+    }
+    File.writeTo(root.join("run/results.jsonl"), results.toArray())
+    let reference = CkbReproReferenceManifest()
+    reference.schemaVersion = "ckb-repro-reference-v1"
+    reference.baselineKind = "portable_release"
+    reference.evidenceStatus = "complete"
+    reference.releaseRepository = "l3gi0nXXXX/CangjieCommunityKnowledgeBase"
+    reference.releaseRepositoryUrl =
+        "https://github.com/l3gi0nXXXX/CangjieCommunityKnowledgeBase"
+    reference.releaseBranch = "main"
+    reference.observedRemote =
+        "https://github.com/l3gi0nXXXX/CangjieCommunityKnowledgeBase.git"
+    reference.runId = "public-run"; reference.knowledgeVersion = "knowledge-v1"
+    reference.vectorProofHash = p5Hash("vector")
+    reference.datasetVersion = "dataset-v1"
+    reference.runnerCommit = "0123456789012345678901234567890123456789"
+    reference.claudeCodeVersion = "claude-code-v1"
+    reference.model = "glm-5.2"
+    reference.providerFingerprint = p5Hash("provider")
+    reference.experimentGroup = CkbAbcdeGroups.D
+    reference.toolTransport = "mcp"; reference.mcpTransport = "stdio"
+    reference.ckbRequired = true; reference.localDocsPolicy = "disabled"
+    reference.modelEffort = "high"; reference.modelBudget = "fixed"
+    reference.timeoutSeconds = 3600; reference.transportRetryBudget = 0
+    reference.promptHash = p5Hash("prompt")
+    reference.resultsHash = benchmarkGapSha256(results)
+    reference.runCriticalTreeHash = p5Hash("critical")
+    reference.certifiedRunInputHash = p5Hash("certified-input")
+    reference.totalCases = 164; reference.rawPassed = 158
+    reference.strictPassed = strictPassed
+    reference.strictFailed = 164 - strictPassed
+    reference.businessFailed = 3
+    reference.protocolInvalid = 161 - strictPassed
+    reference.transportUnresolved = 0
+    File.writeTo(root.join("reference.json"),
+        renderCkbReproReferenceManifest(reference).toArray())
+    let canonicalRoot = Path(canonicalize(root).toString())
+    let options = CkbPublicEvidenceCliOptions()
+    options.runRoot = canonicalRoot.join("run").toString()
+    options.referenceManifest = canonicalRoot.join("reference.json").toString()
+    options.outputRoot = canonicalRoot.join("out").toString()
+    let result = runCkbPublicEvidenceExportFromFiles(options)
+    remove(root, recursive: true)
+    result
 }
 
 private func p5CopyIdentity(source: CkbStrictScoreEvidenceRow): CkbStrictScoreEvidenceRow {
