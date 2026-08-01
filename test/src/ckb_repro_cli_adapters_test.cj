@@ -359,13 +359,38 @@ public class CkbReproCliAdaptersTest {
         let root = Path("target/p234-p4-production")
         if (exists(root)) { remove(root, recursive: true) }
         Directory.create(root, recursive: true)
+        File.writeTo(root.join("p2.json"), "p2-real-proof".toArray())
+        File.writeTo(root.join("p3.json"), "p3-real-proof".toArray())
+        File.writeTo(root.join("p5.json"), "p5-real-proof".toArray())
+        File.writeTo(root.join("p8a.json"), "p8a-real-proof".toArray())
+        let promotion = CkbPortablePromotionOptions()
+        promotion.candidateVersion = "portable-v1"
+        promotion.p2ProofHash = benchmarkGapSha256("p2-real-proof")
+        promotion.p3ProofHash = benchmarkGapSha256("p3-real-proof")
+        promotion.p5ProofHash = benchmarkGapSha256("p5-real-proof")
+        promotion.p8AProofHash = benchmarkGapSha256("p8a-real-proof")
+        promotion.identity = "portable-identity"
+        promotion.p8StrictPassed = 151
+        promotion.candidateManifestHash =
+            ckbPortableCandidateManifestHash(promotion)
+        promotion.p8BProofHash = ckbPortableP8BProofHash(promotion)
         let candidate = "{\"candidateVersion\":\"portable-v1\"," +
-            "\"candidateManifestHash\":\"${p234Hash("candidate")}\"," +
-            "\"p2ProofHash\":\"${p234Hash("p2")}\",\"p3ProofHash\":\"${p234Hash("p3")}\"," +
-            "\"p5ProofHash\":\"${p234Hash("p5")}\",\"p8AProofHash\":\"${p234Hash("p8a")}\"," +
+            "\"candidateManifestHash\":\"${promotion.candidateManifestHash}\"," +
+            "\"p2ProofHash\":\"${promotion.p2ProofHash}\"," +
+            "\"p3ProofHash\":\"${promotion.p3ProofHash}\"," +
+            "\"p5ProofHash\":\"${promotion.p5ProofHash}\"," +
+            "\"p8AProofHash\":\"${promotion.p8AProofHash}\"," +
+            "\"p2ProofPath\":\"p2.json\",\"p3ProofPath\":\"p3.json\"," +
+            "\"p5ProofPath\":\"p5.json\",\"p8AProofPath\":\"p8a.json\"," +
             "\"identity\":\"portable-identity\",\"p8StrictPassed\":151}"
         let p8b = "{\"ready\":true,\"candidateVersion\":\"portable-v1\"," +
-            "\"identity\":\"portable-identity\",\"p8BProofHash\":\"${p234Hash("p8b")}\"}"
+            "\"identity\":\"portable-identity\"," +
+            "\"candidateManifestHash\":\"${promotion.candidateManifestHash}\"," +
+            "\"p2ProofHash\":\"${promotion.p2ProofHash}\"," +
+            "\"p3ProofHash\":\"${promotion.p3ProofHash}\"," +
+            "\"p5ProofHash\":\"${promotion.p5ProofHash}\"," +
+            "\"p8AProofHash\":\"${promotion.p8AProofHash}\"," +
+            "\"p8BProofHash\":\"${promotion.p8BProofHash}\"}"
         File.writeTo(root.join("candidate.json"), candidate.toArray())
         File.writeTo(root.join("p8b.json"), p8b.toArray())
         let productionRoot = root.join("production")
@@ -379,6 +404,16 @@ public class CkbReproCliAdaptersTest {
             "--candidate-manifest", root.join("candidate.json").toString(),
             "--p8-b-report", root.join("p8b.json").toString(), "--apply"], production)
         @Expect(actual.ok, true); @Expect(dependency.commits, 1)
+        File.writeTo(root.join("p3.json"), "p3-tampered".toArray())
+        @Expect(loadCkbPortablePromotionCliInputs(
+            root.join("candidate.json").toString(),
+            root.join("p8b.json").toString())[0].diagnostic,
+            "promotion_artifact_hash_mismatch")
+        File.writeTo(root.join("p8b-invalid.json"), [UInt8(0xff), UInt8(0xfe)])
+        @Expect(loadCkbPortablePromotionCliInputs(
+            root.join("candidate.json").toString(),
+            root.join("p8b-invalid.json").toString())[0].diagnostic,
+            "invalid_response_encoding")
 
         let transport = P234SnapshotDependency()
         let business = newCkbP4BusinessProductionAdapter(

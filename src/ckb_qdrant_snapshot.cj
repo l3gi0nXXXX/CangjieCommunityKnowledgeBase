@@ -501,11 +501,22 @@ private func ckbP3LoadBuildProof(candidateRoot: String):
         proof.evalSupportPersisted = ckbP3RequiredInt(object, "evalSupportPersisted")
         proof.vectorCount = ckbP3RequiredInt(object, "vectorCount")
         proof.vectorState = ckbP3RequiredString(object, "vectorState")
+        proof.candidateVersion = ckbP3RequiredString(object, "candidateVersion")
+        proof.typedPairAggregateHash =
+            ckbP3RequiredString(object, "typedPairAggregateHash")
+        proof.rawPairAggregateHash =
+            ckbP3RequiredString(object, "rawPairAggregateHash")
         proof.preservationHash = ckbP3RequiredString(object, "preservationHash")
     } catch (_: Exception) { return (ckbP3ContractFailure("p4_proof_malformed_json"), proof) }
     if (!proof.logicalReady || proof.diagnostic != "ok" || proof.vectorState != "DEGRADED" ||
-        proof.vectorCount != 0 || !ckbQdrantSnapshotHashValid(proof.preservationHash)) {
+        proof.vectorCount != 0 || proof.candidateVersion == "" ||
+        !ckbQdrantSnapshotHashValid(proof.typedPairAggregateHash) ||
+        !ckbQdrantSnapshotHashValid(proof.rawPairAggregateHash) ||
+        !ckbQdrantSnapshotHashValid(proof.preservationHash)) {
         return (ckbP3ContractFailure("p4_proof_invalid"), proof)
+    }
+    if (proof.preservationHash != ckbReproBuildPreservationHash(proof)) {
+        return (ckbP3ContractFailure("p4_proof_hash_mismatch"), proof)
     }
     (ckbP3ContractSuccess(), proof)
 }
@@ -648,10 +659,24 @@ private func ckbP3NewOutputDiagnostic(pathText: String,
         return "p3_output_path_invalid"
     }
     for (root in [policy.worktreeRoot, policy.productionStoreRoot, policy.userConfigRoot]) {
-        if (root != "" && (pathText == root || pathText.startsWith("${root}/") ||
-            root.startsWith("${pathText}/"))) { return "p3_output_path_forbidden" }
+        let protected = ckbP3CanonicalPolicyRoot(root)
+        if (protected != "" && (pathText == protected ||
+            pathText.startsWith("${protected}/") ||
+            protected.startsWith("${pathText}/"))) {
+            return "p3_output_path_forbidden"
+        }
     }
     "ok"
+}
+
+private func ckbP3CanonicalPolicyRoot(value: String): String {
+    if (value == "" || !value.startsWith("/")) { return "" }
+    let path = Path(value)
+    if (exists(path)) {
+        return try { canonicalize(path).toString() } catch (_: Exception) { "" }
+    }
+    let parent = try { canonicalize(path.parent) } catch (_: Exception) { return "" }
+    parent.join(path.fileName).toString()
 }
 
 private func ckbP3RequiredString(object: JsonObject, key: String): String {

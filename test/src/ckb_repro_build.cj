@@ -1,7 +1,7 @@
 package cangjie_community_knowledge_base_test
 
 import std.collection.{ArrayList, HashSet}
-import std.fs.{File, Path, canonicalize, exists}
+import std.fs.{File, OpenMode, Path, canonicalize, exists}
 import std.sort.*
 import stdx.encoding.json.*
 
@@ -206,11 +206,15 @@ public func newCkbP4BusinessProductionAdapter(
 public func loadCkbPortablePromotionCliInputs(candidatePath: String,
     p8BPath: String): (CkbReproContractResult, CkbPortablePromotionOptions) {
     let options = CkbPortablePromotionOptions()
+    let candidateRead = p4BuildReadBoundedUtf8(candidatePath, "promotion_candidate")
+    if (candidateRead[0] != "ok") {
+        return (p4BuildFailure(candidateRead[0]), options)
+    }
+    let p8BRead = p4BuildReadBoundedUtf8(p8BPath, "promotion_p8_b")
+    if (p8BRead[0] != "ok") { return (p4BuildFailure(p8BRead[0]), options) }
     try {
-        let candidate = JsonValue.fromStr(String.fromUtf8(
-            File.readFrom(Path(candidatePath)))).asObject()
-        let p8b = JsonValue.fromStr(String.fromUtf8(
-            File.readFrom(Path(p8BPath)))).asObject()
+        let candidate = JsonValue.fromStr(candidateRead[1]).asObject()
+        let p8b = JsonValue.fromStr(p8BRead[1]).asObject()
         options.candidateVersion = p4BuildRequiredString(candidate, "candidateVersion")
         options.candidateManifestHash =
             p4BuildRequiredString(candidate, "candidateManifestHash")
@@ -221,9 +225,35 @@ public func loadCkbPortablePromotionCliInputs(candidatePath: String,
         options.identity = p4BuildRequiredString(candidate, "identity")
         options.p8StrictPassed = p4BuildRequiredInt(candidate, "p8StrictPassed")
         options.p8BProofHash = p4BuildRequiredString(p8b, "p8BProofHash")
+        let artifactPaths = [
+            p4BuildRequiredString(candidate, "p2ProofPath"),
+            p4BuildRequiredString(candidate, "p3ProofPath"),
+            p4BuildRequiredString(candidate, "p5ProofPath"),
+            p4BuildRequiredString(candidate, "p8AProofPath")
+        ]
+        let declaredHashes = [options.p2ProofHash, options.p3ProofHash,
+            options.p5ProofHash, options.p8AProofHash]
+        for (i in 0..artifactPaths.size) {
+            let artifact = p4BuildReadPromotionArtifact(candidatePath, artifactPaths[i])
+            if (artifact[0] != "ok") { return (p4BuildFailure(artifact[0]), options) }
+            if (benchmarkGapSha256(artifact[1]) != declaredHashes[i]) {
+                return (p4BuildFailure("promotion_artifact_hash_mismatch"), options)
+            }
+        }
+        if (options.candidateManifestHash !=
+            ckbPortableCandidateManifestHash(options)) {
+            return (p4BuildFailure("promotion_candidate_hash_mismatch"), options)
+        }
         if (!p4BuildRequiredBool(p8b, "ready") ||
             p4BuildRequiredString(p8b, "candidateVersion") != options.candidateVersion ||
-            p4BuildRequiredString(p8b, "identity") != options.identity) {
+            p4BuildRequiredString(p8b, "identity") != options.identity ||
+            p4BuildRequiredString(p8b, "candidateManifestHash") !=
+                options.candidateManifestHash ||
+            p4BuildRequiredString(p8b, "p2ProofHash") != options.p2ProofHash ||
+            p4BuildRequiredString(p8b, "p3ProofHash") != options.p3ProofHash ||
+            p4BuildRequiredString(p8b, "p5ProofHash") != options.p5ProofHash ||
+            p4BuildRequiredString(p8b, "p8AProofHash") != options.p8AProofHash ||
+            options.p8BProofHash != ckbPortableP8BProofHash(options)) {
             return (p4BuildFailure("promotion_p8_b_report_invalid"), options)
         }
     } catch (_: Exception) {
@@ -239,6 +269,61 @@ public func loadCkbPortablePromotionCliInputs(candidatePath: String,
         return (p4BuildFailure("promotion_identity_invalid"), options)
     }
     (p4BuildSuccess(), options)
+}
+
+public func ckbPortableCandidateManifestHash(
+    options: CkbPortablePromotionOptions): String {
+    benchmarkGapSha256("ckb-portable-candidate-manifest-v1|" + p4BuildFields([
+        options.candidateVersion, options.p2ProofHash, options.p3ProofHash,
+        options.p5ProofHash, options.p8AProofHash, options.identity,
+        options.p8StrictPassed.toString()
+    ]))
+}
+
+public func ckbPortableP8BProofHash(options: CkbPortablePromotionOptions): String {
+    benchmarkGapSha256("ckb-portable-p8-b-proof-v1|" + p4BuildFields([
+        options.candidateManifestHash, options.candidateVersion,
+        options.identity, options.p2ProofHash, options.p3ProofHash,
+        options.p5ProofHash, options.p8AProofHash
+    ]))
+}
+
+private func p4BuildReadPromotionArtifact(candidatePath: String,
+    relative: String): (String, String) {
+    if (!p4BuildSafeRelative(relative)) {
+        return ("promotion_artifact_path_invalid", "")
+    }
+    let parent = try { canonicalize(Path(candidatePath).parent) }
+        catch (_: Exception) { return ("promotion_artifact_path_invalid", "") }
+    let artifact = parent.join(relative)
+    let canonical = try { canonicalize(artifact) }
+        catch (_: Exception) { return ("promotion_artifact_unreadable", "") }
+    if (!canonical.toString().startsWith("${parent.toString()}/")) {
+        return ("promotion_artifact_path_invalid", "")
+    }
+    p4BuildReadBoundedUtf8(canonical.toString(), "promotion_artifact")
+}
+
+private func p4BuildReadBoundedUtf8(path: String, kind: String): (String, String) {
+    let bytes = ArrayList<UInt8>()
+    try {
+        try (file = File(Path(path), OpenMode.Read)) {
+            while (true) {
+                let buffer = Array<UInt8>(16000, repeat: UInt8(0))
+                let count = file.read(buffer)
+                if (count < 0 || count > buffer.size) {
+                    return ("${kind}_read_failed", "")
+                }
+                if (count == 0) { break }
+                if (bytes.size > 65536 - count) {
+                    return ("${kind}_size_invalid", "")
+                }
+                for (i in 0..count) { bytes.add(buffer[i]) }
+            }
+        }
+    } catch (_: Exception) { return ("${kind}_unreadable", "") }
+    try { ("ok", String.fromUtf8(bytes.toArray())) }
+    catch (_: Exception) { ("invalid_response_encoding", "") }
 }
 public func runCkbP4Cli(args: Array<String>, context: CkbP4CliAdapter): CkbP4CliExecution {
     executeCkbP4CliAdapter(args, context)
@@ -755,8 +840,20 @@ public class CkbReproBuildProof {
     public var evalSupportPersisted: Int64 = 0
     public var vectorCount: Int64 = 0
     public var vectorState: String = "DEGRADED"
+    public var candidateVersion: String = ""
+    public var typedPairAggregateHash: String = ""
+    public var rawPairAggregateHash: String = ""
     public var preservationHash: String = ""
     public init() {}
+}
+
+public func ckbReproBuildPreservationHash(proof: CkbReproBuildProof): String {
+    benchmarkGapSha256("ckb-repro-build-proof-v1|" + p4BuildFields([
+        proof.candidateVersion, proof.sourceLockHash,
+        proof.typedCount.toString(), proof.rawCount.toString(),
+        proof.selectedCount.toString(), proof.excludedCount.toString(),
+        proof.typedPairAggregateHash, proof.rawPairAggregateHash
+    ]))
 }
 
 public class CkbReproBuildResult {
@@ -853,8 +950,10 @@ public func runCkbReproBuild(request: CkbReproBuildRequest,
     result.proof.excludedCount = coverage.excludedCount
     result.proof.evalSupportPersisted = 0
     result.proof.vectorCount = 0; result.proof.vectorState = "DEGRADED"
-    result.proof.preservationHash = benchmarkGapSha256(
-        preservation.typedPairAggregateHash + "|" + preservation.rawPairAggregateHash)
+    result.proof.candidateVersion = request.candidateVersion
+    result.proof.typedPairAggregateHash = preservation.typedPairAggregateHash
+    result.proof.rawPairAggregateHash = preservation.rawPairAggregateHash
+    result.proof.preservationHash = ckbReproBuildPreservationHash(result.proof)
     result.ready = true; result.diagnostic = "ok"; result
 }
 
@@ -864,7 +963,10 @@ public func renderCkbReproBuildProof(proof: CkbReproBuildProof): String {
     "\"rawCount\":${proof.rawCount},\"selectedCount\":${proof.selectedCount}," +
     "\"excludedCount\":${proof.excludedCount},\"evalSupportPersisted\":" +
     "${proof.evalSupportPersisted},\"vectorCount\":${proof.vectorCount}," +
-    "\"vectorState\":\"${proof.vectorState}\",\"preservationHash\":" +
+    "\"vectorState\":\"${proof.vectorState}\",\"candidateVersion\":" +
+    "\"${p4BuildEscape(proof.candidateVersion)}\",\"typedPairAggregateHash\":" +
+    "\"${proof.typedPairAggregateHash}\",\"rawPairAggregateHash\":" +
+    "\"${proof.rawPairAggregateHash}\",\"preservationHash\":" +
     "\"${proof.preservationHash}\"}"
 }
 
@@ -1185,8 +1287,20 @@ private func p4BuildJoin(values: Array<String>, separator: String): String {
 }
 
 private func p4BuildEscape(value: String): String {
-    value.replace("\\", "\\\\").replace("\"", "\\\"")
-        .replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
+    let out = StringBuilder(); let hex = "0123456789abcdef".toRuneArray()
+    for (rune in value.runes()) {
+        if (rune == r'"') { out.append("\\\"") }
+        else if (rune == r'\\') { out.append("\\\\") }
+        else if (rune == r'\n') { out.append("\\n") }
+        else if (rune == r'\r') { out.append("\\r") }
+        else if (rune == r'\t') { out.append("\\t") }
+        else if (UInt32(rune) < 0x20u32) {
+            let code = UInt32(rune); out.append("\\u00")
+            out.append(hex[Int64(code / 16u32)])
+            out.append(hex[Int64(code % 16u32)])
+        } else { out.append(rune) }
+    }
+    out.toString()
 }
 
 private func p4BuildSuccess(): CkbReproContractResult {

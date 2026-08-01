@@ -154,6 +154,19 @@ public class CkbReproBuildTest {
         @Expect(second.ready, true)
         @Expect(renderCkbReproBuildProof(first.proof),
             renderCkbReproBuildProof(second.proof))
+        @Expect(first.proof.candidateVersion, fixture.request.candidateVersion)
+        @Expect(first.proof.preservationHash,
+            ckbReproBuildPreservationHash(first.proof))
+        let original = first.proof.preservationHash
+        first.proof.candidateVersion = "substituted-candidate"
+        @Expect(ckbReproBuildPreservationHash(first.proof) == original, false)
+        var controls = ""
+        for (value in 0..32) { controls += Rune(UInt32(value)).toString() }
+        first.proof.candidateVersion = controls
+        let json = renderCkbReproBuildProof(first.proof)
+        for (value in 0..32) {
+            @Expect(json.contains(Rune(UInt32(value)).toString()), false)
+        }
         p4RemoveBuildFixture(fixture)
     }
 
