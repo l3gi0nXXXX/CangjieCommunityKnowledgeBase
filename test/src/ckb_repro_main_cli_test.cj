@@ -52,13 +52,15 @@ public class CkbReproMainCliTest {
             @Expect(human.handled, true)
             @Expect(human.exitCode, 2)
             @Expect(human.output.startsWith("{"), false)
-            @Expect(human.output.contains("diagnostic"), true)
+            @Expect(human.output.contains(if (command ==
+                "ckb-repro-publish-gate") { "publish gate:" }
+                else { "CKB release operation failed:" }), true)
 
             let json = runCkbReproMainCli(command, [command, "--json"])
             @Expect(json.handled, true)
             @Expect(json.exitCode, 2)
             @Expect(json.output.startsWith("{"), true)
-            @Expect(json.output.contains("\"ok\""), true)
+            @Expect(json.output.contains("\"diagnostic\""), true)
         }
     }
 }
