@@ -36,7 +36,7 @@
     {"path":"src/ckb_portable_vector_build.cj","status":"present","sha256":"sha256:3b78e95b31b4513b7a50ff2b58068d16c04b171440d46fb2e1e9558c02af6168"},
     {"path":"src/ckb_repro_build.cj","status":"present","sha256":"sha256:fbe02221e49ad8c52de9066235bc7ff05231641f2c641a937bfc7e954637f1b2"},
     {"path":"src/ckb_portable_path_normalizer.cj","status":"present","sha256":"sha256:5668a9dfabd8c7af872a781c273e1c5600f2953714cfcc80bd4b079d2a3d720e"},
-    {"path":"src/ckb_repro_environment.cj","status":"present","sha256":"sha256:e97219ffa8aa745c2582e4307d1aab7510907c9a1c41ae938d629f24cae24d35"},
+    {"path":"src/ckb_repro_environment.cj","status":"present","sha256":"sha256:4446dce7e3e1df58b9ecae2ee9c601cd84f0236debb66ac9c7b411d6710cfaf7"},
     {"path":"src/ckb_repro_verify.cj","status":"present","sha256":"sha256:4ff3b520ddfd77d2ec84a05dad731b45ec1e4c1825e84c780f93ca1718f82465"}
   ]
 }

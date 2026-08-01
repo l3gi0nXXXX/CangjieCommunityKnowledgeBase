@@ -207,12 +207,27 @@ public class CkbPublicEvidenceTest {
             p6FrozenEnvironment(), p6RunnerInputs())
         @Expect(built[0].ok, true)
         let runner = parseCkbAbcdeRunnerOptions(built[1])
+        @Expect(reference.modelFingerprint,
+            p6FrozenEnvironment().modelFingerprint)
         @Expect(runner.modelFingerprint, "claude-code-glm-5.2")
         @Expect(p5RunProductionExportFixture(151,
             certificationModelFingerprint: runner.modelFingerprint).ok, true)
         @Expect(p5RunProductionExportFixture(151,
             certificationModelFingerprint: "claude-code-GLM-5.2").diagnostic,
             "public_evidence_reference_identity_mismatch")
+        let missing = p6FrozenEnvironment()
+        missing.modelFingerprint = ""
+        @Expect(buildCkbReproRunnerArgs(reference, missing,
+            p6RunnerInputs())[0].ok, false)
+        let legacy = p6FrozenEnvironment()
+        legacy.modelFingerprint = "claude-code-GLM-5.2"
+        @Expect(buildCkbReproRunnerArgs(reference, legacy,
+            p6RunnerInputs())[0].ok, false)
+        let schema = String.fromUtf8(File.readFrom(
+            Path("../reproducibility/environment-lock.schema.json")))
+        @Expect(schema.contains(
+            "\"modelFingerprint\": {\"const\": \"claude-code-glm-5.2\"}"),
+            true)
     }
 
     @TestCase

@@ -532,6 +532,7 @@ public func p6FrozenEnvironment(): CkbReproEnvironmentLock {
     lock.glmProvider = "openai-compatible"
     lock.glmBaseUrl = "https://provider.example/v1"
     lock.glmModel = "GLM-5.2"
+    lock.modelFingerprint = "claude-code-glm-5.2"
     lock.glmCredentialEnv = "GLM_API_KEY"
     lock.embeddingProvider = "ollama"
     lock.embeddingModel = "bge-m3:latest"

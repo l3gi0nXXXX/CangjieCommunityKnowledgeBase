@@ -26,6 +26,7 @@ public class CkbReproEnvironmentLock {
     public var glmProvider: String = ""
     public var glmBaseUrl: String = ""
     public var glmModel: String = ""
+    public var modelFingerprint: String = ""
     public var glmCredentialEnv: String = ""
     public var embeddingProvider: String = ""
     public var embeddingModel: String = ""
@@ -395,7 +396,7 @@ public func parseCkbReproEnvironmentLock(bytes: Array<UInt8>):
     if (decoded[0] != "ok") { return (p6Failure(decoded[0]), lock) }
     try {
         let object = JsonValue.fromStr(decoded[1]).asObject()
-        if (object.size() != 36) {
+        if (object.size() != 37) {
             return (p6Failure("environment_field_contract_invalid"), lock)
         }
         lock.schemaVersion = p6String(object, "schemaVersion")
@@ -414,6 +415,7 @@ public func parseCkbReproEnvironmentLock(bytes: Array<UInt8>):
         lock.glmProvider = p6String(object, "glmProvider")
         lock.glmBaseUrl = p6String(object, "glmBaseUrl")
         lock.glmModel = p6String(object, "glmModel")
+        lock.modelFingerprint = p6String(object, "modelFingerprint")
         lock.glmCredentialEnv = p6String(object, "glmCredentialEnv")
         lock.embeddingProvider = p6String(object, "embeddingProvider")
         lock.embeddingModel = p6String(object, "embeddingModel")
@@ -472,6 +474,7 @@ public func validateCkbReproEnvironmentLock(lock: CkbReproEnvironmentLock,
         return p6Failure("environment_heap_contract_invalid")
     }
     if (lock.glmProvider == "" || lock.glmModel != "GLM-5.2" ||
+        lock.modelFingerprint != "claude-code-glm-5.2" ||
         !p6PublicHttpsUrl(lock.glmBaseUrl) ||
         !p6CredentialEnvName(lock.glmCredentialEnv)) {
         return p6Failure("environment_provider_identity_invalid")
@@ -561,6 +564,7 @@ public func renderCkbReproEnvironmentLock(lock: CkbReproEnvironmentLock): String
     "\"glmProvider\":\"${p6Escape(lock.glmProvider)}\"," +
     "\"glmBaseUrl\":\"${p6Escape(lock.glmBaseUrl)}\"," +
     "\"glmModel\":\"${p6Escape(lock.glmModel)}\"," +
+    "\"modelFingerprint\":\"${p6Escape(lock.modelFingerprint)}\"," +
     "\"glmCredentialEnv\":\"${p6Escape(lock.glmCredentialEnv)}\"," +
     "\"embeddingProvider\":\"${p6Escape(lock.embeddingProvider)}\"," +
     "\"embeddingModel\":\"${p6Escape(lock.embeddingModel)}\"," +
@@ -587,6 +591,7 @@ public func renderCkbProviderTemplate(lock: CkbReproEnvironmentLock): String {
     "GLM_PROVIDER=${lock.glmProvider}\n" +
     "GLM_BASE_URL=${lock.glmBaseUrl}\n" +
     "GLM_MODEL=${lock.glmModel}\n" +
+    "MODEL_FINGERPRINT=${lock.modelFingerprint}\n" +
     "GLM_CREDENTIAL_ENV=${lock.glmCredentialEnv}\n" +
     "EMBEDDING_PROVIDER=${lock.embeddingProvider}\n" +
     "EMBEDDING_MODEL=${lock.embeddingModel}\n" +
@@ -620,7 +625,7 @@ public func buildCkbReproRunnerArgs(reference: CkbReproReferenceManifest,
         "--dataset-version", lock.datasetVersion,
         "--candidate-version", inputs.candidateVersion,
         "--knowledge-version", inputs.knowledgeVersion,
-        "--model-fingerprint", "claude-code-${lock.glmModel}",
+        "--model-fingerprint", lock.modelFingerprint,
         "--run-id", inputs.runId, "--repo-root", inputs.repoRoot,
         "--runs-root", inputs.runsRoot, "--dataset-root", inputs.datasetRoot,
         "--manifest", inputs.authorityManifestPath, "--ckb-bin", inputs.ckbBin,
@@ -896,6 +901,7 @@ private func p6ProbeReadPipeBounded(pipe: InputStream, maxBytes: Int64):
 
 private func p6CopyUnobservableAuthorityFields(source: CkbReproEnvironmentLock,
     target: CkbReproEnvironmentLock): Unit {
+    target.modelFingerprint = source.modelFingerprint
     target.experimentGroup = source.experimentGroup
     target.ckbRequired = source.ckbRequired
     target.localDocsPolicy = source.localDocsPolicy
