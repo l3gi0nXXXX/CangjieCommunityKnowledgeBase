@@ -191,6 +191,70 @@ private class P9FakeBundleReadHandle <: CkbReproBundleReadHandle {
     }
 }
 
+private class P9SparseBundleReadBackend <: CkbReproBundleReadBackend {
+    private let root: String
+    private let manifestBytes: Array<UInt8>
+    private let listing: ArrayList<CkbReproBundleReadEntry>
+    public var generatedBytes: Int64 = 0
+    public var maxBufferSize: Int64 = 0
+    public init(root: String, manifestBytes: Array<UInt8>,
+        assets: ArrayList<CkbReproBundleAsset>) {
+        this.root = root; this.manifestBytes = manifestBytes
+        this.listing = ArrayList<CkbReproBundleReadEntry>()
+        this.listing.add(p9SparseEntry(root, "RELEASE-MANIFEST.json",
+            manifestBytes.size))
+        let directory = p9SparseEntry(root, "assets", 0)
+        directory.kind = "directory"; this.listing.add(directory)
+        for (asset in assets) {
+            this.listing.add(p9SparseEntry(root, asset.relativePath, asset.size))
+        }
+    }
+    public func rootExists(root: String): Bool { root == this.root }
+    public func rootIdentity(root: String): String { "sparse-root-v1" }
+    public func list(root: String): ArrayList<CkbReproBundleReadEntry> {
+        this.listing
+    }
+    public func open(root: String, expected: CkbReproBundleReadEntry):
+        CkbReproBundleReadHandle {
+        P9SparseBundleReadHandle(this, expected,
+            if (expected.relativePath == "RELEASE-MANIFEST.json") {
+                this.manifestBytes
+            } else { Array<UInt8>() })
+    }
+}
+
+private class P9SparseBundleReadHandle <: CkbReproBundleReadHandle {
+    private let backend: P9SparseBundleReadBackend
+    private let entry: CkbReproBundleReadEntry
+    private let concrete: Array<UInt8>
+    private var offset: Int64 = 0
+    public init(backend: P9SparseBundleReadBackend,
+        entry: CkbReproBundleReadEntry, concrete: Array<UInt8>) {
+        this.backend = backend; this.entry = p9CopyReadEntry(entry)
+        this.concrete = concrete
+    }
+    public func read(buffer: Array<UInt8>): Int64 {
+        if (buffer.size > this.backend.maxBufferSize) {
+            this.backend.maxBufferSize = buffer.size
+        }
+        if (this.offset >= this.entry.size) { return 0 }
+        let remaining = this.entry.size - this.offset
+        let count = if (remaining < buffer.size) { remaining } else { buffer.size }
+        if (this.concrete.size > 0) {
+            for (i in 0..count) { buffer[i] = this.concrete[this.offset + i] }
+        } else {
+            for (i in 0..count) { buffer[i] = UInt8(0) }
+            this.backend.generatedBytes += count
+        }
+        this.offset += count; count
+    }
+    public func observedEntry(): CkbReproBundleReadEntry {
+        p9CopyReadEntry(this.entry)
+    }
+    public func noFollow(): Bool { true }
+    public func close(): Unit {}
+}
+
 @Test
 public class CkbReproBundleTest {
     @TestCase
@@ -464,6 +528,15 @@ public class CkbReproBundleTest {
             p9TwoGiBMetadataAssets(false), false)
         @Expect(p9Load(twoGiB).contract.ok, false)
         @Expect(twoGiB[0].maxBufferSize <= 65536, true)
+        let sparseAssets = p9TwoGiBSparseAssets()
+        let sparseManifest = writeCkbReproReleaseManifest(sparseAssets).toArray()
+        let sparse = P9SparseBundleReadBackend(
+            "/tmp/ckb-p9/two-gib-sparse", sparseManifest, sparseAssets)
+        let sparseLoaded = validateCkbReproBundleManifest(
+            "/tmp/ckb-p9/two-gib-sparse", sparse)
+        @Expect(sparseLoaded.contract.ok, true)
+        @Expect(sparse.maxBufferSize <= 65536, true)
+        @Expect(sparse.generatedBytes, 4 * 1024 * 1024 * 1024)
         let unicodeAssets = ArrayList<CkbReproBundleAsset>()
         unicodeAssets.add(p9Asset("资料/结果🙂.json", "仓颉🙂"))
         let seeded = p9ReadableBundle("/tmp/ckb-p9/read-unicode",
@@ -587,6 +660,19 @@ public class CkbReproBundleTest {
 
     @TestCase
     public func p9Pos01ProductionFinalizeOwnsAndEmitsCompleteArtifacts(): Unit {
+        let collected = p9ProductionFinalizeFixture(suffix: "-collect")
+        let collectOptions = parseCkbReproBundleCliArgs([
+            "ckb-repro-bundle", "--mode", "unsigned", "--input-root",
+            collected[0], "--output",
+            Path(collected[3]).join("collected").toString()
+        ])
+        @Expect(collectOptions.valid, true)
+        @Expect(runCkbReproBundleCliAdapter(
+            collectOptions, p9CliContext()).ok, true)
+        @Expect(File.readFrom(Path(collectOptions.outputRoot).join(
+            "assets/a.txt")), "alpha".toArray())
+        remove(Path(collected[3]), recursive: true)
+
         let fixture = p9ProductionFinalizeFixture()
         let options = parseCkbReproBundleCliArgs([
             "ckb-repro-bundle", "--mode", "finalize", "--unsigned-root",
@@ -977,6 +1063,31 @@ private func p9TwoGiBMetadataAssets(wrongNonLast: Bool):
         out.add(part)
     }
     out
+}
+
+private func p9TwoGiBSparseAssets(): ArrayList<CkbReproBundleAsset> {
+    let out = ArrayList<CkbReproBundleAsset>()
+    for (index in 0..2) {
+        let asset = CkbReproBundleAsset()
+        asset.relativePath = "assets/two-gib.bin.part-000${index + 1}"
+        asset.size = 1024 * 1024 * 1024
+        asset.sha256 = "sha256:49bc20df15e412a64472421e13fe86ff1c5165e18b2afccf160d4dc19fe68a14"
+        asset.inputKind = "verified_input"; asset.role = "portable_report"
+        asset.logicalAsset = "assets/two-gib.bin"; asset.partIndex = index
+        asset.partCount = 2; asset.logicalSize = 2 * 1024 * 1024 * 1024
+        asset.logicalSha256 = "sha256:a7c744c13cc101ed66c29f672f92455547889cc586ce6d44fe76ae824958ea51"
+        out.add(asset)
+    }
+    out
+}
+
+private func p9SparseEntry(root: String, path: String,
+    size: Int64): CkbReproBundleReadEntry {
+    let entry = CkbReproBundleReadEntry()
+    entry.relativePath = path; entry.kind = "regular"
+    entry.canonicalPath = "${root}/${path}"; entry.withinRoot = true
+    entry.identity = "sparse:${path}:${size}"; entry.size = size
+    entry
 }
 
 private func p9BundleOptions(output: String): CkbReproBundleOptions {

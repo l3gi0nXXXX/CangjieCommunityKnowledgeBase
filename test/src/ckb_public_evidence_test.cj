@@ -161,7 +161,11 @@ public class CkbPublicEvidenceTest {
             "/etc/metis/secret.conf",
             "/opt/private/tool",
             "/srv/ckb/private.json",
-            "/usr/local/bin/private-tool"
+            "/usr/local/bin/private-tool",
+            "/mnt", "/mnt/release/result.json",
+            "/Volumes", "/Volumes/private/result.json",
+            "/data", "/data/release/result.json",
+            "/etc"
         ]
         for (attack in attacks) {
             let report = scanCkbPublicEvidenceLeakage(attack.toArray())
@@ -169,7 +173,8 @@ public class CkbPublicEvidenceTest {
             @Expect(report.findingCodes.size > 0, true)
         }
         for (safe in ["https://provider.example/v1/chat/completions",
-            "API route /v1/embeddings", "semantic path /knowledge/search"]) {
+            "API route /v1/embeddings", "semantic path /knowledge/search",
+            "endpoint /v2/models", "documentation /guide/install"]) {
             @Expect(scanCkbPublicEvidenceLeakage(safe.toArray()).ok, true)
         }
         for (identity in [
