@@ -345,12 +345,12 @@ public class CkbReproPublishGateTest {
         @Expect(absent[0], "ok"); @Expect(absent[1], false)
         let lightweight = parseCkbRemoteTagLsRemote(
             "${commit}\trefs/tags/${tag}\n", tag)
-        @Expect(lightweight[0], "ok"); @Expect(lightweight[1], true)
-        @Expect(lightweight[2], commit)
+        @Expect(lightweight[0], "publish_remote_tag_query_invalid")
         let annotated = parseCkbRemoteTagLsRemote(
             "${object}\trefs/tags/${tag}\n" +
             "${commit}\trefs/tags/${tag}^{}\n", tag)
-        @Expect(annotated[0], "ok"); @Expect(annotated[2], commit)
+        @Expect(annotated[0], "ok"); @Expect(annotated[2], object)
+        @Expect(annotated[3], commit)
         for (forged in [
             "${commit}\trefs/tags/${tag}-old\n",
             "${commit}\trefs/tags/${tag}\n${commit}\trefs/tags/${tag}\n",
@@ -364,6 +364,9 @@ public class CkbReproPublishGateTest {
         let source = String.fromUtf8(File.readFrom(
             Path("../src/ckb_repro_publish_gate.cj")))
         @Expect(source.contains("\"ls-remote\", \"--tags\", \"origin\","), true)
+        @Expect(source.contains(
+            "\"refs/tags/\${options.tagName}\", \"refs/tags/\${options.tagName}^{}\""),
+            true)
         @Expect(source.contains("refs/remotes/origin/tags"), false)
     }
 
