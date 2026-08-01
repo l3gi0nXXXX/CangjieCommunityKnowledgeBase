@@ -667,7 +667,8 @@ public func runCkbPublicEvidenceExportFromFiles(
                 parsedReference[1].knowledgeVersion ||
             certification.providerIdentityHash !=
                 parsedReference[1].providerFingerprint ||
-            certification.modelFingerprint != parsedReference[1].model ||
+            certification.modelFingerprint !=
+                parsedReference[1].modelFingerprint ||
             certification.runManifestHash != declaredRunManifestHash) {
             return p5CliRenderFailure(
                 "public_evidence_reference_identity_mismatch")
@@ -730,7 +731,7 @@ public func runCkbPublicEvidenceExportFromFiles(
         exportManifest.knowledgeVersion = parsedReference[1].knowledgeVersion
         exportManifest.providerFingerprint =
             parsedReference[1].providerFingerprint
-        exportManifest.modelFingerprint = parsedReference[1].model
+        exportManifest.modelFingerprint = parsedReference[1].modelFingerprint
         exportManifest.runManifestHash = declaredRunManifestHash
         exportManifest.vectorProofHash = parsedReference[1].vectorProofHash
         exportManifest.certifiedRunInputHash =

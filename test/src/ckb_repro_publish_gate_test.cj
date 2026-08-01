@@ -641,6 +641,7 @@ private func p9PublishReferenceManifest(): CkbReproReferenceManifest {
     reference.datasetVersion = "fixture-dataset"
     reference.runnerCommit = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     reference.claudeCodeVersion = "fixture-cli"; reference.model = "glm-5.2"
+    reference.modelFingerprint = "claude-code-glm-5.2"
     reference.providerFingerprint = ckbReproBundleHash("provider".toArray())
     reference.experimentGroup = "D"; reference.toolTransport = "mcp"
     reference.mcpTransport = "stdio"; reference.ckbRequired = true

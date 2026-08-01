@@ -32,6 +32,7 @@ public class CkbReproReferenceManifest {
     public var runnerCommit: String = ""
     public var claudeCodeVersion: String = ""
     public var model: String = ""
+    public var modelFingerprint: String = ""
     public var providerFingerprint: String = ""
     public var experimentGroup: String = ""
     public var toolTransport: String = ""
@@ -127,7 +128,7 @@ public func parseCkbReproReferenceManifest(bytes: Array<UInt8>): (CkbReproContra
     if (decoded[0] != "ok") { return (ckbReproFailure(decoded[0]), manifest) }
     try {
         let object = JsonValue.fromStr(decoded[1]).asObject()
-        if (object.size() != 35 && object.size() != 36) {
+        if (object.size() != 36 && object.size() != 37) {
             return (ckbReproFailure("reference_field_contract_invalid"), manifest)
         }
         manifest.schemaVersion = ckbReproString(object, "schemaVersion")
@@ -144,6 +145,7 @@ public func parseCkbReproReferenceManifest(bytes: Array<UInt8>): (CkbReproContra
         manifest.runnerCommit = ckbReproString(object, "runnerCommit")
         manifest.claudeCodeVersion = ckbReproString(object, "claudeCodeVersion")
         manifest.model = ckbReproString(object, "model")
+        manifest.modelFingerprint = ckbReproString(object, "modelFingerprint")
         manifest.providerFingerprint = ckbReproString(object, "providerFingerprint")
         manifest.experimentGroup = ckbReproString(object, "experimentGroup")
         manifest.toolTransport = ckbReproString(object, "toolTransport")
@@ -157,7 +159,7 @@ public func parseCkbReproReferenceManifest(bytes: Array<UInt8>): (CkbReproContra
         manifest.promptHash = ckbReproString(object, "promptHash")
         manifest.resultsHash = ckbReproString(object, "resultsHash")
         manifest.runCriticalTreeHash = ckbReproString(object, "runCriticalTreeHash")
-        if (object.size() == 36) {
+        if (object.size() == 37) {
             manifest.certifiedRunInputHash = ckbReproString(object, "certifiedRunInputHash")
         }
         manifest.totalCases = ckbReproInt(object, "totalCases")
@@ -190,6 +192,7 @@ public func validateCkbReproReferenceManifest(manifest: CkbReproReferenceManifes
     }
     if (manifest.runId == "" || manifest.knowledgeVersion == "" || manifest.datasetVersion == "" ||
         manifest.runnerCommit == "" || manifest.claudeCodeVersion == "" || manifest.model == "" ||
+        manifest.modelFingerprint != "claude-code-glm-5.2" ||
         manifest.experimentGroup == "" || manifest.toolTransport == "" || manifest.mcpTransport == "" ||
         !manifest.ckbRequired || manifest.localDocsPolicy == "") {
         return ckbReproFailure("identity_mismatch")
@@ -253,6 +256,7 @@ public func renderCkbReproReferenceManifest(manifest: CkbReproReferenceManifest)
     "\"runnerCommit\":\"${ckbReproEscape(manifest.runnerCommit)}\"," +
     "\"claudeCodeVersion\":\"${ckbReproEscape(manifest.claudeCodeVersion)}\"," +
     "\"model\":\"${ckbReproEscape(manifest.model)}\"," +
+    "\"modelFingerprint\":\"${ckbReproEscape(manifest.modelFingerprint)}\"," +
     "\"providerFingerprint\":\"${ckbReproEscape(manifest.providerFingerprint)}\"," +
     "\"experimentGroup\":\"${ckbReproEscape(manifest.experimentGroup)}\"," +
     "\"toolTransport\":\"${ckbReproEscape(manifest.toolTransport)}\"," +
