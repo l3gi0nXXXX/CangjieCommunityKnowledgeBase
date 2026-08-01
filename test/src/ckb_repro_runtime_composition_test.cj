@@ -1,6 +1,8 @@
 package cangjie_community_knowledge_base_test
 
 import std.collection.ArrayList
+import std.fs.{Directory, File, Path, exists, remove}
+import std.time.DateTime
 import std.unittest.*
 import std.unittest.testmacro.*
 
@@ -13,6 +15,30 @@ private class P3RuntimeHttpExecutor <: HttpRequestExecutor {
     public func get(request: HttpExecutionRequest): HttpExecutionResponse {
         this.execute(request)
     }
+}
+
+private class P3RuntimeDownloadStream <: CkbQdrantSnapshotDownloadStream {
+    public var remaining: Int64
+    public var failAfter: Int64 = -1
+    public var readTotal: Int64 = 0
+    public var maxRequested: Int64 = 0
+    public var closed: Int64 = 0
+    public init(size: Int64) { this.remaining = size }
+    public func statusCode(): Int64 { 200 }
+    public func contentLength(): Int64 { -1 }
+    public func read(buffer: Array<UInt8>): Int64 {
+        if (buffer.size > this.maxRequested) { this.maxRequested = buffer.size }
+        if (this.failAfter >= 0 && this.readTotal >= this.failAfter) {
+            throw Exception("token=secret /private/path")
+        }
+        if (this.remaining == 0) { return 0 }
+        let count = if (this.remaining < buffer.size) {
+            this.remaining
+        } else { buffer.size }
+        for (i in 0..count) { buffer[i] = UInt8((this.readTotal + i) % 251) }
+        this.remaining -= count; this.readTotal += count; count
+    }
+    public func close(): Unit { this.closed += 1 }
 }
 
 private class P3RuntimeProcessExecutor <: CkbRetrievalParityProcessExecutor {
@@ -28,28 +54,35 @@ private class P3RuntimeProcessExecutor <: CkbRetrievalParityProcessExecutor {
 @Test
 public class CkbReproRuntimeCompositionTest {
     @TestCase
-    public func p3RuntimeRedQdrantExecutorPreservesBinaryAndBoundsBody(): Unit {
-        let http = P3RuntimeHttpExecutor()
-        http.response.statusCode = 200
-        http.response.status = "http_200"
-        http.response.contentType = "application/octet-stream"
-        http.response.bodyBytes = [0x00, 0xff, 0x43, 0x4b, 0x42]
-        let executor = CkbProductionQdrantSnapshotExecutor(
-            "http://127.0.0.1:6333", http, maxResponseBytes: 8)
-        let request = CkbQdrantSnapshotRequest()
-        request.method = "GET"
-        request.path = "/collections/portable/snapshots/x.snapshot"
-        let response = executor.execute(request)
-        @Expect(response.statusCode, 200)
-        @Expect(response.bodyBytes, [0x00, 0xff, 0x43, 0x4b, 0x42])
-        @Expect(http.requests.size, 1)
-        @Expect(http.requests[0].url,
-            "http://127.0.0.1:6333/collections/portable/snapshots/x.snapshot")
+    public func p3RuntimeRedSnapshotStreamsToOwnedTempAndCleansFailure(): Unit {
+        let root = Path("/tmp/ckb-p3-stream-${DateTime.now().toUnixTimeStamp()}")
+        Directory.create(root)
+        try {
+            let source = P3RuntimeDownloadStream(512 * 1024 + 17)
+            let target = root.join("snapshot.part")
+            let result = streamCkbQdrantSnapshotToOwnedTemp(
+                source, target.toString(), 1024 * 1024)
+            @Expect(result.ok, true)
+            @Expect(result.size, 512 * 1024 + 17)
+            @Expect(result.sha256.startsWith("sha256:"), true)
+            @Expect(source.maxRequested <= 65536, true)
+            @Expect(source.closed, 1)
+            @Expect(exists(target), true)
 
-        http.response.bodyBytes = Array<UInt8>(9, repeat: 0x41)
-        let bounded = executor.execute(request)
-        @Expect(bounded.statusCode, 0)
-        @Expect(bounded.diagnostic, "qdrant_snapshot_response_too_large")
+            let failing = P3RuntimeDownloadStream(200000)
+            failing.failAfter = 65536
+            let failedTarget = root.join("failed.part")
+            let failed = streamCkbQdrantSnapshotToOwnedTemp(
+                failing, failedTarget.toString(), 1024 * 1024)
+            @Expect(failed.ok, false)
+            @Expect(failed.diagnostic, "qdrant_snapshot_stream_read_failed")
+            @Expect(failing.closed, 1)
+            @Expect(exists(failedTarget), false)
+            @Expect(failed.diagnostic.contains("secret"), false)
+            @Expect(failed.diagnostic.contains("/private"), false)
+        } finally {
+            if (exists(root)) { remove(root, recursive: true) }
+        }
     }
 
     @TestCase
