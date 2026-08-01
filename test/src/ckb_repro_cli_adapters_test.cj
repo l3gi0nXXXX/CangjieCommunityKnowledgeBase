@@ -384,10 +384,20 @@ public class CkbReproCliAdaptersTest {
         let referenceValidation = validateCkbReproReferenceManifest(reference)
         @Expect(referenceValidation.ok, true)
         let p8aText = referenceValidation.canonicalJson
-        let p5Text = "{\"schemaVersion\":\"ckb-public-evidence-export-v1\"," +
-            "\"referenceManifestHash\":\"${referenceValidation.manifestHash}\"," +
-            "\"privateResultsHash\":\"${reference.resultsHash}\"," +
-            "\"publicEvidenceHash\":\"${promotion.identity}\"}"
+        let p5 = CkbPublicEvidenceExportManifest()
+        p5.schemaVersion = "ckb-public-evidence-export-v1"
+        p5.referenceManifestHash = referenceValidation.manifestHash
+        p5.privateResultsHash = reference.resultsHash
+        p5.publicEvidenceHash = promotion.identity
+        p5.runId = reference.runId
+        p5.knowledgeVersion = reference.knowledgeVersion
+        p5.providerFingerprint = reference.providerFingerprint
+        p5.modelFingerprint = reference.modelFingerprint
+        p5.runManifestHash = p234Hash("run-manifest")
+        p5.vectorProofHash = reference.vectorProofHash
+        p5.certifiedRunInputHash = reference.certifiedRunInputHash
+        @Expect(validateCkbPublicEvidenceExportManifest(p5).ok, true)
+        let p5Text = renderCkbPublicEvidenceExportManifest(p5)
         File.writeTo(root.join("p2.json"), p2Text.toArray())
         File.writeTo(root.join("p3.json"), p3Text.toArray())
         File.writeTo(root.join("p5.json"), p5Text.toArray())
@@ -411,6 +421,32 @@ public class CkbReproCliAdaptersTest {
             "--candidate-manifest", root.join("candidate.json").toString(),
             "--p8-b-report", root.join("p8b.json").toString(), "--apply"], production)
         @Expect(actual.ok, true); @Expect(dependency.commits, 1)
+        let authorityVersion = promotion.candidateVersion
+        let authorityIdentity = promotion.identity
+        for (drift in ["version", "identity", "score"]) {
+            if (drift == "version") {
+                promotion.candidateVersion = "caller-forged-version"
+            } else if (drift == "identity") {
+                promotion.identity = p234Hash("caller-forged-identity")
+            } else {
+                promotion.p8StrictPassed = 150
+            }
+            promotion.candidateManifestHash =
+                ckbPortableCandidateManifestHash(promotion)
+            promotion.p8BProofHash = ckbPortableP8BProofHash(promotion)
+            p234WritePromotionManifests(root, promotion)
+            @Expect(loadCkbPortablePromotionCliInputs(
+                root.join("candidate.json").toString(),
+                root.join("p8b.json").toString())[0].diagnostic,
+                "promotion_typed_artifact_invalid")
+            promotion.candidateVersion = authorityVersion
+            promotion.identity = authorityIdentity
+            promotion.p8StrictPassed = 151
+        }
+        promotion.candidateManifestHash =
+            ckbPortableCandidateManifestHash(promotion)
+        promotion.p8BProofHash = ckbPortableP8BProofHash(promotion)
+        p234WritePromotionManifests(root, promotion)
         File.writeTo(root.join("p3.json"), "p3-tampered".toArray())
         @Expect(loadCkbPortablePromotionCliInputs(
             root.join("candidate.json").toString(),
@@ -421,19 +457,22 @@ public class CkbReproCliAdaptersTest {
             root.join("candidate.json").toString(),
             root.join("p8b-invalid.json").toString())[0].diagnostic,
             "invalid_response_encoding")
-        let legacyP5 = CkbPortableContaminationProof()
-        legacyP5.candidateVersion = promotion.candidateVersion
-        legacyP5.identity = promotion.identity
-        legacyP5.clean = true; legacyP5.findingCount = 0
-        legacyP5.proofHash = ckbPortableContaminationProofHash(legacyP5)
-        let legacyP8A = CkbPortableP8AProof()
-        legacyP8A.candidateVersion = promotion.candidateVersion
-        legacyP8A.identity = promotion.identity; legacyP8A.totalCases = 164
-        legacyP8A.strictPassed = 151; legacyP8A.transportUnresolved = 0
-        legacyP8A.proofHash = ckbPortableP8AProofHash(legacyP8A)
-        let legacyP2 = p2Text.replace(promotion.identity, legacyP5.proofHash)
-        let legacyP5Text = renderCkbPortableContaminationProof(legacyP5)
-        let legacyP8AText = renderCkbPortableP8AProof(legacyP8A)
+        let legacyP5Hash = benchmarkGapSha256("ckb-contamination-proof-v1|" +
+            p234LegacyFields([promotion.candidateVersion, promotion.identity,
+                "true", "0"]))
+        let legacyP8AHash = benchmarkGapSha256("ckb-portable-p8-a-proof-v1|" +
+            p234LegacyFields([promotion.candidateVersion, promotion.identity,
+                "164", "151", "0"]))
+        let legacyP2 = p2Text.replace(promotion.identity, legacyP5Hash)
+        let legacyP5Text = "{\"schemaVersion\":\"ckb-contamination-proof-v1\"," +
+            "\"candidateVersion\":\"${promotion.candidateVersion}\"," +
+            "\"identity\":\"${promotion.identity}\",\"clean\":true," +
+            "\"findingCount\":0,\"proofHash\":\"${legacyP5Hash}\"}"
+        let legacyP8AText = "{\"schemaVersion\":\"ckb-p8-a-proof-v1\"," +
+            "\"candidateVersion\":\"${promotion.candidateVersion}\"," +
+            "\"identity\":\"${promotion.identity}\",\"totalCases\":164," +
+            "\"strictPassed\":151,\"transportUnresolved\":0," +
+            "\"proofHash\":\"${legacyP8AHash}\"}"
         File.writeTo(root.join("p2.json"), legacyP2.toArray())
         File.writeTo(root.join("p3.json"), p3Text.toArray())
         File.writeTo(root.join("p5.json"), legacyP5Text.toArray())
@@ -490,6 +529,12 @@ private func p234LongControlSummary(): String {
 
 private func p234Hash(value: String): String { benchmarkGapSha256(value) }
 
+private func p234LegacyFields(values: Array<String>): String {
+    var out = ""
+    for (value in values) { out += "${value.toArray().size}:${value}" }
+    out
+}
+
 private func p234PortableReference(knowledgeVersion: String,
     vectorProofHash: String): CkbReproReferenceManifest {
     let manifest = CkbReproReferenceManifest()
@@ -509,6 +554,7 @@ private func p234PortableReference(knowledgeVersion: String,
     manifest.runnerCommit = "0123456789012345678901234567890123456789"
     manifest.claudeCodeVersion = "2.1.179"
     manifest.model = "GLM-5.2"
+    manifest.modelFingerprint = "claude-code-glm-5.2"
     manifest.providerFingerprint = p234Hash("provider")
     manifest.experimentGroup = "D-ckb-mcp-http"
     manifest.toolTransport = "streamable_http"
@@ -540,7 +586,8 @@ private func p234WritePromotionManifests(root: Path,
         "\"p8AProofHash\":\"${promotion.p8AProofHash}\"," +
         "\"p2ProofPath\":\"p2.json\",\"p3ProofPath\":\"p3.json\"," +
         "\"p5ProofPath\":\"p5.json\",\"p8AProofPath\":\"p8a.json\"," +
-        "\"identity\":\"${promotion.identity}\",\"p8StrictPassed\":151}"
+        "\"identity\":\"${promotion.identity}\",\"p8StrictPassed\":" +
+        "${promotion.p8StrictPassed}}"
     let p8b = "{\"ready\":true," +
         "\"candidateVersion\":\"${promotion.candidateVersion}\"," +
         "\"identity\":\"${promotion.identity}\"," +
