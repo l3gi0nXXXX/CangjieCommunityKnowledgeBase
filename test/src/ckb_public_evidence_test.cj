@@ -462,7 +462,7 @@ private func p5RunProductionExportFixture(
             } else { "knowledge-v1" },
             modelFingerprint: if (drift == "model") {
                 "other-model"
-            } else { "glm-5.2" },
+            } else { "claude-code-glm-5.2" },
             providerIdentityHash: if (drift == "provider") {
                 p5Hash("other-provider")
             } else { p5Hash("provider") },
@@ -506,6 +506,7 @@ private func p5RunProductionExportFixture(
     reference.runnerCommit = "0123456789012345678901234567890123456789"
     reference.claudeCodeVersion = "claude-code-v1"
     reference.model = "glm-5.2"
+    reference.modelFingerprint = "claude-code-glm-5.2"
     reference.providerFingerprint = p5Hash("provider")
     reference.experimentGroup = CkbAbcdeGroups.D
     reference.toolTransport = "mcp"; reference.mcpTransport = "stdio"

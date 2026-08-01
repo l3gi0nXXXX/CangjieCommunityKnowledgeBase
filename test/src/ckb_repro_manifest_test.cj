@@ -325,6 +325,7 @@ private func p0CompleteReference(): CkbReproReferenceManifest {
     manifest.runnerCommit = "0123456789012345678901234567890123456789"
     manifest.claudeCodeVersion = "2.1.179"
     manifest.model = "GLM-5.2"
+    manifest.modelFingerprint = "claude-code-glm-5.2"
     manifest.providerFingerprint = p0HashA()
     manifest.experimentGroup = "D-ckb-mcp-http"
     manifest.toolTransport = "streamable_http"
