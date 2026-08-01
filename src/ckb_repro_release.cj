@@ -99,6 +99,9 @@ public class CkbReleaseArchiveEntry {
 public class CkbReleaseArchivePayload {
     public var path: String = ""
     public var bytes: Array<UInt8> = Array<UInt8>()
+    public var sourcePath: String = ""
+    public var size: Int64 = 0
+    public var sha256: String = ""
     public init() {}
 }
 
@@ -129,6 +132,13 @@ public interface CkbReleaseArchiveBackend {
     func enumerate(archivePath: String): CkbReleaseArchiveListing
     func readRegular(archivePath: String,
         relativePath: String): CkbReleaseArchiveRead
+    func supportsStreaming(): Bool
+    func createFromFiles(archivePath: String,
+        values: ArrayList<CkbReleaseArchivePayload>): CkbReleaseArchiveOperation
+    func extractRegularToFile(archivePath: String, relativePath: String,
+        outputPath: String, expectedSize: Int64,
+        expectedSha256: String): CkbReleaseArchiveOperation
+    func archiveHash(archivePath: String): String
 }
 
 public class CkbReleaseArchiveLimits {
@@ -377,6 +387,84 @@ public class CkbPortableReleaseArchiveBackend <: CkbReleaseArchiveBackend {
         }
         result.diagnostic = "archive_entry_missing"; result
     }
+
+    public func supportsStreaming(): Bool { true }
+
+    public func createFromFiles(archivePath: String,
+        values: ArrayList<CkbReleaseArchivePayload>): CkbReleaseArchiveOperation {
+        let result = CkbReleaseArchiveOperation()
+        try {
+            if (values.size > 128) { throw Exception("archive_count") }
+            var total: Int64 = 16
+            for (value in values) {
+                let pathSize = value.path.toArray().size
+                let bodySize = if (value.sourcePath == "") { value.bytes.size } else { value.size }
+                if (pathSize <= 0 || pathSize > 4096 || bodySize < 0 ||
+                    bodySize > 67108864 || total > 536870912 - 16 - pathSize - bodySize) {
+                    throw Exception("archive_bounds")
+                }
+                if (value.sourcePath != "" && !exists(Path(value.sourcePath))) {
+                    throw Exception("archive_source_missing")
+                }
+                total += 16 + pathSize + bodySize
+            }
+            try (file = File(Path(archivePath), OpenMode.Write)) {
+                file.write("CKBREL01".toArray()); file.write(ckbReleaseArchiveIntBytes(values.size))
+                for (value in values) {
+                    let pathBytes = value.path.toArray()
+                    let bodySize = if (value.sourcePath == "") { value.bytes.size } else { value.size }
+                    file.write(ckbReleaseArchiveIntBytes(pathBytes.size))
+                    file.write(ckbReleaseArchiveIntBytes(bodySize)); file.write(pathBytes)
+                    if (value.sourcePath == "") {
+                        ckbReleaseArchiveWriteChunks(file, value.bytes, this)
+                    } else {
+                        ckbReleaseArchiveCopyFileToArchive(value.sourcePath, file,
+                            bodySize, value.sha256, this)
+                    }
+                }
+            }
+            result.ok = true; result.diagnostic = "ok"
+        } catch (_: Exception) { result.diagnostic = "archive_operation_failed" }
+        result
+    }
+
+    public func extractRegularToFile(archivePath: String, relativePath: String,
+        outputPath: String, expectedSize: Int64,
+        expectedSha256: String): CkbReleaseArchiveOperation {
+        let result = CkbReleaseArchiveOperation()
+        try {
+            try (file = File(Path(archivePath), OpenMode.Read)) {
+                let count = ckbReleaseArchiveReadHeader(file, this)
+                var total: Int64 = 16; var found: Bool = false
+                for (_ in 0..count) {
+                    let pathSize = ckbReleaseArchiveReadInt(file, this)
+                    let bodySize = ckbReleaseArchiveReadInt(file, this)
+                    ckbReleaseArchiveValidateLengths(pathSize, bodySize)
+                    if (total > 536870912 - 16 - pathSize - bodySize) {
+                        throw Exception("archive_total_size")
+                    }
+                    total += 16 + pathSize + bodySize
+                    let path = ckbReleaseArchiveReadPath(file, pathSize, this)
+                    if (path == relativePath) {
+                        if (found || bodySize != expectedSize) { throw Exception("archive_identity") }
+                        ckbReleaseArchiveExtractBody(file, outputPath, bodySize,
+                            expectedSha256, this); found = true
+                    } else { ckbReleaseArchiveSkip(file, bodySize, this) }
+                }
+                ckbReleaseArchiveRequireEof(file, this)
+                if (!found) { throw Exception("archive_entry_missing") }
+            }
+            result.ok = true; result.diagnostic = "ok"
+        } catch (_: Exception) {
+            if (exists(Path(outputPath))) { try { remove(Path(outputPath), recursive: true) } catch (_: Exception) { () } }
+            result.diagnostic = "archive_entry_read_failed"
+        }
+        result
+    }
+
+    public func archiveHash(archivePath: String): String {
+        try { ckbReleaseFileHash(archivePath, this) } catch (_: Exception) { "" }
+    }
 }
 
 public class CkbReleaseProductionAdapter <: CkbReleaseCliAdapter {
@@ -610,6 +698,75 @@ private func ckbReleaseArchiveWriteChunks(file: File, bytes: Array<UInt8>,
         for (i in 0..count) { chunk[i] = bytes[offset + i] }
         ckbReleaseArchiveTrackBuffer(backend, chunk.size); file.write(chunk); offset += count
     }
+}
+
+private func ckbReleaseArchiveCopyFileToArchive(sourcePath: String,
+    output: File, expectedSize: Int64, expectedHash: String,
+    backend: CkbPortableReleaseArchiveBackend): Unit {
+    let digest = SHA256(); var total: Int64 = 0
+    try (source = File(Path(sourcePath), OpenMode.Read)) {
+        let buffer = Array<UInt8>(65536, repeat: UInt8(0))
+        ckbReleaseArchiveTrackBuffer(backend, buffer.size)
+        while (true) {
+            let count = source.read(buffer)
+            if (count < 0 || count > buffer.size) { throw Exception("archive_source_read") }
+            if (count == 0) { break }
+            let chunk = if (count == buffer.size) { buffer }
+                else { buffer[0..count].clone() }
+            output.write(chunk); digest.write(chunk); total += count
+            if (total > expectedSize) { throw Exception("archive_source_size") }
+        }
+    }
+    if (total != expectedSize || ckbReleaseDigestHash(digest) != expectedHash) {
+        throw Exception("archive_source_hash")
+    }
+}
+
+private func ckbReleaseArchiveExtractBody(input: File, outputPath: String,
+    size: Int64, expectedHash: String,
+    backend: CkbPortableReleaseArchiveBackend): Unit {
+    let digest = SHA256(); var remaining = size
+    try (output = File(Path(outputPath), OpenMode.Write)) {
+        let buffer = Array<UInt8>(65536, repeat: UInt8(0))
+        ckbReleaseArchiveTrackBuffer(backend, buffer.size)
+        while (remaining > 0) {
+            let wanted = if (remaining < buffer.size) { remaining } else { buffer.size }
+            let chunk = if (wanted == buffer.size) { buffer }
+                else { Array<UInt8>(wanted, repeat: UInt8(0)) }
+            let count = input.read(chunk)
+            if (count <= 0 || count > wanted) { throw Exception("archive_truncated") }
+            let written = if (count == chunk.size) { chunk } else { chunk[0..count].clone() }
+            output.write(written); digest.write(written); remaining -= count
+        }
+    }
+    if (ckbReleaseDigestHash(digest) != expectedHash) {
+        throw Exception("archive_asset_hash")
+    }
+}
+
+private func ckbReleaseFileHash(path: String,
+    backend: CkbPortableReleaseArchiveBackend): String {
+    let digest = SHA256()
+    try (file = File(Path(path), OpenMode.Read)) {
+        let buffer = Array<UInt8>(65536, repeat: UInt8(0))
+        ckbReleaseArchiveTrackBuffer(backend, buffer.size)
+        while (true) {
+            let count = file.read(buffer)
+            if (count < 0 || count > buffer.size) { throw Exception("archive_hash_read") }
+            if (count == 0) { break }
+            digest.write(if (count == buffer.size) { buffer } else { buffer[0..count].clone() })
+        }
+    }
+    ckbReleaseDigestHash(digest)
+}
+
+private func ckbReleaseDigestHash(digest: SHA256): String {
+    let out = StringBuilder()
+    for (byte in digest.finish()) {
+        out.append(ckbLogicalSnapshotNibble(byte / UInt8(16)))
+        out.append(ckbLogicalSnapshotNibble(byte % UInt8(16)))
+    }
+    "sha256:${out.toString()}"
 }
 
 private func ckbReleaseRequiredString(object: JsonObject, key: String): String {

@@ -11,6 +11,7 @@ private class P2FakeArchiveBackend <: CkbReleaseArchiveBackend {
     public var listCalls: Int64 = 0
     public var readCalls: Int64 = 0
     public var createCalls: Int64 = 0
+    public var createFromFilesCalls: Int64 = 0
     public var tamperPath: String = ""
     public var forcedEntries: ArrayList<CkbReleaseArchiveEntry> =
         ArrayList<CkbReleaseArchiveEntry>()
@@ -78,6 +79,23 @@ private class P2FakeArchiveBackend <: CkbReleaseArchiveBackend {
         result
     }
 
+    public func supportsStreaming(): Bool { false }
+    public func createFromFiles(archivePath: String,
+        values: ArrayList<CkbReleaseArchivePayload>): CkbReleaseArchiveOperation {
+        this.createFromFilesCalls += 1
+        this.create(archivePath, values)
+    }
+    public func extractRegularToFile(archivePath: String, relativePath: String,
+        outputPath: String, expectedSize: Int64,
+        expectedSha256: String): CkbReleaseArchiveOperation {
+        CkbReleaseArchiveOperation()
+    }
+    public func archiveHash(archivePath: String): String {
+        if (exists(Path(archivePath))) {
+            ckbLogicalSnapshotBytesHash(File.readFrom(Path(archivePath)))
+        } else { "" }
+    }
+
     public func forceCapturedEntries(): Unit {
         this.forcedEntries.clear()
         for (value in this.payloads) {
@@ -94,6 +112,12 @@ private class P2FakeArchiveBackend <: CkbReleaseArchiveBackend {
             if (value.path == relativePath) { return value.bytes.clone() }
         }
         Array<UInt8>()
+    }
+
+    public func payloadsForTest(): ArrayList<CkbReleaseArchivePayload> {
+        let out = ArrayList<CkbReleaseArchivePayload>()
+        for (value in this.payloads) { out.add(value) }
+        out
     }
 
     public func replacePayload(relativePath: String, bytes: Array<UInt8>): Unit {
@@ -215,6 +239,15 @@ public class CkbReproReleaseTest {
         let first = exportCkbLogicalSnapshot(store, p2Proofs(store), firstPath,
             backend, pathPolicy: policy, allowSyntheticProof: true)
         @Expect(first.ok, true)
+        @Expect(backend.createFromFilesCalls, 1)
+        for (payload in backend.payloadsForTest()) {
+            if (payload.path != "RELEASE-MANIFEST.json") {
+                @Expect(payload.bytes.size, 0)
+                @Expect(payload.sourcePath == "", false)
+                @Expect(payload.size > 0, true)
+                @Expect(payload.sha256.startsWith("sha256:"), true)
+            }
+        }
         @Expect(first.diagnostic, "ok")
         @Expect(first.evidenceLevel, "fake_proof_dependency")
         @Expect(first.realP3Bound, false)
@@ -229,6 +262,7 @@ public class CkbReproReleaseTest {
         @Expect(restored.normalizedCount, 1)
         @Expect(restored.indexCount, 1)
         @Expect(restored.vectorCollection, "portable_vectors")
+        @Expect(backend.readCalls <= 1, true)
         let loaded = FileKnowledgeStore(target).loadActiveSnapshot()
         @Expect(loaded.valid, true)
         @Expect(loaded.activeVersion, p2Version())
@@ -400,6 +434,62 @@ public class CkbReproReleaseTest {
         @Expect(store.backupActiveSnapshot(backup).ok, true)
         @Expect(FileKnowledgeStore(restored).restoreActiveSnapshotBackup(
             backup).ok, true)
+    }
+
+    @TestCase
+    public func p2Stream01PortableCodecIsBoundedAndRejectsMalformedArchives(): Unit {
+        let root = p2Root("stream-codec")
+        let source = "${root}/source.bin"
+        let sourceBytes = Array<UInt8>(196608, repeat: UInt8(0x5a))
+        File.writeTo(Path(source), sourceBytes)
+        let payload = CkbReleaseArchivePayload()
+        payload.path = "transactions/tx/raw/large.ckb"
+        payload.sourcePath = source
+        payload.size = sourceBytes.size
+        payload.sha256 = ckbLogicalSnapshotBytesHash(sourceBytes)
+        let payloads = ArrayList<CkbReleaseArchivePayload>(); payloads.add(payload)
+        let archive = "${root}/large.ckb-release"
+        let backend = CkbPortableReleaseArchiveBackend()
+        @Expect(backend.createFromFiles(archive, payloads).ok, true)
+        @Expect(backend.maxBufferBytes <= 65536, true)
+        @Expect(backend.archiveHash(archive).startsWith("sha256:"), true)
+        @Expect(backend.maxBufferBytes <= 65536, true)
+
+        let trailing = "${root}/trailing.ckb-release"
+        let trailingBytes = ArrayList<UInt8>()
+        trailingBytes.add(all: File.readFrom(Path(archive)))
+        trailingBytes.add(UInt8(1)); File.writeTo(Path(trailing), trailingBytes.toArray())
+        @Expect(backend.enumerate(trailing).ok, false)
+        let truncated = "${root}/truncated.ckb-release"
+        File.writeTo(Path(truncated), File.readFrom(Path(archive))[0..31])
+        @Expect(backend.enumerate(truncated).ok, false)
+
+        let invalidPath = CkbReleaseArchivePayload()
+        invalidPath.path = "bad\u{7f}path"; invalidPath.bytes = [UInt8(1)]
+        let invalidPayloads = ArrayList<CkbReleaseArchivePayload>()
+        invalidPayloads.add(invalidPath)
+        let invalidArchive = "${root}/invalid-path.ckb-release"
+        @Expect(backend.create(invalidArchive, invalidPayloads).ok, false)
+    }
+
+    @TestCase
+    public func p2Stream02PreexistingTemporaryPathsAreNeverDeleted(): Unit {
+        let root = p2Root("owned-temp")
+        let store = p2CommittedStore("${root}/source")
+        let backend = P2FakeArchiveBackend()
+        let policy = p2Policy("${root}/forbidden", store.rootPath())
+        let output = "${root}/owned.ckb-release"
+        let preview = exportCkbLogicalSnapshot(store, p2Proofs(store), output,
+            backend, pathPolicy: policy, allowSyntheticProof: true)
+        @Expect(preview.ok, true)
+        remove(Path(output), recursive: true)
+        let temporary = "${output}.tmp-export-${preview.manifestHash.replace("sha256:", "")}"
+        File.writeTo(Path(temporary), "preexisting".toArray())
+        let blocked = exportCkbLogicalSnapshot(store, p2Proofs(store), output,
+            backend, pathPolicy: policy, allowSyntheticProof: true)
+        @Expect(blocked.ok, false)
+        @Expect(blocked.diagnostic, "logical_snapshot_temporary_path_exists")
+        @Expect(String.fromUtf8(File.readFrom(Path(temporary))), "preexisting")
     }
 }
 
