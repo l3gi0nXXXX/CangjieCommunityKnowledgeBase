@@ -5,6 +5,7 @@ import std.fs.{Directory, File, Path, canonicalize, exists, remove}
 import std.time.DateTime
 import std.unittest.*
 import std.unittest.testmacro.*
+import stdx.encoding.json.JsonValue
 
 private class P9FakeGitProvider <: CkbReproGitEvidenceProvider {
     public let evidence: CkbReproGitEvidence
@@ -62,19 +63,12 @@ public class CkbReproPublishGateTest {
         @Expect(postResult.componentReady, true)
         @Expect(postResult.publishable, false)
 
-        let authentication = CkbReproFilesystemPublishAuthentication()
-        authentication.bundleSignatureVerified = true
-        authentication.remoteAttestationVerified = true
-        authentication.gitSnapshotBound = true
-        let authenticatedEvidence = p9PublishEvidence()
-        authenticatedEvidence.externalProofsVerified = true
-        let promoted = finalizeCkbReproFilesystemPublishResult(postResult,
-            authenticatedEvidence, authentication)
-        @Expect(promoted.publishable, true)
-        @Expect(promoted.diagnostic, "ok")
-        authentication.gitSnapshotBound = false
-        @Expect(finalizeCkbReproFilesystemPublishResult(postResult,
-            authenticatedEvidence, authentication).publishable, false)
+        let productionSource = String.fromUtf8(File.readFrom(
+            Path("../src/ckb_repro_publish_gate.cj")))
+        @Expect(productionSource.contains(
+            "public class CkbReproFilesystemPublishAuthentication"), false)
+        @Expect(productionSource.contains(
+            "public func finalizeCkbReproFilesystemPublishResult"), false)
 
         let cliOptions = parseCkbReproPublishGateCliArgs([
             "ckb-repro-publish-gate", "--mode", "pre-tag", "--bundle",
@@ -87,6 +81,11 @@ public class CkbReproPublishGateTest {
         @Expect(cliExecutor.calls, 1)
         @Expect(renderCkbReproPublishGateCliHuman(cli).contains("{\""), false)
         @Expect(renderCkbReproPublishGateCliJson(cli).startsWith("{"), true)
+        let controlResult = CkbReproPublishGateResult()
+        controlResult.diagnostic = "blocked\u{0001}🙂"
+        @Expect(try { JsonValue.fromStr(
+            renderCkbReproPublishGateReport(controlResult)); true }
+            catch (_: Exception) { false }, true)
     }
 
     @TestCase

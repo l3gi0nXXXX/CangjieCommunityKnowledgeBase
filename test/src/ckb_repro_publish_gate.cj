@@ -62,6 +62,13 @@ public class CkbReproPublishGateResult {
     public init() {}
 }
 
+private class CkbReproFilesystemPublishAuthentication {
+    public var bundleSignatureVerified: Bool = false
+    public var remoteAttestationVerified: Bool = false
+    public var gitSnapshotBound: Bool = false
+    public init() {}
+}
+
 public interface CkbReproGitEvidenceProvider {
     func inspect(): CkbReproGitEvidence
 }
@@ -132,9 +139,25 @@ public class CkbReproFilesystemPublishGateCliExecutor <:
         let signature = p9PublishReadSignatureEvidence(
             options.bundleRoot, loaded.gateOptions, options.mode)
         if (signature[0] != "ok") { return p9PublishCliFailure(signature[0]) }
-        validateCkbReproPublishBundle(loaded.gateOptions, loaded.evidence,
+        let result = validateCkbReproPublishBundle(
+            loaded.gateOptions, loaded.evidence,
             P9PublishFixedGitProvider(git[1]),
             P9PublishFixedSignatureVerifier(signature[1]))
+        let authentication = CkbReproFilesystemPublishAuthentication()
+        authentication.bundleSignatureVerified = signature[1].shaSumsVerified
+        authentication.remoteAttestationVerified =
+            git[1].remoteTagSnapshotAvailable &&
+            git[1].remoteTagSnapshotFresh
+        authentication.gitSnapshotBound = if (options.mode == "pre-tag") {
+            git[1].remoteTagState == "absent" &&
+                !git[1].tagExistsRemote
+        } else {
+            git[1].remoteTagState == "present" &&
+                git[1].tagExistsRemote &&
+                git[1].remoteTagCommit == loaded.gateOptions.releaseCommit
+        }
+        finalizeCkbReproFilesystemPublishResult(result, loaded.evidence,
+            authentication)
     }
 }
 
@@ -454,6 +477,24 @@ public func validateCkbReproPublishBundle(options: CkbReproPublishGateOptions,
     out
 }
 
+private func finalizeCkbReproFilesystemPublishResult(
+    component: CkbReproPublishGateResult,
+    evidence: CkbReproPublishEvidence,
+    authentication: CkbReproFilesystemPublishAuthentication):
+    CkbReproPublishGateResult {
+    let out = CkbReproPublishGateResult()
+    out.componentReady = component.componentReady
+    out.publishable = component.componentReady &&
+        evidence.externalProofsVerified &&
+        authentication.bundleSignatureVerified &&
+        authentication.remoteAttestationVerified &&
+        authentication.gitSnapshotBound
+    out.diagnostic = if (out.publishable) { "ok" } else {
+        component.diagnostic
+    }
+    out
+}
+
 public func renderCkbReproPublishGateReport(
     result: CkbReproPublishGateResult): String {
     "{\"schemaVersion\":\"ckb-repro-publish-gate-component-v1\"," +
@@ -513,7 +554,22 @@ private func p9PublishTagName(value: String): Bool {
 
 private func p9PublishJson(value: String): String {
     value.replace("\\", "\\\\").replace("\"", "\\\"")
-        .replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
+        .replace("\u{0000}", "\\u0000").replace("\u{0001}", "\\u0001")
+        .replace("\u{0002}", "\\u0002").replace("\u{0003}", "\\u0003")
+        .replace("\u{0004}", "\\u0004").replace("\u{0005}", "\\u0005")
+        .replace("\u{0006}", "\\u0006").replace("\u{0007}", "\\u0007")
+        .replace("\u{0008}", "\\b").replace("\t", "\\t")
+        .replace("\n", "\\n").replace("\u{000b}", "\\u000b")
+        .replace("\u{000c}", "\\f").replace("\r", "\\r")
+        .replace("\u{000e}", "\\u000e").replace("\u{000f}", "\\u000f")
+        .replace("\u{0010}", "\\u0010").replace("\u{0011}", "\\u0011")
+        .replace("\u{0012}", "\\u0012").replace("\u{0013}", "\\u0013")
+        .replace("\u{0014}", "\\u0014").replace("\u{0015}", "\\u0015")
+        .replace("\u{0016}", "\\u0016").replace("\u{0017}", "\\u0017")
+        .replace("\u{0018}", "\\u0018").replace("\u{0019}", "\\u0019")
+        .replace("\u{001a}", "\\u001a").replace("\u{001b}", "\\u001b")
+        .replace("\u{001c}", "\\u001c").replace("\u{001d}", "\\u001d")
+        .replace("\u{001e}", "\\u001e").replace("\u{001f}", "\\u001f")
 }
 
 private func p9PublishAbsolutePath(value: String): Bool {
@@ -749,22 +805,9 @@ private func p9PublishTrimLine(value: String): String {
 private func p9PublishDeriveEvidence(root: String,
     local: CkbReproPublishLocalEvidence,
     manifest: CkbReproBundleManifest): String {
-    for (asset in manifest.assets) {
-        if (!validateCkbReproBundleRelativePath(asset.relativePath).ok ||
-            p9PublishDerivedName(asset.relativePath)) {
-            return "publish_manifest_coverage_invalid"
-        }
-        let path = Path(root).join(asset.relativePath)
-        if (!p9PublishSafeNestedFile(root, asset.relativePath)) {
-            return "publish_manifest_coverage_invalid"
-        }
-        let bytes = try { File.readFrom(path) } catch (_: Exception) {
-            return "publish_manifest_coverage_invalid"
-        }
-        if (bytes.size != asset.size || ckbReproBundleHash(bytes) != asset.sha256) {
-            return "publish_manifest_coverage_invalid"
-        }
-    }
+    let streamed = validateCkbReproBundleAssetsStreaming(root, manifest,
+        CkbReproFilesystemBundleReadBackend())
+    if (!streamed.ok) { return streamed.diagnostic }
     let sumsBytes = try { File.readFrom(Path(root).join("SHA256SUMS")) }
         catch (_: Exception) { return "publish_sha_coverage_invalid" }
     let sumsText = try { String.fromUtf8(sumsBytes) } catch (_: Exception) {
@@ -786,10 +829,22 @@ private func p9PublishDeriveEvidence(root: String,
         if (expected == "" || !p9PublishSafeNestedFile(root, name)) {
             return "publish_sha_coverage_invalid"
         }
-        let bytes = try { File.readFrom(Path(root).join(name)) }
-            catch (_: Exception) { return "publish_sha_coverage_invalid" }
-        if (expected != ckbReproBundleHash(bytes).replace("sha256:", "")) {
-            return "publish_sha_coverage_invalid"
+        var manifestHash = ""
+        for (asset in manifest.assets) {
+            if (asset.relativePath == name) {
+                manifestHash = asset.sha256.replace("sha256:", "")
+            }
+        }
+        if (manifestHash != "") {
+            if (expected != manifestHash) {
+                return "publish_sha_coverage_invalid"
+            }
+        } else {
+            let bytes = try { File.readFrom(Path(root).join(name)) }
+                catch (_: Exception) { return "publish_sha_coverage_invalid" }
+            if (expected != ckbReproBundleHash(bytes).replace("sha256:", "")) {
+                return "publish_sha_coverage_invalid"
+            }
         }
     }
     let verification = p9PublishObject(root, "verification-report.json", 19)
