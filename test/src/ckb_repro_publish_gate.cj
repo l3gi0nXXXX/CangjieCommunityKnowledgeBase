@@ -7,6 +7,7 @@ import std.io.InputStream
 import std.process.{ProcessRedirect, launch}
 import std.sort.*
 import std.time.DateTime
+import stdx.encoding.base64.fromBase64String
 import stdx.encoding.json.*
 
 public class CkbReproPublishGateOptions {
@@ -761,7 +762,8 @@ private func p9PublishReadRemoteTagSnapshot(root: String,
     if (repositoryRoot == "") {
         return ("publish_release_key_missing", "", "")
     }
-    if (ckbReproVerifyReleaseSignature(repositoryRoot, root,
+    if (ckbReproVerifyReleaseSignatureAtCommit(repositoryRoot,
+        options.releaseCommit, root,
         "REMOTE-TAG-EVIDENCE.json.sig", "REMOTE-TAG-EVIDENCE.json",
         options.signingFingerprint, P9ProductionGpgvRunner()) != "ok") {
         return ("publish_remote_tag_evidence_signature_invalid", "", "")
@@ -824,7 +826,8 @@ private func p9PublishReadSignatureEvidence(root: String,
     let out = CkbReproSignatureEvidence()
     let repositoryRoot = p9PublishRepositoryRoot()
     if (repositoryRoot == "") { return ("publish_release_key_missing", out) }
-    if (ckbReproVerifyReleaseSignature(repositoryRoot, root,
+    if (ckbReproVerifyReleaseSignatureAtCommit(repositoryRoot,
+        options.releaseCommit, root,
         "SHA256SUMS.sig", "SHA256SUMS", options.signingFingerprint,
         P9ProductionGpgvRunner()) != "ok") {
         return ("publish_signature_mismatch", out)
@@ -843,19 +846,19 @@ private func p9PublishReadSignatureEvidence(root: String,
     ("ok", out)
 }
 
-public func ckbReproVerifyReleaseSignature(repositoryRoot: String,
-    bundleRoot: String, signatureRelativePath: String,
+public func ckbReproVerifyReleaseSignatureAtCommit(repositoryRoot: String,
+    releaseCommit: String, bundleRoot: String, signatureRelativePath: String,
     payloadRelativePath: String, fingerprint: String,
     runner: CkbReproGpgvRunner): String {
-    if (!p9PublishFingerprint(fingerprint)) { return "publish_identity_invalid" }
-    let sourceKey = Path(repositoryRoot).join(
-        "reproducibility/RELEASE-SIGNING-KEY.asc")
+    if (!p9PublishFingerprint(fingerprint) ||
+        !p9PublishCommit(releaseCommit)) { return "publish_identity_invalid" }
     let bundleKey = Path(bundleRoot).join(
         "reproducibility/RELEASE-SIGNING-KEY.asc")
     if (!p9PublishCanonicalRoot(repositoryRoot) ||
-        !p9PublishCanonicalRoot(bundleRoot) || !exists(sourceKey) ||
+        !p9PublishCanonicalRoot(bundleRoot) ||
         !exists(bundleKey)) { return "publish_release_key_missing" }
-    let sourceRead = p9PublishReadBounded(sourceKey.toString(), 16 * 1024 * 1024)
+    let sourceRead = p9PublishReadReleaseKeyAtCommit(repositoryRoot,
+        releaseCommit)
     let bundleRead = p9PublishReadBounded(bundleKey.toString(), 16 * 1024 * 1024)
     if (sourceRead[0] != "ok" || bundleRead[0] != "ok") {
         return "publish_release_key_missing"
@@ -868,21 +871,37 @@ public func ckbReproVerifyReleaseSignature(repositoryRoot: String,
     if (!exists(signature) || !exists(payload)) {
         return "publish_signature_input_missing"
     }
-    p9PublishRunIsolatedGpgv(bundleRoot, sourceKey.toString(),
+    p9PublishRunIsolatedGpgv(bundleRoot, sourceRead[1],
         signature.toString(), payload.toString(), fingerprint, runner)
 }
 
-private func p9PublishRunIsolatedGpgv(workRoot: String, keyPath: String,
+private func p9PublishReadReleaseKeyAtCommit(repositoryRoot: String,
+    releaseCommit: String): (String, Array<UInt8>) {
+    let read = p9PublishCommandBytes("git", ["-C", repositoryRoot, "show",
+        "${releaseCommit}:reproducibility/RELEASE-SIGNING-KEY.asc"])
+    if (read[0] != 0 || read[1] != "ok" || read[2].size == 0) {
+        return ("publish_release_key_missing", Array<UInt8>())
+    }
+    ("ok", read[2])
+}
+
+private func p9PublishRunIsolatedGpgv(workRoot: String,
+    keyBytes: Array<UInt8>,
     signaturePath: String, payloadPath: String, fingerprint: String,
     runner: CkbReproGpgvRunner): String {
     let home = Path(workRoot).parent.join(
         ".ckb-gpgv-${DateTime.now().toUnixTimeStamp().toMilliseconds()}")
     if (exists(home)) { return "publish_gpgv_home_unavailable" }
     try {
+        let decodedKey = p9PublishDecodeArmoredPublicKey(keyBytes)
+        if (decodedKey[0] != "ok") { return "publish_signature_mismatch" }
         Directory.create(home)
         let canonicalHome = canonicalize(home).toString()
-        let verified = runner.run("gpgv", ["--no-options", "--homedir",
-            canonicalHome, "--status-fd", "1", "--keyring", keyPath,
+        let keyPath = Path(canonicalHome).join("release-signing-key.gpg")
+        File.writeTo(keyPath, decodedKey[1])
+        let verified = runner.run("gpgv", ["--homedir", canonicalHome,
+            "--status-fd", "1", "--keyring",
+            keyPath.toString(),
             signaturePath, payloadPath])
         remove(home, recursive: true)
         if (verified[0] != 0 || !verified[1].contains(
@@ -894,6 +913,34 @@ private func p9PublishRunIsolatedGpgv(workRoot: String, keyPath: String,
         if (exists(home)) { try { remove(home, recursive: true) } catch (_: Exception) {} }
         "publish_signature_mismatch"
     }
+}
+
+private func p9PublishDecodeArmoredPublicKey(bytes: Array<UInt8>):
+    (String, Array<UInt8>) {
+    let text = try { String.fromUtf8(bytes) } catch (_: Exception) {
+        return ("invalid_response_encoding", Array<UInt8>())
+    }
+    var body = false; var ended = false; var encoded = ""
+    for (raw in text.split("\n")) {
+        let line = raw.trimAscii()
+        if (line == "-----BEGIN PGP PUBLIC KEY BLOCK-----") {
+            if (body) { return ("malformed_public_key", Array<UInt8>()) }
+            body = true
+        } else if (line == "-----END PGP PUBLIC KEY BLOCK-----") {
+            ended = body; break
+        } else if (body && line != "" &&
+            !line.startsWith("Version:") && !line.startsWith("Comment:") &&
+            !line.startsWith("=")) {
+            encoded += line
+        }
+    }
+    if (!body || !ended || encoded == "") {
+        return ("malformed_public_key", Array<UInt8>())
+    }
+    if (let Some(value) <- fromBase64String(encoded)) {
+        if (value.size > 0) { return ("ok", value) }
+    }
+    ("malformed_public_key", Array<UInt8>())
 }
 
 private func p9PublishRepositoryRoot(): String {
@@ -931,9 +978,13 @@ private func p9PublishVerifyAnnotatedTag(repositoryRoot: String,
         let signaturePath = work.join("tag.sig")
         File.writeTo(payloadPath, parsed[1])
         File.writeTo(signaturePath, parsed[2])
-        let key = Path(repositoryRoot).join(
-            "reproducibility/RELEASE-SIGNING-KEY.asc").toString()
-        let result = p9PublishRunIsolatedGpgv(work.toString(), key,
+        let key = p9PublishReadReleaseKeyAtCommit(repositoryRoot,
+            options.releaseCommit)
+        if (key[0] != "ok") {
+            remove(work, recursive: true)
+            return key[0]
+        }
+        let result = p9PublishRunIsolatedGpgv(work.toString(), key[1],
             signaturePath.toString(), payloadPath.toString(),
             options.signingFingerprint, runner)
         remove(work, recursive: true)

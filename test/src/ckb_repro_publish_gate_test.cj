@@ -2,6 +2,8 @@ package cangjie_community_knowledge_base_test
 
 import std.collection.ArrayList
 import std.fs.{Directory, File, Path, canonicalize, exists, remove}
+import std.io.InputStream
+import std.process.{ProcessRedirect, launch}
 import std.time.DateTime
 import std.unittest.*
 import std.unittest.testmacro.*
@@ -67,7 +69,7 @@ private class P9FakeGpgvRunner <: CkbReproGpgvRunner {
 
 private class P9RealGpgvRunner <: CkbReproGpgvRunner {
     public func run(command: String, args: Array<String>): (Int64, String) {
-        let result = ckbReproBoundedProbeCommand(command, args, 1024 * 1024)
+        let result = p9TestCommand(command, args)
         if (result[1] != "ok") { return (127, "") }
         (result[0], result[2])
     }
@@ -402,10 +404,21 @@ public class CkbReproPublishGateTest {
         let bundle = base.join("bundle")
         Directory.create(repository.join("reproducibility"), recursive: true)
         Directory.create(bundle.join("reproducibility"), recursive: true)
-        let key = "-----BEGIN PGP PUBLIC KEY BLOCK-----\nfixture\n" +
+        let key = "-----BEGIN PGP PUBLIC KEY BLOCK-----\nZml4dHVyZQ==\n" +
             "-----END PGP PUBLIC KEY BLOCK-----\n"
         File.writeTo(repository.join("reproducibility/RELEASE-SIGNING-KEY.asc"),
             key.toArray())
+        p9TestCommandOk("git", ["-C", repository.toString(), "init"])
+        p9TestCommandOk("git", ["-C", repository.toString(), "config",
+            "user.name", "Metis Repro Test"])
+        p9TestCommandOk("git", ["-C", repository.toString(), "config",
+            "user.email", "repro@example.invalid"])
+        p9TestCommandOk("git", ["-C", repository.toString(), "add",
+            "reproducibility/RELEASE-SIGNING-KEY.asc"])
+        p9TestCommandOk("git", ["-C", repository.toString(), "commit",
+            "-m", "fixture key"])
+        let releaseCommit = p9TestCommand("git", ["-C",
+            repository.toString(), "rev-parse", "HEAD"])[2].trimAscii()
         File.writeTo(bundle.join("reproducibility/RELEASE-SIGNING-KEY.asc"),
             key.toArray())
         File.writeTo(bundle.join("SHA256SUMS.sig"), "signature".toArray())
@@ -413,31 +426,35 @@ public class CkbReproPublishGateTest {
         let repositoryRoot = canonicalize(repository).toString()
         let bundleRoot = canonicalize(bundle).toString()
         let runner = P9FakeGpgvRunner()
-        @Expect(ckbReproVerifyReleaseSignature(repositoryRoot, bundleRoot,
+        @Expect(ckbReproVerifyReleaseSignatureAtCommit(repositoryRoot,
+            releaseCommit, bundleRoot,
             "SHA256SUMS.sig", "SHA256SUMS",
             "0123456789ABCDEF0123456789ABCDEF01234567", runner), "ok")
         @Expect(runner.command, "gpgv")
-        @Expect(runner.args[0], "--no-options")
-        @Expect(runner.args[1], "--homedir")
-        @Expect(exists(Path(runner.args[2])), false)
-        @Expect(runner.args[3], "--status-fd")
-        @Expect(runner.args[4], "1")
-        @Expect(runner.args[5], "--keyring")
-        @Expect(runner.args[6], Path(repositoryRoot).join(
-            "reproducibility/RELEASE-SIGNING-KEY.asc").toString())
+        @Expect(runner.args[0], "--homedir")
+        @Expect(exists(Path(runner.args[1])), false)
+        @Expect(runner.args[2], "--status-fd")
+        @Expect(runner.args[3], "1")
+        @Expect(runner.args[4], "--keyring")
+        @Expect(runner.args[5].endsWith("release-signing-key.gpg"), true)
+        @Expect(exists(Path(runner.args[5])), false)
         File.writeTo(bundle.join("reproducibility/RELEASE-SIGNING-KEY.asc"),
             (key + "drift").toArray())
         let drift = P9FakeGpgvRunner()
-        @Expect(ckbReproVerifyReleaseSignature(repositoryRoot, bundleRoot,
+        @Expect(ckbReproVerifyReleaseSignatureAtCommit(repositoryRoot,
+            releaseCommit, bundleRoot,
             "SHA256SUMS.sig", "SHA256SUMS",
             "0123456789ABCDEF0123456789ABCDEF01234567", drift),
             "publish_release_key_mismatch")
         @Expect(drift.calls, Int64(0))
+        File.writeTo(bundle.join("reproducibility/RELEASE-SIGNING-KEY.asc"),
+            key.toArray())
         remove(repository.join("reproducibility/RELEASE-SIGNING-KEY.asc"))
-        @Expect(ckbReproVerifyReleaseSignature(repositoryRoot, bundleRoot,
+        @Expect(ckbReproVerifyReleaseSignatureAtCommit(repositoryRoot,
+            releaseCommit, bundleRoot,
             "SHA256SUMS.sig", "SHA256SUMS",
             "0123456789ABCDEF0123456789ABCDEF01234567",
-            P9FakeGpgvRunner()), "publish_release_key_missing")
+            P9FakeGpgvRunner()), "ok")
         let productionSource = String.fromUtf8(File.readFrom(
             Path("../src/ckb_repro_publish_gate.cj")))
         @Expect(productionSource.contains("[\"verify-tag\", \"--raw\""), false)
@@ -467,15 +484,23 @@ public class CkbReproPublishGateTest {
 
     @TestCase
     public func p9Pos03ReleaseCommitKeyVerifiesRealSignature(): Unit {
-        let base = Path("target/p9-real-signing")
-        if (exists(base)) { remove(base, recursive: true) }
+        let created = p9TestCommand("mktemp",
+            ["-d", "/tmp/ckb-p9-signing-XXXXXX"])
+        if (created[0] != 0 || created[1] != "ok" ||
+            created[2].trimAscii() == "") {
+            throw Exception("test temporary directory unavailable")
+        }
+        let base = Path(created[2].trimAscii())
         let repository = base.join("repository")
         let bundle = base.join("bundle")
         let firstHome = base.join("first-home")
         let wrongHome = base.join("wrong-home")
+        try {
         Directory.create(repository.join("reproducibility"), recursive: true)
         Directory.create(bundle.join("reproducibility"), recursive: true)
         Directory.create(firstHome); Directory.create(wrongHome)
+        p9TestCommandOk("chmod", ["700", firstHome.toString()])
+        p9TestCommandOk("chmod", ["700", wrongHome.toString()])
         p9TestCommandOk("gpg", ["--homedir", firstHome.toString(),
             "--batch", "--pinentry-mode", "loopback", "--passphrase", "",
             "--quick-generate-key", "Metis Repro Test <repro@example.invalid>",
@@ -531,7 +556,17 @@ public class CkbReproPublishGateTest {
             wrongCommit, bundleRoot, "SHA256SUMS.sig", "SHA256SUMS",
             wrongFingerprint, P9RealGpgvRunner()),
             "publish_signature_mismatch")
-        remove(base, recursive: true)
+        } finally {
+            if (exists(firstHome)) {
+                p9TestCommand("gpgconf", ["--homedir",
+                    firstHome.toString(), "--kill", "all"])
+            }
+            if (exists(wrongHome)) {
+                p9TestCommand("gpgconf", ["--homedir",
+                    wrongHome.toString(), "--kill", "all"])
+            }
+            if (exists(base)) { remove(base, recursive: true) }
+        }
     }
 
     @TestCase
@@ -591,7 +626,34 @@ public class CkbReproPublishGateTest {
 
 private func p9TestCommand(command: String, args: Array<String>):
     (Int64, String, String) {
-    ckbReproBoundedProbeCommand(command, args, 1024 * 1024)
+    try {
+        let process = launch(command, args, stdOut: ProcessRedirect.Pipe,
+            stdErr: ProcessRedirect.Pipe)
+        let stdout = spawn { => p9TestReadPipe(process.stdOutPipe) }
+        let stderr = spawn { => p9TestReadPipe(process.stdErrPipe) }
+        let code = process.wait()
+        let output = stdout.get(); let error = stderr.get()
+        if (output[0] != "ok") { return (code, output[0], "") }
+        if (error[0] != "ok") { return (code, error[0], "") }
+        (code, "ok", if (output[1] == "") { error[1] } else { output[1] })
+    } catch (_: Exception) { (127, "command_failed", "") }
+}
+
+private func p9TestReadPipe(pipe: InputStream): (String, String) {
+    let bytes = ArrayList<UInt8>()
+    let buffer = Array<UInt8>(8192, repeat: UInt8(0))
+    try {
+        while (true) {
+            let count = pipe.read(buffer)
+            if (count < 0 || count > buffer.size) { return ("read_failed", "") }
+            if (count == 0) { break }
+            if (bytes.size + count > 1024 * 1024) {
+                return ("output_too_large", "")
+            }
+            for (i in 0..count) { bytes.add(buffer[i]) }
+        }
+        ("ok", String.fromUtf8(bytes.toArray()))
+    } catch (_: Exception) { ("invalid_response_encoding", "") }
 }
 
 private func p9TestCommandOk(command: String, args: Array<String>): Unit {
