@@ -368,6 +368,21 @@ public class CkbReproCliAdaptersTest {
             "--candidate-manifest", root.join("candidate.json").toString(),
             "--p8-b-report", root.join("p8b.json").toString(), "--apply"], production)
         @Expect(actual.ok, true); @Expect(dependency.commits, 1)
+
+        let transport = P234SnapshotDependency()
+        let business = newCkbP4BusinessProductionAdapter(
+            CkbReproBuildRequest(), FileKnowledgeStore(productionRoot.toString()),
+            FileKnowledgeStore(productionRoot.toString()), Array<UInt8>(),
+            CkbQdrantSnapshotManifest(), CkbLogicalSnapshotManifest(),
+            "portable-staging", transport, CkbPortablePathContext())
+        @Expect(business is CkbP4CliAdapter, true)
+        let concretePromotion = CkbPortableProductionPromotionBackend(
+            FileKnowledgeStore(productionRoot.toString()),
+            FileKnowledgeStore(productionRoot.toString()), Array<UInt8>(),
+            CkbQdrantSnapshotManifest(), CkbLogicalSnapshotManifest(),
+            "portable-staging", transport, CkbPortablePathContext())
+        concretePromotion.cleanupStaging()
+        @Expect(transport.restored, true)
         remove(root, recursive: true)
     }
 

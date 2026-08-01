@@ -187,6 +187,22 @@ public func newCkbP4ProductionAdapter(buildRequest: CkbReproBuildRequest,
     CkbP4ProductionAdapter(buildRequest, buildBackend, promotionBackend)
 }
 
+public func newCkbP4BusinessProductionAdapter(
+    buildRequest: CkbReproBuildRequest,
+    candidateStore: FileKnowledgeStore,
+    productionStore: FileKnowledgeStore,
+    snapshotBytes: Array<UInt8>,
+    snapshotManifest: CkbQdrantSnapshotManifest,
+    logicalManifest: CkbLogicalSnapshotManifest,
+    targetCollection: String,
+    snapshotExecutor: CkbQdrantSnapshotExecutor,
+    pathContext: CkbPortablePathContext): CkbP4CliAdapter {
+    CkbP4ProductionAdapter(buildRequest, CkbReproProductionBuildBackend(),
+        CkbPortableProductionPromotionBackend(candidateStore, productionStore,
+            snapshotBytes, snapshotManifest, logicalManifest, targetCollection,
+            snapshotExecutor, pathContext))
+}
+
 public func loadCkbPortablePromotionCliInputs(candidatePath: String,
     p8BPath: String): (CkbReproContractResult, CkbPortablePromotionOptions) {
     let options = CkbPortablePromotionOptions()
@@ -554,8 +570,18 @@ public func generateAndValidateCkbSourceMaterials(
     p4BuildSuccess()
 }
 
+public class CkbReproPipelineInput {
+    public var request: CkbReproBuildRequest = CkbReproBuildRequest()
+    public var selectedTyped: ArrayList<CangjieTypedRecord> =
+        ArrayList<CangjieTypedRecord>()
+    public var portableTyped: ArrayList<CangjieTypedRecord> =
+        ArrayList<CangjieTypedRecord>()
+    public var portableRaw: ArrayList<RawRecord> = ArrayList<RawRecord>()
+    public init() {}
+}
+
 public interface CkbReproBuildBackend {
-    func run(stage: String): CkbReproBackendResult
+    func run(stage: String, input: CkbReproPipelineInput): CkbReproBackendResult
 }
 
 public class CkbReproBuildRequest {
@@ -568,7 +594,154 @@ public class CkbReproBuildRequest {
     public var pathContext: CkbPortablePathContext = CkbPortablePathContext()
     public var typedInput: ArrayList<CangjieTypedRecord> = ArrayList<CangjieTypedRecord>()
     public var rawInput: ArrayList<RawRecord> = ArrayList<RawRecord>()
+    public var candidateVersion: String = ""
+    public var evalSupportAuthority: CangjieEvalSupportSnapshot =
+        CangjieEvalSupportSnapshot()
+    public var leakageAuthority: CangjieBenchmarkLeakageAuthority =
+        CangjieBenchmarkLeakageAuthority()
+    public var leakageAuthorityHash: String = ""
     public init() {}
+}
+
+public class CkbReproProductionBuildBackend <: CkbReproBuildBackend {
+    private var kb: KnowledgeBase = KnowledgeBase(FakeClock(0))
+    private var candidate: CkbCompleteCleanStudentCandidate =
+        CkbCompleteCleanStudentCandidate()
+    private var persisted: CkbCleanCandidateBuildResult =
+        CkbCleanCandidateBuildResult()
+    private var materialized: CkbCandidateRuntimeMaterializeResult =
+        CkbCandidateRuntimeMaterializeResult()
+
+    public init() {}
+
+    public func run(stage: String,
+        input: CkbReproPipelineInput): CkbReproBackendResult {
+        if (stage == "assemble") { return this.assemble(input) }
+        if (stage == "validate_authority") { return this.validateAuthority(input) }
+        if (stage == "load_first_init") { return this.loadFirstInit(input) }
+        if (stage == "validate_serving") { return this.validateServing(input) }
+        if (stage == "clean") { return this.clean(input) }
+        if (stage == "leakage") { return this.leakage(input) }
+        if (stage == "materialize") { return this.materialize(input) }
+        if (stage == "logical_scan") { return this.logicalScan(input) }
+        CkbReproBackendResult(false, "build_stage_unknown")
+    }
+
+    private func assemble(input: CkbReproPipelineInput): CkbReproBackendResult {
+        this.kb = KnowledgeBase(FakeClock(0))
+        this.candidate = CkbCompleteCleanStudentCandidate()
+        this.persisted = CkbCleanCandidateBuildResult()
+        this.materialized = CkbCandidateRuntimeMaterializeResult()
+        if (input.request.candidateVersion == "" ||
+            input.selectedTyped.size == 0 || input.portableTyped.size == 0) {
+            return CkbReproBackendResult(false, "portable_build_input_empty")
+        }
+        let deduped = dedupeCkbFirstInitializationRecords(input.selectedTyped)
+        CkbReproBackendResult(deduped.size == input.selectedTyped.size,
+            if (deduped.size == input.selectedTyped.size) { "ok" }
+            else { "portable_build_dedupe_count_mismatch" })
+    }
+
+    private func validateAuthority(input: CkbReproPipelineInput): CkbReproBackendResult {
+        let validated = validateCkbFirstInitializationRecords(
+            input.portableTyped, input.request.evalSupportAuthority)
+        CkbReproBackendResult(validated.ok,
+            if (validated.ok) { "ok" } else { "first_init_authority_invalid" })
+    }
+
+    private func loadFirstInit(input: CkbReproPipelineInput): CkbReproBackendResult {
+        let version = input.request.candidateVersion
+        let loaded = this.kb.loadFirstInitializationTypedRecords(
+            input.selectedTyped, version)
+        CkbReproBackendResult(loaded == version &&
+            this.kb.candidateRecordSnapshot().size == input.selectedTyped.size,
+            if (loaded == version) { "ok" } else { "first_init_load_failed" })
+    }
+
+    private func validateServing(input: CkbReproPipelineInput): CkbReproBackendResult {
+        let result = validateCandidateServingIndex(
+            this.kb.candidateRecordSnapshot(), input.request.candidateVersion)
+        CkbReproBackendResult(result.ok,
+            if (result.ok) { "ok" } else { result.status })
+    }
+
+    private func clean(input: CkbReproPipelineInput): CkbReproBackendResult {
+        let raw = ArrayList<RawRecord>()
+        let normalized = ArrayList<NormalizedRecord>()
+        for (record in input.selectedTyped) {
+            let metadata = KnowledgeMetadata()
+            let value = cangjieTypedRecordToNormalized(record, metadata)
+            let source = RawRecord(); source.sourceId = value.sourceId
+            source.title = value.title; source.content = value.chunk
+            source.metadata = value.metadata; source.contentHash = record.contentHash
+            source.requiresReview = value.requiresReview
+            raw.add(source); normalized.add(value)
+        }
+        let normalizer = Normalizer()
+        for (record in input.portableRaw) {
+            raw.add(record)
+            normalized.add(normalizer.normalize(record, "",
+                input.request.candidateVersion))
+        }
+        this.candidate = ckbBuildCompleteCleanStudentCandidate(
+            ArrayList<RawRecord>(), ArrayList<NormalizedRecord>(),
+            ArrayList<NormalizedRecord>(), raw, normalized, normalized,
+            input.request.candidateVersion,
+            authorityHash: input.request.leakageAuthorityHash,
+            authority: input.request.leakageAuthority)
+        CkbReproBackendResult(this.candidate.ok, this.candidate.diagnostic)
+    }
+
+    private func leakage(input: CkbReproPipelineInput): CkbReproBackendResult {
+        let leakage = validateCangjieStudentKnowledgeRecords(
+            this.candidate.normalizedRecords,
+            authority: input.request.leakageAuthority)
+        if (!leakage.ok) {
+            return CkbReproBackendResult(false, leakage.code)
+        }
+        let visible = CkbStudentVisiblePathInput()
+        visible.rawRecords = this.candidate.rawRecords
+        visible.normalizedRecords = this.candidate.normalizedRecords
+        visible.activeRecords = this.candidate.activeRecords
+        let paths = scanCkbStudentVisiblePaths(visible, input.request.pathContext)
+        CkbReproBackendResult(paths.ready, paths.diagnostic)
+    }
+
+    private func materialize(input: CkbReproPipelineInput): CkbReproBackendResult {
+        let staging = FileKnowledgeStore(input.request.options.temporaryRoot)
+        this.persisted = ckbPersistCompleteCleanStudentCandidate(staging,
+            this.candidate)
+        if (!this.persisted.ok) {
+            return CkbReproBackendResult(false, this.persisted.diagnostic)
+        }
+        let options = CkbCandidateRuntimeMaterializeOptions()
+        options.sourceStore = input.request.options.temporaryRoot
+        options.outputStore = input.request.options.outputRoot
+        options.candidateVersion = input.request.candidateVersion
+        this.materialized = ckbMaterializeCandidateRuntime(options)
+        CkbReproBackendResult(this.materialized.ok, this.materialized.diagnostic)
+    }
+
+    private func logicalScan(input: CkbReproPipelineInput): CkbReproBackendResult {
+        let store = FileKnowledgeStore(input.request.options.outputRoot)
+        let snapshot = store.loadActiveSnapshot()
+        let metadata = store.loadMetadataStatus()
+        if (!snapshot.valid || !metadata.valid ||
+            snapshot.rawRecords.size != this.candidate.rawRecords.size ||
+            snapshot.normalizedRecords.size != this.candidate.normalizedRecords.size ||
+            snapshot.activeIndex.size != this.candidate.activeRecords.size ||
+            metadata.vectorState != EmbeddingProviderState.DEGRADED ||
+            metadata.vectorDegradedReason != "vector_snapshot_missing" ||
+            metadata.vectorIndexCount != 0) {
+            return CkbReproBackendResult(false, "portable_logical_scan_failed")
+        }
+        let visible = CkbStudentVisiblePathInput()
+        visible.rawRecords = snapshot.rawRecords
+        visible.normalizedRecords = snapshot.normalizedRecords
+        visible.activeRecords = snapshot.activeIndex
+        let paths = scanCkbStudentVisiblePaths(visible, input.request.pathContext)
+        CkbReproBackendResult(paths.ready, paths.diagnostic)
+    }
 }
 
 public class CkbReproBuildProof {
@@ -610,11 +783,12 @@ public func selectCkbPortableFirstInitKnowledgeRecords(
     (p4BuildSuccess(), out)
 }
 
-public func runCkbReproOfficialPipeline(backend: CkbReproBuildBackend):
+public func runCkbReproOfficialPipeline(input: CkbReproPipelineInput,
+    backend: CkbReproBuildBackend):
     CkbReproContractResult {
     for (stage in ["assemble", "validate_authority", "load_first_init",
         "validate_serving", "clean", "leakage", "materialize", "logical_scan"]) {
-        if (!backend.run(stage).ok) {
+        if (!backend.run(stage, input).ok) {
             return p4BuildFailure("build_stage_failed:${stage}")
         }
     }
@@ -653,13 +827,24 @@ public func runCkbReproBuild(request: CkbReproBuildRequest,
         if (!normalized.ok) { result.diagnostic = normalized.diagnostic; return result }
         rawOutput.add(normalized.record)
     }
+    let selectedOutput = ArrayList<CangjieTypedRecord>()
+    for (record in selected[1]) {
+        let normalized = normalizeCkbTypedRecordPortablePaths(record, request.pathContext)
+        if (!normalized.ok) { result.diagnostic = normalized.diagnostic; return result }
+        selectedOutput.add(normalized.record)
+    }
     let preservation = buildCkbPortableRecordPreservationProof(
         request.typedInput.toArray(), typedOutput.toArray(),
         request.rawInput.toArray(), rawOutput.toArray(), request.pathContext)
     if (!preservation.ready) {
         result.diagnostic = preservation.diagnostic; return result
     }
-    let pipeline = runCkbReproOfficialPipeline(backend)
+    let pipelineInput = CkbReproPipelineInput()
+    pipelineInput.request = request
+    pipelineInput.selectedTyped = selectedOutput
+    pipelineInput.portableTyped = typedOutput
+    pipelineInput.portableRaw = rawOutput
+    let pipeline = runCkbReproOfficialPipeline(pipelineInput, backend)
     if (!pipeline.ok) { result.diagnostic = pipeline.diagnostic; return result }
     result.proof.logicalReady = true; result.proof.diagnostic = "ok"
     result.proof.sourceLockHash = canonicalCkbReproSourceLockHash(request.sourceLock)
@@ -769,6 +954,109 @@ public interface CkbPortablePromotionBackend {
     func readBack(options: CkbPortablePromotionOptions): Bool
     func cleanupOld(): Bool
     func cleanupStaging(): Unit
+}
+
+public class CkbPortableProductionPromotionBackend <:
+    CkbPortablePromotionBackend {
+    private let candidateStore: FileKnowledgeStore
+    private let productionStore: FileKnowledgeStore
+    private let snapshotBytes: Array<UInt8>
+    private let snapshotManifest: CkbQdrantSnapshotManifest
+    private let logicalManifest: CkbLogicalSnapshotManifest
+    private let targetCollection: String
+    private let executor: CkbQdrantSnapshotExecutor
+    private let pathContext: CkbPortablePathContext
+    private var before: CkbPortablePromotionState =
+        CkbPortablePromotionState("", "", "")
+    private var pointerCommitted: Bool = false
+
+    public init(candidateStore: FileKnowledgeStore,
+        productionStore: FileKnowledgeStore, snapshotBytes: Array<UInt8>,
+        snapshotManifest: CkbQdrantSnapshotManifest,
+        logicalManifest: CkbLogicalSnapshotManifest, targetCollection: String,
+        executor: CkbQdrantSnapshotExecutor,
+        pathContext: CkbPortablePathContext) {
+        this.candidateStore = candidateStore
+        this.productionStore = productionStore
+        this.snapshotBytes = snapshotBytes
+        this.snapshotManifest = snapshotManifest
+        this.logicalManifest = logicalManifest
+        this.targetCollection = targetCollection
+        this.executor = executor; this.pathContext = pathContext
+    }
+
+    public func readCurrent(): CkbPortablePromotionState {
+        let pointer = this.productionStore.loadActiveSnapshotPointer()
+        let state = if (pointer.valid) {
+            CkbPortablePromotionState(pointer.activeVersion,
+                ckbActiveSnapshotPointerIdentityHash(pointer),
+                pointer.vectorActiveCollection)
+        } else { CkbPortablePromotionState("", "", "") }
+        this.before = state
+        state
+    }
+
+    public func restoreVector(options: CkbPortablePromotionOptions): Bool {
+        if (this.snapshotManifest.collection == "" ||
+            this.snapshotManifest.logicalManifestHash !=
+                this.logicalManifest.manifestHash) { return false }
+        restoreCkbQdrantSnapshot(this.targetCollection, this.snapshotBytes,
+            this.snapshotManifest, this.executor).ok
+    }
+
+    public func validateVector(options: CkbPortablePromotionOptions): Bool {
+        let request = CkbQdrantSnapshotRequest(); request.method = "GET"
+        request.path = "/collections/${this.targetCollection}"
+        let response = this.executor.execute(request)
+        let status = parseCkbQdrantRestoredStatus(response.bodyBytes,
+            this.targetCollection, this.snapshotManifest.payloadCanonicalHash)
+        if (!status[0].ok) { return false }
+        let visible = CkbStoreVerificationInputProvider(
+            this.candidateStore, this.pathContext)
+        verifyRestoredCkbQdrantSnapshot(status[1], this.snapshotManifest,
+            this.logicalManifest, visible.visibleInput(this.targetCollection),
+            this.pathContext).ok
+    }
+
+    public func commitPointer(options: CkbPortablePromotionOptions): Bool {
+        let snapshot = this.candidateStore.loadActiveSnapshot()
+        if (!snapshot.valid || snapshot.activeVersion != options.candidateVersion) {
+            return false
+        }
+        let kb = KnowledgeBase(FakeClock(0))
+        if (!kb.restoreActiveSnapshot(snapshot)) { return false }
+        kb.promoteVectorActiveCollection(this.targetCollection)
+        let committed = kb.persistActiveSnapshotUsingVectorRecords(
+            this.productionStore, ArrayList<VectorRecord>(),
+            persistVectorFile: false,
+            expectedBaseActivePointerHash: options.expectedPointerHash)
+        this.pointerCommitted = committed.ok && committed.businessCommitted &&
+            committed.pointerCommitted
+        this.pointerCommitted
+    }
+
+    public func readBack(options: CkbPortablePromotionOptions): Bool {
+        let pointer = this.productionStore.loadActiveSnapshotPointer()
+        pointer.valid && pointer.activeVersion == options.candidateVersion &&
+            pointer.vectorActiveCollection == this.targetCollection
+    }
+
+    public func cleanupOld(): Bool {
+        if (this.before.vectorCollection == "" ||
+            this.before.vectorCollection == this.targetCollection) { return true }
+        let request = CkbQdrantSnapshotRequest(); request.method = "DELETE"
+        request.path = "/collections/${this.before.vectorCollection}"
+        let response = this.executor.execute(request)
+        response.statusCode == 200 || response.statusCode == 202 ||
+            response.statusCode == 404
+    }
+
+    public func cleanupStaging(): Unit {
+        if (this.pointerCommitted) { return }
+        let request = CkbQdrantSnapshotRequest(); request.method = "DELETE"
+        request.path = "/collections/${this.targetCollection}"
+        _ = this.executor.execute(request)
+    }
 }
 
 public class CkbPortablePromotionResult {

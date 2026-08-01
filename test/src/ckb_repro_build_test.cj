@@ -109,6 +109,16 @@ public class CkbReproBuildTest {
              "clean", "leakage", "materialize", "logical_scan"])
         @Expect(backend.selectedTypedCount > 0, true)
         @Expect(backend.portableRawCount, fixture.request.rawInput.size)
+        let productionInput = CkbReproPipelineInput()
+        productionInput.request = fixture.request
+        productionInput.request.candidateVersion = "portable-production-candidate"
+        productionInput.selectedTyped.add(fixture.request.typedInput[0])
+        productionInput.portableTyped.add(fixture.request.typedInput[0])
+        @Expect(CkbReproProductionBuildBackend().run(
+            "assemble", productionInput).ok, true)
+        productionInput.selectedTyped.add(fixture.request.typedInput[0])
+        @Expect(CkbReproProductionBuildBackend().run(
+            "assemble", productionInput).ok, false)
         p4RemoveBuildFixture(fixture)
     }
 
