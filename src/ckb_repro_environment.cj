@@ -93,6 +93,8 @@ public class CkbReproPreflightCliOptions {
     public var observedEnvironmentPath: String = ""
     public var certificationPreflightPath: String = ""
     public var certificationRunManifestPath: String = ""
+    public var signingFingerprint: String = ""
+    public var observedEnvironmentHash: String = ""
     public var json: Bool = false
     public var valid: Bool = false
     public var diagnostic: String = "usage_error"
@@ -231,10 +233,16 @@ public func parseCkbReproPreflightCliArgs(args: Array<String>):
         }
         if (arg == "--environment-lock" || arg == "--observed-environment" ||
             arg == "--certification-preflight" ||
-            arg == "--certification-run-manifest") {
+            arg == "--certification-run-manifest" ||
+            arg == "--signing-fingerprint" ||
+            arg == "--observed-environment-hash") {
             if (i + 1 >= args.size) { out.diagnostic = "missing_value:${arg}"; return out }
             let value = args[i + 1]
-            if (!p6CliAbsolutePath(value)) { out.diagnostic = "preflight_path_invalid"; return out }
+            if (arg != "--signing-fingerprint" &&
+                arg != "--observed-environment-hash" &&
+                !p6CliAbsolutePath(value)) {
+                out.diagnostic = "preflight_path_invalid"; return out
+            }
             if (arg == "--environment-lock") {
                 if (out.environmentLockPath != "") { out.diagnostic = "duplicate_argument:${arg}"; return out }
                 out.environmentLockPath = value
@@ -244,9 +252,15 @@ public func parseCkbReproPreflightCliArgs(args: Array<String>):
             } else if (arg == "--certification-preflight") {
                 if (out.certificationPreflightPath != "") { out.diagnostic = "duplicate_argument:${arg}"; return out }
                 out.certificationPreflightPath = value
-            } else {
+            } else if (arg == "--certification-run-manifest") {
                 if (out.certificationRunManifestPath != "") { out.diagnostic = "duplicate_argument:${arg}"; return out }
                 out.certificationRunManifestPath = value
+            } else if (arg == "--signing-fingerprint") {
+                if (out.signingFingerprint != "") { out.diagnostic = "duplicate_argument:${arg}"; return out }
+                out.signingFingerprint = value
+            } else {
+                if (out.observedEnvironmentHash != "") { out.diagnostic = "duplicate_argument:${arg}"; return out }
+                out.observedEnvironmentHash = value
             }
             i += 2; continue
         }
@@ -254,7 +268,8 @@ public func parseCkbReproPreflightCliArgs(args: Array<String>):
     }
     if (out.environmentLockPath == "" || out.observedEnvironmentPath == "" ||
         out.certificationPreflightPath == "" ||
-        out.certificationRunManifestPath == "") {
+        out.certificationRunManifestPath == "" || out.signingFingerprint == "" ||
+        out.observedEnvironmentHash == "") {
         out.diagnostic = "required_argument_missing"; return out
     }
     out.valid = true; out.diagnostic = "ok"; out
@@ -267,6 +282,10 @@ public func validateCkbReproPreflightCliOptions(
         options.certificationPreflightPath,
         options.certificationRunManifestPath]) {
         if (!p6CliAbsolutePath(path)) { return p6Failure("preflight_path_invalid") }
+    }
+    if (!p6ProbeFingerprint(options.signingFingerprint) ||
+        !p6HashValid(options.observedEnvironmentHash)) {
+        return p6Failure("environment_attestation_authority_invalid")
     }
     p6Success()
 }
@@ -302,9 +321,11 @@ public func executeCkbReproPreflightCliAdapterWithProbe(
 
 public func runCkbReproPreflightCliAdapter(
     options: CkbReproPreflightCliOptions): CkbReproEnvironmentPreflightResult {
-    let checked = validateCkbReproPreflightCliOptions(options)
-    if (!checked.ok) { return p6CliPreflightFailure(checked.diagnostic) }
-    p6CliPreflightFailure("environment_attestation_authority_unavailable")
+    let authority = CkbReproAttestationAuthority()
+    authority.signingFingerprint = options.signingFingerprint
+    authority.observedEnvironmentHash = options.observedEnvironmentHash
+    authority.frozen = true
+    runCkbReproPreflightCliAdapter(options, authority)
 }
 
 public func runCkbReproPreflightCliAdapter(
@@ -315,7 +336,9 @@ public func runCkbReproPreflightCliAdapter(
     if (!checked.ok) { return p6CliPreflightFailure(checked.diagnostic) }
     if (!authority.frozen ||
         !p6ProbeFingerprint(authority.signingFingerprint) ||
-        !p6HashValid(authority.observedEnvironmentHash)) {
+        !p6HashValid(authority.observedEnvironmentHash) ||
+        authority.signingFingerprint != options.signingFingerprint ||
+        authority.observedEnvironmentHash != options.observedEnvironmentHash) {
         return p6CliPreflightFailure(
             "environment_attestation_authority_unavailable")
     }

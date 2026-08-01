@@ -5,6 +5,7 @@ import std.fs.{Directory, File, Path, canonicalize, exists, remove}
 import std.process.launch
 import std.unittest.*
 import std.unittest.testmacro.*
+import stdx.encoding.json.JsonValue
 
 private class P9FakeBundleBackend <: CkbReproBundleBackend {
     public let roots = HashMap<String, HashMap<String, Array<UInt8>>>()
@@ -473,10 +474,11 @@ public class CkbReproBundleTest {
         let options = p9FrozenInputOptions(fixture[0], fixture[1], fixture[2])
         let built = runCkbReproBundleCliAdapter(options)
         @Expect(built.ok, true)
-        @Expect(File.readFrom(Path(fixture[1]).join("assets/a.txt")),
+        @Expect(File.readFrom(Path(fixture[1]).join(
+            ckbReproReleaseAuthorityRequiredLayout("public_rebuild")[0][0])),
             "alpha".toArray())
         @Expect(exists(Path(fixture[1]).join("RELEASE-MANIFEST.json")), true)
-        @Expect(exists(Path(fixture[1]).join("SHA256SUMS")), true)
+        @Expect(exists(Path(fixture[1]).join("SHA256SUMS")), false)
         remove(Path(fixture[2]), recursive: true)
     }
 
@@ -497,14 +499,14 @@ public class CkbReproBundleTest {
             if (mode == "extra") {
                 File.writeTo(Path(fixture[0]).join("extra.txt"), "extra".toArray())
             } else if (mode == "missing") {
-                remove(Path(fixture[0]).join("source/a.txt"))
+                remove(Path(fixture[0]).join("source/input-0.bin"))
             } else if (mode == "hash") {
-                File.writeTo(Path(fixture[0]).join("source/a.txt"), "drift".toArray())
+                File.writeTo(Path(fixture[0]).join("source/input-0.bin"), "drift".toArray())
             } else {
-                remove(Path(fixture[0]).join("source/a.txt"))
+                remove(Path(fixture[0]).join("source/input-0.bin"))
                 File.writeTo(Path(fixture[2]).join("outside.txt"), "alpha".toArray())
                 @Expect(launch("/bin/ln", ["-s", "../../outside.txt",
-                    Path(fixture[0]).join("source/a.txt").toString()]).wait(), 0)
+                    Path(fixture[0]).join("source/input-0.bin").toString()]).wait(), 0)
             }
             let result = runCkbReproBundleCliAdapter(p9FrozenInputOptions(
                 fixture[0], fixture[1], fixture[2]))
@@ -512,11 +514,31 @@ public class CkbReproBundleTest {
             @Expect(exists(Path(fixture[1])), false)
             remove(Path(fixture[2]), recursive: true)
         }
+        for (field in ["releaseCommit", "runCriticalTreeHash",
+            "certifiedRunInputHash", "referenceManifestHash",
+            "authorityLayoutHash"]) {
+            let fixture = p9FrozenInputFixture("identity-${field}",
+                "alpha".toArray())
+            let path = Path(fixture[0]).join("RELEASE-INPUTS.json")
+            let original = String.fromUtf8(File.readFrom(path))
+            let object = JsonValue.fromStr(original).asObject()
+            let current = object.get(field).getOrThrow().asString().getValue()
+            let replacement = if (field == "releaseCommit") { "b" * 40 }
+                else { ckbReproBundleHash("drift-${field}".toArray()) }
+            File.writeTo(path, original.replace(
+                "\"${field}\":\"${current}\"",
+                "\"${field}\":\"${replacement}\"").toArray())
+            @Expect(runCkbReproBundleCliAdapter(p9FrozenInputOptions(
+                fixture[0], fixture[1], fixture[2])).ok, false)
+            @Expect(exists(Path(fixture[1])), false)
+            remove(Path(fixture[2]), recursive: true)
+        }
         let streamed = p9FrozenInputFixture("streamed",
             Array<UInt8>(200000, repeat: UInt8(7)))
         @Expect(runCkbReproBundleCliAdapter(p9FrozenInputOptions(
             streamed[0], streamed[1], streamed[2])).ok, true)
-        @Expect(File.readFrom(Path(streamed[1]).join("assets/a.txt")).size,
+        @Expect(File.readFrom(Path(streamed[1]).join(
+            ckbReproReleaseAuthorityRequiredLayout("public_rebuild")[0][0])).size,
             Int64(200000))
         remove(Path(streamed[2]), recursive: true)
     }
@@ -1151,14 +1173,47 @@ private func p9FrozenInputFixture(suffix: String, bytes: Array<UInt8>):
     Directory.create(base.join("protected/production"), recursive: true)
     Directory.create(base.join("protected/runs"), recursive: true)
     Directory.create(base.join("protected/config"), recursive: true)
-    File.writeTo(base.join("input/source/a.txt"), bytes)
     let root = canonicalize(base).toString()
-    let row = CkbReproReleaseInput()
-    row.sourceRelativePath = "source/a.txt"
-    row.asset = p9AssetBytes("assets/a.txt", bytes)
-    let rows = ArrayList<CkbReproReleaseInput>(); rows.add(row)
+    let rows = ArrayList<CkbReproReleaseInput>()
+    let releaseCommit = "a" * 40
+    let runCriticalTreeHash = ckbReproBundleHash("critical".toArray())
+    let certifiedRunInputHash = ckbReproBundleHash("certified".toArray())
+    var referenceBytes = String.fromUtf8(File.readFrom(
+        "../reproducibility/manifests/historical-reference-run.json"))
+        .replace("\"runCriticalTreeHash\": \"sha256:be5aab72f3e477a1d23aa1f3f53c79f701dfaad5dfc361c44ae7b4ba24458fc2\"",
+            "\"runCriticalTreeHash\": \"${runCriticalTreeHash}\"")
+        .replace("\"totalCases\":", "\"certifiedRunInputHash\": \"${certifiedRunInputHash}\",\n  \"totalCases\":")
+        .toArray()
+    let layout = ckbReproReleaseAuthorityRequiredLayout("public_rebuild")
+    for (i in 0..layout.size) {
+        let row = CkbReproReleaseInput()
+        row.sourceRelativePath = "source/input-${i}.bin"
+        var content = if (layout[i][0] == "release/release-commit.txt") {
+            releaseCommit.toArray()
+        } else if (layout[i][0] ==
+            "reproducibility/manifests/reference-run.json") {
+            referenceBytes
+        } else if (i == 0) { bytes } else { "fixture-${i}".toArray() }
+        File.writeTo(Path(root).join("input/${row.sourceRelativePath}"), content)
+        row.asset = p9AssetBytes(layout[i][0], content)
+        row.asset.role = layout[i][1]
+        row.asset.logicalAsset = layout[i][0]
+        rows.add(row)
+    }
+    let evidence = ArrayList<CkbReproReleaseAuthorityEvidence>()
+    for (row in rows) {
+        let item = CkbReproReleaseAuthorityEvidence()
+        item.role = row.asset.role; item.logicalAsset = row.asset.logicalAsset
+        item.size = row.asset.size; item.sha256 = row.asset.sha256
+        evidence.add(item)
+    }
+    let authority = buildCkbReproReleaseAuthorityContract(
+        evidence, "public_rebuild")
+    let referenceHash = ckbReproBundleHash(referenceBytes)
     File.writeTo(Path(root).join("input/RELEASE-INPUTS.json"),
-        renderCkbReproReleaseInputsManifest(rows).toArray())
+        renderCkbReproReleaseInputsManifest(rows, releaseCommit,
+            runCriticalTreeHash, certifiedRunInputHash, referenceHash,
+            "public_rebuild", authority[1].layoutHash).toArray())
     ("${root}/input", "${root}/unsigned", root)
 }
 

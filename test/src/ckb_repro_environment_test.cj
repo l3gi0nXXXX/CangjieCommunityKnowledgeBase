@@ -192,6 +192,15 @@ public class CkbReproEnvironmentTest {
         @Expect(parseCkbReproPreflightCliArgs([
             "ckb-repro-preflight", "--token", "secret"]).diagnostic,
             "unknown_argument:--token")
+        let invalidAuthority = parseCkbReproPreflightCliArgs(p6ExplicitCliArgs())
+        invalidAuthority.signingFingerprint = "not-a-fingerprint"
+        @Expect(validateCkbReproPreflightCliOptions(invalidAuthority).diagnostic,
+            "environment_attestation_authority_invalid")
+        invalidAuthority.signingFingerprint =
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        invalidAuthority.observedEnvironmentHash = "sha256:invalid"
+        @Expect(validateCkbReproPreflightCliOptions(invalidAuthority).diagnostic,
+            "environment_attestation_authority_invalid")
     }
 
     @TestCase
@@ -378,7 +387,7 @@ public class CkbReproEnvironmentTest {
             P6FakeEnvironmentProbe(matched)).ok, true)
 
         @Expect(runCkbReproPreflightCliAdapter(options).diagnostic,
-            "environment_attestation_authority_unavailable")
+            "environment_lock_missing")
         let untrusted = CkbReproAttestationAuthority()
         untrusted.signingFingerprint =
             "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
