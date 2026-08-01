@@ -455,6 +455,42 @@ public class CkbReproCliAdaptersTest {
             "--candidate-manifest", root.join("promotion-candidate.json").toString(),
             "--p8-b-report", p234ReportPath(root).toString(), "--apply"], production)
         @Expect(actual.ok, true); @Expect(dependency.commits, 1)
+        for (driftedP2 in [
+            p2Text.replace("}", ",\"unknown\":true}"),
+            p2Text.replace("\"sourceState\":\"portableVectorCandidate\",", "")
+        ]) {
+            File.writeTo(root.join("portable-logical-proof.json"),
+                driftedP2.toArray())
+            promotion.p2ProofHash = benchmarkGapSha256(driftedP2)
+            promotion.candidateManifestHash = ckbPortableCandidateManifestHash(promotion)
+            p234WritePromotionManifests(root, promotion,
+                reportText: verificationText)
+            let strict = p234RunPromotion(root, productionRoot)
+            @Expect(strict[0].ok, false); @Expect(strict[1], Int64(0))
+        }
+        File.writeTo(root.join("portable-logical-proof.json"), p2Text.toArray())
+        promotion.p2ProofHash = benchmarkGapSha256(p2Text)
+        for (driftedP3 in [
+            p3Text.replace("}", ",\"unknown\":true}"),
+            p3Text.replace("\"collection\":\"ckb-portable-v1\",", ""),
+            p3Text.replace("\"proofReal\":true", "\"proofReal\":false"),
+            p3Text.replace("\"vectorState\":\"READY\"", "\"vectorState\":\"FAILED\""),
+            p3Text.replace("\"count\":7978", "\"count\":7977")
+        ]) {
+            File.writeTo(root.join("portable-vector-proof.json"),
+                driftedP3.toArray())
+            promotion.p3ProofHash = benchmarkGapSha256(driftedP3)
+            promotion.candidateManifestHash = ckbPortableCandidateManifestHash(promotion)
+            p234WritePromotionManifests(root, promotion,
+                reportText: verificationText)
+            let strict = p234RunPromotion(root, productionRoot)
+            @Expect(strict[0].ok, false); @Expect(strict[1], Int64(0))
+        }
+        File.writeTo(root.join("portable-vector-proof.json"), p3Text.toArray())
+        promotion.p3ProofHash = benchmarkGapSha256(p3Text)
+        promotion.candidateManifestHash = ckbPortableCandidateManifestHash(promotion)
+        p234WritePromotionManifests(root, promotion,
+            reportText: verificationText)
         let goodReport = File.readFrom(p234ReportPath(root))
         let originalP5Hash = promotion.p5ProofHash
         File.writeTo(root.join("public-evidence-export.json"),
@@ -826,4 +862,18 @@ private func p234PromotionArgs(apply: Bool): Array<String> {
         "--p8-b-report", "p8-b.json"]) { values.add(value) }
     if (apply) { values.add("--apply") }
     values.toArray()
+}
+
+private func p234RunPromotion(root: Path, productionRoot: Path):
+    (CkbP4CliExecution, Int64) {
+    let dependency = P234PromotionDependency()
+    let result = runCkbP4Cli(["ckb-repro-promote", "--production-store",
+        canonicalize(productionRoot).toString(), "--qdrant-endpoint",
+        "http://127.0.0.1:6333", "--expected-active-version", "old",
+        "--unsigned-root", canonicalize(root).toString(),
+        "--candidate-manifest", root.join("promotion-candidate.json").toString(),
+        "--p8-b-report", p234ReportPath(root).toString(), "--apply"],
+        newCkbP4ProductionAdapter(CkbReproBuildRequest(),
+            P234BuildDependency(), dependency))
+    (result, dependency.commits)
 }
