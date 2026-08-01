@@ -1,7 +1,7 @@
 package cangjie_community_knowledge_base_test
 
 import std.collection.ArrayList
-import std.fs.{Directory, File, Path, exists, remove}
+import std.fs.{Directory, File, Path, canonicalize, exists, remove}
 import std.unittest.*
 import std.unittest.testmacro.*
 import stdx.encoding.json.JsonValue
@@ -26,6 +26,16 @@ private class P6FakeEnvironmentProbe <: CkbReproEnvironmentProbe {
         CkbReproEnvironmentProbeResult {
         this.calls += 1
         this.result
+    }
+}
+
+private class P6FakeGitProbeRunner <: CkbReproGitProbeRunner {
+    public var command: String = ""
+    public var args: Array<String> = Array<String>()
+    public func run(value: String, arguments: Array<String>): (Int64, String) {
+        this.command = value
+        this.args = arguments
+        (0, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
     }
 }
 
@@ -480,6 +490,27 @@ public class CkbReproEnvironmentTest {
             @Expect(text.contains("bearer "), false)
             @Expect(text.contains("password="), false)
         }
+    }
+
+    @TestCase
+    public func p6Reg02GitCommitProbeIsBoundToCanonicalRepositoryRoot(): Unit {
+        let root = Path("target/p6-git-probe/repository")
+        if (exists(root.parent)) { remove(root.parent, recursive: true) }
+        Directory.create(root, recursive: true)
+        let canonicalRoot = canonicalize(root).toString()
+        let runner = P6FakeGitProbeRunner()
+        let result = ckbReproProbeGitCommit(canonicalRoot, runner)
+        @Expect(result[0], Int64(0))
+        @Expect(result[1], "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        @Expect(runner.command, "git")
+        @Expect(runner.args,
+            ["-C", canonicalRoot, "rev-parse", "HEAD"])
+        for (invalid in ["", root.toString(), canonicalRoot + "/missing"]) {
+            let blocked = P6FakeGitProbeRunner()
+            @Expect(ckbReproProbeGitCommit(invalid, blocked)[0], Int64(127))
+            @Expect(blocked.command, "")
+        }
+        remove(root.parent, recursive: true)
     }
 }
 
