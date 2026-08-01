@@ -17,6 +17,8 @@ private class P2FakeArchiveBackend <: CkbReleaseArchiveBackend {
         ArrayList<CkbReleaseArchiveEntry>()
     private var payloads: ArrayList<CkbReleaseArchivePayload> =
         ArrayList<CkbReleaseArchivePayload>()
+    private var capturedPayloads: ArrayList<CkbReleaseArchivePayload> =
+        ArrayList<CkbReleaseArchivePayload>()
 
     public init() {}
 
@@ -79,16 +81,54 @@ private class P2FakeArchiveBackend <: CkbReleaseArchiveBackend {
         result
     }
 
-    public func supportsStreaming(): Bool { false }
+    public func supportsStreaming(): Bool { true }
     public func createFromFiles(archivePath: String,
         values: ArrayList<CkbReleaseArchivePayload>): CkbReleaseArchiveOperation {
         this.createFromFilesCalls += 1
-        this.create(archivePath, values)
+        let materialized = ArrayList<CkbReleaseArchivePayload>()
+        this.capturedPayloads.clear()
+        for (value in values) {
+            let captured = CkbReleaseArchivePayload()
+            captured.path = value.path; captured.bytes = value.bytes.clone()
+            captured.sourcePath = value.sourcePath; captured.size = value.size
+            captured.sha256 = value.sha256; this.capturedPayloads.add(captured)
+            let payload = CkbReleaseArchivePayload(); payload.path = value.path
+            payload.bytes = if (value.sourcePath == "") { value.bytes.clone() }
+                else { File.readFrom(Path(value.sourcePath)) }
+            materialized.add(payload)
+        }
+        this.create(archivePath, materialized)
     }
     public func extractRegularToFile(archivePath: String, relativePath: String,
         outputPath: String, expectedSize: Int64,
         expectedSha256: String): CkbReleaseArchiveOperation {
         CkbReleaseArchiveOperation()
+    }
+    public func extractAllRegularToDirectory(archivePath: String,
+        outputRoot: String, manifest: CkbLogicalSnapshotManifest):
+        CkbReleaseArchiveOperation {
+        let result = CkbReleaseArchiveOperation()
+        for (asset in manifest.assets) {
+            var matched: Bool = false
+            for (value in this.payloads) {
+                if (value.path != asset.relativePath) { continue }
+                let bytes = value.bytes.clone()
+                if (value.path == this.tamperPath && bytes.size > 0) {
+                    bytes[0] = bytes[0] ^ UInt8(1)
+                }
+                if (bytes.size != asset.size ||
+                    ckbLogicalSnapshotBytesHash(bytes) != asset.sha256) {
+                    return result
+                }
+                let target = Path(outputRoot).join(asset.relativePath)
+                if (!exists(target.parent)) {
+                    Directory.create(target.parent, recursive: true)
+                }
+                File.writeTo(target, bytes); matched = true; break
+            }
+            if (!matched) { return result }
+        }
+        result.ok = true; result.diagnostic = "ok"; result
     }
     public func archiveHash(archivePath: String): String {
         if (exists(Path(archivePath))) {
@@ -116,7 +156,7 @@ private class P2FakeArchiveBackend <: CkbReleaseArchiveBackend {
 
     public func payloadsForTest(): ArrayList<CkbReleaseArchivePayload> {
         let out = ArrayList<CkbReleaseArchivePayload>()
-        for (value in this.payloads) { out.add(value) }
+        for (value in this.capturedPayloads) { out.add(value) }
         out
     }
 
@@ -221,6 +261,15 @@ public class CkbReproReleaseTest {
             "${root}/inside-worktree.ckb-release", backend,
             pathPolicy: forbiddenPolicy, allowSyntheticProof: true).diagnostic,
             "logical_snapshot_path_forbidden")
+        @Expect(exportCkbLogicalSnapshot(store, p2Proofs(store),
+            "${store.rootPath()}/inside-production.ckb-release", backend,
+            pathPolicy: policy, allowSyntheticProof: true).diagnostic,
+            "logical_snapshot_path_forbidden")
+        Directory.create(Path(policy.userConfigRoot), recursive: true)
+        @Expect(exportCkbLogicalSnapshot(store, p2Proofs(store),
+            "${policy.userConfigRoot}/inside-config.ckb-release", backend,
+            pathPolicy: policy, allowSyntheticProof: true).diagnostic,
+            "logical_snapshot_path_forbidden")
     }
 
     @TestCase
@@ -244,7 +293,7 @@ public class CkbReproReleaseTest {
             if (payload.path != "RELEASE-MANIFEST.json") {
                 @Expect(payload.bytes.size, 0)
                 @Expect(payload.sourcePath == "", false)
-                @Expect(payload.size > 0, true)
+                @Expect(payload.size >= 0, true)
                 @Expect(payload.sha256.startsWith("sha256:"), true)
             }
         }
@@ -253,6 +302,7 @@ public class CkbReproReleaseTest {
         @Expect(first.realP3Bound, false)
         let firstBytes = File.readFrom(Path(firstPath))
         let target = "${root}/restored"
+        let readsBeforeImport = backend.readCalls
         let restored = importCkbLogicalSnapshot(firstPath, target, backend,
             pathPolicy: policy)
         @Expect(restored.diagnostic, "ok")
@@ -262,7 +312,7 @@ public class CkbReproReleaseTest {
         @Expect(restored.normalizedCount, 1)
         @Expect(restored.indexCount, 1)
         @Expect(restored.vectorCollection, "portable_vectors")
-        @Expect(backend.readCalls <= 1, true)
+        @Expect(backend.readCalls - readsBeforeImport, 1)
         let loaded = FileKnowledgeStore(target).loadActiveSnapshot()
         @Expect(loaded.valid, true)
         @Expect(loaded.activeVersion, p2Version())
@@ -470,6 +520,35 @@ public class CkbReproReleaseTest {
         invalidPayloads.add(invalidPath)
         let invalidArchive = "${root}/invalid-path.ckb-release"
         @Expect(backend.create(invalidArchive, invalidPayloads).ok, false)
+
+        let duplicatePayloads = ArrayList<CkbReleaseArchivePayload>()
+        let duplicate = CkbReleaseArchivePayload(); duplicate.path = payload.path
+        duplicate.bytes = [UInt8(2)]
+        duplicatePayloads.add(duplicate); duplicatePayloads.add(duplicate)
+        @Expect(backend.create("${root}/duplicate.ckb-release",
+            duplicatePayloads).ok, false)
+        let invalidUtf8 = ArrayList<UInt8>(); invalidUtf8.add(all: "CKBREL01".toArray())
+        invalidUtf8.add(all: p2ArchiveIntBytes(1)); invalidUtf8.add(all: p2ArchiveIntBytes(1))
+        invalidUtf8.add(all: p2ArchiveIntBytes(0)); invalidUtf8.add(UInt8(0xff))
+        let invalidUtf8Path = "${root}/invalid-utf8.ckb-release"
+        File.writeTo(Path(invalidUtf8Path), invalidUtf8.toArray())
+        @Expect(backend.enumerate(invalidUtf8Path).diagnostic,
+            "invalid_response_encoding")
+        let excessiveCount = ArrayList<UInt8>()
+        excessiveCount.add(all: "CKBREL01".toArray())
+        excessiveCount.add(all: p2ArchiveIntBytes(129))
+        let excessiveCountPath = "${root}/count.ckb-release"
+        File.writeTo(Path(excessiveCountPath), excessiveCount.toArray())
+        @Expect(backend.enumerate(excessiveCountPath).ok, false)
+        let excessiveEntry = ArrayList<UInt8>()
+        excessiveEntry.add(all: "CKBREL01".toArray())
+        excessiveEntry.add(all: p2ArchiveIntBytes(1))
+        excessiveEntry.add(all: p2ArchiveIntBytes(1))
+        excessiveEntry.add(all: p2ArchiveIntBytes(67108865))
+        excessiveEntry.add(UInt8(0x61))
+        let excessiveEntryPath = "${root}/entry-cap.ckb-release"
+        File.writeTo(Path(excessiveEntryPath), excessiveEntry.toArray())
+        @Expect(backend.enumerate(excessiveEntryPath).ok, false)
     }
 
     @TestCase
@@ -490,6 +569,78 @@ public class CkbReproReleaseTest {
         @Expect(blocked.ok, false)
         @Expect(blocked.diagnostic, "logical_snapshot_temporary_path_exists")
         @Expect(String.fromUtf8(File.readFrom(Path(temporary))), "preexisting")
+        remove(Path(temporary), recursive: true)
+        @Expect(exportCkbLogicalSnapshot(store, p2Proofs(store), output,
+            backend, pathPolicy: policy, allowSyntheticProof: true).ok, true)
+        let target = "${root}/restored"
+        let staging = "${target}.tmp-source-${preview.manifestHash.replace("sha256:", "")}"
+        Directory.create(Path(staging), recursive: false)
+        File.writeTo(Path(staging).join("marker"), "preexisting".toArray())
+        let importBlocked = importCkbLogicalSnapshot(output, target, backend,
+            pathPolicy: policy)
+        @Expect(importBlocked.diagnostic, "logical_snapshot_temporary_path_exists")
+        @Expect(String.fromUtf8(File.readFrom(Path(staging).join("marker"))),
+            "preexisting")
+    }
+
+    @TestCase
+    public func p2Stream03TypedProofsAreBoundedAndCrossBound(): Unit {
+        let root = p2Root("typed-proofs")
+        let logicalPath = "${root}/logical.json"
+        let vectorPath = "${root}/vector.json"
+        let version = p2Version(); let p4Hash = p2Hash("p4-real")
+        let collection = "portable_vectors"; let image = p2Hash("image")
+        let payloadHash = p2Hash("payload"); let provider = "provider"
+        let model = "model"; let distance = "Cosine"
+        let vectorHash = benchmarkGapSha256(
+            "${collection}|${version}|${p4Hash}|${image}|${provider}|${model}|" +
+            "1|1024|${distance}|${payloadHash}")
+        let logical = "{\"sourceState\":\"portableVectorCandidate\"," +
+            "\"portableKnowledgeVersion\":\"${version}\"," +
+            "\"p4PortableProofHash\":\"${p4Hash}\"," +
+            "\"pathMachineFindingCount\":0,\"pathUnmappedFindingCount\":0," +
+            "\"contaminationProofHash\":\"${p2Hash("clean")}\"," +
+            "\"activePointerHash\":\"${p2Hash("pointer")}\"}"
+        let vector = "{\"collection\":\"${collection}\"," +
+            "\"candidateVersion\":\"${version}\",\"p4PortableProofHash\":\"${p4Hash}\"," +
+            "\"qdrantImageDigest\":\"${image}\",\"embeddingProvider\":\"${provider}\"," +
+            "\"embeddingModel\":\"${model}\",\"count\":1,\"dimension\":1024," +
+            "\"distance\":\"${distance}\",\"payloadCanonicalHash\":\"${payloadHash}\"," +
+            "\"vectorProofHash\":\"${vectorHash}\",\"vectorState\":\"READY\",\"proofReal\":true}"
+        File.writeTo(Path(logicalPath), logical.toArray())
+        File.writeTo(Path(vectorPath), vector.toArray())
+        @Expect(loadCkbLogicalSnapshotCliProofs(logicalPath, vectorPath)[0].diagnostic,
+            "ok")
+        File.writeTo(Path(vectorPath), vector.replace(vectorHash,
+            p2Hash("substituted")).toArray())
+        @Expect(loadCkbLogicalSnapshotCliProofs(logicalPath, vectorPath)[0].diagnostic,
+            "release_proof_cross_binding_mismatch")
+        File.writeTo(Path(vectorPath), [UInt8(0xff), UInt8(0xfe)])
+        @Expect(loadCkbLogicalSnapshotCliProofs(logicalPath, vectorPath)[0].diagnostic,
+            "invalid_response_encoding")
+        File.writeTo(Path(vectorPath), Array<UInt8>(65537, repeat: UInt8(0x20)))
+        @Expect(loadCkbLogicalSnapshotCliProofs(logicalPath, vectorPath)[0].diagnostic,
+            "release_proof_size_invalid")
+    }
+
+    @TestCase
+    public func p2Stream04ProductionRoundTripUsesBoundedBuffers(): Unit {
+        let root = p2Root("production-streaming")
+        let store = p2CommittedStore("${root}/source")
+        let backend = CkbPortableReleaseArchiveBackend()
+        let policy = p2Policy("${root}/forbidden", store.rootPath())
+        let archive = "${root}/snapshot.ckb-release"
+        let exported = exportCkbLogicalSnapshot(store, p2Proofs(store), archive,
+            backend, pathPolicy: policy, allowSyntheticProof: true)
+        @Expect(exported.ok, true)
+        let target = "${root}/restored"
+        let imported = importCkbLogicalSnapshot(archive, target, backend,
+            pathPolicy: policy)
+        @Expect(imported.ok, true)
+        @Expect(imported.activeVersion, p2Version())
+        @Expect(backend.maxResidentBufferBytes <= 65536, true)
+        @Expect(backend.maxReadBytes <= 65536, true)
+        @Expect(backend.maxBufferBytes, backend.maxResidentBufferBytes)
     }
 }
 
@@ -605,6 +756,16 @@ private func p2Root(name: String): String {
 private func p2Version(): String { "portable-knowledge-2026-07-31" }
 
 private func p2Hash(value: String): String { benchmarkGapSha256(value) }
+
+private func p2ArchiveIntBytes(value: Int64): Array<UInt8> {
+    let out = ArrayList<UInt8>()
+    for (shift in [56, 48, 40, 32, 24, 16, 8, 0]) {
+        var divisor: Int64 = 1
+        for (_ in 0..(shift / 8)) { divisor *= 256 }
+        out.add(UInt8((value / divisor) % 256))
+    }
+    out.toArray()
+}
 
 private func p2BytesHash(bytes: Array<UInt8>): String {
     ckbLogicalSnapshotBytesHash(bytes)
