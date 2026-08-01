@@ -22,6 +22,13 @@ public class CkbReproBuildTest {
         second.entries[0].license = "changed"
         @Expect(canonicalCkbReproSourceLockHash(first) ==
             canonicalCkbReproSourceLockHash(second), false)
+        let routed = p4ExternalLock("a")
+        routed.assemblyRole = "community_docs"
+        routed.outputKind = CangjieTypedRecordKinds.DOC_SECTION
+        let routedLock = CkbReproSourceLock(); routedLock.entries.add(routed)
+        let original = canonicalCkbReproSourceLockHash(routedLock)
+        routed.outputKind = CangjieTypedRecordKinds.GUIDE
+        @Expect(canonicalCkbReproSourceLockHash(routedLock) == original, false)
     }
 
     @TestCase
@@ -42,6 +49,12 @@ public class CkbReproBuildTest {
         mixed.entries.add(generated)
         @Expect(validateCkbReproBuildLocks(mixed).diagnostic,
             "generated_source_fields_mixed")
+
+        let unknownField =
+            "{\"schemaVersion\":\"ckb-source-lock-v1\",\"sources\":[]," +
+            "\"unexpected\":true}"
+        @Expect(parseCkbReproSourceLock(unknownField.toArray())[0].diagnostic,
+            "source_lock_field_contract_invalid")
     }
 
     @TestCase
@@ -64,6 +77,9 @@ public class CkbReproBuildTest {
         @Expect(coverage.ready, true)
         @Expect(coverage.selectedCount + coverage.excludedCount,
             coverage.inventoryCount)
+        for (row in inventory) {
+            @Expect(row.sourceLockEntryHash.startsWith("sha256:"), true)
+        }
     }
 
     @TestCase
@@ -264,6 +280,8 @@ private func p4ExternalLock(id: String): CkbReproSourceLockEntry {
     entry.fileHash = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
     entry.license = "Apache-2.0"
     entry.authMode = "anonymous"
+    entry.assemblyRole = "community_docs"
+    entry.outputKind = CangjieTypedRecordKinds.DOC_SECTION
     entry
 }
 
@@ -280,6 +298,8 @@ private func p4GeneratedLock(id: String): CkbReproSourceLockEntry {
     entry.outputHash =
         "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
     entry.license = "Apache-2.0"
+    entry.assemblyRole = "generated_guidance"
+    entry.outputKind = CangjieTypedRecordKinds.GUIDE
     entry
 }
 
@@ -292,6 +312,8 @@ private func p4Inventory(): ArrayList<CkbReproKnowledgeInventoryRow> {
     excluded.portableLocator = "ckb-source://generated/eval"
     excluded.sourceType = "generated"
     excluded.license = "Apache-2.0"
+    excluded.sourceLockEntryHash =
+        "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     rows.add(excluded)
     rows
 }
@@ -305,6 +327,8 @@ private func p4InventoryOne(): ArrayList<CkbReproKnowledgeInventoryRow> {
     selected.portableLocator = "ckb-source://generated/docs/a.md"
     selected.sourceType = "generated"
     selected.license = "Apache-2.0"
+    selected.sourceLockEntryHash =
+        "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
     rows.add(selected)
     rows
 }
