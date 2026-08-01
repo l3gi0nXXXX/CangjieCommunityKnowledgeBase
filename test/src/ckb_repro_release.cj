@@ -169,6 +169,147 @@ public class CkbLogicalSnapshotResult {
     public init() {}
 }
 
+// Thin CLI contract used by main; archive/proof loading remains behind the
+// production context so tests never need a real store or archive tool.
+public class CkbReleaseCliOptions {
+    public var mode: String = ""
+    public var storeRoot: String = ""
+    public var logicalProof: String = ""
+    public var vectorProof: String = ""
+    public var output: String = ""
+    public var archive: String = ""
+    public var targetRoot: String = ""
+    public var json: Bool = false
+    public var diagnostic: String = "not_parsed"
+    public init() {}
+}
+
+public class CkbReleaseCliOperationResult {
+    public var ok: Bool = false
+    public var diagnostic: String = "not_run"
+    public var summary: String = ""
+    public init() {}
+}
+
+public class CkbReleaseCliExecution {
+    public var ok: Bool = false
+    public var exitCode: Int64 = 2
+    public var diagnostic: String = "not_run"
+    public var output: String = ""
+    public init() {}
+}
+
+public interface CkbReleaseCliAdapter {
+    func execute(options: CkbReleaseCliOptions): CkbReleaseCliOperationResult
+}
+
+private class CkbUnavailableReleaseCliAdapter <: CkbReleaseCliAdapter {
+    public func execute(options: CkbReleaseCliOptions): CkbReleaseCliOperationResult {
+        let out = CkbReleaseCliOperationResult()
+        out.diagnostic = "release_production_context_required"
+        out
+    }
+}
+
+public func parseCkbReleaseCliOptions(args: Array<String>): CkbReleaseCliOptions {
+    let out = CkbReleaseCliOptions()
+    if (args.size == 0 || (args[0] != "ckb-release-export" &&
+        args[0] != "ckb-release-import")) {
+        out.diagnostic = "release_command_required"; return out
+    }
+    out.mode = if (args[0] == "ckb-release-export") { "export" } else { "import" }
+    let seen = HashSet<String>()
+    var i: Int64 = 1
+    while (i < args.size) {
+        let arg = args[i]
+        if (arg == "--json") {
+            if (seen.contains(arg)) { out.diagnostic = "duplicate_argument:${arg}"; return out }
+            seen.add(arg); out.json = true; i += 1; continue
+        }
+        if (!ckbReleaseCliAllowed(out.mode, arg)) {
+            out.diagnostic = "unknown_argument:${arg}"; return out
+        }
+        if (seen.contains(arg)) { out.diagnostic = "duplicate_argument:${arg}"; return out }
+        if (i + 1 >= args.size || args[i + 1].startsWith("--")) {
+            out.diagnostic = "missing_argument_value:${arg}"; return out
+        }
+        seen.add(arg)
+        let value = args[i + 1]
+        if (arg == "--store-root") { out.storeRoot = value }
+        else if (arg == "--logical-proof") { out.logicalProof = value }
+        else if (arg == "--vector-proof") { out.vectorProof = value }
+        else if (arg == "--output") { out.output = value }
+        else if (arg == "--archive") { out.archive = value }
+        else if (arg == "--target-root") { out.targetRoot = value }
+        i += 2
+    }
+    out.diagnostic = validateCkbReleaseCliOptions(out); out
+}
+
+public func validateCkbReleaseCliOptions(out: CkbReleaseCliOptions): String {
+    for (pair in if (out.mode == "export") {
+        [("--store-root", out.storeRoot), ("--logical-proof", out.logicalProof),
+         ("--vector-proof", out.vectorProof), ("--output", out.output)]
+    } else { [("--archive", out.archive), ("--target-root", out.targetRoot)] }) {
+        if (pair[1] == "") { return "required_argument_missing:${pair[0]}" }
+    }
+    "ok"
+}
+
+public func executeCkbReleaseCliAdapter(args: Array<String>,
+    adapter: CkbReleaseCliAdapter): CkbReleaseCliExecution {
+    let options = parseCkbReleaseCliOptions(args)
+    if (options.diagnostic != "ok") { return ckbReleaseCliFailure(options.diagnostic, false) }
+    let result = adapter.execute(options)
+    let out = CkbReleaseCliExecution()
+    out.ok = result.ok; out.exitCode = if (result.ok) { 0 } else { 1 }
+    out.diagnostic = result.diagnostic
+    out.output = if (options.json) { renderCkbReleaseCliJson(result) }
+        else { renderCkbReleaseCliHuman(result) }
+    out
+}
+
+public func runCkbReleaseCli(args: Array<String>): CkbReleaseCliExecution {
+    executeCkbReleaseCliAdapter(args, CkbUnavailableReleaseCliAdapter())
+}
+
+public func runCkbReleaseCli(args: Array<String>,
+    context: CkbReleaseCliAdapter): CkbReleaseCliExecution {
+    executeCkbReleaseCliAdapter(args, context)
+}
+
+public func renderCkbReleaseCliHuman(result: CkbReleaseCliOperationResult): String {
+    if (result.ok) { "CKB release operation completed. ${result.summary}\n" }
+    else { "CKB release operation failed: ${ckbReleaseCliSafe(result.diagnostic)}\n" }
+}
+
+public func renderCkbReleaseCliJson(result: CkbReleaseCliOperationResult): String {
+    "{\"ok\":${result.ok},\"diagnostic\":\"${ckbReleaseCliJson(result.diagnostic)}\"," +
+        "\"summary\":\"${ckbReleaseCliJson(result.summary)}\"}"
+}
+
+private func ckbReleaseCliAllowed(mode: String, arg: String): Bool {
+    if (mode == "export") { return ["--store-root", "--logical-proof",
+        "--vector-proof", "--output"].contains(arg) }
+    ["--archive", "--target-root"].contains(arg)
+}
+
+private func ckbReleaseCliFailure(diagnostic: String, runtime: Bool): CkbReleaseCliExecution {
+    let result = CkbReleaseCliOperationResult(); result.diagnostic = diagnostic
+    let out = CkbReleaseCliExecution(); out.exitCode = if (runtime) { 1 } else { 2 }
+    out.diagnostic = diagnostic; out.output = renderCkbReleaseCliHuman(result); out
+}
+
+private func ckbReleaseCliSafe(value: String): String {
+    let runes = value.toRuneArray(); let limit: Int64 = if (runes.size < 160) { runes.size } else { 160 }
+    let out = StringBuilder(); for (i in 0..limit) { out.append(runes[i]) }; out.toString()
+}
+
+private func ckbReleaseCliJson(value: String): String {
+    ckbReleaseCliSafe(value).replace("\\", "\\\\").replace("\"", "\\\"")
+        .replace("\n", "\\n").replace("\r", "\\r")
+}
+
 // Release-level binding is created only after both the logical manifest and
 // Qdrant snapshot manifest are final. It prevents either artifact from being
 // substituted independently.

@@ -1,6 +1,6 @@
 package cangjie_community_knowledge_base
 
-import std.collection.ArrayList
+import std.collection.{ArrayList, HashSet}
 import stdx.crypto.digest.SHA256
 import stdx.encoding.json.*
 
@@ -92,6 +92,164 @@ public class CkbQdrantSnapshotVerification {
     public var diagnostic: String = "snapshot_not_verified"
     public init() {}
 }
+
+public class CkbP3CliOptions {
+    public var command: String = ""
+    public var mode: String = ""
+    public var endpoint: String = ""
+    public var collection: String = ""
+    public var targetCollection: String = ""
+    public var candidateRoot: String = ""
+    public var environmentLock: String = ""
+    public var outputProof: String = ""
+    public var logicalManifest: String = ""
+    public var vectorProof: String = ""
+    public var outputRoot: String = ""
+    public var snapshot: String = ""
+    public var manifest: String = ""
+    public var restEndpoint: String = ""
+    public var mcpStdioCommand: String = ""
+    public var mcpHttpEndpoint: String = ""
+    public var json: Bool = false
+    public var diagnostic: String = "not_parsed"
+    public init() {}
+}
+
+public class CkbP3CliOperationResult {
+    public var ok: Bool = false
+    public var diagnostic: String = "not_run"
+    public var summary: String = ""
+    public init() {}
+}
+
+public class CkbP3CliExecution {
+    public var ok: Bool = false
+    public var exitCode: Int64 = 2
+    public var diagnostic: String = "not_run"
+    public var output: String = ""
+    public init() {}
+}
+
+public interface CkbP3CliAdapter {
+    func execute(options: CkbP3CliOptions): CkbP3CliOperationResult
+}
+
+private class CkbUnavailableP3CliAdapter <: CkbP3CliAdapter {
+    public func execute(options: CkbP3CliOptions): CkbP3CliOperationResult {
+        let out = CkbP3CliOperationResult(); out.diagnostic = "p3_production_context_required"; out
+    }
+}
+
+public func parseCkbP3CliOptions(args: Array<String>): CkbP3CliOptions {
+    let out = CkbP3CliOptions()
+    if (args.size == 0) { out.diagnostic = "p3_command_required"; return out }
+    out.command = args[0]
+    var i: Int64 = 1
+    if (out.command == "ckb-qdrant-snapshot") {
+        if (i >= args.size || (args[i] != "create" && args[i] != "restore" && args[i] != "verify")) {
+            out.diagnostic = "qdrant_snapshot_mode_required"; return out
+        }
+        out.mode = args[i]; i += 1
+    } else if (out.command == "ckb-portable-vector-build") { out.mode = "build" }
+    else if (out.command == "ckb-retrieval-parity") { out.mode = "parity" }
+    else { out.diagnostic = "p3_command_required"; return out }
+    let seen = HashSet<String>()
+    while (i < args.size) {
+        let arg = args[i]
+        if (arg == "--json") {
+            if (seen.contains(arg)) { out.diagnostic = "duplicate_argument:${arg}"; return out }
+            seen.add(arg); out.json = true; i += 1; continue
+        }
+        if (!ckbP3CliKnown(arg)) { out.diagnostic = "unknown_argument:${arg}"; return out }
+        if (!ckbP3CliAllowed(out.mode, arg)) {
+            out.diagnostic = "argument_not_allowed:${out.mode}:${arg}"; return out
+        }
+        if (seen.contains(arg)) { out.diagnostic = "duplicate_argument:${arg}"; return out }
+        if (i + 1 >= args.size || args[i + 1].startsWith("--")) {
+            out.diagnostic = "missing_argument_value:${arg}"; return out
+        }
+        seen.add(arg); let value = args[i + 1]
+        if (arg == "--endpoint") { out.endpoint = value }
+        else if (arg == "--collection") { out.collection = value }
+        else if (arg == "--target-collection") { out.targetCollection = value }
+        else if (arg == "--candidate-root") { out.candidateRoot = value }
+        else if (arg == "--environment-lock") { out.environmentLock = value }
+        else if (arg == "--output-proof") { out.outputProof = value }
+        else if (arg == "--logical-manifest") { out.logicalManifest = value }
+        else if (arg == "--vector-proof") { out.vectorProof = value }
+        else if (arg == "--output-root") { out.outputRoot = value }
+        else if (arg == "--snapshot") { out.snapshot = value }
+        else if (arg == "--manifest") { out.manifest = value }
+        else if (arg == "--mode") { if (value != "verify") { out.diagnostic = "invalid_argument_value:--mode"; return out } }
+        else if (arg == "--rest-endpoint") { out.restEndpoint = value }
+        else if (arg == "--mcp-stdio-command") { out.mcpStdioCommand = value }
+        else if (arg == "--mcp-http-endpoint") { out.mcpHttpEndpoint = value }
+        i += 2
+    }
+    out.diagnostic = validateCkbP3CliOptions(out); out
+}
+
+public func validateCkbP3CliOptions(out: CkbP3CliOptions): String {
+    for (pair in ckbP3CliRequired(out)) {
+        if (pair[1] == "") { return "required_argument_missing:${pair[0]}" }
+    }
+    for (endpoint in [out.endpoint, out.restEndpoint, out.mcpHttpEndpoint]) {
+        if (endpoint != "" && !(endpoint.startsWith("http://") || endpoint.startsWith("https://"))) {
+            return "invalid_endpoint"
+        }
+    }
+    "ok"
+}
+
+public func executeCkbP3CliAdapter(args: Array<String>, adapter: CkbP3CliAdapter): CkbP3CliExecution {
+    let options = parseCkbP3CliOptions(args)
+    if (options.diagnostic != "ok") { return ckbP3CliFailure(options.diagnostic) }
+    let result = adapter.execute(options); let out = CkbP3CliExecution()
+    out.ok = result.ok; out.exitCode = if (result.ok) { 0 } else { 1 }
+    out.diagnostic = result.diagnostic
+    out.output = if (options.json) { renderCkbP3CliJson(result) } else { renderCkbP3CliHuman(result) }
+    out
+}
+
+public func runCkbP3Cli(args: Array<String>): CkbP3CliExecution {
+    executeCkbP3CliAdapter(args, CkbUnavailableP3CliAdapter())
+}
+public func runCkbP3Cli(args: Array<String>, context: CkbP3CliAdapter): CkbP3CliExecution {
+    executeCkbP3CliAdapter(args, context)
+}
+public func renderCkbP3CliHuman(result: CkbP3CliOperationResult): String {
+    if (result.ok) { "CKB portable vector operation completed. ${ckbP3CliSafe(result.summary)}\n" }
+    else { "CKB portable vector operation failed: ${ckbP3CliSafe(result.diagnostic)}\n" }
+}
+public func renderCkbP3CliJson(result: CkbP3CliOperationResult): String {
+    "{\"ok\":${result.ok},\"diagnostic\":\"${ckbP3CliJson(result.diagnostic)}\"," +
+        "\"summary\":\"${ckbP3CliJson(result.summary)}\"}"
+}
+
+private func ckbP3CliKnown(arg: String): Bool { ["--endpoint", "--collection", "--target-collection",
+    "--candidate-root", "--environment-lock", "--output-proof", "--logical-manifest",
+    "--vector-proof", "--output-root", "--snapshot", "--manifest", "--mode",
+    "--rest-endpoint", "--mcp-stdio-command", "--mcp-http-endpoint"].contains(arg) }
+private func ckbP3CliAllowed(mode: String, arg: String): Bool {
+    if (mode == "build") { return ["--candidate-root", "--environment-lock", "--output-proof"].contains(arg) }
+    if (mode == "create") { return ["--endpoint", "--collection", "--logical-manifest", "--vector-proof", "--output-root"].contains(arg) }
+    if (mode == "restore") { return ["--endpoint", "--target-collection", "--snapshot", "--manifest"].contains(arg) }
+    if (mode == "verify") { return ["--endpoint", "--collection", "--manifest", "--logical-manifest"].contains(arg) }
+    ["--mode", "--manifest", "--rest-endpoint", "--mcp-stdio-command", "--mcp-http-endpoint"].contains(arg)
+}
+private func ckbP3CliRequired(out: CkbP3CliOptions): Array<(String, String)> {
+    if (out.mode == "build") { return [("--candidate-root", out.candidateRoot), ("--environment-lock", out.environmentLock), ("--output-proof", out.outputProof)] }
+    if (out.mode == "create") { return [("--endpoint", out.endpoint), ("--collection", out.collection), ("--logical-manifest", out.logicalManifest), ("--vector-proof", out.vectorProof), ("--output-root", out.outputRoot)] }
+    if (out.mode == "restore") { return [("--endpoint", out.endpoint), ("--target-collection", out.targetCollection), ("--snapshot", out.snapshot), ("--manifest", out.manifest)] }
+    if (out.mode == "verify") { return [("--endpoint", out.endpoint), ("--collection", out.collection), ("--manifest", out.manifest), ("--logical-manifest", out.logicalManifest)] }
+    [("--mode", if (out.mode == "parity") { "verify" } else { "" }), ("--manifest", out.manifest), ("--rest-endpoint", out.restEndpoint), ("--mcp-stdio-command", out.mcpStdioCommand), ("--mcp-http-endpoint", out.mcpHttpEndpoint)]
+}
+private func ckbP3CliFailure(diagnostic: String): CkbP3CliExecution {
+    let result = CkbP3CliOperationResult(); result.diagnostic = diagnostic
+    let out = CkbP3CliExecution(); out.diagnostic = diagnostic; out.output = renderCkbP3CliHuman(result); out
+}
+private func ckbP3CliSafe(value: String): String { let runes = value.toRuneArray(); let n = if (runes.size < 160) { runes.size } else { 160 }; let out = StringBuilder(); for (i in 0..n) { out.append(runes[i]) }; out.toString() }
+private func ckbP3CliJson(value: String): String { ckbP3CliSafe(value).replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n").replace("\r", "\\r") }
 
 public func parseCkbQdrantRestoredStatus(bytes: Array<UInt8>,
     collection: String, payloadCanonicalHash: String):

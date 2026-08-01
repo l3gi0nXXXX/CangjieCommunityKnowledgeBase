@@ -1,7 +1,6 @@
 package cangjie_community_knowledge_base_test
 
 import std.collection.ArrayList
-import std.fs.{Directory, Path, canonicalize, exists, remove}
 import std.unittest.*
 import std.unittest.testmacro.*
 
@@ -71,7 +70,7 @@ public class CkbReproCliAdaptersTest {
         let fake = P234ReleaseCliFake()
         let args = ["ckb-release-import", "--archive", "/tmp/a",
             "--target-root", "/tmp/b"]
-        let human = executeCkbReleaseCliAdapter(args, fake)
+        let human = runCkbReleaseCli(args, fake)
         @Expect(human.ok, true)
         @Expect(human.output.contains("仓颉🙂"), true)
         @Expect(human.output.contains("\"ok\""), false)
@@ -114,7 +113,7 @@ public class CkbReproCliAdaptersTest {
     @TestCase
     public func p3Pos01CliAdapterRunsRestoreAndParityHumanOutput(): Unit {
         let fake = P234P3CliFake()
-        let restore = executeCkbP3CliAdapter([
+        let restore = runCkbP3Cli([
             "ckb-qdrant-snapshot", "restore", "--endpoint", "http://127.0.0.1:1",
             "--target-collection", "new", "--snapshot", "s", "--manifest", "m"
         ], fake)
@@ -180,7 +179,7 @@ public class CkbReproCliAdaptersTest {
     @TestCase
     public func p4Pos01CliAdapterRunsBuildWithExplicitRoots(): Unit {
         let fake = P234P4CliFake()
-        let result = executeCkbP4CliAdapter([
+        let result = runCkbP4Cli([
             "ckb-repro-build", "--output-root", "/tmp/out 仓颉🙂",
             "--temporary-root", "/tmp/temp 仓颉🙂"
         ], fake)

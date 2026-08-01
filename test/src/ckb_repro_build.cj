@@ -37,6 +37,135 @@ public class CkbReproBuildOptions {
     public init() {}
 }
 
+public class CkbP4CliOptions {
+    public var command: String = ""
+    public var outputRoot: String = ""
+    public var temporaryRoot: String = ""
+    public var productionStore: String = ""
+    public var qdrantEndpoint: String = ""
+    public var expectedActiveVersion: String = ""
+    public var candidateManifest: String = ""
+    public var p8BReport: String = ""
+    public var apply: Bool = false
+    public var json: Bool = false
+    public var diagnostic: String = "not_parsed"
+    public init() {}
+}
+
+public class CkbP4CliOperationResult {
+    public var ok: Bool = false
+    public var diagnostic: String = "not_run"
+    public var summary: String = ""
+    public init() {}
+}
+
+public class CkbP4CliExecution {
+    public var ok: Bool = false
+    public var exitCode: Int64 = 2
+    public var diagnostic: String = "not_run"
+    public var output: String = ""
+    public init() {}
+}
+
+public interface CkbP4CliAdapter {
+    func execute(options: CkbP4CliOptions): CkbP4CliOperationResult
+}
+
+private class CkbUnavailableP4CliAdapter <: CkbP4CliAdapter {
+    public func execute(options: CkbP4CliOptions): CkbP4CliOperationResult {
+        let out = CkbP4CliOperationResult(); out.diagnostic = "p4_production_context_required"; out
+    }
+}
+
+public func parseCkbP4CliOptions(args: Array<String>): CkbP4CliOptions {
+    let out = CkbP4CliOptions()
+    if (args.size == 0 || (args[0] != "ckb-repro-build" && args[0] != "ckb-repro-promote")) {
+        out.diagnostic = "p4_command_required"; return out
+    }
+    out.command = args[0]; let seen = HashSet<String>(); var i: Int64 = 1
+    while (i < args.size) {
+        let arg = args[i]
+        if (arg == "--apply" || arg == "--json") {
+            if (seen.contains(arg)) { out.diagnostic = "duplicate_argument:${arg}"; return out }
+            if (arg == "--apply" && out.command != "ckb-repro-promote") {
+                out.diagnostic = "argument_not_allowed:build:--apply"; return out
+            }
+            seen.add(arg); if (arg == "--apply") { out.apply = true } else { out.json = true }
+            i += 1; continue
+        }
+        if (!ckbP4CliAllowed(out.command, arg)) { out.diagnostic = "unknown_argument:${arg}"; return out }
+        if (seen.contains(arg)) { out.diagnostic = "duplicate_argument:${arg}"; return out }
+        if (i + 1 >= args.size || args[i + 1].startsWith("--")) {
+            out.diagnostic = "missing_argument_value:${arg}"; return out
+        }
+        seen.add(arg); let value = args[i + 1]
+        if (arg == "--output-root") { out.outputRoot = value }
+        else if (arg == "--temporary-root") { out.temporaryRoot = value }
+        else if (arg == "--production-store") { out.productionStore = value }
+        else if (arg == "--qdrant-endpoint") { out.qdrantEndpoint = value }
+        else if (arg == "--expected-active-version") { out.expectedActiveVersion = value }
+        else if (arg == "--candidate-manifest") { out.candidateManifest = value }
+        else if (arg == "--p8-b-report") { out.p8BReport = value }
+        i += 2
+    }
+    out.diagnostic = validateCkbP4CliOptions(out); out
+}
+
+public func validateCkbP4CliOptions(out: CkbP4CliOptions): String {
+    for (pair in if (out.command == "ckb-repro-build") {
+        [("--output-root", out.outputRoot), ("--temporary-root", out.temporaryRoot)]
+    } else { [("--production-store", out.productionStore),
+        ("--qdrant-endpoint", out.qdrantEndpoint),
+        ("--expected-active-version", out.expectedActiveVersion),
+        ("--candidate-manifest", out.candidateManifest),
+        ("--p8-b-report", out.p8BReport)] }) {
+        if (pair[1] == "") { return "required_argument_missing:${pair[0]}" }
+    }
+    if (out.command == "ckb-repro-promote" && !out.apply) {
+        return "promotion_apply_required"
+    }
+    if (out.command == "ckb-repro-promote" && !(out.qdrantEndpoint.startsWith("http://") ||
+        out.qdrantEndpoint.startsWith("https://"))) {
+        return "invalid_endpoint"
+    }
+    "ok"
+}
+
+public func executeCkbP4CliAdapter(args: Array<String>, adapter: CkbP4CliAdapter): CkbP4CliExecution {
+    let options = parseCkbP4CliOptions(args)
+    if (options.diagnostic != "ok") { return ckbP4CliFailure(options.diagnostic) }
+    let result = adapter.execute(options); let out = CkbP4CliExecution()
+    out.ok = result.ok; out.exitCode = if (result.ok) { 0 } else { 1 }
+    out.diagnostic = result.diagnostic
+    out.output = if (options.json) { renderCkbP4CliJson(result) } else { renderCkbP4CliHuman(result) }
+    out
+}
+public func runCkbP4Cli(args: Array<String>): CkbP4CliExecution {
+    executeCkbP4CliAdapter(args, CkbUnavailableP4CliAdapter())
+}
+public func runCkbP4Cli(args: Array<String>, context: CkbP4CliAdapter): CkbP4CliExecution {
+    executeCkbP4CliAdapter(args, context)
+}
+public func renderCkbP4CliHuman(result: CkbP4CliOperationResult): String {
+    if (result.ok) { "CKB reproducible build operation completed. ${ckbP4CliSafe(result.summary)}\n" }
+    else { "CKB reproducible build operation failed: ${ckbP4CliSafe(result.diagnostic)}\n" }
+}
+public func renderCkbP4CliJson(result: CkbP4CliOperationResult): String {
+    "{\"ok\":${result.ok},\"diagnostic\":\"${ckbP4CliJson(result.diagnostic)}\"," +
+        "\"summary\":\"${ckbP4CliJson(result.summary)}\"}"
+}
+private func ckbP4CliAllowed(command: String, arg: String): Bool {
+    if (command == "ckb-repro-build") { return ["--output-root", "--temporary-root"].contains(arg) }
+    ["--production-store", "--qdrant-endpoint", "--expected-active-version",
+     "--candidate-manifest", "--p8-b-report"].contains(arg)
+}
+private func ckbP4CliFailure(diagnostic: String): CkbP4CliExecution {
+    let result = CkbP4CliOperationResult(); result.diagnostic = diagnostic
+    let out = CkbP4CliExecution(); out.diagnostic = diagnostic; out.output = renderCkbP4CliHuman(result); out
+}
+private func ckbP4CliSafe(value: String): String { let runes = value.toRuneArray(); let n = if (runes.size < 160) { runes.size } else { 160 }; let out = StringBuilder(); for (i in 0..n) { out.append(runes[i]) }; out.toString() }
+private func ckbP4CliJson(value: String): String { ckbP4CliSafe(value).replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n").replace("\r", "\\r") }
+
 public func parseCkbReproBuildOptions(args: Array<String>): CkbReproBuildOptions {
     let options = CkbReproBuildOptions()
     var i: Int64 = 0
