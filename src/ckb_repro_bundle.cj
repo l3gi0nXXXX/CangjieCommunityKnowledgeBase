@@ -52,6 +52,10 @@ public class CkbReproBundleCliOptions {
     public var outputRoot: String = ""
     public var unsignedRoot: String = ""
     public var verificationReport: String = ""
+    public var worktreeRoot: String = ""
+    public var productionRoot: String = ""
+    public var privateRunRoot: String = ""
+    public var userConfigRoot: String = ""
     public var json: Bool = false
     public var valid: Bool = false
     public var diagnostic: String = "usage_error"
@@ -158,11 +162,9 @@ public class CkbReproFilesystemBundleCliExecutor <: CkbReproBundleCliExecutor {
 public class CkbReproProductionBundleCliExecutor <:
     CkbReproBundleCliExecutor {
     private let reader: CkbReproBundleReadBackend
-    private let provider: CkbReproFrozenAssetProvider
     private var ownedRoot: String = ""
     public init() {
         this.reader = CkbReproFilesystemBundleReadBackend()
-        this.provider = CkbReproFilesystemFrozenAssetProvider()
     }
     public func exists(path: String): Bool { exists(Path(path)) }
     public func outputParentExists(path: String): Bool { exists(Path(path).parent) }
@@ -173,17 +175,15 @@ public class CkbReproProductionBundleCliExecutor <:
             !p9BundleCliNewOutputCanonical(options.outputRoot)) {
             return p9BundleCliFailure("bundle_input_root_invalid")
         }
-        let loaded = this.provider.collect(options.inputRoot)
-        if (!loaded.contract.ok) {
-            return p9BundleCliFailure(loaded.contract.diagnostic)
-        }
+        let loaded = p9LoadFrozenReleaseInputs(options.inputRoot, this.reader)
+        if (!loaded.contract.ok) { return p9BundleCliFailure(loaded.contract.diagnostic) }
         try { Directory.create(Path(options.outputRoot), recursive: false) }
         catch (_: Exception) {
             return p9BundleCliFailure("bundle_output_create_failed")
         }
         this.ownedRoot = options.outputRoot
-        if (!p9BundleStreamCopyValidated(options.inputRoot,
-            options.outputRoot, loaded.manifest, this.reader)) {
+        if (!p9BundleStreamFrozenInputs(options.inputRoot,
+            options.outputRoot, loaded, this.reader)) {
             return p9BundleCliFailure("bundle_stream_copy_failed")
         }
         let copied = validateCkbReproBundleManifest(options.outputRoot,
@@ -268,6 +268,28 @@ public class CkbReproBundleManifest {
     public var schemaVersion: String = ""
     public var inputSetHash: String = ""
     public let assets = ArrayList<CkbReproBundleAsset>()
+    public init() {}
+}
+
+public class CkbReproReleaseInput {
+    public var sourceRelativePath: String = ""
+    public var asset: CkbReproBundleAsset = CkbReproBundleAsset()
+    public init() {}
+}
+
+public class CkbReproReleaseInputsLoadResult {
+    public var contract: CkbReproContractResult = CkbReproContractResult()
+    public var manifest: CkbReproBundleManifest = CkbReproBundleManifest()
+    public let inputs = ArrayList<CkbReproReleaseInput>()
+    public var rootIdentity: String = ""
+    public var listingHash: String = ""
+    public var manifestBytes: Array<UInt8> = Array<UInt8>()
+    public var releaseCommit: String = ""
+    public var runCriticalTreeHash: String = ""
+    public var certifiedRunInputHash: String = ""
+    public var referenceManifestHash: String = ""
+    public var authorityDeliveryMode: String = ""
+    public var authorityLayoutHash: String = ""
     public init() {}
 }
 
@@ -488,7 +510,9 @@ public func parseCkbReproBundleCliArgs(args: Array<String>):
             out.json = true; i += 1; continue
         }
         if (arg == "--mode" || arg == "--output" || arg == "--input-root" ||
-            arg == "--unsigned-root" || arg == "--verification-report") {
+            arg == "--unsigned-root" || arg == "--verification-report" ||
+            arg == "--worktree-root" || arg == "--production-root" ||
+            arg == "--private-run-root" || arg == "--user-config-root") {
             if (i + 1 >= args.size) { out.diagnostic = "missing_value:${arg}"; return out }
             let value = args[i + 1]
             if (value.toRuneArray().size > 4096) {
@@ -506,9 +530,21 @@ public func parseCkbReproBundleCliArgs(args: Array<String>):
             } else if (arg == "--unsigned-root") {
                 if (out.unsignedRoot != "") { out.diagnostic = "duplicate_argument:${arg}"; return out }
                 out.unsignedRoot = value
-            } else {
+            } else if (arg == "--verification-report") {
                 if (out.verificationReport != "") { out.diagnostic = "duplicate_argument:${arg}"; return out }
                 out.verificationReport = value
+            } else if (arg == "--worktree-root") {
+                if (out.worktreeRoot != "") { out.diagnostic = "duplicate_argument:${arg}"; return out }
+                out.worktreeRoot = value
+            } else if (arg == "--production-root") {
+                if (out.productionRoot != "") { out.diagnostic = "duplicate_argument:${arg}"; return out }
+                out.productionRoot = value
+            } else if (arg == "--private-run-root") {
+                if (out.privateRunRoot != "") { out.diagnostic = "duplicate_argument:${arg}"; return out }
+                out.privateRunRoot = value
+            } else {
+                if (out.userConfigRoot != "") { out.diagnostic = "duplicate_argument:${arg}"; return out }
+                out.userConfigRoot = value
             }
             i += 2; continue
         }
@@ -517,10 +553,18 @@ public func parseCkbReproBundleCliArgs(args: Array<String>):
     if (out.mode != "unsigned" && out.mode != "finalize") {
         out.diagnostic = "bundle_mode_invalid"; return out
     }
-    if (out.outputRoot == "") { out.diagnostic = "required_argument_missing"; return out }
+    if (out.outputRoot == "" || out.worktreeRoot == "" ||
+        out.productionRoot == "" || out.privateRunRoot == "" ||
+        out.userConfigRoot == "") {
+        out.diagnostic = "required_argument_missing"; return out
+    }
     if (out.mode == "unsigned" &&
-        (out.unsignedRoot != "" || out.verificationReport != "")) {
-        out.diagnostic = "bundle_unsigned_arguments_conflict"; return out
+        (out.inputRoot == "" || out.unsignedRoot != "" ||
+            out.verificationReport != "")) {
+        out.diagnostic = if (out.inputRoot == "") {
+            "bundle_unsigned_input_root_missing"
+        } else { "bundle_unsigned_arguments_conflict" }
+        return out
     }
     if (out.mode == "finalize" &&
         (out.unsignedRoot == "" || out.verificationReport == "")) {
@@ -533,14 +577,32 @@ public func validateCkbReproBundleCliOptions(options: CkbReproBundleCliOptions,
     context: CkbReproBundleCliPathContext,
     executor: CkbReproBundleCliExecutor): CkbReproContractResult {
     if (!options.valid) { return p9BundleFailure(options.diagnostic) }
+    if (options.worktreeRoot != context.worktreeRoot ||
+        options.productionRoot != context.productionRoot ||
+        options.privateRunRoot != context.privateRunRoot ||
+        options.userConfigRoot != context.userConfigRoot) {
+        return p9BundleFailure("bundle_context_mismatch")
+    }
     for (path in [options.outputRoot, context.worktreeRoot,
         context.productionRoot, context.privateRunRoot, context.userConfigRoot]) {
         if (!p9AbsoluteRoot(path)) { return p9BundleFailure("bundle_output_invalid") }
     }
     for (protected in [context.worktreeRoot, context.productionRoot,
         context.privateRunRoot, context.userConfigRoot]) {
+        if (!executor.exists(protected)) {
+            return p9BundleFailure("bundle_protected_root_missing")
+        }
         if (p9RootsOverlap(options.outputRoot, protected)) {
             return p9BundleFailure("bundle_output_forbidden")
+        }
+    }
+    let protected = [context.worktreeRoot, context.productionRoot,
+        context.privateRunRoot, context.userConfigRoot]
+    for (i in 0..protected.size) {
+        for (j in (i + 1)..protected.size) {
+            if (p9RootsOverlap(protected[i], protected[j])) {
+                return p9BundleFailure("bundle_protected_roots_overlap")
+            }
         }
     }
     if (executor.exists(options.outputRoot)) {
@@ -601,6 +663,26 @@ public func runCkbReproBundleCliAdapter(options: CkbReproBundleCliOptions,
     context: CkbReproBundleCliPathContext): CkbReproBundleResult {
     executeCkbReproBundleCliAdapter(options, context,
         CkbReproProductionBundleCliExecutor())
+}
+
+public func runCkbReproBundleCliAdapter(options: CkbReproBundleCliOptions):
+    CkbReproBundleResult {
+    let context = CkbReproBundleCliPathContext()
+    context.worktreeRoot = options.worktreeRoot
+    context.productionRoot = options.productionRoot
+    context.privateRunRoot = options.privateRunRoot
+    context.userConfigRoot = options.userConfigRoot
+    for (root in [context.worktreeRoot, context.productionRoot,
+        context.privateRunRoot, context.userConfigRoot]) {
+        let canonical = try { canonicalize(Path(root)).toString() }
+            catch (_: Exception) {
+                return p9BundleCliFailure("bundle_path_not_canonical")
+            }
+        if (canonical != root) {
+            return p9BundleCliFailure("bundle_path_not_canonical")
+        }
+    }
+    runCkbReproBundleCliAdapter(options, context)
 }
 
 public func renderCkbReproBundleCliHuman(result: CkbReproBundleResult): String {
@@ -725,6 +807,132 @@ public func renderCkbReproBundleManifest(
     "{\"schemaVersion\":\"${p9BundleJson(manifest.schemaVersion)}\"," +
         "\"inputSetHash\":\"${p9BundleJson(manifest.inputSetHash)}\"," +
         "\"assets\":[${p9BundleJoin(ordered, ",")}]}"
+}
+
+public func renderCkbReproReleaseInputsManifest(
+    inputs: ArrayList<CkbReproReleaseInput>, releaseCommit: String,
+    runCriticalTreeHash: String, certifiedRunInputHash: String,
+    referenceManifestHash: String, authorityDeliveryMode: String,
+    authorityLayoutHash: String): String {
+    let rows = ArrayList<String>()
+    for (input in inputs) {
+        let asset = input.asset
+        rows.add("{\"sourcePath\":\"${p9BundleJson(input.sourceRelativePath)}\"," +
+            "\"path\":\"${p9BundleJson(asset.relativePath)}\"," +
+            "\"size\":${asset.size},\"sha256\":\"${asset.sha256}\"," +
+            "\"inputKind\":\"${p9BundleJson(asset.inputKind)}\"," +
+            "\"role\":\"${p9BundleJson(asset.role)}\"," +
+            "\"logicalAsset\":\"${p9BundleJson(asset.logicalAsset)}\"," +
+            "\"partIndex\":${asset.partIndex},\"partCount\":${asset.partCount}," +
+            "\"logicalSize\":${asset.logicalSize}," +
+            "\"logicalSha256\":\"${asset.logicalSha256}\"}")
+    }
+    let ordered = rows.toArray(); sort(ordered)
+    "{\"schemaVersion\":\"ckb-repro-release-inputs-v1\"," +
+        "\"releaseCommit\":\"${p9BundleJson(releaseCommit)}\"," +
+        "\"runCriticalTreeHash\":\"${p9BundleJson(runCriticalTreeHash)}\"," +
+        "\"certifiedRunInputHash\":\"${p9BundleJson(certifiedRunInputHash)}\"," +
+        "\"referenceManifestHash\":\"${p9BundleJson(referenceManifestHash)}\"," +
+        "\"authorityDeliveryMode\":\"${p9BundleJson(authorityDeliveryMode)}\"," +
+        "\"authorityLayoutHash\":\"${p9BundleJson(authorityLayoutHash)}\"," +
+        "\"inputs\":[${p9BundleJoin(ordered, ",")}]}"
+}
+
+private func p9ParseReleaseInputs(bytes: Array<UInt8>):
+    CkbReproReleaseInputsLoadResult {
+    let out = CkbReproReleaseInputsLoadResult()
+    let text = try { String.fromUtf8(bytes) } catch (_: Exception) {
+        out.contract = p9BundleFailure("invalid_response_encoding"); return out
+    }
+    try {
+        let object = JsonValue.fromStr(text).asObject()
+        if (object.size() != 8 ||
+            p9BundleString(object, "schemaVersion") !=
+                "ckb-repro-release-inputs-v1") {
+            out.contract = p9BundleFailure("bundle_release_inputs_invalid")
+            return out
+        }
+        out.releaseCommit = p9BundleString(object, "releaseCommit")
+        out.runCriticalTreeHash = p9BundleString(object, "runCriticalTreeHash")
+        out.certifiedRunInputHash = p9BundleString(object,
+            "certifiedRunInputHash")
+        out.referenceManifestHash = p9BundleString(object,
+            "referenceManifestHash")
+        out.authorityDeliveryMode = p9BundleString(object,
+            "authorityDeliveryMode")
+        out.authorityLayoutHash = p9BundleString(object,
+            "authorityLayoutHash")
+        for (value in object.get("inputs").getOrThrow().asArray().getItems()) {
+            let row = value.asObject()
+            if (row.size() != 11) {
+                out.contract = p9BundleFailure("bundle_release_inputs_invalid")
+                return out
+            }
+            let input = CkbReproReleaseInput()
+            input.sourceRelativePath = p9BundleString(row, "sourcePath")
+            let asset = input.asset
+            asset.relativePath = p9BundleString(row, "path")
+            asset.size = p9BundleInt(row, "size")
+            asset.sha256 = p9BundleString(row, "sha256")
+            asset.inputKind = p9BundleString(row, "inputKind")
+            asset.role = p9BundleString(row, "role")
+            asset.logicalAsset = p9BundleString(row, "logicalAsset")
+            asset.partIndex = p9BundleInt(row, "partIndex")
+            asset.partCount = p9BundleInt(row, "partCount")
+            asset.logicalSize = p9BundleInt(row, "logicalSize")
+            asset.logicalSha256 = p9BundleString(row, "logicalSha256")
+            out.inputs.add(input); out.manifest.assets.add(asset)
+        }
+    } catch (_: Exception) {
+        out.contract = p9BundleFailure("bundle_release_inputs_invalid")
+        return out
+    }
+    if (renderCkbReproReleaseInputsManifest(out.inputs, out.releaseCommit,
+        out.runCriticalTreeHash, out.certifiedRunInputHash,
+        out.referenceManifestHash, out.authorityDeliveryMode,
+        out.authorityLayoutHash) != text ||
+        !p9BundleCommit(out.releaseCommit) ||
+        !p9BundleHashValid(out.runCriticalTreeHash) ||
+        !p9BundleHashValid(out.certifiedRunInputHash) ||
+        !p9BundleHashValid(out.referenceManifestHash)) {
+        out.contract = p9BundleFailure("bundle_release_inputs_invalid")
+        return out
+    }
+    let sources = HashSet<String>(); let targets = HashSet<String>()
+    let evidence = ArrayList<CkbReproReleaseAuthorityEvidence>()
+    for (input in out.inputs) {
+        if (!validateCkbReproBundleRelativePath(input.sourceRelativePath).ok ||
+            input.sourceRelativePath == "RELEASE-INPUTS.json" ||
+            !validateCkbReproBundleRelativePath(input.asset.relativePath).ok ||
+            sources.contains(input.sourceRelativePath) ||
+            targets.contains(input.asset.relativePath) ||
+            input.asset.size < 0 || !p9BundleHashValid(input.asset.sha256) ||
+            input.asset.inputKind != "verified_input") {
+            out.contract = p9BundleFailure("bundle_release_inputs_invalid")
+            return out
+        }
+        sources.add(input.sourceRelativePath)
+        targets.add(input.asset.relativePath)
+        let row = CkbReproReleaseAuthorityEvidence()
+        row.role = input.asset.role
+        row.logicalAsset = input.asset.logicalAsset
+        row.size = input.asset.size; row.sha256 = input.asset.sha256
+        evidence.add(row)
+    }
+    let metadata = p9ValidateBundleAssetMetadata(out.manifest.assets, false)
+    if (!metadata.ok) { out.contract = metadata; return out }
+    let authority = buildCkbReproReleaseAuthorityContract(evidence,
+        out.authorityDeliveryMode)
+    if (!authority[0].ok ||
+        authority[1].layoutHash != out.authorityLayoutHash) {
+        out.contract = p9BundleFailure("bundle_release_authority_mismatch")
+        return out
+    }
+    out.manifest.schemaVersion = "ckb-repro-release-component-v1"
+    out.manifest.inputSetHash =
+        computeCkbReproBundleInputSetHash(out.manifest.assets)
+    out.manifestBytes = bytes
+    out.contract = p9BundleSuccess(); out
 }
 
 public func parseCkbReproBundleManifest(bytes: Array<UInt8>):
@@ -1730,6 +1938,172 @@ private func p9BundleReadSmallFile(path: String, limit: Int64):
     } catch (_: Exception) {
         ("bundle_verification_report_read_failed", Array<UInt8>())
     }
+}
+
+private func p9LoadFrozenReleaseInputs(root: String,
+    backend: CkbReproBundleReadBackend): CkbReproReleaseInputsLoadResult {
+    let failed = CkbReproReleaseInputsLoadResult()
+    try {
+        if (!backend.rootExists(root)) {
+            failed.contract = p9BundleFailure("bundle_input_root_missing")
+            return failed
+        }
+        let identity = backend.rootIdentity(root)
+        if (identity == "") {
+            failed.contract = p9BundleFailure("bundle_input_root_invalid")
+            return failed
+        }
+        let listing = backend.list(root)
+        let safe = p9ValidateBundleReadListing(root, listing)
+        if (!safe.ok) { failed.contract = safe; return failed }
+        let found = p9FindBundleReadEntry(listing, "RELEASE-INPUTS.json")
+        if (!found[0]) {
+            failed.contract = p9BundleFailure("bundle_release_inputs_missing")
+            return failed
+        }
+        let manifestRead = p9ConsumeBundleEntry(root, found[1], backend,
+            16 * 1024 * 1024)
+        if (!manifestRead.contract.ok) {
+            failed.contract = manifestRead.contract; return failed
+        }
+        let out = p9ParseReleaseInputs(manifestRead.bytes)
+        if (!out.contract.ok) { return out }
+        let declared = HashSet<String>(); declared.add("RELEASE-INPUTS.json")
+        let directories = HashSet<String>()
+        for (input in out.inputs) {
+            declared.add(input.sourceRelativePath)
+            let parts = input.sourceRelativePath.split("/")
+            let parent = StringBuilder()
+            for (i in 0..parts.size - 1) {
+                if (i > 0) { parent.append("/") }
+                parent.append(parts[i]); directories.add(parent.toString())
+            }
+        }
+        for (entry in listing) {
+            if (entry.kind == "directory") {
+                if (!directories.contains(entry.relativePath)) {
+                    out.contract = p9BundleFailure(
+                        "bundle_input_root_extra_asset"); return out
+                }
+            } else if (!declared.contains(entry.relativePath)) {
+                out.contract = p9BundleFailure(
+                    "bundle_input_root_extra_asset"); return out
+            }
+        }
+        if (listing.size != declared.size + directories.size) {
+            out.contract = p9BundleFailure("bundle_input_root_missing_asset")
+            return out
+        }
+        var releaseBound = false; var referenceBound = false
+        for (input in out.inputs) {
+            let entry = p9FindBundleReadEntry(listing,
+                input.sourceRelativePath)
+            if (!entry[0] || entry[1].kind != "regular" ||
+                entry[1].size != input.asset.size) {
+                out.contract = p9BundleFailure(
+                    "bundle_input_root_missing_asset"); return out
+            }
+            if (input.asset.logicalAsset == "release/release-commit.txt") {
+                let read = p9ConsumeBundleEntry(root, entry[1], backend, 1024)
+                let text = try { String.fromUtf8(read.bytes).trimAscii() }
+                    catch (_: Exception) { "" }
+                if (!read.contract.ok || read.sha256 != input.asset.sha256 ||
+                    text != out.releaseCommit) {
+                    out.contract = p9BundleFailure(
+                        "bundle_release_identity_mismatch"); return out
+                }
+                releaseBound = true
+            }
+            if (input.asset.logicalAsset ==
+                "reproducibility/manifests/reference-run.json") {
+                let read = p9ConsumeBundleEntry(root, entry[1], backend,
+                    16 * 1024 * 1024)
+                let reference = parseCkbReproReferenceManifest(read.bytes)
+                if (!read.contract.ok || read.sha256 != input.asset.sha256 ||
+                    read.sha256 != out.referenceManifestHash ||
+                    !reference[0].ok ||
+                    reference[1].runCriticalTreeHash != out.runCriticalTreeHash ||
+                    reference[1].certifiedRunInputHash !=
+                        out.certifiedRunInputHash) {
+                    out.contract = p9BundleFailure(
+                        "bundle_release_identity_mismatch"); return out
+                }
+                referenceBound = true
+            }
+        }
+        if (!releaseBound || !referenceBound) {
+            out.contract = p9BundleFailure("bundle_release_identity_missing")
+            return out
+        }
+        out.rootIdentity = identity
+        out.listingHash = p9BundleReadSnapshotHash(listing)
+        out.manifestBytes = manifestRead.bytes
+        out.contract = p9BundleSuccess(); out
+    } catch (_: Exception) {
+        failed.contract = p9BundleFailure("bundle_release_inputs_read_failed")
+        failed
+    }
+}
+
+private func p9BundleStreamFrozenInputs(sourceRoot: String,
+    outputRoot: String, loaded: CkbReproReleaseInputsLoadResult,
+    backend: CkbReproBundleReadBackend): Bool {
+    try {
+        let listing = backend.list(sourceRoot)
+        if (p9BundleReadSnapshotHash(listing) != loaded.listingHash ||
+            backend.rootIdentity(sourceRoot) != loaded.rootIdentity) {
+            return false
+        }
+        for (input in loaded.inputs) {
+            let asset = input.asset
+            let found = p9FindBundleReadEntry(listing,
+                input.sourceRelativePath)
+            if (!found[0] || found[1].kind != "regular") { return false }
+            let target = Path(outputRoot).join(asset.relativePath)
+            if (!exists(target.parent)) {
+                Directory.create(target.parent, recursive: true)
+            }
+            let handle = backend.open(sourceRoot, found[1])
+            let digest = SHA256(); var size: Int64 = 0
+            let scanner = P9BundleContentScanner(!p9BundleBinaryAllowed(asset))
+            try {
+                if (!handle.noFollow()) { return false }
+                try (file = File(target, OpenMode.Write)) {
+                    let buffer = Array<UInt8>(65536, repeat: UInt8(0))
+                    while (true) {
+                        let count = handle.read(buffer)
+                        if (count < 0 || count > buffer.size) { return false }
+                        if (count == 0) { break }
+                        let chunk = if (count == buffer.size) { buffer }
+                            else { buffer[0..count].clone() }
+                        file.write(chunk); digest.write(chunk)
+                        scanner.feed(chunk); size += count
+                        if (size > asset.size) { return false }
+                    }
+                }
+                if (size != asset.size ||
+                    p9BundleDigestHash(digest) != asset.sha256 ||
+                    scanner.finish() != "ok" ||
+                    !p9BundleReadEntriesEqual(found[1],
+                        handle.observedEntry())) { return false }
+            } finally { handle.close() }
+        }
+        let foundManifest = p9FindBundleReadEntry(listing,
+            "RELEASE-INPUTS.json")
+        if (!foundManifest[0]) { return false }
+        let manifestAfter = p9ConsumeBundleEntry(sourceRoot,
+            foundManifest[1], backend, 16 * 1024 * 1024)
+        if (!manifestAfter.contract.ok ||
+            manifestAfter.bytes != loaded.manifestBytes ||
+            p9BundleReadSnapshotHash(backend.list(sourceRoot)) !=
+                loaded.listingHash ||
+            backend.rootIdentity(sourceRoot) != loaded.rootIdentity) {
+            return false
+        }
+        File.writeTo(Path(outputRoot).join("RELEASE-MANIFEST.json"),
+            renderCkbReproBundleManifest(loaded.manifest).toArray())
+        true
+    } catch (_: Exception) { false }
 }
 
 private func p9BundleStreamCopyValidated(sourceRoot: String,
