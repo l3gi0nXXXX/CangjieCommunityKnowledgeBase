@@ -409,7 +409,11 @@ public class CkbReproCliAdaptersTest {
         promotion.candidateManifestHash =
             ckbPortableCandidateManifestHash(promotion)
         promotion.p8BProofHash = ckbPortableP8BProofHash(promotion)
-        p234WritePromotionManifests(root, promotion)
+        let verification = p234VerificationReport(
+            referenceValidation.manifestHash, reference)
+        let verificationText = renderCkbReproVerificationReport(verification)
+        p234WritePromotionManifests(root, promotion,
+            reportText: verificationText)
         let productionRoot = root.join("production")
         Directory.create(productionRoot, recursive: true)
         let dependency = P234PromotionDependency()
@@ -421,6 +425,13 @@ public class CkbReproCliAdaptersTest {
             "--candidate-manifest", root.join("candidate.json").toString(),
             "--p8-b-report", root.join("p8b.json").toString(), "--apply"], production)
         @Expect(actual.ok, true); @Expect(dependency.commits, 1)
+        p234WritePromotionManifests(root, promotion)
+        @Expect(loadCkbPortablePromotionCliInputs(
+            root.join("candidate.json").toString(),
+            root.join("p8b.json").toString())[0].diagnostic,
+            "promotion_p8_b_report_invalid")
+        p234WritePromotionManifests(root, promotion,
+            reportText: verificationText)
         let authorityVersion = promotion.candidateVersion
         let authorityIdentity = promotion.identity
         for (drift in ["version", "identity", "score"]) {
@@ -434,7 +445,8 @@ public class CkbReproCliAdaptersTest {
             promotion.candidateManifestHash =
                 ckbPortableCandidateManifestHash(promotion)
             promotion.p8BProofHash = ckbPortableP8BProofHash(promotion)
-            p234WritePromotionManifests(root, promotion)
+            p234WritePromotionManifests(root, promotion,
+                reportText: verificationText)
             @Expect(loadCkbPortablePromotionCliInputs(
                 root.join("candidate.json").toString(),
                 root.join("p8b.json").toString())[0].diagnostic,
@@ -446,7 +458,8 @@ public class CkbReproCliAdaptersTest {
         promotion.candidateManifestHash =
             ckbPortableCandidateManifestHash(promotion)
         promotion.p8BProofHash = ckbPortableP8BProofHash(promotion)
-        p234WritePromotionManifests(root, promotion)
+        p234WritePromotionManifests(root, promotion,
+            reportText: verificationText)
         File.writeTo(root.join("p3.json"), "p3-tampered".toArray())
         @Expect(loadCkbPortablePromotionCliInputs(
             root.join("candidate.json").toString(),
@@ -577,7 +590,8 @@ private func p234PortableReference(knowledgeVersion: String,
 }
 
 private func p234WritePromotionManifests(root: Path,
-    promotion: CkbPortablePromotionOptions): Unit {
+    promotion: CkbPortablePromotionOptions,
+    reportText!: String = ""): Unit {
     let candidate = "{\"candidateVersion\":\"${promotion.candidateVersion}\"," +
         "\"candidateManifestHash\":\"${promotion.candidateManifestHash}\"," +
         "\"p2ProofHash\":\"${promotion.p2ProofHash}\"," +
@@ -598,7 +612,27 @@ private func p234WritePromotionManifests(root: Path,
         "\"p8AProofHash\":\"${promotion.p8AProofHash}\"," +
         "\"p8BProofHash\":\"${promotion.p8BProofHash}\"}"
     File.writeTo(root.join("candidate.json"), candidate.toArray())
-    File.writeTo(root.join("p8b.json"), p8b.toArray())
+    File.writeTo(root.join("p8b.json"),
+        if (reportText == "") { p8b.toArray() } else { reportText.toArray() })
+}
+
+private func p234VerificationReport(referenceManifestHash: String,
+    reference: CkbReproReferenceManifest): CkbReproReleaseVerificationResult {
+    let report = CkbReproReleaseVerificationResult()
+    report.ok = true; report.diagnostic = "verified"
+    report.verifiedReleaseInputSetHash = p234Hash("release-input-set")
+    report.bundleProofSetHash = p234Hash("bundle-proof-set")
+    report.releaseCommit = "0123456789012345678901234567890123456789"
+    report.certifiedRunInputHash = reference.certifiedRunInputHash
+    report.runCriticalTreeHash = reference.runCriticalTreeHash
+    report.referenceManifestHash = referenceManifestHash
+    report.authorityHash = p234Hash("authority")
+    report.restored.ok = true; report.restored.diagnostic = "ok"
+    report.rebuilt.ok = true; report.rebuilt.diagnostic = "ok"
+    report.publicEvidence.ok = true; report.publicEvidence.diagnostic = "ok"
+    report.documentation.ok = true; report.documentation.diagnostic = "ok"
+    report.runnerCalls = 0
+    report
 }
 
 private func p234PromotionArgs(apply: Bool): Array<String> {
