@@ -3,6 +3,7 @@ package cangjie_community_knowledge_base_test
 import std.collection.ArrayList
 import std.unittest.*
 import std.unittest.testmacro.*
+import stdx.encoding.json.JsonValue
 
 private class P5FakeCliExecutor <: CkbPublicEvidenceCliExecutor {
     public var outputExists: Bool = false
