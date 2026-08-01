@@ -56,6 +56,7 @@ private class P9FakeBundleReadBackend <: CkbReproBundleReadBackend {
     public var negativeReadPath: String = ""
     public var oversizedReadPath: String = ""
     public var throwingClosePath: String = ""
+    public var throwingCloseNumber: Int64 = -1
     public var maxBufferSize: Int64 = 0
     public let observedOverrides =
         HashMap<String, CkbReproBundleReadEntry>()
@@ -63,6 +64,9 @@ private class P9FakeBundleReadBackend <: CkbReproBundleReadBackend {
     public func rootExists(root: String): Bool {
         this.rootExistsCalls += 1
         this.roots.contains(root)
+    }
+    public func rootIdentity(root: String): String {
+        if (this.roots.contains(root)) { "fake-root:${root}" } else { "" }
     }
     public func list(root: String): ArrayList<CkbReproBundleReadEntry> {
         this.listCalls += 1
@@ -143,7 +147,8 @@ private class P9FakeBundleReadHandle <: CkbReproBundleReadHandle {
     public func noFollow(): Bool { this.followsSafely }
     public func close(): Unit {
         this.backend.closeCalls += 1
-        if (this.relativePath == this.backend.throwingClosePath) {
+        if (this.relativePath == this.backend.throwingClosePath ||
+            this.backend.closeCalls == this.backend.throwingCloseNumber) {
             throw Exception("fake close failure")
         }
     }
@@ -202,6 +207,11 @@ public class CkbReproBundleTest {
         @Expect(validateCkbReproBundleAssets(
             p9AssetList(forgedVerification)).diagnostic,
             "bundle_derived_asset_forbidden")
+        let forgedLogical = p9Asset("assets/innocent.bin", "x")
+        forgedLogical.logicalAsset = "build-attestation.json"
+        @Expect(validateCkbReproBundleAssets(
+            p9AssetList(forgedLogical)).diagnostic,
+            "bundle_derived_asset_forbidden")
         let discontinuous = p9Asset("assets/data.part-0001", "x")
         discontinuous.logicalAsset = "assets/data"
         discontinuous.partIndex = 1
@@ -234,9 +244,35 @@ public class CkbReproBundleTest {
         wrongParts.add(wrongPartB)
         @Expect(validateCkbReproBundleAssets(wrongParts).diagnostic,
             "bundle_asset_parts_incomplete")
-        let tooMany = ArrayList<CkbReproBundleAsset>()
-        for (i in 0..1001) { tooMany.add(p9Asset("assets/${i}.txt", "${i}")) }
-        @Expect(validateCkbReproBundleAssets(tooMany).diagnostic,
+        let tinyPartA = p9Asset("assets/tiny.part-0001", "x")
+        let tinyPartB = p9Asset("assets/tiny.part-0002", "y")
+        for (part in [tinyPartA, tinyPartB]) {
+            part.logicalAsset = "assets/tiny"
+            part.partCount = 2
+            part.logicalSize = 2
+            part.logicalSha256 = ckbReproBundleHash("xy".toArray())
+        }
+        tinyPartB.partIndex = 1
+        let tinyParts = ArrayList<CkbReproBundleAsset>()
+        tinyParts.add(tinyPartA)
+        tinyParts.add(tinyPartB)
+        @Expect(validateCkbReproBundleAssets(tinyParts).diagnostic,
+            "bundle_asset_parts_incomplete")
+        let twoGiBCanonical = p9TwoGiBMetadataAssets(false)
+        @Expect(p9ParseAndValidate(p9ReadableBundle(
+            "/tmp/ckb-p9/two-gib-canonical", twoGiBCanonical,
+            false)).diagnostic, "bundle_asset_size_mismatch")
+        let twoGiBWrongNonLast = p9TwoGiBMetadataAssets(true)
+        @Expect(p9ParseAndValidate(p9ReadableBundle(
+            "/tmp/ckb-p9/two-gib-wrong-nonlast", twoGiBWrongNonLast,
+            false)).diagnostic, "bundle_asset_parts_incomplete")
+        let maximum = ArrayList<CkbReproBundleAsset>()
+        for (i in 0..995) {
+            maximum.add(p9Asset("assets/${i}.txt", ""))
+        }
+        @Expect(validateCkbReproBundleAssets(maximum).ok, true)
+        maximum.add(p9Asset("assets/995.txt", ""))
+        @Expect(validateCkbReproBundleAssets(maximum).diagnostic,
             "bundle_asset_count_exceeded")
         let forbidden = p9BundleOptions("/tmp/ckb-p9/worktree/output")
         @Expect(assembleCkbUnsignedReleaseCandidate(forbidden, p9Assets(false),
@@ -439,6 +475,13 @@ public class CkbReproBundleTest {
         closeAfterSuccess[0].throwingClosePath =
             "RELEASE-MANIFEST.json"
         @Expect(p9ParseAndValidate(closeAfterSuccess).diagnostic,
+            "bundle_read_close_failed")
+
+        let assetCloseAfterSuccess = p9ReadableBundle(
+            "/tmp/ckb-p9/asset-close-after-success",
+            p9Assets(false), false)
+        assetCloseAfterSuccess[0].throwingClosePath = "assets/a.txt"
+        @Expect(p9ParseAndValidate(assetCloseAfterSuccess).diagnostic,
             "bundle_read_close_failed")
 
         let missingRoot = P9FakeBundleReadBackend()
@@ -684,6 +727,34 @@ private func p9AssetList(asset: CkbReproBundleAsset):
     ArrayList<CkbReproBundleAsset> {
     let out = ArrayList<CkbReproBundleAsset>()
     out.add(asset)
+    out
+}
+
+private func p9TwoGiBMetadataAssets(wrongNonLast: Bool):
+    ArrayList<CkbReproBundleAsset> {
+    let out = ArrayList<CkbReproBundleAsset>()
+    let count: Int64 = if (wrongNonLast) { 3 } else { 2 }
+    for (index in 0..count) {
+        let suffix = match (index) {
+            case 0 => "0001"
+            case 1 => "0002"
+            case _ => "0003"
+        }
+        let part = p9Asset("assets/two-gib.bin.part-${suffix}", "x")
+        part.logicalAsset = "assets/two-gib.bin"
+        part.partIndex = index
+        part.partCount = count
+        part.logicalSize = 2 * 1024 * 1024 * 1024
+        part.logicalSha256 = ckbReproBundleHash("logical".toArray())
+        part.size = if (!wrongNonLast) {
+            1024 * 1024 * 1024
+        } else if (index == 0) {
+            1024 * 1024 * 1024 - 1
+        } else if (index == 1) {
+            1024 * 1024 * 1024
+        } else { 1 }
+        out.add(part)
+    }
     out
 }
 

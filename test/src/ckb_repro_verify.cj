@@ -312,6 +312,14 @@ public class CkbReproFilesystemBundleReadBackend <:
         try { canonicalize(Path(root)).toString() == root }
         catch (_: Exception) { false }
     }
+    public func rootIdentity(root: String): String {
+        if (!this.rootExists(root)) { return "" }
+        let fd = p8OpenBundlePath(root)
+        if (fd < 0) { return "" }
+        let entry = p8DescriptorEntry(fd, root, "")
+        _ = unsafe { close(fd) }
+        if (entry.kind == "directory") { entry.identity } else { "" }
+    }
     public func list(root: String): ArrayList<CkbReproBundleReadEntry> {
         let out = ArrayList<CkbReproBundleReadEntry>()
         if (!this.rootExists(root)) { return out }
@@ -793,6 +801,13 @@ public func verifyCkbUnsignedReleaseCandidate(
         out.diagnostic = "run_critical_changed_rerun_a"
         return out
     }
+    let bundleStableBeforeRestore = p8RevalidateBundle(
+        options.candidateRoot, expectedInputSetHash, loaded.proofSetHash,
+        loaded.rootIdentity, backend)
+    if (!bundleStableBeforeRestore.ok) {
+        out.diagnostic = bundleStableBeforeRestore.diagnostic
+        return out
+    }
     out.restored = try {
         p8ValidateStage(executor.restore(options), expected, false)
     } catch (_: Exception) { p8StageFailure("restore_executor_failed") }
@@ -800,11 +815,25 @@ public func verifyCkbUnsignedReleaseCandidate(
         out.diagnostic = out.restored.diagnostic
         return out
     }
+    let bundleStableAfterRestore = p8RevalidateBundle(
+        options.candidateRoot, expectedInputSetHash, loaded.proofSetHash,
+        loaded.rootIdentity, backend)
+    if (!bundleStableAfterRestore.ok) {
+        out.diagnostic = bundleStableAfterRestore.diagnostic
+        return out
+    }
     out.rebuilt = try {
         p8ValidateStage(executor.rebuild(options), expected, true)
     } catch (_: Exception) { p8StageFailure("rebuild_executor_failed") }
     if (!out.rebuilt.ok) {
         out.diagnostic = out.rebuilt.diagnostic
+        return out
+    }
+    let bundleStableAfterRebuild = p8RevalidateBundle(
+        options.candidateRoot, expectedInputSetHash, loaded.proofSetHash,
+        loaded.rootIdentity, backend)
+    if (!bundleStableAfterRebuild.ok) {
+        out.diagnostic = bundleStableAfterRebuild.diagnostic
         return out
     }
     out.publicEvidence = try { executor.verifyPublicEvidence(options) }
@@ -815,12 +844,26 @@ public func verifyCkbUnsignedReleaseCandidate(
         out.diagnostic = out.publicEvidence.diagnostic
         return out
     }
+    let bundleStableAfterEvidence = p8RevalidateBundle(
+        options.candidateRoot, expectedInputSetHash, loaded.proofSetHash,
+        loaded.rootIdentity, backend)
+    if (!bundleStableAfterEvidence.ok) {
+        out.diagnostic = bundleStableAfterEvidence.diagnostic
+        return out
+    }
     out.documentation = try { executor.verifyDocumentation(options) }
         catch (_: Exception) {
             p8Failure("documentation_executor_failed")
         }
     if (!out.documentation.ok) {
         out.diagnostic = out.documentation.diagnostic
+        return out
+    }
+    let bundleStableAfterDocs = p8RevalidateBundle(
+        options.candidateRoot, expectedInputSetHash, loaded.proofSetHash,
+        loaded.rootIdentity, backend)
+    if (!bundleStableAfterDocs.ok) {
+        out.diagnostic = bundleStableAfterDocs.diagnostic
         return out
     }
     out.ok = true
@@ -975,6 +1018,19 @@ private func p8RevalidateInputs(options: CkbReproVerifyOptions,
     p8Success()
 }
 
+private func p8RevalidateBundle(root: String, expectedInputSetHash: String,
+    expectedProofSetHash: String, expectedRootIdentity: String,
+    backend: CkbReproBundleReadBackend): CkbReproContractResult {
+    let loaded = validateCkbReproBundleManifest(root, backend)
+    if (!loaded.contract.ok || loaded.rootIdentity != expectedRootIdentity ||
+        loaded.proofSetHash != expectedProofSetHash ||
+        computeCkbVerifiedReleaseInputSetHash(loaded.manifest) !=
+            expectedInputSetHash) {
+        return p8Failure("bundle_revalidation_failed")
+    }
+    p8Success()
+}
+
 private func p8OptionsFingerprint(options: CkbReproVerifyOptions): String {
     p8HashParts("ckb-repro-verify-options-v1", [
         options.mode, options.workRoot, options.runtimeRoot,
@@ -1102,6 +1158,9 @@ private func p8DescriptorEntry(fd: Int32, root: String,
     } else if ((mode & UInt64(0xf000)) == UInt64(0x4000)) {
         out.kind = "directory"
     } else { out.kind = "special" }
+    if (out.kind == "regular" && p8LittleEndian(stat, 6, 2) != UInt64(1)) {
+        out.kind = "special"
+    }
     let sizeBits = p8LittleEndian(stat, 96, 8)
     if ((sizeBits & (UInt64(1) << 63)) != 0) { return out }
     out.size = Int64(sizeBits)
@@ -1239,7 +1298,8 @@ private func p8ValidateReleaseAuthority(
         seenPreflight.add(preflight.inputRoles[i])
         var matched = false
         for (expected in contract.expected) {
-            if (expected.role == preflight.inputRoles[i] &&
+            if (p8AuthorityPreflightRole(expected.logicalAsset) ==
+                    preflight.inputRoles[i] &&
                 expected.sha256 == preflight.inputHashes[i] &&
                 expected.size == preflight.inputSizes[i]) { matched = true }
         }
@@ -1294,6 +1354,23 @@ private func p8ValidateReleaseAuthority(
     out
 }
 
+private func p8AuthorityPreflightRole(logicalAsset: String): String {
+    match (logicalAsset) {
+        case "reproducibility/manifests/historical-reference-run.json" =>
+            "p0_manifest"
+        case "reproducibility/PUBLIC-EVIDENCE.schema.json" =>
+            "p1_score_contract"
+        case "ckb-logical-snapshot.tar.zst" => "p2_logical_snapshot"
+        case "qdrant-collection.snapshot" => "p3_qdrant_snapshot"
+        case "portable-logical-proof.json" => "p4_build_proof"
+        case "reproducibility/manifests/environment-lock.json" =>
+            "p6_environment_lock"
+        case "reproducibility/manifests/reference-run.json" =>
+            "p8_reference"
+        case _ => ""
+    }
+}
+
 private func p8AuthorityRequiredLayout(mode: String):
     ArrayList<(String, String)> {
     let out = ArrayList<(String, String)>()
@@ -1309,16 +1386,22 @@ private func p8AuthorityRequiredLayout(mode: String):
         ("docs/reproducibility/result-interpretation.md", "p7_documentation"),
         ("docs/reproducibility/troubleshooting.md", "p7_documentation"),
         ("docs/reproducibility/release-maintainer-runbook.md", "p7_documentation"),
+        ("reproducibility/PUBLIC-EVIDENCE.schema.json", "p1_score_contract"),
         ("reproducibility/RELEASE-MANIFEST.schema.json", "p0_manifest"),
+        ("reproducibility/authority-source-materials.schema.json", "authority_delivery"),
         ("reproducibility/source-lock.schema.json", "source_lock"),
         ("reproducibility/source-inventory.schema.json", "source_lock"),
         ("reproducibility/knowledge-selection.schema.json", "p0_manifest"),
         ("reproducibility/authority-delivery.schema.json", "authority_delivery"),
+        ("reproducibility/environment-lock.schema.json", "p6_environment_lock"),
+        ("reproducibility/historical-reference-evidence.schema.json", "p0_manifest"),
+        ("reproducibility/reference-run.schema.json", "p0_manifest"),
         ("reproducibility/portable-path-policy.schema.json", "portable_report"),
         ("reproducibility/run-critical-files.schema.json", "p4_build_proof"),
         ("reproducibility/RELEASE-SIGNING-KEY.asc", "p0_manifest"),
         ("reproducibility/configs/provider.example.env", "p6_environment_lock"),
         ("reproducibility/configs/ckb.example.conf", "p6_environment_lock"),
+        ("reproducibility/configs/claude-mcp.example.json", "p6_environment_lock"),
         ("reproducibility/configs/experiment-profile.json", "p1_score_contract"),
         ("reproducibility/manifests/source-lock.json", "source_lock"),
         ("reproducibility/manifests/source-inventory.jsonl", "source_lock"),
@@ -1327,11 +1410,14 @@ private func p8AuthorityRequiredLayout(mode: String):
         ("reproducibility/manifests/knowledge-selection.jsonl", "p0_manifest"),
         ("reproducibility/manifests/environment-lock.json", "p6_environment_lock"),
         ("reproducibility/manifests/authority-delivery.json", "authority_delivery"),
+        ("reproducibility/manifests/authority-source-materials.json", "authority_delivery"),
+        ("reproducibility/manifests/historical-reference-evidence.json", "p0_manifest"),
         ("reproducibility/manifests/historical-reference-run.json", "p0_manifest"),
         ("reproducibility/manifests/reference-run.json", "p8_reference"),
         ("reproducibility/licenses/THIRD_PARTY_NOTICES.md", "license"),
         ("ckb-logical-snapshot.tar.zst", "p2_logical_snapshot"),
         ("qdrant-collection.snapshot", "p3_qdrant_snapshot"),
+        ("portable-logical-proof.json", "p4_build_proof"),
         ("source-materials-manifest.json", "source_lock"),
         ("ckb-public-reference-evidence.tar.zst", "p5_public_evidence"),
         ("leakage-report.json", "portable_report"),

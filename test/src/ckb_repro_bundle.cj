@@ -76,6 +76,7 @@ public class CkbReproBundleLoadResult {
     public var manifest: CkbReproBundleManifest = CkbReproBundleManifest()
     public let assetProofs = ArrayList<CkbReproBundleAssetProof>()
     public var proofSetHash: String = ""
+    public var rootIdentity: String = ""
     public init() {}
 }
 
@@ -99,6 +100,7 @@ public interface CkbReproBundleBackend {
 
 public interface CkbReproBundleReadBackend {
     func rootExists(root: String): Bool
+    func rootIdentity(root: String): String
     func list(root: String): ArrayList<CkbReproBundleReadEntry>
     func open(root: String, expected: CkbReproBundleReadEntry):
         CkbReproBundleReadHandle
@@ -149,19 +151,13 @@ public func validateCkbReproBundleRelativePathBytes(bytes: Array<UInt8>):
 
 public func validateCkbReproBundleAssets(assets: ArrayList<CkbReproBundleAsset>):
     CkbReproContractResult {
-    if (assets.size > 1000) {
+    if (assets.size > 995) {
         return p9BundleFailure("bundle_asset_count_exceeded")
     }
     let seen = HashSet<String>()
     for (asset in assets) {
-        if (asset.relativePath == "RELEASE-MANIFEST.json" ||
-            asset.relativePath == "SHA256SUMS" ||
-            asset.relativePath == "SHA256SUMS.sig" ||
-            asset.relativePath == "build-attestation.json" ||
-            asset.relativePath.endsWith("/build-attestation.json") ||
-            asset.relativePath == "verification-report.json" ||
-            asset.relativePath.endsWith("/verification-report.json") ||
-            asset.relativePath.endsWith(".sig")) {
+        if (p9BundleDerivedPathForbidden(asset.relativePath) ||
+            p9BundleDerivedPathForbidden(asset.logicalAsset)) {
             return p9BundleFailure("bundle_derived_asset_forbidden")
         }
         let path = validateCkbReproBundleRelativePath(asset.relativePath)
@@ -288,6 +284,11 @@ public func validateCkbReproBundleManifest(root: String,
             out.contract = p9BundleFailure("bundle_root_missing")
             return out
         }
+        let rootIdentity = backend.rootIdentity(root)
+        if (rootIdentity == "") {
+            out.contract = p9BundleFailure("bundle_root_identity_invalid")
+            return out
+        }
         let firstListing = backend.list(root)
         let firstSafe = p9ValidateBundleReadListing(root, firstListing)
         if (!firstSafe.ok) { out.contract = firstSafe; return out }
@@ -368,10 +369,15 @@ public func validateCkbReproBundleManifest(root: String,
             out.contract = p9BundleFailure("bundle_root_listing_changed")
             return out
         }
+        if (backend.rootIdentity(root) != rootIdentity) {
+            out.contract = p9BundleFailure("bundle_root_identity_changed")
+            return out
+        }
         out.manifest = parsed[1]
         // Proofs bind this two-list snapshot only. A later consumer must
         // re-list and re-read each asset before using its bytes.
         out.proofSetHash = p9BundleProofSetHash(out.assetProofs)
+        out.rootIdentity = rootIdentity
         out.contract = p9BundleSuccess()
         out.contract.canonicalJson =
             renderCkbReproBundleManifest(parsed[1])
@@ -543,6 +549,18 @@ private func p9BundleRoleAllowed(role: String): Bool {
     false
 }
 
+private func p9BundleDerivedPathForbidden(path: String): Bool {
+    path == "RELEASE-MANIFEST.json" ||
+        path.endsWith("/RELEASE-MANIFEST.json") ||
+        path == "SHA256SUMS" || path.endsWith("/SHA256SUMS") ||
+        path == "SHA256SUMS.sig" || path.endsWith("/SHA256SUMS.sig") ||
+        path == "build-attestation.json" ||
+        path.endsWith("/build-attestation.json") ||
+        path == "verification-report.json" ||
+        path.endsWith("/verification-report.json") ||
+        path.endsWith(".sig")
+}
+
 private func p9ValidateBundleAssetMetadata(
     assets: ArrayList<CkbReproBundleAsset>, verifyBytes: Bool):
     CkbReproContractResult {
@@ -600,6 +618,9 @@ private func p9ValidateBundleAssetMetadata(
                 return p9BundleFailure("bundle_asset_parts_incomplete")
             }
         } else {
+            if (asset.logicalSize < 2 * 1024 * 1024 * 1024) {
+                return p9BundleFailure("bundle_asset_parts_incomplete")
+            }
             for (part in assets) {
                 if (part.role != asset.role ||
                     part.logicalAsset != asset.logicalAsset) { continue }
@@ -637,7 +658,7 @@ private func p9ValidateBundleManifestStructure(
     if (manifest.schemaVersion != "ckb-repro-release-component-v1") {
         return p9BundleFailure("bundle_manifest_schema_invalid")
     }
-    if (manifest.assets.size > 1000) {
+    if (manifest.assets.size > 995) {
         return p9BundleFailure("bundle_asset_count_exceeded")
     }
     let declared = HashSet<String>()
@@ -645,14 +666,8 @@ private func p9ValidateBundleManifestStructure(
     for (asset in manifest.assets) {
         let path = validateCkbReproBundleRelativePath(asset.relativePath)
         if (!path.ok) { return path }
-        if (asset.relativePath == "RELEASE-MANIFEST.json" ||
-            asset.relativePath == "SHA256SUMS" ||
-            asset.relativePath == "SHA256SUMS.sig" ||
-            asset.relativePath == "build-attestation.json" ||
-            asset.relativePath.endsWith("/build-attestation.json") ||
-            asset.relativePath == "verification-report.json" ||
-            asset.relativePath.endsWith("/verification-report.json") ||
-            asset.relativePath.endsWith(".sig")) {
+        if (p9BundleDerivedPathForbidden(asset.relativePath) ||
+            p9BundleDerivedPathForbidden(asset.logicalAsset)) {
             return p9BundleFailure("bundle_derived_asset_forbidden")
         }
         if (declared.contains(asset.relativePath)) {
