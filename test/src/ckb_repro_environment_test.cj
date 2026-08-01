@@ -514,7 +514,7 @@ public class CkbReproEnvironmentTest {
     }
 }
 
-private func p6FrozenEnvironment(): CkbReproEnvironmentLock {
+public func p6FrozenEnvironment(): CkbReproEnvironmentLock {
     let lock = CkbReproEnvironmentLock()
     lock.schemaVersion = "ckb-repro-environment-v1"
     lock.identityStatus = "frozen"
@@ -591,7 +591,7 @@ private func p6PublicDelivery(authority: Array<UInt8>,
     manifest
 }
 
-private func p6RunnerInputs(): CkbReproRunnerInputs {
+public func p6RunnerInputs(): CkbReproRunnerInputs {
     let inputs = CkbReproRunnerInputs()
     inputs.runId = "p6-fixture"
     inputs.repoRoot = "target/repository"

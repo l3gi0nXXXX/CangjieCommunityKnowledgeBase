@@ -200,6 +200,22 @@ public class CkbPublicEvidenceTest {
     }
 
     @TestCase
+    public func p5Neg04P6FingerprintMatchesFrozenReferenceIdentity(): Unit {
+        let reference = parseCkbReproReferenceManifest(File.readFrom(
+            Path("../reproducibility/manifests/historical-reference-run.json")))[1]
+        let built = buildCkbReproRunnerArgs(reference,
+            p6FrozenEnvironment(), p6RunnerInputs())
+        @Expect(built[0].ok, true)
+        let runner = parseCkbAbcdeRunnerOptions(built[1])
+        @Expect(runner.modelFingerprint, "claude-code-glm-5.2")
+        @Expect(p5RunProductionExportFixture(151,
+            certificationModelFingerprint: runner.modelFingerprint).ok, true)
+        @Expect(p5RunProductionExportFixture(151,
+            certificationModelFingerprint: "claude-code-GLM-5.2").diagnostic,
+            "public_evidence_reference_identity_mismatch")
+    }
+
+    @TestCase
     public func p5Neg01LeakageAndInputDriftBlockProjection(): Unit {
         let attacks = [
             "Authorization: Bearer secret",
@@ -446,7 +462,9 @@ private func p5Hash(seed: String): String {
 
 private func p5RunProductionExportFixture(
     strictPassed: Int64,
-    drift!: String = ""): CkbPublicEvidenceRenderResult {
+    drift!: String = "",
+    certificationModelFingerprint!: String =
+        "claude-code-glm-5.2"): CkbPublicEvidenceRenderResult {
     let root = Path("target/p5-production-export-${strictPassed}-${drift}")
     if (exists(root)) { remove(root, recursive: true) }
     Directory.create(root.join("run/cases"), recursive: true)
@@ -462,7 +480,7 @@ private func p5RunProductionExportFixture(
             } else { "knowledge-v1" },
             modelFingerprint: if (drift == "model") {
                 "other-model"
-            } else { "claude-code-glm-5.2" },
+            } else { certificationModelFingerprint },
             providerIdentityHash: if (drift == "provider") {
                 p5Hash("other-provider")
             } else { p5Hash("provider") },
