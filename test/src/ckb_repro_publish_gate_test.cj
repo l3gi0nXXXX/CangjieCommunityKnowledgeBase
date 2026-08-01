@@ -323,6 +323,37 @@ public class CkbReproPublishGateTest {
             stale, p9SignatureEvidence(false)).diagnostic,
             "publish_remote_tag_evidence_stale")
     }
+
+    @TestCase
+    public func p9Bnd02RemoteTagUsesExactAuthoritativeRefs(): Unit {
+        let object = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        let commit = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        let tag = "ckb-repro-v1"
+        let absent = parseCkbRemoteTagLsRemote("", tag)
+        @Expect(absent[0], "ok"); @Expect(absent[1], false)
+        let lightweight = parseCkbRemoteTagLsRemote(
+            "${commit}\trefs/tags/${tag}\n", tag)
+        @Expect(lightweight[0], "ok"); @Expect(lightweight[1], true)
+        @Expect(lightweight[2], commit)
+        let annotated = parseCkbRemoteTagLsRemote(
+            "${object}\trefs/tags/${tag}\n" +
+            "${commit}\trefs/tags/${tag}^{}\n", tag)
+        @Expect(annotated[0], "ok"); @Expect(annotated[2], commit)
+        for (forged in [
+            "${commit}\trefs/tags/${tag}-old\n",
+            "${commit}\trefs/tags/${tag}\n${commit}\trefs/tags/${tag}\n",
+            "${commit}\trefs/tags/${tag}^{}\n",
+            "not-a-commit\trefs/tags/${tag}\n",
+            "${commit}\trefs/heads/main\n"
+        ]) {
+            @Expect(parseCkbRemoteTagLsRemote(forged, tag)[0],
+                "publish_remote_tag_query_invalid")
+        }
+        let source = String.fromUtf8(File.readFrom(
+            Path("../src/ckb_repro_publish_gate.cj")))
+        @Expect(source.contains("\"ls-remote\", \"--tags\", \"origin\","), true)
+        @Expect(source.contains("refs/remotes/origin/tags"), false)
+    }
 }
 
 private func p9PublishLocalFixture(): String {
