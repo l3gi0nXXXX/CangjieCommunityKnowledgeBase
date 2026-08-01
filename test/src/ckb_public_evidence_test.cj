@@ -84,10 +84,16 @@ public class CkbPublicEvidenceTest {
         let parsed = parseCkbPublicEvidenceCliArgs([
             "ckb-public-evidence-export", "--run-root", "/tmp/私有🙂",
             "--reference-manifest", "/tmp/私有🙂/reference.json",
-            "--output", "/tmp/发布 资料/out"
+            "--output", "/tmp/发布 资料/out",
+            "--worktree-root", "/tmp/metis-worktree",
+            "--production-root", "/tmp/ckb-data",
+            "--user-config-root", "/tmp/settings",
+            "--unsigned-root", "/tmp/repro-unsigned",
+            "--final-root", "/tmp/repro-final"
         ])
         @Expect(parsed.valid, true)
         @Expect(parsed.runRoot, "/tmp/私有🙂")
+        @Expect(parsed.worktreeRoot, "/tmp/metis-worktree")
         let context = p5CliContext()
         let fake = P5FakeCliExecutor()
         @Expect(validateCkbPublicEvidenceCliOptions(parsed, context, fake).ok, true)
@@ -97,6 +103,17 @@ public class CkbPublicEvidenceTest {
             "--reference-manifest", "/tmp/reference.json", "--output",
             "/tmp/发布 资料/out"
         ]).diagnostic, "cli_argument_too_long")
+        @Expect(parseCkbPublicEvidenceCliArgs([
+            "ckb-public-evidence-export", "--run-root", "/tmp/run",
+            "--reference-manifest", "/tmp/run/reference.json", "--output",
+            "/tmp/out"]).diagnostic, "required_argument_missing")
+        @Expect(parseCkbPublicEvidenceCliArgs([
+            "ckb-public-evidence-export", "--run-root", "/tmp/run",
+            "--reference-manifest", "/tmp/run/reference.json", "--output",
+            "/tmp/out", "--worktree-root", "/tmp/w", "--worktree-root",
+            "/tmp/w2", "--production-root", "/tmp/p", "--user-config-root",
+            "/tmp/u", "--unsigned-root", "/tmp/i", "--final-root", "/tmp/f"
+        ]).diagnostic, "duplicate_argument:--worktree-root")
         for (output in ["relative/out", "/tmp/../escape/out",
             "/tmp/metis-worktree/out", "/tmp/ckb-data/out",
             "/tmp/私有🙂/out", "/tmp/settings/out",
@@ -373,7 +390,10 @@ private func p5CliOptions(output: String): CkbPublicEvidenceCliOptions {
     parseCkbPublicEvidenceCliArgs([
         "ckb-public-evidence-export", "--run-root", "/tmp/私有🙂",
         "--reference-manifest", "/tmp/私有🙂/reference.json",
-        "--output", output
+        "--output", output, "--worktree-root", "/tmp/metis-worktree",
+        "--production-root", "/tmp/ckb-data", "--user-config-root",
+        "/tmp/settings", "--unsigned-root", "/tmp/repro-unsigned",
+        "--final-root", "/tmp/repro-final"
     ])
 }
 

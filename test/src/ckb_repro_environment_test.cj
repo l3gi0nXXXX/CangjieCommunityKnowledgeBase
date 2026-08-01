@@ -174,19 +174,21 @@ public class CkbReproEnvironmentTest {
             mode: "execution").diagnostic,
             "environment_platform_unsupported")
 
-        @Expect(parseCkbReproPreflightCliArgs([
-            "ckb-repro-preflight", "--environment-lock", "/tmp/expected.json",
-            "--observed-environment", "/tmp/observed.json",
-            "--certification-preflight", "/tmp/preflight.json",
-            "--certification-run-manifest", "/tmp/run-manifest.json",
-            "--json"]).valid, true)
-        @Expect(parseCkbReproPreflightCliArgs([
-            "ckb-repro-preflight", "--environment-lock", "/tmp/expected.json",
-            "--observed-environment", "/tmp/observed.json",
-            "--certification-preflight", "/tmp/preflight.json",
-            "--certification-run-manifest", "/tmp/run-manifest.json",
-            "--json", "--json"]).diagnostic,
+        let explicit = p6ExplicitCliArgs()
+        let withJson = ArrayList<String>()
+        withJson.add(all: explicit); withJson.add("--json")
+        @Expect(parseCkbReproPreflightCliArgs(withJson.toArray()).valid, true)
+        @Expect(parseCkbReproPreflightCliArgs(explicit).signingFingerprint,
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
+        withJson.add("--json")
+        @Expect(parseCkbReproPreflightCliArgs(withJson.toArray()).diagnostic,
             "duplicate_argument:--json")
+        @Expect(parseCkbReproPreflightCliArgs([
+            "ckb-repro-preflight", "--environment-lock", "/tmp/expected.json",
+            "--observed-environment", "/tmp/observed.json",
+            "--certification-preflight", "/tmp/preflight.json",
+            "--certification-run-manifest", "/tmp/run-manifest.json"
+        ]).diagnostic, "required_argument_missing")
         @Expect(parseCkbReproPreflightCliArgs([
             "ckb-repro-preflight", "--token", "secret"]).diagnostic,
             "unknown_argument:--token")
@@ -237,11 +239,7 @@ public class CkbReproEnvironmentTest {
         cliInputs.certificationPreflightJson = seal[0]
         cliInputs.certificationRunManifestJson = seal[1]
         let cli = executeCkbReproPreflightCliAdapter(
-            parseCkbReproPreflightCliArgs([
-                "ckb-repro-preflight", "--environment-lock", "/tmp/expected.json",
-                "--observed-environment", "/tmp/observed.json",
-                "--certification-preflight", "/tmp/preflight.json",
-                "--certification-run-manifest", "/tmp/run-manifest.json"]),
+            parseCkbReproPreflightCliArgs(p6ExplicitCliArgs()),
             cliInputs)
         @Expect(cli.ok, true)
         let human = renderCkbReproPreflightCliHuman(cli, lock)
@@ -350,11 +348,7 @@ public class CkbReproEnvironmentTest {
         let seal = p6CertificationSeal()
         inputs.certificationPreflightJson = seal[0]
         inputs.certificationRunManifestJson = seal[1]
-        let options = parseCkbReproPreflightCliArgs([
-            "ckb-repro-preflight", "--environment-lock", "/tmp/expected.json",
-            "--observed-environment", "/tmp/observed.json",
-            "--certification-preflight", "/tmp/preflight.json",
-            "--certification-run-manifest", "/tmp/run-manifest.json"])
+        let options = parseCkbReproPreflightCliArgs(p6ExplicitCliArgs())
 
         let drifted = CkbReproEnvironmentProbeResult()
         drifted.ok = true
@@ -403,11 +397,7 @@ public class CkbReproEnvironmentTest {
         let seal = p6CertificationSeal()
         inputs.certificationPreflightJson = seal[0]
         inputs.certificationRunManifestJson = seal[1]
-        let options = parseCkbReproPreflightCliArgs([
-            "ckb-repro-preflight", "--environment-lock", "/tmp/expected.json",
-            "--observed-environment", "/tmp/observed.json",
-            "--certification-preflight", "/tmp/preflight.json",
-            "--certification-run-manifest", "/tmp/run-manifest.json"])
+        let options = parseCkbReproPreflightCliArgs(p6ExplicitCliArgs())
 
         let unbound = CkbReproEnvironmentProbeResult()
         unbound.ok = true
@@ -670,6 +660,15 @@ private func p6CertificationSeal(): (String, String) {
 
 private func p6SealPart(value: String): String {
     "${value.toArray().size}:${value}"
+}
+
+private func p6ExplicitCliArgs(): Array<String> {
+    ["ckb-repro-preflight", "--environment-lock", "/tmp/expected.json",
+        "--observed-environment", "/tmp/observed.json",
+        "--certification-preflight", "/tmp/preflight.json",
+        "--certification-run-manifest", "/tmp/run-manifest.json",
+        "--signing-fingerprint", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+        "--observed-environment-hash", "sha256:${"a" * 64}"]
 }
 
 private func p6Hash(value: String): String {

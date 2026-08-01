@@ -386,49 +386,53 @@ public class CkbReproBundleTest {
 
         let context = p9CliContext()
         let fake = P9FakeBundleCliExecutor()
-        let unsigned = parseCkbReproBundleCliArgs([
+        let unsigned = parseCkbReproBundleCliArgs(p9ExplicitCliArgs([
             "ckb-repro-bundle", "--mode", "unsigned", "--output",
             "/tmp/发布 资料/out"
-        ])
+        ]))
         @Expect(unsigned.valid, true)
+        @Expect(unsigned.worktreeRoot, "/tmp/metis-worktree")
         @Expect(validateCkbReproBundleCliOptions(unsigned, context, fake).ok,
             true)
-        let finalize = parseCkbReproBundleCliArgs([
+        let finalize = parseCkbReproBundleCliArgs(p9ExplicitCliArgs([
             "ckb-repro-bundle", "--mode", "finalize", "--unsigned-root",
             "/tmp/已验证🙂/unsigned", "--verification-report",
             "/tmp/证据/p8-b.json", "--output", "/tmp/发布 资料/out"
-        ])
+        ]))
         @Expect(finalize.valid, true)
         @Expect(validateCkbReproBundleCliOptions(finalize, context, fake).ok,
             true)
         for (output in ["relative/out", "/tmp/../escape/out",
             "/tmp/metis-worktree/out", "/tmp/ckb-data/out",
             "/tmp/p8-runs/out", "/tmp/settings/out"]) {
-            let options = parseCkbReproBundleCliArgs([
-                "ckb-repro-bundle", "--mode", "unsigned", "--output", output])
+            let options = parseCkbReproBundleCliArgs(p9ExplicitCliArgs([
+                "ckb-repro-bundle", "--mode", "unsigned", "--output", output]))
             @Expect(validateCkbReproBundleCliOptions(options, context, fake).ok,
                 false)
         }
-        let overlap = parseCkbReproBundleCliArgs([
+        let overlap = parseCkbReproBundleCliArgs(p9ExplicitCliArgs([
             "ckb-repro-bundle", "--mode", "finalize", "--unsigned-root",
             "/tmp/发布 资料", "--verification-report", "/tmp/证据/p8-b.json",
             "--output", "/tmp/发布 资料/out"
-        ])
+        ]))
         @Expect(validateCkbReproBundleCliOptions(overlap, context, fake).diagnostic,
             "bundle_unsigned_final_overlap")
-        @Expect(parseCkbReproBundleCliArgs([
+        @Expect(parseCkbReproBundleCliArgs(p9ExplicitCliArgs([
             "ckb-repro-bundle", "--mode", "unsigned", "--unsigned-root",
             "/tmp/已验证🙂/unsigned", "--output", "/tmp/发布 资料/out"
-        ]).diagnostic, "bundle_unsigned_arguments_conflict")
+        ])).diagnostic, "bundle_unsigned_arguments_conflict")
+        @Expect(parseCkbReproBundleCliArgs([
+            "ckb-repro-bundle", "--mode", "unsigned", "--output", "/tmp/out"
+        ]).diagnostic, "required_argument_missing")
 
         let temporary = Path("target/ckb-repro-cli-adapter")
         if (exists(temporary)) { remove(temporary, recursive: true) }
         Directory.create(temporary, recursive: true)
         let temporaryRoot = canonicalize(temporary).toString()
-        let realOptions = parseCkbReproBundleCliArgs([
+        let realOptions = parseCkbReproBundleCliArgs(p9ExplicitCliArgs([
             "ckb-repro-bundle", "--mode", "unsigned", "--output",
             "${temporaryRoot}/out"
-        ])
+        ]))
         let realContext = CkbReproBundleCliPathContext()
         realContext.worktreeRoot = "/tmp/protected-worktree"
         realContext.productionRoot = "/tmp/protected-production"
@@ -469,11 +473,11 @@ public class CkbReproBundleTest {
 
         let fake = P9FakeBundleCliExecutor()
         fake.fail = true
-        let cliOptions = parseCkbReproBundleCliArgs([
+        let cliOptions = parseCkbReproBundleCliArgs(p9ExplicitCliArgs([
             "ckb-repro-bundle", "--mode", "finalize", "--unsigned-root",
             "/tmp/已验证🙂/unsigned", "--verification-report",
             "/tmp/证据/p8-b.json", "--output", "/tmp/发布 资料/out"
-        ])
+        ]))
         let failed = executeCkbReproBundleCliAdapter(cliOptions, p9CliContext(), fake)
         @Expect(failed.ok, false)
         @Expect(fake.finalizeCalls, 1)
@@ -661,11 +665,11 @@ public class CkbReproBundleTest {
     @TestCase
     public func p9Pos01ProductionFinalizeOwnsAndEmitsCompleteArtifacts(): Unit {
         let collected = p9ProductionFinalizeFixture(suffix: "-collect")
-        let collectOptions = parseCkbReproBundleCliArgs([
+        let collectOptions = parseCkbReproBundleCliArgs(p9ExplicitCliArgs([
             "ckb-repro-bundle", "--mode", "unsigned", "--input-root",
             collected[0], "--output",
             Path(collected[3]).join("collected").toString()
-        ])
+        ]))
         @Expect(collectOptions.valid, true)
         @Expect(runCkbReproBundleCliAdapter(
             collectOptions, p9CliContext()).ok, true)
@@ -674,11 +678,11 @@ public class CkbReproBundleTest {
         remove(Path(collected[3]), recursive: true)
 
         let fixture = p9ProductionFinalizeFixture()
-        let options = parseCkbReproBundleCliArgs([
+        let options = parseCkbReproBundleCliArgs(p9ExplicitCliArgs([
             "ckb-repro-bundle", "--mode", "finalize", "--unsigned-root",
             fixture[0], "--verification-report", fixture[1], "--output",
             fixture[2]
-        ])
+        ]))
         let executor = CkbReproProductionBundleCliExecutor()
         let finalized = executor.finalizeBundle(options)
         @Expect(finalized.ok, true)
@@ -718,10 +722,10 @@ public class CkbReproBundleTest {
         let raced = p9ProductionFinalizeFixture(suffix: "-race")
         Directory.create(Path(raced[2]), recursive: false)
         File.writeTo(Path(raced[2]).join("external-sentinel"), "keep".toArray())
-        let racedOptions = parseCkbReproBundleCliArgs([
+        let racedOptions = parseCkbReproBundleCliArgs(p9ExplicitCliArgs([
             "ckb-repro-bundle", "--mode", "finalize", "--unsigned-root",
             raced[0], "--verification-report", raced[1], "--output", raced[2]
-        ])
+        ]))
         let racedExecutor = CkbReproProductionBundleCliExecutor()
         @Expect(racedExecutor.finalizeBundle(racedOptions).ok, false)
         @Expect(racedExecutor.cleanupOutput(raced[2]), true)
@@ -1038,6 +1042,16 @@ private func p9CliContext(): CkbReproBundleCliPathContext {
     context.privateRunRoot = "/tmp/p8-runs"
     context.userConfigRoot = "/tmp/settings"
     context
+}
+
+private func p9ExplicitCliArgs(values: Array<String>): Array<String> {
+    let out = ArrayList<String>()
+    out.add(all: values)
+    out.add(all: ["--worktree-root", "/tmp/metis-worktree",
+        "--production-root", "/tmp/ckb-data",
+        "--private-run-root", "/tmp/p8-runs",
+        "--user-config-root", "/tmp/settings"])
+    out.toArray()
 }
 
 private func p9Asset(path: String, value: String): CkbReproBundleAsset {
