@@ -579,6 +579,10 @@ public func runCkbPublicEvidenceExportFromFiles(
         parsedReference[1].evidenceStatus != "complete") {
         return p5CliRenderFailure("public_evidence_portable_reference_required")
     }
+    if (parsedReference[1].strictPassed != 151 ||
+        parsedReference[1].transportUnresolved != 0) {
+        return p5CliRenderFailure("public_evidence_target_score_required")
+    }
     let resultsRead = p5CliReadBounded(
         Path(options.runRoot).join("results.jsonl").toString(), 64 * 1024 * 1024)
     if (resultsRead[0] != "ok") {
