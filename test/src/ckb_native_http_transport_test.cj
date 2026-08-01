@@ -334,7 +334,6 @@ public class CkbNativeHttpTransportTest {
     @TestCase
     public func nativeTlsBootstrapEnvIncludesNativeRuntimeFallbacksWithoutCaBundleWork(): Unit {
         let script = ckbNativeTlsBootstrapEnvScript()
-        let workspaceMarker = "workspace" + "_cangjie"
 
         @Expect(script.contains("CKB_NATIVE_TLS_BOOTSTRAPPED=1"), true)
         @Expect(script.contains("/opt/homebrew/opt/openssl@3/lib"), true)
@@ -342,10 +341,14 @@ public class CkbNativeHttpTransportTest {
         @Expect(script.contains("/usr/local/opt/openssl@3/lib"), true)
         @Expect(script.contains("CKB_CJPM_SKIP_BUILD_CANGJIE_ROOT"), true)
         @Expect(script.contains("CKB_CJPM_SKIP_BUILD_MAGIC_ROOT"), true)
-        @Expect(script.contains("/Users/l3gi0n/cangjie100/runtime/lib/darwin_aarch64_llvm"), true)
-        @Expect(script.contains(workspaceMarker), true)
+        @Expect(script.contains("$" + "{CANGJIE_HOME:-" + "$" +
+            "{CKB_CANGJIE_ROOT:-}}"), true)
+        @Expect(script.contains("$" + "{MAGIC_PATH:-" + "$" +
+            "{CKB_MAGIC_ROOT:-}}"), true)
         @Expect(script.contains("cangjie-stdx-mac-aarch64-1.0.0.1"), true)
-        @Expect(script.contains("/Users/l3gi0n/work/workspace_cangjie/Metis/ffi"), true)
+        @Expect(script.contains("/Users/"), false)
+        @Expect(script.contains("workspace_cangjie"), false)
+        @Expect(script.contains("Metis/ffi"), false)
         @Expect(script.contains("SSL_CERT_FILE"), false)
         @Expect(script.contains("SSL_CERT_DIR"), false)
         @Expect(script.contains("security find-certificate"), false)
