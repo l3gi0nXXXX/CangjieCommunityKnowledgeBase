@@ -7,6 +7,24 @@ import std.unittest.*
 import std.unittest.testmacro.*
 import stdx.encoding.json.*
 
+private class P2RealP3VectorBackend <: CkbPortableVectorBuildBackend {
+    public func collectionExists(collection: String): Bool { false }
+    public func createEmpty(collection: String, dimension: Int64,
+        distance: String): CkbReproContractResult {
+        let result = CkbReproContractResult()
+        result.ok = true; result.diagnostic = "ok"; result
+    }
+    public func stagedRebuild(collection: String): CkbPortableVectorBuildEvidence {
+        let evidence = CkbPortableVectorBuildEvidence()
+        evidence.ready = true; evidence.diagnostic = "ok"
+        evidence.collection = collection; evidence.count = 7978
+        evidence.dimension = 1024; evidence.distance = "Cosine"
+        evidence.payloadCanonicalHash = benchmarkGapSha256("real-payload")
+        evidence.machinePathCount = 0; evidence
+    }
+    public func deleteCollection(collection: String): Unit {}
+}
+
 private class P2FakeArchiveBackend <: CkbReleaseArchiveBackend {
     public var listCalls: Int64 = 0
     public var readCalls: Int64 = 0
@@ -601,30 +619,38 @@ public class CkbReproReleaseTest {
         let logicalPath = "${root}/logical.json"
         let vectorPath = "${root}/vector.json"
         let version = p2Version(); let p4Hash = p2Hash("p4-real")
-        let collection = "portable_vectors"; let image = p2Hash("image")
-        let payloadHash = p2Hash("payload"); let provider = "provider"
-        let model = "model"; let distance = "Cosine"
-        let vectorHash = benchmarkGapSha256(
-            "${collection}|${version}|${p4Hash}|${image}|${provider}|${model}|" +
-            "1|1024|${distance}|${payloadHash}")
+        let buildOptions = CkbPortableVectorBuildOptions()
+        buildOptions.candidateVersion = version
+        buildOptions.p4PortableProofHash = p4Hash
+        buildOptions.runtimeVectorState = "DEGRADED"
+        buildOptions.runtimeVectorDegradedReason = "vector_snapshot_missing"
+        buildOptions.runtimeVectorCount = 0
+        let p4Proof = CkbReproBuildProof()
+        p4Proof.logicalReady = true; p4Proof.diagnostic = "ok"
+        p4Proof.vectorState = "DEGRADED"; p4Proof.vectorCount = 0
+        p4Proof.preservationHash = p4Hash
+        let environment = CkbReproEnvironmentLock()
+        environment.identityStatus = "frozen"
+        environment.qdrantImageDigest = p2Hash("real-image")
+        environment.embeddingProvider = "real-provider"
+        environment.embeddingModel = "real-model"
+        environment.embeddingDimension = 1024
+        let generated = buildCkbPortableReferenceVectors(buildOptions,
+            p4Proof, environment, P2RealP3VectorBackend())
+        @Expect(generated.ready, true)
+        let vector = renderCkbPortableVectorProof(generated.proof)
         let logical = "{\"sourceState\":\"portableVectorCandidate\"," +
             "\"portableKnowledgeVersion\":\"${version}\"," +
             "\"p4PortableProofHash\":\"${p4Hash}\"," +
             "\"pathMachineFindingCount\":0,\"pathUnmappedFindingCount\":0," +
             "\"contaminationProofHash\":\"${p2Hash("clean")}\"," +
             "\"activePointerHash\":\"${p2Hash("pointer")}\"}"
-        let vector = "{\"collection\":\"${collection}\"," +
-            "\"candidateVersion\":\"${version}\",\"p4PortableProofHash\":\"${p4Hash}\"," +
-            "\"qdrantImageDigest\":\"${image}\",\"embeddingProvider\":\"${provider}\"," +
-            "\"embeddingModel\":\"${model}\",\"count\":1,\"dimension\":1024," +
-            "\"distance\":\"${distance}\",\"payloadCanonicalHash\":\"${payloadHash}\"," +
-            "\"vectorProofHash\":\"${vectorHash}\",\"vectorState\":\"READY\",\"proofReal\":true}"
         File.writeTo(Path(logicalPath), logical.toArray())
         File.writeTo(Path(vectorPath), vector.toArray())
         @Expect(loadCkbLogicalSnapshotCliProofs(logicalPath, vectorPath)[0].diagnostic,
             "ok")
-        File.writeTo(Path(vectorPath), vector.replace(vectorHash,
-            p2Hash("substituted")).toArray())
+        File.writeTo(Path(vectorPath), vector.replace("\"real-model\"",
+            "\"tampered-model\"").toArray())
         @Expect(loadCkbLogicalSnapshotCliProofs(logicalPath, vectorPath)[0].diagnostic,
             "release_proof_cross_binding_mismatch")
         File.writeTo(Path(vectorPath), [UInt8(0xff), UInt8(0xfe)])
