@@ -2,6 +2,7 @@ package cangjie_community_knowledge_base_test
 
 import std.collection.ArrayList
 import std.fs.{Directory, File, Path, canonicalize, exists, remove}
+import std.time.DateTime
 import std.unittest.*
 import std.unittest.testmacro.*
 
@@ -249,12 +250,28 @@ private func p9PublishLocalFixture(): String {
     let localText = renderCkbReproPublishLocalEvidence(local,
         ckbReproBundleHash(verification.toArray()),
         ckbReproBundleHash(attestation.toArray()))
+    let observed = DateTime.now().toUnixTimeStamp().toMilliseconds()
+    let expires = observed + 600000
+    let remoteSeed = "ckb-repro-remote-tag-evidence-v1|" +
+        "git@github.com:l3gi0nXXXX/CangjieCommunityKnowledgeBase.git|" +
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|ckb-repro-v1|absent||" +
+        "${observed}|${expires}|git-ls-remote-tags-refs|true"
+    let remote = "{\"schemaVersion\":\"ckb-repro-remote-tag-evidence-v1\"," +
+        "\"originRepository\":\"git@github.com:l3gi0nXXXX/CangjieCommunityKnowledgeBase.git\"," +
+        "\"originMainCommit\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"," +
+        "\"tagName\":\"ckb-repro-v1\",\"state\":\"absent\"," +
+        "\"tagCommit\":\"\",\"observedAtMillis\":${observed}," +
+        "\"expiresAtMillis\":${expires}," +
+        "\"queryKind\":\"git-ls-remote-tags-refs\"," +
+        "\"querySucceeded\":true," +
+        "\"evidenceHash\":\"${ckbReproBundleHash(remoteSeed.toArray())}\"}"
     let files = [
         (asset.relativePath, asset.bytes),
         ("RELEASE-MANIFEST.json", manifest.toArray()),
         ("verification-report.json", verification.toArray()),
         ("build-attestation.json", attestation.toArray()),
-        ("PUBLISH-EVIDENCE.json", localText.toArray())
+        ("PUBLISH-EVIDENCE.json", localText.toArray()),
+        ("REMOTE-TAG-EVIDENCE.json", remote.toArray())
     ]
     var sums = ""
     for (item in files) {
@@ -263,6 +280,8 @@ private func p9PublishLocalFixture(): String {
     }
     File.writeTo(Path(canonicalRoot).join("SHA256SUMS"), sums.toArray())
     File.writeTo(Path(canonicalRoot).join("SHA256SUMS.sig"), "fake-signature".toArray())
+    File.writeTo(Path(canonicalRoot).join("REMOTE-TAG-EVIDENCE.json.sig"),
+        "fake-remote-attestation-signature".toArray())
     canonicalRoot
 }
 
@@ -286,6 +305,10 @@ private func p9GitEvidence(tagExists: Bool): CkbReproGitEvidence {
     evidence.tagExistsLocal = tagExists
     evidence.tagExistsRemote = tagExists
     evidence.tagCommit = if (tagExists) { evidence.headCommit } else { "" }
+    evidence.remoteTagSnapshotAvailable = true
+    evidence.remoteTagSnapshotFresh = true
+    evidence.remoteTagState = if (tagExists) { "present" } else { "absent" }
+    evidence.remoteTagCommit = if (tagExists) { evidence.headCommit } else { "" }
     evidence
 }
 

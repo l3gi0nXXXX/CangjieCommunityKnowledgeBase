@@ -4,6 +4,7 @@ import std.collection.{ArrayList, HashSet}
 import std.fs.{File, Path, canonicalize, exists}
 import std.io.{InputStream, StringReader}
 import std.process.{ProcessRedirect, launch}
+import std.time.DateTime
 import stdx.encoding.json.*
 
 public class CkbReproPublishGateOptions {
@@ -23,6 +24,10 @@ public class CkbReproGitEvidence {
     public var tagExistsLocal: Bool = false
     public var tagExistsRemote: Bool = false
     public var tagCommit: String = ""
+    public var remoteTagSnapshotAvailable: Bool = false
+    public var remoteTagSnapshotFresh: Bool = false
+    public var remoteTagState: String = "unavailable"
+    public var remoteTagCommit: String = ""
     public init() {}
 }
 
@@ -121,7 +126,8 @@ public class CkbReproFilesystemPublishGateCliExecutor <:
         let loaded = loadCkbReproPublishLocalEvidence(options.bundleRoot)
         if (!loaded.valid) { return p9PublishCliFailure(loaded.diagnostic) }
         loaded.gateOptions.mode = options.mode
-        let git = p9PublishReadGitEvidence(loaded.gateOptions)
+        let git = p9PublishReadGitEvidence(loaded.gateOptions,
+            options.bundleRoot)
         if (git[0] != "ok") { return p9PublishCliFailure(git[0]) }
         let signature = p9PublishReadSignatureEvidence(
             options.bundleRoot, loaded.gateOptions, options.mode)
@@ -311,7 +317,8 @@ public func loadCkbReproPublishLocalEvidence(bundleRoot: String):
     let failed = CkbReproPublishLocalEvidence()
     let files = ["PUBLISH-EVIDENCE.json", "RELEASE-MANIFEST.json",
         "SHA256SUMS", "SHA256SUMS.sig", "verification-report.json",
-        "build-attestation.json"]
+        "build-attestation.json", "REMOTE-TAG-EVIDENCE.json",
+        "REMOTE-TAG-EVIDENCE.json.sig"]
     for (name in files) {
         if (!p9PublishSafeBundleFile(bundleRoot, name)) {
             failed.diagnostic = "publish_bundle_required_evidence_missing"
@@ -379,7 +386,7 @@ public func validateCkbTagReleaseBindingEvidence(
         out.diagnostic = "publish_mode_invalid"
         return out
     }
-    if (options.tagName == "" || options.releaseTitle == "" ||
+    if (!p9PublishTagName(options.tagName) || options.releaseTitle == "" ||
         !p9PublishFingerprint(options.signingFingerprint)) {
         out.diagnostic = "publish_identity_invalid"
         return out
@@ -400,13 +407,24 @@ public func validateCkbTagReleaseBindingEvidence(
         out.diagnostic = "publish_signature_mismatch"
         return out
     }
+    if (!git.remoteTagSnapshotAvailable) {
+        out.diagnostic = "publish_remote_tag_evidence_unavailable"
+        return out
+    }
+    if (!git.remoteTagSnapshotFresh) {
+        out.diagnostic = "publish_remote_tag_evidence_stale"
+        return out
+    }
     if (options.mode == "pre-tag") {
-        if (git.tagExistsLocal || git.tagExistsRemote) {
+        if (git.remoteTagState != "absent" || git.tagExistsLocal ||
+            git.tagExistsRemote || git.remoteTagCommit != "") {
             out.diagnostic = "publish_tag_already_exists"
             return out
         }
     } else if (!git.tagExistsLocal || !git.tagExistsRemote ||
-        git.tagCommit != options.releaseCommit || !signature.tagSigned ||
+        git.remoteTagState != "present" ||
+        git.tagCommit != options.releaseCommit ||
+        git.remoteTagCommit != options.releaseCommit || !signature.tagSigned ||
         signature.tagFingerprint != options.signingFingerprint) {
         out.diagnostic = "publish_tag_binding_mismatch"
         return out
@@ -477,6 +495,18 @@ private func p9PublishFingerprint(value: String): Bool {
     for (rune in value.runes()) {
         if (!((rune >= r'0' && rune <= r'9') ||
             (rune >= r'A' && rune <= r'F'))) { return false }
+    }
+    true
+}
+
+private func p9PublishTagName(value: String): Bool {
+    if (value == "" || value.toRuneArray().size > 128 ||
+        value.startsWith(".") || value.endsWith(".")) { return false }
+    for (rune in value.runes()) {
+        if (!((rune >= r'0' && rune <= r'9') ||
+            (rune >= r'a' && rune <= r'z') ||
+            (rune >= r'A' && rune <= r'Z') || rune == r'-' ||
+            rune == r'_' || rune == r'.')) { return false }
     }
     true
 }
@@ -558,7 +588,8 @@ private func p9PublishSafeBundleFile(root: String, name: String): Bool {
     } catch (_: Exception) { false }
 }
 
-private func p9PublishReadGitEvidence(options: CkbReproPublishGateOptions):
+private func p9PublishReadGitEvidence(options: CkbReproPublishGateOptions,
+    root: String):
     (String, CkbReproGitEvidence) {
     let out = CkbReproGitEvidence()
     let origin = p9PublishCommand("git", ["config", "--get", "remote.origin.url"])
@@ -572,15 +603,98 @@ private func p9PublishReadGitEvidence(options: CkbReproPublishGateOptions):
     out.originMainCommit = remoteMain[1]
     let tag = p9PublishCommand("git", ["rev-parse", "refs/tags/${options.tagName}"])
     out.tagExistsLocal = tag[0] == 0
-    // The offline gate intentionally performs no fetch. The local ref is the
-    // only tag fact available after the maintainer's explicit push/fetch step.
-    out.tagExistsRemote = out.tagExistsLocal
     out.tagCommit = if (out.tagExistsLocal) {
         let commit = p9PublishCommand("git", ["rev-list", "-n", "1",
             "refs/tags/${options.tagName}"])
         if (commit[0] == 0) { commit[1] } else { "" }
     } else { "" }
+    let snapshot = p9PublishReadRemoteTagSnapshot(root, options,
+        out.originRepository, out.originMainCommit)
+    if (snapshot[0] != "ok") { return (snapshot[0], out) }
+    out.remoteTagSnapshotAvailable = true
+    out.remoteTagSnapshotFresh = true
+    out.remoteTagState = snapshot[1]
+    out.remoteTagCommit = snapshot[2]
+    let remoteRef = p9PublishCommand("git", ["rev-parse",
+        "refs/remotes/origin/tags/${options.tagName}"])
+    out.tagExistsRemote = remoteRef[0] == 0
+    if (out.remoteTagState == "present") {
+        if (!out.tagExistsRemote) {
+            return ("publish_remote_tag_evidence_unavailable", out)
+        }
+        let remoteCommit = p9PublishCommand("git", ["rev-list", "-n", "1",
+            "refs/remotes/origin/tags/${options.tagName}"])
+        if (remoteCommit[0] != 0 || remoteCommit[1] != out.remoteTagCommit) {
+            return ("publish_tag_binding_mismatch", out)
+        }
+    } else if (out.tagExistsRemote) {
+        return ("publish_tag_already_exists", out)
+    }
     ("ok", out)
+}
+
+private func p9PublishReadRemoteTagSnapshot(root: String,
+    options: CkbReproPublishGateOptions, origin: String,
+    originMainCommit: String): (String, String, String) {
+    if (!p9PublishSafeBundleFile(root, "REMOTE-TAG-EVIDENCE.json") ||
+        !p9PublishSafeBundleFile(root, "REMOTE-TAG-EVIDENCE.json.sig") ||
+        !p9PublishSafeNestedFile(root,
+            "reproducibility/RELEASE-SIGNING-KEY.asc")) {
+        return ("publish_remote_tag_evidence_unavailable", "", "")
+    }
+    let verified = p9PublishCommand("gpgv", ["--status-fd", "1", "--keyring",
+        Path(root).join("reproducibility/RELEASE-SIGNING-KEY.asc").toString(),
+        Path(root).join("REMOTE-TAG-EVIDENCE.json.sig").toString(),
+        Path(root).join("REMOTE-TAG-EVIDENCE.json").toString()])
+    if (verified[0] != 0 || !verified[1].contains(
+        "VALIDSIG ${options.signingFingerprint} ")) {
+        return ("publish_remote_tag_evidence_signature_invalid", "", "")
+    }
+    try {
+        let bytes = File.readFrom(Path(root).join("REMOTE-TAG-EVIDENCE.json"))
+        let text = try { String.fromUtf8(bytes) } catch (_: Exception) {
+            return ("invalid_response_encoding", "", "")
+        }
+        let object = JsonValue.fromStr(text).asObject()
+        if (object.size() != 11 ||
+            p9PublishLocalString(object, "schemaVersion") !=
+                "ckb-repro-remote-tag-evidence-v1" ||
+            p9PublishLocalString(object, "queryKind") !=
+                "git-ls-remote-tags-refs" ||
+            !p9PublishLocalBool(object, "querySucceeded")) {
+            return ("publish_remote_tag_evidence_invalid", "", "")
+        }
+        let repository = p9PublishLocalString(object, "originRepository")
+        let mainCommit = p9PublishLocalString(object, "originMainCommit")
+        let tagName = p9PublishLocalString(object, "tagName")
+        let state = p9PublishLocalString(object, "state")
+        let tagCommit = p9PublishLocalString(object, "tagCommit")
+        let observed = p9PublishLocalInt(object, "observedAtMillis")
+        let expires = p9PublishLocalInt(object, "expiresAtMillis")
+        let evidenceHash = p9PublishLocalString(object, "evidenceHash")
+        let seed = "ckb-repro-remote-tag-evidence-v1|${repository}|" +
+            "${mainCommit}|${tagName}|${state}|${tagCommit}|${observed}|" +
+            "${expires}|git-ls-remote-tags-refs|true"
+        if (evidenceHash != ckbReproBundleHash(seed.toArray()) ||
+            normalizeCkbReproRepositoryRemote(repository) !=
+                options.releaseRepository ||
+            normalizeCkbReproRepositoryRemote(origin) !=
+                options.releaseRepository || mainCommit != originMainCommit ||
+            tagName != options.tagName ||
+            (state != "absent" && state != "present") ||
+            (state == "absent" && tagCommit != "") ||
+            (state == "present" && !p9PublishCommit(tagCommit))) {
+            return ("publish_remote_tag_evidence_invalid", "", "")
+        }
+        let now = DateTime.now().toUnixTimeStamp().toMilliseconds()
+        if (observed <= 0 || expires <= observed ||
+            expires - observed > 600000 || now < observed || now > expires) {
+            return ("publish_remote_tag_evidence_stale", "", "")
+        }
+        ("ok", state, tagCommit)
+    } catch (_: Exception) {
+        ("publish_remote_tag_evidence_invalid", "", "")
+    }
 }
 
 private func p9PublishReadSignatureEvidence(root: String,
@@ -615,7 +729,7 @@ private func p9PublishCommand(command: String, args: Array<String>):
         let stdout = p9PublishReadPipe(process.stdOutPipe)
         let stderr = p9PublishReadPipe(process.stdErrPipe)
         let code = process.wait()
-        let text = if (command == "gpg" ||
+        let text = if (command == "gpg" || command == "gpgv" ||
             (command == "git" && args.size > 0 && args[0] == "verify-tag")) {
             stdout + stderr
         } else { stdout }
@@ -661,7 +775,8 @@ private func p9PublishDeriveEvidence(root: String,
     let required = ArrayList<String>()
     for (asset in manifest.assets) { required.add(asset.relativePath) }
     for (name in ["RELEASE-MANIFEST.json", "verification-report.json",
-        "build-attestation.json", "PUBLISH-EVIDENCE.json"]) { required.add(name) }
+        "build-attestation.json", "PUBLISH-EVIDENCE.json",
+        "REMOTE-TAG-EVIDENCE.json"]) { required.add(name) }
     if (sums[1].size != required.size) { return "publish_sha_coverage_invalid" }
     for (name in required) {
         var expected = ""
@@ -753,7 +868,8 @@ private func p9PublishParseSums(text: String):
 }
 
 private func p9PublishDerivedName(path: String): Bool {
-    path == "SHA256SUMS" || path == "SHA256SUMS.sig"
+    path == "SHA256SUMS" || path == "SHA256SUMS.sig" ||
+        path == "REMOTE-TAG-EVIDENCE.json.sig"
 }
 
 private func p9PublishSafeNestedFile(root: String, relative: String): Bool {
