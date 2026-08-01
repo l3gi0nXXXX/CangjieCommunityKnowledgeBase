@@ -361,18 +361,9 @@ public class CkbReproCliAdaptersTest {
         Directory.create(root, recursive: true)
         let promotion = CkbPortablePromotionOptions()
         promotion.candidateVersion = "portable-v1"
-        promotion.identity = "portable-identity"
+        promotion.identity = p234Hash("public-evidence")
         promotion.p8StrictPassed = 151
         let p4Hash = p234Hash("p4-proof")
-        let p5 = CkbPortableContaminationProof()
-        p5.candidateVersion = promotion.candidateVersion
-        p5.identity = promotion.identity; p5.clean = true; p5.findingCount = 0
-        p5.proofHash = ckbPortableContaminationProofHash(p5)
-        let p8a = CkbPortableP8AProof()
-        p8a.candidateVersion = promotion.candidateVersion
-        p8a.identity = promotion.identity; p8a.totalCases = 164
-        p8a.strictPassed = 151; p8a.transportUnresolved = 0
-        p8a.proofHash = ckbPortableP8AProofHash(p8a)
         let p3 = CkbPortableVectorProof()
         p3.collection = "ckb-portable-v1"
         p3.candidateVersion = promotion.candidateVersion
@@ -385,11 +376,18 @@ public class CkbReproCliAdaptersTest {
             "\"portableKnowledgeVersion\":\"${promotion.candidateVersion}\"," +
             "\"p4PortableProofHash\":\"${p4Hash}\"," +
             "\"pathMachineFindingCount\":0,\"pathUnmappedFindingCount\":0," +
-            "\"contaminationProofHash\":\"${p5.proofHash}\"," +
+            "\"contaminationProofHash\":\"${promotion.identity}\"," +
             "\"activePointerHash\":\"${p234Hash("pointer")}\"}"
         let p3Text = renderCkbPortableVectorProof(p3)
-        let p5Text = renderCkbPortableContaminationProof(p5)
-        let p8aText = renderCkbPortableP8AProof(p8a)
+        let reference = p234PortableReference(promotion.candidateVersion,
+            p3.vectorProofHash)
+        let referenceValidation = validateCkbReproReferenceManifest(reference)
+        @Expect(referenceValidation.ok, true)
+        let p8aText = referenceValidation.canonicalJson
+        let p5Text = "{\"schemaVersion\":\"ckb-public-evidence-export-v1\"," +
+            "\"referenceManifestHash\":\"${referenceValidation.manifestHash}\"," +
+            "\"privateResultsHash\":\"${reference.resultsHash}\"," +
+            "\"publicEvidenceHash\":\"${promotion.identity}\"}"
         File.writeTo(root.join("p2.json"), p2Text.toArray())
         File.writeTo(root.join("p3.json"), p3Text.toArray())
         File.writeTo(root.join("p5.json"), p5Text.toArray())
@@ -401,25 +399,7 @@ public class CkbReproCliAdaptersTest {
         promotion.candidateManifestHash =
             ckbPortableCandidateManifestHash(promotion)
         promotion.p8BProofHash = ckbPortableP8BProofHash(promotion)
-        let candidate = "{\"candidateVersion\":\"portable-v1\"," +
-            "\"candidateManifestHash\":\"${promotion.candidateManifestHash}\"," +
-            "\"p2ProofHash\":\"${promotion.p2ProofHash}\"," +
-            "\"p3ProofHash\":\"${promotion.p3ProofHash}\"," +
-            "\"p5ProofHash\":\"${promotion.p5ProofHash}\"," +
-            "\"p8AProofHash\":\"${promotion.p8AProofHash}\"," +
-            "\"p2ProofPath\":\"p2.json\",\"p3ProofPath\":\"p3.json\"," +
-            "\"p5ProofPath\":\"p5.json\",\"p8AProofPath\":\"p8a.json\"," +
-            "\"identity\":\"portable-identity\",\"p8StrictPassed\":151}"
-        let p8b = "{\"ready\":true,\"candidateVersion\":\"portable-v1\"," +
-            "\"identity\":\"portable-identity\"," +
-            "\"candidateManifestHash\":\"${promotion.candidateManifestHash}\"," +
-            "\"p2ProofHash\":\"${promotion.p2ProofHash}\"," +
-            "\"p3ProofHash\":\"${promotion.p3ProofHash}\"," +
-            "\"p5ProofHash\":\"${promotion.p5ProofHash}\"," +
-            "\"p8AProofHash\":\"${promotion.p8AProofHash}\"," +
-            "\"p8BProofHash\":\"${promotion.p8BProofHash}\"}"
-        File.writeTo(root.join("candidate.json"), candidate.toArray())
-        File.writeTo(root.join("p8b.json"), p8b.toArray())
+        p234WritePromotionManifests(root, promotion)
         let productionRoot = root.join("production")
         Directory.create(productionRoot, recursive: true)
         let dependency = P234PromotionDependency()
@@ -441,16 +421,33 @@ public class CkbReproCliAdaptersTest {
             root.join("candidate.json").toString(),
             root.join("p8b-invalid.json").toString())[0].diagnostic,
             "invalid_response_encoding")
-        File.writeTo(root.join("p5-tampered.json"), p5Text.replace(
-            p5.proofHash, p234Hash("tampered-p5")).toArray())
-        @Expect(parseCkbPortableContaminationProofFile(
-            root.join("p5-tampered.json").toString())[0].diagnostic,
-            "promotion_p5_proof_invalid")
-        File.writeTo(root.join("p8a-tampered.json"), p8aText.replace(
-            "\"strictPassed\":151", "\"strictPassed\":150").toArray())
-        @Expect(parseCkbPortableP8AProofFile(
-            root.join("p8a-tampered.json").toString())[0].diagnostic,
-            "promotion_p8_a_proof_invalid")
+        let legacyP5 = CkbPortableContaminationProof()
+        legacyP5.candidateVersion = promotion.candidateVersion
+        legacyP5.identity = promotion.identity
+        legacyP5.clean = true; legacyP5.findingCount = 0
+        legacyP5.proofHash = ckbPortableContaminationProofHash(legacyP5)
+        let legacyP8A = CkbPortableP8AProof()
+        legacyP8A.candidateVersion = promotion.candidateVersion
+        legacyP8A.identity = promotion.identity; legacyP8A.totalCases = 164
+        legacyP8A.strictPassed = 151; legacyP8A.transportUnresolved = 0
+        legacyP8A.proofHash = ckbPortableP8AProofHash(legacyP8A)
+        let legacyP2 = p2Text.replace(promotion.identity, legacyP5.proofHash)
+        let legacyP5Text = renderCkbPortableContaminationProof(legacyP5)
+        let legacyP8AText = renderCkbPortableP8AProof(legacyP8A)
+        File.writeTo(root.join("p2.json"), legacyP2.toArray())
+        File.writeTo(root.join("p3.json"), p3Text.toArray())
+        File.writeTo(root.join("p5.json"), legacyP5Text.toArray())
+        File.writeTo(root.join("p8a.json"), legacyP8AText.toArray())
+        promotion.p2ProofHash = benchmarkGapSha256(legacyP2)
+        promotion.p5ProofHash = benchmarkGapSha256(legacyP5Text)
+        promotion.p8AProofHash = benchmarkGapSha256(legacyP8AText)
+        promotion.candidateManifestHash = ckbPortableCandidateManifestHash(promotion)
+        promotion.p8BProofHash = ckbPortableP8BProofHash(promotion)
+        p234WritePromotionManifests(root, promotion)
+        @Expect(loadCkbPortablePromotionCliInputs(
+            root.join("candidate.json").toString(),
+            root.join("p8b.json").toString())[0].diagnostic,
+            "promotion_typed_artifact_invalid")
 
         let transport = P234SnapshotDependency()
         let business = newCkbP4BusinessProductionAdapter(
@@ -492,6 +489,70 @@ private func p234LongControlSummary(): String {
 }
 
 private func p234Hash(value: String): String { benchmarkGapSha256(value) }
+
+private func p234PortableReference(knowledgeVersion: String,
+    vectorProofHash: String): CkbReproReferenceManifest {
+    let manifest = CkbReproReferenceManifest()
+    manifest.schemaVersion = "ckb-repro-reference-v1"
+    manifest.baselineKind = "portable_release"
+    manifest.evidenceStatus = "complete"
+    manifest.releaseRepository = "l3gi0nXXXX/CangjieCommunityKnowledgeBase"
+    manifest.releaseRepositoryUrl =
+        "https://github.com/l3gi0nXXXX/CangjieCommunityKnowledgeBase"
+    manifest.releaseBranch = "main"
+    manifest.observedRemote =
+        "https://github.com/l3gi0nXXXX/CangjieCommunityKnowledgeBase.git"
+    manifest.runId = "portable-promotion"
+    manifest.knowledgeVersion = knowledgeVersion
+    manifest.vectorProofHash = vectorProofHash
+    manifest.datasetVersion = "dataset-v1"
+    manifest.runnerCommit = "0123456789012345678901234567890123456789"
+    manifest.claudeCodeVersion = "2.1.179"
+    manifest.model = "GLM-5.2"
+    manifest.providerFingerprint = p234Hash("provider")
+    manifest.experimentGroup = "D-ckb-mcp-http"
+    manifest.toolTransport = "streamable_http"
+    manifest.mcpTransport = "mcp_http"
+    manifest.ckbRequired = true
+    manifest.localDocsPolicy = "disabled"
+    manifest.modelEffort = "fixed"
+    manifest.modelBudget = "fixed"
+    manifest.timeoutSeconds = 3600
+    manifest.transportRetryBudget = 10
+    manifest.promptHash = p234Hash("prompt")
+    manifest.resultsHash = p234Hash("private-results")
+    manifest.runCriticalTreeHash = p234Hash("critical-tree")
+    manifest.certifiedRunInputHash = p234Hash("certified-input")
+    manifest.totalCases = 164; manifest.rawPassed = 158
+    manifest.strictPassed = 151; manifest.strictFailed = 13
+    manifest.businessFailed = 3; manifest.protocolInvalid = 10
+    manifest.transportUnresolved = 0
+    manifest
+}
+
+private func p234WritePromotionManifests(root: Path,
+    promotion: CkbPortablePromotionOptions): Unit {
+    let candidate = "{\"candidateVersion\":\"${promotion.candidateVersion}\"," +
+        "\"candidateManifestHash\":\"${promotion.candidateManifestHash}\"," +
+        "\"p2ProofHash\":\"${promotion.p2ProofHash}\"," +
+        "\"p3ProofHash\":\"${promotion.p3ProofHash}\"," +
+        "\"p5ProofHash\":\"${promotion.p5ProofHash}\"," +
+        "\"p8AProofHash\":\"${promotion.p8AProofHash}\"," +
+        "\"p2ProofPath\":\"p2.json\",\"p3ProofPath\":\"p3.json\"," +
+        "\"p5ProofPath\":\"p5.json\",\"p8AProofPath\":\"p8a.json\"," +
+        "\"identity\":\"${promotion.identity}\",\"p8StrictPassed\":151}"
+    let p8b = "{\"ready\":true," +
+        "\"candidateVersion\":\"${promotion.candidateVersion}\"," +
+        "\"identity\":\"${promotion.identity}\"," +
+        "\"candidateManifestHash\":\"${promotion.candidateManifestHash}\"," +
+        "\"p2ProofHash\":\"${promotion.p2ProofHash}\"," +
+        "\"p3ProofHash\":\"${promotion.p3ProofHash}\"," +
+        "\"p5ProofHash\":\"${promotion.p5ProofHash}\"," +
+        "\"p8AProofHash\":\"${promotion.p8AProofHash}\"," +
+        "\"p8BProofHash\":\"${promotion.p8BProofHash}\"}"
+    File.writeTo(root.join("candidate.json"), candidate.toArray())
+    File.writeTo(root.join("p8b.json"), p8b.toArray())
+}
 
 private func p234PromotionArgs(apply: Bool): Array<String> {
     let values = ArrayList<String>()
