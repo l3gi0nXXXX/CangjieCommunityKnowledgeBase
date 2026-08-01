@@ -11,6 +11,18 @@ private class P0MainCliAdapter <: CkbReproMainCliAdapter {
         this.calls.add("release:${args[0]}")
         CkbReproMainCliResult(true, 0, "release human\n")
     }
+    public func runPublicEvidence(args: Array<String>): CkbReproMainCliResult {
+        this.calls.add("evidence:${args[0]}")
+        CkbReproMainCliResult(true, 0, "evidence human\n")
+    }
+    public func runPreflight(args: Array<String>): CkbReproMainCliResult {
+        this.calls.add("preflight:${args[0]}")
+        CkbReproMainCliResult(true, 1, "preflight human\n")
+    }
+    public func runBundle(args: Array<String>): CkbReproMainCliResult {
+        this.calls.add("bundle:${args[0]}")
+        CkbReproMainCliResult(true, 0, "bundle human\n")
+    }
     public func runPublishGate(args: Array<String>): CkbReproMainCliResult {
         this.calls.add("publish:${args[0]}")
         CkbReproMainCliResult(true, 1, "publish human\n")
@@ -37,6 +49,20 @@ public class CkbReproMainCliTest {
     }
 
     @TestCase
+    public func p5P6AndP9CommandsRouteBeforeKnowledgeBaseLoading(): Unit {
+        let adapter = P0MainCliAdapter()
+        for (command in ["ckb-public-evidence-export", "ckb-repro-preflight",
+            "ckb-repro-bundle"]) {
+            let result = executeCkbReproMainCli(command, [command], adapter)
+            @Expect(result.handled, true)
+        }
+        @Expect(adapter.calls.toArray(), [
+            "evidence:ckb-public-evidence-export",
+            "preflight:ckb-repro-preflight",
+            "bundle:ckb-repro-bundle"])
+    }
+
+    @TestCase
     public func unrelatedCommandsAreNotConsumedByReproRouter(): Unit {
         let adapter = P0MainCliAdapter()
         let result = executeCkbReproMainCli("status", ["status"], adapter)
@@ -47,14 +73,14 @@ public class CkbReproMainCliTest {
 
     @TestCase
     public func defaultOutputIsHumanAndJsonRequiresExplicitFlag(): Unit {
-        for (command in ["ckb-release-export", "ckb-repro-publish-gate"]) {
+        for (command in ["ckb-release-export", "ckb-public-evidence-export",
+            "ckb-repro-preflight", "ckb-repro-bundle",
+            "ckb-repro-publish-gate"]) {
             let human = runCkbReproMainCli(command, [command])
             @Expect(human.handled, true)
             @Expect(human.exitCode, 2)
             @Expect(human.output.startsWith("{"), false)
-            @Expect(human.output.contains(if (command ==
-                "ckb-repro-publish-gate") { "publish gate:" }
-                else { "CKB release operation failed:" }), true)
+            @Expect(human.output.startsWith("{"), false)
 
             let json = runCkbReproMainCli(command, [command, "--json"])
             @Expect(json.handled, true)

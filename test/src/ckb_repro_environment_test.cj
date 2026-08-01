@@ -63,8 +63,17 @@ public class CkbReproEnvironmentTest {
         let environmentValidation = validateCkbReproEnvironmentLock(environment[1])
         @Expect(environmentValidation.ok, true)
         @Expect(environment[1].identityStatus, "planned")
+        @Expect(environment[1].attestationAuthorityManifestPath,
+            "reproducibility/manifests/environment-attestation-authority.json")
+        @Expect(environment[1].attestationAuthorityHash, "")
         @Expect(validateCkbReproEnvironmentLock(environment[1],
             mode: "execution").diagnostic, "environment_identity_not_frozen")
+        @Expect(exists(Path(
+            "../reproducibility/manifests/environment-attestation-authority.json")),
+            true)
+        @Expect(exists(Path(
+            "../reproducibility/environment-attestation-authority.schema.json")),
+            true)
         let critical = parseCkbRunCriticalFilesManifest(
             p6Read("../reproducibility/manifests/run-critical-files.json"))
         @Expect(critical[0].ok, true)
@@ -644,6 +653,9 @@ public func p6FrozenEnvironment(): CkbReproEnvironmentLock {
     lock.datasetVersion =
         "cangjie-humaneval-164-sha256:3a12d5a5283daa492dd489c1a97ebc457b71e72d90669fbc965e165566386b33"
     lock.authorityDeliveryHash = p6Hash("authority-delivery")
+    lock.attestationAuthorityManifestPath =
+        "reproducibility/manifests/environment-attestation-authority.json"
+    lock.attestationAuthorityHash = p6Hash("attestation-authority")
     lock
 }
 
