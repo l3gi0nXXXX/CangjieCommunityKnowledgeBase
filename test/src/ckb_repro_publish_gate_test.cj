@@ -94,9 +94,9 @@ public class CkbReproPublishGateTest {
             "public class CkbReproFilesystemPublishAuthentication"), false)
         @Expect(productionSource.contains(
             "public func finalizeCkbReproFilesystemPublishResult"), false)
-        @Expect(productionSource.split("p9PublishCommand(\"gpgv\"").size - 1, 2)
+        @Expect(productionSource.split("runner.run(\"gpgv\"").size - 1, 1)
         @Expect(productionSource.contains("p9PublishCommand(\"gpg\""), false)
-        @Expect(productionSource.split("--keyring").size - 1, 2)
+        @Expect(productionSource.split("--keyring").size - 1, 1)
         @Expect(productionSource.contains("signed-remote-tag-attestation"), true)
 
         let cliOptions = parseCkbReproPublishGateCliArgs([
@@ -396,7 +396,7 @@ public class CkbReproPublishGateTest {
         @Expect(runner.args[3], "--status-fd")
         @Expect(runner.args[4], "1")
         @Expect(runner.args[5], "--keyring")
-        @Expect(runner.args[6], repository.join(
+        @Expect(runner.args[6], Path(repositoryRoot).join(
             "reproducibility/RELEASE-SIGNING-KEY.asc").toString())
         File.writeTo(bundle.join("reproducibility/RELEASE-SIGNING-KEY.asc"),
             (key + "drift").toArray())
@@ -416,8 +416,25 @@ public class CkbReproPublishGateTest {
         @Expect(productionSource.contains("[\"verify-tag\", \"--raw\""), false)
         @Expect(productionSource.contains("RELEASE-TAG-EVIDENCE.json"), false)
         @Expect(productionSource.contains(
-            "[\"cat-file\", \"tag\", \"refs/tags/\${options.tagName}\"]"),
-            true)
+            "\"cat-file\", \"tag\", \"refs/tags/\${options.tagName}\""), true)
+        let tagPayload = "object aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n" +
+            "type commit\ntag ckb-repro-v1\n" +
+            "tagger Tester <test@example.invalid> 0 +0000\n\n发布🙂\n"
+        let rawTag = (tagPayload + "-----BEGIN PGP SIGNATURE-----\nfixture\n" +
+            "-----END PGP SIGNATURE-----\n").toArray()
+        let parsedTag = parseCkbReproAnnotatedTag(rawTag,
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "ckb-repro-v1")
+        @Expect(parsedTag[0], "ok")
+        @Expect(parsedTag[1], tagPayload.toArray())
+        @Expect(parseCkbReproAnnotatedTag(rawTag,
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "ckb-repro-v1")[0], "publish_tag_binding_mismatch")
+        let invalidTag = ArrayList<UInt8>()
+        invalidTag.add(UInt8(0xff)); invalidTag.add(UInt8(0xfe))
+        invalidTag.add(all: "-----BEGIN PGP SIGNATURE-----".toArray())
+        @Expect(parseCkbReproAnnotatedTag(invalidTag.toArray(),
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "ckb-repro-v1")[0], "publish_tag_encoding_invalid")
         remove(base, recursive: true)
     }
 }

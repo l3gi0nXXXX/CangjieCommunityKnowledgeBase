@@ -1,7 +1,10 @@
 package cangjie_community_knowledge_base_test
 
 import std.collection.{ArrayList, HashSet}
-import std.fs.{File, OpenMode, Path, canonicalize, exists}
+import std.env.getVariable
+import std.fs.{Directory, File, OpenMode, Path, canonicalize, exists, remove}
+import std.io.InputStream
+import std.process.{ProcessRedirect, launch}
 import std.sort.*
 import std.time.DateTime
 import stdx.encoding.json.*
@@ -96,6 +99,16 @@ public interface CkbReproPublishAuthenticationProvider {
         root: String): (String, CkbReproGitEvidence)
     func readSignature(root: String, options: CkbReproPublishGateOptions,
         mode: String): (String, CkbReproSignatureEvidence)
+}
+
+public interface CkbReproGpgvRunner {
+    func run(command: String, args: Array<String>): (Int64, String)
+}
+
+private class P9ProductionGpgvRunner <: CkbReproGpgvRunner {
+    public func run(command: String, args: Array<String>): (Int64, String) {
+        p9PublishCommand(command, args)
+    }
 }
 
 private class P9PublishProductionAuthentication <:
@@ -737,12 +750,13 @@ private func p9PublishReadRemoteTagSnapshot(root: String,
             "reproducibility/RELEASE-SIGNING-KEY.asc")) {
         return ("publish_remote_tag_evidence_unavailable", "", "")
     }
-    let verified = p9PublishCommand("gpgv", ["--status-fd", "1", "--keyring",
-        Path(root).join("reproducibility/RELEASE-SIGNING-KEY.asc").toString(),
-        Path(root).join("REMOTE-TAG-EVIDENCE.json.sig").toString(),
-        Path(root).join("REMOTE-TAG-EVIDENCE.json").toString()])
-    if (verified[0] != 0 || !verified[1].contains(
-        "VALIDSIG ${options.signingFingerprint} ")) {
+    let repositoryRoot = p9PublishRepositoryRoot()
+    if (repositoryRoot == "") {
+        return ("publish_release_key_missing", "", "")
+    }
+    if (ckbReproVerifyReleaseSignature(repositoryRoot, root,
+        "REMOTE-TAG-EVIDENCE.json.sig", "REMOTE-TAG-EVIDENCE.json",
+        options.signingFingerprint, P9ProductionGpgvRunner()) != "ok") {
         return ("publish_remote_tag_evidence_signature_invalid", "", "")
     }
     try {
@@ -801,25 +815,209 @@ private func p9PublishReadSignatureEvidence(root: String,
     options: CkbReproPublishGateOptions, mode: String):
     (String, CkbReproSignatureEvidence) {
     let out = CkbReproSignatureEvidence()
-    let verify = p9PublishCommand("gpgv", ["--status-fd", "1", "--keyring",
-        Path(root).join("reproducibility/RELEASE-SIGNING-KEY.asc").toString(),
-        Path(root).join("SHA256SUMS.sig").toString(),
-        Path(root).join("SHA256SUMS").toString()])
-    if (verify[0] != 0 || !verify[1].contains(
-        "VALIDSIG ${options.signingFingerprint} ")) {
+    let repositoryRoot = p9PublishRepositoryRoot()
+    if (repositoryRoot == "") { return ("publish_release_key_missing", out) }
+    if (ckbReproVerifyReleaseSignature(repositoryRoot, root,
+        "SHA256SUMS.sig", "SHA256SUMS", options.signingFingerprint,
+        P9ProductionGpgvRunner()) != "ok") {
         return ("publish_signature_mismatch", out)
     }
     out.shaSumsVerified = true
     out.shaSumsFingerprint = options.signingFingerprint
     if (mode == "post-tag") {
-        let tag = p9PublishCommand("git", ["verify-tag", "--raw", options.tagName])
-        if (tag[0] != 0 || !tag[1].contains(options.signingFingerprint)) {
+        let tag = p9PublishVerifyAnnotatedTag(repositoryRoot, options,
+            P9ProductionGpgvRunner())
+        if (tag != "ok") {
             return ("publish_tag_binding_mismatch", out)
         }
         out.tagSigned = true
         out.tagFingerprint = options.signingFingerprint
     }
     ("ok", out)
+}
+
+public func ckbReproVerifyReleaseSignature(repositoryRoot: String,
+    bundleRoot: String, signatureRelativePath: String,
+    payloadRelativePath: String, fingerprint: String,
+    runner: CkbReproGpgvRunner): String {
+    if (!p9PublishFingerprint(fingerprint)) { return "publish_identity_invalid" }
+    let sourceKey = Path(repositoryRoot).join(
+        "reproducibility/RELEASE-SIGNING-KEY.asc")
+    let bundleKey = Path(bundleRoot).join(
+        "reproducibility/RELEASE-SIGNING-KEY.asc")
+    if (!p9PublishCanonicalRoot(repositoryRoot) ||
+        !p9PublishCanonicalRoot(bundleRoot) || !exists(sourceKey) ||
+        !exists(bundleKey)) { return "publish_release_key_missing" }
+    let sourceRead = p9PublishReadBounded(sourceKey.toString(), 16 * 1024 * 1024)
+    let bundleRead = p9PublishReadBounded(bundleKey.toString(), 16 * 1024 * 1024)
+    if (sourceRead[0] != "ok" || bundleRead[0] != "ok") {
+        return "publish_release_key_missing"
+    }
+    if (ckbReproBundleHash(sourceRead[1]) != ckbReproBundleHash(bundleRead[1])) {
+        return "publish_release_key_mismatch"
+    }
+    let signature = Path(bundleRoot).join(signatureRelativePath)
+    let payload = Path(bundleRoot).join(payloadRelativePath)
+    if (!exists(signature) || !exists(payload)) {
+        return "publish_signature_input_missing"
+    }
+    p9PublishRunIsolatedGpgv(bundleRoot, sourceKey.toString(),
+        signature.toString(), payload.toString(), fingerprint, runner)
+}
+
+private func p9PublishRunIsolatedGpgv(workRoot: String, keyPath: String,
+    signaturePath: String, payloadPath: String, fingerprint: String,
+    runner: CkbReproGpgvRunner): String {
+    let home = Path(workRoot).parent.join(
+        ".ckb-gpgv-${DateTime.now().toUnixTimeStamp().toMilliseconds()}")
+    if (exists(home)) { return "publish_gpgv_home_unavailable" }
+    try {
+        Directory.create(home)
+        let canonicalHome = canonicalize(home).toString()
+        let verified = runner.run("gpgv", ["--no-options", "--homedir",
+            canonicalHome, "--status-fd", "1", "--keyring", keyPath,
+            signaturePath, payloadPath])
+        remove(home, recursive: true)
+        if (verified[0] != 0 || !verified[1].contains(
+            "VALIDSIG ${fingerprint} ")) {
+            return "publish_signature_mismatch"
+        }
+        "ok"
+    } catch (_: Exception) {
+        if (exists(home)) { try { remove(home, recursive: true) } catch (_: Exception) {} }
+        "publish_signature_mismatch"
+    }
+}
+
+private func p9PublishRepositoryRoot(): String {
+    let value = match (getVariable("CKB_REPRO_REPOSITORY_ROOT")) {
+        case Some(root) => root
+        case None => return ""
+    }
+    if (!p9PublishCanonicalRoot(value)) { return "" }
+    value
+}
+
+private func p9PublishCanonicalRoot(value: String): Bool {
+    if (!p9PublishAbsolutePath(value) || !exists(Path(value))) { return false }
+    try { canonicalize(Path(value)).toString() == value }
+    catch (_: Exception) { false }
+}
+
+private func p9PublishVerifyAnnotatedTag(repositoryRoot: String,
+    options: CkbReproPublishGateOptions,
+    runner: CkbReproGpgvRunner): String {
+    let tag = p9PublishCommandBytes("git", ["-C", repositoryRoot,
+        "cat-file", "tag", "refs/tags/${options.tagName}"])
+    if (tag[0] != 0 || tag[1] != "ok") {
+        return "publish_tag_binding_mismatch"
+    }
+    let parsed = parseCkbReproAnnotatedTag(tag[2], options.releaseCommit,
+        options.tagName)
+    if (parsed[0] != "ok") { return parsed[0] }
+    let work = Path(repositoryRoot).join(
+        ".ckb-tag-verify-${DateTime.now().toUnixTimeStamp().toMilliseconds()}")
+    if (exists(work)) { return "publish_tag_verification_unavailable" }
+    try {
+        Directory.create(work)
+        let payloadPath = work.join("tag.payload")
+        let signaturePath = work.join("tag.sig")
+        File.writeTo(payloadPath, parsed[1])
+        File.writeTo(signaturePath, parsed[2])
+        let key = Path(repositoryRoot).join(
+            "reproducibility/RELEASE-SIGNING-KEY.asc").toString()
+        let result = p9PublishRunIsolatedGpgv(work.toString(), key,
+            signaturePath.toString(), payloadPath.toString(),
+            options.signingFingerprint, runner)
+        remove(work, recursive: true)
+        if (result == "ok") { "ok" } else { "publish_tag_signature_invalid" }
+    } catch (_: Exception) {
+        if (exists(work)) { try { remove(work, recursive: true) } catch (_: Exception) {} }
+        "publish_tag_signature_invalid"
+    }
+}
+
+public func parseCkbReproAnnotatedTag(raw: Array<UInt8>, releaseCommit: String,
+    tagName: String): (String, Array<UInt8>, Array<UInt8>) {
+    let marker = "-----BEGIN PGP SIGNATURE-----".toArray()
+    let split = p9PublishBytesIndexOf(raw, marker)
+    if (split <= 0) {
+        return ("publish_tag_signature_invalid", Array<UInt8>(), Array<UInt8>())
+    }
+    let payload = ArrayList<UInt8>()
+    let signature = ArrayList<UInt8>()
+    for (i in 0..raw.size) {
+        if (i < split) { payload.add(raw[i]) } else { signature.add(raw[i]) }
+    }
+    let text = try { String.fromUtf8(payload.toArray()) }
+        catch (_: Exception) {
+            return ("publish_tag_encoding_invalid", Array<UInt8>(), Array<UInt8>())
+        }
+    if (!text.startsWith("object ${releaseCommit}\n") ||
+        !text.contains("\ntype commit\n") ||
+        !text.contains("\ntag ${tagName}\n") ||
+        !text.contains("\ntagger ")) {
+        return ("publish_tag_binding_mismatch", Array<UInt8>(), Array<UInt8>())
+    }
+    ("ok", payload.toArray(), signature.toArray())
+}
+
+private func p9PublishCommandBytes(command: String, args: Array<String>):
+    (Int64, String, Array<UInt8>) {
+    try {
+        let process = launch(command, args, stdOut: ProcessRedirect.Pipe,
+            stdErr: ProcessRedirect.Pipe)
+        let stdout = spawn { => p9PublishReadPipeBytes(
+            process.stdOutPipe, 16 * 1024 * 1024) }
+        let stderr = spawn { => p9PublishReadPipeBytes(
+            process.stdErrPipe, 1024 * 1024) }
+        let code = process.wait()
+        let output = stdout.get()
+        let error = stderr.get()
+        if (output[0] != "ok") { return (code, output[0], Array<UInt8>()) }
+        if (error[0] != "ok") { return (code, error[0], Array<UInt8>()) }
+        (code, "ok", output[1])
+    } catch (_: Exception) {
+        (127, "publish_tag_verification_unavailable", Array<UInt8>())
+    }
+}
+
+private func p9PublishReadPipeBytes(pipe: InputStream, maxBytes: Int64):
+    (String, Array<UInt8>) {
+    let out = ArrayList<UInt8>()
+    let buffer = Array<UInt8>(8192, repeat: UInt8(0))
+    var total: Int64 = 0
+    try {
+        while (true) {
+            let count = pipe.read(buffer)
+            if (count < 0 || count > buffer.size) {
+                return ("publish_tag_read_failed", Array<UInt8>())
+            }
+            if (count == 0) { break }
+            total += count
+            if (total <= maxBytes) {
+                for (i in 0..count) { out.add(buffer[i]) }
+            }
+        }
+    } catch (_: Exception) {
+        return ("publish_tag_read_failed", Array<UInt8>())
+    }
+    if (total > maxBytes) {
+        return ("publish_tag_output_too_large", Array<UInt8>())
+    }
+    ("ok", out.toArray())
+}
+
+private func p9PublishBytesIndexOf(value: Array<UInt8>, marker: Array<UInt8>): Int64 {
+    if (marker.size == 0 || value.size < marker.size) { return -1 }
+    for (i in 0..value.size - marker.size + 1) {
+        var matches = true
+        for (j in 0..marker.size) {
+            if (value[i + j] != marker[j]) { matches = false; break }
+        }
+        if (matches) { return i }
+    }
+    -1
 }
 
 private func p9PublishCommand(command: String, args: Array<String>):
