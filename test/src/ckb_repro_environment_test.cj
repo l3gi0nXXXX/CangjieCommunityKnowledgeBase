@@ -3,6 +3,7 @@ package cangjie_community_knowledge_base_test
 import std.fs.{Directory, File, Path, exists, remove}
 import std.unittest.*
 import std.unittest.testmacro.*
+import stdx.encoding.json.JsonValue
 
 private class P6FakeRunner <: CkbReproRunnerInvoker {
     public var count: Int64 = 0
@@ -240,6 +241,11 @@ public class CkbReproEnvironmentTest {
         @Expect(json.startsWith("{"), true)
         @Expect(json.contains(lock.glmBaseUrl), false)
         @Expect(json.contains(lock.glmCredentialEnv), false)
+        let controlLock = p6FrozenEnvironment()
+        controlLock.certifiedPlatform = "macOS\u{0001}"
+        @Expect(try { JsonValue.fromStr(
+            renderCkbReproPreflightCliJson(cli, controlLock)); true }
+            catch (_: Exception) { false }, true)
     }
 
     @TestCase
