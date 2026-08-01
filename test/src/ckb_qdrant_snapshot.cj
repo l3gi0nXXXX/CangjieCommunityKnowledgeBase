@@ -1,6 +1,7 @@
 package cangjie_community_knowledge_base_test
 
 import std.collection.{ArrayList, HashSet}
+import std.fs.{Directory, File, Path, canonicalize, exists, remove, rename}
 import stdx.crypto.digest.SHA256
 import stdx.encoding.json.*
 
@@ -134,9 +135,10 @@ public interface CkbP3CliAdapter {
     func execute(options: CkbP3CliOptions): CkbP3CliOperationResult
 }
 
-private class CkbUnavailableP3CliAdapter <: CkbP3CliAdapter {
+private class CkbMissingP3ProductionDependencies <: CkbP3CliAdapter {
     public func execute(options: CkbP3CliOptions): CkbP3CliOperationResult {
-        let out = CkbP3CliOperationResult(); out.diagnostic = "p3_production_context_required"; out
+        let out = CkbP3CliOperationResult(); out.diagnostic =
+            "p3_binary_executor_and_backend_factory_required"; out
     }
 }
 
@@ -215,7 +217,148 @@ public func executeCkbP3CliAdapter(args: Array<String>, adapter: CkbP3CliAdapter
 }
 
 public func runCkbP3Cli(args: Array<String>): CkbP3CliExecution {
-    executeCkbP3CliAdapter(args, CkbUnavailableP3CliAdapter())
+    executeCkbP3CliAdapter(args, CkbMissingP3ProductionDependencies())
+}
+
+public interface CkbP3VerificationInputProvider {
+    func visibleInput(collection: String): CkbStudentVisiblePathInput
+    func pathContext(collection: String): CkbPortablePathContext
+}
+
+public class CkbP3ProductionAdapter <: CkbP3CliAdapter {
+    private let vectorBackend: CkbPortableVectorBuildBackend
+    private let snapshotExecutor: CkbQdrantSnapshotExecutor
+    private let parityBackend: CkbRetrievalParityBackend
+    private let verificationProvider: CkbP3VerificationInputProvider
+    private let pathPolicy: CkbReleasePathPolicy
+    public init(vectorBackend: CkbPortableVectorBuildBackend,
+        snapshotExecutor: CkbQdrantSnapshotExecutor,
+        parityBackend: CkbRetrievalParityBackend,
+        verificationProvider: CkbP3VerificationInputProvider,
+        pathPolicy: CkbReleasePathPolicy) {
+        this.vectorBackend = vectorBackend; this.snapshotExecutor = snapshotExecutor
+        this.parityBackend = parityBackend; this.verificationProvider = verificationProvider
+        this.pathPolicy = pathPolicy
+    }
+
+    public func execute(options: CkbP3CliOptions): CkbP3CliOperationResult {
+        if (options.mode == "build") { return this.buildVectors(options) }
+        if (options.mode == "create") { return this.createSnapshot(options) }
+        if (options.mode == "restore") { return this.restoreSnapshot(options) }
+        if (options.mode == "verify") { return this.verifySnapshot(options) }
+        this.verifyParity(options)
+    }
+
+    private func buildVectors(options: CkbP3CliOptions): CkbP3CliOperationResult {
+        let out = CkbP3CliOperationResult()
+        let buildProof = ckbP3LoadBuildProof(options.candidateRoot)
+        if (!buildProof[0].ok) { out.diagnostic = buildProof[0].diagnostic; return out }
+        let environment = ckbP3LoadEnvironment(options.environmentLock)
+        if (!environment[0].ok) { out.diagnostic = environment[0].diagnostic; return out }
+        let store = FileKnowledgeStore(options.candidateRoot)
+        let pointer = store.loadActiveSnapshotPointer(); let metadata = store.loadMetadataStatus()
+        if (!pointer.valid || !metadata.valid) { out.diagnostic = "portable_vector_candidate_invalid"; return out }
+        let buildOptions = CkbPortableVectorBuildOptions()
+        buildOptions.candidateVersion = pointer.activeVersion
+        buildOptions.p4PortableProofHash = buildProof[1].preservationHash
+        buildOptions.runtimeVectorState = metadata.vectorState
+        buildOptions.runtimeVectorDegradedReason = metadata.vectorDegradedReason
+        buildOptions.runtimeVectorCount = metadata.vectorIndexCount
+        let result = buildCkbPortableReferenceVectors(buildOptions, buildProof[1],
+            environment[1], this.vectorBackend)
+        if (!result.ready) { out.diagnostic = result.diagnostic; return out }
+        let write = ckbP3WriteNewFile(options.outputProof,
+            renderCkbPortableVectorProof(result.proof), this.pathPolicy)
+        if (write != "ok") { out.diagnostic = write; return out }
+        out.ok = true; out.diagnostic = "ok"
+        out.summary = "collection=${result.proof.collection} points=${result.proof.count} " +
+            "dimension=${result.proof.dimension}"; out
+    }
+
+    private func createSnapshot(options: CkbP3CliOptions): CkbP3CliOperationResult {
+        let out = CkbP3CliOperationResult()
+        let logical = ckbP3LoadLogicalManifest(options.logicalManifest)
+        if (!logical[0].ok) { out.diagnostic = logical[0].diagnostic; return out }
+        let vector = parseCkbPortableVectorProofFile(options.vectorProof)
+        if (!vector[0].ok) { out.diagnostic = vector[0].diagnostic; return out }
+        if (vector[1].collection != options.collection ||
+            logical[1].vectorCollection != options.collection ||
+            logical[1].p3VectorProofHash != vector[1].vectorProofHash) {
+            out.diagnostic = "qdrant_snapshot_identity_mismatch"; return out
+        }
+        let identity = CkbQdrantSnapshotIdentity(); identity.collection = options.collection
+        identity.logicalManifestHash = logical[1].manifestHash
+        identity.vectorProofHash = vector[1].vectorProofHash
+        let created = createCkbQdrantSnapshot(identity, this.snapshotExecutor)
+        if (!created.ok) { out.diagnostic = created.diagnostic; return out }
+        let downloaded = downloadCkbQdrantSnapshot(identity, created.snapshotName,
+            this.snapshotExecutor)
+        if (!downloaded.ok) { out.diagnostic = downloaded.diagnostic; return out }
+        let manifest = CkbQdrantSnapshotManifest()
+        manifest.schemaVersion = "ckb-qdrant-snapshot-v1"
+        manifest.imageDigest = vector[1].qdrantImageDigest
+        manifest.qdrantMinorVersion = "1.14"; manifest.collection = options.collection
+        manifest.distance = vector[1].distance; manifest.dimension = vector[1].dimension
+        manifest.points = vector[1].count; manifest.snapshotSha256 = downloaded.sha256
+        manifest.logicalManifestHash = logical[1].manifestHash
+        manifest.vectorProofHash = vector[1].vectorProofHash
+        manifest.payloadCanonicalHash = vector[1].payloadCanonicalHash
+        let built = buildCkbQdrantSnapshotManifest(manifest)
+        if (!built.ok) { out.diagnostic = built.diagnostic; return out }
+        let write = ckbP3WriteSnapshotDirectory(options.outputRoot, downloaded.bytes,
+            built.canonicalJson, this.pathPolicy)
+        if (write != "ok") { out.diagnostic = write; return out }
+        out.ok = true; out.diagnostic = "ok"
+        out.summary = "collection=${manifest.collection} points=${manifest.points} " +
+            "dimension=${manifest.dimension}"; out
+    }
+
+    private func restoreSnapshot(options: CkbP3CliOptions): CkbP3CliOperationResult {
+        let out = CkbP3CliOperationResult(); let manifest = ckbP3LoadSnapshotManifest(options.manifest)
+        if (!manifest[0].ok) { out.diagnostic = manifest[0].diagnostic; return out }
+        let bytes = try { File.readFrom(Path(options.snapshot)) } catch (_: Exception) {
+            out.diagnostic = "qdrant_snapshot_file_unreadable"; return out
+        }
+        let result = restoreCkbQdrantSnapshot(options.targetCollection, bytes,
+            manifest[1], this.snapshotExecutor)
+        out.ok = result.ok; out.diagnostic = result.diagnostic
+        out.summary = "collection=${options.targetCollection}"; out
+    }
+
+    private func verifySnapshot(options: CkbP3CliOptions): CkbP3CliOperationResult {
+        let out = CkbP3CliOperationResult(); let manifest = ckbP3LoadSnapshotManifest(options.manifest)
+        if (!manifest[0].ok) { out.diagnostic = manifest[0].diagnostic; return out }
+        let logical = ckbP3LoadLogicalManifest(options.logicalManifest)
+        if (!logical[0].ok) { out.diagnostic = logical[0].diagnostic; return out }
+        let request = CkbQdrantSnapshotRequest(); request.method = "GET"
+        request.path = "/collections/${options.collection}"
+        let response = this.snapshotExecutor.execute(request)
+        let status = parseCkbQdrantRestoredStatus(response.bodyBytes,
+            options.collection, manifest[1].payloadCanonicalHash)
+        if (!status[0].ok) { out.diagnostic = status[0].diagnostic; return out }
+        let verified = verifyRestoredCkbQdrantSnapshot(status[1], manifest[1], logical[1],
+            this.verificationProvider.visibleInput(options.collection),
+            this.verificationProvider.pathContext(options.collection))
+        out.ok = verified.ok; out.diagnostic = verified.diagnostic
+        out.summary = "collection=${options.collection} points=${status[1].count} " +
+            "dimension=${status[1].dimension}"; out
+    }
+
+    private func verifyParity(options: CkbP3CliOptions): CkbP3CliOperationResult {
+        let out = CkbP3CliOperationResult(); let manifest = ckbP3LoadParityManifest(options.manifest)
+        if (!manifest[0].ok) { out.diagnostic = manifest[0].diagnostic; return out }
+        let result = verifyCkbRetrievalParityManifest(manifest[1], this.parityBackend)
+        out.ok = result.ok; out.diagnostic = result.diagnostic
+        out.summary = "knowledgeVersion=${manifest[1].knowledgeVersion} transports=3"; out
+    }
+}
+
+public func newCkbP3ProductionAdapter(vectorBackend: CkbPortableVectorBuildBackend,
+    snapshotExecutor: CkbQdrantSnapshotExecutor, parityBackend: CkbRetrievalParityBackend,
+    verificationProvider: CkbP3VerificationInputProvider,
+    pathPolicy: CkbReleasePathPolicy): CkbP3CliAdapter {
+    CkbP3ProductionAdapter(vectorBackend, snapshotExecutor, parityBackend,
+        verificationProvider, pathPolicy)
 }
 public func runCkbP3Cli(args: Array<String>, context: CkbP3CliAdapter): CkbP3CliExecution {
     executeCkbP3CliAdapter(args, context)
@@ -254,6 +397,201 @@ private func ckbP3CliFailure(diagnostic: String, json: Bool): CkbP3CliExecution 
 }
 private func ckbP3CliSafe(value: String): String { let runes = redactSensitive(value).toRuneArray(); let n = if (runes.size < 160) { runes.size } else { 160 }; let out = StringBuilder(); for (i in 0..n) { out.append(runes[i]) }; out.toString() }
 private func ckbP3CliJson(value: String): String { let out = StringBuilder(); let hex = "0123456789abcdef".toRuneArray(); for (rune in ckbP3CliSafe(value).runes()) { if (rune == r'"') { out.append("\\\"") } else if (rune == r'\\') { out.append("\\\\") } else if (rune == r'\n') { out.append("\\n") } else if (rune == r'\r') { out.append("\\r") } else if (rune == r'\t') { out.append("\\t") } else if (UInt32(rune) < 0x20u32) { let code = UInt32(rune); out.append("\\u00"); out.append(hex[Int64(code / 16u32)]); out.append(hex[Int64(code % 16u32)]) } else { out.append(rune) } }; out.toString() }
+
+public func renderCkbPortableVectorProof(proof: CkbPortableVectorProof): String {
+    "{\"collection\":\"${ckbQdrantSnapshotJson(proof.collection)}\"," +
+        "\"candidateVersion\":\"${ckbQdrantSnapshotJson(proof.candidateVersion)}\"," +
+        "\"p4PortableProofHash\":\"${proof.p4PortableProofHash}\"," +
+        "\"qdrantImageDigest\":\"${proof.qdrantImageDigest}\"," +
+        "\"embeddingProvider\":\"${ckbQdrantSnapshotJson(proof.embeddingProvider)}\"," +
+        "\"embeddingModel\":\"${ckbQdrantSnapshotJson(proof.embeddingModel)}\"," +
+        "\"count\":${proof.count},\"dimension\":${proof.dimension}," +
+        "\"distance\":\"${ckbQdrantSnapshotJson(proof.distance)}\"," +
+        "\"payloadCanonicalHash\":\"${proof.payloadCanonicalHash}\"," +
+        "\"vectorProofHash\":\"${proof.vectorProofHash}\"," +
+        "\"vectorState\":\"READY\",\"proofReal\":true}"
+}
+
+public func parseCkbPortableVectorProofFile(path: String):
+    (CkbReproContractResult, CkbPortableVectorProof) {
+    let proof = CkbPortableVectorProof()
+    try {
+        let text = String.fromUtf8(File.readFrom(Path(path)))
+        let object = JsonValue.fromStr(text).asObject()
+        proof.collection = ckbP3RequiredString(object, "collection")
+        proof.candidateVersion = ckbP3RequiredString(object, "candidateVersion")
+        proof.p4PortableProofHash = ckbP3RequiredString(object, "p4PortableProofHash")
+        proof.qdrantImageDigest = ckbP3RequiredString(object, "qdrantImageDigest")
+        proof.embeddingProvider = ckbP3RequiredString(object, "embeddingProvider")
+        proof.embeddingModel = ckbP3RequiredString(object, "embeddingModel")
+        proof.count = ckbP3RequiredInt(object, "count")
+        proof.dimension = ckbP3RequiredInt(object, "dimension")
+        proof.distance = ckbP3RequiredString(object, "distance")
+        proof.payloadCanonicalHash = ckbP3RequiredString(object, "payloadCanonicalHash")
+        proof.vectorProofHash = ckbP3RequiredString(object, "vectorProofHash")
+        if (ckbP3RequiredString(object, "vectorState") != "READY" ||
+            !ckbP3RequiredBool(object, "proofReal")) {
+            return (ckbP3ContractFailure("portable_vector_proof_not_real_ready"), proof)
+        }
+    } catch (_: Exception) {
+        return (ckbP3ContractFailure("portable_vector_proof_malformed_json"), proof)
+    }
+    if (!ckbQdrantSnapshotCollectionValid(proof.collection) || proof.count != 7978 ||
+        proof.dimension != 1024 || proof.distance.toAsciiLower() != "cosine") {
+        return (ckbP3ContractFailure("portable_vector_proof_invalid"), proof)
+    }
+    for (hash in [proof.p4PortableProofHash, proof.qdrantImageDigest,
+        proof.payloadCanonicalHash, proof.vectorProofHash]) {
+        if (!ckbQdrantSnapshotHashValid(hash)) {
+            return (ckbP3ContractFailure("portable_vector_proof_invalid"), proof)
+        }
+    }
+    (ckbP3ContractSuccess(), proof)
+}
+
+private func ckbP3LoadBuildProof(candidateRoot: String):
+    (CkbReproContractResult, CkbReproBuildProof) {
+    let proof = CkbReproBuildProof()
+    try {
+        let object = JsonValue.fromStr(String.fromUtf8(File.readFrom(
+            Path(candidateRoot).join("repro-build-proof.json")))).asObject()
+        proof.logicalReady = ckbP3RequiredBool(object, "logicalReady")
+        proof.diagnostic = ckbP3RequiredString(object, "diagnostic")
+        proof.sourceLockHash = ckbP3RequiredString(object, "sourceLockHash")
+        proof.typedCount = ckbP3RequiredInt(object, "typedCount")
+        proof.rawCount = ckbP3RequiredInt(object, "rawCount")
+        proof.selectedCount = ckbP3RequiredInt(object, "selectedCount")
+        proof.excludedCount = ckbP3RequiredInt(object, "excludedCount")
+        proof.evalSupportPersisted = ckbP3RequiredInt(object, "evalSupportPersisted")
+        proof.vectorCount = ckbP3RequiredInt(object, "vectorCount")
+        proof.vectorState = ckbP3RequiredString(object, "vectorState")
+        proof.preservationHash = ckbP3RequiredString(object, "preservationHash")
+    } catch (_: Exception) { return (ckbP3ContractFailure("p4_proof_malformed_json"), proof) }
+    if (!proof.logicalReady || proof.diagnostic != "ok" || proof.vectorState != "DEGRADED" ||
+        proof.vectorCount != 0 || !ckbQdrantSnapshotHashValid(proof.preservationHash)) {
+        return (ckbP3ContractFailure("p4_proof_invalid"), proof)
+    }
+    (ckbP3ContractSuccess(), proof)
+}
+
+private func ckbP3LoadEnvironment(path: String):
+    (CkbReproContractResult, CkbReproEnvironmentLock) {
+    let bytes = try { File.readFrom(Path(path)) } catch (_: Exception) {
+        return (ckbP3ContractFailure("environment_lock_unreadable"), CkbReproEnvironmentLock())
+    }
+    parseCkbReproEnvironmentLock(bytes)
+}
+
+private func ckbP3LoadLogicalManifest(path: String):
+    (CkbLogicalSnapshotContract, CkbLogicalSnapshotManifest) {
+    let bytes = try { File.readFrom(Path(path)) } catch (_: Exception) {
+        return (ckbQdrantLogicalFailure("logical_manifest_unreadable"), CkbLogicalSnapshotManifest())
+    }
+    let parsed = parseCkbLogicalSnapshotManifest(bytes)
+    if (!parsed[0].ok) { return parsed }
+    (validateCkbLogicalSnapshotManifest(parsed[1]), parsed[1])
+}
+
+private func ckbP3LoadSnapshotManifest(path: String):
+    (CkbQdrantSnapshotContract, CkbQdrantSnapshotManifest) {
+    let bytes = try { File.readFrom(Path(path)) } catch (_: Exception) {
+        return (ckbQdrantSnapshotFailure("qdrant_snapshot_manifest_unreadable"),
+            CkbQdrantSnapshotManifest())
+    }
+    let parsed = parseCkbQdrantSnapshotManifest(bytes)
+    if (!parsed[0].ok) { return parsed }
+    (validateCkbQdrantSnapshotManifest(parsed[1]), parsed[1])
+}
+
+private func ckbP3LoadParityManifest(path: String):
+    (CkbReproContractResult, CkbRetrievalParityManifest) {
+    let manifest = CkbRetrievalParityManifest()
+    try {
+        let object = JsonValue.fromStr(String.fromUtf8(File.readFrom(Path(path)))).asObject()
+        manifest.schemaVersion = ckbP3RequiredString(object, "schemaVersion")
+        manifest.knowledgeVersion = ckbP3RequiredString(object, "knowledgeVersion")
+        manifest.logicalManifestHash = ckbP3RequiredString(object, "logicalManifestHash")
+        manifest.query = ckbP3RequiredString(object, "query")
+        manifest.canonicalResultHash = ckbP3RequiredString(object, "canonicalResultHash")
+        for (item in object.get("transports").getOrThrow().asArray().getItems()) {
+            manifest.transports.add(item.asString().getValue())
+        }
+    } catch (_: Exception) { return (ckbP3ContractFailure("retrieval_parity_malformed_json"), manifest) }
+    if (manifest.transports.toArray() != ["rest", "mcp_stdio", "mcp_http"]) {
+        return (ckbP3ContractFailure("retrieval_parity_manifest_invalid"), manifest)
+    }
+    (ckbP3ContractSuccess(), manifest)
+}
+
+private func ckbP3WriteNewFile(path: String, text: String,
+    policy: CkbReleasePathPolicy): String {
+    let diagnostic = ckbP3NewOutputDiagnostic(path, policy)
+    if (diagnostic != "ok") { return diagnostic }
+    let temporary = "${path}.tmp-proof"
+    try {
+        if (exists(Path(temporary))) { remove(Path(temporary), recursive: true) }
+        File.writeTo(Path(temporary), text.toArray())
+        rename(temporary, to: path, overwrite: false); "ok"
+    } catch (_: Exception) { "p3_output_commit_failed" }
+    finally { if (exists(Path(temporary))) { try { remove(Path(temporary), recursive: true) } catch (_: Exception) { () } } }
+}
+
+private func ckbP3WriteSnapshotDirectory(path: String, snapshot: Array<UInt8>,
+    manifest: String, policy: CkbReleasePathPolicy): String {
+    let diagnostic = ckbP3NewOutputDiagnostic(path, policy)
+    if (diagnostic != "ok") { return diagnostic }
+    let temporary = "${path}.tmp-snapshot"
+    try {
+        if (exists(Path(temporary))) { remove(Path(temporary), recursive: true) }
+        Directory.create(Path(temporary), recursive: false)
+        File.writeTo(Path(temporary).join("snapshot.bin"), snapshot)
+        File.writeTo(Path(temporary).join("manifest.json"), manifest.toArray())
+        let check = parseCkbQdrantSnapshotManifest(
+            File.readFrom(Path(temporary).join("manifest.json")))
+        if (!check[0].ok || ckbQdrantSnapshotBytesHash(
+            File.readFrom(Path(temporary).join("snapshot.bin"))) != check[1].snapshotSha256) {
+            return "qdrant_snapshot_output_verification_failed"
+        }
+        rename(temporary, to: path, overwrite: false); "ok"
+    } catch (_: Exception) { "p3_output_commit_failed" }
+    finally { if (exists(Path(temporary))) { try { remove(Path(temporary), recursive: true) } catch (_: Exception) { () } } }
+}
+
+private func ckbP3NewOutputDiagnostic(pathText: String,
+    policy: CkbReleasePathPolicy): String {
+    if (pathText == "" || !pathText.startsWith("/") || pathText != pathText.trimAscii() ||
+        pathText.contains("//") || pathText.contains("/../") || pathText.contains("/./") ||
+        exists(Path(pathText)) || !exists(Path(pathText).parent)) { return "p3_output_path_invalid" }
+    let parent = try { canonicalize(Path(pathText).parent).toString() }
+        catch (_: Exception) { return "p3_output_path_invalid" }
+    if (Path(parent).join(Path(pathText).fileName).toString() != pathText) {
+        return "p3_output_path_invalid"
+    }
+    for (root in [policy.worktreeRoot, policy.productionStoreRoot, policy.userConfigRoot]) {
+        if (root != "" && (pathText == root || pathText.startsWith("${root}/") ||
+            root.startsWith("${pathText}/"))) { return "p3_output_path_forbidden" }
+    }
+    "ok"
+}
+
+private func ckbP3RequiredString(object: JsonObject, key: String): String {
+    object.get(key).getOrThrow().asString().getValue()
+}
+private func ckbP3RequiredInt(object: JsonObject, key: String): Int64 {
+    object.get(key).getOrThrow().asInt().getValue()
+}
+private func ckbP3RequiredBool(object: JsonObject, key: String): Bool {
+    object.get(key).getOrThrow().asBool().getValue()
+}
+private func ckbP3ContractSuccess(): CkbReproContractResult {
+    let result = CkbReproContractResult(); result.ok = true; result.diagnostic = "ok"; result
+}
+private func ckbP3ContractFailure(diagnostic: String): CkbReproContractResult {
+    let result = CkbReproContractResult(); result.diagnostic = diagnostic; result
+}
+private func ckbQdrantLogicalFailure(diagnostic: String): CkbLogicalSnapshotContract {
+    let result = CkbLogicalSnapshotContract(); result.diagnostic = diagnostic; result
+}
 
 public func parseCkbQdrantRestoredStatus(bytes: Array<UInt8>,
     collection: String, payloadCanonicalHash: String):

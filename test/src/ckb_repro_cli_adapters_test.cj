@@ -40,6 +40,38 @@ private class P234P3CliFake <: CkbP3CliAdapter {
     }
 }
 
+private class P234VectorDependency <: CkbPortableVectorBuildBackend {
+    public func collectionExists(collection: String): Bool { false }
+    public func createEmpty(collection: String, dimension: Int64,
+        distance: String): CkbReproContractResult { CkbReproContractResult() }
+    public func stagedRebuild(collection: String): CkbPortableVectorBuildEvidence {
+        CkbPortableVectorBuildEvidence()
+    }
+    public func deleteCollection(collection: String): Unit {}
+}
+private class P234SnapshotDependency <: CkbQdrantSnapshotExecutor {
+    public var restored: Bool = false
+    public func execute(request: CkbQdrantSnapshotRequest): CkbQdrantSnapshotResponse {
+        let out = CkbQdrantSnapshotResponse()
+        if (request.method == "GET") { out.statusCode = 404 }
+        else { this.restored = true; out.statusCode = 200 }
+        out
+    }
+}
+private class P234ParityDependency <: CkbRetrievalParityBackend {
+    public func query(transport: String, query: String): CkbRetrievalParityResponse {
+        CkbRetrievalParityResponse()
+    }
+}
+private class P234VerificationDependency <: CkbP3VerificationInputProvider {
+    public func visibleInput(collection: String): CkbStudentVisiblePathInput {
+        CkbStudentVisiblePathInput()
+    }
+    public func pathContext(collection: String): CkbPortablePathContext {
+        CkbPortablePathContext()
+    }
+}
+
 private class P234P4CliFake <: CkbP4CliAdapter {
     public var calls: Int64 = 0
     public var fail: Bool = false
@@ -171,6 +203,33 @@ public class CkbReproCliAdaptersTest {
             "--rest-endpoint", "http://127.0.0.1:1", "--mcp-stdio-command", "cmd",
             "--mcp-http-endpoint", "http://127.0.0.1:2"
         ], fake).ok, true)
+
+        let root = Path("target/p234-p3-production")
+        if (exists(root)) { remove(root, recursive: true) }
+        Directory.create(root, recursive: true)
+        let bytes: Array<UInt8> = [0xff, 0x00, 0xfe, 0x41]
+        let manifest = CkbQdrantSnapshotManifest()
+        manifest.schemaVersion = "ckb-qdrant-snapshot-v1"
+        manifest.imageDigest = p234Hash("image"); manifest.qdrantMinorVersion = "1.14"
+        manifest.collection = "source"; manifest.distance = "Cosine"
+        manifest.dimension = 1024; manifest.points = 7978
+        manifest.snapshotSha256 = ckbQdrantSnapshotBytesHash(bytes)
+        manifest.logicalManifestHash = p234Hash("logical")
+        manifest.vectorProofHash = p234Hash("vector")
+        manifest.payloadCanonicalHash = p234Hash("payload")
+        let built = buildCkbQdrantSnapshotManifest(manifest)
+        File.writeTo(root.join("snapshot.bin"), bytes)
+        File.writeTo(root.join("manifest.json"), built.canonicalJson.toArray())
+        let snapshotDependency = P234SnapshotDependency()
+        let production = newCkbP3ProductionAdapter(P234VectorDependency(),
+            snapshotDependency, P234ParityDependency(), P234VerificationDependency(),
+            CkbReleasePathPolicy())
+        let actual = runCkbP3Cli(["ckb-qdrant-snapshot", "restore", "--endpoint",
+            "http://127.0.0.1:1", "--target-collection", "restored",
+            "--snapshot", root.join("snapshot.bin").toString(), "--manifest",
+            root.join("manifest.json").toString()], production)
+        @Expect(actual.ok, true); @Expect(snapshotDependency.restored, true)
+        remove(root, recursive: true)
     }
 
     @TestCase
@@ -268,6 +327,8 @@ private func p234LongControlSummary(): String {
     for (_ in 0..300) { out += "界" }
     out
 }
+
+private func p234Hash(value: String): String { benchmarkGapSha256(value) }
 
 private func p234PromotionArgs(apply: Bool): Array<String> {
     let values = ArrayList<String>()
