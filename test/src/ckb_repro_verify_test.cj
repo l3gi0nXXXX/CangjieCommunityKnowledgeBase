@@ -539,6 +539,42 @@ public class CkbReproVerifyTest {
     }
 
     @TestCase
+    public func p8Bnd02VerificationReportParserIsStrictAndUtf8Safe(): Unit {
+        let report = p8VerificationReport()
+        let text = renderCkbReproVerificationReport(report)
+        let parsed = parseCkbReproVerificationReport(text.toArray())
+        @Expect(parsed[0].ok, true)
+        @Expect(validateCkbReproVerificationReport(parsed[1]).ok, true)
+        @Expect(parseCkbReproVerificationReport([0xff, 0xfe])[0].diagnostic,
+            "invalid_response_encoding")
+        @Expect(parseCkbReproVerificationReport("{".toArray())[0].diagnostic,
+            "verification_report_invalid")
+        @Expect(parseCkbReproVerificationReport(text.replace(
+            "\"runnerCalls\":0}", "\"runnerCalls\":0,\"extra\":true}")
+            .toArray())[0].diagnostic, "verification_report_invalid")
+        for (drift in [
+            (report.referenceManifestHash, "sha256:bad"),
+            (report.certifiedRunInputHash, "sha256:bad"),
+            (report.runCriticalTreeHash, "sha256:bad"),
+            (report.verifiedReleaseInputSetHash, "sha256:bad"),
+            (report.bundleProofSetHash, "sha256:bad"),
+            (report.releaseCommit, "not-a-commit"),
+            (report.authorityHash, "sha256:bad"),
+            ("\"runnerCalls\":0", "\"runnerCalls\":1"),
+            ("\"restoreOk\":true", "\"restoreOk\":false"),
+            ("\"rebuildOk\":true", "\"rebuildOk\":false"),
+            ("\"publicEvidenceOk\":true", "\"publicEvidenceOk\":false"),
+            ("\"documentationOk\":true", "\"documentationOk\":false")
+        ]) {
+            let drifted = parseCkbReproVerificationReport(
+                text.replace(drift[0], drift[1]).toArray())
+            @Expect(drifted[0].ok, true)
+            @Expect(validateCkbReproVerificationReport(drifted[1]).diagnostic,
+                "verification_report_invalid")
+        }
+    }
+
+    @TestCase
     public func p8Pos04AndNeg01ProductionReleaseAuthority(): Unit {
         let root = p8ResetRoot("target/p8-authority")
         try {
@@ -1069,6 +1105,24 @@ private func p8HashInputs(root: String):
     out.repositoryRoot = repository
     out.runCriticalManifest = p8Critical(repository)
     out
+}
+
+private func p8VerificationReport(): CkbReproReleaseVerificationResult {
+    let report = CkbReproReleaseVerificationResult()
+    report.ok = true; report.diagnostic = "verified"
+    report.verifiedReleaseInputSetHash = p8Hash("release-input")
+    report.bundleProofSetHash = p8Hash("proof-set")
+    report.releaseCommit = "0123456789012345678901234567890123456789"
+    report.certifiedRunInputHash = p8Hash("certified-input")
+    report.runCriticalTreeHash = p8Hash("critical-tree")
+    report.referenceManifestHash = p8Hash("reference")
+    report.authorityHash = p8Hash("authority")
+    report.restored.ok = true; report.restored.diagnostic = "ok"
+    report.rebuilt.ok = true; report.rebuilt.diagnostic = "ok"
+    report.publicEvidence.ok = true; report.publicEvidence.diagnostic = "ok"
+    report.documentation.ok = true; report.documentation.diagnostic = "ok"
+    report.runnerCalls = 0
+    report
 }
 
 private func p8Critical(repository: String):

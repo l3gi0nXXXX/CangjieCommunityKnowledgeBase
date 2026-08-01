@@ -3,6 +3,7 @@ package cangjie_community_knowledge_base_test
 import std.collection.{ArrayList, HashSet}
 import std.fs.{Directory, Path, canonicalize, exists}
 import std.sort.*
+import stdx.encoding.json.*
 
 foreign {
     func open(path: CString, flags: Int32): Int32
@@ -188,6 +189,7 @@ public class CkbReproRunCertificationResult {
 }
 
 public class CkbReproReleaseVerificationResult {
+    public var schemaVersion: String = "ckb-repro-verification-report-v1"
     public var ok: Bool = false
     public var diagnostic: String = "release_verification_not_run"
     public var verifiedReleaseInputSetHash: String = ""
@@ -900,6 +902,83 @@ public func renderCkbReproVerificationReport(
         "\"documentationDiagnostic\":\"" +
         "${p8Json(result.documentation.diagnostic)}\"," +
         "\"runnerCalls\":${result.runnerCalls}}"
+}
+
+public func parseCkbReproVerificationReport(bytes: Array<UInt8>):
+    (CkbReproContractResult, CkbReproReleaseVerificationResult) {
+    let out = CkbReproReleaseVerificationResult()
+    let text = try { String.fromUtf8(bytes) } catch (_: Exception) {
+        return (p8Failure("invalid_response_encoding"), out)
+    }
+    try {
+        let object = JsonValue.fromStr(text).asObject()
+        if (object.size() != 19) {
+            return (p8Failure("verification_report_invalid"), out)
+        }
+        out.schemaVersion = object.get("schemaVersion").getOrThrow()
+            .asString().getValue()
+        out.ok = object.get("ok").getOrThrow().asBool().getValue()
+        out.diagnostic = object.get("diagnostic").getOrThrow()
+            .asString().getValue()
+        out.verifiedReleaseInputSetHash = object.get(
+            "verifiedReleaseInputSetHash").getOrThrow().asString().getValue()
+        out.bundleProofSetHash = object.get("bundleProofSetHash").getOrThrow()
+            .asString().getValue()
+        out.releaseCommit = object.get("releaseCommit").getOrThrow()
+            .asString().getValue()
+        out.certifiedRunInputHash = object.get("certifiedRunInputHash")
+            .getOrThrow().asString().getValue()
+        out.runCriticalTreeHash = object.get("runCriticalTreeHash")
+            .getOrThrow().asString().getValue()
+        out.referenceManifestHash = object.get("referenceManifestHash")
+            .getOrThrow().asString().getValue()
+        out.authorityHash = object.get("authorityHash").getOrThrow()
+            .asString().getValue()
+        out.restored.ok = object.get("restoreOk").getOrThrow()
+            .asBool().getValue()
+        out.restored.diagnostic = object.get("restoreDiagnostic").getOrThrow()
+            .asString().getValue()
+        out.rebuilt.ok = object.get("rebuildOk").getOrThrow()
+            .asBool().getValue()
+        out.rebuilt.diagnostic = object.get("rebuildDiagnostic").getOrThrow()
+            .asString().getValue()
+        out.publicEvidence.ok = object.get("publicEvidenceOk").getOrThrow()
+            .asBool().getValue()
+        out.publicEvidence.diagnostic = object.get("publicEvidenceDiagnostic")
+            .getOrThrow().asString().getValue()
+        out.documentation.ok = object.get("documentationOk").getOrThrow()
+            .asBool().getValue()
+        out.documentation.diagnostic = object.get("documentationDiagnostic")
+            .getOrThrow().asString().getValue()
+        out.runnerCalls = object.get("runnerCalls").getOrThrow()
+            .asInt().getValue()
+    } catch (_: Exception) {
+        return (p8Failure("verification_report_invalid"),
+            CkbReproReleaseVerificationResult())
+    }
+    (p8Success(), out)
+}
+
+public func validateCkbReproVerificationReport(
+    report: CkbReproReleaseVerificationResult): CkbReproContractResult {
+    if (report.schemaVersion != "ckb-repro-verification-report-v1" ||
+        !report.ok || report.diagnostic != "verified" ||
+        !report.restored.ok || report.restored.diagnostic != "ok" ||
+        !report.rebuilt.ok || report.rebuilt.diagnostic != "ok" ||
+        !report.publicEvidence.ok || report.publicEvidence.diagnostic != "ok" ||
+        !report.documentation.ok || report.documentation.diagnostic != "ok" ||
+        report.runnerCalls != 0 || !p8CommitValid(report.releaseCommit)) {
+        return p8Failure("verification_report_invalid")
+    }
+    for (hash in [report.verifiedReleaseInputSetHash,
+        report.bundleProofSetHash, report.certifiedRunInputHash,
+        report.runCriticalTreeHash, report.referenceManifestHash,
+        report.authorityHash]) {
+        if (!p8HashValid(hash)) {
+            return p8Failure("verification_report_invalid")
+        }
+    }
+    p8Success()
 }
 
 private func p8ValidateOptions(options: CkbReproVerifyOptions):

@@ -408,7 +408,6 @@ public class CkbReproCliAdaptersTest {
         promotion.p8AProofHash = benchmarkGapSha256(p8aText)
         promotion.candidateManifestHash =
             ckbPortableCandidateManifestHash(promotion)
-        promotion.p8BProofHash = ckbPortableP8BProofHash(promotion)
         let verification = p234VerificationReport(
             referenceValidation.manifestHash, reference)
         let verificationText = renderCkbReproVerificationReport(verification)
@@ -432,6 +431,28 @@ public class CkbReproCliAdaptersTest {
             "promotion_p8_b_report_invalid")
         p234WritePromotionManifests(root, promotion,
             reportText: verificationText)
+        for (drift in [
+            (verification.referenceManifestHash, p234Hash("wrong-reference")),
+            (verification.certifiedRunInputHash, p234Hash("wrong-certified")),
+            (verification.runCriticalTreeHash, p234Hash("wrong-tree")),
+            (verification.verifiedReleaseInputSetHash, "sha256:bad"),
+            (verification.bundleProofSetHash, "sha256:bad"),
+            (verification.releaseCommit, "not-a-commit"),
+            (verification.authorityHash, "sha256:bad"),
+            ("\"runnerCalls\":0", "\"runnerCalls\":1"),
+            ("\"restoreOk\":true", "\"restoreOk\":false"),
+            ("\"rebuildOk\":true", "\"rebuildOk\":false"),
+            ("\"publicEvidenceOk\":true", "\"publicEvidenceOk\":false"),
+            ("\"documentationOk\":true", "\"documentationOk\":false")
+        ]) {
+            File.writeTo(root.join("p8b.json"),
+                verificationText.replace(drift[0], drift[1]).toArray())
+            @Expect(loadCkbPortablePromotionCliInputs(
+                root.join("candidate.json").toString(),
+                root.join("p8b.json").toString())[0].diagnostic,
+                "promotion_p8_b_report_invalid")
+        }
+        File.writeTo(root.join("p8b.json"), verificationText.toArray())
         let authorityVersion = promotion.candidateVersion
         let authorityIdentity = promotion.identity
         for (drift in ["version", "identity", "score"]) {
@@ -444,7 +465,6 @@ public class CkbReproCliAdaptersTest {
             }
             promotion.candidateManifestHash =
                 ckbPortableCandidateManifestHash(promotion)
-            promotion.p8BProofHash = ckbPortableP8BProofHash(promotion)
             p234WritePromotionManifests(root, promotion,
                 reportText: verificationText)
             @Expect(loadCkbPortablePromotionCliInputs(
@@ -457,7 +477,6 @@ public class CkbReproCliAdaptersTest {
         }
         promotion.candidateManifestHash =
             ckbPortableCandidateManifestHash(promotion)
-        promotion.p8BProofHash = ckbPortableP8BProofHash(promotion)
         p234WritePromotionManifests(root, promotion,
             reportText: verificationText)
         File.writeTo(root.join("p3.json"), "p3-tampered".toArray())
@@ -494,12 +513,11 @@ public class CkbReproCliAdaptersTest {
         promotion.p5ProofHash = benchmarkGapSha256(legacyP5Text)
         promotion.p8AProofHash = benchmarkGapSha256(legacyP8AText)
         promotion.candidateManifestHash = ckbPortableCandidateManifestHash(promotion)
-        promotion.p8BProofHash = ckbPortableP8BProofHash(promotion)
         p234WritePromotionManifests(root, promotion)
         @Expect(loadCkbPortablePromotionCliInputs(
             root.join("candidate.json").toString(),
             root.join("p8b.json").toString())[0].diagnostic,
-            "promotion_typed_artifact_invalid")
+            "promotion_p8_b_report_invalid")
 
         let transport = P234SnapshotDependency()
         let business = newCkbP4BusinessProductionAdapter(
@@ -610,7 +628,7 @@ private func p234WritePromotionManifests(root: Path,
         "\"p3ProofHash\":\"${promotion.p3ProofHash}\"," +
         "\"p5ProofHash\":\"${promotion.p5ProofHash}\"," +
         "\"p8AProofHash\":\"${promotion.p8AProofHash}\"," +
-        "\"p8BProofHash\":\"${promotion.p8BProofHash}\"}"
+        "\"p8BProofHash\":\"${p234Hash("legacy-p8b")}\"}"
     File.writeTo(root.join("candidate.json"), candidate.toArray())
     File.writeTo(root.join("p8b.json"),
         if (reportText == "") { p8b.toArray() } else { reportText.toArray() })

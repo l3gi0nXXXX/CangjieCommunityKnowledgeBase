@@ -409,8 +409,6 @@ private func p4PromotionFixture(id: String): P4PromotionFixture {
         "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
     fixture.options.p8AProofHash =
         "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
-    fixture.options.p8BProofHash =
-        "sha256:1111111111111111111111111111111111111111111111111111111111111111"
     fixture.options.identity = "portable-identity"
     fixture.options.p8StrictPassed = 151
     fixture.options.apply = true

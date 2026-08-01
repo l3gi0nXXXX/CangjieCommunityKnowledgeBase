@@ -212,9 +212,12 @@ public func loadCkbPortablePromotionCliInputs(candidatePath: String,
     }
     let p8BRead = p4BuildReadBoundedUtf8(p8BPath, "promotion_p8_b")
     if (p8BRead[0] != "ok") { return (p4BuildFailure(p8BRead[0]), options) }
+    let report = parseCkbReproVerificationReport(p8BRead[1].toArray())
+    if (!report[0].ok || !validateCkbReproVerificationReport(report[1]).ok) {
+        return (p4BuildFailure("promotion_p8_b_report_invalid"), options)
+    }
     try {
         let candidate = JsonValue.fromStr(candidateRead[1]).asObject()
-        let p8b = JsonValue.fromStr(p8BRead[1]).asObject()
         options.candidateVersion = p4BuildRequiredString(candidate, "candidateVersion")
         options.candidateManifestHash =
             p4BuildRequiredString(candidate, "candidateManifestHash")
@@ -224,7 +227,6 @@ public func loadCkbPortablePromotionCliInputs(candidatePath: String,
         options.p8AProofHash = p4BuildRequiredString(candidate, "p8AProofHash")
         options.identity = p4BuildRequiredString(candidate, "identity")
         options.p8StrictPassed = p4BuildRequiredInt(candidate, "p8StrictPassed")
-        options.p8BProofHash = p4BuildRequiredString(p8b, "p8BProofHash")
         let artifactPaths = [
             p4BuildRequiredString(candidate, "p2ProofPath"),
             p4BuildRequiredString(candidate, "p3ProofPath"),
@@ -281,24 +283,16 @@ public func loadCkbPortablePromotionCliInputs(candidatePath: String,
             ckbPortableCandidateManifestHash(options)) {
             return (p4BuildFailure("promotion_candidate_hash_mismatch"), options)
         }
-        if (!p4BuildRequiredBool(p8b, "ready") ||
-            p4BuildRequiredString(p8b, "candidateVersion") != options.candidateVersion ||
-            p4BuildRequiredString(p8b, "identity") != options.identity ||
-            p4BuildRequiredString(p8b, "candidateManifestHash") !=
-                options.candidateManifestHash ||
-            p4BuildRequiredString(p8b, "p2ProofHash") != options.p2ProofHash ||
-            p4BuildRequiredString(p8b, "p3ProofHash") != options.p3ProofHash ||
-            p4BuildRequiredString(p8b, "p5ProofHash") != options.p5ProofHash ||
-            p4BuildRequiredString(p8b, "p8AProofHash") != options.p8AProofHash ||
-            options.p8BProofHash != ckbPortableP8BProofHash(options)) {
+        if (report[1].referenceManifestHash != referenceValidation.manifestHash ||
+            report[1].certifiedRunInputHash != reference[1].certifiedRunInputHash ||
+            report[1].runCriticalTreeHash != reference[1].runCriticalTreeHash) {
             return (p4BuildFailure("promotion_p8_b_report_invalid"), options)
         }
     } catch (_: Exception) {
         return (p4BuildFailure("promotion_artifact_malformed_json"), options)
     }
     for (hash in [options.candidateManifestHash, options.p2ProofHash,
-        options.p3ProofHash, options.p5ProofHash, options.p8AProofHash,
-        options.p8BProofHash]) {
+        options.p3ProofHash, options.p5ProofHash, options.p8AProofHash]) {
         if (!p4BuildHash(hash)) { return (p4BuildFailure("promotion_proof_missing"), options) }
     }
     if (options.candidateVersion == "" || options.identity == "" ||
@@ -314,14 +308,6 @@ public func ckbPortableCandidateManifestHash(
         options.candidateVersion, options.p2ProofHash, options.p3ProofHash,
         options.p5ProofHash, options.p8AProofHash, options.identity,
         options.p8StrictPassed.toString()
-    ]))
-}
-
-public func ckbPortableP8BProofHash(options: CkbPortablePromotionOptions): String {
-    benchmarkGapSha256("ckb-portable-p8-b-proof-v1|" + p4BuildFields([
-        options.candidateManifestHash, options.candidateVersion,
-        options.identity, options.p2ProofHash, options.p3ProofHash,
-        options.p5ProofHash, options.p8AProofHash
     ]))
 }
 
@@ -1018,7 +1004,6 @@ public class CkbPortablePromotionOptions {
     public var p3ProofHash: String = ""
     public var p5ProofHash: String = ""
     public var p8AProofHash: String = ""
-    public var p8BProofHash: String = ""
     public var identity: String = ""
     public var p8StrictPassed: Int64 = 0
     public var apply: Bool = false
@@ -1068,8 +1053,7 @@ public func validateCkbPortablePromotionInputs(
         return p4BuildFailure("promotion_identity_invalid")
     }
     for (hash in [options.candidateManifestHash, options.p2ProofHash,
-        options.p3ProofHash, options.p5ProofHash, options.p8AProofHash,
-        options.p8BProofHash]) {
+        options.p3ProofHash, options.p5ProofHash, options.p8AProofHash]) {
         if (!p4BuildHash(hash)) { return p4BuildFailure("promotion_proof_missing") }
     }
     p4BuildSuccess()

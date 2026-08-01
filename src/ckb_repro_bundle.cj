@@ -932,41 +932,27 @@ public func writeCkbReproSha256Sums(
 public func buildCkbReproBuildAttestation(reportBytes: Array<UInt8>,
     manifestBytes: Array<UInt8>): (CkbReproContractResult, String) {
     let failed = p9BundleFailure("bundle_build_attestation_invalid")
-    let reportText = try { String.fromUtf8(reportBytes) }
-        catch (_: Exception) { return (failed, "") }
+    let parsedReport = parseCkbReproVerificationReport(reportBytes)
+    if (!parsedReport[0].ok ||
+        !validateCkbReproVerificationReport(parsedReport[1]).ok) {
+        return (failed, "")
+    }
+    let report = parsedReport[1]
     let parsedManifest = parseCkbReproBundleManifest(manifestBytes)
     if (!parsedManifest[0].ok) { return (failed, "") }
-    try {
-        let report = JsonValue.fromStr(reportText).asObject()
-        if (report.size() != 19 ||
-            p9BundleString(report, "schemaVersion") !=
-                "ckb-repro-verification-report-v1" ||
-            !p9BundleBool(report, "ok") ||
-            p9BundleString(report, "diagnostic") != "verified" ||
-            !p9BundleBool(report, "restoreOk") ||
-            !p9BundleBool(report, "rebuildOk") ||
-            !p9BundleBool(report, "publicEvidenceOk") ||
-            !p9BundleBool(report, "documentationOk") ||
-            p9BundleInt(report, "runnerCalls") != 0 ||
-            p9BundleString(report, "verifiedReleaseInputSetHash") !=
-                parsedManifest[1].inputSetHash ||
-            !p9BundleHashValid(p9BundleString(report, "bundleProofSetHash")) ||
-            !p9BundleHashValid(p9BundleString(report, "runCriticalTreeHash")) ||
-            !p9BundleHashValid(p9BundleString(report, "referenceManifestHash")) ||
-            !p9BundleCommit(p9BundleString(report, "releaseCommit"))) {
-            return (failed, "")
-        }
-        let text = "{\"schemaVersion\":\"ckb-repro-build-attestation-v2\"," +
-            "\"verificationReportHash\":\"${ckbReproBundleHash(reportBytes)}\"," +
-            "\"releaseManifestHash\":\"${ckbReproBundleHash(manifestBytes)}\"," +
-            "\"verifiedReleaseInputSetHash\":\"${p9BundleJson(p9BundleString(report, "verifiedReleaseInputSetHash"))}\"," +
-            "\"bundleProofSetHash\":\"${p9BundleJson(p9BundleString(report, "bundleProofSetHash"))}\"," +
-            "\"releaseCommit\":\"${p9BundleJson(p9BundleString(report, "releaseCommit"))}\"," +
-            "\"runCriticalTreeHash\":\"${p9BundleJson(p9BundleString(report, "runCriticalTreeHash"))}\"," +
-            "\"referenceManifestHash\":\"${p9BundleJson(p9BundleString(report, "referenceManifestHash"))}\"}"
-        let ok = p9BundleSuccess(); ok.canonicalJson = text
-        (ok, text)
-    } catch (_: Exception) { (failed, "") }
+    if (report.verifiedReleaseInputSetHash != parsedManifest[1].inputSetHash) {
+        return (failed, "")
+    }
+    let text = "{\"schemaVersion\":\"ckb-repro-build-attestation-v2\"," +
+        "\"verificationReportHash\":\"${ckbReproBundleHash(reportBytes)}\"," +
+        "\"releaseManifestHash\":\"${ckbReproBundleHash(manifestBytes)}\"," +
+        "\"verifiedReleaseInputSetHash\":\"${p9BundleJson(report.verifiedReleaseInputSetHash)}\"," +
+        "\"bundleProofSetHash\":\"${p9BundleJson(report.bundleProofSetHash)}\"," +
+        "\"releaseCommit\":\"${p9BundleJson(report.releaseCommit)}\"," +
+        "\"runCriticalTreeHash\":\"${p9BundleJson(report.runCriticalTreeHash)}\"," +
+        "\"referenceManifestHash\":\"${p9BundleJson(report.referenceManifestHash)}\"}"
+    let ok = p9BundleSuccess(); ok.canonicalJson = text
+    (ok, text)
 }
 
 public func validateCkbReproBuildAttestation(
