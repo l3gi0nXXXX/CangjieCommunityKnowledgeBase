@@ -240,8 +240,20 @@ public class CangjieRoutineCleanCandidateTest {
         let firstResult = ckbRunCleanCandidateBuild(first)
         let secondResult = ckbRunCleanCandidateBuild(second)
 
+        let sourceSnapshot = source.loadActiveSnapshot()
+        let authority = ckbLoadBenchmarkLeakageAuthority(source)
+        let directCandidate = ckbBuildCompleteCleanStudentCandidate(
+            sourceSnapshot.rawRecords, sourceSnapshot.normalizedRecords,
+            sourceSnapshot.activeIndex, ArrayList<RawRecord>(),
+            ArrayList<NormalizedRecord>(), ArrayList<NormalizedRecord>(),
+            "clean-positive-v1", authorityHash: authority.authorityHash,
+            authority: authority.authority)
+        let directResult = ckbPersistCompleteCleanStudentCandidate(
+            FileKnowledgeStore("${root}/apply-direct"), directCandidate)
+
         @Expect(firstResult.ok, true)
         @Expect(secondResult.ok, true)
+        @Expect(directResult.ok, true)
         @Expect(firstResult.applied, true)
         @Expect(firstResult.rawCount, firstResult.normalizedCount)
         @Expect(firstResult.normalizedCount, firstResult.activeCount)
@@ -251,6 +263,9 @@ public class CangjieRoutineCleanCandidateTest {
         @Expect(firstResult.authorityHash.startsWith("sha256:"), true)
         @Expect(firstResult.auditEvidenceHash.startsWith("sha256:"), true)
         @Expect(firstResult.cleanManifestHash.startsWith("sha256:"), true)
+        @Expect(firstResult.manifestEvidenceHash, directResult.manifestEvidenceHash)
+        @Expect(firstResult.immutableManifestHash, directResult.immutableManifestHash)
+        @Expect(firstResult.cleanManifestHash, directResult.cleanManifestHash)
         let firstStore = FileKnowledgeStore(first.stagingStore)
         let secondStore = FileKnowledgeStore(second.stagingStore)
         @Expect(firstStore.readText(
