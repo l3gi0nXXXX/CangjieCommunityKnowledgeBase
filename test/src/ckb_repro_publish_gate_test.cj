@@ -161,6 +161,49 @@ public class CkbReproPublishGateTest {
         let loadedFixture = loadCkbReproPublishLocalEvidence(fixture)
         @Expect(loadedFixture.diagnostic, "ok")
         @Expect(loadedFixture.valid, true)
+        let manifestBytes = File.readFrom(Path(fixture).join(
+            "RELEASE-MANIFEST.json"))
+        let reportBytes = File.readFrom(Path(fixture).join(
+            "verification-report.json"))
+        @Expect(validateCkbReproPublishBindings(
+            fixture, manifestBytes, reportBytes).ok, true)
+        for (field in ["bundleProofSetHash", "certifiedRunInputHash",
+            "authorityHash", "referenceManifestHash",
+            "runCriticalTreeHash"]) {
+            let reportObject = JsonValue.fromStr(
+                String.fromUtf8(reportBytes)).asObject()
+            let original = reportObject.get(field).getOrThrow()
+                .asString().getValue()
+            let forged = String.fromUtf8(reportBytes).replace(
+                original, ckbReproBundleHash("forged-${field}".toArray()))
+            @Expect(validateCkbReproPublishBindings(
+                fixture, manifestBytes, forged.toArray()).ok, false)
+        }
+
+        let remote = File.readFrom(Path(fixture).join(
+            "REMOTE-TAG-EVIDENCE.json"))
+        let remoteSignature = File.readFrom(Path(fixture).join(
+            "REMOTE-TAG-EVIDENCE.json.sig"))
+        for (name in ["PUBLISH-EVIDENCE.json", "REMOTE-TAG-EVIDENCE.json",
+            "REMOTE-TAG-EVIDENCE.json.sig", "SHA256SUMS",
+            "SHA256SUMS.sig"]) {
+            remove(Path(fixture).join(name))
+        }
+        @Expect(prepareCkbReproPreSignatureArtifacts(fixture,
+            p9GateOptions("pre-tag"), remote, remoteSignature).ok, true)
+        for (name in ["PUBLISH-EVIDENCE.json", "REMOTE-TAG-EVIDENCE.json",
+            "REMOTE-TAG-EVIDENCE.json.sig", "SHA256SUMS"]) {
+            @Expect(exists(Path(fixture).join(name)), true)
+        }
+        @Expect(exists(Path(fixture).join("SHA256SUMS.sig")), false)
+        let rebuiltSums = String.fromUtf8(File.readFrom(
+            Path(fixture).join("SHA256SUMS")))
+        @Expect(rebuiltSums.contains("  PUBLISH-EVIDENCE.json\n"), true)
+        @Expect(rebuiltSums.contains("  REMOTE-TAG-EVIDENCE.json\n"), true)
+        @Expect(rebuiltSums.contains("  SHA256SUMS\n"), false)
+        @Expect(rebuiltSums.contains("  SHA256SUMS.sig\n"), false)
+        @Expect(rebuiltSums.contains(
+            "  REMOTE-TAG-EVIDENCE.json.sig\n"), false)
         File.writeTo(Path(fixture).join("verification-report.json"),
             "{\"tampered\":true}".toArray())
         @Expect(loadCkbReproPublishLocalEvidence(fixture).diagnostic,
