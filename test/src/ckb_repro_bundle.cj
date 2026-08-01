@@ -134,7 +134,11 @@ public class CkbReproFilesystemBundleCliExecutor <: CkbReproBundleCliExecutor {
         finalizeCkbReproReleaseBundle(p9BundleCliCoreOptions(options),
             this.assets, this.expectedInputSetHash, this.backend)
     }
-    public func cleanupOutput(path: String): Bool { this.backend.removeRoot(path) }
+    public func cleanupOutput(path: String): Bool {
+        // The core writer removes only roots that it created. A later generic
+        // cleanup must not delete a path won by another process.
+        true
+    }
 }
 
 public class CkbReproProductionBundleCliExecutor <:
@@ -162,6 +166,10 @@ public class CkbReproProductionBundleCliExecutor <:
         let loaded = loadCkbReproFinalizeInputs(options.unsignedRoot,
             reportBytes, this.reader)
         if (!loaded.ok) { return p9BundleCliFailure(loaded.diagnostic) }
+        try { Directory.create(Path(options.outputRoot), recursive: false) }
+        catch (_: Exception) {
+            return p9BundleCliFailure("bundle_output_create_failed")
+        }
         this.ownedRoot = options.outputRoot
         if (!p9BundleStreamCopyValidated(options.unsignedRoot,
             options.outputRoot, loaded.manifest, this.reader)) {
@@ -178,6 +186,23 @@ public class CkbReproProductionBundleCliExecutor <:
         try { File.writeTo(verificationTarget, reportBytes) }
         catch (_: Exception) { return p9BundleCliFailure(
             "bundle_verification_report_copy_failed") }
+        let manifestBytes = renderCkbReproBundleManifest(
+            loaded.manifest).toArray()
+        let attestation = buildCkbReproBuildAttestation(
+            reportBytes, manifestBytes)
+        if (!attestation[0].ok) {
+            return p9BundleCliFailure(attestation[0].diagnostic)
+        }
+        let attestationBytes = attestation[1].toArray()
+        try {
+            File.writeTo(Path(options.outputRoot).join(
+                "build-attestation.json"), attestationBytes)
+            File.writeTo(Path(options.outputRoot).join("SHA256SUMS"),
+                p9BundleFinalShaSums(loaded.manifest, manifestBytes,
+                    reportBytes, attestationBytes).toArray())
+        } catch (_: Exception) {
+            return p9BundleCliFailure("bundle_final_artifact_write_failed")
+        }
         let out = CkbReproBundleResult()
         out.ok = true; out.diagnostic = "ready"
         out.inputSetHash = loaded.manifest.inputSetHash
@@ -755,6 +780,78 @@ public func writeCkbReproSha256Sums(
     let ordered = rows.toArray()
     sort(ordered)
     if (ordered.size == 0) { return "" }
+    p9BundleJoin(ordered, "\n") + "\n"
+}
+
+public func buildCkbReproBuildAttestation(reportBytes: Array<UInt8>,
+    manifestBytes: Array<UInt8>): (CkbReproContractResult, String) {
+    let failed = p9BundleFailure("bundle_build_attestation_invalid")
+    let reportText = try { String.fromUtf8(reportBytes) }
+        catch (_: Exception) { return (failed, "") }
+    let parsedManifest = parseCkbReproBundleManifest(manifestBytes)
+    if (!parsedManifest[0].ok) { return (failed, "") }
+    try {
+        let report = JsonValue.fromStr(reportText).asObject()
+        if (report.size() != 19 ||
+            p9BundleString(report, "schemaVersion") !=
+                "ckb-repro-verification-report-v1" ||
+            !p9BundleBool(report, "ok") ||
+            p9BundleString(report, "diagnostic") != "verified" ||
+            !p9BundleBool(report, "restoreOk") ||
+            !p9BundleBool(report, "rebuildOk") ||
+            !p9BundleBool(report, "publicEvidenceOk") ||
+            !p9BundleBool(report, "documentationOk") ||
+            p9BundleInt(report, "runnerCalls") != 0 ||
+            p9BundleString(report, "verifiedReleaseInputSetHash") !=
+                parsedManifest[1].inputSetHash ||
+            !p9BundleHashValid(p9BundleString(report, "bundleProofSetHash")) ||
+            !p9BundleHashValid(p9BundleString(report, "runCriticalTreeHash")) ||
+            !p9BundleHashValid(p9BundleString(report, "referenceManifestHash")) ||
+            !p9BundleCommit(p9BundleString(report, "releaseCommit"))) {
+            return (failed, "")
+        }
+        let text = "{\"schemaVersion\":\"ckb-repro-build-attestation-v2\"," +
+            "\"verificationReportHash\":\"${ckbReproBundleHash(reportBytes)}\"," +
+            "\"releaseManifestHash\":\"${ckbReproBundleHash(manifestBytes)}\"," +
+            "\"verifiedReleaseInputSetHash\":\"${p9BundleJson(p9BundleString(report, "verifiedReleaseInputSetHash"))}\"," +
+            "\"bundleProofSetHash\":\"${p9BundleJson(p9BundleString(report, "bundleProofSetHash"))}\"," +
+            "\"releaseCommit\":\"${p9BundleJson(p9BundleString(report, "releaseCommit"))}\"," +
+            "\"runCriticalTreeHash\":\"${p9BundleJson(p9BundleString(report, "runCriticalTreeHash"))}\"," +
+            "\"referenceManifestHash\":\"${p9BundleJson(p9BundleString(report, "referenceManifestHash"))}\"}"
+        let ok = p9BundleSuccess(); ok.canonicalJson = text
+        (ok, text)
+    } catch (_: Exception) { (failed, "") }
+}
+
+public func validateCkbReproBuildAttestation(
+    attestationBytes: Array<UInt8>, reportBytes: Array<UInt8>,
+    manifestBytes: Array<UInt8>): CkbReproContractResult {
+    let expected = buildCkbReproBuildAttestation(reportBytes, manifestBytes)
+    if (!expected[0].ok) { return expected[0] }
+    let actual = try { String.fromUtf8(attestationBytes) }
+        catch (_: Exception) {
+            return p9BundleFailure("bundle_build_attestation_invalid_encoding")
+        }
+    if (actual != expected[1]) {
+        return p9BundleFailure("bundle_build_attestation_mismatch")
+    }
+    expected[0]
+}
+
+private func p9BundleFinalShaSums(manifest: CkbReproBundleManifest,
+    manifestBytes: Array<UInt8>, reportBytes: Array<UInt8>,
+    attestationBytes: Array<UInt8>): String {
+    let rows = ArrayList<String>()
+    for (asset in manifest.assets) {
+        rows.add("${asset.sha256.replace("sha256:", "")}  ${asset.relativePath}")
+    }
+    for (item in [
+        ("RELEASE-MANIFEST.json", manifestBytes),
+        ("verification-report.json", reportBytes),
+        ("build-attestation.json", attestationBytes)]) {
+        rows.add("${ckbReproBundleHash(item[1]).replace("sha256:", "")}  ${item[0]}")
+    }
+    let ordered = rows.toArray(); sort(ordered)
     p9BundleJoin(ordered, "\n") + "\n"
 }
 
@@ -1421,7 +1518,6 @@ private func p9BundleStreamCopyValidated(sourceRoot: String,
     outputRoot: String, manifest: CkbReproBundleManifest,
     backend: CkbReproBundleReadBackend): Bool {
     try {
-        Directory.create(Path(outputRoot), recursive: false)
         let listing = backend.list(sourceRoot)
         for (asset in manifest.assets) {
             let found = p9FindBundleReadEntry(listing, asset.relativePath)

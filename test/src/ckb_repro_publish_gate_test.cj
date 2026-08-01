@@ -227,20 +227,25 @@ private func p9PublishLocalFixture(): String {
     if (exists(root)) { remove(root, recursive: true) }
     Directory.create(root.join("assets"), recursive: true)
     let canonicalRoot = canonicalize(root).toString()
-    let asset = CkbReproBundleAsset()
-    asset.relativePath = "assets/input.txt"
-    asset.bytes = "仓颉🙂".toArray()
-    asset.size = asset.bytes.size
-    asset.sha256 = ckbReproBundleHash(asset.bytes)
-    asset.inputKind = "verified_input"
-    asset.role = "portable_report"
-    asset.logicalAsset = asset.relativePath
-    asset.partIndex = 0
-    asset.partCount = 1
-    asset.logicalSize = asset.size
-    asset.logicalSha256 = asset.sha256
+    let asset = p9PublishAsset("assets/input.txt", "仓颉🙂".toArray(),
+        "portable_report")
+    let reference = p9PublishReferenceManifest()
+    let referenceBytes = renderCkbReproReferenceManifest(reference).toArray()
+    let referenceAsset = p9PublishAsset(
+        "reproducibility/manifests/reference-run.json", referenceBytes,
+        "p8_reference")
+    let leakageAsset = p9PublishAsset("leakage-report.json",
+        ("{\"schemaVersion\":\"ckb-repro-leakage-report-v1\"," +
+        "\"findingCount\":0,\"pathFindingCount\":0}").toArray(),
+        "portable_report")
+    let licenseAsset = p9PublishAsset(
+        "reproducibility/licenses/THIRD_PARTY_NOTICES.md",
+        "fixture license evidence".toArray(), "license")
     let assets = ArrayList<CkbReproBundleAsset>()
     assets.add(asset)
+    assets.add(referenceAsset)
+    assets.add(leakageAsset)
+    assets.add(licenseAsset)
     let manifest = writeCkbReproReleaseManifest(assets)
     let verification = "{\"schemaVersion\":\"ckb-repro-verification-report-v1\"," +
         "\"ok\":true,\"diagnostic\":\"verified\"," +
@@ -248,19 +253,16 @@ private func p9PublishLocalFixture(): String {
         "\"bundleProofSetHash\":\"${ckbReproBundleHash("proof".toArray())}\"," +
         "\"releaseCommit\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"," +
         "\"certifiedRunInputHash\":\"${ckbReproBundleHash("input".toArray())}\"," +
-        "\"runCriticalTreeHash\":\"${ckbReproBundleHash("tree".toArray())}\"," +
-        "\"referenceManifestHash\":\"${ckbReproBundleHash("reference".toArray())}\"," +
+        "\"runCriticalTreeHash\":\"${reference.runCriticalTreeHash}\"," +
+        "\"referenceManifestHash\":\"${ckbReproBundleHash(referenceBytes)}\"," +
         "\"authorityHash\":\"${ckbReproBundleHash("authority".toArray())}\"," +
         "\"restoreOk\":true,\"restoreDiagnostic\":\"ok\"," +
         "\"rebuildOk\":true,\"rebuildDiagnostic\":\"ok\"," +
         "\"publicEvidenceOk\":true,\"publicEvidenceDiagnostic\":\"ok\"," +
         "\"documentationOk\":true,\"documentationDiagnostic\":\"ok\"," +
         "\"runnerCalls\":0}"
-    let attestation = "{\"schemaVersion\":\"ckb-repro-build-attestation-v1\"," +
-        "\"runCriticalTreeMatches\":true,\"strictPassed\":151," +
-        "\"transportUnresolved\":0,\"leakageFindingCount\":0," +
-        "\"fullTestsPassed\":true,\"licenseComplete\":true," +
-        "\"externalProofsVerified\":true}"
+    let attestation = buildCkbReproBuildAttestation(
+        verification.toArray(), manifest.toArray())[1]
     let local = CkbReproPublishLocalEvidence()
     local.gateOptions = p9GateOptions("pre-tag")
     local.evidence = p9PublishEvidence()
@@ -284,6 +286,9 @@ private func p9PublishLocalFixture(): String {
         "\"evidenceHash\":\"${ckbReproBundleHash(remoteSeed.toArray())}\"}"
     let files = [
         (asset.relativePath, asset.bytes),
+        (referenceAsset.relativePath, referenceAsset.bytes),
+        (leakageAsset.relativePath, leakageAsset.bytes),
+        (licenseAsset.relativePath, licenseAsset.bytes),
         ("RELEASE-MANIFEST.json", manifest.toArray()),
         ("verification-report.json", verification.toArray()),
         ("build-attestation.json", attestation.toArray()),
@@ -292,7 +297,11 @@ private func p9PublishLocalFixture(): String {
     ]
     var sums = ""
     for (item in files) {
-        File.writeTo(Path(canonicalRoot).join(item[0]), item[1])
+        let target = Path(canonicalRoot).join(item[0])
+        if (!exists(target.parent)) {
+            Directory.create(target.parent, recursive: true)
+        }
+        File.writeTo(target, item[1])
         sums += "${ckbReproBundleHash(item[1]).replace("sha256:", "")}  ${item[0]}\n"
     }
     File.writeTo(Path(canonicalRoot).join("SHA256SUMS"), sums.toArray())
@@ -300,6 +309,51 @@ private func p9PublishLocalFixture(): String {
     File.writeTo(Path(canonicalRoot).join("REMOTE-TAG-EVIDENCE.json.sig"),
         "fake-remote-attestation-signature".toArray())
     canonicalRoot
+}
+
+private func p9PublishAsset(path: String, bytes: Array<UInt8>,
+    role: String): CkbReproBundleAsset {
+    let asset = CkbReproBundleAsset()
+    asset.relativePath = path; asset.bytes = bytes; asset.size = bytes.size
+    asset.sha256 = ckbReproBundleHash(bytes)
+    asset.inputKind = "verified_input"; asset.role = role
+    asset.logicalAsset = path; asset.partIndex = 0; asset.partCount = 1
+    asset.logicalSize = asset.size; asset.logicalSha256 = asset.sha256
+    asset
+}
+
+private func p9PublishReferenceManifest(): CkbReproReferenceManifest {
+    let reference = CkbReproReferenceManifest()
+    reference.schemaVersion = "ckb-repro-reference-v1"
+    reference.baselineKind = "portable_release"
+    reference.evidenceStatus = "complete"
+    reference.releaseRepository =
+        "l3gi0nXXXX/CangjieCommunityKnowledgeBase"
+    reference.releaseRepositoryUrl =
+        "https://github.com/l3gi0nXXXX/CangjieCommunityKnowledgeBase"
+    reference.releaseBranch = "main"
+    reference.observedRemote =
+        "git@github.com:l3gi0nXXXX/CangjieCommunityKnowledgeBase.git"
+    reference.runId = "fixture-run"; reference.knowledgeVersion = "fixture-v1"
+    reference.vectorProofHash = ckbReproBundleHash("vector".toArray())
+    reference.datasetVersion = "fixture-dataset"
+    reference.runnerCommit = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    reference.claudeCodeVersion = "fixture-cli"; reference.model = "glm-5.2"
+    reference.providerFingerprint = ckbReproBundleHash("provider".toArray())
+    reference.experimentGroup = "D"; reference.toolTransport = "mcp"
+    reference.mcpTransport = "stdio"; reference.ckbRequired = true
+    reference.localDocsPolicy = "disabled"; reference.modelEffort = "high"
+    reference.modelBudget = "unbounded"; reference.timeoutSeconds = 3600
+    reference.transportRetryBudget = 0
+    reference.promptHash = ckbReproBundleHash("prompt".toArray())
+    reference.resultsHash = ckbReproBundleHash("results".toArray())
+    reference.runCriticalTreeHash = ckbReproBundleHash("tree".toArray())
+    reference.certifiedRunInputHash = ckbReproBundleHash("input".toArray())
+    reference.totalCases = 164; reference.rawPassed = 158
+    reference.strictPassed = 151; reference.strictFailed = 13
+    reference.businessFailed = 10; reference.protocolInvalid = 3
+    reference.transportUnresolved = 0
+    reference
 }
 
 private func p9GateOptions(mode: String): CkbReproPublishGateOptions {

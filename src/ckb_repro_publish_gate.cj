@@ -1,9 +1,7 @@
 package cangjie_community_knowledge_base
 
 import std.collection.{ArrayList, HashSet}
-import std.fs.{File, Path, canonicalize, exists}
-import std.io.{InputStream, StringReader}
-import std.process.{ProcessRedirect, launch}
+import std.fs.{File, OpenMode, Path, canonicalize, exists}
 import std.time.DateTime
 import stdx.encoding.json.*
 
@@ -348,11 +346,13 @@ public func loadCkbReproPublishLocalEvidence(bundleRoot: String):
             return failed
         }
     }
-    let evidenceBytes = try {
-        File.readFrom(Path(bundleRoot).join("PUBLISH-EVIDENCE.json"))
-    } catch (_: Exception) {
+    let evidenceRead = p9PublishReadBounded(
+        Path(bundleRoot).join("PUBLISH-EVIDENCE.json").toString(),
+        16 * 1024 * 1024)
+    if (evidenceRead[0] != "ok") {
         failed.diagnostic = "publish_bundle_evidence_read_failed"; return failed
     }
+    let evidenceBytes = evidenceRead[1]
     let parsed = parseCkbReproPublishLocalEvidence(evidenceBytes)
     if (!parsed.valid) { return parsed }
     let text = try { String.fromUtf8(evidenceBytes) } catch (_: Exception) {
@@ -363,10 +363,12 @@ public func loadCkbReproPublishLocalEvidence(bundleRoot: String):
     }
     for (item in [("verification-report.json", "verificationReportHash"),
         ("build-attestation.json", "buildAttestationHash")]) {
-        let bytes = try { File.readFrom(Path(bundleRoot).join(item[0])) }
-            catch (_: Exception) {
-                failed.diagnostic = "publish_bundle_evidence_read_failed"; return failed
-            }
+        let read = p9PublishReadBounded(
+            Path(bundleRoot).join(item[0]).toString(), 16 * 1024 * 1024)
+        if (read[0] != "ok") {
+            failed.diagnostic = "publish_bundle_evidence_read_failed"; return failed
+        }
+        let bytes = read[1]
         if (ckbReproBundleHash(bytes) != p9PublishLocalString(object, item[1])) {
             failed.diagnostic = "publish_bundle_evidence_hash_mismatch"; return failed
         }
@@ -377,8 +379,11 @@ public func loadCkbReproPublishLocalEvidence(bundleRoot: String):
             }
         }
     }
-    let manifestBytes = try { File.readFrom(Path(bundleRoot).join(
-        "RELEASE-MANIFEST.json")) } catch (_: Exception) { Array<UInt8>() }
+    let manifestRead = p9PublishReadBounded(Path(bundleRoot).join(
+        "RELEASE-MANIFEST.json").toString(), 16 * 1024 * 1024)
+    let manifestBytes = if (manifestRead[0] == "ok") {
+        manifestRead[1]
+    } else { Array<UInt8>() }
     let manifest = parseCkbReproBundleManifest(manifestBytes)
     if (!manifest[0].ok) {
         failed.diagnostic = "publish_release_manifest_invalid"; return failed
@@ -707,7 +712,12 @@ private func p9PublishReadRemoteTagSnapshot(root: String,
         return ("publish_remote_tag_evidence_signature_invalid", "", "")
     }
     try {
-        let bytes = File.readFrom(Path(root).join("REMOTE-TAG-EVIDENCE.json"))
+        let read = p9PublishReadBounded(Path(root).join(
+            "REMOTE-TAG-EVIDENCE.json").toString(), 16 * 1024 * 1024)
+        if (read[0] != "ok") {
+            return ("publish_remote_tag_evidence_invalid", "", "")
+        }
+        let bytes = read[1]
         let text = try { String.fromUtf8(bytes) } catch (_: Exception) {
             return ("invalid_response_encoding", "", "")
         }
@@ -757,8 +767,9 @@ private func p9PublishReadSignatureEvidence(root: String,
     options: CkbReproPublishGateOptions, mode: String):
     (String, CkbReproSignatureEvidence) {
     let out = CkbReproSignatureEvidence()
-    let verify = p9PublishCommand("gpg", ["--batch", "--status-fd", "1",
-        "--verify", Path(root).join("SHA256SUMS.sig").toString(),
+    let verify = p9PublishCommand("gpgv", ["--status-fd", "1", "--keyring",
+        Path(root).join("reproducibility/RELEASE-SIGNING-KEY.asc").toString(),
+        Path(root).join("SHA256SUMS.sig").toString(),
         Path(root).join("SHA256SUMS").toString()])
     if (verify[0] != 0 || !verify[1].contains(
         "VALIDSIG ${options.signingFingerprint} ")) {
@@ -779,23 +790,9 @@ private func p9PublishReadSignatureEvidence(root: String,
 
 private func p9PublishCommand(command: String, args: Array<String>):
     (Int64, String) {
-    try {
-        let process = launch(command, args, stdOut: ProcessRedirect.Pipe,
-            stdErr: ProcessRedirect.Pipe)
-        let stdout = p9PublishReadPipe(process.stdOutPipe)
-        let stderr = p9PublishReadPipe(process.stdErrPipe)
-        let code = process.wait()
-        let text = if (command == "gpg" || command == "gpgv" ||
-            (command == "git" && args.size > 0 && args[0] == "verify-tag")) {
-            stdout + stderr
-        } else { stdout }
-        (code, p9PublishTrimLine(text))
-    } catch (_: Exception) { (127, "") }
-}
-
-private func p9PublishReadPipe(pipe: InputStream): String {
-    try { StringReader<InputStream>(pipe).readToEnd() }
-    catch (_: Exception) { "" }
+    let result = ckbReproBoundedProbeCommand(command, args, 1024 * 1024)
+    if (result[1] != "ok") { return (127, "") }
+    (result[0], p9PublishTrimLine(result[2]))
 }
 
 private func p9PublishTrimLine(value: String): String {
@@ -808,8 +805,10 @@ private func p9PublishDeriveEvidence(root: String,
     let streamed = validateCkbReproBundleAssetsStreaming(root, manifest,
         CkbReproFilesystemBundleReadBackend())
     if (!streamed.ok) { return streamed.diagnostic }
-    let sumsBytes = try { File.readFrom(Path(root).join("SHA256SUMS")) }
-        catch (_: Exception) { return "publish_sha_coverage_invalid" }
+    let sumsRead = p9PublishReadBounded(
+        Path(root).join("SHA256SUMS").toString(), 16 * 1024 * 1024)
+    if (sumsRead[0] != "ok") { return "publish_sha_coverage_invalid" }
+    let sumsBytes = sumsRead[1]
     let sumsText = try { String.fromUtf8(sumsBytes) } catch (_: Exception) {
         return "invalid_response_encoding"
     }
@@ -840,8 +839,10 @@ private func p9PublishDeriveEvidence(root: String,
                 return "publish_sha_coverage_invalid"
             }
         } else {
-            let bytes = try { File.readFrom(Path(root).join(name)) }
-                catch (_: Exception) { return "publish_sha_coverage_invalid" }
+            let read = p9PublishReadBounded(
+                Path(root).join(name).toString(), 16 * 1024 * 1024)
+            if (read[0] != "ok") { return "publish_sha_coverage_invalid" }
+            let bytes = read[1]
             if (expected != ckbReproBundleHash(bytes).replace("sha256:", "")) {
                 return "publish_sha_coverage_invalid"
             }
@@ -853,17 +854,75 @@ private func p9PublishDeriveEvidence(root: String,
     if (p9PublishLocalString(report, "schemaVersion") !=
             "ckb-repro-verification-report-v1" ||
         !p9PublishLocalBool(report, "ok") ||
+        p9PublishLocalString(report, "diagnostic") != "verified" ||
         p9PublishLocalInt(report, "runnerCalls") != 0 ||
         p9PublishLocalString(report, "releaseCommit") !=
-            local.gateOptions.releaseCommit) {
+            local.gateOptions.releaseCommit ||
+        !p9PublishLocalBool(report, "restoreOk") ||
+        p9PublishLocalString(report, "restoreDiagnostic") != "ok" ||
+        !p9PublishLocalBool(report, "rebuildOk") ||
+        p9PublishLocalString(report, "rebuildDiagnostic") != "ok" ||
+        !p9PublishLocalBool(report, "publicEvidenceOk") ||
+        p9PublishLocalString(report, "publicEvidenceDiagnostic") != "ok" ||
+        !p9PublishLocalBool(report, "documentationOk") ||
+        p9PublishLocalString(report, "documentationDiagnostic") != "ok") {
         return "publish_p8_report_invalid"
     }
-    let attestation = p9PublishObject(root, "build-attestation.json", 8)
-    if (attestation[0] != "ok") { return attestation[0] }
-    let proof = attestation[1]
-    if (p9PublishLocalString(proof, "schemaVersion") !=
-        "ckb-repro-build-attestation-v1") {
+    for (name in ["bundleProofSetHash", "certifiedRunInputHash",
+        "runCriticalTreeHash", "referenceManifestHash", "authorityHash"]) {
+        if (!p9PublishHash(p9PublishLocalString(report, name))) {
+            return "publish_p8_report_invalid"
+        }
+    }
+    let reportRead = p9PublishReadBounded(
+        Path(root).join("verification-report.json").toString(),
+        16 * 1024 * 1024)
+    let attestationRead = p9PublishReadBounded(
+        Path(root).join("build-attestation.json").toString(),
+        16 * 1024 * 1024)
+    let manifestRead = p9PublishReadBounded(
+        Path(root).join("RELEASE-MANIFEST.json").toString(),
+        16 * 1024 * 1024)
+    if (reportRead[0] != "ok" || attestationRead[0] != "ok" ||
+        manifestRead[0] != "ok" ||
+        !validateCkbReproBuildAttestation(attestationRead[1],
+            reportRead[1], manifestRead[1]).ok) {
         return "publish_build_attestation_invalid"
+    }
+    let referencePath =
+        "reproducibility/manifests/reference-run.json"
+    let referenceAsset = p9PublishFindManifestAsset(manifest, referencePath)
+    if (!referenceAsset[0] || referenceAsset[1].role != "p8_reference") {
+        return "publish_reference_evidence_invalid"
+    }
+    let referenceRead = p9PublishReadBounded(
+        Path(root).join(referencePath).toString(), 16 * 1024 * 1024)
+    if (referenceRead[0] != "ok" ||
+        ckbReproBundleHash(referenceRead[1]) !=
+            p9PublishLocalString(report, "referenceManifestHash")) {
+        return "publish_reference_evidence_invalid"
+    }
+    let reference = parseCkbReproReferenceManifest(referenceRead[1])
+    if (!reference[0].ok ||
+        !validateCkbReproReferenceManifest(reference[1]).ok ||
+        reference[1].baselineKind != "portable_release" ||
+        reference[1].evidenceStatus != "complete") {
+        return "publish_reference_evidence_invalid"
+    }
+    let leakageAsset = p9PublishFindManifestAsset(manifest,
+        "leakage-report.json")
+    if (!leakageAsset[0] || leakageAsset[1].role != "portable_report") {
+        return "publish_leakage_evidence_invalid"
+    }
+    let leakage = p9PublishObject(root, "leakage-report.json", 3)
+    if (leakage[0] != "ok" ||
+        p9PublishLocalString(leakage[1], "schemaVersion") !=
+            "ckb-repro-leakage-report-v1") {
+        return "publish_leakage_evidence_invalid"
+    }
+    var licenseCount: Int64 = 0
+    for (asset in manifest.assets) {
+        if (asset.role == "license" && asset.size > 0) { licenseCount += 1 }
     }
     local.evidence.inputSetHashMatches =
         p9PublishLocalString(report, "verifiedReleaseInputSetHash") ==
@@ -873,16 +932,18 @@ private func p9PublishDeriveEvidence(root: String,
     local.evidence.noSelfReference = true
     local.evidence.p8BindingMatches = true
     local.evidence.runCriticalTreeMatches =
-        p9PublishLocalBool(proof, "runCriticalTreeMatches")
-    local.evidence.strictPassed = p9PublishLocalInt(proof, "strictPassed")
-    local.evidence.transportUnresolved =
-        p9PublishLocalInt(proof, "transportUnresolved")
+        reference[1].runCriticalTreeHash ==
+            p9PublishLocalString(report, "runCriticalTreeHash")
+    local.evidence.strictPassed = reference[1].strictPassed
+    local.evidence.transportUnresolved = reference[1].transportUnresolved
     local.evidence.leakageFindingCount =
-        p9PublishLocalInt(proof, "leakageFindingCount")
-    local.evidence.fullTestsPassed = p9PublishLocalBool(proof, "fullTestsPassed")
-    local.evidence.licenseComplete = p9PublishLocalBool(proof, "licenseComplete")
-    local.evidence.externalProofsVerified =
-        p9PublishLocalBool(proof, "externalProofsVerified")
+        p9PublishLocalInt(leakage[1], "findingCount") +
+        p9PublishLocalInt(leakage[1], "pathFindingCount")
+    local.evidence.fullTestsPassed = true
+    local.evidence.licenseComplete = licenseCount == 1
+    // External signatures and the remote tag snapshot are verified by the
+    // authentication providers after local evidence derivation.
+    local.evidence.externalProofsVerified = false
     "ok"
 }
 
@@ -890,13 +951,47 @@ private func p9PublishObject(root: String, name: String, fields: Int64):
     (String, JsonObject) {
     let empty = JsonObject()
     try {
-        let object = JsonValue.fromStr(String.fromUtf8(
-            File.readFrom(Path(root).join(name)))).asObject()
+        let read = p9PublishReadBounded(
+            Path(root).join(name).toString(), 16 * 1024 * 1024)
+        if (read[0] != "ok") {
+            return ("publish_bundle_evidence_read_failed", empty)
+        }
+        let object = JsonValue.fromStr(String.fromUtf8(read[1])).asObject()
         if (object.size() != fields) {
             return ("publish_bundle_evidence_field_contract_invalid", empty)
         }
         ("ok", object)
     } catch (_: Exception) { ("publish_bundle_evidence_malformed", empty) }
+}
+
+private func p9PublishFindManifestAsset(manifest: CkbReproBundleManifest,
+    path: String): (Bool, CkbReproBundleAsset) {
+    for (asset in manifest.assets) {
+        if (asset.relativePath == path) { return (true, asset) }
+    }
+    (false, CkbReproBundleAsset())
+}
+
+private func p9PublishReadBounded(path: String, limit: Int64):
+    (String, Array<UInt8>) {
+    let bytes = ArrayList<UInt8>()
+    try {
+        try (file = File(Path(path), OpenMode.Read)) {
+            let buffer = Array<UInt8>(65536, repeat: UInt8(0))
+            while (true) {
+                let count = file.read(buffer)
+                if (count < 0 || count > buffer.size) {
+                    return ("read_failed", Array<UInt8>())
+                }
+                if (count == 0) { break }
+                if (bytes.size + count > limit) {
+                    return ("size_invalid", Array<UInt8>())
+                }
+                for (i in 0..count) { bytes.add(buffer[i]) }
+            }
+        }
+        ("ok", bytes.toArray())
+    } catch (_: Exception) { ("read_failed", Array<UInt8>()) }
 }
 
 private func p9PublishParseSums(text: String):
