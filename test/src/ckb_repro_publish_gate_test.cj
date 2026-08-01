@@ -678,10 +678,14 @@ private func p9GitEvidence(tagExists: Bool): CkbReproGitEvidence {
     evidence.tagExistsLocal = tagExists
     evidence.tagExistsRemote = tagExists
     evidence.tagCommit = if (tagExists) { evidence.headCommit } else { "" }
+    evidence.tagObjectHash = if (tagExists) {
+        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    } else { "" }
     evidence.remoteTagSnapshotAvailable = true
     evidence.remoteTagSnapshotFresh = true
     evidence.remoteTagState = if (tagExists) { "present" } else { "absent" }
     evidence.remoteTagCommit = if (tagExists) { evidence.headCommit } else { "" }
+    evidence.remoteTagObjectHash = evidence.tagObjectHash
     evidence
 }
 

@@ -25,6 +25,8 @@ public class CkbReproGitEvidence {
     public var originMainCommit: String = ""
     public var tagExistsLocal: Bool = false
     public var tagExistsRemote: Bool = false
+    public var tagObjectHash: String = ""
+    public var remoteTagObjectHash: String = ""
     public var tagCommit: String = ""
     public var remoteTagSnapshotAvailable: Bool = false
     public var remoteTagSnapshotFresh: Bool = false
@@ -495,6 +497,8 @@ public func validateCkbTagReleaseBindingEvidence(
         }
     } else if (!git.tagExistsLocal || !git.tagExistsRemote ||
         git.remoteTagState != "present" ||
+        git.tagObjectHash == "" ||
+        git.tagObjectHash != git.remoteTagObjectHash ||
         git.tagCommit != options.releaseCommit ||
         git.remoteTagCommit != options.releaseCommit || !signature.tagSigned ||
         signature.tagFingerprint != options.signingFingerprint) {
@@ -708,6 +712,7 @@ private func p9PublishReadGitEvidence(options: CkbReproPublishGateOptions,
     out.originMainCommit = remoteMain[1]
     let tag = p9PublishCommand("git", ["rev-parse", "refs/tags/${options.tagName}"])
     out.tagExistsLocal = tag[0] == 0
+    out.tagObjectHash = if (out.tagExistsLocal) { tag[1] } else { "" }
     out.tagCommit = if (out.tagExistsLocal) {
         let commit = p9PublishCommand("git", ["rev-list", "-n", "1",
             "refs/tags/${options.tagName}"])
@@ -721,18 +726,20 @@ private func p9PublishReadGitEvidence(options: CkbReproPublishGateOptions,
     out.remoteTagState = snapshot[1]
     out.remoteTagCommit = snapshot[2]
     let remoteQuery = p9PublishCommandRaw("git", ["ls-remote", "--tags", "origin",
-        "refs/tags/${options.tagName}"])
+        "refs/tags/${options.tagName}", "refs/tags/${options.tagName}^{}"])
     if (remoteQuery[0] != 0) {
         return ("publish_remote_tag_evidence_unavailable", out)
     }
     let remote = parseCkbRemoteTagLsRemote(remoteQuery[1], options.tagName)
     if (remote[0] != "ok") { return (remote[0], out) }
     out.tagExistsRemote = remote[1]
+    out.remoteTagObjectHash = remote[2]
     if (out.remoteTagState == "present") {
         if (!out.tagExistsRemote) {
             return ("publish_remote_tag_evidence_unavailable", out)
         }
-        if (remote[2] != out.remoteTagCommit) {
+        if (remote[3] != out.remoteTagCommit ||
+            remote[2] != out.tagObjectHash) {
             return ("publish_tag_binding_mismatch", out)
         }
     } else if (out.tagExistsRemote) {
@@ -1035,9 +1042,9 @@ private func p9PublishCommandRaw(command: String, args: Array<String>):
 }
 
 public func parseCkbRemoteTagLsRemote(value: String,
-    tagName: String): (String, Bool, String) {
+    tagName: String): (String, Bool, String, String) {
     if (!p9PublishTagName(tagName)) {
-        return ("publish_remote_tag_query_invalid", false, "")
+        return ("publish_remote_tag_query_invalid", false, "", "")
     }
     let exact = "refs/tags/${tagName}"
     let peeledRef = "${exact}^{}"
@@ -1048,21 +1055,24 @@ public func parseCkbRemoteTagLsRemote(value: String,
         if (line == "") { continue }
         let fields = line.split("\t")
         if (fields.size != 2 || !p9PublishCommit(fields[0])) {
-            return ("publish_remote_tag_query_invalid", false, "")
+            return ("publish_remote_tag_query_invalid", false, "", "")
         }
         if (fields[1] == exact && direct == "") {
             direct = fields[0]
         } else if (fields[1] == peeledRef && peeled == "") {
             peeled = fields[0]
         } else {
-            return ("publish_remote_tag_query_invalid", false, "")
+            return ("publish_remote_tag_query_invalid", false, "", "")
         }
     }
     if (direct == "" && peeled != "") {
-        return ("publish_remote_tag_query_invalid", false, "")
+        return ("publish_remote_tag_query_invalid", false, "", "")
     }
-    if (direct == "") { return ("ok", false, "") }
-    ("ok", true, if (peeled == "") { direct } else { peeled })
+    if (direct == "") { return ("ok", false, "", "") }
+    if (peeled == "" || direct == peeled) {
+        return ("publish_remote_tag_query_invalid", false, "", "")
+    }
+    ("ok", true, direct, peeled)
 }
 
 private func p9PublishTrimLine(value: String): String {
