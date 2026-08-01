@@ -1229,6 +1229,117 @@ public func validateCkbReproPublishBindings(root: String,
     p9PublishBindings(root, manifestBytes, reportBytes).contract
 }
 
+public func renderCkbReproFullTestProof(releaseCommit: String,
+    runCriticalTreeHash: String, certifiedRunInputHash: String,
+    verifiedInputManifestHash: String, verifiedInputAssetHash: String,
+    testTopologyHash: String, testRunnerHash: String,
+    sourceArtifactHash: String, cleanLogHash: String, buildLogHash: String,
+    testLogHash: String, testPassedCount: Int64): String {
+    let clean = "cjpm clean"; let build = "cjpm build -i"
+    let test = "cjpm test"
+    let cleanHash = ckbReproBundleHash(clean.toArray())
+    let buildHash = ckbReproBundleHash(build.toArray())
+    let testHash = ckbReproBundleHash(test.toArray())
+    let proofHash = computeCkbReproFullTestProofHash(releaseCommit,
+        runCriticalTreeHash, certifiedRunInputHash,
+        verifiedInputManifestHash, verifiedInputAssetHash, testTopologyHash,
+        testRunnerHash, sourceArtifactHash, cleanHash, cleanLogHash,
+        buildHash, buildLogHash, testHash, testLogHash, testPassedCount)
+    "{\"schemaVersion\":\"ckb-repro-full-test-proof-v2\"," +
+        "\"releaseCommit\":\"${releaseCommit}\"," +
+        "\"runCriticalTreeHash\":\"${runCriticalTreeHash}\"," +
+        "\"certifiedRunInputHash\":\"${certifiedRunInputHash}\"," +
+        "\"verifiedInputManifestHash\":\"${verifiedInputManifestHash}\"," +
+        "\"verifiedInputAssetHash\":\"${verifiedInputAssetHash}\"," +
+        "\"testTopologyHash\":\"${testTopologyHash}\"," +
+        "\"testRunnerHash\":\"${testRunnerHash}\"," +
+        "\"cleanCommandId\":\"cjpm-clean\",\"cleanCommand\":\"${clean}\"," +
+        "\"cleanCommandHash\":\"${cleanHash}\",\"cleanExitCode\":0," +
+        "\"cleanPassedCount\":1,\"cleanLogHash\":\"${cleanLogHash}\"," +
+        "\"buildCommandId\":\"cjpm-build-incremental\"," +
+        "\"buildCommand\":\"${build}\",\"buildCommandHash\":\"${buildHash}\"," +
+        "\"buildExitCode\":0,\"buildPassedCount\":1," +
+        "\"buildLogHash\":\"${buildLogHash}\"," +
+        "\"testCommandId\":\"cjpm-test-full\",\"testCommand\":\"${test}\"," +
+        "\"testCommandHash\":\"${testHash}\",\"testExitCode\":0," +
+        "\"testPassedCount\":${testPassedCount},\"testLogHash\":\"${testLogHash}\"," +
+        "\"sourceKind\":\"signed-release-source-lock\"," +
+        "\"sourceArtifactHash\":\"${sourceArtifactHash}\"," +
+        "\"proofHash\":\"${proofHash}\"}"
+}
+
+public func validateCkbReproFullTestProof(bytes: Array<UInt8>,
+    releaseCommit: String, runCriticalTreeHash: String,
+    certifiedRunInputHash: String, verifiedInputManifestHash: String,
+    verifiedInputAssetHash: String, testTopologyHash: String,
+    testRunnerHash: String, sourceArtifactHash: String): String {
+    let text = try { String.fromUtf8(bytes) }
+        catch (_: Exception) { return "invalid_response_encoding" }
+    try {
+        let object = JsonValue.fromStr(text).asObject()
+        if (object.size() != 29 || p9PublishLocalString(object,
+            "schemaVersion") != "ckb-repro-full-test-proof-v2" ||
+            p9PublishLocalString(object, "releaseCommit") != releaseCommit ||
+            p9PublishLocalString(object, "runCriticalTreeHash") != runCriticalTreeHash ||
+            p9PublishLocalString(object, "certifiedRunInputHash") != certifiedRunInputHash ||
+            p9PublishLocalString(object, "verifiedInputManifestHash") != verifiedInputManifestHash ||
+            p9PublishLocalString(object, "verifiedInputAssetHash") != verifiedInputAssetHash ||
+            p9PublishLocalString(object, "testTopologyHash") != testTopologyHash ||
+            p9PublishLocalString(object, "testRunnerHash") != testRunnerHash ||
+            p9PublishLocalString(object, "sourceKind") != "signed-release-source-lock" ||
+            p9PublishLocalString(object, "sourceArtifactHash") != sourceArtifactHash) {
+            return "publish_full_test_proof_invalid"
+        }
+        let commands = [("clean", "cjpm-clean", "cjpm clean"),
+            ("build", "cjpm-build-incremental", "cjpm build -i"),
+            ("test", "cjpm-test-full", "cjpm test")]
+        for (entry in commands) {
+            if (p9PublishLocalString(object, "${entry[0]}CommandId") != entry[1] ||
+                p9PublishLocalString(object, "${entry[0]}Command") != entry[2] ||
+                p9PublishLocalString(object, "${entry[0]}CommandHash") !=
+                    ckbReproBundleHash(entry[2].toArray()) ||
+                p9PublishLocalInt(object, "${entry[0]}ExitCode") != 0 ||
+                p9PublishLocalInt(object, "${entry[0]}PassedCount") <= 0 ||
+                !p9PublishHash(p9PublishLocalString(object,
+                    "${entry[0]}LogHash"))) {
+                return "publish_full_test_proof_invalid"
+            }
+        }
+        let expected = computeCkbReproFullTestProofHash(releaseCommit,
+            runCriticalTreeHash, certifiedRunInputHash,
+            verifiedInputManifestHash, verifiedInputAssetHash,
+            testTopologyHash, testRunnerHash, sourceArtifactHash,
+            p9PublishLocalString(object, "cleanCommandHash"),
+            p9PublishLocalString(object, "cleanLogHash"),
+            p9PublishLocalString(object, "buildCommandHash"),
+            p9PublishLocalString(object, "buildLogHash"),
+            p9PublishLocalString(object, "testCommandHash"),
+            p9PublishLocalString(object, "testLogHash"),
+            p9PublishLocalInt(object, "testPassedCount"))
+        if (p9PublishLocalString(object, "proofHash") != expected) {
+            return "publish_full_test_proof_invalid"
+        }
+        "ok"
+    } catch (_: Exception) { "publish_full_test_proof_invalid" }
+}
+
+public func computeCkbReproFullTestProofHash(releaseCommit: String,
+    runCriticalTreeHash: String, certifiedRunInputHash: String,
+    verifiedInputManifestHash: String, verifiedInputAssetHash: String,
+    testTopologyHash: String, testRunnerHash: String,
+    sourceArtifactHash: String, cleanCommandHash: String,
+    cleanLogHash: String, buildCommandHash: String, buildLogHash: String,
+    testCommandHash: String, testLogHash: String,
+    testPassedCount: Int64): String {
+    p9PublishHashParts("ckb-repro-full-test-proof-v2", [releaseCommit,
+        runCriticalTreeHash, certifiedRunInputHash, verifiedInputManifestHash,
+        verifiedInputAssetHash, testTopologyHash, testRunnerHash,
+        sourceArtifactHash, "cjpm-clean", cleanCommandHash, "0", "1",
+        cleanLogHash, "cjpm-build-incremental", buildCommandHash, "0", "1",
+        buildLogHash, "cjpm-test-full", testCommandHash, "0",
+        "${testPassedCount}", testLogHash, "signed-release-source-lock"])
+}
+
 private func p9PublishBindings(root: String, manifestBytes: Array<UInt8>,
     reportBytes: Array<UInt8>): CkbReproPublishBindingResult {
     let out = CkbReproPublishBindingResult()
@@ -1315,13 +1426,17 @@ private func p9PublishBindings(root: String, manifestBytes: Array<UInt8>,
         out.contract = p9PublishFailure("publish_authority_binding_invalid")
         return out
     }
-    let fullTests = p9PublishObject(root, "full-test-report.json", 4)
-    if (fullTests[0] != "ok" ||
-        p9PublishLocalString(fullTests[1], "schemaVersion") !=
-            "ckb-repro-full-test-proof-v1" ||
-        !p9PublishLocalBool(fullTests[1], "ok") ||
-        !p9PublishHash(p9PublishLocalString(fullTests[1], "commandHash")) ||
-        !p9PublishHash(p9PublishLocalString(fullTests[1], "resultHash"))) {
+    let sourceLock = p9PublishFindManifestRole(parsed[1], "source_lock")
+    let testRunner = p9PublishFindManifestRole(parsed[1], "p4_build_proof")
+    let fullTests = p9PublishReadBounded(Path(root).join(
+        "full-test-report.json").toString(), 16 * 1024 * 1024)
+    if (!sourceLock[0] || !testRunner[0] || fullTests[0] != "ok" ||
+        validateCkbReproFullTestProof(fullTests[1], releaseCommit,
+            reference[1].runCriticalTreeHash,
+            reference[1].certifiedRunInputHash,
+            ckbReproBundleHash(referenceRead[1]), reference[1].resultsHash,
+            sourceLock[1].logicalSha256, testRunner[1].logicalSha256,
+            sourceLock[1].logicalSha256) != "ok") {
         out.contract = p9PublishFailure("publish_full_test_proof_invalid")
         return out
     }
@@ -1350,6 +1465,18 @@ private func p9PublishBindings(root: String, manifestBytes: Array<UInt8>,
     out.evidence.externalProofsVerified = true
     out.contract = p9PublishSuccess()
     out
+}
+
+private func p9PublishFindManifestRole(manifest: CkbReproBundleManifest,
+    role: String): (Bool, CkbReproBundleAsset) {
+    var found = false; var value = CkbReproBundleAsset()
+    for (asset in manifest.assets) {
+        if (asset.role == role) {
+            if (found) { return (false, CkbReproBundleAsset()) }
+            found = true; value = asset
+        }
+    }
+    (found, value)
 }
 
 public func computeCkbReproPublishAuthorityHash(
