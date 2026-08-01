@@ -1,5 +1,6 @@
 package cangjie_community_knowledge_base_test
 
+import std.collection.ArrayList
 import std.fs.{Directory, File, Path, exists, remove}
 import std.unittest.*
 import std.unittest.testmacro.*
@@ -20,7 +21,8 @@ private class P6FakeEnvironmentProbe <: CkbReproEnvironmentProbe {
     public var result: CkbReproEnvironmentProbeResult
     public var calls: Int64 = 0
     public init(value: CkbReproEnvironmentProbeResult) { this.result = value }
-    public func inspect(attested: CkbReproEnvironmentLock):
+    public func inspect(attested: CkbReproEnvironmentLock,
+        attestedInputHash: String):
         CkbReproEnvironmentProbeResult {
         this.calls += 1
         this.result
@@ -347,6 +349,8 @@ public class CkbReproEnvironmentTest {
         let drifted = CkbReproEnvironmentProbeResult()
         drifted.ok = true
         drifted.observed = p6FrozenEnvironment()
+        drifted.attestedInputHash = p6Hash(
+            renderCkbReproEnvironmentLock(inputs.observed))
         drifted.observed.timeoutSeconds = 3599
         let driftProbe = P6FakeEnvironmentProbe(drifted)
         let blocked = executeCkbReproPreflightCliAdapterWithProbe(
@@ -364,6 +368,8 @@ public class CkbReproEnvironmentTest {
         let matched = CkbReproEnvironmentProbeResult()
         matched.ok = true
         matched.observed = p6FrozenEnvironment()
+        matched.attestedInputHash = p6Hash(
+            renderCkbReproEnvironmentLock(inputs.observed))
         @Expect(executeCkbReproPreflightCliAdapterWithProbe(options, inputs,
             P6FakeEnvironmentProbe(matched)).ok, true)
 
@@ -375,6 +381,58 @@ public class CkbReproEnvironmentTest {
         untrusted.frozen = false
         @Expect(runCkbReproPreflightCliAdapter(options, untrusted).diagnostic,
             "environment_attestation_authority_unavailable")
+    }
+
+    @TestCase
+    public func p6Bnd01ActualProbeIsHashBoundBoundedAndUtf8Safe(): Unit {
+        let expected = p6FrozenEnvironment()
+        let inputs = CkbReproPreflightCliInputs()
+        inputs.expected = expected
+        inputs.observed = expected
+        inputs.heap = ckbServiceHeapPreflight("4GB")
+        let seal = p6CertificationSeal()
+        inputs.certificationPreflightJson = seal[0]
+        inputs.certificationRunManifestJson = seal[1]
+        let options = parseCkbReproPreflightCliArgs([
+            "ckb-repro-preflight", "--environment-lock", "/tmp/expected.json",
+            "--observed-environment", "/tmp/observed.json",
+            "--certification-preflight", "/tmp/preflight.json",
+            "--certification-run-manifest", "/tmp/run-manifest.json"])
+
+        let unbound = CkbReproEnvironmentProbeResult()
+        unbound.ok = true
+        unbound.observed = p6FrozenEnvironment()
+        unbound.attestedInputHash = p6Hash("different-attestation")
+        @Expect(executeCkbReproPreflightCliAdapterWithProbe(options, inputs,
+            P6FakeEnvironmentProbe(unbound)).diagnostic,
+            "environment_attestation_input_mismatch")
+
+        @Expect(ckbReproSdkExecutableHash("sdk-binary".toArray()),
+            p6Hash("sdk-binary"))
+        @Expect(ckbReproSdkExecutableHash("sdk-binary-2".toArray()) ==
+            ckbReproSdkExecutableHash("sdk-binary".toArray()), false)
+
+        let unicode = ckbReproNormalizeProbeOutput(
+            "仓颉🙂\nversion".toArray(), 64)
+        @Expect(unicode[0], "ok")
+        @Expect(unicode[1], "仓颉🙂 version")
+        @Expect(ckbReproNormalizeProbeOutput([0xff, 0xfe], 64)[0],
+            "environment_probe_invalid_encoding")
+        @Expect(ckbReproNormalizeProbeOutput("ok\u{0001}bad".toArray(), 64)[0],
+            "environment_probe_control_character")
+        @Expect(ckbReproNormalizeProbeOutput(
+            "/Users/private/repository".toArray(), 64)[0],
+            "environment_probe_path_leak")
+        let long = ArrayList<UInt8>()
+        for (_ in 0..4096) { long.add(all: "🙂".toArray()) }
+        @Expect(ckbReproNormalizeProbeOutput(long.toArray(), 256)[0],
+            "environment_probe_output_too_large")
+
+        let concurrent = ckbReproBoundedProbeCommand("/bin/sh", ["-c",
+            "i=0; while [ $i -lt 12000 ]; do printf x; printf y >&2; i=$((i+1)); done"],
+            32768)
+        @Expect(concurrent[0], Int64(0))
+        @Expect(concurrent[1], "environment_probe_output_too_large")
     }
 
     @TestCase
