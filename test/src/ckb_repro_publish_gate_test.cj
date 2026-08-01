@@ -65,6 +65,14 @@ private class P9FakeGpgvRunner <: CkbReproGpgvRunner {
     }
 }
 
+private class P9RealGpgvRunner <: CkbReproGpgvRunner {
+    public func run(command: String, args: Array<String>): (Int64, String) {
+        let result = ckbReproBoundedProbeCommand(command, args, 1024 * 1024)
+        if (result[1] != "ok") { return (127, "") }
+        (result[0], result[2])
+    }
+}
+
 @Test
 public class CkbReproPublishGateTest {
     @TestCase
@@ -458,6 +466,75 @@ public class CkbReproPublishGateTest {
     }
 
     @TestCase
+    public func p9Pos03ReleaseCommitKeyVerifiesRealSignature(): Unit {
+        let base = Path("target/p9-real-signing")
+        if (exists(base)) { remove(base, recursive: true) }
+        let repository = base.join("repository")
+        let bundle = base.join("bundle")
+        let firstHome = base.join("first-home")
+        let wrongHome = base.join("wrong-home")
+        Directory.create(repository.join("reproducibility"), recursive: true)
+        Directory.create(bundle.join("reproducibility"), recursive: true)
+        Directory.create(firstHome); Directory.create(wrongHome)
+        p9TestCommandOk("gpg", ["--homedir", firstHome.toString(),
+            "--batch", "--pinentry-mode", "loopback", "--passphrase", "",
+            "--quick-generate-key", "Metis Repro Test <repro@example.invalid>",
+            "ed25519", "sign", "0"])
+        let firstFingerprint = p9TestGpgFingerprint(firstHome.toString())
+        @Expect(firstFingerprint.size, Int64(40))
+        let repositoryKey = repository.join(
+            "reproducibility/RELEASE-SIGNING-KEY.asc")
+        p9TestCommandOk("gpg", ["--homedir", firstHome.toString(),
+            "--batch", "--yes", "--armor", "--output",
+            repositoryKey.toString(), "--export", firstFingerprint])
+        File.writeTo(bundle.join("reproducibility/RELEASE-SIGNING-KEY.asc"),
+            File.readFrom(repositoryKey))
+        File.writeTo(bundle.join("SHA256SUMS"), "payload\n".toArray())
+        p9TestCommandOk("gpg", ["--homedir", firstHome.toString(),
+            "--batch", "--yes", "--armor", "--output",
+            bundle.join("SHA256SUMS.sig").toString(), "--detach-sign",
+            bundle.join("SHA256SUMS").toString()])
+        p9TestCommandOk("git", ["-C", repository.toString(), "init"])
+        p9TestCommandOk("git", ["-C", repository.toString(), "config",
+            "user.name", "Metis Repro Test"])
+        p9TestCommandOk("git", ["-C", repository.toString(), "config",
+            "user.email", "repro@example.invalid"])
+        p9TestCommandOk("git", ["-C", repository.toString(), "add",
+            "reproducibility/RELEASE-SIGNING-KEY.asc"])
+        p9TestCommandOk("git", ["-C", repository.toString(), "commit",
+            "-m", "trusted key"])
+        let trustedCommit = p9TestCommand("git", ["-C",
+            repository.toString(), "rev-parse", "HEAD"])[2].trimAscii()
+        let repositoryRoot = canonicalize(repository).toString()
+        let bundleRoot = canonicalize(bundle).toString()
+        @Expect(ckbReproVerifyReleaseSignatureAtCommit(repositoryRoot,
+            trustedCommit, bundleRoot, "SHA256SUMS.sig", "SHA256SUMS",
+            firstFingerprint, P9RealGpgvRunner()), "ok")
+
+        p9TestCommandOk("gpg", ["--homedir", wrongHome.toString(),
+            "--batch", "--pinentry-mode", "loopback", "--passphrase", "",
+            "--quick-generate-key", "Metis Wrong Test <wrong@example.invalid>",
+            "ed25519", "sign", "0"])
+        let wrongFingerprint = p9TestGpgFingerprint(wrongHome.toString())
+        p9TestCommandOk("gpg", ["--homedir", wrongHome.toString(),
+            "--batch", "--yes", "--armor", "--output",
+            repositoryKey.toString(), "--export", wrongFingerprint])
+        File.writeTo(bundle.join("reproducibility/RELEASE-SIGNING-KEY.asc"),
+            File.readFrom(repositoryKey))
+        p9TestCommandOk("git", ["-C", repository.toString(), "add",
+            "reproducibility/RELEASE-SIGNING-KEY.asc"])
+        p9TestCommandOk("git", ["-C", repository.toString(), "commit",
+            "-m", "wrong key"])
+        let wrongCommit = p9TestCommand("git", ["-C",
+            repository.toString(), "rev-parse", "HEAD"])[2].trimAscii()
+        @Expect(ckbReproVerifyReleaseSignatureAtCommit(repositoryRoot,
+            wrongCommit, bundleRoot, "SHA256SUMS.sig", "SHA256SUMS",
+            wrongFingerprint, P9RealGpgvRunner()),
+            "publish_signature_mismatch")
+        remove(base, recursive: true)
+    }
+
+    @TestCase
     public func p9Neg04FullTestProofBindsActualTrustedRun(): Unit {
         let commit = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         let tree = ckbReproBundleHash("tree".toArray())
@@ -510,6 +587,28 @@ public class CkbReproPublishGateTest {
             commit, tree, input, manifest, verifiedAsset, topology, runner,
             source), "invalid_response_encoding")
     }
+}
+
+private func p9TestCommand(command: String, args: Array<String>):
+    (Int64, String, String) {
+    ckbReproBoundedProbeCommand(command, args, 1024 * 1024)
+}
+
+private func p9TestCommandOk(command: String, args: Array<String>): Unit {
+    let result = p9TestCommand(command, args)
+    @Expect(result[1], "ok")
+    @Expect(result[0], Int64(0))
+}
+
+private func p9TestGpgFingerprint(home: String): String {
+    let result = p9TestCommand("gpg", ["--homedir", home, "--batch",
+        "--with-colons", "--list-keys"])
+    if (result[0] != 0 || result[1] != "ok") { return "" }
+    for (line in result[2].split("\n")) {
+        let fields = line.split(":")
+        if (fields.size > 9 && fields[0] == "fpr") { return fields[9] }
+    }
+    ""
 }
 
 private func p9PublishLocalFixture(): String {
