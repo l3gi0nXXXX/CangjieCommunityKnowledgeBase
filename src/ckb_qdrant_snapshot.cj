@@ -444,11 +444,25 @@ public func renderCkbPortableVectorProof(proof: CkbPortableVectorProof): String 
 
 public func parseCkbPortableVectorProofFile(path: String):
     (CkbReproContractResult, CkbPortableVectorProof) {
-    let proof = CkbPortableVectorProof()
     let read = ckbP3ReadBoundedUtf8(path, "portable_vector_proof")
-    if (read[0] != "ok") { return (ckbP3ContractFailure(read[0]), proof) }
+    if (read[0] != "ok") {
+        return (ckbP3ContractFailure(read[0]), CkbPortableVectorProof())
+    }
+    parseCkbPortableVectorProofBytes(read[1].toArray())
+}
+
+public func parseCkbPortableVectorProofBytes(bytes: Array<UInt8>):
+    (CkbReproContractResult, CkbPortableVectorProof) {
+    let proof = CkbPortableVectorProof()
+    let text = try { String.fromUtf8(bytes) } catch (_: Exception) {
+        return (ckbP3ContractFailure("invalid_response_encoding"), proof)
+    }
     try {
-        let object = JsonValue.fromStr(read[1]).asObject()
+        let object = JsonValue.fromStr(text).asObject()
+        if (object.size() != 13) {
+            return (ckbP3ContractFailure(
+                "portable_vector_proof_field_contract_invalid"), proof)
+        }
         proof.collection = ckbP3RequiredString(object, "collection")
         proof.candidateVersion = ckbP3RequiredString(object, "candidateVersion")
         proof.p4PortableProofHash = ckbP3RequiredString(object, "p4PortableProofHash")

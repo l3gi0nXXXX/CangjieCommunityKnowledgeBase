@@ -621,18 +621,35 @@ public func newCkbReleaseProductionAdapter(policy: CkbReleasePathPolicy,
 
 public func loadCkbLogicalSnapshotCliProofs(logicalPath: String,
     vectorPath: String): (CkbReproContractResult, CkbLogicalSnapshotExportProofs) {
-    let proofs = CkbLogicalSnapshotExportProofs()
     let logicalRead = ckbReleaseReadBoundedUtf8(logicalPath)
     if (logicalRead[0] != "ok") {
-        return (ckbReleaseCliContractFailure(logicalRead[0]), proofs)
+        return (ckbReleaseCliContractFailure(logicalRead[0]),
+            CkbLogicalSnapshotExportProofs())
     }
     let vectorRead = ckbReleaseReadBoundedUtf8(vectorPath)
     if (vectorRead[0] != "ok") {
-        return (ckbReleaseCliContractFailure(vectorRead[0]), proofs)
+        return (ckbReleaseCliContractFailure(vectorRead[0]),
+            CkbLogicalSnapshotExportProofs())
     }
+    parseCkbLogicalSnapshotCliProofBytes(
+        logicalRead[1].toArray(), vectorRead[1].toArray())
+}
+
+public func parseCkbLogicalSnapshotCliProofBytes(logicalBytes: Array<UInt8>,
+    vectorBytes: Array<UInt8>):
+    (CkbReproContractResult, CkbLogicalSnapshotExportProofs) {
+    let proofs = CkbLogicalSnapshotExportProofs()
+    let logicalText = try { String.fromUtf8(logicalBytes) }
+        catch (_: Exception) {
+            return (ckbReleaseCliContractFailure("invalid_response_encoding"), proofs)
+        }
+    let vectorText = try { String.fromUtf8(vectorBytes) }
+        catch (_: Exception) {
+            return (ckbReleaseCliContractFailure("invalid_response_encoding"), proofs)
+        }
     try {
-        let logical = JsonValue.fromStr(logicalRead[1]).asObject()
-        let vector = JsonValue.fromStr(vectorRead[1]).asObject()
+        let logical = JsonValue.fromStr(logicalText).asObject()
+        let vector = JsonValue.fromStr(vectorText).asObject()
         if (logical.size() != 7 || vector.size() != 13) {
             return (ckbReleaseCliContractFailure(
                 "release_proof_field_contract_invalid"), proofs)

@@ -266,6 +266,7 @@ public func loadCkbPortablePromotionCliInputs(unsignedRoot: String,
             "p5_public_evidence", "p8_reference"]
         let declaredHashes = [options.p2ProofHash, options.p3ProofHash,
             options.p5ProofHash, options.p8AProofHash]
+        let artifactBytes = ArrayList<Array<UInt8>>()
         let artifactTexts = ArrayList<String>()
         for (i in 0..artifactPaths.size) {
             if (artifactPaths[i] != expectedPaths[i] ||
@@ -282,25 +283,27 @@ public func loadCkbPortablePromotionCliInputs(unsignedRoot: String,
             if (benchmarkGapSha256(artifactText) != declaredHashes[i]) {
                 return (p4BuildFailure("promotion_artifact_hash_mismatch"), options)
             }
+            artifactBytes.add(artifact[1])
             artifactTexts.add(artifactText)
         }
-        let logical = JsonValue.fromStr(artifactTexts[0]).asObject()
-        let vector = JsonValue.fromStr(artifactTexts[1]).asObject()
+        let logical = parseCkbLogicalSnapshotCliProofBytes(
+            artifactBytes[0], artifactBytes[1])
+        let vector = parseCkbPortableVectorProofBytes(artifactBytes[1])
         let publicEvidence = parseCkbPublicEvidenceExportManifest(
             artifactTexts[2].toArray())
         let reference = parseCkbReproReferenceManifest(
             artifactTexts[3].toArray())
         let referenceValidation = validateCkbReproReferenceManifest(reference[1])
-        if (!publicEvidence[0].ok ||
+        if (!logical[0].ok || !vector[0].ok || !publicEvidence[0].ok ||
             !validateCkbPublicEvidenceExportManifest(publicEvidence[1]).ok ||
             !reference[0].ok || !referenceValidation.ok ||
             reference[1].baselineKind != "portable_release" ||
             reference[1].evidenceStatus != "complete" ||
-            p4BuildRequiredString(logical, "portableKnowledgeVersion") != options.candidateVersion ||
-            p4BuildRequiredString(vector, "candidateVersion") != options.candidateVersion ||
+            logical[1].portableKnowledgeVersion != options.candidateVersion ||
+            vector[1].candidateVersion != options.candidateVersion ||
             reference[1].knowledgeVersion != options.candidateVersion ||
             publicEvidence[1].knowledgeVersion != options.candidateVersion ||
-            p4BuildRequiredString(logical, "contaminationProofHash") != publicEvidence[1].publicEvidenceHash ||
+            logical[1].contaminationProofHash != publicEvidence[1].publicEvidenceHash ||
             publicEvidence[1].publicEvidenceHash != options.identity ||
             reference[1].strictPassed != options.p8StrictPassed ||
             reference[1].strictPassed != 151 ||
@@ -310,7 +313,7 @@ public func loadCkbPortablePromotionCliInputs(unsignedRoot: String,
             publicEvidence[1].providerFingerprint != reference[1].providerFingerprint ||
             publicEvidence[1].modelFingerprint != reference[1].modelFingerprint ||
             publicEvidence[1].vectorProofHash != reference[1].vectorProofHash ||
-            p4BuildRequiredString(vector, "vectorProofHash") != reference[1].vectorProofHash ||
+            vector[1].vectorProofHash != reference[1].vectorProofHash ||
             publicEvidence[1].certifiedRunInputHash != reference[1].certifiedRunInputHash) {
             return (p4BuildFailure("promotion_typed_artifact_invalid"), options)
         }
@@ -377,7 +380,8 @@ private func p4BuildBundleAssetBytes(snapshot: CkbReproPromotionAssetSnapshot,
             count += 1; index = i
             if (asset.role != role || asset.logicalAsset != relativePath ||
                 asset.partIndex != 0 || asset.partCount != 1 ||
-                asset.logicalSize != asset.size || asset.logicalSha256 != asset.sha256) {
+                asset.logicalSize != asset.size ||
+                asset.logicalSha256 != asset.sha256) {
                 return (false, Array<UInt8>())
             }
         }
@@ -388,7 +392,8 @@ private func p4BuildBundleAssetBytes(snapshot: CkbReproPromotionAssetSnapshot,
         "release/release-commit.txt"]
     var captured: Int64 = -1
     for (i in 0..paths.size) { if (paths[i] == relativePath) { captured = i } }
-    if (count != 1 || index < 0 || captured < 0 || captured >= snapshot.bytes.size) {
+    if (count != 1 || index < 0 || captured < 0 ||
+        captured >= snapshot.bytes.size) {
         return (false, Array<UInt8>())
     }
     (true, snapshot.bytes[captured])

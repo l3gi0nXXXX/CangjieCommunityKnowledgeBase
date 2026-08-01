@@ -1450,15 +1450,19 @@ public func computeCkbReproReleaseAuthorityHash(
         } else {
             var consistent = false
             for (evidence in inputs) {
-                if (evidence.role == asset.role && evidence.logicalAsset == asset.logicalAsset &&
-                    evidence.size == asset.logicalSize && evidence.sha256 == asset.logicalSha256) {
-                    consistent = true
-                }
+                if (evidence.role == asset.role &&
+                    evidence.logicalAsset == asset.logicalAsset &&
+                    evidence.size == asset.logicalSize &&
+                    evidence.sha256 == asset.logicalSha256) { consistent = true }
             }
             if (!consistent) { return "" }
         }
-        if (asset.logicalAsset == "cangjie-humaneval-authority.tar.zst") { bundled = true }
-        if (asset.logicalAsset == "authority-source-materials.json") { publicRebuild = true }
+        if (asset.logicalAsset == "cangjie-humaneval-authority.tar.zst") {
+            bundled = true
+        }
+        if (asset.logicalAsset == "authority-source-materials.json") {
+            publicRebuild = true
+        }
     }
     if (bundled == publicRebuild) { return "" }
     let built = buildCkbReproReleaseAuthorityContract(inputs,
@@ -1466,7 +1470,8 @@ public func computeCkbReproReleaseAuthorityHash(
     if (!built[0].ok) { return "" }
     var referenceMatched = false; var commitMatched = false
     for (evidence in built[1].expected) {
-        if (evidence.role == "p8_reference" && evidence.sha256 == referenceManifestHash &&
+        if (evidence.role == "p8_reference" &&
+            evidence.sha256 == referenceManifestHash &&
             evidence.size == referenceManifestSize) { referenceMatched = true }
         if (evidence.role == "release_commit" &&
             evidence.sha256 == ckbReproBundleHash(releaseCommit.toArray()) &&
