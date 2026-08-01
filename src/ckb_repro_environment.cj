@@ -687,7 +687,22 @@ private func p6ContainsSecretOrLocalPath(value: String): Bool {
 
 private func p6Escape(value: String): String {
     value.replace("\\", "\\\\").replace("\"", "\\\"")
-        .replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
+        .replace("\u{0000}", "\\u0000").replace("\u{0001}", "\\u0001")
+        .replace("\u{0002}", "\\u0002").replace("\u{0003}", "\\u0003")
+        .replace("\u{0004}", "\\u0004").replace("\u{0005}", "\\u0005")
+        .replace("\u{0006}", "\\u0006").replace("\u{0007}", "\\u0007")
+        .replace("\u{0008}", "\\b").replace("\t", "\\t")
+        .replace("\n", "\\n").replace("\u{000b}", "\\u000b")
+        .replace("\u{000c}", "\\f").replace("\r", "\\r")
+        .replace("\u{000e}", "\\u000e").replace("\u{000f}", "\\u000f")
+        .replace("\u{0010}", "\\u0010").replace("\u{0011}", "\\u0011")
+        .replace("\u{0012}", "\\u0012").replace("\u{0013}", "\\u0013")
+        .replace("\u{0014}", "\\u0014").replace("\u{0015}", "\\u0015")
+        .replace("\u{0016}", "\\u0016").replace("\u{0017}", "\\u0017")
+        .replace("\u{0018}", "\\u0018").replace("\u{0019}", "\\u0019")
+        .replace("\u{001a}", "\\u001a").replace("\u{001b}", "\\u001b")
+        .replace("\u{001c}", "\\u001c").replace("\u{001d}", "\\u001d")
+        .replace("\u{001e}", "\\u001e").replace("\u{001f}", "\\u001f")
 }
 
 private func p6VerifyObservedEnvironmentAttestation(path: String,
