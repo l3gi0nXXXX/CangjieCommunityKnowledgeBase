@@ -1,7 +1,7 @@
 {
   "schemaVersion": "ckb-run-critical-files-v1",
   "files": [
-    {"path":"src/main.cj","status":"present","sha256":"sha256:4084687ace5eb0f0aec7160b2a5988c6030be90fa6ae40ad7ffd60f838ac5deb"},
+    {"path":"src/main.cj","status":"present","sha256":"sha256:d69a2a6278671db48fc87b1bb8c8102a1dfe1a12326b39368d4f8fbddd85597a"},
     {"path":"src/cangjie_eval_abcde_runner.cj","status":"present","sha256":"sha256:5cdc331056da3482da097256e015576ea9ad4d742d6d5190ecf7c81b0c6c9fb3"},
     {"path":"src/cangjie_strict_certification.cj","status":"present","sha256":"sha256:781ee706c1441f4111c97a4573ff0df20191e5e0a1af03ff6e35d0f0c5ea816d"},
     {"path":"src/cangjie_eval_knowledge_audit.cj","status":"present","sha256":"sha256:de1ed91483fdda2eade6939208098d6e89f28af4d0eac0527812748f3ad20e73"},
@@ -14,7 +14,7 @@
     {"path":"src/cangjie_release_gate.cj","status":"present","sha256":"sha256:d3192c8fac69ca5a53c6320e6d85a5fa1df7b73e9ea8097df2418f569d234ae7"},
     {"path":"src/ckb_candidate_runtime_materialize.cj","status":"present","sha256":"sha256:7cb1f82e8f00ff279e114c31cd304f7cd06547cffc96a553a57c3d5b4c7fe4ae"},
     {"path":"src/native_http_transport.cj","status":"present","sha256":"sha256:d153a5f7e720298b604daec5a08dc7f7df5b37cf4f39f4611b179d5e4f8c71a3"},
-    {"path":"src/native_tls_bootstrap.cj","status":"present","sha256":"sha256:1676be18d86517c254c590cba72e9e231ed0dc197ff4e99fb02e10052350df3d"},
+    {"path":"src/native_tls_bootstrap.cj","status":"present","sha256":"sha256:4e936a0aec6781678159a4e09c0ef6940aeb043cce7bd3652ae67d74e3de97be"},
     {"path":"src/core.cj","status":"present","sha256":"sha256:ed73f52f60dc67074175a21a2ac81efae033c133d7ae94ccd67706117063c046"},
     {"path":"src/services.cj","status":"present","sha256":"sha256:212dbcb82d01e25333dd8ff37976cc2b2b533c0dd255644b3f6866701fec1f81"},
     {"path":"src/service_api.cj","status":"present","sha256":"sha256:d6b767a7e5df190b48f9e573298cf0793e857595c93daa512dfe04a180a7f780"},
@@ -36,7 +36,7 @@
     {"path":"src/ckb_portable_vector_build.cj","status":"present","sha256":"sha256:59821a4233dd14817476353e3ce142e2e5b5163f2988996989d423d657e304bc"},
     {"path":"src/ckb_repro_build.cj","status":"present","sha256":"sha256:d438320e0a94615f7e37d1a963c37bffca98aff0248e2d6233b411fecd5967a8"},
     {"path":"src/ckb_portable_path_normalizer.cj","status":"present","sha256":"sha256:5668a9dfabd8c7af872a781c273e1c5600f2953714cfcc80bd4b079d2a3d720e"},
-    {"path":"src/ckb_repro_environment.cj","status":"present","sha256":"sha256:4446dce7e3e1df58b9ecae2ee9c601cd84f0236debb66ac9c7b411d6710cfaf7"},
+    {"path":"src/ckb_repro_environment.cj","status":"present","sha256":"sha256:2a09130f43d4bc915862840afd5e38266833d25955424caf0020addbb05becf4"},
     {"path":"src/ckb_repro_verify.cj","status":"present","sha256":"sha256:ea0bc776376daed5f01c175df7d8819da5279504fd7630f55eb59e5515225eee"}
   ]
 }

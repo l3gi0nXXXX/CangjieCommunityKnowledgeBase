@@ -9,8 +9,8 @@
   "serviceHeap": "4GB",
   "qdrantImageDigest": "",
   "runCandidateCommit": "d9f76c3350be8961c6cac049d8e35005e34f8262",
-  "runCriticalFilesManifestHash": "sha256:a6e0fbba6189010aa168cb6d94d26a9af7789aa61e8d92eea0c68bfeadb839b1",
-  "runCriticalTreeHash": "sha256:6105dfea52aacca4399966642e76de94c2ab5f36c8604d3976275a8f787da806",
+  "runCriticalFilesManifestHash": "sha256:5ffa34baea074dd79994d66a83392c356cd1cbeb6dcb26b17eeddace02c8b53b",
+  "runCriticalTreeHash": "sha256:5a5ec26abf3441e39d4b3cdc285c61ffdf424e13790562c1e60e9d0b93c70230",
   "claudeCodeVersion": "",
   "glmProvider": "openai-compatible",
   "glmBaseUrl": "https://provider.example/v1",
@@ -35,5 +35,7 @@
   "mcpTransport": "mcp_http",
   "sandboxCapability": "macos-sandbox-exec",
   "datasetVersion": "cangjie-humaneval-164-sha256:3a12d5a5283daa492dd489c1a97ebc457b71e72d90669fbc965e165566386b33",
-  "authorityDeliveryHash": ""
+  "authorityDeliveryHash": "",
+  "attestationAuthorityManifestPath": "reproducibility/manifests/environment-attestation-authority.json",
+  "attestationAuthorityHash": ""
 }

@@ -81,6 +81,28 @@ planned_identity_exit=0
 
 失败处理：若不是 planned，只能在 W4/W5 冻结流程中核对真实 manifest，不能手填值。
 
+环境证明使用三个不同的哈希：`environmentManifestHash` 覆盖完整规范化
+environment lock；`certifiedRunInputHash` 仅排除既有的
+`runCandidateCommit`；`observedEnvironmentProjectionHash` 仅将
+`attestationAuthorityHash` 置空后计算，用于避免 authority manifest 与其自身
+哈希形成循环。authority manifest 固定 projection hash，environment lock 则固定
+authority 的仓库相对路径和完整文件哈希；两者不能由 CLI 覆盖。
+
+冻结采用两个提交：`runCandidateCommit` 指向包含全部运行关键源码和公开输入的
+候选提交 A；冻结后的 environment lock 和 authority manifest 写入后继证据提交 B。
+运行 worktree 必须干净且 HEAD 精确等于 A；只读证据 worktree 必须干净且 HEAD 等于
+B。preflight 要求 A 是 B 的祖先，并且 A 到 B 只修改且必须修改上述两个派生证据文件。
+探测成功后仍将 observed `runCandidateCommit` 记为 A，而不是把 B 写回 lock，从而避免
+Git commit 对自身哈希的循环依赖；同时将 B 作为
+`attestationEvidenceCommit` 写入 preflight 结果，供后续 reference evidence 审计，
+但 B 不进入 `certifiedRunInputHash`。
+
+```bash
+git worktree add --detach "${RUNNER_ROOT}" "${RUN_CANDIDATE_COMMIT}"
+git worktree add --detach "${EVIDENCE_ROOT}" "${ATTESTATION_EVIDENCE_COMMIT}"
+export CKB_REPRO_REPOSITORY_ROOT="${RUNNER_ROOT}"
+```
+
 ## 第 3 步：生成一次性 local-root map 位置
 
 目的：为 W4 的确定性 normalizer 预留显式输入，不泄漏机器路径。

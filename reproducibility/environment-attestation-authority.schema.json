@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/l3gi0nXXXX/CangjieCommunityKnowledgeBase/reproducibility/environment-attestation-authority.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "status", "signingFingerprint", "observedEnvironmentProjectionHash", "authoritySource", "authoritySourceHash"],
+  "properties": {
+    "schemaVersion": {"const": "ckb-repro-environment-attestation-authority-v1"},
+    "status": {"enum": ["planned", "frozen"]},
+    "signingFingerprint": {"type": "string"},
+    "observedEnvironmentProjectionHash": {"type": "string", "$comment": "Hash of the canonical environment lock with only attestationAuthorityHash replaced by the empty string."},
+    "authoritySource": {"const": "release://ckb/environment-attestation-authority-v1"},
+    "authoritySourceHash": {"const": "sha256:ce2a1bf242f355edce14efb506dba15e6155c726be4e4da91e6047a129a1cc3f"}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"status": {"const": "planned"}}},
+      "then": {
+        "properties": {
+          "signingFingerprint": {"const": ""},
+          "observedEnvironmentProjectionHash": {"const": ""}
+        }
+      }
+    },
+    {
+      "if": {"properties": {"status": {"const": "frozen"}}},
+      "then": {
+        "properties": {
+          "signingFingerprint": {"pattern": "^[0-9A-F]{40}$"},
+          "observedEnvironmentProjectionHash": {"pattern": "^sha256:[0-9a-f]{64}$"}
+        }
+      }
+    }
+  ]
+}
