@@ -39,6 +39,20 @@ private class P6FakeGitProbeRunner <: CkbReproGitProbeRunner {
     }
 }
 
+private class P6FakeSignatureVerifier <:
+    CkbReproAttestationSignatureVerifier {
+    public var result: CkbReproAttestationSignatureResult
+    public var calls: Int64 = 0
+    public init(fingerprint: String) {
+        this.result = CkbReproAttestationSignatureResult()
+        this.result.ok = true; this.result.diagnostic = "ok"
+        this.result.signingFingerprint = fingerprint
+    }
+    public func verify(path: String): CkbReproAttestationSignatureResult {
+        this.calls += 1; this.result
+    }
+}
+
 @Test
 public class CkbReproEnvironmentTest {
     @TestCase
@@ -423,7 +437,7 @@ public class CkbReproEnvironmentTest {
                 "\"status\":\"planned\"").toArray(), p6Hash(first))[0].ok,
             false)
         @Expect(loadCkbReproVerifiedAttestationAuthority(
-            (first[0..first.size - 1] + ",\"extra\":true}").toArray(),
+            first.replace("}", ",\"extra\":true}").toArray(),
             p6Hash(first))[0].ok, false)
         @Expect(loadCkbReproVerifiedAttestationAuthority(
             [0xff, 0xfe], p6Hash(first))[0].diagnostic,
@@ -431,6 +445,46 @@ public class CkbReproEnvironmentTest {
         @Expect(loadCkbReproVerifiedAttestationAuthority(
             "{bad".toArray(), p6Hash(first))[0].diagnostic,
             "environment_attestation_authority_malformed")
+
+        let root = Path("target/p6-independent-authority")
+        if (exists(root)) { remove(root, recursive: true) }
+        Directory.create(root, recursive: true)
+        let canonical = canonicalize(root).toString()
+        let observed = p6FrozenEnvironment()
+        let observedText = renderCkbReproEnvironmentLock(observed)
+        let observedHash = p6Hash(observedText)
+        let anchoredText = p6AuthorityManifest(
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", observedHash)
+        let anchored = loadCkbReproVerifiedAttestationAuthority(
+            anchoredText.toArray(), p6Hash(anchoredText))
+        @Expect(anchored[0].ok, true)
+        File.writeTo(Path(canonical).join("expected.json"),
+            observedText.toArray())
+        File.writeTo(Path(canonical).join("observed.json"),
+            observedText.toArray())
+        let seal = p6CertificationSeal()
+        File.writeTo(Path(canonical).join("preflight.json"), seal[0].toArray())
+        File.writeTo(Path(canonical).join("run-manifest.json"),
+            seal[1].toArray())
+        let bounded = parseCkbReproPreflightCliArgs([
+            "ckb-repro-preflight", "--environment-lock",
+            "${canonical}/expected.json", "--observed-environment",
+            "${canonical}/observed.json", "--certification-preflight",
+            "${canonical}/preflight.json", "--certification-run-manifest",
+            "${canonical}/run-manifest.json", "--signing-fingerprint",
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "--observed-environment-hash", observedHash])
+        let wrongKey = P6FakeSignatureVerifier(
+            "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB")
+        let probeResult = CkbReproEnvironmentProbeResult()
+        probeResult.diagnostic = "must_not_run"
+        let probe = P6FakeEnvironmentProbe(probeResult)
+        @Expect(runCkbReproPreflightCliAdapterWithAuthorityDependencies(
+            bounded, anchored[1], wrongKey, probe).diagnostic,
+            "environment_attestation_signature_invalid")
+        @Expect(wrongKey.calls, 1)
+        @Expect(probe.calls, 0)
+        remove(root, recursive: true)
     }
 
     @TestCase
