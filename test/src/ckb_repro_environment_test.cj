@@ -360,6 +360,15 @@ public class CkbReproEnvironmentTest {
         matched.observed = p6FrozenEnvironment()
         @Expect(executeCkbReproPreflightCliAdapterWithProbe(options, inputs,
             P6FakeEnvironmentProbe(matched)).ok, true)
+
+        @Expect(runCkbReproPreflightCliAdapter(options).diagnostic,
+            "environment_attestation_authority_unavailable")
+        let untrusted = CkbReproAttestationAuthority()
+        untrusted.signingFingerprint =
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        untrusted.frozen = false
+        @Expect(runCkbReproPreflightCliAdapter(options, untrusted).diagnostic,
+            "environment_attestation_authority_unavailable")
     }
 
     @TestCase
