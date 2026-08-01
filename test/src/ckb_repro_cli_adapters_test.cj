@@ -264,6 +264,26 @@ public class CkbReproCliAdaptersTest {
     }
 
     @TestCase
+    public func p3ProductionBusinessFactoryLeavesOnlyTransportDependencies(): Unit {
+        let root = Path("target/p234-p3-business-factory")
+        if (exists(root)) { remove(root, recursive: true) }
+        Directory.create(root, recursive: true)
+        let store = FileKnowledgeStore(root.toString())
+        let pathContext = CkbPortablePathContext()
+        pathContext.apiRoutes.add("/v1/query")
+        let provider = CkbStoreVerificationInputProvider(store, pathContext)
+        @Expect(provider.visibleInput("portable").rawRecords.size, 0)
+        @Expect(provider.pathContext("portable").apiRoutes[0], "/v1/query")
+
+        let adapter = newCkbP3BusinessProductionAdapter(
+            KnowledgeBase(FakeClock(0)), store, LocalVectorStore(), pathContext,
+            P234SnapshotDependency(), P234ParityDependency(),
+            CkbReleasePathPolicy())
+        @Expect(adapter is CkbP3CliAdapter, true)
+        remove(root, recursive: true)
+    }
+
+    @TestCase
     public func p3Neg01CliAdapterContainsInvalidUtf8Failure(): Unit {
         let fake = P234P3CliFake(); fake.fail = true
         let result = executeCkbP3CliAdapter([
