@@ -53,6 +53,18 @@ private class P9FakeFilesystemAuthentication <:
     }
 }
 
+private class P9FakeGpgvRunner <: CkbReproGpgvRunner {
+    public var calls: Int64 = 0
+    public var command: String = ""
+    public var args: Array<String> = Array<String>()
+    public var output: String =
+        "[GNUPG:] VALIDSIG 0123456789ABCDEF0123456789ABCDEF01234567 20260801"
+    public func run(value: String, arguments: Array<String>): (Int64, String) {
+        this.calls += 1; this.command = value; this.args = arguments
+        (0, this.output)
+    }
+}
+
 @Test
 public class CkbReproPublishGateTest {
     @TestCase
@@ -353,6 +365,60 @@ public class CkbReproPublishGateTest {
             Path("../src/ckb_repro_publish_gate.cj")))
         @Expect(source.contains("\"ls-remote\", \"--tags\", \"origin\","), true)
         @Expect(source.contains("refs/remotes/origin/tags"), false)
+    }
+
+    @TestCase
+    public func p9Neg03ReleaseKeyAndTagVerificationAreIsolated(): Unit {
+        let base = Path("target/p9-signing-root")
+        if (exists(base)) { remove(base, recursive: true) }
+        let repository = base.join("repository")
+        let bundle = base.join("bundle")
+        Directory.create(repository.join("reproducibility"), recursive: true)
+        Directory.create(bundle.join("reproducibility"), recursive: true)
+        let key = "-----BEGIN PGP PUBLIC KEY BLOCK-----\nfixture\n" +
+            "-----END PGP PUBLIC KEY BLOCK-----\n"
+        File.writeTo(repository.join("reproducibility/RELEASE-SIGNING-KEY.asc"),
+            key.toArray())
+        File.writeTo(bundle.join("reproducibility/RELEASE-SIGNING-KEY.asc"),
+            key.toArray())
+        File.writeTo(bundle.join("SHA256SUMS.sig"), "signature".toArray())
+        File.writeTo(bundle.join("SHA256SUMS"), "payload".toArray())
+        let repositoryRoot = canonicalize(repository).toString()
+        let bundleRoot = canonicalize(bundle).toString()
+        let runner = P9FakeGpgvRunner()
+        @Expect(ckbReproVerifyReleaseSignature(repositoryRoot, bundleRoot,
+            "SHA256SUMS.sig", "SHA256SUMS",
+            "0123456789ABCDEF0123456789ABCDEF01234567", runner), "ok")
+        @Expect(runner.command, "gpgv")
+        @Expect(runner.args[0], "--no-options")
+        @Expect(runner.args[1], "--homedir")
+        @Expect(exists(Path(runner.args[2])), false)
+        @Expect(runner.args[3], "--status-fd")
+        @Expect(runner.args[4], "1")
+        @Expect(runner.args[5], "--keyring")
+        @Expect(runner.args[6], repository.join(
+            "reproducibility/RELEASE-SIGNING-KEY.asc").toString())
+        File.writeTo(bundle.join("reproducibility/RELEASE-SIGNING-KEY.asc"),
+            (key + "drift").toArray())
+        let drift = P9FakeGpgvRunner()
+        @Expect(ckbReproVerifyReleaseSignature(repositoryRoot, bundleRoot,
+            "SHA256SUMS.sig", "SHA256SUMS",
+            "0123456789ABCDEF0123456789ABCDEF01234567", drift),
+            "publish_release_key_mismatch")
+        @Expect(drift.calls, Int64(0))
+        remove(repository.join("reproducibility/RELEASE-SIGNING-KEY.asc"))
+        @Expect(ckbReproVerifyReleaseSignature(repositoryRoot, bundleRoot,
+            "SHA256SUMS.sig", "SHA256SUMS",
+            "0123456789ABCDEF0123456789ABCDEF01234567",
+            P9FakeGpgvRunner()), "publish_release_key_missing")
+        let productionSource = String.fromUtf8(File.readFrom(
+            Path("../src/ckb_repro_publish_gate.cj")))
+        @Expect(productionSource.contains("[\"verify-tag\", \"--raw\""), false)
+        @Expect(productionSource.contains("RELEASE-TAG-EVIDENCE.json"), false)
+        @Expect(productionSource.contains(
+            "[\"cat-file\", \"tag\", \"refs/tags/\${options.tagName}\"]"),
+            true)
+        remove(base, recursive: true)
     }
 }
 
