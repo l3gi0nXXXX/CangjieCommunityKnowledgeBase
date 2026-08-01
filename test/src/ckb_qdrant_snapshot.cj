@@ -5,6 +5,14 @@ import std.fs.{Directory, File, OpenMode, Path, canonicalize, exists, remove, re
 import stdx.crypto.digest.SHA256
 import stdx.encoding.json.*
 
+foreign {
+    func openat(directoryFd: Int32, path: CString, flags: Int32,
+        mode: Int32): Int32
+    func write(fd: Int32, buffer: CPointer<UInt8>, size: UIntNative): IntNative
+    func fsync(fd: Int32): Int32
+    func fchmod(fd: Int32, mode: Int32): Int32
+}
+
 public class CkbQdrantSnapshotManifest {
     public var schemaVersion: String = ""
     public var imageDigest: String = ""
@@ -54,6 +62,225 @@ public class CkbQdrantSnapshotResponse {
 public interface CkbQdrantSnapshotExecutor {
     func execute(request: CkbQdrantSnapshotRequest):
         CkbQdrantSnapshotResponse
+}
+
+public interface CkbQdrantSnapshotFileExecutor {
+    func download(request: CkbQdrantSnapshotRequest, targetPath: String,
+        maxBytes: Int64): CkbQdrantSnapshotFileTransferResult
+    func upload(request: CkbQdrantSnapshotRequest, sourcePath: String,
+        expectedSize: Int64, expectedSha256: String): CkbQdrantSnapshotResponse
+}
+
+public class CkbQdrantSnapshotHttpExecutor <: CkbQdrantSnapshotExecutor {
+    private let endpoint: String
+    private let http: HttpRequestExecutor
+    public init(endpoint: String, http: HttpRequestExecutor) {
+        this.endpoint = endpoint.trimAscii(); this.http = http
+    }
+    public func execute(request: CkbQdrantSnapshotRequest):
+        CkbQdrantSnapshotResponse {
+        let out = CkbQdrantSnapshotResponse()
+        if (this.endpoint == "" || this.endpoint.endsWith("/") ||
+            !request.path.startsWith("/") || request.path.contains("..") ||
+            request.path.contains("?") || request.path.contains("#") ||
+            request.contentType == "application/octet-stream" ||
+            request.bodyBytes.size > 65536 ||
+            !(request.method == "GET" || request.method == "POST" ||
+              request.method == "DELETE")) {
+            out.diagnostic = "qdrant_snapshot_control_request_invalid"; return out
+        }
+        let body = try { String.fromUtf8(request.bodyBytes) }
+            catch (_: Exception) {
+                out.diagnostic = "invalid_response_encoding"; return out
+            }
+        let native = HttpExecutionRequest()
+        native.method = request.method
+        native.url = this.endpoint + request.path
+        native.accept = "application/json"
+        native.contentType = if (request.contentType == "") {
+            "application/json"
+        } else { request.contentType }
+        native.body = body
+        native.retryCount = 0
+        native.maxResponseBytes = 65536
+        let response = this.http.execute(native)
+        out.statusCode = response.statusCode
+        out.diagnostic = if (response.transportErrorClass == "") {
+            ""
+        } else { "qdrant_snapshot_transport_failed" }
+        out.bodyBytes = response.body.toArray(); out
+    }
+}
+
+public interface CkbQdrantSnapshotDownloadStream {
+    func statusCode(): Int64
+    // -1 means the server did not provide Content-Length.
+    func contentLength(): Int64
+    func read(buffer: Array<UInt8>): Int64
+    func close(): Unit
+}
+
+public class CkbQdrantSnapshotFileTransferResult {
+    public var ok: Bool = false
+    public var diagnostic: String = "snapshot_stream_not_run"
+    public var size: Int64 = 0
+    public var sha256: String = ""
+    public init() {}
+}
+
+public func streamCkbQdrantSnapshotToOwnedTemp(
+    source: CkbQdrantSnapshotDownloadStream, targetPath: String,
+    maxBytes: Int64): CkbQdrantSnapshotFileTransferResult {
+    let out = CkbQdrantSnapshotFileTransferResult()
+    let target = Path(targetPath)
+    let parent = target.parent
+    if (maxBytes < 1 || !target.isAbsolute() || targetPath.contains("\n") ||
+        targetPath.contains("\r") || targetPath.contains("\u{0000}") ||
+        exists(target) || !exists(parent)) {
+        out.diagnostic = "qdrant_snapshot_temp_path_invalid"
+        try { source.close() } catch (_: Exception) {}
+        return out
+    }
+    let canonicalParent = try { canonicalize(parent).toString() }
+        catch (_: Exception) {
+            out.diagnostic = "qdrant_snapshot_temp_path_invalid"
+            try { source.close() } catch (_: Exception) {}
+            return out
+        }
+    if (canonicalParent != parent.toString() ||
+        !targetPath.startsWith(canonicalParent + "/")) {
+        out.diagnostic = "qdrant_snapshot_temp_path_invalid"
+        try { source.close() } catch (_: Exception) {}
+        return out
+    }
+    let declared = try { source.contentLength() } catch (_: Exception) { -2 }
+    let status = try { source.statusCode() } catch (_: Exception) { 0 }
+    if (status < 200 || status >= 300 || declared == 0 ||
+        declared < -1 || declared > maxBytes) {
+        out.diagnostic = if (declared > maxBytes) {
+            "qdrant_snapshot_stream_too_large"
+        } else { "qdrant_snapshot_stream_response_invalid" }
+        try { source.close() } catch (_: Exception) {}
+        return out
+    }
+    var fd: Int32 = -1
+    var success = false
+    let digest = SHA256()
+    try {
+        let cpath = unsafe { LibC.mallocCString(targetPath) }
+        fd = unsafe { openat(-2, cpath, 0xb01, 0x180) }
+        unsafe { LibC.free(cpath) }
+        if (fd < 0) { throw Exception("exclusive open failed") }
+        if (unsafe { fchmod(fd, 0x180) } != 0) {
+            throw Exception("exclusive mode failed")
+        }
+        let buffer = Array<UInt8>(65536, repeat: UInt8(0))
+        while (true) {
+            let count = source.read(buffer)
+            if (count < 0 || count > buffer.size) {
+                throw Exception("stream read failed")
+            }
+            if (count == 0) { break }
+            out.size += count
+            if (out.size > maxBytes) {
+                out.diagnostic = "qdrant_snapshot_stream_too_large"
+                throw Exception("stream too large")
+            }
+            if (declared >= 0 && out.size > declared) {
+                out.diagnostic = "qdrant_snapshot_stream_length_mismatch"
+                throw Exception("stream length mismatch")
+            }
+            let chunk = if (count == buffer.size) { buffer }
+                else { buffer[0..count].clone() }
+            digest.write(chunk)
+            var offset: Int64 = 0
+            while (offset < count) {
+                let written = unsafe {
+                    let pointer = acquireArrayRawData(chunk)
+                    let value = write(fd, pointer.pointer + offset,
+                        UIntNative(count - offset))
+                    releaseArrayRawData(pointer)
+                    Int64(value)
+                }
+                if (written <= 0 || written > count - offset) {
+                    throw Exception("stream write failed")
+                }
+                offset += written
+            }
+        }
+        if (out.size == 0 || (declared >= 0 && out.size != declared)) {
+            out.diagnostic = "qdrant_snapshot_stream_length_mismatch"
+            throw Exception("stream length mismatch")
+        }
+        if (unsafe { fsync(fd) } != 0) { throw Exception("fsync failed") }
+        if (unsafe { close(fd) } != 0) { throw Exception("close failed") }
+        fd = -1
+        out.sha256 = ckbQdrantSnapshotDigestHash(digest)
+        out.ok = true; out.diagnostic = "ok"; success = true
+    } catch (_: Exception) {
+        if (out.diagnostic == "snapshot_stream_not_run") {
+            out.diagnostic = "qdrant_snapshot_stream_read_failed"
+        }
+    } finally {
+        if (fd >= 0) { _ = unsafe { close(fd) } }
+        try { source.close() } catch (_: Exception) {
+            success = false; out.ok = false
+            out.diagnostic = "qdrant_snapshot_stream_close_failed"
+        }
+        if (!success && exists(target)) {
+            try { remove(target) } catch (_: Exception) {}
+        }
+    }
+    out
+}
+
+public func ckbQdrantSnapshotFileIdentity(pathText: String):
+    CkbQdrantSnapshotFileTransferResult {
+    let out = CkbQdrantSnapshotFileTransferResult()
+    let path = Path(pathText)
+    if (!path.isAbsolute() || !exists(path) || pathText.contains("\n") ||
+        pathText.contains("\r") || pathText.contains("\u{0000}")) {
+        out.diagnostic = "qdrant_snapshot_file_unreadable"; return out
+    }
+    let canonical = try { canonicalize(path).toString() }
+        catch (_: Exception) {
+            out.diagnostic = "qdrant_snapshot_file_unreadable"; return out
+        }
+    if (canonical != pathText) {
+        out.diagnostic = "qdrant_snapshot_file_symlink_forbidden"; return out
+    }
+    let digest = SHA256()
+    try {
+        try (file = File(path, OpenMode.Read)) {
+            let buffer = Array<UInt8>(65536, repeat: UInt8(0))
+            while (true) {
+                let count = file.read(buffer)
+                if (count < 0 || count > buffer.size) {
+                    throw Exception("file read failed")
+                }
+                if (count == 0) { break }
+                out.size += count
+                digest.write(if (count == buffer.size) { buffer }
+                    else { buffer[0..count].clone() })
+            }
+        }
+    } catch (_: Exception) {
+        out.diagnostic = "qdrant_snapshot_file_read_failed"; return out
+    }
+    if (out.size == 0) {
+        out.diagnostic = "qdrant_snapshot_file_empty"; return out
+    }
+    out.sha256 = ckbQdrantSnapshotDigestHash(digest)
+    out.ok = true; out.diagnostic = "ok"; out
+}
+
+private func ckbQdrantSnapshotDigestHash(digest: SHA256): String {
+    let out = StringBuilder()
+    for (byte in digest.finish()) {
+        out.append(ckbQdrantSnapshotNibble(byte / UInt8(16)))
+        out.append(ckbQdrantSnapshotNibble(byte % UInt8(16)))
+    }
+    "sha256:${out.toString()}"
 }
 
 public class CkbQdrantSnapshotCreateResult {
@@ -241,6 +468,7 @@ public class CkbStoreVerificationInputProvider <:
 public class CkbP3ProductionAdapter <: CkbP3CliAdapter {
     private let vectorBackend: CkbPortableVectorBuildBackend
     private let snapshotExecutor: CkbQdrantSnapshotExecutor
+    private let snapshotFileExecutor: ?CkbQdrantSnapshotFileExecutor
     private let parityBackend: CkbRetrievalParityBackend
     private let verificationProvider: CkbP3VerificationInputProvider
     private let pathPolicy: CkbReleasePathPolicy
@@ -248,8 +476,10 @@ public class CkbP3ProductionAdapter <: CkbP3CliAdapter {
         snapshotExecutor: CkbQdrantSnapshotExecutor,
         parityBackend: CkbRetrievalParityBackend,
         verificationProvider: CkbP3VerificationInputProvider,
-        pathPolicy: CkbReleasePathPolicy) {
+        pathPolicy: CkbReleasePathPolicy,
+        snapshotFileExecutor!: ?CkbQdrantSnapshotFileExecutor = None) {
         this.vectorBackend = vectorBackend; this.snapshotExecutor = snapshotExecutor
+        this.snapshotFileExecutor = snapshotFileExecutor
         this.parityBackend = parityBackend; this.verificationProvider = verificationProvider
         this.pathPolicy = pathPolicy
     }
@@ -304,6 +534,63 @@ public class CkbP3ProductionAdapter <: CkbP3CliAdapter {
         identity.vectorProofHash = vector[1].vectorProofHash
         let created = createCkbQdrantSnapshot(identity, this.snapshotExecutor)
         if (!created.ok) { out.diagnostic = created.diagnostic; return out }
+        if (let Some(fileExecutor) <- this.snapshotFileExecutor) {
+            let pathDiagnostic = ckbP3NewOutputDiagnostic(
+                options.outputRoot, this.pathPolicy)
+            if (pathDiagnostic != "ok") {
+                out.diagnostic = pathDiagnostic; return out
+            }
+            let temporary = ckbP3OwnedTemporary(options.outputRoot, "snapshot")
+            if (temporary == "") {
+                out.diagnostic = "p3_output_commit_failed"; return out
+            }
+            try {
+                Directory.create(Path(temporary), recursive: false)
+                let request = CkbQdrantSnapshotRequest()
+                request.method = "GET"
+                request.path = "/collections/${identity.collection}/snapshots/${created.snapshotName}"
+                let streamed = fileExecutor.download(request,
+                    Path(temporary).join("snapshot.bin").toString(), 8589934592)
+                if (!streamed.ok) {
+                    out.diagnostic = streamed.diagnostic; return out
+                }
+                let manifest = CkbQdrantSnapshotManifest()
+                manifest.schemaVersion = "ckb-qdrant-snapshot-v1"
+                manifest.imageDigest = vector[1].qdrantImageDigest
+                manifest.qdrantMinorVersion = "1.14"
+                manifest.collection = options.collection
+                manifest.distance = vector[1].distance
+                manifest.dimension = vector[1].dimension
+                manifest.points = vector[1].count
+                manifest.snapshotSha256 = streamed.sha256
+                manifest.logicalManifestHash = logical[1].manifestHash
+                manifest.vectorProofHash = vector[1].vectorProofHash
+                manifest.payloadCanonicalHash = vector[1].payloadCanonicalHash
+                let built = buildCkbQdrantSnapshotManifest(manifest)
+                if (!built.ok) { out.diagnostic = built.diagnostic; return out }
+                File.writeTo(Path(temporary).join("manifest.json"),
+                    built.canonicalJson.toArray())
+                let identityCheck = ckbQdrantSnapshotFileIdentity(
+                    Path(temporary).join("snapshot.bin").toString())
+                if (!identityCheck.ok || identityCheck.size != streamed.size ||
+                    identityCheck.sha256 != manifest.snapshotSha256) {
+                    out.diagnostic = "qdrant_snapshot_output_verification_failed"
+                    return out
+                }
+                rename(temporary, to: options.outputRoot, overwrite: false)
+                out.ok = true; out.diagnostic = "ok"
+                out.summary = "collection=${manifest.collection} points=${manifest.points} " +
+                    "dimension=${manifest.dimension}"
+                return out
+            } catch (_: Exception) {
+                out.diagnostic = "p3_output_commit_failed"; return out
+            } finally {
+                if (exists(Path(temporary))) {
+                    try { remove(Path(temporary), recursive: true) }
+                    catch (_: Exception) {}
+                }
+            }
+        }
         let downloaded = downloadCkbQdrantSnapshot(identity, created.snapshotName,
             this.snapshotExecutor)
         if (!downloaded.ok) { out.diagnostic = downloaded.diagnostic; return out }
@@ -329,6 +616,13 @@ public class CkbP3ProductionAdapter <: CkbP3CliAdapter {
     private func restoreSnapshot(options: CkbP3CliOptions): CkbP3CliOperationResult {
         let out = CkbP3CliOperationResult(); let manifest = ckbP3LoadSnapshotManifest(options.manifest)
         if (!manifest[0].ok) { out.diagnostic = manifest[0].diagnostic; return out }
+        if (let Some(fileExecutor) <- this.snapshotFileExecutor) {
+            let result = restoreCkbQdrantSnapshotFromFile(
+                options.targetCollection, options.snapshot, manifest[1],
+                this.snapshotExecutor, fileExecutor)
+            out.ok = result.ok; out.diagnostic = result.diagnostic
+            out.summary = "collection=${options.targetCollection}"; return out
+        }
         let bytes = try { File.readFrom(Path(options.snapshot)) } catch (_: Exception) {
             out.diagnostic = "qdrant_snapshot_file_unreadable"; return out
         }
@@ -374,13 +668,14 @@ public func newCkbP3BusinessProductionAdapter(embeddingProvider: EmbeddingProvid
     snapshotExecutor: CkbQdrantSnapshotExecutor,
     parityBackend: CkbRetrievalParityBackend,
     pathPolicy: CkbReleasePathPolicy,
-    deadlineAtMillis!: Int64 = 0): CkbP3CliAdapter {
+    deadlineAtMillis!: Int64 = 0,
+    snapshotFileExecutor!: ?CkbQdrantSnapshotFileExecutor = None): CkbP3CliAdapter {
     CkbP3ProductionAdapter(
         CkbPortableVectorProductionBackend(embeddingProvider, candidateStore, vectorStore,
             pathContext, deadlineAtMillis: deadlineAtMillis),
         snapshotExecutor, parityBackend,
         CkbStoreVerificationInputProvider(candidateStore, pathContext),
-        pathPolicy)
+        pathPolicy, snapshotFileExecutor: snapshotFileExecutor)
 }
 
 public func newCkbP3ProductionAdapter(vectorBackend: CkbPortableVectorBuildBackend,
@@ -389,6 +684,36 @@ public func newCkbP3ProductionAdapter(vectorBackend: CkbPortableVectorBuildBacke
     pathPolicy: CkbReleasePathPolicy): CkbP3CliAdapter {
     CkbP3ProductionAdapter(vectorBackend, snapshotExecutor, parityBackend,
         verificationProvider, pathPolicy)
+}
+
+public func newCkbP3RuntimeProductionAdapter(
+    embeddingProvider: EmbeddingProvider, candidateStore: FileKnowledgeStore,
+    vectorStore: VectorStore, pathContext: CkbPortablePathContext,
+    snapshotEndpoint: String, restEndpoint: String,
+    stdioSpec: CkbMcpStdioCommandSpec, mcpHttpEndpoint: String,
+    runtime: CkbRuntimeConfig, pathPolicy: CkbReleasePathPolicy,
+    deadlineAtMillis!: Int64 = 0): CkbP3CliAdapter {
+    let transportConfig = ckbNativeHttpAdapterConfigFromRuntime(runtime, true)
+    let http = NativeHttpRequestExecutor(transportConfig)
+    let control = CkbQdrantSnapshotHttpExecutor(snapshotEndpoint, http)
+    let files = CkbNativeQdrantSnapshotFileExecutor(
+        snapshotEndpoint, transportConfig)
+    let parity = CkbProductionRetrievalParityBackend(
+        restEndpoint, stdioSpec, mcpHttpEndpoint, http,
+        CkbNativeRetrievalParityProcessExecutor())
+    newCkbP3BusinessProductionAdapter(embeddingProvider, candidateStore,
+        vectorStore, pathContext, control, parity, pathPolicy,
+        deadlineAtMillis: deadlineAtMillis,
+        snapshotFileExecutor: files)
+}
+
+public func loadCkbMcpStdioCommandSpecFile(path: String):
+    (CkbReproContractResult, CkbMcpStdioCommandSpec) {
+    let read = ckbP3ReadBoundedBytes(path, "mcp_stdio_command")
+    if (read[0] != "ok") {
+        return (ckbP3ContractFailure(read[0]), CkbMcpStdioCommandSpec())
+    }
+    parseCkbMcpStdioCommandSpec(read[1])
 }
 public func runCkbP3Cli(args: Array<String>, context: CkbP3CliAdapter): CkbP3CliExecution {
     executeCkbP3CliAdapter(args, context)
@@ -913,6 +1238,44 @@ public func restoreCkbQdrantSnapshot(targetCollection: String,
     result.ok = true
     result.diagnostic = "ok"
     result
+}
+
+public func restoreCkbQdrantSnapshotFromFile(targetCollection: String,
+    snapshotPath: String, manifest: CkbQdrantSnapshotManifest,
+    controlExecutor: CkbQdrantSnapshotExecutor,
+    fileExecutor: CkbQdrantSnapshotFileExecutor): CkbQdrantSnapshotRestoreResult {
+    let result = CkbQdrantSnapshotRestoreResult()
+    let validation = validateCkbQdrantSnapshotManifest(manifest)
+    if (!validation.ok) { result.diagnostic = validation.diagnostic; return result }
+    if (!ckbQdrantSnapshotCollectionValid(targetCollection)) {
+        result.diagnostic = "qdrant_snapshot_target_invalid"; return result
+    }
+    // Verify the complete file before any transport call. The file executor
+    // repeats this identity check immediately before opening the HTTP request.
+    let identity = ckbQdrantSnapshotFileIdentity(snapshotPath)
+    if (!identity.ok) { result.diagnostic = identity.diagnostic; return result }
+    if (identity.sha256 != manifest.snapshotSha256) {
+        result.diagnostic = "qdrant_snapshot_hash_mismatch"; return result
+    }
+    let statusRequest = CkbQdrantSnapshotRequest()
+    statusRequest.method = "GET"
+    statusRequest.path = "/collections/${targetCollection}"
+    if (controlExecutor.execute(statusRequest).statusCode != 404) {
+        result.diagnostic = "qdrant_snapshot_target_exists"; return result
+    }
+    let uploadRequest = CkbQdrantSnapshotRequest()
+    uploadRequest.method = "PUT"
+    uploadRequest.path = "/collections/${targetCollection}/snapshots/upload"
+    uploadRequest.contentType = "application/octet-stream"
+    let response = fileExecutor.upload(uploadRequest, snapshotPath,
+        identity.size, identity.sha256)
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+        result.diagnostic = if (response.diagnostic == "") {
+            "qdrant_snapshot_restore_failed"
+        } else { response.diagnostic }
+        return result
+    }
+    result.ok = true; result.diagnostic = "ok"; result
 }
 
 public func verifyRestoredCkbQdrantSnapshot(

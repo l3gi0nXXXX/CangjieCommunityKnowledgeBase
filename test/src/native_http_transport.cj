@@ -3,12 +3,19 @@ package cangjie_community_knowledge_base_test
 import std.collection.ArrayList
 import std.convert.Parsable
 import std.env.getVariable
+import std.io.InputStream
 import std.net.{SocketAddress, TcpSocket}
 import std.time.*
 import stdx.encoding.base64.toBase64String
+import stdx.encoding.json.JsonValue
+import stdx.crypto.digest.SHA256
 import stdx.encoding.url.URL
 import stdx.net.http.*
 import stdx.net.tls.*
+
+foreign {
+    func lseek(fd: Int32, offset: Int64, whence: Int32): Int64
+}
 
 public class CkbNativeHttpTransportConfig {
     public let proxy: String
@@ -160,6 +167,261 @@ public class NativeHttpRequestExecutor <: HttpRequestExecutor {
     }
 }
 
+public class CkbNativeQdrantSnapshotFileExecutor <:
+    CkbQdrantSnapshotFileExecutor {
+    private let endpoint: String
+    private let config: CkbNativeHttpTransportConfig
+
+    public init(endpoint: String, config: CkbNativeHttpTransportConfig) {
+        this.endpoint = endpoint.trimAscii()
+        this.config = config
+    }
+
+    public func download(request: CkbQdrantSnapshotRequest,
+        targetPath: String, maxBytes: Int64): CkbQdrantSnapshotFileTransferResult {
+        let invalid = ckbNativeQdrantRequestDiagnostic(
+            this.endpoint, request, this.config)
+        if (invalid != "ok" || request.method != "GET") {
+            let out = CkbQdrantSnapshotFileTransferResult()
+            out.diagnostic = if (invalid == "ok") {
+                "qdrant_snapshot_request_invalid"
+            } else { invalid }
+            return out
+        }
+        try {
+            let url = this.endpoint + request.path
+            let parts = ckbNativeHttpBuildClientBuilder(
+                url, this.config, this.config.timeoutMillis)
+            if (parts[1].error != "") {
+                let out = CkbQdrantSnapshotFileTransferResult()
+                out.diagnostic = "qdrant_snapshot_transport_failed"; return out
+            }
+            let client = parts[0].build()
+            try {
+                let nativeRequest = HttpRequestBuilder().url(url).get()
+                    .header("Accept", "application/octet-stream").build()
+                let response = client.send(nativeRequest)
+                let stream = CkbNativeQdrantDownloadStream(response, client)
+                return streamCkbQdrantSnapshotToOwnedTemp(
+                    stream, targetPath, maxBytes)
+            } catch (e: Exception) {
+                client.close(); throw e
+            }
+        } catch (_: Exception) {
+            let out = CkbQdrantSnapshotFileTransferResult()
+            out.diagnostic = "qdrant_snapshot_transport_failed"; out
+        }
+    }
+
+    public func upload(request: CkbQdrantSnapshotRequest,
+        sourcePath: String, expectedSize: Int64,
+        expectedSha256: String): CkbQdrantSnapshotResponse {
+        let out = CkbQdrantSnapshotResponse()
+        let invalid = ckbNativeQdrantRequestDiagnostic(
+            this.endpoint, request, this.config)
+        if (invalid != "ok" || request.method != "PUT" ||
+            request.contentType != "application/octet-stream") {
+            out.diagnostic = if (invalid == "ok") {
+                "qdrant_snapshot_request_invalid"
+            } else { invalid }
+            return out
+        }
+        let opened = ckbNativeQdrantOpenVerifiedFile(
+            sourcePath, expectedSize, expectedSha256)
+        if (!opened[0]) {
+            out.diagnostic = "qdrant_snapshot_upload_identity_mismatch"
+            return out
+        }
+        let stream = opened[1]
+        try {
+            let url = this.endpoint + request.path
+            let parts = ckbNativeHttpBuildClientBuilder(
+                url, this.config, this.config.timeoutMillis)
+            if (parts[1].error != "") {
+                out.diagnostic = "qdrant_snapshot_transport_failed"; return out
+            }
+            let client = parts[0].build()
+            try {
+                let nativeRequest = HttpRequestBuilder().url(url)
+                    .method("PUT")
+                    .header("Accept", "application/json")
+                    .header("Content-Type", "application/octet-stream")
+                    .header("Content-Length", "${expectedSize}")
+                    .body(stream).build()
+                let response = client.send(nativeRequest)
+                out.statusCode = Int64(response.status)
+                if (out.statusCode < 200 || out.statusCode >= 300) {
+                    out.diagnostic = "qdrant_snapshot_restore_failed"
+                } else {
+                    out.diagnostic = ckbNativeQdrantReadJsonDiagnostic(
+                        response, 65536)
+                    if (out.diagnostic != "ok") { out.statusCode = 0 }
+                }
+                if (stream.bytesRead != expectedSize ||
+                    !stream.identityUnchanged()) {
+                    out.statusCode = 0
+                    out.diagnostic = "qdrant_snapshot_upload_identity_changed"
+                }
+            } finally { client.close() }
+        } catch (_: Exception) {
+            out.statusCode = 0
+            out.diagnostic = "qdrant_snapshot_transport_failed"
+        } finally {
+            stream.close()
+        }
+        out
+    }
+}
+
+private class CkbNativeQdrantDownloadStream <:
+    CkbQdrantSnapshotDownloadStream {
+    private let response: HttpResponse
+    private let client: Client
+    private var closed: Bool = false
+    public init(response: HttpResponse, client: Client) {
+        this.response = response; this.client = client
+    }
+    public func statusCode(): Int64 { Int64(this.response.status) }
+    public func contentLength(): Int64 {
+        let raw = this.response.headers.getFirst("content-length") ??
+            this.response.headers.getFirst("Content-Length") ?? ""
+        if (raw == "") { return -1 }
+        try { Int64.parse(raw.trimAscii()) } catch (_: Exception) { -2 }
+    }
+    public func read(buffer: Array<UInt8>): Int64 {
+        this.response.body.read(buffer)
+    }
+    public func close(): Unit {
+        if (!this.closed) { this.closed = true; this.client.close() }
+    }
+}
+
+private func ckbNativeQdrantRequestDiagnostic(endpoint: String,
+    request: CkbQdrantSnapshotRequest,
+    config: CkbNativeHttpTransportConfig): String {
+    if (endpoint == "" || endpoint.endsWith("/") || request.path == "" ||
+        !request.path.startsWith("/") || request.path.contains("..") ||
+        request.path.contains("?") || request.path.contains("#") ||
+        request.path.contains("\n") || request.path.contains("\r")) {
+        return "qdrant_snapshot_request_invalid"
+    }
+    if (ckbNativeHttpValidateUrl(endpoint + request.path, config) != "") {
+        return "qdrant_snapshot_endpoint_blocked"
+    }
+    "ok"
+}
+
+private class CkbNativeOwnedFdInputStream <: InputStream {
+    private var fd: Int32
+    private let initialStat: Array<UInt8>
+    public var bytesRead: Int64 = 0
+    public init(fd: Int32, initialStat: Array<UInt8>) {
+        this.fd = fd; this.initialStat = initialStat
+    }
+    public func read(buffer: Array<UInt8>): Int64 {
+        if (this.fd < 0) { return 0 }
+        let count = unsafe {
+            let pointer = acquireArrayRawData(buffer)
+            let value = read(this.fd, pointer.pointer, UIntNative(buffer.size))
+            releaseArrayRawData(pointer); Int64(value)
+        }
+        if (count < 0 || count > buffer.size) {
+            throw Exception("qdrant upload file read failed")
+        }
+        this.bytesRead += count; count
+    }
+    public func identityUnchanged(): Bool {
+        if (this.fd < 0) { return false }
+        let current = Array<UInt8>(256, repeat: UInt8(0))
+        unsafe {
+            let pointer = acquireArrayRawData(current)
+            let status = fstat(this.fd, pointer.pointer)
+            releaseArrayRawData(pointer)
+            status == 0 && current == this.initialStat
+        }
+    }
+    public func close(): Unit {
+        if (this.fd >= 0) { _ = unsafe { close(this.fd) }; this.fd = -1 }
+    }
+}
+
+private func ckbNativeQdrantOpenVerifiedFile(path: String,
+    expectedSize: Int64, expectedSha256: String):
+    (Bool, CkbNativeOwnedFdInputStream) {
+    var fd: Int32 = -1
+    let statBytes = Array<UInt8>(256, repeat: UInt8(0))
+    try {
+        let cpath = unsafe { LibC.mallocCString(path) }
+        fd = unsafe { open(cpath, 0x100) }
+        unsafe { LibC.free(cpath) }
+        if (fd < 0) { throw Exception("open failed") }
+        let statOk = unsafe {
+            let pointer = acquireArrayRawData(statBytes)
+            let status = fstat(fd, pointer.pointer)
+            releaseArrayRawData(pointer); status == 0
+        }
+        if (!statOk) { throw Exception("fstat failed") }
+        let digest = SHA256()
+        var size: Int64 = 0
+        let buffer = Array<UInt8>(65536, repeat: UInt8(0))
+        while (true) {
+            let count = unsafe {
+                let pointer = acquireArrayRawData(buffer)
+                let value = read(fd, pointer.pointer, UIntNative(buffer.size))
+                releaseArrayRawData(pointer); Int64(value)
+            }
+            if (count < 0 || count > buffer.size) {
+                throw Exception("read failed")
+            }
+            if (count == 0) { break }
+            size += count
+            digest.write(if (count == buffer.size) { buffer }
+                else { buffer[0..count].clone() })
+        }
+        if (size != expectedSize ||
+            ckbNativeQdrantDigestHash(digest) != expectedSha256 ||
+            unsafe { lseek(fd, 0, 0) } != 0) {
+            throw Exception("identity mismatch")
+        }
+        return (true, CkbNativeOwnedFdInputStream(fd, statBytes.clone()))
+    } catch (_: Exception) {
+        if (fd >= 0) { _ = unsafe { close(fd) } }
+        (false, CkbNativeOwnedFdInputStream(-1, statBytes))
+    }
+}
+
+private func ckbNativeQdrantDigestHash(digest: SHA256): String {
+    let digits = "0123456789abcdef".toRuneArray()
+    let out = StringBuilder()
+    for (byte in digest.finish()) {
+        out.append(digits[Int64(byte / UInt8(16))])
+        out.append(digits[Int64(byte % UInt8(16))])
+    }
+    "sha256:${out.toString()}"
+}
+
+private func ckbNativeQdrantReadJsonDiagnostic(response: HttpResponse,
+    maxBytes: Int64): String {
+    let bytes = ArrayList<UInt8>()
+    let buffer = Array<UInt8>(8192, repeat: UInt8(0))
+    while (true) {
+        let count = response.body.read(buffer)
+        if (count < 0 || count > buffer.size) {
+            return "qdrant_snapshot_response_read_failed"
+        }
+        if (count == 0) { break }
+        if (bytes.size > maxBytes - count) {
+            return "qdrant_snapshot_response_too_large"
+        }
+        bytes.add(all: buffer[0..count])
+    }
+    let text = try { String.fromUtf8(bytes.toArray()) }
+        catch (_: Exception) { return "invalid_response_encoding" }
+    try { _ = JsonValue.fromStr(text) }
+    catch (_: Exception) { return "qdrant_snapshot_response_malformed_json" }
+    "ok"
+}
+
 private func ckbNativeHttpExecuteOnce(request: HttpExecutionRequest, config: CkbNativeHttpTransportConfig): HttpExecutionResponse {
     let response = HttpExecutionResponse()
     let timeoutMillis = if (request.timeoutMillis > 0) { request.timeoutMillis } else { config.timeoutMillis }
@@ -175,9 +437,11 @@ private func ckbNativeHttpExecuteOnce(request: HttpExecutionRequest, config: Ckb
         let client = clientParts[0].build()
         try {
             let nativeResponse = client.send(ckbNativeHttpBuildRequest(request))
-            let decoded = ckbNativeHttpDecodeBody(nativeResponse)
-            if (!decoded[0]) {
-                return ckbNativeHttpInvalidEncodingResponse(request, timeoutMillis)
+            let decoded = ckbNativeHttpDecodeBody(
+                nativeResponse, request.maxResponseBytes)
+            if (decoded[0] != "ok") {
+                return ckbNativeHttpInvalidBodyResponse(
+                    request, timeoutMillis, decoded[0])
             }
             response.statusCode = Int64(nativeResponse.status)
             response.body = decoded[1]
@@ -437,14 +701,20 @@ private func ckbNativeHttpFailureStatus(errorClass: String): String {
 }
 
 private func ckbNativeHttpInvalidEncodingResponse(request: HttpExecutionRequest, timeoutMillis: Int64): HttpExecutionResponse {
+    ckbNativeHttpInvalidBodyResponse(
+        request, timeoutMillis, "invalid_response_encoding")
+}
+
+private func ckbNativeHttpInvalidBodyResponse(request: HttpExecutionRequest,
+    timeoutMillis: Int64, bodyDiagnostic: String): HttpExecutionResponse {
     let response = HttpExecutionResponse()
     let diagnostic = CkbNativeHttpTransportDiagnostic()
-    diagnostic.transportErrorClass = "invalid_response_encoding"
-    diagnostic.transportDiagnostic = "invalid_response_encoding"
-    response.status = "invalid_response_encoding"
+    diagnostic.transportErrorClass = bodyDiagnostic
+    diagnostic.transportDiagnostic = bodyDiagnostic
+    response.status = bodyDiagnostic
     response.statusCode = 0
     response.body = ""
-    response.transportErrorClass = "invalid_response_encoding"
+    response.transportErrorClass = bodyDiagnostic
     response.transportDiagnostic = ckbNativeHttpExecutionDiagnostic(request, diagnostic, timeoutMillis)
     response
 }
@@ -537,6 +807,7 @@ private func ckbNativeHttpCopyExecutionRequest(request: HttpExecutionRequest): H
     copied.contentType = request.contentType
     copied.timeoutMillis = request.timeoutMillis
     copied.retryCount = request.retryCount
+    copied.maxResponseBytes = request.maxResponseBytes
     for (header in request.headers) {
         copied.headers.add(header)
     }
@@ -556,17 +827,22 @@ private func ckbNativeHttpParseHeaderLine(header: String): (String, String) {
     }
 }
 
-private func ckbNativeHttpDecodeBody(response: HttpResponse): (Bool, String) {
+private func ckbNativeHttpDecodeBody(response: HttpResponse,
+    maxResponseBytes: Int64): (String, String) {
     let out = ArrayList<Byte>()
     let buffer = Array<Byte>(8192, repeat: 0)
     while (true) {
         let n = response.body.read(buffer)
-        if (n <= 0) {
-            break
+        if (n < 0 || n > buffer.size) { return ("response_read_failed", "") }
+        if (n == 0) { break }
+        if (maxResponseBytes > 0 && out.size > maxResponseBytes - n) {
+            return ("response_too_large", "")
         }
         out.add(all: buffer[..n])
     }
-    ckbNativeHttpDecodeUtf8Bytes(out.toArray())
+    let decoded = ckbNativeHttpDecodeUtf8Bytes(out.toArray())
+    if (decoded[0]) { ("ok", decoded[1]) }
+    else { ("invalid_response_encoding", "") }
 }
 
 func ckbNativeHttpDecodeUtf8Bytes(bytes: Array<Byte>): (Bool, String) {

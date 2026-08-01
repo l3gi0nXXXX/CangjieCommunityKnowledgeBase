@@ -207,6 +207,28 @@ public func newCkbP4BusinessProductionAdapter(
             snapshotExecutor, pathContext))
 }
 
+public func newCkbP4RuntimeProductionAdapter(
+    buildRequest: CkbReproBuildRequest,
+    candidateStore: FileKnowledgeStore,
+    productionStore: FileKnowledgeStore,
+    snapshotPath: String,
+    snapshotManifest: CkbQdrantSnapshotManifest,
+    logicalManifest: CkbLogicalSnapshotManifest,
+    targetCollection: String,
+    snapshotEndpoint: String,
+    runtime: CkbRuntimeConfig,
+    pathContext: CkbPortablePathContext): CkbP4CliAdapter {
+    let transportConfig = ckbNativeHttpAdapterConfigFromRuntime(runtime, true)
+    let http = NativeHttpRequestExecutor(transportConfig)
+    let control = CkbQdrantSnapshotHttpExecutor(snapshotEndpoint, http)
+    let files = CkbNativeQdrantSnapshotFileExecutor(
+        snapshotEndpoint, transportConfig)
+    CkbP4ProductionAdapter(buildRequest, CkbReproProductionBuildBackend(),
+        CkbPortableProductionPromotionBackend(candidateStore, productionStore,
+            snapshotPath, snapshotManifest, logicalManifest, targetCollection,
+            control, files, pathContext))
+}
+
 public func loadCkbPortablePromotionCliInputs(unsignedRoot: String,
     candidatePath: String, p8BPath: String,
     backend: CkbReproBundleReadBackend):
@@ -1204,6 +1226,8 @@ public class CkbPortableProductionPromotionBackend <:
     private let candidateStore: FileKnowledgeStore
     private let productionStore: FileKnowledgeStore
     private let snapshotBytes: Array<UInt8>
+    private let snapshotPath: String
+    private let fileExecutor: ?CkbQdrantSnapshotFileExecutor
     private let snapshotManifest: CkbQdrantSnapshotManifest
     private let logicalManifest: CkbLogicalSnapshotManifest
     private let targetCollection: String
@@ -1223,6 +1247,24 @@ public class CkbPortableProductionPromotionBackend <:
         this.candidateStore = candidateStore
         this.productionStore = productionStore
         this.snapshotBytes = snapshotBytes
+        this.snapshotPath = ""; this.fileExecutor = None
+        this.snapshotManifest = snapshotManifest
+        this.logicalManifest = logicalManifest
+        this.targetCollection = targetCollection
+        this.executor = executor; this.pathContext = pathContext
+    }
+
+    public init(candidateStore: FileKnowledgeStore,
+        productionStore: FileKnowledgeStore, snapshotPath: String,
+        snapshotManifest: CkbQdrantSnapshotManifest,
+        logicalManifest: CkbLogicalSnapshotManifest, targetCollection: String,
+        executor: CkbQdrantSnapshotExecutor,
+        fileExecutor: CkbQdrantSnapshotFileExecutor,
+        pathContext: CkbPortablePathContext) {
+        this.candidateStore = candidateStore
+        this.productionStore = productionStore
+        this.snapshotBytes = Array<UInt8>()
+        this.snapshotPath = snapshotPath; this.fileExecutor = Some(fileExecutor)
         this.snapshotManifest = snapshotManifest
         this.logicalManifest = logicalManifest
         this.targetCollection = targetCollection
@@ -1245,8 +1287,13 @@ public class CkbPortableProductionPromotionBackend <:
         if (this.snapshotManifest.collection == "" ||
             this.snapshotManifest.logicalManifestHash !=
                 this.logicalManifest.manifestHash) { return false }
-        restoreCkbQdrantSnapshot(this.targetCollection, this.snapshotBytes,
-            this.snapshotManifest, this.executor).ok
+        if (let Some(files) <- this.fileExecutor) {
+            return restoreCkbQdrantSnapshotFromFile(this.targetCollection,
+                this.snapshotPath, this.snapshotManifest, this.executor,
+                files).ok
+        }
+        restoreCkbQdrantSnapshot(this.targetCollection,
+            this.snapshotBytes, this.snapshotManifest, this.executor).ok
     }
 
     public func validateVector(options: CkbPortablePromotionOptions): Bool {

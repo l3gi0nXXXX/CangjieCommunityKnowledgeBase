@@ -3,6 +3,7 @@ package cangjie_community_knowledge_base_test
 import std.collection.{ArrayList, HashSet}
 import std.fs.{Directory, Path, canonicalize, exists}
 import std.sort.*
+import stdx.crypto.digest.SHA256
 import stdx.encoding.json.*
 
 foreign {
@@ -53,6 +54,132 @@ public interface CkbReproVerifyEnvironmentProbe {
     func modelIdentity(): String
     func staleProcessCount(): Int64
     func privatePathDependencyCount(): Int64
+}
+
+public class CkbFilesystemReproVerifyEnvironmentProbe <:
+    CkbReproVerifyEnvironmentProbe {
+    private let candidateStore: FileKnowledgeStore
+    private let pathContext: CkbPortablePathContext
+    private let releaseRepository: String
+    private let providerHash: String
+    private let model: String
+    private let staleCounter: () -> Int64
+
+    public init(candidateStore: FileKnowledgeStore,
+        pathContext: CkbPortablePathContext, releaseRepository: String,
+        providerHash: String, model: String,
+        staleCounter: () -> Int64) {
+        this.candidateStore = candidateStore; this.pathContext = pathContext
+        this.releaseRepository = releaseRepository
+        this.providerHash = providerHash; this.model = model
+        this.staleCounter = staleCounter
+    }
+    public func pathExists(path: String): Bool { exists(Path(path)) }
+    public func pathIsEmptyDirectory(path: String): Bool {
+        try { Directory.readFrom(Path(path)).size == 0 }
+        catch (_: Exception) { false }
+    }
+    public func candidateEntryCount(path: String): Int64 {
+        try { Directory.readFrom(Path(path)).size }
+        catch (_: Exception) { -1 }
+    }
+    public func inspectInput(path: String): CkbReproVerifyInputEvidence {
+        p8InspectProductionInput(path)
+    }
+    public func canonicalReleaseRepository(): String {
+        this.releaseRepository
+    }
+    public func providerFingerprint(): String { this.providerHash }
+    public func modelIdentity(): String { this.model }
+    public func staleProcessCount(): Int64 { this.staleCounter() }
+    public func privatePathDependencyCount(): Int64 {
+        let snapshot = this.candidateStore.loadActiveSnapshot()
+        if (!snapshot.valid) { return 1 }
+        let input = CkbStudentVisiblePathInput()
+        for (record in snapshot.rawRecords) { input.rawRecords.add(record) }
+        for (record in snapshot.normalizedRecords) {
+            input.normalizedRecords.add(record)
+        }
+        for (record in snapshot.activeIndex) { input.activeRecords.add(record) }
+        for (record in snapshot.vectorRecords) { input.vectorRecords.add(record) }
+        let report = scanCkbStudentVisiblePaths(input, this.pathContext)
+        if (!report.ready) { return report.findings.size + 1 }
+        report.machinePathCount + report.unmappedCount
+    }
+}
+
+private func p8InspectProductionInput(
+    pathText: String): CkbReproVerifyInputEvidence {
+    let out = CkbReproVerifyInputEvidence()
+    let path = Path(pathText)
+    if (!path.isAbsolute() || !exists(path)) { return out }
+    let canonical = try { canonicalize(path).toString() }
+        catch (_: Exception) { return out }
+    if (canonical != pathText) { return out }
+    var fd: Int32 = -1
+    try {
+        fd = p8OpenBundlePath(pathText)
+        if (fd < 0) { return out }
+        let before = Array<UInt8>(144, repeat: UInt8(0))
+        let beforeOk = unsafe {
+            let pointer = acquireArrayRawData(before)
+            let status = fstat(fd, pointer.pointer)
+            releaseArrayRawData(pointer); status == 0
+        }
+        if (!beforeOk ||
+            (p8LittleEndian(before, 4, 2) & UInt64(0xf000)) !=
+                UInt64(0x8000) ||
+            p8LittleEndian(before, 6, 2) != UInt64(1)) { return out }
+        let digest = SHA256(); var size: Int64 = 0
+        let buffer = Array<UInt8>(65536, repeat: UInt8(0))
+        while (true) {
+            let count = unsafe {
+                let pointer = acquireArrayRawData(buffer)
+                let value = read(fd, pointer.pointer, UIntNative(buffer.size))
+                releaseArrayRawData(pointer); Int64(value)
+            }
+            if (count < 0 || count > buffer.size) { return out }
+            if (count == 0) { break }
+            size += count
+            digest.write(if (count == buffer.size) { buffer }
+                else { buffer[0..count].clone() })
+        }
+        let after = Array<UInt8>(144, repeat: UInt8(0))
+        let afterOk = unsafe {
+            let pointer = acquireArrayRawData(after)
+            let status = fstat(fd, pointer.pointer)
+            releaseArrayRawData(pointer); status == 0
+        }
+        let beforeIdentity = p8StatIdentity(before)
+        let afterIdentity = p8StatIdentity(after)
+        if (!afterOk || beforeIdentity == "" ||
+            beforeIdentity != afterIdentity ||
+            size != Int64(p8LittleEndian(before, 96, 8))) { return out }
+        out.ok = true; out.regular = true; out.noFollow = true
+        out.stable = true; out.size = size; out.identity = beforeIdentity
+        out.sha256 = p8DigestHash(digest); out
+    } finally { if (fd >= 0) { _ = unsafe { close(fd) } } }
+}
+
+private func p8StatIdentity(stat: Array<UInt8>): String {
+    if (stat.size < 104) { return "" }
+    "dev=${p8LittleEndian(stat, 0, 4)};" +
+        "ino=${p8LittleEndian(stat, 8, 8)};" +
+        "size=${p8LittleEndian(stat, 96, 8)};" +
+        "mtime=${p8LittleEndian(stat, 48, 8)}:" +
+        "${p8LittleEndian(stat, 56, 8)};" +
+        "ctime=${p8LittleEndian(stat, 64, 8)}:" +
+        "${p8LittleEndian(stat, 72, 8)}"
+}
+
+private func p8DigestHash(digest: SHA256): String {
+    let digits = "0123456789abcdef".toRuneArray()
+    let out = StringBuilder()
+    for (byte in digest.finish()) {
+        out.append(digits[Int64(byte / UInt8(16))])
+        out.append(digits[Int64(byte % UInt8(16))])
+    }
+    "sha256:${out.toString()}"
 }
 
 public class CkbReproVerifyInputEvidence {
@@ -133,6 +260,82 @@ public interface CkbReproReleaseVerificationExecutor {
         CkbReproContractResult
     func verifyDocumentation(options: CkbReproVerifyOptions):
         CkbReproContractResult
+}
+
+public interface CkbReproRestoreStageOperation {
+    func execute(options: CkbReproVerifyOptions): CkbReproStageEvidence
+}
+
+public interface CkbReproRebuildStageOperation {
+    func execute(options: CkbReproVerifyOptions): CkbReproStageEvidence
+}
+
+public interface CkbReproReferenceRunOperation {
+    func execute(options: CkbReproVerifyOptions): CkbReproReferenceRunEvidence
+}
+
+public interface CkbReproPublicEvidenceOperation {
+    func execute(options: CkbReproVerifyOptions): CkbReproContractResult
+}
+
+public interface CkbReproDocumentationOperation {
+    func execute(options: CkbReproVerifyOptions): CkbReproContractResult
+}
+
+public class CkbProductionRunCertificationExecutor <:
+    CkbReproRunCertificationExecutor {
+    private let restoreOperation: CkbReproRestoreStageOperation
+    private let rebuildOperation: CkbReproRebuildStageOperation
+    private let referenceOperation: CkbReproReferenceRunOperation
+    public init(restoreOperation: CkbReproRestoreStageOperation,
+        rebuildOperation: CkbReproRebuildStageOperation,
+        referenceOperation: CkbReproReferenceRunOperation) {
+        this.restoreOperation = restoreOperation
+        this.rebuildOperation = rebuildOperation
+        this.referenceOperation = referenceOperation
+    }
+    public func restore(options: CkbReproVerifyOptions): CkbReproStageEvidence {
+        this.restoreOperation.execute(options)
+    }
+    public func rebuild(options: CkbReproVerifyOptions): CkbReproStageEvidence {
+        this.rebuildOperation.execute(options)
+    }
+    public func runReference(options: CkbReproVerifyOptions):
+        CkbReproReferenceRunEvidence {
+        this.referenceOperation.execute(options)
+    }
+}
+
+// This type deliberately cannot hold a reference runner or model provider.
+public class CkbProductionReleaseVerificationExecutor <:
+    CkbReproReleaseVerificationExecutor {
+    private let restoreOperation: CkbReproRestoreStageOperation
+    private let rebuildOperation: CkbReproRebuildStageOperation
+    private let publicEvidenceOperation: CkbReproPublicEvidenceOperation
+    private let documentationOperation: CkbReproDocumentationOperation
+    public init(restoreOperation: CkbReproRestoreStageOperation,
+        rebuildOperation: CkbReproRebuildStageOperation,
+        publicEvidenceOperation: CkbReproPublicEvidenceOperation,
+        documentationOperation: CkbReproDocumentationOperation) {
+        this.restoreOperation = restoreOperation
+        this.rebuildOperation = rebuildOperation
+        this.publicEvidenceOperation = publicEvidenceOperation
+        this.documentationOperation = documentationOperation
+    }
+    public func restore(options: CkbReproVerifyOptions): CkbReproStageEvidence {
+        this.restoreOperation.execute(options)
+    }
+    public func rebuild(options: CkbReproVerifyOptions): CkbReproStageEvidence {
+        this.rebuildOperation.execute(options)
+    }
+    public func verifyPublicEvidence(options: CkbReproVerifyOptions):
+        CkbReproContractResult {
+        this.publicEvidenceOperation.execute(options)
+    }
+    public func verifyDocumentation(options: CkbReproVerifyOptions):
+        CkbReproContractResult {
+        this.documentationOperation.execute(options)
+    }
 }
 
 public class CkbReproCertifiedRunHashInputs {
@@ -438,6 +641,60 @@ public func validateCkbReproVerifyEnvironment(
         out.diagnostic = "verify_environment_probe_failed"
         out
     }
+}
+
+public func runCkbReproProductionCertification(args: Array<String>,
+    heapRaw: String, expected: CkbReproExpectedIdentity,
+    hashInputs: CkbReproCertifiedRunHashInputs,
+    probe: CkbReproVerifyEnvironmentProbe,
+    referenceTemplate: CkbReproReferenceManifest,
+    executor: CkbReproRunCertificationExecutor):
+    CkbReproRunCertificationResult {
+    let parsed = parseCkbReproVerifyOptions(args)
+    if (!parsed.ok || parsed.options.mode != "run-certify") {
+        let out = CkbReproRunCertificationResult()
+        out.diagnostic = if (!parsed.ok) { parsed.diagnostic }
+            else { "verify_mode_mismatch" }
+        return out
+    }
+    let preflight = validateCkbReproVerifyEnvironment(
+        parsed.options, heapRaw, probe)
+    if (!preflight.ok) {
+        let out = CkbReproRunCertificationResult()
+        out.diagnostic = preflight.diagnostic; return out
+    }
+    runCkbPortableReferenceHumanEval(parsed.options, expected, hashInputs,
+        preflight, probe, referenceTemplate, executor)
+}
+
+public func runCkbReproProductionReleaseVerification(args: Array<String>,
+    heapRaw: String, expected: CkbReproExpectedIdentity,
+    reference: CkbReproReferenceManifest, expectedInputSetHash: String,
+    expectedCertifiedRunInputHash: String,
+    canonicalReleaseRepository: String,
+    runCriticalManifest: CkbRunCriticalFilesManifest,
+    authorityValidator: CkbReproReleaseAssetAuthority,
+    probe: CkbReproVerifyEnvironmentProbe,
+    backend: CkbReproBundleReadBackend,
+    executor: CkbReproReleaseVerificationExecutor):
+    CkbReproReleaseVerificationResult {
+    let parsed = parseCkbReproVerifyOptions(args)
+    if (!parsed.ok || parsed.options.mode != "release-verify") {
+        let out = CkbReproReleaseVerificationResult()
+        out.diagnostic = if (!parsed.ok) { parsed.diagnostic }
+            else { "verify_mode_mismatch" }
+        return out
+    }
+    let preflight = validateCkbReproVerifyEnvironment(
+        parsed.options, heapRaw, probe)
+    if (!preflight.ok) {
+        let out = CkbReproReleaseVerificationResult()
+        out.diagnostic = preflight.diagnostic; return out
+    }
+    verifyCkbUnsignedReleaseCandidate(parsed.options, expected, reference,
+        expectedInputSetHash, expectedCertifiedRunInputHash,
+        canonicalReleaseRepository, runCriticalManifest, authorityValidator,
+        preflight, probe, backend, executor)
 }
 
 private func p8ValidateEnvironmentUnchecked(
