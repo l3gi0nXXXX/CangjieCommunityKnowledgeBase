@@ -423,6 +423,15 @@ public class CkbReproEnvironmentTest {
         @Expect(ckbReproNormalizeProbeOutput(
             "/Users/private/repository".toArray(), 64)[0],
             "environment_probe_path_leak")
+        for (path in ["/mnt", "/Volumes/private", "/data/release", "/etc"]) {
+            @Expect(ckbReproNormalizeProbeOutput(path.toArray(), 64)[0],
+                "environment_probe_path_leak")
+        }
+        for (safe in ["https://provider.example/v1/models", "/v2/models",
+            "/knowledge/search", "/guide/install"]) {
+            @Expect(ckbReproNormalizeProbeOutput(safe.toArray(), 128)[0],
+                "ok")
+        }
         let long = ArrayList<UInt8>()
         for (_ in 0..4096) { long.add(all: "🙂".toArray()) }
         @Expect(ckbReproNormalizeProbeOutput(long.toArray(), 256)[0],

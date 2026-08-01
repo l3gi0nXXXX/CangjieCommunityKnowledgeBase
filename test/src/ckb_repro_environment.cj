@@ -3,7 +3,7 @@ package cangjie_community_knowledge_base_test
 import std.collection.ArrayList
 import std.convert.Parsable
 import std.env.getVariable
-import std.fs.{File, Path, canonicalize, exists}
+import std.fs.{File, OpenMode, Path, canonicalize, exists}
 import std.io.InputStream
 import std.process.{ProcessRedirect, launch}
 import stdx.crypto.digest.SHA256
@@ -155,8 +155,8 @@ public class CkbReproFilesystemEnvironmentProbe <: CkbReproEnvironmentProbe {
             claude, tar, zstd, qdrant]) {
             if (probe[0] != 0 || probe[1] == "") { return out }
         }
-        let sdkBytes = try { File.readFrom(Path(sdkPath)) }
-            catch (_: Exception) { return out }
+        let sdkHash = p6ProbeFileHash(sdkPath, 512 * 1024 * 1024)
+        if (sdkHash[0] != "ok") { return out }
         // Runtime/tool fields are measured below. Configuration fields are
         // accepted only from the hash-bound, signed frozen attestation.
         let observed = CkbReproEnvironmentLock()
@@ -169,7 +169,7 @@ public class CkbReproFilesystemEnvironmentProbe <: CkbReproEnvironmentProbe {
         } else { platform[1] }
         observed.cpuArchitecture = architecture[1]
         observed.cangjieSdkVersion = sdk[1]
-        observed.cangjieSdkHash = ckbReproSdkExecutableHash(sdkBytes)
+        observed.cangjieSdkHash = sdkHash[1]
         observed.opensslVersion = openssl[1]
         observed.runCandidateCommit = commit[1]
         observed.claudeCodeVersion = claude[1]
@@ -706,9 +706,26 @@ private func p6PublicHttpsUrl(value: String): Bool {
 
 private func p6ContainsSecretOrLocalPath(value: String): Bool {
     let lower = value.toAsciiLower()
-    lower.contains("authorization") || lower.contains("bearer ") ||
-        lower.contains("/users/") || lower.contains("/home/") ||
-        lower.contains("api_key=") || lower.contains("password=")
+    if (lower.contains("authorization") || lower.contains("bearer ") ||
+        lower.contains("api_key=") || lower.contains("password=")) {
+        return true
+    }
+    let normalized = value.replace("\n", " ").replace("\r", " ")
+        .replace("\t", " ").replace("\"", " ").replace("'", " ")
+        .replace(",", " ").replace(";", " ").replace("{", " ")
+        .replace("}", " ").replace("[", " ").replace("]", " ")
+        .replace("(", " ").replace(")", " ")
+    for (token in normalized.split(" ")) {
+        if (!token.startsWith("/") || token.contains("://")) { continue }
+        let parts = token.split("/")
+        if (parts.size < 2 || parts[1] == "") { continue }
+        let root = parts[1].toAsciiLower()
+        if (root != "v1" && root != "v2" && root != "api" &&
+            root != "knowledge" && root != "guide" && root != "docs") {
+            return true
+        }
+    }
+    false
 }
 
 private func p6Escape(value: String): String {
@@ -892,8 +909,9 @@ private func p6ProbeActualConfiguration(target: CkbReproEnvironmentLock): String
         datasetPath == "" || authorityPath == "") {
         return "environment_probe_input_missing"
     }
-    let criticalBytes = try { File.readFrom(Path(criticalPath)) }
-        catch (_: Exception) { return "environment_probe_input_missing" }
+    let criticalRead = p6ReadFileBounded(criticalPath, 16 * 1024 * 1024)
+    if (criticalRead[0] != "ok") { return "environment_probe_input_missing" }
+    let criticalBytes = criticalRead[1]
     let critical = parseCkbRunCriticalFilesManifest(criticalBytes)
     if (!critical[0].ok) { return "environment_probe_run_critical_invalid" }
     let checkedCritical = validateCkbRunCriticalFilesManifest(
@@ -901,18 +919,21 @@ private func p6ProbeActualConfiguration(target: CkbReproEnvironmentLock): String
     if (!checkedCritical.ok || checkedCritical.treeHash == "") {
         return "environment_probe_run_critical_invalid"
     }
-    let promptBytes = try { File.readFrom(Path(promptPath)) }
-        catch (_: Exception) { return "environment_probe_input_missing" }
-    let datasetBytes = try { File.readFrom(Path(datasetPath)) }
-        catch (_: Exception) { return "environment_probe_input_missing" }
+    let promptRead = p6ReadFileBounded(promptPath, 16 * 1024 * 1024)
+    if (promptRead[0] != "ok") { return "environment_probe_input_missing" }
+    let promptBytes = promptRead[1]
+    let datasetRead = p6ReadFileBounded(datasetPath, 64 * 1024 * 1024)
+    if (datasetRead[0] != "ok") { return "environment_probe_input_missing" }
+    let datasetBytes = datasetRead[1]
     let datasetText = try { String.fromUtf8(datasetBytes) }
         catch (_: Exception) { return "environment_probe_invalid_encoding" }
     let dataset = parseCangjieHumanEvalAuthorityManifest(datasetText)
     if (!dataset.ok || dataset.datasetVersion == "") {
         return "environment_probe_dataset_invalid"
     }
-    let authorityBytes = try { File.readFrom(Path(authorityPath)) }
-        catch (_: Exception) { return "environment_probe_input_missing" }
+    let authorityRead = p6ReadFileBounded(authorityPath, 16 * 1024 * 1024)
+    if (authorityRead[0] != "ok") { return "environment_probe_input_missing" }
+    let authorityBytes = authorityRead[1]
     let authority = parseCkbAuthorityDeliveryManifest(authorityBytes)
     if (!authority[0].ok || !selectCkbAuthorityDeliveryMode(authority[1]).ok) {
         return "environment_probe_authority_invalid"
@@ -1017,18 +1038,70 @@ private func p6CliPreflightFailure(code: String): CkbReproEnvironmentPreflightRe
 
 private func p6CliReadEnvironment(path: String):
     (CkbReproContractResult, CkbReproEnvironmentLock) {
-    let bytes = try { File.readFrom(Path(path)) } catch (_: Exception) {
+    let read = p6ReadFileBounded(path, 16 * 1024 * 1024)
+    if (read[0] != "ok") {
         return (p6Failure("environment_lock_read_failed"), CkbReproEnvironmentLock())
     }
-    parseCkbReproEnvironmentLock(bytes)
+    parseCkbReproEnvironmentLock(read[1])
 }
 
 private func p6CliReadUtf8(path: String): (String, String) {
-    let bytes = try { File.readFrom(Path(path)) } catch (_: Exception) {
-        return ("preflight_artifact_read_failed", "")
-    }
-    try { ("ok", String.fromUtf8(bytes)) }
+    let read = p6ReadFileBounded(path, 16 * 1024 * 1024)
+    if (read[0] != "ok") { return ("preflight_artifact_read_failed", "") }
+    try { ("ok", String.fromUtf8(read[1])) }
     catch (_: Exception) { ("invalid_response_encoding", "") }
+}
+
+private func p6ReadFileBounded(path: String, limit: Int64):
+    (String, Array<UInt8>) {
+    let bytes = ArrayList<UInt8>()
+    try {
+        try (file = File(Path(path), OpenMode.Read)) {
+            let buffer = Array<UInt8>(65536, repeat: UInt8(0))
+            while (true) {
+                let count = file.read(buffer)
+                if (count < 0 || count > buffer.size) {
+                    return ("read_failed", Array<UInt8>())
+                }
+                if (count == 0) { break }
+                if (bytes.size + count > limit) {
+                    return ("size_invalid", Array<UInt8>())
+                }
+                for (i in 0..count) { bytes.add(buffer[i]) }
+            }
+        }
+        ("ok", bytes.toArray())
+    } catch (_: Exception) { ("read_failed", Array<UInt8>()) }
+}
+
+private func p6ProbeFileHash(path: String, limit: Int64): (String, String) {
+    let digest = SHA256(); var size: Int64 = 0
+    try {
+        try (file = File(Path(path), OpenMode.Read)) {
+            let buffer = Array<UInt8>(65536, repeat: UInt8(0))
+            while (true) {
+                let count = file.read(buffer)
+                if (count < 0 || count > buffer.size) {
+                    return ("read_failed", "")
+                }
+                if (count == 0) { break }
+                size += count
+                if (size > limit) { return ("size_invalid", "") }
+                digest.write(if (count == buffer.size) { buffer }
+                    else { buffer[0..count].clone() })
+            }
+        }
+        ("ok", p6DigestHash(digest))
+    } catch (_: Exception) { ("read_failed", "") }
+}
+
+private func p6DigestHash(digest: SHA256): String {
+    let builder = StringBuilder()
+    for (byte in digest.finish()) {
+        builder.append(p6Hex(byte / UInt8(16)))
+        builder.append(p6Hex(byte % UInt8(16)))
+    }
+    "sha256:${builder.toString()}"
 }
 
 private func p6CliSafeDiagnostic(value: String): String {
