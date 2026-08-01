@@ -122,10 +122,22 @@ public class CkbPublicEvidenceTest {
         let bytes = ("{\"schemaVersion\":\"ckb-public-evidence-export-v1\"," +
             "\"referenceManifestHash\":\"${hash}\"," +
             "\"privateResultsHash\":\"${hash}\"," +
-            "\"publicEvidenceHash\":\"${hash}\"}").toArray()
+            "\"publicEvidenceHash\":\"${hash}\"," +
+            "\"runId\":\"public-run\",\"knowledgeVersion\":\"knowledge-v1\"," +
+            "\"providerFingerprint\":\"${hash}\"," +
+            "\"vectorProofHash\":\"${hash}\"," +
+            "\"certifiedRunInputHash\":\"${hash}\"}").toArray()
         let parsed = parseCkbPublicEvidenceExportManifest(bytes)
         @Expect(parsed[0].ok, true)
         @Expect(validateCkbPublicEvidenceExportManifest(parsed[1]).ok, true)
+        let roundTrip = parseCkbPublicEvidenceExportManifest(
+            p5CanonicalExportManifest(parsed[1]).toArray())
+        @Expect(roundTrip[0].ok, true)
+        @Expect(roundTrip[1].runId, "public-run")
+        @Expect(roundTrip[1].knowledgeVersion, "knowledge-v1")
+        @Expect(roundTrip[1].providerFingerprint, hash)
+        @Expect(roundTrip[1].vectorProofHash, hash)
+        @Expect(roundTrip[1].certifiedRunInputHash, hash)
         @Expect(parseCkbPublicEvidenceExportManifest([0xff, 0xfe])[0].diagnostic,
             "invalid_response_encoding")
         @Expect(parseCkbPublicEvidenceExportManifest("{bad".toArray())[0].diagnostic,
@@ -172,6 +184,15 @@ public class CkbPublicEvidenceTest {
             "public_evidence_target_score_required")
         @Expect(p5RunProductionExportFixture(152).diagnostic,
             "public_evidence_target_score_required")
+    }
+
+    @TestCase
+    public func p5Neg03ProductionExportBindsEveryReferenceIdentity(): Unit {
+        for (field in ["run", "knowledge", "provider", "model"]) {
+            @Expect(p5RunProductionExportFixture(151,
+                drift: field).diagnostic,
+                "public_evidence_reference_identity_mismatch")
+        }
     }
 
     @TestCase
@@ -338,21 +359,29 @@ private func p5CertificationJson(caseIndex: Int64, passed: Bool): String {
 private func p5CertificationJsonWithRun(
     caseIndex: Int64,
     passed: Bool,
-    runId: String
+    runId: String,
+    knowledgeVersion!: String = "knowledge-v1",
+    modelFingerprint!: String = "glm-5.2",
+    providerIdentityHash!: String = "",
+    runManifestHash!: String = ""
 ): String {
     let row = CkbCertificationCaseEvidence()
     row.runId = runId
     row.caseId = p5EvidenceCaseId(caseIndex)
     row.group = CkbAbcdeGroups.D
     row.datasetVersion = "dataset-v1"
-    row.knowledgeVersion = "knowledge-v1"
-    row.modelFingerprint = "glm-5.2"
+    row.knowledgeVersion = knowledgeVersion
+    row.modelFingerprint = modelFingerprint
     row.expectedModelVersion = "glm-5.2"
     row.observedModelVersion = "glm-5.2"
     row.claudeCodeVersion = "claude-code-v1"
-    row.providerIdentityHash = p5Hash("provider")
+    row.providerIdentityHash = if (providerIdentityHash == "") {
+        p5Hash("provider")
+    } else { providerIdentityHash }
     row.preflightHash = p5Hash("preflight")
-    row.runManifestHash = p5Hash("manifest")
+    row.runManifestHash = if (runManifestHash == "") {
+        p5Hash("manifest")
+    } else { runManifestHash }
     row.authorityCaseHash = p5Hash("case-${caseIndex}")
     row.authorityTestsHash = p5Hash("tests-${caseIndex}")
     row.workspaceId = "private-workspace-${caseIndex}"
@@ -412,8 +441,9 @@ private func p5Hash(seed: String): String {
 }
 
 private func p5RunProductionExportFixture(
-    strictPassed: Int64): CkbPublicEvidenceRenderResult {
-    let root = Path("target/p5-production-export-${strictPassed}")
+    strictPassed: Int64,
+    drift!: String = ""): CkbPublicEvidenceRenderResult {
+    let root = Path("target/p5-production-export-${strictPassed}-${drift}")
     if (exists(root)) { remove(root, recursive: true) }
     Directory.create(root.join("run/cases"), recursive: true)
     var results = ""
@@ -421,7 +451,17 @@ private func p5RunProductionExportFixture(
         let strict = i < strictPassed
         let raw = i < 158
         let protocol = (!strict && raw) || i >= 161
-        let certification = p5CertificationJson(i, strict)
+        let certification = p5CertificationJsonWithRun(i, strict,
+            if (drift == "run") { "other-run" } else { "public-run" },
+            knowledgeVersion: if (drift == "knowledge") {
+                "other-knowledge"
+            } else { "knowledge-v1" },
+            modelFingerprint: if (drift == "model") {
+                "other-model"
+            } else { "glm-5.2" },
+            providerIdentityHash: if (drift == "provider") {
+                p5Hash("other-provider")
+            } else { p5Hash("provider") })
         results += certification + "\n"
         let caseRoot = root.join(
             "run/cases/${p5EvidenceCaseId(i)}/${CkbAbcdeGroups.D}")
@@ -483,6 +523,19 @@ private func p5RunProductionExportFixture(
     let result = runCkbPublicEvidenceExportFromFiles(options)
     remove(root, recursive: true)
     result
+}
+
+private func p5CanonicalExportManifest(
+    manifest: CkbPublicEvidenceExportManifest): String {
+    "{\"schemaVersion\":\"${manifest.schemaVersion}\"," +
+        "\"referenceManifestHash\":\"${manifest.referenceManifestHash}\"," +
+        "\"privateResultsHash\":\"${manifest.privateResultsHash}\"," +
+        "\"publicEvidenceHash\":\"${manifest.publicEvidenceHash}\"," +
+        "\"runId\":\"${manifest.runId}\"," +
+        "\"knowledgeVersion\":\"${manifest.knowledgeVersion}\"," +
+        "\"providerFingerprint\":\"${manifest.providerFingerprint}\"," +
+        "\"vectorProofHash\":\"${manifest.vectorProofHash}\"," +
+        "\"certifiedRunInputHash\":\"${manifest.certifiedRunInputHash}\"}"
 }
 
 private func p5CopyIdentity(source: CkbStrictScoreEvidenceRow): CkbStrictScoreEvidenceRow {
