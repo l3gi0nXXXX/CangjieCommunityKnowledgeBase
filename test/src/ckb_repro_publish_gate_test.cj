@@ -390,9 +390,8 @@ public class CkbReproPublishGateTest {
         let source = String.fromUtf8(File.readFrom(
             Path("../src/ckb_repro_publish_gate.cj")))
         @Expect(source.contains("\"ls-remote\", \"--tags\", \"origin\","), true)
-        @Expect(source.contains(
-            "\"refs/tags/\${options.tagName}\", \"refs/tags/\${options.tagName}^{}\""),
-            true)
+        @Expect(source.contains("\"refs/tags/\${tagName}\","), true)
+        @Expect(source.contains("\"refs/tags/\${tagName}^{}\"]"), true)
         @Expect(source.contains("refs/remotes/origin/tags"), false)
     }
 
