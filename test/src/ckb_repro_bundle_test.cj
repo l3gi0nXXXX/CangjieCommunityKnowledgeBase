@@ -2,6 +2,7 @@ package cangjie_community_knowledge_base_test
 
 import std.collection.{ArrayList, HashMap, HashSet}
 import std.fs.{Directory, File, Path, canonicalize, exists, remove}
+import std.process.launch
 import std.unittest.*
 import std.unittest.testmacro.*
 
@@ -53,7 +54,9 @@ private class P9FakeBundleCliExecutor <: CkbReproBundleCliExecutor {
         if (path.endsWith("/out")) { return this.outputExists }
         if (path.endsWith("/unsigned")) { return this.unsignedExists }
         if (path.endsWith("/p8-b.json")) { return this.reportExists }
-        false
+        if (path == "/tmp/frozen-inputs") { return true }
+        path == "/tmp/metis-worktree" || path == "/tmp/ckb-data" ||
+            path == "/tmp/p8-runs" || path == "/tmp/settings"
     }
     public func outputParentExists(path: String): Bool { this.parentExists }
     public func assembleUnsigned(options: CkbReproBundleCliOptions):
@@ -387,7 +390,8 @@ public class CkbReproBundleTest {
         let context = p9CliContext()
         let fake = P9FakeBundleCliExecutor()
         let unsigned = parseCkbReproBundleCliArgs(p9ExplicitCliArgs([
-            "ckb-repro-bundle", "--mode", "unsigned", "--output",
+            "ckb-repro-bundle", "--mode", "unsigned", "--input-root",
+            "/tmp/frozen-inputs", "--output",
             "/tmp/发布 资料/out"
         ]))
         @Expect(unsigned.valid, true)
@@ -406,7 +410,8 @@ public class CkbReproBundleTest {
             "/tmp/metis-worktree/out", "/tmp/ckb-data/out",
             "/tmp/p8-runs/out", "/tmp/settings/out"]) {
             let options = parseCkbReproBundleCliArgs(p9ExplicitCliArgs([
-                "ckb-repro-bundle", "--mode", "unsigned", "--output", output]))
+                "ckb-repro-bundle", "--mode", "unsigned", "--input-root",
+                "/tmp/frozen-inputs", "--output", output]))
             @Expect(validateCkbReproBundleCliOptions(options, context, fake).ok,
                 false)
         }
@@ -424,26 +429,96 @@ public class CkbReproBundleTest {
         @Expect(parseCkbReproBundleCliArgs([
             "ckb-repro-bundle", "--mode", "unsigned", "--output", "/tmp/out"
         ]).diagnostic, "required_argument_missing")
+        let duplicateRoots = p9ExplicitCliArgs([
+            "ckb-repro-bundle", "--mode", "unsigned", "--output", "/tmp/out"])
+        let duplicateList = ArrayList<String>()
+        duplicateList.add(all: duplicateRoots)
+        duplicateList.add(all: ["--worktree-root", "/tmp/other"])
+        @Expect(parseCkbReproBundleCliArgs(duplicateList.toArray()).diagnostic,
+            "duplicate_argument:--worktree-root")
 
         let temporary = Path("target/ckb-repro-cli-adapter")
         if (exists(temporary)) { remove(temporary, recursive: true) }
         Directory.create(temporary, recursive: true)
         let temporaryRoot = canonicalize(temporary).toString()
         let realOptions = parseCkbReproBundleCliArgs(p9ExplicitCliArgs([
-            "ckb-repro-bundle", "--mode", "unsigned", "--output",
+            "ckb-repro-bundle", "--mode", "unsigned", "--input-root",
+            "/tmp/frozen-inputs", "--output",
             "${temporaryRoot}/out"
         ]))
         let realContext = CkbReproBundleCliPathContext()
-        realContext.worktreeRoot = "/tmp/protected-worktree"
-        realContext.productionRoot = "/tmp/protected-production"
-        realContext.privateRunRoot = "/tmp/protected-runs"
-        realContext.userConfigRoot = "/tmp/protected-settings"
+        realContext.worktreeRoot = "${temporaryRoot}/protected-worktree"
+        realContext.productionRoot = "${temporaryRoot}/protected-production"
+        realContext.privateRunRoot = "${temporaryRoot}/protected-runs"
+        realContext.userConfigRoot = "${temporaryRoot}/protected-settings"
+        for (root in [realContext.worktreeRoot, realContext.productionRoot,
+            realContext.privateRunRoot, realContext.userConfigRoot]) {
+            Directory.create(Path(root), recursive: false)
+        }
+        realOptions.worktreeRoot = realContext.worktreeRoot
+        realOptions.productionRoot = realContext.productionRoot
+        realOptions.privateRunRoot = realContext.privateRunRoot
+        realOptions.userConfigRoot = realContext.userConfigRoot
         let real = runCkbReproBundleCliAdapter(realOptions, realContext,
             p9Assets(false), "")
         @Expect(real.ok, true)
         @Expect(File.readFrom(Path(realOptions.outputRoot).join("assets/b.txt")),
             "仓颉🙂".toArray())
         remove(temporary, recursive: true)
+    }
+
+    @TestCase
+    public func p9Pos02ProductionUnsignedBuildsOnlyFrozenManifestInputs(): Unit {
+        let fixture = p9FrozenInputFixture("valid", "alpha".toArray())
+        let options = p9FrozenInputOptions(fixture[0], fixture[1], fixture[2])
+        let built = runCkbReproBundleCliAdapter(options)
+        @Expect(built.ok, true)
+        @Expect(File.readFrom(Path(fixture[1]).join("assets/a.txt")),
+            "alpha".toArray())
+        @Expect(exists(Path(fixture[1]).join("RELEASE-MANIFEST.json")), true)
+        @Expect(exists(Path(fixture[1]).join("SHA256SUMS")), true)
+        remove(Path(fixture[2]), recursive: true)
+    }
+
+    @TestCase
+    public func p9Neg03FrozenInputManifestRejectsUnlistedUnsafeAndDrift(): Unit {
+        let missingManifest = p9FrozenInputFixture("prebuilt", "alpha".toArray())
+        remove(Path(missingManifest[0]).join("RELEASE-INPUTS.json"))
+        File.writeTo(Path(missingManifest[0]).join("RELEASE-MANIFEST.json"),
+            "{}".toArray())
+        @Expect(runCkbReproBundleCliAdapter(p9FrozenInputOptions(
+            missingManifest[0], missingManifest[1], missingManifest[2])).diagnostic,
+            "bundle_release_inputs_missing")
+        @Expect(exists(Path(missingManifest[1])), false)
+        remove(Path(missingManifest[2]), recursive: true)
+
+        for (mode in ["extra", "missing", "hash", "symlink"]) {
+            let fixture = p9FrozenInputFixture(mode, "alpha".toArray())
+            if (mode == "extra") {
+                File.writeTo(Path(fixture[0]).join("extra.txt"), "extra".toArray())
+            } else if (mode == "missing") {
+                remove(Path(fixture[0]).join("source/a.txt"))
+            } else if (mode == "hash") {
+                File.writeTo(Path(fixture[0]).join("source/a.txt"), "drift".toArray())
+            } else {
+                remove(Path(fixture[0]).join("source/a.txt"))
+                File.writeTo(Path(fixture[2]).join("outside.txt"), "alpha".toArray())
+                @Expect(launch("/bin/ln", ["-s", "../../outside.txt",
+                    Path(fixture[0]).join("source/a.txt").toString()]).wait(), 0)
+            }
+            let result = runCkbReproBundleCliAdapter(p9FrozenInputOptions(
+                fixture[0], fixture[1], fixture[2]))
+            @Expect(result.ok, false)
+            @Expect(exists(Path(fixture[1])), false)
+            remove(Path(fixture[2]), recursive: true)
+        }
+        let streamed = p9FrozenInputFixture("streamed",
+            Array<UInt8>(200000, repeat: UInt8(7)))
+        @Expect(runCkbReproBundleCliAdapter(p9FrozenInputOptions(
+            streamed[0], streamed[1], streamed[2])).ok, true)
+        @Expect(File.readFrom(Path(streamed[1]).join("assets/a.txt")).size,
+            Int64(200000))
+        remove(Path(streamed[2]), recursive: true)
     }
 
     @TestCase
@@ -670,9 +745,22 @@ public class CkbReproBundleTest {
             collected[0], "--output",
             Path(collected[3]).join("collected").toString()
         ]))
+        let collectContext = CkbReproBundleCliPathContext()
+        collectContext.worktreeRoot = Path(collected[3]).join("protected-worktree").toString()
+        collectContext.productionRoot = Path(collected[3]).join("protected-production").toString()
+        collectContext.privateRunRoot = Path(collected[3]).join("protected-runs").toString()
+        collectContext.userConfigRoot = Path(collected[3]).join("protected-settings").toString()
+        for (root in [collectContext.worktreeRoot, collectContext.productionRoot,
+            collectContext.privateRunRoot, collectContext.userConfigRoot]) {
+            Directory.create(Path(root), recursive: false)
+        }
+        collectOptions.worktreeRoot = collectContext.worktreeRoot
+        collectOptions.productionRoot = collectContext.productionRoot
+        collectOptions.privateRunRoot = collectContext.privateRunRoot
+        collectOptions.userConfigRoot = collectContext.userConfigRoot
         @Expect(collectOptions.valid, true)
         @Expect(runCkbReproBundleCliAdapter(
-            collectOptions, p9CliContext()).ok, true)
+            collectOptions, collectContext).ok, true)
         @Expect(File.readFrom(Path(collectOptions.outputRoot).join(
             "assets/a.txt")), "alpha".toArray())
         remove(Path(collected[3]), recursive: true)
@@ -1052,6 +1140,37 @@ private func p9ExplicitCliArgs(values: Array<String>): Array<String> {
         "--private-run-root", "/tmp/p8-runs",
         "--user-config-root", "/tmp/settings"])
     out.toArray()
+}
+
+private func p9FrozenInputFixture(suffix: String, bytes: Array<UInt8>):
+    (String, String, String) {
+    let base = Path("target/p9-frozen-input-${suffix}-仓颉🙂")
+    if (exists(base)) { remove(base, recursive: true) }
+    Directory.create(base.join("input/source"), recursive: true)
+    Directory.create(base.join("protected/worktree"), recursive: true)
+    Directory.create(base.join("protected/production"), recursive: true)
+    Directory.create(base.join("protected/runs"), recursive: true)
+    Directory.create(base.join("protected/config"), recursive: true)
+    File.writeTo(base.join("input/source/a.txt"), bytes)
+    let root = canonicalize(base).toString()
+    let row = CkbReproReleaseInput()
+    row.sourceRelativePath = "source/a.txt"
+    row.asset = p9AssetBytes("assets/a.txt", bytes)
+    let rows = ArrayList<CkbReproReleaseInput>(); rows.add(row)
+    File.writeTo(Path(root).join("input/RELEASE-INPUTS.json"),
+        renderCkbReproReleaseInputsManifest(rows).toArray())
+    ("${root}/input", "${root}/unsigned", root)
+}
+
+private func p9FrozenInputOptions(input: String, output: String, base: String):
+    CkbReproBundleCliOptions {
+    parseCkbReproBundleCliArgs([
+        "ckb-repro-bundle", "--mode", "unsigned", "--input-root", input,
+        "--output", output,
+        "--worktree-root", "${base}/protected/worktree",
+        "--production-root", "${base}/protected/production",
+        "--private-run-root", "${base}/protected/runs",
+        "--user-config-root", "${base}/protected/config"])
 }
 
 private func p9Asset(path: String, value: String): CkbReproBundleAsset {
