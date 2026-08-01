@@ -40,6 +40,19 @@ private class P9FakePublishCliExecutor <: CkbReproPublishGateCliExecutor {
     }
 }
 
+private class P9FakeFilesystemAuthentication <:
+    CkbReproPublishAuthenticationProvider {
+    public func readGit(options: CkbReproPublishGateOptions,
+        root: String): (String, CkbReproGitEvidence) {
+        ("ok", p9GitEvidence(false))
+    }
+    public func readSignature(root: String,
+        options: CkbReproPublishGateOptions,
+        mode: String): (String, CkbReproSignatureEvidence) {
+        ("ok", p9SignatureEvidence(false))
+    }
+}
+
 @Test
 public class CkbReproPublishGateTest {
     @TestCase
@@ -90,6 +103,47 @@ public class CkbReproPublishGateTest {
         @Expect(try { JsonValue.fromStr(
             renderCkbReproPublishGateReport(controlResult)); true }
             catch (_: Exception) { false }, true)
+    }
+
+    @TestCase
+    public func p9Pos02FilesystemProductionDerivesExternalProofs(): Unit {
+        let fixture = p9PublishLocalFixture()
+        let loaded = loadCkbReproPublishLocalEvidence(fixture)
+        @Expect(loaded.valid, true)
+        @Expect(loaded.evidence.externalProofsVerified, true)
+        let options = parseCkbReproPublishGateCliArgs([
+            "ckb-repro-publish-gate", "--mode", "pre-tag", "--bundle",
+            fixture])
+        let executor = CkbReproFilesystemPublishGateCliExecutor(
+            P9FakeFilesystemAuthentication())
+        let published = executeCkbReproPublishGateCliAdapter(options, executor)
+        @Expect(published.publishable, true)
+        @Expect(published.diagnostic, "ok")
+
+        remove(Path(fixture), recursive: true)
+        for (proof in ["fixture/p5_public_evidence.txt",
+            "reproducibility/manifests/reference-run.json",
+            "full-test-report.json", "leakage-report.json",
+            "reproducibility/licenses/THIRD_PARTY_NOTICES.md",
+            "verification-report.json", "build-attestation.json"]) {
+            let missingFixture = p9PublishLocalFixture()
+            remove(Path(missingFixture).join(proof))
+            let missingOptions = parseCkbReproPublishGateCliArgs([
+                "ckb-repro-publish-gate", "--mode", "pre-tag", "--bundle",
+                missingFixture])
+            @Expect(executeCkbReproPublishGateCliAdapter(
+                missingOptions, executor).publishable, false)
+            remove(Path(missingFixture), recursive: true)
+        }
+        let tamperedFixture = p9PublishLocalFixture()
+        File.writeTo(Path(tamperedFixture).join("fixture/p5_public_evidence.txt"),
+            "tampered-authority-proof".toArray())
+        let tamperedOptions = parseCkbReproPublishGateCliArgs([
+            "ckb-repro-publish-gate", "--mode", "pre-tag", "--bundle",
+            tamperedFixture])
+        @Expect(executeCkbReproPublishGateCliAdapter(
+            tamperedOptions, executor).publishable, false)
+        remove(Path(tamperedFixture), recursive: true)
     }
 
     @TestCase
