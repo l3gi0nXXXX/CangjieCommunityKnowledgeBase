@@ -586,6 +586,65 @@ public class CkbReproBundleTest {
     }
 
     @TestCase
+    public func p9Pos01ProductionFinalizeOwnsAndEmitsCompleteArtifacts(): Unit {
+        let fixture = p9ProductionFinalizeFixture()
+        let options = parseCkbReproBundleCliArgs([
+            "ckb-repro-bundle", "--mode", "finalize", "--unsigned-root",
+            fixture[0], "--verification-report", fixture[1], "--output",
+            fixture[2]
+        ])
+        let executor = CkbReproProductionBundleCliExecutor()
+        let finalized = executor.finalizeBundle(options)
+        @Expect(finalized.ok, true)
+        @Expect(exists(Path(fixture[2]).join("RELEASE-MANIFEST.json")), true)
+        @Expect(exists(Path(fixture[2]).join("verification-report.json")), true)
+        @Expect(exists(Path(fixture[2]).join("build-attestation.json")), true)
+        @Expect(exists(Path(fixture[2]).join("SHA256SUMS")), true)
+        if (exists(Path(fixture[2]).join("build-attestation.json"))) {
+            @Expect(validateCkbReproBuildAttestation(
+                File.readFrom(Path(fixture[2]).join("build-attestation.json")),
+                File.readFrom(Path(fixture[2]).join("verification-report.json")),
+                File.readFrom(Path(fixture[2]).join("RELEASE-MANIFEST.json"))).ok,
+                true)
+        }
+        let legacyBooleanAttestation =
+            "{\"schemaVersion\":\"ckb-repro-build-attestation-v1\"," +
+            "\"runCriticalTreeMatches\":true,\"strictPassed\":151," +
+            "\"transportUnresolved\":0,\"leakageFindingCount\":0," +
+            "\"fullTestsPassed\":true,\"licenseComplete\":true," +
+            "\"externalProofsVerified\":true}"
+        @Expect(validateCkbReproBuildAttestation(
+            legacyBooleanAttestation.toArray(),
+            File.readFrom(Path(fixture[1])),
+            File.readFrom(Path(fixture[0]).join("RELEASE-MANIFEST.json"))).ok,
+            false)
+        if (exists(Path(fixture[2]).join("SHA256SUMS"))) {
+            let sums = String.fromUtf8(File.readFrom(
+                Path(fixture[2]).join("SHA256SUMS")))
+            for (name in ["assets/a.txt", "assets/b.txt",
+                "RELEASE-MANIFEST.json", "verification-report.json",
+                "build-attestation.json"]) {
+                @Expect(sums.contains("  ${name}\n"), true)
+            }
+            @Expect(sums.contains("  SHA256SUMS\n"), false)
+        }
+
+        let raced = p9ProductionFinalizeFixture(suffix: "-race")
+        Directory.create(Path(raced[2]), recursive: false)
+        File.writeTo(Path(raced[2]).join("external-sentinel"), "keep".toArray())
+        let racedOptions = parseCkbReproBundleCliArgs([
+            "ckb-repro-bundle", "--mode", "finalize", "--unsigned-root",
+            raced[0], "--verification-report", raced[1], "--output", raced[2]
+        ])
+        let racedExecutor = CkbReproProductionBundleCliExecutor()
+        @Expect(racedExecutor.finalizeBundle(racedOptions).ok, false)
+        @Expect(racedExecutor.cleanupOutput(raced[2]), true)
+        @Expect(exists(Path(raced[2]).join("external-sentinel")), true)
+        remove(Path(fixture[3]), recursive: true)
+        remove(Path(raced[3]), recursive: true)
+    }
+
+    @TestCase
     public func p9Neg01BundleReadContract(): Unit {
         let negativeRead = p9ReadableBundle(
             "/tmp/ckb-p9/read-negative-count", p9Assets(false), false)
@@ -928,6 +987,40 @@ private func p9BundleOptions(output: String): CkbReproBundleOptions {
     options.privateRunRoot = "/tmp/ckb-p9/private-runs"
     options.userConfigRoot = "/tmp/ckb-p9/config"
     options
+}
+
+private func p9ProductionFinalizeFixture(suffix!: String = ""):
+    (String, String, String, String) {
+    let base = Path("target/ckb-repro-production-finalize${suffix}")
+    if (exists(base)) { remove(base, recursive: true) }
+    Directory.create(base.join("unsigned/assets"), recursive: true)
+    let canonicalBase = canonicalize(base).toString()
+    let unsigned = Path(canonicalBase).join("unsigned")
+    let assets = p9Assets(false)
+    for (asset in assets) {
+        File.writeTo(unsigned.join(asset.relativePath), asset.bytes)
+    }
+    File.writeTo(unsigned.join("RELEASE-MANIFEST.json"),
+        writeCkbReproReleaseManifest(assets).toArray())
+    let loaded = validateCkbReproBundleManifest(unsigned.toString(),
+        CkbReproFilesystemBundleReadBackend())
+    let report = CkbReproReleaseVerificationResult()
+    report.ok = true; report.diagnostic = "verified"
+    report.verifiedReleaseInputSetHash = loaded.manifest.inputSetHash
+    report.bundleProofSetHash = loaded.proofSetHash
+    report.releaseCommit = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    report.certifiedRunInputHash = ckbReproBundleHash("input".toArray())
+    report.runCriticalTreeHash = ckbReproBundleHash("tree".toArray())
+    report.referenceManifestHash = ckbReproBundleHash("reference".toArray())
+    report.authorityHash = ckbReproBundleHash("authority".toArray())
+    report.restored.ok = true; report.restored.diagnostic = "ok"
+    report.rebuilt.ok = true; report.rebuilt.diagnostic = "ok"
+    report.publicEvidence.ok = true; report.publicEvidence.diagnostic = "ok"
+    report.documentation.ok = true; report.documentation.diagnostic = "ok"
+    let reportPath = Path(canonicalBase).join("verification-input.json")
+    File.writeTo(reportPath, renderCkbReproVerificationReport(report).toArray())
+    (unsigned.toString(), reportPath.toString(),
+        Path(canonicalBase).join("final").toString(), canonicalBase)
 }
 
 private func p9ReadableBundle(root: String,
