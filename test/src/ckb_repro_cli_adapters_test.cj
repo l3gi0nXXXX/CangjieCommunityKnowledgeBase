@@ -421,6 +421,7 @@ public class CkbReproCliAdaptersTest {
         let actual = runCkbP4Cli(["ckb-repro-promote", "--production-store",
             canonicalize(productionRoot).toString(), "--qdrant-endpoint",
             "http://127.0.0.1:6333", "--expected-active-version", "old",
+            "--unsigned-root", canonicalize(root).toString(),
             "--candidate-manifest", root.join("candidate.json").toString(),
             "--p8-b-report", root.join("p8b.json").toString(), "--apply"], production)
         @Expect(actual.ok, true); @Expect(dependency.commits, 1)
@@ -657,7 +658,8 @@ private func p234PromotionArgs(apply: Bool): Array<String> {
     let values = ArrayList<String>()
     for (value in ["ckb-repro-promote", "--production-store", "/tmp/production",
         "--qdrant-endpoint", "http://127.0.0.1:6333",
-        "--expected-active-version", "old", "--candidate-manifest", "candidate.json",
+        "--expected-active-version", "old", "--unsigned-root", "/tmp/unsigned",
+        "--candidate-manifest", "candidate.json",
         "--p8-b-report", "p8-b.json"]) { values.add(value) }
     if (apply) { values.add("--apply") }
     values.toArray()
