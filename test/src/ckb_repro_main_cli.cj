@@ -1,5 +1,7 @@
 package cangjie_community_knowledge_base_test
 
+import std.collection.ArrayList
+
 public class CkbReproMainCliResult {
     public var handled: Bool
     public var exitCode: Int64
@@ -13,10 +15,13 @@ public class CkbReproMainCliResult {
 
 public interface CkbReproMainCliAdapter {
     func runRelease(args: Array<String>): CkbReproMainCliResult
+    func runP3(args: Array<String>): CkbReproMainCliResult
+    func runP4(args: Array<String>): CkbReproMainCliResult
     func runPublicEvidence(args: Array<String>): CkbReproMainCliResult
     func runPreflight(args: Array<String>): CkbReproMainCliResult
     func runBundle(args: Array<String>): CkbReproMainCliResult
     func runPublishGate(args: Array<String>): CkbReproMainCliResult
+    func runP8(args: Array<String>): CkbReproMainCliResult
 }
 
 private class CkbReproProductionMainCliAdapter <: CkbReproMainCliAdapter {
@@ -24,6 +29,12 @@ private class CkbReproProductionMainCliAdapter <: CkbReproMainCliAdapter {
     public func runRelease(args: Array<String>): CkbReproMainCliResult {
         let execution = runCkbReleaseCli(args)
         CkbReproMainCliResult(true, execution.exitCode, execution.output)
+    }
+    public func runP3(args: Array<String>): CkbReproMainCliResult {
+        runCkbP3ProductionMainCli(args)
+    }
+    public func runP4(args: Array<String>): CkbReproMainCliResult {
+        runCkbP4ProductionMainCli(args)
     }
     public func runPublicEvidence(args: Array<String>): CkbReproMainCliResult {
         let options = parseCkbPublicEvidenceCliArgs(args)
@@ -113,12 +124,23 @@ private class CkbReproProductionMainCliAdapter <: CkbReproMainCliAdapter {
         CkbReproMainCliResult(true, if (result.publishable) { 0 } else { 1 },
             output)
     }
+    public func runP8(args: Array<String>): CkbReproMainCliResult {
+        runCkbP8ProductionMainCli(args)
+    }
 }
 
 public func executeCkbReproMainCli(command: String, args: Array<String>,
     adapter: CkbReproMainCliAdapter): CkbReproMainCliResult {
     if (command == "ckb-release-export" || command == "ckb-release-import") {
         return adapter.runRelease(args)
+    }
+    if (command == "ckb-portable-vector-build" ||
+        command == "ckb-qdrant-snapshot" ||
+        command == "ckb-retrieval-parity") {
+        return adapter.runP3(args)
+    }
+    if (command == "ckb-repro-build" || command == "ckb-repro-promote") {
+        return adapter.runP4(args)
     }
     if (command == "ckb-public-evidence-export") {
         return adapter.runPublicEvidence(args)
@@ -132,10 +154,56 @@ public func executeCkbReproMainCli(command: String, args: Array<String>,
     if (command == "ckb-repro-publish-gate") {
         return adapter.runPublishGate(args)
     }
+    if (command == "ckb-repro-verify") {
+        return adapter.runP8(args)
+    }
     CkbReproMainCliResult(false, 0, "")
 }
 
 public func runCkbReproMainCli(command: String,
     args: Array<String>): CkbReproMainCliResult {
     executeCkbReproMainCli(command, args, CkbReproProductionMainCliAdapter())
+}
+
+private func runCkbP3ProductionMainCli(args: Array<String>):
+    CkbReproMainCliResult {
+    let options = parseCkbP3CliOptions(args)
+    let result = CkbP3CliOperationResult()
+    result.diagnostic = if (options.diagnostic == "ok") {
+        "p3_production_composition_manifest_required"
+    } else { options.diagnostic }
+    let output = if (args.contains("--json")) {
+        renderCkbP3CliJson(result)
+    } else { renderCkbP3CliHuman(result) }
+    CkbReproMainCliResult(true, 2, output)
+}
+
+private func runCkbP4ProductionMainCli(args: Array<String>):
+    CkbReproMainCliResult {
+    let options = parseCkbP4CliOptions(args)
+    let result = CkbP4CliOperationResult()
+    result.diagnostic = if (options.diagnostic == "ok") {
+        "p4_production_composition_manifest_required"
+    } else { options.diagnostic }
+    let output = if (args.contains("--json")) {
+        renderCkbP4CliJson(result)
+    } else { renderCkbP4CliHuman(result) }
+    CkbReproMainCliResult(true, 2, output)
+}
+
+private func runCkbP8ProductionMainCli(args: Array<String>):
+    CkbReproMainCliResult {
+    let json = args.contains("--json")
+    let values = ArrayList<String>()
+    for (i in 1..args.size) {
+        if (args[i] != "--json") { values.add(args[i]) }
+    }
+    let parsed = parseCkbReproVerifyOptions(values.toArray())
+    let diagnostic = if (parsed.ok) {
+        "p8_production_composition_manifest_required"
+    } else { parsed.diagnostic }
+    let output = if (json) {
+        "{\"ok\":false,\"diagnostic\":\"${diagnostic}\"}"
+    } else { "CKB reproducibility verification failed: ${diagnostic}\n" }
+    CkbReproMainCliResult(true, 2, output)
 }
