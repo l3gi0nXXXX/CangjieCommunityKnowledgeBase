@@ -2,7 +2,6 @@ package cangjie_community_knowledge_base_test
 
 import std.collection.ArrayList
 import std.fs.Path
-import stdx.encoding.json.*
 
 class CkbReproProductionCliComposition {
     var ok: Bool = false
@@ -13,12 +12,6 @@ class CkbReproProductionCliComposition {
     var args: Array<String> = Array<String>()
     var loaded: CkbReproCliCompositionLoadResult =
         CkbReproCliCompositionLoadResult()
-    public init() {}
-}
-
-class CkbReproCliPathContext {
-    var context: CkbPortablePathContext = CkbPortablePathContext()
-    var releasePolicy: CkbReleasePathPolicy = CkbReleasePathPolicy()
     public init() {}
 }
 
@@ -85,53 +78,6 @@ func ckbReproCompositionAssetPath(
     (matched, path)
 }
 
-func parseCkbReproCliPathContext(bytes: Array<UInt8>):
-    (CkbReproContractResult, CkbReproCliPathContext) {
-    let out = CkbReproCliPathContext()
-    let text = try { String.fromUtf8(bytes) } catch (_: Exception) {
-        return (ckbReproRuntimeCompositionFailure(
-            "invalid_response_encoding"), out)
-    }
-    try {
-        let object = JsonValue.fromStr(text).asObject()
-        if (object.size() != 7 || object.get("schemaVersion").getOrThrow()
-            .asString().getValue() != "ckb-repro-cli-path-context-v1") {
-            return (ckbReproRuntimeCompositionFailure(
-                "path_context_field_contract_invalid"), out)
-        }
-        let policy = parseCkbPortablePathPolicy(object.get("portablePolicy")
-            .getOrThrow().asString().getValue().toArray())
-        let roots = parseCkbPortableLocalRootMap(object.get("localRootMap")
-            .getOrThrow().asString().getValue().toArray())
-        let routes = parseCkbReproApiRoutes(object.get("apiRoutes")
-            .getOrThrow().asString().getValue().toArray())
-        if (!policy[0].ok || !roots[0].ok || !routes[0].ok) {
-            return (ckbReproRuntimeCompositionFailure(
-                "path_context_component_invalid"), out)
-        }
-        out.context.policy = policy[1]; out.context.localRoots = roots[1]
-        for (route in routes[1]) { out.context.apiRoutes.add(route) }
-        out.releasePolicy.worktreeRoot = object.get("worktreeRoot")
-            .getOrThrow().asString().getValue()
-        out.releasePolicy.productionStoreRoot = object
-            .get("productionStoreRoot").getOrThrow().asString().getValue()
-        out.releasePolicy.userConfigRoot = object.get("userConfigRoot")
-            .getOrThrow().asString().getValue()
-        if (!validateCkbPortablePathContext(out.context).ok ||
-            !Path(out.releasePolicy.worktreeRoot).isAbsolute() ||
-            !Path(out.releasePolicy.productionStoreRoot).isAbsolute() ||
-            !Path(out.releasePolicy.userConfigRoot).isAbsolute()) {
-            return (ckbReproRuntimeCompositionFailure(
-                "path_context_invalid"), CkbReproCliPathContext())
-        }
-    } catch (_: Exception) {
-        return (ckbReproRuntimeCompositionFailure(
-            "path_context_malformed_json"), CkbReproCliPathContext())
-    }
-    let result = CkbReproContractResult(); result.ok = true
-    result.diagnostic = "ok"; (result, out)
-}
-
 func ckbReproP3CompositionMode(args: Array<String>): String {
     let options = parseCkbP3CliOptions(
         ckbReproArgsWithoutCompositionManifest(args))
@@ -160,31 +106,38 @@ func runCkbReproP3ProductionComposition(args: Array<String>):
         return ckbReproP3CompositionFailure(prepared.diagnostic,
             prepared.json)
     }
-    let runtimeAsset = ckbReproCompositionAssetPath(
-        prepared.loaded, "runtime_config")
     let runtimeBytes = ckbReproCompositionAssetBytes(
         prepared.loaded, "runtime_config")
-    let pathBytes = ckbReproCompositionAssetBytes(
+    let policyBytes = ckbReproCompositionAssetBytes(
+        prepared.loaded, "path_policy")
+    let rootsBytes = ckbReproCompositionAssetBytes(
+        prepared.loaded, "local_root_map")
+    let routesBytes = ckbReproCompositionAssetBytes(
+        prepared.loaded, "api_routes")
+    let releasePolicyBytes = ckbReproCompositionAssetBytes(
         prepared.loaded, "path_context")
-    if (!runtimeAsset[0] || !runtimeBytes[0] || !pathBytes[0]) {
+    if (!runtimeBytes[0] || !policyBytes[0] || !rootsBytes[0] ||
+        !routesBytes[0] || !releasePolicyBytes[0]) {
         return ckbReproP3CompositionFailure(
             "p3_composition_asset_missing", prepared.json)
     }
-    try { _ = String.fromUtf8(runtimeBytes[1]) } catch (_: Exception) {
+    let runtime = parseCkbReproCliRuntimeConfigBytes(runtimeBytes[1])
+    if (!runtime[0].ok) {
         return ckbReproP3CompositionFailure(
-            "invalid_response_encoding", prepared.json)
+            runtime[0].diagnostic, prepared.json)
     }
-    let pathContext = parseCkbReproCliPathContext(pathBytes[1])
+    let pathContext = parseCkbReproCliPathContextBytes(policyBytes[1],
+        rootsBytes[1], routesBytes[1], releasePolicyBytes[1])
     if (!pathContext[0].ok) {
         return ckbReproP3CompositionFailure(
             pathContext[0].diagnostic, prepared.json)
     }
     let assembly = CkbReproP3ProductionAssembly()
     assembly.mode = options.mode
-    assembly.runtime = loadCkbRuntimeConfig(runtimeAsset[1])
+    assembly.runtime = runtime[1]
     assembly.candidateStoreRoot = options.candidateRoot
-    assembly.pathContext = pathContext[1].context
-    assembly.pathPolicy = pathContext[1].releasePolicy
+    assembly.pathContext = pathContext[1].pathContext
+    assembly.pathPolicy = pathContext[1].releasePathPolicy
     if (options.mode == "parity") {
         let stdio = ckbReproCompositionAssetBytes(
             prepared.loaded, "mcp_stdio_command")
@@ -253,11 +206,6 @@ func ckbReproVerifyArgsWithoutPresentation(args: Array<String>):
         }
     }
     out.toArray()
-}
-
-private func ckbReproRuntimeCompositionFailure(code: String):
-    CkbReproContractResult {
-    let out = CkbReproContractResult(); out.diagnostic = code; out
 }
 
 private func ckbReproP3CompositionFailure(code: String, json: Bool):

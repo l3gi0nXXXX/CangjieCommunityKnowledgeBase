@@ -25,6 +25,9 @@ public class CkbReproCliCompositionLoadResult {
     public var root: String = ""
     public var manifest: CkbReproCliCompositionManifest =
         CkbReproCliCompositionManifest()
+    public var authorityEnvironmentLock: CkbReproEnvironmentLock =
+        CkbReproEnvironmentLock()
+    public var authorityEnvironmentLockBytes: Array<UInt8> = Array<UInt8>()
     public let assets = ArrayList<CkbReproCliCompositionLoadedAsset>()
     public init() {}
 }
@@ -180,6 +183,10 @@ public func loadCkbReproCliComposition(path: String, expectedMode: String):
             else { "cli_composition_authority_path_mismatch" }
         return out
     }
+    let environment = parseCkbReproEnvironmentLock(authorityBytes[1])
+    if (!environment[0].ok) {
+        out.diagnostic = environment[0].diagnostic; return out
+    }
     try {
         let manifestBytes = ckbCliCompositionRead(
             out.root, manifestRelative, 64 * 1024)
@@ -251,7 +258,10 @@ public func loadCkbReproCliComposition(path: String, expectedMode: String):
             !manifestAfter[0].ok || manifestAfter[1] != manifestBytes[1]) {
             out.diagnostic = "cli_composition_authority_changed"; return out
         }
-        out.manifest = parsed[1]; out.ok = true; out.diagnostic = "ok"; out
+        out.manifest = parsed[1]
+        out.authorityEnvironmentLock = environment[1]
+        out.authorityEnvironmentLockBytes = authorityBytes[1]
+        out.ok = true; out.diagnostic = "ok"; out
     } catch (_: Exception) {
         out.diagnostic = "cli_composition_load_failed"; out
     }
@@ -522,7 +532,7 @@ private func ckbCliCompositionRoles(mode: String): Array<String> {
             "runtime_transport", "mcp_stdio_command", "runner_inputs",
             "runner_authority",
             "reference_template", "authority_manifest",
-            "environment_lock", "environment_preflight",
+            "environment_preflight",
             "run_critical_manifest", "experiment_profile"]
     }
     if (mode == "release-verify") {
@@ -533,7 +543,7 @@ private func ckbCliCompositionRoles(mode: String): Array<String> {
             "path_context", "eval_support", "leakage_authority",
             "runtime_transport", "mcp_stdio_command",
             "release_asset_authority", "reference_template",
-            "environment_lock", "run_critical_manifest"]
+            "run_critical_manifest"]
     }
     Array<String>()
 }

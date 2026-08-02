@@ -52,7 +52,7 @@ private func cliCompositionRoles(mode: String): Array<String> {
             "path_context", "eval_support", "leakage_authority",
             "runtime_transport", "mcp_stdio_command", "runner_inputs",
             "runner_authority", "reference_template", "authority_manifest",
-            "environment_lock", "environment_preflight",
+            "environment_preflight",
             "run_critical_manifest", "experiment_profile"]
     }
     ["logical_manifest", "qdrant_manifest", "parity_manifest",
@@ -61,7 +61,7 @@ private func cliCompositionRoles(mode: String): Array<String> {
         "public_build_input_manifest", "private_build_authority",
         "path_context", "eval_support", "leakage_authority",
         "runtime_transport", "mcp_stdio_command", "release_asset_authority",
-        "reference_template", "environment_lock", "run_critical_manifest"]
+        "reference_template", "run_critical_manifest"]
 }
 
 private func cliCompositionPrivateAuthority(): String {
@@ -217,6 +217,17 @@ public class CkbReproCliCompositionTest {
         a.assets.remove(at: a.assets.size - 1)
         @Expect(validateCkbReproCliCompositionManifest(a).diagnostic,
             "cli_composition_mode_contract_invalid")
+        for (mode in ["run-certify", "release-verify"]) {
+            let cyclic = cliCompositionManifest(mode)
+            let lock = CkbReproCliCompositionAsset()
+            lock.role = "environment_lock"
+            lock.relativePath =
+                "reproducibility/manifests/environment-lock.json"
+            lock.size = 1; lock.sha256 = cliCompositionHash("lock")
+            cyclic.assets.add(lock)
+            @Expect(validateCkbReproCliCompositionManifest(cyclic).diagnostic,
+                "cli_composition_mode_contract_invalid")
+        }
     }
 
     @TestCase
@@ -299,6 +310,19 @@ public class CkbReproCliCompositionTest {
                     .toString(), mode)
                 @Expect(loaded.ok, true)
                 @Expect(loaded.assets.size, cliCompositionRoles(mode).size)
+                var hasEnvironmentLockAsset = false
+                for (asset in loaded.assets) {
+                    if (asset.role == "environment_lock") {
+                        hasEnvironmentLockAsset = true
+                    }
+                }
+                @Expect(hasEnvironmentLockAsset, false)
+                @Expect(loaded.authorityEnvironmentLock.compositionManifestHash,
+                    cliCompositionHash(renderCkbReproCliCompositionManifest(
+                        cliCompositionManifest(mode))))
+                @Expect(loaded.authorityEnvironmentLockBytes,
+                    File.readFrom(Path(root).join(
+                        "reproducibility/manifests/environment-lock.json")))
                 for (asset in loaded.assets) {
                     @Expect(asset.privateAuthority,
                         asset.relativePath.startsWith("private-authority/"))
