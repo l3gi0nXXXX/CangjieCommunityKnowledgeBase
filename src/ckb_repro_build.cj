@@ -1298,8 +1298,13 @@ public class CkbReproProductionBuildBackend <: CkbReproBuildBackend {
         let normalizer = Normalizer()
         for (record in input.portableRaw) {
             raw.add(record)
-            normalized.add(normalizer.normalize(record, "",
-                input.request.candidateVersion))
+            let value = normalizer.normalize(record, "",
+                input.request.candidateVersion)
+            value.recordKind = if (record.metadata.sourceSet ==
+                CangjieSourceSets.KNOWLEDGE_ATOMS) {
+                CangjieTypedRecordKinds.KNOWLEDGE_ATOM
+            } else { CangjieTypedRecordKinds.DOC_SECTION }
+            normalized.add(value)
         }
         this.candidate = ckbBuildCompleteCleanStudentCandidate(
             ArrayList<RawRecord>(), ArrayList<NormalizedRecord>(),

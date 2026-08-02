@@ -278,6 +278,32 @@ public class CkbReproBuildTest {
     }
 
     @TestCase
+    public func p4Reg02GenericRawAtomKeepsKnowledgeAtomKind(): Unit {
+        let input = CkbReproPipelineInput()
+        input.request.candidateVersion = "portable-production-candidate"
+        let atom = RawRecord()
+        atom.sourceId = "knowledge-atom-regression"
+        atom.title = "Generic atom"
+        atom.content = "Knowledge: String runes preserve Unicode boundaries\n" +
+            "Example: text.toRuneArray()"
+        atom.contentHash = cangjieTypedRecordContentHash(
+            atom.sourceId, atom.content)
+        atom.metadata.sourceId = atom.sourceId
+        atom.metadata.sourceType = SourceTypes.DERIVED
+        atom.metadata.sourceSet = CangjieSourceSets.KNOWLEDGE_ATOMS
+        atom.metadata.path = "knowledge-atom/KC-02/regression.json"
+        atom.metadata.trustLevel = TrustLevels.COMMUNITY
+        atom.metadata.reviewState = ReviewStates.REVIEWED
+        atom.metadata.license = "Apache-2.0"
+        atom.metadata.repoVisibility = "public"
+        atom.metadata.derivedFrom = ["generated-guidance:regression"]
+        input.portableRaw.add(atom)
+
+        @Expect(CkbReproProductionBuildBackend().run("clean", input).ok,
+            true)
+    }
+
+    @TestCase
     public func p4Neg02BuildComponentEvalSelectionAndStageFailureShortCircuit(): Unit {
         let fixture = p4BuildFixture("neg02")
         let leaked = CkbReproKnowledgeSelectionRow()

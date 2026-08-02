@@ -104,10 +104,10 @@ public class CkbReproCliTypedAssetsTest {
     @TestCase
     public func leakageAuthorityRequiresSortedCanonicalPrivateData(): Unit {
         let authority = CangjieBenchmarkLeakageAuthority()
-        authority.fingerprints.add("abcdefghijklmnopqrstuvwx")
-        authority.fingerprintSet.add("abcdefghijklmnopqrstuvwx")
         authority.fingerprints.add("知识原子abcdefghijklmnopqrst")
         authority.fingerprintSet.add("知识原子abcdefghijklmnopqrst")
+        authority.fingerprints.add("abcdefghijklmnopqrstuvwx")
+        authority.fingerprintSet.add("abcdefghijklmnopqrstuvwx")
         let text = renderCkbReproCliLeakageAuthority(authority)
         @Expect(parseCkbReproCliLeakageAuthorityBytes(text.toArray())[0].ok,
             true)

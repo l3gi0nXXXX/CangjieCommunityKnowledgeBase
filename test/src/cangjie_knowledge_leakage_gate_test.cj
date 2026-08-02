@@ -51,10 +51,21 @@ public class CangjieKnowledgeLeakageGateTest {
         @Expect(cangjieStudentRecordDiagnostic(oversized).ok, false)
 
         let authorityRecords = ArrayList<NormalizedRecord>()
-        authorityRecords.add(r3LeakRecord("authority-safe-id", "authority title", "Task: prefix\nVisible sample line unique中文🙂-abcdefghijklmnop\nTask: suffix"))
+        authorityRecords.add(r3LeakRecord("authority-safe-id", "authority title", "Task: prefix\nVisible sample line unique中文🙂-abcdefghijklmnopqrstuvwxyz-0123456789\nTask: suffix"))
         let authority = buildCangjieBenchmarkLeakageAuthority(authorityRecords)
-        let copiedFragment = r3LeakRecord("safe-source", "safe title", "Visible sample line unique中文🙂-abcdefghijklmnop")
+        let copiedFragment = r3LeakRecord("safe-source", "safe title", "Visible sample line unique中文🙂-abcdefghijklmnopqrstuvwxyz-0123456789")
         @Expect(cangjieStudentRecordDiagnostic(copiedFragment, authority: authority).ok, false)
+
+        let whitespaceAuthorityRecords = ArrayList<NormalizedRecord>()
+        whitespaceAuthorityRecords.add(r3LeakRecord("authority-spaces",
+            "authority title", "abcdefghijkl            " +
+            "                        suffix"))
+        let whitespaceAuthority = buildCangjieBenchmarkLeakageAuthority(
+            whitespaceAuthorityRecords)
+        let formattedProse = r3LeakRecord("safe-source", "safe title",
+            "official prose                         remains safe")
+        @Expect(cangjieStudentRecordDiagnostic(formattedProse,
+            authority: whitespaceAuthority).ok, true)
 
         let compositePack = CangjieTaskKnowledgePack()
         let evidence = CangjieMatchedEvidence()
