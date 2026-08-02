@@ -20,12 +20,29 @@ private func cliCompositionReadUtf8(path: Path): String {
 
 private func cliCompositionRoles(mode: String): Array<String> {
     if (mode == "p3-vector-build") {
-        return ["runtime_config", "path_context"]
+        return ["runtime_config", "path_policy", "local_root_map",
+            "api_routes", "path_context"]
+    }
+    if (mode == "p3-snapshot-create") {
+        return ["runtime_config", "path_policy", "local_root_map",
+            "api_routes", "path_context"]
+    }
+    if (mode == "p3-snapshot-restore" || mode == "p3-snapshot-verify") {
+        return ["runtime_config", "path_policy", "local_root_map",
+            "api_routes", "path_context", "qdrant_manifest"]
+    }
+    if (mode == "p3-parity") {
+        return ["runtime_config", "path_policy", "local_root_map",
+            "api_routes", "path_context", "mcp_stdio_command"]
     }
     if (mode == "p4-build") {
         return ["public_build_input_manifest", "private_build_authority",
             "local_root_map", "path_context", "eval_support",
             "leakage_authority", "runtime_config"]
+    }
+    if (mode == "p4-promote") {
+        return ["runtime_config", "path_policy", "local_root_map",
+            "api_routes", "path_context"]
     }
     if (mode == "run-certify") {
         return ["logical_manifest", "qdrant_manifest", "parity_manifest",
@@ -34,13 +51,15 @@ private func cliCompositionRoles(mode: String): Array<String> {
             "path_context", "eval_support", "leakage_authority",
             "runtime_transport", "mcp_stdio_command", "runner_inputs",
             "runner_authority", "reference_template", "authority_manifest",
-            "environment_preflight"]
+            "environment_lock", "environment_preflight",
+            "run_critical_manifest", "experiment_profile"]
     }
     ["logical_manifest", "qdrant_manifest", "parity_manifest",
         "path_policy", "local_root_map", "api_routes",
         "public_build_input_manifest", "private_build_authority",
         "path_context", "eval_support", "leakage_authority",
-        "runtime_transport", "mcp_stdio_command", "release_asset_authority"]
+        "runtime_transport", "mcp_stdio_command", "release_asset_authority",
+        "reference_template", "environment_lock", "run_critical_manifest"]
 }
 
 private func cliCompositionPrivateAuthority(): String {
@@ -137,12 +156,10 @@ private func cliCompositionRoot(mode: String,
         "../reproducibility/manifests/environment-lock.json"))
     let hash = if (validAuthority) { cliCompositionHash(compositionText) }
         else { cliCompositionHash("wrong") }
-    let extension = ",\"compositionManifestPath\":" +
-        "\"reproducibility/manifests/runtime-composition.json\"," +
-        "\"compositionManifestHash\":\"${hash}\"}"
     cliCompositionWriteFile(root,
         "reproducibility/manifests/environment-lock.json",
-        current.replace("}", extension))
+        current.replace("\"compositionManifestHash\": \"\"",
+            "\"compositionManifestHash\": \"${hash}\""))
     root
 }
 

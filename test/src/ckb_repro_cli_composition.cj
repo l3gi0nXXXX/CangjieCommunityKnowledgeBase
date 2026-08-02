@@ -489,14 +489,20 @@ public func parseCkbReproCliRunnerAuthority(bytes: Array<UInt8>, mode: String):
 
 private func ckbCliCompositionRoles(mode: String): Array<String> {
     if (mode == "p3-vector-build") {
-        return ["runtime_config", "path_context"]
+        return ["runtime_config", "path_policy", "local_root_map",
+            "api_routes", "path_context"]
     }
-    if (mode == "p3-snapshot-create" || mode == "p3-snapshot-restore" ||
-        mode == "p3-snapshot-verify") {
-        return ["runtime_config", "path_context", "qdrant_manifest"]
+    if (mode == "p3-snapshot-create") {
+        return ["runtime_config", "path_policy", "local_root_map",
+            "api_routes", "path_context"]
+    }
+    if (mode == "p3-snapshot-restore" || mode == "p3-snapshot-verify") {
+        return ["runtime_config", "path_policy", "local_root_map",
+            "api_routes", "path_context", "qdrant_manifest"]
     }
     if (mode == "p3-parity") {
-        return ["runtime_config", "mcp_stdio_command"]
+        return ["runtime_config", "path_policy", "local_root_map",
+            "api_routes", "path_context", "mcp_stdio_command"]
     }
     if (mode == "p4-build") {
         return ["public_build_input_manifest", "private_build_authority",
@@ -504,7 +510,8 @@ private func ckbCliCompositionRoles(mode: String): Array<String> {
             "leakage_authority", "runtime_config"]
     }
     if (mode == "p4-promote") {
-        return ["runtime_config", "path_context"]
+        return ["runtime_config", "path_policy", "local_root_map",
+            "api_routes", "path_context"]
     }
     if (mode == "run-certify") {
         return ["logical_manifest", "qdrant_manifest", "parity_manifest",
@@ -514,7 +521,8 @@ private func ckbCliCompositionRoles(mode: String): Array<String> {
             "runtime_transport", "mcp_stdio_command", "runner_inputs",
             "runner_authority",
             "reference_template", "authority_manifest",
-            "environment_preflight"]
+            "environment_lock", "environment_preflight",
+            "run_critical_manifest", "experiment_profile"]
     }
     if (mode == "release-verify") {
         return ["logical_manifest", "qdrant_manifest", "parity_manifest",
@@ -522,7 +530,8 @@ private func ckbCliCompositionRoles(mode: String): Array<String> {
             "public_build_input_manifest", "private_build_authority",
             "path_context", "eval_support", "leakage_authority",
             "runtime_transport", "mcp_stdio_command",
-            "release_asset_authority"]
+            "release_asset_authority", "reference_template",
+            "environment_lock", "run_critical_manifest"]
     }
     Array<String>()
 }
@@ -577,7 +586,8 @@ private func ckbCliCompositionEnvironmentLockFields(): Array<String> {
         "cpuArchitecture", "cangjieSdkVersion", "cangjieSdkHash",
         "opensslVersion", "serviceHeap", "qdrantImageDigest",
         "runCandidateCommit", "runCriticalFilesManifestHash",
-        "runCriticalTreeHash", "claudeCodeVersion", "glmProvider",
+        "runCriticalTreeHash", "compositionManifestPath",
+        "compositionManifestHash", "claudeCodeVersion", "glmProvider",
         "glmBaseUrl", "glmModel", "modelFingerprint", "glmCredentialEnv",
         "embeddingProvider", "embeddingModel", "embeddingDimension",
         "embeddingCredentialEnv", "archiveTool", "archiveToolVersion",
