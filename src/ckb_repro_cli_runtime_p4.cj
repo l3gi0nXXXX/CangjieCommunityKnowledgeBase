@@ -1,6 +1,6 @@
 package cangjie_community_knowledge_base
 
-import std.fs.Path
+import std.fs.{File, Path}
 
 class CkbReproP4BuildProductionAssembly {
     var publicRoot: String = ""
@@ -48,10 +48,28 @@ func executeCkbReproP4BuildProductionAssembly(args: Array<String>,
         CkbReproProductionBuildBackend())
     let operation = CkbP4CliOperationResult()
     operation.ok = result.ready; operation.diagnostic = result.diagnostic
+    if (result.ready) {
+        let persisted = persistCkbReproBuildProof(
+            options.outputRoot, result.proof)
+        if (persisted != "ok") {
+            operation.ok = false; operation.diagnostic = persisted
+        }
+    }
     operation.summary = "logicalReady=${result.proof.logicalReady} " +
         "raw=${result.proof.rawCount} selected=${result.proof.selectedCount} " +
         "vectorState=${result.proof.vectorState}"
     ckbP4MainResult(operation, options.json)
+}
+
+func persistCkbReproBuildProof(outputRoot: String,
+    proof: CkbReproBuildProof): String {
+    try {
+        File.writeTo(Path(outputRoot).join("repro-build-proof.json"),
+            renderCkbReproBuildProof(proof).toArray())
+        "ok"
+    } catch (_: Exception) {
+        "p4_build_proof_write_failed"
+    }
 }
 
 func executeCkbReproP4PromoteProductionAssembly(args: Array<String>,

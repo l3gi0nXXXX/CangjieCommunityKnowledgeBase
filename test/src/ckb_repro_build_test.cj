@@ -304,6 +304,26 @@ public class CkbReproBuildTest {
     }
 
     @TestCase
+    public func p4Reg03ProductionProofIsPersistedForP3(): Unit {
+        let fixture = p4BuildFixture("proof-output")
+        let result = runCkbReproBuild(
+            fixture.request, P4FakeBuildBackend())
+        let output = Path(fixture.root).join("proof")
+        Directory.create(output)
+
+        @Expect(persistCkbReproBuildProof(
+            output.toString(), result.proof), "ok")
+        let parsed = parseCkbReproBuildProof(File.readFrom(
+            output.join("repro-build-proof.json")))
+        @Expect(parsed[0].ok, true)
+        @Expect(parsed[1].preservationHash, result.proof.preservationHash)
+        @Expect(persistCkbReproBuildProof(
+            output.join("missing").toString(), result.proof),
+            "p4_build_proof_write_failed")
+        p4RemoveBuildFixture(fixture)
+    }
+
+    @TestCase
     public func p4Neg02BuildComponentEvalSelectionAndStageFailureShortCircuit(): Unit {
         let fixture = p4BuildFixture("neg02")
         let leaked = CkbReproKnowledgeSelectionRow()
