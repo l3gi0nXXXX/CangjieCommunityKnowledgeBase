@@ -1,7 +1,7 @@
 package cangjie_community_knowledge_base_test
 
 import std.collection.ArrayList
-import std.fs.Path
+import std.fs.{Path, exists, remove}
 
 class CkbReproProductionCliComposition {
     var ok: Bool = false
@@ -13,6 +13,32 @@ class CkbReproProductionCliComposition {
     var loaded: CkbReproCliCompositionLoadResult =
         CkbReproCliCompositionLoadResult()
     public init() {}
+}
+
+interface CkbReproP4BuildCompositionExecutor {
+    func execute(args: Array<String>, assembly: CkbReproP4BuildProductionAssembly):
+        CkbReproMainCliResult
+}
+
+interface CkbReproP4OwnedRootCleaner {
+    func cleanup(path: String): Bool
+}
+
+private class CkbReproP4ProductionBuildCompositionExecutor <:
+    CkbReproP4BuildCompositionExecutor {
+    public init() {}
+    public func execute(args: Array<String>,
+        assembly: CkbReproP4BuildProductionAssembly): CkbReproMainCliResult {
+        executeCkbReproP4BuildProductionAssembly(args, assembly)
+    }
+}
+
+private class CkbReproP4FilesystemOwnedRootCleaner <:
+    CkbReproP4OwnedRootCleaner {
+    public init() {}
+    public func cleanup(path: String): Bool {
+        ckbReproP4RemoveOwnedRoot(path)
+    }
 }
 
 func loadCkbReproProductionCliComposition(args: Array<String>, mode: String):
@@ -176,6 +202,128 @@ func ckbReproP4CompositionMode(args: Array<String>): String {
     else { "" }
 }
 
+func runCkbReproP4ProductionComposition(args: Array<String>):
+    CkbReproMainCliResult {
+    let forwarded = ckbReproArgsWithoutCompositionManifest(args)
+    let options = parseCkbP4CliOptions(forwarded)
+    if (options.diagnostic != "ok") {
+        return ckbReproP4CompositionFailure(options.diagnostic,
+            args.contains("--json"))
+    }
+    let prepared = loadCkbReproProductionCliComposition(args,
+        ckbReproP4CompositionMode(args))
+    if (!prepared.ok) {
+        return ckbReproP4CompositionFailure(prepared.diagnostic,
+            prepared.json)
+    }
+    let runtimeBytes = ckbReproCompositionAssetBytes(
+        prepared.loaded, "runtime_config")
+    let policyBytes = ckbReproCompositionAssetBytes(
+        prepared.loaded, "path_policy")
+    let rootsBytes = ckbReproCompositionAssetBytes(
+        prepared.loaded, "local_root_map")
+    let routesBytes = ckbReproCompositionAssetBytes(
+        prepared.loaded, "api_routes")
+    let releasePolicyBytes = ckbReproCompositionAssetBytes(
+        prepared.loaded, "path_context")
+    if (!runtimeBytes[0] || !policyBytes[0] || !rootsBytes[0] ||
+        !routesBytes[0] || !releasePolicyBytes[0]) {
+        return ckbReproP4CompositionFailure(
+            "p4_composition_asset_missing", prepared.json)
+    }
+    let runtime = parseCkbReproCliRuntimeConfigBytes(runtimeBytes[1])
+    let path = parseCkbReproCliPathContextBytes(policyBytes[1],
+        rootsBytes[1], routesBytes[1], releasePolicyBytes[1])
+    if (!runtime[0].ok || !path[0].ok) {
+        return ckbReproP4CompositionFailure(if (!runtime[0].ok) {
+            runtime[0].diagnostic
+        } else { path[0].diagnostic }, prepared.json)
+    }
+    if (options.command == "ckb-repro-promote") {
+        let assembly = CkbReproP4PromoteProductionAssembly()
+        assembly.runtime = runtime[1]
+        assembly.pathContext = path[1].pathContext
+        return executeCkbReproP4PromoteProductionAssembly(forwarded,
+            assembly)
+    }
+    let manifestBytes = ckbReproCompositionAssetBytes(
+        prepared.loaded, "public_build_input_manifest")
+    let evalBytes = ckbReproCompositionAssetBytes(
+        prepared.loaded, "eval_support")
+    let leakageBytes = ckbReproCompositionAssetBytes(
+        prepared.loaded, "leakage_authority")
+    if (!manifestBytes[0] || !evalBytes[0] || !leakageBytes[0]) {
+        return ckbReproP4CompositionFailure(
+            "p4_composition_asset_missing", prepared.json)
+    }
+    let manifest = parseCkbReproBuildInputManifest(manifestBytes[1])
+    let eval = parseCkbReproCliEvalSupportBytes(evalBytes[1])
+    let leakage = parseCkbReproCliLeakageAuthorityBytes(leakageBytes[1])
+    if (!manifest[0].ok || !eval[0].ok || !leakage[0].ok) {
+        return ckbReproP4CompositionFailure(if (!manifest[0].ok) {
+            manifest[0].diagnostic
+        } else if (!eval[0].ok) { eval[0].diagnostic }
+        else { leakage[0].diagnostic }, prepared.json)
+    }
+    let authority = composeCkbReproCliPrivateBuildAuthority(eval[1],
+        leakage[1], path[1], options.temporaryRoot, options.outputRoot)
+    if (!authority[0].ok) {
+        return ckbReproP4CompositionFailure(
+            authority[0].diagnostic, prepared.json)
+    }
+    let publicRoot = Path(prepared.loaded.root).join(
+        "public-build-inputs").toString()
+    let reader = CkbReproFilesystemBundleReadBackend()
+    let loaded = loadCkbReproPublicBuildInputs(
+        publicRoot, manifest[1], reader)
+    if (!loaded.ok) {
+        return ckbReproP4CompositionFailure(loaded.diagnostic, prepared.json)
+    }
+    let sourceCacheRoot = options.temporaryRoot + ".source-cache"
+    let ownedSourceRoot = options.temporaryRoot + ".owned-sources"
+    if (exists(Path(sourceCacheRoot)) || exists(Path(ownedSourceRoot))) {
+        return ckbReproP4CompositionFailure(
+            "p4_source_root_exists", prepared.json)
+    }
+    let assembly = CkbReproP4BuildProductionAssembly()
+    assembly.publicRoot = publicRoot; assembly.manifest = manifest[1]
+    assembly.authority = authority[1]; assembly.reader = Some(reader)
+    assembly.materialBackend = Some(CkbPinnedSourceMaterialBackend(
+        loaded.sourceLock, sourceCacheRoot))
+    assembly.materializer = Some(CkbFilesystemOwnedSourceMaterializer(
+        ownedSourceRoot))
+    ckbReproExecuteP4BuildWithCleanup(forwarded, prepared.json, assembly,
+        sourceCacheRoot, ownedSourceRoot,
+        CkbReproP4ProductionBuildCompositionExecutor(),
+        CkbReproP4FilesystemOwnedRootCleaner())
+}
+
+func ckbReproExecuteP4BuildWithCleanup(args: Array<String>, json: Bool,
+    assembly: CkbReproP4BuildProductionAssembly, sourceCacheRoot: String,
+    ownedSourceRoot: String, executor: CkbReproP4BuildCompositionExecutor,
+    cleaner: CkbReproP4OwnedRootCleaner): CkbReproMainCliResult {
+    var result = ckbReproP4CompositionFailure(
+        "p4_build_execution_failed", json)
+    var cacheCleaned = false
+    var sourcesCleaned = false
+    try {
+        result = executor.execute(args, assembly)
+    } catch (_: Exception) {
+        result = ckbReproP4CompositionFailure(
+            "p4_build_execution_failed", json)
+    } finally {
+        try { cacheCleaned = cleaner.cleanup(sourceCacheRoot) }
+        catch (_: Exception) { cacheCleaned = false }
+        try { sourcesCleaned = cleaner.cleanup(ownedSourceRoot) }
+        catch (_: Exception) { sourcesCleaned = false }
+    }
+    if (!cacheCleaned || !sourcesCleaned) {
+        return ckbReproP4CompositionFailure(
+            "p4_source_cleanup_failed", json)
+    }
+    result
+}
+
 func ckbReproP8CompositionMode(args: Array<String>): String {
     let forwarded = ckbReproVerifyArgsWithoutPresentation(args)
     let parsed = parseCkbReproVerifyOptions(forwarded)
@@ -214,4 +362,18 @@ private func ckbReproP3CompositionFailure(code: String, json: Bool):
     CkbReproMainCliResult(true, 2, if (json) {
         renderCkbP3CliJson(result)
     } else { renderCkbP3CliHuman(result) })
+}
+
+private func ckbReproP4RemoveOwnedRoot(path: String): Bool {
+    if (!exists(Path(path))) { return true }
+    try { remove(Path(path), recursive: true); true }
+    catch (_: Exception) { false }
+}
+
+private func ckbReproP4CompositionFailure(code: String, json: Bool):
+    CkbReproMainCliResult {
+    let result = CkbP4CliOperationResult(); result.diagnostic = code
+    CkbReproMainCliResult(true, 2, if (json) {
+        renderCkbP4CliJson(result)
+    } else { renderCkbP4CliHuman(result) })
 }

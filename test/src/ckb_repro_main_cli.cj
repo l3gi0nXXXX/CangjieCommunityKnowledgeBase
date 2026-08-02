@@ -172,15 +172,7 @@ private func runCkbP3ProductionMainCli(args: Array<String>):
 
 private func runCkbP4ProductionMainCli(args: Array<String>):
     CkbReproMainCliResult {
-    let options = parseCkbP4CliOptions(args)
-    let result = CkbP4CliOperationResult()
-    result.diagnostic = if (options.diagnostic == "ok") {
-        "p4_production_composition_manifest_required"
-    } else { options.diagnostic }
-    let output = if (args.contains("--json")) {
-        renderCkbP4CliJson(result)
-    } else { renderCkbP4CliHuman(result) }
-    CkbReproMainCliResult(true, 2, output)
+    runCkbReproP4ProductionComposition(args)
 }
 
 private func runCkbP8ProductionMainCli(args: Array<String>):

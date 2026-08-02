@@ -37,7 +37,8 @@ private func cliCompositionRoles(mode: String): Array<String> {
     }
     if (mode == "p4-build") {
         return ["public_build_input_manifest", "private_build_authority",
-            "local_root_map", "path_context", "eval_support",
+            "path_policy", "local_root_map", "api_routes", "path_context",
+            "eval_support",
             "leakage_authority", "runtime_config"]
     }
     if (mode == "p4-promote") {
@@ -88,6 +89,9 @@ private func cliCompositionBuildManifest(): String {
 }
 
 private func cliCompositionPath(role: String): String {
+    if (role == "public_build_input_manifest") {
+        return "assets/public-build-input-manifest.json"
+    }
     if (role == "private_build_authority") {
         return "private-authority/build-authority.json"
     }
@@ -228,6 +232,14 @@ public class CkbReproCliCompositionTest {
             @Expect(validateCkbReproCliCompositionManifest(cyclic).diagnostic,
                 "cli_composition_mode_contract_invalid")
         }
+        let wrongBuildRoot = cliCompositionManifest("p4-build")
+        for (asset in wrongBuildRoot.assets) {
+            if (asset.role == "public_build_input_manifest") {
+                asset.relativePath = "assets/other-build-input-manifest.json"
+            }
+        }
+        @Expect(validateCkbReproCliCompositionManifest(wrongBuildRoot)
+            .diagnostic, "cli_composition_asset_invalid")
     }
 
     @TestCase

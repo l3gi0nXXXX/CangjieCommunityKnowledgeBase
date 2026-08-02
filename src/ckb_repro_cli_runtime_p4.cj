@@ -1,5 +1,7 @@
 package cangjie_community_knowledge_base
 
+import std.fs.Path
+
 class CkbReproP4BuildProductionAssembly {
     var publicRoot: String = ""
     var manifest: CkbReproBuildInputManifest = CkbReproBuildInputManifest()
@@ -12,14 +14,6 @@ class CkbReproP4BuildProductionAssembly {
 }
 
 class CkbReproP4PromoteProductionAssembly {
-    var candidateStore: ?FileKnowledgeStore = None
-    var productionStore: ?FileKnowledgeStore = None
-    var snapshotPath: String = ""
-    var snapshotManifest: CkbQdrantSnapshotManifest =
-        CkbQdrantSnapshotManifest()
-    var logicalManifest: CkbLogicalSnapshotManifest =
-        CkbLogicalSnapshotManifest()
-    var targetCollection: String = ""
     var runtime: CkbRuntimeConfig = CkbRuntimeConfig()
     var pathContext: CkbPortablePathContext = CkbPortablePathContext()
     public init() {}
@@ -66,23 +60,29 @@ func executeCkbReproP4PromoteProductionAssembly(args: Array<String>,
     if (options.diagnostic != "ok" || options.command != "ckb-repro-promote") {
         return ckbP4MainFailure(options.diagnostic, args.contains("--json"))
     }
-    let candidate = match (assembly.candidateStore) {
-        case Some(value) => value
-        case None => return ckbP4MainFailure("p4_candidate_store_required",
-            options.json)
-    }
-    let production = match (assembly.productionStore) {
-        case Some(value) => value
-        case None => return ckbP4MainFailure("p4_production_store_required",
-            options.json)
-    }
-    let request = CkbReproBuildRequest()
-    let adapter = newCkbP4RuntimeProductionAdapter(request, candidate,
-        production, assembly.snapshotPath, assembly.snapshotManifest,
-        assembly.logicalManifest, assembly.targetCollection,
-        options.qdrantEndpoint, assembly.runtime, assembly.pathContext)
+    let transport = ckbNativeHttpAdapterConfigFromRuntime(
+        assembly.runtime, assembly.runtime.vectorAllowPrivateEndpoint)
+    let http = NativeHttpRequestExecutor(transport)
+    let ownedRoot = Path(options.unsignedRoot).parent.join(
+        ".ckb-promotion-owned-" + benchmarkGapSha256(
+            options.unsignedRoot).replace("sha256:", "")).toString()
+    let adapter = CkbP4SameBundleProductionAdapter(
+        CkbP4ProductionBuildRejectedAdapter(), ownedRoot,
+        CkbReproFilesystemBundleReadBackend(),
+        CkbPortableReleaseArchiveBackend(),
+        CkbQdrantSnapshotHttpExecutor(options.qdrantEndpoint, http),
+        CkbNativeQdrantSnapshotFileExecutor(options.qdrantEndpoint,
+            transport), assembly.pathContext)
     let execution = runCkbP4Cli(args, adapter)
     CkbReproMainCliResult(true, execution.exitCode, execution.output)
+}
+
+private class CkbP4ProductionBuildRejectedAdapter <: CkbP4CliAdapter {
+    public init() {}
+    public func execute(options: CkbP4CliOptions): CkbP4CliOperationResult {
+        let out = CkbP4CliOperationResult()
+        out.diagnostic = "p4_build_adapter_not_available"; out
+    }
 }
 
 private func ckbP4MainResult(result: CkbP4CliOperationResult, json: Bool):

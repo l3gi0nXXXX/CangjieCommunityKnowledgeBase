@@ -516,7 +516,8 @@ private func ckbCliCompositionRoles(mode: String): Array<String> {
     }
     if (mode == "p4-build") {
         return ["public_build_input_manifest", "private_build_authority",
-            "local_root_map", "path_context", "eval_support",
+            "path_policy", "local_root_map", "api_routes", "path_context",
+            "eval_support",
             "leakage_authority", "runtime_config"]
     }
     if (mode == "p4-promote") {
@@ -582,6 +583,9 @@ private func ckbCliCompositionEnvironmentVariable(value: String): Bool {
 }
 
 private func ckbCliCompositionRolePath(role: String, path: String): Bool {
+    if (role == "public_build_input_manifest") {
+        return path == "assets/public-build-input-manifest.json"
+    }
     if (role == "private_build_authority" || role == "local_root_map" ||
         role == "path_context" || role == "eval_support" ||
         role == "leakage_authority") {

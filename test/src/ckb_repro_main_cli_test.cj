@@ -56,13 +56,30 @@ public class CkbReproMainCliTest {
         for (required in ["runCkbReproProductionBuild(",
             "CkbFirstInitReproSourceAssembler()",
             "CkbReproProductionBuildBackend()",
-            "newCkbP4RuntimeProductionAdapter(", "runCkbP4Cli("]) {
+            "CkbP4SameBundleProductionAdapter(",
+            "CkbReproFilesystemBundleReadBackend()",
+            "CkbPortableReleaseArchiveBackend()",
+            "CkbQdrantSnapshotHttpExecutor(",
+            "CkbNativeQdrantSnapshotFileExecutor(", "runCkbP4Cli("]) {
             @Expect(source.contains(required), true)
         }
         for (forbidden in ["typedInput.add", "rawInput.add",
             "newCkbP4ProductionAdapter(",
             "newCkbP4BusinessProductionAdapter("]) {
             @Expect(source.contains(forbidden), false)
+        }
+        let loader = try {
+            String.fromUtf8(File.readFrom(
+                Path("../src/ckb_repro_cli_runtime_loader.cj")))
+        } catch (_: Exception) {
+            @Expect("invalid_response_encoding", "valid_utf8_source")
+            return
+        }
+        for (required in ["public-build-inputs", "finally {",
+            "ckbReproP4RemoveOwnedRoot(sourceCacheRoot)",
+            "ckbReproP4RemoveOwnedRoot(ownedSourceRoot)",
+            "p4_source_cleanup_failed"]) {
+            @Expect(loader.contains(required), true)
         }
     }
 
