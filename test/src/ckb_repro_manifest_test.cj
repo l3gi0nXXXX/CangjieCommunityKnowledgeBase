@@ -49,7 +49,7 @@ public class CkbReproManifestTest {
             mode: "execution")
         @Expect(execution.ok, true)
         @Expect(execution.treeHash,
-            "sha256:31b7ff2c872920a04385ab530a7da778e89e247ffac3f0c891781e19bb3c8e7d")
+            "sha256:c2f4a6febb00d13947891c9d98f67b8512653675c1b00bda1964a96f6c853153")
     }
 
     @TestCase

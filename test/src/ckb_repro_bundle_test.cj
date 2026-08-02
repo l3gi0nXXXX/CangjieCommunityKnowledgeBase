@@ -636,6 +636,16 @@ public class CkbReproBundleTest {
     }
 
     @TestCase
+    public func p9BndQuotePathBundleReadsWithoutChangingIdentity(): Unit {
+        let quoted = ArrayList<CkbReproBundleAsset>()
+        quoted.add(p9Asset("资料/\"结果🙂.json", "仓颉🙂"))
+        let loaded = p9Load(p9ReadableBundle(
+            "/tmp/ckb-p9/read-quote-focused", quoted, false))
+        @Expect(loaded.contract.diagnostic, "ok")
+        @Expect(loaded.contract.ok, true)
+    }
+
+    @TestCase
     public func p9Bnd01BundleReadContract(): Unit {
         let unpartitionedHuge = p9Asset("assets/huge.bin", "x")
         unpartitionedHuge.size = 2 * 1024 * 1024 * 1024

@@ -653,13 +653,26 @@ private class P9BundleContentScanner {
         }
         this.scanRecent()
     }
-    private func scanRecent(): Unit {
+    private func scanRecent(final!: Bool = false): Unit {
+        let scan = ArrayList<UInt8>()
+        var i: Int64 = 0
+        while (i < this.recent.size) {
+            if (this.recent[i] == UInt8(0x5c)) {
+                if (i + 1 < this.recent.size &&
+                    this.recent[i + 1] == UInt8(0x22)) {
+                    scan.add(UInt8(0x22)); i += 2; continue
+                }
+                if (!final && i + 1 == this.recent.size) { break }
+            }
+            scan.add(this.recent[i]); i += 1
+        }
         if (!this.sensitive &&
-            !scanCkbPublicEvidenceLeakage(this.recent.toArray()).ok) {
+            !scanCkbPublicEvidenceLeakage(scan.toArray()).ok) {
             this.sensitive = true
         }
     }
     public func finish(): String {
+        this.scanRecent(final: true)
         if (this.textRequired &&
             (this.invalidEncoding || this.utf8Remaining != 0)) {
             return "bundle_text_encoding_invalid"
