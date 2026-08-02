@@ -7,6 +7,7 @@ import std.time.DateTime
 import std.unittest.*
 import std.unittest.testmacro.*
 import stdx.crypto.digest.SHA256
+import stdx.encoding.json.*
 import stdx.net.http.*
 
 private class P3RuntimeHttpExecutor <: HttpRequestExecutor {
@@ -689,6 +690,33 @@ public class CkbReproRuntimeCompositionTest {
         missing.ok = true; missing.mode = "run-certify"
         let missingResult = loadCkbReproP8SharedComposition(missing, "/tmp")
         @Expect(missingResult[0].diagnostic, "p8_composition_asset_missing")
+
+        let prepared = CkbReproProductionCliComposition()
+        let shared = CkbReproP8SharedComposition()
+        shared.environment.qdrantImageDigest = benchmarkGapSha256("expected")
+        let transport = CkbP8OwnedLocalRuntimeAuthority()
+        transport.qdrantImageId = benchmarkGapSha256("different")
+        let stages = buildCkbReproP8ProductionStages(prepared, shared,
+            CkbReproVerifyOptions(), transport, CkbReproBuildInputManifest(),
+            CangjieEvalSupportSnapshot(), CangjieBenchmarkLeakageAuthority())
+        @Expect(stages.ok, false)
+        @Expect(stages.diagnostic, "p8_transport_environment_invalid")
+    }
+
+    @TestCase
+    public func p8CompositionDiagnosticIsRuneSafeAndBounded(): Unit {
+        let value = StringBuilder("\"\n\u{0001}\b\fAuthorization: secret ")
+        for (_ in 0..200) { value.append("中🙂") }
+        let safe = ckbReproP8SafeDiagnostic(value.toString())
+        @Expect(safe.toRuneArray().size <= 160, true)
+        @Expect(safe.contains("secret"), false)
+        let failure = ckbReproP8CompositionFailure(value.toString(), true)
+        let object = JsonValue.fromStr(failure.output).asObject()
+        @Expect(object.get("ok").getOrThrow().asBool().getValue(), false)
+        let diagnostic = object.get("diagnostic").getOrThrow()
+            .asString().getValue()
+        @Expect(diagnostic.toRuneArray().size <= 160, true)
+        @Expect(diagnostic.contains("secret"), false)
     }
 
     @TestCase

@@ -142,6 +142,32 @@ public class CkbReproP8OwnedLifecycleTest {
     }
 
     @TestCase
+    public func failedServiceStopKeepsHandleForCleanupRetry(): Unit {
+        let fixture = p8LifecycleFixture("stop-retry")
+        let process = P8FakeOwnedProcess(); process.stopFailures = 1
+        let commands = P8FakeOwnedCommandExecutor()
+        p8QueueQdrantSuccess(commands, fixture)
+        commands.process = Some<CkbP8OwnedProcessHandle>(process)
+        let readiness = P8FakeOwnedReadinessProbe()
+        readiness.responses.add(p8ReadyUnavailable())
+        readiness.responses.add(p8Ready(200, "ready".toArray()))
+        readiness.responses.add(p8ReadyUnavailable())
+        readiness.responses.add(p8Ready(200,
+            "{\"activeKnowledgeVersion\":\"${fixture.knowledgeVersion}\"}"
+                .toArray()))
+        let lifecycle = CkbNativeP8OwnedLocalLifecycle(fixture.authority,
+            fixture.qdrant, commandExecutor: commands,
+            readinessProbe: readiness)
+        @Expect(lifecycle.startQdrant(fixture.options).ok, true)
+        @Expect(lifecycle.startParityService(fixture.options.runtimeRoot,
+            fixture.knowledgeVersion).ok, true)
+        @Expect(lifecycle.stopParityService(), false)
+        @Expect(lifecycle.cleanup(fixture.options), true)
+        @Expect(process.stopCalls, 2)
+        p8RemoveFixture(fixture.root)
+    }
+
+    @TestCase
     public func qdrantFailurePreservesEncodingAndCleansOwnedState(): Unit {
         let fixture = p8LifecycleFixture("qdrant-invalid-utf8")
         let commands = P8FakeOwnedCommandExecutor()
@@ -208,10 +234,15 @@ private class P8FakeOwnedCommandExecutor <: CkbP8OwnedCommandExecutor {
 
 private class P8FakeOwnedProcess <: CkbP8OwnedProcessHandle {
     var stopCalls: Int64 = 0
+    var stopFailures: Int64 = 0
     var running: Bool = true
     public init() {}
     public func pid(): Int64 { 1234 }
-    public func stop(): Bool { this.stopCalls += 1; this.running = false; true }
+    public func stop(): Bool {
+        this.stopCalls += 1
+        if (this.stopFailures > 0) { this.stopFailures -= 1; return false }
+        this.running = false; true
+    }
     public func alive(): Bool { this.running }
 }
 

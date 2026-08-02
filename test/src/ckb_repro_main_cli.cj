@@ -177,17 +177,5 @@ private func runCkbP4ProductionMainCli(args: Array<String>):
 
 private func runCkbP8ProductionMainCli(args: Array<String>):
     CkbReproMainCliResult {
-    let json = args.contains("--json")
-    let values = ArrayList<String>()
-    for (i in 1..args.size) {
-        if (args[i] != "--json") { values.add(args[i]) }
-    }
-    let parsed = parseCkbReproVerifyOptions(values.toArray())
-    let diagnostic = if (parsed.ok) {
-        "p8_production_composition_manifest_required"
-    } else { parsed.diagnostic }
-    let output = if (json) {
-        "{\"ok\":false,\"diagnostic\":\"${diagnostic}\"}"
-    } else { "CKB reproducibility verification failed: ${diagnostic}\n" }
-    CkbReproMainCliResult(true, 2, output)
+    runCkbReproP8ProductionComposition(args)
 }

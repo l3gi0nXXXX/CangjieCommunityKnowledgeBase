@@ -253,9 +253,13 @@ public class CkbNativeP8OwnedLocalLifecycle <: CkbP8OwnedLocalLifecycle {
     }
 
     public func stopParityService(): Bool {
-        let current = this.service; this.service = None<CkbP8OwnedProcessHandle>
-        match (current) {
-            case Some(process) => process.stop()
+        match (this.service) {
+            case Some(process) =>
+                let stopped = process.stop()
+                if (stopped) {
+                    this.service = None<CkbP8OwnedProcessHandle>
+                }
+                stopped
             case None => true
         }
     }

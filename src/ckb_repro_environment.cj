@@ -84,6 +84,7 @@ public class CkbReproRunnerInputs {
     public var providerIdentityHash: String = ""
     public var providerIdentityArtifactPath: String = ""
     public var frozenCandidateManifestPath: String = ""
+    public var observedEnvironmentPath: String = ""
     public var certificationPreflightPath: String = ""
     public var certificationRunManifestPath: String = ""
     public init() {}

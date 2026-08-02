@@ -1169,6 +1169,16 @@ private func p9ParseReleaseInputs(bytes: Array<UInt8>):
     out.contract = p9BundleSuccess(); out
 }
 
+public func parseCkbReproReleaseInputsManifest(bytes: Array<UInt8>):
+    CkbReproReleaseInputsLoadResult {
+    if (bytes.size <= 0 || bytes.size > 16 * 1024 * 1024) {
+        let out = CkbReproReleaseInputsLoadResult()
+        out.contract = p9BundleFailure("bundle_release_inputs_invalid")
+        return out
+    }
+    p9ParseReleaseInputs(bytes)
+}
+
 public func parseCkbReproBundleManifest(bytes: Array<UInt8>):
     (CkbReproContractResult, CkbReproBundleManifest) {
     let manifest = CkbReproBundleManifest()

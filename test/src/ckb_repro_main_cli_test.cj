@@ -76,8 +76,8 @@ public class CkbReproMainCliTest {
             return
         }
         for (required in ["public-build-inputs", "finally {",
-            "ckbReproP4RemoveOwnedRoot(sourceCacheRoot)",
-            "ckbReproP4RemoveOwnedRoot(ownedSourceRoot)",
+            "cacheCleaned = cleaner.cleanup(sourceCacheRoot)",
+            "sourcesCleaned = cleaner.cleanup(ownedSourceRoot)",
             "p4_source_cleanup_failed"]) {
             @Expect(loader.contains(required), true)
         }
@@ -120,6 +120,38 @@ public class CkbReproMainCliTest {
             "Claude", "GLM", "credential"]) {
             @Expect(source.contains(forbidden), false)
         }
+    }
+
+    @TestCase
+    public func p8ProductionMainUsesTheOwnedCompositionRouter(): Unit {
+        let source = try {
+            String.fromUtf8(File.readFrom(Path("../src/main.cj")))
+        } catch (_: Exception) {
+            @Expect("invalid_response_encoding", "valid_utf8_source")
+            return
+        }
+        @Expect(source.contains("runCkbReproP8ProductionComposition(args)"),
+            true)
+        @Expect(source.contains(
+            "p8_production_composition_manifest_required"), false)
+        let loader = try {
+            String.fromUtf8(File.readFrom(
+                Path("../src/ckb_repro_cli_runtime_loader.cj")))
+        } catch (_: Exception) {
+            @Expect("invalid_response_encoding", "valid_utf8_source")
+            return
+        }
+        for (required in ["runCkbReproPreflightCliAdapter(",
+            "validateCkbReproVerifyEnvironment(",
+            "buildCkbReproP8ProductionStages(",
+            "parseCkbReproReleaseInputsManifest(",
+            "ckbReproP8ReleaseInputsAuthority(",
+            "executeCkbReproP8AProductionAssembly(",
+            "executeCkbReproP8BProductionAssembly("]) {
+            @Expect(loader.contains(required), true)
+        }
+        @Expect(loader.contains("ckbReproP8ReleaseAuthority("), false)
+        @Expect(loader.contains("ckbReproP8JsonEscape(safe)"), true)
     }
 
     @TestCase

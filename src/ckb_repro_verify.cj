@@ -114,14 +114,12 @@ public class CkbFilesystemReproVerifyEnvironmentProbe <:
 
 public class CkbReleaseFilesystemReproVerifyEnvironmentProbe <:
     CkbReproReleaseVerifyEnvironmentProbe {
-    private let candidateStore: FileKnowledgeStore
-    private let pathContext: CkbPortablePathContext
+    private let candidateRoot: String
     private let releaseRepository: String
     private let staleCounter: () -> Int64
-    public init(candidateStore: FileKnowledgeStore,
-        pathContext: CkbPortablePathContext, releaseRepository: String,
+    public init(candidateRoot: String, releaseRepository: String,
         staleCounter: () -> Int64) {
-        this.candidateStore = candidateStore; this.pathContext = pathContext
+        this.candidateRoot = candidateRoot
         this.releaseRepository = releaseRepository
         this.staleCounter = staleCounter
     }
@@ -142,18 +140,67 @@ public class CkbReleaseFilesystemReproVerifyEnvironmentProbe <:
     }
     public func staleProcessCount(): Int64 { this.staleCounter() }
     public func privatePathDependencyCount(): Int64 {
-        let snapshot = this.candidateStore.loadActiveSnapshot()
-        if (!snapshot.valid) { return 1 }
-        let input = CkbStudentVisiblePathInput()
-        for (record in snapshot.rawRecords) { input.rawRecords.add(record) }
-        for (record in snapshot.normalizedRecords) {
-            input.normalizedRecords.add(record)
+        if (this.candidateRoot == "") { return 1 }
+        let read = p8ReadPortablePathReport(this.candidateRoot)
+        if (read[0] != "ok") { return 1 }
+        try {
+            let text = String.fromUtf8(read[1])
+            let object = JsonValue.fromStr(text).asObject()
+            if (object.size() != 5 ||
+                !object.get("ready").getOrThrow().asBool().getValue() ||
+                object.get("scannedFieldCount").getOrThrow().asInt()
+                    .getValue() < 0 ||
+                object.get("machinePathCount").getOrThrow().asInt()
+                    .getValue() != 0 ||
+                object.get("unmappedCount").getOrThrow().asInt()
+                    .getValue() != 0 ||
+                object.get("findings").getOrThrow().asArray()
+                    .getItems().size != 0) { return 1 }
+            0
+        } catch (_: Exception) { 1 }
+    }
+}
+
+private func p8ReadPortablePathReport(root: String):
+    (String, Array<UInt8>) {
+    let reader = CkbReproFilesystemBundleReadBackend()
+    if (!reader.rootExists(root)) { return ("bundle_root_invalid", []) }
+    var expected: ?CkbReproBundleReadEntry = None
+    for (entry in reader.list(root)) {
+        if (entry.relativePath == "portable-path-report.json") {
+            if (expected.isSome()) { return ("report_duplicate", []) }
+            expected = Some(entry)
         }
-        for (record in snapshot.activeIndex) { input.activeRecords.add(record) }
-        for (record in snapshot.vectorRecords) { input.vectorRecords.add(record) }
-        let report = scanCkbStudentVisiblePaths(input, this.pathContext)
-        if (!report.ready) { return report.findings.size + 1 }
-        report.machinePathCount + report.unmappedCount
+    }
+    let entry = match (expected) {
+        case Some(value) => value
+        case None => return ("report_missing", [])
+    }
+    if (entry.kind != "regular" || !entry.withinRoot || entry.size < 1 ||
+        entry.size > 64 * 1024) { return ("report_invalid", []) }
+    var handle: ?CkbReproBundleReadHandle = None
+    try {
+        let opened = reader.open(root, entry); handle = Some(opened)
+        if (!opened.noFollow()) { return ("report_invalid", []) }
+        let bytes = ArrayList<UInt8>(); let buffer = Array<UInt8>(4096, repeat: 0)
+        while (true) {
+            let count = opened.read(buffer)
+            if (count < 0) { return ("report_read_failed", []) }
+            if (count == 0) { break }
+            if (bytes.size + count > 64 * 1024) {
+                return ("report_too_large", [])
+            }
+            for (i in 0..count) { bytes.add(buffer[i]) }
+        }
+        let observed = opened.observedEntry()
+        if (observed.identity != entry.identity || observed.size != entry.size ||
+            observed.kind != "regular" || !observed.withinRoot) {
+            return ("report_identity_drift", [])
+        }
+        ("ok", bytes.toArray())
+    } catch (_: Exception) { ("report_read_failed", []) }
+    finally {
+        if (let Some(opened) <- handle) { try { opened.close() } catch (_: Exception) {} }
     }
 }
 
@@ -1137,36 +1184,106 @@ public func newCkbP8AProductionExecutor(
     reference: CkbReproReferenceManifest,
     lock: CkbReproEnvironmentLock, inputs: CkbReproRunnerInputs,
     preflight: CkbReproEnvironmentPreflightResult,
-    runner: CkbReproRunnerInvoker, authorityManifestText: String):
+    runner: CkbReproRunnerInvoker, authorityManifestText: String,
+    lifecycle!: ?CkbP8OwnedLocalLifecycle = None):
     CkbReproRunCertificationExecutor {
+    let restoreOperation: CkbReproRestoreStageOperation = match (lifecycle) {
+        case Some(value) => CkbP8OwnedQdrantRestoreOperation(restore, value)
+        case None => CkbP8ProductionRestoreOperation(restore)
+    }
+    let rebuildOperation: CkbReproRebuildStageOperation = match (lifecycle) {
+        case Some(value) => CkbP8OwnedParityRebuildOperation(rebuild, value)
+        case None => CkbP8ProductionRebuildOperation(rebuild)
+    }
     CkbProductionRunCertificationExecutor(
-        CkbP8ProductionRestoreOperation(restore),
-        CkbP8ProductionRebuildOperation(rebuild),
+        restoreOperation,
+        rebuildOperation,
         CkbP8ProductionReferenceRunOperation(reference, lock, inputs,
             preflight, runner, authorityManifestText),
         cleanupAction: { options: CkbReproVerifyOptions =>
-            p8CleanupRebuildOwned(options, rebuild) })
+            p8CleanupP8OwnedState(options, rebuild, lifecycle) })
 }
 
 // P8-B has no Runner or model/provider parameter by construction.
 public func newCkbP8BProductionExecutor(
     restore: CkbP8ProductionRestoreInputs,
     rebuild: CkbP8ProductionRebuildInputs,
-    registeredCommands: Array<String>): CkbReproReleaseVerificationExecutor {
+    registeredCommands: Array<String>,
+    lifecycle!: ?CkbP8OwnedLocalLifecycle = None):
+    CkbReproReleaseVerificationExecutor {
+    let restoreOperation: CkbReproRestoreStageOperation = match (lifecycle) {
+        case Some(value) => CkbP8OwnedQdrantRestoreOperation(restore, value)
+        case None => CkbP8ProductionRestoreOperation(restore)
+    }
+    let rebuildOperation: CkbReproRebuildStageOperation = match (lifecycle) {
+        case Some(value) => CkbP8OwnedParityRebuildOperation(rebuild, value)
+        case None => CkbP8ProductionRebuildOperation(rebuild)
+    }
     CkbProductionReleaseVerificationExecutor(
-        CkbP8ProductionRestoreOperation(restore),
-        CkbP8ProductionRebuildOperation(rebuild),
+        restoreOperation,
+        rebuildOperation,
         CkbP8ProductionPublicEvidenceOperation(),
         CkbP8ProductionDocumentationOperation(registeredCommands),
         cleanupAction: { options: CkbReproVerifyOptions =>
-            p8CleanupRebuildOwned(options, rebuild) })
+            p8CleanupP8OwnedState(options, rebuild, lifecycle) })
+}
+
+private class CkbP8OwnedQdrantRestoreOperation <:
+    CkbReproRestoreStageOperation {
+    private let delegate: CkbP8ProductionRestoreOperation
+    private let lifecycle: CkbP8OwnedLocalLifecycle
+    public init(inputs: CkbP8ProductionRestoreInputs,
+        lifecycle: CkbP8OwnedLocalLifecycle) {
+        this.delegate = CkbP8ProductionRestoreOperation(inputs)
+        this.lifecycle = lifecycle
+    }
+    public func execute(options: CkbReproVerifyOptions): CkbReproStageEvidence {
+        let started = this.lifecycle.startQdrant(options)
+        if (!started.ok) { return p8StageFailure(started.diagnostic) }
+        let result = this.delegate.execute(options)
+        if (!this.lifecycle.stopParityService()) {
+            return p8StageFailure("p8_parity_service_stop_failed")
+        }
+        result
+    }
+}
+
+private class CkbP8OwnedParityRebuildOperation <:
+    CkbReproRebuildStageOperation {
+    private let delegate: CkbP8ProductionRebuildOperation
+    private let lifecycle: CkbP8OwnedLocalLifecycle
+    public init(inputs: CkbP8ProductionRebuildInputs,
+        lifecycle: CkbP8OwnedLocalLifecycle) {
+        this.delegate = CkbP8ProductionRebuildOperation(inputs)
+        this.lifecycle = lifecycle
+    }
+    public func execute(options: CkbReproVerifyOptions): CkbReproStageEvidence {
+        let result = this.delegate.execute(options)
+        if (!this.lifecycle.stopParityService()) {
+            return p8StageFailure("p8_parity_service_stop_failed")
+        }
+        result
+    }
+}
+
+private func p8CleanupP8OwnedState(options: CkbReproVerifyOptions,
+    rebuild: CkbP8ProductionRebuildInputs,
+    lifecycle: ?CkbP8OwnedLocalLifecycle): Bool {
+    let rebuildCleaned = p8CleanupRebuildOwned(options, rebuild)
+    let lifecycleCleaned = match (lifecycle) {
+        case Some(value) => try { value.cleanup(options) }
+            catch (_: Exception) { false }
+        case None => true
+    }
+    rebuildCleaned && lifecycleCleaned
 }
 
 private func p8CleanupRebuildOwned(options: CkbReproVerifyOptions,
     inputs: CkbP8ProductionRebuildInputs): Bool {
     var ok = true
-    for (root in [inputs.authority.outputRoot, inputs.authority.temporaryRoot]) {
-        if (exists(Path(root))) {
+    for (root in [inputs.authority.outputRoot, inputs.authority.temporaryRoot,
+        options.sourceRoot]) {
+        if (root != "" && exists(Path(root))) {
             try { remove(Path(root), recursive: true) }
             catch (_: Exception) { ok = false }
         }

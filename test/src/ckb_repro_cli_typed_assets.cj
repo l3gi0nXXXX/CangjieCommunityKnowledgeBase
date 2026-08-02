@@ -374,7 +374,7 @@ public func parseCkbReproCliRunnerInputsBytes(bytes: Array<UInt8>, mode: String)
     if (!decoded[0].ok) { return (decoded[0], out) }
     try {
         let root = JsonValue.fromStr(decoded[1]).asObject()
-        if (root.size() != 19 || ckbTypedString(root, "schemaVersion") !=
+        if (root.size() != 20 || ckbTypedString(root, "schemaVersion") !=
                 "ckb-repro-runner-inputs-v1") {
             return (ckbTypedFailure("runner_inputs_field_contract_invalid"), out)
         }
@@ -396,6 +396,8 @@ public func parseCkbReproCliRunnerInputsBytes(bytes: Array<UInt8>, mode: String)
             "providerIdentityArtifactPath")
         out.frozenCandidateManifestPath = ckbTypedString(root,
             "frozenCandidateManifestPath")
+        out.observedEnvironmentPath = ckbTypedString(root,
+            "observedEnvironmentPath")
         out.certificationPreflightPath = ckbTypedString(root,
             "certificationPreflightPath")
         out.certificationRunManifestPath = ckbTypedString(root,
@@ -430,6 +432,7 @@ public func renderCkbReproCliRunnerInputs(value: CkbReproRunnerInputs): String {
         "\"providerIdentityHash\":\"${ckbTypedEscape(value.providerIdentityHash)}\"," +
         "\"providerIdentityArtifactPath\":\"${ckbTypedEscape(value.providerIdentityArtifactPath)}\"," +
         "\"frozenCandidateManifestPath\":\"${ckbTypedEscape(value.frozenCandidateManifestPath)}\"," +
+        "\"observedEnvironmentPath\":\"${ckbTypedEscape(value.observedEnvironmentPath)}\"," +
         "\"certificationPreflightPath\":\"${ckbTypedEscape(value.certificationPreflightPath)}\"," +
         "\"certificationRunManifestPath\":\"${ckbTypedEscape(value.certificationRunManifestPath)}\"}"
 }
@@ -540,6 +543,7 @@ private func ckbTypedRunnerValid(value: CkbReproRunnerInputs): Bool {
         value.authorityManifestPath, value.ckbBin, value.ckbConfig,
         value.ckbStore, value.claudeBin, value.docsRoot,
         value.providerIdentityArtifactPath, value.frozenCandidateManifestPath,
+        value.observedEnvironmentPath,
         value.certificationPreflightPath, value.certificationRunManifestPath]) {
         if (!ckbTypedAbsolutePath(path) || ckbTypedSensitive(path)) { return false }
     }

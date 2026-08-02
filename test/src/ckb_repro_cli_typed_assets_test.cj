@@ -125,12 +125,17 @@ public class CkbReproCliTypedAssetsTest {
             text.toArray(), "run-certify")
         @Expect(parsed[0].ok, true)
         @Expect(parsed[1].runId, "run-中文🙂")
+        @Expect(parsed[1].observedEnvironmentPath,
+            "/tmp/private/observed-environment.json")
         @Expect(parseCkbReproCliRunnerInputsBytes(
             text.toArray(), "release-verify")[0].diagnostic,
             "runner_inputs_mode_invalid")
         @Expect(parseCkbReproCliRunnerInputsBytes(text.replace(
             "\"runId\":", "\"unknown\":true,\"runId\":").toArray(),
             "run-certify")[0].ok, false)
+        @Expect(parseCkbReproCliRunnerInputsBytes(text.replace(
+            "/tmp/private/observed-environment.json", "relative.json")
+            .toArray(), "run-certify")[0].ok, false)
     }
 
     @TestCase
@@ -407,6 +412,7 @@ private func typedRunnerInputs(): CkbReproRunnerInputs {
     value.providerIdentityHash = benchmarkGapSha256("provider")
     value.providerIdentityArtifactPath = "/tmp/private/provider.json"
     value.frozenCandidateManifestPath = "/tmp/private/candidate.json"
+    value.observedEnvironmentPath = "/tmp/private/observed-environment.json"
     value.certificationPreflightPath = "/tmp/private/preflight.json"
     value.certificationRunManifestPath = "/tmp/private/run.json"
     value

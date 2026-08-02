@@ -545,7 +545,8 @@ private func ckbCliCompositionRoles(mode: String): Array<String> {
             "public_build_input_manifest", "private_build_authority",
             "path_context", "eval_support", "leakage_authority",
             "runtime_transport", "mcp_stdio_command",
-            "reference_template", "run_critical_manifest"]
+            "reference_template", "run_critical_manifest",
+            "release_inputs_manifest"]
     }
     Array<String>()
 }

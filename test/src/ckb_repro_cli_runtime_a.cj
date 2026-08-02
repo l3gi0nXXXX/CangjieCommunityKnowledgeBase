@@ -13,6 +13,7 @@ class CkbReproP8AProductionAssembly {
     var authorityManifestText: String = ""
     var restore: CkbP8ProductionRestoreInputs = CkbP8ProductionRestoreInputs()
     var rebuild: CkbP8ProductionRebuildInputs = CkbP8ProductionRebuildInputs()
+    var lifecycle: ?CkbP8OwnedLocalLifecycle = None
     public init() {}
 }
 
@@ -27,7 +28,8 @@ func executeCkbReproP8AProductionAssembly(args: Array<String>, heap: String,
     let executor = newCkbP8AProductionExecutor(assembly.restore,
         assembly.rebuild, assembly.reference, assembly.environment,
         assembly.runnerInputs, assembly.preflight,
-        CkbInProcessReproRunnerInvoker(), assembly.authorityManifestText)
+        CkbInProcessReproRunnerInvoker(), assembly.authorityManifestText,
+        lifecycle: assembly.lifecycle)
     let result = runCkbReproProductionCertification(args, heap,
         assembly.expected, assembly.hashInputs, probe, assembly.reference,
         executor)

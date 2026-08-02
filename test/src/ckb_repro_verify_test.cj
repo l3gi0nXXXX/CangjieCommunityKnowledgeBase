@@ -321,6 +321,26 @@ private class P8ReleaseAuthority <: CkbReproReleaseAssetAuthority {
 @Test
 public class CkbReproVerifyTest {
     @TestCase
+    public func releaseProbeReadsOnlyAuthorizedPortablePathReport(): Unit {
+        let root = p8ResetRoot("target/p8-release-path-report")
+        try {
+            let probe = CkbReleaseFilesystemReproVerifyEnvironmentProbe(
+                root, "l3gi0nXXXX/CangjieCommunityKnowledgeBase", { => 0 })
+            @Expect(probe.privatePathDependencyCount(), 1)
+            let path = Path(root).join("portable-path-report.json")
+            let clean = "{\"ready\":true,\"scannedFieldCount\":17," +
+                "\"machinePathCount\":0,\"unmappedCount\":0,\"findings\":[]}"
+            File.writeTo(path, clean.toArray())
+            @Expect(probe.privatePathDependencyCount(), 0)
+            File.writeTo(path, clean.replace("\"machinePathCount\":0",
+                "\"machinePathCount\":1").toArray())
+            @Expect(probe.privatePathDependencyCount(), 1)
+            File.writeTo(path, [0xff, 0xfe])
+            @Expect(probe.privatePathDependencyCount(), 1)
+        } finally { p8Remove(root) }
+    }
+
+    @TestCase
     public func p8Ut01ModesAreParsedWithoutImplicitReleaseState(): Unit {
         let run = parseCkbReproVerifyOptions([
             "--mode", "run-certify",
@@ -795,6 +815,31 @@ public class CkbReproVerifyTest {
                 "0123456789abcdef0123456789abcdef01234567",
                 stablePreflight).diagnostic,
                 "release_authority_commit_mismatch")
+        } finally { p8Remove(root) }
+    }
+
+    @TestCase
+    public func p8BRejectsSelfConsistentTamperedCandidateAgainstFrozenInputs():
+        Unit {
+        let root = p8ResetRoot("target/p8-frozen-authority-tamper")
+        try {
+            let reference = p8ReferenceTemplate()
+            let frozenBundle = p8CreateBundle("${root}/frozen",
+                "assets/unused.txt", "p0", reference: reference)
+            let contract = p8AuthorityContract("p0", reference)
+            let authority = CkbReproCanonicalReleaseAssetAuthority(contract)
+            let preflight = p8AuthorityPreflight(contract)
+            let releaseCommit =
+                "89abcdef0123456789abcdef0123456789abcdef"
+
+            let tamperedBundle = p8CreateBundle("${root}/tampered",
+                "assets/unused.txt", "tampered", reference: reference)
+            let tamperedLoaded = validateCkbReproBundleManifest(
+                tamperedBundle[0], CkbReproFilesystemBundleReadBackend())
+            @Expect(tamperedLoaded.contract.ok, true)
+            @Expect(tamperedBundle[1] == frozenBundle[1], false)
+            @Expect(authority.validate(tamperedLoaded, reference,
+                releaseCommit, preflight).ok, false)
         } finally { p8Remove(root) }
     }
 
@@ -1309,16 +1354,23 @@ public class CkbReproVerifyTest {
 
             let options = CkbReproVerifyOptions(); options.candidateRoot = bundle[0]
             options.workRoot = Path(root).join("work").toString()
+            options.sourceRoot = Path(root).join("source").toString()
+            Directory.create(Path(options.sourceRoot))
+            File.writeTo(Path(options.sourceRoot).join("owned.txt"),
+                "owned".toArray())
             let publicResult = CkbP8ProductionPublicEvidenceOperation()
                 .execute(options)
             @Expect(publicResult.ok, false)
             @Expect(exists(Path(options.workRoot)), false)
 
+            let cleanupRebuild = CkbP8ProductionRebuildInputs()
+            cleanupRebuild.qdrantControl = Some(P8RestoreControl())
             let b = newCkbP8BProductionExecutor(
-                CkbP8ProductionRestoreInputs(), CkbP8ProductionRebuildInputs(),
+                CkbP8ProductionRestoreInputs(), cleanupRebuild,
                 ["ckb-repro-build", "cangjie-humaneval-strict-score"])
             @Expect(b.verifyPublicEvidence(options).ok, false)
             @Expect(b.cleanup(options), true)
+            @Expect(exists(Path(options.sourceRoot)), false)
         } finally { p8Remove(root) }
     }
 }

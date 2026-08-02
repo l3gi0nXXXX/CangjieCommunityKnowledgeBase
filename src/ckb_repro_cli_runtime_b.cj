@@ -16,6 +16,7 @@ class CkbReproP8BProductionAssembly {
     var restore: CkbP8ProductionRestoreInputs = CkbP8ProductionRestoreInputs()
     var rebuild: CkbP8ProductionRebuildInputs = CkbP8ProductionRebuildInputs()
     var registeredCommands: Array<String> = Array<String>()
+    var lifecycle: ?CkbP8OwnedLocalLifecycle = None
     public init() {}
 }
 
@@ -33,7 +34,8 @@ func executeCkbReproP8BProductionAssembly(args: Array<String>, heap: String,
             "release_verify_backend_required", json)
     }
     let executor = newCkbP8BProductionExecutor(assembly.restore,
-        assembly.rebuild, assembly.registeredCommands)
+        assembly.rebuild, assembly.registeredCommands,
+        lifecycle: assembly.lifecycle)
     let result = runCkbReproProductionReleaseVerification(args, heap,
         assembly.expected, assembly.reference, assembly.expectedInputSetHash,
         assembly.expectedCertifiedInputHash, assembly.releaseRepository,
