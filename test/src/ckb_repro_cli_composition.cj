@@ -515,6 +515,7 @@ private func ckbCliCompositionRoles(mode: String): Array<String> {
     }
     if (mode == "run-certify") {
         return ["logical_manifest", "qdrant_manifest", "parity_manifest",
+            "build_proof",
             "path_policy", "local_root_map", "api_routes",
             "public_build_input_manifest", "private_build_authority",
             "path_context", "eval_support", "leakage_authority",
@@ -526,6 +527,7 @@ private func ckbCliCompositionRoles(mode: String): Array<String> {
     }
     if (mode == "release-verify") {
         return ["logical_manifest", "qdrant_manifest", "parity_manifest",
+            "build_proof",
             "path_policy", "local_root_map", "api_routes",
             "public_build_input_manifest", "private_build_authority",
             "path_context", "eval_support", "leakage_authority",

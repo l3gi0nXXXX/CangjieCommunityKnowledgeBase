@@ -1033,24 +1033,11 @@ private func ckbP3LoadSnapshotManifest(path: String):
 
 private func ckbP3LoadParityManifest(path: String):
     (CkbReproContractResult, CkbRetrievalParityManifest) {
-    let manifest = CkbRetrievalParityManifest()
-    let read = ckbP3ReadBoundedUtf8(path, "retrieval_parity")
-    if (read[0] != "ok") { return (ckbP3ContractFailure(read[0]), manifest) }
-    try {
-        let object = JsonValue.fromStr(read[1]).asObject()
-        manifest.schemaVersion = ckbP3RequiredString(object, "schemaVersion")
-        manifest.knowledgeVersion = ckbP3RequiredString(object, "knowledgeVersion")
-        manifest.logicalManifestHash = ckbP3RequiredString(object, "logicalManifestHash")
-        manifest.query = ckbP3RequiredString(object, "query")
-        manifest.canonicalResultHash = ckbP3RequiredString(object, "canonicalResultHash")
-        for (item in object.get("transports").getOrThrow().asArray().getItems()) {
-            manifest.transports.add(item.asString().getValue())
-        }
-    } catch (_: Exception) { return (ckbP3ContractFailure("retrieval_parity_malformed_json"), manifest) }
-    if (manifest.transports.toArray() != ["rest", "mcp_stdio", "mcp_http"]) {
-        return (ckbP3ContractFailure("retrieval_parity_manifest_invalid"), manifest)
+    let read = ckbP3ReadBoundedBytes(path, "retrieval_parity")
+    if (read[0] != "ok") {
+        return (ckbP3ContractFailure(read[0]), CkbRetrievalParityManifest())
     }
-    (ckbP3ContractSuccess(), manifest)
+    parseCkbRetrievalParityManifest(read[1])
 }
 
 public func ckbP3WriteNewFile(path: String, text: String,

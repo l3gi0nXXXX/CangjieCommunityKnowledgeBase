@@ -11,7 +11,7 @@ class CkbReproP8BProductionAssembly {
     var critical: CkbRunCriticalFilesManifest = CkbRunCriticalFilesManifest()
     var authority: CkbReproReleaseAuthorityContract =
         CkbReproReleaseAuthorityContract()
-    var probe: ?CkbFilesystemReproVerifyEnvironmentProbe = None
+    var probe: ?CkbReleaseFilesystemReproVerifyEnvironmentProbe = None
     var backend: ?CkbReproFilesystemBundleReadBackend = None
     var restore: CkbP8ProductionRestoreInputs = CkbP8ProductionRestoreInputs()
     var rebuild: CkbP8ProductionRebuildInputs = CkbP8ProductionRebuildInputs()

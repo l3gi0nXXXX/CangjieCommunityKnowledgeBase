@@ -1174,6 +1174,57 @@ public func renderCkbReproBuildProof(proof: CkbReproBuildProof): String {
     "\"${proof.preservationHash}\"}"
 }
 
+public func parseCkbReproBuildProof(bytes: Array<UInt8>):
+    (CkbReproContractResult, CkbReproBuildProof) {
+    let proof = CkbReproBuildProof()
+    let text = try { String.fromUtf8(bytes) } catch (_: Exception) {
+        return (p4BuildFailure("invalid_response_encoding"), proof)
+    }
+    try {
+        let object = JsonValue.fromStr(text).asObject()
+        if (object.size() != 15) {
+            return (p4BuildFailure("build_proof_field_contract_invalid"),
+                proof)
+        }
+        proof.logicalReady = p4BuildRequiredBool(object, "logicalReady")
+        proof.diagnostic = p4BuildRequiredString(object, "diagnostic")
+        proof.sourceLockHash = p4BuildRequiredString(object, "sourceLockHash")
+        proof.typedCount = p4BuildRequiredInt(object, "typedCount")
+        proof.rawCount = p4BuildRequiredInt(object, "rawCount")
+        proof.selectedCount = p4BuildRequiredInt(object, "selectedCount")
+        proof.excludedCount = p4BuildRequiredInt(object, "excludedCount")
+        proof.evalSupportPersisted = p4BuildRequiredInt(
+            object, "evalSupportPersisted")
+        proof.vectorCount = p4BuildRequiredInt(object, "vectorCount")
+        proof.vectorState = p4BuildRequiredString(object, "vectorState")
+        proof.candidateVersion = p4BuildRequiredString(
+            object, "candidateVersion")
+        proof.typedPairAggregateHash = p4BuildRequiredString(
+            object, "typedPairAggregateHash")
+        proof.rawPairAggregateHash = p4BuildRequiredString(
+            object, "rawPairAggregateHash")
+        proof.preservationHash = p4BuildRequiredString(
+            object, "preservationHash")
+    } catch (_: Exception) {
+        return (p4BuildFailure("build_proof_malformed_json"),
+            CkbReproBuildProof())
+    }
+    if (!proof.logicalReady || proof.diagnostic != "ok" ||
+        !p4BuildHash(proof.sourceLockHash) || proof.typedCount < 1 ||
+        proof.rawCount < 1 || proof.selectedCount < 1 ||
+        proof.selectedCount + proof.excludedCount != proof.rawCount ||
+        proof.evalSupportPersisted != 0 || proof.vectorCount != 0 ||
+        proof.vectorState != "DEGRADED" || proof.candidateVersion == "" ||
+        !p4BuildHash(proof.typedPairAggregateHash) ||
+        !p4BuildHash(proof.rawPairAggregateHash) ||
+        proof.preservationHash != ckbReproBuildPreservationHash(proof) ||
+        renderCkbReproBuildProof(proof) != text) {
+        return (p4BuildFailure("build_proof_invalid"),
+            CkbReproBuildProof())
+    }
+    (p4BuildSuccess(), proof)
+}
+
 public class CkbPortablePromotionOptions {
     public var productionStore: String = ""
     public var qdrantEndpoint: String = ""

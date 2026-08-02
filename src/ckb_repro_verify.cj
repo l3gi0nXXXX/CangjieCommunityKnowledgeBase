@@ -44,16 +44,20 @@ public class CkbReproVerifyOptionsResult {
     public init() {}
 }
 
-public interface CkbReproVerifyEnvironmentProbe {
+public interface CkbReproReleaseVerifyEnvironmentProbe {
     func pathExists(path: String): Bool
     func pathIsEmptyDirectory(path: String): Bool
     func candidateEntryCount(path: String): Int64
     func inspectInput(path: String): CkbReproVerifyInputEvidence
     func canonicalReleaseRepository(): String
-    func providerFingerprint(): String
-    func modelIdentity(): String
     func staleProcessCount(): Int64
     func privatePathDependencyCount(): Int64
+}
+
+public interface CkbReproVerifyEnvironmentProbe <:
+    CkbReproReleaseVerifyEnvironmentProbe {
+    func providerFingerprint(): String
+    func modelIdentity(): String
 }
 
 public class CkbFilesystemReproVerifyEnvironmentProbe <:
@@ -91,6 +95,51 @@ public class CkbFilesystemReproVerifyEnvironmentProbe <:
     }
     public func providerFingerprint(): String { this.providerHash }
     public func modelIdentity(): String { this.model }
+    public func staleProcessCount(): Int64 { this.staleCounter() }
+    public func privatePathDependencyCount(): Int64 {
+        let snapshot = this.candidateStore.loadActiveSnapshot()
+        if (!snapshot.valid) { return 1 }
+        let input = CkbStudentVisiblePathInput()
+        for (record in snapshot.rawRecords) { input.rawRecords.add(record) }
+        for (record in snapshot.normalizedRecords) {
+            input.normalizedRecords.add(record)
+        }
+        for (record in snapshot.activeIndex) { input.activeRecords.add(record) }
+        for (record in snapshot.vectorRecords) { input.vectorRecords.add(record) }
+        let report = scanCkbStudentVisiblePaths(input, this.pathContext)
+        if (!report.ready) { return report.findings.size + 1 }
+        report.machinePathCount + report.unmappedCount
+    }
+}
+
+public class CkbReleaseFilesystemReproVerifyEnvironmentProbe <:
+    CkbReproReleaseVerifyEnvironmentProbe {
+    private let candidateStore: FileKnowledgeStore
+    private let pathContext: CkbPortablePathContext
+    private let releaseRepository: String
+    private let staleCounter: () -> Int64
+    public init(candidateStore: FileKnowledgeStore,
+        pathContext: CkbPortablePathContext, releaseRepository: String,
+        staleCounter: () -> Int64) {
+        this.candidateStore = candidateStore; this.pathContext = pathContext
+        this.releaseRepository = releaseRepository
+        this.staleCounter = staleCounter
+    }
+    public func pathExists(path: String): Bool { exists(Path(path)) }
+    public func pathIsEmptyDirectory(path: String): Bool {
+        try { Directory.readFrom(Path(path)).size == 0 }
+        catch (_: Exception) { false }
+    }
+    public func candidateEntryCount(path: String): Int64 {
+        try { Directory.readFrom(Path(path)).size }
+        catch (_: Exception) { -1 }
+    }
+    public func inspectInput(path: String): CkbReproVerifyInputEvidence {
+        p8InspectProductionInput(path)
+    }
+    public func canonicalReleaseRepository(): String {
+        this.releaseRepository
+    }
     public func staleProcessCount(): Int64 { this.staleCounter() }
     public func privatePathDependencyCount(): Int64 {
         let snapshot = this.candidateStore.loadActiveSnapshot()
@@ -1448,11 +1497,26 @@ public func validateCkbReproVerifyEnvironment(
     probe: CkbReproVerifyEnvironmentProbe):
     CkbReproVerifyEnvironmentResult {
     try {
-        p8ValidateEnvironmentUnchecked(options, heapRaw, probe)
+        p8ValidateEnvironmentUnchecked(options, heapRaw, probe, true,
+            { => probe.providerFingerprint() },
+            { => probe.modelIdentity() })
     } catch (_: Exception) {
         let out = CkbReproVerifyEnvironmentResult()
         out.diagnostic = "verify_environment_probe_failed"
         out
+    }
+}
+
+public func validateCkbReproReleaseVerifyEnvironment(
+    options: CkbReproVerifyOptions, heapRaw: String,
+    probe: CkbReproReleaseVerifyEnvironmentProbe):
+    CkbReproVerifyEnvironmentResult {
+    try {
+        p8ValidateEnvironmentUnchecked(options, heapRaw, probe, false,
+            { => "" }, { => "" })
+    } catch (_: Exception) {
+        let out = CkbReproVerifyEnvironmentResult()
+        out.diagnostic = "verify_environment_probe_failed"; out
     }
 }
 
@@ -1487,7 +1551,7 @@ public func runCkbReproProductionReleaseVerification(args: Array<String>,
     canonicalReleaseRepository: String,
     runCriticalManifest: CkbRunCriticalFilesManifest,
     authorityValidator: CkbReproReleaseAssetAuthority,
-    probe: CkbReproVerifyEnvironmentProbe,
+    probe: CkbReproReleaseVerifyEnvironmentProbe,
     backend: CkbReproBundleReadBackend,
     executor: CkbReproReleaseVerificationExecutor):
     CkbReproReleaseVerificationResult {
@@ -1498,7 +1562,7 @@ public func runCkbReproProductionReleaseVerification(args: Array<String>,
             else { "verify_mode_mismatch" }
         return out
     }
-    let preflight = validateCkbReproVerifyEnvironment(
+    let preflight = validateCkbReproReleaseVerifyEnvironment(
         parsed.options, heapRaw, probe)
     if (!preflight.ok) {
         let out = CkbReproReleaseVerificationResult()
@@ -1512,7 +1576,10 @@ public func runCkbReproProductionReleaseVerification(args: Array<String>,
 
 private func p8ValidateEnvironmentUnchecked(
     options: CkbReproVerifyOptions, heapRaw: String,
-    probe: CkbReproVerifyEnvironmentProbe):
+    probe: CkbReproReleaseVerifyEnvironmentProbe,
+    onlineIdentityRequired: Bool,
+    providerFingerprint: () -> String,
+    modelIdentity: () -> String):
     CkbReproVerifyEnvironmentResult {
     let out = CkbReproVerifyEnvironmentResult()
     out.heap = ckbServiceHeapPreflight(heapRaw)
@@ -1579,11 +1646,13 @@ private func p8ValidateEnvironmentUnchecked(
     out.localToctouToken = p8HashParts(
         "ckb-repro-local-toctou-v1", localRows.toArray())
     out.canonicalReleaseRepository = probe.canonicalReleaseRepository()
-    out.providerFingerprint = probe.providerFingerprint()
-    out.modelIdentity = probe.modelIdentity()
+    if (onlineIdentityRequired) {
+        out.providerFingerprint = providerFingerprint()
+        out.modelIdentity = modelIdentity()
+    }
     if (out.canonicalReleaseRepository == "" ||
-        !p8HashValid(out.providerFingerprint) ||
-        out.modelIdentity == "") {
+        (onlineIdentityRequired &&
+        (!p8HashValid(out.providerFingerprint) || out.modelIdentity == ""))) {
         out.diagnostic = "verify_authority_identity_invalid"
         return out
     }
@@ -1711,7 +1780,8 @@ private func p8RunCkbPortableReferenceHumanEvalCore(
         out.diagnostic = out.rebuilt.diagnostic
         return out
     }
-    let stable = p8RevalidateInputs(options, preflight, probe)
+    let stable = p8RevalidateInputs(options, preflight, probe, true,
+        { => probe.providerFingerprint() }, { => probe.modelIdentity() })
     if (!stable.ok) {
         out.diagnostic = stable.diagnostic
         return out
@@ -1810,7 +1880,7 @@ private func p8VerifyCkbUnsignedReleaseCandidateCore(
     runCriticalManifest: CkbRunCriticalFilesManifest,
     authorityValidator: CkbReproReleaseAssetAuthority,
     preflight: CkbReproVerifyEnvironmentResult,
-    probe: CkbReproVerifyEnvironmentProbe,
+    probe: CkbReproReleaseVerifyEnvironmentProbe,
     backend: CkbReproBundleReadBackend,
     executor: CkbReproReleaseVerificationExecutor):
     CkbReproReleaseVerificationResult {
@@ -1883,7 +1953,8 @@ private func p8VerifyCkbUnsignedReleaseCandidateCore(
         return out
     }
     out.authorityHash = authority.authorityHash
-    let stable = p8RevalidateInputs(options, preflight, probe)
+    let stable = p8RevalidateInputs(options, preflight, probe, false,
+        { => "" }, { => "" })
     if (!stable.ok) {
         out.diagnostic = stable.diagnostic
         return out
@@ -1973,7 +2044,7 @@ public func verifyCkbUnsignedReleaseCandidate(
     runCriticalManifest: CkbRunCriticalFilesManifest,
     authorityValidator: CkbReproReleaseAssetAuthority,
     preflight: CkbReproVerifyEnvironmentResult,
-    probe: CkbReproVerifyEnvironmentProbe,
+    probe: CkbReproReleaseVerifyEnvironmentProbe,
     backend: CkbReproBundleReadBackend,
     executor: CkbReproReleaseVerificationExecutor):
     CkbReproReleaseVerificationResult {
@@ -2170,7 +2241,10 @@ private func p8InputRole(options: CkbReproVerifyOptions, index: Int64):
 
 private func p8RevalidateInputs(options: CkbReproVerifyOptions,
     preflight: CkbReproVerifyEnvironmentResult,
-    probe: CkbReproVerifyEnvironmentProbe): CkbReproContractResult {
+    probe: CkbReproReleaseVerifyEnvironmentProbe,
+    onlineIdentityRequired: Bool,
+    providerFingerprint: () -> String,
+    modelIdentity: () -> String): CkbReproContractResult {
     let portableRows = ArrayList<String>()
     let localRows = ArrayList<String>()
     try {
@@ -2187,8 +2261,9 @@ private func p8RevalidateInputs(options: CkbReproVerifyOptions,
         }
         if (probe.canonicalReleaseRepository() !=
             preflight.canonicalReleaseRepository ||
-            probe.providerFingerprint() != preflight.providerFingerprint ||
-            probe.modelIdentity() != preflight.modelIdentity) {
+            (onlineIdentityRequired &&
+            (providerFingerprint() != preflight.providerFingerprint ||
+            modelIdentity() != preflight.modelIdentity))) {
             return p8Failure("verify_authority_identity_drift")
         }
         let paths = p8InputPaths(options)

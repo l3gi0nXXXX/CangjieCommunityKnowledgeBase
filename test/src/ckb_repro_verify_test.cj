@@ -146,6 +146,8 @@ private class P8EnvironmentProbe <: CkbReproVerifyEnvironmentProbe {
     public var inputValid: Bool = true
     public var throwProbe: Bool = false
     public var identityVersion: String = "v1"
+    public var providerCalls: Int64 = 0
+    public var modelCalls: Int64 = 0
     public init() {}
     public func pathExists(path: String): Bool {
         this.existing.contains(path)
@@ -177,8 +179,12 @@ private class P8EnvironmentProbe <: CkbReproVerifyEnvironmentProbe {
     public func canonicalReleaseRepository(): String {
         "l3gi0nXXXX/CangjieCommunityKnowledgeBase"
     }
-    public func providerFingerprint(): String { p8Hash("provider") }
-    public func modelIdentity(): String { "GLM-5.2" }
+    public func providerFingerprint(): String {
+        this.providerCalls += 1; p8Hash("provider")
+    }
+    public func modelIdentity(): String {
+        this.modelCalls += 1; "GLM-5.2"
+    }
     public func staleProcessCount(): Int64 { this.stale }
     public func privatePathDependencyCount(): Int64 { this.privatePaths }
 }
@@ -412,6 +418,13 @@ public class CkbReproVerifyTest {
             probe.existing.add(options.candidateRoot)
             @Expect(validateCkbReproVerifyEnvironment(
                 options, "4GB", probe).ok, true)
+            let releaseOptions = p8Options("release-verify", root)
+            let releaseProbe = P8EnvironmentProbe()
+            releaseProbe.existing.add(releaseOptions.candidateRoot)
+            @Expect(validateCkbReproReleaseVerifyEnvironment(
+                releaseOptions, "4GB", releaseProbe).ok, true)
+            @Expect(releaseProbe.providerCalls, 0)
+            @Expect(releaseProbe.modelCalls, 0)
             for (heap in ["", "仓颉🙂", "4095MB"]) {
                 let result = validateCkbReproVerifyEnvironment(
                     options, heap, probe)

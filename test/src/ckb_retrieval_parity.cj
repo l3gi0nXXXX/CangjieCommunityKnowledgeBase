@@ -389,6 +389,63 @@ public class CkbRetrievalParityResult {
     public init() {}
 }
 
+public func parseCkbRetrievalParityManifest(bytes: Array<UInt8>):
+    (CkbReproContractResult, CkbRetrievalParityManifest) {
+    let manifest = CkbRetrievalParityManifest()
+    let text = try { String.fromUtf8(bytes) } catch (_: Exception) {
+        return (ckbRetrievalParityFailure("invalid_response_encoding"),
+            manifest)
+    }
+    try {
+        let object = JsonValue.fromStr(text).asObject()
+        if (object.size() != 6) {
+            return (ckbRetrievalParityFailure(
+                "retrieval_parity_field_contract_invalid"), manifest)
+        }
+        manifest.schemaVersion = object.get("schemaVersion").getOrThrow()
+            .asString().getValue()
+        manifest.knowledgeVersion = object.get("knowledgeVersion")
+            .getOrThrow().asString().getValue()
+        manifest.logicalManifestHash = object.get("logicalManifestHash")
+            .getOrThrow().asString().getValue()
+        manifest.query = object.get("query").getOrThrow()
+            .asString().getValue()
+        for (item in object.get("transports").getOrThrow()
+            .asArray().getItems()) {
+            manifest.transports.add(item.asString().getValue())
+        }
+        manifest.canonicalResultHash = object.get("canonicalResultHash")
+            .getOrThrow().asString().getValue()
+    } catch (_: Exception) {
+        return (ckbRetrievalParityFailure(
+            "retrieval_parity_malformed_json"),
+            CkbRetrievalParityManifest())
+    }
+    if (manifest.schemaVersion != "ckb-retrieval-parity-v1" ||
+        manifest.knowledgeVersion == "" ||
+        !ckbRetrievalParityHashValid(manifest.logicalManifestHash) ||
+        !ckbRetrievalParityHashValid(manifest.canonicalResultHash) ||
+        manifest.query != ckbRetrievalParityReferenceQuery() ||
+        manifest.transports.toArray() !=
+            ["rest", "mcp_stdio", "mcp_http"] ||
+        renderCkbRetrievalParityManifest(manifest) != text) {
+        return (ckbRetrievalParityFailure(
+            "retrieval_parity_manifest_invalid"),
+            CkbRetrievalParityManifest())
+    }
+    (ckbRetrievalParitySuccess(), manifest)
+}
+
+public func renderCkbRetrievalParityManifest(
+    manifest: CkbRetrievalParityManifest): String {
+    "{\"schemaVersion\":\"${ckbRetrievalParityJson(manifest.schemaVersion)}\"," +
+        "\"knowledgeVersion\":\"${ckbRetrievalParityJson(manifest.knowledgeVersion)}\"," +
+        "\"logicalManifestHash\":\"${manifest.logicalManifestHash}\"," +
+        "\"query\":\"${ckbRetrievalParityJson(manifest.query)}\"," +
+        "\"transports\":[\"rest\",\"mcp_stdio\",\"mcp_http\"]," +
+        "\"canonicalResultHash\":\"${manifest.canonicalResultHash}\"}"
+}
+
 public func ckbRetrievalParityReferenceQuery(): String {
     "仓颉语言中如何按 Rune 安全遍历 UTF-8 字符串？"
 }
