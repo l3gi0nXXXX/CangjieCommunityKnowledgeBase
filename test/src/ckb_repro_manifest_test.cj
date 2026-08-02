@@ -49,7 +49,7 @@ public class CkbReproManifestTest {
             mode: "execution")
         @Expect(execution.ok, true)
         @Expect(execution.treeHash,
-            "sha256:6105dfea52aacca4399966642e76de94c2ab5f36c8604d3976275a8f787da806")
+            "sha256:12b780f0f77383c996e4c7441feb4b633e95b9536957832624e87ba3a57336f8")
     }
 
     @TestCase
@@ -189,6 +189,10 @@ public class CkbReproManifestTest {
         @Expect(validateCkbRunCriticalFilesManifest(critical, "..").diagnostic, "hash_mismatch")
         let omittedRuntimeDependency = p0WithoutCriticalPath("src/main.cj")
         @Expect(validateCkbRunCriticalFilesManifest(omittedRuntimeDependency, "..").diagnostic,
+            "run_critical_manifest_incomplete")
+        let omittedOwnedLifecycle = p0WithoutCriticalPath(
+            "src/ckb_repro_p8_owned_lifecycle.cj")
+        @Expect(validateCkbRunCriticalFilesManifest(omittedOwnedLifecycle, "..").diagnostic,
             "run_critical_manifest_incomplete")
         let policy = parseCkbPortablePathPolicy(
             p0Read("../reproducibility/manifests/portable-path-policy.json"))[1]

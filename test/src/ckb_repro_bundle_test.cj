@@ -483,6 +483,23 @@ public class CkbReproBundleTest {
     }
 
     @TestCase
+    public func releaseInputsPublicParserIsStrictAndReadOnly(): Unit {
+        let fixture = p9FrozenInputFixture("parser", "alpha".toArray())
+        try {
+            let frozenBytes = File.readFrom(
+                Path(fixture[0]).join("RELEASE-INPUTS.json"))
+            let parsed = parseCkbReproReleaseInputsManifest(frozenBytes)
+            @Expect(parsed.contract.ok, true)
+            @Expect(parsed.manifest.inputSetHash.startsWith("sha256:"), true)
+            @Expect(parsed.manifestBytes, frozenBytes)
+            @Expect(parseCkbReproReleaseInputsManifest([0xff, 0xfe])
+                .contract.diagnostic, "invalid_response_encoding")
+            @Expect(File.readFrom(Path(fixture[0]).join(
+                "RELEASE-INPUTS.json")), frozenBytes)
+        } finally { remove(Path(fixture[2]), recursive: true) }
+    }
+
+    @TestCase
     public func p9Neg03FrozenInputManifestRejectsUnlistedUnsafeAndDrift(): Unit {
         let missingManifest = p9FrozenInputFixture("prebuilt", "alpha".toArray())
         remove(Path(missingManifest[0]).join("RELEASE-INPUTS.json"))

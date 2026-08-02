@@ -328,6 +328,138 @@ public class CkbReproPromotionAssetSnapshot {
     public init() {}
 }
 
+public class CkbReproPromotionRuntimeAssets {
+    public var contract: CkbReproContractResult = CkbReproContractResult()
+    public var control: CkbReproPromotionAssetSnapshot =
+        CkbReproPromotionAssetSnapshot()
+    public var ownedRoot: String = ""
+    public var logicalSnapshotPath: String = ""
+    public var logicalSnapshotSha256: String = ""
+    public var qdrantSnapshotPath: String = ""
+    public var qdrantSnapshotSha256: String = ""
+    public init() {}
+}
+
+// Promotion consumes a fixed, single-part authority layout. This prevents a
+// caller from mixing control proofs with runtime assets from another bundle.
+public func validateCkbReproPromotionBundleLayout(
+    assets: ArrayList<CkbReproBundleAsset>): CkbReproContractResult {
+    let required = [
+        ("promotion-candidate.json", "p4_build_proof"),
+        ("portable-logical-proof.json", "p4_build_proof"),
+        ("portable-vector-proof.json", "p4_build_proof"),
+        ("public-evidence-export.json", "p5_public_evidence"),
+        ("reproducibility/manifests/reference-run.json", "p8_reference"),
+        ("release/release-commit.txt", "release_commit"),
+        ("qdrant-snapshot-manifest.json", "p3_qdrant_snapshot"),
+        ("ckb-logical-snapshot.tar.zst", "p2_logical_snapshot"),
+        ("qdrant-collection.snapshot", "p3_qdrant_snapshot")
+    ]
+    for (row in required) {
+        var matched: Int64 = 0
+        for (asset in assets) {
+            if (asset.relativePath == row[0] && asset.role == row[1] &&
+                asset.logicalAsset == row[0] && asset.partIndex == 0 &&
+                asset.partCount == 1 && asset.logicalSize == asset.size &&
+                asset.logicalSha256 == asset.sha256) { matched += 1 }
+        }
+        if (matched != 1) {
+            return p9BundleFailure("promotion_bundle_layout_invalid")
+        }
+    }
+    for (expected in [("p2_logical_snapshot", Int64(1)),
+        ("p3_qdrant_snapshot", Int64(2)),
+        ("p4_build_proof", Int64(3)),
+        ("p5_public_evidence", Int64(1)),
+        ("p8_reference", Int64(1)),
+        ("release_commit", Int64(1))]) {
+        var count: Int64 = 0
+        for (asset in assets) {
+            if (asset.role == expected[0]) { count += 1 }
+        }
+        if (count != expected[1]) {
+            return p9BundleFailure("promotion_bundle_layout_invalid")
+        }
+    }
+    p9BundleSuccess()
+}
+
+// Captures bounded JSON/text controls in memory and streams both potentially
+// large runtime snapshots into a newly owned directory. Each stream is hashed
+// from the no-follow handle that supplied the bytes.
+public func captureCkbReproPromotionRuntimeAssets(root: String,
+    ownedRoot: String, backend: CkbReproBundleReadBackend):
+    CkbReproPromotionRuntimeAssets {
+    let out = CkbReproPromotionRuntimeAssets()
+    let before = validateCkbReproBundleManifest(root, backend)
+    if (!before.contract.ok) { out.contract = before.contract; return out }
+    let layout = validateCkbReproPromotionBundleLayout(before.manifest.assets)
+    if (!layout.ok) { out.contract = layout; return out }
+    if (!p9PromotionOwnedRootValid(root, ownedRoot)) {
+        out.contract = p9BundleFailure("promotion_owned_root_invalid")
+        return out
+    }
+    try {
+        Directory.create(Path(ownedRoot), recursive: false)
+        out.ownedRoot = ownedRoot
+        let listing = backend.list(root)
+        let controls = ["promotion-candidate.json",
+            "portable-logical-proof.json", "portable-vector-proof.json",
+            "public-evidence-export.json",
+            "reproducibility/manifests/reference-run.json",
+            "release/release-commit.txt", "qdrant-snapshot-manifest.json"]
+        for (path in controls) {
+            let read = p9PromotionReadSmallAsset(root, path, before, listing,
+                backend)
+            if (!read[0].ok) {
+                out.contract = read[0]
+                p9PromotionCleanupOwnedRoot(out)
+                return out
+            }
+            out.control.bytes.add(read[1])
+        }
+        out.control.loaded = before
+        out.control.contract = p9BundleSuccess()
+
+        let logical = p9PromotionStreamAsset(root,
+            "ckb-logical-snapshot.tar.zst", ownedRoot, before, listing,
+            backend)
+        if (!logical[0].ok) {
+            out.contract = logical[0]; p9PromotionCleanupOwnedRoot(out)
+            return out
+        }
+        out.logicalSnapshotPath = logical[1]
+        out.logicalSnapshotSha256 = logical[2]
+        let vector = p9PromotionStreamAsset(root,
+            "qdrant-collection.snapshot", ownedRoot, before, listing, backend)
+        if (!vector[0].ok) {
+            out.contract = vector[0]; p9PromotionCleanupOwnedRoot(out)
+            return out
+        }
+        out.qdrantSnapshotPath = vector[1]
+        out.qdrantSnapshotSha256 = vector[2]
+
+        let after = validateCkbReproBundleManifest(root, backend)
+        if (!after.contract.ok || after.rootIdentity != before.rootIdentity ||
+            after.manifest.inputSetHash != before.manifest.inputSetHash ||
+            after.proofSetHash != before.proofSetHash) {
+            out.contract = p9BundleFailure("promotion_bundle_changed")
+            p9PromotionCleanupOwnedRoot(out)
+            return out
+        }
+        out.contract = p9BundleSuccess(); out
+    } catch (_: Exception) {
+        out.contract = p9BundleFailure("promotion_asset_read_failed")
+        p9PromotionCleanupOwnedRoot(out)
+        out
+    }
+}
+
+public func cleanupCkbReproPromotionRuntimeAssets(
+    assets: CkbReproPromotionRuntimeAssets): Bool {
+    p9PromotionCleanupOwnedRoot(assets)
+}
+
 // Captures only the bounded promotion control assets. Large bundle payloads
 // remain streaming-only and are never retained by bundle validation.
 public func captureCkbReproPromotionAssets(root: String,
@@ -372,6 +504,108 @@ public func captureCkbReproPromotionAssets(root: String,
     } catch (_: Exception) {
         out.contract = p9BundleFailure("promotion_asset_read_failed"); out
     }
+}
+
+private func p9PromotionOwnedRootValid(root: String,
+    ownedRoot: String): Bool {
+    if (!p9AbsoluteRoot(root) || !p9AbsoluteRoot(ownedRoot) ||
+        p9RootsOverlap(root, ownedRoot) || exists(Path(ownedRoot))) {
+        return false
+    }
+    let path = Path(ownedRoot)
+    try {
+        let parent = canonicalize(path.parent).toString()
+        Path(parent).join(path.fileName).toString() == ownedRoot
+    } catch (_: Exception) { false }
+}
+
+private func p9PromotionManifestAsset(manifest: CkbReproBundleManifest,
+    path: String): (Bool, CkbReproBundleAsset) {
+    var matched: Int64 = 0
+    var value = CkbReproBundleAsset()
+    for (asset in manifest.assets) {
+        if (asset.relativePath == path) { matched += 1; value = asset }
+    }
+    (matched == 1, value)
+}
+
+private func p9PromotionReadSmallAsset(root: String, path: String,
+    loaded: CkbReproBundleLoadResult,
+    listing: ArrayList<CkbReproBundleReadEntry>,
+    backend: CkbReproBundleReadBackend):
+    (CkbReproContractResult, Array<UInt8>) {
+    let entry = p9FindBundleReadEntry(listing, path)
+    let asset = p9PromotionManifestAsset(loaded.manifest, path)
+    if (!entry[0] || !asset[0] || entry[1].size > 64 * 1024) {
+        return (p9BundleFailure("promotion_asset_invalid"), Array<UInt8>())
+    }
+    let read = p9ConsumeBundleEntry(root, entry[1], backend,
+        64 * 1024, scanText: true)
+    if (!read.contract.ok) { return (read.contract, Array<UInt8>()) }
+    if (read.size != asset[1].size || read.sha256 != asset[1].sha256) {
+        return (p9BundleFailure("promotion_asset_invalid"), Array<UInt8>())
+    }
+    (p9BundleSuccess(), read.bytes)
+}
+
+private func p9PromotionStreamAsset(root: String, path: String,
+    ownedRoot: String, loaded: CkbReproBundleLoadResult,
+    listing: ArrayList<CkbReproBundleReadEntry>,
+    backend: CkbReproBundleReadBackend):
+    (CkbReproContractResult, String, String) {
+    let entry = p9FindBundleReadEntry(listing, path)
+    let asset = p9PromotionManifestAsset(loaded.manifest, path)
+    if (!entry[0] || !asset[0] || entry[1].kind != "regular") {
+        return (p9BundleFailure("promotion_asset_invalid"), "", "")
+    }
+    let target = Path(ownedRoot).join(Path(path).fileName)
+    try {
+        let handle = backend.open(root, entry[1])
+        try {
+            if (!handle.noFollow()) {
+                return (p9BundleFailure("bundle_read_no_follow_required"),
+                    "", "")
+            }
+            let digest = SHA256()
+            var size: Int64 = 0
+            try (file = File(target, OpenMode.Write)) {
+                let buffer = Array<UInt8>(65536, repeat: UInt8(0))
+                while (true) {
+                    let count = handle.read(buffer)
+                    if (count < 0 || count > buffer.size) {
+                        return (p9BundleFailure("bundle_read_failed"), "", "")
+                    }
+                    if (count == 0) { break }
+                    let chunk = p9BundleBufferPrefix(buffer, count)
+                    file.write(chunk); digest.write(chunk); size += count
+                    if (size > asset[1].size) {
+                        return (p9BundleFailure("bundle_asset_size_mismatch"),
+                            "", "")
+                    }
+                }
+            }
+            let hash = p9BundleDigestHash(digest)
+            if (size != asset[1].size || hash != asset[1].sha256 ||
+                !p9BundleReadEntriesEqual(entry[1], handle.observedEntry())) {
+                return (p9BundleFailure("bundle_read_entry_changed"), "", "")
+            }
+            (p9BundleSuccess(), target.toString(), hash)
+        } finally { handle.close() }
+    } catch (_: Exception) {
+        (p9BundleFailure("promotion_asset_read_failed"), "", "")
+    }
+}
+
+private func p9PromotionCleanupOwnedRoot(
+    assets: CkbReproPromotionRuntimeAssets): Bool {
+    if (assets.ownedRoot == "") { return true }
+    try {
+        if (exists(Path(assets.ownedRoot))) {
+            remove(Path(assets.ownedRoot), recursive: true)
+        }
+        assets.ownedRoot = ""
+        true
+    } catch (_: Exception) { false }
 }
 
 public class CkbReproFinalizeInputs {
@@ -935,6 +1169,16 @@ private func p9ParseReleaseInputs(bytes: Array<UInt8>):
     out.contract = p9BundleSuccess(); out
 }
 
+public func parseCkbReproReleaseInputsManifest(bytes: Array<UInt8>):
+    CkbReproReleaseInputsLoadResult {
+    if (bytes.size <= 0 || bytes.size > 16 * 1024 * 1024) {
+        let out = CkbReproReleaseInputsLoadResult()
+        out.contract = p9BundleFailure("bundle_release_inputs_invalid")
+        return out
+    }
+    p9ParseReleaseInputs(bytes)
+}
+
 public func parseCkbReproBundleManifest(bytes: Array<UInt8>):
     (CkbReproContractResult, CkbReproBundleManifest) {
     let manifest = CkbReproBundleManifest()
@@ -1400,7 +1644,8 @@ private func p9BundleRoleAllowed(role: String): Bool {
 }
 
 private func p9BundleBinaryAllowed(asset: CkbReproBundleAsset): Bool {
-    if (asset.role != "p3_qdrant_snapshot" &&
+    if (asset.role != "p2_logical_snapshot" &&
+        asset.role != "p3_qdrant_snapshot" &&
         asset.role != "authority_delivery") { return false }
     let path = asset.logicalAsset.toAsciiLower()
     path.endsWith(".bin") || path.endsWith(".snapshot") ||

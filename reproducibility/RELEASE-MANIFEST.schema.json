@@ -163,6 +163,9 @@
         "snapshot": {
           "$ref": "#/$defs/hashedAsset"
         },
+        "manifest": {
+          "$ref": "#/$defs/hashedAsset"
+        },
         "manifestHash": {
           "$ref": "#/$defs/sha256"
         },
@@ -198,6 +201,7 @@
           "then": {
             "required": [
               "snapshot",
+              "manifest",
               "manifestHash",
               "logicalManifestHash",
               "collection",

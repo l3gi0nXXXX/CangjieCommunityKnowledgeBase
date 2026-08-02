@@ -334,7 +334,6 @@ public class CkbNativeHttpTransportTest {
     @TestCase
     public func nativeTlsBootstrapEnvIncludesNativeRuntimeFallbacksWithoutCaBundleWork(): Unit {
         let script = ckbNativeTlsBootstrapEnvScript()
-        let workspaceMarker = "workspace" + "_cangjie"
 
         @Expect(script.contains("CKB_NATIVE_TLS_BOOTSTRAPPED=1"), true)
         @Expect(script.contains("/opt/homebrew/opt/openssl@3/lib"), true)
@@ -342,15 +341,26 @@ public class CkbNativeHttpTransportTest {
         @Expect(script.contains("/usr/local/opt/openssl@3/lib"), true)
         @Expect(script.contains("CKB_CJPM_SKIP_BUILD_CANGJIE_ROOT"), true)
         @Expect(script.contains("CKB_CJPM_SKIP_BUILD_MAGIC_ROOT"), true)
-        @Expect(script.contains("/Users/l3gi0n/cangjie100/runtime/lib/darwin_aarch64_llvm"), true)
-        @Expect(script.contains(workspaceMarker), true)
+        @Expect(script.contains("$" + "{CANGJIE_HOME:-" + "$" +
+            "{CKB_CANGJIE_ROOT:-}}"), true)
+        @Expect(script.contains("$" + "{MAGIC_PATH:-" + "$" +
+            "{CKB_MAGIC_ROOT:-}}"), true)
         @Expect(script.contains("cangjie-stdx-mac-aarch64-1.0.0.1"), true)
-        @Expect(script.contains("/Users/l3gi0n/work/workspace_cangjie/Metis/ffi"), true)
+        @Expect(script.contains("/Users/"), false)
+        @Expect(script.contains("workspace_cangjie"), false)
+        @Expect(script.contains("Metis/ffi"), false)
         @Expect(script.contains("SSL_CERT_FILE"), false)
         @Expect(script.contains("SSL_CERT_DIR"), false)
         @Expect(script.contains("security find-certificate"), false)
         @Expect(script.contains("ckb-system-roots"), false)
         @Expect(script.contains("SystemRootCertificates"), false)
+
+        let commandScript = ckbNativeTlsBootstrapScript(
+            "/tmp/ckb executable", ["service-http", "a'b"])
+        @Expect(commandScript.contains("/Users/"), false)
+        @Expect(commandScript.contains("Metis/ffi"), false)
+        @Expect(commandScript.contains("exec '/tmp/ckb executable'"), true)
+        @Expect(commandScript.contains("'a'\\''b'"), true)
     }
 
     @TestCase
@@ -370,6 +380,20 @@ public class CkbNativeHttpTransportTest {
         @Expect(ckbCommandNeedsNativeTlsBootstrap("metrics"), true)
         @Expect(ckbCommandNeedsNativeTlsBootstrap("cangjie-landing-status"), true)
         @Expect(ckbCommandNeedsNativeTlsBootstrap("cangjie-corpus-status"), true)
+    }
+
+    @TestCase
+    public func reproducibilityCommandsOnlyBootstrapNativeTlsWhenTheyUseNetwork(): Unit {
+        for (command in ["ckb-portable-vector-build", "ckb-qdrant-snapshot",
+            "ckb-retrieval-parity", "ckb-repro-build", "ckb-repro-promote",
+            "ckb-repro-verify"]) {
+            @Expect(ckbCommandNeedsNativeTlsBootstrap(command), true)
+        }
+        for (command in ["ckb-release-export", "ckb-release-import",
+            "ckb-public-evidence-export", "ckb-repro-preflight",
+            "ckb-repro-bundle", "ckb-repro-publish-gate"]) {
+            @Expect(ckbCommandNeedsNativeTlsBootstrap(command), false)
+        }
     }
 
     @TestCase

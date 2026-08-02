@@ -7,6 +7,7 @@ import std.time.DateTime
 import std.unittest.*
 import std.unittest.testmacro.*
 import stdx.crypto.digest.SHA256
+import stdx.encoding.json.*
 import stdx.net.http.*
 
 private class P3RuntimeHttpExecutor <: HttpRequestExecutor {
@@ -155,6 +156,15 @@ private class P8RuntimeDocumentationOperation <:
         this.calls += 1
         let out = CkbReproContractResult(); out.ok = true
         out.diagnostic = "ok"; out
+    }
+}
+
+private class P8RuntimeCleanupProbe {
+    var calls: Int64 = 0
+    public init() {}
+    func execute(options: CkbReproVerifyOptions): Bool {
+        this.calls += 1
+        true
     }
 }
 
@@ -546,6 +556,27 @@ public class CkbReproRuntimeCompositionTest {
     }
 
     @TestCase
+    public func p3RuntimeParityManifestParserIsCanonicalAndUtf8Safe(): Unit {
+        let manifest = CkbRetrievalParityManifest()
+        manifest.knowledgeVersion = "portable-知识🙂"
+        manifest.logicalManifestHash = benchmarkGapSha256("logical")
+        manifest.query = ckbRetrievalParityReferenceQuery()
+        manifest.canonicalResultHash = benchmarkGapSha256("result")
+        for (transport in ["rest", "mcp_stdio", "mcp_http"]) {
+            manifest.transports.add(transport)
+        }
+        let canonical = renderCkbRetrievalParityManifest(manifest)
+        let parsed = parseCkbRetrievalParityManifest(canonical.toArray())
+        @Expect(parsed[0].ok, true)
+        @Expect(parsed[1].knowledgeVersion, manifest.knowledgeVersion)
+        @Expect(parseCkbRetrievalParityManifest(
+            [0xff, 0xfe])[0].diagnostic, "invalid_response_encoding")
+        @Expect(parseCkbRetrievalParityManifest(
+            canonical.replace("\"rest\"", "\"other\"").toArray())[0]
+            .diagnostic, "retrieval_parity_manifest_invalid")
+    }
+
+    @TestCase
     public func p3RuntimeNativeStdioUsesOneLineFrameAndCleansProcess(): Unit {
         let root = p3RuntimeRoot("stdio")
         Directory.create(root)
@@ -624,6 +655,68 @@ public class CkbReproRuntimeCompositionTest {
         @Expect(restore.calls, 2); @Expect(rebuild.calls, 2)
         @Expect(publicEvidence.calls, 1); @Expect(documentation.calls, 1)
         @Expect(reference.calls, 1)
+    }
+
+    @TestCase
+    public func p8OwnedCleanupRunsEvenWhenRebuildWasNeverReached(): Unit {
+        let certificationCleanup = P8RuntimeCleanupProbe()
+        let certification = CkbProductionRunCertificationExecutor(
+            P8RuntimeRestoreOperation(), P8RuntimeRebuildOperation(),
+            P8RuntimeReferenceOperation(), cleanupAction: {
+                _: CkbReproVerifyOptions =>
+                certificationCleanup.execute(CkbReproVerifyOptions())
+            })
+        @Expect(certification.cleanup(CkbReproVerifyOptions()), true)
+        @Expect(certificationCleanup.calls, 1)
+
+        let releaseCleanup = P8RuntimeCleanupProbe()
+        let release = CkbProductionReleaseVerificationExecutor(
+            P8RuntimeRestoreOperation(), P8RuntimeRebuildOperation(),
+            P8RuntimePublicOperation(), P8RuntimeDocumentationOperation(),
+            cleanupAction: { _: CkbReproVerifyOptions =>
+                releaseCleanup.execute(CkbReproVerifyOptions())
+            })
+        @Expect(release.cleanup(CkbReproVerifyOptions()), true)
+        @Expect(releaseCleanup.calls, 1)
+    }
+
+    @TestCase
+    public func p8RuntimeSharedCompositionFailsBeforeSideEffects(): Unit {
+        let invalid = CkbReproProductionCliComposition()
+        let invalidResult = loadCkbReproP8SharedComposition(invalid, "/tmp")
+        @Expect(invalidResult[0].diagnostic, "p8_composition_mode_invalid")
+
+        let missing = CkbReproProductionCliComposition()
+        missing.ok = true; missing.mode = "run-certify"
+        let missingResult = loadCkbReproP8SharedComposition(missing, "/tmp")
+        @Expect(missingResult[0].diagnostic, "p8_composition_asset_missing")
+
+        let prepared = CkbReproProductionCliComposition()
+        let shared = CkbReproP8SharedComposition()
+        shared.environment.qdrantImageDigest = benchmarkGapSha256("expected")
+        let transport = CkbP8OwnedLocalRuntimeAuthority()
+        transport.qdrantImageId = benchmarkGapSha256("different")
+        let stages = buildCkbReproP8ProductionStages(prepared, shared,
+            CkbReproVerifyOptions(), transport, CkbReproBuildInputManifest(),
+            CangjieEvalSupportSnapshot(), CangjieBenchmarkLeakageAuthority())
+        @Expect(stages.ok, false)
+        @Expect(stages.diagnostic, "p8_transport_environment_invalid")
+    }
+
+    @TestCase
+    public func p8CompositionDiagnosticIsRuneSafeAndBounded(): Unit {
+        let value = StringBuilder("\"\n\u{0001}\b\fAuthorization: secret ")
+        for (_ in 0..200) { value.append("中🙂") }
+        let safe = ckbReproP8SafeDiagnostic(value.toString())
+        @Expect(safe.toRuneArray().size <= 160, true)
+        @Expect(safe.contains("secret"), false)
+        let failure = ckbReproP8CompositionFailure(value.toString(), true)
+        let object = JsonValue.fromStr(failure.output).asObject()
+        @Expect(object.get("ok").getOrThrow().asBool().getValue(), false)
+        let diagnostic = object.get("diagnostic").getOrThrow()
+            .asString().getValue()
+        @Expect(diagnostic.toRuneArray().size <= 160, true)
+        @Expect(diagnostic.contains("secret"), false)
     }
 
     @TestCase

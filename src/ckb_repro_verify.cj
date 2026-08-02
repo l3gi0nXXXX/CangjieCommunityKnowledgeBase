@@ -44,16 +44,20 @@ public class CkbReproVerifyOptionsResult {
     public init() {}
 }
 
-public interface CkbReproVerifyEnvironmentProbe {
+public interface CkbReproReleaseVerifyEnvironmentProbe {
     func pathExists(path: String): Bool
     func pathIsEmptyDirectory(path: String): Bool
     func candidateEntryCount(path: String): Int64
     func inspectInput(path: String): CkbReproVerifyInputEvidence
     func canonicalReleaseRepository(): String
-    func providerFingerprint(): String
-    func modelIdentity(): String
     func staleProcessCount(): Int64
     func privatePathDependencyCount(): Int64
+}
+
+public interface CkbReproVerifyEnvironmentProbe <:
+    CkbReproReleaseVerifyEnvironmentProbe {
+    func providerFingerprint(): String
+    func modelIdentity(): String
 }
 
 public class CkbFilesystemReproVerifyEnvironmentProbe <:
@@ -105,6 +109,98 @@ public class CkbFilesystemReproVerifyEnvironmentProbe <:
         let report = scanCkbStudentVisiblePaths(input, this.pathContext)
         if (!report.ready) { return report.findings.size + 1 }
         report.machinePathCount + report.unmappedCount
+    }
+}
+
+public class CkbReleaseFilesystemReproVerifyEnvironmentProbe <:
+    CkbReproReleaseVerifyEnvironmentProbe {
+    private let candidateRoot: String
+    private let releaseRepository: String
+    private let staleCounter: () -> Int64
+    public init(candidateRoot: String, releaseRepository: String,
+        staleCounter: () -> Int64) {
+        this.candidateRoot = candidateRoot
+        this.releaseRepository = releaseRepository
+        this.staleCounter = staleCounter
+    }
+    public func pathExists(path: String): Bool { exists(Path(path)) }
+    public func pathIsEmptyDirectory(path: String): Bool {
+        try { Directory.readFrom(Path(path)).size == 0 }
+        catch (_: Exception) { false }
+    }
+    public func candidateEntryCount(path: String): Int64 {
+        try { Directory.readFrom(Path(path)).size }
+        catch (_: Exception) { -1 }
+    }
+    public func inspectInput(path: String): CkbReproVerifyInputEvidence {
+        p8InspectProductionInput(path)
+    }
+    public func canonicalReleaseRepository(): String {
+        this.releaseRepository
+    }
+    public func staleProcessCount(): Int64 { this.staleCounter() }
+    public func privatePathDependencyCount(): Int64 {
+        if (this.candidateRoot == "") { return 1 }
+        let read = p8ReadPortablePathReport(this.candidateRoot)
+        if (read[0] != "ok") { return 1 }
+        try {
+            let text = String.fromUtf8(read[1])
+            let object = JsonValue.fromStr(text).asObject()
+            if (object.size() != 5 ||
+                !object.get("ready").getOrThrow().asBool().getValue() ||
+                object.get("scannedFieldCount").getOrThrow().asInt()
+                    .getValue() < 0 ||
+                object.get("machinePathCount").getOrThrow().asInt()
+                    .getValue() != 0 ||
+                object.get("unmappedCount").getOrThrow().asInt()
+                    .getValue() != 0 ||
+                object.get("findings").getOrThrow().asArray()
+                    .getItems().size != 0) { return 1 }
+            0
+        } catch (_: Exception) { 1 }
+    }
+}
+
+private func p8ReadPortablePathReport(root: String):
+    (String, Array<UInt8>) {
+    let reader = CkbReproFilesystemBundleReadBackend()
+    if (!reader.rootExists(root)) { return ("bundle_root_invalid", []) }
+    var expected: ?CkbReproBundleReadEntry = None
+    for (entry in reader.list(root)) {
+        if (entry.relativePath == "portable-path-report.json") {
+            if (expected.isSome()) { return ("report_duplicate", []) }
+            expected = Some(entry)
+        }
+    }
+    let entry = match (expected) {
+        case Some(value) => value
+        case None => return ("report_missing", [])
+    }
+    if (entry.kind != "regular" || !entry.withinRoot || entry.size < 1 ||
+        entry.size > 64 * 1024) { return ("report_invalid", []) }
+    var handle: ?CkbReproBundleReadHandle = None
+    try {
+        let opened = reader.open(root, entry); handle = Some(opened)
+        if (!opened.noFollow()) { return ("report_invalid", []) }
+        let bytes = ArrayList<UInt8>(); let buffer = Array<UInt8>(4096, repeat: 0)
+        while (true) {
+            let count = opened.read(buffer)
+            if (count < 0) { return ("report_read_failed", []) }
+            if (count == 0) { break }
+            if (bytes.size + count > 64 * 1024) {
+                return ("report_too_large", [])
+            }
+            for (i in 0..count) { bytes.add(buffer[i]) }
+        }
+        let observed = opened.observedEntry()
+        if (observed.identity != entry.identity || observed.size != entry.size ||
+            observed.kind != "regular" || !observed.withinRoot) {
+            return ("report_identity_drift", [])
+        }
+        ("ok", bytes.toArray())
+    } catch (_: Exception) { ("report_read_failed", []) }
+    finally {
+        if (let Some(opened) <- handle) { try { opened.close() } catch (_: Exception) {} }
     }
 }
 
@@ -999,7 +1095,6 @@ public class CkbProductionRunCertificationExecutor <:
     private let rebuildOperation: CkbReproRebuildStageOperation
     private let referenceOperation: CkbReproReferenceRunOperation
     private let cleanupAction: (CkbReproVerifyOptions) -> Bool
-    private var rebuildOwned: Bool = false
     public init(restoreOperation: CkbReproRestoreStageOperation,
         rebuildOperation: CkbReproRebuildStageOperation,
         referenceOperation: CkbReproReferenceRunOperation,
@@ -1013,16 +1108,14 @@ public class CkbProductionRunCertificationExecutor <:
         this.restoreOperation.execute(options)
     }
     public func rebuild(options: CkbReproVerifyOptions): CkbReproStageEvidence {
-        let result = this.rebuildOperation.execute(options)
-        if (result.ok) { this.rebuildOwned = true }; result
+        this.rebuildOperation.execute(options)
     }
     public func runReference(options: CkbReproVerifyOptions):
         CkbReproReferenceRunEvidence {
         this.referenceOperation.execute(options)
     }
     public func cleanup(options: CkbReproVerifyOptions): Bool {
-        if (!this.rebuildOwned) { return true }
-        this.rebuildOwned = false; this.cleanupAction(options)
+        this.cleanupAction(options)
     }
 }
 
@@ -1034,7 +1127,6 @@ public class CkbProductionReleaseVerificationExecutor <:
     private let publicEvidenceOperation: CkbReproPublicEvidenceOperation
     private let documentationOperation: CkbReproDocumentationOperation
     private let cleanupAction: (CkbReproVerifyOptions) -> Bool
-    private var rebuildOwned: Bool = false
     public init(restoreOperation: CkbReproRestoreStageOperation,
         rebuildOperation: CkbReproRebuildStageOperation,
         publicEvidenceOperation: CkbReproPublicEvidenceOperation,
@@ -1050,8 +1142,7 @@ public class CkbProductionReleaseVerificationExecutor <:
         this.restoreOperation.execute(options)
     }
     public func rebuild(options: CkbReproVerifyOptions): CkbReproStageEvidence {
-        let result = this.rebuildOperation.execute(options)
-        if (result.ok) { this.rebuildOwned = true }; result
+        this.rebuildOperation.execute(options)
     }
     public func verifyPublicEvidence(options: CkbReproVerifyOptions):
         CkbReproContractResult {
@@ -1062,8 +1153,7 @@ public class CkbProductionReleaseVerificationExecutor <:
         this.documentationOperation.execute(options)
     }
     public func cleanup(options: CkbReproVerifyOptions): Bool {
-        if (!this.rebuildOwned) { return true }
-        this.rebuildOwned = false; this.cleanupAction(options)
+        this.cleanupAction(options)
     }
 }
 
@@ -1094,36 +1184,106 @@ public func newCkbP8AProductionExecutor(
     reference: CkbReproReferenceManifest,
     lock: CkbReproEnvironmentLock, inputs: CkbReproRunnerInputs,
     preflight: CkbReproEnvironmentPreflightResult,
-    runner: CkbReproRunnerInvoker, authorityManifestText: String):
+    runner: CkbReproRunnerInvoker, authorityManifestText: String,
+    lifecycle!: ?CkbP8OwnedLocalLifecycle = None):
     CkbReproRunCertificationExecutor {
+    let restoreOperation: CkbReproRestoreStageOperation = match (lifecycle) {
+        case Some(value) => CkbP8OwnedQdrantRestoreOperation(restore, value)
+        case None => CkbP8ProductionRestoreOperation(restore)
+    }
+    let rebuildOperation: CkbReproRebuildStageOperation = match (lifecycle) {
+        case Some(value) => CkbP8OwnedParityRebuildOperation(rebuild, value)
+        case None => CkbP8ProductionRebuildOperation(rebuild)
+    }
     CkbProductionRunCertificationExecutor(
-        CkbP8ProductionRestoreOperation(restore),
-        CkbP8ProductionRebuildOperation(rebuild),
+        restoreOperation,
+        rebuildOperation,
         CkbP8ProductionReferenceRunOperation(reference, lock, inputs,
             preflight, runner, authorityManifestText),
         cleanupAction: { options: CkbReproVerifyOptions =>
-            p8CleanupRebuildOwned(options, rebuild) })
+            p8CleanupP8OwnedState(options, rebuild, lifecycle) })
 }
 
 // P8-B has no Runner or model/provider parameter by construction.
 public func newCkbP8BProductionExecutor(
     restore: CkbP8ProductionRestoreInputs,
     rebuild: CkbP8ProductionRebuildInputs,
-    registeredCommands: Array<String>): CkbReproReleaseVerificationExecutor {
+    registeredCommands: Array<String>,
+    lifecycle!: ?CkbP8OwnedLocalLifecycle = None):
+    CkbReproReleaseVerificationExecutor {
+    let restoreOperation: CkbReproRestoreStageOperation = match (lifecycle) {
+        case Some(value) => CkbP8OwnedQdrantRestoreOperation(restore, value)
+        case None => CkbP8ProductionRestoreOperation(restore)
+    }
+    let rebuildOperation: CkbReproRebuildStageOperation = match (lifecycle) {
+        case Some(value) => CkbP8OwnedParityRebuildOperation(rebuild, value)
+        case None => CkbP8ProductionRebuildOperation(rebuild)
+    }
     CkbProductionReleaseVerificationExecutor(
-        CkbP8ProductionRestoreOperation(restore),
-        CkbP8ProductionRebuildOperation(rebuild),
+        restoreOperation,
+        rebuildOperation,
         CkbP8ProductionPublicEvidenceOperation(),
         CkbP8ProductionDocumentationOperation(registeredCommands),
         cleanupAction: { options: CkbReproVerifyOptions =>
-            p8CleanupRebuildOwned(options, rebuild) })
+            p8CleanupP8OwnedState(options, rebuild, lifecycle) })
+}
+
+private class CkbP8OwnedQdrantRestoreOperation <:
+    CkbReproRestoreStageOperation {
+    private let delegate: CkbP8ProductionRestoreOperation
+    private let lifecycle: CkbP8OwnedLocalLifecycle
+    public init(inputs: CkbP8ProductionRestoreInputs,
+        lifecycle: CkbP8OwnedLocalLifecycle) {
+        this.delegate = CkbP8ProductionRestoreOperation(inputs)
+        this.lifecycle = lifecycle
+    }
+    public func execute(options: CkbReproVerifyOptions): CkbReproStageEvidence {
+        let started = this.lifecycle.startQdrant(options)
+        if (!started.ok) { return p8StageFailure(started.diagnostic) }
+        let result = this.delegate.execute(options)
+        if (!this.lifecycle.stopParityService()) {
+            return p8StageFailure("p8_parity_service_stop_failed")
+        }
+        result
+    }
+}
+
+private class CkbP8OwnedParityRebuildOperation <:
+    CkbReproRebuildStageOperation {
+    private let delegate: CkbP8ProductionRebuildOperation
+    private let lifecycle: CkbP8OwnedLocalLifecycle
+    public init(inputs: CkbP8ProductionRebuildInputs,
+        lifecycle: CkbP8OwnedLocalLifecycle) {
+        this.delegate = CkbP8ProductionRebuildOperation(inputs)
+        this.lifecycle = lifecycle
+    }
+    public func execute(options: CkbReproVerifyOptions): CkbReproStageEvidence {
+        let result = this.delegate.execute(options)
+        if (!this.lifecycle.stopParityService()) {
+            return p8StageFailure("p8_parity_service_stop_failed")
+        }
+        result
+    }
+}
+
+private func p8CleanupP8OwnedState(options: CkbReproVerifyOptions,
+    rebuild: CkbP8ProductionRebuildInputs,
+    lifecycle: ?CkbP8OwnedLocalLifecycle): Bool {
+    let rebuildCleaned = p8CleanupRebuildOwned(options, rebuild)
+    let lifecycleCleaned = match (lifecycle) {
+        case Some(value) => try { value.cleanup(options) }
+            catch (_: Exception) { false }
+        case None => true
+    }
+    rebuildCleaned && lifecycleCleaned
 }
 
 private func p8CleanupRebuildOwned(options: CkbReproVerifyOptions,
     inputs: CkbP8ProductionRebuildInputs): Bool {
     var ok = true
-    for (root in [inputs.authority.outputRoot, inputs.authority.temporaryRoot]) {
-        if (exists(Path(root))) {
+    for (root in [inputs.authority.outputRoot, inputs.authority.temporaryRoot,
+        options.sourceRoot]) {
+        if (root != "" && exists(Path(root))) {
             try { remove(Path(root), recursive: true) }
             catch (_: Exception) { ok = false }
         }
@@ -1448,11 +1608,26 @@ public func validateCkbReproVerifyEnvironment(
     probe: CkbReproVerifyEnvironmentProbe):
     CkbReproVerifyEnvironmentResult {
     try {
-        p8ValidateEnvironmentUnchecked(options, heapRaw, probe)
+        p8ValidateEnvironmentUnchecked(options, heapRaw, probe, true,
+            { => probe.providerFingerprint() },
+            { => probe.modelIdentity() })
     } catch (_: Exception) {
         let out = CkbReproVerifyEnvironmentResult()
         out.diagnostic = "verify_environment_probe_failed"
         out
+    }
+}
+
+public func validateCkbReproReleaseVerifyEnvironment(
+    options: CkbReproVerifyOptions, heapRaw: String,
+    probe: CkbReproReleaseVerifyEnvironmentProbe):
+    CkbReproVerifyEnvironmentResult {
+    try {
+        p8ValidateEnvironmentUnchecked(options, heapRaw, probe, false,
+            { => "" }, { => "" })
+    } catch (_: Exception) {
+        let out = CkbReproVerifyEnvironmentResult()
+        out.diagnostic = "verify_environment_probe_failed"; out
     }
 }
 
@@ -1487,7 +1662,7 @@ public func runCkbReproProductionReleaseVerification(args: Array<String>,
     canonicalReleaseRepository: String,
     runCriticalManifest: CkbRunCriticalFilesManifest,
     authorityValidator: CkbReproReleaseAssetAuthority,
-    probe: CkbReproVerifyEnvironmentProbe,
+    probe: CkbReproReleaseVerifyEnvironmentProbe,
     backend: CkbReproBundleReadBackend,
     executor: CkbReproReleaseVerificationExecutor):
     CkbReproReleaseVerificationResult {
@@ -1498,7 +1673,7 @@ public func runCkbReproProductionReleaseVerification(args: Array<String>,
             else { "verify_mode_mismatch" }
         return out
     }
-    let preflight = validateCkbReproVerifyEnvironment(
+    let preflight = validateCkbReproReleaseVerifyEnvironment(
         parsed.options, heapRaw, probe)
     if (!preflight.ok) {
         let out = CkbReproReleaseVerificationResult()
@@ -1512,7 +1687,10 @@ public func runCkbReproProductionReleaseVerification(args: Array<String>,
 
 private func p8ValidateEnvironmentUnchecked(
     options: CkbReproVerifyOptions, heapRaw: String,
-    probe: CkbReproVerifyEnvironmentProbe):
+    probe: CkbReproReleaseVerifyEnvironmentProbe,
+    onlineIdentityRequired: Bool,
+    providerFingerprint: () -> String,
+    modelIdentity: () -> String):
     CkbReproVerifyEnvironmentResult {
     let out = CkbReproVerifyEnvironmentResult()
     out.heap = ckbServiceHeapPreflight(heapRaw)
@@ -1579,11 +1757,13 @@ private func p8ValidateEnvironmentUnchecked(
     out.localToctouToken = p8HashParts(
         "ckb-repro-local-toctou-v1", localRows.toArray())
     out.canonicalReleaseRepository = probe.canonicalReleaseRepository()
-    out.providerFingerprint = probe.providerFingerprint()
-    out.modelIdentity = probe.modelIdentity()
+    if (onlineIdentityRequired) {
+        out.providerFingerprint = providerFingerprint()
+        out.modelIdentity = modelIdentity()
+    }
     if (out.canonicalReleaseRepository == "" ||
-        !p8HashValid(out.providerFingerprint) ||
-        out.modelIdentity == "") {
+        (onlineIdentityRequired &&
+        (!p8HashValid(out.providerFingerprint) || out.modelIdentity == ""))) {
         out.diagnostic = "verify_authority_identity_invalid"
         return out
     }
@@ -1711,7 +1891,8 @@ private func p8RunCkbPortableReferenceHumanEvalCore(
         out.diagnostic = out.rebuilt.diagnostic
         return out
     }
-    let stable = p8RevalidateInputs(options, preflight, probe)
+    let stable = p8RevalidateInputs(options, preflight, probe, true,
+        { => probe.providerFingerprint() }, { => probe.modelIdentity() })
     if (!stable.ok) {
         out.diagnostic = stable.diagnostic
         return out
@@ -1810,7 +1991,7 @@ private func p8VerifyCkbUnsignedReleaseCandidateCore(
     runCriticalManifest: CkbRunCriticalFilesManifest,
     authorityValidator: CkbReproReleaseAssetAuthority,
     preflight: CkbReproVerifyEnvironmentResult,
-    probe: CkbReproVerifyEnvironmentProbe,
+    probe: CkbReproReleaseVerifyEnvironmentProbe,
     backend: CkbReproBundleReadBackend,
     executor: CkbReproReleaseVerificationExecutor):
     CkbReproReleaseVerificationResult {
@@ -1883,7 +2064,8 @@ private func p8VerifyCkbUnsignedReleaseCandidateCore(
         return out
     }
     out.authorityHash = authority.authorityHash
-    let stable = p8RevalidateInputs(options, preflight, probe)
+    let stable = p8RevalidateInputs(options, preflight, probe, false,
+        { => "" }, { => "" })
     if (!stable.ok) {
         out.diagnostic = stable.diagnostic
         return out
@@ -1973,7 +2155,7 @@ public func verifyCkbUnsignedReleaseCandidate(
     runCriticalManifest: CkbRunCriticalFilesManifest,
     authorityValidator: CkbReproReleaseAssetAuthority,
     preflight: CkbReproVerifyEnvironmentResult,
-    probe: CkbReproVerifyEnvironmentProbe,
+    probe: CkbReproReleaseVerifyEnvironmentProbe,
     backend: CkbReproBundleReadBackend,
     executor: CkbReproReleaseVerificationExecutor):
     CkbReproReleaseVerificationResult {
@@ -2170,7 +2352,10 @@ private func p8InputRole(options: CkbReproVerifyOptions, index: Int64):
 
 private func p8RevalidateInputs(options: CkbReproVerifyOptions,
     preflight: CkbReproVerifyEnvironmentResult,
-    probe: CkbReproVerifyEnvironmentProbe): CkbReproContractResult {
+    probe: CkbReproReleaseVerifyEnvironmentProbe,
+    onlineIdentityRequired: Bool,
+    providerFingerprint: () -> String,
+    modelIdentity: () -> String): CkbReproContractResult {
     let portableRows = ArrayList<String>()
     let localRows = ArrayList<String>()
     try {
@@ -2187,8 +2372,9 @@ private func p8RevalidateInputs(options: CkbReproVerifyOptions,
         }
         if (probe.canonicalReleaseRepository() !=
             preflight.canonicalReleaseRepository ||
-            probe.providerFingerprint() != preflight.providerFingerprint ||
-            probe.modelIdentity() != preflight.modelIdentity) {
+            (onlineIdentityRequired &&
+            (providerFingerprint() != preflight.providerFingerprint ||
+            modelIdentity() != preflight.modelIdentity))) {
             return p8Failure("verify_authority_identity_drift")
         }
         let paths = p8InputPaths(options)

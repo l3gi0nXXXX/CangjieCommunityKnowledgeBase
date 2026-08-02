@@ -146,6 +146,8 @@ private class P8EnvironmentProbe <: CkbReproVerifyEnvironmentProbe {
     public var inputValid: Bool = true
     public var throwProbe: Bool = false
     public var identityVersion: String = "v1"
+    public var providerCalls: Int64 = 0
+    public var modelCalls: Int64 = 0
     public init() {}
     public func pathExists(path: String): Bool {
         this.existing.contains(path)
@@ -177,8 +179,12 @@ private class P8EnvironmentProbe <: CkbReproVerifyEnvironmentProbe {
     public func canonicalReleaseRepository(): String {
         "l3gi0nXXXX/CangjieCommunityKnowledgeBase"
     }
-    public func providerFingerprint(): String { p8Hash("provider") }
-    public func modelIdentity(): String { "GLM-5.2" }
+    public func providerFingerprint(): String {
+        this.providerCalls += 1; p8Hash("provider")
+    }
+    public func modelIdentity(): String {
+        this.modelCalls += 1; "GLM-5.2"
+    }
     public func staleProcessCount(): Int64 { this.stale }
     public func privatePathDependencyCount(): Int64 { this.privatePaths }
 }
@@ -315,6 +321,26 @@ private class P8ReleaseAuthority <: CkbReproReleaseAssetAuthority {
 @Test
 public class CkbReproVerifyTest {
     @TestCase
+    public func releaseProbeReadsOnlyAuthorizedPortablePathReport(): Unit {
+        let root = p8ResetRoot("target/p8-release-path-report")
+        try {
+            let probe = CkbReleaseFilesystemReproVerifyEnvironmentProbe(
+                root, "l3gi0nXXXX/CangjieCommunityKnowledgeBase", { => 0 })
+            @Expect(probe.privatePathDependencyCount(), 1)
+            let path = Path(root).join("portable-path-report.json")
+            let clean = "{\"ready\":true,\"scannedFieldCount\":17," +
+                "\"machinePathCount\":0,\"unmappedCount\":0,\"findings\":[]}"
+            File.writeTo(path, clean.toArray())
+            @Expect(probe.privatePathDependencyCount(), 0)
+            File.writeTo(path, clean.replace("\"machinePathCount\":0",
+                "\"machinePathCount\":1").toArray())
+            @Expect(probe.privatePathDependencyCount(), 1)
+            File.writeTo(path, [0xff, 0xfe])
+            @Expect(probe.privatePathDependencyCount(), 1)
+        } finally { p8Remove(root) }
+    }
+
+    @TestCase
     public func p8Ut01ModesAreParsedWithoutImplicitReleaseState(): Unit {
         let run = parseCkbReproVerifyOptions([
             "--mode", "run-certify",
@@ -412,6 +438,13 @@ public class CkbReproVerifyTest {
             probe.existing.add(options.candidateRoot)
             @Expect(validateCkbReproVerifyEnvironment(
                 options, "4GB", probe).ok, true)
+            let releaseOptions = p8Options("release-verify", root)
+            let releaseProbe = P8EnvironmentProbe()
+            releaseProbe.existing.add(releaseOptions.candidateRoot)
+            @Expect(validateCkbReproReleaseVerifyEnvironment(
+                releaseOptions, "4GB", releaseProbe).ok, true)
+            @Expect(releaseProbe.providerCalls, 0)
+            @Expect(releaseProbe.modelCalls, 0)
             for (heap in ["", "仓颉🙂", "4095MB"]) {
                 let result = validateCkbReproVerifyEnvironment(
                     options, heap, probe)
@@ -782,6 +815,31 @@ public class CkbReproVerifyTest {
                 "0123456789abcdef0123456789abcdef01234567",
                 stablePreflight).diagnostic,
                 "release_authority_commit_mismatch")
+        } finally { p8Remove(root) }
+    }
+
+    @TestCase
+    public func p8BRejectsSelfConsistentTamperedCandidateAgainstFrozenInputs():
+        Unit {
+        let root = p8ResetRoot("target/p8-frozen-authority-tamper")
+        try {
+            let reference = p8ReferenceTemplate()
+            let frozenBundle = p8CreateBundle("${root}/frozen",
+                "assets/unused.txt", "p0", reference: reference)
+            let contract = p8AuthorityContract("p0", reference)
+            let authority = CkbReproCanonicalReleaseAssetAuthority(contract)
+            let preflight = p8AuthorityPreflight(contract)
+            let releaseCommit =
+                "89abcdef0123456789abcdef0123456789abcdef"
+
+            let tamperedBundle = p8CreateBundle("${root}/tampered",
+                "assets/unused.txt", "tampered", reference: reference)
+            let tamperedLoaded = validateCkbReproBundleManifest(
+                tamperedBundle[0], CkbReproFilesystemBundleReadBackend())
+            @Expect(tamperedLoaded.contract.ok, true)
+            @Expect(tamperedBundle[1] == frozenBundle[1], false)
+            @Expect(authority.validate(tamperedLoaded, reference,
+                releaseCommit, preflight).ok, false)
         } finally { p8Remove(root) }
     }
 
@@ -1296,16 +1354,23 @@ public class CkbReproVerifyTest {
 
             let options = CkbReproVerifyOptions(); options.candidateRoot = bundle[0]
             options.workRoot = Path(root).join("work").toString()
+            options.sourceRoot = Path(root).join("source").toString()
+            Directory.create(Path(options.sourceRoot))
+            File.writeTo(Path(options.sourceRoot).join("owned.txt"),
+                "owned".toArray())
             let publicResult = CkbP8ProductionPublicEvidenceOperation()
                 .execute(options)
             @Expect(publicResult.ok, false)
             @Expect(exists(Path(options.workRoot)), false)
 
+            let cleanupRebuild = CkbP8ProductionRebuildInputs()
+            cleanupRebuild.qdrantControl = Some(P8RestoreControl())
             let b = newCkbP8BProductionExecutor(
-                CkbP8ProductionRestoreInputs(), CkbP8ProductionRebuildInputs(),
+                CkbP8ProductionRestoreInputs(), cleanupRebuild,
                 ["ckb-repro-build", "cangjie-humaneval-strict-score"])
             @Expect(b.verifyPublicEvidence(options).ok, false)
             @Expect(b.cleanup(options), true)
+            @Expect(exists(Path(options.sourceRoot)), false)
         } finally { p8Remove(root) }
     }
 }

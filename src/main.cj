@@ -15,6 +15,184 @@ main(args: Array<String>): Int64 {
     ckbCliMain(args)
 }
 
+public class CkbReproMainCliResult {
+    public var handled: Bool
+    public var exitCode: Int64
+    public var output: String
+    public init(handled: Bool, exitCode: Int64, output: String) {
+        this.handled = handled
+        this.exitCode = exitCode
+        this.output = output
+    }
+}
+
+public interface CkbReproMainCliAdapter {
+    func runRelease(args: Array<String>): CkbReproMainCliResult
+    func runP3(args: Array<String>): CkbReproMainCliResult
+    func runP4(args: Array<String>): CkbReproMainCliResult
+    func runPublicEvidence(args: Array<String>): CkbReproMainCliResult
+    func runPreflight(args: Array<String>): CkbReproMainCliResult
+    func runBundle(args: Array<String>): CkbReproMainCliResult
+    func runPublishGate(args: Array<String>): CkbReproMainCliResult
+    func runP8(args: Array<String>): CkbReproMainCliResult
+}
+
+private class CkbReproProductionMainCliAdapter <: CkbReproMainCliAdapter {
+    public init() {}
+    public func runRelease(args: Array<String>): CkbReproMainCliResult {
+        let execution = runCkbReleaseCli(args)
+        CkbReproMainCliResult(true, execution.exitCode, execution.output)
+    }
+    public func runP3(args: Array<String>): CkbReproMainCliResult {
+        runCkbP3ProductionMainCli(args)
+    }
+    public func runP4(args: Array<String>): CkbReproMainCliResult {
+        runCkbP4ProductionMainCli(args)
+    }
+    public func runPublicEvidence(args: Array<String>): CkbReproMainCliResult {
+        let options = parseCkbPublicEvidenceCliArgs(args)
+        if (!options.valid) {
+            let invalid = CkbPublicEvidenceRenderResult()
+            invalid.diagnostic = options.diagnostic
+            let output = if (options.json) {
+                renderCkbPublicEvidenceCliJson(invalid)
+            } else { renderCkbPublicEvidenceCliHuman(invalid) }
+            return CkbReproMainCliResult(true, 2, output)
+        }
+        let result = runCkbPublicEvidenceCliAdapter(options)
+        let output = if (options.json) {
+            renderCkbPublicEvidenceCliJson(result)
+        } else { renderCkbPublicEvidenceCliHuman(result) }
+        CkbReproMainCliResult(true, if (result.ok) { 0 } else { 1 }, output)
+    }
+    public func runPreflight(args: Array<String>): CkbReproMainCliResult {
+        let options = parseCkbReproPreflightCliArgs(args)
+        if (!options.valid) {
+            let invalid = CkbReproEnvironmentPreflightResult()
+            invalid.diagnostic = options.diagnostic
+            let output = if (options.json) {
+                renderCkbReproPreflightCliJson(invalid,
+                    CkbReproEnvironmentLock())
+            } else {
+                renderCkbReproPreflightCliHuman(invalid,
+                    CkbReproEnvironmentLock())
+            }
+            return CkbReproMainCliResult(true, 2, output)
+        }
+        let loaded = loadCkbReproPreflightAuthority(
+            options.environmentLockPath)
+        if (!loaded[0].ok) {
+            let blocked = CkbReproEnvironmentPreflightResult()
+            blocked.diagnostic = loaded[0].diagnostic
+            let output = if (options.json) {
+                renderCkbReproPreflightCliJson(blocked, loaded[1])
+            } else { renderCkbReproPreflightCliHuman(blocked, loaded[1]) }
+            return CkbReproMainCliResult(true, 1, output)
+        }
+        if (let Some(authority) <- loaded[2]) {
+            let result = runCkbReproPreflightCliAdapter(options, authority)
+            let output = if (options.json) {
+                renderCkbReproPreflightCliJson(result, loaded[1])
+            } else { renderCkbReproPreflightCliHuman(result, loaded[1]) }
+            return CkbReproMainCliResult(true, if (result.ok) { 0 } else { 1 },
+                output)
+        }
+        let blocked = CkbReproEnvironmentPreflightResult()
+        blocked.diagnostic = "environment_attestation_authority_unavailable"
+        let output = if (options.json) {
+            renderCkbReproPreflightCliJson(blocked, loaded[1])
+        } else { renderCkbReproPreflightCliHuman(blocked, loaded[1]) }
+        CkbReproMainCliResult(true, 1, output)
+    }
+    public func runBundle(args: Array<String>): CkbReproMainCliResult {
+        let options = parseCkbReproBundleCliArgs(args)
+        if (!options.valid) {
+            let invalid = CkbReproBundleResult()
+            invalid.diagnostic = options.diagnostic
+            let output = if (options.json) {
+                renderCkbReproBundleCliJson(invalid)
+            } else { renderCkbReproBundleCliHuman(invalid) }
+            return CkbReproMainCliResult(true, 2, output)
+        }
+        let result = runCkbReproBundleCliAdapter(options)
+        let output = if (options.json) {
+            renderCkbReproBundleCliJson(result)
+        } else { renderCkbReproBundleCliHuman(result) }
+        CkbReproMainCliResult(true, if (result.ok) { 0 } else { 1 }, output)
+    }
+    public func runPublishGate(args: Array<String>): CkbReproMainCliResult {
+        let options = parseCkbReproPublishGateCliArgs(args)
+        if (!options.valid) {
+            let invalid = CkbReproPublishGateResult()
+            invalid.diagnostic = options.diagnostic
+            let output = if (options.json) {
+                renderCkbReproPublishGateCliJson(invalid)
+            } else { renderCkbReproPublishGateCliHuman(invalid) }
+            return CkbReproMainCliResult(true, 2, output)
+        }
+        let result = runCkbReproPublishGateCliAdapter(options)
+        let output = if (options.json) {
+            renderCkbReproPublishGateCliJson(result)
+        } else { renderCkbReproPublishGateCliHuman(result) }
+        CkbReproMainCliResult(true, if (result.publishable) { 0 } else { 1 },
+            output)
+    }
+    public func runP8(args: Array<String>): CkbReproMainCliResult {
+        runCkbP8ProductionMainCli(args)
+    }
+}
+
+public func executeCkbReproMainCli(command: String, args: Array<String>,
+    adapter: CkbReproMainCliAdapter): CkbReproMainCliResult {
+    if (command == "ckb-release-export" || command == "ckb-release-import") {
+        return adapter.runRelease(args)
+    }
+    if (command == "ckb-portable-vector-build" ||
+        command == "ckb-qdrant-snapshot" ||
+        command == "ckb-retrieval-parity") {
+        return adapter.runP3(args)
+    }
+    if (command == "ckb-repro-build" || command == "ckb-repro-promote") {
+        return adapter.runP4(args)
+    }
+    if (command == "ckb-public-evidence-export") {
+        return adapter.runPublicEvidence(args)
+    }
+    if (command == "ckb-repro-preflight") {
+        return adapter.runPreflight(args)
+    }
+    if (command == "ckb-repro-bundle") {
+        return adapter.runBundle(args)
+    }
+    if (command == "ckb-repro-publish-gate") {
+        return adapter.runPublishGate(args)
+    }
+    if (command == "ckb-repro-verify") {
+        return adapter.runP8(args)
+    }
+    CkbReproMainCliResult(false, 0, "")
+}
+
+public func runCkbReproMainCli(command: String,
+    args: Array<String>): CkbReproMainCliResult {
+    executeCkbReproMainCli(command, args, CkbReproProductionMainCliAdapter())
+}
+
+private func runCkbP3ProductionMainCli(args: Array<String>):
+    CkbReproMainCliResult {
+    runCkbReproP3ProductionComposition(args)
+}
+
+private func runCkbP4ProductionMainCli(args: Array<String>):
+    CkbReproMainCliResult {
+    runCkbReproP4ProductionComposition(args)
+}
+
+private func runCkbP8ProductionMainCli(args: Array<String>):
+    CkbReproMainCliResult {
+    runCkbReproP8ProductionComposition(args)
+}
+
 public func ckbCliMain(args: Array<String>): Int64 {
     let cli = parseCli(args)
     if (cli.command == "cangjie-clean-candidate-build") {
@@ -28,6 +206,11 @@ public func ckbCliMain(args: Array<String>): Int64 {
     }
     if (cli.command == "cangjie-atom-selection-build") {
         return runCkbAtomSelectionCli(args)
+    }
+    let repro = runCkbReproMainCli(cli.command, args)
+    if (repro.handled) {
+        print(repro.output)
+        return repro.exitCode
     }
     let config = loadCkbRuntimeConfig(cli.configPath)
     let store = FileKnowledgeStore(cli.storePath)
@@ -472,6 +655,8 @@ public func ckbCliMain(args: Array<String>): Int64 {
     }
     println("  cangjie-benchmark-gap-staging-init --config <path> --store <empty-path> [--json]")
     println("  cangjie-candidate-runtime-materialize --source-store <absolute-canonical-path> --output-store <absolute-canonical-new-path> --candidate-version <version>")
+    println("  ckb-portable-vector-build | ckb-qdrant-snapshot create|restore|verify | ckb-retrieval-parity --mode verify")
+    println("  ckb-repro-build | ckb-repro-promote --apply | ckb-repro-verify --mode run-certify|release-verify --composition-manifest <path> [--json]")
     println("Usage: cangjie_community_knowledge_base [--config <path>] [--store <path>] doctor | status | metrics | service | service-http | http-service | mcp-stdio | cangjie-clean-candidate-build (--dry-run|--apply) --source-store <path> --staging-store <path> --authority-store <path> [--atoms-store <path>] --candidate-version <version> [--json] | cangjie-initialize (--dry-run|--apply) --docs-root <path> --std-root <path> --stdx-root <path> --eval-root <path> | cangjie-atom-selection-build --manifest <selection.jsonl> --teacher-export-root <path> --output <atoms.jsonl> --proof <proof.json> | cangjie-candidate-precert-seal --selected-atoms <normalized-candidate.jsonl> --output-root <dir> | cangjie-humaneval-manifest-build --dataset-root <path> --output <authority.jsonl> | cangjie-eval-classifier-run --run-root <path> --run-id <id> --transport C|D --output-root <path> --classifier-a-executable <path> --classifier-a-provider <id> --classifier-a-model <model> --classifier-a-id <id> --classifier-b-executable <path> --classifier-b-provider <id> --classifier-b-model <model> --classifier-b-id <id> --timeout-seconds <n> | cangjie-eval-development-close --run-root <path> --run-id <id> --transport C|D --classifier-a-root <path> --classifier-b-root <path> | cangjie-certification-preflight --control-manifest <path> | cangjie-frozen-candidate-seal --control-manifest <path> --store <path> | cangjie-certified-production-publish --control-manifest <path> --store <path> | cangjie-landing-status [--format json] | service-once <command> | start | stop | restart | sync-once | sync-live (--dry-run|--apply) | source_analysis repo=<owner/repo> ref=<ref> path=<path> | native-http-smoke <url> | cangjie-corpus-status | cangjie-knowledge-pack <task> | cangjie-api-search <query> | cangjie-syntax-query <query> | cangjie-cookbook <task> | cangjie-diagnose <compiler-output> | cangjie-llms [task] | cangjie-context-pack <task> | cangjie-eval-summary <manifest.jsonl> | cangjie-eval-abcde [--preflight-only] | cangjie-eval-knowledge-audit --run-root <path> | cangjie-humaneval-pass1-gate --run-root <path> | cangjie-knowledge-release-gate --run-root <path> --manifest <manifest.jsonl> | cangjie-typed-ingest-smoke --docs-root <path> --case-root <path> | cangjie-serving-feed-smoke | cangjie-serving-query-smoke | cangjie-update-promotion-smoke | cangjie-abcde-parity-smoke | cangjie-humaneval-pass1-gate-smoke | vector-bootstrap [--json] | vector-clean-derived [--force] [--json] | vector-reconcile [--force] [--json] | routine-repair --force [--json] | ollama-embedding-benchmark [--json] [--sample-size <n>] | scheduler-run [--force-all|--task <name> [--force]] [--json] | rebuild-index | backup <path> | restore <path> | query <text> | evidence <text> | schema")
     2
 }
@@ -503,10 +688,8 @@ private func ckbMaybeRelaunchWithNativeTlsEnv(args: Array<String>): (Bool, Int64
         return (false, 0)
     }
     let config = loadCkbRuntimeConfig(cli.configPath)
-    var script = ckbNativeTlsBootstrapEnvScript(caFile: config.networkCaFile) + " exec " + ckbShellQuote(command)
-    for (arg in args) {
-        script += " " + ckbShellQuote(arg)
-    }
+    let script = ckbNativeTlsBootstrapScript(command, args,
+        caFile: config.networkCaFile)
     try {
         let process = launch("/bin/zsh", ["-lc", script], stdIn: Inherit, stdOut: Inherit, stdErr: Inherit)
         return (true, process.wait())
@@ -514,29 +697,6 @@ private func ckbMaybeRelaunchWithNativeTlsEnv(args: Array<String>): (Bool, Int64
         println("native tls bootstrap failed: ${e.message}")
         return (true, 1)
     }
-}
-
-public func ckbNativeTlsBootstrapScript(command: String, args: Array<String>): String {
-    var script = "export CKB_NATIVE_TLS_BOOTSTRAPPED=1; " +
-        "MAGIC_ROOT=\"" + "$" + "{MAGIC_PATH:-}\"; " +
-        "if [ -z \"" + "$" + "{MAGIC_ROOT}\" ]; then MAGIC_ROOT=\"" + "$" + "{CKB_MAGIC_ROOT:-}\"; fi; " +
-        "CANGJIE_ROOT=\"" + "$" + "{CANGJIE_HOME:-}\"; " +
-        "if [ -z \"" + "$" + "{CANGJIE_ROOT}\" ]; then CANGJIE_ROOT=\"" + "$" + "{CKB_CANGJIE_ROOT:-}\"; fi; " +
-        "CKB_DYLD_EXTRA=\"/opt/homebrew/opt/openssl@3/lib:/opt/homebrew/opt/openssl@3.5/lib:/usr/local/opt/openssl@3/lib:/Users/l3gi0n/cangjie100/runtime/lib/darwin_aarch64_llvm:/Users/l3gi0n/work/workspace_cangjie/CangjieMagic/libs/cangjie-stdx-mac-aarch64-1.0.0.1/darwin_aarch64_llvm/dynamic/stdx:/Users/l3gi0n/work/workspace_cangjie/Metis/ffi\"; " +
-        "if [ -n \"" + "$" + "{CANGJIE_ROOT}\" ]; then CKB_DYLD_EXTRA=\"" + "$" + "{CKB_DYLD_EXTRA}:" + "$" + "{CANGJIE_ROOT}/runtime/lib/darwin_aarch64_llvm\"; fi; " +
-        "if [ -n \"" + "$" + "{MAGIC_ROOT}\" ]; then CKB_DYLD_EXTRA=\"" + "$" + "{CKB_DYLD_EXTRA}:" + "$" + "{MAGIC_ROOT}/libs/cangjie-stdx-mac-aarch64-1.0.0.1/darwin_aarch64_llvm/dynamic/stdx\"; fi; " +
-        "export DYLD_LIBRARY_PATH=\"" +
-        "$" + "{CKB_DYLD_EXTRA}:" +
-        "$" + "{DYLD_LIBRARY_PATH}\"; " +
-        "exec " + ckbShellQuote(command)
-    for (arg in args) {
-        script += " " + ckbShellQuote(arg)
-    }
-    script
-}
-
-private func ckbShellQuote(value: String): String {
-    "'" + value.replace("'", "'\\''") + "'"
 }
 
 class CliOptions {

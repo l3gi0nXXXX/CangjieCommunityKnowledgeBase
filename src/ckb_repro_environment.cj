@@ -22,6 +22,8 @@ public class CkbReproEnvironmentLock {
     public var runCandidateCommit: String = ""
     public var runCriticalFilesManifestHash: String = ""
     public var runCriticalTreeHash: String = ""
+    public var compositionManifestPath: String = ""
+    public var compositionManifestHash: String = ""
     public var claudeCodeVersion: String = ""
     public var glmProvider: String = ""
     public var glmBaseUrl: String = ""
@@ -47,6 +49,8 @@ public class CkbReproEnvironmentLock {
     public var sandboxCapability: String = ""
     public var datasetVersion: String = ""
     public var authorityDeliveryHash: String = ""
+    public var attestationAuthorityManifestPath: String = ""
+    public var attestationAuthorityHash: String = ""
     public init() {}
 }
 
@@ -56,6 +60,7 @@ public class CkbReproEnvironmentPreflightResult {
     public var diagnostic: String = "not_validated"
     public var environmentManifestHash: String = ""
     public var certifiedRunInputHash: String = ""
+    public var attestationEvidenceCommit: String = ""
     public var heapResult: CkbServiceHeapPreflightResult = CkbServiceHeapPreflightResult()
     public init() {}
 }
@@ -79,6 +84,7 @@ public class CkbReproRunnerInputs {
     public var providerIdentityHash: String = ""
     public var providerIdentityArtifactPath: String = ""
     public var frozenCandidateManifestPath: String = ""
+    public var observedEnvironmentPath: String = ""
     public var certificationPreflightPath: String = ""
     public var certificationRunManifestPath: String = ""
     public init() {}
@@ -94,7 +100,7 @@ public class CkbReproPreflightCliOptions {
     public var certificationPreflightPath: String = ""
     public var certificationRunManifestPath: String = ""
     public var signingFingerprint: String = ""
-    public var observedEnvironmentHash: String = ""
+    public var observedEnvironmentProjectionHash: String = ""
     public var json: Bool = false
     public var valid: Bool = false
     public var diagnostic: String = "usage_error"
@@ -115,12 +121,13 @@ public class CkbReproEnvironmentProbeResult {
     public var diagnostic: String = "environment_probe_unavailable"
     public var observed: CkbReproEnvironmentLock = CkbReproEnvironmentLock()
     public var attestedInputHash: String = ""
+    public var attestationEvidenceCommit: String = ""
     public init() {}
 }
 
 public interface CkbReproEnvironmentProbe {
     func inspect(attested: CkbReproEnvironmentLock,
-        attestedInputHash: String):
+        attestedInputHash: String, evidenceRepositoryRoot: String):
         CkbReproEnvironmentProbeResult
 }
 
@@ -136,7 +143,7 @@ private class P6FilesystemGitProbeRunner <: CkbReproGitProbeRunner {
 
 public class CkbReproAttestationAuthority {
     public var signingFingerprint: String = ""
-    public var observedEnvironmentHash: String = ""
+    public var observedEnvironmentProjectionHash: String = ""
     public var frozen: Bool = false
     public init() {}
 }
@@ -152,7 +159,9 @@ public class CkbReproVerifiedAttestationAuthority {
         this.anchorHash = anchorHash
     }
     public func signingFingerprint(): String { this.fingerprint }
-    public func observedEnvironmentHash(): String { this.environmentHash }
+    public func observedEnvironmentProjectionHash(): String {
+        this.environmentHash
+    }
     public func authorityAnchorHash(): String { this.anchorHash }
     public static func load(bytes: Array<UInt8>, expectedAnchorHash: String):
         (CkbReproContractResult, CkbReproVerifiedAttestationAuthority) {
@@ -174,13 +183,13 @@ public class CkbReproVerifiedAttestationAuthority {
             let status = p6String(object, "status")
             let fingerprint = p6String(object, "signingFingerprint")
             let environmentHash = p6String(object,
-                "observedEnvironmentHash")
+                "observedEnvironmentProjectionHash")
             let source = p6String(object, "authoritySource")
             let sourceHash = p6String(object, "authoritySourceHash")
             let canonical =
                 "{\"schemaVersion\":\"ckb-repro-environment-attestation-authority-v1\"," +
                 "\"status\":\"frozen\",\"signingFingerprint\":\"${fingerprint}\"," +
-                "\"observedEnvironmentHash\":\"${environmentHash}\"," +
+                "\"observedEnvironmentProjectionHash\":\"${environmentHash}\"," +
                 "\"authoritySource\":\"${source}\"," +
                 "\"authoritySourceHash\":\"${sourceHash}\"}"
             if (schema !=
@@ -234,6 +243,76 @@ public func loadCkbReproVerifiedAttestationAuthority(bytes: Array<UInt8>,
     CkbReproVerifiedAttestationAuthority.load(bytes, expectedAnchorHash)
 }
 
+public func loadCkbReproPreflightAuthority(environmentLockPath: String):
+    (CkbReproContractResult, CkbReproEnvironmentLock,
+        ?CkbReproVerifiedAttestationAuthority) {
+    let empty = CkbReproEnvironmentLock()
+    if (!p6CliAbsolutePath(environmentLockPath) ||
+        !exists(Path(environmentLockPath))) {
+        return (p6Failure("environment_lock_missing"), empty,
+            None<CkbReproVerifiedAttestationAuthority>)
+    }
+    let canonicalLock = try { canonicalize(Path(environmentLockPath)).toString() }
+        catch (_: Exception) {
+            return (p6Failure("preflight_path_not_canonical"), empty,
+                None<CkbReproVerifiedAttestationAuthority>)
+        }
+    if (canonicalLock != environmentLockPath) {
+        return (p6Failure("preflight_path_not_canonical"), empty,
+            None<CkbReproVerifiedAttestationAuthority>)
+    }
+    let repositoryRoot = Path(environmentLockPath).parent.parent.parent
+    let canonicalRoot = try { canonicalize(repositoryRoot).toString() }
+        catch (_: Exception) {
+            return (p6Failure("preflight_path_not_canonical"), empty,
+                None<CkbReproVerifiedAttestationAuthority>)
+        }
+    let fixedLock = Path(canonicalRoot).join(
+        "reproducibility/manifests/environment-lock.json").toString()
+    if (fixedLock != environmentLockPath) {
+        return (p6Failure("environment_lock_path_invalid"), empty,
+            None<CkbReproVerifiedAttestationAuthority>)
+    }
+    let parsed = p6CliReadEnvironment(environmentLockPath)
+    if (!parsed[0].ok) {
+        return (parsed[0], parsed[1],
+            None<CkbReproVerifiedAttestationAuthority>)
+    }
+    let checked = validateCkbReproEnvironmentLock(parsed[1], mode: "execution")
+    if (!checked.ok) {
+        return (checked, parsed[1],
+            None<CkbReproVerifiedAttestationAuthority>)
+    }
+    let authorityPath = Path(canonicalRoot).join(
+        parsed[1].attestationAuthorityManifestPath).toString()
+    let canonicalAuthority = try { canonicalize(Path(authorityPath)).toString() }
+        catch (_: Exception) {
+            return (p6Failure("environment_attestation_authority_unavailable"),
+                parsed[1], None<CkbReproVerifiedAttestationAuthority>)
+        }
+    if (canonicalAuthority != authorityPath) {
+        return (p6Failure("environment_attestation_authority_unavailable"),
+            parsed[1], None<CkbReproVerifiedAttestationAuthority>)
+    }
+    let authorityRead = p6ReadFileBounded(authorityPath, 64 * 1024)
+    if (authorityRead[0] != "ok") {
+        return (p6Failure("environment_attestation_authority_unavailable"),
+            parsed[1], None<CkbReproVerifiedAttestationAuthority>)
+    }
+    let authority = loadCkbReproVerifiedAttestationAuthority(
+        authorityRead[1], parsed[1].attestationAuthorityHash)
+    if (!authority[0].ok) {
+        return (authority[0], parsed[1],
+            None<CkbReproVerifiedAttestationAuthority>)
+    }
+    if (authority[1].observedEnvironmentProjectionHash() !=
+        ckbReproObservedEnvironmentProjectionHash(parsed[1])) {
+        return (p6Failure("environment_attestation_input_mismatch"),
+            parsed[1], None<CkbReproVerifiedAttestationAuthority>)
+    }
+    (p6Success(), parsed[1], Some(authority[1]))
+}
+
 public class CkbReproFilesystemEnvironmentProbe <: CkbReproEnvironmentProbe {
     private let gitRunner: CkbReproGitProbeRunner
     public init(gitRunner!: CkbReproGitProbeRunner =
@@ -241,11 +320,11 @@ public class CkbReproFilesystemEnvironmentProbe <: CkbReproEnvironmentProbe {
         this.gitRunner = gitRunner
     }
     public func inspect(attested: CkbReproEnvironmentLock,
-        attestedInputHash: String):
+        attestedInputHash: String, evidenceRepositoryRoot: String):
         CkbReproEnvironmentProbeResult {
         let out = CkbReproEnvironmentProbeResult()
-        if (attestedInputHash != p6Hash(
-            renderCkbReproEnvironmentLock(attested).toArray())) { return out }
+        if (attestedInputHash !=
+            ckbReproObservedEnvironmentProjectionHash(attested)) { return out }
         let platform = p6ProbeCommand("uname", ["-s"])
         let architecture = p6ProbeCommand("uname", ["-m"])
         let sdkPath = p6ProbeCanonicalInputPath(
@@ -256,7 +335,12 @@ public class CkbReproFilesystemEnvironmentProbe <: CkbReproEnvironmentProbe {
         let repositoryRoot = p6ProbeCanonicalInputPath(
             "CKB_REPRO_REPOSITORY_ROOT", "")
         if (repositoryRoot == "") { return out }
-        let commit = ckbReproProbeGitCommit(repositoryRoot, this.gitRunner)
+        let candidate = ckbReproValidateCandidateCheckout(repositoryRoot,
+            attested.runCandidateCommit, this.gitRunner)
+        if (candidate[0] != "ok") { return out }
+        let evidence = ckbReproValidateEvidenceCommit(evidenceRepositoryRoot,
+            attested.runCandidateCommit, this.gitRunner)
+        if (evidence[0] != "ok") { return out }
         let claude = p6ProbeCommand("claude", ["--version"])
         let tar = p6ProbeCommand("tar", ["--version"])
         let zstd = p6ProbeCommand("zstd", ["--version"])
@@ -264,7 +348,7 @@ public class CkbReproFilesystemEnvironmentProbe <: CkbReproEnvironmentProbe {
         if (!qdrantImage[0]) { return out }
         let qdrant = p6ProbeCommand("docker", ["image", "inspect",
             "--format={{.Id}}", qdrantImage[1]])
-        for (probe in [platform, architecture, sdk, openssl, commit,
+        for (probe in [platform, architecture, sdk, openssl,
             claude, tar, zstd, qdrant]) {
             if (probe[0] != 0 || probe[1] == "") { return out }
         }
@@ -286,7 +370,7 @@ public class CkbReproFilesystemEnvironmentProbe <: CkbReproEnvironmentProbe {
         observed.cangjieSdkVersion = sdk[1]
         observed.cangjieSdkHash = sdkHash[1]
         observed.opensslVersion = openssl[1]
-        observed.runCandidateCommit = commit[1]
+        observed.runCandidateCommit = candidate[1]
         observed.claudeCodeVersion = claude[1]
         observed.archiveToolVersion = "${tar[1]}|${zstd[1]}"
         observed.archiveTool = "tar+zstd"
@@ -295,6 +379,7 @@ public class CkbReproFilesystemEnvironmentProbe <: CkbReproEnvironmentProbe {
         out.diagnostic = "ok"
         out.observed = observed
         out.attestedInputHash = attestedInputHash
+        out.attestationEvidenceCommit = evidence[1]
         out
     }
 }
@@ -313,6 +398,84 @@ public func ckbReproProbeGitCommit(repositoryRoot: String,
     runner.run("git", ["-C", repositoryRoot, "rev-parse", "HEAD"])
 }
 
+public func ckbReproValidateEvidenceCommit(repositoryRoot: String,
+    runCandidateCommit: String, runner: CkbReproGitProbeRunner):
+    (String, String) {
+    if (!p6CliAbsolutePath(repositoryRoot) ||
+        !exists(Path(repositoryRoot)) || !p6CommitValid(runCandidateCommit)) {
+        return ("git_run_candidate_invalid", "")
+    }
+    let canonical = try { canonicalize(Path(repositoryRoot)).toString() }
+        catch (_: Exception) { return ("git_repository_invalid", "") }
+    if (canonical != repositoryRoot) {
+        return ("git_repository_invalid", "")
+    }
+    let candidate = runner.run("git", ["-C", repositoryRoot, "cat-file",
+        "-e", "${runCandidateCommit}^{commit}"])
+    if (candidate[0] != 0) { return ("git_run_candidate_missing", "") }
+    let status = runner.run("git", ["-C", repositoryRoot, "status",
+        "--porcelain=v1", "--untracked-files=all"])
+    if (status[0] != 0) { return ("git_status_unavailable", "") }
+    if (status[1] != "") { return ("git_worktree_dirty", "") }
+    let head = runner.run("git", ["-C", repositoryRoot, "rev-parse", "HEAD"])
+    if (head[0] != 0 || !p6CommitValid(head[1])) {
+        return ("git_head_invalid", "")
+    }
+    if (head[1] == runCandidateCommit) {
+        return ("git_evidence_commit_missing", "")
+    }
+    let ancestor = runner.run("git", ["-C", repositoryRoot, "merge-base",
+        "--is-ancestor", runCandidateCommit, head[1]])
+    if (ancestor[0] != 0) {
+        return ("git_run_candidate_not_ancestor", "")
+    }
+    let range = "${runCandidateCommit}..${head[1]}"
+    let lockPath = "reproducibility/manifests/environment-lock.json"
+    let authorityPath =
+        "reproducibility/manifests/environment-attestation-authority.json"
+    let lockDiff = runner.run("git", ["-C", repositoryRoot, "diff",
+        "--quiet", range, "--", lockPath])
+    let authorityDiff = runner.run("git", ["-C", repositoryRoot, "diff",
+        "--quiet", range, "--", authorityPath])
+    if (lockDiff[0] != 1 || authorityDiff[0] != 1) {
+        return ("git_evidence_commit_incomplete", "")
+    }
+    let outside = runner.run("git", ["-C", repositoryRoot, "diff",
+        "--quiet", range, "--", ".", ":(exclude)${lockPath}",
+        ":(exclude)${authorityPath}"])
+    if (outside[0] != 0) {
+        return ("git_evidence_commit_scope_invalid", "")
+    }
+    if (!exists(Path(repositoryRoot).join(lockPath)) ||
+        !exists(Path(repositoryRoot).join(authorityPath))) {
+        return ("git_evidence_commit_incomplete", "")
+    }
+    ("ok", head[1])
+}
+
+public func ckbReproValidateCandidateCheckout(repositoryRoot: String,
+    runCandidateCommit: String, runner: CkbReproGitProbeRunner):
+    (String, String) {
+    if (!p6CliAbsolutePath(repositoryRoot) ||
+        !exists(Path(repositoryRoot)) || !p6CommitValid(runCandidateCommit)) {
+        return ("git_run_candidate_invalid", "")
+    }
+    let canonical = try { canonicalize(Path(repositoryRoot)).toString() }
+        catch (_: Exception) { return ("git_repository_invalid", "") }
+    if (canonical != repositoryRoot) {
+        return ("git_repository_invalid", "")
+    }
+    let status = runner.run("git", ["-C", repositoryRoot, "status",
+        "--porcelain=v1", "--untracked-files=all"])
+    if (status[0] != 0) { return ("git_status_unavailable", "") }
+    if (status[1] != "") { return ("git_worktree_dirty", "") }
+    let head = runner.run("git", ["-C", repositoryRoot, "rev-parse", "HEAD"])
+    if (head[0] != 0 || head[1] != runCandidateCommit) {
+        return ("git_candidate_checkout_mismatch", "")
+    }
+    ("ok", runCandidateCommit)
+}
+
 public func parseCkbReproPreflightCliArgs(args: Array<String>):
     CkbReproPreflightCliOptions {
     let out = CkbReproPreflightCliOptions()
@@ -328,11 +491,11 @@ public func parseCkbReproPreflightCliArgs(args: Array<String>):
             arg == "--certification-preflight" ||
             arg == "--certification-run-manifest" ||
             arg == "--signing-fingerprint" ||
-            arg == "--observed-environment-hash") {
+            arg == "--observed-environment-projection-hash") {
             if (i + 1 >= args.size) { out.diagnostic = "missing_value:${arg}"; return out }
             let value = args[i + 1]
             if (arg != "--signing-fingerprint" &&
-                arg != "--observed-environment-hash" &&
+                arg != "--observed-environment-projection-hash" &&
                 !p6CliAbsolutePath(value)) {
                 out.diagnostic = "preflight_path_invalid"; return out
             }
@@ -352,8 +515,8 @@ public func parseCkbReproPreflightCliArgs(args: Array<String>):
                 if (out.signingFingerprint != "") { out.diagnostic = "duplicate_argument:${arg}"; return out }
                 out.signingFingerprint = value
             } else {
-                if (out.observedEnvironmentHash != "") { out.diagnostic = "duplicate_argument:${arg}"; return out }
-                out.observedEnvironmentHash = value
+                if (out.observedEnvironmentProjectionHash != "") { out.diagnostic = "duplicate_argument:${arg}"; return out }
+                out.observedEnvironmentProjectionHash = value
             }
             i += 2; continue
         }
@@ -362,7 +525,7 @@ public func parseCkbReproPreflightCliArgs(args: Array<String>):
     if (out.environmentLockPath == "" || out.observedEnvironmentPath == "" ||
         out.certificationPreflightPath == "" ||
         out.certificationRunManifestPath == "" || out.signingFingerprint == "" ||
-        out.observedEnvironmentHash == "") {
+        out.observedEnvironmentProjectionHash == "") {
         out.diagnostic = "required_argument_missing"; return out
     }
     out.valid = true; out.diagnostic = "ok"; out
@@ -377,7 +540,7 @@ public func validateCkbReproPreflightCliOptions(
         if (!p6CliAbsolutePath(path)) { return p6Failure("preflight_path_invalid") }
     }
     if (!p6ProbeFingerprint(options.signingFingerprint) ||
-        !p6HashValid(options.observedEnvironmentHash)) {
+        !p6HashValid(options.observedEnvironmentProjectionHash)) {
         return p6Failure("environment_attestation_authority_invalid")
     }
     p6Success()
@@ -398,18 +561,32 @@ public func executeCkbReproPreflightCliAdapterWithProbe(
     probe: CkbReproEnvironmentProbe): CkbReproEnvironmentPreflightResult {
     let checked = validateCkbReproPreflightCliOptions(options)
     if (!checked.ok) { return p6CliPreflightFailure(checked.diagnostic) }
-    let attestedInputHash = p6Hash(
-        renderCkbReproEnvironmentLock(inputs.observed).toArray())
-    let actual = try { probe.inspect(inputs.observed, attestedInputHash) }
+    let attestedInputHash =
+        ckbReproObservedEnvironmentProjectionHash(inputs.observed)
+    let evidenceRoot = p6EnvironmentRepositoryRoot(
+        options.environmentLockPath)
+    if (evidenceRoot == "") {
+        return p6CliPreflightFailure("environment_evidence_root_invalid")
+    }
+    let actual = try {
+        probe.inspect(inputs.observed, attestedInputHash, evidenceRoot)
+    }
         catch (_: Exception) { return p6CliPreflightFailure(
             "environment_probe_unavailable") }
     if (!actual.ok) { return p6CliPreflightFailure(actual.diagnostic) }
     if (actual.attestedInputHash != attestedInputHash) {
         return p6CliPreflightFailure("environment_attestation_input_mismatch")
     }
-    runCkbReproEnvironmentPreflight(inputs.expected, actual.observed,
+    let result = runCkbReproEnvironmentPreflight(inputs.expected, actual.observed,
         inputs.heap, inputs.certificationPreflightJson,
         inputs.certificationRunManifestJson)
+    if (result.ok) {
+        if (!p6CommitValid(actual.attestationEvidenceCommit)) {
+            return p6CliPreflightFailure("git_evidence_commit_invalid")
+        }
+        result.attestationEvidenceCommit = actual.attestationEvidenceCommit
+    }
+    result
 }
 
 public func runCkbReproPreflightCliAdapter(
@@ -435,19 +612,19 @@ public func runCkbReproPreflightCliAdapter(
     let checked = validateCkbReproPreflightCliOptions(options)
     if (!checked.ok) { return p6CliPreflightFailure(checked.diagnostic) }
     if (authority.signingFingerprint() != options.signingFingerprint ||
-        authority.observedEnvironmentHash() !=
-            options.observedEnvironmentHash) {
+        authority.observedEnvironmentProjectionHash() !=
+            options.observedEnvironmentProjectionHash) {
         return p6CliPreflightFailure(
             "environment_attestation_authority_mismatch")
     }
     p6RunVerifiedPreflight(options, authority.signingFingerprint(),
-        authority.observedEnvironmentHash(),
+        authority.observedEnvironmentProjectionHash(),
         CkbReproGpgAttestationSignatureVerifier(),
         CkbReproFilesystemEnvironmentProbe())
 }
 
 private func p6RunVerifiedPreflight(options: CkbReproPreflightCliOptions,
-    signingFingerprint: String, observedEnvironmentHash: String,
+    signingFingerprint: String, observedEnvironmentProjectionHash: String,
     signatureVerifier: CkbReproAttestationSignatureVerifier,
     probe: CkbReproEnvironmentProbe):
     CkbReproEnvironmentPreflightResult {
@@ -467,8 +644,8 @@ private func p6RunVerifiedPreflight(options: CkbReproPreflightCliOptions,
     if (!expected[0].ok) { return p6CliPreflightFailure(expected[0].diagnostic) }
     let observed = p6CliReadEnvironment(options.observedEnvironmentPath)
     if (!observed[0].ok) { return p6CliPreflightFailure(observed[0].diagnostic) }
-    if (p6Hash(renderCkbReproEnvironmentLock(observed[1]).toArray()) !=
-        observedEnvironmentHash) {
+    if (ckbReproObservedEnvironmentProjectionHash(observed[1]) !=
+        observedEnvironmentProjectionHash) {
         return p6CliPreflightFailure("environment_attestation_input_mismatch")
     }
     let attestation = try {
@@ -510,13 +687,14 @@ public func runCkbReproPreflightCliAdapterWithAuthorityDependencies(
     let checked = validateCkbReproPreflightCliOptions(options)
     if (!checked.ok) { return p6CliPreflightFailure(checked.diagnostic) }
     if (authority.signingFingerprint() != options.signingFingerprint ||
-        authority.observedEnvironmentHash() !=
-            options.observedEnvironmentHash) {
+        authority.observedEnvironmentProjectionHash() !=
+            options.observedEnvironmentProjectionHash) {
         return p6CliPreflightFailure(
             "environment_attestation_authority_mismatch")
     }
     p6RunVerifiedPreflight(options, authority.signingFingerprint(),
-        authority.observedEnvironmentHash(), signatureVerifier, probe)
+        authority.observedEnvironmentProjectionHash(), signatureVerifier,
+        probe)
 }
 
 public func renderCkbReproPreflightCliHuman(
@@ -529,7 +707,8 @@ public func renderCkbReproPreflightCliHuman(
         "embedding: ${p6CliPublic(lock.embeddingProvider)}/${p6CliPublic(lock.embeddingModel)}\n" +
         "mcp transport: ${p6CliPublic(lock.mcpTransport)}\n" +
         "environment hash: ${result.environmentManifestHash}\n" +
-        "certified input hash: ${result.certifiedRunInputHash}\n"
+        "certified input hash: ${result.certifiedRunInputHash}\n" +
+        "attestation evidence commit: ${result.attestationEvidenceCommit}\n"
 }
 
 public func renderCkbReproPreflightCliJson(
@@ -545,7 +724,8 @@ public func renderCkbReproPreflightCliJson(
         "\"embeddingModel\":\"${p6Escape(p6CliPublic(lock.embeddingModel))}\"," +
         "\"mcpTransport\":\"${p6Escape(p6CliPublic(lock.mcpTransport))}\"," +
         "\"environmentManifestHash\":\"${p6Escape(result.environmentManifestHash)}\"," +
-        "\"certifiedRunInputHash\":\"${p6Escape(result.certifiedRunInputHash)}\"}"
+        "\"certifiedRunInputHash\":\"${p6Escape(result.certifiedRunInputHash)}\"," +
+        "\"attestationEvidenceCommit\":\"${p6Escape(result.attestationEvidenceCommit)}\"}"
 }
 
 public func parseCkbReproEnvironmentLock(bytes: Array<UInt8>):
@@ -555,7 +735,7 @@ public func parseCkbReproEnvironmentLock(bytes: Array<UInt8>):
     if (decoded[0] != "ok") { return (p6Failure(decoded[0]), lock) }
     try {
         let object = JsonValue.fromStr(decoded[1]).asObject()
-        if (object.size() != 37) {
+        if (object.size() != 41) {
             return (p6Failure("environment_field_contract_invalid"), lock)
         }
         lock.schemaVersion = p6String(object, "schemaVersion")
@@ -570,6 +750,10 @@ public func parseCkbReproEnvironmentLock(bytes: Array<UInt8>):
         lock.runCandidateCommit = p6String(object, "runCandidateCommit")
         lock.runCriticalFilesManifestHash = p6String(object, "runCriticalFilesManifestHash")
         lock.runCriticalTreeHash = p6String(object, "runCriticalTreeHash")
+        lock.compositionManifestPath = p6String(object,
+            "compositionManifestPath")
+        lock.compositionManifestHash = p6String(object,
+            "compositionManifestHash")
         lock.claudeCodeVersion = p6String(object, "claudeCodeVersion")
         lock.glmProvider = p6String(object, "glmProvider")
         lock.glmBaseUrl = p6String(object, "glmBaseUrl")
@@ -595,6 +779,10 @@ public func parseCkbReproEnvironmentLock(bytes: Array<UInt8>):
         lock.sandboxCapability = p6String(object, "sandboxCapability")
         lock.datasetVersion = p6String(object, "datasetVersion")
         lock.authorityDeliveryHash = p6String(object, "authorityDeliveryHash")
+        lock.attestationAuthorityManifestPath = p6String(object,
+            "attestationAuthorityManifestPath")
+        lock.attestationAuthorityHash = p6String(object,
+            "attestationAuthorityHash")
     } catch (_: Exception) {
         return (p6Failure("environment_field_contract_invalid"), CkbReproEnvironmentLock())
     }
@@ -619,7 +807,8 @@ public func validateCkbReproEnvironmentLock(lock: CkbReproEnvironmentLock,
             return p6Failure("environment_tool_identity_required")
         }
         for (hash in [lock.cangjieSdkHash, lock.runCriticalFilesManifestHash,
-            lock.runCriticalTreeHash, lock.promptHash, lock.authorityDeliveryHash]) {
+            lock.runCriticalTreeHash, lock.promptHash, lock.authorityDeliveryHash,
+            lock.attestationAuthorityHash, lock.compositionManifestHash]) {
             if (!p6HashValid(hash)) { return p6Failure("environment_hash_invalid") }
         }
         if (!lock.qdrantImageDigest.startsWith("sha256:") ||
@@ -628,6 +817,18 @@ public func validateCkbReproEnvironmentLock(lock: CkbReproEnvironmentLock,
         }
     } else if (mode == "execution") {
         return p6Failure("environment_identity_not_frozen")
+    }
+    if (lock.attestationAuthorityManifestPath !=
+        "reproducibility/manifests/environment-attestation-authority.json" ||
+        (lock.identityStatus == "planned" &&
+            lock.attestationAuthorityHash != "")) {
+        return p6Failure("environment_attestation_authority_invalid")
+    }
+    if (lock.compositionManifestPath !=
+        "reproducibility/manifests/runtime-composition.json" ||
+        (lock.identityStatus == "planned" &&
+            lock.compositionManifestHash != "")) {
+        return p6Failure("environment_composition_authority_invalid")
     }
     if (lock.serviceHeap != "4GB") {
         return p6Failure("environment_heap_contract_invalid")
@@ -719,6 +920,8 @@ public func renderCkbReproEnvironmentLock(lock: CkbReproEnvironmentLock): String
     "\"runCandidateCommit\":\"${p6Escape(lock.runCandidateCommit)}\"," +
     "\"runCriticalFilesManifestHash\":\"${p6Escape(lock.runCriticalFilesManifestHash)}\"," +
     "\"runCriticalTreeHash\":\"${p6Escape(lock.runCriticalTreeHash)}\"," +
+    "\"compositionManifestPath\":\"${p6Escape(lock.compositionManifestPath)}\"," +
+    "\"compositionManifestHash\":\"${p6Escape(lock.compositionManifestHash)}\"," +
     "\"claudeCodeVersion\":\"${p6Escape(lock.claudeCodeVersion)}\"," +
     "\"glmProvider\":\"${p6Escape(lock.glmProvider)}\"," +
     "\"glmBaseUrl\":\"${p6Escape(lock.glmBaseUrl)}\"," +
@@ -743,7 +946,17 @@ public func renderCkbReproEnvironmentLock(lock: CkbReproEnvironmentLock): String
     "\"mcpTransport\":\"${p6Escape(lock.mcpTransport)}\"," +
     "\"sandboxCapability\":\"${p6Escape(lock.sandboxCapability)}\"," +
     "\"datasetVersion\":\"${p6Escape(lock.datasetVersion)}\"," +
-    "\"authorityDeliveryHash\":\"${p6Escape(lock.authorityDeliveryHash)}\"}"
+    "\"authorityDeliveryHash\":\"${p6Escape(lock.authorityDeliveryHash)}\"," +
+    "\"attestationAuthorityManifestPath\":\"${p6Escape(lock.attestationAuthorityManifestPath)}\"," +
+    "\"attestationAuthorityHash\":\"${p6Escape(lock.attestationAuthorityHash)}\"}"
+}
+
+public func ckbReproObservedEnvironmentProjectionHash(
+    lock: CkbReproEnvironmentLock): String {
+    let canonical = renderCkbReproEnvironmentLock(lock)
+    let anchored = "\"attestationAuthorityHash\":\"${p6Escape(lock.attestationAuthorityHash)}\""
+    p6Hash(canonical.replace(anchored,
+        "\"attestationAuthorityHash\":\"\"").toArray())
 }
 
 public func renderCkbProviderTemplate(lock: CkbReproEnvironmentLock): String {
@@ -1073,6 +1286,11 @@ private func p6CopyUnobservableAuthorityFields(source: CkbReproEnvironmentLock,
     target.modelBudget = source.modelBudget
     target.timeoutSeconds = source.timeoutSeconds
     target.transportRetryBudget = source.transportRetryBudget
+    target.attestationAuthorityManifestPath =
+        source.attestationAuthorityManifestPath
+    target.attestationAuthorityHash = source.attestationAuthorityHash
+    target.compositionManifestPath = source.compositionManifestPath
+    target.compositionManifestHash = source.compositionManifestHash
 }
 
 private func p6ProbeActualConfiguration(target: CkbReproEnvironmentLock,
@@ -1166,6 +1384,24 @@ private func p6ProbeActualConfiguration(target: CkbReproEnvironmentLock,
     target.datasetVersion = dataset.datasetVersion
     target.authorityDeliveryHash = p6Hash(
         renderCkbAuthorityDeliveryManifest(authority[1]).toArray())
+    let attestationPath = Path(repositoryRoot).join(
+        target.attestationAuthorityManifestPath).toString()
+    let attestationRead = p6ReadFileBounded(attestationPath, 64 * 1024)
+    if (attestationRead[0] != "ok") {
+        return "environment_probe_attestation_authority_invalid"
+    }
+    let attestation = loadCkbReproVerifiedAttestationAuthority(
+        attestationRead[1], target.attestationAuthorityHash)
+    if (!attestation[0].ok) {
+        return "environment_probe_attestation_authority_invalid"
+    }
+    let compositionPath = Path(repositoryRoot).join(
+        target.compositionManifestPath).toString()
+    let compositionRead = p6ReadFileBounded(compositionPath, 64 * 1024)
+    if (compositionRead[0] != "ok" ||
+        p6Hash(compositionRead[1]) != target.compositionManifestHash) {
+        return "environment_probe_composition_authority_invalid"
+    }
     "ok"
 }
 
@@ -1237,6 +1473,16 @@ private func p6CliAbsolutePath(value: String): Bool {
         !value.endsWith("/..") && !value.contains("\\") &&
         !value.contains("\n") && !value.contains("\r") && !value.contains("\t") &&
         value.toRuneArray().size <= 4096
+}
+
+private func p6EnvironmentRepositoryRoot(environmentLockPath: String): String {
+    if (!p6CliAbsolutePath(environmentLockPath)) { return "" }
+    let root = Path(environmentLockPath).parent.parent.parent.toString()
+    if (!p6CliAbsolutePath(root)) { return "" }
+    let fixed = Path(root).join(
+        "reproducibility/manifests/environment-lock.json").toString()
+    if (fixed != environmentLockPath) { return "" }
+    root
 }
 
 private func p6CliPreflightFailure(code: String): CkbReproEnvironmentPreflightResult {

@@ -99,6 +99,35 @@ public class CkbNativeRetrievalParityProcessExecutor <:
     }
 }
 
+// P8-B revalidates the frozen executable immediately before every launch.
+// This closes the gap between composition parsing and process execution.
+public class CkbP8BIdentityCheckedProcessExecutor <:
+    CkbRetrievalParityProcessExecutor {
+    private let transport: CkbP8OwnedLocalRuntimeAuthority
+    private let configPath: String
+    private let runtimeRoot: String
+    private let delegate: CkbRetrievalParityProcessExecutor
+    public init(transport: CkbP8OwnedLocalRuntimeAuthority,
+        configPath: String, runtimeRoot: String,
+        delegate!: CkbRetrievalParityProcessExecutor =
+            CkbNativeRetrievalParityProcessExecutor()) {
+        this.transport = transport; this.configPath = configPath
+        this.runtimeRoot = runtimeRoot; this.delegate = delegate
+    }
+    public func execute(spec: CkbMcpStdioCommandSpec,
+        request: Array<UInt8>): CkbRetrievalParityProcessResponse {
+        if (!validateCkbP8BExecutableIdentity(this.transport).ok ||
+            spec.executable != this.transport.ckbExecutable ||
+            spec.args.toArray() != ["--config", this.configPath, "--store",
+                this.runtimeRoot, "mcp-stdio"] ||
+            spec.environment.size != 0) {
+            let out = CkbRetrievalParityProcessResponse()
+            out.diagnostic = "p8b_ckb_executable_identity_invalid"; return out
+        }
+        this.delegate.execute(spec, request)
+    }
+}
+
 private func ckbRetrievalParityReadLine(pipe: InputStream,
     maxBytes: Int64): (String, Array<UInt8>) {
     let bytes = ArrayList<UInt8>()
@@ -387,6 +416,63 @@ public class CkbRetrievalParityResult {
     public var manifest: CkbRetrievalParityManifest =
         CkbRetrievalParityManifest()
     public init() {}
+}
+
+public func parseCkbRetrievalParityManifest(bytes: Array<UInt8>):
+    (CkbReproContractResult, CkbRetrievalParityManifest) {
+    let manifest = CkbRetrievalParityManifest()
+    let text = try { String.fromUtf8(bytes) } catch (_: Exception) {
+        return (ckbRetrievalParityFailure("invalid_response_encoding"),
+            manifest)
+    }
+    try {
+        let object = JsonValue.fromStr(text).asObject()
+        if (object.size() != 6) {
+            return (ckbRetrievalParityFailure(
+                "retrieval_parity_field_contract_invalid"), manifest)
+        }
+        manifest.schemaVersion = object.get("schemaVersion").getOrThrow()
+            .asString().getValue()
+        manifest.knowledgeVersion = object.get("knowledgeVersion")
+            .getOrThrow().asString().getValue()
+        manifest.logicalManifestHash = object.get("logicalManifestHash")
+            .getOrThrow().asString().getValue()
+        manifest.query = object.get("query").getOrThrow()
+            .asString().getValue()
+        for (item in object.get("transports").getOrThrow()
+            .asArray().getItems()) {
+            manifest.transports.add(item.asString().getValue())
+        }
+        manifest.canonicalResultHash = object.get("canonicalResultHash")
+            .getOrThrow().asString().getValue()
+    } catch (_: Exception) {
+        return (ckbRetrievalParityFailure(
+            "retrieval_parity_malformed_json"),
+            CkbRetrievalParityManifest())
+    }
+    if (manifest.schemaVersion != "ckb-retrieval-parity-v1" ||
+        manifest.knowledgeVersion == "" ||
+        !ckbRetrievalParityHashValid(manifest.logicalManifestHash) ||
+        !ckbRetrievalParityHashValid(manifest.canonicalResultHash) ||
+        manifest.query != ckbRetrievalParityReferenceQuery() ||
+        manifest.transports.toArray() !=
+            ["rest", "mcp_stdio", "mcp_http"] ||
+        renderCkbRetrievalParityManifest(manifest) != text) {
+        return (ckbRetrievalParityFailure(
+            "retrieval_parity_manifest_invalid"),
+            CkbRetrievalParityManifest())
+    }
+    (ckbRetrievalParitySuccess(), manifest)
+}
+
+public func renderCkbRetrievalParityManifest(
+    manifest: CkbRetrievalParityManifest): String {
+    "{\"schemaVersion\":\"${ckbRetrievalParityJson(manifest.schemaVersion)}\"," +
+        "\"knowledgeVersion\":\"${ckbRetrievalParityJson(manifest.knowledgeVersion)}\"," +
+        "\"logicalManifestHash\":\"${manifest.logicalManifestHash}\"," +
+        "\"query\":\"${ckbRetrievalParityJson(manifest.query)}\"," +
+        "\"transports\":[\"rest\",\"mcp_stdio\",\"mcp_http\"]," +
+        "\"canonicalResultHash\":\"${manifest.canonicalResultHash}\"}"
 }
 
 public func ckbRetrievalParityReferenceQuery(): String {

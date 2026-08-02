@@ -120,6 +120,17 @@ public class CkbReproBuildTest {
         @Expect(result.proof.evalSupportPersisted, 0)
         @Expect(result.proof.vectorCount, 0)
         @Expect(result.proof.vectorState, "DEGRADED")
+        let canonicalProof = renderCkbReproBuildProof(result.proof)
+        let parsedProof = parseCkbReproBuildProof(canonicalProof.toArray())
+        @Expect(parsedProof[0].ok, true)
+        @Expect(parsedProof[1].preservationHash,
+            result.proof.preservationHash)
+        @Expect(parseCkbReproBuildProof([0xff, 0xfe])[0].diagnostic,
+            "invalid_response_encoding")
+        @Expect(parseCkbReproBuildProof(
+            canonicalProof.replace("\"vectorCount\":0",
+                "\"vectorCount\":1").toArray())[0].diagnostic,
+            "build_proof_invalid")
         @Expect(backend.stages.toArray(),
             ["assemble", "validate_authority", "load_first_init", "validate_serving",
              "clean", "leakage", "materialize", "logical_scan"])

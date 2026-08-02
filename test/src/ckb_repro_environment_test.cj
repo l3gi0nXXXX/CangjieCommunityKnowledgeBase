@@ -22,7 +22,7 @@ private class P6FakeEnvironmentProbe <: CkbReproEnvironmentProbe {
     public var calls: Int64 = 0
     public init(value: CkbReproEnvironmentProbeResult) { this.result = value }
     public func inspect(attested: CkbReproEnvironmentLock,
-        attestedInputHash: String):
+        attestedInputHash: String, evidenceRepositoryRoot: String):
         CkbReproEnvironmentProbeResult {
         this.calls += 1
         this.result
@@ -36,6 +36,64 @@ private class P6FakeGitProbeRunner <: CkbReproGitProbeRunner {
         this.command = value
         this.args = arguments
         (0, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+    }
+}
+
+private class P6FakeGitEvidenceRunner <: CkbReproGitProbeRunner {
+    public var dirty: Bool = false
+    public var ancestor: Bool = true
+    public var commitExists: Bool = true
+    public var head: String = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    public var changedPaths: String =
+        "reproducibility/manifests/environment-lock.json " +
+        "reproducibility/manifests/environment-attestation-authority.json"
+    public let calls = ArrayList<String>()
+    public func run(command: String, args: Array<String>): (Int64, String) {
+        var joined = ""
+        for (arg in args) {
+            if (joined != "") { joined += " " }
+            joined += arg
+        }
+        this.calls.add(joined)
+        if (joined.contains("cat-file")) {
+            return (if (this.commitExists) { 0 } else { 1 }, "")
+        }
+        if (joined.contains("status")) {
+            return (0, if (this.dirty) { " M src/main.cj" } else { "" })
+        }
+        if (joined.contains("merge-base")) {
+            return (if (this.ancestor) { 0 } else { 1 }, "")
+        }
+        if (joined.contains("diff") && joined.contains("--quiet")) {
+            if (joined.contains(":(exclude)")) {
+                return (if (this.changedPaths.contains("src/main.cj")) {
+                    1
+                } else { 0 }, "")
+            }
+            if (joined.contains(
+                "reproducibility/manifests/environment-lock.json")) {
+                return (if (this.changedPaths.contains(
+                    "reproducibility/manifests/environment-lock.json")) {
+                    1
+                } else { 0 }, "")
+            }
+            if (joined.contains(
+                "reproducibility/manifests/environment-attestation-authority.json")) {
+                return (if (this.changedPaths.contains(
+                    "reproducibility/manifests/environment-attestation-authority.json")) {
+                    1
+                } else { 0 }, "")
+            }
+        }
+        if (joined.contains("rev-parse")) { return (0, this.head) }
+        (1, "")
+    }
+}
+
+private class P6RealGitEvidenceRunner <: CkbReproGitProbeRunner {
+    public func run(command: String, args: Array<String>): (Int64, String) {
+        let result = ckbReproBoundedProbeCommand(command, args, 1024 * 1024)
+        (if (result[1] == "ok") { result[0] } else { 127 }, result[2])
     }
 }
 
@@ -63,8 +121,24 @@ public class CkbReproEnvironmentTest {
         let environmentValidation = validateCkbReproEnvironmentLock(environment[1])
         @Expect(environmentValidation.ok, true)
         @Expect(environment[1].identityStatus, "planned")
+        @Expect(environment[1].attestationAuthorityManifestPath,
+            "reproducibility/manifests/environment-attestation-authority.json")
+        @Expect(environment[1].attestationAuthorityHash, "")
+        @Expect(environment[1].compositionManifestPath,
+            "reproducibility/manifests/runtime-composition.json")
+        @Expect(environment[1].compositionManifestHash, "")
         @Expect(validateCkbReproEnvironmentLock(environment[1],
             mode: "execution").diagnostic, "environment_identity_not_frozen")
+        let plannedLockPath = canonicalize(Path(
+            "../reproducibility/manifests/environment-lock.json")).toString()
+        @Expect(loadCkbReproPreflightAuthority(plannedLockPath)[0].diagnostic,
+            "environment_identity_not_frozen")
+        @Expect(exists(Path(
+            "../reproducibility/manifests/environment-attestation-authority.json")),
+            true)
+        @Expect(exists(Path(
+            "../reproducibility/environment-attestation-authority.schema.json")),
+            true)
         let critical = parseCkbRunCriticalFilesManifest(
             p6Read("../reproducibility/manifests/run-critical-files.json"))
         @Expect(critical[0].ok, true)
@@ -206,13 +280,19 @@ public class CkbReproEnvironmentTest {
         @Expect(parseCkbReproPreflightCliArgs([
             "ckb-repro-preflight", "--token", "secret"]).diagnostic,
             "unknown_argument:--token")
+        for (forbidden in ["--attestation-authority-path",
+            "--attestation-authority-hash", "--observed-environment-hash"]) {
+            @Expect(parseCkbReproPreflightCliArgs([
+                "ckb-repro-preflight", forbidden, "untrusted"]).diagnostic,
+                "unknown_argument:${forbidden}")
+        }
         let invalidAuthority = parseCkbReproPreflightCliArgs(p6ExplicitCliArgs())
         invalidAuthority.signingFingerprint = "not-a-fingerprint"
         @Expect(validateCkbReproPreflightCliOptions(invalidAuthority).diagnostic,
             "environment_attestation_authority_invalid")
         invalidAuthority.signingFingerprint =
             "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
-        invalidAuthority.observedEnvironmentHash = "sha256:invalid"
+        invalidAuthority.observedEnvironmentProjectionHash = "sha256:invalid"
         @Expect(validateCkbReproPreflightCliOptions(invalidAuthority).diagnostic,
             "environment_attestation_authority_invalid")
     }
@@ -376,8 +456,8 @@ public class CkbReproEnvironmentTest {
         let drifted = CkbReproEnvironmentProbeResult()
         drifted.ok = true
         drifted.observed = p6FrozenEnvironment()
-        drifted.attestedInputHash = p6Hash(
-            renderCkbReproEnvironmentLock(inputs.observed))
+        drifted.attestedInputHash =
+            ckbReproObservedEnvironmentProjectionHash(inputs.observed)
         drifted.observed.timeoutSeconds = 3599
         let driftProbe = P6FakeEnvironmentProbe(drifted)
         let blocked = executeCkbReproPreflightCliAdapterWithProbe(
@@ -395,10 +475,15 @@ public class CkbReproEnvironmentTest {
         let matched = CkbReproEnvironmentProbeResult()
         matched.ok = true
         matched.observed = p6FrozenEnvironment()
-        matched.attestedInputHash = p6Hash(
-            renderCkbReproEnvironmentLock(inputs.observed))
-        @Expect(executeCkbReproPreflightCliAdapterWithProbe(options, inputs,
-            P6FakeEnvironmentProbe(matched)).ok, true)
+        matched.attestedInputHash =
+            ckbReproObservedEnvironmentProjectionHash(inputs.observed)
+        matched.attestationEvidenceCommit =
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        let matchedResult = executeCkbReproPreflightCliAdapterWithProbe(
+            options, inputs, P6FakeEnvironmentProbe(matched))
+        @Expect(matchedResult.ok, true)
+        @Expect(matchedResult.attestationEvidenceCommit,
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
 
         @Expect(runCkbReproPreflightCliAdapter(options).diagnostic,
             "environment_attestation_authority_unavailable")
@@ -452,7 +537,7 @@ public class CkbReproEnvironmentTest {
         let canonical = canonicalize(root).toString()
         let observed = p6FrozenEnvironment()
         let observedText = renderCkbReproEnvironmentLock(observed)
-        let observedHash = p6Hash(observedText)
+        let observedHash = ckbReproObservedEnvironmentProjectionHash(observed)
         let anchoredText = p6AuthorityManifest(
             "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", observedHash)
         let anchored = loadCkbReproVerifiedAttestationAuthority(
@@ -473,7 +558,7 @@ public class CkbReproEnvironmentTest {
             "${canonical}/preflight.json", "--certification-run-manifest",
             "${canonical}/run-manifest.json", "--signing-fingerprint",
             "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-            "--observed-environment-hash", observedHash])
+            "--observed-environment-projection-hash", observedHash])
         let wrongKey = P6FakeSignatureVerifier(
             "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB")
         let probeResult = CkbReproEnvironmentProbeResult()
@@ -484,7 +569,89 @@ public class CkbReproEnvironmentTest {
             "environment_attestation_signature_invalid")
         @Expect(wrongKey.calls, 1)
         @Expect(probe.calls, 0)
+
+        let repo = Path(canonical).join("repo")
+        let manifests = repo.join("reproducibility/manifests")
+        Directory.create(manifests, recursive: true)
+        let repoCanonical = canonicalize(repo).toString()
+        let frozen = p6FrozenEnvironment()
+        let projection = ckbReproObservedEnvironmentProjectionHash(frozen)
+        let frozenAuthority = p6AuthorityManifest(
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", projection)
+        frozen.attestationAuthorityHash = p6Hash(frozenAuthority)
+        let lockPath = Path(repoCanonical).join(
+            "reproducibility/manifests/environment-lock.json")
+        let authorityPath = Path(repoCanonical).join(
+            frozen.attestationAuthorityManifestPath)
+        File.writeTo(lockPath,
+            renderCkbReproEnvironmentLock(frozen).toArray())
+        File.writeTo(authorityPath, frozenAuthority.toArray())
+        @Expect(loadCkbReproPreflightAuthority(lockPath.toString())[0].ok,
+            true)
+
+        let fullLockHash = p6Hash(renderCkbReproEnvironmentLock(frozen))
+        let circularAuthority = p6AuthorityManifest(
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", fullLockHash)
+        frozen.attestationAuthorityHash = p6Hash(circularAuthority)
+        File.writeTo(lockPath,
+            renderCkbReproEnvironmentLock(frozen).toArray())
+        File.writeTo(authorityPath, circularAuthority.toArray())
+        @Expect(loadCkbReproPreflightAuthority(lockPath.toString())[0].diagnostic,
+            "environment_attestation_input_mismatch")
+
+        frozen.attestationAuthorityHash = p6Hash(frozenAuthority)
+        File.writeTo(lockPath,
+            renderCkbReproEnvironmentLock(frozen).toArray())
+        let driftedAuthority = frozenAuthority.replace(
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB")
+        File.writeTo(authorityPath, driftedAuthority.toArray())
+        @Expect(loadCkbReproPreflightAuthority(lockPath.toString())[0].diagnostic,
+            "environment_attestation_authority_anchor_mismatch")
+
+        frozen.attestationAuthorityManifestPath =
+            "reproducibility/manifests/other-authority.json"
+        File.writeTo(lockPath,
+            renderCkbReproEnvironmentLock(frozen).toArray())
+        @Expect(loadCkbReproPreflightAuthority(lockPath.toString())[0].diagnostic,
+            "environment_attestation_authority_invalid")
         remove(root, recursive: true)
+    }
+
+    @TestCase
+    public func p6Neg03ProjectionExcludesOnlyAuthorityHash(): Unit {
+        let base = p6FrozenEnvironment()
+        let baseProjection = ckbReproObservedEnvironmentProjectionHash(base)
+        let baseFull = validateCkbReproEnvironmentLock(base,
+            mode: "execution")
+
+        let authorityHashDrift = p6FrozenEnvironment()
+        authorityHashDrift.attestationAuthorityHash = p6Hash("other-authority")
+        let authorityFull = validateCkbReproEnvironmentLock(
+            authorityHashDrift, mode: "execution")
+        @Expect(ckbReproObservedEnvironmentProjectionHash(authorityHashDrift),
+            baseProjection)
+        @Expect(authorityFull.manifestHash == baseFull.manifestHash, false)
+        @Expect(authorityFull.treeHash == baseFull.treeHash, false)
+
+        let commitDrift = p6FrozenEnvironment()
+        commitDrift.runCandidateCommit =
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        let commitFull = validateCkbReproEnvironmentLock(commitDrift,
+            mode: "execution")
+        @Expect(ckbReproObservedEnvironmentProjectionHash(commitDrift) ==
+            baseProjection, false)
+        @Expect(commitFull.manifestHash == baseFull.manifestHash, false)
+        @Expect(commitFull.treeHash, baseFull.treeHash)
+
+        let timeoutDrift = p6FrozenEnvironment()
+        timeoutDrift.timeoutSeconds = 3599
+        @Expect(ckbReproObservedEnvironmentProjectionHash(timeoutDrift) ==
+            baseProjection, false)
+        let providerDrift = p6FrozenEnvironment()
+        providerDrift.glmProvider = "different-provider"
+        @Expect(ckbReproObservedEnvironmentProjectionHash(providerDrift) ==
+            baseProjection, false)
     }
 
     @TestCase
@@ -544,7 +711,8 @@ public class CkbReproEnvironmentTest {
         @Expect(concurrent[1], "environment_probe_output_too_large")
 
         let production = CkbReproFilesystemEnvironmentProbe().inspect(
-            expected, p6Hash(renderCkbReproEnvironmentLock(expected)))
+            expected, ckbReproObservedEnvironmentProjectionHash(expected),
+            "")
         @Expect(production.ok, false)
         @Expect(production.diagnostic, "environment_probe_unavailable")
         @Expect(production.observed.glmProvider, "")
@@ -602,6 +770,120 @@ public class CkbReproEnvironmentTest {
         }
         remove(root.parent, recursive: true)
     }
+
+    @TestCase
+    public func p6Reg03RunCandidateAndEvidenceCommitsDoNotSelfReference(): Unit {
+        let root = Path("target/p6-evidence-commit/repository")
+        if (exists(root.parent)) { remove(root.parent, recursive: true) }
+        Directory.create(root, recursive: true)
+        let canonicalRoot = canonicalize(root).toString()
+        let manifests = Path(canonicalRoot).join(
+            "reproducibility/manifests")
+        Directory.create(manifests, recursive: true)
+        let lockPath = manifests.join("environment-lock.json")
+        let authorityPath = manifests.join(
+            "environment-attestation-authority.json")
+        File.writeTo(lockPath, "lock".toArray())
+        File.writeTo(authorityPath, "authority".toArray())
+        let candidate = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        let valid = P6FakeGitEvidenceRunner()
+        let accepted = ckbReproValidateEvidenceCommit(
+            canonicalRoot, candidate, valid)
+        @Expect(accepted[0], "ok")
+        @Expect(accepted[1],
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb")
+
+        let dirty = P6FakeGitEvidenceRunner(); dirty.dirty = true
+        @Expect(ckbReproValidateEvidenceCommit(
+            canonicalRoot, candidate, dirty)[0], "git_worktree_dirty")
+        let unrelated = P6FakeGitEvidenceRunner()
+        unrelated.changedPaths =
+            "reproducibility/manifests/environment-lock.json " +
+            "reproducibility/manifests/environment-attestation-authority.json " +
+            "src/main.cj"
+        @Expect(ckbReproValidateEvidenceCommit(
+            canonicalRoot, candidate, unrelated)[0],
+            "git_evidence_commit_scope_invalid")
+        let incomplete = P6FakeGitEvidenceRunner()
+        incomplete.changedPaths =
+            "reproducibility/manifests/environment-lock.json"
+        @Expect(ckbReproValidateEvidenceCommit(
+            canonicalRoot, candidate, incomplete)[0],
+            "git_evidence_commit_incomplete")
+        remove(authorityPath)
+        @Expect(ckbReproValidateEvidenceCommit(
+            canonicalRoot, candidate, valid)[0],
+            "git_evidence_commit_incomplete")
+        File.writeTo(authorityPath, "authority".toArray())
+        let missing = P6FakeGitEvidenceRunner(); missing.commitExists = false
+        @Expect(ckbReproValidateEvidenceCommit(
+            canonicalRoot, candidate, missing)[0],
+            "git_run_candidate_missing")
+        let candidateCheckout = P6FakeGitEvidenceRunner()
+        candidateCheckout.head = candidate
+        @Expect(ckbReproValidateCandidateCheckout(
+            canonicalRoot, candidate, candidateCheckout)[0], "ok")
+        candidateCheckout.head =
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        @Expect(ckbReproValidateCandidateCheckout(
+            canonicalRoot, candidate, candidateCheckout)[0],
+            "git_candidate_checkout_mismatch")
+        remove(root.parent, recursive: true)
+    }
+
+    @TestCase
+    public func p6Reg04RealGitEvidenceCommitTopologyIsExact(): Unit {
+        let root = Path("target/p6-real-git/repository")
+        if (exists(root.parent)) { remove(root.parent, recursive: true) }
+        Directory.create(root.join("src"), recursive: true)
+        let manifests = root.join("reproducibility/manifests")
+        Directory.create(manifests, recursive: true)
+        File.writeTo(root.join("src/main.cj"), "main A".toArray())
+        File.writeTo(manifests.join("environment-lock.json"),
+            "planned lock".toArray())
+        File.writeTo(manifests.join(
+            "environment-attestation-authority.json"),
+            "planned authority".toArray())
+        let canonical = canonicalize(root).toString()
+        let runner = P6RealGitEvidenceRunner()
+        @Expect(runner.run("git", ["init", "--quiet", canonical])[0],
+            Int64(0))
+        @Expect(runner.run("git", ["-C", canonical, "add", "."])[0],
+            Int64(0))
+        @Expect(runner.run("git", ["-C", canonical, "-c",
+            "user.name=CKB Test", "-c", "user.email=ckb@example.invalid",
+            "commit", "--quiet", "-m", "candidate A"])[0], Int64(0))
+        let candidate = runner.run("git", ["-C", canonical,
+            "rev-parse", "HEAD"])[1]
+
+        File.writeTo(manifests.join("environment-lock.json"),
+            "frozen lock".toArray())
+        File.writeTo(manifests.join(
+            "environment-attestation-authority.json"),
+            "frozen authority".toArray())
+        @Expect(runner.run("git", ["-C", canonical, "add", "."])[0],
+            Int64(0))
+        @Expect(runner.run("git", ["-C", canonical, "-c",
+            "user.name=CKB Test", "-c", "user.email=ckb@example.invalid",
+            "commit", "--quiet", "-m", "evidence B"])[0], Int64(0))
+        let evidence = runner.run("git", ["-C", canonical,
+            "rev-parse", "HEAD"])[1]
+        let accepted = ckbReproValidateEvidenceCommit(
+            canonical, candidate, runner)
+        @Expect(accepted[0], "ok")
+        @Expect(accepted[1], evidence)
+
+        remove(root.join("src/main.cj"))
+        @Expect(runner.run("git", ["-C", canonical, "add", "-A"])[0],
+            Int64(0))
+        @Expect(runner.run("git", ["-C", canonical, "-c",
+            "user.name=CKB Test", "-c", "user.email=ckb@example.invalid",
+            "commit", "--quiet", "-m", "forbidden C"])[0], Int64(0))
+        @Expect(ckbReproValidateEvidenceCommit(
+            canonical, candidate, runner)[0],
+            "git_evidence_commit_scope_invalid")
+        remove(root.parent, recursive: true)
+    }
 }
 
 public func p6FrozenEnvironment(): CkbReproEnvironmentLock {
@@ -618,6 +900,9 @@ public func p6FrozenEnvironment(): CkbReproEnvironmentLock {
     lock.runCandidateCommit = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     lock.runCriticalFilesManifestHash = p6Hash("critical-manifest")
     lock.runCriticalTreeHash = p6Hash("critical-tree")
+    lock.compositionManifestPath =
+        "reproducibility/manifests/runtime-composition.json"
+    lock.compositionManifestHash = p6Hash("composition-manifest")
     lock.claudeCodeVersion = "test-version"
     lock.glmProvider = "openai-compatible"
     lock.glmBaseUrl = "https://provider.example/v1"
@@ -644,6 +929,9 @@ public func p6FrozenEnvironment(): CkbReproEnvironmentLock {
     lock.datasetVersion =
         "cangjie-humaneval-164-sha256:3a12d5a5283daa492dd489c1a97ebc457b71e72d90669fbc965e165566386b33"
     lock.authorityDeliveryHash = p6Hash("authority-delivery")
+    lock.attestationAuthorityManifestPath =
+        "reproducibility/manifests/environment-attestation-authority.json"
+    lock.attestationAuthorityHash = p6Hash("attestation-authority")
     lock
 }
 
@@ -763,12 +1051,13 @@ private func p6SealPart(value: String): String {
 }
 
 private func p6ExplicitCliArgs(): Array<String> {
-    ["ckb-repro-preflight", "--environment-lock", "/tmp/expected.json",
+    ["ckb-repro-preflight", "--environment-lock",
+        "/tmp/reproducibility/manifests/environment-lock.json",
         "--observed-environment", "/tmp/observed.json",
         "--certification-preflight", "/tmp/preflight.json",
         "--certification-run-manifest", "/tmp/run-manifest.json",
         "--signing-fingerprint", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-        "--observed-environment-hash", "sha256:${"a" * 64}"]
+        "--observed-environment-projection-hash", "sha256:${"a" * 64}"]
 }
 
 private func p6AuthorityManifest(fingerprint: String,
@@ -776,7 +1065,7 @@ private func p6AuthorityManifest(fingerprint: String,
     let source = "release://ckb/environment-attestation-authority-v1"
     "{\"schemaVersion\":\"ckb-repro-environment-attestation-authority-v1\"," +
         "\"status\":\"frozen\",\"signingFingerprint\":\"${fingerprint}\"," +
-        "\"observedEnvironmentHash\":\"${observedHash}\"," +
+        "\"observedEnvironmentProjectionHash\":\"${observedHash}\"," +
         "\"authoritySource\":\"${source}\"," +
         "\"authoritySourceHash\":\"${p6Hash(source)}\"}"
 }
