@@ -17,6 +17,13 @@ public class CkbReproBuildTest {
         second.entries.add(p4ExternalLock("a"))
         second.entries.add(p4ExternalLock("b"))
         @Expect(validateCkbReproBuildLocks(first).ok, true)
+        let rendered = renderCkbReproSourceLock(first)
+        let parsed = parseCkbReproSourceLock(rendered.toArray())
+        @Expect(parsed[0].ok, true)
+        @Expect(renderCkbReproSourceLock(parsed[1]), rendered)
+        let aIndex = rendered.indexOf("\"sourceId\":\"a\"").getOrThrow()
+        let bIndex = rendered.indexOf("\"sourceId\":\"b\"").getOrThrow()
+        @Expect(aIndex < bIndex, true)
         @Expect(canonicalCkbReproSourceLockHash(first),
             canonicalCkbReproSourceLockHash(second))
         second.entries[0].license = "changed"

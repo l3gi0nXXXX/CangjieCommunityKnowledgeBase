@@ -529,7 +529,7 @@ public class CkbReproBuildInputsRuntimeTest {
         contract.knowledgeSelectionHash = manifest.assets[4].sha256
         contract.portablePolicyHash = manifest.assets[5].sha256
         contract.apiRoutesHash = manifest.assets[6].sha256
-        contract.assemblerIdentityHash = p4RuntimeHexIdentity(8)
+        contract.assemblerIdentityHash = ckbFirstInitReproAssemblerIdentityHash()
         contract.privateAuthorityIdentityHash = p4RuntimeHexIdentity(9)
         payloads[0] = renderCkbReproBuildContract(contract)
         manifest.assets[0].size = payloads[0].toArray().size
@@ -545,6 +545,23 @@ public class CkbReproBuildInputsRuntimeTest {
         @Expect(loaded.selection.size, 1)
         @Expect(loaded.sourceMaterials.entries.size, 1)
         @Expect(loaded.sourceLock.entries.size, 1)
+
+        contract.assemblerIdentityHash = p4RuntimeHexIdentity(8)
+        payloads[0] = renderCkbReproBuildContract(contract)
+        manifest.assets[0].size = payloads[0].toArray().size
+        manifest.assets[0].sha256 = benchmarkGapSha256(payloads[0])
+        let wrongAssembler = P4RuntimeMultiReadBackend(root)
+        for (i in 0..roles.size) {
+            wrongAssembler.add(manifest.assets[i].relativePath,
+                payloads[i].toArray())
+        }
+        @Expect(loadCkbReproPublicBuildInputs(
+            root, manifest, wrongAssembler).diagnostic,
+            "build_contract_assembler_identity_mismatch")
+        contract.assemblerIdentityHash = ckbFirstInitReproAssemblerIdentityHash()
+        payloads[0] = renderCkbReproBuildContract(contract)
+        manifest.assets[0].size = payloads[0].toArray().size
+        manifest.assets[0].sha256 = benchmarkGapSha256(payloads[0])
 
         let tampered = P4RuntimeMultiReadBackend(root)
         for (i in 0..roles.size) {

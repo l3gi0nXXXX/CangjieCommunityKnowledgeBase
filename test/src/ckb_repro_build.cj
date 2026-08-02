@@ -766,10 +766,75 @@ public func parseCkbReproSourceLock(bytes: Array<UInt8>):
             }
             lock.entries.add(entry)
         }
+        let validated = validateCkbReproBuildLocks(lock)
+        if (!validated.ok) { return (validated, CkbReproSourceLock()) }
+        if (renderCkbReproSourceLock(lock) != text) {
+            return (p4BuildFailure("source_lock_noncanonical"),
+                CkbReproSourceLock())
+        }
         (p4BuildSuccess(), lock)
     } catch (_: Exception) {
         (p4BuildFailure("source_lock_malformed_json"), CkbReproSourceLock())
     }
+}
+
+public func renderCkbReproSourceLock(lock: CkbReproSourceLock): String {
+    let rows = ArrayList<String>()
+    for (entry in lock.entries) {
+        if (entry.sourceType == "external_git") {
+            rows.add("{\"sourceId\":\"${p4BuildJson(entry.sourceId)}\"," +
+                "\"sourceType\":\"external_git\"," +
+                "\"repository\":\"${p4BuildJson(entry.repository)}\"," +
+                "\"commit\":\"${p4BuildJson(entry.commit)}\"," +
+                "\"tree\":\"${entry.tree}\"," +
+                "\"path\":\"${p4BuildJson(entry.path)}\"," +
+                "\"fileHash\":\"${entry.fileHash}\"," +
+                "\"license\":\"${p4BuildJson(entry.license)}\"," +
+                "\"authMode\":\"${p4BuildJson(entry.authMode)}\"," +
+                "\"assemblyRole\":\"${p4BuildJson(entry.assemblyRole)}\"," +
+                "\"outputKind\":\"${p4BuildJson(entry.outputKind)}\"}")
+        } else {
+            let inputs = entry.inputHashes.toArray(); sort(inputs)
+            var renderedInputs = "["
+            for (i in 0..inputs.size) {
+                if (i > 0) { renderedInputs += "," }
+                renderedInputs += "\"${inputs[i]}\""
+            }
+            renderedInputs += "]"
+            rows.add("{\"sourceId\":\"${p4BuildJson(entry.sourceId)}\"," +
+                "\"sourceType\":\"generated\"," +
+                "\"generatorId\":\"${p4BuildJson(entry.generatorId)}\"," +
+                "\"generatorVersion\":\"${p4BuildJson(entry.generatorVersion)}\"," +
+                "\"generatorSourceHash\":\"${entry.generatorSourceHash}\"," +
+                "\"inputHashes\":${renderedInputs}," +
+                "\"outputHash\":\"${entry.outputHash}\"," +
+                "\"outputPath\":\"${p4BuildJson(entry.outputPath)}\"," +
+                "\"license\":\"${p4BuildJson(entry.license)}\"," +
+                "\"assemblyRole\":\"${p4BuildJson(entry.assemblyRole)}\"," +
+                "\"outputKind\":\"${p4BuildJson(entry.outputKind)}\"}")
+        }
+    }
+    let ordered = rows.toArray(); sort(ordered)
+    "{\"schemaVersion\":\"ckb-source-lock-v1\",\"sources\":[" +
+        p4BuildJoin(ordered, ",") + "]}"
+}
+
+private func p4BuildJson(value: String): String {
+    let out = StringBuilder()
+    let hex = "0123456789abcdef".toRuneArray()
+    for (rune in value.runes()) {
+        if (rune == r'"') { out.append("\\\"") }
+        else if (rune == r'\\') { out.append("\\\\") }
+        else if (rune == r'\n') { out.append("\\n") }
+        else if (rune == r'\r') { out.append("\\r") }
+        else if (rune == r'\t') { out.append("\\t") }
+        else if (UInt32(rune) < 0x20u32) {
+            let code = UInt32(rune); out.append("\\u00")
+            out.append(hex[Int64(code / 16u32)])
+            out.append(hex[Int64(code % 16u32)])
+        } else { out.append(rune) }
+    }
+    out.toString()
 }
 
 public func validateCkbReproBuildLocks(lock: CkbReproSourceLock): CkbReproContractResult {
