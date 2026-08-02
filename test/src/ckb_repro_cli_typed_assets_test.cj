@@ -140,8 +140,8 @@ public class CkbReproCliTypedAssetsTest {
 
     @TestCase
     public func p8BTransportAcceptsOnlyCanonicalLoopbackEndpoints(): Unit {
-        let executable = canonicalize(
-            Path("../target/release/bin/main")).toString()
+        let fixture = typedP8BExecutable("transport")
+        let executable = fixture[1]
         let valid = typedP8BTransport(executable)
         let parsed = parseCkbP8OwnedLocalRuntimeAuthorityBytes(valid.toArray())
         @Expect(parsed[0].diagnostic, "ok")
@@ -174,12 +174,13 @@ public class CkbReproCliTypedAssetsTest {
                 invalid.toArray())[0].diagnostic,
                 "p8b_runtime_transport_invalid")
         }
+        remove(Path(fixture[0]), recursive: true)
     }
 
     @TestCase
     public func p8BStdioRejectsArgsEnvironmentAndExecutableMismatch(): Unit {
-        let executable = canonicalize(
-            Path("../target/release/bin/main")).toString()
+        let fixture = typedP8BExecutable("stdio")
+        let executable = fixture[1]
         let transport = parseCkbP8OwnedLocalRuntimeAuthorityBytes(
             typedP8BTransport(executable).toArray())[1]
         let valid = "{\"schemaVersion\":\"ckb-mcp-stdio-command-v1\"," +
@@ -199,12 +200,13 @@ public class CkbReproCliTypedAssetsTest {
         @Expect(parseCkbP8BMcpStdioCommand(
             [UInt8(0xff)], transport)[0].diagnostic,
             "invalid_response_encoding")
+        remove(Path(fixture[0]), recursive: true)
     }
 
     @TestCase
     public func p8BProcessRevalidatesExecutableBeforeDelegate(): Unit {
-        let executable = canonicalize(
-            Path("../target/release/bin/main")).toString()
+        let fixture = typedP8BExecutable("process")
+        let executable = fixture[1]
         let transport = parseCkbP8OwnedLocalRuntimeAuthorityBytes(
             typedP8BTransport(executable).toArray())[1]
         let command = "{\"schemaVersion\":\"ckb-mcp-stdio-command-v1\"," +
@@ -224,6 +226,7 @@ public class CkbReproCliTypedAssetsTest {
         @Expect(checked.execute(spec, "{}".toArray()).diagnostic,
             "p8b_ckb_executable_identity_invalid")
         @Expect(delegate.calls, 1)
+        remove(Path(fixture[0]), recursive: true)
     }
 
     @TestCase
@@ -297,6 +300,13 @@ private func ckbTypedAssetsTestFileHash(path: String): String {
         out.append(digits[Int64(byte % UInt8(16))])
     }
     "sha256:${out.toString()}"
+}
+
+private func typedP8BExecutable(name: String): (String, String) {
+    let root = typedRoot("p8b-${name}")
+    let path = Path(root).join("ckb-test-executable")
+    File.writeTo(path, "ckb-test-executable-${name}\n".toArray())
+    (root, canonicalize(path).toString())
 }
 
 private func typedRuntime(): CkbRuntimeConfig {
