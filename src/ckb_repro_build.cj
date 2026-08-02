@@ -232,6 +232,194 @@ public func newCkbP4RuntimeProductionAdapter(
             control, files, pathContext))
 }
 
+public class CkbPortablePromotionBundleInputs {
+    public var contract: CkbReproContractResult = CkbReproContractResult()
+    public var runtimeAssets: CkbReproPromotionRuntimeAssets =
+        CkbReproPromotionRuntimeAssets()
+    public var options: CkbPortablePromotionOptions =
+        CkbPortablePromotionOptions()
+    public var logicalManifest: CkbLogicalSnapshotManifest =
+        CkbLogicalSnapshotManifest()
+    public var snapshotManifest: CkbQdrantSnapshotManifest =
+        CkbQdrantSnapshotManifest()
+    public var candidateStoreRoot: String = ""
+    public var targetCollection: String = ""
+    public init() {}
+}
+
+public func validateCkbPortablePromotionRuntimeBindings(
+    options: CkbPortablePromotionOptions,
+    snapshot: CkbQdrantSnapshotManifest,
+    logical: CkbLogicalSnapshotManifest,
+    vector: CkbPortableVectorProof,
+    qdrantSnapshotSha256: String): CkbReproContractResult {
+    if (snapshot.snapshotSha256 != qdrantSnapshotSha256 ||
+        snapshot.logicalManifestHash != logical.manifestHash ||
+        snapshot.vectorProofHash != vector.vectorProofHash ||
+        logical.p3VectorProofHash != vector.vectorProofHash ||
+        snapshot.collection != logical.vectorCollection ||
+        snapshot.points != logical.vectorCount ||
+        snapshot.dimension != logical.vectorDimension ||
+        logical.portableKnowledgeVersion != options.candidateVersion) {
+        return p4BuildFailure("promotion_runtime_asset_binding_invalid")
+    }
+    p4BuildSuccess()
+}
+
+// Loads every runtime promotion input from one validated release bundle.
+// productionStore is intentionally absent: only the CLI may select it.
+public func loadCkbPortablePromotionBundleInputs(unsignedRoot: String,
+    candidatePath: String, p8BPath: String, ownedRoot: String,
+    bundleBackend: CkbReproBundleReadBackend,
+    archiveBackend: CkbReleaseArchiveBackend):
+    CkbPortablePromotionBundleInputs {
+    let out = CkbPortablePromotionBundleInputs()
+    let baseline = validateCkbReproBundleManifest(unsignedRoot, bundleBackend)
+    if (!baseline.contract.ok) {
+        out.contract = p4BuildFailure("promotion_bundle_invalid"); return out
+    }
+    let controls = loadCkbPortablePromotionCliInputs(unsignedRoot,
+        candidatePath, p8BPath, bundleBackend)
+    if (!controls[0].ok) { out.contract = controls[0]; return out }
+    let runtime = captureCkbReproPromotionRuntimeAssets(unsignedRoot,
+        ownedRoot, bundleBackend)
+    out.runtimeAssets = runtime
+    if (!runtime.contract.ok || runtime.control.bytes.size != 7 ||
+        runtime.control.loaded.rootIdentity != baseline.rootIdentity ||
+        runtime.control.loaded.manifest.inputSetHash !=
+            baseline.manifest.inputSetHash ||
+        runtime.control.loaded.proofSetHash != baseline.proofSetHash) {
+        cleanupCkbReproPromotionRuntimeAssets(runtime)
+        out.contract = p4BuildFailure(if (runtime.contract.ok) {
+            "promotion_bundle_changed"
+        } else { runtime.contract.diagnostic })
+        return out
+    }
+    let parsedSnapshot = parseCkbQdrantSnapshotManifest(
+        runtime.control.bytes[6])
+    if (!parsedSnapshot[0].ok ||
+        !validateCkbQdrantSnapshotManifest(parsedSnapshot[1]).ok) {
+        return p4BuildBundleInputsFailure(out,
+            if (parsedSnapshot[0].diagnostic == "invalid_response_encoding") {
+                "invalid_response_encoding"
+            } else { "promotion_qdrant_manifest_invalid" })
+    }
+    let inspected = inspectCkbReleaseArchive(archiveBackend,
+        runtime.logicalSnapshotPath)
+    if (!inspected.ok) {
+        return p4BuildBundleInputsFailure(out,
+            "promotion_logical_archive_invalid")
+    }
+    let vector = parseCkbPortableVectorProofBytes(
+        runtime.control.bytes[2])
+    if (!vector[0].ok) {
+        return p4BuildBundleInputsFailure(out,
+            "promotion_vector_proof_invalid")
+    }
+    let snapshot = parsedSnapshot[1]
+    let logical = inspected.manifest
+    let binding = validateCkbPortablePromotionRuntimeBindings(controls[1],
+        snapshot, logical, vector[1], runtime.qdrantSnapshotSha256)
+    if (!binding.ok) {
+        return p4BuildBundleInputsFailure(out,
+            binding.diagnostic)
+    }
+    let candidateStoreRoot = Path(ownedRoot).join("candidate-store").toString()
+    let imported = importCkbLogicalSnapshot(runtime.logicalSnapshotPath,
+        candidateStoreRoot, archiveBackend)
+    if (!imported.ok) {
+        return p4BuildBundleInputsFailure(out,
+            "promotion_candidate_store_import_failed")
+    }
+    out.options = controls[1]
+    out.logicalManifest = logical
+    out.snapshotManifest = snapshot
+    out.candidateStoreRoot = candidateStoreRoot
+    out.targetCollection = "ckb_promotion_" +
+        controls[1].candidateManifestHash.replace("sha256:", "")
+    out.contract = p4BuildSuccess()
+    out
+}
+
+public func newCkbPortableBundlePromotionBackend(
+    inputs: CkbPortablePromotionBundleInputs, productionStore: String,
+    executor: CkbQdrantSnapshotExecutor,
+    fileExecutor: CkbQdrantSnapshotFileExecutor,
+    pathContext: CkbPortablePathContext): CkbPortablePromotionBackend {
+    CkbPortableProductionPromotionBackend(
+        FileKnowledgeStore(inputs.candidateStoreRoot),
+        FileKnowledgeStore(productionStore),
+        inputs.runtimeAssets.qdrantSnapshotPath, inputs.snapshotManifest,
+        inputs.logicalManifest, inputs.targetCollection, executor,
+        fileExecutor, pathContext)
+}
+
+public func cleanupCkbPortablePromotionBundleInputs(
+    inputs: CkbPortablePromotionBundleInputs): Bool {
+    cleanupCkbReproPromotionRuntimeAssets(inputs.runtimeAssets)
+}
+
+public class CkbP4SameBundleProductionAdapter <: CkbP4CliAdapter {
+    private let buildAdapter: CkbP4CliAdapter
+    private let ownedRoot: String
+    private let bundleBackend: CkbReproBundleReadBackend
+    private let archiveBackend: CkbReleaseArchiveBackend
+    private let executor: CkbQdrantSnapshotExecutor
+    private let fileExecutor: CkbQdrantSnapshotFileExecutor
+    private let pathContext: CkbPortablePathContext
+    public init(buildAdapter: CkbP4CliAdapter, ownedRoot: String,
+        bundleBackend: CkbReproBundleReadBackend,
+        archiveBackend: CkbReleaseArchiveBackend,
+        executor: CkbQdrantSnapshotExecutor,
+        fileExecutor: CkbQdrantSnapshotFileExecutor,
+        pathContext: CkbPortablePathContext) {
+        this.buildAdapter = buildAdapter; this.ownedRoot = ownedRoot
+        this.bundleBackend = bundleBackend; this.archiveBackend = archiveBackend
+        this.executor = executor; this.fileExecutor = fileExecutor
+        this.pathContext = pathContext
+    }
+    public func execute(options: CkbP4CliOptions): CkbP4CliOperationResult {
+        if (options.command == "ckb-repro-build") {
+            return this.buildAdapter.execute(options)
+        }
+        let out = CkbP4CliOperationResult()
+        let loaded = loadCkbPortablePromotionBundleInputs(
+            options.unsignedRoot, options.candidateManifest,
+            options.p8BReport, this.ownedRoot, this.bundleBackend,
+            this.archiveBackend)
+        if (!loaded.contract.ok) {
+            out.diagnostic = loaded.contract.diagnostic; return out
+        }
+        try {
+            let promotion = loaded.options
+            promotion.productionStore = options.productionStore
+            promotion.qdrantEndpoint = options.qdrantEndpoint
+            promotion.expectedActiveVersion = options.expectedActiveVersion
+            promotion.apply = options.apply
+            let backend = newCkbPortableBundlePromotionBackend(loaded,
+                options.productionStore, this.executor, this.fileExecutor,
+                this.pathContext)
+            let current = backend.readCurrent()
+            promotion.expectedPointerHash = current.pointerHash
+            let result = promoteCkbPortableCandidate(promotion, backend)
+            out.ok = result.ready; out.diagnostic = result.diagnostic
+            out.summary = "activeVersion=${result.activeVersion} " +
+                "pointerCommitted=${result.pointerCommitted}"
+            out
+        } finally {
+            cleanupCkbPortablePromotionBundleInputs(loaded)
+        }
+    }
+}
+
+private func p4BuildBundleInputsFailure(
+    out: CkbPortablePromotionBundleInputs, diagnostic: String):
+    CkbPortablePromotionBundleInputs {
+    cleanupCkbReproPromotionRuntimeAssets(out.runtimeAssets)
+    out.contract = p4BuildFailure(diagnostic)
+    out
+}
+
 public func loadCkbPortablePromotionCliInputs(unsignedRoot: String,
     candidatePath: String, p8BPath: String,
     backend: CkbReproBundleReadBackend):

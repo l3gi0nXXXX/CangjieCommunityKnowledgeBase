@@ -242,6 +242,15 @@ public class CkbReproReleaseTest {
         @Expect(schemaObject.get("title").isSome(), true)
         @Expect(releaseSchema.contains("\"logicalSnapshot\""), true)
         @Expect(releaseSchema.contains("\"vectorSnapshot\""), true)
+        let definitions = schemaObject.get("$defs").getOrThrow().asObject()
+        let vectorSchema = definitions.get("vectorSnapshot").getOrThrow()
+            .asObject()
+        let vectorProperties = vectorSchema.get("properties").getOrThrow()
+            .asObject()
+        @Expect(vectorProperties.get("manifest").isSome(), true)
+        @Expect(releaseSchema.contains(
+            "\"snapshot\",\n              \"manifest\",\n              \"manifestHash\""),
+            true)
         @Expect(releaseSchema.contains("\"environment\""), true)
         @Expect(releaseSchema.contains("\"licenses\""), true)
     }
