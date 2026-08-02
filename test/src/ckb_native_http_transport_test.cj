@@ -555,6 +555,14 @@ public class CkbNativeHttpTransportTest {
         @Expect(sourceResponse.status, "blocked_url")
         @Expect(sourceResponse.transportDiagnostic.contains("private-network"), true)
     }
+
+    @TestCase
+    public func nativeQdrantLittleEndianAcceptsEightByteHighBit(): Unit {
+        let bytes: Array<UInt8> = [1, 0, 0, 0, 0, 0, 0, 128]
+        let expected = (UInt64(128) << UInt64(56)) | UInt64(1)
+
+        @Expect(ckbNativeQdrantLittleEndian(bytes, 0, 8), expected)
+    }
 }
 
 private func jsonHttpRequest(method: String, url: String, body: String): HttpExecutionRequest {

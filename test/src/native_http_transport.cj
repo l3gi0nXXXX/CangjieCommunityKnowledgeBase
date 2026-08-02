@@ -415,15 +415,14 @@ private func ckbNativeQdrantStatIdentity(stat: Array<UInt8>): String {
         "${ckbNativeQdrantLittleEndian(stat, 72, 8)}"
 }
 
-private func ckbNativeQdrantLittleEndian(bytes: Array<UInt8>,
+func ckbNativeQdrantLittleEndian(bytes: Array<UInt8>,
     offset: Int64, count: Int64): UInt64 {
     if (offset < 0 || count < 0 || offset + count > bytes.size) {
         return UInt64(0)
     }
-    var out = UInt64(0); var multiplier = UInt64(1)
+    var out = UInt64(0)
     for (i in 0..count) {
-        out += UInt64(bytes[offset + i]) * multiplier
-        multiplier *= UInt64(256)
+        out |= UInt64(bytes[offset + i]) << UInt64(i * 8)
     }
     out
 }
