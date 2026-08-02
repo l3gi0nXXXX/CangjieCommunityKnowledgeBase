@@ -158,6 +158,15 @@ private class P8RuntimeDocumentationOperation <:
     }
 }
 
+private class P8RuntimeCleanupProbe {
+    var calls: Int64 = 0
+    public init() {}
+    func execute(options: CkbReproVerifyOptions): Bool {
+        this.calls += 1
+        true
+    }
+}
+
 private class P3RuntimeUploadServerState {
     public var calls: Int64 = 0
     public init() {}
@@ -645,6 +654,29 @@ public class CkbReproRuntimeCompositionTest {
         @Expect(restore.calls, 2); @Expect(rebuild.calls, 2)
         @Expect(publicEvidence.calls, 1); @Expect(documentation.calls, 1)
         @Expect(reference.calls, 1)
+    }
+
+    @TestCase
+    public func p8OwnedCleanupRunsEvenWhenRebuildWasNeverReached(): Unit {
+        let certificationCleanup = P8RuntimeCleanupProbe()
+        let certification = CkbProductionRunCertificationExecutor(
+            P8RuntimeRestoreOperation(), P8RuntimeRebuildOperation(),
+            P8RuntimeReferenceOperation(), cleanupAction: {
+                _: CkbReproVerifyOptions =>
+                certificationCleanup.execute(CkbReproVerifyOptions())
+            })
+        @Expect(certification.cleanup(CkbReproVerifyOptions()), true)
+        @Expect(certificationCleanup.calls, 1)
+
+        let releaseCleanup = P8RuntimeCleanupProbe()
+        let release = CkbProductionReleaseVerificationExecutor(
+            P8RuntimeRestoreOperation(), P8RuntimeRebuildOperation(),
+            P8RuntimePublicOperation(), P8RuntimeDocumentationOperation(),
+            cleanupAction: { _: CkbReproVerifyOptions =>
+                releaseCleanup.execute(CkbReproVerifyOptions())
+            })
+        @Expect(release.cleanup(CkbReproVerifyOptions()), true)
+        @Expect(releaseCleanup.calls, 1)
     }
 
     @TestCase

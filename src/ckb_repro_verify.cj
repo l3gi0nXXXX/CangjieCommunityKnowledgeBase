@@ -1048,7 +1048,6 @@ public class CkbProductionRunCertificationExecutor <:
     private let rebuildOperation: CkbReproRebuildStageOperation
     private let referenceOperation: CkbReproReferenceRunOperation
     private let cleanupAction: (CkbReproVerifyOptions) -> Bool
-    private var rebuildOwned: Bool = false
     public init(restoreOperation: CkbReproRestoreStageOperation,
         rebuildOperation: CkbReproRebuildStageOperation,
         referenceOperation: CkbReproReferenceRunOperation,
@@ -1062,16 +1061,14 @@ public class CkbProductionRunCertificationExecutor <:
         this.restoreOperation.execute(options)
     }
     public func rebuild(options: CkbReproVerifyOptions): CkbReproStageEvidence {
-        let result = this.rebuildOperation.execute(options)
-        if (result.ok) { this.rebuildOwned = true }; result
+        this.rebuildOperation.execute(options)
     }
     public func runReference(options: CkbReproVerifyOptions):
         CkbReproReferenceRunEvidence {
         this.referenceOperation.execute(options)
     }
     public func cleanup(options: CkbReproVerifyOptions): Bool {
-        if (!this.rebuildOwned) { return true }
-        this.rebuildOwned = false; this.cleanupAction(options)
+        this.cleanupAction(options)
     }
 }
 
@@ -1083,7 +1080,6 @@ public class CkbProductionReleaseVerificationExecutor <:
     private let publicEvidenceOperation: CkbReproPublicEvidenceOperation
     private let documentationOperation: CkbReproDocumentationOperation
     private let cleanupAction: (CkbReproVerifyOptions) -> Bool
-    private var rebuildOwned: Bool = false
     public init(restoreOperation: CkbReproRestoreStageOperation,
         rebuildOperation: CkbReproRebuildStageOperation,
         publicEvidenceOperation: CkbReproPublicEvidenceOperation,
@@ -1099,8 +1095,7 @@ public class CkbProductionReleaseVerificationExecutor <:
         this.restoreOperation.execute(options)
     }
     public func rebuild(options: CkbReproVerifyOptions): CkbReproStageEvidence {
-        let result = this.rebuildOperation.execute(options)
-        if (result.ok) { this.rebuildOwned = true }; result
+        this.rebuildOperation.execute(options)
     }
     public func verifyPublicEvidence(options: CkbReproVerifyOptions):
         CkbReproContractResult {
@@ -1111,8 +1106,7 @@ public class CkbProductionReleaseVerificationExecutor <:
         this.documentationOperation.execute(options)
     }
     public func cleanup(options: CkbReproVerifyOptions): Bool {
-        if (!this.rebuildOwned) { return true }
-        this.rebuildOwned = false; this.cleanupAction(options)
+        this.cleanupAction(options)
     }
 }
 
