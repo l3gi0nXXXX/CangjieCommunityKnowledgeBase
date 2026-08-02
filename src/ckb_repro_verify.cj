@@ -329,14 +329,20 @@ public class CkbP8ProductionReferenceRunOperation <:
             gate.unresolvedTransport != 0 || !results.ok) {
             out.diagnostic = "reference_run_evidence_invalid"; return out
         }
-        out.totalCases = gate.total; out.rawPassed = gate.unitPass
-        out.strictPassed = gate.unitPassAt1
-        out.protocolInvalid = gate.invalid
-        out.transportUnresolved = gate.unresolvedTransport
-        out.businessFailed = gate.total - gate.unitPassAt1 - gate.invalid
-        if (out.businessFailed < 0) {
-            out.diagnostic = "reference_run_counts_invalid"; return out
+        let projected = projectCkbPublicEvidenceFromRunFiles(
+            runRoot, this.reference)
+        if (!projected.ok || projected.score.total != gate.total ||
+            projected.score.unitFirstSamplePassed != gate.unitPass ||
+            projected.score.strictPassed != gate.unitPassAt1 ||
+            projected.score.transportUnresolved != gate.unresolvedTransport) {
+            out.diagnostic = "reference_run_projection_invalid"; return out
         }
+        out.totalCases = projected.score.total
+        out.rawPassed = projected.score.unitFirstSamplePassed
+        out.strictPassed = projected.score.strictPassed
+        out.protocolInvalid = projected.score.protocolInvalid
+        out.transportUnresolved = projected.score.transportUnresolved
+        out.businessFailed = projected.score.businessFailed
         out.resultsHash = results.sha256; out.ok = true
         out.diagnostic = if (gate.ok) { "ok" } else { "score_mismatch_hold" }
         out
