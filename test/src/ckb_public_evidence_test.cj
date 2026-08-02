@@ -2,6 +2,7 @@ package cangjie_community_knowledge_base_test
 
 import std.collection.ArrayList
 import std.fs.{Directory, File, Path, canonicalize, exists, remove}
+import std.process.launch
 import std.unittest.*
 import std.unittest.testmacro.*
 import stdx.encoding.json.JsonValue
@@ -10,15 +11,24 @@ private class P5FakeCliExecutor <: CkbPublicEvidenceCliExecutor {
     public var outputExists: Bool = false
     public var parentExists: Bool = true
     public var inputExists: Bool = true
+    public var futureParentExists: Bool = true
     public var failExport: Bool = false
     public var executeCalls: Int64 = 0
     public var cleanupCalls: Int64 = 0
     public init() {}
     public func exists(path: String): Bool {
         if (path.endsWith("/out")) { return this.outputExists }
+        if (path == "/tmp/repro-unsigned" || path == "/tmp/repro-final") {
+            return false
+        }
         this.inputExists
     }
-    public func outputParentExists(path: String): Bool { this.parentExists }
+    public func outputParentExists(path: String): Bool {
+        if (path == "/tmp/repro-unsigned" || path == "/tmp/repro-final") {
+            return this.futureParentExists
+        }
+        this.parentExists
+    }
     public func exportEvidence(options: CkbPublicEvidenceCliOptions):
         CkbPublicEvidenceRenderResult {
         this.executeCalls += 1
@@ -84,19 +94,40 @@ public class CkbPublicEvidenceTest {
         let parsed = parseCkbPublicEvidenceCliArgs([
             "ckb-public-evidence-export", "--run-root", "/tmp/私有🙂",
             "--reference-manifest", "/tmp/私有🙂/reference.json",
-            "--output", "/tmp/发布 资料/out"
+            "--output", "/tmp/发布 资料/out",
+            "--worktree-root", "/tmp/metis-worktree",
+            "--production-root", "/tmp/ckb-data",
+            "--user-config-root", "/tmp/settings",
+            "--unsigned-root", "/tmp/repro-unsigned",
+            "--final-root", "/tmp/repro-final"
         ])
         @Expect(parsed.valid, true)
         @Expect(parsed.runRoot, "/tmp/私有🙂")
+        @Expect(parsed.worktreeRoot, "/tmp/metis-worktree")
         let context = p5CliContext()
         let fake = P5FakeCliExecutor()
         @Expect(validateCkbPublicEvidenceCliOptions(parsed, context, fake).ok, true)
+        fake.futureParentExists = false
+        @Expect(validateCkbPublicEvidenceCliOptions(parsed, context, fake).diagnostic,
+            "public_evidence_future_root_parent_missing")
+        fake.futureParentExists = true
         let veryLong = "界" * 4097
         @Expect(parseCkbPublicEvidenceCliArgs([
             "ckb-public-evidence-export", "--run-root", "/tmp/${veryLong}",
             "--reference-manifest", "/tmp/reference.json", "--output",
             "/tmp/发布 资料/out"
         ]).diagnostic, "cli_argument_too_long")
+        @Expect(parseCkbPublicEvidenceCliArgs([
+            "ckb-public-evidence-export", "--run-root", "/tmp/run",
+            "--reference-manifest", "/tmp/run/reference.json", "--output",
+            "/tmp/out"]).diagnostic, "required_argument_missing")
+        @Expect(parseCkbPublicEvidenceCliArgs([
+            "ckb-public-evidence-export", "--run-root", "/tmp/run",
+            "--reference-manifest", "/tmp/run/reference.json", "--output",
+            "/tmp/out", "--worktree-root", "/tmp/w", "--worktree-root",
+            "/tmp/w2", "--production-root", "/tmp/p", "--user-config-root",
+            "/tmp/u", "--unsigned-root", "/tmp/i", "--final-root", "/tmp/f"
+        ]).diagnostic, "duplicate_argument:--worktree-root")
         for (output in ["relative/out", "/tmp/../escape/out",
             "/tmp/metis-worktree/out", "/tmp/ckb-data/out",
             "/tmp/私有🙂/out", "/tmp/settings/out",
@@ -152,6 +183,47 @@ public class CkbPublicEvidenceTest {
         parsed[1].publicEvidenceHash = "sha256:${"g" * 64}"
         @Expect(validateCkbPublicEvidenceExportManifest(parsed[1]).diagnostic,
             "public_evidence_export_manifest_hash_invalid")
+    }
+
+    @TestCase
+    public func p5Bnd03FutureBundleRootsUseCanonicalExistingParents(): Unit {
+        let base = Path("target/p5-future-roots-仓颉🙂")
+        if (exists(base)) { remove(base, recursive: true) }
+        for (name in ["run", "worktree", "production", "config",
+            "future-parent", "output-parent", "real-parent"]) {
+            Directory.create(base.join(name), recursive: true)
+        }
+        File.writeTo(base.join("run/reference.json"), "{}".toArray())
+        let root = canonicalize(base).toString()
+        let options = parseCkbPublicEvidenceCliArgs([
+            "ckb-public-evidence-export", "--run-root", "${root}/run",
+            "--reference-manifest", "${root}/run/reference.json",
+            "--output", "${root}/output-parent/out",
+            "--worktree-root", "${root}/worktree",
+            "--production-root", "${root}/production",
+            "--user-config-root", "${root}/config",
+            "--unsigned-root", "${root}/future-parent/unsigned",
+            "--final-root", "${root}/future-parent/final"])
+        let context = p5ContextFromOptions(options)
+        @Expect(validateCkbPublicEvidenceCliOptions(options, context,
+            CkbPublicEvidenceFilesystemCliExecutor()).ok, true)
+        remove(base.join("future-parent"), recursive: true)
+        @Expect(validateCkbPublicEvidenceCliOptions(options, context,
+            CkbPublicEvidenceFilesystemCliExecutor()).diagnostic,
+            "public_evidence_future_root_parent_missing")
+        Directory.create(base.join("future-parent"), recursive: true)
+        @Expect(launch("/bin/ln", ["-s", "real-parent",
+            base.join("linked-parent").toString()]).wait(), 0)
+        options.unsignedRoot = "${root}/linked-parent/unsigned"
+        context.unsignedRoot = options.unsignedRoot
+        @Expect(runCkbPublicEvidenceCliAdapter(options, context).diagnostic,
+            "public_evidence_path_not_canonical")
+        options.unsignedRoot = "${root}/future-parent/../escape"
+        context.unsignedRoot = options.unsignedRoot
+        @Expect(validateCkbPublicEvidenceCliOptions(options, context,
+            CkbPublicEvidenceFilesystemCliExecutor()).diagnostic,
+            "public_evidence_path_invalid")
+        remove(base, recursive: true)
     }
 
     @TestCase
@@ -413,7 +485,10 @@ private func p5CliOptions(output: String): CkbPublicEvidenceCliOptions {
     parseCkbPublicEvidenceCliArgs([
         "ckb-public-evidence-export", "--run-root", "/tmp/私有🙂",
         "--reference-manifest", "/tmp/私有🙂/reference.json",
-        "--output", output
+        "--output", output, "--worktree-root", "/tmp/metis-worktree",
+        "--production-root", "/tmp/ckb-data", "--user-config-root",
+        "/tmp/settings", "--unsigned-root", "/tmp/repro-unsigned",
+        "--final-root", "/tmp/repro-final"
     ])
 }
 
@@ -424,6 +499,17 @@ private func p5CliContext(): CkbPublicEvidenceCliPathContext {
     context.userConfigRoot = "/tmp/settings"
     context.unsignedRoot = "/tmp/repro-unsigned"
     context.finalRoot = "/tmp/repro-final"
+    context
+}
+
+private func p5ContextFromOptions(options: CkbPublicEvidenceCliOptions):
+    CkbPublicEvidenceCliPathContext {
+    let context = CkbPublicEvidenceCliPathContext()
+    context.worktreeRoot = options.worktreeRoot
+    context.productionRoot = options.productionRoot
+    context.userConfigRoot = options.userConfigRoot
+    context.unsignedRoot = options.unsignedRoot
+    context.finalRoot = options.finalRoot
     context
 }
 
