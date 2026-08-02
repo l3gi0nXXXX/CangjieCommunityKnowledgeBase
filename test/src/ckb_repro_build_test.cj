@@ -122,6 +122,7 @@ public class CkbReproBuildTest {
         @Expect(result.proof.vectorState, "DEGRADED")
         let canonicalProof = renderCkbReproBuildProof(result.proof)
         let parsedProof = parseCkbReproBuildProof(canonicalProof.toArray())
+        @Expect(parsedProof[0].diagnostic, "ok")
         @Expect(parsedProof[0].ok, true)
         @Expect(parsedProof[1].preservationHash,
             result.proof.preservationHash)
@@ -265,6 +266,7 @@ private func p4BuildFixture(id: String): P4BuildFixture {
     fixture.request.options.outputRoot = fixture.root + "/output"
     fixture.request.options.temporaryRoot = fixture.root + "/temporary"
     fixture.request.options.expectedRawCount = 1
+    fixture.request.candidateVersion = "portable-${id}"
     fixture.request.sourceLock.entries.add(p4GeneratedLock("generated"))
     fixture.request.inventory = p4InventoryOne()
     fixture.request.selection = buildCkbKnowledgeSelectionManifest(fixture.request.inventory)

@@ -1370,7 +1370,7 @@ public func parseCkbReproBuildProof(bytes: Array<UInt8>):
     }
     try {
         let object = JsonValue.fromStr(text).asObject()
-        if (object.size() != 15) {
+        if (object.size() != 14) {
             return (p4BuildFailure("build_proof_field_contract_invalid"),
                 proof)
         }
