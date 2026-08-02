@@ -159,8 +159,8 @@ public class CkbPublicEvidenceTest {
         let rows = ArrayList<CkbStrictScoreEvidenceRow>()
         for (i in 0..164) {
             let strict = i < 151
-            let raw = i < 158
-            let protocol = (!strict && raw) || i >= 161
+            let protocol = !strict && i >= 161
+            let raw = strict || protocol
             let projected = projectCkbPublicEvidenceRow(
                 p5CertificationJson(i, strict).toArray(),
                 p5AuditJson(i, strict, raw, protocol).toArray())
@@ -173,12 +173,52 @@ public class CkbPublicEvidenceTest {
         @Expect(rendered.score.valid, true)
         @Expect(rendered.score.total, 164)
         @Expect(rendered.score.strictPassed, 151)
-        @Expect(rendered.score.unitFirstSamplePassed, 158)
-        @Expect(rendered.score.businessFailed, 3)
-        @Expect(rendered.score.protocolInvalid, 10)
+        @Expect(rendered.score.unitFirstSamplePassed, 154)
+        @Expect(rendered.score.businessFailed, 10)
+        @Expect(rendered.score.protocolInvalid, 3)
         @Expect(rendered.score.transportUnresolved, 0)
         @Expect(rendered.text.split("\n").size, 165)
         @Expect(rendered.evidenceHash.startsWith("sha256:"), true)
+    }
+
+    @TestCase
+    public func p5Pos02ReadOnlyRunProjectionRecomputesExactPublicScore(): Unit {
+        let projected = p5RunProductionProjectionFixture(151)
+        @Expect(projected.ok, true)
+        @Expect(projected.diagnostic, "ok")
+        @Expect(projected.score.total, 164)
+        @Expect(projected.score.strictPassed, 151)
+        @Expect(projected.score.businessFailed, 10)
+        @Expect(projected.score.protocolInvalid, 3)
+        @Expect(projected.score.transportUnresolved, 0)
+        @Expect(projected.runManifestHash, p5Hash("manifest"))
+        @Expect(projected.text.contains("private-workspace"), false)
+        @Expect(projected.text.contains("private-session"), false)
+        @Expect(projected.text.contains("transcriptHash"), false)
+    }
+
+    @TestCase
+    public func p5Neg05ReadOnlyRunProjectionFailsClosedOnArtifactDrift(): Unit {
+        let cases = [
+            ("invalid_results_utf8", "invalid_response_encoding"),
+            ("malformed_results", "public_evidence_certification_invalid"),
+            ("missing_results", "public_evidence_results_missing"),
+            ("results_hash", "public_evidence_results_hash_mismatch"),
+            ("missing_run_manifest", "public_evidence_run_manifest_missing"),
+            ("invalid_run_manifest_utf8", "public_evidence_run_manifest_invalid"),
+            ("malformed_run_manifest", "public_evidence_run_manifest_invalid"),
+            ("lineage", "public_evidence_reference_identity_mismatch"),
+            ("missing_test", "public_evidence_test_result_missing"),
+            ("invalid_test_utf8", "public_evidence_private_artifact_invalid"),
+            ("malformed_test", "public_evidence_private_artifact_invalid"),
+            ("missing_audit", "public_evidence_audit_missing"),
+            ("invalid_audit_utf8", "public_evidence_private_artifact_invalid"),
+            ("malformed_audit", "public_evidence_private_artifact_invalid")
+        ]
+        for (item in cases) {
+            @Expect(p5RunProductionProjectionFixture(151,
+                drift: item[0]).diagnostic, item[1])
+        }
     }
 
     @TestCase
@@ -343,8 +383,8 @@ public class CkbPublicEvidenceTest {
         let rows = ArrayList<CkbStrictScoreEvidenceRow>()
         for (i in 0..164) {
             let strict = i < 151
-            let raw = i < 158
-            let protocol = (!strict && raw) || i >= 161
+            let protocol = !strict && i >= 161
+            let raw = strict || protocol
             rows.add(projectCkbPublicEvidenceRow(
                 p5CertificationJson(i, strict).toArray(),
                 p5AuditJson(i, strict, raw, protocol).toArray()).row)
@@ -480,16 +520,34 @@ private func p5RunProductionExportFixture(
     drift!: String = "",
     certificationModelFingerprint!: String =
         "claude-code-glm-5.2"): CkbPublicEvidenceRenderResult {
-    let root = Path("target/p5-production-export-${strictPassed}-${drift}")
+    p5RunProductionFixture(strictPassed, drift: drift,
+        certificationModelFingerprint: certificationModelFingerprint,
+        export: true)
+}
+
+private func p5RunProductionProjectionFixture(
+    strictPassed: Int64,
+    drift!: String = ""): CkbPublicEvidenceRenderResult {
+    p5RunProductionFixture(strictPassed, drift: drift, export: false)
+}
+
+private func p5RunProductionFixture(
+    strictPassed: Int64,
+    drift!: String = "",
+    certificationModelFingerprint!: String = "claude-code-glm-5.2",
+    export!: Bool = true): CkbPublicEvidenceRenderResult {
+    let root = Path("target/p5-production-export-${strictPassed}-${drift}-${export}")
     if (exists(root)) { remove(root, recursive: true) }
     Directory.create(root.join("run/cases"), recursive: true)
     var results = ""
     for (i in 0..164) {
         let strict = i < strictPassed
-        let raw = i < 158
-        let protocol = (!strict && raw) || i >= 161
+        let protocol = !strict && i >= 161
+        let raw = strict || protocol
         let certification = p5CertificationJsonWithRun(i, strict,
-            if (drift == "run") { "other-run" } else { "public-run" },
+            if (drift == "run" || (drift == "lineage" && i == 0)) {
+                "other-run"
+            } else { "public-run" },
             knowledgeVersion: if (drift == "knowledge") {
                 "other-knowledge"
             } else { "knowledge-v1" },
@@ -547,14 +605,18 @@ private func p5RunProductionExportFixture(
     reference.modelEffort = "high"; reference.modelBudget = "fixed"
     reference.timeoutSeconds = 3600; reference.transportRetryBudget = 0
     reference.promptHash = p5Hash("prompt")
-    reference.resultsHash = benchmarkGapSha256(results)
+    reference.resultsHash = if (drift == "results_hash") {
+        p5Hash("other-results")
+    } else if (drift == "malformed_results") {
+        benchmarkGapSha256("{bad\n")
+    } else { benchmarkGapSha256(results) }
     reference.runCriticalTreeHash = p5Hash("critical")
     reference.certifiedRunInputHash = p5Hash("certified-input")
-    reference.totalCases = 164; reference.rawPassed = 158
+    reference.totalCases = 164; reference.rawPassed = strictPassed + 3
     reference.strictPassed = strictPassed
     reference.strictFailed = 164 - strictPassed
-    reference.businessFailed = 3
-    reference.protocolInvalid = 161 - strictPassed
+    reference.businessFailed = 161 - strictPassed
+    reference.protocolInvalid = 3
     reference.transportUnresolved = 0
     File.writeTo(root.join("reference.json"),
         renderCkbReproReferenceManifest(reference).toArray())
@@ -563,7 +625,42 @@ private func p5RunProductionExportFixture(
     options.runRoot = canonicalRoot.join("run").toString()
     options.referenceManifest = canonicalRoot.join("reference.json").toString()
     options.outputRoot = canonicalRoot.join("out").toString()
-    let result = runCkbPublicEvidenceExportFromFiles(options)
+    let firstCase = canonicalRoot.join(
+        "run/cases/CJ-HUMANEVAL-000/${CkbAbcdeGroups.D}")
+    if (drift == "invalid_results_utf8") {
+        File.writeTo(canonicalRoot.join("run/results.jsonl"), [0xff, 0xfe])
+    } else if (drift == "malformed_results") {
+        File.writeTo(canonicalRoot.join("run/results.jsonl"), "{bad\n".toArray())
+    } else if (drift == "missing_results") {
+        remove(canonicalRoot.join("run/results.jsonl"))
+    } else if (drift == "missing_run_manifest") {
+        remove(canonicalRoot.join("run/run-manifest.json"))
+    } else if (drift == "invalid_run_manifest_utf8") {
+        File.writeTo(canonicalRoot.join("run/run-manifest.json"), [0xff, 0xfe])
+    } else if (drift == "malformed_run_manifest") {
+        File.writeTo(canonicalRoot.join("run/run-manifest.json"), "{bad".toArray())
+    } else if (drift == "missing_test") {
+        remove(firstCase.join("test-result.json"))
+    } else if (drift == "invalid_test_utf8") {
+        File.writeTo(firstCase.join("test-result.json"), [0xff, 0xfe])
+    } else if (drift == "malformed_test") {
+        File.writeTo(firstCase.join("test-result.json"), "{bad".toArray())
+    } else if (drift == "missing_audit") {
+        remove(firstCase.join("audit.json"))
+    } else if (drift == "invalid_audit_utf8") {
+        File.writeTo(firstCase.join("audit.json"), [0xff, 0xfe])
+    } else if (drift == "malformed_audit") {
+        File.writeTo(firstCase.join("audit.json"), "{bad".toArray())
+    }
+    let result = if (export) {
+        runCkbPublicEvidenceExportFromFiles(options)
+    } else {
+        projectCkbPublicEvidenceFromRunFiles(options.runRoot, reference)
+    }
+    if (!export && exists(options.outputRoot)) {
+        result.ok = false
+        result.diagnostic = "read_only_projection_wrote_output"
+    }
     remove(root, recursive: true)
     result
 }
