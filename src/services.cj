@@ -974,6 +974,8 @@ public class HttpExecutionRequest {
     public var headers: ArrayList<String> = ArrayList<String>()
     public var timeoutMillis: Int64 = 10000
     public var retryCount: Int64 = 2
+    // Zero preserves historical behavior; bounded callers set a positive cap.
+    public var maxResponseBytes: Int64 = 0
 
     public init() {}
 }

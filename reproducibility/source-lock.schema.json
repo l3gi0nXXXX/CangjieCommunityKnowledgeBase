@@ -12,7 +12,7 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["sourceId", "sourceType", "license"],
+        "required": ["sourceId", "sourceType", "license", "assemblyRole", "outputKind"],
         "properties": {
           "sourceId": {"type": "string", "minLength": 1},
           "sourceType": {"enum": ["external_git", "generated"]},
@@ -27,7 +27,10 @@
           "generatorVersion": {"type": "string"},
           "generatorSourceHash": {"type": "string"},
           "inputHashes": {"type": "array", "items": {"type": "string"}},
-          "outputHash": {"type": "string"}
+          "outputHash": {"type": "string"},
+          "outputPath": {"type": "string"},
+          "assemblyRole": {"type": "string", "minLength": 1},
+          "outputKind": {"type": "string", "minLength": 1}
         },
         "allOf": [
           {
@@ -40,7 +43,7 @@
           {
             "if": {"properties": {"sourceType": {"const": "generated"}}},
             "then": {
-              "required": ["generatorId", "generatorVersion", "generatorSourceHash", "inputHashes", "outputHash"]
+              "required": ["generatorId", "generatorVersion", "generatorSourceHash", "inputHashes", "outputHash", "outputPath"]
             }
           }
         ]

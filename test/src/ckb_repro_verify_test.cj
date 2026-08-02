@@ -18,6 +18,125 @@ private class P8InterruptedReadOperation <: CkbReproNativeReadOperation {
     public func errorNumber(): Int32 { 4 }
 }
 
+private class P8ProductionRunnerProbe <: CkbReproRunnerInvoker {
+    public var calls: Int64 = 0
+    public var exitCode: Int64 = 9
+    public func run(args: Array<String>): Int64 {
+        this.calls += 1; this.exitCode
+    }
+}
+
+private class P8RestoreControl <: CkbQdrantSnapshotExecutor {
+    public var calls: Int64 = 0
+    public var deleteCalls: Int64 = 0
+    public var statusCode: Int64 = 200
+    public var points: Int64 = 7978
+    public var targetExists: Bool = false
+    public func execute(request: CkbQdrantSnapshotRequest):
+        CkbQdrantSnapshotResponse {
+        this.calls += 1
+        let out = CkbQdrantSnapshotResponse()
+        if (request.method == "DELETE") {
+            this.deleteCalls += 1; out.statusCode = 202; return out
+        }
+        if (this.calls == 1) {
+            out.statusCode = if (this.targetExists) { 200 } else { 404 }
+            return out
+        }
+        out.statusCode = this.statusCode
+        out.bodyBytes = ("{\"result\":{\"status\":\"green\"," +
+            "\"points_count\":${this.points},\"config\":{\"params\":{" +
+            "\"vectors\":{\"size\":1024,\"distance\":\"Cosine\"}}}}}").toArray()
+        out
+    }
+}
+
+private class P8RestoreFiles <: CkbQdrantSnapshotFileExecutor {
+    public var uploadStatus: Int64 = 200
+    public var uploadCalls: Int64 = 0
+    public func download(request: CkbQdrantSnapshotRequest,
+        targetPath: String, maxBytes: Int64): CkbQdrantSnapshotFileTransferResult {
+        CkbQdrantSnapshotFileTransferResult()
+    }
+    public func upload(request: CkbQdrantSnapshotRequest, sourcePath: String,
+        expectedSize: Int64, expectedSha256: String): CkbQdrantSnapshotResponse {
+        this.uploadCalls += 1
+        let out = CkbQdrantSnapshotResponse()
+        out.statusCode = this.uploadStatus
+        out.diagnostic = if (this.uploadStatus == 200) { "ok" }
+            else { "qdrant_snapshot_restore_failed" }
+        out
+    }
+}
+
+private class P8RestoreParity <: CkbRetrievalParityBackend {
+    public var version: String = ""
+    public func query(transport: String, query: String):
+        CkbRetrievalParityResponse {
+        let out = CkbRetrievalParityResponse()
+        out.ok = true; out.diagnostic = "ok"; out.knowledgeVersion = this.version
+        let hit = CkbRetrievalParityHit()
+        hit.logicalId = "std/string/rune"
+        hit.contentHash = p8Hash("std/string/rune|按 Rune 遍历")
+        hit.citation = "按 Rune 遍历"; hit.rank = 1; out.hits.add(hit); out
+    }
+}
+
+private class P8RebuildMaterialHandle <: CkbReproSourceMaterialReadHandle {
+    public func read(maxBytes: Int64): Array<UInt8> { Array<UInt8>() }
+    public func noFollow(): Bool { true }
+    public func identity(): String { "unused" }
+    public func observedIdentity(): String { "unused" }
+    public func close(): Unit {}
+}
+
+private class P8RebuildMaterialBackend <:
+    CkbReproMaterializingSourceBackend {
+    public func fetch(entry: CkbReproSourceMaterialEntry): CkbReproBackendResult {
+        CkbReproBackendResult(true, entry.expectedHash)
+    }
+    public func generate(entry: CkbReproSourceMaterialEntry): CkbReproBackendResult {
+        CkbReproBackendResult(true, entry.expectedHash)
+    }
+    public func open(entry: CkbReproSourceMaterialEntry):
+        CkbReproSourceMaterialReadHandle { P8RebuildMaterialHandle() }
+}
+
+private class P8RebuildMaterializer <: CkbReproOwnedSourceMaterializer {
+    public func materialize(lock: CkbReproSourceLock,
+        manifest: CkbReproSourceMaterialsManifest,
+        backend: CkbReproMaterializingSourceBackend):
+        CkbReproOwnedSourceMaterials {
+        let out = CkbReproOwnedSourceMaterials(); out.ok = true
+        out.diagnostic = "ok"; out.root = "/owned-fixture"
+        out.proofHash = p8Hash("owned-materials"); out
+    }
+    public func cleanup(materials: CkbReproOwnedSourceMaterials): Bool { true }
+}
+
+private class P8RebuildAssembler <: CkbReproActualSourceAssembler {
+    public var record: CangjieTypedRecord = CangjieTypedRecord()
+    public func assemble(materials: CkbReproOwnedSourceMaterials,
+        lock: CkbReproSourceLock): CkbReproActualSourceRecords {
+        let out = CkbReproActualSourceRecords(); out.ok = true
+        out.diagnostic = "ok"; out.typed.add(this.record); out
+    }
+}
+
+private class P8RebuildPipeline <: CkbReproBuildBackend {
+    public var readyVector: Bool = false
+    public var stages: Int64 = 0
+    public func run(stage: String,
+        input: CkbReproPipelineInput): CkbReproBackendResult {
+        this.stages += 1
+        if (stage == "materialize") {
+            p8WriteRebuildRuntime(input.request.options.outputRoot,
+                input.request.candidateVersion, this.readyVector)
+        }
+        CkbReproBackendResult(true, "ok")
+    }
+}
+
 private class P8EnvironmentProbe <: CkbReproVerifyEnvironmentProbe {
     public let existing = HashSet<String>()
     public let empty = HashSet<String>()
@@ -956,6 +1075,239 @@ public class CkbReproVerifyTest {
                 String.fromUtf8(mirror))
         } finally { p8Remove(root) }
     }
+
+    @TestCase
+    public func productionFactoriesSeparateAOnlyRunnerFromBOnlyPublicChecks(): Unit {
+        let calls = ArrayList<String>()
+        let restore = CkbProductionRestoreStageOperation(
+            { _options: CkbReproVerifyOptions =>
+                calls.add("restore"); p8ValidStage(false) })
+        let rebuild = CkbProductionRebuildStageOperation(
+            { _options: CkbReproVerifyOptions =>
+                calls.add("rebuild"); p8ValidStage(true) })
+        let reference = CkbProductionReferenceRunOperation(
+            { _options: CkbReproVerifyOptions =>
+                calls.add("reference")
+                let out = CkbReproReferenceRunEvidence(); out.ok = true; out })
+        let publicEvidence = CkbProductionPublicEvidenceOperation(
+            { _options: CkbReproVerifyOptions =>
+                calls.add("public"); p8Contract(true, "ok") })
+        let documentation = CkbProductionDocumentationOperation(
+            { _options: CkbReproVerifyOptions =>
+                calls.add("docs"); p8Contract(true, "ok") })
+        let options = CkbReproVerifyOptions()
+        let a = newCkbInjectedRunCertificationExecutorForTest(
+            restore, rebuild, reference)
+        _ = a.restore(options); _ = a.rebuild(options); _ = a.runReference(options)
+        @Expect(calls.toArray(), ["restore", "rebuild", "reference"])
+        calls.clear()
+        let b = newCkbInjectedReleaseVerificationExecutorForTest(
+            restore, rebuild, publicEvidence, documentation)
+        _ = b.restore(options); _ = b.rebuild(options)
+        _ = b.verifyPublicEvidence(options); _ = b.verifyDocumentation(options)
+        @Expect(calls.toArray(), ["restore", "rebuild", "public", "docs"])
+
+        let referenceManifest = parseCkbReproReferenceManifest(File.readFrom(Path(
+            "../reproducibility/manifests/historical-reference-run.json")))[1]
+        let lock = parseCkbReproEnvironmentLock(File.readFrom(Path(
+            "../reproducibility/manifests/environment-lock.json")))[1]
+        let inputs = CkbReproRunnerInputs()
+        inputs.runId = "p8-production-probe"
+        inputs.repoRoot = "/tmp/repo"; inputs.runsRoot = "/tmp/runs"
+        inputs.datasetRoot = "/tmp/dataset"
+        inputs.authorityManifestPath = "/tmp/authority.json"
+        inputs.ckbBin = "/tmp/ckb"; inputs.ckbConfig = "/tmp/ckb.conf"
+        inputs.ckbStore = "/tmp/store"; inputs.ckbHttpBase = "http://127.0.0.1"
+        inputs.claudeBin = "/tmp/claude"; inputs.docsRoot = "/tmp/docs"
+        inputs.candidateVersion = "candidate"
+        inputs.knowledgeVersion = referenceManifest.knowledgeVersion
+        inputs.providerIdentityHash = p8Hash("provider")
+        inputs.providerIdentityArtifactPath = "/tmp/provider.json"
+        inputs.frozenCandidateManifestPath = "/tmp/frozen.json"
+        inputs.certificationPreflightPath = "/tmp/preflight.json"
+        inputs.certificationRunManifestPath = "/tmp/run.json"
+        let preflight = CkbReproEnvironmentPreflightResult()
+        preflight.ok = true; preflight.startAllowed = true
+        let runner = P8ProductionRunnerProbe()
+        let actualA = newCkbP8AInjectedExecutorForTest(restore, rebuild,
+            referenceManifest, lock, inputs, preflight, runner, "authority")
+        let runOptions = CkbReproVerifyOptions(); runOptions.mode = "run-certify"
+        let failed = actualA.runReference(runOptions)
+        @Expect(failed.diagnostic, "reference_runner_failed")
+        @Expect(runner.calls, 1)
+    }
+
+    @TestCase
+    public func productionRestoreReadsCurrentRuntimeAndQdrantStatus(): Unit {
+        let root = p8ResetRoot("/tmp/ckb-p8-production-restore")
+        try {
+            let live = P8RestoreControl()
+            let fixture = p8RestoreFixture(root, live)
+            let restored = CkbP8ProductionRestoreOperation(fixture.inputs)
+                .execute(fixture.options)
+            @Expect(restored.ok, true)
+            @Expect(restored.diagnostic, "ok")
+            @Expect(live.calls, 3)
+            @Expect(live.deleteCalls, 1)
+            @Expect(restored.rawRecords, 1)
+            @Expect(restored.normalizedRecords, 1)
+            @Expect(exists(Path(fixture.options.runtimeRoot)), false)
+
+            let failedStatus = P8RestoreControl(); failedStatus.statusCode = 503
+            fixture.inputs.qdrantControl = Some(failedStatus)
+            let unavailable = CkbP8ProductionRestoreOperation(fixture.inputs)
+                .execute(fixture.options)
+            @Expect(unavailable.diagnostic,
+                "qdrant_snapshot_status_read_failed")
+            @Expect(failedStatus.calls, 3)
+            @Expect(failedStatus.deleteCalls, 1)
+            @Expect(exists(Path(fixture.options.runtimeRoot)), false)
+
+            if (exists(Path(fixture.options.runtimeRoot))) {
+                remove(Path(fixture.options.runtimeRoot), recursive: true)
+            }
+            let driftedStatus = P8RestoreControl(); driftedStatus.points = 7979
+            fixture.inputs.qdrantControl = Some(driftedStatus)
+            let drifted = CkbP8ProductionRestoreOperation(fixture.inputs)
+                .execute(fixture.options)
+            @Expect(drifted.diagnostic, "qdrant_restored_status_mismatch")
+            @Expect(driftedStatus.calls, 3)
+            @Expect(driftedStatus.deleteCalls, 1)
+            @Expect(exists(Path(fixture.options.runtimeRoot)), false)
+
+            let uploadControl = P8RestoreControl()
+            let uploadFiles = P8RestoreFiles(); uploadFiles.uploadStatus = 500
+            fixture.inputs.qdrantControl = Some(uploadControl)
+            fixture.inputs.qdrantFile = Some(uploadFiles)
+            let uploadFailed = CkbP8ProductionRestoreOperation(fixture.inputs)
+                .execute(fixture.options)
+            @Expect(uploadFailed.diagnostic, "qdrant_snapshot_restore_failed")
+            @Expect(uploadFiles.uploadCalls, 1)
+            @Expect(uploadControl.deleteCalls, 1)
+            @Expect(exists(Path(fixture.options.runtimeRoot)), false)
+
+            let existingControl = P8RestoreControl(); existingControl.targetExists = true
+            let existingFiles = P8RestoreFiles()
+            fixture.inputs.qdrantControl = Some(existingControl)
+            fixture.inputs.qdrantFile = Some(existingFiles)
+            let targetExists = CkbP8ProductionRestoreOperation(fixture.inputs)
+                .execute(fixture.options)
+            @Expect(targetExists.diagnostic, "qdrant_snapshot_target_exists")
+            @Expect(existingFiles.uploadCalls, 0)
+            @Expect(existingControl.deleteCalls, 0)
+
+            let source = String.fromUtf8(File.readFrom(Path(
+                "../src/ckb_repro_verify.cj")))
+            @Expect(source.contains("public var restoredStatus"), false)
+            @Expect(source.contains("public var visible: CkbStudentVisiblePathInput"),
+                false)
+            @Expect(source.contains("CkbP3FilesystemVerificationInputProvider"),
+                true)
+        } finally { p8Remove(root) }
+    }
+
+    @TestCase
+    public func productionRebuildRejectsOutOfScopeRootsBeforeDependencies(): Unit {
+        let options = CkbReproVerifyOptions()
+        options.workRoot = "/tmp/ckb-p8-work"
+        options.runtimeRoot = "/tmp/ckb-p8-runtime"
+        let inputs = CkbP8ProductionRebuildInputs()
+        inputs.authority.outputRoot = "/tmp/outside-runtime"
+        inputs.authority.temporaryRoot = "/tmp/ckb-p8-work/rebuild-temporary"
+        @Expect(CkbP8ProductionRebuildOperation(inputs).execute(options).diagnostic,
+            "production_rebuild_root_mismatch")
+        inputs.authority.outputRoot = options.runtimeRoot
+        inputs.authority.temporaryRoot = "/tmp/outside-temporary"
+        @Expect(CkbP8ProductionRebuildOperation(inputs).execute(options).diagnostic,
+            "production_rebuild_root_mismatch")
+        inputs.authority.temporaryRoot =
+            "/tmp/ckb-p8-work/rebuild-temporary"
+        @Expect(CkbP8ProductionRebuildOperation(inputs).execute(options).diagnostic,
+            "rebuild_reader_required")
+    }
+
+    @TestCase
+    public func productionRebuildUsesPinnedInputsAndIsolatedRuntime(): Unit {
+        let root = p8ResetRoot("/tmp/ckb-p8-production-rebuild")
+        try {
+            let restore = p8RestoreFixture(root, P8RestoreControl())
+            restore.options.workRoot = Path(root).join("work").toString()
+            restore.options.candidateRoot =
+                Path(root).join("public-build-inputs").toString()
+            let control = P8RestoreControl(); let pipeline = P8RebuildPipeline()
+            let inputs = p8RebuildInputs(root, restore, control, pipeline)
+            let rebuilt = CkbP8ProductionRebuildOperation(inputs)
+                .execute(restore.options)
+            @Expect(rebuilt.ok, true)
+            @Expect(rebuilt.diagnostic, "ok")
+            @Expect(rebuilt.rawRecords, 1)
+            @Expect(rebuilt.normalizedRecords, 1)
+            @Expect(rebuilt.vectorPoints, 7978)
+            @Expect(pipeline.stages, 8)
+            @Expect(control.calls, 2)
+
+            if (exists(Path(restore.options.runtimeRoot))) {
+                remove(Path(restore.options.runtimeRoot), recursive: true)
+            }
+            let readyControl = P8RestoreControl()
+            let readyPipeline = P8RebuildPipeline(); readyPipeline.readyVector = true
+            let readyInputs = p8RebuildInputs(root, restore,
+                readyControl, readyPipeline)
+            let disguised = CkbP8ProductionRebuildOperation(readyInputs)
+                .execute(restore.options)
+            @Expect(disguised.diagnostic, "production_rebuild_readback_mismatch")
+            @Expect(readyControl.calls, 0)
+            @Expect(exists(Path(readyInputs.authority.outputRoot)), false)
+            @Expect(exists(Path(readyInputs.authority.temporaryRoot)), false)
+        } finally { p8Remove(root) }
+    }
+
+    @TestCase
+    public func manifestAuthorizedPublicAndDocumentationReadersFailClosed(): Unit {
+        let root = p8ResetRoot("/tmp/ckb-p8-authorized-readers")
+        try {
+            let bundle = p8CreateBundle(Path(root).join("candidate").toString(),
+                "assets/unused.txt", "manifest")
+            let reader = CkbP8ManifestAuthorizedReader()
+            @Expect(reader.start(bundle[0]).ok, true)
+            let publicExport = reader.read("p5_public_evidence",
+                "public-evidence-export.json", 64 * 1024)
+            @Expect(publicExport[0].ok, true)
+            @Expect(String.fromUtf8(publicExport[1]), "public-export")
+            @Expect(reader.finish().ok, true)
+
+            let docs = CkbP8FilesystemDocumentationReader()
+            @Expect(docs.list(bundle[0]).size, 11)
+            @Expect(docs.read(bundle[0], "README.md").found, true)
+            @Expect(docs.finish().ok, true)
+
+            let changed = CkbP8ManifestAuthorizedReader()
+            @Expect(changed.start(bundle[0]).ok, true)
+            File.writeTo(Path(bundle[0]).join("public-evidence-export.json"),
+                "changed".toArray())
+            @Expect(changed.read("p5_public_evidence",
+                "public-evidence-export.json", 64 * 1024)[0].ok, false)
+
+            let extraRoot = p8CreateBundle(
+                Path(root).join("extra").toString(), "assets/unused.txt",
+                "manifest")[0]
+            Directory.create(Path(extraRoot).join("docs/reproducibility/extra"))
+            @Expect(CkbP8ManifestAuthorizedReader().start(extraRoot).ok, false)
+
+            let options = CkbReproVerifyOptions(); options.candidateRoot = bundle[0]
+            options.workRoot = Path(root).join("work").toString()
+            let publicResult = CkbP8ProductionPublicEvidenceOperation()
+                .execute(options)
+            @Expect(publicResult.ok, false)
+            @Expect(exists(Path(options.workRoot)), false)
+
+            let b = newCkbP8BProductionExecutor(
+                CkbP8ProductionRestoreInputs(), CkbP8ProductionRebuildInputs(),
+                ["ckb-repro-build", "cangjie-humaneval-strict-score"])
+            @Expect(b.verifyPublicEvidence(options).ok, false)
+            @Expect(b.cleanup(options), true)
+        } finally { p8Remove(root) }
+    }
 }
 
 @Test
@@ -1387,6 +1739,226 @@ private func p8Contract(ok: Bool, diagnostic: String):
     out.ok = ok
     out.diagnostic = diagnostic
     out
+}
+
+private class P8RestoreFixture {
+    public var options: CkbReproVerifyOptions = CkbReproVerifyOptions()
+    public var inputs: CkbP8ProductionRestoreInputs =
+        CkbP8ProductionRestoreInputs()
+    public init() {}
+}
+
+private func p8RestoreFixture(root: String, control: P8RestoreControl):
+    P8RestoreFixture {
+    let fixture = P8RestoreFixture()
+    let version = "portable-knowledge-restore-v1"
+    let store = p8WriteRebuildRuntime(
+        Path(root).join("source-store").toString(), version, true)
+    let proofs = CkbLogicalSnapshotExportProofs()
+    proofs.sourceState = CkbLogicalSnapshotSourceStates.PORTABLE_VECTOR_CANDIDATE
+    proofs.portableKnowledgeVersion = version
+    proofs.p4PortableProofHash = p8Hash("p4-portable-clean")
+    proofs.p3VectorProofHash = p8Hash("p3-vector-ready")
+    proofs.p3ProofReal = true; proofs.vectorState = EmbeddingProviderState.READY
+    proofs.vectorCollection = "portable_vectors"; proofs.vectorCount = 7978
+    proofs.vectorDimension = 1024; proofs.pathMachineFindingCount = 0
+    proofs.pathUnmappedFindingCount = 0
+    proofs.contaminationProofHash = p8Hash("contamination-clean")
+    proofs.expectedStartPointerHash = ckbActiveSnapshotPointerIdentityHash(
+        store.loadActiveSnapshotPointer())
+    proofs.expectedEndPointerHash = proofs.expectedStartPointerHash
+    let archive = Path(root).join("logical.snapshot").toString()
+    let archiveBackend = CkbPortableReleaseArchiveBackend()
+    let exported = exportCkbLogicalSnapshot(store, proofs, archive, archiveBackend)
+    if (!exported.ok) {
+        throw Exception("p8_restore_fixture_export_failed:${exported.diagnostic}")
+    }
+    let inspected = inspectCkbReleaseArchive(archiveBackend, archive)
+    if (!inspected.ok) { throw Exception("p8_restore_fixture_inspect_failed") }
+    let snapshotBytes = "qdrant-snapshot-中文🙂".toArray()
+    let snapshotPath = Path(root).join("qdrant.snapshot").toString()
+    File.writeTo(Path(snapshotPath), snapshotBytes)
+    let qdrant = CkbQdrantSnapshotManifest()
+    qdrant.schemaVersion = "ckb-qdrant-snapshot-v1"
+    qdrant.imageDigest = p8Hash("image"); qdrant.qdrantMinorVersion = "1.14"
+    qdrant.collection = inspected.manifest.vectorCollection
+    qdrant.distance = "Cosine"; qdrant.dimension = 1024; qdrant.points = 7978
+    qdrant.snapshotSha256 = ckbQdrantSnapshotBytesHash(snapshotBytes)
+    qdrant.logicalManifestHash = inspected.manifest.manifestHash
+    qdrant.vectorProofHash = inspected.manifest.p3VectorProofHash
+    qdrant.payloadCanonicalHash = p8Hash("payload")
+    let qdrantBuilt = buildCkbQdrantSnapshotManifest(qdrant)
+    if (!qdrantBuilt.ok) {
+        throw Exception(
+            "p8_restore_fixture_qdrant_manifest_failed:${qdrantBuilt.diagnostic}")
+    }
+    let parity = P8RestoreParity(); parity.version = version
+    let parityBuilt = buildCkbRetrievalParityManifest(
+        version, inspected.manifest.manifestHash, parity)
+    if (!parityBuilt.ok) { throw Exception("p8_restore_fixture_parity_failed") }
+    let context = CkbPortablePathContext()
+    context.policy = parseCkbPortablePathPolicy(File.readFrom(Path(
+        "../reproducibility/manifests/portable-path-policy.json")))[1]
+    let local = CkbPortableLocalRoot(); local.sourceId = "fixture"
+    local.kind = "PROJECT_ROOT"; local.localRoot = canonicalize(Path(root)).toString()
+    context.localRoots.schemaVersion = "ckb-portable-local-root-map-v1"
+    context.localRoots.roots.add(local)
+    fixture.options.p2LogicalSnapshotPath = archive
+    fixture.options.p3QdrantSnapshotPath = snapshotPath
+    fixture.options.runtimeRoot = Path(root).join("runtime").toString()
+    fixture.inputs.archiveBackend = Some(archiveBackend)
+    fixture.inputs.targetCollection = qdrant.collection
+    fixture.inputs.qdrantManifest = qdrant
+    fixture.inputs.qdrantControl = Some(control)
+    fixture.inputs.qdrantFile = Some(P8RestoreFiles())
+    fixture.inputs.pathContext = context
+    fixture.inputs.parityManifest = parityBuilt.manifest
+    fixture.inputs.parityBackend = Some(parity)
+    fixture.inputs.sourceLockHash = p8Hash("source-lock")
+    fixture.inputs.pathProofHash = p8Hash("path-proof")
+    fixture
+}
+
+private func p8WriteRebuildRuntime(root: String, version: String,
+    readyVector: Bool): FileKnowledgeStore {
+    let store = FileKnowledgeStore(root)
+    let raw = RawRecord(); raw.sourceId = "atom-rune"
+    raw.title = "Rune iteration"; raw.content = "按 Rune 遍历字符串"
+    raw.contentHash = p8Hash(raw.content)
+    raw.metadata.knowledgeVersion = version
+    raw.metadata.targetVersion = "1.0.0"
+    let normalized = NormalizedRecord(); normalized.sourceId = raw.sourceId
+    normalized.recordKind = "knowledge_atom"; normalized.title = raw.title
+    normalized.chunk = raw.content
+    normalized.citation = "https://docs.cangjie-lang.cn/docs/1.0.0/"
+    normalized.metadata = raw.metadata
+    let raws = ArrayList<RawRecord>(); raws.add(raw)
+    let records = ArrayList<NormalizedRecord>(); records.add(normalized)
+    let status = KnowledgeStatus(); status.activeKnowledgeVersion = version
+    status.activeStateSource = "portable_candidate"
+    status.storage.rawCount = 1; status.storage.normalizedCount = 1
+    status.storage.indexCount = 1; status.storage.textIndexCount = 1
+    status.storage.vectorIndexCount = if (readyVector) { 7978 } else { 0 }
+    status.storage.vectorBackend = "qdrant"
+    status.storage.vectorState = if (readyVector) {
+        EmbeddingProviderState.READY
+    } else { EmbeddingProviderState.DEGRADED }
+    status.storage.vectorCollection = "portable_vectors"
+    status.storage.vectorActiveCollection = "portable_vectors"
+    status.storage.vectorCandidateCollection = "portable_vectors_candidate"
+    status.storage.vectorDimension = 1024
+    status.storage.graphBackend = "local"
+    status.storage.graphState = EmbeddingProviderState.READY
+    let committed = store.writeActiveSnapshotTransaction(status, raws, records,
+        records, ArrayList<VectorRecord>(), "portable_vectors",
+        GraphBuildResult(), persistVectorFile: false)
+    if (!committed.ok) { throw Exception("p8_restore_fixture_commit_failed") }
+    store
+}
+
+private func p8RebuildInputs(root: String, restore: P8RestoreFixture,
+    control: P8RestoreControl, pipeline: P8RebuildPipeline):
+    CkbP8ProductionRebuildInputs {
+    let candidate = Path(root).join("public-build-inputs")
+    if (!exists(candidate)) { Directory.create(candidate, recursive: true) }
+    let work = Path(root).join("work")
+    if (!exists(work)) { Directory.create(work, recursive: true) }
+    let context = restore.inputs.pathContext
+    let authority = CkbReproPrivateBuildAuthority()
+    authority.evalSupport = buildVersionedEvalSupportSnapshot(
+        "cangjie_eval/cases/Cangjie-HumanEval",
+        "humaneval-cangjie-164-v1")
+    authority.leakageHash = ckbReproLeakageAuthorityHash(authority.leakage)
+    authority.pathContext = context
+    authority.outputRoot = Path(root).join("runtime").toString()
+    authority.temporaryRoot = work.join("rebuild-temporary").toString()
+    let record = CangjieTypedRecord(); record.sourceId = "docs/a"
+    record.recordKind = CangjieTypedRecordKinds.DOC_SECTION
+    record.path = "docs/a.md"; record.title = "Rune iteration"
+    record.content = "按 Rune 遍历字符串"
+    record.contentHash = cangjieTypedRecordContentHash(
+        record.sourceId, record.content)
+    let sourceLock =
+        "{\"schemaVersion\":\"ckb-source-lock-v1\",\"sources\":[{" +
+        "\"sourceId\":\"docs/a\",\"sourceType\":\"external_git\"," +
+        "\"repository\":\"https://example.invalid/docs.git\"," +
+        "\"commit\":\"0123456789012345678901234567890123456789\"," +
+        "\"tree\":\"${p8Hash("tree")}\",\"path\":\"docs/a.md\"," +
+        "\"fileHash\":\"${p8Hash("source")}\",\"license\":\"Apache-2.0\"," +
+        "\"authMode\":\"anonymous\",\"assemblyRole\":\"community_docs\"," +
+        "\"outputKind\":\"DOC_SECTION\"}]}"
+    let lock = parseCkbReproSourceLock(sourceLock.toArray())[1]
+    let materials = renderCkbSourceMaterialsManifest(
+        buildCkbSourceMaterialsManifest(lock))
+    let identity = ckbReproValidatedPublicTypedRecordIdentity(record, context)
+    if (!identity.ok) { throw Exception("p8_rebuild_record_identity_failed") }
+    let inventoryRow = CkbReproKnowledgeInventoryRow()
+    inventoryRow.identity = identity.identity; inventoryRow.sourceId = record.sourceId
+    inventoryRow.recordKind = record.recordKind
+    inventoryRow.portableLocator = record.path
+    inventoryRow.sourceType = "external_git"; inventoryRow.license = "Apache-2.0"
+    inventoryRow.sourceLockEntryHash =
+        canonicalCkbReproSourceLockEntryHash(lock.entries[0])
+    let inventory = renderCkbReproKnowledgeInventoryRow(inventoryRow) + "\n"
+    let selectionRow = CkbReproKnowledgeSelectionRow()
+    selectionRow.identity = identity.identity; selectionRow.recordKind = record.recordKind
+    selectionRow.decision = "selected"; selectionRow.reason = "knowledge_plane"
+    let selection = renderCkbReproKnowledgeSelectionRow(selectionRow) + "\n"
+    let policy = String.fromUtf8(File.readFrom(Path(
+        "../reproducibility/manifests/portable-path-policy.json")))
+    let routes = renderCkbReproApiRoutes(ArrayList<String>())
+    let payloads = ArrayList<String>()
+    payloads.add(""); payloads.add(sourceLock); payloads.add(materials)
+    payloads.add(inventory); payloads.add(selection); payloads.add(policy)
+    payloads.add(routes)
+    let manifest = CkbReproBuildInputManifest()
+    manifest.schemaVersion = "ckb-repro-build-inputs-v1"
+    manifest.candidateVersion = "portable-knowledge-restore-v1"
+    manifest.targetVersion = "1.0.0"; manifest.expectedRawCount = 1
+    let roles = ckbReproPublicBuildInputRoles()
+    for (i in 0..roles.size) {
+        let asset = CkbReproBuildInputAsset(); asset.role = roles[i]
+        asset.relativePath = "inputs/${roles[i]}.json"
+        asset.size = payloads[i].toArray().size
+        asset.sha256 = benchmarkGapSha256(payloads[i])
+        manifest.assets.add(asset)
+    }
+    let contract = CkbReproBuildContract()
+    contract.schemaVersion = "ckb-repro-build-contract-v1"
+    contract.candidateVersion = manifest.candidateVersion
+    contract.targetVersion = manifest.targetVersion; contract.expectedRawCount = 1
+    contract.sourceLockHash = manifest.assets[1].sha256
+    contract.sourceMaterialsHash = manifest.assets[2].sha256
+    contract.knowledgeInventoryHash = manifest.assets[3].sha256
+    contract.knowledgeSelectionHash = manifest.assets[4].sha256
+    contract.portablePolicyHash = manifest.assets[5].sha256
+    contract.apiRoutesHash = manifest.assets[6].sha256
+    contract.assemblerIdentityHash = p8Hash("assembler")
+    contract.privateAuthorityIdentityHash =
+        ckbReproPrivateBuildAuthorityIdentity(authority)
+    payloads[0] = renderCkbReproBuildContract(contract)
+    manifest.assets[0].size = payloads[0].toArray().size
+    manifest.assets[0].sha256 = benchmarkGapSha256(payloads[0])
+    for (i in 0..manifest.assets.size) {
+        let target = candidate.join(manifest.assets[i].relativePath)
+        if (!exists(target.parent)) { Directory.create(target.parent, recursive: true) }
+        File.writeTo(target, payloads[i].toArray())
+    }
+    let assembler = P8RebuildAssembler(); assembler.record = record
+    let inputs = CkbP8ProductionRebuildInputs()
+    inputs.buildManifest = manifest; inputs.authority = authority
+    inputs.reader = Some(CkbReproFilesystemBundleReadBackend())
+    inputs.materialBackend = Some(P8RebuildMaterialBackend())
+    inputs.materializer = Some(P8RebuildMaterializer())
+    inputs.assembler = Some(assembler); inputs.pipeline = Some(pipeline)
+    inputs.archiveBackend = restore.inputs.archiveBackend
+    inputs.qdrantManifest = restore.inputs.qdrantManifest
+    inputs.targetCollection = "portable_vectors_rebuilt"
+    inputs.qdrantControl = Some(control); inputs.qdrantFile = Some(P8RestoreFiles())
+    inputs.parityManifest = restore.inputs.parityManifest
+    inputs.parityBackend = restore.inputs.parityBackend
+    inputs.pathProofHash = p8Hash("path-proof")
+    inputs
 }
 
 private func p8Hash(value: String): String {

@@ -20,6 +20,9 @@ public class CkbReproSourceLockEntry {
     public var generatorSourceHash: String = ""
     public var inputHashes: ArrayList<String> = ArrayList<String>()
     public var outputHash: String = ""
+    public var outputPath: String = ""
+    public var assemblyRole: String = ""
+    public var outputKind: String = ""
     public init() {}
 }
 
@@ -205,6 +208,28 @@ public func newCkbP4BusinessProductionAdapter(
         CkbPortableProductionPromotionBackend(candidateStore, productionStore,
             snapshotBytes, snapshotManifest, logicalManifest, targetCollection,
             snapshotExecutor, pathContext))
+}
+
+public func newCkbP4RuntimeProductionAdapter(
+    buildRequest: CkbReproBuildRequest,
+    candidateStore: FileKnowledgeStore,
+    productionStore: FileKnowledgeStore,
+    snapshotPath: String,
+    snapshotManifest: CkbQdrantSnapshotManifest,
+    logicalManifest: CkbLogicalSnapshotManifest,
+    targetCollection: String,
+    snapshotEndpoint: String,
+    runtime: CkbRuntimeConfig,
+    pathContext: CkbPortablePathContext): CkbP4CliAdapter {
+    let transportConfig = ckbNativeHttpAdapterConfigFromRuntime(runtime, true)
+    let http = NativeHttpRequestExecutor(transportConfig)
+    let control = CkbQdrantSnapshotHttpExecutor(snapshotEndpoint, http)
+    let files = CkbNativeQdrantSnapshotFileExecutor(
+        snapshotEndpoint, transportConfig)
+    CkbP4ProductionAdapter(buildRequest, CkbReproProductionBuildBackend(),
+        CkbPortableProductionPromotionBackend(candidateStore, productionStore,
+            snapshotPath, snapshotManifest, logicalManifest, targetCollection,
+            control, files, pathContext))
 }
 
 public func loadCkbPortablePromotionCliInputs(unsignedRoot: String,
@@ -514,6 +539,9 @@ public func parseCkbReproSourceLock(bytes: Array<UInt8>):
     }
     try {
         let root = JsonValue.fromStr(text).asObject()
+        if (root.size() != 2) {
+            return (p4BuildFailure("source_lock_field_contract_invalid"), lock)
+        }
         lock.schemaVersion = root.get("schemaVersion").getOrThrow().asString().getValue()
         for (value in root.get("sources").getOrThrow().asArray().getItems()) {
             let object = value.asObject()
@@ -531,12 +559,22 @@ public func parseCkbReproSourceLock(bytes: Array<UInt8>):
             entry.generatorVersion = p4BuildOptionalString(object, "generatorVersion")
             entry.generatorSourceHash = p4BuildOptionalString(object, "generatorSourceHash")
             entry.outputHash = p4BuildOptionalString(object, "outputHash")
+            entry.outputPath = p4BuildOptionalString(object, "outputPath")
+            entry.assemblyRole = p4BuildOptionalString(object, "assemblyRole")
+            entry.outputKind = p4BuildOptionalString(object, "outputKind")
             match (object.get("inputHashes")) {
                 case Some(items) =>
                     for (item in items.asArray().getItems()) {
                         entry.inputHashes.add(item.asString().getValue())
                     }
                 case None => ()
+            }
+            let expectedFields: Int64 = if (entry.sourceType == "external_git") {
+                11
+            } else if (entry.sourceType == "generated") { 11 } else { -1 }
+            if (object.size() != expectedFields) {
+                return (p4BuildFailure("source_lock_field_contract_invalid"),
+                    CkbReproSourceLock())
             }
             lock.entries.add(entry)
         }
@@ -552,14 +590,16 @@ public func validateCkbReproBuildLocks(lock: CkbReproSourceLock): CkbReproContra
     }
     let ids = HashSet<String>()
     for (entry in lock.entries) {
-        if (entry.sourceId == "" || ids.contains(entry.sourceId) || entry.license == "") {
+        if (entry.sourceId == "" || ids.contains(entry.sourceId) ||
+            entry.license == "" || entry.assemblyRole == "" ||
+            entry.outputKind == "" || p4BuildEvaluationKind(entry.outputKind)) {
             return p4BuildFailure("source_lock_identity_invalid")
         }
         ids.add(entry.sourceId)
         if (entry.sourceType == "external_git") {
             if (entry.generatorId != "" || entry.generatorVersion != "" ||
                 entry.generatorSourceHash != "" || entry.inputHashes.size > 0 ||
-                entry.outputHash != "") {
+                entry.outputHash != "" || entry.outputPath != "") {
                 return p4BuildFailure("external_source_fields_mixed")
             }
             if (!p4BuildAnonymousHttps(entry.repository) || !p4BuildCommit(entry.commit) ||
@@ -574,7 +614,8 @@ public func validateCkbReproBuildLocks(lock: CkbReproSourceLock): CkbReproContra
             }
             if (entry.generatorId == "" || entry.generatorVersion == "" ||
                 !p4BuildHash(entry.generatorSourceHash) || entry.inputHashes.size == 0 ||
-                !p4BuildHash(entry.outputHash)) {
+                !p4BuildHash(entry.outputHash) ||
+                !p4BuildSafeRelative(entry.outputPath)) {
                 return p4BuildFailure("generated_source_contract_invalid")
             }
             for (hash in entry.inputHashes) {
@@ -597,11 +638,26 @@ public func canonicalCkbReproSourceLockHash(lock: CkbReproSourceLock): String {
             entry.sourceId, entry.sourceType, entry.repository, entry.commit, entry.tree,
             entry.path, entry.fileHash, entry.license, entry.authMode, entry.generatorId,
             entry.generatorVersion, entry.generatorSourceHash,
-            p4BuildJoin(inputs, ","), entry.outputHash
+            p4BuildJoin(inputs, ","), entry.outputHash, entry.outputPath,
+            entry.assemblyRole,
+            entry.outputKind
         ]))
     }
     let ordered = rows.toArray(); sort(ordered)
     benchmarkGapSha256("ckb-source-lock-v1|" + p4BuildJoin(ordered, "\n"))
+}
+
+public func canonicalCkbReproSourceLockEntryHash(
+    entry: CkbReproSourceLockEntry): String {
+    let inputs = entry.inputHashes.toArray(); sort(inputs)
+    benchmarkGapSha256("ckb-source-lock-entry-v1|" + p4BuildFields([
+        entry.sourceId, entry.sourceType, entry.repository, entry.commit,
+        entry.tree, entry.path, entry.fileHash, entry.license, entry.authMode,
+        entry.generatorId, entry.generatorVersion, entry.generatorSourceHash,
+        p4BuildJoin(inputs, ","), entry.outputHash, entry.outputPath,
+        entry.assemblyRole,
+        entry.outputKind
+    ]))
 }
 
 public class CkbReproKnowledgeInventoryRow {
@@ -611,6 +667,7 @@ public class CkbReproKnowledgeInventoryRow {
     public var portableLocator: String = ""
     public var sourceType: String = ""
     public var license: String = ""
+    public var sourceLockEntryHash: String = ""
     public init() {}
 }
 
@@ -714,6 +771,7 @@ public class CkbReproSourceMaterialEntry {
     public var sourceId: String = ""
     public var action: String = ""
     public var expectedHash: String = ""
+    public var relativePath: String = ""
     public var canonicalIdentity: String = ""
     public init() {}
 }
@@ -751,9 +809,13 @@ public func buildCkbSourceMaterialsManifest(
         entry.expectedHash = if (source.sourceType == "external_git") {
             source.fileHash
         } else { source.outputHash }
+        entry.relativePath = if (source.sourceType == "external_git") {
+            source.path
+        } else { source.outputPath }
         entry.canonicalIdentity = benchmarkGapSha256(
             p4BuildFields([source.sourceId, source.sourceType,
-                canonicalCkbReproSourceLockHash(lock), entry.expectedHash]))
+                canonicalCkbReproSourceLockHash(lock), entry.relativePath,
+                entry.expectedHash]))
         manifest.entries.add(entry)
     }
     manifest.ready = true; manifest.diagnostic = "ok"; manifest
@@ -763,8 +825,8 @@ public func renderCkbSourceMaterialsManifest(
     manifest: CkbReproSourceMaterialsManifest): String {
     let rows = ArrayList<String>()
     for (entry in manifest.entries) {
-        rows.add("${entry.sourceId}|${entry.action}|${entry.expectedHash}|" +
-            entry.canonicalIdentity)
+        rows.add("${entry.sourceId}|${entry.action}|${entry.relativePath}|" +
+            "${entry.expectedHash}|${entry.canonicalIdentity}")
     }
     let ordered = rows.toArray(); sort(ordered)
     p4BuildJoin(ordered, "\n")
@@ -1204,6 +1266,8 @@ public class CkbPortableProductionPromotionBackend <:
     private let candidateStore: FileKnowledgeStore
     private let productionStore: FileKnowledgeStore
     private let snapshotBytes: Array<UInt8>
+    private let snapshotPath: String
+    private let fileExecutor: ?CkbQdrantSnapshotFileExecutor
     private let snapshotManifest: CkbQdrantSnapshotManifest
     private let logicalManifest: CkbLogicalSnapshotManifest
     private let targetCollection: String
@@ -1223,6 +1287,24 @@ public class CkbPortableProductionPromotionBackend <:
         this.candidateStore = candidateStore
         this.productionStore = productionStore
         this.snapshotBytes = snapshotBytes
+        this.snapshotPath = ""; this.fileExecutor = None
+        this.snapshotManifest = snapshotManifest
+        this.logicalManifest = logicalManifest
+        this.targetCollection = targetCollection
+        this.executor = executor; this.pathContext = pathContext
+    }
+
+    public init(candidateStore: FileKnowledgeStore,
+        productionStore: FileKnowledgeStore, snapshotPath: String,
+        snapshotManifest: CkbQdrantSnapshotManifest,
+        logicalManifest: CkbLogicalSnapshotManifest, targetCollection: String,
+        executor: CkbQdrantSnapshotExecutor,
+        fileExecutor: CkbQdrantSnapshotFileExecutor,
+        pathContext: CkbPortablePathContext) {
+        this.candidateStore = candidateStore
+        this.productionStore = productionStore
+        this.snapshotBytes = Array<UInt8>()
+        this.snapshotPath = snapshotPath; this.fileExecutor = Some(fileExecutor)
         this.snapshotManifest = snapshotManifest
         this.logicalManifest = logicalManifest
         this.targetCollection = targetCollection
@@ -1245,8 +1327,13 @@ public class CkbPortableProductionPromotionBackend <:
         if (this.snapshotManifest.collection == "" ||
             this.snapshotManifest.logicalManifestHash !=
                 this.logicalManifest.manifestHash) { return false }
-        restoreCkbQdrantSnapshot(this.targetCollection, this.snapshotBytes,
-            this.snapshotManifest, this.executor).ok
+        if (let Some(files) <- this.fileExecutor) {
+            return restoreCkbQdrantSnapshotFromFile(this.targetCollection,
+                this.snapshotPath, this.snapshotManifest, this.executor,
+                files).ok
+        }
+        restoreCkbQdrantSnapshot(this.targetCollection,
+            this.snapshotBytes, this.snapshotManifest, this.executor).ok
     }
 
     public func validateVector(options: CkbPortablePromotionOptions): Bool {

@@ -25,6 +25,7 @@ public class CkbPublicEvidenceRenderResult {
     public var diagnostic: String = ""
     public var text: String = ""
     public var evidenceHash: String = ""
+    public var runManifestHash: String = ""
     public var score: CkbHumanEvalStrictScore = CkbHumanEvalStrictScore()
     public init() {}
 }
@@ -702,89 +703,10 @@ public func runCkbPublicEvidenceExportFromFiles(
         parsedReference[1].transportUnresolved != 0) {
         return p5CliRenderFailure("public_evidence_target_score_required")
     }
-    let resultsRead = p5CliReadBounded(
-        Path(options.runRoot).join("results.jsonl").toString(), 64 * 1024 * 1024)
-    if (resultsRead[0] != "ok") {
-        return p5CliRenderFailure("public_evidence_results_missing")
-    }
-    let resultsBytes = resultsRead[1]
-    let resultsText = try { String.fromUtf8(resultsBytes) } catch (_: Exception) {
-        return p5CliRenderFailure("invalid_response_encoding")
-    }
-    if (benchmarkGapSha256(resultsText) != parsedReference[1].resultsHash) {
-        return p5CliRenderFailure("public_evidence_results_hash_mismatch")
-    }
-    let runManifestRead = p5CliReadBounded(
-        Path(options.runRoot).join("run-manifest.json").toString(),
-        16 * 1024 * 1024)
-    if (runManifestRead[0] != "ok") {
-        return p5CliRenderFailure("public_evidence_run_manifest_missing")
-    }
-    let declaredRunManifestHash = try {
-        JsonValue.fromStr(String.fromUtf8(runManifestRead[1])).asObject()
-            .get("runManifestHash").getOrThrow().asString().getValue()
-    } catch (_: Exception) {
-        return p5CliRenderFailure("public_evidence_run_manifest_invalid")
-    }
-    if (!p5ExportManifestHashValid(declaredRunManifestHash)) {
-        return p5CliRenderFailure("public_evidence_run_manifest_invalid")
-    }
-    let rows = ArrayList<CkbStrictScoreEvidenceRow>()
-    for (line in resultsText.split("\n")) {
-        if (line.trimAscii() == "") { continue }
-        let certification = parseCkbCertificationEvidence(line.trimAscii())
-        if (!certification.valid) {
-            return p5CliRenderFailure("public_evidence_certification_invalid")
-        }
-        if (certification.runId != parsedReference[1].runId ||
-            certification.knowledgeVersion !=
-                parsedReference[1].knowledgeVersion ||
-            certification.providerIdentityHash !=
-                parsedReference[1].providerFingerprint ||
-            certification.modelFingerprint !=
-                parsedReference[1].modelFingerprint ||
-            certification.runManifestHash != declaredRunManifestHash) {
-            return p5CliRenderFailure(
-                "public_evidence_reference_identity_mismatch")
-        }
-        if (!validateCkbPublicEvidenceArtifactIdentity(
-                certification.caseId, certification.group).ok) {
-            return p5CliRenderFailure("public_evidence_case_identity_invalid")
-        }
-        let caseRoot = Path(options.runRoot).join(
-            "cases/${certification.caseId}/${certification.group}")
-        let testPath = caseRoot.join("test-result.json").toString()
-        let auditPath = caseRoot.join("audit.json").toString()
-        if (!p5CliCanonicalArtifactPath(options.runRoot, testPath) ||
-            !p5CliCanonicalArtifactPath(options.runRoot, auditPath)) {
-            return p5CliRenderFailure("public_evidence_artifact_path_invalid")
-        }
-        let testRead = p5CliReadBounded(testPath, 16 * 1024 * 1024)
-        if (testRead[0] != "ok") {
-            return p5CliRenderFailure("public_evidence_test_result_missing")
-        }
-        let auditRead = p5CliReadBounded(auditPath, 16 * 1024 * 1024)
-        if (auditRead[0] != "ok") {
-            return p5CliRenderFailure("public_evidence_audit_missing")
-        }
-        let testBytes = testRead[1]
-        let auditBytes = auditRead[1]
-        let audit = projectCkbPublicAuditFromPrivateArtifacts(
-            certification, testBytes, auditBytes)
-        if (audit[0] != "ok") { return p5CliRenderFailure(audit[0]) }
-        let projected = projectCkbPublicEvidenceRow(
-            line.trimAscii().toArray(), audit[1].toArray())
-        if (!projected.ok) { return p5CliRenderFailure(projected.diagnostic) }
-        rows.add(projected.row)
-    }
-    let rendered = renderCkbPublicEvidence(rows)
-    if (!rendered.ok || rendered.score.strictPassed !=
-            parsedReference[1].strictPassed ||
-        rendered.score.unitFirstSamplePassed != parsedReference[1].rawPassed ||
-        rendered.score.businessFailed != parsedReference[1].businessFailed ||
-        rendered.score.protocolInvalid != parsedReference[1].protocolInvalid) {
-        return p5CliRenderFailure("public_evidence_reference_score_mismatch")
-    }
+    let rendered = projectCkbPublicEvidenceFromRunFiles(
+        options.runRoot, parsedReference[1])
+    if (!rendered.ok) { return rendered }
+    let declaredRunManifestHash = rendered.runManifestHash
     let temporary = planCkbPublicEvidenceTemporaryPath(options.outputRoot,
         DateTime.now().toUnixTimeStamp().toMilliseconds())
     var temporaryOwned = false
@@ -831,6 +753,104 @@ public func runCkbPublicEvidenceExportFromFiles(
         catch (_: Exception) {}
         p5CliRenderFailure("public_evidence_export_failed")
     }
+}
+
+public func projectCkbPublicEvidenceFromRunFiles(
+    runRoot: String,
+    reference: CkbReproReferenceManifest): CkbPublicEvidenceRenderResult {
+    if (!validateCkbReproReferenceManifest(reference).ok ||
+        reference.baselineKind != "portable_release" ||
+        reference.evidenceStatus != "complete") {
+        return p5CliRenderFailure("public_evidence_portable_reference_required")
+    }
+    let resultsRead = p5CliReadBounded(
+        Path(runRoot).join("results.jsonl").toString(), 64 * 1024 * 1024)
+    if (resultsRead[0] != "ok") {
+        return p5CliRenderFailure("public_evidence_results_missing")
+    }
+    let resultsText = try { String.fromUtf8(resultsRead[1]) }
+        catch (_: Exception) {
+            return p5CliRenderFailure("invalid_response_encoding")
+        }
+    if (benchmarkGapSha256(resultsText) != reference.resultsHash) {
+        return p5CliRenderFailure("public_evidence_results_hash_mismatch")
+    }
+    let runManifestRead = p5CliReadBounded(
+        Path(runRoot).join("run-manifest.json").toString(), 16 * 1024 * 1024)
+    if (runManifestRead[0] != "ok") {
+        return p5CliRenderFailure("public_evidence_run_manifest_missing")
+    }
+    let declaredRunManifestHash = p5RunManifestHash(runManifestRead[1])
+    if (declaredRunManifestHash == "") {
+        return p5CliRenderFailure("public_evidence_run_manifest_invalid")
+    }
+    let rows = ArrayList<CkbStrictScoreEvidenceRow>()
+    for (line in resultsText.split("\n")) {
+        let certificationLine = line.trimAscii()
+        if (certificationLine == "") { continue }
+        let certification = parseCkbCertificationEvidence(certificationLine)
+        if (!certification.valid) {
+            return p5CliRenderFailure("public_evidence_certification_invalid")
+        }
+        if (certification.runId != reference.runId ||
+            certification.knowledgeVersion != reference.knowledgeVersion ||
+            certification.providerIdentityHash != reference.providerFingerprint ||
+            certification.modelFingerprint != reference.modelFingerprint ||
+            certification.runManifestHash != declaredRunManifestHash) {
+            return p5CliRenderFailure(
+                "public_evidence_reference_identity_mismatch")
+        }
+        if (!validateCkbPublicEvidenceArtifactIdentity(
+                certification.caseId, certification.group).ok) {
+            return p5CliRenderFailure("public_evidence_case_identity_invalid")
+        }
+        let caseRoot = Path(runRoot).join(
+            "cases/${certification.caseId}/${certification.group}")
+        let testPath = caseRoot.join("test-result.json").toString()
+        let auditPath = caseRoot.join("audit.json").toString()
+        if (!exists(Path(testPath))) {
+            return p5CliRenderFailure("public_evidence_test_result_missing")
+        }
+        if (!exists(Path(auditPath))) {
+            return p5CliRenderFailure("public_evidence_audit_missing")
+        }
+        if (!p5CliCanonicalArtifactPath(runRoot, testPath) ||
+            !p5CliCanonicalArtifactPath(runRoot, auditPath)) {
+            return p5CliRenderFailure("public_evidence_artifact_path_invalid")
+        }
+        let testRead = p5CliReadBounded(testPath, 16 * 1024 * 1024)
+        if (testRead[0] != "ok") {
+            return p5CliRenderFailure("public_evidence_test_result_missing")
+        }
+        let auditRead = p5CliReadBounded(auditPath, 16 * 1024 * 1024)
+        if (auditRead[0] != "ok") {
+            return p5CliRenderFailure("public_evidence_audit_missing")
+        }
+        let audit = projectCkbPublicAuditFromPrivateArtifacts(
+            certification, testRead[1], auditRead[1])
+        if (audit[0] != "ok") { return p5CliRenderFailure(audit[0]) }
+        let projected = projectCkbPublicEvidenceRow(
+            certificationLine.toArray(), audit[1].toArray())
+        if (!projected.ok) { return p5CliRenderFailure(projected.diagnostic) }
+        rows.add(projected.row)
+    }
+    let rendered = renderCkbPublicEvidence(rows)
+    if (!rendered.ok || rendered.score.strictPassed != reference.strictPassed ||
+        rendered.score.unitFirstSamplePassed != reference.rawPassed ||
+        rendered.score.businessFailed != reference.businessFailed ||
+        rendered.score.protocolInvalid != reference.protocolInvalid) {
+        return p5CliRenderFailure("public_evidence_reference_score_mismatch")
+    }
+    rendered.runManifestHash = declaredRunManifestHash
+    rendered
+}
+
+private func p5RunManifestHash(bytes: Array<UInt8>): String {
+    try {
+        let value = JsonValue.fromStr(String.fromUtf8(bytes)).asObject()
+            .get("runManifestHash").getOrThrow().asString().getValue()
+        if (p5ExportManifestHashValid(value)) { value } else { "" }
+    } catch (_: Exception) { "" }
 }
 
 public func projectCkbPublicAuditFromPrivateArtifacts(
