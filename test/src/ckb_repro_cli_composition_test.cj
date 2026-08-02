@@ -53,16 +53,15 @@ private func cliCompositionRoles(mode: String): Array<String> {
             "path_context", "eval_support", "leakage_authority",
             "runtime_transport", "mcp_stdio_command", "runner_inputs",
             "runner_authority", "reference_template", "authority_manifest",
-            "environment_preflight",
-            "run_critical_manifest", "experiment_profile"]
+            "run_critical_manifest"]
     }
     ["logical_manifest", "qdrant_manifest", "parity_manifest",
         "build_proof",
         "path_policy", "local_root_map", "api_routes",
         "public_build_input_manifest", "private_build_authority",
         "path_context", "eval_support", "leakage_authority",
-        "runtime_transport", "mcp_stdio_command", "release_asset_authority",
-        "reference_template", "run_critical_manifest"]
+        "runtime_transport", "mcp_stdio_command", "reference_template",
+        "run_critical_manifest"]
 }
 
 private func cliCompositionPrivateAuthority(): String {
@@ -232,6 +231,18 @@ public class CkbReproCliCompositionTest {
             @Expect(validateCkbReproCliCompositionManifest(cyclic).diagnostic,
                 "cli_composition_mode_contract_invalid")
         }
+        for (item in [("run-certify", "environment_preflight"),
+            ("run-certify", "experiment_profile"),
+            ("release-verify", "release_asset_authority")]) {
+            let redundant = cliCompositionManifest(item[0])
+            let asset = CkbReproCliCompositionAsset()
+            asset.role = item[1]
+            asset.relativePath = "assets/${item[1]}.json"
+            asset.size = 1; asset.sha256 = cliCompositionHash(item[1])
+            redundant.assets.add(asset)
+            @Expect(validateCkbReproCliCompositionManifest(redundant)
+                .diagnostic, "cli_composition_mode_contract_invalid")
+        }
         let wrongBuildRoot = cliCompositionManifest("p4-build")
         for (asset in wrongBuildRoot.assets) {
             if (asset.role == "public_build_input_manifest") {
@@ -335,6 +346,8 @@ public class CkbReproCliCompositionTest {
                 @Expect(loaded.authorityEnvironmentLockBytes,
                     File.readFrom(Path(root).join(
                         "reproducibility/manifests/environment-lock.json")))
+                @Expect(loaded.runnerAuthority.credentialEnvironmentVariables.size,
+                    if (mode == "run-certify") { 1 } else { 0 })
                 for (asset in loaded.assets) {
                     @Expect(asset.privateAuthority,
                         asset.relativePath.startsWith("private-authority/"))

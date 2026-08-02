@@ -28,6 +28,8 @@ public class CkbReproCliCompositionLoadResult {
     public var authorityEnvironmentLock: CkbReproEnvironmentLock =
         CkbReproEnvironmentLock()
     public var authorityEnvironmentLockBytes: Array<UInt8> = Array<UInt8>()
+    public var runnerAuthority: CkbReproCliRunnerAuthority =
+        CkbReproCliRunnerAuthority()
     public let assets = ArrayList<CkbReproCliCompositionLoadedAsset>()
     public init() {}
 }
@@ -232,6 +234,7 @@ public func loadCkbReproCliComposition(path: String, expectedMode: String):
                 if (!authority[0].ok) {
                     out.diagnostic = authority[0].diagnostic; return out
                 }
+                out.runnerAuthority = authority[1]
             }
             let loaded = CkbReproCliCompositionLoadedAsset()
             loaded.role = asset.role; loaded.relativePath = asset.relativePath
@@ -533,8 +536,7 @@ private func ckbCliCompositionRoles(mode: String): Array<String> {
             "runtime_transport", "mcp_stdio_command", "runner_inputs",
             "runner_authority",
             "reference_template", "authority_manifest",
-            "environment_preflight",
-            "run_critical_manifest", "experiment_profile"]
+            "run_critical_manifest"]
     }
     if (mode == "release-verify") {
         return ["logical_manifest", "qdrant_manifest", "parity_manifest",
@@ -543,8 +545,7 @@ private func ckbCliCompositionRoles(mode: String): Array<String> {
             "public_build_input_manifest", "private_build_authority",
             "path_context", "eval_support", "leakage_authority",
             "runtime_transport", "mcp_stdio_command",
-            "release_asset_authority", "reference_template",
-            "run_critical_manifest"]
+            "reference_template", "run_critical_manifest"]
     }
     Array<String>()
 }
