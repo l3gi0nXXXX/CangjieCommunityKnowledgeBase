@@ -11,6 +11,13 @@ private func cliCompositionHash(value: String): String {
     ckbReproBundleHash(value.toArray())
 }
 
+private func cliCompositionReadUtf8(path: Path): String {
+    let bytes = File.readFrom(path)
+    try { String.fromUtf8(bytes) } catch (_: Exception) {
+        throw Exception("fixture_invalid_response_encoding")
+    }
+}
+
 private func cliCompositionRoles(mode: String): Array<String> {
     if (mode == "p3-vector-build") {
         return ["runtime_config", "path_context"]
@@ -126,8 +133,8 @@ private func cliCompositionRoot(mode: String,
     let compositionText = renderCkbReproCliCompositionManifest(composition)
     cliCompositionWriteFile(root,
         "reproducibility/manifests/runtime-composition.json", compositionText)
-    let current = String.fromUtf8(File.readFrom(Path(
-        "../reproducibility/manifests/environment-lock.json")))
+    let current = cliCompositionReadUtf8(Path(
+        "../reproducibility/manifests/environment-lock.json"))
     let hash = if (validAuthority) { cliCompositionHash(compositionText) }
         else { cliCompositionHash("wrong") }
     let extension = ",\"compositionManifestPath\":" +
@@ -244,13 +251,13 @@ public class CkbReproCliCompositionTest {
                 changedAuthority.toArray())
             let compositionPath = Path(root).join(
                 "reproducibility/manifests/runtime-composition.json")
-            let composition = String.fromUtf8(File.readFrom(compositionPath))
+            let composition = cliCompositionReadUtf8(compositionPath)
                 .replace(cliCompositionHash(authority),
                     cliCompositionHash(changedAuthority))
             File.writeTo(compositionPath, composition.toArray())
             let environmentPath = Path(root).join(
                 "reproducibility/manifests/environment-lock.json")
-            let environment = String.fromUtf8(File.readFrom(environmentPath))
+            let environment = cliCompositionReadUtf8(environmentPath)
                 .replace(cliCompositionHash(renderCkbReproCliCompositionManifest(
                     cliCompositionManifest("p4-build"))),
                     cliCompositionHash(composition))
@@ -325,8 +332,8 @@ public class CkbReproCliCompositionTest {
             if (exists(Path(symlinkRoot))) { remove(Path(symlinkRoot), recursive: true) }
         }
 
-        let source = String.fromUtf8(File.readFrom(Path(
-            "../src/ckb_repro_cli_composition.cj")))
+        let source = cliCompositionReadUtf8(Path(
+            "../src/ckb_repro_cli_composition.cj"))
         @Expect(source.contains("observed.identity != initial.identity"), true)
         @Expect(source.contains("authorityAfter[1] != authorityBytes[1]"), true)
         @Expect(source.contains("manifestAfter[1] != manifestBytes[1]"), true)
