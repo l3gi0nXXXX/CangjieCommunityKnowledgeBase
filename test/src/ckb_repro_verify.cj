@@ -1,7 +1,7 @@
 package cangjie_community_knowledge_base_test
 
 import std.collection.{ArrayList, HashSet}
-import std.fs.{Directory, Path, canonicalize, exists}
+import std.fs.{Directory, File, Path, canonicalize, exists, remove}
 import std.sort.*
 import stdx.crypto.digest.SHA256
 import stdx.encoding.json.*
@@ -250,6 +250,7 @@ public interface CkbReproRunCertificationExecutor {
     func rebuild(options: CkbReproVerifyOptions): CkbReproStageEvidence
     func runReference(options: CkbReproVerifyOptions):
         CkbReproReferenceRunEvidence
+    func cleanup(options: CkbReproVerifyOptions): Bool { true }
 }
 
 // P8-B deliberately has no provider or Runner method.
@@ -260,6 +261,7 @@ public interface CkbReproReleaseVerificationExecutor {
         CkbReproContractResult
     func verifyDocumentation(options: CkbReproVerifyOptions):
         CkbReproContractResult
+    func cleanup(options: CkbReproVerifyOptions): Bool { true }
 }
 
 public interface CkbReproRestoreStageOperation {
@@ -282,27 +284,739 @@ public interface CkbReproDocumentationOperation {
     func execute(options: CkbReproVerifyOptions): CkbReproContractResult
 }
 
+public class CkbInProcessReproRunnerInvoker <: CkbReproRunnerInvoker {
+    public init() {}
+    public func run(args: Array<String>): Int64 { runCangjieEvalAbcde(args) }
+}
+
+public class CkbP8ProductionReferenceRunOperation <:
+    CkbReproReferenceRunOperation {
+    private let reference: CkbReproReferenceManifest
+    private let lock: CkbReproEnvironmentLock
+    private let inputs: CkbReproRunnerInputs
+    private let preflight: CkbReproEnvironmentPreflightResult
+    private let runner: CkbReproRunnerInvoker
+    private let authorityManifestText: String
+    public init(reference: CkbReproReferenceManifest,
+        lock: CkbReproEnvironmentLock, inputs: CkbReproRunnerInputs,
+        preflight: CkbReproEnvironmentPreflightResult,
+        runner: CkbReproRunnerInvoker, authorityManifestText: String) {
+        this.reference = reference; this.lock = lock; this.inputs = inputs
+        this.preflight = preflight; this.runner = runner
+        this.authorityManifestText = authorityManifestText
+    }
+    public func execute(options: CkbReproVerifyOptions):
+        CkbReproReferenceRunEvidence {
+        let out = CkbReproReferenceRunEvidence()
+        if (options.mode != "run-certify" ||
+            this.authorityManifestText == "") {
+            out.diagnostic = "reference_run_inputs_invalid"; return out
+        }
+        let exitCode = runCkbReproCertifiedStudent(this.reference, this.lock,
+            this.inputs, this.preflight, this.runner)
+        if (exitCode != 0) {
+            out.diagnostic = "reference_runner_failed"; return out
+        }
+        let runRoot = Path(this.inputs.runsRoot).join(
+            this.inputs.runId).toString()
+        let gate = ckbStrictCertificationGateFromRunRoot(
+            runRoot, this.authorityManifestText)
+        let thresholdOnly = !gate.ok && gate.diagnostics.size == 1 &&
+            gate.diagnostics[0] == "strict_pass_at_1_requirements_not_met"
+        let results = p8InspectProductionInput(
+            Path(runRoot).join("results.jsonl").toString())
+        if ((!gate.ok && !thresholdOnly) || gate.total != 164 ||
+            gate.unresolvedTransport != 0 || !results.ok) {
+            out.diagnostic = "reference_run_evidence_invalid"; return out
+        }
+        out.totalCases = gate.total; out.rawPassed = gate.unitPass
+        out.strictPassed = gate.unitPassAt1
+        out.protocolInvalid = gate.invalid
+        out.transportUnresolved = gate.unresolvedTransport
+        out.businessFailed = gate.total - gate.unitPassAt1 - gate.invalid
+        if (out.businessFailed < 0) {
+            out.diagnostic = "reference_run_counts_invalid"; return out
+        }
+        out.resultsHash = results.sha256; out.ok = true
+        out.diagnostic = if (gate.ok) { "ok" } else { "score_mismatch_hold" }
+        out
+    }
+}
+
+public class CkbP8ProductionRestoreInputs {
+    public var archiveBackend: ?CkbReleaseArchiveBackend = None
+    public var pathPolicy: CkbReleasePathPolicy = CkbReleasePathPolicy()
+    public var targetCollection: String = ""
+    public var qdrantManifest: CkbQdrantSnapshotManifest =
+        CkbQdrantSnapshotManifest()
+    public var qdrantControl: ?CkbQdrantSnapshotExecutor = None
+    public var qdrantFile: ?CkbQdrantSnapshotFileExecutor = None
+    public var pathContext: CkbPortablePathContext = CkbPortablePathContext()
+    public var parityManifest: CkbRetrievalParityManifest =
+        CkbRetrievalParityManifest()
+    public var parityBackend: ?CkbRetrievalParityBackend = None
+    public var sourceLockHash: String = ""
+    public var pathProofHash: String = ""
+    public init() {}
+}
+
+public class CkbP8ProductionRestoreOperation <:
+    CkbReproRestoreStageOperation {
+    private let inputs: CkbP8ProductionRestoreInputs
+    public init(inputs: CkbP8ProductionRestoreInputs) { this.inputs = inputs }
+    public func execute(options: CkbReproVerifyOptions): CkbReproStageEvidence {
+        if (exists(Path(options.runtimeRoot))) {
+            return p8StageFailure("restore_runtime_root_exists")
+        }
+        let result = try { this.executeCore(options) }
+            catch (_: Exception) { p8StageFailure("restore_operation_failed") }
+        if (!result.ok && exists(Path(options.runtimeRoot))) {
+            try { remove(Path(options.runtimeRoot), recursive: true) }
+            catch (_: Exception) {
+                return p8StageFailure("restore_runtime_cleanup_failed")
+            }
+        }
+        result
+    }
+    private func executeCore(options: CkbReproVerifyOptions): CkbReproStageEvidence {
+        let out = CkbReproStageEvidence()
+        let archive = match (this.inputs.archiveBackend) {
+            case Some(value) => value
+            case None => out.diagnostic = "restore_archive_backend_required"; return out
+        }
+        let control = match (this.inputs.qdrantControl) {
+            case Some(value) => value
+            case None => out.diagnostic = "restore_qdrant_backend_required"; return out
+        }
+        let file = match (this.inputs.qdrantFile) {
+            case Some(value) => value
+            case None => out.diagnostic = "restore_qdrant_file_backend_required"; return out
+        }
+        let parityBackend = match (this.inputs.parityBackend) {
+            case Some(value) => value
+            case None => out.diagnostic = "restore_parity_backend_required"; return out
+        }
+        let inspected = inspectCkbReleaseArchive(
+            archive, options.p2LogicalSnapshotPath)
+        if (!inspected.ok) { out.diagnostic = inspected.diagnostic; return out }
+        let logical = importCkbLogicalSnapshot(options.p2LogicalSnapshotPath,
+            options.runtimeRoot, archive, pathPolicy: this.inputs.pathPolicy)
+        if (!logical.ok) { out.diagnostic = logical.diagnostic; return out }
+        if (logical.manifestHash != inspected.manifest.manifestHash) {
+            out.diagnostic = "logical_snapshot_archive_manifest_mismatch"; return out
+        }
+        let restored = restoreCkbQdrantSnapshotFromFile(
+            this.inputs.targetCollection, options.p3QdrantSnapshotPath,
+            this.inputs.qdrantManifest, control, file)
+        if (!restored.ok) {
+            if (restored.targetAbsentConfirmed && restored.uploadAttempted) {
+                return p8CreatedQdrantFailure(out, restored.diagnostic,
+                    control, this.inputs.targetCollection)
+            }
+            out.diagnostic = restored.diagnostic; return out
+        }
+        let statusRequest = CkbQdrantSnapshotRequest()
+        statusRequest.method = "GET"
+        statusRequest.path = "/collections/${this.inputs.targetCollection}"
+        let response = control.execute(statusRequest)
+        if (response.statusCode < 200 || response.statusCode >= 300) {
+            return p8CreatedQdrantFailure(out,
+                "qdrant_snapshot_status_read_failed", control,
+                this.inputs.targetCollection)
+        }
+        let status = parseCkbQdrantRestoredStatus(response.bodyBytes,
+            this.inputs.targetCollection,
+            this.inputs.qdrantManifest.payloadCanonicalHash)
+        if (!status[0].ok) { return p8CreatedQdrantFailure(out,
+            status[0].diagnostic, control, this.inputs.targetCollection) }
+        let provider = CkbP3FilesystemVerificationInputProvider(
+            options.runtimeRoot, this.inputs.pathContext)
+        if (!provider.ready(this.inputs.qdrantManifest.collection)) {
+            return p8CreatedQdrantFailure(out,
+                "logical_snapshot_restore_readback_mismatch", control,
+                this.inputs.targetCollection)
+        }
+        let verified = verifyRestoredCkbQdrantSnapshot(
+            status[1], this.inputs.qdrantManifest, inspected.manifest,
+            provider.visibleInput(this.inputs.qdrantManifest.collection),
+            provider.pathContext(this.inputs.qdrantManifest.collection))
+        if (!verified.ok) { return p8CreatedQdrantFailure(out,
+            verified.diagnostic, control, this.inputs.targetCollection) }
+        if (this.inputs.parityManifest.knowledgeVersion != logical.activeVersion ||
+            this.inputs.parityManifest.logicalManifestHash != logical.manifestHash) {
+            return p8CreatedQdrantFailure(out,
+                "retrieval_parity_identity_mismatch", control,
+                this.inputs.targetCollection)
+        }
+        let parity = verifyCkbRetrievalParityManifest(
+            this.inputs.parityManifest, parityBackend)
+        if (!parity.ok) { return p8CreatedQdrantFailure(out,
+            parity.diagnostic, control, this.inputs.targetCollection) }
+        out.knowledgeVersion = logical.activeVersion
+        out.logicalManifestHash = logical.manifestHash
+        out.vectorProofHash = this.inputs.qdrantManifest.vectorProofHash
+        out.sourceLockHash = this.inputs.sourceLockHash
+        out.pathProofHash = this.inputs.pathProofHash
+        out.rawRecords = logical.rawCount
+        out.normalizedRecords = logical.normalizedCount
+        out.activeRecords = logical.indexCount
+        out.vectorPoints = this.inputs.qdrantManifest.points
+        out.vectorDimension = this.inputs.qdrantManifest.dimension
+        let cleanup = CkbQdrantSnapshotRequest(); cleanup.method = "DELETE"
+        cleanup.path = "/collections/${this.inputs.targetCollection}"
+        let cleanupResponse = control.execute(cleanup)
+        if (cleanupResponse.statusCode != 200 && cleanupResponse.statusCode != 202 &&
+            cleanupResponse.statusCode != 404) {
+            out.diagnostic = "restore_qdrant_cleanup_failed"; return out
+        }
+        try { remove(Path(options.runtimeRoot), recursive: true) }
+        catch (_: Exception) {
+            out.diagnostic = "restore_runtime_cleanup_failed"; return out
+        }
+        out.ok = true; out.diagnostic = "ok"; out
+    }
+}
+
+public class CkbP8ProductionRebuildInputs {
+    public var buildManifest: CkbReproBuildInputManifest =
+        CkbReproBuildInputManifest()
+    public var authority: CkbReproPrivateBuildAuthority =
+        CkbReproPrivateBuildAuthority()
+    public var reader: ?CkbReproBundleReadBackend = None
+    public var materialBackend: ?CkbReproMaterializingSourceBackend = None
+    public var materializer: ?CkbReproOwnedSourceMaterializer = None
+    public var assembler: ?CkbReproActualSourceAssembler = None
+    public var pipeline: ?CkbReproBuildBackend = None
+    public var archiveBackend: ?CkbReleaseArchiveBackend = None
+    public var qdrantManifest: CkbQdrantSnapshotManifest =
+        CkbQdrantSnapshotManifest()
+    public var targetCollection: String = ""
+    public var qdrantControl: ?CkbQdrantSnapshotExecutor = None
+    public var qdrantFile: ?CkbQdrantSnapshotFileExecutor = None
+    public var parityManifest: CkbRetrievalParityManifest =
+        CkbRetrievalParityManifest()
+    public var parityBackend: ?CkbRetrievalParityBackend = None
+    public var pathProofHash: String = ""
+    public init() {}
+}
+
+public class CkbP8ProductionRebuildOperation <:
+    CkbReproRebuildStageOperation {
+    private let inputs: CkbP8ProductionRebuildInputs
+    public init(inputs: CkbP8ProductionRebuildInputs) { this.inputs = inputs }
+    public func execute(options: CkbReproVerifyOptions): CkbReproStageEvidence {
+        let outputRoot = this.inputs.authority.outputRoot
+        let temporaryRoot = this.inputs.authority.temporaryRoot
+        if (exists(Path(outputRoot)) || exists(Path(temporaryRoot))) {
+            return p8StageFailure("production_rebuild_root_exists")
+        }
+        let result = try { this.executeCore(options) }
+            catch (_: Exception) { p8StageFailure("rebuild_operation_failed") }
+        if (!result.ok) {
+            for (root in [outputRoot, temporaryRoot]) {
+                if (exists(Path(root))) {
+                    try { remove(Path(root), recursive: true) }
+                    catch (_: Exception) {
+                        return p8StageFailure("production_rebuild_cleanup_failed")
+                    }
+                }
+            }
+        }
+        result
+    }
+    private func executeCore(options: CkbReproVerifyOptions): CkbReproStageEvidence {
+        let out = CkbReproStageEvidence()
+        if (this.inputs.authority.outputRoot != options.runtimeRoot ||
+            this.inputs.authority.temporaryRoot !=
+                Path(options.workRoot).join("rebuild-temporary").toString() ||
+            this.inputs.authority.outputRoot == this.inputs.authority.temporaryRoot) {
+            out.diagnostic = "production_rebuild_root_mismatch"; return out
+        }
+        let reader = match (this.inputs.reader) {
+            case Some(value) => value
+            case None => out.diagnostic = "rebuild_reader_required"; return out
+        }
+        let materialBackend = match (this.inputs.materialBackend) {
+            case Some(value) => value
+            case None => out.diagnostic = "rebuild_material_backend_required"; return out
+        }
+        let materializer = match (this.inputs.materializer) {
+            case Some(value) => value
+            case None => out.diagnostic = "rebuild_materializer_required"; return out
+        }
+        let assembler = match (this.inputs.assembler) {
+            case Some(value) => value
+            case None => out.diagnostic = "rebuild_assembler_required"; return out
+        }
+        let pipeline = match (this.inputs.pipeline) {
+            case Some(value) => value
+            case None => out.diagnostic = "rebuild_pipeline_required"; return out
+        }
+        let archive = match (this.inputs.archiveBackend) {
+            case Some(value) => value
+            case None => out.diagnostic = "rebuild_archive_backend_required"; return out
+        }
+        let control = match (this.inputs.qdrantControl) {
+            case Some(value) => value
+            case None => out.diagnostic = "rebuild_qdrant_backend_required"; return out
+        }
+        let file = match (this.inputs.qdrantFile) {
+            case Some(value) => value
+            case None => out.diagnostic = "rebuild_qdrant_file_backend_required"; return out
+        }
+        let parityBackend = match (this.inputs.parityBackend) {
+            case Some(value) => value
+            case None => out.diagnostic = "rebuild_parity_backend_required"; return out
+        }
+        let inspected = inspectCkbReleaseArchive(
+            archive, options.p2LogicalSnapshotPath)
+        if (!inspected.ok) { out.diagnostic = inspected.diagnostic; return out }
+        let built = runCkbReproProductionBuild(options.candidateRoot,
+            this.inputs.buildManifest, this.inputs.authority, reader,
+            materialBackend, materializer, assembler, pipeline)
+        if (!built.ready || !built.proof.logicalReady ||
+            built.proof.evalSupportPersisted != 0 || built.proof.vectorCount != 0 ||
+            built.proof.vectorState != "DEGRADED") {
+            out.diagnostic = if (built.diagnostic == "") {
+                "production_rebuild_invalid"
+            } else { built.diagnostic }
+            return out
+        }
+        let store = FileKnowledgeStore(this.inputs.authority.outputRoot)
+        let snapshot = store.loadActiveSnapshot()
+        let metadata = store.loadMetadataStatus()
+        if (!snapshot.valid || !metadata.valid ||
+            snapshot.activeVersion != inspected.manifest.portableKnowledgeVersion ||
+            snapshot.rawRecords.size != inspected.manifest.rawCount ||
+            snapshot.normalizedRecords.size != inspected.manifest.normalizedCount ||
+            ckbCertifiedNormalizedRecordsChecksum(snapshot.normalizedRecords) !=
+                inspected.manifest.normalizedChecksum ||
+            snapshot.activeIndex.size != inspected.manifest.indexCount ||
+            snapshot.vectorRecords.size != 0 ||
+            metadata.vectorState != EmbeddingProviderState.DEGRADED ||
+            metadata.vectorIndexCount != 0) {
+            out.diagnostic = "production_rebuild_readback_mismatch"; return out
+        }
+        let restored = restoreCkbQdrantSnapshotFromFile(
+            this.inputs.targetCollection, options.p3QdrantSnapshotPath,
+            this.inputs.qdrantManifest, control, file)
+        if (!restored.ok) {
+            if (restored.targetAbsentConfirmed && restored.uploadAttempted) {
+                return p8CreatedQdrantFailure(out, restored.diagnostic,
+                    control, this.inputs.targetCollection)
+            }
+            out.diagnostic = restored.diagnostic; return out
+        }
+        let request = CkbQdrantSnapshotRequest(); request.method = "GET"
+        request.path = "/collections/${this.inputs.targetCollection}"
+        let response = control.execute(request)
+        if (response.statusCode < 200 || response.statusCode >= 300) {
+            return p8CreatedQdrantFailure(out,
+                "qdrant_snapshot_status_read_failed", control,
+                this.inputs.targetCollection)
+        }
+        let status = parseCkbQdrantRestoredStatus(response.bodyBytes,
+            this.inputs.targetCollection,
+            this.inputs.qdrantManifest.payloadCanonicalHash)
+        if (!status[0].ok) { return p8CreatedQdrantFailure(out,
+            status[0].diagnostic, control, this.inputs.targetCollection) }
+        let provider = CkbP3FilesystemVerificationInputProvider(
+            this.inputs.authority.outputRoot, this.inputs.authority.pathContext)
+        if (!provider.logicalReady()) {
+            return p8CreatedQdrantFailure(out,
+                "production_rebuild_readback_mismatch", control,
+                this.inputs.targetCollection)
+        }
+        let verified = verifyRestoredCkbQdrantSnapshot(status[1],
+            this.inputs.qdrantManifest, inspected.manifest,
+            provider.visibleRuntimeInput(),
+            provider.pathContext(this.inputs.qdrantManifest.collection))
+        if (!verified.ok) { return p8CreatedQdrantFailure(out,
+            verified.diagnostic, control, this.inputs.targetCollection) }
+        if (this.inputs.parityManifest.knowledgeVersion != snapshot.activeVersion ||
+            this.inputs.parityManifest.logicalManifestHash !=
+                inspected.manifest.manifestHash) {
+            return p8CreatedQdrantFailure(out,
+                "retrieval_parity_identity_mismatch", control,
+                this.inputs.targetCollection)
+        }
+        let parity = verifyCkbRetrievalParityManifest(
+            this.inputs.parityManifest, parityBackend)
+        if (!parity.ok) { return p8CreatedQdrantFailure(out,
+            parity.diagnostic, control, this.inputs.targetCollection) }
+        out.knowledgeVersion = snapshot.activeVersion
+        out.logicalManifestHash = inspected.manifest.manifestHash
+        out.vectorProofHash = this.inputs.qdrantManifest.vectorProofHash
+        out.sourceLockHash = built.proof.sourceLockHash
+        out.pathProofHash = this.inputs.pathProofHash
+        out.rawRecords = snapshot.rawRecords.size
+        out.normalizedRecords = snapshot.normalizedRecords.size
+        out.activeRecords = snapshot.activeIndex.size
+        out.vectorPoints = this.inputs.qdrantManifest.points
+        out.vectorDimension = this.inputs.qdrantManifest.dimension
+        out.ok = true; out.diagnostic = "ok"; out
+    }
+}
+
+private func p8CreatedQdrantFailure(out: CkbReproStageEvidence,
+    diagnostic: String, control: CkbQdrantSnapshotExecutor,
+    collection: String): CkbReproStageEvidence {
+    let request = CkbQdrantSnapshotRequest(); request.method = "DELETE"
+    request.path = "/collections/${collection}"
+    let response = control.execute(request)
+    if (response.statusCode != 200 && response.statusCode != 202 &&
+        response.statusCode != 404) {
+        out.diagnostic = "qdrant_created_collection_cleanup_failed"
+    } else { out.diagnostic = diagnostic }
+    out
+}
+
+public class CkbProductionRestoreStageOperation <:
+    CkbReproRestoreStageOperation {
+    private let action: (CkbReproVerifyOptions) -> CkbReproStageEvidence
+    public init(action: (CkbReproVerifyOptions) -> CkbReproStageEvidence) {
+        this.action = action
+    }
+    public func execute(options: CkbReproVerifyOptions): CkbReproStageEvidence {
+        this.action(options)
+    }
+}
+
+public class CkbProductionRebuildStageOperation <:
+    CkbReproRebuildStageOperation {
+    private let action: (CkbReproVerifyOptions) -> CkbReproStageEvidence
+    public init(action: (CkbReproVerifyOptions) -> CkbReproStageEvidence) {
+        this.action = action
+    }
+    public func execute(options: CkbReproVerifyOptions): CkbReproStageEvidence {
+        this.action(options)
+    }
+}
+
+public class CkbProductionReferenceRunOperation <:
+    CkbReproReferenceRunOperation {
+    private let action: (CkbReproVerifyOptions) -> CkbReproReferenceRunEvidence
+    public init(action: (CkbReproVerifyOptions) -> CkbReproReferenceRunEvidence) {
+        this.action = action
+    }
+    public func execute(options: CkbReproVerifyOptions):
+        CkbReproReferenceRunEvidence { this.action(options) }
+}
+
+public class CkbProductionPublicEvidenceOperation <:
+    CkbReproPublicEvidenceOperation {
+    private let action: (CkbReproVerifyOptions) -> CkbReproContractResult
+    public init(action: (CkbReproVerifyOptions) -> CkbReproContractResult) {
+        this.action = action
+    }
+    public func execute(options: CkbReproVerifyOptions):
+        CkbReproContractResult { this.action(options) }
+}
+
+public class CkbProductionDocumentationOperation <:
+    CkbReproDocumentationOperation {
+    private let action: (CkbReproVerifyOptions) -> CkbReproContractResult
+    public init(action: (CkbReproVerifyOptions) -> CkbReproContractResult) {
+        this.action = action
+    }
+    public func execute(options: CkbReproVerifyOptions):
+        CkbReproContractResult { this.action(options) }
+}
+
+public class CkbP8ProductionPublicEvidenceOperation <:
+    CkbReproPublicEvidenceOperation {
+    public init() {}
+    public func execute(options: CkbReproVerifyOptions): CkbReproContractResult {
+        let reader = CkbP8ManifestAuthorizedReader()
+        if (!reader.start(options.candidateRoot).ok) {
+            return p8Failure("public_evidence_binding_missing")
+        }
+        let standalone = reader.read("p5_public_evidence",
+            "public-evidence-export.json", 64 * 1024)
+        let archive = reader.read("p5_public_evidence",
+            "ckb-public-reference-evidence.tar.zst", 64 * 1024 * 1024)
+        let referenceBytes = reader.read("p8_reference",
+            "reproducibility/manifests/reference-run.json", 1024 * 1024)
+        if (!standalone[0].ok || !archive[0].ok || !referenceBytes[0].ok ||
+            !reader.finish().ok ||
+            !scanCkbPublicEvidenceLeakage(standalone[1]).ok ||
+            !scanCkbPublicEvidenceLeakage(referenceBytes[1]).ok) {
+            return p8Failure("public_evidence_binding_missing")
+        }
+        let publicManifest = parseCkbPublicEvidenceExportManifest(standalone[1])
+        let reference = parseCkbReproReferenceManifest(referenceBytes[1])
+        let referenceValidation = validateCkbReproReferenceManifest(reference[1])
+        if (!publicManifest[0].ok ||
+            !validateCkbPublicEvidenceExportManifest(publicManifest[1]).ok ||
+            !reference[0].ok || !referenceValidation.ok ||
+            publicManifest[1].referenceManifestHash !=
+                referenceValidation.manifestHash ||
+            publicManifest[1].privateResultsHash != reference[1].resultsHash ||
+            publicManifest[1].runId != reference[1].runId ||
+            publicManifest[1].knowledgeVersion != reference[1].knowledgeVersion ||
+            publicManifest[1].providerFingerprint !=
+                reference[1].providerFingerprint ||
+            publicManifest[1].modelFingerprint != reference[1].modelFingerprint ||
+            publicManifest[1].vectorProofHash != reference[1].vectorProofHash ||
+            publicManifest[1].certifiedRunInputHash !=
+                reference[1].certifiedRunInputHash ||
+            reference[1].baselineKind != "portable_release" ||
+            reference[1].evidenceStatus != "complete" ||
+            reference[1].totalCases != 164 || reference[1].strictPassed != 151 ||
+            reference[1].transportUnresolved != 0) {
+            return p8Failure("public_evidence_binding_invalid")
+        }
+        try { p8VerifyAuthorizedPublicArchive(archive[1], options,
+            publicManifest[1], reference[1]) }
+        catch (_: Exception) { p8Failure("public_evidence_temp_cleanup_failed") }
+    }
+}
+
+private func p8VerifyAuthorizedPublicArchive(bytes: Array<UInt8>,
+    options: CkbReproVerifyOptions, publicManifest: CkbPublicEvidenceExportManifest,
+    reference: CkbReproReferenceManifest): CkbReproContractResult {
+    var workOwned = false
+    let archivePath = Path(options.workRoot).join(
+        "p8-public-evidence-readonly.archive")
+    try {
+        if (!exists(Path(options.workRoot))) {
+            Directory.create(Path(options.workRoot), recursive: false)
+            workOwned = true
+        }
+        if (exists(archivePath)) { return p8Failure("public_evidence_temp_exists") }
+        File.writeTo(archivePath, bytes)
+        let backend = CkbPortableReleaseArchiveBackend()
+        let listed = backend.enumerate(archivePath.toString())
+        if (!listed.ok || listed.entries.size != 3) {
+            return p8Failure("public_evidence_archive_invalid")
+        }
+        let required = HashSet<String>()
+        for (path in ["public-evidence.jsonl", "score.json", "manifest.json"]) {
+            required.add(path)
+        }
+        for (entry in listed.entries) {
+            if (entry.kind != CkbReleaseArchiveEntryKinds.REGULAR ||
+                !required.contains(entry.path)) {
+                return p8Failure("public_evidence_archive_invalid")
+            }
+            required.remove(entry.path)
+        }
+        if (required.size != 0) {
+            return p8Failure("public_evidence_archive_invalid")
+        }
+        let evidence = backend.readRegular(archivePath.toString(),
+            "public-evidence.jsonl")
+        let scoreBytes = backend.readRegular(archivePath.toString(), "score.json")
+        let manifestBytes = backend.readRegular(archivePath.toString(), "manifest.json")
+        if (!evidence.ok || !scoreBytes.ok || !manifestBytes.ok ||
+            evidence.bytes.size > 64 * 1024 * 1024 ||
+            scoreBytes.bytes.size > 64 * 1024 ||
+            manifestBytes.bytes.size > 64 * 1024 ||
+            !scanCkbPublicEvidenceLeakage(evidence.bytes).ok ||
+            !scanCkbPublicEvidenceLeakage(scoreBytes.bytes).ok ||
+            !scanCkbPublicEvidenceLeakage(manifestBytes.bytes).ok) {
+            return p8Failure("public_evidence_archive_invalid")
+        }
+        let evidenceText = try { String.fromUtf8(evidence.bytes) }
+            catch (_: Exception) { return p8Failure("invalid_response_encoding") }
+        let scoreText = try { String.fromUtf8(scoreBytes.bytes) }
+            catch (_: Exception) { return p8Failure("invalid_response_encoding") }
+        let archivedManifest = parseCkbPublicEvidenceExportManifest(
+            manifestBytes.bytes)
+        let score = parseCkbStrictScoreEvidenceJsonl(evidence.bytes)
+        let runManifestHash = try {
+            JsonValue.fromStr(evidenceText.split("\n")[0]).asObject()
+                .get("runManifestHash").getOrThrow().asString().getValue()
+        } catch (_: Exception) { "" }
+        if (!archivedManifest[0].ok ||
+            renderCkbPublicEvidenceExportManifest(archivedManifest[1]) !=
+                renderCkbPublicEvidenceExportManifest(publicManifest) ||
+            !score.valid || score.total != 164 || score.strictPassed != 151 ||
+            score.transportUnresolved != 0 ||
+            runManifestHash == "" ||
+            runManifestHash != publicManifest.runManifestHash ||
+            scoreText.trimAscii() != renderCkbHumanEvalStrictScoreJson(score) ||
+            benchmarkGapSha256(evidenceText) != publicManifest.publicEvidenceHash ||
+            score.strictPassed != reference.strictPassed ||
+            score.unitFirstSamplePassed != reference.rawPassed ||
+            score.businessFailed != reference.businessFailed ||
+            score.protocolInvalid != reference.protocolInvalid) {
+            return p8Failure("public_evidence_archive_binding_invalid")
+        }
+        p8Success()
+    } catch (_: Exception) { p8Failure("public_evidence_archive_failed") }
+    finally {
+        if (exists(archivePath)) {
+            try { remove(archivePath) }
+            catch (_: Exception) { throw Exception("public_evidence_temp_cleanup_failed") }
+        }
+        if (workOwned && exists(Path(options.workRoot))) {
+            try { remove(Path(options.workRoot), recursive: true) }
+            catch (_: Exception) { throw Exception("public_evidence_temp_cleanup_failed") }
+        }
+    }
+}
+
+public class CkbP8FilesystemDocumentationReader <:
+    CkbReproDocumentationReader {
+    private let authorized = CkbP8ManifestAuthorizedReader()
+    public init() {}
+    public func list(root: String): ArrayList<CkbReproDocumentationEntry> {
+        let out = ArrayList<CkbReproDocumentationEntry>()
+        if (!this.authorized.start(root).ok) { return out }
+        let required = HashSet<String>()
+        for (path in requiredCkbReproDocumentationFiles()) { required.add(path) }
+        let seen = HashSet<String>(); var invalid = false
+        for (asset in this.authorized.manifest().assets) {
+            if (asset.role != "p7_documentation") { continue }
+            if (!required.contains(asset.relativePath)) {
+                if (asset.relativePath != "docs/service-http-operations.md") {
+                    invalid = true
+                }
+                continue
+            }
+            if (seen.contains(asset.relativePath) ||
+                asset.logicalAsset != asset.relativePath ||
+                asset.partIndex != 0 || asset.partCount != 1 ||
+                asset.size != asset.logicalSize || asset.sha256 != asset.logicalSha256) {
+                invalid = true; continue
+            }
+            seen.add(asset.relativePath)
+            let item = CkbReproDocumentationEntry()
+            item.relativePath = asset.relativePath
+            item.kind = CKB_REPRO_DOCUMENTATION_ENTRY_REGULAR
+            out.add(item)
+        }
+        if (invalid || seen.size != required.size) { out.clear() }
+        out
+    }
+    public func read(root: String, relativePath: String): CkbReproDocumentationRead {
+        let out = CkbReproDocumentationRead()
+        let read = this.authorized.read("p7_documentation", relativePath,
+            4 * 1024 * 1024)
+        out.found = read[0].ok; if (out.found) { out.bytes = read[1] }; out
+    }
+    public func finish(): CkbReproContractResult { this.authorized.finish() }
+}
+
+public class CkbP8ProductionDocumentationOperation <:
+    CkbReproDocumentationOperation {
+    private let registeredCommands: Array<String>
+    public init(registeredCommands: Array<String>) {
+        this.registeredCommands = registeredCommands
+    }
+    public func execute(options: CkbReproVerifyOptions): CkbReproContractResult {
+        let reader = CkbP8FilesystemDocumentationReader()
+        let evidence = validateCkbReproDocumentation(
+            reader, options.candidateRoot,
+            CKB_REPRO_DOCUMENTATION_MODE_RELEASE, this.registeredCommands)
+        if (!evidence.ok) { return p8Failure(evidence.diagnostic) }
+        reader.finish()
+    }
+}
+
+public class CkbP8ManifestAuthorizedReader {
+    private let backend = CkbReproFilesystemBundleReadBackend()
+    private var root: String = ""
+    private var loaded: CkbReproBundleLoadResult = CkbReproBundleLoadResult()
+    public init() {}
+    public func start(root: String): CkbReproContractResult {
+        if (this.root != "") { return p8Failure("candidate_reader_reused") }
+        let loaded = validateCkbReproBundleManifest(root, this.backend)
+        if (!loaded.contract.ok) { return loaded.contract }
+        this.root = root; this.loaded = loaded; p8Success()
+    }
+    public func manifest(): CkbReproBundleManifest { this.loaded.manifest }
+    public func read(role: String, relativePath: String, maxBytes: Int64):
+        (CkbReproContractResult, Array<UInt8>) {
+    if (this.root == "" || !validateCkbReproBundleRelativePath(relativePath).ok ||
+        maxBytes < 1 || maxBytes > 64 * 1024 * 1024) {
+        return (p8Failure("candidate_file_invalid"), Array<UInt8>())
+    }
+    var asset = CkbReproBundleAsset(); var assetCount: Int64 = 0
+    for (value in this.loaded.manifest.assets) {
+        if (value.relativePath == relativePath && value.role == role &&
+            value.logicalAsset == relativePath && value.partIndex == 0 &&
+            value.partCount == 1 && value.size == value.logicalSize &&
+            value.sha256 == value.logicalSha256) {
+            asset = value; assetCount += 1
+        }
+    }
+    var found = CkbReproBundleReadEntry(); var count: Int64 = 0
+    for (entry in this.backend.list(this.root)) {
+        if (entry.relativePath == relativePath) { found = entry; count += 1 }
+    }
+    if (assetCount != 1 || count != 1 || found.kind != "regular" ||
+        found.size != asset.size || found.size > maxBytes) {
+        return (p8Failure("candidate_file_invalid"), Array<UInt8>())
+    }
+    let bytes = ArrayList<UInt8>(); let handle = this.backend.open(this.root, found)
+    try {
+        while (true) {
+            let buffer = Array<UInt8>(65536, repeat: UInt8(0))
+            let size = handle.read(buffer)
+            if (size < 0 || size > buffer.size || bytes.size + size > maxBytes) {
+                return (p8Failure("candidate_file_read_failed"), Array<UInt8>())
+            }
+            if (size == 0) { break }
+            bytes.add(all: if (size == buffer.size) { buffer }
+                else { buffer[0..size].clone() })
+        }
+        let observed = handle.observedEntry()
+        if (!handle.noFollow() || observed.relativePath != found.relativePath ||
+            observed.kind != found.kind || observed.identity != found.identity ||
+            observed.size != found.size || !observed.withinRoot) {
+            return (p8Failure("candidate_file_changed"), Array<UInt8>())
+        }
+    } finally { handle.close() }
+    let value = bytes.toArray()
+    if (ckbReproBundleHash(value) != asset.sha256) {
+        return (p8Failure("candidate_file_hash_mismatch"), Array<UInt8>())
+    }
+    (p8Success(), value)
+    }
+    public func finish(): CkbReproContractResult {
+        if (this.root == "") { return p8Failure("candidate_reader_not_started") }
+        let after = validateCkbReproBundleManifest(this.root, this.backend)
+        if (!after.contract.ok || after.rootIdentity != this.loaded.rootIdentity ||
+            after.manifest.inputSetHash != this.loaded.manifest.inputSetHash ||
+            after.proofSetHash != this.loaded.proofSetHash) {
+            return p8Failure("candidate_bundle_changed")
+        }
+        p8Success()
+    }
+}
+
 public class CkbProductionRunCertificationExecutor <:
     CkbReproRunCertificationExecutor {
     private let restoreOperation: CkbReproRestoreStageOperation
     private let rebuildOperation: CkbReproRebuildStageOperation
     private let referenceOperation: CkbReproReferenceRunOperation
+    private let cleanupAction: (CkbReproVerifyOptions) -> Bool
+    private var rebuildOwned: Bool = false
     public init(restoreOperation: CkbReproRestoreStageOperation,
         rebuildOperation: CkbReproRebuildStageOperation,
-        referenceOperation: CkbReproReferenceRunOperation) {
+        referenceOperation: CkbReproReferenceRunOperation,
+        cleanupAction!: (CkbReproVerifyOptions) -> Bool = { _: CkbReproVerifyOptions => true }) {
         this.restoreOperation = restoreOperation
         this.rebuildOperation = rebuildOperation
         this.referenceOperation = referenceOperation
+        this.cleanupAction = cleanupAction
     }
     public func restore(options: CkbReproVerifyOptions): CkbReproStageEvidence {
         this.restoreOperation.execute(options)
     }
     public func rebuild(options: CkbReproVerifyOptions): CkbReproStageEvidence {
-        this.rebuildOperation.execute(options)
+        let result = this.rebuildOperation.execute(options)
+        if (result.ok) { this.rebuildOwned = true }; result
     }
     public func runReference(options: CkbReproVerifyOptions):
         CkbReproReferenceRunEvidence {
         this.referenceOperation.execute(options)
+    }
+    public func cleanup(options: CkbReproVerifyOptions): Bool {
+        if (!this.rebuildOwned) { return true }
+        this.rebuildOwned = false; this.cleanupAction(options)
     }
 }
 
@@ -313,20 +1027,25 @@ public class CkbProductionReleaseVerificationExecutor <:
     private let rebuildOperation: CkbReproRebuildStageOperation
     private let publicEvidenceOperation: CkbReproPublicEvidenceOperation
     private let documentationOperation: CkbReproDocumentationOperation
+    private let cleanupAction: (CkbReproVerifyOptions) -> Bool
+    private var rebuildOwned: Bool = false
     public init(restoreOperation: CkbReproRestoreStageOperation,
         rebuildOperation: CkbReproRebuildStageOperation,
         publicEvidenceOperation: CkbReproPublicEvidenceOperation,
-        documentationOperation: CkbReproDocumentationOperation) {
+        documentationOperation: CkbReproDocumentationOperation,
+        cleanupAction!: (CkbReproVerifyOptions) -> Bool = { _: CkbReproVerifyOptions => true }) {
         this.restoreOperation = restoreOperation
         this.rebuildOperation = rebuildOperation
         this.publicEvidenceOperation = publicEvidenceOperation
         this.documentationOperation = documentationOperation
+        this.cleanupAction = cleanupAction
     }
     public func restore(options: CkbReproVerifyOptions): CkbReproStageEvidence {
         this.restoreOperation.execute(options)
     }
     public func rebuild(options: CkbReproVerifyOptions): CkbReproStageEvidence {
-        this.rebuildOperation.execute(options)
+        let result = this.rebuildOperation.execute(options)
+        if (result.ok) { this.rebuildOwned = true }; result
     }
     public func verifyPublicEvidence(options: CkbReproVerifyOptions):
         CkbReproContractResult {
@@ -336,6 +1055,94 @@ public class CkbProductionReleaseVerificationExecutor <:
         CkbReproContractResult {
         this.documentationOperation.execute(options)
     }
+    public func cleanup(options: CkbReproVerifyOptions): Bool {
+        if (!this.rebuildOwned) { return true }
+        this.rebuildOwned = false; this.cleanupAction(options)
+    }
+}
+
+public func newCkbInjectedRunCertificationExecutorForTest(
+    restore: CkbReproRestoreStageOperation,
+    rebuild: CkbReproRebuildStageOperation,
+    reference: CkbReproReferenceRunOperation):
+    CkbReproRunCertificationExecutor {
+    CkbProductionRunCertificationExecutor(restore, rebuild, reference)
+}
+
+public func newCkbP8AInjectedExecutorForTest(
+    restore: CkbReproRestoreStageOperation,
+    rebuild: CkbReproRebuildStageOperation,
+    reference: CkbReproReferenceManifest,
+    lock: CkbReproEnvironmentLock, inputs: CkbReproRunnerInputs,
+    preflight: CkbReproEnvironmentPreflightResult,
+    runner: CkbReproRunnerInvoker, authorityManifestText: String):
+    CkbReproRunCertificationExecutor {
+    CkbProductionRunCertificationExecutor(restore, rebuild,
+        CkbP8ProductionReferenceRunOperation(reference, lock, inputs,
+            preflight, runner, authorityManifestText))
+}
+
+public func newCkbP8AProductionExecutor(
+    restore: CkbP8ProductionRestoreInputs,
+    rebuild: CkbP8ProductionRebuildInputs,
+    reference: CkbReproReferenceManifest,
+    lock: CkbReproEnvironmentLock, inputs: CkbReproRunnerInputs,
+    preflight: CkbReproEnvironmentPreflightResult,
+    runner: CkbReproRunnerInvoker, authorityManifestText: String):
+    CkbReproRunCertificationExecutor {
+    CkbProductionRunCertificationExecutor(
+        CkbP8ProductionRestoreOperation(restore),
+        CkbP8ProductionRebuildOperation(rebuild),
+        CkbP8ProductionReferenceRunOperation(reference, lock, inputs,
+            preflight, runner, authorityManifestText),
+        cleanupAction: { options: CkbReproVerifyOptions =>
+            p8CleanupRebuildOwned(options, rebuild) })
+}
+
+// P8-B has no Runner or model/provider parameter by construction.
+public func newCkbP8BProductionExecutor(
+    restore: CkbP8ProductionRestoreInputs,
+    rebuild: CkbP8ProductionRebuildInputs,
+    registeredCommands: Array<String>): CkbReproReleaseVerificationExecutor {
+    CkbProductionReleaseVerificationExecutor(
+        CkbP8ProductionRestoreOperation(restore),
+        CkbP8ProductionRebuildOperation(rebuild),
+        CkbP8ProductionPublicEvidenceOperation(),
+        CkbP8ProductionDocumentationOperation(registeredCommands),
+        cleanupAction: { options: CkbReproVerifyOptions =>
+            p8CleanupRebuildOwned(options, rebuild) })
+}
+
+private func p8CleanupRebuildOwned(options: CkbReproVerifyOptions,
+    inputs: CkbP8ProductionRebuildInputs): Bool {
+    var ok = true
+    for (root in [inputs.authority.outputRoot, inputs.authority.temporaryRoot]) {
+        if (exists(Path(root))) {
+            try { remove(Path(root), recursive: true) }
+            catch (_: Exception) { ok = false }
+        }
+    }
+    match (inputs.qdrantControl) {
+        case Some(control) =>
+            let request = CkbQdrantSnapshotRequest(); request.method = "DELETE"
+            request.path = "/collections/${inputs.targetCollection}"
+            let response = control.execute(request)
+            if (response.statusCode != 200 && response.statusCode != 202 &&
+                response.statusCode != 404) { ok = false }
+        case None => ok = false
+    }
+    ok
+}
+
+// P8-B has no reference-run parameter by construction.
+public func newCkbInjectedReleaseVerificationExecutorForTest(
+    restore: CkbReproRestoreStageOperation,
+    rebuild: CkbReproRebuildStageOperation,
+    publicEvidence: CkbReproPublicEvidenceOperation,
+    documentation: CkbReproDocumentationOperation):
+    CkbReproReleaseVerificationExecutor {
+    CkbProductionReleaseVerificationExecutor(
+        restore, rebuild, publicEvidence, documentation)
 }
 
 public class CkbReproCertifiedRunHashInputs {
@@ -850,7 +1657,7 @@ public func classifyCkbReferenceTargetScore(
     out
 }
 
-public func runCkbPortableReferenceHumanEval(
+private func p8RunCkbPortableReferenceHumanEvalCore(
     options: CkbReproVerifyOptions, expected: CkbReproExpectedIdentity,
     hashInputs: CkbReproCertifiedRunHashInputs,
     preflight: CkbReproVerifyEnvironmentResult,
@@ -937,6 +1744,28 @@ public func runCkbPortableReferenceHumanEval(
     out
 }
 
+public func runCkbPortableReferenceHumanEval(
+    options: CkbReproVerifyOptions, expected: CkbReproExpectedIdentity,
+    hashInputs: CkbReproCertifiedRunHashInputs,
+    preflight: CkbReproVerifyEnvironmentResult,
+    probe: CkbReproVerifyEnvironmentProbe,
+    referenceTemplate: CkbReproReferenceManifest,
+    executor: CkbReproRunCertificationExecutor):
+    CkbReproRunCertificationResult {
+    let out = try { p8RunCkbPortableReferenceHumanEvalCore(options, expected,
+        hashInputs, preflight, probe, referenceTemplate, executor) }
+        catch (_: Exception) {
+            let failed = CkbReproRunCertificationResult()
+            failed.diagnostic = "certification_unexpected_failure"; failed
+        }
+    let cleaned = try { executor.cleanup(options) }
+        catch (_: Exception) { false }
+    if (!cleaned) {
+        out.ok = false; out.diagnostic += ";certification_cleanup_failed"
+    }
+    out
+}
+
 public func writeCkbPortableReferenceManifest(
     template: CkbReproReferenceManifest,
     run: CkbReproReferenceRunEvidence, runCandidateCommit: String,
@@ -967,7 +1796,7 @@ public func computeCkbVerifiedReleaseInputSetHash(
     computeCkbReproBundleInputSetHash(bundle.assets)
 }
 
-public func verifyCkbUnsignedReleaseCandidate(
+private func p8VerifyCkbUnsignedReleaseCandidateCore(
     options: CkbReproVerifyOptions, expected: CkbReproExpectedIdentity,
     reference: CkbReproReferenceManifest,
     expectedInputSetHash: String, expectedCertifiedRunInputHash: String,
@@ -1127,6 +1956,34 @@ public func verifyCkbUnsignedReleaseCandidate(
     }
     out.ok = true
     out.diagnostic = "verified"
+    out
+}
+
+public func verifyCkbUnsignedReleaseCandidate(
+    options: CkbReproVerifyOptions, expected: CkbReproExpectedIdentity,
+    reference: CkbReproReferenceManifest,
+    expectedInputSetHash: String, expectedCertifiedRunInputHash: String,
+    canonicalReleaseRepository: String,
+    runCriticalManifest: CkbRunCriticalFilesManifest,
+    authorityValidator: CkbReproReleaseAssetAuthority,
+    preflight: CkbReproVerifyEnvironmentResult,
+    probe: CkbReproVerifyEnvironmentProbe,
+    backend: CkbReproBundleReadBackend,
+    executor: CkbReproReleaseVerificationExecutor):
+    CkbReproReleaseVerificationResult {
+    let out = try { p8VerifyCkbUnsignedReleaseCandidateCore(options, expected,
+        reference, expectedInputSetHash, expectedCertifiedRunInputHash,
+        canonicalReleaseRepository, runCriticalManifest, authorityValidator,
+        preflight, probe, backend, executor) } catch (_: Exception) {
+            let failed = CkbReproReleaseVerificationResult()
+            failed.diagnostic = "release_verification_unexpected_failure"; failed
+        }
+    let cleaned = try { executor.cleanup(options) }
+        catch (_: Exception) { false }
+    if (!cleaned) {
+        out.ok = false
+        out.diagnostic += ";release_verification_cleanup_failed"
+    }
     out
 }
 

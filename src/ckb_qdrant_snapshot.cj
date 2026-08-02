@@ -301,6 +301,8 @@ public class CkbQdrantSnapshotDownloadResult {
 public class CkbQdrantSnapshotRestoreResult {
     public var ok: Bool = false
     public var diagnostic: String = "snapshot_restore_not_run"
+    public var targetAbsentConfirmed: Bool = false
+    public var uploadAttempted: Bool = false
     public init() {}
 }
 
@@ -462,6 +464,50 @@ public class CkbStoreVerificationInputProvider <:
     }
     public func pathContext(collection: String): CkbPortablePathContext {
         this.context
+    }
+}
+
+// Loads verification records from the runtime created by the immediately
+// preceding logical-snapshot import. Callers cannot substitute an older
+// in-memory visible-record set for that runtime.
+public class CkbP3FilesystemVerificationInputProvider <:
+    CkbP3VerificationInputProvider {
+    private let store: FileKnowledgeStore
+    private let delegate: CkbStoreVerificationInputProvider
+    public init(runtimeRoot: String, context: CkbPortablePathContext) {
+        this.store = FileKnowledgeStore(runtimeRoot)
+        this.delegate = CkbStoreVerificationInputProvider(this.store, context)
+    }
+    public func ready(collection: String): Bool {
+        let snapshot = this.store.loadActiveSnapshot()
+        let metadata = this.store.loadMetadataStatus()
+        snapshot.valid && metadata.valid && snapshot.activeVersion != "" &&
+            snapshot.rawRecords.size > 0 && snapshot.normalizedRecords.size > 0 &&
+            snapshot.activeIndex.size > 0 &&
+            metadata.vectorActiveCollection == collection
+    }
+    public func logicalReady(): Bool {
+        let snapshot = this.store.loadActiveSnapshot()
+        let metadata = this.store.loadMetadataStatus()
+        snapshot.valid && metadata.valid && snapshot.activeVersion != "" &&
+            snapshot.rawRecords.size > 0 && snapshot.normalizedRecords.size > 0 &&
+            snapshot.activeIndex.size > 0
+    }
+    public func visibleRuntimeInput(): CkbStudentVisiblePathInput {
+        let out = CkbStudentVisiblePathInput()
+        let snapshot = this.store.loadActiveSnapshot()
+        if (!snapshot.valid) { return out }
+        for (record in snapshot.rawRecords) { out.rawRecords.add(record) }
+        for (record in snapshot.normalizedRecords) { out.normalizedRecords.add(record) }
+        for (record in snapshot.activeIndex) { out.activeRecords.add(record) }
+        for (record in snapshot.vectorRecords) { out.vectorRecords.add(record) }
+        out
+    }
+    public func visibleInput(collection: String): CkbStudentVisiblePathInput {
+        this.delegate.visibleInput(collection)
+    }
+    public func pathContext(collection: String): CkbPortablePathContext {
+        this.delegate.pathContext(collection)
     }
 }
 
@@ -1263,10 +1309,12 @@ public func restoreCkbQdrantSnapshotFromFile(targetCollection: String,
     if (controlExecutor.execute(statusRequest).statusCode != 404) {
         result.diagnostic = "qdrant_snapshot_target_exists"; return result
     }
+    result.targetAbsentConfirmed = true
     let uploadRequest = CkbQdrantSnapshotRequest()
     uploadRequest.method = "PUT"
     uploadRequest.path = "/collections/${targetCollection}/snapshots/upload"
     uploadRequest.contentType = "application/octet-stream"
+    result.uploadAttempted = true
     let response = fileExecutor.upload(uploadRequest, snapshotPath,
         identity.size, identity.sha256)
     if (response.statusCode < 200 || response.statusCode >= 300) {

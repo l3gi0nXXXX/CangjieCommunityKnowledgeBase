@@ -1,6 +1,6 @@
 package cangjie_community_knowledge_base_test
 
-import std.collection.ArrayList
+import std.collection.{ArrayList, HashSet}
 import std.fs.{Directory, File, Path, exists, remove}
 import std.process.launch
 import std.unittest.*
@@ -165,9 +165,26 @@ private class P4RuntimeMultiReadBackend <: CkbReproBundleReadBackend {
     private let root: String
     private let entries = ArrayList<CkbReproBundleReadEntry>()
     private let values = ArrayList<Array<UInt8>>()
+    private let directories = HashSet<String>()
     public var maxRequest: Int64 = 0
     public init(root: String) { this.root = root }
+    public func addDirectory(relativePath: String): Unit {
+        if (this.directories.contains(relativePath)) { return }
+        this.directories.add(relativePath)
+        let directory = CkbReproBundleReadEntry()
+        directory.relativePath = relativePath; directory.kind = "directory"
+        directory.canonicalPath = "${this.root}/${relativePath}"
+        directory.withinRoot = true
+        directory.identity = "dir-${this.directories.size}"
+        this.entries.add(directory); this.values.add(Array<UInt8>())
+    }
     public func add(relativePath: String, bytes: Array<UInt8>): Unit {
+        let parts = relativePath.split("/"); var current = ""
+        for (i in 0..parts.size - 1) {
+            current = if (current == "") { parts[i] }
+                else { "${current}/${parts[i]}" }
+            this.addDirectory(current)
+        }
         let entry = CkbReproBundleReadEntry()
         entry.relativePath = relativePath; entry.kind = "regular"
         entry.canonicalPath = "${this.root}/${relativePath}"
@@ -557,6 +574,15 @@ public class CkbReproBuildInputsRuntimeTest {
             "/fixture-extra", clean, backend)
         @Expect(loaded.ok, false)
         @Expect(loaded.diagnostic, "build_inputs_root_contract_invalid")
+
+        let extraDirectory = P4RuntimeMultiReadBackend("/fixture-extra-dir")
+        for (asset in clean.assets) {
+            extraDirectory.add(asset.relativePath, "{}".toArray())
+        }
+        extraDirectory.addDirectory("unlisted-empty")
+        @Expect(loadCkbReproPublicBuildInputs(
+            "/fixture-extra-dir", clean, extraDirectory).diagnostic,
+            "build_inputs_root_contract_invalid")
     }
 
     @TestCase

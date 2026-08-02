@@ -871,20 +871,39 @@ public func loadCkbReproPublicBuildInputs(root: String,
             out.diagnostic = "build_inputs_root_contract_invalid"; return out
         }
         let declaredPaths = HashSet<String>()
-        for (asset in manifest.assets) { declaredPaths.add(asset.relativePath) }
+        let declaredDirectories = HashSet<String>()
+        for (asset in manifest.assets) {
+            declaredPaths.add(asset.relativePath)
+            ckbAddBuildInputParentDirectories(
+                asset.relativePath, declaredDirectories)
+        }
         let listedPaths = HashSet<String>()
+        let listedDirectories = HashSet<String>()
         for (entry in backend.list(root)) {
-            if (!declaredPaths.contains(entry.relativePath) ||
-                listedPaths.contains(entry.relativePath) ||
-                entry.kind != "regular" || !entry.withinRoot ||
+            if (!entry.withinRoot ||
                 entry.canonicalPath != "${root}/${entry.relativePath}" ||
                 entry.identity == "") {
                 out.diagnostic = "build_inputs_root_contract_invalid"
                 return out
             }
-            listedPaths.add(entry.relativePath)
+            if (entry.kind == "regular") {
+                if (!declaredPaths.contains(entry.relativePath) ||
+                    listedPaths.contains(entry.relativePath)) {
+                    out.diagnostic = "build_inputs_root_contract_invalid"; return out
+                }
+                listedPaths.add(entry.relativePath)
+            } else if (entry.kind == "directory") {
+                if (!declaredDirectories.contains(entry.relativePath) ||
+                    listedDirectories.contains(entry.relativePath)) {
+                    out.diagnostic = "build_inputs_root_contract_invalid"; return out
+                }
+                listedDirectories.add(entry.relativePath)
+            } else {
+                out.diagnostic = "build_inputs_root_contract_invalid"; return out
+            }
         }
-        if (listedPaths.size != declaredPaths.size) {
+        if (listedPaths.size != declaredPaths.size ||
+            listedDirectories.size != declaredDirectories.size) {
             out.diagnostic = "build_inputs_root_contract_invalid"; return out
         }
         var captured = ckbCaptureBuildInputAsset(root,
@@ -978,6 +997,17 @@ public func loadCkbReproPublicBuildInputs(root: String,
         out.ok = true; out.diagnostic = "ok"; out
     } catch (_: Exception) {
         out.diagnostic = "build_inputs_role_missing"; out
+    }
+}
+
+private func ckbAddBuildInputParentDirectories(path: String,
+    out: HashSet<String>): Unit {
+    let parts = path.split("/")
+    var current = ""
+    for (i in 0..parts.size - 1) {
+        current = if (current == "") { parts[i] }
+            else { "${current}/${parts[i]}" }
+        out.add(current)
     }
 }
 
