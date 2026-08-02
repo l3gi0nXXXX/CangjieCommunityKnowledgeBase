@@ -318,9 +318,7 @@ private func ckbPinnedSourceForMaterial(entry: CkbReproSourceMaterialEntry,
     let expected = if (source.sourceType == "external_git") {
         source.fileHash
     } else { source.outputHash }
-    let relative = if (source.sourceType == "external_git") {
-        source.path
-    } else { source.outputPath }
+    let relative = ckbReproSourceAssemblyPath(source)
     if (entry.expectedHash != expected || entry.relativePath != relative) {
         return ("pinned_source_material_mismatch", CkbReproSourceLockEntry())
     }

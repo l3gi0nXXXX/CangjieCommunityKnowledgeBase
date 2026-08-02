@@ -29,6 +29,21 @@ public class CkbReproBuildTest {
         second.entries[0].license = "changed"
         @Expect(canonicalCkbReproSourceLockHash(first) ==
             canonicalCkbReproSourceLockHash(second), false)
+        let mapped = p4ExternalLock("mapped")
+        mapped.path = "docs/dev-guide/a.md"
+        mapped.assemblyPath = "dev-guide/a.md"
+        let mappedLock = CkbReproSourceLock(); mappedLock.entries.add(mapped)
+        let mappedText = renderCkbReproSourceLock(mappedLock)
+        @Expect(mappedText.contains(
+            "\"assemblyPath\":\"dev-guide/a.md\""), true)
+        let mappedParsed = parseCkbReproSourceLock(mappedText.toArray())
+        @Expect(mappedParsed[0].ok, true)
+        @Expect(buildCkbSourceMaterialsManifest(mappedParsed[1])
+            .entries[0].relativePath, "dev-guide/a.md")
+        let originalMappedHash = canonicalCkbReproSourceLockHash(mappedLock)
+        mapped.assemblyPath = "dev-guide/b.md"
+        @Expect(canonicalCkbReproSourceLockHash(mappedLock) ==
+            originalMappedHash, false)
         let routed = p4ExternalLock("a")
         routed.assemblyRole = "community_docs"
         routed.outputKind = CangjieTypedRecordKinds.DOC_SECTION
