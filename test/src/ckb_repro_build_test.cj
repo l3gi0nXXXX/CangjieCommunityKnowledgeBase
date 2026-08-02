@@ -83,6 +83,42 @@ public class CkbReproBuildTest {
     }
 
     @TestCase
+    public func p4Pos01MultipleRecordsBindOneSourceFile(): Unit {
+        let lock = CkbReproSourceLock()
+        lock.entries.add(p4ExternalLock("a"))
+        let typed = ArrayList<CangjieTypedRecord>()
+        for (name in ["first", "second"]) {
+            let record = CangjieTypedRecord()
+            record.recordKind = CangjieTypedRecordKinds.DOC_SECTION
+            record.sourceId = "record-${name}"
+            record.sourceSet = CangjieSourceSets.DOCS
+            record.path = "docs/a.md"
+            record.title = name; record.content = "content-${name}"
+            record.contentHash = cangjieTypedRecordContentHash(
+                record.sourceId, record.content)
+            typed.add(record)
+        }
+        let inventory = inventoryCkbCurrentKnowledgeSources(
+            typed, ArrayList<RawRecord>(), lock)
+        @Expect(inventory.size, 2)
+        @Expect(inventory[0].sourceId, "a")
+        @Expect(inventory[1].sourceId, "a")
+        @Expect(inventory[0].identity == inventory[1].identity, false)
+        @Expect(inventory[0].sourceLockEntryHash,
+            canonicalCkbReproSourceLockEntryHash(lock.entries[0]))
+        @Expect(validateCkbSourceCoverage(inventory,
+            buildCkbKnowledgeSelectionManifest(inventory), 2).ready, true)
+
+        let duplicate = p4ExternalLock("duplicate")
+        duplicate.path = "docs/a.md"; lock.entries.add(duplicate)
+        let ambiguous = inventoryCkbCurrentKnowledgeSources(
+            typed, ArrayList<RawRecord>(), lock)
+        @Expect(ambiguous[0].sourceId, "")
+        @Expect(validateCkbSourceCoverage(ambiguous,
+            buildCkbKnowledgeSelectionManifest(ambiguous), 2).ready, false)
+    }
+
+    @TestCase
     public func p4Neg01ComponentDriftDuplicateAndBackendFailureStopWork(): Unit {
         let inventory = p4Inventory()
         inventory.add(inventory[0])

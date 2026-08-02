@@ -1405,7 +1405,7 @@ public func validateCkbReproActualRecordCoverage(
             out.diagnostic = "actual_record_inventory_mismatch"; return out
         }
         let row = inventoryById.get(identity.identity).getOrThrow()
-        if (row.sourceId != record.sourceId || row.recordKind != record.recordKind) {
+        if (row.recordKind != record.recordKind) {
             out.diagnostic = "actual_record_inventory_mismatch"; return out
         }
         actualIds.add(identity.identity)
@@ -1417,7 +1417,7 @@ public func validateCkbReproActualRecordCoverage(
             out.diagnostic = "actual_record_inventory_mismatch"; return out
         }
         let row = inventoryById.get(identity.identity).getOrThrow()
-        if (row.sourceId != record.sourceId || row.recordKind != "raw") {
+        if (row.recordKind != "raw") {
             out.diagnostic = "actual_record_inventory_mismatch"; return out
         }
         actualIds.add(identity.identity)
@@ -1429,13 +1429,13 @@ public func validateCkbReproActualRecordCoverage(
     out.ok = true; out.diagnostic = "ok"; out
 }
 
-private func ckbReproPublicTypedRecordIdentity(
+public func ckbReproPublicTypedRecordIdentity(
     record: CangjieTypedRecord): String {
     benchmarkGapSha256("ckb-public-record-identity-v1|typed|" +
         canonicalCkbPortableTypedRecord(record))
 }
 
-private func ckbReproPublicRawRecordIdentity(record: RawRecord): String {
+public func ckbReproPublicRawRecordIdentity(record: RawRecord): String {
     benchmarkGapSha256("ckb-public-record-identity-v1|raw|" +
         canonicalCkbPortableRawRecord(record))
 }

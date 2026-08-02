@@ -879,23 +879,73 @@ public class CkbReproSourceCoverageResult {
 
 public func inventoryCkbCurrentKnowledgeSources(
     typed: ArrayList<CangjieTypedRecord>, raw: ArrayList<RawRecord>,
-    provider: CkbPortablePathHmacProvider): ArrayList<CkbReproKnowledgeInventoryRow> {
+    lock: CkbReproSourceLock): ArrayList<CkbReproKnowledgeInventoryRow> {
     let rows = ArrayList<CkbReproKnowledgeInventoryRow>()
     for (record in typed) {
         let row = CkbReproKnowledgeInventoryRow()
-        row.identity = provider.recordId(canonicalCkbPortableTypedRecord(record))
-        row.sourceId = record.sourceId; row.recordKind = record.recordKind
-        row.portableLocator = record.path; row.sourceType = "generated"
-        row.license = "declared"; rows.add(row)
+        row.identity = ckbReproPublicTypedRecordIdentity(record)
+        let source = ckbP4InventorySource(record.path, record.sourceSet, lock)
+        match (source) {
+            case Some(value) =>
+                row.sourceId = value.sourceId
+                row.sourceType = value.sourceType
+                row.license = value.license
+                row.sourceLockEntryHash =
+                    canonicalCkbReproSourceLockEntryHash(value)
+            case None => ()
+        }
+        row.recordKind = record.recordKind
+        row.portableLocator = record.path; rows.add(row)
     }
     for (record in raw) {
         let row = CkbReproKnowledgeInventoryRow()
-        row.identity = provider.recordId(canonicalCkbPortableRawRecord(record))
-        row.sourceId = record.sourceId; row.recordKind = "raw"
-        row.portableLocator = record.metadata.path; row.sourceType = record.metadata.sourceType
-        row.license = record.metadata.license; rows.add(row)
+        row.identity = ckbReproPublicRawRecordIdentity(record)
+        let source = ckbP4InventorySource(record.metadata.path,
+            record.metadata.sourceSet, lock)
+        match (source) {
+            case Some(value) =>
+                row.sourceId = value.sourceId
+                row.sourceType = value.sourceType
+                row.license = value.license
+                row.sourceLockEntryHash =
+                    canonicalCkbReproSourceLockEntryHash(value)
+            case None => ()
+        }
+        row.recordKind = "raw"
+        row.portableLocator = record.metadata.path; rows.add(row)
     }
     rows
+}
+
+private func ckbP4InventorySource(path: String, sourceSet: String,
+    lock: CkbReproSourceLock): ?CkbReproSourceLockEntry {
+    var matched: ?CkbReproSourceLockEntry = None
+    for (source in lock.entries) {
+        let relative = if (source.sourceType == "external_git") {
+            source.path
+        } else { source.outputPath }
+        if (!ckbP4InventoryRoleMatches(sourceSet, source.assemblyRole) ||
+            !(path == relative || path.endsWith("/${relative}"))) {
+            continue
+        }
+        match (matched) {
+            case Some(_) => return None<CkbReproSourceLockEntry>
+            case None => matched = Some(source)
+        }
+    }
+    matched
+}
+
+private func ckbP4InventoryRoleMatches(sourceSet: String, role: String): Bool {
+    (sourceSet == CangjieSourceSets.DOCS &&
+        (role == "docs" || role == "community_docs")) ||
+    (sourceSet == CangjieSourceSets.TOOLS &&
+        (role == "tools" || role == "tool_docs")) ||
+    (sourceSet == CangjieSourceSets.STD &&
+        (role == "std" || role == "std_source")) ||
+    (sourceSet == CangjieSourceSets.STDX &&
+        (role == "stdx" || role == "stdx_source")) ||
+    (sourceSet == "knowledge-atoms" && role == "generated_guidance")
 }
 
 public func buildCkbKnowledgeSelectionManifest(
