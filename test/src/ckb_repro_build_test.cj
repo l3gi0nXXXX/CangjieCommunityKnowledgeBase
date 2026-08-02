@@ -144,6 +144,59 @@ public class CkbReproBuildTest {
         @Expect(inventory[0].identity == inventory[1].identity, false)
         @Expect(inventory[0].sourceLockEntryHash,
             canonicalCkbReproSourceLockEntryHash(lock.entries[0]))
+
+        let semanticTool = CangjieTypedRecord()
+        semanticTool.recordKind = CangjieTypedRecordKinds.TOOL_MANUAL
+        semanticTool.sourceId = "semantic-tool"
+        semanticTool.sourceSet = CangjieSourceSets.TOOLS
+        semanticTool.path = "docs/a.md"
+        semanticTool.title = "tool"; semanticTool.content = "content"
+        semanticTool.contentHash = cangjieTypedRecordContentHash(
+            semanticTool.sourceId, semanticTool.content)
+        let semanticTyped = ArrayList<CangjieTypedRecord>()
+        semanticTyped.add(semanticTool)
+        let semanticRows = inventoryCkbCurrentKnowledgeSources(
+            semanticTyped, ArrayList<RawRecord>(), lock)
+        @Expect(semanticRows[0].sourceId, "a")
+
+        let nestedLock = CkbReproSourceLock()
+        let basename = p4ExternalLock("basename")
+        basename.path = "README.md"
+        let nested = p4ExternalLock("nested")
+        nested.path = "third_party/README.md"
+        nestedLock.entries.add(basename); nestedLock.entries.add(nested)
+        let nestedRecord = CangjieTypedRecord()
+        nestedRecord.recordKind = CangjieTypedRecordKinds.DOC_SECTION
+        nestedRecord.sourceId = "nested-record"
+        nestedRecord.sourceSet = CangjieSourceSets.DOCS
+        nestedRecord.path = "third_party/README.md"
+        nestedRecord.title = "nested"; nestedRecord.content = "content"
+        nestedRecord.contentHash = cangjieTypedRecordContentHash(
+            nestedRecord.sourceId, nestedRecord.content)
+        let nestedTyped = ArrayList<CangjieTypedRecord>()
+        nestedTyped.add(nestedRecord)
+        let nestedRows = inventoryCkbCurrentKnowledgeSources(
+            nestedTyped, ArrayList<RawRecord>(), nestedLock)
+        @Expect(nestedRows[0].sourceId, "nested")
+
+        let pathFixture = p4BuildFixture("public-identity")
+        let portableRecord = CangjieTypedRecord()
+        portableRecord.recordKind = CangjieTypedRecordKinds.DOC_SECTION
+        portableRecord.sourceId = "portable-record"
+        portableRecord.path = "docs/a.md"
+        portableRecord.title = "absolute path semantics"
+        portableRecord.content = "Use {{CKB_PATH:ABSOLUTE}}/example"
+        portableRecord.contentHash = cangjieTypedRecordContentHash(
+            portableRecord.sourceId, portableRecord.content)
+        @Expect(ckbReproValidatedPublicTypedRecordIdentity(
+            portableRecord, pathFixture.request.pathContext).ok, true)
+        portableRecord.content = "Use {{CKB_PATH:UNKNOWN}}/example"
+        portableRecord.contentHash = cangjieTypedRecordContentHash(
+            portableRecord.sourceId, portableRecord.content)
+        @Expect(ckbReproValidatedPublicTypedRecordIdentity(
+            portableRecord, pathFixture.request.pathContext).diagnostic,
+            "portable_placeholder_unresolved")
+        p4RemoveBuildFixture(pathFixture)
         @Expect(validateCkbSourceCoverage(inventory,
             buildCkbKnowledgeSelectionManifest(inventory), 2).ready, true)
 

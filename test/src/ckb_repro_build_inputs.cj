@@ -1484,7 +1484,8 @@ public func ckbReproValidatedPublicTypedRecordIdentity(
     record: CangjieTypedRecord, context: CkbPortablePathContext):
     CkbReproPublicRecordIdentityResult {
     let out = CkbReproPublicRecordIdentityResult()
-    if (canonicalCkbPortableTypedRecord(record).contains("{{CKB_PATH:")) {
+    if (ckbReproUnknownPortablePlaceholder(
+        canonicalCkbPortableTypedRecord(record), context)) {
         out.diagnostic = "portable_placeholder_unresolved"; return out
     }
     let validation = validateCkbPortableTypedRecord(record, context)
@@ -1496,7 +1497,8 @@ public func ckbReproValidatedPublicTypedRecordIdentity(
 public func ckbReproValidatedPublicRawRecordIdentity(record: RawRecord,
     context: CkbPortablePathContext): CkbReproPublicRecordIdentityResult {
     let out = CkbReproPublicRecordIdentityResult()
-    if (canonicalCkbPortableRawRecord(record).contains("{{CKB_PATH:")) {
+    if (ckbReproUnknownPortablePlaceholder(
+        canonicalCkbPortableRawRecord(record), context)) {
         out.diagnostic = "portable_placeholder_unresolved"; return out
     }
     let scan = scanCkbRawPathOccurrences(record, context)
@@ -1509,6 +1511,15 @@ public func ckbReproValidatedPublicRawRecordIdentity(record: RawRecord,
     }
     out.identity = ckbReproPublicRawRecordIdentity(record)
     out.ok = true; out.diagnostic = "ok"; out
+}
+
+private func ckbReproUnknownPortablePlaceholder(value: String,
+    context: CkbPortablePathContext): Bool {
+    var remaining = value
+    for (placeholder in context.policy.placeholders) {
+        remaining = remaining.replace(placeholder, "")
+    }
+    remaining.contains("{{CKB_PATH:")
 }
 
 public func validateCkbReproActualRecordCoverage(

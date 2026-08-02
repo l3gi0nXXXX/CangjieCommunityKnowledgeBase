@@ -466,6 +466,38 @@ public func normalizeCkbTypedRecordPortablePaths(record: CangjieTypedRecord,
     copy.citation = citation.value; copy.path = path.value; copy.sourceRef = sourceRef.value
     copy.resolvedCommit = commit.value
     if (path.changed) { result.changedCount += 1 }
+    let extras = [
+        normalizeCkbKnowledgeText(copy.sourceSet, "sourceSet", copy.sourceId, context),
+        normalizeCkbKnowledgeText(copy.sourceFamily, "sourceFamily", copy.sourceId, context),
+        normalizeCkbKnowledgeText(copy.heading, "heading", copy.sourceId, context),
+        normalizeCkbKnowledgeText(copy.sectionId, "sectionId", copy.sourceId, context),
+        normalizeCkbKnowledgeText(copy.symbol, "symbol", copy.sourceId, context),
+        normalizeCkbKnowledgeText(copy.toolName, "toolName", copy.sourceId, context),
+        normalizeCkbKnowledgeText(copy.command, "command", copy.sourceId, context),
+        normalizeCkbKnowledgeText(copy.caseId, "caseId", copy.sourceId, context),
+        normalizeCkbKnowledgeText(copy.versionResolutionId, "versionResolutionId", copy.sourceId, context),
+        normalizeCkbKnowledgeText(copy.targetVersion, "targetVersion", copy.sourceId, context),
+        normalizeCkbKnowledgeText(copy.refKind, "refKind", copy.sourceId, context),
+        normalizeCkbKnowledgeText(copy.trustLevel, "trustLevel", copy.sourceId, context),
+        normalizeCkbKnowledgeText(copy.reviewState, "reviewState", copy.sourceId, context),
+        normalizeCkbKnowledgeText(copy.diagnostic, "diagnostic", copy.sourceId, context)
+    ]
+    for (text in extras) {
+        ckbPortableAddFindings(result.findings, text.findings)
+        result.changedCount += text.changedCount
+        if (!text.ok) {
+            result.diagnostic = text.diagnostic; result.record = copy
+            return result
+        }
+    }
+    copy.sourceSet = extras[0].value; copy.sourceFamily = extras[1].value
+    copy.heading = extras[2].value; copy.sectionId = extras[3].value
+    copy.symbol = extras[4].value; copy.toolName = extras[5].value
+    copy.command = extras[6].value; copy.caseId = extras[7].value
+    copy.versionResolutionId = extras[8].value
+    copy.targetVersion = extras[9].value; copy.refKind = extras[10].value
+    copy.trustLevel = extras[11].value; copy.reviewState = extras[12].value
+    copy.diagnostic = extras[13].value
     copy.contentHash = cangjieTypedRecordContentHash(copy.sourceId, copy.content)
     let validation = validateCkbPortableTypedRecord(copy, context)
     if (!validation.ok) { result.diagnostic = validation.diagnostic; result.record = copy; return result }

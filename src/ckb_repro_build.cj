@@ -1003,13 +1003,23 @@ public func inventoryCkbCurrentKnowledgeSources(
 
 private func ckbP4InventorySource(path: String, sourceSet: String,
     lock: CkbReproSourceLock): ?CkbReproSourceLockEntry {
-    var matched: ?CkbReproSourceLockEntry = None
+    let pathMatches = ArrayList<CkbReproSourceLockEntry>()
+    var bestLength: Int64 = -1
     for (source in lock.entries) {
         let relative = ckbReproSourceAssemblyPath(source)
-        if (!ckbP4InventoryRoleMatches(sourceSet, source.assemblyRole) ||
-            !(path == relative || path.endsWith("/${relative}"))) {
-            continue
+        if (path == relative || path.endsWith("/${relative}")) {
+            if (relative.size > bestLength) {
+                pathMatches.clear(); bestLength = relative.size
+                pathMatches.add(source)
+            } else if (relative.size == bestLength) {
+                pathMatches.add(source)
+            }
         }
+    }
+    if (pathMatches.size == 1) { return Some(pathMatches[0]) }
+    var matched: ?CkbReproSourceLockEntry = None
+    for (source in pathMatches) {
+        if (!ckbP4InventoryRoleMatches(sourceSet, source.assemblyRole)) { continue }
         match (matched) {
             case Some(_) => return None<CkbReproSourceLockEntry>
             case None => matched = Some(source)
@@ -1120,6 +1130,7 @@ public func buildCkbSourceMaterialsManifest(
     let manifest = CkbReproSourceMaterialsManifest()
     let contract = validateCkbReproBuildLocks(lock)
     if (!contract.ok) { manifest.diagnostic = contract.diagnostic; return manifest }
+    let sourceLockHash = canonicalCkbReproSourceLockHash(lock)
     for (source in lock.entries) {
         let entry = CkbReproSourceMaterialEntry()
         entry.sourceId = source.sourceId
@@ -1132,7 +1143,7 @@ public func buildCkbSourceMaterialsManifest(
         entry.relativePath = ckbReproSourceAssemblyPath(source)
         entry.canonicalIdentity = benchmarkGapSha256(
             p4BuildFields([source.sourceId, source.sourceType,
-                canonicalCkbReproSourceLockHash(lock), entry.relativePath,
+                sourceLockHash, entry.relativePath,
                 entry.expectedHash]))
         manifest.entries.add(entry)
     }

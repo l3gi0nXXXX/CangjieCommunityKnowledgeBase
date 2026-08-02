@@ -77,6 +77,9 @@ public class CkbPortablePathNormalizerTest {
         typed.title = "Guide at ${fixture.root}/docs"
         typed.content = "open(${fixture.root}/样例/🙂.cj)"
         typed.citation = "${fixture.root}/docs/guide.md:10"
+        typed.heading = "/"
+        typed.sectionId = "section ${fixture.root}/docs"
+        typed.command = "run ${fixture.root}/bin/tool"
         typed.path = "${fixture.root}/docs/guide.md"
         typed.sourceRef = "https://example.invalid/ref"
         typed.resolvedCommit = "0123456789012345678901234567890123456789"
@@ -86,6 +89,9 @@ public class CkbPortablePathNormalizerTest {
         @Expect(typedResult.ok, true)
         @Expect(typedResult.record.path, "docs/guide.md")
         @Expect(typedResult.record.content.contains("{{CKB_PATH:PROJECT_ROOT}}"), true)
+        @Expect(typedResult.record.heading.contains("{{CKB_PATH:ABSOLUTE}}"), true)
+        @Expect(typedResult.record.sectionId.contains("{{CKB_PATH:PROJECT_ROOT}}"), true)
+        @Expect(typedResult.record.command.contains("{{CKB_PATH:PROJECT_ROOT}}"), true)
         @Expect(typedResult.record.contentHash == oldHash, false)
         @Expect(typed.path, "${fixture.root}/docs/guide.md")
 
