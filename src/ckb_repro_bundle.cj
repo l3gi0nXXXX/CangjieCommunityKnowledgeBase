@@ -792,13 +792,13 @@ public func parseCkbReproBundleCliArgs(args: Array<String>):
         out.userConfigRoot == "") {
         out.diagnostic = "required_argument_missing"; return out
     }
-    if (out.mode == "unsigned" &&
-        (out.inputRoot == "" || out.unsignedRoot != "" ||
-            out.verificationReport != "")) {
-        out.diagnostic = if (out.inputRoot == "") {
-            "bundle_unsigned_input_root_missing"
-        } else { "bundle_unsigned_arguments_conflict" }
-        return out
+    if (out.mode == "unsigned") {
+        if (out.unsignedRoot != "" || out.verificationReport != "") {
+            out.diagnostic = "bundle_unsigned_arguments_conflict"; return out
+        }
+        if (out.inputRoot == "") {
+            out.diagnostic = "bundle_unsigned_input_root_missing"; return out
+        }
     }
     if (out.mode == "finalize" &&
         (out.unsignedRoot == "" || out.verificationReport == "")) {

@@ -442,9 +442,11 @@ public class CkbReproBundleTest {
         if (exists(temporary)) { remove(temporary, recursive: true) }
         Directory.create(temporary, recursive: true)
         let temporaryRoot = canonicalize(temporary).toString()
+        let frozenInputRoot = Path(temporaryRoot).join("frozen-inputs")
+        Directory.create(frozenInputRoot, recursive: false)
         let realOptions = parseCkbReproBundleCliArgs(p9ExplicitCliArgs([
             "ckb-repro-bundle", "--mode", "unsigned", "--input-root",
-            "/tmp/frozen-inputs", "--output",
+            frozenInputRoot.toString(), "--output",
             "${temporaryRoot}/out"
         ]))
         let realContext = CkbReproBundleCliPathContext()
@@ -778,31 +780,23 @@ public class CkbReproBundleTest {
 
     @TestCase
     public func p9Pos01ProductionFinalizeOwnsAndEmitsCompleteArtifacts(): Unit {
-        let collected = p9ProductionFinalizeFixture(suffix: "-collect")
-        let collectOptions = parseCkbReproBundleCliArgs(p9ExplicitCliArgs([
-            "ckb-repro-bundle", "--mode", "unsigned", "--input-root",
-            collected[0], "--output",
-            Path(collected[3]).join("collected").toString()
-        ]))
+        let collected = p9FrozenInputFixture(
+            "production-finalize-collect", "alpha".toArray())
+        let collectOptions = p9FrozenInputOptions(
+            collected[0], collected[1], collected[2])
         let collectContext = CkbReproBundleCliPathContext()
-        collectContext.worktreeRoot = Path(collected[3]).join("protected-worktree").toString()
-        collectContext.productionRoot = Path(collected[3]).join("protected-production").toString()
-        collectContext.privateRunRoot = Path(collected[3]).join("protected-runs").toString()
-        collectContext.userConfigRoot = Path(collected[3]).join("protected-settings").toString()
-        for (root in [collectContext.worktreeRoot, collectContext.productionRoot,
-            collectContext.privateRunRoot, collectContext.userConfigRoot]) {
-            Directory.create(Path(root), recursive: false)
-        }
-        collectOptions.worktreeRoot = collectContext.worktreeRoot
-        collectOptions.productionRoot = collectContext.productionRoot
-        collectOptions.privateRunRoot = collectContext.privateRunRoot
-        collectOptions.userConfigRoot = collectContext.userConfigRoot
+        collectContext.worktreeRoot = collectOptions.worktreeRoot
+        collectContext.productionRoot = collectOptions.productionRoot
+        collectContext.privateRunRoot = collectOptions.privateRunRoot
+        collectContext.userConfigRoot = collectOptions.userConfigRoot
         @Expect(collectOptions.valid, true)
-        @Expect(runCkbReproBundleCliAdapter(
-            collectOptions, collectContext).ok, true)
+        let collectedResult = runCkbReproBundleCliAdapter(
+            collectOptions, collectContext)
+        @Expect(collectedResult.diagnostic, "ready")
+        @Expect(collectedResult.ok, true)
         @Expect(File.readFrom(Path(collectOptions.outputRoot).join(
-            "assets/a.txt")), "alpha".toArray())
-        remove(Path(collected[3]), recursive: true)
+            "README.md")), "alpha".toArray())
+        remove(Path(collected[2]), recursive: true)
 
         let fixture = p9ProductionFinalizeFixture()
         let options = parseCkbReproBundleCliArgs(p9ExplicitCliArgs([
