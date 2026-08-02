@@ -3,7 +3,7 @@
   "$id": "https://github.com/l3gi0nXXXX/CangjieCommunityKnowledgeBase/reproducibility/environment-lock.schema.json",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schemaVersion", "identityStatus", "certifiedPlatform", "cpuArchitecture", "cangjieSdkVersion", "cangjieSdkHash", "opensslVersion", "serviceHeap", "qdrantImageDigest", "runCandidateCommit", "runCriticalFilesManifestHash", "runCriticalTreeHash", "claudeCodeVersion", "glmProvider", "glmBaseUrl", "glmModel", "modelFingerprint", "glmCredentialEnv", "embeddingProvider", "embeddingModel", "embeddingDimension", "embeddingCredentialEnv", "archiveTool", "archiveToolVersion", "experimentGroup", "ckbRequired", "localDocsPolicy", "modelEffort", "modelBudget", "timeoutSeconds", "transportRetryBudget", "promptHash", "mcpCommand", "mcpTransport", "sandboxCapability", "datasetVersion", "authorityDeliveryHash", "attestationAuthorityManifestPath", "attestationAuthorityHash"],
+  "required": ["schemaVersion", "identityStatus", "certifiedPlatform", "cpuArchitecture", "cangjieSdkVersion", "cangjieSdkHash", "opensslVersion", "serviceHeap", "qdrantImageDigest", "runCandidateCommit", "runCriticalFilesManifestHash", "runCriticalTreeHash", "compositionManifestPath", "compositionManifestHash", "claudeCodeVersion", "glmProvider", "glmBaseUrl", "glmModel", "modelFingerprint", "glmCredentialEnv", "embeddingProvider", "embeddingModel", "embeddingDimension", "embeddingCredentialEnv", "archiveTool", "archiveToolVersion", "experimentGroup", "ckbRequired", "localDocsPolicy", "modelEffort", "modelBudget", "timeoutSeconds", "transportRetryBudget", "promptHash", "mcpCommand", "mcpTransport", "sandboxCapability", "datasetVersion", "authorityDeliveryHash", "attestationAuthorityManifestPath", "attestationAuthorityHash"],
   "properties": {
     "schemaVersion": {"const": "ckb-repro-environment-v1"},
     "identityStatus": {"enum": ["planned", "frozen"]},
@@ -17,6 +17,8 @@
     "runCandidateCommit": {"type": "string"},
     "runCriticalFilesManifestHash": {"type": "string"},
     "runCriticalTreeHash": {"type": "string"},
+    "compositionManifestPath": {"const": "reproducibility/manifests/runtime-composition.json"},
+    "compositionManifestHash": {"type": "string", "$comment": "Hash of the exact private runtime-composition manifest; the manifest must not contain this environment lock."},
     "claudeCodeVersion": {"type": "string"},
     "glmProvider": {"type": "string"},
     "glmBaseUrl": {"type": "string"},

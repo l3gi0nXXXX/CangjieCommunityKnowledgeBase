@@ -512,11 +512,12 @@ public class CkbP3FilesystemVerificationInputProvider <:
 }
 
 public class CkbP3ProductionAdapter <: CkbP3CliAdapter {
-    private let vectorBackend: CkbPortableVectorBuildBackend
-    private let snapshotExecutor: CkbQdrantSnapshotExecutor
+    private let permittedMode: String
+    private let vectorBackend: ?CkbPortableVectorBuildBackend
+    private let snapshotExecutor: ?CkbQdrantSnapshotExecutor
     private let snapshotFileExecutor: ?CkbQdrantSnapshotFileExecutor
-    private let parityBackend: CkbRetrievalParityBackend
-    private let verificationProvider: CkbP3VerificationInputProvider
+    private let parityBackend: ?CkbRetrievalParityBackend
+    private let verificationProvider: ?CkbP3VerificationInputProvider
     private let pathPolicy: CkbReleasePathPolicy
     public init(vectorBackend: CkbPortableVectorBuildBackend,
         snapshotExecutor: CkbQdrantSnapshotExecutor,
@@ -524,13 +525,34 @@ public class CkbP3ProductionAdapter <: CkbP3CliAdapter {
         verificationProvider: CkbP3VerificationInputProvider,
         pathPolicy: CkbReleasePathPolicy,
         snapshotFileExecutor!: ?CkbQdrantSnapshotFileExecutor = None) {
-        this.vectorBackend = vectorBackend; this.snapshotExecutor = snapshotExecutor
+        this.permittedMode = "all"
+        this.vectorBackend = Some(vectorBackend)
+        this.snapshotExecutor = Some(snapshotExecutor)
         this.snapshotFileExecutor = snapshotFileExecutor
-        this.parityBackend = parityBackend; this.verificationProvider = verificationProvider
+        this.parityBackend = Some(parityBackend)
+        this.verificationProvider = Some(verificationProvider)
         this.pathPolicy = pathPolicy
+    }
+    init(permittedMode: String,
+        vectorBackend: ?CkbPortableVectorBuildBackend,
+        snapshotExecutor: ?CkbQdrantSnapshotExecutor,
+        parityBackend: ?CkbRetrievalParityBackend,
+        verificationProvider: ?CkbP3VerificationInputProvider,
+        pathPolicy: CkbReleasePathPolicy,
+        snapshotFileExecutor: ?CkbQdrantSnapshotFileExecutor) {
+        this.permittedMode = permittedMode; this.vectorBackend = vectorBackend
+        this.snapshotExecutor = snapshotExecutor
+        this.parityBackend = parityBackend
+        this.verificationProvider = verificationProvider
+        this.pathPolicy = pathPolicy
+        this.snapshotFileExecutor = snapshotFileExecutor
     }
 
     public func execute(options: CkbP3CliOptions): CkbP3CliOperationResult {
+        if (this.permittedMode != "all" && options.mode != this.permittedMode) {
+            let out = CkbP3CliOperationResult()
+            out.diagnostic = "p3_composition_mode_mismatch"; return out
+        }
         if (options.mode == "build") { return this.buildVectors(options) }
         if (options.mode == "create") { return this.createSnapshot(options) }
         if (options.mode == "restore") { return this.restoreSnapshot(options) }
@@ -540,6 +562,10 @@ public class CkbP3ProductionAdapter <: CkbP3CliAdapter {
 
     private func buildVectors(options: CkbP3CliOptions): CkbP3CliOperationResult {
         let out = CkbP3CliOperationResult()
+        let vectorBackend = match (this.vectorBackend) {
+            case Some(value) => value
+            case None => out.diagnostic = "p3_vector_backend_required"; return out
+        }
         let buildProof = ckbP3LoadBuildProof(options.candidateRoot)
         if (!buildProof[0].ok) { out.diagnostic = buildProof[0].diagnostic; return out }
         let environment = ckbP3LoadEnvironment(options.environmentLock)
@@ -554,7 +580,7 @@ public class CkbP3ProductionAdapter <: CkbP3CliAdapter {
         buildOptions.runtimeVectorDegradedReason = metadata.vectorDegradedReason
         buildOptions.runtimeVectorCount = metadata.vectorIndexCount
         let result = buildCkbPortableReferenceVectors(buildOptions, buildProof[1],
-            environment[1], this.vectorBackend)
+            environment[1], vectorBackend)
         if (!result.ready) { out.diagnostic = result.diagnostic; return out }
         let write = ckbP3WriteNewFile(options.outputProof,
             renderCkbPortableVectorProof(result.proof), this.pathPolicy)
@@ -566,6 +592,10 @@ public class CkbP3ProductionAdapter <: CkbP3CliAdapter {
 
     private func createSnapshot(options: CkbP3CliOptions): CkbP3CliOperationResult {
         let out = CkbP3CliOperationResult()
+        let snapshotExecutor = match (this.snapshotExecutor) {
+            case Some(value) => value
+            case None => out.diagnostic = "p3_snapshot_backend_required"; return out
+        }
         let logical = ckbP3LoadLogicalManifest(options.logicalManifest)
         if (!logical[0].ok) { out.diagnostic = logical[0].diagnostic; return out }
         let vector = parseCkbPortableVectorProofFile(options.vectorProof)
@@ -578,7 +608,7 @@ public class CkbP3ProductionAdapter <: CkbP3CliAdapter {
         let identity = CkbQdrantSnapshotIdentity(); identity.collection = options.collection
         identity.logicalManifestHash = logical[1].manifestHash
         identity.vectorProofHash = vector[1].vectorProofHash
-        let created = createCkbQdrantSnapshot(identity, this.snapshotExecutor)
+        let created = createCkbQdrantSnapshot(identity, snapshotExecutor)
         if (!created.ok) { out.diagnostic = created.diagnostic; return out }
         if (let Some(fileExecutor) <- this.snapshotFileExecutor) {
             let pathDiagnostic = ckbP3NewOutputDiagnostic(
@@ -638,7 +668,7 @@ public class CkbP3ProductionAdapter <: CkbP3CliAdapter {
             }
         }
         let downloaded = downloadCkbQdrantSnapshot(identity, created.snapshotName,
-            this.snapshotExecutor)
+            snapshotExecutor)
         if (!downloaded.ok) { out.diagnostic = downloaded.diagnostic; return out }
         let manifest = CkbQdrantSnapshotManifest()
         manifest.schemaVersion = "ckb-qdrant-snapshot-v1"
@@ -661,11 +691,15 @@ public class CkbP3ProductionAdapter <: CkbP3CliAdapter {
 
     private func restoreSnapshot(options: CkbP3CliOptions): CkbP3CliOperationResult {
         let out = CkbP3CliOperationResult(); let manifest = ckbP3LoadSnapshotManifest(options.manifest)
+        let snapshotExecutor = match (this.snapshotExecutor) {
+            case Some(value) => value
+            case None => out.diagnostic = "p3_snapshot_backend_required"; return out
+        }
         if (!manifest[0].ok) { out.diagnostic = manifest[0].diagnostic; return out }
         if (let Some(fileExecutor) <- this.snapshotFileExecutor) {
             let result = restoreCkbQdrantSnapshotFromFile(
                 options.targetCollection, options.snapshot, manifest[1],
-                this.snapshotExecutor, fileExecutor)
+                snapshotExecutor, fileExecutor)
             out.ok = result.ok; out.diagnostic = result.diagnostic
             out.summary = "collection=${options.targetCollection}"; return out
         }
@@ -673,25 +707,33 @@ public class CkbP3ProductionAdapter <: CkbP3CliAdapter {
             out.diagnostic = "qdrant_snapshot_file_unreadable"; return out
         }
         let result = restoreCkbQdrantSnapshot(options.targetCollection, bytes,
-            manifest[1], this.snapshotExecutor)
+            manifest[1], snapshotExecutor)
         out.ok = result.ok; out.diagnostic = result.diagnostic
         out.summary = "collection=${options.targetCollection}"; out
     }
 
     private func verifySnapshot(options: CkbP3CliOptions): CkbP3CliOperationResult {
         let out = CkbP3CliOperationResult(); let manifest = ckbP3LoadSnapshotManifest(options.manifest)
+        let snapshotExecutor = match (this.snapshotExecutor) {
+            case Some(value) => value
+            case None => out.diagnostic = "p3_snapshot_backend_required"; return out
+        }
+        let verificationProvider = match (this.verificationProvider) {
+            case Some(value) => value
+            case None => out.diagnostic = "p3_verification_provider_required"; return out
+        }
         if (!manifest[0].ok) { out.diagnostic = manifest[0].diagnostic; return out }
         let logical = ckbP3LoadLogicalManifest(options.logicalManifest)
         if (!logical[0].ok) { out.diagnostic = logical[0].diagnostic; return out }
         let request = CkbQdrantSnapshotRequest(); request.method = "GET"
         request.path = "/collections/${options.collection}"
-        let response = this.snapshotExecutor.execute(request)
+        let response = snapshotExecutor.execute(request)
         let status = parseCkbQdrantRestoredStatus(response.bodyBytes,
             options.collection, manifest[1].payloadCanonicalHash)
         if (!status[0].ok) { out.diagnostic = status[0].diagnostic; return out }
         let verified = verifyRestoredCkbQdrantSnapshot(status[1], manifest[1], logical[1],
-            this.verificationProvider.visibleInput(options.collection),
-            this.verificationProvider.pathContext(options.collection))
+            verificationProvider.visibleInput(options.collection),
+            verificationProvider.pathContext(options.collection))
         out.ok = verified.ok; out.diagnostic = verified.diagnostic
         out.summary = "collection=${options.collection} points=${status[1].count} " +
             "dimension=${status[1].dimension}"; out
@@ -699,8 +741,12 @@ public class CkbP3ProductionAdapter <: CkbP3CliAdapter {
 
     private func verifyParity(options: CkbP3CliOptions): CkbP3CliOperationResult {
         let out = CkbP3CliOperationResult(); let manifest = ckbP3LoadParityManifest(options.manifest)
+        let parityBackend = match (this.parityBackend) {
+            case Some(value) => value
+            case None => out.diagnostic = "p3_parity_backend_required"; return out
+        }
         if (!manifest[0].ok) { out.diagnostic = manifest[0].diagnostic; return out }
-        let result = verifyCkbRetrievalParityManifest(manifest[1], this.parityBackend)
+        let result = verifyCkbRetrievalParityManifest(manifest[1], parityBackend)
         out.ok = result.ok; out.diagnostic = result.diagnostic
         out.summary = "knowledgeVersion=${manifest[1].knowledgeVersion} transports=3"; out
     }
@@ -751,6 +797,51 @@ public func newCkbP3RuntimeProductionAdapter(
         vectorStore, pathContext, control, parity, pathPolicy,
         deadlineAtMillis: deadlineAtMillis,
         snapshotFileExecutor: files)
+}
+
+public func newCkbP3RuntimeVectorBuildAdapter(
+    embeddingProvider: EmbeddingProvider, candidateStore: FileKnowledgeStore,
+    vectorStore: VectorStore, pathContext: CkbPortablePathContext,
+    pathPolicy: CkbReleasePathPolicy,
+    deadlineAtMillis!: Int64 = 0): CkbP3CliAdapter {
+    CkbP3ProductionAdapter("build",
+        Some<CkbPortableVectorBuildBackend>(CkbPortableVectorProductionBackend(
+            embeddingProvider, candidateStore, vectorStore, pathContext,
+            deadlineAtMillis: deadlineAtMillis)), None, None,
+        Some<CkbP3VerificationInputProvider>(
+            CkbStoreVerificationInputProvider(candidateStore, pathContext)),
+        pathPolicy, None)
+}
+
+public func newCkbP3RuntimeSnapshotAdapter(mode: String,
+    candidateStore: ?FileKnowledgeStore, pathContext: CkbPortablePathContext,
+    snapshotEndpoint: String, runtime: CkbRuntimeConfig,
+    pathPolicy: CkbReleasePathPolicy): CkbP3CliAdapter {
+    let transport = ckbNativeHttpAdapterConfigFromRuntime(runtime, true)
+    let control = CkbQdrantSnapshotHttpExecutor(snapshotEndpoint,
+        NativeHttpRequestExecutor(transport))
+    let provider: ?CkbP3VerificationInputProvider = match (candidateStore) {
+        case Some(store) => Some<CkbP3VerificationInputProvider>(
+            CkbStoreVerificationInputProvider(store, pathContext))
+        case None => None
+    }
+    CkbP3ProductionAdapter(mode, None,
+        Some<CkbQdrantSnapshotExecutor>(control), None,
+        provider, pathPolicy,
+        Some<CkbQdrantSnapshotFileExecutor>(
+            CkbNativeQdrantSnapshotFileExecutor(snapshotEndpoint, transport)))
+}
+
+public func newCkbP3RuntimeParityAdapter(restEndpoint: String,
+    stdioSpec: CkbMcpStdioCommandSpec, mcpHttpEndpoint: String,
+    runtime: CkbRuntimeConfig, pathPolicy: CkbReleasePathPolicy):
+    CkbP3CliAdapter {
+    let http = NativeHttpRequestExecutor(
+        ckbNativeHttpAdapterConfigFromRuntime(runtime, true))
+    CkbP3ProductionAdapter("parity", None, None,
+        Some<CkbRetrievalParityBackend>(CkbProductionRetrievalParityBackend(
+            restEndpoint, stdioSpec, mcpHttpEndpoint, http,
+            CkbNativeRetrievalParityProcessExecutor())), None, pathPolicy, None)
 }
 
 public func loadCkbMcpStdioCommandSpecFile(path: String):

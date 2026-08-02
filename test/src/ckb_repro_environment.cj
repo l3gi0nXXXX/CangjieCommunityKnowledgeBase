@@ -22,6 +22,8 @@ public class CkbReproEnvironmentLock {
     public var runCandidateCommit: String = ""
     public var runCriticalFilesManifestHash: String = ""
     public var runCriticalTreeHash: String = ""
+    public var compositionManifestPath: String = ""
+    public var compositionManifestHash: String = ""
     public var claudeCodeVersion: String = ""
     public var glmProvider: String = ""
     public var glmBaseUrl: String = ""
@@ -732,7 +734,7 @@ public func parseCkbReproEnvironmentLock(bytes: Array<UInt8>):
     if (decoded[0] != "ok") { return (p6Failure(decoded[0]), lock) }
     try {
         let object = JsonValue.fromStr(decoded[1]).asObject()
-        if (object.size() != 39) {
+        if (object.size() != 41) {
             return (p6Failure("environment_field_contract_invalid"), lock)
         }
         lock.schemaVersion = p6String(object, "schemaVersion")
@@ -747,6 +749,10 @@ public func parseCkbReproEnvironmentLock(bytes: Array<UInt8>):
         lock.runCandidateCommit = p6String(object, "runCandidateCommit")
         lock.runCriticalFilesManifestHash = p6String(object, "runCriticalFilesManifestHash")
         lock.runCriticalTreeHash = p6String(object, "runCriticalTreeHash")
+        lock.compositionManifestPath = p6String(object,
+            "compositionManifestPath")
+        lock.compositionManifestHash = p6String(object,
+            "compositionManifestHash")
         lock.claudeCodeVersion = p6String(object, "claudeCodeVersion")
         lock.glmProvider = p6String(object, "glmProvider")
         lock.glmBaseUrl = p6String(object, "glmBaseUrl")
@@ -801,7 +807,7 @@ public func validateCkbReproEnvironmentLock(lock: CkbReproEnvironmentLock,
         }
         for (hash in [lock.cangjieSdkHash, lock.runCriticalFilesManifestHash,
             lock.runCriticalTreeHash, lock.promptHash, lock.authorityDeliveryHash,
-            lock.attestationAuthorityHash]) {
+            lock.attestationAuthorityHash, lock.compositionManifestHash]) {
             if (!p6HashValid(hash)) { return p6Failure("environment_hash_invalid") }
         }
         if (!lock.qdrantImageDigest.startsWith("sha256:") ||
@@ -816,6 +822,12 @@ public func validateCkbReproEnvironmentLock(lock: CkbReproEnvironmentLock,
         (lock.identityStatus == "planned" &&
             lock.attestationAuthorityHash != "")) {
         return p6Failure("environment_attestation_authority_invalid")
+    }
+    if (lock.compositionManifestPath !=
+        "reproducibility/manifests/runtime-composition.json" ||
+        (lock.identityStatus == "planned" &&
+            lock.compositionManifestHash != "")) {
+        return p6Failure("environment_composition_authority_invalid")
     }
     if (lock.serviceHeap != "4GB") {
         return p6Failure("environment_heap_contract_invalid")
@@ -907,6 +919,8 @@ public func renderCkbReproEnvironmentLock(lock: CkbReproEnvironmentLock): String
     "\"runCandidateCommit\":\"${p6Escape(lock.runCandidateCommit)}\"," +
     "\"runCriticalFilesManifestHash\":\"${p6Escape(lock.runCriticalFilesManifestHash)}\"," +
     "\"runCriticalTreeHash\":\"${p6Escape(lock.runCriticalTreeHash)}\"," +
+    "\"compositionManifestPath\":\"${p6Escape(lock.compositionManifestPath)}\"," +
+    "\"compositionManifestHash\":\"${p6Escape(lock.compositionManifestHash)}\"," +
     "\"claudeCodeVersion\":\"${p6Escape(lock.claudeCodeVersion)}\"," +
     "\"glmProvider\":\"${p6Escape(lock.glmProvider)}\"," +
     "\"glmBaseUrl\":\"${p6Escape(lock.glmBaseUrl)}\"," +
@@ -1274,6 +1288,8 @@ private func p6CopyUnobservableAuthorityFields(source: CkbReproEnvironmentLock,
     target.attestationAuthorityManifestPath =
         source.attestationAuthorityManifestPath
     target.attestationAuthorityHash = source.attestationAuthorityHash
+    target.compositionManifestPath = source.compositionManifestPath
+    target.compositionManifestHash = source.compositionManifestHash
 }
 
 private func p6ProbeActualConfiguration(target: CkbReproEnvironmentLock,
@@ -1377,6 +1393,13 @@ private func p6ProbeActualConfiguration(target: CkbReproEnvironmentLock,
         attestationRead[1], target.attestationAuthorityHash)
     if (!attestation[0].ok) {
         return "environment_probe_attestation_authority_invalid"
+    }
+    let compositionPath = Path(repositoryRoot).join(
+        target.compositionManifestPath).toString()
+    let compositionRead = p6ReadFileBounded(compositionPath, 64 * 1024)
+    if (compositionRead[0] != "ok" ||
+        p6Hash(compositionRead[1]) != target.compositionManifestHash) {
+        return "environment_probe_composition_authority_invalid"
     }
     "ok"
 }

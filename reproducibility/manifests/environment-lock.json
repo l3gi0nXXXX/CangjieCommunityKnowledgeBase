@@ -11,6 +11,8 @@
   "runCandidateCommit": "d9f76c3350be8961c6cac049d8e35005e34f8262",
   "runCriticalFilesManifestHash": "sha256:5ffa34baea074dd79994d66a83392c356cd1cbeb6dcb26b17eeddace02c8b53b",
   "runCriticalTreeHash": "sha256:5a5ec26abf3441e39d4b3cdc285c61ffdf424e13790562c1e60e9d0b93c70230",
+  "compositionManifestPath": "reproducibility/manifests/runtime-composition.json",
+  "compositionManifestHash": "",
   "claudeCodeVersion": "",
   "glmProvider": "openai-compatible",
   "glmBaseUrl": "https://provider.example/v1",

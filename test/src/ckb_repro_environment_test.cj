@@ -124,6 +124,9 @@ public class CkbReproEnvironmentTest {
         @Expect(environment[1].attestationAuthorityManifestPath,
             "reproducibility/manifests/environment-attestation-authority.json")
         @Expect(environment[1].attestationAuthorityHash, "")
+        @Expect(environment[1].compositionManifestPath,
+            "reproducibility/manifests/runtime-composition.json")
+        @Expect(environment[1].compositionManifestHash, "")
         @Expect(validateCkbReproEnvironmentLock(environment[1],
             mode: "execution").diagnostic, "environment_identity_not_frozen")
         let plannedLockPath = canonicalize(Path(
@@ -897,6 +900,9 @@ public func p6FrozenEnvironment(): CkbReproEnvironmentLock {
     lock.runCandidateCommit = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     lock.runCriticalFilesManifestHash = p6Hash("critical-manifest")
     lock.runCriticalTreeHash = p6Hash("critical-tree")
+    lock.compositionManifestPath =
+        "reproducibility/manifests/runtime-composition.json"
+    lock.compositionManifestHash = p6Hash("composition-manifest")
     lock.claudeCodeVersion = "test-version"
     lock.glmProvider = "openai-compatible"
     lock.glmBaseUrl = "https://provider.example/v1"

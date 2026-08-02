@@ -1,6 +1,7 @@
 package cangjie_community_knowledge_base_test
 
 import std.collection.ArrayList
+import std.fs.{File, Path}
 import std.unittest.*
 import std.unittest.testmacro.*
 
@@ -43,6 +44,67 @@ private class P0MainCliAdapter <: CkbReproMainCliAdapter {
 
 @Test
 public class CkbReproMainCliTest {
+    @TestCase
+    public func p4ProductionBoundaryUsesPublicInputsAndConcretePipeline(): Unit {
+        let source = try {
+            String.fromUtf8(File.readFrom(
+                Path("../src/ckb_repro_cli_runtime_p4.cj")))
+        } catch (_: Exception) {
+            @Expect("invalid_response_encoding", "valid_utf8_source")
+            return
+        }
+        for (required in ["runCkbReproProductionBuild(",
+            "CkbFirstInitReproSourceAssembler()",
+            "CkbReproProductionBuildBackend()",
+            "newCkbP4RuntimeProductionAdapter(", "runCkbP4Cli("]) {
+            @Expect(source.contains(required), true)
+        }
+        for (forbidden in ["typedInput.add", "rawInput.add",
+            "newCkbP4ProductionAdapter(",
+            "newCkbP4BusinessProductionAdapter("]) {
+            @Expect(source.contains(forbidden), false)
+        }
+    }
+
+    @TestCase
+    public func p3ProductionBoundarySelectsOnlyModeSpecificFactories(): Unit {
+        let source = try {
+            String.fromUtf8(File.readFrom(
+                Path("../src/ckb_repro_cli_runtime_p3.cj")))
+        } catch (_: Exception) {
+            @Expect("invalid_response_encoding", "valid_utf8_source")
+            return
+        }
+        for (required in ["newCkbP3RuntimeVectorBuildAdapter(",
+            "newCkbP3RuntimeSnapshotAdapter(",
+            "newCkbP3RuntimeParityAdapter(", "runCkbP3Cli("]) {
+            @Expect(source.contains(required), true)
+        }
+        @Expect(source.contains("newCkbP3ProductionAdapter("), false)
+        @Expect(source.contains("newCkbP3BusinessProductionAdapter("), false)
+    }
+
+    @TestCase
+    public func p8BProductionBoundaryHasNoOnlineOrInjectedExecutorPath(): Unit {
+        let source = try {
+            String.fromUtf8(File.readFrom(
+                Path("../src/ckb_repro_cli_runtime_b.cj")))
+        } catch (_: Exception) {
+            @Expect("invalid_response_encoding", "valid_utf8_source")
+            return
+        }
+        @Expect(source.contains("newCkbP8BProductionExecutor("), true)
+        @Expect(source.contains(
+            "runCkbReproProductionReleaseVerification("), true)
+        for (forbidden in ["CkbInProcessReproRunnerInvoker",
+            "runCkbReproCertifiedStudent", "runCangjieEvalAbcde",
+            "newCkbP8AProductionExecutor", "newCkbP8AInjectedExecutorForTest",
+            "newCkbInjectedReleaseVerificationExecutorForTest",
+            "Claude", "GLM", "credential"]) {
+            @Expect(source.contains(forbidden), false)
+        }
+    }
+
     @TestCase
     public func p3P4AndP8CommandsRouteThroughOwnedProductionBoundaries(): Unit {
         let adapter = P0MainCliAdapter()
