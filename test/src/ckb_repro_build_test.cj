@@ -8,6 +8,22 @@ import std.unittest.testmacro.*
 @Test
 public class CkbReproBuildTest {
     @TestCase
+    public func p4Pos00TrackedSourceLockIsCanonicalAndComplete(): Unit {
+        let bytes = File.readFrom(Path(
+            "../reproducibility/manifests/source-lock.json"))
+        let parsed = parseCkbReproSourceLock(bytes)
+        @Expect(parsed[0].ok, true)
+        @Expect(parsed[1].entries.size, 897)
+        @Expect(renderCkbReproSourceLock(parsed[1]).toArray(), bytes)
+
+        let schema = String.fromUtf8(File.readFrom(Path(
+            "../reproducibility/source-lock.schema.json")))
+        @Expect(schema.contains("\"assemblyPath\""), true)
+        @Expect(schema.contains(
+            "\"not\": {\"required\": [\"assemblyPath\"]}"), true)
+    }
+
+    @TestCase
     public func p4Ut01ComponentCanonicalSourceLocksBindEveryField(): Unit {
         let a = p4ExternalLock("b")
         let b = p4ExternalLock("a")
