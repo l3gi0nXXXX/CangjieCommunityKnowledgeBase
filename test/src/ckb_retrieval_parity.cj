@@ -99,6 +99,35 @@ public class CkbNativeRetrievalParityProcessExecutor <:
     }
 }
 
+// P8-B revalidates the frozen executable immediately before every launch.
+// This closes the gap between composition parsing and process execution.
+public class CkbP8BIdentityCheckedProcessExecutor <:
+    CkbRetrievalParityProcessExecutor {
+    private let transport: CkbP8OwnedLocalRuntimeAuthority
+    private let configPath: String
+    private let runtimeRoot: String
+    private let delegate: CkbRetrievalParityProcessExecutor
+    public init(transport: CkbP8OwnedLocalRuntimeAuthority,
+        configPath: String, runtimeRoot: String,
+        delegate!: CkbRetrievalParityProcessExecutor =
+            CkbNativeRetrievalParityProcessExecutor()) {
+        this.transport = transport; this.configPath = configPath
+        this.runtimeRoot = runtimeRoot; this.delegate = delegate
+    }
+    public func execute(spec: CkbMcpStdioCommandSpec,
+        request: Array<UInt8>): CkbRetrievalParityProcessResponse {
+        if (!validateCkbP8BExecutableIdentity(this.transport).ok ||
+            spec.executable != this.transport.ckbExecutable ||
+            spec.args.toArray() != ["--config", this.configPath, "--store",
+                this.runtimeRoot, "mcp-stdio"] ||
+            spec.environment.size != 0) {
+            let out = CkbRetrievalParityProcessResponse()
+            out.diagnostic = "p8b_ckb_executable_identity_invalid"; return out
+        }
+        this.delegate.execute(spec, request)
+    }
+}
+
 private func ckbRetrievalParityReadLine(pipe: InputStream,
     maxBytes: Int64): (String, Array<UInt8>) {
     let bytes = ArrayList<UInt8>()

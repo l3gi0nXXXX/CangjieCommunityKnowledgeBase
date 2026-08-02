@@ -1,14 +1,137 @@
 package cangjie_community_knowledge_base_test
 
 import std.collection.ArrayList
+import std.convert.Parsable
 import std.fs.{Path, canonicalize, exists}
 import std.sort.*
+import stdx.crypto.digest.SHA256
 import stdx.encoding.json.*
 
 public class CkbReproCliPathContextAsset {
     public var pathContext: CkbPortablePathContext = CkbPortablePathContext()
     public var releasePathPolicy: CkbReleasePathPolicy = CkbReleasePathPolicy()
     public init() {}
+}
+
+public class CkbP8OwnedLocalRuntimeAuthority {
+    public var schemaVersion: String = ""
+    public var qdrantEndpoint: String = ""
+    public var restEndpoint: String = ""
+    public var mcpHttpEndpoint: String = ""
+    public var ckbExecutable: String = ""
+    public var ckbExecutableSha256: String = ""
+    public var dockerExecutable: String = ""
+    public var dockerExecutableSha256: String = ""
+    public var qdrantImageReference: String = ""
+    public var qdrantImageId: String = ""
+    public var timeoutMillis: Int64 = 0
+    public init() {}
+}
+
+public func parseCkbP8OwnedLocalRuntimeAuthorityBytes(bytes: Array<UInt8>):
+    (CkbReproContractResult, CkbP8OwnedLocalRuntimeAuthority) {
+    let out = CkbP8OwnedLocalRuntimeAuthority()
+    let decoded = ckbTypedAssetDecode(bytes, 64 * 1024, "runtime_transport")
+    if (!decoded[0].ok) { return (decoded[0], out) }
+    try {
+        let root = JsonValue.fromStr(decoded[1]).asObject()
+        if (root.size() != 11 || ckbTypedString(root, "schemaVersion") !=
+                "ckb-repro-p8-owned-local-runtime-v1") {
+            return (ckbTypedFailure(
+                "p8b_runtime_transport_field_contract_invalid"), out)
+        }
+        out.schemaVersion = ckbTypedString(root, "schemaVersion")
+        out.qdrantEndpoint = ckbTypedString(root, "qdrantEndpoint")
+        out.restEndpoint = ckbTypedString(root, "restEndpoint")
+        out.mcpHttpEndpoint = ckbTypedString(root, "mcpHttpEndpoint")
+        out.ckbExecutable = ckbTypedString(root, "ckbExecutable")
+        out.ckbExecutableSha256 = ckbTypedString(root, "ckbExecutableSha256")
+        out.dockerExecutable = ckbTypedString(root, "dockerExecutable")
+        out.dockerExecutableSha256 = ckbTypedString(root,
+            "dockerExecutableSha256")
+        out.qdrantImageReference = ckbTypedString(root,
+            "qdrantImageReference")
+        out.qdrantImageId = ckbTypedString(root, "qdrantImageId")
+        out.timeoutMillis = ckbTypedInt(root, "timeoutMillis")
+        if (!ckbTypedP8BLoopbackEndpoint(out.qdrantEndpoint, "") ||
+            !ckbTypedP8BLoopbackEndpoint(out.restEndpoint,
+                "/v1/cangjie/syntax-query") ||
+            !ckbTypedP8BLoopbackEndpoint(out.mcpHttpEndpoint, "/mcp") ||
+            ckbTypedP8BOrigin(out.restEndpoint) !=
+                ckbTypedP8BOrigin(out.mcpHttpEndpoint) ||
+            !validateCkbP8BExecutableIdentity(out).ok ||
+            !validateCkbP8DockerExecutableIdentity(out).ok ||
+            !ckbTypedP8QdrantImageReference(out.qdrantImageReference) ||
+            !ckbTypedHash(out.qdrantImageId) ||
+            out.timeoutMillis < 100 || out.timeoutMillis > 300000 ||
+            renderCkbP8OwnedLocalRuntimeAuthority(out) != decoded[1]) {
+            return (ckbTypedFailure("p8b_runtime_transport_invalid"),
+                CkbP8OwnedLocalRuntimeAuthority())
+        }
+        (ckbTypedSuccess(), out)
+    } catch (_: Exception) {
+        (ckbTypedFailure("p8b_runtime_transport_field_contract_invalid"),
+            CkbP8OwnedLocalRuntimeAuthority())
+    }
+}
+
+public func renderCkbP8OwnedLocalRuntimeAuthority(
+    value: CkbP8OwnedLocalRuntimeAuthority): String {
+    "{\"schemaVersion\":\"ckb-repro-p8-owned-local-runtime-v1\"," +
+        "\"qdrantEndpoint\":\"${ckbTypedEscape(value.qdrantEndpoint)}\"," +
+        "\"restEndpoint\":\"${ckbTypedEscape(value.restEndpoint)}\"," +
+        "\"mcpHttpEndpoint\":\"${ckbTypedEscape(value.mcpHttpEndpoint)}\"," +
+        "\"ckbExecutable\":\"${ckbTypedEscape(value.ckbExecutable)}\"," +
+        "\"ckbExecutableSha256\":\"${value.ckbExecutableSha256}\"," +
+        "\"dockerExecutable\":\"${ckbTypedEscape(value.dockerExecutable)}\"," +
+        "\"dockerExecutableSha256\":\"${value.dockerExecutableSha256}\"," +
+        "\"qdrantImageReference\":\"${ckbTypedEscape(value.qdrantImageReference)}\"," +
+        "\"qdrantImageId\":\"${value.qdrantImageId}\"," +
+        "\"timeoutMillis\":${value.timeoutMillis}}"
+}
+
+public func validateCkbP8BExecutableIdentity(
+    transport: CkbP8OwnedLocalRuntimeAuthority): CkbReproContractResult {
+    let evidence = ckbTypedP8BFileEvidence(transport.ckbExecutable,
+        transport.ckbExecutableSha256)
+    if (!evidence.ok) {
+        return ckbTypedFailure("p8b_ckb_executable_identity_invalid")
+    }
+    ckbTypedSuccess()
+}
+
+public func validateCkbP8DockerExecutableIdentity(
+    transport: CkbP8OwnedLocalRuntimeAuthority): CkbReproContractResult {
+    let evidence = ckbTypedP8BFileEvidence(transport.dockerExecutable,
+        transport.dockerExecutableSha256)
+    if (!evidence.ok) {
+        return ckbTypedFailure("p8_docker_executable_identity_invalid")
+    }
+    ckbTypedSuccess()
+}
+
+public func validateCkbP8BTransportEnvironment(
+    transport: CkbP8OwnedLocalRuntimeAuthority,
+    environment: CkbReproEnvironmentLock): CkbReproContractResult {
+    if (transport.qdrantImageId != environment.qdrantImageDigest) {
+        return ckbTypedFailure("p8b_qdrant_image_authority_mismatch")
+    }
+    ckbTypedSuccess()
+}
+
+public func parseCkbP8BMcpStdioCommand(bytes: Array<UInt8>,
+    transport: CkbP8OwnedLocalRuntimeAuthority):
+    (CkbReproContractResult, CkbMcpStdioCommandSpec) {
+    let parsed = parseCkbMcpStdioCommandSpec(bytes)
+    if (!parsed[0].ok) { return parsed }
+    if (parsed[1].executable != transport.ckbExecutable ||
+        parsed[1].args.size != 0 || parsed[1].environment.size != 0 ||
+        parsed[1].timeoutMillis != transport.timeoutMillis ||
+        !validateCkbP8BExecutableIdentity(transport).ok) {
+        return (ckbTypedFailure("p8b_mcp_stdio_command_forbidden"),
+            CkbMcpStdioCommandSpec())
+    }
+    parsed
 }
 
 public func parseCkbReproCliRuntimeConfigBytes(bytes: Array<UInt8>):
@@ -483,6 +606,158 @@ private func ckbTypedCanonicalNewPath(value: String): Bool {
     let parent = try { canonicalize(path.parent).toString() }
         catch (_: Exception) { return false }
     Path(parent).join(path.fileName).toString() == value
+}
+
+private class CkbTypedP8BFileEvidence {
+    var ok: Bool = false
+    var identity: String = ""
+    var size: Int64 = 0
+    var sha256: String = ""
+    init() {}
+}
+
+private func ckbTypedP8BFileEvidence(path: String,
+    expectedHash: String): CkbTypedP8BFileEvidence {
+    let out = CkbTypedP8BFileEvidence()
+    if (!ckbTypedAbsolutePath(path) || !ckbTypedHash(expectedHash) ||
+        !exists(Path(path))) { return out }
+    let root = try { canonicalize(Path(path).parent).toString() }
+        catch (_: Exception) { return out }
+    if (Path(root).join(Path(path).fileName).toString() != path) { return out }
+    let backend = CkbReproFilesystemBundleReadBackend()
+    var matched: ?CkbReproBundleReadEntry = None
+    for (entry in backend.list(root)) {
+        if (entry.relativePath == Path(path).fileName) {
+            match (matched) {
+                case Some(_) => return out
+                case None => ()
+            }
+            matched = Some(entry)
+        }
+    }
+    let expected = match (matched) {
+        case Some(value) => value
+        case None => return out
+    }
+    if (expected.kind != "regular" || !expected.withinRoot ||
+        expected.canonicalPath != path || expected.identity == "" ||
+        expected.size < 1 || expected.size > 512 * 1024 * 1024) { return out }
+    let digest = SHA256(); var size: Int64 = 0
+    var handle: ?CkbReproBundleReadHandle = None
+    try {
+        let opened = backend.open(root, expected); handle = Some(opened)
+        try {
+            if (!opened.noFollow() ||
+                !ckbTypedP8BEntryEqual(expected, opened.observedEntry())) {
+                return out
+            }
+            let buffer = Array<UInt8>(65536, repeat: UInt8(0))
+            while (true) {
+                let count = opened.read(buffer)
+                if (count < 0 || count > buffer.size) { return out }
+                if (count == 0) { break }
+                size += count
+                if (size > 512 * 1024 * 1024) { return out }
+                digest.write(if (count == buffer.size) { buffer }
+                    else { buffer[0..count].clone() })
+            }
+            if (size != expected.size ||
+                !ckbTypedP8BEntryEqual(expected, opened.observedEntry())) {
+                return out
+            }
+        } finally { opened.close(); handle = None }
+    } catch (_: Exception) {
+        match (handle) {
+            case Some(value) => try { value.close() } catch (_: Exception) {}
+            case None => ()
+        }
+        return out
+    }
+    let builder = StringBuilder()
+    let digits = "0123456789abcdef".toRuneArray()
+    for (byte in digest.finish()) {
+        builder.append(digits[Int64(byte / UInt8(16))])
+        builder.append(digits[Int64(byte % UInt8(16))])
+    }
+    let actualHash = "sha256:${builder.toString()}"
+    if (actualHash != expectedHash) { return CkbTypedP8BFileEvidence() }
+    let evidence = CkbTypedP8BFileEvidence(); evidence.ok = true
+    evidence.identity = expected.identity; evidence.size = expected.size
+    evidence.sha256 = actualHash; evidence
+}
+
+private func ckbTypedP8BEntryEqual(left: CkbReproBundleReadEntry,
+    right: CkbReproBundleReadEntry): Bool {
+    left.relativePath == right.relativePath && left.kind == right.kind &&
+        left.canonicalPath == right.canonicalPath &&
+        left.withinRoot == right.withinRoot &&
+        left.identity == right.identity && left.size == right.size
+}
+
+private func ckbTypedP8QdrantImageReference(value: String): Bool {
+    if (!ckbTypedAscii(value) || value.size < 10 || value.size > 512 ||
+        value.contains("@") == false || value.contains("//") ||
+        value.contains("..") || value.contains(" ") ||
+        value.startsWith("/") || value.endsWith("/")) { return false }
+    let parts = value.split("@")
+    if (parts.size != 2 || parts[0] == "" || !ckbTypedHash(parts[1]) ||
+        parts[0].contains(":latest")) { return false }
+    for (rune in parts[0].runes()) {
+        if (!((rune >= r'a' && rune <= r'z') ||
+            (rune >= r'0' && rune <= r'9') || rune == r'.' ||
+            rune == r'/' || rune == r':' || rune == r'_' || rune == r'-')) {
+            return false
+        }
+    }
+    true
+}
+
+private func ckbTypedP8BLoopbackEndpoint(value: String,
+    requiredPath: String): Bool {
+    if (!ckbTypedAscii(value) || !value.startsWith("http://") ||
+        value.contains("@") ||
+        value.contains("?") || value.contains("#") ||
+        value.trimAscii() != value || !ckbTypedSafeValue(value, 4096)) {
+        return false
+    }
+    let rest = value[7..]
+    let slash = match (rest.indexOf("/")) {
+        case Some(index) => index
+        case None => rest.size
+    }
+    let authority = rest[..slash]
+    let path = rest[slash..]
+    if (path != requiredPath) { return false }
+    let colon = match (authority.lastIndexOf(":")) {
+        case Some(index) => index
+        case None => return false
+    }
+    let host = authority[..colon]
+    let portText = authority[colon + 1..]
+    if (host != "127.0.0.1" && host != "[::1]") { return false }
+    if (portText == "" || (portText.size > 1 && portText.startsWith("0"))) {
+        return false
+    }
+    for (rune in portText.runes()) {
+        if (rune < r'0' || rune > r'9') { return false }
+    }
+    let port = try { Int64.parse(portText) } catch (_: Exception) { return false }
+    port > 0 && port <= 65535
+}
+
+private func ckbTypedAscii(value: String): Bool {
+    for (rune in value.runes()) {
+        if (rune > r'\u{007f}') { return false }
+    }
+    true
+}
+
+private func ckbTypedP8BOrigin(value: String): String {
+    let rest = value[7..]
+    match (rest.indexOf("/")) {
+        case Some(index) => value[..7 + index]
+        case None => value
+    }
 }
 
 private func ckbTypedProtectedPath(value: String,

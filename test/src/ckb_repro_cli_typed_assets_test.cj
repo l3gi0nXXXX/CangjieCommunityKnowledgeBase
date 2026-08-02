@@ -1,10 +1,11 @@
 package cangjie_community_knowledge_base_test
 
 import std.collection.ArrayList
-import std.fs.{Directory, Path, canonicalize, exists, remove}
+import std.fs.{Directory, File, Path, canonicalize, exists, remove}
 import std.time.DateTime
 import std.unittest.*
 import std.unittest.testmacro.*
+import stdx.crypto.digest.SHA256
 
 @Test
 public class CkbReproCliTypedAssetsTest {
@@ -133,6 +134,94 @@ public class CkbReproCliTypedAssetsTest {
     }
 
     @TestCase
+    public func p8BTransportAcceptsOnlyCanonicalLoopbackEndpoints(): Unit {
+        let executable = canonicalize(
+            Path("../target/release/bin/main")).toString()
+        let valid = typedP8BTransport(executable)
+        let parsed = parseCkbP8OwnedLocalRuntimeAuthorityBytes(valid.toArray())
+        @Expect(parsed[0].diagnostic, "ok")
+        @Expect(parsed[1].qdrantEndpoint, "http://127.0.0.1:6333")
+        let environment = CkbReproEnvironmentLock()
+        environment.qdrantImageDigest = "sha256:" +
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        @Expect(validateCkbP8BTransportEnvironment(
+            parsed[1], environment).ok, true)
+        environment.qdrantImageDigest = "sha256:" +
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        @Expect(validateCkbP8BTransportEnvironment(
+            parsed[1], environment).diagnostic,
+            "p8b_qdrant_image_authority_mismatch")
+        @Expect(parseCkbP8OwnedLocalRuntimeAuthorityBytes(valid.replace(
+            "\"ckbExecutableSha256\":\"sha256:",
+            "\"ckbExecutableSha256\":\"sha256:0").toArray())[0].ok, false)
+        @Expect(parseCkbP8OwnedLocalRuntimeAuthorityBytes(valid.replace(
+            "qdrant/qdrant@sha256:",
+            "qdrant/qdrant:latest@sha256:").toArray())[0].ok, false)
+        for (invalid in [
+            valid.replace("127.0.0.1:6333", "localhost:6333"),
+            valid.replace("127.0.0.1:6333", "0.0.0.0:6333"),
+            valid.replace("http://127.0.0.1:6333", "https://127.0.0.1:6333"),
+            valid.replace("127.0.0.1:6333", "用户@127.0.0.1:6333"),
+            valid.replace("127.0.0.1:6333", "127.0.0.1:6333?令牌=🙂"),
+            valid.replace("/mcp", "/mcp#片段🙂")
+        ]) {
+            @Expect(parseCkbP8OwnedLocalRuntimeAuthorityBytes(
+                invalid.toArray())[0].diagnostic,
+                "p8b_runtime_transport_invalid")
+        }
+    }
+
+    @TestCase
+    public func p8BStdioRejectsArgsEnvironmentAndExecutableMismatch(): Unit {
+        let executable = canonicalize(
+            Path("../target/release/bin/main")).toString()
+        let transport = parseCkbP8OwnedLocalRuntimeAuthorityBytes(
+            typedP8BTransport(executable).toArray())[1]
+        let valid = "{\"schemaVersion\":\"ckb-mcp-stdio-command-v1\"," +
+            "\"executable\":\"${executable}\",\"args\":[]," +
+            "\"environment\":[],\"timeoutMillis\":10000}"
+        @Expect(parseCkbP8BMcpStdioCommand(
+            valid.toArray(), transport)[0].ok, true)
+        for (invalid in [
+            valid.replace("\"args\":[]", "\"args\":[\"mcp-stdio\"]"),
+            valid.replace("\"environment\":[]",
+                "\"environment\":[\"PATH=/tmp\"]"),
+            valid.replace(executable, "/bin/sh")
+        ]) {
+            @Expect(parseCkbP8BMcpStdioCommand(
+                invalid.toArray(), transport)[0].ok, false)
+        }
+        @Expect(parseCkbP8BMcpStdioCommand(
+            [UInt8(0xff)], transport)[0].diagnostic,
+            "invalid_response_encoding")
+    }
+
+    @TestCase
+    public func p8BProcessRevalidatesExecutableBeforeDelegate(): Unit {
+        let executable = canonicalize(
+            Path("../target/release/bin/main")).toString()
+        let transport = parseCkbP8OwnedLocalRuntimeAuthorityBytes(
+            typedP8BTransport(executable).toArray())[1]
+        let command = "{\"schemaVersion\":\"ckb-mcp-stdio-command-v1\"," +
+            "\"executable\":\"${executable}\",\"args\":[]," +
+            "\"environment\":[],\"timeoutMillis\":10000}"
+        let spec = parseCkbP8BMcpStdioCommand(
+            command.toArray(), transport)[1]
+        for (value in ["--config", "/tmp/owned.conf", "--store",
+            "/tmp/owned-store", "mcp-stdio"]) { spec.args.add(value) }
+        let delegate = TypedAssetsProcessDelegate()
+        let checked = CkbP8BIdentityCheckedProcessExecutor(transport,
+            "/tmp/owned.conf", "/tmp/owned-store", delegate: delegate)
+        @Expect(checked.execute(spec, "{}".toArray()).diagnostic, "ok")
+        @Expect(delegate.calls, 1)
+        transport.ckbExecutableSha256 = "sha256:" +
+            "0000000000000000000000000000000000000000000000000000000000000000"
+        @Expect(checked.execute(spec, "{}".toArray()).diagnostic,
+            "p8b_ckb_executable_identity_invalid")
+        @Expect(delegate.calls, 1)
+    }
+
+    @TestCase
     public func privateAuthorityRejectsProtectedAndNoncanonicalTargets(): Unit {
         let root = typedRoot("authority")
         let path = CkbReproCliPathContextAsset()
@@ -163,6 +252,46 @@ public class CkbReproCliTypedAssetsTest {
             "/tmp/../escape", "/tmp/output")[0].ok, false)
         remove(Path(root), recursive: true)
     }
+}
+
+private class TypedAssetsProcessDelegate <:
+    CkbRetrievalParityProcessExecutor {
+    var calls: Int64 = 0
+    public init() {}
+    public func execute(spec: CkbMcpStdioCommandSpec,
+        request: Array<UInt8>): CkbRetrievalParityProcessResponse {
+        this.calls += 1
+        let out = CkbRetrievalParityProcessResponse()
+        out.exitCode = 0; out.diagnostic = "ok"; out
+    }
+}
+
+private func typedP8BTransport(executable: String): String {
+    let executableHash = ckbTypedAssetsTestFileHash(executable)
+    "{\"schemaVersion\":\"ckb-repro-p8-owned-local-runtime-v1\"," +
+        "\"qdrantEndpoint\":\"http://127.0.0.1:6333\"," +
+        "\"restEndpoint\":\"http://127.0.0.1:18081/v1/cangjie/syntax-query\"," +
+        "\"mcpHttpEndpoint\":\"http://127.0.0.1:18081/mcp\"," +
+        "\"ckbExecutable\":\"${executable}\"," +
+        "\"ckbExecutableSha256\":\"${executableHash}\"," +
+        "\"dockerExecutable\":\"${executable}\"," +
+        "\"dockerExecutableSha256\":\"${executableHash}\"," +
+        "\"qdrantImageReference\":\"qdrant/qdrant@sha256:" +
+        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"," +
+        "\"qdrantImageId\":\"sha256:" +
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"," +
+        "\"timeoutMillis\":10000}"
+}
+
+private func ckbTypedAssetsTestFileHash(path: String): String {
+    let digest = SHA256(); digest.write(File.readFrom(Path(path)))
+    let out = StringBuilder()
+    let digits = "0123456789abcdef".toRuneArray()
+    for (byte in digest.finish()) {
+        out.append(digits[Int64(byte / UInt8(16))])
+        out.append(digits[Int64(byte % UInt8(16))])
+    }
+    "sha256:${out.toString()}"
 }
 
 private func typedRuntime(): CkbRuntimeConfig {
