@@ -722,6 +722,12 @@ public class CkbReproEnvironmentTest {
     public func p6Reg01MirrorsConfigsManifestAndCriticalContractStayStable(): Unit {
         @Expect(p6MirrorEquivalent("../src/ckb_repro_environment.cj",
             "src/ckb_repro_environment.cj"), true)
+        let production = String.fromUtf8(File.readFrom(Path(
+            "../src/ckb_repro_environment.cj")))
+        @Expect(production.contains(
+            "\"CKB_REPRO_COMPOSITION_MANIFEST\", \"\""), true)
+        @Expect(production.contains("Path(repositoryRoot).join(\n" +
+            "        target.compositionManifestPath)"), false)
         @Expect(p6MirrorEquivalent("../src/ckb_repro_authority_bundle.cj",
             "src/ckb_repro_authority_bundle.cj"), true)
         let manifest = parseCangjieHumanEvalAuthorityManifest(String.fromUtf8(

@@ -1395,8 +1395,12 @@ private func p6ProbeActualConfiguration(target: CkbReproEnvironmentLock,
     if (!attestation[0].ok) {
         return "environment_probe_attestation_authority_invalid"
     }
-    let compositionPath = Path(repositoryRoot).join(
-        target.compositionManifestPath).toString()
+    let compositionPath = p6ProbeCanonicalInputPath(
+        "CKB_REPRO_COMPOSITION_MANIFEST", "")
+    if (compositionPath == "" || !compositionPath.endsWith(
+        "/${target.compositionManifestPath}")) {
+        return "environment_probe_composition_authority_invalid"
+    }
     let compositionRead = p6ReadFileBounded(compositionPath, 64 * 1024)
     if (compositionRead[0] != "ok" ||
         p6Hash(compositionRead[1]) != target.compositionManifestHash) {
