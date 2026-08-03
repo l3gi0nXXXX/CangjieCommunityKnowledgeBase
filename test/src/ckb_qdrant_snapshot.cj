@@ -846,7 +846,8 @@ public func newCkbP3RuntimeParityAdapter(restEndpoint: String,
     CkbP3ProductionAdapter("parity", None, None,
         Some<CkbRetrievalParityBackend>(CkbProductionRetrievalParityBackend(
             restEndpoint, stdioSpec, mcpHttpEndpoint, http,
-            CkbNativeRetrievalParityProcessExecutor())), None, pathPolicy, None)
+            CkbNativeRetrievalParityProcessExecutor(),
+            timeoutMillis: runtime.timeoutMillis)), None, pathPolicy, None)
 }
 
 public func loadCkbMcpStdioCommandSpecFile(path: String):

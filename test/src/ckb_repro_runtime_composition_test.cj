@@ -14,7 +14,20 @@ private class P3RuntimeHttpExecutor <: HttpRequestExecutor {
     public let requests = ArrayList<HttpExecutionRequest>()
     public var response: HttpExecutionResponse = HttpExecutionResponse()
     public func execute(request: HttpExecutionRequest): HttpExecutionResponse {
-        this.requests.add(request); this.response
+        this.requests.add(request)
+        if (request.body.contains("\"method\":\"initialize\"")) {
+            let initialized = HttpExecutionResponse()
+            initialized.statusCode = 200
+            initialized.mcpSessionId = "test-session"
+            initialized.body = "{\"jsonrpc\":\"2.0\",\"id\":0," +
+                "\"result\":{}}"
+            return initialized
+        }
+        if (request.body.contains("\"method\":\"notifications/initialized\"")) {
+            let notified = HttpExecutionResponse()
+            notified.statusCode = 202; return notified
+        }
+        this.response
     }
     public func get(request: HttpExecutionRequest): HttpExecutionResponse {
         this.execute(request)
@@ -489,6 +502,16 @@ public class CkbReproRuntimeCompositionTest {
         @Expect(parsed[1].executable, "/opt/ckb/bin/ckb")
         @Expect(parsed[1].args.size, 1)
         @Expect(parsed[1].args[0], "mcp-stdio")
+        @Expect(parseCkbMcpStdioCommandSpec(
+            ("{\"schemaVersion\":\"ckb-mcp-stdio-command-v1\"," +
+            "\"executable\":\"/opt/ckb/bin/ckb\",\"args\":[\"mcp-stdio\"]," +
+            "\"environment\":[\"cjHeapSize=4GB\"],\"timeoutMillis\":10000}").toArray())[0].ok,
+            true)
+        @Expect(parseCkbMcpStdioCommandSpec(
+            ("{\"schemaVersion\":\"ckb-mcp-stdio-command-v1\"," +
+            "\"executable\":\"/opt/ckb/bin/ckb\",\"args\":[\"mcp-stdio\"]," +
+            "\"environment\":[\"cjHeapSize=8GB\"],\"timeoutMillis\":10000}").toArray())[0].diagnostic,
+            "mcp_stdio_environment_forbidden")
         @Expect(parseCkbMcpStdioCommandSpec([0xff, 0xfe])[0].diagnostic,
             "invalid_response_encoding")
         @Expect(parseCkbMcpStdioCommandSpec(
@@ -536,6 +559,44 @@ public class CkbReproRuntimeCompositionTest {
         @Expect(result.diagnostic, "retrieval_parity_query_forbidden")
         @Expect(http.requests.size, 0)
         @Expect(process.calls, 0)
+    }
+
+    @TestCase
+    public func p3RuntimeParityPropagatesBoundedTransportTimeout(): Unit {
+        let http = P3RuntimeHttpExecutor()
+        http.response.statusCode = 200
+        http.response.body = "{\"ok\":true,\"data\":{" +
+            "\"knowledgeVersion\":\"portable-v1\",\"citations\":[{" +
+            "\"sourceId\":\"doc-rune\",\"citation\":\"docs/rune.md\"," +
+            "\"knowledgeVersion\":\"portable-v1\"}]}}"
+        let process = P3RuntimeProcessExecutor()
+        let spec = CkbMcpStdioCommandSpec()
+        spec.schemaVersion = "ckb-mcp-stdio-command-v1"
+        spec.executable = "/opt/ckb/bin/ckb"
+        spec.args.add("mcp-stdio")
+        spec.timeoutMillis = 120000
+        let backend = CkbProductionRetrievalParityBackend(
+            "http://127.0.0.1:8080", spec,
+            "http://127.0.0.1:8081/mcp", http, process,
+            timeoutMillis: 120000)
+        @Expect(backend.query("rest",
+            ckbRetrievalParityReferenceQuery()).ok, true)
+        @Expect(http.requests.size, 1)
+        @Expect(http.requests[0].timeoutMillis, 120000)
+        http.response.body = ("{\"jsonrpc\":\"2.0\",\"id\":1," +
+            "\"result\":{\"content\":[{\"type\":\"text\",\"text\":" +
+            "\"{\\\"knowledgeVersion\\\":\\\"portable-v1\\\"," +
+            "\\\"citations\\\":[{\\\"sourceId\\\":\\\"doc-rune\\\"," +
+            "\\\"citation\\\":\\\"docs/rune.md\\\"," +
+            "\\\"knowledgeVersion\\\":\\\"portable-v1\\\"}]}\"}]}}")
+        @Expect(backend.query("mcp_http",
+            ckbRetrievalParityReferenceQuery()).ok, true)
+        @Expect(http.requests.size, 4)
+        @Expect(http.requests[3].accept,
+            "application/json, text/event-stream")
+        @Expect(http.requests[3].timeoutMillis, 120000)
+        @Expect(http.requests[3].headers.contains(
+            "Mcp-Session-Id: test-session"), true)
     }
 
     @TestCase

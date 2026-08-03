@@ -78,7 +78,7 @@ public class CkbReproP8OwnedLifecycleTest {
     }
 
     @TestCase
-    public func buildsOnlyFixedEmptyEnvironmentMcpSpec(): Unit {
+    public func buildsOnlyFixedHeapEnvironmentMcpSpec(): Unit {
         let fixture = p8LifecycleFixture("mcp-spec")
         let built = buildCkbP8OwnedMcpStdioSpec(fixture.authority,
             "${fixture.options.workRoot}/owned.conf",
@@ -88,7 +88,7 @@ public class CkbReproP8OwnedLifecycleTest {
         @Expect(built[1].args.toArray(), ["--config",
             "${fixture.options.workRoot}/owned.conf", "--store",
             fixture.options.runtimeRoot, "mcp-stdio"])
-        @Expect(built[1].environment.size, 0)
+        @Expect(built[1].environment.toArray(), ["cjHeapSize=4GB"])
         p8RemoveFixture(fixture.root)
     }
 

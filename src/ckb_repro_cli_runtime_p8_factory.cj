@@ -45,7 +45,8 @@ class CkbP8OwnedLazyParityBackend <: CkbRetrievalParityBackend {
                     this.authority.mcpHttpEndpoint,
                     NativeHttpRequestExecutor(config),
                     CkbP8BIdentityCheckedProcessExecutor(this.authority,
-                        this.lifecycle.ownedConfigPath(), this.runtimeRoot)))
+                        this.lifecycle.ownedConfigPath(), this.runtimeRoot),
+                    timeoutMillis: this.authority.timeoutMillis))
         }
         let response = try {
             match (this.backend) {

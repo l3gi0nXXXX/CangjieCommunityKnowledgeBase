@@ -984,6 +984,7 @@ public class HttpExecutionResponse {
     public var statusCode: Int64 = 0
     public var body: String = ""
     public var contentType: String = ""
+    public var mcpSessionId: String = ""
     public var retryAfterSeconds: Int64 = 0
     public var status: String = "not_started"
     public var transportErrorClass: String = ""
