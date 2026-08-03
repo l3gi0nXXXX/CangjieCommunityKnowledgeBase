@@ -49,7 +49,7 @@ public class CkbNativeRetrievalParityProcessExecutor <:
         }
         let environment = HashMap<String, String>()
         for (entry in spec.environment) {
-            for (key in ["LANG", "LC_ALL", "PATH"]) {
+            for (key in ["LANG", "LC_ALL", "PATH", "cjHeapSize"]) {
                 let prefix = "${key}="
                 if (entry.startsWith(prefix)) {
                     let runes = entry.toRuneArray()
@@ -120,7 +120,7 @@ public class CkbP8BIdentityCheckedProcessExecutor <:
             spec.executable != this.transport.ckbExecutable ||
             spec.args.toArray() != ["--config", this.configPath, "--store",
                 this.runtimeRoot, "mcp-stdio"] ||
-            spec.environment.size != 0) {
+            spec.environment.toArray() != ["cjHeapSize=4GB"]) {
             let out = CkbRetrievalParityProcessResponse()
             out.diagnostic = "p8b_ckb_executable_identity_invalid"; return out
         }
@@ -222,7 +222,7 @@ private func ckbValidateMcpStdioCommandSpec(
     }
     for (entry in spec.environment) {
         if (!(entry.startsWith("LANG=") || entry.startsWith("LC_ALL=") ||
-            entry.startsWith("PATH=")) || entry.contains("\n") ||
+            entry.startsWith("PATH=") || entry == "cjHeapSize=4GB") || entry.contains("\n") ||
             entry.contains("\r") || entry.toRuneArray().size > 4096) {
             return ckbRetrievalParityFailure(
                 "mcp_stdio_environment_forbidden")
@@ -238,14 +238,17 @@ public class CkbProductionRetrievalParityBackend <:
     private let mcpHttpEndpoint: String
     private let http: HttpRequestExecutor
     private let process: CkbRetrievalParityProcessExecutor
+    private let timeoutMillis: Int64
     public init(restEndpoint: String, stdioSpec: CkbMcpStdioCommandSpec,
         mcpHttpEndpoint: String, http: HttpRequestExecutor,
-        process: CkbRetrievalParityProcessExecutor) {
+        process: CkbRetrievalParityProcessExecutor,
+        timeoutMillis!: Int64 = 300000) {
         this.restEndpoint = restEndpoint
         this.stdioSpec = stdioSpec
         this.mcpHttpEndpoint = mcpHttpEndpoint
         this.http = http
         this.process = process
+        this.timeoutMillis = timeoutMillis
     }
     public func query(transport: String, query: String):
         CkbRetrievalParityResponse {
@@ -262,6 +265,7 @@ public class CkbProductionRetrievalParityBackend <:
             request.accept = "application/json"
             request.contentType = "application/json"
             request.body = "{\"q\":\"${escaped}\",\"budget\":5}"
+            request.timeoutMillis = this.timeoutMillis
             request.retryCount = 0; request.maxResponseBytes = 262144
             let response = this.http.execute(request)
             if (response.statusCode < 200 || response.statusCode >= 300) {
@@ -286,12 +290,47 @@ public class CkbProductionRetrievalParityBackend <:
                 response.stdout, "mcp")
         }
         if (transport == "mcp_http") {
+            let initialize = HttpExecutionRequest()
+            initialize.method = "POST"; initialize.url = this.mcpHttpEndpoint
+            initialize.accept = "application/json, text/event-stream"
+            initialize.contentType = "application/json"
+            initialize.body = "{\"jsonrpc\":\"2.0\",\"id\":0," +
+                "\"method\":\"initialize\",\"params\":{" +
+                "\"protocolVersion\":\"2025-06-18\",\"capabilities\":{}," +
+                "\"clientInfo\":{\"name\":\"ckb-retrieval-parity\"," +
+                "\"version\":\"1.0\"}}}"
+            initialize.timeoutMillis = this.timeoutMillis
+            initialize.retryCount = 0; initialize.maxResponseBytes = 262144
+            let initialized = this.http.execute(initialize)
+            if (initialized.statusCode < 200 || initialized.statusCode >= 300 ||
+                initialized.mcpSessionId == "") {
+                out.diagnostic = "retrieval_parity_mcp_http_initialize_failed"
+                return out
+            }
+            let sessionHeaders = ["MCP-Protocol-Version: 2025-06-18",
+                "Mcp-Session-Id: ${initialized.mcpSessionId}"]
+            let notification = HttpExecutionRequest()
+            notification.method = "POST"; notification.url = this.mcpHttpEndpoint
+            notification.accept = "application/json, text/event-stream"
+            notification.contentType = "application/json"
+            notification.body = "{\"jsonrpc\":\"2.0\"," +
+                "\"method\":\"notifications/initialized\",\"params\":{}}"
+            notification.timeoutMillis = this.timeoutMillis
+            notification.retryCount = 0; notification.maxResponseBytes = 262144
+            for (header in sessionHeaders) { notification.headers.add(header) }
+            let notified = this.http.execute(notification)
+            if (notified.statusCode < 200 || notified.statusCode >= 300) {
+                out.diagnostic = "retrieval_parity_mcp_http_initialize_failed"
+                return out
+            }
             let request = HttpExecutionRequest()
             request.method = "POST"; request.url = this.mcpHttpEndpoint
-            request.accept = "application/json"
+            request.accept = "application/json, text/event-stream"
             request.contentType = "application/json"
-            request.body = rpc; request.retryCount = 0
+            request.body = rpc; request.timeoutMillis = this.timeoutMillis
+            request.retryCount = 0
             request.maxResponseBytes = 262144
+            for (header in sessionHeaders) { request.headers.add(header) }
             let response = this.http.execute(request)
             if (response.statusCode < 200 || response.statusCode >= 300) {
                 out.diagnostic = "retrieval_parity_mcp_http_failed"; return out

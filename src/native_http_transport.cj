@@ -483,6 +483,12 @@ private func ckbNativeHttpExecuteOnce(request: HttpExecutionRequest, config: Ckb
             response.statusCode = Int64(nativeResponse.status)
             response.body = decoded[1]
             response.contentType = nativeResponse.headers.getFirst("content-type") ?? nativeResponse.headers.getFirst("Content-Type") ?? ""
+            let mcpSessionId = (nativeResponse.headers.getFirst("mcp-session-id") ??
+                nativeResponse.headers.getFirst("Mcp-Session-Id") ?? "").trimAscii()
+            if (mcpSessionId.toRuneArray().size <= 256 &&
+                !mcpSessionId.contains("\n") && !mcpSessionId.contains("\r")) {
+                response.mcpSessionId = mcpSessionId
+            }
             response.retryAfterSeconds = ckbNativeHttpParseRetryAfter(nativeResponse.headers.getFirst("retry-after") ?? nativeResponse.headers.getFirst("Retry-After") ?? "")
             response.status = "http_${response.statusCode}"
         } finally {

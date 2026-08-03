@@ -22,7 +22,7 @@ public interface CkbP8OwnedProcessHandle {
 }
 
 // Environment is intentionally absent from this interface. Production
-// implementations always launch the frozen executables with an empty map.
+// implementations use only the fixed service heap required by CKB startup.
 public interface CkbP8OwnedCommandExecutor {
     func executeDocker(executable: String, args: Array<String>,
         timeoutMillis: Int64): CkbP8OwnedCommandResult
@@ -93,8 +93,10 @@ public class CkbNativeP8OwnedCommandExecutor <: CkbP8OwnedCommandExecutor {
     public func launchCkb(executable: String, args: Array<String>,
         timeoutMillis: Int64): (?CkbP8OwnedProcessHandle, String) {
         try {
+            let environment = HashMap<String, String>()
+            environment["cjHeapSize"] = "4GB"
             let process = launch(executable, args,
-                environment: HashMap<String, String>(),
+                environment: environment,
                 stdOut: ProcessRedirect.Pipe, stdErr: ProcessRedirect.Pipe)
             (Some<CkbP8OwnedProcessHandle>(
                 CkbNativeP8OwnedProcessHandle(process)), "ok")
@@ -357,6 +359,7 @@ public func buildCkbP8OwnedMcpStdioSpec(
     spec.executable = authority.ckbExecutable
     for (arg in ["--config", configPath, "--store", runtimeRoot,
         "mcp-stdio"]) { spec.args.add(arg) }
+    spec.environment.add("cjHeapSize=4GB")
     spec.timeoutMillis = authority.timeoutMillis
     (p8OwnedSuccess(), spec)
 }
