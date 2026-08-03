@@ -101,7 +101,13 @@ Git commit 对自身哈希的循环依赖；同时将 B 作为
 git worktree add --detach "${RUNNER_ROOT}" "${RUN_CANDIDATE_COMMIT}"
 git worktree add --detach "${EVIDENCE_ROOT}" "${ATTESTATION_EVIDENCE_COMMIT}"
 export CKB_REPRO_REPOSITORY_ROOT="${RUNNER_ROOT}"
+export CKB_REPRO_COMPOSITION_MANIFEST="${REPRO_ROOT}/reproducibility/manifests/runtime-composition.json"
 ```
+
+`CKB_REPRO_COMPOSITION_MANIFEST`必须指向独立的私有composition root，不得位于
+execution或evidence Git worktree。environment lock只保存固定相对布局和文件哈希，
+不会保存本机绝对路径；探针按该显式环境变量读取并校验canonical path、固定文件后缀
+和完整哈希。这样两个Git worktree保持clean，私有authority也不会进入Git。
 
 ## 第 3 步：生成一次性 local-root map 位置
 
