@@ -1311,7 +1311,7 @@ public class CkbReproProductionBuildBackend <: CkbReproBuildBackend {
             ArrayList<RawRecord>(), ArrayList<NormalizedRecord>(),
             ArrayList<NormalizedRecord>(), raw, normalized, normalized,
             input.request.candidateVersion,
-            authorityHash: input.request.leakageAuthorityHash,
+            authorityHash: input.request.evalSupportAuthority.authorityHash,
             authority: input.request.leakageAuthority)
         CkbReproBackendResult(this.candidate.ok, this.candidate.diagnostic)
     }

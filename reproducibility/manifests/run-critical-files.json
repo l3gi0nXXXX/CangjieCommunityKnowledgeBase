@@ -34,7 +34,7 @@
     {"path":"src/ckb_qdrant_snapshot.cj","status":"present","sha256":"sha256:9df8fb6a7f5ed0157b74ceb5c1e5432b65cb862671e48d1256c56d44c75cf390"},
     {"path":"src/ckb_retrieval_parity.cj","status":"present","sha256":"sha256:4704c4788f2a3c99602ec6e16afcdb4c308c3ef85a8fd92de194de5886895d1d"},
     {"path":"src/ckb_portable_vector_build.cj","status":"present","sha256":"sha256:ccf30e4426aebb9053ec0028ec1a9684956f4a2e9dc260a3eec18de0785c9b93"},
-    {"path":"src/ckb_repro_build.cj","status":"present","sha256":"sha256:c97b3a019f1dfdb832590eb56e32240612960a7e731ddc9651bbc0f19681459e"},
+    {"path":"src/ckb_repro_build.cj","status":"present","sha256":"sha256:99b29a0641feb1e7ff7f8fa52315f52510356e73ece0282a4abe933baf738f12"},
     {"path":"src/ckb_repro_build_inputs.cj","status":"present","sha256":"sha256:b371451acd344812b52c1a1d8a43454421dc31622f228993d79b12ecf67eb9ce"},
     {"path":"src/ckb_pinned_source_backend.cj","status":"present","sha256":"sha256:c8c5dfda1219365bd391717073400eed8a0a15564b5bd9d73321d4bfb289ae47"},
     {"path":"src/ckb_public_evidence.cj","status":"present","sha256":"sha256:d35e2151e80691e8ebf5c043d0dfbd4127506d1c96ce90c2895db6daff0b4ee5"},

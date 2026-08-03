@@ -324,6 +324,32 @@ public class CkbReproBuildTest {
     }
 
     @TestCase
+    public func p4Reg04ProductionCandidateBindsEvalSupportAuthority(): Unit {
+        let fixture = p4BuildFixture("authority-binding")
+        let input = CkbReproPipelineInput()
+        input.request = fixture.request
+        input.request.candidateVersion = "portable-authority-binding"
+        input.request.evalSupportAuthority.authorityHash =
+            "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        input.request.leakageAuthorityHash =
+            "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        input.selectedTyped.add(fixture.request.typedInput[0])
+        input.portableTyped.add(fixture.request.typedInput[0])
+        let backend = CkbReproProductionBuildBackend()
+
+        @Expect(backend.run("clean", input).ok, true)
+        @Expect(backend.run("materialize", input).ok, true)
+        let manifest = File.readFrom(Path(input.request.options.temporaryRoot)
+            .join("candidate-artifacts/portable-authority-binding/" +
+                "clean-candidate-manifest.json"))
+        let text = String.fromUtf8(manifest)
+        @Expect(text.contains(input.request.evalSupportAuthority.authorityHash),
+            true)
+        @Expect(text.contains(input.request.leakageAuthorityHash), false)
+        p4RemoveBuildFixture(fixture)
+    }
+
+    @TestCase
     public func p4Neg02BuildComponentEvalSelectionAndStageFailureShortCircuit(): Unit {
         let fixture = p4BuildFixture("neg02")
         let leaked = CkbReproKnowledgeSelectionRow()
