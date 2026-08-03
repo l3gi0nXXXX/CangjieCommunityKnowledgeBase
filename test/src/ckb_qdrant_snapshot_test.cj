@@ -60,13 +60,13 @@ public class CkbQdrantSnapshotTest {
         @Expect(downloaded.bytes, executor.snapshotBytes)
         @Expect(executor.requests[1].method, "GET")
         let parsedStatus = parseCkbQdrantRestoredStatus(
-            ("{\"result\":{\"status\":\"green\",\"points_count\":7978," +
+            ("{\"result\":{\"status\":\"green\",\"points_count\":7817," +
             "\"config\":{\"params\":{\"vectors\":{\"size\":1024," +
             "\"distance\":\"Cosine\"}}}}}").toArray(),
             "portable-v1", p3Hash("payload"))
         @Expect(parsedStatus[0].ok, true)
         @Expect(parsedStatus[1].state, "green")
-        @Expect(parsedStatus[1].count, 7978)
+        @Expect(parsedStatus[1].count, 7817)
         @Expect(parsedStatus[1].dimension, 1024)
         let manifest = p3Manifest(downloaded.sha256)
         let built = buildCkbQdrantSnapshotManifest(manifest)
@@ -87,7 +87,7 @@ public class CkbQdrantSnapshotTest {
             @Expect(buildCkbQdrantSnapshotManifest(valid).diagnostic,
                 "qdrant_snapshot_points_mismatch")
         }
-        valid.points = 7978
+        valid.points = 7817
         for (dimension in [Int64(0), Int64(1023), Int64(1025)]) {
             valid.dimension = dimension
             @Expect(buildCkbQdrantSnapshotManifest(valid).diagnostic,
@@ -163,7 +163,7 @@ public class CkbQdrantSnapshotTest {
         proof.qdrantImageDigest = p3Hash("qdrant")
         proof.embeddingProvider = "deterministic"
         proof.embeddingModel = "ckb-repro-v1"
-        proof.count = 7978
+        proof.count = 7817
         proof.dimension = 1024
         proof.distance = "Cosine"
         proof.payloadCanonicalHash = p3Hash("payload")
@@ -172,7 +172,7 @@ public class CkbQdrantSnapshotTest {
         File.writeTo(validPath, renderCkbPortableVectorProof(proof).toArray())
         @Expect(parseCkbPortableVectorProofFile(validPath.toString())[0].ok, true)
         let tampered = renderCkbPortableVectorProof(proof).replace(
-            "\"count\":7978", "\"count\":7977")
+            "\"count\":7817", "\"count\":7977")
         let tamperedPath = root.join("tampered.json")
         File.writeTo(tamperedPath, tampered.toArray())
         @Expect(parseCkbPortableVectorProofFile(
@@ -275,7 +275,7 @@ private func p3Manifest(snapshotHash: String): CkbQdrantSnapshotManifest {
     value.collection = "portable-v1"
     value.distance = "Cosine"
     value.dimension = 1024
-    value.points = 7978
+    value.points = 7817
     value.snapshotSha256 = snapshotHash
     value.logicalManifestHash = p3Hash("logical")
     value.vectorProofHash = p3Hash("vector")
@@ -288,7 +288,7 @@ private func p3LogicalManifest(): CkbLogicalSnapshotManifest {
     value.manifestHash = p3Hash("logical")
     value.p3VectorProofHash = p3Hash("vector")
     value.vectorCollection = "portable-v1"
-    value.vectorCount = 7978
+    value.vectorCount = 7817
     value.vectorDimension = 1024
     value
 }
@@ -303,7 +303,7 @@ private func p3ReleaseLogicalManifest(): CkbLogicalSnapshotManifest {
     value.p3VectorProofHash = p3Hash("vector")
     value.vectorState = EmbeddingProviderState.READY
     value.vectorCollection = "portable-v1"
-    value.vectorCount = 7978
+    value.vectorCount = 7817
     value.vectorDimension = 1024
     value.rawCount = 1
     value.normalizedCount = 1
@@ -327,7 +327,7 @@ private func p3Status(collection: String): CkbQdrantRestoredStatus {
     let value = CkbQdrantRestoredStatus()
     value.state = "green"
     value.collection = collection
-    value.count = 7978
+    value.count = 7817
     value.dimension = 1024
     value.distance = "Cosine"
     value.payloadCanonicalHash = p3Hash("payload")

@@ -172,7 +172,8 @@ public class CkbReproMainCliTest {
     @TestCase
     public func p2AndP9CommandsRouteBeforeKnowledgeBaseLoading(): Unit {
         let adapter = P0MainCliAdapter()
-        for (command in ["ckb-release-export", "ckb-release-import"]) {
+        for (command in ["ckb-release-export", "ckb-release-import",
+            "ckb-logical-proof"]) {
             let result = executeCkbReproMainCli(command, [command], adapter)
             @Expect(result.handled, true)
             @Expect(result.exitCode, 0)
@@ -183,7 +184,7 @@ public class CkbReproMainCliTest {
         @Expect(publish.handled, true)
         @Expect(publish.exitCode, 1)
         @Expect(publish.output, "publish human\n")
-        @Expect(adapter.calls.size, 3)
+        @Expect(adapter.calls.size, 4)
     }
 
     @TestCase
@@ -211,7 +212,8 @@ public class CkbReproMainCliTest {
 
     @TestCase
     public func defaultOutputIsHumanAndJsonRequiresExplicitFlag(): Unit {
-        for (command in ["ckb-release-export", "ckb-public-evidence-export",
+        for (command in ["ckb-release-export", "ckb-logical-proof",
+            "ckb-public-evidence-export",
             "ckb-repro-preflight", "ckb-repro-bundle",
             "ckb-repro-publish-gate", "ckb-portable-vector-build",
             "ckb-qdrant-snapshot", "ckb-retrieval-parity",

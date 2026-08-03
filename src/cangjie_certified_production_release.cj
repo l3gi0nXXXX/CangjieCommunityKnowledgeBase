@@ -177,6 +177,10 @@ public func ckbCertifiedNormalizedRecordsChecksum(records: ArrayList<NormalizedR
     benchmarkGapSha256(seed.toString())
 }
 
+public func ckbCertifiedNormalizedRecordSeed(record: NormalizedRecord): String {
+    ckbP8NormalizedRecordSeed(record)
+}
+
 private func ckbP8P6BindingDiagnostic(proof: CkbProductionReleaseProof,
     candidateChecksum: String): String {
     try {

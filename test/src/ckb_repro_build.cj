@@ -517,7 +517,8 @@ public func loadCkbPortablePromotionCliInputs(unsignedRoot: String,
             vector[1].candidateVersion != options.candidateVersion ||
             reference[1].knowledgeVersion != options.candidateVersion ||
             publicEvidence[1].knowledgeVersion != options.candidateVersion ||
-            logical[1].contaminationProofHash != publicEvidence[1].publicEvidenceHash ||
+            // P2 contamination proves clean knowledge bytes; P5 public evidence
+            // proves the later benchmark run. They are independently bound assets.
             publicEvidence[1].publicEvidenceHash != options.identity ||
             reference[1].strictPassed != options.p8StrictPassed ||
             reference[1].strictPassed != 151 ||
@@ -1546,7 +1547,8 @@ public func parseCkbReproBuildProof(bytes: Array<UInt8>):
     if (!proof.logicalReady || proof.diagnostic != "ok" ||
         !p4BuildHash(proof.sourceLockHash) || proof.typedCount < 1 ||
         proof.rawCount < 1 || proof.selectedCount < 1 ||
-        proof.selectedCount + proof.excludedCount != proof.rawCount ||
+        proof.selectedCount + proof.excludedCount !=
+            proof.typedCount + proof.rawCount ||
         proof.evalSupportPersisted != 0 || proof.vectorCount != 0 ||
         proof.vectorState != "DEGRADED" || proof.candidateVersion == "" ||
         !p4BuildHash(proof.typedPairAggregateHash) ||

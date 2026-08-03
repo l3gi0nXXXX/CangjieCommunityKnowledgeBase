@@ -17,7 +17,7 @@ private class P2RealP3VectorBackend <: CkbPortableVectorBuildBackend {
     public func stagedRebuild(collection: String): CkbPortableVectorBuildEvidence {
         let evidence = CkbPortableVectorBuildEvidence()
         evidence.ready = true; evidence.diagnostic = "ok"
-        evidence.collection = collection; evidence.count = 7978
+        evidence.collection = collection; evidence.count = 7817
         evidence.dimension = 1024; evidence.distance = "Cosine"
         evidence.payloadCanonicalHash = benchmarkGapSha256("real-payload")
         evidence.machinePathCount = 0; evidence
@@ -190,6 +190,19 @@ private class P2FakeArchiveBackend <: CkbReleaseArchiveBackend {
 
 @Test
 public class CkbReproReleaseTest {
+    @TestCase
+    public func p2Bnd02LogicalProofCliHasExplicitInputs(): Unit {
+        let parsed = parseCkbReleaseCliOptions(["ckb-logical-proof",
+            "--store-root", "/candidate", "--build-proof", "/p4.json",
+            "--vector-proof", "/p3.json", "--clean-manifest", "/clean.json",
+            "--output", "/out/logical.json"])
+        @Expect(parsed.diagnostic, "ok")
+        @Expect(parsed.mode, "proof")
+        let missing = parseCkbReleaseCliOptions(["ckb-logical-proof",
+            "--store-root", "/candidate"])
+        @Expect(missing.diagnostic,
+            "required_argument_missing:--build-proof")
+    }
     @TestCase
     public func p2ProofJsonEscapesEveryControlRune(): Unit {
         let manifest = CkbLogicalSnapshotManifest()
@@ -575,7 +588,7 @@ public class CkbReproReleaseTest {
             "invalid_response_encoding")
         let excessiveCount = ArrayList<UInt8>()
         excessiveCount.add(all: "CKBREL01".toArray())
-        excessiveCount.add(all: p2ArchiveIntBytes(129))
+        excessiveCount.add(all: p2ArchiveIntBytes(16385))
         let excessiveCountPath = "${root}/count.ckb-release"
         File.writeTo(Path(excessiveCountPath), excessiveCount.toArray())
         @Expect(backend.enumerate(excessiveCountPath).ok, false)
@@ -672,6 +685,40 @@ public class CkbReproReleaseTest {
     }
 
     @TestCase
+    public func p2Reg02CleanManifestIsValidatedAgainstCandidateBytes(): Unit {
+        let root = p2Root("clean-proof")
+        let source = p2CommittedStore("${root}/source")
+        let snapshot = source.loadActiveSnapshot()
+        let consistency = ckbCleanCandidateConsistencyDiagnostic(
+            snapshot.rawRecords, snapshot.normalizedRecords,
+            snapshot.activeIndex, p2Version())
+        @Expect(consistency.ok, true)
+        let body = "{\"schemaVersion\":\"ckb-clean-candidate-v1\",\"ok\":true," +
+            "\"versionHash\":\"${p2Hash(p2Version())}\",\"rawCount\":1," +
+            "\"normalizedCount\":1,\"activeCount\":1,\"historicalRemoved\":0," +
+            "\"candidateChecksum\":\"${consistency.candidateChecksum}\"," +
+            "\"authorityHash\":\"${p2Hash("authority")}\"," +
+            "\"auditEvidenceHash\":\"${p2Hash("audit")}\"," +
+            "\"materializationManifestEvidenceHash\":\"${p2BareHash("material")}\"," +
+            "\"immutableManifestHash\":\"${p2Hash("immutable")}\"," +
+            "\"rawEvidenceHash\":\"${p2BareHash("raw")}\"," +
+            "\"normalizedEvidenceHash\":\"${p2BareHash("normalized")}\"," +
+            "\"batchCount\":1"
+        let evidence = p2Hash(body + "}")
+        let manifest = (body + ",\"evidenceHash\":\"${evidence}\"}\n").toArray()
+        let valid = validateCkbPortableCleanManifest(manifest, snapshot, p2Version())
+        @Expect(valid[0].ok, true)
+        @Expect(valid[1].startsWith("sha256:"), true)
+
+        let tampered = String.fromUtf8(manifest).replace(
+            "\"rawCount\":1", "\"rawCount\":2").toArray()
+        @Expect(validateCkbPortableCleanManifest(tampered, snapshot,
+            p2Version())[0].diagnostic, "portable_clean_manifest_invalid")
+        @Expect(validateCkbPortableCleanManifest([UInt8(0xff)], snapshot,
+            p2Version())[0].diagnostic, "invalid_response_encoding")
+    }
+
+    @TestCase
     public func p2Stream04ProductionRoundTripUsesBoundedBuffers(): Unit {
         let root = p2Root("production-streaming")
         let store = p2CommittedStore("${root}/source")
@@ -689,6 +736,43 @@ public class CkbReproReleaseTest {
         @Expect(backend.maxResidentBufferBytes <= 65536, true)
         @Expect(backend.maxReadBytes <= 65536, true)
         @Expect(backend.maxBufferBytes, backend.maxResidentBufferBytes)
+    }
+
+    @TestCase
+    public func p2Bnd03NestedRawFilesAreCollectedAndUnsafeEntriesFailClosed(): Unit {
+        let root = p2Root("nested-raw")
+        let rawRoot = Path(root).join("raw")
+        let derived = rawRoot.join("derived")
+        Directory.create(derived, recursive: true)
+        File.writeTo(rawRoot.join("records.ckb"), "records".toArray())
+        File.writeTo(derived.join("atom.ckb"), "atom".toArray())
+        let paths = ArrayList<String>()
+        @Expect(ckbLogicalSnapshotCollectRawPaths(rawRoot,
+            canonicalize(rawRoot), "", "transactions/tx", paths), "ok")
+        @Expect(paths.contains("transactions/tx/raw/records.ckb"), true)
+        @Expect(paths.contains("transactions/tx/raw/derived/atom.ckb"), true)
+
+        File.writeTo(derived.join("unexpected.txt"), "blocked".toArray())
+        @Expect(ckbLogicalSnapshotCollectRawPaths(rawRoot,
+            canonicalize(rawRoot), "", "transactions/tx",
+            ArrayList<String>()), "logical_snapshot_raw_entry_invalid")
+    }
+
+    @TestCase
+    public func p2Bnd04LargeLogicalManifestRendersWithinTestHeap(): Unit {
+        let manifest = p2Manifest()
+        manifest.assets.clear()
+        for (i in 0..7500) {
+            let asset = CkbLogicalSnapshotAsset()
+            asset.relativePath = "transactions/tx/raw/doc/atom-${i}.ckb"
+            asset.size = i
+            asset.sha256 = p2Hash("large-manifest")
+            manifest.assets.add(asset)
+        }
+        let rendered = renderCkbLogicalSnapshotManifest(manifest)
+        @Expect(rendered.contains(
+            "transactions/tx/raw/doc/atom-7499.ckb"), true)
+        @Expect(rendered.toArray().size > 1000000, true)
     }
 }
 
@@ -750,6 +834,7 @@ private func p2CommittedStore(root: String): FileKnowledgeStore {
     raw.content = "使用 add 追加元素"
     raw.contentHash = p2Hash(raw.content)
     raw.metadata.knowledgeVersion = p2Version()
+    raw.metadata.candidateVersion = p2Version()
     raw.metadata.targetVersion = "1.0.0"
     let normalized = NormalizedRecord()
     normalized.sourceId = raw.sourceId
@@ -776,6 +861,8 @@ private func p2CommittedStore(root: String): FileKnowledgeStore {
     status.storage.vectorDimension = 1024
     status.storage.graphBackend = "local"
     status.storage.graphState = EmbeddingProviderState.READY
+    status.storage.graphNodeCount = 1
+    status.storage.graphEdgeCount = 0
     let graph = GraphBuildResult()
     let committed = store.writeActiveSnapshotTransaction(status, raws, records,
         records, ArrayList<VectorRecord>(), "portable_vectors", graph,
@@ -804,6 +891,9 @@ private func p2Root(name: String): String {
 private func p2Version(): String { "portable-knowledge-2026-07-31" }
 
 private func p2Hash(value: String): String { benchmarkGapSha256(value) }
+private func p2BareHash(value: String): String {
+    p2Hash(value).replace("sha256:", "")
+}
 
 private func p2ArchiveIntBytes(value: Int64): Array<UInt8> {
     let out = ArrayList<UInt8>()

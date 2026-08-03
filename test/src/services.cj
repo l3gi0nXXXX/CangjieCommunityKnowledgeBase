@@ -9077,6 +9077,17 @@ public class FileKnowledgeStore {
         this.parseNormalizedInternal(text, true, diagnostics)
     }
 
+    public func parseNormalizedRecordLineForStreaming(line: String,
+        lineNumber: Int64): (String, ?NormalizedRecord) {
+        let out = ArrayList<NormalizedRecord>()
+        let diagnostics = ArrayList<String>()
+        this.appendNormalizedRecordLine(line, true, lineNumber, out, diagnostics)
+        if (diagnostics.size > 0 || out.size != 1) {
+            return ("normalized_record_line_invalid", None<NormalizedRecord>)
+        }
+        ("ok", Some<NormalizedRecord>(out[0]))
+    }
+
     private func parseNormalizedInternal(text: String, strict: Bool, diagnostics: ArrayList<String>): ArrayList<NormalizedRecord> {
         let out = ArrayList<NormalizedRecord>()
         if (text == "") {

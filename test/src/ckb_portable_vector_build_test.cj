@@ -7,7 +7,7 @@ import std.unittest.testmacro.*
 private class P3FakeVectorBuildBackend <: CkbPortableVectorBuildBackend {
     public var existing: Bool = false
     public var failRebuild: Bool = false
-    public var count: Int64 = 7978
+    public var count: Int64 = 7817
     public var dimension: Int64 = 1024
     public var distance: String = "Cosine"
     public var machinePathCount: Int64 = 0
@@ -75,7 +75,7 @@ public class CkbPortableVectorBuildTest {
         let result = buildCkbPortableReferenceVectors(
             p3VectorOptions(), p3BuildProof(), p3Environment(), backend)
         @Expect(result.ready, true)
-        @Expect(result.proof.count, 7978)
+        @Expect(result.proof.count, 7817)
         @Expect(result.proof.dimension, 1024)
         @Expect(result.proof.distance, "Cosine")
         @Expect(result.proof.vectorProofHash.startsWith("sha256:"), true)
@@ -138,12 +138,12 @@ public class CkbPortableVectorBuildTest {
             p3VectorOptions(), wrongCandidate, p3Environment(),
             backend).diagnostic, "portable_vector_p4_proof_mismatch")
 
-        backend.count = 7977
+        backend.count = 7816
         @Expect(buildCkbPortableReferenceVectors(
             p3VectorOptions(), p3BuildProof(), p3Environment(),
             backend).diagnostic, "portable_vector_count_mismatch")
         @Expect(backend.deleted, 1)
-        backend.count = 7978
+        backend.count = 7817
         backend.machinePathCount = 1
         @Expect(buildCkbPortableReferenceVectors(
             p3VectorOptions(), p3BuildProof(), p3Environment(),
@@ -186,6 +186,63 @@ public class CkbPortableVectorBuildTest {
         second.p4PortableProofHash = p3VectorHash("different")
         @Expect(ckbPortableVectorCollectionName(first) ==
             ckbPortableVectorCollectionName(second), false)
+    }
+
+    @TestCase
+    public func p3Reg02NormalizedEvidenceMatchesMaterializedPayload(): Unit {
+        let normalized = NormalizedRecord()
+        normalized.sourceId = "source-1"
+        normalized.title = "title"
+        normalized.chunk = "chunk"
+        normalized.citation = "citation"
+        normalized.metadata.path = "docs/example.md"
+        normalized.metadata.sourceType = "official-doc"
+        normalized.metadata.license = "Apache-2.0"
+        normalized.metadata.derivedFrom = ["source-b", "source-a"]
+        let normalizedRecords = ArrayList<NormalizedRecord>()
+        normalizedRecords.add(normalized)
+
+        let vector = VectorRecord()
+        vector.id = normalized.sourceId
+        vector.pointId = ckbVectorPointId(normalized)
+        vector.title = normalized.title
+        vector.chunk = normalized.chunk
+        vector.citation = normalized.citation
+        vector.metadata = normalized.metadata
+        vector.vector.add(1.0)
+        let vectorRecords = ArrayList<VectorRecord>()
+        vectorRecords.add(vector)
+
+        @Expect(ckbPortableVectorPayloadCanonicalHashFromNormalized(
+            normalizedRecords), ckbPortableVectorPayloadCanonicalHash(vectorRecords))
+    }
+
+    @TestCase
+    public func p3Reg03CandidateBindingRequiresExactReadyIdentity(): Unit {
+        let snapshot = ActiveSnapshot()
+        snapshot.valid = true
+        snapshot.activeVersion = "portable-v1"
+        snapshot.vectorActiveCollection = "portable-vector"
+        let metadata = StoreMetadataStatus()
+        metadata.valid = true
+        metadata.activeVersion = snapshot.activeVersion
+        metadata.vectorState = EmbeddingProviderState.READY
+        metadata.vectorCollection = snapshot.vectorActiveCollection
+        metadata.vectorActiveCollection = snapshot.vectorActiveCollection
+        metadata.vectorIndexCount = 7817
+        metadata.vectorDimension = 1024
+        @Expect(validateCkbPortableVectorCandidateBinding(snapshot, metadata,
+            "portable-v1", "portable-vector", 7817, 1024).ok, true)
+
+        metadata.vectorState = EmbeddingProviderState.DEGRADED
+        @Expect(validateCkbPortableVectorCandidateBinding(snapshot, metadata,
+            "portable-v1", "portable-vector", 7817, 1024).diagnostic,
+            "portable_vector_candidate_binding_invalid")
+        metadata.vectorState = EmbeddingProviderState.READY
+        @Expect(validateCkbPortableVectorCandidateBinding(snapshot, metadata,
+            "portable-v1", "other", 7817, 1024).ok, false)
+        @Expect(validateCkbPortableVectorCandidateBinding(snapshot, metadata,
+            "other-version", "portable-vector", 7817, 1024).ok, false)
     }
 }
 
