@@ -282,9 +282,18 @@ public class CkbReproEnvironmentTest {
         encoding.glmBaseUrl = "https://服务.example/v1"
         @Expect(validateCkbReproEnvironmentLock(encoding,
             mode: "execution").ok, true)
+        let publicHttpProvider = p6FrozenEnvironment()
+        publicHttpProvider.glmBaseUrl = "http://113.46.219.251:8080/"
+        @Expect(validateCkbReproEnvironmentLock(publicHttpProvider,
+            mode: "execution").ok, true)
         let localProvider = p6FrozenEnvironment()
         localProvider.glmBaseUrl = "https://127.0.0.1/v1"
         @Expect(validateCkbReproEnvironmentLock(localProvider,
+            mode: "execution").diagnostic,
+            "environment_provider_identity_invalid")
+        let unsupportedProviderScheme = p6FrozenEnvironment()
+        unsupportedProviderScheme.glmBaseUrl = "ftp://provider.example/v1"
+        @Expect(validateCkbReproEnvironmentLock(unsupportedProviderScheme,
             mode: "execution").diagnostic,
             "environment_provider_identity_invalid")
         let missingKey = p6FrozenEnvironment()

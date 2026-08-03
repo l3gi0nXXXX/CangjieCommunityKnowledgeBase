@@ -893,7 +893,7 @@ public func validateCkbReproEnvironmentLock(lock: CkbReproEnvironmentLock,
     }
     if (lock.glmProvider == "" || lock.glmModel != "GLM-5.2" ||
         lock.modelFingerprint != "claude-code-glm-5.2" ||
-        !p6PublicHttpsUrl(lock.glmBaseUrl) ||
+        !p6PublicProviderUrl(lock.glmBaseUrl) ||
         !p6CredentialEnvName(lock.glmCredentialEnv)) {
         return p6Failure("environment_provider_identity_invalid")
     }
@@ -1167,8 +1167,9 @@ private func p6CredentialEnvName(value: String): Bool {
     true
 }
 
-private func p6PublicHttpsUrl(value: String): Bool {
-    value.startsWith("https://") && !value.contains("@") &&
+private func p6PublicProviderUrl(value: String): Bool {
+    (value.startsWith("http://") || value.startsWith("https://")) &&
+        !value.contains("@") &&
         !value.contains("localhost") && !value.contains("127.0.0.1")
 }
 
