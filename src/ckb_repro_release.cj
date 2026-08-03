@@ -3,6 +3,7 @@ package cangjie_community_knowledge_base
 import std.collection.{ArrayList, HashMap, HashSet}
 import std.env.getVariable
 import std.fs.{Directory, File, OpenMode, Path, canonicalize, exists, remove, rename}
+import std.io.StringReader
 import std.sort.*
 import stdx.crypto.digest.SHA256
 import stdx.encoding.json.*
@@ -82,6 +83,134 @@ public class CkbLogicalSnapshotExportProofs {
     public init() {}
 }
 
+public class CkbPortableLogicalProofBuildResult {
+    public var ok: Bool = false
+    public var diagnostic: String = "portable_logical_proof_not_built"
+    public var canonicalJson: String = ""
+    public init() {}
+}
+
+public func buildCkbPortableLogicalProof(store: FileKnowledgeStore,
+    buildProof: CkbReproBuildProof, vectorProof: CkbPortableVectorProof,
+    cleanManifestBytes: Array<UInt8>, pathContext: CkbPortablePathContext):
+    CkbPortableLogicalProofBuildResult {
+    let out = CkbPortableLogicalProofBuildResult()
+    if (!buildProof.logicalReady || buildProof.diagnostic != "ok" ||
+        buildProof.vectorState != "DEGRADED" || buildProof.vectorCount != 0 ||
+        buildProof.preservationHash != ckbReproBuildPreservationHash(buildProof) ||
+        vectorProof.candidateVersion != buildProof.candidateVersion ||
+        vectorProof.p4PortableProofHash != buildProof.preservationHash ||
+        vectorProof.count != ckbReproReleaseRecordCount() ||
+        vectorProof.dimension != 1024) {
+        out.diagnostic = "portable_logical_proof_identity_mismatch"; return out
+    }
+    let snapshot = store.loadActiveSnapshot()
+    let metadata = store.loadMetadataStatus()
+    let binding = validateCkbPortableVectorCandidateBinding(snapshot, metadata,
+        buildProof.candidateVersion, vectorProof.collection, vectorProof.count,
+        vectorProof.dimension)
+    if (!binding.ok || snapshot.activeVersion != buildProof.candidateVersion) {
+        out.diagnostic = "portable_logical_proof_vector_binding_invalid"; return out
+    }
+    let clean = validateCkbPortableCleanManifest(cleanManifestBytes, snapshot,
+        buildProof.candidateVersion)
+    if (!clean[0].ok) { out.diagnostic = clean[0].diagnostic; return out }
+    let visible = CkbStudentVisiblePathInput()
+    for (record in snapshot.rawRecords) { visible.rawRecords.add(record) }
+    for (record in snapshot.normalizedRecords) { visible.normalizedRecords.add(record) }
+    for (record in snapshot.activeIndex) { visible.activeRecords.add(record) }
+    let paths = scanCkbStudentVisiblePaths(visible, pathContext)
+    if (!paths.ready) { out.diagnostic = paths.diagnostic; return out }
+    let pointerHash = ckbActiveSnapshotPointerIdentityHash(
+        store.loadActiveSnapshotPointer())
+    if (!ckbLogicalSnapshotHashValid(pointerHash)) {
+        out.diagnostic = "portable_logical_proof_pointer_invalid"; return out
+    }
+    out.canonicalJson = "{\"sourceState\":\"${CkbLogicalSnapshotSourceStates.PORTABLE_VECTOR_CANDIDATE}\"," +
+        "\"portableKnowledgeVersion\":\"${buildProof.candidateVersion}\"," +
+        "\"p4PortableProofHash\":\"${buildProof.preservationHash}\"," +
+        "\"pathMachineFindingCount\":0,\"pathUnmappedFindingCount\":0," +
+        "\"contaminationProofHash\":\"${clean[1]}\"," +
+        "\"activePointerHash\":\"${pointerHash}\"}"
+    out.ok = true; out.diagnostic = "ok"; out
+}
+
+public func validateCkbPortableCleanManifest(bytes: Array<UInt8>,
+    snapshot: ActiveSnapshot, version: String): (CkbReproContractResult, String) {
+    let text = try { String.fromUtf8(bytes) } catch (_: Exception) {
+        return (ckbReleaseCliContractFailure("invalid_response_encoding"), "")
+    }
+    try {
+        let object = JsonValue.fromStr(text).asObject()
+        if (object.size() != 16 ||
+            ckbReleaseRequiredString(object, "schemaVersion") != "ckb-clean-candidate-v1" ||
+            !ckbReleaseRequiredBool(object, "ok") ||
+            ckbReleaseRequiredString(object, "versionHash") != benchmarkGapSha256(version) ||
+            ckbReleaseRequiredInt(object, "rawCount") != snapshot.rawRecords.size ||
+            ckbReleaseRequiredInt(object, "normalizedCount") != snapshot.normalizedRecords.size ||
+            ckbReleaseRequiredInt(object, "activeCount") != snapshot.activeIndex.size) {
+            return (ckbReleaseCliContractFailure("portable_clean_manifest_invalid"), "")
+        }
+        let consistency = ckbCleanCandidateConsistencyDiagnostic(
+            snapshot.rawRecords, snapshot.normalizedRecords, snapshot.activeIndex, version)
+        if (!consistency.ok || ckbReleaseRequiredString(object,
+            "candidateChecksum") != consistency.candidateChecksum) {
+            return (ckbReleaseCliContractFailure("portable_clean_manifest_mismatch"), "")
+        }
+        for (key in ["authorityHash", "auditEvidenceHash", "immutableManifestHash",
+            "evidenceHash"]) {
+            if (!ckbLogicalSnapshotHashValid(ckbReleaseRequiredString(object, key))) {
+                return (ckbReleaseCliContractFailure("portable_clean_manifest_invalid"), "")
+            }
+        }
+        for (key in ["materializationManifestEvidenceHash", "rawEvidenceHash",
+            "normalizedEvidenceHash"]) {
+            if (!ckbReleaseBareHashValid(ckbReleaseRequiredString(object, key))) {
+                return (ckbReleaseCliContractFailure("portable_clean_manifest_invalid"), "")
+            }
+        }
+        if (ckbReleaseRequiredInt(object, "historicalRemoved") < 0 ||
+            ckbReleaseRequiredInt(object, "batchCount") <= 0) {
+            return (ckbReleaseCliContractFailure("portable_clean_manifest_invalid"), "")
+        }
+        let body = "{\"schemaVersion\":\"ckb-clean-candidate-v1\",\"ok\":true," +
+            "\"versionHash\":\"${ckbReleaseRequiredString(object, "versionHash")}\"," +
+            "\"rawCount\":${ckbReleaseRequiredInt(object, "rawCount")}," +
+            "\"normalizedCount\":${ckbReleaseRequiredInt(object, "normalizedCount")}," +
+            "\"activeCount\":${ckbReleaseRequiredInt(object, "activeCount")}," +
+            "\"historicalRemoved\":${ckbReleaseRequiredInt(object, "historicalRemoved")}," +
+            "\"candidateChecksum\":\"${ckbReleaseRequiredString(object, "candidateChecksum")}\"," +
+            "\"authorityHash\":\"${ckbReleaseRequiredString(object, "authorityHash")}\"," +
+            "\"auditEvidenceHash\":\"${ckbReleaseRequiredString(object, "auditEvidenceHash")}\"," +
+            "\"materializationManifestEvidenceHash\":\"${ckbReleaseRequiredString(object, "materializationManifestEvidenceHash")}\"," +
+            "\"immutableManifestHash\":\"${ckbReleaseRequiredString(object, "immutableManifestHash")}\"," +
+            "\"rawEvidenceHash\":\"${ckbReleaseRequiredString(object, "rawEvidenceHash")}\"," +
+            "\"normalizedEvidenceHash\":\"${ckbReleaseRequiredString(object, "normalizedEvidenceHash")}\"," +
+            "\"batchCount\":${ckbReleaseRequiredInt(object, "batchCount")}"
+        let evidenceHash = benchmarkGapSha256(body + "}")
+        if (ckbReleaseRequiredString(object, "evidenceHash") != evidenceHash ||
+            text != body + ",\"evidenceHash\":\"${evidenceHash}\"}\n") {
+            return (ckbReleaseCliContractFailure(
+                "portable_clean_manifest_noncanonical"), "")
+        }
+        let success = CkbReproContractResult()
+        success.ok = true; success.diagnostic = "ok"
+        return (success, benchmarkGapSha256(text))
+    } catch (_: Exception) {
+        return (ckbReleaseCliContractFailure("malformed_json"), "")
+    }
+}
+
+private func ckbReleaseBareHashValid(value: String): Bool {
+    if (value.toRuneArray().size != 64) { return false }
+    for (rune in value.toRuneArray()) {
+        if (!((rune >= r'0' && rune <= r'9') ||
+            (rune >= r'a' && rune <= r'f') ||
+            (rune >= r'A' && rune <= r'F'))) { return false }
+    }
+    true
+}
+
 public class CkbReleasePathPolicy {
     public var worktreeRoot: String = ""
     public var productionStoreRoot: String = ""
@@ -153,7 +282,7 @@ public interface CkbReleaseArchiveBackend {
 }
 
 public class CkbReleaseArchiveLimits {
-    public var maxEntries: Int64 = 128
+    public var maxEntries: Int64 = 16384
     public var maxEntryBytes: Int64 = 67108864
     public var maxTotalBytes: Int64 = 536870912
     public init() {}
@@ -190,6 +319,14 @@ public class CkbLogicalSnapshotResult {
     public init() {}
 }
 
+private class CkbLogicalNormalizedScan {
+    var ok: Bool = false
+    var diagnostic: String = "logical_snapshot_normalized_scan_failed"
+    var count: Int64 = 0
+    var checksum: String = ""
+    init() {}
+}
+
 // Thin CLI contract used by main; archive/proof loading remains behind the
 // production context so tests never need a real store or archive tool.
 public class CkbReleaseCliOptions {
@@ -197,6 +334,8 @@ public class CkbReleaseCliOptions {
     public var storeRoot: String = ""
     public var logicalProof: String = ""
     public var vectorProof: String = ""
+    public var buildProof: String = ""
+    public var cleanManifest: String = ""
     public var output: String = ""
     public var archive: String = ""
     public var targetRoot: String = ""
@@ -227,10 +366,11 @@ public interface CkbReleaseCliAdapter {
 public func parseCkbReleaseCliOptions(args: Array<String>): CkbReleaseCliOptions {
     let out = CkbReleaseCliOptions()
     if (args.size == 0 || (args[0] != "ckb-release-export" &&
-        args[0] != "ckb-release-import")) {
+        args[0] != "ckb-release-import" && args[0] != "ckb-logical-proof")) {
         out.diagnostic = "release_command_required"; return out
     }
-    out.mode = if (args[0] == "ckb-release-export") { "export" } else { "import" }
+    out.mode = if (args[0] == "ckb-release-export") { "export" }
+        else if (args[0] == "ckb-logical-proof") { "proof" } else { "import" }
     let seen = HashSet<String>()
     var i: Int64 = 1
     while (i < args.size) {
@@ -251,6 +391,8 @@ public func parseCkbReleaseCliOptions(args: Array<String>): CkbReleaseCliOptions
         if (arg == "--store-root") { out.storeRoot = value }
         else if (arg == "--logical-proof") { out.logicalProof = value }
         else if (arg == "--vector-proof") { out.vectorProof = value }
+        else if (arg == "--build-proof") { out.buildProof = value }
+        else if (arg == "--clean-manifest") { out.cleanManifest = value }
         else if (arg == "--output") { out.output = value }
         else if (arg == "--archive") { out.archive = value }
         else if (arg == "--target-root") { out.targetRoot = value }
@@ -263,6 +405,10 @@ public func validateCkbReleaseCliOptions(out: CkbReleaseCliOptions): String {
     for (pair in if (out.mode == "export") {
         [("--store-root", out.storeRoot), ("--logical-proof", out.logicalProof),
          ("--vector-proof", out.vectorProof), ("--output", out.output)]
+    } else if (out.mode == "proof") {
+        [("--store-root", out.storeRoot), ("--build-proof", out.buildProof),
+         ("--vector-proof", out.vectorProof),
+         ("--clean-manifest", out.cleanManifest), ("--output", out.output)]
     } else { [("--archive", out.archive), ("--target-root", out.targetRoot)] }) {
         if (pair[1] == "") { return "required_argument_missing:${pair[0]}" }
     }
@@ -300,7 +446,9 @@ public func ckbDefaultReleasePathPolicy(
     options: CkbReleaseCliOptions): CkbReleasePathPolicy {
     let policy = CkbReleasePathPolicy()
     policy.worktreeRoot = ckbReleaseGitWorktreeRoot()
-    let production = if (options.mode == "export") { options.storeRoot }
+    let production = if (options.mode == "export" || options.mode == "proof") {
+        options.storeRoot
+    }
         else if (policy.worktreeRoot == "") { "" }
         else { Path(policy.worktreeRoot).join("target/ckb-data").toString() }
     policy.productionStoreRoot = ckbReleaseCanonicalPolicyPath(production)
@@ -350,7 +498,7 @@ public class CkbPortableReleaseArchiveBackend <: CkbReleaseArchiveBackend {
         values: ArrayList<CkbReleaseArchivePayload>): CkbReleaseArchiveOperation {
         let result = CkbReleaseArchiveOperation()
         try {
-            if (values.size > 128) { throw Exception("archive_count") }
+            if (values.size > 16384) { throw Exception("archive_count") }
             var total: Int64 = 16; let seen = HashSet<String>()
             for (value in values) {
                 let pathSize = value.path.toArray().size
@@ -451,7 +599,7 @@ public class CkbPortableReleaseArchiveBackend <: CkbReleaseArchiveBackend {
         values: ArrayList<CkbReleaseArchivePayload>): CkbReleaseArchiveOperation {
         let result = CkbReleaseArchiveOperation()
         try {
-            if (values.size > 128) { throw Exception("archive_count") }
+            if (values.size > 16384) { throw Exception("archive_count") }
             var total: Int64 = 16; let seen = HashSet<String>()
             for (value in values) {
                 let pathSize = value.path.toArray().size
@@ -592,12 +740,15 @@ public class CkbPortableReleaseArchiveBackend <: CkbReleaseArchiveBackend {
 public class CkbReleaseProductionAdapter <: CkbReleaseCliAdapter {
     private let policy: CkbReleasePathPolicy
     private let backend: CkbReleaseArchiveBackend
+    private let pathContext: CkbPortablePathContext
     public init(policy: CkbReleasePathPolicy,
-        backend!: CkbReleaseArchiveBackend = CkbPortableReleaseArchiveBackend()) {
-        this.policy = policy; this.backend = backend
+        backend!: CkbReleaseArchiveBackend = CkbPortableReleaseArchiveBackend(),
+        pathContext!: CkbPortablePathContext = CkbPortablePathContext()) {
+        this.policy = policy; this.backend = backend; this.pathContext = pathContext
     }
     public func execute(options: CkbReleaseCliOptions): CkbReleaseCliOperationResult {
         let out = CkbReleaseCliOperationResult()
+        if (options.mode == "proof") { return this.buildLogicalProof(options) }
         let result = if (options.mode == "export") {
             let loaded = loadCkbLogicalSnapshotCliProofs(
                 options.logicalProof, options.vectorProof)
@@ -611,6 +762,38 @@ public class CkbReleaseProductionAdapter <: CkbReleaseCliAdapter {
         out.ok = result.ok; out.diagnostic = result.diagnostic
         out.summary = "version=${result.activeVersion} raw=${result.rawCount} " +
             "normalized=${result.normalizedCount} vector=${result.vectorCount}"
+        out
+    }
+
+    private func buildLogicalProof(options: CkbReleaseCliOptions):
+        CkbReleaseCliOperationResult {
+        let out = CkbReleaseCliOperationResult()
+        let buildRead = ckbReleaseReadBoundedUtf8(options.buildProof)
+        let vectorRead = ckbReleaseReadBoundedUtf8(options.vectorProof)
+        let cleanRead = ckbReleaseReadBoundedUtf8(options.cleanManifest)
+        if (buildRead[0] != "ok" || vectorRead[0] != "ok" ||
+            cleanRead[0] != "ok") {
+            out.diagnostic = if (buildRead[0] != "ok") { buildRead[0] }
+                else if (vectorRead[0] != "ok") { vectorRead[0] }
+                else { cleanRead[0] }
+            return out
+        }
+        let build = parseCkbReproBuildProof(buildRead[1].toArray())
+        let vector = parseCkbPortableVectorProofBytes(vectorRead[1].toArray())
+        if (!build[0].ok || !vector[0].ok) {
+            out.diagnostic = if (!build[0].ok) { build[0].diagnostic }
+                else { vector[0].diagnostic }
+            return out
+        }
+        let proof = buildCkbPortableLogicalProof(
+            FileKnowledgeStore(options.storeRoot), build[1], vector[1],
+            cleanRead[1].toArray(), this.pathContext)
+        if (!proof.ok) { out.diagnostic = proof.diagnostic; return out }
+        let write = ckbP3WriteNewFile(options.output, proof.canonicalJson,
+            this.policy)
+        if (write != "ok") { out.diagnostic = write; return out }
+        out.ok = true; out.diagnostic = "ok"
+        out.summary = "version=${build[1].candidateVersion} logicalProof=ready"
         out
     }
 }
@@ -756,6 +939,8 @@ public func renderCkbReleaseCliJson(result: CkbReleaseCliOperationResult): Strin
 private func ckbReleaseCliAllowed(mode: String, arg: String): Bool {
     if (mode == "export") { return ["--store-root", "--logical-proof",
         "--vector-proof", "--output"].contains(arg) }
+    if (mode == "proof") { return ["--store-root", "--build-proof",
+        "--vector-proof", "--clean-manifest", "--output"].contains(arg) }
     ["--archive", "--target-root"].contains(arg)
 }
 
@@ -848,7 +1033,7 @@ private func ckbReleaseArchiveReadHeader(file: File,
         throw Exception("archive_magic")
     }
     let count = ckbReleaseArchiveReadInt(file, backend)
-    if (count < 0 || count > 128) { throw Exception("archive_count") }
+    if (count < 0 || count > 16384) { throw Exception("archive_count") }
     count
 }
 
@@ -1324,6 +1509,53 @@ public func inspectCkbReleaseArchive(backend: CkbReleaseArchiveBackend,
     result
 }
 
+private func ckbLogicalSnapshotScanNormalized(store: FileKnowledgeStore,
+    pointer: CkbActiveSnapshotPointer): CkbLogicalNormalizedScan {
+    let result = CkbLogicalNormalizedScan()
+    let path = Path(store.rootPath()).join(
+        "transactions/${pointer.txId}/normalized/records.ckb")
+    let identities = ArrayList<String>()
+    var lineNumber: Int64 = 0
+    try {
+        try (file = File(path, OpenMode.Read)) {
+            let reader = StringReader(file)
+            while (true) {
+                let line = if (let Some(value) <- reader.readln()) {
+                    value
+                } else { break }
+                if (line == "") { continue }
+                lineNumber += 1
+                let parsed = store.parseNormalizedRecordLineForStreaming(
+                    line, lineNumber)
+                if (parsed[0] != "ok") {
+                    result.diagnostic = parsed[0]
+                    return result
+                }
+                if (let Some(record) <- parsed[1]) {
+                    identities.add(ckbCertifiedNormalizedRecordSeed(record))
+                } else {
+                    result.diagnostic = "normalized_record_line_invalid"
+                    return result
+                }
+            }
+        }
+    } catch (_: Exception) {
+        result.diagnostic = "invalid_response_encoding"
+        return result
+    }
+    let ordered = identities.toArray()
+    sort(ordered)
+    let seed = StringBuilder()
+    for (identity in ordered) {
+        seed.append("${identity.toArray().size}:${identity}")
+    }
+    result.ok = true
+    result.diagnostic = "ok"
+    result.count = lineNumber
+    result.checksum = benchmarkGapSha256(seed.toString())
+    result
+}
+
 public func exportCkbLogicalSnapshot(store: FileKnowledgeStore,
     proofs: CkbLogicalSnapshotExportProofs, outputPath: String,
     backend: CkbReleaseArchiveBackend,
@@ -1359,21 +1591,16 @@ public func exportCkbLogicalSnapshot(store: FileKnowledgeStore,
         result.diagnostic = "logical_snapshot_real_p3_proof_required"
         return result
     }
-    let snapshot = store.loadActiveSnapshot()
     let metadata = store.loadMetadataStatus()
-    if (!snapshot.valid || !metadata.valid) {
-        result.diagnostic = if (!snapshot.valid) {
-            snapshot.diagnostic
-        } else { metadata.diagnostic }
+    if (!metadata.valid) {
+        result.diagnostic = metadata.diagnostic
         return result
     }
-    if (snapshot.activeIndex.size == 0) {
+    if (metadata.indexCount == 0) {
         result.diagnostic = "logical_snapshot_empty_store"
         return result
     }
-    if (snapshot.activeVersion != proofs.portableKnowledgeVersion ||
-        metadata.activeVersion != proofs.portableKnowledgeVersion ||
-        snapshot.vectorActiveCollection != proofs.vectorCollection ||
+    if (metadata.activeVersion != proofs.portableKnowledgeVersion ||
         metadata.vectorActiveCollection != proofs.vectorCollection ||
         metadata.vectorState != EmbeddingProviderState.READY ||
         metadata.vectorIndexCount != proofs.vectorCount ||
@@ -1381,14 +1608,15 @@ public func exportCkbLogicalSnapshot(store: FileKnowledgeStore,
         result.diagnostic = "logical_snapshot_vector_binding_mismatch"
         return result
     }
-    let materialized = KnowledgeBase(FakeClock(0))
-    if (!materialized.restoreActiveSnapshot(snapshot)) {
-        result.diagnostic = materialized.status().restoreDiagnostic
+    let normalizedScan = ckbLogicalSnapshotScanNormalized(store, start)
+    if (!normalizedScan.ok) {
+        result.diagnostic = normalizedScan.diagnostic
         return result
     }
-    let graph = materialized.activeGraphBuild()
-    if (!graph.ok) {
-        result.diagnostic = graph.diagnostic
+    if (normalizedScan.count != metadata.normalizedCount ||
+        metadata.rawCount <= 0 || metadata.indexCount <= 0 ||
+        metadata.graphNodeCount < 0 || metadata.graphEdgeCount < 0) {
+        result.diagnostic = "logical_snapshot_metadata_count_mismatch"
         return result
     }
     let payloads = ckbLogicalSnapshotStorePayloads(store, start)
@@ -1399,20 +1627,19 @@ public func exportCkbLogicalSnapshot(store: FileKnowledgeStore,
     let manifest = CkbLogicalSnapshotManifest()
     manifest.schemaVersion = "ckb-logical-snapshot-v1"
     manifest.sourceState = CkbLogicalSnapshotSourceStates.PORTABLE_VECTOR_ARTIFACT
-    manifest.portableKnowledgeVersion = snapshot.activeVersion
+    manifest.portableKnowledgeVersion = metadata.activeVersion
     manifest.p4PortableProofHash = proofs.p4PortableProofHash
     manifest.p3VectorProofHash = proofs.p3VectorProofHash
     manifest.vectorState = proofs.vectorState
     manifest.vectorCollection = proofs.vectorCollection
     manifest.vectorCount = proofs.vectorCount
     manifest.vectorDimension = proofs.vectorDimension
-    manifest.rawCount = snapshot.rawRecords.size
-    manifest.normalizedCount = snapshot.normalizedRecords.size
-    manifest.normalizedChecksum = ckbCertifiedNormalizedRecordsChecksum(
-        snapshot.normalizedRecords)
-    manifest.indexCount = snapshot.activeIndex.size
-    manifest.graphNodeCount = graph.nodes.size
-    manifest.graphEdgeCount = graph.edges.size
+    manifest.rawCount = metadata.rawCount
+    manifest.normalizedCount = metadata.normalizedCount
+    manifest.normalizedChecksum = normalizedScan.checksum
+    manifest.indexCount = metadata.indexCount
+    manifest.graphNodeCount = metadata.graphNodeCount
+    manifest.graphEdgeCount = metadata.graphEdgeCount
     manifest.activePointerHash = startHash
     manifest.contaminationProofHash = proofs.contaminationProofHash
     for (payload in payloads[1]) {
@@ -1488,8 +1715,7 @@ public func exportCkbLogicalSnapshot(store: FileKnowledgeStore,
         "real_p3_bound"
     } else { "fake_proof_dependency" }
     result.realP3Bound = proofs.p3ProofReal
-    result.normalizedChecksum = ckbCertifiedNormalizedRecordsChecksum(
-        snapshot.normalizedRecords)
+    result.normalizedChecksum = normalizedScan.checksum
     result
 }
 
@@ -1514,7 +1740,6 @@ public func importCkbLogicalSnapshot(archivePath: String, targetRoot: String,
     let targetTemporary = ckbLogicalSnapshotTemporaryPath(
         targetRoot, inspected.manifest.manifestHash, "target")
     var ownsStaging: Bool = false
-    var ownsTargetTemporary: Bool = false
     try {
         if (exists(Path(staging)) || exists(Path(targetTemporary))) {
             result.diagnostic = "logical_snapshot_temporary_path_exists"
@@ -1530,13 +1755,8 @@ public func importCkbLogicalSnapshot(archivePath: String, targetRoot: String,
         }
         let sourceStore = FileKnowledgeStore(staging)
         let sourcePointer = sourceStore.loadActiveSnapshotPointer()
-        let sourceSnapshot = sourceStore.loadActiveSnapshot()
         if (!sourcePointer.valid) {
             result.diagnostic = "logical_snapshot_staged_pointer_invalid:${sourcePointer.diagnostic}"
-            return result
-        }
-        if (!sourceSnapshot.valid) {
-            result.diagnostic = "logical_snapshot_staged_payload_invalid"
             return result
         }
         if (ckbActiveSnapshotPointerIdentityHash(sourcePointer) !=
@@ -1544,54 +1764,32 @@ public func importCkbLogicalSnapshot(archivePath: String, targetRoot: String,
             result.diagnostic = "logical_snapshot_staged_pointer_hash_mismatch"
             return result
         }
-        if (sourceSnapshot.activeVersion !=
-            inspected.manifest.portableKnowledgeVersion) {
-            result.diagnostic = "logical_snapshot_staged_version_mismatch"
-            return result
-        }
-        let targetStore = FileKnowledgeStore(targetTemporary)
-        ownsTargetTemporary = true
-        let restored = targetStore.restoreActiveSnapshotBackup(staging)
-        if (!restored.ok) {
-            result.diagnostic = restored.diagnostic
-            return result
-        }
-        let reloaded = targetStore.loadActiveSnapshot()
-        let metadata = targetStore.loadMetadataStatus()
-        if (!reloaded.valid || !metadata.valid ||
-            reloaded.activeVersion != inspected.manifest.portableKnowledgeVersion ||
-            reloaded.rawRecords.size != inspected.manifest.rawCount ||
-            reloaded.normalizedRecords.size != inspected.manifest.normalizedCount ||
-            ckbCertifiedNormalizedRecordsChecksum(reloaded.normalizedRecords) !=
-                inspected.manifest.normalizedChecksum ||
-            reloaded.activeIndex.size != inspected.manifest.indexCount ||
+        let metadata = sourceStore.loadMetadataStatus()
+        let normalizedScan = ckbLogicalSnapshotScanNormalized(
+            sourceStore, sourcePointer)
+        if (!metadata.valid || !normalizedScan.ok ||
+            metadata.activeVersion != inspected.manifest.portableKnowledgeVersion ||
+            metadata.rawCount != inspected.manifest.rawCount ||
+            metadata.normalizedCount != inspected.manifest.normalizedCount ||
+            normalizedScan.count != inspected.manifest.normalizedCount ||
+            normalizedScan.checksum != inspected.manifest.normalizedChecksum ||
+            metadata.indexCount != inspected.manifest.indexCount ||
             metadata.vectorActiveCollection !=
                 inspected.manifest.vectorCollection ||
             metadata.vectorIndexCount != inspected.manifest.vectorCount ||
-            metadata.vectorDimension != inspected.manifest.vectorDimension) {
+            metadata.vectorDimension != inspected.manifest.vectorDimension ||
+            metadata.graphNodeCount != inspected.manifest.graphNodeCount ||
+            metadata.graphEdgeCount != inspected.manifest.graphEdgeCount) {
             result.diagnostic = "logical_snapshot_restore_readback_mismatch"
             return result
         }
-        let kb = KnowledgeBase(FakeClock(0))
-        if (!kb.restoreActiveSnapshot(reloaded)) {
-            result.diagnostic = kb.status().restoreDiagnostic
-            return result
-        }
-        let graph = kb.activeGraphBuild()
-        if (!graph.ok ||
-            graph.nodes.size != inspected.manifest.graphNodeCount ||
-            graph.edges.size != inspected.manifest.graphEdgeCount) {
-            result.diagnostic = "logical_snapshot_graph_readback_mismatch"
-            return result
-        }
-        rename(targetTemporary, to: targetRoot, overwrite: false)
-        ownsTargetTemporary = false
+        rename(staging, to: targetRoot, overwrite: false)
+        ownsStaging = false
         ckbLogicalSnapshotFillResult(result, inspected.manifest)
         result.ok = true
         result.diagnostic = "ok"
         result.evidenceLevel = "imported_manifest"
-        result.normalizedChecksum = ckbCertifiedNormalizedRecordsChecksum(
-            reloaded.normalizedRecords)
+        result.normalizedChecksum = normalizedScan.checksum
     } catch (_: Exception) {
         if (result.diagnostic == "not_started") {
             result.diagnostic = "logical_snapshot_import_failed"
@@ -1599,9 +1797,6 @@ public func importCkbLogicalSnapshot(archivePath: String, targetRoot: String,
     } finally {
         if (ownsStaging && exists(Path(staging))) {
             try { remove(Path(staging), recursive: true) } catch (_: Exception) { () }
-        }
-        if (ownsTargetTemporary && exists(Path(targetTemporary))) {
-            try { remove(Path(targetTemporary), recursive: true) } catch (_: Exception) { () }
         }
     }
     result
@@ -1795,12 +1990,13 @@ private func ckbLogicalSnapshotManifestBody(
     }
     let ordered = rows.toArray()
     sort(ordered)
-    var assets = "["
+    let assets = StringBuilder()
+    assets.append("[")
     for (i in 0..ordered.size) {
-        if (i > 0) { assets += "," }
-        assets += ordered[i]
+        if (i > 0) { assets.append(",") }
+        assets.append(ordered[i])
     }
-    assets += "]"
+    assets.append("]")
     "{\"schemaVersion\":\"${ckbLogicalSnapshotJson(manifest.schemaVersion)}\"," +
         "\"sourceState\":\"${ckbLogicalSnapshotJson(manifest.sourceState)}\"," +
         "\"portableKnowledgeVersion\":\"${ckbLogicalSnapshotJson(manifest.portableKnowledgeVersion)}\"," +
@@ -1818,7 +2014,7 @@ private func ckbLogicalSnapshotManifestBody(
         "\"graphEdgeCount\":${manifest.graphEdgeCount}," +
         "\"activePointerHash\":\"${manifest.activePointerHash}\"," +
         "\"contaminationProofHash\":\"${manifest.contaminationProofHash}\"," +
-        "\"assets\":${assets}"
+        "\"assets\":${assets.toString()}"
 }
 
 private func ckbLogicalSnapshotProofDiagnostic(
@@ -1875,16 +2071,10 @@ private func ckbLogicalSnapshotStorePayloads(store: FileKnowledgeStore,
         return (ckbLogicalSnapshotFailure(
             "logical_snapshot_raw_directory_invalid"), payloads)
     }
-    for (entry in Directory.readFrom(rawRoot)) {
-        if (!entry.isRegular() || !entry.name.endsWith(".ckb") ||
-            !ckbLogicalSnapshotRelativePathValid(entry.name) ||
-            (try { canonicalize(entry.path).toString() } catch (_: Exception) {
-                ""
-            }) != canonicalRawRoot.join(entry.name).toString()) {
-            return (ckbLogicalSnapshotFailure(
-                "logical_snapshot_raw_entry_invalid"), payloads)
-        }
-        paths.add("${tx}/raw/${entry.name}")
+    let rawDiagnostic = ckbLogicalSnapshotCollectRawPaths(rawRoot,
+        canonicalRawRoot, "", tx, paths)
+    if (rawDiagnostic != "ok") {
+        return (ckbLogicalSnapshotFailure(rawDiagnostic), payloads)
     }
     let commitBytes = try {
         File.readFrom(Path(store.rootPath()).join("${tx}/COMMIT"))
@@ -1950,6 +2140,34 @@ private func ckbLogicalSnapshotStorePayloads(store: FileKnowledgeStore,
     success.ok = true
     success.diagnostic = "ok"
     (success, payloads)
+}
+
+func ckbLogicalSnapshotCollectRawPaths(current: Path,
+    canonicalRawRoot: Path, prefix: String, tx: String,
+    paths: ArrayList<String>): String {
+    for (entry in Directory.readFrom(current)) {
+        let relative = if (prefix == "") { entry.name }
+            else { "${prefix}/${entry.name}" }
+        if (!ckbLogicalSnapshotRelativePathValid(relative)) {
+            return "logical_snapshot_raw_entry_invalid"
+        }
+        let canonicalEntry = try {
+            canonicalize(entry.path).toString()
+        } catch (_: Exception) { "" }
+        if (canonicalEntry != canonicalRawRoot.join(relative).toString()) {
+            return "logical_snapshot_raw_entry_invalid"
+        }
+        if (entry.isDirectory()) {
+            let nested = ckbLogicalSnapshotCollectRawPaths(entry.path,
+                canonicalRawRoot, relative, tx, paths)
+            if (nested != "ok") { return nested }
+        } else if (entry.isRegular() && entry.name.endsWith(".ckb")) {
+            paths.add("${tx}/raw/${relative}")
+        } else {
+            return "logical_snapshot_raw_entry_invalid"
+        }
+    }
+    "ok"
 }
 
 private func ckbLogicalSnapshotNewPathDiagnostic(pathText: String,

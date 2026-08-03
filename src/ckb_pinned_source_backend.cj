@@ -116,19 +116,17 @@ public class CkbPinnedSourceMaterialBackend <:
     public func generate(entry: CkbReproSourceMaterialEntry): CkbReproBackendResult {
         let source = ckbPinnedSourceForMaterial(entry, this.sources)
         if (!this.lockValid || source[0] != "ok" ||
-            source[1].sourceType != "generated" ||
-            source[1].generatorId != "ckb-hash-manifest-v1" ||
-            source[1].generatorVersion != "1" ||
-            source[1].generatorSourceHash != benchmarkGapSha256(
-                "ckb-hash-manifest-v1|1|sorted-input-hashes")) {
+            source[1].sourceType != "generated") {
             return CkbReproBackendResult(false, "")
         }
         if (!ckbPinnedPrepareRoot(this.cacheRoot)) {
             return CkbReproBackendResult(false, "")
         }
-        let inputs = source[1].inputHashes.toArray(); sort(inputs)
-        var text = "# CKB pinned input hashes\n"
-        for (hash in inputs) { text += "${hash}\n" }
+        let generated = ckbPinnedGeneratedContent(source[1])
+        let text = match (generated) {
+            case Some(value) => value
+            case None => return CkbReproBackendResult(false, "")
+        }
         if (benchmarkGapSha256(text) != source[1].outputHash) {
             return CkbReproBackendResult(false, "")
         }
@@ -154,6 +152,19 @@ public class CkbPinnedSourceMaterialBackend <:
         }
         CkbPinnedSourceFileHandle(path, entry.canonicalIdentity)
     }
+}
+
+private func ckbPinnedGeneratedContent(source: CkbReproSourceLockEntry): ?String {
+    if (source.generatorId == "ckb-hash-manifest-v1" &&
+        source.generatorVersion == "1" &&
+        source.generatorSourceHash == benchmarkGapSha256(
+            "ckb-hash-manifest-v1|1|sorted-input-hashes")) {
+        let inputs = source.inputHashes.toArray(); sort(inputs)
+        var text = "# CKB pinned input hashes\n"
+        for (hash in inputs) { text += "${hash}\n" }
+        return Some(text)
+    }
+    ckbGenericKnowledgeAtomMaterialForSource(source)
 }
 
 private func ckbPinnedAcquireRepository(command: CkbPinnedSourceCommandExecutor,
@@ -307,9 +318,7 @@ private func ckbPinnedSourceForMaterial(entry: CkbReproSourceMaterialEntry,
     let expected = if (source.sourceType == "external_git") {
         source.fileHash
     } else { source.outputHash }
-    let relative = if (source.sourceType == "external_git") {
-        source.path
-    } else { source.outputPath }
+    let relative = ckbReproSourceAssemblyPath(source)
     if (entry.expectedHash != expected || entry.relativePath != relative) {
         return ("pinned_source_material_mismatch", CkbReproSourceLockEntry())
     }

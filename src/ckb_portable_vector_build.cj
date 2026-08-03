@@ -3,6 +3,8 @@ package cangjie_community_knowledge_base
 import std.collection.ArrayList
 import std.sort.*
 
+public func ckbReproReleaseRecordCount(): Int64 { 7817 }
+
 public class CkbPortableVectorBuildOptions {
     public var candidateVersion: String = ""
     public var p4PortableProofHash: String = ""
@@ -68,9 +70,22 @@ public class CkbPortableVectorProductionBackend <: CkbPortableVectorBuildBackend
 
     public func stagedRebuild(collection: String): CkbPortableVectorBuildEvidence {
         let evidence = CkbPortableVectorBuildEvidence()
-        let built = ckbRebuildIndex(this.kb, this.store,
+        let basePointer = this.store.loadActiveSnapshotPointer()
+        if (!basePointer.valid) {
+            evidence.diagnostic = "portable_vector_candidate_pointer_invalid"
+            return evidence
+        }
+        let basePointerHash = ckbActiveSnapshotPointerIdentityHash(basePointer)
+        let sourceSnapshot = this.store.loadActiveSnapshot()
+        if (!sourceSnapshot.valid || !this.kb.restoreActiveSnapshot(sourceSnapshot)) {
+            evidence.diagnostic = "portable_vector_candidate_restore_failed"
+            return evidence
+        }
+        // P3 builds vectors for the already frozen P4 active snapshot. The
+        // generic rebuild entry may promote an unrelated lifecycle candidate.
+        let built = this.kb.reconcileProductionVectorIndex(
             progressSink: NoopVectorBuildProgressSink(),
-            targetVectorCollection: collection, persistSnapshot: false,
+            targetVectorCollection: collection,
             deadlineAtMillis: this.deadlineAtMillis)
         if (!built.ok) {
             evidence.diagnostic = if (built.failedVersion == "") {
@@ -83,14 +98,16 @@ public class CkbPortableVectorProductionBackend <: CkbPortableVectorBuildBackend
             evidence.diagnostic = "portable_vector_collection_not_ready"
             return evidence
         }
-        let vectorBuild = this.kb.lastVectorIndexBuild()
-        if (!vectorBuild.vectorRecordsMaterialized ||
-            vectorBuild.vectorRecords.size != status.count) {
+        // Staged production builds intentionally do not retain 1024-dimensional
+        // vectors in process memory. Reconstruct the canonical payload fields
+        // from the exact active records that fed the successful staged build.
+        let snapshot = this.store.loadActiveSnapshot()
+        if (!snapshot.valid || snapshot.activeIndex.size != status.count) {
             evidence.diagnostic = "portable_vector_payload_evidence_unavailable"
             return evidence
         }
         let visible = CkbStudentVisiblePathInput()
-        for (record in vectorBuild.vectorRecords) { visible.vectorRecords.add(record) }
+        for (record in snapshot.activeIndex) { visible.activeRecords.add(record) }
         let scan = scanCkbStudentVisiblePaths(visible, this.pathContext)
         if (!scan.ready) {
             evidence.diagnostic = scan.diagnostic
@@ -101,7 +118,25 @@ public class CkbPortableVectorProductionBackend <: CkbPortableVectorBuildBackend
         evidence.dimension = status.dimension; evidence.distance = status.distance
         evidence.machinePathCount = 0
         evidence.payloadCanonicalHash =
-            ckbPortableVectorPayloadCanonicalHash(vectorBuild.vectorRecords)
+            ckbPortableVectorPayloadCanonicalHashFromNormalized(snapshot.activeIndex)
+        try {
+            this.kb.promoteVectorActiveCollection(collection)
+            this.kb.persistActiveSnapshotUsingVectorRecords(this.store,
+                ArrayList<VectorRecord>(), persistVectorFile: false,
+                deadlineAtMillis: this.deadlineAtMillis,
+                expectedBaseActivePointerHash: basePointerHash)
+        } catch (_: Exception) {
+            evidence.diagnostic = "portable_vector_candidate_binding_failed"
+            return evidence
+        }
+        let binding = validateCkbPortableVectorCandidateBinding(
+            this.store.loadActiveSnapshot(), this.store.loadMetadataStatus(),
+            sourceSnapshot.activeVersion, collection, status.count,
+            status.dimension)
+        if (!binding.ok) {
+            evidence.diagnostic = binding.diagnostic
+            return evidence
+        }
         evidence.ready = true; evidence.diagnostic = "ok"
         evidence
     }
@@ -109,6 +144,25 @@ public class CkbPortableVectorProductionBackend <: CkbPortableVectorBuildBackend
     public func deleteCollection(collection: String): Unit {
         _ = this.vectorStore.deleteCollection(collection)
     }
+}
+
+public func validateCkbPortableVectorCandidateBinding(snapshot: ActiveSnapshot,
+    metadata: StoreMetadataStatus, expectedVersion: String,
+    collection: String, count: Int64, dimension: Int64): CkbReproContractResult {
+    if (!snapshot.valid || !metadata.valid || collection == "" || count <= 0 ||
+        dimension <= 0 || expectedVersion == "" ||
+        snapshot.activeVersion != expectedVersion ||
+        snapshot.activeVersion != metadata.activeVersion ||
+        snapshot.vectorActiveCollection != collection ||
+        metadata.vectorActiveCollection != collection ||
+        metadata.vectorCollection != collection ||
+        metadata.vectorState != EmbeddingProviderState.READY ||
+        metadata.vectorIndexCount != count ||
+        metadata.vectorDimension != dimension) {
+        return ckbPortableVectorFailure(
+            "portable_vector_candidate_binding_invalid")
+    }
+    ckbPortableVectorSuccess()
 }
 
 public func ckbPortableVectorPayloadCanonicalHash(
@@ -122,6 +176,25 @@ public func ckbPortableVectorPayloadCanonicalHash(
             record.id, record.pointId, record.title, record.chunk,
             record.citation, record.metadata.path, record.metadata.sourceType,
             record.metadata.license, derivedText
+        ]))
+    }
+    let ordered = rows.toArray(); sort(ordered)
+    var body = "ckb-portable-vector-payload-v1|"
+    for (row in ordered) { body += "${row.toArray().size}:${row}" }
+    benchmarkGapSha256(body)
+}
+
+public func ckbPortableVectorPayloadCanonicalHashFromNormalized(
+    records: ArrayList<NormalizedRecord>): String {
+    let rows = ArrayList<String>()
+    for (record in records) {
+        let derived = record.metadata.derivedFrom.toArray(); sort(derived)
+        var derivedText = ""
+        for (value in derived) { derivedText += "${value.toArray().size}:${value}" }
+        rows.add(ckbPortableVectorCanonicalFields([
+            record.sourceId, ckbVectorPointId(record), record.title,
+            record.chunk, record.citation, record.metadata.path,
+            record.metadata.sourceType, record.metadata.license, derivedText
         ]))
     }
     let ordered = rows.toArray(); sort(ordered)
@@ -251,7 +324,7 @@ public func buildCkbPortableReferenceVectors(
         result.diagnostic = "portable_vector_collection_mismatch"
         return result
     }
-    if (evidence.count != 7978) {
+    if (evidence.count != ckbReproReleaseRecordCount()) {
         backend.deleteCollection(collection)
         result.diagnostic = "portable_vector_count_mismatch"
         return result

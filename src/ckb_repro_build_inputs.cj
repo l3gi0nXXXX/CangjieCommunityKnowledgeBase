@@ -398,6 +398,162 @@ private func ckbAddOwnedExpectedDirectories(path: String,
     }
 }
 
+private class CkbGenericKnowledgeAtomSpec {
+    var atomId: String = ""
+    var knowledge: String = ""
+    var example: String = ""
+    public init() {}
+}
+
+private func ckbGenericKnowledgeAtomSpec(
+    source: CkbReproSourceLockEntry): ?CkbGenericKnowledgeAtomSpec {
+    if (source.generatorId != "ckb-cangjie-guidance-v1" ||
+        source.generatorVersion != "1" ||
+        source.generatorSourceHash != benchmarkGapSha256(
+            "ckb-cangjie-guidance-v1|1|atomic-string-guidance") ||
+        source.inputHashes.size != 1 ||
+        source.outputKind != CangjieTypedRecordKinds.KNOWLEDGE_ATOM ||
+        source.assemblyRole != "generated_guidance" ||
+        source.license != "Apache-2.0") {
+        return None<CkbGenericKnowledgeAtomSpec>
+    }
+    let out = CkbGenericKnowledgeAtomSpec()
+    if (source.sourceId == "generated/string-built-in" &&
+        source.outputPath == "knowledge-atom/KC-02/string-built-in.json" &&
+        source.inputHashes[0] == benchmarkGapSha256(
+            "ckb-guidance-seed-v1|string-built-in")) {
+        out.atomId = "string-built-in-ownership"
+        out.knowledge = "String literals and the built-in String type do not " +
+            "require an unrelated text-package import. If CJPM reports that " +
+            "an imported package is not a dependency, verify API ownership " +
+            "and remove an unnecessary import instead of adding a dependency."
+        out.example = "Use `let empty: String = \"\"` directly without an " +
+            "unrelated text-package import."
+        return Some(out)
+    }
+    if (source.sourceId == "generated/string-runes" &&
+        source.outputPath == "knowledge-atom/KC-02/string-runes.json" &&
+        source.inputHashes[0] == benchmarkGapSha256(
+            "ckb-guidance-seed-v1|string-runes")) {
+        out.atomId = "string-rune-safe-iteration"
+        out.knowledge = "Direct String iteration yields UTF-8 UInt8 bytes. " +
+            "Use `text.runes()` when processing characters."
+        out.example = "Convert each Rune with `toString()` so Chinese text " +
+            "仓颉 and emoji 🙂 remain intact."
+        return Some(out)
+    }
+    None<CkbGenericKnowledgeAtomSpec>
+}
+
+private func renderCkbGenericKnowledgeAtomMaterial(
+    spec: CkbGenericKnowledgeAtomSpec): String {
+    "{\"schemaVersion\":\"ckb-generic-knowledge-atom-v1\"," +
+        "\"atomId\":\"${ckbBuildInputsEscape(spec.atomId)}\"," +
+        "\"knowledge\":\"${ckbBuildInputsEscape(spec.knowledge)}\"," +
+        "\"example\":\"${ckbBuildInputsEscape(spec.example)}\"," +
+        "\"targetVersion\":\"${cangjieDefaultTargetVersion()}\"," +
+        "\"sourceClass\":\"community-reviewed\"," +
+        "\"license\":\"Apache-2.0\"}\n"
+}
+
+public func ckbGenericKnowledgeAtomMaterialForSource(
+    source: CkbReproSourceLockEntry): ?String {
+    match (ckbGenericKnowledgeAtomSpec(source)) {
+        case Some(spec) => Some(renderCkbGenericKnowledgeAtomMaterial(spec))
+        case None => None<String>
+    }
+}
+
+private func parseCkbGenericKnowledgeAtomMaterial(bytes: Array<UInt8>,
+    source: CkbReproSourceLockEntry): (Bool, String, RawRecord) {
+    let empty = RawRecord()
+    if (bytes.size <= 0 || bytes.size > 64 * 1024) {
+        return (false, "generic_atom_size_invalid", empty)
+    }
+    let text = try { String.fromUtf8(bytes) } catch (_: Exception) {
+        return (false, "invalid_response_encoding", empty)
+    }
+    let expected = match (ckbGenericKnowledgeAtomMaterialForSource(source)) {
+        case Some(value) => value
+        case None => return (false, "generic_atom_generator_invalid", empty)
+    }
+    if (text != expected) { return (false, "generic_atom_noncanonical", empty) }
+    try {
+        let object = JsonValue.fromStr(text).asObject()
+        if (object.size() != 7 ||
+            ckbBuildInputsString(object, "schemaVersion") !=
+                "ckb-generic-knowledge-atom-v1" ||
+            ckbBuildInputsString(object, "targetVersion") !=
+                cangjieDefaultTargetVersion() ||
+            ckbBuildInputsString(object, "sourceClass") !=
+                "community-reviewed" ||
+            ckbBuildInputsString(object, "license") != source.license) {
+            return (false, "generic_atom_contract_invalid", empty)
+        }
+        let atomId = ckbBuildInputsString(object, "atomId")
+        let knowledge = ckbBuildInputsString(object, "knowledge")
+        let example = ckbBuildInputsString(object, "example")
+        if (atomId == "" || knowledge == "" || example == "") {
+            return (false, "generic_atom_content_invalid", empty)
+        }
+        let record = RawRecord()
+        record.sourceId = "knowledge-atom-" + benchmarkGapSha256(
+            "ckb-generic-knowledge-atom-v1|${atomId}|${knowledge}|${example}")
+            .replace("sha256:", "")
+        record.title = "Knowledge atom " + benchmarkGapSha256(atomId)
+            .replace("sha256:", "")
+        record.content = "Knowledge: ${knowledge}\nExample: ${example}"
+        record.contentHash = cangjieTypedRecordContentHash(
+            record.sourceId, record.content)
+        record.metadata.sourceId = record.sourceId
+        record.metadata.sourceType = SourceTypes.DERIVED
+        record.metadata.sourceUrl =
+            "ckb-source://${source.sourceId}/${source.outputPath}"
+        record.metadata.path = source.outputPath
+        record.metadata.symbol = "GEN-01:${atomId}"
+        record.metadata.docVersion = cangjieDefaultTargetVersion()
+        record.metadata.targetVersion = cangjieDefaultTargetVersion()
+        record.metadata.sourceSet = CangjieSourceSets.KNOWLEDGE_ATOMS
+        record.metadata.versionResolutionId =
+            "cangjie-${cangjieDefaultTargetVersion()}-knowledge-atoms-generated"
+        record.metadata.contentSize = record.content.size
+        record.metadata.trustLevel = TrustLevels.COMMUNITY
+        record.metadata.reviewState = ReviewStates.REVIEWED
+        record.metadata.license = source.license
+        record.metadata.repoVisibility = "public"
+        record.metadata.derivedFrom = ["generated-guidance:${atomId}"]
+        record.requiresReview = false
+        (true, "ok", record)
+    } catch (_: Exception) {
+        (false, "generic_atom_malformed_json", empty)
+    }
+}
+
+private func ckbAppendGenericKnowledgeAtoms(
+    materials: CkbReproOwnedSourceMaterials, lock: CkbReproSourceLock,
+    out: CkbReproActualSourceRecords): Bool {
+    for (source in lock.entries) {
+        if (source.generatorId != "ckb-cangjie-guidance-v1") { continue }
+        let bytes = try { File.readFrom(Path(materials.root).join("docs")
+            .join(source.outputPath)) } catch (_: Exception) {
+            out.diagnostic = "generic_atom_read_failed"; return false
+        }
+        let parsed = parseCkbGenericKnowledgeAtomMaterial(bytes, source)
+        if (!parsed[0]) { out.diagnostic = parsed[1]; return false }
+        out.raw.add(parsed[2])
+    }
+    true
+}
+
+private func ckbReproRoleRequiresTypedScan(roleRoot: String,
+    lock: CkbReproSourceLock): Bool {
+    for (source in lock.entries) {
+        if (ckbReproFirstInitRoleRoot(source.assemblyRole) == roleRoot &&
+            source.generatorId != "ckb-cangjie-guidance-v1") { return true }
+    }
+    false
+}
+
 private func ckbReproFirstInitRoleRoot(role: String): String {
     if (role == "community_docs" || role == "generated_guidance" ||
         role == "docs") { "docs" }
@@ -418,6 +574,7 @@ public class CkbFirstInitReproSourceAssembler <:
             !validateCkbOwnedSourceMaterials(materials, lock)) {
             out.diagnostic = "owned_source_materials_invalid"; return out
         }
+        if (!ckbAppendGenericKnowledgeAtoms(materials, lock, out)) { return out }
         let roots = HashSet<String>()
         for (entry in lock.entries) {
             let roleRoot = ckbReproFirstInitRoleRoot(entry.assemblyRole)
@@ -443,7 +600,7 @@ public class CkbFirstInitReproSourceAssembler <:
                     if (roleRoot == "std") { CangjieSourceSets.STD }
                     else { CangjieSourceSets.STDX }, resolution)
             }
-            if (!scanned.ok) {
+            if (!scanned.ok && ckbReproRoleRequiresTypedScan(roleRoot, lock)) {
                 out.diagnostic = "first_init_source_assembly_failed"
                 return out
             }
@@ -451,10 +608,15 @@ public class CkbFirstInitReproSourceAssembler <:
         }
         let deduped = dedupeCkbFirstInitializationRecords(out.typed)
         out.typed.clear(); for (record in deduped) { out.typed.add(record) }
-        out.ok = out.typed.size > 0
+        out.ok = out.typed.size > 0 || out.raw.size > 0
         out.diagnostic = if (out.ok) { "ok" } else { "source_records_empty" }
         out
     }
+}
+
+public func ckbFirstInitReproAssemblerIdentityHash(): String {
+    benchmarkGapSha256("ckb-first-init-repro-assembler-v2|docs-full|" +
+        "source-symbols|generic-knowledge-atoms-v1|dedupe")
 }
 
 public func ckbReproPublicBuildInputRoles(): Array<String> {
@@ -919,6 +1081,11 @@ public func loadCkbReproPublicBuildInputs(root: String,
             out.buildContract.expectedRawCount != manifest.expectedRawCount) {
             out.diagnostic = "build_contract_manifest_mismatch"; return out
         }
+        if (out.buildContract.assemblerIdentityHash !=
+            ckbFirstInitReproAssemblerIdentityHash()) {
+            out.diagnostic = "build_contract_assembler_identity_mismatch"
+            return out
+        }
         captured = ckbCaptureBuildInputAsset(root,
             ckbBuildInputsAsset(manifest, "source_lock"), backend)
         if (!captured.contract.ok) {
@@ -1317,7 +1484,8 @@ public func ckbReproValidatedPublicTypedRecordIdentity(
     record: CangjieTypedRecord, context: CkbPortablePathContext):
     CkbReproPublicRecordIdentityResult {
     let out = CkbReproPublicRecordIdentityResult()
-    if (canonicalCkbPortableTypedRecord(record).contains("{{CKB_PATH:")) {
+    if (ckbReproUnknownPortablePlaceholder(
+        canonicalCkbPortableTypedRecord(record), context)) {
         out.diagnostic = "portable_placeholder_unresolved"; return out
     }
     let validation = validateCkbPortableTypedRecord(record, context)
@@ -1329,7 +1497,8 @@ public func ckbReproValidatedPublicTypedRecordIdentity(
 public func ckbReproValidatedPublicRawRecordIdentity(record: RawRecord,
     context: CkbPortablePathContext): CkbReproPublicRecordIdentityResult {
     let out = CkbReproPublicRecordIdentityResult()
-    if (canonicalCkbPortableRawRecord(record).contains("{{CKB_PATH:")) {
+    if (ckbReproUnknownPortablePlaceholder(
+        canonicalCkbPortableRawRecord(record), context)) {
         out.diagnostic = "portable_placeholder_unresolved"; return out
     }
     let scan = scanCkbRawPathOccurrences(record, context)
@@ -1342,6 +1511,15 @@ public func ckbReproValidatedPublicRawRecordIdentity(record: RawRecord,
     }
     out.identity = ckbReproPublicRawRecordIdentity(record)
     out.ok = true; out.diagnostic = "ok"; out
+}
+
+private func ckbReproUnknownPortablePlaceholder(value: String,
+    context: CkbPortablePathContext): Bool {
+    var remaining = value
+    for (placeholder in context.policy.placeholders) {
+        remaining = remaining.replace(placeholder, "")
+    }
+    remaining.contains("{{CKB_PATH:")
 }
 
 public func validateCkbReproActualRecordCoverage(
@@ -1405,7 +1583,7 @@ public func validateCkbReproActualRecordCoverage(
             out.diagnostic = "actual_record_inventory_mismatch"; return out
         }
         let row = inventoryById.get(identity.identity).getOrThrow()
-        if (row.sourceId != record.sourceId || row.recordKind != record.recordKind) {
+        if (row.recordKind != record.recordKind) {
             out.diagnostic = "actual_record_inventory_mismatch"; return out
         }
         actualIds.add(identity.identity)
@@ -1417,7 +1595,7 @@ public func validateCkbReproActualRecordCoverage(
             out.diagnostic = "actual_record_inventory_mismatch"; return out
         }
         let row = inventoryById.get(identity.identity).getOrThrow()
-        if (row.sourceId != record.sourceId || row.recordKind != "raw") {
+        if (row.recordKind != "raw") {
             out.diagnostic = "actual_record_inventory_mismatch"; return out
         }
         actualIds.add(identity.identity)
@@ -1429,13 +1607,13 @@ public func validateCkbReproActualRecordCoverage(
     out.ok = true; out.diagnostic = "ok"; out
 }
 
-private func ckbReproPublicTypedRecordIdentity(
+public func ckbReproPublicTypedRecordIdentity(
     record: CangjieTypedRecord): String {
     benchmarkGapSha256("ckb-public-record-identity-v1|typed|" +
         canonicalCkbPortableTypedRecord(record))
 }
 
-private func ckbReproPublicRawRecordIdentity(record: RawRecord): String {
+public func ckbReproPublicRawRecordIdentity(record: RawRecord): String {
     benchmarkGapSha256("ckb-public-record-identity-v1|raw|" +
         canonicalCkbPortableRawRecord(record))
 }

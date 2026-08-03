@@ -74,6 +74,32 @@ private func p8PinnedGeneratedLock(generatorId: String): CkbReproSourceLock {
     lock.entries.add(entry); lock
 }
 
+private func p8PinnedGuidanceLock(): CkbReproSourceLock {
+    let lock = CkbReproSourceLock()
+    for ((id, seed, path) in [
+        ("string-built-in", "string-built-in",
+            "knowledge-atom/KC-02/string-built-in.json"),
+        ("string-runes", "string-runes",
+            "knowledge-atom/KC-02/string-runes.json")]) {
+        let entry = CkbReproSourceLockEntry()
+        entry.sourceId = "generated/${id}"; entry.sourceType = "generated"
+        entry.generatorId = "ckb-cangjie-guidance-v1"
+        entry.generatorVersion = "1"
+        entry.generatorSourceHash = benchmarkGapSha256(
+            "ckb-cangjie-guidance-v1|1|atomic-string-guidance")
+        entry.inputHashes.add(benchmarkGapSha256(
+            "ckb-guidance-seed-v1|${seed}"))
+        entry.outputPath = path; entry.license = "Apache-2.0"
+        entry.assemblyRole = "generated_guidance"
+        entry.outputKind = CangjieTypedRecordKinds.KNOWLEDGE_ATOM
+        let text = ckbGenericKnowledgeAtomMaterialForSource(entry)
+            .getOrThrow()
+        entry.outputHash = benchmarkGapSha256(text)
+        lock.entries.add(entry)
+    }
+    lock
+}
+
 private func p8PinnedSharedLock(command: P8PinnedGitCommand): CkbReproSourceLock {
     let lock = p8PinnedExternalLock(command.content, command.treeOid)
     let second = CkbReproSourceLockEntry()
@@ -89,6 +115,56 @@ private func p8PinnedSharedLock(command: P8PinnedGitCommand): CkbReproSourceLock
 
 @Test
 public class CkbPinnedSourceBackendTest {
+    @TestCase
+    public func atomicGuidanceGeneratorFeedsFirstInitWithoutEvalContent(): Unit {
+        let cacheRoot = p8PinnedRoot("guidance-cache")
+        let ownedRoot = p8PinnedRoot("guidance-owned")
+        let lock = p8PinnedGuidanceLock()
+        let manifest = buildCkbSourceMaterialsManifest(lock)
+        let backend = CkbPinnedSourceMaterialBackend(lock, cacheRoot)
+        @Expect(generateAndValidateCkbSourceMaterials(manifest, backend).ok, true)
+        let materializer = CkbFilesystemOwnedSourceMaterializer(ownedRoot)
+        let materials = materializer.materialize(lock, manifest, backend)
+        @Expect(materials.ok, true)
+        let assembled = CkbFirstInitReproSourceAssembler().assemble(
+            materials, lock)
+        @Expect(assembled.ok, true); @Expect(assembled.typed.size, 0)
+        @Expect(assembled.raw.size, 2)
+        var all = ""
+        for (record in assembled.raw) {
+            all += record.content
+            @Expect(record.metadata.sourceSet, CangjieSourceSets.KNOWLEDGE_ATOMS)
+            @Expect(record.metadata.trustLevel, TrustLevels.COMMUNITY)
+            @Expect(record.metadata.reviewState, ReviewStates.REVIEWED)
+            @Expect(record.metadata.path.startsWith("knowledge-atom/"), true)
+        }
+        @Expect(all.contains("built-in String"), true)
+        @Expect(all.contains("text.runes()"), true)
+        @Expect(all.contains("仓颉"), true); @Expect(all.contains("🙂"), true)
+        @Expect(all.toAsciiLower().contains("humaneval"), false)
+        @Expect(all.toAsciiLower().contains("reference solution"), false)
+        @Expect(materializer.cleanup(materials), true)
+        if (exists(Path(cacheRoot))) { remove(Path(cacheRoot), recursive: true) }
+        for (mode in ["source_id", "input_hash", "output_kind"]) {
+            let rejectedRoot = p8PinnedRoot("guidance-${mode}")
+            let rejected = p8PinnedGuidanceLock()
+            if (mode == "source_id") {
+                rejected.entries[0].sourceId = "generated/unknown"
+            } else if (mode == "input_hash") {
+                rejected.entries[0].inputHashes[0] = benchmarkGapSha256("drift")
+            } else {
+                rejected.entries[0].outputKind = CangjieTypedRecordKinds.DOC_SECTION
+            }
+            let rejectedManifest = buildCkbSourceMaterialsManifest(rejected)
+            @Expect(rejectedManifest.ready, true)
+            @Expect(CkbPinnedSourceMaterialBackend(rejected, rejectedRoot)
+                .generate(rejectedManifest.entries[0]).ok, false)
+            if (exists(Path(rejectedRoot))) {
+                remove(Path(rejectedRoot), recursive: true)
+            }
+        }
+    }
+
     @TestCase
     public func externalGitUsesExactPinsAndSameDescriptorStream(): Unit {
         let root = p8PinnedRoot("external")

@@ -74,8 +74,12 @@ public interface CkbQdrantSnapshotFileExecutor {
 public class CkbQdrantSnapshotHttpExecutor <: CkbQdrantSnapshotExecutor {
     private let endpoint: String
     private let http: HttpRequestExecutor
-    public init(endpoint: String, http: HttpRequestExecutor) {
+    private let timeoutMillis: Int64
+    public init(endpoint: String, http: HttpRequestExecutor,
+        timeoutMillis!: Int64 = 300000) {
         this.endpoint = endpoint.trimAscii(); this.http = http
+        this.timeoutMillis = if (timeoutMillis > 0) { timeoutMillis }
+            else { 300000 }
     }
     public func execute(request: CkbQdrantSnapshotRequest):
         CkbQdrantSnapshotResponse {
@@ -101,6 +105,7 @@ public class CkbQdrantSnapshotHttpExecutor <: CkbQdrantSnapshotExecutor {
             "application/json"
         } else { request.contentType }
         native.body = body
+        native.timeoutMillis = this.timeoutMillis
         native.retryCount = 0
         native.maxResponseBytes = 65536
         let response = this.http.execute(native)
@@ -576,7 +581,7 @@ public class CkbP3ProductionAdapter <: CkbP3CliAdapter {
         let buildOptions = CkbPortableVectorBuildOptions()
         buildOptions.candidateVersion = pointer.activeVersion
         buildOptions.p4PortableProofHash = buildProof[1].preservationHash
-        buildOptions.runtimeVectorState = metadata.vectorState
+        buildOptions.runtimeVectorState = metadata.vectorState.toAsciiUpper()
         buildOptions.runtimeVectorDegradedReason = metadata.vectorDegradedReason
         buildOptions.runtimeVectorCount = metadata.vectorIndexCount
         let result = buildCkbPortableReferenceVectors(buildOptions, buildProof[1],
@@ -952,7 +957,8 @@ public func parseCkbPortableVectorProofBytes(bytes: Array<UInt8>):
     if (proof.vectorProofHash != ckbPortableVectorProofHash(proof)) {
         return (ckbP3ContractFailure("portable_vector_proof_hash_mismatch"), proof)
     }
-    if (!ckbQdrantSnapshotCollectionValid(proof.collection) || proof.count != 7978 ||
+    if (!ckbQdrantSnapshotCollectionValid(proof.collection) ||
+        proof.count != ckbReproReleaseRecordCount() ||
         proof.dimension != 1024 || proof.distance.toAsciiLower() != "cosine") {
         return (ckbP3ContractFailure("portable_vector_proof_invalid"), proof)
     }
@@ -1085,6 +1091,8 @@ private func ckbP3OwnedTemporary(path: String, kind: String): String {
 private func ckbP3ReadBoundedBytes(path: String, kind: String):
     (String, Array<UInt8>) {
     let bytes = ArrayList<UInt8>()
+    let limit: Int64 = if (kind == "logical_manifest") { 4194304 }
+        else { 65536 }
     try {
         try (file = File(Path(path), OpenMode.Read)) {
             while (true) {
@@ -1094,7 +1102,7 @@ private func ckbP3ReadBoundedBytes(path: String, kind: String):
                     return ("${kind}_read_failed", Array<UInt8>())
                 }
                 if (count == 0) { break }
-                if (bytes.size > 65536 - count) {
+                if (bytes.size > limit - count) {
                     return ("${kind}_size_invalid", Array<UInt8>())
                 }
                 for (i in 0..count) { bytes.add(buffer[i]) }
@@ -1465,7 +1473,7 @@ private func ckbQdrantSnapshotValidateStructure(
         return ckbQdrantSnapshotFailure(
             "qdrant_snapshot_minor_version_mismatch")
     }
-    if (manifest.points != 7978) {
+    if (manifest.points != ckbReproReleaseRecordCount()) {
         return ckbQdrantSnapshotFailure("qdrant_snapshot_points_mismatch")
     }
     if (manifest.dimension != 1024) {

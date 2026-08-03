@@ -356,7 +356,9 @@ public func parseCkbReproCliLeakageAuthorityBytes(bytes: Array<UInt8>):
 public func renderCkbReproCliLeakageAuthority(
     value: CangjieBenchmarkLeakageAuthority): String {
     let rows = ArrayList<String>()
-    for (fingerprint in value.fingerprints) {
+    let fingerprints = value.fingerprints.toArray()
+    sort(fingerprints)
+    for (fingerprint in fingerprints) {
         rows.add("\"${ckbTypedEscape(fingerprint)}\"")
     }
     "{\"schemaVersion\":\"ckb-repro-leakage-authority-v1\"," +

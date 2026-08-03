@@ -20,6 +20,7 @@
           "commit": {"type": "string"},
           "tree": {"type": "string"},
           "path": {"type": "string"},
+          "assemblyPath": {"type": "string", "minLength": 1},
           "fileHash": {"type": "string"},
           "license": {"type": "string", "minLength": 1},
           "authMode": {"type": "string"},
@@ -43,7 +44,8 @@
           {
             "if": {"properties": {"sourceType": {"const": "generated"}}},
             "then": {
-              "required": ["generatorId", "generatorVersion", "generatorSourceHash", "inputHashes", "outputHash", "outputPath"]
+              "required": ["generatorId", "generatorVersion", "generatorSourceHash", "inputHashes", "outputHash", "outputPath"],
+              "not": {"required": ["assemblyPath"]}
             }
           }
         ]

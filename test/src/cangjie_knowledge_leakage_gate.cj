@@ -355,16 +355,19 @@ private func cangjieLeakageScanFields(result: CangjieStudentKnowledgeDiagnostics
 
 private func cangjieLeakageAddFingerprintWindows(authority: CangjieBenchmarkLeakageAuthority, raw: String): Unit {
     let runes = raw.toRuneArray()
-    if (runes.size < 24) { return }
+    // A longer window still catches copied benchmark text while avoiding
+    // collisions with short signatures that also appear in official docs.
+    if (runes.size < 48) { return }
     var start: Int64 = 0
-    while (start + 24 <= runes.size) {
+    while (start + 48 <= runes.size) {
         let out = StringBuilder()
-        for (i in start..(start + 24)) { out.append(runes[i]) }
+        for (i in start..(start + 48)) { out.append(runes[i]) }
         let fingerprint = out.toString()
+        if (fingerprint.trimAscii() == "") { start += 24; continue }
         if (!authority.fingerprintSet.contains(fingerprint)) {
             authority.fingerprints.add(fingerprint); authority.fingerprintSet.add(fingerprint)
         }
-        start += 12
+        start += 24
     }
 }
 
@@ -377,9 +380,9 @@ private func cangjieLeakageTextDiagnostic(field: String, raw: String,
     }
     let runes = clean.toRuneArray()
     var start: Int64 = 0
-    while (start + 24 <= runes.size) {
+    while (start + 48 <= runes.size) {
         let window = StringBuilder()
-        for (i in start..(start + 24)) { window.append(runes[i]) }
+        for (i in start..(start + 48)) { window.append(runes[i]) }
         if (authority.fingerprintSet.contains(window.toString())) {
             return cangjieLeakageRejected(field, "student_knowledge_leakage_blocked")
         }

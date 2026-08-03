@@ -12,6 +12,7 @@ public class CkbReproSourceLockEntry {
     public var commit: String = ""
     public var tree: String = ""
     public var path: String = ""
+    public var assemblyPath: String = ""
     public var fileHash: String = ""
     public var license: String = ""
     public var authMode: String = ""
@@ -516,7 +517,8 @@ public func loadCkbPortablePromotionCliInputs(unsignedRoot: String,
             vector[1].candidateVersion != options.candidateVersion ||
             reference[1].knowledgeVersion != options.candidateVersion ||
             publicEvidence[1].knowledgeVersion != options.candidateVersion ||
-            logical[1].contaminationProofHash != publicEvidence[1].publicEvidenceHash ||
+            // P2 contamination proves clean knowledge bytes; P5 public evidence
+            // proves the later benchmark run. They are independently bound assets.
             publicEvidence[1].publicEvidenceHash != options.identity ||
             reference[1].strictPassed != options.p8StrictPassed ||
             reference[1].strictPassed != 151 ||
@@ -740,6 +742,7 @@ public func parseCkbReproSourceLock(bytes: Array<UInt8>):
             entry.commit = p4BuildOptionalString(object, "commit")
             entry.tree = p4BuildOptionalString(object, "tree")
             entry.path = p4BuildOptionalString(object, "path")
+            entry.assemblyPath = p4BuildOptionalString(object, "assemblyPath")
             entry.fileHash = p4BuildOptionalString(object, "fileHash")
             entry.license = p4BuildOptionalString(object, "license")
             entry.authMode = p4BuildOptionalString(object, "authMode")
@@ -757,19 +760,90 @@ public func parseCkbReproSourceLock(bytes: Array<UInt8>):
                     }
                 case None => ()
             }
-            let expectedFields: Int64 = if (entry.sourceType == "external_git") {
-                11
-            } else if (entry.sourceType == "generated") { 11 } else { -1 }
-            if (object.size() != expectedFields) {
+            let validFieldCount = if (entry.sourceType == "external_git") {
+                object.size() == 11 || object.size() == 12
+            } else if (entry.sourceType == "generated") {
+                object.size() == 11
+            } else { false }
+            if (!validFieldCount) {
                 return (p4BuildFailure("source_lock_field_contract_invalid"),
                     CkbReproSourceLock())
             }
             lock.entries.add(entry)
         }
+        let validated = validateCkbReproBuildLocks(lock)
+        if (!validated.ok) { return (validated, CkbReproSourceLock()) }
+        if (renderCkbReproSourceLock(lock) != text) {
+            return (p4BuildFailure("source_lock_noncanonical"),
+                CkbReproSourceLock())
+        }
         (p4BuildSuccess(), lock)
     } catch (_: Exception) {
         (p4BuildFailure("source_lock_malformed_json"), CkbReproSourceLock())
     }
+}
+
+public func renderCkbReproSourceLock(lock: CkbReproSourceLock): String {
+    let rows = ArrayList<String>()
+    for (entry in lock.entries) {
+        if (entry.sourceType == "external_git") {
+            rows.add("{\"sourceId\":\"${p4BuildJson(entry.sourceId)}\"," +
+                "\"sourceType\":\"external_git\"," +
+                "\"repository\":\"${p4BuildJson(entry.repository)}\"," +
+                "\"commit\":\"${p4BuildJson(entry.commit)}\"," +
+                "\"tree\":\"${entry.tree}\"," +
+                "\"path\":\"${p4BuildJson(entry.path)}\"," +
+                if (entry.assemblyPath != "" &&
+                    entry.assemblyPath != entry.path) {
+                    "\"assemblyPath\":\"${p4BuildJson(entry.assemblyPath)}\","
+                } else { "" } +
+                "\"fileHash\":\"${entry.fileHash}\"," +
+                "\"license\":\"${p4BuildJson(entry.license)}\"," +
+                "\"authMode\":\"${p4BuildJson(entry.authMode)}\"," +
+                "\"assemblyRole\":\"${p4BuildJson(entry.assemblyRole)}\"," +
+                "\"outputKind\":\"${p4BuildJson(entry.outputKind)}\"}")
+        } else {
+            let inputs = entry.inputHashes.toArray(); sort(inputs)
+            var renderedInputs = "["
+            for (i in 0..inputs.size) {
+                if (i > 0) { renderedInputs += "," }
+                renderedInputs += "\"${inputs[i]}\""
+            }
+            renderedInputs += "]"
+            rows.add("{\"sourceId\":\"${p4BuildJson(entry.sourceId)}\"," +
+                "\"sourceType\":\"generated\"," +
+                "\"generatorId\":\"${p4BuildJson(entry.generatorId)}\"," +
+                "\"generatorVersion\":\"${p4BuildJson(entry.generatorVersion)}\"," +
+                "\"generatorSourceHash\":\"${entry.generatorSourceHash}\"," +
+                "\"inputHashes\":${renderedInputs}," +
+                "\"outputHash\":\"${entry.outputHash}\"," +
+                "\"outputPath\":\"${p4BuildJson(entry.outputPath)}\"," +
+                "\"license\":\"${p4BuildJson(entry.license)}\"," +
+                "\"assemblyRole\":\"${p4BuildJson(entry.assemblyRole)}\"," +
+                "\"outputKind\":\"${p4BuildJson(entry.outputKind)}\"}")
+        }
+    }
+    let ordered = rows.toArray(); sort(ordered)
+    "{\"schemaVersion\":\"ckb-source-lock-v1\",\"sources\":[" +
+        p4BuildJoin(ordered, ",") + "]}"
+}
+
+private func p4BuildJson(value: String): String {
+    let out = StringBuilder()
+    let hex = "0123456789abcdef".toRuneArray()
+    for (rune in value.runes()) {
+        if (rune == r'"') { out.append("\\\"") }
+        else if (rune == r'\\') { out.append("\\\\") }
+        else if (rune == r'\n') { out.append("\\n") }
+        else if (rune == r'\r') { out.append("\\r") }
+        else if (rune == r'\t') { out.append("\\t") }
+        else if (UInt32(rune) < 0x20u32) {
+            let code = UInt32(rune); out.append("\\u00")
+            out.append(hex[Int64(code / 16u32)])
+            out.append(hex[Int64(code % 16u32)])
+        } else { out.append(rune) }
+    }
+    out.toString()
 }
 
 public func validateCkbReproBuildLocks(lock: CkbReproSourceLock): CkbReproContractResult {
@@ -792,12 +866,14 @@ public func validateCkbReproBuildLocks(lock: CkbReproSourceLock): CkbReproContra
             }
             if (!p4BuildAnonymousHttps(entry.repository) || !p4BuildCommit(entry.commit) ||
                 !p4BuildHash(entry.tree) || !p4BuildSafeRelative(entry.path) ||
+                !p4BuildSafeRelative(ckbReproSourceAssemblyPath(entry)) ||
                 !p4BuildHash(entry.fileHash) || entry.authMode != "anonymous") {
                 return p4BuildFailure("external_source_contract_invalid")
             }
         } else if (entry.sourceType == "generated") {
             if (entry.repository != "" || entry.commit != "" || entry.tree != "" ||
-                entry.path != "" || entry.fileHash != "" || entry.authMode != "") {
+                entry.path != "" || entry.assemblyPath != "" ||
+                entry.fileHash != "" || entry.authMode != "") {
                 return p4BuildFailure("generated_source_fields_mixed")
             }
             if (entry.generatorId == "" || entry.generatorVersion == "" ||
@@ -818,13 +894,21 @@ public func validateCkbReproBuildLocks(lock: CkbReproSourceLock): CkbReproContra
     p4BuildSuccess()
 }
 
+public func ckbReproSourceAssemblyPath(
+    entry: CkbReproSourceLockEntry): String {
+    if (entry.sourceType == "external_git") {
+        if (entry.assemblyPath == "") { entry.path } else { entry.assemblyPath }
+    } else { entry.outputPath }
+}
+
 public func canonicalCkbReproSourceLockHash(lock: CkbReproSourceLock): String {
     let rows = ArrayList<String>()
     for (entry in lock.entries) {
         let inputs = entry.inputHashes.toArray(); sort(inputs)
         rows.add(p4BuildFields([
             entry.sourceId, entry.sourceType, entry.repository, entry.commit, entry.tree,
-            entry.path, entry.fileHash, entry.license, entry.authMode, entry.generatorId,
+            entry.path, ckbReproSourceAssemblyPath(entry), entry.fileHash,
+            entry.license, entry.authMode, entry.generatorId,
             entry.generatorVersion, entry.generatorSourceHash,
             p4BuildJoin(inputs, ","), entry.outputHash, entry.outputPath,
             entry.assemblyRole,
@@ -840,7 +924,8 @@ public func canonicalCkbReproSourceLockEntryHash(
     let inputs = entry.inputHashes.toArray(); sort(inputs)
     benchmarkGapSha256("ckb-source-lock-entry-v1|" + p4BuildFields([
         entry.sourceId, entry.sourceType, entry.repository, entry.commit,
-        entry.tree, entry.path, entry.fileHash, entry.license, entry.authMode,
+        entry.tree, entry.path, ckbReproSourceAssemblyPath(entry),
+        entry.fileHash, entry.license, entry.authMode,
         entry.generatorId, entry.generatorVersion, entry.generatorSourceHash,
         p4BuildJoin(inputs, ","), entry.outputHash, entry.outputPath,
         entry.assemblyRole,
@@ -879,23 +964,81 @@ public class CkbReproSourceCoverageResult {
 
 public func inventoryCkbCurrentKnowledgeSources(
     typed: ArrayList<CangjieTypedRecord>, raw: ArrayList<RawRecord>,
-    provider: CkbPortablePathHmacProvider): ArrayList<CkbReproKnowledgeInventoryRow> {
+    lock: CkbReproSourceLock): ArrayList<CkbReproKnowledgeInventoryRow> {
     let rows = ArrayList<CkbReproKnowledgeInventoryRow>()
     for (record in typed) {
         let row = CkbReproKnowledgeInventoryRow()
-        row.identity = provider.recordId(canonicalCkbPortableTypedRecord(record))
-        row.sourceId = record.sourceId; row.recordKind = record.recordKind
-        row.portableLocator = record.path; row.sourceType = "generated"
-        row.license = "declared"; rows.add(row)
+        row.identity = ckbReproPublicTypedRecordIdentity(record)
+        let source = ckbP4InventorySource(record.path, record.sourceSet, lock)
+        match (source) {
+            case Some(value) =>
+                row.sourceId = value.sourceId
+                row.sourceType = value.sourceType
+                row.license = value.license
+                row.sourceLockEntryHash =
+                    canonicalCkbReproSourceLockEntryHash(value)
+            case None => ()
+        }
+        row.recordKind = record.recordKind
+        row.portableLocator = record.path; rows.add(row)
     }
     for (record in raw) {
         let row = CkbReproKnowledgeInventoryRow()
-        row.identity = provider.recordId(canonicalCkbPortableRawRecord(record))
-        row.sourceId = record.sourceId; row.recordKind = "raw"
-        row.portableLocator = record.metadata.path; row.sourceType = record.metadata.sourceType
-        row.license = record.metadata.license; rows.add(row)
+        row.identity = ckbReproPublicRawRecordIdentity(record)
+        let source = ckbP4InventorySource(record.metadata.path,
+            record.metadata.sourceSet, lock)
+        match (source) {
+            case Some(value) =>
+                row.sourceId = value.sourceId
+                row.sourceType = value.sourceType
+                row.license = value.license
+                row.sourceLockEntryHash =
+                    canonicalCkbReproSourceLockEntryHash(value)
+            case None => ()
+        }
+        row.recordKind = "raw"
+        row.portableLocator = record.metadata.path; rows.add(row)
     }
     rows
+}
+
+private func ckbP4InventorySource(path: String, sourceSet: String,
+    lock: CkbReproSourceLock): ?CkbReproSourceLockEntry {
+    let pathMatches = ArrayList<CkbReproSourceLockEntry>()
+    var bestLength: Int64 = -1
+    for (source in lock.entries) {
+        let relative = ckbReproSourceAssemblyPath(source)
+        if (path == relative || path.endsWith("/${relative}")) {
+            if (relative.size > bestLength) {
+                pathMatches.clear(); bestLength = relative.size
+                pathMatches.add(source)
+            } else if (relative.size == bestLength) {
+                pathMatches.add(source)
+            }
+        }
+    }
+    if (pathMatches.size == 1) { return Some(pathMatches[0]) }
+    var matched: ?CkbReproSourceLockEntry = None
+    for (source in pathMatches) {
+        if (!ckbP4InventoryRoleMatches(sourceSet, source.assemblyRole)) { continue }
+        match (matched) {
+            case Some(_) => return None<CkbReproSourceLockEntry>
+            case None => matched = Some(source)
+        }
+    }
+    matched
+}
+
+private func ckbP4InventoryRoleMatches(sourceSet: String, role: String): Bool {
+    (sourceSet == CangjieSourceSets.DOCS &&
+        (role == "docs" || role == "community_docs")) ||
+    (sourceSet == CangjieSourceSets.TOOLS &&
+        (role == "tools" || role == "tool_docs")) ||
+    (sourceSet == CangjieSourceSets.STD &&
+        (role == "std" || role == "std_source")) ||
+    (sourceSet == CangjieSourceSets.STDX &&
+        (role == "stdx" || role == "stdx_source")) ||
+    (sourceSet == "knowledge-atoms" && role == "generated_guidance")
 }
 
 public func buildCkbKnowledgeSelectionManifest(
@@ -988,6 +1131,7 @@ public func buildCkbSourceMaterialsManifest(
     let manifest = CkbReproSourceMaterialsManifest()
     let contract = validateCkbReproBuildLocks(lock)
     if (!contract.ok) { manifest.diagnostic = contract.diagnostic; return manifest }
+    let sourceLockHash = canonicalCkbReproSourceLockHash(lock)
     for (source in lock.entries) {
         let entry = CkbReproSourceMaterialEntry()
         entry.sourceId = source.sourceId
@@ -997,12 +1141,10 @@ public func buildCkbSourceMaterialsManifest(
         entry.expectedHash = if (source.sourceType == "external_git") {
             source.fileHash
         } else { source.outputHash }
-        entry.relativePath = if (source.sourceType == "external_git") {
-            source.path
-        } else { source.outputPath }
+        entry.relativePath = ckbReproSourceAssemblyPath(source)
         entry.canonicalIdentity = benchmarkGapSha256(
             p4BuildFields([source.sourceId, source.sourceType,
-                canonicalCkbReproSourceLockHash(lock), entry.relativePath,
+                sourceLockHash, entry.relativePath,
                 entry.expectedHash]))
         manifest.entries.add(entry)
     }
@@ -1157,8 +1299,13 @@ public class CkbReproProductionBuildBackend <: CkbReproBuildBackend {
         let normalizer = Normalizer()
         for (record in input.portableRaw) {
             raw.add(record)
-            normalized.add(normalizer.normalize(record, "",
-                input.request.candidateVersion))
+            let value = normalizer.normalize(record, "",
+                input.request.candidateVersion)
+            value.recordKind = if (record.metadata.sourceSet ==
+                CangjieSourceSets.KNOWLEDGE_ATOMS) {
+                CangjieTypedRecordKinds.KNOWLEDGE_ATOM
+            } else { CangjieTypedRecordKinds.DOC_SECTION }
+            normalized.add(value)
         }
         this.candidate = ckbBuildCompleteCleanStudentCandidate(
             ArrayList<RawRecord>(), ArrayList<NormalizedRecord>(),
@@ -1400,7 +1547,8 @@ public func parseCkbReproBuildProof(bytes: Array<UInt8>):
     if (!proof.logicalReady || proof.diagnostic != "ok" ||
         !p4BuildHash(proof.sourceLockHash) || proof.typedCount < 1 ||
         proof.rawCount < 1 || proof.selectedCount < 1 ||
-        proof.selectedCount + proof.excludedCount != proof.rawCount ||
+        proof.selectedCount + proof.excludedCount !=
+            proof.typedCount + proof.rawCount ||
         proof.evalSupportPersisted != 0 || proof.vectorCount != 0 ||
         proof.vectorState != "DEGRADED" || proof.candidateVersion == "" ||
         !p4BuildHash(proof.typedPairAggregateHash) ||

@@ -8,6 +8,22 @@ import std.unittest.testmacro.*
 @Test
 public class CkbReproBuildTest {
     @TestCase
+    public func p4Pos00TrackedSourceLockIsCanonicalAndComplete(): Unit {
+        let bytes = File.readFrom(Path(
+            "../reproducibility/manifests/source-lock.json"))
+        let parsed = parseCkbReproSourceLock(bytes)
+        @Expect(parsed[0].ok, true)
+        @Expect(parsed[1].entries.size, 897)
+        @Expect(renderCkbReproSourceLock(parsed[1]).toArray(), bytes)
+
+        let schema = String.fromUtf8(File.readFrom(Path(
+            "../reproducibility/source-lock.schema.json")))
+        @Expect(schema.contains("\"assemblyPath\""), true)
+        @Expect(schema.contains(
+            "\"not\": {\"required\": [\"assemblyPath\"]}"), true)
+    }
+
+    @TestCase
     public func p4Ut01ComponentCanonicalSourceLocksBindEveryField(): Unit {
         let a = p4ExternalLock("b")
         let b = p4ExternalLock("a")
@@ -17,11 +33,33 @@ public class CkbReproBuildTest {
         second.entries.add(p4ExternalLock("a"))
         second.entries.add(p4ExternalLock("b"))
         @Expect(validateCkbReproBuildLocks(first).ok, true)
+        let rendered = renderCkbReproSourceLock(first)
+        let parsed = parseCkbReproSourceLock(rendered.toArray())
+        @Expect(parsed[0].ok, true)
+        @Expect(renderCkbReproSourceLock(parsed[1]), rendered)
+        let aIndex = rendered.indexOf("\"sourceId\":\"a\"").getOrThrow()
+        let bIndex = rendered.indexOf("\"sourceId\":\"b\"").getOrThrow()
+        @Expect(aIndex < bIndex, true)
         @Expect(canonicalCkbReproSourceLockHash(first),
             canonicalCkbReproSourceLockHash(second))
         second.entries[0].license = "changed"
         @Expect(canonicalCkbReproSourceLockHash(first) ==
             canonicalCkbReproSourceLockHash(second), false)
+        let mapped = p4ExternalLock("mapped")
+        mapped.path = "docs/dev-guide/a.md"
+        mapped.assemblyPath = "dev-guide/a.md"
+        let mappedLock = CkbReproSourceLock(); mappedLock.entries.add(mapped)
+        let mappedText = renderCkbReproSourceLock(mappedLock)
+        @Expect(mappedText.contains(
+            "\"assemblyPath\":\"dev-guide/a.md\""), true)
+        let mappedParsed = parseCkbReproSourceLock(mappedText.toArray())
+        @Expect(mappedParsed[0].ok, true)
+        @Expect(buildCkbSourceMaterialsManifest(mappedParsed[1])
+            .entries[0].relativePath, "dev-guide/a.md")
+        let originalMappedHash = canonicalCkbReproSourceLockHash(mappedLock)
+        mapped.assemblyPath = "dev-guide/b.md"
+        @Expect(canonicalCkbReproSourceLockHash(mappedLock) ==
+            originalMappedHash, false)
         let routed = p4ExternalLock("a")
         routed.assemblyRole = "community_docs"
         routed.outputKind = CangjieTypedRecordKinds.DOC_SECTION
@@ -80,6 +118,95 @@ public class CkbReproBuildTest {
         for (row in inventory) {
             @Expect(row.sourceLockEntryHash.startsWith("sha256:"), true)
         }
+    }
+
+    @TestCase
+    public func p4Pos01MultipleRecordsBindOneSourceFile(): Unit {
+        let lock = CkbReproSourceLock()
+        lock.entries.add(p4ExternalLock("a"))
+        let typed = ArrayList<CangjieTypedRecord>()
+        for (name in ["first", "second"]) {
+            let record = CangjieTypedRecord()
+            record.recordKind = CangjieTypedRecordKinds.DOC_SECTION
+            record.sourceId = "record-${name}"
+            record.sourceSet = CangjieSourceSets.DOCS
+            record.path = "docs/a.md"
+            record.title = name; record.content = "content-${name}"
+            record.contentHash = cangjieTypedRecordContentHash(
+                record.sourceId, record.content)
+            typed.add(record)
+        }
+        let inventory = inventoryCkbCurrentKnowledgeSources(
+            typed, ArrayList<RawRecord>(), lock)
+        @Expect(inventory.size, 2)
+        @Expect(inventory[0].sourceId, "a")
+        @Expect(inventory[1].sourceId, "a")
+        @Expect(inventory[0].identity == inventory[1].identity, false)
+        @Expect(inventory[0].sourceLockEntryHash,
+            canonicalCkbReproSourceLockEntryHash(lock.entries[0]))
+
+        let semanticTool = CangjieTypedRecord()
+        semanticTool.recordKind = CangjieTypedRecordKinds.TOOL_MANUAL
+        semanticTool.sourceId = "semantic-tool"
+        semanticTool.sourceSet = CangjieSourceSets.TOOLS
+        semanticTool.path = "docs/a.md"
+        semanticTool.title = "tool"; semanticTool.content = "content"
+        semanticTool.contentHash = cangjieTypedRecordContentHash(
+            semanticTool.sourceId, semanticTool.content)
+        let semanticTyped = ArrayList<CangjieTypedRecord>()
+        semanticTyped.add(semanticTool)
+        let semanticRows = inventoryCkbCurrentKnowledgeSources(
+            semanticTyped, ArrayList<RawRecord>(), lock)
+        @Expect(semanticRows[0].sourceId, "a")
+
+        let nestedLock = CkbReproSourceLock()
+        let basename = p4ExternalLock("basename")
+        basename.path = "README.md"
+        let nested = p4ExternalLock("nested")
+        nested.path = "third_party/README.md"
+        nestedLock.entries.add(basename); nestedLock.entries.add(nested)
+        let nestedRecord = CangjieTypedRecord()
+        nestedRecord.recordKind = CangjieTypedRecordKinds.DOC_SECTION
+        nestedRecord.sourceId = "nested-record"
+        nestedRecord.sourceSet = CangjieSourceSets.DOCS
+        nestedRecord.path = "third_party/README.md"
+        nestedRecord.title = "nested"; nestedRecord.content = "content"
+        nestedRecord.contentHash = cangjieTypedRecordContentHash(
+            nestedRecord.sourceId, nestedRecord.content)
+        let nestedTyped = ArrayList<CangjieTypedRecord>()
+        nestedTyped.add(nestedRecord)
+        let nestedRows = inventoryCkbCurrentKnowledgeSources(
+            nestedTyped, ArrayList<RawRecord>(), nestedLock)
+        @Expect(nestedRows[0].sourceId, "nested")
+
+        let pathFixture = p4BuildFixture("public-identity")
+        let portableRecord = CangjieTypedRecord()
+        portableRecord.recordKind = CangjieTypedRecordKinds.DOC_SECTION
+        portableRecord.sourceId = "portable-record"
+        portableRecord.path = "docs/a.md"
+        portableRecord.title = "absolute path semantics"
+        portableRecord.content = "Use {{CKB_PATH:ABSOLUTE}}/example"
+        portableRecord.contentHash = cangjieTypedRecordContentHash(
+            portableRecord.sourceId, portableRecord.content)
+        @Expect(ckbReproValidatedPublicTypedRecordIdentity(
+            portableRecord, pathFixture.request.pathContext).ok, true)
+        portableRecord.content = "Use {{CKB_PATH:UNKNOWN}}/example"
+        portableRecord.contentHash = cangjieTypedRecordContentHash(
+            portableRecord.sourceId, portableRecord.content)
+        @Expect(ckbReproValidatedPublicTypedRecordIdentity(
+            portableRecord, pathFixture.request.pathContext).diagnostic,
+            "portable_placeholder_unresolved")
+        p4RemoveBuildFixture(pathFixture)
+        @Expect(validateCkbSourceCoverage(inventory,
+            buildCkbKnowledgeSelectionManifest(inventory), 2).ready, true)
+
+        let duplicate = p4ExternalLock("duplicate")
+        duplicate.path = "docs/a.md"; lock.entries.add(duplicate)
+        let ambiguous = inventoryCkbCurrentKnowledgeSources(
+            typed, ArrayList<RawRecord>(), lock)
+        @Expect(ambiguous[0].sourceId, "")
+        @Expect(validateCkbSourceCoverage(ambiguous,
+            buildCkbKnowledgeSelectionManifest(ambiguous), 2).ready, false)
     }
 
     @TestCase
@@ -147,6 +274,52 @@ public class CkbReproBuildTest {
         productionInput.selectedTyped.add(fixture.request.typedInput[0])
         @Expect(CkbReproProductionBuildBackend().run(
             "assemble", productionInput).ok, false)
+        p4RemoveBuildFixture(fixture)
+    }
+
+    @TestCase
+    public func p4Reg02GenericRawAtomKeepsKnowledgeAtomKind(): Unit {
+        let input = CkbReproPipelineInput()
+        input.request.candidateVersion = "portable-production-candidate"
+        let atom = RawRecord()
+        atom.sourceId = "knowledge-atom-regression"
+        atom.title = "Generic atom"
+        atom.content = "Knowledge: String runes preserve Unicode boundaries\n" +
+            "Example: text.toRuneArray()"
+        atom.contentHash = cangjieTypedRecordContentHash(
+            atom.sourceId, atom.content)
+        atom.metadata.sourceId = atom.sourceId
+        atom.metadata.sourceType = SourceTypes.DERIVED
+        atom.metadata.sourceSet = CangjieSourceSets.KNOWLEDGE_ATOMS
+        atom.metadata.path = "knowledge-atom/KC-02/regression.json"
+        atom.metadata.trustLevel = TrustLevels.COMMUNITY
+        atom.metadata.reviewState = ReviewStates.REVIEWED
+        atom.metadata.license = "Apache-2.0"
+        atom.metadata.repoVisibility = "public"
+        atom.metadata.derivedFrom = ["generated-guidance:regression"]
+        input.portableRaw.add(atom)
+
+        @Expect(CkbReproProductionBuildBackend().run("clean", input).ok,
+            true)
+    }
+
+    @TestCase
+    public func p4Reg03ProductionProofIsPersistedForP3(): Unit {
+        let fixture = p4BuildFixture("proof-output")
+        let result = runCkbReproBuild(
+            fixture.request, P4FakeBuildBackend())
+        let output = Path(fixture.root).join("proof")
+        Directory.create(output)
+
+        @Expect(persistCkbReproBuildProof(
+            output.toString(), result.proof), "ok")
+        let parsed = parseCkbReproBuildProof(File.readFrom(
+            output.join("repro-build-proof.json")))
+        @Expect(parsed[0].ok, true)
+        @Expect(parsed[1].preservationHash, result.proof.preservationHash)
+        @Expect(persistCkbReproBuildProof(
+            output.join("missing").toString(), result.proof),
+            "p4_build_proof_write_failed")
         p4RemoveBuildFixture(fixture)
     }
 

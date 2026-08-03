@@ -131,7 +131,8 @@ private class CkbReproProductionMainCliAdapter <: CkbReproMainCliAdapter {
 
 public func executeCkbReproMainCli(command: String, args: Array<String>,
     adapter: CkbReproMainCliAdapter): CkbReproMainCliResult {
-    if (command == "ckb-release-export" || command == "ckb-release-import") {
+    if (command == "ckb-release-export" || command == "ckb-release-import" ||
+        command == "ckb-logical-proof") {
         return adapter.runRelease(args)
     }
     if (command == "ckb-portable-vector-build" ||
