@@ -141,7 +141,7 @@ public class CkbReproMainCliTest {
             @Expect("invalid_response_encoding", "valid_utf8_source")
             return
         }
-        for (required in ["runCkbReproPreflightCliAdapter(",
+        for (required in ["runCkbReproSingleCommitPreflight(",
             "validateCkbReproVerifyEnvironment(",
             "buildCkbReproP8ProductionStages(",
             "parseCkbReproReleaseInputsManifest(",
@@ -150,6 +150,7 @@ public class CkbReproMainCliTest {
             "executeCkbReproP8BProductionAssembly("]) {
             @Expect(loader.contains(required), true)
         }
+        @Expect(loader.contains("loadCkbReproPreflightAuthority("), false)
         @Expect(loader.contains("ckbReproP8ReleaseAuthority("), false)
         @Expect(loader.contains("ckbReproP8JsonEscape(safe)"), true)
     }

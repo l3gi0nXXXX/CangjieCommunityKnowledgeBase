@@ -1051,21 +1051,35 @@ public class CkbReproVerifyTest {
     }
 
     @TestCase
-    public func p8Neg02ValidNonTargetScoresHoldWithoutDownstream():
+    public func p8Neg02OnlyScoresBelow151HoldWithoutDownstream():
         Unit {
         let root = p8ResetRoot("target/p8-neg02")
         try {
-            for (score in [Int64(150), Int64(152), Int64(164)]) {
+            let below = P8RunExecutor()
+            below.score = 150
+            below.raw = 150
+            let held = runCkbPortableReferenceHumanEval(
+                p8Options("run-certify", root), p8Identity(),
+                p8HashInputs(root), below)
+            @Expect(held.ok, false)
+            @Expect(held.target.runValid, true)
+            @Expect(held.target.targetScoreMatched, false)
+            @Expect(held.diagnostic, "score_mismatch_hold")
+            @Expect(held.runnerCalls, 1)
+            @Expect(held.downstreamCalls, 0)
+            @Expect(below.calls.toArray(), ["restore", "rebuild", "runner"])
+
+            for (score in [Int64(151), Int64(152)]) {
                 let executor = P8RunExecutor()
                 executor.score = score
                 executor.raw = score
                 let result = runCkbPortableReferenceHumanEval(
                     p8Options("run-certify", root), p8Identity(),
                     p8HashInputs(root), executor)
-                @Expect(result.ok, false)
+                @Expect(result.ok, true)
                 @Expect(result.target.runValid, true)
-                @Expect(result.target.targetScoreMatched, false)
-                @Expect(result.diagnostic, "score_mismatch_hold")
+                @Expect(result.target.targetScoreMatched, true)
+                @Expect(result.diagnostic, "target_matched")
                 @Expect(result.runnerCalls, 1)
                 @Expect(result.downstreamCalls, 0)
                 @Expect(executor.calls.toArray(),

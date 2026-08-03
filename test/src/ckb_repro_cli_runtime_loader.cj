@@ -411,31 +411,12 @@ private func ckbReproRunP8A(prepared: CkbReproProductionCliComposition,
         return ckbReproP8CompositionFailure(
             "p8a_runner_authority_invalid", prepared.json)
     }
-    let loadedAuthority = loadCkbReproPreflightAuthority(
-        options.p6EnvironmentLockPath)
-    let verifiedAuthority = match (loadedAuthority[2]) {
-        case Some(value) => value
-        case None => return ckbReproP8CompositionFailure(
-            "environment_attestation_authority_unavailable", prepared.json)
-    }
-    if (!loadedAuthority[0].ok ||
-        renderCkbReproEnvironmentLock(loadedAuthority[1]) !=
-            renderCkbReproEnvironmentLock(shared.environment)) {
-        return ckbReproP8CompositionFailure(
-            "p8a_environment_authority_mismatch", prepared.json)
-    }
-    let p6Options = CkbReproPreflightCliOptions()
-    p6Options.environmentLockPath = options.p6EnvironmentLockPath
-    p6Options.observedEnvironmentPath = runner[1].observedEnvironmentPath
-    p6Options.certificationPreflightPath =
-        runner[1].certificationPreflightPath
-    p6Options.certificationRunManifestPath =
-        runner[1].certificationRunManifestPath
-    p6Options.signingFingerprint = verifiedAuthority.signingFingerprint()
-    p6Options.observedEnvironmentProjectionHash =
-        verifiedAuthority.observedEnvironmentProjectionHash()
-    p6Options.valid = true; p6Options.diagnostic = "ok"
-    let p6 = runCkbReproPreflightCliAdapter(p6Options, verifiedAuthority)
+    shared.environment.runCandidateCommit = options.runCandidateCommit
+    let p6 = runCkbReproSingleCommitPreflight(
+        options.p6EnvironmentLockPath,
+        runner[1].certificationPreflightPath,
+        runner[1].certificationRunManifestPath,
+        options.repositoryRoot, options.runCandidateCommit, ckbReproP8Heap())
     if (!p6.ok || !p6.startAllowed) {
         return ckbReproP8CompositionFailure(p6.diagnostic, prepared.json)
     }

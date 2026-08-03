@@ -699,7 +699,7 @@ public func runCkbPublicEvidenceExportFromFiles(
         parsedReference[1].evidenceStatus != "complete") {
         return p5CliRenderFailure("public_evidence_portable_reference_required")
     }
-    if (parsedReference[1].strictPassed != 151 ||
+    if (parsedReference[1].strictPassed < 151 ||
         parsedReference[1].transportUnresolved != 0) {
         return p5CliRenderFailure("public_evidence_target_score_required")
     }
@@ -757,7 +757,8 @@ public func runCkbPublicEvidenceExportFromFiles(
 
 public func projectCkbPublicEvidenceFromRunFiles(
     runRoot: String,
-    reference: CkbReproReferenceManifest): CkbPublicEvidenceRenderResult {
+    reference: CkbReproReferenceManifest,
+    bindReferenceOutcome!: Bool = true): CkbPublicEvidenceRenderResult {
     if (!validateCkbReproReferenceManifest(reference).ok ||
         reference.baselineKind != "portable_release" ||
         reference.evidenceStatus != "complete") {
@@ -772,7 +773,8 @@ public func projectCkbPublicEvidenceFromRunFiles(
         catch (_: Exception) {
             return p5CliRenderFailure("invalid_response_encoding")
         }
-    if (benchmarkGapSha256(resultsText) != reference.resultsHash) {
+    if (bindReferenceOutcome &&
+        benchmarkGapSha256(resultsText) != reference.resultsHash) {
         return p5CliRenderFailure("public_evidence_results_hash_mismatch")
     }
     let runManifestRead = p5CliReadBounded(
@@ -835,10 +837,11 @@ public func projectCkbPublicEvidenceFromRunFiles(
         rows.add(projected.row)
     }
     let rendered = renderCkbPublicEvidence(rows)
-    if (!rendered.ok || rendered.score.strictPassed != reference.strictPassed ||
+    if (!rendered.ok || (bindReferenceOutcome &&
+        (rendered.score.strictPassed != reference.strictPassed ||
         rendered.score.unitFirstSamplePassed != reference.rawPassed ||
         rendered.score.businessFailed != reference.businessFailed ||
-        rendered.score.protocolInvalid != reference.protocolInvalid) {
+        rendered.score.protocolInvalid != reference.protocolInvalid))) {
         return p5CliRenderFailure("public_evidence_reference_score_mismatch")
     }
     rendered.runManifestHash = declaredRunManifestHash

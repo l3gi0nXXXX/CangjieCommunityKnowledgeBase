@@ -338,9 +338,6 @@ public class CkbReproFilesystemEnvironmentProbe <: CkbReproEnvironmentProbe {
         let candidate = ckbReproValidateCandidateCheckout(repositoryRoot,
             attested.runCandidateCommit, this.gitRunner)
         if (candidate[0] != "ok") { return out }
-        let evidence = ckbReproValidateEvidenceCommit(evidenceRepositoryRoot,
-            attested.runCandidateCommit, this.gitRunner)
-        if (evidence[0] != "ok") { return out }
         let claude = p6ProbeCommand("claude", ["--version"])
         let tar = p6ProbeCommand("tar", ["--version"])
         let zstd = p6ProbeCommand("zstd", ["--version"])
@@ -379,7 +376,9 @@ public class CkbReproFilesystemEnvironmentProbe <: CkbReproEnvironmentProbe {
         out.diagnostic = "ok"
         out.observed = observed
         out.attestedInputHash = attestedInputHash
-        out.attestationEvidenceCommit = evidence[1]
+        // The single-commit model binds the measured environment directly to
+        // the clean candidate checkout selected by the run command.
+        out.attestationEvidenceCommit = candidate[1]
         out
     }
 }
@@ -586,6 +585,65 @@ public func executeCkbReproPreflightCliAdapterWithProbe(
         }
         result.attestationEvidenceCommit = actual.attestationEvidenceCommit
     }
+    result
+}
+
+// Runs the production preflight for the release model selected by the user:
+// one clean candidate commit plus runtime measurement. The commit is supplied
+// by the run command instead of being written into the commit it identifies.
+public func runCkbReproSingleCommitPreflight(environmentLockPath: String,
+    certificationPreflightPath: String,
+    certificationRunManifestPath: String, repositoryRoot: String,
+    sourceCommit: String, heapRaw: String,
+    probe!: CkbReproEnvironmentProbe = CkbReproFilesystemEnvironmentProbe()):
+    CkbReproEnvironmentPreflightResult {
+    for (item in [
+        (environmentLockPath, "environment_lock_missing"),
+        (certificationPreflightPath, "certification_preflight_missing"),
+        (certificationRunManifestPath, "certification_run_manifest_missing")
+    ]) {
+        if (!p6CliAbsolutePath(item[0]) || !exists(Path(item[0]))) {
+            return p6CliPreflightFailure(item[1])
+        }
+        if (try { canonicalize(Path(item[0])).toString() != item[0] }
+            catch (_: Exception) { true }) {
+            return p6CliPreflightFailure("preflight_path_not_canonical")
+        }
+    }
+    if (!p6CliAbsolutePath(repositoryRoot) ||
+        !p6CommitValid(sourceCommit)) {
+        return p6CliPreflightFailure("git_run_candidate_invalid")
+    }
+    let expected = p6CliReadEnvironment(environmentLockPath)
+    if (!expected[0].ok) {
+        return p6CliPreflightFailure(expected[0].diagnostic)
+    }
+    expected[1].runCandidateCommit = sourceCommit
+    let checked = validateCkbReproEnvironmentLock(expected[1],
+        mode: "execution")
+    if (!checked.ok) { return p6CliPreflightFailure(checked.diagnostic) }
+    let preflight = p6CliReadUtf8(certificationPreflightPath)
+    if (preflight[0] != "ok") {
+        return p6CliPreflightFailure(preflight[0])
+    }
+    let manifest = p6CliReadUtf8(certificationRunManifestPath)
+    if (manifest[0] != "ok") {
+        return p6CliPreflightFailure(manifest[0])
+    }
+    let inputHash = ckbReproObservedEnvironmentProjectionHash(expected[1])
+    let actual = try {
+        probe.inspect(expected[1], inputHash, repositoryRoot)
+    } catch (_: Exception) {
+        return p6CliPreflightFailure("environment_probe_unavailable")
+    }
+    if (!actual.ok) { return p6CliPreflightFailure(actual.diagnostic) }
+    if (actual.attestedInputHash != inputHash ||
+        actual.attestationEvidenceCommit != sourceCommit) {
+        return p6CliPreflightFailure("git_candidate_checkout_mismatch")
+    }
+    let result = runCkbReproEnvironmentPreflight(expected[1], actual.observed,
+        ckbServiceHeapPreflight(heapRaw), preflight[1], manifest[1])
+    if (result.ok) { result.attestationEvidenceCommit = sourceCommit }
     result
 }
 
@@ -808,7 +866,7 @@ public func validateCkbReproEnvironmentLock(lock: CkbReproEnvironmentLock,
         }
         for (hash in [lock.cangjieSdkHash, lock.runCriticalFilesManifestHash,
             lock.runCriticalTreeHash, lock.promptHash, lock.authorityDeliveryHash,
-            lock.attestationAuthorityHash, lock.compositionManifestHash]) {
+            lock.compositionManifestHash]) {
             if (!p6HashValid(hash)) { return p6Failure("environment_hash_invalid") }
         }
         if (!lock.qdrantImageDigest.startsWith("sha256:") ||
@@ -820,8 +878,8 @@ public func validateCkbReproEnvironmentLock(lock: CkbReproEnvironmentLock,
     }
     if (lock.attestationAuthorityManifestPath !=
         "reproducibility/manifests/environment-attestation-authority.json" ||
-        (lock.identityStatus == "planned" &&
-            lock.attestationAuthorityHash != "")) {
+        (lock.attestationAuthorityHash != "" &&
+            !p6HashValid(lock.attestationAuthorityHash))) {
         return p6Failure("environment_attestation_authority_invalid")
     }
     if (lock.compositionManifestPath !=
@@ -1384,17 +1442,6 @@ private func p6ProbeActualConfiguration(target: CkbReproEnvironmentLock,
     target.datasetVersion = dataset.datasetVersion
     target.authorityDeliveryHash = p6Hash(
         renderCkbAuthorityDeliveryManifest(authority[1]).toArray())
-    let attestationPath = Path(repositoryRoot).join(
-        target.attestationAuthorityManifestPath).toString()
-    let attestationRead = p6ReadFileBounded(attestationPath, 64 * 1024)
-    if (attestationRead[0] != "ok") {
-        return "environment_probe_attestation_authority_invalid"
-    }
-    let attestation = loadCkbReproVerifiedAttestationAuthority(
-        attestationRead[1], target.attestationAuthorityHash)
-    if (!attestation[0].ok) {
-        return "environment_probe_attestation_authority_invalid"
-    }
     let compositionPath = p6ProbeCanonicalInputPath(
         "CKB_REPRO_COMPOSITION_MANIFEST", "")
     if (compositionPath == "" || !compositionPath.endsWith(

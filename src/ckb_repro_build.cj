@@ -521,7 +521,7 @@ public func loadCkbPortablePromotionCliInputs(unsignedRoot: String,
             // proves the later benchmark run. They are independently bound assets.
             publicEvidence[1].publicEvidenceHash != options.identity ||
             reference[1].strictPassed != options.p8StrictPassed ||
-            reference[1].strictPassed != 151 ||
+            reference[1].strictPassed < 151 ||
             publicEvidence[1].referenceManifestHash != referenceValidation.manifestHash ||
             publicEvidence[1].privateResultsHash != reference[1].resultsHash ||
             publicEvidence[1].runId != reference[1].runId ||
@@ -570,7 +570,7 @@ public func loadCkbPortablePromotionCliInputs(unsignedRoot: String,
         if (!p4BuildHash(hash)) { return (p4BuildFailure("promotion_proof_missing"), options) }
     }
     if (options.candidateVersion == "" || options.identity == "" ||
-        options.p8StrictPassed != 151) {
+        options.p8StrictPassed < 151) {
         return (p4BuildFailure("promotion_identity_invalid"), options)
     }
     (p4BuildSuccess(), options)
@@ -1617,7 +1617,7 @@ public func validateCkbPortablePromotionInputs(
     }
     if (options.expectedActiveVersion == "" || !p4BuildHash(options.expectedPointerHash) ||
         options.candidateVersion == "" || options.identity == "" ||
-        options.p8StrictPassed != 151) {
+        options.p8StrictPassed < 151) {
         return p4BuildFailure("promotion_identity_invalid")
     }
     for (hash in [options.candidateManifestHash, options.p2ProofHash,

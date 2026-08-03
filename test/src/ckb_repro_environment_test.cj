@@ -193,6 +193,52 @@ public class CkbReproEnvironmentTest {
     }
 
     @TestCase
+    public func p6Ut02SingleCommitPreflightAcceptsOnlyMatchingCleanCandidate(): Unit {
+        let root = Path("target/p6-single-commit-preflight")
+        if (exists(root)) { remove(root, recursive: true) }
+        Directory.create(root, recursive: true)
+        let canonical = canonicalize(root).toString()
+        let lockPath = "${canonical}/environment-lock.json"
+        let preflightPath = "${canonical}/certification-preflight.json"
+        let runManifestPath = "${canonical}/certification-run-manifest.json"
+        let commit = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        let expected = p6FrozenEnvironment()
+        expected.attestationAuthorityHash = ""
+        File.writeTo(Path(lockPath),
+            renderCkbReproEnvironmentLock(expected).toArray())
+        let seal = p6CertificationSeal()
+        File.writeTo(Path(preflightPath), seal[0].toArray())
+        File.writeTo(Path(runManifestPath), seal[1].toArray())
+
+        let observed = p6FrozenEnvironment()
+        observed.attestationAuthorityHash = ""
+        let matching = CkbReproEnvironmentProbeResult()
+        matching.ok = true
+        matching.observed = observed
+        matching.attestedInputHash =
+            ckbReproObservedEnvironmentProjectionHash(observed)
+        matching.attestationEvidenceCommit = commit
+        let accepted = runCkbReproSingleCommitPreflight(lockPath,
+            preflightPath, runManifestPath, canonical, commit, "4GB",
+            probe: P6FakeEnvironmentProbe(matching))
+        @Expect(accepted.ok, true)
+        @Expect(accepted.startAllowed, true)
+        @Expect(accepted.attestationEvidenceCommit, commit)
+
+        matching.attestationEvidenceCommit =
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        @Expect(runCkbReproSingleCommitPreflight(lockPath, preflightPath,
+            runManifestPath, canonical, commit, "4GB",
+            probe: P6FakeEnvironmentProbe(matching)).diagnostic,
+            "git_candidate_checkout_mismatch")
+        @Expect(runCkbReproSingleCommitPreflight(lockPath, preflightPath,
+            runManifestPath, canonical, "not-a-commit", "4GB",
+            probe: P6FakeEnvironmentProbe(matching)).diagnostic,
+            "git_run_candidate_invalid")
+        remove(root, recursive: true)
+    }
+
+    @TestCase
     public func p6Bnd01HeapEncodingTimeoutAndTransportBoundariesFailClosed(): Unit {
         @Expect(parseCkbReproEnvironmentLock([0xff, 0xfe])[0].diagnostic,
             "invalid_response_encoding")

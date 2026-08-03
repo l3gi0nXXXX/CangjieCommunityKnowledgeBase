@@ -294,12 +294,24 @@ public class CkbPublicEvidenceTest {
     }
 
     @TestCase
-    public func p5Neg02ProductionExportRequiresExactPortableTarget(): Unit {
+    public func p5Neg02ProductionExportRequiresPortableTargetFloor(): Unit {
         @Expect(p5RunProductionExportFixture(151).ok, true)
+        @Expect(p5RunProductionExportFixture(152).ok, true)
         @Expect(p5RunProductionExportFixture(150).diagnostic,
             "public_evidence_target_score_required")
-        @Expect(p5RunProductionExportFixture(152).diagnostic,
-            "public_evidence_target_score_required")
+        @Expect(p5RunProductionProjectionFixture(152,
+            referenceStrictPassed: 151).diagnostic,
+            "public_evidence_reference_score_mismatch")
+        @Expect(p5RunProductionProjectionFixture(152,
+            bindReferenceOutcome: false,
+            referenceStrictPassed: 151).ok, true)
+        @Expect(p5RunProductionProjectionFixture(152,
+            drift: "results_hash", bindReferenceOutcome: false,
+            referenceStrictPassed: 151).ok, true)
+        @Expect(p5RunProductionProjectionFixture(152,
+            drift: "provider", bindReferenceOutcome: false,
+            referenceStrictPassed: 151).diagnostic,
+            "public_evidence_reference_identity_mismatch")
     }
 
     @TestCase
@@ -613,15 +625,19 @@ private func p5RunProductionExportFixture(
 
 private func p5RunProductionProjectionFixture(
     strictPassed: Int64,
-    drift!: String = ""): CkbPublicEvidenceRenderResult {
-    p5RunProductionFixture(strictPassed, drift: drift, export: false)
+    drift!: String = "", bindReferenceOutcome!: Bool = true,
+    referenceStrictPassed!: Int64 = -1): CkbPublicEvidenceRenderResult {
+    p5RunProductionFixture(strictPassed, drift: drift, export: false,
+        bindReferenceOutcome: bindReferenceOutcome,
+        referenceStrictPassed: referenceStrictPassed)
 }
 
 private func p5RunProductionFixture(
     strictPassed: Int64,
     drift!: String = "",
     certificationModelFingerprint!: String = "claude-code-glm-5.2",
-    export!: Bool = true): CkbPublicEvidenceRenderResult {
+    export!: Bool = true, bindReferenceOutcome!: Bool = true,
+    referenceStrictPassed!: Int64 = -1): CkbPublicEvidenceRenderResult {
     let root = Path("target/p5-production-export-${strictPassed}-${drift}-${export}")
     if (exists(root)) { remove(root, recursive: true) }
     Directory.create(root.join("run/cases"), recursive: true)
@@ -698,10 +714,13 @@ private func p5RunProductionFixture(
     } else { benchmarkGapSha256(results) }
     reference.runCriticalTreeHash = p5Hash("critical")
     reference.certifiedRunInputHash = p5Hash("certified-input")
-    reference.totalCases = 164; reference.rawPassed = strictPassed + 3
-    reference.strictPassed = strictPassed
-    reference.strictFailed = 164 - strictPassed
-    reference.businessFailed = 161 - strictPassed
+    let referenceScore = if (referenceStrictPassed >= 0) {
+        referenceStrictPassed
+    } else { strictPassed }
+    reference.totalCases = 164; reference.rawPassed = referenceScore + 3
+    reference.strictPassed = referenceScore
+    reference.strictFailed = 164 - referenceScore
+    reference.businessFailed = 161 - referenceScore
     reference.protocolInvalid = 3
     reference.transportUnresolved = 0
     File.writeTo(root.join("reference.json"),
@@ -741,7 +760,8 @@ private func p5RunProductionFixture(
     let result = if (export) {
         runCkbPublicEvidenceExportFromFiles(options)
     } else {
-        projectCkbPublicEvidenceFromRunFiles(options.runRoot, reference)
+        projectCkbPublicEvidenceFromRunFiles(options.runRoot, reference,
+            bindReferenceOutcome: bindReferenceOutcome)
     }
     if (!export && exists(options.outputRoot)) {
         result.ok = false

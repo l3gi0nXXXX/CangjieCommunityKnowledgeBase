@@ -90,6 +90,13 @@ public class CkbReproPublishGateTest {
         @Expect(git.calls, 1)
         @Expect(signature.calls, 1)
 
+        let aboveFloor = p9PublishEvidence()
+        aboveFloor.strictPassed = 152
+        @Expect(validateCkbReproPublishBundle(options, aboveFloor,
+            P9FakeGitProvider(p9GitEvidence(false)),
+            P9FakeSignatureVerifier(p9SignatureEvidence(false)))
+            .componentReady, true)
+
         let post = p9GateOptions("post-tag")
         let postResult = validateCkbReproPublishBundle(post,
             p9PublishEvidence(),

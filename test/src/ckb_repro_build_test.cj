@@ -374,6 +374,7 @@ public class CkbReproBuildTest {
     @TestCase
     public func p4Pos03PromotionInterfaceFakePointerCommitsOnce(): Unit {
         let fixture = p4PromotionFixture("pos03")
+        fixture.options.p8StrictPassed = 152
         let backend = P4FakePromotionBackend()
         let result = promoteCkbPortableCandidate(fixture.options, backend)
         @Expect(result.ready, true)
