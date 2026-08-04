@@ -628,6 +628,7 @@ private class P9BundleStreamResult {
 
 private class P9BundleContentScanner {
     private let textRequired: Bool
+    private let leakageMode: Int64
     private var utf8Remaining: Int64 = 0
     private var nextMinimum: UInt8 = 0x80
     private var nextMaximum: UInt8 = 0xbf
@@ -635,7 +636,10 @@ private class P9BundleContentScanner {
     private var invalidEncoding: Bool = false
     private var sensitive: Bool = false
     private var recent = ArrayList<UInt8>()
-    public init(scanText: Bool) { this.textRequired = scanText }
+    public init(scanText: Bool, leakageMode!: Int64 = 2) {
+        this.textRequired = scanText
+        this.leakageMode = leakageMode
+    }
     public func feed(bytes: Array<UInt8>): Unit {
         for (byte in bytes) {
             if (this.textRequired && !this.invalidEncoding) {
@@ -666,9 +670,11 @@ private class P9BundleContentScanner {
             }
             scan.add(this.recent[i]); i += 1
         }
-        if (!this.sensitive &&
-            !scanCkbPublicEvidenceLeakage(scan.toArray()).ok) {
-            this.sensitive = true
+        if (!this.sensitive && this.leakageMode > 0) {
+            let detected = if (this.leakageMode == 2) {
+                !scanCkbPublicEvidenceLeakage(scan.toArray()).ok
+            } else { p9BundleMachinePathLeakage(scan.toArray()) }
+            if (detected) { this.sensitive = true }
         }
     }
     public func finish(): String {
@@ -1003,7 +1009,8 @@ public func validateCkbReproBundleAssets(assets: ArrayList<CkbReproBundleAsset>)
             asset.sha256 != ckbReproBundleHash(asset.bytes)) {
             return p9BundleFailure("bundle_asset_hash_mismatch")
         }
-        let scanner = P9BundleContentScanner(!p9BundleBinaryAllowed(asset))
+        let scanner = P9BundleContentScanner(!p9BundleBinaryAllowed(asset),
+            leakageMode: p9BundleLeakageMode(asset))
         scanner.feed(asset.bytes)
         let content = scanner.finish()
         if (content != "ok") { return p9BundleFailure(content) }
@@ -1303,7 +1310,8 @@ public func validateCkbReproBundleManifest(root: String,
                 return out
             }
             let assetRead = p9ConsumeBundleEntry(root, entry[1], backend, 0,
-                scanText: !p9BundleBinaryAllowed(asset))
+                scanText: !p9BundleBinaryAllowed(asset),
+                leakageMode: p9BundleLeakageMode(asset))
             if (!assetRead.contract.ok) {
                 out.contract = assetRead.contract
                 return out
@@ -1380,7 +1388,8 @@ public func validateCkbReproBundleAssetsStreaming(root: String,
             return p9BundleFailure("bundle_asset_size_mismatch")
         }
         let streamed = p9ConsumeBundleEntry(root, entry[1], backend, 0,
-            scanText: !p9BundleBinaryAllowed(asset))
+            scanText: !p9BundleBinaryAllowed(asset),
+            leakageMode: p9BundleLeakageMode(asset))
         if (!streamed.contract.ok) { return streamed.contract }
         if (streamed.sha256 != asset.sha256) {
             return p9BundleFailure("bundle_asset_hash_mismatch")
@@ -1659,12 +1668,47 @@ private func p9BundleRoleAllowed(role: String): Bool {
 private func p9BundleBinaryAllowed(asset: CkbReproBundleAsset): Bool {
     if (asset.role != "p2_logical_snapshot" &&
         asset.role != "p3_qdrant_snapshot" &&
+        asset.role != "p5_public_evidence" &&
         asset.role != "authority_delivery") { return false }
     let path = asset.logicalAsset.toAsciiLower()
     path.endsWith(".bin") || path.endsWith(".snapshot") ||
         path.endsWith(".tar") || path.endsWith(".tar.gz") ||
         path.endsWith(".gz") || path.endsWith(".zst") ||
         path.endsWith(".zip") || path.endsWith(".ckb-release")
+}
+
+private func p9BundleLeakageMode(asset: CkbReproBundleAsset): Int64 {
+    if (p9BundleBinaryAllowed(asset)) { return 0 }
+    if (asset.logicalAsset.endsWith(".schema.json") ||
+        asset.role == "p0_manifest" || asset.role == "p6_environment_lock" ||
+        asset.role == "p7_documentation" || asset.role == "source_lock" ||
+        asset.role == "authority_delivery" || asset.role == "license" ||
+        (asset.role == "portable_report" &&
+        asset.logicalAsset.contains("portable-path-policy"))) { return 1 }
+    2
+}
+
+private func p9BundleMachinePathLeakage(bytes: Array<UInt8>): Bool {
+    let text = try { String.fromUtf8(bytes) } catch (_: Exception) { return true }
+    for (prefix in ["/Users/", "/home/", "/private/", "/tmp/",
+        "/var/folders/", "/Volumes/", "/mnt/"]) {
+        if (text.contains(prefix)) { return true }
+    }
+    let runes = text.toRuneArray()
+    if (runes.size < 3) { return false }
+    for (i in 0..(runes.size - 2)) {
+        let boundary = i == 0 || runes[i - 1] == r' ' ||
+            runes[i - 1] == r'\t' || runes[i - 1] == r'\n' ||
+            runes[i - 1] == r'\r' || runes[i - 1] == r'"' ||
+            runes[i - 1] == r'\''
+        if (boundary && runes[i] >= r'A' && runes[i] <= r'Z' &&
+            runes[i + 1] == r':' &&
+            (runes[i + 2] == r'/' || runes[i + 2] == r'\\') &&
+            i + 3 < runes.size &&
+            !(runes[i + 2] == r'/' &&
+            runes[i + 3] == r'/')) { return true }
+    }
+    false
 }
 
 private func p9BundleDerivedPathForbidden(path: String): Bool {
@@ -1905,7 +1949,7 @@ private func p9FindBundleReadEntry(
 private func p9ConsumeBundleEntry(root: String,
     expected: CkbReproBundleReadEntry,
     backend: CkbReproBundleReadBackend, captureLimit: Int64,
-    scanText!: Bool = false):
+    scanText!: Bool = false, leakageMode!: Int64 = 2):
     P9BundleStreamResult {
     let out = P9BundleStreamResult()
     if (captureLimit > 0 && expected.size > captureLimit) {
@@ -1921,7 +1965,8 @@ private func p9ConsumeBundleEntry(root: String,
             }
             let digest = SHA256()
             let captured = ArrayList<UInt8>()
-            let scanner = P9BundleContentScanner(scanText)
+            let scanner = P9BundleContentScanner(scanText,
+                leakageMode: leakageMode)
             let buffer = Array<UInt8>(65536, repeat: UInt8(0))
             while (true) {
                 let count = handle.read(buffer)
@@ -2323,7 +2368,8 @@ private func p9BundleStreamFrozenInputs(sourceRoot: String,
             }
             let handle = backend.open(sourceRoot, found[1])
             let digest = SHA256(); var size: Int64 = 0
-            let scanner = P9BundleContentScanner(!p9BundleBinaryAllowed(asset))
+            let scanner = P9BundleContentScanner(!p9BundleBinaryAllowed(asset),
+                leakageMode: p9BundleLeakageMode(asset))
             try {
                 if (!handle.noFollow()) { return false }
                 try (file = File(target, OpenMode.Write)) {

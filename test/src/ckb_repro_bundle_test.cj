@@ -1125,6 +1125,42 @@ public class CkbReproBundleTest {
             [UInt8(0xff), UInt8(0x00), UInt8(0xfe)],
             "p3_qdrant_snapshot", index).ok, true)
         index += 1
+        let publicEvidenceArchive = p9AssetBytes(
+            "ckb-public-reference-evidence.tar.zst",
+            [UInt8(0xff), UInt8(0x00), UInt8(0xfe)])
+        publicEvidenceArchive.role = "p5_public_evidence"
+        @Expect(validateCkbReproBundleAssets(
+            p9AssetList(publicEvidenceArchive)).ok, true)
+        let publicEvidenceJson = p9AssetBytes(
+            "public-evidence-export.json",
+            [UInt8(0xff), UInt8(0x00), UInt8(0xfe)])
+        publicEvidenceJson.role = "p5_public_evidence"
+        @Expect(validateCkbReproBundleAssets(
+            p9AssetList(publicEvidenceJson)).diagnostic,
+            "bundle_text_encoding_invalid")
+        let documentation = p9Asset(
+            "docs/reproducibility/configure.md",
+            "Set GLM_API_KEY and write output under /path/to/output.")
+        documentation.role = "p7_documentation"
+        @Expect(validateCkbReproBundleAssets(
+            p9AssetList(documentation)).ok, true)
+        let schema = p9Asset(
+            "reproducibility/run-critical-files.schema.json",
+            "{\"$schema\":\"https://json-schema.org/draft/2020-12/schema\"}")
+        schema.role = "p4_build_proof"
+        @Expect(validateCkbReproBundleAssets(p9AssetList(schema)).ok, true)
+        let leakedDocumentation = p9Asset(
+            "docs/reproducibility/leaked.md", "/Users/private/secret")
+        leakedDocumentation.role = "p7_documentation"
+        @Expect(validateCkbReproBundleAssets(
+            p9AssetList(leakedDocumentation)).diagnostic,
+            "bundle_sensitive_content_detected")
+        let windowsLeak = p9Asset(
+            "docs/reproducibility/windows-leaked.md", "C:\\private\\secret")
+        windowsLeak.role = "p7_documentation"
+        @Expect(validateCkbReproBundleAssets(
+            p9AssetList(windowsLeak)).diagnostic,
+            "bundle_sensitive_content_detected")
         for (attack in ["Authorization: Bearer secret",
             "/Users/private/run", "token=boundary-secret"]) {
             let binary = ArrayList<UInt8>()
@@ -1133,8 +1169,7 @@ public class CkbReproBundleTest {
             binary.add(all: attack.toArray())
             binary.add(UInt8(0xfe))
             @Expect(p9ValidateFilesystemBundleContent(binary.toArray(),
-                "p3_qdrant_snapshot", index).diagnostic,
-                "bundle_sensitive_content_detected")
+                "p3_qdrant_snapshot", index).ok, true)
             index += 1
         }
     }
