@@ -765,6 +765,18 @@ public class CkbReproRuntimeCompositionTest {
     }
 
     @TestCase
+    public func p8SharedCompositionMatchesLogicalTotalToSelectedBuildCount(): Unit {
+        let source = String.fromUtf8(File.readFrom(
+            Path("../src/ckb_repro_cli_runtime_p8_factory.cj")))
+        @Expect(source.contains(
+            "out.buildProof.selectedCount != out.logical.rawCount"), true)
+        @Expect(source.contains(
+            "prepared.mode == \"run-certify\" &&"), true)
+        @Expect(source.contains(
+            "out.buildProof.rawCount != out.logical.rawCount"), true)
+    }
+
+    @TestCase
     public func p8CompositionDiagnosticIsRuneSafeAndBounded(): Unit {
         let value = StringBuilder("\"\n\u{0001}\b\fAuthorization: secret ")
         for (_ in 0..200) { value.append("中🙂") }

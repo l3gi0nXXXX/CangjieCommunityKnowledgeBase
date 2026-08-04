@@ -608,10 +608,15 @@ private func ckbTypedCanonicalNewPath(value: String): Bool {
         return try { canonicalize(path).toString() == value }
             catch (_: Exception) { false }
     }
-    if (!exists(path.parent)) { return false }
-    let parent = try { canonicalize(path.parent).toString() }
+    var existingParent = path.parent
+    while (!exists(existingParent)) {
+        let next = existingParent.parent
+        if (next.toString() == existingParent.toString()) { return false }
+        existingParent = next
+    }
+    let parent = try { canonicalize(existingParent).toString() }
         catch (_: Exception) { return false }
-    Path(parent).join(path.fileName).toString() == value
+    parent == existingParent.toString() && value.startsWith("${parent}/")
 }
 
 private class CkbTypedP8BFileEvidence {

@@ -59,6 +59,13 @@ public class CkbReproCliTypedAssetsTest {
         @Expect(parsed[1].pathContext.apiRoutes.size, 1)
         @Expect(parsed[1].releasePathPolicy.productionStoreRoot,
             "/tmp/ckb-typed-production")
+        let leakage = CangjieBenchmarkLeakageAuthority()
+        leakage.fingerprints.add("abcdefghijklmnopqrstuvwx")
+        leakage.fingerprintSet.add("abcdefghijklmnopqrstuvwx")
+        @Expect(composeCkbReproCliPrivateBuildAuthority(
+            typedEvalSupport(), leakage, parsed[1],
+            "${root}/nested/rebuild-temporary", "${root}/runtime")[0].ok,
+            true)
         remove(Path(root), recursive: true)
     }
 
@@ -216,6 +223,7 @@ public class CkbReproCliTypedAssetsTest {
             command.toArray(), transport)[1]
         for (value in ["--config", "/tmp/owned.conf", "--store",
             "/tmp/owned-store", "mcp-stdio"]) { spec.args.add(value) }
+        spec.environment.add("cjHeapSize=4GB")
         let delegate = TypedAssetsProcessDelegate()
         let checked = CkbP8BIdentityCheckedProcessExecutor(transport,
             "/tmp/owned.conf", "/tmp/owned-store", delegate: delegate)
