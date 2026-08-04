@@ -105,6 +105,42 @@ public class CkbReproP8OwnedLifecycleTest {
     }
 
     @TestCase
+    public func stoppedServiceRemovesOwnedConfigBeforeNextStage(): Unit {
+        let fixture = p8LifecycleFixture("ckb-restart")
+        let commands = P8FakeOwnedCommandExecutor()
+        p8QueueQdrantSuccess(commands, fixture)
+        commands.process = Some<CkbP8OwnedProcessHandle>(P8FakeOwnedProcess())
+        let readiness = P8FakeOwnedReadinessProbe()
+        readiness.responses.add(p8ReadyUnavailable())
+        readiness.responses.add(p8Ready(200, "ready".toArray()))
+        for (_ in 0..2) {
+            readiness.responses.add(p8ReadyUnavailable())
+            readiness.responses.add(p8Ready(200,
+                "{\"activeKnowledgeVersion\":\"${fixture.knowledgeVersion}\"}"
+                    .toArray()))
+        }
+        let lifecycle = CkbNativeP8OwnedLocalLifecycle(fixture.authority,
+            fixture.qdrant, commandExecutor: commands,
+            readinessProbe: readiness)
+
+        @Expect(lifecycle.startQdrant(fixture.options).ok, true)
+        @Expect(lifecycle.startParityService(fixture.options.runtimeRoot,
+            fixture.knowledgeVersion).ok, true)
+        let firstConfig = lifecycle.ownedConfigPath()
+        @Expect(exists(Path(firstConfig)), true)
+        @Expect(lifecycle.stopParityService(), true)
+        @Expect(exists(Path(firstConfig)), false)
+        @Expect(lifecycle.ownedConfigPath(), "")
+
+        commands.process = Some<CkbP8OwnedProcessHandle>(P8FakeOwnedProcess())
+        @Expect(lifecycle.startParityService(fixture.options.runtimeRoot,
+            fixture.knowledgeVersion).ok, true)
+        @Expect(commands.launches.size, 2)
+        @Expect(lifecycle.cleanup(fixture.options), true)
+        p8RemoveFixture(fixture.root)
+    }
+
+    @TestCase
     public func readinessIdentityAndUtf8FailuresStopOwnedProcess(): Unit {
         for (response in [
             p8Ready(200, "{\"activeKnowledgeVersion\":\"wrong\"}".toArray()),

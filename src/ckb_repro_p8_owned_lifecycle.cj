@@ -257,7 +257,7 @@ public class CkbNativeP8OwnedLocalLifecycle <: CkbP8OwnedLocalLifecycle {
     }
 
     public func stopParityService(): Bool {
-        match (this.service) {
+        let stopped = match (this.service) {
             case Some(process) =>
                 let stopped = process.stop()
                 if (stopped) {
@@ -266,6 +266,13 @@ public class CkbNativeP8OwnedLocalLifecycle <: CkbP8OwnedLocalLifecycle {
                 stopped
             case None => true
         }
+        if (!stopped) { return false }
+        if (this.configPath != "" && exists(Path(this.configPath))) {
+            try { remove(Path(this.configPath)) }
+            catch (_: Exception) { return false }
+        }
+        this.configPath = ""
+        true
     }
 
     public func conflictingProcessCount(): Int64 {
