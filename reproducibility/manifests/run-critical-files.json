@@ -50,6 +50,6 @@
     {"path":"src/ckb_repro_documentation.cj","status":"present","sha256":"sha256:81c51f4bee5f5053ed2c44b0ac6a72bc30e2b60606b8647637fe03bf4cacd3ff"},
     {"path":"src/ckb_portable_path_normalizer.cj","status":"present","sha256":"sha256:88742dd5cd61c7e44f21cbb7eea3089961db82665b927991cffc5a55f3267ffc"},
     {"path":"src/ckb_repro_environment.cj","status":"present","sha256":"sha256:751a42fbee666e47073d1d6c77b6715819f1b892889f39c1e782c95ca70ad3ad"},
-    {"path":"src/ckb_repro_verify.cj","status":"present","sha256":"sha256:de2facc81f8a5132e10be40e75a08491b4ef257d78fc0a389f81b1fbf5128232"}
+    {"path":"src/ckb_repro_verify.cj","status":"present","sha256":"sha256:7930899df4b5e022ddb6366a11524337253b8fcb0eeec946b3c13dc6aab3f568"}
   ]
 }
