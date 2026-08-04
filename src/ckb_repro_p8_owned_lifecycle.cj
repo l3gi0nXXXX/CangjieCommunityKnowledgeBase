@@ -183,7 +183,7 @@ public class CkbNativeP8OwnedLocalLifecycle <: CkbP8OwnedLocalLifecycle {
         }
         Directory.create(Path(this.workRoot), recursive: false)
         Directory.create(Path(this.qdrantRoot), recursive: false)
-        let network = this.docker(["network", "create", "--internal",
+        let network = this.docker(["network", "create",
                 "--label", "ckb.repro.p8.owner=${identity}", this.networkName])
         if (network.exitCode != 0 || network.diagnostic != "ok") {
             return p8OwnedFailure("p8_qdrant_network_create_failed")
@@ -195,6 +195,7 @@ public class CkbNativeP8OwnedLocalLifecycle <: CkbP8OwnedLocalLifecycle {
         let run = this.docker(["run", "--pull=never", "--rm", "-d",
                 "--name", containerName, "--label",
                 "ckb.repro.p8.owner=${identity}", "--network", this.networkName,
+                "--env", "QDRANT__TELEMETRY_DISABLED=true",
                 "--publish", "127.0.0.1:${port}:6333", "--mount",
                 "type=bind,source=${this.qdrantRoot},target=/qdrant/storage",
                 this.authority.qdrantImageReference])
