@@ -11,6 +11,19 @@ public class CkbReproPromotionBundleTest {
     public func p4P9UtPromotionLayoutRequiresSameBundleRuntimeAssets(): Unit {
         let assets = p4PromotionRequiredAssets()
         @Expect(validateCkbReproPromotionBundleLayout(assets).ok, true)
+        let additional = CkbReproBundleAsset()
+        additional.relativePath = "ckb-public-reference-evidence.tar.zst"
+        additional.bytes = "additional-evidence".toArray()
+        additional.size = additional.bytes.size
+        additional.sha256 = ckbReproBundleHash(additional.bytes)
+        additional.inputKind = "verified_input"
+        additional.role = "p5_public_evidence"
+        additional.logicalAsset = additional.relativePath
+        additional.partIndex = 0; additional.partCount = 1
+        additional.logicalSize = additional.size
+        additional.logicalSha256 = additional.sha256
+        assets.add(additional)
+        @Expect(validateCkbReproPromotionBundleLayout(assets).ok, true)
 
         let missing = p4PromotionRequiredAssets()
         missing.remove(at: missing.size - 1)

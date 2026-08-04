@@ -367,20 +367,6 @@ public func validateCkbReproPromotionBundleLayout(
             return p9BundleFailure("promotion_bundle_layout_invalid")
         }
     }
-    for (expected in [("p2_logical_snapshot", Int64(1)),
-        ("p3_qdrant_snapshot", Int64(2)),
-        ("p4_build_proof", Int64(3)),
-        ("p5_public_evidence", Int64(1)),
-        ("p8_reference", Int64(1)),
-        ("release_commit", Int64(1))]) {
-        var count: Int64 = 0
-        for (asset in assets) {
-            if (asset.role == expected[0]) { count += 1 }
-        }
-        if (count != expected[1]) {
-            return p9BundleFailure("promotion_bundle_layout_invalid")
-        }
-    }
     p9BundleSuccess()
 }
 
