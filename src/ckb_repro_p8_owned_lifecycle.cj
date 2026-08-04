@@ -327,7 +327,16 @@ public class CkbNativeP8OwnedLocalLifecycle <: CkbP8OwnedLocalLifecycle {
     private func waitReady(url: String, expectedVersion: String,
         checkVersion: Bool): CkbReproContractResult {
         var attempts: Int64 = 0
-        while (attempts < 50) {
+        while (attempts < 200) {
+            if (checkVersion) {
+                match (this.service) {
+                    case Some(process) => if (!process.alive()) {
+                        return p8OwnedFailure("p8_ckb_service_exited")
+                    }
+                    case None => return p8OwnedFailure(
+                        "p8_ckb_service_exited")
+                }
+            }
             let response = this.readinessProbe.get(url,
                 this.authority.timeoutMillis, 65536)
             if (response.statusCode >= 200 && response.statusCode < 300) {
@@ -342,7 +351,7 @@ public class CkbNativeP8OwnedLocalLifecycle <: CkbP8OwnedLocalLifecycle {
                 return p8OwnedFailure("p8_ckb_service_identity_mismatch")
             }
             attempts += 1
-            if (attempts < 50) { sleep(Duration.millisecond * 20) }
+            if (attempts < 200) { sleep(Duration.millisecond * 50) }
         }
         p8OwnedFailure(if (checkVersion) { "p8_ckb_service_not_ready" }
             else { "p8_qdrant_not_ready" })
