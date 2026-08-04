@@ -437,7 +437,7 @@ private func p8OwnedEndpointPort(value: String): String {
 
 private func p8OwnedIdentity(workRoot: String, imageId: String): String {
     let hash = benchmarkGapSha256("${workRoot}|${imageId}")
-    hash[0..16]
+    hash[7..23]
 }
 
 private func p8OwnedAsciiLine(bytes: Array<UInt8>): (String, String) {

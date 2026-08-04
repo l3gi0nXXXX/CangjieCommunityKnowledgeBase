@@ -30,7 +30,15 @@ public class CkbReproP8OwnedLifecycleTest {
             ["image", "inspect", "--format={{.Id}}",
                 fixture.authority.qdrantImageReference])
         @Expect(commands.calls[1].args.contains("--internal"), true)
+        let networkName = commands.calls[1].args[
+            commands.calls[1].args.size - 1]
+        @Expect(networkName.startsWith("ckb-p8-net-"), true)
+        @Expect(networkName.contains(":"), false)
         @Expect(commands.calls[2].args.contains("--pull=never"), true)
+        let nameIndex = commands.calls[2].args.indexOf("--name").getOrThrow()
+        @Expect(commands.calls[2].args[nameIndex + 1].startsWith(
+            "ckb-p8-qdrant-"), true)
+        @Expect(commands.calls[2].args[nameIndex + 1].contains(":"), false)
         @Expect(commands.calls[2].args.contains(
             "127.0.0.1:6333:6333"), true)
         @Expect(commands.calls[2].args.contains(
