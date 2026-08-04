@@ -1700,13 +1700,10 @@ public class CkbPortableProductionPromotionBackend <:
 
     public func readCurrent(): CkbPortablePromotionState {
         let pointer = this.productionStore.loadActiveSnapshotPointer()
-        let state = if (pointer.valid) {
-            CkbPortablePromotionState(pointer.activeVersion,
-                ckbActiveSnapshotPointerIdentityHash(pointer),
-                pointer.vectorActiveCollection)
-        } else { CkbPortablePromotionState("", "", "") }
+        let snapshot = this.productionStore.loadActiveSnapshot()
+        let state = ckbPortablePromotionCurrentState(pointer, snapshot)
         this.before = state
-        this.beforeSnapshot = this.productionStore.loadActiveSnapshot()
+        this.beforeSnapshot = snapshot
         state
     }
 
@@ -1797,6 +1794,20 @@ public class CkbPortableProductionPromotionBackend <:
         request.path = "/collections/${this.targetCollection}"
         _ = this.executor.execute(request)
     }
+}
+
+func ckbPortablePromotionCurrentState(pointer: CkbActiveSnapshotPointer,
+    snapshot: ActiveSnapshot): CkbPortablePromotionState {
+    if (pointer.valid) {
+        return CkbPortablePromotionState(pointer.activeVersion,
+            ckbActiveSnapshotPointerIdentityHash(pointer),
+            pointer.vectorActiveCollection)
+    }
+    if (snapshot.valid) {
+        return CkbPortablePromotionState(snapshot.activeVersion, "",
+            snapshot.vectorActiveCollection)
+    }
+    CkbPortablePromotionState("", "", "")
 }
 
 public class CkbPortablePromotionResult {
