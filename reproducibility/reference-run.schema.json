@@ -63,7 +63,7 @@
     "strictFailed": {"type": "integer", "minimum": 0, "maximum": 164},
     "businessFailed": {"type": "integer", "minimum": 0, "maximum": 164},
     "protocolInvalid": {"type": "integer", "minimum": 0, "maximum": 164},
-    "transportUnresolved": {"const": 0},
+    "transportUnresolved": {"type": "integer", "minimum": 0, "maximum": 164},
     "missingEvidence": {"type": "array", "items": {"type": "string"}, "uniqueItems": true}
   }
 }

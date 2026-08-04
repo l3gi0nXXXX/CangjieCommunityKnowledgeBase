@@ -49,7 +49,7 @@ public class CkbReproManifestTest {
             mode: "execution")
         @Expect(execution.ok, true)
         @Expect(execution.treeHash,
-            "sha256:eda802c3275d60a512015ff40ce39aef95f31ddcba9be427426f7a056f67eb26")
+            "sha256:7e26be38623ffe6082ef8e6389b5a59ae6d80c00a101f07eb2d562e2c381ad69")
     }
 
     @TestCase
@@ -77,6 +77,14 @@ public class CkbReproManifestTest {
             sample.rawPassed = if (strict < 158) { 158 } else { strict }
             @Expect(validateCkbReproReferenceManifest(sample).ok, true)
         }
+        let unresolved = p0CompleteReference()
+        unresolved.strictPassed = 158
+        unresolved.strictFailed = 6
+        unresolved.rawPassed = 160
+        unresolved.businessFailed = 2
+        unresolved.protocolInvalid = 2
+        unresolved.transportUnresolved = 2
+        @Expect(validateCkbReproReferenceManifest(unresolved).ok, true)
         let unicode = p0CompleteReference()
         unicode.runId = "公开-复现🙂"
         let unicodeRoundTrip = parseCkbReproReferenceManifest(
@@ -132,7 +140,13 @@ public class CkbReproManifestTest {
         @Expect(computeCkbHistoricalEvidenceTreeHash(evidence[1]),
             parsed[1].runCriticalTreeHash)
         @Expect(validateCkbHistoricalReferenceEvidence(evidence[1], parsed[1]).ok, true)
-        @Expect(exists(Path("../reproducibility/manifests/reference-run.json")), false)
+        let portable = parseCkbReproReferenceManifest(
+            p0Read("../reproducibility/manifests/reference-run.json"))
+        @Expect(portable[0].ok, true)
+        @Expect(validateCkbReproReferenceManifest(portable[1]).ok, true)
+        @Expect(portable[1].baselineKind, "portable_release")
+        @Expect(portable[1].strictPassed, 158)
+        @Expect(portable[1].transportUnresolved, 2)
     }
 
     @TestCase

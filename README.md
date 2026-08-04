@@ -47,34 +47,26 @@ The integration test constructs the 164-case runner proof once and reuses it
 for both certified publication/tamper rejection and polluted-candidate
 rejection.
 
-## 复现 HumanEval 151/164
+## 复现 HumanEval 158/164
 
-状态：`UNPUBLISHED_W3_DRAFT`、`PENDING_W4_CLI_REGISTRATION`。本节是不可发布的
-W3 操作草案，不代表 portable 新知识已经完成真实 HumanEval 164，也不代表 tag、
-GitHub Release、公共证据、知识版本或发布 hash 已经存在。
+W7 已完成 portable 真实 Student 164-case 运行：strict pass@1 为 158/164，
+raw pass@1 为 160/164，达到发布门槛 strict >= 151。6 个 strict failure
+由 2 个业务失败、2 个协议无效和 2 个 transport unresolved 组成；用户接受本轮
+结果，不再重试。路径治理前的 strict 151/164、raw 158/164 仅保留为历史对照。
 
-目的：为第三方提供一个入口，说明发布完成后如何恢复或重建同一套 portable CKB，
-并使用自己的 Claude Code、GLM-5.2 凭据和 CKB MCP 执行独立测试。
+冻结身份：
 
-当前可引用的只有路径治理前历史基线：严格结果为 151/164，原始单元首样本为
-158/164。它不能作为 portable 新知识的成绩。portable 参考结果必须等 P8-A
-真实运行完成；只有目标门禁通过后，W7 才会把 `UNPUBLISHED_P8_A_REFERENCE`、
-`UNAVAILABLE_UNTIL_W7` 等占位符替换为实际证据。
+- knowledgeVersion：`ckb-first-init-1-0-0-candidate`
+- records / vector points：7,817 / 7,817
+- vector dimension：1,024
+- reference：`reproducibility/manifests/reference-run.json`
+- public evidence hash：`sha256:5e7fbb60be8bb6c8660a758cbf86d432103c748130fddbe29f6885e552fe4516`
 
-发布完成后支持两条路径：
+目的：让第三方恢复或重建同一套 portable CKB，并使用自己的 Claude Code、
+GLM-5.2 凭据和 CKB MCP 执行独立测试。普通 tag 与 Release URL 由 W11 定稿；
+当前文档不虚构尚未创建的发布身份。
 
-- 快速恢复：验证签名和 asset hash，导入逻辑快照并恢复绑定的 Qdrant snapshot。
-- 独立重建：从固定 tag 和 pinned upstream 构建 portable 逻辑知识，再绑定同一
-  参考 Qdrant snapshot。
-
-两条路径都必须校验 knowledge version、7,818 条 raw、7,978 条
-normalized/index、7,978 个向量点、1,024 维、污染 finding=0 和检索 parity。
-这些数值是发布门禁预期，不是本草案已经生成的实际结果。
-
-用户必须自行提供模型凭据；仓库与未来 Release 都不包含 API key 或用户 settings。
-证据重算应是确定的，在线模型重跑则只报告本轮结果，不承诺每轮都等于参考分数。
-
-操作入口：
+复现入口：
 
 - [复现文档导航](docs/reproducibility/README.md)
 - [快速开始](docs/reproducibility/quick-start.md)
@@ -87,11 +79,10 @@ normalized/index、7,978 个向量点、1,024 维、污染 finding=0 和检索 p
 - [故障处理](docs/reproducibility/troubleshooting.md)
 - [发布维护手册](docs/reproducibility/release-maintainer-runbook.md)
 
-通过标准：W3 阶段只要求文档结构、链接、命令真实性、可移植性和未发布门禁通过；
-真实 quick start、portable 参考分数和公共证据重算后移到 W7。
+通过标准：reference manifest、知识身份、记录/向量计数和公共证据 hash 一致；
+独立复现结果必须如实报告，不与其他运行拼接。
 
-失败处理：看到任一占位符时不得把本节当作正式发布说明；返回复现文档导航检查当前
-阶段和停止条件。
+失败处理：身份或 hash 不一致时停止；不得修改知识、结果或评测工件来追求更高分数。
 
 ## CLI
 

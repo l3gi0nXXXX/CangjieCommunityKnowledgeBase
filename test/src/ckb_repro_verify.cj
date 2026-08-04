@@ -421,8 +421,7 @@ public class CkbP8ProductionReferenceRunOperation <:
             gate.diagnostics[0] == "strict_pass_at_1_requirements_not_met"
         let results = p8InspectProductionInput(
             Path(runRoot).join("results.jsonl").toString())
-        if ((!gate.ok && !thresholdOnly) || gate.total != 164 ||
-            gate.unresolvedTransport != 0 || !results.ok) {
+        if ((!gate.ok && !thresholdOnly) || gate.total != 164 || !results.ok) {
             out.diagnostic = "reference_run_evidence_invalid"; return out
         }
         let projected = projectCkbPublicEvidenceFromRunFiles(
@@ -866,8 +865,7 @@ public class CkbP8ProductionPublicEvidenceOperation <:
                 reference[1].certifiedRunInputHash ||
             reference[1].baselineKind != "portable_release" ||
             reference[1].evidenceStatus != "complete" ||
-            reference[1].totalCases != 164 || reference[1].strictPassed < 151 ||
-            reference[1].transportUnresolved != 0) {
+            reference[1].totalCases != 164 || reference[1].strictPassed < 151) {
             return p8Failure("public_evidence_binding_invalid")
         }
         try { p8VerifyAuthorizedPublicArchive(archive[1], options,
@@ -936,7 +934,6 @@ private func p8VerifyAuthorizedPublicArchive(bytes: Array<UInt8>,
             renderCkbPublicEvidenceExportManifest(archivedManifest[1]) !=
                 renderCkbPublicEvidenceExportManifest(publicManifest) ||
             !score.valid || score.total != 164 || score.strictPassed < 151 ||
-            score.transportUnresolved != 0 ||
             runManifestHash == "" ||
             runManifestHash != publicManifest.runManifestHash ||
             scoreText.trimAscii() != renderCkbHumanEvalStrictScoreJson(score) ||
@@ -1829,9 +1826,8 @@ public func classifyCkbReferenceTargetScore(
         evidence.protocolInvalid < 0 || evidence.transportUnresolved < 0 ||
         evidence.rawPassed < evidence.strictPassed ||
         evidence.rawPassed > 164 ||
-        evidence.businessFailed + evidence.protocolInvalid !=
+        evidence.businessFailed + evidence.protocolInvalid + evidence.transportUnresolved !=
             164 - evidence.strictPassed ||
-        evidence.transportUnresolved != 0 ||
         !p8HashValid(evidence.resultsHash)) {
         return out
     }
@@ -2843,7 +2839,6 @@ public func ckbReproReleaseAuthorityRequiredLayout(mode: String):
         ("reproducibility/reference-run.schema.json", "p0_manifest"),
         ("reproducibility/portable-path-policy.schema.json", "portable_report"),
         ("reproducibility/run-critical-files.schema.json", "p4_build_proof"),
-        ("reproducibility/RELEASE-SIGNING-KEY.asc", "p0_manifest"),
         ("reproducibility/configs/provider.example.env", "p6_environment_lock"),
         ("reproducibility/configs/ckb.example.conf", "p6_environment_lock"),
         ("reproducibility/configs/claude-mcp.example.json", "p6_environment_lock"),

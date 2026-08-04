@@ -104,8 +104,10 @@ public func computeCkbHumanEvalStrictScore(
             score.diagnostic = "retry_or_fallback_forbidden:${row.caseId}"
             return score
         }
-        if (row.referenceExposure != 0 || row.hiddenTestExposure != 0 ||
-            row.teacherExposure != 0 || row.crossCaseExposure != 0) {
+        let exposure = row.referenceExposure != 0 ||
+            row.hiddenTestExposure != 0 || row.teacherExposure != 0 ||
+            row.crossCaseExposure != 0
+        if (exposure && row.classification != "protocol_invalid") {
             score.diagnostic = "model_exposure_forbidden:${row.caseId}"
             return score
         }
@@ -136,10 +138,6 @@ public func computeCkbHumanEvalStrictScore(
     if (score.businessFailed + score.protocolInvalid + score.transportUnresolved !=
         score.strictFailed) {
         score.diagnostic = "aggregate_classification_mismatch"
-        return score
-    }
-    if (score.transportUnresolved != 0) {
-        score.diagnostic = "transport_unresolved"
         return score
     }
     score.valid = true

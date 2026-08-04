@@ -97,6 +97,14 @@ public class CkbReproPublishGateTest {
             P9FakeSignatureVerifier(p9SignatureEvidence(false)))
             .componentReady, true)
 
+        let disclosedTransport = p9PublishEvidence()
+        disclosedTransport.strictPassed = 158
+        disclosedTransport.transportUnresolved = 2
+        @Expect(validateCkbReproPublishBundle(options, disclosedTransport,
+            P9FakeGitProvider(p9GitEvidence(false)),
+            P9FakeSignatureVerifier(p9SignatureEvidence(false)))
+            .componentReady, true)
+
         let post = p9GateOptions("post-tag")
         let postResult = validateCkbReproPublishBundle(post,
             p9PublishEvidence(),

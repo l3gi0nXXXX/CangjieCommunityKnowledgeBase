@@ -1,30 +1,27 @@
 # HumanEval 结果口径
 
-状态：`UNPUBLISHED_W3_DRAFT`、`UNPUBLISHED_P8_A_REFERENCE`。不可发布。
+状态：W7 portable 参考结果已冻结。
 
 ## 测试目标
 
-目的：规定 historical、portable reference、current run、raw、strict 和 release
-gate 的唯一口径。
+目的：规定 historical、portable reference、current run、raw、strict 和 release gate 的唯一口径。
 
 ## 测试结论怎么判定
 
 | 名称 | 含义 | 可否作为 portable 成绩 |
 |---|---|---|
-| 历史 raw 158/164 | 路径治理前首个业务样本单测 | 否 |
-| 历史 strict 151/164 | 同一历史 run 的最终严格结果 | 否，仅迁移对照 |
-| portable reference | P8-A 在新知识上的独立真实 164 | W7 后才可引用 |
+| 历史 raw 158/164、strict 151/164 | 路径治理前历史迁移基线 | 否，仅历史对照 |
+| portable raw 160/164、strict 158/164 | W7 独立真实 164 | 是 |
 | current run | 用户本轮在线实验 | 只代表本轮 |
-| 164/164 release gate | 发布工件完整性 | 不是模型成绩 |
+| 发布完整性门禁 | 工件与证据完整 | 不是模型成绩 |
 
-通过标准：每个数值都能回溯到单一 run、固定 identity 和严格计分 JSON；不得跨 run
-拼接。
+通过标准：每个数值都回溯到单一 run、固定 identity 和严格计分；不得跨 run 拼接。
 
 失败处理：无法证明 run identity 或 evidence hash 时不引用结果。
 
-## 第 1 步：检查引用文本
+## 第 1 步：核对结果来源
 
-目的：在发布前发现把历史结果误写成 portable 结果的文案。
+目的：确认 portable 与历史对照没有混写。
 
 工作目录：`${CKB_ROOT}`。
 
@@ -32,32 +29,30 @@ gate 的唯一口径。
 
 ```bash
 cd "${CKB_ROOT:?set CKB_ROOT}"
-rg -n 'UNPUBLISHED_P8_A_REFERENCE|历史迁移基线' \
-  docs/reproducibility README.md
-rc=$?
-echo "exit=${rc}"
+jq -e '.baselineKind == "portable_release" and
+       .strictPassed == 158 and .rawPassed == 160'   reproducibility/manifests/reference-run.json >/dev/null
+echo "exit=$?"
 ```
 
 预期输出：
 
 ```text
-至少一行未发布占位符和至少一行“历史迁移基线”
 exit=0
 ```
 
-通过标准：W3 文档保留未发布边界，历史数值没有被写成 portable 新结果。
+通过标准：当前 portable 成绩为 strict 158/164，历史 151/164 只在文字对照中出现。
 
-失败处理：恢复占位符并运行文档门禁；不得自行填入 151。
+失败处理：停止引用，不把历史 raw 或 strict 填入 portable reference。
 
 ## 允许的表述
 
 - “路径治理前历史基线 strict 为 151/164，raw 为 158/164。”
-- “本次 portable 在线实验 strict 为 N/164”，前提是引用本轮独立证据。
+- “W7 portable 参考运行 strict 为 158/164，raw 为 160/164。”
+- “本次结果包含 2 个 protocol invalid 和 2 个 transport unresolved，用户接受且不再重试。”
 
 ## 禁止的表述
 
-- 把历史 151 称为 portable 知识成绩；
-- 把 raw 158 称为最终 strict pass@1；
-- 拼接多轮、transport 重试或不同实验臂的成功 case；
-- 把合成集成测试称为真实 Claude Code、GLM-5.2 成绩；
-- 把 164/164 发布门禁称为模型 pass@1。
+- 把历史 151 称为 portable 成绩；
+- 把 raw 160 称为 strict pass@1；
+- 拼接多轮或不同实验臂的成功样本；
+- 把合成集成测试或发布完整性门禁称为模型 pass@1。

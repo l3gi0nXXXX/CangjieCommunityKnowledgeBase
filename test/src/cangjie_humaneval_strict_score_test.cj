@@ -132,6 +132,11 @@ public class CangjieHumanEvalStrictScoreTest {
         exposure[0].teacherExposure = 1
         @Expect(computeCkbHumanEvalStrictScore(exposure).diagnostic,
             "model_exposure_forbidden:CJ-HUMANEVAL-000")
+        let protocolExposure = p1ScoreRows(151, 158)
+        protocolExposure[151].referenceExposure = 1
+        let protocolExposureScore = computeCkbHumanEvalStrictScore(protocolExposure)
+        @Expect(protocolExposureScore.valid, true)
+        @Expect(protocolExposureScore.protocolInvalid, 10)
 
         let classification = p1ScoreRows(151, 158)
         classification[0].classification = "business_failure"
@@ -143,8 +148,12 @@ public class CangjieHumanEvalStrictScoreTest {
         unresolved[151].sampleAttemptCount = 0
         unresolved[151].selectedBusinessSample = 0
         unresolved[151].unresolvedTransport = 1
-        @Expect(computeCkbHumanEvalStrictScore(unresolved).diagnostic,
-            "transport_unresolved")
+        let unresolvedScore = computeCkbHumanEvalStrictScore(unresolved)
+        @Expect(unresolvedScore.valid, true)
+        @Expect(unresolvedScore.diagnostic, "ok")
+        @Expect(unresolvedScore.strictPassed, 151)
+        @Expect(unresolvedScore.strictFailed, 13)
+        @Expect(unresolvedScore.transportUnresolved, 1)
 
         let privateFixture = p1ScorePrivateRun(151, "neg")
         let mismatched = p1ScoreRows(158, 158)
@@ -186,7 +195,7 @@ public class CangjieHumanEvalStrictScoreTest {
         @Expect(score.evidenceLevel, "public_projection")
 
         @Expect(p1ScoreFileHash("../src/cangjie_eval_abcde_runner.cj"),
-            "sha256:5cdc331056da3482da097256e015576ea9ad4d742d6d5190ecf7c81b0c6c9fb3")
+            "sha256:a8abf91d5e1dbb45671298c32b630899b833a1b7550c4fc2f487c43619ff5e1f")
         @Expect(p1ScoreFileHash("../src/cangjie_eval_knowledge_audit.cj"),
             "sha256:de1ed91483fdda2eade6939208098d6e89f28af4d0eac0527812748f3ad20e73")
         @Expect(p1ScoreFileHash("../src/cangjie_strict_certification.cj"),

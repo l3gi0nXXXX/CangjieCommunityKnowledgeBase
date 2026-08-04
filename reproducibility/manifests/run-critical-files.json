@@ -2,12 +2,12 @@
   "schemaVersion": "ckb-run-critical-files-v1",
   "files": [
     {"path":"src/main.cj","status":"present","sha256":"sha256:0419fc31be56a9f94c664da31a575c2ffc212cec12e4eabdca802525b7143477"},
-    {"path":"src/cangjie_eval_abcde_runner.cj","status":"present","sha256":"sha256:5cdc331056da3482da097256e015576ea9ad4d742d6d5190ecf7c81b0c6c9fb3"},
+    {"path":"src/cangjie_eval_abcde_runner.cj","status":"present","sha256":"sha256:a8abf91d5e1dbb45671298c32b630899b833a1b7550c4fc2f487c43619ff5e1f"},
     {"path":"src/cangjie_strict_certification.cj","status":"present","sha256":"sha256:781ee706c1441f4111c97a4573ff0df20191e5e0a1af03ff6e35d0f0c5ea816d"},
     {"path":"src/cangjie_eval_knowledge_audit.cj","status":"present","sha256":"sha256:de1ed91483fdda2eade6939208098d6e89f28af4d0eac0527812748f3ad20e73"},
-    {"path":"src/cangjie_certification_preflight.cj","status":"present","sha256":"sha256:a2245e1de94166b6230efe14ea8d1c3895738a316c5e692447435a7e945668d9"},
+    {"path":"src/cangjie_certification_preflight.cj","status":"present","sha256":"sha256:0c4539644b1f5852f0190497c96ef25c23f09bc384803b79351a0fefa322fea4"},
     {"path":"src/cangjie_humaneval_manifest.cj","status":"present","sha256":"sha256:3a35dc7bb3ec0522ea48fd8daf71bda56ccd2fd8f9660b4097f6a8c111c71148"},
-    {"path":"src/cangjie_humaneval_strict_score.cj","status":"present","sha256":"sha256:0ec0dda9f833df0470e3736c1c116a57fb2058e7c43829cdb0309c454b4f0e71"},
+    {"path":"src/cangjie_humaneval_strict_score.cj","status":"present","sha256":"sha256:717cc41a2bb8c01cb61eb1c4b0955509b2099afac619b188ae26fb0b54e5a715"},
     {"path":"src/cangjie_first_initialization.cj","status":"present","sha256":"sha256:12090d66f4098539635984fd980a45c860f03281362b3fdfb314a68eb48d711d"},
     {"path":"src/cangjie_typed_records.cj","status":"present","sha256":"sha256:fc914567f35fe8aed3b0d9e1b74afa2cb9be8117d527871ad441332e31d7a136"},
     {"path":"src/cangjie_routine_clean_candidate.cj","status":"present","sha256":"sha256:1ff8c5ff52b49cbc13dab6997ae684a658b4d0aa312388a7502dd82d8ecaa64f"},
@@ -29,7 +29,7 @@
     {"path":"src/mcp_protocol.cj","status":"present","sha256":"sha256:a3999ae81aa7902acc73aa85fd8bc05afeb1eee8f9fe9c58f27af8f9ac18b5e3"},
     {"path":"src/mcp_stdio.cj","status":"present","sha256":"sha256:ce72ddafce8911149550638cf57754aaf1842ad7098e7bddbb7d8a2ddc3e1052"},
     {"path":"src/mcp_http.cj","status":"present","sha256":"sha256:3e2c558698028d3bc94da6325333eb0544347c5a8cf5e738fd4fdaeb0514df57"},
-    {"path":"src/ckb_repro_manifest.cj","status":"present","sha256":"sha256:3187f03dba7d892bc4b9e464e8aec2b3a0eefb92620d6d43384f0bbc34d56a35"},
+    {"path":"src/ckb_repro_manifest.cj","status":"present","sha256":"sha256:58ecf2c5f0f2d3a972db6da82381727ead6a6c0c0ac5cac47ef2cf7bd5b717af"},
     {"path":"src/ckb_repro_release.cj","status":"present","sha256":"sha256:2b85d9b7dd65964c436535862a6557113153c0cedc2c90c9bce8f4d1b8c5521c"},
     {"path":"src/ckb_qdrant_snapshot.cj","status":"present","sha256":"sha256:9df8fb6a7f5ed0157b74ceb5c1e5432b65cb862671e48d1256c56d44c75cf390"},
     {"path":"src/ckb_retrieval_parity.cj","status":"present","sha256":"sha256:4704c4788f2a3c99602ec6e16afcdb4c308c3ef85a8fd92de194de5886895d1d"},
@@ -37,7 +37,7 @@
     {"path":"src/ckb_repro_build.cj","status":"present","sha256":"sha256:99b29a0641feb1e7ff7f8fa52315f52510356e73ece0282a4abe933baf738f12"},
     {"path":"src/ckb_repro_build_inputs.cj","status":"present","sha256":"sha256:b371451acd344812b52c1a1d8a43454421dc31622f228993d79b12ecf67eb9ce"},
     {"path":"src/ckb_pinned_source_backend.cj","status":"present","sha256":"sha256:c8c5dfda1219365bd391717073400eed8a0a15564b5bd9d73321d4bfb289ae47"},
-    {"path":"src/ckb_public_evidence.cj","status":"present","sha256":"sha256:d35e2151e80691e8ebf5c043d0dfbd4127506d1c96ce90c2895db6daff0b4ee5"},
+    {"path":"src/ckb_public_evidence.cj","status":"present","sha256":"sha256:16afb4bff3b53c44b65246fb9fb7632a0589feb161ece5ee75d8e47a8e70d21a"},
     {"path":"src/ckb_repro_cli_composition.cj","status":"present","sha256":"sha256:dad258229d74b7b65fc57d740662027cf850f5f320ccda8b18dc05a05b7e0fae"},
     {"path":"src/ckb_repro_cli_typed_assets.cj","status":"present","sha256":"sha256:5187527b4d16c1f119263ad0697cedb09d9e63c208ec57bdb5a1e0beefcaf796"},
     {"path":"src/ckb_repro_cli_runtime_loader.cj","status":"present","sha256":"sha256:1b2b9479fcabdbd04de712eb2697b736df88248b88e6f0b188f7b1dd5275d57d"},
@@ -51,6 +51,6 @@
     {"path":"src/ckb_repro_documentation.cj","status":"present","sha256":"sha256:81c51f4bee5f5053ed2c44b0ac6a72bc30e2b60606b8647637fe03bf4cacd3ff"},
     {"path":"src/ckb_portable_path_normalizer.cj","status":"present","sha256":"sha256:88742dd5cd61c7e44f21cbb7eea3089961db82665b927991cffc5a55f3267ffc"},
     {"path":"src/ckb_repro_environment.cj","status":"present","sha256":"sha256:751a42fbee666e47073d1d6c77b6715819f1b892889f39c1e782c95ca70ad3ad"},
-    {"path":"src/ckb_repro_verify.cj","status":"present","sha256":"sha256:f5fb504362734dc58a55aa87376a15e4aac14ca40a02f8d10070a2bf573a3b1b"}
+    {"path":"src/ckb_repro_verify.cj","status":"present","sha256":"sha256:bd30843ace250d9ad0b41196e0cb743866503d3e4d0e48431bdf2d1f826a5432"}
   ]
 }

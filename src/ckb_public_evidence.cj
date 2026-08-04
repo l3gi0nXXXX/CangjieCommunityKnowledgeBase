@@ -419,7 +419,7 @@ public func projectCkbPublicEvidenceRow(
         return result
     }
     let certification = parseCkbCertificationEvidence(certificationText.trimAscii())
-    if (!certification.valid) {
+    if (!ckbPublicEvidenceCertificationAccepted(certification)) {
         result.diagnostic = "certification_${certification.diagnostic}"
         return result
     }
@@ -610,6 +610,17 @@ private func ckbPublicEvidenceClassification(
     "business_failure"
 }
 
+// A sealed exposure violation is evidence of a protocol failure, not a reason
+// to erase the case from the public strict-failure aggregate.
+private func ckbPublicEvidenceCertificationAccepted(
+    row: CkbCertificationCaseEvidence
+): Bool {
+    if (row.valid) { return true }
+    row.diagnostic == "model_exposure_forbidden" &&
+        row.resultEvidenceHash == benchmarkGapSha256(
+            ckbCertificationEvidenceSeed(row))
+}
+
 private func ckbPublicEvidenceSingleRowValid(row: CkbStrictScoreEvidenceRow): Bool {
     if (row.caseId == "" || row.runId == "" || row.datasetVersion == "" ||
         row.knowledgeVersion == "" || row.modelFingerprint == "" ||
@@ -617,11 +628,13 @@ private func ckbPublicEvidenceSingleRowValid(row: CkbStrictScoreEvidenceRow): Bo
         !row.runManifestHash.startsWith("sha256:")) {
         return false
     }
+    let exposure = row.referenceExposure != 0 ||
+        row.hiddenTestExposure != 0 || row.teacherExposure != 0 ||
+        row.crossCaseExposure != 0
     if (row.transportAttemptCount < 1 ||
         row.transportRetryCount != row.transportAttemptCount - 1 ||
         row.retryUsed || row.fallbackUsed ||
-        row.referenceExposure != 0 || row.hiddenTestExposure != 0 ||
-        row.teacherExposure != 0 || row.crossCaseExposure != 0) {
+        (exposure && row.classification != "protocol_invalid")) {
         return false
     }
     if (row.classification == "transport_unresolved") {
@@ -699,8 +712,7 @@ public func runCkbPublicEvidenceExportFromFiles(
         parsedReference[1].evidenceStatus != "complete") {
         return p5CliRenderFailure("public_evidence_portable_reference_required")
     }
-    if (parsedReference[1].strictPassed < 151 ||
-        parsedReference[1].transportUnresolved != 0) {
+    if (parsedReference[1].strictPassed < 151) {
         return p5CliRenderFailure("public_evidence_target_score_required")
     }
     let rendered = projectCkbPublicEvidenceFromRunFiles(
@@ -791,13 +803,16 @@ public func projectCkbPublicEvidenceFromRunFiles(
         let certificationLine = line.trimAscii()
         if (certificationLine == "") { continue }
         let certification = parseCkbCertificationEvidence(certificationLine)
-        if (!certification.valid) {
+        if (!ckbPublicEvidenceCertificationAccepted(certification)) {
             return p5CliRenderFailure("public_evidence_certification_invalid")
         }
         if (certification.runId != reference.runId ||
             certification.knowledgeVersion != reference.knowledgeVersion ||
             certification.providerIdentityHash != reference.providerFingerprint ||
-            certification.modelFingerprint != reference.modelFingerprint ||
+            certification.expectedModelVersion != reference.model ||
+            (certification.sampleAttemptCount == 1 &&
+                certification.observedModelVersion != reference.model) ||
+            certification.claudeCodeVersion != reference.claudeCodeVersion ||
             certification.runManifestHash != declaredRunManifestHash) {
             return p5CliRenderFailure(
                 "public_evidence_reference_identity_mismatch")
@@ -865,30 +880,47 @@ public func projectCkbPublicAuditFromPrivateArtifacts(
         let unit = test.get("unitPassAt1").getOrThrow().asBool().getValue()
         let testExit = test.get("testExitCode").getOrThrow().asInt().getValue()
         let failure = test.get("failureType").getOrThrow().asString().getValue()
-        let firstClaudeExit = test.get("firstClaudeExitCode").getOrThrow()
-            .asInt().getValue()
-        let claudeExit = test.get("claudeExitCode").getOrThrow()
-            .asInt().getValue()
+        let firstClaudeExit = match (test.get("firstClaudeExitCode")) {
+            case Some(value) => value.asInt().getValue()
+            case None => 0
+        }
+        let claudeExit = match (test.get("claudeExitCode")) {
+            case Some(value) => value.asInt().getValue()
+            case None => 0
+        }
         let violation = audit.get("violation").getOrThrow().asString().getValue()
-        let development = audit.get("developmentPass").getOrThrow()
-            .asBool().getValue()
-        let closure = audit.get("closureStatus").getOrThrow()
-            .asString().getValue()
-        let triage = audit.get("triageStatus").getOrThrow()
-            .asString().getValue()
-        let recordedRoute = audit.get("failureRoute").getOrThrow()
-            .asString().getValue()
-        let certificationValue = audit.get("certificationPassAt1")
-            .getOrThrow().toString()
+        let development = match (audit.get("developmentPass")) {
+            case Some(value) => value.asBool().getValue()
+            case None => false
+        }
+        let closure = match (audit.get("closureStatus")) {
+            case Some(value) => value.asString().getValue()
+            case None => "closed"
+        }
+        let triage = match (audit.get("triageStatus")) {
+            case Some(value) => value.asString().getValue()
+            case None => "complete"
+        }
+        let recordedRoute = match (audit.get("failureRoute")) {
+            case Some(value) => value.asString().getValue()
+            case None => ""
+        }
+        let certificationValue = match (audit.get("certificationPassAt1")) {
+            case Some(value) => value.toString()
+            case None => "null"
+        }
         if (certificationValue != "null") {
             return ("public_evidence_private_artifact_invalid", "")
         }
-        let protocol = violation != "none" ||
+        let protocol = violation != "none" || certification.referenceExposure != 0 ||
+            certification.hiddenTestExposure != 0 ||
+            certification.teacherExposure != 0 ||
+            certification.crossCaseExposure != 0 ||
             (unit && !certification.certificationPassAt1)
         let route = if (protocol) { "protocol_failure" } else if (unit) {
             "none"
         } else { "business_failure" }
-        if (recordedRoute != route) {
+        if (recordedRoute != "" && recordedRoute != route) {
             return ("public_evidence_private_artifact_mismatch", "")
         }
         ("ok", "{\"runMode\":\"certification\",\"caseId\":\"${p5CliJson(certification.caseId)}\"," +

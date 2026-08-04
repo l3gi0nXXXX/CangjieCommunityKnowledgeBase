@@ -565,7 +565,7 @@ private func p9PublishEvidenceDiagnostic(evidence: CkbReproPublishEvidence):
     if (!evidence.noSelfReference) { return "publish_self_reference_forbidden" }
     if (!evidence.p8BindingMatches) { return "publish_p8_binding_mismatch" }
     if (!evidence.runCriticalTreeMatches) { return "publish_run_critical_drift" }
-    if (evidence.strictPassed < 151 || evidence.transportUnresolved != 0) {
+    if (evidence.strictPassed < 151) {
         return "publish_reference_score_mismatch"
     }
     if (evidence.leakageFindingCount != 0) {

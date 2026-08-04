@@ -18,8 +18,9 @@ public class CkbReproDocumentationTest {
             @Expect(text.contains("失败处理"), true)
         }
         let root = p7Read("../README.md")
-        @Expect(root.contains("## 复现 HumanEval 151/164"), true)
-        @Expect(root.contains("UNPUBLISHED_W3_DRAFT"), true)
+        @Expect(root.contains("## 复现 HumanEval 158/164"), true)
+        @Expect(root.contains("strict pass@1 为 158/164"), true)
+        @Expect(root.contains("UNPUBLISHED_W3_DRAFT"), false)
         @Expect(root.contains("docs/reproducibility/README.md"), true)
     }
 
@@ -46,27 +47,27 @@ public class CkbReproDocumentationTest {
     }
 
     @TestCase
-    public func p7DraftQuickStartCannotMasqueradeAsPublished(): Unit {
+    public func p7ReleaseQuickStartUsesFrozenW7Identity(): Unit {
         let root = p7Read("../README.md")
         let quick = p7Read("../docs/reproducibility/quick-start.md")
         for (text in [root, quick]) {
-            @Expect(text.contains("UNPUBLISHED_W3_DRAFT"), true)
-            @Expect(text.contains("PENDING_W4_CLI_REGISTRATION"), true)
-            @Expect(text.contains("不可发布"), true)
+            @Expect(text.contains("UNPUBLISHED_W3_DRAFT"), false)
+            @Expect(text.contains("PENDING_W4_CLI_REGISTRATION"), false)
+            @Expect(text.contains("ckb-first-init-1-0-0-candidate"), true)
         }
-        @Expect(quick.contains("ckb-humaneval-151-repro-v1.0.0"), false)
-        @Expect(quick.contains("strictPassed=151"), false)
+        @Expect(quick.contains(".strictPassed == 158"), true)
+        @Expect(quick.contains("CKB_RELEASE_URL"), false)
     }
 
     @TestCase
-    public func p7DraftStrictEvidenceCannotClaimPortable151(): Unit {
+    public func p7ReleaseStrictEvidenceReportsPortable158(): Unit {
         let strict = p7Read("../docs/reproducibility/verify-strict-pass-at-1.md")
-        @Expect(strict.contains("UNPUBLISHED_P8_A_REFERENCE"), true)
-        @Expect(strict.contains("UNAVAILABLE_UNTIL_W7"), true)
+        @Expect(strict.contains("UNPUBLISHED_P8_A_REFERENCE"), false)
+        @Expect(strict.contains("UNAVAILABLE_UNTIL_W7"), false)
         @Expect(strict.contains("历史迁移基线"), true)
-        @Expect(strict.contains("portable strict pass@1=151/164"), false)
-        @Expect(strict.contains("cangjie-humaneval-strict-score"), true)
-        @Expect(strict.contains("待 W4 激活"), true)
+        @Expect(strict.contains("portable raw 160/164、strict 158/164"), true)
+        @Expect(strict.contains("strict 158 >= 151"), true)
+        @Expect(strict.contains("待 W4 激活"), false)
     }
 
     @TestCase
@@ -112,10 +113,11 @@ public class CkbReproDocumentationTest {
     }
 
     @TestCase
-    public func productionValidatorAcceptsCurrentDraft(): Unit {
+    public func productionValidatorAcceptsCurrentReleaseDocumentation(): Unit {
         let evidence = validateCkbReproDocumentation(
             P7RepositoryDocumentationReader(), "..",
-            CKB_REPRO_DOCUMENTATION_MODE_DRAFT, Array<String>())
+            CKB_REPRO_DOCUMENTATION_MODE_RELEASE,
+            p7ReleaseRegisteredCommands())
         @Expect(evidence.ok, true)
         @Expect(evidence.diagnostic, "documentation_valid")
         @Expect(evidence.requiredDocumentCount, 11)
@@ -465,7 +467,8 @@ public class CkbReproDocumentationTest {
     public func productionRepositoryReaderEnumeratesFilesystemSurface(): Unit {
         @Expect(validateCkbReproDocumentation(
             P7RepositoryDocumentationReader(), "..",
-            CKB_REPRO_DOCUMENTATION_MODE_DRAFT, Array<String>()).ok, true)
+            CKB_REPRO_DOCUMENTATION_MODE_RELEASE,
+            p7ReleaseRegisteredCommands()).ok, true)
 
         let root = "target/p7-documentation-reader-surface"
         if (exists(Path(root))) { remove(Path(root), recursive: true) }
@@ -473,14 +476,16 @@ public class CkbReproDocumentationTest {
             p7CopyDocumentationSurface("..", root)
             let before = validateCkbReproDocumentation(
                 P7RepositoryDocumentationReader(), root,
-                CKB_REPRO_DOCUMENTATION_MODE_DRAFT, Array<String>())
+                CKB_REPRO_DOCUMENTATION_MODE_RELEASE,
+                p7ReleaseRegisteredCommands())
             @Expect(before.ok, true)
             File.writeTo(
                 Path("${root}/docs/reproducibility/undeclared.md"),
                 p7ValidDocument(true).toArray())
             let after = validateCkbReproDocumentation(
                 P7RepositoryDocumentationReader(), root,
-                CKB_REPRO_DOCUMENTATION_MODE_DRAFT, Array<String>())
+                CKB_REPRO_DOCUMENTATION_MODE_RELEASE,
+                p7ReleaseRegisteredCommands())
             @Expect(after.diagnostic, "documentation_extra_release_entry")
         } finally {
             if (exists(Path(root))) { remove(Path(root), recursive: true) }
@@ -874,6 +879,10 @@ private func p7RequiredDocuments(): Array<String> {
         "docs/reproducibility/troubleshooting.md",
         "docs/reproducibility/release-maintainer-runbook.md"
     ]
+}
+
+private func p7ReleaseRegisteredCommands(): Array<String> {
+    ["ckb-release-import", "ckb-repro-build"]
 }
 
 private func p7DocumentationText(): String {

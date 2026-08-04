@@ -30,7 +30,7 @@ private class P8RestoreControl <: CkbQdrantSnapshotExecutor {
     public var calls: Int64 = 0
     public var deleteCalls: Int64 = 0
     public var statusCode: Int64 = 200
-    public var points: Int64 = 7978
+    public var points: Int64 = ckbReproReleaseRecordCount()
     public var targetExists: Bool = false
     public func execute(request: CkbQdrantSnapshotRequest):
         CkbQdrantSnapshotResponse {
@@ -1085,6 +1085,19 @@ public class CkbReproVerifyTest {
                 @Expect(executor.calls.toArray(),
                     ["restore", "rebuild", "runner"])
             }
+            let unresolved = CkbReproReferenceRunEvidence()
+            unresolved.ok = true
+            unresolved.totalCases = 164
+            unresolved.rawPassed = 160
+            unresolved.strictPassed = 158
+            unresolved.businessFailed = 2
+            unresolved.protocolInvalid = 2
+            unresolved.transportUnresolved = 2
+            unresolved.resultsHash = p8Hash("unresolved")
+            let unresolvedTarget = classifyCkbReferenceTargetScore(unresolved)
+            @Expect(unresolvedTarget.runValid, true)
+            @Expect(unresolvedTarget.targetScoreMatched, true)
+            @Expect(unresolvedTarget.status, "target_matched")
             let negative = CkbReproReferenceRunEvidence()
             negative.ok = true
             negative.totalCases = 164
@@ -1314,7 +1327,7 @@ public class CkbReproVerifyTest {
             @Expect(rebuilt.diagnostic, "ok")
             @Expect(rebuilt.rawRecords, 1)
             @Expect(rebuilt.normalizedRecords, 1)
-            @Expect(rebuilt.vectorPoints, 7978)
+            @Expect(rebuilt.vectorPoints, ckbReproReleaseRecordCount())
             @Expect(pipeline.stages, 8)
             @Expect(control.calls, 2)
 
@@ -1395,12 +1408,12 @@ public class CkbReproAuthorityLayoutBaselineTest {
     public func authorityModesMatchIndependentFixture(): Unit {
         let reference = p8ReferenceTemplate()
         let rows = p8AuthorityRows("manifest", reference)
-        @Expect(rows.size, 54)
+        @Expect(rows.size, 53)
         let built = buildCkbReproReleaseAuthorityContract(
             p8AuthorityInputs("manifest", reference), "public_rebuild")
         @Expect(built[0].ok, true)
         let contract = built[1]
-        @Expect(contract.expected.size, 54)
+        @Expect(contract.expected.size, 53)
         for (row in rows) {
             var matches = 0
             for (evidence in contract.expected) {
@@ -1430,7 +1443,7 @@ public class CkbReproAuthorityLayoutBaselineTest {
         let bundled = buildCkbReproReleaseAuthorityContract(
             bundledInputs, "bundled")
         @Expect(bundled[0].ok, true)
-        @Expect(bundled[1].expected.size, 54)
+        @Expect(bundled[1].expected.size, 53)
         var bundledAssetMatches = 0
         var rebuildAssetMatches = 0
         for (evidence in bundled[1].expected) {
@@ -1696,7 +1709,6 @@ private func p8AuthorityRows(content: String,
         ("reproducibility/reference-run.schema.json", "reference-schema", "p0_manifest"),
         ("reproducibility/portable-path-policy.schema.json", "path-schema", "portable_report"),
         ("reproducibility/run-critical-files.schema.json", "critical-schema", "p4_build_proof"),
-        ("reproducibility/RELEASE-SIGNING-KEY.asc", "public-key", "p0_manifest"),
         ("reproducibility/configs/provider.example.env", "provider", "p6_environment_lock"),
         ("reproducibility/configs/ckb.example.conf", "config", "p6_environment_lock"),
         ("reproducibility/configs/claude-mcp.example.json", "claude-mcp", "p6_environment_lock"),
@@ -1839,7 +1851,7 @@ private func p8RestoreFixture(root: String, control: P8RestoreControl):
     proofs.p4PortableProofHash = p8Hash("p4-portable-clean")
     proofs.p3VectorProofHash = p8Hash("p3-vector-ready")
     proofs.p3ProofReal = true; proofs.vectorState = EmbeddingProviderState.READY
-    proofs.vectorCollection = "portable_vectors"; proofs.vectorCount = 7978
+    proofs.vectorCollection = "portable_vectors"; proofs.vectorCount = ckbReproReleaseRecordCount()
     proofs.vectorDimension = 1024; proofs.pathMachineFindingCount = 0
     proofs.pathUnmappedFindingCount = 0
     proofs.contaminationProofHash = p8Hash("contamination-clean")
@@ -1861,7 +1873,7 @@ private func p8RestoreFixture(root: String, control: P8RestoreControl):
     qdrant.schemaVersion = "ckb-qdrant-snapshot-v1"
     qdrant.imageDigest = p8Hash("image"); qdrant.qdrantMinorVersion = "1.14"
     qdrant.collection = inspected.manifest.vectorCollection
-    qdrant.distance = "Cosine"; qdrant.dimension = 1024; qdrant.points = 7978
+    qdrant.distance = "Cosine"; qdrant.dimension = 1024; qdrant.points = ckbReproReleaseRecordCount()
     qdrant.snapshotSha256 = ckbQdrantSnapshotBytesHash(snapshotBytes)
     qdrant.logicalManifestHash = inspected.manifest.manifestHash
     qdrant.vectorProofHash = inspected.manifest.p3VectorProofHash
@@ -1917,7 +1929,7 @@ private func p8WriteRebuildRuntime(root: String, version: String,
     status.activeStateSource = "portable_candidate"
     status.storage.rawCount = 1; status.storage.normalizedCount = 1
     status.storage.indexCount = 1; status.storage.textIndexCount = 1
-    status.storage.vectorIndexCount = if (readyVector) { 7978 } else { 0 }
+    status.storage.vectorIndexCount = if (readyVector) { ckbReproReleaseRecordCount() } else { 0 }
     status.storage.vectorBackend = "qdrant"
     status.storage.vectorState = if (readyVector) {
         EmbeddingProviderState.READY
@@ -2012,7 +2024,7 @@ private func p8RebuildInputs(root: String, restore: P8RestoreFixture,
     contract.knowledgeSelectionHash = manifest.assets[4].sha256
     contract.portablePolicyHash = manifest.assets[5].sha256
     contract.apiRoutesHash = manifest.assets[6].sha256
-    contract.assemblerIdentityHash = p8Hash("assembler")
+    contract.assemblerIdentityHash = ckbFirstInitReproAssemblerIdentityHash()
     contract.privateAuthorityIdentityHash =
         ckbReproPrivateBuildAuthorityIdentity(authority)
     payloads[0] = renderCkbReproBuildContract(contract)

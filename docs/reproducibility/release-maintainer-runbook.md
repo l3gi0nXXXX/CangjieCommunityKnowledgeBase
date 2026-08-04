@@ -1,94 +1,58 @@
 # 发布维护手册
 
-状态：`UNPUBLISHED_W3_DRAFT`、`UNAVAILABLE_UNTIL_W7`。不可发布。
+状态：W7 结果与文档已回填；W8—W11 尚需完成 bundle、clean-room、普通 tag 和 Release，不使用 GPG 签名。
 
 ## 测试目标
 
-目的：规定从 W3 文档草案到 W7 结果回填、W8/W9 clean-room 验证和最终签名发布的
-单向门禁，避免草案占位符进入正式材料。
+目的：规定 W7 之后的单向发布门禁，防止未验证身份或工件进入发布。
 
 ## 测试结论怎么判定
 
 | 阶段 | 必须事实 |
 |---|---|
-| W3 | 文档与自动门禁存在，所有发布身份仍为占位符 |
-| W4 | CLI 已注册，run-critical manifest 全部 frozen |
-| W5 | portable 逻辑、向量、快照与 parity 工件完成 |
-| W6 | P8-A 独立真实 164 完成 |
-| W7 | 仅 `target_matched` 才回填结果与命名 |
-| W8/W9 | unsigned bundle 和 clean-room 复验通过 |
-| W10/W11 | promotion、签名、tag、Release 和下载回验通过 |
+| W7 | strict=158/164，raw=160/164，reference 与公共证据冻结 |
+| W8 | unsigned bundle 只来自冻结输入 |
+| W9 | clean-room 独立复验 |
+| W10 | promotion 与最终 bundle |
+| W11 | 普通 tag、Release 和下载回验 |
 
-通过标准：前一阶段证据未通过时，下游调用数为 0；正式文档不含任何未发布占位符。
+通过标准：前一阶段通过后才执行下一阶段；tag 和 Release URL 只由 W11 写入。
 
-失败处理：任一门禁失败即停止，不改分数目标、不覆盖旧 asset、不跳过签名。
+失败处理：任一门禁失败即停止，不覆盖旧 asset、不降低 strict>=151 门槛。
 
 ## 重要边界
 
 - 不强制添加被忽略的生产知识、配置、凭据或生成资产。
-- 不在 W3 创建 tag、Release、签名、最终 manifest 或 reference-run。
-- portable P8-A strict 不等于目标时进入 `scoreMismatchHold`，不自动换发布名。
 - authority 和评测工件不进入知识平面。
+- W7 reference 为 `reproducibility/manifests/reference-run.json`。
+- 当前 public evidence hash 为 `sha256:5e7fbb60be8bb6c8660a758cbf86d432103c748130fddbe29f6885e552fe4516`。
 
-## 第 1 步：W3 占位符门禁
+## 第 1 步：文档发布模式门禁
 
-目的：证明当前文档不能被发布。
-
-工作目录：`${CKB_ROOT}`。
-
-命令：
-
-```bash
-cd "${CKB_ROOT:?set CKB_ROOT}"
-rg -l 'UNPUBLISHED_W3_DRAFT|UNPUBLISHED_P8_A_REFERENCE|UNAVAILABLE_UNTIL_W7' \
-  README.md docs/reproducibility >"${TMPDIR:-/tmp}/ckb-repro-placeholders.txt"
-rc=$?
-echo "placeholder_scan_exit=${rc}"
-```
-
-预期输出：
-
-```text
-placeholder_scan_exit=0
-```
-
-通过标准：W3 必须至少找到一个占位符；正式发布门禁则必须反向要求 finding=0。
-
-失败处理：W3 没有占位符时停止合并；W7 只能按真实 P8-A/P5 manifest 回填。
-
-## 第 2 步：自动文档门禁
-
-目的：检查文件、链接、命令边界、portable 变量和敏感内容。
+目的：确认公开入口没有草案标记、本机路径、凭据或未知命令。
 
 工作目录：`${CKB_ROOT}/test`。
 
 命令：
 
 ```bash
-cd "${CKB_ROOT}/test"
+cd "${CKB_ROOT:?set CKB_ROOT}/test"
 source "${CANGJIE_SDK_ROOT:?set CANGJIE_SDK_ROOT}/envsetup.sh"
 export OPENSSL_ROOT="${OPENSSL_ROOT:-$(brew --prefix openssl@3)}"
 export DYLD_LIBRARY_PATH="${OPENSSL_ROOT}/lib:${DYLD_LIBRARY_PATH:-}"
 cjpm test -j 1 --filter CkbReproDocumentationTest
-rc=$?
-echo "exit=${rc}"
+echo "exit=$?"
 ```
 
-预期输出：
+预期输出：`FAILED: 0` 且 `exit=0`。
 
-```text
-PASSED: 6
-FAILED: 0
-exit=0
-```
+通过标准：全部文档契约测试通过。
 
-通过标准：6 个 P7 文档测试全部通过。
+失败处理：按失败测试修正文档，不放宽路径、凭据或评测污染扫描。
 
-失败处理：按失败 Test ID 修正文档；不得放宽扫描规则来容纳真实凭据或私有路径。
+## 第 2 步：核对 W7 证据
 
-## 第 3 步：W7 回填前置
-
-目的：保证结果、知识身份和公共证据来自同一 P8-A run。
+目的：保证结果、知识身份和公共证据同源。
 
 工作目录：`${CKB_ROOT}`。
 
@@ -96,23 +60,39 @@ exit=0
 
 ```bash
 cd "${CKB_ROOT}"
-test -f reproducibility/manifests/reference-run.json &&
-test -f "${REPRO_ROOT:?set REPRO_ROOT}/ckb-public-reference-evidence.tar.zst"
-rc=$?
-echo "w7_inputs_exit=${rc}"
+jq -e '.strictPassed == 158 and .rawPassed == 160 and
+       .knowledgeVersion == "ckb-first-init-1-0-0-candidate"'   reproducibility/manifests/reference-run.json >/dev/null
+test "${CKB_PUBLIC_EVIDENCE_HASH:?set observed hash}" =   "sha256:5e7fbb60be8bb6c8660a758cbf86d432103c748130fddbe29f6885e552fe4516"
+echo "exit=$?"
 ```
 
 预期输出：
 
 ```text
-w7_inputs_exit=0
+exit=0
 ```
 
-通过标准：只在 W7 真实产物存在并通过 hash/identity 门禁时回填。
+通过标准：退出码为 0，strict 158 >= 151。
 
-失败处理：输出非 0 时保持 `UNAVAILABLE_UNTIL_W7`，不创建占位文件。
+失败处理：停止 bundle 与 promotion，不修改 reference 或证据。
 
-## 后续发布
+## 第 3 步：W11 定稿
 
-签名 tag、Release、asset hash 和下载回验命令必须在 P9 实现并由 W11 定稿后加入。
-当前没有 canonical tag 或 Release URL；维护者应返回[复现导航](README.md)检查状态。
+目的：只在 clean-room、普通 tag/commit 绑定和下载回验通过后发布身份。
+
+工作目录：`${CKB_ROOT}`。
+
+命令：
+
+```bash
+test -n "${CKB_RELEASE_TAG:-}" &&
+test -n "${CKB_RELEASE_URL:-}" &&
+test -n "${CKB_RELEASE_ARCHIVE:-}"
+echo "exit=$?"
+```
+
+预期输出：W11 完成后为 `exit=0`。
+
+通过标准：普通 tag、完整 commit SHA、URL 和 archive SHA-256 相互绑定，并从公开地址下载回验。
+
+失败处理：W11 完成前保持“待定稿”，不得虚构 URL。

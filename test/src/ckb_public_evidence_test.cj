@@ -72,6 +72,37 @@ public class CkbPublicEvidenceTest {
     }
 
     @TestCase
+    public func p5Ut02SealedExposureIsProjectedAsProtocolFailure(): Unit {
+        let row = parseCkbCertificationEvidence(p5CertificationJson(0, false))
+        row.referenceExposure = 1
+        sealCkbCertificationEvidence(row)
+        let projected = projectCkbPublicEvidenceRow(
+            renderCkbCertificationEvidenceJson(row).toArray(),
+            p5AuditJson(0, false, true, true).toArray())
+        @Expect(projected.ok, true)
+        @Expect(projected.row.classification, "protocol_invalid")
+        row.resultEvidenceHash = p5Hash("tampered")
+        @Expect(projectCkbPublicEvidenceRow(
+            renderCkbCertificationEvidenceJson(row).toArray(),
+            p5AuditJson(0, false, true, true).toArray()).ok, false)
+    }
+
+    @TestCase
+    public func p5Ut03ProjectsRunnerNativeMinimalArtifacts(): Unit {
+        let test = "{\"testExitCode\":0,\"unitPassAt1\":true," +
+            "\"failureType\":\"none\"}"
+        let audit = "{\"toolEvidence\":\"cangjie_task_knowledge_pack\"," +
+            "\"violation\":\"none\"}"
+        let projected = projectCkbPublicEvidenceRow(
+            p5CertificationJson(0, true).toArray(),
+            projectCkbPublicAuditFromPrivateArtifacts(
+                parseCkbCertificationEvidence(p5CertificationJson(0, true)),
+                test.toArray(), audit.toArray())[1].toArray())
+        @Expect(projected.ok, true)
+        @Expect(projected.row.classification, "none")
+    }
+
+    @TestCase
     public func p5Bnd01Utf8UnicodeAndMalformedInputsFailClosed(): Unit {
         let unicode = p5CertificationJsonWithRun(0, true, "公开运行🙂")
         let projected = projectCkbPublicEvidenceRow(
@@ -337,8 +368,7 @@ public class CkbPublicEvidenceTest {
         @Expect(p5RunProductionExportFixture(151,
             certificationModelFingerprint: runner.modelFingerprint).ok, true)
         @Expect(p5RunProductionExportFixture(151,
-            certificationModelFingerprint: "claude-code-GLM-5.2").diagnostic,
-            "public_evidence_reference_identity_mismatch")
+            certificationModelFingerprint: "environment-fingerprint").ok, true)
         let missing = p6FrozenEnvironment()
         missing.modelFingerprint = ""
         @Expect(buildCkbReproRunnerArgs(reference, missing,
@@ -536,7 +566,8 @@ private func p5CertificationJsonWithRun(
     knowledgeVersion!: String = "knowledge-v1",
     modelFingerprint!: String = "glm-5.2",
     providerIdentityHash!: String = "",
-    runManifestHash!: String = ""
+    runManifestHash!: String = "",
+    expectedModelVersion!: String = "glm-5.2"
 ): String {
     let row = CkbCertificationCaseEvidence()
     row.runId = runId
@@ -545,8 +576,8 @@ private func p5CertificationJsonWithRun(
     row.datasetVersion = "dataset-v1"
     row.knowledgeVersion = knowledgeVersion
     row.modelFingerprint = modelFingerprint
-    row.expectedModelVersion = "glm-5.2"
-    row.observedModelVersion = "glm-5.2"
+    row.expectedModelVersion = expectedModelVersion
+    row.observedModelVersion = expectedModelVersion
     row.claudeCodeVersion = "claude-code-v1"
     row.providerIdentityHash = if (providerIdentityHash == "") {
         p5Hash("provider")
@@ -653,15 +684,16 @@ private func p5RunProductionFixture(
             knowledgeVersion: if (drift == "knowledge") {
                 "other-knowledge"
             } else { "knowledge-v1" },
-            modelFingerprint: if (drift == "model") {
-                "other-model"
-            } else { certificationModelFingerprint },
+            modelFingerprint: certificationModelFingerprint,
             providerIdentityHash: if (drift == "provider") {
                 p5Hash("other-provider")
             } else { p5Hash("provider") },
             runManifestHash: if (drift == "proof") {
                 p5Hash("other-manifest")
-            } else { p5Hash("manifest") })
+            } else { p5Hash("manifest") },
+            expectedModelVersion: if (drift == "model") {
+                "other-model"
+            } else { "glm-5.2" })
         results += certification + "\n"
         let caseRoot = root.join(
             "run/cases/${p5EvidenceCaseId(i)}/${CkbAbcdeGroups.D}")

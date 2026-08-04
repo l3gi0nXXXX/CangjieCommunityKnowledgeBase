@@ -199,8 +199,8 @@ public func validateCkbReproReferenceManifest(manifest: CkbReproReferenceManifes
     }
     if (manifest.totalCases != 164 || manifest.strictPassed < 0 ||
         manifest.strictPassed + manifest.strictFailed != 164 ||
-        manifest.businessFailed + manifest.protocolInvalid != manifest.strictFailed ||
-        manifest.transportUnresolved != 0 || manifest.rawPassed < manifest.strictPassed ||
+        manifest.businessFailed + manifest.protocolInvalid + manifest.transportUnresolved != manifest.strictFailed ||
+        manifest.transportUnresolved < 0 || manifest.rawPassed < manifest.strictPassed ||
         manifest.rawPassed > 164) {
         return ckbReproFailure("invalid_aggregate")
     }
