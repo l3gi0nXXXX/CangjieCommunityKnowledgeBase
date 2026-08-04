@@ -231,12 +231,6 @@ private func ckbPreflightStoreRouteFixture(): CkbPreflightStoreRouteFixture {
     let frozenPath = ckbStoreRouteWrite(root, "frozen-manifest.json", frozen.manifestJson)
     let promptHash = benchmarkGapSha256("store-route-prompt")
     let toolHash = benchmarkGapSha256("store-route-tools")
-    let baseline = ckbStoreRouteArm("no-ckb", false, datasetVersion, manifestHash,
-        promptHash, toolHash, "", "", 100, 0)
-    let treatment = ckbStoreRouteArm("frozen-ckb", true, datasetVersion, manifestHash,
-        promptHash, toolHash, snapshot.activeVersion, checksum, 164, 164)
-    let baselinePath = ckbStoreRouteWrite(root, "baseline.json", baseline)
-    let treatmentPath = ckbStoreRouteWrite(root, "treatment.json", treatment)
     let control = "{" +
         "\"runId\":\"${runId}\",\"outputRoot\":\"${canonicalize(outputRoot)}\"," +
         "\"workspaceRoot\":\"${workspaceCanonical}\",\"runtimeHomeRoot\":\"${runtimeCanonical}\"," +
@@ -251,8 +245,7 @@ private func ckbPreflightStoreRouteFixture(): CkbPreflightStoreRouteFixture {
         "\"filesystemProbePath\":\"${filesystemProbe}\",\"providerIdentityPath\":\"${providerPath}\"," +
         "\"parityRestPath\":\"${parityRest}\",\"parityStdioPath\":\"${parityStdio}\",\"parityHttpPath\":\"${parityHttp}\"," +
         "\"knowledgeContentHash\":\"${checksum}\",\"studentLeakageProofPath\":\"${leakagePath}\",\"frozenCandidateManifestPath\":\"${frozenPath}\"," +
-        "\"promptHash\":\"${promptHash}\",\"toolConfigHash\":\"${toolHash}\",\"runtimeConfigHash\":\"${benchmarkGapSha256("store-route-runtime")}\"," +
-        "\"baselineArmPath\":\"${baselinePath}\",\"treatmentArmPath\":\"${treatmentPath}\"}"
+        "\"promptHash\":\"${promptHash}\",\"toolConfigHash\":\"${toolHash}\",\"runtimeConfigHash\":\"${benchmarkGapSha256("store-route-runtime")}\"}"
     let controlPath = ckbStoreRouteWrite(root, "control.json", control)
     let wrongStore = root.join("wrong-store")
     Directory.create(wrongStore, recursive: true)
@@ -281,18 +274,4 @@ private func ckbStoreRouteClosure(): String {
 
 private func ckbStoreRouteGate(evidence: String): String {
     "{\"ok\":true,\"status\":\"pass\",\"evidence\":\"${evidence}\",\"evidenceHash\":\"${benchmarkGapSha256(evidence)}\"}"
-}
-
-private func ckbStoreRouteArm(name: String, enabled: Bool, dataset: String,
-    manifest: String, prompt: String, tools: String, version: String,
-    checksum: String, passed: Int64, hits: Int64): String {
-    let result = "{\"arm\":\"${name}\"}"
-    let isolation = "{\"isolated\":true,\"arm\":\"${name}\"}"
-    "{\"synthetic\":false,\"name\":\"${name}\",\"ckbEnabled\":${enabled}," +
-        "\"workspaceId\":\"${name}-workspace\",\"sessionId\":\"${name}-session\",\"runtimeHomeId\":\"${name}-home\"," +
-        "\"datasetVersion\":\"${dataset}\",\"manifestHash\":\"${manifest}\",\"modelVersion\":\"GLM-5.2\",\"claudeCodeVersion\":\"claude-code-1.0\"," +
-        "\"promptHash\":\"${prompt}\",\"toolConfigHash\":\"${tools}\",\"temperature\":\"0\",\"toolBudget\":1," +
-        "\"passed\":${passed},\"total\":164,\"knowledgeHits\":${hits},\"failureClassificationHash\":\"${benchmarkGapSha256("${name}-classification")}\"," +
-        "\"resultArtifactJson\":\"${result.replace("\"", "\\\"")}\",\"isolationSetJson\":\"${isolation.replace("\"", "\\\"")}\"," +
-        "\"frozenKnowledgeVersion\":\"${version}\",\"frozenKnowledgeContentHash\":\"${checksum}\"}"
 }

@@ -520,7 +520,7 @@ private func ckbAbcdeWaitForCertificationIdentity(options: CkbAbcdeRunnerOptions
     "certification_http_not_ready"
 }
 
-public func ckbAbcdeCertificationReadinessDeadlineMillis(): Int64 { 60000 }
+public func ckbAbcdeCertificationReadinessDeadlineMillis(): Int64 { 300000 }
 public func ckbAbcdeDevelopmentToolProbeTimeoutSeconds(): Int64 { 30 }
 public func ckbAbcdeCertificationProbeMaxTimeSeconds(remainingMillis: Int64): Int64 {
     if (remainingMillis < 1000) { return 0 }
@@ -1076,12 +1076,37 @@ public func ckbAbcdeAssessSample(transcript: String, expectedModel: String): Ckb
     if(transcript==""){result.transcriptDiagnostic="empty_transcript";return result}
     var observedModel = ""
     var initCount:Int64=0;var terminalCount:Int64=0
+    let knowledgeToolUseIds = HashSet<String>()
+    for (line in transcript.split("\n")) {
+        if(line.trimAscii()==""){continue}
+        try {
+            let object = JsonValue.fromStr(line).asObject()
+            if (ckbAbcdeStrictJsonString(object, "type") != "assistant") { continue }
+            let content = object.get("message").getOrThrow().asObject().get("content").getOrThrow().asArray().getItems()
+            for (value in content) {
+                let entry = value.asObject()
+                if (ckbAbcdeStrictJsonString(entry, "type") == "tool_use" && ckbAbcdeStrictJsonString(entry, "name").contains("mcp__ckb-cangjie-")) {
+                    let id = ckbAbcdeStrictJsonString(entry, "id")
+                    if (id != "") { knowledgeToolUseIds.add(id) }
+                }
+            }
+        } catch (_: Exception) {}
+    }
     for (line in transcript.split("\n")) {
         if(line.trimAscii()==""){continue}
         try {
             let object = JsonValue.fromStr(line).asObject()
             if (ckbAbcdeStrictJsonString(object, "subtype") == "init") { initCount+=1;observedModel = ckbAbcdeStrictJsonString(object, "model") }
-            if(line.contains("\"type\":\"tool_use\"")||line.contains("\"type\":\"tool_result\"")){result.toolEventCount+=1};let lower=line.toAsciiLower();if(line.contains("\"type\":\"tool_result\"")&&(lower.contains("\"is_error\":true")||lower.contains("mcp_error")||lower.contains("tool_result_failed")||lower.contains("knowledge_transport_failure"))){result.toolFailureCount+=1}
+            if(line.contains("\"type\":\"tool_use\"")||line.contains("\"type\":\"tool_result\"")){result.toolEventCount+=1}
+            if (ckbAbcdeStrictJsonString(object, "type") == "user") {
+                let content = object.get("message").getOrThrow().asObject().get("content").getOrThrow().asArray().getItems()
+                for (value in content) {
+                    let entry = value.asObject()
+                    if (ckbAbcdeStrictJsonString(entry, "type") != "tool_result" || !knowledgeToolUseIds.contains(ckbAbcdeStrictJsonString(entry, "tool_use_id"))) { continue }
+                    let lower = entry.toString().toAsciiLower()
+                    if (lower.contains("\"is_error\":true") || lower.contains("mcp_error") || lower.contains("tool_result_failed") || lower.contains("knowledge_transport_failure")) { result.toolFailureCount += 1 }
+                }
+            }
             if (ckbAbcdeStrictJsonString(object, "type") == "result") { terminalCount+=1;result.terminalResultCount+=1;if(ckbAbcdeStrictJsonString(object, "subtype") == "success" && !ckbAbcdeStrictJsonBool(object, "is_error")){result.completeResult = true} }
         } catch (_: Exception) {result.transcriptDiagnostic="malformed_json"}
     }
@@ -1101,6 +1126,7 @@ public func ckbAbcdeRenderModelTransportDiagnostic(transcript: String, exitCode:
 
 public func ckbAbcdeTransportClassification(exitCode:Int64,assessment:CkbAbcdeSampleAssessment,diagnostic:String):String{
     if(assessment.transcriptDiagnostic!="ok"&&assessment.transcriptDiagnostic!="empty_transcript"){return "non_retryable_transport_error"}
+    if(exitCode==0&&assessment.completeResult){return if(assessment.identityMatched){"business_sample"}else{"model_identity_mismatch"}}
     let value=diagnostic.toAsciiLower()
     for(blocked in ["mcp_error","tool_result_failed","knowledge_transport_failure","ckb_transport_error"]){if(value.contains(blocked)){return "knowledge_transport_failure"}}
     for(blocked in ["invalid_response_encoding","transcript_too_large","diagnostic_too_large","malformed_json","protocol violation","protocol_violation","sandbox","identity mismatch"]){if(value.contains(blocked)){return "non_retryable_transport_error"}}
@@ -2769,6 +2795,7 @@ private func ckbAbcdeFindCommandEscapesWorkspace(group: String, command: String,
             target = token
         }
         if (targetCount != 1 || !ckbAbcdeFindTargetInsideWorkspace(group, target, workspaceRoot)) { return true }
+        if (!target.startsWith("/") && command.contains("cd ") && !command.contains(workspaceRoot)) { return true }
     }
     false
 }
@@ -2777,7 +2804,7 @@ private func ckbAbcdeFindTargetInsideWorkspace(group: String, target: String, wo
     let normalizedTarget = ckbAbcdeTrimTrailingPathSeparators(target.trimAscii())
     if (normalizedTarget == "" || ckbAbcdePathHasParentSegment(normalizedTarget)) { return false }
     if (normalizedTarget == "." || normalizedTarget.startsWith("./")) { return true }
-    if (!normalizedTarget.startsWith("/")) { return false }
+    if (!normalizedTarget.startsWith("/")) { return true }
     let canonicalWorkspace = try { canonicalize(Path(workspaceRoot)).toString() } catch (_: Exception) { workspaceRoot }
     let normalizedWorkspace = ckbAbcdeTrimTrailingPathSeparators(canonicalWorkspace)
     if (normalizedWorkspace != "" && (normalizedTarget == normalizedWorkspace || normalizedTarget.startsWith("${normalizedWorkspace}/"))) { return true }

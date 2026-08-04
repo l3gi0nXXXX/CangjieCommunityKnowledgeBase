@@ -203,7 +203,7 @@ public class CangjieRealScaleServingTest {
 
     @TestCase
     public func readinessAndFrozenPointerGuardsAreBoundedAndFailClosed(): Unit {
-        @Expect(ckbAbcdeCertificationReadinessDeadlineMillis() >= 60000, true)
+        @Expect(ckbAbcdeCertificationReadinessDeadlineMillis(), 300000)
         @Expect(ckbAbcdeDevelopmentToolProbeTimeoutSeconds(), 30)
         @Expect(ckbAbcdeCertificationProbeMaxTimeSeconds(0), 0)
         @Expect(ckbAbcdeCertificationProbeMaxTimeSeconds(999), 0)

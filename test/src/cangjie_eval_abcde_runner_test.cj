@@ -102,11 +102,17 @@ public class CangjieEvalAbcdeRunnerTest {
         let successfulTool=ckbAbcdeAssessSample("{\"type\":\"system\",\"subtype\":\"init\",\"model\":\"GLM-5.2\"}\n{\"type\":\"tool_result\",\"is_error\":false}\n","GLM-5.2")
         @Expect(ckbAbcdeTransportClassification(1,successfulTool,"HTTP 503 service unavailable"),"service_unavailable")
         @Expect(ckbAbcdeShouldRetryTransport(1,successfulTool,diagnostic:"HTTP 503 service unavailable"),true)
-        let failedTool=ckbAbcdeAssessSample("{\"type\":\"system\",\"subtype\":\"init\",\"model\":\"GLM-5.2\"}\n{\"type\":\"tool_result\",\"is_error\":true}\n","GLM-5.2")
+        let failedTool=ckbAbcdeAssessSample("{\"type\":\"system\",\"subtype\":\"init\",\"model\":\"GLM-5.2\"}\n{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"mcp__ckb-cangjie-http__cangjie_task_knowledge_pack\",\"id\":\"ckb-1\"}]}}\n{\"type\":\"user\",\"message\":{\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"ckb-1\",\"is_error\":true}]}}\n","GLM-5.2")
         @Expect(ckbAbcdeTransportClassification(1,failedTool,"HTTP 503 service unavailable"),"knowledge_transport_failure")
         @Expect(ckbAbcdeShouldRetryTransport(1,failedTool,diagnostic:"HTTP 503 service unavailable"),false)
         @Expect(ckbAbcdeTransportClassification(124,failedTool,""),"knowledge_transport_failure")
         @Expect(ckbAbcdeShouldRetryTransport(124,failedTool),false)
+        let recoveredKnowledgeTool=ckbAbcdeAssessSample("{\"type\":\"system\",\"subtype\":\"init\",\"model\":\"GLM-5.2\"}\n{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"mcp__ckb-cangjie-http__cangjie_cookbook\",\"id\":\"ckb-2\"}]}}\n{\"type\":\"user\",\"message\":{\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"ckb-2\",\"is_error\":true,\"content\":\"operation timed out\"}]}}\n{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false}\n","GLM-5.2")
+        @Expect(recoveredKnowledgeTool.toolFailureCount,1)
+        @Expect(ckbAbcdeTransportClassification(0,recoveredKnowledgeTool,""),"business_sample")
+        let ordinaryToolFailure=ckbAbcdeAssessSample("{\"type\":\"system\",\"subtype\":\"init\",\"model\":\"GLM-5.2\"}\n{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Bash\",\"id\":\"bash-1\"}]}}\n{\"type\":\"user\",\"message\":{\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"bash-1\",\"is_error\":true,\"content\":\"cjpm build failed\"}]}}\n{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false}\n","GLM-5.2")
+        @Expect(ordinaryToolFailure.toolFailureCount,0)
+        @Expect(ckbAbcdeTransportClassification(0,ordinaryToolFailure,""),"business_sample")
         @Expect(ckbAbcdeTransportClassification(124,emptyTranscript,"mcp_error"),"knowledge_transport_failure")
         @Expect(ckbAbcdeShouldRetryTransport(124,emptyTranscript,diagnostic:"knowledge_transport_failure"),false)
     }
@@ -863,7 +869,9 @@ public class CangjieEvalAbcdeRunnerTest {
         let absolute = "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Bash\",\"input\":{\"command\":\"find ${workspace} -type f -name '*.cj' -o -name '*.toml' | head -50\"}}]}}"
         let child = "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Bash\",\"input\":{\"command\":\"find '${workspace}/src' -type f\"}}]}}"
         let dot = "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Bash\",\"input\":{\"command\":\"find . -type f\"}}]}}"
-        for (event in [absolute, child, dot]) {
+        let relative = "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Bash\",\"input\":{\"command\":\"find target -name '*.a'\"}}]}}"
+        let workspaceCd = "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Bash\",\"input\":{\"command\":\"cd '${workspace}' && find src -type f\"}}]}}"
+        for (event in [absolute, child, dot, relative, workspaceCd]) {
             @Expect(ckbAbcdeForbiddenEvidenceForWorkspaceForTest(CkbAbcdeGroups.C, event, workspace), "none")
         }
     }
@@ -879,7 +887,8 @@ public class CangjieEvalAbcdeRunnerTest {
             "find $(pwd) -type f",
             "find \"$PWD\" -type f",
             "find `pwd` -type f",
-            "find /Users -type f"
+            "find /Users -type f",
+            "cd / && find tmp -type f"
         ]
         for (command in commands) {
             let event = "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Bash\",\"input\":{\"command\":\"${ckbAbcdeJsonEscape(command)}\"}}]}}"

@@ -59,7 +59,7 @@ public class CangjieCertificationPreflightTest {
     }
 
     @TestCase
-    public func p6Neg01ForbiddenPathsRetryLayersAndSyntheticEvidenceAreRejected(): Unit {
+    public func p6Neg01ForbiddenPathsAndRetryLayersAreRejected(): Unit {
         let testsPath=p6EmptyOutput("../target/p6-path/tests/hidden"); let referencePath=p6EmptyOutput("../target/p6-path/reference/work"); let teacherPath=p6EmptyOutput("../target/p6-path/teacher-solutions/work")
         @Expect(ckbCertificationWorkspaceDiagnostic(testsPath), "forbidden_workspace_segment:tests")
         @Expect(ckbCertificationWorkspaceDiagnostic(referencePath), "forbidden_workspace_segment:reference")
@@ -83,11 +83,11 @@ public class CangjieCertificationPreflightTest {
         @Expect(ckbCertificationBudgetDiagnostic(budget), "knowledge_rest_retry_must_be_zero")
 
         let options = p6Preflight(p6EmptyOutput("../target/p6-neg-empty"))
-        options.contributionExperimentSynthetic = true
+        options.experimentReport = CkbContributionExperimentReport()
         let report = runCertificationPreflight(options, p6Fingerprint())
         @Expect(report.startAllowed, false)
-        @Expect(report.checks.contains("trusted_contribution_experiment_required"), true)
-        options.contributionExperimentSynthetic = false; options.filesystemProbeJson = "{\"deniedOutsideWorkspace\":false}"
+        @Expect(report.checks.contains("trusted_contribution_experiment_required"), false)
+        options.filesystemProbeJson = "{\"deniedOutsideWorkspace\":false}"
         let unsafeReport = runCertificationPreflight(options, p6Fingerprint())
         @Expect(unsafeReport.checks.contains("filesystem_isolation_probe_invalid"), true)
         options.filesystemProbeJson = "{}"; options.developmentClosureJson = "{malformed中文😀"

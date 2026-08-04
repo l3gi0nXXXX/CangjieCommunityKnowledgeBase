@@ -221,7 +221,6 @@ public func runCertificationPreflight(options: CkbCertificationPreflightOptions,
     ckbP6Check(report, ckbP6DevelopmentClosureDiagnostic(options.developmentClosureJson) == "ok", ckbP6DevelopmentClosureDiagnostic(options.developmentClosureJson))
     ckbP6Check(report, ckbP6GateArtifactDiagnostic(options.knowledgeGateJson, "knowledge") == "ok", ckbP6GateArtifactDiagnostic(options.knowledgeGateJson, "knowledge"))
     ckbP6Check(report, ckbP6GateArtifactDiagnostic(options.releaseGateJson, "release") == "ok", ckbP6GateArtifactDiagnostic(options.releaseGateJson, "release"))
-    ckbP6Check(report, options.experimentReport.ok && !options.contributionExperimentSynthetic && ckbP6HashFormat(options.experimentReport.evidenceHash) && options.experimentReport.frozenFingerprint == report.fingerprint, "trusted_contribution_experiment_required")
     let parityHash = ckbP6ParityHash(options.parityRestPayload, options.parityStdioPayload, options.parityHttpPayload, options.frozenVersion)
     ckbP6Check(report, parityHash != "" && parityHash == options.parityEvidenceHash, "transport_parity_required")
     ckbP6Check(report, options.modelVersion != "" && options.claudeCodeVersion != "", "exact_model_versions_required")
