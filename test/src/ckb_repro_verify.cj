@@ -474,8 +474,7 @@ public class CkbP8ProductionRestoreOperation <:
         let result = try { this.executeCore(options) }
             catch (_: Exception) { p8StageFailure("restore_operation_failed") }
         if (!result.ok && exists(Path(options.runtimeRoot))) {
-            try { remove(Path(options.runtimeRoot), recursive: true) }
-            catch (_: Exception) {
+            if (!p8RemoveRuntimeRoot(options.runtimeRoot)) {
                 return p8StageFailure("restore_runtime_cleanup_failed")
             }
         }
@@ -572,12 +571,18 @@ public class CkbP8ProductionRestoreOperation <:
             cleanupResponse.statusCode != 404) {
             out.diagnostic = "restore_qdrant_cleanup_failed"; return out
         }
-        try { remove(Path(options.runtimeRoot), recursive: true) }
-        catch (_: Exception) {
+        if (!p8RemoveRuntimeRoot(options.runtimeRoot)) {
             out.diagnostic = "restore_runtime_cleanup_failed"; return out
         }
         out.ok = true; out.diagnostic = "ok"; out
     }
+}
+
+private func p8RemoveRuntimeRoot(root: String): Bool {
+    if (!exists(Path(root))) { return true }
+    try { remove(Path(root), recursive: true) }
+    catch (_: Exception) { return !exists(Path(root)) }
+    !exists(Path(root))
 }
 
 public class CkbP8ProductionRebuildInputs {
