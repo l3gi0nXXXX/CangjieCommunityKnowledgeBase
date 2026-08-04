@@ -37,6 +37,8 @@ public class CkbReproP8OwnedLifecycleTest {
         @Expect(commands.calls[2].args.contains("--pull=never"), true)
         @Expect(commands.calls[2].args.contains(
             "QDRANT__TELEMETRY_DISABLED=true"), true)
+        @Expect(commands.calls[2].args.contains(
+            "QDRANT__SERVICE__MAX_REQUEST_SIZE_MB=1024"), true)
         let nameIndex = commands.calls[2].args.indexOf("--name").getOrThrow()
         @Expect(commands.calls[2].args[nameIndex + 1].startsWith(
             "ckb-p8-qdrant-"), true)

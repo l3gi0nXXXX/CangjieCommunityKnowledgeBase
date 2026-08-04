@@ -196,6 +196,7 @@ public class CkbNativeP8OwnedLocalLifecycle <: CkbP8OwnedLocalLifecycle {
                 "--name", containerName, "--label",
                 "ckb.repro.p8.owner=${identity}", "--network", this.networkName,
                 "--env", "QDRANT__TELEMETRY_DISABLED=true",
+                "--env", "QDRANT__SERVICE__MAX_REQUEST_SIZE_MB=1024",
                 "--publish", "127.0.0.1:${port}:6333", "--mount",
                 "type=bind,source=${this.qdrantRoot},target=/qdrant/storage",
                 this.authority.qdrantImageReference])
