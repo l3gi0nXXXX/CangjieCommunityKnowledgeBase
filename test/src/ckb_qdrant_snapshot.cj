@@ -1358,7 +1358,7 @@ public func restoreCkbQdrantSnapshot(targetCollection: String,
         return result
     }
     let restoreRequest = CkbQdrantSnapshotRequest()
-    restoreRequest.method = "PUT"
+    restoreRequest.method = "POST"
     restoreRequest.path =
         "/collections/${targetCollection}/snapshots/upload"
     restoreRequest.contentType = "application/octet-stream"
@@ -1398,7 +1398,7 @@ public func restoreCkbQdrantSnapshotFromFile(targetCollection: String,
     }
     result.targetAbsentConfirmed = true
     let uploadRequest = CkbQdrantSnapshotRequest()
-    uploadRequest.method = "PUT"
+    uploadRequest.method = "POST"
     uploadRequest.path = "/collections/${targetCollection}/snapshots/upload"
     uploadRequest.contentType = "application/octet-stream"
     result.uploadAttempted = true

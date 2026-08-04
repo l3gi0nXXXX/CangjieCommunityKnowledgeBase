@@ -30,7 +30,7 @@ private class P3FakeSnapshotExecutor <: CkbQdrantSnapshotExecutor {
             request.path.contains("/snapshots/portable.snapshot")) {
             out.statusCode = 200
             out.bodyBytes = this.snapshotBytes.clone()
-        } else if (request.method == "PUT" &&
+        } else if (request.method == "POST" &&
             request.path.contains("/snapshots/upload")) {
             out.statusCode = if (this.failRestore) { 500 } else { 200 }
             out.bodyBytes = "{\"status\":\"ok\"}".toArray()
@@ -123,7 +123,7 @@ public class CkbQdrantSnapshotTest {
             "target", bytes, manifest, executor)
         @Expect(restored.ok, true)
         @Expect(executor.requests[0].method, "GET")
-        @Expect(executor.requests[1].method, "PUT")
+        @Expect(executor.requests[1].method, "POST")
         @Expect(executor.requests[1].bodyBytes, bytes)
         let status = p3Status("target")
         let verified = verifyRestoredCkbQdrantSnapshot(

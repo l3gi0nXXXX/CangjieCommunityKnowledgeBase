@@ -374,7 +374,7 @@ public class CkbReproRuntimeCompositionTest {
             let identity = ckbQdrantSnapshotFileIdentity(source.toString())
             @Expect(identity.ok, true)
             let request = CkbQdrantSnapshotRequest()
-            request.method = "PUT"; request.path = "/upload"
+            request.method = "POST"; request.path = "/upload"
             request.contentType = "application/octet-stream"
             let response = executor.upload(request, source.toString(),
                 identity.size, identity.sha256)
@@ -436,7 +436,7 @@ public class CkbReproRuntimeCompositionTest {
                 "http://127.0.0.1:${server.port}", config)
             let identity = ckbQdrantSnapshotFileIdentity(source.toString())
             let request = CkbQdrantSnapshotRequest()
-            request.method = "PUT"
+            request.method = "POST"
             request.contentType = "application/octet-stream"
             request.path = "/non2xx"
             @Expect(executor.upload(request, source.toString(), identity.size,

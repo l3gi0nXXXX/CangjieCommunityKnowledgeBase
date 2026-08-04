@@ -219,7 +219,7 @@ public class CkbNativeQdrantSnapshotFileExecutor <:
         let out = CkbQdrantSnapshotResponse()
         let invalid = ckbNativeQdrantRequestDiagnostic(
             this.endpoint, request, this.config)
-        if (invalid != "ok" || request.method != "PUT" ||
+        if (invalid != "ok" || request.method != "POST" ||
             request.contentType != "application/octet-stream") {
             out.diagnostic = if (invalid == "ok") {
                 "qdrant_snapshot_request_invalid"
@@ -246,7 +246,7 @@ public class CkbNativeQdrantSnapshotFileExecutor <:
                 let multipart = CkbNativeQdrantMultipartInputStream(
                     stream, boundary)
                 let nativeRequest = HttpRequestBuilder().url(url)
-                    .method("PUT")
+                    .method("POST")
                     .header("Accept", "application/json")
                     .header("Content-Type",
                         "multipart/form-data; boundary=${boundary}")
