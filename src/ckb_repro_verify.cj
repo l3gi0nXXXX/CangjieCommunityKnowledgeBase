@@ -466,14 +466,22 @@ public class CkbP8ProductionRestoreInputs {
 public class CkbP8ProductionRestoreOperation <:
     CkbReproRestoreStageOperation {
     private let inputs: CkbP8ProductionRestoreInputs
-    public init(inputs: CkbP8ProductionRestoreInputs) { this.inputs = inputs }
+    private let beforeRuntimeCleanup: () -> Bool
+    public init(inputs: CkbP8ProductionRestoreInputs,
+        beforeRuntimeCleanup!: () -> Bool = { => true }) {
+        this.inputs = inputs
+        this.beforeRuntimeCleanup = beforeRuntimeCleanup
+    }
     public func execute(options: CkbReproVerifyOptions): CkbReproStageEvidence {
         if (exists(Path(options.runtimeRoot))) {
             return p8StageFailure("restore_runtime_root_exists")
         }
         let result = try { this.executeCore(options) }
             catch (_: Exception) { p8StageFailure("restore_operation_failed") }
-        if (!result.ok && exists(Path(options.runtimeRoot))) {
+        if (exists(Path(options.runtimeRoot))) {
+            if (!this.beforeRuntimeCleanup()) {
+                return p8StageFailure("restore_runtime_cleanup_precondition_failed")
+            }
             if (!p8RemoveRuntimeRoot(options.runtimeRoot)) {
                 return p8StageFailure("restore_runtime_cleanup_failed")
             }
@@ -570,9 +578,6 @@ public class CkbP8ProductionRestoreOperation <:
         if (cleanupResponse.statusCode != 200 && cleanupResponse.statusCode != 202 &&
             cleanupResponse.statusCode != 404) {
             out.diagnostic = "restore_qdrant_cleanup_failed"; return out
-        }
-        if (!p8RemoveRuntimeRoot(options.runtimeRoot)) {
-            out.diagnostic = "restore_runtime_cleanup_failed"; return out
         }
         out.ok = true; out.diagnostic = "ok"; out
     }
@@ -1238,7 +1243,8 @@ private class CkbP8OwnedQdrantRestoreOperation <:
     private let lifecycle: CkbP8OwnedLocalLifecycle
     public init(inputs: CkbP8ProductionRestoreInputs,
         lifecycle: CkbP8OwnedLocalLifecycle) {
-        this.delegate = CkbP8ProductionRestoreOperation(inputs)
+        this.delegate = CkbP8ProductionRestoreOperation(inputs,
+            beforeRuntimeCleanup: { => lifecycle.stopParityService() })
         this.lifecycle = lifecycle
     }
     public func execute(options: CkbReproVerifyOptions): CkbReproStageEvidence {

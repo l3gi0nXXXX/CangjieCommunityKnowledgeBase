@@ -1238,6 +1238,23 @@ public class CkbReproVerifyTest {
             @Expect(restored.normalizedRecords, 1)
             @Expect(exists(Path(fixture.options.runtimeRoot)), false)
 
+            let orderedControl = P8RestoreControl()
+            fixture.inputs.qdrantControl = Some(orderedControl)
+            let ordered = CkbP8ProductionRestoreOperation(fixture.inputs,
+                beforeRuntimeCleanup: { => exists(Path(
+                    fixture.options.runtimeRoot)) }).execute(fixture.options)
+            @Expect(ordered.ok, true)
+            @Expect(exists(Path(fixture.options.runtimeRoot)), false)
+
+            let blockedControl = P8RestoreControl()
+            fixture.inputs.qdrantControl = Some(blockedControl)
+            let blocked = CkbP8ProductionRestoreOperation(fixture.inputs,
+                beforeRuntimeCleanup: { => false }).execute(fixture.options)
+            @Expect(blocked.diagnostic,
+                "restore_runtime_cleanup_precondition_failed")
+            @Expect(exists(Path(fixture.options.runtimeRoot)), true)
+            remove(Path(fixture.options.runtimeRoot), recursive: true)
+
             let failedStatus = P8RestoreControl(); failedStatus.statusCode = 503
             fixture.inputs.qdrantControl = Some(failedStatus)
             let unavailable = CkbP8ProductionRestoreOperation(fixture.inputs)
