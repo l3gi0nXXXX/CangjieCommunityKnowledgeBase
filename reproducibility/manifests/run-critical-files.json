@@ -13,7 +13,7 @@
     {"path":"src/cangjie_routine_clean_candidate.cj","status":"present","sha256":"sha256:1ff8c5ff52b49cbc13dab6997ae684a658b4d0aa312388a7502dd82d8ecaa64f"},
     {"path":"src/cangjie_release_gate.cj","status":"present","sha256":"sha256:d3192c8fac69ca5a53c6320e6d85a5fa1df7b73e9ea8097df2418f569d234ae7"},
     {"path":"src/ckb_candidate_runtime_materialize.cj","status":"present","sha256":"sha256:7cb1f82e8f00ff279e114c31cd304f7cd06547cffc96a553a57c3d5b4c7fe4ae"},
-    {"path":"src/native_http_transport.cj","status":"present","sha256":"sha256:41487912a64a4e39ac8e0c6b8a9df92b2786391a8682e8a66b670e86779b43ed"},
+    {"path":"src/native_http_transport.cj","status":"present","sha256":"sha256:b35fe7e50ef6f26c1639ad5d1633c54c99ec816fbc40af472258aeb8614ba0bc"},
     {"path":"src/native_tls_bootstrap.cj","status":"present","sha256":"sha256:4e936a0aec6781678159a4e09c0ef6940aeb043cce7bd3652ae67d74e3de97be"},
     {"path":"src/core.cj","status":"present","sha256":"sha256:ed73f52f60dc67074175a21a2ac81efae033c133d7ae94ccd67706117063c046"},
     {"path":"src/services.cj","status":"present","sha256":"sha256:a6107a8407a2927cf9eeccc4ee2b78ed6329b5ecb0071ec6e4a8834af5ed45aa"},

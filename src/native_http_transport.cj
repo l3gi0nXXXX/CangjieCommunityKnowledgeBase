@@ -242,12 +242,17 @@ public class CkbNativeQdrantSnapshotFileExecutor <:
             }
             let client = parts[0].build()
             try {
+                let boundary = "ckb-qdrant-snapshot-boundary"
+                let multipart = CkbNativeQdrantMultipartInputStream(
+                    stream, boundary)
                 let nativeRequest = HttpRequestBuilder().url(url)
                     .method("PUT")
                     .header("Accept", "application/json")
-                    .header("Content-Type", "application/octet-stream")
-                    .header("Content-Length", "${expectedSize}")
-                    .body(stream).build()
+                    .header("Content-Type",
+                        "multipart/form-data; boundary=${boundary}")
+                    .header("Content-Length",
+                        "${multipart.contentLength(expectedSize)}")
+                    .body(multipart).build()
                 let response = client.send(nativeRequest)
                 out.statusCode = Int64(response.status)
                 if (out.statusCode < 200 || out.statusCode >= 300) {
@@ -270,6 +275,56 @@ public class CkbNativeQdrantSnapshotFileExecutor <:
             stream.close()
         }
         out
+    }
+}
+
+private class CkbNativeQdrantMultipartInputStream <: InputStream {
+    private let source: CkbNativeOwnedFdInputStream
+    private let header: Array<UInt8>
+    private let trailer: Array<UInt8>
+    private var headerOffset: Int64 = 0
+    private var trailerOffset: Int64 = 0
+    private var sourceComplete: Bool = false
+
+    public init(source: CkbNativeOwnedFdInputStream, boundary: String) {
+        this.source = source
+        this.header = ("--${boundary}\r\n" +
+            "Content-Disposition: form-data; name=\"snapshot\"; " +
+            "filename=\"snapshot.snapshot\"\r\n" +
+            "Content-Type: application/octet-stream\r\n\r\n").toArray()
+        this.trailer = "\r\n--${boundary}--\r\n".toArray()
+    }
+
+    public func contentLength(sourceSize: Int64): Int64 {
+        Int64(this.header.size) + sourceSize + Int64(this.trailer.size)
+    }
+
+    public func read(buffer: Array<UInt8>): Int64 {
+        if (buffer.size == 0) { return 0 }
+        if (this.headerOffset < this.header.size) {
+            let count = min(Int64(buffer.size),
+                Int64(this.header.size) - this.headerOffset)
+            for (i in 0..count) {
+                buffer[i] = this.header[this.headerOffset + i]
+            }
+            this.headerOffset += count
+            return count
+        }
+        if (!this.sourceComplete) {
+            let count = this.source.read(buffer)
+            if (count > 0) { return count }
+            this.sourceComplete = true
+        }
+        if (this.trailerOffset < this.trailer.size) {
+            let count = min(Int64(buffer.size),
+                Int64(this.trailer.size) - this.trailerOffset)
+            for (i in 0..count) {
+                buffer[i] = this.trailer[this.trailerOffset + i]
+            }
+            this.trailerOffset += count
+            return count
+        }
+        0
     }
 }
 

@@ -378,7 +378,13 @@ public class CkbReproRuntimeCompositionTest {
             request.contentType = "application/octet-stream"
             let response = executor.upload(request, source.toString(),
                 identity.size, identity.sha256)
-            @Expect(received.toArray(), "original-snapshot-content".toArray())
+            let multipart = String.fromUtf8(received.toArray())
+            @Expect(multipart.contains(
+                "Content-Disposition: form-data; name=\"snapshot\"; " +
+                "filename=\"snapshot.snapshot\""), true)
+            @Expect(multipart.contains(
+                "\r\n\r\noriginal-snapshot-content\r\n" +
+                "--ckb-qdrant-snapshot-boundary--\r\n"), true)
             @Expect(response.diagnostic == "ok" ||
                 response.diagnostic == "qdrant_snapshot_upload_identity_changed",
                 true)
