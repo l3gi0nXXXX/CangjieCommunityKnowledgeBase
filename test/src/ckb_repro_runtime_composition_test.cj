@@ -780,6 +780,13 @@ public class CkbReproRuntimeCompositionTest {
             "prepared.mode == \"run-certify\" &&"), true)
         @Expect(source.contains(
             "out.buildProof.rawCount != out.logical.rawCount"), true)
+        @Expect(source.contains(
+            "out.rebuild.publicBuildInputRoot = publicRoot"), true)
+        let verify = String.fromUtf8(File.readFrom(
+            Path("../src/ckb_repro_verify.cj")))
+        @Expect(verify.contains(
+            "runCkbReproProductionBuild(this.inputs.publicBuildInputRoot"),
+            true)
     }
 
     @TestCase

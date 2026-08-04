@@ -151,6 +151,7 @@ func buildCkbReproP8ProductionStages(
     out.restore.sourceLockHash = shared.buildProof.sourceLockHash
     out.restore.pathProofHash = shared.logical.p4PortableProofHash
 
+    out.rebuild.publicBuildInputRoot = publicRoot
     out.rebuild.buildManifest = buildManifest
     out.rebuild.authority = authority[1]; out.rebuild.reader = Some(reader)
     out.rebuild.materialBackend = Some<CkbReproMaterializingSourceBackend>(

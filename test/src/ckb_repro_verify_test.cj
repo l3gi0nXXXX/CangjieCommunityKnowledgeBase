@@ -1313,7 +1313,9 @@ public class CkbReproVerifyTest {
         let options = CkbReproVerifyOptions()
         options.workRoot = "/tmp/ckb-p8-work"
         options.runtimeRoot = "/tmp/ckb-p8-runtime"
+        options.candidateRoot = "/tmp/ckb-p8-candidate"
         let inputs = CkbP8ProductionRebuildInputs()
+        inputs.publicBuildInputRoot = "/tmp/ckb-p8-public-build-inputs"
         inputs.authority.outputRoot = "/tmp/outside-runtime"
         inputs.authority.temporaryRoot = "/tmp/ckb-p8-work/rebuild-temporary"
         @Expect(CkbP8ProductionRebuildOperation(inputs).execute(options).diagnostic,
@@ -1335,7 +1337,7 @@ public class CkbReproVerifyTest {
             let restore = p8RestoreFixture(root, P8RestoreControl())
             restore.options.workRoot = Path(root).join("work").toString()
             restore.options.candidateRoot =
-                Path(root).join("public-build-inputs").toString()
+                Path(root).join("unsigned-candidate").toString()
             let control = P8RestoreControl(); let pipeline = P8RebuildPipeline()
             let inputs = p8RebuildInputs(root, restore, control, pipeline)
             let rebuilt = CkbP8ProductionRebuildOperation(inputs)
@@ -2054,6 +2056,7 @@ private func p8RebuildInputs(root: String, restore: P8RestoreFixture,
     }
     let assembler = P8RebuildAssembler(); assembler.record = record
     let inputs = CkbP8ProductionRebuildInputs()
+    inputs.publicBuildInputRoot = candidate.toString()
     inputs.buildManifest = manifest; inputs.authority = authority
     inputs.reader = Some(CkbReproFilesystemBundleReadBackend())
     inputs.materialBackend = Some(P8RebuildMaterialBackend())

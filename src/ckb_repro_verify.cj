@@ -594,6 +594,7 @@ private func p8RemoveRuntimeRoot(root: String): Bool {
 }
 
 public class CkbP8ProductionRebuildInputs {
+    public var publicBuildInputRoot: String = ""
     public var buildManifest: CkbReproBuildInputManifest =
         CkbReproBuildInputManifest()
     public var authority: CkbReproPrivateBuildAuthority =
@@ -642,7 +643,10 @@ public class CkbP8ProductionRebuildOperation <:
     }
     private func executeCore(options: CkbReproVerifyOptions): CkbReproStageEvidence {
         let out = CkbReproStageEvidence()
-        if (this.inputs.authority.outputRoot != options.runtimeRoot ||
+        if (this.inputs.publicBuildInputRoot == "" ||
+            !Path(this.inputs.publicBuildInputRoot).isAbsolute() ||
+            this.inputs.publicBuildInputRoot == options.candidateRoot ||
+            this.inputs.authority.outputRoot != options.runtimeRoot ||
             this.inputs.authority.temporaryRoot !=
                 Path(options.workRoot).join("rebuild-temporary").toString() ||
             this.inputs.authority.outputRoot == this.inputs.authority.temporaryRoot) {
@@ -687,7 +691,7 @@ public class CkbP8ProductionRebuildOperation <:
         let inspected = inspectCkbReleaseArchive(
             archive, options.p2LogicalSnapshotPath)
         if (!inspected.ok) { out.diagnostic = inspected.diagnostic; return out }
-        let built = runCkbReproProductionBuild(options.candidateRoot,
+        let built = runCkbReproProductionBuild(this.inputs.publicBuildInputRoot,
             this.inputs.buildManifest, this.inputs.authority, reader,
             materialBackend, materializer, assembler, pipeline)
         if (!built.ready || !built.proof.logicalReady ||
