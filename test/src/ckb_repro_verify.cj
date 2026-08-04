@@ -2874,6 +2874,7 @@ public func ckbReproReleaseAuthorityRequiredLayout(mode: String):
         ("reproducibility/manifests/reference-run.json", "p8_reference"),
         ("reproducibility/licenses/THIRD_PARTY_NOTICES.md", "license"),
         ("ckb-logical-snapshot.tar.zst", "p2_logical_snapshot"),
+        ("qdrant-snapshot-manifest.json", "p3_qdrant_snapshot"),
         ("qdrant-collection.snapshot", "p3_qdrant_snapshot"),
         ("portable-logical-proof.json", "p4_build_proof"),
         ("promotion-candidate.json", "p4_build_proof"),

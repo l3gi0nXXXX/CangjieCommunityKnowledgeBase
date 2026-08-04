@@ -1427,12 +1427,12 @@ public class CkbReproAuthorityLayoutBaselineTest {
     public func authorityModesMatchIndependentFixture(): Unit {
         let reference = p8ReferenceTemplate()
         let rows = p8AuthorityRows("manifest", reference)
-        @Expect(rows.size, 53)
+        @Expect(rows.size, 54)
         let built = buildCkbReproReleaseAuthorityContract(
             p8AuthorityInputs("manifest", reference), "public_rebuild")
         @Expect(built[0].ok, true)
         let contract = built[1]
-        @Expect(contract.expected.size, 53)
+        @Expect(contract.expected.size, 54)
         for (row in rows) {
             var matches = 0
             for (evidence in contract.expected) {
@@ -1462,7 +1462,7 @@ public class CkbReproAuthorityLayoutBaselineTest {
         let bundled = buildCkbReproReleaseAuthorityContract(
             bundledInputs, "bundled")
         @Expect(bundled[0].ok, true)
-        @Expect(bundled[1].expected.size, 53)
+        @Expect(bundled[1].expected.size, 54)
         var bundledAssetMatches = 0
         var rebuildAssetMatches = 0
         for (evidence in bundled[1].expected) {
@@ -1746,6 +1746,7 @@ private func p8AuthorityRows(content: String,
             renderCkbReproReferenceManifest(reference), "p8_reference"),
         ("reproducibility/licenses/THIRD_PARTY_NOTICES.md", "licenses", "license"),
         ("ckb-logical-snapshot.tar.zst", "p2", "p2_logical_snapshot"),
+        ("qdrant-snapshot-manifest.json", "p3-manifest", "p3_qdrant_snapshot"),
         ("qdrant-collection.snapshot", "p3", "p3_qdrant_snapshot"),
         ("portable-logical-proof.json", "proof", "p4_build_proof"),
         ("promotion-candidate.json", "candidate", "p4_build_proof"),
