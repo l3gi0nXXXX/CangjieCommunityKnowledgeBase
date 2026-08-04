@@ -584,9 +584,12 @@ public class CkbP8ProductionRestoreOperation <:
 }
 
 private func p8RemoveRuntimeRoot(root: String): Bool {
-    if (!exists(Path(root))) { return true }
-    try { remove(Path(root), recursive: true) }
-    catch (_: Exception) { return !exists(Path(root)) }
+    var attempts: Int64 = 0
+    while (exists(Path(root)) && attempts < 3) {
+        try { remove(Path(root), recursive: true) }
+        catch (_: Exception) {}
+        attempts += 1
+    }
     !exists(Path(root))
 }
 
