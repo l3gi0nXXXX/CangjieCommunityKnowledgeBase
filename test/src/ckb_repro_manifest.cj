@@ -572,7 +572,6 @@ public func validateCkbRunCriticalFilesManifest(manifest: CkbRunCriticalFilesMan
         "src/ckb_repro_cli_runtime_a.cj",
         "src/ckb_repro_cli_runtime_b.cj",
         "src/ckb_repro_p8_owned_lifecycle.cj",
-        "src/ckb_repro_bundle.cj",
         "src/ckb_repro_documentation.cj",
         "src/ckb_portable_path_normalizer.cj",
         "src/ckb_repro_environment.cj",

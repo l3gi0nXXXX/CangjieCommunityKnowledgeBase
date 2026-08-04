@@ -20,6 +20,14 @@ public class CkbReproManifestTest {
         @Expect(renderCkbReproReferenceManifest(referenceAgain[1]),
             referenceValidation.canonicalJson)
         @Expect(referenceValidation.manifestHash.startsWith("sha256:"), true)
+        let portableReference = parseCkbReproReferenceManifest(
+            p0Read("../reproducibility/manifests/reference-run.json"))
+        @Expect(portableReference[0].ok, true)
+        let portableReferenceValidation = validateCkbReproReferenceManifest(
+            portableReference[1], mode: "contract")
+        @Expect(portableReferenceValidation.ok, true)
+        @Expect(portableReferenceValidation.manifestHash,
+            "sha256:ab6d90b034045010302083747fd00ecdb4e043b8dd93b9a77362e22557db515c")
         let evidence = parseCkbHistoricalReferenceEvidence(
             p0Read("../reproducibility/manifests/historical-reference-evidence.json"))
         @Expect(evidence[0].ok, true)
@@ -49,7 +57,12 @@ public class CkbReproManifestTest {
             mode: "execution")
         @Expect(execution.ok, true)
         @Expect(execution.treeHash,
-            "sha256:7e26be38623ffe6082ef8e6389b5a59ae6d80c00a101f07eb2d562e2c381ad69")
+            "sha256:a4c33ab0ceb8f246c24b329757e7457e943040287c80a23f84d768e4ee08d8fb")
+        var bundleListed = false
+        for (file in critical[1].files) {
+            if (file.path == "src/ckb_repro_bundle.cj") { bundleListed = true }
+        }
+        @Expect(bundleListed, false)
     }
 
     @TestCase
@@ -229,6 +242,8 @@ public class CkbReproManifestTest {
             p0Read("../src/native_tls_bootstrap.cj"))
         File.writeTo(Path(root).join("src/service_http.cj"),
             p0Read("../src/service_http.cj"))
+        File.writeTo(Path(root).join("src/ckb_repro_bundle.cj"),
+            p0Read("../src/ckb_repro_bundle.cj"))
         File.writeTo(Path(root).join("docs-note.md"), "说明🙂".toArray())
         let manifest = p0CriticalFromRepositoryManifest(
             ["src/native_tls_bootstrap.cj", "src/service_http.cj"])
@@ -238,6 +253,10 @@ public class CkbReproManifestTest {
         File.writeTo(Path(root).join("docs-note.md"), "说明变化🙂".toArray())
         let docsOnly = computeCkbRunCriticalTreeHash(manifest, root)
         @Expect(docsOnly, firstTreeHash)
+        File.writeTo(Path(root).join("src/ckb_repro_bundle.cj"),
+            "release-only change".toArray())
+        let releaseOnly = computeCkbRunCriticalTreeHash(manifest, root)
+        @Expect(releaseOnly, firstTreeHash)
         File.writeTo(Path(root).join("src/service_http.cj"),
             (String.fromUtf8(p0Read("../src/service_http.cj")) + "\n// critical change\n").toArray())
         let criticalChange = computeCkbRunCriticalTreeHash(manifest, root)
