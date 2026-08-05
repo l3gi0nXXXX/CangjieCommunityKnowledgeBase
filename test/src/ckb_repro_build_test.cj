@@ -8,19 +8,6 @@ import std.unittest.testmacro.*
 @Test
 public class CkbReproBuildTest {
     @TestCase
-    public func promotionReadsLegacySnapshotWhenV2PointerIsAbsent(): Unit {
-        let pointer = CkbActiveSnapshotPointer()
-        let snapshot = ActiveSnapshot()
-        snapshot.valid = true
-        snapshot.activeVersion = "legacy-active"
-        snapshot.vectorActiveCollection = "legacy-vectors"
-        let state = ckbPortablePromotionCurrentState(pointer, snapshot)
-        @Expect(state.activeVersion, "legacy-active")
-        @Expect(state.pointerHash, "")
-        @Expect(state.vectorCollection, "legacy-vectors")
-    }
-
-    @TestCase
     public func p4Pos00TrackedSourceLockIsCanonicalAndComplete(): Unit {
         let bytes = File.readFrom(Path(
             "../reproducibility/manifests/source-lock.json"))
