@@ -219,7 +219,7 @@ public func s3IntegrationPollutedCandidateCannotChangeActiveVersion(
         expectedBaseActivePointerHash: pointerBefore)
     @Expect(promotion.ok, false)
     @Expect(promotion.validation.status,
-        "student_knowledge_leakage_blocked")
+        "p6_candidate_binding_mismatch")
     @Expect(s3Contains(promotion.validation.diagnostics,
         authorityOnlyFragment), false)
     @Expect(kb.status().activeKnowledgeVersion, activeBefore)
