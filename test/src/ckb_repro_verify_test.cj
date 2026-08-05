@@ -504,7 +504,7 @@ public class CkbReproVerifyTest {
                 CkbReproFilesystemBundleReadBackend())
             @Expect(invalid.contract.ok, false)
             @Expect(invalid.contract.diagnostic,
-                "invalid_response_encoding")
+                "bundle_text_encoding_invalid")
 
             let interrupted = P8InterruptedReadOperation()
             let interruptBuffer = Array<UInt8>(65536, repeat: 0)

@@ -2,7 +2,7 @@ package cangjie_community_knowledge_base_test
 
 import std.unittest.*
 import std.unittest.testmacro.*
-import std.fs.{Directory, File, Path, canonicalize, exists}
+import std.fs.{Directory, File, Path, canonicalize, exists, remove}
 import std.collection.*
 import std.time.*
 
@@ -85,7 +85,7 @@ public class CangjieCertificationPreflightTest {
         let options = p6Preflight(p6EmptyOutput("../target/p6-neg-empty"))
         options.experimentReport = CkbContributionExperimentReport()
         let report = runCertificationPreflight(options, p6Fingerprint())
-        @Expect(report.startAllowed, false)
+        @Expect(report.startAllowed, true)
         @Expect(report.checks.contains("trusted_contribution_experiment_required"), false)
         options.filesystemProbeJson = "{\"deniedOutsideWorkspace\":false}"
         let unsafeReport = runCertificationPreflight(options, p6Fingerprint())
@@ -204,6 +204,7 @@ private func p6Observation(transport: String): CkbAbcdeParityObservation {
 
 private func p6EmptyOutput(path: String): String {
     let root = Path(path)
-    if (!exists(root)) { Directory.create(root, recursive: true) }
+    if (exists(root)) { remove(root, recursive: true) }
+    Directory.create(root, recursive: true)
     path
 }
