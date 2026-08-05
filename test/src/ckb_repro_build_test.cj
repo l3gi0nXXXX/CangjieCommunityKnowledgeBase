@@ -468,7 +468,7 @@ private func p4BuildFixture(id: String): P4BuildFixture {
     fixture.request.options.expectedRawCount = 1
     fixture.request.candidateVersion = "portable-${id}"
     fixture.request.sourceLock.entries.add(p4GeneratedLock("generated"))
-    fixture.request.inventory = p4InventoryOne()
+    fixture.request.inventory = p4Inventory()
     fixture.request.selection = buildCkbKnowledgeSelectionManifest(fixture.request.inventory)
     fixture.request.pathContext = p4BuildPathContext(fixture.root)
     fixture.request.typedInput.add(p4BuildTyped(fixture.root))

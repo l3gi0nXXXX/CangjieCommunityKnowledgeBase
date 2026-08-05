@@ -202,7 +202,8 @@ private func p3RuntimeSnapshotManifest(hash: String): CkbQdrantSnapshotManifest 
     out.schemaVersion = "ckb-qdrant-snapshot-v1"
     out.imageDigest = benchmarkGapSha256("image")
     out.qdrantMinorVersion = "1.14"; out.collection = "portable-v1"
-    out.distance = "Cosine"; out.dimension = 1024; out.points = 7978
+    out.distance = "Cosine"; out.dimension = 1024
+    out.points = ckbReproReleaseRecordCount()
     out.snapshotSha256 = hash
     out.logicalManifestHash = benchmarkGapSha256("logical")
     out.vectorProofHash = benchmarkGapSha256("vector")

@@ -259,7 +259,8 @@ public class CkbReproCliAdaptersTest {
         manifest.schemaVersion = "ckb-qdrant-snapshot-v1"
         manifest.imageDigest = p234Hash("image"); manifest.qdrantMinorVersion = "1.14"
         manifest.collection = "source"; manifest.distance = "Cosine"
-        manifest.dimension = 1024; manifest.points = 7978
+        manifest.dimension = 1024
+        manifest.points = ckbReproReleaseRecordCount()
         manifest.snapshotSha256 = ckbQdrantSnapshotBytesHash(bytes)
         manifest.logicalManifestHash = p234Hash("logical")
         manifest.vectorProofHash = p234Hash("vector")
@@ -396,7 +397,8 @@ public class CkbReproCliAdaptersTest {
         p3.candidateVersion = promotion.candidateVersion
         p3.p4PortableProofHash = p4Hash; p3.qdrantImageDigest = p234Hash("image")
         p3.embeddingProvider = "provider"; p3.embeddingModel = "model"
-        p3.count = 7978; p3.dimension = 1024; p3.distance = "Cosine"
+        p3.count = ckbReproReleaseRecordCount()
+        p3.dimension = 1024; p3.distance = "Cosine"
         p3.payloadCanonicalHash = p234Hash("payload")
         p3.vectorProofHash = ckbPortableVectorProofHash(p3)
         let p2Text = "{\"sourceState\":\"portableVectorCandidate\"," +
@@ -475,7 +477,8 @@ public class CkbReproCliAdaptersTest {
             p3Text.replace("\"collection\":\"ckb-portable-v1\",", ""),
             p3Text.replace("\"proofReal\":true", "\"proofReal\":false"),
             p3Text.replace("\"vectorState\":\"READY\"", "\"vectorState\":\"FAILED\""),
-            p3Text.replace("\"count\":7978", "\"count\":7977")
+            p3Text.replace("\"count\":${ckbReproReleaseRecordCount()}",
+                "\"count\":${ckbReproReleaseRecordCount() - 1}")
         ]) {
             File.writeTo(root.join("portable-vector-proof.json"),
                 driftedP3.toArray())

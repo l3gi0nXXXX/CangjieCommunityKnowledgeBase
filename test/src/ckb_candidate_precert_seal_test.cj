@@ -13,18 +13,18 @@ public class CkbCandidatePrecertSealTest {
         let authorityRecords = ArrayList<NormalizedRecord>()
         for (i in 0..656) {
             let record = r6PrecertTrustedRecord("authority-${i}",
-                "权威中文😀窗口-${i}-abcdefghijklmnopqrstuvwxyz")
+                "权威中文😀窗口-${i}-abcdefghijklmnopqrstuvwxyz-0123456789abcdef")
             authorityRecords.add(record)
         }
         let duplicateFree = buildCangjieBenchmarkLeakageAuthority(authorityRecords)
         let uniqueCount = duplicateFree.fingerprints.size
         authorityRecords.add(r6PrecertTrustedRecord("authority-duplicate",
-            "权威中文😀窗口-0-abcdefghijklmnopqrstuvwxyz"))
+            "权威中文😀窗口-0-abcdefghijklmnopqrstuvwxyz-0123456789abcdef"))
         let authority = buildCangjieBenchmarkLeakageAuthority(authorityRecords)
         @Expect(authority.fingerprintSet.size, uniqueCount)
         @Expect(authority.fingerprints.size, uniqueCount)
         let contaminated = r6PrecertTrustedRecord("student-contaminated",
-            "前缀-权威中文😀窗口-0-abcdefghijklmnopqrstuvwx-后缀")
+            "前缀-权威中文😀窗口-0-abcdefghijklmnopqrstuvwxyz-0123456789abcdef-后缀")
         @Expect(cangjieStudentRecordDiagnostic(contaminated, authority: authority).ok, false)
         let safe = ArrayList<NormalizedRecord>()
         for (i in 0..7373) {

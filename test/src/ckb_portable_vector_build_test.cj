@@ -58,7 +58,8 @@ private class P3VectorSnapshotExecutor <: CkbQdrantSnapshotExecutor {
             out.bodyBytes = this.snapshotBytes.clone()
         } else if (request.method == "GET") {
             out.statusCode = 404
-        } else if (request.method == "PUT") {
+        } else if (request.method == "POST" &&
+            request.path.endsWith("/snapshots/upload")) {
             this.restored = request.bodyBytes == this.snapshotBytes
             out.statusCode = 200
             out.bodyBytes = "{\"status\":\"ok\"}".toArray()

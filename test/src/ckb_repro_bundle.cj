@@ -1276,7 +1276,8 @@ public func validateCkbReproBundleManifest(root: String,
             return out
         }
         let manifestRead = p9ConsumeBundleEntry(
-            root, manifestEntry[1], backend, 16 * 1024 * 1024)
+            root, manifestEntry[1], backend, 16 * 1024 * 1024,
+            scanText: true, leakageMode: 0)
         if (!manifestRead.contract.ok) {
             out.contract = manifestRead.contract
             return out
@@ -1319,7 +1320,8 @@ public func validateCkbReproBundleManifest(root: String,
             firstListing, backend)
         if (!logical.ok) { out.contract = logical; return out }
         let manifestReadAfterAssets = p9ConsumeBundleEntry(
-            root, manifestEntry[1], backend, 16 * 1024 * 1024)
+            root, manifestEntry[1], backend, 16 * 1024 * 1024,
+            scanText: true, leakageMode: 0)
         if (!manifestReadAfterAssets.contract.ok) {
             out.contract = manifestReadAfterAssets.contract
             return out
