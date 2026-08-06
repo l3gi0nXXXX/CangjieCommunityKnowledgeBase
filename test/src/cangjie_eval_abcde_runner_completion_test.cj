@@ -79,6 +79,40 @@ public class CangjieEvalAbcdeRunnerCompletionTest {
         @Expect(String.fromUtf8(File.readFrom(groupRoot.join("base-test-result.json"))).contains("\"answerHash\":\"${completion.answerHash}\""),true);@Expect(String.fromUtf8(File.readFrom(groupRoot.join("plus-test-result.json"))).contains("\"answerHash\":\"${completion.answerHash}\""),true)
     }
 
+    // P4-POS-01: exercise the production suite executor against the protected
+    // Base and Plus assets without invoking a model or a certification run.
+    @TestCase
+    public func realCase000BaseAndPlusAssetsPassThroughProductionExecutor(): Unit {
+        let root = Path("target/p4-real-plus-smoke-${DateTime.now().toUnixTimeStamp().toMilliseconds()}")
+        let groupRoot = root.join("case")
+        let workspace = groupRoot.join("workspace")
+        let caseSrc = Path("cangjie_eval/cases/Cangjie-HumanEval/CJ-HUMANEVAL-000")
+        Directory.create(workspace, recursive: true)
+        @Expect(launch("/bin/cp", ["-R", "${caseSrc.join("starter")}/.", workspace.toString()]).wait(), 0)
+        let solution = "package cangjie_humaneval_000\n\n" +
+            "import std.collection.*\n\n" +
+            "public func has_close_elements(numbers: ArrayList<Float64>, threshold: Float64): Bool {\n" +
+            "    for (i in 0..numbers.size) {\n" +
+            "        for (j in (i + 1)..numbers.size) {\n" +
+            "            let difference = numbers[i] - numbers[j]\n" +
+            "            let distance = if (difference < 0.0) { -difference } else { difference }\n" +
+            "            if (distance < threshold) { return true }\n" +
+            "        }\n" +
+            "    }\n" +
+            "    return false\n" +
+            "}\n"
+        File.writeTo(workspace.join("src/solution.cj"), solution.toArray())
+        let answerHash = benchmarkGapSha256(solution)
+        let evaluated = ckbAbcdeEvaluateFrozenCompletion(groupRoot.toString(), caseSrc.toString(),
+            workspace.toString(), answerHash, "base,plus")
+        @Expect(evaluated.baseExecuted, true)
+        @Expect(evaluated.plusExecuted, true)
+        @Expect(evaluated.basePassed, true)
+        @Expect(evaluated.plusPassed, true)
+        @Expect(String.fromUtf8(File.readFrom(groupRoot.join("base-test-result.json"))).contains("\"passed\":true"), true)
+        @Expect(String.fromUtf8(File.readFrom(groupRoot.join("plus-test-result.json"))).contains("\"passed\":true"), true)
+    }
+
     // P3-NEG-01
     @TestCase
     public func toolFallbackAndMultipleTerminalFormsAreRejected(): Unit {

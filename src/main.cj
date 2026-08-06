@@ -495,6 +495,9 @@ public func ckbCliMain(args: Array<String>): Int64 {
     if (cli.command == "cangjie-humaneval-manifest-build") {
         return runCangjieHumanEvalManifestBuild(args)
     }
+    if (cli.command == "cangjie-humaneval-plus-authority-build") {
+        return runCangjieHumanEvalPlusAuthorityBuild(args)
+    }
     if (cli.command == "cangjie-eval-knowledge-audit") {
         return runCangjieEvalKnowledgeAudit(args)
     }

@@ -1,7 +1,7 @@
 package cangjie_community_knowledge_base
 
 import std.collection.{ArrayList, HashSet}
-import std.fs.{Directory, File, Path, exists}
+import std.fs.{Directory, File, OpenMode, Path, exists}
 import std.process.launch
 import std.sort.*
 import stdx.crypto.digest.SHA256
@@ -17,6 +17,7 @@ public class CangjieHumanEvalManifestRow {
     public var metadataHash: String = ""
     public var starterHash: String = ""
     public var testsHash: String = ""
+    public var plusTestsHash: String = ""
     public var translationHash: String = ""
     public var caseHash: String = ""
     public var expectedKnowledgeTags: ArrayList<String> = ArrayList<String>()
@@ -144,7 +145,7 @@ public func validateCangjieHumanEvalManifest(manifest: CangjieHumanEvalManifestR
         if (seen.contains(row.caseId)) { out.addDiagnostic("manifest_duplicate_case_id:${row.caseId}") } else { seen.add(row.caseId) }
         if (row.datasetVersion == "" || row.datasetVersion != manifest.datasetVersion) { out.addDiagnostic("manifest_dataset_version_mismatch:${row.caseId}") }
         if (row.signature == "") { out.addDiagnostic("manifest_signature_missing:${row.caseId}") }
-        for (field in [row.promptHash, row.metadataHash, row.starterHash, row.testsHash, row.translationHash, row.caseHash]) {
+        for (field in [row.promptHash, row.metadataHash, row.starterHash, row.testsHash, row.plusTestsHash, row.translationHash, row.caseHash]) {
             if (!cangjieHumanEvalManifestValidHash(field)) { out.addDiagnostic("manifest_hash_invalid:${row.caseId}") }
         }
         if (row.caseHash != cangjieHumanEvalManifestRowHash(row)) { out.addDiagnostic("manifest_case_hash_invalid:${row.caseId}") }
@@ -194,6 +195,7 @@ public func parseCangjieHumanEvalAuthorityManifest(text: String): CangjieHumanEv
             row.metadataHash = cangjieHumanEvalAuthorityString(object, "metadataHash")
             row.starterHash = cangjieHumanEvalAuthorityString(object, "starterHash")
             row.testsHash = cangjieHumanEvalAuthorityString(object, "testsHash")
+            row.plusTestsHash = cangjieHumanEvalAuthorityString(object, "plusTestsHash")
             row.translationHash = cangjieHumanEvalAuthorityString(object, "translationHash")
             row.caseHash = cangjieHumanEvalAuthorityString(object, "caseHash")
             cangjieHumanEvalAuthorityTags(object, "requiredKnowledgeTags", row.expectedKnowledgeTags)
@@ -238,7 +240,7 @@ public func renderModelVisibleManifest(manifest: CangjieHumanEvalManifestResult)
 public func renderVerifierManifest(manifest: CangjieHumanEvalManifestResult): String {
     var out = ""
     for (row in manifest.rows) {
-        out += "{\"schemaVersion\":\"cangjie-humaneval-verifier-v1\",\"caseId\":\"${row.caseId}\",\"datasetVersion\":\"${row.datasetVersion}\",\"caseHash\":\"${row.caseHash}\",\"metadataHash\":\"${row.metadataHash}\",\"testsHash\":\"${row.testsHash}\",\"translationHash\":\"${row.translationHash}\",\"testsPath\":\"${row.caseId}/tests\",\"translationPath\":\"${row.caseId}/translation\"}\n"
+        out += "{\"schemaVersion\":\"cangjie-humaneval-verifier-v1\",\"caseId\":\"${row.caseId}\",\"datasetVersion\":\"${row.datasetVersion}\",\"caseHash\":\"${row.caseHash}\",\"metadataHash\":\"${row.metadataHash}\",\"testsHash\":\"${row.testsHash}\",\"plusTestsHash\":\"${row.plusTestsHash}\",\"translationHash\":\"${row.translationHash}\",\"testsPath\":\"${row.caseId}/tests\",\"plusTestsPath\":\"${row.caseId}/tests-plus\",\"translationPath\":\"${row.caseId}/translation\"}\n"
     }
     out
 }
@@ -246,7 +248,7 @@ public func renderVerifierManifest(manifest: CangjieHumanEvalManifestResult): St
 public func cangjieHumanEvalRenderAuthorityManifest(manifest: CangjieHumanEvalManifestResult): String {
     var out = ""
     for (row in manifest.rows) {
-        out += "{\"schemaVersion\":\"cangjie-humaneval-authority-v1\",\"id\":\"${row.caseId}\",\"caseId\":\"${row.caseId}\",\"category\":\"unit\",\"datasetVersion\":\"${row.datasetVersion}\",\"targetVersion\":\"${row.targetVersion}\",\"signature\":\"${cangjieHumanEvalManifestJsonEscape(row.signature)}\",\"prompt\":\"${cangjieHumanEvalManifestJsonEscape(row.prompt)}\",\"entryPoint\":\"${row.caseId}/starter\",\"testCommand\":\"verifier-owned\",\"promptHash\":\"${row.promptHash}\",\"metadataHash\":\"${row.metadataHash}\",\"starterHash\":\"${row.starterHash}\",\"testsHash\":\"${row.testsHash}\",\"translationHash\":\"${row.translationHash}\",\"caseHash\":\"${row.caseHash}\",\"expectedKnowledgeTags\":${cangjieHumanEvalManifestTagsJson(row.expectedKnowledgeTags)},\"requiredKnowledgeTags\":${cangjieHumanEvalManifestTagsJson(row.expectedKnowledgeTags)}}\n"
+        out += "{\"schemaVersion\":\"cangjie-humaneval-authority-v1\",\"id\":\"${row.caseId}\",\"caseId\":\"${row.caseId}\",\"category\":\"unit\",\"datasetVersion\":\"${row.datasetVersion}\",\"targetVersion\":\"${row.targetVersion}\",\"signature\":\"${cangjieHumanEvalManifestJsonEscape(row.signature)}\",\"prompt\":\"${cangjieHumanEvalManifestJsonEscape(row.prompt)}\",\"entryPoint\":\"${row.caseId}/starter\",\"testCommand\":\"verifier-owned\",\"promptHash\":\"${row.promptHash}\",\"metadataHash\":\"${row.metadataHash}\",\"starterHash\":\"${row.starterHash}\",\"testsHash\":\"${row.testsHash}\",\"plusTestsHash\":\"${row.plusTestsHash}\",\"translationHash\":\"${row.translationHash}\",\"caseHash\":\"${row.caseHash}\",\"expectedKnowledgeTags\":${cangjieHumanEvalManifestTagsJson(row.expectedKnowledgeTags)},\"requiredKnowledgeTags\":${cangjieHumanEvalManifestTagsJson(row.expectedKnowledgeTags)}}\n"
     }
     out
 }
@@ -258,8 +260,11 @@ private func cangjieHumanEvalBuildManifestRow(caseRoot: Path, caseId: String): C
     let metadata = cangjieHumanEvalManifestReadUtf8(caseRoot.join("metadata.json"))
     let starter = cangjieHumanEvalManifestDirectoryHash(caseRoot.join("starter"))
     let tests = cangjieHumanEvalManifestDirectoryHash(caseRoot.join("tests"))
+    let plusTestsRoot = caseRoot.join("tests-plus")
+    let plusTests = cangjieHumanEvalManifestDirectoryHash(plusTestsRoot)
     let translation = cangjieHumanEvalManifestDirectoryHash(caseRoot.join("translation"))
-    if (!prompt[0] || !metadata[0] || starter == "" || tests == "" || translation == "") { return row }
+    if (!prompt[0] || !metadata[0] || starter == "" || tests == "" || plusTests == "" ||
+        !cangjieHumanEvalManifestDirectoryUtf8Valid(plusTestsRoot) || translation == "") { return row }
     row.prompt = prompt[1]
     row.targetVersion = cangjieHumanEvalManifestJsonString(metadata[1], "targetVersion")
     row.signature = cangjieHumanEvalManifestJsonString(metadata[1], "signature")
@@ -267,6 +272,7 @@ private func cangjieHumanEvalBuildManifestRow(caseRoot: Path, caseId: String): C
     row.metadataHash = cangjieHumanEvalManifestHash(metadata[1].toArray())
     row.starterHash = starter
     row.testsHash = tests
+    row.plusTestsHash = plusTests
     row.translationHash = translation
     for (tag in cangjieHumanEvalManifestInferTags("${prompt[1]}\n${row.signature}")) { row.expectedKnowledgeTags.add(tag) }
     row.caseHash = cangjieHumanEvalManifestRowHash(row)
@@ -274,7 +280,7 @@ private func cangjieHumanEvalBuildManifestRow(caseRoot: Path, caseId: String): C
 }
 
 private func cangjieHumanEvalManifestRowHash(row: CangjieHumanEvalManifestRow): String {
-    cangjieHumanEvalManifestHash("${row.caseId}|${row.targetVersion}|${row.signature}|${row.promptHash}|${row.metadataHash}|${row.starterHash}|${row.testsHash}|${row.translationHash}".toArray())
+    cangjieHumanEvalManifestHash("${row.caseId}|${row.targetVersion}|${row.signature}|${row.promptHash}|${row.metadataHash}|${row.starterHash}|${row.testsHash}|${row.plusTestsHash}|${row.translationHash}".toArray())
 }
 
 private func cangjieHumanEvalManifestValidHash(value: String): Bool {
@@ -310,11 +316,98 @@ private func cangjieHumanEvalManifestDirectoryHash(root: Path): String {
     sort(files)
     let digest = SHA256()
     for (relative in files) {
-        let bytes = try { File.readFrom(root.join(relative)) } catch (_: Exception) { return "" }
-        digest.write("${relative.size}:${relative}:${bytes.size}:".toArray())
-        digest.write(bytes)
+        let path = root.join(relative)
+        let size = cangjieHumanEvalManifestFileSize(path)
+        if (!size[0]) { return "" }
+        digest.write("${relative.size}:${relative}:${size[1]}:".toArray())
+        if (!cangjieHumanEvalManifestWriteFileHash(path, digest)) { return "" }
     }
     cangjieHumanEvalManifestFinishHash(digest)
+}
+
+private func cangjieHumanEvalManifestDirectoryUtf8Valid(root: Path): Bool {
+    if (!exists(root)) { return false }
+    let files = ArrayList<String>()
+    cangjieHumanEvalManifestCollectFiles(root, "", files)
+    if (files.size == 0) { return false }
+    for (relative in files) {
+        if (!cangjieHumanEvalManifestFileUtf8Valid(root.join(relative))) { return false }
+    }
+    true
+}
+
+private func cangjieHumanEvalManifestFileSize(path: Path): (Bool, Int64) {
+    var size: Int64 = 0
+    try {
+        try (file = File(path, OpenMode.Read)) {
+            let buffer = Array<UInt8>(32768, repeat: UInt8(0))
+            while (true) {
+                let count = file.read(buffer)
+                if (count < 0 || count > buffer.size) { return (false, 0) }
+                if (count == 0) { break }
+                size += count
+            }
+        }
+        (true, size)
+    } catch (_: Exception) { (false, 0) }
+}
+
+private func cangjieHumanEvalManifestWriteFileHash(path: Path, digest: SHA256): Bool {
+    try {
+        try (file = File(path, OpenMode.Read)) {
+            let buffer = Array<UInt8>(32768, repeat: UInt8(0))
+            while (true) {
+                let count = file.read(buffer)
+                if (count < 0 || count > buffer.size) { return false }
+                if (count == 0) { break }
+                digest.write(if (count == buffer.size) { buffer } else { buffer[0..count].clone() })
+            }
+        }
+        true
+    } catch (_: Exception) { false }
+}
+
+private func cangjieHumanEvalManifestFileUtf8Valid(path: Path): Bool {
+    var remaining: Int64 = 0
+    var nextMin = UInt8(0x80)
+    var nextMax = UInt8(0xbf)
+    try {
+        try (file = File(path, OpenMode.Read)) {
+            let buffer = Array<UInt8>(32768, repeat: UInt8(0))
+            while (true) {
+                let count = file.read(buffer)
+                if (count < 0 || count > buffer.size) { return false }
+                if (count == 0) { break }
+                for (i in 0..count) {
+                    let byte = buffer[i]
+                    if (remaining == 0) {
+                        if (byte <= UInt8(0x7f)) { continue }
+                        if (byte >= UInt8(0xc2) && byte <= UInt8(0xdf)) {
+                            remaining = 1
+                        } else if (byte == UInt8(0xe0)) {
+                            remaining = 2; nextMin = UInt8(0xa0)
+                        } else if ((byte >= UInt8(0xe1) && byte <= UInt8(0xec)) ||
+                            (byte >= UInt8(0xee) && byte <= UInt8(0xef))) {
+                            remaining = 2
+                        } else if (byte == UInt8(0xed)) {
+                            remaining = 2; nextMax = UInt8(0x9f)
+                        } else if (byte == UInt8(0xf0)) {
+                            remaining = 3; nextMin = UInt8(0x90)
+                        } else if (byte >= UInt8(0xf1) && byte <= UInt8(0xf3)) {
+                            remaining = 3
+                        } else if (byte == UInt8(0xf4)) {
+                            remaining = 3; nextMax = UInt8(0x8f)
+                        } else { return false }
+                    } else {
+                        if (byte < nextMin || byte > nextMax) { return false }
+                        remaining -= 1
+                        nextMin = UInt8(0x80); nextMax = UInt8(0xbf)
+                    }
+                }
+            }
+        }
+        remaining == 0
+    } catch (_: Exception) { false }
 }
 
 private func cangjieHumanEvalManifestCollectFiles(current: Path, relativePrefix: String, files: ArrayList<String>): Unit {

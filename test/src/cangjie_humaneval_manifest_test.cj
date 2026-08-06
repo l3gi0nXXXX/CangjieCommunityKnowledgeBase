@@ -32,6 +32,7 @@ public class CangjieHumanEvalManifestTest {
         @Expect(cangjieHumanEvalRenderAuthorityManifest(first), cangjieHumanEvalRenderAuthorityManifest(second))
         @Expect(first.rows[0].promptHash.startsWith("sha256:"), true)
         @Expect(first.rows[0].testsHash.startsWith("sha256:"), true)
+        @Expect(first.rows[0].plusTestsHash.startsWith("sha256:"), true)
 
         let context = ckbAbcdeBuildTaskContext("${datasetRoot}/CJ-HUMANEVAL-000", "CJ-HUMANEVAL-000", cangjieHumanEvalRenderAuthorityManifest(first))
         @Expect(context.datasetVersion, first.datasetVersion)
@@ -61,6 +62,7 @@ public class CangjieHumanEvalManifestTest {
         let reparsedUnicode = parseCangjieHumanEvalAuthorityManifest(cangjieHumanEvalRenderAuthorityManifest(unicodeManifest))
         @Expect(reparsedUnicode.rows[0].prompt, unicodeManifest.rows[0].prompt)
         @Expect(reparsedUnicode.rows[0].signature, unicodeManifest.rows[0].signature)
+        @Expect(reparsedUnicode.rows[0].plusTestsHash, unicodeManifest.rows[0].plusTestsHash)
 
         let root = "target/p1-manifest-invalid-utf8"
         p1ManifestReset(root)
@@ -77,6 +79,14 @@ public class CangjieHumanEvalManifestTest {
         let malformed = buildCangjieHumanEvalManifest(malformedRoot, "")
         @Expect(malformed.ok, false)
         @Expect(p1ManifestHasDiagnostic(malformed, "manifest_signature_missing:CJ-HUMANEVAL-000"), true)
+
+        let invalidPlusRoot = "target/p1-manifest-plus-invalid-utf8"
+        p1ManifestReset(invalidPlusRoot)
+        p1ManifestWriteCase(invalidPlusRoot, "# prompt\n", "{\"targetVersion\":\"1.0.0\",\"signature\":\"public func f(): Unit\"}")
+        File.writeTo(Path(invalidPlusRoot).join("CJ-HUMANEVAL-000/tests-plus/TestMain.cj"), [UInt8(255), UInt8(254)])
+        let invalidPlus = buildCangjieHumanEvalManifest(invalidPlusRoot, "")
+        @Expect(invalidPlus.ok, false)
+        @Expect(p1ManifestHasDiagnostic(invalidPlus, "case_read_failed:CJ-HUMANEVAL-000"), true)
     }
 
     // P1-POS-01: scan the checked-in 164-case corpus without changing it and
@@ -92,11 +102,15 @@ public class CangjieHumanEvalManifestTest {
         @Expect(model.contains("\"caseId\":\"CJ-HUMANEVAL-000\""), true)
         @Expect(model.contains("testsPath"), false)
         @Expect(model.contains("testsHash"), false)
+        @Expect(model.contains("plusTestsHash"), false)
+        @Expect(model.contains("tests-plus"), false)
         @Expect(model.contains("translationPath"), false)
         @Expect(model.contains("reference"), false)
         @Expect(model.contains("TestMain.cj"), false)
         @Expect(verifier.contains("\"testsHash\":\"sha256:"), true)
+        @Expect(verifier.contains("\"plusTestsHash\":\"sha256:"), true)
         @Expect(verifier.contains("\"testsPath\":\"CJ-HUMANEVAL-000/tests\""), true)
+        @Expect(verifier.contains("\"plusTestsPath\":\"CJ-HUMANEVAL-000/tests-plus\""), true)
         @Expect(verifier.contains("public func has_close_elements"), false)
     }
 
@@ -144,6 +158,33 @@ public class CangjieHumanEvalManifestTest {
         @Expect(visible.contains("translation/"), false)
         @Expect(visible.contains("canonical"), false)
         @Expect(visible.contains("solution.cj"), false)
+
+        let fixtureRoot = "target/p1-manifest-plus-integrity"
+        p1ManifestReset(fixtureRoot)
+        p1ManifestWriteCase(fixtureRoot, "# 中文🙂\n", "{\"targetVersion\":\"1.0.0\",\"signature\":\"public func f(): Unit\"}")
+        p1ManifestWrite(Path(fixtureRoot).join("CJ-HUMANEVAL-000/tests-plus/中文🙂.cj"), "// 中文🙂\n")
+        let fixture = buildCangjieHumanEvalManifest(fixtureRoot, "")
+        @Expect(fixture.rows[0].plusTestsHash.startsWith("sha256:"), true)
+        let authorityWithoutPlusHash = cangjieHumanEvalRenderAuthorityManifest(fixture).replace(
+            "\"plusTestsHash\":\"${fixture.rows[0].plusTestsHash}\",", "")
+        @Expect(p1ManifestHasDiagnostic(parseCangjieHumanEvalAuthorityManifest(authorityWithoutPlusHash), "authority_json_invalid:1"), true)
+
+        let original = fixture.rows[0].plusTestsHash
+        p1ManifestWrite(Path(fixtureRoot).join("CJ-HUMANEVAL-000/tests-plus/中文🙂.cj"), "// 已篡改🙂\n")
+        let changed = buildCangjieHumanEvalManifest(fixtureRoot, "")
+        @Expect(changed.rows[0].plusTestsHash == original, false)
+        @Expect(changed.rows[0].caseHash == fixture.rows[0].caseHash, false)
+        @Expect(changed.datasetVersion == fixture.datasetVersion, false)
+        let tamperValidation = validateCangjieHumanEvalManifest(fixture, fixtureRoot)
+        @Expect(p1ManifestHasDiagnostic(tamperValidation, "manifest_case_hash_mismatch:CJ-HUMANEVAL-000"), true)
+
+        let missingPlusRoot = "target/p1-manifest-plus-missing"
+        p1ManifestReset(missingPlusRoot)
+        p1ManifestWriteCase(missingPlusRoot, "# prompt\n", "{\"targetVersion\":\"1.0.0\",\"signature\":\"public func f(): Unit\"}")
+        _ = launch("/bin/rm", ["-rf", Path(missingPlusRoot).join("CJ-HUMANEVAL-000/tests-plus").toString()]).wait()
+        let missingPlus = buildCangjieHumanEvalManifest(missingPlusRoot, "")
+        @Expect(missingPlus.ok, false)
+        @Expect(p1ManifestHasDiagnostic(missingPlus, "case_read_failed:CJ-HUMANEVAL-000"), true)
     }
 
     @TestCase
@@ -178,6 +219,8 @@ private func p1ManifestWriteCase(root: String, prompt: String, metadata: String)
     p1ManifestWrite(caseRoot.join("metadata.json"), metadata)
     p1ManifestWrite(caseRoot.join("starter/src/solution.cj"), "package fixture\npublic func f(): Unit {}\n")
     p1ManifestWrite(caseRoot.join("tests/TestMain.cj"), "main() {}\n")
+    p1ManifestWrite(caseRoot.join("tests-plus/TestMain.cj"), "main() {}\n")
+    p1ManifestWrite(caseRoot.join("tests-plus/cjpm.executable.toml"), "[package]\nname = \"fixture_plus\"\n")
     p1ManifestWrite(caseRoot.join("translation/line_translation.md"), "translation\n")
 }
 
