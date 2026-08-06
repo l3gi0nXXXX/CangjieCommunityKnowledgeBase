@@ -283,15 +283,17 @@ private func r7WriteSyntheticAuthority(root: Path): Unit {
         let id = if (i < 10) { "CJ-HUMANEVAL-00${i}" } else if (i < 100) { "CJ-HUMANEVAL-0${i}" } else { "CJ-HUMANEVAL-${i}" }
         let packageName = "ckb_certification_case_${i}"
         let caseRoot = root.join(id); Directory.create(caseRoot.join("starter/src"), recursive: true)
-        Directory.create(caseRoot.join("tests"), recursive: true); Directory.create(caseRoot.join("translation"), recursive: true)
+        Directory.create(caseRoot.join("tests"), recursive: true); Directory.create(caseRoot.join("tests-plus"), recursive: true); Directory.create(caseRoot.join("translation"), recursive: true)
         File.writeTo(caseRoot.join("prompt.md"), "Implement certificationFixture so it returns true.\n".toArray())
         File.writeTo(caseRoot.join("metadata.json"), "{\"id\":\"${id}\",\"targetVersion\":\"1.0.0\",\"signature\":\"public func certificationFixture(): Bool\"}\n".toArray())
         let staticToml = "[package]\n  cjc-version = \"1.0.0\"\n  name = \"${packageName}\"\n  version = \"0.1.0\"\n  output-type = \"static\"\n  src-dir = \"src\"\n"
         let executableToml = staticToml.replace("output-type = \"static\"", "output-type = \"executable\"")
         File.writeTo(caseRoot.join("starter/cjpm.toml"), staticToml.toArray())
         File.writeTo(caseRoot.join("tests/cjpm.executable.toml"), executableToml.toArray())
+        File.writeTo(caseRoot.join("tests-plus/cjpm.executable.toml"), executableToml.toArray())
         File.writeTo(caseRoot.join("starter/src/solution.cj"), "package ${packageName}\n\npublic func certificationFixture(): Bool { return false }\n".toArray())
         File.writeTo(caseRoot.join("tests/TestMain.cj"), "package ${packageName}\n\nmain(): Int64 { if (certificationFixture()) { return 0 }; return 1 }\n".toArray())
+        File.writeTo(caseRoot.join("tests-plus/TestMain.cj"), "package ${packageName}\n\nmain(): Int64 { if (certificationFixture()) { return 0 }; return 1 }\n".toArray())
         File.writeTo(caseRoot.join("translation/line_translation.md"), "synthetic certification fixture\n".toArray())
     }
 }

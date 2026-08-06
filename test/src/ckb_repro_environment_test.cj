@@ -789,6 +789,22 @@ public class CkbReproEnvironmentTest {
             p6SyntheticAuthorityBytes()))
         @Expect(manifest.ok, true)
         @Expect(manifest.rows.size, 164)
+        let originalPlusHash = manifest.rows[0].plusTestsHash
+        @Expect(originalPlusHash.startsWith("sha256:"), true)
+        let plusTest = Path("target/p6-synthetic-authority/CJ-HUMANEVAL-000/tests-plus/TestMain.cj")
+        File.writeTo(plusTest, "package fixture_plus_test\n// drifted synthetic verifier fixture 0\n".toArray())
+        let drifted = buildCangjieHumanEvalManifest(
+            "target/p6-synthetic-authority", "")
+        @Expect(drifted.ok, true)
+        @Expect(drifted.rows[0].plusTestsHash == originalPlusHash, false)
+        @Expect(validateCangjieHumanEvalManifest(manifest,
+            "target/p6-synthetic-authority").ok, false)
+        p6WriteSyntheticPlusFixture(
+            Path("target/p6-synthetic-authority/CJ-HUMANEVAL-000"), 0)
+        let restored = buildCangjieHumanEvalManifest(
+            "target/p6-synthetic-authority", "")
+        @Expect(restored.ok, true)
+        @Expect(restored.rows[0].plusTestsHash, originalPlusHash)
         let critical = parseCkbRunCriticalFilesManifest(
             p6Read("../reproducibility/manifests/run-critical-files.json"))
         @Expect(critical[0].ok, true)
@@ -988,7 +1004,7 @@ public func p6FrozenEnvironment(): CkbReproEnvironmentLock {
     lock.mcpTransport = "mcp_http"
     lock.sandboxCapability = "macos-sandbox-exec"
     lock.datasetVersion =
-        "cangjie-humaneval-164-sha256:3a12d5a5283daa492dd489c1a97ebc457b71e72d90669fbc965e165566386b33"
+        "cangjie-humaneval-164-sha256:72aa7564b350583eff660722aa54487334079b2c92207d3906898953f72f90f6"
     lock.authorityDeliveryHash = p6Hash("authority-delivery")
     lock.attestationAuthorityManifestPath =
         "reproducibility/manifests/environment-attestation-authority.json"
@@ -1142,6 +1158,7 @@ private func p6SyntheticAuthorityBytes(): Array<UInt8> {
             let caseRoot = root.join(p6CaseId(i))
             Directory.create(caseRoot.join("starter"), recursive: true)
             Directory.create(caseRoot.join("tests"), recursive: true)
+            Directory.create(caseRoot.join("tests-plus"), recursive: true)
             Directory.create(caseRoot.join("translation"), recursive: true)
             File.writeTo(caseRoot.join("prompt.md"),
                 "Implement fixture_${i}; no benchmark case content.\n".toArray())
@@ -1151,13 +1168,28 @@ private func p6SyntheticAuthorityBytes(): Array<UInt8> {
                 "package fixture\npublic func fixture_${i}(): Int64 { 0 }\n".toArray())
             File.writeTo(caseRoot.join("tests/TestMain.cj"),
                 "package fixture_test\n// synthetic verifier fixture ${i}\n".toArray())
+            p6WriteSyntheticPlusFixture(caseRoot, i)
             File.writeTo(caseRoot.join("translation/source.txt"),
                 "synthetic-${i}\n".toArray())
         }
     }
+    // Upgrade a cache created by an older fixture contract without replacing unrelated files.
+    for (i in 0..164) {
+        p6WriteSyntheticPlusFixture(root.join(p6CaseId(i)), i)
+    }
     let manifest = buildCangjieHumanEvalManifest(root.toString(), "")
     if (!manifest.ok) { return Array<UInt8>() }
     cangjieHumanEvalRenderAuthorityManifest(manifest).toArray()
+}
+
+private func p6WriteSyntheticPlusFixture(caseRoot: Path, index: Int64): Unit {
+    if (!exists(caseRoot.join("tests-plus"))) {
+        Directory.create(caseRoot.join("tests-plus"), recursive: true)
+    }
+    File.writeTo(caseRoot.join("tests-plus/TestMain.cj"),
+        "package fixture_plus_test\n// synthetic plus verifier fixture ${index}\n".toArray())
+    File.writeTo(caseRoot.join("tests-plus/cjpm.executable.toml"),
+        "[package]\nname = \"fixture_plus_${index}\"\noutput-type = \"executable\"\n".toArray())
 }
 
 private func p6CaseId(index: Int64): String {
