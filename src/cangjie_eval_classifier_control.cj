@@ -11,6 +11,128 @@ private let CKB_P5_CLASSIFIER_SCHEMA = "ckb-p5-classifier-v1"
 private let CKB_P5_RESPONSE_SCHEMA = "ckb-p5-classifier-response-v1"
 private let CKB_P5_REQUEST_SCHEMA = "ckb-p5-classifier-request-v1"
 
+public let CKB_COMPLETION_FAILURE_FIXTURE_HASH = "f08453591302a46c4acc04c43d9bdf456679fae27b354bbca7ebecb194c1e773"
+public let CKB_COMPLETION_FAILURE_CLASSIFICATION_FIXTURE_HASH = "1ff85ffec78c69504a2f98146daebb75557d340b6366e92875c4c1acd4b44a16"
+
+public class CkbCompletionFailure {
+    public var schemaVersion = "ckb-completion-failure-v1"
+    public var runId = ""
+    public var caseId = ""
+    public var datasetVersion = ""
+    public var generationProtocol = "completion-only-v1"
+    public var completionHash = ""
+    public var baseStatus = ""
+    public var plusStatus = ""
+    public var failureKind = ""
+    public var failureObservation = ""
+    public var assetLineage = ""
+    public var evidenceHash = ""
+    public init() {}
+}
+
+public class CkbCompletionFailureClassification {
+    public var schemaVersion = "ckb-completion-failure-classification-v1"
+    public var failureEvidenceHash = ""
+    public var gapKind = ""
+    public var knowledgeEligible = false
+    public var skillEligible = false
+    public var classificationEvidenceHash = ""
+    public init() {}
+}
+
+public func sealCkbCompletionFailure(row: CkbCompletionFailure): String {
+    let diagnostic = ckbCompletionFailureDiagnostic(row, false)
+    if (diagnostic != "ok") { return diagnostic }
+    row.failureObservation = utf8SafePrefix(redactSensitive(row.failureObservation), 1024)
+    if (ckbCompletionFailureObservationForbidden(row.failureObservation)) {
+        return "protected_failure_observation"
+    }
+    row.evidenceHash = ckbCompletionHexHash(ckbCompletionFailureCanonical(row, false))
+    "ok"
+}
+
+public func renderCkbCompletionFailure(row: CkbCompletionFailure): String {
+    ckbCompletionFailureCanonical(row, true)
+}
+
+public func parseCkbCompletionFailure(bytes: Array<UInt8>): (CkbCompletionFailure, String) {
+    let row = CkbCompletionFailure()
+    let raw = try { String.fromUtf8(bytes) } catch (_: Exception) { return (row, "invalid_response_encoding") }
+    try {
+        let object = JsonValue.fromStr(raw.trimAscii()).asObject()
+        let keys = ["schemaVersion", "runId", "caseId", "datasetVersion", "generationProtocol",
+            "completionHash", "baseStatus", "plusStatus", "failureKind", "failureObservation",
+            "assetLineage", "evidenceHash"]
+        if (object.getFields().size != keys.size || !ckbCompletionUniqueFields(raw, keys)) {
+            return (row, "failure_schema_fields_invalid")
+        }
+        row.schemaVersion=ckbP5String(object,"schemaVersion");row.runId=ckbP5String(object,"runId")
+        row.caseId=ckbP5String(object,"caseId");row.datasetVersion=ckbP5String(object,"datasetVersion")
+        row.generationProtocol=ckbP5String(object,"generationProtocol");row.completionHash=ckbP5String(object,"completionHash")
+        row.baseStatus=ckbP5String(object,"baseStatus");row.plusStatus=ckbP5String(object,"plusStatus")
+        row.failureKind=ckbP5String(object,"failureKind");row.failureObservation=ckbP5String(object,"failureObservation")
+        row.assetLineage=ckbP5String(object,"assetLineage");row.evidenceHash=ckbP5String(object,"evidenceHash")
+        (row, ckbCompletionFailureDiagnostic(row, true))
+    } catch (_: Exception) { (row, "malformed_json") }
+}
+
+public func sealCkbCompletionFailureClassification(row: CkbCompletionFailureClassification): String {
+    let diagnostic = ckbCompletionFailureClassificationDiagnostic(row, false)
+    if (diagnostic != "ok") { return diagnostic }
+    row.classificationEvidenceHash = ckbCompletionHexHash(
+        ckbCompletionFailureClassificationCanonical(row, false))
+    "ok"
+}
+
+public func renderCkbCompletionFailureClassification(row: CkbCompletionFailureClassification): String {
+    ckbCompletionFailureClassificationCanonical(row, true)
+}
+
+public func ckbCompletionFailureFixtureJsonl(): String {
+    "{\"schemaVersion\":\"ckb-completion-failure-v1\",\"runId\":\"recert-fixture-run\",\"caseId\":\"CJ-HUMANEVAL-007\",\"datasetVersion\":\"cangjie-humaneval-164-v1\",\"generationProtocol\":\"completion-only-v1\",\"completionHash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"baseStatus\":\"failed\",\"plusStatus\":\"failed\",\"failureKind\":\"test_failure\",\"failureObservation\":\"student_completion_test_failed 中文😀\",\"assetLineage\":\"independent\",\"evidenceHash\":\"${CKB_COMPLETION_FAILURE_FIXTURE_HASH}\"}\n" +
+    "{\"schemaVersion\":\"ckb-completion-failure-classification-v1\",\"failureEvidenceHash\":\"${CKB_COMPLETION_FAILURE_FIXTURE_HASH}\",\"gapKind\":\"mixed_gap\",\"knowledgeEligible\":true,\"skillEligible\":true,\"classificationEvidenceHash\":\"${CKB_COMPLETION_FAILURE_CLASSIFICATION_FIXTURE_HASH}\"}\n"
+}
+
+private func ckbCompletionFailureDiagnostic(row:CkbCompletionFailure,verifyHash:Bool):String{
+    if(row.schemaVersion!="ckb-completion-failure-v1"||row.runId==""||row.datasetVersion==""||
+        row.generationProtocol!="completion-only-v1"||!ckbCompletionCaseId(row.caseId)||
+        !ckbCompletionHash(row.completionHash)){return "failure_identity_invalid"}
+    if(!ckbCompletionOneOf(row.baseStatus,["passed","failed","timeout","infra_error"])||
+        !ckbCompletionOneOf(row.plusStatus,["passed","failed","timeout","infra_error"])||
+        !ckbCompletionOneOf(row.failureKind,["compile_error","test_failure","timeout","infra_error","protocol_violation"])||
+        !ckbCompletionOneOf(row.assetLineage,["independent","humaneval_164_derived"])){return "failure_enum_invalid"}
+    if(row.failureObservation.toArray().size>1024||ckbCompletionFailureObservationForbidden(row.failureObservation)){return "protected_failure_observation"}
+    if(verifyHash&&row.evidenceHash!=ckbCompletionHexHash(ckbCompletionFailureCanonical(row,false))){return "failure_evidence_hash_mismatch"}
+    "ok"
+}
+
+private func ckbCompletionFailureClassificationDiagnostic(row:CkbCompletionFailureClassification,verifyHash:Bool):String{
+    if(row.schemaVersion!="ckb-completion-failure-classification-v1"||!ckbCompletionHash(row.failureEvidenceHash)||
+        !ckbCompletionOneOf(row.gapKind,["knowledge_gap","procedure_gap","mixed_gap","reasoning_error","translation_defect","infrastructure_failure"])){
+        return "classification_identity_invalid"
+    }
+    let knowledge=row.gapKind=="knowledge_gap"||row.gapKind=="mixed_gap"
+    let skill=row.gapKind=="procedure_gap"||row.gapKind=="mixed_gap"
+    if(row.knowledgeEligible!=knowledge||row.skillEligible!=skill){return "classification_eligibility_invalid"}
+    if(verifyHash&&row.classificationEvidenceHash!=ckbCompletionHexHash(ckbCompletionFailureClassificationCanonical(row,false))){return "classification_evidence_hash_mismatch"}
+    "ok"
+}
+
+private func ckbCompletionFailureCanonical(row:CkbCompletionFailure,includeHash:Bool):String{
+    let suffix=if(includeHash){",\"evidenceHash\":\"${ckbP5Escape(row.evidenceHash)}\""}else{""}
+    "{\"schemaVersion\":\"${ckbP5Escape(row.schemaVersion)}\",\"runId\":\"${ckbP5Escape(row.runId)}\",\"caseId\":\"${ckbP5Escape(row.caseId)}\",\"datasetVersion\":\"${ckbP5Escape(row.datasetVersion)}\",\"generationProtocol\":\"${ckbP5Escape(row.generationProtocol)}\",\"completionHash\":\"${ckbP5Escape(row.completionHash)}\",\"baseStatus\":\"${ckbP5Escape(row.baseStatus)}\",\"plusStatus\":\"${ckbP5Escape(row.plusStatus)}\",\"failureKind\":\"${ckbP5Escape(row.failureKind)}\",\"failureObservation\":\"${ckbP5Escape(row.failureObservation)}\",\"assetLineage\":\"${ckbP5Escape(row.assetLineage)}\"${suffix}}"
+}
+private func ckbCompletionFailureClassificationCanonical(row:CkbCompletionFailureClassification,includeHash:Bool):String{
+    let suffix=if(includeHash){",\"classificationEvidenceHash\":\"${row.classificationEvidenceHash}\""}else{""}
+    "{\"schemaVersion\":\"${row.schemaVersion}\",\"failureEvidenceHash\":\"${row.failureEvidenceHash}\",\"gapKind\":\"${row.gapKind}\",\"knowledgeEligible\":${row.knowledgeEligible},\"skillEligible\":${row.skillEligible}${suffix}}"
+}
+private func ckbCompletionHexHash(raw:String):String{let value=benchmarkGapSha256(raw);value[7..value.size]}
+private func ckbCompletionHash(value:String):Bool{if(value.toRuneArray().size!=64){return false};for(c in value.toRuneArray()){if(!((c>=r'0'&&c<=r'9')||(c>=r'a'&&c<=r'f'))){return false}};true}
+private func ckbCompletionCaseId(value:String):Bool{if(value.size!=16||!value.startsWith("CJ-HUMANEVAL-")){return false};for(c in value.toRuneArray()[13..16]){if(c<r'0'||c>r'9'){return false}};true}
+private func ckbCompletionOneOf(value:String,allowed:Array<String>):Bool{for(item in allowed){if(value==item){return true}};false}
+private func ckbCompletionUniqueFields(raw:String,keys:Array<String>):Bool{for(key in keys){if(raw.split("\"${key}\"").size!=2){return false}};true}
+private func ckbCompletionFailureObservationForbidden(raw:String):Bool{let lower=raw.toAsciiLower();for(term in ["authorization","bearer ","api_key","token=","reference solution","testmain.cj","expected:","assert(","/users/","/home/"]){if(lower.contains(term)){return true}};false}
+
 public class CkbP5ClassifierConfig {
     public var label: String = ""
     public var classifierId: String = ""

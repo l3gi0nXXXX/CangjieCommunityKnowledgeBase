@@ -10,6 +10,36 @@ import std.unittest.testmacro.*
 
 @Test
 public class CangjieEvalClassifierControlTest {
+    // P6-UT-01 / P6-POS-01: frozen cross-repository carrier and eligibility rules.
+    @TestCase
+    public func p6FrozenCompletionFailureFixtureIsByteExact(): Unit {
+        let lines=ckbCompletionFailureFixtureJsonl().split("\n")
+        @Expect(lines.size,3)
+        let parsed=parseCkbCompletionFailure(lines[0].toArray())
+        @Expect(parsed[1],"ok")
+        @Expect(parsed[0].evidenceHash,CKB_COMPLETION_FAILURE_FIXTURE_HASH)
+        @Expect(renderCkbCompletionFailure(parsed[0]),lines[0])
+        let classification=CkbCompletionFailureClassification()
+        classification.failureEvidenceHash=CKB_COMPLETION_FAILURE_FIXTURE_HASH
+        classification.gapKind="mixed_gap";classification.knowledgeEligible=true;classification.skillEligible=true
+        @Expect(sealCkbCompletionFailureClassification(classification),"ok")
+        @Expect(classification.classificationEvidenceHash,CKB_COMPLETION_FAILURE_CLASSIFICATION_FIXTURE_HASH)
+        @Expect(renderCkbCompletionFailureClassification(classification),lines[1])
+    }
+
+    // P6-BND-01 / P6-NEG-01: encoding, protected detail, tamper, and invalid eligibility fail closed.
+    @TestCase
+    public func p6CompletionFailureBoundaryAndNegativeCasesFailClosed(): Unit {
+        @Expect(parseCkbCompletionFailure([UInt8(0xff),UInt8(0xfe)])[1],"invalid_response_encoding")
+        let fixture=ckbCompletionFailureFixtureJsonl().split("\n")[0]
+        @Expect(parseCkbCompletionFailure(fixture.replace("student_completion_test_failed 中文😀","Authorization: Bearer secret").toArray())[1],"protected_failure_observation")
+        @Expect(parseCkbCompletionFailure(fixture.replace(CKB_COMPLETION_FAILURE_FIXTURE_HASH,"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb").toArray())[1],"failure_evidence_hash_mismatch")
+        @Expect(parseCkbCompletionFailure(fixture.replace("\"runId\":", "\"unknown\":1,\"runId\":").toArray())[1],"failure_schema_fields_invalid")
+        let invalid=CkbCompletionFailureClassification();invalid.failureEvidenceHash=CKB_COMPLETION_FAILURE_FIXTURE_HASH
+        invalid.gapKind="reasoning_error";invalid.knowledgeEligible=true
+        @Expect(sealCkbCompletionFailureClassification(invalid),"classification_eligibility_invalid")
+    }
+
     // P5-C-UT-01
     @TestCase
     public func p5IcUt01SealedIndependentEvidenceBindsSchemaModelAndProvenance(): Unit {
