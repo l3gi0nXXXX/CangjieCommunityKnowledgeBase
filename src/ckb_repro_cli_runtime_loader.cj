@@ -594,7 +594,8 @@ private func ckbReproP8RegisteredCommands(): Array<String> {
         "ckb-repro-bundle", "ckb-repro-publish-gate",
         "ckb-portable-vector-build", "ckb-qdrant-snapshot",
         "ckb-retrieval-parity", "ckb-repro-build", "ckb-repro-promote",
-        "ckb-repro-verify", "cangjie-humaneval-strict-score"]
+        "ckb-repro-verify", "cangjie-humaneval-pass1-gate",
+        "cangjie-humaneval-strict-score"]
 }
 
 func ckbReproP8CompositionFailure(code: String, json: Bool):

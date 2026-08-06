@@ -4,6 +4,18 @@
 
 正式执行前必须完成 [`freeze-humaneval-authority-delivery.md`](freeze-humaneval-authority-delivery.md)。认证入口只能使用 production `ckb-repro-verify --mode run-certify`；不得用独立 `cangjie-certification-preflight` 加直接 `cangjie-eval-abcde` 绕过 authority/environment/composition 门禁。
 
+目的：在维护者明确授权后，使用冻结输入执行唯一一次 completion-only HumanEval 164 认证。
+
+工作目录：`${CKB_ROOT}` 指向 clean、canonical 的 CKB 仓库根目录。
+
+命令：仅使用本文登记的 production `ckb-repro-verify` 和独立严格 gate。
+
+预期输出：P8 与严格 gate 均输出单个 JSON，且最终结果为 164/164。
+
+通过标准：所有 authority、environment、composition、generation seal、Base 和 Plus 门禁均通过。
+
+失败处理：任一门禁失败立即停止；门禁失败后不得继续 Runner 或发布。
+
 ## 验收目标
 
 - 固定 164 个 case，Group D，completion-only，每题恰好一个业务样本。
@@ -35,8 +47,10 @@ set -euo pipefail
 : "${CKB_REPRO_QDRANT_IMAGE:?set the frozen image reference whose ID matches qdrantImageDigest}"
 
 cd "$CKB_ROOT"
-source /Users/l3gi0n/cangjie100/envsetup.sh
-export DYLD_LIBRARY_PATH="/opt/homebrew/opt/openssl@3/lib:${DYLD_LIBRARY_PATH:-}"
+: "${CANGJIE_SDK_ROOT:?set the Cangjie SDK root}"
+source "$CANGJIE_SDK_ROOT/envsetup.sh"
+OPENSSL_ROOT="${OPENSSL_ROOT:-$(brew --prefix openssl@3)}"
+export DYLD_LIBRARY_PATH="${OPENSSL_ROOT}/lib:${DYLD_LIBRARY_PATH:-}"
 export cjHeapSize=4GB
 
 # The actual-environment probe reads these values; derive identities from the

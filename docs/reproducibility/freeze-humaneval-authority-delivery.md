@@ -6,6 +6,18 @@
 
 固定工件包括 164 题 authority、source-lock、release attachment、两份独立 LICENSE、内部 license evidence、内部 bundle index 和 delivery manifest。任何一个字节不匹配都必须 fail-close。
 
+目的：冻结并复核可执行的 HumanEval+ authority delivery，不调用 Student 模型。
+
+工作目录：`${CKB_ROOT}` 指向 clean、canonical 的 CKB 仓库根目录。
+
+命令：仅使用本文登记的 `ckb-authority-bundle` 与只读验证命令。
+
+预期输出：生成精确两文件 delivery，并由 verify 返回 164 题有效的单个 JSON。
+
+通过标准：固定 Git 身份、LICENSE、release attachment、source-lock、bundle 和 delivery manifest 全部匹配。
+
+失败处理：任一身份、hash、布局或许可证口径不满足时立即停止，不进入 P5。
+
 ## 1. 准备隔离目录
 
 ```bash
@@ -17,13 +29,13 @@ test "$(git rev-parse --show-toplevel)" = "$CKB_ROOT"
 git ls-files --error-unmatch src/ckb_repro_authority_bundle.cj >/dev/null
 git diff --quiet && git diff --cached --quiet
 test -z "$(git status --porcelain)"
-export CKB_AUTHORITY_TMP="$(mktemp -d /tmp/ckb-authority-freeze.XXXXXX)"
+export CKB_AUTHORITY_TMP="$(mktemp -d "${TMPDIR:-/tmp}/ckb-authority-freeze.XXXXXX")"
 export CKB_AUTHORITY_TMP="$(cd "$CKB_AUTHORITY_TMP" && pwd -P)"
 export CKB_AUTHORITY_DELIVERY_ROOT="$CKB_ROOT/target/repro-authority-delivery"
 test ! -e "$CKB_AUTHORITY_DELIVERY_ROOT"
 ```
 
-通过标准：`$CKB_ROOT` 是维护者明确指定、当前 clean 的 CKB worktree；`$CKB_AUTHORITY_TMP` 位于 `/tmp`，不在仓库、知识 store 或 Student workspace 内。
+通过标准：`$CKB_ROOT` 是维护者明确指定、当前 clean 的 CKB worktree；`$CKB_AUTHORITY_TMP` 位于 `${TMPDIR:-/tmp}`，不在仓库、知识 store 或 Student workspace 内。
 
 ## 2. 验证固定 Git 身份
 
@@ -91,8 +103,10 @@ test "$(wc -c < "$CKB_AUTHORITY_TMP/tag-tree-HumanEvalPlus.jsonl.gz" | tr -d ' '
 维护者必须先确认 `Apache-2.0 AND MIT` 的交付口径。未确认时保留仓库中的 `mode=blocked`，不得执行本步骤或进入 P5。
 
 ```bash
-source /Users/l3gi0n/cangjie100/envsetup.sh
-export DYLD_LIBRARY_PATH="/opt/homebrew/opt/openssl@3/lib:${DYLD_LIBRARY_PATH:-}"
+: "${CANGJIE_SDK_ROOT:?set the Cangjie SDK root}"
+source "$CANGJIE_SDK_ROOT/envsetup.sh"
+OPENSSL_ROOT="${OPENSSL_ROOT:-$(brew --prefix openssl@3)}"
+export DYLD_LIBRARY_PATH="${OPENSSL_ROOT}/lib:${DYLD_LIBRARY_PATH:-}"
 cjpm build -i
 
 export AUTHORITY_MANIFEST="$CKB_ROOT/test/cangjie_eval/cangjie_humaneval_manifest.jsonl"
@@ -147,4 +161,4 @@ rm -rf -- "$CKB_AUTHORITY_TMP"
 unset CKB_AUTHORITY_TMP CKB_AUTHORITY_DELIVERY_ROOT AUTHORITY_MANIFEST AUTHORITY_SOURCE_LOCK
 ```
 
-不得把 `/tmp` 下载物、bundle 或许可证证据绕过 `.gitignore` 强制提交。
+不得把 `${TMPDIR:-/tmp}` 下载物、bundle 或许可证证据绕过 `.gitignore` 强制提交。

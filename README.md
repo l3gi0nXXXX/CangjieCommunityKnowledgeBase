@@ -73,6 +73,7 @@ GLM-5.2 凭据和 CKB MCP 执行独立测试。普通 tag 与 Release URL 由 W1
 - [恢复知识库](docs/reproducibility/restore-knowledge-base.md)
 - [从源码重建](docs/reproducibility/rebuild-from-source.md)
 - [配置 Claude Code 与 GLM-5.2](docs/reproducibility/configure-claude-glm.md)
+- [冻结 HumanEval+ authority delivery](docs/reproducibility/freeze-humaneval-authority-delivery.md)
 - [运行 HumanEval 164](docs/reproducibility/run-humaneval-164.md)
 - [严格计分](docs/reproducibility/verify-strict-pass-at-1.md)
 - [结果口径](docs/reproducibility/result-interpretation.md)

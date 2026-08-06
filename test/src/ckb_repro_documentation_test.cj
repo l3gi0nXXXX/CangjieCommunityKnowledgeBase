@@ -32,6 +32,7 @@ public class CkbReproDocumentationTest {
             "docs/reproducibility/restore-knowledge-base.md",
             "docs/reproducibility/rebuild-from-source.md",
             "docs/reproducibility/configure-claude-glm.md",
+            "docs/reproducibility/freeze-humaneval-authority-delivery.md",
             "docs/reproducibility/run-humaneval-164.md",
             "docs/reproducibility/verify-strict-pass-at-1.md",
             "docs/reproducibility/result-interpretation.md",
@@ -120,8 +121,8 @@ public class CkbReproDocumentationTest {
             p7ReleaseRegisteredCommands())
         @Expect(evidence.ok, true)
         @Expect(evidence.diagnostic, "documentation_valid")
-        @Expect(evidence.requiredDocumentCount, 11)
-        @Expect(evidence.discoveredDocumentCount, 11)
+        @Expect(evidence.requiredDocumentCount, 12)
+        @Expect(evidence.discoveredDocumentCount, 12)
         @Expect(evidence.placeholderFindingCount, 0)
         @Expect(evidence.pathSecretFindingCount, 0)
         @Expect(evidence.commandFindingCount, 0)
@@ -873,6 +874,7 @@ private func p7RequiredDocuments(): Array<String> {
         "docs/reproducibility/restore-knowledge-base.md",
         "docs/reproducibility/rebuild-from-source.md",
         "docs/reproducibility/configure-claude-glm.md",
+        "docs/reproducibility/freeze-humaneval-authority-delivery.md",
         "docs/reproducibility/run-humaneval-164.md",
         "docs/reproducibility/verify-strict-pass-at-1.md",
         "docs/reproducibility/result-interpretation.md",
@@ -882,7 +884,8 @@ private func p7RequiredDocuments(): Array<String> {
 }
 
 private func p7ReleaseRegisteredCommands(): Array<String> {
-    ["ckb-release-import", "ckb-repro-build"]
+    ["cangjie-humaneval-pass1-gate", "ckb-authority-bundle",
+        "ckb-release-import", "ckb-repro-build", "ckb-repro-verify"]
 }
 
 private func p7DocumentationText(): String {

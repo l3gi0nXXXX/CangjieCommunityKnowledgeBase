@@ -57,6 +57,7 @@ public func requiredCkbReproDocumentationFiles(): Array<String> {
         "docs/reproducibility/restore-knowledge-base.md",
         "docs/reproducibility/rebuild-from-source.md",
         "docs/reproducibility/configure-claude-glm.md",
+        "docs/reproducibility/freeze-humaneval-authority-delivery.md",
         "docs/reproducibility/run-humaneval-164.md",
         "docs/reproducibility/verify-strict-pass-at-1.md",
         "docs/reproducibility/result-interpretation.md",
@@ -567,7 +568,8 @@ private func p7DocumentationCommandTokens(text: String): ArrayList<String> {
 }
 
 private func p7DocumentationKnownArtifactName(value: String): Bool {
-    value == "ckb-repro-placeholders.txt"
+    value == "ckb-repro-placeholders.txt" ||
+        value == "cangjie-humaneval-164-sha256"
 }
 
 private func p7DocumentationCommandRune(rune: Rune): Bool {

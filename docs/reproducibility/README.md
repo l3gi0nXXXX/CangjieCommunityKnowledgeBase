@@ -36,10 +36,11 @@
 1. [快速开始](quick-start.md)
 2. 选择[恢复知识库](restore-knowledge-base.md)或[从源码重建](rebuild-from-source.md)
 3. [配置 Claude Code 与 GLM-5.2](configure-claude-glm.md)
-4. [运行 HumanEval 164](run-humaneval-164.md)
-5. [严格计分](verify-strict-pass-at-1.md)
-6. 阅读[结果口径](result-interpretation.md)
-7. 出错时查看[故障处理](troubleshooting.md)
+4. [冻结 HumanEval+ authority delivery](freeze-humaneval-authority-delivery.md)
+5. [运行 HumanEval 164](run-humaneval-164.md)
+6. [严格计分](verify-strict-pass-at-1.md)
+7. 阅读[结果口径](result-interpretation.md)
+8. 出错时查看[故障处理](troubleshooting.md)
 
 维护者另见[发布维护手册](release-maintainer-runbook.md)和[Service HTTP operations](../service-http-operations.md)。
 
