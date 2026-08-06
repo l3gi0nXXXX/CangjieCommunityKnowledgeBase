@@ -2986,6 +2986,7 @@ public func ckbReproReleaseAuthorityRequiredLayout(mode: String):
         ("docs/reproducibility/restore-knowledge-base.md", "p7_documentation"),
         ("docs/reproducibility/rebuild-from-source.md", "p7_documentation"),
         ("docs/reproducibility/configure-claude-glm.md", "p7_documentation"),
+        ("docs/reproducibility/freeze-humaneval-authority-delivery.md", "p7_documentation"),
         ("docs/reproducibility/run-humaneval-164.md", "p7_documentation"),
         ("docs/reproducibility/verify-strict-pass-at-1.md", "p7_documentation"),
         ("docs/reproducibility/result-interpretation.md", "p7_documentation"),

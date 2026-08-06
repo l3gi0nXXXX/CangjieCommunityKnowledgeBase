@@ -1414,7 +1414,7 @@ public class CkbReproVerifyTest {
             @Expect(reader.finish().ok, true)
 
             let docs = CkbP8FilesystemDocumentationReader()
-            @Expect(docs.list(bundle[0]).size, 11)
+            @Expect(docs.list(bundle[0]).size, 12)
             @Expect(docs.read(bundle[0], "README.md").found, true)
             @Expect(docs.finish().ok, true)
 
@@ -1460,12 +1460,12 @@ public class CkbReproAuthorityLayoutBaselineTest {
     public func authorityModesMatchIndependentFixture(): Unit {
         let reference = p8ReferenceTemplate()
         let rows = p8AuthorityRows("manifest", reference)
-        @Expect(rows.size, 54)
+        @Expect(rows.size, 55)
         let built = buildCkbReproReleaseAuthorityContract(
             p8AuthorityInputs("manifest", reference), "public_rebuild")
         @Expect(built[0].ok, true)
         let contract = built[1]
-        @Expect(contract.expected.size, 54)
+        @Expect(contract.expected.size, 55)
         for (row in rows) {
             var matches = 0
             for (evidence in contract.expected) {
@@ -1495,7 +1495,7 @@ public class CkbReproAuthorityLayoutBaselineTest {
         let bundled = buildCkbReproReleaseAuthorityContract(
             bundledInputs, "bundled")
         @Expect(bundled[0].ok, true)
-        @Expect(bundled[1].expected.size, 54)
+        @Expect(bundled[1].expected.size, 55)
         var bundledAssetMatches = 0
         var rebuildAssetMatches = 0
         for (evidence in bundled[1].expected) {
@@ -1743,6 +1743,7 @@ private func p8AuthorityRows(content: String,
         ("docs/reproducibility/restore-knowledge-base.md", "restore", "p7_documentation"),
         ("docs/reproducibility/rebuild-from-source.md", "rebuild", "p7_documentation"),
         ("docs/reproducibility/configure-claude-glm.md", "glm", "p7_documentation"),
+        ("docs/reproducibility/freeze-humaneval-authority-delivery.md", "freeze", "p7_documentation"),
         ("docs/reproducibility/run-humaneval-164.md", "run", "p7_documentation"),
         ("docs/reproducibility/verify-strict-pass-at-1.md", "verify", "p7_documentation"),
         ("docs/reproducibility/result-interpretation.md", "result", "p7_documentation"),
