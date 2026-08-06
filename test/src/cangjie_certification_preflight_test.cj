@@ -149,6 +149,7 @@ public class CangjieCertificationPreflightTest {
         @Expect(ckbAbcdeCertificationHttpLaunchSpecHash(report.certificationBinaryHash,options.certificationConfigPath,options.certificationStorePath,options.certificationRunRoot,options.certificationHttpBase)==report.certificationHttpLaunchSpecHash,false)
         @Expect(ckbCertificationPreflightSealDiagnostic(preflight,manifest.replace("certificationBinaryHash","tamperedCertificationBinaryHash")),"preflight_manifest_seal_mismatch")
         @Expect(ckbCertificationPreflightSealDiagnostic(preflight,manifest.replace(report.certificationHttpCommandHash,benchmarkGapSha256("wrong-command"))),"preflight_manifest_seal_mismatch")
+        @Expect(ckbCertificationPreflightSealDiagnostic(preflight.replace(report.providerIdentityHash,benchmarkGapSha256("wrong-provider")),manifest),"preflight_manifest_seal_mismatch")
     }
 }
 
@@ -159,6 +160,7 @@ private func p6Fingerprint(): CkbFrozenFingerprintInput {
     input.promptHash = benchmarkGapSha256("prompt"); input.toolConfigHash = benchmarkGapSha256("tools")
     input.providerIdentityHash = benchmarkGapSha256("{\"provider\":\"redacted-provider\",\"model\":\"GLM-5.2\",\"claudeCodeVersion\":\"claude-code-1.0\"}"); input.certificationTransport = CkbAbcdeGroups.D; input.runtimeConfigHash = benchmarkGapSha256("runtime-config")
     input.candidateChecksum=input.knowledgeContentHash;input.studentLeakageProofHash=benchmarkGapSha256("{\"ok\":true,\"status\":\"pass\"}");input.frozenCandidateManifestHash=benchmarkGapSha256(p6FrozenManifest(input.candidateChecksum,input.studentLeakageProofHash))
+    let bundle=p6SkillBundle();input.skillBundleVersion=bundle.bundleVersion;input.skillBundleHash=bundle.canonicalHash;input.skillCount=bundle.skillCount;input.skillContentBytes=bundle.contentBytes;input.samplingCapabilityHash=benchmarkGapSha256(p6SamplingCapability());input.generationProtocol="completion-only-v1";input.outputSchemaHash=benchmarkGapSha256(ckbAbcdeCompletionOutputSchema());input.assetLineage="independent";input.lineageProofHash=benchmarkGapSha256(p6LineageProof())
     input
 }
 
@@ -188,9 +190,15 @@ private func p6Preflight(output: String): CkbCertificationPreflightOptions {
     let wc=canonicalize(Path(options.workspaceRoot)).toString();let rc=canonicalize(Path(options.runtimeHomeRoot)).toString();options.filesystemProbeJson="{\"deniedOutsideWorkspace\":true,\"deniedTests\":true,\"deniedReference\":true,\"deniedTeacher\":true,\"deniedStore\":true,\"workspaceCanonical\":\"${wc}\",\"runtimeHomeCanonical\":\"${rc}\"}"
     options.parityRestPayload="{\"atomIds\":[\"A\"],\"contentHash\":\"${benchmarkGapSha256("atom")}\",\"citation\":\"官方中文😀\",\"knowledgeVersion\":\"knowledge-v1\"}";options.parityStdioPayload=options.parityRestPayload;options.parityHttpPayload=options.parityRestPayload;options.parityEvidenceHash=benchmarkGapSha256(options.parityRestPayload)
     options.candidateChecksum=benchmarkGapSha256("knowledge");options.studentLeakageProofJson="{\"ok\":true,\"status\":\"pass\"}";options.studentLeakageProofHash=benchmarkGapSha256(options.studentLeakageProofJson);options.frozenCandidateManifestJson=p6FrozenManifest(options.candidateChecksum,options.studentLeakageProofHash);options.frozenCandidateManifestHash=benchmarkGapSha256(options.frozenCandidateManifestJson)
+    let bundle=p6SkillBundle();options.skillBundlePath=Path(certificationRoot).join("student-skills.json").toString();File.writeTo(Path(options.skillBundlePath),(bundle.json+"\n").toArray());options.skillBundleVersion=bundle.bundleVersion;options.skillBundleHash=bundle.canonicalHash;options.skillCount=bundle.skillCount;options.skillContentBytes=bundle.contentBytes
+    options.samplingCapabilityPath=Path(certificationRoot).join("sampling.json").toString();File.writeTo(Path(options.samplingCapabilityPath),p6SamplingCapability().toArray());options.samplingCapabilityHash=benchmarkGapSha256(p6SamplingCapability());options.generationProtocol="completion-only-v1";options.samplesPerCase=1;options.outputSchemaHash=benchmarkGapSha256(ckbAbcdeCompletionOutputSchema());options.assetLineage="independent";options.lineageProofPath=Path(certificationRoot).join("lineage.json").toString();options.lineageProofJson=p6LineageProof();File.writeTo(Path(options.lineageProofPath),options.lineageProofJson.toArray());options.lineageProofHash=benchmarkGapSha256(options.lineageProofJson)
     let baseline=p6Arm("no-ckb",false,"pre-w1","pre-s1","pre-h1");let treatment=p6Arm("frozen-ckb",true,"pre-w2","pre-s2","pre-h2");options.experimentReport=runCkbContributionExperiment(baseline,treatment,frozenFingerprint: ckbFrozenFingerprint(p6Fingerprint()))
     options
 }
+
+private func p6SkillBundle():CkbStudentSkillBundleBuild{let candidate=parseStudentSkillCandidateDirectory("fixtures/teacher_skill_candidate/static-boundary-review",true);compileStudentSkillBundle("student-skills-v1",ArrayList<CkbStudentSkillCandidate>([candidate]))}
+private func p6SamplingCapability():String{"{\"schemaVersion\":\"ckb-completion-sampling-capability-v1\",\"samplingControl\":\"provider_default_not_client_exposed\"}\n"}
+private func p6LineageProof():String{"{\"assetLineage\":\"independent\",\"source\":\"non_humaneval_seed\"}\n"}
 
 private func p6ClosureJson():String{var rows="";for(i in 0..164){if(i>0){rows+=","};rows+="{\"caseId\":\"CJ-HUMANEVAL-${i}\",\"developmentPass\":true,\"valid\":true}"};"{\"developmentClosed\":true,\"developmentPassed\":164,\"developmentTotal\":164,\"knowledgeCandidateCount\":0,\"invalidCaseCount\":0,\"certifiedPassAt1\":null,\"cases\":[${rows}]}"}
 private func p6FrozenManifest(candidate:String,leakage:String):String{let h={v:String=>benchmarkGapSha256(v)};let body="{\"schemaVersion\":\"ckb-frozen-candidate-v1\",\"knowledgeVersion\":\"knowledge-v1\",\"txIdHash\":\"${h("tx")}\",\"activePointerHash\":\"${h("pointer")}\",\"transactionHash\":\"${h("transaction")}\",\"candidateChecksum\":\"${candidate}\",\"inputHash\":\"${h("input")}\",\"configHash\":\"${h("config")}\",\"modelHash\":\"${h("model")}\",\"studentLeakageProofHash\":\"${leakage}\",\"authorityIsolationArtifactHash\":\"${h("authority")}\",\"anonymousQueryArtifactHash\":\"${h("query")}\",\"atomTestArtifactHash\":\"${h("atom")}\"";body+",\"evidenceHash\":\"${h(body+"}")}\"}"}

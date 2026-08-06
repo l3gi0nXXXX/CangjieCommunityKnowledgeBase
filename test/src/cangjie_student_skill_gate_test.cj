@@ -42,8 +42,13 @@ public class CkbR1StudentSkillCandidateContractTest {
         let duplicate=ArrayList<CkbStudentSkillCandidate>([seed,seed]);@Expect(auditStudentSkillBundle(duplicate),"duplicate_skill_id")
         let many=ArrayList<CkbStudentSkillCandidate>();for(i in 0..17){let c=p2GateCandidate("skill-${i}","procedure-${i}");many.add(c)}
         @Expect(auditStudentSkillBundle(many),"student_skill_count_exceeded")
+        let sixteen=ArrayList<CkbStudentSkillCandidate>();for(i in 0..16){sixteen.add(p2GateCandidate("exact-${i}","exact-procedure-${i}"))};@Expect(auditStudentSkillBundle(sixteen),"ok")
+        @Expect(compileStudentSkillBundle("exact-sixteen",sixteen).skillCount,16)
+        let exactBytes=p2GateCandidate("exact-bytes","exact-bytes");let exactBody=StringBuilder();for(_ in 0..24576){exactBody.append("x")};exactBytes.skillContent=exactBody.toString();@Expect(auditStudentSkillBundle(ArrayList<CkbStudentSkillCandidate>([exactBytes])),"ok")
         let large=p2GateCandidate("large","large");let body=StringBuilder();for(_ in 0..24577){body.append("x")};large.skillContent=body.toString()
         @Expect(auditStudentSkillBundle(ArrayList<CkbStudentSkillCandidate>([large])),"student_skill_content_budget_exceeded")
+        @Expect(ckbStudentSkillFixturePathUniquenessDiagnostic(["tests/a.json","tests/b.json","tests/c.json"]),"ok")
+        @Expect(ckbStudentSkillFixturePathUniquenessDiagnostic(["tests/a.json","tests/a.json","tests/c.json"]),"duplicate_skill_fixture_path")
     }
 
     // P2-CKB-NEG-01
@@ -57,6 +62,8 @@ public class CkbR1StudentSkillCandidateContractTest {
         @Expect(parseStudentSkillBundle([UInt8(0xff),UInt8(0xfe)]).diagnostic,"invalid_response_encoding")
         @Expect(parseStudentSkillBundle("{".toArray()).diagnostic,"malformed_json")
         @Expect(parseStudentSkillBundle((built.json.replace("general_engineering","teacher_derived")+"\n").toArray()).diagnostic,"skill_entry_identity_invalid")
+        @Expect(parseStudentSkillBundle((" "+built.json+"\n").toArray()).diagnostic,"skill_bundle_noncanonical")
+        @Expect(parseStudentSkillBundle((built.json+"\n\n").toArray()).diagnostic,"skill_bundle_noncanonical")
         let copied=root.join("candidate-copy");@Expect(launch("/bin/cp",["-R","fixtures/teacher_skill_candidate/static-boundary-review",copied.toString()]).wait(),0)
         let manifestPath=copied.join("candidate-manifest.json");let manifest=String.fromUtf8(File.readFrom(manifestPath));File.writeTo(manifestPath,(manifest+"\n").toArray())
         @Expect(parseStudentSkillCandidateDirectory(copied.toString(),true).diagnostic,"skill_candidate_artifact_hash_mismatch")

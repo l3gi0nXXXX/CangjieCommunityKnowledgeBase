@@ -16,10 +16,13 @@ public class CangjieCertificationControlCliTest {
         let raw=String.fromUtf8(File.readFrom(Path(fixture.inputPath)));let parsed=parseCkbCertificationControlManifest(raw.toArray())
         @Expect(parsed.ok,true);@Expect(validateCkbCertificationControlManifest(parsed),"ok")
         @Expect(sealCkbCertificationControlManifest(parsed).contains("\"generationProtocol\":\"completion-only-v1\""),true)
+        let sealedText=sealCkbCertificationControlManifest(parsed);@Expect(sealedText.contains("\"providerIdentityHash\":"),true);@Expect(sealedText.contains("\"studentLeakageProofHash\":"),true);@Expect(sealedText.contains("\"frozenCandidateManifestHash\":"),true);@Expect(sealedText.contains("\"skillCount\":1"),true);@Expect(sealedText.contains("\"assetLineage\":\"independent\""),true);@Expect(parseCkbCertificationControlManifest(sealedText.toArray()).kind,"manifest")
         @Expect(validateCkbCertificationControlManifest(raw.replace("\"runId\":","\"runId\":\"duplicate\",\"runId\":").toArray()).startsWith("control_manifest_duplicate_field:"),true)
         @Expect(validateCkbCertificationControlManifest(raw.replace(",\"samplesPerCase\":1","").toArray()),"control_manifest_missing_field:samplesPerCase")
-        @Expect(validateCkbCertificationControlManifest(raw.replace("\"samplesPerCase\":1}","\"samplesPerCase\":1,\"unknown\":1}").toArray()).startsWith("control_manifest_unknown_field:"),true)
-        @Expect(validateCkbCertificationControlManifest(raw.replace("\"samplesPerCase\":1}","\"samplesPerCase\":1,\"token\":\"private-value\"}").toArray()),"secret_artifact_forbidden")
+        @Expect(validateCkbCertificationControlManifest(raw.replace("\"assetLineage\":\"independent\",","\"unknown\":1,\"assetLineage\":\"independent\",").toArray()).startsWith("control_manifest_unknown_field:"),true)
+        @Expect(validateCkbCertificationControlManifest(raw.replace("\"assetLineage\":\"independent\",","\"token\":\"private-value\",\"assetLineage\":\"independent\",").toArray()),"secret_artifact_forbidden")
+        @Expect(validateCkbCertificationControlManifest(raw.replace("\"assetLineage\":\"independent\"","\"assetLineage\":\"invalid\"").toArray()),"asset_lineage_invalid")
+        let providerHash=benchmarkGapSha256("{\"provider\":\"store-route-test\",\"model\":\"GLM-5.2\",\"claudeCodeVersion\":\"claude-code-1.0\"}");let tamperedPath=Path(fixture.controlPath).parent.join("tampered-provider.json");File.writeTo(tamperedPath,sealedText.replace(providerHash,benchmarkGapSha256("wrong-provider")).toArray());@Expect(runCkbCertificationPreflightCli(["cangjie-certification-preflight","--control-manifest",tamperedPath.toString()],store:FileKnowledgeStore(fixture.frozenStorePath)),1)
         let output=Path(fixture.controlPath).parent.join("sealed-control-cli.json");let cli=ckbStoreRouteRunCli(["--store",fixture.frozenStorePath,"cangjie-certification-control-seal","--input",fixture.inputPath,"--output",output.toString()])
         @Expect(cli.exitCode,0);@Expect(cli.stdoutText.trimAscii(),"controlManifestSealed=true unknownFieldCount=0 secretFieldCount=0 output=${output}");@Expect(exists(output),true)
         @Expect(String.fromUtf8(File.readFrom(output)).contains("ckb-certification-control-seal-v1"),false)
@@ -257,6 +260,7 @@ private func ckbPreflightStoreRouteFixture(): CkbPreflightStoreRouteFixture {
     let skillBundlePath=root.join("student-skill-bundle.json");File.writeTo(skillBundlePath,(skillBundle.json+"\n").toArray())
     let sampling="{\"schemaVersion\":\"ckb-completion-sampling-capability-v1\",\"samplingControl\":\"provider_default_not_client_exposed\"}\n";let samplingPath=root.join("sampling-capability.json");File.writeTo(samplingPath,sampling.toArray())
     let systemPromptPath=root.join("system-prompt.txt");File.writeTo(systemPromptPath,"Frozen completion-only system prompt 中文😀\n".toArray())
+    let lineageProof="{\"assetLineage\":\"independent\",\"source\":\"non_humaneval_seed\"}\n";let lineageProofPath=root.join("lineage-proof.json");File.writeTo(lineageProofPath,lineageProof.toArray())
     let control = "{" +
         "\"runId\":\"${runId}\",\"outputRoot\":\"${canonicalize(outputRoot)}\"," +
         "\"workspaceRoot\":\"${workspaceCanonical}\",\"runtimeHomeRoot\":\"${runtimeCanonical}\"," +
@@ -272,7 +276,8 @@ private func ckbPreflightStoreRouteFixture(): CkbPreflightStoreRouteFixture {
         "\"parityRestPath\":\"${parityRest}\",\"parityStdioPath\":\"${parityStdio}\",\"parityHttpPath\":\"${parityHttp}\"," +
         "\"studentLeakageProofPath\":\"${leakagePath}\",\"frozenCandidateManifestPath\":\"${frozenPath}\",\"systemPromptPath\":\"${canonicalize(systemPromptPath)}\"," +
         "\"skillBundlePath\":\"${canonicalize(skillBundlePath)}\",\"skillBundleVersion\":\"student-skills-v1\","+
-        "\"samplingCapabilityPath\":\"${canonicalize(samplingPath)}\",\"generationProtocol\":\"completion-only-v1\",\"samplesPerCase\":1}"
+        "\"samplingCapabilityPath\":\"${canonicalize(samplingPath)}\",\"generationProtocol\":\"completion-only-v1\",\"samplesPerCase\":1,"+
+        "\"assetLineage\":\"independent\",\"lineageProofPath\":\"${canonicalize(lineageProofPath)}\"}"
     let inputPath = ckbStoreRouteWrite(root, "control-input.json", control);let sealed=sealCkbCertificationControlManifest(parseCkbCertificationControlManifest(control.toArray()));if(sealed==""){return fixture};let controlPath=ckbStoreRouteWrite(root,"control.json",sealed.trimAscii())
     let wrongStore = root.join("wrong-store")
     Directory.create(wrongStore, recursive: true)
