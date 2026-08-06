@@ -58,7 +58,7 @@ public class CangjieEvalAbcdeRunnerCompletionTest {
     // P3-NEG-01
     @TestCase
     public func toolFallbackAndMultipleTerminalFormsAreRejected(): Unit {
-        for(raw in ["{\"type\":\"assistant\",\"tool_use\":\"Bash\"}","```cangjie\\nx\\n```", p3Terminal("x")+"\n"+p3Terminal("y")]){
+        for(raw in ["{\"type\":\"assistant\",\"tool_use\":\"Bash\"}",p3Terminal("x")+"\n"+p3Terminal("y")]){
             @Expect(ckbAbcdeExtractSingleCompletion(raw.toArray()).ok,false)
         }
         let command=ckbAbcdeCertificationClaudeCommand("case","home","profile","claude","GLM-5.2","transcript","stderr")
@@ -67,6 +67,8 @@ public class CangjieEvalAbcdeRunnerCompletionTest {
         @Expect(command.contains("--output-format json"),true);@Expect(command.contains("additionalProperties"),true)
         @Expect(command.contains("output-schema.json"),false)
         @Expect(ckbAbcdeExtractSingleCompletion(p3Terminal("// bash SKILL.md mcp__ are harmless source text\nmain() {}").toArray()).ok,true)
+        @Expect(ckbAbcdeExtractSingleCompletion(p3Terminal("// ```cangjie is documentation text\nmain() {}").toArray()).ok,true)
+        @Expect(ckbAbcdeExtractSingleCompletion(p3Terminal("// JSON key name: \"solution_cj\"\nmain() {}").toArray()).ok,true)
         let assessed=ckbAbcdeAssessSample(p3Terminal("main() {}"),"GLM-5.2")
         @Expect(assessed.completeResult,true);@Expect(assessed.identityMatched,true);@Expect(assessed.toolEventCount,0)
         @Expect(command.toAsciiLower().contains("authorization"),false)

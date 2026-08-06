@@ -167,7 +167,6 @@ public func ckbAbcdeExtractSingleCompletion(bytes: Array<UInt8>): CkbAbcdeSingle
     let result = CkbAbcdeSingleCompletion()
     if (bytes.size > CKB_ABCDE_MAX_MODEL_TRANSCRIPT_BYTES) { result.diagnostic="transcript_too_large";return result }
     let raw = try { String.fromUtf8(bytes) } catch (_: Exception) { result.diagnostic="invalid_response_encoding";return result }
-    if (raw.contains("```")) { result.diagnostic="generation_protocol_violation";return result }
     try {
         let terminal=JsonValue.fromStr(raw.trimAscii()).asObject()
         if(ckbAbcdeManifestString(terminal,"type")!="result"||ckbAbcdeManifestString(terminal,"subtype")!="success"||
@@ -176,7 +175,7 @@ public func ckbAbcdeExtractSingleCompletion(bytes: Array<UInt8>): CkbAbcdeSingle
         if(usage.getFields().size!=1){result.diagnostic="completion_observed_model_mismatch";return result}
         match(usage.get("GLM-5.2")){case Some(_)=>() case None=>result.diagnostic="completion_observed_model_mismatch";return result}
         let object=terminal.get("structured_output").getOrThrow().asObject()
-        if (object.getFields().size != 1 || raw.split("\"solution_cj\"").size != 2) {
+        if (object.getFields().size != 1) {
             result.diagnostic="completion_schema_invalid";return result
         }
         let solution=ckbAbcdeManifestString(object,"solution_cj")
