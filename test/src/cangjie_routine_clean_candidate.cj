@@ -1057,6 +1057,18 @@ public func ckbStudentCleanRemovalDiagnostic(kind: String, count: Int64, evidenc
     "student_clean_${kind}:removed=${count}|evidenceHash=${evidenceHash}"
 }
 
+public func ckbFilterIndependentCertificationRecords(records:ArrayList<NormalizedRecord>):ArrayList<NormalizedRecord>{
+    let out=ArrayList<NormalizedRecord>();for(record in records){if(ckbIndependentRecordAllowed(record)){out.add(record)}};out
+}
+public func ckbIndependentAssetLineageDiagnostic(records:ArrayList<NormalizedRecord>):String{
+    if(records.size==0){return "independent_certification_records_empty"};for(record in records){if(!ckbIndependentRecordAllowed(record)){return "non_independent_record:${utf8SafePrefix(redactSensitive(record.sourceId),120)}"}};"ok"
+}
+private func ckbIndependentRecordAllowed(record:NormalizedRecord):Bool{
+    let source=(record.sourceId+"\n"+record.title+"\n"+record.citation+"\n"+record.metadata.sourceId+"\n"+record.metadata.sourceType+"\n"+record.metadata.path+"\n"+record.metadata.derivedFrom.toString()).toAsciiLower()
+    if(source.contains("humaneval")||source.contains("eval-support")||source.contains("teacher")||source.contains("student_solution")||source.contains("benchmark-gap")){return false}
+    [SourceTypes.DOC,SourceTypes.WEBSITE,SourceTypes.REPO,SourceTypes.COMMUNITY].contains(record.metadata.sourceType)&&record.metadata.sourceId!=""&&record.citation!=""
+}
+
 private func ckbCleanNormalizedIdentity(record: NormalizedRecord): String {
     let body = StringBuilder()
     for (value in [record.sourceId, record.recordKind, record.chunk]) {

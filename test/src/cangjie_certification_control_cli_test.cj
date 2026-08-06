@@ -5,9 +5,25 @@ import std.unittest.testmacro.*
 import std.fs.{Directory, File, Path, canonicalize, exists}
 import std.process.*
 import std.time.*
+import std.collection.ArrayList
 
 @Test
 public class CangjieCertificationControlCliTest {
+    // P2-CKB-CTRL-01
+    @TestCase
+    public func controlParseSealAndCliFailClosedContracts(): Unit {
+        let fixture=ckbPreflightStoreRouteFixture();@Expect(fixture.ready,true);if(!fixture.ready){return}
+        let raw=String.fromUtf8(File.readFrom(Path(fixture.inputPath)));let parsed=parseCkbCertificationControlManifest(raw.toArray())
+        @Expect(parsed.ok,true);@Expect(validateCkbCertificationControlManifest(parsed),"ok")
+        @Expect(sealCkbCertificationControlManifest(parsed).contains("\"generationProtocol\":\"completion-only-v1\""),true)
+        @Expect(validateCkbCertificationControlManifest(raw.replace("\"runId\":","\"runId\":\"duplicate\",\"runId\":").toArray()).startsWith("control_manifest_duplicate_field:"),true)
+        @Expect(validateCkbCertificationControlManifest(raw.replace(",\"samplesPerCase\":1","").toArray()),"control_manifest_missing_field:samplesPerCase")
+        @Expect(validateCkbCertificationControlManifest(raw.replace("\"samplesPerCase\":1}","\"samplesPerCase\":1,\"unknown\":1}").toArray()).startsWith("control_manifest_unknown_field:"),true)
+        @Expect(validateCkbCertificationControlManifest(raw.replace("\"samplesPerCase\":1}","\"samplesPerCase\":1,\"token\":\"private-value\"}").toArray()),"secret_artifact_forbidden")
+        let output=Path(fixture.controlPath).parent.join("sealed-control-cli.json");let cli=ckbStoreRouteRunCli(["--store",fixture.frozenStorePath,"cangjie-certification-control-seal","--input",fixture.inputPath,"--output",output.toString()])
+        @Expect(cli.exitCode,0);@Expect(cli.stdoutText.trimAscii(),"controlManifestSealed=true unknownFieldCount=0 secretFieldCount=0 output=${output}");@Expect(exists(output),true)
+        @Expect(String.fromUtf8(File.readFrom(output)).contains("ckb-certification-control-seal-v1"),false)
+    }
     @TestCase
     public func preflightRejectsDatasetVersionThatDoesNotMatchAuthority(): Unit {
         let root = Path("../target/control-authority-dataset-${DateTime.now().toUnixTimeStamp().toMilliseconds()}")
@@ -90,6 +106,8 @@ public class CangjieCertificationControlCliTest {
             "--store", fixture.frozenStorePath, "cangjie-certification-preflight",
             "--control-manifest", fixture.controlPath])
         @Expect(correct.exitCode, 0)
+        @Expect(correct.stdoutText.contains("preflight complete:"),true)
+        @Expect(correct.stdoutText.contains("\"ok\""),false)
         @Expect(exists(Path(fixture.outputRoot).join("preflight.json")), true)
         @Expect(exists(Path(fixture.outputRoot).join("run-manifest.json")), true)
         @Expect(ckbCertificationPreflightSealDiagnostic(
@@ -107,6 +125,8 @@ public class CangjieCertificationControlCliTest {
         @Expect(defaultStore.exitCode, 1)
         @Expect((defaultStore.stdoutText + defaultStore.stderrText).trimAscii(),
             "preflight blocked: frozen_candidate_manifest_drift")
+        let jsonFixture=ckbPreflightStoreRouteFixture();@Expect(jsonFixture.ready,true)
+        if(jsonFixture.ready){let machine=ckbStoreRouteRunCli(["--store",jsonFixture.frozenStorePath,"cangjie-certification-preflight","--control-manifest",jsonFixture.controlPath,"--json"]);@Expect(machine.exitCode,0);@Expect(machine.stdoutText.contains("\"ok\":true"),true);@Expect(machine.stdoutText.contains("\"preflightPath\":"),true);@Expect(machine.stdoutText.contains("\"runManifestPath\":"),true)}
     }
 }
 
@@ -119,6 +139,7 @@ private class CkbStoreRouteCliResult {
 private class CkbPreflightStoreRouteFixture {
     var ready: Bool = false
     var controlPath: String = ""
+    var inputPath: String = ""
     var frozenStorePath: String = ""
     var wrongStorePath: String = ""
     var outputRoot: String = ""
@@ -231,6 +252,11 @@ private func ckbPreflightStoreRouteFixture(): CkbPreflightStoreRouteFixture {
     let frozenPath = ckbStoreRouteWrite(root, "frozen-manifest.json", frozen.manifestJson)
     let promptHash = benchmarkGapSha256("store-route-prompt")
     let toolHash = benchmarkGapSha256("store-route-tools")
+    let skill=parseStudentSkillCandidateDirectory("fixtures/teacher_skill_candidate/static-boundary-review",true)
+    let skillBundle=compileStudentSkillBundle("student-skills-v1",ArrayList<CkbStudentSkillCandidate>([skill]));if(!skillBundle.ok){return fixture}
+    let skillBundlePath=root.join("student-skill-bundle.json");File.writeTo(skillBundlePath,(skillBundle.json+"\n").toArray())
+    let sampling="{\"schemaVersion\":\"ckb-completion-sampling-capability-v1\",\"samplingControl\":\"provider_default_not_client_exposed\"}\n";let samplingPath=root.join("sampling-capability.json");File.writeTo(samplingPath,sampling.toArray())
+    let systemPromptPath=root.join("system-prompt.txt");File.writeTo(systemPromptPath,"Frozen completion-only system prompt 中文😀\n".toArray())
     let control = "{" +
         "\"runId\":\"${runId}\",\"outputRoot\":\"${canonicalize(outputRoot)}\"," +
         "\"workspaceRoot\":\"${workspaceCanonical}\",\"runtimeHomeRoot\":\"${runtimeCanonical}\"," +
@@ -240,16 +266,18 @@ private func ckbPreflightStoreRouteFixture(): CkbPreflightStoreRouteFixture {
         "\"certificationBinaryPath\":\"${canonicalize(Path("../target/release/bin/main"))}\"," +
         "\"certificationConfigPath\":\"${canonicalize(configPath)}\",\"certificationStorePath\":\"${canonicalize(frozenStore.root)}\"," +
         "\"certificationRunRoot\":\"${canonicalize(certificationRunRoot)}\",\"ckbHttpBase\":\"http://127.0.0.1:19873\"," +
-        "\"authorityManifestPath\":\"${canonicalize(authorityPath)}\",\"datasetVersion\":\"${datasetVersion}\",\"authorityManifestHash\":\"${manifestHash}\"," +
+        "\"authorityManifestPath\":\"${canonicalize(authorityPath)}\",\"datasetVersion\":\"${datasetVersion}\"," +
         "\"developmentClosurePath\":\"${closure}\",\"knowledgeGatePath\":\"${knowledgeGate}\",\"releaseGatePath\":\"${releaseGate}\"," +
         "\"filesystemProbePath\":\"${filesystemProbe}\",\"providerIdentityPath\":\"${providerPath}\"," +
         "\"parityRestPath\":\"${parityRest}\",\"parityStdioPath\":\"${parityStdio}\",\"parityHttpPath\":\"${parityHttp}\"," +
-        "\"knowledgeContentHash\":\"${checksum}\",\"studentLeakageProofPath\":\"${leakagePath}\",\"frozenCandidateManifestPath\":\"${frozenPath}\"," +
-        "\"promptHash\":\"${promptHash}\",\"toolConfigHash\":\"${toolHash}\",\"runtimeConfigHash\":\"${benchmarkGapSha256("store-route-runtime")}\"}"
-    let controlPath = ckbStoreRouteWrite(root, "control.json", control)
+        "\"studentLeakageProofPath\":\"${leakagePath}\",\"frozenCandidateManifestPath\":\"${frozenPath}\",\"systemPromptPath\":\"${canonicalize(systemPromptPath)}\"," +
+        "\"skillBundlePath\":\"${canonicalize(skillBundlePath)}\",\"skillBundleVersion\":\"student-skills-v1\","+
+        "\"samplingCapabilityPath\":\"${canonicalize(samplingPath)}\",\"generationProtocol\":\"completion-only-v1\",\"samplesPerCase\":1}"
+    let inputPath = ckbStoreRouteWrite(root, "control-input.json", control);let sealed=sealCkbCertificationControlManifest(parseCkbCertificationControlManifest(control.toArray()));if(sealed==""){return fixture};let controlPath=ckbStoreRouteWrite(root,"control.json",sealed.trimAscii())
     let wrongStore = root.join("wrong-store")
     Directory.create(wrongStore, recursive: true)
     fixture.controlPath = controlPath
+    fixture.inputPath = inputPath
     fixture.frozenStorePath = canonicalize(frozenStore.root).toString()
     fixture.wrongStorePath = canonicalize(wrongStore).toString()
     fixture.outputRoot = canonicalize(outputRoot).toString()

@@ -301,6 +301,9 @@ public func ckbCliMain(args: Array<String>): Int64 {
     if (cli.command == "cangjie-certification-preflight") {
         return runCkbCertificationPreflightCli(args, store: store)
     }
+    if (cli.command == "cangjie-certification-control-seal") {
+        return runCkbCertificationControlSealCli(args, store: store)
+    }
     if (cli.command == "cangjie-frozen-candidate-seal") {
         return runCkbFrozenCandidateSealCli(args, store)
     }
