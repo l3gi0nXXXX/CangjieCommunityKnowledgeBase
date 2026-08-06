@@ -1193,7 +1193,7 @@ public class CkbReproVerifyTest {
         @Expect(calls.toArray(), ["restore", "rebuild", "public", "docs"])
 
         let referenceManifest = parseCkbReproReferenceManifest(File.readFrom(Path(
-            "../reproducibility/manifests/historical-reference-run.json")))[1]
+            "../reproducibility/manifests/reference-run.json")))[1]
         let lock = parseCkbReproEnvironmentLock(File.readFrom(Path(
             "../reproducibility/manifests/environment-lock.json")))[1]
         let inputs = CkbReproRunnerInputs()
