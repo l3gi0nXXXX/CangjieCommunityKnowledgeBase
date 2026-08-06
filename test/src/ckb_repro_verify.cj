@@ -11,6 +11,7 @@ foreign {
     func read(fd: Int32, buffer: CPointer<UInt8>, size: UIntNative): IntNative
     func fstat(fd: Int32, stat: CPointer<UInt8>): Int32
     func fcntl(fd: Int32, command: Int32, ...): Int32
+    func unlinkat(directoryFd: Int32, path: CString, flags: Int32): Int32
     func close(fd: Int32): Int32
     func __error(): CPointer<Int32>
 }
@@ -382,41 +383,30 @@ public interface CkbReproDocumentationOperation {
 
 public class CkbInProcessReproRunnerInvoker <: CkbReproRunnerInvoker {
     public init() {}
-    public func run(args: Array<String>): Int64 { runCangjieEvalAbcde(args) }
+    public func generate(args: Array<String>, runRoot: String):
+        (Int64, String) {
+        runCangjieEvalAbcdeFromP8(args, runRoot, "")
+    }
+    public func evaluate(args: Array<String>, runRoot: String,
+        expectedGenerationSeal: String): Int64 {
+        runCangjieEvalAbcdeFromP8(
+            args, runRoot, expectedGenerationSeal)[0]
+    }
 }
 
-public class CkbP8ProductionReferenceRunOperation <:
-    CkbReproReferenceRunOperation {
-    private let reference: CkbReproReferenceManifest
-    private let lock: CkbReproEnvironmentLock
-    private let inputs: CkbReproRunnerInputs
-    private let preflight: CkbReproEnvironmentPreflightResult
-    private let runner: CkbReproRunnerInvoker
-    private let authorityManifestText: String
-    public init(reference: CkbReproReferenceManifest,
-        lock: CkbReproEnvironmentLock, inputs: CkbReproRunnerInputs,
-        preflight: CkbReproEnvironmentPreflightResult,
-        runner: CkbReproRunnerInvoker, authorityManifestText: String) {
-        this.reference = reference; this.lock = lock; this.inputs = inputs
-        this.preflight = preflight; this.runner = runner
-        this.authorityManifestText = authorityManifestText
-    }
-    public func execute(options: CkbReproVerifyOptions):
-        CkbReproReferenceRunEvidence {
+public interface CkbP8ReferenceRunInspector {
+    func inspect(runRoot: String, authorityManifestText: String,
+        reference: CkbReproReferenceManifest): CkbReproReferenceRunEvidence
+}
+
+public class CkbP8ProductionReferenceRunInspector <:
+    CkbP8ReferenceRunInspector {
+    public init() {}
+    public func inspect(runRoot: String, authorityManifestText: String,
+        reference: CkbReproReferenceManifest): CkbReproReferenceRunEvidence {
         let out = CkbReproReferenceRunEvidence()
-        if (options.mode != "run-certify" ||
-            this.authorityManifestText == "") {
-            out.diagnostic = "reference_run_inputs_invalid"; return out
-        }
-        let exitCode = runCkbReproCertifiedStudent(this.reference, this.lock,
-            this.inputs, this.preflight, this.runner)
-        if (exitCode != 0) {
-            out.diagnostic = "reference_runner_failed"; return out
-        }
-        let runRoot = Path(this.inputs.runsRoot).join(
-            this.inputs.runId).toString()
         let gate = ckbStrictCertificationGateFromRunRoot(
-            runRoot, this.authorityManifestText)
+            runRoot, authorityManifestText)
         let thresholdOnly = !gate.ok && gate.diagnostics.size == 1 &&
             gate.diagnostics[0] == "strict_pass_at_1_requirements_not_met"
         let results = p8InspectProductionInput(
@@ -425,7 +415,7 @@ public class CkbP8ProductionReferenceRunOperation <:
             out.diagnostic = "reference_run_evidence_invalid"; return out
         }
         let projected = projectCkbPublicEvidenceFromRunFiles(
-            runRoot, this.reference, bindReferenceOutcome: false)
+            runRoot, reference, bindReferenceOutcome: false)
         if (!projected.ok || projected.score.total != gate.total ||
             projected.score.unitFirstSamplePassed != gate.unitPass ||
             projected.score.strictPassed != gate.unitPassAt1 ||
@@ -443,6 +433,45 @@ public class CkbP8ProductionReferenceRunOperation <:
             "ok"
         } else { "score_mismatch_hold" }
         out
+    }
+}
+
+public class CkbP8ProductionReferenceRunOperation <:
+    CkbReproReferenceRunOperation {
+    private let reference: CkbReproReferenceManifest
+    private let lock: CkbReproEnvironmentLock
+    private let inputs: CkbReproRunnerInputs
+    private let preflight: CkbReproEnvironmentPreflightResult
+    private let runner: CkbReproRunnerInvoker
+    private let authorityManifestText: String
+    private let inspector: CkbP8ReferenceRunInspector
+    public init(reference: CkbReproReferenceManifest,
+        lock: CkbReproEnvironmentLock, inputs: CkbReproRunnerInputs,
+        preflight: CkbReproEnvironmentPreflightResult,
+        runner: CkbReproRunnerInvoker, authorityManifestText: String,
+        inspector!: CkbP8ReferenceRunInspector =
+            CkbP8ProductionReferenceRunInspector()) {
+        this.reference = reference; this.lock = lock; this.inputs = inputs
+        this.preflight = preflight; this.runner = runner
+        this.authorityManifestText = authorityManifestText
+        this.inspector = inspector
+    }
+    public func execute(options: CkbReproVerifyOptions):
+        CkbReproReferenceRunEvidence {
+        let out = CkbReproReferenceRunEvidence()
+        if (options.mode != "run-certify" ||
+            this.authorityManifestText == "") {
+            out.diagnostic = "reference_run_inputs_invalid"; return out
+        }
+        let exitCode = runCkbReproCertifiedStudent(this.reference, this.lock,
+            this.inputs, this.preflight, this.runner)
+        if (exitCode != 0) {
+            out.diagnostic = "reference_runner_failed"; return out
+        }
+        let runRoot = Path(this.inputs.runsRoot).join(
+            this.inputs.runId).toString()
+        this.inspector.inspect(
+            runRoot, this.authorityManifestText, this.reference)
     }
 }
 
@@ -1529,6 +1558,124 @@ public class CkbReproFilesystemBundleReadBackend <:
         }
         P8FilesystemBundleReadHandle(root, expected.relativePath)
     }
+}
+
+public func ckbReproReadSingleFileNoFollow(path: String, maxBytes: Int64):
+    (Bool, Array<UInt8>) {
+    if (path == "" || maxBytes < 1) { return (false, Array<UInt8>()) }
+    let input = Path(path); let name = input.fileName
+    if (name == "" || name == "." || name == "..") {
+        return (false, Array<UInt8>())
+    }
+    let root = try { canonicalize(input.parent).toString() }
+        catch (_: Exception) { return (false, Array<UInt8>()) }
+    if (Path(root).join(name).toString() != path) {
+        return (false, Array<UInt8>())
+    }
+    let fd = p8OpenBundlePath(path)
+    if (fd < 0) { return (false, Array<UInt8>()) }
+    try {
+        let expected = p8DescriptorEntry(fd, root, name)
+        if (expected.kind != "regular" || !expected.withinRoot ||
+            expected.identity == "" || expected.size < 1 ||
+            expected.size > maxBytes) { return (false, Array<UInt8>()) }
+        let bytes = ArrayList<UInt8>()
+        let operation = P8NativeReadOperation()
+        let buffer = Array<UInt8>(8192, repeat: UInt8(0))
+        while (true) {
+            let count = ckbReproReadRetryingInterrupt(fd, buffer, operation)
+            if (count < 0) { return (false, Array<UInt8>()) }
+            if (count == 0) { break }
+            if (bytes.size > maxBytes - count ||
+                bytes.size > expected.size - count) {
+                return (false, Array<UInt8>())
+            }
+            bytes.add(all: if (count == buffer.size) { buffer }
+                else { buffer[0..count].clone() })
+        }
+        let observed = p8DescriptorEntry(fd, root, name)
+        if (bytes.size != expected.size ||
+            !p8SingleFileEntryEqual(expected, observed)) {
+            return (false, Array<UInt8>())
+        }
+        (true, bytes.toArray())
+    } finally { _ = unsafe { close(fd) } }
+}
+
+private func p8SingleFileEntryEqual(left: CkbReproBundleReadEntry,
+    right: CkbReproBundleReadEntry): Bool {
+    left.relativePath == right.relativePath && left.kind == right.kind &&
+        left.canonicalPath == right.canonicalPath &&
+        left.withinRoot == right.withinRoot &&
+        left.identity == right.identity && left.size == right.size
+}
+
+public func ckbReproDirectoryOwnershipIdentity(path: String): String {
+    let canonical = try { canonicalize(Path(path)).toString() }
+        catch (_: Exception) { return "" }
+    if (canonical != path) { return "" }
+    let fd = p8OpenBundlePath(path)
+    if (fd < 0) { return "" }
+    try {
+        let entry = p8DescriptorEntry(fd, path, "")
+        if (entry.kind != "directory" || entry.identity == "") { return "" }
+        entry.identity.split(";size=")[0]
+    } finally { _ = unsafe { close(fd) } }
+}
+
+public func ckbReproCleanupOwnedDirectory(path: String,
+    expectedIdentity: String, fileNames: Array<String>,
+    beforeFinalDirectoryUnlink!: () -> Unit = { => }): Bool {
+    if (expectedIdentity == "") { return false }
+    if (!exists(Path(path))) { return true }
+    let input = Path(path); let name = input.fileName
+    if (name == "" || name == "." || name == "..") { return false }
+    let parent = try { canonicalize(input.parent).toString() }
+        catch (_: Exception) { return false }
+    if (Path(parent).join(name).toString() != path) { return false }
+    let parentFd = p8OpenBundlePath(parent)
+    if (parentFd < 0) { return false }
+    try {
+        let cname = unsafe { LibC.mallocCString(name) }
+        let childFd = unsafe { openat(parentFd, cname, 0x104, 0) }
+        unsafe { LibC.free(cname) }
+        if (childFd < 0) { return false }
+        try {
+            let entry = p8DescriptorEntry(childFd, path, "")
+            if (entry.kind != "directory" ||
+                entry.identity.split(";size=")[0] != expectedIdentity) {
+                return false
+            }
+            for (fileName in fileNames) {
+                if (fileName == "" || fileName == "." || fileName == ".." ||
+                    fileName.contains("/")) { return false }
+                let childName = unsafe { LibC.mallocCString(fileName) }
+                _ = unsafe { unlinkat(childFd, childName, 0) }
+                unsafe { LibC.free(childName) }
+            }
+            let observed = p8DescriptorEntry(childFd, path, "")
+            if (observed.kind != "directory" ||
+                observed.identity.split(";size=")[0] != expectedIdentity) {
+                return false
+            }
+        } finally { _ = unsafe { close(childFd) } }
+        try { beforeFinalDirectoryUnlink() }
+        catch (_: Exception) { return false }
+        let finalName = unsafe { LibC.mallocCString(name) }
+        let finalFd = unsafe { openat(parentFd, finalName, 0x104, 0) }
+        if (finalFd < 0) {
+            unsafe { LibC.free(finalName) }; return false
+        }
+        let finalEntry = try { p8DescriptorEntry(finalFd, path, "") }
+            finally { _ = unsafe { close(finalFd) } }
+        if (finalEntry.kind != "directory" ||
+            finalEntry.identity.split(";size=")[0] != expectedIdentity) {
+            unsafe { LibC.free(finalName) }; return false
+        }
+        let removed = unsafe { unlinkat(parentFd, finalName, 0x80) } == 0
+        unsafe { LibC.free(finalName) }
+        removed && !exists(Path(path))
+    } finally { _ = unsafe { close(parentFd) } }
 }
 
 private class P8FilesystemBundleReadHandle <:

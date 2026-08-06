@@ -21,8 +21,30 @@ private class P8InterruptedReadOperation <: CkbReproNativeReadOperation {
 private class P8ProductionRunnerProbe <: CkbReproRunnerInvoker {
     public var calls: Int64 = 0
     public var exitCode: Int64 = 9
-    public func run(args: Array<String>): Int64 {
+    public func generate(args: Array<String>, runRoot: String):
+        (Int64, String) {
         this.calls += 1; this.exitCode
+        (this.exitCode, if (this.exitCode == 0) {
+            "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        } else { "" })
+    }
+    public func evaluate(args: Array<String>, runRoot: String,
+        expectedGenerationSeal: String): Int64 {
+        this.calls += 1; this.exitCode
+    }
+}
+
+private class P8ReferenceRunInspectorProbe <: CkbP8ReferenceRunInspector {
+    public var calls: Int64 = 0
+    public var runRoot: String = ""
+    public func inspect(value: String, authorityManifestText: String,
+        reference: CkbReproReferenceManifest): CkbReproReferenceRunEvidence {
+        this.calls += 1; this.runRoot = value
+        let out = CkbReproReferenceRunEvidence()
+        out.ok = true; out.diagnostic = "ok"; out.totalCases = 164
+        out.rawPassed = 164; out.strictPassed = 164
+        out.resultsHash = p8Hash("fixture-results")
+        out
     }
 }
 
@@ -1220,6 +1242,17 @@ public class CkbReproVerifyTest {
         let failed = actualA.runReference(runOptions)
         @Expect(failed.diagnostic, "reference_runner_failed")
         @Expect(runner.calls, 1)
+
+        runner.exitCode = 0
+        let inspector = P8ReferenceRunInspectorProbe()
+        let successful = CkbP8ProductionReferenceRunOperation(
+            referenceManifest, lock, inputs, preflight, runner, "authority",
+            inspector: inspector).execute(runOptions)
+        @Expect(successful.ok, true)
+        @Expect(successful.totalCases, 164)
+        @Expect(runner.calls, 3)
+        @Expect(inspector.calls, 1)
+        @Expect(inspector.runRoot, "/tmp/runs/p8-production-probe")
     }
 
     @TestCase

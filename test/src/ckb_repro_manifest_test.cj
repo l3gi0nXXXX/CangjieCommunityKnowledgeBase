@@ -57,7 +57,7 @@ public class CkbReproManifestTest {
             mode: "execution")
         @Expect(execution.ok, true)
         @Expect(execution.treeHash,
-            "sha256:b09b18c34e1c62215c03550579619be38b36bba28b037d666fc50c0710e88ce1")
+            "sha256:77bb3a77e75a46fe2ba2c83a498e9a40b4547d9e7c1f86b97bba9d70c6446889")
         var bundleListed = false
         var plusAuthorityListed = false
         for (file in critical[1].files) {
@@ -66,7 +66,7 @@ public class CkbReproManifestTest {
                 plusAuthorityListed = true
             }
         }
-        @Expect(bundleListed, false)
+        @Expect(bundleListed, true)
         @Expect(plusAuthorityListed, true)
     }
 
@@ -249,9 +249,13 @@ public class CkbReproManifestTest {
             p0Read("../src/service_http.cj"))
         File.writeTo(Path(root).join("src/ckb_repro_bundle.cj"),
             p0Read("../src/ckb_repro_bundle.cj"))
+        File.writeTo(Path(root).join("src/ckb_repro_authority_bundle.cj"),
+            p0Read("../src/ckb_repro_authority_bundle.cj"))
         File.writeTo(Path(root).join("docs-note.md"), "说明🙂".toArray())
-        let manifest = p0CriticalFromRepositoryManifest(
-            ["src/native_tls_bootstrap.cj", "src/service_http.cj"])
+        let manifest = p0CriticalFromRepositoryManifest([
+            "src/native_tls_bootstrap.cj", "src/service_http.cj",
+            "src/ckb_repro_bundle.cj",
+            "src/ckb_repro_authority_bundle.cj"])
         let firstTreeHash = computeCkbRunCriticalTreeHash(manifest, root)
         @Expect(firstTreeHash.startsWith("sha256:"), true)
 
@@ -261,7 +265,14 @@ public class CkbReproManifestTest {
         File.writeTo(Path(root).join("src/ckb_repro_bundle.cj"),
             "release-only change".toArray())
         let releaseOnly = computeCkbRunCriticalTreeHash(manifest, root)
-        @Expect(releaseOnly, firstTreeHash)
+        @Expect(releaseOnly == firstTreeHash, false)
+        File.writeTo(Path(root).join("src/ckb_repro_authority_bundle.cj"),
+            "weakened authority policy".toArray())
+        let authorityPolicyChange = computeCkbRunCriticalTreeHash(
+            manifest, root)
+        @Expect(authorityPolicyChange == firstTreeHash, false)
+        File.writeTo(Path(root).join("src/ckb_repro_authority_bundle.cj"),
+            p0Read("../src/ckb_repro_authority_bundle.cj"))
         File.writeTo(Path(root).join("src/service_http.cj"),
             (String.fromUtf8(p0Read("../src/service_http.cj")) + "\n// critical change\n").toArray())
         let criticalChange = computeCkbRunCriticalTreeHash(manifest, root)

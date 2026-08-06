@@ -6,6 +6,8 @@ import std.env.getVariable
 import std.fs.{Directory, File, Path, exists, canonicalize, rename, remove}
 import std.io.*
 import std.process.*
+import std.sort.*
+import stdx.crypto.digest.SHA256
 import stdx.encoding.base64.*
 import stdx.encoding.json.*
 
@@ -21,6 +23,7 @@ public class CkbAbcdeGroups {
 }
 
 public class CkbAbcdeRunnerOptions {
+    public var internalQuiet: Bool = false
     public var generationProtocol: String = ""
     public var samplesPerCase: Int64 = 0
     public var generateOnly: Bool = false
@@ -555,36 +558,254 @@ public func parseCkbAbcdeRunnerOptions(args: Array<String>): CkbAbcdeRunnerOptio
     options
 }
 
+private let CKB_ABCDE_GENERATION_SEAL_FILE: String =
+    "generation-phase-seal.json"
+
+private func ckbAbcdeGenerationSealBody(runRoot: String): String {
+    try {
+    let backend = CkbReproFilesystemBundleReadBackend()
+    let rootIdentity = backend.rootIdentity(runRoot)
+    if (rootIdentity == "") { return "" }
+    let rows = ArrayList<String>(); let seen = HashSet<String>()
+    var totalBytes: Int64 = 0
+    for (entry in backend.list(runRoot)) {
+        if (entry.relativePath == CKB_ABCDE_GENERATION_SEAL_FILE) { continue }
+        if (!entry.withinRoot || entry.identity == "" ||
+            seen.contains(entry.relativePath)) { return "" }
+        seen.add(entry.relativePath)
+        if (entry.kind == "directory") { continue }
+        if (entry.kind != "regular" || entry.size < 0 ||
+            entry.size > 64 * 1024 * 1024 ||
+            totalBytes > 2 * 1024 * 1024 * 1024 - entry.size) { return "" }
+        let hashed = ckbAbcdeHashGenerationEntry(
+            backend, runRoot, entry)
+        if (!hashed[0] || hashed[1] != entry.size) { return "" }
+        totalBytes += entry.size
+        rows.add("{\"path\":\"${ckbAbcdeJsonEscape(entry.relativePath)}\"," +
+            "\"size\":${entry.size},\"sha256\":\"${hashed[2]}\"}")
+    }
+    if (backend.rootIdentity(runRoot) != rootIdentity) { return "" }
+    let ordered = rows.toArray(); sort(ordered)
+    let entries = StringBuilder()
+    for (i in 0..ordered.size) {
+        if (i > 0) { entries.append(",") }
+        entries.append(ordered[i])
+    }
+    "{\"schemaVersion\":\"ckb-generation-phase-seal-v1\"," +
+        "\"entries\":[${entries.toString()}]}\n"
+    } catch (_: Exception) { "" }
+}
+
+private func ckbAbcdeHashGenerationEntry(
+    backend: CkbReproBundleReadBackend, root: String,
+    expected: CkbReproBundleReadEntry): (Bool, Int64, String) {
+    var handle: ?CkbReproBundleReadHandle = None
+    try {
+        let opened = backend.open(root, expected); handle = Some(opened)
+        try {
+            if (!opened.noFollow() || !ckbAbcdeGenerationEntryEqual(
+                expected, opened.observedEntry())) { return (false, 0, "") }
+            let digest = SHA256(); var size: Int64 = 0
+            let buffer = Array<UInt8>(8192, repeat: UInt8(0))
+            while (true) {
+                let count = opened.read(buffer)
+                if (count < 0) { return (false, 0, "") }
+                if (count == 0) { break }
+                if (size > expected.size - count) { return (false, 0, "") }
+                digest.write(if (count == buffer.size) { buffer }
+                    else { buffer[0..count].clone() })
+                size += count
+            }
+            if (size != expected.size || !ckbAbcdeGenerationEntryEqual(
+                expected, opened.observedEntry())) { return (false, 0, "") }
+            (true, size, ckbAbcdeGenerationDigest(digest.finish()))
+        } finally { opened.close(); handle = None }
+    } catch (_: Exception) {
+        match (handle) {
+            case Some(value) => try { value.close() } catch (_: Exception) {}
+            case None => ()
+        }
+        (false, 0, "")
+    }
+}
+
+private func ckbAbcdeGenerationEntryEqual(left: CkbReproBundleReadEntry,
+    right: CkbReproBundleReadEntry): Bool {
+    left.relativePath == right.relativePath && left.kind == right.kind &&
+        left.canonicalPath == right.canonicalPath &&
+        left.withinRoot == right.withinRoot &&
+        left.identity == right.identity && left.size == right.size
+}
+
+private func ckbAbcdeGenerationDigest(bytes: Array<UInt8>): String {
+    let out = StringBuilder()
+    for (byte in bytes) {
+        out.append(ckbAbcdeGenerationNibble(byte / UInt8(16)))
+        out.append(ckbAbcdeGenerationNibble(byte % UInt8(16)))
+    }
+    "sha256:${out.toString()}"
+}
+
+private func ckbAbcdeGenerationNibble(value: UInt8): String {
+    if(value==UInt8(0)){return "0"};if(value==UInt8(1)){return "1"};if(value==UInt8(2)){return "2"};if(value==UInt8(3)){return "3"};if(value==UInt8(4)){return "4"};if(value==UInt8(5)){return "5"};if(value==UInt8(6)){return "6"};if(value==UInt8(7)){return "7"};if(value==UInt8(8)){return "8"};if(value==UInt8(9)){return "9"};if(value==UInt8(10)){return "a"};if(value==UInt8(11)){return "b"};if(value==UInt8(12)){return "c"};if(value==UInt8(13)){return "d"};if(value==UInt8(14)){return "e"};"f"
+}
+
+private func ckbAbcdeCreateGenerationSeal(runRoot: String): String {
+    let body = ckbAbcdeGenerationSealBody(runRoot)
+    if (body == "") { return "" }
+    let sealPath = Path(runRoot).join(CKB_ABCDE_GENERATION_SEAL_FILE)
+    let staging = Path("${sealPath.toString()}.staging")
+    if (exists(sealPath) || exists(staging)) { return "" }
+    var ownership = ""
+    try {
+        Directory.create(staging, recursive: false)
+        ownership = ckbReproDirectoryOwnershipIdentity(staging.toString())
+        if (ownership == "") { return "" }
+        let temporary = staging.join("seal.tmp")
+        File.writeTo(temporary, body.toArray())
+        if (File.readFrom(temporary) != body.toArray()) { return "" }
+        rename(temporary.toString(), to: sealPath.toString(), overwrite: false)
+        benchmarkGapSha256(body)
+    } catch (_: Exception) {
+        ""
+    } finally {
+        _ = ckbReproCleanupOwnedDirectory(
+            staging.toString(), ownership, ["seal.tmp"])
+    }
+}
+
+private func ckbAbcdeVerifyGenerationSeal(runRoot: String,
+    expected: String): Bool {
+    if (!ckbAbcdeGenerationSealHash(expected)) { return false }
+    let sealPath = Path(runRoot).join(CKB_ABCDE_GENERATION_SEAL_FILE)
+    let read = ckbReproReadSingleFileNoFollow(
+        sealPath.toString(), 64 * 1024 * 1024)
+    if (!read[0]) { return false }
+    let body = try { String.fromUtf8(read[1]) }
+        catch (_: Exception) { return false }
+    expected == benchmarkGapSha256(body) &&
+        body == ckbAbcdeGenerationSealBody(runRoot)
+}
+
+private func ckbAbcdeGenerationSealHash(value: String): Bool {
+    let runes = value.toRuneArray()
+    if (runes.size != 71 || !value.startsWith("sha256:")) { return false }
+    for (i in 7..71) {
+        let rune = runes[i]
+        if (!((rune >= r'0' && rune <= r'9') ||
+            (rune >= r'a' && rune <= r'f'))) { return false }
+    }
+    true
+}
+
+public func ckbAbcdeCreateGenerationSealForTest(runRoot: String): String {
+    ckbAbcdeCreateGenerationSeal(runRoot)
+}
+
+public func ckbAbcdeVerifyGenerationSealForTest(runRoot: String,
+    expected: String): Bool {
+    ckbAbcdeVerifyGenerationSeal(runRoot, expected)
+}
+
+private func ckbAbcdeEmit(quiet: Bool, value: String, newline!: Bool = true): Unit {
+    if (!quiet) { if (newline) { println(value) } else { print(value) } }
+}
+
+private func ckbAbcdeBindFrozenRunInputs(options: CkbAbcdeRunnerOptions): Unit {
+    let frozenRoot = Path(options.runsRoot).join(options.runId)
+    options.certificationPreflightPath =
+        frozenRoot.join("preflight.json").toString()
+    options.certificationRunManifestPath =
+        frozenRoot.join("run-manifest.json").toString()
+    options.providerIdentityArtifactPath =
+        frozenRoot.join("provider-identity.json").toString()
+    options.frozenCandidateManifestPath =
+        frozenRoot.join("frozen-candidate-manifest.json").toString()
+    options.manifestPath = frozenRoot.join("authority.jsonl").toString()
+}
+
+public func ckbAbcdeBindFrozenRunInputsForTest(
+    options: CkbAbcdeRunnerOptions): Unit {
+    ckbAbcdeBindFrozenRunInputs(options)
+}
+
 public func runCangjieEvalAbcde(args: Array<String>): Int64 {
-    let usage = ckbAbcdeStrictUsageDiagnostic(args)
-    if (usage != "ok") { println("usage error: ${usage}"); return 2 }
     let options = parseCkbAbcdeRunnerOptions(args)
+    if (options.runMode == "certification") {
+        println("ABCDE certification start blocked: p8_authority_required")
+        return 1
+    }
+    runCangjieEvalAbcdeCore(args, false, false)
+}
+
+func runCangjieEvalAbcdeFromP8(args: Array<String>, runRoot: String,
+    expectedGenerationSeal: String): (Int64, String) {
+    let options = parseCkbAbcdeRunnerOptions(args)
+    if (options.runMode != "certification") { return (1, "") }
+    if (runRoot == "" || runRoot != Path(options.runsRoot).join(
+        options.runId).toString()) { return (1, "") }
+    if (
+        (options.generateOnly == options.evaluateFrozen)) { return (1, "") }
+    if (options.evaluateFrozen && !ckbAbcdeVerifyGenerationSeal(
+        runRoot, expectedGenerationSeal)) { return (1, "") }
+    let exitCode = runCangjieEvalAbcdeCore(args, true, true)
+    if (exitCode != 0 || !options.generateOnly) { return (exitCode, "") }
+    let seal = ckbAbcdeCreateGenerationSeal(runRoot)
+    if (!ckbAbcdeGenerationSealHash(seal)) { return (1, "") }
+    (0, seal)
+}
+
+public func runCangjieEvalAbcdeLegacyFixtureForTest(
+    args: Array<String>): Int64 {
+    runCangjieEvalAbcdeCore(args, true, true)
+}
+
+private func runCangjieEvalAbcdeCore(args: Array<String>,
+    p8Authorized: Bool, quiet: Bool): Int64 {
+    let usage = ckbAbcdeStrictUsageDiagnostic(args)
+    if (usage != "ok") { ckbAbcdeEmit(quiet, "usage error: ${usage}"); return 2 }
+    let options = parseCkbAbcdeRunnerOptions(args)
+    options.internalQuiet = quiet
     if (options.help) {
-        print(ckbAbcdeUsage())
+        ckbAbcdeEmit(quiet, ckbAbcdeUsage(), newline: false)
         return 0
     }
+    if (options.runMode == "certification" && !p8Authorized) {
+        ckbAbcdeEmit(quiet,
+            "ABCDE certification start blocked: p8_authority_required")
+        return 1
+    }
+    if (options.runMode == "certification" && options.evaluateFrozen) {
+        ckbAbcdeBindFrozenRunInputs(options)
+    }
     if (options.runMode == "certification") {
-        if (!exists(Path(options.certificationRunManifestPath))) { println("ABCDE certification start blocked: run_manifest_missing"); return 1 }
-        let manifestBytes=try{File.readFrom(Path(options.certificationRunManifestPath))}catch(_:Exception){println("ABCDE certification start blocked: run_manifest_unreadable");return 1}
+        if (!exists(Path(options.certificationRunManifestPath))) { ckbAbcdeEmit(quiet,"ABCDE certification start blocked: run_manifest_missing"); return 1 }
+        let manifestBytes=try{File.readFrom(Path(options.certificationRunManifestPath))}catch(_:Exception){ckbAbcdeEmit(quiet,"ABCDE certification start blocked: run_manifest_unreadable");return 1}
         let manifestProtocol=try{ckbAbcdeManifestString(JsonValue.fromStr(String.fromUtf8(manifestBytes)).asObject(),"generationProtocol")}catch(_:Exception){""}
         let completionRequested=options.generationProtocol=="completion-only-v1"||manifestProtocol=="completion-only-v1"
-        if(completionRequested){let manifestDiagnostic=applyCkbAbcdeFrozenRunManifest(options,manifestBytes);if(manifestDiagnostic!="ok"){println("ABCDE certification start blocked: ${manifestDiagnostic}");return 1};let completionDiagnostic=ckbAbcdeCompletionOptionsDiagnostic(options);if(completionDiagnostic!="ok"){println("ABCDE certification start blocked: ${completionDiagnostic}");return 1};if(options.evaluateFrozen){options.manifestPath="${options.runsRoot}/${options.runId}/authority.jsonl"}}else if(options.generationProtocol!=""){println("ABCDE certification start blocked: generation_protocol_invalid");return 1}
+        if(completionRequested){
+            let manifestDiagnostic=applyCkbAbcdeFrozenRunManifest(options,manifestBytes)
+            if(manifestDiagnostic!="ok"){ckbAbcdeEmit(quiet,"ABCDE certification start blocked: ${manifestDiagnostic}");return 1}
+            let completionDiagnostic=ckbAbcdeCompletionOptionsDiagnostic(options)
+            if(completionDiagnostic!="ok"){ckbAbcdeEmit(quiet,"ABCDE certification start blocked: ${completionDiagnostic}");return 1}
+            if(options.evaluateFrozen){options.manifestPath="${options.runsRoot}/${options.runId}/authority.jsonl"}
+        }else if(options.generationProtocol!="") { ckbAbcdeEmit(quiet,"ABCDE certification start blocked: generation_protocol_invalid"); return 1 }
     }
     let developmentContract = ckbAbcdeDevelopmentOptionsDiagnostic(options)
-    if (developmentContract != "") { println("usage error: ${developmentContract}"); return 2 }
+    if (developmentContract != "") { ckbAbcdeEmit(quiet,"usage error: ${developmentContract}"); return 2 }
     if (options.runId == "") {
         options.runId = "abcde-${ckbAbcdeGeneratedRunId()}"
     }
     let safetyDiagnostic = ckbAbcdeOptionsSafetyDiagnostic(options)
     if (safetyDiagnostic != "ok") {
-        println("ABCDE safety check failed: ${safetyDiagnostic}")
+        ckbAbcdeEmit(quiet,"ABCDE safety check failed: ${safetyDiagnostic}")
         return 1
     }
     let runRoot = "${options.runsRoot}/${options.runId}"
     if (options.runMode == "certification") {
         let certificationDiagnostic = ckbAbcdeCertificationEntryDiagnostic(options, runRoot)
         if (certificationDiagnostic != "ok") {
-            println("ABCDE certification start blocked: ${certificationDiagnostic}")
+            ckbAbcdeEmit(quiet,"ABCDE certification start blocked: ${certificationDiagnostic}")
             return 1
         }
     }
@@ -594,26 +815,32 @@ public func runCangjieEvalAbcde(args: Array<String>): Int64 {
         // rerun the legacy development preflight or synthesize replacements.
         let authorityTarget="${runRoot}/authority.jsonl"
         if(options.generationProtocol=="completion-only-v1"&&options.evaluateFrozen){
-            if(!exists(Path(authorityTarget))){println("ABCDE certification start blocked: authority_snapshot_missing");return 1}
+            if(!exists(Path(authorityTarget))){ckbAbcdeEmit(quiet,"ABCDE certification start blocked: authority_snapshot_missing");return 1}
         }else{
             let authorityText=ckbAbcdeReadText(options.manifestPath)
             let authorityTemporary="${authorityTarget}.tmp"
             ckbAbcdeWriteText(authorityTemporary,authorityText)
-            try{rename(authorityTemporary,to:authorityTarget,overwrite:true)}catch(_:Exception){println("ABCDE certification start blocked: authority_freeze_failed");return 1}
-            if(ckbAbcdeReadText(authorityTarget)!=authorityText){println("ABCDE certification start blocked: authority_freeze_hash_mismatch");return 1}
+            try{rename(authorityTemporary,to:authorityTarget,overwrite:true)}catch(_:Exception){ckbAbcdeEmit(quiet,"ABCDE certification start blocked: authority_freeze_failed");return 1}
+            if(ckbAbcdeReadText(authorityTarget)!=authorityText){ckbAbcdeEmit(quiet,"ABCDE certification start blocked: authority_freeze_hash_mismatch");return 1}
         }
         if(options.generationProtocol=="completion-only-v1"){
-            let skillManifestPath=if(options.evaluateFrozen){"${runRoot}/run-manifest.json"}else{options.certificationRunManifestPath};let manifest=try{JsonValue.fromStr(ckbAbcdeReadText(skillManifestPath)).asObject()}catch(_:Exception){println("ABCDE certification start blocked: run_manifest_malformed_json");return 1};let skillHash=ckbAbcdeManifestString(manifest,"skillBundleHash");let target=Path(runRoot).join("student-skills.json")
+            let skillManifestPath=if(options.evaluateFrozen){"${runRoot}/run-manifest.json"}else{options.certificationRunManifestPath};let manifest=try{JsonValue.fromStr(ckbAbcdeReadText(skillManifestPath)).asObject()}catch(_:Exception){ckbAbcdeEmit(quiet,"ABCDE certification start blocked: run_manifest_malformed_json");return 1};let skillHash=ckbAbcdeManifestString(manifest,"skillBundleHash");let target=Path(runRoot).join("student-skills.json")
             if(options.evaluateFrozen){
-                let frozenBytes=try{File.readFrom(target)}catch(_:Exception){println("ABCDE certification start blocked: frozen_skill_bundle_missing");return 1};let frozenText=try{String.fromUtf8(frozenBytes)}catch(_:Exception){println("ABCDE certification start blocked: invalid_response_encoding");return 1};if(benchmarkGapSha256(frozenText)!=skillHash){println("ABCDE certification start blocked: frozen_skill_bundle_hash_mismatch");return 1}
+                let frozenBytes=try{File.readFrom(target)}catch(_:Exception){ckbAbcdeEmit(quiet,"ABCDE certification start blocked: frozen_skill_bundle_missing");return 1};let frozenText=try{String.fromUtf8(frozenBytes)}catch(_:Exception){ckbAbcdeEmit(quiet,"ABCDE certification start blocked: invalid_response_encoding");return 1};if(benchmarkGapSha256(frozenText)!=skillHash){ckbAbcdeEmit(quiet,"ABCDE certification start blocked: frozen_skill_bundle_hash_mismatch");return 1}
             }else{
-                let skillPath=ckbAbcdeManifestString(manifest,"skillBundlePath");let skillBytes=try{File.readFrom(Path(skillPath))}catch(_:Exception){println("ABCDE certification start blocked: skill_bundle_unreadable");return 1};if(benchmarkGapSha256(try{String.fromUtf8(skillBytes)}catch(_:Exception){println("ABCDE certification start blocked: invalid_response_encoding");return 1})!=skillHash){println("ABCDE certification start blocked: skill_bundle_hash_mismatch");return 1};let temporary=Path("${target.toString()}.tmp");File.writeTo(temporary,skillBytes);try{rename(temporary.toString(),to:target.toString(),overwrite:true)}catch(_:Exception){println("ABCDE certification start blocked: skill_bundle_freeze_failed");return 1}
+                let skillPath=ckbAbcdeManifestString(manifest,"skillBundlePath");let skillBytes=try{File.readFrom(Path(skillPath))}catch(_:Exception){ckbAbcdeEmit(quiet,"ABCDE certification start blocked: skill_bundle_unreadable");return 1};if(benchmarkGapSha256(try{String.fromUtf8(skillBytes)}catch(_:Exception){ckbAbcdeEmit(quiet,"ABCDE certification start blocked: invalid_response_encoding");return 1})!=skillHash){ckbAbcdeEmit(quiet,"ABCDE certification start blocked: skill_bundle_hash_mismatch");return 1};let temporary=Path("${target.toString()}.tmp");File.writeTo(temporary,skillBytes);try{rename(temporary.toString(),to:target.toString(),overwrite:true)}catch(_:Exception){ckbAbcdeEmit(quiet,"ABCDE certification start blocked: skill_bundle_freeze_failed");return 1}
             }
         }
-        ckbAbcdeWriteText("${runRoot}/preflight.json", ckbAbcdeReadText(options.certificationPreflightPath))
-        ckbAbcdeWriteText("${runRoot}/run-manifest.json", ckbAbcdeReadText(options.certificationRunManifestPath))
-        ckbAbcdeWriteText("${runRoot}/provider-identity.json",ckbAbcdeReadText(options.providerIdentityArtifactPath))
-        ckbAbcdeWriteText("${runRoot}/frozen-candidate-manifest.json",ckbAbcdeReadText(options.frozenCandidateManifestPath))
+        if (!options.evaluateFrozen) {
+            ckbAbcdeWriteText("${runRoot}/preflight.json",
+                ckbAbcdeReadText(options.certificationPreflightPath))
+            ckbAbcdeWriteText("${runRoot}/run-manifest.json",
+                ckbAbcdeReadText(options.certificationRunManifestPath))
+            ckbAbcdeWriteText("${runRoot}/provider-identity.json",
+                ckbAbcdeReadText(options.providerIdentityArtifactPath))
+            ckbAbcdeWriteText("${runRoot}/frozen-candidate-manifest.json",
+                ckbAbcdeReadText(options.frozenCandidateManifestPath))
+        }
         options.certificationPreflightPath="${runRoot}/preflight.json"
         options.certificationRunManifestPath="${runRoot}/run-manifest.json"
         options.providerIdentityArtifactPath="${runRoot}/provider-identity.json"
@@ -624,39 +851,39 @@ public func runCangjieEvalAbcde(args: Array<String>): Int64 {
         ckbAbcdeWriteText("${runRoot}/preflight.json", ckbAbcdeRenderPreflightJson(options, runRoot, preflight))
         ckbAbcdeWriteText("${runRoot}/preflight.md", ckbAbcdeRenderPreflightMarkdown(options, runRoot, preflight))
         if (!preflight.ok) {
-            println("ABCDE preflight failed: ${runRoot}/preflight.md")
+            ckbAbcdeEmit(quiet,"ABCDE preflight failed: ${runRoot}/preflight.md")
             return 1
         }
         if (options.preflightOnly) {
-            println("ABCDE preflight ok: ${runRoot}")
+            ckbAbcdeEmit(quiet,"ABCDE preflight ok: ${runRoot}")
             return 0
         }
     }
 
     if (options.runMode == "certification") {
         let portDiagnostic = ckbAbcdeCertificationPortDiagnostic(options.ckbHttpBase)
-        if (portDiagnostic != "ok") { println("ABCDE certification start blocked: ${portDiagnostic}"); return 1 }
-        let binaryHash=ckbAbcdeBinaryHash(options.ckbBin);if(!ckbAbcdeStrictSha256(binaryHash)){println("ABCDE certification start blocked: certification_http_binary_hash_failed");return 1}
+        if (portDiagnostic != "ok") { ckbAbcdeEmit(quiet,"ABCDE certification start blocked: ${portDiagnostic}"); return 1 }
+        let binaryHash=ckbAbcdeBinaryHash(options.ckbBin);if(!ckbAbcdeStrictSha256(binaryHash)){ckbAbcdeEmit(quiet,"ABCDE certification start blocked: certification_http_binary_hash_failed");return 1}
         let launchSpecHash=ckbAbcdeCertificationHttpLaunchSpecHash(binaryHash,options.ckbConfig,options.ckbStore,runRoot,options.ckbHttpBase)
         let commandHash=benchmarkGapSha256(ckbAbcdeCertificationHttpLaunchScript(options.ckbBin,options.ckbConfig,options.ckbStore,runRoot))
-        try{let manifest=JsonValue.fromStr(ckbAbcdeReadText(options.certificationRunManifestPath)).asObject();if(ckbAbcdeStrictJsonString(manifest,"certificationBinaryHash")!=binaryHash||ckbAbcdeStrictJsonString(manifest,"certificationHttpLaunchSpecHash")!=launchSpecHash||ckbAbcdeStrictJsonString(manifest,"certificationHttpCommandHash")!=commandHash){println("ABCDE certification start blocked: certification_http_provenance_mismatch");return 1}}catch(_:Exception){println("ABCDE certification start blocked: certification_http_provenance_malformed");return 1}
+        try{let manifest=JsonValue.fromStr(ckbAbcdeReadText(options.certificationRunManifestPath)).asObject();if(ckbAbcdeStrictJsonString(manifest,"certificationBinaryHash")!=binaryHash||ckbAbcdeStrictJsonString(manifest,"certificationHttpLaunchSpecHash")!=launchSpecHash||ckbAbcdeStrictJsonString(manifest,"certificationHttpCommandHash")!=commandHash){ckbAbcdeEmit(quiet,"ABCDE certification start blocked: certification_http_provenance_mismatch");return 1}}catch(_:Exception){ckbAbcdeEmit(quiet,"ABCDE certification start blocked: certification_http_provenance_malformed");return 1}
         let serviceCommand=ckbAbcdeCertificationHttpLaunchScript(options.ckbBin,options.ckbConfig,options.ckbStore,runRoot)
         let process = try {
             launch("/bin/zsh", ["-lc", serviceCommand], stdOut: ProcessRedirect.Pipe, stdErr: ProcessRedirect.Pipe)
-        } catch (_: Exception) { println("ABCDE certification start blocked: certification_http_launch_failed"); return 1 }
+        } catch (_: Exception) { ckbAbcdeEmit(quiet,"ABCDE certification start blocked: certification_http_launch_failed"); return 1 }
         let owner = "{\"schemaVersion\":\"ckb-certification-http-owner-v1\",\"pid\":${process.pid},\"binaryHash\":\"${binaryHash}\",\"launchSpecHash\":\"${launchSpecHash}\",\"commandHash\":\"${commandHash}\"}"
         ckbAbcdeWriteText("${runRoot}/certification-http-owner.json", owner)
         var caseExit:Int64=1
         try {
             let ready = ckbAbcdeWaitForCertificationIdentity(options,runRoot)
-            if (ready != "ok") { println("ABCDE certification start blocked: ${ready}"); return 1 }
+            if (ready != "ok") { ckbAbcdeEmit(quiet,"ABCDE certification start blocked: ${ready}"); return 1 }
             caseExit=ckbAbcdeRunCases(options, runRoot)
         } finally {
             let stopMethod=ckbAbcdeStopOwnedCertificationHttpWithEscalation(process.pid)
             _ = try { process.wait() } catch (_: Exception) { -1 }
             ckbAbcdeWriteText("${runRoot}/certification-http-stopped.json", "{\"schemaVersion\":\"ckb-certification-http-stop-v1\",\"pid\":${process.pid},\"stopMethod\":\"${stopMethod}\",\"aliveAfterStop\":${ckbAbcdePidAlive(process.pid)}}")
         }
-        if(caseExit==0&&!ckbAbcdeWriteRunnerProvenance(options,runRoot,binaryHash,launchSpecHash,commandHash)){println("ABCDE certification failed: runner_provenance_write_failed");return 1}
+        if(caseExit==0&&!ckbAbcdeWriteRunnerProvenance(options,runRoot,binaryHash,launchSpecHash,commandHash)){ckbAbcdeEmit(quiet,"ABCDE certification failed: runner_provenance_write_failed");return 1}
         return caseExit
     }
     ckbAbcdeRunCases(options, runRoot)
@@ -668,7 +895,7 @@ private func ckbAbcdeRunCases(options: CkbAbcdeRunnerOptions, runRoot: String): 
     var failed: Int64 = 0
     var caseIndex = options.caseStart
     while (caseIndex <= options.caseEnd) {
-        if(options.runMode=="certification"&&ckbAbcdeFrozenPointerDiagnostic(FileKnowledgeStore(options.ckbStore),ckbAbcdeReadText(options.frozenCandidateManifestPath))!="ok"){println("ABCDE certification blocked: frozen_candidate_store_drift_before_case");return 1}
+        if(options.runMode=="certification"&&ckbAbcdeFrozenPointerDiagnostic(FileKnowledgeStore(options.ckbStore),ckbAbcdeReadText(options.frozenCandidateManifestPath))!="ok"){ckbAbcdeEmit(options.internalQuiet,"ABCDE certification blocked: frozen_candidate_store_drift_before_case");return 1}
         let caseId = ckbAbcdeCaseId(caseIndex)
         let caseRoot = "${runRoot}/cases/${caseId}"
         ckbAbcdeEnsureDir(caseRoot)
@@ -685,7 +912,7 @@ private func ckbAbcdeRunCases(options: CkbAbcdeRunnerOptions, runRoot: String): 
         }
         ckbAbcdeWriteText("${caseRoot}/case-summary.json", ckbAbcdeRenderCaseSummary(options, runRoot, caseId, summaries))
         ckbAbcdeAppendText("${runRoot}/case-usage-summary.csv", ckbAbcdeRenderCaseUsageSummaryCsvRow(caseId, summaries) + "\n")
-        if(options.runMode=="certification"&&ckbAbcdeFrozenPointerDiagnostic(FileKnowledgeStore(options.ckbStore),ckbAbcdeReadText(options.frozenCandidateManifestPath))!="ok"){println("ABCDE certification blocked: frozen_candidate_store_drift_after_case");return 1}
+        if(options.runMode=="certification"&&ckbAbcdeFrozenPointerDiagnostic(FileKnowledgeStore(options.ckbStore),ckbAbcdeReadText(options.frozenCandidateManifestPath))!="ok"){ckbAbcdeEmit(options.internalQuiet,"ABCDE certification blocked: frozen_candidate_store_drift_after_case");return 1}
         caseIndex += 1
     }
     if (options.explicitRunMode && options.runMode == "development" && options.caseStart == 0 && options.caseEnd == 163) {
@@ -693,9 +920,9 @@ private func ckbAbcdeRunCases(options: CkbAbcdeRunnerOptions, runRoot: String): 
         if (!aggregate.ok) { failed += 1 }
     }
     ckbAbcdeWriteSummary(runRoot)
-    if(options.runMode=="certification"&&ckbFrozenCandidateManifestDiagnostic(FileKnowledgeStore(options.ckbStore),ckbAbcdeReadText(options.frozenCandidateManifestPath))!="ok"){println("ABCDE certification blocked: frozen_candidate_store_drift_at_end");return 1}
+    if(options.runMode=="certification"&&ckbFrozenCandidateManifestDiagnostic(FileKnowledgeStore(options.ckbStore),ckbAbcdeReadText(options.frozenCandidateManifestPath))!="ok"){ckbAbcdeEmit(options.internalQuiet,"ABCDE certification blocked: frozen_candidate_store_drift_at_end");return 1}
     let pass1GateOk = if(options.runMode=="certification"&&options.generationProtocol=="completion-only-v1"&&options.generateOnly){true}else{ckbAbcdeWritePass1GateArtifactsIfFullRun(options, runRoot)}
-    println("ABCDE run complete: ${runRoot}")
+    ckbAbcdeEmit(options.internalQuiet,"ABCDE run complete: ${runRoot}")
     if (failed > 0 || !pass1GateOk) { 1 } else { 0 }
 }
 
@@ -1186,7 +1413,9 @@ private func ckbAbcdeRunCaseGroup(options: CkbAbcdeRunnerOptions, runRoot: Strin
         if(installDiagnostic!="ok"){return "{\"caseId\":\"${caseId}\",\"group\":\"${group}\",\"status\":\"failed\",\"diagnostic\":\"${installDiagnostic}\"}"}
         if(options.generateOnly){
             let evidence="{\"answerHash\":\"${completion.answerHash}\",\"completionCount\":1,\"toolCallCount\":0,\"executionFeedbackCount\":0,\"interrupted\":false,\"generatedTokenCount\":1,\"checkpointRecovered\":false}"
-            ckbAbcdeWriteText("${groupRoot}/generation-evidence.json",evidence+"\n");ckbAbcdeWriteText("${groupRoot}/answer-freeze.json","{\"answerHash\":\"${completion.answerHash}\",\"sequence\":2}\n");return "{\"caseId\":\"${caseId}\",\"group\":\"${group}\",\"status\":\"frozen\",\"answerHash\":\"${completion.answerHash}\",\"completionCount\":1,\"toolCallCount\":0}"
+            ckbAbcdeWriteText("${groupRoot}/generation-evidence.json",evidence+"\n")
+            ckbAbcdeWriteText("${groupRoot}/answer-freeze.json","{\"answerHash\":\"${completion.answerHash}\",\"sequence\":2}\n")
+            return "{\"caseId\":\"${caseId}\",\"group\":\"${group}\",\"status\":\"frozen\",\"answerHash\":\"${completion.answerHash}\",\"completionCount\":1,\"toolCallCount\":0}"
         }
     }
 
@@ -1195,7 +1424,14 @@ private func ckbAbcdeRunCaseGroup(options: CkbAbcdeRunnerOptions, runRoot: Strin
     let frozenAnswerHash=benchmarkGapSha256(frozenAnswer)
     if(options.generationProtocol!="completion-only-v1"){ckbAbcdeWriteText("${groupRoot}/answer-freeze.json","{\"answerHash\":\"${frozenAnswerHash}\",\"verifierMounted\":false}\n")}
     var inject=CkbAbcdeCommandResult();var test=CkbAbcdeCommandResult()
-    if(options.runMode=="certification"&&options.generationProtocol=="completion-only-v1"&&options.evaluateFrozen){let evaluation=ckbAbcdeEvaluateFrozenCompletion(groupRoot,caseSrc,workspace,frozenAnswerHash,options.testSuites);inject.exitCode=if(evaluation.baseExecuted&&evaluation.plusExecuted){0}else{1};test.exitCode=if(evaluation.basePassed&&evaluation.plusPassed){0}else{1};test.stdout=evaluation.baseResult.stdout+evaluation.baseResult.stderr+evaluation.plusResult.stdout+evaluation.plusResult.stderr}else{inject=ckbAbcdeRunShell("cp ${ckbAbcdeShellQuote("${caseSrc}/tests/TestMain.cj")} ${ckbAbcdeShellQuote("${workspace}/src/main.cj")} && cp ${ckbAbcdeShellQuote("${caseSrc}/tests/cjpm.executable.toml")} ${ckbAbcdeShellQuote("${workspace}/cjpm.toml")}", "");if(inject.exitCode==0){test=ckbAbcdeRunShell("cjpm run", workspace)}}
+    if(options.runMode=="certification"&&options.generationProtocol=="completion-only-v1"&&options.evaluateFrozen){
+        let evaluation=ckbAbcdeEvaluateFrozenCompletion(groupRoot,caseSrc,workspace,frozenAnswerHash,options.testSuites)
+        inject.exitCode=if(evaluation.baseExecuted&&evaluation.plusExecuted){0}else{1}
+        test.exitCode=if(evaluation.basePassed&&evaluation.plusPassed){0}else{1};test.stdout=evaluation.baseResult.stdout+evaluation.baseResult.stderr+evaluation.plusResult.stdout+evaluation.plusResult.stderr
+    }else{
+        inject=ckbAbcdeRunShell("cp ${ckbAbcdeShellQuote("${caseSrc}/tests/TestMain.cj")} ${ckbAbcdeShellQuote("${workspace}/src/main.cj")} && cp ${ckbAbcdeShellQuote("${caseSrc}/tests/cjpm.executable.toml")} ${ckbAbcdeShellQuote("${workspace}/cjpm.toml")}", "")
+        if(inject.exitCode==0){test=ckbAbcdeRunShell("cjpm run", workspace)}
+    }
     ckbAbcdeWriteText("${groupRoot}/hidden-test-inject.stdout.log", inject.stdout)
     ckbAbcdeWriteText("${groupRoot}/hidden-test-inject.stderr.log", inject.stderr)
     ckbAbcdeWriteText("${groupRoot}/hidden-test-inject.log", inject.stdout + inject.stderr)
@@ -1263,7 +1499,9 @@ private func ckbAbcdeRenderStrictCertificationCase(options:CkbAbcdeRunnerOptions
     let probe=ckbAbcdeReadText("${groupRoot}/sandbox-probe.json");row.isolationEvidenceHash=benchmarkGapSha256(probe);row.answerHash=answerHash;row.transcriptHash=benchmarkGapSha256(transcript);row.testHash=benchmarkGapSha256(testLog);row.configHash=benchmarkGapSha256(ckbAbcdeReadText("${groupRoot}/mcp-config.json")+ckbAbcdeReadText("${groupRoot}/runtime-policy.json")+ckbAbcdeReadText(options.providerIdentityArtifactPath)+pairedEvidence);row.artifactHash=benchmarkGapSha256(row.answerHash+row.transcriptHash+row.testHash+row.configHash)
     let lowered=transcript.toAsciiLower();row.referenceExposure=if(violation.contains("reference")||lowered.contains("/reference")){1}else{0};row.hiddenTestExposure=if(violation.contains("test")||lowered.contains("/tests/")||lowered.contains("testmain.cj")){1}else{0};row.teacherExposure=if(violation.contains("teacher")||lowered.contains("cangjieteacher")||lowered.contains("teacher-solutions")){1}else{0};row.crossCaseExposure=if(violation.contains("cross_case")||ckbAbcdeTranscriptHasOtherCase(transcript,caseId)){1}else{0}
     let attempts=ckbAbcdeReadText("${groupRoot}/claude-attempts.jsonl");let restores=ckbAbcdeReadText("${groupRoot}/workspace-restores.jsonl");let attemptCount=ckbAbcdeClaudeAttemptCount(groupRoot);row.sampleAttemptCount=ckbAbcdeSampleAttemptCount(groupRoot);row.lastAuditedTransportAttempt=attemptCount;row.selectedBusinessSample=selected;row.transportAttemptCount=attemptCount;row.retryCount=if(attemptCount>0){attemptCount-1}else{0};row.unresolvedTransport=if(row.sampleAttemptCount==1){0}else{1};row.attemptLineageHash=ckbAbcdeAttemptLineageHash(attempts,restores);row.agentRetryCount=ckbAbcdeAgentRetryCount(attempts,attemptCount,row.sampleAttemptCount);row.retryUsed=ckbAbcdeBusinessRetryUsed(attempts,attemptCount,row.sampleAttemptCount);row.fallbackUsed=attempts.contains("\"fallbackUsed\":true")||lowered.contains("fallback_model");row.providerRetryCount=ckbAbcdeCountOccurrences(transcript,"provider_retry");row.sdkRetryCount=ckbAbcdeCountOccurrences(transcript,"sdk_retry");row.llmTurnCount=if(options.generationProtocol=="completion-only-v1"){1}else{ckbAbcdeParseClaudeUsageFromText(transcript,"transcript").llmTurnCount}
-    if(options.generationProtocol=="completion-only-v1"){try{let generation=JsonValue.fromStr(ckbAbcdeReadText("${groupRoot}/generation-evidence.json")).asObject();let freeze=JsonValue.fromStr(ckbAbcdeReadText("${groupRoot}/answer-freeze.json")).asObject();let base=JsonValue.fromStr(ckbAbcdeReadText("${groupRoot}/base-test-result.json")).asObject();let plus=JsonValue.fromStr(ckbAbcdeReadText("${groupRoot}/plus-test-result.json")).asObject();row.completionCount=ckbAbcdeStrictJsonInt(generation,"completionCount",0);row.toolCallCount=ckbAbcdeStrictJsonInt(generation,"toolCallCount",-1);row.executionFeedbackCount=ckbAbcdeStrictJsonInt(generation,"executionFeedbackCount",-1);row.answerFreezeSequence=ckbAbcdeStrictJsonInt(freeze,"sequence",0);let baseSequence=ckbAbcdeStrictJsonInt(base,"sequence",0);let plusSequence=ckbAbcdeStrictJsonInt(plus,"sequence",0);row.firstExecutionSequence=if(baseSequence<plusSequence){baseSequence}else{plusSequence};row.baseAnswerHash=ckbAbcdeStrictJsonString(base,"answerHash");row.plusAnswerHash=ckbAbcdeStrictJsonString(plus,"answerHash");row.basePassed=ckbAbcdeStrictJsonBool(base,"passed");row.plusPassed=ckbAbcdeStrictJsonBool(plus,"passed")}catch(_:Exception){}}
+    if(options.generationProtocol=="completion-only-v1"){
+        try{let generation=JsonValue.fromStr(ckbAbcdeReadText("${groupRoot}/generation-evidence.json")).asObject();let freeze=JsonValue.fromStr(ckbAbcdeReadText("${groupRoot}/answer-freeze.json")).asObject();let base=JsonValue.fromStr(ckbAbcdeReadText("${groupRoot}/base-test-result.json")).asObject();let plus=JsonValue.fromStr(ckbAbcdeReadText("${groupRoot}/plus-test-result.json")).asObject();row.completionCount=ckbAbcdeStrictJsonInt(generation,"completionCount",0);row.toolCallCount=ckbAbcdeStrictJsonInt(generation,"toolCallCount",-1);row.executionFeedbackCount=ckbAbcdeStrictJsonInt(generation,"executionFeedbackCount",-1);row.answerFreezeSequence=ckbAbcdeStrictJsonInt(freeze,"sequence",0);let baseSequence=ckbAbcdeStrictJsonInt(base,"sequence",0);let plusSequence=ckbAbcdeStrictJsonInt(plus,"sequence",0);row.firstExecutionSequence=if(baseSequence<plusSequence){baseSequence}else{plusSequence};row.baseAnswerHash=ckbAbcdeStrictJsonString(base,"answerHash");row.plusAnswerHash=ckbAbcdeStrictJsonString(plus,"answerHash");row.basePassed=ckbAbcdeStrictJsonBool(base,"passed");row.plusPassed=ckbAbcdeStrictJsonBool(plus,"passed")}catch(_:Exception){}
+    }
     let attemptArtifactsOk=ckbAbcdeAttemptArtifactsDiagnostic(groupRoot)=="ok";row.sandboxDeniedOutsideWorkspace=ckbAbcdeStrictSandboxProbeOk(probe,workspace,runtimeHome);row.verifierMountedAfterAnswerFreeze=ckbAbcdeStrictVerifierMountOk(ckbAbcdeReadText("${groupRoot}/verifier-mount.json"),answerHash);let completionMode=options.generationProtocol=="completion-only-v1";row.certificationPassAt1=(if(completionMode){row.basePassed&&row.plusPassed}else{unitPassAt1})&&attemptArtifactsOk&&(completionMode||(toolReady&&taskKnowledgeReady&&pairedEvidence!=""))&&violation=="none"&&row.observedModelVersion==row.expectedModelVersion&&row.sampleAttemptCount==1&&row.unresolvedTransport==0&&!row.retryUsed&&!row.fallbackUsed&&row.agentRetryCount==0&&row.providerRetryCount==0&&row.sdkRetryCount==0&&row.sandboxDeniedOutsideWorkspace&&row.verifierMountedAfterAnswerFreeze&&row.referenceExposure==0&&row.hiddenTestExposure==0&&row.teacherExposure==0&&row.crossCaseExposure==0&&row.llmTurnCount>0
     sealCkbCertificationEvidence(row);renderCkbCertificationEvidenceJson(row)
 }
@@ -1426,6 +1664,16 @@ private func ckbAbcdeRestoreLineageDiagnostic(restores:String,transportAttemptCo
     if(count!=transportAttemptCount-1){return "transport_restore_count_mismatch"};if(transportAttemptCount>1){for(attempt in 2..=transportAttemptCount){if(!seen.contains(attempt)){return "transport_restore_sequence_invalid"}}};"ok"
 }
 
+public func ckbAbcdeRestoreWorkspaceForRetry(workspace: String, authoritativeWorkspace: String, transportAttempt: Int64): String {
+    let beforeHash = benchmarkGapSha256(ckbAbcdeReadText("${workspace}/src/solution.cj"))
+    let authorityHash = benchmarkGapSha256(ckbAbcdeReadText("${authoritativeWorkspace}/src/solution.cj"))
+    let restored = ckbAbcdeRunShell("rm -rf ${ckbAbcdeShellQuote(workspace)} && cp -R ${ckbAbcdeShellQuote(authoritativeWorkspace)} ${ckbAbcdeShellQuote(workspace)}", "")
+    let afterHash = benchmarkGapSha256(ckbAbcdeReadText("${workspace}/src/solution.cj"))
+    let ok = restored.exitCode == 0 && afterHash == authorityHash
+    let base = "{\"transportAttempt\":${transportAttempt},\"restored\":${ok},\"beforeHash\":\"${beforeHash}\",\"authorityHash\":\"${authorityHash}\",\"afterHash\":\"${afterHash}\",\"diagnostic\":\"${if (ok) { "ok" } else { "workspace_restore_failed" }}\"}"
+    base.replace("}", ",\"evidenceHash\":\"${benchmarkGapSha256(base)}\"}")
+}
+
 public func ckbAbcdeRunFakeTransportRetryForTest(root:String,workspace:String,authoritativeWorkspace:String,frozenPointerPath:String,exitCodes:Array<Int64>,diagnostics:Array<String>,transcripts:Array<String>,expectedModel:String,retryBudget:Int64):String{
     if(exitCodes.size!=diagnostics.size||exitCodes.size!=transcripts.size||retryBudget<0){return "{\"diagnostic\":\"fake_transport_input_invalid\"}"}
     ckbAbcdeEnsureDir(root);let pointerBefore=benchmarkGapSha256(ckbAbcdeReadText(frozenPointerPath));var attempts="";var restores="";var attemptCount:Int64=0;var sampleCount:Int64=0
@@ -1438,16 +1686,6 @@ public func ckbAbcdeRunFakeTransportRetryForTest(root:String,workspace:String,au
     }
     let pointerAfter=benchmarkGapSha256(ckbAbcdeReadText(frozenPointerPath));let lineage=ckbAbcdeAttemptLineageDiagnostic(attempts,restores,attemptCount,sampleCount);ckbAbcdeWriteText("${root}/fake-attempts.jsonl",attempts);ckbAbcdeWriteText("${root}/fake-restores.jsonl",restores)
     "{\"transportAttemptCount\":${attemptCount},\"sampleAttemptCount\":${sampleCount},\"retryCount\":${if(attemptCount>0){attemptCount-1}else{0}},\"lineageDiagnostic\":\"${lineage}\",\"attemptLineageHash\":\"${ckbAbcdeAttemptLineageHash(attempts,restores)}\",\"frozenPointerBeforeHash\":\"${pointerBefore}\",\"frozenPointerAfterHash\":\"${pointerAfter}\",\"frozenPointerUnchanged\":${pointerBefore==pointerAfter}}"
-}
-
-public func ckbAbcdeRestoreWorkspaceForRetry(workspace: String, authoritativeWorkspace: String, transportAttempt: Int64): String {
-    let beforeHash = benchmarkGapSha256(ckbAbcdeReadText("${workspace}/src/solution.cj"))
-    let authorityHash = benchmarkGapSha256(ckbAbcdeReadText("${authoritativeWorkspace}/src/solution.cj"))
-    let restored = ckbAbcdeRunShell("rm -rf ${ckbAbcdeShellQuote(workspace)} && cp -R ${ckbAbcdeShellQuote(authoritativeWorkspace)} ${ckbAbcdeShellQuote(workspace)}", "")
-    let afterHash = benchmarkGapSha256(ckbAbcdeReadText("${workspace}/src/solution.cj"))
-    let ok = restored.exitCode == 0 && afterHash == authorityHash
-    let base = "{\"transportAttempt\":${transportAttempt},\"restored\":${ok},\"beforeHash\":\"${beforeHash}\",\"authorityHash\":\"${authorityHash}\",\"afterHash\":\"${afterHash}\",\"diagnostic\":\"${if (ok) { "ok" } else { "workspace_restore_failed" }}\"}"
-    base.replace("}", ",\"evidenceHash\":\"${benchmarkGapSha256(base)}\"}")
 }
 
 private func ckbAbcdePublishClaudeSampleArtifacts(groupRoot: String, transportAttempt: Int64): Unit {
@@ -1515,7 +1753,6 @@ private func ckbAbcdeCertificationSandboxProbe(profilePath:String,workspace:Stri
     let result=CkbAbcdeCommandResult();result.exitCode=raw.exitCode;result.stderr=raw.stderr;result.stdout="{\"ok\":${raw.exitCode==0},\"stdinReadable\":${raw.exitCode==0},\"runtimeTempMarkersPassed\":${raw.exitCode==0},\"runtimeTempMarkersCleaned\":${raw.exitCode==0},\"archiverReady\":${raw.exitCode==0},\"minimalBuildPassed\":${raw.exitCode==0},\"deniedExternalTemp\":${raw.exitCode==0},\"deniedTempSibling\":${raw.exitCode==0},\"deniedOutsideWorkspace\":${raw.exitCode==0},\"deniedTests\":${raw.exitCode==0},\"deniedReference\":${raw.exitCode==0},\"deniedTeacher\":${raw.exitCode==0},\"deniedStore\":${deniedStore},\"workspaceCanonical\":\"${ckbAbcdeJsonEscape(try{canonicalize(Path(workspace)).toString()}catch(_:Exception){""})}\",\"runtimeHomeCanonical\":\"${ckbAbcdeJsonEscape(try{canonicalize(Path(runtimeHome)).toString()}catch(_:Exception){""})}\"}\n";result
 }
 public func ckbAbcdeCertificationSandboxProbeForTest(profilePath:String,workspace:String,runtimeHome:String,caseSrc:String,ckbStore!:String=""):CkbAbcdeCommandResult{ckbAbcdeCertificationSandboxProbe(profilePath,workspace,runtimeHome,caseSrc,ckbStore)}
-
 public func ckbAbcdeDevelopmentSandboxProfile(group:String,workspace:String,runtimeHome:String,ckbBin:String,ckbConfig:String,ckbStore:String,caseSrc:String,docsRoot:String,cangjieHome:String,sdkRoot:String,claudeRequested:String,claudeCanonical:String):String{
     let w=ckbAbcdeSandboxPath(workspace);let h=ckbAbcdeSandboxPath(runtimeHome);let bin=ckbAbcdeSandboxPath(ckbBin);let config=ckbAbcdeSandboxPath(ckbConfig);let store=ckbAbcdeSandboxPath(ckbStore);let sdk=ckbAbcdeSandboxPath(cangjieHome);let macSdk=ckbAbcdeSandboxPath(sdkRoot);let tests=ckbAbcdeSandboxPath("${caseSrc}/tests");let reference=ckbAbcdeSandboxPath("${caseSrc}/translation");let teacher=ckbAbcdeSandboxPath("/Users/l3gi0n/work/workspace_cangjie/CangjieTeacher")
     let docs=if(group==CkbAbcdeGroups.E){" (subpath \"${ckbAbcdeSandboxPath(docsRoot)}\")"}else{""}
@@ -1727,7 +1964,6 @@ private func ckbAbcdePublishLastAuditedCertificationArtifacts(groupRoot:String,a
     ckbAbcdeWriteText("${groupRoot}/sandbox-probe.json",ckbAbcdeReadText("${groupRoot}/sandbox-probe.attempt-${attempt}.json"));ckbAbcdeWriteText("${groupRoot}/session-id.txt",ckbAbcdeReadText("${groupRoot}/session-id.attempt-${attempt}.txt"))
 }
 public func ckbAbcdePublishLastAuditedCertificationArtifactsForTest(groupRoot:String,attempt:Int64):Unit{ckbAbcdePublishLastAuditedCertificationArtifacts(groupRoot,attempt)}
-
 private func ckbAbcdeMergedClaudeAttemptText(groupRoot: String, prefix: String, suffix: String, attemptCount: Int64): String {
     let out = StringBuilder()
     for (attempt in 1..=attemptCount) {

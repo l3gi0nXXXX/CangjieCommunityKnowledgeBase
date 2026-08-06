@@ -91,7 +91,9 @@ public class CkbReproRunnerInputs {
 }
 
 public interface CkbReproRunnerInvoker {
-    func run(args: Array<String>): Int64
+    func generate(args: Array<String>, runRoot: String): (Int64, String)
+    func evaluate(args: Array<String>, runRoot: String,
+        expectedGenerationSeal: String): Int64
 }
 
 public class CkbReproPreflightCliOptions {
@@ -1071,7 +1073,9 @@ public func buildCkbReproRunnerArgs(reference: CkbReproReferenceManifest,
         "--provider-identity-artifact", inputs.providerIdentityArtifactPath,
         "--frozen-candidate-manifest", inputs.frozenCandidateManifestPath,
         "--certification-preflight", inputs.certificationPreflightPath,
-        "--certification-run-manifest", inputs.certificationRunManifestPath
+        "--certification-run-manifest", inputs.certificationRunManifestPath,
+        "--generation-protocol", "completion-only-v1",
+        "--samples-per-case", "1"
     ]
     let result = p6Success()
     result.canonicalJson = p6ArgsIdentity(args)
@@ -1086,7 +1090,15 @@ public func runCkbReproCertifiedStudent(reference: CkbReproReferenceManifest,
     if (!preflight.ok || !preflight.startAllowed) { return 1 }
     let built = buildCkbReproRunnerArgs(reference, lock, inputs)
     if (!built[0].ok) { return 1 }
-    runner.run(built[1])
+    let generation = ArrayList<String>()
+    generation.add(all: built[1]); generation.add("--generate-only")
+    let runRoot = Path(inputs.runsRoot).join(inputs.runId).toString()
+    let generated = runner.generate(generation.toArray(), runRoot)
+    if (generated[0] != 0 || !p6HashValid(generated[1])) { return 1 }
+    let evaluation = ArrayList<String>()
+    evaluation.add(all: built[1]); evaluation.add("--evaluate-frozen")
+    evaluation.add("--test-suites"); evaluation.add("base,plus")
+    runner.evaluate(evaluation.toArray(), runRoot, generated[1])
 }
 
 private func renderCkbCertifiedRunInput(lock: CkbReproEnvironmentLock): String {
@@ -1419,7 +1431,11 @@ private func p6ProbeActualConfiguration(target: CkbReproEnvironmentLock,
     if (authorityRead[0] != "ok") { return "environment_probe_input_missing" }
     let authorityBytes = authorityRead[1]
     let authority = parseCkbAuthorityDeliveryManifest(authorityBytes)
-    if (!authority[0].ok || !selectCkbAuthorityDeliveryMode(authority[1]).ok) {
+    let authorityBundlePath = p6ProbeCanonicalInputPath(
+        "CKB_REPRO_AUTHORITY_BUNDLE", repositoryRoot)
+    if (!authority[0].ok || authorityBundlePath == "" ||
+        ckbReproProbeAuthorityDelivery(authorityBytes, datasetBytes,
+            authorityBundlePath) != "ok") {
         return "environment_probe_authority_invalid"
     }
     if (!exists(Path("/usr/bin/sandbox-exec"))) {
@@ -1453,6 +1469,19 @@ private func p6ProbeActualConfiguration(target: CkbReproEnvironmentLock,
     if (compositionRead[0] != "ok" ||
         p6Hash(compositionRead[1]) != target.compositionManifestHash) {
         return "environment_probe_composition_authority_invalid"
+    }
+    "ok"
+}
+
+public func ckbReproProbeAuthorityDelivery(deliveryBytes: Array<UInt8>,
+    datasetBytes: Array<UInt8>, bundlePath: String,
+    policy!: CkbAuthorityTrustPolicy = ckbHumanEvalAuthorityTrustPolicy(),
+    backend!: CkbReleaseArchiveBackend = CkbPortableReleaseArchiveBackend()):
+    String {
+    if (bundlePath == "" ||
+        !validateCkbExecutionAuthorityDelivery(deliveryBytes, datasetBytes,
+            bundlePath, policy: policy, backend: backend).ok) {
+        return "environment_probe_authority_invalid"
     }
     "ok"
 }

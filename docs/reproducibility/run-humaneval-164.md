@@ -1,116 +1,162 @@
 # 运行真实 HumanEval 164
 
-状态：W7 portable 参考运行已完成并冻结。
+> 当前状态：仅完成脚手架后供维护者手工执行。未获得明确授权前，不得运行本手册中的 `run-certify` 命令，不得启动 Student 模型。
 
-## 测试目标
+正式执行前必须完成 [`freeze-humaneval-authority-delivery.md`](freeze-humaneval-authority-delivery.md)。认证入口只能使用 production `ckb-repro-verify --mode run-certify`；不得用独立 `cangjie-certification-preflight` 加直接 `cangjie-eval-abcde` 绕过 authority/environment/composition 门禁。
 
-目的：在固定知识、authority、provider、prompt、sandbox、MCP 和预算身份下执行 164 个独立样本；每个样本只有一个业务首样本。
+## 验收目标
 
-## 测试结论怎么判定
+- 固定 164 个 case，Group D，completion-only，每题恰好一个业务样本。
+- production P8 内部先执行 `--generate-only`，成功后再执行 `--evaluate-frozen --test-suites base,plus`。
+- 冻结评测阶段不调用模型；生成失败时不得启动评测阶段。
+- 最终 base 和 plus 都是 164/164；unresolved、retry、fallback、协议违规、重复和缺失全部为 0。
 
-| 项目 | W7 结果 |
-|---|---|
-| total | 164 |
-| rawPassed | 160 |
-| strictPassed / strictFailed | 158 / 6 |
-| businessFailed | 2 |
-| protocolInvalid | 2 |
-| transportUnresolved | 2 |
-| 发布门槛 | strict >= 151 |
-
-通过标准：结果完整唯一且身份 hash 与 preflight 一致。本次 158/164 达到门槛；用户接受 2 个 unresolved transport，不再重试。
-
-失败处理：新运行中的 transport 只按冻结预算处理；业务失败保留，不跨运行拼接。
-
-## 重要边界
-
-verifier 在答案冻结后运行，不进入 Student workspace、知识 store 或 MCP。门禁失败后不得继续 Runner 或发布。
-
-## 第 1 步：创建独立运行目录
-
-目的：隔离本轮产物。
-
-工作目录：任意目录。
-
-命令：
+## 1. 准备冻结输入
 
 ```bash
-export CKB_ROOT="${CKB_ROOT:?set CKB_ROOT}"
-export REPRO_ROOT="${REPRO_ROOT:-${TMPDIR:-/tmp}/ckb repro humaneval}"
-export RUN_ROOT="${REPRO_ROOT}/run-$(date -u +%Y%m%dT%H%M%SZ)"
-mkdir -p "${RUN_ROOT}"
-echo 'run_root_created=yes'
+set -euo pipefail
+: "${CKB_ROOT:?set repository root}"
+: "${CKB_COMPOSITION_MANIFEST:?set frozen runtime composition manifest}"
+: "${CKB_WORK_ROOT:?set a new path that does not exist}"
+: "${CKB_RUNTIME_ROOT:?set a new path that does not exist}"
+: "${CKB_QDRANT_ROOT:?set a new isolated path that does not exist}"
+: "${CKB_SOURCE_ROOT:?set a new materialization path that does not exist}"
+: "${CKB_CANDIDATE_ROOT:?set frozen candidate root}"
+: "${CKB_P0_MANIFEST:?}"
+: "${CKB_P1_SCORE_CONTRACT:?}"
+: "${CKB_P2_LOGICAL_SNAPSHOT:?}"
+: "${CKB_P3_QDRANT_SNAPSHOT:?}"
+: "${CKB_P4_BUILD_PROOF:?}"
+: "${CKB_P6_ENVIRONMENT_LOCK:?}"
+: "${RUN_CANDIDATE_COMMIT:?set exact clean candidate commit}"
+: "${CKB_REPRO_PROMPT_INPUT:?set frozen prompt input whose hash matches the environment lock}"
+: "${GLM_API_KEY:?set the credential named by glmCredentialEnv in the environment lock}"
+: "${CKB_EMBEDDING_TOKEN:?set the credential named by embeddingCredentialEnv in the environment lock}"
+: "${CKB_REPRO_QDRANT_IMAGE:?set the frozen image reference whose ID matches qdrantImageDigest}"
+
+cd "$CKB_ROOT"
+source /Users/l3gi0n/cangjie100/envsetup.sh
+export DYLD_LIBRARY_PATH="/opt/homebrew/opt/openssl@3/lib:${DYLD_LIBRARY_PATH:-}"
+export cjHeapSize=4GB
+
+# The actual-environment probe reads these values; derive identities from the
+# frozen environment lock instead of retyping them.
+export CKB_REPRO_REPOSITORY_ROOT="$(pwd -P)"
+export CKB_ROOT="$CKB_REPRO_REPOSITORY_ROOT"
+test "$(git rev-parse --show-toplevel)" = "$CKB_REPRO_REPOSITORY_ROOT"
+test -z "$(git status --porcelain)"
+export CKB_REPRO_RUN_CRITICAL_MANIFEST="$CKB_REPRO_REPOSITORY_ROOT/reproducibility/manifests/run-critical-files.json"
+export CKB_REPRO_PROMPT_INPUT="$(cd "$(dirname "$CKB_REPRO_PROMPT_INPUT")" && pwd -P)/$(basename "$CKB_REPRO_PROMPT_INPUT")"
+export CKB_REPRO_COMPOSITION_MANIFEST="$(cd "$(dirname "$CKB_COMPOSITION_MANIFEST")" && pwd -P)/$(basename "$CKB_COMPOSITION_MANIFEST")"
+export CKB_COMPOSITION_MANIFEST="$CKB_REPRO_COMPOSITION_MANIFEST"
+export CKB_REPRO_CJC_EXECUTABLE="$(cd "$(dirname "$(command -v cjc)")" && pwd -P)/$(basename "$(command -v cjc)")"
+export GLM_PROVIDER="$(jq -er '.glmProvider' "$CKB_P6_ENVIRONMENT_LOCK")"
+export GLM_BASE_URL="$(jq -er '.glmBaseUrl' "$CKB_P6_ENVIRONMENT_LOCK")"
+export GLM_MODEL="$(jq -er '.glmModel' "$CKB_P6_ENVIRONMENT_LOCK")"
+export GLM_CREDENTIAL_ENV="$(jq -er '.glmCredentialEnv' "$CKB_P6_ENVIRONMENT_LOCK")"
+export EMBEDDING_PROVIDER="$(jq -er '.embeddingProvider' "$CKB_P6_ENVIRONMENT_LOCK")"
+export EMBEDDING_MODEL="$(jq -er '.embeddingModel' "$CKB_P6_ENVIRONMENT_LOCK")"
+export EMBEDDING_DIMENSION="$(jq -er '.embeddingDimension' "$CKB_P6_ENVIRONMENT_LOCK")"
+export EMBEDDING_CREDENTIAL_ENV="$(jq -er '.embeddingCredentialEnv' "$CKB_P6_ENVIRONMENT_LOCK")"
+export CKB_REPRO_MCP_COMMAND="$(jq -er '.mcpCommand' "$CKB_P6_ENVIRONMENT_LOCK")"
+export CKB_REPRO_MCP_TRANSPORT="$(jq -er '.mcpTransport' "$CKB_P6_ENVIRONMENT_LOCK")"
+
+test "$GLM_CREDENTIAL_ENV" = GLM_API_KEY
+test "$EMBEDDING_CREDENTIAL_ENV" = CKB_EMBEDDING_TOKEN
+test "$(docker image inspect --format='{{.Id}}' "$CKB_REPRO_QDRANT_IMAGE")" = \
+  "$(jq -er '.qdrantImageDigest' "$CKB_P6_ENVIRONMENT_LOCK")"
+test "$(shasum -a 256 "$CKB_REPRO_PROMPT_INPUT" | awk '{print "sha256:"$1}')" = \
+  "$(jq -er '.promptHash' "$CKB_P6_ENVIRONMENT_LOCK")"
+for root in "$CKB_WORK_ROOT" "$CKB_RUNTIME_ROOT" "$CKB_QDRANT_ROOT" "$CKB_SOURCE_ROOT"; do
+  test ! -e "$root"
+done
+test -d "$CKB_CANDIDATE_ROOT"
+test -n "$(find "$CKB_CANDIDATE_ROOT" -mindepth 1 -maxdepth 1 -print -quit)"
 ```
 
-预期输出：
-
-```text
-run_root_created=yes
-```
-
-通过标准：`${RUN_ROOT}` 是新目录且不在生产 store 内。
-
-失败处理：选择新目录，不复用已有结果拼接样本。
-
-## 第 2 步：执行认证 preflight
-
-目的：在模型、知识或评测 identity 漂移时阻止 Runner。
-
-工作目录：`${CKB_ROOT}`。
-
-命令：
+三个 authority 环境变量必须是绝对 canonical 路径：
 
 ```bash
-cd "${CKB_ROOT}"
-source "${CANGJIE_SDK_ROOT:?set CANGJIE_SDK_ROOT}/envsetup.sh"
-cjpm run --skip-build --run-args   "cangjie-certification-preflight --control-manifest ${CERTIFICATION_CONTROL:?set frozen control manifest}"
+: "${CKB_REPRO_AUTHORITY_DELIVERY:?set authority-delivery.json}"
+: "${CKB_REPRO_DATASET_MANIFEST:?set frozen 164 authority manifest}"
+: "${CKB_REPRO_AUTHORITY_BUNDLE:?set CKBREL01 authority bundle}"
+export CKB_REPRO_AUTHORITY_DELIVERY CKB_REPRO_DATASET_MANIFEST \
+  CKB_REPRO_AUTHORITY_BUNDLE CKB_REPRO_REPOSITORY_ROOT \
+  CKB_REPRO_RUN_CRITICAL_MANIFEST CKB_REPRO_PROMPT_INPUT \
+  CKB_REPRO_COMPOSITION_MANIFEST GLM_PROVIDER GLM_BASE_URL GLM_MODEL \
+  CKB_REPRO_CJC_EXECUTABLE CKB_REPRO_QDRANT_IMAGE \
+  GLM_CREDENTIAL_ENV EMBEDDING_PROVIDER EMBEDDING_MODEL \
+  EMBEDDING_DIMENSION EMBEDDING_CREDENTIAL_ENV CKB_REPRO_MCP_COMMAND \
+  CKB_REPRO_MCP_TRANSPORT
+
+cjpm run --skip-build --run-args \
+  "ckb-authority-bundle verify --authority $CKB_REPRO_DATASET_MANIFEST --delivery-root $(dirname "$CKB_REPRO_AUTHORITY_DELIVERY") --json" | \
+  jq -e '.ok == true and .presentCount == 164'
 ```
 
-预期输出：preflight 允许启动，所有 identity 校验通过。
+通过标准：authority verify 退出 0；`work/runtime/qdrant/source` 四个路径在命令启动前均不存在（即使是空目录也会被拒绝）；candidate root 已存在、非空且已冻结；source 和 Qdrant 的冻结输入来自 composition 中的 source/snapshot 工件，不得预先写入上述运行路径。
 
-通过标准：退出码为 0；knowledgeVersion 为 `ckb-first-init-1-0-0-candidate`。
+## 2. 执行 production P8 认证
 
-失败处理：输出 `model_identity_mismatch_stop`、`leakage_finding_stop` 或其他门禁诊断时停止。
-
-## 第 3 步：运行 164 个样本
-
-目的：从 000 到 163 各产生一个业务首样本。
-
-工作目录：`${CKB_ROOT}`。
-
-命令：
+以下命令会启动真实 Student；只能在维护者明确授权后执行：
 
 ```bash
-cjpm run --skip-build --run-args   "cangjie-eval-abcde --control-manifest ${CERTIFICATION_CONTROL} --run-root ${RUN_ROOT}"
+P8_JSON="$(cjpm run --skip-build --run-args \
+  "ckb-repro-verify --mode run-certify --composition-manifest $CKB_REPRO_COMPOSITION_MANIFEST --work-root $CKB_WORK_ROOT --runtime-root $CKB_RUNTIME_ROOT --qdrant-root $CKB_QDRANT_ROOT --source-root $CKB_SOURCE_ROOT --candidate-root $CKB_CANDIDATE_ROOT --repository-root $CKB_REPRO_REPOSITORY_ROOT --p0-manifest $CKB_P0_MANIFEST --p1-score-contract $CKB_P1_SCORE_CONTRACT --p2-logical-snapshot $CKB_P2_LOGICAL_SNAPSHOT --p3-qdrant-snapshot $CKB_P3_QDRANT_SNAPSHOT --p4-build-proof $CKB_P4_BUILD_PROOF --p6-environment-lock $CKB_P6_ENVIRONMENT_LOCK --run-candidate-commit $RUN_CANDIDATE_COMMIT --json")"
+printf '%s\n' "$P8_JSON" | jq -e '
+  .ok == true and .strictPassed == 164 and .totalCases == 164 and
+  .transportUnresolved == 0'
 ```
 
-预期输出：164 个唯一结果和本轮汇总。
+通过标准：P8 先完成 authority/environment/run-critical/composition/portable candidate 门禁，再执行生成与冻结评测两阶段；生成成功后必须产生 `generation-phase-seal.json`，冻结评测启动前必须按该清单验证全部既有 run 文件，篡改、新增文件或符号链接都必须阻断；stdout 只包含最终 P8 JSON，最终 JSON 精确满足 164/164。
 
-通过标准：不跨 run 拼接；如 transport 预算耗尽，记录 `transport_unresolved_stop` 并如实计入本轮。
+失败处理：任何 preflight、restore、rebuild、generation 或 frozen evaluation 失败都停止当前 run。不得修改知识后续跑同一 run，不得跨 run 拼接结果。
 
-失败处理：不得修改知识后在同一认证 run 重试业务失败。
+## 3. 独立严格 gate
 
-## 第 4 步：核对冻结参考结果
+从冻结 composition 的 `runner_inputs` 取得 `runsRoot` 和 `runId`，设置：
 
-目的：确认公开 W7 数值没有被后续运行覆盖。
+```bash
+: "${CERT_RUN_ROOT:?set exact runsRoot/runId from frozen runner inputs}"
+GATE_JSON="$(cjpm run --skip-build --run-args \
+  "cangjie-humaneval-pass1-gate --run-root $CERT_RUN_ROOT --manifest $CERT_RUN_ROOT/authority.jsonl --groups D --protocol completion-only-v1 --expected-total 164 --expected-pass 164 --format json")"
+printf '%s\n' "$GATE_JSON" | jq -e '
+  .ok == true and .releaseGate == "pass" and
+  .expectedTotal == 164 and .expectedPass == 164 and
+  .manifestCaseCount == 164 and .parsedResultRows == 164 and
+  .baseMetricName == "strict_ckb_skill_base_pass_at_1" and
+  .plusMetricName == "strict_ckb_skill_plus_pass_at_1" and
+  .basePassed == 164 and .plusPassed == 164 and
+  .certificationStatus == "passed" and
+  (.diagnostics|length) == 0 and (.remainingGaps|length) == 0 and
+  (.groups|length) == 1 and .groups[0].group == "D-ckb-mcp-http" and
+  .groups[0].total == 164 and .groups[0].passAt1 == 164 and
+  .groups[0].duplicates == 0 and .groups[0].missing == 0 and
+  .groups[0].protocolViolations == 0 and
+  .groups[0].transportParityFailures == 0'
 
-工作目录：`${CKB_ROOT}`。
+jq -s -e 'length == 164 and all(.[];
+  .certificationPassAt1 == true and .basePassed == true and
+  .plusPassed == true and .sampleAttemptCount == 1 and
+  .unresolvedTransport == 0 and .retryUsed == false and
+  .fallbackUsed == false)' "$CERT_RUN_ROOT/results.jsonl"
+```
 
-命令：
+通过标准：两个 `jq -e` 都退出 0。
+
+## 4. 历史 W7 只读不变性检查
+
+历史 W7 的 158/164 仅用于证明旧 reference 未被覆盖，不是当前 100% 目标的验收门槛：
 
 ```bash
 jq -e '.strictPassed == 158 and .rawPassed == 160 and
        .businessFailed == 2 and .protocolInvalid == 2 and
-       .transportUnresolved == 2'   reproducibility/manifests/reference-run.json >/dev/null
-echo "exit=$?"
+       .transportUnresolved == 2' \
+  reproducibility/manifests/reference-run.json >/dev/null
 ```
 
-预期输出：
+历史检查失败时停止发布，不得手工修改 reference。
 
-```text
-exit=0
-```
+## 5. 收尾
 
-通过标准：退出码为 0。
-
-失败处理：停止发布，不手工修改冻结结果。
+停止 P8 所属生命周期后确认没有残留 CKB、Qdrant 或 Runner 进程；保留本轮不可变证据并清理 P8 明确拥有的临时 root。不得删除生产 store、用户配置或其他 run。

@@ -19,6 +19,7 @@ public interface CkbReproMainCliAdapter {
     func runP4(args: Array<String>): CkbReproMainCliResult
     func runPublicEvidence(args: Array<String>): CkbReproMainCliResult
     func runPreflight(args: Array<String>): CkbReproMainCliResult
+    func runAuthorityBundle(args: Array<String>): CkbReproMainCliResult
     func runBundle(args: Array<String>): CkbReproMainCliResult
     func runPublishGate(args: Array<String>): CkbReproMainCliResult
     func runP8(args: Array<String>): CkbReproMainCliResult
@@ -91,6 +92,10 @@ private class CkbReproProductionMainCliAdapter <: CkbReproMainCliAdapter {
         } else { renderCkbReproPreflightCliHuman(blocked, loaded[1]) }
         CkbReproMainCliResult(true, 1, output)
     }
+    public func runAuthorityBundle(args: Array<String>): CkbReproMainCliResult {
+        let execution = runCkbAuthorityBundleCli(args)
+        CkbReproMainCliResult(true, execution.exitCode, execution.output)
+    }
     public func runBundle(args: Array<String>): CkbReproMainCliResult {
         let options = parseCkbReproBundleCliArgs(args)
         if (!options.valid) {
@@ -148,6 +153,9 @@ public func executeCkbReproMainCli(command: String, args: Array<String>,
     }
     if (command == "ckb-repro-preflight") {
         return adapter.runPreflight(args)
+    }
+    if (command == "ckb-authority-bundle") {
+        return adapter.runAuthorityBundle(args)
     }
     if (command == "ckb-repro-bundle") {
         return adapter.runBundle(args)

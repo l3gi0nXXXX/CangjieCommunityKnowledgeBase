@@ -143,7 +143,7 @@ public func r7BuildRealRunnerProof(records: ArrayList<CkbCertifiedKnowledgeRecor
         "--provider-identity-artifact", canonicalize(providerPath).toString(),
         "--frozen-candidate-manifest", canonicalize(frozenPath).toString(),
         "--transport-retries", "1", "--model-timeout-seconds", "30"]
-    result.runnerExitCode = runCangjieEvalAbcde(args)
+    result.runnerExitCode = runCangjieEvalAbcdeLegacyFixtureForTest(args)
     let runRoot = runsRoot.join(runId)
     if (result.runnerExitCode != 0) { result.diagnostic = "runner_failed"; return result }
     let gate = ckbStrictCertificationGateFromRunRoot(runRoot.toString(), authorityText)

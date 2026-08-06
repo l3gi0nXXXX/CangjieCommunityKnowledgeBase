@@ -32,6 +32,7 @@ public interface CkbReproMainCliAdapter {
     func runP4(args: Array<String>): CkbReproMainCliResult
     func runPublicEvidence(args: Array<String>): CkbReproMainCliResult
     func runPreflight(args: Array<String>): CkbReproMainCliResult
+    func runAuthorityBundle(args: Array<String>): CkbReproMainCliResult
     func runBundle(args: Array<String>): CkbReproMainCliResult
     func runPublishGate(args: Array<String>): CkbReproMainCliResult
     func runP8(args: Array<String>): CkbReproMainCliResult
@@ -104,6 +105,10 @@ private class CkbReproProductionMainCliAdapter <: CkbReproMainCliAdapter {
         } else { renderCkbReproPreflightCliHuman(blocked, loaded[1]) }
         CkbReproMainCliResult(true, 1, output)
     }
+    public func runAuthorityBundle(args: Array<String>): CkbReproMainCliResult {
+        let execution = runCkbAuthorityBundleCli(args)
+        CkbReproMainCliResult(true, execution.exitCode, execution.output)
+    }
     public func runBundle(args: Array<String>): CkbReproMainCliResult {
         let options = parseCkbReproBundleCliArgs(args)
         if (!options.valid) {
@@ -161,6 +166,9 @@ public func executeCkbReproMainCli(command: String, args: Array<String>,
     }
     if (command == "ckb-repro-preflight") {
         return adapter.runPreflight(args)
+    }
+    if (command == "ckb-authority-bundle") {
+        return adapter.runAuthorityBundle(args)
     }
     if (command == "ckb-repro-bundle") {
         return adapter.runBundle(args)
@@ -663,7 +671,7 @@ public func ckbCliMain(args: Array<String>): Int64 {
     println("  cangjie-benchmark-gap-staging-init --config <path> --store <empty-path> [--json]")
     println("  cangjie-candidate-runtime-materialize --source-store <absolute-canonical-path> --output-store <absolute-canonical-new-path> --candidate-version <version>")
     println("  ckb-logical-proof | ckb-portable-vector-build | ckb-qdrant-snapshot create|restore|verify | ckb-retrieval-parity --mode verify")
-    println("  ckb-repro-build | ckb-repro-promote --apply | ckb-repro-verify --mode run-certify|release-verify --composition-manifest <path> [--json]")
+    println("  ckb-authority-bundle seal|verify | ckb-repro-build | ckb-repro-promote --apply | ckb-repro-verify --mode run-certify|release-verify --composition-manifest <path> [--json]")
     println("Usage: cangjie_community_knowledge_base [--config <path>] [--store <path>] doctor | status | metrics | service | service-http | http-service | mcp-stdio | cangjie-clean-candidate-build (--dry-run|--apply) --source-store <path> --staging-store <path> --authority-store <path> [--atoms-store <path>] --candidate-version <version> [--json] | cangjie-initialize (--dry-run|--apply) --docs-root <path> --std-root <path> --stdx-root <path> --eval-root <path> | cangjie-atom-selection-build --manifest <selection.jsonl> --teacher-export-root <path> --output <atoms.jsonl> --proof <proof.json> | cangjie-candidate-precert-seal --selected-atoms <normalized-candidate.jsonl> --output-root <dir> | cangjie-humaneval-manifest-build --dataset-root <path> --output <authority.jsonl> | cangjie-eval-classifier-run --run-root <path> --run-id <id> --transport C|D --output-root <path> --classifier-a-executable <path> --classifier-a-provider <id> --classifier-a-model <model> --classifier-a-id <id> --classifier-b-executable <path> --classifier-b-provider <id> --classifier-b-model <model> --classifier-b-id <id> --timeout-seconds <n> | cangjie-eval-development-close --run-root <path> --run-id <id> --transport C|D --classifier-a-root <path> --classifier-b-root <path> | cangjie-certification-preflight --control-manifest <path> | cangjie-frozen-candidate-seal --control-manifest <path> --store <path> | cangjie-certified-production-publish --control-manifest <path> --store <path> | cangjie-landing-status [--format json] | service-once <command> | start | stop | restart | sync-once | sync-live (--dry-run|--apply) | source_analysis repo=<owner/repo> ref=<ref> path=<path> | native-http-smoke <url> | cangjie-corpus-status | cangjie-knowledge-pack <task> | cangjie-api-search <query> | cangjie-syntax-query <query> | cangjie-cookbook <task> | cangjie-diagnose <compiler-output> | cangjie-llms [task] | cangjie-context-pack <task> | cangjie-eval-summary <manifest.jsonl> | cangjie-eval-abcde [--preflight-only] | cangjie-eval-knowledge-audit --run-root <path> | cangjie-humaneval-pass1-gate --run-root <path> | cangjie-knowledge-release-gate --run-root <path> --manifest <manifest.jsonl> | cangjie-typed-ingest-smoke --docs-root <path> --case-root <path> | cangjie-serving-feed-smoke | cangjie-serving-query-smoke | cangjie-update-promotion-smoke | cangjie-abcde-parity-smoke | cangjie-humaneval-pass1-gate-smoke | vector-bootstrap [--json] | vector-clean-derived [--force] [--json] | vector-reconcile [--force] [--json] | routine-repair --force [--json] | ollama-embedding-benchmark [--json] [--sample-size <n>] | scheduler-run [--force-all|--task <name> [--force]] [--json] | rebuild-index | backup <path> | restore <path> | query <text> | evidence <text> | schema")
     2
 }

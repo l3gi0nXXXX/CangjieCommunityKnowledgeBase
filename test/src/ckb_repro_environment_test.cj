@@ -1,7 +1,8 @@
 package cangjie_community_knowledge_base_test
 
 import std.collection.ArrayList
-import std.fs.{Directory, File, Path, canonicalize, exists, remove}
+import std.fs.{Directory, File, Path, canonicalize, exists, remove, rename}
+import std.process.launch
 import std.unittest.*
 import std.unittest.testmacro.*
 import stdx.encoding.json.JsonValue
@@ -9,11 +10,59 @@ import stdx.encoding.json.JsonValue
 private class P6FakeRunner <: CkbReproRunnerInvoker {
     public var count: Int64 = 0
     public var args: Array<String> = Array<String>()
+    public var history: ArrayList<Array<String>> = ArrayList<Array<String>>()
+    public var failAtCall: Int64 = 0
+    public var evaluatedSeal: String = ""
+    public var generationSeal: String =
+        "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
     public init() {}
-    public func run(value: Array<String>): Int64 {
+    private func record(value: Array<String>): Int64 {
         this.count += 1
         this.args = value
-        0
+        this.history.add(value)
+        if (this.failAtCall == this.count) { 1 } else { 0 }
+    }
+    public func generate(value: Array<String>, runRoot: String):
+        (Int64, String) {
+        let code = this.record(value)
+        (code, if (code == 0) { this.generationSeal } else { "" })
+    }
+    public func evaluate(value: Array<String>, runRoot: String,
+        expectedGenerationSeal: String): Int64 {
+        this.evaluatedSeal = expectedGenerationSeal
+        this.record(value)
+    }
+}
+
+private class P6PartialAuthorityArchiveBackend <: CkbReleaseArchiveBackend {
+    private let delegate = CkbPortableReleaseArchiveBackend()
+    public func create(path: String,
+        values: ArrayList<CkbReleaseArchivePayload>): CkbReleaseArchiveOperation {
+        File.writeTo(Path(path), "partial archive 中文🙂".toArray())
+        CkbReleaseArchiveOperation()
+    }
+    public func enumerate(path: String): CkbReleaseArchiveListing {
+        this.delegate.enumerate(path)
+    }
+    public func readRegular(path: String, relative: String):
+        CkbReleaseArchiveRead {
+        this.delegate.readRegular(path, relative)
+    }
+    public func supportsStreaming(): Bool { this.delegate.supportsStreaming() }
+    public func createFromFiles(path: String,
+        values: ArrayList<CkbReleaseArchivePayload>): CkbReleaseArchiveOperation {
+        this.delegate.createFromFiles(path, values)
+    }
+    public func extractRegularToFile(path: String, relative: String,
+        output: String, size: Int64, hash: String): CkbReleaseArchiveOperation {
+        this.delegate.extractRegularToFile(path, relative, output, size, hash)
+    }
+    public func extractAllRegularToDirectory(path: String, output: String,
+        manifest: CkbLogicalSnapshotManifest): CkbReleaseArchiveOperation {
+        this.delegate.extractAllRegularToDirectory(path, output, manifest)
+    }
+    public func archiveHash(path: String): String {
+        this.delegate.archiveHash(path)
     }
 }
 
@@ -142,6 +191,9 @@ public class CkbReproEnvironmentTest {
         let critical = parseCkbRunCriticalFilesManifest(
             p6Read("../reproducibility/manifests/run-critical-files.json"))
         @Expect(critical[0].ok, true)
+        @Expect(String.fromUtf8(p6Read(
+            "../reproducibility/manifests/run-critical-files.json")).contains(
+            "src/ckb_repro_authority_bundle.cj"), true)
         let criticalContract = validateCkbRunCriticalFilesManifest(
             critical[1], "..", mode: "contract")
         let criticalExecution = validateCkbRunCriticalFilesManifest(
@@ -168,28 +220,279 @@ public class CkbReproEnvironmentTest {
             String.fromUtf8(authorityBytes))
         @Expect(authority.ok, true)
         @Expect(authority.rows.size, 164)
-        let bundled = p6BundledDelivery(authorityBytes, authority.datasetVersion)
+        let bundle = p6AuthorityBundleFixture(authorityBytes,
+            authority.datasetVersion, "positive")
+        let bundled = bundle.manifest
         let publicRebuild = p6PublicDelivery(authorityBytes,
             authority.datasetVersion)
         @Expect(selectCkbAuthorityDeliveryMode(bundled).diagnostic, "bundled")
         @Expect(selectCkbAuthorityDeliveryMode(publicRebuild).diagnostic,
             "public_rebuild")
         let bundledResult = buildCkbReproAuthorityBundle(bundled,
-            authorityBytes, "/tmp/ckb-p6/bundled", "/tmp/ckb-store",
-            "/tmp/ckb-student")
+            bundle.path, authorityBytes, "/tmp/ckb-p6/bundled",
+            "/tmp/ckb-store", "/tmp/ckb-student", policy: bundle.policy)
         let publicResult = buildCkbReproAuthorityFromPublicSource(publicRebuild,
             authorityBytes, "/tmp/ckb-p6/public", "/tmp/ckb-store",
             "/tmp/ckb-student")
         @Expect(bundledResult.ok, true)
-        @Expect(publicResult.ok, true)
+        @Expect(publicResult.diagnostic,
+            "authority_public_rebuild_not_executable")
         @Expect(bundledResult.presentCount, 164)
-        @Expect(publicResult.presentCount, 164)
-        @Expect(bundledResult.treeHash, publicResult.treeHash)
+        @Expect(ckbReproProbeAuthorityDelivery(
+            renderCkbAuthorityDeliveryManifest(bundled).toArray(),
+            authorityBytes, bundle.path, policy: bundle.policy), "ok")
+        @Expect(ckbAuthorityDeliveryReadyForExecution(publicRebuild), false)
         let publicAgain = parseCkbAuthorityDeliveryManifest(
             renderCkbAuthorityDeliveryManifest(publicRebuild).toArray())
         @Expect(publicAgain[0].ok, true)
         @Expect(renderCkbAuthorityDeliveryManifest(publicAgain[1]),
             renderCkbAuthorityDeliveryManifest(publicRebuild))
+    }
+
+    @TestCase
+    public func p6Ut02AuthorityBundleSealAndVerifyCliAreDeterministic(): Unit {
+        let root = Path("target/p6-authority-cli")
+        if (exists(root)) { remove(root, recursive: true) }
+        Directory.create(root, recursive: true)
+        let canonical = canonicalize(root).toString()
+        let authority = p6SyntheticAuthorityBytes()
+        let parsed = parseCangjieHumanEvalAuthorityManifest(
+            String.fromUtf8(authority))
+        let fixture = p6AuthorityBundleFixture(authority,
+            parsed.datasetVersion, "cli-materials")
+        let authorityPath = "${canonical}/authority-中文🙂.jsonl"
+        let sourceLockPath = "${canonical}/source-lock.json"
+        let releaseAssetPath = "${canonical}/HumanEvalPlus.jsonl.gz"
+        let releaseLicensePath = "${canonical}/release-LICENSE"
+        let evaluatorLicensePath = "${canonical}/evaluator-LICENSE"
+        File.writeTo(Path(authorityPath), authority)
+        File.writeTo(Path(sourceLockPath), fixture.sourceLock)
+        File.writeTo(Path(releaseAssetPath), fixture.releaseAsset)
+        File.writeTo(Path(releaseLicensePath), fixture.releaseLicense)
+        File.writeTo(Path(evaluatorLicensePath), fixture.evaluatorLicense)
+
+        let archiveA = "${canonical}/direct-a.tar.zst"
+        let archiveB = "${canonical}/direct-b.tar.zst"
+        let sealedA = sealCkbExecutionAuthorityDelivery(authority,
+            fixture.sourceLock, fixture.releaseAsset, fixture.releaseLicense,
+            fixture.evaluatorLicense, archiveA, policy: fixture.policy)
+        let sealedB = sealCkbExecutionAuthorityDelivery(authority,
+            fixture.sourceLock, fixture.releaseAsset, fixture.releaseLicense,
+            fixture.evaluatorLicense, archiveB, policy: fixture.policy)
+        @Expect(sealedA.ok, true)
+        @Expect(sealedB.ok, true)
+        @Expect(File.readFrom(Path(archiveA)), File.readFrom(Path(archiveB)))
+        @Expect(sealedA.canonicalJson, sealedB.canonicalJson)
+
+        let conflictArchive = "${canonical}/direct-conflict.tar.zst"
+        let conflictId = benchmarkGapSha256(
+            conflictArchive + fixture.policy.authorityHash).replace(
+                "sha256:", "")
+        let conflictRoot = Path(
+            "${conflictArchive}.seal-${conflictId}.tmp")
+        Directory.create(conflictRoot, recursive: false)
+        let conflict = sealCkbExecutionAuthorityDelivery(authority,
+            fixture.sourceLock, fixture.releaseAsset, fixture.releaseLicense,
+            fixture.evaluatorLicense, conflictArchive,
+            policy: fixture.policy)
+        @Expect(conflict.diagnostic, "authority_bundle_temporary_conflict")
+        @Expect(exists(Path(conflictArchive)), false)
+        remove(conflictRoot, recursive: true)
+        let partialArchive = "${canonical}/direct-partial.tar.zst"
+        let partial = sealCkbExecutionAuthorityDelivery(authority,
+            fixture.sourceLock, fixture.releaseAsset, fixture.releaseLicense,
+            fixture.evaluatorLicense, partialArchive,
+            policy: fixture.policy,
+            backend: P6PartialAuthorityArchiveBackend())
+        @Expect(partial.diagnostic, "authority_bundle_create_failed")
+        @Expect(exists(Path(partialArchive)), false)
+        let partialId = benchmarkGapSha256(
+            partialArchive + fixture.policy.authorityHash).replace(
+                "sha256:", "")
+        @Expect(exists(Path(
+            "${partialArchive}.seal-${partialId}.tmp")), false)
+
+        let cleanupRoot = Path("${canonical}/cleanup-owned")
+        Directory.create(cleanupRoot, recursive: false)
+        File.writeTo(cleanupRoot.join("bundle.tmp"), "owned".toArray())
+        let cleanupIdentity = ckbReproDirectoryOwnershipIdentity(
+            cleanupRoot.toString())
+        let movedCleanupRoot = Path("${canonical}/cleanup-owned-moved")
+        rename(cleanupRoot.toString(), to: movedCleanupRoot.toString(),
+            overwrite: false)
+        Directory.create(cleanupRoot, recursive: false)
+        File.writeTo(cleanupRoot.join("sentinel.txt"),
+            "replacement 中文🙂".toArray())
+        @Expect(ckbReproCleanupOwnedDirectory(cleanupRoot.toString(),
+            cleanupIdentity, ["bundle.tmp"]), false)
+        @Expect(exists(cleanupRoot.join("sentinel.txt")), true)
+        @Expect(exists(movedCleanupRoot.join("bundle.tmp")), true)
+        remove(cleanupRoot, recursive: true)
+        remove(movedCleanupRoot, recursive: true)
+
+        let finalRaceRoot = Path("${canonical}/cleanup-final-race")
+        Directory.create(finalRaceRoot, recursive: false)
+        File.writeTo(finalRaceRoot.join("bundle.tmp"), "owned".toArray())
+        let finalRaceIdentity = ckbReproDirectoryOwnershipIdentity(
+            finalRaceRoot.toString())
+        let finalRaceMoved = Path("${canonical}/cleanup-final-race-moved")
+        let replacement = "replacement 中文🙂".toArray()
+        @Expect(ckbReproCleanupOwnedDirectory(finalRaceRoot.toString(),
+            finalRaceIdentity, ["bundle.tmp"],
+            beforeFinalDirectoryUnlink: { =>
+                rename(finalRaceRoot.toString(),
+                    to: finalRaceMoved.toString(), overwrite: false)
+                File.writeTo(finalRaceRoot, replacement)
+            }), false)
+        @Expect(File.readFrom(finalRaceRoot), replacement)
+        @Expect(exists(finalRaceMoved), true)
+        remove(finalRaceRoot)
+        remove(finalRaceMoved, recursive: true)
+
+        let finalDirectoryRoot = Path("${canonical}/cleanup-final-directory")
+        Directory.create(finalDirectoryRoot, recursive: false)
+        File.writeTo(finalDirectoryRoot.join("bundle.tmp"), "owned".toArray())
+        let finalDirectoryIdentity = ckbReproDirectoryOwnershipIdentity(
+            finalDirectoryRoot.toString())
+        let finalDirectoryMoved = Path(
+            "${canonical}/cleanup-final-directory-moved")
+        @Expect(ckbReproCleanupOwnedDirectory(finalDirectoryRoot.toString(),
+            finalDirectoryIdentity, ["bundle.tmp"],
+            beforeFinalDirectoryUnlink: { =>
+                rename(finalDirectoryRoot.toString(),
+                    to: finalDirectoryMoved.toString(), overwrite: false)
+                Directory.create(finalDirectoryRoot, recursive: false)
+                File.writeTo(finalDirectoryRoot.join("sentinel.txt"),
+                    replacement)
+            }), false)
+        @Expect(File.readFrom(finalDirectoryRoot.join("sentinel.txt")),
+            replacement)
+        remove(finalDirectoryRoot, recursive: true)
+        remove(finalDirectoryMoved, recursive: true)
+
+        let finalLinkRoot = Path("${canonical}/cleanup-final-link")
+        Directory.create(finalLinkRoot, recursive: false)
+        File.writeTo(finalLinkRoot.join("bundle.tmp"), "owned".toArray())
+        let finalLinkIdentity = ckbReproDirectoryOwnershipIdentity(
+            finalLinkRoot.toString())
+        let finalLinkMoved = Path("${canonical}/cleanup-final-link-moved")
+        @Expect(ckbReproCleanupOwnedDirectory(finalLinkRoot.toString(),
+            finalLinkIdentity, ["bundle.tmp"],
+            beforeFinalDirectoryUnlink: { =>
+                rename(finalLinkRoot.toString(),
+                    to: finalLinkMoved.toString(), overwrite: false)
+                _ = launch("/bin/ln", ["-s", finalLinkMoved.toString(),
+                    finalLinkRoot.toString()]).wait()
+            }), false)
+        @Expect(exists(finalLinkRoot), true)
+        remove(finalLinkRoot)
+        remove(finalLinkMoved, recursive: true)
+
+        let outputRoot = "${canonical}/delivery"
+        let sealArgs = ["ckb-authority-bundle", "seal", "--authority",
+            authorityPath, "--source-lock", sourceLockPath, "--release-asset",
+            releaseAssetPath, "--release-license", releaseLicensePath,
+            "--evaluator-license", evaluatorLicensePath, "--output-root",
+            outputRoot]
+        let sealed = runCkbAuthorityBundleCli(sealArgs,
+            policy: fixture.policy)
+        @Expect(sealed.exitCode, 0)
+        @Expect(sealed.output.contains("authority bundle: sealed"), true)
+        @Expect(sealed.output.contains("{\""), false)
+        @Expect(exists(Path(outputRoot).join("authority-delivery.json")), true)
+        @Expect(exists(Path(outputRoot).join(
+            "cangjie-humaneval-authority.tar.zst")), true)
+        @Expect(runCkbAuthorityBundleCli(sealArgs,
+            policy: fixture.policy).diagnostic,
+            "authority_bundle_output_invalid")
+
+        let verified = runCkbAuthorityBundleCli([
+            "ckb-authority-bundle", "verify", "--authority", authorityPath,
+            "--delivery-root", outputRoot, "--json"], policy: fixture.policy)
+        @Expect(verified.exitCode, 0)
+        @Expect(JsonValue.fromStr(verified.output).asObject().get("ok")
+            .getOrThrow().asBool().getValue(), true)
+        @Expect(verified.output.contains("\"presentCount\":164"), true)
+
+        let extra = Path(outputRoot).join("unexpected.txt")
+        File.writeTo(extra, "unexpected 中文🙂".toArray())
+        @Expect(runCkbAuthorityBundleCli([
+            "ckb-authority-bundle", "verify", "--authority", authorityPath,
+            "--delivery-root", outputRoot], policy: fixture.policy).diagnostic,
+            "authority_bundle_layout_invalid")
+        remove(extra)
+        let archiveOutput = Path(outputRoot).join(
+            "cangjie-humaneval-authority.tar.zst")
+        let archiveBytes = File.readFrom(archiveOutput)
+        File.writeTo(archiveOutput, "tampered".toArray())
+        @Expect(runCkbAuthorityBundleCli([
+            "ckb-authority-bundle", "verify", "--authority", authorityPath,
+            "--delivery-root", outputRoot], policy: fixture.policy).exitCode, 1)
+        File.writeTo(archiveOutput, archiveBytes)
+        remove(archiveOutput)
+        @Expect(launch("/bin/ln", ["-s", authorityPath,
+            archiveOutput.toString()]).wait(), 0)
+        @Expect(runCkbAuthorityBundleCli([
+            "ckb-authority-bundle", "verify", "--authority", authorityPath,
+            "--delivery-root", outputRoot], policy: fixture.policy).diagnostic,
+            "authority_bundle_layout_invalid")
+        remove(archiveOutput)
+        File.writeTo(archiveOutput, archiveBytes)
+        let deliveryLink = "${canonical}/delivery-root-link"
+        @Expect(launch("/bin/ln", ["-s", outputRoot, deliveryLink]).wait(), 0)
+        @Expect(runCkbAuthorityBundleCli([
+            "ckb-authority-bundle", "verify", "--authority", authorityPath,
+            "--delivery-root", deliveryLink], policy: fixture.policy).diagnostic,
+            "authority_bundle_input_invalid")
+        let failedJson = runCkbAuthorityBundleCli([
+            "ckb-authority-bundle", "verify", "--authority", authorityPath,
+            "--delivery-root", deliveryLink, "--json"], policy: fixture.policy)
+        @Expect(JsonValue.fromStr(failedJson.output).asObject().get("ok")
+            .getOrThrow().asBool().getValue(), false)
+
+        @Expect(parseCkbAuthorityBundleCliArgs([
+            "ckb-authority-bundle", "public_rebuild"]).diagnostic,
+            "authority_bundle_action_invalid")
+        @Expect(parseCkbAuthorityBundleCliArgs([
+            "ckb-authority-bundle", "verify", "--authority", authorityPath,
+            "--delivery-root", outputRoot, "--json", "--json"]).diagnostic,
+            "duplicate_argument:--json")
+        @Expect(parseCkbAuthorityBundleCliArgs([
+            "ckb-authority-bundle", "verify", "--authority", "relative",
+            "--delivery-root", outputRoot]).diagnostic,
+            "authority_bundle_path_invalid")
+        let oversized = StringBuilder()
+        for (_ in 0..4097) { oversized.append("界") }
+        @Expect(parseCkbAuthorityBundleCliArgs([
+            "ckb-authority-bundle", "verify", "--authority",
+            oversized.toString(), "--delivery-root", outputRoot]).diagnostic,
+            "cli_argument_too_long")
+
+        let symlink = "${canonical}/authority-link.jsonl"
+        @Expect(launch("/bin/ln", ["-s", authorityPath, symlink]).wait(), 0)
+        let linkedArgs = sealArgs.clone()
+        linkedArgs[3] = symlink
+        linkedArgs[13] = "${canonical}/delivery-link"
+        @Expect(runCkbAuthorityBundleCli(linkedArgs,
+            policy: fixture.policy).diagnostic,
+            "authority_bundle_input_read_failed")
+        let fifo = "${canonical}/authority.fifo"
+        @Expect(launch("/usr/bin/mkfifo", [fifo]).wait(), 0)
+        let fifoArgs = sealArgs.clone()
+        fifoArgs[3] = fifo
+        fifoArgs[13] = "${canonical}/delivery-fifo"
+        @Expect(runCkbAuthorityBundleCli(fifoArgs,
+            policy: fixture.policy).diagnostic,
+            "authority_bundle_input_read_failed")
+
+        File.writeTo(Path(outputRoot).join("authority-delivery.json"),
+            [UInt8(0xff)])
+        let rejected = runCkbAuthorityBundleCli([
+            "ckb-authority-bundle", "verify", "--authority", authorityPath,
+            "--delivery-root", outputRoot], policy: fixture.policy)
+        @Expect(rejected.exitCode, 1)
+        @Expect(rejected.output.contains("authority bundle: blocked"), true)
+        remove(root, recursive: true)
     }
 
     @TestCase
@@ -353,7 +656,7 @@ public class CkbReproEnvironmentTest {
     }
 
     @TestCase
-    public func p6Pos01TypedIdentityBuildsExplicitRunnerArgumentsOnce(): Unit {
+    public func p6Pos01TypedIdentityBuildsExplicitTwoPhaseRunnerArguments(): Unit {
         let lock = p6FrozenEnvironment()
         let reference = parseCkbReproReferenceManifest(
             p6Read("../reproducibility/manifests/reference-run.json"))[1]
@@ -368,6 +671,8 @@ public class CkbReproEnvironmentTest {
         @Expect(parsed.docsRoot, inputs.docsRoot)
         @Expect(parsed.caseStart, 0)
         @Expect(parsed.caseEnd, 163)
+        @Expect(parsed.generationProtocol, "completion-only-v1")
+        @Expect(parsed.samplesPerCase, 1)
         @Expect(parsed.groups.size, 1)
         @Expect(parsed.groups[0], CkbAbcdeGroups.D)
         @Expect(parsed.candidateVersion, "portable-candidate-v1")
@@ -381,8 +686,28 @@ public class CkbReproEnvironmentTest {
         let runner = P6FakeRunner()
         @Expect(runCkbReproCertifiedStudent(reference, lock, inputs,
             preflight, runner), 0)
-        @Expect(runner.count, 1)
-        @Expect(runner.args, built[1])
+        @Expect(runner.count, 2)
+        @Expect(runner.history[0].contains("--generate-only"), true)
+        @Expect(runner.history[0].contains("--evaluate-frozen"), false)
+        @Expect(runner.history[1].contains("--evaluate-frozen"), true)
+        @Expect(runner.history[1].contains("base,plus"), true)
+        @Expect(runner.evaluatedSeal,
+            "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")
+        let generationFailure = P6FakeRunner()
+        generationFailure.failAtCall = 1
+        @Expect(runCkbReproCertifiedStudent(reference, lock, inputs,
+            preflight, generationFailure), 1)
+        @Expect(generationFailure.count, 1)
+        let evaluationFailure = P6FakeRunner()
+        evaluationFailure.failAtCall = 2
+        @Expect(runCkbReproCertifiedStudent(reference, lock, inputs,
+            preflight, evaluationFailure), 1)
+        @Expect(evaluationFailure.count, 2)
+        let invalidSeal = P6FakeRunner()
+        invalidSeal.generationSeal = ""
+        @Expect(runCkbReproCertifiedStudent(reference, lock, inputs,
+            preflight, invalidSeal), 1)
+        @Expect(invalidSeal.count, 1)
 
         let rendered = renderCkbProviderTemplate(lock)
         @Expect(rendered.contains("GLM_API_KEY"), true)
@@ -448,34 +773,119 @@ public class CkbReproEnvironmentTest {
 
         let blocked = parseCkbAuthorityDeliveryManifest(
             p6Read("../reproducibility/manifests/authority-delivery.json"))[1]
-        @Expect(validateCkbReproAuthorityDelivery(blocked, Array<UInt8>(),
-            "", "/tmp/ckb-output", "/tmp/ckb-store",
+        @Expect(ckbAuthorityDeliveryReadyForExecution(blocked), false)
+        @Expect(ckbReproProbeAuthorityDelivery(
+            renderCkbAuthorityDeliveryManifest(blocked).toArray(),
+            Array<UInt8>(), ""), "environment_probe_authority_invalid")
+        @Expect(validateCkbReproAuthorityDelivery(blocked, "",
+            Array<UInt8>(), "", "/tmp/ckb-output", "/tmp/ckb-store",
             "/tmp/ckb-student").diagnostic,
             "authority_delivery_blocked")
 
         let authorityBytes = p6SyntheticAuthorityBytes()
         let parsedAuthority = parseCangjieHumanEvalAuthorityManifest(
             String.fromUtf8(authorityBytes))
+        let bundle = p6AuthorityBundleFixture(authorityBytes,
+            parsedAuthority.datasetVersion, "negative-positive")
         let publicRebuild = p6PublicDelivery(authorityBytes,
             parsedAuthority.datasetVersion)
+        @Expect(validateCkbExecutionAuthorityDelivery(
+            renderCkbAuthorityDeliveryManifest(publicRebuild).toArray(),
+            authorityBytes, bundle.path, policy: bundle.policy).diagnostic,
+            "authority_public_rebuild_not_executable")
+        @Expect(ckbReproProbeAuthorityDelivery(
+            renderCkbAuthorityDeliveryManifest(publicRebuild).toArray(),
+            authorityBytes, bundle.path, policy: bundle.policy),
+            "environment_probe_authority_invalid")
         for (output in ["/tmp/ckb-store", "/tmp/ckb-store/authority",
             "/tmp/ckb-student/authority", "/tmp"]) {
-            @Expect(validateCkbReproAuthorityDelivery(publicRebuild,
-                authorityBytes, parsedAuthority.datasetVersion, output,
-                "/tmp/ckb-store", "/tmp/ckb-student").diagnostic,
+            @Expect(validateCkbReproAuthorityDelivery(bundle.manifest,
+                bundle.path, authorityBytes, parsedAuthority.datasetVersion,
+                output, "/tmp/ckb-store", "/tmp/ckb-student",
+                policy: bundle.policy).diagnostic,
                 "authority_output_root_forbidden")
         }
         for (output in ["target/output", "/tmp/../tmp/output",
             "/tmp//output", "/tmp\\output", " /tmp/output"]) {
-            @Expect(validateCkbReproAuthorityDelivery(publicRebuild,
-                authorityBytes, parsedAuthority.datasetVersion, output,
-                "/tmp/ckb-store", "/tmp/ckb-student").diagnostic,
+            @Expect(validateCkbReproAuthorityDelivery(bundle.manifest,
+                bundle.path, authorityBytes, parsedAuthority.datasetVersion,
+                output, "/tmp/ckb-store", "/tmp/ckb-student",
+                policy: bundle.policy).diagnostic,
                 "authority_output_root_invalid")
         }
-        @Expect(validateCkbReproAuthorityDelivery(publicRebuild,
-            authorityBytes, parsedAuthority.datasetVersion,
-            "/tmp/ckb-store2", "/tmp/ckb-store",
-            "/tmp/ckb-student").ok, true)
+        let ambiguous = bundle.manifest
+        ambiguous.anonymousPublicAccess = true
+        @Expect(selectCkbAuthorityDeliveryMode(ambiguous).diagnostic,
+            "authority_delivery_mode_ambiguous")
+        let expectedTamperDiagnostics = [
+            ("release-license", "authority_license_bytes_mismatch"),
+            ("evaluator-license", "authority_license_bytes_mismatch"),
+            ("license-swap", "authority_license_bytes_mismatch"),
+            ("empty-license", "authority_bundle_layout_invalid"),
+            ("source-lock", "authority_bundle_source_lock_mismatch"),
+            ("license-evidence", "authority_license_evidence_invalid"),
+            ("invalid-evidence-utf8", "invalid_response_encoding"),
+            ("index", "authority_bundle_manifest_invalid"),
+            ("invalid-index-utf8", "invalid_response_encoding"),
+            ("oversized-index", "authority_bundle_layout_invalid"),
+            ("authority", "authority_bundle_authority_mismatch"),
+            ("extra", "authority_bundle_layout_invalid")
+        ]
+        for (entry in expectedTamperDiagnostics) {
+            let altered = p6AuthorityBundleFixture(authorityBytes,
+                parsedAuthority.datasetVersion, entry[0])
+            @Expect(validateCkbExecutionAuthorityDelivery(
+                renderCkbAuthorityDeliveryManifest(altered.manifest).toArray(),
+                authorityBytes, altered.path, policy: altered.policy).diagnostic,
+                entry[1])
+            @Expect(ckbReproProbeAuthorityDelivery(
+                renderCkbAuthorityDeliveryManifest(altered.manifest).toArray(),
+                authorityBytes, altered.path, policy: altered.policy),
+                "environment_probe_authority_invalid")
+        }
+        for (missing in ["missing-index", "missing-source-lock",
+            "missing-authority", "missing-license-evidence",
+            "missing-release-license", "missing-evaluator-license"]) {
+            let altered = p6AuthorityBundleFixture(authorityBytes,
+                parsedAuthority.datasetVersion, missing)
+            @Expect(validateCkbExecutionAuthorityDelivery(
+                renderCkbAuthorityDeliveryManifest(altered.manifest).toArray(),
+                authorityBytes, altered.path, policy: altered.policy).diagnostic,
+                "authority_bundle_layout_invalid")
+        }
+        let wrongBundleHash = p6AuthorityBundleFixture(authorityBytes,
+            parsedAuthority.datasetVersion, "wrong-bundle-hash")
+        wrongBundleHash.manifest.bundleHash = p6Hash("wrong-bundle")
+        @Expect(validateCkbExecutionAuthorityDelivery(
+            renderCkbAuthorityDeliveryManifest(
+                wrongBundleHash.manifest).toArray(), authorityBytes,
+            wrongBundleHash.path, policy: wrongBundleHash.policy).diagnostic,
+            "authority_bundle_hash_mismatch")
+        let wrongPolicy = p6AuthorityBundleFixture(authorityBytes,
+            parsedAuthority.datasetVersion, "wrong-policy")
+        wrongPolicy.policy.releaseCommit =
+            "cccccccccccccccccccccccccccccccccccccccc"
+        @Expect(validateCkbExecutionAuthorityDelivery(
+            renderCkbAuthorityDeliveryManifest(wrongPolicy.manifest).toArray(),
+            authorityBytes, wrongPolicy.path,
+            policy: wrongPolicy.policy).diagnostic,
+            "authority_license_evidence_invalid")
+        let wrongAuthorityPolicy = p6AuthorityBundleFixture(authorityBytes,
+            parsedAuthority.datasetVersion, "wrong-authority-policy")
+        wrongAuthorityPolicy.policy.authorityHash = p6Hash("other-authority")
+        @Expect(validateCkbExecutionAuthorityDelivery(
+            renderCkbAuthorityDeliveryManifest(
+                wrongAuthorityPolicy.manifest).toArray(), authorityBytes,
+            wrongAuthorityPolicy.path,
+            policy: wrongAuthorityPolicy.policy).diagnostic,
+            "authority_trust_policy_mismatch")
+        let invalidBytes = [UInt8(0xff)]
+        let invalid = p6AuthorityBundleFixture(invalidBytes,
+            parsedAuthority.datasetVersion, "invalid-utf8")
+        @Expect(validateCkbExecutionAuthorityDelivery(
+            renderCkbAuthorityDeliveryManifest(invalid.manifest).toArray(),
+            invalidBytes, invalid.path, policy: invalid.policy).diagnostic,
+            "invalid_response_encoding")
         let sourceDrift = p6PublicDelivery(authorityBytes,
             parsedAuthority.datasetVersion)
         sourceDrift.commit = "latest"
@@ -488,12 +898,6 @@ public class CkbReproEnvironmentTest {
             parsedAuthority.datasetVersion)
         builderDrift.builderHash = "sha256:invalid"
         @Expect(selectCkbAuthorityDeliveryMode(builderDrift).ok, false)
-        let datasetDrift = p6PublicDelivery(authorityBytes,
-            parsedAuthority.datasetVersion)
-        datasetDrift.datasetVersion = "cangjie-humaneval-164-sha256:wrong"
-        @Expect(validateCkbReproAuthorityDelivery(datasetDrift, authorityBytes,
-            datasetDrift.datasetVersion, "/tmp/ckb-p6/public",
-            "/tmp/ckb-store", "/tmp/ckb-student").ok, false)
     }
 
     @TestCase
@@ -1012,19 +1416,153 @@ public func p6FrozenEnvironment(): CkbReproEnvironmentLock {
     lock
 }
 
-private func p6BundledDelivery(authority: Array<UInt8>,
-    datasetVersion: String): CkbAuthorityDeliveryManifest {
+private class P6AuthorityBundleFixture {
+    public var manifest: CkbAuthorityDeliveryManifest =
+        CkbAuthorityDeliveryManifest()
+    public var policy: CkbAuthorityTrustPolicy = CkbAuthorityTrustPolicy()
+    public var path: String = ""
+    public var releaseLicense: Array<UInt8> = Array<UInt8>()
+    public var evaluatorLicense: Array<UInt8> = Array<UInt8>()
+    public var sourceLock: Array<UInt8> = Array<UInt8>()
+    public var releaseAsset: Array<UInt8> = Array<UInt8>()
+    public init() {}
+}
+
+private func p6AuthorityBundleFixture(authority: Array<UInt8>,
+    datasetVersion: String, suffix: String): P6AuthorityBundleFixture {
+    let fixture = P6AuthorityBundleFixture()
+    let policy = CkbAuthorityTrustPolicy()
+    let releaseLicense = "fixture release LICENSE 中文🔒".toArray()
+    let evaluatorLicense = "fixture evaluator LICENSE".toArray()
+    let sourceLock = "fixture-source-lock".toArray()
+    policy.releaseRepository = "https://example.test/release"
+    policy.releaseCommit = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    policy.releaseTree = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    policy.releaseLicenseSize = releaseLicense.size
+    policy.releaseLicenseHash = ckbReproBundleHash(releaseLicense)
+    policy.evaluatorRepository = "https://example.test/evaluator"
+    policy.evaluatorCommit = "cccccccccccccccccccccccccccccccccccccccc"
+    policy.evaluatorTree = "dddddddddddddddddddddddddddddddddddddddd"
+    policy.evaluatorLicenseSize = evaluatorLicense.size
+    policy.evaluatorLicenseHash = ckbReproBundleHash(evaluatorLicense)
+    policy.releaseLicenseId = "fixture-release-license"
+    policy.evaluatorLicenseId = "fixture-evaluator-license"
+    policy.deliveryLicenseId = "fixture-delivery-license"
+    policy.releaseAssetHash = p6Hash("fixture-release-asset")
+    policy.sourceLockHash = ckbReproBundleHash(sourceLock)
+    policy.authorityHash = ckbReproBundleHash(authority)
+    policy.datasetVersion = datasetVersion
+
+    var licenseEvidence =
+        "{\"schemaVersion\":\"ckb-authority-license-evidence-v1\",\"licenses\":[" +
+        "{\"role\":\"humanevalplus-release\",\"bundlePath\":\"licenses/humanevalplus-release-LICENSE\",\"repository\":\"${policy.releaseRepository}\",\"commit\":\"${policy.releaseCommit}\",\"tree\":\"${policy.releaseTree}\",\"sourcePath\":\"LICENSE\",\"size\":${policy.releaseLicenseSize},\"sha256\":\"${policy.releaseLicenseHash}\",\"licenseId\":\"${policy.releaseLicenseId}\"}," +
+        "{\"role\":\"evalplus-evaluator\",\"bundlePath\":\"licenses/evalplus-evaluator-LICENSE\",\"repository\":\"${policy.evaluatorRepository}\",\"commit\":\"${policy.evaluatorCommit}\",\"tree\":\"${policy.evaluatorTree}\",\"sourcePath\":\"LICENSE\",\"size\":${policy.evaluatorLicenseSize},\"sha256\":\"${policy.evaluatorLicenseHash}\",\"licenseId\":\"${policy.evaluatorLicenseId}\"}]}"
+    if (suffix == "license-evidence") {
+        licenseEvidence = licenseEvidence.replace(
+            "\"fixture-release-license\"", "\"wrong-license\"")
+    }
+    let authorityHash = ckbReproBundleHash(authority)
+    let licenseEvidenceBytes = if (suffix == "invalid-evidence-utf8") {
+        [UInt8(0xff)]
+    } else { licenseEvidence.toArray() }
+    let licenseEvidenceHash = ckbReproBundleHash(licenseEvidenceBytes)
+    var index =
+        "{\"schemaVersion\":\"ckb-authority-bundle-manifest-v1\"," +
+        "\"datasetVersion\":\"${datasetVersion}\"," +
+        "\"authorityPath\":\"authority/cangjie_humaneval_manifest.jsonl\"," +
+        "\"authorityHash\":\"${authorityHash}\"," +
+        "\"licenseEvidencePath\":\"licenses/LICENSE-EVIDENCE.json\"," +
+        "\"licenseEvidenceHash\":\"${licenseEvidenceHash}\"," +
+        "\"sourceLockPath\":\"authority/HumanEvalPlus-v0.1.10/source-lock.json\"," +
+        "\"sourceLockHash\":\"${policy.sourceLockHash}\"," +
+        "\"releaseAssetHash\":\"${policy.releaseAssetHash}\"," +
+        "\"evaluatorCommit\":\"${policy.evaluatorCommit}\"}"
+    if (suffix == "index") {
+        index = index.replace("ckb-authority-bundle-manifest-v1",
+            "ckb-authority-bundle-manifest-v0")
+    }
+
+    let payloads = ArrayList<CkbReleaseArchivePayload>()
+    if (suffix != "missing-index") {
+        p6AuthorityPayload(payloads, "AUTHORITY-BUNDLE-MANIFEST.json",
+            if (suffix == "invalid-index-utf8") { [UInt8(0xff)] }
+            else if (suffix == "oversized-index") {
+                Array<UInt8>(1024 * 1024 + 1, repeat: UInt8(1))
+            } else { index.toArray() })
+    }
+    if (suffix != "missing-source-lock") {
+        p6AuthorityPayload(payloads,
+            "authority/HumanEvalPlus-v0.1.10/source-lock.json",
+            if (suffix == "source-lock") {
+                "tampered-source-lock".toArray()
+            } else { sourceLock })
+    }
+    if (suffix != "missing-authority") {
+        p6AuthorityPayload(payloads,
+            "authority/cangjie_humaneval_manifest.jsonl",
+            if (suffix == "authority") {
+                "tampered-authority".toArray()
+            } else { authority })
+    }
+    if (suffix != "missing-license-evidence") {
+        p6AuthorityPayload(payloads, "licenses/LICENSE-EVIDENCE.json",
+            licenseEvidenceBytes)
+    }
+    if (suffix != "missing-evaluator-license") {
+        p6AuthorityPayload(payloads, "licenses/evalplus-evaluator-LICENSE",
+            if (suffix == "evaluator-license") {
+                "tampered evaluator".toArray()
+            } else if (suffix == "license-swap") { releaseLicense }
+            else { evaluatorLicense })
+    }
+    if (suffix != "missing-release-license") {
+        p6AuthorityPayload(payloads,
+            "licenses/humanevalplus-release-LICENSE",
+            if (suffix == "release-license") {
+                "篡改🔒".toArray()
+            } else if (suffix == "empty-license") {
+                Array<UInt8>()
+            } else if (suffix == "license-swap") { evaluatorLicense }
+            else { releaseLicense })
+    }
+    if (suffix == "extra") {
+        p6AuthorityPayload(payloads, "unexpected.txt", "unexpected".toArray())
+    }
+
+    let root = Path("target/p6-authority-bundles")
+    if (!exists(root)) { Directory.create(root, recursive: true) }
+    let archivePath = root.join("${suffix}.tar.zst")
+    if (exists(archivePath)) { remove(archivePath, recursive: true) }
+    let backend = CkbPortableReleaseArchiveBackend()
+    backend.create(archivePath.toString(), payloads)
+
     let manifest = CkbAuthorityDeliveryManifest()
     manifest.schemaVersion = "ckb-authority-delivery-v1"
     manifest.mode = "bundled"
-    manifest.licenseId = "fixture-permissive"
-    manifest.licenseEvidenceHash = p6Hash("fixture-license")
+    manifest.licenseId = policy.deliveryLicenseId
+    manifest.licenseEvidenceHash = licenseEvidenceHash
     manifest.redistributionAllowed = true
-    manifest.bundleHash = p6Hash("fixture-bundle")
-    manifest.authorityHash = p6Hash(String.fromUtf8(authority))
+    manifest.bundleHash = backend.archiveHash(archivePath.toString())
+    manifest.authorityHash = authorityHash
     manifest.datasetVersion = datasetVersion
-    manifest
+    fixture.manifest = manifest
+    fixture.policy = policy
+    fixture.path = archivePath.toString()
+    fixture.releaseLicense = releaseLicense
+    fixture.evaluatorLicense = evaluatorLicense
+    fixture.sourceLock = sourceLock
+    fixture.releaseAsset = "fixture-release-asset".toArray()
+    fixture
 }
+
+private func p6AuthorityPayload(values: ArrayList<CkbReleaseArchivePayload>,
+    path: String, bytes: Array<UInt8>): Unit {
+    let payload = CkbReleaseArchivePayload()
+    payload.path = path
+    payload.bytes = bytes
+    values.add(payload)
+}
+
 
 private func p6PublicDelivery(authority: Array<UInt8>,
     datasetVersion: String): CkbAuthorityDeliveryManifest {

@@ -590,6 +590,7 @@ private func ckbReproP8ReleaseInputsAuthority(
 private func ckbReproP8RegisteredCommands(): Array<String> {
     ["ckb-release-export", "ckb-release-import",
         "ckb-public-evidence-export", "ckb-repro-preflight",
+        "ckb-authority-bundle",
         "ckb-repro-bundle", "ckb-repro-publish-gate",
         "ckb-portable-vector-build", "ckb-qdrant-snapshot",
         "ckb-retrieval-parity", "ckb-repro-build", "ckb-repro-promote",

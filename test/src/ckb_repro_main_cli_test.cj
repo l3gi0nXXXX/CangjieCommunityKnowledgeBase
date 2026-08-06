@@ -28,6 +28,10 @@ private class P0MainCliAdapter <: CkbReproMainCliAdapter {
         this.calls.add("preflight:${args[0]}")
         CkbReproMainCliResult(true, 1, "preflight human\n")
     }
+    public func runAuthorityBundle(args: Array<String>): CkbReproMainCliResult {
+        this.calls.add("authority:${args[0]}")
+        CkbReproMainCliResult(true, 0, "authority human\n")
+    }
     public func runBundle(args: Array<String>): CkbReproMainCliResult {
         this.calls.add("bundle:${args[0]}")
         CkbReproMainCliResult(true, 0, "bundle human\n")
@@ -153,6 +157,24 @@ public class CkbReproMainCliTest {
         @Expect(loader.contains("loadCkbReproPreflightAuthority("), false)
         @Expect(loader.contains("ckbReproP8ReleaseAuthority("), false)
         @Expect(loader.contains("ckbReproP8JsonEscape(safe)"), true)
+
+        let runner = try {
+            String.fromUtf8(File.readFrom(
+                Path("../src/cangjie_eval_abcde_runner.cj")))
+        } catch (_: Exception) {
+            @Expect("invalid_response_encoding", "valid_utf8_source")
+            return
+        }
+        @Expect(runner.contains(
+            "runCangjieEvalAbcdeCore(args, true, true)"), true)
+        @Expect(runner.contains(
+            "runCangjieEvalAbcdeCore(args, true, false)"), false)
+        let p8Json = runCkbReproMainCli("ckb-repro-verify", [
+            "ckb-repro-verify", "--mode", "run-certify", "--json"])
+        @Expect(p8Json.handled, true)
+        @Expect(p8Json.output.trimAscii().startsWith("{"), true)
+        @Expect(p8Json.output.trimAscii().endsWith("}"), true)
+        @Expect(p8Json.output.contains("}\n{"), false)
     }
 
     @TestCase
@@ -192,13 +214,14 @@ public class CkbReproMainCliTest {
     public func p5P6AndP9CommandsRouteBeforeKnowledgeBaseLoading(): Unit {
         let adapter = P0MainCliAdapter()
         for (command in ["ckb-public-evidence-export", "ckb-repro-preflight",
-            "ckb-repro-bundle"]) {
+            "ckb-authority-bundle", "ckb-repro-bundle"]) {
             let result = executeCkbReproMainCli(command, [command], adapter)
             @Expect(result.handled, true)
         }
         @Expect(adapter.calls.toArray(), [
             "evidence:ckb-public-evidence-export",
             "preflight:ckb-repro-preflight",
+            "authority:ckb-authority-bundle",
             "bundle:ckb-repro-bundle"])
     }
 
@@ -215,7 +238,8 @@ public class CkbReproMainCliTest {
     public func defaultOutputIsHumanAndJsonRequiresExplicitFlag(): Unit {
         for (command in ["ckb-release-export", "ckb-logical-proof",
             "ckb-public-evidence-export",
-            "ckb-repro-preflight", "ckb-repro-bundle",
+            "ckb-repro-preflight", "ckb-authority-bundle",
+            "ckb-repro-bundle",
             "ckb-repro-publish-gate", "ckb-portable-vector-build",
             "ckb-qdrant-snapshot", "ckb-retrieval-parity",
             "ckb-repro-build", "ckb-repro-promote", "ckb-repro-verify"]) {
@@ -223,7 +247,8 @@ public class CkbReproMainCliTest {
             @Expect(human.handled, true)
             @Expect(human.exitCode, 2)
             @Expect(human.output.startsWith("{"), false)
-            @Expect(human.output.startsWith("{"), false)
+            @Expect(human.output.contains("\"ok\""), false)
+            @Expect(human.output.contains("\"result\""), false)
 
             let json = runCkbReproMainCli(command, [command, "--json"])
             @Expect(json.handled, true)

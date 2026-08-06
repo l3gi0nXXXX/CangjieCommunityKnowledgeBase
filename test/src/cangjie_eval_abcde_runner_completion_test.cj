@@ -1,7 +1,7 @@
 package cangjie_community_knowledge_base_test
 
 import std.collection.ArrayList
-import std.fs.{Directory, File, Path, exists}
+import std.fs.{Directory, File, Path, canonicalize, exists, remove}
 import std.time.DateTime
 import std.process.launch
 import std.unittest.*
@@ -34,6 +34,78 @@ public class CangjieEvalAbcdeRunnerCompletionTest {
         @Expect(evidence.contains(benchmarkGapSha256(pack)),true)
         @Expect(evidence.contains(benchmarkGapSha256(skill)),true)
         @Expect(evidence!=ckbAbcdeCompletionContextEvidence(task,pack,skill+"-drift"),true)
+    }
+
+    @TestCase
+    public func frozenEvaluationRebindsEveryExternalInputToSealedRun(): Unit {
+        let options = CkbAbcdeRunnerOptions()
+        options.runsRoot = "/sealed/runs"
+        options.runId = "run-中文🙂"
+        options.certificationPreflightPath = "/external/preflight.json"
+        options.certificationRunManifestPath = "/external/run-manifest.json"
+        options.providerIdentityArtifactPath = "/external/provider.json"
+        options.frozenCandidateManifestPath = "/external/candidate.json"
+        options.manifestPath = "/external/authority.jsonl"
+        ckbAbcdeBindFrozenRunInputsForTest(options)
+        let root = "/sealed/runs/run-中文🙂"
+        @Expect(options.certificationPreflightPath,
+            "${root}/preflight.json")
+        @Expect(options.certificationRunManifestPath,
+            "${root}/run-manifest.json")
+        @Expect(options.providerIdentityArtifactPath,
+            "${root}/provider-identity.json")
+        @Expect(options.frozenCandidateManifestPath,
+            "${root}/frozen-candidate-manifest.json")
+        @Expect(options.manifestPath, "${root}/authority.jsonl")
+    }
+
+    @TestCase
+    public func generationPhaseSealRejectsMutationAdditionAndSymlink(): Unit {
+        let stamp = "${DateTime.now().toUnixTimeStamp().toMilliseconds()}"
+        let root = Path("target/p4-generation-seal-${stamp}")
+        Directory.create(root.join("cases/CJ-HUMANEVAL-000/D-ckb-mcp-http"),
+            recursive: true)
+        let artifact = root.join(
+            "cases/CJ-HUMANEVAL-000/D-ckb-mcp-http/生成-🙂.json")
+        File.writeTo(artifact, [UInt8(0xff), UInt8(0xfe), UInt8(0x00)])
+        let canonicalRoot = canonicalize(root).toString()
+        let seal = ckbAbcdeCreateGenerationSealForTest(canonicalRoot)
+        @Expect(seal.startsWith("sha256:"), true)
+        @Expect(ckbAbcdeVerifyGenerationSealForTest(canonicalRoot, seal), true)
+        File.writeTo(artifact, "tampered 中文🙂".toArray())
+        @Expect(ckbAbcdeVerifyGenerationSealForTest(canonicalRoot, seal), false)
+
+        let addedRoot = Path("target/p4-generation-added-${stamp}")
+        Directory.create(addedRoot, recursive: true)
+        File.writeTo(addedRoot.join("one.json"), "{}".toArray())
+        let canonicalAdded = canonicalize(addedRoot).toString()
+        let addedSeal = ckbAbcdeCreateGenerationSealForTest(canonicalAdded)
+        File.writeTo(addedRoot.join("two.json"), "{}".toArray())
+        @Expect(ckbAbcdeVerifyGenerationSealForTest(
+            canonicalAdded, addedSeal), false)
+
+        let sealLinkRoot = Path("target/p4-generation-seal-link-${stamp}")
+        Directory.create(sealLinkRoot, recursive: true)
+        File.writeTo(sealLinkRoot.join("artifact.json"), "{}".toArray())
+        let canonicalSealLink = canonicalize(sealLinkRoot).toString()
+        let sealLinkHash = ckbAbcdeCreateGenerationSealForTest(
+            canonicalSealLink)
+        remove(sealLinkRoot.join("generation-phase-seal.json"))
+        @Expect(launch("/bin/ln", ["-s", "artifact.json",
+            sealLinkRoot.join("generation-phase-seal.json").toString()]).wait(), 0)
+        @Expect(ckbAbcdeVerifyGenerationSealForTest(
+            canonicalSealLink, sealLinkHash), false)
+
+        let linkedRoot = Path("target/p4-generation-link-${stamp}")
+        Directory.create(linkedRoot, recursive: true)
+        File.writeTo(linkedRoot.join("real.json"), "{}".toArray())
+        @Expect(launch("/bin/ln", ["-s", "real.json",
+            linkedRoot.join("linked.json").toString()]).wait(), 0)
+        @Expect(ckbAbcdeCreateGenerationSealForTest(
+            canonicalize(linkedRoot).toString()), "")
+        @Expect(runCangjieEvalAbcde(["cangjie-eval-abcde", "--run-mode",
+            "certification"]), 1)
+        @Expect(exists(root.join("generation-phase-seal.json")), true)
     }
 
     // P3-BND-01
