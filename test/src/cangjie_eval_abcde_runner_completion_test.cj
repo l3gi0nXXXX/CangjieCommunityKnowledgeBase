@@ -1,5 +1,6 @@
 package cangjie_community_knowledge_base_test
 
+import std.collection.ArrayList
 import std.fs.{Directory, File, Path, exists}
 import std.time.DateTime
 import std.process.launch
@@ -19,6 +20,20 @@ public class CangjieEvalAbcdeRunnerCompletionTest {
         let completion=ckbAbcdeExtractSingleCompletion(p3Terminal("package solution\npublic func answer(): Int64 { 42 } // 中文😀").toArray())
         @Expect(completion.ok,true);@Expect(completion.completionCount,1);@Expect(completion.toolCallCount,0)
         @Expect(completion.answerHash.startsWith("sha256:"),true)
+    }
+
+    @TestCase
+    public func completionTranscriptNeedsNoToolResultAndContextHashesAreBound(): Unit {
+        let terminal=p3Terminal("package solution\npublic func answer(): Int64 { 42 } // 中文😀")
+        @Expect(ckbAbcdeCompletionViolation(terminal,"none"),"none")
+        @Expect(ckbAbcdeCompletionViolation("{\"type\":\"tool_use\"}","none"),"completion_tool_use_forbidden")
+        @Expect(ckbAbcdeCompletionViolation(terminal,"model_reference_exposure"),"model_reference_exposure")
+        let task="task 中文😀";let pack="knowledge-pack";let skill="student-skill"
+        let evidence=ckbAbcdeCompletionContextEvidence(task,pack,skill)
+        @Expect(evidence.contains(benchmarkGapSha256(task)),true)
+        @Expect(evidence.contains(benchmarkGapSha256(pack)),true)
+        @Expect(evidence.contains(benchmarkGapSha256(skill)),true)
+        @Expect(evidence!=ckbAbcdeCompletionContextEvidence(task,pack,skill+"-drift"),true)
     }
 
     // P3-BND-01
@@ -41,7 +56,7 @@ public class CangjieEvalAbcdeRunnerCompletionTest {
     @TestCase
     public func validCompletionFreezesBeforeIndependentEvaluation(): Unit {
         let root="target/p3-completion-${DateTime.now().toUnixTimeStamp().toMilliseconds()}"
-        let completion=ckbAbcdeExtractSingleCompletion(p3Terminal("main() { println(\"ok 中文😀\") }").toArray())
+        let completion=ckbAbcdeExtractSingleCompletion(p3Terminal("package p3_completion_fixture\nmain() { println(\"ok 中文😀\") }").toArray())
         @Expect(ckbAbcdeFreezeCompletion(root,completion),"ok")
         @Expect(String.fromUtf8(File.readFrom(Path(root).join("solution.cj"))),completion.solutionCj)
         let compileRoot=Path("${root}-compile");Directory.create(compileRoot.join("src"),recursive:true)
@@ -53,6 +68,15 @@ public class CangjieEvalAbcdeRunnerCompletionTest {
         let blockedRoot=blockedParent.join("child")
         @Expect(ckbAbcdeFreezeCompletion(blockedRoot.toString(),completion),"completion_freeze_failed")
         @Expect(exists(blockedRoot),false)
+    }
+
+    @TestCase
+    public func realRunnerEvaluationInterfaceWritesIndependentBasePlusEvidence():Unit{
+        let root=Path("target/p3-runner-evaluator-${DateTime.now().toUnixTimeStamp().toMilliseconds()}");let groupRoot=root.join("case");let workspace=groupRoot.join("workspace");Directory.create(workspace.join("src"),recursive:true);let solution="package solution\npublic func answer(): Int64 { 42 } // 中文😀\n";File.writeTo(workspace.join("src/solution.cj"),solution.toArray());let completion=ckbAbcdeExtractSingleCompletion(p3Terminal(solution).toArray());@Expect(ckbAbcdeFreezeCompletion(groupRoot.join("frozen-completion").toString(),completion),"ok");File.writeTo(groupRoot.join("generation-evidence.json"),"{\"answerHash\":\"${completion.answerHash}\",\"completionCount\":1,\"toolCallCount\":0,\"executionFeedbackCount\":0,\"interrupted\":false,\"generatedTokenCount\":1,\"checkpointRecovered\":false}".toArray());File.writeTo(groupRoot.join("answer-freeze.json"),"{\"answerHash\":\"${completion.answerHash}\",\"sequence\":2}".toArray())
+        let verifier=P3FakeCompletionVerifier();let evaluated=ckbAbcdeEvaluateFrozenCompletion(groupRoot.toString(),root.join("case-source").toString(),workspace.toString(),completion.answerHash,"base,plus",executor:verifier)
+        @Expect(evaluated.basePassed,true);@Expect(evaluated.plusPassed,true);@Expect(verifier.baseCalls,1);@Expect(verifier.plusCalls,1);@Expect(verifier.workspaces.size,2);@Expect(verifier.workspaces[0]!=verifier.workspaces[1],true);@Expect(String.fromUtf8(File.readFrom(workspace.join("src/solution.cj"))),solution)
+        for(name in ["frozen-completion/solution.cj","generation-evidence.json","answer-freeze.json","base-test-result.json","plus-test-result.json"]){@Expect(exists(groupRoot.join(name)),true)}
+        @Expect(String.fromUtf8(File.readFrom(groupRoot.join("base-test-result.json"))).contains("\"answerHash\":\"${completion.answerHash}\""),true);@Expect(String.fromUtf8(File.readFrom(groupRoot.join("plus-test-result.json"))).contains("\"answerHash\":\"${completion.answerHash}\""),true)
     }
 
     // P3-NEG-01
@@ -73,6 +97,13 @@ public class CangjieEvalAbcdeRunnerCompletionTest {
         @Expect(assessed.completeResult,true);@Expect(assessed.identityMatched,true);@Expect(assessed.toolEventCount,0)
         @Expect(command.toAsciiLower().contains("authorization"),false)
     }
+}
+
+private class P3FakeCompletionVerifier <: CkbAbcdeCompletionSuiteExecutor {
+    public var baseCalls:Int64=0
+    public var plusCalls:Int64=0
+    public var workspaces:ArrayList<String>=ArrayList<String>()
+    public override func execute(suite:String,caseSrc:String,workspace:String):CkbAbcdeCommandResult{workspaces.add(workspace);if(suite=="base"){baseCalls+=1}else if(suite=="plus"){plusCalls+=1};let result=CkbAbcdeCommandResult();result.exitCode=0;result.stdout="PASS ${suite} 中文😀";result}
 }
 
 private func p3Terminal(solution:String):String{p3TerminalFields("\"solution_cj\":\"${ckbAbcdeJsonEscape(solution)}\"")}

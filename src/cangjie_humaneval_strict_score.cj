@@ -27,6 +27,11 @@ public class CkbStrictScoreEvidenceRow {
     public var hiddenTestExposure: Int64 = 0
     public var teacherExposure: Int64 = 0
     public var crossCaseExposure: Int64 = 0
+    public var generationProtocol: String = "historical-agentic-v1"
+    public var assetLineage: String = "historical_agentic"
+    public var skillBundleHash: String = ""
+    public var basePassed: Bool = false
+    public var plusPassed: Bool = false
     public init() {}
 }
 
@@ -39,6 +44,11 @@ public class CkbHumanEvalStrictScore {
     public var businessFailed: Int64 = 0
     public var protocolInvalid: Int64 = 0
     public var transportUnresolved: Int64 = 0
+    public var basePassed: Int64 = 0
+    public var plusPassed: Int64 = 0
+    public var baseMetricName: String = "historical_agentic_base_pass_at_1"
+    public var plusMetricName: String = "historical_agentic_plus_pass_at_1"
+    public var certificationStatus: String = "historical_agentic_not_strict"
     public var evidenceLevel: String = ""
     public var artifactManifestHash: String = ""
     // Score computation never signs or authorizes a release. P9 owns that decision.
@@ -87,6 +97,10 @@ public func computeCkbHumanEvalStrictScore(
             score.diagnostic = "evidence_lineage_drift:${row.caseId}"
             return score
         }
+        if(row.generationProtocol!=first.generationProtocol){score.diagnostic="generation_protocol_mixed";return score}
+        if(first.generationProtocol=="completion-only-v1"&&(row.assetLineage!=first.assetLineage||row.skillBundleHash!=first.skillBundleHash)){
+            score.diagnostic="bundle_or_lineage_drift:${row.caseId}";return score
+        }
         let unresolved = row.classification == "transport_unresolved"
         let sampleValid = if (unresolved) {
             row.sampleAttemptCount == 0 && row.selectedBusinessSample == 0
@@ -115,7 +129,11 @@ public func computeCkbHumanEvalStrictScore(
             score.diagnostic = "classification_closure_invalid:${row.caseId}"
             return score
         }
+        if(first.generationProtocol=="completion-only-v1"&&row.certificationPassAt1!=(row.basePassed&&row.plusPassed)){
+            score.diagnostic="base_plus_certification_mismatch:${row.caseId}";return score
+        }
         if (row.certificationPassAt1) { score.strictPassed += 1 }
+        if(row.basePassed){score.basePassed+=1};if(row.plusPassed){score.plusPassed+=1}
         if (row.unitFirstSamplePassed) { score.unitFirstSamplePassed += 1 }
         if (row.classification == "business_failure") { score.businessFailed += 1 }
         if (row.classification == "protocol_invalid") { score.protocolInvalid += 1 }
@@ -139,6 +157,14 @@ public func computeCkbHumanEvalStrictScore(
         score.strictFailed) {
         score.diagnostic = "aggregate_classification_mismatch"
         return score
+    }
+    if(first.generationProtocol=="completion-only-v1"){
+        if(!ckbStrictScoreHash(first.skillBundleHash)||(first.assetLineage!="independent"&&first.assetLineage!="humaneval_164_derived")){
+            score.diagnostic="completion_lineage_invalid";return score
+        }
+        let prefix=if(first.assetLineage=="independent"){"strict_ckb_skill"}else{"closed_loop_ckb_skill"}
+        score.baseMetricName="${prefix}_base_pass_at_1";score.plusMetricName="${prefix}_plus_pass_at_1"
+        score.certificationStatus=if(score.basePassed==164&&score.plusPassed==164&&score.strictPassed==164){"passed"}else{"failed"}
     }
     score.valid = true
     score.diagnostic = "ok"
@@ -185,6 +211,9 @@ public func renderCkbHumanEvalStrictScoreJson(score: CkbHumanEvalStrictScore): S
         "\"strictFailed\":${score.strictFailed},\"unitFirstSamplePassed\":${score.unitFirstSamplePassed}," +
         "\"businessFailed\":${score.businessFailed},\"protocolInvalid\":${score.protocolInvalid}," +
         "\"transportUnresolved\":${score.transportUnresolved}," +
+        "\"basePassed\":${score.basePassed},\"plusPassed\":${score.plusPassed},"+
+        "\"baseMetricName\":\"${ckbStrictScoreEscape(score.baseMetricName)}\",\"plusMetricName\":\"${ckbStrictScoreEscape(score.plusMetricName)}\","+
+        "\"certificationStatus\":\"${ckbStrictScoreEscape(score.certificationStatus)}\","+
         "\"evidenceLevel\":\"${ckbStrictScoreEscape(score.evidenceLevel)}\"," +
         "\"artifactManifestHash\":\"${ckbStrictScoreEscape(score.artifactManifestHash)}\"," +
         "\"releaseEligible\":${score.releaseEligible}," +
@@ -192,6 +221,7 @@ public func renderCkbHumanEvalStrictScoreJson(score: CkbHumanEvalStrictScore): S
 }
 
 public func renderCkbStrictScoreEvidenceRowJson(row: CkbStrictScoreEvidenceRow): String {
+    let completion=if(row.schemaVersion=="ckb-humaneval-public-evidence-v2"){",\"generationProtocol\":\"${row.generationProtocol}\",\"assetLineage\":\"${row.assetLineage}\",\"skillBundleHash\":\"${row.skillBundleHash}\",\"basePassed\":${row.basePassed},\"plusPassed\":${row.plusPassed}"}else{""}
     "{\"schemaVersion\":\"${ckbStrictScoreEscape(row.schemaVersion)}\"," +
         "\"caseId\":\"${ckbStrictScoreEscape(row.caseId)}\"," +
         "\"runId\":\"${ckbStrictScoreEscape(row.runId)}\"," +
@@ -212,7 +242,7 @@ public func renderCkbStrictScoreEvidenceRowJson(row: CkbStrictScoreEvidenceRow):
         "\"referenceExposure\":${row.referenceExposure}," +
         "\"hiddenTestExposure\":${row.hiddenTestExposure}," +
         "\"teacherExposure\":${row.teacherExposure}," +
-        "\"crossCaseExposure\":${row.crossCaseExposure}}"
+        "\"crossCaseExposure\":${row.crossCaseExposure}${completion}}"
 }
 
 public func renderCkbStrictScoreEvidenceJsonl(
@@ -323,19 +353,23 @@ private func ckbStrictScoreParseRow(raw: String): (String, CkbStrictScoreEvidenc
     let row = CkbStrictScoreEvidenceRow()
     try {
         let object = JsonValue.fromStr(raw).asObject()
-        let fields = [
+        row.schemaVersion = ckbStrictScoreString(object, "schemaVersion")
+        let fields = ArrayList<String>()
+        for(field in [
             "schemaVersion", "caseId", "runId", "datasetVersion", "knowledgeVersion",
             "modelFingerprint", "providerIdentityHash", "runManifestHash",
             "certificationPassAt1", "unitFirstSamplePassed", "classification",
             "sampleAttemptCount", "selectedBusinessSample", "transportAttemptCount",
             "transportRetryCount", "unresolvedTransport", "retryUsed", "fallbackUsed",
             "referenceExposure", "hiddenTestExposure", "teacherExposure", "crossCaseExposure"
-        ]
+        ]){fields.add(field)}
+        if(row.schemaVersion=="ckb-humaneval-public-evidence-v2"){
+            for(field in ["generationProtocol","assetLineage","skillBundleHash","basePassed","plusPassed"]){fields.add(field)}
+        }
         if (object.getFields().size != fields.size ||
-            !ckbStrictScoreUniqueFields(raw, fields)) {
+            !ckbStrictScoreUniqueFields(raw, fields.toArray())) {
             return ("public_evidence_unknown_or_duplicate_field", row)
         }
-        row.schemaVersion = ckbStrictScoreString(object, "schemaVersion")
         row.caseId = ckbStrictScoreString(object, "caseId")
         row.runId = ckbStrictScoreString(object, "runId")
         row.datasetVersion = ckbStrictScoreString(object, "datasetVersion")
@@ -357,14 +391,18 @@ private func ckbStrictScoreParseRow(raw: String): (String, CkbStrictScoreEvidenc
         row.hiddenTestExposure = ckbStrictScoreInt(object, "hiddenTestExposure")
         row.teacherExposure = ckbStrictScoreInt(object, "teacherExposure")
         row.crossCaseExposure = ckbStrictScoreInt(object, "crossCaseExposure")
+        if(row.schemaVersion=="ckb-humaneval-public-evidence-v2"){
+            row.generationProtocol=ckbStrictScoreString(object,"generationProtocol");row.assetLineage=ckbStrictScoreString(object,"assetLineage");row.skillBundleHash=ckbStrictScoreString(object,"skillBundleHash");row.basePassed=ckbStrictScoreBool(object,"basePassed");row.plusPassed=ckbStrictScoreBool(object,"plusPassed")
+        }
     } catch (_: Exception) {
         return ("malformed_json", row)
     }
+    if(row.schemaVersion=="ckb-humaneval-public-evidence-v2"&&raw!=renderCkbStrictScoreEvidenceRowJson(row)){return ("public_evidence_non_canonical",row)}
     ("ok", row)
 }
 
 private func ckbStrictScoreIdentityValid(row: CkbStrictScoreEvidenceRow): Bool {
-    row.schemaVersion == "ckb-humaneval-public-evidence-v1" &&
+    (row.schemaVersion == "ckb-humaneval-public-evidence-v1"||row.schemaVersion=="ckb-humaneval-public-evidence-v2") &&
         row.caseId != "" && row.runId != "" && row.datasetVersion != "" &&
         row.knowledgeVersion != "" && row.modelFingerprint != "" &&
         ckbStrictScoreHash(row.providerIdentityHash) &&

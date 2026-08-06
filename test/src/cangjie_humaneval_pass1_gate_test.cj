@@ -26,6 +26,10 @@ public class CangjieHumanEvalPass1GateTest {
         @Expect(gate.groups[1].total, 2)
         @Expect(gate.groups[1].passAt1, 2)
         @Expect(gate.remainingGaps.size, 0)
+        let legacy=parseCangjieHumanEvalPass1GateOptions(["--run-root","legacy"])
+        @Expect(legacy.protocol,"");@Expect(legacy.groups.size,2)
+        let misleading=parseCangjieHumanEvalPass1Row(p8ResultLine("CJ-HUMANEVAL-000",CangjieHumanEvalPass1GateGroups.D,true,"none",false,"cangjie_task_knowledge_pack").replace("}",",\"note\":\"ckb-humaneval-certification-result-v4\"}"))
+        @Expect(misleading.ok,true);@Expect(misleading.generationProtocol,"historical-agentic-v1")
     }
 
     @TestCase

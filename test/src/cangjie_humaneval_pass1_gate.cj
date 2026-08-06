@@ -17,6 +17,8 @@ public class CangjieHumanEvalPass1GateOptions {
     public var expectedTotal: Int64 = 164
     public var expectedPass: Int64 = 164
     public var format: String = "markdown"
+    public var protocol: String = ""
+    public var groupsExplicit: Bool = false
     public var emitCurationInputPath: String = ""
     public var help: Bool = false
 
@@ -30,12 +32,21 @@ public class CangjieHumanEvalPass1ResultRow {
     public var ok: Bool = false
     public var diagnostic: String = ""
     public var raw: String = ""
+    public var schemaVersion: String = ""
     public var caseId: String = ""
     public var group: String = ""
     public var unitPassAt1: Bool = false
     public var protocolViolation: Bool = false
     public var failureType: String = ""
     public var toolEvidence: String = ""
+    public var runId: String = ""
+    public var generationProtocol: String = "historical-agentic-v1"
+    public var baseAnswerHash: String = ""
+    public var plusAnswerHash: String = ""
+    public var skillBundleHash: String = ""
+    public var assetLineage: String = ""
+    public var basePassed: Bool = false
+    public var plusPassed: Bool = false
 
     public init() {}
 }
@@ -78,6 +89,12 @@ public class CangjieHumanEvalPass1GateResult {
     public var groups: ArrayList<CangjieHumanEvalPass1GroupResult> = ArrayList<CangjieHumanEvalPass1GroupResult>()
     public var remainingGaps: ArrayList<CangjieHumanEvalRemainingGap> = ArrayList<CangjieHumanEvalRemainingGap>()
     public var diagnostics: ArrayList<String> = ArrayList<String>()
+    public var baseMetricName: String = ""
+    public var plusMetricName: String = ""
+    public var basePassed: Int64 = 0
+    public var plusPassed: Int64 = 0
+    public var certificationStatus: String = ""
+    public var assetLineage: String = ""
 
     public init() {}
 
@@ -113,6 +130,7 @@ public func parseCangjieHumanEvalPass1GateOptions(args: Array<String>): CangjieH
         }
         if (arg == "--groups" && i + 1 < args.size) {
             options.groups = cangjieHumanEvalGateParseGroups(args[i + 1])
+            options.groupsExplicit = true
             i += 2
             continue
         }
@@ -131,12 +149,21 @@ public func parseCangjieHumanEvalPass1GateOptions(args: Array<String>): CangjieH
             i += 2
             continue
         }
+        if (arg == "--protocol" && i + 1 < args.size) {
+            options.protocol = args[i + 1].trimAscii()
+            i += 2
+            continue
+        }
         if (arg == "--emit-curation-input" && i + 1 < args.size) {
             options.emitCurationInputPath = args[i + 1].trimAscii()
             i += 2
             continue
         }
         i += 1
+    }
+    if(options.protocol=="completion-only-v1"){
+        if(!options.groupsExplicit){options.groups=ArrayList<String>();options.groups.add(CangjieHumanEvalPass1GateGroups.D)}
+        else if(options.groups.size!=1||options.groups[0]!=CangjieHumanEvalPass1GateGroups.D){options.groups=ArrayList<String>()}
     }
     options
 }
@@ -151,6 +178,7 @@ public func runCangjieHumanEvalPass1Gate(args: Array<String>): Int64 {
         println("usage error: cangjie-humaneval-pass1-gate requires --run-root <path>")
         return 2
     }
+    if(options.protocol=="completion-only-v1"&&(options.groups.size!=1||options.groups[0]!=CangjieHumanEvalPass1GateGroups.D)){println("usage error: completion-only-v1 requires group D");return 2}
     let result = cangjieHumanEvalPass1GateFromFiles(options)
     if (options.emitCurationInputPath != "") {
         let writeDiagnostic = cangjieHumanEvalGateWriteCurationInput(options.runRoot, options.emitCurationInputPath, result)
@@ -211,7 +239,13 @@ public func cangjieHumanEvalPass1GateFromFiles(options: CangjieHumanEvalPass1Gat
         result.addDiagnostic("manifest_not_found:${options.manifestPath}")
         return result
     }
-    cangjieHumanEvalPass1GateFromText(cangjieHumanEvalGateReadText(resultsPath), cangjieHumanEvalGateReadText(options.manifestPath), options, options.runRoot, options.manifestPath)
+    let manifestText=cangjieHumanEvalGateReadText(options.manifestPath)
+    if(options.protocol=="completion-only-v1"){
+        let gate=ckbStrictCertificationGateFromRunRoot(options.runRoot,manifestText)
+        let thresholdOnly=!gate.ok&&gate.diagnostics.size==1&&gate.diagnostics[0]=="strict_pass_at_1_requirements_not_met"
+        if(!gate.ok&&!thresholdOnly){result.addDiagnostic("completion_private_artifact_certification_invalid:${if(gate.diagnostics.size>0){gate.diagnostics[0]}else{"unknown"}}");return result}
+    }
+    cangjieHumanEvalPass1GateFromText(cangjieHumanEvalGateReadText(resultsPath), manifestText, options, options.runRoot, options.manifestPath)
 }
 
 public func cangjieHumanEvalPass1GateFromText(
@@ -248,6 +282,23 @@ public func cangjieHumanEvalPass1GateFromText(
             result.addDiagnostic("${row.diagnostic}:${cangjieHumanEvalGateCompactRaw(row.raw)}")
         }
     }
+    if(options.protocol=="completion-only-v1"){
+        var runId="";var bundle="";var lineage=""
+        let scoreRows=ArrayList<CkbStrictScoreEvidenceRow>()
+        for(row in rows){
+            if(!row.ok||row.generationProtocol!="completion-only-v1"){result.addDiagnostic("completion_protocol_row_invalid:${row.caseId}");continue}
+            if(runId==""){runId=row.runId;bundle=row.skillBundleHash;lineage=row.assetLineage}
+            if(row.runId!=runId){result.addDiagnostic("cross_run_sample_join:${row.caseId}")}
+            if(row.baseAnswerHash!=row.plusAnswerHash){result.addDiagnostic("base_plus_answer_mismatch:${row.caseId}")}
+            if(row.skillBundleHash!=bundle||row.assetLineage!=lineage){result.addDiagnostic("completion_bundle_or_lineage_drift:${row.caseId}")}
+            let certification=parseCkbCertificationEvidence(row.raw)
+            let artifactDiagnostic=ckbStrictCompletionCaseFromRunRootDiagnostic(runRoot,certification)
+            if(artifactDiagnostic!="ok"){result.addDiagnostic("completion_artifact_invalid:${row.caseId}:${artifactDiagnostic}")}
+            if(certification.valid){scoreRows.add(cangjieHumanEvalCompletionScoreRow(certification))}
+        }
+        let score=computeCkbHumanEvalStrictScore(scoreRows)
+        if(!score.valid){result.addDiagnostic("completion_score_invalid:${score.diagnostic}")}else{result.baseMetricName=score.baseMetricName;result.plusMetricName=score.plusMetricName;result.basePassed=score.basePassed;result.plusPassed=score.plusPassed;result.certificationStatus=score.certificationStatus;result.assetLineage=if(scoreRows.size>0){scoreRows[0].assetLineage}else{""}}
+    }
     for (group in options.groups) {
         result.groups.add(cangjieHumanEvalPass1GroupGate(group, rows, manifest, options, result.remainingGaps))
     }
@@ -255,7 +306,7 @@ public func cangjieHumanEvalPass1GateFromText(
         if (groupResult.total != options.expectedTotal) {
             result.addDiagnostic("group_total_mismatch:${groupResult.group}:${groupResult.total}:${options.expectedTotal}")
         }
-        if (groupResult.passAt1 != options.expectedPass) {
+        if (options.protocol!="completion-only-v1"&&groupResult.passAt1 != options.expectedPass) {
             result.addDiagnostic("group_pass_at1_mismatch:${groupResult.group}:${groupResult.passAt1}:${options.expectedPass}")
         }
         if (groupResult.duplicates > 0) {
@@ -332,12 +383,23 @@ public func parseCangjieHumanEvalPass1Row(line: String): CangjieHumanEvalPass1Re
     }
     try {
         let object = JsonValue.fromStr(raw).asObject()
+        row.schemaVersion = match (object.get("schemaVersion")) {
+            case Some(value) => value.asString().getValue().trimAscii()
+            case None => ""
+        }
         row.caseId = cangjieHumanEvalGateObjectString(object, "caseId").trimAscii()
         row.group = cangjieHumanEvalGateObjectString(object, "group").trimAscii()
-        row.unitPassAt1 = cangjieHumanEvalGateObjectBool(object, "unitPassAt1")
-        row.protocolViolation = cangjieHumanEvalGateObjectBool(object, "protocolViolation")
-        row.failureType = cangjieHumanEvalGateObjectString(object, "failureType").trimAscii()
-        row.toolEvidence = cangjieHumanEvalGateObjectString(object, "toolEvidence").trimAscii()
+        if(row.schemaVersion=="ckb-humaneval-certification-result-v4"){
+            let certification=parseCkbCertificationEvidence(raw);if(!certification.valid){row.diagnostic="completion_${certification.diagnostic}";return row}
+            row.runId=certification.runId;row.generationProtocol=certification.generationProtocol;row.baseAnswerHash=certification.baseAnswerHash;row.plusAnswerHash=certification.plusAnswerHash
+            row.skillBundleHash=certification.skillBundleHash;row.assetLineage=certification.assetLineage;row.basePassed=certification.basePassed;row.plusPassed=certification.plusPassed
+            row.unitPassAt1=certification.certificationPassAt1;row.protocolViolation=false;row.failureType=if(row.unitPassAt1){"none"}else{"test_failure"}
+        }else{
+            row.unitPassAt1 = cangjieHumanEvalGateObjectBool(object, "unitPassAt1")
+            row.protocolViolation = cangjieHumanEvalGateObjectBool(object, "protocolViolation")
+            row.failureType = cangjieHumanEvalGateObjectString(object, "failureType").trimAscii()
+            row.toolEvidence = cangjieHumanEvalGateObjectString(object, "toolEvidence").trimAscii()
+        }
     } catch (_: Exception) {
         row.diagnostic = "malformed_result_row"
         return row
@@ -397,8 +459,13 @@ private func cangjieHumanEvalGateFindRows(rows: ArrayList<CangjieHumanEvalPass1R
 }
 
 private func cangjieHumanEvalGateTransportParityFailure(group: String, row: CangjieHumanEvalPass1ResultRow): Bool {
+    if(row.generationProtocol=="completion-only-v1"){return false}
     (group == CangjieHumanEvalPass1GateGroups.C || group == CangjieHumanEvalPass1GateGroups.D) &&
         row.toolEvidence != "cangjie_task_knowledge_pack"
+}
+
+private func cangjieHumanEvalCompletionScoreRow(certification:CkbCertificationCaseEvidence):CkbStrictScoreEvidenceRow{
+    let row=CkbStrictScoreEvidenceRow();row.schemaVersion="ckb-humaneval-public-evidence-v2";row.caseId=certification.caseId;row.runId=certification.runId;row.datasetVersion=certification.datasetVersion;row.knowledgeVersion=certification.knowledgeVersion;row.modelFingerprint=certification.modelFingerprint;row.providerIdentityHash=certification.providerIdentityHash;row.runManifestHash=certification.runManifestHash;row.certificationPassAt1=certification.certificationPassAt1;row.unitFirstSamplePassed=certification.certificationPassAt1&&certification.unresolvedTransport==0;row.classification=if(certification.unresolvedTransport==1){"transport_unresolved"}else if(certification.certificationPassAt1){"none"}else{"business_failure"};row.sampleAttemptCount=certification.sampleAttemptCount;row.selectedBusinessSample=certification.selectedBusinessSample;row.transportAttemptCount=certification.transportAttemptCount;row.transportRetryCount=certification.retryCount;row.unresolvedTransport=certification.unresolvedTransport;row.retryUsed=certification.retryUsed;row.fallbackUsed=certification.fallbackUsed;row.referenceExposure=certification.referenceExposure;row.hiddenTestExposure=certification.hiddenTestExposure;row.teacherExposure=certification.teacherExposure;row.crossCaseExposure=certification.crossCaseExposure;row.generationProtocol=certification.generationProtocol;row.assetLineage=certification.assetLineage;row.skillBundleHash=certification.skillBundleHash;row.basePassed=certification.basePassed;row.plusPassed=certification.plusPassed;row
 }
 
 private func cangjieHumanEvalGateRowStatus(row: CangjieHumanEvalPass1ResultRow): String {
@@ -453,6 +520,7 @@ public func renderCangjieHumanEvalPass1GateMarkdown(result: CangjieHumanEvalPass
     out += "- expected: ${result.expectedPass}/${result.expectedTotal}\n"
     out += "- manifestCaseCount: ${result.manifestCaseCount}\n"
     out += "- parsedResultRows: ${result.parsedResultRows}\n\n"
+    if(result.baseMetricName!=""){out+="${result.baseMetricName}=${result.basePassed}/${result.expectedTotal}\n${result.plusMetricName}=${result.plusPassed}/${result.expectedTotal}\ncertification_status=${result.certificationStatus}\nasset_lineage=${result.assetLineage}\n\n"}
     out += "## Group Gate\n\n"
     out += "| group | total | pass@1 | duplicates | missing | protocolViolation | transportParityFailure |\n"
     out += "| --- | ---: | ---: | ---: | ---: | ---: | ---: |\n"
@@ -489,7 +557,7 @@ public func renderCangjieHumanEvalPass1GateJson(result: CangjieHumanEvalPass1Gat
         let gap = result.remainingGaps[i]
         gaps += "{\"caseId\":\"${cangjieHumanEvalGateJsonEscape(gap.caseId)}\",\"group\":\"${cangjieHumanEvalGateJsonEscape(gap.group)}\",\"status\":\"${cangjieHumanEvalGateJsonEscape(gap.status)}\",\"targetVersion\":\"${cangjieHumanEvalGateJsonEscape(gap.targetVersion)}\",\"gapCodes\":[${cangjieHumanEvalGateJsonStringArray(gap.gapCodes)}],\"kiInterfaces\":[${cangjieHumanEvalGateJsonStringArray(gap.kiInterfaces)}],\"tags\":[${cangjieHumanEvalGateJsonStringArray(gap.tags)}]}"
     }
-    "{\"ok\":${result.ok},\"releaseGate\":\"${if (result.ok) { "pass" } else { "fail" }}\",\"runRoot\":\"${cangjieHumanEvalGateJsonEscape(result.runRoot)}\",\"manifestPath\":\"${cangjieHumanEvalGateJsonEscape(result.manifestPath)}\",\"expectedTotal\":${result.expectedTotal},\"expectedPass\":${result.expectedPass},\"manifestCaseCount\":${result.manifestCaseCount},\"parsedResultRows\":${result.parsedResultRows},\"diagnostics\":[${cangjieHumanEvalGateJsonStringArray(result.diagnostics)}],\"groups\":[${groups}],\"remainingGaps\":[${gaps}]}\n"
+    "{\"ok\":${result.ok},\"baseMetricName\":\"${cangjieHumanEvalGateJsonEscape(result.baseMetricName)}\",\"plusMetricName\":\"${cangjieHumanEvalGateJsonEscape(result.plusMetricName)}\",\"basePassed\":${result.basePassed},\"plusPassed\":${result.plusPassed},\"certificationStatus\":\"${cangjieHumanEvalGateJsonEscape(result.certificationStatus)}\",\"assetLineage\":\"${cangjieHumanEvalGateJsonEscape(result.assetLineage)}\",\"releaseGate\":\"${if (result.ok) { "pass" } else { "fail" }}\",\"runRoot\":\"${cangjieHumanEvalGateJsonEscape(result.runRoot)}\",\"manifestPath\":\"${cangjieHumanEvalGateJsonEscape(result.manifestPath)}\",\"expectedTotal\":${result.expectedTotal},\"expectedPass\":${result.expectedPass},\"manifestCaseCount\":${result.manifestCaseCount},\"parsedResultRows\":${result.parsedResultRows},\"diagnostics\":[${cangjieHumanEvalGateJsonStringArray(result.diagnostics)}],\"groups\":[${groups}],\"remainingGaps\":[${gaps}]}\n"
 }
 
 public func emitCangjieHumanEvalGapCurationInput(result: CangjieHumanEvalPass1GateResult): String {

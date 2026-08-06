@@ -22,7 +22,7 @@ public class CangjieHumanEvalStrictScoreTest {
         @Expect(score.transportUnresolved, 0)
         @Expect(score.evidenceLevel, "public_projection")
         @Expect(renderCkbHumanEvalStrictScoreJson(score),
-            "{\"valid\":true,\"total\":164,\"strictPassed\":151,\"strictFailed\":13,\"unitFirstSamplePassed\":158,\"businessFailed\":3,\"protocolInvalid\":10,\"transportUnresolved\":0,\"evidenceLevel\":\"public_projection\",\"artifactManifestHash\":\"\",\"releaseEligible\":false,\"diagnostic\":\"ok\"}")
+            "{\"valid\":true,\"total\":164,\"strictPassed\":151,\"strictFailed\":13,\"unitFirstSamplePassed\":158,\"businessFailed\":3,\"protocolInvalid\":10,\"transportUnresolved\":0,\"basePassed\":0,\"plusPassed\":0,\"baseMetricName\":\"historical_agentic_base_pass_at_1\",\"plusMetricName\":\"historical_agentic_plus_pass_at_1\",\"certificationStatus\":\"historical_agentic_not_strict\",\"evidenceLevel\":\"public_projection\",\"artifactManifestHash\":\"\",\"releaseEligible\":false,\"diagnostic\":\"ok\"}")
     }
 
     @TestCase
@@ -195,11 +195,11 @@ public class CangjieHumanEvalStrictScoreTest {
         @Expect(score.evidenceLevel, "public_projection")
 
         @Expect(p1ScoreFileHash("../src/cangjie_eval_abcde_runner.cj"),
-            "sha256:a8abf91d5e1dbb45671298c32b630899b833a1b7550c4fc2f487c43619ff5e1f")
+            "sha256:f9a67521f40d307d63f18f355c34817ad25f10c1f317bb82cf5d537b4009c569")
         @Expect(p1ScoreFileHash("../src/cangjie_eval_knowledge_audit.cj"),
             "sha256:de1ed91483fdda2eade6939208098d6e89f28af4d0eac0527812748f3ad20e73")
         @Expect(p1ScoreFileHash("../src/cangjie_strict_certification.cj"),
-            "sha256:781ee706c1441f4111c97a4573ff0df20191e5e0a1af03ff6e35d0f0c5ea816d")
+            "sha256:aef4fe722e570b0fb92de3e299fdafe1252551f3833796c8a38b3a72a0ed6b46")
     }
 }
 

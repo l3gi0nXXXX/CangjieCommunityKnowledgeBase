@@ -455,6 +455,11 @@ public func projectCkbPublicEvidenceRow(
     }
 
     let row = CkbStrictScoreEvidenceRow()
+    if(certification.schemaVersion=="ckb-humaneval-certification-result-v4"){
+        row.schemaVersion="ckb-humaneval-public-evidence-v2";row.generationProtocol=certification.generationProtocol
+        row.assetLineage=certification.assetLineage;row.skillBundleHash=certification.skillBundleHash
+        row.basePassed=certification.basePassed;row.plusPassed=certification.plusPassed
+    }
     row.caseId = certification.caseId
     row.runId = certification.runId
     row.datasetVersion = certification.datasetVersion
@@ -587,7 +592,10 @@ public func compareCkbPrivateAndPublicScores(
         privateScore.unitFirstSamplePassed != publicScore.unitFirstSamplePassed ||
         privateScore.businessFailed != publicScore.businessFailed ||
         privateScore.protocolInvalid != publicScore.protocolInvalid ||
-        privateScore.transportUnresolved != publicScore.transportUnresolved) {
+        privateScore.transportUnresolved != publicScore.transportUnresolved ||
+        privateScore.basePassed!=publicScore.basePassed||privateScore.plusPassed!=publicScore.plusPassed||
+        privateScore.baseMetricName!=publicScore.baseMetricName||privateScore.plusMetricName!=publicScore.plusMetricName||
+        privateScore.certificationStatus!=publicScore.certificationStatus) {
         result.diagnostic = "score_mismatch"
         return result
     }
@@ -695,7 +703,8 @@ private func ckbPublicEvidenceIdentityEqual(
         left.knowledgeVersion == right.knowledgeVersion &&
         left.modelFingerprint == right.modelFingerprint &&
         left.providerIdentityHash == right.providerIdentityHash &&
-        left.runManifestHash == right.runManifestHash
+        left.runManifestHash == right.runManifestHash&&left.generationProtocol==right.generationProtocol&&
+        left.assetLineage==right.assetLineage&&left.skillBundleHash==right.skillBundleHash
 }
 
 public func runCkbPublicEvidenceExportFromFiles(
@@ -785,6 +794,35 @@ public func projectCkbPublicEvidenceFromRunFiles(
         catch (_: Exception) {
             return p5CliRenderFailure("invalid_response_encoding")
         }
+    var completionOnly = false
+    for (line in resultsText.split("\n")) {
+        let certificationLine = line.trimAscii()
+        if (certificationLine == "") { continue }
+        if (parseCkbCertificationEvidence(certificationLine).schemaVersion ==
+            "ckb-humaneval-certification-result-v4") {
+            completionOnly = true
+        }
+    }
+    if (completionOnly) {
+        let authorityRead = p5CliReadBounded(
+            Path(runRoot).join("authority.jsonl").toString(), 64 * 1024 * 1024)
+        if (authorityRead[0] != "ok") {
+            return p5CliRenderFailure("public_evidence_authority_snapshot_missing")
+        }
+        let authorityText = try { String.fromUtf8(authorityRead[1]) }
+            catch (_: Exception) {
+                return p5CliRenderFailure("invalid_response_encoding")
+            }
+        let privateGate = ckbStrictCertificationGateFromRunRoot(
+            runRoot, authorityText)
+        let thresholdOnly = !privateGate.ok &&
+            privateGate.diagnostics.size == 1 &&
+            privateGate.diagnostics[0] == "strict_pass_at_1_requirements_not_met"
+        if (!privateGate.ok && !thresholdOnly) {
+            return p5CliRenderFailure(
+                "public_evidence_private_certification_invalid")
+        }
+    }
     if (bindReferenceOutcome &&
         benchmarkGapSha256(resultsText) != reference.resultsHash) {
         return p5CliRenderFailure("public_evidence_results_hash_mismatch")
@@ -823,6 +861,10 @@ public func projectCkbPublicEvidenceFromRunFiles(
         }
         let caseRoot = Path(runRoot).join(
             "cases/${certification.caseId}/${certification.group}")
+        if(certification.schemaVersion=="ckb-humaneval-certification-result-v4"){
+            let completionDiagnostic=ckbStrictCompletionCaseFromRunRootDiagnostic(runRoot,certification)
+            if(completionDiagnostic!="ok"){return p5CliRenderFailure("public_evidence_completion_${completionDiagnostic}")}
+        }
         let testPath = caseRoot.join("test-result.json").toString()
         let auditPath = caseRoot.join("audit.json").toString()
         if (!exists(Path(testPath))) {

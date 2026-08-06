@@ -1,5 +1,6 @@
 package cangjie_community_knowledge_base_test
 
+import std.collection.ArrayList
 import std.fs.{Directory, File, Path, canonicalize, exists, remove}
 import std.env.getVariable
 import std.time.*
@@ -201,7 +202,78 @@ public class CangjieStrictCertificationTest {
         @Expect(score.ok, false)
         @Expect(score.unitPassAt1, 151)
     }
+
 }
+
+@Test
+public class CkbP4IntegratedCertificationTest {
+    @TestCase
+    public func p4Ut01ExistingScorePipelineNamesBasePlusByLineage(): Unit {
+        let fixture=p4CompletionRun("ut-score","none");let projected=projectCkbPublicEvidenceFromRunFiles(canonicalize(Path(fixture.root)).toString(),p4Reference(fixture),bindReferenceOutcome:false)
+        @Expect(projected.ok,true);@Expect(projected.score.basePassed,164);@Expect(projected.score.plusPassed,164)
+        @Expect(projected.score.baseMetricName,"strict_ckb_skill_base_pass_at_1");@Expect(projected.score.plusMetricName,"strict_ckb_skill_plus_pass_at_1")
+        @Expect(projected.score.certificationStatus,"passed")
+    }
+    
+    @TestCase
+    public func p4Bnd01ExistingPass1GateRejectsCountsAndTreatsPostTokenAsFailure(): Unit {
+        let fixture=p4CompletionRun("bnd-post-token","post_token_failure");let options=p4Pass1Options(fixture)
+        let gate=cangjieHumanEvalPass1GateFromFiles(options)
+        @Expect(gate.ok,true);@Expect(gate.groups[0].total,164);@Expect(gate.groups[0].passAt1,163);@Expect(gate.basePassed,163);@Expect(gate.plusPassed,163);@Expect(gate.remainingGaps.size>0,true)
+        let lines=String.fromUtf8(File.readFrom(Path(fixture.root).join("results.jsonl"))).split("\n");let short=StringBuilder();for(i in 0..163){short.append(lines[i]);short.append("\n")}
+        let countGate=cangjieHumanEvalPass1GateFromText(short.toString(),fixture.authority,options,fixture.root,"authority.jsonl")
+        @Expect(p7DiagnosticsText(countGate.diagnostics).contains("group_total_mismatch"),true)
+        let recovered=p4CompletionRun("bnd-zero-recovered","zero_token_recovered");@Expect(cangjieHumanEvalPass1GateFromFiles(p4Pass1Options(recovered)).ok,true)
+        let unrecovered=p4CompletionRun("bnd-zero-unrecovered","zero_token_unrecovered");let unrecoveredGate=cangjieHumanEvalPass1GateFromFiles(p4Pass1Options(unrecovered));@Expect(unrecoveredGate.ok,false);@Expect(p7DiagnosticsText(unrecoveredGate.diagnostics).contains("zero_token_recovery_evidence_required"),true)
+        let public163=projectCkbPublicEvidenceFromRunFiles(canonicalize(Path(fixture.root)).toString(),p4Reference(fixture),bindReferenceOutcome:false);@Expect(public163.ok,true);@Expect(public163.score.strictPassed,163);@Expect(public163.score.businessFailed,1);@Expect(public163.text.contains("\"classification\":\"business_failure\""),true)
+    }
+    
+    @TestCase
+    public func p4Pos01Real164RunPassesCertificationPass1ScoreAndPublicExport(): Unit {
+        let fixture=p4CompletionRun("pos","none")
+        let strict=ckbStrictCertificationGateFromRunRoot(fixture.root,fixture.authority)
+        @Expect(strict.ok,true)
+        @Expect(cangjieHumanEvalPass1GateFromFiles(p4Pass1Options(fixture)).ok,true)
+        let runbook=parseCangjieHumanEvalPass1GateOptions(["--run-root",fixture.root,"--protocol","completion-only-v1"]);runbook.manifestPath=Path(fixture.root).join("authority.jsonl").toString();let runbookResult=cangjieHumanEvalPass1GateFromFiles(runbook);let human=renderCangjieHumanEvalPass1GateMarkdown(runbookResult)
+        let machine=renderCangjieHumanEvalPass1GateJson(runbookResult);@Expect(runbookResult.ok,true);@Expect(runbook.groups.size,1);@Expect(runbook.groups[0],CkbAbcdeGroups.D);@Expect(human.contains("strict_ckb_skill_base_pass_at_1=164/164"),true);@Expect(human.contains("certification_status=passed"),true);@Expect(machine.contains("\"baseMetricName\":\"strict_ckb_skill_base_pass_at_1\""),true);@Expect(machine.contains("\"assetLineage\":\"independent\""),true)
+        let derived=p4CompletionRun("pos-derived","derived");let derivedOptions=parseCangjieHumanEvalPass1GateOptions(["--run-root",derived.root,"--protocol","completion-only-v1"]);derivedOptions.manifestPath=Path(derived.root).join("authority.jsonl").toString();let derivedHuman=renderCangjieHumanEvalPass1GateMarkdown(cangjieHumanEvalPass1GateFromFiles(derivedOptions));@Expect(derivedHuman.contains("closed_loop_ckb_skill_base_pass_at_1=164/164"),true)
+        let reference=p4Reference(fixture);let projected=projectCkbPublicEvidenceFromRunFiles(canonicalize(Path(fixture.root)).toString(),reference,bindReferenceOutcome:false)
+        @Expect(projected.ok,true);@Expect(projected.score.strictPassed,164);@Expect(projected.text.contains("\"generationProtocol\":\"completion-only-v1\""),true)
+    }
+    
+    @TestCase
+    public func p4Neg01RealRunArtifactsRejectToolsSecondAnswerEarlyExecutionAndBundleDrift(): Unit {
+        for(mutation in ["tool_use","second_answer","early_execution","bundle_drift"]){
+            let fixture=p4CompletionRun("neg-${mutation}",mutation);let gate=ckbStrictCertificationGateFromRunRoot(fixture.root,fixture.authority)
+            let expected=if(mutation=="tool_use"){"completion_tool_use_forbidden"}else if(mutation=="second_answer"){"completion_not_unique"}else if(mutation=="early_execution"){"execution_before_answer_freeze"}else{"completion_bundle_or_lineage_drift"}
+            @Expect(gate.ok,false);@Expect(p7Diagnostics(gate).contains(expected),true)
+        }
+        let provenance=p4CompletionRun("neg-provenance","none");let provenancePath=Path(provenance.root).join("runner-provenance.json");let provenanceText=String.fromUtf8(File.readFrom(provenancePath));File.writeTo(provenancePath,provenanceText.replace("\"caseCount\":164","\"caseCount\":163").toArray())
+        let pass1=cangjieHumanEvalPass1GateFromFiles(p4Pass1Options(provenance));@Expect(pass1.ok,false);@Expect(p7DiagnosticsText(pass1.diagnostics).contains("run_manifest_artifact_binding_mismatch"),true)
+        let artifacts=p4CompletionRun("neg-completion-seed","none");let caseRoot=Path(artifacts.root).join("cases/CJ-HUMANEVAL-000").join(CkbAbcdeGroups.D);let initial=ckbStrictCertificationGateFromRunRoot(artifacts.root,artifacts.authority);@Expect(initial.ok,true);@Expect(initial.artifactManifestHash!="",true)
+        for(name in ["frozen-completion/solution.cj","generation-evidence.json","answer-freeze.json","base-test-result.json","plus-test-result.json"]){let path=caseRoot.join(name);let original=File.readFrom(path);File.writeTo(path,(String.fromUtf8(original)+" ").toArray());let tampered=ckbStrictCertificationGateFromRunRoot(artifacts.root,artifacts.authority);@Expect(!tampered.ok||tampered.artifactManifestHash!=initial.artifactManifestHash,true);File.writeTo(path,original)}
+        let v4Legacy=p4CompletionRun("neg-v4-legacy-manifest","none");let v4Manifest=Path(v4Legacy.root).join("run-manifest.json");File.writeTo(v4Manifest,String.fromUtf8(File.readFrom(v4Manifest)).replace("\"generationProtocol\":\"completion-only-v1\"","\"legacyProtocol\":\"completion-only-v1\"").toArray());@Expect(p7Diagnostics(ckbStrictCertificationGateFromRunRoot(v4Legacy.root,v4Legacy.authority)).contains("case_run_protocol_mismatch"),true)
+        let v3Completion=p1M00PrivateRun(164,"p4-neg-v3-completion-manifest");let v3Manifest=Path(v3Completion.root).join("run-manifest.json");let bundle=benchmarkGapSha256("student-bundle");File.writeTo(v3Manifest,String.fromUtf8(File.readFrom(v3Manifest)).replace("}",",\"generationProtocol\":\"completion-only-v1\",\"samplingCapability\":\"temperature_zero\",\"skillBundleVersion\":\"student-v1\",\"skillBundleHash\":\"${bundle}\",\"assetLineage\":\"independent\"}").toArray());@Expect(p7Diagnostics(ckbStrictCertificationGateFromRunRoot(v3Completion.root,v3Completion.authority)).contains("case_run_protocol_mismatch"),true)
+    }
+    
+    @TestCase
+    public func p4Pub01ExistingExportRejectsPrivateHiddenSecretWrongLineageAndInvalidUtf8(): Unit {
+        let fixture=p4CompletionRun("pub","none");let reference=p4Reference(fixture)
+        @Expect(projectCkbPublicEvidenceFromRunFiles(canonicalize(Path(fixture.root)).toString(),reference,bindReferenceOutcome:false).ok,true)
+        let caseRoot=Path(fixture.root).join("cases/CJ-HUMANEVAL-000").join(CkbAbcdeGroups.D)
+        File.writeTo(caseRoot.join("audit.json"),"{\"token\":\"secret\",\"hiddenTest\":\"/Users/private/x\"}".toArray())
+        @Expect(projectCkbPublicEvidenceFromRunFiles(canonicalize(Path(fixture.root)).toString(),reference,bindReferenceOutcome:false).ok,false)
+        File.writeTo(caseRoot.join("audit.json"),[UInt8(0xff),UInt8(0xfe)])
+        @Expect(projectCkbPublicEvidenceFromRunFiles(canonicalize(Path(fixture.root)).toString(),reference,bindReferenceOutcome:false).ok,false)
+        let drift=p4CompletionRun("pub-lineage","wrong_lineage")
+        @Expect(projectCkbPublicEvidenceFromRunFiles(canonicalize(Path(drift.root)).toString(),p4Reference(drift),bindReferenceOutcome:false).ok,false)
+        let provenance=p4CompletionRun("pub-provenance","none");let provenancePath=Path(provenance.root).join("runner-provenance.json");let provenanceText=String.fromUtf8(File.readFrom(provenancePath));File.writeTo(provenancePath,provenanceText.replace("\"caseCount\":164","\"caseCount\":163").toArray())
+        @Expect(projectCkbPublicEvidenceFromRunFiles(canonicalize(Path(provenance.root)).toString(),p4Reference(provenance),bindReferenceOutcome:false).ok,false)
+        let authority=p4CompletionRun("pub-authority","none");let authorityPath=Path(authority.root).join("authority.jsonl");File.writeTo(authorityPath,(String.fromUtf8(File.readFrom(authorityPath))+" ").toArray())
+        @Expect(projectCkbPublicEvidenceFromRunFiles(canonicalize(Path(authority.root)).toString(),p4Reference(authority),bindReferenceOutcome:false).ok,false)
+    }
+}
+
 
 private class P7FakeExecutor <: CkbCertificationExecutor {
     public override func execute(caseId:String,workspace:String,sessionId:String,runtimeHome:String):CkbCertificationCaseEvidence{
@@ -368,3 +440,28 @@ private func p1M00Hash(value: String): Bool {
     }
     true
 }
+
+private func p4CompletionRun(label:String,mutation:String):P1M00PrivateRunFixture{
+    let fixture=p1M00PrivateRun(164,"p4-${label}");let root=Path(fixture.root);let bundleHash=benchmarkGapSha256("student-bundle");let oldResults=String.fromUtf8(File.readFrom(root.join("results.jsonl")));let lineageValue=if(mutation=="derived"){"humaneval_164_derived"}else if(mutation=="wrong_lineage"){"wrong"}else{"independent"}
+    let manifest=String.fromUtf8(File.readFrom(root.join("run-manifest.json"))).replace("}",",\"generationProtocol\":\"completion-only-v1\",\"samplingCapability\":\"temperature_zero\",\"skillBundleVersion\":\"student-v1\",\"skillBundleHash\":\"${bundleHash}\",\"assetLineage\":\"${lineageValue}\"}")
+    File.writeTo(root.join("run-manifest.json"),manifest.toArray());let out=StringBuilder()
+    for(line in oldResults.split("\n")){if(line==""){continue};let row=parseCkbCertificationEvidence(line);let groupRoot=root.join("cases").join(row.caseId).join(row.group);let solution=String.fromUtf8(File.readFrom(groupRoot.join("workspace/src/solution.cj")));let answerHash=benchmarkGapSha256(solution)
+        var transcript="{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"modelUsage\":{\"GLM-5.2\":{}},\"structured_output\":{\"solution_cj\":\"${ckbAbcdeJsonEscape(solution)}\"}}"
+        if(row.caseId=="CJ-HUMANEVAL-000"&&mutation=="tool_use"){transcript="{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Skill\"}]}}\n${transcript}"}
+        if(row.caseId=="CJ-HUMANEVAL-000"&&mutation=="second_answer"){transcript+="\n${transcript}"}
+        Directory.create(groupRoot.join("frozen-completion"),recursive:true);File.writeTo(groupRoot.join("frozen-completion/solution.cj"),solution.toArray());File.writeTo(groupRoot.join("claude-transcript.jsonl"),transcript.toArray());File.writeTo(groupRoot.join("claude-transcript.attempt-1.jsonl"),transcript.toArray())
+        let attemptsPath=groupRoot.join("claude-attempts.jsonl");let oldAttempts=String.fromUtf8(File.readFrom(attemptsPath));let attempts=oldAttempts.replace(row.transcriptHash,benchmarkGapSha256(transcript));File.writeTo(attemptsPath,attempts.toArray());let restores=String.fromUtf8(File.readFrom(groupRoot.join("workspace-restores.jsonl")));let lineageHash=ckbAbcdeAttemptLineageHash(attempts,restores);let summaryPath=groupRoot.join("attempt-evidence.json");let summary=String.fromUtf8(File.readFrom(summaryPath)).replace(row.attemptLineageHash,lineageHash);File.writeTo(summaryPath,summary.toArray());let legacyTestPath=groupRoot.join("test-result.json");let legacyTest=String.fromUtf8(File.readFrom(legacyTestPath)).replace(row.attemptLineageHash,lineageHash);File.writeTo(legacyTestPath,legacyTest.toArray())
+        let early=row.caseId=="CJ-HUMANEVAL-000"&&mutation=="early_execution";let failed=row.caseId=="CJ-HUMANEVAL-000"&&mutation=="post_token_failure";let outcomeFailed=failed;let zeroRecovered=row.caseId=="CJ-HUMANEVAL-000"&&mutation=="zero_token_recovered";let zeroUnrecovered=row.caseId=="CJ-HUMANEVAL-000"&&mutation=="zero_token_unrecovered"
+        if(outcomeFailed){let failedTest=String.fromUtf8(File.readFrom(legacyTestPath)).replace("\"testExitCode\":0","\"testExitCode\":1").replace("\"unitPassAt1\":true","\"unitPassAt1\":false").replace("\"failureType\":\"none\"","\"failureType\":\"test_failure\"");File.writeTo(legacyTestPath,failedTest.toArray())}
+        File.writeTo(groupRoot.join("generation-evidence.json"),"{\"answerHash\":\"${answerHash}\",\"completionCount\":1,\"toolCallCount\":0,\"executionFeedbackCount\":0,\"interrupted\":${failed||zeroRecovered||zeroUnrecovered},\"generatedTokenCount\":${if(failed){1}else{0}},\"checkpointRecovered\":${zeroRecovered}}".toArray())
+        File.writeTo(groupRoot.join("answer-freeze.json"),"{\"answerHash\":\"${answerHash}\",\"sequence\":${if(early){4}else{2}}}".toArray())
+        File.writeTo(groupRoot.join("base-test-result.json"),"{\"answerHash\":\"${answerHash}\",\"sequence\":3,\"passed\":${!outcomeFailed}}".toArray());File.writeTo(groupRoot.join("plus-test-result.json"),"{\"answerHash\":\"${answerHash}\",\"sequence\":4,\"passed\":${!outcomeFailed}}".toArray())
+        row.schemaVersion="ckb-humaneval-certification-result-v4";row.generationProtocol="completion-only-v1";row.samplingCapability="temperature_zero";row.completionCount=1;row.toolCallCount=0;row.executionFeedbackCount=0;row.answerFreezeSequence=if(early){4}else{2};row.firstExecutionSequence=3;row.baseAnswerHash=answerHash;row.plusAnswerHash=answerHash;row.basePassed=!outcomeFailed;row.plusPassed=!outcomeFailed;row.skillBundleVersion="student-v1";row.skillBundleHash=if(row.caseId=="CJ-HUMANEVAL-000"&&mutation=="bundle_drift"){benchmarkGapSha256("drift")}else{bundleHash};row.assetLineage=lineageValue;row.llmTurnCount=1;row.attemptLineageHash=lineageHash;row.transcriptHash=benchmarkGapSha256(transcript);row.certificationPassAt1=!outcomeFailed;row.artifactHash=benchmarkGapSha256(row.answerHash+row.transcriptHash+row.testHash+row.configHash);sealCkbCertificationEvidence(row)
+        let rendered=renderCkbCertificationEvidenceJson(row);File.writeTo(groupRoot.join("result-evidence.json"),rendered.toArray());File.writeTo(groupRoot.join("audit.json"),"{\"violation\":\"none\",\"developmentPass\":false,\"closureStatus\":\"closed\",\"triageStatus\":\"complete\",\"failureRoute\":\"${if(failed){"business_failure"}else{"none"}}\",\"certificationPassAt1\":null}".toArray());out.append(rendered);out.append("\n")
+    }
+    let results=out.toString();File.writeTo(root.join("results.jsonl"),results.toArray());let provenancePath=root.join("runner-provenance.json");let provenance=String.fromUtf8(File.readFrom(provenancePath)).replace(benchmarkGapSha256(oldResults),benchmarkGapSha256(results));File.writeTo(provenancePath,provenance.toArray());fixture
+}
+
+private func p4Pass1Options(fixture:P1M00PrivateRunFixture):CangjieHumanEvalPass1GateOptions{let o=CangjieHumanEvalPass1GateOptions();o.runRoot=fixture.root;o.manifestPath=Path(fixture.root).join("authority.jsonl").toString();o.groups=ArrayList<String>();o.groups.add(CkbAbcdeGroups.D);o.protocol="completion-only-v1";o}
+private func p7DiagnosticsText(values:ArrayList<String>):String{let out=StringBuilder();for(value in values){out.append(value);out.append("\n")};out.toString()}
+private func p4Reference(fixture:P1M00PrivateRunFixture):CkbReproReferenceManifest{let first=parseCkbCertificationEvidence(String.fromUtf8(File.readFrom(Path(fixture.root).join("results.jsonl"))).split("\n")[0]);let r=CkbReproReferenceManifest();r.schemaVersion="ckb-repro-reference-v1";r.baselineKind="portable_release";r.evidenceStatus="complete";r.releaseRepository="l3gi0nXXXX/CangjieCommunityKnowledgeBase";r.releaseRepositoryUrl="https://github.com/l3gi0nXXXX/CangjieCommunityKnowledgeBase";r.releaseBranch="main";r.observedRemote="https://github.com/l3gi0nXXXX/CangjieCommunityKnowledgeBase.git";r.runId=first.runId;r.knowledgeVersion=first.knowledgeVersion;r.vectorProofHash=benchmarkGapSha256("vector");r.datasetVersion=first.datasetVersion;r.runnerCommit="0123456789012345678901234567890123456789";r.claudeCodeVersion=first.claudeCodeVersion;r.model=first.expectedModelVersion;r.modelFingerprint="claude-code-glm-5.2";r.providerFingerprint=first.providerIdentityHash;r.experimentGroup=CkbAbcdeGroups.D;r.toolTransport="mcp";r.mcpTransport="stdio";r.ckbRequired=true;r.localDocsPolicy="disabled";r.modelEffort="high";r.modelBudget="fixed";r.timeoutSeconds=3600;r.transportRetryBudget=0;r.promptHash=benchmarkGapSha256("prompt");r.resultsHash=benchmarkGapSha256(String.fromUtf8(File.readFrom(Path(fixture.root).join("results.jsonl"))));r.runCriticalTreeHash=benchmarkGapSha256("tree");r.certifiedRunInputHash=benchmarkGapSha256("input");r.totalCases=164;r.rawPassed=164;r.strictPassed=164;r.strictFailed=0;r.businessFailed=0;r.protocolInvalid=0;r.transportUnresolved=0;r}
