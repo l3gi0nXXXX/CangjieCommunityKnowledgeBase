@@ -532,6 +532,7 @@ public func validateCkbRunCriticalFilesManifest(manifest: CkbRunCriticalFilesMan
         "src/cangjie_eval_knowledge_audit.cj",
         "src/cangjie_certification_preflight.cj",
         "src/cangjie_humaneval_manifest.cj",
+        "src/cangjie_humaneval_plus_authority.cj",
         "src/cangjie_humaneval_strict_score.cj",
         "src/cangjie_first_initialization.cj",
         "src/cangjie_typed_records.cj",

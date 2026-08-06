@@ -356,7 +356,7 @@ public class CkbReproEnvironmentTest {
     public func p6Pos01TypedIdentityBuildsExplicitRunnerArgumentsOnce(): Unit {
         let lock = p6FrozenEnvironment()
         let reference = parseCkbReproReferenceManifest(
-            p6Read("../reproducibility/manifests/historical-reference-run.json"))[1]
+            p6Read("../reproducibility/manifests/reference-run.json"))[1]
         let inputs = p6RunnerInputs()
         let built = buildCkbReproRunnerArgs(reference, lock, inputs)
         @Expect(built[0].ok, true)
@@ -1079,12 +1079,22 @@ private func p6CertificationSeal(): (String, String) {
     let launch = p6Hash("launch")
     let command = p6Hash("command")
     let provider = p6Hash("provider")
+    let skillBundle = p6Hash("skill-bundle")
+    let sampling = p6Hash("sampling-capability")
+    let outputSchema = p6Hash("output-schema")
+    let lineage = p6Hash("lineage")
     let preflight =
         "{\"ok\":true,\"startAllowed\":true,\"diagnostic\":\"ok\"," +
         "\"fingerprint\":\"${fingerprint}\"," +
+        "\"providerIdentityHash\":\"${provider}\"," +
         "\"candidateChecksum\":\"${candidate}\"," +
         "\"studentLeakageProofHash\":\"${leakage}\"," +
         "\"frozenCandidateManifestHash\":\"${frozen}\"," +
+        "\"skillBundleHash\":\"${skillBundle}\",\"skillCount\":1,\"contentBytes\":1," +
+        "\"assetLineage\":\"independent\",\"lineageProofHash\":\"${lineage}\"," +
+        "\"samplingCapabilityHash\":\"${sampling}\"," +
+        "\"generationProtocol\":\"completion-only-v1\",\"samplesPerCase\":1," +
+        "\"outputSchemaHash\":\"${outputSchema}\"," +
         "\"certificationBinaryHash\":\"${binary}\"," +
         "\"certificationHttpLaunchSpecHash\":\"${launch}\"," +
         "\"certificationHttpCommandHash\":\"${command}\"," +
@@ -1102,6 +1112,10 @@ private func p6CertificationSeal(): (String, String) {
         p6SealPart(transport) + p6SealPart("10") +
         p6SealPart("3600") + p6SealPart(candidate) +
         p6SealPart(leakage) + p6SealPart(frozen) +
+        p6SealPart(skillBundle) + p6SealPart(sampling) +
+        p6SealPart("completion-only-v1") + p6SealPart("1") +
+        p6SealPart(outputSchema) + p6SealPart("1") + p6SealPart("1") +
+        p6SealPart("independent") + p6SealPart(lineage) +
         p6SealPart(binary) + p6SealPart(launch) + p6SealPart(command))
     let manifest =
         "{\"runId\":\"${runId}\",\"startAllowed\":true," +
@@ -1114,6 +1128,11 @@ private func p6CertificationSeal(): (String, String) {
         "\"candidateChecksum\":\"${candidate}\"," +
         "\"studentLeakageProofHash\":\"${leakage}\"," +
         "\"frozenCandidateManifestHash\":\"${frozen}\"," +
+        "\"skillBundleHash\":\"${skillBundle}\",\"skillCount\":1,\"contentBytes\":1," +
+        "\"assetLineage\":\"independent\",\"lineageProofHash\":\"${lineage}\"," +
+        "\"samplingCapabilityHash\":\"${sampling}\"," +
+        "\"generationProtocol\":\"completion-only-v1\",\"samplesPerCase\":1," +
+        "\"outputSchemaHash\":\"${outputSchema}\"," +
         "\"certificationBinaryHash\":\"${binary}\"," +
         "\"certificationHttpLaunchSpecHash\":\"${launch}\"," +
         "\"certificationHttpCommandHash\":\"${command}\"," +

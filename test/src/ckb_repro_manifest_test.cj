@@ -27,7 +27,7 @@ public class CkbReproManifestTest {
             portableReference[1], mode: "contract")
         @Expect(portableReferenceValidation.ok, true)
         @Expect(portableReferenceValidation.manifestHash,
-            "sha256:92df5f35a74be89fb2e9a0c937ac2e00a6febf71ddf9b60cb089c657dcf0072b")
+            "sha256:86ac13a68f21b7f63566bff5154e85edc14632e54d70dd4d93f0aa1bdfefbdec")
         let evidence = parseCkbHistoricalReferenceEvidence(
             p0Read("../reproducibility/manifests/historical-reference-evidence.json"))
         @Expect(evidence[0].ok, true)
@@ -57,12 +57,17 @@ public class CkbReproManifestTest {
             mode: "execution")
         @Expect(execution.ok, true)
         @Expect(execution.treeHash,
-            "sha256:b601d7681d3637985cf798dd2a929f245cea2eb7a53522536969e1eadf50b6bc")
+            "sha256:b09b18c34e1c62215c03550579619be38b36bba28b037d666fc50c0710e88ce1")
         var bundleListed = false
+        var plusAuthorityListed = false
         for (file in critical[1].files) {
             if (file.path == "src/ckb_repro_bundle.cj") { bundleListed = true }
+            if (file.path == "src/cangjie_humaneval_plus_authority.cj") {
+                plusAuthorityListed = true
+            }
         }
         @Expect(bundleListed, false)
+        @Expect(plusAuthorityListed, true)
     }
 
     @TestCase
