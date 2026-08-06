@@ -1102,6 +1102,15 @@ public class CkbReproBundleTest {
 
     @TestCase
     public func p9Neg02FilesystemBundleScansActualAssetContent(): Unit {
+        let relativeAcrossWindow = ("x" * 768) + "/relative/path" +
+            ("x" * 300)
+        @Expect(p9ValidateFilesystemBundleContent(
+            relativeAcrossWindow.toArray(), "portable_report", -2).ok, true)
+        let absoluteAcrossWindow = ("x" * 767) + " /private/path" +
+            ("x" * 300)
+        @Expect(p9ValidateFilesystemBundleContent(
+            absoluteAcrossWindow.toArray(), "portable_report", -1).diagnostic,
+            "bundle_sensitive_content_detected")
         var index: Int64 = 0
         for (attack in ["/Users/private/run", "/home/private/run",
             "/mnt/private/run", "/Volumes/private/run",

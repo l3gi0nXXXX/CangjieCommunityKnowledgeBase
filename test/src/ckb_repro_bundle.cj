@@ -622,6 +622,8 @@ private class P9BundleContentScanner {
     private var invalidEncoding: Bool = false
     private var sensitive: Bool = false
     private var recent = ArrayList<UInt8>()
+    private var hasPrefixContext: Bool = false
+    private var prefixContext: UInt8 = UInt8(0)
     public init(scanText: Bool, leakageMode!: Int64 = 2) {
         this.textRequired = scanText
         this.leakageMode = leakageMode
@@ -634,6 +636,8 @@ private class P9BundleContentScanner {
             if (this.recent.size >= 1024) {
                 this.scanRecent()
                 let tail = ArrayList<UInt8>()
+                this.prefixContext = this.recent[this.recent.size - 257]
+                this.hasPrefixContext = true
                 for (i in this.recent.size - 256..this.recent.size) {
                     tail.add(this.recent[i])
                 }
@@ -645,6 +649,7 @@ private class P9BundleContentScanner {
     }
     private func scanRecent(final!: Bool = false): Unit {
         let scan = ArrayList<UInt8>()
+        if (this.hasPrefixContext) { scan.add(this.prefixContext) }
         var i: Int64 = 0
         while (i < this.recent.size) {
             if (this.recent[i] == UInt8(0x5c)) {
