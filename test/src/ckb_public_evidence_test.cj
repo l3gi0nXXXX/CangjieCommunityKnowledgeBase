@@ -357,7 +357,7 @@ public class CkbPublicEvidenceTest {
     @TestCase
     public func p5Neg04P6FingerprintMatchesFrozenReferenceIdentity(): Unit {
         let reference = parseCkbReproReferenceManifest(File.readFrom(
-            Path("../reproducibility/manifests/historical-reference-run.json")))[1]
+            Path("../reproducibility/manifests/reference-run.json")))[1]
         let built = buildCkbReproRunnerArgs(reference,
             p6FrozenEnvironment(), p6RunnerInputs())
         @Expect(built[0].ok, true)
