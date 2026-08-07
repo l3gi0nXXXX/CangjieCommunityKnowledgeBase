@@ -1,6 +1,6 @@
 package cangjie_community_knowledge_base_test
 
-import std.collection.ArrayList
+import std.collection.{ArrayList, HashSet}
 import std.env.getVariable
 import std.fs.{Directory, File, Path, exists, remove}
 import std.process.launch
@@ -63,6 +63,34 @@ public class CangjieEvalClassifierControlTest {
             @Expect(columns[1].contains("/")||columns[1].contains(".."),false)
             @Expect(benchmarkGapSha256(s0FailureAssetFixture(columns[1])).replace("sha256:",""),columns[0])
         }
+        @Expect(s0FailureAssetClosureDiagnostic(),"ok")
+    }
+
+    // S0-REVIEW-02: lock the complete fixture inventory, bytes, schemas, closure, and hygiene.
+    @TestCase
+    public func s0Review02AllFailureAssetFixturesAreFullyFrozen():Unit{
+        let manifest=s0FailureAssetFixture("SHA256SUMS")
+        @Expect(benchmarkGapSha256(manifest).replace("sha256:",""),
+            "ebace396c9b7b6103a9b4b65dc489ca8606224de63293f8d04656c0121589479")
+        @Expect(manifest,s0Review02Sha256Sums())
+        let expected=HashSet<String>();expected.add("SHA256SUMS")
+        for(line in manifest.split("\n")){if(line==""){continue};let columns=line.split("  ");@Expect(columns.size,2);expected.add(columns[1])}
+        var actualCount:Int64=0
+        for(entry in Directory.readFrom(Path("fixtures/completion_failure_assets"))){
+            @Expect(entry.isRegular(),true);@Expect(expected.contains(entry.name),true);actualCount+=1
+        }
+        @Expect(expected.size,20);@Expect(actualCount,20)
+        for(line in manifest.split("\n")){
+            if(line==""){continue}
+            let columns=line.split("  ");let raw=s0FailureAssetFixture(columns[1]);let lower=raw.toAsciiLower()
+            @Expect(benchmarkGapSha256(raw).replace("sha256:",""),columns[0])
+            for(term in ["/users/","/home/","authorization","bearer ","token=","password",
+                "canonical_solution","reference solution","testmain.cj","/tests/","hidden_test",
+                "public func has_close_elements","public func truncate_number","ckb-data/"]){
+                @Expect(lower.contains(term),false)
+            }
+        }
+        @Expect(s0Review02SchemaContractsDiagnostic(),"ok")
         @Expect(s0FailureAssetClosureDiagnostic(),"ok")
     }
 
@@ -698,6 +726,53 @@ public class CangjieEvalClassifierControlTest {
 private func s0FailureAssetFixture(name:String):String{
     try{String.fromUtf8(File.readFrom(Path("fixtures/completion_failure_assets").join(name)))}
     catch(_:Exception){"fixture_invalid_encoding"}
+}
+private func s0Review02Sha256Sums():String{
+    "667efa4439002f78b8002ff842e2134255d938c20a8b575f82e152e0db0115e3  approval-v1.json\n"+
+    "ea7111cca8a9846374001d183f278bf31ff3bec4389f405672e0f9559691885a  candidate-fixture-execution-v1.json\n"+
+    "8f9c39e9e4376634ad81669baa4d5ccba37573e8d86fbe5a27f99c875c0a9fe6  candidate-set-manifest-v1.json\n"+
+    "4f81b72456d8ffe799ff8694942d07226a42904c5040cf65b4b96a1e1b6afb15  certification-v5-delta.json\n"+
+    "1f83878a8823e02975be746650fe122662f71a64edcf4ceaa23713789df1abe3  classification-invalid-utf8.hex\n"+
+    "65c5fe37b4937e7a5e369db9cffcedad84de0bd45bef7d6e60f5b00e9767e953  classification-v1-compatibility.jsonl\n"+
+    "d984b0417abbdd8aa59b7073feda3a1822f1c4a0d1806885a3ebe1f4c9b4ece5  classification-v2-contract-drift.jsonl\n"+
+    "5fa4aa906f5a147d220372cbb67533565ac7222419bf6f7c462cc476c0a31768  classification-v2-valid.jsonl\n"+
+    "d528f03688604809456adab3e38e6c74874a7af4d478fa27e879756e46c8f71e  completion-context-evidence-v2.json\n"+
+    "6f32c0f9f02003b956c5fe1eedc52642955d9f7cf7ad06dec1710cb3f7035bd6  completion-failure-v1-utf8.json\n"+
+    "b6f120ac06d16cbb3e6b29252131294c98823dce22cd61a4a2bd37ea79d59ddf  frozen-knowledge-reference-v1.json\n"+
+    "39c400fb1e29b16784f5305012430e3cdcc35e7d4b2c6aceb37b4e6892d29ece  knowledge-content.md\n"+
+    "97cbda0237a5028b2af32379200b8162a5f251af68177e9004fce1ec75328a1a  provider-prompt-capability-v1.json\n"+
+    "08565a321868d1fede4e622ed0570a6347bfec0243acc7fe0f18b3bcbcf36c40  rule-candidate-v1.json\n"+
+    "b38ce89372c1d9c305f87266843ecb60590b23f1b7a98f445fe2aa54e70c37a0  rules-operation-v1.json\n"+
+    "dff0848ff59ab53766538ff3237c85f4ca2b90d4b93a80237c93e3e9f4bf2124  skills-operation-v1.json\n"+
+    "10a8fc924caa608687f25c5e51b03c9796644c5ade15de4ffb21990ecae57f50  source-evidence-manifest-v1.json\n"+
+    "11852d03d1ef6756a24b217074ac978cb0e0a93e9520fbf28c3811240c75a2f0  student-context-bundle-v1.json\n"+
+    "f8f6308a1857aa6b29b6edad7b05d802c1bb2c10216def09a1c335f1eae9870e  student-skill-content.md\n"
+}
+private func s0Review02SchemaContractsDiagnostic():String{
+    let contracts=[
+        ("approval-v1.json","teacher-student-context-approval-v1",["schemaVersion","candidateSetHash","rulesHash","skillsHash","knowledgeCandidateHash","decision","reviewer","reason","approvedAtUtc"]),
+        ("candidate-fixture-execution-v1.json","teacher-candidate-fixture-execution-v1",["schemaVersion","fixtureId","kind","sourceClass","fixtureHash","executorKind","providerIdentityHash","modelVersion","expectedEvidenceHash","actualEvidenceHash","transcriptHash","exitCode","passed"]),
+        ("candidate-set-manifest-v1.json","teacher-student-context-candidate-set-v1",["schemaVersion","candidateSetId","baseCompositeHash","validationLevel","sourceEvidenceManifestHash","classificationManifestHash","rulesEligible","rulesHash","rulesCount","rulesAssetLineage","skillsEligible","skillsHash","skillsCount","skillAssetLineage","knowledgeEligible","knowledgeCandidateHash","knowledgeTargetVersion","knowledgeAssetLineage","combinationAuditHash","candidateSetHash"]),
+        ("completion-context-evidence-v2.json","ckb-completion-context-evidence-v2",["schemaVersion","ok","diagnostic","taskHash","mcpToolRequestHash","mcpToolResponseHash","knowledgeVersion","knowledgeRequestHash","knowledgeResponseHash","knowledgePackHash","knowledgeContentBytes","rulesVersion","rulesHash","skillBundleVersion","skillBundleHash","compositeHash","promptHash"]),
+        ("completion-failure-v1-utf8.json","ckb-completion-failure-v1",["schemaVersion","runId","caseId","datasetVersion","generationProtocol","completionHash","baseStatus","plusStatus","failureKind","failureObservation","assetLineage","evidenceHash"]),
+        ("frozen-knowledge-reference-v1.json","ckb-frozen-knowledge-reference-v1",["schemaVersion","knowledgeCandidateHash","knowledgeVersion","frozenCandidateManifestHash","knowledgeContentHash","assetLineage"]),
+        ("provider-prompt-capability-v1.json","ckb-provider-prompt-capability-v1",["schemaVersion","modelVersion","maxContextTokens","reservedOutputTokens","sourceEvidence","observedAtUtc","capabilityHash"]),
+        ("rule-candidate-v1.json","teacher-rule-candidate-v1",["schemaVersion","ruleId","conceptId","title","body","trigger","scope","priority","sourceEvidenceKind","sourceEvidenceHash","assetRole","assetLineage","positiveEvidenceHash","negativeEvidenceHash","boundaryEvidenceHash","generalizationEvidenceHash","canonicalHash"]),
+        ("rules-operation-v1.json","teacher-context-asset-operation-v1",["schemaVersion","assetRole","assetId","operation","expectedOldHash","newHash"]),
+        ("skills-operation-v1.json","teacher-context-asset-operation-v1",["schemaVersion","assetRole","assetId","operation","expectedOldHash","newHash"]),
+        ("source-evidence-manifest-v1.json","teacher-context-source-manifest-v1",["schemaVersion","sourceKind","sourceHashes","sourceManifestHash"]),
+        ("student-context-bundle-v1.json","ckb-student-context-bundle-v1",["schemaVersion","contextVersion","baseCompositeHash","candidateSetHash","approvalHash","validationLevel","changedLanes","rulesVersion","rulesHash","rulesCount","rulesContentBytes","rulesAssetLineage","skillBundleVersion","skillBundleHash","skillCount","skillContentBytes","skillAssetLineage","knowledgeVersion","knowledgeContentHash","frozenCandidateManifestHash","knowledgeAssetLineage","aggregateAssetLineage","combinationAuditHash","compositeHash"])
+    ]
+    for(contract in contracts){
+        let raw=s0FailureAssetFixture(contract[0]).trimAscii()
+        try{
+            let object=JsonValue.fromStr(raw).asObject();if(object.getFields().size!=contract[2].size||
+                s0FailureAssetString(object,"schemaVersion")!=contract[1]){return "schema_contract_invalid:${contract[0]}"}
+            var tail=raw
+            for(key in contract[2]){let parts=tail.split("\"${key}\":");if(parts.size!=2){return "schema_key_order_invalid:${contract[0]}:${key}"};tail=parts[1]}
+        }catch(_:Exception){return "schema_malformed:${contract[0]}"}
+    }
+    "ok"
 }
 private func s0FailureAssetFileHash(name:String):String{
     benchmarkGapSha256(s0FailureAssetFixture(name))
