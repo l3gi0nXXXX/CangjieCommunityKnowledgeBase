@@ -28,17 +28,20 @@ public class CkbFrozenFingerprintInput {
     public var skillContentBytes: Int64 = 0
     public var assetLineage: String = ""
     public var lineageProofHash: String = ""
+    public var studentContextCompositeHash: String = ""
+    public var combinationAuditHash: String = ""
     public init() {}
 }
 
 public func ckbFrozenFingerprint(input: CkbFrozenFingerprintInput): String {
+    let contextSeed=if(input.studentContextCompositeHash==""&&input.combinationAuditHash==""){""}else{ckbP6Part(input.studentContextCompositeHash)+ckbP6Part(input.combinationAuditHash)}
     benchmarkGapSha256(ckbP6Part(input.knowledgeVersion) + ckbP6Part(input.knowledgeContentHash) +
         ckbP6Part(input.datasetVersion) + ckbP6Part(input.manifestHash) + ckbP6Part(input.modelVersion) +
         ckbP6Part(input.claudeCodeVersion) + ckbP6Part(input.promptHash) + ckbP6Part(input.toolConfigHash) +
         ckbP6Part(input.providerIdentityHash) + ckbP6Part(input.certificationTransport) + ckbP6Part(input.runtimeConfigHash) +
         ckbP6Part(input.candidateChecksum) + ckbP6Part(input.studentLeakageProofHash) + ckbP6Part(input.frozenCandidateManifestHash) +
         ckbP6Part(input.skillBundleVersion)+ckbP6Part(input.skillBundleHash)+ckbP6Part(input.samplingCapabilityHash)+
-        ckbP6Part(input.generationProtocol)+ckbP6Part(input.outputSchemaHash)+ckbP6Part("${input.skillCount}")+ckbP6Part("${input.skillContentBytes}")+ckbP6Part(input.assetLineage)+ckbP6Part(input.lineageProofHash))
+        ckbP6Part(input.generationProtocol)+ckbP6Part(input.outputSchemaHash)+ckbP6Part("${input.skillCount}")+ckbP6Part("${input.skillContentBytes}")+ckbP6Part(input.assetLineage)+ckbP6Part(input.lineageProofHash)+contextSeed)
 }
 
 public func ckbFrozenFingerprintDiagnostic(input: CkbFrozenFingerprintInput): String {
@@ -48,6 +51,7 @@ public func ckbFrozenFingerprintDiagnostic(input: CkbFrozenFingerprintInput): St
         if (!ckbP6HashFormat(hash)) { return "fingerprint_canonical_hash_required" }
     }
     if (input.certificationTransport != CkbAbcdeGroups.D) { return "fingerprint_transport_invalid" }
+    if((input.studentContextCompositeHash=="")!=(input.combinationAuditHash=="")||(input.studentContextCompositeHash!=""&&(!ckbP6HashFormat(input.studentContextCompositeHash)||!ckbP6HashFormat(input.combinationAuditHash)))){return "student_context_fingerprint_binding_invalid"}
     "ok"
 }
 
@@ -192,6 +196,16 @@ public class CkbCertificationPreflightOptions {
     public var lineageProofPath: String = ""
     public var lineageProofJson: String = ""
     public var lineageProofHash: String = ""
+    public var studentContextRoot: String = ""
+    public var studentContextManifestHash: String = ""
+    public var studentContextCompositeHash: String = ""
+    public var combinationAuditHash: String = ""
+    public var aggregateAssetLineage: String = ""
+    public var generationMode: String = ""
+    public var providerCount: Int64 = 0
+    public var providerPromptCapabilityPath: String = ""
+    public var providerPromptCapabilityHash: String = ""
+    public var effectivePromptByteBudget: Int64 = 0
     public init() {}
 }
 
@@ -226,6 +240,10 @@ public class CkbCertificationPreflightReport {
     public var skillContentBytes: Int64 = 0
     public var assetLineage: String = ""
     public var lineageProofHash: String = ""
+    public var studentContextManifestHash: String = ""
+    public var studentContextCompositeHash: String = ""
+    public var combinationAuditHash: String = ""
+    public var aggregateAssetLineage: String = ""
     public init() {}
 }
 
@@ -240,7 +258,7 @@ public func runCertificationPreflight(options: CkbCertificationPreflightOptions,
     report.frozenCandidateManifestHash = options.frozenCandidateManifestHash
     report.skillBundleHash=options.skillBundleHash;report.samplingCapabilityHash=options.samplingCapabilityHash
     report.generationProtocol=options.generationProtocol;report.samplesPerCase=options.samplesPerCase;report.outputSchemaHash=options.outputSchemaHash
-    report.skillCount=options.skillCount;report.skillContentBytes=options.skillContentBytes;report.assetLineage=options.assetLineage;report.lineageProofHash=options.lineageProofHash
+    report.skillCount=options.skillCount;report.skillContentBytes=options.skillContentBytes;report.assetLineage=options.assetLineage;report.lineageProofHash=options.lineageProofHash;report.studentContextManifestHash=options.studentContextManifestHash;report.studentContextCompositeHash=options.studentContextCompositeHash;report.combinationAuditHash=options.combinationAuditHash;report.aggregateAssetLineage=options.aggregateAssetLineage
     report.certificationBinaryHash = ckbAbcdeBinaryHash(options.certificationBinaryPath)
     report.certificationHttpLaunchSpecHash = ckbAbcdeCertificationHttpLaunchSpecHash(
         report.certificationBinaryHash, options.certificationConfigPath,
@@ -252,6 +270,7 @@ public func runCertificationPreflight(options: CkbCertificationPreflightOptions,
     ckbP6Check(report, ckbP6HashFormat(report.certificationHttpLaunchSpecHash), "certification_http_launch_spec_invalid")
     ckbP6Check(report, ckbP6HashFormat(report.certificationHttpCommandHash), "certification_http_command_hash_invalid")
     ckbP6Check(report, ckbFrozenFingerprintDiagnostic(fingerprintInput) == "ok", ckbFrozenFingerprintDiagnostic(fingerprintInput))
+    if(options.generationMode!=""){let context=readStudentContextBundleV2(options.studentContextRoot);let contextManifest=try{String.fromUtf8(File.readFrom(Path(options.studentContextRoot).join("student-context-manifest.json")))}catch(_:Exception){""};let aggregate=if(context.rulesLineage=="independent"&&context.skillsLineage=="independent"&&context.knowledgeLineage=="independent"){"independent"}else{"humaneval_164_derived"};ckbP6Check(report,context.ok&&benchmarkGapSha256(contextManifest)==options.studentContextManifestHash&&context.compositeHash==options.studentContextCompositeHash&&context.combinationAuditHash==options.combinationAuditHash&&aggregate==options.aggregateAssetLineage,"student_context_manifest_binding_invalid");let binding=ckbS4PreflightBindingDiagnostic(options.generationMode,options.studentContextCompositeHash,options.combinationAuditHash,options.providerCount);ckbP6Check(report,binding=="ok",binding);let capability=try{File.readFrom(Path(options.providerPromptCapabilityPath))}catch(_:Exception){Array<UInt8>()};let parsedCapability=parseCkbS4ProviderPromptCapability(capability,options.modelVersion,"");let capabilityText=try{String.fromUtf8(capability)}catch(_:Exception){""};ckbP6Check(report,parsedCapability.ok&&benchmarkGapSha256(capabilityText)==options.providerPromptCapabilityHash&&options.effectivePromptByteBudget>0&&options.effectivePromptByteBudget<=parsedCapability.maxPromptBytes,"provider_prompt_capability_binding_invalid")}
     let skillBundle=try{parseStudentSkillBundle(File.readFrom(Path(options.skillBundlePath)))}catch(_:Exception){CkbStudentSkillBundleBuild()}
     ckbP6Check(report,validateStudentSkillBundle(skillBundle)=="ok"&&skillBundle.bundleVersion==options.skillBundleVersion&&skillBundle.canonicalHash==options.skillBundleHash&&skillBundle.skillCount==options.skillCount&&skillBundle.contentBytes==options.skillContentBytes,"student_skill_bundle_binding_invalid")
     ckbP6Check(report,(options.assetLineage=="independent"||options.assetLineage=="humaneval_164_derived")&&options.lineageProofHash==benchmarkGapSha256(options.lineageProofJson),"asset_lineage_binding_invalid")
@@ -293,7 +312,7 @@ public func runCertificationPreflight(options: CkbCertificationPreflightOptions,
     ckbP6Check(report, ckbCertificationWorkspaceDiagnostic(options.workspaceRoot) == "ok", ckbCertificationWorkspaceDiagnostic(options.workspaceRoot))
     ckbP6Check(report, ckbCertificationOutputDiagnostic(options.outputRoot) == "ok", ckbCertificationOutputDiagnostic(options.outputRoot))
     ckbP6Check(report, ckbP6CanonicalPath(options.outputRoot).endsWith("/${options.runId}"), "output_root_run_identity_mismatch")
-    ckbP6Check(report, fingerprintInput.knowledgeVersion == options.frozenVersion && fingerprintInput.manifestHash == options.actualManifestHash && fingerprintInput.modelVersion == options.modelVersion && fingerprintInput.claudeCodeVersion == options.claudeCodeVersion && fingerprintInput.providerIdentityHash == options.providerIdentityHash && fingerprintInput.certificationTransport == options.certificationTransport && fingerprintInput.runtimeConfigHash != "" && fingerprintInput.skillBundleVersion==options.skillBundleVersion&&fingerprintInput.skillBundleHash==options.skillBundleHash&&fingerprintInput.samplingCapabilityHash==options.samplingCapabilityHash&&fingerprintInput.generationProtocol==options.generationProtocol&&fingerprintInput.outputSchemaHash==options.outputSchemaHash&&fingerprintInput.skillCount==options.skillCount&&fingerprintInput.skillContentBytes==options.skillContentBytes&&fingerprintInput.assetLineage==options.assetLineage&&fingerprintInput.lineageProofHash==options.lineageProofHash, "fingerprint_binding_mismatch")
+    ckbP6Check(report, fingerprintInput.knowledgeVersion == options.frozenVersion && fingerprintInput.manifestHash == options.actualManifestHash && fingerprintInput.modelVersion == options.modelVersion && fingerprintInput.claudeCodeVersion == options.claudeCodeVersion && fingerprintInput.providerIdentityHash == options.providerIdentityHash && fingerprintInput.certificationTransport == options.certificationTransport && fingerprintInput.runtimeConfigHash != "" && fingerprintInput.skillBundleVersion==options.skillBundleVersion&&fingerprintInput.skillBundleHash==options.skillBundleHash&&fingerprintInput.samplingCapabilityHash==options.samplingCapabilityHash&&fingerprintInput.generationProtocol==options.generationProtocol&&fingerprintInput.outputSchemaHash==options.outputSchemaHash&&fingerprintInput.skillCount==options.skillCount&&fingerprintInput.skillContentBytes==options.skillContentBytes&&fingerprintInput.assetLineage==options.assetLineage&&fingerprintInput.lineageProofHash==options.lineageProofHash&&(options.generationMode==""||(fingerprintInput.studentContextCompositeHash==options.studentContextCompositeHash&&fingerprintInput.combinationAuditHash==options.combinationAuditHash)), "fingerprint_binding_mismatch")
     report.ok = report.checks.size == 0
     report.startAllowed = report.ok
     report.diagnostic = if (report.ok) { "ok" } else { report.checks[0] }
@@ -343,6 +362,7 @@ public func ckbCertificationPreflightSealDiagnostic(preflight: String, manifest:
     try {
         let p = JsonValue.fromStr(preflight).asObject(); let m = JsonValue.fromStr(manifest).asObject()
         let declared = ckbP6String(m, "preflightHash")
+        let contextSeed=match(m.get("studentContextCompositeHash")){case Some(_)=>ckbP6Part(ckbP6String(m,"studentContextManifestHash"))+ckbP6Part(ckbP6String(m,"studentContextCompositeHash"))+ckbP6Part(ckbP6String(m,"combinationAuditHash"))+ckbP6Part(ckbP6String(m,"aggregateAssetLineage"))+ckbP6Part(ckbP6String(m,"providerPromptCapabilityPath"))+ckbP6Part(ckbP6String(m,"providerPromptCapabilityHash"))+ckbP6Part("${ckbP6Int(m,"effectivePromptByteBudget")}") case None=>""}
         let expectedManifest = benchmarkGapSha256(ckbP6Part(ckbP6String(m, "runId")) +
             ckbP6Part(declared) + ckbP6Part(ckbP6String(m, "fingerprint")) +
             ckbP6Part(ckbP6String(m, "providerIdentityHash")) + ckbP6Part(ckbP6String(m, "modelVersion")) +
@@ -352,7 +372,7 @@ public func ckbCertificationPreflightSealDiagnostic(preflight: String, manifest:
             ckbP6Part(ckbP6String(m, "candidateChecksum")) + ckbP6Part(ckbP6String(m, "studentLeakageProofHash")) +
             ckbP6Part(ckbP6String(m, "frozenCandidateManifestHash")) + ckbP6Part(ckbP6String(m,"skillBundleHash"))+
             ckbP6Part(ckbP6String(m,"samplingCapabilityHash"))+ckbP6Part(ckbP6String(m,"generationProtocol"))+ckbP6Part("${ckbP6Int(m,"samplesPerCase")}")+ckbP6Part(ckbP6String(m,"outputSchemaHash"))+ckbP6Part("${ckbP6Int(m,"skillCount")}")+ckbP6Part("${ckbP6Int(m,"contentBytes")}")+ckbP6Part(ckbP6String(m,"assetLineage"))+ckbP6Part(ckbP6String(m,"lineageProofHash"))+ckbP6Part(ckbP6String(m, "certificationBinaryHash")) +
-            ckbP6Part(ckbP6String(m, "certificationHttpLaunchSpecHash")) + ckbP6Part(ckbP6String(m, "certificationHttpCommandHash")))
+            ckbP6Part(ckbP6String(m, "certificationHttpLaunchSpecHash")) + ckbP6Part(ckbP6String(m, "certificationHttpCommandHash"))+contextSeed)
         if (declared != benchmarkGapSha256(preflight) || ckbP6String(m, "runManifestHash") != expectedManifest ||
             !ckbP6Bool(m, "startAllowed") || !ckbP6Null(m, "certificationPassAt1") ||
             !ckbP6Bool(p, "ok") || !ckbP6Bool(p, "startAllowed") ||
@@ -394,8 +414,10 @@ public func cangjieCertificationReleaseGateIntegrated(preflightPath: String, man
 private func ckbP6PersistManifest(options: CkbCertificationPreflightOptions, report: CkbCertificationPreflightReport): Unit {
     let preflightPath = Path(options.outputRoot).join("preflight.json"); let manifestPath = Path(options.outputRoot).join("run-manifest.json")
     let preflight = renderCertificationPreflightJson(report); File.writeTo(preflightPath, preflight.toArray()); report.preflightHash = benchmarkGapSha256(preflight)
-    report.runManifestHash = benchmarkGapSha256(ckbP6Part(options.runId) + ckbP6Part(report.preflightHash) + ckbP6Part(report.fingerprint) + ckbP6Part(options.providerIdentityHash) + ckbP6Part(options.modelVersion) + ckbP6Part(options.claudeCodeVersion) + ckbP6Part(options.certificationTransport) + ckbP6Part("${report.transportRetryBudget}") + ckbP6Part("${report.modelTimeoutSeconds}") + ckbP6Part(options.candidateChecksum) + ckbP6Part(options.studentLeakageProofHash) + ckbP6Part(options.frozenCandidateManifestHash)+ckbP6Part(options.skillBundleHash)+ckbP6Part(options.samplingCapabilityHash)+ckbP6Part(options.generationProtocol)+ckbP6Part("${options.samplesPerCase}")+ckbP6Part(options.outputSchemaHash)+ckbP6Part("${options.skillCount}")+ckbP6Part("${options.skillContentBytes}")+ckbP6Part(options.assetLineage)+ckbP6Part(options.lineageProofHash) + ckbP6Part(report.certificationBinaryHash) + ckbP6Part(report.certificationHttpLaunchSpecHash) + ckbP6Part(report.certificationHttpCommandHash))
-    let manifest = "{\"runId\":\"${ckbP6JsonEscape(options.runId)}\",\"startAllowed\":true,\"fingerprint\":\"${report.fingerprint}\",\"providerIdentityHash\":\"${options.providerIdentityHash}\",\"modelVersion\":\"${ckbP6JsonEscape(options.modelVersion)}\",\"claudeCodeVersion\":\"${ckbP6JsonEscape(options.claudeCodeVersion)}\",\"certificationTransport\":\"${ckbP6JsonEscape(options.certificationTransport)}\",\"transportRetryBudget\":${report.transportRetryBudget},\"modelTimeoutSeconds\":${report.modelTimeoutSeconds},\"candidateChecksum\":\"${options.candidateChecksum}\",\"studentLeakageProofHash\":\"${options.studentLeakageProofHash}\",\"frozenCandidateManifestHash\":\"${options.frozenCandidateManifestHash}\",\"skillBundlePath\":\"${ckbP6JsonEscape(options.skillBundlePath)}\",\"skillBundleHash\":\"${options.skillBundleHash}\",\"skillCount\":${options.skillCount},\"contentBytes\":${options.skillContentBytes},\"assetLineage\":\"${options.assetLineage}\",\"lineageProofHash\":\"${options.lineageProofHash}\",\"samplingCapabilityHash\":\"${options.samplingCapabilityHash}\",\"generationProtocol\":\"${options.generationProtocol}\",\"samplesPerCase\":${options.samplesPerCase},\"outputSchemaHash\":\"${options.outputSchemaHash}\",\"datasetVersion\":\"${ckbP6JsonEscape(options.datasetVersion)}\",\"knowledgeVersion\":\"${ckbP6JsonEscape(options.frozenVersion)}\",\"certificationBinaryHash\":\"${report.certificationBinaryHash}\",\"certificationHttpLaunchSpecHash\":\"${report.certificationHttpLaunchSpecHash}\",\"certificationHttpCommandHash\":\"${report.certificationHttpCommandHash}\",\"preflightHash\":\"${report.preflightHash}\",\"runManifestHash\":\"${report.runManifestHash}\",\"certificationPassAt1\":null}"
+    let contextSeed=if(options.generationMode==""){""}else{ckbP6Part(options.studentContextManifestHash)+ckbP6Part(options.studentContextCompositeHash)+ckbP6Part(options.combinationAuditHash)+ckbP6Part(options.aggregateAssetLineage)+ckbP6Part(options.providerPromptCapabilityPath)+ckbP6Part(options.providerPromptCapabilityHash)+ckbP6Part("${options.effectivePromptByteBudget}")}
+    report.runManifestHash = benchmarkGapSha256(ckbP6Part(options.runId) + ckbP6Part(report.preflightHash) + ckbP6Part(report.fingerprint) + ckbP6Part(options.providerIdentityHash) + ckbP6Part(options.modelVersion) + ckbP6Part(options.claudeCodeVersion) + ckbP6Part(options.certificationTransport) + ckbP6Part("${report.transportRetryBudget}") + ckbP6Part("${report.modelTimeoutSeconds}") + ckbP6Part(options.candidateChecksum) + ckbP6Part(options.studentLeakageProofHash) + ckbP6Part(options.frozenCandidateManifestHash)+ckbP6Part(options.skillBundleHash)+ckbP6Part(options.samplingCapabilityHash)+ckbP6Part(options.generationProtocol)+ckbP6Part("${options.samplesPerCase}")+ckbP6Part(options.outputSchemaHash)+ckbP6Part("${options.skillCount}")+ckbP6Part("${options.skillContentBytes}")+ckbP6Part(options.assetLineage)+ckbP6Part(options.lineageProofHash) + ckbP6Part(report.certificationBinaryHash) + ckbP6Part(report.certificationHttpLaunchSpecHash) + ckbP6Part(report.certificationHttpCommandHash)+contextSeed)
+    let persistedContext=if(options.generationMode==""){CkbContextBaseVersion()}else{readStudentContextBundleV2(options.studentContextRoot)};let contextFields=if(options.generationMode==""){""}else{",\"skillBundleVersion\":\"${ckbP6JsonEscape(options.skillBundleVersion)}\",\"samplingCapability\":\"provider_default_not_client_exposed\",\"studentContextRoot\":\"${ckbP6JsonEscape(options.studentContextRoot)}\",\"studentContextManifestHash\":\"${options.studentContextManifestHash}\",\"studentContextCompositeHash\":\"${options.studentContextCompositeHash}\",\"combinationAuditHash\":\"${options.combinationAuditHash}\",\"aggregateAssetLineage\":\"${options.aggregateAssetLineage}\",\"providerPromptCapabilityPath\":\"${ckbP6JsonEscape(options.providerPromptCapabilityPath)}\",\"providerPromptCapabilityHash\":\"${options.providerPromptCapabilityHash}\",\"effectivePromptByteBudget\":${options.effectivePromptByteBudget},\"rulesHash\":\"${persistedContext.rulesHash}\",\"rulesTreeHash\":\"${persistedContext.rulesBundleHash}\",\"rulesCount\":${persistedContext.rulesCount}"}
+    let manifest = "{\"runId\":\"${ckbP6JsonEscape(options.runId)}\",\"startAllowed\":true,\"fingerprint\":\"${report.fingerprint}\",\"providerIdentityHash\":\"${options.providerIdentityHash}\",\"modelVersion\":\"${ckbP6JsonEscape(options.modelVersion)}\",\"claudeCodeVersion\":\"${ckbP6JsonEscape(options.claudeCodeVersion)}\",\"certificationTransport\":\"${ckbP6JsonEscape(options.certificationTransport)}\",\"transportRetryBudget\":${report.transportRetryBudget},\"modelTimeoutSeconds\":${report.modelTimeoutSeconds},\"candidateChecksum\":\"${options.candidateChecksum}\",\"studentLeakageProofHash\":\"${options.studentLeakageProofHash}\",\"frozenCandidateManifestHash\":\"${options.frozenCandidateManifestHash}\",\"skillBundlePath\":\"${ckbP6JsonEscape(options.skillBundlePath)}\",\"skillBundleHash\":\"${options.skillBundleHash}\",\"skillCount\":${options.skillCount},\"contentBytes\":${options.skillContentBytes},\"assetLineage\":\"${options.assetLineage}\",\"lineageProofHash\":\"${options.lineageProofHash}\",\"samplingCapabilityHash\":\"${options.samplingCapabilityHash}\",\"generationProtocol\":\"${options.generationProtocol}\",\"samplesPerCase\":${options.samplesPerCase},\"outputSchemaHash\":\"${options.outputSchemaHash}\",\"datasetVersion\":\"${ckbP6JsonEscape(options.datasetVersion)}\",\"knowledgeVersion\":\"${ckbP6JsonEscape(options.frozenVersion)}\",\"certificationBinaryHash\":\"${report.certificationBinaryHash}\",\"certificationHttpLaunchSpecHash\":\"${report.certificationHttpLaunchSpecHash}\",\"certificationHttpCommandHash\":\"${report.certificationHttpCommandHash}\",\"preflightHash\":\"${report.preflightHash}\",\"runManifestHash\":\"${report.runManifestHash}\",\"certificationPassAt1\":null${contextFields}}"
     File.writeTo(manifestPath, manifest.toArray()); report.runManifestPath = manifestPath.toString()
 }
 

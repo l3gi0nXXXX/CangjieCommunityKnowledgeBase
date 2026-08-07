@@ -27,14 +27,14 @@ private class CkbContextParsedLanes {
     var diagnostic="ok"
     init(){}
 }
-private class CkbContextBaseVersion {
-    var ok=false;var diagnostic="candidate_base_composite_mismatch";var manifestJson=""
-    var rulesJson="";var agentsMarkdown="";var skillsJson="";var skillsPrompt=""
-    var knowledgeReference="";var combinationAudit="";var compositeHash=""
-    var rulesVersion="";var rulesHash="";var rulesBundleHash="";var rulesCount:Int64=0;var rulesBytes:Int64=0;var rulesLineage=""
-    var skillVersion="";var skillsHash="";var skillProjectionHash="";var skillsCount:Int64=0;var skillsBytes:Int64=0;var skillsLineage=""
-    var knowledgeHash="";var knowledgeVersion="";var knowledgeLineage=""
-    init(){}
+public class CkbContextBaseVersion {
+    public var ok=false;public var diagnostic="candidate_base_composite_mismatch";public var manifestJson=""
+    public var rulesJson="";public var agentsMarkdown="";public var skillsJson="";public var skillsPrompt=""
+    public var knowledgeReference="";public var combinationAudit="";public var compositeHash=""
+    public var rulesVersion="";public var rulesHash="";public var rulesBundleHash="";public var rulesCount:Int64=0;public var rulesBytes:Int64=0;public var rulesLineage=""
+    public var skillVersion="";public var skillsHash="";public var skillProjectionHash="";public var skillsCount:Int64=0;public var skillsBytes:Int64=0;public var skillsLineage=""
+    public var knowledgeHash="";public var knowledgeVersion="";public var knowledgeLineage="";public var combinationAuditHash=""
+    public init(){}
 }
 private class CkbContextOperation {
     var role="";var assetId="";var operation="";var expectedOldHash="";var newHash="";init(){}
@@ -222,7 +222,7 @@ private func ckbContextKnowledgeMaterial(store:Option<FileKnowledgeStore>,refere
         case None=>("","frozen_knowledge_reference_invalid")
     }
 }
-private func ckbContextReadBaseVersion(rootPath:String):CkbContextBaseVersion {
+public func readStudentContextBundleV2(rootPath:String):CkbContextBaseVersion {
     let out=CkbContextBaseVersion();let root=Path(rootPath)
     try {
         if(!exists(root)||FileInfo(root).isSymbolicLink()||!FileInfo(root).isDirectory()){return out}
@@ -239,12 +239,13 @@ private func ckbContextReadBaseVersion(rootPath:String):CkbContextBaseVersion {
         if(ckbContextKnowledgeReferenceDiagnostic(knowledge[0],"structural_read_only","",None<FileKnowledgeStore>)!="ok"){return out}
         let referenceObject=JsonValue.fromStr(knowledge[0].trimAscii()).asObject();if(knowledge[0]!=ckbContextRenderKnowledgeReference(referenceObject)+"\n"||ckbContextString(referenceObject,"knowledgeVersion")!=ckbContextString(object,"knowledgeVersion")||ckbContextString(referenceObject,"knowledgeContentHash")!=ckbContextString(object,"knowledgeContentHash")||ckbContextString(referenceObject,"frozenCandidateManifestHash")!=ckbContextString(object,"frozenCandidateManifestHash")||ckbContextString(referenceObject,"assetLineage")!=ckbContextString(object,"knowledgeAssetLineage")){return out}
         let auditObject=JsonValue.fromStr(audit[0].trimAscii()).asObject();if(auditObject.getFields().size!=5||ckbContextString(auditObject,"schemaVersion")!="ckb-student-context-combination-audit-v1"||!ckbContextBool(auditObject,"passed")||!ckbContextHash(ckbContextString(auditObject,"sourceClosureHash"))||!ckbContextHash(ckbContextString(auditObject,"protectedClosureHash"))){return out};let expectedAuditHash=ckbContextCombinationAuditHash(ckbContextString(object,"rulesHash"),ckbContextString(object,"skillProjectionHash"),ckbContextString(object,"knowledgeContentHash"),ckbContextString(auditObject,"sourceClosureHash"),ckbContextString(auditObject,"protectedClosureHash"));if(ckbContextString(auditObject,"combinationAuditHash")!=expectedAuditHash||ckbContextString(object,"combinationAuditHash")!=expectedAuditHash){return out};let canonicalAudit="{\"schemaVersion\":\"ckb-student-context-combination-audit-v1\",\"sourceClosureHash\":\"${ckbContextString(auditObject,"sourceClosureHash")}\",\"protectedClosureHash\":\"${ckbContextString(auditObject,"protectedClosureHash")}\",\"combinationAuditHash\":\"${expectedAuditHash}\",\"passed\":true}\n";if(audit[0]!=canonicalAudit){return out}
-        out.manifestJson=manifest[0];out.rulesJson=rules[0];out.agentsMarkdown=agents[0];out.skillsJson=skills[0];out.skillsPrompt=prompt[0];out.knowledgeReference=knowledge[0];out.combinationAudit=audit[0];out.compositeHash=composite
+        out.manifestJson=manifest[0];out.rulesJson=rules[0];out.agentsMarkdown=agents[0];out.skillsJson=skills[0];out.skillsPrompt=prompt[0];out.knowledgeReference=knowledge[0];out.combinationAudit=audit[0];out.compositeHash=composite;out.combinationAuditHash=expectedAuditHash
         out.rulesVersion=ckbContextString(object,"rulesVersion");out.rulesHash=ckbContextString(object,"rulesHash");out.rulesBundleHash=ckbContextString(object,"rulesBundleHash");out.rulesCount=ckbContextInt(object,"rulesCount");out.rulesBytes=ckbContextInt(object,"rulesContentBytes");out.rulesLineage=ckbContextString(object,"rulesAssetLineage");out.skillVersion=ckbContextString(object,"skillBundleVersion");out.skillsHash=ckbContextString(object,"skillBundleHash");out.skillProjectionHash=ckbContextString(object,"skillProjectionHash");out.skillsCount=ckbContextInt(object,"skillCount");out.skillsBytes=ckbContextInt(object,"skillContentBytes");out.skillsLineage=ckbContextString(object,"skillAssetLineage");out.knowledgeVersion=ckbContextString(object,"knowledgeVersion");out.knowledgeLineage=ckbContextString(object,"knowledgeAssetLineage")
         let reference=JsonValue.fromStr(knowledge[0].trimAscii()).asObject();out.knowledgeHash=ckbContextString(reference,"knowledgeCandidateHash")
         if(out.rulesHash!=benchmarkGapSha256(agents[0])||out.rulesBundleHash!=rebuiltRules.canonicalHash||out.skillsHash!=rebuiltSkills.canonicalHash||out.skillProjectionHash!=benchmarkGapSha256(prompt[0])||out.rulesCount<1||out.rulesCount>16||out.skillsCount<1||out.skillsCount>16||out.rulesCount!=parsedRules[0].size||out.skillsCount!=parsedSkills[0].size||out.rulesBytes!=agents[0].toArray().size||out.skillsBytes!=prompt[0].toArray().size){return out};out.ok=true;out.diagnostic="ok";out
     }catch(_:Exception){out}
 }
+private func ckbContextReadBaseVersion(rootPath:String):CkbContextBaseVersion {readStudentContextBundleV2(rootPath)}
 private func ckbContextParseStudentSkills(raw:String):(ArrayList<CkbStudentSkillCandidate>,String) {
     let out=ArrayList<CkbStudentSkillCandidate>()
     try {

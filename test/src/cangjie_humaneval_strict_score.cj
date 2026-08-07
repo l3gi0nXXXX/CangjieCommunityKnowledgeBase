@@ -30,6 +30,9 @@ public class CkbStrictScoreEvidenceRow {
     public var generationProtocol: String = "historical-agentic-v1"
     public var assetLineage: String = "historical_agentic"
     public var skillBundleHash: String = ""
+    public var rulesHash: String = ""
+    public var rulesTreeHash: String = ""
+    public var rulesCount: Int64 = 0
     public var basePassed: Bool = false
     public var plusPassed: Bool = false
     public init() {}
@@ -98,7 +101,7 @@ public func computeCkbHumanEvalStrictScore(
             return score
         }
         if(row.generationProtocol!=first.generationProtocol){score.diagnostic="generation_protocol_mixed";return score}
-        if(first.generationProtocol=="completion-only-v1"&&(row.assetLineage!=first.assetLineage||row.skillBundleHash!=first.skillBundleHash)){
+        if(first.generationProtocol=="completion-only-v1"&&(row.assetLineage!=first.assetLineage||row.skillBundleHash!=first.skillBundleHash||(first.schemaVersion=="ckb-humaneval-public-evidence-v3"&&(row.rulesHash!=first.rulesHash||row.rulesTreeHash!=first.rulesTreeHash||row.rulesCount!=first.rulesCount)))){
             score.diagnostic="bundle_or_lineage_drift:${row.caseId}";return score
         }
         let unresolved = row.classification == "transport_unresolved"
@@ -159,7 +162,7 @@ public func computeCkbHumanEvalStrictScore(
         return score
     }
     if(first.generationProtocol=="completion-only-v1"){
-        if(!ckbStrictScoreHash(first.skillBundleHash)||(first.assetLineage!="independent"&&first.assetLineage!="humaneval_164_derived")){
+        if(!ckbStrictScoreHash(first.skillBundleHash)||(first.schemaVersion=="ckb-humaneval-public-evidence-v3"&&ckbS4RulesIdentityDiagnostic(first.rulesHash,first.rulesTreeHash,first.rulesCount)!="ok")||(first.assetLineage!="independent"&&first.assetLineage!="humaneval_164_derived")){
             score.diagnostic="completion_lineage_invalid";return score
         }
         let prefix=if(first.assetLineage=="independent"){"strict_ckb_skill"}else{"closed_loop_ckb_skill"}
@@ -221,7 +224,7 @@ public func renderCkbHumanEvalStrictScoreJson(score: CkbHumanEvalStrictScore): S
 }
 
 public func renderCkbStrictScoreEvidenceRowJson(row: CkbStrictScoreEvidenceRow): String {
-    let completion=if(row.schemaVersion=="ckb-humaneval-public-evidence-v2"){",\"generationProtocol\":\"${row.generationProtocol}\",\"assetLineage\":\"${row.assetLineage}\",\"skillBundleHash\":\"${row.skillBundleHash}\",\"basePassed\":${row.basePassed},\"plusPassed\":${row.plusPassed}"}else{""}
+    let completion=if(row.schemaVersion=="ckb-humaneval-public-evidence-v2"){",\"generationProtocol\":\"${row.generationProtocol}\",\"assetLineage\":\"${row.assetLineage}\",\"skillBundleHash\":\"${row.skillBundleHash}\",\"basePassed\":${row.basePassed},\"plusPassed\":${row.plusPassed}"}else if(row.schemaVersion=="ckb-humaneval-public-evidence-v3"){",\"generationProtocol\":\"${row.generationProtocol}\",\"assetLineage\":\"${row.assetLineage}\",\"skillBundleHash\":\"${row.skillBundleHash}\",\"rulesHash\":\"${row.rulesHash}\",\"rulesTreeHash\":\"${row.rulesTreeHash}\",\"rulesCount\":${row.rulesCount},\"basePassed\":${row.basePassed},\"plusPassed\":${row.plusPassed}"}else{""}
     "{\"schemaVersion\":\"${ckbStrictScoreEscape(row.schemaVersion)}\"," +
         "\"caseId\":\"${ckbStrictScoreEscape(row.caseId)}\"," +
         "\"runId\":\"${ckbStrictScoreEscape(row.runId)}\"," +
@@ -365,6 +368,8 @@ private func ckbStrictScoreParseRow(raw: String): (String, CkbStrictScoreEvidenc
         ]){fields.add(field)}
         if(row.schemaVersion=="ckb-humaneval-public-evidence-v2"){
             for(field in ["generationProtocol","assetLineage","skillBundleHash","basePassed","plusPassed"]){fields.add(field)}
+        }else if(row.schemaVersion=="ckb-humaneval-public-evidence-v3"){
+            for(field in ["generationProtocol","assetLineage","skillBundleHash","rulesHash","rulesTreeHash","rulesCount","basePassed","plusPassed"]){fields.add(field)}
         }
         if (object.getFields().size != fields.size ||
             !ckbStrictScoreUniqueFields(raw, fields.toArray())) {
@@ -393,16 +398,18 @@ private func ckbStrictScoreParseRow(raw: String): (String, CkbStrictScoreEvidenc
         row.crossCaseExposure = ckbStrictScoreInt(object, "crossCaseExposure")
         if(row.schemaVersion=="ckb-humaneval-public-evidence-v2"){
             row.generationProtocol=ckbStrictScoreString(object,"generationProtocol");row.assetLineage=ckbStrictScoreString(object,"assetLineage");row.skillBundleHash=ckbStrictScoreString(object,"skillBundleHash");row.basePassed=ckbStrictScoreBool(object,"basePassed");row.plusPassed=ckbStrictScoreBool(object,"plusPassed")
+        }else if(row.schemaVersion=="ckb-humaneval-public-evidence-v3"){
+            row.generationProtocol=ckbStrictScoreString(object,"generationProtocol");row.assetLineage=ckbStrictScoreString(object,"assetLineage");row.skillBundleHash=ckbStrictScoreString(object,"skillBundleHash");row.rulesHash=ckbStrictScoreString(object,"rulesHash");row.rulesTreeHash=ckbStrictScoreString(object,"rulesTreeHash");row.rulesCount=ckbStrictScoreInt(object,"rulesCount");row.basePassed=ckbStrictScoreBool(object,"basePassed");row.plusPassed=ckbStrictScoreBool(object,"plusPassed")
         }
     } catch (_: Exception) {
         return ("malformed_json", row)
     }
-    if(row.schemaVersion=="ckb-humaneval-public-evidence-v2"&&raw!=renderCkbStrictScoreEvidenceRowJson(row)){return ("public_evidence_non_canonical",row)}
+    if((row.schemaVersion=="ckb-humaneval-public-evidence-v2"||row.schemaVersion=="ckb-humaneval-public-evidence-v3")&&raw!=renderCkbStrictScoreEvidenceRowJson(row)){return ("public_evidence_non_canonical",row)}
     ("ok", row)
 }
 
 private func ckbStrictScoreIdentityValid(row: CkbStrictScoreEvidenceRow): Bool {
-    (row.schemaVersion == "ckb-humaneval-public-evidence-v1"||row.schemaVersion=="ckb-humaneval-public-evidence-v2") &&
+    (row.schemaVersion == "ckb-humaneval-public-evidence-v1"||row.schemaVersion=="ckb-humaneval-public-evidence-v2"||row.schemaVersion=="ckb-humaneval-public-evidence-v3") &&
         row.caseId != "" && row.runId != "" && row.datasetVersion != "" &&
         row.knowledgeVersion != "" && row.modelFingerprint != "" &&
         ckbStrictScoreHash(row.providerIdentityHash) &&

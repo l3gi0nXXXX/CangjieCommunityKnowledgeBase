@@ -404,6 +404,12 @@ private func s3ProductionContextFixture(name: String): S3ProductionContextFixtur
     S3ProductionContextFixture(allowed, candidate, approval, manifest, store)
 }
 
+public func s4PublishedStudentContext(name:String):String {
+    let fixture=s3ProductionContextFixture(name);let output=fixture.allowed.join("published-context")
+    let bundle=compileAndPublishStudentContextBundle(fixture.allowed.toString(),"s4-context-v1",fixture.candidate.toString(),fixture.approval.toString(),"none",fixture.manifest.toString(),fixture.store,output.toString(),true)
+    if(!bundle.ok){""}else{output.toString()}
+}
+
 private func s3ProductionUpdateFixture(baseFixture: S3ProductionContextFixture, baseRoot: Path,
     base: CkbStudentContextBundle): S3ProductionContextFixture {
     let candidate = baseFixture.allowed.join("candidate-update-v2")

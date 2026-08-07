@@ -64,6 +64,9 @@ public class CkbCertificationCaseEvidence {
     public var skillBundleVersion: String = ""
     public var skillBundleHash: String = ""
     public var assetLineage: String = ""
+    public var rulesHash: String = ""
+    public var rulesTreeHash: String = ""
+    public var rulesCount: Int64 = 0
     public var resultEvidenceHash: String = ""
     public var valid: Bool = false
     public var diagnostic: String = ""
@@ -96,12 +99,12 @@ public class CkbStrictCertificationGateResult {
 }
 
 public func ckbCertificationEvidenceSeed(row: CkbCertificationCaseEvidence): String {
-    let completionSeed=if(row.schemaVersion=="ckb-humaneval-certification-result-v4"){
+    let completionSeed=if(row.schemaVersion=="ckb-humaneval-certification-result-v4"||row.schemaVersion=="ckb-humaneval-certification-result-v5"){
         ckbCertPart(row.generationProtocol)+ckbCertPart(row.samplingCapability)+ckbCertPart("${row.completionCount}")+
         ckbCertPart("${row.toolCallCount}")+ckbCertPart("${row.executionFeedbackCount}")+ckbCertPart("${row.answerFreezeSequence}")+
         ckbCertPart("${row.firstExecutionSequence}")+ckbCertPart(row.baseAnswerHash)+ckbCertPart(row.plusAnswerHash)+
         ckbCertPart("${row.basePassed}")+ckbCertPart("${row.plusPassed}")+ckbCertPart(row.skillBundleVersion)+
-        ckbCertPart(row.skillBundleHash)+ckbCertPart(row.assetLineage)
+        ckbCertPart(row.skillBundleHash)+ckbCertPart(row.assetLineage)+if(row.schemaVersion=="ckb-humaneval-certification-result-v5"){ckbCertPart(row.rulesHash)+ckbCertPart(row.rulesTreeHash)+ckbCertPart("${row.rulesCount}")}else{""}
     }else{""}
     ckbCertPart(row.schemaVersion) + ckbCertPart(row.runId) + ckbCertPart(row.caseId) + ckbCertPart(row.group) +
         ckbCertPart(row.datasetVersion) + ckbCertPart(row.knowledgeVersion) + ckbCertPart(row.modelFingerprint) +
@@ -122,7 +125,7 @@ public func sealCkbCertificationEvidence(row: CkbCertificationCaseEvidence): Uni
 }
 
 public func renderCkbCertificationEvidenceJson(row: CkbCertificationCaseEvidence): String {
-    let completion=if(row.schemaVersion=="ckb-humaneval-certification-result-v4"){",\"generationProtocol\":\"${ckbCertEscape(row.generationProtocol)}\",\"samplingCapability\":\"${ckbCertEscape(row.samplingCapability)}\",\"completionCount\":${row.completionCount},\"toolCallCount\":${row.toolCallCount},\"executionFeedbackCount\":${row.executionFeedbackCount},\"answerFreezeSequence\":${row.answerFreezeSequence},\"firstExecutionSequence\":${row.firstExecutionSequence},\"baseAnswerHash\":\"${row.baseAnswerHash}\",\"plusAnswerHash\":\"${row.plusAnswerHash}\",\"basePassed\":${row.basePassed},\"plusPassed\":${row.plusPassed},\"skillBundleVersion\":\"${ckbCertEscape(row.skillBundleVersion)}\",\"skillBundleHash\":\"${row.skillBundleHash}\",\"assetLineage\":\"${row.assetLineage}\""}else{""}
+    let completion=if(row.schemaVersion=="ckb-humaneval-certification-result-v4"||row.schemaVersion=="ckb-humaneval-certification-result-v5"){",\"generationProtocol\":\"${ckbCertEscape(row.generationProtocol)}\",\"samplingCapability\":\"${ckbCertEscape(row.samplingCapability)}\",\"completionCount\":${row.completionCount},\"toolCallCount\":${row.toolCallCount},\"executionFeedbackCount\":${row.executionFeedbackCount},\"answerFreezeSequence\":${row.answerFreezeSequence},\"firstExecutionSequence\":${row.firstExecutionSequence},\"baseAnswerHash\":\"${row.baseAnswerHash}\",\"plusAnswerHash\":\"${row.plusAnswerHash}\",\"basePassed\":${row.basePassed},\"plusPassed\":${row.plusPassed},\"skillBundleVersion\":\"${ckbCertEscape(row.skillBundleVersion)}\",\"skillBundleHash\":\"${row.skillBundleHash}\",\"assetLineage\":\"${row.assetLineage}\"${if(row.schemaVersion=="ckb-humaneval-certification-result-v5"){",\"rulesHash\":\"${row.rulesHash}\",\"rulesTreeHash\":\"${row.rulesTreeHash}\",\"rulesCount\":${row.rulesCount}"}else{""}}"}else{""}
     "{\"schemaVersion\":\"${ckbCertEscape(row.schemaVersion)}\",\"runId\":\"${ckbCertEscape(row.runId)}\",\"caseId\":\"${ckbCertEscape(row.caseId)}\",\"group\":\"${ckbCertEscape(row.group)}\",\"datasetVersion\":\"${ckbCertEscape(row.datasetVersion)}\",\"knowledgeVersion\":\"${ckbCertEscape(row.knowledgeVersion)}\",\"modelFingerprint\":\"${ckbCertEscape(row.modelFingerprint)}\",\"expectedModelVersion\":\"${ckbCertEscape(row.expectedModelVersion)}\",\"observedModelVersion\":\"${ckbCertEscape(row.observedModelVersion)}\",\"claudeCodeVersion\":\"${ckbCertEscape(row.claudeCodeVersion)}\",\"providerIdentityHash\":\"${ckbCertEscape(row.providerIdentityHash)}\",\"preflightHash\":\"${ckbCertEscape(row.preflightHash)}\",\"runManifestHash\":\"${ckbCertEscape(row.runManifestHash)}\",\"authorityCaseHash\":\"${ckbCertEscape(row.authorityCaseHash)}\",\"authorityTestsHash\":\"${ckbCertEscape(row.authorityTestsHash)}\",\"workspaceId\":\"${ckbCertEscape(row.workspaceId)}\",\"sessionId\":\"${ckbCertEscape(row.sessionId)}\",\"runtimeHomeId\":\"${ckbCertEscape(row.runtimeHomeId)}\",\"isolationEvidenceHash\":\"${ckbCertEscape(row.isolationEvidenceHash)}\",\"answerHash\":\"${ckbCertEscape(row.answerHash)}\",\"transcriptHash\":\"${ckbCertEscape(row.transcriptHash)}\",\"testHash\":\"${ckbCertEscape(row.testHash)}\",\"configHash\":\"${ckbCertEscape(row.configHash)}\",\"artifactHash\":\"${ckbCertEscape(row.artifactHash)}\",\"attempt\":${row.attempt},\"sampleAttemptCount\":${row.sampleAttemptCount},\"lastAuditedTransportAttempt\":${row.lastAuditedTransportAttempt},\"selectedBusinessSample\":${row.selectedBusinessSample},\"transportAttemptCount\":${row.transportAttemptCount},\"retryCount\":${row.retryCount},\"unresolvedTransport\":${row.unresolvedTransport},\"attemptLineageHash\":\"${ckbCertEscape(row.attemptLineageHash)}\",\"retryUsed\":${row.retryUsed},\"fallbackUsed\":${row.fallbackUsed},\"agentRetryCount\":${row.agentRetryCount},\"providerRetryCount\":${row.providerRetryCount},\"sdkRetryCount\":${row.sdkRetryCount},\"llmTurnCount\":${row.llmTurnCount},\"referenceExposure\":${row.referenceExposure},\"hiddenTestExposure\":${row.hiddenTestExposure},\"teacherExposure\":${row.teacherExposure},\"crossCaseExposure\":${row.crossCaseExposure},\"sandboxDeniedOutsideWorkspace\":${row.sandboxDeniedOutsideWorkspace},\"verifierMountedAfterAnswerFreeze\":${row.verifierMountedAfterAnswerFreeze},\"certificationPassAt1\":${row.certificationPassAt1}${completion},\"resultEvidenceHash\":\"${ckbCertEscape(row.resultEvidenceHash)}\"}"
 }
 
@@ -137,17 +140,18 @@ public func parseCkbCertificationEvidence(line: String): CkbCertificationCaseEvi
         row.attempt = ckbCertInt(o, "attempt"); row.sampleAttemptCount=ckbCertInt(o,"sampleAttemptCount");row.lastAuditedTransportAttempt=ckbCertInt(o,"lastAuditedTransportAttempt");row.selectedBusinessSample=ckbCertInt(o,"selectedBusinessSample"); row.transportAttemptCount=ckbCertInt(o,"transportAttemptCount");row.retryCount=ckbCertInt(o,"retryCount");row.unresolvedTransport=ckbCertInt(o,"unresolvedTransport");row.attemptLineageHash=ckbCertString(o,"attemptLineageHash"); row.retryUsed = ckbCertBool(o, "retryUsed"); row.fallbackUsed = ckbCertBool(o, "fallbackUsed"); row.agentRetryCount = ckbCertInt(o, "agentRetryCount"); row.providerRetryCount = ckbCertInt(o, "providerRetryCount"); row.sdkRetryCount = ckbCertInt(o, "sdkRetryCount");row.llmTurnCount=ckbCertInt(o,"llmTurnCount")
         row.referenceExposure = ckbCertInt(o, "referenceExposure"); row.hiddenTestExposure = ckbCertInt(o, "hiddenTestExposure"); row.teacherExposure = ckbCertInt(o, "teacherExposure"); row.crossCaseExposure = ckbCertInt(o, "crossCaseExposure")
         row.sandboxDeniedOutsideWorkspace = ckbCertBool(o, "sandboxDeniedOutsideWorkspace"); row.verifierMountedAfterAnswerFreeze = ckbCertBool(o, "verifierMountedAfterAnswerFreeze"); row.certificationPassAt1 = ckbCertBool(o, "certificationPassAt1"); row.resultEvidenceHash = ckbCertString(o, "resultEvidenceHash")
-        if(row.schemaVersion=="ckb-humaneval-certification-result-v4"){
+        if(row.schemaVersion=="ckb-humaneval-certification-result-v4"||row.schemaVersion=="ckb-humaneval-certification-result-v5"){
             row.generationProtocol=ckbCertString(o,"generationProtocol");row.samplingCapability=ckbCertString(o,"samplingCapability")
             row.completionCount=ckbCertInt(o,"completionCount");row.toolCallCount=ckbCertInt(o,"toolCallCount");row.executionFeedbackCount=ckbCertInt(o,"executionFeedbackCount")
             row.answerFreezeSequence=ckbCertInt(o,"answerFreezeSequence");row.firstExecutionSequence=ckbCertInt(o,"firstExecutionSequence")
             row.baseAnswerHash=ckbCertString(o,"baseAnswerHash");row.plusAnswerHash=ckbCertString(o,"plusAnswerHash")
             row.basePassed=ckbCertBool(o,"basePassed");row.plusPassed=ckbCertBool(o,"plusPassed")
             row.skillBundleVersion=ckbCertString(o,"skillBundleVersion");row.skillBundleHash=ckbCertString(o,"skillBundleHash");row.assetLineage=ckbCertString(o,"assetLineage")
+            if(row.schemaVersion=="ckb-humaneval-certification-result-v5"){row.rulesHash=ckbCertString(o,"rulesHash");row.rulesTreeHash=ckbCertString(o,"rulesTreeHash");row.rulesCount=ckbCertInt(o,"rulesCount")}
         }
     } catch (_: Exception) { row.diagnostic = "malformed_json"; return row }
     row.diagnostic = ckbCertificationEvidenceDiagnostic(row)
-    if(row.diagnostic=="ok"&&row.schemaVersion=="ckb-humaneval-certification-result-v4"&&line!=renderCkbCertificationEvidenceJson(row)){
+    if(row.diagnostic=="ok"&&(row.schemaVersion=="ckb-humaneval-certification-result-v4"||row.schemaVersion=="ckb-humaneval-certification-result-v5")&&line!=renderCkbCertificationEvidenceJson(row)){
         row.diagnostic="non_canonical_completion_evidence"
     }
     row.valid = row.diagnostic == "ok"
@@ -155,7 +159,7 @@ public func parseCkbCertificationEvidence(line: String): CkbCertificationCaseEvi
 }
 
 public func ckbCertificationEvidenceDiagnostic(row: CkbCertificationCaseEvidence): String {
-    if (row.schemaVersion != "ckb-humaneval-certification-result-v3" && row.schemaVersion != "ckb-humaneval-certification-result-v4") { return "unknown_schema" }
+    if (row.schemaVersion != "ckb-humaneval-certification-result-v3" && row.schemaVersion != "ckb-humaneval-certification-result-v4" && row.schemaVersion != "ckb-humaneval-certification-result-v5") { return "unknown_schema" }
     if (row.runId == "" || row.caseId == "" || row.group == "" || row.datasetVersion == "" || row.knowledgeVersion == "" || row.modelFingerprint == "") { return "identity_field_required" }
     if (row.expectedModelVersion == "" || row.claudeCodeVersion == "") { return "observed_model_identity_mismatch" }
     if (row.group != CkbAbcdeGroups.D) { return "certification_requires_isolated_http_transport" }
@@ -172,7 +176,7 @@ public func ckbCertificationEvidenceDiagnostic(row: CkbCertificationCaseEvidence
     if (row.referenceExposure != 0 || row.hiddenTestExposure != 0 || row.teacherExposure != 0 || row.crossCaseExposure != 0) { return "model_exposure_forbidden" }
     if (!row.sandboxDeniedOutsideWorkspace) { return "auditable_sandbox_deny_required" }
     if (!row.verifierMountedAfterAnswerFreeze) { return "verifier_mount_order_invalid" }
-    if(row.schemaVersion=="ckb-humaneval-certification-result-v4"){
+    if(row.schemaVersion=="ckb-humaneval-certification-result-v4"||row.schemaVersion=="ckb-humaneval-certification-result-v5"){
         if(row.generationProtocol!="completion-only-v1"){return "completion_protocol_required"}
         if(row.samplingCapability!="temperature_zero"&&row.samplingCapability!="provider_default_not_client_exposed"){return "sampling_capability_invalid"}
         if(row.completionCount!=1){return "completion_not_unique"}
@@ -182,6 +186,7 @@ public func ckbCertificationEvidenceDiagnostic(row: CkbCertificationCaseEvidence
         if(!ckbCertHash(row.baseAnswerHash)||row.baseAnswerHash!=row.answerHash||row.plusAnswerHash!=row.answerHash){return "base_plus_answer_mismatch"}
         if(row.skillBundleVersion==""||!ckbCertHash(row.skillBundleHash)){return "skill_bundle_identity_invalid"}
         if(row.assetLineage!="independent"&&row.assetLineage!="humaneval_164_derived"){return "asset_lineage_invalid"}
+        if(row.schemaVersion=="ckb-humaneval-certification-result-v5"&&ckbS4RulesIdentityDiagnostic(row.rulesHash,row.rulesTreeHash,row.rulesCount)!="ok"){return "rules_identity_invalid"}
         if(row.certificationPassAt1!=(row.basePassed&&row.plusPassed)){return "base_plus_certification_mismatch"}
     }
     if (row.resultEvidenceHash != benchmarkGapSha256(ckbCertificationEvidenceSeed(row))) { return "result_evidence_hash_mismatch" }

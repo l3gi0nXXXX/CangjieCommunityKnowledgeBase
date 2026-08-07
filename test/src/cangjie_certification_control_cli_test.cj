@@ -139,13 +139,14 @@ private class CkbStoreRouteCliResult {
     var stderrText: String = ""
 }
 
-private class CkbPreflightStoreRouteFixture {
-    var ready: Bool = false
-    var controlPath: String = ""
-    var inputPath: String = ""
-    var frozenStorePath: String = ""
-    var wrongStorePath: String = ""
-    var outputRoot: String = ""
+public class CkbPreflightStoreRouteFixture {
+    public var ready: Bool = false
+    public var controlPath: String = ""
+    public var inputPath: String = ""
+    public var frozenStorePath: String = ""
+    public var wrongStorePath: String = ""
+    public var outputRoot: String = ""
+    public init() {}
 }
 
 private func ckbStoreRouteRunCli(args: Array<String>): CkbStoreRouteCliResult {
@@ -178,7 +179,7 @@ private func ckbStoreRouteShellQuote(value: String): String {
     "'" + value.replace("'", "'\\''") + "'"
 }
 
-private func ckbPreflightStoreRouteFixture(): CkbPreflightStoreRouteFixture {
+public func ckbPreflightStoreRouteFixture(): CkbPreflightStoreRouteFixture {
     let fixture = CkbPreflightStoreRouteFixture()
     let stamp = DateTime.now().toUnixTimeStamp().toMilliseconds()
     let root = Path("../target/control-store-route-${stamp}")
@@ -261,13 +262,16 @@ private func ckbPreflightStoreRouteFixture(): CkbPreflightStoreRouteFixture {
     let sampling="{\"schemaVersion\":\"ckb-completion-sampling-capability-v1\",\"samplingControl\":\"provider_default_not_client_exposed\"}\n";let samplingPath=root.join("sampling-capability.json");File.writeTo(samplingPath,sampling.toArray())
     let systemPromptPath=root.join("system-prompt.txt");File.writeTo(systemPromptPath,"Frozen completion-only system prompt 中文😀\n".toArray())
     let lineageProof="{\"assetLineage\":\"independent\",\"source\":\"non_humaneval_seed\"}\n";let lineageProofPath=root.join("lineage-proof.json");File.writeTo(lineageProofPath,lineageProof.toArray())
+    let contextRoot=s4PublishedStudentContext("control-${stamp}");if(contextRoot==""){return fixture};let context=readStudentContextBundleV2(contextRoot);let contextManifest=Path(contextRoot).join("student-context-manifest.json")
+    let capabilityEvidence="{\"schemaVersion\":\"ckb-provider-prompt-capability-v1\",\"modelVersion\":\"GLM-5.2\",\"maxContextTokens\":196608,\"reservedOutputTokens\":8192,\"sourceEvidence\":\"synthetic control fixture\",\"observedAtUtc\":\"2026-08-07T00:00:00Z\"}";let capability=capabilityEvidence.replace("}",",\"capabilityHash\":\"${benchmarkGapSha256(capabilityEvidence)}\"}\n");let capabilityPath=root.join("provider-prompt-capability.json");File.writeTo(capabilityPath,capability.toArray())
+    let certificationBinaryPath=root.join("synthetic-certification-binary");File.writeTo(certificationBinaryPath,"synthetic certification binary\n".toArray())
     let control = "{" +
         "\"runId\":\"${runId}\",\"outputRoot\":\"${canonicalize(outputRoot)}\"," +
         "\"workspaceRoot\":\"${workspaceCanonical}\",\"runtimeHomeRoot\":\"${runtimeCanonical}\"," +
         "\"frozenVersion\":\"${snapshot.activeVersion}\",\"activeStatusStartPath\":\"${activeStart}\",\"activeStatusEndPath\":\"${activeEnd}\"," +
         "\"modelVersion\":\"GLM-5.2\",\"claudeCodeVersion\":\"claude-code-1.0\",\"certificationTransport\":\"${CkbAbcdeGroups.D}\"," +
         "\"transportRetryBudget\":2,\"modelTimeoutSeconds\":30," +
-        "\"certificationBinaryPath\":\"${canonicalize(Path("../target/release/bin/main"))}\"," +
+        "\"certificationBinaryPath\":\"${canonicalize(certificationBinaryPath)}\"," +
         "\"certificationConfigPath\":\"${canonicalize(configPath)}\",\"certificationStorePath\":\"${canonicalize(frozenStore.root)}\"," +
         "\"certificationRunRoot\":\"${canonicalize(certificationRunRoot)}\",\"ckbHttpBase\":\"http://127.0.0.1:19873\"," +
         "\"authorityManifestPath\":\"${canonicalize(authorityPath)}\",\"datasetVersion\":\"${datasetVersion}\"," +
@@ -277,7 +281,8 @@ private func ckbPreflightStoreRouteFixture(): CkbPreflightStoreRouteFixture {
         "\"studentLeakageProofPath\":\"${leakagePath}\",\"frozenCandidateManifestPath\":\"${frozenPath}\",\"systemPromptPath\":\"${canonicalize(systemPromptPath)}\"," +
         "\"skillBundlePath\":\"${canonicalize(skillBundlePath)}\",\"skillBundleVersion\":\"student-skills-v1\","+
         "\"samplingCapabilityPath\":\"${canonicalize(samplingPath)}\",\"generationProtocol\":\"completion-only-v1\",\"samplesPerCase\":1,"+
-        "\"assetLineage\":\"independent\",\"lineageProofPath\":\"${canonicalize(lineageProofPath)}\"}"
+        "\"assetLineage\":\"independent\",\"lineageProofPath\":\"${canonicalize(lineageProofPath)}\","+
+        "\"studentContextManifestPath\":\"${canonicalize(contextManifest)}\",\"providerPromptCapabilityPath\":\"${canonicalize(capabilityPath)}\",\"effectivePromptByteBudget\":188416}"
     let inputPath = ckbStoreRouteWrite(root, "control-input.json", control);let sealed=sealCkbCertificationControlManifest(parseCkbCertificationControlManifest(control.toArray()));if(sealed==""){return fixture};let controlPath=ckbStoreRouteWrite(root,"control.json",sealed.trimAscii())
     let wrongStore = root.join("wrong-store")
     Directory.create(wrongStore, recursive: true)
