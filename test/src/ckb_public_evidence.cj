@@ -455,9 +455,10 @@ public func projectCkbPublicEvidenceRow(
     }
 
     let row = CkbStrictScoreEvidenceRow()
-    if(certification.schemaVersion=="ckb-humaneval-certification-result-v4"){
-        row.schemaVersion="ckb-humaneval-public-evidence-v2";row.generationProtocol=certification.generationProtocol
+    if(certification.schemaVersion=="ckb-humaneval-certification-result-v4"||certification.schemaVersion=="ckb-humaneval-certification-result-v5"){
+        row.schemaVersion=if(certification.schemaVersion=="ckb-humaneval-certification-result-v5"){"ckb-humaneval-public-evidence-v3"}else{"ckb-humaneval-public-evidence-v2"};row.generationProtocol=certification.generationProtocol
         row.assetLineage=certification.assetLineage;row.skillBundleHash=certification.skillBundleHash
+        if(certification.schemaVersion=="ckb-humaneval-certification-result-v5"){row.rulesHash=certification.rulesHash;row.rulesTreeHash=certification.rulesTreeHash;row.rulesCount=certification.rulesCount}
         row.basePassed=certification.basePassed;row.plusPassed=certification.plusPassed
     }
     row.caseId = certification.caseId
@@ -798,8 +799,8 @@ public func projectCkbPublicEvidenceFromRunFiles(
     for (line in resultsText.split("\n")) {
         let certificationLine = line.trimAscii()
         if (certificationLine == "") { continue }
-        if (parseCkbCertificationEvidence(certificationLine).schemaVersion ==
-            "ckb-humaneval-certification-result-v4") {
+        if (["ckb-humaneval-certification-result-v4","ckb-humaneval-certification-result-v5"].contains(
+            parseCkbCertificationEvidence(certificationLine).schemaVersion)) {
             completionOnly = true
         }
     }
@@ -861,7 +862,7 @@ public func projectCkbPublicEvidenceFromRunFiles(
         }
         let caseRoot = Path(runRoot).join(
             "cases/${certification.caseId}/${certification.group}")
-        if(certification.schemaVersion=="ckb-humaneval-certification-result-v4"){
+        if(certification.schemaVersion=="ckb-humaneval-certification-result-v4"||certification.schemaVersion=="ckb-humaneval-certification-result-v5"){
             let completionDiagnostic=ckbStrictCompletionCaseFromRunRootDiagnostic(runRoot,certification)
             if(completionDiagnostic!="ok"){return p5CliRenderFailure("public_evidence_completion_${completionDiagnostic}")}
         }

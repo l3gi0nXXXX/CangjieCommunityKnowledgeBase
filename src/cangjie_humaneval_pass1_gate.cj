@@ -389,7 +389,8 @@ public func parseCangjieHumanEvalPass1Row(line: String): CangjieHumanEvalPass1Re
         }
         row.caseId = cangjieHumanEvalGateObjectString(object, "caseId").trimAscii()
         row.group = cangjieHumanEvalGateObjectString(object, "group").trimAscii()
-        if(row.schemaVersion=="ckb-humaneval-certification-result-v4"){
+        if(row.schemaVersion=="ckb-humaneval-certification-result-v4"||
+            row.schemaVersion=="ckb-humaneval-certification-result-v5"){
             let certification=parseCkbCertificationEvidence(raw);if(!certification.valid){row.diagnostic="completion_${certification.diagnostic}";return row}
             row.runId=certification.runId;row.generationProtocol=certification.generationProtocol;row.baseAnswerHash=certification.baseAnswerHash;row.plusAnswerHash=certification.plusAnswerHash
             row.skillBundleHash=certification.skillBundleHash;row.assetLineage=certification.assetLineage;row.basePassed=certification.basePassed;row.plusPassed=certification.plusPassed
