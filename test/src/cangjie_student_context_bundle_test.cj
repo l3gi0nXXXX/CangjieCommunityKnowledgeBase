@@ -326,6 +326,10 @@ private func s3FixtureRoot(): Path {
     canonicalize(Path("fixtures/student_context_candidate_v2"))
 }
 
+public func s3FixtureRootForTest(): Path {
+    s3FixtureRoot()
+}
+
 private func s3UniqueRoot(name: String): Path {
     if (!exists(Path("target"))) { Directory.create(Path("target"), recursive: true) }
     let root = canonicalize(Path("target")).join(
@@ -349,6 +353,17 @@ private class S3ProductionContextFixture {
     init(allowed: Path, candidate: Path, approval: Path, manifest: Path, store: FileKnowledgeStore) {
         this.allowed = allowed; this.candidate = candidate; this.approval = approval
         this.manifest = manifest; this.store = store
+    }
+}
+
+public class S5SplitLeakStudentContextFixture {
+    public let args: Array<String>
+    public let output: String
+    public let candidateRoot: String
+    public init(args: Array<String>, output: String, candidateRoot: String) {
+        this.args = args
+        this.output = output
+        this.candidateRoot = candidateRoot
     }
 }
 
@@ -410,6 +425,85 @@ public func s4PublishedStudentContext(name:String):String {
     if(!bundle.ok){""}else{output.toString()}
 }
 
+// Canonical at every inner/outer boundary, but the final compact combination joins
+// canonical_ and solution across a line break that each individual lane permits.
+public func s5SplitLeakStudentContextCliFixture(name: String): S5SplitLeakStudentContextFixture {
+    let fixture = s3ProductionContextFixture(name)
+    let skillRoot = fixture.candidate.join("skills/rune-safe-review")
+    let skill = parseStudentSkillCandidateDirectory(skillRoot.toString(), true)
+    if (!skill.verified) { throw IllegalStateException("s5_split_leak_source_invalid") }
+    skill.procedure += "\ncanonical_\nsolution"
+    let identity = s3Part(skill.id) + s3Part(skill.version) + s3Part(skill.title) +
+        s3Part(skill.procedure) + s3Part(skill.sourceCategory) + s3Part(skill.applicability) +
+        s3Part(skill.lineage) + s3Part(skill.testEvidenceHash)
+    skill.candidateContentHash = benchmarkGapSha256(identity)
+    skill.skillContent = "---\nname: ${skill.id}\nversion: ${skill.version}\n" +
+        "source: ${skill.sourceCategory}\nlineage: ${skill.lineage}\n" +
+        "content-hash: ${skill.candidateContentHash}\n---\n\n# ${skill.title}\n\n" +
+        "Applicability: ${skill.applicability}\n\n${skill.procedure}\n"
+    skill.skillContentHash = benchmarkGapSha256(skill.skillContent)
+    let skillEvidence = s5SplitLeakSkillManifest(skill, false)
+    skill.artifactHash = benchmarkGapSha256(skillEvidence)
+    File.writeTo(skillRoot.join("SKILL.md"), skill.skillContent.toArray())
+    File.writeTo(skillRoot.join("candidate-manifest.json"),
+        (s5SplitLeakSkillManifest(skill, true) + "\n").toArray())
+    File.writeTo(skillRoot.join("operation.json"),
+        ("{\"schemaVersion\":\"teacher-context-asset-operation-v1\",\"assetRole\":\"skills\"," +
+        "\"assetId\":\"${skill.id}\",\"operation\":\"add\",\"expectedOldHash\":\"\"," +
+        "\"newHash\":\"${skill.candidateContentHash}\"}\n").toArray())
+    let parsed = parseStudentSkillCandidateDirectory(skillRoot.toString(), true)
+    if (!parsed.verified || ckbStudentVisibleAssetForbidden(parsed.skillContent) ||
+        auditStudentVisibleAssetCombination("safe knowledge", parsed.skillContent, "safe rules",
+            ckbStudentVisibleProtectedArtifacts()) != "student_visible_asset_combination_leakage") {
+        throw IllegalStateException("s5_split_leak_inner_reseal_invalid")
+    }
+    let outer = JsonValue.fromStr(s5SplitLeakReadUtf8(
+        fixture.candidate.join("candidate-set-manifest.json")).trimAscii()).asObject()
+    let skillsHash = benchmarkGapSha256(parsed.skillContent)
+    let combination = benchmarkGapSha256(s3Part(s3ContextBundleJsonString(outer, "rulesHash")) +
+        s3Part(skillsHash) + s3Part(s3ContextBundleJsonString(outer, "knowledgeCandidateHash")) +
+        s3Part(s3ContextBundleJsonString(outer, "sourceClosureHash")) +
+        s3Part(s3ContextBundleJsonString(outer, "protectedClosureHash")))
+    s3ResealGenesisCandidateOuter(fixture, combination: combination, skillsHash: skillsHash)
+    let candidate = parseTeacherContextCandidateSetDirectoryV2(fixture.allowed.toString(),
+        fixture.candidate.toString())
+    let approval = s5SplitLeakReadUtf8(fixture.approval).trimAscii()
+    if (ckbStudentVisibleAssetForbidden(candidate.rules.visibleContent) ||
+        ckbStudentVisibleAssetForbidden(candidate.skills.visibleContent) ||
+        ckbStudentVisibleAssetForbidden(candidate.knowledge.visibleContent) ||
+        validateTeacherContextApprovalV2(approval, candidate) != "approve") {
+        throw IllegalStateException("s5_split_leak_outer_reseal_invalid")
+    }
+    let output = fixture.allowed.join("must-not-publish")
+    S5SplitLeakStudentContextFixture(s3CliArgs(fixture, output, false), output.toString(),
+        fixture.candidate.toString())
+}
+
+private func s5SplitLeakSkillManifest(skill: CkbStudentSkillCandidate, sealed: Bool): String {
+    let fields = "\"schemaVersion\":\"cangjie-teacher-skill-candidate-v1\"," +
+        "\"id\":\"${s5SplitLeakEscape(skill.id)}\",\"version\":\"${s5SplitLeakEscape(skill.version)}\"," +
+        "\"title\":\"${s5SplitLeakEscape(skill.title)}\",\"procedure\":\"${s5SplitLeakEscape(skill.procedure)}\"," +
+        "\"sourceCategory\":\"${skill.sourceCategory}\",\"applicability\":\"${s5SplitLeakEscape(skill.applicability)}\"," +
+        "\"lineage\":\"${skill.lineage}\",\"skillPath\":\"SKILL.md\"," +
+        "\"skillContentHash\":\"${skill.skillContentHash}\",\"testBundlePath\":\"test-bundle.json\"," +
+        "\"testBundleHash\":\"${skill.testBundleHash}\",\"testEvidenceHash\":\"${skill.testEvidenceHash}\"," +
+        "\"candidateContentHash\":\"${skill.candidateContentHash}\""
+    if (sealed) { "{${fields},\"artifactHash\":\"${skill.artifactHash}\"}" } else { "{${fields}}" }
+}
+
+private func s5SplitLeakEscape(value: String): String {
+    value.replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", "\\n")
+        .replace("\r", "\\r").replace("\t", "\\t")
+}
+
+private func s5SplitLeakReadUtf8(path: Path): String {
+    try {
+        String.fromUtf8(File.readFrom(path))
+    } catch (_: Exception) {
+        throw IllegalStateException("s5_split_leak_invalid_response_encoding")
+    }
+}
+
 private func s3ProductionUpdateFixture(baseFixture: S3ProductionContextFixture, baseRoot: Path,
     base: CkbStudentContextBundle): S3ProductionContextFixture {
     let candidate = baseFixture.allowed.join("candidate-update-v2")
@@ -468,7 +562,7 @@ private func s3WriteDerivedRuleCandidate(source: Path, target: Path, id: String,
 }
 
 private func s3ResealGenesisCandidateOuter(fixture: S3ProductionContextFixture,
-    combination!: String = ""): Unit {
+    combination!: String = "", skillsHash!: String = ""): Unit {
     let manifestPath = fixture.candidate.join("candidate-set-manifest.json")
     let object = JsonValue.fromStr(String.fromUtf8(File.readFrom(manifestPath)).trimAscii()).asObject()
     let rulesTree = benchmarkGapSha256(s3TreeInventory(fixture.candidate.join("rules")))
@@ -478,17 +572,22 @@ private func s3ResealGenesisCandidateOuter(fixture: S3ProductionContextFixture,
     let selectedCombination = if (combination == "") { s3ContextBundleJsonString(object, "combinationAuditHash") }
         else { combination }
     let evidence = s3CandidateManifestEvidence(object, s3ContextBundleJsonString(object, "knowledgeCandidateHash"),
-        knowledgeTree, inventory, selectedCombination, rulesTree, skillsTree)
+        knowledgeTree, inventory, selectedCombination, rulesTree, skillsTree, skillsHash: skillsHash)
     let candidateHash = benchmarkGapSha256(evidence)
     File.writeTo(manifestPath,
         (evidence.replace("}", ",\"candidateSetHash\":\"${candidateHash}\"}") + "\n").toArray())
-    let approvalJson = "{\"schemaVersion\":\"teacher-student-context-approval-v2\",\"candidateSetHash\":\"${candidateHash}\",\"assetInventoryHash\":\"${inventory}\",\"rulesHash\":\"${s3ContextBundleJsonString(object, "rulesHash")}\",\"rulesTreeHash\":\"${rulesTree}\",\"skillsHash\":\"${s3ContextBundleJsonString(object, "skillsHash")}\",\"skillsTreeHash\":\"${skillsTree}\",\"knowledgeCandidateHash\":\"${s3ContextBundleJsonString(object, "knowledgeCandidateHash")}\",\"knowledgeTreeHash\":\"${knowledgeTree}\",\"sourceClosureHash\":\"${s3ContextBundleJsonString(object, "sourceClosureHash")}\",\"protectedClosureHash\":\"${s3ContextBundleJsonString(object, "protectedClosureHash")}\",\"combinationAuditHash\":\"${selectedCombination}\",\"decision\":\"approve\",\"reviewer\":\"synthetic-reviewer\",\"reason\":\"Synthetic full-tree scaffold contract approved.\",\"approvedAtUtc\":\"2026-08-07T00:00:00Z\"}\n"
+    let selectedSkillsHash = if (skillsHash == "") { s3ContextBundleJsonString(object, "skillsHash") }
+        else { skillsHash }
+    let approvalJson = "{\"schemaVersion\":\"teacher-student-context-approval-v2\",\"candidateSetHash\":\"${candidateHash}\",\"assetInventoryHash\":\"${inventory}\",\"rulesHash\":\"${s3ContextBundleJsonString(object, "rulesHash")}\",\"rulesTreeHash\":\"${rulesTree}\",\"skillsHash\":\"${selectedSkillsHash}\",\"skillsTreeHash\":\"${skillsTree}\",\"knowledgeCandidateHash\":\"${s3ContextBundleJsonString(object, "knowledgeCandidateHash")}\",\"knowledgeTreeHash\":\"${knowledgeTree}\",\"sourceClosureHash\":\"${s3ContextBundleJsonString(object, "sourceClosureHash")}\",\"protectedClosureHash\":\"${s3ContextBundleJsonString(object, "protectedClosureHash")}\",\"combinationAuditHash\":\"${selectedCombination}\",\"decision\":\"approve\",\"reviewer\":\"synthetic-reviewer\",\"reason\":\"Synthetic full-tree scaffold contract approved.\",\"approvedAtUtc\":\"2026-08-07T00:00:00Z\"}\n"
     File.writeTo(fixture.approval, approvalJson.toArray())
 }
 
 private func s3CandidateManifestEvidence(o: JsonObject, knowledgeHash: String, knowledgeTreeHash: String,
-    inventoryHash: String, combination: String, rulesTreeHash: String, skillsTreeHash: String): String {
-    "{\"schemaVersion\":\"teacher-student-context-candidate-set-v2\",\"candidateSetId\":\"${s3ContextBundleJsonString(o, "candidateSetId")}\",\"baseCompositeHash\":\"none\",\"validationLevel\":\"scaffold_contract\",\"sourceEvidenceManifestHash\":\"${s3ContextBundleJsonString(o, "sourceEvidenceManifestHash")}\",\"classificationManifestHash\":\"\",\"sourceClosureHash\":\"${s3ContextBundleJsonString(o, "sourceClosureHash")}\",\"protectedClosureHash\":\"${s3ContextBundleJsonString(o, "protectedClosureHash")}\",\"rulesEligible\":true,\"rulesHash\":\"${s3ContextBundleJsonString(o, "rulesHash")}\",\"rulesTreeHash\":\"${rulesTreeHash}\",\"rulesCount\":1,\"rulesAssetLineage\":\"independent\",\"skillsEligible\":true,\"skillsHash\":\"${s3ContextBundleJsonString(o, "skillsHash")}\",\"skillsTreeHash\":\"${skillsTreeHash}\",\"skillsCount\":1,\"skillAssetLineage\":\"independent\",\"knowledgeEligible\":true,\"knowledgeCandidateHash\":\"${knowledgeHash}\",\"knowledgeTreeHash\":\"${knowledgeTreeHash}\",\"knowledgeTargetVersion\":\"${s3ContextBundleJsonString(o, "knowledgeTargetVersion")}\",\"knowledgeAssetLineage\":\"independent\",\"assetInventoryHash\":\"${inventoryHash}\",\"combinationAuditHash\":\"${combination}\"}"
+    inventoryHash: String, combination: String, rulesTreeHash: String, skillsTreeHash: String,
+    skillsHash!: String = ""): String {
+    let selectedSkillsHash = if (skillsHash == "") { s3ContextBundleJsonString(o, "skillsHash") }
+        else { skillsHash }
+    "{\"schemaVersion\":\"teacher-student-context-candidate-set-v2\",\"candidateSetId\":\"${s3ContextBundleJsonString(o, "candidateSetId")}\",\"baseCompositeHash\":\"none\",\"validationLevel\":\"scaffold_contract\",\"sourceEvidenceManifestHash\":\"${s3ContextBundleJsonString(o, "sourceEvidenceManifestHash")}\",\"classificationManifestHash\":\"\",\"sourceClosureHash\":\"${s3ContextBundleJsonString(o, "sourceClosureHash")}\",\"protectedClosureHash\":\"${s3ContextBundleJsonString(o, "protectedClosureHash")}\",\"rulesEligible\":true,\"rulesHash\":\"${s3ContextBundleJsonString(o, "rulesHash")}\",\"rulesTreeHash\":\"${rulesTreeHash}\",\"rulesCount\":1,\"rulesAssetLineage\":\"independent\",\"skillsEligible\":true,\"skillsHash\":\"${selectedSkillsHash}\",\"skillsTreeHash\":\"${skillsTreeHash}\",\"skillsCount\":1,\"skillAssetLineage\":\"independent\",\"knowledgeEligible\":true,\"knowledgeCandidateHash\":\"${knowledgeHash}\",\"knowledgeTreeHash\":\"${knowledgeTreeHash}\",\"knowledgeTargetVersion\":\"${s3ContextBundleJsonString(o, "knowledgeTargetVersion")}\",\"knowledgeAssetLineage\":\"independent\",\"assetInventoryHash\":\"${inventoryHash}\",\"combinationAuditHash\":\"${combination}\"}"
 }
 
 private func s3ContextBundleJsonString(o: JsonObject, key: String): String { o.get(key).getOrThrow().asString().getValue() }
