@@ -7,9 +7,118 @@ import std.process.launch
 import std.time.DateTime
 import std.unittest.*
 import std.unittest.testmacro.*
+import stdx.encoding.json.*
 
 @Test
 public class CangjieEvalClassifierControlTest {
+    // S0-UT-01: the owner-specific v2 carrier seals and parses canonical bytes deterministically.
+    @TestCase
+    public func failureAssetV2CanonicalBytesMatchAcrossRepositories(): Unit {
+        let fixture=s0FailureAssetFixture("classification-v2-valid.jsonl")
+        @Expect(benchmarkGapSha256(fixture).replace("sha256:",""),
+            CKB_COMPLETION_FAILURE_ASSET_CLASSIFICATION_FIXTURE_HASH)
+        let lines=fixture.split("\n");@Expect(lines.size,12)
+        for(i in 0..11){
+            let parsed=parseCkbCompletionFailureAssetClassification(lines[i].toArray())
+            @Expect(parsed[1],"ok")
+            let originalHash=parsed[0].classificationEvidenceHash
+            parsed[0].classificationEvidenceHash=""
+            @Expect(sealCkbCompletionFailureAssetClassification(parsed[0]),"ok")
+            @Expect(parsed[0].classificationEvidenceHash,originalHash)
+            @Expect(renderCkbCompletionFailureAssetClassification(parsed[0]),lines[i])
+        }
+        let checks=s0FailureAssetFixture("SHA256SUMS").split("\n");@Expect(checks.size,20)
+        for(i in 0..19){
+            let columns=checks[i].split("  ");@Expect(columns.size,2)
+            @Expect(columns[1].contains("/")||columns[1].contains(".."),false)
+            @Expect(benchmarkGapSha256(s0FailureAssetFixture(columns[1])).replace("sha256:",""),columns[0])
+        }
+        @Expect(s0FailureAssetClosureDiagnostic(),"ok")
+    }
+
+    // S0-BND-01: v1 remains read-only compatible and bytes are decoded fail-close.
+    @TestCase
+    public func failureAssetV2BoundariesAreUtf8Safe(): Unit {
+        let v1=s0FailureAssetFixture("classification-v1-compatibility.jsonl").split("\n")[0]
+        let parsedV1=parseCkbCompletionFailureClassification(v1.toArray())
+        @Expect(parsedV1[1],"ok")
+        @Expect(ckbFailureAssetOutputKind(parsedV1[0]),"knowledge_skill")
+        let invalidBytes=s0FailureAssetInvalidUtf8Bytes()
+        @Expect(invalidBytes.size,2)
+        @Expect(parseCkbCompletionFailureAssetClassification(invalidBytes)[1],
+            "invalid_response_encoding")
+        let row=CkbCompletionFailureAssetClassification()
+        row.failureEvidenceHash=CKB_COMPLETION_FAILURE_FIXTURE_HASH
+        row.gapKind="rules_gap";row.rulesEligible=true
+        row.classificationReasonCode="missing_global_invariant"
+        @Expect(sealCkbCompletionFailureAssetClassification(row),"ok")
+        @Expect(parseCkbCompletionFailureAssetClassification(
+            renderCkbCompletionFailureAssetClassification(row).toArray())[1],"ok")
+        let failure=s0FailureAssetFixture("completion-failure-v1-utf8.json").split("\n")[0]
+        @Expect(parseCkbCompletionFailure(failure.toArray())[1],"ok")
+        @Expect(parseCkbCompletionFailure(failure.toArray())[0].failureObservation.contains("中文😀"),true)
+    }
+
+    // S0-POS-01: all eight visibility routes are exact.
+    @TestCase
+    public func failureAssetOutputKindsAreExact(): Unit {
+        for ((knowledge,skill,rules,expected) in [
+            (false,false,false,"none"),(true,false,false,"knowledge"),
+            (false,true,false,"skill"),(false,false,true,"rules"),
+            (true,true,false,"knowledge_skill"),(true,false,true,"knowledge_rules"),
+            (false,true,true,"skill_rules"),(true,true,true,"all")]) {
+            let row=CkbCompletionFailureAssetClassification()
+            row.knowledgeEligible=knowledge;row.skillEligible=skill;row.rulesEligible=rules
+            @Expect(ckbFailureAssetOutputKind(row),expected)
+        }
+    }
+
+    // S0-NEG-01: schema, enum, eligibility, reason, hash, and JSON drift fail closed.
+    @TestCase
+    public func failureAssetV2RejectsContractDrift(): Unit {
+        let row=CkbCompletionFailureAssetClassification()
+        row.failureEvidenceHash=CKB_COMPLETION_FAILURE_FIXTURE_HASH
+        row.gapKind="knowledge_gap";row.knowledgeEligible=true
+        row.classificationReasonCode="missing_versioned_fact"
+        @Expect(sealCkbCompletionFailureAssetClassification(row),"ok")
+        let valid=renderCkbCompletionFailureAssetClassification(row)
+        @Expect(parseCkbCompletionFailureAssetClassification(valid.replace(
+            "\"schemaVersion\":", "\"unknown\":1,\"schemaVersion\":").toArray())[1],
+            "classification_schema_fields_invalid")
+        @Expect(parseCkbCompletionFailureAssetClassification(valid.replace(
+            "\"gapKind\":\"knowledge_gap\"",
+            "\"gapKind\":\"knowledge_gap\",\"gapKind\":\"knowledge_gap\"").toArray())[1],
+            "classification_schema_fields_invalid")
+        @Expect(parseCkbCompletionFailureAssetClassification(valid.replace(
+            ",\"rulesEligible\":false", "").toArray())[1],"classification_schema_fields_invalid")
+        @Expect(parseCkbCompletionFailureAssetClassification(valid.replace(
+            "knowledge_gap","unknown_gap").toArray())[1],"classification_identity_invalid")
+        @Expect(parseCkbCompletionFailureAssetClassification(valid.replace(
+            "\"knowledgeEligible\":true","\"knowledgeEligible\":false").toArray())[1],
+            "classification_eligibility_invalid")
+        @Expect(parseCkbCompletionFailureAssetClassification(valid.replace(
+            "missing_versioned_fact","multiple_reusable_gaps").toArray())[1],
+            "classification_eligibility_invalid")
+        @Expect(parseCkbCompletionFailureAssetClassification(valid.replace(
+            row.classificationEvidenceHash,
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb").toArray())[1],
+            "classification_evidence_hash_mismatch")
+        @Expect(parseCkbCompletionFailureAssetClassification("{中文🙂".toArray())[1],"malformed_json")
+        @Expect(parseCkbCompletionFailureAssetClassification((" "+valid).toArray())[1],
+            "classification_schema_fields_invalid")
+        let reordered=valid.replace(
+            "\"schemaVersion\":\"ckb-completion-failure-classification-v2\",\"failureEvidenceHash\":",
+            "\"failureEvidenceHash\":").replace(
+            "{\"failureEvidenceHash\":",
+            "{\"failureEvidenceHash\":").replace(
+            "\"gapKind\":", "\"schemaVersion\":\"ckb-completion-failure-classification-v2\",\"gapKind\":")
+        @Expect(parseCkbCompletionFailureAssetClassification(reordered.toArray())[1],
+            "classification_schema_fields_invalid")
+        let drifts=s0FailureAssetFixture("classification-v2-contract-drift.jsonl").split("\n")
+        @Expect(drifts.size,8)
+        for(i in 0..7){@Expect(parseCkbCompletionFailureAssetClassification(drifts[i].toArray())[1]=="ok",false)}
+    }
+
     // P6-UT-01 / P6-POS-01: frozen cross-repository carrier and eligibility rules.
     @TestCase
     public func p6FrozenCompletionFailureFixtureIsByteExact(): Unit {
@@ -554,6 +663,142 @@ public class CangjieEvalClassifierControlTest {
         @Expect(blocked.ok,false);@Expect(blocked.rejected,1);@Expect(blocked.processed,0)
         @Expect(exists(Path(tamperedOutput).join("runs/CJ-HUMANEVAL-016")),false)
     }
+}
+
+private func s0FailureAssetFixture(name:String):String{
+    try{String.fromUtf8(File.readFrom(Path("fixtures/completion_failure_assets").join(name)))}
+    catch(_:Exception){"fixture_invalid_encoding"}
+}
+private func s0FailureAssetFileHash(name:String):String{
+    benchmarkGapSha256(s0FailureAssetFixture(name))
+}
+private func s0FailureAssetString(object:JsonObject,key:String):String{
+    object.get(key).getOrThrow().asString().getValue()
+}
+private func s0FailureAssetInt(object:JsonObject,key:String):Int64{
+    object.get(key).getOrThrow().asInt().getValue()
+}
+private func s0FailureAssetHashInput(raw:String,key:String):String{
+    let parts=raw.trimAscii().split(",\"${key}\"")
+    if(parts.size!=2){return "fixture_hash_input_invalid"}
+    parts[0]+"}"
+}
+private func s0FailureAssetClosureDiagnostic():String{
+    try{
+        let sourceRaw=s0FailureAssetFixture("source-evidence-manifest-v1.json")
+        let source=JsonValue.fromStr(sourceRaw.trimAscii()).asObject()
+        if(benchmarkGapSha256(s0FailureAssetHashInput(sourceRaw,"sourceManifestHash"))!=
+            s0FailureAssetString(source,"sourceManifestHash")){return "source_manifest_hash_mismatch"}
+        let ruleRaw=s0FailureAssetFixture("rule-candidate-v1.json")
+        let rule=JsonValue.fromStr(ruleRaw.trimAscii()).asObject()
+        if(benchmarkGapSha256(s0FailureAssetHashInput(ruleRaw,"canonicalHash"))!=
+            s0FailureAssetString(rule,"canonicalHash")||
+            s0FailureAssetString(rule,"sourceEvidenceHash")!=s0FailureAssetString(source,"sourceManifestHash")||
+            s0FailureAssetString(rule,"positiveEvidenceHash")!=s0FailureAssetFileHash("classification-v2-valid.jsonl")||
+            s0FailureAssetString(rule,"negativeEvidenceHash")!=s0FailureAssetFileHash("classification-v2-contract-drift.jsonl")||
+            s0FailureAssetString(rule,"boundaryEvidenceHash")!=s0FailureAssetFileHash("completion-failure-v1-utf8.json")||
+            s0FailureAssetString(rule,"generalizationEvidenceHash")!=s0FailureAssetFileHash("classification-v1-compatibility.jsonl")){
+            return "rule_candidate_hash_mismatch"
+        }
+        let rulesOperation=JsonValue.fromStr(s0FailureAssetFixture("rules-operation-v1.json").trimAscii()).asObject()
+        let skillsOperation=JsonValue.fromStr(s0FailureAssetFixture("skills-operation-v1.json").trimAscii()).asObject()
+        if(s0FailureAssetString(rulesOperation,"newHash")!=s0FailureAssetString(rule,"canonicalHash")||
+            s0FailureAssetString(skillsOperation,"newHash")!=s0FailureAssetFileHash("student-skill-content.md")){
+            return "operation_hash_mismatch"
+        }
+        let execution=JsonValue.fromStr(s0FailureAssetFixture("candidate-fixture-execution-v1.json").trimAscii()).asObject()
+        if(s0FailureAssetString(execution,"fixtureHash")!=s0FailureAssetFileHash("knowledge-content.md")||
+            s0FailureAssetString(execution,"providerIdentityHash")!=s0FailureAssetFileHash("classification-v2-valid.jsonl")||
+            s0FailureAssetString(execution,"expectedEvidenceHash")!=s0FailureAssetFileHash("source-evidence-manifest-v1.json")||
+            s0FailureAssetString(execution,"actualEvidenceHash")!=s0FailureAssetFileHash("source-evidence-manifest-v1.json")||
+            s0FailureAssetString(execution,"transcriptHash")!=s0FailureAssetFileHash("rules-operation-v1.json")){
+            return "candidate_execution_hash_mismatch"
+        }
+        let candidateRaw=s0FailureAssetFixture("candidate-set-manifest-v1.json")
+        let candidate=JsonValue.fromStr(candidateRaw.trimAscii()).asObject()
+        if(benchmarkGapSha256(s0FailureAssetHashInput(candidateRaw,"candidateSetHash"))!=
+            s0FailureAssetString(candidate,"candidateSetHash")||
+            s0FailureAssetString(candidate,"sourceEvidenceManifestHash")!=s0FailureAssetString(source,"sourceManifestHash")||
+            s0FailureAssetString(candidate,"rulesHash")!=s0FailureAssetFileHash("rule-candidate-v1.json")||
+            s0FailureAssetString(candidate,"skillsHash")!=s0FailureAssetFileHash("skills-operation-v1.json")||
+            s0FailureAssetString(candidate,"knowledgeCandidateHash")!=s0FailureAssetFileHash("knowledge-content.md")||
+            s0FailureAssetString(candidate,"combinationAuditHash")!=s0FailureAssetFileHash("candidate-fixture-execution-v1.json")){
+            return "candidate_set_hash_mismatch"
+        }
+        let approvalRaw=s0FailureAssetFixture("approval-v1.json")
+        let approval=JsonValue.fromStr(approvalRaw.trimAscii()).asObject()
+        if(s0FailureAssetString(approval,"candidateSetHash")!=s0FailureAssetString(candidate,"candidateSetHash")||
+            s0FailureAssetString(approval,"rulesHash")!=s0FailureAssetString(candidate,"rulesHash")||
+            s0FailureAssetString(approval,"skillsHash")!=s0FailureAssetString(candidate,"skillsHash")||
+            s0FailureAssetString(approval,"knowledgeCandidateHash")!=s0FailureAssetString(candidate,"knowledgeCandidateHash")){
+            return "approval_hash_mismatch"
+        }
+        let frozen=JsonValue.fromStr(s0FailureAssetFixture("frozen-knowledge-reference-v1.json").trimAscii()).asObject()
+        if(s0FailureAssetString(frozen,"knowledgeCandidateHash")!=s0FailureAssetString(candidate,"knowledgeCandidateHash")||
+            s0FailureAssetString(frozen,"frozenCandidateManifestHash")!=s0FailureAssetFileHash("candidate-set-manifest-v1.json")||
+            s0FailureAssetString(frozen,"knowledgeContentHash")!=s0FailureAssetFileHash("knowledge-content.md")){
+            return "frozen_knowledge_reference_hash_mismatch"
+        }
+        let bundleRaw=s0FailureAssetFixture("student-context-bundle-v1.json")
+        let bundle=JsonValue.fromStr(bundleRaw.trimAscii()).asObject()
+        if(benchmarkGapSha256(s0FailureAssetHashInput(bundleRaw,"compositeHash"))!=
+            s0FailureAssetString(bundle,"compositeHash")||
+            s0FailureAssetString(bundle,"candidateSetHash")!=s0FailureAssetString(candidate,"candidateSetHash")||
+            s0FailureAssetString(bundle,"approvalHash")!=s0FailureAssetFileHash("approval-v1.json")||
+            s0FailureAssetString(bundle,"rulesHash")!=s0FailureAssetString(candidate,"rulesHash")||
+            s0FailureAssetString(bundle,"skillBundleHash")!=s0FailureAssetString(candidate,"skillsHash")||
+            s0FailureAssetString(bundle,"knowledgeContentHash")!=s0FailureAssetString(frozen,"knowledgeContentHash")||
+            s0FailureAssetInt(bundle,"rulesContentBytes")!=s0FailureAssetString(rule,"body").toArray().size||
+            s0FailureAssetInt(bundle,"skillContentBytes")!=s0FailureAssetFixture("student-skill-content.md").toArray().size){
+            return "student_context_bundle_hash_mismatch"
+        }
+        let context=JsonValue.fromStr(s0FailureAssetFixture("completion-context-evidence-v2.json").trimAscii()).asObject()
+        if(s0FailureAssetString(context,"knowledgeResponseHash")!=s0FailureAssetFileHash("frozen-knowledge-reference-v1.json")||
+            s0FailureAssetString(context,"knowledgePackHash")!=s0FailureAssetFileHash("knowledge-content.md")||
+            s0FailureAssetInt(context,"knowledgeContentBytes")!=s0FailureAssetFixture("knowledge-content.md").toArray().size||
+            s0FailureAssetString(context,"compositeHash")!=s0FailureAssetString(bundle,"compositeHash")){
+            return "completion_context_evidence_hash_mismatch"
+        }
+        let capabilityRaw=s0FailureAssetFixture("provider-prompt-capability-v1.json")
+        let capability=JsonValue.fromStr(capabilityRaw.trimAscii()).asObject()
+        if(benchmarkGapSha256(s0FailureAssetHashInput(capabilityRaw,"capabilityHash"))!=
+            s0FailureAssetString(capability,"capabilityHash")){return "provider_capability_hash_mismatch"}
+        let delta=JsonValue.fromStr(s0FailureAssetFixture("certification-v5-delta.json").trimAscii()).asObject()
+        if(s0FailureAssetString(delta,"studentContextManifestHash")!=s0FailureAssetFileHash("student-context-bundle-v1.json")||
+            s0FailureAssetString(delta,"compositeHash")!=s0FailureAssetString(bundle,"compositeHash")||
+            s0FailureAssetString(delta,"providerPromptCapabilityHash")!=s0FailureAssetFileHash("provider-prompt-capability-v1.json")||
+            s0FailureAssetInt(delta,"effectivePromptByteBudget")!=188416){return "certification_delta_hash_mismatch"}
+        for(name in ["student-skill-content.md","knowledge-content.md","source-evidence-manifest-v1.json",
+            "rule-candidate-v1.json","candidate-set-manifest-v1.json","approval-v1.json",
+            "student-context-bundle-v1.json","completion-context-evidence-v2.json"]){
+            let lower=s0FailureAssetFixture(name).toAsciiLower()
+            if(lower.contains("/users/")||lower.contains("/home/")||lower.contains("authorization")||
+                lower.contains("bearer ")||lower.contains("token=")||lower.contains("password")||
+                lower.contains("canonical_solution")||lower.contains("hidden_test")){return "fixture_protected_material"}
+        }
+        "ok"
+    }catch(_:Exception){"fixture_closure_malformed"}
+}
+private func s0FailureAssetHexNibble(value:Rune):UInt8{
+    if(value==r'0'){return UInt8(0)};if(value==r'1'){return UInt8(1)}
+    if(value==r'2'){return UInt8(2)};if(value==r'3'){return UInt8(3)}
+    if(value==r'4'){return UInt8(4)};if(value==r'5'){return UInt8(5)}
+    if(value==r'6'){return UInt8(6)};if(value==r'7'){return UInt8(7)}
+    if(value==r'8'){return UInt8(8)};if(value==r'9'){return UInt8(9)}
+    if(value==r'a'){return UInt8(10)};if(value==r'b'){return UInt8(11)}
+    if(value==r'c'){return UInt8(12)};if(value==r'd'){return UInt8(13)}
+    if(value==r'e'){return UInt8(14)};if(value==r'f'){return UInt8(15)}
+    UInt8(255)
+}
+private func s0FailureAssetInvalidUtf8Bytes():Array<UInt8>{
+    let text=s0FailureAssetFixture("classification-invalid-utf8.hex")
+    if(text!="fffe\n"){return []}
+    let runes=text.toRuneArray();let out=ArrayList<UInt8>()
+    for(i in 0..4:2){
+        let high=s0FailureAssetHexNibble(runes[i]);let low=s0FailureAssetHexNibble(runes[i+1])
+        if(high>15||low>15){return []};out.add(high*16+low)
+    }
+    out.toArray()
 }
 
 private func p5IcRoot(label:String):String{let root="/tmp/ckb-p5-ic-${label}-${DateTime.now().toUnixTimeStamp().toMilliseconds()}";if(exists(Path(root))){_=launch("/bin/rm",["-rf",root]).wait()};Directory.create(Path(root),recursive:true);root}
