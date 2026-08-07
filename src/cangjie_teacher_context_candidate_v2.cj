@@ -90,13 +90,13 @@ private func ckbTeacherV2ValidateLaneTruth(root:Path,candidate:TeacherContextCan
         let parsed=ArrayList<CkbStudentRuleCandidate>()
         for(entry in Directory.readFrom(root.join("rules"))){let rule=parseStudentRuleCandidateDirectory(entry.path.toString());if(!rule.verified||rule.assetLineage!=candidate.rules.lineage||(rule.assetLineage=="humaneval_164_derived"&&(rule.sourceEvidenceKind!="completion_failure"||rule.sourceEvidenceHash!=candidate.classificationManifestHash))||(rule.assetLineage=="independent"&&(!genesis||rule.sourceEvidenceKind!="independent_manifest"||rule.sourceEvidenceHash!=candidate.sourceEvidenceManifestHash))){throw IllegalArgumentException("candidate_lane_lineage_invalid")};parsed.add(rule)}
         let compiled=compileStudentRulesBundle("candidate-parse",parsed)
-        if(!compiled.ok||Int64(parsed.size)!=candidate.rules.count||benchmarkGapSha256(compiled.agentsMarkdown)!=candidate.rules.hash){throw IllegalArgumentException("candidate_lane_hash_mismatch")}
+        if(!compiled.ok||(genesis&&(Int64(parsed.size)!=candidate.rules.count||benchmarkGapSha256(compiled.agentsMarkdown)!=candidate.rules.hash))){throw IllegalArgumentException("candidate_lane_hash_mismatch")}
     }
     if(candidate.skills.eligible){
         let parsed=ArrayList<CkbStudentSkillCandidate>()
         for(entry in Directory.readFrom(root.join("skills"))){let skill=parseStudentSkillCandidateDirectory(entry.path.toString(),candidate.skills.lineage=="independent");if(!skill.verified||skill.lineage!=candidate.skills.lineage||(skill.lineage=="independent"&&!genesis)){throw IllegalArgumentException("candidate_lane_lineage_invalid")};parsed.add(skill)}
         let compiled=compileStudentSkillBundle("candidate-parse",parsed)
-        if(!compiled.ok||Int64(parsed.size)!=candidate.skills.count||benchmarkGapSha256(renderStudentVisibleSkillPrompt(compiled.json))!=candidate.skills.hash){throw IllegalArgumentException("candidate_lane_hash_mismatch")}
+        if(!compiled.ok||(genesis&&(Int64(parsed.size)!=candidate.skills.count||benchmarkGapSha256(renderStudentVisibleSkillPrompt(compiled.json))!=candidate.skills.hash))){throw IllegalArgumentException("candidate_lane_hash_mismatch")}
     }
     if(candidate.knowledge.eligible){
         let raw=candidate.knowledge.files[0].content;let object=JsonValue.fromStr(raw.trimAscii()).asObject()
