@@ -179,6 +179,70 @@ private func triageAtomicWrite(path: Path, text: String): Bool {
     try { File.writeTo(tmp, text.toArray()); if (triageReadText(tmp) != text) { _ = launch("/bin/rm", ["-f", tmp.toString()]).wait(); return false }; launch("/bin/mv", ["-f", tmp.toString(), path.toString()]).wait() == 0 } catch (_: Exception) { try { _ = launch("/bin/rm", ["-f", tmp.toString()]).wait() } catch (_: Exception) {}; false }
 }
 
+public func renderCkbCompletionEvaluationOutcome(runId:String,caseId:String,group:String,
+    datasetVersion:String,completionHash:String,baseStatus:String,plusStatus:String,
+    resultHash:String):String {
+    let fields="\"schemaVersion\":\"ckb-completion-evaluation-outcome-v1\",\"runId\":\"${triageJsonEscape(runId)}\",\"caseId\":\"${triageJsonEscape(caseId)}\",\"group\":\"${triageJsonEscape(group)}\",\"datasetVersion\":\"${triageJsonEscape(datasetVersion)}\",\"generationProtocol\":\"completion-only-v1\",\"completionHash\":\"${triageJsonEscape(completionHash)}\",\"baseStatus\":\"${triageJsonEscape(baseStatus)}\",\"plusStatus\":\"${triageJsonEscape(plusStatus)}\",\"resultHash\":\"${triageJsonEscape(resultHash)}\""
+    let payload="{${fields}}"
+    "{${fields},\"outcomeHash\":\"${benchmarkGapSha256(payload)}\"}"
+}
+
+public func buildCkbCompletionFailureIndex(runRoot:String,runId:String,groups:ArrayList<String>,
+    caseStart:Int64,caseEnd:Int64):(String,String) {
+    if(runRoot==""||runId==""||groups.size==0||caseStart<0||caseEnd<caseStart){return("","failure_index_identity_invalid")}
+    let identities=HashSet<String>();var index=""
+    for(caseIndex in caseStart..=caseEnd){
+        let caseId=triageCaseId(caseIndex)
+        for(group in groups){
+            let identity="${caseId}:${group}";if(identities.contains(identity)){return("","failure_index_duplicate")};identities.add(identity)
+            let root=Path(runRoot).join("cases").join(caseId).join(group)
+            let outcomeText=triageReadText(root.join("evaluation-outcome.json")).trimAscii()
+            if(outcomeText==""){return("","failure_index_outcome_missing")}
+            try{
+                let outcome=JsonValue.fromStr(outcomeText).asObject()
+                let base=triageJsonString(outcome,"baseStatus");let plus=triageJsonString(outcome,"plusStatus")
+                let resultText=triageReadText(root.join("result-evidence.json")).trimAscii()
+                if(triageJsonString(outcome,"schemaVersion")!="ckb-completion-evaluation-outcome-v1"||
+                    triageJsonString(outcome,"runId")!=runId||triageJsonString(outcome,"caseId")!=caseId||
+                    triageJsonString(outcome,"group")!=group||resultText==""||
+                    triageJsonString(outcome,"resultHash")!=benchmarkGapSha256(resultText)){
+                    return("","failure_index_identity_mismatch")
+                }
+                let canonical=renderCkbCompletionEvaluationOutcome(runId,caseId,group,
+                    triageJsonString(outcome,"datasetVersion"),triageJsonString(outcome,"completionHash"),base,plus,
+                    triageJsonString(outcome,"resultHash"))
+                if(canonical!=outcomeText){
+                    return("","failure_index_outcome_hash_mismatch")
+                }
+                let failureText=triageReadText(root.join("completion-failure.json")).trimAscii()
+                var failureHash=""
+                if(base=="passed"&&plus=="passed"){
+                    if(failureText!=""){return("","failure_index_stale_failure")}
+                }else{
+                    if(failureText==""){return("","failure_index_failure_missing")}
+                    let parsed=parseCkbCompletionFailure(failureText.toArray())
+                    if(parsed[1]!="ok"||parsed[0].runId!=runId||parsed[0].caseId!=caseId||
+                        parsed[0].datasetVersion!=triageJsonString(outcome,"datasetVersion")||
+                        parsed[0].completionHash!=triageJsonString(outcome,"completionHash").replace("sha256:","")||
+                        parsed[0].baseStatus!=base||parsed[0].plusStatus!=plus){return("","failure_index_failure_mismatch")}
+                    failureHash=parsed[0].evidenceHash
+                }
+                index+="{\"caseId\":\"${caseId}\",\"group\":\"${triageJsonEscape(group)}\",\"outcomeHash\":\"${triageJsonString(outcome,"outcomeHash")}\",\"failureEvidenceHash\":\"${failureHash}\"}\n"
+            }catch(_:Exception){return("","failure_index_malformed")}
+        }
+    }
+    (index,"ok")
+}
+
+public func finalizeCkbCompletionFailureIndex(runRoot:String,runId:String,groups:ArrayList<String>,
+    caseStart:Int64,caseEnd:Int64):String {
+    let built=buildCkbCompletionFailureIndex(runRoot,runId,groups,caseStart,caseEnd)
+    if(built[1]!="ok"){return built[1]}
+    let target=Path(runRoot).join("completion-failures.jsonl")
+    if(exists(target)){return if(triageReadText(target)==built[0]){"ok"}else{"failure_evidence_frozen"}}
+    if(triageAtomicWrite(target,built[0])){"ok"}else{"failure_index_persist_failed"}
+}
+
 private func triageReadText(path: Path): String {
     if (!exists(path)) { return "" }
     try { String.fromUtf8(File.readFrom(path)) } catch (_: Exception) { "" }

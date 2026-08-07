@@ -11,6 +11,36 @@ import stdx.encoding.json.*
 
 @Test
 public class CangjieEvalClassifierControlTest {
+    // S1-UT-01
+    @TestCase
+    public func completionFailureBuildsFromFrozenArtifacts():Unit{
+        let root=Path("target/s1-failure-builder-${DateTime.now().toUnixTimeStamp().toMilliseconds()}")
+        Directory.create(root,recursive:true)
+        let caseId="CJ-HUMANEVAL-007";let runId="s1-run";let dataset="dataset-v1"
+        let result="{\"runId\":\"${runId}\",\"caseId\":\"${caseId}\",\"datasetVersion\":\"${dataset}\",\"failureType\":\"test_failure\"}"
+        File.writeTo(root.join("result-evidence.json"),(result+"\n").toArray())
+        File.writeTo(root.join("canonical-task-context.json"),("{\"taskId\":\"${caseId}\",\"datasetVersion\":\"${dataset}\",\"taskText\":\"公开任务 中文😀\"}\n").toArray())
+        File.writeTo(root.join("evaluation-outcome.json"),(renderCkbCompletionEvaluationOutcome(runId,caseId,"C-ckb-mcp-stdio",dataset,"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","failed","passed",benchmarkGapSha256(result))+"\n").toArray())
+        File.writeTo(root.join("base-test.log"),"exception 中文😀\n/Users/private/hidden/TestMain.cj expected: secret".toArray())
+        File.writeTo(root.join("plus-test.log"),"PASS".toArray())
+        let built=buildCkbCompletionFailureFromArtifacts(root,caseId,runId)
+        @Expect(built[1],"ok");@Expect(parseCkbCompletionFailure(renderCkbCompletionFailure(built[0]).toArray())[1],"ok")
+        let rendered=renderCkbCompletionFailure(built[0]);@Expect(rendered.contains("中文😀"),true)
+        @Expect(rendered.contains("/Users/"),false);@Expect(rendered.contains("TestMain.cj"),false)
+        @Expect(rendered.toAsciiLower().contains("expected:"),false);@Expect(rendered.contains("solution.cj"),false)
+    }
+
+    // S1-BND-01
+    @TestCase
+    public func completionFailureSummaryBoundariesAreSafe():Unit{
+        @Expect(ckbP5CompilerSummaryFromBytes([UInt8(0xff),UInt8(0xfe)],"test_failure"),"invalid_response_encoding")
+        var long="";for(_ in 0..2000){long+="界😀"}
+        let summary=ckbP5CompilerSummaryFromBytes(("exception 中文😀 "+long).toArray(),"test_failure")
+        @Expect(summary.toRuneArray().size<=1024,true);@Expect(summary.contains("中文😀"),true)
+        let redacted=ckbP5CompilerSummaryFromBytes("Authorization: Bearer secret\nassert public failure".toArray(),"test_failure")
+        @Expect(redacted,"test_failure_detail_redacted");@Expect(redacted.toAsciiLower().contains("authorization"),false)
+    }
+
     // S0-UT-01: the owner-specific v2 carrier seals and parses canonical bytes deterministically.
     @TestCase
     public func failureAssetV2CanonicalBytesMatchAcrossRepositories(): Unit {

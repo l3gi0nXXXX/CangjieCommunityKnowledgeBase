@@ -421,6 +421,11 @@ private func ckbP5FinalizeControllerResult(outputRoot:String,result:CkbP5Classif
 public func ckbP5ClassifierDiagnosticArtifactValid(raw:String):Bool{try{let o=JsonValue.fromStr(raw).asObject();if(ckbP5String(o,"schemaVersion")!="ckb-p5-classifier-diagnostics-v1"){return false};let items=o.get("cases").getOrThrow().asArray().getItems();var rows="";for(i in 0..items.size){let row=items[i].asObject();if(i>0){rows+=","};rows+="{\"caseId\":\"${ckbP5Escape(ckbP5String(row,"caseId"))}\",\"classifierA\":\"${ckbP5Escape(ckbP5String(row,"classifierA"))}\",\"classifierB\":\"${ckbP5Escape(ckbP5String(row,"classifierB"))}\",\"pair\":\"${ckbP5Escape(ckbP5String(row,"pair"))}\"}"};let payload="{\"schemaVersion\":\"ckb-p5-classifier-diagnostics-v1\",\"ok\":${ckbP5Bool(o,"ok")},\"diagnostic\":\"${ckbP5Escape(ckbP5String(o,"diagnostic"))}\",\"processed\":${ckbP5Int(o,"processed")},\"paired\":${ckbP5Int(o,"paired")},\"rejected\":${ckbP5Int(o,"rejected")},\"cases\":[${rows}]}";ckbP5String(o,"artifactHash")==benchmarkGapSha256(payload)}catch(_:Exception){false}}
 
 public func buildCkbP5ClassifierRequest(caseRoot: Path, caseId: String, runId: String): String {
+    if (exists(caseRoot.join("evaluation-outcome.json"))) {
+        let failure = buildCkbCompletionFailureFromArtifacts(caseRoot, caseId, runId)
+        if (failure[1] != "ok") { return failure[1] }
+        return renderCkbCompletionFailure(failure[0])
+    }
     let caseText=ckbP5ReadUtf8(caseRoot.join("case-result.json"));let evidenceText=ckbP5ReadUtf8(caseRoot.join("result-evidence.json"))
     if(caseText==""||evidenceText==""){return "missing_case_evidence"}
     try{
@@ -447,6 +452,45 @@ public func buildCkbP5ClassifierRequest(caseRoot: Path, caseId: String, runId: S
         let request="{\"schemaVersion\":\"${CKB_P5_REQUEST_SCHEMA}\",\"caseId\":\"${ckbP5Escape(caseId)}\",\"runId\":\"${ckbP5Escape(runId)}\",\"datasetVersion\":\"${ckbP5Escape(ckbP5String(row,"datasetVersion"))}\",\"attempt\":1,\"sourceTransportAttempt\":${sample[1]},\"runMode\":\"development\",\"taskText\":\"${ckbP5Escape(taskText)}\",\"signature\":\"${ckbP5Escape(signature)}\",\"studentSourceExcerpt\":\"${ckbP5Escape(studentExcerpt)}\",\"studentSourceHash\":\"${studentSourceHash}\",\"failureObservation\":\"${ckbP5Escape(ckbP5String(evidence,"failureObservation"))}\",\"failureType\":\"${ckbP5Escape(failureType)}\",\"compilerTestSummary\":\"${ckbP5Escape(summary)}\",\"resultEvidenceHash\":\"${ckbP5Escape(ckbP5String(evidence,"resultEvidenceHash"))}\",\"retrievalDiagnostic\":\"${ckbP5Escape(ckbP5String(evidence,"retrievalDiagnostic"))}\",\"retrievalEvidenceHash\":\"${ckbP5Escape(retrievalEvidenceHash)}\",\"toolEvidenceHash\":\"${ckbP5Escape(toolEvidenceHash)}\",\"toolCoveragePass\":${ckbP5Bool(row,"toolCoveragePass")},\"citationCount\":${ckbP5Int(row,"citationCount")} }"
         if(ckbP5Forbidden(request)){"request_contains_forbidden_evidence"}else{request}
     }catch(_:Exception){"malformed_case_evidence"}
+}
+
+public func buildCkbCompletionFailureFromArtifacts(caseRoot:Path,caseId:String,runId:String):
+    (CkbCompletionFailure,String) {
+    let failure=CkbCompletionFailure()
+    let outcomeText=ckbP5ReadUtf8(caseRoot.join("evaluation-outcome.json"))
+    let resultText=ckbP5ReadUtf8(caseRoot.join("result-evidence.json"))
+    let contextText=ckbP5ReadUtf8(caseRoot.join("canonical-task-context.json"))
+    if(outcomeText==""||resultText==""||contextText==""){return(failure,"missing_case_evidence")}
+    try{
+        let outcome=JsonValue.fromStr(outcomeText.trimAscii()).asObject()
+        let result=JsonValue.fromStr(resultText.trimAscii()).asObject()
+        let context=JsonValue.fromStr(contextText.trimAscii()).asObject()
+        let dataset=ckbP5String(outcome,"datasetVersion")
+        if(ckbP5String(outcome,"schemaVersion")!="ckb-completion-evaluation-outcome-v1"||
+            ckbP5String(outcome,"runId")!=runId||ckbP5String(outcome,"caseId")!=caseId||
+            ckbP5String(outcome,"generationProtocol")!="completion-only-v1"||
+            ckbP5String(result,"runId")!=runId||ckbP5String(result,"caseId")!=caseId||
+            ckbP5String(result,"datasetVersion")!=dataset||
+            ckbP5String(context,"taskId")!=caseId||ckbP5String(context,"datasetVersion")!=dataset||
+            ckbP5String(context,"taskText")==""||ckbP5Forbidden(ckbP5String(context,"taskText"))){
+            return(failure,"failure_artifact_identity_mismatch")
+        }
+        let resultHash=benchmarkGapSha256(resultText.trimAscii())
+        if(ckbP5String(outcome,"resultHash")!=resultHash){return(failure,"failure_result_hash_mismatch")}
+        let base=ckbP5String(outcome,"baseStatus");let plus=ckbP5String(outcome,"plusStatus")
+        if(base=="passed"&&plus=="passed"){return(failure,"completion_failure_not_required")}
+        failure.runId=runId;failure.caseId=caseId;failure.datasetVersion=dataset
+        failure.completionHash=ckbP5String(outcome,"completionHash").replace("sha256:","")
+        failure.baseStatus=base;failure.plusStatus=plus
+        let resultFailure=ckbP5String(result,"failureType")
+        failure.failureKind=if(resultFailure=="compile_error"){"compile_error"}else if(resultFailure=="timeout"){"timeout"}else if(resultFailure=="protocol_violation"){"protocol_violation"}else if(resultFailure=="runner_failure"||resultFailure=="environment_failure"){"infra_error"}else{"test_failure"}
+        let baseSummary=ckbP5CompilerSummaryFromBytes(try{File.readFrom(caseRoot.join("base-test.log"))}catch(_:Exception){Array<UInt8>()},failure.failureKind)
+        let plusSummary=ckbP5CompilerSummaryFromBytes(try{File.readFrom(caseRoot.join("plus-test.log"))}catch(_:Exception){Array<UInt8>()},failure.failureKind)
+        failure.failureObservation=utf8SafePrefix("base=${base}:${baseSummary}; plus=${plus}:${plusSummary}",1024)
+        failure.assetLineage="humaneval_164_derived"
+        let diagnostic=sealCkbCompletionFailure(failure)
+        (failure,diagnostic)
+    }catch(_:Exception){(failure,"malformed_case_evidence")}
 }
 
 private func ckbP5FirstCompleteDevelopmentSample(caseRoot:Path,row:JsonObject,evidence:JsonObject):(String,Int64){
@@ -753,6 +797,11 @@ func ckbP5CompilerSummary(text:String,failureType:String):String{
         if(ckbP5Forbidden(clean)||clean.contains("/")){continue}
         if(lower.contains("error")||lower.contains("expected")||lower.contains("found")){if(out!=""){out+=" | "};out+=utf8SafePrefix(clean,240);if(out.toRuneArray().size>=960){break}}
     };utf8SafePrefix(out,1024)
+}
+public func ckbP5CompilerSummaryFromBytes(bytes:Array<UInt8>,failureType:String):String{
+    let text=try{String.fromUtf8(bytes)}catch(_:Exception){return "invalid_response_encoding"}
+    let summary=ckbP5CompilerSummary(text,failureType);let lower=summary.toAsciiLower()
+    if(lower.contains("assert")||lower.contains("expected")){"test_failure_detail_redacted"}else{summary}
 }
 private func ckbP5CompilerLocation(value:String):String{
     let runes=value.toRuneArray();var separator:Int64=-1

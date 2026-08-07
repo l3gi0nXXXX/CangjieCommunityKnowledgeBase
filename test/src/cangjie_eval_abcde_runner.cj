@@ -920,6 +920,15 @@ private func ckbAbcdeRunCases(options: CkbAbcdeRunnerOptions, runRoot: String): 
         if (!aggregate.ok) { failed += 1 }
     }
     ckbAbcdeWriteSummary(runRoot)
+    if(options.runMode=="certification"&&options.generationProtocol=="completion-only-v1"&&
+        options.evaluateFrozen&&options.caseStart==0&&options.caseEnd==163){
+        let diagnostic=finalizeCkbCompletionFailureIndex(runRoot,options.runId,options.groups,0,163)
+        if(diagnostic!="ok"){
+            ckbAbcdeWriteText("${runRoot}/completion-failure-index-diagnostic.json",
+                "{\"diagnostic\":\"${ckbAbcdeJsonEscape(diagnostic)}\"}\n")
+            failed+=1
+        }
+    }
     if(options.runMode=="certification"&&ckbFrozenCandidateManifestDiagnostic(FileKnowledgeStore(options.ckbStore),ckbAbcdeReadText(options.frozenCandidateManifestPath))!="ok"){ckbAbcdeEmit(options.internalQuiet,"ABCDE certification blocked: frozen_candidate_store_drift_at_end");return 1}
     let pass1GateOk = if(options.runMode=="certification"&&options.generationProtocol=="completion-only-v1"&&options.generateOnly){true}else{ckbAbcdeWritePass1GateArtifactsIfFullRun(options, runRoot)}
     ckbAbcdeEmit(options.internalQuiet,"ABCDE run complete: ${runRoot}")
@@ -1484,9 +1493,59 @@ private func ckbAbcdeRunCaseGroup(options: CkbAbcdeRunnerOptions, runRoot: Strin
         ckbAbcdeWriteText("${groupRoot}/authoritative-gap.jsonl", closure.authoritativeGapJsonl)
         if (closure.knowledgeGapCount == 1) { result = result.replace("\"knowledgeGapConfirmationStatus\":\"pending_classifier_artifacts\"", "\"knowledgeGapConfirmationStatus\":\"confirmed\"") }
     }
+    if(options.runMode=="certification"&&options.generationProtocol=="completion-only-v1"&&
+        options.evaluateFrozen&&options.testSuites=="base,plus"){
+        let evidenceDiagnostic=persistCkbCompletionFailureEvidence(groupRoot,options,caseId,group,
+            frozenAnswerHash,result)
+        if(evidenceDiagnostic!="ok"){
+            ckbAbcdeWriteText("${groupRoot}/failure-evidence-diagnostic.json",
+                "{\"diagnostic\":\"${ckbAbcdeJsonEscape(evidenceDiagnostic)}\"}\n")
+        }
+    }
     ckbAbcdeWriteText("${groupRoot}/case-result.json", result + "\n")
     ckbAbcdeWriteText("${groupRoot}/audit.json", "{\"toolEvidence\":\"${toolEvidence}\",\"violation\":\"${violation}\"}\n")
     result
+}
+
+public func persistCkbCompletionFailureEvidence(groupRoot:String,options:CkbAbcdeRunnerOptions,
+    caseId:String,group:String,answerHash:String,resultEvidence:String):String {
+    let baseText=ckbAbcdeReadText("${groupRoot}/base-test-result.json")
+    let plusText=ckbAbcdeReadText("${groupRoot}/plus-test-result.json")
+    if(baseText==""||plusText==""||resultEvidence.trimAscii()==""){return "failure_index_outcome_missing"}
+    try{
+        let base=JsonValue.fromStr(baseText).asObject();let plus=JsonValue.fromStr(plusText).asObject()
+        if(ckbAbcdeStrictJsonString(base,"answerHash")!=answerHash||
+            ckbAbcdeStrictJsonString(plus,"answerHash")!=answerHash){return "failure_index_identity_mismatch"}
+        let baseStatus=if(ckbAbcdeStrictJsonBool(base,"passed")){"passed"}else{"failed"}
+        let plusStatus=if(ckbAbcdeStrictJsonBool(plus,"passed")){"passed"}else{"failed"}
+        let outcome=renderCkbCompletionEvaluationOutcome(options.runId,caseId,group,
+            options.datasetVersion,answerHash,baseStatus,plusStatus,
+            benchmarkGapSha256(resultEvidence.trimAscii()))
+        let outcomePath=Path(groupRoot).join("evaluation-outcome.json")
+        if(exists(outcomePath)){
+            if(ckbAbcdeReadText(outcomePath.toString()).trimAscii()!=outcome){return "failure_evidence_frozen"}
+        }else if(!ckbAbcdeAtomicEvidenceWrite(outcomePath,outcome+"\n")){return "failure_index_persist_failed"}
+        let failurePath=Path(groupRoot).join("completion-failure.json")
+        if(baseStatus=="passed"&&plusStatus=="passed"){
+            return if(exists(failurePath)){"failure_evidence_frozen"}else{"ok"}
+        }
+        let built=buildCkbCompletionFailureFromArtifacts(Path(groupRoot),caseId,options.runId)
+        if(built[1]!="ok"){return built[1]}
+        let rendered=renderCkbCompletionFailure(built[0])
+        if(exists(failurePath)){
+            return if(ckbAbcdeReadText(failurePath.toString()).trimAscii()==rendered){"ok"}else{"failure_evidence_frozen"}
+        }
+        if(ckbAbcdeAtomicEvidenceWrite(failurePath,rendered+"\n")){"ok"}else{"failure_index_persist_failed"}
+    }catch(_:Exception){"failure_index_malformed"}
+}
+
+private func ckbAbcdeAtomicEvidenceWrite(path:Path,text:String):Bool {
+    let tmp=path.parent.join(".tmp-${benchmarkGapSha256(path.toString()+text).replace("sha256:","")}")
+    try{
+        File.writeTo(tmp,text.toArray())
+        if(ckbAbcdeReadText(tmp.toString())!=text){_=launch("/bin/rm",["-f",tmp.toString()]).wait();return false}
+        launch("/bin/mv",["-f",tmp.toString(),path.toString()]).wait()==0
+    }catch(_:Exception){try{_=launch("/bin/rm",["-f",tmp.toString()]).wait()}catch(_:Exception){};false}
 }
 
 private func ckbAbcdeRenderStrictCertificationCase(options:CkbAbcdeRunnerOptions,caseId:String,group:String,groupRoot:String,answerHash:String,transcript:String,testLog:String,unitPassAt1:Bool,violation:String,toolReady:Bool,taskKnowledge:CkbAbcdeTaskKnowledgeEvidence):String{

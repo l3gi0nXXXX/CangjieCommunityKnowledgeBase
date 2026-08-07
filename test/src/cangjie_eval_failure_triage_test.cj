@@ -8,6 +8,49 @@ import std.unittest.testmacro.*
 
 @Test
 public class CangjieEvalFailureTriageTest {
+    // S1-POS-01
+    @TestCase
+    public func completionFailureIndexIsAtomicSortedAndIdempotent():Unit{
+        let root=Path("target/s1-failure-index-positive");if(exists(root)){_=launch("/bin/rm",["-rf",root.toString()]).wait()}
+        let groups=ArrayList<String>();groups.add("C-ckb-mcp-stdio")
+        s1WriteOutcome(root,"CJ-HUMANEVAL-001",true)
+        s1WriteOutcome(root,"CJ-HUMANEVAL-000",false)
+        let built=buildCkbCompletionFailureIndex(root.toString(),"s1-run",groups,0,1)
+        @Expect(built[1],"ok");@Expect(built[0].startsWith("{\"caseId\":\"CJ-HUMANEVAL-000\""),true)
+        @Expect(built[0].contains("base-test"),false);@Expect(built[0].contains("solution"),false)
+        @Expect(finalizeCkbCompletionFailureIndex(root.toString(),"s1-run",groups,0,1),"ok")
+        let first=String.fromUtf8(File.readFrom(root.join("completion-failures.jsonl")))
+        @Expect(finalizeCkbCompletionFailureIndex(root.toString(),"s1-run",groups,0,1),"ok")
+        @Expect(String.fromUtf8(File.readFrom(root.join("completion-failures.jsonl"))),first)
+    }
+
+    // S1-NEG-01
+    @TestCase
+    public func completionFailureRejectsDriftSecretsAndFrozenRewrite():Unit{
+        let root=Path("target/s1-failure-index-negative");if(exists(root)){_=launch("/bin/rm",["-rf",root.toString()]).wait()}
+        let groups=ArrayList<String>();groups.add("C-ckb-mcp-stdio")
+        s1WriteOutcome(root,"CJ-HUMANEVAL-000",false)
+        @Expect(finalizeCkbCompletionFailureIndex(root.toString(),"s1-run",groups,0,0),"ok")
+        File.writeTo(root.join("completion-failures.jsonl"),"drift\n".toArray())
+        @Expect(finalizeCkbCompletionFailureIndex(root.toString(),"s1-run",groups,0,0),"failure_evidence_frozen")
+        let caseRoot=root.join("cases/CJ-HUMANEVAL-000/C-ckb-mcp-stdio")
+        let answer="sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        File.writeTo(caseRoot.join("base-test-result.json"),("{\"answerHash\":\"${answer}\",\"passed\":false}\n").toArray())
+        File.writeTo(caseRoot.join("plus-test-result.json"),("{\"answerHash\":\"${answer}\",\"passed\":true}\n").toArray())
+        File.writeTo(caseRoot.join("canonical-task-context.json"),"{\"taskId\":\"CJ-HUMANEVAL-000\",\"datasetVersion\":\"dataset-v1\",\"taskText\":\"公开任务 中文😀\"}\n".toArray())
+        File.writeTo(caseRoot.join("base-test.log"),"assert public failure 中文😀".toArray());File.writeTo(caseRoot.join("plus-test.log"),"PASS".toArray())
+        let options=CkbAbcdeRunnerOptions();options.runId="s1-run";options.datasetVersion="dataset-v1"
+        let result=String.fromUtf8(File.readFrom(caseRoot.join("result-evidence.json"))).trimAscii()
+        _=launch("/bin/rm",["-f",caseRoot.join("completion-failure.json").toString()]).wait()
+        @Expect(persistCkbCompletionFailureEvidence(caseRoot.toString(),options,"CJ-HUMANEVAL-000","C-ckb-mcp-stdio",answer,result),"ok")
+        @Expect(persistCkbCompletionFailureEvidence(caseRoot.toString(),options,"CJ-HUMANEVAL-000","C-ckb-mcp-stdio",answer,result.replace("test_failure","compile_error")),"failure_evidence_frozen")
+        let duplicate=ArrayList<String>();duplicate.add("C-ckb-mcp-stdio");duplicate.add("C-ckb-mcp-stdio")
+        @Expect(buildCkbCompletionFailureIndex(root.toString(),"s1-run",duplicate,0,0)[1],"failure_index_duplicate")
+        let failure=String.fromUtf8(File.readFrom(caseRoot.join("completion-failure.json")))
+        File.writeTo(caseRoot.join("completion-failure.json"),failure.replace("base=failed","Authorization: Bearer secret").toArray())
+        @Expect(buildCkbCompletionFailureIndex(root.toString(),"s1-run",groups,0,0)[1],"failure_index_failure_mismatch")
+    }
+
     @TestCase
     public func p5Ut01TaxonomyConfirmationAndRetryPass1AreStrict(): Unit {
         let cases = [
@@ -259,6 +302,18 @@ public class CangjieEvalFailureTriageTest {
         let blocked=orchestrateDevelopmentClosure(tamperedInputs,"teacher-s5")
         @Expect(blocked.ok,false);@Expect(blocked.knowledgeGapCount,0)
         @Expect(blocked.authoritativeGapJsonl,"")
+    }
+}
+
+private func s1WriteOutcome(root:Path,caseId:String,passed:Bool):Unit{
+    let group="C-ckb-mcp-stdio";let caseRoot=root.join("cases").join(caseId).join(group);Directory.create(caseRoot,recursive:true)
+    let result="{\"runId\":\"s1-run\",\"caseId\":\"${caseId}\",\"datasetVersion\":\"dataset-v1\",\"failureType\":\"test_failure\"}"
+    File.writeTo(caseRoot.join("result-evidence.json"),(result+"\n").toArray())
+    let base=if(passed){"passed"}else{"failed"};let outcome=renderCkbCompletionEvaluationOutcome("s1-run",caseId,group,"dataset-v1","sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",base,"passed",benchmarkGapSha256(result))
+    File.writeTo(caseRoot.join("evaluation-outcome.json"),(outcome+"\n").toArray())
+    if(!passed){
+        let failure=CkbCompletionFailure();failure.runId="s1-run";failure.caseId=caseId;failure.datasetVersion="dataset-v1";failure.completionHash="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";failure.baseStatus="failed";failure.plusStatus="passed";failure.failureKind="test_failure";failure.failureObservation="base=failed:中文😀";failure.assetLineage="humaneval_164_derived"
+        @Expect(sealCkbCompletionFailure(failure),"ok");File.writeTo(caseRoot.join("completion-failure.json"),(renderCkbCompletionFailure(failure)+"\n").toArray())
     }
 }
 
