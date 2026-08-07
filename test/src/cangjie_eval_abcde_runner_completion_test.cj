@@ -15,7 +15,17 @@ public class CangjieEvalAbcdeRunnerCompletionTest {
         let options=parseCkbAbcdeRunnerOptions(["cangjie-eval-abcde","--generation-protocol","completion-only-v1","--samples-per-case","1","--generate-only"])
         @Expect(ckbAbcdeCompletionOptionsDiagnostic(options),"ok")
         let h="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-        let manifest="{\"generationProtocol\":\"completion-only-v1\",\"samplesPerCase\":1,\"datasetVersion\":\"dataset-v1\",\"knowledgeVersion\":\"knowledge-v1\",\"modelVersion\":\"GLM-5.2\",\"providerIdentityHash\":\"${h}\",\"skillBundleHash\":\"${h}\",\"samplingCapabilityHash\":\"${h}\",\"outputSchemaHash\":\"${h}\"}"
+        let legacyManifest="{\"generationProtocol\":\"completion-only-v1\",\"samplesPerCase\":1,\"datasetVersion\":\"dataset-v1\",\"knowledgeVersion\":\"knowledge-v1\",\"modelVersion\":\"GLM-5.2\",\"providerIdentityHash\":\"${h}\",\"skillBundleHash\":\"${h}\",\"samplingCapabilityHash\":\"${h}\",\"outputSchemaHash\":\"${h}\"}"
+        @Expect(applyCkbAbcdeFrozenRunManifest(options,legacyManifest.toArray()),
+            "run_manifest_malformed_json")
+        let fixture = ckbPreflightStoreRouteFixture()
+        @Expect(fixture.ready, true)
+        if (!fixture.ready) { return }
+        @Expect(runCkbCertificationPreflightCli(["cangjie-certification-preflight",
+            "--control-manifest", fixture.controlPath],
+            store: FileKnowledgeStore(fixture.frozenStorePath)), 0)
+        let manifest = String.fromUtf8(File.readFrom(
+            Path(fixture.outputRoot).join("run-manifest.json")))
         @Expect(applyCkbAbcdeFrozenRunManifest(options,manifest.toArray()),"ok")
         let completion=ckbAbcdeExtractSingleCompletion(p3Terminal("package solution\npublic func answer(): Int64 { 42 } // 中文😀").toArray())
         @Expect(completion.ok,true);@Expect(completion.completionCount,1);@Expect(completion.toolCallCount,0)
