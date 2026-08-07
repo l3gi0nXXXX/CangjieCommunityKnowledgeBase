@@ -30,6 +30,12 @@ public class CangjieStudentContextBundleTest {
         @Expect(bundle.ok, true)
         @Expect(bundle.ruleCount, 1)
         @Expect(bundle.agentsMarkdown.contains("中文🙂"), true)
+        let bundleObject = JsonValue.fromStr(bundle.json).asObject()
+        let ruleContent = bundleObject.get("rules").getOrThrow().asArray()
+            .getItems()[0].asObject().get("content").getOrThrow().asString().getValue()
+        @Expect(ruleContent.startsWith("\n## "), true)
+        @Expect(ruleContent.contains("# Student Rules"), false)
+        @Expect(bundle.agentsMarkdown, "# Student Rules\n" + ruleContent)
 
         let output = s3UniqueRoot("rules-round-trip").join("student-rules.json")
         @Expect(publishStudentRulesBundle(output.toString(), bundle), "ok")
