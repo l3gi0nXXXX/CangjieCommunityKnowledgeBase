@@ -556,7 +556,7 @@ private func s3WriteDerivedRuleCandidate(source: Path, target: Path, id: String,
     s3CopyTree(source, target)
     let rule = parseStudentRuleCandidateDirectory(source.toString())
     rule.ruleId = id; rule.conceptId = "derived-${id}"; rule.sourceEvidenceKind = "completion_failure"
-    rule.sourceEvidenceHash = classification; rule.assetLineage = "humaneval_164_derived"
+    rule.sourceEvidenceHash = benchmarkGapSha256("synthetic-completion-failure"); rule.assetLineage = "humaneval_164_derived"
     if (addedBody != "") { rule.title = "Additional Rune Boundary Review"; rule.body = addedBody }
     rule.canonicalHash = ckbStudentRuleCandidateCanonicalHash(rule)
     rule.agentsMarkdown = "# Student Rules\n\n## ${rule.title}\n\n${rule.body}\n\nTrigger: ${rule.trigger}\nScope: ${rule.scope}\n"
