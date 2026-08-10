@@ -6,9 +6,40 @@ import std.fs.{Directory, File, Path, canonicalize, exists}
 import std.process.*
 import std.time.*
 import std.collection.ArrayList
+import stdx.encoding.json.*
 
 @Test
 public class CangjieCertificationControlCliTest {
+    // R6-C1-UT / R6-C1-POS / R6-C1-BND / R6-C1-NEG
+    @TestCase
+    public func r6StudentValidationIdentityAndCompletionControlAreCanonical(): Unit {
+        let model="GLM-5.2";let claude="claude-code-1.0";let transport=CkbAbcdeGroups.D
+        @Expect(ckbStudentCompletionCommandHash(model),
+            "sha256:f459b295757aad5f6b192b9117a0097e6deb94b2043070f6a74e2155cfe64ce0")
+        let schemaHash=benchmarkGapSha256(ckbAbcdeCompletionOutputSchema());let samplingHash=benchmarkGapSha256("sampling🙂\n")
+        let runtimeConfigHash=benchmarkGapSha256("runtime config 中文\n");let capabilityHash=benchmarkGapSha256("capability🙂\n")
+        let control="{\"schemaVersion\":\"ckb-student-completion-control-v1\",\"certificationTransport\":\"${transport}\",\"generationProtocol\":\"completion-only-v1\",\"samplesPerCase\":1,\"outputSchemaHash\":\"${schemaHash}\",\"samplingCapabilityHash\":\"${samplingHash}\",\"effectivePromptByteBudget\":188416,\"transportRetryBudget\":2,\"modelTimeoutSeconds\":30,\"runtimeConfigHash\":\"${runtimeConfigHash}\",\"completionCommandHash\":\"${ckbStudentCompletionCommandHash(model)}\"}\n"
+        @Expect(ckbStudentCompletionControlDiagnostic(control.toArray(),transport,"completion-only-v1",1,schemaHash,samplingHash,188416,2,30,runtimeConfigHash,model),"ok")
+        @Expect(ckbStudentCompletionControlDiagnostic(control.replace("\"samplesPerCase\":1","\"samplesPerCase\":2").toArray(),transport,"completion-only-v1",1,schemaHash,samplingHash,188416,2,30,runtimeConfigHash,model),"student_completion_control_invalid")
+        @Expect(ckbStudentCompletionControlDiagnostic([UInt8(0xff)],transport,"completion-only-v1",1,schemaHash,samplingHash,188416,2,30,runtimeConfigHash,model),"student_completion_control_invalid")
+        let controlHash=benchmarkGapSha256(control);let runtimeHash=benchmarkGapSha256("runtime executable bytes")
+        let identity="{\"schemaVersion\":\"ckb-student-validation-provider-identity-v1\",\"provider\":\"学生-provider🙂\",\"model\":\"${model}\",\"claudeCodeVersion\":\"${claude}\",\"runtimeExecutableHash\":\"${runtimeHash}\",\"completionControlHash\":\"${controlHash}\",\"providerPromptCapabilityHash\":\"${capabilityHash}\"}\n"
+        @Expect(ckbStudentValidationProviderIdentityDiagnostic(identity.toArray(),model,claude,runtimeHash,controlHash,capabilityHash),"ok")
+        @Expect(ckbStudentValidationProviderIdentityDiagnostic(identity.toArray(),"drifted-model",claude,runtimeHash,controlHash,capabilityHash),"student_validation_identity_invalid")
+        @Expect(ckbStudentValidationProviderIdentityDiagnostic(identity.toArray(),model,claude,benchmarkGapSha256("drifted runtime"),controlHash,capabilityHash),"student_validation_identity_invalid")
+        @Expect(ckbStudentValidationProviderIdentityDiagnostic([UInt8(0xff)],model,claude,runtimeHash,controlHash,capabilityHash),"student_validation_identity_invalid")
+    }
+
+    // E2E-05B: scaffold projection is stopped before any provider executor is reachable.
+    @TestCase
+    public func e2e05bScaffoldContextIsRejectedBeforeProvider(): Unit {
+        let contextRoot=s4PublishedStudentContext("r6-e2e05b")
+        @Expect(contextRoot!="",true);if(contextRoot==""){return}
+        let context=readStudentContextBundleV2(contextRoot);@Expect(context.validationLevel,"scaffold_contract")
+        @Expect(ckbStudentContextValidationIdentityDiagnostic(contextRoot,contextRoot,ckbR6Hash(r'a'),ckbR6Hash(r'b'),"GLM-5.2"),"student_context_not_student_validated")
+        let providerCalls:Int64=0;@Expect(providerCalls,0)
+    }
+
     // P2-CKB-CTRL-01
     @TestCase
     public func controlParseSealAndCliFailClosedContracts(): Unit {
@@ -22,7 +53,7 @@ public class CangjieCertificationControlCliTest {
         @Expect(validateCkbCertificationControlManifest(raw.replace("\"assetLineage\":\"independent\",","\"unknown\":1,\"assetLineage\":\"independent\",").toArray()).startsWith("control_manifest_unknown_field:"),true)
         @Expect(validateCkbCertificationControlManifest(raw.replace("\"assetLineage\":\"independent\",","\"token\":\"private-value\",\"assetLineage\":\"independent\",").toArray()),"secret_artifact_forbidden")
         @Expect(validateCkbCertificationControlManifest(raw.replace("\"assetLineage\":\"independent\"","\"assetLineage\":\"invalid\"").toArray()),"asset_lineage_invalid")
-        let providerHash=benchmarkGapSha256("{\"provider\":\"store-route-test\",\"model\":\"GLM-5.2\",\"claudeCodeVersion\":\"claude-code-1.0\"}");let tamperedPath=Path(fixture.controlPath).parent.join("tampered-provider.json");File.writeTo(tamperedPath,sealedText.replace(providerHash,benchmarkGapSha256("wrong-provider")).toArray());@Expect(runCkbCertificationPreflightCli(["cangjie-certification-preflight","--control-manifest",tamperedPath.toString()],store:FileKnowledgeStore(fixture.frozenStorePath)),1)
+        let providerHash=JsonValue.fromStr(sealedText).asObject().get("providerIdentityHash").getOrThrow().asString().getValue();let tamperedPath=Path(fixture.controlPath).parent.join("tampered-provider.json");File.writeTo(tamperedPath,sealedText.replace(providerHash,benchmarkGapSha256("wrong-provider")).toArray());@Expect(runCkbCertificationPreflightCli(["cangjie-certification-preflight","--control-manifest",tamperedPath.toString()],store:FileKnowledgeStore(fixture.frozenStorePath)),1)
         let output=Path(fixture.controlPath).parent.join("sealed-control-cli.json");let cli=ckbStoreRouteRunCli(["--store",fixture.frozenStorePath,"cangjie-certification-control-seal","--input",fixture.inputPath,"--output",output.toString()])
         @Expect(cli.exitCode,0);@Expect(cli.stdoutText.trimAscii(),"controlManifestSealed=true unknownFieldCount=0 secretFieldCount=0 output=${output}");@Expect(exists(output),true)
         @Expect(String.fromUtf8(File.readFrom(output)).contains("ckb-certification-control-seal-v1"),false)
@@ -133,6 +164,8 @@ public class CangjieCertificationControlCliTest {
     }
 }
 
+private func ckbR6Hash(value:Rune):String{var out="sha256:";for(_ in 0..64){out+=value.toString()};out}
+
 private class CkbStoreRouteCliResult {
     var exitCode: Int64 = -1
     var stdoutText: String = ""
@@ -146,6 +179,7 @@ public class CkbPreflightStoreRouteFixture {
     public var frozenStorePath: String = ""
     public var wrongStorePath: String = ""
     public var outputRoot: String = ""
+    public var runtimePath: String = ""
     public init() {}
 }
 
@@ -262,9 +296,17 @@ public func ckbPreflightStoreRouteFixture(): CkbPreflightStoreRouteFixture {
     let sampling="{\"schemaVersion\":\"ckb-completion-sampling-capability-v1\",\"samplingControl\":\"provider_default_not_client_exposed\"}\n";let samplingPath=root.join("sampling-capability.json");File.writeTo(samplingPath,sampling.toArray())
     let systemPromptPath=root.join("system-prompt.txt");File.writeTo(systemPromptPath,"Frozen completion-only system prompt 中文😀\n".toArray())
     let lineageProof="{\"assetLineage\":\"independent\",\"source\":\"non_humaneval_seed\"}\n";let lineageProofPath=root.join("lineage-proof.json");File.writeTo(lineageProofPath,lineageProof.toArray())
-    let contextRoot=s4PublishedStudentContext("control-${stamp}");if(contextRoot==""){return fixture};let context=readStudentContextBundleV2(contextRoot);let contextManifest=Path(contextRoot).join("student-context-manifest.json")
     let capabilityEvidence="{\"schemaVersion\":\"ckb-provider-prompt-capability-v1\",\"modelVersion\":\"GLM-5.2\",\"maxContextTokens\":196608,\"reservedOutputTokens\":8192,\"sourceEvidence\":\"synthetic control fixture\",\"observedAtUtc\":\"2026-08-07T00:00:00Z\"}";let capability=capabilityEvidence.replace("}",",\"capabilityHash\":\"${benchmarkGapSha256(capabilityEvidence)}\"}\n");let capabilityPath=root.join("provider-prompt-capability.json");File.writeTo(capabilityPath,capability.toArray())
     let certificationBinaryPath=root.join("synthetic-certification-binary");File.writeTo(certificationBinaryPath,"synthetic certification binary\n".toArray())
+    let runtimePath=root.join("synthetic-provider-runtime");File.writeTo(runtimePath,
+        "#!/bin/zsh\n[[ \"$1\" == \"--version\" ]] || exit 1\nprint -r -- \"claude-code-1.0\"\n".toArray())
+    if (launch("/bin/chmod", ["700", runtimePath.toString()]).wait() != 0) { return fixture }
+    let completion="{\"schemaVersion\":\"ckb-student-completion-control-v1\",\"certificationTransport\":\"${CkbAbcdeGroups.D}\",\"generationProtocol\":\"completion-only-v1\",\"samplesPerCase\":1,\"outputSchemaHash\":\"${benchmarkGapSha256(ckbAbcdeCompletionOutputSchema())}\",\"samplingCapabilityHash\":\"${benchmarkGapSha256(sampling)}\",\"effectivePromptByteBudget\":188416,\"transportRetryBudget\":2,\"modelTimeoutSeconds\":30,\"runtimeConfigHash\":\"${benchmarkGapSha256(String.fromUtf8(File.readFrom(configPath)))}\",\"completionCommandHash\":\"${ckbStudentCompletionCommandHash("GLM-5.2")}\"}\n";let completionPath=root.join("completion-control.json");File.writeTo(completionPath,completion.toArray())
+    let validationProvider="{\"schemaVersion\":\"ckb-student-validation-provider-identity-v1\",\"provider\":\"store-route-test\",\"model\":\"GLM-5.2\",\"claudeCodeVersion\":\"claude-code-1.0\",\"runtimeExecutableHash\":\"${ckbAbcdeBinaryHash(canonicalize(runtimePath).toString())}\",\"completionControlHash\":\"${benchmarkGapSha256(completion)}\",\"providerPromptCapabilityHash\":\"${benchmarkGapSha256(capability)}\"}\n";File.writeTo(Path(providerPath),validationProvider.toArray())
+    let realContext=s4PublishedStudentValidatedContext("control-${stamp}",benchmarkGapSha256(validationProvider),"GLM-5.2")
+    let contextRoot=realContext.contextRoot;let context=readStudentContextBundleV2(contextRoot)
+    let contextManifest=Path(contextRoot).join("student-context-manifest.json")
+    let candidateRoot=Path(realContext.candidateRoot)
     let control = "{" +
         "\"runId\":\"${runId}\",\"outputRoot\":\"${canonicalize(outputRoot)}\"," +
         "\"workspaceRoot\":\"${workspaceCanonical}\",\"runtimeHomeRoot\":\"${runtimeCanonical}\"," +
@@ -282,7 +324,8 @@ public func ckbPreflightStoreRouteFixture(): CkbPreflightStoreRouteFixture {
         "\"skillBundlePath\":\"${canonicalize(skillBundlePath)}\",\"skillBundleVersion\":\"student-skills-v1\","+
         "\"samplingCapabilityPath\":\"${canonicalize(samplingPath)}\",\"generationProtocol\":\"completion-only-v1\",\"samplesPerCase\":1,"+
         "\"assetLineage\":\"independent\",\"lineageProofPath\":\"${canonicalize(lineageProofPath)}\","+
-        "\"studentContextManifestPath\":\"${canonicalize(contextManifest)}\",\"providerPromptCapabilityPath\":\"${canonicalize(capabilityPath)}\",\"effectivePromptByteBudget\":188416}"
+        "\"studentContextManifestPath\":\"${canonicalize(contextManifest)}\",\"providerPromptCapabilityPath\":\"${canonicalize(capabilityPath)}\",\"effectivePromptByteBudget\":188416,"+
+        "\"studentContextCandidateRoot\":\"${canonicalize(candidateRoot)}\",\"studentContextCandidateSetHash\":\"${context.candidateSetHash}\",\"completionControlPath\":\"${canonicalize(completionPath)}\",\"completionControlHash\":\"${benchmarkGapSha256(completion)}\",\"providerRuntimeExecutablePath\":\"${canonicalize(runtimePath)}\"}"
     let inputPath = ckbStoreRouteWrite(root, "control-input.json", control);let sealed=sealCkbCertificationControlManifest(parseCkbCertificationControlManifest(control.toArray()));if(sealed==""){return fixture};let controlPath=ckbStoreRouteWrite(root,"control.json",sealed.trimAscii())
     let wrongStore = root.join("wrong-store")
     Directory.create(wrongStore, recursive: true)
@@ -291,6 +334,7 @@ public func ckbPreflightStoreRouteFixture(): CkbPreflightStoreRouteFixture {
     fixture.frozenStorePath = canonicalize(frozenStore.root).toString()
     fixture.wrongStorePath = canonicalize(wrongStore).toString()
     fixture.outputRoot = canonicalize(outputRoot).toString()
+    fixture.runtimePath = canonicalize(runtimePath).toString()
     fixture.ready = true
     fixture
 }

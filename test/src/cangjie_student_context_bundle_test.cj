@@ -239,6 +239,76 @@ public class CangjieStudentContextBundleTest {
         @Expect(compositeBlocked.ok, false)
     }
 
+    @TestCase
+    public func studentValidationTranscriptBindsIdentityModelAndEnvelope(): Unit {
+        let binding = s3ValidationBinding()
+        @Expect(ckbStudentValidationExecutionBindingDiagnostic(binding.fixture.toArray(), binding.actual.toArray(),
+            binding.transcript.toArray(), binding.execution.toArray(), binding.lane, binding.candidateVisibleHash,
+            binding.baseCompositeHash, binding.validationIdentityHash, binding.modelVersion), "ok")
+
+        let otherIdentity = "sha256:" + s3Hex(r'c')
+        @Expect(ckbStudentValidationExecutionBindingDiagnostic(binding.fixture.toArray(), binding.actual.toArray(),
+            binding.transcript.toArray(), binding.execution.replace(binding.validationIdentityHash, otherIdentity).toArray(),
+            binding.lane, binding.candidateVisibleHash, binding.baseCompositeHash, binding.validationIdentityHash,
+            binding.modelVersion), "candidate_test_evidence_invalid")
+        @Expect(ckbStudentValidationExecutionBindingDiagnostic(binding.fixture.toArray(), binding.actual.toArray(),
+            binding.transcript.toArray(), binding.execution.replace(binding.modelVersion, "drifted-model").toArray(),
+            binding.lane, binding.candidateVisibleHash, binding.baseCompositeHash, binding.validationIdentityHash,
+            binding.modelVersion), "candidate_test_evidence_invalid")
+
+        let driftedTranscript = binding.transcript.replace(binding.requestHash, "sha256:" + s3Hex(r'd'))
+        let driftedExecution = binding.execution.replace(benchmarkGapSha256(binding.transcript.trimAscii()),
+            benchmarkGapSha256(driftedTranscript.trimAscii()))
+        @Expect(ckbStudentValidationExecutionBindingDiagnostic(binding.fixture.toArray(), binding.actual.toArray(),
+            driftedTranscript.toArray(), driftedExecution.toArray(), binding.lane, binding.candidateVisibleHash,
+            binding.baseCompositeHash, binding.validationIdentityHash, binding.modelVersion),
+            "candidate_test_evidence_invalid")
+    }
+
+    @TestCase
+    public func strictStudentValidationBindingRejectsFrozenControlTamper(): Unit {
+        let root=s3UniqueRoot("r6-strict-student-binding")
+        let runtime=root.join("provider-runtime");File.writeTo(runtime,"runtime bytes 中文🙂\n".toArray())
+        let runtimeEvidence="{\"runtime\":\"frozen 中文🙂\"}\n"
+        let sampling="{\"schemaVersion\":\"ckb-completion-sampling-capability-v1\",\"samplingControl\":\"provider_default_not_client_exposed\"}\n"
+        let capability="{\"schemaVersion\":\"ckb-provider-prompt-capability-v1\",\"capability\":\"strict fixture 中文🙂\"}\n"
+        let model="GLM-5.2";let claude="claude-code-1.0";let transport=CkbAbcdeGroups.D
+        let completion="{\"schemaVersion\":\"ckb-student-completion-control-v1\","+
+            "\"certificationTransport\":\"${transport}\",\"generationProtocol\":\"completion-only-v1\","+
+            "\"samplesPerCase\":1,\"outputSchemaHash\":\"${benchmarkGapSha256(ckbAbcdeCompletionOutputSchema())}\","+
+            "\"samplingCapabilityHash\":\"${benchmarkGapSha256(sampling)}\",\"effectivePromptByteBudget\":188416,"+
+            "\"transportRetryBudget\":2,\"modelTimeoutSeconds\":30,"+
+            "\"runtimeConfigHash\":\"${benchmarkGapSha256(runtimeEvidence)}\","+
+            "\"completionCommandHash\":\"${ckbStudentCompletionCommandHash(model)}\"}\n"
+        let completionHash=benchmarkGapSha256(completion);let capabilityHash=benchmarkGapSha256(capability)
+        let provider="{\"schemaVersion\":\"ckb-student-validation-provider-identity-v1\","+
+            "\"provider\":\"strict-fixture\",\"model\":\"${model}\",\"claudeCodeVersion\":\"${claude}\","+
+            "\"runtimeExecutableHash\":\"${ckbAbcdeBinaryHash(runtime.toString())}\","+
+            "\"completionControlHash\":\"${completionHash}\","+
+            "\"providerPromptCapabilityHash\":\"${capabilityHash}\"}\n"
+        let providerHash=benchmarkGapSha256(provider)
+        let context=s4PublishedStudentValidatedContext("strict-binding",providerHash,model)
+        s3CopyTree(Path(context.contextRoot),root.join("student-context"))
+        s3CopyTree(Path(context.candidateRoot),root.join("student-context-candidate"))
+        File.writeTo(root.join("completion-control.json"),completion.toArray())
+        File.writeTo(root.join("completion-runtime-config.json"),runtimeEvidence.toArray())
+        File.writeTo(root.join("completion-sampling-capability.json"),sampling.toArray())
+        File.writeTo(root.join("provider-prompt-capability.json"),capability.toArray())
+        let manifest="{\"studentContextCandidateSetHash\":\"${context.candidateSetHash}\","+
+            "\"completionControlHash\":\"${completionHash}\",\"providerPromptCapabilityHash\":\"${capabilityHash}\","+
+            "\"providerRuntimeExecutablePath\":\"${runtime}\",\"modelVersion\":\"${model}\","+
+            "\"claudeCodeVersion\":\"${claude}\",\"providerIdentityHash\":\"${providerHash}\","+
+            "\"samplingCapabilityHash\":\"${benchmarkGapSha256(sampling)}\","+
+            "\"certificationTransport\":\"${transport}\",\"generationProtocol\":\"completion-only-v1\","+
+            "\"samplesPerCase\":1,\"outputSchemaHash\":\"${benchmarkGapSha256(ckbAbcdeCompletionOutputSchema())}\","+
+            "\"effectivePromptByteBudget\":188416,\"transportRetryBudget\":2,\"modelTimeoutSeconds\":30}"
+        @Expect(ckbStrictStudentValidationBindingDiagnostic(root.toString(),manifest,provider),"ok")
+        File.writeTo(root.join("completion-control.json"),completion.replace("\"samplesPerCase\":1",
+            "\"samplesPerCase\":2").toArray())
+        @Expect(ckbStrictStudentValidationBindingDiagnostic(root.toString(),manifest,provider),
+            "student_completion_control_invalid")
+    }
+
     // S3-FS-01/02: traversal/symlink-shaped paths and occupied stages fail closed.
     @TestCase
     public func studentContextFilesystemBoundariesFailClosed(): Unit {
@@ -373,6 +443,17 @@ public class S5SplitLeakStudentContextFixture {
     }
 }
 
+public class S4StudentValidatedContextFixture {
+    public let contextRoot: String
+    public let candidateRoot: String
+    public let candidateSetHash: String
+    public init(contextRoot: String, candidateRoot: String, candidateSetHash: String) {
+        this.contextRoot = contextRoot
+        this.candidateRoot = candidateRoot
+        this.candidateSetHash = candidateSetHash
+    }
+}
+
 private func s3CliArgs(fixture: S3ProductionContextFixture, output: Path, json: Bool): Array<String> {
     let values = ArrayList<String>(); for (value in ["cangjie-student-context-import", "--allowed-root",
         fixture.allowed.toString(), "--base-context", "none", "--candidate-set", fixture.candidate.toString(),
@@ -429,6 +510,115 @@ public func s4PublishedStudentContext(name:String):String {
     let fixture=s3ProductionContextFixture(name);let output=fixture.allowed.join("published-context")
     let bundle=compileAndPublishStudentContextBundle(fixture.allowed.toString(),"s4-context-v1",fixture.candidate.toString(),fixture.approval.toString(),"none",fixture.manifest.toString(),fixture.store,output.toString(),true)
     if(!bundle.ok){""}else{output.toString()}
+}
+
+public func s4PublishedStudentValidatedContext(name: String, providerIdentityHash: String,
+    modelVersion: String): S4StudentValidatedContextFixture {
+    let fixture = s3ProductionContextFixture(name)
+    let manifestPath = fixture.candidate.join("candidate-set-manifest.json")
+    let manifest = JsonValue.fromStr(String.fromUtf8(File.readFrom(manifestPath)).trimAscii()).asObject()
+    let rulesHash = s3ContextBundleJsonString(manifest, "rulesHash")
+    let skillsHash = s3ContextBundleJsonString(manifest, "skillsHash")
+    let ruleRoot = fixture.candidate.join("rules/prefer-rune-safe-text-boundaries")
+    let rule = parseStudentRuleCandidateDirectory(ruleRoot.toString())
+    if (!rule.verified) { throw IllegalStateException("s4_student_validated_rule_source_invalid") }
+    let stable = s4RewriteStudentValidationExecutions(ruleRoot.join("tests"), "rules", rulesHash,
+        providerIdentityHash, modelVersion)
+    rule.positiveEvidenceHash = stable.positive
+    rule.negativeEvidenceHash = stable.negative
+    rule.boundaryEvidenceHash = stable.boundary
+    rule.generalizationEvidenceHash = stable.generalization
+    rule.canonicalHash = ckbStudentRuleCandidateCanonicalHash(rule)
+    File.writeTo(ruleRoot.join("candidate-manifest.json"),
+        (renderStudentRuleCandidateManifest(rule) + "\n").toArray())
+    File.writeTo(ruleRoot.join("operation.json"),
+        ("{\"schemaVersion\":\"teacher-context-asset-operation-v1\",\"assetRole\":\"rules\"," +
+        "\"assetId\":\"${rule.ruleId}\",\"operation\":\"add\",\"expectedOldHash\":\"\"," +
+        "\"newHash\":\"${rule.canonicalHash}\"}\n").toArray())
+    _ = s4RewriteStudentValidationExecutions(
+        fixture.candidate.join("skills/rune-safe-review/executions"), "skills", skillsHash,
+        providerIdentityHash, modelVersion)
+    s3ResealGenesisCandidateOuter(fixture, validationLevel: "student_validated")
+    let output = fixture.allowed.join("published-student-validated-context")
+    let bundle = compileAndPublishStudentContextBundle(fixture.allowed.toString(), "s4-real-context-v1",
+        fixture.candidate.toString(), fixture.approval.toString(), "none", fixture.manifest.toString(),
+        fixture.store, output.toString(), false)
+    if (!bundle.ok) { throw IllegalStateException("s4_student_validated_publish_failed:${bundle.diagnostic}") }
+    let resealedManifest = JsonValue.fromStr(
+        String.fromUtf8(File.readFrom(manifestPath)).trimAscii()).asObject()
+    S4StudentValidatedContextFixture(output.toString(), fixture.candidate.toString(),
+        s3ContextBundleJsonString(resealedManifest, "candidateSetHash"))
+}
+
+private class S4StableValidationEvidence {
+    var positive = ""
+    var positiveId = ""
+    var negative = ""
+    var negativeId = ""
+    var boundary = ""
+    var boundaryId = ""
+    var generalization = ""
+    var generalizationId = ""
+    init() {}
+}
+
+private func s4RewriteStudentValidationExecutions(root: Path, lane: String, candidateVisibleHash: String,
+    providerIdentityHash: String, modelVersion: String): S4StableValidationEvidence {
+    let stable = S4StableValidationEvidence()
+    for (directory in Directory.readFrom(root)) {
+        if (!directory.isDirectory() || directory.isSymbolicLink()) {
+            throw IllegalStateException("s4_student_validation_execution_tree_invalid")
+        }
+        let fixtureRaw = String.fromUtf8(File.readFrom(directory.path.join("fixture.json")))
+        let actualRaw = String.fromUtf8(File.readFrom(directory.path.join("actual.txt")))
+        let fixture = JsonValue.fromStr(fixtureRaw.trimAscii()).asObject()
+        let fixtureId = s3ContextBundleJsonString(fixture, "fixtureId")
+        let kind = s3ContextBundleJsonString(fixture, "kind")
+        let source = s3ContextBundleJsonString(fixture, "sourceClass")
+        let fixtureHash = s3ContextBundleJsonString(fixture, "fixtureHash")
+        let expected = s3ContextBundleJsonString(fixture, "expectedEvidence")
+        let actual = s4RemoveStructuralLf(actualRaw)
+        let evidenceHash = benchmarkGapSha256(actual)
+        let requestHash = benchmarkGapSha256(s3Part(fixtureHash) + s3Part(lane) +
+            s3Part(candidateVisibleHash) + s3Part("none") + s3Part(providerIdentityHash))
+        let responseHash = benchmarkGapSha256(s3Part(actual) + s3Part(evidenceHash) + s3Part("0"))
+        let transcript = "{\"schemaVersion\":\"teacher-student-validation-transcript-v1\"," +
+            "\"fixtureId\":\"${fixtureId}\",\"lane\":\"${lane}\"," +
+            "\"candidateVisibleHash\":\"${candidateVisibleHash}\",\"baseCompositeHash\":\"none\"," +
+            "\"validationIdentityHash\":\"${providerIdentityHash}\",\"requestHash\":\"${requestHash}\"," +
+            "\"responseHash\":\"${responseHash}\",\"verifierEvidenceHash\":\"${evidenceHash}\"," +
+            "\"exitCode\":0}"
+        let transcriptHash = benchmarkGapSha256(transcript)
+        let execution = "{\"schemaVersion\":\"teacher-candidate-fixture-execution-v1\"," +
+            "\"fixtureId\":\"${fixtureId}\",\"kind\":\"${kind}\",\"sourceClass\":\"${source}\"," +
+            "\"fixtureHash\":\"${fixtureHash}\",\"executorKind\":\"student_completion_non_humaneval\"," +
+            "\"providerIdentityHash\":\"${providerIdentityHash}\",\"modelVersion\":\"${modelVersion}\"," +
+            "\"expectedEvidenceHash\":\"${benchmarkGapSha256(expected)}\"," +
+            "\"actualEvidenceHash\":\"${evidenceHash}\",\"transcriptHash\":\"${transcriptHash}\"," +
+            "\"exitCode\":0,\"passed\":true}\n"
+        File.writeTo(directory.path.join("transcript.txt"), (transcript + "\n").toArray())
+        File.writeTo(directory.path.join("execution.json"), execution.toArray())
+        if (kind == "positive" && (stable.positiveId == "" || fixtureId.compare(stable.positiveId) == Ordering.LT)) {
+            stable.positiveId = fixtureId; stable.positive = transcriptHash
+        } else if (kind == "negative" && (stable.negativeId == "" || fixtureId.compare(stable.negativeId) == Ordering.LT)) {
+            stable.negativeId = fixtureId; stable.negative = transcriptHash
+        } else if (kind == "boundary" && (stable.boundaryId == "" || fixtureId.compare(stable.boundaryId) == Ordering.LT)) {
+            stable.boundaryId = fixtureId; stable.boundary = transcriptHash
+        } else if (kind == "generalization" && (stable.generalizationId == "" || fixtureId.compare(stable.generalizationId) == Ordering.LT)) {
+            stable.generalizationId = fixtureId; stable.generalization = transcriptHash
+        }
+    }
+    stable
+}
+
+private func s4RemoveStructuralLf(value: String): String {
+    let runes = value.toRuneArray()
+    if (runes.size == 0 || runes[runes.size - 1] != r'\n') {
+        throw IllegalStateException("s4_student_validation_structural_lf_invalid")
+    }
+    var out = ""
+    for (i in 0..(runes.size - 1)) { out += runes[i].toString() }
+    out
 }
 
 // Canonical at every inner/outer boundary, but the final compact combination joins
@@ -568,7 +758,8 @@ private func s3WriteDerivedRuleCandidate(source: Path, target: Path, id: String,
 }
 
 private func s3ResealGenesisCandidateOuter(fixture: S3ProductionContextFixture,
-    combination!: String = "", skillsHash!: String = ""): Unit {
+    combination!: String = "", skillsHash!: String = "",
+    validationLevel!: String = "scaffold_contract"): Unit {
     let manifestPath = fixture.candidate.join("candidate-set-manifest.json")
     let object = JsonValue.fromStr(String.fromUtf8(File.readFrom(manifestPath)).trimAscii()).asObject()
     let rulesTree = benchmarkGapSha256(s3TreeInventory(fixture.candidate.join("rules")))
@@ -578,7 +769,8 @@ private func s3ResealGenesisCandidateOuter(fixture: S3ProductionContextFixture,
     let selectedCombination = if (combination == "") { s3ContextBundleJsonString(object, "combinationAuditHash") }
         else { combination }
     let evidence = s3CandidateManifestEvidence(object, s3ContextBundleJsonString(object, "knowledgeCandidateHash"),
-        knowledgeTree, inventory, selectedCombination, rulesTree, skillsTree, skillsHash: skillsHash)
+        knowledgeTree, inventory, selectedCombination, rulesTree, skillsTree, skillsHash: skillsHash,
+        validationLevel: validationLevel)
     let candidateHash = benchmarkGapSha256(evidence)
     File.writeTo(manifestPath,
         (evidence.replace("}", ",\"candidateSetHash\":\"${candidateHash}\"}") + "\n").toArray())
@@ -590,10 +782,10 @@ private func s3ResealGenesisCandidateOuter(fixture: S3ProductionContextFixture,
 
 private func s3CandidateManifestEvidence(o: JsonObject, knowledgeHash: String, knowledgeTreeHash: String,
     inventoryHash: String, combination: String, rulesTreeHash: String, skillsTreeHash: String,
-    skillsHash!: String = ""): String {
+    skillsHash!: String = "", validationLevel!: String = "scaffold_contract"): String {
     let selectedSkillsHash = if (skillsHash == "") { s3ContextBundleJsonString(o, "skillsHash") }
         else { skillsHash }
-    "{\"schemaVersion\":\"teacher-student-context-candidate-set-v2\",\"candidateSetId\":\"${s3ContextBundleJsonString(o, "candidateSetId")}\",\"baseCompositeHash\":\"none\",\"validationLevel\":\"scaffold_contract\",\"sourceEvidenceManifestHash\":\"${s3ContextBundleJsonString(o, "sourceEvidenceManifestHash")}\",\"classificationManifestHash\":\"\",\"sourceClosureHash\":\"${s3ContextBundleJsonString(o, "sourceClosureHash")}\",\"protectedClosureHash\":\"${s3ContextBundleJsonString(o, "protectedClosureHash")}\",\"rulesEligible\":true,\"rulesHash\":\"${s3ContextBundleJsonString(o, "rulesHash")}\",\"rulesTreeHash\":\"${rulesTreeHash}\",\"rulesCount\":1,\"rulesAssetLineage\":\"independent\",\"skillsEligible\":true,\"skillsHash\":\"${selectedSkillsHash}\",\"skillsTreeHash\":\"${skillsTreeHash}\",\"skillsCount\":1,\"skillAssetLineage\":\"independent\",\"knowledgeEligible\":true,\"knowledgeCandidateHash\":\"${knowledgeHash}\",\"knowledgeTreeHash\":\"${knowledgeTreeHash}\",\"knowledgeTargetVersion\":\"${s3ContextBundleJsonString(o, "knowledgeTargetVersion")}\",\"knowledgeAssetLineage\":\"independent\",\"assetInventoryHash\":\"${inventoryHash}\",\"combinationAuditHash\":\"${combination}\"}"
+    "{\"schemaVersion\":\"teacher-student-context-candidate-set-v2\",\"candidateSetId\":\"${s3ContextBundleJsonString(o, "candidateSetId")}\",\"baseCompositeHash\":\"none\",\"validationLevel\":\"${validationLevel}\",\"sourceEvidenceManifestHash\":\"${s3ContextBundleJsonString(o, "sourceEvidenceManifestHash")}\",\"classificationManifestHash\":\"\",\"sourceClosureHash\":\"${s3ContextBundleJsonString(o, "sourceClosureHash")}\",\"protectedClosureHash\":\"${s3ContextBundleJsonString(o, "protectedClosureHash")}\",\"rulesEligible\":true,\"rulesHash\":\"${s3ContextBundleJsonString(o, "rulesHash")}\",\"rulesTreeHash\":\"${rulesTreeHash}\",\"rulesCount\":1,\"rulesAssetLineage\":\"independent\",\"skillsEligible\":true,\"skillsHash\":\"${selectedSkillsHash}\",\"skillsTreeHash\":\"${skillsTreeHash}\",\"skillsCount\":1,\"skillAssetLineage\":\"independent\",\"knowledgeEligible\":true,\"knowledgeCandidateHash\":\"${knowledgeHash}\",\"knowledgeTreeHash\":\"${knowledgeTreeHash}\",\"knowledgeTargetVersion\":\"${s3ContextBundleJsonString(o, "knowledgeTargetVersion")}\",\"knowledgeAssetLineage\":\"independent\",\"assetInventoryHash\":\"${inventoryHash}\",\"combinationAuditHash\":\"${combination}\"}"
 }
 
 private func s3ContextBundleJsonString(o: JsonObject, key: String): String { o.get(key).getOrThrow().asString().getValue() }
@@ -690,6 +882,25 @@ private func s3Skill(id: String, procedure: String): CkbStudentSkillCandidate {
 
 private func s3Part(value: String): String {
     "${value.toArray().size}:${value}"
+}
+
+private class S3ValidationBinding {
+    var fixture="";var actual="";var transcript="";var execution="";var lane="rules"
+    var candidateVisibleHash="";var baseCompositeHash="none";var validationIdentityHash=""
+    var modelVersion="student-model-v1";var requestHash="";init(){}
+}
+
+private func s3ValidationBinding(): S3ValidationBinding {
+    let out=S3ValidationBinding();let fixtureId="validation-unit";let kind="unit"
+    let source="non_humaneval_experiment";let content="校验候选上下文🙂";let evidence="验证通过🙂"
+    out.candidateVisibleHash="sha256:"+s3Hex(r'b');out.validationIdentityHash="sha256:"+s3Hex(r'a')
+    let fixtureHash=benchmarkGapSha256(s3Part(fixtureId)+s3Part(kind)+s3Part(source)+s3Part(content)+s3Part(evidence))
+    out.fixture="{\"schemaVersion\":\"teacher-asset-fixture-v1\",\"fixtureId\":\"${fixtureId}\",\"kind\":\"${kind}\",\"sourceClass\":\"${source}\",\"content\":\"${content}\",\"expectedEvidence\":\"${evidence}\",\"fixtureHash\":\"${fixtureHash}\"}\n"
+    out.actual=evidence+"\n";let evidenceHash=benchmarkGapSha256(evidence)
+    out.requestHash=benchmarkGapSha256(s3Part(fixtureHash)+s3Part(out.lane)+s3Part(out.candidateVisibleHash)+s3Part(out.baseCompositeHash)+s3Part(out.validationIdentityHash))
+    let responseHash=benchmarkGapSha256(s3Part(evidence)+s3Part(evidenceHash)+s3Part("0"))
+    out.transcript="{\"schemaVersion\":\"teacher-student-validation-transcript-v1\",\"fixtureId\":\"${fixtureId}\",\"lane\":\"${out.lane}\",\"candidateVisibleHash\":\"${out.candidateVisibleHash}\",\"baseCompositeHash\":\"${out.baseCompositeHash}\",\"validationIdentityHash\":\"${out.validationIdentityHash}\",\"requestHash\":\"${out.requestHash}\",\"responseHash\":\"${responseHash}\",\"verifierEvidenceHash\":\"${evidenceHash}\",\"exitCode\":0}\n"
+    out.execution="{\"schemaVersion\":\"teacher-candidate-fixture-execution-v1\",\"fixtureId\":\"${fixtureId}\",\"kind\":\"${kind}\",\"sourceClass\":\"${source}\",\"fixtureHash\":\"${fixtureHash}\",\"executorKind\":\"student_completion_non_humaneval\",\"providerIdentityHash\":\"${out.validationIdentityHash}\",\"modelVersion\":\"${out.modelVersion}\",\"expectedEvidenceHash\":\"${evidenceHash}\",\"actualEvidenceHash\":\"${evidenceHash}\",\"transcriptHash\":\"${benchmarkGapSha256(out.transcript.trimAscii())}\",\"exitCode\":0,\"passed\":true}\n";out
 }
 
 private func s3WriteUnitExecution(root: Path, content: String): Unit {

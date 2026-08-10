@@ -6,6 +6,7 @@ import std.time.DateTime
 import std.process.launch
 import std.unittest.*
 import std.unittest.testmacro.*
+import stdx.encoding.json.*
 
 @Test
 public class CangjieEvalAbcdeRunnerCompletionTest {
@@ -24,8 +25,10 @@ public class CangjieEvalAbcdeRunnerCompletionTest {
         @Expect(runCkbCertificationPreflightCli(["cangjie-certification-preflight",
             "--control-manifest", fixture.controlPath],
             store: FileKnowledgeStore(fixture.frozenStorePath)), 0)
-        let manifest = String.fromUtf8(File.readFrom(
-            Path(fixture.outputRoot).join("run-manifest.json")))
+        let manifestPath = Path(fixture.outputRoot).join("run-manifest.json")
+        options.certificationRunManifestPath = manifestPath.toString()
+        let manifest = String.fromUtf8(File.readFrom(manifestPath))
+        options.claudeBin=JsonValue.fromStr(manifest).asObject().get("providerRuntimeExecutablePath").getOrThrow().asString().getValue()
         @Expect(applyCkbAbcdeFrozenRunManifest(options,manifest.toArray()),"ok")
         let completion=ckbAbcdeExtractSingleCompletion(p3Terminal("package solution\npublic func answer(): Int64 { 42 } // 中文😀").toArray())
         @Expect(completion.ok,true);@Expect(completion.completionCount,1);@Expect(completion.toolCallCount,0)
@@ -213,6 +216,24 @@ public class CangjieEvalAbcdeRunnerCompletionTest {
         @Expect(assessed.completeResult,true);@Expect(assessed.identityMatched,true);@Expect(assessed.toolEventCount,0)
         @Expect(command.toAsciiLower().contains("authorization"),false)
     }
+
+    // R6-C1-NEG: identity/path drift is rejected before the provider executor.
+    @TestCase
+    public func studentValidationDriftMakesProviderCallCountZero(): Unit {
+        let root=Path("../target/r6-provider-path-drift-${DateTime.now().toUnixTimeStamp().toMilliseconds()}");Directory.create(root,recursive:true);let runtimeA=root.join("runtime-a");let runtimeB=root.join("runtime-b");File.writeTo(runtimeA,"runtime-a".toArray());File.writeTo(runtimeB,"runtime-b".toArray())
+        let options=CkbAbcdeRunnerOptions();options.runMode="certification";options.generationProtocol="completion-only-v1"
+        options.claudeBin=canonicalize(runtimeA).toString();options.providerIdentityArtifactPath="/missing/provider.json";options.providerRuntimeExecutablePath=canonicalize(runtimeB).toString()
+        options.completionControlPath="/missing/control.json";options.providerPromptCapabilityPath="/missing/capability.json"
+        let executor=R6CountingProviderExecutor();let result=ckbAbcdeRunClaudeCertification(options,CkbAbcdeGroups.D,
+            "/missing/group","/missing/workspace","/missing/home","/missing/case",executor:executor)
+        @Expect(result.exitCode,126);@Expect(result.stderr,"student_validation_identity_mismatch");@Expect(executor.calls,0)
+    }
+}
+
+private class R6CountingProviderExecutor <: CkbAbcdeCertificationProviderExecutor {
+    public var calls:Int64=0
+    public override func execute(options:CkbAbcdeRunnerOptions,group:String,groupRoot:String,workspace:String,
+        runtimeHome:String,caseSrc:String):CkbAbcdeCommandResult{calls+=1;CkbAbcdeCommandResult()}
 }
 
 private class P3FakeCompletionVerifier <: CkbAbcdeCompletionSuiteExecutor {

@@ -3,7 +3,7 @@ package cangjie_community_knowledge_base
 import std.collection.{ArrayList, HashSet}
 import std.convert.Parsable
 import std.env.getVariable
-import std.fs.{Directory, File, Path, exists, canonicalize, rename, remove}
+import std.fs.{Directory, File, FileInfo, Path, exists, canonicalize, rename, remove}
 import std.io.*
 import std.process.*
 import std.sort.*
@@ -75,6 +75,11 @@ public class CkbAbcdeRunnerOptions {
     public var providerPromptCapabilityPath: String = ""
     public var providerPromptCapabilityHash: String = ""
     public var effectivePromptByteBudget: Int64 = 0
+    public var studentContextCandidateRoot: String = ""
+    public var studentContextCandidateSetHash: String = ""
+    public var completionControlPath: String = ""
+    public var completionControlHash: String = ""
+    public var providerRuntimeExecutablePath: String = ""
 
     public init() {
         this.datasetRoot = "${this.repoRoot}/test/cangjie_eval/cases/Cangjie-HumanEval"
@@ -175,14 +180,14 @@ public func ckbAbcdeCompletionOptionsDiagnostic(options: CkbAbcdeRunnerOptions):
 public func applyCkbAbcdeFrozenRunManifest(options:CkbAbcdeRunnerOptions,bytes:Array<UInt8>):String{
     let raw=try{String.fromUtf8(bytes)}catch(_:Exception){return "run_manifest_invalid_encoding"}
     try{
-        let object=JsonValue.fromStr(raw).asObject();let protocol=ckbAbcdeManifestString(object,"generationProtocol");let samples=ckbAbcdeManifestInt(object,"samplesPerCase");let dataset=ckbAbcdeManifestString(object,"datasetVersion");let knowledge=ckbAbcdeManifestString(object,"knowledgeVersion");let model=ckbAbcdeManifestString(object,"modelVersion");let provider=ckbAbcdeManifestString(object,"providerIdentityHash");let bundleHash=ckbAbcdeManifestString(object,"skillBundleHash");let samplingHash=ckbAbcdeManifestString(object,"samplingCapabilityHash");let schemaHash=ckbAbcdeManifestString(object,"outputSchemaHash");let contextRoot=ckbAbcdeManifestString(object,"studentContextRoot");let contextManifestHash=ckbAbcdeManifestString(object,"studentContextManifestHash");let contextCompositeHash=ckbAbcdeManifestString(object,"studentContextCompositeHash");let combinationAuditHash=ckbAbcdeManifestString(object,"combinationAuditHash");let providerCapabilityPath=ckbAbcdeManifestString(object,"providerPromptCapabilityPath");let providerCapabilityHash=ckbAbcdeManifestString(object,"providerPromptCapabilityHash");let effectivePromptByteBudget=ckbAbcdeManifestInt(object,"effectivePromptByteBudget")
+        let object=JsonValue.fromStr(raw).asObject();let protocol=ckbAbcdeManifestString(object,"generationProtocol");let samples=ckbAbcdeManifestInt(object,"samplesPerCase");let dataset=ckbAbcdeManifestString(object,"datasetVersion");let knowledge=ckbAbcdeManifestString(object,"knowledgeVersion");let model=ckbAbcdeManifestString(object,"modelVersion");let provider=ckbAbcdeManifestString(object,"providerIdentityHash");let bundleHash=ckbAbcdeManifestString(object,"skillBundleHash");let samplingHash=ckbAbcdeManifestString(object,"samplingCapabilityHash");let schemaHash=ckbAbcdeManifestString(object,"outputSchemaHash");let contextRoot=ckbAbcdeManifestString(object,"studentContextRoot");let contextManifestHash=ckbAbcdeManifestString(object,"studentContextManifestHash");let contextCompositeHash=ckbAbcdeManifestString(object,"studentContextCompositeHash");let combinationAuditHash=ckbAbcdeManifestString(object,"combinationAuditHash");let providerCapabilityPath=ckbAbcdeManifestString(object,"providerPromptCapabilityPath");let providerCapabilityHash=ckbAbcdeManifestString(object,"providerPromptCapabilityHash");let effectivePromptByteBudget=ckbAbcdeManifestInt(object,"effectivePromptByteBudget");let candidateRoot=ckbAbcdeManifestString(object,"studentContextCandidateRoot");let candidateSetHash=ckbAbcdeManifestString(object,"studentContextCandidateSetHash");let completionPath=ckbAbcdeManifestString(object,"completionControlPath");let completionHash=ckbAbcdeManifestString(object,"completionControlHash");let providerIdentityPath=ckbAbcdeManifestString(object,"providerIdentityPath");let runtimePath=ckbAbcdeManifestString(object,"providerRuntimeExecutablePath")
         if(protocol!="completion-only-v1"||samples!=1||!ckbAbcdePlainHash(bundleHash)||!ckbAbcdePlainHash(samplingHash)||!ckbAbcdePlainHash(schemaHash)||!ckbAbcdeStrictSha256(contextManifestHash)||!ckbAbcdeStrictSha256(contextCompositeHash)||!ckbAbcdeStrictSha256(combinationAuditHash)||!ckbAbcdeStrictSha256(providerCapabilityHash)||effectivePromptByteBudget<1){return "run_manifest_completion_contract_invalid"}
         if((options.datasetVersion!=""&&options.datasetVersion!=dataset)||(options.knowledgeVersion!=""&&options.knowledgeVersion!=knowledge)||(options.expectedModelVersion!=""&&options.expectedModelVersion!=model)||(options.providerIdentityHash!=""&&options.providerIdentityHash!=provider)||(options.generationProtocol!=""&&options.generationProtocol!=protocol)||(options.samplesPerCase!=0&&options.samplesPerCase!=samples)){return "run_manifest_cli_identity_drift"}
         options.datasetVersion=dataset;options.knowledgeVersion=knowledge;options.expectedModelVersion=model;options.providerIdentityHash=provider;options.generationProtocol=protocol;options.samplesPerCase=samples
-        let frozenRoot="${options.runsRoot}/${options.runId}";let effectiveContextRoot=if(options.evaluateFrozen){"${frozenRoot}/student-context"}else{contextRoot};let effectiveCapabilityPath=if(options.evaluateFrozen){"${frozenRoot}/provider-prompt-capability.json"}else{providerCapabilityPath};let context=readStudentContextBundleV2(effectiveContextRoot)
-        if(!context.ok||benchmarkGapSha256(context.manifestJson)!=contextManifestHash||context.compositeHash!=contextCompositeHash||context.combinationAuditHash!=combinationAuditHash){return "run_manifest_student_context_drift"}
-        let capability=try{String.fromUtf8(File.readFrom(Path(effectiveCapabilityPath)))}catch(_:Exception){return "provider_prompt_capability_unreadable"};if(benchmarkGapSha256(capability)!=providerCapabilityHash){return "provider_prompt_capability_hash_mismatch"}
-        options.studentContextRoot=effectiveContextRoot;options.studentContextCompositeHash=contextCompositeHash;options.combinationAuditHash=combinationAuditHash;options.providerPromptCapabilityPath=effectiveCapabilityPath;options.providerPromptCapabilityHash=providerCapabilityHash;options.effectivePromptByteBudget=effectivePromptByteBudget;"ok"
+        let frozenRoot="${options.runsRoot}/${options.runId}";let effectiveContextRoot=if(options.evaluateFrozen){"${frozenRoot}/student-context"}else{contextRoot};let effectiveCapabilityPath=if(options.evaluateFrozen){"${frozenRoot}/provider-prompt-capability.json"}else{providerCapabilityPath};let effectiveCandidateRoot=if(options.evaluateFrozen){"${frozenRoot}/student-context-candidate"}else{candidateRoot};let effectiveCompletionPath=if(options.evaluateFrozen){"${frozenRoot}/completion-control.json"}else{completionPath};let effectiveProviderPath=if(options.evaluateFrozen){"${frozenRoot}/provider-identity.json"}else{providerIdentityPath};if(runtimePath!=options.claudeBin||ckbControlFrozenPathDiagnostic(runtimePath,false)!="ok"){return "student_validation_identity_mismatch"};if(ckbControlFrozenPathDiagnostic(effectiveContextRoot,true)!="ok"||ckbControlFrozenPathDiagnostic(effectiveCandidateRoot,true)!="ok"||ckbControlFrozenPathDiagnostic(effectiveCapabilityPath,false)!="ok"||ckbControlFrozenPathDiagnostic(effectiveCompletionPath,false)!="ok"||ckbControlFrozenPathDiagnostic(effectiveProviderPath,false)!="ok"){return "student_validation_identity_invalid"};let context=readStudentContextBundleV2(effectiveContextRoot)
+        if(!context.ok||context.validationLevel!="student_validated"||benchmarkGapSha256(context.manifestJson)!=contextManifestHash||context.compositeHash!=contextCompositeHash||context.combinationAuditHash!=combinationAuditHash){return "student_context_not_student_validated"}
+        let capability=try{String.fromUtf8(File.readFrom(Path(effectiveCapabilityPath)))}catch(_:Exception){return "provider_prompt_capability_unreadable"};if(benchmarkGapSha256(capability)!=providerCapabilityHash){return "provider_prompt_capability_hash_mismatch"};let completionBytes=try{File.readFrom(Path(effectiveCompletionPath))}catch(_:Exception){return "student_completion_control_invalid"};let completionText=try{String.fromUtf8(completionBytes)}catch(_:Exception){return "student_completion_control_invalid"};if(benchmarkGapSha256(completionText)!=completionHash){return "student_completion_control_invalid"};let evidenceRoot=Path(options.certificationRunManifestPath).parent;let samplingEvidence=try{String.fromUtf8(File.readFrom(evidenceRoot.join("completion-sampling-capability.json")))}catch(_:Exception){return "student_completion_control_invalid"};let runtimeEvidence=try{String.fromUtf8(File.readFrom(evidenceRoot.join("completion-runtime-config.json")))}catch(_:Exception){return "student_completion_control_invalid"};if(benchmarkGapSha256(samplingEvidence)!=samplingHash){return "student_completion_control_invalid"};let completionDiagnostic=ckbStudentCompletionControlDiagnostic(completionBytes,ckbAbcdeManifestString(object,"certificationTransport"),protocol,samples,schemaHash,samplingHash,effectivePromptByteBudget,ckbAbcdeManifestInt(object,"transportRetryBudget"),ckbAbcdeManifestInt(object,"modelTimeoutSeconds"),benchmarkGapSha256(runtimeEvidence),model);if(completionDiagnostic!="ok"){return completionDiagnostic};let providerBytes=try{File.readFrom(Path(effectiveProviderPath))}catch(_:Exception){return "student_validation_identity_invalid"};let providerText=try{String.fromUtf8(providerBytes)}catch(_:Exception){return "student_validation_identity_invalid"};if(benchmarkGapSha256(providerText)!=provider||ckbStudentValidationProviderIdentityDiagnostic(providerBytes,model,ckbAbcdeManifestString(object,"claudeCodeVersion"),ckbAbcdeBinaryHash(runtimePath),completionHash,providerCapabilityHash)!="ok"){return "student_validation_identity_invalid"};let identity=ckbStudentContextValidationIdentityDiagnostic(effectiveContextRoot,effectiveCandidateRoot,candidateSetHash,provider,model);if(identity!="ok"){return identity}
+        options.studentContextRoot=effectiveContextRoot;options.studentContextCompositeHash=contextCompositeHash;options.combinationAuditHash=combinationAuditHash;options.providerPromptCapabilityPath=effectiveCapabilityPath;options.providerPromptCapabilityHash=providerCapabilityHash;options.effectivePromptByteBudget=effectivePromptByteBudget;options.studentContextCandidateRoot=effectiveCandidateRoot;options.studentContextCandidateSetHash=candidateSetHash;options.completionControlPath=effectiveCompletionPath;options.completionControlHash=completionHash;options.providerIdentityArtifactPath=effectiveProviderPath;options.providerRuntimeExecutablePath=runtimePath;"ok"
     }catch(_:Exception){"run_manifest_malformed_json"}
 }
 public func ckbAbcdeFreezeS4RunAssets(options: CkbAbcdeRunnerOptions, runRoot: String, evaluateFrozen: Bool): String {
@@ -215,6 +220,8 @@ public func ckbAbcdeFreezeS4RunAssets(options: CkbAbcdeRunnerOptions, runRoot: S
             return "provider_prompt_capability_hash_mismatch"
         };
         ckbAbcdeWriteText("${runRoot}/provider-prompt-capability.json", capability)
+        if(!ckbAbcdeCopyFrozenTree(Path(options.studentContextCandidateRoot),Path("${runRoot}/student-context-candidate"))){return "student_validation_identity_invalid"}
+        let completion=try{File.readFrom(Path(options.completionControlPath))}catch(_:Exception){return "student_completion_control_invalid"};try{File.writeTo(Path("${runRoot}/completion-control.json"),completion)}catch(_:Exception){return "student_completion_control_invalid"}
     }
     for (asset in assets) {
         if (ckbAbcdeReadText("${targetRoot}/${asset[0]}") != asset[1]) {
@@ -229,6 +236,7 @@ public func ckbAbcdeFreezeS4RunAssets(options: CkbAbcdeRunnerOptions, runRoot: S
     options.providerPromptCapabilityPath = "${runRoot}/provider-prompt-capability.json"
     "ok"
 }
+private func ckbAbcdeCopyFrozenTree(source:Path,target:Path):Bool{try{if(FileInfo(source).isSymbolicLink()||!FileInfo(source).isDirectory()||exists(target)){return false};Directory.create(target,recursive:false);for(entry in Directory.readFrom(source)){if(entry.isSymbolicLink()){return false};let destination=target.join(entry.name);if(entry.isDirectory()){if(!ckbAbcdeCopyFrozenTree(entry.path,destination)){return false}}else if(entry.isRegular()){File.writeTo(destination,File.readFrom(entry.path))}else{return false}};true}catch(_:Exception){false}}
 
 public func ckbAbcdeCompletionViolation(transcript: String, forbiddenViolation: String): String {
     if (transcript.contains("\"type\":\"tool_use\"")) { return "completion_tool_use_forbidden" }
@@ -779,6 +787,8 @@ private func ckbAbcdeBindFrozenRunInputs(options: CkbAbcdeRunnerOptions): Unit {
         frozenRoot.join("provider-identity.json").toString()
     options.frozenCandidateManifestPath =
         frozenRoot.join("frozen-candidate-manifest.json").toString()
+    options.studentContextCandidateRoot = frozenRoot.join("student-context-candidate").toString()
+    options.completionControlPath = frozenRoot.join("completion-control.json").toString()
     options.manifestPath = frozenRoot.join("authority.jsonl").toString()
 }
 
@@ -899,6 +909,7 @@ private func runCangjieEvalAbcdeCore(args: Array<String>,
                 ckbAbcdeReadText(options.providerIdentityArtifactPath))
             ckbAbcdeWriteText("${runRoot}/frozen-candidate-manifest.json",
                 ckbAbcdeReadText(options.frozenCandidateManifestPath))
+            let p6Root=Path(options.certificationRunManifestPath).parent;ckbAbcdeWriteText("${runRoot}/completion-runtime-config.json",ckbAbcdeReadText(p6Root.join("completion-runtime-config.json").toString()));ckbAbcdeWriteText("${runRoot}/completion-sampling-capability.json",ckbAbcdeReadText(p6Root.join("completion-sampling-capability.json").toString()))
         }
         options.certificationPreflightPath="${runRoot}/preflight.json"
         options.certificationRunManifestPath="${runRoot}/run-manifest.json"
@@ -1962,6 +1973,9 @@ public open class CkbAbcdeCertificationProviderExecutor {
 public func ckbAbcdeRunClaudeCertification(options: CkbAbcdeRunnerOptions, group: String, groupRoot: String,
     workspace: String, runtimeHome: String, caseSrc: String,
     executor!: CkbAbcdeCertificationProviderExecutor = CkbAbcdeCertificationProviderExecutor()): CkbAbcdeCommandResult {
+    if(options.generationProtocol=="completion-only-v1"){
+        let binding=ckbAbcdeProviderIdentityBeforeCallDiagnostic(options);if(binding!="ok"){let blocked=CkbAbcdeCommandResult();blocked.exitCode=126;blocked.stderr=binding;return blocked}
+    }
     let promptGate = ckbAbcdeProviderPromptGate(options, ckbAbcdeReadText("${groupRoot}/prompt.final.md"));
     if (promptGate != "ok") {
         let blocked = CkbAbcdeCommandResult();
@@ -1970,6 +1984,11 @@ public func ckbAbcdeRunClaudeCertification(options: CkbAbcdeRunnerOptions, group
         return blocked
     }
     executor.execute(options, group, groupRoot, workspace, runtimeHome, caseSrc)
+}
+public func ckbAbcdeProviderIdentityBeforeCallDiagnostic(options:CkbAbcdeRunnerOptions):String{
+    let runtimeCanonical=try{canonicalize(Path(options.claudeBin)).toString()}catch(_:Exception){""};if(runtimeCanonical!=options.providerRuntimeExecutablePath){return "student_validation_identity_mismatch"}
+    if(ckbControlFrozenPathDiagnostic(options.providerIdentityArtifactPath,false)!="ok"||ckbControlFrozenPathDiagnostic(options.providerRuntimeExecutablePath,false)!="ok"||ckbControlFrozenPathDiagnostic(options.completionControlPath,false)!="ok"||ckbControlFrozenPathDiagnostic(options.providerPromptCapabilityPath,false)!="ok"){return "student_validation_identity_invalid"}
+    try{let provider=File.readFrom(Path(options.providerIdentityArtifactPath));let completion=File.readFrom(Path(options.completionControlPath));let capability=File.readFrom(Path(options.providerPromptCapabilityPath));let identity=ckbStudentValidationProviderIdentityDiagnostic(provider,options.expectedModelVersion,ckbAbcdeClaudeVersion(executable:options.claudeBin),ckbAbcdeBinaryHash(options.providerRuntimeExecutablePath),benchmarkGapSha256(String.fromUtf8(completion)),benchmarkGapSha256(String.fromUtf8(capability)));if(identity!="ok"){return identity};ckbStudentContextValidationIdentityDiagnostic(options.studentContextRoot,options.studentContextCandidateRoot,options.studentContextCandidateSetHash,benchmarkGapSha256(String.fromUtf8(provider)),options.expectedModelVersion)}catch(_:Exception){"student_validation_identity_invalid"}
 }
 
 
@@ -3253,7 +3272,7 @@ public func ckbAbcdeCertificationEntryDiagnostic(options: CkbAbcdeRunnerOptions,
         if(ckbAbcdeStrictJsonString(manifest,"certificationBinaryHash")!=binaryHash||ckbAbcdeStrictJsonString(manifest,"certificationHttpLaunchSpecHash")!=launchSpecHash||ckbAbcdeStrictJsonString(manifest,"certificationHttpCommandHash")!=commandHash){return "p6_certification_http_provenance_mismatch"}
         if(ckbAbcdeStrictJsonString(manifest,"frozenCandidateManifestHash")!=benchmarkGapSha256(frozen)){return "p6_frozen_candidate_manifest_mismatch"}
         if (ckbAbcdeStrictJsonString(manifest,"claudeCodeVersion")!=ckbAbcdeClaudeVersion(executable: options.claudeBin)) { return "p6_claude_version_drift" }
-        let provider=JsonValue.fromStr(ckbAbcdeReadText(options.providerIdentityArtifactPath)).asObject();if(ckbAbcdeStrictJsonString(provider,"model")!=options.expectedModelVersion||ckbAbcdeStrictJsonString(provider,"claudeCodeVersion")!=ckbAbcdeClaudeVersion(executable: options.claudeBin)||ckbAbcdeStrictJsonString(provider,"provider")==""){return "provider_runtime_identity_mismatch"}
+        let provider=JsonValue.fromStr(ckbAbcdeReadText(options.providerIdentityArtifactPath)).asObject();if(ckbAbcdeStrictJsonString(provider,"model")!=options.expectedModelVersion||ckbAbcdeStrictJsonString(provider,"claudeCodeVersion")!=ckbAbcdeClaudeVersion(executable: options.claudeBin)||ckbAbcdeStrictJsonString(provider,"provider")==""||ckbAbcdeStrictJsonString(provider,"runtimeExecutableHash")!=ckbAbcdeBinaryHash(options.claudeBin)){return "student_validation_identity_mismatch"}
     } catch (_: Exception) { return "p6_manifest_malformed" }
     if (!options.evaluateFrozen && exists(Path(runRoot))) {
         try { for (_ in Directory.readFrom(Path(runRoot))) { return "certification_run_root_not_empty" } }

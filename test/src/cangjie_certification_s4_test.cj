@@ -1,7 +1,7 @@
 package cangjie_community_knowledge_base_test
 
 import std.collection.*
-import std.fs.{Directory, File, Path, exists, remove}
+import std.fs.{Directory, File, Path, canonicalize, exists, remove}
 import std.time.*
 import std.unittest.*
 import std.unittest.testmacro.*
@@ -93,7 +93,15 @@ public class CkbCertificationS4ContractTest {
         @Expect(blocked.exitCode,126)
         @Expect(fake.callCount,0)
         let manifest = String.fromUtf8(File.readFrom(Path(prepared[3])));
-        @Expect(applyCkbAbcdeFrozenRunManifest(CkbAbcdeRunnerOptions(),manifest.replace(options.studentContextCompositeHash,s4Hash(r'e')).toArray()),"run_manifest_student_context_drift")
+        let driftOptions = CkbAbcdeRunnerOptions()
+        driftOptions.runId = options.runId
+        driftOptions.runsRoot = options.runsRoot
+        driftOptions.expectedModelVersion = options.expectedModelVersion
+        driftOptions.certificationRunManifestPath = prepared[3]
+        driftOptions.claudeBin = options.claudeBin
+        @Expect(applyCkbAbcdeFrozenRunManifest(driftOptions,
+            manifest.replace(options.studentContextCompositeHash,s4Hash(r'e')).toArray()),
+            "student_context_not_student_validated")
     }
 
     @TestCase
@@ -150,6 +158,8 @@ private func s4PreparedRun(name: String): (String, CkbAbcdeRunnerOptions, String
     options.runId = "store-route-run"
     options.runsRoot = Path(fixture.outputRoot).parent.toString()
     options.expectedModelVersion = "GLM-5.2"
+    options.certificationRunManifestPath = manifestPath.toString()
+    options.claudeBin = fixture.runtimePath
     let diagnostic = applyCkbAbcdeFrozenRunManifest(options, manifest.toArray());
     if (diagnostic != "ok") {
         return (diagnostic, options, "", manifestPath.toString())
@@ -159,8 +169,9 @@ private func s4PreparedRun(name: String): (String, CkbAbcdeRunnerOptions, String
         remove(root, recursive: true)
     };
     Directory.create(root, recursive: true);
-    let freeze = ckbAbcdeFreezeS4RunAssets(options, root.toString(), false);
-    (freeze, options, root.toString(), manifestPath.toString())
+    let canonicalRoot = canonicalize(root).toString()
+    let freeze = ckbAbcdeFreezeS4RunAssets(options, canonicalRoot, false);
+    (freeze, options, canonicalRoot, manifestPath.toString())
 }
 
 private func s4AssetsFromRun(options: CkbAbcdeRunnerOptions): CkbS4FrozenContextAssets {

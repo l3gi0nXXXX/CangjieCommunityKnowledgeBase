@@ -1,9 +1,9 @@
-package cangjie_community_knowledge_base_test
+public package cangjie_community_knowledge_base_test
 
 import std.collection.{ArrayList, HashSet}
 import std.convert.Parsable
 import std.env.getVariable
-import std.fs.{Directory, File, Path, exists, canonicalize, rename, remove}
+import std.fs.{Directory, File, FileInfo, Path, exists, canonicalize, rename, remove}
 import std.io.*
 import std.process.*
 import std.sort.*
@@ -75,6 +75,11 @@ public class CkbAbcdeRunnerOptions {
     public var providerPromptCapabilityPath: String = ""
     public var providerPromptCapabilityHash: String = ""
     public var effectivePromptByteBudget: Int64 = 0
+    public var studentContextCandidateRoot: String = ""
+    public var studentContextCandidateSetHash: String = ""
+    public var completionControlPath: String = ""
+    public var completionControlHash: String = ""
+    public var providerRuntimeExecutablePath: String = ""
 
     public init() {
         this.datasetRoot = "${this.repoRoot}/test/cangjie_eval/cases/Cangjie-HumanEval"
@@ -175,14 +180,14 @@ public func ckbAbcdeCompletionOptionsDiagnostic(options: CkbAbcdeRunnerOptions):
 public func applyCkbAbcdeFrozenRunManifest(options:CkbAbcdeRunnerOptions,bytes:Array<UInt8>):String{
     let raw=try{String.fromUtf8(bytes)}catch(_:Exception){return "run_manifest_invalid_encoding"}
     try{
-        let object=JsonValue.fromStr(raw).asObject();let protocol=ckbAbcdeManifestString(object,"generationProtocol");let samples=ckbAbcdeManifestInt(object,"samplesPerCase");let dataset=ckbAbcdeManifestString(object,"datasetVersion");let knowledge=ckbAbcdeManifestString(object,"knowledgeVersion");let model=ckbAbcdeManifestString(object,"modelVersion");let provider=ckbAbcdeManifestString(object,"providerIdentityHash");let bundleHash=ckbAbcdeManifestString(object,"skillBundleHash");let samplingHash=ckbAbcdeManifestString(object,"samplingCapabilityHash");let schemaHash=ckbAbcdeManifestString(object,"outputSchemaHash");let contextRoot=ckbAbcdeManifestString(object,"studentContextRoot");let contextManifestHash=ckbAbcdeManifestString(object,"studentContextManifestHash");let contextCompositeHash=ckbAbcdeManifestString(object,"studentContextCompositeHash");let combinationAuditHash=ckbAbcdeManifestString(object,"combinationAuditHash");let providerCapabilityPath=ckbAbcdeManifestString(object,"providerPromptCapabilityPath");let providerCapabilityHash=ckbAbcdeManifestString(object,"providerPromptCapabilityHash");let effectivePromptByteBudget=ckbAbcdeManifestInt(object,"effectivePromptByteBudget")
+        let object=JsonValue.fromStr(raw).asObject();let protocol=ckbAbcdeManifestString(object,"generationProtocol");let samples=ckbAbcdeManifestInt(object,"samplesPerCase");let dataset=ckbAbcdeManifestString(object,"datasetVersion");let knowledge=ckbAbcdeManifestString(object,"knowledgeVersion");let model=ckbAbcdeManifestString(object,"modelVersion");let provider=ckbAbcdeManifestString(object,"providerIdentityHash");let bundleHash=ckbAbcdeManifestString(object,"skillBundleHash");let samplingHash=ckbAbcdeManifestString(object,"samplingCapabilityHash");let schemaHash=ckbAbcdeManifestString(object,"outputSchemaHash");let contextRoot=ckbAbcdeManifestString(object,"studentContextRoot");let contextManifestHash=ckbAbcdeManifestString(object,"studentContextManifestHash");let contextCompositeHash=ckbAbcdeManifestString(object,"studentContextCompositeHash");let combinationAuditHash=ckbAbcdeManifestString(object,"combinationAuditHash");let providerCapabilityPath=ckbAbcdeManifestString(object,"providerPromptCapabilityPath");let providerCapabilityHash=ckbAbcdeManifestString(object,"providerPromptCapabilityHash");let effectivePromptByteBudget=ckbAbcdeManifestInt(object,"effectivePromptByteBudget");let candidateRoot=ckbAbcdeManifestString(object,"studentContextCandidateRoot");let candidateSetHash=ckbAbcdeManifestString(object,"studentContextCandidateSetHash");let completionPath=ckbAbcdeManifestString(object,"completionControlPath");let completionHash=ckbAbcdeManifestString(object,"completionControlHash");let providerIdentityPath=ckbAbcdeManifestString(object,"providerIdentityPath");let runtimePath=ckbAbcdeManifestString(object,"providerRuntimeExecutablePath")
         if(protocol!="completion-only-v1"||samples!=1||!ckbAbcdePlainHash(bundleHash)||!ckbAbcdePlainHash(samplingHash)||!ckbAbcdePlainHash(schemaHash)||!ckbAbcdeStrictSha256(contextManifestHash)||!ckbAbcdeStrictSha256(contextCompositeHash)||!ckbAbcdeStrictSha256(combinationAuditHash)||!ckbAbcdeStrictSha256(providerCapabilityHash)||effectivePromptByteBudget<1){return "run_manifest_completion_contract_invalid"}
         if((options.datasetVersion!=""&&options.datasetVersion!=dataset)||(options.knowledgeVersion!=""&&options.knowledgeVersion!=knowledge)||(options.expectedModelVersion!=""&&options.expectedModelVersion!=model)||(options.providerIdentityHash!=""&&options.providerIdentityHash!=provider)||(options.generationProtocol!=""&&options.generationProtocol!=protocol)||(options.samplesPerCase!=0&&options.samplesPerCase!=samples)){return "run_manifest_cli_identity_drift"}
         options.datasetVersion=dataset;options.knowledgeVersion=knowledge;options.expectedModelVersion=model;options.providerIdentityHash=provider;options.generationProtocol=protocol;options.samplesPerCase=samples
-        let frozenRoot="${options.runsRoot}/${options.runId}";let effectiveContextRoot=if(options.evaluateFrozen){"${frozenRoot}/student-context"}else{contextRoot};let effectiveCapabilityPath=if(options.evaluateFrozen){"${frozenRoot}/provider-prompt-capability.json"}else{providerCapabilityPath};let context=readStudentContextBundleV2(effectiveContextRoot)
-        if(!context.ok||benchmarkGapSha256(context.manifestJson)!=contextManifestHash||context.compositeHash!=contextCompositeHash||context.combinationAuditHash!=combinationAuditHash){return "run_manifest_student_context_drift"}
-        let capability=try{String.fromUtf8(File.readFrom(Path(effectiveCapabilityPath)))}catch(_:Exception){return "provider_prompt_capability_unreadable"};if(benchmarkGapSha256(capability)!=providerCapabilityHash){return "provider_prompt_capability_hash_mismatch"}
-        options.studentContextRoot=effectiveContextRoot;options.studentContextCompositeHash=contextCompositeHash;options.combinationAuditHash=combinationAuditHash;options.providerPromptCapabilityPath=effectiveCapabilityPath;options.providerPromptCapabilityHash=providerCapabilityHash;options.effectivePromptByteBudget=effectivePromptByteBudget;"ok"
+        let frozenRoot="${options.runsRoot}/${options.runId}";let effectiveContextRoot=if(options.evaluateFrozen){"${frozenRoot}/student-context"}else{contextRoot};let effectiveCapabilityPath=if(options.evaluateFrozen){"${frozenRoot}/provider-prompt-capability.json"}else{providerCapabilityPath};let effectiveCandidateRoot=if(options.evaluateFrozen){"${frozenRoot}/student-context-candidate"}else{candidateRoot};let effectiveCompletionPath=if(options.evaluateFrozen){"${frozenRoot}/completion-control.json"}else{completionPath};let effectiveProviderPath=if(options.evaluateFrozen){"${frozenRoot}/provider-identity.json"}else{providerIdentityPath};if(runtimePath!=options.claudeBin||ckbControlFrozenPathDiagnostic(runtimePath,false)!="ok"){return "student_validation_identity_mismatch"};if(ckbControlFrozenPathDiagnostic(effectiveContextRoot,true)!="ok"||ckbControlFrozenPathDiagnostic(effectiveCandidateRoot,true)!="ok"||ckbControlFrozenPathDiagnostic(effectiveCapabilityPath,false)!="ok"||ckbControlFrozenPathDiagnostic(effectiveCompletionPath,false)!="ok"||ckbControlFrozenPathDiagnostic(effectiveProviderPath,false)!="ok"){return "student_validation_identity_invalid"};let context=readStudentContextBundleV2(effectiveContextRoot)
+        if(!context.ok||context.validationLevel!="student_validated"||benchmarkGapSha256(context.manifestJson)!=contextManifestHash||context.compositeHash!=contextCompositeHash||context.combinationAuditHash!=combinationAuditHash){return "student_context_not_student_validated"}
+        let capability=try{String.fromUtf8(File.readFrom(Path(effectiveCapabilityPath)))}catch(_:Exception){return "provider_prompt_capability_unreadable"};if(benchmarkGapSha256(capability)!=providerCapabilityHash){return "provider_prompt_capability_hash_mismatch"};let completionBytes=try{File.readFrom(Path(effectiveCompletionPath))}catch(_:Exception){return "student_completion_control_invalid"};let completionText=try{String.fromUtf8(completionBytes)}catch(_:Exception){return "student_completion_control_invalid"};if(benchmarkGapSha256(completionText)!=completionHash){return "student_completion_control_invalid"};let evidenceRoot=Path(options.certificationRunManifestPath).parent;let samplingEvidence=try{String.fromUtf8(File.readFrom(evidenceRoot.join("completion-sampling-capability.json")))}catch(_:Exception){return "student_completion_control_invalid"};let runtimeEvidence=try{String.fromUtf8(File.readFrom(evidenceRoot.join("completion-runtime-config.json")))}catch(_:Exception){return "student_completion_control_invalid"};if(benchmarkGapSha256(samplingEvidence)!=samplingHash){return "student_completion_control_invalid"};let completionDiagnostic=ckbStudentCompletionControlDiagnostic(completionBytes,ckbAbcdeManifestString(object,"certificationTransport"),protocol,samples,schemaHash,samplingHash,effectivePromptByteBudget,ckbAbcdeManifestInt(object,"transportRetryBudget"),ckbAbcdeManifestInt(object,"modelTimeoutSeconds"),benchmarkGapSha256(runtimeEvidence),model);if(completionDiagnostic!="ok"){return completionDiagnostic};let providerBytes=try{File.readFrom(Path(effectiveProviderPath))}catch(_:Exception){return "student_validation_identity_invalid"};let providerText=try{String.fromUtf8(providerBytes)}catch(_:Exception){return "student_validation_identity_invalid"};if(benchmarkGapSha256(providerText)!=provider||ckbStudentValidationProviderIdentityDiagnostic(providerBytes,model,ckbAbcdeManifestString(object,"claudeCodeVersion"),ckbAbcdeBinaryHash(runtimePath),completionHash,providerCapabilityHash)!="ok"){return "student_validation_identity_invalid"};let identity=ckbStudentContextValidationIdentityDiagnostic(effectiveContextRoot,effectiveCandidateRoot,candidateSetHash,provider,model);if(identity!="ok"){return identity}
+        options.studentContextRoot=effectiveContextRoot;options.studentContextCompositeHash=contextCompositeHash;options.combinationAuditHash=combinationAuditHash;options.providerPromptCapabilityPath=effectiveCapabilityPath;options.providerPromptCapabilityHash=providerCapabilityHash;options.effectivePromptByteBudget=effectivePromptByteBudget;options.studentContextCandidateRoot=effectiveCandidateRoot;options.studentContextCandidateSetHash=candidateSetHash;options.completionControlPath=effectiveCompletionPath;options.completionControlHash=completionHash;options.providerIdentityArtifactPath=effectiveProviderPath;options.providerRuntimeExecutablePath=runtimePath;"ok"
     }catch(_:Exception){"run_manifest_malformed_json"}
 }
 public func ckbAbcdeFreezeS4RunAssets(options: CkbAbcdeRunnerOptions, runRoot: String, evaluateFrozen: Bool): String {
@@ -215,6 +220,8 @@ public func ckbAbcdeFreezeS4RunAssets(options: CkbAbcdeRunnerOptions, runRoot: S
             return "provider_prompt_capability_hash_mismatch"
         };
         ckbAbcdeWriteText("${runRoot}/provider-prompt-capability.json", capability)
+        if(!ckbAbcdeCopyFrozenTree(Path(options.studentContextCandidateRoot),Path("${runRoot}/student-context-candidate"))){return "student_validation_identity_invalid"}
+        let completion=try{File.readFrom(Path(options.completionControlPath))}catch(_:Exception){return "student_completion_control_invalid"};try{File.writeTo(Path("${runRoot}/completion-control.json"),completion)}catch(_:Exception){return "student_completion_control_invalid"}
     }
     for (asset in assets) {
         if (ckbAbcdeReadText("${targetRoot}/${asset[0]}") != asset[1]) {
@@ -229,6 +236,7 @@ public func ckbAbcdeFreezeS4RunAssets(options: CkbAbcdeRunnerOptions, runRoot: S
     options.providerPromptCapabilityPath = "${runRoot}/provider-prompt-capability.json"
     "ok"
 }
+private func ckbAbcdeCopyFrozenTree(source:Path,target:Path):Bool{try{if(FileInfo(source).isSymbolicLink()||!FileInfo(source).isDirectory()||exists(target)){return false};Directory.create(target,recursive:false);for(entry in Directory.readFrom(source)){if(entry.isSymbolicLink()){return false};let destination=target.join(entry.name);if(entry.isDirectory()){if(!ckbAbcdeCopyFrozenTree(entry.path,destination)){return false}}else if(entry.isRegular()){File.writeTo(destination,File.readFrom(entry.path))}else{return false}};true}catch(_:Exception){false}}
 
 public func ckbAbcdeCompletionViolation(transcript: String, forbiddenViolation: String): String {
     if (transcript.contains("\"type\":\"tool_use\"")) { return "completion_tool_use_forbidden" }
@@ -744,16 +752,15 @@ private func ckbAbcdeVerifyGenerationSeal(runRoot: String,
         body == ckbAbcdeGenerationSealBody(runRoot)
 }
 
+
 public func ckbAbcdeCreateGenerationSealForTest(runRoot: String): String {
     ckbAbcdeCreateGenerationSeal(runRoot)
 }
 
 
-public func ckbAbcdeVerifyGenerationSealForTest(runRoot: String,
-    expected: String): Bool {
+public func ckbAbcdeVerifyGenerationSealForTest(runRoot: String, expected: String): Bool {
     ckbAbcdeVerifyGenerationSeal(runRoot, expected)
 }
-
 
 private func ckbAbcdeGenerationSealHash(value: String): Bool {
     let runes = value.toRuneArray()
@@ -780,11 +787,13 @@ private func ckbAbcdeBindFrozenRunInputs(options: CkbAbcdeRunnerOptions): Unit {
         frozenRoot.join("provider-identity.json").toString()
     options.frozenCandidateManifestPath =
         frozenRoot.join("frozen-candidate-manifest.json").toString()
+    options.studentContextCandidateRoot = frozenRoot.join("student-context-candidate").toString()
+    options.completionControlPath = frozenRoot.join("completion-control.json").toString()
     options.manifestPath = frozenRoot.join("authority.jsonl").toString()
 }
 
-public func ckbAbcdeBindFrozenRunInputsForTest(
-    options: CkbAbcdeRunnerOptions): Unit {
+
+public func ckbAbcdeBindFrozenRunInputsForTest(options: CkbAbcdeRunnerOptions): Unit {
     ckbAbcdeBindFrozenRunInputs(options)
 }
 
@@ -814,8 +823,8 @@ func runCangjieEvalAbcdeFromP8(args: Array<String>, runRoot: String,
     (0, seal)
 }
 
-public func runCangjieEvalAbcdeLegacyFixtureForTest(
-    args: Array<String>): Int64 {
+
+public func runCangjieEvalAbcdeLegacyFixtureForTest(args: Array<String>): Int64 {
     runCangjieEvalAbcdeCore(args, true, true)
 }
 
@@ -900,6 +909,7 @@ private func runCangjieEvalAbcdeCore(args: Array<String>,
                 ckbAbcdeReadText(options.providerIdentityArtifactPath))
             ckbAbcdeWriteText("${runRoot}/frozen-candidate-manifest.json",
                 ckbAbcdeReadText(options.frozenCandidateManifestPath))
+            let p6Root=Path(options.certificationRunManifestPath).parent;ckbAbcdeWriteText("${runRoot}/completion-runtime-config.json",ckbAbcdeReadText(p6Root.join("completion-runtime-config.json").toString()));ckbAbcdeWriteText("${runRoot}/completion-sampling-capability.json",ckbAbcdeReadText(p6Root.join("completion-sampling-capability.json").toString()))
         }
         options.certificationPreflightPath="${runRoot}/preflight.json"
         options.certificationRunManifestPath="${runRoot}/run-manifest.json"
@@ -1649,17 +1659,57 @@ public func ckbAbcdeBindCompletionCertificationV5(row: CkbCertificationCaseEvide
 
 public func ckbAbcdeRenderStrictCertificationCaseForTest(options:CkbAbcdeRunnerOptions,caseId:String,group:String,groupRoot:String,answerHash:String,transcript:String,testLog:String,unitPassAt1:Bool,violation:String,toolReady:Bool):String{let evidence=ckbAbcdeTaskKnowledgeEvidence(group,transcript,ckbAbcdeReadText("${groupRoot}/canonical-task-context.json"));ckbAbcdePersistTaskKnowledgeEvidence(groupRoot,evidence,evidence.valid&&evidence.knowledgeVersion==options.knowledgeVersion);ckbAbcdeRenderStrictCertificationCase(options,caseId,group,groupRoot,answerHash,transcript,testLog,unitPassAt1,violation,toolReady,evidence)}
 
+
 // Builds raw successful fake-transport output, then delegates all hashes,
 // paired-tool evidence, and result sealing to the production runner path.
-public func ckbAbcdeWriteSuccessfulFakeTransportCaseForTest(options:CkbAbcdeRunnerOptions,caseId:String,groupRoot:String):String{
-    let workspace="${groupRoot}/workspace";let home="${groupRoot}/runtime-home/attempt-1";Directory.create(Path("${workspace}/src"),recursive:true);Directory.create(Path(home),recursive:true)
-    let solution="public func solve(): String { \"${caseId}\" }\n";ckbAbcdeWriteText("${workspace}/src/solution.cj",solution);let answerHash=benchmarkGapSha256(solution)
-    let context="{\"taskId\":\"${caseId}\",\"benchmark\":\"Cangjie-HumanEval\",\"taskText\":\"Certification fake transport task\",\"signature\":\"public func solve(): String\",\"datasetVersion\":\"${options.datasetVersion}\",\"promptHash\":\"sha256:prompt\",\"starterHash\":\"sha256:starter\",\"expectedKnowledgeTags\":[\"String\"],\"targetVersion\":\"1.0.0\",\"sourceSet\":\"all\",\"versionPolicy\":\"default\",\"budget\":10,\"responseMode\":\"evidence\"}";ckbAbcdeWriteText("${groupRoot}/canonical-task-context.json",context)
-    let contextHash=benchmarkGapSha256(context);let inputHash=benchmarkGapSha256("{}");let toolUse="{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"id\":\"call-cert\",\"name\":\"mcp__ckb-cangjie-http__cangjie_task_knowledge_pack\",\"input\":{}}]}}";let toolResult="{\"type\":\"user\",\"message\":{\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"call-cert\",\"content\":\"{\\\"taskId\\\":\\\"${caseId}\\\",\\\"resultType\\\":\\\"task_knowledge_pack\\\",\\\"evidenceHash\\\":\\\"sha256:fake-transport-evidence\\\",\\\"knowledgeVersion\\\":\\\"${options.knowledgeVersion}\\\",\\\"coverage\\\":{\\\"coveragePass\\\":true},\\\"citations\\\":[{\\\"citation\\\":\\\"official\\\"}],\\\"requestBinding\\\":{\\\"schemaVersion\\\":\\\"ckb-runner-bound-mcp-v1\\\",\\\"bindingMode\\\":\\\"runner_immutable\\\",\\\"requestHash\\\":\\\"${contextHash}\\\",\\\"effectiveRequestHash\\\":\\\"${contextHash}\\\",\\\"modelArgumentsHash\\\":\\\"${inputHash}\\\",\\\"taskId\\\":\\\"${caseId}\\\"}}\"}]}}";let transcript="{\"type\":\"system\",\"subtype\":\"init\",\"model\":\"${options.expectedModelVersion}\"}\n${toolUse}\n${toolResult}\n{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"num_turns\":1,\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"cache_read_input_tokens\":0,\"cache_creation_input_tokens\":0}}\n"
-    let session="session-${caseId}";let probe="{\"ok\":true,\"deniedOutsideWorkspace\":true,\"deniedTests\":true,\"deniedReference\":true,\"deniedTeacher\":true,\"deniedStore\":true,\"workspaceCanonical\":\"${canonicalize(Path(workspace)).toString()}\",\"runtimeHomeCanonical\":\"${canonicalize(Path(home)).toString()}\"}";let assessment=ckbAbcdeAssessSample(transcript,options.expectedModelVersion);let diagnostic=ckbAbcdeRenderModelTransportDiagnostic(transcript,0,assessment,options.modelTimeoutSeconds,"certification","")+"\n"
-    ckbAbcdeWriteText("${groupRoot}/mcp-config.json","{}");ckbAbcdeWriteText("${groupRoot}/runtime-policy.json","{\"model\":\"${options.expectedModelVersion}\",\"modelTimeoutSeconds\":${options.modelTimeoutSeconds},\"sampleAttempts\":1}");ckbAbcdeWriteText("${groupRoot}/test.log","tests passed");ckbAbcdeWriteText("${groupRoot}/session-id.attempt-1.txt",session);ckbAbcdeWriteText("${groupRoot}/session-id.txt",session);ckbAbcdeWriteText("${groupRoot}/sandbox-probe.attempt-1.json",probe);ckbAbcdeWriteText("${groupRoot}/sandbox-probe.json",probe);ckbAbcdeWriteText("${groupRoot}/claude-transcript.attempt-1.jsonl",transcript);ckbAbcdeWriteText("${groupRoot}/claude-transcript.jsonl",transcript);ckbAbcdeWriteText("${groupRoot}/claude.attempt-1.stderr.log","");ckbAbcdeWriteText("${groupRoot}/model-transport-diagnostic.attempt-1.json",diagnostic);ckbAbcdeInitializeWorkspaceRestoreEvidenceForTest(groupRoot);ckbAbcdeWriteText("${groupRoot}/verifier-mount.json","{\"injectExitCode\":0,\"answerHashBefore\":\"${answerHash}\",\"answerHashAfter\":\"${answerHash}\",\"mountedAfterFreeze\":true}")
-    let attempt="{\"attempt\":1,\"transportAttempt\":1,\"modelTimeoutSeconds\":${options.modelTimeoutSeconds},\"sampleAttempt\":1,\"exitCode\":0,\"classification\":\"business_sample\",\"completeResult\":true,\"identityMatched\":true,\"workspaceRestored\":false,\"restoreEvidenceHash\":\"\",\"sessionIdHash\":\"${benchmarkGapSha256(session)}\",\"runtimeHomeId\":\"${benchmarkGapSha256(canonicalize(Path(home)).toString())}\",\"sandboxProbeHash\":\"${benchmarkGapSha256(probe)}\",\"transcriptHash\":\"${benchmarkGapSha256(transcript)}\",\"stderrHash\":\"${benchmarkGapSha256("")}\",\"diagnosticHash\":\"${benchmarkGapSha256(diagnostic)}\",\"retryUsed\":false,\"fallbackUsed\":false}\n";ckbAbcdeWriteText("${groupRoot}/claude-attempts.jsonl",attempt);let lineage=ckbAbcdeAttemptLineageHash(attempt,"");let summary="{\"transportAttemptCount\":1,\"sampleAttemptCount\":1,\"lastAuditedTransportAttempt\":1,\"selectedBusinessSample\":1,\"selectedTransportAttempt\":1,\"retryCount\":0,\"unresolvedTransport\":0,\"attemptLineageHash\":\"${lineage}\",\"workspaceRestoreEvidenceHash\":\"${benchmarkGapSha256("")}\",\"attemptsPath\":\"claude-attempts.jsonl\",\"restoresPath\":\"workspace-restores.jsonl\"}";ckbAbcdeWriteText("${groupRoot}/attempt-evidence.json",summary);let testResult=summary.replace("}",",\"testExitCode\":0,\"unitPassAt1\":true,\"failureType\":\"none\",\"testLogPath\":\"${groupRoot}/test.log\"}");ckbAbcdeWriteText("${groupRoot}/test-result.json",testResult)
-    let row=ckbAbcdeRenderStrictCertificationCaseForTest(options,caseId,CkbAbcdeGroups.D,groupRoot,answerHash,transcript,"tests passed",true,"none",true);ckbAbcdeWriteText("${groupRoot}/result-evidence.json",row);row
+public func ckbAbcdeWriteSuccessfulFakeTransportCaseForTest(options: CkbAbcdeRunnerOptions, caseId: String,
+    groupRoot: String): String {
+    let workspace = "${groupRoot}/workspace";
+    let home = "${groupRoot}/runtime-home/attempt-1";
+    Directory.create(Path("${workspace}/src"), recursive: true);
+    Directory.create(Path(home), recursive: true)
+    let solution = "public func solve(): String { \"${caseId}\" }\n";
+    ckbAbcdeWriteText("${workspace}/src/solution.cj", solution);
+    let answerHash = benchmarkGapSha256(solution)
+    let context = "{\"taskId\":\"${caseId}\",\"benchmark\":\"Cangjie-HumanEval\",\"taskText\":\"Certification fake transport task\",\"signature\":\"public func solve(): String\",\"datasetVersion\":\"${options.datasetVersion}\",\"promptHash\":\"sha256:prompt\",\"starterHash\":\"sha256:starter\",\"expectedKnowledgeTags\":[\"String\"],\"targetVersion\":\"1.0.0\",\"sourceSet\":\"all\",\"versionPolicy\":\"default\",\"budget\":10,\"responseMode\":\"evidence\"}";
+    ckbAbcdeWriteText("${groupRoot}/canonical-task-context.json", context)
+    let contextHash = benchmarkGapSha256(context);
+    let inputHash = benchmarkGapSha256("{}");
+    let toolUse = "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"id\":\"call-cert\",\"name\":\"mcp__ckb-cangjie-http__cangjie_task_knowledge_pack\",\"input\":{}}]}}";
+    let toolResult = "{\"type\":\"user\",\"message\":{\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"call-cert\",\"content\":\"{\\\"taskId\\\":\\\"${caseId}\\\",\\\"resultType\\\":\\\"task_knowledge_pack\\\",\\\"evidenceHash\\\":\\\"sha256:fake-transport-evidence\\\",\\\"knowledgeVersion\\\":\\\"${options.knowledgeVersion}\\\",\\\"coverage\\\":{\\\"coveragePass\\\":true},\\\"citations\\\":[{\\\"citation\\\":\\\"official\\\"}],\\\"requestBinding\\\":{\\\"schemaVersion\\\":\\\"ckb-runner-bound-mcp-v1\\\",\\\"bindingMode\\\":\\\"runner_immutable\\\",\\\"requestHash\\\":\\\"${contextHash}\\\",\\\"effectiveRequestHash\\\":\\\"${contextHash}\\\",\\\"modelArgumentsHash\\\":\\\"${inputHash}\\\",\\\"taskId\\\":\\\"${caseId}\\\"}}\"}]}}";
+    let transcript = "{\"type\":\"system\",\"subtype\":\"init\",\"model\":\"${options.expectedModelVersion}\"}\n${toolUse}\n${toolResult}\n{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"num_turns\":1,\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"cache_read_input_tokens\":0,\"cache_creation_input_tokens\":0}}\n"
+    let session = "session-${caseId}";
+    let probe = "{\"ok\":true,\"deniedOutsideWorkspace\":true,\"deniedTests\":true,\"deniedReference\":true,\"deniedTeacher\":true,\"deniedStore\":true,\"workspaceCanonical\":\"${canonicalize(Path(workspace)).toString()}\",\"runtimeHomeCanonical\":\"${canonicalize(Path(home)).toString()}\"}";
+    let assessment = ckbAbcdeAssessSample(transcript, options.expectedModelVersion);
+    let diagnostic = ckbAbcdeRenderModelTransportDiagnostic(transcript, 0, assessment, options.modelTimeoutSeconds,
+        "certification", "") + "\n"
+    ckbAbcdeWriteText("${groupRoot}/mcp-config.json", "{}");
+    ckbAbcdeWriteText("${groupRoot}/runtime-policy.json",
+        "{\"model\":\"${options.expectedModelVersion}\",\"modelTimeoutSeconds\":${options.modelTimeoutSeconds},\"sampleAttempts\":1}");
+    ckbAbcdeWriteText("${groupRoot}/test.log", "tests passed");
+    ckbAbcdeWriteText("${groupRoot}/session-id.attempt-1.txt", session);
+    ckbAbcdeWriteText("${groupRoot}/session-id.txt", session);
+    ckbAbcdeWriteText("${groupRoot}/sandbox-probe.attempt-1.json", probe);
+    ckbAbcdeWriteText("${groupRoot}/sandbox-probe.json", probe);
+    ckbAbcdeWriteText("${groupRoot}/claude-transcript.attempt-1.jsonl", transcript);
+    ckbAbcdeWriteText("${groupRoot}/claude-transcript.jsonl", transcript);
+    ckbAbcdeWriteText("${groupRoot}/claude.attempt-1.stderr.log", "");
+    ckbAbcdeWriteText("${groupRoot}/model-transport-diagnostic.attempt-1.json", diagnostic);
+    ckbAbcdeInitializeWorkspaceRestoreEvidenceForTest(groupRoot);
+    ckbAbcdeWriteText("${groupRoot}/verifier-mount.json",
+        "{\"injectExitCode\":0,\"answerHashBefore\":\"${answerHash}\",\"answerHashAfter\":\"${answerHash}\",\"mountedAfterFreeze\":true}")
+    let attempt = "{\"attempt\":1,\"transportAttempt\":1,\"modelTimeoutSeconds\":${options.modelTimeoutSeconds},\"sampleAttempt\":1,\"exitCode\":0,\"classification\":\"business_sample\",\"completeResult\":true,\"identityMatched\":true,\"workspaceRestored\":false,\"restoreEvidenceHash\":\"\",\"sessionIdHash\":\"${benchmarkGapSha256(session)}\",\"runtimeHomeId\":\"${benchmarkGapSha256(canonicalize(Path(home)).toString())}\",\"sandboxProbeHash\":\"${benchmarkGapSha256(probe)}\",\"transcriptHash\":\"${benchmarkGapSha256(transcript)}\",\"stderrHash\":\"${benchmarkGapSha256("")}\",\"diagnosticHash\":\"${benchmarkGapSha256(diagnostic)}\",\"retryUsed\":false,\"fallbackUsed\":false}\n";
+    ckbAbcdeWriteText("${groupRoot}/claude-attempts.jsonl", attempt);
+    let lineage = ckbAbcdeAttemptLineageHash(attempt, "");
+    let summary = "{\"transportAttemptCount\":1,\"sampleAttemptCount\":1,\"lastAuditedTransportAttempt\":1,\"selectedBusinessSample\":1,\"selectedTransportAttempt\":1,\"retryCount\":0,\"unresolvedTransport\":0,\"attemptLineageHash\":\"${lineage}\",\"workspaceRestoreEvidenceHash\":\"${benchmarkGapSha256("")}\",\"attemptsPath\":\"claude-attempts.jsonl\",\"restoresPath\":\"workspace-restores.jsonl\"}";
+    ckbAbcdeWriteText("${groupRoot}/attempt-evidence.json", summary);
+    let testResult = summary.replace("}",
+        ",\"testExitCode\":0,\"unitPassAt1\":true,\"failureType\":\"none\",\"testLogPath\":\"${groupRoot}/test.log\"}");
+    ckbAbcdeWriteText("${groupRoot}/test-result.json", testResult)
+    let row = ckbAbcdeRenderStrictCertificationCaseForTest(options, caseId, CkbAbcdeGroups.D, groupRoot, answerHash,
+        transcript, "tests passed", true, "none", true);
+    ckbAbcdeWriteText("${groupRoot}/result-evidence.json", row);
+    row
 }
 
 private func ckbAbcdeObservedModel(transcript:String):String{for(line in transcript.split("\n")){try{let o=JsonValue.fromStr(line).asObject();if(ckbAbcdeStrictJsonString(o,"subtype")=="init"){return ckbAbcdeStrictJsonString(o,"model")};match(o.get("modelUsage")){case Some(value)=>let usage=value.asObject();if(usage.getFields().size==1){match(usage.get("GLM-5.2")){case Some(_)=>return "GLM-5.2" case None=>()}} case None=>()}}catch(_:Exception){}};""}
@@ -1705,6 +1755,7 @@ private func ckbAbcdeRunClaude(options: CkbAbcdeRunnerOptions, group: String, gr
 private func ckbAbcdeDevelopmentTransportAttemptLimit(transportRetries: Int64): Int64 {
     transportRetries + 1
 }
+
 
 public func ckbAbcdeDevelopmentTransportAttemptLimitForTest(transportRetries: Int64): Int64 {
     ckbAbcdeDevelopmentTransportAttemptLimit(transportRetries)
@@ -1816,18 +1867,58 @@ public func ckbAbcdeRestoreWorkspaceForRetry(workspace: String, authoritativeWor
     base.replace("}", ",\"evidenceHash\":\"${benchmarkGapSha256(base)}\"}")
 }
 
-public func ckbAbcdeRunFakeTransportRetryForTest(root:String,workspace:String,authoritativeWorkspace:String,frozenPointerPath:String,exitCodes:Array<Int64>,diagnostics:Array<String>,transcripts:Array<String>,expectedModel:String,retryBudget:Int64):String{
-    if(exitCodes.size!=diagnostics.size||exitCodes.size!=transcripts.size||retryBudget<0){return "{\"diagnostic\":\"fake_transport_input_invalid\"}"}
-    ckbAbcdeEnsureDir(root);let pointerBefore=benchmarkGapSha256(ckbAbcdeReadText(frozenPointerPath));var attempts="";var restores="";var attemptCount:Int64=0;var sampleCount:Int64=0
-    let attemptLimit=ckbAbcdeDevelopmentTransportAttemptLimit(retryBudget)
-    let limit=if(exitCodes.size<attemptLimit){exitCodes.size}else{attemptLimit}
-    for(i in 0..limit){let attempt=Int64(i)+1;attemptCount=attempt;var restore="";if(attempt>1){restore=ckbAbcdeRestoreWorkspaceForRetry(workspace,authoritativeWorkspace,attempt);restores+=restore+"\n";if(!restore.contains("\"restored\":true")){break}}
-        let home="${root}/runtime-home/attempt-${attempt}";ckbAbcdeEnsureDir(home);let session="fake-session-${attempt}";let probe="{\"ok\":true,\"attempt\":${attempt}}";let assessment=ckbAbcdeAssessSample(transcripts[i],expectedModel);let classification=ckbAbcdeTransportClassification(exitCodes[i],assessment,diagnostics[i]);let sample=if(exitCodes[i]==0&&assessment.completeResult&&assessment.identityMatched){1}else{0};sampleCount+=sample
-        attempts+="{\"transportAttempt\":${attempt},\"sampleAttempt\":${sample},\"classification\":\"${classification}\",\"workspaceRestored\":${attempt>1},\"restoreEvidenceHash\":\"${if(attempt>1){benchmarkGapSha256(restore)}else{""}}\",\"sessionIdHash\":\"${benchmarkGapSha256(session)}\",\"runtimeHomeId\":\"${benchmarkGapSha256(home)}\",\"sandboxProbeHash\":\"${benchmarkGapSha256(probe)}\",\"transcriptHash\":\"${benchmarkGapSha256(transcripts[i])}\",\"stderrHash\":\"${benchmarkGapSha256(diagnostics[i])}\",\"diagnosticHash\":\"${benchmarkGapSha256(classification+diagnostics[i])}\"}\n"
-        if(sample==1||!ckbAbcdeShouldRetryTransport(exitCodes[i],assessment,diagnostic:diagnostics[i])){break}
+
+public func ckbAbcdeRunFakeTransportRetryForTest(root: String, workspace: String, authoritativeWorkspace: String,
+    frozenPointerPath: String, exitCodes: Array<Int64>, diagnostics: Array<String>, transcripts: Array<String>,
+    expectedModel: String, retryBudget: Int64): String {
+    if (exitCodes.size != diagnostics.size || exitCodes.size != transcripts.size || retryBudget < 0) {
+        return "{\"diagnostic\":\"fake_transport_input_invalid\"}"
     }
-    let pointerAfter=benchmarkGapSha256(ckbAbcdeReadText(frozenPointerPath));let lineage=ckbAbcdeAttemptLineageDiagnostic(attempts,restores,attemptCount,sampleCount);ckbAbcdeWriteText("${root}/fake-attempts.jsonl",attempts);ckbAbcdeWriteText("${root}/fake-restores.jsonl",restores)
-    "{\"transportAttemptCount\":${attemptCount},\"sampleAttemptCount\":${sampleCount},\"retryCount\":${if(attemptCount>0){attemptCount-1}else{0}},\"lineageDiagnostic\":\"${lineage}\",\"attemptLineageHash\":\"${ckbAbcdeAttemptLineageHash(attempts,restores)}\",\"frozenPointerBeforeHash\":\"${pointerBefore}\",\"frozenPointerAfterHash\":\"${pointerAfter}\",\"frozenPointerUnchanged\":${pointerBefore==pointerAfter}}"
+    ckbAbcdeEnsureDir(root);
+    let pointerBefore = benchmarkGapSha256(ckbAbcdeReadText(frozenPointerPath));
+    var attempts = "";
+    var restores = "";
+    var attemptCount: Int64 = 0;
+    var sampleCount: Int64 = 0
+    let attemptLimit = ckbAbcdeDevelopmentTransportAttemptLimit(retryBudget)
+    let limit = if (exitCodes.size < attemptLimit) {
+        exitCodes.size
+    } else {
+        attemptLimit
+    }
+    for (i in 0..limit) {
+        let attempt = Int64(i) + 1;
+        attemptCount = attempt
+        var restore = "";
+        if (attempt > 1) {
+            restore = ckbAbcdeRestoreWorkspaceForRetry(workspace, authoritativeWorkspace, attempt)
+            restores += restore + "\n"
+            if (!restore.contains("\"restored\":true")) {
+                break
+            }
+        }
+        let home = "${root}/runtime-home/attempt-${attempt}";
+        ckbAbcdeEnsureDir(home);
+        let session = "fake-session-${attempt}";
+        let probe = "{\"ok\":true,\"attempt\":${attempt}}";
+        let assessment = ckbAbcdeAssessSample(transcripts[i], expectedModel);
+        let classification = ckbAbcdeTransportClassification(exitCodes[i], assessment, diagnostics[i]);
+        let sample = if (exitCodes[i] == 0 && assessment.completeResult && assessment.identityMatched) {
+            1
+        } else {
+            0
+        };
+        sampleCount += sample
+        attempts += "{\"transportAttempt\":${attempt},\"sampleAttempt\":${sample},\"classification\":\"${classification}\",\"workspaceRestored\":${attempt > 1},\"restoreEvidenceHash\":\"${if (attempt > 1) { benchmarkGapSha256(restore) } else { "" }}\",\"sessionIdHash\":\"${benchmarkGapSha256(session)}\",\"runtimeHomeId\":\"${benchmarkGapSha256(home)}\",\"sandboxProbeHash\":\"${benchmarkGapSha256(probe)}\",\"transcriptHash\":\"${benchmarkGapSha256(transcripts[i])}\",\"stderrHash\":\"${benchmarkGapSha256(diagnostics[i])}\",\"diagnosticHash\":\"${benchmarkGapSha256(classification + diagnostics[i])}\"}\n"
+        if (sample == 1 || !ckbAbcdeShouldRetryTransport(exitCodes[i], assessment, diagnostic: diagnostics[i])) {
+            break
+        }
+    }
+    let pointerAfter = benchmarkGapSha256(ckbAbcdeReadText(frozenPointerPath));
+    let lineage = ckbAbcdeAttemptLineageDiagnostic(attempts, restores, attemptCount, sampleCount);
+    ckbAbcdeWriteText("${root}/fake-attempts.jsonl", attempts);
+    ckbAbcdeWriteText("${root}/fake-restores.jsonl", restores)
+    "{\"transportAttemptCount\":${attemptCount},\"sampleAttemptCount\":${sampleCount},\"retryCount\":${if (attemptCount > 0) { attemptCount - 1 } else { 0 }},\"lineageDiagnostic\":\"${lineage}\",\"attemptLineageHash\":\"${ckbAbcdeAttemptLineageHash(attempts, restores)}\",\"frozenPointerBeforeHash\":\"${pointerBefore}\",\"frozenPointerAfterHash\":\"${pointerAfter}\",\"frozenPointerUnchanged\":${pointerBefore == pointerAfter}}"
 }
 
 private func ckbAbcdePublishClaudeSampleArtifacts(groupRoot: String, transportAttempt: Int64): Unit {
@@ -1841,6 +1932,7 @@ private func ckbAbcdePublishClaudeSampleArtifacts(groupRoot: String, transportAt
 private func ckbAbcdeInitializeWorkspaceRestoreEvidence(groupRoot: String): Unit {
     ckbAbcdeWriteText("${groupRoot}/workspace-restores.jsonl", "")
 }
+
 
 public func ckbAbcdeInitializeWorkspaceRestoreEvidenceForTest(groupRoot: String): Unit {
     ckbAbcdeInitializeWorkspaceRestoreEvidence(groupRoot)
@@ -1881,6 +1973,9 @@ public open class CkbAbcdeCertificationProviderExecutor {
 public func ckbAbcdeRunClaudeCertification(options: CkbAbcdeRunnerOptions, group: String, groupRoot: String,
     workspace: String, runtimeHome: String, caseSrc: String,
     executor!: CkbAbcdeCertificationProviderExecutor = CkbAbcdeCertificationProviderExecutor()): CkbAbcdeCommandResult {
+    if(options.generationProtocol=="completion-only-v1"){
+        let binding=ckbAbcdeProviderIdentityBeforeCallDiagnostic(options);if(binding!="ok"){let blocked=CkbAbcdeCommandResult();blocked.exitCode=126;blocked.stderr=binding;return blocked}
+    }
     let promptGate = ckbAbcdeProviderPromptGate(options, ckbAbcdeReadText("${groupRoot}/prompt.final.md"));
     if (promptGate != "ok") {
         let blocked = CkbAbcdeCommandResult();
@@ -1889,6 +1984,11 @@ public func ckbAbcdeRunClaudeCertification(options: CkbAbcdeRunnerOptions, group
         return blocked
     }
     executor.execute(options, group, groupRoot, workspace, runtimeHome, caseSrc)
+}
+public func ckbAbcdeProviderIdentityBeforeCallDiagnostic(options:CkbAbcdeRunnerOptions):String{
+    let runtimeCanonical=try{canonicalize(Path(options.claudeBin)).toString()}catch(_:Exception){""};if(runtimeCanonical!=options.providerRuntimeExecutablePath){return "student_validation_identity_mismatch"}
+    if(ckbControlFrozenPathDiagnostic(options.providerIdentityArtifactPath,false)!="ok"||ckbControlFrozenPathDiagnostic(options.providerRuntimeExecutablePath,false)!="ok"||ckbControlFrozenPathDiagnostic(options.completionControlPath,false)!="ok"||ckbControlFrozenPathDiagnostic(options.providerPromptCapabilityPath,false)!="ok"){return "student_validation_identity_invalid"}
+    try{let provider=File.readFrom(Path(options.providerIdentityArtifactPath));let completion=File.readFrom(Path(options.completionControlPath));let capability=File.readFrom(Path(options.providerPromptCapabilityPath));let identity=ckbStudentValidationProviderIdentityDiagnostic(provider,options.expectedModelVersion,ckbAbcdeClaudeVersion(executable:options.claudeBin),ckbAbcdeBinaryHash(options.providerRuntimeExecutablePath),benchmarkGapSha256(String.fromUtf8(completion)),benchmarkGapSha256(String.fromUtf8(capability)));if(identity!="ok"){return identity};ckbStudentContextValidationIdentityDiagnostic(options.studentContextRoot,options.studentContextCandidateRoot,options.studentContextCandidateSetHash,benchmarkGapSha256(String.fromUtf8(provider)),options.expectedModelVersion)}catch(_:Exception){"student_validation_identity_invalid"}
 }
 
 
@@ -1940,7 +2040,12 @@ private func ckbAbcdeCertificationSandboxProbe(profilePath:String,workspace:Stri
     try{_=launch("/bin/rm",["-f",stdinProbe,externalTemp]).wait()}catch(_:Exception){}
     let result=CkbAbcdeCommandResult();result.exitCode=raw.exitCode;result.stderr=raw.stderr;result.stdout="{\"ok\":${raw.exitCode==0},\"stdinReadable\":${raw.exitCode==0},\"runtimeTempMarkersPassed\":${raw.exitCode==0},\"runtimeTempMarkersCleaned\":${raw.exitCode==0},\"archiverReady\":${raw.exitCode==0},\"minimalBuildPassed\":${raw.exitCode==0},\"deniedExternalTemp\":${raw.exitCode==0},\"deniedTempSibling\":${raw.exitCode==0},\"deniedOutsideWorkspace\":${raw.exitCode==0},\"deniedTests\":${raw.exitCode==0},\"deniedReference\":${raw.exitCode==0},\"deniedTeacher\":${raw.exitCode==0},\"deniedStore\":${deniedStore},\"workspaceCanonical\":\"${ckbAbcdeJsonEscape(try{canonicalize(Path(workspace)).toString()}catch(_:Exception){""})}\",\"runtimeHomeCanonical\":\"${ckbAbcdeJsonEscape(try{canonicalize(Path(runtimeHome)).toString()}catch(_:Exception){""})}\"}\n";result
 }
-public func ckbAbcdeCertificationSandboxProbeForTest(profilePath:String,workspace:String,runtimeHome:String,caseSrc:String,ckbStore!:String=""):CkbAbcdeCommandResult{ckbAbcdeCertificationSandboxProbe(profilePath,workspace,runtimeHome,caseSrc,ckbStore)}
+
+public func ckbAbcdeCertificationSandboxProbeForTest(profilePath: String, workspace: String, runtimeHome: String,
+    caseSrc: String, ckbStore!: String = ""): CkbAbcdeCommandResult {
+    ckbAbcdeCertificationSandboxProbe(profilePath, workspace, runtimeHome, caseSrc, ckbStore)
+}
+
 public func ckbAbcdeDevelopmentSandboxProfile(group:String,workspace:String,runtimeHome:String,ckbBin:String,ckbConfig:String,ckbStore:String,caseSrc:String,docsRoot:String,cangjieHome:String,sdkRoot:String,claudeRequested:String,claudeCanonical:String):String{
     let w=ckbAbcdeSandboxPath(workspace);let h=ckbAbcdeSandboxPath(runtimeHome);let bin=ckbAbcdeSandboxPath(ckbBin);let config=ckbAbcdeSandboxPath(ckbConfig);let store=ckbAbcdeSandboxPath(ckbStore);let sdk=ckbAbcdeSandboxPath(cangjieHome);let macSdk=ckbAbcdeSandboxPath(sdkRoot);let tests=ckbAbcdeSandboxPath("${caseSrc}/tests");let reference=ckbAbcdeSandboxPath("${caseSrc}/translation");let teacher=ckbAbcdeSandboxPath("/Users/l3gi0n/work/workspace_cangjie/CangjieTeacher")
     let docs=if(group==CkbAbcdeGroups.E){" (subpath \"${ckbAbcdeSandboxPath(docsRoot)}\")"}else{""}
@@ -2151,7 +2256,11 @@ private func ckbAbcdePublishLastAuditedCertificationArtifacts(groupRoot:String,a
     ckbAbcdeWriteText("${groupRoot}/claude.stderr.log",ckbAbcdeReadText("${groupRoot}/claude.attempt-${attempt}.stderr.log"))
     ckbAbcdeWriteText("${groupRoot}/sandbox-probe.json",ckbAbcdeReadText("${groupRoot}/sandbox-probe.attempt-${attempt}.json"));ckbAbcdeWriteText("${groupRoot}/session-id.txt",ckbAbcdeReadText("${groupRoot}/session-id.attempt-${attempt}.txt"))
 }
-public func ckbAbcdePublishLastAuditedCertificationArtifactsForTest(groupRoot:String,attempt:Int64):Unit{ckbAbcdePublishLastAuditedCertificationArtifacts(groupRoot,attempt)}
+
+public func ckbAbcdePublishLastAuditedCertificationArtifactsForTest(groupRoot: String, attempt: Int64): Unit {
+    ckbAbcdePublishLastAuditedCertificationArtifacts(groupRoot, attempt)
+}
+
 private func ckbAbcdeMergedClaudeAttemptText(groupRoot: String, prefix: String, suffix: String, attemptCount: Int64): String {
     let out = StringBuilder()
     for (attempt in 1..=attemptCount) {
@@ -3163,7 +3272,7 @@ public func ckbAbcdeCertificationEntryDiagnostic(options: CkbAbcdeRunnerOptions,
         if(ckbAbcdeStrictJsonString(manifest,"certificationBinaryHash")!=binaryHash||ckbAbcdeStrictJsonString(manifest,"certificationHttpLaunchSpecHash")!=launchSpecHash||ckbAbcdeStrictJsonString(manifest,"certificationHttpCommandHash")!=commandHash){return "p6_certification_http_provenance_mismatch"}
         if(ckbAbcdeStrictJsonString(manifest,"frozenCandidateManifestHash")!=benchmarkGapSha256(frozen)){return "p6_frozen_candidate_manifest_mismatch"}
         if (ckbAbcdeStrictJsonString(manifest,"claudeCodeVersion")!=ckbAbcdeClaudeVersion(executable: options.claudeBin)) { return "p6_claude_version_drift" }
-        let provider=JsonValue.fromStr(ckbAbcdeReadText(options.providerIdentityArtifactPath)).asObject();if(ckbAbcdeStrictJsonString(provider,"model")!=options.expectedModelVersion||ckbAbcdeStrictJsonString(provider,"claudeCodeVersion")!=ckbAbcdeClaudeVersion(executable: options.claudeBin)||ckbAbcdeStrictJsonString(provider,"provider")==""){return "provider_runtime_identity_mismatch"}
+        let provider=JsonValue.fromStr(ckbAbcdeReadText(options.providerIdentityArtifactPath)).asObject();if(ckbAbcdeStrictJsonString(provider,"model")!=options.expectedModelVersion||ckbAbcdeStrictJsonString(provider,"claudeCodeVersion")!=ckbAbcdeClaudeVersion(executable: options.claudeBin)||ckbAbcdeStrictJsonString(provider,"provider")==""||ckbAbcdeStrictJsonString(provider,"runtimeExecutableHash")!=ckbAbcdeBinaryHash(options.claudeBin)){return "student_validation_identity_mismatch"}
     } catch (_: Exception) { return "p6_manifest_malformed" }
     if (!options.evaluateFrozen && exists(Path(runRoot))) {
         try { for (_ in Directory.readFrom(Path(runRoot))) { return "certification_run_root_not_empty" } }
@@ -3219,7 +3328,10 @@ private func ckbAbcdeClaudeVersion(executable!:String="claude"): String {
     result.stdout.trimAscii()
 }
 
-public func ckbAbcdeClaudeVersionForTest(executable!:String="claude"): String { ckbAbcdeClaudeVersion(executable: executable) }
+
+public func ckbAbcdeClaudeVersionForTest(executable!: String = "claude"): String {
+    ckbAbcdeClaudeVersion(executable: executable)
+}
 
 private func ckbAbcdeCountOccurrences(text: String, needle: String): Int64 {
     if (needle == "" || text.size < needle.size) {

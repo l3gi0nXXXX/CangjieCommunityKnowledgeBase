@@ -69,39 +69,63 @@ public class CangjieAgentsSkillsRagE2eTest {
     @TestCase
     public func syntheticFailureAssetsProduceSingleFrozenCompletion(): Unit {
         @Expect(s5cSourceGoldenDiagnostic(), "ok")
-        let seeded = s4PublishedStudentContext("s5c-completion-seed")
-        @Expect(seeded != "", true)
-        if (seeded == "") { return }
-        let seedRoot = Path(seeded).parent
-        let imported = seedRoot.join("completion-import")
-        @Expect(runStudentContextImportCli(s5cImportArgs(seedRoot, seedRoot.join("candidate-set-v2"),
-            seedRoot.join("approval-v2.json"), imported, true)), 0)
-        let importedContext = readStudentContextBundleV2(imported.toString())
-        @Expect(importedContext.ok, true)
-        if (!importedContext.ok) { return }
         let root = s5cRoot("single-completion")
         let capability = s5cCapability("GLM-5.2", 1048576)
         let capabilityPath = root.join("source-provider-prompt-capability.json")
         File.writeTo(capabilityPath, capability.toArray())
+        let runtimePath = root.join("provider-runtime")
+        File.writeTo(runtimePath,
+            "#!/bin/zsh\n[[ \"$1\" == \"--version\" ]] || exit 1\nprint -r -- \"claude-code-s5c\"\n".toArray())
+        @Expect(launch("/bin/chmod", ["700", runtimePath.toString()]).wait(), 0)
+        let runtimeEvidence = "{\"runtime\":\"s5c completion fixture\"}\n"
+        let sampling = "{\"schemaVersion\":\"ckb-completion-sampling-capability-v1\"," +
+            "\"samplingControl\":\"provider_default_not_client_exposed\"}\n"
+        File.writeTo(root.join("completion-runtime-config.json"), runtimeEvidence.toArray())
+        File.writeTo(root.join("completion-sampling-capability.json"), sampling.toArray())
+        let completionControl = "{\"schemaVersion\":\"ckb-student-completion-control-v1\"," +
+            "\"certificationTransport\":\"${CkbAbcdeGroups.D}\"," +
+            "\"generationProtocol\":\"completion-only-v1\",\"samplesPerCase\":1," +
+            "\"outputSchemaHash\":\"${benchmarkGapSha256(ckbAbcdeCompletionOutputSchema())}\"," +
+            "\"samplingCapabilityHash\":\"${benchmarkGapSha256(sampling)}\"," +
+            "\"effectivePromptByteBudget\":1048576,\"transportRetryBudget\":0," +
+            "\"modelTimeoutSeconds\":30," +
+            "\"runtimeConfigHash\":\"${benchmarkGapSha256(runtimeEvidence)}\"," +
+            "\"completionCommandHash\":\"${ckbStudentCompletionCommandHash("GLM-5.2")}\"}\n"
+        let completionPath = root.join("source-completion-control.json")
+        File.writeTo(completionPath, completionControl.toArray())
+        let providerIdentity = "{\"schemaVersion\":\"ckb-student-validation-provider-identity-v1\"," +
+            "\"provider\":\"s5c-fixture\",\"model\":\"GLM-5.2\"," +
+            "\"claudeCodeVersion\":\"claude-code-s5c\"," +
+            "\"runtimeExecutableHash\":\"${ckbAbcdeBinaryHash(canonicalize(runtimePath).toString())}\"," +
+            "\"completionControlHash\":\"${benchmarkGapSha256(completionControl)}\"," +
+            "\"providerPromptCapabilityHash\":\"${benchmarkGapSha256(capability)}\"}\n"
+        let providerPath = root.join("provider-identity.json")
+        File.writeTo(providerPath, providerIdentity.toArray())
+        let seeded = s4PublishedStudentValidatedContext("s5c-completion-seed",
+            benchmarkGapSha256(providerIdentity), "GLM-5.2")
+        let imported = Path(seeded.contextRoot)
+        let importedContext = readStudentContextBundleV2(imported.toString())
+        @Expect(importedContext.ok, true)
+        if (!importedContext.ok) { return }
         let authority = s5cAuthority()
         let datasetVersion = parseCangjieHumanEvalAuthorityManifest(authority).datasetVersion
         let manifest = s5cRunManifest(imported, importedContext, capabilityPath,
-            seedRoot.join("candidate-set-v2"), datasetVersion)
+            Path(seeded.candidateRoot), datasetVersion, completionPath, providerPath,
+            canonicalize(runtimePath).toString(), benchmarkGapSha256(providerIdentity),
+            benchmarkGapSha256(completionControl), benchmarkGapSha256(sampling), seeded.candidateSetHash)
         let manifestPath = root.join("run-manifest.json")
         File.writeTo(manifestPath, manifest.toArray())
         let options = CkbAbcdeRunnerOptions()
         options.runId = "s5c-run"
         options.runsRoot = root.parent.toString()
         options.expectedModelVersion = "GLM-5.2"
+        options.certificationRunManifestPath = manifestPath.toString()
+        options.claudeBin = canonicalize(runtimePath).toString()
         @Expect(applyCkbAbcdeFrozenRunManifest(options, manifest.toArray()), "ok")
         options.modelFingerprint = "GLM-5.2"
         options.certificationPreflightPath = root.join("preflight.json").toString()
-        options.certificationRunManifestPath = manifestPath.toString()
-        options.providerIdentityArtifactPath = root.join("provider.json").toString()
         options.manifestPath = root.join("authority.jsonl").toString()
-        options.claudeBin = "/bin/sh"
         File.writeTo(Path(options.certificationPreflightPath), "synthetic preflight\n".toArray())
-        File.writeTo(Path(options.providerIdentityArtifactPath), "synthetic provider\n".toArray())
         File.writeTo(Path(options.manifestPath), authority.toArray())
         @Expect(ckbAbcdeFreezeS4RunAssets(options, root.toString(), false), "ok")
         let groupRoot = root.join("cases/CJ-HUMANEVAL-000").join(CkbAbcdeGroups.D)
@@ -421,11 +445,11 @@ private func s5cRebindFakeTransport(groupRoot: Path, transcript: String,
 }
 
 private func s5cRunManifest(contextRoot: Path, context: CkbContextBaseVersion, capabilityPath: Path,
-    candidateRoot: Path, datasetVersion: String): String {
+    candidateRoot: Path, datasetVersion: String, completionPath: Path, providerPath: Path,
+    runtimePath: String, provider: String, completion: String, sampling: String,
+    candidateSetHash: String): String {
     let candidate = parseTeacherContextCandidateSetDirectoryV2(candidateRoot.parent.toString(),
         candidateRoot.toString())
-    let provider = benchmarkGapSha256("s5c-provider")
-    let sampling = benchmarkGapSha256("s5c-sampling")
     let schema = benchmarkGapSha256(ckbAbcdeCompletionOutputSchema())
     let runHash = benchmarkGapSha256(context.compositeHash + context.combinationAuditHash)
     "{\"generationProtocol\":\"completion-only-v1\",\"samplesPerCase\":1," +
@@ -442,7 +466,13 @@ private func s5cRunManifest(contextRoot: Path, context: CkbContextBaseVersion, c
         "\"combinationAuditHash\":\"${context.combinationAuditHash}\"," +
         "\"providerPromptCapabilityPath\":\"${capabilityPath.toString()}\"," +
         "\"providerPromptCapabilityHash\":\"${benchmarkGapSha256(s5cCapability("GLM-5.2", 1048576))}\"," +
-        "\"effectivePromptByteBudget\":1048576,\"runManifestHash\":\"${runHash}\"}"
+        "\"effectivePromptByteBudget\":1048576,\"studentContextCandidateRoot\":\"${candidateRoot}\"," +
+        "\"studentContextCandidateSetHash\":\"${candidateSetHash}\"," +
+        "\"completionControlPath\":\"${completionPath}\",\"completionControlHash\":\"${completion}\"," +
+        "\"providerIdentityPath\":\"${providerPath}\",\"providerRuntimeExecutablePath\":\"${runtimePath}\"," +
+        "\"certificationTransport\":\"${CkbAbcdeGroups.D}\",\"transportRetryBudget\":0," +
+        "\"modelTimeoutSeconds\":30,\"claudeCodeVersion\":\"claude-code-s5c\"," +
+        "\"runManifestHash\":\"${runHash}\"}"
 }
 
 private func s5cAuthority(): String {

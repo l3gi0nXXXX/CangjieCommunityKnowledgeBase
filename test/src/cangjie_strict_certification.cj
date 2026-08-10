@@ -1,4 +1,4 @@
-package cangjie_community_knowledge_base_test
+public package cangjie_community_knowledge_base_test
 
 import std.collection.{ArrayList, HashSet}
 import std.fs.{Directory, File, Path, exists, canonicalize}
@@ -251,6 +251,10 @@ public func ckbStrictCertificationGateFromRunRoot(runRoot: String, authorityMani
     var frozenHash="";var providerHash="";var declaredModel="";var declaredFingerprint="";var declaredPreflight="";var declaredRunHash="";var declaredTimeout:Int64=-1;var declaredClaude="";var declaredRunId="";var declaredBinary="";var declaredLaunch="";var declaredCommand="";var declaredProtocol="historical-agentic-v1";var declaredBundle="";var declaredBundleVersion="";var declaredLineage="";var declaredSampling="historical";var declaredRulesHash="";var declaredRulesTreeHash="";var declaredRulesCount:Int64=0
     try{let manifest=JsonValue.fromStr(runManifest).asObject();frozenHash=ckbCertString(manifest,"frozenCandidateManifestHash");providerHash=ckbCertString(manifest,"providerIdentityHash");declaredModel=ckbCertString(manifest,"modelVersion");declaredFingerprint=ckbCertString(manifest,"fingerprint");declaredPreflight=ckbCertString(manifest,"preflightHash");declaredRunHash=ckbCertString(manifest,"runManifestHash");declaredTimeout=ckbCertInt(manifest,"modelTimeoutSeconds");declaredClaude=ckbCertString(manifest,"claudeCodeVersion");declaredRunId=ckbCertString(manifest,"runId");declaredBinary=ckbCertString(manifest,"certificationBinaryHash");declaredLaunch=ckbCertString(manifest,"certificationHttpLaunchSpecHash");declaredCommand=ckbCertString(manifest,"certificationHttpCommandHash");match(manifest.get("generationProtocol")){case Some(value)=>declaredProtocol=value.asString().getValue();if(declaredProtocol!="completion-only-v1"){gate.fail("run_manifest_generation_protocol_invalid");return gate};declaredBundle=ckbCertString(manifest,"skillBundleHash");declaredBundleVersion=ckbCertString(manifest,"skillBundleVersion");declaredLineage=ckbCertString(manifest,"assetLineage");declaredSampling=ckbCertString(manifest,"samplingCapability");match(manifest.get("rulesHash")){case Some(_)=>declaredRulesHash=ckbCertString(manifest,"rulesHash") case None=>()};match(manifest.get("rulesTreeHash")){case Some(_)=>declaredRulesTreeHash=ckbCertString(manifest,"rulesTreeHash") case None=>()};match(manifest.get("rulesCount")){case Some(_)=>declaredRulesCount=ckbCertInt(manifest,"rulesCount") case None=>()} case None=>()}}catch(_:Exception){gate.fail("run_manifest_malformed");return gate}
     var providerModel="";var providerClaude="";try{let object=JsonValue.fromStr(provider).asObject();providerModel=ckbCertString(object,"model");providerClaude=ckbCertString(object,"claudeCodeVersion")}catch(_:Exception){gate.fail("provider_identity_malformed");return gate}
+    if(declaredProtocol=="completion-only-v1"){
+        let studentBinding=ckbStrictStudentValidationBindingDiagnostic(root.toString(),runManifest,provider)
+        if(studentBinding!="ok"){gate.fail(studentBinding);return gate}
+    }
     var ownerPid:Int64=-1;var stopPid:Int64=-2;var alive=true;var ownerBinary="";var ownerLaunch="";var ownerCommand="";try{let own=JsonValue.fromStr(owner).asObject();if(own.getFields().size!=5||!ckbCertUniqueFields(owner,["schemaVersion","pid","binaryHash","launchSpecHash","commandHash"])||ckbCertString(own,"schemaVersion")!="ckb-certification-http-owner-v1"||!ckbCertHash(ckbCertString(own,"binaryHash"))||!ckbCertHash(ckbCertString(own,"launchSpecHash"))||!ckbCertHash(ckbCertString(own,"commandHash"))){gate.fail("http_owner_invalid")};ownerPid=ckbCertInt(own,"pid");ownerBinary=ckbCertString(own,"binaryHash");ownerLaunch=ckbCertString(own,"launchSpecHash");ownerCommand=ckbCertString(own,"commandHash");let stop=JsonValue.fromStr(stopped).asObject();if(stop.getFields().size!=4||!ckbCertUniqueFields(stopped,["schemaVersion","pid","stopMethod","aliveAfterStop"])||ckbCertString(stop,"schemaVersion")!="ckb-certification-http-stop-v1"){gate.fail("http_stop_invalid")};stopPid=ckbCertInt(stop,"pid");alive=ckbCertBool(stop,"aliveAfterStop");let method=ckbCertString(stop,"stopMethod");if(method!="term"&&method!="kill"){gate.fail("http_stop_method_invalid")}}catch(_:Exception){gate.fail("http_lifecycle_malformed")}
     var provenanceOk=false;try{let p=JsonValue.fromStr(provenance).asObject();provenanceOk=p.getFields().size==10&&ckbCertUniqueFields(provenance,["schemaVersion","runId","canonicalRunRootHash","runManifestHash","runnerBinaryHash","launchSpecHash","commandHash","authorityHash","caseCount","resultManifestHash"])&&ckbCertString(p,"schemaVersion")=="ckb-certification-runner-provenance-v1"&&ckbCertString(p,"runId")==declaredRunId&&ckbCertString(p,"canonicalRunRootHash")==benchmarkGapSha256(canonicalize(root).toString())&&ckbCertString(p,"runManifestHash")==declaredRunHash&&ckbCertString(p,"runnerBinaryHash")==declaredBinary&&ckbCertString(p,"launchSpecHash")==declaredLaunch&&ckbCertString(p,"commandHash")==declaredCommand&&ckbCertString(p,"authorityHash")==benchmarkGapSha256(authorityManifestText)&&ckbCertInt(p,"caseCount")==164&&ckbCertString(p,"resultManifestHash")==benchmarkGapSha256(results)}catch(_:Exception){}
     if(frozenHash!=benchmarkGapSha256(frozen)||providerHash!=benchmarkGapSha256(provider)||declaredPreflight!=benchmarkGapSha256(preflight)||declaredModel!=providerModel||declaredClaude!=providerClaude||declaredTimeout<=0||declaredFingerprint!=parsed.modelFingerprint||!ckbCertHash(declaredBinary)||!ckbCertHash(declaredLaunch)||!ckbCertHash(declaredCommand)||ownerBinary!=declaredBinary||ownerLaunch!=declaredLaunch||ownerCommand!=declaredCommand||!provenanceOk||ownerPid<=0||ownerPid!=stopPid||alive){gate.fail("run_manifest_artifact_binding_mismatch");return gate}
@@ -288,6 +292,56 @@ public func ckbStrictCertificationGateFromRunRoot(runRoot: String, authorityMani
     }
     if(gate.diagnostics.size>0){gate.total=parsed.total;gate.unitPass=parsed.unitPass;gate.unitPassAt1=parsed.unitPassAt1;gate.failed=parsed.failed;gate.invalid=parsed.invalid;return gate}
     parsed.artifactManifestHash=benchmarkGapSha256(seed);parsed
+}
+
+public func ckbStrictStudentValidationBindingDiagnostic(runRoot:String,runManifestText:String,
+    providerText:String):String {
+    try {
+        let root=canonicalize(Path(runRoot));let manifest=JsonValue.fromStr(runManifestText).asObject()
+        let candidateSetHash=ckbCertString(manifest,"studentContextCandidateSetHash")
+        let completionHash=ckbCertString(manifest,"completionControlHash")
+        let capabilityHash=ckbCertString(manifest,"providerPromptCapabilityHash")
+        let runtimePath=ckbCertString(manifest,"providerRuntimeExecutablePath")
+        let model=ckbCertString(manifest,"modelVersion");let claude=ckbCertString(manifest,"claudeCodeVersion")
+        let providerHash=ckbCertString(manifest,"providerIdentityHash")
+        let completionPath=root.join("completion-control.json")
+        let candidateRoot=root.join("student-context-candidate")
+        let contextRoot=root.join("student-context")
+        let capabilityPath=root.join("provider-prompt-capability.json")
+        if(ckbControlFrozenPathDiagnostic(completionPath.toString(),false)!="ok"||
+            ckbControlFrozenPathDiagnostic(candidateRoot.toString(),true)!="ok"||
+            ckbControlFrozenPathDiagnostic(contextRoot.toString(),true)!="ok"||
+            ckbControlFrozenPathDiagnostic(capabilityPath.toString(),false)!="ok"||
+            ckbControlFrozenPathDiagnostic(runtimePath,false)!="ok"){
+            return "student_validation_identity_invalid"
+        }
+        let completionBytes=File.readFrom(completionPath)
+        let completionText=String.fromUtf8(completionBytes)
+        let runtimeEvidence=String.fromUtf8(File.readFrom(root.join("completion-runtime-config.json")))
+        let samplingEvidence=String.fromUtf8(File.readFrom(root.join("completion-sampling-capability.json")))
+        if(benchmarkGapSha256(samplingEvidence)!=ckbCertString(manifest,"samplingCapabilityHash")){
+            return "student_completion_control_invalid"
+        }
+        let controlDiagnostic=ckbStudentCompletionControlDiagnostic(completionBytes,
+            ckbCertString(manifest,"certificationTransport"),ckbCertString(manifest,"generationProtocol"),
+            ckbCertInt(manifest,"samplesPerCase"),ckbCertString(manifest,"outputSchemaHash"),
+            ckbCertString(manifest,"samplingCapabilityHash"),ckbCertInt(manifest,"effectivePromptByteBudget"),
+            ckbCertInt(manifest,"transportRetryBudget"),ckbCertInt(manifest,"modelTimeoutSeconds"),
+            benchmarkGapSha256(runtimeEvidence),model)
+        if(controlDiagnostic!="ok"||benchmarkGapSha256(completionText)!=completionHash){
+            return "student_completion_control_invalid"
+        }
+        let capability=String.fromUtf8(File.readFrom(capabilityPath))
+        if(benchmarkGapSha256(capability)!=capabilityHash||
+            ckbStudentValidationProviderIdentityDiagnostic(providerText.toArray(),model,claude,
+                ckbAbcdeBinaryHash(runtimePath),completionHash,capabilityHash)!="ok"){
+            return "student_validation_identity_invalid"
+        }
+        ckbStudentContextValidationIdentityDiagnostic(contextRoot.toString(),candidateRoot.toString(),
+            candidateSetHash,providerHash,model)
+    } catch(_:Exception) {
+        "student_validation_identity_invalid"
+    }
 }
 
 public func renderCkbStrictCertificationGateJson(g: CkbStrictCertificationGateResult): String {

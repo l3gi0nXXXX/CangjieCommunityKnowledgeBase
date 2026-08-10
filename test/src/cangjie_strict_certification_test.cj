@@ -253,7 +253,7 @@ public class CkbP4IntegratedCertificationTest {
         let artifacts=p4CompletionRun("neg-completion-seed","none");let caseRoot=Path(artifacts.root).join("cases/CJ-HUMANEVAL-000").join(CkbAbcdeGroups.D);let initial=ckbStrictCertificationGateFromRunRoot(artifacts.root,artifacts.authority);@Expect(initial.ok,true);@Expect(initial.artifactManifestHash!="",true)
         for(name in ["frozen-completion/solution.cj","generation-evidence.json","answer-freeze.json","base-test-result.json","plus-test-result.json"]){let path=caseRoot.join(name);let original=File.readFrom(path);File.writeTo(path,(String.fromUtf8(original)+" ").toArray());let tampered=ckbStrictCertificationGateFromRunRoot(artifacts.root,artifacts.authority);@Expect(!tampered.ok||tampered.artifactManifestHash!=initial.artifactManifestHash,true);File.writeTo(path,original)}
         let v4Legacy=p4CompletionRun("neg-v4-legacy-manifest","none");let v4Manifest=Path(v4Legacy.root).join("run-manifest.json");File.writeTo(v4Manifest,String.fromUtf8(File.readFrom(v4Manifest)).replace("\"generationProtocol\":\"completion-only-v1\"","\"legacyProtocol\":\"completion-only-v1\"").toArray());@Expect(p7Diagnostics(ckbStrictCertificationGateFromRunRoot(v4Legacy.root,v4Legacy.authority)).contains("case_run_protocol_mismatch"),true)
-        let v3Completion=p1M00PrivateRun(164,"p4-neg-v3-completion-manifest");let v3Manifest=Path(v3Completion.root).join("run-manifest.json");let bundle=benchmarkGapSha256("student-bundle");File.writeTo(v3Manifest,String.fromUtf8(File.readFrom(v3Manifest)).replace("}",",\"generationProtocol\":\"completion-only-v1\",\"samplingCapability\":\"temperature_zero\",\"skillBundleVersion\":\"student-v1\",\"skillBundleHash\":\"${bundle}\",\"assetLineage\":\"independent\"}").toArray());@Expect(p7Diagnostics(ckbStrictCertificationGateFromRunRoot(v3Completion.root,v3Completion.authority)).contains("case_run_protocol_mismatch"),true)
+        let v3Completion=p1M00PrivateRun(164,"p4-neg-v3-completion-manifest");let v3Manifest=Path(v3Completion.root).join("run-manifest.json");let bundle=benchmarkGapSha256("student-bundle");File.writeTo(v3Manifest,String.fromUtf8(File.readFrom(v3Manifest)).replace("}",",\"generationProtocol\":\"completion-only-v1\",\"samplingCapability\":\"temperature_zero\",\"skillBundleVersion\":\"student-v1\",\"skillBundleHash\":\"${bundle}\",\"assetLineage\":\"independent\"}").toArray());@Expect(p7Diagnostics(ckbStrictCertificationGateFromRunRoot(v3Completion.root,v3Completion.authority)).contains("student_validation_identity_invalid"),true)
     }
 
     @TestCase
@@ -338,6 +338,90 @@ private class P1M00PrivateRunFixture {
         this.root = root
         this.authority = authority
     }
+}
+
+private class P4StudentValidationAssets {
+    public let providerText: String
+    public let providerHash: String
+    public let manifestFields: String
+    public init(providerText: String, providerHash: String, manifestFields: String) {
+        this.providerText = providerText
+        this.providerHash = providerHash
+        this.manifestFields = manifestFields
+    }
+}
+
+private func p4FreezeStudentValidationAssets(rootValue: String, model: String,
+    claudeVersion: String): P4StudentValidationAssets {
+    let root = canonicalize(Path(rootValue)); let source = root.join("p4-student-validation-source")
+    Directory.create(source, recursive: true)
+    let runtime = canonicalize(Path("/bin/echo")).toString()
+    let runtimeEvidence = "{\"runtime\":\"p4 frozen completion fixture\"}\n"
+    let sampling = "{\"schemaVersion\":\"ckb-completion-sampling-capability-v1\"," +
+        "\"samplingControl\":\"provider_default_not_client_exposed\"}\n"
+    let capability = "{\"schemaVersion\":\"ckb-provider-prompt-capability-v1\"," +
+        "\"capability\":\"p4 strict completion fixture\"}\n"
+    let outputSchemaHash = benchmarkGapSha256(ckbAbcdeCompletionOutputSchema())
+    let samplingHash = benchmarkGapSha256(sampling)
+    let completion = "{\"schemaVersion\":\"ckb-student-completion-control-v1\"," +
+        "\"certificationTransport\":\"${CkbAbcdeGroups.D}\"," +
+        "\"generationProtocol\":\"completion-only-v1\",\"samplesPerCase\":1," +
+        "\"outputSchemaHash\":\"${outputSchemaHash}\"," +
+        "\"samplingCapabilityHash\":\"${samplingHash}\"," +
+        "\"effectivePromptByteBudget\":188416,\"transportRetryBudget\":0," +
+        "\"modelTimeoutSeconds\":180," +
+        "\"runtimeConfigHash\":\"${benchmarkGapSha256(runtimeEvidence)}\"," +
+        "\"completionCommandHash\":\"${ckbStudentCompletionCommandHash(model)}\"}\n"
+    let completionHash = benchmarkGapSha256(completion)
+    let capabilityHash = benchmarkGapSha256(capability)
+    let provider = "{\"schemaVersion\":\"ckb-student-validation-provider-identity-v1\"," +
+        "\"provider\":\"p4-strict-fixture\",\"model\":\"${model}\"," +
+        "\"claudeCodeVersion\":\"${claudeVersion}\"," +
+        "\"runtimeExecutableHash\":\"${ckbAbcdeBinaryHash(runtime)}\"," +
+        "\"completionControlHash\":\"${completionHash}\"," +
+        "\"providerPromptCapabilityHash\":\"${capabilityHash}\"}\n"
+    let providerHash = benchmarkGapSha256(provider)
+    let context = s4PublishedStudentValidatedContext("p4-${benchmarkGapSha256(root.toString())}",
+        providerHash, model)
+    let bundle = readStudentContextBundleV2(context.contextRoot)
+    if (!bundle.ok) { throw IllegalStateException("p4_student_context_fixture_invalid") }
+    let capabilitySource = source.join("provider-prompt-capability.json")
+    let completionSource = source.join("completion-control.json")
+    File.writeTo(capabilitySource, capability.toArray()); File.writeTo(completionSource, completion.toArray())
+    let options = CkbAbcdeRunnerOptions()
+    options.studentContextRoot = context.contextRoot
+    options.studentContextCompositeHash = bundle.compositeHash
+    options.combinationAuditHash = bundle.combinationAuditHash
+    options.providerPromptCapabilityPath = capabilitySource.toString()
+    options.providerPromptCapabilityHash = capabilityHash
+    options.studentContextCandidateRoot = context.candidateRoot
+    options.studentContextCandidateSetHash = context.candidateSetHash
+    options.completionControlPath = completionSource.toString()
+    options.completionControlHash = completionHash
+    if (ckbAbcdeFreezeS4RunAssets(options, root.toString(), false) != "ok") {
+        throw IllegalStateException("p4_student_context_freeze_failed")
+    }
+    File.writeTo(root.join("completion-runtime-config.json"), runtimeEvidence.toArray())
+    File.writeTo(root.join("completion-sampling-capability.json"), sampling.toArray())
+    File.writeTo(root.join("provider-identity.json"), provider.toArray())
+    let fields = "\"studentContextRoot\":\"${root.join("student-context")}\"," +
+        "\"studentContextManifestHash\":\"${benchmarkGapSha256(bundle.manifestJson)}\"," +
+        "\"studentContextCompositeHash\":\"${bundle.compositeHash}\"," +
+        "\"combinationAuditHash\":\"${bundle.combinationAuditHash}\"," +
+        "\"aggregateAssetLineage\":\"independent\"," +
+        "\"studentContextCandidateRoot\":\"${root.join("student-context-candidate")}\"," +
+        "\"studentContextCandidateSetHash\":\"${context.candidateSetHash}\"," +
+        "\"completionControlPath\":\"${root.join("completion-control.json")}\"," +
+        "\"completionControlHash\":\"${completionHash}\"," +
+        "\"providerPromptCapabilityPath\":\"${root.join("provider-prompt-capability.json")}\"," +
+        "\"providerPromptCapabilityHash\":\"${capabilityHash}\"," +
+        "\"providerIdentityPath\":\"${root.join("provider-identity.json")}\"," +
+        "\"providerRuntimeExecutablePath\":\"${runtime}\"," +
+        "\"samplingCapabilityHash\":\"${samplingHash}\"," +
+        "\"certificationTransport\":\"${CkbAbcdeGroups.D}\",\"samplesPerCase\":1," +
+        "\"outputSchemaHash\":\"${outputSchemaHash}\",\"effectivePromptByteBudget\":188416," +
+        "\"transportRetryBudget\":0"
+    P4StudentValidationAssets(provider, providerHash, fields)
 }
 
 private func p1M00Rows(strictPassed: Int64): String {
@@ -454,7 +538,8 @@ private func p1M00Hash(value: String): Bool {
 
 private func p4CompletionRun(label:String,mutation:String):P1M00PrivateRunFixture{
     let fixture=p1M00PrivateRun(164,"p4-${label}");let root=Path(fixture.root);let bundleHash=benchmarkGapSha256("student-bundle");let oldResults=String.fromUtf8(File.readFrom(root.join("results.jsonl")));let lineageValue=if(mutation=="derived"){"humaneval_164_derived"}else if(mutation=="wrong_lineage"){"wrong"}else{"independent"}
-    let manifest=String.fromUtf8(File.readFrom(root.join("run-manifest.json"))).replace("}",",\"generationProtocol\":\"completion-only-v1\",\"samplingCapability\":\"temperature_zero\",\"skillBundleVersion\":\"student-v1\",\"skillBundleHash\":\"${bundleHash}\",\"assetLineage\":\"${lineageValue}\"}")
+    let oldProvider=String.fromUtf8(File.readFrom(root.join("provider-identity.json")));let oldProviderHash=benchmarkGapSha256(oldProvider);let model="GLM-5.2";let claude=ckbAbcdeClaudeVersionForTest(executable:"/bin/echo");let student=p4FreezeStudentValidationAssets(fixture.root,model,claude)
+    let manifest=String.fromUtf8(File.readFrom(root.join("run-manifest.json"))).replace(oldProviderHash,student.providerHash).replace("}",",\"generationProtocol\":\"completion-only-v1\",\"samplingCapability\":\"temperature_zero\",\"skillBundleVersion\":\"student-v1\",\"skillBundleHash\":\"${bundleHash}\",\"assetLineage\":\"${lineageValue}\",${student.manifestFields}}")
     File.writeTo(root.join("run-manifest.json"),manifest.toArray());let out=StringBuilder()
     for(line in oldResults.split("\n")){if(line==""){continue};let row=parseCkbCertificationEvidence(line);let groupRoot=root.join("cases").join(row.caseId).join(row.group);let solution=String.fromUtf8(File.readFrom(groupRoot.join("workspace/src/solution.cj")));let answerHash=benchmarkGapSha256(solution)
         var transcript="{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"modelUsage\":{\"GLM-5.2\":{}},\"structured_output\":{\"solution_cj\":\"${ckbAbcdeJsonEscape(solution)}\"}}"
@@ -467,7 +552,7 @@ private func p4CompletionRun(label:String,mutation:String):P1M00PrivateRunFixtur
         File.writeTo(groupRoot.join("generation-evidence.json"),"{\"answerHash\":\"${answerHash}\",\"completionCount\":1,\"toolCallCount\":0,\"executionFeedbackCount\":0,\"interrupted\":${failed||zeroRecovered||zeroUnrecovered},\"generatedTokenCount\":${if(failed){1}else{0}},\"checkpointRecovered\":${zeroRecovered}}".toArray())
         File.writeTo(groupRoot.join("answer-freeze.json"),"{\"answerHash\":\"${answerHash}\",\"sequence\":${if(early){4}else{2}}}".toArray())
         File.writeTo(groupRoot.join("base-test-result.json"),"{\"answerHash\":\"${answerHash}\",\"sequence\":3,\"passed\":${!outcomeFailed}}".toArray());File.writeTo(groupRoot.join("plus-test-result.json"),"{\"answerHash\":\"${answerHash}\",\"sequence\":4,\"passed\":${!outcomeFailed}}".toArray())
-        row.schemaVersion="ckb-humaneval-certification-result-v4";row.generationProtocol="completion-only-v1";row.samplingCapability="temperature_zero";row.completionCount=1;row.toolCallCount=0;row.executionFeedbackCount=0;row.answerFreezeSequence=if(early){4}else{2};row.firstExecutionSequence=3;row.baseAnswerHash=answerHash;row.plusAnswerHash=answerHash;row.basePassed=!outcomeFailed;row.plusPassed=!outcomeFailed;row.skillBundleVersion="student-v1";row.skillBundleHash=if(row.caseId=="CJ-HUMANEVAL-000"&&mutation=="bundle_drift"){benchmarkGapSha256("drift")}else{bundleHash};row.assetLineage=lineageValue;row.llmTurnCount=1;row.attemptLineageHash=lineageHash;row.transcriptHash=benchmarkGapSha256(transcript);row.certificationPassAt1=!outcomeFailed;row.artifactHash=benchmarkGapSha256(row.answerHash+row.transcriptHash+row.testHash+row.configHash);sealCkbCertificationEvidence(row)
+        row.schemaVersion="ckb-humaneval-certification-result-v4";row.generationProtocol="completion-only-v1";row.samplingCapability="temperature_zero";row.completionCount=1;row.toolCallCount=0;row.executionFeedbackCount=0;row.answerFreezeSequence=if(early){4}else{2};row.firstExecutionSequence=3;row.baseAnswerHash=answerHash;row.plusAnswerHash=answerHash;row.basePassed=!outcomeFailed;row.plusPassed=!outcomeFailed;row.skillBundleVersion="student-v1";row.skillBundleHash=if(row.caseId=="CJ-HUMANEVAL-000"&&mutation=="bundle_drift"){benchmarkGapSha256("drift")}else{bundleHash};row.assetLineage=lineageValue;row.providerIdentityHash=student.providerHash;row.llmTurnCount=1;row.attemptLineageHash=lineageHash;row.transcriptHash=benchmarkGapSha256(transcript);row.certificationPassAt1=!outcomeFailed;row.configHash=benchmarkGapSha256(String.fromUtf8(File.readFrom(groupRoot.join("mcp-config.json")))+String.fromUtf8(File.readFrom(groupRoot.join("runtime-policy.json")))+student.providerText+String.fromUtf8(File.readFrom(groupRoot.join("paired-tool-evidence.json"))));row.artifactHash=benchmarkGapSha256(row.answerHash+row.transcriptHash+row.testHash+row.configHash);sealCkbCertificationEvidence(row)
         let rendered=renderCkbCertificationEvidenceJson(row);File.writeTo(groupRoot.join("result-evidence.json"),rendered.toArray());File.writeTo(groupRoot.join("audit.json"),"{\"violation\":\"none\",\"developmentPass\":false,\"closureStatus\":\"closed\",\"triageStatus\":\"complete\",\"failureRoute\":\"${if(failed){"business_failure"}else{"none"}}\",\"certificationPassAt1\":null}".toArray());out.append(rendered);out.append("\n")
     }
     let results=out.toString();File.writeTo(root.join("results.jsonl"),results.toArray());let provenancePath=root.join("runner-provenance.json");let provenance=String.fromUtf8(File.readFrom(provenancePath)).replace(benchmarkGapSha256(oldResults),benchmarkGapSha256(results));File.writeTo(provenancePath,provenance.toArray());fixture
