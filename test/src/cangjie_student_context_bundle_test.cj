@@ -157,6 +157,11 @@ public class CangjieStudentContextBundleTest {
         let protected = ["canonical_solution"]
         @Expect(auditStudentVisibleAssetCombination("safe inherited knowledge", "safe active skill",
             "safe active rule", protected), "ok")
+        @Expect(auditStudentVisibleAssetCombination(
+            "Official examples may discuss /home/ paths, password policies, and expected output. ",
+            "safe active skill", "safe active rule", ckbStudentVisibleProtectedArtifacts()), "ok")
+        @Expect(auditStudentVisibleAssetCombination("canonical_solution", "safe active skill",
+            "safe active rule", protected), "student_visible_asset_combination_leakage")
         @Expect(auditStudentVisibleAssetCombination("tion", "solu", "canonical_", protected),
             "student_visible_asset_combination_leakage")
 

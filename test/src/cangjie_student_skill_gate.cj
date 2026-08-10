@@ -76,13 +76,12 @@ public func auditStudentSkillBundle(skills:ArrayList<CkbStudentSkillCandidate>):
     for(s in skills){if(!s.verified){return "student_skill_candidate_unverified"};if(ids.contains(s.id)){return "duplicate_skill_id"};if(contents.contains(s.candidateContentHash)){return "duplicate_skill_identity"};ids.add(s.id);contents.add(s.candidateContentHash);bytes+=s.skillContent.replace("\r\n","\n").replace("\r","\n").toArray().size}
     if(bytes>24576){return "student_skill_content_budget_exceeded"};for(a in skills){for(b in skills){if(a.id!=b.id&&ckbSkillRuleKey(a.procedure)==ckbSkillRuleKey(b.procedure)&&a.procedure!=b.procedure){return "conflicting_skill_rules"}}};"ok"
 }
-public func auditStudentSkillBundleWithKnowledge(skills:ArrayList<CkbStudentSkillCandidate>,knowledgePack:String,authority!:CangjieBenchmarkLeakageAuthority=CangjieBenchmarkLeakageAuthority()):String{let d=auditStudentSkillBundle(skills);if(d!="ok"){return d};var combined=knowledgePack;for(s in skills){combined+="\n"+s.skillContent};if(ckbSkillProtected(combined)){return "skill_knowledge_combination_leakage"};let diagnostic=cangjieStudentVisibleTextDiagnostic("skillKnowledgeCombination",combined,authority:authority);if(diagnostic.ok){"ok"}else{"skill_knowledge_combination_leakage:${diagnostic.code}"}}
+public func auditStudentSkillBundleWithKnowledge(skills:ArrayList<CkbStudentSkillCandidate>,knowledgePack:String,authority!:CangjieBenchmarkLeakageAuthority=CangjieBenchmarkLeakageAuthority()):String{let d=auditStudentSkillBundle(skills);if(d!="ok"){return d};var skillBundle="";for(s in skills){skillBundle+="\n"+s.skillContent};if(ckbSkillCombinationProtected(knowledgePack,skillBundle,"",ckbStudentVisibleProtectedArtifacts())){return "skill_knowledge_combination_leakage"};let diagnostic=cangjieStudentVisibleTextDiagnostic("skillKnowledgeCombination",skillBundle+"\n"+knowledgePack,authority:authority);if(diagnostic.ok){"ok"}else{"skill_knowledge_combination_leakage:${diagnostic.code}"}}
 public func auditStudentVisibleAssetCombination(knowledgeMaterial:String,skillBundle:String,
     rulesBundle:String,protectedArtifacts:Array<String>,authority!:CangjieBenchmarkLeakageAuthority=CangjieBenchmarkLeakageAuthority()):String{
     if(protectedArtifacts.size==0){return "student_visible_protected_closure_required"}
     let combined=rulesBundle+"\n"+skillBundle+"\n"+knowledgeMaterial
-    if(ckbSkillProtected(combined)){return "student_visible_asset_combination_leakage"}
-    let lower=combined.toAsciiLower();let compact=ckbSkillCompactAudit(lower);for(raw in protectedArtifacts){let marker=raw.trimAscii().toAsciiLower();if(marker!=""&&(lower.contains(marker)||compact.contains(ckbSkillCompactAudit(marker)))){return "student_visible_asset_combination_leakage"}}
+    if(ckbSkillCombinationProtected(knowledgeMaterial,skillBundle,rulesBundle,protectedArtifacts)){return "student_visible_asset_combination_leakage"}
     let diagnostic=cangjieStudentVisibleTextDiagnostic("studentVisibleAssetCombination",combined,authority:authority)
     if(diagnostic.ok){"ok"}else{"student_visible_asset_combination_leakage:${diagnostic.code}"}
 }
@@ -154,6 +153,24 @@ private func ckbSkillInt(o:JsonObject,k:String):Int64{o.get(k).getOrThrow().asIn
 private func ckbSkillBool(o:JsonObject,k:String):Bool{o.get(k).getOrThrow().asBool().getValue()}
 private func ckbSkillHash(v:String):Bool{let runes=v.toRuneArray();if(runes.size!=71||!v.startsWith("sha256:")){return false};for(i in 7..71){let rune=runes[i];if(!((rune>=r'0'&&rune<=r'9')||(rune>=r'a'&&rune<=r'f'))){return false}};true}
 private func ckbSkillCompactAudit(v:String):String{v.replace("\n","").replace("\r","").replace("\t","").replace(" ","")}
+private func ckbSkillCombinationProtected(knowledge:String,skills:String,rules:String,protectedArtifacts:Array<String>):Bool{
+    let knowledgeCompact=ckbSkillCompactAudit(knowledge.toAsciiLower())
+    let authoredCompact=ckbSkillCompactAudit((rules+"\n"+skills).toAsciiLower())
+    let combinedCompact=ckbSkillCompactAudit((rules+"\n"+skills+"\n"+knowledge).toAsciiLower())
+    for(raw in protectedArtifacts){
+        let marker=ckbSkillCompactAudit(raw.trimAscii().toAsciiLower())
+        if(marker==""){continue}
+        let inKnowledge=knowledgeCompact.contains(marker)
+        let inAuthored=authoredCompact.contains(marker)
+        if(inAuthored||inKnowledge&&!ckbSkillKnowledgeContextMarkerAllowed(marker)||
+            combinedCompact.contains(marker)&&!inKnowledge&&!inAuthored){return true}
+    }
+    false
+}
+private func ckbSkillKnowledgeContextMarkerAllowed(marker:String):Bool{
+    ["expectedoutput","authorization:","authorization","bearer","api_key","token=","password","secret",
+        "/users/","/home/","/private/","runcommand","readtest","readreference"].contains(marker)
+}
 private func ckbSkillPart(v:String):String{"${v.toArray().size}:${v}"}
 private func ckbSkillSafeRelative(v:String):Bool{if(!v.startsWith("tests/")||v.startsWith("/")||v.contains("\\")||v.endsWith("/")){return false};for(p in v.split("/")){if(p==""||p=="."||p==".."){return false}};true}
 public func ckbStudentVisibleProtectedArtifacts():Array<String>{["cj-humaneval-","humaneval/","caseid","题号","本题","canonical_solution","reference solution","expectedoutput","hidden_test","testmain.cj","solution_cj","/reference/","authorization:","authorization","bearer ","api_key","token=","password","secret","/users/","/home/","/private/","ignore protocol","override protocol","ignore public task","override public task","change public function signature","run command","read test","read reference"]}
