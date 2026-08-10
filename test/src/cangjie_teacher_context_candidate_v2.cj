@@ -102,9 +102,9 @@ private func ckbTeacherV2ValidateLaneTruth(root:Path,candidate:TeacherContextCan
         let raw=candidate.knowledge.files[0].content;let object=JsonValue.fromStr(raw.trimAscii()).asObject()
         let reference="{\"schemaVersion\":\"ckb-frozen-knowledge-reference-v1\",\"knowledgeCandidateHash\":\"${ckbTeacherV2String(object,"knowledgeCandidateHash")}\",\"knowledgeVersion\":\"${ckbTeacherV2Escape(ckbTeacherV2String(object,"knowledgeVersion"))}\",\"frozenCandidateManifestHash\":\"${ckbTeacherV2String(object,"frozenCandidateManifestHash")}\",\"knowledgeContentHash\":\"${ckbTeacherV2String(object,"knowledgeContentHash")}\",\"assetLineage\":\"${ckbTeacherV2String(object,"assetLineage")}\"}\n"
         if(object.getFields().size!=6||raw!=reference||ckbTeacherV2String(object,"schemaVersion")!="ckb-frozen-knowledge-reference-v1"||!ckbTeacherV2Hash(ckbTeacherV2String(object,"frozenCandidateManifestHash"))||!ckbTeacherV2Hash(ckbTeacherV2String(object,"knowledgeContentHash"))||ckbTeacherV2String(object,"knowledgeCandidateHash")!=candidate.knowledge.hash||ckbTeacherV2String(object,"knowledgeVersion")!=candidate.knowledgeTargetVersion||ckbTeacherV2String(object,"assetLineage")!=candidate.knowledge.lineage){throw IllegalArgumentException("candidate_lane_hash_mismatch")}
+        let expectedCombination=benchmarkGapSha256(ckbTeacherV2Part(candidate.rules.hash)+ckbTeacherV2Part(candidate.skills.hash)+ckbTeacherV2Part(ckbTeacherV2String(object,"knowledgeContentHash"))+ckbTeacherV2Part(candidate.sourceClosureHash)+ckbTeacherV2Part(candidate.protectedClosureHash))
+        if(candidate.combinationAuditHash!=expectedCombination){throw IllegalArgumentException("candidate_set_hash_mismatch")}
     }
-    let expectedCombination=benchmarkGapSha256(ckbTeacherV2Part(candidate.rules.hash)+ckbTeacherV2Part(candidate.skills.hash)+ckbTeacherV2Part(candidate.knowledge.hash)+ckbTeacherV2Part(candidate.sourceClosureHash)+ckbTeacherV2Part(candidate.protectedClosureHash))
-    if(candidate.combinationAuditHash!=expectedCombination){throw IllegalArgumentException("candidate_set_hash_mismatch")}
 }
 
 private func ckbTeacherV2ValidateCandidateDirectories(root:Path,skills:TeacherContextLaneV2):Unit {

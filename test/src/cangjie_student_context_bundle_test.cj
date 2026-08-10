@@ -142,6 +142,13 @@ public class CangjieStudentContextBundleTest {
         @Expect(updated.agentsMarkdown.contains("Additional Rune boundary review"), true)
         @Expect(updated.skillsPrompt, base.skillsPrompt)
         @Expect(updated.knowledgeReferenceJson, base.knowledgeReferenceJson)
+        let tamperedUpdate = s3ProductionUpdateFixture(fixture, baseOutput, base,
+            combinationOverride: "sha256:" + s3Hex(r'0'))
+        let blocked = compileStudentContextBundleScaffoldWithBase(fixture.allowed.toString(),
+            "s3-update-combination-tamper", tamperedUpdate.candidate.toString(),
+            tamperedUpdate.approval.toString(), baseOutput.toString(), tamperedUpdate.manifest.toString(),
+            tamperedUpdate.store)
+        @Expect(blocked.diagnostic, "candidate_set_hash_mismatch")
     }
 
     // S3-NEG
@@ -484,24 +491,25 @@ private func s3ProductionContextFixture(name: String): S3ProductionContextFixtur
     let snapshot = store.loadActiveSnapshot()
     if (!snapshot.valid) { throw IllegalStateException("s3_fake_store_commit_failed") }
     let checksum = ckbCertifiedNormalizedRecordsChecksum(snapshot.normalizedRecords)
+    let knowledgeCandidateHash = benchmarkGapSha256("candidate:" + checksum)
     let pointer = store.loadActiveSnapshotPointer(); let zero = "sha256:" + s3Hex(r'0')
     let transactionHash = s3DirectoryHash(store.root.join("transactions").join(pointer.txId))
     let frozenBody = "{\"schemaVersion\":\"ckb-frozen-candidate-v2\",\"knowledgeVersion\":\"${version}\",\"txIdHash\":\"${benchmarkGapSha256(pointer.txId)}\",\"activePointerHash\":\"${ckbActiveSnapshotPointerIdentityHash(pointer)}\",\"transactionHash\":\"${transactionHash}\",\"candidateChecksum\":\"${checksum}\",\"inputHash\":\"${zero}\",\"configHash\":\"${zero}\",\"modelHash\":\"${zero}\",\"studentLeakageProofHash\":\"${zero}\",\"authorityIsolationArtifactHash\":\"${zero}\",\"anonymousQueryArtifactHash\":\"${zero}\",\"anonymousAtomQueryArtifactHash\":\"${zero}\",\"restLeakageArtifactHash\":\"${zero}\",\"mcpStdioLeakageArtifactHash\":\"${zero}\",\"mcpHttpLeakageArtifactHash\":\"${zero}\",\"atomTestArtifactHash\":\"${zero}\""
     let frozenEvidence = benchmarkGapSha256(frozenBody + "}")
     let frozen = frozenBody + ",\"evidenceHash\":\"${frozenEvidence}\"}"
     let manifest = allowed.join("frozen-candidate-manifest.json"); File.writeTo(manifest, frozen.toArray())
-    let reference = "{\"schemaVersion\":\"ckb-frozen-knowledge-reference-v1\",\"knowledgeCandidateHash\":\"${checksum}\",\"knowledgeVersion\":\"${version}\",\"frozenCandidateManifestHash\":\"${benchmarkGapSha256(frozen)}\",\"knowledgeContentHash\":\"${checksum}\",\"assetLineage\":\"independent\"}\n"
+    let reference = "{\"schemaVersion\":\"ckb-frozen-knowledge-reference-v1\",\"knowledgeCandidateHash\":\"${knowledgeCandidateHash}\",\"knowledgeVersion\":\"${version}\",\"frozenCandidateManifestHash\":\"${benchmarkGapSha256(frozen)}\",\"knowledgeContentHash\":\"${checksum}\",\"assetLineage\":\"independent\"}\n"
     File.writeTo(candidate.join("knowledge/knowledge-candidate-reference.json"), reference.toArray())
     let original = JsonValue.fromStr(String.fromUtf8(File.readFrom(candidate.join("candidate-set-manifest.json"))).trimAscii()).asObject()
     let knowledgeTreeHash = benchmarkGapSha256("${benchmarkGapSha256(reference).replace("sha256:", "")}  knowledge-candidate-reference.json\n")
     let inventoryHash = benchmarkGapSha256(s3CandidateInventory(candidate))
     let combination = benchmarkGapSha256(s3Part(s3ContextBundleJsonString(original, "rulesHash")) + s3Part(s3ContextBundleJsonString(original, "skillsHash")) + s3Part(checksum) + s3Part(s3ContextBundleJsonString(original, "sourceClosureHash")) + s3Part(s3ContextBundleJsonString(original, "protectedClosureHash")))
-    let evidence = s3CandidateManifestEvidence(original, checksum, knowledgeTreeHash, inventoryHash, combination,
+    let evidence = s3CandidateManifestEvidence(original, knowledgeCandidateHash, knowledgeTreeHash, inventoryHash, combination,
         s3ContextBundleJsonString(original, "rulesTreeHash"), s3ContextBundleJsonString(original, "skillsTreeHash"))
     let candidateHash = benchmarkGapSha256(evidence)
     File.writeTo(candidate.join("candidate-set-manifest.json"), (evidence.replace("}", ",\"candidateSetHash\":\"${candidateHash}\"}") + "\n").toArray())
     let approval = allowed.join("approval-v2.json")
-    let approvalJson = "{\"schemaVersion\":\"teacher-student-context-approval-v2\",\"candidateSetHash\":\"${candidateHash}\",\"assetInventoryHash\":\"${inventoryHash}\",\"rulesHash\":\"${s3ContextBundleJsonString(original, "rulesHash")}\",\"rulesTreeHash\":\"${s3ContextBundleJsonString(original, "rulesTreeHash")}\",\"skillsHash\":\"${s3ContextBundleJsonString(original, "skillsHash")}\",\"skillsTreeHash\":\"${s3ContextBundleJsonString(original, "skillsTreeHash")}\",\"knowledgeCandidateHash\":\"${checksum}\",\"knowledgeTreeHash\":\"${knowledgeTreeHash}\",\"sourceClosureHash\":\"${s3ContextBundleJsonString(original, "sourceClosureHash")}\",\"protectedClosureHash\":\"${s3ContextBundleJsonString(original, "protectedClosureHash")}\",\"combinationAuditHash\":\"${combination}\",\"decision\":\"approve\",\"reviewer\":\"synthetic-reviewer\",\"reason\":\"Synthetic full-tree scaffold contract approved.\",\"approvedAtUtc\":\"2026-08-07T00:00:00Z\"}\n"
+    let approvalJson = "{\"schemaVersion\":\"teacher-student-context-approval-v2\",\"candidateSetHash\":\"${candidateHash}\",\"assetInventoryHash\":\"${inventoryHash}\",\"rulesHash\":\"${s3ContextBundleJsonString(original, "rulesHash")}\",\"rulesTreeHash\":\"${s3ContextBundleJsonString(original, "rulesTreeHash")}\",\"skillsHash\":\"${s3ContextBundleJsonString(original, "skillsHash")}\",\"skillsTreeHash\":\"${s3ContextBundleJsonString(original, "skillsTreeHash")}\",\"knowledgeCandidateHash\":\"${knowledgeCandidateHash}\",\"knowledgeTreeHash\":\"${knowledgeTreeHash}\",\"sourceClosureHash\":\"${s3ContextBundleJsonString(original, "sourceClosureHash")}\",\"protectedClosureHash\":\"${s3ContextBundleJsonString(original, "protectedClosureHash")}\",\"combinationAuditHash\":\"${combination}\",\"decision\":\"approve\",\"reviewer\":\"synthetic-reviewer\",\"reason\":\"Synthetic full-tree scaffold contract approved.\",\"approvedAtUtc\":\"2026-08-07T00:00:00Z\"}\n"
     File.writeTo(approval, approvalJson.toArray())
     S3ProductionContextFixture(allowed, candidate, approval, manifest, store)
 }
@@ -655,9 +663,11 @@ public func s5SplitLeakStudentContextCliFixture(name: String): S5SplitLeakStuden
     }
     let outer = JsonValue.fromStr(s5SplitLeakReadUtf8(
         fixture.candidate.join("candidate-set-manifest.json")).trimAscii()).asObject()
+    let knowledgeReference = JsonValue.fromStr(s5SplitLeakReadUtf8(
+        fixture.candidate.join("knowledge/knowledge-candidate-reference.json")).trimAscii()).asObject()
     let skillsHash = benchmarkGapSha256(parsed.skillContent)
     let combination = benchmarkGapSha256(s3Part(s3ContextBundleJsonString(outer, "rulesHash")) +
-        s3Part(skillsHash) + s3Part(s3ContextBundleJsonString(outer, "knowledgeCandidateHash")) +
+        s3Part(skillsHash) + s3Part(s3ContextBundleJsonString(knowledgeReference, "knowledgeContentHash")) +
         s3Part(s3ContextBundleJsonString(outer, "sourceClosureHash")) +
         s3Part(s3ContextBundleJsonString(outer, "protectedClosureHash")))
     s3ResealGenesisCandidateOuter(fixture, combination: combination, skillsHash: skillsHash)
@@ -701,8 +711,12 @@ private func s5SplitLeakReadUtf8(path: Path): String {
 }
 
 private func s3ProductionUpdateFixture(baseFixture: S3ProductionContextFixture, baseRoot: Path,
-    base: CkbStudentContextBundle): S3ProductionContextFixture {
-    let candidate = baseFixture.allowed.join("candidate-update-v2")
+    base: CkbStudentContextBundle, combinationOverride!: String = ""): S3ProductionContextFixture {
+    let candidate = baseFixture.allowed.join(if (combinationOverride == "") {
+        "candidate-update-v2"
+    } else {
+        "candidate-update-v2-combination-override"
+    })
     Directory.create(candidate.join("rules"), recursive: true)
     Directory.create(candidate.join("skills"), recursive: true)
     Directory.create(candidate.join("knowledge"), recursive: true)
@@ -726,11 +740,12 @@ private func s3ProductionUpdateFixture(baseFixture: S3ProductionContextFixture, 
     let emptyTree = benchmarkGapSha256("")
     let rulesTree = benchmarkGapSha256(s3TreeInventory(candidate.join("rules")))
     let inventory = benchmarkGapSha256(s3CandidateInventory(candidate))
-    let combination = benchmarkGapSha256(s3Part(benchmarkGapSha256(compiledRules.agentsMarkdown)) +
+    let expectedCombination = benchmarkGapSha256(s3Part(benchmarkGapSha256(compiledRules.agentsMarkdown)) +
         s3Part(s3ContextBundleJsonString(baseManifest, "skillProjectionHash")) +
         s3Part(s3ContextBundleJsonString(baseManifest, "knowledgeContentHash")) +
         s3Part(s3ContextBundleJsonString(genesisManifest, "sourceClosureHash")) +
         s3Part(s3ContextBundleJsonString(genesisManifest, "protectedClosureHash")))
+    let combination = if (combinationOverride == "") { expectedCombination } else { combinationOverride }
     let evidence = "{\"schemaVersion\":\"teacher-student-context-candidate-set-v2\",\"candidateSetId\":\"synthetic-derived-update-v2\",\"baseCompositeHash\":\"${base.compositeHash}\",\"validationLevel\":\"scaffold_contract\",\"sourceEvidenceManifestHash\":\"${s3ContextBundleJsonString(genesisManifest, "sourceEvidenceManifestHash")}\",\"classificationManifestHash\":\"${classification}\",\"sourceClosureHash\":\"${s3ContextBundleJsonString(genesisManifest, "sourceClosureHash")}\",\"protectedClosureHash\":\"${s3ContextBundleJsonString(genesisManifest, "protectedClosureHash")}\",\"rulesEligible\":true,\"rulesHash\":\"${benchmarkGapSha256(compiledRules.agentsMarkdown)}\",\"rulesTreeHash\":\"${rulesTree}\",\"rulesCount\":2,\"rulesAssetLineage\":\"humaneval_164_derived\",\"skillsEligible\":false,\"skillsHash\":\"${s3ContextBundleJsonString(baseManifest, "skillProjectionHash")}\",\"skillsTreeHash\":\"${emptyTree}\",\"skillsCount\":${baseManifest.get("skillCount").getOrThrow().asInt().getValue()},\"skillAssetLineage\":\"${s3ContextBundleJsonString(baseManifest, "skillAssetLineage")}\",\"knowledgeEligible\":false,\"knowledgeCandidateHash\":\"${s3ContextBundleJsonString(baseReference, "knowledgeCandidateHash")}\",\"knowledgeTreeHash\":\"${emptyTree}\",\"knowledgeTargetVersion\":\"${s3ContextBundleJsonString(baseReference, "knowledgeVersion")}\",\"knowledgeAssetLineage\":\"${s3ContextBundleJsonString(baseReference, "assetLineage")}\",\"assetInventoryHash\":\"${inventory}\",\"combinationAuditHash\":\"${combination}\"}"
     let candidateHash = benchmarkGapSha256(evidence)
     File.writeTo(candidate.join("candidate-set-manifest.json"),
