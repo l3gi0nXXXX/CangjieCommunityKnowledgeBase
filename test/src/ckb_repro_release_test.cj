@@ -202,6 +202,16 @@ public class CkbReproReleaseTest {
             "--store-root", "/candidate"])
         @Expect(missing.diagnostic,
             "required_argument_missing:--build-proof")
+        let imported = parseCkbReleaseCliOptions(["ckb-release-import",
+            "--archive", "/tmp/archive.ckb", "--target-root", "/tmp/store",
+            "--manifest-output", "/tmp/逻辑🙂.json"])
+        @Expect(imported.diagnostic, "ok")
+        @Expect(imported.manifestOutput, "/tmp/逻辑🙂.json")
+        @Expect(parseCkbReleaseCliOptions(["ckb-logical-proof",
+            "--store-root", "/candidate", "--build-proof", "/p4.json",
+            "--vector-proof", "/p3.json", "--clean-manifest", "/clean.json",
+            "--output", "/out/logical.json", "--manifest-output", "/bad"])
+            .diagnostic, "unknown_argument:--manifest-output")
     }
     @TestCase
     public func p2ProofJsonEscapesEveryControlRune(): Unit {
@@ -371,6 +381,22 @@ public class CkbReproReleaseTest {
         @Expect(ckbCertifiedNormalizedRecordsChecksum(loaded.normalizedRecords),
             first.normalizedChecksum)
 
+        // R6-O1A-POS-01: production adapter exports the already verified
+        // archive manifest exact bytes and never rebuilds it from summary data.
+        let exactTarget = "${root}/restored-exact"
+        let exactManifest = "${root}/logical-资料🙂.json"
+        let exactOptions = CkbReleaseCliOptions()
+        exactOptions.mode = "import"; exactOptions.archive = firstPath
+        exactOptions.targetRoot = exactTarget
+        exactOptions.manifestOutput = exactManifest
+        let exact = CkbReleaseProductionAdapter(policy, backend: backend)
+            .execute(exactOptions)
+        @Expect(exact.ok, true)
+        @Expect(File.readFrom(Path(exactManifest)),
+            backend.payloadBytes("RELEASE-MANIFEST.json"))
+        @Expect(parseCkbLogicalSnapshotManifest(
+            File.readFrom(Path(exactManifest)))[0].ok, true)
+
         let secondPath = "${root}/production two.ckb-release"
         let production = p2Proofs(store)
         production.sourceState = CkbLogicalSnapshotSourceStates.PROMOTED_PORTABLE_PRODUCTION
@@ -510,6 +536,17 @@ public class CkbReproReleaseTest {
             backend, pathPolicy: policy)
         @Expect(schemaMismatch.diagnostic, "logical_snapshot_schema_mismatch")
         @Expect(exists(Path(schemaTarget)), false)
+        // R6-O1A-NEG-01: manifest export is coupled to verified import;
+        // tampered archive bytes publish neither store nor manifest.
+        let exactOptions = CkbReleaseCliOptions()
+        exactOptions.mode = "import"; exactOptions.archive = archive
+        exactOptions.targetRoot = "${root}/schema-exact-target"
+        exactOptions.manifestOutput = "${root}/schema-exact-manifest.json"
+        let exact = CkbReleaseProductionAdapter(policy, backend: backend)
+            .execute(exactOptions)
+        @Expect(exact.ok, false)
+        @Expect(exists(Path(exactOptions.targetRoot)), false)
+        @Expect(exists(Path(exactOptions.manifestOutput)), false)
     }
 
     @TestCase

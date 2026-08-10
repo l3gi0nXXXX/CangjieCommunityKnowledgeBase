@@ -345,6 +345,7 @@ public class CkbP3CliOptions {
     public var restEndpoint: String = ""
     public var mcpStdioCommand: String = ""
     public var mcpHttpEndpoint: String = ""
+    public var parityAction: String = ""
     public var json: Bool = false
     public var diagnostic: String = "not_parsed"
     public init() {}
@@ -409,7 +410,13 @@ public func parseCkbP3CliOptions(args: Array<String>): CkbP3CliOptions {
         else if (arg == "--output-root") { out.outputRoot = value }
         else if (arg == "--snapshot") { out.snapshot = value }
         else if (arg == "--manifest") { out.manifest = value }
-        else if (arg == "--mode") { if (value != "verify") { out.diagnostic = "invalid_argument_value:--mode"; return out } }
+        else if (arg == "--mode") {
+            if (value != "verify" && value != "build") {
+                out.diagnostic = "invalid_argument_value:--mode"; return out
+            }
+            out.parityAction = value
+        }
+        else if (arg == "--output") { out.outputProof = value }
         else if (arg == "--rest-endpoint") { out.restEndpoint = value }
         else if (arg == "--mcp-stdio-command") { out.mcpStdioCommand = value }
         else if (arg == "--mcp-http-endpoint") { out.mcpHttpEndpoint = value }
@@ -524,6 +531,7 @@ public class CkbP3ProductionAdapter <: CkbP3CliAdapter {
     private let parityBackend: ?CkbRetrievalParityBackend
     private let verificationProvider: ?CkbP3VerificationInputProvider
     private let pathPolicy: CkbReleasePathPolicy
+    private let frozenLogicalManifest: ?CkbLogicalSnapshotManifest
     public init(vectorBackend: CkbPortableVectorBuildBackend,
         snapshotExecutor: CkbQdrantSnapshotExecutor,
         parityBackend: CkbRetrievalParityBackend,
@@ -537,6 +545,7 @@ public class CkbP3ProductionAdapter <: CkbP3CliAdapter {
         this.parityBackend = Some(parityBackend)
         this.verificationProvider = Some(verificationProvider)
         this.pathPolicy = pathPolicy
+        this.frozenLogicalManifest = None
     }
     init(permittedMode: String,
         vectorBackend: ?CkbPortableVectorBuildBackend,
@@ -544,13 +553,15 @@ public class CkbP3ProductionAdapter <: CkbP3CliAdapter {
         parityBackend: ?CkbRetrievalParityBackend,
         verificationProvider: ?CkbP3VerificationInputProvider,
         pathPolicy: CkbReleasePathPolicy,
-        snapshotFileExecutor: ?CkbQdrantSnapshotFileExecutor) {
+        snapshotFileExecutor: ?CkbQdrantSnapshotFileExecutor,
+        frozenLogicalManifest: ?CkbLogicalSnapshotManifest) {
         this.permittedMode = permittedMode; this.vectorBackend = vectorBackend
         this.snapshotExecutor = snapshotExecutor
         this.parityBackend = parityBackend
         this.verificationProvider = verificationProvider
         this.pathPolicy = pathPolicy
         this.snapshotFileExecutor = snapshotFileExecutor
+        this.frozenLogicalManifest = frozenLogicalManifest
     }
 
     public func execute(options: CkbP3CliOptions): CkbP3CliOperationResult {
@@ -562,7 +573,7 @@ public class CkbP3ProductionAdapter <: CkbP3CliAdapter {
         if (options.mode == "create") { return this.createSnapshot(options) }
         if (options.mode == "restore") { return this.restoreSnapshot(options) }
         if (options.mode == "verify") { return this.verifySnapshot(options) }
-        this.verifyParity(options)
+        this.runParity(options)
     }
 
     private func buildVectors(options: CkbP3CliOptions): CkbP3CliOperationResult {
@@ -744,12 +755,40 @@ public class CkbP3ProductionAdapter <: CkbP3CliAdapter {
             "dimension=${status[1].dimension}"; out
     }
 
-    private func verifyParity(options: CkbP3CliOptions): CkbP3CliOperationResult {
-        let out = CkbP3CliOperationResult(); let manifest = ckbP3LoadParityManifest(options.manifest)
+    private func runParity(options: CkbP3CliOptions): CkbP3CliOperationResult {
+        let out = CkbP3CliOperationResult()
         let parityBackend = match (this.parityBackend) {
             case Some(value) => value
             case None => out.diagnostic = "p3_parity_backend_required"; return out
         }
+        if (options.parityAction == "build") {
+            var logical = CkbLogicalSnapshotManifest()
+            match (this.frozenLogicalManifest) {
+                case Some(value) => logical = value
+                case None =>
+                    if (this.permittedMode == "parity") {
+                        out.diagnostic =
+                            "p3_logical_manifest_authority_required"
+                        return out
+                    }
+                    let loaded = ckbP3LoadLogicalManifest(options.logicalManifest)
+                    if (!loaded[0].ok) {
+                        out.diagnostic = loaded[0].diagnostic; return out
+                    }
+                    logical = loaded[1]
+            }
+            let result = buildCkbRetrievalParityManifest(
+                logical.portableKnowledgeVersion,
+                logical.manifestHash, parityBackend)
+            if (!result.ok) { out.diagnostic = result.diagnostic; return out }
+            let write = ckbP3WriteNewFile(options.outputProof,
+                renderCkbRetrievalParityManifest(result.manifest), this.pathPolicy)
+            if (write != "ok") { out.diagnostic = write; return out }
+            out.ok = true; out.diagnostic = "ok"
+            out.summary = "knowledgeVersion=${result.manifest.knowledgeVersion} transports=3"
+            return out
+        }
+        let manifest = ckbP3LoadParityManifest(options.manifest)
         if (!manifest[0].ok) { out.diagnostic = manifest[0].diagnostic; return out }
         let result = verifyCkbRetrievalParityManifest(manifest[1], parityBackend)
         out.ok = result.ok; out.diagnostic = result.diagnostic
@@ -815,7 +854,7 @@ public func newCkbP3RuntimeVectorBuildAdapter(
             deadlineAtMillis: deadlineAtMillis)), None, None,
         Some<CkbP3VerificationInputProvider>(
             CkbStoreVerificationInputProvider(candidateStore, pathContext)),
-        pathPolicy, None)
+        pathPolicy, None, None)
 }
 
 public func newCkbP3RuntimeSnapshotAdapter(mode: String,
@@ -834,12 +873,22 @@ public func newCkbP3RuntimeSnapshotAdapter(mode: String,
         Some<CkbQdrantSnapshotExecutor>(control), None,
         provider, pathPolicy,
         Some<CkbQdrantSnapshotFileExecutor>(
-            CkbNativeQdrantSnapshotFileExecutor(snapshotEndpoint, transport)))
+            CkbNativeQdrantSnapshotFileExecutor(snapshotEndpoint, transport)),
+        None)
 }
 
 public func newCkbP3RuntimeParityAdapter(restEndpoint: String,
     stdioSpec: CkbMcpStdioCommandSpec, mcpHttpEndpoint: String,
     runtime: CkbRuntimeConfig, pathPolicy: CkbReleasePathPolicy):
+    CkbP3CliAdapter {
+    newCkbP3RuntimeParityAdapterWithLogical(restEndpoint, stdioSpec,
+        mcpHttpEndpoint, runtime, pathPolicy, None)
+}
+
+public func newCkbP3RuntimeParityAdapterWithLogical(restEndpoint: String,
+    stdioSpec: CkbMcpStdioCommandSpec, mcpHttpEndpoint: String,
+    runtime: CkbRuntimeConfig, pathPolicy: CkbReleasePathPolicy,
+    frozenLogicalManifest: ?CkbLogicalSnapshotManifest):
     CkbP3CliAdapter {
     let http = NativeHttpRequestExecutor(
         ckbNativeHttpAdapterConfigFromRuntime(runtime, true))
@@ -847,7 +896,8 @@ public func newCkbP3RuntimeParityAdapter(restEndpoint: String,
         Some<CkbRetrievalParityBackend>(CkbProductionRetrievalParityBackend(
             restEndpoint, stdioSpec, mcpHttpEndpoint, http,
             CkbNativeRetrievalParityProcessExecutor(),
-            timeoutMillis: runtime.timeoutMillis)), None, pathPolicy, None)
+            timeoutMillis: runtime.timeoutMillis)), None, pathPolicy, None,
+        frozenLogicalManifest)
 }
 
 public func loadCkbMcpStdioCommandSpecFile(path: String):
@@ -873,20 +923,31 @@ public func renderCkbP3CliJson(result: CkbP3CliOperationResult): String {
 private func ckbP3CliKnown(arg: String): Bool { ["--endpoint", "--collection", "--target-collection",
     "--candidate-root", "--environment-lock", "--output-proof", "--logical-manifest",
     "--vector-proof", "--output-root", "--snapshot", "--manifest", "--mode",
-    "--rest-endpoint", "--mcp-stdio-command", "--mcp-http-endpoint"].contains(arg) }
+    "--rest-endpoint", "--mcp-stdio-command", "--mcp-http-endpoint", "--output"].contains(arg) }
 private func ckbP3CliAllowed(mode: String, arg: String): Bool {
     if (mode == "build") { return ["--candidate-root", "--environment-lock", "--output-proof"].contains(arg) }
     if (mode == "create") { return ["--endpoint", "--collection", "--logical-manifest", "--vector-proof", "--output-root"].contains(arg) }
     if (mode == "restore") { return ["--endpoint", "--target-collection", "--snapshot", "--manifest"].contains(arg) }
     if (mode == "verify") { return ["--endpoint", "--collection", "--manifest", "--logical-manifest"].contains(arg) }
-    ["--mode", "--manifest", "--rest-endpoint", "--mcp-stdio-command", "--mcp-http-endpoint"].contains(arg)
+    ["--mode", "--manifest", "--logical-manifest", "--output", "--rest-endpoint", "--mcp-stdio-command", "--mcp-http-endpoint"].contains(arg)
 }
 private func ckbP3CliRequired(out: CkbP3CliOptions): Array<(String, String)> {
     if (out.mode == "build") { return [("--candidate-root", out.candidateRoot), ("--environment-lock", out.environmentLock), ("--output-proof", out.outputProof)] }
     if (out.mode == "create") { return [("--endpoint", out.endpoint), ("--collection", out.collection), ("--logical-manifest", out.logicalManifest), ("--vector-proof", out.vectorProof), ("--output-root", out.outputRoot)] }
     if (out.mode == "restore") { return [("--endpoint", out.endpoint), ("--target-collection", out.targetCollection), ("--snapshot", out.snapshot), ("--manifest", out.manifest)] }
     if (out.mode == "verify") { return [("--endpoint", out.endpoint), ("--collection", out.collection), ("--manifest", out.manifest), ("--logical-manifest", out.logicalManifest)] }
-    [("--mode", if (out.mode == "parity") { "verify" } else { "" }), ("--manifest", out.manifest), ("--rest-endpoint", out.restEndpoint), ("--mcp-stdio-command", out.mcpStdioCommand), ("--mcp-http-endpoint", out.mcpHttpEndpoint)]
+    if (out.parityAction == "build") {
+        return [("--mode", out.parityAction),
+            ("--logical-manifest", out.logicalManifest),
+            ("--output", out.outputProof),
+            ("--rest-endpoint", out.restEndpoint),
+            ("--mcp-stdio-command", out.mcpStdioCommand),
+            ("--mcp-http-endpoint", out.mcpHttpEndpoint)]
+    }
+    [("--mode", out.parityAction), ("--manifest", out.manifest),
+        ("--rest-endpoint", out.restEndpoint),
+        ("--mcp-stdio-command", out.mcpStdioCommand),
+        ("--mcp-http-endpoint", out.mcpHttpEndpoint)]
 }
 private func ckbP3CliFailure(diagnostic: String, json: Bool): CkbP3CliExecution {
     let result = CkbP3CliOperationResult(); result.diagnostic = diagnostic

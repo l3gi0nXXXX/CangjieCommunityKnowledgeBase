@@ -12,8 +12,342 @@ foreign {
     func fstat(fd: Int32, stat: CPointer<UInt8>): Int32
     func fcntl(fd: Int32, command: Int32, ...): Int32
     func unlinkat(directoryFd: Int32, path: CString, flags: Int32): Int32
+    func renameatx_np(fromFd: Int32, from: CString, toFd: Int32,
+        to: CString, flags: UInt32): Int32
     func close(fd: Int32): Int32
     func __error(): CPointer<Int32>
+}
+
+public class CkbReproOwnedTempDescriptor {
+    private var grandparentFd: Int32 = -1
+    private var parentFd: Int32 = -1
+    private var payloadFd: Int32 = -1
+    private var grandparentIdentity: String = ""
+    private var parentIdentity: String = ""
+    private var payloadIdentity: String = ""
+    private var grandparentPath: String = ""
+    private var parentName: String = ""
+    private var tempName: String = ""
+    private var targetName: String = ""
+    private var published: Bool = false
+    private var createdByThisInvocation: Bool = false
+    public var ok: Bool = false
+    public var diagnostic: String = "composition_temporary_open_failed"
+    public var nativeErrno: Int32 = 0
+    public init() {}
+
+    public func acquire(parent: String, tempName: String,
+        targetName: String,
+        forceInitialIdentityFailure!: Bool = false): Unit {
+        if (tempName == "" || tempName.contains("/") || targetName == "" ||
+            targetName.contains("/")) { return }
+        let parentPath = Path(parent)
+        this.grandparentPath = parentPath.parent.toString()
+        this.parentName = parentPath.fileName
+        this.tempName = tempName; this.targetName = targetName
+        if (this.parentName == "" || this.parentName == "." ||
+            this.parentName == "..") { return }
+        this.grandparentFd = p8OpenBundleDirectory(this.grandparentPath)
+        if (this.grandparentFd < 0) { return }
+        this.grandparentIdentity =
+            p8StableDescriptorIdentity(this.grandparentFd)
+        let pname = unsafe { LibC.mallocCString(this.parentName) }
+        this.parentFd = unsafe {
+            openat(this.grandparentFd, pname, 0x100104, 0)
+        }
+        unsafe { LibC.free(pname) }
+        if (this.parentFd < 0 || p8DescriptorKind(this.parentFd) != "directory") {
+            this.diagnostic = "composition_parent_open_failed"
+            this.close(); return
+        }
+        this.parentIdentity = p8StableDescriptorIdentity(this.parentFd)
+        if (this.grandparentIdentity == "" || this.parentIdentity == "" ||
+            !this.publicParentStillBound()) {
+            this.diagnostic = "composition_parent_binding_invalid"
+            this.close(); return
+        }
+        let tname = unsafe { LibC.mallocCString(this.tempName) }
+        this.payloadFd = unsafe { openat(this.parentFd, tname, 0xb02, 0x180) }
+        this.nativeErrno = if (this.payloadFd < 0) {
+            unsafe { __error().read() }
+        } else { Int32(0) }
+        unsafe { LibC.free(tname) }
+        if (this.payloadFd < 0) {
+            this.diagnostic = if (this.nativeErrno == 17) {
+                "composition_temporary_exists"
+            } else { "composition_temporary_open_failed" }
+            this.close(); return
+        }
+        this.createdByThisInvocation = true
+        this.payloadIdentity = if (forceInitialIdentityFailure) { "" }
+            else { p8StableDescriptorIdentity(this.payloadFd) }
+        if (this.payloadIdentity == "") {
+            // Keep the atomically-created fd open. A retry may establish the
+            // inode identity needed for safe name cleanup, but this acquire
+            // still fails so an unavailable first identity is never hidden.
+            let retryIdentity = p8StableDescriptorIdentity(this.payloadFd)
+            if (retryIdentity != "" &&
+                p8DescriptorRegularSingleLink(this.payloadFd)) {
+                this.payloadIdentity = retryIdentity
+            }
+            this.diagnostic = "composition_temporary_identity_initial_failed"
+            this.cleanup(); return
+        }
+        if (!p8DescriptorRegularSingleLink(this.payloadFd)) {
+            this.diagnostic = "composition_temporary_not_exclusive"
+            this.cleanup(); return
+        }
+        if (unsafe { fchmod(this.payloadFd, 0x180) } != 0) {
+            this.diagnostic = "composition_temporary_mode_failed"
+            this.cleanup(); return
+        }
+        this.ok = true; this.diagnostic = "ok"
+    }
+
+    public func createPayload(bytes: Array<UInt8>): Bool {
+        if (!this.ok || this.payloadFd < 0 ||
+            !this.tempNameStillOwnedAndExclusive()) {
+            this.diagnostic = "composition_temporary_name_replaced"
+            return false
+        }
+        var offset: Int64 = 0
+        while (offset < bytes.size) {
+            let count = unsafe {
+                let raw = acquireArrayRawData(bytes)
+                let written = write(this.payloadFd,
+                    raw.pointer + offset, UIntNative(bytes.size - offset))
+                releaseArrayRawData(raw)
+                Int64(written)
+            }
+            if (count <= 0) { return false }
+            offset += count
+        }
+        if (unsafe { fsync(this.payloadFd) } != 0 ||
+            unsafe { lseek(this.payloadFd, 0, 0) } != 0) { return false }
+        let readback = ArrayList<UInt8>()
+        while (true) {
+            let buffer = Array<UInt8>(8192, repeat: UInt8(0))
+            let count = unsafe {
+                let raw = acquireArrayRawData(buffer)
+                let value = read(this.payloadFd, raw.pointer,
+                    UIntNative(buffer.size))
+                releaseArrayRawData(raw)
+                Int64(value)
+            }
+            if (count < 0 || count > buffer.size) { return false }
+            if (count == 0) { break }
+            readback.add(all: if (count == buffer.size) { buffer }
+                else { buffer[0..count].clone() })
+        }
+        let exact = readback.toArray() == bytes &&
+            this.tempNameStillOwnedAndExclusive()
+        if (!exact) { this.diagnostic = "composition_readback_failed" }
+        exact
+    }
+
+    public func publish(): Bool {
+        if (!this.ok || this.payloadFd < 0 ||
+            !this.publicParentStillBound() ||
+            !this.tempNameStillOwnedAndExclusive() ||
+            p8StableDescriptorIdentity(this.parentFd) != this.parentIdentity ||
+            p8StableDescriptorIdentity(this.payloadFd) != this.payloadIdentity) {
+            this.diagnostic = "composition_commit_precheck_failed"
+            return false
+        }
+        let source = unsafe { LibC.mallocCString(this.tempName) }
+        let target = unsafe { LibC.mallocCString(this.targetName) }
+        let renameResult = unsafe { renameatx_np(this.parentFd, source,
+            this.parentFd, target, UInt32(4)) }
+        let renameErrno = if (renameResult != 0) {
+            unsafe { __error().read() }
+        } else { Int32(0) }
+        let renamed = renameResult == 0
+        unsafe { LibC.free(source); LibC.free(target) }
+        if (renamed) {
+            this.published = true
+            _ = unsafe { close(this.payloadFd) }; this.payloadFd = -1
+            this.diagnostic = "ok"
+        } else if (renameErrno == 17) {
+            this.diagnostic = "composition_commit_failed"
+        } else {
+            this.diagnostic = "composition_commit_rename_failed"
+        }
+        renamed
+    }
+
+    public func syncAndValidate(forceFailure!: Bool = false): Bool {
+        if (!this.published) {
+            this.diagnostic = "composition_parent_fsync_precondition_failed"
+            return false
+        }
+        if (!this.publicParentStillBound()) {
+            this.diagnostic = "composition_parent_binding_changed_after_publish"
+            return false
+        }
+        this.syncParentAndValidate(forceFailure: forceFailure)
+    }
+
+    public func syncParentAndValidate(forceFailure!: Bool = false): Bool {
+        if (!this.ok || this.parentFd < 0 || !this.publicParentStillBound()) {
+            this.diagnostic = "composition_parent_binding_invalid"
+            return false
+        }
+        if (forceFailure) {
+            this.nativeErrno = 5
+            this.diagnostic = "composition_parent_fsync_failed"
+            return false
+        }
+        let synced = unsafe { fsync(this.parentFd) }
+        this.nativeErrno = if (synced != 0) {
+            unsafe { __error().read() }
+        } else { Int32(0) }
+        if (synced != 0) {
+            this.diagnostic = "composition_parent_fsync_failed"
+            return false
+        }
+        if (!this.publicParentStillBound()) {
+            this.diagnostic = if (this.published) {
+                "composition_parent_binding_changed_after_publish"
+            } else { "composition_parent_binding_invalid" }
+            return false
+        }
+        this.diagnostic = "ok"; true
+    }
+
+    public func readPublicTarget(maxBytes: Int64): (Bool, Array<UInt8>) {
+        if (maxBytes < 1 || !this.publicParentStillBound()) {
+            return (false, Array<UInt8>())
+        }
+        let publicParent = this.openPublicParent()
+        if (publicParent < 0) { return (false, Array<UInt8>()) }
+        try {
+            let name = unsafe { LibC.mallocCString(this.targetName) }
+            let fd = unsafe { openat(publicParent, name, 0x104, 0) }
+            unsafe { LibC.free(name) }
+            if (fd < 0 || p8DescriptorKind(fd) != "regular") {
+                if (fd >= 0) { _ = unsafe { close(fd) } }
+                return (false, Array<UInt8>())
+            }
+            try {
+                let initial = p8StableDescriptorIdentity(fd)
+                let bytes = ArrayList<UInt8>()
+                while (true) {
+                    let buffer = Array<UInt8>(8192, repeat: UInt8(0))
+                    let count = unsafe {
+                        let raw = acquireArrayRawData(buffer)
+                        let value = read(fd, raw.pointer, UIntNative(buffer.size))
+                        releaseArrayRawData(raw)
+                        Int64(value)
+                    }
+                    if (count < 0 || bytes.size > maxBytes - count) {
+                        return (false, Array<UInt8>())
+                    }
+                    if (count == 0) { break }
+                    bytes.add(all: if (count == buffer.size) { buffer }
+                        else { buffer[0..count].clone() })
+                }
+                if (bytes.size < 1 || initial == "" ||
+                    p8StableDescriptorIdentity(fd) != initial) {
+                    return (false, Array<UInt8>())
+                }
+                (true, bytes.toArray())
+            } finally { _ = unsafe { close(fd) } }
+        } finally { _ = unsafe { close(publicParent) } }
+    }
+
+    public func cleanup(): Bool {
+        var removed = true
+        if (!this.published && this.createdByThisInvocation &&
+            this.parentFd >= 0 && this.payloadFd >= 0) {
+            if (this.payloadIdentity == "") {
+                this.payloadIdentity =
+                    p8StableDescriptorIdentity(this.payloadFd)
+            }
+            let nameStillOwned = this.tempNameStillOwnedForCleanup()
+            if (nameStillOwned) {
+                let payload = unsafe { LibC.mallocCString(this.tempName) }
+                removed = unsafe { unlinkat(this.parentFd, payload, 0) } == 0
+                unsafe { LibC.free(payload) }
+            } else {
+                removed = false
+            }
+        }
+        this.close(); removed
+    }
+
+    public func close(): Unit {
+        if (this.payloadFd >= 0) { _ = unsafe { close(this.payloadFd) } }
+        if (this.parentFd >= 0) { _ = unsafe { close(this.parentFd) } }
+        if (this.grandparentFd >= 0) {
+            _ = unsafe { close(this.grandparentFd) }
+        }
+        this.payloadFd = -1; this.parentFd = -1; this.grandparentFd = -1
+    }
+
+    private func openPublicParent(): Int32 {
+        if (this.grandparentFd < 0 || this.grandparentPath == "" ||
+            this.parentName == "" ||
+            p8StableDescriptorIdentity(this.grandparentFd) !=
+                this.grandparentIdentity) { return -1 }
+        let publicGrandparent = p8OpenBundleDirectory(this.grandparentPath)
+        if (publicGrandparent < 0 ||
+            p8StableDescriptorIdentity(publicGrandparent) !=
+                this.grandparentIdentity) {
+            if (publicGrandparent >= 0) {
+                _ = unsafe { close(publicGrandparent) }
+            }
+            return -1
+        }
+        let name = unsafe { LibC.mallocCString(this.parentName) }
+        let observedFd = unsafe {
+            openat(publicGrandparent, name, 0x100104, 0)
+        }
+        unsafe { LibC.free(name) }
+        _ = unsafe { close(publicGrandparent) }
+        if (observedFd < 0 || p8DescriptorKind(observedFd) != "directory" ||
+            p8StableDescriptorIdentity(observedFd) != this.parentIdentity) {
+            if (observedFd >= 0) { _ = unsafe { close(observedFd) } }
+            return -1
+        }
+        observedFd
+    }
+
+    private func publicParentStillBound(): Bool {
+        let observedFd = this.openPublicParent()
+        if (observedFd < 0) { return false }
+        let matched = p8DescriptorKind(observedFd) == "directory" &&
+            p8StableDescriptorIdentity(observedFd) == this.parentIdentity
+        _ = unsafe { close(observedFd) }
+        matched
+    }
+
+    private func tempNameStillOwnedAndExclusive(): Bool {
+        this.tempNameStillOwned(true)
+    }
+
+    private func tempNameStillOwnedForCleanup(): Bool {
+        this.tempNameStillOwned(false)
+    }
+
+    private func tempNameStillOwned(requireSingleLink: Bool): Bool {
+        if (this.parentFd < 0 || this.payloadFd < 0 ||
+            this.payloadIdentity == "" ||
+            p8StableDescriptorIdentity(this.payloadFd) !=
+                this.payloadIdentity ||
+            p8DescriptorKind(this.payloadFd) != "regular") { return false }
+        if (requireSingleLink &&
+            !p8DescriptorRegularSingleLink(this.payloadFd)) { return false }
+        let name = unsafe { LibC.mallocCString(this.tempName) }
+        let observedFd = unsafe { openat(this.parentFd, name, 0x104, 0) }
+        unsafe { LibC.free(name) }
+        if (observedFd < 0) { return false }
+        let observed = p8StableDescriptorIdentity(observedFd)
+        let regular = p8DescriptorKind(observedFd) == "regular"
+        let exclusive = !requireSingleLink ||
+            p8DescriptorRegularSingleLink(observedFd)
+        _ = unsafe { close(observedFd) }
+        observed == this.payloadIdentity && regular && exclusive
+    }
 }
 
 public class CkbReproVerifyOptions {
@@ -2681,6 +3015,56 @@ private func p8OpenBundlePath(path: String): Int32 {
     let fd = unsafe { open(cpath, 0x104) }
     unsafe { LibC.free(cpath) }
     fd
+}
+
+private func p8OpenBundleDirectory(path: String): Int32 {
+    let cpath = unsafe { LibC.mallocCString(path) }
+    let fd = unsafe { open(cpath, 0x100104) }
+    unsafe { LibC.free(cpath) }
+    fd
+}
+
+private func p8DescriptorKind(fd: Int32): String {
+    let stat = Array<UInt8>(144, repeat: UInt8(0))
+    let ok = unsafe {
+        let raw = acquireArrayRawData(stat)
+        let value = fstat(fd, raw.pointer) == 0
+        releaseArrayRawData(raw)
+        value
+    }
+    if (!ok) { return "" }
+    let mode = p8LittleEndian(stat, 4, 2)
+    if ((mode & UInt64(0xf000)) == UInt64(0x4000)) { "directory" }
+    else if ((mode & UInt64(0xf000)) == UInt64(0x8000)) { "regular" }
+    else { "special" }
+}
+
+private func p8DescriptorRegularSingleLink(fd: Int32): Bool {
+    let stat = Array<UInt8>(144, repeat: UInt8(0))
+    let ok = unsafe {
+        let raw = acquireArrayRawData(stat)
+        let value = fstat(fd, raw.pointer) == 0
+        releaseArrayRawData(raw)
+        value
+    }
+    if (!ok) { return false }
+    let mode = p8LittleEndian(stat, 4, 2)
+    let linkCount = p8LittleEndian(stat, 6, 2)
+    (mode & UInt64(0xf000)) == UInt64(0x8000) &&
+        linkCount == UInt64(1)
+}
+
+private func p8StableDescriptorIdentity(fd: Int32): String {
+    let stat = Array<UInt8>(144, repeat: UInt8(0))
+    let ok = unsafe {
+        let raw = acquireArrayRawData(stat)
+        let value = fstat(fd, raw.pointer) == 0
+        releaseArrayRawData(raw)
+        value
+    }
+    if (!ok || p8DescriptorKind(fd) == "special") { return "" }
+    "dev=${p8LittleEndian(stat, 0, 4)};" +
+        "ino=${p8LittleEndian(stat, 8, 8)}"
 }
 
 private func p8DescriptorEntry(fd: Int32, root: String,

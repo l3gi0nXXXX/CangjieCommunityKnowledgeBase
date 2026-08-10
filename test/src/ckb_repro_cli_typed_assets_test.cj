@@ -16,6 +16,8 @@ public class CkbReproCliTypedAssetsTest {
         let parsed = parseCkbReproCliRuntimeConfigBytes(text.toArray())
         @Expect(parsed[0].ok, true)
         @Expect(parsed[1].embeddingModel, "嵌入🙂-v1")
+        @Expect(parsed[1].serviceBind, "127.0.0.1")
+        @Expect(parsed[1].servicePort, 18890)
         @Expect(parseCkbReproCliRuntimeConfigBytes(
             text.replace("\"networkEnabled\":false",
                 "\"networkEnabled\":false,\"unknown\":1").toArray())[0].ok,
@@ -33,6 +35,13 @@ public class CkbReproCliTypedAssetsTest {
             renderCkbReproCliRuntimeConfig(config).toArray())[0].ok, false)
         config.vectorEndpoint = "http://127.0.0.1:6333"
         config.vectorDimensions = 65537
+        @Expect(parseCkbReproCliRuntimeConfigBytes(
+            renderCkbReproCliRuntimeConfig(config).toArray())[0].ok, false)
+        config.vectorDimensions = 16
+        config.serviceBind = "0.0.0.0"
+        @Expect(parseCkbReproCliRuntimeConfigBytes(
+            renderCkbReproCliRuntimeConfig(config).toArray())[0].ok, false)
+        config.serviceBind = "127.0.0.1"; config.servicePort = 65536
         @Expect(parseCkbReproCliRuntimeConfigBytes(
             renderCkbReproCliRuntimeConfig(config).toArray())[0].ok, false)
     }
@@ -345,6 +354,7 @@ private func typedRuntime(): CkbRuntimeConfig {
     value.networkNoProxy = ""; value.networkInsecureSkipTlsVerify = false
     value.networkCaFile = ""; value.networkAllowPrivateNetwork = true
     value.networkAllowedHosts = "127.0.0.1"
+    value.serviceBind = "127.0.0.1"; value.servicePort = 18890
     value
 }
 

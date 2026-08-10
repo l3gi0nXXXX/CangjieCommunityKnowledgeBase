@@ -7,6 +7,7 @@ class CkbReproP3ProductionAssembly {
     var pathContext: CkbPortablePathContext = CkbPortablePathContext()
     var pathPolicy: CkbReleasePathPolicy = CkbReleasePathPolicy()
     var stdioSpec: CkbMcpStdioCommandSpec = CkbMcpStdioCommandSpec()
+    var logicalManifest: ?CkbLogicalSnapshotManifest = None
     public init() {}
 }
 
@@ -34,9 +35,9 @@ func executeCkbReproP3ProductionAssembly(args: Array<String>,
             assembly.pathContext, options.endpoint, assembly.runtime,
             assembly.pathPolicy)
     } else {
-        adapter = newCkbP3RuntimeParityAdapter(options.restEndpoint,
+        adapter = newCkbP3RuntimeParityAdapterWithLogical(options.restEndpoint,
             assembly.stdioSpec, options.mcpHttpEndpoint, assembly.runtime,
-            assembly.pathPolicy)
+            assembly.pathPolicy, assembly.logicalManifest)
     }
     ckbP3MainExecution(runCkbP3Cli(args, adapter))
 }

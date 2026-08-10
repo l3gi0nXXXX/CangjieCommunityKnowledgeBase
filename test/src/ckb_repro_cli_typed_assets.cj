@@ -141,7 +141,7 @@ public func parseCkbReproCliRuntimeConfigBytes(bytes: Array<UInt8>):
     if (!decoded[0].ok) { return (decoded[0], out) }
     try {
         let root = JsonValue.fromStr(decoded[1]).asObject()
-        if (root.size() != 31 || ckbTypedString(root, "schemaVersion") !=
+        if (root.size() != 33 || ckbTypedString(root, "schemaVersion") !=
                 "ckb-repro-runtime-config-v1") {
             return (ckbTypedFailure("runtime_config_field_contract_invalid"), out)
         }
@@ -181,6 +181,8 @@ public func parseCkbReproCliRuntimeConfigBytes(bytes: Array<UInt8>):
         out.networkAllowPrivateNetwork = ckbTypedBool(root,
             "networkAllowPrivateNetwork")
         out.networkAllowedHosts = ckbTypedString(root, "networkAllowedHosts")
+        out.serviceBind = ckbTypedString(root, "serviceBind")
+        out.servicePort = ckbTypedInt(root, "servicePort")
         if (!ckbTypedRuntimeValid(out) ||
             renderCkbReproCliRuntimeConfig(out) != decoded[1]) {
             return (ckbTypedFailure("runtime_config_invalid"), CkbRuntimeConfig())
@@ -222,7 +224,9 @@ public func renderCkbReproCliRuntimeConfig(value: CkbRuntimeConfig): String {
         "\"networkInsecureSkipTlsVerify\":${value.networkInsecureSkipTlsVerify}," +
         "\"networkCaFile\":\"${ckbTypedEscape(value.networkCaFile)}\"," +
         "\"networkAllowPrivateNetwork\":${value.networkAllowPrivateNetwork}," +
-        "\"networkAllowedHosts\":\"${ckbTypedEscape(value.networkAllowedHosts)}\"}"
+        "\"networkAllowedHosts\":\"${ckbTypedEscape(value.networkAllowedHosts)}\"," +
+        "\"serviceBind\":\"${ckbTypedEscape(value.serviceBind)}\"," +
+        "\"servicePort\":${value.servicePort}}"
 }
 
 public func parseCkbReproCliPathContextBytes(pathPolicyBytes: Array<UInt8>,
@@ -513,7 +517,8 @@ private func ckbTypedRuntimeValid(value: CkbRuntimeConfig): Bool {
         value.vectorBackend, value.vectorActiveCollection,
         value.vectorCandidateCollection, value.vectorDistance,
         value.embeddingEndpoint, value.vectorEndpoint, value.networkProxy,
-        value.networkNoProxy, value.networkCaFile, value.networkAllowedHosts]) {
+        value.networkNoProxy, value.networkCaFile, value.networkAllowedHosts,
+        value.serviceBind]) {
         if (!ckbTypedSafeValue(text, 4096) || ckbTypedSensitive(text)) { return false }
     }
     if (value.embeddingProvider == "" || value.embeddingModel == "" ||
@@ -526,7 +531,9 @@ private func ckbTypedRuntimeValid(value: CkbRuntimeConfig): Bool {
         value.embeddingTotalTimeoutMillis < 0 ||
         value.embeddingTimeoutMillis <= 0 || value.vectorTimeoutMillis <= 0 ||
         value.timeoutMillis <= 0 || value.embeddingRetryCount < 0 ||
-        value.vectorRetryCount < 0 || value.retryCount < 0) { return false }
+        value.vectorRetryCount < 0 || value.retryCount < 0 ||
+        value.serviceBind != "127.0.0.1" || value.servicePort <= 0 ||
+        value.servicePort > 65535) { return false }
     for (endpoint in [value.embeddingEndpoint, value.vectorEndpoint,
         value.networkProxy]) {
         if (endpoint != "" && (!ckbTypedHttpUrl(endpoint) ||

@@ -76,8 +76,22 @@ private class P234DriftingBundleBackend <: CkbReproBundleReadBackend {
         CkbReproBundleReadHandle { this.delegate.open(root, expected) }
 }
 private class P234ParityDependency <: CkbRetrievalParityBackend {
+    public var mismatch: Bool = false
+    public var invalidUtf8: Bool = false
     public func query(transport: String, query: String): CkbRetrievalParityResponse {
-        CkbRetrievalParityResponse()
+        let out = CkbRetrievalParityResponse()
+        out.ok = true; out.diagnostic = "ok"
+        out.knowledgeVersion = "portable-资料🙂-v1"
+        out.rawBytes = if (this.invalidUtf8) { [0xff, 0xfe] }
+            else { "ok-资料🙂".toArray() }
+        let hit = CkbRetrievalParityHit()
+        hit.logicalId = if (this.mismatch && transport == "mcp_http") {
+            "different"
+        } else { "cangjie-rune" }
+        hit.contentHash = p234Hash("content")
+        hit.citation = "docs/rune.md"; hit.rank = 1
+        out.hits.add(hit)
+        out
     }
 }
 private class P234VerificationDependency <: CkbP3VerificationInputProvider {
@@ -129,6 +143,68 @@ private class P234PromotionDependency <: CkbPortablePromotionBackend {
 
 @Test
 public class CkbReproCliAdaptersTest {
+    @TestCase
+    public func r6O1aPos01ParityBuildPersistsCanonicalManifest(): Unit {
+        let root = Path("target/r6-o1a-parity")
+        if (exists(root)) { remove(root, recursive: true) }
+        Directory.create(root, recursive: true)
+        let canonicalRoot = canonicalize(root).toString()
+        let logical = p234LogicalManifest()
+        let logicalPath = Path(canonicalRoot).join("logical.json")
+        let output = Path(canonicalRoot).join("parity-资料🙂.json")
+        File.writeTo(logicalPath,
+            renderCkbLogicalSnapshotManifest(logical).toArray())
+        let parity = P234ParityDependency()
+        let production = newCkbP3ProductionAdapter(P234VectorDependency(),
+            P234SnapshotDependency(), parity, P234VerificationDependency(),
+            CkbReleasePathPolicy())
+        let args = ["ckb-retrieval-parity", "--mode", "build",
+            "--logical-manifest", logicalPath.toString(), "--output",
+            output.toString(), "--rest-endpoint", "http://127.0.0.1:1",
+            "--mcp-stdio-command", "fixture", "--mcp-http-endpoint",
+            "http://127.0.0.1:2"]
+        let built = runCkbP3Cli(args, production)
+        @Expect(built.ok, true)
+        @Expect(built.output.contains("\"ok\""), false)
+        let parsed = parseCkbRetrievalParityManifest(File.readFrom(output))
+        @Expect(parsed[0].ok, true)
+        @Expect(parsed[1].knowledgeVersion, logical.portableKnowledgeVersion)
+        @Expect(runCkbP3Cli(args, production).diagnostic,
+            "p3_output_path_invalid")
+        remove(root, recursive: true)
+    }
+
+    @TestCase
+    public func r6O1aNeg01ParityMismatchAndInvalidUtf8PublishNothing(): Unit {
+        let root = Path("target/r6-o1a-parity-negative")
+        if (exists(root)) { remove(root, recursive: true) }
+        Directory.create(root, recursive: true)
+        let canonicalRoot = canonicalize(root).toString()
+        let logical = p234LogicalManifest()
+        let logicalPath = Path(canonicalRoot).join("logical.json")
+        File.writeTo(logicalPath,
+            renderCkbLogicalSnapshotManifest(logical).toArray())
+        for (invalidUtf8 in [false, true]) {
+            let parity = P234ParityDependency()
+            parity.mismatch = !invalidUtf8; parity.invalidUtf8 = invalidUtf8
+            let output = Path(canonicalRoot).join(
+                if (invalidUtf8) { "invalid.json" } else { "mismatch.json" })
+            let production = newCkbP3ProductionAdapter(P234VectorDependency(),
+                P234SnapshotDependency(), parity,
+                P234VerificationDependency(), CkbReleasePathPolicy())
+            let result = runCkbP3Cli(["ckb-retrieval-parity", "--mode", "build",
+                "--logical-manifest", logicalPath.toString(), "--output",
+                output.toString(), "--rest-endpoint", "http://127.0.0.1:1",
+                "--mcp-stdio-command", "fixture", "--mcp-http-endpoint",
+                "http://127.0.0.1:2"], production)
+            @Expect(result.diagnostic, if (invalidUtf8) {
+                "invalid_response_encoding"
+            } else { "retrieval_parity_result_mismatch" })
+            @Expect(exists(output), false)
+        }
+        remove(root, recursive: true)
+    }
+
     @TestCase
     public func p2Bnd01CliAdapterRejectsAmbiguousArgsAndKeepsUtf8(): Unit {
         let fake = P234ReleaseCliFake()
@@ -250,6 +326,18 @@ public class CkbReproCliAdaptersTest {
             "--rest-endpoint", "http://127.0.0.1:1", "--mcp-stdio-command", "cmd",
             "--mcp-http-endpoint", "http://127.0.0.1:2"
         ], fake).ok, true)
+        let build = parseCkbP3CliOptions([
+            "ckb-retrieval-parity", "--mode", "build",
+            "--logical-manifest", "/tmp/logical-资料🙂.json",
+            "--output", "/tmp/parity-资料🙂.json",
+            "--rest-endpoint", "http://127.0.0.1:1",
+            "--mcp-stdio-command", "cmd",
+            "--mcp-http-endpoint", "http://127.0.0.1:2"])
+        @Expect(build.diagnostic, "ok")
+        @Expect(build.parityAction, "build")
+        @Expect(parseCkbP3CliOptions([
+            "ckb-retrieval-parity", "--mode", "invalid"]).diagnostic,
+            "invalid_argument_value:--mode")
 
         let root = Path("target/p234-p3-production")
         if (exists(root)) { remove(root, recursive: true) }
@@ -290,6 +378,48 @@ public class CkbReproCliAdaptersTest {
         ], fake)
         @Expect(result.ok, true)
         @Expect(result.output.contains("\"ok\":true"), true)
+    }
+
+    @TestCase
+    public func p3ParityBuildConsumesFrozenLogicalObjectAfterPathDrift(): Unit {
+        let root = Path("target/p234-p3-frozen-logical")
+        if (exists(root)) { remove(root, recursive: true) }
+        Directory.create(root, recursive: true)
+        let canonicalRoot = Path(canonicalize(root).toString())
+        let logicalPath = canonicalRoot.join("logical.json")
+        let outputPath = canonicalRoot.join("parity.json")
+        File.writeTo(logicalPath, "drifted-invalid-json".toArray())
+        let logical = p234LogicalManifest()
+        let backend = P234ParityDependency()
+        let noFrozen: CkbP3CliAdapter = CkbP3ProductionAdapter("parity",
+            None, None, Some<CkbRetrievalParityBackend>(backend), None,
+            CkbReleasePathPolicy(), None, None)
+        let args = [
+            "ckb-retrieval-parity", "--mode", "build",
+            "--logical-manifest", logicalPath.toString(),
+            "--output", outputPath.toString(),
+            "--rest-endpoint", "http://127.0.0.1:18890/v1/cangjie/syntax-query",
+            "--mcp-stdio-command", "/tmp/stdio.json",
+            "--mcp-http-endpoint", "http://127.0.0.1:18890/mcp"
+        ]
+        @Expect(executeCkbP3CliAdapter(args, noFrozen).diagnostic,
+            "p3_logical_manifest_authority_required")
+        let adapter: CkbP3CliAdapter = CkbP3ProductionAdapter("parity",
+            None, None, Some<CkbRetrievalParityBackend>(backend), None,
+            CkbReleasePathPolicy(), None,
+            Some<CkbLogicalSnapshotManifest>(logical))
+        try {
+            let result = executeCkbP3CliAdapter(args, adapter)
+            @Expect(result.ok, true)
+            let persisted = parseCkbRetrievalParityManifest(
+                File.readFrom(outputPath))
+            @Expect(persisted[0].ok, true)
+            @Expect(persisted[1].logicalManifestHash, logical.manifestHash)
+            @Expect(persisted[1].knowledgeVersion,
+                logical.portableKnowledgeVersion)
+        } finally {
+            if (exists(root)) { remove(root, recursive: true) }
+        }
     }
 
     @TestCase
@@ -694,6 +824,31 @@ private func p234LongControlSummary(): String {
 }
 
 private func p234Hash(value: String): String { benchmarkGapSha256(value) }
+
+private func p234LogicalManifest(): CkbLogicalSnapshotManifest {
+    let value = CkbLogicalSnapshotManifest()
+    value.schemaVersion = "ckb-logical-snapshot-v1"
+    value.sourceState = CkbLogicalSnapshotSourceStates.PORTABLE_VECTOR_ARTIFACT
+    value.portableKnowledgeVersion = "portable-资料🙂-v1"
+    value.p4PortableProofHash = p234Hash("p4")
+    value.p3VectorProofHash = p234Hash("vector")
+    value.vectorState = EmbeddingProviderState.READY
+    value.vectorCollection = "portable-v1"
+    value.vectorCount = ckbReproReleaseRecordCount()
+    value.vectorDimension = 1024
+    value.rawCount = 1; value.normalizedCount = 1
+    value.normalizedChecksum = p234Hash("normalized")
+    value.indexCount = 1; value.graphNodeCount = 0; value.graphEdgeCount = 0
+    value.activePointerHash = p234Hash("pointer")
+    value.contaminationProofHash = p234Hash("contamination")
+    let asset = CkbLogicalSnapshotAsset()
+    asset.relativePath = "transactions/portable/COMMIT"
+    asset.size = 1; asset.sha256 = p234Hash("asset")
+    value.assets.add(asset)
+    let built = buildCkbLogicalSnapshotManifest(value)
+    if (!built.ok) { return CkbLogicalSnapshotManifest() }
+    value
+}
 
 private func p234LegacyFields(values: Array<String>): String {
     var out = ""

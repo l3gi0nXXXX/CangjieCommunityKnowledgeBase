@@ -1019,6 +1019,50 @@ public func ckbReproObservedEnvironmentProjectionHash(
         "\"attestationAuthorityHash\":\"\"").toArray())
 }
 
+public func freezeCkbReproEnvironmentLock(planned: CkbReproEnvironmentLock,
+    compositionManifestHash: String,
+    authority: CkbReproVerifiedAttestationAuthority,
+    probe: CkbReproEnvironmentProbe,
+    repositoryRoot: String):
+    (CkbReproContractResult, CkbReproEnvironmentLock) {
+    let empty = CkbReproEnvironmentLock()
+    let plannedCheck = validateCkbReproEnvironmentLock(planned)
+    if (!plannedCheck.ok || planned.identityStatus != "planned" ||
+        planned.compositionManifestHash != "" ||
+        !p6HashValid(compositionManifestHash)) {
+        return (p6Failure("environment_freeze_input_invalid"), empty)
+    }
+    let cloned = parseCkbReproEnvironmentLock(
+        renderCkbReproEnvironmentLock(planned).toArray())
+    if (!cloned[0].ok) { return (cloned[0], empty) }
+    let expected = cloned[1]
+    expected.identityStatus = "frozen"
+    expected.compositionManifestHash = compositionManifestHash
+    let projectionHash = ckbReproObservedEnvironmentProjectionHash(expected)
+    if (authority.authorityAnchorHash() != planned.attestationAuthorityHash ||
+        authority.observedEnvironmentProjectionHash() != projectionHash) {
+        return (p6Failure("environment_attestation_authority_mismatch"), empty)
+    }
+    let observed = try {
+        probe.inspect(expected, projectionHash, repositoryRoot)
+    } catch (_: Exception) {
+        return (p6Failure("environment_probe_unavailable"), empty)
+    }
+    if (!observed.ok || observed.attestedInputHash != projectionHash) {
+        return (p6Failure(if (observed.diagnostic == "") {
+            "environment_probe_unavailable"
+        } else { observed.diagnostic }), empty)
+    }
+    let checked = validateCkbReproEnvironmentLock(observed.observed,
+        mode: "execution")
+    if (!checked.ok) { return (checked, empty) }
+    if (renderCkbReproEnvironmentLock(observed.observed) !=
+        renderCkbReproEnvironmentLock(expected)) {
+        return (p6Failure("environment_identity_drift"), empty)
+    }
+    (checked, observed.observed)
+}
+
 public func renderCkbProviderTemplate(lock: CkbReproEnvironmentLock): String {
     "GLM_PROVIDER=${lock.glmProvider}\n" +
     "GLM_BASE_URL=${lock.glmBaseUrl}\n" +

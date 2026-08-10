@@ -23,6 +23,7 @@ public interface CkbReproMainCliAdapter {
     func runBundle(args: Array<String>): CkbReproMainCliResult
     func runPublishGate(args: Array<String>): CkbReproMainCliResult
     func runP8(args: Array<String>): CkbReproMainCliResult
+    func runCompositionSeal(args: Array<String>): CkbReproMainCliResult
 }
 
 private class CkbReproProductionMainCliAdapter <: CkbReproMainCliAdapter {
@@ -132,6 +133,10 @@ private class CkbReproProductionMainCliAdapter <: CkbReproMainCliAdapter {
     public func runP8(args: Array<String>): CkbReproMainCliResult {
         runCkbP8ProductionMainCli(args)
     }
+    public func runCompositionSeal(args: Array<String>): CkbReproMainCliResult {
+        let execution = runCkbReproCompositionSealCli(args)
+        CkbReproMainCliResult(true, execution.exitCode, execution.output)
+    }
 }
 
 public func executeCkbReproMainCli(command: String, args: Array<String>,
@@ -165,6 +170,9 @@ public func executeCkbReproMainCli(command: String, args: Array<String>,
     }
     if (command == "ckb-repro-verify") {
         return adapter.runP8(args)
+    }
+    if (command == "ckb-repro-composition-seal") {
+        return adapter.runCompositionSeal(args)
     }
     CkbReproMainCliResult(false, 0, "")
 }

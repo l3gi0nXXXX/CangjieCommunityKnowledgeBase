@@ -57,6 +57,7 @@ public func ckbCommandNeedsNativeTlsBootstrap(command: String): Bool {
         command == "ckb-portable-vector-build" ||
         command == "ckb-qdrant-snapshot" ||
         command == "ckb-retrieval-parity" ||
+        command == "ckb-repro-composition-seal" ||
         command == "ckb-repro-build" ||
         command == "ckb-repro-promote" ||
         command == "ckb-repro-verify"

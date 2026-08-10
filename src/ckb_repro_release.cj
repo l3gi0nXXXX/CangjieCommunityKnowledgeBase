@@ -339,6 +339,7 @@ public class CkbReleaseCliOptions {
     public var output: String = ""
     public var archive: String = ""
     public var targetRoot: String = ""
+    public var manifestOutput: String = ""
     public var json: Bool = false
     public var diagnostic: String = "not_parsed"
     public init() {}
@@ -396,6 +397,7 @@ public func parseCkbReleaseCliOptions(args: Array<String>): CkbReleaseCliOptions
         else if (arg == "--output") { out.output = value }
         else if (arg == "--archive") { out.archive = value }
         else if (arg == "--target-root") { out.targetRoot = value }
+        else if (arg == "--manifest-output") { out.manifestOutput = value }
         i += 2
     }
     out.diagnostic = validateCkbReleaseCliOptions(out); out
@@ -749,6 +751,12 @@ public class CkbReleaseProductionAdapter <: CkbReleaseCliAdapter {
     public func execute(options: CkbReleaseCliOptions): CkbReleaseCliOperationResult {
         let out = CkbReleaseCliOperationResult()
         if (options.mode == "proof") { return this.buildLogicalProof(options) }
+        if (options.manifestOutput != "" &&
+            ckbLogicalSnapshotNewPathDiagnostic(options.manifestOutput,
+                this.policy, "", "output") != "ok") {
+            out.diagnostic = "logical_snapshot_manifest_output_path_invalid"
+            return out
+        }
         let result = if (options.mode == "export") {
             let loaded = loadCkbLogicalSnapshotCliProofs(
                 options.logicalProof, options.vectorProof)
@@ -758,6 +766,21 @@ public class CkbReleaseProductionAdapter <: CkbReleaseCliAdapter {
         } else {
             importCkbLogicalSnapshot(options.archive, options.targetRoot,
                 this.backend, pathPolicy: this.policy)
+        }
+        if (result.ok && options.manifestOutput != "") {
+            let persisted = ckbReleasePersistVerifiedManifest(
+                if (options.mode == "export") { options.output }
+                else { options.archive }, options.manifestOutput, this.backend)
+            if (persisted != "ok") {
+                try {
+                    let owned = if (options.mode == "export") {
+                        options.output
+                    } else { options.targetRoot }
+                    if (exists(Path(owned))) { remove(Path(owned), recursive: true) }
+                } catch (_: Exception) {}
+                out.diagnostic = persisted
+                return out
+            }
         }
         out.ok = result.ok; out.diagnostic = result.diagnostic
         out.summary = "version=${result.activeVersion} raw=${result.rawCount} " +
@@ -938,10 +961,47 @@ public func renderCkbReleaseCliJson(result: CkbReleaseCliOperationResult): Strin
 
 private func ckbReleaseCliAllowed(mode: String, arg: String): Bool {
     if (mode == "export") { return ["--store-root", "--logical-proof",
-        "--vector-proof", "--output"].contains(arg) }
+        "--vector-proof", "--output", "--manifest-output"].contains(arg) }
     if (mode == "proof") { return ["--store-root", "--build-proof",
         "--vector-proof", "--clean-manifest", "--output"].contains(arg) }
-    ["--archive", "--target-root"].contains(arg)
+    ["--archive", "--target-root", "--manifest-output"].contains(arg)
+}
+
+private func ckbReleasePersistVerifiedManifest(archivePath: String,
+    outputPath: String, backend: CkbReleaseArchiveBackend): String {
+    let inspected = inspectCkbReleaseArchive(backend, archivePath)
+    if (!inspected.ok) { return inspected.diagnostic }
+    let exact = backend.readRegular(archivePath, "RELEASE-MANIFEST.json")
+    if (!exact.ok) { return "logical_snapshot_manifest_read_failed" }
+    let parsed = parseCkbLogicalSnapshotManifest(exact.bytes)
+    if (!parsed[0].ok || parsed[1].manifestHash !=
+        inspected.manifest.manifestHash) {
+        return if (!parsed[0].ok) { parsed[0].diagnostic }
+            else { "logical_snapshot_archive_manifest_mismatch" }
+    }
+    let temporary = ckbLogicalSnapshotTemporaryPath(outputPath,
+        inspected.manifest.manifestHash, "manifest")
+    var ownsTemporary = false
+    try {
+        if (exists(Path(temporary))) {
+            return "logical_snapshot_temporary_path_exists"
+        }
+        File.writeTo(Path(temporary), exact.bytes)
+        ownsTemporary = true
+        let readback = File.readFrom(Path(temporary))
+        if (readback != exact.bytes) {
+            return "logical_snapshot_manifest_output_verification_failed"
+        }
+        rename(temporary, to: outputPath, overwrite: false)
+        ownsTemporary = false
+        "ok"
+    } catch (_: Exception) { "logical_snapshot_manifest_output_commit_failed" }
+    finally {
+        if (ownsTemporary && exists(Path(temporary))) {
+            try { remove(Path(temporary), recursive: true) }
+            catch (_: Exception) {}
+        }
+    }
 }
 
 private func ckbReleaseCliFailure(diagnostic: String, runtime: Bool, json: Bool): CkbReleaseCliExecution {

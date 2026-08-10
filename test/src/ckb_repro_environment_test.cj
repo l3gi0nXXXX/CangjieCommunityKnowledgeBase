@@ -163,6 +163,47 @@ private class P6FakeSignatureVerifier <:
 @Test
 public class CkbReproEnvironmentTest {
     @TestCase
+    public func r6O1aFreezeUsesIndependentAuthorityAndObservedIdentity(): Unit {
+        let compositionHash = p6Hash("composition-资料🙂")
+        let planned = p6FrozenEnvironment()
+        planned.identityStatus = "planned"
+        planned.compositionManifestHash = ""
+        planned.attestationAuthorityHash = ""
+        let expectedParsed = parseCkbReproEnvironmentLock(
+            renderCkbReproEnvironmentLock(planned).toArray())
+        @Expect(expectedParsed[0].ok, true)
+        let expected = expectedParsed[1]
+        expected.identityStatus = "frozen"
+        expected.compositionManifestHash = compositionHash
+        let projection = ckbReproObservedEnvironmentProjectionHash(expected)
+        let authorityBytes = p6AuthorityManifest(
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", projection).toArray()
+        let anchor = p6Hash(try { String.fromUtf8(authorityBytes) }
+            catch (_: Exception) { "" })
+        planned.attestationAuthorityHash = anchor
+        expected.attestationAuthorityHash = anchor
+        let authority = loadCkbReproVerifiedAttestationAuthority(
+            authorityBytes, anchor)
+        @Expect(authority[0].ok, true)
+        let observed = CkbReproEnvironmentProbeResult()
+        observed.ok = true; observed.diagnostic = "ok"
+        observed.observed = expected
+        observed.attestedInputHash = projection
+        let probe = P6FakeEnvironmentProbe(observed)
+        let frozen = freezeCkbReproEnvironmentLock(planned,
+            compositionHash, authority[1], probe, "/tmp/组合🙂")
+        @Expect(frozen[0].ok, true)
+        @Expect(frozen[1].identityStatus, "frozen")
+        @Expect(frozen[1].compositionManifestHash, compositionHash)
+        @Expect(probe.calls, 1)
+
+        observed.observed.glmModel = "drift"
+        @Expect(freezeCkbReproEnvironmentLock(planned,
+            compositionHash, authority[1], probe, "/tmp/组合🙂")[0]
+            .diagnostic, "environment_provider_identity_invalid")
+    }
+
+    @TestCase
     public func p6Ut01EnvironmentAndAuthorityContractsAreCanonical(): Unit {
         let environment = parseCkbReproEnvironmentLock(
             p6Read("../reproducibility/manifests/environment-lock.json"))

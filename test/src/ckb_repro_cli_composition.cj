@@ -1,7 +1,7 @@
 package cangjie_community_knowledge_base_test
 
 import std.collection.{ArrayList, HashSet}
-import std.fs.Path
+import std.fs.{Path, canonicalize, exists}
 import stdx.encoding.json.*
 
 public class CkbReproCliCompositionAsset {
@@ -61,6 +61,97 @@ public class CkbReproCliCompositionAuthority {
     public var manifestPath: String = ""
     public var manifestSha256: String = ""
     public init() {}
+}
+
+public class CkbReproCompositionSealAssetSpec {
+    public var role: String = ""
+    public var relativePath: String = ""
+    public init() {}
+}
+
+public class CkbReproCompositionSealOptions {
+    public var root: String = ""
+    public var mode: String = ""
+    public var json: Bool = false
+    public var diagnostic: String = "not_parsed"
+    public let assets = ArrayList<CkbReproCompositionSealAssetSpec>()
+    public init() {}
+}
+
+public class CkbReproCompositionSealExecution {
+    public var ok: Bool = false
+    public var exitCode: Int64 = 2
+    public var diagnostic: String = "not_run"
+    public var output: String = ""
+    public init() {}
+}
+
+public interface CkbReproCompositionSealCommitHook {
+    func beforeCompositionCommit(): Unit
+    func afterTempAcquired(path: String, kind: String): Unit
+    func afterTargetPublished(path: String, kind: String): Unit
+    func forceParentFsyncFailure(kind: String): Bool
+    func forceInitialTempIdentityFailure(kind: String): Bool
+    // Returning true simulates a process crash after the composition manifest
+    // is durable but before the environment lock publication point.
+    func afterCompositionCommitted(compositionPath: String,
+        expectedMode: String): Bool
+}
+
+private class CkbReproCompositionSealNoopCommitHook <:
+    CkbReproCompositionSealCommitHook {
+    public func beforeCompositionCommit(): Unit {}
+    public func afterTempAcquired(path: String, kind: String): Unit {}
+    public func afterTargetPublished(path: String, kind: String): Unit {}
+    public func forceParentFsyncFailure(kind: String): Bool { false }
+    public func forceInitialTempIdentityFailure(kind: String): Bool { false }
+    public func afterCompositionCommitted(compositionPath: String,
+        expectedMode: String): Bool { false }
+}
+
+private class CkbReproCompositionTempFile {
+    public var ok: Bool = false
+    public var path: String = ""
+    public var diagnostic: String = "composition_temporary_open_failed"
+    public var descriptor: CkbReproOwnedTempDescriptor =
+        CkbReproOwnedTempDescriptor()
+    public init() {}
+}
+
+private func ckbCompositionAcquireTempFile(target: String, kind: String,
+    manifestHash: String,
+    hook: CkbReproCompositionSealCommitHook):
+    CkbReproCompositionTempFile {
+    let out = CkbReproCompositionTempFile()
+    let token = manifestHash.replace("sha256:", "")
+    let targetPath = Path(target)
+    let parent = targetPath.parent.toString()
+    let targetName = targetPath.fileName
+    for (index in 0..4096) {
+        let tempName = "${targetName}.tmp-${kind}-${token}-${index}"
+        let descriptor = CkbReproOwnedTempDescriptor()
+        descriptor.acquire(parent, tempName, targetName,
+            forceInitialIdentityFailure:
+                hook.forceInitialTempIdentityFailure(kind))
+        if (descriptor.ok) {
+            out.ok = true; out.path = Path(parent).join(tempName).toString()
+            out.descriptor = descriptor
+            hook.afterTempAcquired(out.path, kind)
+            return out
+        }
+        if (descriptor.diagnostic != "composition_temporary_exists") {
+            out.diagnostic = descriptor.diagnostic
+            _ = descriptor.cleanup()
+            return out
+        }
+        descriptor.close()
+    }
+    out
+}
+
+private func ckbCompositionReleaseTempFile(
+    claim: CkbReproCompositionTempFile): Unit {
+    if (claim.ok) { _ = claim.descriptor.cleanup() }
 }
 
 public func parseCkbReproCliCompositionManifest(bytes: Array<UInt8>):
@@ -500,6 +591,337 @@ public func parseCkbReproCliRunnerAuthority(bytes: Array<UInt8>, mode: String):
     (ckbCliCompositionSuccess(), out)
 }
 
+public func parseCkbReproCompositionSealOptions(args: Array<String>):
+    CkbReproCompositionSealOptions {
+    let out = CkbReproCompositionSealOptions()
+    if (args.size == 0 || args[0] != "ckb-repro-composition-seal") {
+        out.diagnostic = "composition_seal_command_required"; return out
+    }
+    let seen = HashSet<String>()
+    var i: Int64 = 1
+    while (i < args.size) {
+        let arg = args[i]
+        if (arg == "--json") {
+            if (seen.contains(arg)) {
+                out.diagnostic = "duplicate_argument:${arg}"; return out
+            }
+            seen.add(arg); out.json = true; i += 1; continue
+        }
+        if (arg != "--root" && arg != "--mode" && arg != "--asset") {
+            out.diagnostic = "unknown_argument:${arg}"; return out
+        }
+        if (arg != "--asset" && seen.contains(arg)) {
+            out.diagnostic = "duplicate_argument:${arg}"; return out
+        }
+        if (i + 1 >= args.size || args[i + 1].startsWith("--")) {
+            out.diagnostic = "missing_argument_value:${arg}"; return out
+        }
+        if (arg != "--asset") { seen.add(arg) }
+        let value = args[i + 1]
+        if (arg == "--root") { out.root = value }
+        else if (arg == "--mode") { out.mode = value }
+        else {
+            let separator = match (value.indexOf("=")) {
+                case Some(index) => index
+                case None => -1
+            }
+            if (separator <= 0 || separator >= value.toRuneArray().size - 1) {
+                out.diagnostic = "composition_asset_argument_invalid"; return out
+            }
+            let runes = value.toRuneArray()
+            let spec = CkbReproCompositionSealAssetSpec()
+            spec.role = String(runes[0..separator])
+            spec.relativePath = String(runes[separator + 1..runes.size])
+            out.assets.add(spec)
+        }
+        i += 2
+    }
+    out.diagnostic = validateCkbReproCompositionSealOptions(out)
+    out
+}
+
+public func validateCkbReproCompositionSealOptions(
+    options: CkbReproCompositionSealOptions): String {
+    let expected = ckbCliCompositionRoles(options.mode)
+    if (options.root == "" || !Path(options.root).isAbsolute() ||
+        expected.size == 0 || options.assets.size != expected.size) {
+        return "composition_seal_options_invalid"
+    }
+    let roles = HashSet<String>(); let paths = HashSet<String>()
+    for (spec in options.assets) {
+        if (!expected.contains(spec.role) || roles.contains(spec.role) ||
+            paths.contains(spec.relativePath) ||
+            !validateCkbReproBundleRelativePath(spec.relativePath).ok ||
+            !ckbCliCompositionRolePath(spec.role, spec.relativePath)) {
+            return "composition_asset_argument_invalid"
+        }
+        roles.add(spec.role); paths.add(spec.relativePath)
+    }
+    "ok"
+}
+
+public func runCkbReproCompositionSealCli(args: Array<String>):
+    CkbReproCompositionSealExecution {
+    runCkbReproCompositionSealCliWithProbe(args,
+        CkbReproFilesystemEnvironmentProbe())
+}
+
+public func runCkbReproCompositionSealCliWithProbe(args: Array<String>,
+    probe: CkbReproEnvironmentProbe): CkbReproCompositionSealExecution {
+    runCkbReproCompositionSealCliWithProbeAndHook(args, probe,
+        CkbReproCompositionSealNoopCommitHook())
+}
+
+public func runCkbReproCompositionSealCliWithProbeAndHook(
+    args: Array<String>, probe: CkbReproEnvironmentProbe,
+    hook: CkbReproCompositionSealCommitHook):
+    CkbReproCompositionSealExecution {
+    let options = parseCkbReproCompositionSealOptions(args)
+    if (options.diagnostic != "ok") {
+        return ckbCompositionSealFailure(options.diagnostic,
+            options.json || args.contains("--json"), 2)
+    }
+    let canonicalRoot = try { canonicalize(Path(options.root)).toString() }
+        catch (_: Exception) { "" }
+    if (canonicalRoot == "" || canonicalRoot != options.root) {
+        return ckbCompositionSealFailure("composition_root_invalid",
+            options.json, 1)
+    }
+    let manifest = CkbReproCliCompositionManifest()
+    manifest.schemaVersion = "ckb-repro-cli-composition-v1"
+    manifest.mode = options.mode
+    for (role in ckbCliCompositionRoles(options.mode)) {
+        for (spec in options.assets) {
+            if (spec.role != role) { continue }
+            let read = ckbCliCompositionRead(canonicalRoot,
+                spec.relativePath, 536870912)
+            if (!read[0].ok) {
+                return ckbCompositionSealFailure(read[0].diagnostic,
+                    options.json, 1)
+            }
+            let asset = CkbReproCliCompositionAsset()
+            asset.role = role; asset.relativePath = spec.relativePath
+            asset.size = read[1].size
+            asset.sha256 = ckbReproBundleHash(read[1])
+            manifest.assets.add(asset)
+        }
+    }
+    let checked = validateCkbReproCliCompositionManifest(manifest)
+    if (!checked.ok) {
+        return ckbCompositionSealFailure(checked.diagnostic, options.json, 1)
+    }
+    let manifestText = renderCkbReproCliCompositionManifest(manifest)
+    let manifestHash = ckbReproBundleHash(manifestText.toArray())
+    let manifestPath = Path(canonicalRoot).join(
+        "reproducibility/manifests/runtime-composition.json").toString()
+    let environmentPath = Path(canonicalRoot).join(
+        "reproducibility/manifests/environment-lock.json").toString()
+    let environmentAlreadyExists = exists(Path(environmentPath))
+    var manifestClaim = CkbReproCompositionTempFile()
+    var environmentClaim = CkbReproCompositionTempFile()
+    try {
+        if (exists(Path(manifestPath))) {
+            manifestClaim = ckbCompositionAcquireTempFile(
+                manifestPath, "manifest", manifestHash, hook)
+            if (!manifestClaim.ok ||
+                !manifestClaim.descriptor.syncParentAndValidate(forceFailure:
+                    hook.forceParentFsyncFailure("manifest"))) {
+                return ckbCompositionSealFailure(if (!manifestClaim.ok) {
+                    manifestClaim.diagnostic
+                } else { manifestClaim.descriptor.diagnostic }, options.json, 1)
+            }
+            let recovery = manifestClaim.descriptor.readPublicTarget(
+                64 * 1024)
+            if (!recovery[0]) {
+                return ckbCompositionSealFailure(
+                    "composition_recovery_read_failed", options.json, 1)
+            }
+            if (recovery[1] != manifestText.toArray()) {
+                return ckbCompositionSealFailure(
+                    "composition_recovery_bytes_mismatch", options.json, 1)
+            }
+            if (ckbReproBundleHash(recovery[1]) != manifestHash) {
+                return ckbCompositionSealFailure(
+                    "composition_recovery_hash_mismatch", options.json, 1)
+            }
+        } else {
+            manifestClaim = ckbCompositionAcquireTempFile(
+                manifestPath, "manifest", manifestHash, hook)
+            if (!manifestClaim.ok) {
+                return ckbCompositionSealFailure(
+                    manifestClaim.diagnostic, options.json, 1)
+            }
+            if (!manifestClaim.descriptor.createPayload(
+                    manifestText.toArray()) ||
+                !parseCkbReproCliCompositionManifest(
+                    manifestText.toArray())[0].ok) {
+                return ckbCompositionSealFailure(
+                    "composition_readback_failed", options.json, 1)
+            }
+            hook.beforeCompositionCommit()
+            if (!manifestClaim.descriptor.publish()) {
+                return ckbCompositionSealFailure(
+                    manifestClaim.descriptor.diagnostic, options.json, 1)
+            }
+            hook.afterTargetPublished(manifestPath, "manifest")
+            if (!manifestClaim.descriptor.syncAndValidate(forceFailure:
+                    hook.forceParentFsyncFailure("manifest"))) {
+                return ckbCompositionSealFailure(
+                    manifestClaim.descriptor.diagnostic, options.json, 1)
+            }
+            let publicManifest = manifestClaim.descriptor.readPublicTarget(
+                64 * 1024)
+            if (!publicManifest[0] || publicManifest[1] != manifestText.toArray()) {
+                return ckbCompositionSealFailure(
+                    "composition_public_reload_failed", options.json, 1)
+            }
+        }
+        if (hook.afterCompositionCommitted(manifestPath, options.mode)) {
+            return ckbCompositionSealFailure(
+                "composition_simulated_crash", options.json, 1)
+        }
+        let plannedRead = ckbCliCompositionRead(canonicalRoot,
+            "reproducibility/manifests/environment-plan.json", 128 * 1024)
+        if (!plannedRead[0].ok) {
+            return ckbCompositionSealFailure(plannedRead[0].diagnostic,
+                options.json, 1)
+        }
+        let planned = parseCkbReproEnvironmentLock(plannedRead[1])
+        if (!planned[0].ok) {
+            return ckbCompositionSealFailure(planned[0].diagnostic,
+                options.json, 1)
+        }
+        let authorityRead = ckbCliCompositionRead(canonicalRoot,
+            planned[1].attestationAuthorityManifestPath, 64 * 1024)
+        if (!authorityRead[0].ok) {
+            return ckbCompositionSealFailure(authorityRead[0].diagnostic,
+                options.json, 1)
+        }
+        let authority = loadCkbReproVerifiedAttestationAuthority(
+            authorityRead[1], planned[1].attestationAuthorityHash)
+        if (!authority[0].ok) {
+            return ckbCompositionSealFailure(authority[0].diagnostic,
+                options.json, 1)
+        }
+        let frozen = freezeCkbReproEnvironmentLock(planned[1], manifestHash,
+            authority[1], probe, canonicalRoot)
+        if (!frozen[0].ok) {
+            return ckbCompositionSealFailure(frozen[0].diagnostic,
+                options.json, 1)
+        }
+        let environmentText = renderCkbReproEnvironmentLock(frozen[1])
+        environmentClaim = ckbCompositionAcquireTempFile(
+            environmentPath, "environment", manifestHash, hook)
+        if (!environmentClaim.ok) {
+            return ckbCompositionSealFailure(
+                environmentClaim.diagnostic, options.json, 1)
+        }
+        if (!environmentAlreadyExists &&
+            !environmentClaim.descriptor.createPayload(environmentText.toArray())) {
+            return ckbCompositionSealFailure(
+                "composition_readback_failed", options.json, 1)
+        }
+        let environmentCanonicalBytes = environmentText.toArray()
+        let parsedEnvironment = parseCkbReproEnvironmentLock(
+            environmentCanonicalBytes)
+        if (!parsedEnvironment[0].ok ||
+            !validateCkbReproEnvironmentLock(parsedEnvironment[1],
+                mode: "execution").ok) {
+            return ckbCompositionSealFailure("composition_readback_failed",
+                options.json, 1)
+        }
+        if (environmentAlreadyExists) {
+            if (!environmentClaim.descriptor.syncParentAndValidate(forceFailure:
+                    hook.forceParentFsyncFailure("environment"))) {
+                return ckbCompositionSealFailure(
+                    environmentClaim.descriptor.diagnostic, options.json, 1)
+            }
+        } else {
+            // The environment lock is the sole publication point. The loader
+            // reads it first, so a composition-only crash is not executable.
+            if (!environmentClaim.descriptor.publish()) {
+                return ckbCompositionSealFailure(
+                    environmentClaim.descriptor.diagnostic, options.json, 1)
+            }
+            hook.afterTargetPublished(environmentPath, "environment")
+            if (!environmentClaim.descriptor.syncAndValidate(forceFailure:
+                    hook.forceParentFsyncFailure("environment"))) {
+                return ckbCompositionSealFailure(
+                    environmentClaim.descriptor.diagnostic, options.json, 1)
+            }
+        }
+        if (!manifestClaim.descriptor.syncParentAndValidate()) {
+            return ckbCompositionSealFailure(
+                manifestClaim.descriptor.diagnostic, options.json, 1)
+        }
+        // Environment is the publication point. Reload it first, then the
+        // composition anchor, through the bound public parent.
+        let publicEnvironment = environmentClaim.descriptor.readPublicTarget(
+            128 * 1024)
+        let publicComposition = manifestClaim.descriptor.readPublicTarget(
+            64 * 1024)
+        if (!publicEnvironment[0] ||
+            publicEnvironment[1] != environmentCanonicalBytes ||
+            !publicComposition[0] ||
+            publicComposition[1] != manifestText.toArray() ||
+            ckbReproBundleHash(publicComposition[1]) != manifestHash) {
+            return ckbCompositionSealFailure(
+                "composition_public_pair_reload_failed", options.json, 1)
+        }
+    } catch (_: Exception) {
+        return ckbCompositionSealFailure("composition_commit_failed",
+            options.json, 1)
+    } finally {
+        ckbCompositionReleaseTempFile(environmentClaim)
+        ckbCompositionReleaseTempFile(manifestClaim)
+        // A committed composition is an immutable pre-publication anchor.
+        // Never roll it back: another invocation may already have adopted it.
+        // Without the environment-lock publication point it is not executable,
+        // and an exact-input rerun can safely recover it.
+    }
+    let out = CkbReproCompositionSealExecution()
+    out.ok = true; out.exitCode = 0; out.diagnostic = "ok"
+    out.output = ckbCompositionSealRender(true, "ok", options.mode,
+        manifestHash, options.json)
+    out
+}
+
+private func ckbCompositionSealFailure(diagnostic: String, json: Bool,
+    exitCode: Int64): CkbReproCompositionSealExecution {
+    let out = CkbReproCompositionSealExecution()
+    out.exitCode = exitCode; out.diagnostic = diagnostic
+    out.output = ckbCompositionSealRender(false, diagnostic, "", "", json)
+    out
+}
+
+private func ckbCompositionSealRender(ok: Bool, diagnostic: String,
+    mode: String, manifestHash: String, json: Bool): String {
+    if (json) {
+        return "{\"ok\":${ok},\"diagnostic\":\"${ckbCliCompositionJson(diagnostic)}\"," +
+            "\"mode\":\"${ckbCliCompositionJson(mode)}\"," +
+            "\"compositionManifestHash\":\"${manifestHash}\"}"
+    }
+    if (ok) {
+        "CKB reproduction composition sealed. mode=${ckbCliCompositionSafe(mode)} " +
+            "hash=${manifestHash}\n"
+    } else {
+        "CKB reproduction composition seal failed: " +
+            "${ckbCliCompositionSafe(diagnostic)}\n"
+    }
+}
+
+private func ckbCliCompositionSafe(value: String): String {
+    let runes = redactSensitive(value).toRuneArray()
+    let count = if (runes.size < 160) { runes.size } else { 160 }
+    String(runes[0..count])
+}
+
+private func ckbCliCompositionJson(value: String): String {
+    ckbCliCompositionSafe(value).replace("\\", "\\\\")
+        .replace("\"", "\\\"").replace("\n", "\\n")
+        .replace("\r", "\\r").replace("\t", "\\t")
+}
+
 private func ckbCliCompositionRoles(mode: String): Array<String> {
     if (mode == "p3-vector-build") {
         return ["runtime_config", "path_policy", "local_root_map",
@@ -516,6 +938,11 @@ private func ckbCliCompositionRoles(mode: String): Array<String> {
     if (mode == "p3-parity") {
         return ["runtime_config", "path_policy", "local_root_map",
             "api_routes", "path_context", "mcp_stdio_command"]
+    }
+    if (mode == "p3-parity-build") {
+        return ["runtime_config", "path_policy", "local_root_map",
+            "api_routes", "path_context", "mcp_stdio_command",
+            "logical_manifest"]
     }
     if (mode == "p4-build") {
         return ["public_build_input_manifest", "private_build_authority",

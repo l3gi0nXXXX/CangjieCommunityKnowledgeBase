@@ -114,9 +114,18 @@ func ckbReproP3CompositionMode(args: Array<String>): String {
         case "create" => "p3-snapshot-create"
         case "restore" => "p3-snapshot-restore"
         case "verify" => "p3-snapshot-verify"
-        case "parity" => "p3-parity"
+        case "parity" => if (options.parityAction == "build") {
+            "p3-parity-build"
+        } else { "p3-parity" }
         case _ => ""
     }
+}
+
+func ckbReproP3FrozenEndpointsValid(options: CkbP3CliOptions,
+    runtime: CkbRuntimeConfig): Bool {
+    let serviceOrigin = "http://${runtime.serviceBind}:${runtime.servicePort}"
+    options.restEndpoint == serviceOrigin + "/v1/cangjie/syntax-query" &&
+        options.mcpHttpEndpoint == serviceOrigin + "/mcp"
 }
 
 func runCkbReproP3ProductionComposition(args: Array<String>):
@@ -166,6 +175,10 @@ func runCkbReproP3ProductionComposition(args: Array<String>):
     assembly.pathContext = pathContext[1].pathContext
     assembly.pathPolicy = pathContext[1].releasePathPolicy
     if (options.mode == "parity") {
+        if (!ckbReproP3FrozenEndpointsValid(options, runtime[1])) {
+            return ckbReproP3CompositionFailure(
+                "p3_composition_endpoint_mismatch", prepared.json)
+        }
         let stdio = ckbReproCompositionAssetBytes(
             prepared.loaded, "mcp_stdio_command")
         if (!stdio[0]) {
@@ -178,6 +191,19 @@ func runCkbReproP3ProductionComposition(args: Array<String>):
                 parsed[0].diagnostic, prepared.json)
         }
         assembly.stdioSpec = parsed[1]
+        if (options.parityAction == "build") {
+            let logicalBytes = ckbReproCompositionAssetBytes(
+                prepared.loaded, "logical_manifest")
+            let logicalPath = ckbReproCompositionAssetPath(
+                prepared.loaded, "logical_manifest")
+            let logical = parseCkbLogicalSnapshotManifest(logicalBytes[1])
+            if (!logicalBytes[0] || !logicalPath[0] ||
+                options.logicalManifest != logicalPath[1] || !logical[0].ok) {
+                return ckbReproP3CompositionFailure(
+                    "p3_logical_manifest_authority_invalid", prepared.json)
+            }
+            assembly.logicalManifest = Some(logical[1])
+        }
     }
     if (options.mode == "restore" || options.mode == "verify") {
         let manifest = ckbReproCompositionAssetBytes(
@@ -594,7 +620,8 @@ private func ckbReproP8RegisteredCommands(): Array<String> {
         "ckb-repro-bundle", "ckb-repro-publish-gate",
         "ckb-portable-vector-build", "ckb-qdrant-snapshot",
         "ckb-retrieval-parity", "ckb-repro-build", "ckb-repro-promote",
-        "ckb-repro-verify", "cangjie-humaneval-pass1-gate",
+        "ckb-repro-composition-seal", "ckb-repro-verify",
+        "cangjie-humaneval-pass1-gate",
         "cangjie-humaneval-strict-score"]
 }
 

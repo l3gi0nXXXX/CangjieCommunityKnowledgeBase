@@ -44,10 +44,40 @@ private class P0MainCliAdapter <: CkbReproMainCliAdapter {
         this.calls.add("p8:${args[0]}")
         CkbReproMainCliResult(true, 0, "p8 human\n")
     }
+    public func runCompositionSeal(args: Array<String>): CkbReproMainCliResult {
+        this.calls.add("composition:${args[0]}")
+        CkbReproMainCliResult(true, 0, "composition")
+    }
 }
 
 @Test
 public class CkbReproMainCliTest {
+    @TestCase
+    public func p3ParityCompositionSeparatesBuildAuthorityAndFrozenEndpoints(): Unit {
+        let buildArgs = ["ckb-retrieval-parity", "--mode", "build",
+            "--logical-manifest", "/tmp/logical.json",
+            "--output", "/tmp/ckb-p3-frozen-parity.json",
+            "--rest-endpoint", "http://127.0.0.1:18890/v1/cangjie/syntax-query",
+            "--mcp-stdio-command", "/tmp/stdio.json",
+            "--mcp-http-endpoint", "http://127.0.0.1:18890/mcp"]
+        let verifyArgs = ["ckb-retrieval-parity", "--mode", "verify",
+            "--manifest", "/tmp/ckb-p3-frozen-parity.json",
+            "--rest-endpoint", "http://127.0.0.1:18890/v1/cangjie/syntax-query",
+            "--mcp-stdio-command", "/tmp/stdio.json",
+            "--mcp-http-endpoint", "http://127.0.0.1:18890/mcp"]
+        @Expect(ckbReproP3CompositionMode(buildArgs), "p3-parity-build")
+        @Expect(ckbReproP3CompositionMode(verifyArgs), "p3-parity")
+        let runtime = CkbRuntimeConfig()
+        let options = parseCkbP3CliOptions(buildArgs)
+        @Expect(options.diagnostic, "ok")
+        @Expect(ckbReproP3FrozenEndpointsValid(options, runtime), true)
+        let drift = buildArgs.clone()
+        drift[drift.size - 1] = "http://127.0.0.1:18891/mcp"
+        @Expect(ckbReproP3FrozenEndpointsValid(
+            parseCkbP3CliOptions(drift), runtime), false)
+
+    }
+
     @TestCase
     public func p4ProductionBoundaryUsesPublicInputsAndConcretePipeline(): Unit {
         let source = try {
@@ -98,7 +128,7 @@ public class CkbReproMainCliTest {
         }
         for (required in ["newCkbP3RuntimeVectorBuildAdapter(",
             "newCkbP3RuntimeSnapshotAdapter(",
-            "newCkbP3RuntimeParityAdapter(", "runCkbP3Cli("]) {
+            "newCkbP3RuntimeParityAdapterWithLogical(", "runCkbP3Cli("]) {
             @Expect(source.contains(required), true)
         }
         @Expect(source.contains("newCkbP3ProductionAdapter("), false)
@@ -182,14 +212,15 @@ public class CkbReproMainCliTest {
         let adapter = P0MainCliAdapter()
         for (command in ["ckb-portable-vector-build", "ckb-qdrant-snapshot",
             "ckb-retrieval-parity", "ckb-repro-build", "ckb-repro-promote",
-            "ckb-repro-verify"]) {
+            "ckb-repro-verify", "ckb-repro-composition-seal"]) {
             let result = executeCkbReproMainCli(command, [command], adapter)
             @Expect(result.handled, true)
         }
         @Expect(adapter.calls.toArray(), [
             "p3:ckb-portable-vector-build", "p3:ckb-qdrant-snapshot",
             "p3:ckb-retrieval-parity", "p4:ckb-repro-build",
-            "p4:ckb-repro-promote", "p8:ckb-repro-verify"])
+            "p4:ckb-repro-promote", "p8:ckb-repro-verify",
+            "composition:ckb-repro-composition-seal"])
     }
 
     @TestCase
@@ -242,7 +273,8 @@ public class CkbReproMainCliTest {
             "ckb-repro-bundle",
             "ckb-repro-publish-gate", "ckb-portable-vector-build",
             "ckb-qdrant-snapshot", "ckb-retrieval-parity",
-            "ckb-repro-build", "ckb-repro-promote", "ckb-repro-verify"]) {
+            "ckb-repro-build", "ckb-repro-promote", "ckb-repro-verify",
+            "ckb-repro-composition-seal"]) {
             let human = runCkbReproMainCli(command, [command])
             @Expect(human.handled, true)
             @Expect(human.exitCode, 2)
