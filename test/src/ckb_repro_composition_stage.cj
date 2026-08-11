@@ -405,7 +405,7 @@ public func runCkbReproCompositionStageCliWithProbe(args: Array<String>,
             sealArgs.add("--asset")
             sealArgs.add("${role}=${ckbReproCliCompositionRoleRelativePath(role)}")
         }
-        let sealed = if (options.prepareOnly) {
+        let sealed = if (options.prepareOnly || options.worktreeRoot == "") {
             runCkbReproCompositionSealCli(sealArgs.toArray())
         } else {
             let compositionPath = Path(canonicalRoot).join(
