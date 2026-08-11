@@ -347,8 +347,14 @@ public class CkbReproRuntimeCompositionTest {
         let held = root.join("opened-snapshot.bin")
         File.writeTo(source, "original-snapshot-content".toArray())
         let received = ArrayList<UInt8>()
+        let transferEncoding = ArrayList<String>()
+        let contentLength = ArrayList<String>()
         let server = ServerBuilder().addr("127.0.0.1").port(0).build()
         server.distributor.register("/upload", { ctx =>
+            transferEncoding.add(ctx.request.headers.getFirst(
+                "transfer-encoding") ?? "")
+            contentLength.add(ctx.request.headers.getFirst(
+                "content-length") ?? "")
             rename(source.toString(), to: held.toString(), overwrite: false)
             File.writeTo(source, "replacement-must-not-upload".toArray())
             let buffer = Array<UInt8>(128, repeat: UInt8(0))
@@ -379,6 +385,10 @@ public class CkbReproRuntimeCompositionTest {
             request.contentType = "application/octet-stream"
             let response = executor.upload(request, source.toString(),
                 identity.size, identity.sha256)
+            @Expect(transferEncoding.size, 1)
+            @Expect(transferEncoding[0].toAsciiLower(), "chunked")
+            @Expect(contentLength.size, 1)
+            @Expect(contentLength[0], "")
             let multipart = String.fromUtf8(received.toArray())
             @Expect(multipart.contains(
                 "Content-Disposition: form-data; name=\"snapshot\"; " +

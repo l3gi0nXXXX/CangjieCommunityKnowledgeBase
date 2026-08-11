@@ -250,8 +250,7 @@ public class CkbNativeQdrantSnapshotFileExecutor <:
                     .header("Accept", "application/json")
                     .header("Content-Type",
                         "multipart/form-data; boundary=${boundary}")
-                    .header("Content-Length",
-                        "${multipart.contentLength(expectedSize)}")
+                    .header("Transfer-Encoding", "chunked")
                     .body(multipart).build()
                 let response = client.send(nativeRequest)
                 out.statusCode = Int64(response.status)
@@ -293,10 +292,6 @@ private class CkbNativeQdrantMultipartInputStream <: InputStream {
             "filename=\"snapshot.snapshot\"\r\n" +
             "Content-Type: application/octet-stream\r\n\r\n").toArray()
         this.trailer = "\r\n--${boundary}--\r\n".toArray()
-    }
-
-    public func contentLength(sourceSize: Int64): Int64 {
-        Int64(this.header.size) + sourceSize + Int64(this.trailer.size)
     }
 
     public func read(buffer: Array<UInt8>): Int64 {
