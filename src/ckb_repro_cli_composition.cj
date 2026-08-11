@@ -710,10 +710,25 @@ public func runCkbReproCompositionSealCliWithProbe(args: Array<String>,
         CkbReproCompositionSealNoopCommitHook())
 }
 
+public func runCkbReproCompositionSealCliWithProbeAndEvidenceRoot(
+    args: Array<String>, probe: CkbReproEnvironmentProbe,
+    evidenceRepositoryRoot: String): CkbReproCompositionSealExecution {
+    runCkbReproCompositionSealCliWithProbeAndHookAndEvidenceRoot(args, probe,
+        CkbReproCompositionSealNoopCommitHook(), evidenceRepositoryRoot)
+}
+
 public func runCkbReproCompositionSealCliWithProbeAndHook(
     args: Array<String>, probe: CkbReproEnvironmentProbe,
     hook: CkbReproCompositionSealCommitHook):
     CkbReproCompositionSealExecution {
+    runCkbReproCompositionSealCliWithProbeAndHookAndEvidenceRoot(args, probe,
+        hook, "")
+}
+
+private func runCkbReproCompositionSealCliWithProbeAndHookAndEvidenceRoot(
+    args: Array<String>, probe: CkbReproEnvironmentProbe,
+    hook: CkbReproCompositionSealCommitHook,
+    evidenceRepositoryRoot: String): CkbReproCompositionSealExecution {
     let options = parseCkbReproCompositionSealOptions(args)
     if (options.diagnostic != "ok") {
         return ckbCompositionSealFailure(options.diagnostic,
@@ -856,8 +871,11 @@ public func runCkbReproCompositionSealCliWithProbeAndHook(
             return ckbCompositionSealFailure(authority[0].diagnostic,
                 options.json, 1)
         }
+        let evidenceRoot = if (evidenceRepositoryRoot == "") {
+            canonicalRoot
+        } else { evidenceRepositoryRoot }
         let frozen = freezeCkbReproEnvironmentLock(planned[1], manifestHash,
-            authority[1], probe, canonicalRoot)
+            authority[1], probe, evidenceRoot)
         if (!frozen[0].ok) {
             return ckbCompositionSealFailure(frozen[0].diagnostic,
                 options.json, 1)

@@ -11,10 +11,12 @@ import std.unittest.testmacro.*
 
 private class R6O1aSealProbe <: CkbReproEnvironmentProbe {
     public var calls: Int64 = 0
+    public var evidenceRepositoryRoot: String = ""
     public func inspect(attested: CkbReproEnvironmentLock,
         attestedInputHash: String, evidenceRepositoryRoot: String):
         CkbReproEnvironmentProbeResult {
         this.calls += 1
+        this.evidenceRepositoryRoot = evidenceRepositoryRoot
         let out = CkbReproEnvironmentProbeResult()
         out.ok = true; out.diagnostic = "ok"
         out.observed = attested
@@ -487,6 +489,24 @@ public class CkbReproCliCompositionTest {
             @Expect(loaded.authorityEnvironmentLock.identityStatus, "frozen")
             @Expect(loaded.authorityEnvironmentLock.compositionManifestHash,
                 cliCompositionHash(cliCompositionReadUtf8(compositionPath)))
+        } finally {
+            if (exists(Path(fixture[0]))) {
+                remove(Path(fixture[0]), recursive: true)
+            }
+        }
+    }
+
+    @TestCase
+    public func r6O1aPos02SealUsesExplicitEvidenceRepositoryRoot(): Unit {
+        let fixture = r6O1aSealFixture("explicit-evidence-root")
+        let probe = R6O1aSealProbe()
+        let evidenceRoot = canonicalize(Path(fixture[0]).parent).toString()
+        try {
+            let result = runCkbReproCompositionSealCliWithProbeAndEvidenceRoot(
+                fixture[1], probe, evidenceRoot)
+            @Expect(result.ok, true)
+            @Expect(probe.calls, 1)
+            @Expect(probe.evidenceRepositoryRoot, evidenceRoot)
         } finally {
             if (exists(Path(fixture[0]))) {
                 remove(Path(fixture[0]), recursive: true)

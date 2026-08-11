@@ -405,7 +405,18 @@ public func runCkbReproCompositionStageCliWithProbe(args: Array<String>,
             sealArgs.add("--asset")
             sealArgs.add("${role}=${ckbReproCliCompositionRoleRelativePath(role)}")
         }
-        let sealed = runCkbReproCompositionSealCli(sealArgs.toArray())
+        let sealed = if (options.prepareOnly) {
+            runCkbReproCompositionSealCli(sealArgs.toArray())
+        } else {
+            let compositionPath = Path(canonicalRoot).join(
+                "reproducibility/manifests/runtime-composition.json").toString()
+            let environmentProbe = CkbReproFilesystemEnvironmentProbe(
+                repositoryRootOverride: options.worktreeRoot,
+                repositoryRootOverrideEnabled: true,
+                compositionManifestOverride: compositionPath)
+            runCkbReproCompositionSealCliWithProbeAndEvidenceRoot(
+                sealArgs.toArray(), environmentProbe, options.worktreeRoot)
+        }
         if (!sealed.ok) {
             return ckbCompositionStageOwnedFailure(options, rootIdentity,
                 sealed.diagnostic, 1)

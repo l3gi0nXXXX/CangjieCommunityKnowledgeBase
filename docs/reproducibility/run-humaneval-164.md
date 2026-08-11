@@ -27,7 +27,9 @@
 
 资产必须按 P4 → P3 vector → logical → P3 snapshot → P3 parity → final 的依赖顺序由 production writer 生成。每个不同的 composition mode 都必须独立执行 `--prepare-only`、`ckb-repro-environment-plan`、`ckb-repro-attestation-authority-freeze`，再使用该 mode 自己的 plan/authority 完成 full stage；不同 mode 的 composition hash 不同，禁止复用 authority pair。所有变量都必须先解析为 absolute canonical 路径，stage root 和 writer output 必须是尚不存在的新路径。不得用 `jq`、临时脚本或手写 JSON 替代这些 production writer。
 
-下面每条 stage 模板均执行两次：第一次使用独立的 `${MODE_PREP_ROOT}`、增加 `--prepare-only`，并省略 `--environment-plan`/`--attestation-authority`；以其 manifest 运行 environment-plan 与 attestation writer；第二次再使用新的 full-stage root 和刚生成的 plan/authority 按模板执行。两个 stage root 都不得预先存在。
+下面每条 stage 模板均执行两次：第一次使用独立的 `${MODE_PREP_ROOT}`、增加 `--prepare-only`，传入与本轮配置完全一致且 `identityStatus=planned`、`compositionManifestHash=""` 的 bootstrap `--environment-plan`，仅省略 `--attestation-authority`；以其 manifest 运行 environment-plan 与 attestation writer；第二次再使用新的 full-stage root 和刚生成的 plan/authority 按模板执行。prepare 与 full 必须使用完全相同的 `--temporary-root`、`--output-root` 及其他资产生成参数，否则 composition hash 必然不同并被拒绝；两个 stage root 都不得预先存在。
+
+`run-certify` 的 full stage 会再次测量真实环境。运行 full stage 时必须保留 environment-plan writer 使用的 SDK、工具 `PATH`、provider/embedding、MCP、authority delivery/bundle 和 run-critical 输入环境变量；authority delivery 与 bundle 必须位于当前 clean worktree 的 `.gitignore` 已覆盖目录（推荐 `target/repro-authority-delivery/`）。stage 内部将显式绑定 `--worktree-root` 作为 Git 证据根，不得把新建的 composition 输出目录当作候选仓库。
 
 ```bash
 # 每个 mode 的 prepare 产出 composition 后，先测量真实环境并生成 canonical planned environment，再冻结该 composition 专属 authority。
