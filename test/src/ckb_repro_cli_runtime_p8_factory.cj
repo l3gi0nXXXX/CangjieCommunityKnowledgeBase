@@ -249,10 +249,7 @@ func loadCkbReproP8SharedComposition(
         out.parity.knowledgeVersion != out.logical.portableKnowledgeVersion ||
         out.parity.logicalManifestHash != out.logical.manifestHash ||
         out.buildProof.candidateVersion != out.logical.portableKnowledgeVersion ||
-        (prepared.mode == "release-verify" &&
-        out.buildProof.selectedCount != out.logical.rawCount) ||
-        (prepared.mode == "run-certify" &&
-        out.buildProof.rawCount != out.logical.rawCount) ||
+        out.buildProof.selectedCount != out.logical.rawCount ||
         out.reference.knowledgeVersion != out.logical.portableKnowledgeVersion ||
         out.reference.vectorProofHash != out.qdrant.vectorProofHash ||
         out.environment.runCriticalTreeHash !=
