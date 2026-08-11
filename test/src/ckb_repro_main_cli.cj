@@ -23,6 +23,7 @@ public interface CkbReproMainCliAdapter {
     func runBundle(args: Array<String>): CkbReproMainCliResult
     func runPublishGate(args: Array<String>): CkbReproMainCliResult
     func runP8(args: Array<String>): CkbReproMainCliResult
+    func runEnvironmentPlan(args: Array<String>): CkbReproMainCliResult
     func runAttestationAuthorityFreeze(args: Array<String>): CkbReproMainCliResult
     func runCompositionStage(args: Array<String>): CkbReproMainCliResult
     func runCompositionSeal(args: Array<String>): CkbReproMainCliResult
@@ -135,6 +136,10 @@ private class CkbReproProductionMainCliAdapter <: CkbReproMainCliAdapter {
     public func runP8(args: Array<String>): CkbReproMainCliResult {
         runCkbP8ProductionMainCli(args)
     }
+    public func runEnvironmentPlan(args: Array<String>): CkbReproMainCliResult {
+        let execution = runCkbReproEnvironmentPlanCli(args)
+        CkbReproMainCliResult(true, execution.exitCode, execution.output)
+    }
     public func runAttestationAuthorityFreeze(args: Array<String>):
         CkbReproMainCliResult {
         let execution = runCkbReproAttestationAuthorityFreezeCli(args)
@@ -181,6 +186,9 @@ public func executeCkbReproMainCli(command: String, args: Array<String>,
     }
     if (command == "ckb-repro-verify") {
         return adapter.runP8(args)
+    }
+    if (command == "ckb-repro-environment-plan") {
+        return adapter.runEnvironmentPlan(args)
     }
     if (command == "ckb-repro-attestation-authority-freeze") {
         return adapter.runAttestationAuthorityFreeze(args)

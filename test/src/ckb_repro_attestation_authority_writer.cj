@@ -120,7 +120,7 @@ public func runCkbReproAttestationAuthorityFreezeCli(args: Array<String>):
                 "attestation_authority_environment_plan_invalid",
                 options.json, 1)
         }
-        let composition = ckbAttestationAuthorityComposition(
+        let composition = ckbReproValidatedCompositionHash(
             options.compositionManifestPath)
         if (!composition[0]) {
             return ckbAttestationAuthorityFailure(
@@ -212,7 +212,7 @@ public func runCkbReproAttestationAuthorityFreezeCli(args: Array<String>):
     }
 }
 
-private func ckbAttestationAuthorityComposition(path: String):
+public func ckbReproValidatedCompositionHash(path: String):
     (Bool, String) {
     let read = ckbReproReadSingleFileNoFollow(path, 64 * 1024)
     if (!read[0]) { return (false, "") }

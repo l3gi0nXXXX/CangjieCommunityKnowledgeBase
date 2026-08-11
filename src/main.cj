@@ -36,6 +36,7 @@ public interface CkbReproMainCliAdapter {
     func runBundle(args: Array<String>): CkbReproMainCliResult
     func runPublishGate(args: Array<String>): CkbReproMainCliResult
     func runP8(args: Array<String>): CkbReproMainCliResult
+    func runEnvironmentPlan(args: Array<String>): CkbReproMainCliResult
     func runAttestationAuthorityFreeze(args: Array<String>): CkbReproMainCliResult
     func runCompositionStage(args: Array<String>): CkbReproMainCliResult
     func runCompositionSeal(args: Array<String>): CkbReproMainCliResult
@@ -148,6 +149,10 @@ private class CkbReproProductionMainCliAdapter <: CkbReproMainCliAdapter {
     public func runP8(args: Array<String>): CkbReproMainCliResult {
         runCkbP8ProductionMainCli(args)
     }
+    public func runEnvironmentPlan(args: Array<String>): CkbReproMainCliResult {
+        let execution = runCkbReproEnvironmentPlanCli(args)
+        CkbReproMainCliResult(true, execution.exitCode, execution.output)
+    }
     public func runAttestationAuthorityFreeze(args: Array<String>):
         CkbReproMainCliResult {
         let execution = runCkbReproAttestationAuthorityFreezeCli(args)
@@ -194,6 +199,9 @@ public func executeCkbReproMainCli(command: String, args: Array<String>,
     }
     if (command == "ckb-repro-verify") {
         return adapter.runP8(args)
+    }
+    if (command == "ckb-repro-environment-plan") {
+        return adapter.runEnvironmentPlan(args)
     }
     if (command == "ckb-repro-attestation-authority-freeze") {
         return adapter.runAttestationAuthorityFreeze(args)
@@ -700,6 +708,7 @@ public func ckbCliMain(args: Array<String>): Int64 {
     println("  cangjie-candidate-runtime-materialize --source-store <absolute-canonical-path> --output-store <absolute-canonical-new-path> --candidate-version <version>")
     println("  ckb-logical-proof | ckb-portable-vector-build | ckb-qdrant-snapshot create|restore|verify | ckb-retrieval-parity --mode build|verify")
     println("  ckb-repro-composition-stage --prepare-only --root <new-path> --mode <stage> --environment-plan <path> [stage-specific options] [--json]")
+    println("  ckb-repro-environment-plan --environment-template <canonical-planned-path> --composition-manifest <canonical-existing-path> --run-candidate-commit <40-hex> --repository-root <canonical-path> --output <canonical-new-path> [--json]")
     println("  ckb-repro-attestation-authority-freeze --environment-lock <canonical-planned-path> --composition-manifest <canonical-existing-path> --signing-fingerprint <40-uppercase-hex> --output-root <canonical-new-path> [--json]")
     println("  ckb-repro-composition-seal --root <prepared-path> --mode <stage> --environment-plan <path> --attestation-authority <path> --asset <role=relative-path>... [--json]")
     println("  ckb-authority-bundle seal|verify | ckb-repro-build | ckb-repro-promote --apply | ckb-repro-verify --mode run-certify|release-verify --composition-manifest <path> [--json]")

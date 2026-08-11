@@ -1,6 +1,6 @@
 package cangjie_community_knowledge_base
 
-import std.collection.ArrayList
+import std.collection.{ArrayList, HashSet}
 import std.convert.Parsable
 import std.env.getVariable
 import std.fs.{Directory, File, OpenMode, Path, canonicalize, exists}
@@ -317,9 +317,17 @@ public func loadCkbReproPreflightAuthority(environmentLockPath: String):
 
 public class CkbReproFilesystemEnvironmentProbe <: CkbReproEnvironmentProbe {
     private let gitRunner: CkbReproGitProbeRunner
+    private let repositoryRootOverride: String
+    private let repositoryRootOverrideEnabled: Bool
+    private let compositionManifestOverride: String
     public init(gitRunner!: CkbReproGitProbeRunner =
-        P6FilesystemGitProbeRunner()) {
+        P6FilesystemGitProbeRunner(), repositoryRootOverride!: String = "",
+        repositoryRootOverrideEnabled!: Bool = false,
+        compositionManifestOverride!: String = "") {
         this.gitRunner = gitRunner
+        this.repositoryRootOverride = repositoryRootOverride
+        this.repositoryRootOverrideEnabled = repositoryRootOverrideEnabled
+        this.compositionManifestOverride = compositionManifestOverride
     }
     public func inspect(attested: CkbReproEnvironmentLock,
         attestedInputHash: String, evidenceRepositoryRoot: String):
@@ -334,8 +342,11 @@ public class CkbReproFilesystemEnvironmentProbe <: CkbReproEnvironmentProbe {
         if (sdkPath == "") { return out }
         let sdk = p6ProbeCommand(sdkPath, ["--version"])
         let openssl = p6ProbeCommand("openssl", ["version"])
-        let repositoryRoot = p6ProbeCanonicalInputPath(
-            "CKB_REPRO_REPOSITORY_ROOT", "")
+        let repositoryRoot = if (!this.repositoryRootOverrideEnabled) {
+            p6ProbeCanonicalInputPath("CKB_REPRO_REPOSITORY_ROOT", "")
+        } else if (this.repositoryRootOverride == evidenceRepositoryRoot) {
+            this.repositoryRootOverride
+        } else { "" }
         if (repositoryRoot == "") { return out }
         let candidate = ckbReproValidateCandidateCheckout(repositoryRoot,
             attested.runCandidateCommit, this.gitRunner)
@@ -359,7 +370,10 @@ public class CkbReproFilesystemEnvironmentProbe <: CkbReproEnvironmentProbe {
         observed.schemaVersion = "ckb-repro-environment-v1"
         observed.identityStatus = "frozen"
         p6CopyUnobservableAuthorityFields(attested, observed)
-        if (p6ProbeActualConfiguration(observed, repositoryRoot) != "ok") {
+        if (p6ProbeActualConfiguration(observed, repositoryRoot,
+                repositoryRootBound: this.repositoryRootOverrideEnabled,
+                compositionManifestOverride:
+                    this.compositionManifestOverride) != "ok") {
             return out
         }
         observed.certifiedPlatform = if (platform[1] == "Darwin") {
@@ -383,6 +397,327 @@ public class CkbReproFilesystemEnvironmentProbe <: CkbReproEnvironmentProbe {
         out.attestationEvidenceCommit = candidate[1]
         out
     }
+}
+
+public class CkbReproEnvironmentPlanOptions {
+    public var environmentTemplatePath: String = ""
+    public var compositionManifestPath: String = ""
+    public var runCandidateCommit: String = ""
+    public var repositoryRoot: String = ""
+    public var outputPath: String = ""
+    public var json: Bool = false
+    public var diagnostic: String = "not_parsed"
+    public init() {}
+}
+
+public class CkbReproEnvironmentPlanExecution {
+    public var ok: Bool = false
+    public var exitCode: Int64 = 2
+    public var diagnostic: String = "not_run"
+    public var output: String = ""
+    public var environmentPlanHash: String = ""
+    public var probeCalls: Int64 = 0
+    public var providerCalls: Int64 = 0
+    public var modelCalls: Int64 = 0
+    public var runnerCalls: Int64 = 0
+    public init() {}
+}
+
+public func parseCkbReproEnvironmentPlanOptions(args: Array<String>):
+    CkbReproEnvironmentPlanOptions {
+    let out = CkbReproEnvironmentPlanOptions()
+    if (args.size == 0 || args[0] != "ckb-repro-environment-plan") {
+        out.diagnostic = "environment_plan_command_required"; return out
+    }
+    let seen = HashSet<String>(); var index: Int64 = 1
+    while (index < args.size) {
+        let name = args[index]
+        if (name == "--json") {
+            if (seen.contains(name)) {
+                out.diagnostic = "duplicate_argument:${name}"; return out
+            }
+            seen.add(name); out.json = true; index += 1; continue
+        }
+        if (name != "--environment-template" &&
+            name != "--composition-manifest" &&
+            name != "--run-candidate-commit" &&
+            name != "--repository-root" && name != "--output") {
+            out.diagnostic = "unknown_argument:${name}"; return out
+        }
+        if (seen.contains(name)) {
+            out.diagnostic = "duplicate_argument:${name}"; return out
+        }
+        if (index + 1 >= args.size || args[index + 1].startsWith("--")) {
+            out.diagnostic = "missing_argument_value:${name}"; return out
+        }
+        seen.add(name); let value = args[index + 1]
+        if (name == "--environment-template") {
+            out.environmentTemplatePath = value
+        } else if (name == "--composition-manifest") {
+            out.compositionManifestPath = value
+        } else if (name == "--run-candidate-commit") {
+            out.runCandidateCommit = value
+        } else if (name == "--repository-root") {
+            out.repositoryRoot = value
+        } else { out.outputPath = value }
+        index += 2
+    }
+    out.diagnostic = validateCkbReproEnvironmentPlanOptions(out); out
+}
+
+public func validateCkbReproEnvironmentPlanOptions(
+    options: CkbReproEnvironmentPlanOptions): String {
+    if (!p6EnvironmentPlanCanonicalFile(options.environmentTemplatePath,
+            128 * 1024)) {
+        return "environment_plan_template_invalid"
+    }
+    if (!p6EnvironmentPlanCanonicalFile(options.compositionManifestPath,
+            64 * 1024)) {
+        return "environment_plan_composition_invalid"
+    }
+    if (!p6CommitValid(options.runCandidateCommit)) {
+        return "environment_plan_commit_invalid"
+    }
+    if (!p6EnvironmentPlanCanonicalDirectory(options.repositoryRoot)) {
+        return "environment_plan_repository_invalid"
+    }
+    if (!p6EnvironmentPlanOutputPathValid(options.outputPath) ||
+        options.outputPath.startsWith("${options.repositoryRoot}/")) {
+        return "environment_plan_output_invalid"
+    }
+    "ok"
+}
+
+public func runCkbReproEnvironmentPlanCli(args: Array<String>):
+    CkbReproEnvironmentPlanExecution {
+    let options = parseCkbReproEnvironmentPlanOptions(args)
+    if (options.diagnostic != "ok") {
+        return p6EnvironmentPlanFailure(options.diagnostic,
+            options.json || args.contains("--json"), 2, 0)
+    }
+    p6RunCkbReproEnvironmentPlan(options,
+        CkbReproFilesystemEnvironmentProbe(
+            repositoryRootOverride: options.repositoryRoot,
+            repositoryRootOverrideEnabled: true,
+            compositionManifestOverride: options.compositionManifestPath))
+}
+
+public func runCkbReproEnvironmentPlanCliWithProbe(args: Array<String>,
+    probe: CkbReproEnvironmentProbe): CkbReproEnvironmentPlanExecution {
+    let options = parseCkbReproEnvironmentPlanOptions(args)
+    if (options.diagnostic != "ok") {
+        return p6EnvironmentPlanFailure(options.diagnostic,
+            options.json || args.contains("--json"), 2, 0)
+    }
+    p6RunCkbReproEnvironmentPlan(options, probe)
+}
+
+private func p6RunCkbReproEnvironmentPlan(
+    options: CkbReproEnvironmentPlanOptions,
+    probe: CkbReproEnvironmentProbe): CkbReproEnvironmentPlanExecution {
+    let templateRead = ckbReproReadSingleFileNoFollow(
+        options.environmentTemplatePath, 128 * 1024)
+    let composition = ckbReproValidatedCompositionHash(
+        options.compositionManifestPath)
+    if (!templateRead[0] || !composition[0]) {
+        return p6EnvironmentPlanFailure(if (!templateRead[0]) {
+            "environment_plan_template_invalid"
+        } else { "environment_plan_composition_invalid" }, options.json, 1, 0)
+    }
+    let template = parseCkbReproEnvironmentLock(templateRead[1])
+    if (!template[0].ok || !validateCkbReproEnvironmentLock(template[1]).ok ||
+        template[1].identityStatus != "planned" ||
+        template[1].compositionManifestHash != "" ||
+        template[1].attestationAuthorityHash != "") {
+        return p6EnvironmentPlanFailure("environment_plan_template_invalid",
+            options.json, 1, 0)
+    }
+    let target = parseCkbReproEnvironmentLock(
+        renderCkbReproEnvironmentLock(template[1]).toArray())
+    if (!target[0].ok) {
+        return p6EnvironmentPlanFailure("environment_plan_template_invalid",
+            options.json, 1, 0)
+    }
+    target[1].identityStatus = "frozen"
+    target[1].runCandidateCommit = options.runCandidateCommit
+    target[1].compositionManifestHash = composition[1]
+    target[1].attestationAuthorityHash = ""
+    let attestedInputHash = ckbReproObservedEnvironmentProjectionHash(target[1])
+    let observed = try {
+        probe.inspect(target[1], attestedInputHash, options.repositoryRoot)
+    } catch (_: Exception) {
+        return p6EnvironmentPlanFailure("environment_probe_unavailable",
+            options.json, 1, 1)
+    }
+    if (!observed.ok || observed.attestedInputHash != attestedInputHash) {
+        return p6EnvironmentPlanFailure(if (observed.diagnostic == "") {
+            "environment_probe_unavailable"
+        } else { observed.diagnostic }, options.json, 1, 1)
+    }
+    let checked = validateCkbReproEnvironmentLock(observed.observed,
+        mode: "execution")
+    if (!checked.ok || observed.attestationEvidenceCommit !=
+            options.runCandidateCommit ||
+        observed.observed.runCandidateCommit != options.runCandidateCommit ||
+        observed.observed.compositionManifestHash != composition[1]) {
+        return p6EnvironmentPlanFailure("environment_plan_observation_invalid",
+            options.json, 1, 1)
+    }
+    let planned = parseCkbReproEnvironmentLock(
+        renderCkbReproEnvironmentLock(template[1]).toArray())
+    if (!planned[0].ok) {
+        return p6EnvironmentPlanFailure("environment_plan_observation_invalid",
+            options.json, 1, 1)
+    }
+    p6EnvironmentPlanCopyMeasured(observed.observed, planned[1])
+    planned[1].identityStatus = "planned"
+    planned[1].compositionManifestHash = ""
+    planned[1].attestationAuthorityHash = ""
+    let planCheck = validateCkbReproEnvironmentLock(planned[1])
+    let planText = renderCkbReproEnvironmentLock(planned[1])
+    let readback = parseCkbReproEnvironmentLock(planText.toArray())
+    if (!planCheck.ok || !readback[0].ok ||
+        renderCkbReproEnvironmentLock(readback[1]) != planText) {
+        return p6EnvironmentPlanFailure("environment_plan_generation_invalid",
+            options.json, 1, 1)
+    }
+    let published = p6EnvironmentPlanPublish(options.outputPath,
+        planText.toArray())
+    if (published != "ok") {
+        return p6EnvironmentPlanFailure(published, options.json, 1, 1)
+    }
+    let out = CkbReproEnvironmentPlanExecution()
+    out.ok = true; out.exitCode = 0; out.diagnostic = "ok"
+    out.probeCalls = 1
+    out.environmentPlanHash = ckbReproBundleHash(planText.toArray())
+    out.output = if (options.json) {
+        "{\"ok\":true,\"diagnostic\":\"ok\"," +
+        "\"environmentPlanHash\":\"${out.environmentPlanHash}\"," +
+        "\"probeCalls\":1,\"providerCalls\":0,\"modelCalls\":0," +
+        "\"runnerCalls\":0}"
+    } else {
+        "CKB environment plan written. hash=${out.environmentPlanHash} " +
+        "probeCalls=1 providerCalls=0 modelCalls=0 runnerCalls=0\n"
+    }
+    out
+}
+
+private func p6EnvironmentPlanPublish(path: String,
+    bytes: Array<UInt8>): String {
+    let target = Path(path); let parent = target.parent
+    let parentIdentity = ckbReproDirectoryOwnershipIdentity(parent.toString())
+    let grandparentIdentity = ckbReproDirectoryOwnershipIdentity(
+        parent.parent.toString())
+    if (parentIdentity == "" || grandparentIdentity == "") {
+        return "environment_plan_output_invalid"
+    }
+    if (exists(target)) {
+        let existing = ckbReproReadSingleFileNoFollow(path, 128 * 1024)
+        return if (existing[0] && existing[1] == bytes) { "ok" }
+            else { "environment_plan_output_conflict" }
+    }
+    let descriptor = CkbReproOwnedTempDescriptor()
+    let token = ckbReproBundleHash(bytes).replace("sha256:", "")
+    descriptor.acquireBound(parent.toString(),
+        ".${target.fileName}.plan-${token}", target.fileName,
+        expectedParentIdentity: parentIdentity,
+        expectedGrandparentIdentity: grandparentIdentity)
+    try {
+        if (!descriptor.ok || !descriptor.createPayload(bytes) ||
+            !descriptor.publish() || !descriptor.syncAndValidate()) {
+            let recovery = ckbReproReadSingleFileNoFollow(path, 128 * 1024)
+            if (recovery[0] && recovery[1] == bytes) { return "ok" }
+            return if (descriptor.diagnostic == "ok") {
+                "environment_plan_publish_failed"
+            } else { descriptor.diagnostic }
+        }
+        let loaded = descriptor.readPublicTarget(128 * 1024)
+        if (!loaded[0] || loaded[1] != bytes ||
+            ckbReproDirectoryOwnershipIdentity(parent.toString()) !=
+                parentIdentity) {
+            return "environment_plan_readback_failed"
+        }
+        "ok"
+    } finally { _ = descriptor.cleanup() }
+}
+
+private func p6EnvironmentPlanFailure(diagnostic: String, json: Bool,
+    exitCode: Int64, probeCalls: Int64): CkbReproEnvironmentPlanExecution {
+    let out = CkbReproEnvironmentPlanExecution()
+    out.exitCode = exitCode; out.diagnostic = p6CliSafeDiagnostic(diagnostic)
+    out.probeCalls = probeCalls
+    out.output = if (json) {
+        "{\"ok\":false,\"diagnostic\":\"${out.diagnostic}\"," +
+        "\"probeCalls\":${probeCalls},\"providerCalls\":0," +
+        "\"modelCalls\":0,\"runnerCalls\":0}"
+    } else {
+        "CKB environment plan failed: ${out.diagnostic}. " +
+        "probeCalls=${probeCalls} providerCalls=0 modelCalls=0 runnerCalls=0\n"
+    }
+    out
+}
+
+private func p6EnvironmentPlanCopyMeasured(source: CkbReproEnvironmentLock,
+    target: CkbReproEnvironmentLock): Unit {
+    target.certifiedPlatform = source.certifiedPlatform
+    target.cpuArchitecture = source.cpuArchitecture
+    target.cangjieSdkVersion = source.cangjieSdkVersion
+    target.cangjieSdkHash = source.cangjieSdkHash
+    target.opensslVersion = source.opensslVersion
+    target.serviceHeap = source.serviceHeap
+    target.qdrantImageDigest = source.qdrantImageDigest
+    target.runCandidateCommit = source.runCandidateCommit
+    target.runCriticalFilesManifestHash = source.runCriticalFilesManifestHash
+    target.runCriticalTreeHash = source.runCriticalTreeHash
+    target.claudeCodeVersion = source.claudeCodeVersion
+    target.glmProvider = source.glmProvider
+    target.glmBaseUrl = source.glmBaseUrl
+    target.glmModel = source.glmModel
+    target.glmCredentialEnv = source.glmCredentialEnv
+    target.embeddingProvider = source.embeddingProvider
+    target.embeddingModel = source.embeddingModel
+    target.embeddingDimension = source.embeddingDimension
+    target.embeddingCredentialEnv = source.embeddingCredentialEnv
+    target.archiveTool = source.archiveTool
+    target.archiveToolVersion = source.archiveToolVersion
+    target.promptHash = source.promptHash
+    target.mcpCommand = source.mcpCommand
+    target.mcpTransport = source.mcpTransport
+    target.sandboxCapability = source.sandboxCapability
+    target.datasetVersion = source.datasetVersion
+    target.authorityDeliveryHash = source.authorityDeliveryHash
+}
+
+private func p6EnvironmentPlanCanonicalFile(path: String,
+    limit: Int64): Bool {
+    path != "" && Path(path).isAbsolute() &&
+        (try { canonicalize(Path(path)).toString() == path }
+            catch (_: Exception) { false }) &&
+        ckbReproReadSingleFileNoFollow(path, limit)[0]
+}
+
+private func p6EnvironmentPlanCanonicalDirectory(path: String): Bool {
+    path != "" && Path(path).isAbsolute() &&
+        ckbReproDirectoryOwnershipIdentity(path) != "" &&
+        (try { canonicalize(Path(path)).toString() == path }
+            catch (_: Exception) { false })
+}
+
+private func p6EnvironmentPlanOutputPathValid(path: String): Bool {
+    if (path == "" || !Path(path).isAbsolute()) {
+        return false
+    }
+    let parent = Path(path).parent
+    if (parent.toString() == "" ||
+        ckbReproDirectoryOwnershipIdentity(parent.toString()) == "") {
+        return false
+    }
+    let canonical = try {
+        canonicalize(parent).toString() == parent.toString() &&
+            parent.join(Path(path).fileName).toString() == path
+    } catch (_: Exception) { false }
+    canonical && (!exists(Path(path)) ||
+        ckbReproReadSingleFileNoFollow(path, 128 * 1024)[0])
 }
 
 public func ckbReproProbeGitCommit(repositoryRoot: String,
@@ -1409,7 +1744,9 @@ private func p6CopyUnobservableAuthorityFields(source: CkbReproEnvironmentLock,
 }
 
 private func p6ProbeActualConfiguration(target: CkbReproEnvironmentLock,
-    expectedRepositoryRoot: String): String {
+    expectedRepositoryRoot: String,
+    repositoryRootBound!: Bool = false,
+    compositionManifestOverride!: String = ""): String {
     let heap = p6ProbeRequiredEnv("cjHeapSize")
     let provider = p6ProbeRequiredEnv("GLM_PROVIDER")
     let baseUrl = p6ProbeRequiredEnv("GLM_BASE_URL")
@@ -1432,8 +1769,11 @@ private func p6ProbeActualConfiguration(target: CkbReproEnvironmentLock,
     }
     let dimension = try { Int64.parse(embeddingDimension[1]) }
         catch (_: Exception) { return "environment_probe_configuration_invalid" }
-    let repositoryRoot = p6ProbeCanonicalInputPath(
-        "CKB_REPRO_REPOSITORY_ROOT", "")
+    let currentRepositoryRoot = if (repositoryRootBound) { "" } else {
+        p6ProbeCanonicalInputPath("CKB_REPRO_REPOSITORY_ROOT", "")
+    }
+    let repositoryRoot = ckbReproResolveProbeRepositoryRoot(
+        expectedRepositoryRoot, repositoryRootBound, currentRepositoryRoot)
     if (repositoryRoot != expectedRepositoryRoot) {
         return "environment_probe_input_changed"
     }
@@ -1503,18 +1843,35 @@ private func p6ProbeActualConfiguration(target: CkbReproEnvironmentLock,
     target.datasetVersion = dataset.datasetVersion
     target.authorityDeliveryHash = p6Hash(
         renderCkbAuthorityDeliveryManifest(authority[1]).toArray())
-    let compositionPath = p6ProbeCanonicalInputPath(
-        "CKB_REPRO_COMPOSITION_MANIFEST", "")
-    if (compositionPath == "" || !compositionPath.endsWith(
-        "/${target.compositionManifestPath}")) {
+    let compositionPath = if (compositionManifestOverride == "") {
+        p6ProbeCanonicalInputPath("CKB_REPRO_COMPOSITION_MANIFEST", "")
+    } else { compositionManifestOverride }
+    if (compositionPath == "" ||
+        (compositionManifestOverride == "" && !compositionPath.endsWith(
+            "/${target.compositionManifestPath}"))) {
         return "environment_probe_composition_authority_invalid"
     }
-    let compositionRead = p6ReadFileBounded(compositionPath, 64 * 1024)
-    if (compositionRead[0] != "ok" ||
-        p6Hash(compositionRead[1]) != target.compositionManifestHash) {
+    if (!ckbReproProbeCompositionAuthority(compositionPath,
+            target.compositionManifestHash)) {
         return "environment_probe_composition_authority_invalid"
     }
     "ok"
+}
+
+public func ckbReproResolveProbeRepositoryRoot(expectedRepositoryRoot: String,
+    repositoryRootBound: Bool, currentEnvironmentRoot: String): String {
+    if (expectedRepositoryRoot == "") { return "" }
+    if (repositoryRootBound) { return expectedRepositoryRoot }
+    if (currentEnvironmentRoot == expectedRepositoryRoot) {
+        return expectedRepositoryRoot
+    }
+    ""
+}
+
+public func ckbReproProbeCompositionAuthority(path: String,
+    expectedHash: String): Bool {
+    let read = ckbReproReadSingleFileNoFollow(path, 64 * 1024)
+    read[0] && p6Hash(read[1]) == expectedHash
 }
 
 public func ckbReproProbeAuthorityDelivery(deliveryBytes: Array<UInt8>,

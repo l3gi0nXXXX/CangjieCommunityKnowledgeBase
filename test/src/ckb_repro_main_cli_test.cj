@@ -44,6 +44,10 @@ private class P0MainCliAdapter <: CkbReproMainCliAdapter {
         this.calls.add("p8:${args[0]}")
         CkbReproMainCliResult(true, 0, "p8 human\n")
     }
+    public func runEnvironmentPlan(args: Array<String>): CkbReproMainCliResult {
+        this.calls.add("environment-plan:${args[0]}")
+        CkbReproMainCliResult(true, 0, "environment plan human\n")
+    }
     public func runAttestationAuthorityFreeze(args: Array<String>):
         CkbReproMainCliResult {
         this.calls.add("attestation:${args[0]}")
@@ -221,7 +225,8 @@ public class CkbReproMainCliTest {
         let adapter = P0MainCliAdapter()
         for (command in ["ckb-portable-vector-build", "ckb-qdrant-snapshot",
             "ckb-retrieval-parity", "ckb-repro-build", "ckb-repro-promote",
-            "ckb-repro-verify", "ckb-repro-composition-stage",
+            "ckb-repro-verify", "ckb-repro-environment-plan",
+            "ckb-repro-composition-stage",
             "ckb-repro-attestation-authority-freeze",
             "ckb-repro-composition-seal"]) {
             let result = executeCkbReproMainCli(command, [command], adapter)
@@ -231,6 +236,7 @@ public class CkbReproMainCliTest {
             "p3:ckb-portable-vector-build", "p3:ckb-qdrant-snapshot",
             "p3:ckb-retrieval-parity", "p4:ckb-repro-build",
             "p4:ckb-repro-promote", "p8:ckb-repro-verify",
+            "environment-plan:ckb-repro-environment-plan",
             "stage:ckb-repro-composition-stage",
             "attestation:ckb-repro-attestation-authority-freeze",
             "composition:ckb-repro-composition-seal"])
@@ -287,6 +293,7 @@ public class CkbReproMainCliTest {
             "ckb-repro-publish-gate", "ckb-portable-vector-build",
             "ckb-qdrant-snapshot", "ckb-retrieval-parity",
             "ckb-repro-build", "ckb-repro-promote", "ckb-repro-verify",
+            "ckb-repro-environment-plan",
             "ckb-repro-attestation-authority-freeze",
             "ckb-repro-composition-seal"]) {
             let human = runCkbReproMainCli(command, [command])

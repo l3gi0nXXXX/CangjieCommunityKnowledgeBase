@@ -386,7 +386,8 @@ public class CkbNativeHttpTransportTest {
     public func reproducibilityCommandsOnlyBootstrapNativeTlsWhenTheyUseNetwork(): Unit {
         for (command in ["ckb-portable-vector-build", "ckb-qdrant-snapshot",
             "ckb-retrieval-parity", "ckb-repro-build", "ckb-repro-promote",
-            "ckb-repro-verify", "ckb-repro-attestation-authority-freeze"]) {
+            "ckb-repro-verify", "ckb-repro-environment-plan",
+            "ckb-repro-attestation-authority-freeze"]) {
             @Expect(ckbCommandNeedsNativeTlsBootstrap(command), true)
         }
         for (command in ["ckb-release-export", "ckb-release-import",

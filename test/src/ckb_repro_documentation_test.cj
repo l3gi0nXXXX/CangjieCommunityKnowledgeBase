@@ -887,6 +887,8 @@ private func p7ReleaseRegisteredCommands(): Array<String> {
     ["cangjie-humaneval-manifest-build",
         "cangjie-humaneval-pass1-gate", "ckb-authority-bundle",
         "ckb-release-import", "ckb-repro-build",
+        "ckb-repro-environment-plan",
+        "ckb-repro-attestation-authority-freeze",
         "ckb-repro-composition-stage", "ckb-repro-composition-seal",
         "ckb-repro-verify"]
 }
