@@ -36,6 +36,7 @@ public interface CkbReproMainCliAdapter {
     func runBundle(args: Array<String>): CkbReproMainCliResult
     func runPublishGate(args: Array<String>): CkbReproMainCliResult
     func runP8(args: Array<String>): CkbReproMainCliResult
+    func runCompositionStage(args: Array<String>): CkbReproMainCliResult
     func runCompositionSeal(args: Array<String>): CkbReproMainCliResult
 }
 
@@ -146,6 +147,10 @@ private class CkbReproProductionMainCliAdapter <: CkbReproMainCliAdapter {
     public func runP8(args: Array<String>): CkbReproMainCliResult {
         runCkbP8ProductionMainCli(args)
     }
+    public func runCompositionStage(args: Array<String>): CkbReproMainCliResult {
+        let execution = runCkbReproCompositionStageCli(args)
+        CkbReproMainCliResult(true, execution.exitCode, execution.output)
+    }
     public func runCompositionSeal(args: Array<String>): CkbReproMainCliResult {
         let execution = runCkbReproCompositionSealCli(args)
         CkbReproMainCliResult(true, execution.exitCode, execution.output)
@@ -186,6 +191,9 @@ public func executeCkbReproMainCli(command: String, args: Array<String>,
     }
     if (command == "ckb-repro-composition-seal") {
         return adapter.runCompositionSeal(args)
+    }
+    if (command == "ckb-repro-composition-stage") {
+        return adapter.runCompositionStage(args)
     }
     CkbReproMainCliResult(false, 0, "")
 }
@@ -682,6 +690,7 @@ public func ckbCliMain(args: Array<String>): Int64 {
     println("  cangjie-benchmark-gap-staging-init --config <path> --store <empty-path> [--json]")
     println("  cangjie-candidate-runtime-materialize --source-store <absolute-canonical-path> --output-store <absolute-canonical-new-path> --candidate-version <version>")
     println("  ckb-logical-proof | ckb-portable-vector-build | ckb-qdrant-snapshot create|restore|verify | ckb-retrieval-parity --mode build|verify")
+    println("  ckb-repro-composition-stage --root <new-path> --mode <p4-build|p3-vector-build|p3-snapshot-create|p3-snapshot-restore|p3-snapshot-verify|p3-parity-build|run-certify> --environment-plan <path> --attestation-authority <path> [stage-specific options] [--json]")
     println("  ckb-repro-composition-seal --root <path> --mode <stage> --asset <role=relative-path>... [--json]")
     println("  ckb-authority-bundle seal|verify | ckb-repro-build | ckb-repro-promote --apply | ckb-repro-verify --mode run-certify|release-verify --composition-manifest <path> [--json]")
     println("  cangjie-student-context-import --allowed-root <path> --base-context <path|none> --candidate-set <path> --approval <path> --frozen-knowledge-manifest <path> --knowledge-store <path> --output <path> --context-version <version> [--scaffold-import] [--json]")

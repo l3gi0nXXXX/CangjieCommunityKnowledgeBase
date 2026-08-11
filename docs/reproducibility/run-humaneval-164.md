@@ -25,6 +25,21 @@
 
 ## 1. 准备冻结输入
 
+资产必须按 P4 → P3 → final 的依赖顺序由 production writer 生成。下面是命令模板；所有变量都必须先解析为 absolute canonical 路径，stage root 必须是尚不存在的新路径。不得用 `jq`、临时脚本或手写 JSON 替代这些命令。
+
+```bash
+# P4：writer 从同一 authority store 导出 private authority，并复制严格 7-file public root。
+cjpm run --skip-build --run-args "ckb-repro-composition-stage --root ${P4_STAGE_ROOT} --mode p4-build --authority-store ${AUTHORITY_STORE} --public-input-root ${PUBLIC_INPUT_ROOT} --environment-plan ${ENVIRONMENT_PLAN} --attestation-authority ${ATTESTATION_AUTHORITY} --worktree-root ${CKB_ROOT} --production-store-root ${PRODUCTION_STORE_ROOT} --user-config-root ${USER_CONFIG_ROOT} --temporary-root ${P4_TEMP_ROOT} --output-root ${P4_OUTPUT_ROOT} --local-root repository|source|${CKB_ROOT} --local-root production-store|store|${PRODUCTION_STORE_ROOT} --input public_build_input_manifest=${PUBLIC_INPUT_MANIFEST} --input path_policy=${PATH_POLICY} --input api_routes=${API_ROUTES} --input runtime_config=${RUNTIME_CONFIG} --json"
+
+# P3：只接受 P4 已冻结的 path assets；logical proof 由既有 production import/export 生成。
+cjpm run --skip-build --run-args "ckb-repro-composition-stage --root ${P3_STAGE_ROOT} --mode p3-parity-build --environment-plan ${ENVIRONMENT_PLAN} --attestation-authority ${ATTESTATION_AUTHORITY} --input runtime_config=${RUNTIME_CONFIG} --input path_policy=${PATH_POLICY} --input local_root_map=${P4_LOCAL_ROOT_MAP} --input api_routes=${API_ROUTES} --input path_context=${P4_PATH_CONTEXT} --input mcp_stdio_command=${P3_MCP_STDIO_COMMAND} --input logical_manifest=${LOGICAL_MANIFEST} --json"
+
+# final：五个 runtime/runner/reference role 只能由显式字段生成，禁止通过 --input 注入。
+cjpm run --skip-build --run-args "ckb-repro-composition-stage --root ${FINAL_STAGE_ROOT} --mode run-certify --authority-store ${AUTHORITY_STORE} --public-input-root ${PUBLIC_INPUT_ROOT} --environment-plan ${ENVIRONMENT_PLAN} --attestation-authority ${ATTESTATION_AUTHORITY} --worktree-root ${CKB_ROOT} --production-store-root ${PRODUCTION_STORE_ROOT} --user-config-root ${USER_CONFIG_ROOT} --temporary-root ${FINAL_TEMP_ROOT} --output-root ${FINAL_OUTPUT_ROOT} --local-root repository|source|${CKB_ROOT} --local-root production-store|store|${PRODUCTION_STORE_ROOT} --ckb-executable ${CKB_EXECUTABLE} --docker-executable ${DOCKER_EXECUTABLE} --qdrant-endpoint ${QDRANT_ENDPOINT} --rest-endpoint ${REST_ENDPOINT} --mcp-http-endpoint ${MCP_HTTP_ENDPOINT} --qdrant-image ${CKB_REPRO_QDRANT_IMAGE} --runtime-timeout-millis 300000 --run-id ${RUN_ID} --runs-root ${RUNS_ROOT} --dataset-root ${DATASET_ROOT} --authority-manifest ${AUTHORITY_MANIFEST} --ckb-config ${CKB_CONFIG} --ckb-store ${CKB_STORE} --ckb-http-base ${CKB_HTTP_BASE} --claude-executable ${CLAUDE_EXECUTABLE} --docs-root ${DOCS_ROOT} --candidate-version ${CANDIDATE_VERSION} --knowledge-version ${KNOWLEDGE_VERSION} --provider-identity-hash ${PROVIDER_IDENTITY_HASH} --provider-identity-artifact ${PROVIDER_IDENTITY_ARTIFACT} --frozen-candidate-manifest ${FROZEN_CANDIDATE_MANIFEST} --observed-environment ${OBSERVED_ENVIRONMENT} --certification-preflight ${CERTIFICATION_PREFLIGHT} --certification-run-manifest ${CERTIFICATION_RUN_MANIFEST} --reference-source ${REFERENCE_SOURCE} --credential-env GLM_API_KEY --credential-env CKB_EMBEDDING_TOKEN --input logical_manifest=${LOGICAL_MANIFEST} --input qdrant_manifest=${QDRANT_MANIFEST} --input parity_manifest=${PARITY_MANIFEST} --input build_proof=${BUILD_PROOF} --input path_policy=${PATH_POLICY} --input api_routes=${API_ROUTES} --input public_build_input_manifest=${PUBLIC_INPUT_MANIFEST} --input authority_manifest=${AUTHORITY_MANIFEST} --input run_critical_manifest=${RUN_CRITICAL_MANIFEST} --json"
+```
+
+每个命令通过标准：退出码为 0，输出包含 `providerCalls=0`、`modelCalls=0`、`runnerCalls=0`，生成的 stage root 可由 `ckb-repro-composition-seal` 和 loader exact 读回；任一 identity drift 必须停止，不能启动 Student。
+
 ```bash
 set -euo pipefail
 : "${CKB_ROOT:?set repository root}"

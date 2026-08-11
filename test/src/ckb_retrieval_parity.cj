@@ -195,7 +195,37 @@ public func parseCkbMcpStdioCommandSpec(bytes: Array<UInt8>):
         return (ckbRetrievalParityFailure("mcp_stdio_command_malformed_json"), out)
     }
     let validation = ckbValidateMcpStdioCommandSpec(out)
+    if (!validation.ok || renderCkbMcpStdioCommandSpec(out) != text) {
+        return (ckbRetrievalParityFailure(if (!validation.ok) {
+            validation.diagnostic
+        } else { "mcp_stdio_command_noncanonical" }), CkbMcpStdioCommandSpec())
+    }
     (validation, out)
+}
+
+public func renderCkbMcpStdioCommandSpec(spec: CkbMcpStdioCommandSpec): String {
+    let args = ArrayList<String>()
+    for (arg in spec.args) {
+        args.add("\"${ckbRetrievalParityJson(arg)}\"")
+    }
+    let environment = ArrayList<String>()
+    for (entry in spec.environment) {
+        environment.add("\"${ckbRetrievalParityJson(entry)}\"")
+    }
+    "{\"schemaVersion\":\"${ckbRetrievalParityJson(spec.schemaVersion)}\"," +
+        "\"executable\":\"${ckbRetrievalParityJson(spec.executable)}\"," +
+        "\"args\":[${ckbRetrievalParityStringJoin(args)}]," +
+        "\"environment\":[${ckbRetrievalParityStringJoin(environment)}]," +
+        "\"timeoutMillis\":${spec.timeoutMillis}}"
+}
+
+private func ckbRetrievalParityStringJoin(values: ArrayList<String>): String {
+    let out = StringBuilder()
+    for (index in 0..values.size) {
+        if (index > 0) { out.append(",") }
+        out.append(values[index])
+    }
+    out.toString()
 }
 
 private func ckbValidateMcpStdioCommandSpec(

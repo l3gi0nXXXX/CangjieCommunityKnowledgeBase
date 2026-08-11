@@ -884,8 +884,11 @@ private func p7RequiredDocuments(): Array<String> {
 }
 
 private func p7ReleaseRegisteredCommands(): Array<String> {
-    ["cangjie-humaneval-pass1-gate", "ckb-authority-bundle",
-        "ckb-release-import", "ckb-repro-build", "ckb-repro-verify"]
+    ["cangjie-humaneval-manifest-build",
+        "cangjie-humaneval-pass1-gate", "ckb-authority-bundle",
+        "ckb-release-import", "ckb-repro-build",
+        "ckb-repro-composition-stage", "ckb-repro-composition-seal",
+        "ckb-repro-verify"]
 }
 
 private func p7DocumentationText(): String {

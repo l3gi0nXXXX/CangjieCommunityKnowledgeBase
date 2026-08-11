@@ -210,7 +210,7 @@ public func validateCkbReproCliCompositionManifest(
     if (manifest.schemaVersion != "ckb-repro-cli-composition-v1") {
         return ckbCliCompositionFailure("cli_composition_schema_invalid")
     }
-    let expected = ckbCliCompositionRoles(manifest.mode)
+    let expected = ckbReproCliCompositionRoles(manifest.mode)
     if (expected.size == 0 || manifest.assets.size != expected.size) {
         return ckbCliCompositionFailure("cli_composition_mode_contract_invalid")
     }
@@ -236,7 +236,7 @@ public func validateCkbReproCliCompositionManifest(
 public func renderCkbReproCliCompositionManifest(
     manifest: CkbReproCliCompositionManifest): String {
     let rows = ArrayList<String>()
-    for (role in ckbCliCompositionRoles(manifest.mode)) {
+    for (role in ckbReproCliCompositionRoles(manifest.mode)) {
         for (asset in manifest.assets) {
             if (asset.role == role) {
                 rows.add("{\"role\":\"${asset.role}\",\"relativePath\":\"" +
@@ -591,6 +591,17 @@ public func parseCkbReproCliRunnerAuthority(bytes: Array<UInt8>, mode: String):
     (ckbCliCompositionSuccess(), out)
 }
 
+public func renderCkbReproCliRunnerAuthority(
+    authority: CkbReproCliRunnerAuthority): String {
+    let values = ArrayList<String>()
+    for (value in authority.credentialEnvironmentVariables) {
+        values.add("\"${ckbCliCompositionJson(value)}\"")
+    }
+    "{\"schemaVersion\":\"ckb-repro-runner-authority-v1\"," +
+        "\"credentialEnvironmentVariables\":[" +
+        ckbCliCompositionJoin(values) + "]}"
+}
+
 public func parseCkbReproCompositionSealOptions(args: Array<String>):
     CkbReproCompositionSealOptions {
     let out = CkbReproCompositionSealOptions()
@@ -642,7 +653,7 @@ public func parseCkbReproCompositionSealOptions(args: Array<String>):
 
 public func validateCkbReproCompositionSealOptions(
     options: CkbReproCompositionSealOptions): String {
-    let expected = ckbCliCompositionRoles(options.mode)
+    let expected = ckbReproCliCompositionRoles(options.mode)
     if (options.root == "" || !Path(options.root).isAbsolute() ||
         expected.size == 0 || options.assets.size != expected.size) {
         return "composition_seal_options_invalid"
@@ -690,7 +701,7 @@ public func runCkbReproCompositionSealCliWithProbeAndHook(
     let manifest = CkbReproCliCompositionManifest()
     manifest.schemaVersion = "ckb-repro-cli-composition-v1"
     manifest.mode = options.mode
-    for (role in ckbCliCompositionRoles(options.mode)) {
+    for (role in ckbReproCliCompositionRoles(options.mode)) {
         for (spec in options.assets) {
             if (spec.role != role) { continue }
             let read = ckbCliCompositionRead(canonicalRoot,
@@ -922,7 +933,7 @@ private func ckbCliCompositionJson(value: String): String {
         .replace("\r", "\\r").replace("\t", "\\t")
 }
 
-private func ckbCliCompositionRoles(mode: String): Array<String> {
+public func ckbReproCliCompositionRoles(mode: String): Array<String> {
     if (mode == "p3-vector-build") {
         return ["runtime_config", "path_policy", "local_root_map",
             "api_routes", "path_context"]
@@ -976,6 +987,42 @@ private func ckbCliCompositionRoles(mode: String): Array<String> {
             "release_inputs_manifest"]
     }
     Array<String>()
+}
+
+public func ckbReproCliCompositionRoleRelativePath(role: String): String {
+    if (role == "public_build_input_manifest") {
+        return "assets/public-build-input-manifest.json"
+    }
+    if (role == "private_build_authority") {
+        return "private-authority/build-authority.json"
+    }
+    if (role == "runner_authority") {
+        return "private-authority/runner-authority.json"
+    }
+    if (role == "local_root_map") {
+        return "private-authority/local-roots.json"
+    }
+    if (role == "path_context") {
+        return "private-authority/path-context.json"
+    }
+    if (role == "eval_support") {
+        return "private-authority/eval-support.json"
+    }
+    if (role == "leakage_authority") {
+        return "private-authority/leakage.json"
+    }
+    if (ckbReproCliCompositionKnownRole(role)) { return "assets/${role}.json" }
+    ""
+}
+
+private func ckbReproCliCompositionKnownRole(role: String): Bool {
+    for (mode in ["p3-vector-build", "p3-snapshot-create",
+        "p3-snapshot-restore", "p3-snapshot-verify", "p3-parity",
+        "p3-parity-build", "p4-build", "p4-promote", "run-certify",
+        "release-verify"]) {
+        if (ckbReproCliCompositionRoles(mode).contains(role)) { return true }
+    }
+    false
 }
 
 private func ckbCliCompositionForbiddenB(value: String): Bool {

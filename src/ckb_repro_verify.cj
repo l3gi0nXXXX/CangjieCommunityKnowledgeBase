@@ -29,12 +29,23 @@ public class CkbReproOwnedTempDescriptor {
     private var parentName: String = ""
     private var tempName: String = ""
     private var targetName: String = ""
+    private var expectedParentIdentity: String = ""
+    private var expectedGrandparentIdentity: String = ""
     private var published: Bool = false
     private var createdByThisInvocation: Bool = false
     public var ok: Bool = false
     public var diagnostic: String = "composition_temporary_open_failed"
     public var nativeErrno: Int32 = 0
     public init() {}
+
+    public func acquireBound(parent: String, tempName: String,
+        targetName: String,
+        expectedParentIdentity!: String = "",
+        expectedGrandparentIdentity!: String = ""): Unit {
+        this.expectedParentIdentity = expectedParentIdentity
+        this.expectedGrandparentIdentity = expectedGrandparentIdentity
+        this.acquire(parent, tempName, targetName)
+    }
 
     public func acquire(parent: String, tempName: String,
         targetName: String,
@@ -62,6 +73,11 @@ public class CkbReproOwnedTempDescriptor {
         }
         this.parentIdentity = p8StableDescriptorIdentity(this.parentFd)
         if (this.grandparentIdentity == "" || this.parentIdentity == "" ||
+            (this.expectedParentIdentity != "" &&
+                this.parentIdentity != this.expectedParentIdentity) ||
+            (this.expectedGrandparentIdentity != "" &&
+                this.grandparentIdentity !=
+                    this.expectedGrandparentIdentity) ||
             !this.publicParentStillBound()) {
             this.diagnostic = "composition_parent_binding_invalid"
             this.close(); return

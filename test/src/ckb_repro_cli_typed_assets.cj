@@ -90,6 +90,62 @@ public func renderCkbP8OwnedLocalRuntimeAuthority(
         "\"timeoutMillis\":${value.timeoutMillis}}"
 }
 
+public func buildCkbP8OwnedLocalRuntimeAuthority(ckbExecutable: String,
+    dockerExecutable: String, qdrantEndpoint: String, restEndpoint: String,
+    mcpHttpEndpoint: String, qdrantImageReference: String,
+    qdrantImageId: String, timeoutMillis: Int64):
+    (CkbReproContractResult, CkbP8OwnedLocalRuntimeAuthority) {
+    let out = CkbP8OwnedLocalRuntimeAuthority()
+    let ckb = ckbReproReadSingleFileNoFollow(ckbExecutable, 536870912)
+    let docker = ckbReproReadSingleFileNoFollow(dockerExecutable, 536870912)
+    if (!ckb[0] || !docker[0]) {
+        return (ckbTypedFailure("p8_executable_identity_invalid"), out)
+    }
+    out.schemaVersion = "ckb-repro-p8-owned-local-runtime-v1"
+    out.qdrantEndpoint = qdrantEndpoint; out.restEndpoint = restEndpoint
+    out.mcpHttpEndpoint = mcpHttpEndpoint; out.ckbExecutable = ckbExecutable
+    out.ckbExecutableSha256 = ckbReproBundleHash(ckb[1])
+    out.dockerExecutable = dockerExecutable
+    out.dockerExecutableSha256 = ckbReproBundleHash(docker[1])
+    out.qdrantImageReference = qdrantImageReference
+    out.qdrantImageId = qdrantImageId; out.timeoutMillis = timeoutMillis
+    let parsed = parseCkbP8OwnedLocalRuntimeAuthorityBytes(
+        renderCkbP8OwnedLocalRuntimeAuthority(out).toArray())
+    if (!parsed[0].ok) { return (parsed[0], CkbP8OwnedLocalRuntimeAuthority()) }
+    parsed
+}
+
+public func buildCkbP8EmptyMcpStdioCommand(
+    authority: CkbP8OwnedLocalRuntimeAuthority):
+    (CkbReproContractResult, CkbMcpStdioCommandSpec) {
+    let out = CkbMcpStdioCommandSpec()
+    if (!validateCkbP8BExecutableIdentity(authority).ok) {
+        return (ckbTypedFailure("p8b_mcp_stdio_command_forbidden"), out)
+    }
+    out.schemaVersion = "ckb-mcp-stdio-command-v1"
+    out.executable = authority.ckbExecutable
+    out.timeoutMillis = authority.timeoutMillis
+    let bytes = renderCkbMcpStdioCommandSpec(out).toArray()
+    parseCkbP8BMcpStdioCommand(bytes, authority)
+}
+
+public func buildCkbReproCliRunnerAuthority(environmentNames: Array<String>):
+    (CkbReproContractResult, CkbReproCliRunnerAuthority) {
+    let out = CkbReproCliRunnerAuthority()
+    out.schemaVersion = "ckb-repro-runner-authority-v1"
+    let sorted = environmentNames.clone()
+    sort(sorted)
+    var previous = ""
+    for (name in sorted) {
+        if (name != previous) {
+            out.credentialEnvironmentVariables.add(name)
+            previous = name
+        }
+    }
+    let text = renderCkbReproCliRunnerAuthority(out)
+    parseCkbReproCliRunnerAuthority(text.toArray(), "run-certify")
+}
+
 public func validateCkbP8BExecutableIdentity(
     transport: CkbP8OwnedLocalRuntimeAuthority): CkbReproContractResult {
     let evidence = ckbTypedP8BFileEvidence(transport.ckbExecutable,
@@ -278,6 +334,36 @@ public func renderCkbReproCliLocalRootMap(value: CkbPortableLocalRootMap): Strin
     }
     "{\"schemaVersion\":\"${ckbTypedEscape(value.schemaVersion)}\"," +
         "\"roots\":[${ckbTypedJoin(rows)}]}"
+}
+
+public func buildAndRenderCkbReproCliPathContext(
+    pathPolicyBytes: Array<UInt8>, localRootMapBytes: Array<UInt8>,
+    apiRoutesBytes: Array<UInt8>, worktreeRoot: String,
+    productionStoreRoot: String, userConfigRoot: String):
+    (CkbReproContractResult, String) {
+    let policy = parseCkbPortablePathPolicy(pathPolicyBytes)
+    let roots = parseCkbPortableLocalRootMap(localRootMapBytes)
+    let routes = parseCkbReproApiRoutes(apiRoutesBytes)
+    if (!policy[0].ok || !validateCkbPortablePathPolicyForBuild(policy[1]).ok ||
+        !roots[0].ok || !routes[0].ok ||
+        !ckbTypedAbsolutePath(worktreeRoot) ||
+        !ckbTypedAbsolutePath(productionStoreRoot) ||
+        !ckbTypedAbsolutePath(userConfigRoot) ||
+        worktreeRoot == productionStoreRoot || worktreeRoot == userConfigRoot ||
+        productionStoreRoot == userConfigRoot) {
+        return (ckbTypedFailure("path_context_input_invalid"), "")
+    }
+    let text = "{\"schemaVersion\":\"ckb-repro-path-context-v1\"," +
+        "\"portablePolicyHash\":\"${ckbReproBundleHash(pathPolicyBytes)}\"," +
+        "\"localRootMapHash\":\"${ckbReproBundleHash(localRootMapBytes)}\"," +
+        "\"apiRoutesHash\":\"${ckbReproBundleHash(apiRoutesBytes)}\"," +
+        "\"worktreeRoot\":\"${ckbTypedEscape(worktreeRoot)}\"," +
+        "\"productionStoreRoot\":\"${ckbTypedEscape(productionStoreRoot)}\"," +
+        "\"userConfigRoot\":\"${ckbTypedEscape(userConfigRoot)}\"}"
+    let parsed = parseCkbReproCliPathContextBytes(pathPolicyBytes,
+        localRootMapBytes, apiRoutesBytes, text.toArray())
+    if (!parsed[0].ok) { return (parsed[0], "") }
+    (ckbTypedSuccess(), text)
 }
 
 public func parseCkbReproCliEvalSupportBytes(bytes: Array<UInt8>):

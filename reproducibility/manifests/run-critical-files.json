@@ -1,7 +1,7 @@
 {
   "schemaVersion": "ckb-run-critical-files-v1",
   "files": [
-    {"path":"src/main.cj","status":"present","sha256":"sha256:c4d5c314cb3980f3b10a36ad71a6d80dc16ba245e92af6b42fddb5cbb24c4fc8"},
+    {"path":"src/main.cj","status":"present","sha256":"sha256:7237fd79ca799270cf430a7a289dd39395f4c9e042aa384aaf38839d3e33d6d6"},
     {"path":"src/cangjie_eval_abcde_runner.cj","status":"present","sha256":"sha256:69637038cdd23fdf768b69bcc18a9bdff153aa5077c0721c8fcf4ec1fbaa022b"},
     {"path":"src/cangjie_strict_certification.cj","status":"present","sha256":"sha256:01ddadd5851c9be0ae4cac383970741c0228bf8258b5cdf43a7022b2232e1ca7"},
     {"path":"src/cangjie_eval_knowledge_audit.cj","status":"present","sha256":"sha256:de1ed91483fdda2eade6939208098d6e89f28af4d0eac0527812748f3ad20e73"},
@@ -23,7 +23,7 @@
     {"path":"src/cangjie_release_gate.cj","status":"present","sha256":"sha256:d3192c8fac69ca5a53c6320e6d85a5fa1df7b73e9ea8097df2418f569d234ae7"},
     {"path":"src/ckb_candidate_runtime_materialize.cj","status":"present","sha256":"sha256:7cb1f82e8f00ff279e114c31cd304f7cd06547cffc96a553a57c3d5b4c7fe4ae"},
     {"path":"src/native_http_transport.cj","status":"present","sha256":"sha256:8f6d5d29bb0a53d85a9dc0e49fbca921c965f48479c36568ee458f48b034262f"},
-    {"path":"src/native_tls_bootstrap.cj","status":"present","sha256":"sha256:6a685b66f1223b81b2721b6fa4afd9dd226d0e563c0de2f42e706663903a0f36"},
+    {"path":"src/native_tls_bootstrap.cj","status":"present","sha256":"sha256:fddac8a0ff392659d7ff94892d015b521bca15bf8552748c74e85a306882d305"},
     {"path":"src/core.cj","status":"present","sha256":"sha256:ed73f52f60dc67074175a21a2ac81efae033c133d7ae94ccd67706117063c046"},
     {"path":"src/services.cj","status":"present","sha256":"sha256:a6107a8407a2927cf9eeccc4ee2b78ed6329b5ecb0071ec6e4a8834af5ed45aa"},
     {"path":"src/service_api.cj","status":"present","sha256":"sha256:d6b767a7e5df190b48f9e573298cf0793e857595c93daa512dfe04a180a7f780"},
@@ -38,18 +38,19 @@
     {"path":"src/mcp_protocol.cj","status":"present","sha256":"sha256:a3999ae81aa7902acc73aa85fd8bc05afeb1eee8f9fe9c58f27af8f9ac18b5e3"},
     {"path":"src/mcp_stdio.cj","status":"present","sha256":"sha256:ce72ddafce8911149550638cf57754aaf1842ad7098e7bddbb7d8a2ddc3e1052"},
     {"path":"src/mcp_http.cj","status":"present","sha256":"sha256:3e2c558698028d3bc94da6325333eb0544347c5a8cf5e738fd4fdaeb0514df57"},
-    {"path":"src/ckb_repro_manifest.cj","status":"present","sha256":"sha256:d676a2e0f626ffff76f12441d975d217b7c0a3cdbdb699da1c185c640a540f44"},
+    {"path":"src/ckb_repro_manifest.cj","status":"present","sha256":"sha256:645460f2a79ac5d7ef9e045c6329535147a63c0bf4b32a3219820a2fa5e28a18"},
     {"path":"src/ckb_repro_release.cj","status":"present","sha256":"sha256:c7592c659d52b0e861216207f58154e1b8177a6e7460bd71684df5161b1e8632"},
     {"path":"src/ckb_qdrant_snapshot.cj","status":"present","sha256":"sha256:c8201eee1bfa7fb666673aa9ff24500b6a28478bc8da6f8dc1e2ba07d3016f44"},
-    {"path":"src/ckb_retrieval_parity.cj","status":"present","sha256":"sha256:4704c4788f2a3c99602ec6e16afcdb4c308c3ef85a8fd92de194de5886895d1d"},
+    {"path":"src/ckb_retrieval_parity.cj","status":"present","sha256":"sha256:43a4c4d94a2ee85a2c1b0985d85c18c091467bddfe4bacc56bd40de73047f79b"},
     {"path":"src/ckb_portable_vector_build.cj","status":"present","sha256":"sha256:ccf30e4426aebb9053ec0028ec1a9684956f4a2e9dc260a3eec18de0785c9b93"},
     {"path":"src/ckb_repro_build.cj","status":"present","sha256":"sha256:99b29a0641feb1e7ff7f8fa52315f52510356e73ece0282a4abe933baf738f12"},
     {"path":"src/ckb_repro_build_inputs.cj","status":"present","sha256":"sha256:b371451acd344812b52c1a1d8a43454421dc31622f228993d79b12ecf67eb9ce"},
     {"path":"src/ckb_pinned_source_backend.cj","status":"present","sha256":"sha256:c8c5dfda1219365bd391717073400eed8a0a15564b5bd9d73321d4bfb289ae47"},
     {"path":"src/ckb_public_evidence.cj","status":"present","sha256":"sha256:9f10dcce644a5da6eb7850e56aa49d62fb27413aab4655d55e9aa130ccbe0c0c"},
-    {"path":"src/ckb_repro_cli_composition.cj","status":"present","sha256":"sha256:c564fbdcc03c80ec64851205dc77e87391da9d889ce65abb268485017f9a50db"},
-    {"path":"src/ckb_repro_cli_typed_assets.cj","status":"present","sha256":"sha256:6af388d9ec870772823f1b1b200e060ec092004358b1600a182d903032f1b577"},
-    {"path":"src/ckb_repro_cli_runtime_loader.cj","status":"present","sha256":"sha256:8b853052a5cdf1789df950a7bcdaa16e138b1d064ea608ae9920746ca4674a15"},
+    {"path":"src/ckb_repro_cli_composition.cj","status":"present","sha256":"sha256:bd17da0f3868b7aa99a511897d5e2832234d6e0a78531b779ac7e1b7d82fcdf5"},
+    {"path":"src/ckb_repro_composition_stage.cj","status":"present","sha256":"sha256:38dea20710959349e56e6708116e3a537b08eb068a9f2c9a75bc19fe577d7257"},
+    {"path":"src/ckb_repro_cli_typed_assets.cj","status":"present","sha256":"sha256:52ad5731744da79af0e3182b3422bf2293e9cae075de04efc03e5c6e5e4b5d2e"},
+    {"path":"src/ckb_repro_cli_runtime_loader.cj","status":"present","sha256":"sha256:d910da872b1fdb14fc1f430d1ba4824cd8fc3d4ff778fc936297ba1c2953efa7"},
     {"path":"src/ckb_repro_cli_runtime_p3.cj","status":"present","sha256":"sha256:80c7ee0a25003c34c0c7dae9a9212edc3c8768f5c01ebb56d72c3afd6901c7c8"},
     {"path":"src/ckb_repro_cli_runtime_p4.cj","status":"present","sha256":"sha256:86620d52385842aeb295452e3dc4d54961c535093d0efe1b39c60df901078717"},
     {"path":"src/ckb_repro_cli_runtime_p8_factory.cj","status":"present","sha256":"sha256:8086bf0ca99c9181a42ae41045984c454a9e1967995df8799d5b0dc4a7519889"},
@@ -61,6 +62,6 @@
     {"path":"src/ckb_repro_bundle.cj","status":"present","sha256":"sha256:694c5ddb4abe4f5dd1280c19315e0b1cfbfd641e29836811af5f1b313ac49b89"},
     {"path":"src/ckb_repro_authority_bundle.cj","status":"present","sha256":"sha256:e08f67ebecea3e7ac8748ed1185de9f3fe620c59056daf5803fdd11d7d0bc9d6"},
     {"path":"src/ckb_repro_environment.cj","status":"present","sha256":"sha256:c0c0d17b6ae7e8e8729bae6cc10fde8ade5ea62b44b92e1ac857d95600864c6f"},
-    {"path":"src/ckb_repro_verify.cj","status":"present","sha256":"sha256:115254587ccad0879d8b52f026774cee0cc8c34c673e814754b4e320df607b41"}
+    {"path":"src/ckb_repro_verify.cj","status":"present","sha256":"sha256:86f4993964e8a67bc820d7c88317d282c8ebab1750bceef4435ad8b424de7c8a"}
   ]
 }
