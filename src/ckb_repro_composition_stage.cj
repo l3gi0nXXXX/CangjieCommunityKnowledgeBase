@@ -221,6 +221,12 @@ public func validateCkbReproCompositionStageOptions(
             return "composition_stage_input_invalid"
         }
     }
+    if (options.mode == "p3-parity-build" &&
+        (!ckbCompositionStageCanonicalExistingFile(options.ckbExecutable) ||
+        !ckbCompositionStageCanonicalExistingFile(options.ckbConfig) ||
+        !ckbCompositionStageCanonicalExistingDirectory(options.ckbStore))) {
+        return "composition_stage_p3_parity_inputs_required"
+    }
     if (options.mode == "p4-build" || options.mode == "run-certify") {
         if (!ckbCompositionStageCanonicalExistingDirectory(
                 options.authorityStore) ||
@@ -535,6 +541,33 @@ private func ckbCompositionStageExpectedGrandparentIdentity(
 private func ckbCompositionStageGenerated(options: CkbReproCompositionStageOptions,
     publication: CkbReproCompositionPublication,
     probe: CkbReproCompositionRuntimeProbe): String {
+    if (options.mode == "p3-parity-build") {
+        let runtimeRead = ckbCompositionStageReadInput(options,
+            "runtime_config")
+        let executableRead = ckbReproReadSingleFileNoFollow(
+            options.ckbExecutable, 536870912)
+        if (!runtimeRead[0] || !executableRead[0]) {
+            return "composition_stage_p3_parity_inputs_required"
+        }
+        let runtime = parseCkbReproCliRuntimeConfigBytes(runtimeRead[1])
+        if (!runtime[0].ok) { return runtime[0].diagnostic }
+        let authority = CkbP8OwnedLocalRuntimeAuthority()
+        authority.ckbExecutable = options.ckbExecutable
+        authority.ckbExecutableSha256 = ckbReproBundleHash(executableRead[1])
+        authority.timeoutMillis = runtime[1].timeoutMillis
+        let spec = buildCkbP8OwnedMcpStdioSpec(authority,
+            options.ckbConfig, options.ckbStore)
+        if (!spec[0].ok) { return spec[0].diagnostic }
+        let rendered = renderCkbMcpStdioCommandSpec(spec[1])
+        let parsed = parseCkbMcpStdioCommandSpec(rendered.toArray())
+        if (!parsed[0].ok ||
+            renderCkbMcpStdioCommandSpec(parsed[1]) != rendered) {
+            return "composition_stage_mcp_stdio_command_invalid"
+        }
+        return ckbCompositionStagePublish(publication,
+            ckbReproCliCompositionRoleRelativePath("mcp_stdio_command"),
+            rendered.toArray())
+    }
     if (options.mode != "p4-build" && options.mode != "run-certify") {
         return "ok"
     }
@@ -1065,6 +1098,9 @@ private func ckbCompositionStageFindInput(
 
 private func ckbCompositionStageGeneratedRole(role: String,
     mode: String): Bool {
+    if (mode == "p3-parity-build") {
+        return role == "mcp_stdio_command"
+    }
     if (mode != "p4-build" && mode != "run-certify") { return false }
     role == "public_build_input_manifest" ||
         role == "private_build_authority" || role == "local_root_map" ||
@@ -1077,6 +1113,9 @@ private func ckbCompositionStageGeneratedRole(role: String,
 
 private func ckbCompositionStageTrustedInputRole(role: String,
     mode: String): Bool {
+    if (mode == "p3-parity-build" && role == "mcp_stdio_command") {
+        return false
+    }
     if (mode == "p4-build" || mode == "run-certify") {
         return role != "private_build_authority" && role != "path_context" &&
             role != "eval_support" && role != "leakage_authority" &&

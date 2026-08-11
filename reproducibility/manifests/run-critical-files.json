@@ -48,7 +48,7 @@
     {"path":"src/ckb_pinned_source_backend.cj","status":"present","sha256":"sha256:c8c5dfda1219365bd391717073400eed8a0a15564b5bd9d73321d4bfb289ae47"},
     {"path":"src/ckb_public_evidence.cj","status":"present","sha256":"sha256:9f10dcce644a5da6eb7850e56aa49d62fb27413aab4655d55e9aa130ccbe0c0c"},
     {"path":"src/ckb_repro_cli_composition.cj","status":"present","sha256":"sha256:4ef65421764ea21f723b5cc43727be2970825b73933ab10a1fd4868d29afb83d"},
-    {"path":"src/ckb_repro_composition_stage.cj","status":"present","sha256":"sha256:a5b1a2df61f591cc886a91ebe7a6a0c380aa76a47d5164d906f1f350512790e8"},
+    {"path":"src/ckb_repro_composition_stage.cj","status":"present","sha256":"sha256:1ee080471439228e5082913dd5eed8fd5d2aa4dd87856152c03a77be112d8e41"},
     {"path":"src/ckb_repro_attestation_authority_writer.cj","status":"present","sha256":"sha256:f41398560cbd82ddd34566bf07b8157d4bc63822751e8244f4d01e30f4e14978"},
     {"path":"src/ckb_repro_cli_typed_assets.cj","status":"present","sha256":"sha256:52ad5731744da79af0e3182b3422bf2293e9cae075de04efc03e5c6e5e4b5d2e"},
     {"path":"src/ckb_repro_cli_runtime_loader.cj","status":"present","sha256":"sha256:f6d7b8dd4787008f7307a7f809c75be7e1f9eb4432ee49b64bd60eb24a3b0be2"},
