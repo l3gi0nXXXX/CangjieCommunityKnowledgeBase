@@ -36,6 +36,7 @@ public interface CkbReproMainCliAdapter {
     func runBundle(args: Array<String>): CkbReproMainCliResult
     func runPublishGate(args: Array<String>): CkbReproMainCliResult
     func runP8(args: Array<String>): CkbReproMainCliResult
+    func runAttestationAuthorityFreeze(args: Array<String>): CkbReproMainCliResult
     func runCompositionStage(args: Array<String>): CkbReproMainCliResult
     func runCompositionSeal(args: Array<String>): CkbReproMainCliResult
 }
@@ -147,6 +148,11 @@ private class CkbReproProductionMainCliAdapter <: CkbReproMainCliAdapter {
     public func runP8(args: Array<String>): CkbReproMainCliResult {
         runCkbP8ProductionMainCli(args)
     }
+    public func runAttestationAuthorityFreeze(args: Array<String>):
+        CkbReproMainCliResult {
+        let execution = runCkbReproAttestationAuthorityFreezeCli(args)
+        CkbReproMainCliResult(true, execution.exitCode, execution.output)
+    }
     public func runCompositionStage(args: Array<String>): CkbReproMainCliResult {
         let execution = runCkbReproCompositionStageCli(args)
         CkbReproMainCliResult(true, execution.exitCode, execution.output)
@@ -188,6 +194,9 @@ public func executeCkbReproMainCli(command: String, args: Array<String>,
     }
     if (command == "ckb-repro-verify") {
         return adapter.runP8(args)
+    }
+    if (command == "ckb-repro-attestation-authority-freeze") {
+        return adapter.runAttestationAuthorityFreeze(args)
     }
     if (command == "ckb-repro-composition-seal") {
         return adapter.runCompositionSeal(args)
@@ -690,8 +699,9 @@ public func ckbCliMain(args: Array<String>): Int64 {
     println("  cangjie-benchmark-gap-staging-init --config <path> --store <empty-path> [--json]")
     println("  cangjie-candidate-runtime-materialize --source-store <absolute-canonical-path> --output-store <absolute-canonical-new-path> --candidate-version <version>")
     println("  ckb-logical-proof | ckb-portable-vector-build | ckb-qdrant-snapshot create|restore|verify | ckb-retrieval-parity --mode build|verify")
-    println("  ckb-repro-composition-stage --root <new-path> --mode <p4-build|p3-vector-build|p3-snapshot-create|p3-snapshot-restore|p3-snapshot-verify|p3-parity-build|run-certify> --environment-plan <path> --attestation-authority <path> [stage-specific options] [--json]")
-    println("  ckb-repro-composition-seal --root <path> --mode <stage> --asset <role=relative-path>... [--json]")
+    println("  ckb-repro-composition-stage --prepare-only --root <new-path> --mode <stage> --environment-plan <path> [stage-specific options] [--json]")
+    println("  ckb-repro-attestation-authority-freeze --environment-lock <canonical-planned-path> --composition-manifest <canonical-existing-path> --signing-fingerprint <40-uppercase-hex> --output-root <canonical-new-path> [--json]")
+    println("  ckb-repro-composition-seal --root <prepared-path> --mode <stage> --environment-plan <path> --attestation-authority <path> --asset <role=relative-path>... [--json]")
     println("  ckb-authority-bundle seal|verify | ckb-repro-build | ckb-repro-promote --apply | ckb-repro-verify --mode run-certify|release-verify --composition-manifest <path> [--json]")
     println("  cangjie-student-context-import --allowed-root <path> --base-context <path|none> --candidate-set <path> --approval <path> --frozen-knowledge-manifest <path> --knowledge-store <path> --output <path> --context-version <version> [--scaffold-import] [--json]")
     println("Usage: cangjie_community_knowledge_base [--config <path>] [--store <path>] doctor | status | metrics | service | service-http | http-service | mcp-stdio | cangjie-clean-candidate-build (--dry-run|--apply) --source-store <path> --staging-store <path> --authority-store <path> [--atoms-store <path>] --candidate-version <version> [--json] | cangjie-initialize (--dry-run|--apply) --docs-root <path> --std-root <path> --stdx-root <path> --eval-root <path> | cangjie-atom-selection-build --manifest <selection.jsonl> --teacher-export-root <path> --output <atoms.jsonl> --proof <proof.json> | cangjie-candidate-precert-seal --selected-atoms <normalized-candidate.jsonl> --output-root <dir> | cangjie-humaneval-manifest-build --dataset-root <path> --output <authority.jsonl> | cangjie-eval-classifier-run --run-root <path> --run-id <id> --transport C|D --output-root <path> --classifier-a-executable <path> --classifier-a-provider <id> --classifier-a-model <model> --classifier-a-id <id> --classifier-b-executable <path> --classifier-b-provider <id> --classifier-b-model <model> --classifier-b-id <id> --timeout-seconds <n> | cangjie-eval-development-close --run-root <path> --run-id <id> --transport C|D --classifier-a-root <path> --classifier-b-root <path> | cangjie-certification-preflight --control-manifest <path> | cangjie-frozen-candidate-seal --control-manifest <path> --store <path> | cangjie-certified-production-publish --control-manifest <path> --store <path> | cangjie-landing-status [--format json] | service-once <command> | start | stop | restart | sync-once | sync-live (--dry-run|--apply) | source_analysis repo=<owner/repo> ref=<ref> path=<path> | native-http-smoke <url> | cangjie-corpus-status | cangjie-knowledge-pack <task> | cangjie-api-search <query> | cangjie-syntax-query <query> | cangjie-cookbook <task> | cangjie-diagnose <compiler-output> | cangjie-llms [task] | cangjie-context-pack <task> | cangjie-eval-summary <manifest.jsonl> | cangjie-eval-abcde [--preflight-only] | cangjie-eval-knowledge-audit --run-root <path> | cangjie-humaneval-pass1-gate --run-root <path> | cangjie-knowledge-release-gate --run-root <path> --manifest <manifest.jsonl> | cangjie-typed-ingest-smoke --docs-root <path> --case-root <path> | cangjie-serving-feed-smoke | cangjie-serving-query-smoke | cangjie-update-promotion-smoke | cangjie-abcde-parity-smoke | cangjie-humaneval-pass1-gate-smoke | vector-bootstrap [--json] | vector-clean-derived [--force] [--json] | vector-reconcile [--force] [--json] | routine-repair --force [--json] | ollama-embedding-benchmark [--json] [--sample-size <n>] | scheduler-run [--force-all|--task <name> [--force]] [--json] | rebuild-index | backup <path> | restore <path> | query <text> | evidence <text> | schema")

@@ -73,6 +73,9 @@ public class CkbReproCompositionSealOptions {
     public var root: String = ""
     public var mode: String = ""
     public var json: Bool = false
+    public var prepareOnly: Bool = false
+    public var environmentPlan: String = ""
+    public var attestationAuthority: String = ""
     public var diagnostic: String = "not_parsed"
     public let assets = ArrayList<CkbReproCompositionSealAssetSpec>()
     public init() {}
@@ -612,13 +615,18 @@ public func parseCkbReproCompositionSealOptions(args: Array<String>):
     var i: Int64 = 1
     while (i < args.size) {
         let arg = args[i]
-        if (arg == "--json") {
+        if (arg == "--json" || arg == "--prepare-only") {
             if (seen.contains(arg)) {
                 out.diagnostic = "duplicate_argument:${arg}"; return out
             }
-            seen.add(arg); out.json = true; i += 1; continue
+            seen.add(arg)
+            if (arg == "--json") { out.json = true }
+            else { out.prepareOnly = true }
+            i += 1; continue
         }
-        if (arg != "--root" && arg != "--mode" && arg != "--asset") {
+        if (arg != "--root" && arg != "--mode" && arg != "--asset" &&
+            arg != "--environment-plan" &&
+            arg != "--attestation-authority") {
             out.diagnostic = "unknown_argument:${arg}"; return out
         }
         if (arg != "--asset" && seen.contains(arg)) {
@@ -631,6 +639,11 @@ public func parseCkbReproCompositionSealOptions(args: Array<String>):
         let value = args[i + 1]
         if (arg == "--root") { out.root = value }
         else if (arg == "--mode") { out.mode = value }
+        else if (arg == "--environment-plan") {
+            out.environmentPlan = value
+        } else if (arg == "--attestation-authority") {
+            out.attestationAuthority = value
+        }
         else {
             let separator = match (value.indexOf("=")) {
                 case Some(index) => index
@@ -657,6 +670,20 @@ public func validateCkbReproCompositionSealOptions(
     if (options.root == "" || !Path(options.root).isAbsolute() ||
         expected.size == 0 || options.assets.size != expected.size) {
         return "composition_seal_options_invalid"
+    }
+    if (options.prepareOnly && (options.environmentPlan != "" ||
+            options.attestationAuthority != "")) {
+        return "composition_seal_options_invalid"
+    }
+    if ((options.environmentPlan == "") !=
+            (options.attestationAuthority == "")) {
+        return "composition_seal_options_invalid"
+    }
+    for (path in [options.environmentPlan, options.attestationAuthority]) {
+        if (path != "" && !ckbReproReadSingleFileNoFollow(path,
+                128 * 1024)[0]) {
+            return "composition_seal_options_invalid"
+        }
     }
     let roles = HashSet<String>(); let paths = HashSet<String>()
     for (spec in options.assets) {
@@ -791,6 +818,21 @@ public func runCkbReproCompositionSealCliWithProbeAndHook(
             return ckbCompositionSealFailure(
                 "composition_simulated_crash", options.json, 1)
         }
+        if (options.prepareOnly) {
+            let prepared = CkbReproCompositionSealExecution()
+            prepared.ok = true; prepared.exitCode = 0
+            prepared.diagnostic = "ok"
+            prepared.output = ckbCompositionSealRender(true, "ok",
+                options.mode, manifestHash, options.json)
+            return prepared
+        }
+        if (options.environmentPlan != "") {
+            let attached = ckbCompositionAttachEnvironmentAuthority(
+                canonicalRoot, options, manifestHash, hook)
+            if (attached != "ok") {
+                return ckbCompositionSealFailure(attached, options.json, 1)
+            }
+        }
         let plannedRead = ckbCliCompositionRead(canonicalRoot,
             "reproducibility/manifests/environment-plan.json", 128 * 1024)
         if (!plannedRead[0].ok) {
@@ -895,6 +937,70 @@ public func runCkbReproCompositionSealCliWithProbeAndHook(
     out.output = ckbCompositionSealRender(true, "ok", options.mode,
         manifestHash, options.json)
     out
+}
+
+private func ckbCompositionAttachEnvironmentAuthority(root: String,
+    options: CkbReproCompositionSealOptions, manifestHash: String,
+    hook: CkbReproCompositionSealCommitHook): String {
+    let plan = ckbReproReadSingleFileNoFollow(options.environmentPlan,
+        128 * 1024)
+    let authority = ckbReproReadSingleFileNoFollow(
+        options.attestationAuthority, 64 * 1024)
+    if (!plan[0] || !authority[0]) {
+        return "composition_environment_attach_invalid"
+    }
+    let parsed = parseCkbReproEnvironmentLock(plan[1])
+    let verified = loadCkbReproVerifiedAttestationAuthority(authority[1],
+        parsed[1].attestationAuthorityHash)
+    if (!parsed[0].ok || !validateCkbReproEnvironmentLock(parsed[1]).ok ||
+        parsed[1].identityStatus != "planned" ||
+        parsed[1].compositionManifestHash != "" ||
+        !verified[0].ok) {
+        return "composition_environment_attach_invalid"
+    }
+    let expected = parseCkbReproEnvironmentLock(
+        renderCkbReproEnvironmentLock(parsed[1]).toArray())
+    if (!expected[0].ok) { return "composition_environment_attach_invalid" }
+    expected[1].identityStatus = "frozen"
+    expected[1].compositionManifestHash = manifestHash
+    if (verified[1].observedEnvironmentProjectionHash() !=
+        ckbReproObservedEnvironmentProjectionHash(expected[1])) {
+        return "composition_environment_attach_invalid"
+    }
+    let authorityTarget = Path(root).join(
+        parsed[1].attestationAuthorityManifestPath).toString()
+    let planTarget = Path(root).join(
+        "reproducibility/manifests/environment-plan.json").toString()
+    var result = ckbCompositionAttachExactFile(authorityTarget, authority[1],
+        "authority", manifestHash, hook)
+    if (result != "ok") { return result }
+    result = ckbCompositionAttachExactFile(planTarget, plan[1], "plan",
+        manifestHash, hook)
+    result
+}
+
+private func ckbCompositionAttachExactFile(target: String,
+    bytes: Array<UInt8>, kind: String, manifestHash: String,
+    hook: CkbReproCompositionSealCommitHook): String {
+    if (exists(Path(target))) {
+        let existing = ckbReproReadSingleFileNoFollow(target, 128 * 1024)
+        return if (existing[0] && existing[1] == bytes) { "ok" }
+            else { "composition_environment_attach_mismatch" }
+    }
+    let claim = ckbCompositionAcquireTempFile(target, kind, manifestHash, hook)
+    if (!claim.ok) { return claim.diagnostic }
+    try {
+        if (!claim.descriptor.createPayload(bytes) ||
+            !claim.descriptor.publish() ||
+            !claim.descriptor.syncAndValidate()) {
+            return claim.descriptor.diagnostic
+        }
+        let readback = claim.descriptor.readPublicTarget(128 * 1024)
+        if (!readback[0] || readback[1] != bytes) {
+            return "composition_environment_attach_readback_failed"
+        }
+        "ok"
+    } finally { ckbCompositionReleaseTempFile(claim) }
 }
 
 private func ckbCompositionSealFailure(diagnostic: String, json: Bool,

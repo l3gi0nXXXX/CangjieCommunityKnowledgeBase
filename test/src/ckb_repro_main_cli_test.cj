@@ -44,6 +44,11 @@ private class P0MainCliAdapter <: CkbReproMainCliAdapter {
         this.calls.add("p8:${args[0]}")
         CkbReproMainCliResult(true, 0, "p8 human\n")
     }
+    public func runAttestationAuthorityFreeze(args: Array<String>):
+        CkbReproMainCliResult {
+        this.calls.add("attestation:${args[0]}")
+        CkbReproMainCliResult(true, 0, "attestation human\n")
+    }
     public func runCompositionStage(args: Array<String>): CkbReproMainCliResult {
         this.calls.add("stage:${args[0]}")
         CkbReproMainCliResult(true, 0, "stage human\n")
@@ -217,6 +222,7 @@ public class CkbReproMainCliTest {
         for (command in ["ckb-portable-vector-build", "ckb-qdrant-snapshot",
             "ckb-retrieval-parity", "ckb-repro-build", "ckb-repro-promote",
             "ckb-repro-verify", "ckb-repro-composition-stage",
+            "ckb-repro-attestation-authority-freeze",
             "ckb-repro-composition-seal"]) {
             let result = executeCkbReproMainCli(command, [command], adapter)
             @Expect(result.handled, true)
@@ -226,6 +232,7 @@ public class CkbReproMainCliTest {
             "p3:ckb-retrieval-parity", "p4:ckb-repro-build",
             "p4:ckb-repro-promote", "p8:ckb-repro-verify",
             "stage:ckb-repro-composition-stage",
+            "attestation:ckb-repro-attestation-authority-freeze",
             "composition:ckb-repro-composition-seal"])
     }
 
@@ -280,6 +287,7 @@ public class CkbReproMainCliTest {
             "ckb-repro-publish-gate", "ckb-portable-vector-build",
             "ckb-qdrant-snapshot", "ckb-retrieval-parity",
             "ckb-repro-build", "ckb-repro-promote", "ckb-repro-verify",
+            "ckb-repro-attestation-authority-freeze",
             "ckb-repro-composition-seal"]) {
             let human = runCkbReproMainCli(command, [command])
             @Expect(human.handled, true)

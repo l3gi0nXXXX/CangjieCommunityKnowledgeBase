@@ -49,6 +49,7 @@ public class CkbReproCompositionStageOptions {
     public var certificationRunManifestPath: String = ""
     public var referenceSource: String = ""
     public var json: Bool = false
+    public var prepareOnly: Bool = false
     public var diagnostic: String = "not_parsed"
     public let inputs = ArrayList<CkbReproCompositionStageInput>()
     public let credentialEnvironmentVariables = ArrayList<String>()
@@ -146,11 +147,14 @@ public func parseCkbReproCompositionStageOptions(args: Array<String>):
     let seen = HashSet<String>(); var index: Int64 = 1
     while (index < args.size) {
         let name = args[index]
-        if (name == "--json") {
+        if (name == "--json" || name == "--prepare-only") {
             if (seen.contains(name)) {
                 out.diagnostic = "duplicate_argument:${name}"; return out
             }
-            seen.add(name); out.json = true; index += 1; continue
+            seen.add(name)
+            if (name == "--json") { out.json = true }
+            else { out.prepareOnly = true }
+            index += 1; continue
         }
         if (!ckbCompositionStageOptionName(name)) {
             out.diagnostic = "unknown_argument:${name}"; return out
@@ -197,7 +201,7 @@ public func validateCkbReproCompositionStageOptions(
     if (!ckbCompositionStageModeAllowed(options.mode) ||
         !ckbCompositionStageCanonicalNewPath(options.root) ||
         options.environmentPlan == "" ||
-        options.attestationAuthority == "") {
+        (!options.prepareOnly && options.attestationAuthority == "")) {
         return "composition_stage_options_invalid"
     }
     let roles = ckbReproCliCompositionRoles(options.mode)
@@ -212,6 +216,7 @@ public func validateCkbReproCompositionStageOptions(
         seen.add(input.role)
     }
     for (path in [options.environmentPlan, options.attestationAuthority]) {
+        if (path == "" && options.prepareOnly) { continue }
         if (!ckbCompositionStageCanonicalExistingFile(path)) {
             return "composition_stage_input_invalid"
         }
@@ -350,10 +355,13 @@ public func runCkbReproCompositionStageCliWithProbe(args: Array<String>,
             return ckbCompositionStageOwnedFailure(options, rootIdentity,
                 publication[0], 1)
         }
-        let auxiliary = ckbCompositionStageEnvironment(options, publication[1])
-        if (auxiliary != "ok") {
-            return ckbCompositionStageOwnedFailure(options, rootIdentity,
-                auxiliary, 1)
+        if (!options.prepareOnly) {
+            let auxiliary = ckbCompositionStageEnvironment(options,
+                publication[1])
+            if (auxiliary != "ok") {
+                return ckbCompositionStageOwnedFailure(options, rootIdentity,
+                    auxiliary, 1)
+            }
         }
         let generated = ckbCompositionStageGenerated(options, publication[1],
             probe)
@@ -385,6 +393,7 @@ public func runCkbReproCompositionStageCliWithProbe(args: Array<String>,
         sealArgs.add("ckb-repro-composition-seal")
         sealArgs.add("--root"); sealArgs.add(canonicalRoot)
         sealArgs.add("--mode"); sealArgs.add(options.mode)
+        if (options.prepareOnly) { sealArgs.add("--prepare-only") }
         if (options.json) { sealArgs.add("--json") }
         for (role in ckbReproCliCompositionRoles(options.mode)) {
             sealArgs.add("--asset")

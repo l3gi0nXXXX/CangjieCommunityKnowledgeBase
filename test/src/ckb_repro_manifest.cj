@@ -574,6 +574,7 @@ public func validateCkbRunCriticalFilesManifest(manifest: CkbRunCriticalFilesMan
         "src/ckb_public_evidence.cj",
         "src/ckb_repro_cli_composition.cj",
         "src/ckb_repro_composition_stage.cj",
+        "src/ckb_repro_attestation_authority_writer.cj",
         "src/ckb_repro_cli_typed_assets.cj",
         "src/ckb_repro_cli_runtime_loader.cj",
         "src/ckb_repro_cli_runtime_p3.cj",
