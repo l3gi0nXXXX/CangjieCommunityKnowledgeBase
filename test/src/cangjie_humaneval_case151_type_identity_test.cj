@@ -125,7 +125,9 @@ public class CangjieHumanEvalCase151TypeIdentityTest {
         @Expect(metadata.contains("Python int and float identities are preserved with EvalValue tags."), true)
         @Expect(translation.contains("evalInt(3)"), true)
         @Expect(translation.contains("evalFloat(3.0)"), true)
-        @Expect(canonical.contains("`double_the_difference` with signature `${signature}`"), true)
+        @Expect(canonical.contains("\"schemaVersion\":\"cangjie-humaneval-authority-v1\""), true)
+        @Expect(canonical.contains("\"caseId\":\"CJ-HUMANEVAL-151\""), true)
+        @Expect(canonical.contains("\"signature\":\"${signature}\""), true)
         @Expect(readme.contains("`CJ-HUMANEVAL-151` | `HumanEval/151` | `double_the_difference` | 9 | `${signature}`"), true)
     }
 }

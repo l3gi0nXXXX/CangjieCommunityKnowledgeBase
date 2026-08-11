@@ -111,8 +111,11 @@ cjpm build -i
 
 export AUTHORITY_MANIFEST="$CKB_ROOT/test/cangjie_eval/cangjie_humaneval_manifest.jsonl"
 export AUTHORITY_SOURCE_LOCK="$CKB_ROOT/test/cangjie_eval/authority/HumanEvalPlus-v0.1.10/source-lock.json"
+cjpm run --skip-build --run-args \
+  "cangjie-humaneval-manifest-build --dataset-root $CKB_ROOT/test/cangjie_eval/cases/Cangjie-HumanEval --output $CKB_AUTHORITY_TMP/repository-authority.jsonl"
+cmp "$CKB_AUTHORITY_TMP/repository-authority.jsonl" "$AUTHORITY_MANIFEST"
 test "$(shasum -a 256 "$AUTHORITY_MANIFEST" | awk '{print $1}')" = \
-  5883bc7092cae90fa21f74abf9bf35036590dad2913871d9921a9f42cc31de37
+  58c32632cb7635e49e33b31e49a8401543a8e2110db975d2577a90465873c3b1
 test "$(shasum -a 256 "$AUTHORITY_SOURCE_LOCK" | awk '{print $1}')" = \
   42af8d986e94d8629407a04c5350da24db574abedd736205cbee914bf68f0454
 
@@ -121,7 +124,7 @@ cjpm run --skip-build --run-args \
 cjpm run --skip-build --run-args \
   "ckb-authority-bundle verify --authority $AUTHORITY_MANIFEST --delivery-root $CKB_AUTHORITY_DELIVERY_ROOT --json" | \
   jq -e '.ok == true and .presentCount == 164 and
-    .authorityHash == "sha256:5883bc7092cae90fa21f74abf9bf35036590dad2913871d9921a9f42cc31de37" and
+    .authorityHash == "sha256:58c32632cb7635e49e33b31e49a8401543a8e2110db975d2577a90465873c3b1" and
     .datasetVersion == "cangjie-humaneval-164-sha256:72aa7564b350583eff660722aa54487334079b2c92207d3906898953f72f90f6"'
 ```
 
@@ -143,7 +146,7 @@ jq -e '
   .mode == "bundled" and
   .licenseId == "Apache-2.0 AND MIT" and
   .redistributionAllowed == true and .anonymousPublicAccess == false and
-  .authorityHash == "sha256:5883bc7092cae90fa21f74abf9bf35036590dad2913871d9921a9f42cc31de37" and
+  .authorityHash == "sha256:58c32632cb7635e49e33b31e49a8401543a8e2110db975d2577a90465873c3b1" and
   .datasetVersion == "cangjie-humaneval-164-sha256:72aa7564b350583eff660722aa54487334079b2c92207d3906898953f72f90f6" and
   (.bundleHash | test("^sha256:[0-9a-f]{64}$")) and
   (.licenseEvidenceHash | test("^sha256:[0-9a-f]{64}$"))' \

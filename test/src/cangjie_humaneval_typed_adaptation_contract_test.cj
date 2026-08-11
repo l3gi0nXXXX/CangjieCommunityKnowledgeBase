@@ -178,8 +178,8 @@ public class CangjieHumanEvalTypedAdaptationContractTest {
         @Expect(readme.contains("typed Cangjie contracts do not claim full Python duck-typing compatibility"), true)
         let canonical = htaReadUtf8(Path("cangjie_eval/cangjie_humaneval_manifest.jsonl"))
         @Expect(canonical[0], true)
-        @Expect(canonical[1].contains("[\"ArrayList\", \"Bool\", \"CangjieEval\", \"EvalValue\", \"HumanEval\", \"Int64\"]"), true)
-        @Expect(canonical[1].contains("[\"ArrayList\", \"CangjieEval\", \"HumanEval\", \"Int64\", \"Option\", \"tuple\"]"), true)
+        @Expect(canonical[1].contains("\"requiredKnowledgeTags\":[\"ArrayList\",\"Int64\",\"Bool\"]"), true)
+        @Expect(canonical[1].contains("\"requiredKnowledgeTags\":[\"ArrayList\",\"Int64\",\"Option\"]"), true)
     }
 
     @TestCase

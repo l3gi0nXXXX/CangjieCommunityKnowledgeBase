@@ -57,7 +57,7 @@ public class CkbReproManifestTest {
             mode: "execution")
         @Expect(execution.ok, true)
         @Expect(execution.treeHash,
-            "sha256:d389767f9fef3b917bc676bafc4a2674a71fcc7da455e8994def0a6282cf07f6")
+            "sha256:5c99c85fec55c712c01a0f012f724e83088400a477f952901a3ff24a02c4a01d")
         var bundleListed = false
         var plusAuthorityListed = false
         for (file in critical[1].files) {

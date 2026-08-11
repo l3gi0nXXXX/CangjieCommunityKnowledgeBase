@@ -291,6 +291,19 @@ public class CkbReproEnvironmentTest {
     }
 
     @TestCase
+    public func p6Ut01bRepositoryAuthorityMatchesProductionTrustPolicy(): Unit {
+        let authorityBytes = p6Read(
+            "cangjie_eval/cangjie_humaneval_manifest.jsonl")
+        let authority = parseCangjieHumanEvalAuthorityManifest(
+            String.fromUtf8(authorityBytes))
+        let policy = ckbHumanEvalAuthorityTrustPolicy()
+        @Expect(authority.ok, true)
+        @Expect(authority.rows.size, 164)
+        @Expect(authority.datasetVersion, policy.datasetVersion)
+        @Expect(ckbReproBundleHash(authorityBytes), policy.authorityHash)
+    }
+
+    @TestCase
     public func p6Ut02AuthorityBundleSealAndVerifyCliAreDeterministic(): Unit {
         let root = Path("target/p6-authority-cli")
         if (exists(root)) { remove(root, recursive: true) }
