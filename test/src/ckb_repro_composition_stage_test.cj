@@ -281,6 +281,7 @@ public class CkbReproCompositionStageTest {
         try {
             let args = r6O1cParityArgs(root, fixture)
             let result = runCkbReproCompositionStageCli(args)
+            @Expect(result.diagnostic, "ok")
             @Expect(result.ok, true)
             @Expect(result.providerCalls, 0)
             @Expect(result.modelCalls, 0)
