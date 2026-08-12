@@ -15,7 +15,7 @@ public class CangjieCertificationControlCliTest {
     public func r6StudentValidationIdentityAndCompletionControlAreCanonical(): Unit {
         let model="GLM-5.2";let claude="claude-code-1.0";let transport=CkbAbcdeGroups.D
         @Expect(ckbStudentCompletionCommandHash(model),
-            "sha256:f459b295757aad5f6b192b9117a0097e6deb94b2043070f6a74e2155cfe64ce0")
+            "sha256:314643ecc3a5aeadbf2ca066c3e02542f57cc5a9da11ce4e76378067cf93120f")
         let schemaHash=benchmarkGapSha256(ckbAbcdeCompletionOutputSchema());let samplingHash=benchmarkGapSha256("sampling🙂\n")
         let runtimeConfigHash=benchmarkGapSha256("runtime config 中文\n");let capabilityHash=benchmarkGapSha256("capability🙂\n")
         let control="{\"schemaVersion\":\"ckb-student-completion-control-v1\",\"certificationTransport\":\"${transport}\",\"generationProtocol\":\"completion-only-v1\",\"samplesPerCase\":1,\"outputSchemaHash\":\"${schemaHash}\",\"samplingCapabilityHash\":\"${samplingHash}\",\"effectivePromptByteBudget\":188416,\"transportRetryBudget\":2,\"modelTimeoutSeconds\":30,\"runtimeConfigHash\":\"${runtimeConfigHash}\",\"completionCommandHash\":\"${ckbStudentCompletionCommandHash(model)}\"}\n"
