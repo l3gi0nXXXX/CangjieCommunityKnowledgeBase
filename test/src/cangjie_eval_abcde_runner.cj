@@ -1035,7 +1035,7 @@ private func ckbAbcdeWaitForCertificationIdentity(options: CkbAbcdeRunnerOptions
     "certification_http_not_ready"
 }
 
-public func ckbAbcdeCertificationReadinessDeadlineMillis(): Int64 { 300000 }
+public func ckbAbcdeCertificationReadinessDeadlineMillis(): Int64 { 900000 }
 public func ckbAbcdeDevelopmentToolProbeTimeoutSeconds(): Int64 { 30 }
 public func ckbAbcdeCertificationProbeMaxTimeSeconds(remainingMillis: Int64): Int64 {
     if (remainingMillis < 1000) { return 0 }
