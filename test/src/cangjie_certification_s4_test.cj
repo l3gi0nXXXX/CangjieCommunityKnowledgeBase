@@ -50,6 +50,20 @@ public class CkbCertificationS4ContractTest {
         };
         let options = prepared[1];
         let groupRoot = prepared[2]
+        let frozenSkillBytes = File.readFrom(
+            Path(options.studentContextRoot).join("student-skills.json"))
+        let frozenSkillBundle = parseStudentSkillBundle(frozenSkillBytes)
+        @Expect(frozenSkillBundle.ok, true)
+        let expectedSkillHash =
+            readStudentContextBundleV2(options.studentContextRoot).skillsHash
+        @Expect(frozenSkillBundle.canonicalHash, expectedSkillHash)
+        @Expect(benchmarkGapSha256(String.fromUtf8(frozenSkillBytes)) ==
+            frozenSkillBundle.canonicalHash, false)
+        @Expect(ckbAbcdeSkillBundleDiagnostic(frozenSkillBytes,
+            expectedSkillHash), "ok")
+        @Expect(ckbAbcdeSkillBundleDiagnostic(frozenSkillBytes,
+            benchmarkGapSha256(String.fromUtf8(frozenSkillBytes))),
+            "skill_bundle_hash_mismatch")
         let assets = s4AssetsFromRun(options);
         @Expect(ckbAbcdeFreezeS4CaseAssets(groupRoot,assets,true),"ok")
         @Expect(ckbAbcdeFreezeS4CaseAssets(groupRoot,assets,false),"ok")

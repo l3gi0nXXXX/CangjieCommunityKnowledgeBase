@@ -177,6 +177,15 @@ public func ckbAbcdeCompletionOptionsDiagnostic(options: CkbAbcdeRunnerOptions):
     "ok"
 }
 
+public func ckbAbcdeSkillBundleDiagnostic(bytes: Array<UInt8>,
+    expectedCanonicalHash: String): String {
+    let bundle = parseStudentSkillBundle(bytes)
+    if (validateStudentSkillBundle(bundle) != "ok" ||
+        bundle.canonicalHash != expectedCanonicalHash) {
+        "skill_bundle_hash_mismatch"
+    } else { "ok" }
+}
+
 public func applyCkbAbcdeFrozenRunManifest(options:CkbAbcdeRunnerOptions,bytes:Array<UInt8>):String{
     let raw=try{String.fromUtf8(bytes)}catch(_:Exception){return "run_manifest_invalid_encoding"}
     try{
@@ -897,7 +906,7 @@ private func runCangjieEvalAbcdeCore(args: Array<String>,
             if(options.evaluateFrozen){
                 let frozenBytes=try{File.readFrom(target)}catch(_:Exception){ckbAbcdeEmit(quiet,"ABCDE certification start blocked: frozen_skill_bundle_missing");return 1};let frozenText=try{String.fromUtf8(frozenBytes)}catch(_:Exception){ckbAbcdeEmit(quiet,"ABCDE certification start blocked: invalid_response_encoding");return 1};if(benchmarkGapSha256(frozenText)!=skillHash){ckbAbcdeEmit(quiet,"ABCDE certification start blocked: frozen_skill_bundle_hash_mismatch");return 1}
             }else{
-                let skillPath=ckbAbcdeManifestString(manifest,"skillBundlePath");let skillBytes=try{File.readFrom(Path(skillPath))}catch(_:Exception){ckbAbcdeEmit(quiet,"ABCDE certification start blocked: skill_bundle_unreadable");return 1};if(benchmarkGapSha256(try{String.fromUtf8(skillBytes)}catch(_:Exception){ckbAbcdeEmit(quiet,"ABCDE certification start blocked: invalid_response_encoding");return 1})!=skillHash){ckbAbcdeEmit(quiet,"ABCDE certification start blocked: skill_bundle_hash_mismatch");return 1};let temporary=Path("${target.toString()}.tmp");File.writeTo(temporary,skillBytes);try{rename(temporary.toString(),to:target.toString(),overwrite:true)}catch(_:Exception){ckbAbcdeEmit(quiet,"ABCDE certification start blocked: skill_bundle_freeze_failed");return 1}
+                let skillPath=ckbAbcdeManifestString(manifest,"skillBundlePath");let skillBytes=try{File.readFrom(Path(skillPath))}catch(_:Exception){ckbAbcdeEmit(quiet,"ABCDE certification start blocked: skill_bundle_unreadable");return 1};if(ckbAbcdeSkillBundleDiagnostic(skillBytes,skillHash)!="ok"){ckbAbcdeEmit(quiet,"ABCDE certification start blocked: skill_bundle_hash_mismatch");return 1};let temporary=Path("${target.toString()}.tmp");File.writeTo(temporary,skillBytes);try{rename(temporary.toString(),to:target.toString(),overwrite:true)}catch(_:Exception){ckbAbcdeEmit(quiet,"ABCDE certification start blocked: skill_bundle_freeze_failed");return 1}
             }
         }
         if (!options.evaluateFrozen) {
