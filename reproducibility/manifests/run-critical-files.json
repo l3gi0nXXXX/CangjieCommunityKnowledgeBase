@@ -57,7 +57,7 @@
     {"path":"src/ckb_repro_cli_runtime_p8_factory.cj","status":"present","sha256":"sha256:a745b4f337be5f731878dd3b8317541f0062b40b90688f7c9feb0354bf196ceb"},
     {"path":"src/ckb_repro_cli_runtime_a.cj","status":"present","sha256":"sha256:5cdfa735ef40150a0fc9913373d4c7353f6be3a499a0da47d83d604d2cf60e28"},
     {"path":"src/ckb_repro_cli_runtime_b.cj","status":"present","sha256":"sha256:d2e14eea4f83d06c9576f85059ab481b6234217c85813b9ee07afebeedd83133"},
-    {"path":"src/ckb_repro_p8_owned_lifecycle.cj","status":"present","sha256":"sha256:c4a3a13f7aee9442abf0af939096c9502b61838a13a4be496a6b80b5e2289586"},
+    {"path":"src/ckb_repro_p8_owned_lifecycle.cj","status":"present","sha256":"sha256:83c2cc166eb9f4a8ef93debd3d64953fdcbc88d54370c9ce2563346578023c67"},
     {"path":"src/ckb_repro_documentation.cj","status":"present","sha256":"sha256:906fdf5ea7fa896fa2f61ffa0096f104ab35863f6cde5401f83d7a757cd052a6"},
     {"path":"src/ckb_portable_path_normalizer.cj","status":"present","sha256":"sha256:88742dd5cd61c7e44f21cbb7eea3089961db82665b927991cffc5a55f3267ffc"},
     {"path":"src/ckb_repro_bundle.cj","status":"present","sha256":"sha256:694c5ddb4abe4f5dd1280c19315e0b1cfbfd641e29836811af5f1b313ac49b89"},
