@@ -62,7 +62,7 @@
     {"path":"src/ckb_portable_path_normalizer.cj","status":"present","sha256":"sha256:88742dd5cd61c7e44f21cbb7eea3089961db82665b927991cffc5a55f3267ffc"},
     {"path":"src/ckb_repro_bundle.cj","status":"present","sha256":"sha256:694c5ddb4abe4f5dd1280c19315e0b1cfbfd641e29836811af5f1b313ac49b89"},
     {"path":"src/ckb_repro_authority_bundle.cj","status":"present","sha256":"sha256:e08f67ebecea3e7ac8748ed1185de9f3fe620c59056daf5803fdd11d7d0bc9d6"},
-    {"path":"src/ckb_repro_environment.cj","status":"present","sha256":"sha256:c829c5eb7eb2cf4903fe537eb15781e938033f0c6f87cd1202aded7f2770b31a"},
+    {"path":"src/ckb_repro_environment.cj","status":"present","sha256":"sha256:a239a18d4e439e44ee5847a3536940d4afaccdd06440e993078398bb2793629a"},
     {"path":"src/ckb_repro_verify.cj","status":"present","sha256":"sha256:031da085e30b7afaa2ab4a7b8d71b2faee0f9dc577b40c30833e8593a5f09eff"}
   ]
 }
