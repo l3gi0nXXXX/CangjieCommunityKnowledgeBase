@@ -9,6 +9,16 @@ import std.process.*
 
 @Test
 public class CangjieEvalAbcdeRunnerTest {
+    @TestCase
+    public func certificationClaudeVersionUsesFrozenSemanticToken(): Unit {
+        let root=Path("target/version-probe-${ckbCoreNowMillis()}")
+        Directory.create(root,recursive:true)
+        let executable=root.join("claude")
+        File.writeTo(executable,"#!/bin/zsh\nprint '2.1.221 (Claude Code)'\n".toArray())
+        @Expect(launch("/bin/chmod",["700",executable.toString()]).wait(),0)
+        @Expect(ckbAbcdeClaudeVersionForTest(executable:executable.toString()),"2.1.221")
+    }
+
     // S7R-UT-01: N configured transport retries permit at most N+1 attempts.
     @TestCase
     public func s7rUt01DevelopmentRetryBudgetMapsToTotalAttempts(): Unit {

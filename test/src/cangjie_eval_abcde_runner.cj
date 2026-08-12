@@ -3325,7 +3325,9 @@ private func ckbAbcdeResultNotes(status: String, violation: String, toolEvidence
 private func ckbAbcdeClaudeVersion(executable!:String="claude"): String {
     let command=if(executable.trimAscii()==""){"claude"}else{ckbAbcdeShellQuote(executable)}
     let result = ckbAbcdeRunShell("${command} --version 2>/dev/null | head -n1", "")
-    result.stdout.trimAscii()
+    let output=result.stdout.trimAscii()
+    if(output==""){return ""}
+    output.split(" ")[0].trimAscii()
 }
 
 
