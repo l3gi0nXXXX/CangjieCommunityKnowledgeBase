@@ -2,7 +2,7 @@
   "schemaVersion": "ckb-run-critical-files-v1",
   "files": [
     {"path":"src/main.cj","status":"present","sha256":"sha256:9937a7abc6104e6311d320fe0ed6a8f26407cfaf3c679ad5c04b3c907995ffed"},
-    {"path":"src/cangjie_eval_abcde_runner.cj","status":"present","sha256":"sha256:c8ee53aee8557b639bb083ff79b39323df5a25a7caed67dfc26164d2830dc13c"},
+    {"path":"src/cangjie_eval_abcde_runner.cj","status":"present","sha256":"sha256:06ab53b7bef90a90cb5dabb918a6eea5c952860ce1152409ff030b1aa3e0cf56"},
     {"path":"src/cangjie_strict_certification.cj","status":"present","sha256":"sha256:4dc016703b9506f7cedb68561128ed01ec77a0cc99180e79218bb96d645ede9c"},
     {"path":"src/cangjie_eval_knowledge_audit.cj","status":"present","sha256":"sha256:de1ed91483fdda2eade6939208098d6e89f28af4d0eac0527812748f3ad20e73"},
     {"path":"src/cangjie_certification_control_cli.cj","status":"present","sha256":"sha256:db871365e0c1d5388ddc3ab94b36fae65f173fa535d686dcb6339cd8be068e62"},
