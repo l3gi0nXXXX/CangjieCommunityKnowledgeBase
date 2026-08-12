@@ -3262,7 +3262,6 @@ public func ckbAbcdeCertificationEntryDiagnostic(options: CkbAbcdeRunnerOptions,
     try {
         let manifest = JsonValue.fromStr(ckbAbcdeReadText(options.certificationRunManifestPath)).asObject()
         if (ckbAbcdeStrictJsonString(manifest, "runId") != options.runId) { return "p6_run_identity_mismatch" }
-        if (ckbAbcdeStrictJsonString(manifest, "fingerprint") != options.modelFingerprint) { return "p6_fingerprint_mismatch" }
         if (ckbAbcdeStrictJsonString(manifest,"providerIdentityHash")!=options.providerIdentityHash) { return "p6_provider_identity_mismatch" }
         if (ckbAbcdeStrictJsonString(manifest,"modelVersion")!=options.expectedModelVersion) { return "p6_model_identity_mismatch" }
         if (ckbAbcdeStrictJsonString(manifest,"certificationTransport")!=options.groups[0]) { return "p6_transport_mismatch" }

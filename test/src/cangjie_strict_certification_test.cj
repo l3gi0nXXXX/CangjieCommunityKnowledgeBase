@@ -445,7 +445,7 @@ private func p1M00PrivateRun(strictPassed: Int64, label: String): P1M00PrivateRu
     let authority = parseCangjieHumanEvalAuthorityManifest(authorityText)
     let runId = "p1-m00-private-run"
     let knowledgeVersion = "knowledge-v1"
-    let fingerprint = "frozen-fingerprint"
+    let fingerprint = benchmarkGapSha256("frozen-input-fingerprint")
     let model = "GLM-5.2"
     let claudeBin = "/bin/echo"
     let claudeVersion = ckbAbcdeClaudeVersionForTest(executable: claudeBin)
@@ -479,7 +479,8 @@ private func p1M00PrivateRun(strictPassed: Int64, label: String): P1M00PrivateRu
     options.runMode = "certification"
     options.datasetVersion = authority.datasetVersion
     options.knowledgeVersion = knowledgeVersion
-    options.modelFingerprint = fingerprint
+    // The environment model identity is distinct from the P6 frozen-input fingerprint.
+    options.modelFingerprint = "claude-code-glm-5.2"
     options.expectedModelVersion = model
     options.claudeBin = claudeBin
     options.providerIdentityHash = providerHash
