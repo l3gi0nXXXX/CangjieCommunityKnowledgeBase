@@ -283,12 +283,35 @@ public func ckbAbcdeFreezeS4CaseAssets(groupRoot: String, assets: CkbS4FrozenCon
     "ok"
 }
 
+private func ckbAbcdeCompletionTerminal(raw: String): JsonObject {
+    let value = JsonValue.fromStr(raw)
+    try { return value.asObject() } catch (_: Exception) {}
+    let items = try { value.asArray().getItems() }
+        catch (_: Exception) { throw IllegalArgumentException("malformed_json") }
+    var terminal: Option<JsonObject> = None
+    for (index in 0..items.size) {
+        let item = try { items[index].asObject() }
+            catch (_: Exception) { throw IllegalArgumentException("malformed_json") }
+        if (ckbAbcdeManifestString(item, "type") != "result") { continue }
+        match (terminal) {
+            case Some(_) => throw IllegalArgumentException("malformed_json")
+            case None => ()
+        }
+        if (index != items.size - 1) { throw IllegalArgumentException("malformed_json") }
+        terminal = Some<JsonObject>(item)
+    }
+    match (terminal) {
+        case Some(item) => item
+        case None => throw IllegalArgumentException("malformed_json")
+    }
+}
+
 public func ckbAbcdeExtractSingleCompletion(bytes: Array<UInt8>): CkbAbcdeSingleCompletion {
     let result = CkbAbcdeSingleCompletion()
     if (bytes.size > CKB_ABCDE_MAX_MODEL_TRANSCRIPT_BYTES) { result.diagnostic="transcript_too_large";return result }
     let raw = try { String.fromUtf8(bytes) } catch (_: Exception) { result.diagnostic="invalid_response_encoding";return result }
     try {
-        let terminal=JsonValue.fromStr(raw.trimAscii()).asObject()
+        let terminal=ckbAbcdeCompletionTerminal(raw.trimAscii())
         if(ckbAbcdeManifestString(terminal,"type")!="result"||ckbAbcdeManifestString(terminal,"subtype")!="success"||
             terminal.get("is_error").getOrThrow().asBool().getValue()){result.diagnostic="completion_unsuccessful_result";return result}
         let usage=terminal.get("modelUsage").getOrThrow().asObject()

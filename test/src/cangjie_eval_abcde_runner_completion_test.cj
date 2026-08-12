@@ -137,6 +137,24 @@ public class CangjieEvalAbcdeRunnerCompletionTest {
         @Expect(ckbAbcdeExtractSingleCompletion(transcript.toString().toArray()).diagnostic,"transcript_too_large")
     }
 
+    @TestCase
+    public func completionEventArrayRequiresOneFinalTerminal(): Unit {
+        let solution = "package solution\npublic func answer(): String { \"中文😀\" }"
+        let terminal = p3Terminal(solution)
+        let valid = "[{\"type\":\"system\"},{\"type\":\"assistant\"},${terminal}]"
+        let completion = ckbAbcdeExtractSingleCompletion(valid.toArray())
+        @Expect(completion.ok, true)
+        @Expect(completion.solutionCj, solution)
+        @Expect(ckbAbcdeExtractSingleCompletion("[${terminal},${terminal}]".toArray()).diagnostic,
+            "malformed_json")
+        @Expect(ckbAbcdeExtractSingleCompletion("[${terminal},{\"type\":\"system\"}]".toArray()).diagnostic,
+            "malformed_json")
+        @Expect(ckbAbcdeExtractSingleCompletion("[{\"type\":\"system\"}]".toArray()).diagnostic,
+            "malformed_json")
+        @Expect(ckbAbcdeExtractSingleCompletion("[1,${terminal}]".toArray()).diagnostic,
+            "malformed_json")
+    }
+
     // P3-POS-01
     @TestCase
     public func validCompletionFreezesBeforeIndependentEvaluation(): Unit {
