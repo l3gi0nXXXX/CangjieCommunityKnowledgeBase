@@ -35,6 +35,17 @@ public class CkbCertificationS4ContractTest {
         let rpc = "{\"jsonrpc\":\"2.0\",\"id\":7,\"result\":{\"structuredContent\":${structured}}}"
         @Expect(parseCompletionMcpHttpBody(rpc.toArray(),"auto","7",requestHash,"v1").ok,true)
         @Expect(parseCompletionMcpHttpBody("data: ${rpc}\n\n".toArray(),"auto","7",requestHash,"v1").ok,true)
+        let taskPack = s4TaskKnowledgeRpc(requestHash)
+        let parsedTaskPack = parseCompletionMcpHttpBody(
+            taskPack.toArray(), "auto", "7", requestHash, "v1")
+        @Expect(parsedTaskPack.ok, true)
+        let normalized = String.fromUtf8(parsedTaskPack.normalizedBytes)
+        @Expect(normalized.contains("matchedEvidence"), true)
+        @Expect(normalized.contains("中文🙂"), true)
+        @Expect(normalized.contains("CJ-HUMANEVAL-000"), false)
+        @Expect(parseCompletionMcpHttpBody(taskPack.replace(requestHash,
+            s4Hash(r'e')).toArray(), "auto", "7", requestHash, "v1")
+            .diagnostic, "structured_content_request_hash_mismatch")
         @Expect(parseCompletionMcpHttpBody([UInt8(0xff)],"auto","7",requestHash,"v1").diagnostic,"invalid_response_encoding")
         let capability = s4Capability("model-v1", 6);
         @Expect(parseCkbS4ProviderPromptCapability(capability.toArray(),"model-v1","中文").ok,true)
@@ -213,6 +224,28 @@ private func s4Capability(model: String, budget: Int64): String {
 private func s4CompletionTranscript(): String {
     let solution = "package solution\n";
     "{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"modelUsage\":{\"GLM-5.2\":{}},\"structured_output\":{\"solution_cj\":\"${solution.replace("\n", "\\n")}\"}}"
+}
+
+private func s4TaskKnowledgeRpc(requestHash: String): String {
+    let structured = "{\"resultType\":\"task_knowledge_pack\"," +
+        "\"interfaceId\":\"KI-02\",\"contentFamily\":\"task_knowledge\"," +
+        "\"updateMechanism\":\"first_init_or_routine_update\"," +
+        "\"queryId\":\"query\",\"taskId\":\"CJ-HUMANEVAL-000\"," +
+        "\"benchmark\":\"Cangjie-HumanEval\",\"knowledgeVersion\":\"v1\"," +
+        "\"targetVersion\":\"1.0.0\",\"evidenceHash\":\"${s4Hash(r'a')}\"," +
+        "\"degraded\":false,\"truncated\":false," +
+        "\"versionResolution\":{},\"queryPlan\":[],\"requiredKnowledge\":[]," +
+        "\"matchedEvidence\":[{\"knowledge\":\"中文🙂\"}]," +
+        "\"examples\":[],\"negativeRules\":[]," +
+        "\"citations\":[{\"citation\":\"official\"}]," +
+        "\"coverage\":{\"coveragePass\":true},\"diagnostics\":[],\"notes\":[]," +
+        "\"requestBinding\":{\"schemaVersion\":\"ckb-runner-bound-mcp-v1\"," +
+        "\"bindingMode\":\"runner_immutable\",\"requestHash\":\"${requestHash}\"," +
+        "\"effectiveRequestHash\":\"${requestHash}\"," +
+        "\"modelArgumentsHash\":\"${s4Hash(r'b')}\"," +
+        "\"taskId\":\"CJ-HUMANEVAL-000\"}}"
+    "{\"jsonrpc\":\"2.0\",\"id\":7,\"result\":{\"content\":[]," +
+        "\"structuredContent\":${structured},\"isError\":false}}"
 }
 
 private func s4RulesManifest(): String {

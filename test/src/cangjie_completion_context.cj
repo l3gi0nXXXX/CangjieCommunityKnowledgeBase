@@ -85,9 +85,7 @@ public func adaptCompletionKnowledgeRpc(responseBytes: Array<UInt8>, mediaType: 
             case None => ()
         }
         if (envelope.getFields().size != 3 ||
-            !ckbCompletionRpcUnique(terminal,
-            ["jsonrpc", "id", "result", "structuredContent", "knowledgeVersion", "knowledgePack", "requestHash",
-                "contentHash"]) || ckbCompletionRpcString(envelope, "jsonrpc") != "2.0") {
+            ckbCompletionRpcString(envelope, "jsonrpc") != "2.0") {
             out.diagnostic = "json_rpc_envelope_invalid"
             return out
         }
@@ -112,6 +110,11 @@ public func adaptCompletionKnowledgeRpc(responseBytes: Array<UInt8>, mediaType: 
             }
         }
         let content = result.get("structuredContent").getOrThrow().asObject();
+        if (ckbCompletionRpcOptionalString(content, "resultType") ==
+            "task_knowledge_pack") {
+            return ckbCompletionAdaptTaskKnowledgePack(content,
+                expectedRequestHash, expectedVersion, out)
+        }
         if (content.getFields().size != 4) {
             out.diagnostic = "structured_content_schema_invalid"
             return out
@@ -151,6 +154,77 @@ public func adaptCompletionKnowledgeRpc(responseBytes: Array<UInt8>, mediaType: 
     }
 }
 
+private func ckbCompletionAdaptTaskKnowledgePack(content: JsonObject,
+    expectedRequestHash: String, expectedVersion: String,
+    out: CkbCompletionRpcAdapterResult): CkbCompletionRpcAdapterResult {
+    let required = ["resultType", "interfaceId", "contentFamily",
+        "updateMechanism", "queryId", "taskId", "benchmark",
+        "knowledgeVersion", "targetVersion", "evidenceHash", "degraded",
+        "truncated", "versionResolution", "queryPlan", "requiredKnowledge",
+        "matchedEvidence", "examples", "negativeRules", "citations",
+        "coverage", "diagnostics", "notes", "requestBinding"]
+    if (content.getFields().size != required.size ||
+        !ckbCompletionObjectHasFields(content, required) ||
+        ckbCompletionRpcString(content, "interfaceId") != "KI-02" ||
+        ckbCompletionRpcString(content, "contentFamily") != "task_knowledge") {
+        out.diagnostic = "structured_content_schema_invalid"
+        return out
+    }
+    let binding = content.get("requestBinding").getOrThrow().asObject()
+    let bindingFields = ["schemaVersion", "bindingMode", "requestHash",
+        "effectiveRequestHash", "modelArgumentsHash", "taskId"]
+    if (binding.getFields().size != bindingFields.size ||
+        !ckbCompletionObjectHasFields(binding, bindingFields) ||
+        ckbCompletionRpcString(binding, "schemaVersion") !=
+            "ckb-runner-bound-mcp-v1" ||
+        ckbCompletionRpcString(binding, "bindingMode") !=
+            "runner_immutable" ||
+        ckbCompletionRpcString(binding, "requestHash") !=
+            expectedRequestHash ||
+        ckbCompletionRpcString(binding, "effectiveRequestHash") !=
+            expectedRequestHash ||
+        ckbCompletionRpcString(binding, "taskId") !=
+            ckbCompletionRpcString(content, "taskId")) {
+        out.diagnostic = "structured_content_request_hash_mismatch"
+        return out
+    }
+    let version = ckbCompletionRpcString(content, "knowledgeVersion")
+    if (version != expectedVersion) {
+        out.diagnostic = "structured_content_version_mismatch"
+        return out
+    }
+    let coverage = content.get("coverage").getOrThrow().asObject()
+    if (!coverage.get("coveragePass").getOrThrow().asBool().getValue() ||
+        content.get("citations").getOrThrow().asArray().getItems().size == 0) {
+        out.diagnostic = "task_knowledge_pack_incomplete"
+        return out
+    }
+    let pack = "{\"matchedEvidence\":" +
+        content.get("matchedEvidence").getOrThrow().toString() +
+        ",\"examples\":" + content.get("examples").getOrThrow().toString() +
+        ",\"negativeRules\":" +
+        content.get("negativeRules").getOrThrow().toString() +
+        ",\"citations\":" + content.get("citations").getOrThrow().toString() +
+        ",\"coverage\":" + content.get("coverage").getOrThrow().toString() +
+        ",\"diagnostics\":" +
+        content.get("diagnostics").getOrThrow().toString() +
+        ",\"notes\":" + content.get("notes").getOrThrow().toString() + "}"
+    if (pack.toArray().size > 65536) {
+        out.diagnostic = "knowledge_pack_too_large"
+        return out
+    }
+    if (ckbCompletionContextForbidden(pack)) {
+        out.diagnostic = "knowledge_pack_protected_or_secret"
+        return out
+    }
+    out.normalizedBytes = ("{\"knowledgeVersion\":\"" +
+        ckbCompletionContextEscape(version) + "\",\"knowledgePack\":\"" +
+        ckbCompletionContextEscape(pack) + "\"}").toArray()
+    out.ok = true
+    out.diagnostic = "ok"
+    out
+}
+
 public func parseCompletionMcpHttpBody(responseBytes: Array<UInt8>, mediaType: String, expectedId: String,
     expectedRequestHash: String, expectedVersion: String): CkbCompletionRpcAdapterResult {
     let resolved = if (mediaType == "auto") {
@@ -180,6 +254,22 @@ public func normalizeCompletionMcpToolResponse(parsed: CkbCompletionRpcAdapterRe
 
 private func ckbCompletionRpcString(o: JsonObject, key: String): String {
     o.get(key).getOrThrow().asString().getValue()
+}
+
+private func ckbCompletionRpcOptionalString(o: JsonObject, key: String): String {
+    match (o.get(key)) {
+        case Some(value) => try { value.asString().getValue() }
+            catch (_: Exception) { "" }
+        case None => ""
+    }
+}
+
+private func ckbCompletionObjectHasFields(o: JsonObject,
+    fields: Array<String>): Bool {
+    for (field in fields) {
+        match (o.get(field)) { case Some(_) => (); case None => return false }
+    }
+    true
 }
 
 private func ckbCompletionAfterDataPrefix(line: String): String {
