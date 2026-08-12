@@ -155,6 +155,52 @@ public class CangjieEvalAbcdeRunnerCompletionTest {
             "malformed_json")
     }
 
+    @TestCase
+    public func generationFailureWritesCanonicalImmutableTeacherCarrier(): Unit {
+        let root=Path("target/p3-generation-failure-carrier-${DateTime.now().toUnixTimeStamp().toMilliseconds()}")
+        Directory.create(root,recursive:true)
+        File.writeTo(root.join("claude-transcript.jsonl"),Array<UInt8>())
+        File.writeTo(root.join("claude-attempts.jsonl"),
+            "{\"attempt\":1,\"exitCode\":124}\n".toArray())
+        File.writeTo(root.join("claude.attempt-1.stderr.log"),
+            "claude_timeout_after_600s\n".toArray())
+        let options=CkbAbcdeRunnerOptions();options.runId="generation-failure-run"
+        options.datasetVersion="cangjie-humaneval-164-v1"
+        options.generationProtocol="completion-only-v1";options.generateOnly=true
+        @Expect(persistCkbGenerationFailureEvidence(root.toString(),options,
+            "CJ-HUMANEVAL-124","malformed_json"),"ok")
+        let raw=File.readFrom(root.join("completion-failure.json"))
+        let parsed=parseCkbCompletionFailure(raw)
+        @Expect(parsed[1],"ok");@Expect(parsed[0].failureKind,"timeout")
+        @Expect(parsed[0].baseStatus,"infra_error");@Expect(parsed[0].plusStatus,"infra_error")
+        @Expect(parsed[0].assetLineage,"humaneval_164_derived")
+        @Expect(parsed[0].failureObservation.contains("CJ-HUMANEVAL"),false)
+        @Expect(parsed[0].failureObservation.contains("/Users/"),false)
+        @Expect(persistCkbGenerationFailureEvidence(root.toString(),options,
+            "CJ-HUMANEVAL-124","malformed_json"),"ok")
+        File.writeTo(root.join("claude-transcript.jsonl"),"drift 中文🙂".toArray())
+        @Expect(persistCkbGenerationFailureEvidence(root.toString(),options,
+            "CJ-HUMANEVAL-124","malformed_json"),
+            "failure_evidence_frozen")
+        @Expect(persistCkbGenerationFailureEvidence(root.toString(),options,
+            "CJ-HUMANEVAL-124",""),"generation_failure_evidence_invalid")
+
+        let invalidRoot=Path("${root.toString()}-invalid");Directory.create(invalidRoot,recursive:true)
+        File.writeTo(invalidRoot.join("claude-transcript.jsonl"),[UInt8(0xff),UInt8(0xfe)])
+        @Expect(persistCkbGenerationFailureEvidence(invalidRoot.toString(),options,
+            "CJ-HUMANEVAL-145","invalid_response_encoding"),"ok")
+        let invalid=parseCkbCompletionFailure(File.readFrom(
+            invalidRoot.join("completion-failure.json")))
+        @Expect(invalid[1],"ok");@Expect(invalid[0].failureKind,"protocol_violation")
+
+        let missingRoot=Path("${root.toString()}-missing");Directory.create(missingRoot,recursive:true)
+        @Expect(persistCkbGenerationFailureEvidence(missingRoot.toString(),options,
+            "CJ-HUMANEVAL-162","completion_read_failed"),"ok")
+        let missing=parseCkbCompletionFailure(File.readFrom(
+            missingRoot.join("completion-failure.json")))
+        @Expect(missing[1],"ok");@Expect(missing[0].failureKind,"infra_error")
+    }
+
     // P3-POS-01
     @TestCase
     public func validCompletionFreezesBeforeIndependentEvaluation(): Unit {

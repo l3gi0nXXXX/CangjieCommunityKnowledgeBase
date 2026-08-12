@@ -1515,9 +1515,21 @@ private func ckbAbcdeRunCaseGroup(options: CkbAbcdeRunnerOptions, runRoot: Strin
             try{completion.solutionCj=String.fromUtf8(File.readFrom(frozenPath));completion.answerHash=benchmarkGapSha256(completion.solutionCj);completion.ok=true;completion.completionCount=1}catch(_:Exception){return "{\"caseId\":\"${caseId}\",\"group\":\"${group}\",\"status\":\"failed\",\"diagnostic\":\"invalid_response_encoding\"}"}
         }else{
             let transcriptPath=Path(groupRoot).join("claude-transcript.jsonl")
-            let bytes=try{File.readFrom(transcriptPath)}catch(_:Exception){return "{\"caseId\":\"${caseId}\",\"group\":\"${group}\",\"status\":\"failed\",\"diagnostic\":\"completion_read_failed\"}"}
+            let bytes=try{File.readFrom(transcriptPath)}catch(_:Exception){
+                _=persistCkbGenerationFailureEvidence(groupRoot,options,caseId,
+                    "completion_read_failed")
+                return "{\"caseId\":\"${caseId}\",\"group\":\"${group}\",\"status\":\"failed\",\"diagnostic\":\"completion_read_failed\"}"
+            }
             completion=ckbAbcdeExtractSingleCompletion(bytes)
-            if(!completion.ok){return "{\"caseId\":\"${caseId}\",\"group\":\"${group}\",\"status\":\"failed\",\"diagnostic\":\"${completion.diagnostic}\"}"}
+            if(!completion.ok){
+                let failureDiagnostic=persistCkbGenerationFailureEvidence(groupRoot,options,
+                    caseId,completion.diagnostic)
+                if(failureDiagnostic!="ok"){
+                    ckbAbcdeWriteText("${groupRoot}/failure-evidence-diagnostic.json",
+                        "{\"diagnostic\":\"${ckbAbcdeJsonEscape(failureDiagnostic)}\"}\n")
+                }
+                return "{\"caseId\":\"${caseId}\",\"group\":\"${group}\",\"status\":\"failed\",\"diagnostic\":\"${completion.diagnostic}\"}"
+            }
             let freezeDiagnostic=ckbAbcdeFreezeCompletion(frozenRoot,completion)
             if(freezeDiagnostic!="ok"){return "{\"caseId\":\"${caseId}\",\"group\":\"${group}\",\"status\":\"failed\",\"diagnostic\":\"${freezeDiagnostic}\"}"}
         }
@@ -1640,6 +1652,49 @@ public func persistCkbCompletionFailureEvidence(groupRoot:String,options:CkbAbcd
         }
         if(ckbAbcdeAtomicEvidenceWrite(failurePath,rendered+"\n")){"ok"}else{"failure_index_persist_failed"}
     }catch(_:Exception){"failure_index_malformed"}
+}
+
+public func persistCkbGenerationFailureEvidence(groupRoot:String,
+    options:CkbAbcdeRunnerOptions,caseId:String,generationDiagnostic:String):String {
+    if(!options.generateOnly||options.generationProtocol!="completion-only-v1"||
+        generationDiagnostic==""){
+        return "generation_failure_evidence_invalid"
+    }
+    let transcriptBytes=try{File.readFrom(Path(groupRoot).join("claude-transcript.jsonl"))}
+        catch(_:Exception){Array<UInt8>()}
+    let attempts=ckbAbcdeReadText("${groupRoot}/claude-attempts.jsonl")
+    let stderr=ckbAbcdeReadText("${groupRoot}/claude.attempt-1.stderr.log")+
+        ckbAbcdeReadText("${groupRoot}/claude.stderr.log")
+    let timedOut=attempts.contains("\"exitCode\":124")||stderr.contains("claude_timeout_after_")
+    let failure=CkbCompletionFailure()
+    failure.runId=options.runId;failure.caseId=caseId;failure.datasetVersion=options.datasetVersion
+    failure.completionHash=ckbAbcdeBytesHash(transcriptBytes).replace("sha256:","")
+    let infrastructure=generationDiagnostic=="completion_read_failed"
+    // No verifier suite ran, so Base/Plus must remain explicitly unadjudicated.
+    failure.baseStatus="infra_error";failure.plusStatus="infra_error"
+    failure.failureKind=if(timedOut){"timeout"}else if(infrastructure){"infra_error"}
+        else{"protocol_violation"}
+    failure.failureObservation=if(timedOut){
+        "Student completion did not produce a canonical result within the frozen generation budget."
+    }else if(infrastructure){
+        "Student completion transcript could not be read from the frozen generation workspace."
+    }else{
+        "Student completion ended before a canonical completion-only result could be frozen."
+    }
+    failure.assetLineage="humaneval_164_derived"
+    let sealed=sealCkbCompletionFailure(failure);if(sealed!="ok"){return sealed}
+    let rendered=renderCkbCompletionFailure(failure)
+    let path=Path(groupRoot).join("completion-failure.json")
+    if(exists(path)){
+        return if(ckbAbcdeReadText(path.toString()).trimAscii()==rendered){"ok"}
+            else{"failure_evidence_frozen"}
+    }
+    if(ckbAbcdeAtomicEvidenceWrite(path,rendered+"\n")){"ok"}
+        else{"failure_index_persist_failed"}
+}
+
+private func ckbAbcdeBytesHash(bytes:Array<UInt8>):String {
+    let digest=SHA256();digest.write(bytes);ckbAbcdeGenerationDigest(digest.finish())
 }
 
 private func ckbAbcdeAtomicEvidenceWrite(path:Path,text:String):Bool {
