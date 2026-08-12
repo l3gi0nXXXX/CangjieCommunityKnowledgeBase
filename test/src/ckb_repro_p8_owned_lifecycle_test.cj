@@ -90,6 +90,14 @@ public class CkbReproP8OwnedLifecycleTest {
     }
 
     @TestCase
+    public func ownedCkbEnvironmentPreventsUntrackedTlsRelaunch(): Unit {
+        let environment = ckbP8OwnedCkbEnvironment()
+        @Expect(environment.size, 2)
+        @Expect(environment.get("cjHeapSize"), Some("4GB"))
+        @Expect(environment.get("CKB_NATIVE_TLS_BOOTSTRAPPED"), Some("1"))
+    }
+
+    @TestCase
     public func buildsOnlyFixedHeapEnvironmentMcpSpec(): Unit {
         let fixture = p8LifecycleFixture("mcp-spec")
         let built = buildCkbP8OwnedMcpStdioSpec(fixture.authority,

@@ -93,8 +93,7 @@ public class CkbNativeP8OwnedCommandExecutor <: CkbP8OwnedCommandExecutor {
     public func launchCkb(executable: String, args: Array<String>,
         timeoutMillis: Int64): (?CkbP8OwnedProcessHandle, String) {
         try {
-            let environment = HashMap<String, String>()
-            environment["cjHeapSize"] = "4GB"
+            let environment = ckbP8OwnedCkbEnvironment()
             let process = launch(executable, args,
                 environment: environment,
                 stdOut: ProcessRedirect.Pipe, stdErr: ProcessRedirect.Pipe)
@@ -104,6 +103,16 @@ public class CkbNativeP8OwnedCommandExecutor <: CkbP8OwnedCommandExecutor {
             (None<CkbP8OwnedProcessHandle>, "p8_ckb_launch_failed")
         }
     }
+}
+
+public func ckbP8OwnedCkbEnvironment(): HashMap<String, String> {
+    let environment = HashMap<String, String>()
+    environment["cjHeapSize"] = "4GB"
+    // The parent verifier has already established the native TLS runtime.
+    // Prevent the owned child from relaunching itself behind the lifecycle
+    // handle, so stopParityService() owns the actual listening process.
+    environment["CKB_NATIVE_TLS_BOOTSTRAPPED"] = "1"
+    environment
 }
 
 public class CkbNativeP8OwnedReadinessProbe <: CkbP8OwnedReadinessProbe {
