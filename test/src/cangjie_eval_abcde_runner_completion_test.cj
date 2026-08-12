@@ -10,6 +10,42 @@ import stdx.encoding.json.*
 
 @Test
 public class CangjieEvalAbcdeRunnerCompletionTest {
+    @TestCase
+    public func targetedStudentParsesExplicitFailureSetWithoutChangingCertification():Unit{
+        let targeted=parseCkbAbcdeRunnerOptions(["cangjie-eval-abcde","--targeted-student","--run-mode","development","--case-list","CJ-HUMANEVAL-077,116,145,162","--groups","D"])
+        @Expect(targeted.targetedStudent,true);@Expect(targeted.caseSelectionValid,true)
+        @Expect(targeted.selectedCaseIndexes.size,4);@Expect(targeted.selectedCaseIndexes[0],77)
+        @Expect(targeted.selectedCaseIndexes[3],162);@Expect(targeted.caseStart,77);@Expect(targeted.caseEnd,162)
+        @Expect(ckbAbcdeSelectedCase(targeted,77),true);@Expect(ckbAbcdeSelectedCase(targeted,78),false)
+        @Expect(ckbAbcdeSelectedCase(targeted,116),true);@Expect(ckbAbcdeSelectedCase(targeted,161),false)
+        let certification=parseCkbAbcdeRunnerOptions(["cangjie-eval-abcde","--run-mode","certification"])
+        @Expect(certification.targetedStudent,false);@Expect(certification.caseStart,0);@Expect(certification.caseEnd,163)
+    }
+
+    @TestCase
+    public func targetedStudentRequiresExplicitNonScoringSingleCompletionContract():Unit{
+        let args=["cangjie-eval-abcde","--targeted-student","--run-mode","development","--case-id","CJ-HUMANEVAL-077","--groups","D","--generation-protocol","completion-only-v1","--samples-per-case","1","--generate-only","--transport-retries","0","--dataset-version","dataset-v1","--candidate-version","candidate-v1","--knowledge-version","knowledge-v1","--model-fingerprint","model-v1","--claude-bin","/usr/bin/true","--config","/usr/bin/true","--certification-run-manifest","/tmp/run-manifest.json","--provider-identity-artifact","/tmp/provider.json"]
+        let valid=parseCkbAbcdeRunnerOptions(args);@Expect(ckbAbcdeDevelopmentOptionsDiagnostic(valid),"")
+        valid.targetedStudent=false;@Expect(ckbAbcdeDevelopmentOptionsDiagnostic(valid),"targeted_student_opt_in_required")
+        valid.targetedStudent=true;valid.evaluateFrozen=true;@Expect(ckbAbcdeDevelopmentOptionsDiagnostic(valid),"targeted_student_requires_generate_only")
+        valid.evaluateFrozen=false;valid.groups.clear();valid.groups.add(CkbAbcdeGroups.C);@Expect(ckbAbcdeDevelopmentOptionsDiagnostic(valid),"targeted_student_requires_group_d")
+    }
+
+    @TestCase
+    public func targetedStudentRejectsMalformedDuplicateAndUtf8CaseSelection():Unit{
+        for(value in ["CJ-HUMANEVAL-中文😀","077,077","164","77,,116"]){
+            let options=parseCkbAbcdeRunnerOptions(["cangjie-eval-abcde","--targeted-student","--run-mode","development","--case-list",value,"--groups","D","--generation-protocol","completion-only-v1","--samples-per-case","1","--generate-only","--transport-retries","0","--dataset-version","dataset","--candidate-version","candidate","--knowledge-version","knowledge","--model-fingerprint","model","--claude-bin","/usr/bin/true","--certification-run-manifest","/tmp/manifest","--provider-identity-artifact","/tmp/provider"])
+            @Expect(options.caseSelectionValid,false);@Expect(ckbAbcdeDevelopmentOptionsDiagnostic(options),"targeted_student_requires_case_selection")
+        }
+    }
+
+    @TestCase
+    public func targetedStudentIdentityDriftBlocksBeforeProviderExecutor():Unit{
+        let options=CkbAbcdeRunnerOptions();options.generationProtocol="completion-only-v1";options.claudeBin="/usr/bin/true";options.providerRuntimeExecutablePath="/usr/bin/false"
+        let executor=P3NeverCalledProvider();let result=ckbAbcdeRunClaudeCertification(options,CkbAbcdeGroups.D,"target/missing-targeted-group","target/missing-workspace","target/missing-home","target/missing-case",executor:executor)
+        @Expect(result.exitCode,126);@Expect(result.stderr,"student_validation_identity_mismatch");@Expect(executor.calls,0)
+    }
+
     // P3-UT-01
     @TestCase
     public func completionOptionsManifestAndSingleAnswerAreBound(): Unit {
@@ -296,6 +332,11 @@ public class CangjieEvalAbcdeRunnerCompletionTest {
             "/missing/group","/missing/workspace","/missing/home","/missing/case",executor:executor)
         @Expect(result.exitCode,126);@Expect(result.stderr,"student_validation_identity_mismatch");@Expect(executor.calls,0)
     }
+}
+
+private class P3NeverCalledProvider <: CkbAbcdeCertificationProviderExecutor {
+    public var calls:Int64=0
+    public override func execute(options:CkbAbcdeRunnerOptions,group:String,groupRoot:String,workspace:String,runtimeHome:String,caseSrc:String):CkbAbcdeCommandResult{calls+=1;CkbAbcdeCommandResult()}
 }
 
 private class R6CountingProviderExecutor <: CkbAbcdeCertificationProviderExecutor {
