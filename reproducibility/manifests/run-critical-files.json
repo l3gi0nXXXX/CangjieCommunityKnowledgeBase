@@ -8,7 +8,7 @@
     {"path":"src/cangjie_certification_control_cli.cj","status":"present","sha256":"sha256:db871365e0c1d5388ddc3ab94b36fae65f173fa535d686dcb6339cd8be068e62"},
     {"path":"src/cangjie_certification_preflight.cj","status":"present","sha256":"sha256:8d894219a14c99b66b5d72c5b264436e1af4ba1bd3d6c903d36a1301f16aeb62"},
     {"path":"src/cangjie_certification_s4.cj","status":"present","sha256":"sha256:9fd095508c4b17d4bcbbe1b5812370f5d4fa268809fe284fc6600898bf956e19"},
-    {"path":"src/cangjie_completion_context.cj","status":"present","sha256":"sha256:d783b9de416c867ad50208c365921f69144f93fd89e2b61374b4e870edf07e52"},
+    {"path":"src/cangjie_completion_context.cj","status":"present","sha256":"sha256:bceee12d8083d7e21ed9d4ae9aa607e7dfdf71bc38c35608796d688f489bac31"},
     {"path":"src/cangjie_humaneval_manifest.cj","status":"present","sha256":"sha256:bf6a097042da575e1e3beaf93aaa994304cdfa157458d65df411a88a41e23d76"},
     {"path":"src/cangjie_humaneval_pass1_gate.cj","status":"present","sha256":"sha256:aa5cdcfe0dd13fc8a32bcdca92575c8b174aff2783334dc43533b5e6d66e6ff2"},
     {"path":"src/cangjie_humaneval_plus_authority.cj","status":"present","sha256":"sha256:e60a7ed33b26beaadbfc02c4640fca4344610a97414e558c70fbceb14d1fb3f7"},
