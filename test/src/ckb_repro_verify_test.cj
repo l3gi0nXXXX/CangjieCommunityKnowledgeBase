@@ -1382,6 +1382,13 @@ public class CkbReproVerifyTest {
             @Expect(rebuilt.vectorPoints, ckbReproReleaseRecordCount())
             @Expect(pipeline.stages, 8)
             @Expect(control.calls, 2)
+            let source = String.fromUtf8(File.readFrom(
+                Path("../src/ckb_repro_verify.cj")))
+            @Expect(source.contains("snapshot.rawRecords.clear(); " +
+                "snapshot.normalizedRecords.clear()"), true)
+            @Expect(source.contains("out.knowledgeVersion = snapshotVersion"),
+                true)
+            @Expect(source.contains("out.rawRecords = snapshotRawCount"), true)
 
             if (exists(Path(restore.options.runtimeRoot))) {
                 remove(Path(restore.options.runtimeRoot), recursive: true)

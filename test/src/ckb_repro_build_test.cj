@@ -350,6 +350,24 @@ public class CkbReproBuildTest {
     }
 
     @TestCase
+    public func p4Reg05ProductionBackendReleasesTerminalBuildState(): Unit {
+        let source = String.fromUtf8(File.readFrom(
+            Path("../src/ckb_repro_build.cj")))
+        @Expect(source.contains("private func releaseRetainedBuildState(): Unit"),
+            true)
+        @Expect(source.contains("if (!result.ok || stage == \"logical_scan\")"),
+            true)
+        @Expect(source.contains("private func assemble(input: " +
+            "CkbReproPipelineInput): CkbReproBackendResult {\n" +
+            "        this.releaseRetainedBuildState()"), true)
+        @Expect(source.contains("visible.rawRecords.clear(); " +
+            "visible.normalizedRecords.clear()"), true)
+        @Expect(source.contains("this.kb = KnowledgeBase(FakeClock(0))"), true)
+        @Expect(source.contains("this.candidate = " +
+            "CkbCompleteCleanStudentCandidate()"), true)
+    }
+
+    @TestCase
     public func p4Neg02BuildComponentEvalSelectionAndStageFailureShortCircuit(): Unit {
         let fixture = p4BuildFixture("neg02")
         let leaked = CkbReproKnowledgeSelectionRow()

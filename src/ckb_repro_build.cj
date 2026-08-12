@@ -1235,22 +1235,23 @@ public class CkbReproProductionBuildBackend <: CkbReproBuildBackend {
 
     public func run(stage: String,
         input: CkbReproPipelineInput): CkbReproBackendResult {
-        if (stage == "assemble") { return this.assemble(input) }
-        if (stage == "validate_authority") { return this.validateAuthority(input) }
-        if (stage == "load_first_init") { return this.loadFirstInit(input) }
-        if (stage == "validate_serving") { return this.validateServing(input) }
-        if (stage == "clean") { return this.clean(input) }
-        if (stage == "leakage") { return this.leakage(input) }
-        if (stage == "materialize") { return this.materialize(input) }
-        if (stage == "logical_scan") { return this.logicalScan(input) }
-        CkbReproBackendResult(false, "build_stage_unknown")
+        let result = if (stage == "assemble") { this.assemble(input) }
+            else if (stage == "validate_authority") { this.validateAuthority(input) }
+            else if (stage == "load_first_init") { this.loadFirstInit(input) }
+            else if (stage == "validate_serving") { this.validateServing(input) }
+            else if (stage == "clean") { this.clean(input) }
+            else if (stage == "leakage") { this.leakage(input) }
+            else if (stage == "materialize") { this.materialize(input) }
+            else if (stage == "logical_scan") { this.logicalScan(input) }
+            else { CkbReproBackendResult(false, "build_stage_unknown") }
+        if (!result.ok || stage == "logical_scan") {
+            this.releaseRetainedBuildState()
+        }
+        result
     }
 
     private func assemble(input: CkbReproPipelineInput): CkbReproBackendResult {
-        this.kb = KnowledgeBase(FakeClock(0))
-        this.candidate = CkbCompleteCleanStudentCandidate()
-        this.persisted = CkbCleanCandidateBuildResult()
-        this.materialized = CkbCandidateRuntimeMaterializeResult()
+        this.releaseRetainedBuildState()
         if (input.request.candidateVersion == "" ||
             input.selectedTyped.size == 0 || input.portableTyped.size == 0) {
             return CkbReproBackendResult(false, "portable_build_input_empty")
@@ -1350,6 +1351,8 @@ public class CkbReproProductionBuildBackend <: CkbReproBuildBackend {
         let store = FileKnowledgeStore(input.request.options.outputRoot)
         let snapshot = store.loadActiveSnapshot()
         let metadata = store.loadMetadataStatus()
+        var result = CkbReproBackendResult(false,
+            "portable_logical_scan_failed")
         if (!snapshot.valid || !metadata.valid ||
             snapshot.rawRecords.size != this.candidate.rawRecords.size ||
             snapshot.normalizedRecords.size != this.candidate.normalizedRecords.size ||
@@ -1357,14 +1360,26 @@ public class CkbReproProductionBuildBackend <: CkbReproBuildBackend {
             metadata.vectorState != EmbeddingProviderState.DEGRADED ||
             metadata.vectorDegradedReason != "vector_snapshot_missing" ||
             metadata.vectorIndexCount != 0) {
-            return CkbReproBackendResult(false, "portable_logical_scan_failed")
+            snapshot.rawRecords.clear(); snapshot.normalizedRecords.clear()
+            snapshot.activeIndex.clear(); snapshot.vectorRecords.clear()
+            return result
         }
         let visible = CkbStudentVisiblePathInput()
         visible.rawRecords = snapshot.rawRecords
         visible.normalizedRecords = snapshot.normalizedRecords
         visible.activeRecords = snapshot.activeIndex
         let paths = scanCkbStudentVisiblePaths(visible, input.request.pathContext)
-        CkbReproBackendResult(paths.ready, paths.diagnostic)
+        result = CkbReproBackendResult(paths.ready, paths.diagnostic)
+        visible.rawRecords.clear(); visible.normalizedRecords.clear()
+        visible.activeRecords.clear(); snapshot.vectorRecords.clear()
+        result
+    }
+
+    private func releaseRetainedBuildState(): Unit {
+        this.kb = KnowledgeBase(FakeClock(0))
+        this.candidate = CkbCompleteCleanStudentCandidate()
+        this.persisted = CkbCleanCandidateBuildResult()
+        this.materialized = CkbCandidateRuntimeMaterializeResult()
     }
 }
 

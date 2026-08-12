@@ -1084,18 +1084,26 @@ public class CkbP8ProductionRebuildOperation <:
         let store = FileKnowledgeStore(this.inputs.authority.outputRoot)
         let snapshot = store.loadActiveSnapshot()
         let metadata = store.loadMetadataStatus()
+        let snapshotVersion = snapshot.activeVersion
+        let snapshotRawCount = snapshot.rawRecords.size
+        let snapshotNormalizedCount = snapshot.normalizedRecords.size
+        let snapshotActiveCount = snapshot.activeIndex.size
         if (!snapshot.valid || !metadata.valid ||
-            snapshot.activeVersion != inspected.manifest.portableKnowledgeVersion ||
-            snapshot.rawRecords.size != inspected.manifest.rawCount ||
-            snapshot.normalizedRecords.size != inspected.manifest.normalizedCount ||
+            snapshotVersion != inspected.manifest.portableKnowledgeVersion ||
+            snapshotRawCount != inspected.manifest.rawCount ||
+            snapshotNormalizedCount != inspected.manifest.normalizedCount ||
             ckbCertifiedNormalizedRecordsChecksum(snapshot.normalizedRecords) !=
                 inspected.manifest.normalizedChecksum ||
-            snapshot.activeIndex.size != inspected.manifest.indexCount ||
+            snapshotActiveCount != inspected.manifest.indexCount ||
             snapshot.vectorRecords.size != 0 ||
             metadata.vectorState != EmbeddingProviderState.DEGRADED ||
             metadata.vectorIndexCount != 0) {
+            snapshot.rawRecords.clear(); snapshot.normalizedRecords.clear()
+            snapshot.activeIndex.clear(); snapshot.vectorRecords.clear()
             out.diagnostic = "production_rebuild_readback_mismatch"; return out
         }
+        snapshot.rawRecords.clear(); snapshot.normalizedRecords.clear()
+        snapshot.activeIndex.clear(); snapshot.vectorRecords.clear()
         let restored = restoreCkbQdrantSnapshotFromFile(
             this.inputs.targetCollection, options.p3QdrantSnapshotPath,
             this.inputs.qdrantManifest, control, file)
@@ -1132,7 +1140,7 @@ public class CkbP8ProductionRebuildOperation <:
             provider.pathContext(this.inputs.qdrantManifest.collection))
         if (!verified.ok) { return p8CreatedQdrantFailure(out,
             verified.diagnostic, control, this.inputs.targetCollection) }
-        if (this.inputs.parityManifest.knowledgeVersion != snapshot.activeVersion ||
+        if (this.inputs.parityManifest.knowledgeVersion != snapshotVersion ||
             this.inputs.parityManifest.logicalManifestHash !=
                 inspected.manifest.manifestHash) {
             return p8CreatedQdrantFailure(out,
@@ -1143,14 +1151,14 @@ public class CkbP8ProductionRebuildOperation <:
             this.inputs.parityManifest, parityBackend)
         if (!parity.ok) { return p8CreatedQdrantFailure(out,
             parity.diagnostic, control, this.inputs.targetCollection) }
-        out.knowledgeVersion = snapshot.activeVersion
+        out.knowledgeVersion = snapshotVersion
         out.logicalManifestHash = inspected.manifest.manifestHash
         out.vectorProofHash = this.inputs.qdrantManifest.vectorProofHash
         out.sourceLockHash = built.proof.sourceLockHash
         out.pathProofHash = this.inputs.pathProofHash
-        out.rawRecords = snapshot.rawRecords.size
-        out.normalizedRecords = snapshot.normalizedRecords.size
-        out.activeRecords = snapshot.activeIndex.size
+        out.rawRecords = snapshotRawCount
+        out.normalizedRecords = snapshotNormalizedCount
+        out.activeRecords = snapshotActiveCount
         out.vectorPoints = this.inputs.qdrantManifest.points
         out.vectorDimension = this.inputs.qdrantManifest.dimension
         out.ok = true; out.diagnostic = "ok"; out
