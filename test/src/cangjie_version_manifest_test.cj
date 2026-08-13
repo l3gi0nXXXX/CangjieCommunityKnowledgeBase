@@ -3,7 +3,7 @@ package cangjie_community_knowledge_base_test
 import std.unittest.*
 import std.unittest.testmacro.*
 import std.collection.*
-import std.fs.{Directory, File, Path, exists}
+import std.fs.{Directory, File, Path, exists, remove}
 import std.process.launch
 
 @Test
@@ -145,6 +145,7 @@ public class CangjieVersionManifestTest {
     @TestCase
     public func s6fNeg001DamagedOrUnboundGitdirFailsClosedAtNearestMarker(): Unit {
         let root = "target/s6f-version-manifest-invalid"
+        if (exists(Path(root))) { remove(Path(root), recursive: true) }
         let damagedDocs = "${root}/damaged/docs"
         cangjieP1WriteGitMetadata(root, "must-not-be-used")
         cangjieP1WriteFile(Path(root).join("damaged/.git"), "gitdir: ../missing-git-dir\n")
