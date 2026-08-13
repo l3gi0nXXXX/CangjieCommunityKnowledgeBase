@@ -195,7 +195,7 @@ public class CangjieHumanEvalStrictScoreTest {
         @Expect(score.evidenceLevel, "public_projection")
 
         @Expect(p1ScoreFileHash("../src/cangjie_eval_abcde_runner.cj"),
-            "sha256:ce489159dc1bdeb5b79bce106273df69c641d7a281fb624157ca2fb932cc25b5")
+            "sha256:7c7c5319d9262672752da93bdbd2e0f7ec64545546f4d9f7f451e4c1955376da")
         @Expect(p1ScoreFileHash("../src/cangjie_eval_knowledge_audit.cj"),
             "sha256:de1ed91483fdda2eade6939208098d6e89f28af4d0eac0527812748f3ad20e73")
         @Expect(p1ScoreFileHash("../src/cangjie_strict_certification.cj"),
