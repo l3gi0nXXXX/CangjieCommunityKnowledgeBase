@@ -138,10 +138,12 @@ public class CangjieStudentContextBundleTest {
         let updated = compileAndPublishStudentContextBundle(fixture.allowed.toString(), "s3-update-v2",
             update.candidate.toString(), update.approval.toString(), baseOutput.toString(),
             update.manifest.toString(), update.store, updatedOutput.toString(), true)
+        @Expect(updated.diagnostic, "ok")
         @Expect(updated.ok, true)
         @Expect(updated.agentsMarkdown.contains("Additional Rune boundary review"), true)
         @Expect(updated.skillsPrompt, base.skillsPrompt)
         @Expect(updated.knowledgeReferenceJson, base.knowledgeReferenceJson)
+        @Expect(readStudentContextBundleV2(updatedOutput.toString()).ok, true)
         let tamperedUpdate = s3ProductionUpdateFixture(fixture, baseOutput, base,
             combinationOverride: "sha256:" + s3Hex(r'0'))
         let blocked = compileStudentContextBundleScaffoldWithBase(fixture.allowed.toString(),
@@ -747,7 +749,7 @@ private func s3ProductionUpdateFixture(baseFixture: S3ProductionContextFixture, 
     let inventory = benchmarkGapSha256(s3CandidateInventory(candidate))
     let expectedCombination = benchmarkGapSha256(s3Part(benchmarkGapSha256(compiledRules.agentsMarkdown)) +
         s3Part(s3ContextBundleJsonString(baseManifest, "skillProjectionHash")) +
-        s3Part(s3ContextBundleJsonString(baseManifest, "knowledgeContentHash")) +
+        s3Part(s3ContextBundleJsonString(baseReference, "knowledgeCandidateHash")) +
         s3Part(s3ContextBundleJsonString(genesisManifest, "sourceClosureHash")) +
         s3Part(s3ContextBundleJsonString(genesisManifest, "protectedClosureHash")))
     let combination = if (combinationOverride == "") { expectedCombination } else { combinationOverride }
