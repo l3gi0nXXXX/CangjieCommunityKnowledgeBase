@@ -78,6 +78,13 @@ public class CkbCertificationS4ContractTest {
         let assets = s4AssetsFromRun(options);
         @Expect(ckbAbcdeFreezeS4CaseAssets(groupRoot,assets,true),"ok")
         @Expect(ckbAbcdeFreezeS4CaseAssets(groupRoot,assets,false),"ok")
+        File.writeTo(Path(groupRoot).join("completion-context-evidence.json"),
+            (ckbAbcdeCompletionContextEvidence(assets) + "\n").toArray())
+        let loaded = ckbAbcdeLoadFrozenS4CaseContext(groupRoot,
+            assets.compositeHash, assets.combinationAuditHash)
+        @Expect(loaded.ok,true)
+        @Expect(loaded.diagnostic,"ok")
+        @Expect(loaded.assets.knowledge,assets.knowledge)
         let prompt = renderCkbS4CompletionPrompt(assets);
         File.writeTo(Path(groupRoot).join("prompt.final.md"), prompt.toArray());
         @Expect(prompt.contains("caseId"),false)
@@ -107,8 +114,17 @@ public class CkbCertificationS4ContractTest {
         let groupRoot = prepared[2];
         let assets = s4AssetsFromRun(options)
         @Expect(ckbAbcdeFreezeS4CaseAssets(groupRoot,assets,true),"ok")
+        File.writeTo(Path(groupRoot).join("completion-context-evidence.json"),
+            (ckbAbcdeCompletionContextEvidence(assets) + "\n").toArray())
         File.writeTo(Path(groupRoot).join("student-rules.md"), "tampered".toArray());
         @Expect(ckbAbcdeFreezeS4CaseAssets(groupRoot,assets,false),"frozen_context_asset_hash_mismatch")
+        @Expect(ckbAbcdeLoadFrozenS4CaseContext(groupRoot,
+            assets.compositeHash,assets.combinationAuditHash).diagnostic,
+            "completion_context_binding_mismatch")
+        File.writeTo(Path(groupRoot).join("student-rules.md"), [UInt8(0xff),UInt8(0xfe)])
+        @Expect(ckbAbcdeLoadFrozenS4CaseContext(groupRoot,
+            assets.compositeHash,assets.combinationAuditHash).diagnostic,
+            "invalid_response_encoding")
         @Expect(ckbS4FrozenContextEvidenceDiagnostic(assets,"{}"),"context_evidence_drift")
         let fake = S4FakeCertificationProvider();
         options.effectivePromptByteBudget = 1

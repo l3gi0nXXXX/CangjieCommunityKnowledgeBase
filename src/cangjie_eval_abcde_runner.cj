@@ -286,6 +286,64 @@ public func ckbAbcdeFreezeS4CaseAssets(groupRoot: String, assets: CkbS4FrozenCon
     "ok"
 }
 
+public class CkbAbcdeFrozenCaseContext {
+    public var ok: Bool = false
+    public var diagnostic: String = "frozen_context_asset_missing"
+    public var assets: CkbS4FrozenContextAssets = CkbS4FrozenContextAssets()
+    public init() {}
+}
+
+public func ckbAbcdeLoadFrozenS4CaseContext(groupRoot: String, compositeHash: String,
+    combinationAuditHash: String): CkbAbcdeFrozenCaseContext {
+    let result = CkbAbcdeFrozenCaseContext()
+    let paths = ["completion-protocol.md", "student-rules.md", "student-skill.md",
+        "completion-knowledge.json", "provider-prompt-capability.json", "public-task.md"]
+    let values = ArrayList<String>()
+    for (path in paths) {
+        let read = ckbAbcdeReadBoundedText("${groupRoot}/${path}", 4194304,
+            "frozen_context_asset_too_large")
+        if (!read.ok) {
+            result.diagnostic = if (read.diagnostic == "artifact_read_failed") {
+                "frozen_context_asset_missing"
+            } else {
+                read.diagnostic
+            }
+            return result
+        }
+        values.add(read.text)
+    }
+    result.assets.protocol = values[0]
+    result.assets.rules = values[1]
+    result.assets.skill = values[2]
+    result.assets.knowledge = values[3]
+    result.assets.providerCapability = values[4]
+    result.assets.publicTask = values[5]
+    result.assets.compositeHash = compositeHash
+    result.assets.combinationAuditHash = combinationAuditHash
+    let assetsDiagnostic = ckbS4FrozenAssetsDiagnostic(result.assets)
+    if (assetsDiagnostic != "ok") {
+        result.diagnostic = assetsDiagnostic
+        return result
+    }
+    let evidence = ckbAbcdeReadBoundedText("${groupRoot}/completion-context-evidence.json",
+        65536, "context_evidence_too_large")
+    if (!evidence.ok) {
+        result.diagnostic = if (evidence.diagnostic == "artifact_read_failed") {
+            "completion_context_binding_mismatch"
+        } else {
+            evidence.diagnostic
+        }
+        return result
+    }
+    if (ckbS4FrozenContextEvidenceDiagnostic(result.assets, evidence.text.trimAscii()) != "ok") {
+        result.diagnostic = "completion_context_binding_mismatch"
+        return result
+    }
+    result.ok = true
+    result.diagnostic = "ok"
+    result
+}
+
 private func ckbAbcdeCompletionTerminal(raw: String): JsonObject {
     let value = JsonValue.fromStr(raw)
     try { return value.asObject() } catch (_: Exception) {}
@@ -1529,14 +1587,25 @@ private func ckbAbcdeRunCaseGroup(options: CkbAbcdeRunnerOptions, runRoot: Strin
         ckbAbcdeWriteText("${groupRoot}/ckb-mcp-http.json", mcpConfig)
     }
 
+    var completionAssets=CkbS4FrozenContextAssets()
     if(completionGeneration){
-        let responseBytes=try{File.readFrom(Path(groupRoot).join("mcp-http-tool-call-response.json"))}catch(_:Exception){Array<UInt8>()};let adapted=parseCompletionMcpHttpBody(responseBytes,"auto","3",benchmarkGapSha256(taskContextJson),options.knowledgeVersion);let normalized=normalizeCompletionMcpToolResponse(adapted);let pack=try{String.fromUtf8(normalized)}catch(_:Exception){""}
-        if(!adapted.ok||pack==""){return "{\"caseId\":\"${caseId}\",\"group\":\"${group}\",\"status\":\"failed\",\"diagnostic\":\"${adapted.diagnostic}\"}"}
-        let assets=CkbS4FrozenContextAssets();assets.protocol="Use exactly one completion. Do not call tools or execute commands. Return one JSON object with only solution_cj.\n";assets.rules=ckbAbcdeReadText("${options.studentContextRoot}/AGENTS.md");assets.skill=ckbAbcdeReadText("${options.studentContextRoot}/student-skills.prompt.md");assets.knowledge=pack;assets.providerCapability=ckbAbcdeReadText(options.providerPromptCapabilityPath);assets.publicTask=ckbAbcdeReadText("${caseSrc}/prompt.md");assets.compositeHash=options.studentContextCompositeHash;assets.combinationAuditHash=options.combinationAuditHash
-        let freezeDiagnostic=ckbAbcdeFreezeS4CaseAssets(groupRoot,assets,options.generateOnly);if(freezeDiagnostic!="ok"){return "{\"caseId\":\"${caseId}\",\"group\":\"${group}\",\"status\":\"failed\",\"diagnostic\":\"${freezeDiagnostic}\"}"};let contextEvidence=ckbAbcdeCompletionContextEvidence(assets);if(contextEvidence==""||ckbS4FrozenContextEvidenceDiagnostic(assets,contextEvidence)!="ok"){return "{\"caseId\":\"${caseId}\",\"group\":\"${group}\",\"status\":\"failed\",\"diagnostic\":\"completion_context_binding_mismatch\"}"};if(options.generateOnly){ckbAbcdeWriteText("${groupRoot}/completion-context-evidence.json",contextEvidence+"\n")}else if(ckbAbcdeReadText("${groupRoot}/completion-context-evidence.json").trimAscii()!=contextEvidence){return "{\"caseId\":\"${caseId}\",\"group\":\"${group}\",\"status\":\"failed\",\"diagnostic\":\"completion_context_binding_mismatch\"}"};contextText=contextEvidence
+        if(options.evaluateFrozen){
+            let loaded=ckbAbcdeLoadFrozenS4CaseContext(groupRoot,
+                options.studentContextCompositeHash,options.combinationAuditHash)
+            if(!loaded.ok){return "{\"caseId\":\"${caseId}\",\"group\":\"${group}\",\"status\":\"failed\",\"diagnostic\":\"${loaded.diagnostic}\"}"}
+            completionAssets=loaded.assets
+        }else{
+            let responseBytes=try{File.readFrom(Path(groupRoot).join("mcp-http-tool-call-response.json"))}catch(_:Exception){Array<UInt8>()};let adapted=parseCompletionMcpHttpBody(responseBytes,"auto","3",benchmarkGapSha256(taskContextJson),options.knowledgeVersion);let normalized=normalizeCompletionMcpToolResponse(adapted);let pack=try{String.fromUtf8(normalized)}catch(_:Exception){""}
+            if(!adapted.ok||pack==""){return "{\"caseId\":\"${caseId}\",\"group\":\"${group}\",\"status\":\"failed\",\"diagnostic\":\"${adapted.diagnostic}\"}"}
+            completionAssets.protocol="Use exactly one completion. Do not call tools or execute commands. Return one JSON object with only solution_cj.\n";completionAssets.rules=ckbAbcdeReadText("${options.studentContextRoot}/AGENTS.md");completionAssets.skill=ckbAbcdeReadText("${options.studentContextRoot}/student-skills.prompt.md");completionAssets.knowledge=pack;completionAssets.providerCapability=ckbAbcdeReadText(options.providerPromptCapabilityPath);completionAssets.publicTask=ckbAbcdeReadText("${caseSrc}/prompt.md");completionAssets.compositeHash=options.studentContextCompositeHash;completionAssets.combinationAuditHash=options.combinationAuditHash
+            let freezeDiagnostic=ckbAbcdeFreezeS4CaseAssets(groupRoot,completionAssets,true);if(freezeDiagnostic!="ok"){return "{\"caseId\":\"${caseId}\",\"group\":\"${group}\",\"status\":\"failed\",\"diagnostic\":\"${freezeDiagnostic}\"}"};let contextEvidence=ckbAbcdeCompletionContextEvidence(completionAssets);if(contextEvidence==""||ckbS4FrozenContextEvidenceDiagnostic(completionAssets,contextEvidence)!="ok"){return "{\"caseId\":\"${caseId}\",\"group\":\"${group}\",\"status\":\"failed\",\"diagnostic\":\"completion_context_binding_mismatch\"}"};ckbAbcdeWriteText("${groupRoot}/completion-context-evidence.json",contextEvidence+"\n")
+        }
+        contextText=ckbAbcdeCompletionContextEvidence(completionAssets)
     }
-    let prompt=if(completionGeneration){let assets=CkbS4FrozenContextAssets();assets.protocol="Use exactly one completion. Do not call tools or execute commands. Return one JSON object with only solution_cj.\n";assets.rules=ckbAbcdeReadText("${options.studentContextRoot}/AGENTS.md");assets.skill=ckbAbcdeReadText("${options.studentContextRoot}/student-skills.prompt.md");assets.knowledge=try{String.fromUtf8(normalizeCompletionMcpToolResponse(parseCompletionMcpHttpBody(try{File.readFrom(Path(groupRoot).join("mcp-http-tool-call-response.json"))}catch(_:Exception){Array<UInt8>()},"auto","3",benchmarkGapSha256(taskContextJson),options.knowledgeVersion)))}catch(_:Exception){""};assets.providerCapability=ckbAbcdeReadText(options.providerPromptCapabilityPath);assets.publicTask=ckbAbcdeReadText("${caseSrc}/prompt.md");assets.compositeHash=options.studentContextCompositeHash;assets.combinationAuditHash=options.combinationAuditHash;ckbAbcdeRenderCompletionPrompt(assets)}else{renderCkbAbcdePromptForMode(group,caseId,ckbAbcdeReadText("${caseSrc}/prompt.md"),contextText,options.runMode)}
-    ckbAbcdeWriteText("${groupRoot}/prompt.final.md", prompt)
+    let prompt=if(completionGeneration){ckbAbcdeRenderCompletionPrompt(completionAssets)}else{renderCkbAbcdePromptForMode(group,caseId,ckbAbcdeReadText("${caseSrc}/prompt.md"),contextText,options.runMode)}
+    if(options.evaluateFrozen&&completionGeneration){
+        if(ckbAbcdeReadText("${groupRoot}/prompt.final.md")!=prompt){return "{\"caseId\":\"${caseId}\",\"group\":\"${group}\",\"status\":\"failed\",\"diagnostic\":\"completion_prompt_binding_mismatch\"}"}
+    }else{ckbAbcdeWriteText("${groupRoot}/prompt.final.md", prompt)}
 
     var claudeExit: Int64 = 0
     if((options.runMode=="certification"||options.targetedStudent)&&options.evaluateFrozen){
