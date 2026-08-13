@@ -987,7 +987,7 @@ private func runCangjieEvalAbcdeCore(args: Array<String>,
         ckbAbcdeWriteText("${runRoot}/development-run.json","{\"schemaVersion\":\"ckb-targeted-student-development-run-v1\",\"runMode\":\"development\",\"certificationEligible\":false,\"scoreEligible\":false,\"samplesPerCase\":1}\n")
         let identity=ckbAbcdeProviderIdentityBeforeCallDiagnostic(options)
         if(identity!="ok"){ckbAbcdeEmit(quiet,"ABCDE targeted Student start blocked: ${identity}");return 1}
-    } else {
+    } else if (!options.targetedStudent) {
         let preflight = ckbAbcdePreflight(options, runRoot)
         ckbAbcdeWriteText("${runRoot}/preflight.json", ckbAbcdeRenderPreflightJson(options, runRoot, preflight))
         ckbAbcdeWriteText("${runRoot}/preflight.md", ckbAbcdeRenderPreflightMarkdown(options, runRoot, preflight))
