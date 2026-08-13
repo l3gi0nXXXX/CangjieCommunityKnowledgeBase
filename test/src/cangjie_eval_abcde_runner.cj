@@ -1981,7 +1981,20 @@ public func ckbAbcdeAssessSample(transcript: String, expectedModel: String): Ckb
     let result = CkbAbcdeSampleAssessment()
     if(transcript==""){result.transcriptDiagnostic="empty_transcript";return result}
     try {
-        let terminal=JsonValue.fromStr(transcript).asObject()
+        let value=JsonValue.fromStr(transcript)
+        try {
+            let items=value.asArray().getItems();var jsonl=""
+            for(item in items){jsonl+="${item.toString()}\n"}
+            let assessment=ckbAbcdeAssessSample(jsonl,expectedModel)
+            if(assessment.transcriptDiagnostic!="ok"){
+                assessment.completeResult=false;assessment.identityMatched=false;assessment.sampleAttempt=0
+            } else if(assessment.terminalResultCount==1){
+                let completion=ckbAbcdeExtractSingleCompletion(transcript.toArray())
+                if(!completion.ok){assessment.completeResult=false;assessment.identityMatched=false;assessment.sampleAttempt=0;assessment.transcriptDiagnostic=completion.diagnostic}
+            }
+            return assessment
+        } catch (_:Exception) {}
+        let terminal=value.asObject()
         if(ckbAbcdeStrictJsonString(terminal,"type")=="result"){
             let completion=ckbAbcdeExtractSingleCompletion(transcript.toArray());result.terminalResultCount=1
             result.completeResult=completion.ok;result.identityMatched=completion.ok&&expectedModel=="GLM-5.2"

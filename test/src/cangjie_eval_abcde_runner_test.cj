@@ -94,6 +94,12 @@ public class CangjieEvalAbcdeRunnerTest {
         let malformed = ckbAbcdeAssessSample("{malformed", "GLM-5.2")
         @Expect(malformed.transcriptDiagnostic, "malformed_json")
         @Expect(ckbAbcdeShouldRetryTransport(124, malformed), false)
+        let arraySuccess=ckbAbcdeAssessSample("[{\"type\":\"system\",\"subtype\":\"init\",\"model\":\"GLM-5.2\"},{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"modelUsage\":{\"GLM-5.2\":{}},\"structured_output\":{\"solution_cj\":\"public func answer(): Int64 { 42 }\"}}]","GLM-5.2")
+        @Expect(arraySuccess.completeResult,true);@Expect(arraySuccess.identityMatched,true);@Expect(arraySuccess.sampleAttempt,1);@Expect(arraySuccess.terminalResultCount,1);@Expect(arraySuccess.transcriptDiagnostic,"ok")
+        let arrayWithoutTerminal=ckbAbcdeAssessSample("[{\"type\":\"system\",\"subtype\":\"init\",\"model\":\"GLM-5.2\"}]","GLM-5.2")
+        @Expect(arrayWithoutTerminal.completeResult,false);@Expect(arrayWithoutTerminal.sampleAttempt,0);@Expect(arrayWithoutTerminal.terminalResultCount,0)
+        let arrayDuplicateTerminal=ckbAbcdeAssessSample("[{\"type\":\"system\",\"subtype\":\"init\",\"model\":\"GLM-5.2\"},{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false},{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false}]","GLM-5.2")
+        @Expect(arrayDuplicateTerminal.completeResult,false);@Expect(arrayDuplicateTerminal.sampleAttempt,0);@Expect(arrayDuplicateTerminal.terminalResultCount,2);@Expect(arrayDuplicateTerminal.transcriptDiagnostic,"protocol_violation")
         let oversized = CkbAbcdeSampleAssessment(); oversized.transcriptDiagnostic = "transcript_too_large"
         @Expect(ckbAbcdeShouldRetryTransport(124, oversized), false)
         let protocol = CkbAbcdeSampleAssessment(); protocol.transcriptDiagnostic = "protocol_violation"
