@@ -2,7 +2,7 @@ package cangjie_community_knowledge_base_test
 
 import std.collection.ArrayList
 import std.env.getVariable
-import std.fs.{Directory, File, Path, exists}
+import std.fs.{Directory, File, Path, exists, remove}
 import std.process.*
 import std.unittest.*
 import std.unittest.testmacro.*
@@ -1319,7 +1319,9 @@ public class CkbBaselineTest {
 
     @TestCase
     public func failedCandidateApplyDoesNotOverwritePersistedActiveAcrossObjects(): Unit {
-        let store = FileKnowledgeStore("target/ckb-test-live-failed-isolation")
+        let root = "target/ckb-test-live-failed-isolation"
+        if (exists(Path(root))) { remove(Path(root), recursive: true) }
+        let store = FileKnowledgeStore(root)
         let first = newOfflineKnowledgeBase()
         let rebuild = ckbRebuildIndex(first, store)
         let restored = newKnowledgeBaseFromStore(store)
