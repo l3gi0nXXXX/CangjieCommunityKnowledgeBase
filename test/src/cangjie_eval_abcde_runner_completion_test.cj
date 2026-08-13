@@ -28,8 +28,14 @@ public class CangjieEvalAbcdeRunnerCompletionTest {
         let valid=parseCkbAbcdeRunnerOptions(args);@Expect(ckbAbcdeDevelopmentOptionsDiagnostic(valid),"")
         valid.targetedStudent=false;@Expect(ckbAbcdeDevelopmentOptionsDiagnostic(valid),"targeted_student_opt_in_required")
         valid.targetedStudent=true;valid.generateOnly=false;valid.evaluateFrozen=true;valid.testSuites="base,plus";@Expect(ckbAbcdeDevelopmentOptionsDiagnostic(valid),"")
+        @Expect(ckbAbcdeCompletionMode(valid),true)
+        let context=CkbAbcdeTaskContext();ckbAbcdeBindTaskContextDatasetVersion(context,"dataset-v1")
+        @Expect(context.datasetVersion,"dataset-v1")
+        ckbAbcdeBindTaskContextDatasetVersion(context,"dataset-drift")
+        @Expect(context.datasetVersion,"dataset-v1")
         valid.testSuites="base";@Expect(ckbAbcdeDevelopmentOptionsDiagnostic(valid),"targeted_student_requires_generate_or_evaluate")
-        valid.evaluateFrozen=false;valid.groups.clear();valid.groups.add(CkbAbcdeGroups.C);@Expect(ckbAbcdeDevelopmentOptionsDiagnostic(valid),"targeted_student_requires_group_d")
+        valid.testSuites="";valid.evaluateFrozen=false;valid.generateOnly=true
+        valid.groups.clear();valid.groups.add(CkbAbcdeGroups.C);@Expect(ckbAbcdeDevelopmentOptionsDiagnostic(valid),"targeted_student_requires_group_d")
     }
 
     @TestCase

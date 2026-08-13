@@ -1449,6 +1449,16 @@ public func ckbAbcdeBuildTaskContext(caseRoot: String, caseId: String, manifestT
     context
 }
 
+public func ckbAbcdeBindTaskContextDatasetVersion(context: CkbAbcdeTaskContext,
+    datasetVersion: String): Unit {
+    if (context.datasetVersion == "") { context.datasetVersion = datasetVersion }
+}
+
+public func ckbAbcdeCompletionMode(options: CkbAbcdeRunnerOptions): Bool {
+    options.generationProtocol == "completion-only-v1" &&
+        (options.runMode == "certification" || options.targetedStudent)
+}
+
 // prompt.md is a line-oriented file. Its single terminal LF/CRLF is a file
 // delimiter, not benchmark task content; all other whitespace stays exact.
 private func ckbAbcdeCanonicalTaskTextFromFile(value: String): String {
@@ -1536,6 +1546,7 @@ private func ckbAbcdeRunCaseGroup(options: CkbAbcdeRunnerOptions, runRoot: Strin
     let groupRoot = "${runRoot}/cases/${caseId}/${group}"
     let workspace = "${groupRoot}/workspace"
     let taskContext = ckbAbcdeBuildTaskContext(caseSrc, caseId, ckbAbcdeReadText(options.manifestPath))
+    ckbAbcdeBindTaskContextDatasetVersion(taskContext, options.datasetVersion)
     let taskContextJson = ckbAbcdeRenderTaskContextJson(taskContext)
     ckbAbcdeEnsureDir(groupRoot)
     ckbAbcdeWriteText("${groupRoot}/canonical-task-context.json", taskContextJson + "\n")
@@ -1680,7 +1691,7 @@ private func ckbAbcdeRunCaseGroup(options: CkbAbcdeRunnerOptions, runRoot: Strin
 
     let primaryTranscript = ckbAbcdeReadText("${groupRoot}/claude-transcript.jsonl")
     let transcript = if (primaryTranscript != "") { primaryTranscript } else { ckbAbcdeReadText("${groupRoot}/claude.stdout.log") + ckbAbcdeReadText("${groupRoot}/claude.stderr.log") }
-    let completionMode=options.runMode=="certification"&&options.generationProtocol=="completion-only-v1"
+    let completionMode=ckbAbcdeCompletionMode(options)
     let parsedEvidence = ckbAbcdeTaskKnowledgeEvidence(group, transcript, contextText)
     let toolEvidence = if(completionMode){"frozen_completion_context"}else if (group == CkbAbcdeGroups.C || group == CkbAbcdeGroups.D) { if (parsedEvidence.valid && parsedEvidence.knowledgeVersion == options.knowledgeVersion) { "cangjie_task_knowledge_pack" } else { "manual_required" } } else { ckbAbcdeToolEvidence(group, transcript) }
     let forbiddenViolation = ckbAbcdeForbiddenEvidence(group, transcript, workspace)
