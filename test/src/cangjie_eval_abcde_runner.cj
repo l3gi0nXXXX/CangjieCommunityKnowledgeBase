@@ -1695,7 +1695,7 @@ private func ckbAbcdeRunCaseGroup(options: CkbAbcdeRunnerOptions, runRoot: Strin
     let parsedEvidence = ckbAbcdeTaskKnowledgeEvidence(group, transcript, contextText)
     let toolEvidence = if(completionMode){"frozen_completion_context"}else if (group == CkbAbcdeGroups.C || group == CkbAbcdeGroups.D) { if (parsedEvidence.valid && parsedEvidence.knowledgeVersion == options.knowledgeVersion) { "cangjie_task_knowledge_pack" } else { "manual_required" } } else { ckbAbcdeToolEvidence(group, transcript) }
     let forbiddenViolation = ckbAbcdeForbiddenEvidence(group, transcript, workspace)
-    let violation = if(completionMode){ckbAbcdeCompletionViolation(transcript,forbiddenViolation)}else if (forbiddenViolation != "none") { forbiddenViolation } else if ((group == CkbAbcdeGroups.C || group == CkbAbcdeGroups.D) && (!parsedEvidence.valid || parsedEvidence.knowledgeVersion != options.knowledgeVersion)) { if (parsedEvidence.valid) { "task_knowledge_version_mismatch" } else { "task_knowledge_${parsedEvidence.diagnostic}" } } else { "none" }
+    let violation = if(completionMode&&options.evaluateFrozen){"none"}else if(completionMode){ckbAbcdeCompletionViolation(transcript,forbiddenViolation)}else if (forbiddenViolation != "none") { forbiddenViolation } else if ((group == CkbAbcdeGroups.C || group == CkbAbcdeGroups.D) && (!parsedEvidence.valid || parsedEvidence.knowledgeVersion != options.knowledgeVersion)) { if (parsedEvidence.valid) { "task_knowledge_version_mismatch" } else { "task_knowledge_${parsedEvidence.diagnostic}" } } else { "none" }
     if(completionMode){let frozen=ckbAbcdeReadText("${groupRoot}/completion-context-evidence.json");ckbAbcdeWriteText("${groupRoot}/paired-tool-evidence.json","{\"valid\":true,\"evidenceHash\":\"${benchmarkGapSha256(frozen)}\",\"knowledgeVersion\":\"${options.knowledgeVersion}\",\"requestBindingHash\":\"${benchmarkGapSha256(taskContextJson)}\",\"coveragePass\":true,\"citationCount\":1}\n")}else{ckbAbcdePersistTaskKnowledgeEvidence(groupRoot, parsedEvidence, parsedEvidence.valid && parsedEvidence.knowledgeVersion == options.knowledgeVersion)}
     let unitPass = test.exitCode == 0 && !ckbAbcdeTestLogContainsFailure(testLog)
     let unitPassAt1 = ckbAbcdeUnitPassAt1(unitPass, groupRoot)
@@ -1704,8 +1704,9 @@ private func ckbAbcdeRunCaseGroup(options: CkbAbcdeRunnerOptions, runRoot: Strin
     let failureType = if (options.explicitRunMode) { ckbAbcdeExpandedFailureType(legacyFailureType) } else { legacyFailureType }
     let protocolViolation = violation != "none"
     let observedModel = ckbAbcdeObservedModel(transcript)
-    let sampleReady = !options.explicitRunMode || options.runMode != "development" || ckbAbcdeSampleAttemptCount(groupRoot) == 1
-    let modelReady = (!options.explicitRunMode || observedModel == options.expectedModelVersion) && sampleReady
+    let frozenEvaluationReady=completionMode&&options.evaluateFrozen
+    let sampleReady = frozenEvaluationReady||!options.explicitRunMode || options.runMode != "development" || ckbAbcdeSampleAttemptCount(groupRoot) == 1
+    let modelReady = frozenEvaluationReady||(!options.explicitRunMode || observedModel == options.expectedModelVersion) && sampleReady
     if (options.explicitRunMode) {
         ckbAbcdeWriteText("${groupRoot}/provider-identity.json", ckbAbcdeProviderIdentityJson(observedModel, ckbAbcdeClaudeVersion(executable: options.claudeBin)))
     }
@@ -1716,6 +1717,7 @@ private func ckbAbcdeRunCaseGroup(options: CkbAbcdeRunnerOptions, runRoot: Strin
         ckbAbcdeWriteText("${groupRoot}/docs-path-audit.json", "{\"docsRoot\":\"${ckbAbcdeJsonEscape(options.docsRoot)}\",\"summaryFiles\":[\"${ckbAbcdeJsonEscape("${options.docsRoot}/dev-guide/summary_cjnative_EN.md")}\",\"${ckbAbcdeJsonEscape("${options.docsRoot}/tools/summary_cjnative_EN.md")}\"],\"allowed\":${exists(Path("${options.docsRoot}/dev-guide/summary_cjnative_EN.md")) && exists(Path("${options.docsRoot}/tools/summary_cjnative_EN.md"))}}\n")
     }
     var result = if(options.runMode=="certification"){ckbAbcdeRenderStrictCertificationCase(options,caseId,group,groupRoot,frozenAnswerHash,transcript,testLog,unitPassAt1,violation,toolReady,parsedEvidence)}else{ckbAbcdeRenderCaseResultBound(options, runRoot, caseId, group, status, claudeExit, test.exitCode, unitPass, unitPassAt1, failureType, toolEvidence, violation, groupRoot, parsedEvidence)}
+    var failureCarrierResultEvidence=result
     if (options.explicitRunMode && options.runMode == "certification") {
         ckbAbcdeWriteText("${groupRoot}/result-evidence.json", result + "\n")
     }
@@ -1723,6 +1725,7 @@ private func ckbAbcdeRunCaseGroup(options: CkbAbcdeRunnerOptions, runRoot: Strin
         let attemptCount = ckbAbcdeClaudeAttemptCount(groupRoot)
         let selectedTransportAttempt=ckbAbcdeSelectedSampleTransportAttempt(groupRoot)
         let resultEvidence = ckbAbcdeTriageEvidenceBound(options, caseId, if(selectedTransportAttempt>0){selectedTransportAttempt}else if(attemptCount>0){attemptCount}else{1}, failureType, unitPass, protocolViolation, claudeExit, test.exitCode, groupRoot, parsedEvidence)
+        failureCarrierResultEvidence=resultEvidence
         ckbAbcdeWriteText("${groupRoot}/result-evidence.json", resultEvidence + "\n")
         let closureInput = CangjieEvalDevelopmentClosureInput()
         closureInput.caseResultJson = result; closureInput.resultEvidenceJson = resultEvidence; closureInput.taskText = taskContext.taskText
@@ -1737,7 +1740,7 @@ private func ckbAbcdeRunCaseGroup(options: CkbAbcdeRunnerOptions, runRoot: Strin
     if((options.runMode=="certification"||options.targetedStudent)&&options.generationProtocol=="completion-only-v1"&&
         options.evaluateFrozen&&options.testSuites=="base,plus"){
         let evidenceDiagnostic=persistCkbCompletionFailureEvidence(groupRoot,options,caseId,group,
-            frozenAnswerHash,result)
+            frozenAnswerHash,failureCarrierResultEvidence)
         if(evidenceDiagnostic!="ok"){
             ckbAbcdeWriteText("${groupRoot}/failure-evidence-diagnostic.json",
                 "{\"diagnostic\":\"${ckbAbcdeJsonEscape(evidenceDiagnostic)}\"}\n")
