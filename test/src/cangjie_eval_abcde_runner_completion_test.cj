@@ -27,7 +27,8 @@ public class CangjieEvalAbcdeRunnerCompletionTest {
         let args=["cangjie-eval-abcde","--targeted-student","--run-mode","development","--case-id","CJ-HUMANEVAL-077","--groups","D","--generation-protocol","completion-only-v1","--samples-per-case","1","--generate-only","--transport-retries","0","--dataset-version","dataset-v1","--candidate-version","candidate-v1","--knowledge-version","knowledge-v1","--model-fingerprint","model-v1","--claude-bin","/usr/bin/true","--config","/usr/bin/true","--certification-run-manifest","/tmp/run-manifest.json","--provider-identity-artifact","/tmp/provider.json"]
         let valid=parseCkbAbcdeRunnerOptions(args);@Expect(ckbAbcdeDevelopmentOptionsDiagnostic(valid),"")
         valid.targetedStudent=false;@Expect(ckbAbcdeDevelopmentOptionsDiagnostic(valid),"targeted_student_opt_in_required")
-        valid.targetedStudent=true;valid.evaluateFrozen=true;@Expect(ckbAbcdeDevelopmentOptionsDiagnostic(valid),"targeted_student_requires_generate_only")
+        valid.targetedStudent=true;valid.generateOnly=false;valid.evaluateFrozen=true;valid.testSuites="base,plus";@Expect(ckbAbcdeDevelopmentOptionsDiagnostic(valid),"")
+        valid.testSuites="base";@Expect(ckbAbcdeDevelopmentOptionsDiagnostic(valid),"targeted_student_requires_generate_or_evaluate")
         valid.evaluateFrozen=false;valid.groups.clear();valid.groups.add(CkbAbcdeGroups.C);@Expect(ckbAbcdeDevelopmentOptionsDiagnostic(valid),"targeted_student_requires_group_d")
     }
 

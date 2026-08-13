@@ -922,8 +922,12 @@ private func runCangjieEvalAbcdeCore(args: Array<String>,
         return 1
     }
     let runRoot = "${options.runsRoot}/${options.runId}"
-    if (options.targetedStudent && exists(Path(runRoot))) {
+    if (options.targetedStudent && !options.evaluateFrozen && exists(Path(runRoot))) {
         ckbAbcdeEmit(quiet,"ABCDE targeted Student start blocked: fresh_run_root_required")
+        return 1
+    }
+    if (options.targetedStudent && options.evaluateFrozen && !exists(Path(runRoot))) {
+        ckbAbcdeEmit(quiet,"ABCDE targeted Student evaluation blocked: frozen_run_root_missing")
         return 1
     }
     if (options.runMode == "certification") {
@@ -972,7 +976,7 @@ private func runCangjieEvalAbcdeCore(args: Array<String>,
         options.providerIdentityArtifactPath="${runRoot}/provider-identity.json"
         options.frozenCandidateManifestPath="${runRoot}/frozen-candidate-manifest.json"
         options.manifestPath=authorityTarget
-    } else if (options.targetedStudent) {
+    } else if (options.targetedStudent && !options.evaluateFrozen) {
         let freezeDiagnostic=ckbAbcdeFreezeS4RunAssets(options,runRoot,false)
         if(freezeDiagnostic!="ok"){ckbAbcdeEmit(quiet,"ABCDE targeted Student start blocked: ${freezeDiagnostic}");return 1}
         let provider=try{File.readFrom(Path(options.providerIdentityArtifactPath))}catch(_:Exception){ckbAbcdeEmit(quiet,"ABCDE targeted Student start blocked: student_validation_identity_invalid");return 1}
@@ -1512,7 +1516,7 @@ private func ckbAbcdeRunCaseGroup(options: CkbAbcdeRunnerOptions, runRoot: Strin
         ckbAbcdeRunMcpStdioSmoke(options, groupRoot, taskContextJson: taskContextJson)
     }
     if (group == CkbAbcdeGroups.D) {
-        if(!(options.runMode=="certification"&&options.generationProtocol=="completion-only-v1"&&options.evaluateFrozen)){ckbAbcdeRunMcpHttpSmoke(options, groupRoot, taskContextJson: taskContextJson)}
+        if(!((options.runMode=="certification"||options.targetedStudent)&&options.generationProtocol=="completion-only-v1"&&options.evaluateFrozen)){ckbAbcdeRunMcpHttpSmoke(options, groupRoot, taskContextJson: taskContextJson)}
     }
 
     let mcpConfig = renderCkbAbcdeMcpConfig(group, options.ckbBin, options.ckbConfig, options.ckbStore, options.ckbHttpBase, taskContextJson: taskContextJson)
@@ -1535,7 +1539,7 @@ private func ckbAbcdeRunCaseGroup(options: CkbAbcdeRunnerOptions, runRoot: Strin
     ckbAbcdeWriteText("${groupRoot}/prompt.final.md", prompt)
 
     var claudeExit: Int64 = 0
-    if(options.runMode=="certification"&&options.evaluateFrozen){
+    if((options.runMode=="certification"||options.targetedStudent)&&options.evaluateFrozen){
         ckbAbcdeWriteText("${groupRoot}/evaluation-model-call.json","{\"modelCalled\":false,\"reason\":\"evaluate_frozen\"}\n")
     } else if (options.skipClaude) {
         ckbAbcdeWriteText("${groupRoot}/claude-transcript.jsonl", "{\"event\":\"skipped\",\"reason\":\"skip-claude\"}\n")
@@ -1590,7 +1594,7 @@ private func ckbAbcdeRunCaseGroup(options: CkbAbcdeRunnerOptions, runRoot: Strin
     let frozenAnswerHash=benchmarkGapSha256(frozenAnswer)
     if(options.generationProtocol!="completion-only-v1"){ckbAbcdeWriteText("${groupRoot}/answer-freeze.json","{\"answerHash\":\"${frozenAnswerHash}\",\"verifierMounted\":false}\n")}
     var inject=CkbAbcdeCommandResult();var test=CkbAbcdeCommandResult()
-    if(options.runMode=="certification"&&options.generationProtocol=="completion-only-v1"&&options.evaluateFrozen){
+    if((options.runMode=="certification"||options.targetedStudent)&&options.generationProtocol=="completion-only-v1"&&options.evaluateFrozen){
         let evaluation=ckbAbcdeEvaluateFrozenCompletion(groupRoot,caseSrc,workspace,frozenAnswerHash,options.testSuites)
         inject.exitCode=if(evaluation.baseExecuted&&evaluation.plusExecuted){0}else{1}
         test.exitCode=if(evaluation.basePassed&&evaluation.plusPassed){0}else{1};test.stdout=evaluation.baseResult.stdout+evaluation.baseResult.stderr+evaluation.plusResult.stdout+evaluation.plusResult.stderr
@@ -1650,7 +1654,7 @@ private func ckbAbcdeRunCaseGroup(options: CkbAbcdeRunnerOptions, runRoot: Strin
         ckbAbcdeWriteText("${groupRoot}/authoritative-gap.jsonl", closure.authoritativeGapJsonl)
         if (closure.knowledgeGapCount == 1) { result = result.replace("\"knowledgeGapConfirmationStatus\":\"pending_classifier_artifacts\"", "\"knowledgeGapConfirmationStatus\":\"confirmed\"") }
     }
-    if(options.runMode=="certification"&&options.generationProtocol=="completion-only-v1"&&
+    if((options.runMode=="certification"||options.targetedStudent)&&options.generationProtocol=="completion-only-v1"&&
         options.evaluateFrozen&&options.testSuites=="base,plus"){
         let evidenceDiagnostic=persistCkbCompletionFailureEvidence(groupRoot,options,caseId,group,
             frozenAnswerHash,result)
@@ -3358,12 +3362,14 @@ public func ckbAbcdeDevelopmentOptionsDiagnostic(options: CkbAbcdeRunnerOptions)
     if (options.runMode == "development" && ckbAbcdeModelEffortDiagnostic(options.modelEffort) != "ok") { return ckbAbcdeModelEffortDiagnostic(options.modelEffort) }
     if (options.targetedStudent) {
         if (options.runMode != "development" || !options.explicitRunMode) { return "targeted_student_requires_development_mode" }
-        if (options.generationProtocol != "completion-only-v1" || !options.generateOnly || options.evaluateFrozen || options.testSuites != "") { return "targeted_student_requires_generate_only" }
+        let generation = options.generateOnly && !options.evaluateFrozen && options.testSuites == ""
+        let evaluation = !options.generateOnly && options.evaluateFrozen && options.testSuites == "base,plus"
+        if (!generation && !evaluation) { return "targeted_student_requires_generate_or_evaluate" }
         if (options.samplesPerCase != 1 || options.transportRetries != 0) { return "targeted_student_requires_single_attempt" }
         if (options.groups.size != 1 || options.groups[0] != CkbAbcdeGroups.D) { return "targeted_student_requires_group_d" }
         if (!options.caseSelectionValid || options.selectedCaseIndexes.size == 0) { return "targeted_student_requires_case_selection" }
         if (options.caseStart == 0 && options.caseEnd == 163) { return "targeted_student_forbids_full_164" }
-        if (options.skipClaude || options.preflightOnly) { return "targeted_student_requires_real_model_execution" }
+        if ((generation && options.skipClaude) || options.preflightOnly) { return "targeted_student_requires_real_model_execution" }
         if (options.certificationRunManifestPath == "" || options.providerIdentityArtifactPath == "") { return "targeted_student_requires_frozen_identity" }
     } else if (options.runMode == "development" && options.generationProtocol == "completion-only-v1") {
         return "targeted_student_opt_in_required"
