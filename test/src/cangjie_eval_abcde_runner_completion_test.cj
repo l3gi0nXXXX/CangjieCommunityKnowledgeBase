@@ -93,6 +93,40 @@ public class CangjieEvalAbcdeRunnerCompletionTest {
     }
 
     @TestCase
+    public func functionCompletionPreservesEvaluatorOwnedScaffold(): Unit {
+        let starter = "package cangjie_humaneval_077\n\nimport std.collection.*\n\n" +
+            "// 中文😀 evaluator-owned comment\n" +
+            "public func iscube(a: Int64): Bool {\n    return false\n}\n"
+        let completion = "public func iscube(a: Int64): Bool {\n    return a == 0\n}\n"
+        let bound = ckbAbcdeBindCompletionToScaffold(starter, completion)
+        @Expect(bound.ok, true)
+        @Expect(bound.diagnostic, "ok")
+        @Expect(bound.solutionCj, "package cangjie_humaneval_077\n\nimport std.collection.*\n\n" +
+            "// 中文😀 evaluator-owned comment\n" + completion)
+        @Expect(bound.answerHash, benchmarkGapSha256(bound.solutionCj))
+    }
+
+    @TestCase
+    public func completionScaffoldBoundariesFailClosed(): Unit {
+        let completion = "public func answer(): Int64 { 42 }"
+        @Expect(ckbAbcdeBindCompletionToScaffold("package p\n", completion).diagnostic,
+            "completion_scaffold_function_missing")
+        @Expect(ckbAbcdeBindCompletionToScaffold(
+            "package p\npublic func one(): Int64 { 1 }\npublic func two(): Int64 { 2 }\n",
+            completion).diagnostic, "completion_scaffold_function_ambiguous")
+        @Expect(ckbAbcdeBindCompletionToScaffold(
+            "package p\npublic func answer(): Int64 { 0 ", completion).diagnostic,
+            "completion_scaffold_boundary_invalid")
+        @Expect(ckbAbcdeBindCompletionToScaffold(
+            "package p\npublic func answer(): Int64 { 0 }\n", "main() {}").diagnostic,
+            "completion_boundary_invalid")
+        let full = "package p\npublic func answer(): Int64 { 42 }\n"
+        let legacy = ckbAbcdeBindCompletionToScaffold("ignored", full)
+        @Expect(legacy.ok, true)
+        @Expect(legacy.solutionCj, full)
+    }
+
+    @TestCase
     public func frozenEvaluationRebindsEveryExternalInputToSealedRun(): Unit {
         let options = CkbAbcdeRunnerOptions()
         options.runsRoot = "/sealed/runs"
@@ -281,9 +315,7 @@ public class CangjieEvalAbcdeRunnerCompletionTest {
         let caseSrc = Path("cangjie_eval/cases/Cangjie-HumanEval/CJ-HUMANEVAL-000")
         Directory.create(workspace, recursive: true)
         @Expect(launch("/bin/cp", ["-R", "${caseSrc.join("starter")}/.", workspace.toString()]).wait(), 0)
-        let solution = "package cangjie_humaneval_000\n\n" +
-            "import std.collection.*\n\n" +
-            "public func has_close_elements(numbers: ArrayList<Float64>, threshold: Float64): Bool {\n" +
+        let completion = "public func has_close_elements(numbers: ArrayList<Float64>, threshold: Float64): Bool {\n" +
             "    for (i in 0..numbers.size) {\n" +
             "        for (j in (i + 1)..numbers.size) {\n" +
             "            let difference = numbers[i] - numbers[j]\n" +
@@ -293,6 +325,10 @@ public class CangjieEvalAbcdeRunnerCompletionTest {
             "    }\n" +
             "    return false\n" +
             "}\n"
+        let starter = String.fromUtf8(File.readFrom(workspace.join("src/solution.cj")))
+        let bound = ckbAbcdeBindCompletionToScaffold(starter, completion)
+        @Expect(bound.ok, true)
+        let solution = bound.solutionCj
         File.writeTo(workspace.join("src/solution.cj"), solution.toArray())
         let answerHash = benchmarkGapSha256(solution)
         let evaluated = ckbAbcdeEvaluateFrozenCompletion(groupRoot.toString(), caseSrc.toString(),

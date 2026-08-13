@@ -408,6 +408,67 @@ public func ckbAbcdeFreezeCompletion(caseRoot: String, completion: CkbAbcdeSingl
     } catch (_: Exception) { try{if(exists(stage)){remove(stage,recursive:true)}}catch(_:Exception){};"completion_freeze_failed" }
 }
 
+public func ckbAbcdeBindCompletionToScaffold(starter: String,
+    rawCompletion: String): CkbAbcdeSingleCompletion {
+    let result = CkbAbcdeSingleCompletion()
+    let completion = rawCompletion.trimAscii()
+    if (completion == "") { result.diagnostic = "completion_empty"; return result }
+    if (completion.startsWith("package ")) {
+        result.solutionCj = rawCompletion
+    } else {
+        if (!completion.startsWith("public func ")) {
+            result.diagnostic = "completion_boundary_invalid"
+            return result
+        }
+        let marker = "public func ".toRuneArray()
+        let runes = starter.toRuneArray()
+        var markerCount: Int64 = 0
+        var start: Int64 = 0
+        for (index in 0..runes.size) {
+            if (index > 0 && runes[index - 1] != r'\n') { continue }
+            if (index + marker.size > runes.size) { continue }
+            var matched = true
+            for (offset in 0..marker.size) {
+                if (runes[index + offset] != marker[offset]) { matched = false; break }
+            }
+            if (matched) { markerCount += 1; start = index }
+        }
+        if (markerCount == 0) {
+            result.diagnostic = "completion_scaffold_function_missing"
+            return result
+        }
+        if (markerCount != 1) {
+            result.diagnostic = "completion_scaffold_function_ambiguous"
+            return result
+        }
+        if (!starter.trimAscii().endsWith("}")) {
+            result.diagnostic = "completion_scaffold_boundary_invalid"
+            return result
+        }
+        let prefix = StringBuilder()
+        for (index in 0..start) { prefix.append(runes[index]) }
+        result.solutionCj = prefix.toString() + rawCompletion
+    }
+    result.ok = true
+    result.completionCount = 1
+    result.answerHash = benchmarkGapSha256(result.solutionCj)
+    result.diagnostic = "ok"
+    result
+}
+
+private func ckbAbcdeBindCompletionToWorkspace(workspace: String,
+    completion: CkbAbcdeSingleCompletion): String {
+    let target = Path(workspace).join("src/solution.cj")
+    try {
+        let starter = String.fromUtf8(File.readFrom(target))
+        let bound = ckbAbcdeBindCompletionToScaffold(starter, completion.solutionCj)
+        if (!bound.ok) { return bound.diagnostic }
+        completion.solutionCj = bound.solutionCj
+        completion.answerHash = bound.answerHash
+        "ok"
+    } catch (_: Exception) { "completion_scaffold_invalid_encoding" }
+}
+
 private func ckbAbcdeInstallFrozenSolution(workspace:String,completion:CkbAbcdeSingleCompletion):String{
     let target=Path(workspace).join("src/solution.cj");let tmp=Path(workspace).join("src/.solution.cj.tmp-${completion.answerHash.replace("sha256:","")}")
     try{File.writeTo(tmp,completion.solutionCj.toArray());let checked=String.fromUtf8(File.readFrom(tmp));if(benchmarkGapSha256(checked)!=completion.answerHash){remove(tmp);return "completion_install_hash_mismatch"};rename(tmp.toString(),to:target.toString(),overwrite:true);"ok"}
@@ -1656,6 +1717,8 @@ private func ckbAbcdeRunCaseGroup(options: CkbAbcdeRunnerOptions, runRoot: Strin
                 }
                 return "{\"caseId\":\"${caseId}\",\"group\":\"${group}\",\"status\":\"failed\",\"diagnostic\":\"${completion.diagnostic}\"}"
             }
+            let scaffoldDiagnostic=ckbAbcdeBindCompletionToWorkspace(workspace,completion)
+            if(scaffoldDiagnostic!="ok"){return "{\"caseId\":\"${caseId}\",\"group\":\"${group}\",\"status\":\"failed\",\"diagnostic\":\"${scaffoldDiagnostic}\"}"}
             let freezeDiagnostic=ckbAbcdeFreezeCompletion(frozenRoot,completion)
             if(freezeDiagnostic!="ok"){return "{\"caseId\":\"${caseId}\",\"group\":\"${group}\",\"status\":\"failed\",\"diagnostic\":\"${freezeDiagnostic}\"}"}
         }
