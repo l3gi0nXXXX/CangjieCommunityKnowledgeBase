@@ -276,6 +276,17 @@ public class CangjieEvalAbcdeRunnerCompletionTest {
         let missing=parseCkbCompletionFailure(File.readFrom(
             missingRoot.join("completion-failure.json")))
         @Expect(missing[1],"ok");@Expect(missing[0].failureKind,"infra_error")
+
+        let boundaryRoot=Path("${root.toString()}-boundary")
+        Directory.create(boundaryRoot,recursive:true)
+        File.writeTo(boundaryRoot.join("claude-transcript.jsonl"),
+            "{\"result\":\"import std.collection.*\\npublic func fixture(): Bool { true }\"}\n".toArray())
+        @Expect(persistCkbGenerationFailureEvidence(boundaryRoot.toString(),options,
+            "CJ-HUMANEVAL-000","completion_boundary_invalid"),"ok")
+        let boundary=parseCkbCompletionFailure(File.readFrom(
+            boundaryRoot.join("completion-failure.json")))
+        @Expect(boundary[1],"ok");@Expect(boundary[0].failureKind,"protocol_violation")
+        @Expect(boundary[0].baseStatus,"infra_error");@Expect(boundary[0].plusStatus,"infra_error")
     }
 
     // P3-POS-01

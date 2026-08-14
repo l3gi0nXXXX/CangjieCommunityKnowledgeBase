@@ -1718,7 +1718,15 @@ private func ckbAbcdeRunCaseGroup(options: CkbAbcdeRunnerOptions, runRoot: Strin
                 return "{\"caseId\":\"${caseId}\",\"group\":\"${group}\",\"status\":\"failed\",\"diagnostic\":\"${completion.diagnostic}\"}"
             }
             let scaffoldDiagnostic=ckbAbcdeBindCompletionToWorkspace(workspace,completion)
-            if(scaffoldDiagnostic!="ok"){return "{\"caseId\":\"${caseId}\",\"group\":\"${group}\",\"status\":\"failed\",\"diagnostic\":\"${scaffoldDiagnostic}\"}"}
+            if(scaffoldDiagnostic!="ok"){
+                let failureDiagnostic=persistCkbGenerationFailureEvidence(groupRoot,options,
+                    caseId,scaffoldDiagnostic)
+                if(failureDiagnostic!="ok"){
+                    ckbAbcdeWriteText("${groupRoot}/failure-evidence-diagnostic.json",
+                        "{\"diagnostic\":\"${ckbAbcdeJsonEscape(failureDiagnostic)}\"}\n")
+                }
+                return "{\"caseId\":\"${caseId}\",\"group\":\"${group}\",\"status\":\"failed\",\"diagnostic\":\"${scaffoldDiagnostic}\"}"
+            }
             let freezeDiagnostic=ckbAbcdeFreezeCompletion(frozenRoot,completion)
             if(freezeDiagnostic!="ok"){return "{\"caseId\":\"${caseId}\",\"group\":\"${group}\",\"status\":\"failed\",\"diagnostic\":\"${freezeDiagnostic}\"}"}
         }
