@@ -1874,7 +1874,9 @@ public func persistCkbGenerationFailureEvidence(groupRoot:String,
     failure.baseStatus="infra_error";failure.plusStatus="infra_error"
     failure.failureKind=if(timedOut){"timeout"}else if(infrastructure){"infra_error"}
         else{"protocol_violation"}
-    failure.failureObservation=if(timedOut){
+    failure.failureObservation=if(generationDiagnostic=="completion_boundary_invalid"){
+        "Student returned a terminal structured completion, but content before the requested target declaration violated the evaluator-owned completion boundary."
+    }else if(timedOut){
         "Student completion did not produce a canonical result within the frozen generation budget."
     }else if(infrastructure){
         "Student completion transcript could not be read from the frozen generation workspace."

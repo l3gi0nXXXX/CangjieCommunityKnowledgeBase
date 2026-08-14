@@ -287,6 +287,8 @@ public class CangjieEvalAbcdeRunnerCompletionTest {
             boundaryRoot.join("completion-failure.json")))
         @Expect(boundary[1],"ok");@Expect(boundary[0].failureKind,"protocol_violation")
         @Expect(boundary[0].baseStatus,"infra_error");@Expect(boundary[0].plusStatus,"infra_error")
+        @Expect(boundary[0].failureObservation.contains("requested target declaration"),true)
+        @Expect(boundary[0].failureObservation.contains("CJ-HUMANEVAL"),false)
     }
 
     // P3-POS-01
