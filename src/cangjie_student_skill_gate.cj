@@ -19,7 +19,9 @@ public class CkbStudentSkillBundleBuild {
     public var json="";public init(){}
 }
 public func ckbStudentSkillVisibleLineage(lineage:String):String{
-    if(lineage=="humaneval_164_derived"){"teacher_derived"}else{lineage}
+    if(lineage=="independent"){return lineage}
+    if(lineage=="humaneval_164_derived"){return "teacher_derived"}
+    throw IllegalArgumentException("skill_source_lineage_invalid")
 }
 private class CkbSkillTestRow{
     var testId="";var kind="";var fixturePath="";var fixtureHash="";var targetVersion=""

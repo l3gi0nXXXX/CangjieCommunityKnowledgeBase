@@ -64,6 +64,14 @@ public class CkbR1StudentSkillCandidateContractTest {
         @Expect(candidate.skillContent.contains("lineage: teacher_derived\n"),false)
     }
 
+    @TestCase
+    public func unknownInternalSkillLineageIsRejectedFailClosed(): Unit {
+        var rejected=false
+        try{_=ckbStudentSkillVisibleLineage("teacher_derived")}
+        catch(e:Exception){rejected=e.message=="skill_source_lineage_invalid"}
+        @Expect(rejected,true)
+    }
+
     // P2-CKB-UT-01
     @TestCase
     public func independentSkillBundleCompilationIsDeterministic(): Unit {
