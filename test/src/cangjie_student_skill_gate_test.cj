@@ -6,6 +6,7 @@ import std.time.DateTime
 import std.process.launch
 import std.unittest.*
 import std.unittest.testmacro.*
+import stdx.encoding.json.*
 
 @Test
 public class CkbR1StudentSkillCandidateContractTest {
@@ -21,6 +22,46 @@ public class CkbR1StudentSkillCandidateContractTest {
         @Expect(candidate.candidateContentHash,"sha256:7a7fa5b2c6d23fcf7eea67eef0fd9de26fe61f7c6f4e6e707e33e2fbb4dbaed0")
         @Expect(candidate.artifactHash,"sha256:f16d7384e707d6848c319522aff1cea14ed90cb46db97f1fccc1ffdee8bcc204")
         @Expect(parseStudentSkillCandidateDirectory(root,false).diagnostic,"derived_staging_lineage_required")
+    }
+
+    @TestCase
+    public func derivedSkillUsesTeacherDerivedOnlyInVisibleFrontmatter(): Unit {
+        let root=p2WriteDerivedSkillCandidateForTest("derived-visible","teacher_derived")
+        let candidate=parseStudentSkillCandidateDirectory(root.toString(),false)
+        @Expect(candidate.verified,true);@Expect(candidate.diagnostic,"ok")
+        @Expect(candidate.lineage,"humaneval_164_derived")
+        @Expect(candidate.skillContent.contains("lineage: teacher_derived\n"),true)
+        @Expect(candidate.skillContent.toAsciiLower().contains("humaneval"),false)
+        @Expect(cangjieStudentVisibleTextDiagnostic("derivedSkill",candidate.skillContent).ok,true)
+        @Expect(String.fromUtf8(File.readFrom(root.join("candidate-manifest.json"))).contains(
+            "\"lineage\":\"humaneval_164_derived\""),true)
+        @Expect(String.fromUtf8(File.readFrom(root.join("test-bundle.json"))).contains(
+            "\"lineage\":\"humaneval_164_derived\""),true)
+        let bundle=compileStudentSkillBundle("derived-visible-v1",
+            ArrayList<CkbStudentSkillCandidate>([candidate]))
+        @Expect(bundle.ok,true)
+        @Expect(bundle.json.contains("\"lineage\":\"humaneval_164_derived\""),true)
+        @Expect(parseStudentSkillBundle((bundle.json+"\n").toArray()).diagnostic,"ok")
+    }
+
+    @TestCase
+    public func derivedSkillRejectsInternalLineageInVisibleFrontmatter(): Unit {
+        let root=p2WriteDerivedSkillCandidateForTest("derived-visible-leak","humaneval_164_derived")
+        let candidate=parseStudentSkillCandidateDirectory(root.toString(),false)
+        @Expect(candidate.verified,false)
+        @Expect(candidate.diagnostic,"skill_markdown_semantic_mismatch")
+        let visible=String.fromUtf8(File.readFrom(root.join("SKILL.md")))
+        @Expect(cangjieStudentVisibleTextDiagnostic("derivedSkillLeak",visible).ok,false)
+    }
+
+    @TestCase
+    public func independentSkillKeepsIndependentVisibleLineage(): Unit {
+        let candidate=parseStudentSkillCandidateDirectory(
+            "fixtures/teacher_skill_candidate/static-boundary-review",true)
+        @Expect(candidate.verified,true)
+        @Expect(ckbStudentSkillVisibleLineage(candidate.lineage),"independent")
+        @Expect(candidate.skillContent.contains("lineage: independent\n"),true)
+        @Expect(candidate.skillContent.contains("lineage: teacher_derived\n"),false)
     }
 
     // P2-CKB-UT-01
@@ -83,3 +124,69 @@ public class CkbR1StudentSkillCandidateContractTest {
 }
 
 private func p2GateCandidate(id:String,procedure:String):CkbStudentSkillCandidate{let c=CkbStudentSkillCandidate();c.id=id;c.version="1";c.procedure=procedure;c.skillContent="content-${id}";c.candidateContentHash=benchmarkGapSha256(id);c.verified=true;c.diagnostic="ok";c}
+
+public func p2WriteDerivedSkillCandidateForTest(name:String,visibleLineage:String,
+    sourcePath!:String="fixtures/teacher_skill_candidate/static-boundary-review",
+    targetParent!:String="target",targetPath!:String=""):Path {
+    let source=Path(sourcePath)
+    let target=if(targetPath==""){Path(targetParent).join(
+        "p2-${name}-${DateTime.now().toUnixTimeStamp().toMilliseconds()}")}else{Path(targetPath)}
+    if(!exists(target.parent)){Directory.create(target.parent,recursive:true)}
+    if(launch("/bin/cp",["-R",source.toString(),target.toString()]).wait()!=0){
+        throw IllegalStateException("p2_derived_skill_copy_failed")
+    }
+    let original=parseStudentSkillCandidateDirectory(source.toString(),true)
+    if(!original.verified){throw IllegalStateException("p2_derived_skill_source_invalid")}
+    let bundlePath=target.join("test-bundle.json")
+    let bundleRaw=String.fromUtf8(File.readFrom(bundlePath)).trimAscii()
+    let bundle=JsonValue.fromStr(bundleRaw).asObject()
+    let oldEvidence=bundle.get("evidenceHash").getOrThrow().asString().getValue()
+    let withLineage=bundleRaw.replace("\"lineage\":\"independent\"",
+        "\"lineage\":\"humaneval_164_derived\"")
+    let evidence=withLineage.replace(",\"evidenceHash\":\"${oldEvidence}\"}","}")
+    let evidenceHash=benchmarkGapSha256(evidence)
+    let evidenceRunes=evidence.toRuneArray()
+    let sealedBundle=String(evidenceRunes[..evidenceRunes.size-1])+
+        ",\"evidenceHash\":\"${evidenceHash}\"}"
+    File.writeTo(bundlePath,(sealedBundle+"\n").toArray())
+
+    original.sourceCategory="teacher_derived";original.lineage="humaneval_164_derived"
+    original.testEvidenceHash=evidenceHash;original.testBundleHash=benchmarkGapSha256(sealedBundle)
+    let identity=p2Part(original.id)+p2Part(original.version)+p2Part(original.title)+
+        p2Part(original.procedure)+p2Part(original.sourceCategory)+p2Part(original.applicability)+
+        p2Part(original.lineage)+p2Part(original.testEvidenceHash)
+    original.candidateContentHash=benchmarkGapSha256(identity)
+    original.skillContent="---\nname: ${original.id}\nversion: ${original.version}\n"+
+        "source: ${original.sourceCategory}\nlineage: ${visibleLineage}\n"+
+        "content-hash: ${original.candidateContentHash}\n---\n\n# ${original.title}\n\n"+
+        "Applicability: ${original.applicability}\n\n${original.procedure}\n"
+    original.skillContentHash=benchmarkGapSha256(original.skillContent)
+    let manifestEvidence=p2SkillManifest(original,false)
+    original.artifactHash=benchmarkGapSha256(manifestEvidence)
+    File.writeTo(target.join("SKILL.md"),original.skillContent.toArray())
+    File.writeTo(target.join("candidate-manifest.json"),
+        (p2SkillManifest(original,true)+"\n").toArray())
+    if(exists(target.join("operation.json"))){
+        let operation="{\"schemaVersion\":\"teacher-context-asset-operation-v1\","+
+            "\"assetRole\":\"skills\",\"assetId\":\"${original.id}\","+
+            "\"operation\":\"replace\",\"expectedOldHash\":\"${parseStudentSkillCandidateDirectory(source.toString(),true).candidateContentHash}\","+
+            "\"newHash\":\"${original.candidateContentHash}\"}\n"
+        File.writeTo(target.join("operation.json"),operation.toArray())
+    }
+    target
+}
+
+private func p2SkillManifest(skill:CkbStudentSkillCandidate,sealed:Bool):String {
+    let fields="\"schemaVersion\":\"cangjie-teacher-skill-candidate-v1\","+
+        "\"id\":\"${p2Escape(skill.id)}\",\"version\":\"${p2Escape(skill.version)}\","+
+        "\"title\":\"${p2Escape(skill.title)}\",\"procedure\":\"${p2Escape(skill.procedure)}\","+
+        "\"sourceCategory\":\"${skill.sourceCategory}\",\"applicability\":\"${p2Escape(skill.applicability)}\","+
+        "\"lineage\":\"${skill.lineage}\",\"skillPath\":\"SKILL.md\","+
+        "\"skillContentHash\":\"${skill.skillContentHash}\",\"testBundlePath\":\"test-bundle.json\","+
+        "\"testBundleHash\":\"${skill.testBundleHash}\",\"testEvidenceHash\":\"${skill.testEvidenceHash}\","+
+        "\"candidateContentHash\":\"${skill.candidateContentHash}\""
+    if(sealed){"{${fields},\"artifactHash\":\"${skill.artifactHash}\"}"}else{"{${fields}}"}
+}
+
+private func p2Part(value:String):String{"${value.toArray().size}:${value}"}
+private func p2Escape(value:String):String{value.replace("\\","\\\\").replace("\"","\\\"").replace("\n","\\n").replace("\r","\\r").replace("\t","\\t")}

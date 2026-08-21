@@ -18,6 +18,9 @@ public class CkbStudentSkillBundleBuild {
     public var contentBytes:Int64=0;public var skillCount:Int64=0;public var canonicalHash=""
     public var json="";public init(){}
 }
+public func ckbStudentSkillVisibleLineage(lineage:String):String{
+    if(lineage=="humaneval_164_derived"){"teacher_derived"}else{lineage}
+}
 private class CkbSkillTestRow{
     var testId="";var kind="";var fixturePath="";var fixtureHash="";var targetVersion=""
     var sourceClass="";var benchmarkDerived=false;var passed=false;var resultHash="";init(){}
@@ -59,7 +62,7 @@ public func parseStudentSkillCandidateDirectory(rootPath:String,independentSeed:
         if(c.skillContentHash!=benchmarkGapSha256(skill[0])){c.diagnostic="skill_content_hash_mismatch";return c}
         let identity=ckbSkillPart(c.id)+ckbSkillPart(c.version)+ckbSkillPart(c.title)+ckbSkillPart(c.procedure)+ckbSkillPart(c.sourceCategory)+ckbSkillPart(c.applicability)+ckbSkillPart(c.lineage)+ckbSkillPart(c.testEvidenceHash)
         if(c.candidateContentHash!=benchmarkGapSha256(identity)){c.diagnostic="skill_candidate_content_hash_mismatch";return c}
-        let expectedSkill="---\nname: ${c.id}\nversion: ${c.version}\nsource: ${c.sourceCategory}\nlineage: ${c.lineage}\ncontent-hash: ${c.candidateContentHash}\n---\n\n# ${c.title}\n\nApplicability: ${c.applicability}\n\n${c.procedure}\n"
+        let expectedSkill="---\nname: ${c.id}\nversion: ${c.version}\nsource: ${c.sourceCategory}\nlineage: ${ckbStudentSkillVisibleLineage(c.lineage)}\ncontent-hash: ${c.candidateContentHash}\n---\n\n# ${c.title}\n\nApplicability: ${c.applicability}\n\n${c.procedure}\n"
         if(c.skillContent!=expectedSkill){c.diagnostic="skill_markdown_semantic_mismatch";return c}
         let evidence=ckbSkillRenderCandidateManifest(c,false)
         let canonicalManifest=ckbSkillRenderCandidateManifest(c,true)

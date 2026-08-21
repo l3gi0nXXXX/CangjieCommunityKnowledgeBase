@@ -193,6 +193,29 @@ public class CangjieStudentContextBundleTest {
         @Expect(runStudentContextImportCli(s3CliArgs(machine, machine.allowed.join("json-output"), true)), 0)
     }
 
+    @TestCase
+    public func derivedSkillContextImportKeepsInternalLineageOutOfVisiblePrompt(): Unit {
+        let fixture=s3ProductionContextFixture("derived-skill-cli")
+        let baseRoot=fixture.allowed.join("base-context")
+        let base=compileAndPublishStudentContextBundle(fixture.allowed.toString(),"derived-base-v1",
+            fixture.candidate.toString(),fixture.approval.toString(),"none",fixture.manifest.toString(),
+            fixture.store,baseRoot.toString(),true)
+        @Expect(base.ok,true)
+        let update=s3ProductionSkillUpdateFixture(fixture,baseRoot,base)
+        let output=fixture.allowed.join("derived-context")
+        @Expect(runStudentContextImportCli(s3UpdateCliArgs(update,baseRoot,output)),0)
+        let published=readStudentContextBundleV2(output.toString())
+        @Expect(published.ok,true)
+        @Expect(published.skillsLineage,"humaneval_164_derived")
+        @Expect(published.skillsPrompt.contains("lineage: teacher_derived\n"),true)
+        @Expect(published.skillsPrompt.toAsciiLower().contains("humaneval"),false)
+        @Expect(cangjieStudentVisibleTextDiagnostic("derivedSkillPrompt",published.skillsPrompt).ok,true)
+        @Expect(published.skillsJson.contains("\"lineage\":\"humaneval_164_derived\""),true)
+        let manifest=JsonValue.fromStr(published.manifestJson.trimAscii()).asObject()
+        @Expect(s3ContextBundleJsonString(manifest,"aggregateAssetLineage"),
+            "humaneval_164_derived")
+    }
+
     // S3-STRICT-01..06: hash resealing cannot bypass semantic/order/mode/store gates.
     @TestCase
     public func studentContextStrictInnerContractsAndRealModeGate(): Unit {
@@ -475,6 +498,14 @@ private func s3CliArgs(fixture: S3ProductionContextFixture, output: Path, json: 
         "--knowledge-store", fixture.store.rootPath(), "--output", output.toString(), "--context-version",
         "s3-cli-v1", "--scaffold-import"]) { values.add(value) }
     if (json) { values.add("--json") }; values.toArray()
+}
+
+private func s3UpdateCliArgs(fixture:S3ProductionContextFixture,base:Path,output:Path):Array<String>{
+    ["cangjie-student-context-import","--allowed-root",fixture.allowed.toString(),
+        "--base-context",base.toString(),"--candidate-set",fixture.candidate.toString(),
+        "--approval",fixture.approval.toString(),"--frozen-knowledge-manifest",
+        fixture.manifest.toString(),"--knowledge-store",fixture.store.rootPath(),"--output",
+        output.toString(),"--context-version","derived-skill-v2","--scaffold-import"]
 }
 
 private func s3ProductionContextFixture(name: String): S3ProductionContextFixture {
@@ -763,6 +794,75 @@ private func s3ProductionUpdateFixture(baseFixture: S3ProductionContextFixture, 
     S3ProductionContextFixture(baseFixture.allowed, candidate, approval, baseFixture.manifest, baseFixture.store)
 }
 
+private func s3ProductionSkillUpdateFixture(baseFixture:S3ProductionContextFixture,baseRoot:Path,
+    base:CkbStudentContextBundle):S3ProductionContextFixture {
+    let candidate=baseFixture.allowed.join("candidate-skill-update-v2")
+    Directory.create(candidate.join("rules"),recursive:true)
+    Directory.create(candidate.join("skills"),recursive:true)
+    Directory.create(candidate.join("knowledge"),recursive:true)
+    s3CopyTree(baseFixture.candidate.join("audit"),candidate.join("audit"))
+    let sourceSkill=baseFixture.candidate.join("skills/rune-safe-review")
+    let targetSkill=candidate.join("skills/rune-safe-review")
+    let derivedRoot=p2WriteDerivedSkillCandidateForTest("context-derived","teacher_derived",
+        sourcePath:sourceSkill.toString(),targetPath:targetSkill.toString())
+    let derived=parseStudentSkillCandidateDirectory(derivedRoot.toString(),false)
+    if(!derived.verified){throw IllegalStateException("s3_derived_skill_candidate_invalid:${derived.diagnostic}")}
+    let skills=ArrayList<CkbStudentSkillCandidate>();skills.add(derived)
+    let compiled=compileStudentSkillBundle("candidate-skill-update",skills)
+    if(!compiled.ok){throw IllegalStateException("s3_derived_skill_bundle_invalid")}
+    let baseManifest=JsonValue.fromStr(String.fromUtf8(File.readFrom(
+        baseRoot.join("student-context-manifest.json"))).trimAscii()).asObject()
+    let baseReference=JsonValue.fromStr(base.knowledgeReferenceJson.trimAscii()).asObject()
+    let genesis=JsonValue.fromStr(String.fromUtf8(File.readFrom(
+        baseFixture.candidate.join("candidate-set-manifest.json"))).trimAscii()).asObject()
+    let classification=benchmarkGapSha256("synthetic-derived-skill-classification")
+    let emptyTree=benchmarkGapSha256("")
+    let skillProjection=benchmarkGapSha256(renderStudentVisibleSkillPrompt(compiled.json))
+    let skillsTree=benchmarkGapSha256(s3TreeInventory(candidate.join("skills")))
+    let inventory=benchmarkGapSha256(s3CandidateInventory(candidate))
+    let combination=benchmarkGapSha256(s3Part(s3ContextBundleJsonString(baseManifest,"rulesHash"))+
+        s3Part(skillProjection)+s3Part(s3ContextBundleJsonString(baseReference,"knowledgeCandidateHash"))+
+        s3Part(s3ContextBundleJsonString(genesis,"sourceClosureHash"))+
+        s3Part(s3ContextBundleJsonString(genesis,"protectedClosureHash")))
+    let evidence="{\"schemaVersion\":\"teacher-student-context-candidate-set-v2\","+
+        "\"candidateSetId\":\"synthetic-derived-skill-update-v2\","+
+        "\"baseCompositeHash\":\"${base.compositeHash}\",\"validationLevel\":\"scaffold_contract\","+
+        "\"sourceEvidenceManifestHash\":\"${s3ContextBundleJsonString(genesis,"sourceEvidenceManifestHash")}\","+
+        "\"classificationManifestHash\":\"${classification}\","+
+        "\"sourceClosureHash\":\"${s3ContextBundleJsonString(genesis,"sourceClosureHash")}\","+
+        "\"protectedClosureHash\":\"${s3ContextBundleJsonString(genesis,"protectedClosureHash")}\","+
+        "\"rulesEligible\":false,\"rulesHash\":\"${s3ContextBundleJsonString(baseManifest,"rulesHash")}\","+
+        "\"rulesTreeHash\":\"${emptyTree}\",\"rulesCount\":${s3ContextBundleJsonInt(baseManifest,"rulesCount")},"+
+        "\"rulesAssetLineage\":\"${s3ContextBundleJsonString(baseManifest,"rulesAssetLineage")}\","+
+        "\"skillsEligible\":true,\"skillsHash\":\"${skillProjection}\","+
+        "\"skillsTreeHash\":\"${skillsTree}\",\"skillsCount\":${s3ContextBundleJsonInt(baseManifest,"skillCount")},"+
+        "\"skillAssetLineage\":\"humaneval_164_derived\",\"knowledgeEligible\":false,"+
+        "\"knowledgeCandidateHash\":\"${s3ContextBundleJsonString(baseReference,"knowledgeCandidateHash")}\","+
+        "\"knowledgeTreeHash\":\"${emptyTree}\","+
+        "\"knowledgeTargetVersion\":\"${s3ContextBundleJsonString(baseReference,"knowledgeVersion")}\","+
+        "\"knowledgeAssetLineage\":\"${s3ContextBundleJsonString(baseReference,"assetLineage")}\","+
+        "\"assetInventoryHash\":\"${inventory}\",\"combinationAuditHash\":\"${combination}\"}"
+    let candidateHash=benchmarkGapSha256(evidence)
+    File.writeTo(candidate.join("candidate-set-manifest.json"),
+        (String(evidence.toRuneArray()[..evidence.toRuneArray().size-1])+
+        ",\"candidateSetHash\":\"${candidateHash}\"}\n").toArray())
+    let approval=baseFixture.allowed.join("approval-skill-update-v2.json")
+    let approvalJson="{\"schemaVersion\":\"teacher-student-context-approval-v2\","+
+        "\"candidateSetHash\":\"${candidateHash}\",\"assetInventoryHash\":\"${inventory}\","+
+        "\"rulesHash\":\"${s3ContextBundleJsonString(baseManifest,"rulesHash")}\","+
+        "\"rulesTreeHash\":\"${emptyTree}\",\"skillsHash\":\"${skillProjection}\","+
+        "\"skillsTreeHash\":\"${skillsTree}\","+
+        "\"knowledgeCandidateHash\":\"${s3ContextBundleJsonString(baseReference,"knowledgeCandidateHash")}\","+
+        "\"knowledgeTreeHash\":\"${emptyTree}\","+
+        "\"sourceClosureHash\":\"${s3ContextBundleJsonString(genesis,"sourceClosureHash")}\","+
+        "\"protectedClosureHash\":\"${s3ContextBundleJsonString(genesis,"protectedClosureHash")}\","+
+        "\"combinationAuditHash\":\"${combination}\",\"decision\":\"approve\","+
+        "\"reviewer\":\"synthetic-reviewer\",\"reason\":\"Synthetic derived skill update approved.\","+
+        "\"approvedAtUtc\":\"2026-08-07T00:00:00Z\"}\n"
+    File.writeTo(approval,approvalJson.toArray())
+    S3ProductionContextFixture(baseFixture.allowed,candidate,approval,baseFixture.manifest,baseFixture.store)
+}
+
 private func s3WriteDerivedRuleCandidate(source: Path, target: Path, id: String, operation: String,
     oldHash: String, classification: String, addedBody: String): CkbStudentRuleCandidate {
     s3CopyTree(source, target)
@@ -811,6 +911,7 @@ private func s3CandidateManifestEvidence(o: JsonObject, knowledgeHash: String, k
 }
 
 private func s3ContextBundleJsonString(o: JsonObject, key: String): String { o.get(key).getOrThrow().asString().getValue() }
+private func s3ContextBundleJsonInt(o:JsonObject,key:String):Int64{o.get(key).getOrThrow().asInt().getValue()}
 
 private func s3CandidateInventory(root: Path): String {
     let rows = ArrayList<String>()
