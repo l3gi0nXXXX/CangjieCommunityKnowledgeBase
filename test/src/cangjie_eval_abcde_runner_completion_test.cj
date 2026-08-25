@@ -1,6 +1,7 @@
 package cangjie_community_knowledge_base_test
 
 import std.collection.ArrayList
+import std.convert.*
 import std.fs.{Directory, File, Path, canonicalize, exists, remove}
 import std.time.DateTime
 import std.process.launch
@@ -314,8 +315,10 @@ public class CangjieEvalAbcdeRunnerCompletionTest {
         let root=Path("target/p3-runner-evaluator-${DateTime.now().toUnixTimeStamp().toMilliseconds()}");let groupRoot=root.join("case");let workspace=groupRoot.join("workspace");Directory.create(workspace.join("src"),recursive:true);let solution="package solution\npublic func answer(): Int64 { 42 } // 中文😀\n";File.writeTo(workspace.join("src/solution.cj"),solution.toArray());let completion=ckbAbcdeExtractSingleCompletion(p3Terminal(solution).toArray());@Expect(ckbAbcdeFreezeCompletion(groupRoot.join("frozen-completion").toString(),completion),"ok");File.writeTo(groupRoot.join("generation-evidence.json"),"{\"answerHash\":\"${completion.answerHash}\",\"completionCount\":1,\"toolCallCount\":0,\"executionFeedbackCount\":0,\"interrupted\":false,\"generatedTokenCount\":1,\"checkpointRecovered\":false}".toArray());File.writeTo(groupRoot.join("answer-freeze.json"),"{\"answerHash\":\"${completion.answerHash}\",\"sequence\":2}".toArray())
         let verifier=P3FakeCompletionVerifier();let evaluated=ckbAbcdeEvaluateFrozenCompletion(groupRoot.toString(),root.join("case-source").toString(),workspace.toString(),completion.answerHash,"base,plus",executor:verifier)
         @Expect(evaluated.basePassed,true);@Expect(evaluated.plusPassed,true);@Expect(verifier.baseCalls,1);@Expect(verifier.plusCalls,1);@Expect(verifier.workspaces.size,2);@Expect(verifier.workspaces[0]!=verifier.workspaces[1],true);@Expect(String.fromUtf8(File.readFrom(workspace.join("src/solution.cj"))),solution)
-        for(name in ["frozen-completion/solution.cj","generation-evidence.json","answer-freeze.json","base-test-result.json","plus-test-result.json"]){@Expect(exists(groupRoot.join(name)),true)}
+        for(name in ["frozen-completion/solution.cj","generation-evidence.json","answer-freeze.json","base-test-result.json","plus-test-result.json","base-test-execution.json","plus-test-execution.json"]){@Expect(exists(groupRoot.join(name)),true)}
         @Expect(String.fromUtf8(File.readFrom(groupRoot.join("base-test-result.json"))).contains("\"answerHash\":\"${completion.answerHash}\""),true);@Expect(String.fromUtf8(File.readFrom(groupRoot.join("plus-test-result.json"))).contains("\"answerHash\":\"${completion.answerHash}\""),true)
+        let execution=String.fromUtf8(File.readFrom(groupRoot.join("base-test-execution.json")))
+        @Expect(execution.contains("\"timeoutSeconds\":180"),true);@Expect(execution.contains("\"timedOut\":false"),true)
     }
 
     // P4-POS-01: exercise the production suite executor against the protected
@@ -352,6 +355,38 @@ public class CangjieEvalAbcdeRunnerCompletionTest {
         @Expect(evaluated.plusPassed, true)
         @Expect(String.fromUtf8(File.readFrom(groupRoot.join("base-test-result.json"))).contains("\"passed\":true"), true)
         @Expect(String.fromUtf8(File.readFrom(groupRoot.join("plus-test-result.json"))).contains("\"passed\":true"), true)
+    }
+
+    @TestCase
+    public func frozenSuiteRunnerTimesOutAndTerminatesItsChildProcess():Unit{
+        let root=Path("target/p4-suite-timeout-${DateTime.now().toUnixTimeStamp().toMilliseconds()}")
+        Directory.create(root,recursive:true);let childPath=root.join("child.pid")
+        let command="sleep 30 & child=$!; print -r -- $child > child.pid; wait $child"
+        let result=ckbAbcdeRunTimedTestShellForTest(command,root.toString(),1,root.toString(),"plus")
+        let childPid=Int64.parse(String.fromUtf8(File.readFrom(childPath)).trimAscii())
+        @Expect(result.exitCode,124);@Expect(result.timedOut,true);@Expect(result.pidKilled,true)
+        @Expect(result.workerPid>0,true);@Expect(result.diagnostic,"worker_cutoff_exceeded")
+        @Expect(launch("/bin/kill",["-0","${childPid}"]).wait()!=0,true)
+        @Expect(ckbAbcdeFailureTypeForTest(0,result.exitCode,false,"none",result.stderr,true),"timeout")
+        let options=CkbAbcdeRunnerOptions();options.runMode="development";options.runId="timeout-run";options.datasetVersion="dataset-v1"
+        let triage=ckbAbcdeTriageEvidenceForTest(options,"CJ-HUMANEVAL-027",1,"timeout",false,false,0,124,root.toString())
+        @Expect(triage.contains("\"timedOut\":true"),true);@Expect(triage.contains("\"reasoningFailure\":false"),true)
+    }
+
+    @TestCase
+    public func frozenSuiteRunnerKeepsUtf8AndClassifiesInvalidBytesAsOperational():Unit{
+        let root=Path("target/p4-suite-encoding-${DateTime.now().toUnixTimeStamp().toMilliseconds()}")
+        Directory.create(root,recursive:true)
+        let utf8=ckbAbcdeRunTimedTestShellForTest("print -r -- '中文😀'",root.toString(),5,root.toString(),"base")
+        let invalid=ckbAbcdeRunTimedTestShellForTest("printf '\\xFF'",root.toString(),5,root.toString(),"plus")
+        @Expect(utf8.exitCode,0);@Expect(utf8.stdout.trimAscii(),"中文😀");@Expect(utf8.encodingFailure,false)
+        @Expect(invalid.exitCode,125);@Expect(invalid.encodingFailure,true)
+        @Expect(invalid.diagnostic,"test_output_invalid_encoding")
+        @Expect(invalid.stderr.contains("operational_encoding_failure"),true)
+        @Expect(ckbAbcdeFailureTypeForTest(0,invalid.exitCode,false,"none",invalid.stderr,true),"runner_failure")
+        let options=CkbAbcdeRunnerOptions();options.runMode="development";options.runId="encoding-run";options.datasetVersion="dataset-v1"
+        let triage=ckbAbcdeTriageEvidenceForTest(options,"CJ-HUMANEVAL-027",1,"runner_failure",false,false,0,125,root.toString())
+        @Expect(triage.contains("\"runnerFailure\":true"),true);@Expect(triage.contains("\"reasoningFailure\":false"),true)
     }
 
     // P3-NEG-01

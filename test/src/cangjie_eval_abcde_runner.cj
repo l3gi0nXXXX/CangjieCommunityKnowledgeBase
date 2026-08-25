@@ -116,16 +116,23 @@ public class CkbAbcdeCommandResult {
     public var exitCode: Int64 = 1
     public var stdout: String = ""
     public var stderr: String = ""
+    public var timedOut: Bool = false
+    public var pidKilled: Bool = false
+    public var workerPid: Int64 = 0
+    public var diagnostic: String = "not_timed"
+    public var encodingFailure: Bool = false
 
     public init() {}
 }
 
 public open class CkbAbcdeCompletionSuiteExecutor {
+    public var testTimeoutSeconds: Int64 = 180
+
     public open func execute(suite:String,caseSrc:String,workspace:String):CkbAbcdeCommandResult {
         let result=CkbAbcdeCommandResult();let suiteRoot=if(suite=="base"){"${caseSrc}/tests"}else if(suite=="plus"){"${caseSrc}/tests-plus"}else{return result}
         let inject=ckbAbcdeRunShell("cp ${ckbAbcdeShellQuote("${suiteRoot}/TestMain.cj")} ${ckbAbcdeShellQuote("${workspace}/src/main.cj")} && cp ${ckbAbcdeShellQuote("${suiteRoot}/cjpm.executable.toml")} ${ckbAbcdeShellQuote("${workspace}/cjpm.toml")}","")
         if(inject.exitCode!=0){result.stderr=inject.stdout+inject.stderr;return result}
-        ckbAbcdeRunShell("cjpm run",workspace)
+        ckbAbcdeRunTimedTestShell("cjpm run",workspace,this.testTimeoutSeconds,workspace,suite)
     }
 }
 
@@ -140,12 +147,15 @@ public class CkbAbcdeCompletionEvaluation {
 }
 
 public func ckbAbcdeEvaluateFrozenCompletion(groupRoot:String,caseSrc:String,workspace:String,
-    answerHash:String,testSuites:String,executor!:CkbAbcdeCompletionSuiteExecutor=CkbAbcdeCompletionSuiteExecutor()):CkbAbcdeCompletionEvaluation {
+    answerHash:String,testSuites:String,testTimeoutSeconds!:Int64=180,
+    executor!:CkbAbcdeCompletionSuiteExecutor=CkbAbcdeCompletionSuiteExecutor()):CkbAbcdeCompletionEvaluation {
     let evaluation=CkbAbcdeCompletionEvaluation()
+    executor.testTimeoutSeconds=testTimeoutSeconds
     for(suite in testSuites.split(",")){
         let name=suite.trimAscii();if(name!="base"&&name!="plus"){continue}
         let suiteWorkspace="${groupRoot}/suite-workspaces/${name}";let copied=ckbAbcdeRunShell("rm -rf ${ckbAbcdeShellQuote(suiteWorkspace)} && mkdir -p ${ckbAbcdeShellQuote(Path(suiteWorkspace).parent.toString())} && cp -R ${ckbAbcdeShellQuote(workspace)} ${ckbAbcdeShellQuote(suiteWorkspace)}","");let before=benchmarkGapSha256(ckbAbcdeReadText("${suiteWorkspace}/src/solution.cj"));let command=if(copied.exitCode==0){executor.execute(name,caseSrc,suiteWorkspace)}else{copied};let after=benchmarkGapSha256(ckbAbcdeReadText("${suiteWorkspace}/src/solution.cj"));let passed=before==answerHash&&after==answerHash&&command.exitCode==0&&!ckbAbcdeTestLogContainsFailure(command.stdout+command.stderr);let sequence=if(name=="base"){3}else{4}
-        ckbAbcdeWriteText("${groupRoot}/${name}-test-result.json","{\"answerHash\":\"${answerHash}\",\"sequence\":${sequence},\"passed\":${passed}}\n")
+        ckbAbcdeWriteText("${groupRoot}/${name}-test-result.json","{\"answerHash\":\"${answerHash}\",\"sequence\":${sequence},\"passed\":${passed},\"exitCode\":${command.exitCode},\"timedOut\":${command.timedOut},\"runnerFailure\":${ckbAbcdeTestRunnerFailure(command)},\"encodingFailure\":${command.encodingFailure}}\n")
+        ckbAbcdeWriteText("${groupRoot}/${name}-test-execution.json","{\"suite\":\"${name}\",\"timeoutSeconds\":${testTimeoutSeconds},\"exitCode\":${command.exitCode},\"timedOut\":${command.timedOut},\"terminationAttempted\":${command.timedOut},\"terminated\":${command.pidKilled},\"workerPid\":${command.workerPid},\"runnerFailure\":${ckbAbcdeTestRunnerFailure(command)},\"encodingFailure\":${command.encodingFailure},\"diagnostic\":\"${ckbAbcdeJsonEscape(command.diagnostic)}\"}\n")
         ckbAbcdeWriteText("${groupRoot}/${name}-test.log",command.stdout+command.stderr)
         if(name=="base"){evaluation.baseExecuted=true;evaluation.basePassed=passed;evaluation.baseResult=command}else{evaluation.plusExecuted=true;evaluation.plusPassed=passed;evaluation.plusResult=command}
     }
@@ -1746,9 +1756,14 @@ private func ckbAbcdeRunCaseGroup(options: CkbAbcdeRunnerOptions, runRoot: Strin
     if(options.generationProtocol!="completion-only-v1"){ckbAbcdeWriteText("${groupRoot}/answer-freeze.json","{\"answerHash\":\"${frozenAnswerHash}\",\"verifierMounted\":false}\n")}
     var inject=CkbAbcdeCommandResult();var test=CkbAbcdeCommandResult()
     if((options.runMode=="certification"||options.targetedStudent)&&options.generationProtocol=="completion-only-v1"&&options.evaluateFrozen){
-        let evaluation=ckbAbcdeEvaluateFrozenCompletion(groupRoot,caseSrc,workspace,frozenAnswerHash,options.testSuites)
+        let evaluation=ckbAbcdeEvaluateFrozenCompletion(groupRoot,caseSrc,workspace,frozenAnswerHash,
+            options.testSuites,testTimeoutSeconds:options.modelTimeoutSeconds)
         inject.exitCode=if(evaluation.baseExecuted&&evaluation.plusExecuted){0}else{1}
-        test.exitCode=if(evaluation.basePassed&&evaluation.plusPassed){0}else{1};test.stdout=evaluation.baseResult.stdout+evaluation.baseResult.stderr+evaluation.plusResult.stdout+evaluation.plusResult.stderr
+        let testTimedOut=evaluation.baseResult.timedOut||evaluation.plusResult.timedOut
+        let runnerFailure=ckbAbcdeTestRunnerFailure(evaluation.baseResult)||ckbAbcdeTestRunnerFailure(evaluation.plusResult)
+        test.exitCode=if(evaluation.basePassed&&evaluation.plusPassed){0}else if(testTimedOut){124}else if(runnerFailure){125}else{1}
+        test.timedOut=testTimedOut;test.encodingFailure=evaluation.baseResult.encodingFailure||evaluation.plusResult.encodingFailure
+        test.stdout=evaluation.baseResult.stdout+evaluation.baseResult.stderr+evaluation.plusResult.stdout+evaluation.plusResult.stderr
     }else{
         inject=ckbAbcdeRunShell("cp ${ckbAbcdeShellQuote("${caseSrc}/tests/TestMain.cj")} ${ckbAbcdeShellQuote("${workspace}/src/main.cj")} && cp ${ckbAbcdeShellQuote("${caseSrc}/tests/cjpm.executable.toml")} ${ckbAbcdeShellQuote("${workspace}/cjpm.toml")}", "")
         if(inject.exitCode==0){test=ckbAbcdeRunShell("cjpm run", workspace)}
@@ -3176,8 +3191,9 @@ private func ckbAbcdeRenderCaseResultBound(
 }
 
 private func ckbAbcdeTriageEvidenceBound(options: CkbAbcdeRunnerOptions, caseId: String, attempt: Int64, failureType: String, unitPass: Bool, protocolViolation: Bool, claudeExitCode: Int64, testExitCode: Int64, groupRoot: String, taskKnowledge: CkbAbcdeTaskKnowledgeEvidence): String {
-    let timedOut = claudeExitCode == 124
+    let timedOut = claudeExitCode == 124 || testExitCode == 124
     let environmentFailure = claudeExitCode != 0 && !timedOut
+    let runnerFailure = testExitCode == 125
     let observation = if (failureType == "none") { "case_passed" } else { failureType }
     let firstRetrieval = ckbAbcdeFirstSampleTranscript(groupRoot)
     let taskContext = ckbAbcdeReadText("${groupRoot}/canonical-task-context.json")
@@ -3186,9 +3202,9 @@ private func ckbAbcdeTriageEvidenceBound(options: CkbAbcdeRunnerOptions, caseId:
     let suspectedKnowledgeGap = options.runMode == "development" && failureType == "compile_error" && !unitPass && !protocolViolation && claudeExitCode == 0 && testExitCode != 0 && (structuredMissing || coverageCompilerConflict)
     let retrievalDiagnostic = if (taskKnowledge.valid) { "bound_tool_result" } else if (structuredMissing && suspectedKnowledgeGap) { "structured_missing_evidence" } else if (coverageCompilerConflict && suspectedKnowledgeGap) { "coverage_compiler_member_conflict" } else { "not_applicable" }
     let retrievalEvidenceHash = if (taskKnowledge.valid) { taskKnowledge.evidenceHash } else if (suspectedKnowledgeGap) { benchmarkGapSha256(taskContext + firstRetrieval) } else { "" }
-    let provisional = "{\"attempt\":${attempt},\"runMode\":\"${ckbAbcdeJsonEscape(options.runMode)}\",\"failureType\":\"${ckbAbcdeJsonEscape(failureType)}\",\"protocolViolation\":${protocolViolation},\"timedOut\":${timedOut},\"environmentFailure\":${environmentFailure},\"suspectedKnowledgeGap\":${suspectedKnowledgeGap},\"reasoningFailure\":false,\"unitPass\":${unitPass}}"
+    let provisional = "{\"attempt\":${attempt},\"runMode\":\"${ckbAbcdeJsonEscape(options.runMode)}\",\"failureType\":\"${ckbAbcdeJsonEscape(failureType)}\",\"protocolViolation\":${protocolViolation},\"timedOut\":${timedOut},\"runnerFailure\":${runnerFailure},\"environmentFailure\":${environmentFailure},\"suspectedKnowledgeGap\":${suspectedKnowledgeGap},\"reasoningFailure\":false,\"unitPass\":${unitPass}}"
     let reasoningFailure = cangjieEvalAuthoritativeFailureCategory(provisional) == "reasoning_failure"
-    let base = "{\"caseId\":\"${ckbAbcdeJsonEscape(caseId)}\",\"runId\":\"${ckbAbcdeJsonEscape(options.runId)}\",\"datasetVersion\":\"${ckbAbcdeJsonEscape(options.datasetVersion)}\",\"attempt\":${attempt},\"transportAttempt\":${attempt},\"sampleAttempt\":${if(ckbAbcdeSelectedSampleTransportAttempt(groupRoot)==attempt){1}else{0}},\"runMode\":\"${ckbAbcdeJsonEscape(options.runMode)}\",\"failureObservation\":\"${ckbAbcdeJsonEscape(observation)}\",\"protocolViolation\":${protocolViolation},\"timedOut\":${timedOut},\"environmentFailure\":${environmentFailure},\"suspectedKnowledgeGap\":${suspectedKnowledgeGap},\"retrievalDiagnostic\":\"${retrievalDiagnostic}\",\"retrievalEvidenceHash\":\"${retrievalEvidenceHash}\",\"reasoningFailure\":${reasoningFailure && !suspectedKnowledgeGap},\"failureType\":\"${ckbAbcdeJsonEscape(failureType)}\",\"unitPass\":${unitPass}}"
+    let base = "{\"caseId\":\"${ckbAbcdeJsonEscape(caseId)}\",\"runId\":\"${ckbAbcdeJsonEscape(options.runId)}\",\"datasetVersion\":\"${ckbAbcdeJsonEscape(options.datasetVersion)}\",\"attempt\":${attempt},\"transportAttempt\":${attempt},\"sampleAttempt\":${if(ckbAbcdeSelectedSampleTransportAttempt(groupRoot)==attempt){1}else{0}},\"runMode\":\"${ckbAbcdeJsonEscape(options.runMode)}\",\"failureObservation\":\"${ckbAbcdeJsonEscape(observation)}\",\"protocolViolation\":${protocolViolation},\"timedOut\":${timedOut},\"runnerFailure\":${runnerFailure},\"environmentFailure\":${environmentFailure},\"suspectedKnowledgeGap\":${suspectedKnowledgeGap},\"retrievalDiagnostic\":\"${retrievalDiagnostic}\",\"retrievalEvidenceHash\":\"${retrievalEvidenceHash}\",\"reasoningFailure\":${reasoningFailure && !suspectedKnowledgeGap},\"failureType\":\"${ckbAbcdeJsonEscape(failureType)}\",\"unitPass\":${unitPass}}"
     let hash = cangjieEvalTriageResultEvidenceHash(base)
     base.replace("}", ",\"resultEvidenceHash\":\"${hash}\"}")
 }
@@ -3488,8 +3504,11 @@ private func ckbAbcdeFailureType(claudeExitCode: Int64, testExitCode: Int64, uni
     if (violation != "none") {
         return "protocol_violation"
     }
-    if (claudeExitCode == 124) {
+    if (claudeExitCode == 124 || testExitCode == 124) {
         return "timeout"
+    }
+    if (testExitCode == 125) {
+        return "runner_failure"
     }
     if (!toolReady) {
         return "tool_unavailable"
@@ -4105,6 +4124,53 @@ private func ckbAbcdeRunShell(script: String, cwd: String): CkbAbcdeCommandResul
         result.stderr = "launch_failed"
     }
     result
+}
+
+private func ckbAbcdeRunTimedTestShell(script:String,cwd:String,timeoutSeconds:Int64,
+    artifactRoot:String,suite:String):CkbAbcdeCommandResult {
+    let result=CkbAbcdeCommandResult()
+    if(timeoutSeconds<=0){result.exitCode=125;result.diagnostic="test_timeout_invalid";return result}
+    let prefix=Path(artifactRoot).join(".ckb-${suite}-test")
+    let pidPath=prefix.toString()+".pid";let markerPath=prefix.toString()+".timeout"
+    let stdoutPath=prefix.toString()+".stdout";let stderrPath=prefix.toString()+".stderr"
+    try{_=launch("/bin/rm",["-f",pidPath,markerPath,stdoutPath,stderrPath]).wait()}catch(_:Exception){}
+    let args=ArrayList<String>();args.add("-lc");args.add(script)
+    let launched=CkbTimedWorkerProcessLauncher("/bin/zsh",args,workdir:cwd,
+        cutoffAtMillis:ckbCoreNowMillis()+timeoutSeconds*1000,
+        hardDeadlineAtMillis:ckbCoreNowMillis()+timeoutSeconds*1000,
+        pidPath:pidPath,timeoutMarkerPath:markerPath,stdoutPath:stdoutPath,
+        stderrPath:stderrPath).run()
+    result.exitCode=launched.exitCode;result.timedOut=launched.timedOut
+    result.pidKilled=launched.pidKilled;result.workerPid=launched.workerPid
+    result.diagnostic=launched.diagnostic
+    let stdoutRead=ckbAbcdeReadBoundedText(stdoutPath,1048576,"test_output_too_large")
+    let stderrRead=ckbAbcdeReadBoundedText(stderrPath,1048576,"test_output_too_large")
+    if(stdoutRead.ok){result.stdout=stdoutRead.text}else if(stdoutRead.diagnostic=="invalid_response_encoding"){
+        result.encodingFailure=true
+    }
+    if(stderrRead.ok){result.stderr=stderrRead.text}else if(stderrRead.diagnostic=="invalid_response_encoding"){
+        result.encodingFailure=true
+    }
+    if(result.encodingFailure){
+        result.exitCode=125;result.diagnostic="test_output_invalid_encoding"
+        result.stdout="";result.stderr="operational_encoding_failure:test_output_invalid_encoding\n"
+    }else if(!stdoutRead.ok||!stderrRead.ok){
+        result.exitCode=125;result.diagnostic=if(!stdoutRead.ok){stdoutRead.diagnostic}else{stderrRead.diagnostic}
+    }
+    try{_=launch("/bin/rm",["-f",pidPath,markerPath,stdoutPath,stderrPath]).wait()}catch(_:Exception){}
+    result
+}
+
+public func ckbAbcdeRunTimedTestShellForTest(script:String,cwd:String,timeoutSeconds:Int64,
+    artifactRoot:String,suite:String):CkbAbcdeCommandResult {
+    ckbAbcdeRunTimedTestShell(script,cwd,timeoutSeconds,artifactRoot,suite)
+}
+
+private func ckbAbcdeTestRunnerFailure(result:CkbAbcdeCommandResult):Bool {
+    result.encodingFailure||result.diagnostic=="test_timeout_invalid"||
+        result.diagnostic=="worker_launch_failed"||result.diagnostic=="worker_start_pid_missing"||
+        result.diagnostic=="worker_timeout_marker_missing"||result.diagnostic=="artifact_read_failed"||
+        result.diagnostic=="test_output_too_large"
 }
 
 private func ckbAbcdeSafeReadPipe(pipe: InputStream): String {
