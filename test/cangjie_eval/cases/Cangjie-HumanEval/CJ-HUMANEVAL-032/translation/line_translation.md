@@ -1,6 +1,6 @@
 # Line Translation: CJ-HUMANEVAL-032
 
-The official recorder expands the 100 deterministic coefficient inputs only. The Cangjie verifier preserves the official property oracle: each candidate result is accepted when the polynomial residual is strictly below `1e-4`; it is not compared with the canonical solution's selected root.
+The official recorder expands the 100 deterministic coefficient inputs only. The Cangjie verifier preserves the official property oracle: each candidate result is accepted when the polynomial residual is strictly below `1e-4`. Plus inputs use canonical allclose only as a fallback when cross-language floating-point projection makes the Cangjie residual unstable; alternate roots that satisfy the residual remain accepted.
 
 ## Official Test Lines
 

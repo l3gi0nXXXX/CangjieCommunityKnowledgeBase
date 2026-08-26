@@ -17,10 +17,10 @@ func mapOfStringString(values: Array<(String, String)>): HashMap<String, String>
 func cjeFail(label: String, detail: String): Unit { throw Exception("CangjieEval failure: ${label}: ${detail}") }
 func polynomialValue(coefficients: ArrayList<Int64>, x: Float64): Float64 {
     var result: Float64 = 0.0
-    var i = coefficients.size
-    while (i > 0) {
-        i -= 1
-        result = result * x + Float64(coefficients[i])
+    var power: Float64 = 1.0
+    for (i in 0..coefficients.size) {
+        result += Float64(coefficients[i]) * power
+        power *= x
     }
     return result
 }

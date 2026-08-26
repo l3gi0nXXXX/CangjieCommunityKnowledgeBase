@@ -16,10 +16,10 @@ private func case032Coefficients(values: Array<Int64>): ArrayList<Int64> {
 
 private func case032PolynomialValue(coefficients: ArrayList<Int64>, x: Float64): Float64 {
     var result: Float64 = 0.0
-    var i = coefficients.size
-    while (i > 0) {
-        i -= 1
-        result = result * x + Float64(coefficients[i])
+    var power: Float64 = 1.0
+    for (i in 0..coefficients.size) {
+        result += Float64(coefficients[i]) * power
+        power *= x
     }
     return result
 }
@@ -27,6 +27,17 @@ private func case032PolynomialValue(coefficients: ArrayList<Int64>, x: Float64):
 private func case032RootAccepted(coefficients: ArrayList<Int64>, actual: Float64): Bool {
     let residual = abs(case032PolynomialValue(coefficients, actual))
     return residual < 0.0001
+}
+
+private func case032PlusRootAccepted(coefficients: ArrayList<Int64>, actual: Float64,
+    expected: Float64, atol: Float64): Bool {
+    if (case032RootAccepted(coefficients, actual)) {
+        return true
+    }
+    if (actual == expected) {
+        return true
+    }
+    return abs(actual - expected) <= atol + 0.0000001 * abs(expected)
 }
 
 private func case032ReadUtf8(relativePath: String): String {
@@ -57,6 +68,16 @@ public class CangjieHumanEvalCase032VerifierTest {
     }
 
     @TestCase
+    public func plusFallbackAcceptsProjectedCanonicalRootWithoutRejectingAlternateRoots(): Unit {
+        let coefficients = case032Coefficients([9450000, 9, -7, 3, 2, 6, 1, -4, -10, 6, 17, -1])
+        @Expect(case032RootAccepted(coefficients, 17.3124550475086), false)
+        @Expect(case032PlusRootAccepted(coefficients, 17.3124550475086, 17.3124550475086, 0.0001), true)
+        let multipleRoots = case032Coefficients([-4, -4, 7, 4])
+        @Expect(case032PlusRootAccepted(multipleRoots, -2.0, 0.8430703308172534, 0.0001), true)
+        @Expect(case032PlusRootAccepted(multipleRoots, 0.0, 0.8430703308172534, 0.0001), false)
+    }
+
+    @TestCase
     public func fixtureUsesOfficialPropertyForAllOneHundredCalls(): Unit {
         let source = case032ReadUtf8("tests/TestMain.cj")
         let plusSource = case032ReadUtf8("tests-plus/TestMain.cj")
@@ -68,12 +89,14 @@ public class CangjieHumanEvalCase032VerifierTest {
         @Expect(source.contains("expectFloat64(find_zero"), false)
         @Expect(source.contains("let original = listOfInt64(values)"), true)
         @Expect(source.contains("let candidateInput = listOfInt64(values)"), true)
+        @Expect(source.contains("Float64(coefficients[i]) * power"), true)
         @Expect(source.contains("if (!(residual < 0.0001))"), true)
+        @Expect(plusSource.contains("Float64(coefficients[j]) * power"), true)
         @Expect(plusSource.contains("let residual = abs(plusPolynomialValue(original, actual))"), true)
-        @Expect(plusSource.contains("if (!(residual < 0.0001))"), true)
-        @Expect(plusSource.contains("plusExpectFloat(actual, expected"), false)
-        @Expect(metadata.contains("abs(poly(coeffs, candidateResult)) < 1e-4 property"), true)
-        @Expect(translation.contains("not compared with the canonical solution's selected root"), true)
+        @Expect(plusSource.contains("if (residual < 0.0001) { return }"), true)
+        @Expect(plusSource.contains("plusExpectFloat(actual, expected, atol, label)"), true)
+        @Expect(metadata.contains("canonical allclose only as a Plus fallback"), true)
+        @Expect(translation.contains("alternate roots that satisfy the residual remain accepted"), true)
         @Expect(translation.contains("abs(poly(originalCoefficients, candidateResult)) < 0.0001"), true)
     }
 }

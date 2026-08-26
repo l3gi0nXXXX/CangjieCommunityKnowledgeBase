@@ -12,7 +12,7 @@
   "returnType": "Float64",
   "callCount": 100,
   "sourceLicense": "MIT",
-  "testStrategy": "official recorder expands the 100 deterministic coefficient inputs; Cangjie assertions preserve the official abs(poly(coeffs, candidateResult)) < 1e-4 property instead of canonical root equality",
+  "testStrategy": "official recorder expands the 100 deterministic coefficient inputs; Cangjie assertions accept abs(poly(coeffs, candidateResult)) < 1e-4, with canonical allclose only as a Plus fallback for cross-language floating-point projection",
   "staticLanguageAdaptations": [
     "Python deepcopy is represented by separate original and candidate ArrayList values so candidate input mutation cannot alter the verifier oracle"
   ]
