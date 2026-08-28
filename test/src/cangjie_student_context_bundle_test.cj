@@ -91,6 +91,101 @@ public class CangjieStudentContextBundleTest {
         @Expect(context.diagnostic, "frozen_knowledge_reference_invalid")
     }
 
+    // S3-UT-01 / S3-POS-01 / E2E-03
+    @TestCase
+    public func derivedFrozenReferenceIsCanonicalImmutableAndImporterVerified(): Unit {
+        let fixture=s3DerivedReferenceFixture("derived-reference-positive")
+        let first=ckbWriteDerivedFrozenKnowledgeReference(fixture.context.store,fixture.options)
+        @Expect(first.ok,true);@Expect(first.diagnostic,"ok")
+        @Expect(first.knowledgeCandidateHash,fixture.candidateHash)
+        let disk=String.fromUtf8(File.readFrom(Path(fixture.options.outputPath)))
+        @Expect(disk,first.referenceJson+"\n")
+        @Expect(JsonValue.fromStr(first.referenceJson).asObject().getFields().size,6)
+        @Expect(first.referenceJson.contains("\"assetLineage\":\"humaneval_164_derived\""),true)
+        @Expect(validateFrozenStudentKnowledgeReference(fixture.context.allowed.toString(),
+            first.referenceJson,fixture.context.manifest.toString(),fixture.context.store),"ok")
+        let replay=ckbWriteDerivedFrozenKnowledgeReference(fixture.context.store,fixture.options)
+        @Expect(replay.ok,true);@Expect(replay.referenceHash,first.referenceHash)
+        @Expect(runFrozenKnowledgeReferenceWriteCli(s3DerivedReferenceCliArgs(fixture,true)),0)
+    }
+
+    // S3-BND-01
+    @TestCase
+    public func derivedFrozenReferencePreservesUnicodeAndRejectsInvalidUtf8AndMultipleAtoms(): Unit {
+        let fixture=s3DerivedReferenceFixture("derived-reference-boundary")
+        let valid=ckbWriteDerivedFrozenKnowledgeReference(fixture.context.store,fixture.options)
+        @Expect(valid.ok,true)
+        @Expect(String.fromUtf8(File.readFrom(Path(fixture.options.selectedAtomsPath))).contains("中文😀"),true)
+
+        let invalid=s3DerivedReferenceFixture("derived-reference-invalid-utf8")
+        File.writeTo(Path(invalid.options.selectionProofPath),[UInt8(255),UInt8(254)])
+        @Expect(ckbWriteDerivedFrozenKnowledgeReference(invalid.context.store,invalid.options).diagnostic,
+            "invalid_response_encoding")
+        @Expect(exists(Path(invalid.options.outputPath)),false)
+
+        let multiple=s3DerivedReferenceFixture("derived-reference-multiple")
+        let selected=String.fromUtf8(File.readFrom(Path(multiple.options.selectedAtomsPath)))
+        File.writeTo(Path(multiple.options.selectedAtomsPath),(selected+selected).toArray())
+        @Expect(ckbWriteDerivedFrozenKnowledgeReference(multiple.context.store,multiple.options).diagnostic,
+            "selected_atoms_count_invalid")
+        @Expect(exists(Path(multiple.options.outputPath)),false)
+    }
+
+    // S3-NEG-01
+    @TestCase
+    public func derivedFrozenReferenceFailsClosedOnEvidenceStoreAndOutputTamper(): Unit {
+        let proof=s3DerivedReferenceFixture("derived-reference-proof-tamper")
+        let proofText=String.fromUtf8(File.readFrom(Path(proof.options.selectionProofPath)))
+        File.writeTo(Path(proof.options.selectionProofPath),proofText.replace("\"selected\":1","\"selected\":2").toArray())
+        @Expect(ckbWriteDerivedFrozenKnowledgeReference(proof.context.store,proof.options).diagnostic,
+            "selected_atoms_proof_invalid")
+        @Expect(exists(Path(proof.options.outputPath)),false)
+
+        let manifest=s3DerivedReferenceFixture("derived-reference-manifest-tamper")
+        let manifestText=String.fromUtf8(File.readFrom(Path(manifest.options.frozenManifestPath)))
+        File.writeTo(Path(manifest.options.frozenManifestPath),manifestText.replace("\"modelHash\":","\"extra\":true,\"modelHash\":").toArray())
+        @Expect(ckbWriteDerivedFrozenKnowledgeReference(manifest.context.store,manifest.options).diagnostic,
+            "frozen_candidate_manifest_invalid")
+        @Expect(exists(Path(manifest.options.outputPath)),false)
+
+        let pointer=s3DerivedReferenceFixture("derived-reference-pointer-tamper")
+        File.writeTo(Path(pointer.context.store.rootPath()).join("metadata/active-snapshot.manifest"),
+            "schema=ckb-active-pointer-v2\ntxId=stale\nactive=stale-version\n".toArray())
+        @Expect(ckbWriteDerivedFrozenKnowledgeReference(pointer.context.store,pointer.options).diagnostic,
+            "frozen_candidate_manifest_invalid")
+        @Expect(exists(Path(pointer.options.outputPath)),false)
+
+        let conflict=s3DerivedReferenceFixture("derived-reference-output-conflict")
+        File.writeTo(Path(conflict.options.outputPath),"owner-content\n".toArray())
+        @Expect(ckbWriteDerivedFrozenKnowledgeReference(conflict.context.store,conflict.options).diagnostic,
+            "frozen_knowledge_reference_output_conflict")
+        @Expect(String.fromUtf8(File.readFrom(Path(conflict.options.outputPath))),"owner-content\n")
+
+        let escape=s3DerivedReferenceFixture("derived-reference-path-escape")
+        escape.options.outputPath=escape.context.allowed.parent.join("escaped-reference.json").toString()
+        @Expect(ckbWriteDerivedFrozenKnowledgeReference(escape.context.store,escape.options).diagnostic,
+            "artifact_path_outside_allowed_root")
+
+        let linked=s3DerivedReferenceFixture("derived-reference-symlink")
+        let outside=linked.context.allowed.parent.join("outside-selected-atoms.jsonl")
+        File.writeTo(outside,String.fromUtf8(File.readFrom(Path(linked.options.selectedAtomsPath))).toArray())
+        @Expect(launch("/bin/rm",["-f",linked.options.selectedAtomsPath]).wait(),0)
+        @Expect(launch("/bin/ln",["-s",outside.toString(),linked.options.selectedAtomsPath]).wait(),0)
+        @Expect(ckbWriteDerivedFrozenKnowledgeReference(linked.context.store,linked.options).diagnostic,
+            "artifact_path_outside_allowed_root")
+
+        let partial=s3DerivedReferenceFixture("derived-reference-partial")
+        let built=ckbWriteDerivedFrozenKnowledgeReference(partial.context.store,partial.options)
+        @Expect(built.ok,true)
+        @Expect(launch("/bin/rm",["-f",partial.options.outputPath]).wait(),0)
+        let stage=Path("${partial.options.outputPath}.tmp-${built.referenceHash.replace("sha256:","")}")
+        File.writeTo(stage,"owner\n".toArray())
+        @Expect(ckbWriteDerivedFrozenKnowledgeReference(partial.context.store,partial.options).diagnostic,
+            "frozen_knowledge_reference_partial_publish_blocked")
+        @Expect(exists(Path(partial.options.outputPath)),false)
+        @Expect(String.fromUtf8(File.readFrom(stage)),"owner\n")
+    }
+
     // S3-POS
     @TestCase
     public func studentContextPublishIsAtomicAndIdempotent(): Unit {
@@ -467,6 +562,60 @@ private class S3ProductionContextFixture {
         this.allowed = allowed; this.candidate = candidate; this.approval = approval
         this.manifest = manifest; this.store = store
     }
+}
+
+private class S3DerivedReferenceFixture {
+    let context:S3ProductionContextFixture
+    let options:CkbFrozenKnowledgeReferenceWriteOptions
+    let candidateHash:String
+    init(context:S3ProductionContextFixture,options:CkbFrozenKnowledgeReferenceWriteOptions,
+        candidateHash:String){this.context=context;this.options=options;this.candidateHash=candidateHash}
+}
+
+private func s3DerivedReferenceFixture(name:String):S3DerivedReferenceFixture {
+    let context=s3ProductionContextFixture(name);let root=context.allowed
+    let marker="sha256:"+s3Hex(r'0')
+    let rawBundle="{\"atomId\":\"scaffold-abi-contract\",\"knowledgeFamily\":\"syntax\",\"sourceClass\":\"official\",\"citation\":\"https://docs.cangjie-lang.cn/docs/1.0.0/\",\"targetVersion\":\"cangjie-language-1.0.0\",\"candidateHash\":\"${marker}\",\"knowledgeText\":\"Inspect the public scaffold ABI before coding 中文😀.\",\"example\":\"Use declared collection properties and tagged-class fields.\",\"extractor\":{\"provider\":\"fixture\",\"model\":\"offline\",\"exitCode\":0,\"transcriptHash\":\"${benchmarkGapSha256("public-transcript")}\"},\"purificationPassed\":true,\"tests\":[{\"category\":\"positive\",\"operation\":\"arraylist_size\",\"input\":\"[1,2,3]\",\"expected\":\"3\"},{\"category\":\"negative\",\"operation\":\"contains\",\"input\":\"class\",\"needle\":\"enum\",\"expected\":\"false\"},{\"category\":\"boundary\",\"operation\":\"rune_count\",\"input\":\"中文😀\",\"expected\":\"3\"}],\"execution\":{\"total\":3,\"passed\":3,\"failed\":0,\"status\":\"passed\",\"commandEvidence\":\"public\",\"commandEvidenceHash\":\"${benchmarkGapSha256("public")}\"}}"
+    let candidateHash=cangjieKnowledgeAtomCandidateHash(rawBundle)
+    let bundle=rawBundle.replace(marker,candidateHash)
+    let input=CangjieBenchmarkGapInput();input.schemaVersion="ckb-benchmark-gap-v1";input.datasetVersion="cangjie-humaneval-164-sha256:${s3Hex(r'a')}"
+    input.teacherRunId="public-s3-run";input.evidence="public scaffold ABI evidence";input.evidenceHash=benchmarkGapSha256(input.evidence)
+    input.candidatePath="candidate-knowledge/ckb-benchmark-gap.jsonl";input.revision=1;input.attempt=1;input.failureTaxonomy="knowledge_gap"
+    input.knowledgeGapConfirmations=2;input.caseId="PUBLIC-S3";input.benchmark="public-cangjie-regression"
+    input.taskText="Implement against a public Cangjie scaffold.";input.visibleTestExcerpt="public fixture"
+    input.compilerOutput="public compiler diagnostic";input.missingKnowledge="G-ARRAYLIST"
+    input.interfaceId="KI-02";input.contentFamily="KC-02";input.updateMechanism="KU-11"
+    input.targetVersion="cangjie-language-1.0.0";input.officialCitation="https://docs.cangjie-lang.cn/docs/1.0.0/"
+    input.knowledgeAtomCandidate=true;input.knowledgeAtomTestBundle=bundle
+    input.candidateHash=canonicalBenchmarkGapCandidateHash(input)
+    let selected="{\"schemaVersion\":\"${input.schemaVersion}\",\"datasetVersion\":\"${input.datasetVersion}\",\"teacherRunId\":\"${input.teacherRunId}\",\"evidenceHash\":\"${input.evidenceHash}\",\"evidence\":\"${input.evidence}\",\"candidateHash\":\"${input.candidateHash}\",\"candidatePath\":\"${input.candidatePath}\",\"revision\":1,\"attempt\":1,\"failureTaxonomy\":\"knowledge_gap\",\"knowledgeGapConfirmations\":2,\"caseId\":\"PUBLIC-S3\",\"benchmark\":\"public-cangjie-regression\",\"taskText\":\"Implement against a public Cangjie scaffold.\",\"visibleTestExcerpt\":\"public fixture\",\"compilerOutput\":\"public compiler diagnostic\",\"missingKnowledge\":\"G-ARRAYLIST\",\"interfaceId\":\"KI-02\",\"contentFamily\":\"KC-02\",\"updateMechanism\":\"KU-11\",\"targetVersion\":\"cangjie-language-1.0.0\",\"officialCitation\":\"https://docs.cangjie-lang.cn/docs/1.0.0/\",\"knowledgeAtomTestBundle\":${bundle},\"knowledgeAtomCandidate\":true}\n"
+    let selectedPath=root.join("selected-atoms.jsonl");File.writeTo(selectedPath,selected.toArray())
+    let proofBody="{\"schemaVersion\":\"ckb-atom-selection-proof-v2\",\"inputRows\":1,\"selected\":1,\"manifestHash\":\"${benchmarkGapSha256("manifest")}\",\"aggregateHash\":\"${benchmarkGapSha256(selected)}\",\"selectionSetHash\":\"${benchmarkGapSha256("selection-set")}\",\"schemaMigrations\":[]"
+    let proof=proofBody+",\"evidenceHash\":\"${benchmarkGapSha256(proofBody+"}")}\"}"
+    let proofPath=root.join("selection-proof.json");File.writeTo(proofPath,proof.toArray())
+    let evidence="scaffold-abi-contract|${candidateHash}|${benchmarkGapSha256(bundle)}"
+    let atomBody="{\"ok\":true,\"diagnostic\":\"validated\",\"bundleCount\":1,\"testCount\":3,\"passed\":3,\"failed\":0,\"selectedAtomsHash\":\"${benchmarkGapSha256(selected)}\",\"bundleEvidenceHash\":\"${benchmarkGapSha256("${evidence.toArray().size}:${evidence}")}\""
+    let atomSummary=atomBody+",\"evidenceHash\":\"${benchmarkGapSha256(atomBody+"}")}\"}\n"
+    let atomPath=root.join("atom-test-summary.json");File.writeTo(atomPath,atomSummary.toArray())
+    let original=String.fromUtf8(File.readFrom(context.manifest));let object=JsonValue.fromStr(original).asObject()
+    let oldHash=object.get("atomTestArtifactHash").getOrThrow().asString().getValue()
+    let updated=original.replace("\"atomTestArtifactHash\":\"${oldHash}\"","\"atomTestArtifactHash\":\"${benchmarkGapSha256(atomSummary)}\"")
+    let parts=updated.split(",\"evidenceHash\":");let body=parts[0]
+    let resealed=body+",\"evidenceHash\":\"${benchmarkGapSha256(body+"}")}\"}"
+    File.writeTo(context.manifest,resealed.toArray())
+    let options=CkbFrozenKnowledgeReferenceWriteOptions();options.allowedRoot=root.toString()
+    options.selectedAtomsPath=selectedPath.toString();options.selectionProofPath=proofPath.toString()
+    options.atomTestSummaryPath=atomPath.toString();options.frozenManifestPath=context.manifest.toString()
+    options.outputPath=root.join("derived-reference.json").toString()
+    S3DerivedReferenceFixture(context,options,candidateHash)
+}
+
+private func s3DerivedReferenceCliArgs(fixture:S3DerivedReferenceFixture,json:Bool):Array<String>{
+    let values=ArrayList<String>();for(value in ["cangjie-frozen-knowledge-reference-write","--allowed-root",
+        fixture.options.allowedRoot,"--selected-atoms",fixture.options.selectedAtomsPath,"--selection-proof",
+        fixture.options.selectionProofPath,"--atom-test-summary",fixture.options.atomTestSummaryPath,
+        "--frozen-candidate-manifest",fixture.options.frozenManifestPath,"--store",fixture.context.store.rootPath(),
+        "--output",fixture.options.outputPath]){values.add(value)};if(json){values.add("--json")};values.toArray()
 }
 
 public class S5SplitLeakStudentContextFixture {

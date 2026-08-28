@@ -41,6 +41,17 @@ private class CkbContextOperation {
     var role="";var assetId="";var operation="";var expectedOldHash="";var newHash="";init(){}
 }
 
+public class CkbFrozenKnowledgeReferenceWriteOptions {
+    public var allowedRoot="";public var selectedAtomsPath="";public var selectionProofPath=""
+    public var atomTestSummaryPath="";public var frozenManifestPath="";public var outputPath=""
+    public init(){}
+}
+public class CkbFrozenKnowledgeReferenceWriteResult {
+    public var ok=false;public var diagnostic="frozen_knowledge_reference_not_written"
+    public var referenceJson="";public var referenceHash="";public var knowledgeCandidateHash=""
+    public init(){}
+}
+
 private func parseTeacherContextCandidateSetV1ReadOnly(path:String):CkbTeacherContextCandidateSetV1ReadOnly {
     let out=CkbTeacherContextCandidateSetV1ReadOnly();let raw=ckbContextRead(Path(path));if(raw[1]!="ok"){out.diagnostic="candidate_set_schema_invalid";return out}
     try{
@@ -347,6 +358,88 @@ private func ckbContextOperations(lane:TeacherContextLaneV2,role:String):(HashMa
         if(lane.eligible&&out.isEmpty()||!lane.eligible&&!out.isEmpty()){return(out,"candidate_operation_invalid")};(out,"ok")
     }catch(_:Exception){(out,"candidate_operation_invalid")}
 }
+public func ckbWriteDerivedFrozenKnowledgeReference(store:FileKnowledgeStore,
+    options:CkbFrozenKnowledgeReferenceWriteOptions):CkbFrozenKnowledgeReferenceWriteResult {
+    let out=CkbFrozenKnowledgeReferenceWriteResult()
+    for(path in [options.selectedAtomsPath,options.selectionProofPath,options.atomTestSummaryPath,
+        options.frozenManifestPath,store.rootPath(),options.outputPath]){
+        if(ckbContextAllowedPath(options.allowedRoot,path)!="ok"){
+            out.diagnostic="artifact_path_outside_allowed_root";return out
+        }
+    }
+    let selectedDisk=ckbContextRead(Path(options.selectedAtomsPath));let proofDisk=ckbContextRead(Path(options.selectionProofPath))
+    let atomDisk=ckbContextRead(Path(options.atomTestSummaryPath));let manifestDisk=ckbContextRead(Path(options.frozenManifestPath))
+    for(read in [selectedDisk,proofDisk,atomDisk,manifestDisk]){if(read[1]!="ok"){out.diagnostic=read[1];return out}}
+    try {
+        let selectedRaw=selectedDisk[0];let lines=ArrayList<String>()
+        for(line in selectedRaw.split("\n")){if(line.trimAscii()!=""){lines.add(line.trimAscii())}}
+        if(lines.size!=1||selectedRaw!=lines[0]+"\n"){out.diagnostic="selected_atoms_count_invalid";return out}
+        let parsed=parseBenchmarkGapInputsJsonl(selectedRaw)
+        if(!parsed.ok||parsed.inputs.size!=1){out.diagnostic="selected_atoms_invalid";return out}
+        let selected=parsed.inputs[0];let exactBundle=ckbMcpJsonObjectField(lines[0],"knowledgeAtomTestBundle")
+        if(!selected.knowledgeAtomCandidate||exactBundle==""){out.diagnostic="selected_atoms_invalid";return out}
+        selected.knowledgeAtomTestBundle=exactBundle
+        if(selected.candidateHash!=canonicalBenchmarkGapCandidateHash(selected)){
+            out.diagnostic="selected_atoms_invalid";return out
+        }
+        let curated=curateBenchmarkGapRecords(parsed.inputs)
+        if(!curated.ok||curated.records.size!=1){out.diagnostic="selected_atoms_invalid";return out}
+        let atom=validateKnowledgeAtomTestBundle(exactBundle)
+        if(!atom.ok){out.diagnostic=atom.diagnostic;return out}
+        let bundleObject=JsonValue.fromStr(exactBundle).asObject()
+        let candidateHash=ckbContextString(bundleObject,"candidateHash")
+        if(candidateHash!=cangjieKnowledgeAtomCandidateHash(exactBundle)){
+            out.diagnostic="atom_candidate_hash_mismatch";return out
+        }
+        let proof=JsonValue.fromStr(proofDisk[0].trimAscii()).asObject()
+        let migrations=proof.get("schemaMigrations").getOrThrow().toString()
+        let proofBody="{\"schemaVersion\":\"ckb-atom-selection-proof-v2\",\"inputRows\":${ckbContextInt(proof,"inputRows")},\"selected\":${ckbContextInt(proof,"selected")},\"manifestHash\":\"${ckbContextString(proof,"manifestHash")}\",\"aggregateHash\":\"${ckbContextString(proof,"aggregateHash")}\",\"selectionSetHash\":\"${ckbContextString(proof,"selectionSetHash")}\",\"schemaMigrations\":${migrations}"
+        if(proof.getFields().size!=8||ckbContextInt(proof,"inputRows")<1||ckbContextInt(proof,"selected")!=1||
+            !ckbContextHash(ckbContextString(proof,"manifestHash"))||!ckbContextHash(ckbContextString(proof,"selectionSetHash"))||
+            ckbContextString(proof,"aggregateHash")!=benchmarkGapSha256(selectedRaw)||
+            ckbContextString(proof,"evidenceHash")!=benchmarkGapSha256(proofBody+"}")||
+            proofDisk[0].trimAscii()!=proofBody+",\"evidenceHash\":\"${ckbContextString(proof,"evidenceHash")}\"}"){
+            out.diagnostic="selected_atoms_proof_invalid";return out
+        }
+        let atomSummary=JsonValue.fromStr(atomDisk[0].trimAscii()).asObject()
+        let bundleEvidence="${atom.atomId}|${candidateHash}|${benchmarkGapSha256(exactBundle.trimAscii())}"
+        let expectedBundleEvidenceHash=benchmarkGapSha256("${bundleEvidence.toArray().size}:${bundleEvidence}")
+        let atomBody="{\"ok\":true,\"diagnostic\":\"validated\",\"bundleCount\":1,\"testCount\":${ckbContextInt(atomSummary,"testCount")},\"passed\":${ckbContextInt(atomSummary,"passed")},\"failed\":0,\"selectedAtomsHash\":\"${benchmarkGapSha256(selectedRaw)}\",\"bundleEvidenceHash\":\"${expectedBundleEvidenceHash}\""
+        if(atomSummary.getFields().size!=9||!ckbContextBool(atomSummary,"ok")||
+            ckbContextString(atomSummary,"diagnostic")!="validated"||ckbContextInt(atomSummary,"bundleCount")!=1||
+            ckbContextInt(atomSummary,"testCount")<=0||ckbContextInt(atomSummary,"passed")!=ckbContextInt(atomSummary,"testCount")||
+            ckbContextInt(atomSummary,"failed")!=0||ckbContextString(atomSummary,"evidenceHash")!=benchmarkGapSha256(atomBody+"}")||
+            atomDisk[0]!=atomBody+",\"evidenceHash\":\"${ckbContextString(atomSummary,"evidenceHash")}\"}\n"){
+            out.diagnostic="atom_test_summary_invalid";return out
+        }
+        let manifestRaw=manifestDisk[0].trimAscii()
+        if(manifestDisk[0]!=manifestRaw||ckbFrozenCandidateManifestDiagnostic(store,manifestRaw)!="ok"){
+            out.diagnostic="frozen_candidate_manifest_invalid";return out
+        }
+        let manifest=JsonValue.fromStr(manifestRaw).asObject();let snapshot=store.loadActiveSnapshot()
+        let version=ckbContextString(manifest,"knowledgeVersion");let checksum=ckbContextString(manifest,"candidateChecksum")
+        if(!snapshot.valid||ckbCertifiedNormalizedRecordsChecksum(snapshot.normalizedRecords)!=checksum||
+            ckbContextString(manifest,"atomTestArtifactHash")!=benchmarkGapSha256(atomDisk[0])){
+            out.diagnostic="frozen_candidate_manifest_invalid";return out
+        }
+        out.referenceJson="{\"schemaVersion\":\"ckb-frozen-knowledge-reference-v1\",\"knowledgeCandidateHash\":\"${candidateHash}\",\"knowledgeVersion\":\"${ckbContextEscape(version)}\",\"frozenCandidateManifestHash\":\"${benchmarkGapSha256(manifestDisk[0])}\",\"knowledgeContentHash\":\"${checksum}\",\"assetLineage\":\"humaneval_164_derived\"}"
+        if(ckbContextKnowledgeReferenceDiagnostic(out.referenceJson,"verified",options.frozenManifestPath,
+            Some<FileKnowledgeStore>(store))!="ok"){out.diagnostic="frozen_knowledge_reference_invalid";return out}
+        let published=ckbContextPublishFrozenKnowledgeReference(options.outputPath,out.referenceJson+"\n")
+        if(published!="ok"){out.diagnostic=published;return out}
+        out.knowledgeCandidateHash=candidateHash;out.referenceHash=benchmarkGapSha256(out.referenceJson+"\n")
+        out.ok=true;out.diagnostic="ok";out
+    }catch(_:Exception){out.diagnostic="malformed_json";out}
+}
+private func ckbContextPublishFrozenKnowledgeReference(path:String,content:String):String {
+    let output=Path(path);let suffix=benchmarkGapSha256(content).replace("sha256:","");let stage=Path("${path}.tmp-${suffix}")
+    try{
+        if(exists(output)){let current=ckbContextRead(output);return if(current[1]=="ok"&&current[0]==content){"ok"}else{"frozen_knowledge_reference_output_conflict"}}
+        if(!exists(output.parent)){Directory.create(output.parent,recursive:true)}
+        if(exists(stage)){return "frozen_knowledge_reference_partial_publish_blocked"}
+        File.writeTo(stage,content.toArray());rename(stage.toString(),to:output.toString(),overwrite:false);"ok"
+    }catch(_:Exception){try{if(exists(stage)){remove(stage)}}catch(_:Exception){};"frozen_knowledge_reference_partial_publish_blocked"}
+}
 private func ckbContextKnowledgeReferenceDiagnostic(raw:String,mode:String,frozenManifestPath:String,store:Option<FileKnowledgeStore>):String {
     try{let text=raw.trimAscii();let o=JsonValue.fromStr(text).asObject();if(o.getFields().size!=6||ckbContextString(o,"schemaVersion")!="ckb-frozen-knowledge-reference-v1"){return "frozen_knowledge_reference_invalid"};for(key in ["knowledgeCandidateHash","frozenCandidateManifestHash","knowledgeContentHash"]){if(!ckbContextHash(ckbContextString(o,key))){return "frozen_knowledge_reference_invalid"}};let lineage=ckbContextString(o,"assetLineage");if(!["independent","humaneval_164_derived"].contains(lineage)||ckbContextString(o,"knowledgeVersion")==""){return "frozen_knowledge_reference_invalid"};if(text!=ckbContextRenderKnowledgeReference(o)){return "frozen_knowledge_reference_invalid"};if(mode=="verified"){let manifest=ckbContextRead(Path(frozenManifestPath));if(manifest[1]!="ok"||benchmarkGapSha256(manifest[0])!=ckbContextString(o,"frozenCandidateManifestHash")){return "frozen_knowledge_reference_invalid"};let manifestObject=JsonValue.fromStr(manifest[0].trimAscii()).asObject();if(ckbContextString(manifestObject,"knowledgeVersion")!=ckbContextString(o,"knowledgeVersion")||ckbContextString(manifestObject,"candidateChecksum")!=ckbContextString(o,"knowledgeContentHash")){return "frozen_knowledge_reference_invalid"};match(store){case Some(value)=>let snapshot=value.loadActiveSnapshot();if(ckbFrozenCandidateManifestDiagnostic(value,manifest[0].trimAscii())!="ok"||!snapshot.valid||ckbCertifiedNormalizedRecordsChecksum(snapshot.normalizedRecords)!=ckbContextString(o,"knowledgeContentHash")){return "frozen_knowledge_reference_invalid"};case None=>return "frozen_knowledge_reference_invalid"}};"ok"}catch(_:Exception){"frozen_knowledge_reference_invalid"}
 }
@@ -372,6 +465,14 @@ public func runStudentContextImportCli(args:Array<String>):Int64 {
     for(path in [candidate,approval,frozen,knowledgeStore,output]){if(ckbContextAllowedPath(allowed,path)!="ok"){ckbContextCliPrint(json,false,"artifact_path_outside_allowed_root","student context import blocked");return 1}};if(base!="none"&&ckbContextAllowedPath(allowed,base)!="ok"){ckbContextCliPrint(json,false,"artifact_path_outside_allowed_root","student context import blocked");return 1};let store=FileKnowledgeStore(knowledgeStore)
     let built=compileAndPublishStudentContextBundle(allowed,version,candidate,approval,base,frozen,store,output,scaffold)
     if(!built.ok){ckbContextCliPrint(json,false,built.diagnostic,"student context import blocked");return 1};println(if(json){"{\"ok\":true,\"compositeHash\":\"${built.compositeHash}\",\"validationLevel\":\"${if(scaffold){"scaffold_contract"}else{"student_validated"}}\"}"}else{"student context imported version=${version} validation=${if(scaffold){"scaffold_contract"}else{"student_validated"}}"});0
+}
+public func runFrozenKnowledgeReferenceWriteCli(args:Array<String>):Int64 {
+    let options=CkbFrozenKnowledgeReferenceWriteOptions();var storePath="";var command=false;var json=false;var i:Int64=0;let seen=HashSet<String>()
+    while(i<args.size){let arg=args[i];if(arg=="cangjie-frozen-knowledge-reference-write"){if(command){ckbContextCliPrint(json,false,"usage_error","frozen knowledge reference write blocked");return 2};command=true;i+=1;continue};if(arg=="--json"){if(json){ckbContextCliPrint(true,false,"usage_error","frozen knowledge reference write blocked");return 2};json=true;i+=1;continue};if(!["--allowed-root","--selected-atoms","--selection-proof","--atom-test-summary","--frozen-candidate-manifest","--store","--output"].contains(arg)||i+1>=args.size||seen.contains(arg)){ckbContextCliPrint(json,false,"usage_error","frozen knowledge reference write blocked");return 2};seen.add(arg);let value=args[i+1];if(arg=="--allowed-root"){options.allowedRoot=value}else if(arg=="--selected-atoms"){options.selectedAtomsPath=value}else if(arg=="--selection-proof"){options.selectionProofPath=value}else if(arg=="--atom-test-summary"){options.atomTestSummaryPath=value}else if(arg=="--frozen-candidate-manifest"){options.frozenManifestPath=value}else if(arg=="--store"){storePath=value}else{options.outputPath=value};i+=2}
+    if(!command||options.allowedRoot==""||options.selectedAtomsPath==""||options.selectionProofPath==""||options.atomTestSummaryPath==""||options.frozenManifestPath==""||storePath==""||options.outputPath==""){ckbContextCliPrint(json,false,"usage_error","frozen knowledge reference write blocked");return 2}
+    let result=ckbWriteDerivedFrozenKnowledgeReference(FileKnowledgeStore(storePath),options)
+    if(json){println("{\"ok\":${result.ok},\"diagnostic\":\"${ckbContextEscape(result.diagnostic)}\",\"knowledgeCandidateHash\":\"${result.knowledgeCandidateHash}\",\"referenceHash\":\"${result.referenceHash}\"}")}else{println("frozen knowledge reference write ok=${result.ok} diagnostic=${result.diagnostic} referenceHash=${result.referenceHash}")}
+    if(result.ok){0}else{1}
 }
 public func renderStudentContextImportCliDiagnostic(json:Bool,ok:Bool,diagnostic:String,message:String):String {if(json){"{\"ok\":${ok},\"diagnostic\":\"${ckbContextEscape(diagnostic)}\",\"message\":\"${ckbContextEscape(message)}\"}"}else{"${message}: ${diagnostic}"}}
 private func ckbContextCliPrint(json:Bool,ok:Bool,diagnostic:String,message:String):Unit {println(renderStudentContextImportCliDiagnostic(json,ok,diagnostic,message))}

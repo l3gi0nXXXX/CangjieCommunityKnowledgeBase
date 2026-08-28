@@ -252,6 +252,9 @@ public func ckbCliMain(args: Array<String>): Int64 {
     if (cli.command == "cangjie-student-context-import") {
         return runStudentContextImportCli(args)
     }
+    if (cli.command == "cangjie-frozen-knowledge-reference-write") {
+        return runFrozenKnowledgeReferenceWriteCli(args)
+    }
     let repro = runCkbReproMainCli(cli.command, args)
     if (repro.handled) {
         print(repro.output)

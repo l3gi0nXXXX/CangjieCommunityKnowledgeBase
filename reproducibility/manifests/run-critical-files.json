@@ -1,7 +1,7 @@
 {
   "schemaVersion": "ckb-run-critical-files-v1",
   "files": [
-    {"path":"src/main.cj","status":"present","sha256":"sha256:9937a7abc6104e6311d320fe0ed6a8f26407cfaf3c679ad5c04b3c907995ffed"},
+    {"path":"src/main.cj","status":"present","sha256":"sha256:9ee0718a1c7adce101c2c63d8f011c2f8368f29cb6bd8b6e4d60ff4c2111160c"},
     {"path":"src/cangjie_eval_abcde_runner.cj","status":"present","sha256":"sha256:15e535a851d3c79de671029241038b065871ed6e4e14a1b8a29f6db994ae356b"},
     {"path":"src/cangjie_strict_certification.cj","status":"present","sha256":"sha256:4dc016703b9506f7cedb68561128ed01ec77a0cc99180e79218bb96d645ede9c"},
     {"path":"src/cangjie_eval_knowledge_audit.cj","status":"present","sha256":"sha256:de1ed91483fdda2eade6939208098d6e89f28af4d0eac0527812748f3ad20e73"},
@@ -14,7 +14,7 @@
     {"path":"src/cangjie_humaneval_plus_authority.cj","status":"present","sha256":"sha256:e60a7ed33b26beaadbfc02c4640fca4344610a97414e558c70fbceb14d1fb3f7"},
     {"path":"src/cangjie_humaneval_strict_score.cj","status":"present","sha256":"sha256:3690b6dd545ed66840eb61ba15ed916bd0fc0a893efd7ccca2c34717291c2bb9"},
     {"path":"src/cangjie_student_agents_rules.cj","status":"present","sha256":"sha256:3fcbd47b6a8b07773080b082ea05cc5512eb07f49b7d5dfe23c40ab0d4c72256"},
-    {"path":"src/cangjie_student_context_bundle.cj","status":"present","sha256":"sha256:5170787f6745cdf4b6e53c5932d3a48b84ac04b0442f7d93bff84774717f364f"},
+    {"path":"src/cangjie_student_context_bundle.cj","status":"present","sha256":"sha256:0aabbae2d075fb88771636eec10520b91a3691303c76c771e5c3a1206587818d"},
     {"path":"src/cangjie_student_skill_gate.cj","status":"present","sha256":"sha256:df4d7194996433cb0844e129b18709ccedad8ccc0d93dd14d6e727aa4c5be2a6"},
     {"path":"src/cangjie_teacher_context_candidate_v2.cj","status":"present","sha256":"sha256:2692e537ab1738570581f08b6c1e01bb39d4934dc91a3cd7a8bff22512087a27"},
     {"path":"src/cangjie_first_initialization.cj","status":"present","sha256":"sha256:12090d66f4098539635984fd980a45c860f03281362b3fdfb314a68eb48d711d"},
