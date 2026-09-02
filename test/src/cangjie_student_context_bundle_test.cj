@@ -219,6 +219,47 @@ public class CangjieStudentContextBundleTest {
         @Expect(String.fromUtf8(File.readFrom(preexistingStage.join("owner.txt"))), "keep\n")
     }
 
+    // RBM-C-P01: a rules lane above the former limit imports, publishes and reopens canonically.
+    @TestCase
+    public func expandedStudentRulesPublishAndReadBackCanonically(): Unit {
+        let fixture = s3ProductionContextFixture("expanded-rules-publish")
+        s3ExpandGenesisRules(fixture, 12557)
+        let output = fixture.allowed.join("expanded-rules-context")
+        let published = compileAndPublishStudentContextBundle(fixture.allowed.toString(),
+            "expanded-rules-v1", fixture.candidate.toString(), fixture.approval.toString(), "none",
+            fixture.manifest.toString(), fixture.store, output.toString(), true)
+        @Expect(published.ok, true)
+        @Expect(published.agentsMarkdown.toArray().size, 12557)
+        let reopened = readStudentContextBundleV2(output.toString())
+        @Expect(reopened.ok, true)
+        @Expect(reopened.rulesBytes, 12557)
+        @Expect(reopened.rulesHash, benchmarkGapSha256(published.agentsMarkdown))
+        @Expect(reopened.agentsMarkdown, published.agentsMarkdown)
+        @Expect(reopened.rulesJson, published.rulesJson)
+
+        let assets = CkbS4FrozenContextAssets()
+        assets.protocol = "One completion only.\n"; assets.rules = reopened.agentsMarkdown
+        assets.skill = reopened.skillsPrompt; assets.knowledge = "Verified frozen knowledge."
+        assets.providerCapability = "Verified provider capability."
+        assets.publicTask = "Implement a public synthetic task."
+        assets.compositeHash = reopened.compositeHash; assets.combinationAuditHash = reopened.combinationAuditHash
+        let finalPrompt = renderCkbS4CompletionPrompt(assets)
+        let capabilityEvidence = "{\"schemaVersion\":\"ckb-provider-prompt-capability-v1\"," +
+            "\"modelVersion\":\"synthetic-model\",\"maxContextTokens\":200000," +
+            "\"reservedOutputTokens\":1000,\"sourceEvidence\":\"synthetic-test\"," +
+            "\"observedAtUtc\":\"2026-09-01T00:00:00Z\"}"
+        let capability = capabilityEvidence.replace("}",
+            ",\"capabilityHash\":\"${benchmarkGapSha256(capabilityEvidence)}\"}")
+        let capabilityPath = fixture.allowed.join("provider-prompt-capability.json")
+        File.writeTo(capabilityPath, (capability + "\n").toArray())
+        let promptOptions = CkbAbcdeRunnerOptions()
+        promptOptions.providerPromptCapabilityPath = capabilityPath.toString()
+        promptOptions.providerPromptCapabilityHash = benchmarkGapSha256(capability + "\n")
+        promptOptions.expectedModelVersion = "synthetic-model"
+        promptOptions.effectivePromptByteBudget = 188416
+        @Expect(ckbAbcdeProviderPromptGate(promptOptions, finalPrompt), "ok")
+    }
+
     // S3-MERGE-01: production base-v2 merge keeps inactive lanes and applies replace+add atomically.
     @TestCase
     public func studentContextBaseV2InactiveReplaceAddMultiAssetMerge(): Unit {
@@ -488,8 +529,10 @@ public class CangjieStudentContextBundleTest {
         @Expect(compileStudentRulesBundle("rules-8192", exactRows).contentBytes, 8192)
         let over = s3RuleWithRenderedBytes(8193)
         let overRows = ArrayList<CkbStudentRuleCandidate>(); overRows.add(over)
-        @Expect(compileStudentRulesBundle("rules-8193", overRows).diagnostic,
-            "rules_bundle_too_large")
+        @Expect(compileStudentRulesBundle("rules-8193", overRows).contentBytes, 8193)
+        let expanded = s3RuleWithRenderedBytes(12557)
+        let expandedRows = ArrayList<CkbStudentRuleCandidate>(); expandedRows.add(expanded)
+        @Expect(compileStudentRulesBundle("rules-12557", expandedRows).contentBytes, 12557)
 
         let invalidRoot = s3UniqueRoot("invalid-utf8")
         s3CopyTree(s3FixtureRoot().join("candidate-set-v2/rules/prefer-rune-safe-text-boundaries"), invalidRoot)
@@ -1028,9 +1071,52 @@ private func s3WriteDerivedRuleCandidate(source: Path, target: Path, id: String,
     rule.verified = true; rule.diagnostic = "ok"; rule
 }
 
+private func s3ExpandGenesisRules(fixture: S3ProductionContextFixture, targetBytes: Int64): Unit {
+    let root = fixture.candidate.join("rules/prefer-rune-safe-text-boundaries")
+    let rule = parseStudentRuleCandidateDirectory(root.toString())
+    if (!rule.verified) { throw IllegalStateException("expanded_rule_source_invalid") }
+    rule.body = ""
+    let fixedMarkdown = "# Student Rules\n\n## ${rule.title}\n\n\n\nTrigger: ${rule.trigger}\nScope: ${rule.scope}\n"
+    if (Int64(fixedMarkdown.toArray().size) > targetBytes) {
+        throw IllegalStateException("expanded_rule_target_too_small")
+    }
+    var body = ""
+    for (_ in 0..(targetBytes - Int64(fixedMarkdown.toArray().size))) { body += "x" }
+    rule.body = body
+    rule.canonicalHash = ckbStudentRuleCandidateCanonicalHash(rule)
+    rule.agentsMarkdown = "# Student Rules\n\n## ${rule.title}\n\n${rule.body}\n\nTrigger: ${rule.trigger}\nScope: ${rule.scope}\n"
+    File.writeTo(root.join("AGENTS.md"), rule.agentsMarkdown.toArray())
+    File.writeTo(root.join("candidate-manifest.json"),
+        (renderStudentRuleCandidateManifest(rule) + "\n").toArray())
+    File.writeTo(root.join("operation.json"),
+        ("{\"schemaVersion\":\"teacher-context-asset-operation-v1\",\"assetRole\":\"rules\"," +
+        "\"assetId\":\"${rule.ruleId}\",\"operation\":\"add\",\"expectedOldHash\":\"\"," +
+        "\"newHash\":\"${rule.canonicalHash}\"}\n").toArray())
+    let verified = parseStudentRuleCandidateDirectory(root.toString())
+    if (!verified.verified || Int64(verified.agentsMarkdown.toArray().size) != targetBytes) {
+        throw IllegalStateException("expanded_rule_candidate_invalid")
+    }
+    let rules = ArrayList<CkbStudentRuleCandidate>(); rules.add(verified)
+    let compiled = compileStudentRulesBundle("expanded-rules", rules)
+    if (!compiled.ok || compiled.contentBytes != targetBytes) {
+        throw IllegalStateException("expanded_rule_bundle_invalid")
+    }
+    let manifest = JsonValue.fromStr(String.fromUtf8(File.readFrom(
+        fixture.candidate.join("candidate-set-manifest.json"))).trimAscii()).asObject()
+    let reference = JsonValue.fromStr(String.fromUtf8(File.readFrom(
+        fixture.candidate.join("knowledge/knowledge-candidate-reference.json"))).trimAscii()).asObject()
+    let rulesHash = benchmarkGapSha256(compiled.agentsMarkdown)
+    let combination = benchmarkGapSha256(s3Part(rulesHash) +
+        s3Part(s3ContextBundleJsonString(manifest, "skillsHash")) +
+        s3Part(s3ContextBundleJsonString(reference, "knowledgeContentHash")) +
+        s3Part(s3ContextBundleJsonString(manifest, "sourceClosureHash")) +
+        s3Part(s3ContextBundleJsonString(manifest, "protectedClosureHash")))
+    s3ResealGenesisCandidateOuter(fixture, combination: combination, rulesHash: rulesHash)
+}
+
 private func s3ResealGenesisCandidateOuter(fixture: S3ProductionContextFixture,
     combination!: String = "", skillsHash!: String = "",
-    validationLevel!: String = "scaffold_contract"): Unit {
+    validationLevel!: String = "scaffold_contract", rulesHash!: String = ""): Unit {
     let manifestPath = fixture.candidate.join("candidate-set-manifest.json")
     let object = JsonValue.fromStr(String.fromUtf8(File.readFrom(manifestPath)).trimAscii()).asObject()
     let rulesTree = benchmarkGapSha256(s3TreeInventory(fixture.candidate.join("rules")))
@@ -1041,22 +1127,27 @@ private func s3ResealGenesisCandidateOuter(fixture: S3ProductionContextFixture,
         else { combination }
     let evidence = s3CandidateManifestEvidence(object, s3ContextBundleJsonString(object, "knowledgeCandidateHash"),
         knowledgeTree, inventory, selectedCombination, rulesTree, skillsTree, skillsHash: skillsHash,
-        validationLevel: validationLevel)
+        validationLevel: validationLevel, rulesHash: rulesHash)
     let candidateHash = benchmarkGapSha256(evidence)
     File.writeTo(manifestPath,
         (evidence.replace("}", ",\"candidateSetHash\":\"${candidateHash}\"}") + "\n").toArray())
     let selectedSkillsHash = if (skillsHash == "") { s3ContextBundleJsonString(object, "skillsHash") }
         else { skillsHash }
-    let approvalJson = "{\"schemaVersion\":\"teacher-student-context-approval-v2\",\"candidateSetHash\":\"${candidateHash}\",\"assetInventoryHash\":\"${inventory}\",\"rulesHash\":\"${s3ContextBundleJsonString(object, "rulesHash")}\",\"rulesTreeHash\":\"${rulesTree}\",\"skillsHash\":\"${selectedSkillsHash}\",\"skillsTreeHash\":\"${skillsTree}\",\"knowledgeCandidateHash\":\"${s3ContextBundleJsonString(object, "knowledgeCandidateHash")}\",\"knowledgeTreeHash\":\"${knowledgeTree}\",\"sourceClosureHash\":\"${s3ContextBundleJsonString(object, "sourceClosureHash")}\",\"protectedClosureHash\":\"${s3ContextBundleJsonString(object, "protectedClosureHash")}\",\"combinationAuditHash\":\"${selectedCombination}\",\"decision\":\"approve\",\"reviewer\":\"synthetic-reviewer\",\"reason\":\"Synthetic full-tree scaffold contract approved.\",\"approvedAtUtc\":\"2026-08-07T00:00:00Z\"}\n"
+    let selectedRulesHash = if (rulesHash == "") { s3ContextBundleJsonString(object, "rulesHash") }
+        else { rulesHash }
+    let approvalJson = "{\"schemaVersion\":\"teacher-student-context-approval-v2\",\"candidateSetHash\":\"${candidateHash}\",\"assetInventoryHash\":\"${inventory}\",\"rulesHash\":\"${selectedRulesHash}\",\"rulesTreeHash\":\"${rulesTree}\",\"skillsHash\":\"${selectedSkillsHash}\",\"skillsTreeHash\":\"${skillsTree}\",\"knowledgeCandidateHash\":\"${s3ContextBundleJsonString(object, "knowledgeCandidateHash")}\",\"knowledgeTreeHash\":\"${knowledgeTree}\",\"sourceClosureHash\":\"${s3ContextBundleJsonString(object, "sourceClosureHash")}\",\"protectedClosureHash\":\"${s3ContextBundleJsonString(object, "protectedClosureHash")}\",\"combinationAuditHash\":\"${selectedCombination}\",\"decision\":\"approve\",\"reviewer\":\"synthetic-reviewer\",\"reason\":\"Synthetic full-tree scaffold contract approved.\",\"approvedAtUtc\":\"2026-08-07T00:00:00Z\"}\n"
     File.writeTo(fixture.approval, approvalJson.toArray())
 }
 
 private func s3CandidateManifestEvidence(o: JsonObject, knowledgeHash: String, knowledgeTreeHash: String,
     inventoryHash: String, combination: String, rulesTreeHash: String, skillsTreeHash: String,
-    skillsHash!: String = "", validationLevel!: String = "scaffold_contract"): String {
+    skillsHash!: String = "", validationLevel!: String = "scaffold_contract",
+    rulesHash!: String = ""): String {
     let selectedSkillsHash = if (skillsHash == "") { s3ContextBundleJsonString(o, "skillsHash") }
         else { skillsHash }
-    "{\"schemaVersion\":\"teacher-student-context-candidate-set-v2\",\"candidateSetId\":\"${s3ContextBundleJsonString(o, "candidateSetId")}\",\"baseCompositeHash\":\"none\",\"validationLevel\":\"${validationLevel}\",\"sourceEvidenceManifestHash\":\"${s3ContextBundleJsonString(o, "sourceEvidenceManifestHash")}\",\"classificationManifestHash\":\"\",\"sourceClosureHash\":\"${s3ContextBundleJsonString(o, "sourceClosureHash")}\",\"protectedClosureHash\":\"${s3ContextBundleJsonString(o, "protectedClosureHash")}\",\"rulesEligible\":true,\"rulesHash\":\"${s3ContextBundleJsonString(o, "rulesHash")}\",\"rulesTreeHash\":\"${rulesTreeHash}\",\"rulesCount\":1,\"rulesAssetLineage\":\"independent\",\"skillsEligible\":true,\"skillsHash\":\"${selectedSkillsHash}\",\"skillsTreeHash\":\"${skillsTreeHash}\",\"skillsCount\":1,\"skillAssetLineage\":\"independent\",\"knowledgeEligible\":true,\"knowledgeCandidateHash\":\"${knowledgeHash}\",\"knowledgeTreeHash\":\"${knowledgeTreeHash}\",\"knowledgeTargetVersion\":\"${s3ContextBundleJsonString(o, "knowledgeTargetVersion")}\",\"knowledgeAssetLineage\":\"independent\",\"assetInventoryHash\":\"${inventoryHash}\",\"combinationAuditHash\":\"${combination}\"}"
+    let selectedRulesHash = if (rulesHash == "") { s3ContextBundleJsonString(o, "rulesHash") }
+        else { rulesHash }
+    "{\"schemaVersion\":\"teacher-student-context-candidate-set-v2\",\"candidateSetId\":\"${s3ContextBundleJsonString(o, "candidateSetId")}\",\"baseCompositeHash\":\"none\",\"validationLevel\":\"${validationLevel}\",\"sourceEvidenceManifestHash\":\"${s3ContextBundleJsonString(o, "sourceEvidenceManifestHash")}\",\"classificationManifestHash\":\"\",\"sourceClosureHash\":\"${s3ContextBundleJsonString(o, "sourceClosureHash")}\",\"protectedClosureHash\":\"${s3ContextBundleJsonString(o, "protectedClosureHash")}\",\"rulesEligible\":true,\"rulesHash\":\"${selectedRulesHash}\",\"rulesTreeHash\":\"${rulesTreeHash}\",\"rulesCount\":1,\"rulesAssetLineage\":\"independent\",\"skillsEligible\":true,\"skillsHash\":\"${selectedSkillsHash}\",\"skillsTreeHash\":\"${skillsTreeHash}\",\"skillsCount\":1,\"skillAssetLineage\":\"independent\",\"knowledgeEligible\":true,\"knowledgeCandidateHash\":\"${knowledgeHash}\",\"knowledgeTreeHash\":\"${knowledgeTreeHash}\",\"knowledgeTargetVersion\":\"${s3ContextBundleJsonString(o, "knowledgeTargetVersion")}\",\"knowledgeAssetLineage\":\"independent\",\"assetInventoryHash\":\"${inventoryHash}\",\"combinationAuditHash\":\"${combination}\"}"
 }
 
 private func s3ContextBundleJsonString(o: JsonObject, key: String): String { o.get(key).getOrThrow().asString().getValue() }

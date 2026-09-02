@@ -176,7 +176,7 @@ private func ckbCompileStudentContextBundleV2(allowedRoot:String,version:String,
         let skills=if(candidate.skills.eligible){renderStudentVisibleSkillPrompt(skillsBuild.json)}else{baseVersion.skillsPrompt}
         if((!candidate.rules.eligible&&benchmarkGapSha256(rules)!=candidate.rules.hash)||(!candidate.skills.eligible&&benchmarkGapSha256(skills)!=candidate.skills.hash)){out.diagnostic="candidate_lane_hash_mismatch";return out}
         var knowledgeReference=if(candidate.knowledge.eligible){""}else{baseVersion.knowledgeReference};if(candidate.knowledge.eligible){for(file in candidate.knowledge.files){if(file.path=="knowledge-candidate-reference.json"){knowledgeReference=file.content}}}
-        if(rules.toArray().size>8192||skills.toArray().size>24576||candidate.rules.count>16||candidate.skills.count>16){out.diagnostic="candidate_lane_hash_mismatch";return out}
+        if(skills.toArray().size>24576||candidate.rules.count>16||candidate.skills.count>16){out.diagnostic="candidate_lane_hash_mismatch";return out}
         let referenceDiagnostic=ckbContextKnowledgeReferenceDiagnostic(knowledgeReference,"verified",frozenManifestPath,store)
         if(referenceDiagnostic!="ok"){out.diagnostic=referenceDiagnostic;return out}
         let reference=JsonValue.fromStr(knowledgeReference.trimAscii()).asObject()

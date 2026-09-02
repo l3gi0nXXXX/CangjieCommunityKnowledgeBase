@@ -271,10 +271,6 @@ public func compileStudentRulesBundle(version: String, rules: ArrayList<CkbStude
         body += "{\"schemaVersion\":\"teacher-rule-candidate-v1\",\"ruleId\":\"${ckbRuleEscape(r.ruleId)}\",\"conceptId\":\"${ckbRuleEscape(r.conceptId)}\",\"title\":\"${ckbRuleEscape(r.title)}\",\"body\":\"${ckbRuleEscape(r.body)}\",\"trigger\":\"${ckbRuleEscape(r.trigger)}\",\"scope\":\"${ckbRuleEscape(r.scope)}\",\"priority\":${r.priority},\"sourceEvidenceKind\":\"${r.sourceEvidenceKind}\",\"sourceEvidenceHash\":\"${r.sourceEvidenceHash}\",\"assetRole\":\"rules\",\"assetLineage\":\"${r.assetLineage}\",\"positiveEvidenceHash\":\"${r.positiveEvidenceHash}\",\"negativeEvidenceHash\":\"${r.negativeEvidenceHash}\",\"boundaryEvidenceHash\":\"${r.boundaryEvidenceHash}\",\"generalizationEvidenceHash\":\"${r.generalizationEvidenceHash}\",\"contentHash\":\"${benchmarkGapSha256(content)}\",\"canonicalHash\":\"${r.canonicalHash}\",\"content\":\"${ckbRuleEscape(content)}\"}"
     }
     let bytes = Int64(markdown.toArray().size);
-    if (bytes > 8192) {
-        out.diagnostic = "rules_bundle_too_large"
-        return out
-    }
     let fields = "\"schemaVersion\":\"ckb-student-rules-bundle-v1\",\"rulesVersion\":\"${ckbRuleEscape(version)}\",\"ruleCount\":${unique.size},\"contentBytes\":${bytes},\"rules\":[${body}]";
     out.canonicalHash = benchmarkGapSha256("{${fields}}")
     out.json = "{${fields},\"canonicalHash\":\"${out.canonicalHash}\"}"
