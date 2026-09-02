@@ -13,8 +13,8 @@
     {"path":"src/cangjie_humaneval_pass1_gate.cj","status":"present","sha256":"sha256:aa5cdcfe0dd13fc8a32bcdca92575c8b174aff2783334dc43533b5e6d66e6ff2"},
     {"path":"src/cangjie_humaneval_plus_authority.cj","status":"present","sha256":"sha256:e60a7ed33b26beaadbfc02c4640fca4344610a97414e558c70fbceb14d1fb3f7"},
     {"path":"src/cangjie_humaneval_strict_score.cj","status":"present","sha256":"sha256:3690b6dd545ed66840eb61ba15ed916bd0fc0a893efd7ccca2c34717291c2bb9"},
-    {"path":"src/cangjie_student_agents_rules.cj","status":"present","sha256":"sha256:3fcbd47b6a8b07773080b082ea05cc5512eb07f49b7d5dfe23c40ab0d4c72256"},
-    {"path":"src/cangjie_student_context_bundle.cj","status":"present","sha256":"sha256:0aabbae2d075fb88771636eec10520b91a3691303c76c771e5c3a1206587818d"},
+    {"path":"src/cangjie_student_agents_rules.cj","status":"present","sha256":"sha256:e5866ca8fc25436543a57fd35be95a6b4397ab1dd0b9929a76c16386241bd551"},
+    {"path":"src/cangjie_student_context_bundle.cj","status":"present","sha256":"sha256:f80563b45e16e303cb0f2e8c2c33093713ea7369ce6408cf869141981004a191"},
     {"path":"src/cangjie_student_skill_gate.cj","status":"present","sha256":"sha256:df4d7194996433cb0844e129b18709ccedad8ccc0d93dd14d6e727aa4c5be2a6"},
     {"path":"src/cangjie_teacher_context_candidate_v2.cj","status":"present","sha256":"sha256:2692e537ab1738570581f08b6c1e01bb39d4934dc91a3cd7a8bff22512087a27"},
     {"path":"src/cangjie_first_initialization.cj","status":"present","sha256":"sha256:12090d66f4098539635984fd980a45c860f03281362b3fdfb314a68eb48d711d"},
@@ -61,7 +61,7 @@
     {"path":"src/ckb_repro_documentation.cj","status":"present","sha256":"sha256:906fdf5ea7fa896fa2f61ffa0096f104ab35863f6cde5401f83d7a757cd052a6"},
     {"path":"src/ckb_portable_path_normalizer.cj","status":"present","sha256":"sha256:88742dd5cd61c7e44f21cbb7eea3089961db82665b927991cffc5a55f3267ffc"},
     {"path":"src/ckb_repro_bundle.cj","status":"present","sha256":"sha256:694c5ddb4abe4f5dd1280c19315e0b1cfbfd641e29836811af5f1b313ac49b89"},
-    {"path":"src/ckb_repro_authority_bundle.cj","status":"present","sha256":"sha256:e08f67ebecea3e7ac8748ed1185de9f3fe620c59056daf5803fdd11d7d0bc9d6"},
+    {"path":"src/ckb_repro_authority_bundle.cj","status":"present","sha256":"sha256:d508406f970ba1a59a38a3fb6dca50222db9bdbd4b44b70c6503f567bce797c1"},
     {"path":"src/ckb_repro_environment.cj","status":"present","sha256":"sha256:a239a18d4e439e44ee5847a3536940d4afaccdd06440e993078398bb2793629a"},
     {"path":"src/ckb_repro_verify.cj","status":"present","sha256":"sha256:031da085e30b7afaa2ab4a7b8d71b2faee0f9dc577b40c30833e8593a5f09eff"}
   ]

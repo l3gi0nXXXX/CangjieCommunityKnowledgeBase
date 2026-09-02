@@ -1466,7 +1466,7 @@ public func p6FrozenEnvironment(): CkbReproEnvironmentLock {
     lock.mcpTransport = "mcp_http"
     lock.sandboxCapability = "macos-sandbox-exec"
     lock.datasetVersion =
-        "cangjie-humaneval-164-sha256:72aa7564b350583eff660722aa54487334079b2c92207d3906898953f72f90f6"
+        "cangjie-humaneval-164-sha256:8be3a9eb4b5a9411f549420dbf201be35582fa5279a5710177948aa788cf2de1"
     lock.authorityDeliveryHash = p6Hash("authority-delivery")
     lock.attestationAuthorityManifestPath =
         "reproducibility/manifests/environment-attestation-authority.json"

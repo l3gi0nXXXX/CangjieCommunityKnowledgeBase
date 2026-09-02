@@ -104,7 +104,7 @@ public class CangjieHumanEvalManifestTest {
         let verifier = renderVerifierManifest(manifest)
         @Expect(validation.ok, true)
         @Expect(validation.rows.size, 164)
-        @Expect(tracked, rendered)
+        @Expect(tracked == rendered, true)
         @Expect(authority.ok, true)
         @Expect(authority.rows.size, 164)
         @Expect(compatible.cases.size, 164)

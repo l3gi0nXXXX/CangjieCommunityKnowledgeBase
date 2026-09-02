@@ -27,7 +27,7 @@ public class CkbReproManifestTest {
             portableReference[1], mode: "contract")
         @Expect(portableReferenceValidation.ok, true)
         @Expect(portableReferenceValidation.manifestHash,
-            "sha256:86ac13a68f21b7f63566bff5154e85edc14632e54d70dd4d93f0aa1bdfefbdec")
+            "sha256:cb8f8be35c821165e2fa3413f29a9acf8c80c8b24b9a11dd8057f8cd33bd1975")
         let evidence = parseCkbHistoricalReferenceEvidence(
             p0Read("../reproducibility/manifests/historical-reference-evidence.json"))
         @Expect(evidence[0].ok, true)
@@ -57,7 +57,7 @@ public class CkbReproManifestTest {
             mode: "execution")
         @Expect(execution.ok, true)
         @Expect(execution.treeHash,
-            "sha256:7b454d9e6d9311f62a63120aad76b6e1bf440861a7f9039a3d3abb17176c7fd7")
+            "sha256:0cc5e8807991eba19aa72b985c05424891c777e1edb5bae4b95c31356feccd99")
         var bundleListed = false
         var plusAuthorityListed = false
         for (file in critical[1].files) {

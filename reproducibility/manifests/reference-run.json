@@ -9,7 +9,7 @@
   "runId": "ckb-repro-student-164-recert-20260804",
   "knowledgeVersion": "ckb-first-init-1-0-0-candidate",
   "vectorProofHash": "sha256:76f6764b592d7f93fd6926824be3290ed4f0bd13dba777a866274406ede27715",
-  "datasetVersion": "cangjie-humaneval-164-sha256:72aa7564b350583eff660722aa54487334079b2c92207d3906898953f72f90f6",
+  "datasetVersion": "cangjie-humaneval-164-sha256:8be3a9eb4b5a9411f549420dbf201be35582fa5279a5710177948aa788cf2de1",
   "runnerCommit": "7d7e538fb4a36c154b6a00d7ef5561ada00207a6",
   "claudeCodeVersion": "2.1.179 (Claude Code)",
   "model": "GLM-5.2",
