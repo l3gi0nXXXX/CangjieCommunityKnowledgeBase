@@ -354,27 +354,95 @@ public func ckbAbcdeLoadFrozenS4CaseContext(groupRoot: String, compositeHash: St
     result
 }
 
-private func ckbAbcdeCompletionTerminal(raw: String): JsonObject {
-    let value = JsonValue.fromStr(raw)
-    try { return value.asObject() } catch (_: Exception) {}
-    let items = try { value.asArray().getItems() }
-        catch (_: Exception) { throw IllegalArgumentException("malformed_json") }
-    var terminal: Option<JsonObject> = None
-    for (index in 0..items.size) {
-        let item = try { items[index].asObject() }
-            catch (_: Exception) { throw IllegalArgumentException("malformed_json") }
-        if (ckbAbcdeManifestString(item, "type") != "result") { continue }
-        match (terminal) {
-            case Some(_) => throw IllegalArgumentException("malformed_json")
-            case None => ()
+private func ckbAbcdeCompletionEvents(raw: String): ArrayList<JsonObject> {
+    let events = ArrayList<JsonObject>()
+    try {
+        let value = JsonValue.fromStr(raw)
+        try { events.add(value.asObject());return events } catch (_: Exception) {}
+        for (item in value.asArray().getItems()) { events.add(item.asObject()) }
+        if (events.size == 0) { throw IllegalArgumentException("malformed_json") }
+        return events
+    } catch (_: Exception) {}
+    for (line in raw.split("\n")) {
+        if (line.trimAscii() == "") { continue }
+        events.add(JsonValue.fromStr(line).asObject())
+    }
+    if (events.size == 0) { throw IllegalArgumentException("malformed_json") }
+    events
+}
+
+private class CkbAbcdeNativeStructuredResult {
+    public var ok: Bool = false
+    public var present: Bool = false
+    public var solutionCj: String = ""
+    public var diagnostic: String = "malformed_json"
+    public init() {}
+}
+
+// Claude Code implements --json-schema with its built-in StructuredOutput carrier.
+// In stream-json mode the carrier and its acknowledgement are durable stdout events
+// even when the buffered SDK result frame is not emitted. Accept only that exact,
+// model-bound pair; ordinary tools and debug/telemetry text remain forbidden.
+private func ckbAbcdeNativeStructuredResult(events: ArrayList<JsonObject>): CkbAbcdeNativeStructuredResult {
+    let result = CkbAbcdeNativeStructuredResult()
+    var initCount: Int64 = 0
+    var observedModel = ""
+    var toolCount: Int64 = 0
+    var nativeCount: Int64 = 0
+    var nativeIndex: Int64 = -1
+    var nativeId = ""
+    var nativeAssistantModel = ""
+    var nativeInput: Option<JsonObject> = None
+    for (index in 0..events.size) {
+        let event = events[index]
+        if (ckbAbcdeStrictJsonString(event, "type") == "system" && ckbAbcdeStrictJsonString(event, "subtype") == "init") {
+            initCount += 1
+            observedModel = ckbAbcdeStrictJsonString(event, "model")
         }
-        if (index != items.size - 1) { throw IllegalArgumentException("malformed_json") }
-        terminal = Some<JsonObject>(item)
+        if (ckbAbcdeStrictJsonString(event, "type") != "assistant") { continue }
+        let content = try { event.get("message").getOrThrow().asObject().get("content").getOrThrow().asArray().getItems() }
+            catch (_: Exception) { continue }
+        for (value in content) {
+            let entry = value.asObject()
+            if (ckbAbcdeStrictJsonString(entry, "type") != "tool_use") { continue }
+            toolCount += 1
+            if (ckbAbcdeStrictJsonString(entry, "name") == "StructuredOutput" && content.size == 1) {
+                nativeCount += 1
+                nativeIndex = index
+                nativeId = ckbAbcdeStrictJsonString(entry, "id")
+                nativeAssistantModel = ckbAbcdeStrictJsonString(event.get("message").getOrThrow().asObject(), "model")
+                if (entry.getFields().size != 4) { result.diagnostic="completion_schema_invalid";return result }
+                nativeInput = Some<JsonObject>(entry.get("input").getOrThrow().asObject())
+            }
+        }
     }
-    match (terminal) {
-        case Some(item) => item
-        case None => throw IllegalArgumentException("malformed_json")
+    result.present = nativeCount > 0
+    if (nativeCount == 0) {
+        result.diagnostic = if (toolCount > 0) { "completion_tool_use_forbidden" } else { "malformed_json" }
+        return result
     }
+    if (toolCount != 1 || nativeCount != 1 || nativeId == "" || initCount != 1 || observedModel != "GLM-5.2" || nativeAssistantModel != "glm-5.2") {
+        result.diagnostic = if (initCount == 1 && observedModel != "GLM-5.2") { "completion_observed_model_mismatch" } else { "completion_tool_use_forbidden" }
+        return result
+    }
+    let input = match (nativeInput) { case Some(value) => value case None => return result }
+    if (input.getFields().size != 1) { result.diagnostic="completion_schema_invalid";return result }
+    let solution = try { ckbAbcdeManifestString(input, "solution_cj") }
+        catch (_: Exception) { result.diagnostic="completion_schema_invalid";return result }
+    if (nativeIndex + 1 >= events.size) { return result }
+    let acknowledgement = events[nativeIndex + 1]
+    if (ckbAbcdeStrictJsonString(acknowledgement, "type") != "user") { return result }
+    let content = try { acknowledgement.get("message").getOrThrow().asObject().get("content").getOrThrow().asArray().getItems() }
+        catch (_: Exception) { return result }
+    if (content.size != 1) { return result }
+    let entry = try { content[0].asObject() } catch (_: Exception) { return result }
+    if (entry.getFields().size != 3 || ckbAbcdeStrictJsonString(entry, "type") != "tool_result" ||
+        ckbAbcdeStrictJsonString(entry, "tool_use_id") != nativeId ||
+        ckbAbcdeStrictJsonString(entry, "content") != "Structured output provided successfully") { return result }
+    if (solution.toArray().size > 262144) { result.diagnostic="solution_too_large";return result }
+    if (solution == "") { result.diagnostic="completion_empty";return result }
+    result.ok=true;result.solutionCj=solution;result.diagnostic="ok"
+    result
 }
 
 public func ckbAbcdeExtractSingleCompletion(bytes: Array<UInt8>): CkbAbcdeSingleCompletion {
@@ -382,23 +450,52 @@ public func ckbAbcdeExtractSingleCompletion(bytes: Array<UInt8>): CkbAbcdeSingle
     if (bytes.size > CKB_ABCDE_MAX_MODEL_TRANSCRIPT_BYTES) { result.diagnostic="transcript_too_large";return result }
     let raw = try { String.fromUtf8(bytes) } catch (_: Exception) { result.diagnostic="invalid_response_encoding";return result }
     try {
-        let terminal=ckbAbcdeCompletionTerminal(raw.trimAscii())
-        if(ckbAbcdeManifestString(terminal,"type")!="result"||ckbAbcdeManifestString(terminal,"subtype")!="success"||
-            terminal.get("is_error").getOrThrow().asBool().getValue()){result.diagnostic="completion_unsuccessful_result";return result}
-        let usage=terminal.get("modelUsage").getOrThrow().asObject()
+        let events=ckbAbcdeCompletionEvents(raw.trimAscii())
+        var terminal: Option<JsonObject> = None
+        var terminalIndex: Int64 = -1
+        for (index in 0..events.size) {
+            let event=events[index]
+            if (ckbAbcdeStrictJsonString(event,"type") != "result") { continue }
+            match (terminal) { case Some(_) => result.diagnostic="malformed_json";return result case None => () }
+            terminal=Some<JsonObject>(event);terminalIndex=index
+        }
+        let native=ckbAbcdeNativeStructuredResult(events)
+        match (terminal) {
+            case None =>
+                if (!native.ok || nativeIndexNotTerminal(events, native)) { result.diagnostic=native.diagnostic;return result }
+                result.ok=true;result.diagnostic="ok";result.solutionCj=native.solutionCj
+                result.answerHash=benchmarkGapSha256(native.solutionCj);result.completionCount=1
+                return result
+            case Some(_) => ()
+        }
+        if (terminalIndex != events.size - 1) { result.diagnostic="malformed_json";return result }
+        let terminalObject=terminal.getOrThrow()
+        if(ckbAbcdeManifestString(terminalObject,"type")!="result"||ckbAbcdeManifestString(terminalObject,"subtype")!="success"||
+            terminalObject.get("is_error").getOrThrow().asBool().getValue()){result.diagnostic="completion_unsuccessful_result";return result}
+        let usage=terminalObject.get("modelUsage").getOrThrow().asObject()
         if(usage.getFields().size!=1){result.diagnostic="completion_observed_model_mismatch";return result}
         match(usage.get("GLM-5.2")){case Some(_)=>() case None=>result.diagnostic="completion_observed_model_mismatch";return result}
-        let object=terminal.get("structured_output").getOrThrow().asObject()
+        let object=terminalObject.get("structured_output").getOrThrow().asObject()
         if (object.getFields().size != 1) {
             result.diagnostic="completion_schema_invalid";return result
         }
         let solution=ckbAbcdeManifestString(object,"solution_cj")
         if (solution.toArray().size > 262144) { result.diagnostic="solution_too_large";return result }
         if (solution == "") { result.diagnostic="completion_empty";return result }
+        if (native.present && (!native.ok || native.solutionCj != solution)) { result.diagnostic="completion_schema_invalid";return result }
         result.ok=true;result.diagnostic="ok";result.solutionCj=solution
         result.answerHash=benchmarkGapSha256(solution);result.completionCount=1
         result
     } catch (_: Exception) { result.diagnostic="malformed_json";result }
+}
+
+private func nativeIndexNotTerminal(events: ArrayList<JsonObject>, native: CkbAbcdeNativeStructuredResult): Bool {
+    // The acknowledged native carrier must be the final two stream events.
+    if (!native.ok || events.size < 2) { return true }
+    let last=events[events.size-1]
+    if (ckbAbcdeStrictJsonString(last,"type") != "user") { return true }
+    let content=try{last.get("message").getOrThrow().asObject().get("content").getOrThrow().asArray().getItems()}catch(_:Exception){return true}
+    content.size != 1 || ckbAbcdeStrictJsonString(content[0].asObject(),"type") != "tool_result"
 }
 
 public func ckbAbcdeFreezeCompletion(caseRoot: String, completion: CkbAbcdeSingleCompletion): String {
@@ -2072,6 +2169,11 @@ public func ckbAbcdeDevelopmentTransportAttemptLimitForTest(transportRetries: In
 public func ckbAbcdeAssessSample(transcript: String, expectedModel: String): CkbAbcdeSampleAssessment {
     let result = CkbAbcdeSampleAssessment()
     if(transcript==""){result.transcriptDiagnostic="empty_transcript";return result}
+    if(transcript.contains("structured_output")||transcript.contains("StructuredOutput")){
+        let completion=ckbAbcdeExtractSingleCompletion(transcript.toArray())
+        if(completion.ok){result.completeResult=true;result.identityMatched=expectedModel=="GLM-5.2";result.sampleAttempt=if(result.identityMatched){1}else{0};result.terminalResultCount=1;result.transcriptDiagnostic="ok";return result}
+        if(transcript.contains("StructuredOutput")){result.transcriptDiagnostic=completion.diagnostic;return result}
+    }
     try {
         let value=JsonValue.fromStr(transcript)
         try {
@@ -2521,7 +2623,7 @@ private func ckbAbcdeRunClaudeOnceInCertificationSandbox(group:String,groupRoot:
     let command=ckbAbcdeCertificationClaudeCommand(groupRoot,runtimeHome,profilePath,claudeExecutable,expectedModel,transcript,stderr,attempt:attempt)
     let script=ckbAbcdeClaudeTimeoutShell(command,stderr,modelTimeoutSeconds)+"; cp ${ckbAbcdeShellQuote(transcript)} ${ckbAbcdeShellQuote(evidenceTranscript)} 2>/dev/null || true; cp ${ckbAbcdeShellQuote(stderr)} ${ckbAbcdeShellQuote(evidenceStderr)} 2>/dev/null || true; exit $code";let result=ckbAbcdeRunShell(script,workspace);try{_=launch("/bin/rm",["-f",ckbAbcdeSandboxPromptPath(runtimeHome)]).wait()}catch(_:Exception){};result
 }
-public func ckbAbcdeCertificationClaudeCommand(groupRoot:String,runtimeHome:String,profilePath:String,claudeExecutable:String,expectedModel:String,transcript:String,stderr:String,attempt!:Int64=1):String{"session_id=$(uuidgen | tr '[:upper:]' '[:lower:]'); printf '%s' \"$session_id\" > ${ckbAbcdeShellQuote("${groupRoot}/session-id.attempt-${attempt}.txt")}; HOME=${ckbAbcdeShellQuote(runtimeHome)} PATH=${ckbAbcdeShellQuote("${runtimeHome}/bin")}:\"$PATH\" TMPDIR=${ckbAbcdeShellQuote("${runtimeHome}/tmp")} CLAUDE_CODE_TMPDIR=${ckbAbcdeShellQuote("${runtimeHome}/tmp")} CLAUDE_TMPDIR=${ckbAbcdeShellQuote("${runtimeHome}/tmp")} XDG_CONFIG_HOME=${ckbAbcdeShellQuote("${runtimeHome}/xdg-config")} XDG_CACHE_HOME=${ckbAbcdeShellQuote("${runtimeHome}/xdg-cache")} CLAUDE_CONFIG_DIR=${ckbAbcdeShellQuote("${runtimeHome}/claude-config")} ANTHROPIC_AUTH_TOKEN=\"$GLM_API_KEY\" ANTHROPIC_BASE_URL=\"$GLM_BASE_URL\" ANTHROPIC_MODEL=${ckbAbcdeShellQuote(expectedModel)} ANTHROPIC_MAX_RETRIES=0 CLAUDE_CODE_MAX_RETRIES=0 sandbox-exec -f ${ckbAbcdeShellQuote(profilePath)} ${ckbAbcdeShellQuote(claudeExecutable)} -p --bare --tools '' --disable-slash-commands --setting-sources '' --max-turns 1 --verbose --no-session-persistence --session-id \"$session_id\" --model ${ckbAbcdeShellQuote(expectedModel)} --output-format json --strict-mcp-config --mcp-config ${ckbAbcdeShellQuote("${runtimeHome}/mcp-config.json")} --json-schema ${ckbAbcdeShellQuote(ckbAbcdeCompletionOutputSchema())} ${ckbAbcdeClaudePermissionFlag()} < ${ckbAbcdeShellQuote(ckbAbcdeSandboxPromptPath(runtimeHome))} > ${ckbAbcdeShellQuote(transcript)} 2> ${ckbAbcdeShellQuote(stderr)}"}
+public func ckbAbcdeCertificationClaudeCommand(groupRoot:String,runtimeHome:String,profilePath:String,claudeExecutable:String,expectedModel:String,transcript:String,stderr:String,attempt!:Int64=1):String{"session_id=$(uuidgen | tr '[:upper:]' '[:lower:]'); printf '%s' \"$session_id\" > ${ckbAbcdeShellQuote("${groupRoot}/session-id.attempt-${attempt}.txt")}; HOME=${ckbAbcdeShellQuote(runtimeHome)} PATH=${ckbAbcdeShellQuote("${runtimeHome}/bin")}:\"$PATH\" TMPDIR=${ckbAbcdeShellQuote("${runtimeHome}/tmp")} CLAUDE_CODE_TMPDIR=${ckbAbcdeShellQuote("${runtimeHome}/tmp")} CLAUDE_TMPDIR=${ckbAbcdeShellQuote("${runtimeHome}/tmp")} XDG_CONFIG_HOME=${ckbAbcdeShellQuote("${runtimeHome}/xdg-config")} XDG_CACHE_HOME=${ckbAbcdeShellQuote("${runtimeHome}/xdg-cache")} CLAUDE_CONFIG_DIR=${ckbAbcdeShellQuote("${runtimeHome}/claude-config")} ANTHROPIC_AUTH_TOKEN=\"$GLM_API_KEY\" ANTHROPIC_BASE_URL=\"$GLM_BASE_URL\" ANTHROPIC_MODEL=${ckbAbcdeShellQuote(expectedModel)} ANTHROPIC_MAX_RETRIES=0 CLAUDE_CODE_MAX_RETRIES=0 sandbox-exec -f ${ckbAbcdeShellQuote(profilePath)} ${ckbAbcdeShellQuote(claudeExecutable)} -p --bare --tools '' --disable-slash-commands --setting-sources '' --max-turns 1 --verbose --no-session-persistence --session-id \"$session_id\" --model ${ckbAbcdeShellQuote(expectedModel)} --output-format stream-json --strict-mcp-config --mcp-config ${ckbAbcdeShellQuote("${runtimeHome}/mcp-config.json")} --json-schema ${ckbAbcdeShellQuote(ckbAbcdeCompletionOutputSchema())} ${ckbAbcdeClaudePermissionFlag()} < ${ckbAbcdeShellQuote(ckbAbcdeSandboxPromptPath(runtimeHome))} > ${ckbAbcdeShellQuote(transcript)} 2> ${ckbAbcdeShellQuote(stderr)}"}
 
 private func ckbAbcdeRunClaudeOnce(group: String, groupRoot: String, workspace: String, runtimeHome: String, docsRoot: String, caseSrc: String, ckbBin: String, ckbConfig: String, ckbStore: String, claudeBin: String, attempt: Int64, expectedModel: String, modelTimeoutSeconds: Int64, modelEffort: String, modelMaxBudgetUsd: String): CkbAbcdeCommandResult {
     var addDir = "--add-dir ${ckbAbcdeShellQuote(workspace)}"

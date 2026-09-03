@@ -401,7 +401,7 @@ public class CangjieEvalAbcdeRunnerCompletionTest {
         let command=ckbAbcdeCertificationClaudeCommand("case","home","profile","claude","GLM-5.2","transcript","stderr")
         let probe=ckbAbcdeRunCompletionCapabilityProbe(command,p3Terminal("public func answer(): Int64 { 42 }").toArray(),"provider_default_not_client_exposed")
         @Expect(probe.ok,true);@Expect(command.contains("--tools ''"),true);@Expect(command.contains("--max-turns 1"),true)
-        @Expect(command.contains("--output-format json"),true);@Expect(command.contains("additionalProperties"),true)
+        @Expect(command.contains("--output-format stream-json"),true);@Expect(command.contains("additionalProperties"),true)
         @Expect(command.contains("output-schema.json"),false)
         @Expect(command.contains("ANTHROPIC_AUTH_TOKEN=\"$GLM_API_KEY\""),true)
         @Expect(command.contains("ANTHROPIC_BASE_URL=\"$GLM_BASE_URL\""),true)
@@ -413,6 +413,62 @@ public class CangjieEvalAbcdeRunnerCompletionTest {
         let assessed=ckbAbcdeAssessSample(p3Terminal("main() {}"),"GLM-5.2")
         @Expect(assessed.completeResult,true);@Expect(assessed.identityMatched,true);@Expect(assessed.toolEventCount,0)
         @Expect(command.toAsciiLower().contains("authorization"),false)
+    }
+
+    // TC-UT-01 / TC-BND-01
+    @TestCase
+    public func structuredCompletionAcceptsCanonicalTerminalAndAcknowledgedNativeCarrier(): Unit {
+        let solution="public func answer(): String { \"中文😀\" }"
+        let terminal=ckbAbcdeExtractSingleCompletion(p3Terminal(solution).toArray())
+        @Expect(terminal.ok,true);@Expect(terminal.solutionCj,solution);@Expect(terminal.toolCallCount,0)
+        let native=tcNativeStructuredCompletion(solution)
+        let recovered=ckbAbcdeExtractSingleCompletion(native.toArray())
+        @Expect(recovered.ok,true);@Expect(recovered.solutionCj,solution)
+        @Expect(recovered.completionCount,1);@Expect(recovered.toolCallCount,0)
+        let fullStream=ckbAbcdeExtractSingleCompletion((native+"\n"+p3Terminal(solution)).toArray())
+        @Expect(fullStream.ok,true);@Expect(fullStream.solutionCj,solution)
+        let assessment=ckbAbcdeAssessSample(native,"GLM-5.2")
+        @Expect(assessment.completeResult,true);@Expect(assessment.identityMatched,true)
+        @Expect(assessment.sampleAttempt,1);@Expect(assessment.terminalResultCount,1)
+    }
+
+    // TC-NEG-01
+    @TestCase
+    public func structuredCompletionFallbackRejectsForgeryMultiplicityModelSchemaAndEncoding(): Unit {
+        let solution="public func answer(): Int64 { 42 }"
+        let native=tcNativeStructuredCompletion(solution)
+        @Expect(ckbAbcdeExtractSingleCompletion(native.replace("GLM-5.2","other-model").toArray()).diagnostic,
+            "completion_observed_model_mismatch")
+        @Expect(ckbAbcdeExtractSingleCompletion(native.replace("Structured output provided successfully","forged").toArray()).ok,false)
+        @Expect(ckbAbcdeExtractSingleCompletion(native.replace("\"content\":\"Structured output provided successfully\"",
+            "\"content\":\"Structured output provided successfully\",\"is_error\":true").toArray()).ok,false)
+        @Expect(ckbAbcdeExtractSingleCompletion(native.replace("\"solution_cj\":", "\"extra\":1,\"solution_cj\":").toArray()).diagnostic,
+            "completion_schema_invalid")
+        let duplicate=native.replace("\n{\"type\":\"user\"", "\n"+tcNativeToolUse(solution,"native-2")+"\n{\"type\":\"user\"")
+        @Expect(ckbAbcdeExtractSingleCompletion(duplicate.toArray()).ok,false)
+        @Expect(ckbAbcdeExtractSingleCompletion(native.replace("StructuredOutput","Bash").toArray()).diagnostic,
+            "completion_tool_use_forbidden")
+        @Expect(ckbAbcdeExtractSingleCompletion((native+"\n"+p3Terminal(solution+" // drift")).toArray()).diagnostic,
+            "completion_schema_invalid")
+        @Expect(ckbAbcdeExtractSingleCompletion("{malformed".toArray()).diagnostic,"malformed_json")
+        @Expect(ckbAbcdeExtractSingleCompletion([UInt8(0xff),UInt8(0xfe)]).diagnostic,"invalid_response_encoding")
+    }
+
+    // TC-POS-01 / TC-HIST-01
+    @TestCase
+    public func nativeStructuredFakeExecutorFreezesOnceAndPreservesSampleRetryContract(): Unit {
+        let root=Path("target/tc-native-freeze-${DateTime.now().toUnixTimeStamp().toMilliseconds()}")
+        let solution="package tc_native\npublic func answer(): Int64 { 42 }\n"
+        let provider=TcNativeStructuredProvider(tcNativeStructuredCompletion(solution))
+        let generated=provider.execute(CkbAbcdeRunnerOptions(),CkbAbcdeGroups.D,root.toString(),"","","" )
+        @Expect(generated.exitCode,0);@Expect(provider.calls,1)
+        let completion=ckbAbcdeExtractSingleCompletion(generated.stdout.toArray())
+        @Expect(completion.ok,true);@Expect(ckbAbcdeFreezeCompletion(root.toString(),completion),"ok")
+        @Expect(String.fromUtf8(File.readFrom(root.join("solution.cj"))),solution)
+        let assessment=ckbAbcdeAssessSample(generated.stdout,"GLM-5.2")
+        @Expect(ckbAbcdeTransportClassification(0,assessment,""),"business_sample")
+        @Expect(ckbAbcdeShouldRetryTransport(0,assessment),false)
+        @Expect(assessment.sampleAttempt,1)
     }
 
     // R6-C1-NEG: identity/path drift is rejected before the provider executor.
@@ -446,5 +502,17 @@ private class P3FakeCompletionVerifier <: CkbAbcdeCompletionSuiteExecutor {
     public override func execute(suite:String,caseSrc:String,workspace:String):CkbAbcdeCommandResult{workspaces.add(workspace);if(suite=="base"){baseCalls+=1}else if(suite=="plus"){plusCalls+=1};let result=CkbAbcdeCommandResult();result.exitCode=0;result.stdout="PASS ${suite} 中文😀";result}
 }
 
+private class TcNativeStructuredProvider <: CkbAbcdeCertificationProviderExecutor {
+    public var calls:Int64=0
+    let transcript:String
+    public init(transcript:String){this.transcript=transcript}
+    public override func execute(options:CkbAbcdeRunnerOptions,group:String,groupRoot:String,workspace:String,
+        runtimeHome:String,caseSrc:String):CkbAbcdeCommandResult{
+        calls+=1;let result=CkbAbcdeCommandResult();result.exitCode=0;result.stdout=transcript;result
+    }
+}
+
 private func p3Terminal(solution:String):String{p3TerminalFields("\"solution_cj\":\"${ckbAbcdeJsonEscape(solution)}\"")}
 private func p3TerminalFields(fields:String):String{"{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"modelUsage\":{\"GLM-5.2\":{}},\"structured_output\":{${fields}}}"}
+private func tcNativeToolUse(solution:String,id:String):String{"{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"model\":\"glm-5.2\",\"content\":[{\"type\":\"tool_use\",\"name\":\"StructuredOutput\",\"id\":\"${id}\",\"input\":{\"solution_cj\":\"${ckbAbcdeJsonEscape(solution)}\"}}]}}"}
+private func tcNativeStructuredCompletion(solution:String):String{"{\"type\":\"system\",\"subtype\":\"init\",\"model\":\"GLM-5.2\"}\n"+tcNativeToolUse(solution,"native-1")+"\n{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"native-1\",\"content\":\"Structured output provided successfully\"}]}}"}
