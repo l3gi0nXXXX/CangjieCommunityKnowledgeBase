@@ -14,5 +14,8 @@
   "callCount": 3,
   "sourceLicense": "MIT",
   "testStrategy": "official check(candidate) expanded through canonical recorder, then translated to Cangjie main assertions",
-  "staticLanguageAdaptations": []
+  "staticLanguageAdaptations": [
+    "Python integer arithmetic uses arbitrary-precision intermediates; this Cangjie projection uses std.math.numeric.BigInt for every operand and intermediate result, applies an explicit remainder/sign correction because BigInt division truncates toward zero while Python // floors, and calls toInt64() only once on the final result.",
+    "Cangjie BigInt exponentiation accepts a UInt64 exponent; convert only after proving the non-negative exponent is representable, or keep the exponent as BigInt in a square-and-multiply helper so right-associative exponentiation does not narrow an intermediate value."
+  ]
 }

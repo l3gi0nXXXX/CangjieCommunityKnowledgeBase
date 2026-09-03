@@ -158,6 +158,6 @@ public class CangjieHumanEvalCase141151ContractTest {
         @Expect(history[0], true)
         @Expect(history[1], 162)
         @Expect(history[2],
-            "sha256:ae379b87baa80dc3e1f64dc19b3a7a5f6cab6d9d03e3df352dfba23b157660b3")
+            "sha256:8304644ab95fe1746f652f4d7a33a4edb1faa3e7a588da724f54fd1b5af9e721")
     }
 }

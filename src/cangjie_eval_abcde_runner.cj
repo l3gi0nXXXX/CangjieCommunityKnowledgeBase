@@ -127,13 +127,202 @@ public class CkbAbcdeCommandResult {
     public init() {}
 }
 
+public class CkbAbcdeSuiteManifestMergeResult {
+    public var ok: Bool = false
+    public var manifest: String = ""
+    public var diagnostic: String = "suite_manifest_merge_not_run"
+    public init() {}
+}
+
+private let CKB_ABCDE_MAX_STARTER_MANIFEST_BYTES: Int64 = 65536
+private let CKB_ABCDE_MAX_SUITE_MANIFEST_BYTES: Int64 = 65536
+private let CKB_ABCDE_MAX_MERGED_MANIFEST_BYTES: Int64 = 131072
+
+private func ckbAbcdeManifestHasForbiddenControl(text: String): Bool {
+    for (value in text.toArray()) {
+        if ((value < UInt8(32) && value != UInt8(9) && value != UInt8(10) &&
+            value != UInt8(13)) || value == UInt8(127)) { return true }
+    }
+    false
+}
+
+private func ckbAbcdeSafeDependencyPath(path: String): Bool {
+    let prefix = "\${MAGIC_PATH}/libs/"
+    if (!path.startsWith(prefix)) { return false }
+    let parts = path.split(prefix)
+    if (parts.size != 2 || parts[0] != "" || parts[1] == "") { return false }
+    for (value in parts[1].toArray()) {
+        let alpha = (value >= UInt8(65) && value <= UInt8(90)) ||
+            (value >= UInt8(97) && value <= UInt8(122))
+        let digit = value >= UInt8(48) && value <= UInt8(57)
+        if (!alpha && !digit && value != UInt8(45) && value != UInt8(46) &&
+            value != UInt8(47) && value != UInt8(95)) { return false }
+    }
+    !parts[1].contains("..") && !parts[1].startsWith("/") &&
+        !parts[1].endsWith("/")
+}
+
+private func ckbAbcdeDependencyPathOption(line: String): (String, String) {
+    let assignment = line.trimAscii().split("=")
+    if (assignment.size != 2 || assignment[0].trimAscii() != "path-option") {
+        return ("starter_manifest_dependency_key_forbidden", "")
+    }
+    let quoted = assignment[1].trimAscii().split("\"")
+    if (quoted.size != 3 || quoted[0].trimAscii() != "[" ||
+        quoted[2].trimAscii() != "]" || !ckbAbcdeSafeDependencyPath(quoted[1])) {
+        return ("starter_manifest_dependency_path_forbidden", "")
+    }
+    ("ok", quoted[1])
+}
+
+private func ckbAbcdeManifestSectionHeader(line: String): String {
+    let trimmed = line.trimAscii()
+    if (trimmed.startsWith("[") && trimmed.endsWith("]")) { trimmed } else { "" }
+}
+
+private func ckbAbcdeBinDependencyHeader(header: String): Bool {
+    if (!header.startsWith("[target.") || !header.endsWith(".bin-dependencies]")) {
+        return false
+    }
+    let prefixParts = header.split("[target.")
+    if (prefixParts.size != 2 || prefixParts[0] != "") { return false }
+    let suffixParts = prefixParts[1].split(".bin-dependencies]")
+    if (suffixParts.size != 2 || suffixParts[1] != "" || suffixParts[0] == "") {
+        return false
+    }
+    for (value in suffixParts[0].toArray()) {
+        let alpha = (value >= UInt8(65) && value <= UInt8(90)) ||
+            (value >= UInt8(97) && value <= UInt8(122))
+        let digit = value >= UInt8(48) && value <= UInt8(57)
+        if (!alpha && !digit && value != UInt8(45) && value != UInt8(46) &&
+            value != UInt8(95)) { return false }
+    }
+    !suffixParts[0].contains("..")
+}
+
+private func ckbAbcdeLooksLikeBinDependencyHeader(header: String): Bool {
+    header.startsWith("[target.") && header.endsWith(".bin-dependencies]")
+}
+
+// The starter manifest is the public dependency authority. Verifier manifests
+// retain their package fields and receive only validated target bin-dependency sections.
+public func ckbAbcdeMergeSuiteManifestDependencies(starterBytes: Array<UInt8>,
+    suiteBytes: Array<UInt8>): CkbAbcdeSuiteManifestMergeResult {
+    let result = CkbAbcdeSuiteManifestMergeResult()
+    if (starterBytes.size > CKB_ABCDE_MAX_STARTER_MANIFEST_BYTES) {
+        result.diagnostic = "starter_manifest_too_large"; return result
+    }
+    if (suiteBytes.size > CKB_ABCDE_MAX_SUITE_MANIFEST_BYTES) {
+        result.diagnostic = "suite_manifest_too_large"; return result
+    }
+    let starter = try { String.fromUtf8(starterBytes) } catch (_: Exception) {
+        result.diagnostic = "starter_manifest_invalid_encoding"; return result
+    }
+    let suite = try { String.fromUtf8(suiteBytes) } catch (_: Exception) {
+        result.diagnostic = "suite_manifest_invalid_encoding"; return result
+    }
+    if (starter.contains("\u{0000}") || suite.contains("\u{0000}")) {
+        result.diagnostic = "suite_manifest_nul_forbidden"; return result
+    }
+    if (ckbAbcdeManifestHasForbiddenControl(starter) ||
+        ckbAbcdeManifestHasForbiddenControl(suite)) {
+        result.diagnostic = "suite_manifest_control_forbidden"; return result
+    }
+    let suiteHeaders = HashSet<String>()
+    for (line in suite.split("\n")) {
+        let trimmed = line.trimAscii()
+        if (trimmed.startsWith("[") && !trimmed.endsWith("]")) {
+            result.diagnostic = "suite_manifest_section_malformed"; return result
+        }
+        let header = ckbAbcdeManifestSectionHeader(line)
+        if (header == "") { continue }
+        if (ckbAbcdeLooksLikeBinDependencyHeader(header) &&
+            !ckbAbcdeBinDependencyHeader(header)) {
+            result.diagnostic = "suite_manifest_dependency_target_invalid"; return result
+        }
+        if (suiteHeaders.contains(header)) {
+            result.diagnostic = "suite_manifest_section_duplicate"; return result
+        }
+        suiteHeaders.add(header)
+    }
+    let starterHeaders = HashSet<String>()
+    let dependencyBlocks = ArrayList<String>()
+    let lines = starter.split("\n")
+    var index: Int64 = 0
+    while (index < lines.size) {
+        let trimmed = lines[index].trimAscii()
+        if (trimmed.startsWith("[") && !trimmed.endsWith("]")) {
+            result.diagnostic = "starter_manifest_section_malformed"; return result
+        }
+        let header = ckbAbcdeManifestSectionHeader(lines[index])
+        if (header != "") {
+            if (ckbAbcdeLooksLikeBinDependencyHeader(header) &&
+                !ckbAbcdeBinDependencyHeader(header)) {
+                result.diagnostic = "starter_manifest_dependency_target_invalid"; return result
+            }
+            if (starterHeaders.contains(header)) {
+                result.diagnostic = "starter_manifest_section_duplicate"; return result
+            }
+            starterHeaders.add(header)
+        }
+        if (!ckbAbcdeBinDependencyHeader(header)) { index += 1; continue }
+        if (suiteHeaders.contains(header)) {
+            result.diagnostic = "suite_manifest_dependency_conflict"; return result
+        }
+        let block = StringBuilder(); block.append(lines[index]); block.append("\n")
+        var pathOptionCount: Int64 = 0
+        index += 1
+        while (index < lines.size && ckbAbcdeManifestSectionHeader(lines[index]) == "") {
+            let body = lines[index].trimAscii()
+            if (body != "" && !body.startsWith("#")) {
+                let option = ckbAbcdeDependencyPathOption(body)
+                if (option[0] != "ok") { result.diagnostic = option[0]; return result }
+                pathOptionCount += 1
+            }
+            block.append(lines[index]); block.append("\n"); index += 1
+        }
+        if (pathOptionCount != 1) {
+            result.diagnostic = "starter_manifest_dependency_path_required"; return result
+        }
+        dependencyBlocks.add(block.toString())
+    }
+    var merged = suite
+    if (!merged.endsWith("\n")) { merged += "\n" }
+    for (block in dependencyBlocks) { merged += "\n" + block }
+    if (merged.toArray().size > CKB_ABCDE_MAX_MERGED_MANIFEST_BYTES) {
+        result.diagnostic = "merged_manifest_too_large"; return result
+    }
+    result.ok = true; result.manifest = merged; result.diagnostic = "ok"
+    result
+}
+
+public func ckbAbcdeInstallSuiteManifestDependencies(workspace: String,
+    suiteManifestPath: String): String {
+    let workspaceManifest = Path(workspace).join("cjpm.toml")
+    try {
+        let merged = ckbAbcdeMergeSuiteManifestDependencies(
+            File.readFrom(workspaceManifest), File.readFrom(Path(suiteManifestPath)))
+        if (!merged.ok) { return merged.diagnostic }
+        let temporary = Path(workspace).join(".cjpm.toml.suite.tmp")
+        File.writeTo(temporary, merged.manifest.toArray())
+        let verified = try { String.fromUtf8(File.readFrom(temporary)) } catch (_: Exception) {
+            remove(temporary); return "suite_manifest_write_invalid_encoding"
+        }
+        if (verified != merged.manifest) { remove(temporary); return "suite_manifest_write_mismatch" }
+        rename(temporary.toString(), to: workspaceManifest.toString(), overwrite: true)
+        "ok"
+    } catch (_: Exception) { "suite_manifest_install_failed" }
+}
+
 public open class CkbAbcdeCompletionSuiteExecutor {
     public var testTimeoutSeconds: Int64 = 180
 
     public open func execute(suite:String,caseSrc:String,workspace:String):CkbAbcdeCommandResult {
         let result=CkbAbcdeCommandResult();let suiteRoot=if(suite=="base"){"${caseSrc}/tests"}else if(suite=="plus"){"${caseSrc}/tests-plus"}else{return result}
-        let inject=ckbAbcdeRunShell("cp ${ckbAbcdeShellQuote("${suiteRoot}/TestMain.cj")} ${ckbAbcdeShellQuote("${workspace}/src/main.cj")} && cp ${ckbAbcdeShellQuote("${suiteRoot}/cjpm.executable.toml")} ${ckbAbcdeShellQuote("${workspace}/cjpm.toml")}","")
+        let inject=ckbAbcdeRunShell("cp ${ckbAbcdeShellQuote("${suiteRoot}/TestMain.cj")} ${ckbAbcdeShellQuote("${workspace}/src/main.cj")}","")
         if(inject.exitCode!=0){result.stderr=inject.stdout+inject.stderr;return result}
+        let manifestDiagnostic=ckbAbcdeInstallSuiteManifestDependencies(workspace,"${suiteRoot}/cjpm.executable.toml")
+        if(manifestDiagnostic!="ok"){result.stderr=manifestDiagnostic;result.diagnostic=manifestDiagnostic;return result}
         ckbAbcdeRunTimedTestShell("cjpm run",workspace,this.testTimeoutSeconds,workspace,suite)
     }
 }
@@ -1652,7 +1841,7 @@ public func ckbAbcdeRenderTaskContextJson(context: CkbAbcdeTaskContext): String 
 private func ckbAbcdeExtractCangjieSignature(source: String): String {
     for (line in source.split("\n")) {
         let trimmed = line.trimAscii()
-        if (trimmed.startsWith("func ")) {
+        if (trimmed.startsWith("func ") || trimmed.startsWith("public func ")) {
             let parts = trimmed.split("{")
             if (parts.size > 0) { return parts[0].trimAscii() }
             return trimmed
@@ -1671,6 +1860,10 @@ private func ckbAbcdeInferKnowledgeTags(text: String): ArrayList<String> {
     ckbAbcdeAddTagIf(tags, lower.contains("sort"), "sort")
     ckbAbcdeAddTagIf(tags, lower.contains("int64") || lower.contains("float"), "numeric")
     ckbAbcdeAddTagIf(tags, lower.contains("option") || lower.contains("none") || lower.contains("some"), "Option")
+    ckbAbcdeAddTagIf(tags, lower.contains("bigint"), "BigInt")
+    ckbAbcdeAddTagIf(tags, lower.contains("md5"), "MD5")
+    ckbAbcdeAddTagIf(tags, lower.contains("digest("), "digest")
+    ckbAbcdeAddTagIf(tags, lower.contains("tohexstring"), "toHexString")
     if (tags.size == 0) {
         tags.add("Cangjie syntax")
     }
@@ -1869,7 +2062,8 @@ private func ckbAbcdeRunCaseGroup(options: CkbAbcdeRunnerOptions, runRoot: Strin
         frozenBaseFailureType=ckbAbcdeSuiteFailureType(evaluation.baseResult,evaluation.basePassed)
         frozenPlusFailureType=ckbAbcdeSuiteFailureType(evaluation.plusResult,evaluation.plusPassed)
     }else{
-        inject=ckbAbcdeRunShell("cp ${ckbAbcdeShellQuote("${caseSrc}/tests/TestMain.cj")} ${ckbAbcdeShellQuote("${workspace}/src/main.cj")} && cp ${ckbAbcdeShellQuote("${caseSrc}/tests/cjpm.executable.toml")} ${ckbAbcdeShellQuote("${workspace}/cjpm.toml")}", "")
+        inject=ckbAbcdeRunShell("cp ${ckbAbcdeShellQuote("${caseSrc}/tests/TestMain.cj")} ${ckbAbcdeShellQuote("${workspace}/src/main.cj")}", "")
+        if(inject.exitCode==0){let manifestDiagnostic=ckbAbcdeInstallSuiteManifestDependencies(workspace,"${caseSrc}/tests/cjpm.executable.toml");if(manifestDiagnostic!="ok"){inject.exitCode=1;inject.stderr=manifestDiagnostic;inject.diagnostic=manifestDiagnostic}}
         if(inject.exitCode==0){test=ckbAbcdeRunShell("cjpm run", workspace)}
     }
     ckbAbcdeWriteText("${groupRoot}/hidden-test-inject.stdout.log", inject.stdout)

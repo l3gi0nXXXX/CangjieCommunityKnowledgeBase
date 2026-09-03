@@ -14,6 +14,7 @@
   "sourceLicense": "MIT",
   "testStrategy": "official check(candidate) expanded through canonical recorder, then translated to Cangjie main assertions",
   "staticLanguageAdaptations": [
-    "Python None returns are represented by Option<T>."
+    "Python None returns are represented by Option<T>.",
+    "Python hashlib.md5(text.encode()).hexdigest() is represented with the official Cangjie libraries as toHexString(digest(MD5(), text.toArray())); String.toArray() supplies UTF-8 bytes and toHexString returns the lowercase 32-character hexadecimal digest."
   ]
 }

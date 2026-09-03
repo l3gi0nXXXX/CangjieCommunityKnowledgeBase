@@ -3,6 +3,10 @@
 - Source task: `HumanEval/160`
 - Cangjie signature: `public func do_algebra(operatorValue: ArrayList<String>, operand: ArrayList<Int64>): Int64`
 - Test calls expanded from official HumanEval: `3`
+- Static-language adaptations:
+  - Python integer arithmetic uses arbitrary-precision intermediates. The scaffold imports `std.math.numeric.*`; construct each operand with `BigInt(Int64)`, keep `+`, `-`, `*`, division, and exponentiation intermediates as `BigInt`, and call `toInt64()` only once on the final result.
+  - `BigInt /` truncates toward zero and `BigInt %` keeps the dividend's sign. To implement Python `//`, subtract one from a non-exact quotient when the operands have different signs.
+  - `BigInt **` accepts a `UInt64` exponent. Convert only after proving the non-negative exponent fits `UInt64`; otherwise retain a `BigInt` exponent in a square-and-multiply helper. Exponentiation remains right-associative.
 
 ## Model-Facing Task
 

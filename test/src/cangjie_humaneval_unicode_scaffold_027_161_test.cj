@@ -142,6 +142,6 @@ public class CangjieHumanEvalUnicodeScaffold027161Test {
         @Expect(history[0], true)
         @Expect(history[1], 163)
         @Expect(history[2],
-            "sha256:e330cba4adc3679143211df4fd74f565faf20c42808d661ba15255bde0df1e5d")
+            "sha256:e010046193f09c0bc9c04a5a3d18d6133a2b03df104667df27849fd457b67351")
     }
 }

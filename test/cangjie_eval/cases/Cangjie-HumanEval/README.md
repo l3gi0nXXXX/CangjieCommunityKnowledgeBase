@@ -211,7 +211,7 @@ These adaptations are recorded per case in `metadata.json`.
 | `CJ-HUMANEVAL-157` | `HumanEval/157` | `right_angle_triangle` | 11 | `public func right_angle_triangle(a: Int64, b: Int64, c: Int64): Bool` | none |
 | `CJ-HUMANEVAL-158` | `HumanEval/158` | `find_max` | 10 | `public func find_max(words: ArrayList<String>): String` | none |
 | `CJ-HUMANEVAL-159` | `HumanEval/159` | `eat` | 6 | `public func eat(number: Int64, need: Int64, remaining: Int64): ArrayList<Int64>` | none |
-| `CJ-HUMANEVAL-160` | `HumanEval/160` | `do_algebra` | 3 | `public func do_algebra(operatorValue: ArrayList<String>, operand: ArrayList<Int64>): Int64` | none |
+| `CJ-HUMANEVAL-160` | `HumanEval/160` | `do_algebra` | 3 | `public func do_algebra(operatorValue: ArrayList<String>, operand: ArrayList<Int64>): Int64` | Python arbitrary-precision integer intermediates use BigInt; Python floor division requires remainder/sign correction; narrow only the final result. |
 | `CJ-HUMANEVAL-161` | `HumanEval/161` | `solve` | 10 | `public func solve(s: String): String` | Completion-only scaffold imports `std.unicode.*`; case conversion and reversal use Rune boundaries. |
-| `CJ-HUMANEVAL-162` | `HumanEval/162` | `string_to_md5` | 4 | `public func string_to_md5(text: String): Option<String>` | Python None returns are represented by Option<T>. |
+| `CJ-HUMANEVAL-162` | `HumanEval/162` | `string_to_md5` | 4 | `public func string_to_md5(text: String): Option<String>` | Python None returns use Option<T>; hashlib MD5 uses the official std/stdx digest and lowercase hex APIs over UTF-8 bytes. |
 | `CJ-HUMANEVAL-163` | `HumanEval/163` | `generate_integers` | 4 | `public func generate_integers(a: Int64, b: Int64): ArrayList<Int64>` | none |

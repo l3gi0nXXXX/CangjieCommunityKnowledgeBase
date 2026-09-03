@@ -2,6 +2,10 @@
 
 The official Python `check(candidate)` was executed against the official canonical solution through a recorder. Each candidate invocation below is translated into a concrete Cangjie assertion in `tests/TestMain.cj`.
 
+## Static-Language Adaptation
+
+Python `None` is represented by `Option<T>`. Python `hashlib.md5(text.encode()).hexdigest()` is projected to the official Cangjie library composition `toHexString(digest(MD5(), text.toArray()))` using `std.crypto.digest.digest`, `stdx.crypto.digest.MD5`, and `stdx.encoding.hex.toHexString`. `String.toArray()` supplies UTF-8 bytes; the hex result is lowercase and 32 characters long.
+
 ## Official Test Lines
 
 | Source line | HumanEval test line | CangjieEval assertion label(s) |

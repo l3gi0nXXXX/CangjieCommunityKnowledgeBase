@@ -5,6 +5,7 @@
 - Test calls expanded from official HumanEval: `4`
 - Static-language adaptations:
   - Python None returns are represented by Option<T>.
+  - The scaffold provides the official equivalent of `hashlib.md5(text.encode()).hexdigest()`: import `std.crypto.digest.digest`, `stdx.crypto.digest.MD5`, and `stdx.encoding.hex.toHexString`, then call `toHexString(digest(MD5(), text.toArray()))`. `String.toArray()` supplies UTF-8 bytes and the result is a lowercase 32-character hexadecimal string.
 
 ## Model-Facing Task
 

@@ -474,6 +474,10 @@ private func cangjieHumanEvalManifestInferTags(text: String): ArrayList<String> 
     cangjieHumanEvalManifestAddTag(tags, lower.contains("int64"), "Int64")
     cangjieHumanEvalManifestAddTag(tags, lower.contains("bool"), "Bool")
     cangjieHumanEvalManifestAddTag(tags, lower.contains("option"), "Option")
+    cangjieHumanEvalManifestAddTag(tags, lower.contains("bigint"), "BigInt")
+    cangjieHumanEvalManifestAddTag(tags, lower.contains("md5"), "MD5")
+    cangjieHumanEvalManifestAddTag(tags, lower.contains("digest("), "digest")
+    cangjieHumanEvalManifestAddTag(tags, lower.contains("tohexstring"), "toHexString")
     if (tags.size == 0) { tags.add("Cangjie syntax") }
     tags
 }
