@@ -169,7 +169,7 @@ public func renderCkbS4CompletionPrompt(assets: CkbS4FrozenContextAssets): Strin
     if (ckbS4FrozenAssetsDiagnostic(assets) != "ok") {
         return ""
     }
-    "## Generation protocol\n\n${assets.protocol}\n\n## Student rules\n\n${assets.rules}\n\n## Student skill\n\n${assets.skill}\n\n## Frozen knowledge\n\n${assets.knowledge}\n\n## Public task\n\n${assets.publicTask}\n"
+    "## Generation protocol\n\n${assets.protocol}\n\n## Public task\n\n${assets.publicTask}\n\n## Student rules\n\n${assets.rules}\n\n## Student skill\n\n${assets.skill}\n\n## Frozen knowledge\n\n${assets.knowledge}\n\n## Pre-submit checklist\n\nUse the public task to select and apply the relevant supplied rules, skill guidance, and frozen knowledge. Verify the required Cangjie syntax and API usage, boundary behavior, arithmetic definedness and overflow, and exact output contract. Submit exactly one completion.\n"
 }
 
 public func renderCkbS4ContextEvidenceV2(assets: CkbS4FrozenContextAssets): String {

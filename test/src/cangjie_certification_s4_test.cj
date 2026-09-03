@@ -9,6 +9,72 @@ import std.unittest.testmacro.*
 @Test
 public class CkbCertificationS4ContractTest {
     @TestCase
+    public func psUt01PublicTaskPrecedesFrozenGuidanceAndChecklistClosesPrompt(): Unit {
+        let assets = s4PromptSalienceAssets("Implement the public function.")
+        let prompt = renderCkbS4CompletionPrompt(assets)
+        let publicTaskAt = prompt.indexOf("## Public task").getOrThrow()
+        let rulesAt = prompt.indexOf("## Student rules").getOrThrow()
+        let skillAt = prompt.indexOf("## Student skill").getOrThrow()
+        let knowledgeAt = prompt.indexOf("## Frozen knowledge").getOrThrow()
+        let checklistAt = prompt.indexOf("## Pre-submit checklist").getOrThrow()
+        @Expect(publicTaskAt < rulesAt, true)
+        @Expect(rulesAt < skillAt, true)
+        @Expect(skillAt < knowledgeAt, true)
+        @Expect(knowledgeAt < checklistAt, true)
+        @Expect(prompt.endsWith("Submit exactly one completion.\n"), true)
+    }
+
+    @TestCase
+    public func psBnd01UnicodeEmojiAndLongAssetsRemainExact(): Unit {
+        let task = StringBuilder()
+        for (_ in 0..4096) {
+            task.append("中文🙂")
+        }
+        let assets = s4PromptSalienceAssets(task.toString())
+        assets.rules = "规则🙂\n" + assets.rules
+        assets.skill = "技能中文🙂\n" + assets.skill
+        let prompt = renderCkbS4CompletionPrompt(assets)
+        @Expect(prompt.contains(assets.publicTask), true)
+        @Expect(prompt.contains(assets.rules), true)
+        @Expect(prompt.contains(assets.skill), true)
+        @Expect(prompt.contains(assets.knowledge), true)
+        @Expect(prompt.toArray().size > assets.publicTask.toArray().size, true)
+    }
+
+    @TestCase
+    public func psPos01PromptRenderingDoesNotChangeFrozenAssetEvidence(): Unit {
+        let assets = s4PromptSalienceAssets("Implement the public function.")
+        let evidenceBefore = renderCkbS4ContextEvidenceV2(assets)
+        let rulesHashBefore = benchmarkGapSha256(assets.rules)
+        let skillHashBefore = benchmarkGapSha256(assets.skill)
+        let prompt = renderCkbS4CompletionPrompt(assets)
+        @Expect(prompt == "", false)
+        @Expect(renderCkbS4ContextEvidenceV2(assets), evidenceBefore)
+        @Expect(benchmarkGapSha256(assets.rules), rulesHashBefore)
+        @Expect(benchmarkGapSha256(assets.skill), skillHashBefore)
+        @Expect(ckbS4FrozenContextEvidenceDiagnostic(assets, evidenceBefore), "ok")
+    }
+
+    @TestCase
+    public func psNeg01PrivateProtocolAndCaseMarkersRemainRejected(): Unit {
+        let privateCase = s4PromptSalienceAssets("{\"caseId\":\"private\"}")
+        @Expect(ckbS4FrozenAssetsDiagnostic(privateCase), "private_protocol_field_forbidden")
+        @Expect(renderCkbS4CompletionPrompt(privateCase), "")
+        let privateProtocol = s4PromptSalienceAssets("Implement the public function.")
+        privateProtocol.protocol = "{\"generationProtocol\":\"private\"}"
+        @Expect(ckbS4FrozenAssetsDiagnostic(privateProtocol), "private_protocol_field_forbidden")
+        @Expect(renderCkbS4CompletionPrompt(privateProtocol), "")
+    }
+
+    @TestCase
+    public func psHist01CompletionOnlyInvariantRemainsStrict(): Unit {
+        @Expect(ckbS4GenerationProtocolDiagnostic("completion-only-v1", 1, 1, 0), "ok")
+        @Expect(ckbS4GenerationProtocolDiagnostic("completion-only-v1", 2, 1, 0), "single_completion_required")
+        @Expect(ckbS4GenerationProtocolDiagnostic("completion-only-v1", 1, 2, 0), "completion_knowledge_entry_count_invalid")
+        @Expect(ckbS4GenerationProtocolDiagnostic("completion-only-v1", 1, 1, 1), "completion_tool_call_forbidden")
+    }
+
+    @TestCase
     public func s4UtControlV5PreflightAndProviderCapabilityBindings(): Unit {
         let fixture = ckbPreflightStoreRouteFixture();
         @Expect(fixture.ready,true)
@@ -88,8 +154,10 @@ public class CkbCertificationS4ContractTest {
         let prompt = renderCkbS4CompletionPrompt(assets);
         File.writeTo(Path(groupRoot).join("prompt.final.md"), prompt.toArray());
         @Expect(prompt.contains("caseId"),false)
+        @Expect(prompt.indexOf("## Public task").getOrThrow()<prompt.indexOf("## Student rules").getOrThrow(),true)
         @Expect(prompt.indexOf("## Student rules").getOrThrow()<prompt.indexOf("## Student skill").getOrThrow(),true)
         @Expect(prompt.indexOf("## Student skill").getOrThrow()<prompt.indexOf("## Frozen knowledge").getOrThrow(),true)
+        @Expect(prompt.indexOf("## Frozen knowledge").getOrThrow()<prompt.indexOf("## Pre-submit checklist").getOrThrow(),true)
         let fake = S4FakeCertificationProvider();
         let result = ckbAbcdeRunClaudeCertification(options, CkbAbcdeGroups.D, groupRoot, "workspace", "runtime", "case",
             executor: fake);
@@ -171,6 +239,19 @@ public class CkbCertificationS4ContractTest {
         @Expect(rows[0].schemaVersion,"ckb-humaneval-public-evidence-v3")
         @Expect(ckbS4RulesIdentityDiagnostic(rows[0].rulesHash,rows[0].rulesTreeHash,rows[0].rulesCount),"ok")
     }
+}
+
+private func s4PromptSalienceAssets(publicTask: String): CkbS4FrozenContextAssets {
+    let assets = CkbS4FrozenContextAssets()
+    assets.protocol = "Use exactly one completion. Do not call tools."
+    assets.rules = "Preserve the frozen rules exactly."
+    assets.skill = "Preserve the frozen skill exactly."
+    assets.knowledge = "Preserve the frozen knowledge exactly."
+    assets.providerCapability = "Preserve the frozen provider capability exactly."
+    assets.publicTask = publicTask
+    assets.compositeHash = s4Hash(r'a')
+    assets.combinationAuditHash = s4Hash(r'b')
+    assets
 }
 
 private class S4FakeCertificationProvider <: CkbAbcdeCertificationProviderExecutor {
