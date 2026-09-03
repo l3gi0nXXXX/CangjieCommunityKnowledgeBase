@@ -392,6 +392,77 @@ public class CangjieEvalAbcdeRunnerCompletionTest {
         @Expect(triage.contains("\"runnerFailure\":true"),true);@Expect(triage.contains("\"reasoningFailure\":false"),true)
     }
 
+    // RO-UT-01: oversized stdout is bounded without replacing the process result.
+    @TestCase
+    public func roUt01OversizedStdoutPreservesSuccessfulExit():Unit{
+        let root=Path("target/ro-stdout-${DateTime.now().toUnixTimeStamp().toMilliseconds()}")
+        Directory.create(root,recursive:true);let payload=root.join("payload.txt")
+        let text=StringBuilder();text.append("Authorization: Bearer secret-value\n")
+        for(_ in 0..1048600){text.append("x")};File.writeTo(payload,text.toString().toArray())
+        let result=ckbAbcdeRunTimedTestShellForTest("cat payload.txt",root.toString(),5,root.toString(),"base")
+        @Expect(result.exitCode,0);@Expect(result.outputTruncated,true)
+        @Expect(result.diagnostic,"test_stdout_truncated");@Expect(result.stdout.size<=1048576,true)
+        @Expect(result.stdout.contains("secret-value"),false)
+        @Expect(ckbAbcdeTestRunnerFailureForTest(result),false)
+    }
+
+    // RO-UT-02: oversized stderr retains a business/test exit code and bounded evidence.
+    @TestCase
+    public func roUt02OversizedStderrPreservesFailureExit():Unit{
+        let root=Path("target/ro-stderr-${DateTime.now().toUnixTimeStamp().toMilliseconds()}")
+        Directory.create(root,recursive:true);let text=StringBuilder()
+        for(_ in 0..1048600){text.append("e")};File.writeTo(root.join("payload.txt"),text.toString().toArray())
+        let result=ckbAbcdeRunTimedTestShellForTest("cat payload.txt >&2; exit 7",root.toString(),5,root.toString(),"plus")
+        @Expect(result.exitCode,7);@Expect(result.outputTruncated,true)
+        @Expect(result.diagnostic,"test_stderr_truncated");@Expect(result.stderr.size<=1048576,true)
+        @Expect(ckbAbcdeTestRunnerFailureForTest(result),false)
+    }
+
+    // RO-POS-01: ordinary output keeps the historical byte-for-byte behavior.
+    @TestCase
+    public func roPos01ShortOutputBehaviorIsUnchanged():Unit{
+        let root=Path("target/ro-short-${DateTime.now().toUnixTimeStamp().toMilliseconds()}")
+        Directory.create(root,recursive:true)
+        let result=ckbAbcdeRunTimedTestShellForTest("print -r -- 'short-中文😀'; print -u2 -r -- 'stderr-ok'",root.toString(),5,root.toString(),"base")
+        @Expect(result.exitCode,0);@Expect(result.stdout,"short-中文😀\n");@Expect(result.stderr,"stderr-ok\n")
+        @Expect(result.outputTruncated,false);@Expect(result.outputFailureDetected,false)
+        @Expect(result.diagnostic,"worker_completed")
+    }
+
+    // RO-NEG-01: output volume alone must never manufacture infra exit 125.
+    @TestCase
+    public func roNeg01OversizeDoesNotManufactureRunnerFailure():Unit{
+        let root=Path("target/ro-no-infra-${DateTime.now().toUnixTimeStamp().toMilliseconds()}")
+        Directory.create(root,recursive:true);let text=StringBuilder()
+        for(_ in 0..1048600){text.append("x")};File.writeTo(root.join("payload.txt"),text.toString().toArray())
+        let result=ckbAbcdeRunTimedTestShellForTest("cat payload.txt; exit 23",root.toString(),5,root.toString(),"plus")
+        @Expect(result.exitCode,23);@Expect(result.exitCode==125,false)
+        @Expect(result.outputTruncated,true);@Expect(result.encodingFailure,false)
+        @Expect(ckbAbcdeTestRunnerFailureForTest(result),false)
+    }
+
+    // RO-BND-01: 1 MiB is accepted exactly; Unicode and invalid bytes remain explicit.
+    @TestCase
+    public func roBnd01OutputBoundaryUtf8AndFailureScanAreExact():Unit{
+        let root=Path("target/ro-boundary-${DateTime.now().toUnixTimeStamp().toMilliseconds()}")
+        Directory.create(root,recursive:true);let exact=StringBuilder()
+        for(_ in 0..1048576){exact.append("x")};let exactPath=root.join("exact.txt")
+        File.writeTo(exactPath,exact.toString().toArray());let accepted=ckbAbcdeReadBoundedTestOutputForTest(exactPath.toString(),1048576)
+        @Expect(accepted.ok,true);@Expect(accepted.truncated,false);@Expect(accepted.text.size,1048576)
+
+        let unicode=StringBuilder();for(_ in 0..150000){unicode.append("中文😀")};unicode.append("FAILED")
+        let unicodePath=root.join("unicode.txt");File.writeTo(unicodePath,unicode.toString().toArray())
+        let bounded=ckbAbcdeReadBoundedTestOutputForTest(unicodePath.toString(),1048576)
+        @Expect(bounded.ok,true);@Expect(bounded.truncated,true);@Expect(bounded.text.size<=1048576,true)
+        @Expect(bounded.text.contains("中文😀"),true);@Expect(bounded.failureDetected,true)
+        let tiny=ckbAbcdeReadBoundedTestOutputForTest(unicodePath.toString(),8)
+        @Expect(tiny.ok,true);@Expect(tiny.truncated,true);@Expect(tiny.text.size<=8,true)
+
+        let invalidPath=root.join("invalid.bin");File.writeTo(invalidPath,[0xff,0xfe,0x80])
+        let invalid=ckbAbcdeReadBoundedTestOutputForTest(invalidPath.toString(),1048576)
+        @Expect(invalid.ok,false);@Expect(invalid.diagnostic,"invalid_response_encoding")
+    }
+
     // P3-NEG-01
     @TestCase
     public func toolFallbackAndMultipleTerminalFormsAreRejected(): Unit {

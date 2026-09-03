@@ -121,6 +121,8 @@ public class CkbAbcdeCommandResult {
     public var workerPid: Int64 = 0
     public var diagnostic: String = "not_timed"
     public var encodingFailure: Bool = false
+    public var outputTruncated: Bool = false
+    public var outputFailureDetected: Bool = false
 
     public init() {}
 }
@@ -153,7 +155,7 @@ public func ckbAbcdeEvaluateFrozenCompletion(groupRoot:String,caseSrc:String,wor
     executor.testTimeoutSeconds=testTimeoutSeconds
     for(suite in testSuites.split(",")){
         let name=suite.trimAscii();if(name!="base"&&name!="plus"){continue}
-        let suiteWorkspace="${groupRoot}/suite-workspaces/${name}";let copied=ckbAbcdeRunShell("rm -rf ${ckbAbcdeShellQuote(suiteWorkspace)} && mkdir -p ${ckbAbcdeShellQuote(Path(suiteWorkspace).parent.toString())} && cp -R ${ckbAbcdeShellQuote(workspace)} ${ckbAbcdeShellQuote(suiteWorkspace)}","");let before=benchmarkGapSha256(ckbAbcdeReadText("${suiteWorkspace}/src/solution.cj"));let command=if(copied.exitCode==0){executor.execute(name,caseSrc,suiteWorkspace)}else{copied};let after=benchmarkGapSha256(ckbAbcdeReadText("${suiteWorkspace}/src/solution.cj"));let passed=before==answerHash&&after==answerHash&&command.exitCode==0&&!ckbAbcdeTestLogContainsFailure(command.stdout+command.stderr);let sequence=if(name=="base"){3}else{4}
+        let suiteWorkspace="${groupRoot}/suite-workspaces/${name}";let copied=ckbAbcdeRunShell("rm -rf ${ckbAbcdeShellQuote(suiteWorkspace)} && mkdir -p ${ckbAbcdeShellQuote(Path(suiteWorkspace).parent.toString())} && cp -R ${ckbAbcdeShellQuote(workspace)} ${ckbAbcdeShellQuote(suiteWorkspace)}","");let before=benchmarkGapSha256(ckbAbcdeReadText("${suiteWorkspace}/src/solution.cj"));let command=if(copied.exitCode==0){executor.execute(name,caseSrc,suiteWorkspace)}else{copied};let after=benchmarkGapSha256(ckbAbcdeReadText("${suiteWorkspace}/src/solution.cj"));let passed=before==answerHash&&after==answerHash&&command.exitCode==0&&!command.outputFailureDetected&&!ckbAbcdeTestLogContainsFailure(command.stdout+command.stderr);let sequence=if(name=="base"){3}else{4}
         ckbAbcdeWriteText("${groupRoot}/${name}-test-result.json","{\"schemaVersion\":\"ckb-completion-suite-result-v1\",\"answerHash\":\"${answerHash}\",\"sequence\":${sequence},\"passed\":${passed},\"exitCode\":${command.exitCode},\"timedOut\":${command.timedOut},\"runnerFailure\":${ckbAbcdeTestRunnerFailure(command)},\"encodingFailure\":${command.encodingFailure}}\n")
         ckbAbcdeWriteText("${groupRoot}/${name}-test-execution.json","{\"schemaVersion\":\"ckb-completion-suite-execution-v1\",\"suite\":\"${name}\",\"timeoutSeconds\":${testTimeoutSeconds},\"exitCode\":${command.exitCode},\"timedOut\":${command.timedOut},\"terminationAttempted\":${command.timedOut},\"terminated\":${command.pidKilled},\"workerPid\":${command.workerPid},\"runnerFailure\":${ckbAbcdeTestRunnerFailure(command)},\"encodingFailure\":${command.encodingFailure},\"diagnostic\":\"${ckbAbcdeJsonEscape(command.diagnostic)}\"}\n")
         ckbAbcdeWriteText("${groupRoot}/${name}-test.log",command.stdout+command.stderr)
@@ -668,6 +670,8 @@ public class CkbAbcdeBoundedTextRead {
     public var text: String = ""
     public var diagnostic: String = "artifact_read_failed"
     public var contentHash: String = ""
+    public var truncated: Bool = false
+    public var failureDetected: Bool = false
     public init() {}
 }
 
@@ -4302,19 +4306,23 @@ private func ckbAbcdeRunTimedTestShell(script:String,cwd:String,timeoutSeconds:I
     result.exitCode=launched.exitCode;result.timedOut=launched.timedOut
     result.pidKilled=launched.pidKilled;result.workerPid=launched.workerPid
     result.diagnostic=launched.diagnostic
-    let stdoutRead=ckbAbcdeReadBoundedText(stdoutPath,1048576,"test_output_too_large")
-    let stderrRead=ckbAbcdeReadBoundedText(stderrPath,1048576,"test_output_too_large")
+    let stdoutRead=ckbAbcdeReadBoundedTestOutput(stdoutPath,1048576)
+    let stderrRead=ckbAbcdeReadBoundedTestOutput(stderrPath,1048576)
     if(stdoutRead.ok){result.stdout=stdoutRead.text}else if(stdoutRead.diagnostic=="invalid_response_encoding"){
         result.encodingFailure=true
     }
     if(stderrRead.ok){result.stderr=stderrRead.text}else if(stderrRead.diagnostic=="invalid_response_encoding"){
         result.encodingFailure=true
     }
+    result.outputTruncated=stdoutRead.truncated||stderrRead.truncated
+    result.outputFailureDetected=stdoutRead.failureDetected||stderrRead.failureDetected
     if(result.encodingFailure){
         result.exitCode=125;result.diagnostic="test_output_invalid_encoding"
         result.stdout="";result.stderr="operational_encoding_failure:test_output_invalid_encoding\n"
     }else if(!stdoutRead.ok||!stderrRead.ok){
         result.exitCode=125;result.diagnostic=if(!stdoutRead.ok){stdoutRead.diagnostic}else{stderrRead.diagnostic}
+    }else if(result.outputTruncated&&!result.timedOut){
+        result.diagnostic=if(stdoutRead.truncated&&stderrRead.truncated){"test_output_truncated"}else if(stdoutRead.truncated){"test_stdout_truncated"}else{"test_stderr_truncated"}
     }
     try{_=launch("/bin/rm",["-f",pidPath,markerPath,stdoutPath,stderrPath]).wait()}catch(_:Exception){}
     result
@@ -4330,6 +4338,10 @@ private func ckbAbcdeTestRunnerFailure(result:CkbAbcdeCommandResult):Bool {
         result.diagnostic=="worker_launch_failed"||result.diagnostic=="worker_start_pid_missing"||
         result.diagnostic=="worker_timeout_marker_missing"||result.diagnostic=="artifact_read_failed"||
         result.diagnostic=="test_output_too_large"
+}
+
+public func ckbAbcdeTestRunnerFailureForTest(result:CkbAbcdeCommandResult):Bool {
+    ckbAbcdeTestRunnerFailure(result)
 }
 
 private func ckbAbcdeSafeReadPipe(pipe: InputStream): String {
@@ -4354,6 +4366,30 @@ private func ckbAbcdeReadTransportDiagnostic(path:String):String{
 
 public func ckbAbcdeReadBoundedText(path:String,maxBytes:Int64,oversizeDiagnostic:String):CkbAbcdeBoundedTextRead{
     let result=CkbAbcdeBoundedTextRead();try{let bytes=File.readFrom(Path(path));if(bytes.size>maxBytes){result.diagnostic=oversizeDiagnostic;return result};try{result.text=String.fromUtf8(bytes);result.contentHash=benchmarkGapSha256(result.text);result.ok=true;result.diagnostic="ok"}catch(_:Exception){result.diagnostic="invalid_response_encoding"}}catch(_:Exception){result.diagnostic="artifact_read_failed"};result
+}
+
+private func ckbAbcdeReadBoundedTestOutput(path:String,maxBytes:Int64):CkbAbcdeBoundedTextRead{
+    let result=CkbAbcdeBoundedTextRead()
+    try{
+        let bytes=File.readFrom(Path(path))
+        let text=try{String.fromUtf8(bytes)}catch(_:Exception){result.diagnostic="invalid_response_encoding";return result}
+        result.contentHash=benchmarkGapSha256(text)
+        result.failureDetected=ckbAbcdeTestLogContainsFailure(text)
+        if(bytes.size>maxBytes){
+            let marker="\n[test_output_truncated bytes=${bytes.size} failure_marker=${result.failureDetected}]\n"
+            result.text=if(maxBytes>marker.size){
+                utf8SafePrefix(redactSensitive(text),maxBytes-marker.size)+marker
+            }else{utf8SafePrefix(marker,maxBytes)}
+            result.truncated=true;result.ok=true;result.diagnostic="test_output_truncated"
+            return result
+        }
+        result.text=text;result.ok=true;result.diagnostic="ok"
+    }catch(_:Exception){result.diagnostic="artifact_read_failed"}
+    result
+}
+
+public func ckbAbcdeReadBoundedTestOutputForTest(path:String,maxBytes:Int64):CkbAbcdeBoundedTextRead{
+    ckbAbcdeReadBoundedTestOutput(path,maxBytes)
 }
 private func ckbAbcdeReplaceUnsafeArtifact(path:String,safe:String):Unit{try{_=launch("/bin/rm",["-f",path]).wait()}catch(_:Exception){};ckbAbcdeWriteText(path,safe)}
 public func ckbAbcdeSanitizeTranscriptArtifact(path:String,runtimePath:String):CkbAbcdeBoundedTextRead{let result=ckbAbcdeReadBoundedText(path,CKB_ABCDE_MAX_MODEL_TRANSCRIPT_BYTES,"transcript_too_large");if(!result.ok){ckbAbcdeReplaceUnsafeArtifact(path,"");if(runtimePath!=""){try{_=launch("/bin/rm",["-f",runtimePath]).wait()}catch(_:Exception){}}};result}
