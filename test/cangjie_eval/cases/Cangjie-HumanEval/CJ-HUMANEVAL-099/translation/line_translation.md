@@ -17,3 +17,7 @@ The official Python `check(candidate)` was executed against the official canonic
 | 9 | `    # Check some edge cases that are easy to work out by hand.` | `` |
 | 10 | `    assert candidate("0") == 0, "Test 0"` | `CJ-HUMANEVAL-099_l10_c005` |
 | 11 | `` | `` |
+
+## Public Static-Language Boundary
+
+The independently constructed public assertion `CJ-HUMANEVAL-099_public_binary64_c006` verifies the source conversion rule before rounding: decimal text `"9007199254740993"` becomes the nearest binary64 value `9007199254740992.0`. A decimal-digit accumulator would incorrectly retain an exact integer that the source oracle does not retain.

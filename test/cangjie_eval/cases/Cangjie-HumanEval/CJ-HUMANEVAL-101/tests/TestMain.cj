@@ -40,6 +40,7 @@ main(): Int64 {
     expectStringList(words_string("One,, two, three, four, five, six,"), listOfString(["One", "two", "three", "four", "five", "six"]), "CJ-HUMANEVAL-101_l8_c004")
     expectStringList(words_string(""), listOfString([]), "CJ-HUMANEVAL-101_l12_c005")
     expectStringList(words_string("ahmed     , gamal"), listOfString(["ahmed", "gamal"]), "CJ-HUMANEVAL-101_l13_c006")
+    expectStringList(words_string("你好,\n🙂 world"), listOfString(["你好", "🙂", "world"]), "CJ-HUMANEVAL-101_public_unicode_whitespace_c007")
     println("CJ-HUMANEVAL-101 ok")
     return 0
 }

@@ -10,8 +10,10 @@
     "String"
   ],
   "returnType": "ArrayList<String>",
-  "callCount": 6,
+  "callCount": 7,
   "sourceLicense": "MIT",
   "testStrategy": "official check(candidate) expanded through canonical recorder, then translated to Cangjie main assertions",
-  "staticLanguageAdaptations": []
+  "staticLanguageAdaptations": [
+    "The source oracle replaces commas with spaces and then applies Python's no-argument whitespace split. The completion-only starter exposes wordsStringSourceWhitespace(Rune), which recognizes that source whitespace set. Iterate over s.runes(), treat a comma or a Rune accepted by that helper as a separator, preserve every non-separator Rune exactly, and omit empty tokens produced by leading, trailing, or consecutive separators. Byte-wise splitting or checking only ASCII space is not source-equivalent and corrupts non-ASCII text."
+  ]
 }

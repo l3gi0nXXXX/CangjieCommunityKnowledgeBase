@@ -1,6 +1,14 @@
 package cangjie_humaneval_101
 
 import std.collection.*
+import std.unicode.*
+
+// Match Python str.split() with no separator: Unicode whitespace plus the
+// four C0 information separators U+001C..U+001F recognized by Python.
+public func wordsStringSourceWhitespace(value: Rune): Bool {
+    let codePoint = UInt32(value)
+    value.isWhiteSpace() || (codePoint >= UInt32(28) && codePoint <= UInt32(31))
+}
 
 public class EvalValue {
     public var kind: String = "none"

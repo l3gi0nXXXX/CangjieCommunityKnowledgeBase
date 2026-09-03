@@ -10,8 +10,10 @@
     "String"
   ],
   "returnType": "Int64",
-  "callCount": 5,
+  "callCount": 6,
   "sourceLicense": "MIT",
   "testStrategy": "official check(candidate) expanded through canonical recorder, then translated to Cangjie main assertions",
-  "staticLanguageAdaptations": []
+  "staticLanguageAdaptations": [
+    "The source oracle first converts value to a Python float, so the Cangjie translation must first parse the complete string as binary64 with Float64.parse(value) and then round that parsed value to the nearest integer, breaking exact half ties away from zero. The completion-only starter imports std.convert.Parsable so Float64.parse is available without changing the file prologue. Manually accumulating decimal digits is not equivalent near binary64 precision boundaries."
+  ]
 }

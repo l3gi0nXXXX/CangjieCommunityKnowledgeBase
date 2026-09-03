@@ -20,3 +20,7 @@ The official Python `check(candidate)` was executed against the official canonic
 | 12 | `    assert candidate("") == []` | `CJ-HUMANEVAL-101_l12_c005` |
 | 13 | `    assert candidate("ahmed     , gamal") == ["ahmed", "gamal"]` | `CJ-HUMANEVAL-101_l13_c006` |
 | 14 | `` | `` |
+
+## Public Static-Language Boundary
+
+The independently constructed public assertion `CJ-HUMANEVAL-101_public_unicode_whitespace_c007` verifies Rune-preserving tokenization across a comma, a newline, Unicode words, and emoji. `wordsStringSourceWhitespace(Rune)` additionally documents and exposes the complete source no-argument whitespace predicate, including Python's U+001C..U+001F behavior.

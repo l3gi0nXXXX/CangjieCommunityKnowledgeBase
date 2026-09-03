@@ -39,6 +39,7 @@ main(): Int64 {
     expectInt64(closest_integer("-15.5"), -16, "CJ-HUMANEVAL-099_l6_c003")
     expectInt64(closest_integer("15.3"), 15, "CJ-HUMANEVAL-099_l7_c004")
     expectInt64(closest_integer("0"), 0, "CJ-HUMANEVAL-099_l10_c005")
+    expectInt64(closest_integer("9007199254740993"), 9007199254740992, "CJ-HUMANEVAL-099_public_binary64_c006")
     println("CJ-HUMANEVAL-099 ok")
     return 0
 }

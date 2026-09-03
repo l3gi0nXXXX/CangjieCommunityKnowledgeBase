@@ -2,11 +2,15 @@
 
 - Source task: `HumanEval/99`
 - Cangjie signature: `public func closest_integer(value: String): Int64`
-- Test calls expanded from official HumanEval: `5`
+- Test calls expanded from official HumanEval plus public contract boundaries: `6`
 
 ## Model-Facing Task
 
 Implement the function in `starter/src/solution.cj` according to the source task. Keep the public Cangjie signature unchanged.
+
+## Static-Language Contract
+
+The source oracle first converts `value` to a Python `float`, so the Cangjie translation must first parse the complete string as binary64 with `Float64.parse(value)` and then round that parsed value to the nearest integer, breaking exact half ties away from zero. The completion-only starter imports `std.convert.Parsable` so `Float64.parse` is available without changing the file prologue. Manually accumulating decimal digits is not equivalent near binary64 precision boundaries.
 
 ## Line-by-Line Prompt Translation
 
