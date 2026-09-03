@@ -198,13 +198,13 @@ public class CangjieHumanEvalTypedAdaptationContractTest {
         let corpus = htaRealCorpusRows()
         @Expect(corpus[0], true)
         @Expect(corpus[2], 164)
-        @Expect(corpus[1].size, 1540)
+        @Expect(corpus[1].size, 1543)
         @Expect(htaNoConflictingExpected(corpus[1]), true)
         let case151 = htaCaseText("CJ-HUMANEVAL-151", "tests/TestMain.cj")
         @Expect(case151.contains("CJ-HUMANEVAL-151_type_int_c008"), true)
         @Expect(case151.contains("CJ-HUMANEVAL-151_type_float_c009"), true)
         let readme = htaCaseText("CJ-HUMANEVAL-151", "../README.md")
-        @Expect(readme.contains("Candidate invocations translated to Cangjie assertions: 1538"), true)
+        @Expect(readme.contains("Candidate invocations translated to Cangjie assertions: 1541"), true)
     }
 
     @TestCase

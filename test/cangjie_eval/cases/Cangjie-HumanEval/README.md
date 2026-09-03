@@ -5,7 +5,7 @@ This directory contains a full 164-case CangjieEval translation pack derived fro
 - Source dataset: https://github.com/openai/human-eval
 - Source license: MIT, copied under `test/cangjie_eval/sources/openai-human-eval/LICENSE`.
 - Cases: 164
-- Candidate invocations translated to Cangjie assertions: 1538
+- Candidate invocations translated to Cangjie assertions: 1541
 
 The authority preserves official calls and expected values while expressing them through explicit Cangjie types. These typed Cangjie contracts do not claim full Python duck-typing compatibility. Whenever Python subtype, iterable, `None`, or container identity semantics are narrowed or represented differently, `metadata.json`, `prompt.md`, and `translation/line_translation.md` must state that adaptation without changing the official observed values.
 
@@ -78,7 +78,7 @@ These adaptations are recorded per case in `metadata.json`.
 | `CJ-HUMANEVAL-024` | `HumanEval/24` | `largest_divisor` | 5 | `public func largest_divisor(n: Int64): Int64` | none |
 | `CJ-HUMANEVAL-025` | `HumanEval/25` | `factorize` | 8 | `public func factorize(n: Int64): ArrayList<Int64>` | none |
 | `CJ-HUMANEVAL-026` | `HumanEval/26` | `remove_duplicates` | 3 | `public func remove_duplicates(numbers: ArrayList<Int64>): ArrayList<Int64>` | none |
-| `CJ-HUMANEVAL-027` | `HumanEval/27` | `flip_case` | 3 | `public func flip_case(string: String): String` | none |
+| `CJ-HUMANEVAL-027` | `HumanEval/27` | `flip_case` | 4 | `public func flip_case(string: String): String` | Completion-only scaffold imports `std.unicode.*`; processing is Rune-boundary safe. |
 | `CJ-HUMANEVAL-028` | `HumanEval/28` | `concatenate` | 3 | `public func concatenate(strings: ArrayList<String>): String` | none |
 | `CJ-HUMANEVAL-029` | `HumanEval/29` | `filter_by_prefix` | 2 | `public func filter_by_prefix(strings: ArrayList<String>, prefix: String): ArrayList<String>` | none |
 | `CJ-HUMANEVAL-030` | `HumanEval/30` | `get_positive` | 4 | `public func get_positive(l: ArrayList<Int64>): ArrayList<Int64>` | none |
@@ -212,6 +212,6 @@ These adaptations are recorded per case in `metadata.json`.
 | `CJ-HUMANEVAL-158` | `HumanEval/158` | `find_max` | 10 | `public func find_max(words: ArrayList<String>): String` | none |
 | `CJ-HUMANEVAL-159` | `HumanEval/159` | `eat` | 6 | `public func eat(number: Int64, need: Int64, remaining: Int64): ArrayList<Int64>` | none |
 | `CJ-HUMANEVAL-160` | `HumanEval/160` | `do_algebra` | 3 | `public func do_algebra(operatorValue: ArrayList<String>, operand: ArrayList<Int64>): Int64` | none |
-| `CJ-HUMANEVAL-161` | `HumanEval/161` | `solve` | 8 | `public func solve(s: String): String` | none |
+| `CJ-HUMANEVAL-161` | `HumanEval/161` | `solve` | 10 | `public func solve(s: String): String` | Completion-only scaffold imports `std.unicode.*`; case conversion and reversal use Rune boundaries. |
 | `CJ-HUMANEVAL-162` | `HumanEval/162` | `string_to_md5` | 4 | `public func string_to_md5(text: String): Option<String>` | Python None returns are represented by Option<T>. |
 | `CJ-HUMANEVAL-163` | `HumanEval/163` | `generate_integers` | 4 | `public func generate_integers(a: Int64, b: Int64): ArrayList<Int64>` | none |

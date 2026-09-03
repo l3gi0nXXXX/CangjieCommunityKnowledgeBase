@@ -2,7 +2,10 @@
 
 - Source task: `HumanEval/161`
 - Cangjie signature: `public func solve(s: String): String`
-- Test calls expanded from official HumanEval: `8`
+- Test calls expanded from official HumanEval plus Unicode/emoji boundaries: `10`
+- Static-language adaptations:
+  - The completion-only starter imports std.unicode.* so Rune.toLowerCase(), Rune.toUpperCase(), and Rune.isLetter() are available without modifying the file prologue.
+  - Iterate the input by Rune boundaries; direct String iteration exposes UTF-8 bytes and cannot safely implement Unicode case conversion or no-letter reversal.
 
 ## Model-Facing Task
 

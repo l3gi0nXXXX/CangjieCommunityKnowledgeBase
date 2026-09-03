@@ -10,8 +10,11 @@
     "String"
   ],
   "returnType": "String",
-  "callCount": 8,
+  "callCount": 10,
   "sourceLicense": "MIT",
-  "testStrategy": "official check(candidate) expanded through canonical recorder, then translated to Cangjie main assertions",
-  "staticLanguageAdaptations": []
+  "testStrategy": "official check(candidate) expanded through canonical recorder, then translated to Cangjie main assertions, plus Unicode case-conversion/emoji-preservation and no-letter Rune reversal boundaries",
+  "staticLanguageAdaptations": [
+    "The completion-only starter imports std.unicode.* so Rune.toLowerCase(), Rune.toUpperCase(), and Rune.isLetter() are available without modifying the file prologue.",
+    "Iterate the input by Rune boundaries; direct String iteration exposes UTF-8 bytes and cannot safely implement Unicode case conversion or no-letter reversal."
+  ]
 }

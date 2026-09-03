@@ -2,7 +2,10 @@
 
 - Source task: `HumanEval/27`
 - Cangjie signature: `public func flip_case(string: String): String`
-- Test calls expanded from official HumanEval: `3`
+- Test calls expanded from official HumanEval plus a Unicode/emoji boundary: `4`
+- Static-language adaptations:
+  - The completion-only starter imports std.unicode.* so Rune.toLowerCase(), Rune.toUpperCase(), and Rune.isLetter() are available without modifying the file prologue.
+  - Iterate the input by Rune boundaries; direct String iteration exposes UTF-8 bytes and is not suitable for Unicode case conversion.
 
 ## Model-Facing Task
 

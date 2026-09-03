@@ -42,6 +42,8 @@ main(): Int64 {
     expectString(solve("#6@2"), "2@6#", "CJ-HUMANEVAL-161_l9_c006")
     expectString(solve("#$a^D"), "#$A^d", "CJ-HUMANEVAL-161_l12_c007")
     expectString(solve("#ccc"), "#CCC", "CJ-HUMANEVAL-161_l13_c008")
+    expectString(solve("éÉ🙂"), "Éé🙂", "CJ-HUMANEVAL-161_unicode_emoji_c009")
+    expectString(solve("🙂😂"), "😂🙂", "CJ-HUMANEVAL-161_no_letter_rune_reverse_c010")
     println("CJ-HUMANEVAL-161 ok")
     return 0
 }
