@@ -316,8 +316,11 @@ public class CangjieEvalAbcdeRunnerCompletionTest {
         let verifier=P3FakeCompletionVerifier();let evaluated=ckbAbcdeEvaluateFrozenCompletion(groupRoot.toString(),root.join("case-source").toString(),workspace.toString(),completion.answerHash,"base,plus",executor:verifier)
         @Expect(evaluated.basePassed,true);@Expect(evaluated.plusPassed,true);@Expect(verifier.baseCalls,1);@Expect(verifier.plusCalls,1);@Expect(verifier.workspaces.size,2);@Expect(verifier.workspaces[0]!=verifier.workspaces[1],true);@Expect(String.fromUtf8(File.readFrom(workspace.join("src/solution.cj"))),solution)
         for(name in ["frozen-completion/solution.cj","generation-evidence.json","answer-freeze.json","base-test-result.json","plus-test-result.json","base-test-execution.json","plus-test-execution.json"]){@Expect(exists(groupRoot.join(name)),true)}
-        @Expect(String.fromUtf8(File.readFrom(groupRoot.join("base-test-result.json"))).contains("\"answerHash\":\"${completion.answerHash}\""),true);@Expect(String.fromUtf8(File.readFrom(groupRoot.join("plus-test-result.json"))).contains("\"answerHash\":\"${completion.answerHash}\""),true)
+        let baseResult=String.fromUtf8(File.readFrom(groupRoot.join("base-test-result.json")));let plusResult=String.fromUtf8(File.readFrom(groupRoot.join("plus-test-result.json")))
+        @Expect(baseResult.contains("\"schemaVersion\":\"ckb-completion-suite-result-v1\""),true);@Expect(baseResult.contains("\"answerHash\":\"${completion.answerHash}\""),true)
+        @Expect(plusResult.contains("\"schemaVersion\":\"ckb-completion-suite-result-v1\""),true);@Expect(plusResult.contains("\"answerHash\":\"${completion.answerHash}\""),true)
         let execution=String.fromUtf8(File.readFrom(groupRoot.join("base-test-execution.json")))
+        @Expect(execution.contains("\"schemaVersion\":\"ckb-completion-suite-execution-v1\""),true)
         @Expect(execution.contains("\"timeoutSeconds\":180"),true);@Expect(execution.contains("\"timedOut\":false"),true)
     }
 

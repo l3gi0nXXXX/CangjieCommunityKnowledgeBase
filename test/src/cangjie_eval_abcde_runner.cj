@@ -154,8 +154,8 @@ public func ckbAbcdeEvaluateFrozenCompletion(groupRoot:String,caseSrc:String,wor
     for(suite in testSuites.split(",")){
         let name=suite.trimAscii();if(name!="base"&&name!="plus"){continue}
         let suiteWorkspace="${groupRoot}/suite-workspaces/${name}";let copied=ckbAbcdeRunShell("rm -rf ${ckbAbcdeShellQuote(suiteWorkspace)} && mkdir -p ${ckbAbcdeShellQuote(Path(suiteWorkspace).parent.toString())} && cp -R ${ckbAbcdeShellQuote(workspace)} ${ckbAbcdeShellQuote(suiteWorkspace)}","");let before=benchmarkGapSha256(ckbAbcdeReadText("${suiteWorkspace}/src/solution.cj"));let command=if(copied.exitCode==0){executor.execute(name,caseSrc,suiteWorkspace)}else{copied};let after=benchmarkGapSha256(ckbAbcdeReadText("${suiteWorkspace}/src/solution.cj"));let passed=before==answerHash&&after==answerHash&&command.exitCode==0&&!ckbAbcdeTestLogContainsFailure(command.stdout+command.stderr);let sequence=if(name=="base"){3}else{4}
-        ckbAbcdeWriteText("${groupRoot}/${name}-test-result.json","{\"answerHash\":\"${answerHash}\",\"sequence\":${sequence},\"passed\":${passed},\"exitCode\":${command.exitCode},\"timedOut\":${command.timedOut},\"runnerFailure\":${ckbAbcdeTestRunnerFailure(command)},\"encodingFailure\":${command.encodingFailure}}\n")
-        ckbAbcdeWriteText("${groupRoot}/${name}-test-execution.json","{\"suite\":\"${name}\",\"timeoutSeconds\":${testTimeoutSeconds},\"exitCode\":${command.exitCode},\"timedOut\":${command.timedOut},\"terminationAttempted\":${command.timedOut},\"terminated\":${command.pidKilled},\"workerPid\":${command.workerPid},\"runnerFailure\":${ckbAbcdeTestRunnerFailure(command)},\"encodingFailure\":${command.encodingFailure},\"diagnostic\":\"${ckbAbcdeJsonEscape(command.diagnostic)}\"}\n")
+        ckbAbcdeWriteText("${groupRoot}/${name}-test-result.json","{\"schemaVersion\":\"ckb-completion-suite-result-v1\",\"answerHash\":\"${answerHash}\",\"sequence\":${sequence},\"passed\":${passed},\"exitCode\":${command.exitCode},\"timedOut\":${command.timedOut},\"runnerFailure\":${ckbAbcdeTestRunnerFailure(command)},\"encodingFailure\":${command.encodingFailure}}\n")
+        ckbAbcdeWriteText("${groupRoot}/${name}-test-execution.json","{\"schemaVersion\":\"ckb-completion-suite-execution-v1\",\"suite\":\"${name}\",\"timeoutSeconds\":${testTimeoutSeconds},\"exitCode\":${command.exitCode},\"timedOut\":${command.timedOut},\"terminationAttempted\":${command.timedOut},\"terminated\":${command.pidKilled},\"workerPid\":${command.workerPid},\"runnerFailure\":${ckbAbcdeTestRunnerFailure(command)},\"encodingFailure\":${command.encodingFailure},\"diagnostic\":\"${ckbAbcdeJsonEscape(command.diagnostic)}\"}\n")
         ckbAbcdeWriteText("${groupRoot}/${name}-test.log",command.stdout+command.stderr)
         if(name=="base"){evaluation.baseExecuted=true;evaluation.basePassed=passed;evaluation.baseResult=command}else{evaluation.plusExecuted=true;evaluation.plusPassed=passed;evaluation.plusResult=command}
     }
@@ -1755,6 +1755,7 @@ private func ckbAbcdeRunCaseGroup(options: CkbAbcdeRunnerOptions, runRoot: Strin
     let frozenAnswerHash=benchmarkGapSha256(frozenAnswer)
     if(options.generationProtocol!="completion-only-v1"){ckbAbcdeWriteText("${groupRoot}/answer-freeze.json","{\"answerHash\":\"${frozenAnswerHash}\",\"verifierMounted\":false}\n")}
     var inject=CkbAbcdeCommandResult();var test=CkbAbcdeCommandResult()
+    var frozenBaseFailureType="none";var frozenPlusFailureType="none"
     if((options.runMode=="certification"||options.targetedStudent)&&options.generationProtocol=="completion-only-v1"&&options.evaluateFrozen){
         let evaluation=ckbAbcdeEvaluateFrozenCompletion(groupRoot,caseSrc,workspace,frozenAnswerHash,
             options.testSuites,testTimeoutSeconds:options.modelTimeoutSeconds)
@@ -1764,6 +1765,8 @@ private func ckbAbcdeRunCaseGroup(options: CkbAbcdeRunnerOptions, runRoot: Strin
         test.exitCode=if(evaluation.basePassed&&evaluation.plusPassed){0}else if(testTimedOut){124}else if(runnerFailure){125}else{1}
         test.timedOut=testTimedOut;test.encodingFailure=evaluation.baseResult.encodingFailure||evaluation.plusResult.encodingFailure
         test.stdout=evaluation.baseResult.stdout+evaluation.baseResult.stderr+evaluation.plusResult.stdout+evaluation.plusResult.stderr
+        frozenBaseFailureType=ckbAbcdeSuiteFailureType(evaluation.baseResult,evaluation.basePassed)
+        frozenPlusFailureType=ckbAbcdeSuiteFailureType(evaluation.plusResult,evaluation.plusPassed)
     }else{
         inject=ckbAbcdeRunShell("cp ${ckbAbcdeShellQuote("${caseSrc}/tests/TestMain.cj")} ${ckbAbcdeShellQuote("${workspace}/src/main.cj")} && cp ${ckbAbcdeShellQuote("${caseSrc}/tests/cjpm.executable.toml")} ${ckbAbcdeShellQuote("${workspace}/cjpm.toml")}", "")
         if(inject.exitCode==0){test=ckbAbcdeRunShell("cjpm run", workspace)}
@@ -1786,11 +1789,12 @@ private func ckbAbcdeRunCaseGroup(options: CkbAbcdeRunnerOptions, runRoot: Strin
     let unitPass = test.exitCode == 0 && !ckbAbcdeTestLogContainsFailure(testLog)
     let unitPassAt1 = ckbAbcdeUnitPassAt1(unitPass, groupRoot)
     let toolReady = completionMode||ckbAbcdeRequiredKnowledgeReady(group, knowledgeReady, toolEvidence)
-    let legacyFailureType = ckbAbcdeFailureType(claudeExit, test.exitCode, unitPass, violation, testLog, toolReady)
+    let frozenEvaluationReady=completionMode&&options.evaluateFrozen
+    let genericFailureType=ckbAbcdeFailureType(claudeExit,test.exitCode,unitPass,violation,testLog,toolReady)
+    let legacyFailureType=if(frozenEvaluationReady&&violation=="none"&&claudeExit==0&&toolReady){ckbAbcdeCanonicalSuiteFailureType(frozenBaseFailureType,frozenPlusFailureType)}else{genericFailureType}
     let failureType = if (options.explicitRunMode) { ckbAbcdeExpandedFailureType(legacyFailureType) } else { legacyFailureType }
     let protocolViolation = violation != "none"
     let observedModel = ckbAbcdeObservedModel(transcript)
-    let frozenEvaluationReady=completionMode&&options.evaluateFrozen
     let sampleReady = frozenEvaluationReady||!options.explicitRunMode || options.runMode != "development" || ckbAbcdeSampleAttemptCount(groupRoot) == 1
     let modelReady = frozenEvaluationReady||(!options.explicitRunMode || observedModel == options.expectedModelVersion) && sampleReady
     if (options.explicitRunMode) {
@@ -3519,11 +3523,56 @@ private func ckbAbcdeFailureType(claudeExitCode: Int64, testExitCode: Int64, uni
     if (unitPass) {
         return "none"
     }
-    let lowered = testLog.toAsciiLower()
-    if (testExitCode != 0 && (lowered.contains("compile") || lowered.contains("syntax") || lowered.contains("error:"))) {
+    if (testExitCode != 0 && ckbAbcdeLogHasCompilerError(testLog)) {
         return "compile_error"
     }
     "unit_failure"
+}
+
+private func ckbAbcdeSuiteFailureType(result:CkbAbcdeCommandResult,passed:Bool):String{
+    if(passed){return "none"}
+    if(ckbAbcdeLogHasCompilerError(result.stdout+result.stderr)){return "compile_error"}
+    if(result.timedOut){return "timeout"}
+    if(ckbAbcdeTestRunnerFailure(result)){return "runner_failure"}
+    "unit_failure"
+}
+
+private func ckbAbcdeCanonicalSuiteFailureType(base:String,plus:String):String{
+    for(kind in ["compile_error","unit_failure","timeout","runner_failure"]){if(base==kind||plus==kind){return kind}}
+    "none"
+}
+
+private func ckbAbcdeLogHasCompilerError(testLog:String):Bool{
+    var stage:Int64=0
+    for(line in testLog.split("\n")){
+        let lower=ckbAbcdeFailureStripAnsi(line).trimAscii().toAsciiLower()
+        if(stage==0&&lower.startsWith("error:")){stage=1}
+        else if(stage==1&&lower.contains("==>")){stage=2}
+        else if(stage==2&&ckbAbcdeCompilerCountTerminal(lower)){stage=3}
+        else if(stage==3&&ckbAbcdeCompilerPackageTerminal(lower)){return true}
+    }
+    false
+}
+
+private func ckbAbcdeCompilerCountTerminal(lower:String):Bool{
+    let parts=lower.split(" ");if(parts.size!=6||parts[2]!="generated,"||parts[5]!="printed."){return false}
+    try{
+        let generated=Int64.parse(parts[0]);let printed=Int64.parse(parts[3])
+        let word=if(generated==1){"error"}else{"errors"}
+        generated>0&&generated==printed&&parts[1]==word&&parts[4]==word
+    }catch(_:Exception){false}
+}
+
+private func ckbAbcdeCompilerPackageTerminal(lower:String):Bool{
+    if(!lower.startsWith("error: failed to compile package `")){return false}
+    let parts=lower.split("`, return code is ");if(parts.size!=2||parts[0].size<=34){return false}
+    try{Int64.parse(parts[1])!=0}catch(_:Exception){false}
+}
+
+private func ckbAbcdeFailureStripAnsi(value:String):String{
+    var out=value
+    for(code in ["\u{001b}[31m","\u{001b}[0m","\u{001b}[36m","\u{001b}[32m","\u{001b}[33m"]){out=out.replace(code,"")}
+    out
 }
 
 public func ckbAbcdeExpandedFailureType(legacy: String): String {
@@ -3641,6 +3690,14 @@ public func ckbAbcdeIsolationDiagnostic(caseId: String, workspaceId: String, ses
 
 public func ckbAbcdeFailureTypeForTest(claudeExitCode: Int64, testExitCode: Int64, unitPass: Bool, violation: String, testLog: String, toolReady: Bool): String {
     ckbAbcdeFailureType(claudeExitCode, testExitCode, unitPass, violation, testLog, toolReady)
+}
+
+public func ckbAbcdeSuiteFailureTypeForTest(result:CkbAbcdeCommandResult,passed:Bool):String{
+    ckbAbcdeExpandedFailureType(ckbAbcdeSuiteFailureType(result,passed))
+}
+
+public func ckbAbcdeCanonicalSuiteFailureTypeForTest(base:String,plus:String):String{
+    ckbAbcdeExpandedFailureType(ckbAbcdeCanonicalSuiteFailureType(base,plus))
 }
 
 private func ckbAbcdeResultNotes(status: String, violation: String, toolEvidence: String): String {

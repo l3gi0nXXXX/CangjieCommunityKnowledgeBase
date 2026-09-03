@@ -21,8 +21,8 @@ public class CangjieEvalClassifierControlTest {
         File.writeTo(root.join("result-evidence.json"),(result+"\n").toArray())
         File.writeTo(root.join("canonical-task-context.json"),("{\"taskId\":\"${caseId}\",\"datasetVersion\":\"${dataset}\",\"taskText\":\"公开任务 中文😀\"}\n").toArray())
         File.writeTo(root.join("evaluation-outcome.json"),(renderCkbCompletionEvaluationOutcome(runId,caseId,"C-ckb-mcp-stdio",dataset,"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","failed","passed",benchmarkGapSha256(result))+"\n").toArray())
-        File.writeTo(root.join("base-test.log"),"exception 中文😀\n/Users/private/hidden/TestMain.cj expected: secret".toArray())
-        File.writeTo(root.join("plus-test.log"),"PASS".toArray())
+        ftWriteSuite(root,"base",false,0,false,false,false,"worker_completed","exception 中文😀\n/Users/private/hidden/TestMain.cj expected: secret")
+        ftWriteSuite(root,"plus",true,0,false,false,false,"worker_completed","PASS")
         let built=buildCkbCompletionFailureFromArtifacts(root,caseId,runId)
         @Expect(built[1],"ok");@Expect(parseCkbCompletionFailure(renderCkbCompletionFailure(built[0]).toArray())[1],"ok")
         let rendered=renderCkbCompletionFailure(built[0]);@Expect(rendered.contains("中文😀"),true)
@@ -38,7 +38,182 @@ public class CangjieEvalClassifierControlTest {
         let summary=ckbP5CompilerSummaryFromBytes(("exception 中文😀 "+long).toArray(),"test_failure")
         @Expect(summary.toRuneArray().size<=1024,true);@Expect(summary.contains("中文😀"),true)
         let redacted=ckbP5CompilerSummaryFromBytes("Authorization: Bearer secret\nassert public failure".toArray(),"test_failure")
-        @Expect(redacted,"test_failure_detail_redacted");@Expect(redacted.toAsciiLower().contains("authorization"),false)
+        @Expect(redacted,"test_assertion:assertion");@Expect(redacted.toAsciiLower().contains("authorization"),false)
+    }
+
+    // FT-UT-01
+    @TestCase
+    public func compilerSummaryKeepsOnlyStableFirstRoot():Unit{
+        let log="error: reserved identifier 中文😀\n==> /private/work/src/solution.cj:16:13:\n16 | let expected = \"protected fixture literal\"\nerror: expected case after parser cascade\n==> /private/work/src/solution.cj:22:9:\n7 errors generated, 7 errors printed.\nError: failed to compile package `fixture`, return code is 1"
+        let summary=ckbP5CompilerSummaryFromBytes(log.toArray(),"compile_error")
+        @Expect(summary.contains("reserved identifier 中文😀"),true)
+        @Expect(summary.contains("location solution.cj:16:13:"),true)
+        @Expect(summary.contains("location solution.cj:22:9:"),false)
+        @Expect(summary.contains("parser cascade"),false)
+        @Expect(summary.contains("protected fixture literal"),false)
+    }
+
+    // FT-POS-01
+    @TestCase
+    public func warningsPlusTerminalAssertionCanonicalizeAsTestFailure():Unit{
+        let root=ftFailureRoot("warning-assertion","compile_error","passed","failed")
+        ftWriteSuite(root,"base",true,0,false,false,false,"worker_completed","tests passed")
+        let log="warning: unusual character 中文😀\nnote: suppress with compiler option\nException: verifier failure: String mismatch"
+        ftWriteSuite(root,"plus",false,0,false,false,false,"worker_completed",log)
+        let built=buildCkbCompletionFailureFromArtifacts(root,"CJ-HUMANEVAL-001","ft-run")
+        @Expect(built[1],"ok");@Expect(built[0].failureKind,"test_failure")
+        @Expect(built[0].failureObservation.contains("test_assertion:string_mismatch"),true)
+        @Expect(built[0].failureObservation.contains("warning"),false)
+        @Expect(ckbAbcdeFailureTypeForTest(0,1,false,"none",log,true),"unit_failure")
+    }
+
+    // FT-NEG-01
+    @TestCase
+    public func realCompilerErrorWithParserCascadesStaysCompileError():Unit{
+        let result=CkbAbcdeCommandResult();result.exitCode=1
+        result.stderr="error: reserved identifier\n==> /private/work/src/solution.cj:9:5:\nerror: unclosed delimiter\n2 errors generated, 2 errors printed.\nError: failed to compile package `fixture`, return code is 1"
+        @Expect(ckbAbcdeSuiteFailureTypeForTest(result,false),"compile_error")
+        @Expect(ckbAbcdeFailureTypeForTest(0,1,false,"none",result.stderr,true),"compile_error")
+        @Expect(ckbAbcdeFailureTypeForTest(0,1,false,"none","compile error 中文😀",true),"unit_failure")
+    }
+
+    // FT-NEG-02
+    @TestCase
+    public func ordinaryFailureWordsNeverClaimCompilerProvenance():Unit{
+        for(log in ["Error: public assertion failed","expected syntax error but got value",
+            "assertion: compile error was not returned","no error generated",
+            "Error: assertion\n1 error generated, 1 error printed.\n==> /tmp/not-compiler-output.cj:1:1:",
+            "Error: assertion\n==> /tmp/not-compiler-output.cj:1:1:\n1 error generated, 1 error printed.",
+            "Error: assertion\n==> /tmp/not-compiler-output.cj:1:1:\nError: failed to compile package `fixture`, return code is 1"]){
+            let result=CkbAbcdeCommandResult();result.exitCode=1;result.stderr=log
+            @Expect(ckbAbcdeSuiteFailureTypeForTest(result,false),"test_failure")
+            @Expect(ckbAbcdeFailureTypeForTest(0,1,false,"none",log,true),"unit_failure")
+        }
+    }
+
+    // FT-POS-02: sanitized terminal shapes captured from CJ018 and CJ027.
+    @TestCase
+    public func realCangjieCompilerTerminalShapesKeepCompileProvenance():Unit{
+        for(log in [
+            "error: expected identifier or pattern after 'var', found keyword 'match'\n==> /private/work/src/solution.cj:16:13:\n7 errors generated, 7 errors printed.\nError: failed to compile package `cangjie_humaneval_018`, return code is 1\nError: cjpm run failed",
+            "error: expected expression after '..', found '<'\n==> /private/work/src/solution.cj:9:18:\n1 error generated, 1 error printed.\nError: failed to compile package `cangjie_humaneval_027`, return code is 1\nError: cjpm run failed"]){
+            let result=CkbAbcdeCommandResult();result.exitCode=1;result.stderr=log
+            @Expect(ckbAbcdeSuiteFailureTypeForTest(result,false),"compile_error")
+            @Expect(ckbAbcdeFailureTypeForTest(0,1,false,"none",log,true),"compile_error")
+        }
+    }
+
+    // FT-BND-01
+    @TestCase
+    public func invalidUtf8SuiteLogBecomesExplicitInfraDiagnostic():Unit{
+        let root=ftFailureRoot("invalid-utf8","test_failure","failed","passed")
+        ftWriteSuite(root,"base",false,1,false,false,false,"worker_exit_code=1","")
+        File.writeTo(root.join("base-test.log"),[UInt8(0xff),UInt8(0xfe)])
+        ftWriteSuite(root,"plus",true,0,false,false,false,"worker_completed","tests passed")
+        let built=buildCkbCompletionFailureFromArtifacts(root,"CJ-HUMANEVAL-001","ft-run")
+        @Expect(built[1],"ok");@Expect(built[0].failureKind,"infra_error")
+        @Expect(built[0].failureObservation.contains("invalid_response_encoding"),true)
+        @Expect(built[0].failureObservation.toRuneArray().size<=1024,true)
+    }
+
+    // FT-BND-02
+    @TestCase
+    public func suiteMetadataFailuresFailClosedAsInfra():Unit{
+        let missing=ftFailureRoot("missing-metadata","test_failure","failed","passed")
+        ftWriteSuite(missing,"base",false,1,false,false,false,"worker_exit_code=1","Exception: assertion")
+        ftWriteSuite(missing,"plus",true,0,false,false,false,"worker_completed","tests passed")
+        _=remove(missing.join("base-test-execution.json"))
+        let missingBuilt=buildCkbCompletionFailureFromArtifacts(missing,"CJ-HUMANEVAL-001","ft-run")
+        @Expect(missingBuilt[1],"ok");@Expect(missingBuilt[0].failureKind,"infra_error")
+        @Expect(missingBuilt[0].failureObservation.contains("test_execution_missing"),true)
+
+        let malformed=ftFailureRoot("malformed-metadata","test_failure","failed","passed")
+        ftWriteSuite(malformed,"base",false,1,false,false,false,"worker_exit_code=1","Exception: assertion")
+        ftWriteSuite(malformed,"plus",true,0,false,false,false,"worker_completed","tests passed")
+        File.writeTo(malformed.join("base-test-result.json"),"{\n".toArray())
+        let malformedBuilt=buildCkbCompletionFailureFromArtifacts(malformed,"CJ-HUMANEVAL-001","ft-run")
+        @Expect(malformedBuilt[1],"ok");@Expect(malformedBuilt[0].failureKind,"infra_error")
+        @Expect(malformedBuilt[0].failureObservation.contains("suite_metadata_malformed"),true)
+
+        let invalid=ftFailureRoot("invalid-metadata-utf8","test_failure","failed","passed")
+        ftWriteSuite(invalid,"base",false,1,false,false,false,"worker_exit_code=1","Exception: assertion")
+        ftWriteSuite(invalid,"plus",true,0,false,false,false,"worker_completed","tests passed")
+        File.writeTo(invalid.join("base-test-result.json"),[UInt8(0xff),UInt8(0xfe)])
+        let invalidBuilt=buildCkbCompletionFailureFromArtifacts(invalid,"CJ-HUMANEVAL-001","ft-run")
+        @Expect(invalidBuilt[1],"ok");@Expect(invalidBuilt[0].failureKind,"infra_error")
+        @Expect(invalidBuilt[0].failureObservation.contains("test_result_invalid_response_encoding"),true)
+    }
+
+    // FT-COMPAT-01
+    @TestCase
+    public func legacySuiteResultWithoutExecutionKeepsProvableMeaning():Unit{
+        let root=ftFailureRoot("legacy-result-only","compile_error","failed","passed")
+        let compiler="error: expected expression\n==> /private/work/src/solution.cj:3:4:\n1 error generated, 1 error printed.\nError: failed to compile package `legacy_fixture`, return code is 1"
+        ftWriteLegacySuite(root,"base",false,1,false,false,false,compiler)
+        ftWriteLegacySuite(root,"plus",true,0,false,false,false,"tests passed")
+        let built=buildCkbCompletionFailureFromArtifacts(root,"CJ-HUMANEVAL-001","ft-run")
+        @Expect(built[1],"ok");@Expect(built[0].failureKind,"compile_error")
+        @Expect(built[0].failureObservation.contains("expected expression"),true)
+        @Expect(built[0].failureObservation.contains("legacy_result_only"),true)
+        @Expect(built[0].failureObservation.contains("test_execution_missing"),false)
+    }
+
+    // FT-NEG-03
+    @TestCase
+    public func strippedLatestSchemaCannotMasqueradeAsLegacy():Unit{
+        let root=ftFailureRoot("stripped-latest-schema","test_failure","failed","passed")
+        ftWriteSuite(root,"base",false,1,false,false,false,"worker_exit_code=1","Exception: assertion")
+        ftWriteLegacySuite(root,"plus",true,0,false,false,false,"tests passed")
+        let path=root.join("base-test-result.json");let raw=String.fromUtf8(File.readFrom(path))
+        File.writeTo(path,raw.replace("\"schemaVersion\":\"ckb-completion-suite-result-v1\",","").toArray())
+        _=remove(root.join("base-test-execution.json"))
+        let built=buildCkbCompletionFailureFromArtifacts(root,"CJ-HUMANEVAL-001","ft-run")
+        @Expect(built[1],"ok");@Expect(built[0].failureKind,"infra_error")
+        @Expect(built[0].failureObservation.contains("test_execution_missing"),true)
+    }
+
+    // FT-CONSIST-02
+    @TestCase
+    public func latestSuiteIdentityAndRuntimeStateMustBeConsistent():Unit{
+        for(kind in ["answer","sequence","worker","timeout","passed_state"]){
+            let root=ftFailureRoot("latest-integrity-${kind}","test_failure","failed","passed")
+            ftWriteSuite(root,"base",false,1,false,false,false,"worker_exit_code=1","Exception: assertion")
+            ftWriteSuite(root,"plus",true,0,false,false,false,"worker_completed","tests passed")
+            if(kind=="answer"){
+                let raw=String.fromUtf8(File.readFrom(root.join("base-test-result.json")))
+                File.writeTo(root.join("base-test-result.json"),raw.replace("sha256:aaaaaaaa","sha256:bbbbbbbb").toArray())
+            }else if(kind=="sequence"){
+                let raw=String.fromUtf8(File.readFrom(root.join("base-test-result.json")))
+                File.writeTo(root.join("base-test-result.json"),raw.replace("\"sequence\":3","\"sequence\":9").toArray())
+            }else if(kind=="worker"){
+                let raw=String.fromUtf8(File.readFrom(root.join("base-test-execution.json")))
+                File.writeTo(root.join("base-test-execution.json"),raw.replace("\"workerPid\":123","\"workerPid\":-1").toArray())
+            }else if(kind=="timeout"){
+                let raw=String.fromUtf8(File.readFrom(root.join("base-test-result.json")))
+                File.writeTo(root.join("base-test-result.json"),raw.replace("\"timedOut\":false","\"timedOut\":true").toArray())
+            }else{
+                let raw=String.fromUtf8(File.readFrom(root.join("base-test-result.json")))
+                File.writeTo(root.join("base-test-result.json"),raw.replace("\"passed\":false","\"passed\":true").toArray())
+            }
+            let built=buildCkbCompletionFailureFromArtifacts(root,"CJ-HUMANEVAL-001","ft-run")
+            @Expect(built[1],"ok");@Expect(built[0].failureKind,"infra_error")
+            @Expect(built[0].failureObservation.contains("suite_metadata_inconsistent"),true)
+        }
+    }
+
+    // FT-CONSIST-01
+    @TestCase
+    public func compileRootPrecedesOtherSuiteOutputOverflow():Unit{
+        let root=ftFailureRoot("compile-and-overflow","runner_failure","failed","failed")
+        ftWriteSuite(root,"base",false,1,false,false,false,"worker_exit_code=1","error: first compiler root\n==> /private/work/src/solution.cj:4:7:\nerror: parser cascade\n2 errors generated, 2 errors printed.\nError: failed to compile package `fixture`, return code is 1")
+        ftWriteSuite(root,"plus",false,125,false,true,false,"test_output_too_large","")
+        let built=buildCkbCompletionFailureFromArtifacts(root,"CJ-HUMANEVAL-001","ft-run")
+        @Expect(built[1],"ok");@Expect(built[0].failureKind,"compile_error")
+        @Expect(built[0].failureObservation.contains("first compiler root"),true)
+        @Expect(built[0].failureObservation.contains("parser cascade"),false)
+        @Expect(built[0].failureObservation.contains("test_output_too_large"),true)
+        @Expect(built[0].failureObservation.contains("result_hash=sha256:"),true)
+        @Expect(ckbAbcdeCanonicalSuiteFailureTypeForTest("compile_error","runner_failure"),"compile_error")
     }
 
     // S0-UT-01: the owner-specific v2 carrier seals and parses canonical bytes deterministically.
@@ -251,7 +426,7 @@ public class CangjieEvalClassifierControlTest {
 
     @TestCase
     public func p5IcBnd01UnicodeRestrictedRequestAndInvalidUtf8FailClosed(): Unit {
-        let root=p5IcRoot("unicode");let caseRoot=p5IcSample(root,"CJ-HUMANEVAL-016","error: 编译错误🙂")
+        let root=p5IcRoot("unicode");let caseRoot=p5IcSample(root,"CJ-HUMANEVAL-016","error: 编译错误🙂\n==> /private/work/src/solution.cj:2:1:\n1 error generated, 1 error printed.\nError: failed to compile package `fixture`, return code is 1")
         let request=buildCkbP5ClassifierRequest(caseRoot,"CJ-HUMANEVAL-016","run-中文🙂")
         @Expect(request.contains("编译错误🙂"),true)
         @Expect(request.contains("studentSourceExcerpt"),true);@Expect(request.contains("学生源码🙂"),true);@Expect(request.contains("\"studentSourceHash\":\"sha256:"),true)
@@ -269,11 +444,12 @@ public class CangjieEvalClassifierControlTest {
         @Expect(unitRequest.contains("expected 001, actual 484849 中文🙂"),true)
         @Expect(unitRequest.contains("/private/user/path"),false);@Expect(unitRequest.contains("token=secret"),false)
         let compilerRoot=p5IcRoot("compiler-summary");let longDetailBuilder=StringBuilder();for(_ in 0..300){longDetailBuilder.append("边界🙂")};let longDetail=longDetailBuilder.toString()
-        let compilerLog="\u{001b}[31merror\u{001b}[0m: mismatched types\n  \u{001b}[36m==>\u{001b}[0m /Users/private/项目🙂/solution.cj:35:5:\n   | _____^ expected 'Float64', found 'Unit' 中文🙂 ${longDetail}\nAuthorization: secret\n/private/token=secret"
+        let compilerLog="\u{001b}[31merror\u{001b}[0m: mismatched types\n  \u{001b}[36m==>\u{001b}[0m /Users/private/项目🙂/solution.cj:35:5:\n   | _____^ expected 'Float64', found 'Unit' 中文🙂 ${longDetail}\n1 error generated, 1 error printed.\nError: failed to compile package `fixture`, return code is 1\nAuthorization: secret\n/private/token=secret"
         let compilerCase=p5IcSample(compilerRoot,"CJ-HUMANEVAL-032",compilerLog)
         let compilerRequest=buildCkbP5ClassifierRequest(compilerCase,"CJ-HUMANEVAL-032","run-中文🙂")
         @Expect(compilerRequest.contains("location solution.cj:35:5:"),true)
-        @Expect(compilerRequest.contains("expected 'Float64', found 'Unit' 中文🙂"),true)
+        @Expect(compilerRequest.contains("mismatched types"),true)
+        @Expect(compilerRequest.contains("expected 'Float64', found 'Unit' 中文🙂"),false)
         @Expect(compilerRequest.contains("/Users/private"),false);@Expect(compilerRequest.toAsciiLower().contains("authorization:"),false);@Expect(compilerRequest.contains("token=secret"),false)
         @Expect(compilerRequest.contains(longDetail),false)
         File.writeTo(compilerCase.join("test.log"),[UInt8(0xff),UInt8(0xfe)])
@@ -721,6 +897,35 @@ public class CangjieEvalClassifierControlTest {
         @Expect(blocked.ok,false);@Expect(blocked.rejected,1);@Expect(blocked.processed,0)
         @Expect(exists(Path(tamperedOutput).join("runs/CJ-HUMANEVAL-016")),false)
     }
+}
+
+private func ftFailureRoot(label:String,resultFailure:String,baseStatus:String,plusStatus:String):Path{
+    let root=Path("target/ft-${label}-${DateTime.now().toUnixTimeStamp().toMilliseconds()}")
+    Directory.create(root,recursive:true)
+    let caseId="CJ-HUMANEVAL-001";let runId="ft-run";let dataset="dataset-v1"
+    let result="{\"runId\":\"${runId}\",\"caseId\":\"${caseId}\",\"datasetVersion\":\"${dataset}\",\"failureType\":\"${resultFailure}\"}"
+    File.writeTo(root.join("result-evidence.json"),(result+"\n").toArray())
+    File.writeTo(root.join("canonical-task-context.json"),("{\"taskId\":\"${caseId}\",\"datasetVersion\":\"${dataset}\",\"taskText\":\"Public failure taxonomy fixture 中文😀\"}\n").toArray())
+    let outcome=renderCkbCompletionEvaluationOutcome(runId,caseId,"fixture-group",dataset,
+        "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        baseStatus,plusStatus,benchmarkGapSha256(result))
+    File.writeTo(root.join("evaluation-outcome.json"),(outcome+"\n").toArray())
+    root
+}
+private func ftWriteSuite(root:Path,suite:String,passed:Bool,exitCode:Int64,timedOut:Bool,
+    runnerFailure:Bool,encodingFailure:Bool,diagnostic:String,log:String):Unit{
+    let sequence=if(suite=="base"){3}else{4}
+    let result="{\"schemaVersion\":\"ckb-completion-suite-result-v1\",\"answerHash\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"sequence\":${sequence},\"passed\":${passed},\"exitCode\":${exitCode},\"timedOut\":${timedOut},\"runnerFailure\":${runnerFailure},\"encodingFailure\":${encodingFailure}}"
+    File.writeTo(root.join("${suite}-test-result.json"),(result+"\n").toArray())
+    File.writeTo(root.join("${suite}-test-execution.json"),("{\"schemaVersion\":\"ckb-completion-suite-execution-v1\",\"suite\":\"${suite}\",\"timeoutSeconds\":180,\"exitCode\":${exitCode},\"timedOut\":${timedOut},\"terminationAttempted\":${timedOut},\"terminated\":false,\"workerPid\":123,\"runnerFailure\":${runnerFailure},\"encodingFailure\":${encodingFailure},\"diagnostic\":\"${diagnostic}\"}\n").toArray())
+    File.writeTo(root.join("${suite}-test.log"),log.toArray())
+}
+private func ftWriteLegacySuite(root:Path,suite:String,passed:Bool,exitCode:Int64,timedOut:Bool,
+    runnerFailure:Bool,encodingFailure:Bool,log:String):Unit{
+    let sequence=if(suite=="base"){3}else{4}
+    let result="{\"answerHash\":\"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"sequence\":${sequence},\"passed\":${passed}}"
+    File.writeTo(root.join("${suite}-test-result.json"),(result+"\n").toArray())
+    File.writeTo(root.join("${suite}-test.log"),log.toArray())
 }
 
 private func s0FailureAssetFixture(name:String):String{
