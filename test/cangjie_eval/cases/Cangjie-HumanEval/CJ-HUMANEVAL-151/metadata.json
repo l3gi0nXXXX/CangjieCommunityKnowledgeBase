@@ -10,10 +10,12 @@
     "ArrayList<EvalValue>"
   ],
   "returnType": "Int64",
-  "callCount": 9,
+  "callCount": 11,
   "sourceLicense": "MIT",
-  "testStrategy": "official check(candidate) translated with tagged Python numeric identities, plus explicit int 3 versus float 3.0 adaptation assertions",
+  "testStrategy": "official check(candidate) translated with tagged Python numeric identities, plus explicit int/float identity and bool-as-int source-semantic assertions",
   "staticLanguageAdaptations": [
-    "Python int and float identities are preserved with EvalValue tags."
+    "Python int and float identities are preserved with EvalValue tags.",
+    "Python bool is an int subtype: evalBool(true) projects to integer 1 and contributes 1, while evalBool(false) projects to integer 0 and contributes 0.",
+    "Float-tagged values such as evalFloat(3.0) are not Python integers and must be ignored."
   ]
 }

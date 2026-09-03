@@ -5,7 +5,7 @@ This directory contains a full 164-case CangjieEval translation pack derived fro
 - Source dataset: https://github.com/openai/human-eval
 - Source license: MIT, copied under `test/cangjie_eval/sources/openai-human-eval/LICENSE`.
 - Cases: 164
-- Candidate invocations translated to Cangjie assertions: 1534
+- Candidate invocations translated to Cangjie assertions: 1538
 
 The authority preserves official calls and expected values while expressing them through explicit Cangjie types. These typed Cangjie contracts do not claim full Python duck-typing compatibility. Whenever Python subtype, iterable, `None`, or container identity semantics are narrowed or represented differently, `metadata.json`, `prompt.md`, and `translation/line_translation.md` must state that adaptation without changing the official observed values.
 
@@ -192,7 +192,7 @@ These adaptations are recorded per case in `metadata.json`.
 | `CJ-HUMANEVAL-138` | `HumanEval/138` | `is_equal_to_sum_even` | 8 | `public func is_equal_to_sum_even(n: Int64): Bool` | none |
 | `CJ-HUMANEVAL-139` | `HumanEval/139` | `special_factorial` | 4 | `public func special_factorial(n: Int64): Int64` | none |
 | `CJ-HUMANEVAL-140` | `HumanEval/140` | `fix_spaces` | 5 | `public func fix_spaces(text: String): String` | none |
-| `CJ-HUMANEVAL-141` | `HumanEval/141` | `file_name_check` | 26 | `public func file_name_check(file_name: String): String` | none |
+| `CJ-HUMANEVAL-141` | `HumanEval/141` | `file_name_check` | 28 | `public func file_name_check(file_name: String): String` | Python `str.isalpha()` Unicode-leading semantics are preserved. |
 | `CJ-HUMANEVAL-142` | `HumanEval/142` | `sum_squares` | 11 | `public func sum_squares(lst: ArrayList<Int64>): Int64` | none |
 | `CJ-HUMANEVAL-143` | `HumanEval/143` | `words_in_sentence` | 7 | `public func words_in_sentence(sentence: String): String` | none |
 | `CJ-HUMANEVAL-144` | `HumanEval/144` | `simplify` | 13 | `public func simplify(x: String, n: String): Bool` | none |
@@ -202,7 +202,7 @@ These adaptations are recorded per case in `metadata.json`.
 | `CJ-HUMANEVAL-148` | `HumanEval/148` | `bf` | 7 | `public func bf(planet1: String, planet2: String): EvalValue` | Python variable-length tuple return uses tuple-tagged `EvalValue` with exact ordered string payload; list tags are rejected. |
 | `CJ-HUMANEVAL-149` | `HumanEval/149` | `sorted_list_sum` | 7 | `public func sorted_list_sum(lst: ArrayList<String>): ArrayList<String>` | none |
 | `CJ-HUMANEVAL-150` | `HumanEval/150` | `x_or_y` | 10 | `public func x_or_y(n: Int64, x: Int64, y: Int64): Int64` | none |
-| `CJ-HUMANEVAL-151` | `HumanEval/151` | `double_the_difference` | 9 | `public func double_the_difference(lst: ArrayList<EvalValue>): Int64` | Python int and float identities are preserved with EvalValue tags. |
+| `CJ-HUMANEVAL-151` | `HumanEval/151` | `double_the_difference` | 11 | `public func double_the_difference(lst: ArrayList<EvalValue>): Int64` | Python int/float identity and bool-as-int subtype semantics are preserved with EvalValue tags. |
 | `CJ-HUMANEVAL-152` | `HumanEval/152` | `compare` | 4 | `public func compare(game: ArrayList<Int64>, guess: ArrayList<Int64>): ArrayList<Int64>` | none |
 | `CJ-HUMANEVAL-153` | `HumanEval/153` | `Strongest_Extension` | 9 | `public func Strongest_Extension(class_name: String, extensions: ArrayList<String>): String` | none |
 | `CJ-HUMANEVAL-154` | `HumanEval/154` | `cycpattern_check` | 6 | `public func cycpattern_check(a: String, b: String): Bool` | none |

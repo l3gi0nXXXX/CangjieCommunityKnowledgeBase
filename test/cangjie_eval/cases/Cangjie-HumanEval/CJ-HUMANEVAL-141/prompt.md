@@ -2,7 +2,11 @@
 
 - Source task: `HumanEval/141`
 - Cangjie signature: `public func file_name_check(file_name: String): String`
-- Test calls expanded from official HumanEval: `26`
+- Test calls expanded from official HumanEval plus source-semantic adaptation checks: `28`
+- Static-language adaptations:
+  - The source oracle uses Python str.isalpha(): the first Unicode code point before the dot must be alphabetic; this is not limited to ASCII or the Latin alphabet.
+  - Cangjie translation must implement the source oracle semantics even though the HumanEval prose says "latin alphabet".
+  - The starter imports `std.unicode.*`, which provides `Rune.isLetter()` for this Unicode-alphabetic check.
 
 ## Model-Facing Task
 

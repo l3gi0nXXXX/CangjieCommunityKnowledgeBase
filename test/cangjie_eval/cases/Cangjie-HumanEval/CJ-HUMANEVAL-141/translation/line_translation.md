@@ -2,6 +2,8 @@
 
 The official Python `check(candidate)` was executed against the official canonical solution through a recorder. Each candidate invocation below is translated into a concrete Cangjie assertion in `tests/TestMain.cj`.
 
+The source oracle uses Python str.isalpha(): the first Unicode code point before the dot must be alphabetic; this is not limited to ASCII or the Latin alphabet. Cangjie translation must implement the source oracle semantics even though the HumanEval prose says "latin alphabet". The starter imports `std.unicode.*`, which provides `Rune.isLetter()` for this check without requiring completion output to modify the file prologue.
+
 ## Official Test Lines
 
 | Source line | HumanEval test line | CangjieEval assertion label(s) |
@@ -40,3 +42,10 @@ The official Python `check(candidate)` was executed against the official canonic
 | 32 | `    assert candidate('.txt') == 'No'` | `CJ-HUMANEVAL-141_l32_c025` |
 | 33 | `    assert candidate('s.') == 'No'` | `CJ-HUMANEVAL-141_l33_c026` |
 | 34 | `` | `` |
+
+## Static-Adaptation Boundary Assertions
+
+| Purpose | CangjieEval assertion | Expected |
+|---|---|---:|
+| Unicode alphabetic leading code point | `file_name_check("éxample.exe")` | `"Yes"` |
+| Emoji is not an alphabetic leading code point | `file_name_check("🙂example.exe")` | `"No"` |

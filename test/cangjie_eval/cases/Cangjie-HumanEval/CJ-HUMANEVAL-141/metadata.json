@@ -10,8 +10,12 @@
     "String"
   ],
   "returnType": "String",
-  "callCount": 26,
+  "callCount": 28,
   "sourceLicense": "MIT",
-  "testStrategy": "official check(candidate) expanded through canonical recorder, then translated to Cangjie main assertions",
-  "staticLanguageAdaptations": []
+  "testStrategy": "official check(candidate) expanded through canonical recorder, then translated to Cangjie main assertions, plus Unicode-alphabetic and emoji-leading source-semantic boundaries",
+  "staticLanguageAdaptations": [
+    "The source oracle uses Python str.isalpha(): the first Unicode code point before the dot must be alphabetic; this is not limited to ASCII or the Latin alphabet.",
+    "Cangjie translation must implement the source oracle semantics even though the HumanEval prose says \"latin alphabet\".",
+    "The starter imports std.unicode.*, which provides Rune.isLetter() for this Unicode-alphabetic check."
+  ]
 }

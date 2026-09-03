@@ -2,10 +2,11 @@
 
 - Source task: `HumanEval/151`
 - Cangjie signature: `public func double_the_difference(lst: ArrayList<EvalValue>): Int64`
-- Test calls expanded from official HumanEval plus type-identity adaptation checks: `9`
+- Test calls expanded from official HumanEval plus type-identity adaptation checks: `11`
 - Static-language adaptations:
   - Python int and float identities are preserved with EvalValue tags.
-  - Only values with `kind == "int"` are Python integers; a float-tagged value such as `evalFloat(3.0)` must be ignored.
+  - Python bool is an int subtype: evalBool(true) projects to integer 1 and contributes 1, while evalBool(false) projects to integer 0 and contributes 0.
+  - Float-tagged values such as `evalFloat(3.0)` are not Python integers and must be ignored.
 
 ## Model-Facing Task
 

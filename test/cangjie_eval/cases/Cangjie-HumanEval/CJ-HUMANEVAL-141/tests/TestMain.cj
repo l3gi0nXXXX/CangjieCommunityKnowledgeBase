@@ -60,6 +60,8 @@ main(): Int64 {
     expectString(file_name_check("_f4indsartal132."), "No", "CJ-HUMANEVAL-141_l27_c024")
     expectString(file_name_check(".txt"), "No", "CJ-HUMANEVAL-141_l32_c025")
     expectString(file_name_check("s."), "No", "CJ-HUMANEVAL-141_l33_c026")
+    expectString(file_name_check("éxample.exe"), "Yes", "CJ-HUMANEVAL-141_unicode_alpha_c027")
+    expectString(file_name_check("🙂example.exe"), "No", "CJ-HUMANEVAL-141_emoji_non_alpha_c028")
     println("CJ-HUMANEVAL-141 ok")
     return 0
 }

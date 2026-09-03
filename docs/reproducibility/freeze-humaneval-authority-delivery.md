@@ -115,7 +115,7 @@ cjpm run --skip-build --run-args \
   "cangjie-humaneval-manifest-build --dataset-root $CKB_ROOT/test/cangjie_eval/cases/Cangjie-HumanEval --output $CKB_AUTHORITY_TMP/repository-authority.jsonl"
 cmp "$CKB_AUTHORITY_TMP/repository-authority.jsonl" "$AUTHORITY_MANIFEST"
 test "$(shasum -a 256 "$AUTHORITY_MANIFEST" | awk '{print $1}')" = \
-  34c9171d82e84c41e59154aca4f77b8a57bcbca6db792dcd0627a0819af35a13
+  5f1dab6a8592929a12c8859763837680d3f2d4090a85d0cc0476add4f2d72621
 test "$(shasum -a 256 "$AUTHORITY_SOURCE_LOCK" | awk '{print $1}')" = \
   42af8d986e94d8629407a04c5350da24db574abedd736205cbee914bf68f0454
 
@@ -124,8 +124,8 @@ cjpm run --skip-build --run-args \
 cjpm run --skip-build --run-args \
   "ckb-authority-bundle verify --authority $AUTHORITY_MANIFEST --delivery-root $CKB_AUTHORITY_DELIVERY_ROOT --json" | \
   jq -e '.ok == true and .presentCount == 164 and
-    .authorityHash == "sha256:34c9171d82e84c41e59154aca4f77b8a57bcbca6db792dcd0627a0819af35a13" and
-    .datasetVersion == "cangjie-humaneval-164-sha256:8be3a9eb4b5a9411f549420dbf201be35582fa5279a5710177948aa788cf2de1"'
+    .authorityHash == "sha256:5f1dab6a8592929a12c8859763837680d3f2d4090a85d0cc0476add4f2d72621" and
+    .datasetVersion == "cangjie-humaneval-164-sha256:e73d050be333b27d771866ef99f8dd5b70d83999a326290bbfaf7c2876e58b9a"'
 ```
 
 通过标准：seal 和 verify 均退出 0；输出目录只含固定 delivery manifest 与 CKBREL01 bundle。命令不读取知识 store、不访问模型、不输出 LICENSE 或 authority 大 payload。
@@ -146,8 +146,8 @@ jq -e '
   .mode == "bundled" and
   .licenseId == "Apache-2.0 AND MIT" and
   .redistributionAllowed == true and .anonymousPublicAccess == false and
-  .authorityHash == "sha256:34c9171d82e84c41e59154aca4f77b8a57bcbca6db792dcd0627a0819af35a13" and
-  .datasetVersion == "cangjie-humaneval-164-sha256:8be3a9eb4b5a9411f549420dbf201be35582fa5279a5710177948aa788cf2de1" and
+  .authorityHash == "sha256:5f1dab6a8592929a12c8859763837680d3f2d4090a85d0cc0476add4f2d72621" and
+  .datasetVersion == "cangjie-humaneval-164-sha256:e73d050be333b27d771866ef99f8dd5b70d83999a326290bbfaf7c2876e58b9a" and
   (.bundleHash | test("^sha256:[0-9a-f]{64}$")) and
   (.licenseEvidenceHash | test("^sha256:[0-9a-f]{64}$"))' \
   "$CKB_AUTHORITY_DELIVERY_ROOT/authority-delivery.json"

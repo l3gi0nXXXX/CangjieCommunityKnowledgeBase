@@ -2,7 +2,7 @@
 
 The official Python `check(candidate)` was executed against the official canonical solution through a recorder. Each candidate invocation below is translated into a concrete Cangjie assertion in `tests/TestMain.cj`.
 
-Type-identity preservation: official integer literals and the integer range are translated with `evalInt`; official float literals are translated with `evalFloat`. The additional adaptation pair `evalInt(3)` / `evalFloat(3.0)` proves that equal numeric payloads retain the Python `int`/`float` distinction required by the canonical integer-type filter.
+Type-identity preservation: official integer literals and the integer range are translated with `evalInt`; official float literals are translated with `evalFloat`. The additional adaptation pair `evalInt(3)` / `evalFloat(3.0)` proves that equal numeric payloads retain the Python `int`/`float` distinction required by the canonical integer-type filter. Python bool is an int subtype: evalBool(true) projects to integer 1 and contributes 1, while evalBool(false) projects to integer 0 and contributes 0.
 
 ## Official Test Lines
 
@@ -31,3 +31,5 @@ Type-identity preservation: official integer literals and the integer range are 
 |---|---|---:|
 | Python integer identity | `double_the_difference([evalInt(3)])` | `9` |
 | Python float identity with the same numeric payload | `double_the_difference([evalFloat(3.0)])` | `0` |
+| Python `True` projected through the bool-as-int subtype rule | `double_the_difference([evalBool(true)])` | `1` |
+| Python `False` projected through the bool-as-int subtype rule | `double_the_difference([evalBool(false)])` | `0` |

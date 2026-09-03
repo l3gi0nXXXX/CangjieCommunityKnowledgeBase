@@ -9,6 +9,7 @@ private class H151Number {
     var kind: String = "none"
     var intValue: Int64 = 0
     var floatValue: Float64 = 0.0
+    var boolValue: Bool = false
 }
 
 private func h151Int(value: Int64): H151Number {
@@ -26,6 +27,13 @@ private func h151Float(value: Float64): H151Number {
     result
 }
 
+private func h151Bool(value: Bool): H151Number {
+    let result = H151Number()
+    result.kind = "bool"
+    result.boolValue = value
+    result
+}
+
 private func h151Values(values: Array<H151Number>): ArrayList<H151Number> {
     let result = ArrayList<H151Number>()
     for (value in values) { result.add(value) }
@@ -35,8 +43,16 @@ private func h151Values(values: Array<H151Number>): ArrayList<H151Number> {
 private func h151OfficialSemantics(values: ArrayList<H151Number>): Int64 {
     var result: Int64 = 0
     for (value in values) {
-        if (value.kind == "int" && value.intValue > 0 && value.intValue % 2 != 0) {
-            result += value.intValue * value.intValue
+        var projected: Int64 = 0
+        if (value.kind == "int") {
+            projected = value.intValue
+        } else if (value.kind == "bool") {
+            projected = if (value.boolValue) { 1 } else { 0 }
+        } else {
+            continue
+        }
+        if (projected > 0 && projected % 2 != 0) {
+            result += projected * projected
         }
     }
     result
@@ -57,6 +73,8 @@ public class CangjieHumanEvalCase151TypeIdentityTest {
     public func h151Ut01TaggedIntegerFilterPreservesTypeIdentity(): Unit {
         @Expect(h151OfficialSemantics(h151Values([h151Int(3)])), 9)
         @Expect(h151OfficialSemantics(h151Values([h151Float(3.0)])), 0)
+        @Expect(h151OfficialSemantics(h151Values([h151Bool(true)])), 1)
+        @Expect(h151OfficialSemantics(h151Values([h151Bool(false)])), 0)
         @Expect(h151OfficialSemantics(h151Values([h151Int(4), h151Float(5.0)])), 0)
     }
 
@@ -123,11 +141,14 @@ public class CangjieHumanEvalCase151TypeIdentityTest {
         @Expect(starter.contains(signature), true)
         @Expect(metadata.contains(signature), true)
         @Expect(metadata.contains("Python int and float identities are preserved with EvalValue tags."), true)
+        @Expect(metadata.contains("Python bool is an int subtype: evalBool(true) projects to integer 1 and contributes 1, while evalBool(false) projects to integer 0 and contributes 0."), true)
         @Expect(translation.contains("evalInt(3)"), true)
         @Expect(translation.contains("evalFloat(3.0)"), true)
+        @Expect(translation.contains("evalBool(true)"), true)
+        @Expect(translation.contains("evalBool(false)"), true)
         @Expect(canonical.contains("\"schemaVersion\":\"cangjie-humaneval-authority-v1\""), true)
         @Expect(canonical.contains("\"caseId\":\"CJ-HUMANEVAL-151\""), true)
         @Expect(canonical.contains("\"signature\":\"${signature}\""), true)
-        @Expect(readme.contains("`CJ-HUMANEVAL-151` | `HumanEval/151` | `double_the_difference` | 9 | `${signature}`"), true)
+        @Expect(readme.contains("`CJ-HUMANEVAL-151` | `HumanEval/151` | `double_the_difference` | 11 | `${signature}`"), true)
     }
 }

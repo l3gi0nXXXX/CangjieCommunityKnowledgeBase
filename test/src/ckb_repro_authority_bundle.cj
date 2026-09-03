@@ -71,9 +71,9 @@ public func ckbHumanEvalAuthorityTrustPolicy(): CkbAuthorityTrustPolicy {
     policy.sourceLockHash =
         "sha256:42af8d986e94d8629407a04c5350da24db574abedd736205cbee914bf68f0454"
     policy.authorityHash =
-        "sha256:34c9171d82e84c41e59154aca4f77b8a57bcbca6db792dcd0627a0819af35a13"
+        "sha256:5f1dab6a8592929a12c8859763837680d3f2d4090a85d0cc0476add4f2d72621"
     policy.datasetVersion =
-        "cangjie-humaneval-164-sha256:8be3a9eb4b5a9411f549420dbf201be35582fa5279a5710177948aa788cf2de1"
+        "cangjie-humaneval-164-sha256:e73d050be333b27d771866ef99f8dd5b70d83999a326290bbfaf7c2876e58b9a"
     policy
 }
 
