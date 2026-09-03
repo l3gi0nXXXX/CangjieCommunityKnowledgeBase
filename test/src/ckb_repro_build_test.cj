@@ -325,7 +325,7 @@ public class CkbReproBuildTest {
 
     @TestCase
     public func p4Reg04ProductionCandidateBindsEvalSupportAuthority(): Unit {
-        let fixture = p4BuildFixture("authority-binding")
+        let fixture = p4BuildFixture("humaneval-authority-binding")
         let input = CkbReproPipelineInput()
         input.request = fixture.request
         input.request.candidateVersion = "portable-authority-binding"
@@ -333,8 +333,9 @@ public class CkbReproBuildTest {
             "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
         input.request.leakageAuthorityHash =
             "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-        input.selectedTyped.add(fixture.request.typedInput[0])
-        input.portableTyped.add(fixture.request.typedInput[0])
+        let portable = p4BuildTyped("portable-authority-binding")
+        input.selectedTyped.add(portable)
+        input.portableTyped.add(portable)
         let backend = CkbReproProductionBuildBackend()
 
         @Expect(backend.run("clean", input).ok, true)
