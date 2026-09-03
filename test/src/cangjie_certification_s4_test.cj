@@ -21,6 +21,10 @@ public class CkbCertificationS4ContractTest {
         @Expect(rulesAt < skillAt, true)
         @Expect(skillAt < knowledgeAt, true)
         @Expect(knowledgeAt < checklistAt, true)
+        @Expect(prompt.contains("scan every declared identifier against Cangjie reserved keywords"), true)
+        @Expect(prompt.contains("rename or consistently escape any conflict"), true)
+        @Expect(prompt.contains("verify the receiver type, member name, parameter types, and return type"), true)
+        @Expect(prompt.contains("do not invent convenience members"), true)
         @Expect(prompt.endsWith("Submit exactly one completion.\n"), true)
     }
 
