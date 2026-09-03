@@ -9,6 +9,8 @@ import stdx.encoding.json.*
 private let HU_ROOT = Path("cangjie_eval/cases/Cangjie-HumanEval")
 private let HU_SCAFFOLD_CONTRACT =
     "The completion-only starter imports std.unicode.* so Rune.toLowerCase(), Rune.toUpperCase(), and Rune.isLetter() are available without modifying the file prologue."
+private let HU_027_FULL_CASE_CONTRACT =
+    "String.toUpper(CasingOption.Other) and String.toLower(CasingOption.Other) return String and preserve full Unicode mappings that may expand one Rune to multiple Runes; Rune.toUpperCase() and Rune.toLowerCase() return only one Rune."
 
 private func huRead(path: Path): (Bool, String) {
     try {
@@ -36,9 +38,14 @@ private func huAligned(caseId: String, baseEvidence: String,
     let base = huCase(caseId, "tests/TestMain.cj")
     let plus = huCase(caseId, "tests-plus/TestMain.cj")
     let translation = huCase(caseId, "translation/line_translation.md")
-    prompt.contains(HU_SCAFFOLD_CONTRACT) &&
-        metadata.contains(HU_SCAFFOLD_CONTRACT) &&
-        translation.contains(HU_SCAFFOLD_CONTRACT) &&
+    let expectedContract = if (caseId == "CJ-HUMANEVAL-027") {
+        HU_027_FULL_CASE_CONTRACT
+    } else {
+        HU_SCAFFOLD_CONTRACT
+    }
+    prompt.contains(expectedContract) &&
+        metadata.contains(expectedContract) &&
+        translation.contains(expectedContract) &&
         starter.contains("import std.unicode.*") &&
         base.contains(baseEvidence) && plus.contains(plusCall) &&
         huHasUnicode(plus)
@@ -54,7 +61,7 @@ private func huOtherCaseHash(): (Bool, Int64, String) {
             if (line.trimAscii() == "") { continue }
             let row = JsonValue.fromStr(line).asObject()
             let caseId = row.get("caseId").getOrThrow().asString().getValue()
-            if (caseId == "CJ-HUMANEVAL-027" || caseId == "CJ-HUMANEVAL-161") {
+            if (caseId == "CJ-HUMANEVAL-027") {
                 continue
             }
             let caseHash = row.get("caseHash").getOrThrow().asString().getValue()
@@ -73,10 +80,12 @@ public class CangjieHumanEvalUnicodeScaffold027161Test {
     public func huUt027CompletionOnlyUnicodeApiIsAvailable(): Unit {
         @Expect(r'é'.toUpperCase(), r'É')
         @Expect(r'É'.toLowerCase(), r'é')
+        @Expect("ß".toUpper(CasingOption.Other), "SS")
+        @Expect("İ".toLower(CasingOption.Other), "i̇")
         @Expect(huCase("CJ-HUMANEVAL-027", "starter/src/solution.cj").contains(
             "import std.unicode.*"), true)
         @Expect(huCase("CJ-HUMANEVAL-027", "metadata.json").contains(
-            HU_SCAFFOLD_CONTRACT), true)
+            HU_027_FULL_CASE_CONTRACT), true)
     }
 
     @TestCase
@@ -95,6 +104,8 @@ public class CangjieHumanEvalUnicodeScaffold027161Test {
         let base161 = huCase("CJ-HUMANEVAL-161", "tests/TestMain.cj")
         @Expect(base027.contains("éÉ🙂"), true)
         @Expect(base027.contains("Éé🙂"), true)
+        @Expect(base027.contains("ßİ🙂"), true)
+        @Expect(base027.contains("SSi̇🙂"), true)
         @Expect(base161.contains("éÉ🙂"), true)
         @Expect(base161.contains("🙂😂"), true)
         @Expect(base161.contains("😂🙂"), true)
@@ -107,7 +118,7 @@ public class CangjieHumanEvalUnicodeScaffold027161Test {
         @Expect(huAligned("CJ-HUMANEVAL-161", "solve(\"éÉ🙂\")",
             "plusExpectString(solve("), true)
         @Expect(huCase("CJ-HUMANEVAL-027", "metadata.json").contains(
-            "\"callCount\": 4"), true)
+            "\"callCount\": 5"), true)
         @Expect(huCase("CJ-HUMANEVAL-161", "metadata.json").contains(
             "\"callCount\": 10"), true)
     }
@@ -121,14 +132,16 @@ public class CangjieHumanEvalUnicodeScaffold027161Test {
         let contracts = huCase("CJ-HUMANEVAL-027", "prompt.md") +
             huCase("CJ-HUMANEVAL-161", "prompt.md")
         @Expect(contracts.contains("ASCII-only case conversion is sufficient"), false)
+        @Expect(contracts.contains(
+            "Rune.toUpperCase() and Rune.toLowerCase() return only one Rune"), true)
     }
 
     @TestCase
-    public func huHistOther162CaseHashesRemainUnchanged(): Unit {
+    public func huHistOther163CaseHashesRemainUnchanged(): Unit {
         let history = huOtherCaseHash()
         @Expect(history[0], true)
-        @Expect(history[1], 162)
+        @Expect(history[1], 163)
         @Expect(history[2],
-            "sha256:82201eb5c75bc6097e3d44e7e219fe32edd090b75e784fcb4062a3ffd48ec842")
+            "sha256:e330cba4adc3679143211df4fd74f565faf20c42808d661ba15255bde0df1e5d")
     }
 }

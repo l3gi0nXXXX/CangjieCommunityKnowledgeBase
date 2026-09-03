@@ -2,7 +2,7 @@
 
 The official Python `check(candidate)` was executed against the official canonical solution through a recorder. Each candidate invocation below is translated into a concrete Cangjie assertion in `tests/TestMain.cj`.
 
-The completion-only starter imports std.unicode.* so Rune.toLowerCase(), Rune.toUpperCase(), and Rune.isLetter() are available without modifying the file prologue. Iterate the input by Rune boundaries; direct String iteration exposes UTF-8 bytes and is not suitable for Unicode case conversion.
+The completion-only starter imports `std.unicode.*` without requiring changes to the file prologue. Iterate the input by Rune boundaries; direct String iteration exposes UTF-8 bytes and is not suitable for Unicode case conversion. String.toUpper(CasingOption.Other) and String.toLower(CasingOption.Other) return String and preserve full Unicode mappings that may expand one Rune to multiple Runes; Rune.toUpperCase() and Rune.toLowerCase() return only one Rune.
 
 ## Official Test Lines
 
@@ -26,3 +26,4 @@ The completion-only starter imports std.unicode.* so Rune.toLowerCase(), Rune.to
 | Purpose | CangjieEval assertion | Expected |
 |---|---|---:|
 | Unicode case conversion with emoji preservation | `flip_case("éÉ🙂")` | `"Éé🙂"` |
+| Full Unicode expansion and combining-mark preservation | `flip_case("ßİ🙂")` | `"SSi̇🙂"` |

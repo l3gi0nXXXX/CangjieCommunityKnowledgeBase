@@ -78,7 +78,7 @@ These adaptations are recorded per case in `metadata.json`.
 | `CJ-HUMANEVAL-024` | `HumanEval/24` | `largest_divisor` | 5 | `public func largest_divisor(n: Int64): Int64` | none |
 | `CJ-HUMANEVAL-025` | `HumanEval/25` | `factorize` | 8 | `public func factorize(n: Int64): ArrayList<Int64>` | none |
 | `CJ-HUMANEVAL-026` | `HumanEval/26` | `remove_duplicates` | 3 | `public func remove_duplicates(numbers: ArrayList<Int64>): ArrayList<Int64>` | none |
-| `CJ-HUMANEVAL-027` | `HumanEval/27` | `flip_case` | 4 | `public func flip_case(string: String): String` | Completion-only scaffold imports `std.unicode.*`; processing is Rune-boundary safe. |
+| `CJ-HUMANEVAL-027` | `HumanEval/27` | `flip_case` | 5 | `public func flip_case(string: String): String` | Completion-only scaffold imports `std.unicode.*`; processing is Rune-boundary safe and String casing preserves full Unicode mappings. |
 | `CJ-HUMANEVAL-028` | `HumanEval/28` | `concatenate` | 3 | `public func concatenate(strings: ArrayList<String>): String` | none |
 | `CJ-HUMANEVAL-029` | `HumanEval/29` | `filter_by_prefix` | 2 | `public func filter_by_prefix(strings: ArrayList<String>, prefix: String): ArrayList<String>` | none |
 | `CJ-HUMANEVAL-030` | `HumanEval/30` | `get_positive` | 4 | `public func get_positive(l: ArrayList<Int64>): ArrayList<Int64>` | none |

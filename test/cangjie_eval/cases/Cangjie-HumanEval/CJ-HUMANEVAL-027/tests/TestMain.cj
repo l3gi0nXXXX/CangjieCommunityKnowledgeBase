@@ -38,6 +38,7 @@ main(): Int64 {
     expectString(flip_case("Hello!"), "hELLO!", "CJ-HUMANEVAL-027_l11_c002")
     expectString(flip_case("These violent delights have violent ends"), "tHESE VIOLENT DELIGHTS HAVE VIOLENT ENDS", "CJ-HUMANEVAL-027_l12_c003")
     expectString(flip_case("éÉ🙂"), "Éé🙂", "CJ-HUMANEVAL-027_unicode_emoji_c004")
+    expectString(flip_case("ßİ🙂"), "SSi̇🙂", "CJ-HUMANEVAL-027_unicode_expansion_c005")
     println("CJ-HUMANEVAL-027 ok")
     return 0
 }
