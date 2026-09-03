@@ -15,6 +15,7 @@
   "testStrategy": "official check(candidate) expanded through canonical recorder, then translated to Cangjie main assertions",
   "staticLanguageAdaptations": [
     "Python list[str] | int is represented by EvalValue with exact string_list and int tagged payloads.",
-    "evalStringList preserves list structure, size, order, and String elements; serialized list text is not equivalent."
+    "evalStringList preserves list structure, size, order, and String elements; serialized list text is not equivalent.",
+    "The integer branch must use the provided evalInt(Int64) helper; evalInt64 is not part of the starter scaffold."
   ]
 }

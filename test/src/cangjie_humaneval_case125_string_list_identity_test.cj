@@ -43,6 +43,8 @@ public class CangjieHumanEvalCase125StringListIdentityTest {
         @Expect(tests.contains("unsupported EvalValue kind"), true)
         @Expect(support.contains("public var stringListValue: ArrayList<String>"), true)
         @Expect(support.contains("public func evalStringList(values: Array<String>): EvalValue"), true)
+        @Expect(support.contains("public func evalInt(value: Int64): EvalValue"), true)
+        @Expect(support.contains("evalInt64"), false)
         @Expect(support.contains("v.kind = \"string_list\""), true)
     }
 
@@ -54,6 +56,11 @@ public class CangjieHumanEvalCase125StringListIdentityTest {
         let readme = case125ReadUtf8("../README.md")
         @Expect(metadata.contains("list[str] | int"), true)
         @Expect(prompt.contains("evalStringList(Array<String>)"), true)
+        @Expect(prompt.contains("evalInt(Int64)"), true)
+        @Expect(prompt.contains("`evalInt64` does not exist"), true)
+        @Expect(metadata.contains("evalInt(Int64) helper"), true)
+        @Expect(translation.contains("evalInt(Int64)"), true)
+        @Expect(readme.contains("integer results use `evalInt(Int64)`"), true)
         @Expect(translation.contains("kind, size, order, and every String element exactly"), true)
         @Expect(readme.contains("serialized list text is rejected"), true)
         var malformedRejected = false
@@ -136,6 +143,8 @@ func expectRejected(actual: EvalValue, expected: EvalValue, label: String): Unit
 }
 
 main(): Int64 {
+    expectEvalValue(evalInt(9223372036854775807), evalInt(9223372036854775807), "H125-BND-int-max")
+    expectEvalValue(evalInt(-9223372036854775807 - 1), evalInt(-9223372036854775807 - 1), "H125-BND-int-min")
     expectEvalValue(evalStringList([]), evalStringList([]), "H125-BND-empty-list")
     expectEvalValue(evalStringList(["中文", "🙂"]), evalStringList(["中文", "🙂"]), "H125-BND-unicode")
     expectRejected(evalStringList(["world!", "Hello"]), evalStringList(["Hello", "world!"]), "H125-NEG-order")

@@ -2,7 +2,7 @@
 
 The official Python `check(candidate)` was executed against the official canonical solution through a recorder. Each candidate invocation below is translated into a concrete Cangjie assertion in `tests/TestMain.cj`.
 
-Oracle preservation: Python `list[str]` results use the `EvalValue` kind `string_list` and an ordered `ArrayList<String>` payload. The verifier compares kind, size, order, and every String element exactly. A scalar String containing JSON-like list text is not structurally equal. Integer results remain the distinct `int` kind.
+Oracle preservation: Python `list[str]` results use the `EvalValue` kind `string_list` and an ordered `ArrayList<String>` payload. The verifier compares kind, size, order, and every String element exactly. A scalar String containing JSON-like list text is not structurally equal. Integer results remain the distinct `int` kind and must be constructed with the starter's provided `evalInt(Int64)` helper; there is no `evalInt64` helper.
 
 ## Official Test Lines
 

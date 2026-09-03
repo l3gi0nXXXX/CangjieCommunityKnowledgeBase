@@ -6,6 +6,7 @@
 - Static-language adaptations:
   - Python `list[str] | int` is represented by `EvalValue` with exact `string_list` and `int` tagged payloads.
   - Return a list branch with `evalStringList(Array<String>)`; serialized list text in `evalString(...)` is a different value and will not pass.
+  - Return an integer branch with the provided `evalInt(Int64)` helper; `evalInt64` does not exist in the starter scaffold.
 
 ## Model-Facing Task
 
