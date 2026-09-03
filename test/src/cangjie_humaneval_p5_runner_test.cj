@@ -106,7 +106,9 @@ public class CangjieHumanEvalP5RunnerTest {
         @Expect(malformed.ok, false)
         @Expect(malformed.diagnostic, "malformed_result_row")
         @Expect(ckbAbcdeFailureTypeForTest(124, 1, false, "none", "超时😀", true), "timeout")
-        @Expect(ckbAbcdeFailureTypeForTest(0, 1, false, "none", "compile error 中文😀", true), "compile_error")
+        let compilerLog = "error: compile error 中文😀\n==> /private/work/src/solution.cj:2:1:\n1 error generated, 1 error printed.\nError: failed to compile package `fixture`, return code is 1"
+        @Expect(ckbAbcdeFailureTypeForTest(0, 1, false, "none", compilerLog, true), "compile_error")
+        @Expect(ckbAbcdeFailureTypeForTest(0, 1, false, "none", "compile error 中文😀", true), "unit_failure")
     }
 
     @TestCase
