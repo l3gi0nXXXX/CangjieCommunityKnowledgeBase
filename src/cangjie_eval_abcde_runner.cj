@@ -4483,6 +4483,19 @@ private func ckbAbcdeRunShell(script: String, cwd: String): CkbAbcdeCommandResul
     result
 }
 
+private func ckbAbcdeTimedTestInnerScript(script: String, dyldLibraryPath: String): String {
+    let value = dyldLibraryPath.trimAscii()
+    if (value == "") { return script }
+    // macOS may remove DYLD_* while starting the protected /bin/zsh binary.
+    // Recreate the inherited value inside that shell before it launches cjpm.
+    "export DYLD_LIBRARY_PATH=${ckbAbcdeShellQuote(value)}; ${script}"
+}
+
+public func ckbAbcdeTimedTestInnerScriptForTest(script: String,
+    dyldLibraryPath: String): String {
+    ckbAbcdeTimedTestInnerScript(script, dyldLibraryPath)
+}
+
 private func ckbAbcdeRunTimedTestShell(script:String,cwd:String,timeoutSeconds:Int64,
     artifactRoot:String,suite:String):CkbAbcdeCommandResult {
     let result=CkbAbcdeCommandResult()
@@ -4491,7 +4504,8 @@ private func ckbAbcdeRunTimedTestShell(script:String,cwd:String,timeoutSeconds:I
     let pidPath=prefix.toString()+".pid";let markerPath=prefix.toString()+".timeout"
     let stdoutPath=prefix.toString()+".stdout";let stderrPath=prefix.toString()+".stderr"
     try{_=launch("/bin/rm",["-f",pidPath,markerPath,stdoutPath,stderrPath]).wait()}catch(_:Exception){}
-    let args=ArrayList<String>();args.add("-lc");args.add(script)
+    let inheritedDyld=match(getVariable("DYLD_LIBRARY_PATH")){case Some(value)=>value;case None=>""}
+    let args=ArrayList<String>();args.add("-lc");args.add(ckbAbcdeTimedTestInnerScript(script,inheritedDyld))
     let launched=CkbTimedWorkerProcessLauncher("/bin/zsh",args,workdir:cwd,
         cutoffAtMillis:ckbCoreNowMillis()+timeoutSeconds*1000,
         hardDeadlineAtMillis:ckbCoreNowMillis()+timeoutSeconds*1000,

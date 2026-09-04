@@ -532,6 +532,27 @@ public class CangjieEvalAbcdeRunnerTest {
         @Expect(script.contains("exec '/tmp/ckb bin' '--store' '/tmp/store path' 'mcp-stdio'"), true)
     }
 
+    // TDYLD-UT-01 / TDYLD-BND-01
+    @TestCase
+    public func ckg12TimedTestInnerScriptRestoresDyldAfterProtectedShellBoundary(): Unit {
+        let value = "/tmp/运行 库🙂:/tmp/quote'value"
+        let script = ckbAbcdeTimedTestInnerScriptForTest("cjpm run", value)
+        @Expect(script, "export DYLD_LIBRARY_PATH='/tmp/运行 库🙂:/tmp/quote'\\''value'; cjpm run")
+        @Expect(ckbAbcdeTimedTestInnerScriptForTest("cjpm run", "  "), "cjpm run")
+    }
+
+    // TDYLD-NEG-01
+    @TestCase
+    public func ckg12TimedTestShellKeepsCommandFailureFailClosed(): Unit {
+        let root = Path("target/ckg12-timed-test-dyld-negative")
+        if (!exists(root)) { Directory.create(root, recursive: true) }
+        let result = ckbAbcdeRunTimedTestShellForTest(
+            "exit 17", root.toString(), 5, root.toString(), "negative")
+        @Expect(result.exitCode, 17)
+        @Expect(result.timedOut, false)
+        @Expect(result.diagnostic, "worker_exit_code=17")
+    }
+
     @TestCase
     public func ckg12Pos003CaseResultCarriesBenchmarkAuditFields(): Unit {
         let options = CkbAbcdeRunnerOptions()

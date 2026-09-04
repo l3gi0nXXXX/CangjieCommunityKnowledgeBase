@@ -2,7 +2,6 @@ package cangjie_community_knowledge_base_test
 
 import std.collection.*
 import std.crypto.digest.digest
-import std.env.getVariable
 import std.fs.{Directory, File, Path, exists}
 import std.math.numeric.*
 import std.process.launch
@@ -33,12 +32,10 @@ private func hsaRunPublicBase(caseId: String, fixtureName: String, solution: Str
     File.writeTo(root.join("src/eval_support.cj"), File.readFrom(caseRoot.join("starter/src/eval_support.cj")))
     File.writeTo(root.join("src/solution.cj"), solution.toArray())
     File.writeTo(root.join("src/test_main.cj"), File.readFrom(caseRoot.join("tests/TestMain.cj")))
-    let magicRoot = match (getVariable("MAGIC_PATH")) { case Some(value) => value; case None => "" }
-    let inheritedDyld = match (getVariable("DYLD_LIBRARY_PATH")) { case Some(value) => value; case None => "" }
-    let dyld = "/opt/homebrew/opt/openssl@3/lib:${magicRoot}/libs/cangjie-stdx-mac-aarch64-1.0.0.1/darwin_aarch64_llvm/dynamic/stdx:${inheritedDyld}"
-    let command = "export DYLD_LIBRARY_PATH='${dyld}'; cd '${root.toString()}' && cjpm clean && cjpm build -i && cjpm run > run.log 2>&1"
-    let exitCode = launch("/bin/zsh", ["-c", command]).wait()
-    (exitCode, hsaRead(root.join("run.log")))
+    let command = "cjpm clean && cjpm build -i && cjpm run > run.log 2>&1"
+    let executed = ckbAbcdeRunTimedTestShellForTest(
+        command, root.toString(), 180, root.toString(), fixtureName)
+    (executed.exitCode, hsaRead(root.join("run.log")))
 }
 
 private func hsaFloorDiv(left: BigInt, right: BigInt): BigInt {
